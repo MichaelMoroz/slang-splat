@@ -1,0 +1,42 @@
+# Slang Splat
+
+Basic Gaussian splat renderer implemented with Slang compute shaders and Slangpy.
+
+## Features
+- PLY Gaussian scene loader for standard 3DGS vertex properties.
+- GPU tile binning pass that produces `(tile_id, depth)` keys and splat indices.
+- GPU radix sort integration (copied/adapted from `ZibraVdbPrototyping`).
+- GPU tile range build pass from sorted keys.
+- GPU compute rasterizer that blends tile-local sorted splats.
+- CPU reference implementations and tests for key algorithms.
+
+## Setup
+1. Create and activate virtual environment:
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+2. Install dependencies:
+```powershell
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m pip install -e ..\slangpy
+```
+
+## Render One Frame
+```powershell
+python render.py --ply C:\path\to\scene.ply --output render.png --width 1280 --height 720
+```
+
+## Run Tests
+```powershell
+pytest -q
+```
+
+## Project Structure
+- `src/scene`: scene datamodel and PLY loader.
+- `src/sort`: GPU radix sort wrapper.
+- `src/renderer`: camera, reference CPU algorithms, and renderer orchestration.
+- `shaders/radix_sort`: radix sort shader stages.
+- `shaders/renderer`: Gaussian renderer compute stages.
+- `tests`: correctness tests against CPU references.
