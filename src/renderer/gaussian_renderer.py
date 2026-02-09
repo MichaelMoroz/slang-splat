@@ -134,7 +134,6 @@ class GaussianRenderer:
                 size=max(splat_capacity, 1) * 16, usage=usage
             ),
             "screen_color_alpha": self.device.create_buffer(size=max(splat_capacity, 1) * 16, usage=usage),
-            "screen_valid": self.device.create_buffer(size=max(splat_capacity, 1) * 4, usage=usage),
             "splat_pos_local": self.device.create_buffer(size=max(splat_capacity, 1) * 16, usage=usage),
             "splat_inv_scale": self.device.create_buffer(size=max(splat_capacity, 1) * 16, usage=usage),
             "splat_quat": self.device.create_buffer(size=max(splat_capacity, 1) * 16, usage=usage),
@@ -197,7 +196,6 @@ class GaussianRenderer:
             "g_ColorAlpha": self._scene_buffers["color_alpha"],
             "g_ScreenCenterRadiusDepth": self._work_buffers["screen_center_radius_depth"],
             "g_ScreenColorAlpha": self._work_buffers["screen_color_alpha"],
-            "g_ScreenValid": self._work_buffers["screen_valid"],
             "g_SplatPosLocal": self._work_buffers["splat_pos_local"],
             "g_SplatInvScale": self._work_buffers["splat_inv_scale"],
             "g_SplatQuat": self._work_buffers["splat_quat"],
@@ -250,7 +248,6 @@ class GaussianRenderer:
             vars={
                 "g_ScreenCenterRadiusDepth": self._work_buffers["screen_center_radius_depth"],
                 "g_ScreenColorAlpha": self._work_buffers["screen_color_alpha"],
-                "g_ScreenValid": self._work_buffers["screen_valid"],
                 "g_SplatPosLocal": self._work_buffers["splat_pos_local"],
                 "g_SplatInvScale": self._work_buffers["splat_inv_scale"],
                 "g_SplatQuat": self._work_buffers["splat_quat"],
@@ -377,7 +374,6 @@ class GaussianRenderer:
                 self._work_buffers["screen_center_radius_depth"], scene.count
             ),
             "screen_color_alpha": self._read_f32x4(self._work_buffers["screen_color_alpha"], scene.count),
-            "screen_valid": self._read_u32(self._work_buffers["screen_valid"], scene.count),
             "splat_pos_local": self._read_f32x4(self._work_buffers["splat_pos_local"], scene.count),
             "splat_inv_scale": self._read_f32x4(self._work_buffers["splat_inv_scale"], scene.count),
             "splat_quat": self._read_f32x4(self._work_buffers["splat_quat"], scene.count),

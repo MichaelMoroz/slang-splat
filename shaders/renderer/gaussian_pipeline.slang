@@ -1,10 +1,9 @@
 static const uint INVALID_START = 0xFFFFFFFFu;
-static const uint RASTER_BATCH = 64u;
+static const uint RASTER_BATCH = 256u;
 groupshared float4 gsRoLocal[RASTER_BATCH];
-groupshared float4 gsInvScale[RASTER_BATCH];
-groupshared float4 gsQuat[RASTER_BATCH];
-groupshared float4 gsColorAlpha[RASTER_BATCH];
-groupshared uint gsValid[RASTER_BATCH];
+groupshared half4 gsInvScale[RASTER_BATCH];
+groupshared half4 gsQuat[RASTER_BATCH];
+groupshared half4 gsColorAlpha[RASTER_BATCH];
 
 uniform StructuredBuffer<float4> g_Positions;
 uniform StructuredBuffer<float4> g_Scales;
@@ -13,7 +12,6 @@ uniform StructuredBuffer<float4> g_ColorAlpha;
 
 uniform RWStructuredBuffer<float4> g_ScreenCenterRadiusDepth;
 uniform RWStructuredBuffer<float4> g_ScreenColorAlpha;
-uniform RWStructuredBuffer<uint> g_ScreenValid;
 uniform RWStructuredBuffer<float4> g_SplatPosLocal;
 uniform RWStructuredBuffer<float4> g_SplatInvScale;
 uniform RWStructuredBuffer<float4> g_SplatQuat;
@@ -148,11 +146,8 @@ void csProjectAndBin(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     if (!visible)
     {
-        g_ScreenValid[splatId] = 0;
         return;
     }
-
-    g_ScreenValid[splatId] = 1;
 
     int minX = int(floor((px - radiusPx) / float(g_tileSize)));
     int maxX = int(floor((px + radiusPx) / float(g_tileSize)));
@@ -179,15 +174,21 @@ void csProjectAndBin(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     uint writeCount = min(areaCount, g_maxListEntries - baseIndex);
     uint depthCode = quantizeDepth(camDistance);
-    for (uint localIndex = 0; localIndex < writeCount; localIndex++)
+    uint written = 0;
+    uint writeIndex = baseIndex;
+    for (uint tileOffsetY = 0; tileOffsetY < spanY && written < writeCount; tileOffsetY++)
     {
-        uint tileOffsetY = localIndex / spanX;
-        uint tileOffsetX = localIndex - tileOffsetY * spanX;
-        uint tileId = (minYU + tileOffsetY) * g_tileWidth + (minXU + tileOffsetX);
-        uint key = (tileId << g_depthBits) | depthCode;
-        uint writeIndex = baseIndex + localIndex;
-        g_Keys[writeIndex] = key;
-        g_Values[writeIndex] = splatId;
+        uint tileY = minYU + tileOffsetY;
+        uint rowBase = tileY * g_tileWidth;
+        for (uint tileOffsetX = 0; tileOffsetX < spanX && written < writeCount; tileOffsetX++)
+        {
+            uint tileId = rowBase + (minXU + tileOffsetX);
+            uint key = (tileId << g_depthBits) | depthCode;
+            g_Keys[writeIndex] = key;
+            g_Values[writeIndex] = splatId;
+            writeIndex++;
+            written++;
+        }
     }
 }
 
@@ -228,7 +229,7 @@ void csBuildTileRanges(uint3 dispatchThreadID : SV_DispatchThreadID)
 }
 
 [shader("compute")]
-[numthreads(8, 8, 1)]
+[numthreads(16, 16, 1)]
 void csRasterize(
     uint3 dispatchThreadID : SV_DispatchThreadID,
     uint3 groupThreadID : SV_GroupThreadID
@@ -254,7 +255,7 @@ void csRasterize(
         return;
     }
 
-    uint lane = groupThreadID.y * 8u + groupThreadID.x;
+    uint lane = groupThreadID.y * 16u + groupThreadID.x;
     uint start = range.x;
     uint end = min(range.y, start + g_maxSplatSteps);
     float3 accum = float3(0.0, 0.0, 0.0);
@@ -272,25 +273,20 @@ void csRasterize(
             gsInvScale[lane] = g_SplatInvScale[splatId];
             gsQuat[lane] = g_SplatQuat[splatId];
             gsColorAlpha[lane] = g_ScreenColorAlpha[splatId];
-            gsValid[lane] = g_ScreenValid[splatId];
-        }
-        else
-        {
-            gsValid[lane] = 0;
         }
         GroupMemoryBarrierWithGroupSync();
 
         uint batchCount = min(RASTER_BATCH, end - batchStart);
         for (uint localIdx = 0; localIdx < batchCount; localIdx++)
         {
-            if (pixelDone || gsValid[localIdx] == 0)
+            if (pixelDone)
             {
                 continue;
             }
 
             float3 roLocal = gsRoLocal[localIdx].xyz;
-            float3 invScale = gsInvScale[localIdx].xyz;
-            float4 q = gsQuat[localIdx];
+            float3 invScale = float3(gsInvScale[localIdx].xyz);
+            float4 q = float4(gsQuat[localIdx]);
             float3 rdLocal = rotate_by_quat(rayDir, q) * invScale;
             float denom = dot(rdLocal, rdLocal);
             if (denom <= 1e-10)
@@ -309,7 +305,7 @@ void csRasterize(
                 continue;
             }
 
-            float4 colorAlpha = gsColorAlpha[localIdx];
+            float4 colorAlpha = float4(gsColorAlpha[localIdx]);
             float coverage = saturate(1.0 - rho);
             coverage = coverage * coverage * (3.0 - 2.0 * coverage);
             float alpha = saturate(colorAlpha.w * coverage);
