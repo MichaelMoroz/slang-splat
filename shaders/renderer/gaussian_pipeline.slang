@@ -1,4 +1,10 @@
 static const uint INVALID_START = 0xFFFFFFFFu;
+static const uint RASTER_BATCH = 64u;
+groupshared float4 gsRoLocal[RASTER_BATCH];
+groupshared float4 gsInvScale[RASTER_BATCH];
+groupshared float4 gsQuat[RASTER_BATCH];
+groupshared float4 gsColorAlpha[RASTER_BATCH];
+groupshared uint gsValid[RASTER_BATCH];
 
 uniform StructuredBuffer<float4> g_Positions;
 uniform StructuredBuffer<float4> g_Scales;
@@ -157,21 +163,31 @@ void csProjectAndBin(uint3 dispatchThreadID : SV_DispatchThreadID)
     minY = clamp(minY, 0, int(g_tileHeight) - 1);
     maxY = clamp(maxY, 0, int(g_tileHeight) - 1);
 
-    uint depthCode = quantizeDepth(camDistance);
-    for (int tileY = minY; tileY <= maxY; tileY++)
+    uint minXU = uint(minX);
+    uint maxXU = uint(maxX);
+    uint minYU = uint(minY);
+    uint maxYU = uint(maxY);
+    uint spanX = maxXU - minXU + 1u;
+    uint spanY = maxYU - minYU + 1u;
+    uint areaCount = spanX * spanY;
+    uint baseIndex = 0;
+    InterlockedAdd(g_ListCounter[0], areaCount, baseIndex);
+    if (baseIndex >= g_maxListEntries)
     {
-        for (int tileX = minX; tileX <= maxX; tileX++)
-        {
-            uint tileId = uint(tileY) * g_tileWidth + uint(tileX);
-            uint key = (tileId << g_depthBits) | depthCode;
-            uint writeIndex = 0;
-            InterlockedAdd(g_ListCounter[0], 1, writeIndex);
-            if (writeIndex < g_maxListEntries)
-            {
-                g_Keys[writeIndex] = key;
-                g_Values[writeIndex] = splatId;
-            }
-        }
+        return;
+    }
+
+    uint writeCount = min(areaCount, g_maxListEntries - baseIndex);
+    uint depthCode = quantizeDepth(camDistance);
+    for (uint localIndex = 0; localIndex < writeCount; localIndex++)
+    {
+        uint tileOffsetY = localIndex / spanX;
+        uint tileOffsetX = localIndex - tileOffsetY * spanX;
+        uint tileId = (minYU + tileOffsetY) * g_tileWidth + (minXU + tileOffsetX);
+        uint key = (tileId << g_depthBits) | depthCode;
+        uint writeIndex = baseIndex + localIndex;
+        g_Keys[writeIndex] = key;
+        g_Values[writeIndex] = splatId;
     }
 }
 
@@ -213,83 +229,109 @@ void csBuildTileRanges(uint3 dispatchThreadID : SV_DispatchThreadID)
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void csRasterize(uint3 dispatchThreadID : SV_DispatchThreadID)
+void csRasterize(
+    uint3 dispatchThreadID : SV_DispatchThreadID,
+    uint3 groupThreadID : SV_GroupThreadID
+)
 {
     uint px = dispatchThreadID.x;
     uint py = dispatchThreadID.y;
-    if (px >= g_width || py >= g_height)
-    {
-        return;
-    }
+    bool pixelActive = px < g_width && py < g_height;
+    uint samplePx = min(px, g_width - 1u);
+    uint samplePy = min(py, g_height - 1u);
 
-    uint tileX = px / g_tileSize;
-    uint tileY = py / g_tileSize;
+    uint tileX = samplePx / g_tileSize;
+    uint tileY = samplePy / g_tileSize;
     uint tileId = tileY * g_tileWidth + tileX;
     uint2 range = g_TileRanges[tileId];
     if (range.x == INVALID_START || range.y <= range.x)
     {
-        float3 bgLinear = pow(max(g_background, 0.0), 2.2);
-        g_Output[uint2(px, py)] = float4(bgLinear, 1.0);
+        if (pixelActive)
+        {
+            float3 bgLinear = pow(max(g_background, 0.0), 2.2);
+            g_Output[uint2(px, py)] = float4(bgLinear, 1.0);
+        }
         return;
     }
 
+    uint lane = groupThreadID.y * 8u + groupThreadID.x;
+    uint start = range.x;
+    uint end = min(range.y, start + g_maxSplatSteps);
     float3 accum = float3(0.0, 0.0, 0.0);
     float trans = 1.0;
-    float2 rayUV = (float2(float(px) + 0.5, float(py) + 0.5) - 0.5 * g_viewport) / g_focalPixels;
+    float2 rayUV = (float2(float(samplePx) + 0.5, float(samplePy) + 0.5) - 0.5 * g_viewport) / g_focalPixels;
     float3 rayDir = normalize(g_camForward + rayUV.x * g_camRight + rayUV.y * g_camUp);
-    uint processed = 0;
-    for (uint idx = range.x; idx < range.y; idx++)
+    bool pixelDone = !pixelActive;
+    for (uint batchStart = start; batchStart < end; batchStart += RASTER_BATCH)
     {
-        if (processed >= g_maxSplatSteps)
+        uint idx = batchStart + lane;
+        if (idx < end)
         {
-            break;
+            uint splatId = g_SortedValues[idx];
+            gsRoLocal[lane] = g_SplatPosLocal[splatId];
+            gsInvScale[lane] = g_SplatInvScale[splatId];
+            gsQuat[lane] = g_SplatQuat[splatId];
+            gsColorAlpha[lane] = g_ScreenColorAlpha[splatId];
+            gsValid[lane] = g_ScreenValid[splatId];
         }
-        processed++;
-        uint splatId = g_SortedValues[idx];
-        if (g_ScreenValid[splatId] == 0)
+        else
         {
-            continue;
+            gsValid[lane] = 0;
         }
+        GroupMemoryBarrierWithGroupSync();
 
-        float3 roLocal = g_SplatPosLocal[splatId].xyz;
-        float3 invScale = g_SplatInvScale[splatId].xyz;
-        float4 q = g_SplatQuat[splatId];
-        float3 rdLocal = rotate_by_quat(rayDir, q) * invScale;
-        float denom = dot(rdLocal, rdLocal);
-        if (denom <= 1e-10)
+        uint batchCount = min(RASTER_BATCH, end - batchStart);
+        for (uint localIdx = 0; localIdx < batchCount; localIdx++)
         {
-            continue;
-        }
-        float tClosest = dot(rdLocal, -roLocal) / denom;
-        if (tClosest <= 0.0)
-        {
-            continue;
-        }
-        float3 closest = roLocal + rdLocal * tClosest;
-        float rho = length(closest);
-        if (rho >= 1.0)
-        {
-            continue;
-        }
+            if (pixelDone || gsValid[localIdx] == 0)
+            {
+                continue;
+            }
 
-        float4 colorAlpha = g_ScreenColorAlpha[splatId];
-        float coverage = saturate(1.0 - rho);
-        coverage = coverage * coverage * (3.0 - 2.0 * coverage);
-        float alpha = saturate(colorAlpha.w * coverage);
-        if (alpha < g_alphaCutoff)
-        {
-            continue;
-        }
+            float3 roLocal = gsRoLocal[localIdx].xyz;
+            float3 invScale = gsInvScale[localIdx].xyz;
+            float4 q = gsQuat[localIdx];
+            float3 rdLocal = rotate_by_quat(rayDir, q) * invScale;
+            float denom = dot(rdLocal, rdLocal);
+            if (denom <= 1e-10)
+            {
+                continue;
+            }
+            float tClosest = dot(rdLocal, -roLocal) / denom;
+            if (tClosest <= 0.0)
+            {
+                continue;
+            }
+            float3 closest = roLocal + rdLocal * tClosest;
+            float rho = length(closest);
+            if (rho >= 1.0)
+            {
+                continue;
+            }
 
-        accum += trans * alpha * colorAlpha.xyz;
-        trans *= 1.0 - alpha;
-        if (trans < g_transmittanceThreshold)
-        {
-            break;
+            float4 colorAlpha = gsColorAlpha[localIdx];
+            float coverage = saturate(1.0 - rho);
+            coverage = coverage * coverage * (3.0 - 2.0 * coverage);
+            float alpha = saturate(colorAlpha.w * coverage);
+            if (alpha < g_alphaCutoff)
+            {
+                continue;
+            }
+
+            accum += trans * alpha * colorAlpha.xyz;
+            trans *= 1.0 - alpha;
+            if (trans < g_transmittanceThreshold)
+            {
+                pixelDone = true;
+            }
         }
+        GroupMemoryBarrierWithGroupSync();
     }
 
-    float3 finalColor = accum + trans * g_background;
-    float3 linearOut = pow(max(finalColor, 0.0), 2.2);
-    g_Output[uint2(px, py)] = float4(linearOut, 1.0 - trans);
+    if (pixelActive)
+    {
+        float3 finalColor = accum + trans * g_background;
+        float3 linearOut = pow(max(finalColor, 0.0), 2.2);
+        g_Output[uint2(px, py)] = float4(linearOut, 1.0 - trans);
+    }
 }
