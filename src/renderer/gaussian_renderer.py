@@ -26,8 +26,10 @@ class GaussianRenderer:
         height: int,
         tile_size: int = 16,
         radius_scale: float = 2.6,
-        max_splat_radius_px: float = 64.0,
+        max_splat_radius_px: float = 512.0,
         alpha_cutoff: float = 1.0 / 255.0,
+        max_splat_steps: int = 32768,
+        transmittance_threshold: float = 0.005,
         list_capacity_multiplier: int = 64,
     ) -> None:
         self.device = device
@@ -37,6 +39,8 @@ class GaussianRenderer:
         self.radius_scale = float(radius_scale)
         self.max_splat_radius_px = float(max_splat_radius_px)
         self.alpha_cutoff = float(alpha_cutoff)
+        self.max_splat_steps = int(max_splat_steps)
+        self.transmittance_threshold = float(transmittance_threshold)
         self.list_capacity_multiplier = int(list_capacity_multiplier)
 
         self.tile_width = (self.width + self.tile_size - 1) // self.tile_size
@@ -52,10 +56,14 @@ class GaussianRenderer:
         self._create_sorter()
 
         self._scene_count = 0
+        self._scene_capacity = 0
+        self._current_scene: GaussianScene | None = None
         self._max_list_entries = 0
+        self._work_splat_capacity = 0
         self._scene_buffers: dict[str, spy.Buffer] = {}
         self._work_buffers: dict[str, spy.Buffer] = {}
         self._output_texture: spy.Texture | None = None
+        self._last_stats: dict[str, int | bool | float] = {}
 
     def _create_shaders(self) -> None:
         load_program = self.device.load_program
@@ -91,42 +99,58 @@ class GaussianRenderer:
         )
 
     def _ensure_scene_buffers(self, splat_count: int) -> None:
-        if splat_count == self._scene_count:
+        if self._scene_buffers and splat_count <= self._scene_capacity:
+            self._scene_count = splat_count
             return
+        old_capacity = max(self._scene_capacity, 1)
+        new_capacity = max(splat_count, old_capacity + old_capacity // 2)
         usage = self._buffer_usage_sr()
         self._scene_buffers = {
-            "positions": self.device.create_buffer(size=max(splat_count, 1) * 16, usage=usage),
-            "scales": self.device.create_buffer(size=max(splat_count, 1) * 16, usage=usage),
-            "rotations": self.device.create_buffer(size=max(splat_count, 1) * 16, usage=usage),
-            "color_alpha": self.device.create_buffer(size=max(splat_count, 1) * 16, usage=usage),
+            "positions": self.device.create_buffer(size=max(new_capacity, 1) * 16, usage=usage),
+            "scales": self.device.create_buffer(size=max(new_capacity, 1) * 16, usage=usage),
+            "rotations": self.device.create_buffer(size=max(new_capacity, 1) * 16, usage=usage),
+            "color_alpha": self.device.create_buffer(size=max(new_capacity, 1) * 16, usage=usage),
         }
+        self._scene_capacity = new_capacity
         self._scene_count = splat_count
 
     def _ensure_work_buffers(self, splat_count: int) -> None:
-        max_list_entries = max(splat_count * self.list_capacity_multiplier, 1)
-        if max_list_entries == self._max_list_entries and self._output_texture is not None:
+        required_splat_capacity = max(splat_count, 1)
+        required_list_entries = max(splat_count * self.list_capacity_multiplier, 1)
+        if (
+            self._work_buffers
+            and required_splat_capacity <= self._work_splat_capacity
+            and required_list_entries <= self._max_list_entries
+            and self._output_texture is not None
+        ):
             return
+        old_splat_capacity = max(self._work_splat_capacity, 1)
+        old_list_capacity = max(self._max_list_entries, 1)
+        splat_capacity = max(required_splat_capacity, old_splat_capacity + old_splat_capacity // 2)
+        max_list_entries = max(required_list_entries, old_list_capacity + old_list_capacity // 2)
         usage = self._buffer_usage_rw()
         self._work_buffers = {
             "screen_center_radius_depth": self.device.create_buffer(
-                size=max(splat_count, 1) * 16, usage=usage
+                size=max(splat_capacity, 1) * 16, usage=usage
             ),
-            "screen_color_alpha": self.device.create_buffer(size=max(splat_count, 1) * 16, usage=usage),
-            "screen_valid": self.device.create_buffer(size=max(splat_count, 1) * 4, usage=usage),
-            "splat_pos_local": self.device.create_buffer(size=max(splat_count, 1) * 16, usage=usage),
-            "splat_inv_scale": self.device.create_buffer(size=max(splat_count, 1) * 16, usage=usage),
-            "splat_quat": self.device.create_buffer(size=max(splat_count, 1) * 16, usage=usage),
+            "screen_color_alpha": self.device.create_buffer(size=max(splat_capacity, 1) * 16, usage=usage),
+            "screen_valid": self.device.create_buffer(size=max(splat_capacity, 1) * 4, usage=usage),
+            "splat_pos_local": self.device.create_buffer(size=max(splat_capacity, 1) * 16, usage=usage),
+            "splat_inv_scale": self.device.create_buffer(size=max(splat_capacity, 1) * 16, usage=usage),
+            "splat_quat": self.device.create_buffer(size=max(splat_capacity, 1) * 16, usage=usage),
             "keys": self.device.create_buffer(size=max_list_entries * 4, usage=usage),
             "values": self.device.create_buffer(size=max_list_entries * 4, usage=usage),
             "counter": self.device.create_buffer(size=4, usage=usage),
             "tile_ranges": self.device.create_buffer(size=max(self.tile_count, 1) * 8, usage=usage),
         }
-        self._output_texture = self.device.create_texture(
-            format=spy.Format.rgba32_float,
-            width=self.width,
-            height=self.height,
-            usage=spy.TextureUsage.shader_resource | spy.TextureUsage.unordered_access,
-        )
+        if self._output_texture is None:
+            self._output_texture = self.device.create_texture(
+                format=spy.Format.rgba32_float,
+                width=self.width,
+                height=self.height,
+                usage=spy.TextureUsage.shader_resource | spy.TextureUsage.unordered_access,
+            )
+        self._work_splat_capacity = splat_capacity
         self._max_list_entries = max_list_entries
 
     def _pack_scene(self, scene: GaussianScene) -> dict[str, np.ndarray]:
@@ -237,7 +261,9 @@ class GaussianRenderer:
                 "g_tileWidth": self.tile_width,
                 "g_width": self.width,
                 "g_height": self.height,
+                "g_maxSplatSteps": self.max_splat_steps,
                 "g_alphaCutoff": self.alpha_cutoff,
+                "g_transmittanceThreshold": self.transmittance_threshold,
                 "g_radiusScale": self.radius_scale,
                 "g_maxSplatRadiusPx": self.max_splat_radius_px,
                 "g_background": spy.float3(*background.tolist()),
@@ -276,6 +302,44 @@ class GaussianRenderer:
             raise RuntimeError("Output texture is not initialized.")
         return np.asarray(self._output_texture.to_numpy(), dtype=np.float32).copy()
 
+    def set_scene(self, scene: GaussianScene) -> None:
+        self._ensure_scene_buffers(scene.count)
+        self._ensure_work_buffers(scene.count)
+        self._upload_scene(scene)
+        self._current_scene = scene
+
+    def render_to_texture(
+        self,
+        camera: Camera,
+        background: np.ndarray | tuple[float, float, float] = (0.0, 0.0, 0.0),
+    ) -> tuple[spy.Texture, dict[str, int | bool | float]]:
+        if self._current_scene is None:
+            raise RuntimeError("Scene is not set. Call set_scene() before render_to_texture().")
+        scene = self._current_scene
+        if scene.count <= 0:
+            raise RuntimeError("Cannot render empty scene.")
+        background_np = np.asarray(background, dtype=np.float32).reshape(3)
+        generated_entries, sorted_count = self._execute_prepass(scene, camera)
+        enc_raster = self.device.create_command_encoder()
+        self._rasterize(enc_raster, camera, background_np)
+        self.device.submit_command_buffer(enc_raster.finish())
+        self.device.wait()
+        self._last_stats = {
+            "generated_entries": int(generated_entries),
+            "written_entries": int(sorted_count),
+            "overflow": bool(generated_entries > sorted_count),
+            "depth_bits": int(self.depth_bits),
+            "tile_count": int(self.tile_count),
+            "splat_count": int(scene.count),
+        }
+        if self._output_texture is None:
+            raise RuntimeError("Output texture is not initialized.")
+        return self._output_texture, self._last_stats
+
+    @property
+    def last_stats(self) -> dict[str, int | bool | float]:
+        return self._last_stats.copy()
+
     def render(
         self,
         scene: GaussianScene,
@@ -289,26 +353,11 @@ class GaussianRenderer:
             )
 
         background_np = np.asarray(background, dtype=np.float32).reshape(3)
-        self._ensure_scene_buffers(scene.count)
-        self._ensure_work_buffers(scene.count)
-        self._upload_scene(scene)
-
-        generated_entries, sorted_count = self._execute_prepass(scene, camera)
-
-        enc_raster = self.device.create_command_encoder()
-        self._rasterize(enc_raster, camera, background_np)
-        self.device.submit_command_buffer(enc_raster.finish())
-        self.device.wait()
-
+        self.set_scene(scene)
+        _, stats = self.render_to_texture(camera, background_np)
         return RenderOutput(
             image=self._read_image(),
-            stats={
-                "generated_entries": int(generated_entries),
-                "written_entries": int(sorted_count),
-                "overflow": bool(generated_entries > sorted_count),
-                "depth_bits": int(self.depth_bits),
-                "tile_count": int(self.tile_count),
-            },
+            stats=stats,
         )
 
     def debug_pipeline_data(self, scene: GaussianScene, camera: Camera) -> dict[str, np.ndarray | int]:

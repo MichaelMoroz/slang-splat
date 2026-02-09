@@ -27,8 +27,8 @@ class Camera:
 
     def basis(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         forward = _normalize(self.target - self.position)
-        right = _normalize(np.cross(forward, self.up))
-        up = _normalize(np.cross(right, forward))
+        right = _normalize(np.cross(self.up, forward))
+        up = _normalize(np.cross(forward, right))
         return right, up, forward
 
     def focal_pixels(self, height: int) -> float:

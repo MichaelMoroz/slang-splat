@@ -31,7 +31,7 @@ def project_splats(
     width: int,
     height: int,
     radius_scale: float,
-    max_splat_radius_px: float = 64.0,
+    max_splat_radius_px: float = 512.0,
 ) -> ProjectedSplats:
     right, up, forward = camera.basis()
     focal = float(camera.focal_pixels(height))
@@ -59,7 +59,7 @@ def project_splats(
 
         inv_depth = 1.0 / z
         px = x * focal * inv_depth + 0.5 * float(width)
-        py = -y * focal * inv_depth + 0.5 * float(height)
+        py = y * focal * inv_depth + 0.5 * float(height)
 
         q = scene.rotations[i]
         scale = scene.scales[i].astype(np.float32).copy()
@@ -87,7 +87,7 @@ def project_splats(
         def proj_cam(p: np.ndarray) -> np.ndarray:
             zc = max(float(p[2]), 1e-6)
             return np.array(
-                [p[0] * focal / zc + 0.5 * float(width), -p[1] * focal / zc + 0.5 * float(height)],
+                [p[0] * focal / zc + 0.5 * float(width), p[1] * focal / zc + 0.5 * float(height)],
                 dtype=np.float32,
             )
 
@@ -202,6 +202,8 @@ def rasterize(
     tile_width: int,
     background: np.ndarray,
     alpha_cutoff: float,
+    max_splat_steps: int,
+    transmittance_threshold: float,
 ) -> np.ndarray:
     output = np.zeros((height, width, 4), dtype=np.float32)
     output[:, :, :3] = background.reshape(1, 1, 3)
@@ -219,15 +221,21 @@ def rasterize(
             tile = tile_y * tile_width + tile_x
             start, end = tile_ranges[tile]
             if start == np.uint32(0xFFFFFFFF) or int(end) <= int(start):
+                bg_linear = np.power(np.clip(background, 0.0, None), 2.2).astype(np.float32)
+                output[py, px, :3] = bg_linear
                 output[py, px, 3] = 1.0
                 continue
             accum = np.zeros((3,), dtype=np.float32)
             trans = 1.0
             uv_x = (float(px) + 0.5 - 0.5 * float(width)) / float(focal)
             uv_y = (float(py) + 0.5 - 0.5 * float(height)) / float(focal)
-            ray = forward + uv_x * right - uv_y * up
+            ray = forward + uv_x * right + uv_y * up
             ray = ray / max(np.linalg.norm(ray), 1e-8)
+            steps = 0
             for item in range(int(start), int(end)):
+                if steps >= max_splat_steps:
+                    break
+                steps += 1
                 splat_id = int(sorted_values[item])
                 if projected.valid[splat_id] == 0:
                     continue
@@ -253,8 +261,9 @@ def rasterize(
                 alpha = float(np.clip(alpha, 0.0, 1.0))
                 accum += trans * alpha * projected.color_alpha[splat_id, :3]
                 trans *= 1.0 - alpha
-                if trans < 0.01:
+                if trans < transmittance_threshold:
                     break
-            output[py, px, :3] = accum + trans * background
+            final_color = accum + trans * background
+            output[py, px, :3] = np.power(np.clip(final_color, 0.0, None), 2.2).astype(np.float32)
             output[py, px, 3] = 1.0 - trans
     return output

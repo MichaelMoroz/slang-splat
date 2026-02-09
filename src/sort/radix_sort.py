@@ -28,7 +28,8 @@ class GPURadixSort:
         self.histogram = mk_pipe("histogram.slang", "csHistogram")
         self.prefix_block = mk_pipe("prefix_block.slang", "csPrefixBlock")
         self.scatter = mk_pipe("scatter.slang", "csScatter")
-        self.buffers: dict[tuple[int, int], dict[str, object]] = {}
+        self._capacity_n = 0
+        self._buffers: dict[str, object] | None = None
         self.indirect_args: spy.Buffer | None = None
 
     def level_size(self, value: int, level: int) -> int:
@@ -44,7 +45,7 @@ class GPURadixSort:
             size = (size + BLOCK_SIZE - 1) // BLOCK_SIZE
         return offset
 
-    def ensure_buffers(self, n: int) -> dict[str, object]:
+    def _layout(self, n: int) -> dict[str, int]:
         num_groups = max((n + GROUP_SIZE - 1) // GROUP_SIZE, 1)
         packed_hist_n = num_groups * PACKED_HIST_SIZE
         total_n = num_groups * HISTOGRAM_SIZE
@@ -56,23 +57,31 @@ class GPURadixSort:
         num_levels += 1
         last_level_size = self.level_size(total_n, num_levels - 1)
         total_prefix_size = self.level_offset(total_n, num_levels - 1) + last_level_size
-        key = (n, num_groups)
-        if key in self.buffers:
-            return self.buffers[key]
-        usage = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access
-        copy_usage = usage | spy.BufferUsage.copy_source
-        mk = lambda size: self.device.create_buffer(size=max(size, 1) * 4, usage=copy_usage)
-        self.buffers[key] = {
-            "keys": [mk(n), mk(n)],
-            "values": [mk(n), mk(n)],
-            "histogram": self.device.create_buffer(size=max(packed_hist_n, 1) * 4, usage=usage),
-            "prefix": self.device.create_buffer(size=max(total_prefix_size, 1) * 4, usage=usage),
+        return {
             "num_groups": num_groups,
             "packed_hist_n": packed_hist_n,
             "total_n": total_n,
             "num_levels": num_levels,
+            "total_prefix_size": total_prefix_size,
         }
-        return self.buffers[key]
+
+    def ensure_buffers(self, n: int) -> dict[str, object]:
+        if self._buffers is not None and n <= self._capacity_n:
+            return self._buffers
+        old_capacity = max(self._capacity_n, 1)
+        grow_n = max(n, old_capacity + old_capacity // 2)
+        layout = self._layout(grow_n)
+        usage = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access
+        copy_usage = usage | spy.BufferUsage.copy_source
+        mk = lambda size: self.device.create_buffer(size=max(size, 1) * 4, usage=copy_usage)
+        self._buffers = {
+            "keys": [mk(grow_n), mk(grow_n)],
+            "values": [mk(grow_n), mk(grow_n)],
+            "histogram": self.device.create_buffer(size=max(layout["packed_hist_n"], 1) * 4, usage=usage),
+            "prefix": self.device.create_buffer(size=max(layout["total_prefix_size"], 1) * 4, usage=usage),
+        }
+        self._capacity_n = grow_n
+        return self._buffers
 
     def ensure_indirect_args(self) -> spy.Buffer:
         if self.indirect_args is None:
@@ -135,9 +144,10 @@ class GPURadixSort:
     ) -> None:
         if working_buffers is None:
             working_buffers = self.ensure_buffers(n)
-        num_groups = int(working_buffers["num_groups"])
-        total_n = int(working_buffers["total_n"])
-        num_levels = int(working_buffers["num_levels"])
+        layout = self._layout(n)
+        num_groups = layout["num_groups"]
+        total_n = layout["total_n"]
+        num_levels = layout["num_levels"]
 
         def indirect(offset: int) -> spy.BufferOffsetPair:
             return spy.BufferOffsetPair(args_buffer, offset * 4)
@@ -184,7 +194,7 @@ class GPURadixSort:
                     cursor.g_prevLevelOffset = prev_offset
                     cursor.g_prevLevelSize = prev_level_size
                     cursor.g_isFirstLevel = 1 if level == 0 else 0
-                    cursor.g_packedHistN = int(working_buffers["packed_hist_n"])
+                    cursor.g_packedHistN = int(layout["packed_hist_n"])
                     cursor.g_prevLevelPacked = prev_packed
                     cursor.g_Histogram = working_buffers["histogram"]
                     cursor.g_Prefix = working_buffers["prefix"]

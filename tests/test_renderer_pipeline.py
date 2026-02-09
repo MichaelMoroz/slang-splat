@@ -103,6 +103,8 @@ def test_tiny_render_matches_cpu_reference(device):
         tile_width=renderer.tile_width,
         background=background,
         alpha_cutoff=renderer.alpha_cutoff,
+        max_splat_steps=renderer.max_splat_steps,
+        transmittance_threshold=renderer.transmittance_threshold,
     )
 
     mean_abs_error = float(np.mean(np.abs(gpu_image - cpu_image)))

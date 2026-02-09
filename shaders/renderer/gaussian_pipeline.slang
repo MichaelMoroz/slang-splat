@@ -32,6 +32,7 @@ uniform uint g_sortedCount;
 uniform uint g_maxListEntries;
 uniform uint g_width;
 uniform uint g_height;
+uniform uint g_maxSplatSteps;
 
 uniform float2 g_viewport;
 uniform float3 g_camPos;
@@ -46,6 +47,7 @@ uniform float g_farDepth;
 uniform float g_radiusScale;
 uniform float g_maxSplatRadiusPx;
 uniform float g_alphaCutoff;
+uniform float g_transmittanceThreshold;
 
 float3 rotate_by_quat(float3 v, float4 q)
 {
@@ -63,7 +65,7 @@ float2 project_cam(float3 p)
     float z = max(p.z, 1e-6);
     return float2(
         p.x * g_focalPixels / z + 0.5 * g_viewport.x,
-        -p.y * g_focalPixels / z + 0.5 * g_viewport.y
+        p.y * g_focalPixels / z + 0.5 * g_viewport.y
     );
 }
 
@@ -93,7 +95,7 @@ void csProjectAndBin(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     float invDepth = 1.0 / max(depthValue, 1e-6);
     float px = camPos.x * g_focalPixels * invDepth + 0.5 * g_viewport.x;
-    float py = -camPos.y * g_focalPixels * invDepth + 0.5 * g_viewport.y;
+    float py = camPos.y * g_focalPixels * invDepth + 0.5 * g_viewport.y;
 
     float4 q = g_Rotations[splatId];
     float3 scale = g_Scales[splatId].xyz;
@@ -226,16 +228,23 @@ void csRasterize(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint2 range = g_TileRanges[tileId];
     if (range.x == INVALID_START || range.y <= range.x)
     {
-        g_Output[uint2(px, py)] = float4(g_background, 1.0);
+        float3 bgLinear = pow(max(g_background, 0.0), 2.2);
+        g_Output[uint2(px, py)] = float4(bgLinear, 1.0);
         return;
     }
 
     float3 accum = float3(0.0, 0.0, 0.0);
     float trans = 1.0;
     float2 rayUV = (float2(float(px) + 0.5, float(py) + 0.5) - 0.5 * g_viewport) / g_focalPixels;
-    float3 rayDir = normalize(g_camForward + rayUV.x * g_camRight - rayUV.y * g_camUp);
+    float3 rayDir = normalize(g_camForward + rayUV.x * g_camRight + rayUV.y * g_camUp);
+    uint processed = 0;
     for (uint idx = range.x; idx < range.y; idx++)
     {
+        if (processed >= g_maxSplatSteps)
+        {
+            break;
+        }
+        processed++;
         uint splatId = g_SortedValues[idx];
         if (g_ScreenValid[splatId] == 0)
         {
@@ -274,11 +283,13 @@ void csRasterize(uint3 dispatchThreadID : SV_DispatchThreadID)
 
         accum += trans * alpha * colorAlpha.xyz;
         trans *= 1.0 - alpha;
-        if (trans < 0.01)
+        if (trans < g_transmittanceThreshold)
         {
             break;
         }
     }
 
-    g_Output[uint2(px, py)] = float4(accum + trans * g_background, 1.0 - trans);
+    float3 finalColor = accum + trans * g_background;
+    float3 linearOut = pow(max(finalColor, 0.0), 2.2);
+    g_Output[uint2(px, py)] = float4(linearOut, 1.0 - trans);
 }

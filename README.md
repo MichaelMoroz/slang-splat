@@ -28,6 +28,22 @@ python -m pip install -e ..\slangpy
 python render.py --ply C:\path\to\scene.ply --output render.png --width 1280 --height 720
 ```
 
+## Realtime Viewer
+```powershell
+python viewer.py --ply D:\Datasets\3DGS\TEST\flowers.ply
+```
+
+Viewer controls:
+- `LMB + drag`: look around
+- `WASDQE`: move camera
+- `Mouse wheel`: adjust move speed
+- `Load PLY...`: open another scene
+
+Smoke-test mode:
+```powershell
+python viewer.py --ply D:\Datasets\3DGS\TEST\flowers.ply --frames 30
+```
+
 ## Run Tests
 ```powershell
 pytest -q
