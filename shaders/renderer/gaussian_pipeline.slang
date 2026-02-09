@@ -4,6 +4,7 @@ groupshared float4 gsRoLocal[RASTER_BATCH];
 groupshared half4 gsInvScale[RASTER_BATCH];
 groupshared half4 gsQuat[RASTER_BATCH];
 groupshared half4 gsColorAlpha[RASTER_BATCH];
+groupshared uint gsStoppedPixels;
 
 uniform StructuredBuffer<float4> g_Positions;
 uniform StructuredBuffer<float4> g_Scales;
@@ -232,7 +233,7 @@ void csBuildTileRanges(uint3 dispatchThreadID : SV_DispatchThreadID)
 [numthreads(16, 16, 1)]
 void csRasterize(
     uint3 dispatchThreadID : SV_DispatchThreadID,
-    uint3 groupThreadID : SV_GroupThreadID
+    uint lane : SV_GroupIndex
 )
 {
     uint px = dispatchThreadID.x;
@@ -255,7 +256,6 @@ void csRasterize(
         return;
     }
 
-    uint lane = groupThreadID.y * 16u + groupThreadID.x;
     uint start = range.x;
     uint end = min(range.y, start + g_maxSplatSteps);
     float3 accum = float3(0.0, 0.0, 0.0);
@@ -263,6 +263,15 @@ void csRasterize(
     float2 rayUV = (float2(float(samplePx) + 0.5, float(samplePy) + 0.5) - 0.5 * g_viewport) / g_focalPixels;
     float3 rayDir = normalize(g_camForward + rayUV.x * g_camRight + rayUV.y * g_camUp);
     bool pixelDone = !pixelActive;
+    if (lane == 0u)
+    {
+        gsStoppedPixels = 0u;
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if (pixelDone)
+    {
+        InterlockedAdd(gsStoppedPixels, 1u);
+    }
     for (uint batchStart = start; batchStart < end; batchStart += RASTER_BATCH)
     {
         uint idx = batchStart + lane;
@@ -275,7 +284,6 @@ void csRasterize(
             gsColorAlpha[lane] = g_ScreenColorAlpha[splatId];
         }
         GroupMemoryBarrierWithGroupSync();
-
         uint batchCount = min(RASTER_BATCH, end - batchStart);
         for (uint localIdx = 0; localIdx < batchCount; localIdx++)
         {
@@ -319,9 +327,14 @@ void csRasterize(
             if (trans < g_transmittanceThreshold)
             {
                 pixelDone = true;
+                InterlockedAdd(gsStoppedPixels, 1u);
             }
         }
         GroupMemoryBarrierWithGroupSync();
+        if (gsStoppedPixels == RASTER_BATCH)
+        {
+            break;
+        }
     }
 
     if (pixelActive)
