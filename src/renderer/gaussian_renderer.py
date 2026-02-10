@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 import numpy as np
 import slangpy as spy
@@ -32,7 +31,6 @@ class GaussianRenderer:
         max_splat_steps: int = 32768,
         transmittance_threshold: float = 0.005,
         list_capacity_multiplier: int = 64,
-        projection_mode: Literal["legacy_axis_extent", "sampled5_mvee"] = "legacy_axis_extent",
         sampled5_mvee_iters: int = 6,
         sampled5_safety_scale: float = 1.0,
         sampled5_radius_pad_px: float = 1.0,
@@ -53,9 +51,6 @@ class GaussianRenderer:
         self.max_splat_steps = int(max_splat_steps)
         self.transmittance_threshold = float(transmittance_threshold)
         self.list_capacity_multiplier = int(list_capacity_multiplier)
-        if projection_mode not in {"legacy_axis_extent", "sampled5_mvee"}:
-            raise ValueError(f"Unsupported projection_mode: {projection_mode}")
-        self.projection_mode = projection_mode
         self.sampled5_mvee_iters = int(sampled5_mvee_iters)
         self.sampled5_safety_scale = float(sampled5_safety_scale)
         self.sampled5_radius_pad_px = float(sampled5_radius_pad_px)
@@ -92,9 +87,6 @@ class GaussianRenderer:
         load_program = self.device.load_program
         self._k_project = self.device.create_compute_kernel(
             load_program(str(self._shader_path), ["csProjectAndBin"])
-        )
-        self._k_project_sampled5 = self.device.create_compute_kernel(
-            load_program(str(self._shader_path), ["csProjectAndBinSampled5MVEE"])
         )
         self._k_clear_ranges = self.device.create_compute_kernel(
             load_program(str(self._shader_path), ["csClearTileRanges"])
@@ -247,8 +239,7 @@ class GaussianRenderer:
             "g_projDistortionK2": self.proj_distortion_k2,
             **camera.gpu_params(self.width, self.height),
         }
-        kernel = self._k_project if self.projection_mode == "legacy_axis_extent" else self._k_project_sampled5
-        kernel.dispatch(
+        self._k_project.dispatch(
             thread_count=spy.uint3(scene.count, 1, 1),
             vars=vars,
             command_encoder=encoder,

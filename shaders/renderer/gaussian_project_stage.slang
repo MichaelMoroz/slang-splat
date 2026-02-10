@@ -4,7 +4,7 @@ import "gaussian_mvee_utils.slang";
 import "gaussian_binning_utils.slang";
 import "gaussian_raster_stage.slang";
 
-void project_and_bin_legacy_impl(uint3 dispatchThreadID)
+void project_and_bin_impl(uint3 dispatchThreadID)
 {
     uint splatId = dispatchThreadID.x;
     if (splatId >= g_splatCount)
@@ -25,82 +25,6 @@ void project_and_bin_legacy_impl(uint3 dispatchThreadID)
     float py = camPos.y * g_focalPixels * invDepth + 0.5 * g_viewport.y;
 
     float4 q = ellipsoid.rotation;
-    float4 qInv = float4(q.x, -q.y, -q.z, -q.w);
-    float3 scale = ellipsoid.scale;
-
-    float3 axis0 = world_to_camera(rotate_by_quat(float3(1.0, 0.0, 0.0), qInv)) * scale.x;
-    float3 axis1 = world_to_camera(rotate_by_quat(float3(0.0, 1.0, 0.0), qInv)) * scale.y;
-    float3 axis2 = world_to_camera(rotate_by_quat(float3(0.0, 0.0, 1.0), qInv)) * scale.z;
-
-    float2 center = float2(px, py);
-    float2 extent = float2(0.0, 0.0);
-    float2 p0p = project_cam(camPos + axis0);
-    float2 p0m = project_cam(camPos - axis0);
-    float2 p1p = project_cam(camPos + axis1);
-    float2 p1m = project_cam(camPos - axis1);
-    float2 p2p = project_cam(camPos + axis2);
-    float2 p2m = project_cam(camPos - axis2);
-    extent = max(extent, abs(p0p - center));
-    extent = max(extent, abs(p0m - center));
-    extent = max(extent, abs(p1p - center));
-    extent = max(extent, abs(p1m - center));
-    extent = max(extent, abs(p2p - center));
-    extent = max(extent, abs(p2m - center));
-    float radiusPx = clamp(max(extent.x, extent.y) + 1.0, 1.0, g_maxSplatRadiusPx);
-
-    float2 e0 = 0.5 * (p0p - p0m);
-    float2 e1 = 0.5 * (p1p - p1m);
-    float2 e2 = 0.5 * (p2p - p2m);
-    float s00 = dot(float3(e0.x, e1.x, e2.x), float3(e0.x, e1.x, e2.x)) + 1e-6;
-    float s01 = dot(float3(e0.x, e1.x, e2.x), float3(e0.y, e1.y, e2.y));
-    float s11 = dot(float3(e0.y, e1.y, e2.y), float3(e0.y, e1.y, e2.y)) + 1e-6;
-    float detS = s00 * s11 - s01 * s01;
-    float invR2 = 1.0 / max(radiusPx * radiusPx, 1e-6);
-    float3 legacyConic = float3(invR2, 0.0, invR2);
-    if (detS > 1e-8)
-    {
-        legacyConic = float3(s11 / detS, -s01 / detS, s00 / detS);
-    }
-
-    float3 invScale = ellipsoid.invScale;
-    float3 roLocal = ellipsoid.roLocal;
-
-    g_ScreenCenterRadiusDepth[splatId] = float4(px, py, radiusPx, camDistance);
-    g_ScreenColorAlpha[splatId] = gaussian.colorAlpha;
-    g_ScreenEllipseConic[splatId] = float4(legacyConic, 1.0);
-    g_SplatPosLocal[splatId] = float4(roLocal, 0.0);
-    g_SplatInvScale[splatId] = float4(invScale, 0.0);
-    g_SplatQuat[splatId] = q;
-    SplatBinRequest binRequest;
-    binRequest.splatId = splatId;
-    binRequest.camDistance = camDistance;
-    binRequest.depthValue = depthValue;
-    binRequest.ellipse.init(float2(px, py), radiusPx, legacyConic);
-    emit_splat_bins(binRequest);
-}
-
-void project_and_bin_sampled5_mvee_impl(uint3 dispatchThreadID)
-{
-    uint splatId = dispatchThreadID.x;
-    if (splatId >= g_splatCount)
-    {
-        return;
-    }
-
-    Gaussian3D gaussian = load_gaussian3d(splatId);
-    Ellipsoid ellipsoid = build_ellipsoid(gaussian);
-    float3 worldPos = ellipsoid.centerWorld;
-    float3 rel = worldPos - g_camPos;
-    float3 camPos = world_to_camera(rel);
-    float camDistance = length(rel);
-    float depthValue = camPos.z;
-
-    float invDepth = 1.0 / max(depthValue, 1e-6);
-    float px = camPos.x * g_focalPixels * invDepth + 0.5 * g_viewport.x;
-    float py = camPos.y * g_focalPixels * invDepth + 0.5 * g_viewport.y;
-
-    float4 q = ellipsoid.rotation;
-    float3 scale = ellipsoid.scale;
     float3 invScale = ellipsoid.invScale;
     float3 roLocal = ellipsoid.roLocal;
 
@@ -198,14 +122,7 @@ void build_tile_ranges_impl(uint3 dispatchThreadID)
 [numthreads(128, 1, 1)]
 void csProjectAndBin(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
-    project_and_bin_legacy_impl(dispatchThreadID);
-}
-
-[shader("compute")]
-[numthreads(128, 1, 1)]
-void csProjectAndBinSampled5MVEE(uint3 dispatchThreadID : SV_DispatchThreadID)
-{
-    project_and_bin_sampled5_mvee_impl(dispatchThreadID);
+    project_and_bin_impl(dispatchThreadID);
 }
 
 [shader("compute")]

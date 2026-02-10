@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .camera import Camera
+from .projection_sampled5_mvee_reference import project_splats_sampled5_mvee
 from ..scene.gaussian_scene import GaussianScene
 
 
@@ -34,115 +35,50 @@ def project_splats(
     radius_scale: float,
     max_splat_radius_px: float = 512.0,
 ) -> ProjectedSplats:
-    right, up, forward = camera.basis()
-    focal = float(camera.focal_pixels(height))
-    center_radius_depth = np.zeros((scene.count, 4), dtype=np.float32)
+    projected = project_splats_sampled5_mvee(
+        scene=scene,
+        camera=camera,
+        width=width,
+        height=height,
+        radius_scale=radius_scale,
+        max_splat_radius_px=max_splat_radius_px,
+        mvee_iters=6,
+        safety_scale=1.0,
+        radius_pad_px=1.0,
+        mvee_eps=1e-6,
+        distortion_k1=0.0,
+        distortion_k2=0.0,
+    )
     ellipse_conic = np.zeros((scene.count, 3), dtype=np.float32)
-    pos_local = np.zeros((scene.count, 3), dtype=np.float32)
-    inv_scale = np.zeros((scene.count, 3), dtype=np.float32)
-    quat = scene.rotations.astype(np.float32).copy()
-    valid = np.zeros((scene.count,), dtype=np.uint32)
-
-    def quat_rotate(v: np.ndarray, q: np.ndarray) -> np.ndarray:
-        qv = q[1:4]
-        return v + 2.0 * np.cross(np.cross(v, qv) + q[0] * v, qv)
-
     for i in range(scene.count):
-        rel = scene.positions[i] - camera.position
-        cam_dist = float(np.linalg.norm(rel))
-        cam_pos = np.array(
-            [np.dot(rel, right), np.dot(rel, up), np.dot(rel, forward)],
-            dtype=np.float32,
-        )
-        x, y, z = float(cam_pos[0]), float(cam_pos[1]), float(cam_pos[2])
-        if z <= 1e-6:
-            center_radius_depth[i, 3] = z
-            continue
-
-        inv_depth = 1.0 / z
-        px = x * focal * inv_depth + 0.5 * float(width)
-        py = y * focal * inv_depth + 0.5 * float(height)
-
-        q = scene.rotations[i]
-        scale = scene.scales[i].astype(np.float32).copy()
-        max_scale = float(np.max(scale))
-        scale = np.maximum(scale, max_scale * 0.05)
-        scale = scale * float(radius_scale)
-
-        axis0_world = quat_rotate(np.array([1.0, 0.0, 0.0], dtype=np.float32), q) * scale[0]
-        axis1_world = quat_rotate(np.array([0.0, 1.0, 0.0], dtype=np.float32), q) * scale[1]
-        axis2_world = quat_rotate(np.array([0.0, 0.0, 1.0], dtype=np.float32), q) * scale[2]
-
-        axis0 = np.array(
-            [np.dot(axis0_world, right), np.dot(axis0_world, up), np.dot(axis0_world, forward)],
-            dtype=np.float32,
-        )
-        axis1 = np.array(
-            [np.dot(axis1_world, right), np.dot(axis1_world, up), np.dot(axis1_world, forward)],
-            dtype=np.float32,
-        )
-        axis2 = np.array(
-            [np.dot(axis2_world, right), np.dot(axis2_world, up), np.dot(axis2_world, forward)],
-            dtype=np.float32,
-        )
-
-        def proj_cam(p: np.ndarray) -> np.ndarray:
-            zc = max(float(p[2]), 1e-6)
-            return np.array(
-                [p[0] * focal / zc + 0.5 * float(width), p[1] * focal / zc + 0.5 * float(height)],
-                dtype=np.float32,
-            )
-
-        c0p = proj_cam(cam_pos + axis0)
-        c0m = proj_cam(cam_pos - axis0)
-        c1p = proj_cam(cam_pos + axis1)
-        c1m = proj_cam(cam_pos - axis1)
-        c2p = proj_cam(cam_pos + axis2)
-        c2m = proj_cam(cam_pos - axis2)
-        center = np.array([px, py], dtype=np.float32)
-        extent = np.zeros((2,), dtype=np.float32)
-        for s in (c0p, c0m, c1p, c1m, c2p, c2m):
-            extent = np.maximum(extent, np.abs(s - center))
-        radius = float(np.clip(np.max(extent) + 1.0, 1.0, max_splat_radius_px))
-        e0 = np.float32(0.5) * (c0p - c0m)
-        e1 = np.float32(0.5) * (c1p - c1m)
-        e2 = np.float32(0.5) * (c2p - c2m)
-        ex = np.array([e0[0], e1[0], e2[0]], dtype=np.float32)
-        ey = np.array([e0[1], e1[1], e2[1]], dtype=np.float32)
-        s00 = float(np.dot(ex, ex)) + 1e-6
-        s01 = float(np.dot(ex, ey))
-        s11 = float(np.dot(ey, ey)) + 1e-6
-        det_s = s00 * s11 - s01 * s01
+        radius = float(projected.center_radius_depth[i, 2])
         inv_r2 = 1.0 / max(radius * radius, 1e-6)
         conic = np.array([inv_r2, 0.0, inv_r2], dtype=np.float32)
-        if det_s > 1e-8:
-            conic = np.array([s11 / det_s, -s01 / det_s, s00 / det_s], dtype=np.float32)
-
-        center_radius_depth[i, :] = np.array([px, py, radius, cam_dist], dtype=np.float32)
+        axes_angle = projected.ellipse_center_axes[i]
+        axis_major = float(axes_angle[2])
+        axis_minor = float(axes_angle[3])
+        angle = float(axes_angle[4])
+        if axis_major > 1e-6 and axis_minor > 1e-6 and np.isfinite(axis_major) and np.isfinite(axis_minor):
+            conic_scale = radius / max(axis_major, 1e-6)
+            axis_major = axis_major * conic_scale
+            axis_minor = axis_minor * conic_scale
+            c = float(np.cos(angle))
+            s = float(np.sin(angle))
+            inv_a2 = 1.0 / (axis_major * axis_major)
+            inv_b2 = 1.0 / (axis_minor * axis_minor)
+            q00 = c * c * inv_a2 + s * s * inv_b2
+            q01 = c * s * (inv_a2 - inv_b2)
+            q11 = s * s * inv_a2 + c * c * inv_b2
+            conic = np.array([q00, q01, q11], dtype=np.float32)
         ellipse_conic[i, :] = conic
-        invs = 1.0 / np.maximum(scale, 1e-6)
-        inv_scale[i, :] = invs.astype(np.float32)
-        pos_local[i, :] = (quat_rotate(camera.position - scene.positions[i], q) * invs).astype(np.float32)
-        is_visible = (
-            z > 1e-4
-            and cam_dist > camera.near
-            and cam_dist < camera.far
-            and (px + radius) >= 0.0
-            and (px - radius) < float(width)
-            and (py + radius) >= 0.0
-            and (py - radius) < float(height)
-        )
-        valid[i] = 1 if is_visible else 0
-
-    color_alpha = np.concatenate([scene.colors, scene.opacities[:, None]], axis=1).astype(np.float32)
     return ProjectedSplats(
-        center_radius_depth=center_radius_depth,
+        center_radius_depth=projected.center_radius_depth,
         ellipse_conic=ellipse_conic,
-        color_alpha=color_alpha,
-        valid=valid,
-        pos_local=pos_local,
-        inv_scale=inv_scale,
-        quat=quat,
+        color_alpha=projected.color_alpha,
+        valid=projected.valid,
+        pos_local=projected.pos_local,
+        inv_scale=projected.inv_scale,
+        quat=projected.quat,
     )
 
 

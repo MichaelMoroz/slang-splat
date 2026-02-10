@@ -5,7 +5,7 @@
 ## 1. Project and Bin
 - Shader: `csProjectAndBin`
 - For each splat:
-  - project to screen space,
+  - project to screen space with sampled-5 MVEE fitting,
   - estimate projected radius,
   - append `(tile_id, depth)` key and splat index for overlapping tiles.
 - Output buffers:

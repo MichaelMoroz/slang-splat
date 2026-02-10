@@ -17,16 +17,12 @@ def _normalize(v: np.ndarray) -> np.ndarray:
 
 
 class SplatViewer(spy.AppWindow):
-    _PROJECTION_MODES = ("legacy_axis_extent", "sampled5_mvee")
-    _PROJECTION_MODE_LABELS = ["Legacy Axis Extent", "Sampled5 MVEE"]
-
     def __init__(
         self,
         app: spy.App,
         width: int = 1280,
         height: int = 720,
         title: str = "Slang Splat Viewer",
-        projection_mode: str = "legacy_axis_extent",
     ) -> None:
         super().__init__(
             app,
@@ -38,13 +34,11 @@ class SplatViewer(spy.AppWindow):
         )
 
         self.list_capacity_multiplier = 16
-        self.projection_mode = projection_mode if projection_mode in self._PROJECTION_MODES else self._PROJECTION_MODES[0]
         self.renderer = GaussianRenderer(
             self.device,
             width=width,
             height=height,
             list_capacity_multiplier=self.list_capacity_multiplier,
-            projection_mode=self.projection_mode,
         )
         self.scene: GaussianScene | None = None
         self.scene_path: Path | None = None
@@ -137,13 +131,6 @@ class SplatViewer(spy.AppWindow):
             min=1.0,
             max=1.2,
         )
-        self.projection_mode_combo = spy.ui.ComboBox(
-            params_group,
-            "Projection Mode",
-            value=self._projection_mode_to_index(self.projection_mode),
-            items=self._PROJECTION_MODE_LABELS,
-            callback=self._on_projection_mode_changed,
-        )
         self.debug_ellipse_checkbox = spy.ui.CheckBox(
             params_group,
             "Debug Ellipse Outlines",
@@ -216,27 +203,11 @@ class SplatViewer(spy.AppWindow):
             transmittance_threshold=float(self.trans_slider.value),
             sampled5_safety_scale=float(self.sampled5_safety_slider.value),
             list_capacity_multiplier=self.list_capacity_multiplier,
-            projection_mode=self.projection_mode,
             debug_show_ellipses=bool(self.debug_ellipse_checkbox.value),
         )
         del old_renderer
         if self.scene is not None:
             self.renderer.set_scene(self.scene)
-
-    def _projection_mode_to_index(self, mode: str) -> int:
-        for i, known_mode in enumerate(self._PROJECTION_MODES):
-            if mode == known_mode:
-                return i
-        return 0
-
-    def _on_projection_mode_changed(self, mode_index: int) -> None:
-        if mode_index < 0 or mode_index >= len(self._PROJECTION_MODES):
-            return
-        selected_mode = self._PROJECTION_MODES[mode_index]
-        if selected_mode == self.projection_mode:
-            return
-        self.projection_mode = selected_mode
-        self._recreate_renderer(self.renderer.width, self.renderer.height)
 
     def _forward(self) -> np.ndarray:
         yaw = self.yaw
@@ -450,13 +421,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--width", type=int, default=1280)
     parser.add_argument("--height", type=int, default=720)
     parser.add_argument("--frames", type=int, default=0, help="Run a fixed frame count for smoke tests.")
-    parser.add_argument(
-        "--projection-mode",
-        type=str,
-        default="legacy_axis_extent",
-        choices=["legacy_axis_extent", "sampled5_mvee"],
-        help="Projection/binning mode for prepass.",
-    )
     parser.add_argument("--debug-layers", action="store_true")
     return parser.parse_args()
 
@@ -469,7 +433,6 @@ def main() -> int:
         app,
         width=args.width,
         height=args.height,
-        projection_mode=str(args.projection_mode),
     )
     if args.ply is not None:
         viewer.load_scene(args.ply)

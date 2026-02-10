@@ -5,7 +5,7 @@ Basic Gaussian splat renderer implemented with Slang compute shaders and Slangpy
 ## Features
 - PLY Gaussian scene loader for standard 3DGS vertex properties.
 - GPU tile binning pass that produces `(tile_id, depth)` keys and splat indices.
-- GPU radix sort integration (copied/adapted from `ZibraVdbPrototyping`).
+- GPU radix sort integration (copied/adapted from prior project code).
 - GPU tile range build pass from sorted keys.
 - GPU compute rasterizer that blends tile-local sorted splats.
 - CPU reference implementations and tests for key algorithms.

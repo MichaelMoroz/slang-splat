@@ -122,7 +122,6 @@ def test_sampled5_mvee_projection_matches_cpu_reference(device):
         tile_size=16,
         radius_scale=1.7,
         list_capacity_multiplier=32,
-        projection_mode="sampled5_mvee",
         sampled5_mvee_iters=6,
         sampled5_safety_scale=1.05,
         sampled5_radius_pad_px=1.0,
@@ -165,7 +164,6 @@ def test_sampled5_mvee_render_smoke(device):
         tile_size=16,
         radius_scale=1.6,
         list_capacity_multiplier=32,
-        projection_mode="sampled5_mvee",
     )
     out = renderer.render(scene, camera, background=background)
     assert out.image.shape == (64, 64, 4)
@@ -182,7 +180,6 @@ def test_debug_ellipse_overlay_render_smoke(device):
         tile_size=16,
         radius_scale=1.6,
         list_capacity_multiplier=32,
-        projection_mode="sampled5_mvee",
         debug_show_ellipses=True,
     )
     out = renderer.render(scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32))
