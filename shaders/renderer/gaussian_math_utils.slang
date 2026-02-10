@@ -21,19 +21,9 @@ uint quantizeDepth(float depthValue)
 
 bool inverse3x3(float3x3 m, float eps, out float3x3 invOut)
 {
-    float a00 = m._m00;
-    float a01 = m._m01;
-    float a02 = m._m02;
-    float a10 = m._m10;
-    float a11 = m._m11;
-    float a12 = m._m12;
-    float a20 = m._m20;
-    float a21 = m._m21;
-    float a22 = m._m22;
-    float det =
-        a00 * (a11 * a22 - a12 * a21)
-        - a01 * (a10 * a22 - a12 * a20)
-        + a02 * (a10 * a21 - a11 * a20);
+    float det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+              - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+              + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
     if (abs(det) <= eps)
     {
         invOut = 0.0;
@@ -41,19 +31,19 @@ bool inverse3x3(float3x3 m, float eps, out float3x3 invOut)
     }
     float invDet = 1.0 / det;
     invOut[0] = float3(
-        (a11 * a22 - a12 * a21),
-        (a02 * a21 - a01 * a22),
-        (a01 * a12 - a02 * a11)
+        m[1][1] * m[2][2] - m[1][2] * m[2][1],
+        m[0][2] * m[2][1] - m[0][1] * m[2][2],
+        m[0][1] * m[1][2] - m[0][2] * m[1][1]
     ) * invDet;
     invOut[1] = float3(
-        (a12 * a20 - a10 * a22),
-        (a00 * a22 - a02 * a20),
-        (a02 * a10 - a00 * a12)
+        m[1][2] * m[2][0] - m[1][0] * m[2][2],
+        m[0][0] * m[2][2] - m[0][2] * m[2][0],
+        m[0][2] * m[1][0] - m[0][0] * m[1][2]
     ) * invDet;
     invOut[2] = float3(
-        (a10 * a21 - a11 * a20),
-        (a01 * a20 - a00 * a21),
-        (a00 * a11 - a01 * a10)
+        m[1][0] * m[2][1] - m[1][1] * m[2][0],
+        m[0][1] * m[2][0] - m[0][0] * m[2][1],
+        m[0][0] * m[1][1] - m[0][1] * m[1][0]
     ) * invDet;
     return true;
 }

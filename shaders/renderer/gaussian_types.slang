@@ -170,20 +170,17 @@ struct Ellipse
         );
         if (boxMin.x <= 0.0 && 0.0 <= boxMax.x && boxMin.y <= 0.0 && 0.0 <= boxMax.y) return 0.0;
 
-        float a = conic.x;
-        float b = conic.y;
-        float c = conic.z;
-        if (c > EPS_CONIC_DETERMINANT)
+        if (conic.z > EPS_CONIC_DETERMINANT)
         {
-            float yAtMinX = clamp(-b * boxMin.x / c, boxMin.y, boxMax.y);
-            float yAtMaxX = clamp(-b * boxMax.x / c, boxMin.y, boxMax.y);
+            float yAtMinX = clamp(-conic.y * boxMin.x / conic.z, boxMin.y, boxMax.y);
+            float yAtMaxX = clamp(-conic.y * boxMax.x / conic.z, boxMin.y, boxMax.y);
             minVal = min(minVal, evalConic(float2(boxMin.x, yAtMinX)));
             minVal = min(minVal, evalConic(float2(boxMax.x, yAtMaxX)));
         }
-        if (a > EPS_CONIC_DETERMINANT)
+        if (conic.x > EPS_CONIC_DETERMINANT)
         {
-            float xAtMinY = clamp(-b * boxMin.y / a, boxMin.x, boxMax.x);
-            float xAtMaxY = clamp(-b * boxMax.y / a, boxMin.x, boxMax.x);
+            float xAtMinY = clamp(-conic.y * boxMin.y / conic.x, boxMin.x, boxMax.x);
+            float xAtMaxY = clamp(-conic.y * boxMax.y / conic.x, boxMin.x, boxMax.x);
             minVal = min(minVal, evalConic(float2(xAtMinY, boxMin.y)));
             minVal = min(minVal, evalConic(float2(xAtMaxY, boxMax.y)));
         }
