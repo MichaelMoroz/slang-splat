@@ -12,6 +12,10 @@
 * Do not add obvious/redundant comments. Method names should be self-documenting. Only comments which describe overall algorithmic logic should be present, unless obvious from the code.
 * After a plan has been implemented, commit the changes into the repository with proper description, dont ask about it. Commits make it easier to revert changes.
 * Prefer usign OOP over pure functional programming in Slang shaders, things like struct methods, interfaces, generics, etc.
+* Keep [unroll] in the same line as the loop.
+* Single line conditionals should be in 1 line of code to avoid LOC bloat.
+* Don't leave unused code. 
+* Don't write effective no-op code like copying a value/member into a new variable with a different name just for naming sake.
 
 # Documentation
 * In a separate folder `doc/progress` write down what changes were done after plan has been approved and implemented. These should be written as separate `.md` files with current date and time. 
