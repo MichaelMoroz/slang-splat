@@ -1,16 +1,19 @@
 # Slang Splat
 
 Basic Gaussian splat renderer implemented with Slang compute shaders and Slangpy.
+Runtime target is Direct3D 12 (`d3d12`) only.
 
 ## Features
 - PLY Gaussian scene loader for standard 3DGS vertex properties.
-- GPU tile binning pass that produces `(tile_id, depth)` keys and splat indices.
+- GPU scanline work-item binning pass followed by key/value composition.
 - GPU radix sort integration (copied/adapted from prior project code).
 - GPU tile range build pass from sorted keys.
 - GPU compute rasterizer that blends tile-local sorted splats.
 - CPU reference implementations and tests for key algorithms.
 
 ## Setup
+Open an elevated PowerShell session first (Run as Administrator), then:
+
 1. Create and activate virtual environment:
 ```powershell
 python -m venv .venv
@@ -20,8 +23,9 @@ python -m venv .venv
 ```powershell
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
-python -m pip install -e ..\slangpy
+python -m pip install slangpy
 ```
+If you have a local Slangpy checkout, replace the last command with `python -m pip install -e <path-to-slangpy>`.
 
 ## Render One Frame
 ```powershell
@@ -46,7 +50,7 @@ python viewer.py --ply D:\Datasets\3DGS\TEST\flowers.ply --frames 30
 
 ## Run Tests
 ```powershell
-pytest -q
+python -m pytest -q
 ```
 
 ## Project Structure

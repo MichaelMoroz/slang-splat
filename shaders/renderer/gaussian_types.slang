@@ -24,6 +24,18 @@ static const float MIN_DEBUG_THICKNESS_PX = 0.25;
 static const float EPS_GRADIENT_LENGTH = 1e-4;
 static const float SCALE_FLOOR_RATIO = 0.05;
 
+struct ScanlineWorkItem
+{
+    uint baseIndex;
+    uint tileBase;
+    uint writeCount;
+    uint splatId;
+    uint depthCode;
+    uint tileStride;
+    uint reserved0;
+    uint reserved1;
+};
+
 groupshared float4 gsRoLocal[RASTER_BATCH];
 groupshared half4 gsInvScale[RASTER_BATCH];
 groupshared half4 gsQuat[RASTER_BATCH];
@@ -45,6 +57,8 @@ uniform RWStructuredBuffer<float4> g_SplatQuat;
 uniform RWStructuredBuffer<uint> g_Keys;
 uniform RWStructuredBuffer<uint> g_Values;
 uniform RWStructuredBuffer<uint> g_ListCounter;
+uniform RWStructuredBuffer<ScanlineWorkItem> g_ScanlineWorkItems;
+uniform RWStructuredBuffer<uint> g_ScanlineCounter;
 uniform RWStructuredBuffer<uint2> g_TileRanges;
 
 uniform StructuredBuffer<uint> g_SortedKeys;
@@ -61,6 +75,7 @@ uniform uint g_tileCount;
 uniform uint g_depthBits;
 uniform uint g_sortedCountOffset;
 uniform uint g_maxListEntries;
+uniform uint g_maxScanlineEntries;
 uniform uint g_width;
 uniform uint g_height;
 uniform uint g_maxSplatSteps;

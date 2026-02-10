@@ -71,11 +71,39 @@ void project_and_bin_impl(uint3 dispatchThreadID)
     emit_splat_bins(binRequest);
 }
 
+void compose_scanline_key_values_impl(uint3 dispatchThreadID)
+{
+    uint scanlineId = dispatchThreadID.x;
+    if (scanlineId >= g_maxScanlineEntries) return;
+    uint scanlineCount = g_ScanlineCounter[0];
+    if (scanlineId >= scanlineCount) return;
+
+    ScanlineWorkItem item = g_ScanlineWorkItems[scanlineId];
+    if (item.writeCount == 0u || item.baseIndex >= g_maxListEntries) return;
+
+    uint writeCount = min(item.writeCount, g_maxListEntries - item.baseIndex);
+    for (uint i = 0; i < writeCount; i++)
+    {
+        uint writeIndex = item.baseIndex + i;
+        uint tileId = item.tileBase + i * item.tileStride;
+        if (tileId >= g_tileCount) continue;
+        g_Keys[writeIndex] = (tileId << g_depthBits) | item.depthCode;
+        g_Values[writeIndex] = item.splatId;
+    }
+}
+
 [shader("compute")]
 [numthreads(PROJECT_GROUP_SIZE, 1, 1)]
 void csProjectAndBin(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     project_and_bin_impl(dispatchThreadID);
+}
+
+[shader("compute")]
+[numthreads(TILE_GROUP_SIZE, 1, 1)]
+void csComposeScanlineKeyValues(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    compose_scanline_key_values_impl(dispatchThreadID);
 }
 
 [shader("compute")]

@@ -20,6 +20,8 @@ class RenderOutput:
 
 class GaussianRenderer:
     _COUNTER_READBACK_RING_SIZE = 2
+    _SCANLINE_WORK_ITEM_UINTS = 8
+    _U32_BYTES = 4
 
     def __init__(
         self,
@@ -86,6 +88,7 @@ class GaussianRenderer:
         self._work_buffers: dict[str, spy.Buffer] = {}
         self._output_texture: spy.Texture | None = None
         self._last_stats: dict[str, int | bool | float] = {}
+        self._max_scanline_entries = 0
         self._counter_readback_ring: list[spy.Buffer] = []
         self._counter_readback_capacity: list[int] = []
         self._counter_readback_frame_id = 0
@@ -99,6 +102,9 @@ class GaussianRenderer:
         load_program = self.device.load_program
         self._k_project = self.device.create_compute_kernel(
             load_program(str(self._shader_path), ["csProjectAndBin"])
+        )
+        self._p_compose_scanline = self.device.create_compute_pipeline(
+            load_program(str(self._shader_path), ["csComposeScanlineKeyValues"])
         )
         self._k_clear_ranges = self.device.create_compute_kernel(
             load_program(str(self._shader_path), ["csClearTileRanges"])
@@ -147,17 +153,24 @@ class GaussianRenderer:
     def _ensure_work_buffers(self, splat_count: int, min_list_entries: int = 0) -> None:
         required_splat_capacity = max(splat_count, 1)
         required_list_entries = max(splat_count * self.list_capacity_multiplier, min_list_entries, 1)
+        required_scanline_entries = required_list_entries
         if (
             self._work_buffers
             and required_splat_capacity <= self._work_splat_capacity
             and required_list_entries <= self._max_list_entries
+            and required_scanline_entries <= self._max_scanline_entries
             and self._output_texture is not None
         ):
             return
         old_splat_capacity = max(self._work_splat_capacity, 1)
         old_list_capacity = max(self._max_list_entries, 1)
+        old_scanline_capacity = max(self._max_scanline_entries, 1)
         splat_capacity = max(required_splat_capacity, old_splat_capacity + old_splat_capacity // 2)
         max_list_entries = max(required_list_entries, old_list_capacity + old_list_capacity // 2)
+        max_scanline_entries = max(
+            required_scanline_entries,
+            old_scanline_capacity + old_scanline_capacity // 2,
+        )
         usage = self._buffer_usage_rw()
         self._work_buffers = {
             "screen_center_radius_depth": self.device.create_buffer(
@@ -171,6 +184,11 @@ class GaussianRenderer:
             "keys": self.device.create_buffer(size=max_list_entries * 4, usage=usage),
             "values": self.device.create_buffer(size=max_list_entries * 4, usage=usage),
             "counter": self.device.create_buffer(size=4, usage=usage),
+            "scanline_work_items": self.device.create_buffer(
+                size=max_scanline_entries * self._SCANLINE_WORK_ITEM_UINTS * self._U32_BYTES,
+                usage=usage,
+            ),
+            "scanline_counter": self.device.create_buffer(size=self._U32_BYTES, usage=usage),
             "tile_ranges": self.device.create_buffer(size=max(self.tile_count, 1) * 8, usage=usage),
         }
         if self._output_texture is None:
@@ -182,6 +200,7 @@ class GaussianRenderer:
             )
         self._work_splat_capacity = splat_capacity
         self._max_list_entries = max_list_entries
+        self._max_scanline_entries = max_scanline_entries
         if self._pending_min_list_entries > 0 and self._max_list_entries >= self._pending_min_list_entries:
             self._pending_min_list_entries = 0
 
@@ -205,8 +224,10 @@ class GaussianRenderer:
         self._scene_buffers["rotations"].copy_from_numpy(packed["rotations"])
         self._scene_buffers["color_alpha"].copy_from_numpy(packed["color_alpha"])
 
-    def _reset_counter(self) -> None:
-        self._work_buffers["counter"].copy_from_numpy(np.array([0], dtype=np.uint32))
+    def _reset_prepass_counters(self) -> None:
+        zero = np.array([0], dtype=np.uint32)
+        self._work_buffers["counter"].copy_from_numpy(zero)
+        self._work_buffers["scanline_counter"].copy_from_numpy(zero)
 
     def _read_u32(self, buffer: spy.Buffer, count: int) -> np.ndarray:
         raw = buffer.to_numpy()
@@ -265,6 +286,8 @@ class GaussianRenderer:
             "g_Keys": self._work_buffers["keys"],
             "g_Values": self._work_buffers["values"],
             "g_ListCounter": self._work_buffers["counter"],
+            "g_ScanlineWorkItems": self._work_buffers["scanline_work_items"],
+            "g_ScanlineCounter": self._work_buffers["scanline_counter"],
             "g_splatCount": scene.count,
             "g_tileSize": self.tile_size,
             "g_tileWidth": self.tile_width,
@@ -272,6 +295,7 @@ class GaussianRenderer:
             "g_tileCount": self.tile_count,
             "g_depthBits": self.depth_bits,
             "g_maxListEntries": self._max_list_entries,
+            "g_maxScanlineEntries": self._max_scanline_entries,
             "g_radiusScale": self.radius_scale,
             "g_maxSplatRadiusPx": self.max_splat_radius_px,
             "g_sampled5MVEEIters": self.sampled5_mvee_iters,
@@ -287,6 +311,32 @@ class GaussianRenderer:
             vars=vars,
             command_encoder=encoder,
         )
+
+    def _compute_scanline_dispatch_args(self, encoder: spy.CommandEncoder) -> spy.Buffer:
+        args_buffer = self._sorter.ensure_indirect_args()
+        self._sorter.compute_indirect_args_from_buffer_dispatch(
+            encoder=encoder,
+            count_buffer=self._work_buffers["scanline_counter"],
+            count_offset=0,
+            max_element_count=self._max_scanline_entries,
+            args_buffer=args_buffer,
+        )
+        return args_buffer
+
+    def _compose_scanline_key_values_indirect(self, encoder: spy.CommandEncoder, args_buffer: spy.Buffer) -> None:
+        with encoder.begin_compute_pass() as compute_pass:
+            cursor = spy.ShaderCursor(compute_pass.bind_pipeline(self._p_compose_scanline))
+            cursor.g_ScanlineWorkItems = self._work_buffers["scanline_work_items"]
+            cursor.g_ScanlineCounter = self._work_buffers["scanline_counter"]
+            cursor.g_Keys = self._work_buffers["keys"]
+            cursor.g_Values = self._work_buffers["values"]
+            cursor.g_depthBits = self.depth_bits
+            cursor.g_tileCount = self.tile_count
+            cursor.g_maxListEntries = self._max_list_entries
+            cursor.g_maxScanlineEntries = self._max_scanline_entries
+            compute_pass.dispatch_compute_indirect(
+                spy.BufferOffsetPair(args_buffer, GPURadixSort.BUILD_RANGE_ARGS_OFFSET * self._U32_BYTES)
+            )
 
     def _clear_tile_ranges(self, encoder: spy.CommandEncoder) -> None:
         self._k_clear_ranges.dispatch(
@@ -345,9 +395,11 @@ class GaussianRenderer:
         )
 
     def _execute_prepass(self, scene: GaussianScene, camera: Camera, sync_counts: bool = False) -> tuple[int, int]:
-        self._reset_counter()
+        self._reset_prepass_counters()
         enc_prepass = self.device.create_command_encoder()
         self._project_and_bin(enc_prepass, scene, camera)
+        scanline_args_buffer = self._compute_scanline_dispatch_args(enc_prepass)
+        self._compose_scanline_key_values_indirect(enc_prepass, scanline_args_buffer)
         self._enqueue_counter_readback(enc_prepass)
         self._clear_tile_ranges(enc_prepass)
         args_buffer = self._sorter.sort_key_values_from_count_buffer(

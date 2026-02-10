@@ -19,7 +19,7 @@ def debug_color(index: int, weight: float = 0.05) -> spy.float3:
 
 
 def create_default_device(
-    device_type: spy.DeviceType = spy.DeviceType.vulkan, enable_debug_layers: bool = False
+    device_type: spy.DeviceType = spy.DeviceType.d3d12, enable_debug_layers: bool = False
 ) -> spy.Device:
     include_paths = (
         SHADER_ROOT,

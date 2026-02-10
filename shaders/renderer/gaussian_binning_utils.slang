@@ -53,7 +53,7 @@ void emit_splat_bins(SplatBinRequest request)
     if (baseIndex >= g_maxListEntries) return;
 
     uint writeCount = min(totalCount, g_maxListEntries - baseIndex);
-    uint writeIndex = baseIndex;
+    if (writeCount == 0u) return;
     uint written = 0;
     for (int lineCoord = loopCfg.lineStart; lineCoord <= loopCfg.lineEnd && written < writeCount; lineCoord++)
     {
@@ -68,19 +68,24 @@ void emit_splat_bins(SplatBinRequest request)
         )) continue;
 
         uint lineWriteCount = min(span.lineCount, writeCount - written);
-        for (uint i = 0; i < lineWriteCount; i++)
+        if (lineWriteCount == 0u) continue;
+
+        uint tileBase = loopCfg.composeTileId(lineCoordU, span.lineStartMinor, g_tileWidth);
+        uint tileStride = loopCfg.scanAlongX ? 1u : g_tileWidth;
+        uint scanlineIndex = 0;
+        InterlockedAdd(g_ScanlineCounter[0], 1u, scanlineIndex);
+        if (scanlineIndex < g_maxScanlineEntries)
         {
-            if (writeIndex >= g_maxListEntries) break;
-
-            uint minorCoord = span.lineStartMinor + i;
-            if (!loopCfg.isMinorCoordValid(minorCoord)) continue;
-
-            uint tileId = loopCfg.composeTileId(lineCoordU, minorCoord, g_tileWidth);
-            if (tileId >= g_tileCount) continue;
-
-            g_Keys[writeIndex] = (tileId << g_depthBits) | request.depthCode;
-            g_Values[writeIndex] = request.splatId;
-            writeIndex++;
+            ScanlineWorkItem item;
+            item.baseIndex = baseIndex + written;
+            item.tileBase = tileBase;
+            item.writeCount = lineWriteCount;
+            item.splatId = request.splatId;
+            item.depthCode = request.depthCode;
+            item.tileStride = tileStride;
+            item.reserved0 = 0u;
+            item.reserved1 = 0u;
+            g_ScanlineWorkItems[scanlineIndex] = item;
         }
         written += lineWriteCount;
     }
