@@ -35,15 +35,15 @@ float3 mul3x3(float3x3 m, float3 v)
 
 bool inverse3x3(float3x3 m, float eps, out float3x3 invOut)
 {
-    float a00 = m[0].x;
-    float a01 = m[0].y;
-    float a02 = m[0].z;
-    float a10 = m[1].x;
-    float a11 = m[1].y;
-    float a12 = m[1].z;
-    float a20 = m[2].x;
-    float a21 = m[2].y;
-    float a22 = m[2].z;
+    float a00 = m._m00;
+    float a01 = m._m01;
+    float a02 = m._m02;
+    float a10 = m._m10;
+    float a11 = m._m11;
+    float a12 = m._m12;
+    float a20 = m._m20;
+    float a21 = m._m21;
+    float a22 = m._m22;
     float det =
         a00 * (a11 * a22 - a12 * a21)
         - a01 * (a10 * a22 - a12 * a20)
@@ -117,15 +117,4 @@ Ellipsoid build_ellipsoid(Gaussian3D gaussian)
     ellipsoid.rotation = gaussian.rotation;
     ellipsoid.roLocal = rotate_by_quat(g_camPos - ellipsoid.centerWorld, ellipsoid.rotation) * ellipsoid.invScale;
     return ellipsoid;
-}
-
-Ellipse make_ellipse(float2 centerPx, float radiusPx, float3 conic)
-{
-    Ellipse ellipse;
-    ellipse.centerPx = centerPx;
-    ellipse.radiusPx = radiusPx;
-    ellipse.conic = conic;
-    ellipse.bboxExtent = float2(radiusPx, radiusPx);
-    ellipse.useConic = 0u;
-    return ellipse;
 }

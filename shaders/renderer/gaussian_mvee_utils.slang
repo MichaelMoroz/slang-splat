@@ -24,7 +24,7 @@ bool generate_silhouette_points_local5(float3 roLocal, float eps, out float3 poi
     float circleRadius = sqrt(max(1.0 - 1.0 / (d * d), 0.0));
     float3 u;
     float3 v;
-    if (n.z < -0.9999999)
+    if (n.z < MVEE_SOUTH_POLE_THRESHOLD)
     {
         u = float3(0.0, -1.0, 0.0);
         v = float3(-1.0, 0.0, 0.0);
@@ -45,7 +45,7 @@ bool generate_silhouette_points_local5(float3 roLocal, float eps, out float3 poi
     [unroll]
     for (uint i = 0; i < MVEE_POINT_COUNT; i++)
     {
-        float theta = 6.28318530718 * (float(i) / float(MVEE_POINT_COUNT));
+        float theta = MVEE_FULL_TURN_RADIANS * (float(i) / float(MVEE_POINT_COUNT));
         float s;
         float c;
         sincos(theta, s, c);
@@ -58,14 +58,10 @@ bool fit_mvee_5pt_fixed_iters(
     float2 points[MVEE_POINT_COUNT],
     uint mveeIters,
     float eps,
-    out float2 centerOut,
-    out float radiusOut,
-    out float3 conicOut
+    out MveeFitResult fitOut
 )
 {
-    centerOut = 0.0;
-    radiusOut = 0.0;
-    conicOut = 0.0;
+    fitOut.clear();
     float2 pointsNorm[MVEE_POINT_COUNT];
     float2 normCenter = 0.0;
     [unroll]
@@ -141,12 +137,12 @@ bool fit_mvee_5pt_fixed_iters(
             }
         }
 
-        float denom = 3.0 * (maxVal - 1.0);
+        float denom = MVEE_AUGMENTED_DIMENSION * (maxVal - 1.0);
         if (denom <= eps)
         {
             break;
         }
-        float alpha = saturate((maxVal - 3.0) / denom);
+        float alpha = saturate((maxVal - MVEE_AUGMENTED_DIMENSION) / denom);
         [unroll]
         for (uint i = 0; i < MVEE_POINT_COUNT; i++)
         {
@@ -203,8 +199,8 @@ bool fit_mvee_5pt_fixed_iters(
     }
     float inflate = (maxQuad > 1.0) ? sqrt(maxQuad) : 1.0;
     float invInflate2 = 1.0 / max(inflate * inflate, eps);
-    centerOut = normCenter + center * normScale;
-    radiusOut = max(axis0, axis1) * inflate * normScale;
-    conicOut = float3(a00, a01, a11) * (invInflate2 / max(normScale * normScale, eps));
-    return all(isfinite(centerOut)) && isfinite(radiusOut) && radiusOut > 0.0;
+    fitOut.centerPx = normCenter + center * normScale;
+    fitOut.radiusPx = max(axis0, axis1) * inflate * normScale;
+    fitOut.conic = float3(a00, a01, a11) * (invInflate2 / max(normScale * normScale, eps));
+    return all(isfinite(fitOut.centerPx)) && isfinite(fitOut.radiusPx) && fitOut.radiusPx > 0.0;
 }

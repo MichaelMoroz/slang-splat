@@ -50,24 +50,20 @@ void project_and_bin_impl(uint3 dispatchThreadID)
 
         if (silhouetteOk)
         {
-            float2 mveeCenter = 0.0;
-            float mveeRadius = 0.0;
-            float3 mveeConic = 0.0;
+            MveeFitResult mveeFit;
             bool fitOk = fit_mvee_5pt_fixed_iters(
                 screenPoints,
                 min(g_sampled5MVEEIters, MVEE_MAX_ITERS),
                 g_sampled5Eps,
-                mveeCenter,
-                mveeRadius,
-                mveeConic
+                mveeFit
             );
-            if (fitOk && all(isfinite(mveeCenter)) && isfinite(mveeRadius) && all(isfinite(mveeConic)))
+            if (fitOk && all(isfinite(mveeFit.centerPx)) && isfinite(mveeFit.radiusPx) && all(isfinite(mveeFit.conic)))
             {
-                fitCenter = mveeCenter;
-                fitRadius = clamp(mveeRadius * g_sampled5SafetyScale + g_sampled5RadiusPadPx, 1.0, g_maxSplatRadiusPx);
-                float conicScale = fitRadius / max(mveeRadius, g_sampled5Eps);
+                fitCenter = mveeFit.centerPx;
+                fitRadius = clamp(mveeFit.radiusPx * g_sampled5SafetyScale + g_sampled5RadiusPadPx, 1.0, g_maxSplatRadiusPx);
+                float conicScale = fitRadius / max(mveeFit.radiusPx, g_sampled5Eps);
                 float invScale2 = 1.0 / max(conicScale * conicScale, g_sampled5Eps);
-                fitConic = mveeConic * invScale2;
+                fitConic = mveeFit.conic * invScale2;
             }
         }
     }
@@ -87,7 +83,16 @@ void project_and_bin_impl(uint3 dispatchThreadID)
     emit_splat_bins(binRequest);
 }
 
-void clear_tile_ranges_impl(uint3 dispatchThreadID)
+[shader("compute")]
+[numthreads(128, 1, 1)]
+void csProjectAndBin(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    project_and_bin_impl(dispatchThreadID);
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void csClearTileRanges(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     uint tileId = dispatchThreadID.x;
     if (tileId >= g_tileCount)
@@ -97,7 +102,9 @@ void clear_tile_ranges_impl(uint3 dispatchThreadID)
     g_TileRanges[tileId] = uint2(INVALID_START, 0);
 }
 
-void build_tile_ranges_impl(uint3 dispatchThreadID)
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void csBuildTileRanges(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     uint idx = dispatchThreadID.x;
     uint sortedCount = g_PrepassParams[g_sortedCountOffset];
@@ -138,27 +145,6 @@ void build_tile_ranges_impl(uint3 dispatchThreadID)
     {
         g_TileRanges[tile].y = idx + 1;
     }
-}
-
-[shader("compute")]
-[numthreads(128, 1, 1)]
-void csProjectAndBin(uint3 dispatchThreadID : SV_DispatchThreadID)
-{
-    project_and_bin_impl(dispatchThreadID);
-}
-
-[shader("compute")]
-[numthreads(256, 1, 1)]
-void csClearTileRanges(uint3 dispatchThreadID : SV_DispatchThreadID)
-{
-    clear_tile_ranges_impl(dispatchThreadID);
-}
-
-[shader("compute")]
-[numthreads(256, 1, 1)]
-void csBuildTileRanges(uint3 dispatchThreadID : SV_DispatchThreadID)
-{
-    build_tile_ranges_impl(dispatchThreadID);
 }
 
 [shader("compute")]

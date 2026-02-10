@@ -2,6 +2,9 @@ static const uint INVALID_START = 0xFFFFFFFFu;
 static const uint RASTER_BATCH = 256u;
 static const uint MVEE_POINT_COUNT = 5u;
 static const uint MVEE_MAX_ITERS = 8u;
+static const float MVEE_FULL_TURN_RADIANS = 6.28318530718;
+static const float MVEE_SOUTH_POLE_THRESHOLD = -0.9999999;
+static const float MVEE_AUGMENTED_DIMENSION = 3.0;
 
 groupshared float4 gsRoLocal[RASTER_BATCH];
 groupshared float4 gsCenterRadiusDepth[RASTER_BATCH];
@@ -164,6 +167,21 @@ struct ScanlineSpan
 {
     uint lineStartMinor;
     uint lineCount;
+};
+
+struct MveeFitResult
+{
+    float2 centerPx;
+    float radiusPx;
+    float3 conic;
+
+    [mutating]
+    void clear()
+    {
+        centerPx = 0.0;
+        radiusPx = 0.0;
+        conic = 0.0;
+    }
 };
 
 struct SplatBinRequest
