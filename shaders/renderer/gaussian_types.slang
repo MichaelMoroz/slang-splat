@@ -26,12 +26,12 @@ static const float SCALE_FLOOR_RATIO = 0.05;
 
 struct ScanlineWorkItem
 {
-    uint baseIndex;
-    uint tileBase;
-    uint writeCount;
     uint splatId;
     uint depthCode;
-    uint tileStride;
+    uint lineCoord;
+    uint minorMin;
+    uint minorMax;
+    uint scanAlongX;
     uint reserved0;
     uint reserved1;
 };

@@ -27,66 +27,27 @@ void emit_splat_bins(SplatBinRequest request)
     if (minX > maxX || minY > maxY) return;
 
     ScanlineLoopConfig loopCfg = build_scanline_loop_config(ellipse, minX, maxX, minY, maxY);
+    uint scanlineCount = uint(loopCfg.lineEnd - loopCfg.lineStart + 1);
+    if (scanlineCount == 0u) return;
 
-    uint totalCount = 0;
-    for (int lineCoord = loopCfg.lineStart; lineCoord <= loopCfg.lineEnd; lineCoord++)
+    uint scanlineBase = 0;
+    InterlockedAdd(g_ScanlineCounter[0], scanlineCount, scanlineBase);
+    if (scanlineBase >= g_maxScanlineEntries) return;
+
+    uint scanlineWriteCount = min(scanlineCount, g_maxScanlineEntries - scanlineBase);
+    for (uint i = 0; i < scanlineWriteCount; i++)
     {
-        ScanlineSpan span;
-        if (!compute_scanline_tile_span_universal(
-            ellipse,
-            loopCfg,
-            tileSize,
-            loopCfg.lineCoordToUint(lineCoord),
-            span
-        )) continue;
-        if (totalCount > UINT_MAX_VALUE - span.lineCount)
-        {
-            totalCount = UINT_MAX_VALUE;
-            break;
-        }
-        totalCount += span.lineCount;
-    }
-    if (totalCount == 0u) return;
-
-    uint baseIndex = 0;
-    InterlockedAdd(g_ListCounter[0], totalCount, baseIndex);
-    if (baseIndex >= g_maxListEntries) return;
-
-    uint writeCount = min(totalCount, g_maxListEntries - baseIndex);
-    if (writeCount == 0u) return;
-    uint written = 0;
-    for (int lineCoord = loopCfg.lineStart; lineCoord <= loopCfg.lineEnd && written < writeCount; lineCoord++)
-    {
-        ScanlineSpan span;
-        uint lineCoordU = loopCfg.lineCoordToUint(lineCoord);
-        if (!compute_scanline_tile_span_universal(
-            ellipse,
-            loopCfg,
-            tileSize,
-            lineCoordU,
-            span
-        )) continue;
-
-        uint lineWriteCount = min(span.lineCount, writeCount - written);
-        if (lineWriteCount == 0u) continue;
-
-        uint tileBase = loopCfg.composeTileId(lineCoordU, span.lineStartMinor, g_tileWidth);
-        uint tileStride = loopCfg.scanAlongX ? 1u : g_tileWidth;
-        uint scanlineIndex = 0;
-        InterlockedAdd(g_ScanlineCounter[0], 1u, scanlineIndex);
-        if (scanlineIndex < g_maxScanlineEntries)
-        {
-            ScanlineWorkItem item;
-            item.baseIndex = baseIndex + written;
-            item.tileBase = tileBase;
-            item.writeCount = lineWriteCount;
-            item.splatId = request.splatId;
-            item.depthCode = request.depthCode;
-            item.tileStride = tileStride;
-            item.reserved0 = 0u;
-            item.reserved1 = 0u;
-            g_ScanlineWorkItems[scanlineIndex] = item;
-        }
-        written += lineWriteCount;
+        uint scanlineIndex = scanlineBase + i;
+        int lineCoord = loopCfg.lineStart + int(i);
+        ScanlineWorkItem item;
+        item.splatId = request.splatId;
+        item.depthCode = request.depthCode;
+        item.lineCoord = uint(lineCoord);
+        item.minorMin = uint(loopCfg.minorMin);
+        item.minorMax = uint(loopCfg.minorMax);
+        item.scanAlongX = loopCfg.scanAlongX ? 1u : 0u;
+        item.reserved0 = 0u;
+        item.reserved1 = 0u;
+        g_ScanlineWorkItems[scanlineIndex] = item;
     }
 }

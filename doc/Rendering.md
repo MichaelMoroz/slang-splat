@@ -17,6 +17,9 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 ## 2. Compose Key/Value Per Scanline
 - Shader: `csComposeScanlineKeyValues`
 - One thread handles one scanline work item and expands it into final `(tile_id, depth)` and splat index entries.
+- Atomic model:
+  - project/bin uses one atomic per splat to reserve scanline work items,
+  - compose uses one atomic per scanline to reserve final tile-entry slots.
 - Dispatch is indirect from `g_ScanlineCounter`.
 
 ## 3. Sort

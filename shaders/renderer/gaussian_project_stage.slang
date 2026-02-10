@@ -2,6 +2,7 @@ import "gaussian_types.slang";
 import "gaussian_math_utils.slang";
 import "gaussian_mvee_utils.slang";
 import "gaussian_binning_utils.slang";
+import "gaussian_scanline_utils.slang";
 import "gaussian_raster_stage.slang";
 
 void project_and_bin_impl(uint3 dispatchThreadID)
@@ -79,14 +80,39 @@ void compose_scanline_key_values_impl(uint3 dispatchThreadID)
     if (scanlineId >= scanlineCount) return;
 
     ScanlineWorkItem item = g_ScanlineWorkItems[scanlineId];
-    if (item.writeCount == 0u || item.baseIndex >= g_maxListEntries) return;
+    float4 centerRadiusDepth = g_ScreenCenterRadiusDepth[item.splatId];
+    float4 conicData = g_ScreenEllipseConic[item.splatId];
+    Ellipse ellipse;
+    ellipse.init(centerRadiusDepth.xy, centerRadiusDepth.z, conicData.xyz);
+    float tileSize = float(g_tileSize);
+    float halfTile = 0.5 * tileSize;
+    try_prepare_conic_for_binning(ellipse, halfTile);
 
-    uint writeCount = min(item.writeCount, g_maxListEntries - item.baseIndex);
+    ScanlineLoopConfig cfg;
+    cfg.scanAlongX = item.scanAlongX != 0u;
+    cfg.lineStart = 0;
+    cfg.lineEnd = 0;
+    cfg.minorMin = int(item.minorMin);
+    cfg.minorMax = int(item.minorMax);
+    cfg.minorLimit = cfg.scanAlongX ? g_tileWidth : g_tileHeight;
+    cfg.lineLimit = cfg.scanAlongX ? g_tileHeight : g_tileWidth;
+
+    ScanlineSpan span;
+    if (!compute_scanline_tile_span_universal(ellipse, cfg, tileSize, item.lineCoord, span)) return;
+    if (span.lineCount == 0u) return;
+
+    uint baseIndex = 0;
+    InterlockedAdd(g_ListCounter[0], span.lineCount, baseIndex);
+    if (baseIndex >= g_maxListEntries) return;
+
+    uint writeCount = min(span.lineCount, g_maxListEntries - baseIndex);
     for (uint i = 0; i < writeCount; i++)
     {
-        uint writeIndex = item.baseIndex + i;
-        uint tileId = item.tileBase + i * item.tileStride;
+        uint minorCoord = span.lineStartMinor + i;
+        if (!cfg.isMinorCoordValid(minorCoord)) continue;
+        uint tileId = cfg.composeTileId(item.lineCoord, minorCoord, g_tileWidth);
         if (tileId >= g_tileCount) continue;
+        uint writeIndex = baseIndex + i;
         g_Keys[writeIndex] = (tileId << g_depthBits) | item.depthCode;
         g_Values[writeIndex] = item.splatId;
     }

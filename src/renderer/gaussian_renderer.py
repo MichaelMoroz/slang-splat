@@ -326,10 +326,16 @@ class GaussianRenderer:
     def _compose_scanline_key_values_indirect(self, encoder: spy.CommandEncoder, args_buffer: spy.Buffer) -> None:
         with encoder.begin_compute_pass() as compute_pass:
             cursor = spy.ShaderCursor(compute_pass.bind_pipeline(self._p_compose_scanline))
+            cursor.g_ScreenCenterRadiusDepth = self._work_buffers["screen_center_radius_depth"]
+            cursor.g_ScreenEllipseConic = self._work_buffers["screen_ellipse_conic"]
             cursor.g_ScanlineWorkItems = self._work_buffers["scanline_work_items"]
             cursor.g_ScanlineCounter = self._work_buffers["scanline_counter"]
             cursor.g_Keys = self._work_buffers["keys"]
             cursor.g_Values = self._work_buffers["values"]
+            cursor.g_ListCounter = self._work_buffers["counter"]
+            cursor.g_tileSize = self.tile_size
+            cursor.g_tileWidth = self.tile_width
+            cursor.g_tileHeight = self.tile_height
             cursor.g_depthBits = self.depth_bits
             cursor.g_tileCount = self.tile_count
             cursor.g_maxListEntries = self._max_list_entries
