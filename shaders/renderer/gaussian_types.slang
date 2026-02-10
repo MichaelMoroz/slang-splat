@@ -64,6 +64,7 @@ uniform float g_sampled5Eps;
 uniform float g_projDistortionK1;
 uniform float g_projDistortionK2;
 uniform uint g_debugShowEllipses;
+uniform uint g_debugShowProcessedCount;
 uniform float g_debugEllipseThicknessPx;
 uniform float3 g_debugEllipseColor;
 

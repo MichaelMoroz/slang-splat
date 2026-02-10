@@ -10,7 +10,7 @@
 * Vector and Matrix math operations are already defined in `spy.math` - prefer using those over recreating helper functions. Import that as `smath`.
 * Dont use `\` to split lines in Python if possible.
 * Do not add obvious/redundant comments. Method names should be self-documenting. Only comments which describe overall algorithmic logic should be present, unless obvious from the code.
-* After a plan has been implemented and approved, commit the changes into the repository with proper description.
+* After a plan has been implemented, commit the changes into the repository with proper description, dont ask about it. Commits make it easier to revert changes.
 * Prefer usign OOP over pure functional programming in Slang shaders, things like struct methods, interfaces, generics, etc.
 
 # Documentation

@@ -185,3 +185,20 @@ def test_debug_ellipse_overlay_render_smoke(device):
     out = renderer.render(scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32))
     assert out.image.shape == (64, 64, 4)
     assert np.all(np.isfinite(out.image))
+
+
+def test_debug_processed_count_render_smoke(device):
+    scene = make_scene(24, seed=37)
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    renderer = GaussianRenderer(
+        device,
+        width=64,
+        height=64,
+        tile_size=16,
+        radius_scale=1.6,
+        list_capacity_multiplier=32,
+        debug_show_processed_count=True,
+    )
+    out = renderer.render(scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32))
+    assert out.image.shape == (64, 64, 4)
+    assert np.all(np.isfinite(out.image))

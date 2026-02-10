@@ -38,6 +38,7 @@ class GaussianRenderer:
         proj_distortion_k1: float = 0.0,
         proj_distortion_k2: float = 0.0,
         debug_show_ellipses: bool = False,
+        debug_show_processed_count: bool = False,
         debug_ellipse_thickness_px: float = 1.0,
         debug_ellipse_color: tuple[float, float, float] = (1.0, 0.15, 0.1),
     ) -> None:
@@ -58,6 +59,7 @@ class GaussianRenderer:
         self.proj_distortion_k1 = float(proj_distortion_k1)
         self.proj_distortion_k2 = float(proj_distortion_k2)
         self.debug_show_ellipses = bool(debug_show_ellipses)
+        self.debug_show_processed_count = bool(debug_show_processed_count)
         self.debug_ellipse_thickness_px = float(debug_ellipse_thickness_px)
         self.debug_ellipse_color = np.asarray(debug_ellipse_color, dtype=np.float32).reshape(3)
 
@@ -293,6 +295,7 @@ class GaussianRenderer:
                 "g_maxSplatRadiusPx": self.max_splat_radius_px,
                 "g_background": spy.float3(*background.tolist()),
                 "g_debugShowEllipses": np.uint32(1 if self.debug_show_ellipses else 0),
+                "g_debugShowProcessedCount": np.uint32(1 if self.debug_show_processed_count else 0),
                 "g_debugEllipseThicknessPx": float(self.debug_ellipse_thickness_px),
                 "g_debugEllipseColor": spy.float3(*self.debug_ellipse_color.tolist()),
                 **camera.gpu_params(self.width, self.height),

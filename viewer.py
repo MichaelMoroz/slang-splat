@@ -136,6 +136,11 @@ class SplatViewer(spy.AppWindow):
             "Debug Ellipse Outlines",
             value=bool(self.renderer.debug_show_ellipses),
         )
+        self.debug_processed_count_checkbox = spy.ui.CheckBox(
+            params_group,
+            "Debug Processed Count",
+            value=bool(self.renderer.debug_show_processed_count),
+        )
 
         cam_group = spy.ui.Group(panel, "Camera")
         self.move_speed_slider = spy.ui.SliderFloat(
@@ -204,6 +209,7 @@ class SplatViewer(spy.AppWindow):
             sampled5_safety_scale=float(self.sampled5_safety_slider.value),
             list_capacity_multiplier=self.list_capacity_multiplier,
             debug_show_ellipses=bool(self.debug_ellipse_checkbox.value),
+            debug_show_processed_count=bool(self.debug_processed_count_checkbox.value),
         )
         del old_renderer
         if self.scene is not None:
@@ -361,6 +367,7 @@ class SplatViewer(spy.AppWindow):
         self.renderer.transmittance_threshold = float(self.trans_slider.value)
         self.renderer.sampled5_safety_scale = float(self.sampled5_safety_slider.value)
         self.renderer.debug_show_ellipses = bool(self.debug_ellipse_checkbox.value)
+        self.renderer.debug_show_processed_count = bool(self.debug_processed_count_checkbox.value)
 
     def _update_ui_text(self, dt: float) -> None:
         self.fps_smooth += (1.0 / max(dt, 1e-5) - self.fps_smooth) * min(dt * 5.0, 1.0)
