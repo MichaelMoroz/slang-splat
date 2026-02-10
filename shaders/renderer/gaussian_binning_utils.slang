@@ -39,9 +39,9 @@ void emit_splat_bins(SplatBinRequest request)
             loopCfg.lineCoordToUint(lineCoord),
             span
         )) continue;
-        if (totalCount > 0xFFFFFFFFu - span.lineCount)
+        if (totalCount > UINT_MAX_VALUE - span.lineCount)
         {
-            totalCount = 0xFFFFFFFFu;
+            totalCount = UINT_MAX_VALUE;
             break;
         }
         totalCount += span.lineCount;

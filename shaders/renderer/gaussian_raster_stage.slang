@@ -53,7 +53,7 @@ void rasterize_impl(uint3 dispatchThreadID, uint lane)
                 float4 q = float4(gsQuat[localIdx]);
                 float3 rdLocal = rotate_by_quat(rayDir, q) * invScale;
                 float denom = dot(rdLocal, rdLocal);
-                if (denom <= 1e-10) continue;
+                if (denom <= EPS_RAY_DENOM) continue;
                 float tClosest = dot(rdLocal, -roLocal) / denom;
                 if (tClosest <= 0.0) continue;
                 float3 closest = roLocal + rdLocal * tClosest;
@@ -87,16 +87,14 @@ void rasterize_impl(uint3 dispatchThreadID, uint lane)
                 float normalized = (logMax > 0.0) ? saturate(log2(processed + 1.0) / logMax) : 0.0;
                 float3 debugColor = float3(normalized, normalized, normalized);
                 outputValue = float4(debugColor, 1.0);
-            }
-            else
-            {
+            } else {
                 float3 finalColor = accum + trans * g_background;
                 if (g_debugShowEllipses != 0u)
                 {
                     float2 samplePoint = float2(float(px) + 0.5, float(py) + 0.5);
                     float maxEdge = 0.0;
                     float3 edgeColor = g_debugEllipseColor;
-                    float thicknessPx = max(g_debugEllipseThicknessPx, 0.25);
+                    float thicknessPx = max(g_debugEllipseThicknessPx, MIN_DEBUG_THICKNESS_PX);
                     for (uint idx = start; idx < end; idx++)
                     {
                         uint splatId = g_SortedValues[idx];
@@ -107,10 +105,12 @@ void rasterize_impl(uint3 dispatchThreadID, uint lane)
 
                         float4 conic = g_ScreenEllipseConic[splatId];
                         if (conic.w <= 0.0) continue;
-                        float fx = conic.x * d.x + conic.y * d.y;
-                        float fy = conic.y * d.x + conic.z * d.y;
-                        float quad = d.x * fx + d.y * fy;
-                        float gradLen = max(length(float2(2.0 * fx, 2.0 * fy)), 1e-4);
+                        float2 grad = float2(
+                            conic.x * d.x + conic.y * d.y,
+                            conic.y * d.x + conic.z * d.y
+                        );
+                        float quad = dot(d, grad);
+                        float gradLen = max(length(2.0 * grad), EPS_GRADIENT_LENGTH);
                         float edgeDistance = abs(quad - 1.0) / gradLen;
                         float edge = saturate(1.0 - edgeDistance / thicknessPx);
                         if (edge > maxEdge)
@@ -122,7 +122,7 @@ void rasterize_impl(uint3 dispatchThreadID, uint lane)
                     finalColor = lerp(finalColor, edgeColor, maxEdge);
                 }
 
-                float3 linearOut = pow(max(finalColor, 0.0), 2.2);
+                float3 linearOut = pow(max(finalColor, 0.0), GAMMA_LINEAR_TO_OUTPUT);
                 outputValue = float4(linearOut, 1.0 - trans);
             }
         }
@@ -130,9 +130,8 @@ void rasterize_impl(uint3 dispatchThreadID, uint lane)
     else if (pixelActive)
     {
         if (g_debugShowProcessedCount != 0u) outputValue = float4(0.0, 0.0, 0.0, 1.0);
-        else
-        {
-            float3 bgLinear = pow(max(g_background, 0.0), 2.2);
+        else {
+            float3 bgLinear = pow(max(g_background, 0.0), GAMMA_LINEAR_TO_OUTPUT);
             outputValue = float4(bgLinear, 1.0);
         }
     }

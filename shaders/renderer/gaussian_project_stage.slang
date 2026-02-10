@@ -11,18 +11,15 @@ void project_and_bin_impl(uint3 dispatchThreadID)
 
     Gaussian3D gaussian = load_gaussian3d(splatId);
     Ellipsoid ellipsoid = build_ellipsoid(gaussian);
-    float3 rel = ellipsoid.centerWorld - g_camPos;
-    float3 camPos = world_to_camera(rel);
-    float camDistance = length(rel);
+    float3 cameraOffset = ellipsoid.centerWorld - g_camPos;
+    float3 camPos = world_to_camera(cameraOffset);
+    float camDistance = length(cameraOffset);
     float depthValue = camPos.z;
 
-    float invDepth = 1.0 / max(depthValue, 1e-6);
-    float px = camPos.x * g_focalPixels * invDepth + 0.5 * g_viewport.x;
-    float py = camPos.y * g_focalPixels * invDepth + 0.5 * g_viewport.y;
-
-    float2 fitCenter = float2(px, py);
+    float invDepth = 1.0 / max(depthValue, EPS_SMALL);
+    float2 fitCenter = camPos.xy * (g_focalPixels * invDepth) + 0.5 * g_viewport;
     float fitRadius = g_maxSplatRadiusPx;
-    float invFitRadius2 = 1.0 / max(fitRadius * fitRadius, 1e-6);
+    float invFitRadius2 = 1.0 / max(fitRadius * fitRadius, EPS_SMALL);
     float3 fitConic = float3(invFitRadius2, 0.0, invFitRadius2);
 
     float3 localPoints[MVEE_POINT_COUNT];
@@ -51,7 +48,7 @@ void project_and_bin_impl(uint3 dispatchThreadID)
             if (fitOk && all(isfinite(mveeFit.centerPx)) && isfinite(mveeFit.radiusPx) && all(isfinite(mveeFit.conic)))
             {
                 fitCenter = mveeFit.centerPx;
-                fitRadius = clamp(mveeFit.radiusPx * g_sampled5SafetyScale + g_sampled5RadiusPadPx, 1.0, g_maxSplatRadiusPx);
+                fitRadius = clamp(mveeFit.radiusPx * g_sampled5SafetyScale + g_sampled5RadiusPadPx, MIN_RADIUS_PX, g_maxSplatRadiusPx);
                 float conicScale = fitRadius / max(mveeFit.radiusPx, g_sampled5Eps);
                 float invScale2 = 1.0 / max(conicScale * conicScale, g_sampled5Eps);
                 fitConic = mveeFit.conic * invScale2;

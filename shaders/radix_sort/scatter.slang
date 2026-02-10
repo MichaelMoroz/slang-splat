@@ -1,14 +1,13 @@
-// Scatter: write keys/values to sorted positions using hierarchical prefix lookup
 import "common.slang";
 
 static const uint QUARTER_SIZE = GROUP_SIZE / 4;
 
-uniform uint g_totalN;      // numGroups * HISTOGRAM_SIZE
-uniform uint g_numLevels;   // Number of hierarchy levels
+uniform uint g_totalN;
+uniform uint g_numLevels;
 
 uniform StructuredBuffer<uint> g_KeysIn;
 uniform StructuredBuffer<uint> g_ValuesIn;
-uniform StructuredBuffer<uint> g_Prefix;  // Hybrid: L0 packed 2x16, L1+ unpacked 32
+uniform StructuredBuffer<uint> g_Prefix;
 uniform RWStructuredBuffer<uint> g_KeysOut;
 uniform RWStructuredBuffer<uint> g_ValuesOut;
 
@@ -19,7 +18,7 @@ uint derive_num_levels(uint totalN)
 {
     uint numLevels = 0;
     uint levelSize = totalN;
-    for (uint i = 0u; i < 4u && levelSize > 1u; ++i)
+    for (uint i = 0u; i < RADIX_MAX_PREFIX_LEVELS && levelSize > 1u; ++i)
     {
         numLevels += 1u;
         levelSize = ceil_div_block(levelSize);
@@ -27,65 +26,93 @@ uint derive_num_levels(uint totalN)
     return max(numLevels + 1u, 1u);
 }
 
-// Get global offset for (digit, group) using hierarchical lookup
-// Level 0: packed 2x16-bit, higher levels: unpacked 32-bit
-uint getGlobalOffset(uint digit, uint group, uint numGroups, uint totalN, uint numLevels) {
-    uint linearIdx = digit * numGroups + group;
-    uint offset = 0, lvlOff = 0, lvlSz = totalN, idx = linearIdx;
-    for (uint lvl = 0; lvl < numLevels; lvl++) {
-        if (idx % BLOCK_SIZE != 0) {
-            uint prev = idx - 1;
-            if (lvl == 0) offset += unpackPrefix16(g_Prefix[lvlOff + prev / 2], prev & 1);
-            else offset += g_Prefix[lvlOff + prev];
+struct PrefixHierarchy
+{
+    uint numGroups;
+    uint totalN;
+    uint numLevels;
+
+    uint get_global_offset(uint digit, uint group)
+    {
+        uint linearIdx = digit * numGroups + group;
+        uint offset = 0u;
+        uint lvlOff = 0u;
+        uint lvlSz = totalN;
+        uint idx = linearIdx;
+        for (uint lvl = 0u; lvl < numLevels; lvl++)
+        {
+            if ((idx % BLOCK_SIZE) != 0u)
+            {
+                uint prev = idx - 1u;
+                if (lvl == 0u) offset += unpackPrefix16(g_Prefix[lvlOff + prev / RADIX_PAIR_SIZE], prev & 1u);
+                else offset += g_Prefix[lvlOff + prev];
+            }
+            lvlOff += (lvl == 0u) ? ceil_div2(lvlSz) : lvlSz;
+            lvlSz = ceil_div_block(lvlSz);
+            idx /= BLOCK_SIZE;
         }
-        lvlOff += (lvl == 0u) ? ceil_div2(lvlSz) : lvlSz;
-        lvlSz = ceil_div_block(lvlSz);
-        idx /= BLOCK_SIZE;
+        return offset;
     }
-    return offset;
-}
+};
 
 [shader("compute")]
 [numthreads(GROUP_SIZE, 1, 1)]
-void csScatter(uint3 groupID : SV_GroupID, uint3 localID : SV_GroupThreadID) {
-    uint group = groupID.x, lane = localID.x;
-    uint elementCount = getElementCount(), numGroups = getNumGroups(), totalN = getTotalN(), numLevels = getNumLevels();
-    if (g_numLevels != 0) numLevels = g_numLevels;  // Prefer uniform if set
-    if (g_totalN != 0) totalN = g_totalN;
+void csScatter(uint3 groupID : SV_GroupID, uint3 localID : SV_GroupThreadID)
+{
+    RadixDispatchConfig cfg;
+    cfg.load();
+    uint group = groupID.x;
+    uint lane = localID.x;
+    uint elementCount = cfg.elementCount;
+    uint numGroups = cfg.numGroups;
+    uint totalN = cfg.totalN;
+    uint numLevels = cfg.numLevels;
+    if (g_numLevels != 0u) numLevels = g_numLevels;
+    if (g_totalN != 0u) totalN = g_totalN;
     if (numLevels == 0u) numLevels = derive_num_levels(totalN);
+    PrefixHierarchy hierarchy;
+    hierarchy.numGroups = numGroups;
+    hierarchy.totalN = totalN;
+    hierarchy.numLevels = numLevels;
     [unroll] for (uint idx = lane; idx < HISTOGRAM_SIZE; idx += GROUP_SIZE) halfCount[idx] = 0;
-    
+
     uint globalIndex = group * GROUP_SIZE + lane;
     bool active = globalIndex < elementCount;
-    uint bit = 0, key = 0, value = 0;
-    if (active) {
+    uint bit = 0u;
+    uint key = 0u;
+    uint value = 0u;
+    if (active)
+    {
         key = g_KeysIn[globalIndex];
-        bit = (key >> g_shift) & (HISTOGRAM_SIZE - 1);
+        bit = (key >> g_shift) & RADIX_BYTE_MASK;
         tempBits[lane] = bit;
         value = g_ValuesIn[globalIndex];
-    } else { tempBits[lane] = 0xFFFFFFFF; }
+    } else tempBits[lane] = RADIX_INVALID_VALUE;
     GroupMemoryBarrierWithGroupSync();
-    
-    // Count elements in first 3 quarters using packed counters
+
     uint quarterIndex = lane / QUARTER_SIZE;
-    if (active && quarterIndex < 3) {
-        uint inc = 0;
-        if (quarterIndex < 1) inc |= 1u;
-        if (quarterIndex < 2) inc |= (1u << 8);
-        if (quarterIndex < 3) inc |= (1u << 16);
+    if (active && quarterIndex < 3u)
+    {
+        uint inc = 0u;
+        if (quarterIndex < 1u) inc |= 1u;
+        if (quarterIndex < 2u) inc |= (1u << RADIX_BYTE_SHIFT);
+        if (quarterIndex < 3u) inc |= (1u << RADIX_PREFIX_SHIFT);
         InterlockedAdd(halfCount[bit], inc);
     }
     GroupMemoryBarrierWithGroupSync();
-    
-    if (active) {
-        uint globalOff = getGlobalOffset(bit, group, numGroups, totalN, numLevels);
-        uint quarterOffset = 0;
-        if (quarterIndex > 0) {
+
+    if (active)
+    {
+        uint globalOff = hierarchy.get_global_offset(bit, group);
+        uint quarterOffset = 0u;
+        if (quarterIndex > 0u)
+        {
             uint packed = halfCount[bit];
-            uint shiftBytes = (quarterIndex - 1u) * 8u;
-            quarterOffset = (packed >> shiftBytes) & 0xFFu;
+            uint shiftBytes = (quarterIndex - 1u) * RADIX_BYTE_SHIFT;
+            quarterOffset = (packed >> shiftBytes) & RADIX_BYTE_MASK;
         }
-        uint begin = quarterIndex * QUARTER_SIZE, localCount = 0;
+        uint begin = quarterIndex * QUARTER_SIZE;
+        uint localCount = 0u;
         [unroll] for (uint t = begin; t < lane; ++t) localCount += (tempBits[t] == bit) ? 1u : 0u;
         uint dest = globalOff + quarterOffset + localCount;
         g_KeysOut[dest] = key;

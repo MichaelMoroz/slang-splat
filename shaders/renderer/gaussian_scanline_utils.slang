@@ -6,25 +6,25 @@ bool try_prepare_conic_for_binning(inout Ellipse ellipse, float halfTile)
     float3 conic = ellipse.conic;
     float detConic = conic.x * conic.z - conic.y * conic.y;
     bool useConic = all(isfinite(conic))
-        && conic.x > 1e-10
-        && conic.z > 1e-10
-        && detConic > 1e-12;
+        && conic.x > EPS_CONIC_POSITIVE
+        && conic.z > EPS_CONIC_POSITIVE
+        && detConic > EPS_CONIC_DETERMINANT;
     if (!useConic) { ellipse.useConic = 0u; return false; }
 
     float traceConic = conic.x + conic.z;
     float discConic = sqrt(max(0.25 * traceConic * traceConic - detConic, 0.0));
     float eigMin = 0.5 * traceConic - discConic;
     float eigMax = 0.5 * traceConic + discConic;
-    float maxAxis = rsqrt(max(eigMin, 1e-20));
-    float minAxis = rsqrt(max(eigMax, 1e-20));
-    float radiusSafe = max(ellipse.radiusPx, 1.0);
+    float maxAxis = rsqrt(max(eigMin, EPS_CONIC_INV_AXIS));
+    float minAxis = rsqrt(max(eigMax, EPS_CONIC_INV_AXIS));
+    float radiusSafe = max(ellipse.radiusPx, MIN_RADIUS_PX);
     float axisLimit = radiusSafe * 2.0 + halfTile;
     useConic = isfinite(maxAxis)
         && isfinite(minAxis)
         && eigMin > 0.0
         && eigMax > 0.0
         && maxAxis <= axisLimit
-        && minAxis >= 0.125;
+        && minAxis >= MIN_AXIS_RATIO;
     if (!useConic) { ellipse.useConic = 0u; return false; }
 
     float xExtent = sqrt(max(conic.z / detConic, 0.0));
@@ -33,7 +33,7 @@ bool try_prepare_conic_for_binning(inout Ellipse ellipse, float halfTile)
 
     ellipse.bboxExtent = clamp(
         float2(xExtent, yExtent),
-        float2(1e-4, 1e-4),
+        float2(MIN_BBOX_EXTENT_PX, MIN_BBOX_EXTENT_PX),
         float2(ellipse.radiusPx, ellipse.radiusPx)
     );
     ellipse.useConic = 1u;
@@ -92,18 +92,10 @@ bool compute_scanline_tile_span_universal(
         if (minor < 0) continue;
         uint minorU = uint(minor);
         if (!cfg.isMinorCoordValid(minorU)) continue;
-        float2 boxMin;
-        float2 boxMax;
-        if (cfg.scanAlongX)
-        {
-            boxMin = float2(float(minorU) * tileSize, float(lineCoord) * tileSize) - ellipse.centerPx;
-            boxMax = float2(float(minorU + 1u) * tileSize, float(lineCoord + 1u) * tileSize) - ellipse.centerPx;
-        }
-        else
-        {
-            boxMin = float2(float(lineCoord) * tileSize, float(minorU) * tileSize) - ellipse.centerPx;
-            boxMax = float2(float(lineCoord + 1u) * tileSize, float(minorU + 1u) * tileSize) - ellipse.centerPx;
-        }
+        float2 tileCoord = cfg.scanAlongX ? float2(float(minorU), float(lineCoord)) : float2(float(lineCoord), float(minorU));
+        float2 tileMin = tileCoord * tileSize;
+        float2 boxMin = tileMin - ellipse.centerPx;
+        float2 boxMax = (tileMin + tileSize) - ellipse.centerPx;
         if (!ellipse.intersectsTileBox(boxMin, boxMax)) continue;
         if (first < 0) first = minor;
         last = minor;

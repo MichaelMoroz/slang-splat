@@ -27,9 +27,7 @@ bool generate_silhouette_points_local5(float3 roLocal, float eps, out float3 poi
     {
         u = float3(0.0, -1.0, 0.0);
         v = float3(-1.0, 0.0, 0.0);
-    }
-    else
-    {
+    } else {
         float a = 1.0 / (1.0 + n.z);
         float b = -n.x * n.y * a;
         u = float3(1.0 - n.x * n.x * a, b, -n.x);
