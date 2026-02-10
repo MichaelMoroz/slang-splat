@@ -1,5 +1,8 @@
 static const uint UINT_MAX_VALUE = 0xFFFFFFFFu;
 static const uint INVALID_START = UINT_MAX_VALUE;
+static const uint PROJECT_GROUP_SIZE = 128u;
+static const uint TILE_GROUP_SIZE = 256u;
+static const uint RASTER_TILE_DIM = 16u;
 static const uint RASTER_BATCH = 256u;
 static const uint MVEE_POINT_COUNT = 5u;
 static const uint MVEE_MAX_ITERS = 8u;
@@ -93,6 +96,16 @@ struct Gaussian3D
     float3 scale;
     float4 rotation;
     float4 colorAlpha;
+
+    static Gaussian3D load(uint splatId)
+    {
+        Gaussian3D g;
+        g.position = g_Positions[splatId].xyz;
+        g.scale = g_Scales[splatId].xyz;
+        g.rotation = g_Rotations[splatId];
+        g.colorAlpha = g_ColorAlpha[splatId];
+        return g;
+    }
 };
 
 struct Ellipsoid
@@ -180,7 +193,7 @@ struct Ellipse
     bool intersectsTileBox(float2 boxMin, float2 boxMax)
     {
         if (useConic != 0u) return minConicOverTileBox(boxMin, boxMax) <= 1.0 + EPS_CONIC_INTERSECTION;
-        float2 q = clamp(float2(0.0, 0.0), boxMin, boxMax);
+        float2 q = clamp(0.0, boxMin, boxMax);
         return dot(q, q) <= radiusPx * radiusPx;
     }
 };

@@ -9,7 +9,7 @@ void project_and_bin_impl(uint3 dispatchThreadID)
     uint splatId = dispatchThreadID.x;
     if (splatId >= g_splatCount) return;
 
-    Gaussian3D gaussian = load_gaussian3d(splatId);
+    Gaussian3D gaussian = Gaussian3D.load(splatId);
     Ellipsoid ellipsoid = build_ellipsoid(gaussian);
     float3 cameraOffset = ellipsoid.centerWorld - g_camPos;
     float3 camPos = world_to_camera(cameraOffset);
@@ -72,14 +72,14 @@ void project_and_bin_impl(uint3 dispatchThreadID)
 }
 
 [shader("compute")]
-[numthreads(128, 1, 1)]
+[numthreads(PROJECT_GROUP_SIZE, 1, 1)]
 void csProjectAndBin(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     project_and_bin_impl(dispatchThreadID);
 }
 
 [shader("compute")]
-[numthreads(256, 1, 1)]
+[numthreads(TILE_GROUP_SIZE, 1, 1)]
 void csClearTileRanges(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     uint tileId = dispatchThreadID.x;
@@ -88,7 +88,7 @@ void csClearTileRanges(uint3 dispatchThreadID : SV_DispatchThreadID)
 }
 
 [shader("compute")]
-[numthreads(256, 1, 1)]
+[numthreads(TILE_GROUP_SIZE, 1, 1)]
 void csBuildTileRanges(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     uint idx = dispatchThreadID.x;
@@ -115,7 +115,7 @@ void csBuildTileRanges(uint3 dispatchThreadID : SV_DispatchThreadID)
 }
 
 [shader("compute")]
-[numthreads(16, 16, 1)]
+[numthreads(RASTER_TILE_DIM, RASTER_TILE_DIM, 1)]
 void csRasterize(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_GroupIndex)
 {
     rasterize_impl(dispatchThreadID, lane);

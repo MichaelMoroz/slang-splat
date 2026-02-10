@@ -19,11 +19,6 @@ uint quantizeDepth(float depthValue)
     return min((uint)round(t * float(maxValue)), maxValue);
 }
 
-float3 mul3x3(float3x3 m, float3 v)
-{
-    return float3(dot(m[0], v), dot(m[1], v), dot(m[2], v));
-}
-
 bool inverse3x3(float3x3 m, float eps, out float3x3 invOut)
 {
     float a00 = m._m00;
@@ -82,20 +77,10 @@ bool project_world_to_screen(float3 worldPos, out float2 screenPos)
 
 float3 local_point_to_world(float3 pLocal, float3 worldPos, float3 invScale, float4 q)
 {
-    float3 invScaleSafe = max(invScale, float3(EPS_SMALL, EPS_SMALL, EPS_SMALL));
+    float3 invScaleSafe = max(invScale, float3(EPS_SMALL));
     float3 localUnscaled = pLocal / invScaleSafe;
     float4 qInv = float4(q.x, -q.y, -q.z, -q.w);
     return worldPos + rotate_by_quat(localUnscaled, qInv);
-}
-
-Gaussian3D load_gaussian3d(uint splatId)
-{
-    Gaussian3D gaussian;
-    gaussian.position = g_Positions[splatId].xyz;
-    gaussian.scale = g_Scales[splatId].xyz;
-    gaussian.rotation = g_Rotations[splatId];
-    gaussian.colorAlpha = g_ColorAlpha[splatId];
-    return gaussian;
 }
 
 Ellipsoid build_ellipsoid(Gaussian3D gaussian)
@@ -104,7 +89,7 @@ Ellipsoid build_ellipsoid(Gaussian3D gaussian)
     ellipsoid.centerWorld = gaussian.position;
     float maxScale = max(gaussian.scale.x, max(gaussian.scale.y, gaussian.scale.z));
     ellipsoid.scale = max(gaussian.scale, maxScale * SCALE_FLOOR_RATIO) * g_radiusScale;
-    ellipsoid.invScale = 1.0 / max(ellipsoid.scale, float3(EPS_SMALL, EPS_SMALL, EPS_SMALL));
+    ellipsoid.invScale = 1.0 / max(ellipsoid.scale, float3(EPS_SMALL));
     ellipsoid.rotation = gaussian.rotation;
     ellipsoid.roLocal = rotate_by_quat(g_camPos - ellipsoid.centerWorld, ellipsoid.rotation) * ellipsoid.invScale;
     return ellipsoid;

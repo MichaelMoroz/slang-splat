@@ -33,8 +33,8 @@ bool try_prepare_conic_for_binning(inout Ellipse ellipse, float halfTile)
 
     ellipse.bboxExtent = clamp(
         float2(xExtent, yExtent),
-        float2(MIN_BBOX_EXTENT_PX, MIN_BBOX_EXTENT_PX),
-        float2(ellipse.radiusPx, ellipse.radiusPx)
+        float2(MIN_BBOX_EXTENT_PX),
+        float2(ellipse.radiusPx)
     );
     ellipse.useConic = 1u;
     return true;

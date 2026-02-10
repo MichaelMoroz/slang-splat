@@ -19,7 +19,7 @@ void rasterize_impl(uint3 dispatchThreadID, uint lane)
     {
         uint start = range.x;
         uint end = min(range.y, start + g_maxSplatSteps);
-        float3 accum = float3(0.0, 0.0, 0.0);
+        float3 accum = 0.0;
         float trans = 1.0;
         uint processedCount = 0u;
         float2 rayUV = (float2(float(samplePx) + 0.5, float(samplePy) + 0.5) - 0.5 * g_viewport) / g_focalPixels;
@@ -85,7 +85,7 @@ void rasterize_impl(uint3 dispatchThreadID, uint lane)
                 float processed = float(processedCount);
                 float logMax = log2(float(g_maxSplatSteps) + 1.0);
                 float normalized = (logMax > 0.0) ? saturate(log2(processed + 1.0) / logMax) : 0.0;
-                float3 debugColor = float3(normalized, normalized, normalized);
+                float3 debugColor = float3(normalized);
                 outputValue = float4(debugColor, 1.0);
             } else {
                 float3 finalColor = accum + trans * g_background;
@@ -126,9 +126,7 @@ void rasterize_impl(uint3 dispatchThreadID, uint lane)
                 outputValue = float4(linearOut, 1.0 - trans);
             }
         }
-    }
-    else if (pixelActive)
-    {
+    } else if (pixelActive) {
         if (g_debugShowProcessedCount != 0u) outputValue = float4(0.0, 0.0, 0.0, 1.0);
         else {
             float3 bgLinear = pow(max(g_background, 0.0), GAMMA_LINEAR_TO_OUTPUT);

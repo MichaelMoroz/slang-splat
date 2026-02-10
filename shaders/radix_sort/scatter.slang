@@ -14,23 +14,23 @@ uniform RWStructuredBuffer<uint> g_ValuesOut;
 groupshared uint tempBits[GROUP_SIZE];
 groupshared uint halfCount[HISTOGRAM_SIZE];
 
-uint derive_num_levels(uint totalN)
-{
-    uint numLevels = 0;
-    uint levelSize = totalN;
-    for (uint i = 0u; i < RADIX_MAX_PREFIX_LEVELS && levelSize > 1u; ++i)
-    {
-        numLevels += 1u;
-        levelSize = ceil_div_block(levelSize);
-    }
-    return max(numLevels + 1u, 1u);
-}
-
 struct PrefixHierarchy
 {
     uint numGroups;
     uint totalN;
     uint numLevels;
+
+    static uint derive_num_levels(uint totalN)
+    {
+        uint levels = 0;
+        uint levelSize = totalN;
+        for (uint i = 0u; i < RADIX_MAX_PREFIX_LEVELS && levelSize > 1u; ++i)
+        {
+            levels += 1u;
+            levelSize = ceil_div_block(levelSize);
+        }
+        return max(levels + 1u, 1u);
+    }
 
     uint get_global_offset(uint digit, uint group)
     {
@@ -63,21 +63,19 @@ void csScatter(uint3 groupID : SV_GroupID, uint3 localID : SV_GroupThreadID)
     cfg.load();
     uint group = groupID.x;
     uint lane = localID.x;
-    uint elementCount = cfg.elementCount;
-    uint numGroups = cfg.numGroups;
     uint totalN = cfg.totalN;
     uint numLevels = cfg.numLevels;
     if (g_numLevels != 0u) numLevels = g_numLevels;
     if (g_totalN != 0u) totalN = g_totalN;
-    if (numLevels == 0u) numLevels = derive_num_levels(totalN);
+    if (numLevels == 0u) numLevels = PrefixHierarchy.derive_num_levels(totalN);
     PrefixHierarchy hierarchy;
-    hierarchy.numGroups = numGroups;
+    hierarchy.numGroups = cfg.numGroups;
     hierarchy.totalN = totalN;
     hierarchy.numLevels = numLevels;
     [unroll] for (uint idx = lane; idx < HISTOGRAM_SIZE; idx += GROUP_SIZE) halfCount[idx] = 0;
 
     uint globalIndex = group * GROUP_SIZE + lane;
-    bool active = globalIndex < elementCount;
+    bool active = globalIndex < cfg.elementCount;
     uint bit = 0u;
     uint key = 0u;
     uint value = 0u;
