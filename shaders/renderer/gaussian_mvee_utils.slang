@@ -35,6 +35,8 @@ bool generate_silhouette_points_local5(float3 roLocal, float eps, out float3 poi
     return true;
 }
 
+// MVEE (Minimum-Volume Enclosing Ellipse) computes the smallest 2D ellipse enclosing
+// the 5 sampled points via fixed-iteration Khachiyan updates in normalized space.
 bool fit_mvee_5pt_fixed_iters(
     float2 points[MVEE_POINT_COUNT],
     uint mveeIters,
