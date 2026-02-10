@@ -14,7 +14,6 @@ void rasterize_impl(uint3 dispatchThreadID, uint lane)
     uint tileId = tileY * g_tileWidth + tileX;
     uint2 range = g_TileRanges[tileId];
     bool hasTileRange = range.x != INVALID_START && range.y > range.x;
-    bool writeOutput = pixelActive;
     float4 outputValue = float4(0.0, 0.0, 0.0, 1.0);
     if (hasTileRange)
     {
@@ -56,25 +55,16 @@ void rasterize_impl(uint3 dispatchThreadID, uint lane)
                 float denom = dot(rdLocal, rdLocal);
                 if (denom <= 1e-10) continue;
                 float tClosest = dot(rdLocal, -roLocal) / denom;
-                if (tClosest <= 0.0)
-                {
-                    continue;
-                }
+                if (tClosest <= 0.0) continue;
                 float3 closest = roLocal + rdLocal * tClosest;
                 float rho = length(closest);
-                if (rho >= 1.0)
-                {
-                    continue;
-                }
+                if (rho >= 1.0) continue;
 
                 float4 colorAlpha = float4(gsColorAlpha[localIdx]);
                 float coverage = saturate(1.0 - rho);
                 coverage = coverage * coverage * (3.0 - 2.0 * coverage);
                 float alpha = saturate(colorAlpha.w * coverage);
-                if (alpha < g_alphaCutoff)
-                {
-                    continue;
-                }
+                if (alpha < g_alphaCutoff) continue;
 
                 accum += trans * alpha * colorAlpha.xyz;
                 trans *= 1.0 - alpha;
@@ -85,13 +75,10 @@ void rasterize_impl(uint3 dispatchThreadID, uint lane)
                 }
             }
             GroupMemoryBarrierWithGroupSync();
-            if (gsStoppedPixels == RASTER_BATCH)
-            {
-                break;
-            }
+            if (gsStoppedPixels == RASTER_BATCH) break;
         }
 
-        if (writeOutput)
+        if (pixelActive)
         {
             if (g_debugShowProcessedCount != 0u)
             {
@@ -116,16 +103,10 @@ void rasterize_impl(uint3 dispatchThreadID, uint lane)
                         float4 centerRadiusDepth = g_ScreenCenterRadiusDepth[splatId];
                         float2 d = samplePoint - centerRadiusDepth.xy;
                         float bound = centerRadiusDepth.z + thicknessPx;
-                        if (abs(d.x) > bound || abs(d.y) > bound)
-                        {
-                            continue;
-                        }
+                        if (abs(d.x) > bound || abs(d.y) > bound) continue;
 
                         float4 conic = g_ScreenEllipseConic[splatId];
-                        if (conic.w <= 0.0)
-                        {
-                            continue;
-                        }
+                        if (conic.w <= 0.0) continue;
                         float fx = conic.x * d.x + conic.y * d.y;
                         float fy = conic.y * d.x + conic.z * d.y;
                         float quad = d.x * fx + d.y * fy;
@@ -146,12 +127,9 @@ void rasterize_impl(uint3 dispatchThreadID, uint lane)
             }
         }
     }
-    else if (writeOutput)
+    else if (pixelActive)
     {
-        if (g_debugShowProcessedCount != 0u)
-        {
-            outputValue = float4(0.0, 0.0, 0.0, 1.0);
-        }
+        if (g_debugShowProcessedCount != 0u) outputValue = float4(0.0, 0.0, 0.0, 1.0);
         else
         {
             float3 bgLinear = pow(max(g_background, 0.0), 2.2);
@@ -159,8 +137,5 @@ void rasterize_impl(uint3 dispatchThreadID, uint lane)
         }
     }
 
-    if (writeOutput)
-    {
-        g_Output[uint2(px, py)] = outputValue;
-    }
+    if (pixelActive) g_Output[uint2(px, py)] = outputValue;
 }

@@ -3,8 +3,7 @@ import "gaussian_math_utils.slang";
 
 void clear_silhouette_points_local5(out float3 points[MVEE_POINT_COUNT])
 {
-    [unroll]
-    for (uint i = 0; i < MVEE_POINT_COUNT; i++)
+    [unroll] for (uint i = 0; i < MVEE_POINT_COUNT; i++)
     {
         points[i] = 0.0;
     }
@@ -42,8 +41,7 @@ bool generate_silhouette_points_local5(float3 roLocal, float eps, out float3 poi
         return false;
     }
 
-    [unroll]
-    for (uint i = 0; i < MVEE_POINT_COUNT; i++)
+    [unroll] for (uint i = 0; i < MVEE_POINT_COUNT; i++)
     {
         float theta = MVEE_FULL_TURN_RADIANS * (float(i) / float(MVEE_POINT_COUNT));
         float s;
@@ -64,49 +62,37 @@ bool fit_mvee_5pt_fixed_iters(
     fitOut.clear();
     float2 pointsNorm[MVEE_POINT_COUNT];
     float2 normCenter = 0.0;
-    [unroll]
-    for (uint i = 0; i < MVEE_POINT_COUNT; i++)
+    [unroll] for (uint i = 0; i < MVEE_POINT_COUNT; i++)
     {
         normCenter += points[i];
     }
     normCenter *= (1.0 / float(MVEE_POINT_COUNT));
 
     float normScale = 0.0;
-    [unroll]
-    for (uint i = 0; i < MVEE_POINT_COUNT; i++)
+    [unroll] for (uint i = 0; i < MVEE_POINT_COUNT; i++)
     {
         float2 d = points[i] - normCenter;
         normScale = max(normScale, length(d));
     }
-    if (normScale <= eps)
-    {
-        return false;
-    }
+    if (normScale <= eps) return false;
     float invNormScale = 1.0 / normScale;
-    [unroll]
-    for (uint i = 0; i < MVEE_POINT_COUNT; i++)
+    [unroll] for (uint i = 0; i < MVEE_POINT_COUNT; i++)
     {
         pointsNorm[i] = (points[i] - normCenter) * invNormScale;
     }
 
     float weights[MVEE_POINT_COUNT];
-    [unroll]
-    for (uint i = 0; i < MVEE_POINT_COUNT; i++)
+    [unroll] for (uint i = 0; i < MVEE_POINT_COUNT; i++)
     {
         weights[i] = 1.0 / float(MVEE_POINT_COUNT);
     }
 
-    [unroll]
-    for (uint iter = 0; iter < MVEE_MAX_ITERS; iter++)
+    [unroll] for (uint iter = 0; iter < MVEE_MAX_ITERS; iter++)
     {
-        if (iter >= mveeIters)
-        {
-            break;
-        }
+        if (iter >= mveeIters) break;
 
         float3x3 xMat = 0.0;
-        [unroll]
-        for (uint i = 0; i < MVEE_POINT_COUNT; i++)
+        [unroll] for (uint i = 0; i < MVEE_POINT_COUNT; i++)
         {
             float3 q = float3(pointsNorm[i], 1.0);
             xMat += weights[i] * float3x3(
@@ -117,15 +103,11 @@ bool fit_mvee_5pt_fixed_iters(
         }
 
         float3x3 xInv = 0.0;
-        if (!inverse3x3(xMat, eps, xInv))
-        {
-            return false;
-        }
+        if (!inverse3x3(xMat, eps, xInv)) return false;
 
         uint maxIdx = 0;
         float maxVal = -1.0;
-        [unroll]
-        for (uint i = 0; i < MVEE_POINT_COUNT; i++)
+        [unroll] for (uint i = 0; i < MVEE_POINT_COUNT; i++)
         {
             float3 q = float3(pointsNorm[i], 1.0);
             float3 xq = mul3x3(xInv, q);
@@ -138,13 +120,9 @@ bool fit_mvee_5pt_fixed_iters(
         }
 
         float denom = MVEE_AUGMENTED_DIMENSION * (maxVal - 1.0);
-        if (denom <= eps)
-        {
-            break;
-        }
+        if (denom <= eps) break;
         float alpha = saturate((maxVal - MVEE_AUGMENTED_DIMENSION) / denom);
-        [unroll]
-        for (uint i = 0; i < MVEE_POINT_COUNT; i++)
+        [unroll] for (uint i = 0; i < MVEE_POINT_COUNT; i++)
         {
             weights[i] *= (1.0 - alpha);
         }
@@ -152,8 +130,7 @@ bool fit_mvee_5pt_fixed_iters(
     }
 
     float2 center = 0.0;
-    [unroll]
-    for (uint i = 0; i < MVEE_POINT_COUNT; i++)
+    [unroll] for (uint i = 0; i < MVEE_POINT_COUNT; i++)
     {
         center += weights[i] * pointsNorm[i];
     }
@@ -161,8 +138,7 @@ bool fit_mvee_5pt_fixed_iters(
     float s00 = 0.0;
     float s01 = 0.0;
     float s11 = 0.0;
-    [unroll]
-    for (uint i = 0; i < MVEE_POINT_COUNT; i++)
+    [unroll] for (uint i = 0; i < MVEE_POINT_COUNT; i++)
     {
         float2 d = pointsNorm[i] - center;
         s00 += weights[i] * d.x * d.x;
@@ -173,10 +149,7 @@ bool fit_mvee_5pt_fixed_iters(
     s11 += eps;
 
     float detS = s00 * s11 - s01 * s01;
-    if (detS <= eps)
-    {
-        return false;
-    }
+    if (detS <= eps) return false;
 
     float a00 = 0.5 * s11 / detS;
     float a01 = -0.5 * s01 / detS;
@@ -190,8 +163,7 @@ bool fit_mvee_5pt_fixed_iters(
     float axis1 = rsqrt(l1);
 
     float maxQuad = 0.0;
-    [unroll]
-    for (uint i = 0; i < MVEE_POINT_COUNT; i++)
+    [unroll] for (uint i = 0; i < MVEE_POINT_COUNT; i++)
     {
         float2 d = pointsNorm[i] - center;
         float quad = a00 * d.x * d.x + 2.0 * a01 * d.x * d.y + a11 * d.y * d.y;

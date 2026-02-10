@@ -7,15 +7,11 @@ import "gaussian_raster_stage.slang";
 void project_and_bin_impl(uint3 dispatchThreadID)
 {
     uint splatId = dispatchThreadID.x;
-    if (splatId >= g_splatCount)
-    {
-        return;
-    }
+    if (splatId >= g_splatCount) return;
 
     Gaussian3D gaussian = load_gaussian3d(splatId);
     Ellipsoid ellipsoid = build_ellipsoid(gaussian);
-    float3 worldPos = ellipsoid.centerWorld;
-    float3 rel = worldPos - g_camPos;
+    float3 rel = ellipsoid.centerWorld - g_camPos;
     float3 camPos = world_to_camera(rel);
     float camDistance = length(rel);
     float depthValue = camPos.z;
@@ -24,24 +20,19 @@ void project_and_bin_impl(uint3 dispatchThreadID)
     float px = camPos.x * g_focalPixels * invDepth + 0.5 * g_viewport.x;
     float py = camPos.y * g_focalPixels * invDepth + 0.5 * g_viewport.y;
 
-    float4 q = ellipsoid.rotation;
-    float3 invScale = ellipsoid.invScale;
-    float3 roLocal = ellipsoid.roLocal;
-
     float2 fitCenter = float2(px, py);
     float fitRadius = g_maxSplatRadiusPx;
     float invFitRadius2 = 1.0 / max(fitRadius * fitRadius, 1e-6);
     float3 fitConic = float3(invFitRadius2, 0.0, invFitRadius2);
 
     float3 localPoints[MVEE_POINT_COUNT];
-    bool silhouetteOk = generate_silhouette_points_local5(roLocal, g_sampled5Eps, localPoints);
+    bool silhouetteOk = generate_silhouette_points_local5(ellipsoid.roLocal, g_sampled5Eps, localPoints);
     if (silhouetteOk)
     {
         float2 screenPoints[MVEE_POINT_COUNT];
-        [unroll]
-        for (uint i = 0; i < MVEE_POINT_COUNT; i++)
+        [unroll] for (uint i = 0; i < MVEE_POINT_COUNT; i++)
         {
-            float3 worldPt = local_point_to_world(localPoints[i], worldPos, invScale, q);
+            float3 worldPt = local_point_to_world(localPoints[i], ellipsoid.centerWorld, ellipsoid.invScale, ellipsoid.rotation);
             float2 screenPt = 0.0;
             bool pointOk = project_world_to_screen(worldPt, screenPt);
             screenPoints[i] = screenPt;
@@ -71,9 +62,9 @@ void project_and_bin_impl(uint3 dispatchThreadID)
     g_ScreenCenterRadiusDepth[splatId] = float4(fitCenter, fitRadius, camDistance);
     g_ScreenColorAlpha[splatId] = gaussian.colorAlpha;
     g_ScreenEllipseConic[splatId] = float4(fitConic, 1.0);
-    g_SplatPosLocal[splatId] = float4(roLocal, 0.0);
-    g_SplatInvScale[splatId] = float4(invScale, 0.0);
-    g_SplatQuat[splatId] = q;
+    g_SplatPosLocal[splatId] = float4(ellipsoid.roLocal, 0.0);
+    g_SplatInvScale[splatId] = float4(ellipsoid.invScale, 0.0);
+    g_SplatQuat[splatId] = ellipsoid.rotation;
     SplatBinRequest binRequest;
     binRequest.splatId = splatId;
     binRequest.camDistance = camDistance;
@@ -95,10 +86,7 @@ void csProjectAndBin(uint3 dispatchThreadID : SV_DispatchThreadID)
 void csClearTileRanges(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     uint tileId = dispatchThreadID.x;
-    if (tileId >= g_tileCount)
-    {
-        return;
-    }
+    if (tileId >= g_tileCount) return;
     g_TileRanges[tileId] = uint2(INVALID_START, 0);
 }
 
@@ -108,43 +96,25 @@ void csBuildTileRanges(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     uint idx = dispatchThreadID.x;
     uint sortedCount = g_PrepassParams[g_sortedCountOffset];
-    if (idx >= sortedCount)
-    {
-        return;
-    }
+    if (idx >= sortedCount) return;
 
     uint tile = g_SortedKeys[idx] >> g_depthBits;
-    if (tile >= g_tileCount)
-    {
-        return;
-    }
+    if (tile >= g_tileCount) return;
     uint prevTile = INVALID_START;
     if (idx > 0)
     {
         prevTile = g_SortedKeys[idx - 1] >> g_depthBits;
-        if (prevTile >= g_tileCount)
-        {
-            prevTile = INVALID_START;
-        }
+        if (prevTile >= g_tileCount) prevTile = INVALID_START;
     }
     uint nextTile = INVALID_START;
     if (idx + 1 < sortedCount)
     {
         nextTile = g_SortedKeys[idx + 1] >> g_depthBits;
-        if (nextTile >= g_tileCount)
-        {
-            nextTile = INVALID_START;
-        }
+        if (nextTile >= g_tileCount) nextTile = INVALID_START;
     }
 
-    if (idx == 0 || tile != prevTile)
-    {
-        g_TileRanges[tile].x = idx;
-    }
-    if (idx + 1 == sortedCount || tile != nextTile)
-    {
-        g_TileRanges[tile].y = idx + 1;
-    }
+    if (idx == 0 || tile != prevTile) g_TileRanges[tile].x = idx;
+    if (idx + 1 == sortedCount || tile != nextTile) g_TileRanges[tile].y = idx + 1;
 }
 
 [shader("compute")]

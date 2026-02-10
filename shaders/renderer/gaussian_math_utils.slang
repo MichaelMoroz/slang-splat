@@ -11,15 +11,6 @@ float3 world_to_camera(float3 v)
     return float3(dot(v, g_camRight), dot(v, g_camUp), dot(v, g_camForward));
 }
 
-float2 project_cam(float3 p)
-{
-    float z = max(p.z, 1e-6);
-    return float2(
-        p.x * g_focalPixels / z + 0.5 * g_viewport.x,
-        p.y * g_focalPixels / z + 0.5 * g_viewport.y
-    );
-}
-
 uint quantizeDepth(float depthValue)
 {
     float denom = max(g_farDepth - g_nearDepth, 1e-6);

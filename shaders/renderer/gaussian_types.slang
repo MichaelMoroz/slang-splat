@@ -7,12 +7,9 @@ static const float MVEE_SOUTH_POLE_THRESHOLD = -0.9999999;
 static const float MVEE_AUGMENTED_DIMENSION = 3.0;
 
 groupshared float4 gsRoLocal[RASTER_BATCH];
-groupshared float4 gsCenterRadiusDepth[RASTER_BATCH];
-groupshared float4 gsEllipseConic[RASTER_BATCH];
 groupshared half4 gsInvScale[RASTER_BATCH];
 groupshared half4 gsQuat[RASTER_BATCH];
 groupshared half4 gsColorAlpha[RASTER_BATCH];
-groupshared uint gsSplatId[RASTER_BATCH];
 groupshared uint gsStoppedPixels;
 
 uniform StructuredBuffer<float4> g_Positions;
