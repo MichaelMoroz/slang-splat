@@ -103,7 +103,7 @@ void rasterize_impl(uint3 dispatchThreadID, uint lane)
                         float4 centerRadiusDepth = g_ScreenCenterRadiusDepth[splatId];
                         float2 d = samplePoint - centerRadiusDepth.xy;
                         float bound = centerRadiusDepth.z + thicknessPx;
-                        if (abs(d.x) > bound || abs(d.y) > bound) continue;
+                        if (any(abs(d) > bound)) continue;
 
                         float4 conic = g_ScreenEllipseConic[splatId];
                         if (conic.w <= 0.0) continue;

@@ -121,11 +121,48 @@ struct Ellipse
     bool chooseScanAlongX(uint spanX, uint spanY)
     {
         bool scanAlongX = bboxExtent.x >= bboxExtent.y;
-        if (abs(bboxExtent.x - bboxExtent.y) < 1e-6)
-        {
-            scanAlongX = spanX >= spanY;
-        }
+        if (abs(bboxExtent.x - bboxExtent.y) < 1e-6) scanAlongX = spanX >= spanY;
         return scanAlongX;
+    }
+
+    float evalConic(float2 d)
+    {
+        return conic.x * d.x * d.x + 2.0 * conic.y * d.x * d.y + conic.z * d.y * d.y;
+    }
+
+    float minConicOverTileBox(float2 boxMin, float2 boxMax)
+    {
+        float minVal = min(
+            min(evalConic(float2(boxMin.x, boxMin.y)), evalConic(float2(boxMax.x, boxMin.y))),
+            min(evalConic(float2(boxMin.x, boxMax.y)), evalConic(float2(boxMax.x, boxMax.y)))
+        );
+        if (boxMin.x <= 0.0 && 0.0 <= boxMax.x && boxMin.y <= 0.0 && 0.0 <= boxMax.y) return 0.0;
+
+        float a = conic.x;
+        float b = conic.y;
+        float c = conic.z;
+        if (c > 1e-12)
+        {
+            float yAtMinX = clamp(-b * boxMin.x / c, boxMin.y, boxMax.y);
+            float yAtMaxX = clamp(-b * boxMax.x / c, boxMin.y, boxMax.y);
+            minVal = min(minVal, evalConic(float2(boxMin.x, yAtMinX)));
+            minVal = min(minVal, evalConic(float2(boxMax.x, yAtMaxX)));
+        }
+        if (a > 1e-12)
+        {
+            float xAtMinY = clamp(-b * boxMin.y / a, boxMin.x, boxMax.x);
+            float xAtMaxY = clamp(-b * boxMax.y / a, boxMin.x, boxMax.x);
+            minVal = min(minVal, evalConic(float2(xAtMinY, boxMin.y)));
+            minVal = min(minVal, evalConic(float2(xAtMaxY, boxMax.y)));
+        }
+        return minVal;
+    }
+
+    bool intersectsTileBox(float2 boxMin, float2 boxMax)
+    {
+        if (useConic != 0u) return minConicOverTileBox(boxMin, boxMax) <= 1.0 + 1e-5;
+        float2 q = clamp(float2(0.0, 0.0), boxMin, boxMax);
+        return dot(q, q) <= radiusPx * radiusPx;
     }
 };
 

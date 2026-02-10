@@ -1,5 +1,5 @@
 // Common constants and utilities for radix sort
-static const uint GROUP_SIZE = 128, HISTOGRAM_SIZE = 256, PACKED_HIST_SIZE = 64, BLOCK_SIZE = 256, BITS_PER_PASS = 8;
+static const uint GROUP_SIZE = 128, HISTOGRAM_SIZE = 256, PACKED_HIST_SIZE = 64, BLOCK_SIZE = 256;
 
 // Params buffer layout: [dispatch args (18), elementCount, numGroups, totalN, numLevels] at indices 18-21
 uniform StructuredBuffer<uint> g_ParamsBuffer;
@@ -10,7 +10,6 @@ uint getNumGroups() { return (g_useParamsBuffer != 0) ? g_ParamsBuffer[19] : g_n
 uint getTotalN() { return (g_useParamsBuffer != 0) ? g_ParamsBuffer[20] : g_numGroups * HISTOGRAM_SIZE; }
 uint getNumLevels() { return (g_useParamsBuffer != 0) ? g_ParamsBuffer[21] : 0; }
 
-uint ceil_div(uint a, uint b) { return (a + b - 1u) / b; }
 uint ceil_div2(uint a) { return (a + 1u) >> 1u; }
 uint ceil_div_group(uint a) { return (a + GROUP_SIZE - 1u) >> 7u; }
 uint ceil_div_block(uint a) { return (a + BLOCK_SIZE - 1u) >> 8u; }
@@ -21,6 +20,4 @@ uint unpackCount(uint packed, uint digit) { return (packed >> ((digit & 3) * 8))
 
 // Pack/unpack 2x16-bit prefix sums (lo = even, hi = odd)
 uint packPrefix16(uint lo, uint hi) { return (hi << 16) | (lo & 0xFFFF); }
-uint unpackPrefixLo(uint packed) { return packed & 0xFFFF; }
-uint unpackPrefixHi(uint packed) { return packed >> 16; }
 uint unpackPrefix16(uint packed, uint isOdd) { return (isOdd != 0) ? (packed >> 16) : (packed & 0xFFFF); }

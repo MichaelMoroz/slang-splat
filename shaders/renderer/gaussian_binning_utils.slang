@@ -1,5 +1,4 @@
 import "gaussian_types.slang";
-import "gaussian_math_utils.slang";
 import "gaussian_scanline_utils.slang";
 
 void emit_splat_bins(SplatBinRequest request)
@@ -11,10 +10,7 @@ void emit_splat_bins(SplatBinRequest request)
         g_viewport,
         g_nearDepth,
         g_farDepth
-    ))
-    {
-        return;
-    }
+    )) return;
 
     float tileSize = float(g_tileSize);
     float halfTile = 0.5 * tileSize;
@@ -28,10 +24,7 @@ void emit_splat_bins(SplatBinRequest request)
     maxX = clamp(maxX, 0, int(g_tileWidth) - 1);
     minY = clamp(minY, 0, int(g_tileHeight) - 1);
     maxY = clamp(maxY, 0, int(g_tileHeight) - 1);
-    if (minX > maxX || minY > maxY)
-    {
-        return;
-    }
+    if (minX > maxX || minY > maxY) return;
 
     ScanlineLoopConfig loopCfg = build_scanline_loop_config(ellipse, minX, maxX, minY, maxY);
 
@@ -43,13 +36,9 @@ void emit_splat_bins(SplatBinRequest request)
             ellipse,
             loopCfg,
             tileSize,
-            halfTile,
             loopCfg.lineCoordToUint(lineCoord),
             span
-        ))
-        {
-            continue;
-        }
+        )) continue;
         if (totalCount > 0xFFFFFFFFu - span.lineCount)
         {
             totalCount = 0xFFFFFFFFu;
@@ -57,20 +46,13 @@ void emit_splat_bins(SplatBinRequest request)
         }
         totalCount += span.lineCount;
     }
-    if (totalCount == 0u)
-    {
-        return;
-    }
+    if (totalCount == 0u) return;
 
     uint baseIndex = 0;
     InterlockedAdd(g_ListCounter[0], totalCount, baseIndex);
-    if (baseIndex >= g_maxListEntries)
-    {
-        return;
-    }
+    if (baseIndex >= g_maxListEntries) return;
 
     uint writeCount = min(totalCount, g_maxListEntries - baseIndex);
-    uint depthCode = request.depthCode;
     uint writeIndex = baseIndex;
     uint written = 0;
     for (int lineCoord = loopCfg.lineStart; lineCoord <= loopCfg.lineEnd && written < writeCount; lineCoord++)
@@ -81,39 +63,22 @@ void emit_splat_bins(SplatBinRequest request)
             ellipse,
             loopCfg,
             tileSize,
-            halfTile,
             lineCoordU,
             span
-        ))
-        {
-            continue;
-        }
-        if (!loopCfg.isLineCoordValid(lineCoordU))
-        {
-            continue;
-        }
+        )) continue;
 
         uint lineWriteCount = min(span.lineCount, writeCount - written);
         for (uint i = 0; i < lineWriteCount; i++)
         {
-            if (writeIndex >= g_maxListEntries)
-            {
-                break;
-            }
+            if (writeIndex >= g_maxListEntries) break;
 
             uint minorCoord = span.lineStartMinor + i;
-            if (!loopCfg.isMinorCoordValid(minorCoord))
-            {
-                continue;
-            }
+            if (!loopCfg.isMinorCoordValid(minorCoord)) continue;
 
             uint tileId = loopCfg.composeTileId(lineCoordU, minorCoord, g_tileWidth);
-            if (tileId >= g_tileCount)
-            {
-                continue;
-            }
+            if (tileId >= g_tileCount) continue;
 
-            g_Keys[writeIndex] = (tileId << g_depthBits) | depthCode;
+            g_Keys[writeIndex] = (tileId << g_depthBits) | request.depthCode;
             g_Values[writeIndex] = request.splatId;
             writeIndex++;
         }
