@@ -151,9 +151,7 @@ def _min_conic_over_tile_box(conic: np.ndarray, x0: float, x1: float, y0: float,
 
 def _tile_intersects_ellipse(
     center: tuple[float, float],
-    radius: float,
     conic: np.ndarray,
-    use_conic: bool,
     scan_along_x: bool,
     tile_size: int,
     line_coord_tile: int,
@@ -172,27 +170,18 @@ def _tile_intersects_ellipse(
         y0 = float(minor_coord_tile) * ts - cy
         y1 = float(minor_coord_tile + 1) * ts - cy
 
-    if use_conic:
-        return _min_conic_over_tile_box(conic, x0, x1, y0, y1) <= 1.0 + 1e-5
-
-    qx = float(np.clip(0.0, x0, x1))
-    qy = float(np.clip(0.0, y0, y1))
-    return (qx * qx + qy * qy) <= (radius * radius)
+    return _min_conic_over_tile_box(conic, x0, x1, y0, y1) <= 1.0 + 1e-5
 
 
 def _compute_scanline_tile_span_universal(
     center: tuple[float, float],
-    radius: float,
-    bbox_extent: np.ndarray,
     conic: np.ndarray,
-    use_conic: bool,
     scan_along_x: bool,
     tile_size: int,
     line_coord_tile: int,
     min_minor_tile: int,
     max_minor_tile: int,
 ) -> tuple[bool, int, int]:
-    _ = bbox_extent
     first = -1
     last = -1
     for minor in range(min_minor_tile, max_minor_tile + 1):
@@ -200,9 +189,7 @@ def _compute_scanline_tile_span_universal(
             continue
         if not _tile_intersects_ellipse(
             center=center,
-            radius=radius,
             conic=conic,
-            use_conic=use_conic,
             scan_along_x=scan_along_x,
             tile_size=tile_size,
             line_coord_tile=line_coord_tile,
@@ -239,6 +226,8 @@ def build_tile_key_value_pairs(
         tile_size_f = float(tile_size)
         half_tile = 0.5 * tile_size_f
         use_conic, bbox_extent = _try_prepare_conic_for_binning(conic, float(radius), half_tile)
+        if not use_conic:
+            continue
         bounds_extent = bbox_extent + half_tile
         min_x = max(int(np.floor((cx - float(bounds_extent[0])) / tile_size_f)), 0)
         max_x = min(int(np.ceil((cx + float(bounds_extent[0])) / tile_size_f)), tile_width - 1)
@@ -257,10 +246,7 @@ def build_tile_key_value_pairs(
             for tile_y in range(min_y, max_y + 1):
                 has_span, _, line_count = _compute_scanline_tile_span_universal(
                     center=(float(cx), float(cy)),
-                    radius=float(radius),
-                    bbox_extent=bbox_extent,
                     conic=conic,
-                    use_conic=use_conic,
                     scan_along_x=True,
                     tile_size=tile_size,
                     line_coord_tile=tile_y,
@@ -273,10 +259,7 @@ def build_tile_key_value_pairs(
             for tile_x in range(min_x, max_x + 1):
                 has_span, _, line_count = _compute_scanline_tile_span_universal(
                     center=(float(cx), float(cy)),
-                    radius=float(radius),
-                    bbox_extent=bbox_extent,
                     conic=conic,
-                    use_conic=use_conic,
                     scan_along_x=False,
                     tile_size=tile_size,
                     line_coord_tile=tile_x,
@@ -302,10 +285,7 @@ def build_tile_key_value_pairs(
                     break
                 has_span, line_min_x, line_count = _compute_scanline_tile_span_universal(
                     center=(float(cx), float(cy)),
-                    radius=float(radius),
-                    bbox_extent=bbox_extent,
                     conic=conic,
-                    use_conic=use_conic,
                     scan_along_x=True,
                     tile_size=tile_size,
                     line_coord_tile=tile_y,
@@ -331,10 +311,7 @@ def build_tile_key_value_pairs(
                     break
                 has_span, line_min_y, line_count = _compute_scanline_tile_span_universal(
                     center=(float(cx), float(cy)),
-                    radius=float(radius),
-                    bbox_extent=bbox_extent,
                     conic=conic,
-                    use_conic=use_conic,
                     scan_along_x=False,
                     tile_size=tile_size,
                     line_coord_tile=tile_x,

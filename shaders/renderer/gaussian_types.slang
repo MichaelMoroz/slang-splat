@@ -138,7 +138,6 @@ struct Ellipse
     float radiusPx;
     float3 conic;
     float2 bboxExtent;
-    uint useConic;
 
     [mutating]
     void init(float2 centerPxIn, float radiusPxIn, float3 conicIn)
@@ -147,7 +146,6 @@ struct Ellipse
         radiusPx = radiusPxIn;
         conic = conicIn;
         bboxExtent = float2(radiusPxIn, radiusPxIn);
-        useConic = 0u;
     }
 
     bool isVisible(float camDistance, float depthValue, float2 viewport, float nearDepth, float farDepth)
@@ -200,9 +198,7 @@ struct Ellipse
 
     bool intersectsTileBox(float2 boxMin, float2 boxMax)
     {
-        if (useConic != 0u) return minConicOverTileBox(boxMin, boxMax) <= 1.0 + EPS_CONIC_INTERSECTION;
-        float2 q = clamp(0.0, boxMin, boxMax);
-        return dot(q, q) <= radiusPx * radiusPx;
+        return minConicOverTileBox(boxMin, boxMax) <= 1.0 + EPS_CONIC_INTERSECTION;
     }
 };
 

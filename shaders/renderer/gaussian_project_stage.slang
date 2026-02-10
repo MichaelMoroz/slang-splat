@@ -89,7 +89,7 @@ void csComposeScanlineKeyValues(uint3 dispatchThreadID : SV_DispatchThreadID)
     ellipse.init(centerRadiusDepth.xy, centerRadiusDepth.z, conicData.xyz);
     float tileSize = float(g_tileSize);
     float halfTile = 0.5 * tileSize;
-    try_prepare_conic_for_binning(ellipse, halfTile);
+    if (!try_prepare_conic_for_binning(ellipse, halfTile)) return;
 
     ScanlineLoopConfig cfg;
     cfg.scanAlongX = item.scanAlongX != 0u;

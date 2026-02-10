@@ -9,7 +9,7 @@ bool try_prepare_conic_for_binning(inout Ellipse ellipse, float halfTile)
         && conic.x > EPS_CONIC_POSITIVE
         && conic.z > EPS_CONIC_POSITIVE
         && detConic > EPS_CONIC_DETERMINANT;
-    if (!useConic) { ellipse.useConic = 0u; return false; }
+    if (!useConic) return false;
 
     float traceConic = conic.x + conic.z;
     float discConic = sqrt(max(0.25 * traceConic * traceConic - detConic, 0.0));
@@ -25,18 +25,17 @@ bool try_prepare_conic_for_binning(inout Ellipse ellipse, float halfTile)
         && eigMax > 0.0
         && maxAxis <= axisLimit
         && minAxis >= MIN_AXIS_RATIO;
-    if (!useConic) { ellipse.useConic = 0u; return false; }
+    if (!useConic) return false;
 
     float xExtent = sqrt(max(conic.z / detConic, 0.0));
     float yExtent = sqrt(max(conic.x / detConic, 0.0));
-    if (!all(isfinite(float2(xExtent, yExtent)))) { ellipse.useConic = 0u; return false; }
+    if (!all(isfinite(float2(xExtent, yExtent)))) return false;
 
     ellipse.bboxExtent = clamp(
         float2(xExtent, yExtent),
         float2(MIN_BBOX_EXTENT_PX),
         float2(ellipse.radiusPx)
     );
-    ellipse.useConic = 1u;
     return true;
 }
 
@@ -108,36 +107,25 @@ bool compute_scanline_tile_span_universal(
     float minPx = 1e30;
     float maxPx = -1e30;
 
-    if (ellipse.useConic != 0u)
+    // Conic: A*dx² + 2B*dx*dy + C*dy² = 1, solve quadratic at each band edge
+    float A = cfg.scanAlongX ? ellipse.conic.x : ellipse.conic.z;
+    float B = ellipse.conic.y;
+    float C = cfg.scanAlongX ? ellipse.conic.z : ellipse.conic.x;
+    float det = A * C - B * B;
+    float invA = 1.0 / A;
+
+    accumulate_conic_cross_section(A, B, det, invA, centerMinor, dM0, minPx, maxPx);
+    accumulate_conic_cross_section(A, B, det, invA, centerMinor, dM1, minPx, maxPx);
+
+    // Extremal dM where the boundary reaches widest minor extent
+    float detC = det * C;
+    if (detC > 0)
     {
-        // Conic: A*dx² + 2B*dx*dy + C*dy² = 1, solve quadratic at each band edge
-        float A = cfg.scanAlongX ? ellipse.conic.x : ellipse.conic.z;
-        float B = ellipse.conic.y;
-        float C = cfg.scanAlongX ? ellipse.conic.z : ellipse.conic.x;
-        float det = A * C - B * B;
-        float invA = 1.0 / A;
-
-        accumulate_conic_cross_section(A, B, det, invA, centerMinor, dM0, minPx, maxPx);
-        accumulate_conic_cross_section(A, B, det, invA, centerMinor, dM1, minPx, maxPx);
-
-        // Extremal dM where the boundary reaches bboxExtent: ±B/sqrt(det*C)
-        float detC = det * C;
-        if (detC > 0)
-        {
-            float dMCrit = B / sqrt(detC);
-            if (dMCrit > dM0 && dMCrit < dM1)
-                accumulate_conic_cross_section(A, B, det, invA, centerMinor, dMCrit, minPx, maxPx);
-            if (-dMCrit > dM0 && -dMCrit < dM1)
-                accumulate_conic_cross_section(A, B, det, invA, centerMinor, -dMCrit, minPx, maxPx);
-        }
-    } else {
-        // Circle fallback: half-width = sqrt(r² - dM²)
-        float rr = ellipse.radiusPx * ellipse.radiusPx;
-        float disc0 = rr - dM0 * dM0;
-        float disc1 = rr - dM1 * dM1;
-        if (disc0 > 0) { float h = sqrt(disc0); minPx = min(minPx, centerMinor - h); maxPx = max(maxPx, centerMinor + h); }
-        if (disc1 > 0) { float h = sqrt(disc1); minPx = min(minPx, centerMinor - h); maxPx = max(maxPx, centerMinor + h); }
-        if (dM0 <= 0 && dM1 >= 0) { minPx = min(minPx, centerMinor - ellipse.radiusPx); maxPx = max(maxPx, centerMinor + ellipse.radiusPx); }
+        float dMCrit = B / sqrt(detC);
+        if (dMCrit > dM0 && dMCrit < dM1)
+            accumulate_conic_cross_section(A, B, det, invA, centerMinor, dMCrit, minPx, maxPx);
+        if (-dMCrit > dM0 && -dMCrit < dM1)
+            accumulate_conic_cross_section(A, B, det, invA, centerMinor, -dMCrit, minPx, maxPx);
     }
 
     if (minPx > maxPx) return false;

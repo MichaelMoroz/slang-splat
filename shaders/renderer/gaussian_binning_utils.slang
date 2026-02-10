@@ -14,7 +14,7 @@ void emit_splat_bins(SplatBinRequest request)
 
     float tileSize = float(g_tileSize);
     float halfTile = 0.5 * tileSize;
-    try_prepare_conic_for_binning(ellipse, halfTile);
+    if (!try_prepare_conic_for_binning(ellipse, halfTile)) return;
     float2 boundsExtent = ellipse.bboxExtent + halfTile;
     int minX = int(floor((ellipse.centerPx.x - boundsExtent.x) / tileSize));
     int maxX = int(ceil((ellipse.centerPx.x + boundsExtent.x) / tileSize));
