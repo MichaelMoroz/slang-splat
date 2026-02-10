@@ -105,10 +105,8 @@ void rasterize_impl(uint3 dispatchThreadID, uint lane)
 
                         float4 conic = g_ScreenEllipseConic[splatId];
                         if (conic.w <= 0.0) continue;
-                        float2 grad = float2(
-                            conic.x * d.x + conic.y * d.y,
-                            conic.y * d.x + conic.z * d.y
-                        );
+                        float2x2 conicMatrix = float2x2(conic.x, conic.y, conic.y, conic.z);
+                        float2 grad = mul(conicMatrix, d);
                         float quad = dot(d, grad);
                         float gradLen = max(length(2.0 * grad), EPS_GRADIENT_LENGTH);
                         float edgeDistance = abs(quad - 1.0) / gradLen;

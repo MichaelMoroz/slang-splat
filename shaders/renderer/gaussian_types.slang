@@ -155,11 +155,7 @@ struct Ellipse
 
     float evalConic(float2 d)
     {
-        float2 grad = float2(
-            conic.x * d.x + conic.y * d.y,
-            conic.y * d.x + conic.z * d.y
-        );
-        return dot(d, grad);
+        return dot(d, mul(float2x2(conic.x, conic.y, conic.y, conic.z), d));
     }
 
     float minConicOverTileBox(float2 boxMin, float2 boxMax)
