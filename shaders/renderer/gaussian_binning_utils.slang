@@ -70,7 +70,7 @@ void emit_splat_bins(SplatBinRequest request)
     }
 
     uint writeCount = min(totalCount, g_maxListEntries - baseIndex);
-    uint depthCode = quantizeDepth(request.camDistance);
+    uint depthCode = request.depthCode;
     uint writeIndex = baseIndex;
     uint written = 0;
     for (int lineCoord = loopCfg.lineStart; lineCoord <= loopCfg.lineEnd && written < writeCount; lineCoord++)

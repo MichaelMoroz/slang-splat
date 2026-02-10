@@ -52,6 +52,25 @@ bool try_prepare_conic_for_binning(inout Ellipse ellipse, float halfTile)
     return true;
 }
 
+ScanlineLoopConfig make_scanline_loop_config(
+    bool scanAlongX,
+    int minX,
+    int maxX,
+    int minY,
+    int maxY
+)
+{
+    ScanlineLoopConfig cfg;
+    cfg.scanAlongX = scanAlongX;
+    cfg.lineStart = cfg.scanAlongX ? minY : minX;
+    cfg.lineEnd = cfg.scanAlongX ? maxY : maxX;
+    cfg.minorMin = cfg.scanAlongX ? minX : minY;
+    cfg.minorMax = cfg.scanAlongX ? maxX : maxY;
+    cfg.minorLimit = cfg.scanAlongX ? g_tileWidth : g_tileHeight;
+    cfg.lineLimit = cfg.scanAlongX ? g_tileHeight : g_tileWidth;
+    return cfg;
+}
+
 ScanlineLoopConfig build_scanline_loop_config(
     Ellipse ellipse,
     int minX,
@@ -60,17 +79,10 @@ ScanlineLoopConfig build_scanline_loop_config(
     int maxY
 )
 {
-    ScanlineLoopConfig cfg;
     uint spanX = uint(maxX - minX + 1);
     uint spanY = uint(maxY - minY + 1);
-    cfg.scanAlongX = ellipse.chooseScanAlongX(spanX, spanY);
-    cfg.lineStart = cfg.scanAlongX ? minY : minX;
-    cfg.lineEnd = cfg.scanAlongX ? maxY : maxX;
-    cfg.minorMin = cfg.scanAlongX ? minX : minY;
-    cfg.minorMax = cfg.scanAlongX ? maxX : maxY;
-    cfg.minorLimit = cfg.scanAlongX ? g_tileWidth : g_tileHeight;
-    cfg.lineLimit = cfg.scanAlongX ? g_tileHeight : g_tileWidth;
-    return cfg;
+    bool scanAlongX = ellipse.chooseScanAlongX(spanX, spanY);
+    return make_scanline_loop_config(scanAlongX, minX, maxX, minY, maxY);
 }
 
 float eval_conic(float3 conic, float x, float y)

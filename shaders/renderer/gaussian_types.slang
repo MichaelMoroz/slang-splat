@@ -4,9 +4,12 @@ static const uint MVEE_POINT_COUNT = 5u;
 static const uint MVEE_MAX_ITERS = 8u;
 
 groupshared float4 gsRoLocal[RASTER_BATCH];
+groupshared float4 gsCenterRadiusDepth[RASTER_BATCH];
+groupshared float4 gsEllipseConic[RASTER_BATCH];
 groupshared half4 gsInvScale[RASTER_BATCH];
 groupshared half4 gsQuat[RASTER_BATCH];
 groupshared half4 gsColorAlpha[RASTER_BATCH];
+groupshared uint gsSplatId[RASTER_BATCH];
 groupshared uint gsStoppedPixels;
 
 uniform StructuredBuffer<float4> g_Positions;
@@ -28,6 +31,7 @@ uniform RWStructuredBuffer<uint2> g_TileRanges;
 
 uniform StructuredBuffer<uint> g_SortedKeys;
 uniform StructuredBuffer<uint> g_SortedValues;
+uniform StructuredBuffer<uint> g_PrepassParams;
 
 uniform RWTexture2D<float4> g_Output;
 
@@ -37,7 +41,7 @@ uniform uint g_tileWidth;
 uniform uint g_tileHeight;
 uniform uint g_tileCount;
 uniform uint g_depthBits;
-uniform uint g_sortedCount;
+uniform uint g_sortedCountOffset;
 uniform uint g_maxListEntries;
 uniform uint g_width;
 uniform uint g_height;
@@ -167,5 +171,6 @@ struct SplatBinRequest
     uint splatId;
     float camDistance;
     float depthValue;
+    uint depthCode;
     Ellipse ellipse;
 };

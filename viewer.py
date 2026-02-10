@@ -379,10 +379,12 @@ class SplatViewer(spy.AppWindow):
         scene_count = self.scene.count if self.scene is not None else 0
         self.scene_stats_text.text = f"Splats: {scene_count:,}"
         if self.stats:
+            delayed_tag = " (delayed)" if bool(self.stats.get("stats_latency_frames", 0)) else ""
+            validity_tag = "" if bool(self.stats.get("stats_valid", True)) else " [warming]"
             self.render_stats_text.text = (
                 f"Generated: {int(self.stats['generated_entries']):,} | "
                 f"Written: {int(self.stats['written_entries']):,} | "
-                f"Overflow: {bool(self.stats['overflow'])}"
+                f"Overflow: {bool(self.stats['overflow'])}{delayed_tag}{validity_tag}"
             )
         else:
             self.render_stats_text.text = "Generated: 0 | Written: 0"

@@ -19,6 +19,8 @@ class RenderOutput:
 
 
 class GaussianRenderer:
+    _COUNTER_READBACK_RING_SIZE = 2
+
     def __init__(
         self,
         device: spy.Device,
@@ -84,6 +86,14 @@ class GaussianRenderer:
         self._work_buffers: dict[str, spy.Buffer] = {}
         self._output_texture: spy.Texture | None = None
         self._last_stats: dict[str, int | bool | float] = {}
+        self._counter_readback_ring: list[spy.Buffer] = []
+        self._counter_readback_capacity: list[int] = []
+        self._counter_readback_frame_id = 0
+        self._pending_min_list_entries = 0
+        self._delayed_generated_entries = 0
+        self._delayed_written_entries = 0
+        self._delayed_overflow = False
+        self._delayed_stats_valid = False
 
     def _create_shaders(self) -> None:
         load_program = self.device.load_program
@@ -93,7 +103,7 @@ class GaussianRenderer:
         self._k_clear_ranges = self.device.create_compute_kernel(
             load_program(str(self._shader_path), ["csClearTileRanges"])
         )
-        self._k_build_ranges = self.device.create_compute_kernel(
+        self._p_build_ranges = self.device.create_compute_pipeline(
             load_program(str(self._shader_path), ["csBuildTileRanges"])
         )
         self._k_raster = self.device.create_compute_kernel(
@@ -134,9 +144,9 @@ class GaussianRenderer:
         self._scene_capacity = new_capacity
         self._scene_count = splat_count
 
-    def _ensure_work_buffers(self, splat_count: int) -> None:
+    def _ensure_work_buffers(self, splat_count: int, min_list_entries: int = 0) -> None:
         required_splat_capacity = max(splat_count, 1)
-        required_list_entries = max(splat_count * self.list_capacity_multiplier, 1)
+        required_list_entries = max(splat_count * self.list_capacity_multiplier, min_list_entries, 1)
         if (
             self._work_buffers
             and required_splat_capacity <= self._work_splat_capacity
@@ -172,6 +182,8 @@ class GaussianRenderer:
             )
         self._work_splat_capacity = splat_capacity
         self._max_list_entries = max_list_entries
+        if self._pending_min_list_entries > 0 and self._max_list_entries >= self._pending_min_list_entries:
+            self._pending_min_list_entries = 0
 
     def _pack_scene(self, scene: GaussianScene) -> dict[str, np.ndarray]:
         splat_count = scene.count
@@ -208,6 +220,35 @@ class GaussianRenderer:
 
     def _read_counter(self) -> int:
         return int(self._read_u32(self._work_buffers["counter"], 1)[0])
+
+    def _ensure_counter_readback_ring(self) -> None:
+        if self._counter_readback_ring:
+            return
+        usage = spy.BufferUsage.copy_destination | spy.BufferUsage.copy_source
+        self._counter_readback_ring = [self.device.create_buffer(size=4, usage=usage) for _ in range(self._COUNTER_READBACK_RING_SIZE)]
+        self._counter_readback_capacity = [0 for _ in range(self._COUNTER_READBACK_RING_SIZE)]
+
+    def _enqueue_counter_readback(self, encoder: spy.CommandEncoder) -> None:
+        self._ensure_counter_readback_ring()
+        slot = self._counter_readback_frame_id % self._COUNTER_READBACK_RING_SIZE
+        encoder.copy_buffer(self._counter_readback_ring[slot], 0, self._work_buffers["counter"], 0, 4)
+        self._counter_readback_capacity[slot] = int(self._max_list_entries)
+
+    def _update_delayed_counter_stats(self) -> None:
+        if self._counter_readback_frame_id <= 1:
+            self._delayed_stats_valid = False
+            return
+        slot = (self._counter_readback_frame_id - 2) % self._COUNTER_READBACK_RING_SIZE
+        generated = int(self._read_u32(self._counter_readback_ring[slot], 1)[0])
+        capacity = int(self._counter_readback_capacity[slot])
+        written = min(generated, capacity)
+        overflow = generated > capacity
+        self._delayed_generated_entries = generated
+        self._delayed_written_entries = written
+        self._delayed_overflow = overflow
+        self._delayed_stats_valid = True
+        if overflow:
+            self._pending_min_list_entries = max(self._pending_min_list_entries, generated)
 
     def _project_and_bin(self, encoder: spy.CommandEncoder, scene: GaussianScene, camera: Camera) -> None:
         vars = {
@@ -257,19 +298,18 @@ class GaussianRenderer:
             command_encoder=encoder,
         )
 
-    def _build_tile_ranges(self, encoder: spy.CommandEncoder, sorted_count: int) -> None:
-        if sorted_count <= 0:
-            return
-        self._k_build_ranges.dispatch(
-            thread_count=spy.uint3(sorted_count, 1, 1),
-            vars={
-                "g_SortedKeys": self._work_buffers["keys"],
-                "g_TileRanges": self._work_buffers["tile_ranges"],
-                "g_sortedCount": sorted_count,
-                "g_depthBits": self.depth_bits,
-            },
-            command_encoder=encoder,
-        )
+    def _build_tile_ranges_indirect(self, encoder: spy.CommandEncoder, args_buffer: spy.Buffer) -> None:
+        with encoder.begin_compute_pass() as compute_pass:
+            cursor = spy.ShaderCursor(compute_pass.bind_pipeline(self._p_build_ranges))
+            cursor.g_SortedKeys = self._work_buffers["keys"]
+            cursor.g_TileRanges = self._work_buffers["tile_ranges"]
+            cursor.g_PrepassParams = args_buffer
+            cursor.g_sortedCountOffset = 18
+            cursor.g_depthBits = self.depth_bits
+            cursor.g_tileCount = self.tile_count
+            compute_pass.dispatch_compute_indirect(
+                spy.BufferOffsetPair(args_buffer, GPURadixSort.BUILD_RANGE_ARGS_OFFSET * 4)
+            )
 
     def _rasterize(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray) -> None:
         self._k_raster.dispatch(
@@ -284,6 +324,7 @@ class GaussianRenderer:
                 "g_SortedValues": self._work_buffers["values"],
                 "g_TileRanges": self._work_buffers["tile_ranges"],
                 "g_Output": self._output_texture,
+                "g_splatCount": self._scene_count,
                 "g_tileSize": self.tile_size,
                 "g_tileWidth": self.tile_width,
                 "g_width": self.width,
@@ -303,29 +344,32 @@ class GaussianRenderer:
             command_encoder=encoder,
         )
 
-    def _execute_prepass(self, scene: GaussianScene, camera: Camera) -> tuple[int, int]:
+    def _execute_prepass(self, scene: GaussianScene, camera: Camera, sync_counts: bool = False) -> tuple[int, int]:
         self._reset_counter()
-        enc_project = self.device.create_command_encoder()
-        self._project_and_bin(enc_project, scene, camera)
-        self.device.submit_command_buffer(enc_project.finish())
-        self.device.wait()
+        enc_prepass = self.device.create_command_encoder()
+        self._project_and_bin(enc_prepass, scene, camera)
+        self._enqueue_counter_readback(enc_prepass)
+        self._clear_tile_ranges(enc_prepass)
+        args_buffer = self._sorter.sort_key_values_from_count_buffer(
+            encoder=enc_prepass,
+            keys_buffer=self._work_buffers["keys"],
+            values_buffer=self._work_buffers["values"],
+            count_buffer=self._work_buffers["counter"],
+            count_offset=0,
+            max_count=self._max_list_entries,
+            max_bits=self.sort_bits,
+        )
+        self._build_tile_ranges_indirect(enc_prepass, args_buffer)
+        self.device.submit_command_buffer(enc_prepass.finish())
 
-        generated_entries = self._read_counter()
-        sorted_count = min(generated_entries, self._max_list_entries)
-
-        enc_sort = self.device.create_command_encoder()
-        self._clear_tile_ranges(enc_sort)
-        if sorted_count > 0:
-            self._sorter.sort_key_values(
-                enc_sort,
-                self._work_buffers["keys"],
-                self._work_buffers["values"],
-                sorted_count,
-                max_bits=self.sort_bits,
-            )
-            self._build_tile_ranges(enc_sort, sorted_count)
-        self.device.submit_command_buffer(enc_sort.finish())
-        self.device.wait()
+        if sync_counts:
+            self.device.wait()
+            generated_entries = self._read_counter()
+            sorted_count = min(generated_entries, self._max_list_entries)
+        else:
+            generated_entries = self._delayed_generated_entries if self._delayed_stats_valid else 0
+            sorted_count = self._delayed_written_entries if self._delayed_stats_valid else 0
+        self._counter_readback_frame_id += 1
         return generated_entries, sorted_count
 
     def _read_image(self) -> np.ndarray:
@@ -349,19 +393,23 @@ class GaussianRenderer:
         scene = self._current_scene
         if scene.count <= 0:
             raise RuntimeError("Cannot render empty scene.")
+        self._ensure_work_buffers(scene.count, self._pending_min_list_entries)
         background_np = np.asarray(background, dtype=np.float32).reshape(3)
-        generated_entries, sorted_count = self._execute_prepass(scene, camera)
+        self._execute_prepass(scene, camera, sync_counts=False)
         enc_raster = self.device.create_command_encoder()
         self._rasterize(enc_raster, camera, background_np)
         self.device.submit_command_buffer(enc_raster.finish())
         self.device.wait()
+        self._update_delayed_counter_stats()
         self._last_stats = {
-            "generated_entries": int(generated_entries),
-            "written_entries": int(sorted_count),
-            "overflow": bool(generated_entries > sorted_count),
+            "generated_entries": int(self._delayed_generated_entries) if self._delayed_stats_valid else 0,
+            "written_entries": int(self._delayed_written_entries) if self._delayed_stats_valid else 0,
+            "overflow": bool(self._delayed_overflow) if self._delayed_stats_valid else False,
             "depth_bits": int(self.depth_bits),
             "tile_count": int(self.tile_count),
             "splat_count": int(scene.count),
+            "stats_valid": bool(self._delayed_stats_valid),
+            "stats_latency_frames": 1,
         }
         if self._output_texture is None:
             raise RuntimeError("Output texture is not initialized.")
@@ -380,7 +428,14 @@ class GaussianRenderer:
         if scene.count <= 0:
             return RenderOutput(
                 image=np.zeros((self.height, self.width, 4), dtype=np.float32),
-                stats={"generated_entries": 0, "written_entries": 0, "overflow": False, "depth_bits": self.depth_bits},
+                stats={
+                    "generated_entries": 0,
+                    "written_entries": 0,
+                    "overflow": False,
+                    "depth_bits": self.depth_bits,
+                    "stats_valid": True,
+                    "stats_latency_frames": 1,
+                },
             )
 
         background_np = np.asarray(background, dtype=np.float32).reshape(3)
@@ -395,7 +450,7 @@ class GaussianRenderer:
         self._ensure_scene_buffers(scene.count)
         self._ensure_work_buffers(scene.count)
         self._upload_scene(scene)
-        generated_entries, sorted_count = self._execute_prepass(scene, camera)
+        generated_entries, sorted_count = self._execute_prepass(scene, camera, sync_counts=True)
         return {
             "generated_entries": generated_entries,
             "sorted_count": sorted_count,

@@ -13,9 +13,14 @@ HISTOGRAM_SIZE = 256
 PACKED_HIST_SIZE = 64
 BLOCK_SIZE = 256
 BITS_PER_PASS = 8
+MAX_PREFIX_LEVELS = 4
+BUILD_RANGE_ARGS_OFFSET = 22
+INDIRECT_ARGS_UINT_COUNT = 25
 
 
 class GPURadixSort:
+    BUILD_RANGE_ARGS_OFFSET = BUILD_RANGE_ARGS_OFFSET
+
     def __init__(self, device: spy.Device):
         self.device = device
         load = device.load_program
@@ -90,11 +95,16 @@ class GPURadixSort:
                 | spy.BufferUsage.unordered_access
                 | spy.BufferUsage.indirect_argument
             )
-            self.indirect_args = self.device.create_buffer(size=22 * 4, usage=usage)
+            self.indirect_args = self.device.create_buffer(size=INDIRECT_ARGS_UINT_COUNT * 4, usage=usage)
         return self.indirect_args
 
     def compute_indirect_args_from_buffer_dispatch(
-        self, encoder: spy.CommandEncoder, count_buffer: spy.Buffer, count_offset: int, args_buffer: spy.Buffer
+        self,
+        encoder: spy.CommandEncoder,
+        count_buffer: spy.Buffer,
+        count_offset: int,
+        max_element_count: int,
+        args_buffer: spy.Buffer,
     ) -> None:
         encoder.push_debug_group("Compute Indirect Args", debug_color(0))
         self.compute_args_from_buffer.dispatch(
@@ -102,6 +112,7 @@ class GPURadixSort:
             vars={
                 "g_ElementCountBuffer": count_buffer,
                 "g_elementCountOffset": count_offset,
+                "g_maxElementCount": int(max_element_count),
                 "g_IndirectArgs": args_buffer,
             },
             command_encoder=encoder,
@@ -123,13 +134,52 @@ class GPURadixSort:
         args_buffer = self.ensure_indirect_args()
         self.compute_args.dispatch(
             thread_count=spy.uint3(1, 1, 1),
-            vars={"g_elementCount": n, "g_IndirectArgs": args_buffer},
+            vars={
+                "g_elementCount": n,
+                "g_maxElementCount": n,
+                "g_IndirectArgs": args_buffer,
+            },
             command_encoder=encoder,
         )
         self.sort_key_values_indirect(
             encoder, keys_buffer, values_buffer, n, args_buffer, working_buffers, max_bits=max_bits
         )
         encoder.pop_debug_group()
+
+    def sort_key_values_from_count_buffer(
+        self,
+        encoder: spy.CommandEncoder,
+        keys_buffer: spy.Buffer,
+        values_buffer: spy.Buffer,
+        count_buffer: spy.Buffer,
+        count_offset: int,
+        max_count: int,
+        max_bits: int = 32,
+    ) -> spy.Buffer:
+        if max_count <= 0:
+            raise ValueError("max_count must be positive")
+        encoder.push_debug_group("Radix Sort (Count Buffer)", debug_color(11))
+        working_buffers = self.ensure_buffers(max_count)
+        args_buffer = self.ensure_indirect_args()
+        self.compute_indirect_args_from_buffer_dispatch(
+            encoder=encoder,
+            count_buffer=count_buffer,
+            count_offset=count_offset,
+            max_element_count=max_count,
+            args_buffer=args_buffer,
+        )
+        self.sort_key_values_indirect(
+            encoder=encoder,
+            keys_buffer=keys_buffer,
+            values_buffer=values_buffer,
+            n=max_count,
+            args_buffer=args_buffer,
+            working_buffers=working_buffers,
+            max_bits=max_bits,
+            use_params_buffer=True,
+        )
+        encoder.pop_debug_group()
+        return args_buffer
 
     def sort_key_values_indirect(
         self,
@@ -157,8 +207,8 @@ class GPURadixSort:
             if use_params_buffer:
                 cursor.g_useParamsBuffer = 1
                 cursor.g_ParamsBuffer = args_buffer
-                cursor.g_elementCount = n
-                cursor.g_numGroups = num_groups
+                cursor.g_elementCount = 0
+                cursor.g_numGroups = 0
             else:
                 cursor.g_useParamsBuffer = 0
                 cursor.g_elementCount = n
@@ -178,24 +228,12 @@ class GPURadixSort:
                 cursor.g_Histogram = working_buffers["histogram"]
                 compute_pass.dispatch_compute_indirect(indirect(0))
                 compute_pass.pop_debug_group()
-            for level in range(num_levels):
-                current_size = self.level_size(total_n, level)
-                prev_offset = self.level_offset(total_n, level - 1) if level > 0 else 0
-                current_offset = self.level_offset(total_n, level) if level > 0 else 0
-                prev_packed = 1 if level == 1 else 0
-                prev_level_size = self.level_size(total_n, level - 1) if level > 1 else total_n
+            for level in range(MAX_PREFIX_LEVELS):
                 with encoder.begin_compute_pass() as compute_pass:
                     compute_pass.push_debug_group(f"Prefix Level {level}", debug_color(3 + level))
                     cursor = spy.ShaderCursor(compute_pass.bind_pipeline(self.prefix_block))
                     set_common(cursor, shift)
-                    cursor.g_totalN = total_n
-                    cursor.g_levelSize = current_size if level > 0 else total_n
-                    cursor.g_levelOffset = current_offset
-                    cursor.g_prevLevelOffset = prev_offset
-                    cursor.g_prevLevelSize = prev_level_size
-                    cursor.g_isFirstLevel = 1 if level == 0 else 0
-                    cursor.g_packedHistN = int(layout["packed_hist_n"])
-                    cursor.g_prevLevelPacked = prev_packed
+                    cursor.g_level = level
                     cursor.g_Histogram = working_buffers["histogram"]
                     cursor.g_Prefix = working_buffers["prefix"]
                     compute_pass.dispatch_compute_indirect(indirect(3 + level * 3))
@@ -204,8 +242,8 @@ class GPURadixSort:
                 compute_pass.push_debug_group("Scatter", debug_color(8))
                 cursor = spy.ShaderCursor(compute_pass.bind_pipeline(self.scatter))
                 set_common(cursor, shift)
-                cursor.g_totalN = total_n
-                cursor.g_numLevels = num_levels
+                cursor.g_totalN = 0 if use_params_buffer else total_n
+                cursor.g_numLevels = 0 if use_params_buffer else num_levels
                 cursor.g_KeysIn = keys_in
                 cursor.g_ValuesIn = values_in
                 cursor.g_Prefix = working_buffers["prefix"]

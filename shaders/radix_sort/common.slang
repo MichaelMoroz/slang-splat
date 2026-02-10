@@ -10,6 +10,11 @@ uint getNumGroups() { return (g_useParamsBuffer != 0) ? g_ParamsBuffer[19] : g_n
 uint getTotalN() { return (g_useParamsBuffer != 0) ? g_ParamsBuffer[20] : g_numGroups * HISTOGRAM_SIZE; }
 uint getNumLevels() { return (g_useParamsBuffer != 0) ? g_ParamsBuffer[21] : 0; }
 
+uint ceil_div(uint a, uint b) { return (a + b - 1u) / b; }
+uint ceil_div2(uint a) { return (a + 1u) >> 1u; }
+uint ceil_div_group(uint a) { return (a + GROUP_SIZE - 1u) >> 7u; }
+uint ceil_div_block(uint a) { return (a + BLOCK_SIZE - 1u) >> 8u; }
+
 // Pack/unpack 4x8-bit histogram counters
 uint packCount(uint digit, uint count) { return count << ((digit & 3) * 8); }
 uint unpackCount(uint packed, uint digit) { return (packed >> ((digit & 3) * 8)) & 0xFF; }

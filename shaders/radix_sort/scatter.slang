@@ -15,6 +15,18 @@ uniform RWStructuredBuffer<uint> g_ValuesOut;
 groupshared uint tempBits[GROUP_SIZE];
 groupshared uint halfCount[HISTOGRAM_SIZE];
 
+uint derive_num_levels(uint totalN)
+{
+    uint numLevels = 0;
+    uint levelSize = totalN;
+    for (uint i = 0u; i < 4u && levelSize > 1u; ++i)
+    {
+        numLevels += 1u;
+        levelSize = ceil_div_block(levelSize);
+    }
+    return max(numLevels + 1u, 1u);
+}
+
 // Get global offset for (digit, group) using hierarchical lookup
 // Level 0: packed 2x16-bit, higher levels: unpacked 32-bit
 uint getGlobalOffset(uint digit, uint group, uint numGroups, uint totalN, uint numLevels) {
@@ -26,8 +38,8 @@ uint getGlobalOffset(uint digit, uint group, uint numGroups, uint totalN, uint n
             if (lvl == 0) offset += unpackPrefix16(g_Prefix[lvlOff + prev / 2], prev & 1);
             else offset += g_Prefix[lvlOff + prev];
         }
-        lvlOff += (lvl == 0) ? ((lvlSz + 1) / 2) : lvlSz;  // L0 packed, others unpacked
-        lvlSz = (lvlSz + BLOCK_SIZE - 1) / BLOCK_SIZE;
+        lvlOff += (lvl == 0u) ? ceil_div2(lvlSz) : lvlSz;
+        lvlSz = ceil_div_block(lvlSz);
         idx /= BLOCK_SIZE;
     }
     return offset;
@@ -40,6 +52,7 @@ void csScatter(uint3 groupID : SV_GroupID, uint3 localID : SV_GroupThreadID) {
     uint elementCount = getElementCount(), numGroups = getNumGroups(), totalN = getTotalN(), numLevels = getNumLevels();
     if (g_numLevels != 0) numLevels = g_numLevels;  // Prefer uniform if set
     if (g_totalN != 0) totalN = g_totalN;
+    if (numLevels == 0u) numLevels = derive_num_levels(totalN);
     [unroll] for (uint idx = lane; idx < HISTOGRAM_SIZE; idx += GROUP_SIZE) halfCount[idx] = 0;
     
     uint globalIndex = group * GROUP_SIZE + lane;

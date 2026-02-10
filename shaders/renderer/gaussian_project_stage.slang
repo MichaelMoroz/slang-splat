@@ -82,6 +82,7 @@ void project_and_bin_impl(uint3 dispatchThreadID)
     binRequest.splatId = splatId;
     binRequest.camDistance = camDistance;
     binRequest.depthValue = depthValue;
+    binRequest.depthCode = quantizeDepth(camDistance);
     binRequest.ellipse.init(fitCenter, fitRadius, fitConic);
     emit_splat_bins(binRequest);
 }
@@ -99,20 +100,41 @@ void clear_tile_ranges_impl(uint3 dispatchThreadID)
 void build_tile_ranges_impl(uint3 dispatchThreadID)
 {
     uint idx = dispatchThreadID.x;
-    if (idx >= g_sortedCount)
+    uint sortedCount = g_PrepassParams[g_sortedCountOffset];
+    if (idx >= sortedCount)
     {
         return;
     }
 
     uint tile = g_SortedKeys[idx] >> g_depthBits;
-    uint prevTile = (idx > 0) ? (g_SortedKeys[idx - 1] >> g_depthBits) : INVALID_START;
-    uint nextTile = (idx + 1 < g_sortedCount) ? (g_SortedKeys[idx + 1] >> g_depthBits) : INVALID_START;
+    if (tile >= g_tileCount)
+    {
+        return;
+    }
+    uint prevTile = INVALID_START;
+    if (idx > 0)
+    {
+        prevTile = g_SortedKeys[idx - 1] >> g_depthBits;
+        if (prevTile >= g_tileCount)
+        {
+            prevTile = INVALID_START;
+        }
+    }
+    uint nextTile = INVALID_START;
+    if (idx + 1 < sortedCount)
+    {
+        nextTile = g_SortedKeys[idx + 1] >> g_depthBits;
+        if (nextTile >= g_tileCount)
+        {
+            nextTile = INVALID_START;
+        }
+    }
 
     if (idx == 0 || tile != prevTile)
     {
         g_TileRanges[tile].x = idx;
     }
-    if (idx + 1 == g_sortedCount || tile != nextTile)
+    if (idx + 1 == sortedCount || tile != nextTile)
     {
         g_TileRanges[tile].y = idx + 1;
     }

@@ -202,3 +202,17 @@ def test_debug_processed_count_render_smoke(device):
     out = renderer.render(scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32))
     assert out.image.shape == (64, 64, 4)
     assert np.all(np.isfinite(out.image))
+
+
+def test_render_stats_are_one_frame_delayed(device):
+    scene = make_scene(16, seed=41)
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    renderer = GaussianRenderer(device, width=64, height=64, tile_size=16, radius_scale=1.6, list_capacity_multiplier=32)
+    renderer.set_scene(scene)
+    _, stats0 = renderer.render_to_texture(camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32))
+    assert stats0["stats_valid"] is False
+    assert int(stats0["stats_latency_frames"]) == 1
+    _, stats1 = renderer.render_to_texture(camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32))
+    assert stats1["stats_valid"] is True
+    assert int(stats1["generated_entries"]) >= 0
+    assert int(stats1["written_entries"]) >= 0
