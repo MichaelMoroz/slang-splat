@@ -73,91 +73,18 @@ ScanlineLoopConfig build_scanline_loop_config(
     return make_scanline_loop_config(scanAlongX, minX, maxX, minY, maxY);
 }
 
-bool scanline_tile_hits_ellipse(
-    Ellipse ellipse,
-    ScanlineLoopConfig cfg,
-    float tileSize,
-    uint lineCoord,
-    uint minorCoord
+void accumulate_conic_cross_section(
+    float conicA, float conicB, float det, float invA,
+    float centerMinor, float dM,
+    inout float minPx, inout float maxPx
 )
 {
-    float2 tileCoord = cfg.scanAlongX ? float2(float(minorCoord), float(lineCoord)) : float2(float(lineCoord), float(minorCoord));
-    float2 tileMin = tileCoord * tileSize;
-    float2 boxMin = tileMin - ellipse.centerPx;
-    float2 boxMax = (tileMin + tileSize) - ellipse.centerPx;
-    return ellipse.intersectsTileBox(boxMin, boxMax);
-}
-
-bool scanline_try_hit_minor(
-    Ellipse ellipse,
-    ScanlineLoopConfig cfg,
-    float tileSize,
-    uint lineCoord,
-    int minor
-)
-{
-    if (minor < 0) return false;
-    uint minorU = uint(minor);
-    if (!cfg.isMinorCoordValid(minorU)) return false;
-    return scanline_tile_hits_ellipse(ellipse, cfg, tileSize, lineCoord, minorU);
-}
-
-int scanline_find_first_hit_binary(
-    Ellipse ellipse,
-    ScanlineLoopConfig cfg,
-    float tileSize,
-    uint lineCoord,
-    int lowFalse,
-    int highTrue
-)
-{
-    while (highTrue - lowFalse > 1)
-    {
-        int mid = lowFalse + ((highTrue - lowFalse) >> 1);
-        if (scanline_try_hit_minor(ellipse, cfg, tileSize, lineCoord, mid)) highTrue = mid; else lowFalse = mid;
-    }
-    return highTrue;
-}
-
-int scanline_find_last_hit_binary(
-    Ellipse ellipse,
-    ScanlineLoopConfig cfg,
-    float tileSize,
-    uint lineCoord,
-    int lowTrue,
-    int highFalse
-)
-{
-    while (highFalse - lowTrue > 1)
-    {
-        int mid = lowTrue + ((highFalse - lowTrue) >> 1);
-        if (scanline_try_hit_minor(ellipse, cfg, tileSize, lineCoord, mid)) lowTrue = mid; else highFalse = mid;
-    }
-    return lowTrue;
-}
-
-bool scanline_compute_span_linear_fallback(
-    Ellipse ellipse,
-    ScanlineLoopConfig cfg,
-    float tileSize,
-    uint lineCoord,
-    out ScanlineSpan span
-)
-{
-    span.lineStartMinor = 0;
-    span.lineCount = 0;
-    int first = -1;
-    int last = -1;
-    for (int minor = cfg.minorMin; minor <= cfg.minorMax; minor++)
-    {
-        if (!scanline_try_hit_minor(ellipse, cfg, tileSize, lineCoord, minor)) continue;
-        if (first < 0) first = minor;
-        last = minor;
-    }
-    if (first < 0 || last < first) return false;
-    span.lineStartMinor = uint(first);
-    span.lineCount = uint(last - first + 1);
-    return true;
+    float disc = conicA - det * dM * dM;
+    if (disc <= 0) return;
+    float half = sqrt(disc) * invA;
+    float shift = -conicB * dM * invA;
+    minPx = min(minPx, centerMinor + shift - half);
+    maxPx = max(maxPx, centerMinor + shift + half);
 }
 
 bool compute_scanline_tile_span_universal(
@@ -170,68 +97,55 @@ bool compute_scanline_tile_span_universal(
 {
     span.lineStartMinor = 0;
     span.lineCount = 0;
-    if (!cfg.isLineCoordValid(lineCoord)) return false;
-    if (cfg.minorMin > cfg.minorMax) return false;
+    if (!cfg.isLineCoordValid(lineCoord) || cfg.minorMin > cfg.minorMax) return false;
 
-    int minorMin = cfg.minorMin;
-    int minorMax = cfg.minorMax;
-    bool leftHit = scanline_try_hit_minor(ellipse, cfg, tileSize, lineCoord, minorMin);
-    bool rightHit = scanline_try_hit_minor(ellipse, cfg, tileSize, lineCoord, minorMax);
+    float centerMinor = cfg.scanAlongX ? ellipse.centerPx.x : ellipse.centerPx.y;
+    float centerMajor = cfg.scanAlongX ? ellipse.centerPx.y : ellipse.centerPx.x;
+    float dM0 = float(lineCoord) * tileSize - centerMajor;
+    float dM1 = dM0 + tileSize;
 
-    if (leftHit && rightHit)
+    // Analytically compute the minor-axis pixel range of the ellipse over the major-axis band
+    float minPx = 1e30;
+    float maxPx = -1e30;
+
+    if (ellipse.useConic != 0u)
     {
-        span.lineStartMinor = uint(minorMin);
-        span.lineCount = uint(minorMax - minorMin + 1);
-        return true;
+        // Conic: A*dx² + 2B*dx*dy + C*dy² = 1, solve quadratic at each band edge
+        float A = cfg.scanAlongX ? ellipse.conic.x : ellipse.conic.z;
+        float B = ellipse.conic.y;
+        float C = cfg.scanAlongX ? ellipse.conic.z : ellipse.conic.x;
+        float det = A * C - B * B;
+        float invA = 1.0 / A;
+
+        accumulate_conic_cross_section(A, B, det, invA, centerMinor, dM0, minPx, maxPx);
+        accumulate_conic_cross_section(A, B, det, invA, centerMinor, dM1, minPx, maxPx);
+
+        // Extremal dM where the boundary reaches bboxExtent: ±B/sqrt(det*C)
+        float detC = det * C;
+        if (detC > 0)
+        {
+            float dMCrit = B / sqrt(detC);
+            if (dMCrit > dM0 && dMCrit < dM1)
+                accumulate_conic_cross_section(A, B, det, invA, centerMinor, dMCrit, minPx, maxPx);
+            if (-dMCrit > dM0 && -dMCrit < dM1)
+                accumulate_conic_cross_section(A, B, det, invA, centerMinor, -dMCrit, minPx, maxPx);
+        }
+    } else {
+        // Circle fallback: half-width = sqrt(r² - dM²)
+        float rr = ellipse.radiusPx * ellipse.radiusPx;
+        float disc0 = rr - dM0 * dM0;
+        float disc1 = rr - dM1 * dM1;
+        if (disc0 > 0) { float h = sqrt(disc0); minPx = min(minPx, centerMinor - h); maxPx = max(maxPx, centerMinor + h); }
+        if (disc1 > 0) { float h = sqrt(disc1); minPx = min(minPx, centerMinor - h); maxPx = max(maxPx, centerMinor + h); }
+        if (dM0 <= 0 && dM1 >= 0) { minPx = min(minPx, centerMinor - ellipse.radiusPx); maxPx = max(maxPx, centerMinor + ellipse.radiusPx); }
     }
 
-    if (leftHit && !rightHit)
-    {
-        int last = scanline_find_last_hit_binary(ellipse, cfg, tileSize, lineCoord, minorMin, minorMax);
-        span.lineStartMinor = uint(minorMin);
-        span.lineCount = uint(last - minorMin + 1);
-        return true;
-    }
+    if (minPx > maxPx) return false;
 
-    if (!leftHit && rightHit)
-    {
-        int first = scanline_find_first_hit_binary(ellipse, cfg, tileSize, lineCoord, minorMin, minorMax);
-        span.lineStartMinor = uint(first);
-        span.lineCount = uint(minorMax - first + 1);
-        return true;
-    }
-
-    float centerPxMinor = cfg.scanAlongX ? ellipse.centerPx.x : ellipse.centerPx.y;
-    int centerMinor = clamp(int(floor(centerPxMinor / tileSize)), minorMin, minorMax);
-    if (scanline_try_hit_minor(ellipse, cfg, tileSize, lineCoord, centerMinor))
-    {
-        int first = scanline_find_first_hit_binary(ellipse, cfg, tileSize, lineCoord, minorMin, centerMinor);
-        int last = scanline_find_last_hit_binary(ellipse, cfg, tileSize, lineCoord, centerMinor, minorMax);
-        span.lineStartMinor = uint(first);
-        span.lineCount = uint(last - first + 1);
-        return true;
-    }
-
-    int hitMinor = -1;
-    int step = 1;
-    int spanSize = minorMax - minorMin + 1;
-    while (step < spanSize)
-    {
-        int leftProbe = centerMinor - step;
-        if (leftProbe >= minorMin && scanline_try_hit_minor(ellipse, cfg, tileSize, lineCoord, leftProbe)) { hitMinor = leftProbe; break; }
-        int rightProbe = centerMinor + step;
-        if (rightProbe <= minorMax && scanline_try_hit_minor(ellipse, cfg, tileSize, lineCoord, rightProbe)) { hitMinor = rightProbe; break; }
-        step <<= 1;
-    }
-
-    if (hitMinor >= 0)
-    {
-        int first = scanline_find_first_hit_binary(ellipse, cfg, tileSize, lineCoord, minorMin, hitMinor);
-        int last = scanline_find_last_hit_binary(ellipse, cfg, tileSize, lineCoord, hitMinor, minorMax);
-        span.lineStartMinor = uint(first);
-        span.lineCount = uint(last - first + 1);
-        return true;
-    }
-
-    return scanline_compute_span_linear_fallback(ellipse, cfg, tileSize, lineCoord, span);
+    int first = max(int(floor(minPx / tileSize)), cfg.minorMin);
+    int last = min(int(floor(maxPx / tileSize)), cfg.minorMax);
+    if (first > last) return false;
+    span.lineStartMinor = uint(first);
+    span.lineCount = uint(last - first + 1);
+    return true;
 }
