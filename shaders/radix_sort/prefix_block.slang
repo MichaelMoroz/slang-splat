@@ -36,7 +36,7 @@ struct PrefixLevelState
         {
             uint digit = i / numGroups;
             uint group = i % numGroups;
-            return unpackCount(g_Histogram[(digit >> 2) * numGroups + group], digit);
+            return unpackCount(g_Histogram[(digit >> RADIX_PACK_LANE_BITS) * numGroups + group], digit);
         }
         uint prevLevel = level - 1u;
         uint prevLevelSize = level_size(prevLevel);

@@ -99,27 +99,20 @@ bool fit_mvee_5pt_fixed_iters(
     float2 center = 0.0;
     [unroll] for (uint i = 0; i < MVEE_POINT_COUNT; i++) center += weights[i] * pointsNorm[i];
 
-    float s00 = 0.0;
-    float s01 = 0.0;
-    float s11 = 0.0;
+    float3 secondMoment = 0.0;
     [unroll] for (uint i = 0; i < MVEE_POINT_COUNT; i++)
     {
         float2 d = pointsNorm[i] - center;
-        s00 += weights[i] * d.x * d.x;
-        s01 += weights[i] * d.x * d.y;
-        s11 += weights[i] * d.y * d.y;
+        secondMoment += weights[i] * float3(d.x * d.x, d.x * d.y, d.y * d.y);
     }
-    s00 += eps;
-    s11 += eps;
+    secondMoment += float3(eps, 0.0, eps);
 
-    float detS = s00 * s11 - s01 * s01;
+    float detS = secondMoment.x * secondMoment.z - secondMoment.y * secondMoment.y;
     if (detS <= eps) return false;
 
-    float a00 = 0.5 * s11 / detS;
-    float a01 = -0.5 * s01 / detS;
-    float a11 = 0.5 * s00 / detS;
-    float trace = a00 + a11;
-    float detA = a00 * a11 - a01 * a01;
+    float3 conicNorm = 0.5 * float3(secondMoment.z, -secondMoment.y, secondMoment.x) / detS;
+    float trace = conicNorm.x + conicNorm.z;
+    float detA = conicNorm.x * conicNorm.z - conicNorm.y * conicNorm.y;
     float disc = sqrt(max(0.25 * trace * trace - detA, 0.0));
     float l0 = max(0.5 * trace + disc, eps);
     float l1 = max(0.5 * trace - disc, eps);
@@ -130,13 +123,13 @@ bool fit_mvee_5pt_fixed_iters(
     [unroll] for (uint i = 0; i < MVEE_POINT_COUNT; i++)
     {
         float2 d = pointsNorm[i] - center;
-        float quad = a00 * d.x * d.x + 2.0 * a01 * d.x * d.y + a11 * d.y * d.y;
+        float quad = dot(float3(d.x * d.x, d.x * d.y, d.y * d.y), float3(conicNorm.x, 2.0 * conicNorm.y, conicNorm.z));
         maxQuad = max(maxQuad, quad);
     }
     float inflate = (maxQuad > 1.0) ? sqrt(maxQuad) : 1.0;
     float invInflate2 = 1.0 / max(inflate * inflate, eps);
     fitOut.centerPx = normCenter + center * normScale;
     fitOut.radiusPx = max(axis0, axis1) * inflate * normScale;
-    fitOut.conic = float3(a00, a01, a11) * (invInflate2 / max(normScale * normScale, eps));
+    fitOut.conic = conicNorm * (invInflate2 / max(normScale * normScale, eps));
     return all(isfinite(fitOut.centerPx)) && isfinite(fitOut.radiusPx) && fitOut.radiusPx > 0.0;
 }

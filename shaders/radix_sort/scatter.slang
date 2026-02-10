@@ -1,6 +1,7 @@
 import "common.slang";
 
 static const uint QUARTER_SIZE = GROUP_SIZE / 4;
+static const uint PACKED_QUARTER_COUNT = 3u;
 
 uniform uint g_totalN;
 uniform uint g_numLevels;
@@ -89,12 +90,10 @@ void csScatter(uint3 groupID : SV_GroupID, uint3 localID : SV_GroupThreadID)
     GroupMemoryBarrierWithGroupSync();
 
     uint quarterIndex = lane / QUARTER_SIZE;
-    if (active && quarterIndex < 3u)
+    if (active && quarterIndex < PACKED_QUARTER_COUNT)
     {
         uint inc = 0u;
-        if (quarterIndex < 1u) inc |= 1u;
-        if (quarterIndex < 2u) inc |= (1u << RADIX_BYTE_SHIFT);
-        if (quarterIndex < 3u) inc |= (1u << RADIX_PREFIX_SHIFT);
+        [unroll] for (uint packedQuarter = quarterIndex; packedQuarter < PACKED_QUARTER_COUNT; ++packedQuarter) inc |= (1u << (packedQuarter * RADIX_BYTE_SHIFT));
         InterlockedAdd(halfCount[bit], inc);
     }
     GroupMemoryBarrierWithGroupSync();
@@ -106,7 +105,7 @@ void csScatter(uint3 groupID : SV_GroupID, uint3 localID : SV_GroupThreadID)
         if (quarterIndex > 0u)
         {
             uint packed = halfCount[bit];
-            uint shiftBytes = (quarterIndex - 1u) * RADIX_BYTE_SHIFT;
+            uint shiftBytes = (min(quarterIndex, PACKED_QUARTER_COUNT) - 1u) * RADIX_BYTE_SHIFT;
             quarterOffset = (packed >> shiftBytes) & RADIX_BYTE_MASK;
         }
         uint begin = quarterIndex * QUARTER_SIZE;
