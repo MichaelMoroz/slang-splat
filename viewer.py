@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import slangpy as spy
 
-from src import create_default_device
+from src import create_default_device, device_type_from_name
 from src.renderer import Camera, GaussianRenderer
 from src.scene import GaussianScene, load_gaussian_ply
 
@@ -431,12 +431,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--height", type=int, default=720)
     parser.add_argument("--frames", type=int, default=0, help="Run a fixed frame count for smoke tests.")
     parser.add_argument("--debug-layers", action="store_true")
+    parser.add_argument("--device", type=str, default="d3d12", choices=("d3d12", "vulkan"), help="GPU backend.")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    device = create_default_device(enable_debug_layers=args.debug_layers)
+    device = create_default_device(
+        device_type=device_type_from_name(args.device),
+        enable_debug_layers=args.debug_layers,
+    )
     app = spy.App(device=device)
     viewer = SplatViewer(
         app,

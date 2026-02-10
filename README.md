@@ -1,7 +1,7 @@
 # Slang Splat
 
 Basic Gaussian splat renderer implemented with Slang compute shaders and Slangpy.
-Runtime target is Direct3D 12 (`d3d12`) only.
+Default runtime target is Direct3D 12 (`d3d12`). Vulkan is also supported via explicit backend selection.
 
 ## Features
 - PLY Gaussian scene loader for standard 3DGS vertex properties.
@@ -31,10 +31,18 @@ If you have a local Slangpy checkout, replace the last command with `python -m p
 ```powershell
 python render.py --ply C:\path\to\scene.ply --output render.png --width 1280 --height 720
 ```
+Vulkan:
+```powershell
+python render.py --device vulkan --ply C:\path\to\scene.ply --output render.png --width 1280 --height 720
+```
 
 ## Realtime Viewer
 ```powershell
 python viewer.py --ply D:\Datasets\3DGS\TEST\flowers.ply
+```
+Vulkan:
+```powershell
+python viewer.py --device vulkan --ply D:\Datasets\3DGS\TEST\flowers.ply
 ```
 
 Viewer controls:
@@ -50,6 +58,11 @@ python viewer.py --ply D:\Datasets\3DGS\TEST\flowers.ply --frames 30
 
 ## Run Tests
 ```powershell
+python -m pytest -q
+```
+Vulkan:
+```powershell
+$env:SLANG_SPLAT_DEVICE = "vulkan"
 python -m pytest -q
 ```
 
