@@ -1,3 +1,5 @@
+IMPORTANT: Slangpy only works with elevated permissions! That includes tests.
+
 # AGENTS Code Style Guide
 * Before proceeding with editing code, provide an extensive edit plan explaning what and why, which algorithms are you going to use, etc.
 * Buffer creation, shader creation, and shader execution + memory readbacks and upload should be in separate methods in python for separation of responsibility. 
@@ -16,6 +18,9 @@
 * Single line conditionals should be in 1 line of code to avoid LOC bloat.
 * Don't leave unused code. 
 * Don't write effective no-op code like copying a value/member into a new variable with a different name just for naming sake.
+* Dont use magic numbers in the code - name them and put them into a common module. With the exception of obvious simple numbers like 0.5, 0.25, 2.0, 4.0, etc.
+* Prefer ` } else { ` over the multiline variant.
+* Anything that reduces the total number of lines of code and or complexity is welcome!
 
 # Documentation
 * In a separate folder `doc/progress` write down what changes were done after plan has been approved and implemented. These should be written as separate `.md` files with current date and time. 
