@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from src.renderer import Camera, GaussianRenderer
+from src.renderer.projection_sampled5_mvee_reference import project_splats_sampled5_mvee
 from src.renderer.reference_cpu import (
     build_tile_key_value_pairs,
     build_tile_ranges,
@@ -109,3 +110,81 @@ def test_tiny_render_matches_cpu_reference(device):
 
     mean_abs_error = float(np.mean(np.abs(gpu_image - cpu_image)))
     assert mean_abs_error < 5e-3
+
+
+def test_sampled5_mvee_projection_matches_cpu_reference(device):
+    scene = make_scene(28, seed=8)
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    renderer = GaussianRenderer(
+        device,
+        width=96,
+        height=96,
+        tile_size=16,
+        radius_scale=1.7,
+        list_capacity_multiplier=32,
+        projection_mode="sampled5_mvee",
+        sampled5_mvee_iters=6,
+        sampled5_safety_scale=1.05,
+        sampled5_radius_pad_px=1.0,
+        sampled5_eps=1e-6,
+    )
+    debug = renderer.debug_pipeline_data(scene, camera)
+    cpu_projected = project_splats_sampled5_mvee(
+        scene=scene,
+        camera=camera,
+        width=renderer.width,
+        height=renderer.height,
+        radius_scale=renderer.radius_scale,
+        max_splat_radius_px=renderer.max_splat_radius_px,
+        mvee_iters=renderer.sampled5_mvee_iters,
+        safety_scale=renderer.sampled5_safety_scale,
+        radius_pad_px=renderer.sampled5_radius_pad_px,
+        mvee_eps=renderer.sampled5_eps,
+        distortion_k1=renderer.proj_distortion_k1,
+        distortion_k2=renderer.proj_distortion_k2,
+    )
+
+    gpu_center = debug["screen_center_radius_depth"][:, :2]
+    cpu_center = cpu_projected.center_radius_depth[:, :2]
+    gpu_radius = debug["screen_center_radius_depth"][:, 2]
+    cpu_radius = cpu_projected.center_radius_depth[:, 2]
+    center_err = np.linalg.norm(gpu_center - cpu_center, axis=1)
+    radius_err = np.abs(gpu_radius - cpu_radius)
+    assert float(np.max(center_err)) < 0.5
+    assert float(np.max(radius_err)) < 0.8
+
+
+def test_sampled5_mvee_render_smoke(device):
+    scene = make_scene(20, seed=13)
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    background = np.array([0.05, 0.1, 0.15], dtype=np.float32)
+    renderer = GaussianRenderer(
+        device,
+        width=64,
+        height=64,
+        tile_size=16,
+        radius_scale=1.6,
+        list_capacity_multiplier=32,
+        projection_mode="sampled5_mvee",
+    )
+    out = renderer.render(scene, camera, background=background)
+    assert out.image.shape == (64, 64, 4)
+    assert np.all(np.isfinite(out.image))
+
+
+def test_debug_ellipse_overlay_render_smoke(device):
+    scene = make_scene(24, seed=31)
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    renderer = GaussianRenderer(
+        device,
+        width=64,
+        height=64,
+        tile_size=16,
+        radius_scale=1.6,
+        list_capacity_multiplier=32,
+        projection_mode="sampled5_mvee",
+        debug_show_ellipses=True,
+    )
+    out = renderer.render(scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32))
+    assert out.image.shape == (64, 64, 4)
+    assert np.all(np.isfinite(out.image))

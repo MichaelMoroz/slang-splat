@@ -11,6 +11,7 @@
 * Dont use `\` to split lines in Python if possible.
 * Do not add obvious/redundant comments. Method names should be self-documenting. Only comments which describe overall algorithmic logic should be present, unless obvious from the code.
 * After a plan has been implemented and approved, commit the changes into the repository with proper description.
+* Prefer usign OOP over pure functional programming in Slang shaders, things like struct methods, interfaces, generics, etc.
 
 # Documentation
 * In a separate folder `doc/progress` write down what changes were done after plan has been approved and implemented. These should be written as separate `.md` files with current date and time. 

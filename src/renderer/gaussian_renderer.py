@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import slangpy as spy
@@ -31,6 +32,16 @@ class GaussianRenderer:
         max_splat_steps: int = 32768,
         transmittance_threshold: float = 0.005,
         list_capacity_multiplier: int = 64,
+        projection_mode: Literal["legacy_axis_extent", "sampled5_mvee"] = "legacy_axis_extent",
+        sampled5_mvee_iters: int = 6,
+        sampled5_safety_scale: float = 1.0,
+        sampled5_radius_pad_px: float = 1.0,
+        sampled5_eps: float = 1e-6,
+        proj_distortion_k1: float = 0.0,
+        proj_distortion_k2: float = 0.0,
+        debug_show_ellipses: bool = False,
+        debug_ellipse_thickness_px: float = 1.0,
+        debug_ellipse_color: tuple[float, float, float] = (1.0, 0.15, 0.1),
     ) -> None:
         self.device = device
         self.width = int(width)
@@ -42,6 +53,18 @@ class GaussianRenderer:
         self.max_splat_steps = int(max_splat_steps)
         self.transmittance_threshold = float(transmittance_threshold)
         self.list_capacity_multiplier = int(list_capacity_multiplier)
+        if projection_mode not in {"legacy_axis_extent", "sampled5_mvee"}:
+            raise ValueError(f"Unsupported projection_mode: {projection_mode}")
+        self.projection_mode = projection_mode
+        self.sampled5_mvee_iters = int(sampled5_mvee_iters)
+        self.sampled5_safety_scale = float(sampled5_safety_scale)
+        self.sampled5_radius_pad_px = float(sampled5_radius_pad_px)
+        self.sampled5_eps = float(sampled5_eps)
+        self.proj_distortion_k1 = float(proj_distortion_k1)
+        self.proj_distortion_k2 = float(proj_distortion_k2)
+        self.debug_show_ellipses = bool(debug_show_ellipses)
+        self.debug_ellipse_thickness_px = float(debug_ellipse_thickness_px)
+        self.debug_ellipse_color = np.asarray(debug_ellipse_color, dtype=np.float32).reshape(3)
 
         self.tile_width = (self.width + self.tile_size - 1) // self.tile_size
         self.tile_height = (self.height + self.tile_size - 1) // self.tile_size
@@ -51,7 +74,7 @@ class GaussianRenderer:
         self.depth_bits = 32 - self.tile_bits
         self.sort_bits = self.tile_bits + self.depth_bits
 
-        self._shader_path = Path(SHADER_ROOT / "renderer" / "gaussian_pipeline.slang")
+        self._shader_path = Path(SHADER_ROOT / "renderer" / "gaussian_project_stage.slang")
         self._create_shaders()
         self._create_sorter()
 
@@ -69,6 +92,9 @@ class GaussianRenderer:
         load_program = self.device.load_program
         self._k_project = self.device.create_compute_kernel(
             load_program(str(self._shader_path), ["csProjectAndBin"])
+        )
+        self._k_project_sampled5 = self.device.create_compute_kernel(
+            load_program(str(self._shader_path), ["csProjectAndBinSampled5MVEE"])
         )
         self._k_clear_ranges = self.device.create_compute_kernel(
             load_program(str(self._shader_path), ["csClearTileRanges"])
@@ -134,6 +160,7 @@ class GaussianRenderer:
                 size=max(splat_capacity, 1) * 16, usage=usage
             ),
             "screen_color_alpha": self.device.create_buffer(size=max(splat_capacity, 1) * 16, usage=usage),
+            "screen_ellipse_conic": self.device.create_buffer(size=max(splat_capacity, 1) * 16, usage=usage),
             "splat_pos_local": self.device.create_buffer(size=max(splat_capacity, 1) * 16, usage=usage),
             "splat_inv_scale": self.device.create_buffer(size=max(splat_capacity, 1) * 16, usage=usage),
             "splat_quat": self.device.create_buffer(size=max(splat_capacity, 1) * 16, usage=usage),
@@ -196,6 +223,7 @@ class GaussianRenderer:
             "g_ColorAlpha": self._scene_buffers["color_alpha"],
             "g_ScreenCenterRadiusDepth": self._work_buffers["screen_center_radius_depth"],
             "g_ScreenColorAlpha": self._work_buffers["screen_color_alpha"],
+            "g_ScreenEllipseConic": self._work_buffers["screen_ellipse_conic"],
             "g_SplatPosLocal": self._work_buffers["splat_pos_local"],
             "g_SplatInvScale": self._work_buffers["splat_inv_scale"],
             "g_SplatQuat": self._work_buffers["splat_quat"],
@@ -206,13 +234,21 @@ class GaussianRenderer:
             "g_tileSize": self.tile_size,
             "g_tileWidth": self.tile_width,
             "g_tileHeight": self.tile_height,
+            "g_tileCount": self.tile_count,
             "g_depthBits": self.depth_bits,
             "g_maxListEntries": self._max_list_entries,
             "g_radiusScale": self.radius_scale,
             "g_maxSplatRadiusPx": self.max_splat_radius_px,
+            "g_sampled5MVEEIters": self.sampled5_mvee_iters,
+            "g_sampled5SafetyScale": self.sampled5_safety_scale,
+            "g_sampled5RadiusPadPx": self.sampled5_radius_pad_px,
+            "g_sampled5Eps": self.sampled5_eps,
+            "g_projDistortionK1": self.proj_distortion_k1,
+            "g_projDistortionK2": self.proj_distortion_k2,
             **camera.gpu_params(self.width, self.height),
         }
-        self._k_project.dispatch(
+        kernel = self._k_project if self.projection_mode == "legacy_axis_extent" else self._k_project_sampled5
+        kernel.dispatch(
             thread_count=spy.uint3(scene.count, 1, 1),
             vars=vars,
             command_encoder=encoder,
@@ -248,6 +284,7 @@ class GaussianRenderer:
             vars={
                 "g_ScreenCenterRadiusDepth": self._work_buffers["screen_center_radius_depth"],
                 "g_ScreenColorAlpha": self._work_buffers["screen_color_alpha"],
+                "g_ScreenEllipseConic": self._work_buffers["screen_ellipse_conic"],
                 "g_SplatPosLocal": self._work_buffers["splat_pos_local"],
                 "g_SplatInvScale": self._work_buffers["splat_inv_scale"],
                 "g_SplatQuat": self._work_buffers["splat_quat"],
@@ -264,6 +301,9 @@ class GaussianRenderer:
                 "g_radiusScale": self.radius_scale,
                 "g_maxSplatRadiusPx": self.max_splat_radius_px,
                 "g_background": spy.float3(*background.tolist()),
+                "g_debugShowEllipses": np.uint32(1 if self.debug_show_ellipses else 0),
+                "g_debugEllipseThicknessPx": float(self.debug_ellipse_thickness_px),
+                "g_debugEllipseColor": spy.float3(*self.debug_ellipse_color.tolist()),
                 **camera.gpu_params(self.width, self.height),
             },
             command_encoder=encoder,
@@ -374,6 +414,7 @@ class GaussianRenderer:
                 self._work_buffers["screen_center_radius_depth"], scene.count
             ),
             "screen_color_alpha": self._read_f32x4(self._work_buffers["screen_color_alpha"], scene.count),
+            "screen_ellipse_conic": self._read_f32x4(self._work_buffers["screen_ellipse_conic"], scene.count),
             "splat_pos_local": self._read_f32x4(self._work_buffers["splat_pos_local"], scene.count),
             "splat_inv_scale": self._read_f32x4(self._work_buffers["splat_inv_scale"], scene.count),
             "splat_quat": self._read_f32x4(self._work_buffers["splat_quat"], scene.count),
