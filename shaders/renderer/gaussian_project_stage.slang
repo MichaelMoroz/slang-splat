@@ -3,9 +3,10 @@ import "gaussian_math_utils.slang";
 import "gaussian_mvee_utils.slang";
 import "gaussian_binning_utils.slang";
 import "gaussian_scanline_utils.slang";
-import "gaussian_raster_stage.slang";
 
-void project_and_bin_impl(uint3 dispatchThreadID)
+[shader("compute")]
+[numthreads(PROJECT_GROUP_SIZE, 1, 1)]
+void csProjectAndBin(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     uint splatId = dispatchThreadID.x;
     if (splatId >= g_splatCount) return;
@@ -72,7 +73,9 @@ void project_and_bin_impl(uint3 dispatchThreadID)
     emit_splat_bins(binRequest);
 }
 
-void compose_scanline_key_values_impl(uint3 dispatchThreadID)
+[shader("compute")]
+[numthreads(TILE_GROUP_SIZE, 1, 1)]
+void csComposeScanlineKeyValues(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     uint scanlineId = dispatchThreadID.x;
     if (scanlineId >= g_maxScanlineEntries) return;
@@ -119,20 +122,6 @@ void compose_scanline_key_values_impl(uint3 dispatchThreadID)
 }
 
 [shader("compute")]
-[numthreads(PROJECT_GROUP_SIZE, 1, 1)]
-void csProjectAndBin(uint3 dispatchThreadID : SV_DispatchThreadID)
-{
-    project_and_bin_impl(dispatchThreadID);
-}
-
-[shader("compute")]
-[numthreads(TILE_GROUP_SIZE, 1, 1)]
-void csComposeScanlineKeyValues(uint3 dispatchThreadID : SV_DispatchThreadID)
-{
-    compose_scanline_key_values_impl(dispatchThreadID);
-}
-
-[shader("compute")]
 [numthreads(TILE_GROUP_SIZE, 1, 1)]
 void csClearTileRanges(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
@@ -168,9 +157,3 @@ void csBuildTileRanges(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (idx + 1 == sortedCount || tile != nextTile) g_TileRanges[tile].y = idx + 1;
 }
 
-[shader("compute")]
-[numthreads(RASTER_TILE_DIM, RASTER_TILE_DIM, 1)]
-void csRasterize(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_GroupIndex)
-{
-    rasterize_impl(dispatchThreadID, lane);
-}

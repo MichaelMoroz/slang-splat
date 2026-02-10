@@ -75,7 +75,8 @@ class GaussianRenderer:
         self.depth_bits = 32 - self.tile_bits
         self.sort_bits = self.tile_bits + self.depth_bits
 
-        self._shader_path = Path(SHADER_ROOT / "renderer" / "gaussian_project_stage.slang")
+        self._project_shader_path = Path(SHADER_ROOT / "renderer" / "gaussian_project_stage.slang")
+        self._raster_shader_path = Path(SHADER_ROOT / "renderer" / "gaussian_raster_stage.slang")
         self._create_shaders()
         self._create_sorter()
 
@@ -101,19 +102,19 @@ class GaussianRenderer:
     def _create_shaders(self) -> None:
         load_program = self.device.load_program
         self._k_project = self.device.create_compute_kernel(
-            load_program(str(self._shader_path), ["csProjectAndBin"])
+            load_program(str(self._project_shader_path), ["csProjectAndBin"])
         )
         self._p_compose_scanline = self.device.create_compute_pipeline(
-            load_program(str(self._shader_path), ["csComposeScanlineKeyValues"])
+            load_program(str(self._project_shader_path), ["csComposeScanlineKeyValues"])
         )
         self._k_clear_ranges = self.device.create_compute_kernel(
-            load_program(str(self._shader_path), ["csClearTileRanges"])
+            load_program(str(self._project_shader_path), ["csClearTileRanges"])
         )
         self._p_build_ranges = self.device.create_compute_pipeline(
-            load_program(str(self._shader_path), ["csBuildTileRanges"])
+            load_program(str(self._project_shader_path), ["csBuildTileRanges"])
         )
         self._k_raster = self.device.create_compute_kernel(
-            load_program(str(self._shader_path), ["csRasterize"])
+            load_program(str(self._raster_shader_path), ["csRasterize"])
         )
 
     def _create_sorter(self) -> None:

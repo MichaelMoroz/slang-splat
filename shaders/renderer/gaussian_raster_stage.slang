@@ -1,7 +1,9 @@
 import "gaussian_types.slang";
 import "gaussian_math_utils.slang";
 
-void rasterize_impl(uint3 dispatchThreadID, uint lane)
+[shader("compute")]
+[numthreads(RASTER_TILE_DIM, RASTER_TILE_DIM, 1)]
+void csRasterize(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_GroupIndex)
 {
     uint px = dispatchThreadID.x;
     uint py = dispatchThreadID.y;
