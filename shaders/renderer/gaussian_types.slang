@@ -69,6 +69,8 @@ uniform StructuredBuffer<uint> g_PrepassParams;
 
 uniform RWTexture2D<float4> g_Output;
 uniform Texture2D<float4> g_OutputGrad;
+uniform RWTexture2D<float4> g_RasterForwardState;
+uniform RWTexture2D<uint> g_RasterProcessedCount;
 
 uniform RWStructuredBuffer<float> g_GradSplatPosLocal;
 uniform RWStructuredBuffer<float> g_GradSplatInvScale;

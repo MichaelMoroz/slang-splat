@@ -273,15 +273,16 @@ void csRasterize(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_Gr
     uint tileId = tileY * g_tileWidth + tileX;
     uint2 range = g_TileRanges[tileId];
     bool hasTileRange = range.x != INVALID_START && range.y > range.x;
+    RasterState state = { 0.0, 1.0 };
+    uint processedCount = 0u;
     float4 outputValue = float4(0.0, 0.0, 0.0, 1.0);
     if (hasTileRange)
     {
         uint start = range.x;
         uint end = min(range.y, start + g_maxSplatSteps);
-        uint processedCount = 0u;
         float2 rayUV = (float2(samplePx, samplePy) + 0.5 - 0.5 * g_viewport) / g_focalPixels;
         float3 rayDir = normalize(g_camForward + rayUV.x * g_camRight + rayUV.y * g_camUp);
-        RasterState state = raster_forward_replay(start, end, pixelActive, rayDir, lane, processedCount);
+        state = raster_forward_replay(start, end, pixelActive, rayDir, lane, processedCount);
 
         if (pixelActive)
         {
@@ -334,7 +335,13 @@ void csRasterize(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_Gr
         outputValue = float4(bgColor, 1.0);
     }
 
-    if (pixelActive) g_Output[uint2(px, py)] = outputValue;
+    if (pixelActive)
+    {
+        uint2 pixelCoord = uint2(px, py);
+        g_RasterForwardState[pixelCoord] = float4(state.accum, state.trans);
+        g_RasterProcessedCount[pixelCoord] = processedCount;
+        g_Output[pixelCoord] = outputValue;
+    }
 }
 
 [shader("compute")]
@@ -360,9 +367,15 @@ void csRasterizeBackward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane
     float2 rayUV = (float2(samplePx, samplePy) + 0.5 - 0.5 * g_viewport) / g_focalPixels;
     float3 rayDir = normalize(g_camForward + rayUV.x * g_camRight + rayUV.y * g_camUp);
 
-    uint processedCount = 0u;
     RasterState state = { 0.0, 1.0 };
-    if (hasTileRange) state = raster_forward_replay(start, end, pixelActive, rayDir, lane, processedCount);
+    uint processedCount = 0u;
+    if (pixelActive)
+    {
+        uint2 pixelCoord = uint2(px, py);
+        float4 cachedState = g_RasterForwardState[pixelCoord];
+        state = { cachedState.xyz, cachedState.w };
+        processedCount = g_RasterProcessedCount[pixelCoord];
+    }
 
     RasterState.Differential dState;
     dState.accum = 0.0;

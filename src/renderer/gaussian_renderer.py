@@ -89,6 +89,8 @@ class GaussianRenderer:
         self._work_buffers: dict[str, spy.Buffer] = {}
         self._output_texture: spy.Texture | None = None
         self._output_grad_texture: spy.Texture | None = None
+        self._raster_forward_state_texture: spy.Texture | None = None
+        self._raster_processed_count_texture: spy.Texture | None = None
         self._last_stats: dict[str, int | bool | float] = {}
         self._max_scanline_entries = 0
         self._counter_readback_ring: list[spy.Buffer] = []
@@ -169,6 +171,8 @@ class GaussianRenderer:
             and required_scanline_entries <= self._max_scanline_entries
             and self._output_texture is not None
             and self._output_grad_texture is not None
+            and self._raster_forward_state_texture is not None
+            and self._raster_processed_count_texture is not None
         ):
             return
         old_splat_capacity = max(self._work_splat_capacity, 1)
@@ -227,6 +231,20 @@ class GaussianRenderer:
         if self._output_grad_texture is None:
             self._output_grad_texture = self.device.create_texture(
                 format=spy.Format.rgba32_float,
+                width=self.width,
+                height=self.height,
+                usage=spy.TextureUsage.shader_resource | spy.TextureUsage.unordered_access,
+            )
+        if self._raster_forward_state_texture is None:
+            self._raster_forward_state_texture = self.device.create_texture(
+                format=spy.Format.rgba32_float,
+                width=self.width,
+                height=self.height,
+                usage=spy.TextureUsage.shader_resource | spy.TextureUsage.unordered_access,
+            )
+        if self._raster_processed_count_texture is None:
+            self._raster_processed_count_texture = self.device.create_texture(
+                format=spy.Format.r32_uint,
                 width=self.width,
                 height=self.height,
                 usage=spy.TextureUsage.shader_resource | spy.TextureUsage.unordered_access,
@@ -409,6 +427,8 @@ class GaussianRenderer:
                 "g_SortedValues": self._work_buffers["values"],
                 "g_TileRanges": self._work_buffers["tile_ranges"],
                 "g_Output": self._output_texture,
+                "g_RasterForwardState": self._raster_forward_state_texture,
+                "g_RasterProcessedCount": self._raster_processed_count_texture,
                 "g_splatCount": self._scene_count,
                 "g_tileSize": self.tile_size,
                 "g_tileWidth": self.tile_width,
@@ -460,6 +480,8 @@ class GaussianRenderer:
                 "g_SortedValues": self._work_buffers["values"],
                 "g_TileRanges": self._work_buffers["tile_ranges"],
                 "g_OutputGrad": output_grad,
+                "g_RasterForwardState": self._raster_forward_state_texture,
+                "g_RasterProcessedCount": self._raster_processed_count_texture,
                 "g_GradSplatPosLocal": self._work_buffers["grad_splat_pos_local"],
                 "g_GradSplatInvScale": self._work_buffers["grad_splat_inv_scale"],
                 "g_GradSplatQuat": self._work_buffers["grad_splat_quat"],
