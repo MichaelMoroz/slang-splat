@@ -27,14 +27,48 @@ void atomic_add_grad<let N : int>(RWStructuredBuffer<float> gradBuffer, uint bas
     {
         float value = grad[i];
         if (value == 0.0) continue;
-        float old = 0.0;
-        InterlockedAdd(gradBuffer[base + uint(i)], value, old);
+        InterlockedAdd(gradBuffer[base + uint(i)], value);
     }
 }
 
-void atomic_add_grad4(RWStructuredBuffer<float> gradBuffer, uint splatId, float4 grad)
+uint grad_state_base(uint localIdx, uint fieldOffset)
 {
-    atomic_add_grad<4>(gradBuffer, splatId * 4u, grad);
+    return localIdx * SPLAT_GRAD_STATE_STRIDE + fieldOffset;
+}
+
+void atomic_add_grad_shared<let N : int>(uint base, vector<float, N> grad)
+{
+    [unroll] for (int i = 0; i < N; i++)
+    {
+        float value = grad[i];
+        if (value == 0.0) continue;
+        InterlockedAdd(gsGradState[base + uint(i)], value);
+    }
+}
+
+vector<float, N> load_grad_shared<let N : int>(uint base)
+{
+    vector<float, N> grad = 0.0;
+    [unroll] for (int i = 0; i < N; i++) grad[i] = gsGradState[base + uint(i)];
+    return grad;
+}
+
+void clear_batch_gradient_cache(uint batchCount, uint lane)
+{
+    if (lane >= batchCount) return;
+    uint base = lane * SPLAT_GRAD_STATE_STRIDE;
+    [unroll] for (uint i = 0u; i < SPLAT_GRAD_STATE_STRIDE; i++) gsGradState[base + i] = 0.0;
+}
+
+void flush_batch_gradient_cache(uint batchCount, uint lane)
+{
+    if (lane >= batchCount) return;
+    uint splatId = gsBatchSplatId[lane];
+    uint splatBase = splatId * SPLAT_GRAD_COMPONENTS;
+    atomic_add_grad<4>(g_GradSplatPosLocal, splatBase, load_grad_shared<4>(grad_state_base(lane, SPLAT_GRAD_STATE_POS_LOCAL_OFFSET)));
+    atomic_add_grad<4>(g_GradSplatInvScale, splatBase, load_grad_shared<4>(grad_state_base(lane, SPLAT_GRAD_STATE_INV_SCALE_OFFSET)));
+    atomic_add_grad<4>(g_GradSplatQuat, splatBase, load_grad_shared<4>(grad_state_base(lane, SPLAT_GRAD_STATE_QUAT_OFFSET)));
+    atomic_add_grad<4>(g_GradScreenColorAlpha, splatBase, load_grad_shared<4>(grad_state_base(lane, SPLAT_GRAD_STATE_COLOR_ALPHA_OFFSET)));
 }
 
 struct RasterGaussian : IDifferentiable
@@ -75,22 +109,31 @@ struct RasterGaussian : IDifferentiable
         gsColorAlpha[localIdx] = half4(colorAlpha);
     }
 
-    static void accumulate_gradients(uint splatId, Differential dOut)
+    static void accumulate_gradients_global(uint splatId, Differential dOut)
     {
-        atomic_add_grad4(g_GradSplatPosLocal, splatId, float4(dOut.roLocal, 0.0));
-        atomic_add_grad4(g_GradSplatInvScale, splatId, float4(dOut.invScale, 0.0));
-        atomic_add_grad4(g_GradSplatQuat, splatId, dOut.quat);
-        atomic_add_grad4(g_GradScreenColorAlpha, splatId, dOut.colorAlpha);
+        uint splatBase = splatId * SPLAT_GRAD_COMPONENTS;
+        atomic_add_grad<4>(g_GradSplatPosLocal, splatBase, float4(dOut.roLocal, 0.0));
+        atomic_add_grad<4>(g_GradSplatInvScale, splatBase, float4(dOut.invScale, 0.0));
+        atomic_add_grad<4>(g_GradSplatQuat, splatBase, dOut.quat);
+        atomic_add_grad<4>(g_GradScreenColorAlpha, splatBase, dOut.colorAlpha);
+    }
+
+    static void accumulate_gradients_shared(uint localIdx, Differential dOut)
+    {
+        atomic_add_grad_shared<4>(grad_state_base(localIdx, SPLAT_GRAD_STATE_POS_LOCAL_OFFSET), float4(dOut.roLocal, 0.0));
+        atomic_add_grad_shared<4>(grad_state_base(localIdx, SPLAT_GRAD_STATE_INV_SCALE_OFFSET), float4(dOut.invScale, 0.0));
+        atomic_add_grad_shared<4>(grad_state_base(localIdx, SPLAT_GRAD_STATE_QUAT_OFFSET), dOut.quat);
+        atomic_add_grad_shared<4>(grad_state_base(localIdx, SPLAT_GRAD_STATE_COLOR_ALPHA_OFFSET), dOut.colorAlpha);
     }
 
     static void raster_gaussian_load_global_bwd(uint splatId, Differential dOut)
     {
-        accumulate_gradients(splatId, dOut);
+        accumulate_gradients_global(splatId, dOut);
     }
 
     static void raster_gaussian_load_shared_bwd(uint localIdx, Differential dOut)
     {
-        accumulate_gradients(gsBatchSplatId[localIdx], dOut);
+        accumulate_gradients_shared(localIdx, dOut);
     }
 };
 
@@ -199,7 +242,7 @@ float3 output_to_linear_grad(float3 finalColor, float3 dOutputRgb)
 [numthreads(TILE_GROUP_SIZE, 1, 1)]
 void csClearRasterGrads(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
-    uint gradCount = g_splatCount * 4u;
+    uint gradCount = g_splatCount * SPLAT_GRAD_COMPONENTS;
     uint idx = dispatchThreadID.x;
     if (idx >= gradCount) return;
 
@@ -348,6 +391,8 @@ void csRasterizeBackward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane
 
         prefetch_batch_from_global(batchStart, batchBase, lane);
         GroupMemoryBarrierWithGroupSync();
+        clear_batch_gradient_cache(batchCount, lane);
+        GroupMemoryBarrierWithGroupSync();
 
         for (uint rev = 0u; rev < batchCount; rev++)
         {
@@ -370,6 +415,8 @@ void csRasterizeBackward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane
             dState = dpPrevState.getDifferential();
         }
 
+        GroupMemoryBarrierWithGroupSync();
+        flush_batch_gradient_cache(batchCount, lane);
         GroupMemoryBarrierWithGroupSync();
         batchBase = batchStart;
     }
