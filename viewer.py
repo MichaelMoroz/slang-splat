@@ -23,7 +23,7 @@ class SplatViewer(spy.AppWindow):
         width: int = 1280,
         height: int = 720,
         title: str = "Slang Splat Viewer",
-        max_prepass_memory_mb: int = 512,
+        max_prepass_memory_mb: int = 4096,
     ) -> None:
         super().__init__(
             app,
@@ -434,7 +434,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ply", type=Path, default=None, help="Optional initial PLY file.")
     parser.add_argument("--width", type=int, default=1280)
     parser.add_argument("--height", type=int, default=720)
-    parser.add_argument("--prepass-memory-mb", type=int, default=512, help="Cap prepass key/value/scanline memory.")
+    parser.add_argument("--prepass-memory-mb", type=int, default=4096, help="Cap prepass key/value/scanline memory.")
     parser.add_argument("--frames", type=int, default=0, help="Run a fixed frame count for smoke tests.")
     parser.add_argument("--debug-layers", action="store_true")
     return parser.parse_args()

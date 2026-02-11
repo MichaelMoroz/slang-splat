@@ -37,7 +37,7 @@ class GaussianRenderer:
         max_splat_steps: int = 32768,
         transmittance_threshold: float = 0.005,
         list_capacity_multiplier: int = 64,
-        max_prepass_memory_mb: int = 512,
+        max_prepass_memory_mb: int = 4096,
         sampled5_mvee_iters: int = 6,
         sampled5_safety_scale: float = 1.0,
         sampled5_radius_pad_px: float = 1.0,

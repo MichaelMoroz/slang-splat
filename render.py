@@ -20,7 +20,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-splats", type=int, default=0, help="Limit rendered splat count. 0 means all.")
     parser.add_argument("--radius-scale", type=float, default=2.6, help="Projected splat radius multiplier.")
     parser.add_argument("--max-splat-radius-px", type=float, default=64.0, help="Clamp for projected splat radius.")
-    parser.add_argument("--prepass-memory-mb", type=int, default=512, help="Cap prepass key/value/scanline memory.")
+    parser.add_argument("--prepass-memory-mb", type=int, default=4096, help="Cap prepass key/value/scanline memory.")
     parser.add_argument("--cam-pos", type=float, nargs=3, default=(0.0, 0.0, 3.0), help="Camera position.")
     parser.add_argument("--cam-target", type=float, nargs=3, default=(0.0, 0.0, 0.0), help="Look-at target.")
     parser.add_argument("--fov", type=float, default=60.0, help="Vertical camera FOV in degrees.")
