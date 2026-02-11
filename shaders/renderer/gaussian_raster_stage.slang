@@ -278,65 +278,10 @@ void csRasterize(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_Gr
     {
         uint start = range.x;
         uint end = min(range.y, start + g_maxSplatSteps);
-        float3 accum = 0.0;
-        float trans = 1.0;
         uint processedCount = 0u;
         float2 rayUV = (float2(samplePx, samplePy) + 0.5 - 0.5 * g_viewport) / g_focalPixels;
         float3 rayDir = normalize(g_camForward + rayUV.x * g_camRight + rayUV.y * g_camUp);
-        bool pixelDone = !pixelActive;
-        if (lane == 0u) gsStoppedPixels = 0u;
-        GroupMemoryBarrierWithGroupSync();
-        if (pixelDone) InterlockedAdd(gsStoppedPixels, 1u);
-
-        for (uint batchStart = start; batchStart < end; batchStart += RASTER_BATCH)
-        {
-            uint idx = batchStart + lane;
-            if (idx < end)
-            {
-                uint splatId = g_SortedValues[idx];
-                gsBatchSplatId[lane] = splatId;
-                gsRoLocal[lane] = g_SplatPosLocal[splatId];
-                gsInvScale[lane] = half4(g_SplatInvScale[splatId]);
-                gsQuat[lane] = half4(g_SplatQuat[splatId]);
-                gsColorAlpha[lane] = half4(g_ScreenColorAlpha[splatId]);
-            }
-            GroupMemoryBarrierWithGroupSync();
-
-            uint batchCount = min(RASTER_BATCH, end - batchStart);
-            for (uint localIdx = 0; localIdx < batchCount; localIdx++)
-            {
-                if (pixelDone) continue;
-                processedCount += 1u;
-
-                float3 roLocal = gsRoLocal[localIdx].xyz;
-                float3 invScale = float3(gsInvScale[localIdx].xyz);
-                float4 q = float4(gsQuat[localIdx]);
-                float3 rdLocal = rotate_by_quat(rayDir, q) * invScale;
-                float denom = dot(rdLocal, rdLocal);
-                if (denom <= EPS_RAY_DENOM) continue;
-                float tClosest = dot(rdLocal, -roLocal) / denom;
-                if (tClosest <= 0.0) continue;
-                float3 closest = roLocal + rdLocal * tClosest;
-                float rho = length(closest);
-                if (rho >= 1.0) continue;
-
-                float4 colorAlpha = float4(gsColorAlpha[localIdx]);
-                float coverage = saturate(1.0 - rho);
-                coverage = coverage * coverage * (3.0 - 2.0 * coverage);
-                float alpha = saturate(colorAlpha.w * coverage);
-                if (alpha < g_alphaCutoff) continue;
-
-                accum += trans * alpha * colorAlpha.xyz;
-                trans *= 1.0 - alpha;
-                if (trans < g_transmittanceThreshold)
-                {
-                    pixelDone = true;
-                    InterlockedAdd(gsStoppedPixels, 1u);
-                }
-            }
-            GroupMemoryBarrierWithGroupSync();
-            if (gsStoppedPixels == RASTER_BATCH) break;
-        }
+        RasterState state = raster_forward_replay(start, end, pixelActive, rayDir, lane, processedCount);
 
         if (pixelActive)
         {
@@ -348,7 +293,7 @@ void csRasterize(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_Gr
                 float3 debugColor = float3(normalized);
                 outputValue = float4(debugColor, 1.0);
             } else {
-                float3 finalColor = accum + trans * g_background;
+                float3 finalColor = state.accum + state.trans * g_background;
                 if (g_debugShowEllipses != 0u)
                 {
                     float2 samplePoint = float2(px, py) + 0.5;
@@ -381,7 +326,7 @@ void csRasterize(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_Gr
                 }
 
                 float3 linearOut = pow(max(finalColor, 0.0), GAMMA_LINEAR_TO_OUTPUT);
-                outputValue = float4(linearOut, 1.0 - trans);
+                outputValue = float4(linearOut, 1.0 - state.trans);
             }
         }
     } else if (pixelActive) {
