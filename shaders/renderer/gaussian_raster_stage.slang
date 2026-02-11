@@ -5,158 +5,114 @@ struct RasterState : IDifferentiable
 {
     float3 accum;
     float trans;
+
+    [Differentiable]
+    RasterState blend(float3 color, float alpha)
+    {
+        return { accum + trans * alpha * color, trans * (1.0 - alpha) };
+    }
+
+    RasterState undo(float3 color, float alpha)
+    {
+        float denom = max(1.0 - alpha, EPS_SMALL);
+        float prevTrans = trans / denom;
+        float3 prevAccum = accum - prevTrans * alpha * color;
+        return { prevAccum, prevTrans };
+    }
 };
 
-void atomic_add_grad_pos(uint splatId, float4 grad)
+void atomic_add_grad<let N : int>(RWStructuredBuffer<float> gradBuffer, uint base, vector<float, N> grad)
 {
-    uint base = splatId * 4u;
-    float old = 0.0;
-    if (grad.x != 0.0) InterlockedAdd(g_GradSplatPosLocal[base + 0u], grad.x, old);
-    if (grad.y != 0.0) InterlockedAdd(g_GradSplatPosLocal[base + 1u], grad.y, old);
-    if (grad.z != 0.0) InterlockedAdd(g_GradSplatPosLocal[base + 2u], grad.z, old);
-    if (grad.w != 0.0) InterlockedAdd(g_GradSplatPosLocal[base + 3u], grad.w, old);
+    [unroll] for (int i = 0; i < N; i++)
+    {
+        float value = grad[i];
+        if (value == 0.0) continue;
+        float old = 0.0;
+        InterlockedAdd(gradBuffer[base + uint(i)], value, old);
+    }
 }
 
-void atomic_add_grad_inv_scale(uint splatId, float4 grad)
+void atomic_add_grad4(RWStructuredBuffer<float> gradBuffer, uint splatId, float4 grad)
 {
-    uint base = splatId * 4u;
-    float old = 0.0;
-    if (grad.x != 0.0) InterlockedAdd(g_GradSplatInvScale[base + 0u], grad.x, old);
-    if (grad.y != 0.0) InterlockedAdd(g_GradSplatInvScale[base + 1u], grad.y, old);
-    if (grad.z != 0.0) InterlockedAdd(g_GradSplatInvScale[base + 2u], grad.z, old);
-    if (grad.w != 0.0) InterlockedAdd(g_GradSplatInvScale[base + 3u], grad.w, old);
+    atomic_add_grad<4>(gradBuffer, splatId * 4u, grad);
 }
 
-void atomic_add_grad_quat(uint splatId, float4 grad)
+struct RasterGaussian : IDifferentiable
 {
-    uint base = splatId * 4u;
-    float old = 0.0;
-    if (grad.x != 0.0) InterlockedAdd(g_GradSplatQuat[base + 0u], grad.x, old);
-    if (grad.y != 0.0) InterlockedAdd(g_GradSplatQuat[base + 1u], grad.y, old);
-    if (grad.z != 0.0) InterlockedAdd(g_GradSplatQuat[base + 2u], grad.z, old);
-    if (grad.w != 0.0) InterlockedAdd(g_GradSplatQuat[base + 3u], grad.w, old);
-}
+    float3 roLocal;
+    float3 invScale;
+    float4 quat;
+    float4 colorAlpha;
 
-void atomic_add_grad_color_alpha(uint splatId, float4 grad)
-{
-    uint base = splatId * 4u;
-    float old = 0.0;
-    if (grad.x != 0.0) InterlockedAdd(g_GradScreenColorAlpha[base + 0u], grad.x, old);
-    if (grad.y != 0.0) InterlockedAdd(g_GradScreenColorAlpha[base + 1u], grad.y, old);
-    if (grad.z != 0.0) InterlockedAdd(g_GradScreenColorAlpha[base + 2u], grad.z, old);
-    if (grad.w != 0.0) InterlockedAdd(g_GradScreenColorAlpha[base + 3u], grad.w, old);
-}
+    [BackwardDerivative(raster_gaussian_load_global_bwd)]
+    static RasterGaussian load_global(uint splatId)
+    {
+        RasterGaussian gaussian;
+        gaussian.roLocal = g_SplatPosLocal[splatId].xyz;
+        gaussian.invScale = g_SplatInvScale[splatId].xyz;
+        gaussian.quat = g_SplatQuat[splatId];
+        gaussian.colorAlpha = g_ScreenColorAlpha[splatId];
+        return gaussian;
+    }
 
-[BackwardDerivative(load_splat_pos_global_bwd)]
-float4 load_splat_pos_global(uint splatId)
-{
-    return g_SplatPosLocal[splatId];
-}
+    [BackwardDerivative(raster_gaussian_load_shared_bwd)]
+    static RasterGaussian load_shared(uint localIdx)
+    {
+        RasterGaussian gaussian;
+        gaussian.roLocal = gsRoLocal[localIdx].xyz;
+        gaussian.invScale = float3(gsInvScale[localIdx].xyz);
+        gaussian.quat = float4(gsQuat[localIdx]);
+        gaussian.colorAlpha = float4(gsColorAlpha[localIdx]);
+        return gaussian;
+    }
 
-void load_splat_pos_global_bwd(uint splatId, float4 dOut)
-{
-    atomic_add_grad_pos(splatId, dOut);
-}
+    [mutating]
+    void store_shared(uint localIdx)
+    {
+        gsRoLocal[localIdx] = float4(roLocal, 0.0);
+        gsInvScale[localIdx] = half4(float4(invScale, 0.0));
+        gsQuat[localIdx] = half4(quat);
+        gsColorAlpha[localIdx] = half4(colorAlpha);
+    }
 
-[BackwardDerivative(load_splat_inv_scale_global_bwd)]
-float4 load_splat_inv_scale_global(uint splatId)
-{
-    return g_SplatInvScale[splatId];
-}
+    static void accumulate_gradients(uint splatId, Differential dOut)
+    {
+        atomic_add_grad4(g_GradSplatPosLocal, splatId, float4(dOut.roLocal, 0.0));
+        atomic_add_grad4(g_GradSplatInvScale, splatId, float4(dOut.invScale, 0.0));
+        atomic_add_grad4(g_GradSplatQuat, splatId, dOut.quat);
+        atomic_add_grad4(g_GradScreenColorAlpha, splatId, dOut.colorAlpha);
+    }
 
-void load_splat_inv_scale_global_bwd(uint splatId, float4 dOut)
-{
-    atomic_add_grad_inv_scale(splatId, dOut);
-}
+    static void raster_gaussian_load_global_bwd(uint splatId, Differential dOut)
+    {
+        accumulate_gradients(splatId, dOut);
+    }
 
-[BackwardDerivative(load_splat_quat_global_bwd)]
-float4 load_splat_quat_global(uint splatId)
-{
-    return g_SplatQuat[splatId];
-}
-
-void load_splat_quat_global_bwd(uint splatId, float4 dOut)
-{
-    atomic_add_grad_quat(splatId, dOut);
-}
-
-[BackwardDerivative(load_splat_color_alpha_global_bwd)]
-float4 load_splat_color_alpha_global(uint splatId)
-{
-    return g_ScreenColorAlpha[splatId];
-}
-
-void load_splat_color_alpha_global_bwd(uint splatId, float4 dOut)
-{
-    atomic_add_grad_color_alpha(splatId, dOut);
-}
-
-[BackwardDerivative(load_splat_pos_shared_bwd)]
-float4 load_splat_pos_shared(uint localIdx)
-{
-    return gsRoLocal[localIdx];
-}
-
-void load_splat_pos_shared_bwd(uint localIdx, float4 dOut)
-{
-    atomic_add_grad_pos(gsBatchSplatId[localIdx], dOut);
-}
-
-[BackwardDerivative(load_splat_inv_scale_shared_bwd)]
-float4 load_splat_inv_scale_shared(uint localIdx)
-{
-    return float4(gsInvScale[localIdx]);
-}
-
-void load_splat_inv_scale_shared_bwd(uint localIdx, float4 dOut)
-{
-    atomic_add_grad_inv_scale(gsBatchSplatId[localIdx], dOut);
-}
-
-[BackwardDerivative(load_splat_quat_shared_bwd)]
-float4 load_splat_quat_shared(uint localIdx)
-{
-    return float4(gsQuat[localIdx]);
-}
-
-void load_splat_quat_shared_bwd(uint localIdx, float4 dOut)
-{
-    atomic_add_grad_quat(gsBatchSplatId[localIdx], dOut);
-}
-
-[BackwardDerivative(load_splat_color_alpha_shared_bwd)]
-float4 load_splat_color_alpha_shared(uint localIdx)
-{
-    return float4(gsColorAlpha[localIdx]);
-}
-
-void load_splat_color_alpha_shared_bwd(uint localIdx, float4 dOut)
-{
-    atomic_add_grad_color_alpha(gsBatchSplatId[localIdx], dOut);
-}
+    static void raster_gaussian_load_shared_bwd(uint localIdx, Differential dOut)
+    {
+        accumulate_gradients(gsBatchSplatId[localIdx], dOut);
+    }
+};
 
 [Differentiable]
 float raster_eval_alpha(uint localIdx, no_diff float3 rayDir)
 {
-    float3 roLocal = load_splat_pos_shared(localIdx).xyz;
-    float3 invScale = load_splat_inv_scale_shared(localIdx).xyz;
-    float4 q = load_splat_quat_shared(localIdx);
-    float4 colorAlpha = load_splat_color_alpha_shared(localIdx);
+    RasterGaussian gaussian = RasterGaussian.load_shared(localIdx);
 
-    float3 rdLocal = rotate_by_quat(rayDir, q) * invScale;
+    float3 rdLocal = rotate_by_quat(rayDir, gaussian.quat) * gaussian.invScale;
     float denom = dot(rdLocal, rdLocal);
     if (denom <= EPS_RAY_DENOM) return 0.0;
 
-    float tClosest = dot(rdLocal, -roLocal) / denom;
+    float tClosest = dot(rdLocal, -gaussian.roLocal) / denom;
     if (tClosest <= 0.0) return 0.0;
 
-    float3 closest = roLocal + rdLocal * tClosest;
+    float3 closest = gaussian.roLocal + rdLocal * tClosest;
     float rho = length(closest);
     if (rho >= 1.0) return 0.0;
 
     float coverage = saturate(1.0 - rho);
     coverage = coverage * coverage * (3.0 - 2.0 * coverage);
-    float alpha = saturate(colorAlpha.w * coverage);
+    float alpha = saturate(gaussian.colorAlpha.w * coverage);
     if (alpha < g_alphaCutoff) return 0.0;
     return alpha;
 }
@@ -164,16 +120,13 @@ float raster_eval_alpha(uint localIdx, no_diff float3 rayDir)
 [Differentiable]
 RasterState raster_blend_step(RasterState state, uint localIdx, float alpha)
 {
-    float3 color = load_splat_color_alpha_shared(localIdx).xyz;
-    return { state.accum + state.trans * alpha * color, state.trans * (1.0 - alpha) };
+    RasterGaussian gaussian = RasterGaussian.load_shared(localIdx);
+    return state.blend(gaussian.colorAlpha.xyz, alpha);
 }
 
 RasterState raster_undo_blend_step(RasterState nextState, float4 colorAlpha, float alpha)
 {
-    float denom = max(1.0 - alpha, EPS_SMALL);
-    float prevTrans = nextState.trans / denom;
-    float3 prevAccum = nextState.accum - prevTrans * alpha * colorAlpha.xyz;
-    return { prevAccum, prevTrans };
+    return nextState.undo(colorAlpha.xyz, alpha);
 }
 
 void prefetch_batch_from_global(uint batchStart, uint batchEnd, uint lane)
@@ -183,10 +136,8 @@ void prefetch_batch_from_global(uint batchStart, uint batchEnd, uint lane)
 
     uint splatId = g_SortedValues[idx];
     gsBatchSplatId[lane] = splatId;
-    gsRoLocal[lane] = load_splat_pos_global(splatId);
-    gsInvScale[lane] = half4(load_splat_inv_scale_global(splatId));
-    gsQuat[lane] = half4(load_splat_quat_global(splatId));
-    gsColorAlpha[lane] = half4(load_splat_color_alpha_global(splatId));
+    RasterGaussian gaussian = RasterGaussian.load_global(splatId);
+    gaussian.store_shared(lane);
 }
 
 RasterState raster_forward_replay(
