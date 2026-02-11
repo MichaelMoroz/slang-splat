@@ -216,3 +216,29 @@ def test_render_stats_are_one_frame_delayed(device):
     assert stats1["stats_valid"] is True
     assert int(stats1["generated_entries"]) >= 0
     assert int(stats1["written_entries"]) >= 0
+
+
+def test_raster_backward_smoke_and_determinism(device):
+    scene = make_scene(20, seed=73)
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    renderer = GaussianRenderer(
+        device,
+        width=64,
+        height=64,
+        tile_size=16,
+        radius_scale=1.6,
+        list_capacity_multiplier=32,
+    )
+
+    grads0 = renderer.debug_raster_backward_grads(scene, camera, background=np.array([0.1, 0.15, 0.2], dtype=np.float32))
+    grads1 = renderer.debug_raster_backward_grads(scene, camera, background=np.array([0.1, 0.15, 0.2], dtype=np.float32))
+
+    for name in (
+        "grad_splat_pos_local",
+        "grad_splat_inv_scale",
+        "grad_splat_quat",
+        "grad_screen_color_alpha",
+    ):
+        assert grads0[name].shape == (scene.count, 4)
+        assert np.all(np.isfinite(grads0[name]))
+        np.testing.assert_allclose(grads0[name], grads1[name], rtol=1e-5, atol=1e-6)

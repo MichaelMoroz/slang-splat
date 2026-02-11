@@ -40,6 +40,7 @@ groupshared float4 gsRoLocal[RASTER_BATCH];
 groupshared half4 gsInvScale[RASTER_BATCH];
 groupshared half4 gsQuat[RASTER_BATCH];
 groupshared half4 gsColorAlpha[RASTER_BATCH];
+groupshared uint gsBatchSplatId[RASTER_BATCH];
 groupshared uint gsStoppedPixels;
 
 uniform StructuredBuffer<float4> g_Positions;
@@ -67,6 +68,12 @@ uniform StructuredBuffer<uint> g_SortedValues;
 uniform StructuredBuffer<uint> g_PrepassParams;
 
 uniform RWTexture2D<float4> g_Output;
+uniform Texture2D<float4> g_OutputGrad;
+
+uniform RWStructuredBuffer<uint> g_GradSplatPosLocal;
+uniform RWStructuredBuffer<uint> g_GradSplatInvScale;
+uniform RWStructuredBuffer<uint> g_GradSplatQuat;
+uniform RWStructuredBuffer<uint> g_GradScreenColorAlpha;
 
 uniform uint g_splatCount;
 uniform uint g_tileSize;

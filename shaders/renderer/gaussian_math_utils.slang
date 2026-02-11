@@ -1,5 +1,6 @@
 import "gaussian_types.slang";
 
+[Differentiable]
 float3 rotate_by_quat(float3 v, float4 q)
 {
     float3 qv = q.yzw;

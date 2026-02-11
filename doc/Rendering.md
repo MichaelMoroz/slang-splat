@@ -41,6 +41,18 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - The inner loop performs cheap screen-space reject checks before expensive local-space Gaussian math to reduce work on heavy tiles.
 - Writes RGBA output texture.
 
+## 6. Raster Backward
+- Shaders: `csClearRasterGrads`, `csRasterizeBackward`.
+- `csClearRasterGrads` zeros per-splat gradient buffers for:
+  - `g_SplatPosLocal`
+  - `g_SplatInvScale`
+  - `g_SplatQuat`
+  - `g_ScreenColorAlpha`
+- `csRasterizeBackward` replays the forward tile batch loop to recover terminal per-pixel blend state and processed prefix length, then traverses batches in reverse.
+- The reverse pass manually differentiates the batch loop and uses `bwd_diff(...)` only inside each per-splat reverse step.
+- Global and groupshared raster loads are implemented via custom derivative functions; their backward functions atomically add gradients into flattened per-splat `float4` gradient buffers (`index = splat_id * 4 + component`).
+- Output gradients are supplied through `g_OutputGrad` (`Texture2D<float4>`), and chain-rule terms include gamma output mapping and alpha output (`1 - transmittance`).
+
 ## Stats Notes
 - `generated_entries` / `written_entries` are reported with one-frame latency (`stats_latency_frames = 1`).
 - `stats_valid` indicates whether delayed stats are available yet (warm-up frame returns `False`).
