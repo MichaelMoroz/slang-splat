@@ -99,9 +99,7 @@ uniform uint g_maxSplatSteps;
 
 uniform float2 g_viewport;
 uniform float3 g_camPos;
-uniform float3 g_camRight;
-uniform float3 g_camUp;
-uniform float3 g_camForward;
+uniform float3x3 g_camBasis;
 uniform float3 g_background;
 
 uniform float g_focalPixels;

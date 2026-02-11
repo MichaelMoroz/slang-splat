@@ -9,7 +9,12 @@ float3 rotate_by_quat(float3 v, float4 q)
 
 float3 world_to_camera(float3 v)
 {
-    return float3(dot(v, g_camRight), dot(v, g_camUp), dot(v, g_camForward));
+    return mul(g_camBasis, v);
+}
+
+float3 camera_to_world(float3 v)
+{
+    return mul(transpose(g_camBasis), v);
 }
 
 uint quantizeDepth(float depthValue)

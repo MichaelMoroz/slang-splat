@@ -37,11 +37,10 @@ class Camera:
 
     def gpu_params(self, width: int, height: int) -> dict[str, object]:
         right, up, forward = self.basis()
+        basis = np.stack((right, up, forward), axis=0).astype(np.float32)
         return {
             "g_camPos": spy.float3(*self.position.tolist()),
-            "g_camRight": spy.float3(*right.tolist()),
-            "g_camUp": spy.float3(*up.tolist()),
-            "g_camForward": spy.float3(*forward.tolist()),
+            "g_camBasis": spy.float3x3(basis),
             "g_viewport": spy.float2(float(width), float(height)),
             "g_focalPixels": float(self.focal_pixels(height)),
             "g_nearDepth": float(self.near),
