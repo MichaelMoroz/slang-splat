@@ -78,43 +78,20 @@ void csProjectAndBin(uint3 dispatchThreadID : SV_DispatchThreadID)
 void csComposeScanlineKeyValues(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     uint scanlineId = dispatchThreadID.x;
-    if (scanlineId >= g_maxScanlineEntries) return;
     uint scanlineCount = g_ScanlineCounter[0];
-    if (scanlineId >= scanlineCount) return;
+    if (scanlineId >= scanlineCount || scanlineId >= g_maxScanlineEntries) return;
 
     ScanlineWorkItem item = g_ScanlineWorkItems[scanlineId];
-    float4 centerRadiusDepth = g_ScreenCenterRadiusDepth[item.splatId];
-    float4 conicData = g_ScreenEllipseConic[item.splatId];
-    Ellipse ellipse;
-    ellipse.init(centerRadiusDepth.xy, centerRadiusDepth.z, conicData.xyz);
-    float tileSize = float(g_tileSize);
-    float halfTile = 0.5 * tileSize;
-    if (!try_prepare_conic_for_binning(ellipse, halfTile)) return;
+    uint baseIndex = g_SplatListBases[item.splatId] + item.splatListOffset;
+    if (baseIndex >= g_maxListEntries || item.lineCount == 0u) return;
 
-    ScanlineLoopConfig cfg;
-    cfg.scanAlongX = item.scanAlongX != 0u;
-    cfg.lineStart = 0;
-    cfg.lineEnd = 0;
-    cfg.minorMin = int(item.minorMin);
-    cfg.minorMax = int(item.minorMax);
-    cfg.minorLimit = cfg.scanAlongX ? g_tileWidth : g_tileHeight;
-    cfg.lineLimit = cfg.scanAlongX ? g_tileHeight : g_tileWidth;
-
-    ScanlineSpan span;
-    if (!compute_scanline_tile_span_universal(ellipse, cfg, tileSize, item.lineCoord, span)) return;
-    if (span.lineCount == 0u) return;
-
-    uint baseIndex = 0;
-    InterlockedAdd(g_ListCounter[0], span.lineCount, baseIndex);
-    if (baseIndex >= g_maxListEntries) return;
-
-    uint writeCount = min(span.lineCount, g_maxListEntries - baseIndex);
+    uint writeCount = min(item.lineCount, g_maxListEntries - baseIndex);
+    uint lineCoord = item.lineCoord;
+    bool scanAlongX = item.scanAlongX != 0u;
     for (uint i = 0; i < writeCount; i++)
     {
-        uint minorCoord = span.lineStartMinor + i;
-        if (!cfg.isMinorCoordValid(minorCoord)) continue;
-        uint tileId = cfg.composeTileId(item.lineCoord, minorCoord, g_tileWidth);
-        if (tileId >= g_tileCount) continue;
+        uint minorCoord = item.lineStartMinor + i;
+        uint tileId = scanAlongX ? (lineCoord * g_tileWidth + minorCoord) : (minorCoord * g_tileWidth + lineCoord);
         uint writeIndex = baseIndex + i;
         g_Keys[writeIndex] = (tileId << g_depthBits) | item.depthCode;
         g_Values[writeIndex] = item.splatId;

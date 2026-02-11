@@ -8,7 +8,9 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - For each splat:
   - project to screen space with sampled-5 MVEE fitting,
   - estimate projected radius,
-  - append scanline work items for overlapping tile spans.
+  - solve scanline spans and reserve final key/value slots once per splat,
+  - write per-splat list base offset,
+  - append scanline work items for overlapping tile spans with precomputed per-splat local offsets.
 - Output buffers:
   - projected splat data for raster stage,
   - scanline work item append buffer,
@@ -16,10 +18,11 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 
 ## 2. Compose Key/Value Per Scanline
 - Shader: `csComposeScanlineKeyValues`
-- One thread handles one scanline work item and expands it into final `(tile_id, depth)` and splat index entries.
+- One thread handles one scanline work item and writes final `(tile_id, depth)` and splat index entries using `splat_base + local_scanline_offset`.
 - Atomic model:
   - project/bin uses one atomic per splat to reserve scanline work items,
-  - compose uses one atomic per scanline to reserve final tile-entry slots.
+  - project/bin uses one atomic per splat to reserve final tile-entry slots,
+  - compose uses no global reservation atomics.
 - Dispatch is indirect from `g_ScanlineCounter`.
 
 ## 3. Sort

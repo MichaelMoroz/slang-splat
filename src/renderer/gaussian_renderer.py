@@ -185,6 +185,7 @@ class GaussianRenderer:
             "keys": self.device.create_buffer(size=max_list_entries * 4, usage=usage),
             "values": self.device.create_buffer(size=max_list_entries * 4, usage=usage),
             "counter": self.device.create_buffer(size=4, usage=usage),
+            "splat_list_bases": self.device.create_buffer(size=max(splat_capacity, 1) * self._U32_BYTES, usage=usage),
             "scanline_work_items": self.device.create_buffer(
                 size=max_scanline_entries * self._SCANLINE_WORK_ITEM_UINTS * self._U32_BYTES,
                 usage=usage,
@@ -287,6 +288,7 @@ class GaussianRenderer:
             "g_Keys": self._work_buffers["keys"],
             "g_Values": self._work_buffers["values"],
             "g_ListCounter": self._work_buffers["counter"],
+            "g_SplatListBases": self._work_buffers["splat_list_bases"],
             "g_ScanlineWorkItems": self._work_buffers["scanline_work_items"],
             "g_ScanlineCounter": self._work_buffers["scanline_counter"],
             "g_splatCount": scene.count,
@@ -327,18 +329,13 @@ class GaussianRenderer:
     def _compose_scanline_key_values_indirect(self, encoder: spy.CommandEncoder, args_buffer: spy.Buffer) -> None:
         with encoder.begin_compute_pass() as compute_pass:
             cursor = spy.ShaderCursor(compute_pass.bind_pipeline(self._p_compose_scanline))
-            cursor.g_ScreenCenterRadiusDepth = self._work_buffers["screen_center_radius_depth"]
-            cursor.g_ScreenEllipseConic = self._work_buffers["screen_ellipse_conic"]
             cursor.g_ScanlineWorkItems = self._work_buffers["scanline_work_items"]
             cursor.g_ScanlineCounter = self._work_buffers["scanline_counter"]
+            cursor.g_SplatListBases = self._work_buffers["splat_list_bases"]
             cursor.g_Keys = self._work_buffers["keys"]
             cursor.g_Values = self._work_buffers["values"]
-            cursor.g_ListCounter = self._work_buffers["counter"]
-            cursor.g_tileSize = self.tile_size
             cursor.g_tileWidth = self.tile_width
-            cursor.g_tileHeight = self.tile_height
             cursor.g_depthBits = self.depth_bits
-            cursor.g_tileCount = self.tile_count
             cursor.g_maxListEntries = self._max_list_entries
             cursor.g_maxScanlineEntries = self._max_scanline_entries
             compute_pass.dispatch_compute_indirect(

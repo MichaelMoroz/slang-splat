@@ -29,11 +29,11 @@ struct ScanlineWorkItem
     uint splatId;
     uint depthCode;
     uint lineCoord;
-    uint minorMin;
-    uint minorMax;
+    uint lineStartMinor;
+    uint lineCount;
+    uint splatListOffset;
     uint scanAlongX;
     uint reserved0;
-    uint reserved1;
 };
 
 groupshared float4 gsRoLocal[RASTER_BATCH];
@@ -57,6 +57,7 @@ uniform RWStructuredBuffer<float4> g_SplatQuat;
 uniform RWStructuredBuffer<uint> g_Keys;
 uniform RWStructuredBuffer<uint> g_Values;
 uniform RWStructuredBuffer<uint> g_ListCounter;
+uniform RWStructuredBuffer<uint> g_SplatListBases;
 uniform RWStructuredBuffer<ScanlineWorkItem> g_ScanlineWorkItems;
 uniform RWStructuredBuffer<uint> g_ScanlineCounter;
 uniform RWStructuredBuffer<uint2> g_TileRanges;

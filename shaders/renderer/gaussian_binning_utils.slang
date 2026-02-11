@@ -35,19 +35,37 @@ void emit_splat_bins(SplatBinRequest request)
     if (scanlineBase >= g_maxScanlineEntries) return;
 
     uint scanlineWriteCount = min(scanlineCount, g_maxScanlineEntries - scanlineBase);
+    if (scanlineWriteCount == 0u) return;
+
+    uint writtenListCount = 0u;
     for (uint i = 0; i < scanlineWriteCount; i++)
     {
-        uint scanlineIndex = scanlineBase + i;
-        int lineCoord = loopCfg.lineStart + int(i);
+        uint lineCoord = uint(loopCfg.lineStart + int(i));
+        ScanlineSpan span;
         ScanlineWorkItem item;
         item.splatId = request.splatId;
         item.depthCode = request.depthCode;
-        item.lineCoord = uint(lineCoord);
-        item.minorMin = uint(loopCfg.minorMin);
-        item.minorMax = uint(loopCfg.minorMax);
+        item.lineCoord = lineCoord;
+        item.lineStartMinor = 0u;
+        item.lineCount = 0u;
+        item.splatListOffset = 0u;
         item.scanAlongX = loopCfg.scanAlongX ? 1u : 0u;
         item.reserved0 = 0u;
-        item.reserved1 = 0u;
+        bool hasSpan = compute_scanline_tile_span_universal(ellipse, loopCfg, tileSize, lineCoord, span);
+        if (hasSpan && span.lineCount > 0u)
+        {
+            item.lineStartMinor = span.lineStartMinor;
+            item.lineCount = span.lineCount;
+            item.splatListOffset = writtenListCount;
+            writtenListCount += span.lineCount;
+        }
+
+        uint scanlineIndex = scanlineBase + i;
         g_ScanlineWorkItems[scanlineIndex] = item;
     }
+    if (writtenListCount == 0u) return;
+
+    uint listBase = 0u;
+    InterlockedAdd(g_ListCounter[0], writtenListCount, listBase);
+    g_SplatListBases[request.splatId] = listBase;
 }
