@@ -1,6 +1,6 @@
 static const uint UINT_MAX_VALUE = 0xFFFFFFFFu;
 static const uint INVALID_START = UINT_MAX_VALUE;
-static const uint PROJECT_GROUP_SIZE = 128u;
+static const uint PROJECT_GROUP_SIZE = 256u;
 static const uint TILE_GROUP_SIZE = 256u;
 static const uint RASTER_TILE_DIM = 16u;
 static const uint RASTER_BATCH = 256u;
