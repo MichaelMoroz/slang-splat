@@ -11,11 +11,9 @@ SHADER_ROOT = ROOT / "shaders"
 
 def device_type_from_name(name: str) -> spy.DeviceType:
     normalized = str(name).strip().lower()
-    if normalized in {"d3d12", "direct3d12", "dx12"}:
-        return spy.DeviceType.d3d12
     if normalized in {"vulkan", "vk"}:
         return spy.DeviceType.vulkan
-    raise ValueError(f"Unsupported device type '{name}'. Use 'd3d12' or 'vulkan'.")
+    raise ValueError(f"Unsupported device type '{name}'. Use 'vulkan'.")
 
 
 def debug_color(index: int, weight: float = 0.05) -> spy.float3:
@@ -28,7 +26,7 @@ def debug_color(index: int, weight: float = 0.05) -> spy.float3:
 
 
 def create_default_device(
-    device_type: spy.DeviceType = spy.DeviceType.d3d12, enable_debug_layers: bool = False
+    device_type: spy.DeviceType = spy.DeviceType.vulkan, enable_debug_layers: bool = False
 ) -> spy.Device:
     include_paths = (
         SHADER_ROOT,

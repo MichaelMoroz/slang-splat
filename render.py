@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from src import create_default_device, device_type_from_name
+from src import create_default_device
 from src.renderer import Camera, GaussianRenderer
 from src.scene import load_gaussian_ply
 
@@ -28,7 +28,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bg", type=float, nargs=3, default=(0.0, 0.0, 0.0), help="Background RGB color.")
     parser.add_argument("--no-flip-y", action="store_true", help="Disable vertical flip before writing PNG.")
     parser.add_argument("--debug-layers", action="store_true", help="Enable graphics debug layers.")
-    parser.add_argument("--device", type=str, default="d3d12", choices=("d3d12", "vulkan"), help="GPU backend.")
     return parser.parse_args()
 
 
@@ -38,10 +37,7 @@ def main() -> int:
     if args.max_splats > 0:
         scene = scene.subset(args.max_splats)
 
-    device = create_default_device(
-        device_type=device_type_from_name(args.device),
-        enable_debug_layers=args.debug_layers,
-    )
+    device = create_default_device(enable_debug_layers=args.debug_layers)
     renderer = GaussianRenderer(
         device=device,
         width=args.width,

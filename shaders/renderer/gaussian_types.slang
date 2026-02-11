@@ -70,10 +70,10 @@ uniform StructuredBuffer<uint> g_PrepassParams;
 uniform RWTexture2D<float4> g_Output;
 uniform Texture2D<float4> g_OutputGrad;
 
-uniform RWStructuredBuffer<uint> g_GradSplatPosLocal;
-uniform RWStructuredBuffer<uint> g_GradSplatInvScale;
-uniform RWStructuredBuffer<uint> g_GradSplatQuat;
-uniform RWStructuredBuffer<uint> g_GradScreenColorAlpha;
+uniform RWStructuredBuffer<float> g_GradSplatPosLocal;
+uniform RWStructuredBuffer<float> g_GradSplatInvScale;
+uniform RWStructuredBuffer<float> g_GradSplatQuat;
+uniform RWStructuredBuffer<float> g_GradScreenColorAlpha;
 
 uniform uint g_splatCount;
 uniform uint g_tileSize;

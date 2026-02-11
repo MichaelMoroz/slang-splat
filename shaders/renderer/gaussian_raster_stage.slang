@@ -10,37 +10,41 @@ struct RasterState : IDifferentiable
 void atomic_add_grad_pos(uint splatId, float4 grad)
 {
     uint base = splatId * 4u;
-    if (grad.x != 0.0) { for (;;) { uint oldBits = g_GradSplatPosLocal[base + 0u]; uint newBits = asuint(asfloat(oldBits) + grad.x); uint outBits = 0u; InterlockedCompareExchange(g_GradSplatPosLocal[base + 0u], oldBits, newBits, outBits); if (outBits == oldBits) break; } }
-    if (grad.y != 0.0) { for (;;) { uint oldBits = g_GradSplatPosLocal[base + 1u]; uint newBits = asuint(asfloat(oldBits) + grad.y); uint outBits = 0u; InterlockedCompareExchange(g_GradSplatPosLocal[base + 1u], oldBits, newBits, outBits); if (outBits == oldBits) break; } }
-    if (grad.z != 0.0) { for (;;) { uint oldBits = g_GradSplatPosLocal[base + 2u]; uint newBits = asuint(asfloat(oldBits) + grad.z); uint outBits = 0u; InterlockedCompareExchange(g_GradSplatPosLocal[base + 2u], oldBits, newBits, outBits); if (outBits == oldBits) break; } }
-    if (grad.w != 0.0) { for (;;) { uint oldBits = g_GradSplatPosLocal[base + 3u]; uint newBits = asuint(asfloat(oldBits) + grad.w); uint outBits = 0u; InterlockedCompareExchange(g_GradSplatPosLocal[base + 3u], oldBits, newBits, outBits); if (outBits == oldBits) break; } }
+    float old = 0.0;
+    if (grad.x != 0.0) InterlockedAdd(g_GradSplatPosLocal[base + 0u], grad.x, old);
+    if (grad.y != 0.0) InterlockedAdd(g_GradSplatPosLocal[base + 1u], grad.y, old);
+    if (grad.z != 0.0) InterlockedAdd(g_GradSplatPosLocal[base + 2u], grad.z, old);
+    if (grad.w != 0.0) InterlockedAdd(g_GradSplatPosLocal[base + 3u], grad.w, old);
 }
 
 void atomic_add_grad_inv_scale(uint splatId, float4 grad)
 {
     uint base = splatId * 4u;
-    if (grad.x != 0.0) { for (;;) { uint oldBits = g_GradSplatInvScale[base + 0u]; uint newBits = asuint(asfloat(oldBits) + grad.x); uint outBits = 0u; InterlockedCompareExchange(g_GradSplatInvScale[base + 0u], oldBits, newBits, outBits); if (outBits == oldBits) break; } }
-    if (grad.y != 0.0) { for (;;) { uint oldBits = g_GradSplatInvScale[base + 1u]; uint newBits = asuint(asfloat(oldBits) + grad.y); uint outBits = 0u; InterlockedCompareExchange(g_GradSplatInvScale[base + 1u], oldBits, newBits, outBits); if (outBits == oldBits) break; } }
-    if (grad.z != 0.0) { for (;;) { uint oldBits = g_GradSplatInvScale[base + 2u]; uint newBits = asuint(asfloat(oldBits) + grad.z); uint outBits = 0u; InterlockedCompareExchange(g_GradSplatInvScale[base + 2u], oldBits, newBits, outBits); if (outBits == oldBits) break; } }
-    if (grad.w != 0.0) { for (;;) { uint oldBits = g_GradSplatInvScale[base + 3u]; uint newBits = asuint(asfloat(oldBits) + grad.w); uint outBits = 0u; InterlockedCompareExchange(g_GradSplatInvScale[base + 3u], oldBits, newBits, outBits); if (outBits == oldBits) break; } }
+    float old = 0.0;
+    if (grad.x != 0.0) InterlockedAdd(g_GradSplatInvScale[base + 0u], grad.x, old);
+    if (grad.y != 0.0) InterlockedAdd(g_GradSplatInvScale[base + 1u], grad.y, old);
+    if (grad.z != 0.0) InterlockedAdd(g_GradSplatInvScale[base + 2u], grad.z, old);
+    if (grad.w != 0.0) InterlockedAdd(g_GradSplatInvScale[base + 3u], grad.w, old);
 }
 
 void atomic_add_grad_quat(uint splatId, float4 grad)
 {
     uint base = splatId * 4u;
-    if (grad.x != 0.0) { for (;;) { uint oldBits = g_GradSplatQuat[base + 0u]; uint newBits = asuint(asfloat(oldBits) + grad.x); uint outBits = 0u; InterlockedCompareExchange(g_GradSplatQuat[base + 0u], oldBits, newBits, outBits); if (outBits == oldBits) break; } }
-    if (grad.y != 0.0) { for (;;) { uint oldBits = g_GradSplatQuat[base + 1u]; uint newBits = asuint(asfloat(oldBits) + grad.y); uint outBits = 0u; InterlockedCompareExchange(g_GradSplatQuat[base + 1u], oldBits, newBits, outBits); if (outBits == oldBits) break; } }
-    if (grad.z != 0.0) { for (;;) { uint oldBits = g_GradSplatQuat[base + 2u]; uint newBits = asuint(asfloat(oldBits) + grad.z); uint outBits = 0u; InterlockedCompareExchange(g_GradSplatQuat[base + 2u], oldBits, newBits, outBits); if (outBits == oldBits) break; } }
-    if (grad.w != 0.0) { for (;;) { uint oldBits = g_GradSplatQuat[base + 3u]; uint newBits = asuint(asfloat(oldBits) + grad.w); uint outBits = 0u; InterlockedCompareExchange(g_GradSplatQuat[base + 3u], oldBits, newBits, outBits); if (outBits == oldBits) break; } }
+    float old = 0.0;
+    if (grad.x != 0.0) InterlockedAdd(g_GradSplatQuat[base + 0u], grad.x, old);
+    if (grad.y != 0.0) InterlockedAdd(g_GradSplatQuat[base + 1u], grad.y, old);
+    if (grad.z != 0.0) InterlockedAdd(g_GradSplatQuat[base + 2u], grad.z, old);
+    if (grad.w != 0.0) InterlockedAdd(g_GradSplatQuat[base + 3u], grad.w, old);
 }
 
 void atomic_add_grad_color_alpha(uint splatId, float4 grad)
 {
     uint base = splatId * 4u;
-    if (grad.x != 0.0) { for (;;) { uint oldBits = g_GradScreenColorAlpha[base + 0u]; uint newBits = asuint(asfloat(oldBits) + grad.x); uint outBits = 0u; InterlockedCompareExchange(g_GradScreenColorAlpha[base + 0u], oldBits, newBits, outBits); if (outBits == oldBits) break; } }
-    if (grad.y != 0.0) { for (;;) { uint oldBits = g_GradScreenColorAlpha[base + 1u]; uint newBits = asuint(asfloat(oldBits) + grad.y); uint outBits = 0u; InterlockedCompareExchange(g_GradScreenColorAlpha[base + 1u], oldBits, newBits, outBits); if (outBits == oldBits) break; } }
-    if (grad.z != 0.0) { for (;;) { uint oldBits = g_GradScreenColorAlpha[base + 2u]; uint newBits = asuint(asfloat(oldBits) + grad.z); uint outBits = 0u; InterlockedCompareExchange(g_GradScreenColorAlpha[base + 2u], oldBits, newBits, outBits); if (outBits == oldBits) break; } }
-    if (grad.w != 0.0) { for (;;) { uint oldBits = g_GradScreenColorAlpha[base + 3u]; uint newBits = asuint(asfloat(oldBits) + grad.w); uint outBits = 0u; InterlockedCompareExchange(g_GradScreenColorAlpha[base + 3u], oldBits, newBits, outBits); if (outBits == oldBits) break; } }
+    float old = 0.0;
+    if (grad.x != 0.0) InterlockedAdd(g_GradScreenColorAlpha[base + 0u], grad.x, old);
+    if (grad.y != 0.0) InterlockedAdd(g_GradScreenColorAlpha[base + 1u], grad.y, old);
+    if (grad.z != 0.0) InterlockedAdd(g_GradScreenColorAlpha[base + 2u], grad.z, old);
+    if (grad.w != 0.0) InterlockedAdd(g_GradScreenColorAlpha[base + 3u], grad.w, old);
 }
 
 [BackwardDerivative(load_splat_pos_global_bwd)]
@@ -248,10 +252,10 @@ void csClearRasterGrads(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint idx = dispatchThreadID.x;
     if (idx >= gradCount) return;
 
-    g_GradSplatPosLocal[idx] = 0u;
-    g_GradSplatInvScale[idx] = 0u;
-    g_GradSplatQuat[idx] = 0u;
-    g_GradScreenColorAlpha[idx] = 0u;
+    g_GradSplatPosLocal[idx] = 0.0;
+    g_GradSplatInvScale[idx] = 0.0;
+    g_GradSplatQuat[idx] = 0.0;
+    g_GradScreenColorAlpha[idx] = 0.0;
 }
 
 [shader("compute")]
