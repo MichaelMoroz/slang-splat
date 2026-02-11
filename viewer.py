@@ -23,6 +23,7 @@ class SplatViewer(spy.AppWindow):
         width: int = 1280,
         height: int = 720,
         title: str = "Slang Splat Viewer",
+        max_prepass_memory_mb: int = 512,
     ) -> None:
         super().__init__(
             app,
@@ -34,11 +35,13 @@ class SplatViewer(spy.AppWindow):
         )
 
         self.list_capacity_multiplier = 16
+        self.max_prepass_memory_mb = max(int(max_prepass_memory_mb), 1)
         self.renderer = GaussianRenderer(
             self.device,
             width=width,
             height=height,
             list_capacity_multiplier=self.list_capacity_multiplier,
+            max_prepass_memory_mb=self.max_prepass_memory_mb,
         )
         self.scene: GaussianScene | None = None
         self.scene_path: Path | None = None
@@ -208,6 +211,7 @@ class SplatViewer(spy.AppWindow):
             transmittance_threshold=float(self.trans_slider.value),
             sampled5_safety_scale=float(self.sampled5_safety_slider.value),
             list_capacity_multiplier=self.list_capacity_multiplier,
+            max_prepass_memory_mb=self.max_prepass_memory_mb,
             debug_show_ellipses=bool(self.debug_ellipse_checkbox.value),
             debug_show_processed_count=bool(self.debug_processed_count_checkbox.value),
         )
@@ -381,10 +385,11 @@ class SplatViewer(spy.AppWindow):
         if self.stats:
             delayed_tag = " (delayed)" if bool(self.stats.get("stats_latency_frames", 0)) else ""
             validity_tag = "" if bool(self.stats.get("stats_valid", True)) else " [warming]"
+            cap_tag = " [cap]" if bool(self.stats.get("capacity_limited", False)) else ""
             self.render_stats_text.text = (
                 f"Generated: {int(self.stats['generated_entries']):,} | "
                 f"Written: {int(self.stats['written_entries']):,} | "
-                f"Overflow: {bool(self.stats['overflow'])}{delayed_tag}{validity_tag}"
+                f"Overflow: {bool(self.stats['overflow'])}{cap_tag}{delayed_tag}{validity_tag}"
             )
         else:
             self.render_stats_text.text = "Generated: 0 | Written: 0"
@@ -429,6 +434,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ply", type=Path, default=None, help="Optional initial PLY file.")
     parser.add_argument("--width", type=int, default=1280)
     parser.add_argument("--height", type=int, default=720)
+    parser.add_argument("--prepass-memory-mb", type=int, default=512, help="Cap prepass key/value/scanline memory.")
     parser.add_argument("--frames", type=int, default=0, help="Run a fixed frame count for smoke tests.")
     parser.add_argument("--debug-layers", action="store_true")
     return parser.parse_args()
@@ -442,6 +448,7 @@ def main() -> int:
         app,
         width=args.width,
         height=args.height,
+        max_prepass_memory_mb=args.prepass_memory_mb,
     )
     if args.ply is not None:
         viewer.load_scene(args.ply)

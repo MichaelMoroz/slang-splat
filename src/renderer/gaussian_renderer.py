@@ -22,6 +22,8 @@ class GaussianRenderer:
     _COUNTER_READBACK_RING_SIZE = 2
     _SCANLINE_WORK_ITEM_UINTS = 8
     _U32_BYTES = 4
+    _MEBIBYTE_BYTES = 1024 * 1024
+    _PREPASS_ENTRY_BYTES = (_SCANLINE_WORK_ITEM_UINTS + 2) * _U32_BYTES
 
     def __init__(
         self,
@@ -35,6 +37,7 @@ class GaussianRenderer:
         max_splat_steps: int = 32768,
         transmittance_threshold: float = 0.005,
         list_capacity_multiplier: int = 64,
+        max_prepass_memory_mb: int = 512,
         sampled5_mvee_iters: int = 6,
         sampled5_safety_scale: float = 1.0,
         sampled5_radius_pad_px: float = 1.0,
@@ -56,6 +59,8 @@ class GaussianRenderer:
         self.max_splat_steps = int(max_splat_steps)
         self.transmittance_threshold = float(transmittance_threshold)
         self.list_capacity_multiplier = int(list_capacity_multiplier)
+        self.max_prepass_memory_mb = max(int(max_prepass_memory_mb), 1)
+        self._max_prepass_memory_bytes = self.max_prepass_memory_mb * self._MEBIBYTE_BYTES
         self.sampled5_mvee_iters = int(sampled5_mvee_iters)
         self.sampled5_safety_scale = float(sampled5_safety_scale)
         self.sampled5_radius_pad_px = float(sampled5_radius_pad_px)
@@ -144,6 +149,9 @@ class GaussianRenderer:
             | spy.BufferUsage.copy_destination
         )
 
+    def _max_prepass_entries_by_budget(self) -> int:
+        return max(self._max_prepass_memory_bytes // self._PREPASS_ENTRY_BYTES, 1)
+
     def _ensure_scene_buffers(self, splat_count: int) -> None:
         if self._scene_buffers and splat_count <= self._scene_capacity:
             self._scene_count = splat_count
@@ -161,8 +169,12 @@ class GaussianRenderer:
         self._scene_count = splat_count
 
     def _ensure_work_buffers(self, splat_count: int, min_list_entries: int = 0) -> None:
+        max_prepass_entries = self._max_prepass_entries_by_budget()
         required_splat_capacity = max(splat_count, 1)
-        required_list_entries = max(splat_count * self.list_capacity_multiplier, min_list_entries, 1)
+        required_list_entries = min(
+            max(splat_count * self.list_capacity_multiplier, min_list_entries, 1),
+            max_prepass_entries,
+        )
         required_scanline_entries = required_list_entries
         if (
             self._work_buffers
@@ -179,10 +191,10 @@ class GaussianRenderer:
         old_list_capacity = max(self._max_list_entries, 1)
         old_scanline_capacity = max(self._max_scanline_entries, 1)
         splat_capacity = max(required_splat_capacity, old_splat_capacity + old_splat_capacity // 2)
-        max_list_entries = max(required_list_entries, old_list_capacity + old_list_capacity // 2)
-        max_scanline_entries = max(
-            required_scanline_entries,
-            old_scanline_capacity + old_scanline_capacity // 2,
+        max_list_entries = min(max(required_list_entries, old_list_capacity + old_list_capacity // 2), max_prepass_entries)
+        max_scanline_entries = min(
+            max(required_scanline_entries, old_scanline_capacity + old_scanline_capacity // 2),
+            max_prepass_entries,
         )
         usage = self._buffer_usage_rw()
         self._work_buffers = {
@@ -320,7 +332,8 @@ class GaussianRenderer:
         self._delayed_overflow = overflow
         self._delayed_stats_valid = True
         if overflow:
-            self._pending_min_list_entries = max(self._pending_min_list_entries, generated)
+            target_capacity = min(generated, self._max_prepass_entries_by_budget())
+            self._pending_min_list_entries = max(self._pending_min_list_entries, target_capacity)
 
     def _project_and_bin(self, encoder: spy.CommandEncoder, scene: GaussianScene, camera: Camera) -> None:
         vars = {
@@ -569,9 +582,14 @@ class GaussianRenderer:
             "generated_entries": int(self._delayed_generated_entries) if self._delayed_stats_valid else 0,
             "written_entries": int(self._delayed_written_entries) if self._delayed_stats_valid else 0,
             "overflow": bool(self._delayed_overflow) if self._delayed_stats_valid else False,
+            "capacity_limited": bool(self._delayed_overflow) if self._delayed_stats_valid else False,
             "depth_bits": int(self.depth_bits),
             "tile_count": int(self.tile_count),
             "splat_count": int(scene.count),
+            "max_list_entries": int(self._max_list_entries),
+            "max_scanline_entries": int(self._max_scanline_entries),
+            "prepass_entry_cap": int(self._max_prepass_entries_by_budget()),
+            "prepass_memory_mb": int(self.max_prepass_memory_mb),
             "stats_valid": bool(self._delayed_stats_valid),
             "stats_latency_frames": 1,
         }
@@ -596,7 +614,12 @@ class GaussianRenderer:
                     "generated_entries": 0,
                     "written_entries": 0,
                     "overflow": False,
+                    "capacity_limited": False,
                     "depth_bits": self.depth_bits,
+                    "max_list_entries": int(self._max_list_entries),
+                    "max_scanline_entries": int(self._max_scanline_entries),
+                    "prepass_entry_cap": int(self._max_prepass_entries_by_budget()),
+                    "prepass_memory_mb": int(self.max_prepass_memory_mb),
                     "stats_valid": True,
                     "stats_latency_frames": 1,
                 },

@@ -20,7 +20,13 @@ void csProjectAndBin(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     float invDepth = 1.0 / max(depthValue, EPS_SMALL);
     float2 fitCenter = camPos.xy * (g_focalPixels * invDepth) + 0.5 * g_viewport;
-    float fitRadius = g_maxSplatRadiusPx;
+    float maxAxisWorld = max(ellipsoid.scale.x, max(ellipsoid.scale.y, ellipsoid.scale.z));
+    float fallbackRadius = g_focalPixels * maxAxisWorld * invDepth;
+    float fitRadius = clamp(
+        fallbackRadius * g_sampled5SafetyScale + g_sampled5RadiusPadPx,
+        MIN_RADIUS_PX,
+        g_maxSplatRadiusPx
+    );
     float invFitRadius2 = 1.0 / max(fitRadius * fitRadius, EPS_SMALL);
     float3 fitConic = float3(invFitRadius2, 0.0, invFitRadius2);
 

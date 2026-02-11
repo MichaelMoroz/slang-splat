@@ -31,11 +31,13 @@ If you have a local Slangpy checkout, replace the last command with `python -m p
 ```powershell
 python render.py --ply C:\path\to\scene.ply --output render.png --width 1280 --height 720
 ```
+Use `--prepass-memory-mb` to cap prepass GPU memory for very large scenes.
 
 ## Realtime Viewer
 ```powershell
 python viewer.py --ply D:\Datasets\3DGS\TEST\flowers.ply
 ```
+Use `--prepass-memory-mb` to prevent large-scene Vulkan OOM crashes.
 
 Viewer controls:
 - `LMB + drag`: look around

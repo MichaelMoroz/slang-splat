@@ -206,6 +206,13 @@ def project_splats_sampled5_mvee(
         max_scale = float(np.max(scale))
         scale = np.maximum(scale, np.float32(max_scale * 0.05))
         scale = scale * np.float32(radius_scale)
+        fallback_radius = float(
+            np.clip(
+                (focal * float(np.max(scale)) / max(depth_value, 1e-6)) * float(safety_scale) + float(radius_pad_px),
+                1.0,
+                float(max_splat_radius_px),
+            )
+        )
         invs = 1.0 / np.maximum(scale, np.float32(1e-6))
         ro_local = (_quat_rotate(camera.position - world_pos, q) * invs).astype(np.float32)
         pos_local[i, :] = ro_local
@@ -214,7 +221,7 @@ def project_splats_sampled5_mvee(
         local_pts, ok_silhouette = _silhouette_points_local5(ro_local, float(mvee_eps))
         if not ok_silhouette:
             status_bits[i] |= STATUS_SILHOUETTE_UNSTABLE
-            radius_px = float(max_splat_radius_px)
+            radius_px = fallback_radius
             center = np.array([px, py], dtype=np.float32)
         else:
             q_inv = _quat_conj(q)
@@ -241,7 +248,7 @@ def project_splats_sampled5_mvee(
             sample_points_screen[i, :, :] = screen_pts
             if not ok_project:
                 status_bits[i] |= STATUS_NEAR_CAMERA_UNSTABLE
-                radius_px = float(max_splat_radius_px)
+                radius_px = fallback_radius
                 center = np.array([px, py], dtype=np.float32)
             else:
                 center_fit, axes_fit, angle_fit, st = _fit_mvee_5pt(
@@ -256,7 +263,7 @@ def project_splats_sampled5_mvee(
                 ellipse_center_axes[i, 4] = np.float32(angle_fit)
                 if not np.all(np.isfinite(center_fit)) or not np.all(np.isfinite(axes_fit)):
                     status_bits[i] |= STATUS_HARD_FALLBACK
-                    radius_px = float(max_splat_radius_px)
+                    radius_px = fallback_radius
                     center = np.array([px, py], dtype=np.float32)
                 else:
                     radius_px = float(np.clip(float(np.max(axes_fit)) * safety_scale + radius_pad_px, 1.0, max_splat_radius_px))

@@ -242,3 +242,32 @@ def test_raster_backward_smoke_and_determinism(device):
         assert grads0[name].shape == (scene.count, 4)
         assert np.all(np.isfinite(grads0[name]))
         np.testing.assert_allclose(grads0[name], grads1[name], rtol=1e-5, atol=1e-6)
+
+
+def test_prepass_capacity_budget_caps_growth(device):
+    scene = make_scene(256, seed=97)
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    renderer = GaussianRenderer(
+        device,
+        width=96,
+        height=96,
+        tile_size=16,
+        radius_scale=1.6,
+        list_capacity_multiplier=1024,
+        max_prepass_memory_mb=1,
+    )
+    renderer.set_scene(scene)
+
+    entry_cap = max(
+        (renderer.max_prepass_memory_mb * renderer._MEBIBYTE_BYTES) // renderer._PREPASS_ENTRY_BYTES,
+        1,
+    )
+    assert renderer._max_list_entries <= entry_cap
+    assert renderer._max_scanline_entries <= entry_cap
+
+    _, stats0 = renderer.render_to_texture(camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32))
+    _, stats1 = renderer.render_to_texture(camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32))
+    assert stats0["stats_valid"] is False
+    assert stats1["stats_valid"] is True
+    assert int(stats1["prepass_entry_cap"]) == int(entry_cap)
+    assert int(stats1["prepass_memory_mb"]) == 1

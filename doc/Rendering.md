@@ -7,6 +7,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - Shader: `csProjectAndBin`
 - For each splat:
   - project to screen space with sampled-5 MVEE fitting,
+  - if sampled-5 fitting is unstable, use an analytic depth/scale fallback radius instead of hard max-radius fallback,
   - estimate projected radius,
   - solve scanline spans and reserve final key/value slots once per splat,
   - write per-splat list base offset,
@@ -56,3 +57,4 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 ## Stats Notes
 - `generated_entries` / `written_entries` are reported with one-frame latency (`stats_latency_frames = 1`).
 - `stats_valid` indicates whether delayed stats are available yet (warm-up frame returns `False`).
+- Prepass key/value/scanline capacity is bounded by `max_prepass_memory_mb`; stats expose `prepass_entry_cap`, `max_list_entries`, `max_scanline_entries`, and `capacity_limited`.
