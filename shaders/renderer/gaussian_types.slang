@@ -84,41 +84,54 @@ uniform RWStructuredBuffer<float> g_GradSplatInvScale;
 uniform RWStructuredBuffer<float> g_GradSplatQuat;
 uniform RWStructuredBuffer<float> g_GradScreenColorAlpha;
 
-uniform uint g_splatCount;
-uniform uint g_tileSize;
-uniform uint g_tileWidth;
-uniform uint g_tileHeight;
-uniform uint g_tileCount;
-uniform uint g_depthBits;
-uniform uint g_sortedCountOffset;
-uniform uint g_maxListEntries;
-uniform uint g_maxScanlineEntries;
-uniform uint g_width;
-uniform uint g_height;
-uniform uint g_maxSplatSteps;
+struct CameraParams
+{
+    float2 viewport;
+    float3 camPos;
+    float3x3 camBasis;
+    float focalPixels;
+    float nearDepth;
+    float farDepth;
+    float projDistortionK1;
+    float projDistortionK2;
+};
 
-uniform float2 g_viewport;
-uniform float3 g_camPos;
-uniform float3x3 g_camBasis;
-uniform float3 g_background;
+struct PrepassParams
+{
+    uint splatCount;
+    uint tileSize;
+    uint tileWidth;
+    uint tileHeight;
+    uint tileCount;
+    uint depthBits;
+    uint sortedCountOffset;
+    uint maxListEntries;
+    uint maxScanlineEntries;
+    float radiusScale;
+    float maxSplatRadiusPx;
+    uint sampled5MVEEIters;
+    float sampled5SafetyScale;
+    float sampled5RadiusPadPx;
+    float sampled5Eps;
+};
 
-uniform float g_focalPixels;
-uniform float g_nearDepth;
-uniform float g_farDepth;
-uniform float g_radiusScale;
-uniform float g_maxSplatRadiusPx;
-uniform float g_alphaCutoff;
-uniform float g_transmittanceThreshold;
-uniform uint g_sampled5MVEEIters;
-uniform float g_sampled5SafetyScale;
-uniform float g_sampled5RadiusPadPx;
-uniform float g_sampled5Eps;
-uniform float g_projDistortionK1;
-uniform float g_projDistortionK2;
-uniform uint g_debugShowEllipses;
-uniform uint g_debugShowProcessedCount;
-uniform float g_debugEllipseThicknessPx;
-uniform float3 g_debugEllipseColor;
+struct RasterParams
+{
+    uint width;
+    uint height;
+    uint maxSplatSteps;
+    float alphaCutoff;
+    float transmittanceThreshold;
+    float3 background;
+    uint debugShowEllipses;
+    uint debugShowProcessedCount;
+    float debugEllipseThicknessPx;
+    float3 debugEllipseColor;
+};
+
+uniform CameraParams g_Camera;
+uniform PrepassParams g_Prepass;
+uniform RasterParams g_Raster;
 
 struct Gaussian3D
 {

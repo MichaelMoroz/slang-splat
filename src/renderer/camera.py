@@ -39,12 +39,12 @@ class Camera:
         right, up, forward = self.basis()
         basis = np.stack((right, up, forward), axis=0).astype(np.float32)
         return {
-            "g_camPos": spy.float3(*self.position.tolist()),
-            "g_camBasis": spy.float3x3(basis),
-            "g_viewport": spy.float2(float(width), float(height)),
-            "g_focalPixels": float(self.focal_pixels(height)),
-            "g_nearDepth": float(self.near),
-            "g_farDepth": float(self.far),
+            "viewport": spy.float2(float(width), float(height)),
+            "camPos": spy.float3(*self.position.tolist()),
+            "camBasis": spy.float3x3(basis),
+            "focalPixels": float(self.focal_pixels(height)),
+            "nearDepth": float(self.near),
+            "farDepth": float(self.far),
         }
 
     @staticmethod

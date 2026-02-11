@@ -156,7 +156,7 @@ float raster_eval_alpha(uint localIdx, no_diff float3 rayDir)
     float coverage = saturate(1.0 - rho);
     coverage = coverage * coverage * (3.0 - 2.0 * coverage);
     float alpha = saturate(gaussian.colorAlpha.w * coverage);
-    if (alpha < g_alphaCutoff) return 0.0;
+    if (alpha < g_Raster.alphaCutoff) return 0.0;
     return alpha;
 }
 
@@ -215,7 +215,7 @@ RasterState raster_forward_replay(
             if (alpha <= 0.0) continue;
 
             state = raster_blend_step(state, localIdx, alpha);
-            if (state.trans < g_transmittanceThreshold)
+            if (state.trans < g_Raster.transmittanceThreshold)
             {
                 pixelDone = true;
                 InterlockedAdd(gsStoppedPixels, 1u);
@@ -242,7 +242,7 @@ float3 output_to_linear_grad(float3 finalColor, float3 dOutputRgb)
 [numthreads(TILE_GROUP_SIZE, 1, 1)]
 void csClearRasterGrads(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
-    uint gradCount = g_splatCount * SPLAT_GRAD_COMPONENTS;
+    uint gradCount = g_Prepass.splatCount * SPLAT_GRAD_COMPONENTS;
     uint idx = dispatchThreadID.x;
     if (idx >= gradCount) return;
 
@@ -258,13 +258,13 @@ void csRasterize(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_Gr
 {
     uint px = dispatchThreadID.x;
     uint py = dispatchThreadID.y;
-    bool pixelActive = px < g_width && py < g_height;
-    uint samplePx = min(px, g_width - 1u);
-    uint samplePy = min(py, g_height - 1u);
+    bool pixelActive = px < g_Raster.width && py < g_Raster.height;
+    uint samplePx = min(px, g_Raster.width - 1u);
+    uint samplePy = min(py, g_Raster.height - 1u);
 
-    uint tileX = samplePx / g_tileSize;
-    uint tileY = samplePy / g_tileSize;
-    uint tileId = tileY * g_tileWidth + tileX;
+    uint tileX = samplePx / g_Prepass.tileSize;
+    uint tileY = samplePy / g_Prepass.tileSize;
+    uint tileId = tileY * g_Prepass.tileWidth + tileX;
     uint2 range = g_TileRanges[tileId];
     bool hasTileRange = range.x != INVALID_START && range.y > range.x;
     RasterState state = { 0.0, 1.0 };
@@ -273,28 +273,28 @@ void csRasterize(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_Gr
     if (hasTileRange)
     {
         uint start = range.x;
-        uint end = min(range.y, start + g_maxSplatSteps);
-        float2 rayUV = (float2(samplePx, samplePy) + 0.5 - 0.5 * g_viewport) / g_focalPixels;
+        uint end = min(range.y, start + g_Raster.maxSplatSteps);
+        float2 rayUV = (float2(samplePx, samplePy) + 0.5 - 0.5 * g_Camera.viewport) / g_Camera.focalPixels;
         float3 rayDir = normalize(camera_to_world(float3(rayUV, 1.0)));
         state = raster_forward_replay(start, end, pixelActive, rayDir, lane, processedCount);
 
         if (pixelActive)
         {
-            if (g_debugShowProcessedCount != 0u)
+            if (g_Raster.debugShowProcessedCount != 0u)
             {
                 float processed = float(processedCount);
-                float logMax = log2(float(g_maxSplatSteps) + 1.0);
+                float logMax = log2(float(g_Raster.maxSplatSteps) + 1.0);
                 float normalized = (logMax > 0.0) ? saturate(log2(processed + 1.0) / logMax) : 0.0;
                 float3 debugColor = float3(normalized);
                 outputValue = float4(debugColor, 1.0);
             } else {
-                float3 finalColor = state.accum + state.trans * g_background;
-                if (g_debugShowEllipses != 0u)
+                float3 finalColor = state.accum + state.trans * g_Raster.background;
+                if (g_Raster.debugShowEllipses != 0u)
                 {
                     float2 samplePoint = float2(px, py) + 0.5;
                     float maxEdge = 0.0;
-                    float3 edgeColor = g_debugEllipseColor;
-                    float thicknessPx = max(g_debugEllipseThicknessPx, MIN_DEBUG_THICKNESS_PX);
+                    float3 edgeColor = g_Raster.debugEllipseColor;
+                    float thicknessPx = max(g_Raster.debugEllipseThicknessPx, MIN_DEBUG_THICKNESS_PX);
                     for (uint idx = start; idx < end; idx++)
                     {
                         uint splatId = g_SortedValues[idx];
@@ -325,7 +325,9 @@ void csRasterize(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_Gr
             }
         }
     } else if (pixelActive) {
-        float3 bgColor = (g_debugShowProcessedCount != 0u) ? float3(0.0) : pow(max(g_background, 0.0), GAMMA_LINEAR_TO_OUTPUT);
+        float3 bgColor = (g_Raster.debugShowProcessedCount != 0u)
+            ? float3(0.0)
+            : pow(max(g_Raster.background, 0.0), GAMMA_LINEAR_TO_OUTPUT);
         outputValue = float4(bgColor, 1.0);
     }
 
@@ -342,23 +344,23 @@ void csRasterize(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_Gr
 [numthreads(RASTER_TILE_DIM, RASTER_TILE_DIM, 1)]
 void csRasterizeBackward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_GroupIndex)
 {
-    if (g_debugShowProcessedCount != 0u || g_debugShowEllipses != 0u) return;
+    if (g_Raster.debugShowProcessedCount != 0u || g_Raster.debugShowEllipses != 0u) return;
 
     uint px = dispatchThreadID.x;
     uint py = dispatchThreadID.y;
-    bool pixelActive = px < g_width && py < g_height;
-    uint samplePx = min(px, g_width - 1u);
-    uint samplePy = min(py, g_height - 1u);
+    bool pixelActive = px < g_Raster.width && py < g_Raster.height;
+    uint samplePx = min(px, g_Raster.width - 1u);
+    uint samplePy = min(py, g_Raster.height - 1u);
 
-    uint tileX = samplePx / g_tileSize;
-    uint tileY = samplePy / g_tileSize;
-    uint tileId = tileY * g_tileWidth + tileX;
+    uint tileX = samplePx / g_Prepass.tileSize;
+    uint tileY = samplePy / g_Prepass.tileSize;
+    uint tileId = tileY * g_Prepass.tileWidth + tileX;
     uint2 range = g_TileRanges[tileId];
     bool hasTileRange = range.x != INVALID_START && range.y > range.x;
 
     uint start = range.x;
-    uint end = hasTileRange ? min(range.y, start + g_maxSplatSteps) : start;
-    float2 rayUV = (float2(samplePx, samplePy) + 0.5 - 0.5 * g_viewport) / g_focalPixels;
+    uint end = hasTileRange ? min(range.y, start + g_Raster.maxSplatSteps) : start;
+    float2 rayUV = (float2(samplePx, samplePy) + 0.5 - 0.5 * g_Camera.viewport) / g_Camera.focalPixels;
     float3 rayDir = normalize(camera_to_world(float3(rayUV, 1.0)));
 
     RasterState state = { 0.0, 1.0 };
@@ -377,10 +379,10 @@ void csRasterizeBackward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane
     if (pixelActive && hasTileRange)
     {
         float4 dOut = g_OutputGrad[uint2(px, py)];
-        float3 finalColor = state.accum + state.trans * g_background;
+        float3 finalColor = state.accum + state.trans * g_Raster.background;
         float3 dFinalColor = output_to_linear_grad(finalColor, dOut.xyz);
         dState.accum = dFinalColor;
-        dState.trans = dot(dFinalColor, g_background) - dOut.w;
+        dState.trans = dot(dFinalColor, g_Raster.background) - dOut.w;
     }
 
     uint processedEnd = start + processedCount;

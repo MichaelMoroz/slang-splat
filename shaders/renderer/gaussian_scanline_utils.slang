@@ -53,8 +53,8 @@ ScanlineLoopConfig make_scanline_loop_config(
     cfg.lineEnd = cfg.scanAlongX ? maxY : maxX;
     cfg.minorMin = cfg.scanAlongX ? minX : minY;
     cfg.minorMax = cfg.scanAlongX ? maxX : maxY;
-    cfg.minorLimit = cfg.scanAlongX ? g_tileWidth : g_tileHeight;
-    cfg.lineLimit = cfg.scanAlongX ? g_tileHeight : g_tileWidth;
+    cfg.minorLimit = cfg.scanAlongX ? g_Prepass.tileWidth : g_Prepass.tileHeight;
+    cfg.lineLimit = cfg.scanAlongX ? g_Prepass.tileHeight : g_Prepass.tileWidth;
     return cfg;
 }
 

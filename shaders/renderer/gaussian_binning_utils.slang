@@ -7,12 +7,12 @@ void emit_splat_bins(SplatBinRequest request)
     if (!ellipse.isVisible(
         request.camDistance,
         request.depthValue,
-        g_viewport,
-        g_nearDepth,
-        g_farDepth
+        g_Camera.viewport,
+        g_Camera.nearDepth,
+        g_Camera.farDepth
     )) return;
 
-    float tileSize = float(g_tileSize);
+    float tileSize = float(g_Prepass.tileSize);
     float halfTile = 0.5 * tileSize;
     if (!try_prepare_conic_for_binning(ellipse, halfTile)) return;
     float2 boundsExtent = ellipse.bboxExtent + halfTile;
@@ -20,10 +20,10 @@ void emit_splat_bins(SplatBinRequest request)
     int maxX = int(ceil((ellipse.centerPx.x + boundsExtent.x) / tileSize));
     int minY = int(floor((ellipse.centerPx.y - boundsExtent.y) / tileSize));
     int maxY = int(ceil((ellipse.centerPx.y + boundsExtent.y) / tileSize));
-    minX = clamp(minX, 0, int(g_tileWidth) - 1);
-    maxX = clamp(maxX, 0, int(g_tileWidth) - 1);
-    minY = clamp(minY, 0, int(g_tileHeight) - 1);
-    maxY = clamp(maxY, 0, int(g_tileHeight) - 1);
+    minX = clamp(minX, 0, int(g_Prepass.tileWidth) - 1);
+    maxX = clamp(maxX, 0, int(g_Prepass.tileWidth) - 1);
+    minY = clamp(minY, 0, int(g_Prepass.tileHeight) - 1);
+    maxY = clamp(maxY, 0, int(g_Prepass.tileHeight) - 1);
     if (minX > maxX || minY > maxY) return;
 
     ScanlineLoopConfig loopCfg = build_scanline_loop_config(ellipse, minX, maxX, minY, maxY);
@@ -32,9 +32,9 @@ void emit_splat_bins(SplatBinRequest request)
 
     uint scanlineBase = 0;
     InterlockedAdd(g_ScanlineCounter[0], scanlineCount, scanlineBase);
-    if (scanlineBase >= g_maxScanlineEntries) return;
+    if (scanlineBase >= g_Prepass.maxScanlineEntries) return;
 
-    uint scanlineWriteCount = min(scanlineCount, g_maxScanlineEntries - scanlineBase);
+    uint scanlineWriteCount = min(scanlineCount, g_Prepass.maxScanlineEntries - scanlineBase);
     if (scanlineWriteCount == 0u) return;
 
     uint writtenListCount = 0u;

@@ -3,6 +3,13 @@
 `src/renderer/gaussian_renderer.py` executes a five-stage compute pipeline.
 Prepass scheduling is GPU-driven via indirect dispatch arguments generated from the GPU list counter.
 
+## Uniform Parameter Layout
+- Shared shader parameters are grouped in `shaders/renderer/gaussian_types.slang`:
+  - `g_Camera` (`CameraParams`) for camera basis/position, projection scale, clip range, and lens distortion.
+  - `g_Prepass` (`PrepassParams`) for splat counts, tile/depth packing, prepass capacities, and sampled-5 MVEE controls.
+  - `g_Raster` (`RasterParams`) for raster resolution, alpha/transmittance thresholds, background, and debug overlays.
+- Python bindings in `GaussianRenderer` mirror this layout by binding these structs per dispatch so stage code only reads structured fields instead of a large flat uniform list.
+
 ## 1. Project and Bin
 - Shader: `csProjectAndBin`
 - For each splat:
