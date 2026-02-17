@@ -68,6 +68,8 @@ class SplatViewer(spy.AppWindow):
         self.loss_debug_view_options = [("rendered", "Rendered"), ("target", "Target"), ("abs_diff", "Abs Diff")]
         self._loss_debug_texture: spy.Texture | None = None
         self._debug_abs_diff_kernel: spy.ComputeKernel | None = None
+        self._debug_letterbox_kernel: spy.ComputeKernel | None = None
+        self._debug_present_texture: spy.Texture | None = None
         self._synced_step_main: int = -1
         self._synced_step_debug: int = -1
 
@@ -105,6 +107,7 @@ class SplatViewer(spy.AppWindow):
 
     def _reset_loss_debug_state(self) -> None:
         self._loss_debug_texture = None
+        self._debug_present_texture = None
         if self.debug_renderer is not None:
             old_renderer = self.debug_renderer
             self.debug_renderer = None
@@ -114,8 +117,10 @@ class SplatViewer(spy.AppWindow):
 
     def _create_debug_shaders(self) -> None:
         shader_path = str(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang")
-        program = self.device.load_program(shader_path, ["csComposeAbsDiffDebug"])
-        self._debug_abs_diff_kernel = self.device.create_compute_kernel(program)
+        abs_diff_program = self.device.load_program(shader_path, ["csComposeAbsDiffDebug"])
+        letterbox_program = self.device.load_program(shader_path, ["csComposeLetterboxDebug"])
+        self._debug_abs_diff_kernel = self.device.create_compute_kernel(abs_diff_program)
+        self._debug_letterbox_kernel = self.device.create_compute_kernel(letterbox_program)
 
     def _build_ui(self) -> None:
         log_flags = spy.ui.SliderFlags.logarithmic
@@ -653,6 +658,25 @@ class SplatViewer(spy.AppWindow):
         )
         return self._loss_debug_texture
 
+    def _ensure_debug_present_texture(self, width: int, height: int) -> spy.Texture:
+        if (
+            self._debug_present_texture is not None
+            and int(self._debug_present_texture.width) == int(width)
+            and int(self._debug_present_texture.height) == int(height)
+        ):
+            return self._debug_present_texture
+        self._debug_present_texture = self.device.create_texture(
+            format=spy.Format.rgba32_float,
+            width=int(width),
+            height=int(height),
+            usage=(
+                spy.TextureUsage.shader_resource
+                | spy.TextureUsage.unordered_access
+                | spy.TextureUsage.copy_destination
+            ),
+        )
+        return self._debug_present_texture
+
     def _dispatch_debug_abs_diff(
         self,
         encoder: spy.CommandEncoder,
@@ -682,8 +706,33 @@ class SplatViewer(spy.AppWindow):
                     "maxOpacity": 0.0,
                     "positionAbsMax": 0.0,
                     "hugeValue": 1e8,
-                    "minInvScale": 0.0,
                 },
+            },
+            command_encoder=encoder,
+        )
+        return out_tex
+
+    def _dispatch_debug_letterbox(
+        self,
+        encoder: spy.CommandEncoder,
+        source_tex: spy.Texture,
+        source_width: int,
+        source_height: int,
+        output_width: int,
+        output_height: int,
+    ) -> spy.Texture:
+        if self._debug_letterbox_kernel is None:
+            raise RuntimeError("Debug letterbox kernel is not initialized.")
+        out_tex = self._ensure_debug_present_texture(output_width, output_height)
+        self._debug_letterbox_kernel.dispatch(
+            thread_count=spy.uint3(int(output_width), int(output_height), 1),
+            vars={
+                "g_LetterboxSource": source_tex,
+                "g_LetterboxOutput": out_tex,
+                "g_LetterboxSourceWidth": int(source_width),
+                "g_LetterboxSourceHeight": int(source_height),
+                "g_LetterboxOutputWidth": int(output_width),
+                "g_LetterboxOutputHeight": int(output_height),
             },
             command_encoder=encoder,
         )
@@ -982,19 +1031,28 @@ class SplatViewer(spy.AppWindow):
                     target_tex = self.trainer.get_frame_target_texture(frame_idx, native_resolution=True)
                     self.stats = stats
                     debug_view_key, _ = self._selected_loss_debug_view()
+                    debug_source_tex: spy.Texture
                     if debug_view_key == "rendered":
-                        encoder.blit(image, debug_render_tex)
+                        debug_source_tex = debug_render_tex
                     elif debug_view_key == "target":
-                        encoder.blit(image, target_tex)
+                        debug_source_tex = target_tex
                     else:
-                        debug_tex = self._dispatch_debug_abs_diff(
+                        debug_source_tex = self._dispatch_debug_abs_diff(
                             encoder=encoder,
                             rendered_tex=debug_render_tex,
                             target_tex=target_tex,
                             width=debug_width,
                             height=debug_height,
                         )
-                        encoder.blit(image, debug_tex)
+                    present_tex = self._dispatch_debug_letterbox(
+                        encoder=encoder,
+                        source_tex=debug_source_tex,
+                        source_width=debug_width,
+                        source_height=debug_height,
+                        output_width=iw,
+                        output_height=ih,
+                    )
+                    encoder.blit(image, present_tex)
                 else:
                     if self.trainer is not None and self.training_renderer is not None:
                         self._sync_scene_from_training_renderer(self.renderer, target="main")

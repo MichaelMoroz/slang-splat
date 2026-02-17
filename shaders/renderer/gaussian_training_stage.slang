@@ -44,6 +44,12 @@ uniform Texture2D<float4> g_DebugTarget;
 uniform RWTexture2D<float4> g_DebugOutput;
 uniform uint g_DebugWidth;
 uniform uint g_DebugHeight;
+uniform Texture2D<float4> g_LetterboxSource;
+uniform RWTexture2D<float4> g_LetterboxOutput;
+uniform uint g_LetterboxSourceWidth;
+uniform uint g_LetterboxSourceHeight;
+uniform uint g_LetterboxOutputWidth;
+uniform uint g_LetterboxOutputHeight;
 groupshared float gsLoss[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
 
 uniform StructuredBuffer<float> g_GradPositions;
@@ -206,6 +212,44 @@ void csComposeAbsDiffDebug(uint3 dispatchThreadID : SV_DispatchThreadID)
     float3 target = g_DebugTarget[pixel].xyz;
     float3 diff = abs(sanitize_float3(rendered - target, g_Stability.hugeValue));
     g_DebugOutput[pixel] = float4(diff, 1.0);
+}
+
+[shader("compute")]
+[numthreads(TRAIN_TILE_DIM, TRAIN_TILE_DIM, 1)]
+void csComposeLetterboxDebug(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint px = dispatchThreadID.x;
+    uint py = dispatchThreadID.y;
+    if (px >= g_LetterboxOutputWidth || py >= g_LetterboxOutputHeight) return;
+
+    float srcW = max(float(g_LetterboxSourceWidth), 1.0);
+    float srcH = max(float(g_LetterboxSourceHeight), 1.0);
+    float dstW = max(float(g_LetterboxOutputWidth), 1.0);
+    float dstH = max(float(g_LetterboxOutputHeight), 1.0);
+    float srcAspect = srcW / srcH;
+    float dstAspect = dstW / dstH;
+
+    float fitW = dstW;
+    float fitH = dstH;
+    if (dstAspect > srcAspect) fitW = dstH * srcAspect;
+    else fitH = dstW / srcAspect;
+
+    float offsetX = 0.5 * (dstW - fitW);
+    float offsetY = 0.5 * (dstH - fitH);
+    float sampleX = float(px) + 0.5;
+    float sampleY = float(py) + 0.5;
+    bool inside = sampleX >= offsetX && sampleX < (offsetX + fitW) && sampleY >= offsetY && sampleY < (offsetY + fitH);
+    if (!inside)
+    {
+        g_LetterboxOutput[uint2(px, py)] = float4(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
+
+    float u = (sampleX - offsetX) / max(fitW, TRAIN_EPS);
+    float v = (sampleY - offsetY) / max(fitH, TRAIN_EPS);
+    uint srcX = min(uint(u * srcW), g_LetterboxSourceWidth - 1u);
+    uint srcY = min(uint(v * srcH), g_LetterboxSourceHeight - 1u);
+    g_LetterboxOutput[uint2(px, py)] = g_LetterboxSource[uint2(srcX, srcY)];
 }
 
 [shader("compute")]
