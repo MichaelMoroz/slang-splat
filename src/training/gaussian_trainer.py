@@ -44,7 +44,6 @@ class TrainingHyperParams:
     background: tuple[float, float, float] = (0.0, 0.0, 0.0)
     near: float = 0.1
     far: float = 120.0
-    target_flip_y: bool = False
     ema_decay: float = 0.95
     mcmc_position_noise_enabled: bool = True
     mcmc_position_noise_scale: float = 1.0
@@ -89,7 +88,6 @@ class GaussianTrainer:
         self._buffers: dict[str, spy.Buffer] = {}
         self._frame_targets_train: list[spy.Texture] = []
         self._frame_targets_native: list[spy.Texture] = []
-        self._target_flip_cached = bool(self.training.target_flip_y)
         self.renderer.set_scene(self.scene)
         self._create_shaders()
         self._create_training_buffers()
@@ -180,7 +178,6 @@ class GaussianTrainer:
         return tex
 
     def _create_dataset_textures(self) -> None:
-        flip_y = bool(self.training.target_flip_y)
         self._frame_targets_train = []
         self._frame_targets_native = []
         train_width = int(self.renderer.width)
@@ -189,25 +186,16 @@ class GaussianTrainer:
             with Image.open(frame.image_path) as pil_image:
                 image = pil_image.convert("RGB")
                 native_rgb = np.asarray(image, dtype=np.float32) / 255.0
-                if flip_y:
-                    native_rgb = np.flipud(native_rgb).copy()
                 native_rgba = self._to_rgba(native_rgb)
                 self._frame_targets_native.append(self._create_gpu_texture(native_rgba))
 
                 if image.size != (train_width, train_height):
                     image_train = image.resize((train_width, train_height), resample=Image.Resampling.BILINEAR)
                     train_rgb = np.asarray(image_train, dtype=np.float32) / 255.0
-                    if flip_y:
-                        train_rgb = np.flipud(train_rgb).copy()
                 else:
                     train_rgb = native_rgb
                 train_rgba = self._to_rgba(train_rgb)
                 self._frame_targets_train.append(self._create_gpu_texture(train_rgba))
-        self._target_flip_cached = flip_y
-
-    def _refresh_dataset_if_needed(self) -> None:
-        if bool(self.training.target_flip_y) != self._target_flip_cached:
-            self._create_dataset_textures()
 
     def update_hyperparams(
         self,
@@ -215,12 +203,9 @@ class GaussianTrainer:
         stability_hparams: StabilityHyperParams,
         training_hparams: TrainingHyperParams,
     ) -> None:
-        old_flip = bool(self.training.target_flip_y)
         self.adam = adam_hparams
         self.stability = stability_hparams
         self.training = training_hparams
-        if bool(self.training.target_flip_y) != old_flip:
-            self._create_dataset_textures()
 
     def frame_count(self) -> int:
         return len(self.frames)
@@ -351,7 +336,6 @@ class GaussianTrainer:
         return float(values[0]) if values.size else float("nan")
 
     def step(self) -> float:
-        self._refresh_dataset_if_needed()
         frame_index = int(self._rng.integers(0, len(self.frames)))
         frame_camera = self.make_frame_camera(frame_index, self.renderer.width, self.renderer.height)
         background = np.asarray(self.training.background, dtype=np.float32).reshape(3)

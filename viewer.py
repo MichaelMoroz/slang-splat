@@ -133,7 +133,7 @@ class SplatViewer(spy.AppWindow):
         self.training_loss_text = spy.ui.Text(panel, "Loss: n/a")
         self.error_text = spy.ui.Text(panel, "")
 
-        load_group = spy.ui.Group(panel, "Scene")
+        load_group = spy.ui.Group(panel, "Main")
         spy.ui.Button(load_group, "Load PLY...", callback=self._browse_load_ply)
         spy.ui.Button(load_group, "Load COLMAP...", callback=self._browse_load_colmap)
         spy.ui.Button(load_group, "Reload", callback=self._reload_scene)
@@ -145,6 +145,38 @@ class SplatViewer(spy.AppWindow):
             max=len(self.image_subdir_options) - 1,
         )
         self.images_subdir_text = spy.ui.Text(load_group, "Train images: images_4")
+        self.loss_debug_checkbox = spy.ui.CheckBox(load_group, "Visual Loss Debug", value=False)
+        self.loss_debug_view_slider = spy.ui.SliderInt(
+            load_group,
+            "Debug View",
+            value=2,
+            min=0,
+            max=len(self.loss_debug_view_options) - 1,
+        )
+        self.loss_debug_view_text = spy.ui.Text(load_group, "View: Abs Diff")
+        self.loss_debug_frame_slider = spy.ui.SliderInt(load_group, "Debug Frame", value=0, min=0, max=10000)
+        self.loss_debug_frame_text = spy.ui.Text(load_group, "Frame: <none>")
+        spy.ui.Button(load_group, "Reinitialize Gaussians", callback=self._initialize_training_scene)
+        spy.ui.Button(load_group, "Start Training", callback=self._start_training)
+        spy.ui.Button(load_group, "Stop Training", callback=self._stop_training)
+
+        cam_group = spy.ui.Group(panel, "Camera")
+        self.move_speed_slider = spy.ui.SliderFloat(
+            cam_group,
+            "Move Speed",
+            value=float(self.move_speed),
+            min=0.1,
+            max=20.0,
+            flags=log_flags,
+            format="%.3g",
+        )
+        self.fov_slider = spy.ui.SliderFloat(
+            cam_group,
+            "FOV",
+            value=float(self.fov_y),
+            min=25.0,
+            max=100.0,
+        )
 
         init_group = spy.ui.Group(panel, "Train Init")
         self.gaussian_count_slider = spy.ui.SliderInt(
@@ -190,44 +222,52 @@ class SplatViewer(spy.AppWindow):
         )
 
         opt_group = spy.ui.Group(panel, "Train Optimizer")
-        self.lr_pos_slider = spy.ui.InputFloat(
+        self.lr_base_slider = spy.ui.InputFloat(
             opt_group,
-            "LR Position",
+            "Base LR",
             value=1e-3,
             step=1e-5,
             step_fast=1e-4,
             format="%.8f",
         )
-        self.lr_scale_slider = spy.ui.InputFloat(
+        self.lr_pos_mul_slider = spy.ui.InputFloat(
             opt_group,
-            "LR Scale",
-            value=2.5e-4,
-            step=1e-6,
-            step_fast=1e-5,
+            "LR Mul Position",
+            value=1.0,
+            step=1e-2,
+            step_fast=1e-1,
             format="%.8f",
         )
-        self.lr_rot_slider = spy.ui.InputFloat(
+        self.lr_scale_mul_slider = spy.ui.InputFloat(
             opt_group,
-            "LR Rotation",
-            value=1e-3,
-            step=1e-5,
-            step_fast=1e-4,
+            "LR Mul Scale",
+            value=1.0,
+            step=1e-2,
+            step_fast=1e-1,
             format="%.8f",
         )
-        self.lr_color_slider = spy.ui.InputFloat(
+        self.lr_rot_mul_slider = spy.ui.InputFloat(
             opt_group,
-            "LR Color",
-            value=1e-3,
-            step=1e-5,
-            step_fast=1e-4,
+            "LR Mul Rotation",
+            value=1.0,
+            step=1e-2,
+            step_fast=1e-1,
             format="%.8f",
         )
-        self.lr_opacity_slider = spy.ui.InputFloat(
+        self.lr_color_mul_slider = spy.ui.InputFloat(
             opt_group,
-            "LR Opacity",
-            value=1e-3,
-            step=1e-5,
-            step_fast=1e-4,
+            "LR Mul Color",
+            value=1.0,
+            step=1e-2,
+            step_fast=1e-1,
+            format="%.8f",
+        )
+        self.lr_opacity_mul_slider = spy.ui.InputFloat(
+            opt_group,
+            "LR Mul Opacity",
+            value=1.0,
+            step=1e-2,
+            step_fast=1e-1,
             format="%.8f",
         )
         self.beta1_slider = spy.ui.InputFloat(opt_group, "Beta1", value=0.9, step=1e-3, step_fast=1e-2, format="%.6f")
@@ -331,11 +371,8 @@ class SplatViewer(spy.AppWindow):
             step_fast=100.0,
             format="%.3f",
         )
-
-        run_group = spy.ui.Group(panel, "Train Control")
-        self.train_target_flip_checkbox = spy.ui.CheckBox(run_group, "Flip Target Y", value=False)
         self.train_near_slider = spy.ui.InputFloat(
-            run_group,
+            stab_group,
             "Train Near",
             value=0.1,
             step=1e-3,
@@ -343,27 +380,13 @@ class SplatViewer(spy.AppWindow):
             format="%.6f",
         )
         self.train_far_slider = spy.ui.InputFloat(
-            run_group,
+            stab_group,
             "Train Far",
             value=120.0,
             step=1.0,
             step_fast=10.0,
             format="%.3f",
         )
-        self.loss_debug_checkbox = spy.ui.CheckBox(run_group, "Visual Loss Debug", value=False)
-        self.loss_debug_view_slider = spy.ui.SliderInt(
-            run_group,
-            "Debug View",
-            value=2,
-            min=0,
-            max=len(self.loss_debug_view_options) - 1,
-        )
-        self.loss_debug_view_text = spy.ui.Text(run_group, "View: Abs Diff")
-        self.loss_debug_frame_slider = spy.ui.SliderInt(run_group, "Debug Frame", value=0, min=0, max=10000)
-        self.loss_debug_frame_text = spy.ui.Text(run_group, "Frame: <none>")
-        spy.ui.Button(run_group, "Init Training Scene", callback=self._initialize_training_scene)
-        spy.ui.Button(run_group, "Start Training", callback=self._start_training)
-        spy.ui.Button(run_group, "Stop Training", callback=self._stop_training)
 
         params_group = spy.ui.Group(panel, "Render Params")
         self.radius_slider = spy.ui.SliderFloat(
@@ -418,23 +441,6 @@ class SplatViewer(spy.AppWindow):
             value=bool(self.renderer.debug_show_processed_count),
         )
 
-        cam_group = spy.ui.Group(panel, "Camera")
-        self.move_speed_slider = spy.ui.SliderFloat(
-            cam_group,
-            "Move Speed",
-            value=float(self.move_speed),
-            min=0.1,
-            max=20.0,
-            flags=log_flags,
-            format="%.3g",
-        )
-        self.fov_slider = spy.ui.SliderFloat(
-            cam_group,
-            "FOV",
-            value=float(self.fov_y),
-            min=25.0,
-            max=100.0,
-        )
         spy.ui.Text(panel, "Controls: LMB drag=look | WASDQE=move | Wheel=speed")
 
     def on_resize(self, width: int, height: int) -> None:
@@ -853,12 +859,18 @@ class SplatViewer(spy.AppWindow):
 
     def _collect_training_hparams(self) -> tuple[AdamHyperParams, StabilityHyperParams, TrainingHyperParams]:
         clamp = lambda v, lo, hi: float(np.clip(float(v), float(lo), float(hi)))
+        base_lr = clamp(self.lr_base_slider.value, 1e-8, 1.0)
+        lr_pos_mul = clamp(self.lr_pos_mul_slider.value, 0.1, 10.0)
+        lr_scale_mul = clamp(self.lr_scale_mul_slider.value, 0.1, 10.0)
+        lr_rot_mul = clamp(self.lr_rot_mul_slider.value, 0.1, 10.0)
+        lr_color_mul = clamp(self.lr_color_mul_slider.value, 0.1, 10.0)
+        lr_opacity_mul = clamp(self.lr_opacity_mul_slider.value, 0.1, 10.0)
         adam = AdamHyperParams(
-            position_lr=clamp(self.lr_pos_slider.value, 1e-7, 1.0),
-            scale_lr=clamp(self.lr_scale_slider.value, 1e-8, 1.0),
-            rotation_lr=clamp(self.lr_rot_slider.value, 1e-7, 1.0),
-            color_lr=clamp(self.lr_color_slider.value, 1e-7, 1.0),
-            opacity_lr=clamp(self.lr_opacity_slider.value, 1e-7, 1.0),
+            position_lr=base_lr * lr_pos_mul,
+            scale_lr=base_lr * lr_scale_mul,
+            rotation_lr=base_lr * lr_rot_mul,
+            color_lr=base_lr * lr_color_mul,
+            opacity_lr=base_lr * lr_opacity_mul,
             beta1=clamp(self.beta1_slider.value, 0.0, 0.99999),
             beta2=clamp(self.beta2_slider.value, 0.0, 0.999999),
             epsilon=clamp(self.eps_slider.value, 1e-12, 1e-2),
@@ -882,7 +894,6 @@ class SplatViewer(spy.AppWindow):
             background=tuple(float(v) for v in self.background.tolist()),
             near=clamp(self.train_near_slider.value, 1e-6, 1e4),
             far=clamp(self.train_far_slider.value, 1e-5, 1e6),
-            target_flip_y=bool(self.train_target_flip_checkbox.value),
             ema_decay=0.95,
             mcmc_position_noise_enabled=bool(self.mcmc_pos_noise_enabled_checkbox.value),
             mcmc_position_noise_scale=clamp(self.mcmc_pos_noise_scale_slider.value, 0.0, 1e4),

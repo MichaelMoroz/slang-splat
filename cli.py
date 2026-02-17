@@ -66,6 +66,7 @@ def _estimate_scene_bounds(scene: GaussianScene) -> tuple[np.ndarray, float]:
 
 
 def _run_train_colmap(args: argparse.Namespace) -> int:
+    clamp = lambda v, lo, hi: float(np.clip(float(v), float(lo), float(hi)))
     colmap_root = Path(args.colmap_root).resolve()
     recon = load_colmap_reconstruction(colmap_root, sparse_subdir=args.sparse_subdir)
     frames = build_training_frames(recon, images_subdir=args.images_subdir)
@@ -98,11 +99,11 @@ def _run_train_colmap(args: argparse.Namespace) -> int:
         max_prepass_memory_mb=int(args.prepass_memory_mb),
     )
     adam = AdamHyperParams(
-        position_lr=float(args.lr_pos),
-        scale_lr=float(args.lr_scale),
-        rotation_lr=float(args.lr_rot),
-        color_lr=float(args.lr_color),
-        opacity_lr=float(args.lr_opacity),
+        position_lr=clamp(args.lr_base, 1e-8, 1.0) * clamp(args.lr_mul_pos, 0.1, 10.0),
+        scale_lr=clamp(args.lr_base, 1e-8, 1.0) * clamp(args.lr_mul_scale, 0.1, 10.0),
+        rotation_lr=clamp(args.lr_base, 1e-8, 1.0) * clamp(args.lr_mul_rot, 0.1, 10.0),
+        color_lr=clamp(args.lr_base, 1e-8, 1.0) * clamp(args.lr_mul_color, 0.1, 10.0),
+        opacity_lr=clamp(args.lr_base, 1e-8, 1.0) * clamp(args.lr_mul_opacity, 0.1, 10.0),
         beta1=float(args.beta1),
         beta2=float(args.beta2),
         epsilon=float(args.eps),
@@ -122,7 +123,6 @@ def _run_train_colmap(args: argparse.Namespace) -> int:
         background=tuple(float(v) for v in args.bg),
         near=float(args.near),
         far=float(args.far),
-        target_flip_y=bool(args.target_flip_y),
         ema_decay=float(args.ema_decay),
     )
     trainer = GaussianTrainer(
@@ -233,11 +233,12 @@ def parse_args() -> argparse.Namespace:
     train.add_argument("--max-splat-steps", type=int, default=32768)
     train.add_argument("--trans-threshold", type=float, default=0.005)
     train.add_argument("--sampled5-safety", type=float, default=1.0)
-    train.add_argument("--lr-pos", type=float, default=1e-3)
-    train.add_argument("--lr-scale", type=float, default=2.5e-4)
-    train.add_argument("--lr-rot", type=float, default=1e-3)
-    train.add_argument("--lr-color", type=float, default=1e-3)
-    train.add_argument("--lr-opacity", type=float, default=1e-3)
+    train.add_argument("--lr-base", type=float, default=1e-3)
+    train.add_argument("--lr-mul-pos", type=float, default=1.0)
+    train.add_argument("--lr-mul-scale", type=float, default=1.0)
+    train.add_argument("--lr-mul-rot", type=float, default=1.0)
+    train.add_argument("--lr-mul-color", type=float, default=1.0)
+    train.add_argument("--lr-mul-opacity", type=float, default=1.0)
     train.add_argument("--beta1", type=float, default=0.9)
     train.add_argument("--beta2", type=float, default=0.999)
     train.add_argument("--eps", type=float, default=1e-8)
@@ -254,7 +255,6 @@ def parse_args() -> argparse.Namespace:
     train.add_argument("--far", type=float, default=120.0)
     train.add_argument("--bg", type=float, nargs=3, default=(0.0, 0.0, 0.0))
     train.add_argument("--ema-decay", type=float, default=0.95)
-    train.add_argument("--target-flip-y", action="store_true", help="Enable target Y flip before loss.")
     train.add_argument("--init-position-jitter", type=float, default=0.01)
     train.add_argument("--init-base-scale", type=float, default=0.03)
     train.add_argument("--init-scale-jitter", type=float, default=0.2)
