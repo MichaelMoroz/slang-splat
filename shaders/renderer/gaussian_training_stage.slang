@@ -3,7 +3,11 @@ static const float TRAIN_EPS = 1e-8;
 
 struct AdamParams
 {
-    float learningRate;
+    float positionLR;
+    float scaleLR;
+    float rotationLR;
+    float colorLR;
+    float opacityLR;
     float beta1;
     float beta2;
     float epsilon;
@@ -38,6 +42,12 @@ uniform Texture2D<float4> g_Rendered;
 uniform Texture2D<float4> g_Target;
 uniform RWTexture2D<float4> g_OutputGrad;
 uniform RWStructuredBuffer<float> g_LossBuffer;
+uniform Texture2D<float4> g_DebugRendered;
+uniform Texture2D<float4> g_DebugTarget;
+uniform RWTexture2D<float4> g_DebugOutput;
+uniform uint g_DebugWidth;
+uniform uint g_DebugHeight;
+groupshared float gsLoss[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
 
 uniform StructuredBuffer<float4> g_SplatInvScale;
 uniform StructuredBuffer<float4> g_SplatQuat;
@@ -125,6 +135,7 @@ float4 adam_update_param(
     float4 grad,
     inout float4 momentM,
     inout float4 momentV,
+    float4 lr,
     float biasCorr1,
     float biasCorr2
 )
@@ -143,7 +154,7 @@ float4 adam_update_param(
 
     float4 mHat = momentM / max(biasCorr1, TRAIN_EPS);
     float4 vHat = momentV / max(biasCorr2, TRAIN_EPS);
-    float4 update = g_Adam.learningRate * mHat / (sqrt(max(vHat, 0.0)) + g_Adam.epsilon);
+    float4 update = lr * mHat / (sqrt(max(vHat, 0.0)) + g_Adam.epsilon);
     update = sanitize_float4(update, g_Stability.maxUpdate);
     update = clamp(update, -g_Stability.maxUpdate, g_Stability.maxUpdate);
     float4 nextParam = sanitize_float4(param - update, g_Stability.hugeValue);
@@ -162,24 +173,56 @@ void csClearLossAndGradTex(uint3 dispatchThreadID : SV_DispatchThreadID)
 
 [shader("compute")]
 [numthreads(TRAIN_TILE_DIM, TRAIN_TILE_DIM, 1)]
-void csComputeMSELossGrad(uint3 dispatchThreadID : SV_DispatchThreadID)
+void csComputeMSELossGrad(
+    uint3 dispatchThreadID : SV_DispatchThreadID,
+    uint3 groupThreadID : SV_GroupThreadID
+)
+{
+    uint localIndex = groupThreadID.y * TRAIN_TILE_DIM + groupThreadID.x;
+    uint px = dispatchThreadID.x;
+    uint py = dispatchThreadID.y;
+
+    float localLoss = 0.0;
+    if (px < g_Width && py < g_Height)
+    {
+        uint2 pixel = uint2(px, py);
+        float3 rendered = g_Rendered[pixel].xyz;
+        float3 target = g_Target[pixel].xyz;
+        float3 diff = sanitize_float3(rendered - target, g_Stability.hugeValue);
+
+        float loss = dot(diff, diff) * (1.0 / 3.0) * g_InvPixelCount;
+        localLoss = isfinite(loss) ? loss : 0.0;
+
+        float3 dOut = 2.0 * diff * (1.0 / 3.0) * g_InvPixelCount;
+        dOut = sanitize_float3(dOut, g_LossGradClip);
+        dOut = clamp(dOut, -g_LossGradClip, g_LossGradClip);
+        g_OutputGrad[pixel] = float4(dOut, 0.0);
+    } else {
+        localLoss = 0.0;
+    }
+
+    gsLoss[localIndex] = localLoss;
+    GroupMemoryBarrierWithGroupSync();
+    [unroll] for (uint stride = (TRAIN_TILE_DIM * TRAIN_TILE_DIM) >> 1; stride > 0; stride >>= 1)
+    {
+        if (localIndex < stride) gsLoss[localIndex] += gsLoss[localIndex + stride];
+        GroupMemoryBarrierWithGroupSync();
+    }
+    if (localIndex == 0u && isfinite(gsLoss[0])) InterlockedAdd(g_LossBuffer[0], gsLoss[0]);
+}
+
+[shader("compute")]
+[numthreads(TRAIN_TILE_DIM, TRAIN_TILE_DIM, 1)]
+void csComposeAbsDiffDebug(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     uint px = dispatchThreadID.x;
     uint py = dispatchThreadID.y;
-    if (px >= g_Width || py >= g_Height) return;
-
+    if (px >= g_DebugWidth || py >= g_DebugHeight) return;
     uint2 pixel = uint2(px, py);
-    float3 rendered = g_Rendered[pixel].xyz;
-    float3 target = g_Target[pixel].xyz;
-    float3 diff = sanitize_float3(rendered - target, g_Stability.hugeValue);
-
-    float loss = dot(diff, diff) * (1.0 / 3.0) * g_InvPixelCount;
-    if (isfinite(loss)) InterlockedAdd(g_LossBuffer[0], loss);
-
-    float3 dOut = 2.0 * diff * (1.0 / 3.0) * g_InvPixelCount;
-    dOut = sanitize_float3(dOut, g_LossGradClip);
-    dOut = clamp(dOut, -g_LossGradClip, g_LossGradClip);
-    g_OutputGrad[pixel] = float4(dOut, 0.0);
+    float3 rendered = g_DebugRendered[pixel].xyz;
+    float3 target = g_DebugTarget[pixel].xyz;
+    float3 diff = abs(sanitize_float3(rendered - target, g_Stability.hugeValue));
+    g_DebugOutput[pixel] = float4(diff, 1.0);
 }
 
 [shader("compute")]
@@ -255,10 +298,14 @@ void csAdamStepFused(uint3 dispatchThreadID : SV_DispatchThreadID)
     float4 gradPos = float4(gradPosWorld, 0.0);
     float4 gradS = float4(gradScale, 0.0);
 
-    pos = adam_update_param(pos, gradPos, mPos, vPos, biasCorr1, biasCorr2);
-    scale = adam_update_param(scale, gradS, mScale, vScale, biasCorr1, biasCorr2);
-    rot = adam_update_param(rot, gradQuat, mQuat, vQuat, biasCorr1, biasCorr2);
-    colorAlpha = adam_update_param(colorAlpha, gradColorAlpha, mColorAlpha, vColorAlpha, biasCorr1, biasCorr2);
+    float4 posLR = float4(g_Adam.positionLR, g_Adam.positionLR, g_Adam.positionLR, 0.0);
+    float4 scaleLR = float4(g_Adam.scaleLR, g_Adam.scaleLR, g_Adam.scaleLR, 0.0);
+    float4 rotLR = float4(g_Adam.rotationLR, g_Adam.rotationLR, g_Adam.rotationLR, g_Adam.rotationLR);
+    float4 colorAlphaLR = float4(g_Adam.colorLR, g_Adam.colorLR, g_Adam.colorLR, g_Adam.opacityLR);
+    pos = adam_update_param(pos, gradPos, mPos, vPos, posLR, biasCorr1, biasCorr2);
+    scale = adam_update_param(scale, gradS, mScale, vScale, scaleLR, biasCorr1, biasCorr2);
+    rot = adam_update_param(rot, gradQuat, mQuat, vQuat, rotLR, biasCorr1, biasCorr2);
+    colorAlpha = adam_update_param(colorAlpha, gradColorAlpha, mColorAlpha, vColorAlpha, colorAlphaLR, biasCorr1, biasCorr2);
 
     pos.xyz = clamp(pos.xyz, -g_Stability.positionAbsMax, g_Stability.positionAbsMax);
     scale.xyz = clamp(scale.xyz, g_Stability.minScale, g_Stability.maxScale);

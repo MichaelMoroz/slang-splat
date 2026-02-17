@@ -37,7 +37,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-splat-steps", type=int, default=32768)
     parser.add_argument("--trans-threshold", type=float, default=0.005)
     parser.add_argument("--sampled5-safety", type=float, default=1.0)
-    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--lr-pos", type=float, default=1e-3)
+    parser.add_argument("--lr-scale", type=float, default=2.5e-4)
+    parser.add_argument("--lr-rot", type=float, default=1e-3)
+    parser.add_argument("--lr-color", type=float, default=1e-3)
+    parser.add_argument("--lr-opacity", type=float, default=1e-3)
     parser.add_argument("--beta1", type=float, default=0.9)
     parser.add_argument("--beta2", type=float, default=0.999)
     parser.add_argument("--eps", type=float, default=1e-8)
@@ -54,7 +58,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--far", type=float, default=120.0)
     parser.add_argument("--bg", type=float, nargs=3, default=(0.0, 0.0, 0.0))
     parser.add_argument("--ema-decay", type=float, default=0.95)
-    parser.add_argument("--no-target-flip-y", action="store_true", help="Disable target Y flip before loss.")
+    parser.add_argument("--target-flip-y", action="store_true", help="Enable target Y flip before loss.")
     parser.add_argument("--init-position-jitter", type=float, default=0.01)
     parser.add_argument("--init-base-scale", type=float, default=0.03)
     parser.add_argument("--init-scale-jitter", type=float, default=0.2)
@@ -111,7 +115,11 @@ def _run_cli(args: argparse.Namespace) -> int:
         max_prepass_memory_mb=int(args.prepass_memory_mb),
     )
     adam = AdamHyperParams(
-        learning_rate=float(args.lr),
+        position_lr=float(args.lr_pos),
+        scale_lr=float(args.lr_scale),
+        rotation_lr=float(args.lr_rot),
+        color_lr=float(args.lr_color),
+        opacity_lr=float(args.lr_opacity),
         beta1=float(args.beta1),
         beta2=float(args.beta2),
         epsilon=float(args.eps),
@@ -131,7 +139,7 @@ def _run_cli(args: argparse.Namespace) -> int:
         background=tuple(float(v) for v in args.bg),
         near=float(args.near),
         far=float(args.far),
-        target_flip_y=not bool(args.no_target_flip_y),
+        target_flip_y=bool(args.target_flip_y),
         ema_decay=float(args.ema_decay),
     )
     trainer = GaussianTrainer(

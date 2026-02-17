@@ -8,6 +8,7 @@ import numpy as np
 import slangpy as spy
 
 from src import create_default_device
+from src.common import SHADER_ROOT
 from src.renderer import Camera, GaussianRenderer
 from src.scene import (
     ColmapReconstruction,
@@ -52,6 +53,9 @@ class SplatViewer(spy.AppWindow):
             list_capacity_multiplier=self.list_capacity_multiplier,
             max_prepass_memory_mb=self.max_prepass_memory_mb,
         )
+        self.training_renderer: GaussianRenderer | None = None
+        self.debug_renderer: GaussianRenderer | None = None
+        self._debug_renderer_size: tuple[int, int] | None = None
         self.scene: GaussianScene | None = None
         self.scene_path: Path | None = None
         self.stats: dict[str, int | bool | float] = {}
@@ -61,6 +65,11 @@ class SplatViewer(spy.AppWindow):
         self.training_frames = []
         self.trainer: GaussianTrainer | None = None
         self.training_active = False
+        self.loss_debug_view_options = [("rendered", "Rendered"), ("target", "Target"), ("abs_diff", "Abs Diff")]
+        self._loss_debug_texture: spy.Texture | None = None
+        self._debug_abs_diff_kernel: spy.ComputeKernel | None = None
+        self._synced_step_main: int = -1
+        self._synced_step_debug: int = -1
 
         self.image_subdir_options = ["images_8", "images_4", "images_2", "images"]
         self.default_image_subdir_index = 1
@@ -91,7 +100,22 @@ class SplatViewer(spy.AppWindow):
         self._last_resize_exception = ""
         self._last_render_exception = ""
 
+        self._create_debug_shaders()
         self._build_ui()
+
+    def _reset_loss_debug_state(self) -> None:
+        self._loss_debug_texture = None
+        if self.debug_renderer is not None:
+            old_renderer = self.debug_renderer
+            self.debug_renderer = None
+            del old_renderer
+        self._debug_renderer_size = None
+        self._synced_step_debug = -1
+
+    def _create_debug_shaders(self) -> None:
+        shader_path = str(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang")
+        program = self.device.load_program(shader_path, ["csComposeAbsDiffDebug"])
+        self._debug_abs_diff_kernel = self.device.create_compute_kernel(program)
 
     def _build_ui(self) -> None:
         panel = spy.ui.Window(self.screen, "Splat Viewer + Trainer", size=spy.float2(520, 760))
@@ -153,9 +177,41 @@ class SplatViewer(spy.AppWindow):
         )
 
         opt_group = spy.ui.Group(panel, "Train Optimizer")
-        self.lr_slider = spy.ui.SliderFloat(
+        self.lr_pos_slider = spy.ui.SliderFloat(
             opt_group,
-            "Learning Rate",
+            "LR Position",
+            value=1e-3,
+            min=1e-5,
+            max=1e-1,
+            flags=spy.ui.SliderFlags.logarithmic,
+        )
+        self.lr_scale_slider = spy.ui.SliderFloat(
+            opt_group,
+            "LR Scale",
+            value=2.5e-4,
+            min=1e-6,
+            max=1e-1,
+            flags=spy.ui.SliderFlags.logarithmic,
+        )
+        self.lr_rot_slider = spy.ui.SliderFloat(
+            opt_group,
+            "LR Rotation",
+            value=1e-3,
+            min=1e-5,
+            max=1e-1,
+            flags=spy.ui.SliderFlags.logarithmic,
+        )
+        self.lr_color_slider = spy.ui.SliderFloat(
+            opt_group,
+            "LR Color",
+            value=1e-3,
+            min=1e-5,
+            max=1e-1,
+            flags=spy.ui.SliderFlags.logarithmic,
+        )
+        self.lr_opacity_slider = spy.ui.SliderFloat(
+            opt_group,
+            "LR Opacity",
             value=1e-3,
             min=1e-5,
             max=1e-1,
@@ -232,9 +288,20 @@ class SplatViewer(spy.AppWindow):
         )
 
         run_group = spy.ui.Group(panel, "Train Control")
-        self.train_target_flip_checkbox = spy.ui.CheckBox(run_group, "Flip Target Y", value=True)
+        self.train_target_flip_checkbox = spy.ui.CheckBox(run_group, "Flip Target Y", value=False)
         self.train_near_slider = spy.ui.SliderFloat(run_group, "Train Near", value=0.1, min=0.01, max=1.0)
         self.train_far_slider = spy.ui.SliderFloat(run_group, "Train Far", value=120.0, min=10.0, max=500.0)
+        self.loss_debug_checkbox = spy.ui.CheckBox(run_group, "Visual Loss Debug", value=False)
+        self.loss_debug_view_slider = spy.ui.SliderInt(
+            run_group,
+            "Debug View",
+            value=2,
+            min=0,
+            max=len(self.loss_debug_view_options) - 1,
+        )
+        self.loss_debug_view_text = spy.ui.Text(run_group, "View: Abs Diff")
+        self.loss_debug_frame_slider = spy.ui.SliderInt(run_group, "Debug Frame", value=0, min=0, max=10000)
+        self.loss_debug_frame_text = spy.ui.Text(run_group, "Frame: <none>")
         spy.ui.Button(run_group, "Init Training Scene", callback=self._initialize_training_scene)
         spy.ui.Button(run_group, "Start Training", callback=self._start_training)
         spy.ui.Button(run_group, "Stop Training", callback=self._stop_training)
@@ -350,9 +417,8 @@ class SplatViewer(spy.AppWindow):
         elif event.type == spy.MouseEventType.scroll:
             self.scroll_delta += float(event.scroll.y)
 
-    def _recreate_renderer(self, width: int, height: int) -> None:
-        old_renderer = self.renderer
-        self.renderer = GaussianRenderer(
+    def _create_renderer(self, width: int, height: int, allow_debug_overlays: bool) -> GaussianRenderer:
+        return GaussianRenderer(
             self.device,
             width=width,
             height=height,
@@ -364,16 +430,61 @@ class SplatViewer(spy.AppWindow):
             sampled5_safety_scale=float(self.sampled5_safety_slider.value),
             list_capacity_multiplier=self.list_capacity_multiplier,
             max_prepass_memory_mb=self.max_prepass_memory_mb,
-            debug_show_ellipses=bool(self.debug_ellipse_checkbox.value),
-            debug_show_processed_count=bool(self.debug_processed_count_checkbox.value),
+            debug_show_ellipses=bool(self.debug_ellipse_checkbox.value) if allow_debug_overlays else False,
+            debug_show_processed_count=bool(self.debug_processed_count_checkbox.value) if allow_debug_overlays else False,
         )
+
+    def _recreate_renderer(self, width: int, height: int) -> None:
+        old_renderer = self.renderer
+        self.renderer = self._create_renderer(width, height, allow_debug_overlays=True)
         del old_renderer
         if self.scene is not None:
             self.renderer.set_scene(self.scene)
-        if self.trainer is not None:
-            self.trainer = None
-            self.training_active = False
-            self.last_error = "Trainer reset after resize. Re-initialize training scene."
+        self._synced_step_main = -1
+        self._reset_loss_debug_state()
+
+    def _ensure_training_renderer(self, width: int, height: int) -> GaussianRenderer:
+        if self.training_renderer is not None and self.training_renderer.width == int(width) and self.training_renderer.height == int(height):
+            return self.training_renderer
+        old_renderer = self.training_renderer
+        self.training_renderer = self._create_renderer(int(width), int(height), allow_debug_overlays=False)
+        if self.scene is not None:
+            self.training_renderer.set_scene(self.scene)
+        if old_renderer is not None:
+            del old_renderer
+        self._synced_step_main = -1
+        self._synced_step_debug = -1
+        return self.training_renderer
+
+    def _ensure_debug_renderer(self, width: int, height: int) -> GaussianRenderer:
+        target_size = (int(width), int(height))
+        if self.debug_renderer is not None and self._debug_renderer_size == target_size:
+            return self.debug_renderer
+        old_renderer = self.debug_renderer
+        self.debug_renderer = self._create_renderer(target_size[0], target_size[1], allow_debug_overlays=False)
+        self._debug_renderer_size = target_size
+        if self.scene is not None:
+            self.debug_renderer.set_scene(self.scene)
+        if old_renderer is not None:
+            del old_renderer
+        self._synced_step_debug = -1
+        return self.debug_renderer
+
+    def _sync_scene_from_training_renderer(self, dst_renderer: GaussianRenderer, target: str, force: bool = False) -> None:
+        if self.training_renderer is None or self.trainer is None:
+            return
+        step = int(self.trainer.state.step)
+        if target == "main" and not force and self._synced_step_main == step:
+            return
+        if target == "debug" and not force and self._synced_step_debug == step:
+            return
+        enc = self.device.create_command_encoder()
+        self.training_renderer.copy_scene_state_to(enc, dst_renderer)
+        self.device.submit_command_buffer(enc.finish())
+        if target == "main":
+            self._synced_step_main = step
+        else:
+            self._synced_step_debug = step
 
     def _forward(self) -> np.ndarray:
         yaw = self.yaw
@@ -457,6 +568,93 @@ class SplatViewer(spy.AppWindow):
         idx = int(np.clip(int(self.images_subdir_slider.value), 0, len(self.image_subdir_options) - 1))
         return self.image_subdir_options[idx]
 
+    def _selected_loss_debug_view(self) -> tuple[str, str]:
+        idx = int(np.clip(int(self.loss_debug_view_slider.value), 0, len(self.loss_debug_view_options) - 1))
+        return self.loss_debug_view_options[idx]
+
+    def _selected_loss_debug_frame_index(self) -> int:
+        if not self.training_frames:
+            return 0
+        return int(np.clip(int(self.loss_debug_frame_slider.value), 0, len(self.training_frames) - 1))
+
+    def _update_debug_frame_slider_range(self) -> None:
+        max_index = max(len(self.training_frames) - 1, 0)
+        try:
+            self.loss_debug_frame_slider.min = 0
+            self.loss_debug_frame_slider.max = int(max_index)
+        except Exception:
+            pass
+        self.loss_debug_frame_slider.value = int(np.clip(int(self.loss_debug_frame_slider.value), 0, max_index))
+
+    def _sync_render_params_to_renderer(self, renderer: GaussianRenderer, allow_debug_overlays: bool) -> None:
+        renderer.radius_scale = float(self.radius_slider.value)
+        renderer.max_splat_radius_px = float(self.max_radius_slider.value)
+        renderer.alpha_cutoff = float(self.alpha_slider.value)
+        renderer.max_splat_steps = int(self.max_steps_slider.value)
+        renderer.transmittance_threshold = float(self.trans_slider.value)
+        renderer.sampled5_safety_scale = float(self.sampled5_safety_slider.value)
+        if allow_debug_overlays:
+            renderer.debug_show_ellipses = bool(self.debug_ellipse_checkbox.value)
+            renderer.debug_show_processed_count = bool(self.debug_processed_count_checkbox.value)
+        else:
+            renderer.debug_show_ellipses = False
+            renderer.debug_show_processed_count = False
+
+    def _ensure_loss_debug_texture(self, width: int, height: int) -> spy.Texture:
+        if (
+            self._loss_debug_texture is not None
+            and int(self._loss_debug_texture.width) == int(width)
+            and int(self._loss_debug_texture.height) == int(height)
+        ):
+            return self._loss_debug_texture
+        self._loss_debug_texture = self.device.create_texture(
+            format=spy.Format.rgba32_float,
+            width=int(width),
+            height=int(height),
+            usage=(
+                spy.TextureUsage.shader_resource
+                | spy.TextureUsage.unordered_access
+                | spy.TextureUsage.copy_destination
+            ),
+        )
+        return self._loss_debug_texture
+
+    def _dispatch_debug_abs_diff(
+        self,
+        encoder: spy.CommandEncoder,
+        rendered_tex: spy.Texture,
+        target_tex: spy.Texture,
+        width: int,
+        height: int,
+    ) -> spy.Texture:
+        if self._debug_abs_diff_kernel is None:
+            raise RuntimeError("Debug abs-diff kernel is not initialized.")
+        out_tex = self._ensure_loss_debug_texture(width, height)
+        self._debug_abs_diff_kernel.dispatch(
+            thread_count=spy.uint3(int(width), int(height), 1),
+            vars={
+                "g_DebugRendered": rendered_tex,
+                "g_DebugTarget": target_tex,
+                "g_DebugOutput": out_tex,
+                "g_DebugWidth": int(width),
+                "g_DebugHeight": int(height),
+                "g_Stability": {
+                    "gradComponentClip": 0.0,
+                    "gradNormClip": 0.0,
+                    "maxUpdate": 0.0,
+                    "minScale": 0.0,
+                    "maxScale": 0.0,
+                    "minOpacity": 0.0,
+                    "maxOpacity": 0.0,
+                    "positionAbsMax": 0.0,
+                    "hugeValue": 1e8,
+                    "minInvScale": 0.0,
+                },
+            },
+            command_encoder=encoder,
+        )
+        return out_tex
+
     def _recenter_camera(self, scene: GaussianScene) -> None:
         pos = np.asarray(scene.positions, dtype=np.float32)
         scales = np.asarray(scene.scales, dtype=np.float32)
@@ -518,6 +716,12 @@ class SplatViewer(spy.AppWindow):
             self.training_frames = []
             self.trainer = None
             self.training_active = False
+            if self.training_renderer is not None:
+                old_renderer = self.training_renderer
+                self.training_renderer = None
+                del old_renderer
+            self._update_debug_frame_slider_range()
+            self._reset_loss_debug_state()
             self.renderer.set_scene(scene)
             self._recenter_camera(scene)
             self.last_error = ""
@@ -536,6 +740,12 @@ class SplatViewer(spy.AppWindow):
             self.scene_path = None
             self.trainer = None
             self.training_active = False
+            if self.training_renderer is not None:
+                old_renderer = self.training_renderer
+                self.training_renderer = None
+                del old_renderer
+            self._update_debug_frame_slider_range()
+            self._reset_loss_debug_state()
             self.last_error = ""
             print(f"Loaded COLMAP: {root} frames={len(frames)} images={images_subdir}")
         except Exception as exc:
@@ -544,7 +754,11 @@ class SplatViewer(spy.AppWindow):
 
     def _collect_training_hparams(self) -> tuple[AdamHyperParams, StabilityHyperParams, TrainingHyperParams]:
         adam = AdamHyperParams(
-            learning_rate=float(self.lr_slider.value),
+            position_lr=float(self.lr_pos_slider.value),
+            scale_lr=float(self.lr_scale_slider.value),
+            rotation_lr=float(self.lr_rot_slider.value),
+            color_lr=float(self.lr_color_slider.value),
+            opacity_lr=float(self.lr_opacity_slider.value),
             beta1=float(self.beta1_slider.value),
             beta2=float(self.beta2_slider.value),
             epsilon=float(self.eps_slider.value),
@@ -587,13 +801,17 @@ class SplatViewer(spy.AppWindow):
                 seed=int(self.seed_slider.value),
                 init_hparams=init_hparams,
             )
+            frame_width = int(self.training_frames[0].width)
+            frame_height = int(self.training_frames[0].height)
+            training_renderer = self._ensure_training_renderer(frame_width, frame_height)
             self.scene = scene
             self.renderer.set_scene(scene)
+            training_renderer.set_scene(scene)
             self._recenter_camera(scene)
             adam, stability, training = self._collect_training_hparams()
             self.trainer = GaussianTrainer(
                 device=self.device,
-                renderer=self.renderer,
+                renderer=training_renderer,
                 scene=scene,
                 frames=self.training_frames,
                 adam_hparams=adam,
@@ -602,6 +820,10 @@ class SplatViewer(spy.AppWindow):
                 seed=int(self.seed_slider.value),
             )
             self.training_active = False
+            self._synced_step_main = -1
+            self._synced_step_debug = -1
+            self._update_debug_frame_slider_range()
+            self._reset_loss_debug_state()
             self.last_error = ""
             print(f"Initialized training scene ({scene.count:,} gaussians)")
         except Exception as exc:
@@ -619,27 +841,31 @@ class SplatViewer(spy.AppWindow):
         self.training_active = False
 
     def _apply_render_params(self) -> None:
-        self.renderer.radius_scale = float(self.radius_slider.value)
-        self.renderer.max_splat_radius_px = float(self.max_radius_slider.value)
-        self.renderer.alpha_cutoff = float(self.alpha_slider.value)
-        self.renderer.max_splat_steps = int(self.max_steps_slider.value)
-        self.renderer.transmittance_threshold = float(self.trans_slider.value)
-        self.renderer.sampled5_safety_scale = float(self.sampled5_safety_slider.value)
-        self.renderer.debug_show_ellipses = bool(self.debug_ellipse_checkbox.value)
-        self.renderer.debug_show_processed_count = bool(self.debug_processed_count_checkbox.value)
+        self._sync_render_params_to_renderer(self.renderer, allow_debug_overlays=True)
+        if self.training_renderer is not None:
+            self._sync_render_params_to_renderer(self.training_renderer, allow_debug_overlays=False)
+        if self.debug_renderer is not None:
+            self._sync_render_params_to_renderer(self.debug_renderer, allow_debug_overlays=False)
 
     def _apply_training_params(self) -> None:
         if self.trainer is None:
             return
         adam, stability, training = self._collect_training_hparams()
-        self.trainer.adam = adam
-        self.trainer.stability = stability
-        self.trainer.training = training
+        self.trainer.update_hyperparams(adam, stability, training)
 
     def _update_ui_text(self, dt: float) -> None:
         self.fps_smooth += (1.0 / max(dt, 1e-5) - self.fps_smooth) * min(dt * 5.0, 1.0)
         self.fps_text.text = f"FPS: {self.fps_smooth:.1f}"
         self.images_subdir_text.text = f"Train images: {self._selected_images_subdir()}"
+        self._update_debug_frame_slider_range()
+        _, debug_view_label = self._selected_loss_debug_view()
+        self.loss_debug_view_text.text = f"View: {debug_view_label}"
+        if self.training_frames:
+            frame_idx = self._selected_loss_debug_frame_index()
+            frame_name = Path(self.training_frames[frame_idx].image_path).name
+            self.loss_debug_frame_text.text = f"Frame[{frame_idx}]: {frame_name}"
+        else:
+            self.loss_debug_frame_text.text = "Frame: <none>"
 
         if self.scene_path is not None:
             self.path_text.text = f"Scene: {self.scene_path.name} [PLY]"
@@ -695,11 +921,48 @@ class SplatViewer(spy.AppWindow):
 
         if self.scene is not None:
             try:
+                capture_loss_debug = bool(self.loss_debug_checkbox.value) and self.trainer is not None and bool(
+                    self.training_frames
+                )
                 if self.training_active and self.trainer is not None:
                     self.trainer.step()
-                out_tex, stats = self.renderer.render_to_texture(self._camera(), background=self.background)
-                self.stats = stats
-                encoder.blit(image, out_tex)
+                if capture_loss_debug:
+                    frame_idx = self._selected_loss_debug_frame_index()
+                    debug_width, debug_height = self.trainer.frame_size(frame_idx)
+                    debug_renderer = self._ensure_debug_renderer(debug_width, debug_height)
+                    self._sync_scene_from_training_renderer(debug_renderer, target="debug")
+                    frame_camera = self.trainer.make_frame_camera(frame_idx, debug_width, debug_height)
+                    debug_render_tex, stats = debug_renderer.render_to_texture(
+                        frame_camera,
+                        background=self.background,
+                        read_stats=False,
+                    )
+                    target_tex = self.trainer.get_frame_target_texture(frame_idx, native_resolution=True)
+                    self.stats = stats
+                    debug_view_key, _ = self._selected_loss_debug_view()
+                    if debug_view_key == "rendered":
+                        encoder.blit(image, debug_render_tex)
+                    elif debug_view_key == "target":
+                        encoder.blit(image, target_tex)
+                    else:
+                        debug_tex = self._dispatch_debug_abs_diff(
+                            encoder=encoder,
+                            rendered_tex=debug_render_tex,
+                            target_tex=target_tex,
+                            width=debug_width,
+                            height=debug_height,
+                        )
+                        encoder.blit(image, debug_tex)
+                else:
+                    if self.trainer is not None and self.training_renderer is not None:
+                        self._sync_scene_from_training_renderer(self.renderer, target="main")
+                    out_tex, stats = self.renderer.render_to_texture(
+                        self._camera(),
+                        background=self.background,
+                        read_stats=False,
+                    )
+                    self.stats = stats
+                    encoder.blit(image, out_tex)
                 self._last_render_exception = ""
             except Exception as exc:
                 self.training_active = False

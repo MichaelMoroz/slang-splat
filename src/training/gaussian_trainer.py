@@ -8,13 +8,17 @@ from PIL import Image
 import slangpy as spy
 
 from ..common import SHADER_ROOT
-from ..renderer import GaussianRenderer
+from ..renderer import Camera, GaussianRenderer
 from ..scene import ColmapFrame, GaussianScene
 
 
 @dataclass(slots=True)
 class AdamHyperParams:
-    learning_rate: float = 1e-3
+    position_lr: float = 1e-3
+    scale_lr: float = 2.5e-4
+    rotation_lr: float = 1e-3
+    color_lr: float = 1e-3
+    opacity_lr: float = 1e-3
     beta1: float = 0.9
     beta2: float = 0.999
     epsilon: float = 1e-8
@@ -40,7 +44,7 @@ class TrainingHyperParams:
     background: tuple[float, float, float] = (0.0, 0.0, 0.0)
     near: float = 0.1
     far: float = 120.0
-    target_flip_y: bool = True
+    target_flip_y: bool = False
     ema_decay: float = 0.95
 
 
@@ -79,10 +83,13 @@ class GaussianTrainer:
         self._shader_path = Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang")
         self._kernels: dict[str, spy.ComputeKernel] = {}
         self._buffers: dict[str, spy.Buffer] = {}
-        self._textures: dict[str, spy.Texture] = {}
+        self._frame_targets_train: list[spy.Texture] = []
+        self._frame_targets_native: list[spy.Texture] = []
+        self._target_flip_cached = bool(self.training.target_flip_y)
         self.renderer.set_scene(self.scene)
         self._create_shaders()
         self._create_training_buffers()
+        self._create_dataset_textures()
 
     def _create_shaders(self) -> None:
         load_program = self.device.load_program
@@ -98,15 +105,6 @@ class GaussianTrainer:
 
     def _create_training_buffers(self) -> None:
         count = max(int(self.scene.count), 1)
-        if "target" not in self._textures or self._textures["target"].width != self.renderer.width or self._textures[
-            "target"
-        ].height != self.renderer.height:
-            self._textures["target"] = self.device.create_texture(
-                format=spy.Format.rgba32_float,
-                width=self.renderer.width,
-                height=self.renderer.height,
-                usage=spy.TextureUsage.shader_resource | spy.TextureUsage.copy_destination,
-            )
         usage_rw = (
             spy.BufferUsage.shader_resource
             | spy.BufferUsage.unordered_access
@@ -142,19 +140,102 @@ class GaussianTrainer:
         ):
             self._buffers[name].copy_from_numpy(zeros)
 
-    def _load_target_image(self, path: Path) -> np.ndarray:
-        with Image.open(path) as pil_image:
-            image = pil_image.convert("RGB")
-            if image.size != (self.renderer.width, self.renderer.height):
-                image = image.resize((self.renderer.width, self.renderer.height), resample=Image.Resampling.BILINEAR)
-            target_rgb = np.asarray(image, dtype=np.float32) / 255.0
-        if self.training.target_flip_y:
-            target_rgb = np.flipud(target_rgb).copy()
-        alpha = np.ones((self.renderer.height, self.renderer.width, 1), dtype=np.float32)
-        return np.concatenate((target_rgb, alpha), axis=2).astype(np.float32)
+    def _make_frame_camera(self, frame: ColmapFrame, width: int, height: int) -> Camera:
+        camera = frame.make_camera(near=float(self.training.near), far=float(self.training.far))
+        frame_width = max(int(frame.width), 1)
+        frame_height = max(int(frame.height), 1)
+        same_size = int(width) == frame_width and int(height) == frame_height
+        if same_size:
+            return camera
+        sx = float(width) / float(frame_width)
+        sy = float(height) / float(frame_height)
+        if camera.fx is not None:
+            camera.fx = float(camera.fx) * sx
+        if camera.fy is not None:
+            camera.fy = float(camera.fy) * sy
+        if camera.cx is not None:
+            camera.cx = float(camera.cx) * sx
+        if camera.cy is not None:
+            camera.cy = float(camera.cy) * sy
+        return camera
 
-    def _upload_target_image(self, target_rgba: np.ndarray) -> None:
-        self._textures["target"].copy_from_numpy(np.ascontiguousarray(target_rgba, dtype=np.float32))
+    def _to_rgba(self, rgb: np.ndarray) -> np.ndarray:
+        height, width = rgb.shape[:2]
+        alpha = np.ones((height, width, 1), dtype=np.float32)
+        return np.concatenate((rgb.astype(np.float32), alpha), axis=2).astype(np.float32)
+
+    def _create_gpu_texture(self, rgba: np.ndarray) -> spy.Texture:
+        height, width = rgba.shape[:2]
+        tex = self.device.create_texture(
+            format=spy.Format.rgba32_float,
+            width=int(width),
+            height=int(height),
+            usage=spy.TextureUsage.shader_resource | spy.TextureUsage.copy_destination,
+        )
+        tex.copy_from_numpy(np.ascontiguousarray(rgba, dtype=np.float32))
+        return tex
+
+    def _create_dataset_textures(self) -> None:
+        flip_y = bool(self.training.target_flip_y)
+        self._frame_targets_train = []
+        self._frame_targets_native = []
+        train_width = int(self.renderer.width)
+        train_height = int(self.renderer.height)
+        for frame in self.frames:
+            with Image.open(frame.image_path) as pil_image:
+                image = pil_image.convert("RGB")
+                native_rgb = np.asarray(image, dtype=np.float32) / 255.0
+                if flip_y:
+                    native_rgb = np.flipud(native_rgb).copy()
+                native_rgba = self._to_rgba(native_rgb)
+                self._frame_targets_native.append(self._create_gpu_texture(native_rgba))
+
+                if image.size != (train_width, train_height):
+                    image_train = image.resize((train_width, train_height), resample=Image.Resampling.BILINEAR)
+                    train_rgb = np.asarray(image_train, dtype=np.float32) / 255.0
+                    if flip_y:
+                        train_rgb = np.flipud(train_rgb).copy()
+                else:
+                    train_rgb = native_rgb
+                train_rgba = self._to_rgba(train_rgb)
+                self._frame_targets_train.append(self._create_gpu_texture(train_rgba))
+        self._target_flip_cached = flip_y
+
+    def _refresh_dataset_if_needed(self) -> None:
+        if bool(self.training.target_flip_y) != self._target_flip_cached:
+            self._create_dataset_textures()
+
+    def update_hyperparams(
+        self,
+        adam_hparams: AdamHyperParams,
+        stability_hparams: StabilityHyperParams,
+        training_hparams: TrainingHyperParams,
+    ) -> None:
+        old_flip = bool(self.training.target_flip_y)
+        self.adam = adam_hparams
+        self.stability = stability_hparams
+        self.training = training_hparams
+        if bool(self.training.target_flip_y) != old_flip:
+            self._create_dataset_textures()
+
+    def frame_count(self) -> int:
+        return len(self.frames)
+
+    def frame_size(self, frame_index: int) -> tuple[int, int]:
+        idx = int(np.clip(frame_index, 0, len(self.frames) - 1))
+        frame = self.frames[idx]
+        return int(frame.width), int(frame.height)
+
+    def get_frame_target_texture(self, frame_index: int, native_resolution: bool = True) -> spy.Texture:
+        idx = int(np.clip(frame_index, 0, len(self.frames) - 1))
+        if native_resolution:
+            return self._frame_targets_native[idx]
+        return self._frame_targets_train[idx]
+
+    def make_frame_camera(self, frame_index: int, width: int, height: int) -> Camera:
+        idx = int(np.clip(frame_index, 0, len(self.frames) - 1))
+        frame = self.frames[idx]
+        return self._make_frame_camera(frame, int(width), int(height))
 
     def _common_vars(self, camera_position: np.ndarray) -> dict[str, object]:
         return {
@@ -166,7 +247,11 @@ class GaussianTrainer:
             "g_LossGradClip": float(self.stability.loss_grad_clip),
             "g_CamPos": spy.float3(*camera_position.astype(np.float32).tolist()),
             "g_Adam": {
-                "learningRate": float(self.adam.learning_rate),
+                "positionLR": float(self.adam.position_lr),
+                "scaleLR": float(self.adam.scale_lr),
+                "rotationLR": float(self.adam.rotation_lr),
+                "colorLR": float(self.adam.color_lr),
+                "opacityLR": float(self.adam.opacity_lr),
                 "beta1": float(self.adam.beta1),
                 "beta2": float(self.adam.beta2),
                 "epsilon": float(self.adam.epsilon),
@@ -186,7 +271,12 @@ class GaussianTrainer:
             },
         }
 
-    def _dispatch_loss_grad(self, encoder: spy.CommandEncoder, camera_position: np.ndarray) -> None:
+    def _dispatch_loss_grad(
+        self,
+        encoder: spy.CommandEncoder,
+        camera_position: np.ndarray,
+        target_texture: spy.Texture,
+    ) -> None:
         vars_common = self._common_vars(camera_position)
         self._kernels["clear_loss_grad"].dispatch(
             thread_count=spy.uint3(self.renderer.width, self.renderer.height, 1),
@@ -201,7 +291,7 @@ class GaussianTrainer:
             thread_count=spy.uint3(self.renderer.width, self.renderer.height, 1),
             vars={
                 "g_Rendered": self.renderer.output_texture,
-                "g_Target": self._textures["target"],
+                "g_Target": target_texture,
                 "g_OutputGrad": self.renderer.output_grad_texture,
                 "g_LossBuffer": self._buffers["loss"],
                 **vars_common,
@@ -257,17 +347,16 @@ class GaussianTrainer:
         return float(values[0]) if values.size else float("nan")
 
     def step(self) -> float:
+        self._refresh_dataset_if_needed()
         frame_index = int(self._rng.integers(0, len(self.frames)))
-        frame = self.frames[frame_index]
-        frame_camera = frame.make_camera(near=float(self.training.near), far=float(self.training.far))
+        frame_camera = self.make_frame_camera(frame_index, self.renderer.width, self.renderer.height)
         background = np.asarray(self.training.background, dtype=np.float32).reshape(3)
-        target_rgba = self._load_target_image(frame.image_path)
-        self._upload_target_image(target_rgba)
+        target_texture = self.get_frame_target_texture(frame_index, native_resolution=False)
         self.renderer.execute_prepass_for_current_scene(frame_camera, sync_counts=False)
 
         enc = self.device.create_command_encoder()
         self.renderer.rasterize_current_scene(enc, frame_camera, background)
-        self._dispatch_loss_grad(enc, frame_camera.position)
+        self._dispatch_loss_grad(enc, frame_camera.position, target_texture)
         self._dispatch_raster_backward(enc, frame_camera, background)
         self.device.submit_command_buffer(enc.finish())
         self.device.wait()
@@ -282,7 +371,6 @@ class GaussianTrainer:
             enc_opt = self.device.create_command_encoder()
             self._dispatch_adam_step(enc_opt, frame_camera.position)
             self.device.submit_command_buffer(enc_opt.finish())
-            self.device.wait()
 
         self.state.step += 1
         self.state.last_frame_index = frame_index

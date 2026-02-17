@@ -578,6 +578,22 @@ class GaussianRenderer:
         self._upload_scene(scene)
         self._current_scene = scene
 
+    def copy_scene_state_to(self, encoder: spy.CommandEncoder, dst: "GaussianRenderer") -> None:
+        if self._current_scene is None:
+            raise RuntimeError("Source scene is not set.")
+        count = int(self._scene_count)
+        if count <= 0:
+            raise RuntimeError("Source scene is empty.")
+        dst._ensure_scene_buffers(count)
+        dst._ensure_work_buffers(count)
+        copy_bytes = count * 16
+        encoder.copy_buffer(dst._scene_buffers["positions"], 0, self._scene_buffers["positions"], 0, copy_bytes)
+        encoder.copy_buffer(dst._scene_buffers["scales"], 0, self._scene_buffers["scales"], 0, copy_bytes)
+        encoder.copy_buffer(dst._scene_buffers["rotations"], 0, self._scene_buffers["rotations"], 0, copy_bytes)
+        encoder.copy_buffer(dst._scene_buffers["color_alpha"], 0, self._scene_buffers["color_alpha"], 0, copy_bytes)
+        dst._scene_count = count
+        dst._current_scene = self._current_scene
+
     @property
     def scene_buffers(self) -> dict[str, spy.Buffer]:
         return self._scene_buffers
@@ -628,6 +644,7 @@ class GaussianRenderer:
         self,
         camera: Camera,
         background: np.ndarray | tuple[float, float, float] = (0.0, 0.0, 0.0),
+        read_stats: bool = True,
     ) -> tuple[spy.Texture, dict[str, int | bool | float]]:
         if self._current_scene is None:
             raise RuntimeError("Scene is not set. Call set_scene() before render_to_texture().")
@@ -641,12 +658,13 @@ class GaussianRenderer:
         self._rasterize(enc_raster, camera, background_np)
         self.device.submit_command_buffer(enc_raster.finish())
         self.device.wait()
-        self._update_delayed_counter_stats()
+        if read_stats:
+            self._update_delayed_counter_stats()
         self._last_stats = {
-            "generated_entries": int(self._delayed_generated_entries) if self._delayed_stats_valid else 0,
-            "written_entries": int(self._delayed_written_entries) if self._delayed_stats_valid else 0,
-            "overflow": bool(self._delayed_overflow) if self._delayed_stats_valid else False,
-            "capacity_limited": bool(self._delayed_overflow) if self._delayed_stats_valid else False,
+            "generated_entries": int(self._delayed_generated_entries) if read_stats and self._delayed_stats_valid else 0,
+            "written_entries": int(self._delayed_written_entries) if read_stats and self._delayed_stats_valid else 0,
+            "overflow": bool(self._delayed_overflow) if read_stats and self._delayed_stats_valid else False,
+            "capacity_limited": bool(self._delayed_overflow) if read_stats and self._delayed_stats_valid else False,
             "depth_bits": int(self.depth_bits),
             "tile_count": int(self.tile_count),
             "splat_count": int(scene.count),
@@ -654,7 +672,7 @@ class GaussianRenderer:
             "max_scanline_entries": int(self._max_scanline_entries),
             "prepass_entry_cap": int(self._max_prepass_entries_by_budget()),
             "prepass_memory_mb": int(self.max_prepass_memory_mb),
-            "stats_valid": bool(self._delayed_stats_valid),
+            "stats_valid": bool(self._delayed_stats_valid) if read_stats else False,
             "stats_latency_frames": 1,
         }
         if self._output_texture is None:
