@@ -1,5 +1,4 @@
 import "gaussian_types.slang";
-import "gaussian_math_utils.slang";
 
 struct RasterState : IDifferentiable
 {

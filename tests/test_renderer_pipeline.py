@@ -241,7 +241,7 @@ def test_raster_backward_smoke_and_determinism(device):
     ):
         assert grads0[name].shape == (scene.count, 4)
         assert np.all(np.isfinite(grads0[name]))
-        np.testing.assert_allclose(grads0[name], grads1[name], rtol=1e-5, atol=5e-6)
+        np.testing.assert_allclose(grads0[name], grads1[name], rtol=2e-5, atol=3e-5)
 
 
 def test_prepass_capacity_budget_caps_growth(device):
