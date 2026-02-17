@@ -100,3 +100,22 @@ def test_colmap_loader_rejects_unsupported_camera_model(tmp_path: Path):
     root = _build_tiny_colmap_tree(tmp_path, model_id=4)
     with pytest.raises(ValueError):
         _ = load_colmap_reconstruction(root)
+
+
+def test_colmap_init_samples_with_replacement_when_requested_count_exceeds_points(tmp_path: Path):
+    root = _build_tiny_colmap_tree(tmp_path, model_id=1)
+    recon = load_colmap_reconstruction(root)
+    requested_count = 7
+    init_hparams = GaussianInitHyperParams(position_jitter_std=0.0, scale_jitter_ratio=0.0)
+    scene = initialize_scene_from_colmap_points(
+        recon,
+        max_gaussians=requested_count,
+        seed=123,
+        init_hparams=init_hparams,
+    )
+
+    assert scene.count == requested_count
+    assert scene.positions.shape == (requested_count, 3)
+    assert scene.colors.shape == (requested_count, 3)
+    unique_positions = np.unique(scene.positions, axis=0)
+    assert unique_positions.shape[0] < requested_count

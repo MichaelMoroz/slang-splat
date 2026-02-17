@@ -279,8 +279,9 @@ def initialize_scene_from_colmap_points(
     rng = np.random.default_rng(int(seed))
     points = list(recon.points3d.values())
     point_count = len(points)
-    chosen_count = point_count if max_gaussians <= 0 else min(int(max_gaussians), point_count)
-    indices = rng.choice(point_count, size=chosen_count, replace=False)
+    chosen_count = point_count if max_gaussians <= 0 else max(int(max_gaussians), 1)
+    sample_with_replacement = chosen_count > point_count
+    indices = rng.choice(point_count, size=chosen_count, replace=sample_with_replacement)
     positions = np.stack([points[int(i)].xyz for i in indices], axis=0).astype(np.float32)
     colors = np.stack([points[int(i)].rgb for i in indices], axis=0).astype(np.float32)
     if float(params.position_jitter_std) > 0.0:
