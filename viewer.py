@@ -118,6 +118,7 @@ class SplatViewer(spy.AppWindow):
         self._debug_abs_diff_kernel = self.device.create_compute_kernel(program)
 
     def _build_ui(self) -> None:
+        log_flags = spy.ui.SliderFlags.logarithmic
         panel = spy.ui.Window(self.screen, "Splat Viewer + Trainer", size=spy.float2(520, 760))
         self.fps_text = spy.ui.Text(panel, "FPS: 0.0")
         self.path_text = spy.ui.Text(panel, "Scene: <none>")
@@ -147,150 +148,178 @@ class SplatViewer(spy.AppWindow):
             value=50000,
             min=1000,
             max=200000,
-            flags=spy.ui.SliderFlags.logarithmic,
+            flags=log_flags,
         )
         self.seed_slider = spy.ui.SliderInt(init_group, "Seed", value=1234, min=0, max=1000000)
-        self.init_pos_jitter_slider = spy.ui.SliderFloat(
+        self.init_pos_jitter_slider = spy.ui.InputFloat(
             init_group,
             "Pos Jitter",
             value=0.01,
-            min=0.0,
-            max=0.1,
-            flags=spy.ui.SliderFlags.logarithmic,
+            step=1e-4,
+            step_fast=1e-3,
+            format="%.6f",
         )
-        self.init_scale_slider = spy.ui.SliderFloat(
+        self.init_scale_slider = spy.ui.InputFloat(
             init_group,
             "Base Scale",
             value=0.03,
-            min=0.001,
-            max=0.2,
-            flags=spy.ui.SliderFlags.logarithmic,
+            step=1e-4,
+            step_fast=1e-3,
+            format="%.6f",
         )
-        self.init_scale_jitter_slider = spy.ui.SliderFloat(init_group, "Scale Jitter", value=0.2, min=0.0, max=0.5)
-        self.init_opacity_slider = spy.ui.SliderFloat(
+        self.init_scale_jitter_slider = spy.ui.InputFloat(
+            init_group,
+            "Scale Jitter",
+            value=0.2,
+            step=1e-3,
+            step_fast=1e-2,
+            format="%.4f",
+        )
+        self.init_opacity_slider = spy.ui.InputFloat(
             init_group,
             "Init Opacity",
             value=0.5,
-            min=0.01,
-            max=0.99,
-            flags=spy.ui.SliderFlags.logarithmic,
+            step=1e-3,
+            step_fast=1e-2,
+            format="%.5f",
         )
 
         opt_group = spy.ui.Group(panel, "Train Optimizer")
-        self.lr_pos_slider = spy.ui.SliderFloat(
+        self.lr_pos_slider = spy.ui.InputFloat(
             opt_group,
             "LR Position",
             value=1e-3,
-            min=1e-5,
-            max=1e-1,
-            flags=spy.ui.SliderFlags.logarithmic,
+            step=1e-5,
+            step_fast=1e-4,
+            format="%.8f",
         )
-        self.lr_scale_slider = spy.ui.SliderFloat(
+        self.lr_scale_slider = spy.ui.InputFloat(
             opt_group,
             "LR Scale",
             value=2.5e-4,
-            min=1e-6,
-            max=1e-1,
-            flags=spy.ui.SliderFlags.logarithmic,
+            step=1e-6,
+            step_fast=1e-5,
+            format="%.8f",
         )
-        self.lr_rot_slider = spy.ui.SliderFloat(
+        self.lr_rot_slider = spy.ui.InputFloat(
             opt_group,
             "LR Rotation",
             value=1e-3,
-            min=1e-5,
-            max=1e-1,
-            flags=spy.ui.SliderFlags.logarithmic,
+            step=1e-5,
+            step_fast=1e-4,
+            format="%.8f",
         )
-        self.lr_color_slider = spy.ui.SliderFloat(
+        self.lr_color_slider = spy.ui.InputFloat(
             opt_group,
             "LR Color",
             value=1e-3,
-            min=1e-5,
-            max=1e-1,
-            flags=spy.ui.SliderFlags.logarithmic,
+            step=1e-5,
+            step_fast=1e-4,
+            format="%.8f",
         )
-        self.lr_opacity_slider = spy.ui.SliderFloat(
+        self.lr_opacity_slider = spy.ui.InputFloat(
             opt_group,
             "LR Opacity",
             value=1e-3,
-            min=1e-5,
-            max=1e-1,
-            flags=spy.ui.SliderFlags.logarithmic,
+            step=1e-5,
+            step_fast=1e-4,
+            format="%.8f",
         )
-        self.beta1_slider = spy.ui.SliderFloat(opt_group, "Beta1", value=0.9, min=0.7, max=0.999)
-        self.beta2_slider = spy.ui.SliderFloat(opt_group, "Beta2", value=0.999, min=0.8, max=0.9999)
-        self.eps_slider = spy.ui.SliderFloat(
+        self.beta1_slider = spy.ui.InputFloat(opt_group, "Beta1", value=0.9, step=1e-3, step_fast=1e-2, format="%.6f")
+        self.beta2_slider = spy.ui.InputFloat(opt_group, "Beta2", value=0.999, step=1e-4, step_fast=1e-3, format="%.6f")
+        self.eps_slider = spy.ui.InputFloat(
             opt_group,
             "Adam Eps",
             value=1e-8,
-            min=1e-10,
-            max=1e-4,
-            flags=spy.ui.SliderFlags.logarithmic,
+            step=1e-9,
+            step_fast=1e-8,
+            format="%.10f",
         )
-        self.grad_clip_slider = spy.ui.SliderFloat(
+        self.grad_clip_slider = spy.ui.InputFloat(
             opt_group,
             "Grad Clip",
             value=10.0,
-            min=0.1,
-            max=100.0,
-            flags=spy.ui.SliderFlags.logarithmic,
+            step=0.1,
+            step_fast=1.0,
+            format="%.4f",
         )
-        self.grad_norm_clip_slider = spy.ui.SliderFloat(
+        self.grad_norm_clip_slider = spy.ui.InputFloat(
             opt_group,
             "Grad Norm Clip",
             value=10.0,
-            min=0.1,
-            max=100.0,
-            flags=spy.ui.SliderFlags.logarithmic,
+            step=0.1,
+            step_fast=1.0,
+            format="%.4f",
         )
-        self.max_update_slider = spy.ui.SliderFloat(
+        self.max_update_slider = spy.ui.InputFloat(
             opt_group,
             "Max Update",
             value=0.05,
-            min=1e-4,
-            max=0.5,
-            flags=spy.ui.SliderFlags.logarithmic,
+            step=1e-4,
+            step_fast=1e-3,
+            format="%.8f",
         )
 
         stab_group = spy.ui.Group(panel, "Train Stability")
-        self.min_scale_slider = spy.ui.SliderFloat(
+        self.min_scale_slider = spy.ui.InputFloat(
             stab_group,
             "Min Scale",
             value=1e-3,
-            min=1e-4,
-            max=0.1,
-            flags=spy.ui.SliderFlags.logarithmic,
+            step=1e-5,
+            step_fast=1e-4,
+            format="%.8f",
         )
-        self.max_scale_slider = spy.ui.SliderFloat(
+        self.max_scale_slider = spy.ui.InputFloat(
             stab_group,
             "Max Scale",
             value=3.0,
-            min=0.2,
-            max=10.0,
-            flags=spy.ui.SliderFlags.logarithmic,
+            step=1e-2,
+            step_fast=0.1,
+            format="%.5f",
         )
-        self.min_opacity_slider = spy.ui.SliderFloat(
+        self.min_opacity_slider = spy.ui.InputFloat(
             stab_group,
             "Min Opacity",
             value=1e-4,
-            min=1e-5,
-            max=0.1,
-            flags=spy.ui.SliderFlags.logarithmic,
+            step=1e-5,
+            step_fast=1e-4,
+            format="%.8f",
         )
-        self.max_opacity_slider = spy.ui.SliderFloat(stab_group, "Max Opacity", value=0.9999, min=0.5, max=1.0)
-        self.position_abs_max_slider = spy.ui.SliderFloat(
+        self.max_opacity_slider = spy.ui.InputFloat(
+            stab_group,
+            "Max Opacity",
+            value=0.9999,
+            step=1e-4,
+            step_fast=1e-3,
+            format="%.6f",
+        )
+        self.position_abs_max_slider = spy.ui.InputFloat(
             stab_group,
             "Pos Abs Max",
             value=1e4,
-            min=100.0,
-            max=1e6,
-            flags=spy.ui.SliderFlags.logarithmic,
+            step=10.0,
+            step_fast=100.0,
+            format="%.3f",
         )
 
         run_group = spy.ui.Group(panel, "Train Control")
         self.train_target_flip_checkbox = spy.ui.CheckBox(run_group, "Flip Target Y", value=False)
-        self.train_near_slider = spy.ui.SliderFloat(run_group, "Train Near", value=0.1, min=0.01, max=1.0)
-        self.train_far_slider = spy.ui.SliderFloat(run_group, "Train Far", value=120.0, min=10.0, max=500.0)
+        self.train_near_slider = spy.ui.InputFloat(
+            run_group,
+            "Train Near",
+            value=0.1,
+            step=1e-3,
+            step_fast=1e-2,
+            format="%.6f",
+        )
+        self.train_far_slider = spy.ui.InputFloat(
+            run_group,
+            "Train Far",
+            value=120.0,
+            step=1.0,
+            step_fast=10.0,
+            format="%.3f",
+        )
         self.loss_debug_checkbox = spy.ui.CheckBox(run_group, "Visual Loss Debug", value=False)
         self.loss_debug_view_slider = spy.ui.SliderInt(
             run_group,
@@ -313,7 +342,8 @@ class SplatViewer(spy.AppWindow):
             value=float(self.renderer.radius_scale),
             min=0.5,
             max=4.0,
-            flags=spy.ui.SliderFlags.logarithmic,
+            flags=log_flags,
+            format="%.3g",
         )
         self.max_radius_slider = spy.ui.SliderFloat(
             params_group,
@@ -321,7 +351,8 @@ class SplatViewer(spy.AppWindow):
             value=float(self.renderer.max_splat_radius_px),
             min=8.0,
             max=2048.0,
-            flags=spy.ui.SliderFlags.logarithmic,
+            flags=log_flags,
+            format="%.3g",
         )
         self.alpha_slider = spy.ui.SliderFloat(
             params_group,
@@ -329,7 +360,8 @@ class SplatViewer(spy.AppWindow):
             value=float(self.renderer.alpha_cutoff),
             min=0.0001,
             max=0.1,
-            flags=spy.ui.SliderFlags.logarithmic,
+            flags=log_flags,
+            format="%.2e",
         )
         self.max_steps_slider = spy.ui.SliderInt(
             params_group,
@@ -344,7 +376,8 @@ class SplatViewer(spy.AppWindow):
             value=float(self.renderer.transmittance_threshold),
             min=0.001,
             max=0.2,
-            flags=spy.ui.SliderFlags.logarithmic,
+            flags=log_flags,
+            format="%.2e",
         )
         self.sampled5_safety_slider = spy.ui.SliderFloat(
             params_group,
@@ -371,7 +404,8 @@ class SplatViewer(spy.AppWindow):
             value=float(self.move_speed),
             min=0.1,
             max=20.0,
-            flags=spy.ui.SliderFlags.logarithmic,
+            flags=log_flags,
+            format="%.3g",
         )
         self.fov_slider = spy.ui.SliderFloat(
             cam_group,
@@ -753,34 +787,41 @@ class SplatViewer(spy.AppWindow):
             print(f"Failed to load COLMAP {root}: {exc}")
 
     def _collect_training_hparams(self) -> tuple[AdamHyperParams, StabilityHyperParams, TrainingHyperParams]:
+        clamp = lambda v, lo, hi: float(np.clip(float(v), float(lo), float(hi)))
         adam = AdamHyperParams(
-            position_lr=float(self.lr_pos_slider.value),
-            scale_lr=float(self.lr_scale_slider.value),
-            rotation_lr=float(self.lr_rot_slider.value),
-            color_lr=float(self.lr_color_slider.value),
-            opacity_lr=float(self.lr_opacity_slider.value),
-            beta1=float(self.beta1_slider.value),
-            beta2=float(self.beta2_slider.value),
-            epsilon=float(self.eps_slider.value),
+            position_lr=clamp(self.lr_pos_slider.value, 1e-7, 1.0),
+            scale_lr=clamp(self.lr_scale_slider.value, 1e-8, 1.0),
+            rotation_lr=clamp(self.lr_rot_slider.value, 1e-7, 1.0),
+            color_lr=clamp(self.lr_color_slider.value, 1e-7, 1.0),
+            opacity_lr=clamp(self.lr_opacity_slider.value, 1e-7, 1.0),
+            beta1=clamp(self.beta1_slider.value, 0.0, 0.99999),
+            beta2=clamp(self.beta2_slider.value, 0.0, 0.999999),
+            epsilon=clamp(self.eps_slider.value, 1e-12, 1e-2),
         )
         stability = StabilityHyperParams(
-            grad_component_clip=float(self.grad_clip_slider.value),
-            grad_norm_clip=float(self.grad_norm_clip_slider.value),
-            max_update=float(self.max_update_slider.value),
-            min_scale=float(self.min_scale_slider.value),
-            max_scale=float(self.max_scale_slider.value),
-            min_opacity=float(self.min_opacity_slider.value),
-            max_opacity=float(self.max_opacity_slider.value),
-            position_abs_max=float(self.position_abs_max_slider.value),
-            loss_grad_clip=float(self.grad_clip_slider.value),
+            grad_component_clip=clamp(self.grad_clip_slider.value, 1e-5, 1e6),
+            grad_norm_clip=clamp(self.grad_norm_clip_slider.value, 1e-5, 1e6),
+            max_update=clamp(self.max_update_slider.value, 1e-8, 10.0),
+            min_scale=clamp(self.min_scale_slider.value, 1e-8, 1e3),
+            max_scale=clamp(self.max_scale_slider.value, 1e-8, 1e4),
+            min_opacity=clamp(self.min_opacity_slider.value, 0.0, 1.0),
+            max_opacity=clamp(self.max_opacity_slider.value, 0.0, 1.0),
+            position_abs_max=clamp(self.position_abs_max_slider.value, 1e-3, 1e9),
+            loss_grad_clip=clamp(self.grad_clip_slider.value, 1e-5, 1e6),
         )
+        if stability.max_scale < stability.min_scale:
+            stability.max_scale = stability.min_scale
+        if stability.max_opacity < stability.min_opacity:
+            stability.max_opacity = stability.min_opacity
         training = TrainingHyperParams(
             background=tuple(float(v) for v in self.background.tolist()),
-            near=float(self.train_near_slider.value),
-            far=float(self.train_far_slider.value),
+            near=clamp(self.train_near_slider.value, 1e-6, 1e4),
+            far=clamp(self.train_far_slider.value, 1e-5, 1e6),
             target_flip_y=bool(self.train_target_flip_checkbox.value),
             ema_decay=0.95,
         )
+        if training.far <= training.near:
+            training.far = training.near + 1e-3
         return adam, stability, training
 
     def _initialize_training_scene(self) -> None:
@@ -788,11 +829,12 @@ class SplatViewer(spy.AppWindow):
             self.last_error = "Load COLMAP dataset first."
             return
         try:
+            clamp = lambda v, lo, hi: float(np.clip(float(v), float(lo), float(hi)))
             init_hparams = GaussianInitHyperParams(
-                position_jitter_std=float(self.init_pos_jitter_slider.value),
-                base_scale=float(self.init_scale_slider.value),
-                scale_jitter_ratio=float(self.init_scale_jitter_slider.value),
-                initial_opacity=float(self.init_opacity_slider.value),
+                position_jitter_std=clamp(self.init_pos_jitter_slider.value, 0.0, 10.0),
+                base_scale=clamp(self.init_scale_slider.value, 1e-8, 1e3),
+                scale_jitter_ratio=clamp(self.init_scale_jitter_slider.value, 0.0, 10.0),
+                initial_opacity=clamp(self.init_opacity_slider.value, 0.0, 1.0),
                 color_jitter_std=0.0,
             )
             scene = initialize_scene_from_colmap_points(
