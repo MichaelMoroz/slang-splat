@@ -79,6 +79,8 @@ float3 local_point_to_world(float3 pLocal, float3 worldPos, float3 invScale, flo
     return worldPos + rotate_by_quat(localUnscaled, qInv);
 }
 
+// Shared by projection and backward conversion from cached ellipsoid grads.
+[Differentiable]
 Ellipsoid build_ellipsoid(Gaussian3D gaussian)
 {
     Ellipsoid ellipsoid;

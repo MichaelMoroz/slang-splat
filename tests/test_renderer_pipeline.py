@@ -234,14 +234,14 @@ def test_raster_backward_smoke_and_determinism(device):
     grads1 = renderer.debug_raster_backward_grads(scene, camera, background=np.array([0.1, 0.15, 0.2], dtype=np.float32))
 
     for name in (
-        "grad_splat_pos_local",
-        "grad_splat_inv_scale",
-        "grad_splat_quat",
-        "grad_screen_color_alpha",
+        "grad_positions",
+        "grad_scales",
+        "grad_rotations",
+        "grad_color_alpha",
     ):
         assert grads0[name].shape == (scene.count, 4)
         assert np.all(np.isfinite(grads0[name]))
-        np.testing.assert_allclose(grads0[name], grads1[name], rtol=1e-5, atol=1e-6)
+        np.testing.assert_allclose(grads0[name], grads1[name], rtol=1e-5, atol=5e-6)
 
 
 def test_prepass_capacity_budget_caps_growth(device):

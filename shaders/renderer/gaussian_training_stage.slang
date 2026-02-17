@@ -25,7 +25,6 @@ struct TrainingStabilityParams
     float maxOpacity;
     float positionAbsMax;
     float hugeValue;
-    float minInvScale;
 };
 
 uniform AdamParams g_Adam;
@@ -33,10 +32,8 @@ uniform TrainingStabilityParams g_Stability;
 uniform uint g_SplatCount;
 uniform uint g_Width;
 uniform uint g_Height;
-uniform float g_RadiusScale;
 uniform float g_InvPixelCount;
 uniform float g_LossGradClip;
-uniform float3 g_CamPos;
 
 uniform Texture2D<float4> g_Rendered;
 uniform Texture2D<float4> g_Target;
@@ -49,12 +46,10 @@ uniform uint g_DebugWidth;
 uniform uint g_DebugHeight;
 groupshared float gsLoss[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
 
-uniform StructuredBuffer<float4> g_SplatInvScale;
-uniform StructuredBuffer<float4> g_SplatQuat;
-uniform StructuredBuffer<float> g_GradSplatPosLocal;
-uniform StructuredBuffer<float> g_GradSplatInvScale;
-uniform StructuredBuffer<float> g_GradSplatQuat;
-uniform StructuredBuffer<float> g_GradScreenColorAlpha;
+uniform StructuredBuffer<float> g_GradPositions;
+uniform StructuredBuffer<float> g_GradScales;
+uniform StructuredBuffer<float> g_GradRotations;
+uniform StructuredBuffer<float> g_GradColorAlpha;
 
 uniform RWStructuredBuffer<float4> g_PositionsRW;
 uniform RWStructuredBuffer<float4> g_ScalesRW;
@@ -109,27 +104,6 @@ float4 clip_norm4(float4 value, float maxNorm)
     float len = length(value);
     if (!isfinite(len) || len <= maxNorm) return value;
     return value * (maxNorm / max(len, TRAIN_EPS));
-}
-
-float3 rotate_by_quat(float3 v, float4 q)
-{
-    float3 qv = q.yzw;
-    return v + 2.0 * cross(cross(v, qv) + q.x * v, qv);
-}
-
-float3 rotate_by_quat_inverse(float3 v, float4 q)
-{
-    float4 qInv = float4(q.x, -q.y, -q.z, -q.w);
-    return rotate_by_quat(v, qInv);
-}
-
-float4 quat_grad_from_rotate(float3 v, float4 q, float3 gradOut)
-{
-    float3 u = q.yzw;
-    float3 t = cross(v, u) + q.x * v;
-    float dw = 2.0 * dot(gradOut, cross(v, u));
-    float3 du = 2.0 * (cross(cross(u, gradOut), v) + cross(gradOut, t));
-    return float4(dw, du);
 }
 
 float4 normalize_quaternion_safe(float4 q)
@@ -242,59 +216,45 @@ void csAdamStepFused(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (splatId >= g_SplatCount) return;
     uint gradBase = splatId * 4u;
 
-    float4 gradRoLocal = float4(
-        g_GradSplatPosLocal[gradBase + 0u],
-        g_GradSplatPosLocal[gradBase + 1u],
-        g_GradSplatPosLocal[gradBase + 2u],
-        g_GradSplatPosLocal[gradBase + 3u]
+    float4 gradPos = float4(
+        g_GradPositions[gradBase + 0u],
+        g_GradPositions[gradBase + 1u],
+        g_GradPositions[gradBase + 2u],
+        g_GradPositions[gradBase + 3u]
     );
-    float4 gradInvScale = float4(
-        g_GradSplatInvScale[gradBase + 0u],
-        g_GradSplatInvScale[gradBase + 1u],
-        g_GradSplatInvScale[gradBase + 2u],
-        g_GradSplatInvScale[gradBase + 3u]
+    float4 gradScale = float4(
+        g_GradScales[gradBase + 0u],
+        g_GradScales[gradBase + 1u],
+        g_GradScales[gradBase + 2u],
+        g_GradScales[gradBase + 3u]
     );
     float4 gradQuat = float4(
-        g_GradSplatQuat[gradBase + 0u],
-        g_GradSplatQuat[gradBase + 1u],
-        g_GradSplatQuat[gradBase + 2u],
-        g_GradSplatQuat[gradBase + 3u]
+        g_GradRotations[gradBase + 0u],
+        g_GradRotations[gradBase + 1u],
+        g_GradRotations[gradBase + 2u],
+        g_GradRotations[gradBase + 3u]
     );
     float4 gradColorAlpha = float4(
-        g_GradScreenColorAlpha[gradBase + 0u],
-        g_GradScreenColorAlpha[gradBase + 1u],
-        g_GradScreenColorAlpha[gradBase + 2u],
-        g_GradScreenColorAlpha[gradBase + 3u]
+        g_GradColorAlpha[gradBase + 0u],
+        g_GradColorAlpha[gradBase + 1u],
+        g_GradColorAlpha[gradBase + 2u],
+        g_GradColorAlpha[gradBase + 3u]
     );
 
     float clipAbs = g_Stability.gradComponentClip;
-    gradRoLocal = sanitize_float4(gradRoLocal, clipAbs);
-    gradInvScale = sanitize_float4(gradInvScale, clipAbs);
+    gradPos = sanitize_float4(gradPos, clipAbs);
+    gradScale = sanitize_float4(gradScale, clipAbs);
     gradQuat = sanitize_float4(gradQuat, clipAbs);
     gradColorAlpha = sanitize_float4(gradColorAlpha, clipAbs);
+    gradPos.xyz = clip_norm3(gradPos.xyz, g_Stability.gradNormClip);
+    gradScale.xyz = clip_norm3(gradScale.xyz, g_Stability.gradNormClip);
+    gradQuat = clip_norm4(gradQuat, g_Stability.gradNormClip);
+    gradColorAlpha = clip_norm4(gradColorAlpha, g_Stability.gradNormClip);
 
     float4 pos = g_PositionsRW[splatId];
     float4 scale = g_ScalesRW[splatId];
     float4 rot = g_RotationsRW[splatId];
     float4 colorAlpha = g_ColorAlphaRW[splatId];
-
-    float3 invScale = max(g_SplatInvScale[splatId].xyz, g_Stability.minInvScale);
-    float4 splatQuat = normalize_quaternion_safe(g_SplatQuat[splatId]);
-    float3 camToSplat = g_CamPos - pos.xyz;
-    float3 gradRoLocal3 = gradRoLocal.xyz;
-    float3 gradU = gradRoLocal3 * invScale;
-    float3 gradPosWorld = -rotate_by_quat_inverse(gradU, splatQuat);
-    gradPosWorld = clip_norm3(gradPosWorld, g_Stability.gradNormClip);
-
-    float3 rotatedCamToSplat = rotate_by_quat(camToSplat, splatQuat);
-    float3 gradInvScaleTotal = gradInvScale.xyz + gradRoLocal3 * rotatedCamToSplat;
-    float3 gradScale = -gradInvScaleTotal * invScale * invScale * g_RadiusScale;
-    gradScale = clip_norm3(gradScale, g_Stability.gradNormClip);
-
-    float4 gradQuatFromRoLocal = quat_grad_from_rotate(camToSplat, splatQuat, gradU);
-    gradQuat += gradQuatFromRoLocal;
-    gradQuat = clip_norm4(gradQuat, g_Stability.gradNormClip);
-    gradColorAlpha = clip_norm4(gradColorAlpha, g_Stability.gradNormClip);
 
     float beta1Pow = pow(g_Adam.beta1, float(g_Adam.stepIndex));
     float beta2Pow = pow(g_Adam.beta2, float(g_Adam.stepIndex));
@@ -310,15 +270,12 @@ void csAdamStepFused(uint3 dispatchThreadID : SV_DispatchThreadID)
     float4 mColorAlpha = g_AdamMColorAlpha[splatId];
     float4 vColorAlpha = g_AdamVColorAlpha[splatId];
 
-    float4 gradPos = float4(gradPosWorld, 0.0);
-    float4 gradS = float4(gradScale, 0.0);
-
     float4 posLR = float4(g_Adam.positionLR, g_Adam.positionLR, g_Adam.positionLR, 0.0);
     float4 scaleLR = float4(g_Adam.scaleLR, g_Adam.scaleLR, g_Adam.scaleLR, 0.0);
     float4 rotLR = float4(g_Adam.rotationLR, g_Adam.rotationLR, g_Adam.rotationLR, g_Adam.rotationLR);
     float4 colorAlphaLR = float4(g_Adam.colorLR, g_Adam.colorLR, g_Adam.colorLR, g_Adam.opacityLR);
     pos = adam_update_param(pos, gradPos, mPos, vPos, posLR, biasCorr1, biasCorr2);
-    scale = adam_update_param(scale, gradS, mScale, vScale, scaleLR, biasCorr1, biasCorr2);
+    scale = adam_update_param(scale, gradScale, mScale, vScale, scaleLR, biasCorr1, biasCorr2);
     rot = adam_update_param(rot, gradQuat, mQuat, vQuat, rotLR, biasCorr1, biasCorr2);
     colorAlpha = adam_update_param(colorAlpha, gradColorAlpha, mColorAlpha, vColorAlpha, colorAlphaLR, biasCorr1, biasCorr2);
 

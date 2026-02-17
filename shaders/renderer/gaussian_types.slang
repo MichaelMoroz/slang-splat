@@ -58,9 +58,6 @@ uniform StructuredBuffer<float4> g_ColorAlpha;
 uniform RWStructuredBuffer<float4> g_ScreenCenterRadiusDepth;
 uniform RWStructuredBuffer<float4> g_ScreenColorAlpha;
 uniform RWStructuredBuffer<float4> g_ScreenEllipseConic;
-uniform RWStructuredBuffer<float4> g_SplatPosLocal;
-uniform RWStructuredBuffer<float4> g_SplatInvScale;
-uniform RWStructuredBuffer<float4> g_SplatQuat;
 
 uniform RWStructuredBuffer<uint> g_Keys;
 uniform RWStructuredBuffer<uint> g_Values;
@@ -79,10 +76,10 @@ uniform Texture2D<float4> g_OutputGrad;
 uniform RWTexture2D<float4> g_RasterForwardState;
 uniform RWTexture2D<uint> g_RasterProcessedCount;
 
-uniform RWStructuredBuffer<float> g_GradSplatPosLocal;
-uniform RWStructuredBuffer<float> g_GradSplatInvScale;
-uniform RWStructuredBuffer<float> g_GradSplatQuat;
-uniform RWStructuredBuffer<float> g_GradScreenColorAlpha;
+uniform RWStructuredBuffer<float> g_GradPositions;
+uniform RWStructuredBuffer<float> g_GradScales;
+uniform RWStructuredBuffer<float> g_GradRotations;
+uniform RWStructuredBuffer<float> g_GradColorAlpha;
 
 struct CameraParams
 {
@@ -134,7 +131,7 @@ uniform CameraParams g_Camera;
 uniform PrepassParams g_Prepass;
 uniform RasterParams g_Raster;
 
-struct Gaussian3D
+struct Gaussian3D : IDifferentiable
 {
     float3 position;
     float3 scale;
@@ -152,7 +149,7 @@ struct Gaussian3D
     }
 };
 
-struct Ellipsoid
+struct Ellipsoid : IDifferentiable
 {
     float3 centerWorld;
     float3 scale;

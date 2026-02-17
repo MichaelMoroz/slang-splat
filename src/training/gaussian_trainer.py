@@ -237,15 +237,13 @@ class GaussianTrainer:
         frame = self.frames[idx]
         return self._make_frame_camera(frame, int(width), int(height))
 
-    def _common_vars(self, camera_position: np.ndarray) -> dict[str, object]:
+    def _common_vars(self) -> dict[str, object]:
         return {
             "g_Width": int(self.renderer.width),
             "g_Height": int(self.renderer.height),
             "g_SplatCount": int(self.scene.count),
-            "g_RadiusScale": float(self.renderer.radius_scale),
             "g_InvPixelCount": 1.0 / float(max(self.renderer.width * self.renderer.height, 1)),
             "g_LossGradClip": float(self.stability.loss_grad_clip),
-            "g_CamPos": spy.float3(*camera_position.astype(np.float32).tolist()),
             "g_Adam": {
                 "positionLR": float(self.adam.position_lr),
                 "scaleLR": float(self.adam.scale_lr),
@@ -267,17 +265,15 @@ class GaussianTrainer:
                 "maxOpacity": float(self.stability.max_opacity),
                 "positionAbsMax": float(self.stability.position_abs_max),
                 "hugeValue": float(self.stability.huge_value),
-                "minInvScale": float(self.stability.min_inv_scale),
             },
         }
 
     def _dispatch_loss_grad(
         self,
         encoder: spy.CommandEncoder,
-        camera_position: np.ndarray,
         target_texture: spy.Texture,
     ) -> None:
-        vars_common = self._common_vars(camera_position)
+        vars_common = self._common_vars()
         self._kernels["clear_loss_grad"].dispatch(
             thread_count=spy.uint3(self.renderer.width, self.renderer.height, 1),
             vars={
@@ -313,17 +309,15 @@ class GaussianTrainer:
             output_grad=self.renderer.output_grad_texture,
         )
 
-    def _dispatch_adam_step(self, encoder: spy.CommandEncoder, camera_position: np.ndarray) -> None:
-        vars_common = self._common_vars(camera_position)
+    def _dispatch_adam_step(self, encoder: spy.CommandEncoder) -> None:
+        vars_common = self._common_vars()
         self._kernels["adam_step"].dispatch(
             thread_count=spy.uint3(self.scene.count, 1, 1),
             vars={
-                "g_SplatInvScale": self.renderer.work_buffers["splat_inv_scale"],
-                "g_SplatQuat": self.renderer.work_buffers["splat_quat"],
-                "g_GradSplatPosLocal": self.renderer.work_buffers["grad_splat_pos_local"],
-                "g_GradSplatInvScale": self.renderer.work_buffers["grad_splat_inv_scale"],
-                "g_GradSplatQuat": self.renderer.work_buffers["grad_splat_quat"],
-                "g_GradScreenColorAlpha": self.renderer.work_buffers["grad_screen_color_alpha"],
+                "g_GradPositions": self.renderer.work_buffers["grad_positions"],
+                "g_GradScales": self.renderer.work_buffers["grad_scales"],
+                "g_GradRotations": self.renderer.work_buffers["grad_rotations"],
+                "g_GradColorAlpha": self.renderer.work_buffers["grad_color_alpha"],
                 "g_PositionsRW": self.renderer.scene_buffers["positions"],
                 "g_ScalesRW": self.renderer.scene_buffers["scales"],
                 "g_RotationsRW": self.renderer.scene_buffers["rotations"],
@@ -356,7 +350,7 @@ class GaussianTrainer:
 
         enc = self.device.create_command_encoder()
         self.renderer.rasterize_current_scene(enc, frame_camera, background)
-        self._dispatch_loss_grad(enc, frame_camera.position, target_texture)
+        self._dispatch_loss_grad(enc, target_texture)
         self._dispatch_raster_backward(enc, frame_camera, background)
         self.device.submit_command_buffer(enc.finish())
         self.device.wait()
@@ -369,7 +363,7 @@ class GaussianTrainer:
         else:
             self.state.last_instability = ""
             enc_opt = self.device.create_command_encoder()
-            self._dispatch_adam_step(enc_opt, frame_camera.position)
+            self._dispatch_adam_step(enc_opt)
             self.device.submit_command_buffer(enc_opt.finish())
 
         self.state.step += 1

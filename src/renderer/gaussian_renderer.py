@@ -203,9 +203,6 @@ class GaussianRenderer:
             ),
             "screen_color_alpha": self.device.create_buffer(size=max(splat_capacity, 1) * 16, usage=usage),
             "screen_ellipse_conic": self.device.create_buffer(size=max(splat_capacity, 1) * 16, usage=usage),
-            "splat_pos_local": self.device.create_buffer(size=max(splat_capacity, 1) * 16, usage=usage),
-            "splat_inv_scale": self.device.create_buffer(size=max(splat_capacity, 1) * 16, usage=usage),
-            "splat_quat": self.device.create_buffer(size=max(splat_capacity, 1) * 16, usage=usage),
             "keys": self.device.create_buffer(size=max_list_entries * 4, usage=usage),
             "values": self.device.create_buffer(size=max_list_entries * 4, usage=usage),
             "counter": self.device.create_buffer(size=4, usage=usage),
@@ -216,19 +213,19 @@ class GaussianRenderer:
             ),
             "scanline_counter": self.device.create_buffer(size=self._U32_BYTES, usage=usage),
             "tile_ranges": self.device.create_buffer(size=max(self.tile_count, 1) * 8, usage=usage),
-            "grad_splat_pos_local": self.device.create_buffer(
+            "grad_positions": self.device.create_buffer(
                 size=max(splat_capacity, 1) * 4 * self._U32_BYTES,
                 usage=usage,
             ),
-            "grad_splat_inv_scale": self.device.create_buffer(
+            "grad_scales": self.device.create_buffer(
                 size=max(splat_capacity, 1) * 4 * self._U32_BYTES,
                 usage=usage,
             ),
-            "grad_splat_quat": self.device.create_buffer(
+            "grad_rotations": self.device.create_buffer(
                 size=max(splat_capacity, 1) * 4 * self._U32_BYTES,
                 usage=usage,
             ),
-            "grad_screen_color_alpha": self.device.create_buffer(
+            "grad_color_alpha": self.device.create_buffer(
                 size=max(splat_capacity, 1) * 4 * self._U32_BYTES,
                 usage=usage,
             ),
@@ -408,9 +405,6 @@ class GaussianRenderer:
             "g_ScreenCenterRadiusDepth": self._work_buffers["screen_center_radius_depth"],
             "g_ScreenColorAlpha": self._work_buffers["screen_color_alpha"],
             "g_ScreenEllipseConic": self._work_buffers["screen_ellipse_conic"],
-            "g_SplatPosLocal": self._work_buffers["splat_pos_local"],
-            "g_SplatInvScale": self._work_buffers["splat_inv_scale"],
-            "g_SplatQuat": self._work_buffers["splat_quat"],
             "g_Keys": self._work_buffers["keys"],
             "g_Values": self._work_buffers["values"],
             "g_ListCounter": self._work_buffers["counter"],
@@ -475,12 +469,13 @@ class GaussianRenderer:
         self._k_raster.dispatch(
             thread_count=spy.uint3(self.width, self.height, 1),
             vars={
+                "g_Positions": self._scene_buffers["positions"],
+                "g_Scales": self._scene_buffers["scales"],
+                "g_Rotations": self._scene_buffers["rotations"],
+                "g_ColorAlpha": self._scene_buffers["color_alpha"],
                 "g_ScreenCenterRadiusDepth": self._work_buffers["screen_center_radius_depth"],
                 "g_ScreenColorAlpha": self._work_buffers["screen_color_alpha"],
                 "g_ScreenEllipseConic": self._work_buffers["screen_ellipse_conic"],
-                "g_SplatPosLocal": self._work_buffers["splat_pos_local"],
-                "g_SplatInvScale": self._work_buffers["splat_inv_scale"],
-                "g_SplatQuat": self._work_buffers["splat_quat"],
                 "g_SortedValues": self._work_buffers["values"],
                 "g_TileRanges": self._work_buffers["tile_ranges"],
                 "g_Output": self._output_texture,
@@ -498,10 +493,10 @@ class GaussianRenderer:
         self._k_clear_raster_grads.dispatch(
             thread_count=spy.uint3(grad_count, 1, 1),
             vars={
-                "g_GradSplatPosLocal": self._work_buffers["grad_splat_pos_local"],
-                "g_GradSplatInvScale": self._work_buffers["grad_splat_inv_scale"],
-                "g_GradSplatQuat": self._work_buffers["grad_splat_quat"],
-                "g_GradScreenColorAlpha": self._work_buffers["grad_screen_color_alpha"],
+                "g_GradPositions": self._work_buffers["grad_positions"],
+                "g_GradScales": self._work_buffers["grad_scales"],
+                "g_GradRotations": self._work_buffers["grad_rotations"],
+                "g_GradColorAlpha": self._work_buffers["grad_color_alpha"],
                 **self._prepass_uniforms(splat_count),
             },
             command_encoder=encoder,
@@ -517,19 +512,20 @@ class GaussianRenderer:
         self._k_raster_backward.dispatch(
             thread_count=spy.uint3(self.width, self.height, 1),
             vars={
+                "g_Positions": self._scene_buffers["positions"],
+                "g_Scales": self._scene_buffers["scales"],
+                "g_Rotations": self._scene_buffers["rotations"],
+                "g_ColorAlpha": self._scene_buffers["color_alpha"],
                 "g_ScreenColorAlpha": self._work_buffers["screen_color_alpha"],
-                "g_SplatPosLocal": self._work_buffers["splat_pos_local"],
-                "g_SplatInvScale": self._work_buffers["splat_inv_scale"],
-                "g_SplatQuat": self._work_buffers["splat_quat"],
                 "g_SortedValues": self._work_buffers["values"],
                 "g_TileRanges": self._work_buffers["tile_ranges"],
                 "g_OutputGrad": output_grad,
                 "g_RasterForwardState": self._raster_forward_state_texture,
                 "g_RasterProcessedCount": self._raster_processed_count_texture,
-                "g_GradSplatPosLocal": self._work_buffers["grad_splat_pos_local"],
-                "g_GradSplatInvScale": self._work_buffers["grad_splat_inv_scale"],
-                "g_GradSplatQuat": self._work_buffers["grad_splat_quat"],
-                "g_GradScreenColorAlpha": self._work_buffers["grad_screen_color_alpha"],
+                "g_GradPositions": self._work_buffers["grad_positions"],
+                "g_GradScales": self._work_buffers["grad_scales"],
+                "g_GradRotations": self._work_buffers["grad_rotations"],
+                "g_GradColorAlpha": self._work_buffers["grad_color_alpha"],
                 **self._prepass_uniforms(self._scene_count),
                 **self._raster_uniforms(background),
                 **self._camera_uniforms(camera),
@@ -733,10 +729,10 @@ class GaussianRenderer:
         self.device.submit_command_buffer(enc.finish())
         self.device.wait()
         return {
-            "grad_splat_pos_local": self._read_f32x4(self._work_buffers["grad_splat_pos_local"], scene.count),
-            "grad_splat_inv_scale": self._read_f32x4(self._work_buffers["grad_splat_inv_scale"], scene.count),
-            "grad_splat_quat": self._read_f32x4(self._work_buffers["grad_splat_quat"], scene.count),
-            "grad_screen_color_alpha": self._read_f32x4(self._work_buffers["grad_screen_color_alpha"], scene.count),
+            "grad_positions": self._read_f32x4(self._work_buffers["grad_positions"], scene.count),
+            "grad_scales": self._read_f32x4(self._work_buffers["grad_scales"], scene.count),
+            "grad_rotations": self._read_f32x4(self._work_buffers["grad_rotations"], scene.count),
+            "grad_color_alpha": self._read_f32x4(self._work_buffers["grad_color_alpha"], scene.count),
         }
 
     def debug_pipeline_data(self, scene: GaussianScene, camera: Camera) -> dict[str, np.ndarray | int]:
@@ -757,7 +753,4 @@ class GaussianRenderer:
             ),
             "screen_color_alpha": self._read_f32x4(self._work_buffers["screen_color_alpha"], scene.count),
             "screen_ellipse_conic": self._read_f32x4(self._work_buffers["screen_ellipse_conic"], scene.count),
-            "splat_pos_local": self._read_f32x4(self._work_buffers["splat_pos_local"], scene.count),
-            "splat_inv_scale": self._read_f32x4(self._work_buffers["splat_inv_scale"], scene.count),
-            "splat_quat": self._read_f32x4(self._work_buffers["splat_quat"], scene.count),
         }

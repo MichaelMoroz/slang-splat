@@ -72,9 +72,6 @@ void csProjectAndBin(uint3 dispatchThreadID : SV_DispatchThreadID)
     g_ScreenCenterRadiusDepth[splatId] = float4(fitCenter, fitRadius, camDistance);
     g_ScreenColorAlpha[splatId] = gaussian.colorAlpha;
     g_ScreenEllipseConic[splatId] = float4(fitConic, 1.0);
-    g_SplatPosLocal[splatId] = float4(ellipsoid.roLocal, 0.0);
-    g_SplatInvScale[splatId] = float4(ellipsoid.invScale, 0.0);
-    g_SplatQuat[splatId] = ellipsoid.rotation;
     SplatBinRequest binRequest;
     binRequest.splatId = splatId;
     binRequest.camDistance = camDistance;

@@ -60,15 +60,23 @@ void clear_batch_gradient_cache(uint batchCount, uint lane)
     [unroll] for (uint i = 0u; i < SPLAT_GRAD_STATE_STRIDE; i++) gsGradState[base + i] = 0.0;
 }
 
-void flush_batch_gradient_cache(uint batchCount, uint lane)
+struct CachedEllipsoid : IDifferentiable
 {
-    if (lane >= batchCount) return;
-    uint splatId = gsBatchSplatId[lane];
-    uint splatBase = splatId * SPLAT_GRAD_COMPONENTS;
-    atomic_add_grad<4>(g_GradSplatPosLocal, splatBase, load_grad_shared<4>(grad_state_base(lane, SPLAT_GRAD_STATE_POS_LOCAL_OFFSET)));
-    atomic_add_grad<4>(g_GradSplatInvScale, splatBase, load_grad_shared<4>(grad_state_base(lane, SPLAT_GRAD_STATE_INV_SCALE_OFFSET)));
-    atomic_add_grad<4>(g_GradSplatQuat, splatBase, load_grad_shared<4>(grad_state_base(lane, SPLAT_GRAD_STATE_QUAT_OFFSET)));
-    atomic_add_grad<4>(g_GradScreenColorAlpha, splatBase, load_grad_shared<4>(grad_state_base(lane, SPLAT_GRAD_STATE_COLOR_ALPHA_OFFSET)));
+    float3 roLocal;
+    float3 invScale;
+    float4 quat;
+};
+
+[Differentiable]
+CachedEllipsoid build_cached_ellipsoid(float3 position, float3 scale, float4 rotation)
+{
+    Gaussian3D gaussian;
+    gaussian.position = position;
+    gaussian.scale = scale;
+    gaussian.rotation = rotation;
+    gaussian.colorAlpha = 0.0;
+    Ellipsoid ellipsoid = build_ellipsoid(gaussian);
+    return { ellipsoid.roLocal, ellipsoid.invScale, ellipsoid.rotation };
 }
 
 struct RasterGaussian : IDifferentiable
@@ -78,15 +86,14 @@ struct RasterGaussian : IDifferentiable
     float4 quat;
     float4 colorAlpha;
 
-    [BackwardDerivative(raster_gaussian_load_global_bwd)]
     static RasterGaussian load_global(uint splatId)
     {
-        RasterGaussian gaussian;
-        gaussian.roLocal = g_SplatPosLocal[splatId].xyz;
-        gaussian.invScale = g_SplatInvScale[splatId].xyz;
-        gaussian.quat = g_SplatQuat[splatId];
-        gaussian.colorAlpha = g_ScreenColorAlpha[splatId];
-        return gaussian;
+        float3 position = g_Positions[splatId].xyz;
+        float3 scale = g_Scales[splatId].xyz;
+        float4 rotation = g_Rotations[splatId];
+        float4 colorAlpha = g_ColorAlpha[splatId];
+        CachedEllipsoid cached = build_cached_ellipsoid(position, scale, rotation);
+        return { cached.roLocal, cached.invScale, cached.quat, colorAlpha };
     }
 
     [BackwardDerivative(raster_gaussian_load_shared_bwd)]
@@ -109,15 +116,6 @@ struct RasterGaussian : IDifferentiable
         gsColorAlpha[localIdx] = half4(colorAlpha);
     }
 
-    static void accumulate_gradients_global(uint splatId, Differential dOut)
-    {
-        uint splatBase = splatId * SPLAT_GRAD_COMPONENTS;
-        atomic_add_grad<4>(g_GradSplatPosLocal, splatBase, float4(dOut.roLocal, 0.0));
-        atomic_add_grad<4>(g_GradSplatInvScale, splatBase, float4(dOut.invScale, 0.0));
-        atomic_add_grad<4>(g_GradSplatQuat, splatBase, dOut.quat);
-        atomic_add_grad<4>(g_GradScreenColorAlpha, splatBase, dOut.colorAlpha);
-    }
-
     static void accumulate_gradients_shared(uint localIdx, Differential dOut)
     {
         atomic_add_grad_shared<4>(grad_state_base(localIdx, SPLAT_GRAD_STATE_POS_LOCAL_OFFSET), float4(dOut.roLocal, 0.0));
@@ -126,16 +124,38 @@ struct RasterGaussian : IDifferentiable
         atomic_add_grad_shared<4>(grad_state_base(localIdx, SPLAT_GRAD_STATE_COLOR_ALPHA_OFFSET), dOut.colorAlpha);
     }
 
-    static void raster_gaussian_load_global_bwd(uint splatId, Differential dOut)
-    {
-        accumulate_gradients_global(splatId, dOut);
-    }
-
     static void raster_gaussian_load_shared_bwd(uint localIdx, Differential dOut)
     {
         accumulate_gradients_shared(localIdx, dOut);
     }
 };
+
+void flush_batch_gradient_cache(uint batchCount, uint lane)
+{
+    if (lane >= batchCount) return;
+    uint splatId = gsBatchSplatId[lane];
+    uint splatBase = splatId * SPLAT_GRAD_COMPONENTS;
+
+    CachedEllipsoid.Differential dCached;
+    dCached.roLocal = load_grad_shared<4>(grad_state_base(lane, SPLAT_GRAD_STATE_POS_LOCAL_OFFSET)).xyz;
+    dCached.invScale = load_grad_shared<4>(grad_state_base(lane, SPLAT_GRAD_STATE_INV_SCALE_OFFSET)).xyz;
+    dCached.quat = load_grad_shared<4>(grad_state_base(lane, SPLAT_GRAD_STATE_QUAT_OFFSET));
+    float4 dColorAlpha = load_grad_shared<4>(grad_state_base(lane, SPLAT_GRAD_STATE_COLOR_ALPHA_OFFSET));
+
+    float3 position = g_Positions[splatId].xyz;
+    float3 scale = g_Scales[splatId].xyz;
+    float4 rotation = g_Rotations[splatId];
+    float4 colorAlpha = g_ColorAlpha[splatId];
+    var dpPosition = diffPair(position);
+    var dpScale = diffPair(scale);
+    var dpRotation = diffPair(rotation);
+    bwd_diff(build_cached_ellipsoid)(dpPosition, dpScale, dpRotation, dCached);
+
+    atomic_add_grad<4>(g_GradPositions, splatBase, float4(dpPosition.getDifferential(), 0.0));
+    atomic_add_grad<4>(g_GradScales, splatBase, float4(dpScale.getDifferential(), 0.0));
+    atomic_add_grad<4>(g_GradRotations, splatBase, dpRotation.getDifferential());
+    atomic_add_grad<4>(g_GradColorAlpha, splatBase, dColorAlpha);
+}
 
 [Differentiable]
 float raster_eval_alpha(uint localIdx, no_diff float3 rayDir)
@@ -246,10 +266,10 @@ void csClearRasterGrads(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint idx = dispatchThreadID.x;
     if (idx >= gradCount) return;
 
-    g_GradSplatPosLocal[idx] = 0.0;
-    g_GradSplatInvScale[idx] = 0.0;
-    g_GradSplatQuat[idx] = 0.0;
-    g_GradScreenColorAlpha[idx] = 0.0;
+    g_GradPositions[idx] = 0.0;
+    g_GradScales[idx] = 0.0;
+    g_GradRotations[idx] = 0.0;
+    g_GradColorAlpha[idx] = 0.0;
 }
 
 [shader("compute")]
