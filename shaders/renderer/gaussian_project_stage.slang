@@ -156,8 +156,7 @@ bool try_prepare_conic_for_binning(inout Ellipse ellipse, float halfTile)
         && isfinite(minAxis)
         && eigMin > 0.0
         && eigMax > 0.0
-        && maxAxis <= axisLimit
-        && minAxis >= MIN_AXIS_RATIO;
+        && maxAxis <= axisLimit;
     if (!useConic) return false;
 
     float xExtent = sqrt(max(conic.z / detConic, 0.0));

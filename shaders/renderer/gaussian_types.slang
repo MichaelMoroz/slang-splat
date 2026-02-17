@@ -23,7 +23,6 @@ static const float EPS_CONIC_POSITIVE = 1e-10;
 static const float EPS_CONIC_DETERMINANT = 1e-12;
 static const float EPS_CONIC_INV_AXIS = 1e-20;
 static const float EPS_CONIC_INTERSECTION = 1e-5;
-static const float MIN_AXIS_RATIO = 0.125;
 static const float MIN_RADIUS_PX = 1.0;
 static const float MIN_BBOX_EXTENT_PX = 1e-4;
 static const float MIN_DEBUG_THICKNESS_PX = 0.25;
