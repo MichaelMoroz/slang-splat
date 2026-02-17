@@ -76,7 +76,8 @@ def _project_world_to_screen(
     cam_right: np.ndarray,
     cam_up: np.ndarray,
     cam_forward: np.ndarray,
-    focal_pixels: float,
+    focal_pixels: np.ndarray,
+    principal_point: np.ndarray,
     width: int,
     height: int,
     distortion_k1: float = 0.0,
@@ -91,8 +92,8 @@ def _project_world_to_screen(
     r2 = float(np.dot(uv, uv))
     distort = 1.0 + distortion_k1 * r2 + distortion_k2 * r2 * r2
     uv = uv * distort
-    px = float(uv[0] * focal_pixels + 0.5 * float(width))
-    py = float(uv[1] * focal_pixels + 0.5 * float(height))
+    px = float(uv[0] * float(focal_pixels[0]) + float(principal_point[0]))
+    py = float(uv[1] * float(focal_pixels[1]) + float(principal_point[1]))
     ok = np.isfinite(px) and np.isfinite(py)
     return np.array([px, py], dtype=np.float32), z, bool(ok)
 
@@ -181,7 +182,11 @@ def project_splats_sampled5_mvee(
     distortion_k2: float = 0.0,
 ) -> Sampled5MVEEProjectedSplats:
     right, up, forward = camera.basis()
-    focal = float(camera.focal_pixels(height))
+    fx, fy = camera.focal_pixels_xy(width, height)
+    cx, cy = camera.principal_point(width, height)
+    focal = np.array([fx, fy], dtype=np.float32)
+    principal = np.array([cx, cy], dtype=np.float32)
+    fallback_focal = float(max(fx, fy))
     n = scene.count
     center_radius_depth = np.zeros((n, 4), dtype=np.float32)
     pos_local = np.zeros((n, 3), dtype=np.float32)
@@ -198,8 +203,8 @@ def project_splats_sampled5_mvee(
         cam_distance = float(np.linalg.norm(rel))
         cam_pos = np.array([np.dot(rel, right), np.dot(rel, up), np.dot(rel, forward)], dtype=np.float32)
         depth_value = float(cam_pos[2])
-        px = float(cam_pos[0] * focal / max(depth_value, 1e-6) + 0.5 * float(width))
-        py = float(cam_pos[1] * focal / max(depth_value, 1e-6) + 0.5 * float(height))
+        px = float(cam_pos[0] * float(focal[0]) / max(depth_value, 1e-6) + float(principal[0]))
+        py = float(cam_pos[1] * float(focal[1]) / max(depth_value, 1e-6) + float(principal[1]))
 
         q = quat[i]
         scale = scene.scales[i].astype(np.float32).copy()
@@ -208,7 +213,8 @@ def project_splats_sampled5_mvee(
         scale = scale * np.float32(radius_scale)
         fallback_radius = float(
             np.clip(
-                (focal * float(np.max(scale)) / max(depth_value, 1e-6)) * float(safety_scale) + float(radius_pad_px),
+                (fallback_focal * float(np.max(scale)) / max(depth_value, 1e-6)) * float(safety_scale)
+                + float(radius_pad_px),
                 1.0,
                 float(max_splat_radius_px),
             )
@@ -236,6 +242,7 @@ def project_splats_sampled5_mvee(
                     up,
                     forward,
                     focal,
+                    principal,
                     width,
                     height,
                     distortion_k1=distortion_k1,

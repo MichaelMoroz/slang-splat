@@ -89,7 +89,8 @@ struct CameraParams
     float2 viewport;
     float3 camPos;
     float3x3 camBasis;
-    float focalPixels;
+    float2 focalPixels;
+    float2 principalPoint;
     float nearDepth;
     float farDepth;
     float projDistortionK1;

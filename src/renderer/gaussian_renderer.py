@@ -158,7 +158,7 @@ class GaussianRenderer:
             return
         old_capacity = max(self._scene_capacity, 1)
         new_capacity = max(splat_count, old_capacity + old_capacity // 2)
-        usage = self._buffer_usage_sr()
+        usage = self._buffer_usage_rw()
         self._scene_buffers = {
             "positions": self.device.create_buffer(size=max(new_capacity, 1) * 16, usage=usage),
             "scales": self.device.create_buffer(size=max(new_capacity, 1) * 16, usage=usage),
@@ -577,6 +577,52 @@ class GaussianRenderer:
         self._ensure_work_buffers(scene.count)
         self._upload_scene(scene)
         self._current_scene = scene
+
+    @property
+    def scene_buffers(self) -> dict[str, spy.Buffer]:
+        return self._scene_buffers
+
+    @property
+    def work_buffers(self) -> dict[str, spy.Buffer]:
+        return self._work_buffers
+
+    @property
+    def output_texture(self) -> spy.Texture:
+        if self._output_texture is None:
+            raise RuntimeError("Output texture is not initialized.")
+        return self._output_texture
+
+    @property
+    def output_grad_texture(self) -> spy.Texture:
+        if self._output_grad_texture is None:
+            raise RuntimeError("Output grad texture is not initialized.")
+        return self._output_grad_texture
+
+    def execute_prepass_for_current_scene(self, camera: Camera, sync_counts: bool = False) -> tuple[int, int]:
+        if self._current_scene is None:
+            raise RuntimeError("Scene is not set. Call set_scene() before execute_prepass_for_current_scene().")
+        return self._execute_prepass(self._current_scene, camera, sync_counts=sync_counts)
+
+    def rasterize_current_scene(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray) -> None:
+        if self._current_scene is None:
+            raise RuntimeError("Scene is not set. Call set_scene() before rasterize_current_scene().")
+        self._rasterize(encoder, camera, background)
+
+    def clear_raster_grads_current_scene(self, encoder: spy.CommandEncoder) -> None:
+        if self._current_scene is None:
+            raise RuntimeError("Scene is not set. Call set_scene() before clear_raster_grads_current_scene().")
+        self._clear_raster_grads(encoder, self._current_scene.count)
+
+    def rasterize_backward_current_scene(
+        self,
+        encoder: spy.CommandEncoder,
+        camera: Camera,
+        background: np.ndarray,
+        output_grad: spy.Texture,
+    ) -> None:
+        if self._current_scene is None:
+            raise RuntimeError("Scene is not set. Call set_scene() before rasterize_backward_current_scene().")
+        self._rasterize_backward(encoder, camera, background, output_grad)
 
     def render_to_texture(
         self,

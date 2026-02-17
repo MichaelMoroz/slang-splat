@@ -1,0 +1,102 @@
+from __future__ import annotations
+
+import struct
+from pathlib import Path
+
+import numpy as np
+import pytest
+from PIL import Image
+
+from src.scene import (
+    GaussianInitHyperParams,
+    build_training_frames,
+    initialize_scene_from_colmap_points,
+    load_colmap_reconstruction,
+)
+
+
+def _write_cameras_bin(path: Path, model_id: int = 1) -> None:
+    with path.open("wb") as handle:
+        handle.write(struct.pack("<Q", 1))
+        handle.write(struct.pack("<i", 7))
+        handle.write(struct.pack("<i", model_id))
+        handle.write(struct.pack("<Q", 400))
+        handle.write(struct.pack("<Q", 200))
+        if model_id == 0:
+            handle.write(struct.pack("<ddd", 420.0, 200.0, 100.0))
+        elif model_id == 1:
+            handle.write(struct.pack("<dddd", 400.0, 420.0, 200.0, 100.0))
+        else:
+            handle.write(struct.pack("<dddddddd", 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0))
+
+
+def _write_images_bin(path: Path, image_name: str) -> None:
+    with path.open("wb") as handle:
+        handle.write(struct.pack("<Q", 1))
+        handle.write(struct.pack("<i", 3))
+        handle.write(struct.pack("<dddd", 1.0, 0.0, 0.0, 0.0))
+        handle.write(struct.pack("<ddd", 0.0, 0.0, -2.0))
+        handle.write(struct.pack("<i", 7))
+        handle.write(image_name.encode("utf-8"))
+        handle.write(b"\x00")
+        handle.write(struct.pack("<Q", 0))
+
+
+def _write_points3d_bin(path: Path) -> None:
+    with path.open("wb") as handle:
+        handle.write(struct.pack("<Q", 2))
+        for point_id, xyz, rgb in (
+            (11, (1.0, 2.0, 3.0), (255, 128, 64)),
+            (12, (-1.0, 0.0, 2.0), (12, 34, 56)),
+        ):
+            handle.write(struct.pack("<Q", point_id))
+            handle.write(struct.pack("<ddd", *xyz))
+            handle.write(struct.pack("<BBB", *rgb))
+            handle.write(struct.pack("<d", 0.5))
+            handle.write(struct.pack("<Q", 0))
+
+
+def _build_tiny_colmap_tree(tmp_path: Path, model_id: int = 1) -> Path:
+    root = tmp_path / "scene"
+    sparse = root / "sparse" / "0"
+    images = root / "images_4"
+    sparse.mkdir(parents=True)
+    images.mkdir(parents=True)
+    _write_cameras_bin(sparse / "cameras.bin", model_id=model_id)
+    _write_images_bin(sparse / "images.bin", "frame.png")
+    _write_points3d_bin(sparse / "points3D.bin")
+    Image.fromarray(np.full((100, 200, 3), 127, dtype=np.uint8), mode="RGB").save(images / "frame.png")
+    return root
+
+
+def test_colmap_loader_and_frame_scaling(tmp_path: Path):
+    root = _build_tiny_colmap_tree(tmp_path, model_id=1)
+    recon = load_colmap_reconstruction(root)
+    assert len(recon.cameras) == 1
+    assert len(recon.images) == 1
+    assert len(recon.points3d) == 2
+
+    frames = build_training_frames(recon, images_subdir="images_4")
+    assert len(frames) == 1
+    frame = frames[0]
+    assert frame.width == 200
+    assert frame.height == 100
+    assert np.isclose(frame.fx, 200.0)
+    assert np.isclose(frame.fy, 210.0)
+    assert np.isclose(frame.cx, 100.0)
+    assert np.isclose(frame.cy, 50.0)
+
+    init_hparams = GaussianInitHyperParams(base_scale=0.02, initial_opacity=0.4)
+    scene = initialize_scene_from_colmap_points(recon, max_gaussians=1, seed=42, init_hparams=init_hparams)
+    assert scene.count == 1
+    assert scene.positions.shape == (1, 3)
+    assert scene.scales.shape == (1, 3)
+    assert scene.rotations.shape == (1, 4)
+    assert scene.colors.shape == (1, 3)
+    assert np.all(np.isfinite(scene.positions))
+
+
+def test_colmap_loader_rejects_unsupported_camera_model(tmp_path: Path):
+    root = _build_tiny_colmap_tree(tmp_path, model_id=4)
+    with pytest.raises(ValueError):
+        _ = load_colmap_reconstruction(root)

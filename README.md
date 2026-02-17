@@ -5,10 +5,13 @@ Runtime target is Vulkan.
 
 ## Features
 - PLY Gaussian scene loader for standard 3DGS vertex properties.
+- COLMAP loader for `sparse/0` reconstructions and image-set training frames.
 - GPU scanline work-item binning pass followed by key/value composition.
 - GPU radix sort integration (copied/adapted from prior project code).
 - GPU tile range build pass from sorted keys.
 - GPU compute rasterizer that blends tile-local sorted splats.
+- Raster backpropagation path for per-splat gradients.
+- Fused one-thread-per-splat ADAM training kernel.
 - CPU reference implementations and tests for key algorithms.
 
 ## Setup
@@ -44,11 +47,28 @@ Viewer controls:
 - `WASDQE`: move camera
 - `Mouse wheel`: adjust move speed
 - `Load PLY...`: open another scene
+- `Load COLMAP...`: open COLMAP dataset root for training setup
 
 Smoke-test mode:
 ```powershell
 python viewer.py --ply D:\Datasets\3DGS\TEST\flowers.ply --frames 30
 ```
+
+## Training CLI
+```powershell
+python train.py --colmap-root dataset/garden --images-subdir images_4 --iters 100 --max-gaussians 50000
+```
+
+Quick smoke configuration:
+```powershell
+python train.py --colmap-root dataset/garden --images-subdir images_8 --iters 10 --max-gaussians 1024 --width 64 --height 64
+```
+
+Training notes:
+- One random training image is sampled per step.
+- Default loss is RGB MSE.
+- Target Y-flip is enabled by default.
+- Numerical reinforcement includes clipping, finite checks, and safe quaternion normalization.
 
 ## Run Tests
 ```powershell
@@ -57,6 +77,7 @@ python -m pytest -q
 
 ## Project Structure
 - `src/scene`: scene datamodel and PLY loader.
+- `src/training`: COLMAP training runtime and hyperparameter dataclasses.
 - `src/sort`: GPU radix sort wrapper.
 - `src/renderer`: camera, reference CPU algorithms, and renderer orchestration.
 - `shaders/radix_sort`: radix sort shader stages.

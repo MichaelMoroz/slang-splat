@@ -67,7 +67,7 @@ bool project_world_to_screen(float3 worldPos, out float2 screenPos)
     float r2 = dot(uv, uv);
     float distortion = 1.0 + g_Camera.projDistortionK1 * r2 + g_Camera.projDistortionK2 * r2 * r2;
     uv *= distortion;
-    screenPos = uv * g_Camera.focalPixels + 0.5 * g_Camera.viewport;
+    screenPos = uv * g_Camera.focalPixels + g_Camera.principalPoint;
     return all(isfinite(screenPos));
 }
 

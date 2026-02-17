@@ -1,6 +1,8 @@
 # Scene Loading
 
-`src/scene/ply_loader.py` loads Gaussian splat scenes from PLY files.
+`src/scene` supports:
+- `src/scene/ply_loader.py` for Gaussian splat PLY scenes.
+- `src/scene/colmap_loader.py` for COLMAP `sparse/0` reconstructions plus image-frame training metadata.
 
 ## Supported Attributes
 - Position: `x`, `y`, `z`
@@ -17,3 +19,10 @@
 - Display color: `0.5 + SH_C0 * SH_DC`, clamped to `[0, 1]`
 
 Output is `GaussianScene` with contiguous `float32` arrays.
+
+## COLMAP Loader Notes
+- Supported camera models:
+  - `SIMPLE_PINHOLE` (id `0`)
+  - `PINHOLE` (id `1`)
+- Camera intrinsics are scaled from COLMAP camera resolution to selected training image resolution.
+- `initialize_scene_from_colmap_points(...)` randomly samples COLMAP points into a trainable `GaussianScene`.

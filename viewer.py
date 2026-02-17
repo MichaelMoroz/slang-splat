@@ -9,7 +9,16 @@ import slangpy as spy
 
 from src import create_default_device
 from src.renderer import Camera, GaussianRenderer
-from src.scene import GaussianScene, load_gaussian_ply
+from src.scene import (
+    ColmapReconstruction,
+    GaussianInitHyperParams,
+    GaussianScene,
+    build_training_frames,
+    initialize_scene_from_colmap_points,
+    load_colmap_reconstruction,
+    load_gaussian_ply,
+)
+from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TrainingHyperParams
 
 
 def _normalize(v: np.ndarray) -> np.ndarray:
@@ -47,6 +56,15 @@ class SplatViewer(spy.AppWindow):
         self.scene_path: Path | None = None
         self.stats: dict[str, int | bool | float] = {}
 
+        self.colmap_root: Path | None = None
+        self.colmap_recon: ColmapReconstruction | None = None
+        self.training_frames = []
+        self.trainer: GaussianTrainer | None = None
+        self.training_active = False
+
+        self.image_subdir_options = ["images_8", "images_4", "images_2", "images"]
+        self.default_image_subdir_index = 1
+
         self.camera_pos = np.array([0.0, 0.0, -3.0], dtype=np.float32)
         self.yaw = 0.0
         self.pitch = 0.0
@@ -76,16 +94,150 @@ class SplatViewer(spy.AppWindow):
         self._build_ui()
 
     def _build_ui(self) -> None:
-        panel = spy.ui.Window(self.screen, "PLY Viewer", size=spy.float2(430, 360))
+        panel = spy.ui.Window(self.screen, "Splat Viewer + Trainer", size=spy.float2(520, 760))
         self.fps_text = spy.ui.Text(panel, "FPS: 0.0")
         self.path_text = spy.ui.Text(panel, "Scene: <none>")
         self.scene_stats_text = spy.ui.Text(panel, "Splats: 0")
         self.render_stats_text = spy.ui.Text(panel, "Generated: 0 | Written: 0")
+        self.training_text = spy.ui.Text(panel, "Training: idle")
+        self.training_loss_text = spy.ui.Text(panel, "Loss: n/a")
         self.error_text = spy.ui.Text(panel, "")
 
         load_group = spy.ui.Group(panel, "Scene")
         spy.ui.Button(load_group, "Load PLY...", callback=self._browse_load_ply)
+        spy.ui.Button(load_group, "Load COLMAP...", callback=self._browse_load_colmap)
         spy.ui.Button(load_group, "Reload", callback=self._reload_scene)
+        self.images_subdir_slider = spy.ui.SliderInt(
+            load_group,
+            "Image Dir",
+            value=int(self.default_image_subdir_index),
+            min=0,
+            max=len(self.image_subdir_options) - 1,
+        )
+        self.images_subdir_text = spy.ui.Text(load_group, "Train images: images_4")
+
+        init_group = spy.ui.Group(panel, "Train Init")
+        self.max_gaussians_slider = spy.ui.SliderInt(
+            init_group,
+            "Max Gaussians",
+            value=50000,
+            min=1000,
+            max=200000,
+            flags=spy.ui.SliderFlags.logarithmic,
+        )
+        self.seed_slider = spy.ui.SliderInt(init_group, "Seed", value=1234, min=0, max=1000000)
+        self.init_pos_jitter_slider = spy.ui.SliderFloat(
+            init_group,
+            "Pos Jitter",
+            value=0.01,
+            min=0.0,
+            max=0.1,
+            flags=spy.ui.SliderFlags.logarithmic,
+        )
+        self.init_scale_slider = spy.ui.SliderFloat(
+            init_group,
+            "Base Scale",
+            value=0.03,
+            min=0.001,
+            max=0.2,
+            flags=spy.ui.SliderFlags.logarithmic,
+        )
+        self.init_scale_jitter_slider = spy.ui.SliderFloat(init_group, "Scale Jitter", value=0.2, min=0.0, max=0.5)
+        self.init_opacity_slider = spy.ui.SliderFloat(
+            init_group,
+            "Init Opacity",
+            value=0.5,
+            min=0.01,
+            max=0.99,
+            flags=spy.ui.SliderFlags.logarithmic,
+        )
+
+        opt_group = spy.ui.Group(panel, "Train Optimizer")
+        self.lr_slider = spy.ui.SliderFloat(
+            opt_group,
+            "Learning Rate",
+            value=1e-3,
+            min=1e-5,
+            max=1e-1,
+            flags=spy.ui.SliderFlags.logarithmic,
+        )
+        self.beta1_slider = spy.ui.SliderFloat(opt_group, "Beta1", value=0.9, min=0.7, max=0.999)
+        self.beta2_slider = spy.ui.SliderFloat(opt_group, "Beta2", value=0.999, min=0.8, max=0.9999)
+        self.eps_slider = spy.ui.SliderFloat(
+            opt_group,
+            "Adam Eps",
+            value=1e-8,
+            min=1e-10,
+            max=1e-4,
+            flags=spy.ui.SliderFlags.logarithmic,
+        )
+        self.grad_clip_slider = spy.ui.SliderFloat(
+            opt_group,
+            "Grad Clip",
+            value=10.0,
+            min=0.1,
+            max=100.0,
+            flags=spy.ui.SliderFlags.logarithmic,
+        )
+        self.grad_norm_clip_slider = spy.ui.SliderFloat(
+            opt_group,
+            "Grad Norm Clip",
+            value=10.0,
+            min=0.1,
+            max=100.0,
+            flags=spy.ui.SliderFlags.logarithmic,
+        )
+        self.max_update_slider = spy.ui.SliderFloat(
+            opt_group,
+            "Max Update",
+            value=0.05,
+            min=1e-4,
+            max=0.5,
+            flags=spy.ui.SliderFlags.logarithmic,
+        )
+
+        stab_group = spy.ui.Group(panel, "Train Stability")
+        self.min_scale_slider = spy.ui.SliderFloat(
+            stab_group,
+            "Min Scale",
+            value=1e-3,
+            min=1e-4,
+            max=0.1,
+            flags=spy.ui.SliderFlags.logarithmic,
+        )
+        self.max_scale_slider = spy.ui.SliderFloat(
+            stab_group,
+            "Max Scale",
+            value=3.0,
+            min=0.2,
+            max=10.0,
+            flags=spy.ui.SliderFlags.logarithmic,
+        )
+        self.min_opacity_slider = spy.ui.SliderFloat(
+            stab_group,
+            "Min Opacity",
+            value=1e-4,
+            min=1e-5,
+            max=0.1,
+            flags=spy.ui.SliderFlags.logarithmic,
+        )
+        self.max_opacity_slider = spy.ui.SliderFloat(stab_group, "Max Opacity", value=0.9999, min=0.5, max=1.0)
+        self.position_abs_max_slider = spy.ui.SliderFloat(
+            stab_group,
+            "Pos Abs Max",
+            value=1e4,
+            min=100.0,
+            max=1e6,
+            flags=spy.ui.SliderFlags.logarithmic,
+        )
+
+        run_group = spy.ui.Group(panel, "Train Control")
+        self.train_target_flip_checkbox = spy.ui.CheckBox(run_group, "Flip Target Y", value=True)
+        self.train_near_slider = spy.ui.SliderFloat(run_group, "Train Near", value=0.1, min=0.01, max=1.0)
+        self.train_far_slider = spy.ui.SliderFloat(run_group, "Train Far", value=120.0, min=10.0, max=500.0)
+        spy.ui.Button(run_group, "Init Training Scene", callback=self._initialize_training_scene)
+        spy.ui.Button(run_group, "Start Training", callback=self._start_training)
+        spy.ui.Button(run_group, "Stop Training", callback=self._stop_training)
 
         params_group = spy.ui.Group(panel, "Render Params")
         self.radius_slider = spy.ui.SliderFloat(
@@ -218,6 +370,10 @@ class SplatViewer(spy.AppWindow):
         del old_renderer
         if self.scene is not None:
             self.renderer.set_scene(self.scene)
+        if self.trainer is not None:
+            self.trainer = None
+            self.training_active = False
+            self.last_error = "Trainer reset after resize. Re-initialize training scene."
 
     def _forward(self) -> np.ndarray:
         yaw = self.yaw
@@ -226,10 +382,7 @@ class SplatViewer(spy.AppWindow):
         sy = np.sin(yaw)
         cp = np.cos(pitch)
         sp = np.sin(pitch)
-        f = np.array(
-            [cp * sy, sp, cp * cy],
-            dtype=np.float32,
-        )
+        f = np.array([cp * sy, sp, cp * cy], dtype=np.float32)
         return _normalize(f)
 
     def _camera(self) -> Camera:
@@ -288,9 +441,21 @@ class SplatViewer(spy.AppWindow):
         if path:
             self.load_scene(Path(path))
 
+    def _browse_load_colmap(self) -> None:
+        path = spy.platform.choose_folder_dialog()
+        if path:
+            self.load_colmap_dataset(Path(path), self._selected_images_subdir())
+
     def _reload_scene(self) -> None:
-        if self.scene_path:
+        if self.scene_path is not None:
             self.load_scene(self.scene_path)
+            return
+        if self.colmap_root is not None:
+            self.load_colmap_dataset(self.colmap_root, self._selected_images_subdir())
+
+    def _selected_images_subdir(self) -> str:
+        idx = int(np.clip(int(self.images_subdir_slider.value), 0, len(self.image_subdir_options) - 1))
+        return self.image_subdir_options[idx]
 
     def _recenter_camera(self, scene: GaussianScene) -> None:
         pos = np.asarray(scene.positions, dtype=np.float32)
@@ -324,10 +489,7 @@ class SplatViewer(spy.AppWindow):
             dist = np.linalg.norm(rel, axis=1)
             splat_extent = np.max(scales_c, axis=1)
             effective = dist + 2.0 * splat_extent
-
-            core_radius = float(np.percentile(effective, 90.0))
-            core_radius = max(core_radius, 1.0)
-
+            core_radius = max(float(np.percentile(effective, 90.0)), 1.0)
             q_lo = np.percentile(pos_c, 5.0, axis=0)
             q_hi = np.percentile(pos_c, 95.0, axis=0)
             quant_extent = 0.5 * np.linalg.norm((q_hi - q_lo).astype(np.float32))
@@ -345,16 +507,17 @@ class SplatViewer(spy.AppWindow):
         self.pitch = 0.0
         self.move_vel[:] = 0.0
         self.rot_vel[:] = 0.0
-        print(
-            f"Camera auto-frame: center={center.tolist()} radius={radius:.2f} "
-            f"distance={cam_distance:.2f} near={self.near:.3f} far={self.far:.2f}"
-        )
 
     def load_scene(self, path: Path) -> None:
         try:
             scene = load_gaussian_ply(path)
             self.scene = scene
             self.scene_path = path
+            self.colmap_root = None
+            self.colmap_recon = None
+            self.training_frames = []
+            self.trainer = None
+            self.training_active = False
             self.renderer.set_scene(scene)
             self._recenter_camera(scene)
             self.last_error = ""
@@ -362,6 +525,98 @@ class SplatViewer(spy.AppWindow):
         except Exception as exc:
             self.last_error = str(exc)
             print(f"Failed to load scene {path}: {exc}")
+
+    def load_colmap_dataset(self, root: Path, images_subdir: str) -> None:
+        try:
+            recon = load_colmap_reconstruction(root)
+            frames = build_training_frames(recon, images_subdir=images_subdir)
+            self.colmap_root = Path(root)
+            self.colmap_recon = recon
+            self.training_frames = frames
+            self.scene_path = None
+            self.trainer = None
+            self.training_active = False
+            self.last_error = ""
+            print(f"Loaded COLMAP: {root} frames={len(frames)} images={images_subdir}")
+        except Exception as exc:
+            self.last_error = str(exc)
+            print(f"Failed to load COLMAP {root}: {exc}")
+
+    def _collect_training_hparams(self) -> tuple[AdamHyperParams, StabilityHyperParams, TrainingHyperParams]:
+        adam = AdamHyperParams(
+            learning_rate=float(self.lr_slider.value),
+            beta1=float(self.beta1_slider.value),
+            beta2=float(self.beta2_slider.value),
+            epsilon=float(self.eps_slider.value),
+        )
+        stability = StabilityHyperParams(
+            grad_component_clip=float(self.grad_clip_slider.value),
+            grad_norm_clip=float(self.grad_norm_clip_slider.value),
+            max_update=float(self.max_update_slider.value),
+            min_scale=float(self.min_scale_slider.value),
+            max_scale=float(self.max_scale_slider.value),
+            min_opacity=float(self.min_opacity_slider.value),
+            max_opacity=float(self.max_opacity_slider.value),
+            position_abs_max=float(self.position_abs_max_slider.value),
+            loss_grad_clip=float(self.grad_clip_slider.value),
+        )
+        training = TrainingHyperParams(
+            background=tuple(float(v) for v in self.background.tolist()),
+            near=float(self.train_near_slider.value),
+            far=float(self.train_far_slider.value),
+            target_flip_y=bool(self.train_target_flip_checkbox.value),
+            ema_decay=0.95,
+        )
+        return adam, stability, training
+
+    def _initialize_training_scene(self) -> None:
+        if self.colmap_recon is None or not self.training_frames:
+            self.last_error = "Load COLMAP dataset first."
+            return
+        try:
+            init_hparams = GaussianInitHyperParams(
+                position_jitter_std=float(self.init_pos_jitter_slider.value),
+                base_scale=float(self.init_scale_slider.value),
+                scale_jitter_ratio=float(self.init_scale_jitter_slider.value),
+                initial_opacity=float(self.init_opacity_slider.value),
+                color_jitter_std=0.0,
+            )
+            scene = initialize_scene_from_colmap_points(
+                recon=self.colmap_recon,
+                max_gaussians=int(self.max_gaussians_slider.value),
+                seed=int(self.seed_slider.value),
+                init_hparams=init_hparams,
+            )
+            self.scene = scene
+            self.renderer.set_scene(scene)
+            self._recenter_camera(scene)
+            adam, stability, training = self._collect_training_hparams()
+            self.trainer = GaussianTrainer(
+                device=self.device,
+                renderer=self.renderer,
+                scene=scene,
+                frames=self.training_frames,
+                adam_hparams=adam,
+                stability_hparams=stability,
+                training_hparams=training,
+                seed=int(self.seed_slider.value),
+            )
+            self.training_active = False
+            self.last_error = ""
+            print(f"Initialized training scene ({scene.count:,} gaussians)")
+        except Exception as exc:
+            self.last_error = str(exc)
+            self.trainer = None
+            self.training_active = False
+            print(f"Training scene init failed: {exc}")
+
+    def _start_training(self) -> None:
+        if self.trainer is None:
+            self._initialize_training_scene()
+        self.training_active = self.trainer is not None
+
+    def _stop_training(self) -> None:
+        self.training_active = False
 
     def _apply_render_params(self) -> None:
         self.renderer.radius_scale = float(self.radius_slider.value)
@@ -373,13 +628,26 @@ class SplatViewer(spy.AppWindow):
         self.renderer.debug_show_ellipses = bool(self.debug_ellipse_checkbox.value)
         self.renderer.debug_show_processed_count = bool(self.debug_processed_count_checkbox.value)
 
+    def _apply_training_params(self) -> None:
+        if self.trainer is None:
+            return
+        adam, stability, training = self._collect_training_hparams()
+        self.trainer.adam = adam
+        self.trainer.stability = stability
+        self.trainer.training = training
+
     def _update_ui_text(self, dt: float) -> None:
         self.fps_smooth += (1.0 / max(dt, 1e-5) - self.fps_smooth) * min(dt * 5.0, 1.0)
         self.fps_text.text = f"FPS: {self.fps_smooth:.1f}"
-        if self.scene_path:
-            self.path_text.text = f"Scene: {self.scene_path.name}"
+        self.images_subdir_text.text = f"Train images: {self._selected_images_subdir()}"
+
+        if self.scene_path is not None:
+            self.path_text.text = f"Scene: {self.scene_path.name} [PLY]"
+        elif self.colmap_root is not None:
+            self.path_text.text = f"Scene: {self.colmap_root.name} [COLMAP]"
         else:
             self.path_text.text = "Scene: <none>"
+
         scene_count = self.scene.count if self.scene is not None else 0
         self.scene_stats_text.text = f"Splats: {scene_count:,}"
         if self.stats:
@@ -393,6 +661,19 @@ class SplatViewer(spy.AppWindow):
             )
         else:
             self.render_stats_text.text = "Generated: 0 | Written: 0"
+
+        if self.trainer is None:
+            self.training_text.text = "Training: not initialized"
+            self.training_loss_text.text = "Loss: n/a"
+        else:
+            state = self.trainer.state
+            status = "running" if self.training_active else "paused"
+            self.training_text.text = (
+                f"Training: {status} | step={state.step:,} | frame={state.last_frame_index}"
+            )
+            self.training_loss_text.text = (
+                f"Loss: {state.last_loss:.6e} | EMA: {state.ema_loss:.6e} | {state.last_instability}"
+            )
         self.error_text.text = f"Error: {self.last_error}" if self.last_error else ""
 
     def render(self, render_context: spy.AppWindow.RenderContext) -> None:
@@ -405,6 +686,7 @@ class SplatViewer(spy.AppWindow):
 
         self._update_camera(dt)
         self._apply_render_params()
+        self._apply_training_params()
 
         iw = int(image.width)
         ih = int(image.height)
@@ -413,14 +695,17 @@ class SplatViewer(spy.AppWindow):
 
         if self.scene is not None:
             try:
+                if self.training_active and self.trainer is not None:
+                    self.trainer.step()
                 out_tex, stats = self.renderer.render_to_texture(self._camera(), background=self.background)
                 self.stats = stats
                 encoder.blit(image, out_tex)
                 self._last_render_exception = ""
             except Exception as exc:
+                self.training_active = False
                 self.last_error = str(exc)
                 if self._last_render_exception != self.last_error:
-                    print(f"Render error: {self.last_error}")
+                    print(f"Render/training error: {self.last_error}")
                 self._last_render_exception = self.last_error
                 encoder.clear_texture_float(image, clear_value=[0.0, 0.0, 0.0, 1.0])
         else:
@@ -432,6 +717,8 @@ class SplatViewer(spy.AppWindow):
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Realtime Slangpy Gaussian Splat viewer.")
     parser.add_argument("--ply", type=Path, default=None, help="Optional initial PLY file.")
+    parser.add_argument("--colmap-root", type=Path, default=None, help="Optional initial COLMAP root.")
+    parser.add_argument("--images-subdir", type=str, default="images_4", help="COLMAP image folder.")
     parser.add_argument("--width", type=int, default=1280)
     parser.add_argument("--height", type=int, default=720)
     parser.add_argument("--prepass-memory-mb", type=int, default=4096, help="Cap prepass key/value/scanline memory.")
@@ -452,6 +739,8 @@ def main() -> int:
     )
     if args.ply is not None:
         viewer.load_scene(args.ply)
+    if args.colmap_root is not None:
+        viewer.load_colmap_dataset(args.colmap_root, args.images_subdir)
 
     if args.frames > 0:
         for _ in range(args.frames):

@@ -274,7 +274,7 @@ void csRasterize(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_Gr
     {
         uint start = range.x;
         uint end = min(range.y, start + g_Raster.maxSplatSteps);
-        float2 rayUV = (float2(samplePx, samplePy) + 0.5 - 0.5 * g_Camera.viewport) / g_Camera.focalPixels;
+        float2 rayUV = (float2(samplePx, samplePy) + 0.5 - g_Camera.principalPoint) / g_Camera.focalPixels;
         float3 rayDir = normalize(camera_to_world(float3(rayUV, 1.0)));
         state = raster_forward_replay(start, end, pixelActive, rayDir, lane, processedCount);
 
@@ -360,7 +360,7 @@ void csRasterizeBackward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane
 
     uint start = range.x;
     uint end = hasTileRange ? min(range.y, start + g_Raster.maxSplatSteps) : start;
-    float2 rayUV = (float2(samplePx, samplePy) + 0.5 - 0.5 * g_Camera.viewport) / g_Camera.focalPixels;
+    float2 rayUV = (float2(samplePx, samplePy) + 0.5 - g_Camera.principalPoint) / g_Camera.focalPixels;
     float3 rayDir = normalize(camera_to_world(float3(rayUV, 1.0)));
 
     RasterState state = { 0.0, 1.0 };

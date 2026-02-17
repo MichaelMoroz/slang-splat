@@ -5,7 +5,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 
 ## Uniform Parameter Layout
 - Shared shader parameters are grouped in `shaders/renderer/gaussian_types.slang`:
-  - `g_Camera` (`CameraParams`) for camera basis/position, projection scale, clip range, and lens distortion.
+  - `g_Camera` (`CameraParams`) for camera basis/position, anisotropic intrinsics (`focalPixels: float2`, `principalPoint: float2`), clip range, and lens distortion.
   - `g_Prepass` (`PrepassParams`) for splat counts, tile/depth packing, prepass capacities, and sampled-5 MVEE controls.
   - `g_Raster` (`RasterParams`) for raster resolution, alpha/transmittance thresholds, background, and debug overlays.
 - Python bindings in `GaussianRenderer` mirror this layout by binding these structs per dispatch so stage code only reads structured fields instead of a large flat uniform list.
@@ -48,6 +48,8 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - Each pixel reads its tile range and blends splats front-to-back with exponential radial falloff.
 - The inner loop performs cheap screen-space reject checks before expensive local-space Gaussian math to reduce work on heavy tiles.
 - Writes RGBA output texture.
+- Primary ray generation uses camera intrinsics directly:
+  - `rayUV = (pixel + 0.5 - principalPoint) / focalPixels`
 
 ## 6. Raster Backward
 - Shaders: `csClearRasterGrads`, `csRasterizeBackward`.
@@ -60,6 +62,19 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - The reverse pass manually differentiates the batch loop and uses `bwd_diff(...)` only inside each per-splat reverse step.
 - Global and groupshared raster loads are implemented via custom derivative functions; their backward functions atomically add gradients into flattened per-splat `float4` gradient buffers (`index = splat_id * 4 + component`).
 - Output gradients are supplied through `g_OutputGrad` (`Texture2D<float4>`), and chain-rule terms include gamma output mapping and alpha output (`1 - transmittance`).
+
+## 7. Training Stage
+- Shader: `shaders/renderer/gaussian_training_stage.slang`.
+- Kernels:
+  - `csClearLossAndGradTex`: clears `g_OutputGrad` and scalar loss buffer.
+  - `csComputeMSELossGrad`: computes RGB MSE and writes output gradients for raster backward.
+  - `csAdamStepFused`: one-thread-per-splat fused ADAM update over position, scale, quaternion, color, and opacity.
+- Stability measures in `csAdamStepFused` include:
+  - finite-value sanitization,
+  - gradient clipping (component and norm),
+  - update clipping,
+  - position/scale/opacity/color range clamps,
+  - quaternion renormalization with identity fallback.
 
 ## Stats Notes
 - `generated_entries` / `written_entries` are reported with one-frame latency (`stats_latency_frames = 1`).

@@ -381,7 +381,8 @@ def rasterize(
     output = np.zeros((height, width, 4), dtype=np.float32)
     output[:, :, :3] = background.reshape(1, 1, 3)
     right, up, forward = camera.basis()
-    focal = camera.focal_pixels(height)
+    fx, fy = camera.focal_pixels_xy(width, height)
+    cx, cy = camera.principal_point(width, height)
 
     def quat_rotate(v: np.ndarray, q: np.ndarray) -> np.ndarray:
         qv = q[1:4]
@@ -400,8 +401,8 @@ def rasterize(
                 continue
             accum = np.zeros((3,), dtype=np.float32)
             trans = 1.0
-            uv_x = (float(px) + 0.5 - 0.5 * float(width)) / float(focal)
-            uv_y = (float(py) + 0.5 - 0.5 * float(height)) / float(focal)
+            uv_x = (float(px) + 0.5 - float(cx)) / float(fx)
+            uv_y = (float(py) + 0.5 - float(cy)) / float(fy)
             ray = forward + uv_x * right + uv_y * up
             ray = ray / max(np.linalg.norm(ray), 1e-8)
             steps = 0
