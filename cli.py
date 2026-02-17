@@ -91,7 +91,6 @@ def _run_train_colmap(args: argparse.Namespace) -> int:
         width=width,
         height=height,
         radius_scale=float(args.radius_scale),
-        max_splat_radius_px=float(args.max_splat_radius_px),
         alpha_cutoff=float(args.alpha_cutoff),
         max_splat_steps=int(args.max_splat_steps),
         transmittance_threshold=float(args.trans_threshold),
@@ -168,7 +167,6 @@ def _run_render_ply(args: argparse.Namespace) -> int:
         width=int(args.width),
         height=int(args.height),
         radius_scale=float(args.radius_scale),
-        max_splat_radius_px=float(args.max_splat_radius_px),
         alpha_cutoff=float(args.alpha_cutoff),
         max_splat_steps=int(args.max_splat_steps),
         transmittance_threshold=float(args.trans_threshold),
@@ -231,7 +229,6 @@ def parse_args() -> argparse.Namespace:
     train.add_argument("--height", type=int, default=0, help="Render height. 0 uses frame height.")
     train.add_argument("--prepass-memory-mb", type=int, default=4096, help="Renderer prepass memory cap.")
     train.add_argument("--radius-scale", type=float, default=2.6)
-    train.add_argument("--max-splat-radius-px", type=float, default=512.0)
     train.add_argument("--alpha-cutoff", type=float, default=1.0 / 255.0)
     train.add_argument("--max-splat-steps", type=int, default=32768)
     train.add_argument("--trans-threshold", type=float, default=0.005)
@@ -283,7 +280,6 @@ def parse_args() -> argparse.Namespace:
     render.add_argument("--bg", type=float, nargs=3, default=(0.0, 0.0, 0.0))
     render.add_argument("--prepass-memory-mb", type=int, default=4096)
     render.add_argument("--radius-scale", type=float, default=2.6)
-    render.add_argument("--max-splat-radius-px", type=float, default=512.0)
     render.add_argument("--alpha-cutoff", type=float, default=1.0 / 255.0)
     render.add_argument("--max-splat-steps", type=int, default=32768)
     render.add_argument("--trans-threshold", type=float, default=0.005)

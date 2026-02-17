@@ -32,7 +32,6 @@ class GaussianRenderer:
         height: int,
         tile_size: int = 16,
         radius_scale: float = 2.6,
-        max_splat_radius_px: float = 512.0,
         alpha_cutoff: float = 1.0 / 255.0,
         max_splat_steps: int = 32768,
         transmittance_threshold: float = 0.005,
@@ -54,7 +53,6 @@ class GaussianRenderer:
         self.height = int(height)
         self.tile_size = int(tile_size)
         self.radius_scale = float(radius_scale)
-        self.max_splat_radius_px = float(max_splat_radius_px)
         self.alpha_cutoff = float(alpha_cutoff)
         self.max_splat_steps = int(max_splat_steps)
         self.transmittance_threshold = float(transmittance_threshold)
@@ -354,7 +352,6 @@ class GaussianRenderer:
                 "maxListEntries": int(self._max_list_entries),
                 "maxScanlineEntries": int(self._max_scanline_entries),
                 "radiusScale": float(self.radius_scale),
-                "maxSplatRadiusPx": float(self.max_splat_radius_px),
                 "sampled5MVEEIters": int(self.sampled5_mvee_iters),
                 "sampled5SafetyScale": float(self.sampled5_safety_scale),
                 "sampled5RadiusPadPx": float(self.sampled5_radius_pad_px),
@@ -390,7 +387,6 @@ class GaussianRenderer:
         cursor.g_Prepass.maxListEntries = prepass["maxListEntries"]
         cursor.g_Prepass.maxScanlineEntries = prepass["maxScanlineEntries"]
         cursor.g_Prepass.radiusScale = prepass["radiusScale"]
-        cursor.g_Prepass.maxSplatRadiusPx = prepass["maxSplatRadiusPx"]
         cursor.g_Prepass.sampled5MVEEIters = prepass["sampled5MVEEIters"]
         cursor.g_Prepass.sampled5SafetyScale = prepass["sampled5SafetyScale"]
         cursor.g_Prepass.sampled5RadiusPadPx = prepass["sampled5RadiusPadPx"]

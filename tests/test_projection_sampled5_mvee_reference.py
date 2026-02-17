@@ -41,7 +41,7 @@ def ellipse_values(points: np.ndarray, center: np.ndarray, axes: np.ndarray, ang
 def test_sampled5_mvee_reference_is_finite() -> None:
     scene = make_scene(128, seed=7)
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
-    projected = project_splats_sampled5_mvee(scene, camera, width=160, height=96, radius_scale=1.8, max_splat_radius_px=512.0)
+    projected = project_splats_sampled5_mvee(scene, camera, width=160, height=96, radius_scale=1.8)
 
     assert np.all(np.isfinite(projected.center_radius_depth))
     assert np.all(np.isfinite(projected.pos_local))
@@ -53,7 +53,7 @@ def test_sampled5_mvee_reference_is_finite() -> None:
 def test_sampled5_mvee_contains_sample_points() -> None:
     scene = make_scene(96, seed=19)
     camera = Camera.look_at(position=(0.0, 0.0, 3.5), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
-    projected = project_splats_sampled5_mvee(scene, camera, width=192, height=128, radius_scale=1.6, max_splat_radius_px=512.0)
+    projected = project_splats_sampled5_mvee(scene, camera, width=192, height=128, radius_scale=1.6)
 
     checked = 0
     for i in range(scene.count):
@@ -74,8 +74,8 @@ def test_sampled5_mvee_reference_is_deterministic() -> None:
     scene = make_scene(64, seed=21)
     camera = Camera.look_at(position=(0.0, 0.0, 3.0), target=(0.0, 0.0, 0.0), near=0.1, far=12.0)
 
-    p0 = project_splats_sampled5_mvee(scene, camera, width=128, height=128, radius_scale=1.6, max_splat_radius_px=256.0)
-    p1 = project_splats_sampled5_mvee(scene, camera, width=128, height=128, radius_scale=1.6, max_splat_radius_px=256.0)
+    p0 = project_splats_sampled5_mvee(scene, camera, width=128, height=128, radius_scale=1.6)
+    p1 = project_splats_sampled5_mvee(scene, camera, width=128, height=128, radius_scale=1.6)
 
     np.testing.assert_allclose(p0.center_radius_depth, p1.center_radius_depth)
     np.testing.assert_array_equal(p0.valid, p1.valid)
@@ -87,6 +87,6 @@ def test_sampled5_mvee_handles_degenerate_thin_splats() -> None:
     scene.scales[:] = np.array([1e-5, 0.3, 1e-5], dtype=np.float32)
     camera = Camera.look_at(position=(0.0, 0.0, 2.5), target=(0.0, 0.0, 0.0), near=0.05, far=10.0)
 
-    projected = project_splats_sampled5_mvee(scene, camera, width=96, height=96, radius_scale=2.0, max_splat_radius_px=512.0)
+    projected = project_splats_sampled5_mvee(scene, camera, width=96, height=96, radius_scale=2.0)
     assert np.all(np.isfinite(projected.center_radius_depth))
-    assert np.all(projected.center_radius_depth[:, 2] <= 512.0)
+    assert np.all(projected.center_radius_depth[:, 2] <= 96.0)

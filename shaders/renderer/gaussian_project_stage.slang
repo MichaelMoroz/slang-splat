@@ -1,5 +1,10 @@
 import "gaussian_types.slang";
 
+float screen_radius_cap()
+{
+    return max(max(g_Camera.viewport.x, g_Camera.viewport.y), MIN_RADIUS_PX);
+}
+
 bool generate_silhouette_points_local5(float3 roLocal, float eps, out float3 points[MVEE_POINT_COUNT])
 {
     [unroll] for (uint i = 0; i < MVEE_POINT_COUNT; i++) points[i] = 0.0;
@@ -351,11 +356,12 @@ void csProjectAndBin(uint3 dispatchThreadID : SV_DispatchThreadID)
     float2 fitCenter = camPos.xy * (g_Camera.focalPixels * invDepth) + g_Camera.principalPoint;
     float maxAxisWorld = max(ellipsoid.scale.x, max(ellipsoid.scale.y, ellipsoid.scale.z));
     float fallbackFocal = max(g_Camera.focalPixels.x, g_Camera.focalPixels.y);
+    float radiusCap = screen_radius_cap();
     float fallbackRadius = fallbackFocal * maxAxisWorld * invDepth;
     float fitRadius = clamp(
         fallbackRadius * g_Prepass.sampled5SafetyScale + g_Prepass.sampled5RadiusPadPx,
         MIN_RADIUS_PX,
-        g_Prepass.maxSplatRadiusPx
+        radiusCap
     );
     float invFitRadius2 = 1.0 / max(fitRadius * fitRadius, EPS_SMALL);
     float3 fitConic = float3(invFitRadius2, 0.0, invFitRadius2);
@@ -389,7 +395,7 @@ void csProjectAndBin(uint3 dispatchThreadID : SV_DispatchThreadID)
                 fitRadius = clamp(
                     mveeFit.radiusPx * g_Prepass.sampled5SafetyScale + g_Prepass.sampled5RadiusPadPx,
                     MIN_RADIUS_PX,
-                    g_Prepass.maxSplatRadiusPx
+                    radiusCap
                 );
                 float conicScale = fitRadius / max(mveeFit.radiusPx, g_Prepass.sampled5Eps);
                 float invScale2 = 1.0 / max(conicScale * conicScale, g_Prepass.sampled5Eps);

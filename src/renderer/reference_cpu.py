@@ -33,7 +33,6 @@ def project_splats(
     width: int,
     height: int,
     radius_scale: float,
-    max_splat_radius_px: float = 512.0,
 ) -> ProjectedSplats:
     projected = project_splats_sampled5_mvee(
         scene=scene,
@@ -41,7 +40,6 @@ def project_splats(
         width=width,
         height=height,
         radius_scale=radius_scale,
-        max_splat_radius_px=max_splat_radius_px,
         mvee_iters=6,
         safety_scale=1.0,
         radius_pad_px=1.0,

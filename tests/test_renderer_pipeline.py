@@ -42,9 +42,7 @@ def test_tile_keys_and_ranges_match_reference(device):
     renderer = GaussianRenderer(device, width=96, height=96, tile_size=16, radius_scale=1.8, list_capacity_multiplier=32)
     debug = renderer.debug_pipeline_data(scene, camera)
 
-    projected = project_splats(
-        scene, camera, renderer.width, renderer.height, renderer.radius_scale, renderer.max_splat_radius_px
-    )
+    projected = project_splats(scene, camera, renderer.width, renderer.height, renderer.radius_scale)
     keys, values, generated = build_tile_key_value_pairs(
         projected=projected,
         tile_width=renderer.tile_width,
@@ -77,9 +75,7 @@ def test_tiny_render_matches_cpu_reference(device):
     renderer = GaussianRenderer(device, width=64, height=64, tile_size=16, radius_scale=1.6, list_capacity_multiplier=32)
     gpu_image = renderer.render(scene, camera, background=background).image
 
-    projected = project_splats(
-        scene, camera, renderer.width, renderer.height, renderer.radius_scale, renderer.max_splat_radius_px
-    )
+    projected = project_splats(scene, camera, renderer.width, renderer.height, renderer.radius_scale)
     keys, values, generated = build_tile_key_value_pairs(
         projected=projected,
         tile_width=renderer.tile_width,
@@ -134,7 +130,6 @@ def test_sampled5_mvee_projection_matches_cpu_reference(device):
         width=renderer.width,
         height=renderer.height,
         radius_scale=renderer.radius_scale,
-        max_splat_radius_px=renderer.max_splat_radius_px,
         mvee_iters=renderer.sampled5_mvee_iters,
         safety_scale=renderer.sampled5_safety_scale,
         radius_pad_px=renderer.sampled5_radius_pad_px,

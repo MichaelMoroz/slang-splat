@@ -104,7 +104,6 @@ struct PrepassParams
     uint maxListEntries;
     uint maxScanlineEntries;
     float radiusScale;
-    float maxSplatRadiusPx;
     uint sampled5MVEEIters;
     float sampled5SafetyScale;
     float sampled5RadiusPadPx;

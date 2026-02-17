@@ -350,15 +350,6 @@ class SplatViewer(spy.AppWindow):
             flags=log_flags,
             format="%.3g",
         )
-        self.max_radius_slider = spy.ui.SliderFloat(
-            params_group,
-            "Max Radius (px)",
-            value=float(self.renderer.max_splat_radius_px),
-            min=8.0,
-            max=2048.0,
-            flags=log_flags,
-            format="%.3g",
-        )
         self.alpha_slider = spy.ui.SliderFloat(
             params_group,
             "Alpha Cutoff",
@@ -462,7 +453,6 @@ class SplatViewer(spy.AppWindow):
             width=width,
             height=height,
             radius_scale=float(self.radius_slider.value),
-            max_splat_radius_px=float(self.max_radius_slider.value),
             alpha_cutoff=float(self.alpha_slider.value),
             max_splat_steps=int(self.max_steps_slider.value),
             transmittance_threshold=float(self.trans_slider.value),
@@ -627,7 +617,6 @@ class SplatViewer(spy.AppWindow):
 
     def _sync_render_params_to_renderer(self, renderer: GaussianRenderer, allow_debug_overlays: bool) -> None:
         renderer.radius_scale = float(self.radius_slider.value)
-        renderer.max_splat_radius_px = float(self.max_radius_slider.value)
         renderer.alpha_cutoff = float(self.alpha_slider.value)
         renderer.max_splat_steps = int(self.max_steps_slider.value)
         renderer.transmittance_threshold = float(self.trans_slider.value)

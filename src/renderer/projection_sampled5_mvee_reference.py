@@ -172,7 +172,6 @@ def project_splats_sampled5_mvee(
     width: int,
     height: int,
     radius_scale: float,
-    max_splat_radius_px: float,
     *,
     mvee_iters: int = 6,
     safety_scale: float = 1.05,
@@ -187,6 +186,7 @@ def project_splats_sampled5_mvee(
     focal = np.array([fx, fy], dtype=np.float32)
     principal = np.array([cx, cy], dtype=np.float32)
     fallback_focal = float(max(fx, fy))
+    radius_cap = float(max(width, height, 1))
     n = scene.count
     center_radius_depth = np.zeros((n, 4), dtype=np.float32)
     pos_local = np.zeros((n, 3), dtype=np.float32)
@@ -214,7 +214,7 @@ def project_splats_sampled5_mvee(
                 (fallback_focal * float(np.max(scale)) / max(depth_value, 1e-6)) * float(safety_scale)
                 + float(radius_pad_px),
                 1.0,
-                float(max_splat_radius_px),
+                radius_cap,
             )
         )
         invs = 1.0 / np.maximum(scale, np.float32(1e-6))
@@ -271,7 +271,7 @@ def project_splats_sampled5_mvee(
                     radius_px = fallback_radius
                     center = np.array([px, py], dtype=np.float32)
                 else:
-                    radius_px = float(np.clip(float(np.max(axes_fit)) * safety_scale + radius_pad_px, 1.0, max_splat_radius_px))
+                    radius_px = float(np.clip(float(np.max(axes_fit)) * safety_scale + radius_pad_px, 1.0, radius_cap))
 
         center_radius_depth[i, :] = np.array([center[0], center[1], radius_px, cam_distance], dtype=np.float32)
         is_visible = (
