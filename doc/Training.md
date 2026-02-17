@@ -1,6 +1,6 @@
 # COLMAP Training Pipeline
 
-`train.py` and `src/training/gaussian_trainer.py` implement a basic 3DGS optimization loop over COLMAP reconstructions.
+`cli.py` (`train-colmap`) and `src/training/gaussian_trainer.py` implement a basic 3DGS optimization loop over COLMAP reconstructions.
 
 ## Data Ingestion
 - Loader: `src/scene/colmap_loader.py`
@@ -63,7 +63,7 @@ Each trainer `step()` performs:
 Example:
 
 ```powershell
-python train.py --colmap-root dataset/garden --images-subdir images_4 --iters 100 --max-gaussians 50000
+python cli.py train-colmap --colmap-root dataset/garden --images-subdir images_4 --iters 100 --max-gaussians 50000
 ```
 
 Useful options:

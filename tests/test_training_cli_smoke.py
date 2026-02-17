@@ -14,9 +14,8 @@ def test_train_cli_smoke():
         pytest.skip("Dataset folder is missing for CLI smoke test.")
     cmd = [
         sys.executable,
-        "train.py",
-        "--mode",
-        "cli",
+        "cli.py",
+        "train-colmap",
         "--colmap-root",
         str(dataset_root),
         "--images-subdir",

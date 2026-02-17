@@ -38,9 +38,9 @@ Use `--prepass-memory-mb` to cap prepass GPU memory for very large scenes.
 
 ## Realtime Viewer
 ```powershell
-python viewer.py --ply D:\Datasets\3DGS\TEST\flowers.ply
+python viewer.py
 ```
-Use `--prepass-memory-mb` to prevent large-scene Vulkan OOM crashes.
+Load scenes from the UI (`Load PLY...` / `Load COLMAP...`).
 
 Viewer controls:
 - `LMB + drag`: look around
@@ -49,19 +49,19 @@ Viewer controls:
 - `Load PLY...`: open another scene
 - `Load COLMAP...`: open COLMAP dataset root for training setup
 
-Smoke-test mode:
-```powershell
-python viewer.py --ply D:\Datasets\3DGS\TEST\flowers.ply --frames 30
-```
-
 ## Training CLI
 ```powershell
-python train.py --colmap-root dataset/garden --images-subdir images_4 --iters 100 --max-gaussians 50000
+python cli.py train-colmap --colmap-root dataset/garden --images-subdir images_4 --iters 100 --max-gaussians 50000
 ```
 
 Quick smoke configuration:
 ```powershell
-python train.py --colmap-root dataset/garden --images-subdir images_8 --iters 10 --max-gaussians 1024 --width 64 --height 64
+python cli.py train-colmap --colmap-root dataset/garden --images-subdir images_8 --iters 10 --max-gaussians 1024 --width 64 --height 64
+```
+
+## PLY Render CLI
+```powershell
+python cli.py render-ply --ply D:\Datasets\3DGS\TEST\flowers.ply --output-dir outputs\flowers_views --views 24
 ```
 
 Training notes:

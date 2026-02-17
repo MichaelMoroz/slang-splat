@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import time
 from pathlib import Path
 
@@ -72,6 +71,7 @@ class SplatViewer(spy.AppWindow):
         self._debug_present_texture: spy.Texture | None = None
         self._synced_step_main: int = -1
         self._synced_step_debug: int = -1
+        self._scene_init_signature: tuple[object, ...] | None = None
 
         self.image_subdir_options = ["images_8", "images_4", "images_2", "images"]
         self.default_image_subdir_index = 1
@@ -796,6 +796,7 @@ class SplatViewer(spy.AppWindow):
             self.scene_path = path
             self.colmap_root = None
             self.colmap_recon = None
+            self._scene_init_signature = None
             self.training_frames = []
             self.trainer = None
             self.training_active = False
@@ -829,8 +830,9 @@ class SplatViewer(spy.AppWindow):
                 del old_renderer
             self._update_debug_frame_slider_range()
             self._reset_loss_debug_state()
-            self.last_error = ""
             print(f"Loaded COLMAP: {root} frames={len(frames)} images={images_subdir}")
+            self.last_error = ""
+            self._initialize_training_scene()
         except Exception as exc:
             self.last_error = str(exc)
             print(f"Failed to load COLMAP {root}: {exc}")
@@ -873,23 +875,44 @@ class SplatViewer(spy.AppWindow):
             training.far = training.near + 1e-3
         return adam, stability, training
 
+    def _collect_init_hparams(self) -> tuple[GaussianInitHyperParams, int, int]:
+        clamp = lambda v, lo, hi: float(np.clip(float(v), float(lo), float(hi)))
+        init_hparams = GaussianInitHyperParams(
+            position_jitter_std=clamp(self.init_pos_jitter_slider.value, 0.0, 10.0),
+            base_scale=clamp(self.init_scale_slider.value, 1e-8, 1e3),
+            scale_jitter_ratio=clamp(self.init_scale_jitter_slider.value, 0.0, 10.0),
+            initial_opacity=clamp(self.init_opacity_slider.value, 0.0, 1.0),
+            color_jitter_std=0.0,
+        )
+        max_gaussians = int(np.clip(int(self.max_gaussians_slider.value), 1, 10_000_000))
+        seed = int(np.clip(int(self.seed_slider.value), 0, 1_000_000_000))
+        return init_hparams, max_gaussians, seed
+
+    def _current_scene_init_signature(self) -> tuple[object, ...] | None:
+        if self.colmap_root is None or self.colmap_recon is None or not self.training_frames:
+            return None
+        init_hparams, max_gaussians, seed = self._collect_init_hparams()
+        return (
+            str(self.colmap_root.resolve()),
+            int(len(self.training_frames)),
+            int(max_gaussians),
+            int(seed),
+            round(float(init_hparams.position_jitter_std), 8),
+            round(float(init_hparams.base_scale), 8),
+            round(float(init_hparams.scale_jitter_ratio), 8),
+            round(float(init_hparams.initial_opacity), 8),
+        )
+
     def _initialize_training_scene(self) -> None:
         if self.colmap_recon is None or not self.training_frames:
             self.last_error = "Load COLMAP dataset first."
             return
         try:
-            clamp = lambda v, lo, hi: float(np.clip(float(v), float(lo), float(hi)))
-            init_hparams = GaussianInitHyperParams(
-                position_jitter_std=clamp(self.init_pos_jitter_slider.value, 0.0, 10.0),
-                base_scale=clamp(self.init_scale_slider.value, 1e-8, 1e3),
-                scale_jitter_ratio=clamp(self.init_scale_jitter_slider.value, 0.0, 10.0),
-                initial_opacity=clamp(self.init_opacity_slider.value, 0.0, 1.0),
-                color_jitter_std=0.0,
-            )
+            init_hparams, max_gaussians, seed = self._collect_init_hparams()
             scene = initialize_scene_from_colmap_points(
                 recon=self.colmap_recon,
-                max_gaussians=int(self.max_gaussians_slider.value),
-                seed=int(self.seed_slider.value),
+                max_gaussians=max_gaussians,
+                seed=seed,
                 init_hparams=init_hparams,
             )
             frame_width = int(self.training_frames[0].width)
@@ -908,11 +931,12 @@ class SplatViewer(spy.AppWindow):
                 adam_hparams=adam,
                 stability_hparams=stability,
                 training_hparams=training,
-                seed=int(self.seed_slider.value),
+                seed=seed,
             )
             self.training_active = False
             self._synced_step_main = -1
             self._synced_step_debug = -1
+            self._scene_init_signature = self._current_scene_init_signature()
             self._update_debug_frame_slider_range()
             self._reset_loss_debug_state()
             self.last_error = ""
@@ -924,7 +948,8 @@ class SplatViewer(spy.AppWindow):
             print(f"Training scene init failed: {exc}")
 
     def _start_training(self) -> None:
-        if self.trainer is None:
+        current_signature = self._current_scene_init_signature()
+        if self.trainer is None or (current_signature is not None and current_signature != self._scene_init_signature):
             self._initialize_training_scene()
         self.training_active = self.trainer is not None
 
@@ -1077,40 +1102,16 @@ class SplatViewer(spy.AppWindow):
         self._update_ui_text(dt)
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Realtime Slangpy Gaussian Splat viewer.")
-    parser.add_argument("--ply", type=Path, default=None, help="Optional initial PLY file.")
-    parser.add_argument("--colmap-root", type=Path, default=None, help="Optional initial COLMAP root.")
-    parser.add_argument("--images-subdir", type=str, default="images_4", help="COLMAP image folder.")
-    parser.add_argument("--width", type=int, default=1280)
-    parser.add_argument("--height", type=int, default=720)
-    parser.add_argument("--prepass-memory-mb", type=int, default=4096, help="Cap prepass key/value/scanline memory.")
-    parser.add_argument("--frames", type=int, default=0, help="Run a fixed frame count for smoke tests.")
-    parser.add_argument("--debug-layers", action="store_true")
-    return parser.parse_args()
-
-
 def main() -> int:
-    args = parse_args()
-    device = create_default_device(enable_debug_layers=args.debug_layers)
+    device = create_default_device(enable_debug_layers=False)
     app = spy.App(device=device)
     viewer = SplatViewer(
         app,
-        width=args.width,
-        height=args.height,
-        max_prepass_memory_mb=args.prepass_memory_mb,
+        width=1280,
+        height=720,
+        max_prepass_memory_mb=4096,
     )
-    if args.ply is not None:
-        viewer.load_scene(args.ply)
-    if args.colmap_root is not None:
-        viewer.load_colmap_dataset(args.colmap_root, args.images_subdir)
-
-    if args.frames > 0:
-        for _ in range(args.frames):
-            app.run_frame()
-        app.terminate()
-    else:
-        app.run()
+    app.run()
     return 0
 
 
