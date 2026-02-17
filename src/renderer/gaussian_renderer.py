@@ -655,8 +655,7 @@ class GaussianRenderer:
         self._rasterize(enc_raster, camera, background_np)
         self.device.submit_command_buffer(enc_raster.finish())
         self.device.wait()
-        if read_stats:
-            self._update_delayed_counter_stats()
+        self._update_delayed_counter_stats()
         self._last_stats = {
             "generated_entries": int(self._delayed_generated_entries) if read_stats and self._delayed_stats_valid else 0,
             "written_entries": int(self._delayed_written_entries) if read_stats and self._delayed_stats_valid else 0,

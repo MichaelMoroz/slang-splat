@@ -266,3 +266,25 @@ def test_prepass_capacity_budget_caps_growth(device):
     assert stats1["stats_valid"] is True
     assert int(stats1["prepass_entry_cap"]) == int(entry_cap)
     assert int(stats1["prepass_memory_mb"]) == 1
+
+
+def test_prepass_capacity_feedback_progresses_with_stats_disabled(device):
+    scene = make_scene(128, seed=131)
+    scene.scales[:] = np.array([0.55, 0.55, 0.55], dtype=np.float32)
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    renderer = GaussianRenderer(
+        device,
+        width=160,
+        height=160,
+        tile_size=16,
+        radius_scale=3.5,
+        list_capacity_multiplier=1,
+        max_prepass_memory_mb=64,
+    )
+    renderer.set_scene(scene)
+    initial_capacity = int(renderer._max_list_entries)
+    renderer.render_to_texture(camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32), read_stats=False)
+    renderer.render_to_texture(camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32), read_stats=False)
+    renderer.render_to_texture(camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32), read_stats=False)
+    assert int(renderer._max_list_entries) >= initial_capacity
+    assert int(renderer._max_list_entries) > initial_capacity or int(renderer._pending_min_list_entries) > 0
