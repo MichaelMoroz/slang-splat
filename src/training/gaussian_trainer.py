@@ -46,6 +46,10 @@ class TrainingHyperParams:
     far: float = 120.0
     target_flip_y: bool = False
     ema_decay: float = 0.95
+    mcmc_position_noise_enabled: bool = True
+    mcmc_position_noise_scale: float = 1.0
+    mcmc_opacity_gate_sharpness: float = 100.0
+    mcmc_opacity_gate_center: float = 0.995
 
 
 @dataclass(slots=True)
@@ -265,6 +269,12 @@ class GaussianTrainer:
                 "maxOpacity": float(self.stability.max_opacity),
                 "positionAbsMax": float(self.stability.position_abs_max),
                 "hugeValue": float(self.stability.huge_value),
+            },
+            "g_MCMC": {
+                "enabled": np.uint32(1 if self.training.mcmc_position_noise_enabled else 0),
+                "positionNoiseScale": float(max(self.training.mcmc_position_noise_scale, 0.0)),
+                "opacityGateSharpness": float(max(self.training.mcmc_opacity_gate_sharpness, 0.0)),
+                "opacityGateCenter": float(np.clip(self.training.mcmc_opacity_gate_center, 0.0, 1.0)),
             },
         }
 

@@ -1,5 +1,9 @@
 static const uint TRAIN_TILE_DIM = 16u;
 static const float TRAIN_EPS = 1e-8;
+static const float TRAIN_TWO_PI = 6.28318530718;
+static const float TRAIN_U32_TO_01 = 1.0 / 4294967297.0;
+static const uint TRAIN_RNG_A = 1664525u;
+static const uint TRAIN_RNG_C = 1013904223u;
 
 struct AdamParams
 {
@@ -27,8 +31,17 @@ struct TrainingStabilityParams
     float hugeValue;
 };
 
+struct TrainingMCMCParams
+{
+    uint enabled;
+    float positionNoiseScale;
+    float opacityGateSharpness;
+    float opacityGateCenter;
+};
+
 uniform AdamParams g_Adam;
 uniform TrainingStabilityParams g_Stability;
+uniform TrainingMCMCParams g_MCMC;
 uniform uint g_SplatCount;
 uniform uint g_Width;
 uniform uint g_Height;
@@ -117,6 +130,58 @@ float4 normalize_quaternion_safe(float4 q)
     float normQ = length(q);
     if (!isfinite(normQ) || normQ < TRAIN_EPS) return float4(1.0, 0.0, 0.0, 0.0);
     return q / normQ;
+}
+
+float3 rotate_by_quat(float3 v, float4 q)
+{
+    float3 qv = q.yzw;
+    return v + 2.0 * cross(cross(v, qv) + q.x * v, qv);
+}
+
+uint rng_next(inout uint state)
+{
+    state = TRAIN_RNG_A * state + TRAIN_RNG_C;
+    return state;
+}
+
+uint hash_u32(uint x)
+{
+    x ^= x >> 16;
+    x *= 0x7feb352du;
+    x ^= x >> 15;
+    x *= 0x846ca68bu;
+    x ^= x >> 16;
+    return x;
+}
+
+float rng_uniform_open01(inout uint state)
+{
+    uint bits = rng_next(state);
+    return (float(bits) + 1.0) * TRAIN_U32_TO_01;
+}
+
+float2 rng_normal2_box_muller(inout uint state)
+{
+    float u1 = max(rng_uniform_open01(state), TRAIN_EPS);
+    float u2 = rng_uniform_open01(state);
+    float radius = sqrt(max(-2.0 * log(u1), 0.0));
+    float s, c;
+    sincos(TRAIN_TWO_PI * u2, s, c);
+    return radius * float2(c, s);
+}
+
+float3 rng_normal3_box_muller(inout uint state)
+{
+    float2 n01 = rng_normal2_box_muller(state);
+    float2 n23 = rng_normal2_box_muller(state);
+    return float3(n01.x, n01.y, n23.x);
+}
+
+float opacity_noise_gate(float opacity)
+{
+    float x = -g_MCMC.opacityGateSharpness * (opacity - g_MCMC.opacityGateCenter);
+    x = clamp(x, -30.0, 30.0);
+    return 1.0 / (1.0 + exp(-x));
 }
 
 float4 adam_update_param(
@@ -322,6 +387,23 @@ void csAdamStepFused(uint3 dispatchThreadID : SV_DispatchThreadID)
     scale = adam_update_param(scale, gradScale, mScale, vScale, scaleLR, biasCorr1, biasCorr2);
     rot = adam_update_param(rot, gradQuat, mQuat, vQuat, rotLR, biasCorr1, biasCorr2);
     colorAlpha = adam_update_param(colorAlpha, gradColorAlpha, mColorAlpha, vColorAlpha, colorAlphaLR, biasCorr1, biasCorr2);
+
+    if (g_MCMC.enabled != 0u && g_MCMC.positionNoiseScale > 0.0)
+    {
+        float4 rotSafe = normalize_quaternion_safe(rot);
+        float4 qInv = float4(rotSafe.x, -rotSafe.y, -rotSafe.z, -rotSafe.w);
+        float3 scaleSafe = max(scale.xyz, float3(g_Stability.minScale));
+        float gate = opacity_noise_gate(colorAlpha.w);
+        uint rngSeed = splatId * 0x9e3779b9u ^ g_Adam.stepIndex * 0x85ebca6bu ^ 0xc2b2ae35u;
+        uint rngState = hash_u32(rngSeed);
+        if (rngState == 0u) rngState = 1u;
+        float3 eta = rng_normal3_box_muller(rngState);
+        float3 localNoise = scaleSafe * eta;
+        float3 worldNoise = rotate_by_quat(localNoise, qInv);
+        float noiseScale = g_Adam.positionLR * g_MCMC.positionNoiseScale * gate;
+        float3 noise = sanitize_float3(worldNoise * noiseScale, g_Stability.maxUpdate);
+        pos.xyz = sanitize_float3(pos.xyz + noise, g_Stability.hugeValue);
+    }
 
     pos.xyz = clamp(pos.xyz, -g_Stability.positionAbsMax, g_Stability.positionAbsMax);
     scale.xyz = clamp(scale.xyz, g_Stability.minScale, g_Stability.maxScale);

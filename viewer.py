@@ -240,6 +240,31 @@ class SplatViewer(spy.AppWindow):
             step_fast=1e-8,
             format="%.10f",
         )
+        self.mcmc_pos_noise_enabled_checkbox = spy.ui.CheckBox(opt_group, "MCMC Pos Noise", value=True)
+        self.mcmc_pos_noise_scale_slider = spy.ui.InputFloat(
+            opt_group,
+            "MCMC Noise Scale",
+            value=1.0,
+            step=1e-3,
+            step_fast=1e-2,
+            format="%.6f",
+        )
+        self.mcmc_opacity_k_slider = spy.ui.InputFloat(
+            opt_group,
+            "MCMC Opacity K",
+            value=100.0,
+            step=0.5,
+            step_fast=5.0,
+            format="%.4f",
+        )
+        self.mcmc_opacity_t_slider = spy.ui.InputFloat(
+            opt_group,
+            "MCMC Opacity T",
+            value=0.995,
+            step=1e-4,
+            step_fast=1e-3,
+            format="%.6f",
+        )
         self.grad_clip_slider = spy.ui.InputFloat(
             opt_group,
             "Grad Clip",
@@ -859,6 +884,10 @@ class SplatViewer(spy.AppWindow):
             far=clamp(self.train_far_slider.value, 1e-5, 1e6),
             target_flip_y=bool(self.train_target_flip_checkbox.value),
             ema_decay=0.95,
+            mcmc_position_noise_enabled=bool(self.mcmc_pos_noise_enabled_checkbox.value),
+            mcmc_position_noise_scale=clamp(self.mcmc_pos_noise_scale_slider.value, 0.0, 1e4),
+            mcmc_opacity_gate_sharpness=clamp(self.mcmc_opacity_k_slider.value, 0.0, 1e6),
+            mcmc_opacity_gate_center=clamp(self.mcmc_opacity_t_slider.value, 0.0, 1.0),
         )
         if training.far <= training.near:
             training.far = training.near + 1e-3
