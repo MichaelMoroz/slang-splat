@@ -123,6 +123,15 @@ float3 rotate_by_quat_inverse(float3 v, float4 q)
     return rotate_by_quat(v, qInv);
 }
 
+float4 quat_grad_from_rotate(float3 v, float4 q, float3 gradOut)
+{
+    float3 u = q.yzw;
+    float3 t = cross(v, u) + q.x * v;
+    float dw = 2.0 * dot(gradOut, cross(v, u));
+    float3 du = 2.0 * (cross(cross(u, gradOut), v) + cross(gradOut, t));
+    return float4(dw, du);
+}
+
 float4 normalize_quaternion_safe(float4 q)
 {
     float normQ = length(q);
@@ -264,15 +273,26 @@ void csAdamStepFused(uint3 dispatchThreadID : SV_DispatchThreadID)
     gradQuat = sanitize_float4(gradQuat, clipAbs);
     gradColorAlpha = sanitize_float4(gradColorAlpha, clipAbs);
 
+    float4 pos = g_PositionsRW[splatId];
+    float4 scale = g_ScalesRW[splatId];
+    float4 rot = g_RotationsRW[splatId];
+    float4 colorAlpha = g_ColorAlphaRW[splatId];
+
     float3 invScale = max(g_SplatInvScale[splatId].xyz, g_Stability.minInvScale);
     float4 splatQuat = normalize_quaternion_safe(g_SplatQuat[splatId]);
-    float3 gradU = gradRoLocal.xyz * invScale;
+    float3 camToSplat = g_CamPos - pos.xyz;
+    float3 gradRoLocal3 = gradRoLocal.xyz;
+    float3 gradU = gradRoLocal3 * invScale;
     float3 gradPosWorld = -rotate_by_quat_inverse(gradU, splatQuat);
     gradPosWorld = clip_norm3(gradPosWorld, g_Stability.gradNormClip);
 
-    float3 gradScale = -gradInvScale.xyz * invScale * invScale * g_RadiusScale;
+    float3 rotatedCamToSplat = rotate_by_quat(camToSplat, splatQuat);
+    float3 gradInvScaleTotal = gradInvScale.xyz + gradRoLocal3 * rotatedCamToSplat;
+    float3 gradScale = -gradInvScaleTotal * invScale * invScale * g_RadiusScale;
     gradScale = clip_norm3(gradScale, g_Stability.gradNormClip);
 
+    float4 gradQuatFromRoLocal = quat_grad_from_rotate(camToSplat, splatQuat, gradU);
+    gradQuat += gradQuatFromRoLocal;
     gradQuat = clip_norm4(gradQuat, g_Stability.gradNormClip);
     gradColorAlpha = clip_norm4(gradColorAlpha, g_Stability.gradNormClip);
 
@@ -280,11 +300,6 @@ void csAdamStepFused(uint3 dispatchThreadID : SV_DispatchThreadID)
     float beta2Pow = pow(g_Adam.beta2, float(g_Adam.stepIndex));
     float biasCorr1 = 1.0 - beta1Pow;
     float biasCorr2 = 1.0 - beta2Pow;
-
-    float4 pos = g_PositionsRW[splatId];
-    float4 scale = g_ScalesRW[splatId];
-    float4 rot = g_RotationsRW[splatId];
-    float4 colorAlpha = g_ColorAlphaRW[splatId];
 
     float4 mPos = g_AdamMPos[splatId];
     float4 vPos = g_AdamVPos[splatId];

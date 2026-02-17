@@ -88,3 +88,37 @@ def test_fused_adam_handles_nan_grads(device, tmp_path: Path):
     for name in ("positions", "scales", "rotations", "color_alpha"):
         values = np.frombuffer(renderer.scene_buffers[name].to_numpy().tobytes(), dtype=np.float32)
         assert np.all(np.isfinite(values))
+
+
+def test_ro_local_grad_contributes_to_quaternion_update(device, tmp_path: Path):
+    scene = _make_scene(count=16)
+    frame = _make_frame(tmp_path)
+    renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
+    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], seed=11)
+    camera = frame.make_camera(near=0.1, far=20.0)
+    renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
+    device.wait()
+
+    grad_pos_local = np.zeros((scene.count, 4), dtype=np.float32)
+    grad_pos_local[:, 0] = 0.5
+    grad_pos_local[:, 1] = -0.25
+    grad_pos_local[:, 2] = 0.125
+    grad_flat = grad_pos_local.reshape(-1)
+    zeros = np.zeros((scene.count * 4,), dtype=np.float32)
+    renderer.work_buffers["grad_splat_pos_local"].copy_from_numpy(grad_flat)
+    renderer.work_buffers["grad_splat_inv_scale"].copy_from_numpy(zeros)
+    renderer.work_buffers["grad_splat_quat"].copy_from_numpy(zeros)
+    renderer.work_buffers["grad_screen_color_alpha"].copy_from_numpy(zeros)
+
+    before = np.frombuffer(renderer.scene_buffers["rotations"].to_numpy().tobytes(), dtype=np.float32).reshape(-1, 4).copy()
+    enc = device.create_command_encoder()
+    trainer._dispatch_adam_step(enc, camera.position)
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+    after = np.frombuffer(renderer.scene_buffers["rotations"].to_numpy().tobytes(), dtype=np.float32).reshape(-1, 4).copy()
+
+    delta = np.abs(after - before)
+    assert np.any(delta > 0.0)
+    norms = np.linalg.norm(after, axis=1)
+    assert np.all(np.isfinite(norms))
+    assert np.all(np.abs(norms - 1.0) < 1e-3)
