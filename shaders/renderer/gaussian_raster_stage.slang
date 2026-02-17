@@ -411,7 +411,6 @@ void csRasterizeBackward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane
         uint batchCount = batchBase - batchStart;
 
         prefetch_batch_from_global(batchStart, batchBase, lane);
-        GroupMemoryBarrierWithGroupSync();
         clear_batch_gradient_cache(batchCount, lane);
         GroupMemoryBarrierWithGroupSync();
 
