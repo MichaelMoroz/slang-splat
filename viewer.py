@@ -184,7 +184,7 @@ class SplatViewer(spy.AppWindow):
             "Gaussian Count",
             value=50000,
             min=1000,
-            max=200000,
+            max=2000000,
             flags=log_flags,
         )
         self.seed_slider = spy.ui.SliderInt(init_group, "Seed", value=1234, min=0, max=1000000)
