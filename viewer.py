@@ -1040,7 +1040,7 @@ class SplatViewer(spy.AppWindow):
                     debug_render_tex, stats = debug_renderer.render_to_texture(
                         frame_camera,
                         background=self.background,
-                        read_stats=False,
+                        read_stats=True,
                     )
                     target_tex = self.trainer.get_frame_target_texture(frame_idx, native_resolution=True)
                     self.stats = stats
@@ -1073,7 +1073,7 @@ class SplatViewer(spy.AppWindow):
                     out_tex, stats = self.renderer.render_to_texture(
                         self._camera(),
                         background=self.background,
-                        read_stats=False,
+                        read_stats=True,
                     )
                     self.stats = stats
                     encoder.blit(image, out_tex)
