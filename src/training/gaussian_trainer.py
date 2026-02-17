@@ -346,7 +346,7 @@ class GaussianTrainer:
         frame_camera = self.make_frame_camera(frame_index, self.renderer.width, self.renderer.height)
         background = np.asarray(self.training.background, dtype=np.float32).reshape(3)
         target_texture = self.get_frame_target_texture(frame_index, native_resolution=False)
-        self.renderer.execute_prepass_for_current_scene(frame_camera, sync_counts=False)
+        self.renderer.execute_prepass_for_current_scene(frame_camera, sync_counts=True)
 
         enc = self.device.create_command_encoder()
         self.renderer.rasterize_current_scene(enc, frame_camera, background)

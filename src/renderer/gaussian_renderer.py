@@ -320,6 +320,9 @@ class GaussianRenderer:
         slot = (self._counter_readback_frame_id - 2) % self._COUNTER_READBACK_RING_SIZE
         generated = int(self._read_u32(self._counter_readback_ring[slot], 1)[0])
         capacity = int(self._counter_readback_capacity[slot])
+        self._apply_counter_feedback(generated, capacity)
+
+    def _apply_counter_feedback(self, generated: int, capacity: int) -> None:
         written = min(generated, capacity)
         overflow = generated > capacity
         self._delayed_generated_entries = generated
@@ -553,6 +556,7 @@ class GaussianRenderer:
             self.device.wait()
             generated_entries = self._read_counter()
             sorted_count = min(generated_entries, self._max_list_entries)
+            self._apply_counter_feedback(generated_entries, self._max_list_entries)
         else:
             generated_entries = self._delayed_generated_entries if self._delayed_stats_valid else 0
             sorted_count = self._delayed_written_entries if self._delayed_stats_valid else 0
@@ -609,6 +613,7 @@ class GaussianRenderer:
     def execute_prepass_for_current_scene(self, camera: Camera, sync_counts: bool = False) -> tuple[int, int]:
         if self._current_scene is None:
             raise RuntimeError("Scene is not set. Call set_scene() before execute_prepass_for_current_scene().")
+        self._ensure_work_buffers(self._current_scene.count, self._pending_min_list_entries)
         return self._execute_prepass(self._current_scene, camera, sync_counts=sync_counts)
 
     def rasterize_current_scene(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray) -> None:
