@@ -28,7 +28,6 @@ static const float MIN_RADIUS_PX = 1.0;
 static const float MIN_BBOX_EXTENT_PX = 1e-4;
 static const float MIN_DEBUG_THICKNESS_PX = 0.25;
 static const float EPS_GRADIENT_LENGTH = 1e-4;
-static const float SCALE_FLOOR_RATIO = 0.05;
 
 struct ScanlineWorkItem
 {
@@ -373,8 +372,7 @@ Ellipsoid build_ellipsoid(Gaussian3D gaussian)
 {
     Ellipsoid ellipsoid;
     ellipsoid.centerWorld = gaussian.position;
-    float maxScale = max(gaussian.scale.x, max(gaussian.scale.y, gaussian.scale.z));
-    ellipsoid.scale = max(gaussian.scale, maxScale * SCALE_FLOOR_RATIO) * g_Prepass.radiusScale;
+    ellipsoid.scale = gaussian.scale * g_Prepass.radiusScale;
     ellipsoid.invScale = 1.0 / max(ellipsoid.scale, float3(EPS_SMALL));
     ellipsoid.rotation = gaussian.rotation;
     ellipsoid.roLocal = rotate_by_quat(g_Camera.camPos - ellipsoid.centerWorld, ellipsoid.rotation) * ellipsoid.invScale;

@@ -208,8 +208,6 @@ def project_splats_sampled5_mvee(
 
         q = quat[i]
         scale = scene.scales[i].astype(np.float32).copy()
-        max_scale = float(np.max(scale))
-        scale = np.maximum(scale, np.float32(max_scale * 0.05))
         scale = scale * np.float32(radius_scale)
         fallback_radius = float(
             np.clip(

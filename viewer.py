@@ -147,9 +147,9 @@ class SplatViewer(spy.AppWindow):
         self.images_subdir_text = spy.ui.Text(load_group, "Train images: images_4")
 
         init_group = spy.ui.Group(panel, "Train Init")
-        self.max_gaussians_slider = spy.ui.SliderInt(
+        self.gaussian_count_slider = spy.ui.SliderInt(
             init_group,
-            "Max Gaussians",
+            "Gaussian Count",
             value=50000,
             min=1000,
             max=200000,
@@ -884,18 +884,18 @@ class SplatViewer(spy.AppWindow):
             initial_opacity=clamp(self.init_opacity_slider.value, 0.0, 1.0),
             color_jitter_std=0.0,
         )
-        max_gaussians = int(np.clip(int(self.max_gaussians_slider.value), 1, 10_000_000))
+        gaussian_count = int(np.clip(int(self.gaussian_count_slider.value), 1, 10_000_000))
         seed = int(np.clip(int(self.seed_slider.value), 0, 1_000_000_000))
-        return init_hparams, max_gaussians, seed
+        return init_hparams, gaussian_count, seed
 
     def _current_scene_init_signature(self) -> tuple[object, ...] | None:
         if self.colmap_root is None or self.colmap_recon is None or not self.training_frames:
             return None
-        init_hparams, max_gaussians, seed = self._collect_init_hparams()
+        init_hparams, gaussian_count, seed = self._collect_init_hparams()
         return (
             str(self.colmap_root.resolve()),
             int(len(self.training_frames)),
-            int(max_gaussians),
+            int(gaussian_count),
             int(seed),
             round(float(init_hparams.position_jitter_std), 8),
             round(float(init_hparams.base_scale), 8),
@@ -908,10 +908,10 @@ class SplatViewer(spy.AppWindow):
             self.last_error = "Load COLMAP dataset first."
             return
         try:
-            init_hparams, max_gaussians, seed = self._collect_init_hparams()
+            init_hparams, gaussian_count, seed = self._collect_init_hparams()
             scene = initialize_scene_from_colmap_points(
                 recon=self.colmap_recon,
-                max_gaussians=max_gaussians,
+                max_gaussians=gaussian_count,
                 seed=seed,
                 init_hparams=init_hparams,
             )
