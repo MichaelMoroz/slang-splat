@@ -15,6 +15,8 @@ def test_train_cli_smoke():
     cmd = [
         sys.executable,
         "train.py",
+        "--mode",
+        "cli",
         "--colmap-root",
         str(dataset_root),
         "--images-subdir",

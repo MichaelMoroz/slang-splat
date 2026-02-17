@@ -33,6 +33,8 @@ class ColmapImage:
     t_xyz: np.ndarray
     camera_id: int
     name: str
+    points2d_xy: np.ndarray
+    points2d_point3d_ids: np.ndarray
 
 
 @dataclass(slots=True)
@@ -161,13 +163,23 @@ def _load_images_bin(path: Path) -> dict[int, ColmapImage]:
             camera_id = _read_i32(handle)
             name = _read_null_terminated_string(handle)
             points2d_count = _read_u64(handle)
-            handle.seek(points2d_count * (8 + 8 + 8), 1)
+            points2d_xy = np.zeros((points2d_count, 2), dtype=np.float32)
+            points2d_point3d_ids = np.zeros((points2d_count,), dtype=np.int64)
+            for i in range(points2d_count):
+                x = float(struct.unpack("<d", handle.read(8))[0])
+                y = float(struct.unpack("<d", handle.read(8))[0])
+                point3d_id = int(struct.unpack("<q", handle.read(8))[0])
+                points2d_xy[i, 0] = x
+                points2d_xy[i, 1] = y
+                points2d_point3d_ids[i] = point3d_id
             images[image_id] = ColmapImage(
                 image_id=image_id,
                 q_wxyz=q_wxyz,
                 t_xyz=t_xyz,
                 camera_id=camera_id,
                 name=name,
+                points2d_xy=points2d_xy,
+                points2d_point3d_ids=points2d_point3d_ids,
             )
     return images
 

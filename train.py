@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
+import slangpy as spy
 
 from src import create_default_device
 from src.renderer import GaussianRenderer
@@ -19,8 +20,9 @@ from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams,
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="COLMAP-driven Gaussian splat trainer.")
-    parser.add_argument("--colmap-root", type=Path, required=True, help="COLMAP scene root folder.")
+    parser = argparse.ArgumentParser(description="COLMAP-driven Gaussian splat trainer + GUI launcher.")
+    parser.add_argument("--mode", type=str, choices=("gui", "cli"), default="gui", help="Run mode.")
+    parser.add_argument("--colmap-root", type=Path, default=None, help="COLMAP scene root folder.")
     parser.add_argument("--sparse-subdir", type=str, default="sparse/0", help="Sparse model relative folder.")
     parser.add_argument("--images-subdir", type=str, default="images_4", help="Training image relative folder.")
     parser.add_argument("--iters", type=int, default=1000, help="Number of optimization iterations.")
@@ -61,6 +63,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-interval", type=int, default=10)
     parser.add_argument("--snapshot-interval", type=int, default=0, help="Write PNG snapshot every N steps.")
     parser.add_argument("--snapshot-dir", type=Path, default=Path("outputs/train_snapshots"))
+    parser.add_argument("--frames", type=int, default=0, help="GUI mode: run fixed frame count and exit.")
     parser.add_argument("--debug-layers", action="store_true")
     return parser.parse_args()
 
@@ -72,9 +75,11 @@ def _save_snapshot(path: Path, rgba: np.ndarray) -> None:
     Image.fromarray((rgb * 255.0 + 0.5).astype(np.uint8), mode="RGB").save(path)
 
 
-def main() -> int:
-    args = parse_args()
-    recon = load_colmap_reconstruction(args.colmap_root, sparse_subdir=args.sparse_subdir)
+def _run_cli(args: argparse.Namespace) -> int:
+    if args.colmap_root is None:
+        raise SystemExit("--colmap-root is required in --mode cli.")
+    colmap_root = Path(args.colmap_root).resolve()
+    recon = load_colmap_reconstruction(colmap_root, sparse_subdir=args.sparse_subdir)
     frames = build_training_frames(recon, images_subdir=args.images_subdir)
     width = int(args.width) if int(args.width) > 0 else int(frames[0].width)
     height = int(args.height) if int(args.height) > 0 else int(frames[0].height)
@@ -141,7 +146,7 @@ def main() -> int:
     )
 
     print(
-        f"Training start: scene={args.colmap_root} images={args.images_subdir} "
+        f"Training start: scene={colmap_root} images={args.images_subdir} "
         f"frames={len(frames)} gaussians={scene.count} size={width}x{height}"
     )
     t_start = time.perf_counter()
@@ -160,6 +165,37 @@ def main() -> int:
             tex, _ = renderer.render_to_texture(camera, background=np.asarray(args.bg, dtype=np.float32))
             _save_snapshot(args.snapshot_dir / f"step_{step + 1:06d}.png", np.asarray(tex.to_numpy(), dtype=np.float32))
     return 0
+
+
+def _run_gui(args: argparse.Namespace) -> int:
+    from viewer import SplatViewer
+
+    width = int(args.width) if int(args.width) > 0 else 1280
+    height = int(args.height) if int(args.height) > 0 else 720
+    device = create_default_device(enable_debug_layers=args.debug_layers)
+    app = spy.App(device=device)
+    viewer = SplatViewer(
+        app,
+        width=width,
+        height=height,
+        max_prepass_memory_mb=int(args.prepass_memory_mb),
+    )
+    if args.colmap_root is not None:
+        viewer.load_colmap_dataset(Path(args.colmap_root), args.images_subdir)
+    if int(args.frames) > 0:
+        for _ in range(int(args.frames)):
+            app.run_frame()
+        app.terminate()
+    else:
+        app.run()
+    return 0
+
+
+def main() -> int:
+    args = parse_args()
+    if args.mode == "gui":
+        return _run_gui(args)
+    return _run_cli(args)
 
 
 if __name__ == "__main__":
