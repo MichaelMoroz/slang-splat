@@ -15,6 +15,7 @@
   - resolved image path,
   - COLMAP extrinsics (`q_wxyz`, `t_xyz`),
   - scaled intrinsics (`fx`, `fy`, `cx`, `cy`) for the selected image resolution.
+- Frame target textures are stored on GPU as `rgba8_unorm` (both native and train resolution) to reduce memory usage.
 
 ## Initialization
 - Gaussians are initialized by random point-cloud sampling from COLMAP `points3D`.

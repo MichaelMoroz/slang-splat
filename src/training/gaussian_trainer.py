@@ -169,20 +169,18 @@ class GaussianTrainer:
             camera.cy = float(camera.cy) * sy
         return camera
 
-    def _to_rgba(self, rgb: np.ndarray) -> np.ndarray:
-        height, width = rgb.shape[:2]
-        alpha = np.ones((height, width, 1), dtype=np.float32)
-        return np.concatenate((rgb.astype(np.float32), alpha), axis=2).astype(np.float32)
+    def _to_rgba8(self, image: Image.Image) -> np.ndarray:
+        return np.array(image.convert("RGBA"), dtype=np.uint8, order="C", copy=True)
 
-    def _create_gpu_texture(self, rgba: np.ndarray) -> spy.Texture:
-        height, width = rgba.shape[:2]
+    def _create_gpu_texture(self, rgba8: np.ndarray) -> spy.Texture:
+        height, width = rgba8.shape[:2]
         tex = self.device.create_texture(
-            format=spy.Format.rgba32_float,
+            format=spy.Format.rgba8_unorm,
             width=int(width),
             height=int(height),
             usage=spy.TextureUsage.shader_resource | spy.TextureUsage.copy_destination,
         )
-        tex.copy_from_numpy(np.ascontiguousarray(rgba, dtype=np.float32))
+        tex.copy_from_numpy(np.ascontiguousarray(rgba8, dtype=np.uint8))
         return tex
 
     def _create_dataset_textures(self) -> None:
@@ -193,17 +191,11 @@ class GaussianTrainer:
         for frame in self.frames:
             with Image.open(frame.image_path) as pil_image:
                 image = pil_image.convert("RGB")
-                native_rgb = np.asarray(image, dtype=np.float32) / 255.0
-                native_rgba = self._to_rgba(native_rgb)
-                self._frame_targets_native.append(self._create_gpu_texture(native_rgba))
-
+                self._frame_targets_native.append(self._create_gpu_texture(self._to_rgba8(image)))
+                image_train = image
                 if image.size != (train_width, train_height):
                     image_train = image.resize((train_width, train_height), resample=Image.Resampling.BILINEAR)
-                    train_rgb = np.asarray(image_train, dtype=np.float32) / 255.0
-                else:
-                    train_rgb = native_rgb
-                train_rgba = self._to_rgba(train_rgb)
-                self._frame_targets_train.append(self._create_gpu_texture(train_rgba))
+                self._frame_targets_train.append(self._create_gpu_texture(self._to_rgba8(image_train)))
 
     def update_hyperparams(
         self,
