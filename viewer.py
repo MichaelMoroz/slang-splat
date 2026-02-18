@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import time
 from pathlib import Path
 
@@ -14,7 +15,6 @@ from src.scene import (
     GaussianInitHyperParams,
     GaussianScene,
     build_training_frames,
-    initialize_scene_from_colmap_points,
     load_colmap_reconstruction,
     load_gaussian_ply,
 )
@@ -23,6 +23,11 @@ from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams,
 
 def _normalize(v: np.ndarray) -> np.ndarray:
     return v / np.maximum(np.linalg.norm(v), 1e-8)
+
+
+@dataclass(slots=True)
+class _SceneCountProxy:
+    count: int
 
 
 class SplatViewer(spy.AppWindow):
@@ -55,13 +60,16 @@ class SplatViewer(spy.AppWindow):
         self.training_renderer: GaussianRenderer | None = None
         self.debug_renderer: GaussianRenderer | None = None
         self._debug_renderer_size: tuple[int, int] | None = None
-        self.scene: GaussianScene | None = None
+        self.scene: GaussianScene | _SceneCountProxy | None = None
         self.scene_path: Path | None = None
         self.stats: dict[str, int | bool | float] = {}
 
         self.colmap_root: Path | None = None
         self.colmap_recon: ColmapReconstruction | None = None
         self.training_frames = []
+        self._colmap_point_positions_buffer: spy.Buffer | None = None
+        self._colmap_point_colors_buffer: spy.Buffer | None = None
+        self._colmap_point_count = 0
         self.trainer: GaussianTrainer | None = None
         self.training_active = False
         self.loss_debug_view_options = [("rendered", "Rendered"), ("target", "Target"), ("abs_diff", "Abs Diff")]
@@ -500,7 +508,7 @@ class SplatViewer(spy.AppWindow):
         old_renderer = self.renderer
         self.renderer = self._create_renderer(width, height, allow_debug_overlays=True)
         del old_renderer
-        if self.scene is not None:
+        if isinstance(self.scene, GaussianScene):
             self.renderer.set_scene(self.scene)
         self._synced_step_main = -1
         self._reset_loss_debug_state()
@@ -510,7 +518,7 @@ class SplatViewer(spy.AppWindow):
             return self.training_renderer
         old_renderer = self.training_renderer
         self.training_renderer = self._create_renderer(int(width), int(height), allow_debug_overlays=False)
-        if self.scene is not None:
+        if isinstance(self.scene, GaussianScene):
             self.training_renderer.set_scene(self.scene)
         if old_renderer is not None:
             del old_renderer
@@ -525,7 +533,7 @@ class SplatViewer(spy.AppWindow):
         old_renderer = self.debug_renderer
         self.debug_renderer = self._create_renderer(target_size[0], target_size[1], allow_debug_overlays=False)
         self._debug_renderer_size = target_size
-        if self.scene is not None:
+        if isinstance(self.scene, GaussianScene):
             self.debug_renderer.set_scene(self.scene)
         if old_renderer is not None:
             del old_renderer
@@ -811,6 +819,54 @@ class SplatViewer(spy.AppWindow):
         self.move_vel[:] = 0.0
         self.rot_vel[:] = 0.0
 
+    def _recenter_camera_from_points(self, points_xyz: np.ndarray) -> None:
+        pos = np.asarray(points_xyz, dtype=np.float32)
+        finite = np.isfinite(pos).all(axis=1)
+        if not np.any(finite):
+            center = np.zeros((3,), dtype=np.float32)
+            radius = 1.0
+        else:
+            pos_f = pos[finite]
+            center = np.mean(pos_f, axis=0).astype(np.float32)
+            rel = pos_f - center[None, :]
+            dist = np.linalg.norm(rel, axis=1)
+            radius = max(float(np.percentile(dist, 90.0)), 1.0)
+
+        fov_rad = float(np.deg2rad(self.fov_y))
+        fit_distance = radius / max(np.tan(0.5 * fov_rad), 1e-4)
+        cam_distance = max(fit_distance * 0.95, radius * 1.35, 1.0)
+        self.camera_pos = center + np.array([0.0, 0.0, -cam_distance], dtype=np.float32)
+        self.near = max(0.01, cam_distance * 0.0015)
+        self.far = max(cam_distance + radius * 4.0, 80.0)
+        self.move_speed = max(0.25, radius * 0.15)
+        self.move_speed_slider.value = float(self.move_speed)
+        self.yaw = 0.0
+        self.pitch = 0.0
+        self.move_vel[:] = 0.0
+        self.rot_vel[:] = 0.0
+
+    def _upload_colmap_pointcloud_buffers(self, recon: ColmapReconstruction) -> None:
+        if recon.point_xyz_table is None or recon.point_rgb_table is None:
+            raise RuntimeError("COLMAP point tables are missing.")
+        xyz = np.ascontiguousarray(recon.point_xyz_table, dtype=np.float32)
+        rgb = np.ascontiguousarray(recon.point_rgb_table, dtype=np.float32)
+        if xyz.shape[0] != rgb.shape[0] or xyz.shape[0] == 0:
+            raise RuntimeError("COLMAP point tables are empty or mismatched.")
+        pos4 = np.zeros((xyz.shape[0], 4), dtype=np.float32)
+        col4 = np.zeros((rgb.shape[0], 4), dtype=np.float32)
+        pos4[:, :3] = xyz
+        col4[:, :3] = rgb
+        usage = (
+            spy.BufferUsage.shader_resource
+            | spy.BufferUsage.copy_source
+            | spy.BufferUsage.copy_destination
+        )
+        self._colmap_point_positions_buffer = self.device.create_buffer(size=xyz.shape[0] * 16, usage=usage)
+        self._colmap_point_colors_buffer = self.device.create_buffer(size=rgb.shape[0] * 16, usage=usage)
+        self._colmap_point_positions_buffer.copy_from_numpy(pos4)
+        self._colmap_point_colors_buffer.copy_from_numpy(col4)
+        self._colmap_point_count = int(xyz.shape[0])
+
     def load_scene(self, path: Path) -> None:
         try:
             scene = load_gaussian_ply(path)
@@ -820,6 +876,9 @@ class SplatViewer(spy.AppWindow):
             self.colmap_recon = None
             self._scene_init_signature = None
             self.training_frames = []
+            self._colmap_point_positions_buffer = None
+            self._colmap_point_colors_buffer = None
+            self._colmap_point_count = 0
             self.trainer = None
             self.training_active = False
             if self.training_renderer is not None:
@@ -843,6 +902,7 @@ class SplatViewer(spy.AppWindow):
             self.colmap_root = Path(root)
             self.colmap_recon = recon
             self.training_frames = frames
+            self._upload_colmap_pointcloud_buffers(recon)
             self.scene_path = None
             self.trainer = None
             self.training_active = False
@@ -854,6 +914,7 @@ class SplatViewer(spy.AppWindow):
             self._reset_loss_debug_state()
             print(f"Loaded COLMAP: {root} frames={len(frames)} images={images_subdir}")
             self.last_error = ""
+            self._recenter_camera_from_points(recon.point_xyz_table if recon.point_xyz_table is not None else np.zeros((0, 3), dtype=np.float32))
             self._initialize_training_scene()
         except Exception as exc:
             self.last_error = str(exc)
@@ -941,30 +1002,44 @@ class SplatViewer(spy.AppWindow):
             return
         try:
             init_hparams, gaussian_count, seed = self._collect_init_hparams()
-            scene = initialize_scene_from_colmap_points(
-                recon=self.colmap_recon,
-                max_gaussians=gaussian_count,
-                seed=seed,
-                init_hparams=init_hparams,
-            )
+            if (
+                self._colmap_point_positions_buffer is None
+                or self._colmap_point_colors_buffer is None
+                or self._colmap_point_count <= 0
+            ):
+                raise RuntimeError("COLMAP pointcloud buffers are not initialized.")
             frame_width = int(self.training_frames[0].width)
             frame_height = int(self.training_frames[0].height)
             training_renderer = self._ensure_training_renderer(frame_width, frame_height)
-            self.scene = scene
-            self.renderer.set_scene(scene)
-            training_renderer.set_scene(scene)
-            self._recenter_camera(scene)
             adam, stability, training = self._collect_training_hparams()
-            self.trainer = GaussianTrainer(
-                device=self.device,
-                renderer=training_renderer,
-                scene=scene,
-                frames=self.training_frames,
-                adam_hparams=adam,
-                stability_hparams=stability,
-                training_hparams=training,
+            if self.trainer is None:
+                self.trainer = GaussianTrainer(
+                    device=self.device,
+                    renderer=training_renderer,
+                    scene=None,
+                    scene_count=gaussian_count,
+                    upload_initial_scene=False,
+                    frames=self.training_frames,
+                    adam_hparams=adam,
+                    stability_hparams=stability,
+                    training_hparams=training,
+                    seed=seed,
+                    init_point_positions_buffer=self._colmap_point_positions_buffer,
+                    init_point_colors_buffer=self._colmap_point_colors_buffer,
+                    init_point_count=self._colmap_point_count,
+                )
+            else:
+                self.trainer.renderer = training_renderer
+                self.trainer.update_hyperparams(adam, stability, training)
+            self.trainer.initialize_scene_from_pointcloud(
+                splat_count=gaussian_count,
+                init_hparams=init_hparams,
                 seed=seed,
             )
+            self.scene = _SceneCountProxy(gaussian_count)
+            enc = self.device.create_command_encoder()
+            training_renderer.copy_scene_state_to(enc, self.renderer)
+            self.device.submit_command_buffer(enc.finish())
             self.training_active = False
             self._synced_step_main = -1
             self._synced_step_debug = -1
@@ -972,7 +1047,7 @@ class SplatViewer(spy.AppWindow):
             self._update_debug_frame_slider_range()
             self._reset_loss_debug_state()
             self.last_error = ""
-            print(f"Initialized training scene ({scene.count:,} gaussians)")
+            print(f"Initialized training scene ({gaussian_count:,} gaussians)")
         except Exception as exc:
             self.last_error = str(exc)
             self.trainer = None

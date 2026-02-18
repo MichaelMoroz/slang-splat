@@ -19,6 +19,7 @@
 
 ## Initialization
 - Gaussians are initialized by random point-cloud sampling from COLMAP `points3D`.
+- Viewer COLMAP reinitialization path uploads COLMAP point tables once, then runs `csInitializeGaussiansFromPointCloud` to rebuild gaussian parameters directly on GPU.
 - Initialization parameters:
   - count cap (`max_gaussians`, default `50000`),
   - position jitter,
@@ -51,6 +52,7 @@ Each trainer `step()` performs:
   - `max(scale.xyz) <= min_scale`.
 - `csResampleLowQualitySplatsRandom`: for each marked splat, picks one deterministic random donor; if donor is valid,
   copies donor params, adds optional MCMC-scale position jitter, and resets optimizer moments.
+- `csInitializeGaussiansFromPointCloud`: initializes scene buffers and optimizer moments from preuploaded COLMAP point buffers.
 
 ## Numerical Reinforcement
 - Loss/grad and optimizer math sanitize non-finite values.

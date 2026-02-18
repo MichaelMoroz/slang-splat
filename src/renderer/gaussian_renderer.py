@@ -18,6 +18,11 @@ class RenderOutput:
     stats: dict[str, int | bool | float]
 
 
+@dataclass(slots=True)
+class SceneBinding:
+    count: int
+
+
 class GaussianRenderer:
     _COUNTER_READBACK_RING_SIZE = 2
     _SCANLINE_WORK_ITEM_UINTS = 8
@@ -569,6 +574,12 @@ class GaussianRenderer:
         self._ensure_work_buffers(scene.count)
         self._upload_scene(scene)
         self._current_scene = scene
+
+    def bind_scene_count(self, splat_count: int) -> None:
+        count = max(int(splat_count), 0)
+        self._ensure_scene_buffers(count)
+        self._ensure_work_buffers(count)
+        self._current_scene = SceneBinding(count=count)
 
     def copy_scene_state_to(self, encoder: spy.CommandEncoder, dst: "GaussianRenderer") -> None:
         if self._current_scene is None:

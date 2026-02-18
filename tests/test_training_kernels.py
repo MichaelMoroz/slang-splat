@@ -6,7 +6,7 @@ import numpy as np
 from PIL import Image
 
 from src.renderer import GaussianRenderer
-from src.scene import ColmapFrame, GaussianScene
+from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 from src.training import GaussianTrainer, StabilityHyperParams, TrainingHyperParams
 
 
@@ -444,3 +444,57 @@ def test_training_step_smoke_with_low_quality_reinit_enabled(device, tmp_path: P
     assert np.all(np.isfinite(scales))
     assert np.all(np.isfinite(rotations))
     assert np.all(np.isfinite(color_alpha))
+
+
+def test_gpu_pointcloud_initializer_rebuilds_scene_without_cpu_upload(device, tmp_path: Path):
+    frame = _make_frame(tmp_path)
+    renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
+    point_pos = np.array(
+        [
+            [0.0, 0.0, 2.0],
+            [1.0, 0.0, 2.0],
+            [0.0, 1.0, 2.0],
+            [-1.0, -1.0, 2.0],
+        ],
+        dtype=np.float32,
+    )
+    point_col = np.array(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 1.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=None,
+        scene_count=16,
+        upload_initial_scene=False,
+        frames=[frame],
+        init_point_positions=point_pos,
+        init_point_colors=point_col,
+        seed=101,
+    )
+
+    init_params = GaussianInitHyperParams(
+        position_jitter_std=0.0,
+        base_scale=0.02,
+        scale_jitter_ratio=0.0,
+        initial_opacity=0.5,
+        color_jitter_std=0.0,
+    )
+    trainer.initialize_scene_from_pointcloud(splat_count=16, init_hparams=init_params, seed=123)
+
+    positions = _read_f32x4(renderer.scene_buffers["positions"], 16)
+    scales = _read_f32x4(renderer.scene_buffers["scales"], 16)
+    rotations = _read_f32x4(renderer.scene_buffers["rotations"], 16)
+    color_alpha = _read_f32x4(renderer.scene_buffers["color_alpha"], 16)
+    assert np.all(np.isfinite(positions))
+    assert np.all(np.isfinite(scales))
+    assert np.all(np.isfinite(rotations))
+    assert np.all(np.isfinite(color_alpha))
+    assert np.all(scales[:, :3] >= 0.02 - 1e-6)
+    assert np.all(np.abs(np.linalg.norm(rotations, axis=1) - 1.0) < 1e-3)

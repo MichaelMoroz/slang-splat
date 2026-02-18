@@ -85,6 +85,15 @@ uniform RWStructuredBuffer<float4> g_AdamVQuat;
 uniform RWStructuredBuffer<float4> g_AdamMColorAlpha;
 uniform RWStructuredBuffer<float4> g_AdamVColorAlpha;
 uniform RWStructuredBuffer<uint> g_LowQualityFlags;
+uniform StructuredBuffer<float4> g_InitPointPositions;
+uniform StructuredBuffer<float4> g_InitPointColors;
+uniform uint g_InitPointCount;
+uniform uint g_InitSeed;
+uniform float g_InitPositionJitterStd;
+uniform float g_InitBaseScale;
+uniform float g_InitScaleJitterRatio;
+uniform float g_InitInitialOpacity;
+uniform float g_InitColorJitterStd;
 
 float sanitize_scalar(float value, float clampAbs)
 {
@@ -177,6 +186,13 @@ float3 rng_normal3_box_muller(inout uint state)
     float2 n01 = rng_normal2_box_muller(state);
     float2 n23 = rng_normal2_box_muller(state);
     return float3(n01.x, n01.y, n23.x);
+}
+
+float4 rng_normal4_box_muller(inout uint state)
+{
+    float2 n01 = rng_normal2_box_muller(state);
+    float2 n23 = rng_normal2_box_muller(state);
+    return float4(n01.x, n01.y, n23.x, n23.y);
 }
 
 float opacity_noise_gate(float opacity)
@@ -486,6 +502,62 @@ void csResampleLowQualitySplatsRandom(uint3 dispatchThreadID : SV_DispatchThread
     g_ScalesRW[splatId] = nextScale;
     g_RotationsRW[splatId] = nextRot;
     g_ColorAlphaRW[splatId] = nextColorAlpha;
+    g_AdamMPos[splatId] = 0.0;
+    g_AdamVPos[splatId] = 0.0;
+    g_AdamMScale[splatId] = 0.0;
+    g_AdamVScale[splatId] = 0.0;
+    g_AdamMQuat[splatId] = 0.0;
+    g_AdamVQuat[splatId] = 0.0;
+    g_AdamMColorAlpha[splatId] = 0.0;
+    g_AdamVColorAlpha[splatId] = 0.0;
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void csInitializeGaussiansFromPointCloud(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint splatId = dispatchThreadID.x;
+    if (splatId >= g_SplatCount || g_InitPointCount == 0u) return;
+
+    uint rngSeed = splatId * 0x9e3779b9u ^ g_InitSeed * 0x85ebca6bu ^ 0x165667b1u;
+    uint rngState = hash_u32(rngSeed);
+    if (rngState == 0u) rngState = 1u;
+
+    uint pointId = rng_next(rngState) % g_InitPointCount;
+    float3 pointPos = g_InitPointPositions[pointId].xyz;
+    float3 pointColor = g_InitPointColors[pointId].xyz;
+
+    float4 pos = float4(pointPos, 0.0);
+    if (g_InitPositionJitterStd > 0.0)
+    {
+        float3 dPos = rng_normal3_box_muller(rngState) * g_InitPositionJitterStd;
+        pos.xyz += dPos;
+    }
+    pos.xyz = clamp(sanitize_float3(pos.xyz, g_Stability.hugeValue), -g_Stability.positionAbsMax, g_Stability.positionAbsMax);
+
+    float baseScale = max(g_InitBaseScale, 1e-4);
+    float ratio = max(g_InitScaleJitterRatio, 0.0);
+    float lo = max(1.0 - ratio, 1e-4);
+    float hi = 1.0 + ratio;
+    float3 scaleMul = float3(
+        lerp(lo, hi, rng_uniform_open01(rngState)),
+        lerp(lo, hi, rng_uniform_open01(rngState)),
+        lerp(lo, hi, rng_uniform_open01(rngState))
+    );
+    float4 scale = float4(baseScale * scaleMul, 0.0);
+    scale.xyz = clamp(sanitize_float3(scale.xyz, g_Stability.hugeValue), g_Stability.minScale, g_Stability.maxScale);
+
+    float4 rot = normalize_quaternion_safe(rng_normal4_box_muller(rngState));
+    float3 color = pointColor;
+    if (g_InitColorJitterStd > 0.0) color += rng_normal3_box_muller(rngState) * g_InitColorJitterStd;
+    color = clamp(sanitize_float3(color, g_Stability.hugeValue), 0.0, 1.0);
+    float opacity = clamp(g_InitInitialOpacity, g_Stability.minOpacity, g_Stability.maxOpacity);
+    float4 colorAlpha = float4(color, opacity);
+
+    g_PositionsRW[splatId] = pos;
+    g_ScalesRW[splatId] = scale;
+    g_RotationsRW[splatId] = rot;
+    g_ColorAlphaRW[splatId] = colorAlpha;
     g_AdamMPos[splatId] = 0.0;
     g_AdamVPos[splatId] = 0.0;
     g_AdamMScale[splatId] = 0.0;
