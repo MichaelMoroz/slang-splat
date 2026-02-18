@@ -7,7 +7,7 @@ from PIL import Image
 
 from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianScene
-from src.training import GaussianTrainer
+from src.training import GaussianTrainer, StabilityHyperParams, TrainingHyperParams
 
 
 def _make_scene(count: int = 24, seed: int = 7) -> GaussianScene:
@@ -47,6 +47,38 @@ def _make_frame(tmp_path: Path, width: int = 64, height: int = 64) -> ColmapFram
         width=width,
         height=height,
     )
+
+
+def _read_f32x4(buffer, count: int) -> np.ndarray:
+    values = np.frombuffer(buffer.to_numpy().tobytes(), dtype=np.float32)
+    return values[: count * 4].reshape(count, 4).copy()
+
+
+def _read_u32(buffer, count: int) -> np.ndarray:
+    values = np.frombuffer(buffer.to_numpy().tobytes(), dtype=np.uint32)
+    return values[:count].copy()
+
+
+def _hash_u32(value: int) -> int:
+    x = int(value) & 0xFFFFFFFF
+    x ^= x >> 16
+    x = (x * 0x7FEB352D) & 0xFFFFFFFF
+    x ^= x >> 15
+    x = (x * 0x846CA68B) & 0xFFFFFFFF
+    x ^= x >> 16
+    return x & 0xFFFFFFFF
+
+
+def _rng_next(state: int) -> int:
+    return (1664525 * int(state) + 1013904223) & 0xFFFFFFFF
+
+
+def _expected_donor_id(splat_id: int, step_index: int, splat_count: int) -> int:
+    seed = ((int(splat_id) * 0x9E3779B9) ^ (int(step_index) * 0x85EBCA6B) ^ 0x27D4EB2D) & 0xFFFFFFFF
+    state = _hash_u32(seed)
+    if state == 0:
+        state = 1
+    return int(_rng_next(state) % int(splat_count))
 
 
 def test_training_step_smoke_updates_params(device, tmp_path: Path):
@@ -169,3 +201,246 @@ def test_synthetic_base_grads_update_and_respect_constraints(device, tmp_path: P
     norms = np.linalg.norm(rotations, axis=1)
     assert np.all(np.isfinite(norms))
     assert np.all(np.abs(norms - 1.0) < 1e-3)
+
+
+def test_mark_low_quality_flags_from_stability_thresholds(device, tmp_path: Path):
+    scene = _make_scene(count=5, seed=33)
+    frame = _make_frame(tmp_path)
+    renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
+    stability = StabilityHyperParams(min_scale=0.2, max_scale=3.0, min_opacity=0.3, max_opacity=0.9999)
+    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], stability_hparams=stability, seed=17)
+
+    scales = _read_f32x4(renderer.scene_buffers["scales"], scene.count)
+    color_alpha = _read_f32x4(renderer.scene_buffers["color_alpha"], scene.count)
+    scales[:, :3] = np.array(
+        [
+            [0.5, 0.5, 0.5],
+            [0.1, 0.1, 0.1],
+            [0.4, 0.2, 0.3],
+            [0.8, 0.8, 0.8],
+            [0.2, 0.2, 0.2],
+        ],
+        dtype=np.float32,
+    )
+    color_alpha[:, 3] = np.array([0.8, 0.8, 0.4, 0.2, 0.8], dtype=np.float32)
+    renderer.scene_buffers["scales"].copy_from_numpy(scales)
+    renderer.scene_buffers["color_alpha"].copy_from_numpy(color_alpha)
+
+    enc = device.create_command_encoder()
+    trainer._dispatch_mark_low_quality_splats(enc)
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+
+    flags = _read_u32(trainer._buffers["low_quality_flags"], scene.count)
+    expected = np.array([0, 1, 0, 1, 1], dtype=np.uint32)
+    np.testing.assert_array_equal(flags, expected)
+
+
+def test_resample_low_quality_from_valid_random_donor(device, tmp_path: Path):
+    scene = _make_scene(count=8, seed=41)
+    frame = _make_frame(tmp_path)
+    renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
+    stability = StabilityHyperParams(min_scale=0.2, max_scale=3.0, min_opacity=0.3, max_opacity=0.9999)
+    training = TrainingHyperParams(low_quality_reinit_enabled=True, mcmc_position_noise_scale=0.0)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        stability_hparams=stability,
+        training_hparams=training,
+        seed=23,
+    )
+
+    positions = _read_f32x4(renderer.scene_buffers["positions"], scene.count)
+    scales = _read_f32x4(renderer.scene_buffers["scales"], scene.count)
+    rotations = _read_f32x4(renderer.scene_buffers["rotations"], scene.count)
+    color_alpha = _read_f32x4(renderer.scene_buffers["color_alpha"], scene.count)
+    for idx in range(scene.count):
+        positions[idx, :3] = np.array([float(idx), float(idx) + 0.1, float(idx) + 0.2], dtype=np.float32)
+        scales[idx, :3] = np.array([0.6, 0.5, 0.4], dtype=np.float32)
+        rotations[idx] = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        color_alpha[idx] = np.array([0.1 * idx, 0.05 * idx, 0.02 * idx, 0.8], dtype=np.float32)
+
+    step_index = int(trainer.state.step + 1)
+    target_id, donor_id = -1, -1
+    for splat_id in range(scene.count):
+        candidate = _expected_donor_id(splat_id, step_index, scene.count)
+        if candidate != splat_id:
+            target_id = splat_id
+            donor_id = candidate
+            break
+    assert target_id >= 0 and donor_id >= 0
+    color_alpha[target_id, 3] = 0.05
+
+    renderer.scene_buffers["positions"].copy_from_numpy(positions)
+    renderer.scene_buffers["scales"].copy_from_numpy(scales)
+    renderer.scene_buffers["rotations"].copy_from_numpy(rotations)
+    renderer.scene_buffers["color_alpha"].copy_from_numpy(color_alpha)
+
+    for name in (
+        "adam_m_pos",
+        "adam_v_pos",
+        "adam_m_scale",
+        "adam_v_scale",
+        "adam_m_quat",
+        "adam_v_quat",
+        "adam_m_color_alpha",
+        "adam_v_color_alpha",
+    ):
+        moments = np.full((scene.count, 4), 3.25, dtype=np.float32)
+        trainer._buffers[name].copy_from_numpy(moments)
+
+    expected_pos = positions[donor_id].copy()
+    expected_scale = scales[donor_id].copy()
+    expected_rot = rotations[donor_id].copy()
+    expected_color_alpha = color_alpha[donor_id].copy()
+
+    enc = device.create_command_encoder()
+    trainer._dispatch_mark_low_quality_splats(enc)
+    trainer._dispatch_resample_low_quality_splats(enc)
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+
+    flags = _read_u32(trainer._buffers["low_quality_flags"], scene.count)
+    assert int(flags[target_id]) == 1
+    assert int(flags[donor_id]) == 0
+
+    after_pos = _read_f32x4(renderer.scene_buffers["positions"], scene.count)
+    after_scale = _read_f32x4(renderer.scene_buffers["scales"], scene.count)
+    after_rot = _read_f32x4(renderer.scene_buffers["rotations"], scene.count)
+    after_color_alpha = _read_f32x4(renderer.scene_buffers["color_alpha"], scene.count)
+    np.testing.assert_allclose(after_pos[target_id], expected_pos, rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(after_scale[target_id], expected_scale, rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(after_rot[target_id], expected_rot, rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(after_color_alpha[target_id], expected_color_alpha, rtol=0.0, atol=1e-6)
+
+    for name in (
+        "adam_m_pos",
+        "adam_v_pos",
+        "adam_m_scale",
+        "adam_v_scale",
+        "adam_m_quat",
+        "adam_v_quat",
+        "adam_m_color_alpha",
+        "adam_v_color_alpha",
+    ):
+        moment_values = _read_f32x4(trainer._buffers[name], scene.count)
+        np.testing.assert_allclose(moment_values[target_id], np.zeros((4,), dtype=np.float32), rtol=0.0, atol=1e-7)
+
+
+def test_resample_skips_when_random_donor_is_low_quality(device, tmp_path: Path):
+    scene = _make_scene(count=8, seed=51)
+    frame = _make_frame(tmp_path)
+    renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
+    stability = StabilityHyperParams(min_scale=0.2, max_scale=3.0, min_opacity=0.3, max_opacity=0.9999)
+    training = TrainingHyperParams(low_quality_reinit_enabled=True, mcmc_position_noise_scale=0.0)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        stability_hparams=stability,
+        training_hparams=training,
+        seed=31,
+    )
+
+    step_index = int(trainer.state.step + 1)
+    target_id, donor_id = -1, -1
+    for splat_id in range(scene.count):
+        candidate = _expected_donor_id(splat_id, step_index, scene.count)
+        if candidate != splat_id:
+            target_id = splat_id
+            donor_id = candidate
+            break
+    assert target_id >= 0 and donor_id >= 0
+
+    positions = _read_f32x4(renderer.scene_buffers["positions"], scene.count)
+    scales = _read_f32x4(renderer.scene_buffers["scales"], scene.count)
+    rotations = _read_f32x4(renderer.scene_buffers["rotations"], scene.count)
+    color_alpha = _read_f32x4(renderer.scene_buffers["color_alpha"], scene.count)
+    scales[:, :3] = 0.6
+    color_alpha[:, 3] = 0.8
+    color_alpha[target_id, 3] = 0.05
+    color_alpha[donor_id, 3] = 0.05
+
+    renderer.scene_buffers["positions"].copy_from_numpy(positions)
+    renderer.scene_buffers["scales"].copy_from_numpy(scales)
+    renderer.scene_buffers["rotations"].copy_from_numpy(rotations)
+    renderer.scene_buffers["color_alpha"].copy_from_numpy(color_alpha)
+
+    sentinel = np.full((scene.count, 4), 1.75, dtype=np.float32)
+    for name in (
+        "adam_m_pos",
+        "adam_v_pos",
+        "adam_m_scale",
+        "adam_v_scale",
+        "adam_m_quat",
+        "adam_v_quat",
+        "adam_m_color_alpha",
+        "adam_v_color_alpha",
+    ):
+        trainer._buffers[name].copy_from_numpy(sentinel)
+
+    before_target_pos = positions[target_id].copy()
+    before_target_scale = scales[target_id].copy()
+    before_target_rot = rotations[target_id].copy()
+    before_target_color_alpha = color_alpha[target_id].copy()
+
+    enc = device.create_command_encoder()
+    trainer._dispatch_mark_low_quality_splats(enc)
+    trainer._dispatch_resample_low_quality_splats(enc)
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+
+    after_pos = _read_f32x4(renderer.scene_buffers["positions"], scene.count)
+    after_scale = _read_f32x4(renderer.scene_buffers["scales"], scene.count)
+    after_rot = _read_f32x4(renderer.scene_buffers["rotations"], scene.count)
+    after_color_alpha = _read_f32x4(renderer.scene_buffers["color_alpha"], scene.count)
+    np.testing.assert_allclose(after_pos[target_id], before_target_pos, rtol=0.0, atol=1e-7)
+    np.testing.assert_allclose(after_scale[target_id], before_target_scale, rtol=0.0, atol=1e-7)
+    np.testing.assert_allclose(after_rot[target_id], before_target_rot, rtol=0.0, atol=1e-7)
+    np.testing.assert_allclose(after_color_alpha[target_id], before_target_color_alpha, rtol=0.0, atol=1e-7)
+
+    for name in (
+        "adam_m_pos",
+        "adam_v_pos",
+        "adam_m_scale",
+        "adam_v_scale",
+        "adam_m_quat",
+        "adam_v_quat",
+        "adam_m_color_alpha",
+        "adam_v_color_alpha",
+    ):
+        moment_values = _read_f32x4(trainer._buffers[name], scene.count)
+        np.testing.assert_allclose(moment_values[target_id], sentinel[target_id], rtol=0.0, atol=1e-7)
+
+
+def test_training_step_smoke_with_low_quality_reinit_enabled(device, tmp_path: Path):
+    scene = _make_scene(count=24, seed=61)
+    frame = _make_frame(tmp_path)
+    renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
+    stability = StabilityHyperParams(min_scale=0.05, max_scale=3.0, min_opacity=0.6, max_opacity=0.9999)
+    training = TrainingHyperParams(low_quality_reinit_enabled=True, mcmc_position_noise_scale=0.5)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        stability_hparams=stability,
+        training_hparams=training,
+        seed=55,
+    )
+
+    loss = trainer.step()
+    positions = _read_f32x4(renderer.scene_buffers["positions"], scene.count)
+    scales = _read_f32x4(renderer.scene_buffers["scales"], scene.count)
+    rotations = _read_f32x4(renderer.scene_buffers["rotations"], scene.count)
+    color_alpha = _read_f32x4(renderer.scene_buffers["color_alpha"], scene.count)
+
+    assert np.isfinite(loss)
+    assert trainer.state.step == 1
+    assert np.all(np.isfinite(positions))
+    assert np.all(np.isfinite(scales))
+    assert np.all(np.isfinite(rotations))
+    assert np.all(np.isfinite(color_alpha))

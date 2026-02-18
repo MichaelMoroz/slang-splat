@@ -49,6 +49,7 @@ class TrainingHyperParams:
     mcmc_position_noise_scale: float = 1.0
     mcmc_opacity_gate_sharpness: float = 100.0
     mcmc_opacity_gate_center: float = 0.995
+    low_quality_reinit_enabled: bool = True
 
 
 @dataclass(slots=True)
@@ -103,6 +104,12 @@ class GaussianTrainer:
                 load_program(str(self._shader_path), ["csComputeMSELossGrad"])
             ),
             "adam_step": self.device.create_compute_kernel(load_program(str(self._shader_path), ["csAdamStepFused"])),
+            "mark_low_quality_splats": self.device.create_compute_kernel(
+                load_program(str(self._shader_path), ["csMarkLowQualitySplats"])
+            ),
+            "resample_low_quality_splats": self.device.create_compute_kernel(
+                load_program(str(self._shader_path), ["csResampleLowQualitySplatsRandom"])
+            ),
         }
 
     def _create_training_buffers(self) -> None:
@@ -114,6 +121,7 @@ class GaussianTrainer:
             | spy.BufferUsage.copy_destination
         )
         self._buffers["loss"] = self.device.create_buffer(size=4, usage=usage_rw)
+        self._buffers["low_quality_flags"] = self.device.create_buffer(size=count * 4, usage=usage_rw)
         for name in (
             "adam_m_pos",
             "adam_v_pos",
@@ -231,6 +239,7 @@ class GaussianTrainer:
             "g_Width": int(self.renderer.width),
             "g_Height": int(self.renderer.height),
             "g_SplatCount": int(self.scene.count),
+            "g_LowQualityReinitEnabled": np.uint32(1 if self.training.low_quality_reinit_enabled else 0),
             "g_InvPixelCount": 1.0 / float(max(self.renderer.width * self.renderer.height, 1)),
             "g_LossGradClip": float(self.stability.loss_grad_clip),
             "g_Adam": {
@@ -330,6 +339,42 @@ class GaussianTrainer:
             command_encoder=encoder,
         )
 
+    def _dispatch_mark_low_quality_splats(self, encoder: spy.CommandEncoder) -> None:
+        vars_common = self._common_vars()
+        self._kernels["mark_low_quality_splats"].dispatch(
+            thread_count=spy.uint3(self.scene.count, 1, 1),
+            vars={
+                "g_ScalesRW": self.renderer.scene_buffers["scales"],
+                "g_ColorAlphaRW": self.renderer.scene_buffers["color_alpha"],
+                "g_LowQualityFlags": self._buffers["low_quality_flags"],
+                **vars_common,
+            },
+            command_encoder=encoder,
+        )
+
+    def _dispatch_resample_low_quality_splats(self, encoder: spy.CommandEncoder) -> None:
+        vars_common = self._common_vars()
+        self._kernels["resample_low_quality_splats"].dispatch(
+            thread_count=spy.uint3(self.scene.count, 1, 1),
+            vars={
+                "g_PositionsRW": self.renderer.scene_buffers["positions"],
+                "g_ScalesRW": self.renderer.scene_buffers["scales"],
+                "g_RotationsRW": self.renderer.scene_buffers["rotations"],
+                "g_ColorAlphaRW": self.renderer.scene_buffers["color_alpha"],
+                "g_AdamMPos": self._buffers["adam_m_pos"],
+                "g_AdamVPos": self._buffers["adam_v_pos"],
+                "g_AdamMScale": self._buffers["adam_m_scale"],
+                "g_AdamVScale": self._buffers["adam_v_scale"],
+                "g_AdamMQuat": self._buffers["adam_m_quat"],
+                "g_AdamVQuat": self._buffers["adam_v_quat"],
+                "g_AdamMColorAlpha": self._buffers["adam_m_color_alpha"],
+                "g_AdamVColorAlpha": self._buffers["adam_v_color_alpha"],
+                "g_LowQualityFlags": self._buffers["low_quality_flags"],
+                **vars_common,
+            },
+            command_encoder=encoder,
+        )
+
     def _read_loss_value(self) -> float:
         raw = self._buffers["loss"].to_numpy()
         values = np.frombuffer(raw.tobytes(), dtype=np.float32)
@@ -358,6 +403,8 @@ class GaussianTrainer:
             self.state.last_instability = ""
             enc_opt = self.device.create_command_encoder()
             self._dispatch_adam_step(enc_opt)
+            self._dispatch_mark_low_quality_splats(enc_opt)
+            self._dispatch_resample_low_quality_splats(enc_opt)
             self.device.submit_command_buffer(enc_opt.finish())
 
         self.state.step += 1

@@ -124,6 +124,7 @@ def _run_train_colmap(args: argparse.Namespace) -> int:
         near=float(args.near),
         far=float(args.far),
         ema_decay=float(args.ema_decay),
+        low_quality_reinit_enabled=bool(args.low_quality_reinit),
     )
     trainer = GaussianTrainer(
         device=device,
@@ -255,6 +256,12 @@ def parse_args() -> argparse.Namespace:
     train.add_argument("--far", type=float, default=120.0)
     train.add_argument("--bg", type=float, nargs=3, default=(0.0, 0.0, 0.0))
     train.add_argument("--ema-decay", type=float, default=0.95)
+    train.add_argument(
+        "--low-quality-reinit",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable per-step low-quality splat reinitialization.",
+    )
     train.add_argument("--init-position-jitter", type=float, default=0.01)
     train.add_argument("--init-base-scale", type=float, default=0.03)
     train.add_argument("--init-scale-jitter", type=float, default=0.2)

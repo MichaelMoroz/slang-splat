@@ -33,6 +33,8 @@ Each trainer `step()` performs:
 4. Run loss kernel (`RGB MSE`) to produce `g_OutputGrad`.
 5. Run raster backward to fill per-splat gradient buffers.
 6. Run fused ADAM kernel (`csAdamStepFused`) with one thread per Gaussian.
+7. Run low-quality marking kernel (`csMarkLowQualitySplats`) using stability thresholds.
+8. Run random low-quality resample kernel (`csResampleLowQualitySplatsRandom`).
 
 ## Kernels
 - `csClearLossAndGradTex`: zero loss + output-grad texture.
@@ -43,6 +45,11 @@ Each trainer `step()` performs:
   - quaternion,
   - color,
   - opacity.
+- `csMarkLowQualitySplats`: marks splats as low-quality when
+  - `opacity <= min_opacity`, or
+  - `max(scale.xyz) <= min_scale`.
+- `csResampleLowQualitySplatsRandom`: for each marked splat, picks one deterministic random donor; if donor is valid,
+  copies donor params, adds optional MCMC-scale position jitter, and resets optimizer moments.
 
 ## Numerical Reinforcement
 - Loss/grad and optimizer math sanitize non-finite values.
@@ -71,6 +78,7 @@ Useful options:
 - `--lr`, `--beta1`, `--beta2`, `--eps`,
 - `--grad-clip`, `--grad-norm-clip`, `--max-update`,
 - `--min-scale`, `--max-scale`, `--min-opacity`, `--max-opacity`.
+- `--[no-]low-quality-reinit` enables/disables per-step low-quality resampling.
 
 ## Viewer Integration
 - `viewer.py` keeps PLY workflow and adds COLMAP training controls:

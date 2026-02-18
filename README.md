@@ -68,6 +68,8 @@ Training notes:
 - One random training image is sampled per step.
 - Default loss is RGB MSE.
 - Target Y-flip is enabled by default.
+- Per-step low-quality reinit is enabled by default: splats with `opacity <= min_opacity` or `max(scale) <= min_scale`
+  can be replaced from a random valid donor splat (skip when donor is also low-quality).
 - Numerical reinforcement includes clipping, finite checks, and safe quaternion normalization.
 
 ## Run Tests

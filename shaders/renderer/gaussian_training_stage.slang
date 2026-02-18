@@ -43,6 +43,7 @@ uniform AdamParams g_Adam;
 uniform TrainingStabilityParams g_Stability;
 uniform TrainingMCMCParams g_MCMC;
 uniform uint g_SplatCount;
+uniform uint g_LowQualityReinitEnabled;
 uniform uint g_Width;
 uniform uint g_Height;
 uniform float g_InvPixelCount;
@@ -83,6 +84,7 @@ uniform RWStructuredBuffer<float4> g_AdamMQuat;
 uniform RWStructuredBuffer<float4> g_AdamVQuat;
 uniform RWStructuredBuffer<float4> g_AdamMColorAlpha;
 uniform RWStructuredBuffer<float4> g_AdamVColorAlpha;
+uniform RWStructuredBuffer<uint> g_LowQualityFlags;
 
 float sanitize_scalar(float value, float clampAbs)
 {
@@ -182,6 +184,12 @@ float opacity_noise_gate(float opacity)
     float x = -g_MCMC.opacityGateSharpness * (opacity - g_MCMC.opacityGateCenter);
     x = clamp(x, -30.0, 30.0);
     return 1.0 / (1.0 + exp(-x));
+}
+
+bool is_low_quality(float3 scale, float opacity)
+{
+    float maxSize = max(scale.x, max(scale.y, scale.z));
+    return (opacity <= g_Stability.minOpacity) || (maxSize <= g_Stability.minScale);
 }
 
 float4 adam_update_param(
@@ -423,4 +431,67 @@ void csAdamStepFused(uint3 dispatchThreadID : SV_DispatchThreadID)
     g_AdamVQuat[splatId] = vQuat;
     g_AdamMColorAlpha[splatId] = mColorAlpha;
     g_AdamVColorAlpha[splatId] = vColorAlpha;
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void csMarkLowQualitySplats(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint splatId = dispatchThreadID.x;
+    if (splatId >= g_SplatCount) return;
+    float3 scale = g_ScalesRW[splatId].xyz;
+    float opacity = g_ColorAlphaRW[splatId].w;
+    g_LowQualityFlags[splatId] = is_low_quality(scale, opacity) ? 1u : 0u;
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void csResampleLowQualitySplatsRandom(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint splatId = dispatchThreadID.x;
+    if (splatId >= g_SplatCount || g_LowQualityReinitEnabled == 0u) return;
+    if (g_LowQualityFlags[splatId] == 0u) return;
+
+    uint rngSeed = splatId * 0x9e3779b9u ^ g_Adam.stepIndex * 0x85ebca6bu ^ 0x27d4eb2du;
+    uint rngState = hash_u32(rngSeed);
+    if (rngState == 0u) rngState = 1u;
+
+    uint donorId = rng_next(rngState) % g_SplatCount;
+    if (g_LowQualityFlags[donorId] != 0u) return;
+
+    float4 donorPos = g_PositionsRW[donorId];
+    float4 donorScale = g_ScalesRW[donorId];
+    float4 donorRot = g_RotationsRW[donorId];
+    float4 donorColorAlpha = g_ColorAlphaRW[donorId];
+
+    float4 nextPos = sanitize_float4(donorPos, g_Stability.hugeValue);
+    float3 donorScaleSafe = max(sanitize_float3(donorScale.xyz, g_Stability.hugeValue), float3(g_Stability.minScale));
+    if (g_MCMC.positionNoiseScale > 0.0)
+    {
+        float3 eta = rng_normal3_box_muller(rngState);
+        float3 jitter = sanitize_float3(donorScaleSafe * eta * g_MCMC.positionNoiseScale, g_Stability.maxUpdate);
+        nextPos.xyz = sanitize_float3(nextPos.xyz + jitter, g_Stability.hugeValue);
+    }
+
+    float4 nextScale = sanitize_float4(donorScale, g_Stability.hugeValue);
+    float4 nextRot = normalize_quaternion_safe(sanitize_float4(donorRot, g_Stability.hugeValue));
+    float4 nextColorAlpha = sanitize_float4(donorColorAlpha, g_Stability.hugeValue);
+
+    nextPos.xyz = clamp(nextPos.xyz, -g_Stability.positionAbsMax, g_Stability.positionAbsMax);
+    nextScale.xyz = clamp(nextScale.xyz, g_Stability.minScale, g_Stability.maxScale);
+    nextColorAlpha.xyz = clamp(nextColorAlpha.xyz, 0.0, 1.0);
+    nextColorAlpha.w = clamp(nextColorAlpha.w, g_Stability.minOpacity, g_Stability.maxOpacity);
+
+    g_PositionsRW[splatId] = nextPos;
+    g_ScalesRW[splatId] = nextScale;
+    g_RotationsRW[splatId] = nextRot;
+    g_ColorAlphaRW[splatId] = nextColorAlpha;
+    g_AdamMPos[splatId] = 0.0;
+    g_AdamVPos[splatId] = 0.0;
+    g_AdamMScale[splatId] = 0.0;
+    g_AdamVScale[splatId] = 0.0;
+    g_AdamMQuat[splatId] = 0.0;
+    g_AdamVQuat[splatId] = 0.0;
+    g_AdamMColorAlpha[splatId] = 0.0;
+    g_AdamVColorAlpha[splatId] = 0.0;
 }

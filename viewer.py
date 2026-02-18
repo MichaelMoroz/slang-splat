@@ -305,6 +305,7 @@ class SplatViewer(spy.AppWindow):
             step_fast=1e-3,
             format="%.6f",
         )
+        self.low_quality_reinit_checkbox = spy.ui.CheckBox(opt_group, "Low-Quality Reinit", value=True)
         self.grad_clip_slider = spy.ui.InputFloat(
             opt_group,
             "Grad Clip",
@@ -363,6 +364,7 @@ class SplatViewer(spy.AppWindow):
             step_fast=1e-3,
             format="%.6f",
         )
+        self.reinit_threshold_text = spy.ui.Text(stab_group, "Reinit thresholds: Min Scale + Min Opacity")
         self.position_abs_max_slider = spy.ui.InputFloat(
             stab_group,
             "Pos Abs Max",
@@ -899,6 +901,7 @@ class SplatViewer(spy.AppWindow):
             mcmc_position_noise_scale=clamp(self.mcmc_pos_noise_scale_slider.value, 0.0, 1e4),
             mcmc_opacity_gate_sharpness=clamp(self.mcmc_opacity_k_slider.value, 0.0, 1e6),
             mcmc_opacity_gate_center=clamp(self.mcmc_opacity_t_slider.value, 0.0, 1.0),
+            low_quality_reinit_enabled=bool(self.low_quality_reinit_checkbox.value),
         )
         if training.far <= training.near:
             training.far = training.near + 1e-3
