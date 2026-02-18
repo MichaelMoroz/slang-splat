@@ -846,10 +846,17 @@ class SplatViewer(spy.AppWindow):
         self.rot_vel[:] = 0.0
 
     def _upload_colmap_pointcloud_buffers(self, recon: ColmapReconstruction) -> None:
-        if recon.point_xyz_table is None or recon.point_rgb_table is None:
-            raise RuntimeError("COLMAP point tables are missing.")
-        xyz = np.ascontiguousarray(recon.point_xyz_table, dtype=np.float32)
-        rgb = np.ascontiguousarray(recon.point_rgb_table, dtype=np.float32)
+        xyz_table = getattr(recon, "point_xyz_table", None)
+        rgb_table = getattr(recon, "point_rgb_table", None)
+        if xyz_table is None or rgb_table is None:
+            points = list(recon.points3d.values())
+            if not points:
+                raise RuntimeError("COLMAP point tables are missing and points3d is empty.")
+            xyz = np.ascontiguousarray(np.stack([point.xyz for point in points], axis=0), dtype=np.float32)
+            rgb = np.ascontiguousarray(np.stack([point.rgb for point in points], axis=0), dtype=np.float32)
+        else:
+            xyz = np.ascontiguousarray(xyz_table, dtype=np.float32)
+            rgb = np.ascontiguousarray(rgb_table, dtype=np.float32)
         if xyz.shape[0] != rgb.shape[0] or xyz.shape[0] == 0:
             raise RuntimeError("COLMAP point tables are empty or mismatched.")
         pos4 = np.zeros((xyz.shape[0], 4), dtype=np.float32)
@@ -914,7 +921,14 @@ class SplatViewer(spy.AppWindow):
             self._reset_loss_debug_state()
             print(f"Loaded COLMAP: {root} frames={len(frames)} images={images_subdir}")
             self.last_error = ""
-            self._recenter_camera_from_points(recon.point_xyz_table if recon.point_xyz_table is not None else np.zeros((0, 3), dtype=np.float32))
+            recenter_xyz = getattr(recon, "point_xyz_table", None)
+            if recenter_xyz is None:
+                points = list(recon.points3d.values())
+                if points:
+                    recenter_xyz = np.stack([point.xyz for point in points], axis=0).astype(np.float32)
+                else:
+                    recenter_xyz = np.zeros((0, 3), dtype=np.float32)
+            self._recenter_camera_from_points(recenter_xyz)
             self._initialize_training_scene()
         except Exception as exc:
             self.last_error = str(exc)
