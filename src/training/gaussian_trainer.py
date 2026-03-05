@@ -50,6 +50,7 @@ class TrainingHyperParams:
     near: float = 0.1
     far: float = 120.0
     ema_decay: float = 0.95
+    scale_l2_weight: float = 1e-4
     mcmc_position_noise_enabled: bool = True
     mcmc_position_noise_scale: float = 1.0
     mcmc_opacity_gate_sharpness: float = 100.0
@@ -325,6 +326,7 @@ class GaussianTrainer:
             "g_LowQualityReinitEnabled": np.uint32(1 if self.training.low_quality_reinit_enabled else 0),
             "g_InvPixelCount": 1.0 / float(max(self.renderer.width * self.renderer.height, 1)),
             "g_LossGradClip": float(self.stability.loss_grad_clip),
+            "g_ScaleL2Weight": float(max(self.training.scale_l2_weight, 0.0)),
             "g_Adam": {
                 "positionLR": float(self.adam.position_lr),
                 "scaleLR": float(self.adam.scale_lr),

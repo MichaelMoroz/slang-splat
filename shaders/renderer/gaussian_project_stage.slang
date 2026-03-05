@@ -1,4 +1,5 @@
 import "gaussian_types.slang";
+import "camera.slang";
 
 float screen_radius_cap()
 {
@@ -345,15 +346,16 @@ void csProjectAndBin(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint splatId = dispatchThreadID.x;
     if (splatId >= g_Prepass.splatCount) return;
 
+    PinholeCamera camera = PinholeCamera.from_params(g_Camera);
     Gaussian3D gaussian = Gaussian3D.load(splatId);
     Ellipsoid ellipsoid = build_ellipsoid(gaussian);
-    float3 cameraOffset = ellipsoid.centerWorld - g_Camera.camPos;
-    float3 camPos = world_to_camera(cameraOffset);
+    float3 cameraOffset = ellipsoid.centerWorld - camera.position_world();
+    float3 camPos = camera.world_to_camera(cameraOffset);
     float camDistance = length(cameraOffset);
     float depthValue = camPos.z;
 
     float invDepth = 1.0 / max(depthValue, EPS_SMALL);
-    float2 fitCenter = camPos.xy * (g_Camera.focalPixels * invDepth) + g_Camera.principalPoint;
+    float2 fitCenter = camera.project_camera_to_screen_linear(camPos);
     float maxAxisWorld = max(ellipsoid.scale.x, max(ellipsoid.scale.y, ellipsoid.scale.z));
     float fallbackFocal = max(g_Camera.focalPixels.x, g_Camera.focalPixels.y);
     float radiusCap = screen_radius_cap();
@@ -375,7 +377,7 @@ void csProjectAndBin(uint3 dispatchThreadID : SV_DispatchThreadID)
         {
             float3 worldPt = local_point_to_world(localPoints[i], ellipsoid.centerWorld, ellipsoid.invScale, ellipsoid.rotation);
             float2 screenPt = 0.0;
-            bool pointOk = project_world_to_screen(worldPt, screenPt);
+            bool pointOk = camera.project_world_to_screen(worldPt, screenPt);
             screenPoints[i] = screenPt;
             silhouetteOk = silhouetteOk && pointOk;
         }

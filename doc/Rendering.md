@@ -4,7 +4,11 @@
 Prepass scheduling is GPU-driven via indirect dispatch arguments generated from the GPU list counter.
 
 ## Uniform Parameter Layout
-- Shared shader parameters are grouped in `shaders/renderer/gaussian_types.slang`:
+- Camera parameters and camera-space math are centralized in `shaders/renderer/camera.slang`:
+  - `CameraParams`
+  - `ICamera`
+  - `PinholeCamera`
+- Shared renderer parameters remain grouped in `shaders/renderer/gaussian_types.slang`:
   - `g_Camera` (`CameraParams`) for camera basis/position, anisotropic intrinsics (`focalPixels: float2`, `principalPoint: float2`), clip range, and lens distortion.
   - `g_Prepass` (`PrepassParams`) for splat counts, tile/depth packing, prepass capacities, and sampled-5 MVEE controls.
   - `g_Raster` (`RasterParams`) for raster resolution, alpha/transmittance thresholds, background, and debug overlays.
@@ -48,8 +52,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - Each pixel reads its tile range and blends splats front-to-back with exponential radial falloff.
 - The inner loop performs cheap screen-space reject checks before expensive local-space Gaussian math to reduce work on heavy tiles.
 - Writes RGBA output texture.
-- Primary ray generation uses camera intrinsics directly:
-  - `rayUV = (pixel + 0.5 - principalPoint) / focalPixels`
+- Primary ray generation goes through `PinholeCamera.screen_to_world_ray(...)`.
 
 ## 6. Raster Backward
 - Shaders: `csClearRasterGrads`, `csRasterizeBackward`.

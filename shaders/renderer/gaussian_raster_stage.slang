@@ -1,4 +1,5 @@
 import "gaussian_types.slang";
+import "camera.slang";
 
 struct RasterState : IDifferentiable
 {
@@ -280,6 +281,7 @@ void csRasterize(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_Gr
     bool pixelActive = px < g_Raster.width && py < g_Raster.height;
     uint samplePx = min(px, g_Raster.width - 1u);
     uint samplePy = min(py, g_Raster.height - 1u);
+    PinholeCamera camera = PinholeCamera.from_params(g_Camera);
 
     uint tileX = samplePx / g_Prepass.tileSize;
     uint tileY = samplePy / g_Prepass.tileSize;
@@ -293,8 +295,7 @@ void csRasterize(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_Gr
     {
         uint start = range.x;
         uint end = min(range.y, start + g_Raster.maxSplatSteps);
-        float2 rayUV = (float2(samplePx, samplePy) + 0.5 - g_Camera.principalPoint) / g_Camera.focalPixels;
-        float3 rayDir = normalize(camera_to_world(float3(rayUV, 1.0)));
+        float3 rayDir = camera.screen_to_world_ray(float2(samplePx, samplePy) + 0.5);
         state = raster_forward_replay(start, end, pixelActive, rayDir, lane, processedCount);
 
         if (pixelActive)
@@ -370,6 +371,7 @@ void csRasterizeBackward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane
     bool pixelActive = px < g_Raster.width && py < g_Raster.height;
     uint samplePx = min(px, g_Raster.width - 1u);
     uint samplePy = min(py, g_Raster.height - 1u);
+    PinholeCamera camera = PinholeCamera.from_params(g_Camera);
 
     uint tileX = samplePx / g_Prepass.tileSize;
     uint tileY = samplePy / g_Prepass.tileSize;
@@ -379,8 +381,7 @@ void csRasterizeBackward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane
 
     uint start = range.x;
     uint end = hasTileRange ? min(range.y, start + g_Raster.maxSplatSteps) : start;
-    float2 rayUV = (float2(samplePx, samplePy) + 0.5 - g_Camera.principalPoint) / g_Camera.focalPixels;
-    float3 rayDir = normalize(camera_to_world(float3(rayUV, 1.0)));
+    float3 rayDir = camera.screen_to_world_ray(float2(samplePx, samplePy) + 0.5);
 
     RasterState state = { 0.0, 1.0 };
     uint processedCount = 0u;

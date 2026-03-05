@@ -53,6 +53,7 @@ Viewer controls:
 ```powershell
 python cli.py train-colmap --colmap-root dataset/garden --images-subdir images_4 --iters 100 --max-gaussians 50000
 ```
+Use `--scale-l2` to control post-ADAM decoupled L2 decay on gaussian scales (default `1e-4`).
 
 Quick smoke configuration:
 ```powershell
@@ -73,6 +74,7 @@ Training notes:
 - Per-step low-quality reinit is enabled by default: splats with `opacity <= min_opacity` or `max(scale) <= min_scale`
   can be replaced from a random valid donor splat (skip when donor is also low-quality).
 - Numerical reinforcement includes clipping, finite checks, and safe quaternion normalization.
+- Scale regularization uses decoupled post-ADAM L2 decay (`scale -= scale_lr * scale_l2 * scale`).
 
 ## Run Tests
 ```powershell

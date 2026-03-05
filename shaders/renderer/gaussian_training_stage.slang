@@ -48,6 +48,7 @@ uniform uint g_Width;
 uniform uint g_Height;
 uniform float g_InvPixelCount;
 uniform float g_LossGradClip;
+uniform float g_ScaleL2Weight;
 
 uniform Texture2D<float4> g_Rendered;
 uniform Texture2D<float4> g_Target;
@@ -411,6 +412,8 @@ void csAdamStepFused(uint3 dispatchThreadID : SV_DispatchThreadID)
     scale = adam_update_param(scale, gradScale, mScale, vScale, scaleLR, biasCorr1, biasCorr2);
     rot = adam_update_param(rot, gradQuat, mQuat, vQuat, rotLR, biasCorr1, biasCorr2);
     colorAlpha = adam_update_param(colorAlpha, gradColorAlpha, mColorAlpha, vColorAlpha, colorAlphaLR, biasCorr1, biasCorr2);
+    float scaleDecay = g_Adam.scaleLR * max(g_ScaleL2Weight, 0.0);
+    scale.xyz = sanitize_float3(scale.xyz * max(1.0 - scaleDecay, 0.0), g_Stability.hugeValue);
 
     if (g_MCMC.enabled != 0u && g_MCMC.positionNoiseScale > 0.0)
     {

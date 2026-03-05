@@ -288,6 +288,14 @@ class SplatViewer(spy.AppWindow):
             step_fast=1e-8,
             format="%.10f",
         )
+        self.scale_l2_slider = spy.ui.InputFloat(
+            opt_group,
+            "Scale L2",
+            value=1e-4,
+            step=1e-5,
+            step_fast=1e-4,
+            format="%.8f",
+        )
         self.mcmc_pos_noise_enabled_checkbox = spy.ui.CheckBox(opt_group, "MCMC Pos Noise", value=True)
         self.mcmc_pos_noise_scale_slider = spy.ui.InputFloat(
             opt_group,
@@ -972,6 +980,7 @@ class SplatViewer(spy.AppWindow):
             near=clamp(self.train_near_slider.value, 1e-6, 1e4),
             far=clamp(self.train_far_slider.value, 1e-5, 1e6),
             ema_decay=0.95,
+            scale_l2_weight=clamp(self.scale_l2_slider.value, 0.0, 1e4),
             mcmc_position_noise_enabled=bool(self.mcmc_pos_noise_enabled_checkbox.value),
             mcmc_position_noise_scale=clamp(self.mcmc_pos_noise_scale_slider.value, 0.0, 1e4),
             mcmc_opacity_gate_sharpness=clamp(self.mcmc_opacity_k_slider.value, 0.0, 1e6),
