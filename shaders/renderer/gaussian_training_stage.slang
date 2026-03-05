@@ -2,6 +2,8 @@ static const uint TRAIN_TILE_DIM = 16u;
 static const float TRAIN_EPS = 1e-8;
 static const float TRAIN_TWO_PI = 6.28318530718;
 static const float TRAIN_U32_TO_01 = 1.0 / 4294967297.0;
+static const float LOG_2 = 0.69314718056;
+static const float SOFTPLUS_CLAMP = 30.0;
 static const uint TRAIN_RNG_A = 1664525u;
 static const uint TRAIN_RNG_C = 1013904223u;
 
@@ -49,6 +51,7 @@ uniform uint g_Height;
 uniform float g_InvPixelCount;
 uniform float g_LossGradClip;
 uniform float g_ScaleL2Weight;
+uniform float g_ScaleAnisoWeight;
 
 uniform Texture2D<float4> g_Rendered;
 uniform Texture2D<float4> g_Target;
@@ -203,6 +206,30 @@ float opacity_noise_gate(float opacity)
     return 1.0 / (1.0 + exp(-x));
 }
 
+[Differentiable]
+float softplus_stable(float x)
+{
+    float xClamped = clamp(x, -SOFTPLUS_CLAMP, SOFTPLUS_CLAMP);
+    if (xClamped > 0.0) return xClamped + log(1.0 + exp(-xClamped));
+    return log(1.0 + exp(xClamped));
+}
+
+[Differentiable]
+float scale_aniso_loss(float3 scale)
+{
+    float3 s = max(scale, float3(TRAIN_EPS));
+    float3 l = log(s);
+    float threshold = 3.0 * LOG_2;
+    float sharpness = 8.0;
+    float dxy = sqrt((l.x - l.y) * (l.x - l.y) + TRAIN_EPS);
+    float dxz = sqrt((l.x - l.z) * (l.x - l.z) + TRAIN_EPS);
+    float dyz = sqrt((l.y - l.z) * (l.y - l.z) + TRAIN_EPS);
+    float pxy = softplus_stable(sharpness * (dxy - threshold)) / sharpness;
+    float pxz = softplus_stable(sharpness * (dxz - threshold)) / sharpness;
+    float pyz = softplus_stable(sharpness * (dyz - threshold)) / sharpness;
+    return (pxy + pxz + pyz) * (1.0 / 3.0);
+}
+
 bool is_low_quality(float3 scale, float opacity)
 {
     float maxSize = max(scale.x, max(scale.y, scale.z));
@@ -349,6 +376,10 @@ void csAdamStepFused(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint splatId = dispatchThreadID.x;
     if (splatId >= g_SplatCount) return;
     uint gradBase = splatId * 4u;
+    float4 pos = g_PositionsRW[splatId];
+    float4 scale = g_ScalesRW[splatId];
+    float4 rot = g_RotationsRW[splatId];
+    float4 colorAlpha = g_ColorAlphaRW[splatId];
 
     float4 gradPos = float4(
         g_GradPositions[gradBase + 0u],
@@ -375,6 +406,17 @@ void csAdamStepFused(uint3 dispatchThreadID : SV_DispatchThreadID)
         g_GradColorAlpha[gradBase + 3u]
     );
 
+    float scaleAnisoWeight = max(g_ScaleAnisoWeight, 0.0);
+    if (scaleAnisoWeight > 0.0)
+    {
+        var dpScaleAniso = diffPair(scale.xyz);
+        float anisoLoss = scale_aniso_loss(scale.xyz);
+        bwd_diff(scale_aniso_loss)(dpScaleAniso, scaleAnisoWeight);
+        gradScale.xyz += dpScaleAniso.getDifferential();
+        float lossAdd = scaleAnisoWeight * anisoLoss / max(float(g_SplatCount), 1.0);
+        if (isfinite(lossAdd) && lossAdd != 0.0) InterlockedAdd(g_LossBuffer[0], lossAdd);
+    }
+
     float clipAbs = g_Stability.gradComponentClip;
     gradPos = sanitize_float4(gradPos, clipAbs);
     gradScale = sanitize_float4(gradScale, clipAbs);
@@ -384,11 +426,6 @@ void csAdamStepFused(uint3 dispatchThreadID : SV_DispatchThreadID)
     gradScale.xyz = clip_norm3(gradScale.xyz, g_Stability.gradNormClip);
     gradQuat = clip_norm4(gradQuat, g_Stability.gradNormClip);
     gradColorAlpha = clip_norm4(gradColorAlpha, g_Stability.gradNormClip);
-
-    float4 pos = g_PositionsRW[splatId];
-    float4 scale = g_ScalesRW[splatId];
-    float4 rot = g_RotationsRW[splatId];
-    float4 colorAlpha = g_ColorAlphaRW[splatId];
 
     float beta1Pow = pow(g_Adam.beta1, float(g_Adam.stepIndex));
     float beta2Pow = pow(g_Adam.beta2, float(g_Adam.stepIndex));

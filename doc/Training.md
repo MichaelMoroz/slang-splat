@@ -35,6 +35,9 @@ Each trainer `step()` performs:
 4. Run loss kernel (`RGB MSE`) to produce `g_OutputGrad`.
 5. Run raster backward to fill per-splat gradient buffers.
 6. Run fused ADAM kernel (`csAdamStepFused`) with one thread per Gaussian.
+   - Scale anisotropy regularization is computed in-kernel via Slang autodiff on `scale.xyz`.
+   - The anisotropy term uses smooth pairwise log-scale ratio penalties with threshold ratio `8`.
+   - The regularization scalar is added to the reported loss buffer in this ADAM pass.
    - Post-ADAM decoupled scale L2 decay is applied on `scale.xyz`:
      - `scale *= max(1 - scale_lr * scale_l2_weight, 0)`
 7. Run low-quality marking kernel (`csMarkLowQualitySplats`) using stability thresholds.
@@ -49,6 +52,8 @@ Each trainer `step()` performs:
   - quaternion,
   - color,
   - opacity.
+  - Adds autodiff anisotropy regularization gradients to scale gradients (`g_ScaleAnisoWeight`, threshold ratio `8`).
+  - Accumulates anisotropy scalar contribution into `g_LossBuffer`.
   - Then applies post-ADAM decoupled scale L2 decay controlled by `g_ScaleL2Weight`.
 - `csMarkLowQualitySplats`: marks splats as low-quality when
   - `opacity <= min_opacity`, or
@@ -83,6 +88,7 @@ Useful options:
 - `--width/--height` for train resolution (defaults to selected image resolution),
 - `--lr`, `--beta1`, `--beta2`, `--eps`,
 - `--scale-l2` for post-ADAM decoupled scale weight decay,
+- `--scale-aniso` for autodiff scale anisotropy regularization strength,
 - `--grad-clip`, `--grad-norm-clip`, `--max-update`,
 - `--min-scale`, `--max-scale`, `--min-opacity`, `--max-opacity`.
 - `--[no-]low-quality-reinit` enables/disables per-step low-quality resampling.

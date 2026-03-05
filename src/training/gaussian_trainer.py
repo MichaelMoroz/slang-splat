@@ -51,6 +51,7 @@ class TrainingHyperParams:
     far: float = 120.0
     ema_decay: float = 0.95
     scale_l2_weight: float = 1e-4
+    scale_aniso_weight: float = 5.0
     mcmc_position_noise_enabled: bool = True
     mcmc_position_noise_scale: float = 1.0
     mcmc_opacity_gate_sharpness: float = 100.0
@@ -327,6 +328,7 @@ class GaussianTrainer:
             "g_InvPixelCount": 1.0 / float(max(self.renderer.width * self.renderer.height, 1)),
             "g_LossGradClip": float(self.stability.loss_grad_clip),
             "g_ScaleL2Weight": float(max(self.training.scale_l2_weight, 0.0)),
+            "g_ScaleAnisoWeight": float(max(self.training.scale_aniso_weight, 0.0)),
             "g_Adam": {
                 "positionLR": float(self.adam.position_lr),
                 "scaleLR": float(self.adam.scale_lr),
@@ -529,8 +531,9 @@ class GaussianTrainer:
         self.device.submit_command_buffer(enc.finish())
         self.device.wait()
 
-        loss = self._read_loss_value()
-        if not np.isfinite(loss):
+        image_loss = self._read_loss_value()
+        loss = image_loss
+        if not np.isfinite(image_loss):
             self.state.last_instability = "Non-finite loss; ADAM step skipped and moments reset."
             self._zero_optimizer_moments()
             loss = float("inf")
@@ -541,6 +544,11 @@ class GaussianTrainer:
             self._dispatch_mark_low_quality_splats(enc_opt)
             self._dispatch_resample_low_quality_splats(enc_opt)
             self.device.submit_command_buffer(enc_opt.finish())
+            self.device.wait()
+            loss = self._read_loss_value()
+            if not np.isfinite(loss):
+                self.state.last_instability = "Non-finite regularized loss after ADAM; using image loss."
+                loss = image_loss
 
         self.state.step += 1
         self.state.last_frame_index = frame_index
