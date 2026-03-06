@@ -52,8 +52,8 @@ class TrainingHyperParams:
     ema_decay: float = 0.95
     psnr_reference_decay: float = 0.995
     psnr_decay: float = 0.985
-    scale_l2_weight: float = 1e-4
-    scale_aniso_weight: float = 5.0
+    scale_l2_weight: float = 1e-3
+    scale_aniso_weight: float = 1e-3
     mcmc_position_noise_enabled: bool = True
     mcmc_position_noise_scale: float = 1.0
     mcmc_opacity_gate_sharpness: float = 100.0

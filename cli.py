@@ -263,8 +263,8 @@ def parse_args() -> argparse.Namespace:
     train.add_argument("--far", type=float, default=120.0)
     train.add_argument("--bg", type=float, nargs=3, default=(0.0, 0.0, 0.0))
     train.add_argument("--ema-decay", type=float, default=0.95)
-    train.add_argument("--scale-l2", type=float, default=1e-4, help="Post-ADAM decoupled L2 decay weight for scales.")
-    train.add_argument("--scale-aniso", type=float, default=5.0, help="Autodiff anisotropy regularization weight.")
+    train.add_argument("--scale-l2", type=float, default=1e-3, help="Post-ADAM decoupled L2 decay weight for scales.")
+    train.add_argument("--scale-aniso", type=float, default=1e-3, help="Autodiff L2 anisotropy regularization weight.")
     train.add_argument(
         "--low-quality-reinit",
         action=argparse.BooleanOptionalAction,

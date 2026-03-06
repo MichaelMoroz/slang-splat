@@ -4,8 +4,6 @@ static const uint TRAIN_TILE_DIM = 16u;
 static const uint LOSS_SLOT_TOTAL = 0u;
 static const uint LOSS_SLOT_MSE = 1u;
 static const float RGB_CHANNEL_COUNT_INV = 1.0 / 3.0;
-static const float ANISOTROPY_LOG_THRESHOLD = 3.0 * LOG_TWO;
-static const float ANISOTROPY_SHARPNESS = 8.0;
 static const uint RNG_LINEAR_A = 1664525u;
 static const uint RNG_LINEAR_C = 1013904223u;
 
@@ -211,14 +209,6 @@ float opacity_noise_gate(float opacity)
 }
 
 [Differentiable]
-float softplus_stable(float x)
-{
-    float xClamped = clamp(x, -SOFTPLUS_INPUT_LIMIT, SOFTPLUS_INPUT_LIMIT);
-    if (xClamped > 0.0) return xClamped + log(1.0 + exp(-xClamped));
-    return log(1.0 + exp(xClamped));
-}
-
-[Differentiable]
 float rgb_mse_loss(float3 rendered, no_diff float3 target, no_diff float invPixelCount)
 {
     float3 diff = rendered - target;
@@ -230,13 +220,9 @@ float scale_aniso_loss(float3 scale)
 {
     float3 s = max(scale, float3(TINY_VALUE));
     float3 l = log(s);
-    float dxy = sqrt((l.x - l.y) * (l.x - l.y) + TINY_VALUE);
-    float dxz = sqrt((l.x - l.z) * (l.x - l.z) + TINY_VALUE);
-    float dyz = sqrt((l.y - l.z) * (l.y - l.z) + TINY_VALUE);
-    float pxy = softplus_stable(ANISOTROPY_SHARPNESS * (dxy - ANISOTROPY_LOG_THRESHOLD)) / ANISOTROPY_SHARPNESS;
-    float pxz = softplus_stable(ANISOTROPY_SHARPNESS * (dxz - ANISOTROPY_LOG_THRESHOLD)) / ANISOTROPY_SHARPNESS;
-    float pyz = softplus_stable(ANISOTROPY_SHARPNESS * (dyz - ANISOTROPY_LOG_THRESHOLD)) / ANISOTROPY_SHARPNESS;
-    return (pxy + pxz + pyz) * (1.0 / 3.0);
+    float meanLogScale = dot(l, float3(RGB_CHANNEL_COUNT_INV));
+    float3 centered = l - meanLogScale;
+    return dot(centered, centered) * RGB_CHANNEL_COUNT_INV;
 }
 
 bool is_low_quality(float3 scale, float opacity)

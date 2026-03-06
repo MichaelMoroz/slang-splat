@@ -291,7 +291,7 @@ class SplatViewer(spy.AppWindow):
         self.scale_l2_slider = spy.ui.InputFloat(
             opt_group,
             "Scale L2",
-            value=1e-4,
+            value=1e-3,
             step=1e-5,
             step_fast=1e-4,
             format="%.8f",
@@ -299,7 +299,7 @@ class SplatViewer(spy.AppWindow):
         self.scale_aniso_slider = spy.ui.InputFloat(
             opt_group,
             "Scale Aniso",
-            value=5.0,
+            value=1e-3,
             step=1e-3,
             step_fast=1e-2,
             format="%.6f",

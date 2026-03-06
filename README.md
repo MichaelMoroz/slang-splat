@@ -53,8 +53,8 @@ Viewer controls:
 ```powershell
 python cli.py train-colmap --colmap-root dataset/garden --images-subdir images_4 --iters 100 --max-gaussians 50000
 ```
-Use `--scale-l2` to control post-ADAM decoupled L2 decay on gaussian scales (default `1e-4`).
-Use `--scale-aniso` to control autodiff anisotropy regularization on gaussian scales (default `5.0`, threshold ratio `8`).
+Use `--scale-l2` to control post-ADAM decoupled L2 decay on gaussian scales (default `1e-3`).
+Use `--scale-aniso` to control autodiff L2 anisotropy regularization on gaussian scales (default `1e-3`).
 
 Quick smoke configuration:
 ```powershell
@@ -77,7 +77,7 @@ Training notes:
   can be replaced from a random valid donor splat (skip when donor is also low-quality).
 - Numerical reinforcement includes clipping, finite checks, and safe quaternion normalization.
 - Scale regularization uses decoupled post-ADAM L2 decay (`scale -= scale_lr * scale_l2 * scale`).
-- Scale anisotropy regularization is applied in the fused ADAM shader with Slang autodiff and contributes to reported training loss.
+- Scale anisotropy regularization is applied in the fused ADAM shader as an L2 penalty on centered log-scales and contributes to reported training loss.
 - Shared shader math constants are centralized in `shaders/renderer/math_constants.slang`.
 
 ## Run Tests
