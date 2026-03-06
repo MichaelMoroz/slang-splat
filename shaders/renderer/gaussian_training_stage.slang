@@ -3,7 +3,6 @@ import "math_constants.slang";
 static const uint TRAIN_TILE_DIM = 16u;
 static const uint LOSS_SLOT_TOTAL = 0u;
 static const uint LOSS_SLOT_MSE = 1u;
-static const float RGB_CHANNEL_COUNT_INV = 1.0 / 3.0;
 static const uint RNG_LINEAR_A = 1664525u;
 static const uint RNG_LINEAR_C = 1013904223u;
 
@@ -212,17 +211,16 @@ float opacity_noise_gate(float opacity)
 float rgb_mse_loss(float3 rendered, no_diff float3 target, no_diff float invPixelCount)
 {
     float3 diff = rendered - target;
-    return dot(diff, diff) * RGB_CHANNEL_COUNT_INV * invPixelCount;
+    return dot(diff, diff) * (1.0 / 3.0) * invPixelCount;
 }
 
 [Differentiable]
 float scale_aniso_loss(float3 scale)
 {
     float3 s = max(scale, float3(TINY_VALUE));
-    float3 l = log(s);
-    float meanLogScale = dot(l, float3(RGB_CHANNEL_COUNT_INV));
-    float3 centered = l - meanLogScale;
-    return dot(centered, centered) * RGB_CHANNEL_COUNT_INV;
+    float meanScale = dot(s, float3(1.0 / 3.0));
+    float3 centered = s - meanScale;
+    return dot(centered, centered) * (1.0 / 3.0);
 }
 
 bool is_low_quality(float3 scale, float opacity)

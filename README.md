@@ -77,7 +77,7 @@ Training notes:
   can be replaced from a random valid donor splat (skip when donor is also low-quality).
 - Numerical reinforcement includes clipping, finite checks, and safe quaternion normalization.
 - Scale regularization uses decoupled post-ADAM L2 decay (`scale -= scale_lr * scale_l2 * scale`).
-- Scale anisotropy regularization is applied in the fused ADAM shader as an L2 penalty on centered log-scales and contributes to reported training loss.
+- Scale anisotropy regularization is applied in the fused ADAM shader as an L2 penalty on centered scales and contributes to reported training loss.
 - Shared shader math constants are centralized in `shaders/renderer/math_constants.slang`.
 
 ## Run Tests

@@ -36,7 +36,7 @@ Each trainer `step()` performs:
 5. Run fused raster forward/backward replay to fill per-splat gradient buffers without cached per-pixel forward state.
 6. Run fused ADAM kernel (`csAdamStepFused`) with one thread per Gaussian.
    - Scale anisotropy regularization is computed in-kernel via Slang autodiff on `scale.xyz`.
-   - The anisotropy term is an L2 penalty on centered log-scales, so it discourages unequal axis scales without the previous sharp threshold.
+   - The anisotropy term is an L2 penalty on centered linear scales, so it discourages unequal axis scales without the previous log-domain amplification.
    - The regularization scalar is added to the reported loss buffer in this ADAM pass.
    - Post-ADAM decoupled scale L2 decay is applied on `scale.xyz`:
      - `scale *= max(1 - scale_lr * scale_l2_weight, 0)`
