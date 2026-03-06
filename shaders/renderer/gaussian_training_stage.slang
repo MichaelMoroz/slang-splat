@@ -219,8 +219,9 @@ float scale_aniso_loss(float3 scale)
 {
     float3 s = max(scale, float3(TINY_VALUE));
     float meanScale = dot(s, float3(1.0 / 3.0));
-    float3 centered = s - meanScale;
-    return dot(centered, centered) * (1.0 / 3.0);
+    float invMeanScale = 1.0 / max(meanScale, TINY_VALUE);
+    float3 relativeScale = s * invMeanScale - 1.0;
+    return dot(relativeScale, relativeScale) * (1.0 / 3.0);
 }
 
 bool is_low_quality(float3 scale, float opacity)
