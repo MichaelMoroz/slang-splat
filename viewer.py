@@ -81,6 +81,8 @@ class SplatViewer(spy.AppWindow):
         self._synced_step_main: int = -1
         self._synced_step_debug: int = -1
         self._scene_init_signature: tuple[object, ...] | None = None
+        self._suggested_init_hparams: GaussianInitHyperParams | None = None
+        self._suggested_init_count: int | None = None
 
         self.image_subdir_options = ["images_8", "images_4", "images_2", "images"]
         self.default_image_subdir_index = 1
@@ -123,6 +125,10 @@ class SplatViewer(spy.AppWindow):
             del old_renderer
         self._debug_renderer_size = None
         self._synced_step_debug = -1
+
+    def _reset_suggested_init_defaults(self) -> None:
+        self._suggested_init_hparams = None
+        self._suggested_init_count = None
 
     def _create_debug_shaders(self) -> None:
         shader_path = str(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang")
@@ -891,15 +897,34 @@ class SplatViewer(spy.AppWindow):
         self._colmap_point_colors_buffer.copy_from_numpy(col4)
         self._colmap_point_count = int(xyz.shape[0])
 
-    def _apply_dataset_init_defaults(self) -> None:
+    def _apply_dataset_init_defaults(self, force: bool = False) -> None:
         if self.colmap_recon is None:
             return
         gaussian_count = int(np.clip(int(self.gaussian_count_slider.value), 1, 10_000_000))
+        if not force and self._suggested_init_count == gaussian_count and self._suggested_init_hparams is not None:
+            return
         suggested = suggest_colmap_init_hparams(self.colmap_recon, gaussian_count)
-        self.init_pos_jitter_slider.value = float(suggested.position_jitter_std)
-        self.init_scale_slider.value = float(suggested.base_scale)
-        self.init_scale_jitter_slider.value = float(suggested.scale_jitter_ratio)
-        self.init_opacity_slider.value = float(suggested.initial_opacity)
+
+        def should_update(current_value: float, previous_value: float | None) -> bool:
+            if force or previous_value is None:
+                return True
+            return abs(float(current_value) - float(previous_value)) <= max(1e-8, 1e-4 * abs(float(previous_value)))
+
+        previous = self._suggested_init_hparams
+        if should_update(self.init_pos_jitter_slider.value, None if previous is None else previous.position_jitter_std):
+            self.init_pos_jitter_slider.value = float(suggested.position_jitter_std)
+        if should_update(self.init_scale_slider.value, None if previous is None else previous.base_scale):
+            self.init_scale_slider.value = float(suggested.base_scale)
+        if should_update(
+            self.init_scale_jitter_slider.value,
+            None if previous is None else previous.scale_jitter_ratio,
+        ):
+            self.init_scale_jitter_slider.value = float(suggested.scale_jitter_ratio)
+        if should_update(self.init_opacity_slider.value, None if previous is None else previous.initial_opacity):
+            self.init_opacity_slider.value = float(suggested.initial_opacity)
+
+        self._suggested_init_hparams = suggested
+        self._suggested_init_count = gaussian_count
 
     def load_scene(self, path: Path) -> None:
         try:
@@ -915,6 +940,7 @@ class SplatViewer(spy.AppWindow):
             self._colmap_point_count = 0
             self.trainer = None
             self.training_active = False
+            self._reset_suggested_init_defaults()
             if self.training_renderer is not None:
                 old_renderer = self.training_renderer
                 self.training_renderer = None
@@ -940,13 +966,14 @@ class SplatViewer(spy.AppWindow):
             self.scene_path = None
             self.trainer = None
             self.training_active = False
+            self._reset_suggested_init_defaults()
             if self.training_renderer is not None:
                 old_renderer = self.training_renderer
                 self.training_renderer = None
                 del old_renderer
             self._update_debug_frame_slider_range()
             self._reset_loss_debug_state()
-            self._apply_dataset_init_defaults()
+            self._apply_dataset_init_defaults(force=True)
             print(f"Loaded COLMAP: {root} frames={len(frames)} images={images_subdir}")
             self.last_error = ""
             recenter_xyz = getattr(recon, "point_xyz_table", None)
@@ -1045,6 +1072,7 @@ class SplatViewer(spy.AppWindow):
             self.last_error = "Load COLMAP dataset first."
             return
         try:
+            self._apply_dataset_init_defaults()
             init_hparams, gaussian_count, seed = self._collect_init_hparams()
             if (
                 self._colmap_point_positions_buffer is None
@@ -1181,6 +1209,7 @@ class SplatViewer(spy.AppWindow):
         self._update_camera(dt)
         self._apply_render_params()
         self._apply_training_params()
+        self._apply_dataset_init_defaults()
 
         iw = int(image.width)
         ih = int(image.height)
