@@ -49,8 +49,9 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 
 ## 5. Rasterize
 - Shader: `csRasterize`.
-- Each pixel reads its tile range and blends splats front-to-back with exponential radial falloff.
-- The inner loop performs cheap screen-space reject checks before expensive local-space Gaussian math to reduce work on heavy tiles.
+- Raster execution is microtiled: one `8x8` thread group covers one `24x24` effective raster tile, and each thread owns a fixed `3x3` pixel block in registers.
+- Each thread resolves one tile range for its microtile, reuses each staged gaussian across all `9` local pixels, and writes per-pixel output after the forward replay.
+- The inner loop performs front-to-back blending with exponential radial falloff while reusing gaussian data already staged in shared memory.
 - Writes RGBA output texture.
 - Primary ray generation goes through `PinholeCamera.screen_to_world_ray(...)`.
 
@@ -62,8 +63,8 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
   - `g_SplatQuat`
   - `g_ScreenColorAlpha`
 - `csRasterizeForwardBackward` recomputes the forward tile traversal inside the gradient pass, then walks the same batches in reverse, so no per-pixel forward-state textures are needed.
-- The reverse pass still keeps the batch loop explicit, but uses `bwd_diff(...)` for per-splat alpha evaluation, blend steps, and the output-state mapping back from `g_OutputGrad`.
-- Global and groupshared raster loads are implemented via custom derivative functions; their backward functions atomically add gradients into flattened per-splat `float4` gradient buffers (`index = splat_id * 4 + component`).
+- The reverse pass reuses one staged gaussian per thread-group lane, accumulates the `3x3` microtile's pixel contributions in registers, and emits one shared gradient accumulation per microtile/splat pair before the shared cache is flushed globally.
+- Global and groupshared raster loads are implemented via custom derivative functions; the shared gradient cache still flushes into flattened per-splat `float4` gradient buffers (`index = splat_id * 4 + component`).
 - Output gradients are supplied through `g_OutputGrad` (`Texture2D<float4>`), and chain-rule terms include gamma output mapping and alpha output (`1 - transmittance`).
 
 ## 7. Training Stage

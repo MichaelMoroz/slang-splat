@@ -29,13 +29,15 @@ class GaussianRenderer:
     _U32_BYTES = 4
     _MEBIBYTE_BYTES = 1024 * 1024
     _PREPASS_ENTRY_BYTES = (_SCANLINE_WORK_ITEM_UINTS + 2) * _U32_BYTES
+    _RASTER_THREAD_TILE_DIM = 8
+    _RASTER_MICROTILE_DIM = 3
+    _RASTER_EFFECTIVE_TILE_SIZE = _RASTER_THREAD_TILE_DIM * _RASTER_MICROTILE_DIM
 
     def __init__(
         self,
         device: spy.Device,
         width: int,
         height: int,
-        tile_size: int = 16,
         radius_scale: float = 2.6,
         alpha_cutoff: float = 1.0 / 255.0,
         max_splat_steps: int = 32768,
@@ -56,7 +58,7 @@ class GaussianRenderer:
         self.device = device
         self.width = int(width)
         self.height = int(height)
-        self.tile_size = int(tile_size)
+        self.tile_size = self._RASTER_EFFECTIVE_TILE_SIZE
         self.radius_scale = float(radius_scale)
         self.alpha_cutoff = float(alpha_cutoff)
         self.max_splat_steps = int(max_splat_steps)
@@ -450,7 +452,11 @@ class GaussianRenderer:
 
     def _rasterize(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray) -> None:
         self._k_raster.dispatch(
-            thread_count=spy.uint3(self.width, self.height, 1),
+            thread_count=spy.uint3(
+                (self.width + self._RASTER_MICROTILE_DIM - 1) // self._RASTER_MICROTILE_DIM,
+                (self.height + self._RASTER_MICROTILE_DIM - 1) // self._RASTER_MICROTILE_DIM,
+                1,
+            ),
             vars={
                 "g_Positions": self._scene_buffers["positions"],
                 "g_Scales": self._scene_buffers["scales"],
@@ -491,7 +497,11 @@ class GaussianRenderer:
         output_grad: spy.Texture,
     ) -> None:
         self._k_raster_forward_backward.dispatch(
-            thread_count=spy.uint3(self.width, self.height, 1),
+            thread_count=spy.uint3(
+                (self.width + self._RASTER_MICROTILE_DIM - 1) // self._RASTER_MICROTILE_DIM,
+                (self.height + self._RASTER_MICROTILE_DIM - 1) // self._RASTER_MICROTILE_DIM,
+                1,
+            ),
             vars={
                 "g_Positions": self._scene_buffers["positions"],
                 "g_Scales": self._scene_buffers["scales"],

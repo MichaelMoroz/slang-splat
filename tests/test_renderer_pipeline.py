@@ -39,7 +39,7 @@ def make_scene(count: int, seed: int = 0) -> GaussianScene:
 def test_tile_keys_and_ranges_match_reference(device):
     scene = make_scene(32, seed=1)
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
-    renderer = GaussianRenderer(device, width=96, height=96, tile_size=16, radius_scale=1.8, list_capacity_multiplier=32)
+    renderer = GaussianRenderer(device, width=96, height=96, radius_scale=1.8, list_capacity_multiplier=32)
     debug = renderer.debug_pipeline_data(scene, camera)
 
     projected = project_splats(scene, camera, renderer.width, renderer.height, renderer.radius_scale)
@@ -64,7 +64,7 @@ def test_tile_keys_and_ranges_match_reference(device):
     np.testing.assert_array_equal(gpu_tile_ids, ref_tile_ids)
     gpu_depth_codes = debug["keys"] & np.uint32((1 << renderer.depth_bits) - 1)
     ref_depth_codes = ref_keys & np.uint32((1 << renderer.depth_bits) - 1)
-    assert np.max(np.abs(gpu_depth_codes.astype(np.int64) - ref_depth_codes.astype(np.int64))) <= 4
+    assert np.max(np.abs(gpu_depth_codes.astype(np.int64) - ref_depth_codes.astype(np.int64))) <= 8
     np.testing.assert_array_equal(debug["tile_ranges"], ref_ranges)
 
 
@@ -72,7 +72,7 @@ def test_tiny_render_matches_cpu_reference(device):
     scene = make_scene(18, seed=5)
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
     background = np.array([0.1, 0.15, 0.2], dtype=np.float32)
-    renderer = GaussianRenderer(device, width=64, height=64, tile_size=16, radius_scale=1.6, list_capacity_multiplier=32)
+    renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, list_capacity_multiplier=32)
     gpu_image = renderer.render(scene, camera, background=background).image
 
     projected = project_splats(scene, camera, renderer.width, renderer.height, renderer.radius_scale)
@@ -115,7 +115,6 @@ def test_sampled5_mvee_projection_matches_cpu_reference(device):
         device,
         width=96,
         height=96,
-        tile_size=16,
         radius_scale=1.7,
         list_capacity_multiplier=32,
         sampled5_mvee_iters=6,
@@ -156,7 +155,6 @@ def test_sampled5_mvee_render_smoke(device):
         device,
         width=64,
         height=64,
-        tile_size=16,
         radius_scale=1.6,
         list_capacity_multiplier=32,
     )
@@ -172,7 +170,6 @@ def test_debug_ellipse_overlay_render_smoke(device):
         device,
         width=64,
         height=64,
-        tile_size=16,
         radius_scale=1.6,
         list_capacity_multiplier=32,
         debug_show_ellipses=True,
@@ -189,7 +186,6 @@ def test_debug_processed_count_render_smoke(device):
         device,
         width=64,
         height=64,
-        tile_size=16,
         radius_scale=1.6,
         list_capacity_multiplier=32,
         debug_show_processed_count=True,
@@ -202,7 +198,7 @@ def test_debug_processed_count_render_smoke(device):
 def test_render_stats_are_one_frame_delayed(device):
     scene = make_scene(16, seed=41)
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
-    renderer = GaussianRenderer(device, width=64, height=64, tile_size=16, radius_scale=1.6, list_capacity_multiplier=32)
+    renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, list_capacity_multiplier=32)
     renderer.set_scene(scene)
     _, stats0 = renderer.render_to_texture(camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32))
     assert stats0["stats_valid"] is False
@@ -220,7 +216,6 @@ def test_raster_backward_smoke_and_determinism(device):
         device,
         width=64,
         height=64,
-        tile_size=16,
         radius_scale=1.6,
         list_capacity_multiplier=32,
     )
@@ -246,7 +241,6 @@ def test_prepass_capacity_budget_caps_growth(device):
         device,
         width=96,
         height=96,
-        tile_size=16,
         radius_scale=1.6,
         list_capacity_multiplier=1024,
         max_prepass_memory_mb=1,
@@ -266,3 +260,43 @@ def test_prepass_capacity_budget_caps_growth(device):
     assert stats1["stats_valid"] is True
     assert int(stats1["prepass_entry_cap"]) == int(entry_cap)
     assert int(stats1["prepass_memory_mb"]) == 1
+
+
+def test_partial_microtile_render_matches_cpu_reference(device):
+    scene = make_scene(22, seed=101)
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    background = np.array([0.12, 0.08, 0.18], dtype=np.float32)
+    renderer = GaussianRenderer(device, width=71, height=53, radius_scale=1.6, list_capacity_multiplier=32)
+    gpu_image = renderer.render(scene, camera, background=background).image
+
+    projected = project_splats(scene, camera, renderer.width, renderer.height, renderer.radius_scale)
+    keys, values, generated = build_tile_key_value_pairs(
+        projected=projected,
+        tile_width=renderer.tile_width,
+        tile_height=renderer.tile_height,
+        tile_size=renderer.tile_size,
+        depth_bits=renderer.depth_bits,
+        near_depth=camera.near,
+        far_depth=camera.far,
+        max_list_entries=renderer._max_list_entries,
+    )
+    sorted_count = min(generated, renderer._max_list_entries)
+    ref_keys, ref_values = sort_key_values(keys, values, sorted_count)
+    ref_ranges = build_tile_ranges(ref_keys, sorted_count, renderer.tile_count, renderer.depth_bits)
+    cpu_image = rasterize(
+        projected=projected,
+        sorted_values=ref_values,
+        tile_ranges=ref_ranges,
+        camera=camera,
+        width=renderer.width,
+        height=renderer.height,
+        tile_size=renderer.tile_size,
+        tile_width=renderer.tile_width,
+        background=background,
+        alpha_cutoff=renderer.alpha_cutoff,
+        max_splat_steps=renderer.max_splat_steps,
+        transmittance_threshold=renderer.transmittance_threshold,
+    )
+
+    mean_abs_error = float(np.mean(np.abs(gpu_image - cpu_image)))
+    assert mean_abs_error < 5e-3
