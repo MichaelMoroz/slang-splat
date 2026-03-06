@@ -41,9 +41,9 @@ void atomic_add_grad_shared<let N : int>(uint base, vector<float, N> grad)
 {
     [unroll] for (int i = 0; i < N; i++)
     {
-        float value = grad[i];
-        if (value == 0.0) continue;
-        InterlockedAdd(gsGradState[base + uint(i)], value);
+        float waveSum = WaveActiveSum(grad[i]);
+        if (!WaveIsFirstLane() || waveSum == 0.0) continue;
+        InterlockedAdd(gsGradState[base + uint(i)], waveSum);
     }
 }
 
