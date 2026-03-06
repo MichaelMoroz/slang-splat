@@ -70,6 +70,7 @@ Training notes:
 - One random training image is sampled per step.
 - Training target images are stored as `rgba8_unorm` textures (not float32) to reduce GPU memory usage.
 - In viewer COLMAP mode, pointcloud XYZ/RGB are uploaded once on dataset load; gaussian reinitialization is done on GPU from those buffers.
+- Default COLMAP initialization parameters are derived from point-cloud nearest-neighbor spacing and requested gaussian count so initial splats are close-packed with limited overlap.
 - Default loss is RGB MSE.
 - Reported training metrics include total loss, EMA loss, and smoothed PSNR computed from image MSE plus an EMA signal max.
 - Target Y-flip is enabled by default.

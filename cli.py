@@ -78,11 +78,11 @@ def _run_train_colmap(args: argparse.Namespace) -> int:
     height = int(args.height) if int(args.height) > 0 else int(frames[0].height)
 
     init_hparams = GaussianInitHyperParams(
-        position_jitter_std=float(args.init_position_jitter),
-        base_scale=float(args.init_base_scale),
-        scale_jitter_ratio=float(args.init_scale_jitter),
-        initial_opacity=float(args.init_opacity),
-        color_jitter_std=float(args.init_color_jitter),
+        position_jitter_std=None if args.init_position_jitter is None else float(args.init_position_jitter),
+        base_scale=None if args.init_base_scale is None else float(args.init_base_scale),
+        scale_jitter_ratio=None if args.init_scale_jitter is None else float(args.init_scale_jitter),
+        initial_opacity=None if args.init_opacity is None else float(args.init_opacity),
+        color_jitter_std=None if args.init_color_jitter is None else float(args.init_color_jitter),
     )
     scene = initialize_scene_from_colmap_points(
         recon=recon,
@@ -271,11 +271,11 @@ def parse_args() -> argparse.Namespace:
         default=True,
         help="Enable per-step low-quality splat reinitialization.",
     )
-    train.add_argument("--init-position-jitter", type=float, default=0.01)
-    train.add_argument("--init-base-scale", type=float, default=0.03)
-    train.add_argument("--init-scale-jitter", type=float, default=0.2)
-    train.add_argument("--init-opacity", type=float, default=0.5)
-    train.add_argument("--init-color-jitter", type=float, default=0.0)
+    train.add_argument("--init-position-jitter", type=float, default=None, help="Initial position jitter. Omit to use dataset-derived spacing.")
+    train.add_argument("--init-base-scale", type=float, default=None, help="Initial isotropic scale. Omit to use dataset-derived spacing.")
+    train.add_argument("--init-scale-jitter", type=float, default=None, help="Initial scale jitter ratio. Omit to use dataset-derived density variability.")
+    train.add_argument("--init-opacity", type=float, default=None, help="Initial opacity. Omit to use dataset-derived density.")
+    train.add_argument("--init-color-jitter", type=float, default=None, help="Initial color jitter. Omit to use the dataset default.")
     train.add_argument("--log-interval", type=int, default=10)
     train.add_argument("--snapshot-interval", type=int, default=0, help="Write PNG snapshot every N steps.")
     train.add_argument("--snapshot-dir", type=Path, default=Path("outputs/train_snapshots"))

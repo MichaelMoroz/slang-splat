@@ -17,6 +17,7 @@ from src.scene import (
     build_training_frames,
     load_colmap_reconstruction,
     load_gaussian_ply,
+    suggest_colmap_init_hparams,
 )
 from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TrainingHyperParams
 
@@ -890,6 +891,16 @@ class SplatViewer(spy.AppWindow):
         self._colmap_point_colors_buffer.copy_from_numpy(col4)
         self._colmap_point_count = int(xyz.shape[0])
 
+    def _apply_dataset_init_defaults(self) -> None:
+        if self.colmap_recon is None:
+            return
+        gaussian_count = int(np.clip(int(self.gaussian_count_slider.value), 1, 10_000_000))
+        suggested = suggest_colmap_init_hparams(self.colmap_recon, gaussian_count)
+        self.init_pos_jitter_slider.value = float(suggested.position_jitter_std)
+        self.init_scale_slider.value = float(suggested.base_scale)
+        self.init_scale_jitter_slider.value = float(suggested.scale_jitter_ratio)
+        self.init_opacity_slider.value = float(suggested.initial_opacity)
+
     def load_scene(self, path: Path) -> None:
         try:
             scene = load_gaussian_ply(path)
@@ -935,6 +946,7 @@ class SplatViewer(spy.AppWindow):
                 del old_renderer
             self._update_debug_frame_slider_range()
             self._reset_loss_debug_state()
+            self._apply_dataset_init_defaults()
             print(f"Loaded COLMAP: {root} frames={len(frames)} images={images_subdir}")
             self.last_error = ""
             recenter_xyz = getattr(recon, "point_xyz_table", None)

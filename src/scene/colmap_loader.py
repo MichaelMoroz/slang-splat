@@ -82,11 +82,112 @@ class ColmapFrame:
 
 @dataclass(slots=True)
 class GaussianInitHyperParams:
-    position_jitter_std: float = 0.01
-    base_scale: float = 0.03
-    scale_jitter_ratio: float = 0.2
-    initial_opacity: float = 0.5
-    color_jitter_std: float = 0.0
+    position_jitter_std: float | None = None
+    base_scale: float | None = None
+    scale_jitter_ratio: float | None = None
+    initial_opacity: float | None = None
+    color_jitter_std: float | None = None
+
+
+def _colmap_point_positions(recon: ColmapReconstruction) -> np.ndarray:
+    xyz_table = getattr(recon, "point_xyz_table", None)
+    if xyz_table is not None:
+        points = np.ascontiguousarray(xyz_table, dtype=np.float32)
+    else:
+        points = np.stack([point.xyz for point in recon.points3d.values()], axis=0).astype(np.float32)
+    finite = np.isfinite(points).all(axis=1)
+    return points[finite]
+
+
+def _subsample_points(points: np.ndarray, max_points: int) -> np.ndarray:
+    if points.shape[0] <= max_points:
+        return points
+    indices = np.linspace(0, points.shape[0] - 1, num=max_points, dtype=np.int64)
+    return points[indices]
+
+
+def _estimate_point_spacing(points: np.ndarray) -> tuple[float, float]:
+    if points.shape[0] == 0:
+        return 1.0, 0.15
+    if points.shape[0] == 1:
+        return 1.0, 0.15
+
+    sample = _subsample_points(points, 2048)
+    diff = sample[:, None, :] - sample[None, :, :]
+    dist2 = np.sum(diff * diff, axis=2, dtype=np.float32)
+    np.fill_diagonal(dist2, np.inf)
+    nearest = np.sqrt(np.min(dist2, axis=1))
+    finite = np.isfinite(nearest) & (nearest > 0.0)
+    if not np.any(finite):
+        return 1.0, 0.15
+
+    nearest = nearest[finite]
+    spacing = float(np.median(nearest))
+    q25 = float(np.percentile(nearest, 25.0))
+    q75 = float(np.percentile(nearest, 75.0))
+    variability = (q75 - q25) / max(spacing, 1e-6)
+    return max(spacing, 1e-4), float(np.clip(variability, 0.0, 1.0))
+
+
+def suggest_colmap_init_hparams(
+    recon: ColmapReconstruction,
+    max_gaussians: int,
+) -> GaussianInitHyperParams:
+    points = _colmap_point_positions(recon)
+    if points.shape[0] == 0:
+        raise RuntimeError("COLMAP reconstruction has no finite 3D points.")
+
+    point_count = int(points.shape[0])
+    chosen_count = point_count if max_gaussians <= 0 else max(int(max_gaussians), 1)
+    spacing, variability = _estimate_point_spacing(points)
+    density_scale = float((point_count / max(chosen_count, 1)) ** (1.0 / 3.0))
+    target_spacing = max(spacing * density_scale, 1e-4)
+    replacement_factor = 1.75 if chosen_count > point_count else 1.0
+
+    base_scale = np.clip(0.35 * target_spacing, 1e-4, 10.0)
+    position_jitter_std = np.clip(0.12 * target_spacing * replacement_factor, 0.0, 10.0)
+    scale_jitter_ratio = np.clip(0.08 + 0.18 * variability, 0.05, 0.35)
+    initial_opacity = np.clip(0.30 * np.sqrt(density_scale), 0.15, 0.55)
+    return GaussianInitHyperParams(
+        position_jitter_std=float(position_jitter_std),
+        base_scale=float(base_scale),
+        scale_jitter_ratio=float(scale_jitter_ratio),
+        initial_opacity=float(initial_opacity),
+        color_jitter_std=0.0,
+    )
+
+
+def resolve_colmap_init_hparams(
+    recon: ColmapReconstruction,
+    max_gaussians: int,
+    init_hparams: GaussianInitHyperParams | None = None,
+) -> GaussianInitHyperParams:
+    suggested = suggest_colmap_init_hparams(recon, max_gaussians)
+    if init_hparams is None:
+        return suggested
+    return GaussianInitHyperParams(
+        position_jitter_std=(
+            suggested.position_jitter_std
+            if init_hparams.position_jitter_std is None
+            else float(init_hparams.position_jitter_std)
+        ),
+        base_scale=suggested.base_scale if init_hparams.base_scale is None else float(init_hparams.base_scale),
+        scale_jitter_ratio=(
+            suggested.scale_jitter_ratio
+            if init_hparams.scale_jitter_ratio is None
+            else float(init_hparams.scale_jitter_ratio)
+        ),
+        initial_opacity=(
+            suggested.initial_opacity
+            if init_hparams.initial_opacity is None
+            else float(init_hparams.initial_opacity)
+        ),
+        color_jitter_std=(
+            suggested.color_jitter_std
+            if init_hparams.color_jitter_std is None
+            else float(init_hparams.color_jitter_std)
+        ),
+    )
 
 
 def _read_u64(handle) -> int:
@@ -273,7 +374,7 @@ def initialize_scene_from_colmap_points(
     seed: int,
     init_hparams: GaussianInitHyperParams | None = None,
 ) -> GaussianScene:
-    params = init_hparams if init_hparams is not None else GaussianInitHyperParams()
+    params = resolve_colmap_init_hparams(recon, max_gaussians, init_hparams)
     if not recon.points3d:
         raise RuntimeError("COLMAP reconstruction has no 3D points.")
     rng = np.random.default_rng(int(seed))

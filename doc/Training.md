@@ -20,6 +20,7 @@
 ## Initialization
 - Gaussians are initialized by random point-cloud sampling from COLMAP `points3D`.
 - Viewer COLMAP reinitialization path uploads COLMAP point tables once, then runs `csInitializeGaussiansFromPointCloud` to rebuild gaussian parameters directly on GPU.
+- When init hyperparameters are omitted, Python derives defaults from COLMAP point-cloud nearest-neighbor spacing and requested gaussian count so initial splats are dense but only lightly overlapping.
 - Initialization parameters:
   - count cap (`max_gaussians`, default `50000`),
   - position jitter,

@@ -12,6 +12,8 @@ from src.scene import (
     build_training_frames,
     initialize_scene_from_colmap_points,
     load_colmap_reconstruction,
+    resolve_colmap_init_hparams,
+    suggest_colmap_init_hparams,
 )
 
 
@@ -119,3 +121,44 @@ def test_colmap_init_samples_with_replacement_when_requested_count_exceeds_point
     assert scene.colors.shape == (requested_count, 3)
     unique_positions = np.unique(scene.positions, axis=0)
     assert unique_positions.shape[0] < requested_count
+
+
+def test_colmap_init_suggestions_scale_with_requested_density(tmp_path: Path):
+    root = _build_tiny_colmap_tree(tmp_path, model_id=1)
+    recon = load_colmap_reconstruction(root)
+
+    coarse = suggest_colmap_init_hparams(recon, max_gaussians=1)
+    dense = suggest_colmap_init_hparams(recon, max_gaussians=8)
+
+    assert coarse.base_scale is not None
+    assert coarse.position_jitter_std is not None
+    assert coarse.initial_opacity is not None
+    assert dense.base_scale is not None
+    assert dense.position_jitter_std is not None
+    assert dense.initial_opacity is not None
+    assert coarse.base_scale > dense.base_scale
+    assert coarse.position_jitter_std > dense.position_jitter_std
+    assert coarse.initial_opacity >= dense.initial_opacity
+
+
+def test_colmap_init_resolver_preserves_manual_overrides(tmp_path: Path):
+    root = _build_tiny_colmap_tree(tmp_path, model_id=1)
+    recon = load_colmap_reconstruction(root)
+
+    resolved = resolve_colmap_init_hparams(
+        recon,
+        max_gaussians=4,
+        init_hparams=GaussianInitHyperParams(
+            position_jitter_std=0.0,
+            base_scale=None,
+            scale_jitter_ratio=0.0,
+            initial_opacity=None,
+            color_jitter_std=0.05,
+        ),
+    )
+
+    assert resolved.position_jitter_std == 0.0
+    assert resolved.scale_jitter_ratio == 0.0
+    assert resolved.color_jitter_std == 0.05
+    assert resolved.base_scale is not None and resolved.base_scale > 0.0
+    assert resolved.initial_opacity is not None and 0.0 < resolved.initial_opacity < 1.0
