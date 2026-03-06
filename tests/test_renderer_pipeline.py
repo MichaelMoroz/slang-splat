@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 
+from src.common import SHADER_ROOT
 from src.renderer import Camera, GaussianRenderer
 from src.renderer.projection_sampled5_mvee_reference import project_splats_sampled5_mvee
 from src.renderer.reference_cpu import (
@@ -34,6 +37,16 @@ def make_scene(count: int, seed: int = 0) -> GaussianScene:
         colors=colors,
         sh_coeffs=sh_coeffs,
     )
+
+
+def test_renderer_loads_raster_constants_from_shader(device):
+    renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, list_capacity_multiplier=32)
+    config = GaussianRenderer._load_raster_config(Path(SHADER_ROOT / "renderer" / "gaussian_types.slang"))
+
+    assert renderer.tile_size == config.effective_tile_size
+    assert renderer._raster_config.thread_tile_dim == config.thread_tile_dim
+    assert renderer._raster_config.microtile_dim == config.microtile_dim
+    assert renderer._raster_config.batch == config.batch
 
 
 def test_tile_keys_and_ranges_match_reference(device):

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
+import re
 
 import numpy as np
 import slangpy as spy
@@ -23,15 +26,20 @@ class SceneBinding:
     count: int
 
 
+@dataclass(frozen=True, slots=True)
+class RasterConfig:
+    thread_tile_dim: int
+    microtile_dim: int
+    effective_tile_size: int
+    batch: int
+
+
 class GaussianRenderer:
     _COUNTER_READBACK_RING_SIZE = 2
     _SCANLINE_WORK_ITEM_UINTS = 8
     _U32_BYTES = 4
     _MEBIBYTE_BYTES = 1024 * 1024
     _PREPASS_ENTRY_BYTES = (_SCANLINE_WORK_ITEM_UINTS + 2) * _U32_BYTES
-    _RASTER_THREAD_TILE_DIM = 8
-    _RASTER_MICROTILE_DIM = 3
-    _RASTER_EFFECTIVE_TILE_SIZE = _RASTER_THREAD_TILE_DIM * _RASTER_MICROTILE_DIM
 
     def __init__(
         self,
@@ -58,7 +66,11 @@ class GaussianRenderer:
         self.device = device
         self.width = int(width)
         self.height = int(height)
-        self.tile_size = self._RASTER_EFFECTIVE_TILE_SIZE
+        self._types_shader_path = Path(SHADER_ROOT / "renderer" / "gaussian_types.slang")
+        self._project_shader_path = Path(SHADER_ROOT / "renderer" / "gaussian_project_stage.slang")
+        self._raster_shader_path = Path(SHADER_ROOT / "renderer" / "gaussian_raster_stage.slang")
+        self._raster_config = self._load_raster_config(self._types_shader_path)
+        self.tile_size = self._raster_config.effective_tile_size
         self.radius_scale = float(radius_scale)
         self.alpha_cutoff = float(alpha_cutoff)
         self.max_splat_steps = int(max_splat_steps)
@@ -85,8 +97,6 @@ class GaussianRenderer:
         self.depth_bits = 32 - self.tile_bits
         self.sort_bits = self.tile_bits + self.depth_bits
 
-        self._project_shader_path = Path(SHADER_ROOT / "renderer" / "gaussian_project_stage.slang")
-        self._raster_shader_path = Path(SHADER_ROOT / "renderer" / "gaussian_raster_stage.slang")
         self._create_shaders()
         self._create_sorter()
 
@@ -109,6 +119,66 @@ class GaussianRenderer:
         self._delayed_written_entries = 0
         self._delayed_overflow = False
         self._delayed_stats_valid = False
+
+    @staticmethod
+    def _eval_uint_constant_expr(expr: str, constants: dict[str, int]) -> int:
+        node = ast.parse(expr, mode="eval")
+
+        def eval_node(current: ast.AST) -> int:
+            if isinstance(current, ast.Expression): return eval_node(current.body)
+            if isinstance(current, ast.Constant):
+                if isinstance(current.value, bool) or not isinstance(current.value, int):
+                    raise ValueError(f"Unsupported constant expression value: {expr}")
+                return int(current.value)
+            if isinstance(current, ast.Name):
+                if current.id not in constants: raise ValueError(f"Unknown constant '{current.id}' in expression: {expr}")
+                return constants[current.id]
+            if isinstance(current, ast.UnaryOp) and isinstance(current.op, (ast.UAdd, ast.USub)):
+                value = eval_node(current.operand)
+                return value if isinstance(current.op, ast.UAdd) else -value
+            if isinstance(current, ast.BinOp):
+                lhs = eval_node(current.left)
+                rhs = eval_node(current.right)
+                if isinstance(current.op, ast.Add): return lhs + rhs
+                if isinstance(current.op, ast.Sub): return lhs - rhs
+                if isinstance(current.op, ast.Mult): return lhs * rhs
+                if isinstance(current.op, (ast.Div, ast.FloorDiv)):
+                    if rhs == 0: raise ValueError(f"Division by zero in expression: {expr}")
+                    return lhs // rhs
+                raise ValueError(f"Unsupported binary operator in expression: {expr}")
+            raise ValueError(f"Unsupported AST node in expression: {expr}")
+
+        value = eval_node(node)
+        if value < 0: raise ValueError(f"Expected non-negative uint expression: {expr}")
+        return value
+
+    @classmethod
+    @lru_cache(maxsize=1)
+    def _load_raster_config(cls, shader_path: Path) -> RasterConfig:
+        source = shader_path.read_text(encoding="utf-8")
+        pattern = re.compile(r"static\s+const\s+uint\s+(\w+)\s*=\s*([^;]+);")
+        constants: dict[str, int] = {}
+        for name, expr in pattern.findall(source):
+            sanitized_expr = re.sub(r"(?<=[0-9A-Fa-f])[uU]\b", "", expr).strip()
+            constants[name] = cls._eval_uint_constant_expr(sanitized_expr, constants)
+
+        required = (
+            "RASTER_THREAD_TILE_DIM",
+            "RASTER_MICROTILE_DIM",
+            "RASTER_EFFECTIVE_TILE_SIZE",
+            "RASTER_BATCH",
+        )
+        missing = [name for name in required if name not in constants]
+        if missing:
+            missing_names = ", ".join(missing)
+            raise RuntimeError(f"Missing raster constants in {shader_path}: {missing_names}")
+
+        return RasterConfig(
+            thread_tile_dim=constants["RASTER_THREAD_TILE_DIM"],
+            microtile_dim=constants["RASTER_MICROTILE_DIM"],
+            effective_tile_size=constants["RASTER_EFFECTIVE_TILE_SIZE"],
+            batch=constants["RASTER_BATCH"],
+        )
 
     def _create_shaders(self) -> None:
         load_program = self.device.load_program
@@ -453,8 +523,8 @@ class GaussianRenderer:
     def _rasterize(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray) -> None:
         self._k_raster.dispatch(
             thread_count=spy.uint3(
-                (self.width + self._RASTER_MICROTILE_DIM - 1) // self._RASTER_MICROTILE_DIM,
-                (self.height + self._RASTER_MICROTILE_DIM - 1) // self._RASTER_MICROTILE_DIM,
+                (self.width + self._raster_config.microtile_dim - 1) // self._raster_config.microtile_dim,
+                (self.height + self._raster_config.microtile_dim - 1) // self._raster_config.microtile_dim,
                 1,
             ),
             vars={
@@ -498,8 +568,8 @@ class GaussianRenderer:
     ) -> None:
         self._k_raster_forward_backward.dispatch(
             thread_count=spy.uint3(
-                (self.width + self._RASTER_MICROTILE_DIM - 1) // self._RASTER_MICROTILE_DIM,
-                (self.height + self._RASTER_MICROTILE_DIM - 1) // self._RASTER_MICROTILE_DIM,
+                (self.width + self._raster_config.microtile_dim - 1) // self._raster_config.microtile_dim,
+                (self.height + self._raster_config.microtile_dim - 1) // self._raster_config.microtile_dim,
                 1,
             ),
             vars={

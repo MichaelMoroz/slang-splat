@@ -12,6 +12,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
   - `g_Camera` (`CameraParams`) for camera basis/position, anisotropic intrinsics (`focalPixels: float2`, `principalPoint: float2`), clip range, and lens distortion.
   - `g_Prepass` (`PrepassParams`) for splat counts, tile/depth packing, prepass capacities, and sampled-5 MVEE controls.
   - `g_Raster` (`RasterParams`) for raster resolution, alpha/transmittance thresholds, background, and debug overlays.
+- Python-side raster layout defaults are sourced from `shaders/renderer/gaussian_types.slang` by parsing the `static const uint` raster constants instead of duplicating them manually in `GaussianRenderer`.
 - Python bindings in `GaussianRenderer` mirror this layout by binding these structs per dispatch so stage code only reads structured fields instead of a large flat uniform list.
 
 ## 1. Project and Bin
