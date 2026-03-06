@@ -296,7 +296,7 @@ class GaussianTrainer:
     def _create_gpu_texture(self, rgba8: np.ndarray) -> spy.Texture:
         height, width = rgba8.shape[:2]
         tex = self.device.create_texture(
-            format=spy.Format.rgba8_unorm,
+            format=spy.Format.rgba8_unorm_srgb,
             width=int(width),
             height=int(height),
             usage=spy.TextureUsage.shader_resource | spy.TextureUsage.copy_destination,

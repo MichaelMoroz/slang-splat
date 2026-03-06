@@ -69,7 +69,7 @@ python cli.py render-ply --ply D:\Datasets\3DGS\TEST\flowers.ply --output-dir ou
 
 Training notes:
 - One random training image is sampled per step.
-- Training target images are stored as `rgba8_unorm` textures (not float32) to reduce GPU memory usage.
+- Training target images are stored as `rgba8_unorm_srgb` textures (not float32) so shader reads use hardware sRGB decode while keeping GPU memory usage low.
 - In viewer COLMAP mode, pointcloud XYZ/RGB are uploaded once on dataset load; gaussian reinitialization is done on GPU from those buffers.
 - Default COLMAP initialization parameters are derived from point-cloud nearest-neighbor spacing and requested gaussian count so initial splats are close-packed with limited overlap.
 - Default loss is RGB MSE.

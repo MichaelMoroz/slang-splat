@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
+import slangpy as spy
 
 from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
@@ -103,6 +104,19 @@ def test_training_step_smoke_updates_params(device, tmp_path: Path):
     assert np.isfinite(trainer.state.last_psnr)
     assert np.isfinite(trainer.state.ema_psnr)
     assert np.all(np.isfinite(after))
+
+
+def test_training_targets_use_srgb_textures(device, tmp_path: Path):
+    scene = _make_scene()
+    frame = _make_frame(tmp_path)
+    renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
+    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], seed=123)
+
+    native_target = trainer.get_frame_target_texture(0, native_resolution=True)
+    train_target = trainer.get_frame_target_texture(0, native_resolution=False)
+
+    assert native_target.format == spy.Format.rgba8_unorm_srgb
+    assert train_target.format == spy.Format.rgba8_unorm_srgb
 
 
 def test_fused_adam_handles_nan_grads(device, tmp_path: Path):
