@@ -12,6 +12,18 @@ from .gaussian_scene import GaussianScene
 
 COLMAP_SIMPLE_PINHOLE_MODEL_ID = 0
 COLMAP_PINHOLE_MODEL_ID = 1
+DEFAULT_RENDER_RADIUS_SCALE = 2.6
+INIT_TARGET_RADIUS_RATIO = 0.42
+INIT_BASE_SCALE_SPACING_RATIO = INIT_TARGET_RADIUS_RATIO / DEFAULT_RENDER_RADIUS_SCALE
+INIT_JITTER_SPACING_RATIO = 0.035
+INIT_REPLACEMENT_JITTER_BOOST = 1.5
+INIT_SCALE_JITTER_BASE = 0.03
+INIT_SCALE_JITTER_VARIABILITY = 0.10
+INIT_SCALE_JITTER_MIN = 0.01
+INIT_SCALE_JITTER_MAX = 0.16
+INIT_OPACITY_BASE = 0.22
+INIT_OPACITY_MIN = 0.10
+INIT_OPACITY_MAX = 0.35
 
 
 @dataclass(slots=True)
@@ -142,12 +154,16 @@ def suggest_colmap_init_hparams(
     spacing, variability = _estimate_point_spacing(points)
     density_scale = float((point_count / max(chosen_count, 1)) ** (1.0 / 3.0))
     target_spacing = max(spacing * density_scale, 1e-4)
-    replacement_factor = 1.75 if chosen_count > point_count else 1.0
+    replacement_factor = INIT_REPLACEMENT_JITTER_BOOST if chosen_count > point_count else 1.0
 
-    base_scale = np.clip(0.35 * target_spacing, 1e-4, 10.0)
-    position_jitter_std = np.clip(0.12 * target_spacing * replacement_factor, 0.0, 10.0)
-    scale_jitter_ratio = np.clip(0.08 + 0.18 * variability, 0.05, 0.35)
-    initial_opacity = np.clip(0.30 * np.sqrt(density_scale), 0.15, 0.55)
+    base_scale = np.clip(INIT_BASE_SCALE_SPACING_RATIO * target_spacing, 1e-4, 10.0)
+    position_jitter_std = np.clip(INIT_JITTER_SPACING_RATIO * target_spacing * replacement_factor, 0.0, 10.0)
+    scale_jitter_ratio = np.clip(
+        INIT_SCALE_JITTER_BASE + INIT_SCALE_JITTER_VARIABILITY * variability,
+        INIT_SCALE_JITTER_MIN,
+        INIT_SCALE_JITTER_MAX,
+    )
+    initial_opacity = np.clip(INIT_OPACITY_BASE * np.sqrt(density_scale), INIT_OPACITY_MIN, INIT_OPACITY_MAX)
     return GaussianInitHyperParams(
         position_jitter_std=float(position_jitter_std),
         base_scale=float(base_scale),
