@@ -206,6 +206,41 @@ def test_synthetic_base_grads_update_and_respect_constraints(device, tmp_path: P
     assert np.all(np.abs(norms - 1.0) < 1e-3)
 
 
+def test_log_scale_regularizer_pulls_scales_toward_reference(device, tmp_path: Path):
+    scene = _make_scene(count=2, seed=27)
+    scene.scales[:] = np.array([[0.02, 0.02, 0.02], [0.08, 0.08, 0.08]], dtype=np.float32)
+    frame = _make_frame(tmp_path)
+    renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
+    training = TrainingHyperParams(scale_l2_weight=1.0, mcmc_position_noise_enabled=False, low_quality_reinit_enabled=False)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=training,
+        scale_reg_reference=0.04,
+        seed=29,
+    )
+    camera = frame.make_camera(near=0.1, far=20.0)
+    renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
+    device.wait()
+
+    zeros = np.zeros((scene.count * 4,), dtype=np.float32)
+    renderer.work_buffers["grad_positions"].copy_from_numpy(zeros)
+    renderer.work_buffers["grad_scales"].copy_from_numpy(zeros)
+    renderer.work_buffers["grad_rotations"].copy_from_numpy(zeros)
+    renderer.work_buffers["grad_color_alpha"].copy_from_numpy(zeros)
+
+    enc = device.create_command_encoder()
+    trainer._dispatch_adam_step(enc)
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+
+    scales_after = np.frombuffer(renderer.scene_buffers["scales"].to_numpy().tobytes(), dtype=np.float32).reshape(-1, 4)
+    assert scales_after[0, 0] > scene.scales[0, 0]
+    assert scales_after[1, 0] < scene.scales[1, 0]
+
+
 def test_mark_low_quality_flags_from_stability_thresholds(device, tmp_path: Path):
     scene = _make_scene(count=5, seed=33)
     frame = _make_frame(tmp_path)

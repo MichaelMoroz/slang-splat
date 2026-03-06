@@ -36,11 +36,10 @@ Each trainer `step()` performs:
 4. Run loss kernel (`RGB MSE`) to produce `g_OutputGrad`.
 5. Run fused raster forward/backward replay to fill per-splat gradient buffers without cached per-pixel forward state.
 6. Run fused ADAM kernel (`csAdamStepFused`) with one thread per Gaussian.
-   - Scale anisotropy regularization is computed in-kernel via Slang autodiff on `scale.xyz`.
-   - The anisotropy term is an L2 penalty on mean-normalized linear scales, so it primarily penalizes axis scale ratios instead of absolute scale differences.
-   - The regularization scalar is added to the reported loss buffer in this ADAM pass.
-   - Post-ADAM decoupled scale L2 decay is applied on `scale.xyz`:
-     - `scale *= max(1 - scale_lr * scale_l2_weight, 0)`
+   - Scale regularization is computed in-kernel via Slang autodiff on `scale.xyz`.
+   - The term is an L2 penalty on `log(scale / referenceScale)`, where the reference scale comes from the initialization base scale when available.
+   - The regularization scalar is averaged over the active splat count and added to the reported loss buffer in this ADAM pass.
+   - A hard anisotropy clamp enforces `max(scale.xyz) / min(scale.xyz) <= max_anisotropy`.
 7. Run low-quality marking kernel (`csMarkLowQualitySplats`) using stability thresholds.
 8. Run random low-quality resample kernel (`csResampleLowQualitySplatsRandom`).
 
@@ -53,9 +52,9 @@ Each trainer `step()` performs:
   - quaternion,
   - color,
   - opacity.
-  - Adds autodiff L2 anisotropy regularization gradients to scale gradients (`g_ScaleAnisoWeight`).
-  - Accumulates anisotropy scalar contribution into `g_LossBuffer`.
-  - Then applies post-ADAM decoupled scale L2 decay controlled by `g_ScaleL2Weight`.
+  - Adds autodiff log-scale regularization gradients to scale gradients (`g_ScaleL2Weight`, `g_ScaleRegReference`).
+  - Accumulates the averaged scale-regularization scalar contribution into `g_LossBuffer`.
+  - Clamps stored scales to `[min_scale, max_scale]` and enforces `max_anisotropy`.
 - `csMarkLowQualitySplats`: marks splats as low-quality when
   - `opacity <= min_opacity`, or
   - `max(scale.xyz) <= min_scale`.
@@ -92,8 +91,8 @@ python cli.py train-colmap --colmap-root dataset/garden --images-subdir images_4
 Useful options:
 - `--width/--height` for train resolution (defaults to selected image resolution),
 - `--lr`, `--beta1`, `--beta2`, `--eps`,
-- `--scale-l2` for post-ADAM decoupled scale weight decay,
-- `--scale-aniso` for autodiff L2 scale anisotropy regularization strength,
+- `--scale-l2` for autodiff log-scale regularization around the init/reference scale,
+- `--max-anisotropy` for the hard per-gaussian scale-ratio cap,
 - `--grad-clip`, `--grad-norm-clip`, `--max-update`,
 - `--min-scale`, `--max-scale`, `--min-opacity`, `--max-opacity`.
 - `--[no-]low-quality-reinit` enables/disables per-step low-quality resampling.

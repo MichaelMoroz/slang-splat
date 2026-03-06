@@ -16,6 +16,7 @@ from src.scene import (
     initialize_scene_from_colmap_points,
     load_colmap_reconstruction,
     load_gaussian_ply,
+    resolve_colmap_init_hparams,
 )
 from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TrainingHyperParams
 
@@ -84,6 +85,7 @@ def _run_train_colmap(args: argparse.Namespace) -> int:
         initial_opacity=None if args.init_opacity is None else float(args.init_opacity),
         color_jitter_std=None if args.init_color_jitter is None else float(args.init_color_jitter),
     )
+    resolved_init_hparams = resolve_colmap_init_hparams(recon, int(args.max_gaussians), init_hparams)
     scene = initialize_scene_from_colmap_points(
         recon=recon,
         max_gaussians=int(args.max_gaussians),
@@ -118,6 +120,7 @@ def _run_train_colmap(args: argparse.Namespace) -> int:
         max_update=float(args.max_update),
         min_scale=float(args.min_scale),
         max_scale=float(args.max_scale),
+        max_anisotropy=float(args.max_anisotropy),
         min_opacity=float(args.min_opacity),
         max_opacity=float(args.max_opacity),
         position_abs_max=float(args.position_abs_max),
@@ -129,7 +132,6 @@ def _run_train_colmap(args: argparse.Namespace) -> int:
         far=float(args.far),
         ema_decay=float(args.ema_decay),
         scale_l2_weight=float(args.scale_l2),
-        scale_aniso_weight=float(args.scale_aniso),
         low_quality_reinit_enabled=bool(args.low_quality_reinit),
     )
     trainer = GaussianTrainer(
@@ -141,6 +143,7 @@ def _run_train_colmap(args: argparse.Namespace) -> int:
         stability_hparams=stability,
         training_hparams=training,
         seed=int(args.seed),
+        scale_reg_reference=float(max(resolved_init_hparams.base_scale, 1e-8)),
     )
 
     print(
@@ -263,8 +266,8 @@ def parse_args() -> argparse.Namespace:
     train.add_argument("--far", type=float, default=120.0)
     train.add_argument("--bg", type=float, nargs=3, default=(0.0, 0.0, 0.0))
     train.add_argument("--ema-decay", type=float, default=0.95)
-    train.add_argument("--scale-l2", type=float, default=1e-3, help="Post-ADAM decoupled L2 decay weight for scales.")
-    train.add_argument("--scale-aniso", type=float, default=1e-3, help="Autodiff L2 anisotropy regularization weight.")
+    train.add_argument("--scale-l2", type=float, default=1e-3, help="Autodiff log-scale regularization weight around the init/reference scale.")
+    train.add_argument("--max-anisotropy", type=float, default=3.0, help="Hard maximum scale ratio per Gaussian.")
     train.add_argument(
         "--low-quality-reinit",
         action=argparse.BooleanOptionalAction,

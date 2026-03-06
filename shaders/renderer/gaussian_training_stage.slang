@@ -26,6 +26,7 @@ struct TrainingStabilityParams
     float maxUpdate;
     float minScale;
     float maxScale;
+    float maxAnisotropy;
     float minOpacity;
     float maxOpacity;
     float positionAbsMax;
@@ -50,7 +51,7 @@ uniform uint g_Height;
 uniform float g_InvPixelCount;
 uniform float g_LossGradClip;
 uniform float g_ScaleL2Weight;
-uniform float g_ScaleAnisoWeight;
+uniform float g_ScaleRegReference;
 
 uniform Texture2D<float4> g_Rendered;
 uniform Texture2D<float4> g_Target;
@@ -215,13 +216,19 @@ float rgb_mse_loss(float3 rendered, no_diff float3 target, no_diff float invPixe
 }
 
 [Differentiable]
-float scale_aniso_loss(float3 scale)
+float scale_log_reference_loss(float3 scale, no_diff float referenceScale)
 {
-    float3 s = max(scale, float3(TINY_VALUE));
-    float meanScale = dot(s, float3(1.0 / 3.0));
-    float invMeanScale = 1.0 / max(meanScale, TINY_VALUE);
-    float3 relativeScale = s * invMeanScale - 1.0;
-    return dot(relativeScale, relativeScale) * (1.0 / 3.0);
+    float3 scaleSafe = max(scale, float3(TINY_VALUE));
+    float refSafe = max(referenceScale, TINY_VALUE);
+    float3 logScale = log(scaleSafe / refSafe);
+    return dot(logScale, logScale) * (1.0 / 3.0);
+}
+
+float3 clamp_scale_anisotropy(float3 scale)
+{
+    float maxAnisotropy = max(g_Stability.maxAnisotropy, 1.0);
+    float maxScale = max(scale.x, max(scale.y, scale.z));
+    return max(scale, float3(maxScale / maxAnisotropy));
 }
 
 bool is_low_quality(float3 scale, float opacity)
@@ -414,14 +421,16 @@ void csAdamStepFused(uint3 dispatchThreadID : SV_DispatchThreadID)
         g_GradColorAlpha[gradBase + 3u]
     );
 
-    float scaleAnisoWeight = max(g_ScaleAnisoWeight, 0.0);
-    if (scaleAnisoWeight > 0.0)
+    float scaleL2Weight = max(g_ScaleL2Weight, 0.0);
+    if (scaleL2Weight > 0.0)
     {
-        var dpScaleAniso = diffPair(scale.xyz);
-        float anisoLoss = scale_aniso_loss(scale.xyz);
-        bwd_diff(scale_aniso_loss)(dpScaleAniso, scaleAnisoWeight);
-        gradScale.xyz += dpScaleAniso.getDifferential();
-        float lossAdd = scaleAnisoWeight * anisoLoss / max(float(g_SplatCount), 1.0);
+        float invSplatCount = 1.0 / max(float(g_SplatCount), 1.0);
+        float scaleRegReference = max(g_ScaleRegReference, TINY_VALUE);
+        var dpScaleReg = diffPair(scale.xyz);
+        float scaleRegLoss = scale_log_reference_loss(scale.xyz, scaleRegReference);
+        bwd_diff(scale_log_reference_loss)(dpScaleReg, scaleRegReference, scaleL2Weight * invSplatCount);
+        gradScale.xyz += dpScaleReg.getDifferential();
+        float lossAdd = scaleL2Weight * scaleRegLoss * invSplatCount;
         if (isfinite(lossAdd) && lossAdd != 0.0) InterlockedAdd(g_LossBuffer[LOSS_SLOT_TOTAL], lossAdd);
     }
 
@@ -457,8 +466,6 @@ void csAdamStepFused(uint3 dispatchThreadID : SV_DispatchThreadID)
     scale = adam_update_param(scale, gradScale, mScale, vScale, scaleLR, biasCorr1, biasCorr2);
     rot = adam_update_param(rot, gradQuat, mQuat, vQuat, rotLR, biasCorr1, biasCorr2);
     colorAlpha = adam_update_param(colorAlpha, gradColorAlpha, mColorAlpha, vColorAlpha, colorAlphaLR, biasCorr1, biasCorr2);
-    float scaleDecay = g_Adam.scaleLR * max(g_ScaleL2Weight, 0.0);
-    scale.xyz = sanitize_float3(scale.xyz * max(1.0 - scaleDecay, 0.0), g_Stability.hugeValue);
 
     if (g_MCMC.enabled != 0u && g_MCMC.positionNoiseScale > 0.0)
     {
@@ -479,6 +486,7 @@ void csAdamStepFused(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     pos.xyz = clamp(pos.xyz, -g_Stability.positionAbsMax, g_Stability.positionAbsMax);
     scale.xyz = clamp(scale.xyz, g_Stability.minScale, g_Stability.maxScale);
+    scale.xyz = clamp_scale_anisotropy(scale.xyz);
     rot = normalize_quaternion_safe(rot);
     colorAlpha.xyz = clamp(colorAlpha.xyz, 0.0, 1.0);
     colorAlpha.w = clamp(colorAlpha.w, g_Stability.minOpacity, g_Stability.maxOpacity);
@@ -543,6 +551,7 @@ void csResampleLowQualitySplatsRandom(uint3 dispatchThreadID : SV_DispatchThread
 
     nextPos.xyz = clamp(nextPos.xyz, -g_Stability.positionAbsMax, g_Stability.positionAbsMax);
     nextScale.xyz = clamp(nextScale.xyz, g_Stability.minScale, g_Stability.maxScale);
+    nextScale.xyz = clamp_scale_anisotropy(nextScale.xyz);
     nextColorAlpha.xyz = clamp(nextColorAlpha.xyz, 0.0, 1.0);
     nextColorAlpha.w = clamp(nextColorAlpha.w, g_Stability.minOpacity, g_Stability.maxOpacity);
 
@@ -594,6 +603,7 @@ void csInitializeGaussiansFromPointCloud(uint3 dispatchThreadID : SV_DispatchThr
     );
     float4 scale = float4(baseScale * scaleMul, 0.0);
     scale.xyz = clamp(sanitize_float3(scale.xyz, g_Stability.hugeValue), g_Stability.minScale, g_Stability.maxScale);
+    scale.xyz = clamp_scale_anisotropy(scale.xyz);
 
     float4 rot = normalize_quaternion_safe(rng_normal4_box_muller(rngState));
     float3 color = pointColor;

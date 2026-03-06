@@ -36,6 +36,7 @@ class StabilityHyperParams:
     max_update: float = 0.05
     min_scale: float = 1e-3
     max_scale: float = 3.0
+    max_anisotropy: float = 3.0
     min_opacity: float = 1e-4
     max_opacity: float = 0.9999
     position_abs_max: float = 1e4
@@ -53,7 +54,6 @@ class TrainingHyperParams:
     psnr_reference_decay: float = 0.995
     psnr_decay: float = 0.985
     scale_l2_weight: float = 1e-3
-    scale_aniso_weight: float = 1e-3
     mcmc_position_noise_enabled: bool = True
     mcmc_position_noise_scale: float = 1.0
     mcmc_opacity_gate_sharpness: float = 100.0
@@ -96,6 +96,7 @@ class GaussianTrainer:
         init_point_positions_buffer: spy.Buffer | None = None,
         init_point_colors_buffer: spy.Buffer | None = None,
         init_point_count: int = 0,
+        scale_reg_reference: float | None = None,
     ) -> None:
         if not frames:
             raise ValueError("Training requires at least one COLMAP frame.")
@@ -115,6 +116,11 @@ class GaussianTrainer:
         self._kernels: dict[str, spy.ComputeKernel] = {}
         self._buffers: dict[str, spy.Buffer] = {}
         self._splat_capacity = 0
+        self._scale_reg_reference = (
+            float(max(scale_reg_reference, 1e-8))
+            if scale_reg_reference is not None
+            else self._estimate_scale_reg_reference(scene)
+        )
         self._init_point_positions_buffer: spy.Buffer | None = None
         self._init_point_colors_buffer: spy.Buffer | None = None
         self._init_point_count = 0
@@ -204,6 +210,16 @@ class GaussianTrainer:
             "adam_v_color_alpha",
         ):
             self._buffers[name].copy_from_numpy(zeros)
+
+    def _estimate_scale_reg_reference(self, scene: GaussianScene | None) -> float:
+        if scene is None or scene.count <= 0:
+            return 1.0
+        scales = np.asarray(scene.scales, dtype=np.float32)
+        finite = np.isfinite(scales).all(axis=1)
+        if not np.any(finite):
+            return 1.0
+        scale_safe = np.maximum(scales[finite], 1e-8)
+        return float(np.exp(np.mean(np.log(scale_safe), dtype=np.float64)))
 
     def _pack_point_table(self, points: np.ndarray) -> np.ndarray:
         pts = np.ascontiguousarray(points, dtype=np.float32)
@@ -340,7 +356,7 @@ class GaussianTrainer:
             "g_InvPixelCount": 1.0 / float(max(self.renderer.width * self.renderer.height, 1)),
             "g_LossGradClip": float(self.stability.loss_grad_clip),
             "g_ScaleL2Weight": float(max(self.training.scale_l2_weight, 0.0)),
-            "g_ScaleAnisoWeight": float(max(self.training.scale_aniso_weight, 0.0)),
+            "g_ScaleRegReference": float(max(self._scale_reg_reference, 1e-8)),
             "g_Adam": {
                 "positionLR": float(self.adam.position_lr),
                 "scaleLR": float(self.adam.scale_lr),
@@ -358,6 +374,7 @@ class GaussianTrainer:
                 "maxUpdate": float(self.stability.max_update),
                 "minScale": float(self.stability.min_scale),
                 "maxScale": float(self.stability.max_scale),
+                "maxAnisotropy": float(max(self.stability.max_anisotropy, 1.0)),
                 "minOpacity": float(self.stability.min_opacity),
                 "maxOpacity": float(self.stability.max_opacity),
                 "positionAbsMax": float(self.stability.position_abs_max),
@@ -488,6 +505,7 @@ class GaussianTrainer:
         self.scene = _SceneCountProxy(self._scene_count)
         self.renderer.bind_scene_count(self._scene_count)
         self._ensure_training_buffers(self._scene_count)
+        self._scale_reg_reference = float(max(init_hparams.base_scale, 1e-8))
         vars_common = self._common_vars()
         enc = self.device.create_command_encoder()
         self._kernels["init_from_pointcloud"].dispatch(

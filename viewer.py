@@ -303,12 +303,12 @@ class SplatViewer(spy.AppWindow):
             step_fast=1e-4,
             format="%.8f",
         )
-        self.scale_aniso_slider = spy.ui.InputFloat(
+        self.max_anisotropy_slider = spy.ui.InputFloat(
             opt_group,
-            "Scale Aniso",
-            value=1e-3,
-            step=1e-3,
-            step_fast=1e-2,
+            "Max Anisotropy",
+            value=3.0,
+            step=0.1,
+            step_fast=0.5,
             format="%.6f",
         )
         self.mcmc_pos_noise_enabled_checkbox = spy.ui.CheckBox(opt_group, "MCMC Pos Noise", value=True)
@@ -1013,6 +1013,7 @@ class SplatViewer(spy.AppWindow):
             max_update=clamp(self.max_update_slider.value, 1e-8, 10.0),
             min_scale=clamp(self.min_scale_slider.value, 1e-8, 1e3),
             max_scale=clamp(self.max_scale_slider.value, 1e-8, 1e4),
+            max_anisotropy=clamp(self.max_anisotropy_slider.value, 1.0, 1e4),
             min_opacity=clamp(self.min_opacity_slider.value, 0.0, 1.0),
             max_opacity=clamp(self.max_opacity_slider.value, 0.0, 1.0),
             position_abs_max=clamp(self.position_abs_max_slider.value, 1e-3, 1e9),
@@ -1028,7 +1029,6 @@ class SplatViewer(spy.AppWindow):
             far=clamp(self.train_far_slider.value, 1e-5, 1e6),
             ema_decay=0.95,
             scale_l2_weight=clamp(self.scale_l2_slider.value, 0.0, 1e4),
-            scale_aniso_weight=clamp(self.scale_aniso_slider.value, 0.0, 1e4),
             mcmc_position_noise_enabled=bool(self.mcmc_pos_noise_enabled_checkbox.value),
             mcmc_position_noise_scale=clamp(self.mcmc_pos_noise_scale_slider.value, 0.0, 1e4),
             mcmc_opacity_gate_sharpness=clamp(self.mcmc_opacity_k_slider.value, 0.0, 1e6),
