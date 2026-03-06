@@ -32,34 +32,13 @@ void atomic_add_grad<let N : int>(RWStructuredBuffer<float> gradBuffer, uint bas
     }
 }
 
-uint grad_state_base(uint localIdx, uint fieldOffset)
-{
-    return localIdx * SPLAT_GRAD_STATE_STRIDE + fieldOffset;
-}
-
-void atomic_add_grad_shared<let N : int>(uint base, vector<float, N> grad)
+void atomic_add_grad_wave<let N : int>(RWStructuredBuffer<float> gradBuffer, uint base, vector<float, N> grad)
 {
     [unroll] for (int i = 0; i < N; i++)
     {
         float waveSum = WaveActiveSum(grad[i]);
         if (!WaveIsFirstLane() || waveSum == 0.0) continue;
-        InterlockedAdd(gsGradState[base + uint(i)], waveSum);
-    }
-}
-
-vector<float, N> load_grad_shared<let N : int>(uint base)
-{
-    vector<float, N> grad = 0.0;
-    [unroll] for (int i = 0; i < N; i++) grad[i] = gsGradState[base + uint(i)];
-    return grad;
-}
-
-void clear_batch_gradient_cache(uint batchCount, uint lane)
-{
-    for (uint localIdx = lane; localIdx < batchCount; localIdx += RASTER_GROUP_THREADS)
-    {
-        uint base = localIdx * SPLAT_GRAD_STATE_STRIDE;
-        [unroll] for (uint i = 0u; i < SPLAT_GRAD_STATE_STRIDE; i++) gsGradState[base + i] = 0.0;
+        InterlockedAdd(gradBuffer[base + uint(i)], waveSum);
     }
 }
 
@@ -119,32 +98,15 @@ struct RasterGaussian : IDifferentiable
         gsColorAlpha[localIdx] = half4(colorAlpha);
     }
 
-    static void accumulate_gradients_shared(uint localIdx, Differential dOut)
-    {
-        atomic_add_grad_shared<4>(grad_state_base(localIdx, SPLAT_GRAD_STATE_POS_LOCAL_OFFSET), float4(dOut.roLocal, 0.0));
-        atomic_add_grad_shared<4>(grad_state_base(localIdx, SPLAT_GRAD_STATE_INV_SCALE_OFFSET), float4(dOut.invScale, 0.0));
-        atomic_add_grad_shared<4>(grad_state_base(localIdx, SPLAT_GRAD_STATE_QUAT_OFFSET), dOut.quat);
-        atomic_add_grad_shared<4>(grad_state_base(localIdx, SPLAT_GRAD_STATE_COLOR_ALPHA_OFFSET), dOut.colorAlpha);
-    }
-
-    static void raster_gaussian_load_shared_bwd(uint localIdx, Differential dOut)
-    {
-        accumulate_gradients_shared(localIdx, dOut);
-    }
-};
-
-void flush_batch_gradient_cache(uint batchCount, uint lane)
-{
-    for (uint localIdx = lane; localIdx < batchCount; localIdx += RASTER_GROUP_THREADS)
+    static void accumulate_gradients_global(uint localIdx, Differential dOut)
     {
         uint splatId = gsBatchSplatId[localIdx];
         uint splatBase = splatId * SPLAT_GRAD_COMPONENTS;
 
         CachedEllipsoid.Differential dCached;
-        dCached.roLocal = load_grad_shared<4>(grad_state_base(localIdx, SPLAT_GRAD_STATE_POS_LOCAL_OFFSET)).xyz;
-        dCached.invScale = load_grad_shared<4>(grad_state_base(localIdx, SPLAT_GRAD_STATE_INV_SCALE_OFFSET)).xyz;
-        dCached.quat = load_grad_shared<4>(grad_state_base(localIdx, SPLAT_GRAD_STATE_QUAT_OFFSET));
-        float4 dColorAlpha = load_grad_shared<4>(grad_state_base(localIdx, SPLAT_GRAD_STATE_COLOR_ALPHA_OFFSET));
+        dCached.roLocal = dOut.roLocal;
+        dCached.invScale = dOut.invScale;
+        dCached.quat = dOut.quat;
 
         float3 position = g_Positions[splatId].xyz;
         float3 scale = g_Scales[splatId].xyz;
@@ -154,12 +116,17 @@ void flush_batch_gradient_cache(uint batchCount, uint lane)
         var dpRotation = diffPair(rotation);
         bwd_diff(build_cached_ellipsoid)(dpPosition, dpScale, dpRotation, dCached);
 
-        atomic_add_grad<4>(g_GradPositions, splatBase, float4(dpPosition.getDifferential(), 0.0));
-        atomic_add_grad<4>(g_GradScales, splatBase, float4(dpScale.getDifferential(), 0.0));
-        atomic_add_grad<4>(g_GradRotations, splatBase, dpRotation.getDifferential());
-        atomic_add_grad<4>(g_GradColorAlpha, splatBase, dColorAlpha);
+        atomic_add_grad_wave<4>(g_GradPositions, splatBase, float4(dpPosition.getDifferential(), 0.0));
+        atomic_add_grad_wave<4>(g_GradScales, splatBase, float4(dpScale.getDifferential(), 0.0));
+        atomic_add_grad_wave<4>(g_GradRotations, splatBase, dpRotation.getDifferential());
+        atomic_add_grad_wave<4>(g_GradColorAlpha, splatBase, dOut.colorAlpha);
     }
-}
+
+    static void raster_gaussian_load_shared_bwd(uint localIdx, Differential dOut)
+    {
+        accumulate_gradients_global(localIdx, dOut);
+    }
+};
 
 [Differentiable]
 float raster_eval_alpha_gaussian(RasterGaussian gaussian, no_diff float3 rayDir)
@@ -505,7 +472,6 @@ void raster_backward_replay(
         uint batchCount = batchBase - batchStart;
 
         prefetch_batch_from_global(batchStart, batchBase, lane);
-        clear_batch_gradient_cache(batchCount, lane);
         GroupMemoryBarrierWithGroupSync();
 
         for (uint rev = 0u; rev < batchCount; rev++)
@@ -544,11 +510,9 @@ void raster_backward_replay(
                 }
             }
 
-            RasterGaussian.accumulate_gradients_shared(localIdx, dGaussian);
+            RasterGaussian.accumulate_gradients_global(localIdx, dGaussian);
         }
 
-        GroupMemoryBarrierWithGroupSync();
-        flush_batch_gradient_cache(batchCount, lane);
         GroupMemoryBarrierWithGroupSync();
         batchBase = batchStart;
     }
