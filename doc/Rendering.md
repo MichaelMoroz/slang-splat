@@ -55,14 +55,14 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - Primary ray generation goes through `PinholeCamera.screen_to_world_ray(...)`.
 
 ## 6. Raster Backward
-- Shaders: `csClearRasterGrads`, `csRasterizeBackward`.
+- Shaders: `csClearRasterGrads`, `csRasterizeForwardBackward`.
 - `csClearRasterGrads` zeros per-splat gradient buffers for:
   - `g_SplatPosLocal`
   - `g_SplatInvScale`
   - `g_SplatQuat`
   - `g_ScreenColorAlpha`
-- `csRasterizeBackward` replays the forward tile batch loop to recover terminal per-pixel blend state and processed prefix length, then traverses batches in reverse.
-- The reverse pass manually differentiates the batch loop and uses `bwd_diff(...)` only inside each per-splat reverse step.
+- `csRasterizeForwardBackward` recomputes the forward tile traversal inside the gradient pass, then walks the same batches in reverse, so no per-pixel forward-state textures are needed.
+- The reverse pass still keeps the batch loop explicit, but uses `bwd_diff(...)` for per-splat alpha evaluation, blend steps, and the output-state mapping back from `g_OutputGrad`.
 - Global and groupshared raster loads are implemented via custom derivative functions; their backward functions atomically add gradients into flattened per-splat `float4` gradient buffers (`index = splat_id * 4 + component`).
 - Output gradients are supplied through `g_OutputGrad` (`Texture2D<float4>`), and chain-rule terms include gamma output mapping and alpha output (`1 - transmittance`).
 
@@ -70,7 +70,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - Shader: `shaders/renderer/gaussian_training_stage.slang`.
 - Kernels:
   - `csClearLossAndGradTex`: clears `g_OutputGrad` and scalar loss buffer.
-  - `csComputeMSELossGrad`: computes RGB MSE and writes output gradients for raster backward.
+  - `csComputeMSELossGrad`: computes RGB MSE with autodiff, writes output gradients, and reduces the target signal max used for PSNR.
   - `csAdamStepFused`: one-thread-per-splat fused ADAM update over position, scale, quaternion, color, and opacity.
 - Stability measures in `csAdamStepFused` include:
   - finite-value sanitization,

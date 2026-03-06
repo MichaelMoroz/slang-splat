@@ -50,6 +50,8 @@ class TrainingHyperParams:
     near: float = 0.1
     far: float = 120.0
     ema_decay: float = 0.95
+    psnr_reference_decay: float = 0.995
+    psnr_decay: float = 0.985
     scale_l2_weight: float = 1e-4
     scale_aniso_weight: float = 5.0
     mcmc_position_noise_enabled: bool = True
@@ -64,11 +66,19 @@ class TrainingState:
     step: int = 0
     last_loss: float = float("nan")
     ema_loss: float = float("nan")
+    last_mse: float = float("nan")
+    ema_signal_max: float = float("nan")
+    last_psnr: float = float("nan")
+    ema_psnr: float = float("nan")
     last_frame_index: int = -1
     last_instability: str = ""
 
 
 class GaussianTrainer:
+    _LOSS_SLOT_TOTAL = 0
+    _LOSS_SLOT_MSE = 1
+    _PSNR_MSE_FLOOR = 1e-12
+
     def __init__(
         self,
         device: spy.Device,
@@ -163,7 +173,9 @@ class GaussianTrainer:
         old_capacity = max(self._splat_capacity, 1)
         new_capacity = max(count, old_capacity + old_capacity // 2)
         if "loss" not in self._buffers:
-            self._buffers["loss"] = self.device.create_buffer(size=4, usage=usage_rw)
+            self._buffers["loss"] = self.device.create_buffer(size=8, usage=usage_rw)
+        if "signal_max" not in self._buffers:
+            self._buffers["signal_max"] = self.device.create_buffer(size=4, usage=usage_rw)
         self._buffers["low_quality_flags"] = self.device.create_buffer(size=new_capacity * 4, usage=usage_rw)
         for name in (
             "adam_m_pos",
@@ -370,6 +382,7 @@ class GaussianTrainer:
             vars={
                 "g_OutputGrad": self.renderer.output_grad_texture,
                 "g_LossBuffer": self._buffers["loss"],
+                "g_SignalMaxBuffer": self._buffers["signal_max"],
                 **vars_common,
             },
             command_encoder=encoder,
@@ -381,19 +394,20 @@ class GaussianTrainer:
                 "g_Target": target_texture,
                 "g_OutputGrad": self.renderer.output_grad_texture,
                 "g_LossBuffer": self._buffers["loss"],
+                "g_SignalMaxBuffer": self._buffers["signal_max"],
                 **vars_common,
             },
             command_encoder=encoder,
         )
 
-    def _dispatch_raster_backward(
+    def _dispatch_raster_forward_backward(
         self,
         encoder: spy.CommandEncoder,
         frame_camera,
         background: np.ndarray,
     ) -> None:
         self.renderer.clear_raster_grads_current_scene(encoder)
-        self.renderer.rasterize_backward_current_scene(
+        self.renderer.rasterize_forward_backward_current_scene(
             encoder=encoder,
             camera=frame_camera,
             background=background,
@@ -509,13 +523,42 @@ class GaussianTrainer:
         self.state.step = 0
         self.state.last_loss = float("nan")
         self.state.ema_loss = float("nan")
+        self.state.last_mse = float("nan")
+        self.state.ema_signal_max = float("nan")
+        self.state.last_psnr = float("nan")
+        self.state.ema_psnr = float("nan")
         self.state.last_frame_index = -1
         self.state.last_instability = ""
 
-    def _read_loss_value(self) -> float:
-        raw = self._buffers["loss"].to_numpy()
-        values = np.frombuffer(raw.tobytes(), dtype=np.float32)
-        return float(values[0]) if values.size else float("nan")
+    def _read_loss_metrics(self) -> tuple[float, float, float]:
+        loss_raw = self._buffers["loss"].to_numpy()
+        loss_values = np.frombuffer(loss_raw.tobytes(), dtype=np.float32)
+        signal_raw = self._buffers["signal_max"].to_numpy()
+        signal_values = np.frombuffer(signal_raw.tobytes(), dtype=np.uint32)
+        total_loss = float(loss_values[self._LOSS_SLOT_TOTAL]) if loss_values.size > self._LOSS_SLOT_TOTAL else float("nan")
+        mse = float(loss_values[self._LOSS_SLOT_MSE]) if loss_values.size > self._LOSS_SLOT_MSE else float("nan")
+        signal_max = float(signal_values.view(np.float32)[0]) if signal_values.size else float("nan")
+        return total_loss, mse, signal_max
+
+    def _update_psnr_state(self, mse: float, signal_max: float) -> None:
+        self.state.last_mse = float(mse)
+        ref_decay = float(np.clip(self.training.psnr_reference_decay, 0.0, 0.999999))
+        psnr_decay = float(np.clip(self.training.psnr_decay, 0.0, 0.999999))
+        if np.isfinite(signal_max) and signal_max > 0.0:
+            if not np.isfinite(self.state.ema_signal_max):
+                self.state.ema_signal_max = float(signal_max)
+            else:
+                self.state.ema_signal_max = ref_decay * self.state.ema_signal_max + (1.0 - ref_decay) * float(signal_max)
+        psnr = float("nan")
+        if np.isfinite(mse) and mse >= 0.0 and np.isfinite(self.state.ema_signal_max) and self.state.ema_signal_max > 0.0:
+            mse_safe = max(float(mse), self._PSNR_MSE_FLOOR)
+            psnr = 20.0 * float(np.log10(self.state.ema_signal_max)) - 10.0 * float(np.log10(mse_safe))
+        self.state.last_psnr = psnr
+        if np.isfinite(psnr):
+            if not np.isfinite(self.state.ema_psnr):
+                self.state.ema_psnr = psnr
+            else:
+                self.state.ema_psnr = psnr_decay * self.state.ema_psnr + (1.0 - psnr_decay) * psnr
 
     def step(self) -> float:
         frame_index = int(self._rng.integers(0, len(self.frames)))
@@ -527,11 +570,11 @@ class GaussianTrainer:
         enc = self.device.create_command_encoder()
         self.renderer.rasterize_current_scene(enc, frame_camera, background)
         self._dispatch_loss_grad(enc, target_texture)
-        self._dispatch_raster_backward(enc, frame_camera, background)
+        self._dispatch_raster_forward_backward(enc, frame_camera, background)
         self.device.submit_command_buffer(enc.finish())
         self.device.wait()
 
-        image_loss = self._read_loss_value()
+        image_loss, image_mse, signal_max = self._read_loss_metrics()
         loss = image_loss
         if not np.isfinite(image_loss):
             self.state.last_instability = "Non-finite loss; ADAM step skipped and moments reset."
@@ -545,7 +588,7 @@ class GaussianTrainer:
             self._dispatch_resample_low_quality_splats(enc_opt)
             self.device.submit_command_buffer(enc_opt.finish())
             self.device.wait()
-            loss = self._read_loss_value()
+            loss, _, _ = self._read_loss_metrics()
             if not np.isfinite(loss):
                 self.state.last_instability = "Non-finite regularized loss after ADAM; using image loss."
                 loss = image_loss
@@ -553,6 +596,7 @@ class GaussianTrainer:
         self.state.step += 1
         self.state.last_frame_index = frame_index
         self.state.last_loss = float(loss)
+        self._update_psnr_state(image_mse, signal_max)
         if not np.isfinite(self.state.ema_loss):
             self.state.ema_loss = float(loss)
         else:

@@ -1,9 +1,10 @@
 import "gaussian_types.slang";
 import "camera.slang";
+import "math_constants.slang";
 
 float screen_radius_cap()
 {
-    return max(max(g_Camera.viewport.x, g_Camera.viewport.y), MIN_RADIUS_PX);
+    return max(max(g_Camera.viewport.x, g_Camera.viewport.y), MIN_SCREEN_RADIUS_PX);
 }
 
 bool generate_silhouette_points_local5(float3 roLocal, float eps, out float3 points[MVEE_POINT_COUNT])
@@ -18,7 +19,7 @@ bool generate_silhouette_points_local5(float3 roLocal, float eps, out float3 poi
     float circleRadius = sqrt(max(1.0 - 1.0 / (d * d), 0.0));
     float3 u;
     float3 v;
-    if (n.z < MVEE_SOUTH_POLE_THRESHOLD)
+    if (n.z < SOUTH_POLE_DOT_FLOOR)
     {
         u = float3(0.0, -1.0, 0.0);
         v = float3(-1.0, 0.0, 0.0);
@@ -32,7 +33,7 @@ bool generate_silhouette_points_local5(float3 roLocal, float eps, out float3 poi
 
     [unroll] for (uint i = 0; i < MVEE_POINT_COUNT; i++)
     {
-        float theta = MVEE_FULL_TURN_RADIANS * (float(i) / float(MVEE_POINT_COUNT));
+        float theta = TAU_RADIANS * (float(i) / float(MVEE_POINT_COUNT));
         float s, c;
         sincos(theta, s, c);
         points[i] = circleCenter + circleRadius * (c * u + s * v);
@@ -94,9 +95,9 @@ bool fit_mvee_5pt_fixed_iters(
             }
         }
 
-        float denom = MVEE_AUGMENTED_DIMENSION * (maxVal - 1.0);
+        float denom = MVEE_AFFINE_DIMENSION * (maxVal - 1.0);
         if (denom <= eps) break;
-        float alpha = saturate((maxVal - MVEE_AUGMENTED_DIMENSION) / denom);
+        float alpha = saturate((maxVal - MVEE_AFFINE_DIMENSION) / denom);
         [unroll] for (uint i = 0; i < MVEE_POINT_COUNT; i++) weights[i] *= (1.0 - alpha);
         weights[maxIdx] += alpha;
     }
@@ -145,18 +146,18 @@ bool try_prepare_conic_for_binning(inout Ellipse ellipse, float halfTile)
     float3 conic = ellipse.conic;
     float detConic = conic.x * conic.z - conic.y * conic.y;
     bool useConic = all(isfinite(conic))
-        && conic.x > EPS_CONIC_POSITIVE
-        && conic.z > EPS_CONIC_POSITIVE
-        && detConic > EPS_CONIC_DETERMINANT;
+        && conic.x > POSITIVE_CONIC_FLOOR
+        && conic.z > POSITIVE_CONIC_FLOOR
+        && detConic > CONIC_DETERMINANT_FLOOR;
     if (!useConic) return false;
 
     float traceConic = conic.x + conic.z;
     float discConic = sqrt(max(0.25 * traceConic * traceConic - detConic, 0.0));
     float eigMin = 0.5 * traceConic - discConic;
     float eigMax = 0.5 * traceConic + discConic;
-    float maxAxis = rsqrt(max(eigMin, EPS_CONIC_INV_AXIS));
-    float minAxis = rsqrt(max(eigMax, EPS_CONIC_INV_AXIS));
-    float radiusSafe = max(ellipse.radiusPx, MIN_RADIUS_PX);
+    float maxAxis = rsqrt(max(eigMin, CONIC_AXIS_FLOOR));
+    float minAxis = rsqrt(max(eigMax, CONIC_AXIS_FLOOR));
+    float radiusSafe = max(ellipse.radiusPx, MIN_SCREEN_RADIUS_PX);
     float axisLimit = radiusSafe * 2.0 + halfTile;
     useConic = isfinite(maxAxis)
         && isfinite(minAxis)
@@ -354,7 +355,7 @@ void csProjectAndBin(uint3 dispatchThreadID : SV_DispatchThreadID)
     float camDistance = length(cameraOffset);
     float depthValue = camPos.z;
 
-    float invDepth = 1.0 / max(depthValue, EPS_SMALL);
+    float invDepth = 1.0 / max(depthValue, SMALL_VALUE);
     float2 fitCenter = camera.project_camera_to_screen_linear(camPos);
     float maxAxisWorld = max(ellipsoid.scale.x, max(ellipsoid.scale.y, ellipsoid.scale.z));
     float fallbackFocal = max(g_Camera.focalPixels.x, g_Camera.focalPixels.y);
@@ -362,10 +363,10 @@ void csProjectAndBin(uint3 dispatchThreadID : SV_DispatchThreadID)
     float fallbackRadius = fallbackFocal * maxAxisWorld * invDepth;
     float fitRadius = clamp(
         fallbackRadius * g_Prepass.sampled5SafetyScale + g_Prepass.sampled5RadiusPadPx,
-        MIN_RADIUS_PX,
+        MIN_SCREEN_RADIUS_PX,
         radiusCap
     );
-    float invFitRadius2 = 1.0 / max(fitRadius * fitRadius, EPS_SMALL);
+    float invFitRadius2 = 1.0 / max(fitRadius * fitRadius, SMALL_VALUE);
     float3 fitConic = float3(invFitRadius2, 0.0, invFitRadius2);
 
     float3 localPoints[MVEE_POINT_COUNT];
@@ -396,7 +397,7 @@ void csProjectAndBin(uint3 dispatchThreadID : SV_DispatchThreadID)
                 fitCenter = mveeFit.centerPx;
                 fitRadius = clamp(
                     mveeFit.radiusPx * g_Prepass.sampled5SafetyScale + g_Prepass.sampled5RadiusPadPx,
-                    MIN_RADIUS_PX,
+                    MIN_SCREEN_RADIUS_PX,
                     radiusCap
                 );
                 float conicScale = fitRadius / max(mveeFit.radiusPx, g_Prepass.sampled5Eps);

@@ -20,6 +20,10 @@ from src.scene import (
 from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TrainingHyperParams
 
 
+def _format_metric(value: float, fmt: str) -> str:
+    return format(value, fmt) if np.isfinite(value) else "n/a"
+
+
 def _save_snapshot(path: Path, rgba: np.ndarray) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     rgb = np.clip(rgba[:, :, :3], 0.0, 1.0)
@@ -151,6 +155,7 @@ def _run_train_colmap(args: argparse.Namespace) -> int:
             ips = float(step + 1) / elapsed
             print(
                 f"step={step + 1:6d} loss={loss:.6e} ema={trainer.state.ema_loss:.6e} "
+                f"psnr={_format_metric(trainer.state.ema_psnr, '.2f')}dB "
                 f"iter/s={ips:.2f} instability='{trainer.state.last_instability}'"
             )
         if int(args.snapshot_interval) > 0 and (step + 1) % int(args.snapshot_interval) == 0:

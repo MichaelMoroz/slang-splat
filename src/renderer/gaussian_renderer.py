@@ -97,8 +97,6 @@ class GaussianRenderer:
         self._work_buffers: dict[str, spy.Buffer] = {}
         self._output_texture: spy.Texture | None = None
         self._output_grad_texture: spy.Texture | None = None
-        self._raster_forward_state_texture: spy.Texture | None = None
-        self._raster_processed_count_texture: spy.Texture | None = None
         self._last_stats: dict[str, int | bool | float] = {}
         self._max_scanline_entries = 0
         self._counter_readback_ring: list[spy.Buffer] = []
@@ -130,8 +128,8 @@ class GaussianRenderer:
         self._k_clear_raster_grads = self.device.create_compute_kernel(
             load_program(str(self._raster_shader_path), ["csClearRasterGrads"])
         )
-        self._k_raster_backward = self.device.create_compute_kernel(
-            load_program(str(self._raster_shader_path), ["csRasterizeBackward"])
+        self._k_raster_forward_backward = self.device.create_compute_kernel(
+            load_program(str(self._raster_shader_path), ["csRasterizeForwardBackward"])
         )
 
     def _create_sorter(self) -> None:
@@ -186,8 +184,6 @@ class GaussianRenderer:
             and required_scanline_entries <= self._max_scanline_entries
             and self._output_texture is not None
             and self._output_grad_texture is not None
-            and self._raster_forward_state_texture is not None
-            and self._raster_processed_count_texture is not None
         ):
             return
         old_splat_capacity = max(self._work_splat_capacity, 1)
@@ -243,20 +239,6 @@ class GaussianRenderer:
         if self._output_grad_texture is None:
             self._output_grad_texture = self.device.create_texture(
                 format=spy.Format.rgba32_float,
-                width=self.width,
-                height=self.height,
-                usage=spy.TextureUsage.shader_resource | spy.TextureUsage.unordered_access,
-            )
-        if self._raster_forward_state_texture is None:
-            self._raster_forward_state_texture = self.device.create_texture(
-                format=spy.Format.rgba32_float,
-                width=self.width,
-                height=self.height,
-                usage=spy.TextureUsage.shader_resource | spy.TextureUsage.unordered_access,
-            )
-        if self._raster_processed_count_texture is None:
-            self._raster_processed_count_texture = self.device.create_texture(
-                format=spy.Format.r32_uint,
                 width=self.width,
                 height=self.height,
                 usage=spy.TextureUsage.shader_resource | spy.TextureUsage.unordered_access,
@@ -480,8 +462,6 @@ class GaussianRenderer:
                 "g_SortedValues": self._work_buffers["values"],
                 "g_TileRanges": self._work_buffers["tile_ranges"],
                 "g_Output": self._output_texture,
-                "g_RasterForwardState": self._raster_forward_state_texture,
-                "g_RasterProcessedCount": self._raster_processed_count_texture,
                 **self._prepass_uniforms(self._scene_count),
                 **self._raster_uniforms(background),
                 **self._camera_uniforms(camera),
@@ -503,14 +483,14 @@ class GaussianRenderer:
             command_encoder=encoder,
         )
 
-    def _rasterize_backward(
+    def _rasterize_forward_backward(
         self,
         encoder: spy.CommandEncoder,
         camera: Camera,
         background: np.ndarray,
         output_grad: spy.Texture,
     ) -> None:
-        self._k_raster_backward.dispatch(
+        self._k_raster_forward_backward.dispatch(
             thread_count=spy.uint3(self.width, self.height, 1),
             vars={
                 "g_Positions": self._scene_buffers["positions"],
@@ -521,8 +501,6 @@ class GaussianRenderer:
                 "g_SortedValues": self._work_buffers["values"],
                 "g_TileRanges": self._work_buffers["tile_ranges"],
                 "g_OutputGrad": output_grad,
-                "g_RasterForwardState": self._raster_forward_state_texture,
-                "g_RasterProcessedCount": self._raster_processed_count_texture,
                 "g_GradPositions": self._work_buffers["grad_positions"],
                 "g_GradScales": self._work_buffers["grad_scales"],
                 "g_GradRotations": self._work_buffers["grad_rotations"],
@@ -632,7 +610,7 @@ class GaussianRenderer:
             raise RuntimeError("Scene is not set. Call set_scene() before clear_raster_grads_current_scene().")
         self._clear_raster_grads(encoder, self._current_scene.count)
 
-    def rasterize_backward_current_scene(
+    def rasterize_forward_backward_current_scene(
         self,
         encoder: spy.CommandEncoder,
         camera: Camera,
@@ -640,8 +618,8 @@ class GaussianRenderer:
         output_grad: spy.Texture,
     ) -> None:
         if self._current_scene is None:
-            raise RuntimeError("Scene is not set. Call set_scene() before rasterize_backward_current_scene().")
-        self._rasterize_backward(encoder, camera, background, output_grad)
+            raise RuntimeError("Scene is not set. Call set_scene() before rasterize_forward_backward_current_scene().")
+        self._rasterize_forward_backward(encoder, camera, background, output_grad)
 
     def render_to_texture(
         self,
@@ -732,7 +710,7 @@ class GaussianRenderer:
         self._clear_raster_grads(enc, scene.count)
         if self._output_texture is None:
             raise RuntimeError("Output texture is not initialized.")
-        self._rasterize_backward(enc, camera, background_np, self._output_texture)
+        self._rasterize_forward_backward(enc, camera, background_np, self._output_texture)
         self.device.submit_command_buffer(enc.finish())
         self.device.wait()
         return {

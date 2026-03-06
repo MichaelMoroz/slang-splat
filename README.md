@@ -10,7 +10,7 @@ Runtime target is Vulkan.
 - GPU radix sort integration (copied/adapted from prior project code).
 - GPU tile range build pass from sorted keys.
 - GPU compute rasterizer that blends tile-local sorted splats.
-- Raster backpropagation path for per-splat gradients.
+- Fused raster forward/backward training path for per-splat gradients without per-pixel state buffers.
 - Fused one-thread-per-splat ADAM training kernel.
 - CPU reference implementations and tests for key algorithms.
 
@@ -71,12 +71,14 @@ Training notes:
 - Training target images are stored as `rgba8_unorm` textures (not float32) to reduce GPU memory usage.
 - In viewer COLMAP mode, pointcloud XYZ/RGB are uploaded once on dataset load; gaussian reinitialization is done on GPU from those buffers.
 - Default loss is RGB MSE.
+- Reported training metrics include total loss, EMA loss, and smoothed PSNR computed from image MSE plus an EMA signal max.
 - Target Y-flip is enabled by default.
 - Per-step low-quality reinit is enabled by default: splats with `opacity <= min_opacity` or `max(scale) <= min_scale`
   can be replaced from a random valid donor splat (skip when donor is also low-quality).
 - Numerical reinforcement includes clipping, finite checks, and safe quaternion normalization.
 - Scale regularization uses decoupled post-ADAM L2 decay (`scale -= scale_lr * scale_l2 * scale`).
 - Scale anisotropy regularization is applied in the fused ADAM shader with Slang autodiff and contributes to reported training loss.
+- Shared shader math constants are centralized in `shaders/renderer/math_constants.slang`.
 
 ## Run Tests
 ```powershell

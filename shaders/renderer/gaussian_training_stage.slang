@@ -1,11 +1,13 @@
+import "math_constants.slang";
+
 static const uint TRAIN_TILE_DIM = 16u;
-static const float TRAIN_EPS = 1e-8;
-static const float TRAIN_TWO_PI = 6.28318530718;
-static const float TRAIN_U32_TO_01 = 1.0 / 4294967297.0;
-static const float LOG_2 = 0.69314718056;
-static const float SOFTPLUS_CLAMP = 30.0;
-static const uint TRAIN_RNG_A = 1664525u;
-static const uint TRAIN_RNG_C = 1013904223u;
+static const uint LOSS_SLOT_TOTAL = 0u;
+static const uint LOSS_SLOT_MSE = 1u;
+static const float RGB_CHANNEL_COUNT_INV = 1.0 / 3.0;
+static const float ANISOTROPY_LOG_THRESHOLD = 3.0 * LOG_TWO;
+static const float ANISOTROPY_SHARPNESS = 8.0;
+static const uint RNG_LINEAR_A = 1664525u;
+static const uint RNG_LINEAR_C = 1013904223u;
 
 struct AdamParams
 {
@@ -57,6 +59,7 @@ uniform Texture2D<float4> g_Rendered;
 uniform Texture2D<float4> g_Target;
 uniform RWTexture2D<float4> g_OutputGrad;
 uniform RWStructuredBuffer<float> g_LossBuffer;
+uniform RWStructuredBuffer<uint> g_SignalMaxBuffer;
 uniform Texture2D<float4> g_DebugRendered;
 uniform Texture2D<float4> g_DebugTarget;
 uniform RWTexture2D<float4> g_DebugOutput;
@@ -69,6 +72,7 @@ uniform uint g_LetterboxSourceHeight;
 uniform uint g_LetterboxOutputWidth;
 uniform uint g_LetterboxOutputHeight;
 groupshared float gsLoss[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
+groupshared float gsSignalMax[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
 
 uniform StructuredBuffer<float> g_GradPositions;
 uniform StructuredBuffer<float> g_GradScales;
@@ -129,7 +133,7 @@ float3 clip_norm3(float3 value, float maxNorm)
     if (maxNorm <= 0.0) return value;
     float len = length(value);
     if (!isfinite(len) || len <= maxNorm) return value;
-    return value * (maxNorm / max(len, TRAIN_EPS));
+    return value * (maxNorm / max(len, TINY_VALUE));
 }
 
 float4 clip_norm4(float4 value, float maxNorm)
@@ -137,13 +141,13 @@ float4 clip_norm4(float4 value, float maxNorm)
     if (maxNorm <= 0.0) return value;
     float len = length(value);
     if (!isfinite(len) || len <= maxNorm) return value;
-    return value * (maxNorm / max(len, TRAIN_EPS));
+    return value * (maxNorm / max(len, TINY_VALUE));
 }
 
 float4 normalize_quaternion_safe(float4 q)
 {
     float normQ = length(q);
-    if (!isfinite(normQ) || normQ < TRAIN_EPS) return float4(1.0, 0.0, 0.0, 0.0);
+    if (!isfinite(normQ) || normQ < TINY_VALUE) return float4(1.0, 0.0, 0.0, 0.0);
     return q / normQ;
 }
 
@@ -155,7 +159,7 @@ float3 rotate_by_quat(float3 v, float4 q)
 
 uint rng_next(inout uint state)
 {
-    state = TRAIN_RNG_A * state + TRAIN_RNG_C;
+    state = RNG_LINEAR_A * state + RNG_LINEAR_C;
     return state;
 }
 
@@ -172,16 +176,16 @@ uint hash_u32(uint x)
 float rng_uniform_open01(inout uint state)
 {
     uint bits = rng_next(state);
-    return (float(bits) + 1.0) * TRAIN_U32_TO_01;
+    return (float(bits) + 1.0) * RNG_OPEN01_SCALE;
 }
 
 float2 rng_normal2_box_muller(inout uint state)
 {
-    float u1 = max(rng_uniform_open01(state), TRAIN_EPS);
+    float u1 = max(rng_uniform_open01(state), TINY_VALUE);
     float u2 = rng_uniform_open01(state);
     float radius = sqrt(max(-2.0 * log(u1), 0.0));
     float s, c;
-    sincos(TRAIN_TWO_PI * u2, s, c);
+    sincos(TAU_RADIANS * u2, s, c);
     return radius * float2(c, s);
 }
 
@@ -202,31 +206,36 @@ float4 rng_normal4_box_muller(inout uint state)
 float opacity_noise_gate(float opacity)
 {
     float x = -g_MCMC.opacityGateSharpness * (opacity - g_MCMC.opacityGateCenter);
-    x = clamp(x, -30.0, 30.0);
+    x = clamp(x, -SOFTPLUS_INPUT_LIMIT, SOFTPLUS_INPUT_LIMIT);
     return 1.0 / (1.0 + exp(-x));
 }
 
 [Differentiable]
 float softplus_stable(float x)
 {
-    float xClamped = clamp(x, -SOFTPLUS_CLAMP, SOFTPLUS_CLAMP);
+    float xClamped = clamp(x, -SOFTPLUS_INPUT_LIMIT, SOFTPLUS_INPUT_LIMIT);
     if (xClamped > 0.0) return xClamped + log(1.0 + exp(-xClamped));
     return log(1.0 + exp(xClamped));
 }
 
 [Differentiable]
+float rgb_mse_loss(float3 rendered, no_diff float3 target, no_diff float invPixelCount)
+{
+    float3 diff = rendered - target;
+    return dot(diff, diff) * RGB_CHANNEL_COUNT_INV * invPixelCount;
+}
+
+[Differentiable]
 float scale_aniso_loss(float3 scale)
 {
-    float3 s = max(scale, float3(TRAIN_EPS));
+    float3 s = max(scale, float3(TINY_VALUE));
     float3 l = log(s);
-    float threshold = 3.0 * LOG_2;
-    float sharpness = 8.0;
-    float dxy = sqrt((l.x - l.y) * (l.x - l.y) + TRAIN_EPS);
-    float dxz = sqrt((l.x - l.z) * (l.x - l.z) + TRAIN_EPS);
-    float dyz = sqrt((l.y - l.z) * (l.y - l.z) + TRAIN_EPS);
-    float pxy = softplus_stable(sharpness * (dxy - threshold)) / sharpness;
-    float pxz = softplus_stable(sharpness * (dxz - threshold)) / sharpness;
-    float pyz = softplus_stable(sharpness * (dyz - threshold)) / sharpness;
+    float dxy = sqrt((l.x - l.y) * (l.x - l.y) + TINY_VALUE);
+    float dxz = sqrt((l.x - l.z) * (l.x - l.z) + TINY_VALUE);
+    float dyz = sqrt((l.y - l.z) * (l.y - l.z) + TINY_VALUE);
+    float pxy = softplus_stable(ANISOTROPY_SHARPNESS * (dxy - ANISOTROPY_LOG_THRESHOLD)) / ANISOTROPY_SHARPNESS;
+    float pxz = softplus_stable(ANISOTROPY_SHARPNESS * (dxz - ANISOTROPY_LOG_THRESHOLD)) / ANISOTROPY_SHARPNESS;
+    float pyz = softplus_stable(ANISOTROPY_SHARPNESS * (dyz - ANISOTROPY_LOG_THRESHOLD)) / ANISOTROPY_SHARPNESS;
     return (pxy + pxz + pyz) * (1.0 / 3.0);
 }
 
@@ -258,8 +267,8 @@ float4 adam_update_param(
     momentM = sanitize_float4(momentM, g_Stability.hugeValue);
     momentV = sanitize_float4(momentV, g_Stability.hugeValue);
 
-    float4 mHat = momentM / max(biasCorr1, TRAIN_EPS);
-    float4 vHat = momentV / max(biasCorr2, TRAIN_EPS);
+    float4 mHat = momentM / max(biasCorr1, TINY_VALUE);
+    float4 vHat = momentV / max(biasCorr2, TINY_VALUE);
     float4 update = lr * mHat / (sqrt(max(vHat, 0.0)) + g_Adam.epsilon);
     update = sanitize_float4(update, g_Stability.maxUpdate);
     update = clamp(update, -g_Stability.maxUpdate, g_Stability.maxUpdate);
@@ -274,7 +283,12 @@ void csClearLossAndGradTex(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint px = dispatchThreadID.x;
     uint py = dispatchThreadID.y;
     if (px < g_Width && py < g_Height) g_OutputGrad[uint2(px, py)] = 0.0;
-    if (px == 0u && py == 0u) g_LossBuffer[0] = 0.0;
+    if (px == 0u && py == 0u)
+    {
+        g_LossBuffer[LOSS_SLOT_TOTAL] = 0.0;
+        g_LossBuffer[LOSS_SLOT_MSE] = 0.0;
+        g_SignalMaxBuffer[0] = 0u;
+    }
 }
 
 [shader("compute")]
@@ -289,32 +303,41 @@ void csComputeMSELossGrad(
     uint py = dispatchThreadID.y;
 
     float localLoss = 0.0;
+    float localSignalMax = 0.0;
     if (px < g_Width && py < g_Height)
     {
         uint2 pixel = uint2(px, py);
-        float3 rendered = g_Rendered[pixel].xyz;
-        float3 target = g_Target[pixel].xyz;
-        float3 diff = sanitize_float3(rendered - target, g_Stability.hugeValue);
-
-        float loss = dot(diff, diff) * (1.0 / 3.0) * g_InvPixelCount;
+        float3 rendered = sanitize_float3(g_Rendered[pixel].xyz, g_Stability.hugeValue);
+        float3 target = sanitize_float3(g_Target[pixel].xyz, g_Stability.hugeValue);
+        float loss = rgb_mse_loss(rendered, target, g_InvPixelCount);
         localLoss = isfinite(loss) ? loss : 0.0;
+        localSignalMax = max(target.x, max(target.y, target.z));
 
-        float3 dOut = 2.0 * diff * (1.0 / 3.0) * g_InvPixelCount;
-        dOut = sanitize_float3(dOut, g_LossGradClip);
+        var dpRendered = diffPair(rendered);
+        bwd_diff(rgb_mse_loss)(dpRendered, target, g_InvPixelCount, 1.0);
+        float3 dOut = sanitize_float3(dpRendered.getDifferential(), g_LossGradClip);
         dOut = clamp(dOut, -g_LossGradClip, g_LossGradClip);
         g_OutputGrad[pixel] = float4(dOut, 0.0);
-    } else {
-        localLoss = 0.0;
     }
 
     gsLoss[localIndex] = localLoss;
+    gsSignalMax[localIndex] = isfinite(localSignalMax) ? max(localSignalMax, 0.0) : 0.0;
     GroupMemoryBarrierWithGroupSync();
     [unroll] for (uint stride = (TRAIN_TILE_DIM * TRAIN_TILE_DIM) >> 1; stride > 0; stride >>= 1)
     {
         if (localIndex < stride) gsLoss[localIndex] += gsLoss[localIndex + stride];
+        if (localIndex < stride) gsSignalMax[localIndex] = max(gsSignalMax[localIndex], gsSignalMax[localIndex + stride]);
         GroupMemoryBarrierWithGroupSync();
     }
-    if (localIndex == 0u && isfinite(gsLoss[0])) InterlockedAdd(g_LossBuffer[0], gsLoss[0]);
+    if (localIndex == 0u)
+    {
+        if (isfinite(gsLoss[0]))
+        {
+            InterlockedAdd(g_LossBuffer[LOSS_SLOT_TOTAL], gsLoss[0]);
+            InterlockedAdd(g_LossBuffer[LOSS_SLOT_MSE], gsLoss[0]);
+        }
+        InterlockedMax(g_SignalMaxBuffer[0], asuint(max(gsSignalMax[0], 0.0)));
+    }
 }
 
 [shader("compute")]
@@ -362,8 +385,8 @@ void csComposeLetterboxDebug(uint3 dispatchThreadID : SV_DispatchThreadID)
         return;
     }
 
-    float u = (sampleX - offsetX) / max(fitW, TRAIN_EPS);
-    float v = (sampleY - offsetY) / max(fitH, TRAIN_EPS);
+    float u = (sampleX - offsetX) / max(fitW, TINY_VALUE);
+    float v = (sampleY - offsetY) / max(fitH, TINY_VALUE);
     uint srcX = min(uint(u * srcW), g_LetterboxSourceWidth - 1u);
     uint srcY = min(uint(v * srcH), g_LetterboxSourceHeight - 1u);
     g_LetterboxOutput[uint2(px, py)] = g_LetterboxSource[uint2(srcX, srcY)];
@@ -414,7 +437,7 @@ void csAdamStepFused(uint3 dispatchThreadID : SV_DispatchThreadID)
         bwd_diff(scale_aniso_loss)(dpScaleAniso, scaleAnisoWeight);
         gradScale.xyz += dpScaleAniso.getDifferential();
         float lossAdd = scaleAnisoWeight * anisoLoss / max(float(g_SplatCount), 1.0);
-        if (isfinite(lossAdd) && lossAdd != 0.0) InterlockedAdd(g_LossBuffer[0], lossAdd);
+        if (isfinite(lossAdd) && lossAdd != 0.0) InterlockedAdd(g_LossBuffer[LOSS_SLOT_TOTAL], lossAdd);
     }
 
     float clipAbs = g_Stability.gradComponentClip;

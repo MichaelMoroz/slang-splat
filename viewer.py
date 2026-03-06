@@ -1149,11 +1149,12 @@ class SplatViewer(spy.AppWindow):
         else:
             state = self.trainer.state
             status = "running" if self.training_active else "paused"
+            psnr_text = f"{state.ema_psnr:.2f} dB" if np.isfinite(state.ema_psnr) else "n/a"
             self.training_text.text = (
                 f"Training: {status} | step={state.step:,} | frame={state.last_frame_index}"
             )
             self.training_loss_text.text = (
-                f"Loss: {state.last_loss:.6e} | EMA: {state.ema_loss:.6e} | {state.last_instability}"
+                f"Loss: {state.last_loss:.6e} | EMA: {state.ema_loss:.6e} | PSNR: {psnr_text} | {state.last_instability}"
             )
         self.error_text.text = f"Error: {self.last_error}" if self.last_error else ""
 

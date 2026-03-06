@@ -33,7 +33,7 @@ Each trainer `step()` performs:
 2. Upload frame image as target texture (Y-flip enabled by default).
 3. Run renderer prepass + raster forward.
 4. Run loss kernel (`RGB MSE`) to produce `g_OutputGrad`.
-5. Run raster backward to fill per-splat gradient buffers.
+5. Run fused raster forward/backward replay to fill per-splat gradient buffers without cached per-pixel forward state.
 6. Run fused ADAM kernel (`csAdamStepFused`) with one thread per Gaussian.
    - Scale anisotropy regularization is computed in-kernel via Slang autodiff on `scale.xyz`.
    - The anisotropy term uses smooth pairwise log-scale ratio penalties with threshold ratio `8`.
@@ -45,7 +45,7 @@ Each trainer `step()` performs:
 
 ## Kernels
 - `csClearLossAndGradTex`: zero loss + output-grad texture.
-- `csComputeMSELossGrad`: output-space gradient for raster backward.
+- `csComputeMSELossGrad`: computes RGB MSE via Slang autodiff, writes output gradients, and reduces the target signal max used for PSNR.
 - `csAdamStepFused`: updates all trainable params in one pass:
   - position,
   - scale,
@@ -76,6 +76,10 @@ Each trainer `step()` performs:
 - Quaternion normalization each step with identity fallback.
 - Host guard:
   - if loss is non-finite, ADAM step is skipped and moments are reset.
+- Host metrics:
+  - `last_mse` stores the image MSE from `csComputeMSELossGrad`,
+  - `ema_signal_max` tracks a slow EMA of per-frame target max intensity,
+  - `ema_psnr` reports a more heavily smoothed PSNR for UI/CLI display.
 
 ## CLI
 Example:

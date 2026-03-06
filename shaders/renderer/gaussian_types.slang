@@ -1,4 +1,5 @@
 import "camera.slang";
+import "math_constants.slang";
 
 static const uint UINT_MAX_VALUE = 0xFFFFFFFFu;
 static const uint INVALID_START = UINT_MAX_VALUE;
@@ -14,21 +15,6 @@ static const uint SPLAT_GRAD_STATE_COLOR_ALPHA_OFFSET = SPLAT_GRAD_STATE_QUAT_OF
 static const uint SPLAT_GRAD_STATE_STRIDE = SPLAT_GRAD_STATE_COLOR_ALPHA_OFFSET + SPLAT_GRAD_COMPONENTS;
 static const uint MVEE_POINT_COUNT = 5u;
 static const uint MVEE_MAX_ITERS = 8u;
-static const float MVEE_FULL_TURN_RADIANS = 6.28318530718;
-static const float MVEE_SOUTH_POLE_THRESHOLD = -0.9999999;
-static const float MVEE_AUGMENTED_DIMENSION = 3.0;
-static const float GAMMA_LINEAR_TO_OUTPUT = 2.2;
-static const float EPS_DEPTH_VISIBILITY = 1e-4;
-static const float EPS_SMALL = 1e-6;
-static const float EPS_RAY_DENOM = 1e-10;
-static const float EPS_CONIC_POSITIVE = 1e-10;
-static const float EPS_CONIC_DETERMINANT = 1e-12;
-static const float EPS_CONIC_INV_AXIS = 1e-20;
-static const float EPS_CONIC_INTERSECTION = 1e-5;
-static const float MIN_RADIUS_PX = 1.0;
-static const float MIN_BBOX_EXTENT_PX = 1e-4;
-static const float MIN_DEBUG_THICKNESS_PX = 0.25;
-static const float EPS_GRADIENT_LENGTH = 1e-4;
 
 struct ScanlineWorkItem
 {
@@ -73,8 +59,6 @@ uniform StructuredBuffer<uint> g_PrepassParams;
 
 uniform RWTexture2D<float4> g_Output;
 uniform Texture2D<float4> g_OutputGrad;
-uniform RWTexture2D<float4> g_RasterForwardState;
-uniform RWTexture2D<uint> g_RasterProcessedCount;
 
 uniform RWStructuredBuffer<float> g_GradPositions;
 uniform RWStructuredBuffer<float> g_GradScales;
@@ -162,7 +146,7 @@ struct Ellipse
 
     bool isVisible(float camDistance, float depthValue, float2 viewport, float nearDepth, float farDepth)
     {
-        return depthValue > EPS_DEPTH_VISIBILITY
+        return depthValue > DEPTH_VISIBILITY_FLOOR
             && camDistance > nearDepth
             && camDistance < farDepth
             && (centerPx.x + radiusPx) >= 0.0
@@ -174,7 +158,7 @@ struct Ellipse
     bool chooseScanAlongX(uint spanX, uint spanY)
     {
         bool scanAlongX = bboxExtent.x >= bboxExtent.y;
-        if (abs(bboxExtent.x - bboxExtent.y) < EPS_SMALL) scanAlongX = spanX >= spanY;
+        if (abs(bboxExtent.x - bboxExtent.y) < SMALL_VALUE) scanAlongX = spanX >= spanY;
         return scanAlongX;
     }
 
@@ -191,14 +175,14 @@ struct Ellipse
         );
         if (boxMin.x <= 0.0 && 0.0 <= boxMax.x && boxMin.y <= 0.0 && 0.0 <= boxMax.y) return 0.0;
 
-        if (conic.z > EPS_CONIC_DETERMINANT)
+        if (conic.z > CONIC_DETERMINANT_FLOOR)
         {
             float yAtMinX = clamp(-conic.y * boxMin.x / conic.z, boxMin.y, boxMax.y);
             float yAtMaxX = clamp(-conic.y * boxMax.x / conic.z, boxMin.y, boxMax.y);
             minVal = min(minVal, evalConic(float2(boxMin.x, yAtMinX)));
             minVal = min(minVal, evalConic(float2(boxMax.x, yAtMaxX)));
         }
-        if (conic.x > EPS_CONIC_DETERMINANT)
+        if (conic.x > CONIC_DETERMINANT_FLOOR)
         {
             float xAtMinY = clamp(-conic.y * boxMin.y / conic.x, boxMin.x, boxMax.x);
             float xAtMaxY = clamp(-conic.y * boxMax.y / conic.x, boxMin.x, boxMax.x);
@@ -210,7 +194,7 @@ struct Ellipse
 
     bool intersectsTileBox(float2 boxMin, float2 boxMax)
     {
-        return minConicOverTileBox(boxMin, boxMax) <= 1.0 + EPS_CONIC_INTERSECTION;
+        return minConicOverTileBox(boxMin, boxMax) <= 1.0 + CONIC_INTERSECTION_SLACK;
     }
 };
 
@@ -284,7 +268,7 @@ float3 rotate_by_quat(float3 v, float4 q)
 
 uint quantizeDepth(float depthValue)
 {
-    float denom = max(g_Camera.farDepth - g_Camera.nearDepth, EPS_SMALL);
+    float denom = max(g_Camera.farDepth - g_Camera.nearDepth, SMALL_VALUE);
     float t = saturate((depthValue - g_Camera.nearDepth) / denom);
     uint maxValue = (1u << g_Prepass.depthBits) - 1u;
     return min((uint)round(t * float(maxValue)), maxValue);
@@ -321,7 +305,7 @@ bool inverse3x3(float3x3 m, float eps, out float3x3 invOut)
 
 float3 local_point_to_world(float3 pLocal, float3 worldPos, float3 invScale, float4 q)
 {
-    float3 invScaleSafe = max(invScale, float3(EPS_SMALL));
+    float3 invScaleSafe = max(invScale, float3(SMALL_VALUE));
     float3 localUnscaled = pLocal / invScaleSafe;
     float4 qInv = float4(q.x, -q.y, -q.z, -q.w);
     return worldPos + rotate_by_quat(localUnscaled, qInv);
@@ -334,7 +318,7 @@ Ellipsoid build_ellipsoid(Gaussian3D gaussian)
     Ellipsoid ellipsoid;
     ellipsoid.centerWorld = gaussian.position;
     ellipsoid.scale = gaussian.scale * g_Prepass.radiusScale;
-    ellipsoid.invScale = 1.0 / max(ellipsoid.scale, float3(EPS_SMALL));
+    ellipsoid.invScale = 1.0 / max(ellipsoid.scale, float3(SMALL_VALUE));
     ellipsoid.rotation = gaussian.rotation;
     ellipsoid.roLocal = rotate_by_quat(camera.position_world() - ellipsoid.centerWorld, ellipsoid.rotation) * ellipsoid.invScale;
     return ellipsoid;

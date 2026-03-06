@@ -1,4 +1,4 @@
-static const float CAMERA_EPS_SMALL = 1e-6;
+import "math_constants.slang";
 
 struct CameraParams
 {
@@ -62,13 +62,13 @@ struct PinholeCamera : ICamera
 
     float2 project_camera_to_screen_linear(float3 cameraPos)
     {
-        float invDepth = 1.0 / max(cameraPos.z, CAMERA_EPS_SMALL);
+        float invDepth = 1.0 / max(cameraPos.z, SMALL_VALUE);
         return cameraPos.xy * (params.focalPixels * invDepth) + params.principalPoint;
     }
 
     bool project_camera_to_screen(float3 cameraPos, out float2 screenPos)
     {
-        if (cameraPos.z <= CAMERA_EPS_SMALL)
+        if (cameraPos.z <= SMALL_VALUE)
         {
             screenPos = 0.0;
             return false;
@@ -89,15 +89,15 @@ struct PinholeCamera : ICamera
 
     float3 screen_to_world(float2 screenPos, float depth)
     {
-        float2 focalSafe = max(params.focalPixels, float2(CAMERA_EPS_SMALL));
-        float depthSafe = max(depth, CAMERA_EPS_SMALL);
+        float2 focalSafe = max(params.focalPixels, float2(SMALL_VALUE));
+        float depthSafe = max(depth, SMALL_VALUE);
         float2 uv = (screenPos - params.principalPoint) / focalSafe;
         return camera_point_to_world(float3(uv * depthSafe, depthSafe));
     }
 
     float3 screen_to_world_ray(float2 screenPos)
     {
-        float2 focalSafe = max(params.focalPixels, float2(CAMERA_EPS_SMALL));
+        float2 focalSafe = max(params.focalPixels, float2(SMALL_VALUE));
         float2 uv = (screenPos - params.principalPoint) / focalSafe;
         return normalize(camera_to_world(float3(uv, 1.0)));
     }
@@ -109,7 +109,7 @@ struct PinholeCamera : ICamera
 
     bool is_depth_in_range(float depthValue)
     {
-        return depthValue > CAMERA_EPS_SMALL && depthValue >= params.nearDepth && depthValue <= params.farDepth;
+        return depthValue > SMALL_VALUE && depthValue >= params.nearDepth && depthValue <= params.farDepth;
     }
 
     float3 position_world()

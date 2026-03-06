@@ -1,5 +1,6 @@
 import "gaussian_types.slang";
 import "camera.slang";
+import "math_constants.slang";
 
 struct RasterState : IDifferentiable
 {
@@ -14,7 +15,7 @@ struct RasterState : IDifferentiable
 
     RasterState undo(float3 color, float alpha)
     {
-        float denom = max(1.0 - alpha, EPS_SMALL);
+        float denom = max(1.0 - alpha, SMALL_VALUE);
         float prevTrans = trans / denom;
         float3 prevAccum = accum - prevTrans * alpha * color;
         return { prevAccum, prevTrans };
@@ -164,7 +165,7 @@ float raster_eval_alpha(uint localIdx, no_diff float3 rayDir)
 
     float3 rdLocal = rotate_by_quat(rayDir, gaussian.quat) * gaussian.invScale;
     float denom = dot(rdLocal, rdLocal);
-    if (denom <= EPS_RAY_DENOM) return 0.0;
+    if (denom <= RAY_DENOMINATOR_FLOOR) return 0.0;
 
     float tClosest = dot(rdLocal, -gaussian.roLocal) / denom;
     if (tClosest <= 0.0) return 0.0;
@@ -191,6 +192,25 @@ RasterState raster_undo_blend_step(RasterState nextState, float4 colorAlpha, flo
 {
     return nextState.undo(colorAlpha.xyz, alpha);
 }
+
+[Differentiable]
+float4 raster_output_from_state(RasterState state, no_diff float3 background)
+{
+    float3 finalColor = state.accum + state.trans * background;
+    return float4(pow(max(finalColor, 0.0), OUTPUT_GAMMA), 1.0 - state.trans);
+}
+
+struct RasterPixelInfo
+{
+    bool pixelActive;
+    bool hasTileRange;
+    uint2 pixelCoord;
+    uint samplePx;
+    uint samplePy;
+    uint start;
+    uint end;
+    float3 rayDir;
+};
 
 void prefetch_batch_from_global(uint batchStart, uint batchEnd, uint lane)
 {
@@ -249,13 +269,155 @@ RasterState raster_forward_replay(
     return state;
 }
 
-float3 output_to_linear_grad(float3 finalColor, float3 dOutputRgb)
+RasterPixelInfo resolve_raster_pixel(uint3 dispatchThreadID)
 {
-    float3 dLinear = 0.0;
-    if (finalColor.x > 0.0) dLinear.x = dOutputRgb.x * GAMMA_LINEAR_TO_OUTPUT * pow(finalColor.x, GAMMA_LINEAR_TO_OUTPUT - 1.0);
-    if (finalColor.y > 0.0) dLinear.y = dOutputRgb.y * GAMMA_LINEAR_TO_OUTPUT * pow(finalColor.y, GAMMA_LINEAR_TO_OUTPUT - 1.0);
-    if (finalColor.z > 0.0) dLinear.z = dOutputRgb.z * GAMMA_LINEAR_TO_OUTPUT * pow(finalColor.z, GAMMA_LINEAR_TO_OUTPUT - 1.0);
-    return dLinear;
+    RasterPixelInfo info;
+    uint px = dispatchThreadID.x;
+    uint py = dispatchThreadID.y;
+    info.pixelCoord = uint2(px, py);
+    info.pixelActive = px < g_Raster.width && py < g_Raster.height;
+    info.samplePx = min(px, g_Raster.width - 1u);
+    info.samplePy = min(py, g_Raster.height - 1u);
+    uint tileX = info.samplePx / g_Prepass.tileSize;
+    uint tileY = info.samplePy / g_Prepass.tileSize;
+    uint tileId = tileY * g_Prepass.tileWidth + tileX;
+    uint2 range = g_TileRanges[tileId];
+    info.hasTileRange = range.x != INVALID_START && range.y > range.x;
+    info.start = info.hasTileRange ? range.x : 0u;
+    info.end = info.hasTileRange ? min(range.y, info.start + g_Raster.maxSplatSteps) : info.start;
+    PinholeCamera camera = PinholeCamera.from_params(g_Camera);
+    info.rayDir = camera.screen_to_world_ray(float2(info.samplePx, info.samplePy) + 0.5);
+    return info;
+}
+
+float4 raster_forward_output(
+    RasterPixelInfo info,
+    RasterState state,
+    uint processedCount
+)
+{
+    if (!info.pixelActive)
+    {
+        return float4(0.0, 0.0, 0.0, 1.0);
+    }
+
+    if (!info.hasTileRange)
+    {
+        float3 bgColor = (g_Raster.debugShowProcessedCount != 0u)
+            ? float3(0.0)
+            : pow(max(g_Raster.background, 0.0), OUTPUT_GAMMA);
+        return float4(bgColor, 1.0);
+    }
+
+    if (g_Raster.debugShowProcessedCount != 0u)
+    {
+        float processed = float(processedCount);
+        float logMax = log2(float(g_Raster.maxSplatSteps) + 1.0);
+        float normalized = (logMax > 0.0) ? saturate(log2(processed + 1.0) / logMax) : 0.0;
+        return float4(float3(normalized), 1.0);
+    }
+
+    float3 finalColor = state.accum + state.trans * g_Raster.background;
+    if (g_Raster.debugShowEllipses != 0u)
+    {
+        float2 samplePoint = float2(info.pixelCoord) + 0.5;
+        float maxEdge = 0.0;
+        float3 edgeColor = g_Raster.debugEllipseColor;
+        float thicknessPx = max(g_Raster.debugEllipseThicknessPx, MIN_DEBUG_THICKNESS_PX);
+        for (uint idx = info.start; idx < info.end; idx++)
+        {
+            uint splatId = g_SortedValues[idx];
+            float4 centerRadiusDepth = g_ScreenCenterRadiusDepth[splatId];
+            float2 d = samplePoint - centerRadiusDepth.xy;
+            float bound = centerRadiusDepth.z + thicknessPx;
+            if (any(abs(d) > bound)) continue;
+
+            float4 conic = g_ScreenEllipseConic[splatId];
+            if (conic.w <= 0.0) continue;
+            float2x2 conicMatrix = float2x2(conic.x, conic.y, conic.y, conic.z);
+            float2 grad = mul(conicMatrix, d);
+            float quad = dot(d, grad);
+            float gradLen = max(length(2.0 * grad), GRADIENT_LENGTH_FLOOR);
+            float edgeDistance = abs(quad - 1.0) / gradLen;
+            float edge = saturate(1.0 - edgeDistance / thicknessPx);
+            if (edge > maxEdge)
+            {
+                maxEdge = edge;
+                edgeColor = g_ScreenColorAlpha[splatId].xyz;
+            }
+        }
+        finalColor = lerp(finalColor, edgeColor, maxEdge);
+    }
+
+    float3 colorOut = pow(max(finalColor, 0.0), OUTPUT_GAMMA);
+    return float4(colorOut, 1.0 - state.trans);
+}
+
+RasterState.Differential raster_output_gradient(
+    RasterPixelInfo info,
+    RasterState state
+)
+{
+    RasterState.Differential dState;
+    dState.accum = 0.0;
+    dState.trans = 0.0;
+    if (!info.pixelActive || !info.hasTileRange) return dState;
+
+    var dpState = diffPair(state);
+    bwd_diff(raster_output_from_state)(dpState, g_Raster.background, g_OutputGrad[info.pixelCoord]);
+    return dpState.getDifferential();
+}
+
+void raster_backward_replay(
+    RasterPixelInfo info,
+    RasterState state,
+    uint processedCount,
+    RasterState.Differential dState,
+    uint lane
+)
+{
+    if (!info.hasTileRange)
+    {
+        GroupMemoryBarrierWithGroupSync();
+        return;
+    }
+
+    uint processedEnd = info.start + processedCount;
+    for (uint batchBase = info.end; batchBase > info.start;)
+    {
+        uint batchStart = (batchBase > info.start + RASTER_BATCH) ? (batchBase - RASTER_BATCH) : info.start;
+        uint batchCount = batchBase - batchStart;
+
+        prefetch_batch_from_global(batchStart, batchBase, lane);
+        clear_batch_gradient_cache(batchCount, lane);
+        GroupMemoryBarrierWithGroupSync();
+
+        for (uint rev = 0u; rev < batchCount; rev++)
+        {
+            uint localIdx = batchCount - 1u - rev;
+            uint globalIdx = batchStart + localIdx;
+            if (!info.pixelActive || globalIdx >= processedEnd) continue;
+
+            float alpha = raster_eval_alpha(localIdx, info.rayDir);
+            if (alpha <= 0.0) continue;
+
+            float4 colorAlpha = float4(gsColorAlpha[localIdx]);
+            RasterState prevState = raster_undo_blend_step(state, colorAlpha, alpha);
+
+            var dpPrevState = diffPair(prevState);
+            var dpAlpha = diffPair(alpha);
+            bwd_diff(raster_blend_step)(dpPrevState, localIdx, dpAlpha, dState);
+            bwd_diff(raster_eval_alpha)(localIdx, info.rayDir, dpAlpha.getDifferential());
+
+            state = prevState;
+            dState = dpPrevState.getDifferential();
+        }
+
+        GroupMemoryBarrierWithGroupSync();
+        flush_batch_gradient_cache(batchCount, lane);
+        GroupMemoryBarrierWithGroupSync();
+        batchBase = batchStart;
+    }
 }
 
 [shader("compute")]
@@ -276,169 +438,22 @@ void csClearRasterGrads(uint3 dispatchThreadID : SV_DispatchThreadID)
 [numthreads(RASTER_TILE_DIM, RASTER_TILE_DIM, 1)]
 void csRasterize(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_GroupIndex)
 {
-    uint px = dispatchThreadID.x;
-    uint py = dispatchThreadID.y;
-    bool pixelActive = px < g_Raster.width && py < g_Raster.height;
-    uint samplePx = min(px, g_Raster.width - 1u);
-    uint samplePy = min(py, g_Raster.height - 1u);
-    PinholeCamera camera = PinholeCamera.from_params(g_Camera);
-
-    uint tileX = samplePx / g_Prepass.tileSize;
-    uint tileY = samplePy / g_Prepass.tileSize;
-    uint tileId = tileY * g_Prepass.tileWidth + tileX;
-    uint2 range = g_TileRanges[tileId];
-    bool hasTileRange = range.x != INVALID_START && range.y > range.x;
+    RasterPixelInfo info = resolve_raster_pixel(dispatchThreadID);
     RasterState state = { 0.0, 1.0 };
     uint processedCount = 0u;
-    float4 outputValue = float4(0.0, 0.0, 0.0, 1.0);
-    if (hasTileRange)
-    {
-        uint start = range.x;
-        uint end = min(range.y, start + g_Raster.maxSplatSteps);
-        float3 rayDir = camera.screen_to_world_ray(float2(samplePx, samplePy) + 0.5);
-        state = raster_forward_replay(start, end, pixelActive, rayDir, lane, processedCount);
-
-        if (pixelActive)
-        {
-            if (g_Raster.debugShowProcessedCount != 0u)
-            {
-                float processed = float(processedCount);
-                float logMax = log2(float(g_Raster.maxSplatSteps) + 1.0);
-                float normalized = (logMax > 0.0) ? saturate(log2(processed + 1.0) / logMax) : 0.0;
-                float3 debugColor = float3(normalized);
-                outputValue = float4(debugColor, 1.0);
-            } else {
-                float3 finalColor = state.accum + state.trans * g_Raster.background;
-                if (g_Raster.debugShowEllipses != 0u)
-                {
-                    float2 samplePoint = float2(px, py) + 0.5;
-                    float maxEdge = 0.0;
-                    float3 edgeColor = g_Raster.debugEllipseColor;
-                    float thicknessPx = max(g_Raster.debugEllipseThicknessPx, MIN_DEBUG_THICKNESS_PX);
-                    for (uint idx = start; idx < end; idx++)
-                    {
-                        uint splatId = g_SortedValues[idx];
-                        float4 centerRadiusDepth = g_ScreenCenterRadiusDepth[splatId];
-                        float2 d = samplePoint - centerRadiusDepth.xy;
-                        float bound = centerRadiusDepth.z + thicknessPx;
-                        if (any(abs(d) > bound)) continue;
-
-                        float4 conic = g_ScreenEllipseConic[splatId];
-                        if (conic.w <= 0.0) continue;
-                        float2x2 conicMatrix = float2x2(conic.x, conic.y, conic.y, conic.z);
-                        float2 grad = mul(conicMatrix, d);
-                        float quad = dot(d, grad);
-                        float gradLen = max(length(2.0 * grad), EPS_GRADIENT_LENGTH);
-                        float edgeDistance = abs(quad - 1.0) / gradLen;
-                        float edge = saturate(1.0 - edgeDistance / thicknessPx);
-                        if (edge > maxEdge)
-                        {
-                            maxEdge = edge;
-                            edgeColor = g_ScreenColorAlpha[splatId].xyz;
-                        }
-                    }
-                    finalColor = lerp(finalColor, edgeColor, maxEdge);
-                }
-
-                float3 linearOut = pow(max(finalColor, 0.0), GAMMA_LINEAR_TO_OUTPUT);
-                outputValue = float4(linearOut, 1.0 - state.trans);
-            }
-        }
-    } else if (pixelActive) {
-        float3 bgColor = (g_Raster.debugShowProcessedCount != 0u)
-            ? float3(0.0)
-            : pow(max(g_Raster.background, 0.0), GAMMA_LINEAR_TO_OUTPUT);
-        outputValue = float4(bgColor, 1.0);
-    }
-
-    if (pixelActive)
-    {
-        uint2 pixelCoord = uint2(px, py);
-        g_RasterForwardState[pixelCoord] = float4(state.accum, state.trans);
-        g_RasterProcessedCount[pixelCoord] = processedCount;
-        g_Output[pixelCoord] = outputValue;
-    }
+    if (info.hasTileRange) state = raster_forward_replay(info.start, info.end, info.pixelActive, info.rayDir, lane, processedCount);
+    if (info.pixelActive) g_Output[info.pixelCoord] = raster_forward_output(info, state, processedCount);
 }
 
 [shader("compute")]
 [numthreads(RASTER_TILE_DIM, RASTER_TILE_DIM, 1)]
-void csRasterizeBackward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_GroupIndex)
+void csRasterizeForwardBackward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_GroupIndex)
 {
     if (g_Raster.debugShowProcessedCount != 0u || g_Raster.debugShowEllipses != 0u) return;
-
-    uint px = dispatchThreadID.x;
-    uint py = dispatchThreadID.y;
-    bool pixelActive = px < g_Raster.width && py < g_Raster.height;
-    uint samplePx = min(px, g_Raster.width - 1u);
-    uint samplePy = min(py, g_Raster.height - 1u);
-    PinholeCamera camera = PinholeCamera.from_params(g_Camera);
-
-    uint tileX = samplePx / g_Prepass.tileSize;
-    uint tileY = samplePy / g_Prepass.tileSize;
-    uint tileId = tileY * g_Prepass.tileWidth + tileX;
-    uint2 range = g_TileRanges[tileId];
-    bool hasTileRange = range.x != INVALID_START && range.y > range.x;
-
-    uint start = range.x;
-    uint end = hasTileRange ? min(range.y, start + g_Raster.maxSplatSteps) : start;
-    float3 rayDir = camera.screen_to_world_ray(float2(samplePx, samplePy) + 0.5);
-
+    RasterPixelInfo info = resolve_raster_pixel(dispatchThreadID);
     RasterState state = { 0.0, 1.0 };
     uint processedCount = 0u;
-    if (pixelActive)
-    {
-        uint2 pixelCoord = uint2(px, py);
-        float4 cachedState = g_RasterForwardState[pixelCoord];
-        state = { cachedState.xyz, cachedState.w };
-        processedCount = g_RasterProcessedCount[pixelCoord];
-    }
-
-    RasterState.Differential dState;
-    dState.accum = 0.0;
-    dState.trans = 0.0;
-    if (pixelActive && hasTileRange)
-    {
-        float4 dOut = g_OutputGrad[uint2(px, py)];
-        float3 finalColor = state.accum + state.trans * g_Raster.background;
-        float3 dFinalColor = output_to_linear_grad(finalColor, dOut.xyz);
-        dState.accum = dFinalColor;
-        dState.trans = dot(dFinalColor, g_Raster.background) - dOut.w;
-    }
-
-    uint processedEnd = start + processedCount;
-    for (uint batchBase = end; batchBase > start;)
-    {
-        uint batchStart = (batchBase > start + RASTER_BATCH) ? (batchBase - RASTER_BATCH) : start;
-        uint batchCount = batchBase - batchStart;
-
-        prefetch_batch_from_global(batchStart, batchBase, lane);
-        clear_batch_gradient_cache(batchCount, lane);
-        GroupMemoryBarrierWithGroupSync();
-
-        for (uint rev = 0u; rev < batchCount; rev++)
-        {
-            uint localIdx = batchCount - 1u - rev;
-            uint globalIdx = batchStart + localIdx;
-            if (!pixelActive || !hasTileRange || globalIdx >= processedEnd) continue;
-
-            float alpha = raster_eval_alpha(localIdx, rayDir);
-            if (alpha <= 0.0) continue;
-
-            float4 colorAlpha = float4(gsColorAlpha[localIdx]);
-            RasterState prevState = raster_undo_blend_step(state, colorAlpha, alpha);
-
-            var dpPrevState = diffPair(prevState);
-            var dpAlpha = diffPair(alpha);
-            bwd_diff(raster_blend_step)(dpPrevState, localIdx, dpAlpha, dState);
-            bwd_diff(raster_eval_alpha)(localIdx, rayDir, dpAlpha.getDifferential());
-
-            state = prevState;
-            dState = dpPrevState.getDifferential();
-        }
-
-        GroupMemoryBarrierWithGroupSync();
-        flush_batch_gradient_cache(batchCount, lane);
-        GroupMemoryBarrierWithGroupSync();
-        batchBase = batchStart;
-    }
+    if (info.hasTileRange) state = raster_forward_replay(info.start, info.end, info.pixelActive, info.rayDir, lane, processedCount);
+    RasterState.Differential dState = raster_output_gradient(info, state);
+    raster_backward_replay(info, state, processedCount, dState, lane);
 }
