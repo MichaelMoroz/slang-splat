@@ -1,6 +1,6 @@
 # Rendering Pipeline
 
-`src/renderer/gaussian_renderer.py` executes a five-stage compute pipeline.
+`src/renderer/gaussian_renderer.py` is the public facade over renderer resource allocation, dispatch orchestration, and readback helpers.
 Prepass scheduling is GPU-driven via indirect dispatch arguments generated from the GPU list counter.
 
 ## Uniform Parameter Layout
@@ -13,7 +13,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
   - `g_Prepass` (`PrepassParams`) for splat counts, tile/depth packing, prepass capacities, and sampled-5 MVEE controls.
   - `g_Raster` (`RasterParams`) for raster resolution, alpha/transmittance thresholds, background, and debug overlays.
 - Python-side raster layout defaults are sourced from `shaders/renderer/gaussian_types.slang` by parsing the `static const uint` raster constants instead of duplicating them manually in `GaussianRenderer`.
-- Python bindings in `GaussianRenderer` mirror this layout by binding these structs per dispatch so stage code only reads structured fields instead of a large flat uniform list.
+- Python bindings in `GaussianRenderer` mirror this layout by building reusable grouped binding dictionaries for scene buffers, prepass uniforms, raster uniforms, and readback state.
 
 ## 1. Project and Bin
 - Shader: `csProjectAndBin`
@@ -85,3 +85,4 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - `generated_entries` / `written_entries` are reported with one-frame latency (`stats_latency_frames = 1`).
 - `stats_valid` indicates whether delayed stats are available yet (warm-up frame returns `False`).
 - Prepass key/value/scanline capacity is bounded by `max_prepass_memory_mb`; stats expose `prepass_entry_cap`, `max_list_entries`, `max_scanline_entries`, and `capacity_limited`.
+- The CPU reference path in `src/renderer/reference_cpu.py` now shares a single axis-parameterized scanline span solver for both X-major and Y-major ellipse traversal.

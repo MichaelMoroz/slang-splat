@@ -2,7 +2,10 @@
 
 `src/scene` supports:
 - `src/scene/ply_loader.py` for Gaussian splat PLY scenes.
-- `src/scene/colmap_loader.py` for COLMAP `sparse/0` reconstructions plus image-frame training metadata.
+- `src/scene/colmap_loader.py` as the stable COLMAP facade, backed by:
+  - `src/scene/_internal/colmap_binary.py` for binary parsing,
+  - `src/scene/_internal/colmap_ops.py` for frame building and init heuristics,
+  - `src/scene/_internal/colmap_types.py` for COLMAP dataclasses and shared point-table extraction.
 
 ## Supported Attributes
 - Position: `x`, `y`, `z`
@@ -26,3 +29,4 @@ Output is `GaussianScene` with contiguous `float32` arrays.
   - `PINHOLE` (id `1`)
 - Camera intrinsics are scaled from COLMAP camera resolution to selected training image resolution.
 - `initialize_scene_from_colmap_points(...)` randomly samples COLMAP points into a trainable `GaussianScene`.
+- Point XYZ/RGB table extraction is centralized so viewer uploads, init heuristics, and scene initialization all consume the same data path.

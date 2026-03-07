@@ -1,0 +1,142 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import slangpy as spy
+
+from .state import DEFAULT_IMAGE_SUBDIR_INDEX, IMAGE_SUBDIR_OPTIONS, LOSS_DEBUG_OPTIONS
+
+
+@dataclass(frozen=True, slots=True)
+class ControlSpec:
+    key: str
+    kind: str
+    label: str
+    kwargs: dict[str, object]
+
+
+@dataclass(slots=True)
+class ViewerUI:
+    texts: dict[str, object]
+    controls: dict[str, object]
+
+    def __getitem__(self, key: str):
+        return self.controls[key]
+
+    def text(self, key: str):
+        return self.texts[key]
+
+
+WIDGETS = {
+    "slider_float": spy.ui.SliderFloat,
+    "slider_int": spy.ui.SliderInt,
+    "input_float": spy.ui.InputFloat,
+    "checkbox": spy.ui.CheckBox,
+    "text": spy.ui.Text,
+}
+
+
+GROUP_SPECS = {
+    "Main": (
+        ControlSpec("images_subdir", "slider_int", "Image Dir", {"value": DEFAULT_IMAGE_SUBDIR_INDEX, "min": 0, "max": len(IMAGE_SUBDIR_OPTIONS) - 1}),
+        ControlSpec("loss_debug", "checkbox", "Visual Loss Debug", {"value": False}),
+        ControlSpec("loss_debug_view", "slider_int", "Debug View", {"value": 2, "min": 0, "max": len(LOSS_DEBUG_OPTIONS) - 1}),
+        ControlSpec("loss_debug_frame", "slider_int", "Debug Frame", {"value": 0, "min": 0, "max": 10000}),
+    ),
+    "Camera": (
+        ControlSpec("move_speed", "slider_float", "Move Speed", {"value": 2.0, "min": 0.1, "max": 20.0, "flags": spy.ui.SliderFlags.logarithmic, "format": "%.3g"}),
+        ControlSpec("fov", "slider_float", "FOV", {"value": 60.0, "min": 25.0, "max": 100.0}),
+    ),
+    "Train Init": (
+        ControlSpec("gaussian_count", "slider_int", "Gaussian Count", {"value": 50000, "min": 1000, "max": 2000000, "flags": spy.ui.SliderFlags.logarithmic}),
+        ControlSpec("seed", "slider_int", "Seed", {"value": 1234, "min": 0, "max": 1000000}),
+        ControlSpec("init_pos_jitter", "input_float", "Pos Jitter", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.6f"}),
+        ControlSpec("init_scale", "input_float", "Base Scale", {"value": 0.03, "step": 1e-4, "step_fast": 1e-3, "format": "%.6f"}),
+        ControlSpec("init_scale_jitter", "input_float", "Scale Jitter", {"value": 0.2, "step": 1e-3, "step_fast": 1e-2, "format": "%.4f"}),
+        ControlSpec("init_opacity", "input_float", "Init Opacity", {"value": 0.5, "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
+    ),
+    "Train Optimizer": (
+        ControlSpec("lr_base", "input_float", "Base LR", {"value": 1e-3, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
+        ControlSpec("lr_pos_mul", "input_float", "LR Mul Position", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
+        ControlSpec("lr_scale_mul", "input_float", "LR Mul Scale", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
+        ControlSpec("lr_rot_mul", "input_float", "LR Mul Rotation", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
+        ControlSpec("lr_color_mul", "input_float", "LR Mul Color", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
+        ControlSpec("lr_opacity_mul", "input_float", "LR Mul Opacity", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
+        ControlSpec("beta1", "input_float", "Beta1", {"value": 0.9, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
+        ControlSpec("beta2", "input_float", "Beta2", {"value": 0.999, "step": 1e-4, "step_fast": 1e-3, "format": "%.6f"}),
+        ControlSpec("eps", "input_float", "Adam Eps", {"value": 1e-8, "step": 1e-9, "step_fast": 1e-8, "format": "%.10f"}),
+        ControlSpec("scale_l2", "input_float", "Scale L2", {"value": 1e-3, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
+        ControlSpec("max_anisotropy", "input_float", "Max Anisotropy", {"value": 3.0, "step": 0.1, "step_fast": 0.5, "format": "%.6f"}),
+        ControlSpec("mcmc_pos_noise_enabled", "checkbox", "MCMC Pos Noise", {"value": True}),
+        ControlSpec("mcmc_pos_noise_scale", "input_float", "MCMC Noise Scale", {"value": 1.0, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
+        ControlSpec("mcmc_opacity_k", "input_float", "MCMC Opacity K", {"value": 100.0, "step": 0.5, "step_fast": 5.0, "format": "%.4f"}),
+        ControlSpec("mcmc_opacity_t", "input_float", "MCMC Opacity T", {"value": 0.995, "step": 1e-4, "step_fast": 1e-3, "format": "%.6f"}),
+        ControlSpec("low_quality_reinit", "checkbox", "Low-Quality Reinit", {"value": True}),
+        ControlSpec("grad_clip", "input_float", "Grad Clip", {"value": 10.0, "step": 0.1, "step_fast": 1.0, "format": "%.4f"}),
+        ControlSpec("grad_norm_clip", "input_float", "Grad Norm Clip", {"value": 10.0, "step": 0.1, "step_fast": 1.0, "format": "%.4f"}),
+        ControlSpec("max_update", "input_float", "Max Update", {"value": 0.05, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
+    ),
+    "Train Stability": (
+        ControlSpec("min_scale", "input_float", "Min Scale", {"value": 1e-3, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
+        ControlSpec("max_scale", "input_float", "Max Scale", {"value": 3.0, "step": 1e-2, "step_fast": 0.1, "format": "%.5f"}),
+        ControlSpec("min_opacity", "input_float", "Min Opacity", {"value": 1e-4, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
+        ControlSpec("max_opacity", "input_float", "Max Opacity", {"value": 0.9999, "step": 1e-4, "step_fast": 1e-3, "format": "%.6f"}),
+        ControlSpec("position_abs_max", "input_float", "Pos Abs Max", {"value": 1e4, "step": 10.0, "step_fast": 100.0, "format": "%.3f"}),
+        ControlSpec("train_near", "input_float", "Train Near", {"value": 0.1, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
+        ControlSpec("train_far", "input_float", "Train Far", {"value": 120.0, "step": 1.0, "step_fast": 10.0, "format": "%.3f"}),
+    ),
+}
+
+
+def _build_group(panel: object, title: str, specs: tuple[ControlSpec, ...], controls: dict[str, object]) -> object:
+    group = spy.ui.Group(panel, title)
+    for spec in specs:
+        controls[spec.key] = WIDGETS[spec.kind](group, spec.label, **spec.kwargs)
+    return group
+
+
+def build_ui(screen: object, app: object, renderer: object) -> ViewerUI:
+    texts: dict[str, object] = {}
+    controls: dict[str, object] = {}
+    panel = spy.ui.Window(screen, "Splat Viewer + Trainer", size=spy.float2(520, 760))
+    for key, value in {
+        "fps": "FPS: 0.0",
+        "path": "Scene: <none>",
+        "scene_stats": "Splats: 0",
+        "render_stats": "Generated: 0 | Written: 0",
+        "training": "Training: idle",
+        "training_loss": "Loss: n/a",
+        "error": "",
+    }.items():
+        texts[key] = spy.ui.Text(panel, value)
+    main_group = _build_group(panel, "Main", GROUP_SPECS["Main"], controls)
+    for label, callback in (
+        ("Load PLY...", app._browse_load_ply),
+        ("Load COLMAP...", app._browse_load_colmap),
+        ("Reload", app._reload_scene),
+        ("Reinitialize Gaussians", app._initialize_training_scene),
+        ("Start Training", app._start_training),
+        ("Stop Training", app._stop_training),
+    ):
+        spy.ui.Button(main_group, label, callback=callback)
+    texts["images_subdir"] = spy.ui.Text(main_group, f"Train images: {IMAGE_SUBDIR_OPTIONS[DEFAULT_IMAGE_SUBDIR_INDEX]}")
+    texts["loss_debug_view"] = spy.ui.Text(main_group, "View: Abs Diff")
+    texts["loss_debug_frame"] = spy.ui.Text(main_group, "Frame: <none>")
+    _build_group(panel, "Camera", GROUP_SPECS["Camera"], controls)
+    _build_group(panel, "Train Init", GROUP_SPECS["Train Init"], controls)
+    _build_group(panel, "Train Optimizer", GROUP_SPECS["Train Optimizer"], controls)
+    stab_group = _build_group(panel, "Train Stability", GROUP_SPECS["Train Stability"], controls)
+    texts["reinit_threshold"] = spy.ui.Text(stab_group, "Reinit thresholds: Min Scale + Min Opacity")
+    params_group = spy.ui.Group(panel, "Render Params")
+    for spec in (
+        ControlSpec("radius_scale", "slider_float", "Radius Scale", {"value": float(renderer.radius_scale), "min": 0.5, "max": 4.0, "flags": spy.ui.SliderFlags.logarithmic, "format": "%.3g"}),
+        ControlSpec("alpha_cutoff", "slider_float", "Alpha Cutoff", {"value": float(renderer.alpha_cutoff), "min": 0.0001, "max": 0.1, "flags": spy.ui.SliderFlags.logarithmic, "format": "%.2e"}),
+        ControlSpec("max_splat_steps", "slider_int", "Max Splat Steps", {"value": int(renderer.max_splat_steps), "min": 16, "max": 32768}),
+        ControlSpec("trans_threshold", "slider_float", "Trans Threshold", {"value": float(renderer.transmittance_threshold), "min": 0.001, "max": 0.2, "flags": spy.ui.SliderFlags.logarithmic, "format": "%.2e"}),
+        ControlSpec("sampled5_safety", "slider_float", "MVEE Safety", {"value": float(renderer.sampled5_safety_scale), "min": 1.0, "max": 1.2}),
+        ControlSpec("debug_ellipse", "checkbox", "Debug Ellipse Outlines", {"value": bool(renderer.debug_show_ellipses)}),
+        ControlSpec("debug_processed_count", "checkbox", "Debug Processed Count", {"value": bool(renderer.debug_show_processed_count)}),
+    ):
+        controls[spec.key] = WIDGETS[spec.kind](params_group, spec.label, **spec.kwargs)
+    spy.ui.Text(panel, "Controls: LMB drag=look | WASDQE=move | Wheel=speed")
+    return ViewerUI(texts=texts, controls=controls)

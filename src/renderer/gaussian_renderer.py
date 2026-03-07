@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass
 from functools import lru_cache
+import operator
 from pathlib import Path
 import re
 
@@ -32,6 +33,52 @@ class RasterConfig:
     microtile_dim: int
     effective_tile_size: int
     batch: int
+
+
+class _UIntExprEvaluator(ast.NodeVisitor):
+    _BIN_OPS = {
+        ast.Add: operator.add,
+        ast.Sub: operator.sub,
+        ast.Mult: operator.mul,
+        ast.Div: operator.floordiv,
+        ast.FloorDiv: operator.floordiv,
+    }
+    _UNARY_OPS = {ast.UAdd: lambda value: value, ast.USub: operator.neg}
+
+    def __init__(self, expr: str, constants: dict[str, int]) -> None:
+        self.expr = expr
+        self.constants = constants
+
+    def visit_Expression(self, node: ast.Expression) -> int:
+        return self.visit(node.body)
+
+    def visit_Constant(self, node: ast.Constant) -> int:
+        if isinstance(node.value, bool) or not isinstance(node.value, int):
+            raise ValueError(f"Unsupported constant expression value: {self.expr}")
+        return int(node.value)
+
+    def visit_Name(self, node: ast.Name) -> int:
+        if node.id not in self.constants:
+            raise ValueError(f"Unknown constant '{node.id}' in expression: {self.expr}")
+        return self.constants[node.id]
+
+    def visit_UnaryOp(self, node: ast.UnaryOp) -> int:
+        op = self._UNARY_OPS.get(type(node.op))
+        if op is None:
+            raise ValueError(f"Unsupported unary operator in expression: {self.expr}")
+        return int(op(self.visit(node.operand)))
+
+    def visit_BinOp(self, node: ast.BinOp) -> int:
+        op = self._BIN_OPS.get(type(node.op))
+        if op is None:
+            raise ValueError(f"Unsupported binary operator in expression: {self.expr}")
+        lhs, rhs = self.visit(node.left), self.visit(node.right)
+        if rhs == 0 and op is operator.floordiv:
+            raise ValueError(f"Division by zero in expression: {self.expr}")
+        return int(op(lhs, rhs))
+
+    def generic_visit(self, node: ast.AST) -> int:
+        raise ValueError(f"Unsupported AST node in expression: {self.expr}")
 
 
 class GaussianRenderer:
@@ -122,33 +169,7 @@ class GaussianRenderer:
 
     @staticmethod
     def _eval_uint_constant_expr(expr: str, constants: dict[str, int]) -> int:
-        node = ast.parse(expr, mode="eval")
-
-        def eval_node(current: ast.AST) -> int:
-            if isinstance(current, ast.Expression): return eval_node(current.body)
-            if isinstance(current, ast.Constant):
-                if isinstance(current.value, bool) or not isinstance(current.value, int):
-                    raise ValueError(f"Unsupported constant expression value: {expr}")
-                return int(current.value)
-            if isinstance(current, ast.Name):
-                if current.id not in constants: raise ValueError(f"Unknown constant '{current.id}' in expression: {expr}")
-                return constants[current.id]
-            if isinstance(current, ast.UnaryOp) and isinstance(current.op, (ast.UAdd, ast.USub)):
-                value = eval_node(current.operand)
-                return value if isinstance(current.op, ast.UAdd) else -value
-            if isinstance(current, ast.BinOp):
-                lhs = eval_node(current.left)
-                rhs = eval_node(current.right)
-                if isinstance(current.op, ast.Add): return lhs + rhs
-                if isinstance(current.op, ast.Sub): return lhs - rhs
-                if isinstance(current.op, ast.Mult): return lhs * rhs
-                if isinstance(current.op, (ast.Div, ast.FloorDiv)):
-                    if rhs == 0: raise ValueError(f"Division by zero in expression: {expr}")
-                    return lhs // rhs
-                raise ValueError(f"Unsupported binary operator in expression: {expr}")
-            raise ValueError(f"Unsupported AST node in expression: {expr}")
-
-        value = eval_node(node)
+        value = _UIntExprEvaluator(expr, constants).visit(ast.parse(expr, mode="eval"))
         if value < 0: raise ValueError(f"Expected non-negative uint expression: {expr}")
         return value
 
@@ -232,12 +253,7 @@ class GaussianRenderer:
         old_capacity = max(self._scene_capacity, 1)
         new_capacity = max(splat_count, old_capacity + old_capacity // 2)
         usage = self._buffer_usage_rw()
-        self._scene_buffers = {
-            "positions": self.device.create_buffer(size=max(new_capacity, 1) * 16, usage=usage),
-            "scales": self.device.create_buffer(size=max(new_capacity, 1) * 16, usage=usage),
-            "rotations": self.device.create_buffer(size=max(new_capacity, 1) * 16, usage=usage),
-            "color_alpha": self.device.create_buffer(size=max(new_capacity, 1) * 16, usage=usage),
-        }
+        self._scene_buffers = {name: self.device.create_buffer(size=max(new_capacity, 1) * 16, usage=usage) for name in ("positions", "scales", "rotations", "color_alpha")}
         self._scene_capacity = new_capacity
         self._scene_count = splat_count
 
@@ -268,53 +284,32 @@ class GaussianRenderer:
             max_prepass_entries,
         )
         usage = self._buffer_usage_rw()
-        self._work_buffers = {
-            "screen_center_radius_depth": self.device.create_buffer(
-                size=max(splat_capacity, 1) * 16, usage=usage
-            ),
-            "screen_color_alpha": self.device.create_buffer(size=max(splat_capacity, 1) * 16, usage=usage),
-            "screen_ellipse_conic": self.device.create_buffer(size=max(splat_capacity, 1) * 16, usage=usage),
-            "keys": self.device.create_buffer(size=max_list_entries * 4, usage=usage),
-            "values": self.device.create_buffer(size=max_list_entries * 4, usage=usage),
-            "counter": self.device.create_buffer(size=4, usage=usage),
-            "splat_list_bases": self.device.create_buffer(size=max(splat_capacity, 1) * self._U32_BYTES, usage=usage),
-            "scanline_work_items": self.device.create_buffer(
-                size=max_scanline_entries * self._SCANLINE_WORK_ITEM_UINTS * self._U32_BYTES,
-                usage=usage,
-            ),
-            "scanline_counter": self.device.create_buffer(size=self._U32_BYTES, usage=usage),
-            "tile_ranges": self.device.create_buffer(size=max(self.tile_count, 1) * 8, usage=usage),
-            "grad_positions": self.device.create_buffer(
-                size=max(splat_capacity, 1) * 4 * self._U32_BYTES,
-                usage=usage,
-            ),
-            "grad_scales": self.device.create_buffer(
-                size=max(splat_capacity, 1) * 4 * self._U32_BYTES,
-                usage=usage,
-            ),
-            "grad_rotations": self.device.create_buffer(
-                size=max(splat_capacity, 1) * 4 * self._U32_BYTES,
-                usage=usage,
-            ),
-            "grad_color_alpha": self.device.create_buffer(
-                size=max(splat_capacity, 1) * 4 * self._U32_BYTES,
-                usage=usage,
-            ),
+        sized = {
+            "screen_center_radius_depth": max(splat_capacity, 1) * 16,
+            "screen_color_alpha": max(splat_capacity, 1) * 16,
+            "screen_ellipse_conic": max(splat_capacity, 1) * 16,
+            "keys": max_list_entries * 4,
+            "values": max_list_entries * 4,
+            "counter": 4,
+            "splat_list_bases": max(splat_capacity, 1) * self._U32_BYTES,
+            "scanline_work_items": max_scanline_entries * self._SCANLINE_WORK_ITEM_UINTS * self._U32_BYTES,
+            "scanline_counter": self._U32_BYTES,
+            "tile_ranges": max(self.tile_count, 1) * 8,
+            **{name: max(splat_capacity, 1) * 4 * self._U32_BYTES for name in ("grad_positions", "grad_scales", "grad_rotations", "grad_color_alpha")},
         }
-        if self._output_texture is None:
-            self._output_texture = self.device.create_texture(
-                format=spy.Format.rgba32_float,
-                width=self.width,
-                height=self.height,
-                usage=spy.TextureUsage.shader_resource | spy.TextureUsage.unordered_access,
-            )
-        if self._output_grad_texture is None:
-            self._output_grad_texture = self.device.create_texture(
-                format=spy.Format.rgba32_float,
-                width=self.width,
-                height=self.height,
-                usage=spy.TextureUsage.shader_resource | spy.TextureUsage.unordered_access,
-            )
+        self._work_buffers = {name: self.device.create_buffer(size=size, usage=usage) for name, size in sized.items()}
+        for attr in ("_output_texture", "_output_grad_texture"):
+            if getattr(self, attr) is None:
+                setattr(
+                    self,
+                    attr,
+                    self.device.create_texture(
+                        format=spy.Format.rgba32_float,
+                        width=self.width,
+                        height=self.height,
+                        usage=spy.TextureUsage.shader_resource | spy.TextureUsage.unordered_access,
+                    ),
+                )
         self._work_splat_capacity = splat_capacity
         self._max_list_entries = max_list_entries
         self._max_scanline_entries = max_scanline_entries
@@ -322,24 +317,17 @@ class GaussianRenderer:
             self._pending_min_list_entries = 0
 
     def _pack_scene(self, scene: GaussianScene) -> dict[str, np.ndarray]:
-        splat_count = scene.count
-        positions = np.zeros((splat_count, 4), dtype=np.float32)
-        positions[:, :3] = scene.positions
-        scales = np.zeros((splat_count, 4), dtype=np.float32)
-        scales[:, :3] = scene.scales
-        rotations = np.zeros((splat_count, 4), dtype=np.float32)
-        rotations[:, :] = scene.rotations
-        color_alpha = np.zeros((splat_count, 4), dtype=np.float32)
-        color_alpha[:, :3] = scene.colors
-        color_alpha[:, 3] = scene.opacities
-        return {"positions": positions, "scales": scales, "rotations": rotations, "color_alpha": color_alpha}
+        packed = {name: np.zeros((scene.count, 4), dtype=np.float32) for name in ("positions", "scales", "rotations", "color_alpha")}
+        packed["positions"][:, :3] = scene.positions
+        packed["scales"][:, :3] = scene.scales
+        packed["rotations"][:] = scene.rotations
+        packed["color_alpha"][:, :3] = scene.colors
+        packed["color_alpha"][:, 3] = scene.opacities
+        return packed
 
     def _upload_scene(self, scene: GaussianScene) -> None:
-        packed = self._pack_scene(scene)
-        self._scene_buffers["positions"].copy_from_numpy(packed["positions"])
-        self._scene_buffers["scales"].copy_from_numpy(packed["scales"])
-        self._scene_buffers["rotations"].copy_from_numpy(packed["rotations"])
-        self._scene_buffers["color_alpha"].copy_from_numpy(packed["color_alpha"])
+        for name, values in self._pack_scene(scene).items():
+            self._scene_buffers[name].copy_from_numpy(values)
 
     def _reset_prepass_counters(self) -> None:
         zero = np.array([0], dtype=np.uint32)

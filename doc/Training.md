@@ -1,9 +1,13 @@
 # COLMAP Training Pipeline
 
-`cli.py` (`train-colmap`) and `src/training/gaussian_trainer.py` implement a basic 3DGS optimization loop over COLMAP reconstructions.
+`cli.py` (`train-colmap`) is a thin wrapper over `src/app/cli.py`, and `src/training/gaussian_trainer.py` remains the public training facade over dataset assets, kernel dispatch, and metric/state updates.
 
 ## Data Ingestion
-- Loader: `src/scene/colmap_loader.py`
+- Loader facade: `src/scene/colmap_loader.py`
+- Internal split:
+  - `src/scene/_internal/colmap_binary.py`
+  - `src/scene/_internal/colmap_ops.py`
+  - `src/scene/_internal/colmap_types.py`
 - Supported camera models:
   - `SIMPLE_PINHOLE` (model id `0`)
   - `PINHOLE` (model id `1`)
@@ -16,6 +20,7 @@
   - COLMAP extrinsics (`q_wxyz`, `t_xyz`),
   - scaled intrinsics (`fx`, `fy`, `cx`, `cy`) for the selected image resolution.
 - Frame target textures are stored on GPU as `rgba8_unorm` (both native and train resolution) to reduce memory usage.
+- Dataset texture creation and point-cloud upload/binding are isolated inside trainer helpers instead of being interleaved with the optimization step.
 
 ## Initialization
 - Gaussians are initialized by random point-cloud sampling from COLMAP `points3D`.
@@ -98,7 +103,12 @@ Useful options:
 - `--[no-]low-quality-reinit` enables/disables per-step low-quality resampling.
 
 ## Viewer Integration
-- `viewer.py` keeps PLY workflow and adds COLMAP training controls:
+- `viewer.py` is a thin launcher over `src/viewer`, which is split into:
+  - state (`src/viewer/state.py`)
+  - UI schema (`src/viewer/ui.py`)
+  - session/runtime operations (`src/viewer/session.py`)
+  - frame presentation (`src/viewer/presenter.py`)
+- The viewer keeps PLY workflow and COLMAP training controls:
   - load COLMAP folder,
   - set train image directory,
   - initialize training scene,

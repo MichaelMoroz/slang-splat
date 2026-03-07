@@ -87,11 +87,20 @@ Training notes:
 python -m pytest -q
 ```
 
+## Complexity Budget
+```powershell
+python -m tools.complexity_budget
+python -m tools.complexity_budget --check
+```
+The budget scans only production Python entrypoints plus `src/**`.
+
 ## Project Structure
+- `src/app`: shared app parameter builders, scene bounds helpers, and CLI command implementations.
 - `src/scene`: scene datamodel and PLY loader.
 - `src/training`: COLMAP training runtime and hyperparameter dataclasses.
 - `src/sort`: GPU radix sort wrapper.
 - `src/renderer`: camera, reference CPU algorithms, and renderer orchestration.
+- `src/viewer`: viewer state, UI schema, session logic, and frame presentation.
 - `shaders/radix_sort`: radix sort shader stages.
 - `shaders/renderer`: Gaussian renderer compute stages.
 - `tests`: correctness tests against CPU references.

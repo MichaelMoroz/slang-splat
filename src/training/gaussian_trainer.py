@@ -78,6 +78,26 @@ class GaussianTrainer:
     _LOSS_SLOT_TOTAL = 0
     _LOSS_SLOT_MSE = 1
     _PSNR_MSE_FLOOR = 1e-12
+    _ADAM_BUFFER_NAMES = (
+        "adam_m_pos",
+        "adam_v_pos",
+        "adam_m_scale",
+        "adam_v_scale",
+        "adam_m_quat",
+        "adam_v_quat",
+        "adam_m_color_alpha",
+        "adam_v_color_alpha",
+    )
+    _ADAM_SHADER_VARS = (
+        ("g_AdamMPos", "adam_m_pos"),
+        ("g_AdamVPos", "adam_v_pos"),
+        ("g_AdamMScale", "adam_m_scale"),
+        ("g_AdamVScale", "adam_v_scale"),
+        ("g_AdamMQuat", "adam_m_quat"),
+        ("g_AdamVQuat", "adam_v_quat"),
+        ("g_AdamMColorAlpha", "adam_m_color_alpha"),
+        ("g_AdamVColorAlpha", "adam_v_color_alpha"),
+    )
 
     def __init__(
         self,
@@ -144,22 +164,15 @@ class GaussianTrainer:
     def _create_shaders(self) -> None:
         load_program = self.device.load_program
         self._kernels = {
-            "clear_loss_grad": self.device.create_compute_kernel(
-                load_program(str(self._shader_path), ["csClearLossAndGradTex"])
-            ),
-            "mse_loss_grad": self.device.create_compute_kernel(
-                load_program(str(self._shader_path), ["csComputeMSELossGrad"])
-            ),
-            "adam_step": self.device.create_compute_kernel(load_program(str(self._shader_path), ["csAdamStepFused"])),
-            "mark_low_quality_splats": self.device.create_compute_kernel(
-                load_program(str(self._shader_path), ["csMarkLowQualitySplats"])
-            ),
-            "resample_low_quality_splats": self.device.create_compute_kernel(
-                load_program(str(self._shader_path), ["csResampleLowQualitySplatsRandom"])
-            ),
-            "init_from_pointcloud": self.device.create_compute_kernel(
-                load_program(str(self._shader_path), ["csInitializeGaussiansFromPointCloud"])
-            ),
+            name: self.device.create_compute_kernel(load_program(str(self._shader_path), [entry]))
+            for name, entry in (
+                ("clear_loss_grad", "csClearLossAndGradTex"),
+                ("mse_loss_grad", "csComputeMSELossGrad"),
+                ("adam_step", "csAdamStepFused"),
+                ("mark_low_quality_splats", "csMarkLowQualitySplats"),
+                ("resample_low_quality_splats", "csResampleLowQualitySplatsRandom"),
+                ("init_from_pointcloud", "csInitializeGaussiansFromPointCloud"),
+            )
         }
 
     def _create_training_buffers(self) -> None:
@@ -183,32 +196,14 @@ class GaussianTrainer:
         if "signal_max" not in self._buffers:
             self._buffers["signal_max"] = self.device.create_buffer(size=4, usage=usage_rw)
         self._buffers["low_quality_flags"] = self.device.create_buffer(size=new_capacity * 4, usage=usage_rw)
-        for name in (
-            "adam_m_pos",
-            "adam_v_pos",
-            "adam_m_scale",
-            "adam_v_scale",
-            "adam_m_quat",
-            "adam_v_quat",
-            "adam_m_color_alpha",
-            "adam_v_color_alpha",
-        ):
+        for name in self._ADAM_BUFFER_NAMES:
             self._buffers[name] = self.device.create_buffer(size=new_capacity * 16, usage=usage_rw)
         self._splat_capacity = new_capacity
 
     def _zero_optimizer_moments(self) -> None:
         count = max(int(self._scene_count), 1)
         zeros = np.zeros((count, 4), dtype=np.float32)
-        for name in (
-            "adam_m_pos",
-            "adam_v_pos",
-            "adam_m_scale",
-            "adam_v_scale",
-            "adam_m_quat",
-            "adam_v_quat",
-            "adam_m_color_alpha",
-            "adam_v_color_alpha",
-        ):
+        for name in self._ADAM_BUFFER_NAMES:
             self._buffers[name].copy_from_numpy(zeros)
 
     def _estimate_scale_reg_reference(self, scene: GaussianScene | None) -> float:
@@ -305,17 +300,14 @@ class GaussianTrainer:
         return tex
 
     def _create_dataset_textures(self) -> None:
-        self._frame_targets_train = []
-        self._frame_targets_native = []
         train_width = int(self.renderer.width)
         train_height = int(self.renderer.height)
+        self._frame_targets_train, self._frame_targets_native = [], []
         for frame in self.frames:
             with Image.open(frame.image_path) as pil_image:
                 image = pil_image.convert("RGB")
                 self._frame_targets_native.append(self._create_gpu_texture(self._to_rgba8(image)))
-                image_train = image
-                if image.size != (train_width, train_height):
-                    image_train = image.resize((train_width, train_height), resample=Image.Resampling.BILINEAR)
+                image_train = image if image.size == (train_width, train_height) else image.resize((train_width, train_height), resample=Image.Resampling.BILINEAR)
                 self._frame_targets_train.append(self._create_gpu_texture(self._to_rgba8(image_train)))
 
     def update_hyperparams(
@@ -417,6 +409,9 @@ class GaussianTrainer:
             command_encoder=encoder,
         )
 
+    def _adam_shader_vars(self) -> dict[str, spy.Buffer]:
+        return {shader_name: self._buffers[buffer_name] for shader_name, buffer_name in self._ADAM_SHADER_VARS}
+
     def _dispatch_raster_forward_backward(
         self,
         encoder: spy.CommandEncoder,
@@ -444,14 +439,7 @@ class GaussianTrainer:
                 "g_ScalesRW": self.renderer.scene_buffers["scales"],
                 "g_RotationsRW": self.renderer.scene_buffers["rotations"],
                 "g_ColorAlphaRW": self.renderer.scene_buffers["color_alpha"],
-                "g_AdamMPos": self._buffers["adam_m_pos"],
-                "g_AdamVPos": self._buffers["adam_v_pos"],
-                "g_AdamMScale": self._buffers["adam_m_scale"],
-                "g_AdamVScale": self._buffers["adam_v_scale"],
-                "g_AdamMQuat": self._buffers["adam_m_quat"],
-                "g_AdamVQuat": self._buffers["adam_v_quat"],
-                "g_AdamMColorAlpha": self._buffers["adam_m_color_alpha"],
-                "g_AdamVColorAlpha": self._buffers["adam_v_color_alpha"],
+                **self._adam_shader_vars(),
                 **vars_common,
             },
             command_encoder=encoder,
@@ -479,14 +467,7 @@ class GaussianTrainer:
                 "g_ScalesRW": self.renderer.scene_buffers["scales"],
                 "g_RotationsRW": self.renderer.scene_buffers["rotations"],
                 "g_ColorAlphaRW": self.renderer.scene_buffers["color_alpha"],
-                "g_AdamMPos": self._buffers["adam_m_pos"],
-                "g_AdamVPos": self._buffers["adam_v_pos"],
-                "g_AdamMScale": self._buffers["adam_m_scale"],
-                "g_AdamVScale": self._buffers["adam_v_scale"],
-                "g_AdamMQuat": self._buffers["adam_m_quat"],
-                "g_AdamVQuat": self._buffers["adam_v_quat"],
-                "g_AdamMColorAlpha": self._buffers["adam_m_color_alpha"],
-                "g_AdamVColorAlpha": self._buffers["adam_v_color_alpha"],
+                **self._adam_shader_vars(),
                 "g_LowQualityFlags": self._buffers["low_quality_flags"],
                 **vars_common,
             },
@@ -515,14 +496,7 @@ class GaussianTrainer:
                 "g_ScalesRW": self.renderer.scene_buffers["scales"],
                 "g_RotationsRW": self.renderer.scene_buffers["rotations"],
                 "g_ColorAlphaRW": self.renderer.scene_buffers["color_alpha"],
-                "g_AdamMPos": self._buffers["adam_m_pos"],
-                "g_AdamVPos": self._buffers["adam_v_pos"],
-                "g_AdamMScale": self._buffers["adam_m_scale"],
-                "g_AdamVScale": self._buffers["adam_v_scale"],
-                "g_AdamMQuat": self._buffers["adam_m_quat"],
-                "g_AdamVQuat": self._buffers["adam_v_quat"],
-                "g_AdamMColorAlpha": self._buffers["adam_m_color_alpha"],
-                "g_AdamVColorAlpha": self._buffers["adam_v_color_alpha"],
+                **self._adam_shader_vars(),
                 "g_InitPointPositions": self._init_point_positions_buffer,
                 "g_InitPointColors": self._init_point_colors_buffer,
                 "g_InitPointCount": int(self._init_point_count),
@@ -538,15 +512,7 @@ class GaussianTrainer:
         )
         self.device.submit_command_buffer(enc.finish())
         self.device.wait()
-        self.state.step = 0
-        self.state.last_loss = float("nan")
-        self.state.ema_loss = float("nan")
-        self.state.last_mse = float("nan")
-        self.state.ema_signal_max = float("nan")
-        self.state.last_psnr = float("nan")
-        self.state.ema_psnr = float("nan")
-        self.state.last_frame_index = -1
-        self.state.last_instability = ""
+        self.state = TrainingState()
 
     def _read_loss_metrics(self) -> tuple[float, float, float]:
         loss_raw = self._buffers["loss"].to_numpy()
