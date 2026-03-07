@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
+import slangpy as spy
 
 from ..scene import GaussianInitHyperParams, GaussianScene
 from ..training import AdamHyperParams, StabilityHyperParams, TrainingHyperParams
@@ -64,7 +65,7 @@ class SceneBounds:
 
 @dataclass(frozen=True, slots=True)
 class CameraFit:
-    position: np.ndarray
+    position: spy.float3
     near: float
     far: float
     move_speed: float
@@ -122,8 +123,9 @@ def fit_camera(bounds: SceneBounds, fov_y_degrees: float) -> CameraFit:
     radius = max(float(bounds.radius), MIN_SCENE_RADIUS)
     fit_distance = radius / max(float(np.tan(0.5 * np.deg2rad(float(fov_y_degrees)))), 1e-4)
     distance = max(fit_distance * 0.95, radius * CAMERA_DISTANCE_SCALE, MIN_SCENE_RADIUS)
+    position = bounds.center + np.array([0.0, 0.0, -distance], dtype=np.float32)
     return CameraFit(
-        position=bounds.center + np.array([0.0, 0.0, -distance], dtype=np.float32),
+        position=spy.float3(*position.tolist()),
         near=max(0.01, distance * CAMERA_NEAR_RATIO),
         far=max(distance + radius * CAMERA_FAR_RADIUS_SCALE, CAMERA_MIN_FAR),
         move_speed=max(MOVE_SPEED_MIN, radius * MOVE_SPEED_RADIUS_SCALE),

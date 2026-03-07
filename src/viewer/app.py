@@ -1,19 +1,23 @@
 from __future__ import annotations
+import math
 from pathlib import Path
 
-import numpy as np
 import slangpy as spy
+from slangpy import math as smath
 
 from .. import create_default_device
 from ..app.shared import RendererParams, build_init_params, build_training_params, fit_camera
+from ..common import normalize3
 from ..renderer import Camera, GaussianRenderer
 from . import presenter, session
 from .state import DEFAULT_IMAGE_SUBDIR_INDEX, IMAGE_SUBDIR_OPTIONS, LOSS_DEBUG_OPTIONS, ViewerState
 from .ui import build_ui
 
-
-def _normalize(v: np.ndarray) -> np.ndarray:
-    return np.asarray(v, dtype=np.float32) / np.maximum(np.linalg.norm(v), 1e-8)
+_VIEW_VEC_EPS = 1e-6
+_SCROLL_SPEED_BASE = 1.1
+_LOOK_SMOOTH = 12.0
+_MOVE_SMOOTH = 10.0
+_PITCH_LIMIT = math.radians(89.0)
 
 
 class SplatViewer(spy.AppWindow):
@@ -38,6 +42,10 @@ class SplatViewer(spy.AppWindow):
 
     def t(self, key: str):
         return self.ui.texts[key]
+
+    def _selected_images_subdir(self) -> str:
+        idx = min(max(int(self.c("images_subdir").value), 0), len(self.image_subdir_options) - 1)
+        return self.image_subdir_options[idx]
 
     def renderer_params(self, allow_debug_overlays: bool) -> RendererParams:
         return RendererParams(
@@ -93,15 +101,16 @@ class SplatViewer(spy.AppWindow):
             low_quality_reinit_enabled=bool(self.c("low_quality_reinit").value),
         )
 
-    def forward(self) -> np.ndarray:
-        cy, sy = np.cos(self.s.yaw), np.sin(self.s.yaw)
-        cp, sp = np.cos(self.s.pitch), np.sin(self.s.pitch)
-        return _normalize(np.array([cp * sy, sp, cp * cy], dtype=np.float32))
+    def forward(self) -> spy.float3:
+        cy, sy = math.cos(self.s.yaw), math.sin(self.s.yaw)
+        cp, sp = math.cos(self.s.pitch), math.sin(self.s.pitch)
+        return normalize3(spy.float3(cp * sy, sp, cp * cy), eps=_VIEW_VEC_EPS)
 
     def camera(self) -> Camera:
+        forward = self.forward()
         return Camera.look_at(
             position=self.s.camera_pos,
-            target=self.s.camera_pos + self.forward(),
+            target=self.s.camera_pos + forward,
             up=self.s.up,
             fov_y_degrees=float(self.s.fov_y),
             near=float(self.s.near),
@@ -112,29 +121,28 @@ class SplatViewer(spy.AppWindow):
         self.s.move_speed = float(self.c("move_speed").value)
         self.s.fov_y = float(self.c("fov").value)
         if abs(self.s.scroll_delta) > 1e-5:
-            self.s.move_speed = float(np.clip(self.s.move_speed * np.power(1.1, self.s.scroll_delta), 0.1, 20.0))
+            self.s.move_speed = min(max(self.s.move_speed * (_SCROLL_SPEED_BASE ** self.s.scroll_delta), 0.1), 20.0)
             self.c("move_speed").value = self.s.move_speed
             self.s.scroll_delta = 0.0
-        target_rot = self.s.mouse_delta * self.s.look_speed if self.s.mouse_left else np.zeros((2,), dtype=np.float32)
-        self.s.rot_vel += (target_rot - self.s.rot_vel) * min(1.0, 12.0 * dt)
-        self.s.mouse_delta[:] = 0.0
-        if np.linalg.norm(self.s.rot_vel) > 1e-6:
-            self.s.yaw += float(self.s.rot_vel[0])
-            self.s.pitch = float(np.clip(self.s.pitch + float(self.s.rot_vel[1]), -float(np.deg2rad(89.0)), float(np.deg2rad(89.0))))
+        target_rot = self.s.mouse_delta * self.s.look_speed if self.s.mouse_left else spy.float2(0.0, 0.0)
+        self.s.rot_vel += (target_rot - self.s.rot_vel) * min(1.0, _LOOK_SMOOTH * dt)
+        self.s.mouse_delta = spy.float2(0.0, 0.0)
+        if float(smath.length(self.s.rot_vel)) > _VIEW_VEC_EPS:
+            self.s.yaw += float(self.s.rot_vel.x)
+            self.s.pitch = min(max(self.s.pitch + float(self.s.rot_vel.y), -_PITCH_LIMIT), _PITCH_LIMIT)
         forward = self.forward()
-        right = _normalize(np.cross(self.s.up, forward))
-        up = _normalize(np.cross(forward, right))
-        move = np.array(
-            [
-                float(self.s.keys.get(spy.KeyCode.e, False)) - float(self.s.keys.get(spy.KeyCode.q, False)),
-                float(self.s.keys.get(spy.KeyCode.d, False)) - float(self.s.keys.get(spy.KeyCode.a, False)),
-                float(self.s.keys.get(spy.KeyCode.w, False)) - float(self.s.keys.get(spy.KeyCode.s, False)),
-            ],
-            dtype=np.float32,
+        right = normalize3(smath.cross(self.s.up, forward), eps=_VIEW_VEC_EPS)
+        up = normalize3(smath.cross(forward, right), eps=_VIEW_VEC_EPS)
+        move = spy.float3(
+            float(self.s.keys.get(spy.KeyCode.e, False)) - float(self.s.keys.get(spy.KeyCode.q, False)),
+            float(self.s.keys.get(spy.KeyCode.d, False)) - float(self.s.keys.get(spy.KeyCode.a, False)),
+            float(self.s.keys.get(spy.KeyCode.w, False)) - float(self.s.keys.get(spy.KeyCode.s, False)),
         )
-        target_move = move * (self.s.move_speed / max(np.linalg.norm(move), 1e-6)) if np.linalg.norm(move) > 1e-6 else np.zeros((3,), dtype=np.float32)
-        self.s.move_vel += (target_move - self.s.move_vel) * min(1.0, 10.0 * dt)
-        self.s.camera_pos += (up * self.s.move_vel[0] + right * self.s.move_vel[1] + forward * self.s.move_vel[2]) * dt
+        move_length = float(smath.length(move))
+        target_move = move * (self.s.move_speed / max(move_length, _VIEW_VEC_EPS)) if move_length > _VIEW_VEC_EPS else spy.float3(0.0, 0.0, 0.0)
+        self.s.move_vel += (target_move - self.s.move_vel) * min(1.0, _MOVE_SMOOTH * dt)
+        world_move = up * self.s.move_vel.x + right * self.s.move_vel.y + forward * self.s.move_vel.z
+        self.s.camera_pos += world_move * dt
 
     def apply_camera_fit(self, bounds: object) -> None:
         fit = fit_camera(bounds, self.s.fov_y)
@@ -145,8 +153,8 @@ class SplatViewer(spy.AppWindow):
         self.c("move_speed").value = float(fit.move_speed)
         self.s.yaw = 0.0
         self.s.pitch = 0.0
-        self.s.move_vel[:] = 0.0
-        self.s.rot_vel[:] = 0.0
+        self.s.move_vel = spy.float3(0.0, 0.0, 0.0)
+        self.s.rot_vel = spy.float2(0.0, 0.0)
 
     def _browse_load_ply(self) -> None:
         path = spy.platform.open_file_dialog([spy.platform.FileDialogFilter("PLY Files", "*.ply")])
@@ -156,15 +164,13 @@ class SplatViewer(spy.AppWindow):
     def _browse_load_colmap(self) -> None:
         path = spy.platform.choose_folder_dialog()
         if path:
-            images_subdir = self.image_subdir_options[int(np.clip(int(self.c("images_subdir").value), 0, len(self.image_subdir_options) - 1))]
-            session.load_colmap_dataset(self, Path(path), images_subdir)
+            session.load_colmap_dataset(self, Path(path), self._selected_images_subdir())
 
     def _reload_scene(self) -> None:
         if self.s.scene_path is not None:
             session.load_scene(self, self.s.scene_path)
         elif self.s.colmap_root is not None:
-            images_subdir = self.image_subdir_options[int(np.clip(int(self.c("images_subdir").value), 0, len(self.image_subdir_options) - 1))]
-            session.load_colmap_dataset(self, self.s.colmap_root, images_subdir)
+            session.load_colmap_dataset(self, self.s.colmap_root, self._selected_images_subdir())
 
     def _initialize_training_scene(self) -> None:
         session.initialize_training_scene(self)
@@ -201,7 +207,7 @@ class SplatViewer(spy.AppWindow):
             self.s.mouse_left = False
         elif event.type == spy.MouseEventType.move:
             if self.s.mx is not None and self.s.my is not None:
-                self.s.mouse_delta += np.array([event.pos.x - self.s.mx, event.pos.y - self.s.my], dtype=np.float32)
+                self.s.mouse_delta += spy.float2(event.pos.x - self.s.mx, event.pos.y - self.s.my)
             self.s.mx, self.s.my = event.pos.x, event.pos.y
         elif event.type == spy.MouseEventType.scroll:
             self.s.scroll_delta += float(event.scroll.y)

@@ -4,7 +4,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import time
 
-import numpy as np
 import slangpy as spy
 
 from ..scene import ColmapReconstruction, GaussianInitHyperParams, GaussianScene
@@ -44,22 +43,22 @@ class ViewerState:
     scene_init_signature: tuple[object, ...] | None = None
     suggested_init_hparams: GaussianInitHyperParams | None = None
     suggested_init_count: int | None = None
-    camera_pos: np.ndarray = field(default_factory=lambda: np.array([0.0, 0.0, -3.0], dtype=np.float32))
+    camera_pos: spy.float3 = field(default_factory=lambda: spy.float3(0.0, 0.0, -3.0))
     yaw: float = 0.0
     pitch: float = 0.0
-    up: np.ndarray = field(default_factory=lambda: np.array([0.0, 1.0, 0.0], dtype=np.float32))
+    up: spy.float3 = field(default_factory=lambda: spy.float3(0.0, 1.0, 0.0))
     fov_y: float = 60.0
     near: float = 0.1
     far: float = 120.0
     move_speed: float = 2.0
     look_speed: float = 0.003
-    background: np.ndarray = field(default_factory=lambda: np.array([0.0, 0.0, 0.0], dtype=np.float32))
+    background: spy.float3 = field(default_factory=lambda: spy.float3(0.0, 0.0, 0.0))
     keys: dict[spy.KeyCode, bool] = field(default_factory=dict)
     mouse_left: bool = False
-    mouse_delta: np.ndarray = field(default_factory=lambda: np.zeros((2,), dtype=np.float32))
+    mouse_delta: spy.float2 = field(default_factory=lambda: spy.float2(0.0, 0.0))
     scroll_delta: float = 0.0
-    move_vel: np.ndarray = field(default_factory=lambda: np.zeros((3,), dtype=np.float32))
-    rot_vel: np.ndarray = field(default_factory=lambda: np.zeros((2,), dtype=np.float32))
+    move_vel: spy.float3 = field(default_factory=lambda: spy.float3(0.0, 0.0, 0.0))
+    rot_vel: spy.float2 = field(default_factory=lambda: spy.float2(0.0, 0.0))
     mx: float | None = None
     my: float | None = None
     last_time: float = field(default_factory=time.perf_counter)

@@ -4,11 +4,9 @@ from dataclasses import dataclass
 
 import numpy as np
 import slangpy as spy
+from slangpy import math as smath
 
-
-def _normalize(v: np.ndarray) -> np.ndarray:
-    v = np.asarray(v, dtype=np.float32)
-    return v / np.maximum(np.linalg.norm(v), 1e-8)
+from ..common import VEC_EPS, as_float3, normalize3
 
 
 @dataclass(slots=True)
@@ -26,9 +24,9 @@ class Camera:
     basis_override: np.ndarray | None = None
 
     def __post_init__(self) -> None:
-        self.position = np.asarray(self.position, dtype=np.float32)
-        self.target = np.asarray(self.target, dtype=np.float32)
-        self.up = _normalize(self.up)
+        self.position = np.asarray(self.position, dtype=np.float32).reshape(3)
+        self.target = np.asarray(self.target, dtype=np.float32).reshape(3)
+        self.up = np.asarray(normalize3(self.up, eps=VEC_EPS), dtype=np.float32)
         if self.basis_override is not None:
             basis = np.asarray(self.basis_override, dtype=np.float32).reshape(3, 3)
             self.basis_override = basis
@@ -36,11 +34,15 @@ class Camera:
     def basis(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         if self.basis_override is not None:
             basis = np.asarray(self.basis_override, dtype=np.float32).reshape(3, 3)
-            return _normalize(basis[0]), _normalize(basis[1]), _normalize(basis[2])
-        forward = _normalize(self.target - self.position)
-        right = _normalize(np.cross(self.up, forward))
-        up = _normalize(np.cross(forward, right))
-        return right, up, forward
+            return tuple(np.asarray(normalize3(axis, eps=VEC_EPS), dtype=np.float32) for axis in basis)
+        forward = normalize3(self.target - self.position, eps=VEC_EPS)
+        right = normalize3(smath.cross(as_float3(self.up), forward), eps=VEC_EPS)
+        up = normalize3(smath.cross(forward, right), eps=VEC_EPS)
+        return (
+            np.asarray(right, dtype=np.float32),
+            np.asarray(up, dtype=np.float32),
+            np.asarray(forward, dtype=np.float32),
+        )
 
     def focal_pixels(self, height: int) -> float:
         if self.fy is not None:
@@ -65,7 +67,7 @@ class Camera:
         cx, cy = self.principal_point(width, height)
         return {
             "viewport": spy.float2(float(width), float(height)),
-            "camPos": spy.float3(*self.position.tolist()),
+            "camPos": as_float3(self.position),
             "camBasis": spy.float3x3(basis),
             "focalPixels": spy.float2(fx, fy),
             "principalPoint": spy.float2(cx, cy),
@@ -75,9 +77,9 @@ class Camera:
 
     @staticmethod
     def look_at(
-        position: tuple[float, float, float] | np.ndarray,
-        target: tuple[float, float, float] | np.ndarray = (0.0, 0.0, 0.0),
-        up: tuple[float, float, float] | np.ndarray = (0.0, 1.0, 0.0),
+        position: tuple[float, float, float] | np.ndarray | spy.float3,
+        target: tuple[float, float, float] | np.ndarray | spy.float3 = (0.0, 0.0, 0.0),
+        up: tuple[float, float, float] | np.ndarray | spy.float3 = (0.0, 1.0, 0.0),
         fov_y_degrees: float = 60.0,
         near: float = 0.1,
         far: float = 100.0,
@@ -122,9 +124,9 @@ class Camera:
         rot = Camera._rotation_matrix_from_quaternion_wxyz(np.asarray(q_wxyz, dtype=np.float32))
         t = np.asarray(t_xyz, dtype=np.float32).reshape(3)
         cam_pos = (-rot.T @ t.astype(np.float64)).astype(np.float32)
-        forward = rot[2]
-        up = rot[1]
-        target = cam_pos + _normalize(forward)
+        forward = np.asarray(rot[2], dtype=np.float32)
+        up = np.asarray(rot[1], dtype=np.float32)
+        target = cam_pos + np.asarray(normalize3(forward, eps=VEC_EPS), dtype=np.float32)
         return Camera(
             position=cam_pos,
             target=target,
