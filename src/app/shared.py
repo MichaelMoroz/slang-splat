@@ -6,7 +6,6 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from ..renderer.camera import Camera
 from ..scene import GaussianInitHyperParams, GaussianScene
 from ..training import AdamHyperParams, StabilityHyperParams, TrainingHyperParams
 
@@ -129,11 +128,6 @@ def fit_camera(bounds: SceneBounds, fov_y_degrees: float) -> CameraFit:
         far=max(distance + radius * CAMERA_FAR_RADIUS_SCALE, CAMERA_MIN_FAR),
         move_speed=max(MOVE_SPEED_MIN, radius * MOVE_SPEED_RADIUS_SCALE),
     )
-
-
-def apply_scene_camera_fit(camera_pos: np.ndarray, fov_y_degrees: float, bounds: SceneBounds) -> CameraFit:
-    del camera_pos
-    return fit_camera(bounds, fov_y_degrees)
 
 
 def build_init_params(

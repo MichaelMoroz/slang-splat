@@ -87,6 +87,23 @@ class GaussianRenderer:
     _U32_BYTES = 4
     _MEBIBYTE_BYTES = 1024 * 1024
     _PREPASS_ENTRY_BYTES = (_SCANLINE_WORK_ITEM_UINTS + 2) * _U32_BYTES
+    _SCENE_SHADER_VARS = {
+        "positions": "g_Positions",
+        "scales": "g_Scales",
+        "rotations": "g_Rotations",
+        "color_alpha": "g_ColorAlpha",
+    }
+    _SCREEN_SHADER_VARS = {
+        "screen_center_radius_depth": "g_ScreenCenterRadiusDepth",
+        "screen_color_alpha": "g_ScreenColorAlpha",
+        "screen_ellipse_conic": "g_ScreenEllipseConic",
+    }
+    _GRAD_SHADER_VARS = {
+        "grad_positions": "g_GradPositions",
+        "grad_scales": "g_GradScales",
+        "grad_rotations": "g_GradRotations",
+        "grad_color_alpha": "g_GradColorAlpha",
+    }
 
     def __init__(
         self,
@@ -236,13 +253,6 @@ class GaussianRenderer:
             | spy.BufferUsage.copy_destination
         )
 
-    def _buffer_usage_sr(self) -> spy.BufferUsage:
-        return (
-            spy.BufferUsage.shader_resource
-            | spy.BufferUsage.copy_source
-            | spy.BufferUsage.copy_destination
-        )
-
     def _max_prepass_entries_by_budget(self) -> int:
         return max(self._max_prepass_memory_bytes // self._PREPASS_ENTRY_BYTES, 1)
 
@@ -347,6 +357,18 @@ class GaussianRenderer:
     def _read_counter(self) -> int:
         return int(self._read_u32(self._work_buffers["counter"], 1)[0])
 
+    def _buffer_vars(self, mapping: dict[str, str], source: dict[str, spy.Buffer]) -> dict[str, spy.Buffer]:
+        return {shader_name: source[name] for name, shader_name in mapping.items()}
+
+    def _scene_shader_vars(self) -> dict[str, spy.Buffer]:
+        return self._buffer_vars(self._SCENE_SHADER_VARS, self._scene_buffers)
+
+    def _screen_shader_vars(self) -> dict[str, spy.Buffer]:
+        return self._buffer_vars(self._SCREEN_SHADER_VARS, self._work_buffers)
+
+    def _grad_shader_vars(self) -> dict[str, spy.Buffer]:
+        return self._buffer_vars(self._GRAD_SHADER_VARS, self._work_buffers)
+
     def _ensure_counter_readback_ring(self) -> None:
         if self._counter_readback_ring:
             return
@@ -439,28 +461,52 @@ class GaussianRenderer:
         cursor.g_Prepass.sampled5RadiusPadPx = prepass["sampled5RadiusPadPx"]
         cursor.g_Prepass.sampled5Eps = prepass["sampled5Eps"]
 
-    def _project_and_bin(self, encoder: spy.CommandEncoder, scene: GaussianScene, camera: Camera) -> None:
-        vars = {
-            "g_Positions": self._scene_buffers["positions"],
-            "g_Scales": self._scene_buffers["scales"],
-            "g_Rotations": self._scene_buffers["rotations"],
-            "g_ColorAlpha": self._scene_buffers["color_alpha"],
-            "g_ScreenCenterRadiusDepth": self._work_buffers["screen_center_radius_depth"],
-            "g_ScreenColorAlpha": self._work_buffers["screen_color_alpha"],
-            "g_ScreenEllipseConic": self._work_buffers["screen_ellipse_conic"],
-            "g_Keys": self._work_buffers["keys"],
-            "g_Values": self._work_buffers["values"],
-            "g_ListCounter": self._work_buffers["counter"],
-            "g_SplatListBases": self._work_buffers["splat_list_bases"],
-            "g_ScanlineWorkItems": self._work_buffers["scanline_work_items"],
-            "g_ScanlineCounter": self._work_buffers["scanline_counter"],
-            **self._prepass_uniforms(scene.count),
-            **self._camera_uniforms(camera),
+    @staticmethod
+    def _background_array(background: np.ndarray | tuple[float, float, float]) -> np.ndarray:
+        return np.asarray(background, dtype=np.float32).reshape(3)
+
+    def _stats_payload(self, splat_count: int, read_stats: bool, stats_valid: bool | None = None) -> dict[str, int | bool | float]:
+        valid = bool(self._delayed_stats_valid) if stats_valid is None else bool(stats_valid)
+        ready = bool(read_stats and valid)
+        return {
+            "generated_entries": int(self._delayed_generated_entries) if ready else 0,
+            "written_entries": int(self._delayed_written_entries) if ready else 0,
+            "overflow": bool(self._delayed_overflow) if ready else False,
+            "capacity_limited": bool(self._delayed_overflow) if ready else False,
+            "depth_bits": int(self.depth_bits),
+            "tile_count": int(self.tile_count),
+            "splat_count": int(splat_count),
+            "max_list_entries": int(self._max_list_entries),
+            "max_scanline_entries": int(self._max_scanline_entries),
+            "prepass_entry_cap": int(self._max_prepass_entries_by_budget()),
+            "prepass_memory_mb": int(self.max_prepass_memory_mb),
+            "stats_valid": bool(valid) if read_stats else False,
+            "stats_latency_frames": 1,
         }
+
+    def _project_and_bin(self, encoder: spy.CommandEncoder, scene: GaussianScene, camera: Camera) -> None:
         self._k_project.dispatch(
             thread_count=spy.uint3(scene.count, 1, 1),
-            vars=vars,
+            vars={
+                **self._scene_shader_vars(),
+                **self._screen_shader_vars(),
+                "g_Keys": self._work_buffers["keys"],
+                "g_Values": self._work_buffers["values"],
+                "g_ListCounter": self._work_buffers["counter"],
+                "g_SplatListBases": self._work_buffers["splat_list_bases"],
+                "g_ScanlineWorkItems": self._work_buffers["scanline_work_items"],
+                "g_ScanlineCounter": self._work_buffers["scanline_counter"],
+                **self._prepass_uniforms(scene.count),
+                **self._camera_uniforms(camera),
+            },
             command_encoder=encoder,
+        )
+
+    def _raster_thread_count(self) -> spy.uint3:
+        return spy.uint3(
+            (self.width + self._raster_config.microtile_dim - 1) // self._raster_config.microtile_dim,
+            (self.height + self._raster_config.microtile_dim - 1) // self._raster_config.microtile_dim,
+            1,
         )
 
     def _compute_scanline_dispatch_args(self, encoder: spy.CommandEncoder) -> spy.Buffer:
@@ -510,19 +556,10 @@ class GaussianRenderer:
 
     def _rasterize(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray) -> None:
         self._k_raster.dispatch(
-            thread_count=spy.uint3(
-                (self.width + self._raster_config.microtile_dim - 1) // self._raster_config.microtile_dim,
-                (self.height + self._raster_config.microtile_dim - 1) // self._raster_config.microtile_dim,
-                1,
-            ),
+            thread_count=self._raster_thread_count(),
             vars={
-                "g_Positions": self._scene_buffers["positions"],
-                "g_Scales": self._scene_buffers["scales"],
-                "g_Rotations": self._scene_buffers["rotations"],
-                "g_ColorAlpha": self._scene_buffers["color_alpha"],
-                "g_ScreenCenterRadiusDepth": self._work_buffers["screen_center_radius_depth"],
-                "g_ScreenColorAlpha": self._work_buffers["screen_color_alpha"],
-                "g_ScreenEllipseConic": self._work_buffers["screen_ellipse_conic"],
+                **self._scene_shader_vars(),
+                **self._screen_shader_vars(),
                 "g_SortedValues": self._work_buffers["values"],
                 "g_TileRanges": self._work_buffers["tile_ranges"],
                 "g_Output": self._output_texture,
@@ -538,10 +575,7 @@ class GaussianRenderer:
         self._k_clear_raster_grads.dispatch(
             thread_count=spy.uint3(grad_count, 1, 1),
             vars={
-                "g_GradPositions": self._work_buffers["grad_positions"],
-                "g_GradScales": self._work_buffers["grad_scales"],
-                "g_GradRotations": self._work_buffers["grad_rotations"],
-                "g_GradColorAlpha": self._work_buffers["grad_color_alpha"],
+                **self._grad_shader_vars(),
                 **self._prepass_uniforms(splat_count),
             },
             command_encoder=encoder,
@@ -555,24 +589,14 @@ class GaussianRenderer:
         output_grad: spy.Texture,
     ) -> None:
         self._k_raster_forward_backward.dispatch(
-            thread_count=spy.uint3(
-                (self.width + self._raster_config.microtile_dim - 1) // self._raster_config.microtile_dim,
-                (self.height + self._raster_config.microtile_dim - 1) // self._raster_config.microtile_dim,
-                1,
-            ),
+            thread_count=self._raster_thread_count(),
             vars={
-                "g_Positions": self._scene_buffers["positions"],
-                "g_Scales": self._scene_buffers["scales"],
-                "g_Rotations": self._scene_buffers["rotations"],
-                "g_ColorAlpha": self._scene_buffers["color_alpha"],
+                **self._scene_shader_vars(),
                 "g_ScreenColorAlpha": self._work_buffers["screen_color_alpha"],
                 "g_SortedValues": self._work_buffers["values"],
                 "g_TileRanges": self._work_buffers["tile_ranges"],
                 "g_OutputGrad": output_grad,
-                "g_GradPositions": self._work_buffers["grad_positions"],
-                "g_GradScales": self._work_buffers["grad_scales"],
-                "g_GradRotations": self._work_buffers["grad_rotations"],
-                "g_GradColorAlpha": self._work_buffers["grad_color_alpha"],
+                **self._grad_shader_vars(),
                 **self._prepass_uniforms(self._scene_count),
                 **self._raster_uniforms(background),
                 **self._camera_uniforms(camera),
@@ -636,12 +660,15 @@ class GaussianRenderer:
         dst._ensure_scene_buffers(count)
         dst._ensure_work_buffers(count)
         copy_bytes = count * 16
-        encoder.copy_buffer(dst._scene_buffers["positions"], 0, self._scene_buffers["positions"], 0, copy_bytes)
-        encoder.copy_buffer(dst._scene_buffers["scales"], 0, self._scene_buffers["scales"], 0, copy_bytes)
-        encoder.copy_buffer(dst._scene_buffers["rotations"], 0, self._scene_buffers["rotations"], 0, copy_bytes)
-        encoder.copy_buffer(dst._scene_buffers["color_alpha"], 0, self._scene_buffers["color_alpha"], 0, copy_bytes)
+        for name in self._SCENE_SHADER_VARS:
+            encoder.copy_buffer(dst._scene_buffers[name], 0, self._scene_buffers[name], 0, copy_bytes)
         dst._scene_count = count
         dst._current_scene = self._current_scene
+
+    def _require_scene(self) -> GaussianScene | SceneBinding:
+        if self._current_scene is None:
+            raise RuntimeError("Scene is not set.")
+        return self._current_scene
 
     @property
     def scene_buffers(self) -> dict[str, spy.Buffer]:
@@ -664,19 +691,15 @@ class GaussianRenderer:
         return self._output_grad_texture
 
     def execute_prepass_for_current_scene(self, camera: Camera, sync_counts: bool = False) -> tuple[int, int]:
-        if self._current_scene is None:
-            raise RuntimeError("Scene is not set. Call set_scene() before execute_prepass_for_current_scene().")
-        return self._execute_prepass(self._current_scene, camera, sync_counts=sync_counts)
+        return self._execute_prepass(self._require_scene(), camera, sync_counts=sync_counts)
 
     def rasterize_current_scene(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray) -> None:
-        if self._current_scene is None:
-            raise RuntimeError("Scene is not set. Call set_scene() before rasterize_current_scene().")
+        self._require_scene()
         self._rasterize(encoder, camera, background)
 
     def clear_raster_grads_current_scene(self, encoder: spy.CommandEncoder) -> None:
-        if self._current_scene is None:
-            raise RuntimeError("Scene is not set. Call set_scene() before clear_raster_grads_current_scene().")
-        self._clear_raster_grads(encoder, self._current_scene.count)
+        scene = self._require_scene()
+        self._clear_raster_grads(encoder, scene.count)
 
     def rasterize_forward_backward_current_scene(
         self,
@@ -685,8 +708,7 @@ class GaussianRenderer:
         background: np.ndarray,
         output_grad: spy.Texture,
     ) -> None:
-        if self._current_scene is None:
-            raise RuntimeError("Scene is not set. Call set_scene() before rasterize_forward_backward_current_scene().")
+        self._require_scene()
         self._rasterize_forward_backward(encoder, camera, background, output_grad)
 
     def render_to_texture(
@@ -701,7 +723,7 @@ class GaussianRenderer:
         if scene.count <= 0:
             raise RuntimeError("Cannot render empty scene.")
         self._ensure_work_buffers(scene.count, self._pending_min_list_entries)
-        background_np = np.asarray(background, dtype=np.float32).reshape(3)
+        background_np = self._background_array(background)
         self._execute_prepass(scene, camera, sync_counts=False)
         enc_raster = self.device.create_command_encoder()
         self._rasterize(enc_raster, camera, background_np)
@@ -709,21 +731,7 @@ class GaussianRenderer:
         self.device.wait()
         if read_stats:
             self._update_delayed_counter_stats()
-        self._last_stats = {
-            "generated_entries": int(self._delayed_generated_entries) if read_stats and self._delayed_stats_valid else 0,
-            "written_entries": int(self._delayed_written_entries) if read_stats and self._delayed_stats_valid else 0,
-            "overflow": bool(self._delayed_overflow) if read_stats and self._delayed_stats_valid else False,
-            "capacity_limited": bool(self._delayed_overflow) if read_stats and self._delayed_stats_valid else False,
-            "depth_bits": int(self.depth_bits),
-            "tile_count": int(self.tile_count),
-            "splat_count": int(scene.count),
-            "max_list_entries": int(self._max_list_entries),
-            "max_scanline_entries": int(self._max_scanline_entries),
-            "prepass_entry_cap": int(self._max_prepass_entries_by_budget()),
-            "prepass_memory_mb": int(self.max_prepass_memory_mb),
-            "stats_valid": bool(self._delayed_stats_valid) if read_stats else False,
-            "stats_latency_frames": 1,
-        }
+        self._last_stats = self._stats_payload(scene.count, read_stats)
         if self._output_texture is None:
             raise RuntimeError("Output texture is not initialized.")
         return self._output_texture, self._last_stats
@@ -741,22 +749,10 @@ class GaussianRenderer:
         if scene.count <= 0:
             return RenderOutput(
                 image=np.zeros((self.height, self.width, 4), dtype=np.float32),
-                stats={
-                    "generated_entries": 0,
-                    "written_entries": 0,
-                    "overflow": False,
-                    "capacity_limited": False,
-                    "depth_bits": self.depth_bits,
-                    "max_list_entries": int(self._max_list_entries),
-                    "max_scanline_entries": int(self._max_scanline_entries),
-                    "prepass_entry_cap": int(self._max_prepass_entries_by_budget()),
-                    "prepass_memory_mb": int(self.max_prepass_memory_mb),
-                    "stats_valid": True,
-                    "stats_latency_frames": 1,
-                },
+                stats=self._stats_payload(0, True, stats_valid=True),
             )
 
-        background_np = np.asarray(background, dtype=np.float32).reshape(3)
+        background_np = self._background_array(background)
         self.set_scene(scene)
         _, stats = self.render_to_texture(camera, background_np)
         return RenderOutput(
@@ -770,7 +766,7 @@ class GaussianRenderer:
         camera: Camera,
         background: np.ndarray | tuple[float, float, float] = (0.0, 0.0, 0.0),
     ) -> dict[str, np.ndarray]:
-        background_np = np.asarray(background, dtype=np.float32).reshape(3)
+        background_np = self._background_array(background)
         self.set_scene(scene)
         self._execute_prepass(scene, camera, sync_counts=False)
         enc = self.device.create_command_encoder()

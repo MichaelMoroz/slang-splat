@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from src.app import build_training_params, estimate_scene_bounds
+from src.app.shared import build_training_params, estimate_scene_bounds
 from src.scene import GaussianScene
 
 

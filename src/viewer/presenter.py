@@ -73,12 +73,14 @@ def dispatch_debug_letterbox(viewer: object, encoder: spy.CommandEncoder, source
 def update_ui_text(viewer: object, dt: float) -> None:
     viewer.s.fps_smooth += (1.0 / max(dt, 1e-5) - viewer.s.fps_smooth) * min(dt * 5.0, 1.0)
     viewer.t("fps").text = f"FPS: {viewer.s.fps_smooth:.1f}"
-    viewer.t("images_subdir").text = f"Train images: {session.selected_images_subdir(viewer)}"
+    image_subdir_idx = int(np.clip(int(viewer.c("images_subdir").value), 0, len(viewer.image_subdir_options) - 1))
+    viewer.t("images_subdir").text = f"Train images: {viewer.image_subdir_options[image_subdir_idx]}"
     session.update_debug_frame_slider_range(viewer)
-    _, debug_label = session.selected_loss_debug_view(viewer)
+    debug_view_idx = int(np.clip(int(viewer.c("loss_debug_view").value), 0, len(viewer.loss_debug_view_options) - 1))
+    _, debug_label = viewer.loss_debug_view_options[debug_view_idx]
     viewer.t("loss_debug_view").text = f"View: {debug_label}"
     if viewer.s.training_frames:
-        frame_idx = session.selected_loss_debug_frame_index(viewer)
+        frame_idx = int(np.clip(int(viewer.c("loss_debug_frame").value), 0, len(viewer.s.training_frames) - 1))
         viewer.t("loss_debug_frame").text = f"Frame[{frame_idx}]: {Path(viewer.s.training_frames[frame_idx].image_path).name}"
     else:
         viewer.t("loss_debug_frame").text = "Frame: <none>"
@@ -110,7 +112,7 @@ def update_ui_text(viewer: object, dt: float) -> None:
 
 
 def _render_debug_view(viewer: object, image: spy.Texture, encoder: spy.CommandEncoder, output_width: int, output_height: int) -> None:
-    frame_idx = session.selected_loss_debug_frame_index(viewer)
+    frame_idx = int(np.clip(int(viewer.c("loss_debug_frame").value), 0, len(viewer.s.training_frames) - 1))
     debug_width, debug_height = viewer.s.trainer.frame_size(frame_idx)
     debug_renderer = session.ensure_renderer(viewer, "debug_renderer", debug_width, debug_height, allow_debug_overlays=False)
     session.sync_scene_from_training_renderer(viewer, debug_renderer, target="debug")
@@ -121,7 +123,8 @@ def _render_debug_view(viewer: object, image: spy.Texture, encoder: spy.CommandE
     )
     target_tex = viewer.s.trainer.get_frame_target_texture(frame_idx, native_resolution=True)
     viewer.s.stats = stats
-    debug_view_key, _ = session.selected_loss_debug_view(viewer)
+    debug_view_idx = int(np.clip(int(viewer.c("loss_debug_view").value), 0, len(viewer.loss_debug_view_options) - 1))
+    debug_view_key, _ = viewer.loss_debug_view_options[debug_view_idx]
     source_tex = (
         debug_render_tex if debug_view_key == "rendered" else
         target_tex if debug_view_key == "target" else

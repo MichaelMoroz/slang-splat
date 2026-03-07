@@ -98,6 +98,18 @@ class GaussianTrainer:
         ("g_AdamMColorAlpha", "adam_m_color_alpha"),
         ("g_AdamVColorAlpha", "adam_v_color_alpha"),
     )
+    _SCENE_RW_SHADER_VARS = {
+        "positions": "g_PositionsRW",
+        "scales": "g_ScalesRW",
+        "rotations": "g_RotationsRW",
+        "color_alpha": "g_ColorAlphaRW",
+    }
+    _SCENE_GRAD_SHADER_VARS = {
+        "grad_positions": "g_GradPositions",
+        "grad_scales": "g_GradScales",
+        "grad_rotations": "g_GradRotations",
+        "grad_color_alpha": "g_GradColorAlpha",
+    }
 
     def __init__(
         self,
@@ -216,24 +228,36 @@ class GaussianTrainer:
         scale_safe = np.maximum(scales[finite], 1e-8)
         return float(np.exp(np.mean(np.log(scale_safe), dtype=np.float64)))
 
-    def _pack_point_table(self, points: np.ndarray) -> np.ndarray:
-        pts = np.ascontiguousarray(points, dtype=np.float32)
-        if pts.ndim != 2 or pts.shape[1] < 3:
-            raise ValueError("Point table must be [N, >=3] float array.")
-        packed = np.zeros((pts.shape[0], 4), dtype=np.float32)
-        packed[:, :3] = pts[:, :3]
-        return packed
+    @staticmethod
+    def _buffer_vars(mapping: dict[str, str], source: dict[str, object]) -> dict[str, object]:
+        return {shader_name: source[name] for name, shader_name in mapping.items()}
+
+    def _scene_thread_count(self) -> spy.uint3:
+        return spy.uint3(self._scene_count, 1, 1)
+
+    def _pixel_thread_count(self) -> spy.uint3:
+        return spy.uint3(self.renderer.width, self.renderer.height, 1)
+
+    def _scene_rw_vars(self) -> dict[str, object]:
+        return self._buffer_vars(self._SCENE_RW_SHADER_VARS, self.renderer.scene_buffers)
+
+    def _scene_grad_vars(self) -> dict[str, object]:
+        return self._buffer_vars(self._SCENE_GRAD_SHADER_VARS, self.renderer.work_buffers)
 
     def _create_init_point_buffer(self, points: np.ndarray) -> spy.Buffer:
-        packed = self._pack_point_table(points)
+        packed = np.ascontiguousarray(points, dtype=np.float32)
+        if packed.ndim != 2 or packed.shape[1] < 3:
+            raise ValueError("Point table must be [N, >=3] float array.")
+        packed4 = np.zeros((packed.shape[0], 4), dtype=np.float32)
+        packed4[:, :3] = packed[:, :3]
         usage = (
             spy.BufferUsage.shader_resource
             | spy.BufferUsage.copy_source
             | spy.BufferUsage.copy_destination
         )
-        buffer = self.device.create_buffer(size=max(packed.shape[0], 1) * 16, usage=usage)
-        if packed.shape[0] > 0:
-            buffer.copy_from_numpy(packed)
+        buffer = self.device.create_buffer(size=max(packed4.shape[0], 1) * 16, usage=usage)
+        if packed4.shape[0] > 0:
+            buffer.copy_from_numpy(packed4)
         return buffer
 
     def _bind_or_upload_init_pointcloud(
@@ -259,13 +283,6 @@ class GaussianTrainer:
         self._init_point_colors_buffer = self._create_init_point_buffer(col)
         self._init_point_count = int(pos.shape[0])
 
-    def has_pointcloud_initializer(self) -> bool:
-        return (
-            self._init_point_positions_buffer is not None
-            and self._init_point_colors_buffer is not None
-            and self._init_point_count > 0
-        )
-
     def _make_frame_camera(self, frame: ColmapFrame, width: int, height: int) -> Camera:
         camera = frame.make_camera(near=float(self.training.near), far=float(self.training.far))
         frame_width = max(int(frame.width), 1)
@@ -285,10 +302,8 @@ class GaussianTrainer:
             camera.cy = float(camera.cy) * sy
         return camera
 
-    def _to_rgba8(self, image: Image.Image) -> np.ndarray:
-        return np.array(image.convert("RGBA"), dtype=np.uint8, order="C", copy=True)
-
-    def _create_gpu_texture(self, rgba8: np.ndarray) -> spy.Texture:
+    def _create_gpu_texture(self, image: Image.Image) -> spy.Texture:
+        rgba8 = np.array(image.convert("RGBA"), dtype=np.uint8, order="C", copy=True)
         height, width = rgba8.shape[:2]
         tex = self.device.create_texture(
             format=spy.Format.rgba8_unorm_srgb,
@@ -306,9 +321,10 @@ class GaussianTrainer:
         for frame in self.frames:
             with Image.open(frame.image_path) as pil_image:
                 image = pil_image.convert("RGB")
-                self._frame_targets_native.append(self._create_gpu_texture(self._to_rgba8(image)))
-                image_train = image if image.size == (train_width, train_height) else image.resize((train_width, train_height), resample=Image.Resampling.BILINEAR)
-                self._frame_targets_train.append(self._create_gpu_texture(self._to_rgba8(image_train)))
+                self._frame_targets_native.append(self._create_gpu_texture(image))
+                if image.size != (train_width, train_height):
+                    image = image.resize((train_width, train_height), resample=Image.Resampling.BILINEAR)
+                self._frame_targets_train.append(self._create_gpu_texture(image))
 
     def update_hyperparams(
         self,
@@ -320,24 +336,19 @@ class GaussianTrainer:
         self.stability = stability_hparams
         self.training = training_hparams
 
-    def frame_count(self) -> int:
-        return len(self.frames)
+    def _frame(self, frame_index: int) -> ColmapFrame:
+        return self.frames[int(np.clip(frame_index, 0, len(self.frames) - 1))]
 
     def frame_size(self, frame_index: int) -> tuple[int, int]:
-        idx = int(np.clip(frame_index, 0, len(self.frames) - 1))
-        frame = self.frames[idx]
+        frame = self._frame(frame_index)
         return int(frame.width), int(frame.height)
 
     def get_frame_target_texture(self, frame_index: int, native_resolution: bool = True) -> spy.Texture:
         idx = int(np.clip(frame_index, 0, len(self.frames) - 1))
-        if native_resolution:
-            return self._frame_targets_native[idx]
-        return self._frame_targets_train[idx]
+        return self._frame_targets_native[idx] if native_resolution else self._frame_targets_train[idx]
 
     def make_frame_camera(self, frame_index: int, width: int, height: int) -> Camera:
-        idx = int(np.clip(frame_index, 0, len(self.frames) - 1))
-        frame = self.frames[idx]
-        return self._make_frame_camera(frame, int(width), int(height))
+        return self._make_frame_camera(self._frame(frame_index), int(width), int(height))
 
     def _common_vars(self) -> dict[str, object]:
         return {
@@ -387,7 +398,7 @@ class GaussianTrainer:
     ) -> None:
         vars_common = self._common_vars()
         self._kernels["clear_loss_grad"].dispatch(
-            thread_count=spy.uint3(self.renderer.width, self.renderer.height, 1),
+            thread_count=self._pixel_thread_count(),
             vars={
                 "g_OutputGrad": self.renderer.output_grad_texture,
                 "g_LossBuffer": self._buffers["loss"],
@@ -397,7 +408,7 @@ class GaussianTrainer:
             command_encoder=encoder,
         )
         self._kernels["mse_loss_grad"].dispatch(
-            thread_count=spy.uint3(self.renderer.width, self.renderer.height, 1),
+            thread_count=self._pixel_thread_count(),
             vars={
                 "g_Rendered": self.renderer.output_texture,
                 "g_Target": target_texture,
@@ -429,16 +440,10 @@ class GaussianTrainer:
     def _dispatch_adam_step(self, encoder: spy.CommandEncoder) -> None:
         vars_common = self._common_vars()
         self._kernels["adam_step"].dispatch(
-            thread_count=spy.uint3(self._scene_count, 1, 1),
+            thread_count=self._scene_thread_count(),
             vars={
-                "g_GradPositions": self.renderer.work_buffers["grad_positions"],
-                "g_GradScales": self.renderer.work_buffers["grad_scales"],
-                "g_GradRotations": self.renderer.work_buffers["grad_rotations"],
-                "g_GradColorAlpha": self.renderer.work_buffers["grad_color_alpha"],
-                "g_PositionsRW": self.renderer.scene_buffers["positions"],
-                "g_ScalesRW": self.renderer.scene_buffers["scales"],
-                "g_RotationsRW": self.renderer.scene_buffers["rotations"],
-                "g_ColorAlphaRW": self.renderer.scene_buffers["color_alpha"],
+                **self._scene_grad_vars(),
+                **self._scene_rw_vars(),
                 **self._adam_shader_vars(),
                 **vars_common,
             },
@@ -448,7 +453,7 @@ class GaussianTrainer:
     def _dispatch_mark_low_quality_splats(self, encoder: spy.CommandEncoder) -> None:
         vars_common = self._common_vars()
         self._kernels["mark_low_quality_splats"].dispatch(
-            thread_count=spy.uint3(self._scene_count, 1, 1),
+            thread_count=self._scene_thread_count(),
             vars={
                 "g_ScalesRW": self.renderer.scene_buffers["scales"],
                 "g_ColorAlphaRW": self.renderer.scene_buffers["color_alpha"],
@@ -461,12 +466,9 @@ class GaussianTrainer:
     def _dispatch_resample_low_quality_splats(self, encoder: spy.CommandEncoder) -> None:
         vars_common = self._common_vars()
         self._kernels["resample_low_quality_splats"].dispatch(
-            thread_count=spy.uint3(self._scene_count, 1, 1),
+            thread_count=self._scene_thread_count(),
             vars={
-                "g_PositionsRW": self.renderer.scene_buffers["positions"],
-                "g_ScalesRW": self.renderer.scene_buffers["scales"],
-                "g_RotationsRW": self.renderer.scene_buffers["rotations"],
-                "g_ColorAlphaRW": self.renderer.scene_buffers["color_alpha"],
+                **self._scene_rw_vars(),
                 **self._adam_shader_vars(),
                 "g_LowQualityFlags": self._buffers["low_quality_flags"],
                 **vars_common,
@@ -480,7 +482,7 @@ class GaussianTrainer:
         init_hparams: GaussianInitHyperParams,
         seed: int,
     ) -> None:
-        if not self.has_pointcloud_initializer():
+        if self._init_point_positions_buffer is None or self._init_point_colors_buffer is None or self._init_point_count <= 0:
             raise RuntimeError("Pointcloud initializer buffers are not available.")
         self._scene_count = max(int(splat_count), 1)
         self.scene = _SceneCountProxy(self._scene_count)
@@ -490,12 +492,9 @@ class GaussianTrainer:
         vars_common = self._common_vars()
         enc = self.device.create_command_encoder()
         self._kernels["init_from_pointcloud"].dispatch(
-            thread_count=spy.uint3(self._scene_count, 1, 1),
+            thread_count=self._scene_thread_count(),
             vars={
-                "g_PositionsRW": self.renderer.scene_buffers["positions"],
-                "g_ScalesRW": self.renderer.scene_buffers["scales"],
-                "g_RotationsRW": self.renderer.scene_buffers["rotations"],
-                "g_ColorAlphaRW": self.renderer.scene_buffers["color_alpha"],
+                **self._scene_rw_vars(),
                 **self._adam_shader_vars(),
                 "g_InitPointPositions": self._init_point_positions_buffer,
                 "g_InitPointColors": self._init_point_colors_buffer,

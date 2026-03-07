@@ -24,7 +24,6 @@ class ViewerState:
     renderer: GaussianRenderer | None = None
     training_renderer: GaussianRenderer | None = None
     debug_renderer: GaussianRenderer | None = None
-    debug_renderer_size: tuple[int, int] | None = None
     scene: GaussianScene | SceneCountProxy | None = None
     scene_path: Path | None = None
     stats: dict[str, int | bool | float] = field(default_factory=dict)

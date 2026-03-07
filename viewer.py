@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.viewer import SplatViewer, main
+from src.viewer.app import SplatViewer, main
 
 __all__ = ["SplatViewer", "main"]
 

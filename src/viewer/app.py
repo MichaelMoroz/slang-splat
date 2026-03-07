@@ -1,17 +1,15 @@
 from __future__ import annotations
-
-import time
 from pathlib import Path
 
 import numpy as np
 import slangpy as spy
 
 from .. import create_default_device
-from ..app import RendererParams, build_init_params, build_training_params
+from ..app.shared import RendererParams, build_init_params, build_training_params, fit_camera
 from ..renderer import Camera, GaussianRenderer
 from . import presenter, session
 from .state import DEFAULT_IMAGE_SUBDIR_INDEX, IMAGE_SUBDIR_OPTIONS, LOSS_DEBUG_OPTIONS, ViewerState
-from .ui import ViewerUI, build_ui
+from .ui import build_ui
 
 
 def _normalize(v: np.ndarray) -> np.ndarray:
@@ -31,7 +29,7 @@ class SplatViewer(spy.AppWindow):
             list_capacity_multiplier=self.s.list_capacity_multiplier,
             max_prepass_memory_mb=self.s.max_prepass_memory_mb,
         )
-        self.ui: ViewerUI = build_ui(self.screen, self, self.s.renderer)
+        self.ui = build_ui(self.screen, self, self.s.renderer)
         self.c("images_subdir").value = int(DEFAULT_IMAGE_SUBDIR_INDEX)
         session.create_debug_shaders(self)
 
@@ -139,7 +137,16 @@ class SplatViewer(spy.AppWindow):
         self.s.camera_pos += (up * self.s.move_vel[0] + right * self.s.move_vel[1] + forward * self.s.move_vel[2]) * dt
 
     def apply_camera_fit(self, bounds: object) -> None:
-        session.apply_camera_fit_to_state(self, bounds)
+        fit = fit_camera(bounds, self.s.fov_y)
+        self.s.camera_pos = fit.position
+        self.s.near = fit.near
+        self.s.far = fit.far
+        self.s.move_speed = fit.move_speed
+        self.c("move_speed").value = float(fit.move_speed)
+        self.s.yaw = 0.0
+        self.s.pitch = 0.0
+        self.s.move_vel[:] = 0.0
+        self.s.rot_vel[:] = 0.0
 
     def _browse_load_ply(self) -> None:
         path = spy.platform.open_file_dialog([spy.platform.FileDialogFilter("PLY Files", "*.ply")])
@@ -149,13 +156,15 @@ class SplatViewer(spy.AppWindow):
     def _browse_load_colmap(self) -> None:
         path = spy.platform.choose_folder_dialog()
         if path:
-            session.load_colmap_dataset(self, Path(path), session.selected_images_subdir(self))
+            images_subdir = self.image_subdir_options[int(np.clip(int(self.c("images_subdir").value), 0, len(self.image_subdir_options) - 1))]
+            session.load_colmap_dataset(self, Path(path), images_subdir)
 
     def _reload_scene(self) -> None:
         if self.s.scene_path is not None:
             session.load_scene(self, self.s.scene_path)
         elif self.s.colmap_root is not None:
-            session.load_colmap_dataset(self, self.s.colmap_root, session.selected_images_subdir(self))
+            images_subdir = self.image_subdir_options[int(np.clip(int(self.c("images_subdir").value), 0, len(self.image_subdir_options) - 1))]
+            session.load_colmap_dataset(self, self.s.colmap_root, images_subdir)
 
     def _initialize_training_scene(self) -> None:
         session.initialize_training_scene(self)
