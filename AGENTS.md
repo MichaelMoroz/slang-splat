@@ -23,5 +23,4 @@ IMPORTANT: Slangpy only works with elevated permissions! That includes tests.
 * Anything that reduces the total number of lines of code and or complexity is welcome!
 
 # Documentation
-* In a separate folder `doc/progress` write down what changes were done after plan has been approved and implemented. These should be written as separate `.md` files with current date and time. 
 * The project code should be documented in `.md` files describing the functionality, API as well as algorithms used. Each general part (like `Rendering`) of the project should be in separate files. General description of the project should be in the `README.md` file in the repository root.
