@@ -207,14 +207,14 @@ RasterState initial_raster_state()
     return { 0.0, 1.0 };
 }
 
-float jet_channel(float x)
-{
-    return saturate(1.5 - abs(4.0 * x - 3.0));
-}
-
 float3 jet_colormap(float x)
 {
-    return float3(jet_channel(x + 0.5), jet_channel(x), jet_channel(x - 0.5));
+    float t = saturate(x);
+    return float3(
+        saturate(1.5 - abs(4.0 * t - 3.0)),
+        saturate(1.5 - abs(4.0 * t - 2.0)),
+        saturate(1.5 - abs(4.0 * t - 1.0))
+    );
 }
 
 float raster_eval_alpha_gaussian_debug(RasterGaussian gaussian, no_diff float3 rayDir)
