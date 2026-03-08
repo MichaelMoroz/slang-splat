@@ -65,7 +65,7 @@ GROUP_SPECS = {
         ControlSpec("eps", "input_float", "Adam Eps", {"value": 1e-8, "step": 1e-9, "step_fast": 1e-8, "format": "%.10f"}),
         ControlSpec("scale_l2", "input_float", "Scale L2", {"value": 1e-3, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
         ControlSpec("lambda_dssim", "input_float", "Lambda DSSIM", {"value": 0.2, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
-        ControlSpec("max_anisotropy", "input_float", "Max Anisotropy", {"value": 3.0, "step": 0.1, "step_fast": 0.5, "format": "%.6f"}),
+        ControlSpec("max_anisotropy", "input_float", "Max Anisotropy", {"value": 10.0, "step": 0.1, "step_fast": 0.5, "format": "%.6f"}),
         ControlSpec("mcmc_pos_noise_enabled", "checkbox", "MCMC Pos Noise", {"value": True}),
         ControlSpec("mcmc_pos_noise_scale", "input_float", "MCMC Noise Scale", {"value": 1.0, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
         ControlSpec("mcmc_opacity_k", "input_float", "MCMC Opacity K", {"value": 100.0, "step": 0.5, "step_fast": 5.0, "format": "%.4f"}),

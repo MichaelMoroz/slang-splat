@@ -218,7 +218,7 @@ TRAIN_RENDER_ARGS = tuple(
         ("--far", 120.0),
         ("--scale-l2", 1e-3),
         ("--lambda-dssim", 0.2),
-        ("--max-anisotropy", 3.0),
+        ("--max-anisotropy", 10.0),
     )
 )
 TRAIN_INIT_ARGS = tuple(

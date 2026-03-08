@@ -56,7 +56,7 @@ Viewer controls:
 python cli.py train-colmap --colmap-root dataset/garden --images-subdir images_4 --iters 100 --max-gaussians 50000
 ```
 Use `--scale-l2` to control autodiff log-scale regularization around the init/reference scale (default `1e-3`).
-Use `--max-anisotropy` to hard-limit each gaussian's axis scale ratio (default `3.0`).
+Use `--max-anisotropy` to hard-limit each gaussian's axis scale ratio (default `10.0`).
 
 Quick smoke configuration:
 ```powershell
