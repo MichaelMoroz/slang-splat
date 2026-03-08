@@ -39,8 +39,8 @@ def _build_trainer(device) -> GaussianTrainer:
     params = default_training_params()
     recon = load_colmap_reconstruction(dataset_root, sparse_subdir=str(SPARSE_SUBDIR))
     frames = build_training_frames(recon, images_subdir=IMAGES_SUBDIR)
-    init_hparams = resolve_colmap_init_hparams(recon, init.gaussian_count, init.hparams)
-    scene = initialize_scene_from_colmap_points(recon=recon, max_gaussians=init.gaussian_count, seed=init.seed, init_hparams=init.hparams)
+    init_hparams = resolve_colmap_init_hparams(recon, 0, init.hparams)
+    scene = initialize_scene_from_colmap_points(recon=recon, max_gaussians=0, seed=init.seed, init_hparams=init.hparams)
     renderer = GaussianRenderer(device, width=TRAIN_WIDTH, height=TRAIN_HEIGHT, **renderer_kwargs(default_renderer_params()))
     return GaussianTrainer(
         device=device,

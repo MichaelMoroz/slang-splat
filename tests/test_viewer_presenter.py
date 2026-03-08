@@ -27,7 +27,8 @@ class _DummyRenderer:
 
 class _DummyTrainer:
     def __init__(self) -> None:
-        self.state = SimpleNamespace(step=0, last_loss=0.0, avg_loss=0.0, last_mse=0.0, avg_psnr=0.0, last_psnr=0.0, last_frame_index=0, last_instability="")
+        self.state = SimpleNamespace(step=0, last_loss=0.0, avg_loss=0.0, last_mse=0.0, last_ssim=0.9, avg_ssim=0.9, avg_psnr=0.0, last_psnr=0.0, last_frame_index=0, last_instability="")
+        self.scene = SimpleNamespace(count=4)
         self.step_calls = 0
 
     def step(self) -> None:
@@ -50,7 +51,7 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         "loss_debug_view": _control(2),
         "images_subdir": _control(0),
     }
-    texts = {key: _text() for key in ("fps", "images_subdir", "loss_debug_view", "loss_debug_frame", "path", "scene_stats", "render_stats", "training", "training_loss", "error")}
+    texts = {key: _text() for key in ("fps", "images_subdir", "loss_debug_view", "loss_debug_frame", "path", "scene_stats", "render_stats", "training", "training_ssim", "training_psnr", "training_loss", "training_instability", "error")}
     viewer = SimpleNamespace()
     viewer.device = SimpleNamespace()
     viewer.loss_debug_view_options = (("rendered", "Rendered"), ("target", "Target"), ("abs_diff", "Abs Diff"))

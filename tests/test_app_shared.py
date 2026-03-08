@@ -53,6 +53,7 @@ def test_build_training_params_clamps_ranges():
         mcmc_position_noise_scale=-5.0,
         mcmc_opacity_gate_sharpness=-1.0,
         mcmc_opacity_gate_center=2.0,
+        max_gaussians=-1,
         densify_from_iter=-5,
         densify_until_iter=1,
         densification_interval=0,
@@ -70,6 +71,7 @@ def test_build_training_params_clamps_ranges():
     assert params.training.far > params.training.near
     assert params.training.scale_l2_weight == 0.0
     assert params.training.lambda_dssim == 1.0
+    assert params.training.max_gaussians == 0
     assert params.training.densify_from_iter == 0
     assert params.training.densify_until_iter == 1
     assert params.training.densification_interval == 1

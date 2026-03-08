@@ -51,6 +51,7 @@ class StabilityHyperParams:
 class TrainingHyperParams:
     background: tuple[float, float, float] = (0.0, 0.0, 0.0); near: float = 0.1; far: float = 120.0; scale_l2_weight: float = 1e-3; mcmc_position_noise_enabled: bool = True
     mcmc_position_noise_scale: float = 1.0; mcmc_opacity_gate_sharpness: float = 100.0; mcmc_opacity_gate_center: float = 0.995; low_quality_reinit_enabled: bool = True; lambda_dssim: float = 0.2
+    max_gaussians: int = 50000
     densify_from_iter: int = 500; densify_until_iter: int = 15000; densification_interval: int = 100; densify_grad_threshold: float = 2e-4
     percent_dense: float = 0.01; prune_min_opacity: float = 0.005; screen_size_prune_threshold: float = 20.0; world_size_prune_ratio: float = 0.1
     split_child_count: int = 2; opacity_reset_interval: int = 3000
@@ -59,13 +60,14 @@ class TrainingHyperParams:
 @dataclass(slots=True)
 class TrainingState:
     step: int = 0; last_loss: float = float("nan"); avg_loss: float = float("nan"); last_mse: float = float("nan")
-    avg_signal_max: float = float("nan"); last_psnr: float = float("nan"); avg_psnr: float = float("nan"); last_frame_index: int = -1
+    last_ssim: float = float("nan"); avg_ssim: float = float("nan"); avg_signal_max: float = float("nan"); last_psnr: float = float("nan"); avg_psnr: float = float("nan"); last_frame_index: int = -1
     last_instability: str = ""
 
 
 class GaussianTrainer:
     _LOSS_SLOT_TOTAL = 0
     _LOSS_SLOT_MSE = 1
+    _LOSS_SLOT_SSIM = 2
     _PSNR_MSE_FLOOR = 1e-12
     _ADAM_BUFFER_NAMES = ("adam_m_pos", "adam_v_pos", "adam_m_scale", "adam_v_scale", "adam_m_quat", "adam_v_quat", "adam_m_color_alpha", "adam_v_color_alpha")
     _LOSS_TEXTURE_NAMES = (
@@ -135,7 +137,8 @@ class GaussianTrainer:
     get_frame_target_texture = lambda self, frame_index, native_resolution=True: (self._frame_targets_native if native_resolution else self._frame_targets_train)[int(np.clip(frame_index, 0, len(self.frames) - 1))]
     _dispatch_raster_forward_backward = lambda self, encoder, frame_camera, background: (self.renderer.clear_raster_grads_current_scene(encoder), self.renderer.rasterize_forward_backward_current_scene(encoder=encoder, camera=frame_camera, background=background, output_grad=self.renderer.output_grad_texture))
     _dispatch_adam_step = lambda self, encoder: self._dispatch("adam_step", encoder, self._scene_thread_count(), {**self._scene_grad_vars(), **self._scene_rw_vars(), **self._adam_shader_vars(), **self._common_vars()})
-    _read_loss_metrics = lambda self: (lambda loss_values, signal_values: (float(loss_values[self._LOSS_SLOT_TOTAL]) if loss_values.size > self._LOSS_SLOT_TOTAL else float("nan"), float(loss_values[self._LOSS_SLOT_MSE]) if loss_values.size > self._LOSS_SLOT_MSE else float("nan"), float(signal_values.view(np.float32)[0]) if signal_values.size else float("nan")))(np.frombuffer(self._buffers["loss"].to_numpy().tobytes(), dtype=np.float32), np.frombuffer(self._buffers["signal_max"].to_numpy().tobytes(), dtype=np.uint32))
+    _read_loss_metrics = lambda self: (lambda loss_values, signal_values: (float(loss_values[self._LOSS_SLOT_TOTAL]) if loss_values.size > self._LOSS_SLOT_TOTAL else float("nan"), float(loss_values[self._LOSS_SLOT_MSE]) if loss_values.size > self._LOSS_SLOT_MSE else float("nan"), float(loss_values[self._LOSS_SLOT_SSIM]) if loss_values.size > self._LOSS_SLOT_SSIM else float("nan"), float(signal_values.view(np.float32)[0]) if signal_values.size else float("nan")))(np.frombuffer(self._buffers["loss"].to_numpy().tobytes(), dtype=np.float32), np.frombuffer(self._buffers["signal_max"].to_numpy().tobytes(), dtype=np.uint32))
+    _effective_max_gaussians = lambda self: max(int(self.training.max_gaussians), int(self._scene_count)) if int(self.training.max_gaussians) > 0 else 2147483647
 
     def __init__(
         self,
@@ -171,6 +174,7 @@ class GaussianTrainer:
         self._loss_window = _RollingMetricWindow(size=self._metric_window_size, values=deque())
         self._frame_signal_max = np.full((len(self.frames),), np.nan, dtype=np.float32)
         self._frame_psnr = np.full((len(self.frames),), np.nan, dtype=np.float32)
+        self._frame_ssim = np.full((len(self.frames),), np.nan, dtype=np.float32)
         self._shader_path = Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang")
         self._kernels = {name: self.device.create_compute_kernel(self.device.load_program(str(self._shader_path), [entry])) for name, entry in self._KERNEL_ENTRIES.items()}
         self._buffers: dict[str, spy.Buffer] = {}
@@ -210,7 +214,7 @@ class GaussianTrainer:
             return
         usage = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
         new_capacity = max(count, max(self._splat_capacity, 1) + max(self._splat_capacity, 1) // 2)
-        self._buffers.setdefault("loss", self.device.create_buffer(size=8, usage=usage))
+        self._buffers.setdefault("loss", self.device.create_buffer(size=12, usage=usage))
         self._buffers.setdefault("signal_max", self.device.create_buffer(size=4, usage=usage))
         self._buffers["grad_ema"] = self.device.create_buffer(size=new_capacity * 4, usage=usage)
         self._buffers["max_screen_radius"] = self.device.create_buffer(size=new_capacity * 4, usage=usage)
@@ -330,6 +334,7 @@ class GaussianTrainer:
         self._loss_window.values.clear()
         self._frame_signal_max.fill(np.nan)
         self._frame_psnr.fill(np.nan)
+        self._frame_ssim.fill(np.nan)
 
     def _mean_finite(self, values: np.ndarray) -> float:
         finite = np.isfinite(values)
@@ -414,6 +419,7 @@ class GaussianTrainer:
             "g_ScaleRegReference": float(max(self._scale_reg_reference, 1e-8)),
             "g_LambdaDSSIM": float(np.clip(self.training.lambda_dssim, 0.0, 1.0)),
             "g_Densify": {
+                "maxGaussianCount": int(self._effective_max_gaussians()),
                 "gradThreshold": float(max(self.training.densify_grad_threshold, 0.0)),
                 "percentDense": float(max(self.training.percent_dense, 0.0)),
                 "sceneExtent": float(max(self._scene_extent, 1e-6)),
@@ -422,7 +428,7 @@ class GaussianTrainer:
                 "worldSizeRatio": float(max(self.training.world_size_prune_ratio, 0.0)),
                 "gradEMAAlpha": float(1.0 / float(max(len(self.frames), 1))),
                 "splitChildCount": int(max(self.training.split_child_count, 2)),
-                "outputCapacity": int(max(self._regen_capacity, 1)),
+                "outputCapacity": int(max(min(self._regen_capacity, self._effective_max_gaussians()), 1)),
                 "enableScreenSizePrune": np.uint32(1 if int(self.state.step + 1) > int(self.training.opacity_reset_interval) else 0),
             },
             "g_Adam": {
@@ -560,7 +566,7 @@ class GaussianTrainer:
         return int(self.training.opacity_reset_interval) > 0 and step_index % int(self.training.opacity_reset_interval) == 0
 
     def _apply_regenerated_scene(self, new_count: int) -> None:
-        self._scene_count = max(int(new_count), 1)
+        self._scene_count = max(min(int(new_count), self._effective_max_gaussians()), 1)
         self.scene.count = self._scene_count
         self.renderer.bind_scene_count(self._scene_count)
         self._ensure_training_buffers(self._scene_count)
@@ -576,7 +582,7 @@ class GaussianTrainer:
         self.device.submit_command_buffer(enc.finish())
         self.device.wait()
 
-    def _update_psnr_state(self, frame_index: int, mse: float, signal_max: float) -> None:
+    def _update_image_metric_state(self, frame_index: int, mse: float, ssim: float, signal_max: float) -> None:
         self.state.last_mse = float(mse)
         idx = int(np.clip(frame_index, 0, len(self.frames) - 1))
         self._frame_signal_max[idx] = float(signal_max) if np.isfinite(signal_max) and signal_max > 0.0 else np.nan
@@ -584,6 +590,9 @@ class GaussianTrainer:
         self.state.last_psnr = self._psnr_from_metrics(mse, float(self._frame_signal_max[idx]))
         self._frame_psnr[idx] = float(self.state.last_psnr) if np.isfinite(self.state.last_psnr) else np.nan
         self.state.avg_psnr = self._mean_finite(self._frame_psnr)
+        self.state.last_ssim = float(ssim) if np.isfinite(ssim) else float("nan")
+        self._frame_ssim[idx] = float(self.state.last_ssim) if np.isfinite(self.state.last_ssim) else np.nan
+        self.state.avg_ssim = self._mean_finite(self._frame_ssim)
 
     def step(self) -> float:
         frame_index = self._next_frame_index()
@@ -597,7 +606,7 @@ class GaussianTrainer:
         self.device.submit_command_buffer(enc.finish())
         self.device.wait()
 
-        image_loss, image_mse, signal_max = self._read_loss_metrics()
+        image_loss, image_mse, image_ssim, signal_max = self._read_loss_metrics()
         if not np.isfinite(image_loss):
             self.state.last_instability, loss = "Non-finite loss; ADAM step skipped and moments reset.", float("inf")
             self._zero_optimizer_moments()
@@ -630,5 +639,5 @@ class GaussianTrainer:
         self.state.last_loss = float(loss)
         self._loss_window.push(loss)
         self.state.avg_loss = self._loss_window.mean()
-        self._update_psnr_state(frame_index, image_mse, signal_max)
+        self._update_image_metric_state(frame_index, image_mse, image_ssim, signal_max)
         return float(loss)

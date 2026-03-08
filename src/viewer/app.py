@@ -45,6 +45,7 @@ _TRAINING_PARAM_KEYS = {
     "mcmc_position_noise_scale": "mcmc_pos_noise_scale",
     "mcmc_opacity_gate_sharpness": "mcmc_opacity_k",
     "mcmc_opacity_gate_center": "mcmc_opacity_t",
+    "max_gaussians": "max_gaussians",
     "densify_from_iter": "densify_from_iter",
     "densify_until_iter": "densify_until_iter",
     "densification_interval": "densification_interval",
@@ -61,8 +62,8 @@ _TRAINING_DEFAULTS = default_control_values("Train Optimizer", "Train Stability"
 
 default_images_subdir = lambda: IMAGE_SUBDIR_OPTIONS[DEFAULT_IMAGE_SUBDIR_INDEX]
 default_renderer_params = lambda max_prepass_memory_mb=DEFAULT_MAX_PREPASS_MEMORY_MB: RendererParams(list_capacity_multiplier=DEFAULT_LIST_CAPACITY_MULTIPLIER, max_prepass_memory_mb=max(int(max_prepass_memory_mb), 1))
-default_init_params = lambda: build_init_params(None, None, None, _TRAIN_SETUP_DEFAULTS["init_opacity"], _TRAIN_SETUP_DEFAULTS["gaussian_count"], _TRAIN_SETUP_DEFAULTS["seed"])
-default_training_params = lambda background=DEFAULT_VIEWER_BACKGROUND: build_training_params(background=background, mcmc_position_noise_enabled=bool(_TRAINING_DEFAULTS["mcmc_pos_noise_enabled"]), **{name: _TRAINING_DEFAULTS[control] for name, control in _TRAINING_PARAM_KEYS.items()})
+default_init_params = lambda: build_init_params(None, None, None, _TRAIN_SETUP_DEFAULTS["init_opacity"], _TRAIN_SETUP_DEFAULTS["seed"])
+default_training_params = lambda background=DEFAULT_VIEWER_BACKGROUND: build_training_params(background=background, mcmc_position_noise_enabled=bool(_TRAINING_DEFAULTS["mcmc_pos_noise_enabled"]), **{name: (_TRAIN_SETUP_DEFAULTS[control] if control in _TRAIN_SETUP_DEFAULTS else _TRAINING_DEFAULTS[control]) for name, control in _TRAINING_PARAM_KEYS.items()})
 
 
 class SplatViewer(spy.AppWindow):
@@ -71,7 +72,7 @@ class SplatViewer(spy.AppWindow):
     _selected_images_subdir = lambda self: self.image_subdir_options[min(max(int(self.c("images_subdir").value), 0), len(self.image_subdir_options) - 1)]
     render = lambda self, render_context: presenter.render_frame(self, render_context)
     renderer_params = lambda self, allow_debug_overlays: RendererParams(radius_scale=float(self.c("radius_scale").value), alpha_cutoff=float(self.c("alpha_cutoff").value), max_splat_steps=int(self.c("max_splat_steps").value), transmittance_threshold=float(self.c("trans_threshold").value), sampled5_safety_scale=float(self.c("sampled5_safety").value), list_capacity_multiplier=self.s.list_capacity_multiplier, max_prepass_memory_mb=self.s.max_prepass_memory_mb, debug_show_ellipses=bool(self.c("debug_ellipse").value) if allow_debug_overlays else False, debug_show_processed_count=bool(self.c("debug_processed_count").value) if allow_debug_overlays else False)
-    init_params = lambda self: build_init_params(None, None, None, self.c("init_opacity").value, self.c("gaussian_count").value, self.c("seed").value)
+    init_params = lambda self: build_init_params(None, None, None, self.c("init_opacity").value, self.c("seed").value)
     _forward = lambda self: (lambda cy, sy, cp, sp: normalize3(spy.float3(cp * sy, sp, cp * cy), eps=_VIEW_VEC_EPS))(math.cos(self.s.yaw), math.sin(self.s.yaw), math.cos(self.s.pitch), math.sin(self.s.pitch))
     camera = lambda self: (lambda forward: Camera.look_at(position=self.s.camera_pos, target=self.s.camera_pos + forward, up=self.s.up, fov_y_degrees=float(self.s.fov_y), near=float(self.s.near), far=float(self.s.far)))(self._forward())
     apply_camera_fit = lambda self, bounds: (lambda fit: (setattr(self.s, "camera_pos", fit.position), setattr(self.s, "near", fit.near), setattr(self.s, "far", fit.far), setattr(self.s, "move_speed", fit.move_speed), setattr(self.c("move_speed"), "value", float(fit.move_speed)), setattr(self.s, "yaw", 0.0), setattr(self.s, "pitch", 0.0), setattr(self.s, "move_vel", spy.float3(0.0, 0.0, 0.0)), setattr(self.s, "rot_vel", spy.float2(0.0, 0.0)) ))(fit_camera(bounds, self.s.fov_y))

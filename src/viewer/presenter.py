@@ -29,15 +29,26 @@ def update_ui_text(viewer: object, dt: float) -> None:
     viewer.t("loss_debug_view").text = f"View: {viewer.loss_debug_view_options[debug_idx][1]}"
     viewer.t("loss_debug_frame").text = f"Frame[{frame_idx}]: {Path(viewer.s.training_frames[frame_idx].image_path).name}" if viewer.s.training_frames else "Frame: <none>"
     viewer.t("path").text = f"Scene: {viewer.s.scene_path.name} [PLY]" if viewer.s.scene_path is not None else f"Scene: {viewer.s.colmap_root.name} [COLMAP]" if viewer.s.colmap_root is not None else "Scene: <none>"
-    viewer.t("scene_stats").text = f"Splats: {(viewer.s.scene.count if viewer.s.scene is not None else 0):,}"
+    current_splat_count = viewer.s.trainer.scene.count if viewer.s.trainer is not None else (viewer.s.scene.count if viewer.s.scene is not None else 0)
+    viewer.t("scene_stats").text = f"Splats: {int(current_splat_count):,}"
     viewer.t("render_stats").text = "Generated: 0 | Written: 0" if not stats else f"Generated: {int(stats['generated_entries']):,} | Written: {int(stats['written_entries']):,} | Overflow: {bool(stats['overflow'])}{' [cap]' if bool(stats.get('capacity_limited', False)) else ''}{' (delayed)' if bool(stats.get('stats_latency_frames', 0)) else ''}{'' if bool(stats.get('stats_valid', True)) else ' [warming]'}"
     if viewer.s.trainer is None:
-        viewer.t("training").text, viewer.t("training_loss").text = "Training: not initialized", "Loss: n/a"
+        viewer.t("training").text = "Training: not initialized"
+        viewer.t("training_ssim").text = "SSIM: n/a"
+        viewer.t("training_psnr").text = "PSNR: n/a"
+        viewer.t("training_loss").text = "Loss: n/a"
+        viewer.t("training_instability").text = ""
     else:
         state = viewer.s.trainer.state
-        psnr_text = f"{state.avg_psnr:.2f} dB" if np.isfinite(state.avg_psnr) else "n/a"
-        viewer.t("training").text = f"Training: {'running' if viewer.s.training_active else 'paused'} | step={state.step:,} | frame={state.last_frame_index}"
-        viewer.t("training_loss").text = f"Loss: {state.last_loss:.6e} | Avg: {state.avg_loss:.6e} | PSNR: {psnr_text} | {state.last_instability}"
+        last_ssim = f"{state.last_ssim:.4f}" if np.isfinite(state.last_ssim) else "n/a"
+        avg_ssim = f"{state.avg_ssim:.4f}" if np.isfinite(state.avg_ssim) else "n/a"
+        last_psnr = f"{state.last_psnr:.2f} dB" if np.isfinite(state.last_psnr) else "n/a"
+        avg_psnr = f"{state.avg_psnr:.2f} dB" if np.isfinite(state.avg_psnr) else "n/a"
+        viewer.t("training").text = f"Training: {'running' if viewer.s.training_active else 'paused'} | step={state.step:,} | frame={state.last_frame_index} | splats={int(current_splat_count):,}"
+        viewer.t("training_ssim").text = f"SSIM: {last_ssim} | Avg: {avg_ssim}"
+        viewer.t("training_psnr").text = f"PSNR: {last_psnr} | Avg: {avg_psnr}"
+        viewer.t("training_loss").text = f"Loss: {state.last_loss:.6e} | Avg: {state.avg_loss:.6e}"
+        viewer.t("training_instability").text = state.last_instability
     viewer.t("error").text = f"Error: {viewer.s.last_error}" if viewer.s.last_error else ""
 
 

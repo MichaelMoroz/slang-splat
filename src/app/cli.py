@@ -88,6 +88,7 @@ def _training_params(args: argparse.Namespace):
         mcmc_position_noise_scale=1.0,
         mcmc_opacity_gate_sharpness=100.0,
         mcmc_opacity_gate_center=0.995,
+        max_gaussians=args.max_gaussians,
         densify_from_iter=args.densify_from_iter,
         densify_until_iter=args.densify_until_iter,
         densification_interval=args.densification_interval,
@@ -107,8 +108,8 @@ def run_train_colmap(args: argparse.Namespace) -> int:
     width, height = (int(args.width), int(args.height))
     width, height = (width if width > 0 else int(frames[0].width), height if height > 0 else int(frames[0].height))
     init_hparams = _init_hparams(args)
-    resolved_init = resolve_colmap_init_hparams(recon, int(args.max_gaussians), init_hparams)
-    scene = initialize_scene_from_colmap_points(recon=recon, max_gaussians=int(args.max_gaussians), seed=int(args.seed), init_hparams=init_hparams)
+    resolved_init = resolve_colmap_init_hparams(recon, 0, init_hparams)
+    scene = initialize_scene_from_colmap_points(recon=recon, max_gaussians=0, seed=int(args.seed), init_hparams=init_hparams)
     params = _training_params(args)
     renderer = _renderer(args, width, height)
     trainer = GaussianTrainer(

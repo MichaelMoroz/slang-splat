@@ -87,9 +87,12 @@ def test_training_step_smoke_updates_params(device, tmp_path: Path):
     assert np.isfinite(loss)
     assert trainer.state.step == 1
     assert np.isfinite(trainer.state.last_mse)
+    assert np.isfinite(trainer.state.last_ssim)
+    assert np.isfinite(trainer.state.avg_ssim)
     assert np.isfinite(trainer.state.last_psnr)
     assert np.isfinite(trainer.state.avg_psnr)
     assert np.isclose(trainer.state.avg_psnr, trainer.state.last_psnr)
+    assert np.isclose(trainer.state.avg_ssim, trainer.state.last_ssim)
     assert np.all(np.isfinite(after))
 
 
@@ -345,6 +348,29 @@ def test_regenerate_scene_clones_small_high_gradient_gaussians(device, tmp_path:
     np.testing.assert_allclose(out_pos[2], positions[1], rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(out_scale[:2], np.repeat(scales[:1], 2, axis=0), rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(_read_f32x4(trainer._regen_buffers["adam_m_pos"], 3)[1], np.zeros((4,), dtype=np.float32), rtol=0.0, atol=1e-7)
+
+
+def test_regenerate_scene_respects_max_gaussian_cap(device, tmp_path: Path):
+    scene = _make_scene(count=2, seed=57)
+    frame = _make_frame(tmp_path)
+    renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
+    training = TrainingHyperParams(max_gaussians=2, densify_grad_threshold=0.5, percent_dense=0.5, world_size_prune_ratio=10.0)
+    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], training_hparams=training, seed=13)
+
+    scales = _read_f32x4(renderer.scene_buffers["scales"], 2)
+    scales[0, :3] = 0.05
+    scales[1, :3] = 0.05
+    renderer.scene_buffers["scales"].copy_from_numpy(scales)
+    trainer._buffers["grad_ema"].copy_from_numpy(np.array([1.0, 1.0], dtype=np.float32))
+    trainer._buffers["max_screen_radius"].copy_from_numpy(np.zeros((2,), dtype=np.float32))
+    trainer._ensure_regen_buffers(2)
+
+    enc = device.create_command_encoder()
+    trainer._dispatch_regenerate_scene(enc)
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+
+    assert trainer._read_output_count() == 2
 
 
 def test_regenerate_scene_splits_large_high_gradient_gaussians(device, tmp_path: Path):

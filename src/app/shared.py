@@ -46,7 +46,7 @@ class RendererParams:
 
 @dataclass(frozen=True, slots=True)
 class InitParams:
-    hparams: GaussianInitHyperParams; gaussian_count: int; seed: int
+    hparams: GaussianInitHyperParams; seed: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,7 +105,6 @@ def build_init_params(
     base_scale: float | None,
     scale_jitter_ratio: float | None,
     initial_opacity: float | None,
-    gaussian_count: int,
     seed: int,
 ) -> InitParams:
     return InitParams(
@@ -116,7 +115,6 @@ def build_init_params(
             initial_opacity=None if initial_opacity is None else clamp_float(initial_opacity, 0.0, 1.0),
             color_jitter_std=0.0,
         ),
-        gaussian_count=clamp_int(gaussian_count, 1, 10_000_000),
         seed=clamp_int(seed, 0, 1_000_000_000),
     )
 
@@ -150,6 +148,7 @@ def build_training_params(
     mcmc_position_noise_scale: float,
     mcmc_opacity_gate_sharpness: float,
     mcmc_opacity_gate_center: float,
+    max_gaussians: int,
     densify_from_iter: int,
     densify_until_iter: int,
     densification_interval: int,
@@ -206,6 +205,7 @@ def build_training_params(
         mcmc_position_noise_scale=clamp_float(mcmc_position_noise_scale, 0.0, 1e4),
         mcmc_opacity_gate_sharpness=clamp_float(mcmc_opacity_gate_sharpness, 0.0, 1e6),
         mcmc_opacity_gate_center=clamp_float(mcmc_opacity_gate_center, 0.0, 1.0),
+        max_gaussians=clamp_int(max_gaussians, 0, 10_000_000),
         densify_from_iter=clamp_int(densify_from_iter, 0, 10_000_000),
         densify_until_iter=clamp_int(densify_until_iter, 0, 10_000_000),
         densification_interval=clamp_int(densification_interval, 1, 10_000_000),

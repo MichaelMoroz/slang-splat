@@ -46,7 +46,7 @@ GROUP_SPECS = {
         ControlSpec("fov", "slider_float", "FOV", {"value": 60.0, "min": 25.0, "max": 100.0}),
     ),
     "Train Setup": (
-        ControlSpec("gaussian_count", "slider_int", "Gaussian Count", {"value": 50000, "min": 1000, "max": 2000000, "flags": spy.ui.SliderFlags.logarithmic}),
+        ControlSpec("max_gaussians", "slider_int", "Max Gaussians", {"value": 50000, "min": 1000, "max": 2000000, "flags": spy.ui.SliderFlags.logarithmic}),
         ControlSpec("seed", "slider_int", "Shuffle Seed", {"value": 1234, "min": 0, "max": 1000000}),
         ControlSpec("init_opacity", "input_float", "Init Opacity", {"value": 0.5, "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
     ),
@@ -116,7 +116,10 @@ def build_ui(screen: object, app: object, renderer: object) -> ViewerUI:
         "scene_stats": "Splats: 0",
         "render_stats": "Generated: 0 | Written: 0",
         "training": "Training: idle",
+        "training_ssim": "SSIM: n/a",
+        "training_psnr": "PSNR: n/a",
         "training_loss": "Loss: n/a",
+        "training_instability": "",
         "error": "",
     }.items():
         texts[key] = spy.ui.Text(panel, value)

@@ -3,6 +3,7 @@ import "math_constants.slang";
 static const uint TRAIN_TILE_DIM = 16u;
 static const uint LOSS_SLOT_TOTAL = 0u;
 static const uint LOSS_SLOT_MSE = 1u;
+static const uint LOSS_SLOT_SSIM = 2u;
 static const uint RNG_LINEAR_A = 1664525u;
 static const uint RNG_LINEAR_C = 1013904223u;
 static const float SSIM_C1 = 0.0001;
@@ -45,6 +46,7 @@ struct TrainingMCMCParams
 
 struct DensifyParams
 {
+    uint maxGaussianCount;
     float gradThreshold;
     float percentDense;
     float sceneExtent;
@@ -102,6 +104,7 @@ uniform uint g_LetterboxOutputWidth;
 uniform uint g_LetterboxOutputHeight;
 groupshared float gsLoss[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
 groupshared float gsMSE[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
+groupshared float gsSSIM[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
 groupshared float gsSignalMax[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
 
 uniform StructuredBuffer<float> g_GradPositions;
@@ -297,6 +300,17 @@ float rgb_dssim_loss(
     return lambdaDSSIM * (1.0 - dot(ssim, float3(1.0, 1.0, 1.0)) * (1.0 / 3.0)) * invPixelCount;
 }
 
+float rgb_ssim_metric(float3 muRendered, float3 muTarget, float3 blurRenderedSq, float3 blurTargetSq, float3 blurRenderTarget)
+{
+    float3 sigmaRendered = blurRenderedSq - muRendered * muRendered;
+    float3 sigmaTarget = blurTargetSq - muTarget * muTarget;
+    float3 sigmaCross = blurRenderTarget - muRendered * muTarget;
+    float3 numer = (2.0 * muRendered * muTarget + SSIM_C1) * (2.0 * sigmaCross + SSIM_C2);
+    float3 denom = max(muRendered * muRendered + muTarget * muTarget + SSIM_C1, float3(TINY_VALUE)) * max(sigmaRendered + sigmaTarget + SSIM_C2, float3(TINY_VALUE));
+    float3 ssim = numer / denom;
+    return dot(ssim, float3(1.0, 1.0, 1.0)) * (1.0 / 3.0);
+}
+
 [Differentiable]
 float scale_log_reference_loss(float3 scale, no_diff float referenceScale)
 {
@@ -423,6 +437,7 @@ void csClearLossAndGradTex(uint3 dispatchThreadID : SV_DispatchThreadID)
     {
         g_LossBuffer[LOSS_SLOT_TOTAL] = 0.0;
         g_LossBuffer[LOSS_SLOT_MSE] = 0.0;
+        g_LossBuffer[LOSS_SLOT_SSIM] = 0.0;
         g_SignalMaxBuffer[0] = 0u;
     }
 }
@@ -455,6 +470,7 @@ void csComputeMixedLossGrad(
 
     float localLoss = 0.0;
     float localMSE = 0.0;
+    float localSSIM = 0.0;
     float localSignalMax = 0.0;
     if (px < g_Width && py < g_Height)
     {
@@ -469,9 +485,11 @@ void csComputeMixedLossGrad(
         float mseLoss = rgb_mse_loss(rendered, target, g_InvPixelCount);
         float l1Loss = (1.0 - g_LambdaDSSIM) * rgb_l1_loss(rendered, target, g_InvPixelCount);
         float ssimLoss = rgb_dssim_loss(muRendered, muTarget, blurRenderedSq, blurTargetSq, blurRenderTarget, g_InvPixelCount, g_LambdaDSSIM);
+        float ssimMetric = rgb_ssim_metric(muRendered, muTarget, blurRenderedSq, blurTargetSq, blurRenderTarget);
         float loss = l1Loss + ssimLoss;
         localLoss = isfinite(loss) ? loss : 0.0;
         localMSE = isfinite(mseLoss) ? mseLoss : 0.0;
+        localSSIM = isfinite(ssimMetric) ? ssimMetric * g_InvPixelCount : 0.0;
         localSignalMax = max(target.x, max(target.y, target.z));
         float3 l1Grad = (1.0 - g_LambdaDSSIM) * rgb_l1_grad(rendered, target, g_InvPixelCount);
 
@@ -490,12 +508,14 @@ void csComputeMixedLossGrad(
 
     gsLoss[localIndex] = localLoss;
     gsMSE[localIndex] = localMSE;
+    gsSSIM[localIndex] = localSSIM;
     gsSignalMax[localIndex] = isfinite(localSignalMax) ? max(localSignalMax, 0.0) : 0.0;
     GroupMemoryBarrierWithGroupSync();
     [unroll] for (uint stride = (TRAIN_TILE_DIM * TRAIN_TILE_DIM) >> 1; stride > 0; stride >>= 1)
     {
         if (localIndex < stride) gsLoss[localIndex] += gsLoss[localIndex + stride];
         if (localIndex < stride) gsMSE[localIndex] += gsMSE[localIndex + stride];
+        if (localIndex < stride) gsSSIM[localIndex] += gsSSIM[localIndex + stride];
         if (localIndex < stride) gsSignalMax[localIndex] = max(gsSignalMax[localIndex], gsSignalMax[localIndex + stride]);
         GroupMemoryBarrierWithGroupSync();
     }
@@ -503,6 +523,7 @@ void csComputeMixedLossGrad(
     {
         if (isfinite(gsLoss[0])) InterlockedAdd(g_LossBuffer[LOSS_SLOT_TOTAL], gsLoss[0]);
         if (isfinite(gsMSE[0])) InterlockedAdd(g_LossBuffer[LOSS_SLOT_MSE], gsMSE[0]);
+        if (isfinite(gsSSIM[0])) InterlockedAdd(g_LossBuffer[LOSS_SLOT_SSIM], gsSSIM[0]);
         InterlockedMax(g_SignalMaxBuffer[0], asuint(max(gsSignalMax[0], 0.0)));
     }
 }
@@ -745,6 +766,7 @@ void csRegenerateScene(uint3 dispatchThreadID : SV_DispatchThreadID)
     float4 adamVColorAlpha = g_AdamVColorAlpha[splatId];
     float gradEMA = sanitize_scalar(g_GradNormEMA[splatId], g_Stability.hugeValue);
     float maxScreenRadius = sanitize_scalar(g_MaxScreenRadius[splatId], g_Stability.hugeValue);
+    bool allowGrowth = g_Densify.maxGaussianCount > g_SplatCount;
 
     float maxScale = max(scale.x, max(scale.y, scale.z));
     bool largeWorld = maxScale > scene_large_scale_threshold();
@@ -755,14 +777,14 @@ void csRegenerateScene(uint3 dispatchThreadID : SV_DispatchThreadID)
     bool highGrad = gradEMA >= g_Densify.gradThreshold;
     bool small = maxScale <= scene_small_scale_threshold();
 
-    if (highGrad && small)
+    if (allowGrowth && highGrad && small)
     {
         append_output_splat(pos, scale, rot, colorAlpha, adamMPos, adamVPos, adamMScale, adamVScale, adamMQuat, adamVQuat, adamMColorAlpha, adamVColorAlpha, 0.0, 0.0);
         append_output_splat(pos, scale, rot, colorAlpha, float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), 0.0, 0.0);
         return;
     }
 
-    if (highGrad)
+    if (allowGrowth && highGrad)
     {
         uint childCount = max(g_Densify.splitChildCount, 2u);
         float4 qInv = float4(rot.x, -rot.y, -rot.z, -rot.w);
