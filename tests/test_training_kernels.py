@@ -10,6 +10,8 @@ from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 from src.training import GaussianTrainer, StabilityHyperParams, TrainingHyperParams
 
+_ADAM_BUFFER_NAMES = ("adam_m_pos", "adam_v_pos", "adam_m_scale", "adam_v_scale", "adam_m_quat", "adam_v_quat", "adam_m_color_alpha", "adam_v_color_alpha")
+
 
 def _make_scene(count: int = 24, seed: int = 7) -> GaussianScene:
     rng = np.random.default_rng(seed)
@@ -330,16 +332,7 @@ def test_resample_low_quality_from_valid_random_donor(device, tmp_path: Path):
     renderer.scene_buffers["rotations"].copy_from_numpy(rotations)
     renderer.scene_buffers["color_alpha"].copy_from_numpy(color_alpha)
 
-    for name in (
-        "adam_m_pos",
-        "adam_v_pos",
-        "adam_m_scale",
-        "adam_v_scale",
-        "adam_m_quat",
-        "adam_v_quat",
-        "adam_m_color_alpha",
-        "adam_v_color_alpha",
-    ):
+    for name in _ADAM_BUFFER_NAMES:
         moments = np.full((scene.count, 4), 3.25, dtype=np.float32)
         trainer._buffers[name].copy_from_numpy(moments)
 
@@ -367,16 +360,7 @@ def test_resample_low_quality_from_valid_random_donor(device, tmp_path: Path):
     np.testing.assert_allclose(after_rot[target_id], expected_rot, rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(after_color_alpha[target_id], expected_color_alpha, rtol=0.0, atol=1e-6)
 
-    for name in (
-        "adam_m_pos",
-        "adam_v_pos",
-        "adam_m_scale",
-        "adam_v_scale",
-        "adam_m_quat",
-        "adam_v_quat",
-        "adam_m_color_alpha",
-        "adam_v_color_alpha",
-    ):
+    for name in _ADAM_BUFFER_NAMES:
         moment_values = _read_f32x4(trainer._buffers[name], scene.count)
         np.testing.assert_allclose(moment_values[target_id], np.zeros((4,), dtype=np.float32), rtol=0.0, atol=1e-7)
 
@@ -422,16 +406,7 @@ def test_resample_skips_when_random_donor_is_low_quality(device, tmp_path: Path)
     renderer.scene_buffers["color_alpha"].copy_from_numpy(color_alpha)
 
     sentinel = np.full((scene.count, 4), 1.75, dtype=np.float32)
-    for name in (
-        "adam_m_pos",
-        "adam_v_pos",
-        "adam_m_scale",
-        "adam_v_scale",
-        "adam_m_quat",
-        "adam_v_quat",
-        "adam_m_color_alpha",
-        "adam_v_color_alpha",
-    ):
+    for name in _ADAM_BUFFER_NAMES:
         trainer._buffers[name].copy_from_numpy(sentinel)
 
     before_target_pos = positions[target_id].copy()
@@ -454,16 +429,7 @@ def test_resample_skips_when_random_donor_is_low_quality(device, tmp_path: Path)
     np.testing.assert_allclose(after_rot[target_id], before_target_rot, rtol=0.0, atol=1e-7)
     np.testing.assert_allclose(after_color_alpha[target_id], before_target_color_alpha, rtol=0.0, atol=1e-7)
 
-    for name in (
-        "adam_m_pos",
-        "adam_v_pos",
-        "adam_m_scale",
-        "adam_v_scale",
-        "adam_m_quat",
-        "adam_v_quat",
-        "adam_m_color_alpha",
-        "adam_v_color_alpha",
-    ):
+    for name in _ADAM_BUFFER_NAMES:
         moment_values = _read_f32x4(trainer._buffers[name], scene.count)
         np.testing.assert_allclose(moment_values[target_id], sentinel[target_id], rtol=0.0, atol=1e-7)
 
@@ -553,3 +519,5 @@ def test_gpu_pointcloud_initializer_rebuilds_scene_without_cpu_upload(device, tm
     assert np.all(np.isfinite(color_alpha))
     assert np.all(scales[:, :3] >= 0.02 - 1e-6)
     assert np.all(np.abs(np.linalg.norm(rotations, axis=1) - 1.0) < 1e-3)
+    for name in _ADAM_BUFFER_NAMES:
+        np.testing.assert_allclose(_read_f32x4(trainer._buffers[name], 16), np.zeros((16, 4), dtype=np.float32), rtol=0.0, atol=1e-7)

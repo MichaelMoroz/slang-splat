@@ -50,14 +50,14 @@ class GaussianTrainer:
     _PSNR_MSE_FLOOR = 1e-12
     _ADAM_BUFFER_NAMES = ("adam_m_pos", "adam_v_pos", "adam_m_scale", "adam_v_scale", "adam_m_quat", "adam_v_quat", "adam_m_color_alpha", "adam_v_color_alpha")
     _ADAM_SHADER_VARS = {
-        "g_AdamMPos": "adam_m_pos",
-        "g_AdamVPos": "adam_v_pos",
-        "g_AdamMScale": "adam_m_scale",
-        "g_AdamVScale": "adam_v_scale",
-        "g_AdamMQuat": "adam_m_quat",
-        "g_AdamVQuat": "adam_v_quat",
-        "g_AdamMColorAlpha": "adam_m_color_alpha",
-        "g_AdamVColorAlpha": "adam_v_color_alpha",
+        "adam_m_pos": "g_AdamMPos",
+        "adam_v_pos": "g_AdamVPos",
+        "adam_m_scale": "g_AdamMScale",
+        "adam_v_scale": "g_AdamVScale",
+        "adam_m_quat": "g_AdamMQuat",
+        "adam_v_quat": "g_AdamVQuat",
+        "adam_m_color_alpha": "g_AdamMColorAlpha",
+        "adam_v_color_alpha": "g_AdamVColorAlpha",
     }
     _SCENE_RW_SHADER_VARS = {"positions": "g_PositionsRW", "scales": "g_ScalesRW", "rotations": "g_RotationsRW", "color_alpha": "g_ColorAlphaRW"}
     _SCENE_GRAD_SHADER_VARS = {"grad_positions": "g_GradPositions", "grad_scales": "g_GradScales", "grad_rotations": "g_GradRotations", "grad_color_alpha": "g_GradColorAlpha"}

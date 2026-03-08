@@ -66,6 +66,7 @@ Each trainer `step()` performs:
 - `csResampleLowQualitySplatsRandom`: for each marked splat, picks one deterministic random donor; if donor is valid,
   copies donor params, adds optional MCMC-scale position jitter, and resets optimizer moments.
 - `csInitializeGaussiansFromPointCloud`: initializes scene buffers and optimizer moments from preuploaded COLMAP point buffers.
+  Host binding uses the same `{python_buffer_name -> shader_variable_name}` map as the renderer/runtime passes, so COLMAP init and ADAM updates share one buffer contract.
 
 ## Numerical Reinforcement
 - Loss/grad and optimizer math sanitize non-finite values.
