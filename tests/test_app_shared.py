@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import numpy as np
 
-from src.app.shared import build_training_params, estimate_scene_bounds
+from pathlib import Path
+
+from src.app.shared import apply_training_profile, build_training_params, estimate_scene_bounds
 from src.scene import GaussianScene
 from src.viewer.app import default_training_params
 from src.viewer.ui import default_control_values, default_prune_small_threshold
@@ -94,10 +96,28 @@ def test_default_training_params_match_mcmc_reference_defaults():
     assert params.training.mcmc_opacity_gate_sharpness == 100.0
     assert params.training.mcmc_opacity_gate_center == 0.995
     assert params.training.opacity_reg_weight == 1e-3
+    assert params.training.max_gaussians == 200000
     assert params.training.densify_from_iter == 500
     assert params.training.densify_until_iter == 15000
     assert params.training.densification_interval == 100
     assert params.training.opacity_reset_interval == 3000
+
+
+def test_bicycle_images4_profile_applies_psnr_overrides():
+    params, profile = apply_training_profile(default_training_params(), "auto", dataset_root=Path("dataset/bicycle"), images_subdir="images_4")
+    assert profile.name == "bicycle-images4-psnr"
+    assert params.adam.position_lr == 1.6e-4
+    assert params.adam.scale_lr == 5e-3
+    assert params.adam.opacity_lr == 5e-2
+    assert params.training.mcmc_position_noise_enabled is False
+    assert params.training.background == (1.0, 1.0, 1.0)
+    assert params.training.lambda_dssim == 0.0
+    assert params.training.max_gaussians == 200000
+    assert params.training.densify_from_iter == 10000
+    assert params.training.densify_until_iter == 10000
+    assert params.training.screen_size_prune_threshold == 0.0
+    assert params.training.world_size_prune_ratio == 0.0
+    assert params.training.opacity_reset_interval == 0
 
 
 def test_default_prune_small_threshold_tracks_min_scale_default():

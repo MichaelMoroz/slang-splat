@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -11,7 +11,8 @@ from .. import create_default_device
 from ..renderer import Camera, GaussianRenderer
 from ..scene import GaussianInitHyperParams, build_training_frames, initialize_scene_from_colmap_points, load_colmap_reconstruction, load_gaussian_ply, resolve_colmap_init_hparams
 from ..training import GaussianTrainer
-from .shared import RendererParams, build_training_params, estimate_scene_bounds, renderer_kwargs, save_snapshot
+from .shared import RendererParams, apply_training_profile, build_training_params, estimate_scene_bounds, renderer_kwargs, save_snapshot
+from ..training import TRAINING_PROFILE_CHOICES
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,9 +110,11 @@ def run_train_colmap(args: argparse.Namespace) -> int:
     width, height = (int(args.width), int(args.height))
     width, height = (width if width > 0 else int(frames[0].width), height if height > 0 else int(frames[0].height))
     init_hparams = _init_hparams(args)
-    resolved_init = resolve_colmap_init_hparams(recon, 0, init_hparams)
-    scene = initialize_scene_from_colmap_points(recon=recon, max_gaussians=0, seed=int(args.seed), init_hparams=init_hparams)
-    params = _training_params(args)
+    params, profile = apply_training_profile(_training_params(args), args.training_profile, dataset_root=root, images_subdir=args.images_subdir)
+    init_hparams = replace(init_hparams, initial_opacity=profile.init_opacity_override) if init_hparams.initial_opacity is None and profile.init_opacity_override is not None else init_hparams
+    resolved_init = resolve_colmap_init_hparams(recon, params.training.max_gaussians, init_hparams)
+    scene_init = replace(init_hparams, initial_opacity=resolved_init.initial_opacity)
+    scene = initialize_scene_from_colmap_points(recon=recon, max_gaussians=params.training.max_gaussians, seed=int(args.seed), init_hparams=scene_init)
     renderer = _renderer(args, width, height)
     trainer = GaussianTrainer(
         device=renderer.device,
@@ -124,7 +127,7 @@ def run_train_colmap(args: argparse.Namespace) -> int:
         seed=int(args.seed),
         scale_reg_reference=float(max(resolved_init.base_scale, 1e-8)),
     )
-    print(f"Training start: scene={root} images={args.images_subdir} frames={len(frames)} gaussians={scene.count} size={width}x{height}")
+    print(f"Training start: scene={root} images={args.images_subdir} profile={profile.name} frames={len(frames)} gaussians={scene.count} size={width}x{height}")
     background, start = np.asarray(args.bg, dtype=np.float32), time.perf_counter()
     for step in range(int(args.iters)):
         loss = trainer.step()
@@ -256,7 +259,8 @@ COMMANDS = (
             A("--sparse-subdir", type=str, default="sparse/0"),
             A("--images-subdir", type=str, default="images_4"),
             A("--iters", type=int, default=1000),
-            A("--max-gaussians", type=int, default=50000),
+            A("--max-gaussians", type=int, default=200000),
+            A("--training-profile", type=str, default="auto", choices=TRAINING_PROFILE_CHOICES),
             A("--seed", type=int, default=1234),
             A("--width", type=int, default=0),
             A("--height", type=int, default=0),

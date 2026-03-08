@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -8,7 +8,7 @@ from PIL import Image
 import slangpy as spy
 
 from ..scene import GaussianInitHyperParams, GaussianScene
-from ..training import AdamHyperParams, StabilityHyperParams, TrainingHyperParams
+from ..training import AdamHyperParams, StabilityHyperParams, TrainingHyperParams, resolve_training_profile
 
 EPS = 1e-8
 MIN_SCENE_RADIUS = 1.0
@@ -224,6 +224,24 @@ def build_training_params(
         training.far = training.near + 1e-3
     training.densify_until_iter = max(training.densify_until_iter, training.densify_from_iter)
     return AppTrainingParams(adam=adam, stability=stability, training=training)
+
+
+def apply_training_profile(
+    params: AppTrainingParams,
+    profile_name: str | None,
+    *,
+    dataset_root: Path | None = None,
+    images_subdir: str | None = None,
+) -> tuple[AppTrainingParams, object]:
+    profile = resolve_training_profile(profile_name, dataset_root=dataset_root, images_subdir=images_subdir)
+    return (
+        AppTrainingParams(
+            adam=replace(params.adam, **profile.adam_overrides),
+            stability=replace(params.stability, **profile.stability_overrides),
+            training=replace(params.training, **profile.training_overrides),
+        ),
+        profile,
+    )
 
 
 renderer_kwargs = lambda params: {name: getattr(params, name) for name in RendererParams.__dataclass_fields__}

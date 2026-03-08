@@ -376,7 +376,7 @@ def test_update_densification_stats_tracks_ema_and_screen_radius(device, tmp_pat
     np.testing.assert_allclose(_read_f32(trainer._buffers["max_screen_radius"], 3), np.array([5.0, 6.0, 7.0], dtype=np.float32), rtol=0.0, atol=1e-6)
 
 
-def test_regenerate_scene_keeps_small_high_gradient_gaussians_below_dense_ratio(device, tmp_path: Path):
+def test_regenerate_scene_clones_small_high_gradient_gaussians_below_dense_ratio(device, tmp_path: Path):
     scene = _make_scene(count=2, seed=51)
     frame = _make_frame(tmp_path)
     renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
@@ -399,15 +399,18 @@ def test_regenerate_scene_keeps_small_high_gradient_gaussians_below_dense_ratio(
     device.submit_command_buffer(enc.finish())
     device.wait()
 
-    assert trainer._read_output_count() == 2
-    out_pos = _read_f32x4(trainer._regen_buffers["positions"], 2)
-    out_scale = _read_f32x4(trainer._regen_buffers["scales"], 2)
-    out_adam_m_pos = _read_f32x4(trainer._regen_buffers["adam_m_pos"], 2)
-    np.testing.assert_allclose(out_pos, positions, rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(out_scale, scales, rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(out_adam_m_pos, np.full((2, 4), 1.0, dtype=np.float32), rtol=0.0, atol=1e-7)
-    np.testing.assert_allclose(_read_f32(trainer._regen_buffers["grad_ema"], 2), np.array([1.0, 0.1], dtype=np.float32), rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(_read_f32(trainer._regen_buffers["max_screen_radius"], 2), np.array([2.5, 1.25], dtype=np.float32), rtol=0.0, atol=1e-6)
+    assert trainer._read_output_count() == 3
+    out_pos = _read_f32x4(trainer._regen_buffers["positions"], 3)
+    out_scale = _read_f32x4(trainer._regen_buffers["scales"], 3)
+    out_adam_m_pos = _read_f32x4(trainer._regen_buffers["adam_m_pos"], 3)
+    np.testing.assert_allclose(out_pos[[0, 2]], positions, rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(out_pos[1], positions[0], rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(out_scale[[0, 2]], scales, rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(out_scale[1], scales[0], rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(out_adam_m_pos[[0, 2]], np.full((2, 4), 1.0, dtype=np.float32), rtol=0.0, atol=1e-7)
+    np.testing.assert_allclose(out_adam_m_pos[1], np.zeros((4,), dtype=np.float32), rtol=0.0, atol=1e-7)
+    np.testing.assert_allclose(_read_f32(trainer._regen_buffers["grad_ema"], 3), np.array([1.0, 1.0, 0.1], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(_read_f32(trainer._regen_buffers["max_screen_radius"], 3), np.array([2.5, 2.5, 1.25], dtype=np.float32), rtol=0.0, atol=1e-6)
 
 
 def test_regenerate_scene_respects_max_gaussian_cap(device, tmp_path: Path):
@@ -550,7 +553,7 @@ def test_regenerate_scene_keeps_anisotropic_low_gradient_gaussian(device, tmp_pa
     np.testing.assert_allclose(_read_f32(trainer._regen_buffers["max_screen_radius"], 1), np.array([4.25], dtype=np.float32), rtol=0.0, atol=1e-6)
 
 
-def test_regenerate_scene_prunes_low_opacity_only(device, tmp_path: Path):
+def test_regenerate_scene_prunes_low_opacity_and_oversized_gaussians(device, tmp_path: Path):
     scene = _make_scene(count=3, seed=71)
     frame = _make_frame(tmp_path)
     renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
@@ -577,7 +580,7 @@ def test_regenerate_scene_prunes_low_opacity_only(device, tmp_path: Path):
     device.submit_command_buffer(enc.finish())
     device.wait()
 
-    assert trainer._read_output_count() == 2
+    assert trainer._read_output_count() == 0
 
 
 def test_reset_opacity_rewrites_raw_alpha_and_clears_color_moments(device, tmp_path: Path):

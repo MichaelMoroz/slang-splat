@@ -103,8 +103,19 @@ def initialize_scene_from_colmap_points(recon: ColmapReconstruction, max_gaussia
         raise RuntimeError("COLMAP reconstruction has no 3D points.")
     chosen_count = xyz.shape[0] if max_gaussians <= 0 else min(max(int(max_gaussians), 1), xyz.shape[0])
     positions, colors = xyz[:chosen_count].copy(), rgb[:chosen_count].copy()
+    rng = np.random.default_rng(int(seed))
+    if init_hparams is not None and init_hparams.position_jitter_std is not None and float(init_hparams.position_jitter_std) > 0.0:
+        positions += rng.normal(0.0, float(init_hparams.position_jitter_std), size=positions.shape).astype(np.float32)
     scales_1d = point_nn_scales(positions)
+    if init_hparams is not None and init_hparams.base_scale is not None:
+        median_scale = float(np.median(scales_1d)) if scales_1d.size > 0 else 1.0
+        scales_1d = scales_1d * (float(max(init_hparams.base_scale, 1e-4)) / max(median_scale, 1e-6))
     scales = np.repeat(scales_1d[:, None], 3, axis=1).astype(np.float32)
+    if init_hparams is not None and init_hparams.scale_jitter_ratio is not None and float(init_hparams.scale_jitter_ratio) > 0.0:
+        lo = max(1.0 - float(init_hparams.scale_jitter_ratio), 1e-4)
+        hi = 1.0 + float(init_hparams.scale_jitter_ratio)
+        scales *= rng.uniform(lo, hi, size=scales.shape).astype(np.float32)
+    scales = np.clip(scales, 1e-4, 1e4).astype(np.float32)
     opacity = 0.1 if init_hparams is None or init_hparams.initial_opacity is None else float(np.clip(init_hparams.initial_opacity, 1e-4, 0.9999))
     return GaussianScene(
         positions=positions,

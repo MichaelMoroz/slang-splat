@@ -46,7 +46,7 @@ GROUP_SPECS = {
         ControlSpec("fov", "slider_float", "FOV", {"value": 60.0, "min": 25.0, "max": 100.0}),
     ),
     "Train Setup": (
-        ControlSpec("max_gaussians", "slider_int", "Max Gaussians", {"value": 50000, "min": 1000, "max": 2000000, "flags": spy.ui.SliderFlags.logarithmic}),
+        ControlSpec("max_gaussians", "slider_int", "Max Gaussians", {"value": 200000, "min": 1000, "max": 2000000, "flags": spy.ui.SliderFlags.logarithmic}),
         ControlSpec("seed", "slider_int", "Shuffle Seed", {"value": 1234, "min": 0, "max": 1000000}),
         ControlSpec("init_opacity", "input_float", "Init Opacity", {"value": 0.5, "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
     ),

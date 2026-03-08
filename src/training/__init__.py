@@ -5,6 +5,7 @@ from .gaussian_trainer import (
     TrainingHyperParams,
     TrainingState,
 )
+from .profiles import TRAINING_PROFILE_CHOICES, TrainingProfile, resolve_training_profile
 
 __all__ = [
     "AdamHyperParams",
@@ -12,4 +13,7 @@ __all__ = [
     "TrainingHyperParams",
     "TrainingState",
     "GaussianTrainer",
+    "TrainingProfile",
+    "TRAINING_PROFILE_CHOICES",
+    "resolve_training_profile",
 ]

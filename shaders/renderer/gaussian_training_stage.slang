@@ -802,14 +802,26 @@ void csRegenerateScene(uint3 dispatchThreadID : SV_DispatchThreadID)
     float opacity = opacity_from_raw(colorAlpha.w);
     float maxScale = max(scale.x, max(scale.y, scale.z));
 
-    bool prune = opacity < g_Densify.pruneMinOpacity || maxScale < g_Densify.forcePruneScaleThreshold;
+    bool oversized = g_Densify.enableScreenSizePrune != 0u && (
+        (g_Densify.screenSizeThreshold > 0.0 && maxScreenRadius > g_Densify.screenSizeThreshold) ||
+        (g_Densify.worldSizeRatio > 0.0 && maxScale > g_Densify.worldSizeRatio * g_Densify.sceneExtent)
+    );
+    bool prune = opacity < g_Densify.pruneMinOpacity || oversized || maxScale < g_Densify.forcePruneScaleThreshold;
     if (prune) return;
 
     bool highGrad = gradEMA >= g_Densify.gradThreshold;
     bool small = maxScale <= scene_small_scale_threshold();
-    bool shouldSplit = g_Densify.forceSplitAll != 0u || (highGrad && !small);
+    bool shouldClone = allowGrowth && g_Densify.forceSplitAll == 0u && highGrad && small;
+    bool shouldSplit = allowGrowth && (g_Densify.forceSplitAll != 0u || (highGrad && !small));
 
-    if (allowGrowth && shouldSplit)
+    if (shouldClone)
+    {
+        append_output_splat(pos, scale, rot, colorAlpha, adamMPos, adamVPos, adamMScale, adamVScale, adamMQuat, adamVQuat, adamMColorAlpha, adamVColorAlpha, gradEMA, maxScreenRadius);
+        append_output_splat(pos, scale, rot, colorAlpha, float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), gradEMA, maxScreenRadius);
+        return;
+    }
+
+    if (shouldSplit)
     {
         float4 qInv = float4(rot.x, -rot.y, -rot.z, -rot.w);
         uint axisIndex = dominant_axis_index(scale.xyz);

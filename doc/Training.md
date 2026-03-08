@@ -28,7 +28,7 @@ The mixed photometric loss uses the reusable separable blur utility in `src/filt
 ## Initialization
 - Gaussians are initialized directly from COLMAP `points3D` on CPU.
 - Position is copied from the COLMAP point cloud.
-- Scale is the nearest-neighbor point spacing repeated across XYZ.
+- Scale starts from the nearest-neighbor point spacing repeated across XYZ; if initialization overrides provide explicit base-scale or jitter values, the CPU initializer applies them before uploading the scene.
 - Rotation starts as identity quaternion.
 - Opacity starts from the configured constant.
 - When init hyperparameters are omitted, Python derives defaults from COLMAP point-cloud nearest-neighbor spacing and requested gaussian count so initial splats are dense but only lightly overlapping.
@@ -60,7 +60,7 @@ Each trainer `step()` performs:
 9. On the configured schedule, run `csRegenerateScene`.
    - Clone: duplicate small high-gradient splats while preserving the original optimizer state on the kept copy and zeroing moments on the new copy.
    - Split: replace large high-gradient splats with two children placed symmetrically on the parent's dominant local axis, with that dominant axis halved in each child.
-   - Prune: drop splats with low opacity.
+   - Prune: drop splats with low opacity, and optionally oversized splats once screen-size pruning is enabled.
    - Regeneration resets densification stats for the new active set.
 10. On the configured schedule, run `csResetOpacity` to rewrite the stored raw opacity parameter so the effective sigmoid opacity becomes `min(alpha, 0.1)`, then clear alpha optimizer moments.
 
@@ -81,6 +81,7 @@ Each trainer `step()` performs:
   - Clamps stored scales to `[min_scale, max_scale]` and enforces `max_anisotropy`.
 - `csUpdateDensificationStats`: updates per-splat gradient EMA and maximum projected radius from the current step.
 - `csRegenerateScene`: inline clone/split/prune classification plus append-buffer regeneration into the next active scene buffers. Split uses deterministic dominant-axis placement and halves the dominant child scale. Size-based pruning is currently disabled.
+- `csRegenerateScene`: inline clone/split/prune classification plus append-buffer regeneration into the next active scene buffers. Clone keeps the original optimizer state on the retained copy and zeros it on the duplicate; split uses deterministic dominant-axis placement and halves the dominant child scale; prune can drop oversized splats after the opacity-reset gate enables screen-size pruning.
 - `csResetOpacity`: rewrites the raw opacity parameter to `logit(min(sigmoid(raw_alpha), 0.1))` and clears alpha optimizer moments.
 - `csInitializeGaussiansFromPointCloud`: still exists for standalone point-buffer initialization, but the COLMAP training path now builds the initial `GaussianScene` on CPU.
 
@@ -95,7 +96,7 @@ Each trainer `step()` performs:
   - scale min/max clamp,
   - color clamp to `[0, 1]`.
 - Quaternion normalization each step with identity fallback.
-- MCMC position noise remains available, but it is disabled by default because global opacity reset drives every splat into the low-opacity regime that the exploration gate treats as maximal-noise.
+- MCMC position noise remains available; the legacy defaults keep it enabled, while the bicycle `/4` PSNR profile disables it because the simplified RGB-only trainer converges more reliably without the exploration term.
 - Host guard:
   - if loss is non-finite, ADAM step is skipped and moments are reset.
 - Host metrics:
@@ -120,11 +121,13 @@ Useful options:
 - `--max-anisotropy` for the hard per-gaussian scale-ratio cap,
 - `--grad-clip`, `--grad-norm-clip`, `--max-update`,
 - `--min-scale`, `--max-scale`, `--min-opacity`, `--max-opacity`.
+- `--training-profile auto|legacy|bicycle-images4-psnr`; `auto` resolves the tuned bicycle `/4` profile when `colmap-root` is `dataset/bicycle` and `images-subdir` is `images_4`.
 
 ## Regression Test
 - `tests/test_training_garden_regression.py` loads the tracked `dataset/garden` subset, initializes gaussians from the COLMAP point cloud with a fixed seed, forces `opacity_reset_interval = 1000`, and runs exactly `1900` training steps.
 - The test asserts on the final cached `avg_psnr >= 25 dB`, so one full post-reset recovery window is part of the regression instead of being hidden by an earlier peak.
 - `last_psnr` is still recorded for diagnostics, but the regression gate uses the per-frame cached average to avoid single-view cherry-picking.
+- `tools/benchmark_bicycle_training.py` is the local benchmark entrypoint for the bicycle `/4` tuning target; it reports the current `avg_psnr`, the `23.18 dB` goal, and the remaining gap after the requested step budget.
 
 ## Viewer Integration
 - `viewer.py` is a thin launcher over `src/viewer`, which is split into:

@@ -57,6 +57,7 @@ python cli.py train-colmap --colmap-root dataset/garden --images-subdir images_4
 ```
 Use `--scale-l2` to control autodiff log-scale regularization around the init/reference scale (default `1e-3`).
 Use `--max-anisotropy` to cap each gaussian's axis scale ratio during the ADAM update (default `10.0`).
+`train-colmap` also accepts `--training-profile`; `auto` selects a tuned `bicycle-images4-psnr` preset for `dataset/bicycle` + `images_4`, otherwise it keeps the legacy defaults.
 
 Quick smoke configuration:
 ```powershell
@@ -76,6 +77,7 @@ Training notes:
 - Training walks a shuffled permutation of views and reshuffles after every full image epoch.
 - Training target images are stored as `rgba8_unorm_srgb` textures (not float32) so shader reads use hardware sRGB decode while keeping GPU memory usage low.
 - COLMAP training initialization now uses the COLMAP point cloud directly on CPU: positions come from `points3D`, per-point scale is the nearest-neighbor spacing, rotation is identity, and opacity starts from the configured constant.
+- CLI and viewer scene initialization now honor the configured gaussian cap instead of always forcing the full COLMAP point cloud into the initial scene.
 - Default COLMAP initialization parameters are still derived from point-cloud nearest-neighbor spacing and requested gaussian count for reference-scale estimation and viewer defaults.
 - Default loss is `(1 - lambda_dssim) * L1 + lambda_dssim * DSSIM`, with DSSIM driven by Gaussian-window SSIM moments on the GPU.
 - GPU scene buffers store opacity as a raw sigmoid parameter; rasterization, pruning, and opacity reset convert it through the same sigmoid/logit helpers so Slang autodiff differentiates through opacity directly.
@@ -83,8 +85,8 @@ Training notes:
 - `last_mse` and PSNR remain plain RGB MSE metrics even though the optimization loss is mixed photometric.
 - Target Y-flip is enabled by default.
 - Density control follows the original 3DGS structure more closely: gradient/radius stats are accumulated until `densify_until_iter`, then clone/split/prune runs every `densification_interval` after `densify_from_iter`, and opacity reset runs every `opacity_reset_interval`.
-- Clone duplicates small high-gradient splats, split replaces large high-gradient splats with two children, and prune currently removes only low-opacity splats; size-based prune is temporarily disabled.
-- MCMC position noise is now opt-in; leaving it off by default avoids the low-opacity reset interacting with max exploration noise on every splat.
+- Clone duplicates small high-gradient splats, split replaces large high-gradient splats with two children, and prune can drop low-opacity plus oversized gaussians once screen-size pruning is enabled.
+- The legacy defaults still keep MCMC position noise enabled; the bicycle `/4` PSNR profile turns it off and also disables densify/reset because that simplified RGB-only pipeline converges more reliably without them.
 - Numerical reinforcement includes clipping, finite checks, and safe quaternion normalization.
 - Scale regularization uses an autodiff log-space penalty around the initialization/reference scale, so equal multiplicative scale deviations are treated more uniformly.
 - Scale anisotropy is clamped in the ADAM step with `max(scale) / min(scale) <= max_anisotropy`.
@@ -96,6 +98,12 @@ python -m pytest -q
 ```
 
 The repo intentionally keeps only the `dataset/garden/images_4` and `dataset/garden/sparse/0` subset visible in git for the COLMAP convergence regression. `tests/test_training_garden_regression.py` now runs a fixed-seed `1900`-step training pass with opacity reset forced every `1000` steps, and only passes when the final cached `avg_psnr` stays at or above `25 dB`; `last_psnr` remains a single-step diagnostic for the currently trained view.
+
+For the local bicycle benchmark target, use:
+```powershell
+python tools/benchmark_bicycle_training.py --steps 5000
+```
+The benchmark reports the current `avg_psnr`, the `23.18 dB` target, and the remaining gap.
 
 ## Complexity Budget
 ```powershell
