@@ -353,6 +353,11 @@ float3 axis_unit(uint axisIndex)
     return float3(0.0, 0.0, 1.0);
 }
 
+float scene_small_scale_threshold()
+{
+    return max(g_Densify.percentDense * g_Densify.sceneExtent, g_Stability.minScale);
+}
+
 void write_output_splat(
     uint outputId,
     float4 pos,
@@ -799,7 +804,8 @@ void csRegenerateScene(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (prune) return;
 
     bool highGrad = gradEMA >= g_Densify.gradThreshold;
-    bool shouldSplit = g_Densify.forceSplitAll != 0u || highGrad;
+    bool small = max(scale.x, max(scale.y, scale.z)) <= scene_small_scale_threshold();
+    bool shouldSplit = g_Densify.forceSplitAll != 0u || (highGrad && !small);
 
     if (allowGrowth && shouldSplit)
     {
