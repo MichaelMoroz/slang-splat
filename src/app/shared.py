@@ -20,126 +20,87 @@ CAMERA_FAR_RADIUS_SCALE = 4.0
 CAMERA_MIN_FAR = 80.0
 MOVE_SPEED_RADIUS_SCALE = 0.15
 MOVE_SPEED_MIN = 0.25
-
-
-def clamp_float(value: float, lo: float, hi: float) -> float:
-    return float(np.clip(float(value), float(lo), float(hi)))
-
-
-def clamp_int(value: int, lo: int, hi: int) -> int:
-    return int(np.clip(int(value), int(lo), int(hi)))
+_LR_LIMITS = (0.1, 10.0)
+_CLAMP_LIMITS = {
+    "grad_component_clip": (1e-5, 1e6),
+    "grad_norm_clip": (1e-5, 1e6),
+    "max_update": (1e-8, 10.0),
+    "min_scale": (1e-8, 1e3),
+    "max_scale": (1e-8, 1e4),
+    "max_anisotropy": (1.0, 1e4),
+    "min_opacity": (0.0, 1.0),
+    "max_opacity": (0.0, 1.0),
+    "position_abs_max": (1e-3, 1e9),
+    "loss_grad_clip": (1e-5, 1e6),
+}
+clamp_float = lambda value, lo, hi: float(np.clip(float(value), float(lo), float(hi)))
+clamp_int = lambda value, lo, hi: int(np.clip(int(value), int(lo), int(hi)))
 
 
 @dataclass(frozen=True, slots=True)
 class RendererParams:
-    radius_scale: float = 2.6
-    alpha_cutoff: float = 1.0 / 255.0
-    max_splat_steps: int = 32768
-    transmittance_threshold: float = 0.005
-    sampled5_safety_scale: float = 1.0
-    list_capacity_multiplier: int = 64
-    max_prepass_memory_mb: int = 4096
-    debug_show_ellipses: bool = False
-    debug_show_processed_count: bool = False
+    radius_scale: float = 2.6; alpha_cutoff: float = 1.0 / 255.0; max_splat_steps: int = 32768
+    transmittance_threshold: float = 0.005; sampled5_safety_scale: float = 1.0; list_capacity_multiplier: int = 64
+    max_prepass_memory_mb: int = 4096; debug_show_ellipses: bool = False; debug_show_processed_count: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class InitParams:
-    hparams: GaussianInitHyperParams
-    gaussian_count: int
-    seed: int
+    hparams: GaussianInitHyperParams; gaussian_count: int; seed: int
 
 
 @dataclass(frozen=True, slots=True)
 class AppTrainingParams:
-    adam: AdamHyperParams
-    stability: StabilityHyperParams
-    training: TrainingHyperParams
+    adam: AdamHyperParams; stability: StabilityHyperParams; training: TrainingHyperParams
 
 
 @dataclass(frozen=True, slots=True)
 class SceneBounds:
-    center: np.ndarray
-    radius: float
+    center: np.ndarray; radius: float
 
 
 @dataclass(frozen=True, slots=True)
 class CameraFit:
-    position: spy.float3
-    near: float
-    far: float
-    move_speed: float
+    position: spy.float3; near: float; far: float; move_speed: float
 
 
-def _filtered_rows(values: np.ndarray) -> np.ndarray:
-    rows = np.ascontiguousarray(values, dtype=np.float32)
-    if rows.ndim != 2 or rows.shape[1] < 3:
-        return np.zeros((0, 3), dtype=np.float32)
-    return rows[np.isfinite(rows[:, :3]).all(axis=1), :3]
+_filtered_rows = lambda values: (lambda rows: np.zeros((0, 3), dtype=np.float32) if rows.ndim != 2 or rows.shape[1] < 3 else rows[np.isfinite(rows[:, :3]).all(axis=1), :3])(np.ascontiguousarray(values, dtype=np.float32))
+_fit_vector = lambda values, size, fill=0.0: np.full((size,), fill, dtype=np.float32) if values is None else np.pad(np.asarray(values, dtype=np.float32).reshape(-1)[:size], (0, max(size - np.asarray(values).size, 0)), constant_values=fill)[:size].astype(np.float32)
 
 
 def _weighted_bounds(points: np.ndarray, extents: np.ndarray | None = None, weights: np.ndarray | None = None) -> SceneBounds:
     pts = _filtered_rows(points)
     if pts.shape[0] == 0:
         return SceneBounds(center=np.zeros((3,), dtype=np.float32), radius=MIN_SCENE_RADIUS)
+    ext = _fit_vector(extents, pts.shape[0])
     if weights is None:
-        center = np.mean(pts, axis=0, dtype=np.float32)
-        core = pts
-        core_extents = np.zeros((pts.shape[0],), dtype=np.float32) if extents is None else np.asarray(extents, dtype=np.float32)
+        core, core_ext, center = pts, ext, np.mean(pts, axis=0, dtype=np.float32)
     else:
-        w = np.clip(np.asarray(weights, dtype=np.float32).reshape(-1), 1e-3, 1.0)
-        w = w[: pts.shape[0]]
-        core_mask = w > np.quantile(w, SCENE_CORE_QUANTILE)
+        core_w = np.clip(_fit_vector(weights, pts.shape[0], 1.0), 1e-3, 1.0)
+        core_mask = core_w > np.quantile(core_w, SCENE_CORE_QUANTILE)
         if np.count_nonzero(core_mask) > SCENE_CORE_LIMIT:
-            core, w = pts[core_mask], w[core_mask]
-            core_extents = np.zeros((core.shape[0],), dtype=np.float32) if extents is None else np.asarray(extents, dtype=np.float32)[core_mask]
-        else:
-            core, core_extents = pts, np.zeros((pts.shape[0],), dtype=np.float32) if extents is None else np.asarray(extents, dtype=np.float32)
-        center = (
-            np.sum(core * w[:, None], axis=0) / max(float(np.sum(w)), EPS)
-            if np.sum(w) > EPS
-            else np.mean(core, axis=0, dtype=np.float32)
-        ).astype(np.float32)
-    rel = core - center[None, :]
-    dist = np.linalg.norm(rel, axis=1)
-    effective = dist + np.asarray(core_extents, dtype=np.float32).reshape(-1)
-    q_lo = np.percentile(core, 5.0, axis=0)
-    q_hi = np.percentile(core, 95.0, axis=0)
-    quant_extent = 0.5 * np.linalg.norm((q_hi - q_lo).astype(np.float32))
-    radius = max(float(np.percentile(effective, 90.0)), float(quant_extent), MIN_SCENE_RADIUS)
+            pts, ext, core_w = pts[core_mask], ext[core_mask], core_w[core_mask]
+        total_w = float(np.sum(core_w))
+        center = (np.sum(pts * core_w[:, None], axis=0) / max(total_w, EPS) if total_w > EPS else np.mean(pts, axis=0, dtype=np.float32)).astype(np.float32)
+        core, core_ext = pts, ext
+    effective = np.linalg.norm(core - center[None, :], axis=1) + core_ext
+    q_lo, q_hi = np.percentile(core, (5.0, 95.0), axis=0)
+    radius = max(float(np.percentile(effective, 90.0)), float(0.5 * np.linalg.norm((q_hi - q_lo).astype(np.float32))), MIN_SCENE_RADIUS)
     return SceneBounds(center=center.astype(np.float32), radius=radius)
 
 
-def estimate_scene_bounds(scene: GaussianScene) -> SceneBounds:
-    scales = np.max(np.asarray(scene.scales, dtype=np.float32), axis=1)
-    return _weighted_bounds(scene.positions, extents=2.0 * scales, weights=scene.opacities)
-
-
-def estimate_point_bounds(points: np.ndarray) -> SceneBounds:
-    return _weighted_bounds(points)
+estimate_scene_bounds = lambda scene: _weighted_bounds(scene.positions, extents=2.0 * np.max(np.asarray(scene.scales, dtype=np.float32), axis=1), weights=scene.opacities)
+estimate_point_bounds = lambda points: _weighted_bounds(points)
 
 
 def fit_camera(bounds: SceneBounds, fov_y_degrees: float) -> CameraFit:
     radius = max(float(bounds.radius), MIN_SCENE_RADIUS)
-    fit_distance = radius / max(float(np.tan(0.5 * np.deg2rad(float(fov_y_degrees)))), 1e-4)
-    distance = max(fit_distance * 0.95, radius * CAMERA_DISTANCE_SCALE, MIN_SCENE_RADIUS)
+    distance = max(radius / max(float(np.tan(0.5 * np.deg2rad(float(fov_y_degrees)))), 1e-4) * 0.95, radius * CAMERA_DISTANCE_SCALE, MIN_SCENE_RADIUS)
     position = bounds.center + np.array([0.0, 0.0, -distance], dtype=np.float32)
-    return CameraFit(
-        position=spy.float3(*position.tolist()),
-        near=max(0.01, distance * CAMERA_NEAR_RATIO),
-        far=max(distance + radius * CAMERA_FAR_RADIUS_SCALE, CAMERA_MIN_FAR),
-        move_speed=max(MOVE_SPEED_MIN, radius * MOVE_SPEED_RADIUS_SCALE),
-    )
+    return CameraFit(position=spy.float3(*position.tolist()), near=max(0.01, distance * CAMERA_NEAR_RATIO), far=max(distance + radius * CAMERA_FAR_RADIUS_SCALE, CAMERA_MIN_FAR), move_speed=max(MOVE_SPEED_MIN, radius * MOVE_SPEED_RADIUS_SCALE))
 
 
-def build_init_params(
-    position_jitter_std: float,
-    base_scale: float,
-    scale_jitter_ratio: float,
-    initial_opacity: float,
-    gaussian_count: int,
-    seed: int,
-) -> InitParams:
+def build_init_params(position_jitter_std: float, base_scale: float, scale_jitter_ratio: float, initial_opacity: float, gaussian_count: int, seed: int) -> InitParams:
     return InitParams(
         hparams=GaussianInitHyperParams(
             position_jitter_std=clamp_float(position_jitter_std, 0.0, 10.0),
@@ -186,26 +147,39 @@ def build_training_params(
 ) -> AppTrainingParams:
     base_lr = clamp_float(base_lr, 1e-8, 1.0)
     adam = AdamHyperParams(
-        position_lr=base_lr * clamp_float(lr_pos_mul, 0.1, 10.0),
-        scale_lr=base_lr * clamp_float(lr_scale_mul, 0.1, 10.0),
-        rotation_lr=base_lr * clamp_float(lr_rot_mul, 0.1, 10.0),
-        color_lr=base_lr * clamp_float(lr_color_mul, 0.1, 10.0),
-        opacity_lr=base_lr * clamp_float(lr_opacity_mul, 0.1, 10.0),
+        **{
+            name: base_lr * clamp_float(value, *_LR_LIMITS)
+            for name, value in {
+                "position_lr": lr_pos_mul,
+                "scale_lr": lr_scale_mul,
+                "rotation_lr": lr_rot_mul,
+                "color_lr": lr_color_mul,
+                "opacity_lr": lr_opacity_mul,
+            }.items()
+        },
         beta1=clamp_float(beta1, 0.0, 0.99999),
         beta2=clamp_float(beta2, 0.0, 0.999999),
         epsilon=clamp_float(epsilon, 1e-12, 1e-2),
     )
     stability = StabilityHyperParams(
-        grad_component_clip=clamp_float(grad_clip, 1e-5, 1e6),
-        grad_norm_clip=clamp_float(grad_norm_clip, 1e-5, 1e6),
-        max_update=clamp_float(max_update, 1e-8, 10.0),
-        min_scale=clamp_float(min_scale, 1e-8, 1e3),
-        max_scale=clamp_float(max_scale, 1e-8, 1e4),
-        max_anisotropy=clamp_float(max_anisotropy, 1.0, 1e4),
-        min_opacity=clamp_float(min_opacity, 0.0, 1.0),
-        max_opacity=clamp_float(max_opacity, 0.0, 1.0),
-        position_abs_max=clamp_float(position_abs_max, 1e-3, 1e9),
-        loss_grad_clip=clamp_float(grad_clip, 1e-5, 1e6),
+        **{
+            name: clamp_float(value, *limits)
+            for (name, limits), value in zip(
+                _CLAMP_LIMITS.items(),
+                (
+                    grad_clip,
+                    grad_norm_clip,
+                    max_update,
+                    min_scale,
+                    max_scale,
+                    max_anisotropy,
+                    min_opacity,
+                    max_opacity,
+                    position_abs_max,
+                    grad_clip,
+                ),
+            )
+        }
     )
     training = TrainingHyperParams(
         background=tuple(float(v) for v in np.asarray(background, dtype=np.float32).reshape(3)),
@@ -219,32 +193,17 @@ def build_training_params(
         mcmc_opacity_gate_center=clamp_float(mcmc_opacity_gate_center, 0.0, 1.0),
         low_quality_reinit_enabled=bool(low_quality_reinit_enabled),
     )
-    if stability.max_scale < stability.min_scale:
-        stability.max_scale = stability.min_scale
-    if stability.max_opacity < stability.min_opacity:
-        stability.max_opacity = stability.min_opacity
+    stability.max_scale = max(stability.max_scale, stability.min_scale)
+    stability.max_opacity = max(stability.max_opacity, stability.min_opacity)
     if training.far <= training.near:
         training.far = training.near + 1e-3
     return AppTrainingParams(adam=adam, stability=stability, training=training)
 
 
-def renderer_kwargs(params: RendererParams) -> dict[str, object]:
-    return {
-        "radius_scale": float(params.radius_scale),
-        "alpha_cutoff": float(params.alpha_cutoff),
-        "max_splat_steps": int(params.max_splat_steps),
-        "transmittance_threshold": float(params.transmittance_threshold),
-        "sampled5_safety_scale": float(params.sampled5_safety_scale),
-        "list_capacity_multiplier": int(params.list_capacity_multiplier),
-        "max_prepass_memory_mb": int(params.max_prepass_memory_mb),
-        "debug_show_ellipses": bool(params.debug_show_ellipses),
-        "debug_show_processed_count": bool(params.debug_show_processed_count),
-    }
+renderer_kwargs = lambda params: {name: getattr(params, name) for name in RendererParams.__dataclass_fields__}
 
 
 def save_snapshot(path: Path, rgba: np.ndarray, flip_y: bool = True) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     rgb = np.clip(np.asarray(rgba, dtype=np.float32)[:, :, :3], 0.0, 1.0)
-    if flip_y:
-        rgb = np.flipud(rgb)
-    Image.fromarray((rgb * 255.0 + 0.5).astype(np.uint8), mode="RGB").save(path)
+    Image.fromarray((255.0 * (np.flipud(rgb) if flip_y else rgb) + 0.5).astype(np.uint8), mode="RGB").save(path)

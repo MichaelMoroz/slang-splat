@@ -22,6 +22,10 @@ class Camera:
     cx: float | None = None
     cy: float | None = None
     basis_override: np.ndarray | None = None
+    focal_pixels = lambda self, height: float(self.fy) if self.fy is not None else float(0.5 * float(height) / np.tan(0.5 * np.deg2rad(self.fov_y_degrees)))
+    focal_pixels_xy = lambda self, width, height: (float(self.fx) if self.fx is not None else float(self.focal_pixels(height)), float(self.fy) if self.fy is not None else float(self.focal_pixels(height)))
+    principal_point = lambda self, width, height: (float(self.cx) if self.cx is not None else 0.5 * float(width), float(self.cy) if self.cy is not None else 0.5 * float(height))
+    look_at = staticmethod(lambda position, target=(0.0, 0.0, 0.0), up=(0.0, 1.0, 0.0), fov_y_degrees=60.0, near=0.1, far=100.0: Camera(position=np.asarray(position, dtype=np.float32), target=np.asarray(target, dtype=np.float32), up=np.asarray(up, dtype=np.float32), fov_y_degrees=fov_y_degrees, near=near, far=far))
 
     def __post_init__(self) -> None:
         self.position = np.asarray(self.position, dtype=np.float32).reshape(3)
@@ -44,22 +48,6 @@ class Camera:
             np.asarray(forward, dtype=np.float32),
         )
 
-    def focal_pixels(self, height: int) -> float:
-        if self.fy is not None:
-            return float(self.fy)
-        fov = np.deg2rad(self.fov_y_degrees)
-        return float(0.5 * float(height) / np.tan(0.5 * fov))
-
-    def focal_pixels_xy(self, width: int, height: int) -> tuple[float, float]:
-        fx = float(self.fx) if self.fx is not None else float(self.focal_pixels(height))
-        fy = float(self.fy) if self.fy is not None else float(self.focal_pixels(height))
-        return fx, fy
-
-    def principal_point(self, width: int, height: int) -> tuple[float, float]:
-        cx = float(self.cx) if self.cx is not None else 0.5 * float(width)
-        cy = float(self.cy) if self.cy is not None else 0.5 * float(height)
-        return cx, cy
-
     def gpu_params(self, width: int, height: int) -> dict[str, object]:
         right, up, forward = self.basis()
         basis = np.stack((right, up, forward), axis=0).astype(np.float32)
@@ -75,23 +63,6 @@ class Camera:
             "farDepth": float(self.far),
         }
 
-    @staticmethod
-    def look_at(
-        position: tuple[float, float, float] | np.ndarray | spy.float3,
-        target: tuple[float, float, float] | np.ndarray | spy.float3 = (0.0, 0.0, 0.0),
-        up: tuple[float, float, float] | np.ndarray | spy.float3 = (0.0, 1.0, 0.0),
-        fov_y_degrees: float = 60.0,
-        near: float = 0.1,
-        far: float = 100.0,
-    ) -> "Camera":
-        return Camera(
-            position=np.asarray(position, dtype=np.float32),
-            target=np.asarray(target, dtype=np.float32),
-            up=np.asarray(up, dtype=np.float32),
-            fov_y_degrees=fov_y_degrees,
-            near=near,
-            far=far,
-        )
 
     @staticmethod
     def _rotation_matrix_from_quaternion_wxyz(q_wxyz: np.ndarray) -> np.ndarray:

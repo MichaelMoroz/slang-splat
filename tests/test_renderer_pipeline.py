@@ -4,16 +4,16 @@ from pathlib import Path
 
 import numpy as np
 
-from src.common import SHADER_ROOT
-from src.renderer import Camera, GaussianRenderer
-from src.renderer.projection_sampled5_mvee_reference import project_splats_sampled5_mvee
-from src.renderer.reference_cpu import (
+from reference_impls.projection_sampled5_mvee_reference import project_splats_sampled5_mvee
+from reference_impls.reference_cpu import (
     build_tile_key_value_pairs,
     build_tile_ranges,
     project_splats,
     rasterize,
     sort_key_values,
 )
+from src.common import SHADER_ROOT
+from src.renderer import Camera, GaussianRenderer
 from src.scene import GaussianScene
 
 

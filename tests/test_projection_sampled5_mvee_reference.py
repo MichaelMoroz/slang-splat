@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from reference_impls.projection_sampled5_mvee_reference import project_splats_sampled5_mvee
 from src.renderer import Camera
-from src.renderer.projection_sampled5_mvee_reference import project_splats_sampled5_mvee
 from src.scene import GaussianScene
 
 

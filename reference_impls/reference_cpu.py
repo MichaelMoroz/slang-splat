@@ -4,8 +4,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ..scene.gaussian_scene import GaussianScene
-from .camera import Camera
+from src.scene.gaussian_scene import GaussianScene
+from src.renderer.camera import Camera
 from .projection_sampled5_mvee_reference import project_splats_sampled5_mvee
 
 ELLIPSE_EPS = 1e-5
@@ -48,26 +48,13 @@ def project_splats(scene: GaussianScene, camera: Camera, width: int, height: int
     conic = np.stack((inv_r2, np.zeros_like(inv_r2), inv_r2), axis=1).astype(np.float32)
     axes = projected.ellipse_center_axes.astype(np.float32)
     major, minor, angle = axes[:, 2], axes[:, 3], axes[:, 4]
-    valid = (
-        (major > 1e-6)
-        & (minor > 1e-6)
-        & np.isfinite(major)
-        & np.isfinite(minor)
-        & np.isfinite(angle)
-    )
+    valid = (major > 1e-6) & (minor > 1e-6) & np.isfinite(major) & np.isfinite(minor) & np.isfinite(angle)
     if np.any(valid):
         major = major[valid] * (radius[valid] / np.maximum(major[valid], 1e-6))
         minor = minor[valid] * (radius[valid] / np.maximum(axes[valid, 2], 1e-6))
         c, s = np.cos(angle[valid]), np.sin(angle[valid])
         inv_a2, inv_b2 = 1.0 / (major * major), 1.0 / (minor * minor)
-        conic[valid] = np.stack(
-            (
-                c * c * inv_a2 + s * s * inv_b2,
-                c * s * (inv_a2 - inv_b2),
-                s * s * inv_a2 + c * c * inv_b2,
-            ),
-            axis=1,
-        ).astype(np.float32)
+        conic[valid] = np.stack((c * c * inv_a2 + s * s * inv_b2, c * s * (inv_a2 - inv_b2), s * s * inv_a2 + c * c * inv_b2), axis=1).astype(np.float32)
     return ProjectedSplats(
         center_radius_depth=projected.center_radius_depth,
         ellipse_conic=conic,
@@ -92,13 +79,7 @@ def _try_prepare_conic_for_binning(conic: np.ndarray, radius: float, half_tile: 
     axis_limit = max(radius, 1.0) * 2.0 + half_tile
     if not (np.isfinite(max_axis) and np.isfinite(min_axis) and eig_min > 0.0 and eig_max > 0.0 and max_axis <= axis_limit and min_axis >= 0.125):
         return False, bbox
-    extent = np.array(
-        [
-            np.sqrt(max(float(conic[2]) / det, 0.0)),
-            np.sqrt(max(float(conic[0]) / det, 0.0)),
-        ],
-        dtype=np.float32,
-    )
+    extent = np.array([np.sqrt(max(float(conic[2]) / det, 0.0)), np.sqrt(max(float(conic[0]) / det, 0.0))], dtype=np.float32)
     return (False, bbox) if not np.isfinite(extent).all() else (True, np.clip(extent, 1e-4, radius).astype(np.float32))
 
 
@@ -152,9 +133,7 @@ def _write_span(keys: np.ndarray, values: np.ndarray, write_index: int, count: i
 
 
 def build_tile_key_value_pairs(projected: ProjectedSplats, tile_width: int, tile_height: int, tile_size: int, depth_bits: int, near_depth: float, far_depth: float, max_list_entries: int) -> tuple[np.ndarray, np.ndarray, int]:
-    keys = np.zeros((max_list_entries,), dtype=np.uint32)
-    values = np.zeros((max_list_entries,), dtype=np.uint32)
-    counter = 0
+    keys, values, counter = np.zeros((max_list_entries,), dtype=np.uint32), np.zeros((max_list_entries,), dtype=np.uint32), 0
     for splat_id, (cx, cy, radius, depth) in enumerate(projected.center_radius_depth):
         if projected.valid[splat_id] == 0:
             continue
@@ -178,9 +157,7 @@ def build_tile_key_value_pairs(projected: ProjectedSplats, tile_width: int, tile
         base_index, counter = counter, counter + total_count
         if base_index >= max_list_entries:
             continue
-        write_limit = min(total_count, max_list_entries - base_index)
-        write_index = base_index
-        written = 0
+        write_limit, write_index, written = min(total_count, max_list_entries - base_index), base_index, 0
         depth_key = quantize_depth(float(depth), near_depth, far_depth, depth_bits)
         for primary, minor_start, count in spans:
             if written >= write_limit:
@@ -229,8 +206,7 @@ def rasterize(projected: ProjectedSplats, sorted_values: np.ndarray, tile_ranges
                 continue
             ray = forward + ((float(px) + 0.5 - float(cx)) / float(fx)) * right + uv_y * up
             ray = ray / max(np.linalg.norm(ray), 1e-8)
-            accum = np.zeros((3,), dtype=np.float32)
-            trans = 1.0
+            accum, trans = np.zeros((3,), dtype=np.float32), 1.0
             for splat_id in map(int, sorted_values[int(start): int(end)][:max_splat_steps]):
                 if projected.valid[splat_id] == 0:
                     continue

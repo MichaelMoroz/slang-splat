@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import slangpy as spy
 
+from . import session
 from .state import DEFAULT_IMAGE_SUBDIR_INDEX, IMAGE_SUBDIR_OPTIONS, LOSS_DEBUG_OPTIONS
 
 
@@ -19,12 +21,8 @@ class ControlSpec:
 class ViewerUI:
     texts: dict[str, object]
     controls: dict[str, object]
-
-    def __getitem__(self, key: str):
-        return self.controls[key]
-
-    def text(self, key: str):
-        return self.texts[key]
+    __getitem__ = lambda self, key: self.controls[key]
+    text = lambda self, key: self.texts[key]
 
 
 WIDGETS = {
@@ -111,12 +109,12 @@ def build_ui(screen: object, app: object, renderer: object) -> ViewerUI:
         texts[key] = spy.ui.Text(panel, value)
     main_group = _build_group(panel, "Main", GROUP_SPECS["Main"], controls)
     for label, callback in (
-        ("Load PLY...", app._browse_load_ply),
-        ("Load COLMAP...", app._browse_load_colmap),
-        ("Reload", app._reload_scene),
-        ("Reinitialize Gaussians", app._initialize_training_scene),
-        ("Start Training", app._start_training),
-        ("Stop Training", app._stop_training),
+        ("Load PLY...", lambda: (lambda path: session.load_scene(app, Path(path)) if path else None)(spy.platform.open_file_dialog([spy.platform.FileDialogFilter("PLY Files", "*.ply")]))),
+        ("Load COLMAP...", lambda: (lambda path: session.load_colmap_dataset(app, Path(path), app._selected_images_subdir()) if path else None)(spy.platform.choose_folder_dialog())),
+        ("Reload", lambda: session.load_scene(app, app.s.scene_path) if app.s.scene_path is not None else session.load_colmap_dataset(app, app.s.colmap_root, app._selected_images_subdir()) if app.s.colmap_root is not None else None),
+        ("Reinitialize Gaussians", lambda: session.initialize_training_scene(app)),
+        ("Start Training", lambda: session.set_training_active(app, True)),
+        ("Stop Training", lambda: session.set_training_active(app, False)),
     ):
         spy.ui.Button(main_group, label, callback=callback)
     texts["images_subdir"] = spy.ui.Text(main_group, f"Train images: {IMAGE_SUBDIR_OPTIONS[DEFAULT_IMAGE_SUBDIR_INDEX]}")

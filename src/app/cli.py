@@ -9,22 +9,9 @@ import numpy as np
 
 from .. import create_default_device
 from ..renderer import Camera, GaussianRenderer
-from ..scene import (
-    GaussianInitHyperParams,
-    build_training_frames,
-    initialize_scene_from_colmap_points,
-    load_colmap_reconstruction,
-    load_gaussian_ply,
-    resolve_colmap_init_hparams,
-)
+from ..scene import GaussianInitHyperParams, build_training_frames, initialize_scene_from_colmap_points, load_colmap_reconstruction, load_gaussian_ply, resolve_colmap_init_hparams
 from ..training import GaussianTrainer
-from .shared import (
-    RendererParams,
-    build_training_params,
-    estimate_scene_bounds,
-    renderer_kwargs,
-    save_snapshot,
-)
+from .shared import RendererParams, build_training_params, estimate_scene_bounds, renderer_kwargs, save_snapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,8 +28,11 @@ class CommandSpec:
     handler_name: str
 
 
-def _format_metric(value: float, fmt: str) -> str:
-    return format(value, fmt) if np.isfinite(value) else "n/a"
+def A(*flags: str, **kwargs: object) -> ArgSpec:
+    return ArgSpec(flags=tuple(flags), kwargs=dict(kwargs))
+
+
+_format_metric = lambda value, fmt: format(value, fmt) if np.isfinite(value) else "n/a"
 
 
 def _renderer(args: argparse.Namespace, width: int, height: int) -> GaussianRenderer:
@@ -55,39 +45,22 @@ def _renderer(args: argparse.Namespace, width: int, height: int) -> GaussianRend
         max_prepass_memory_mb=int(args.prepass_memory_mb),
         list_capacity_multiplier=int(getattr(args, "list_capacity_multiplier", 64)),
     )
-    return GaussianRenderer(
-        device=create_default_device(enable_debug_layers=bool(args.debug_layers)),
-        width=int(width),
-        height=int(height),
-        **renderer_kwargs(params),
-    )
+    return GaussianRenderer(create_default_device(enable_debug_layers=bool(args.debug_layers)), width=int(width), height=int(height), **renderer_kwargs(params))
 
 
 def _init_hparams(args: argparse.Namespace) -> GaussianInitHyperParams:
+    get = lambda name: None if getattr(args, name) is None else float(getattr(args, name))
     return GaussianInitHyperParams(
-        position_jitter_std=None if args.init_position_jitter is None else float(args.init_position_jitter),
-        base_scale=None if args.init_base_scale is None else float(args.init_base_scale),
-        scale_jitter_ratio=None if args.init_scale_jitter is None else float(args.init_scale_jitter),
-        initial_opacity=None if args.init_opacity is None else float(args.init_opacity),
-        color_jitter_std=None if args.init_color_jitter is None else float(args.init_color_jitter),
+        position_jitter_std=get("init_position_jitter"),
+        base_scale=get("init_base_scale"),
+        scale_jitter_ratio=get("init_scale_jitter"),
+        initial_opacity=get("init_opacity"),
+        color_jitter_std=get("init_color_jitter"),
     )
 
 
-def run_train_colmap(args: argparse.Namespace) -> int:
-    root = Path(args.colmap_root).resolve()
-    recon = load_colmap_reconstruction(root, sparse_subdir=args.sparse_subdir)
-    frames = build_training_frames(recon, images_subdir=args.images_subdir)
-    width = int(args.width) if int(args.width) > 0 else int(frames[0].width)
-    height = int(args.height) if int(args.height) > 0 else int(frames[0].height)
-    init_hparams = _init_hparams(args)
-    resolved_init = resolve_colmap_init_hparams(recon, int(args.max_gaussians), init_hparams)
-    scene = initialize_scene_from_colmap_points(
-        recon=recon,
-        max_gaussians=int(args.max_gaussians),
-        seed=int(args.seed),
-        init_hparams=init_hparams,
-    )
-    params = build_training_params(
+def _training_params(args: argparse.Namespace):
+    return build_training_params(
         background=args.bg,
         base_lr=args.lr_base,
         lr_pos_mul=args.lr_mul_pos,
@@ -117,6 +90,18 @@ def run_train_colmap(args: argparse.Namespace) -> int:
         low_quality_reinit_enabled=bool(args.low_quality_reinit),
         ema_decay=args.ema_decay,
     )
+
+
+def run_train_colmap(args: argparse.Namespace) -> int:
+    root = Path(args.colmap_root).resolve()
+    recon = load_colmap_reconstruction(root, sparse_subdir=args.sparse_subdir)
+    frames = build_training_frames(recon, images_subdir=args.images_subdir)
+    width, height = (int(args.width), int(args.height))
+    width, height = (width if width > 0 else int(frames[0].width), height if height > 0 else int(frames[0].height))
+    init_hparams = _init_hparams(args)
+    resolved_init = resolve_colmap_init_hparams(recon, int(args.max_gaussians), init_hparams)
+    scene = initialize_scene_from_colmap_points(recon=recon, max_gaussians=int(args.max_gaussians), seed=int(args.seed), init_hparams=init_hparams)
+    params = _training_params(args)
     renderer = _renderer(args, width, height)
     trainer = GaussianTrainer(
         device=renderer.device,
@@ -129,27 +114,20 @@ def run_train_colmap(args: argparse.Namespace) -> int:
         seed=int(args.seed),
         scale_reg_reference=float(max(resolved_init.base_scale, 1e-8)),
     )
-    print(
-        f"Training start: scene={root} images={args.images_subdir} "
-        f"frames={len(frames)} gaussians={scene.count} size={width}x{height}"
-    )
-    start = time.perf_counter()
-    background = np.asarray(args.bg, dtype=np.float32)
+    print(f"Training start: scene={root} images={args.images_subdir} frames={len(frames)} gaussians={scene.count} size={width}x{height}")
+    background, start = np.asarray(args.bg, dtype=np.float32), time.perf_counter()
     for step in range(int(args.iters)):
         loss = trainer.step()
         if step == 0 or (step + 1) % max(int(args.log_interval), 1) == 0:
             elapsed = max(time.perf_counter() - start, 1e-6)
             print(
                 f"step={step + 1:6d} loss={loss:.6e} ema={trainer.state.ema_loss:.6e} "
-                f"psnr={_format_metric(trainer.state.ema_psnr, '.2f')}dB "
-                f"iter/s={(step + 1) / elapsed:.2f} instability='{trainer.state.last_instability}'"
+                f"psnr={_format_metric(trainer.state.ema_psnr, '.2f')}dB iter/s={(step + 1) / elapsed:.2f} "
+                f"instability='{trainer.state.last_instability}'"
             )
         if int(args.snapshot_interval) > 0 and (step + 1) % int(args.snapshot_interval) == 0:
             frame = frames[max(trainer.state.last_frame_index, 0)]
-            tex, _ = renderer.render_to_texture(
-                frame.make_camera(near=float(args.near), far=float(args.far)),
-                background=background,
-            )
+            tex, _ = renderer.render_to_texture(frame.make_camera(near=float(args.near), far=float(args.far)), background=background)
             save_snapshot(args.snapshot_dir / f"step_{step + 1:06d}.png", tex.to_numpy())
     return 0
 
@@ -161,25 +139,15 @@ def run_render_ply(args: argparse.Namespace) -> int:
     bounds = estimate_scene_bounds(scene)
     distance = max(float(args.distance_multiplier) * float(bounds.radius), 1.0)
     cam_y = float(bounds.center[1] + float(args.elevation_ratio) * float(bounds.radius))
-    near = max(float(args.near), 1e-4)
-    far = max(float(args.far), distance + 4.0 * float(bounds.radius))
-    background = np.asarray(args.bg, dtype=np.float32).reshape(3)
-    out_dir = Path(args.output_dir)
+    near, far = max(float(args.near), 1e-4), max(float(args.far), distance + 4.0 * float(bounds.radius))
+    background, out_dir, views = np.asarray(args.bg, dtype=np.float32).reshape(3), Path(args.output_dir), max(int(args.views), 1)
     out_dir.mkdir(parents=True, exist_ok=True)
-    views = max(int(args.views), 1)
     print(f"Render start: ply={args.ply} views={views} size={int(args.width)}x{int(args.height)} output={out_dir}")
     for idx in range(views):
         theta = (2.0 * np.pi * float(idx)) / float(views)
         tex, _ = renderer.render_to_texture(
             Camera.look_at(
-                position=np.array(
-                    [
-                        float(bounds.center[0] + np.sin(theta) * distance),
-                        cam_y,
-                        float(bounds.center[2] - np.cos(theta) * distance),
-                    ],
-                    dtype=np.float32,
-                ),
+                position=np.array([float(bounds.center[0] + np.sin(theta) * distance), cam_y, float(bounds.center[2] - np.cos(theta) * distance)], dtype=np.float32),
                 target=bounds.center,
                 up=(0.0, 1.0, 0.0),
                 fov_y_degrees=float(args.fov_y),
@@ -217,62 +185,67 @@ def run_render_single(args: argparse.Namespace) -> int:
 
 
 COMMON_RENDER_ARGS = (
-    ArgSpec(("--prepass-memory-mb",), {"type": int, "default": 4096}),
-    ArgSpec(("--radius-scale",), {"type": float, "default": 2.6}),
-    ArgSpec(("--alpha-cutoff",), {"type": float, "default": 1.0 / 255.0}),
-    ArgSpec(("--max-splat-steps",), {"type": int, "default": 32768}),
-    ArgSpec(("--trans-threshold",), {"type": float, "default": 0.005}),
-    ArgSpec(("--sampled5-safety",), {"type": float, "default": 1.0}),
-    ArgSpec(("--debug-layers",), {"action": "store_true"}),
+    A("--prepass-memory-mb", type=int, default=4096),
+    A("--radius-scale", type=float, default=2.6),
+    A("--alpha-cutoff", type=float, default=1.0 / 255.0),
+    A("--max-splat-steps", type=int, default=32768),
+    A("--trans-threshold", type=float, default=0.005),
+    A("--sampled5-safety", type=float, default=1.0),
+    A("--debug-layers", action="store_true"),
 )
-
+TRAIN_RENDER_ARGS = tuple(
+    A(flag, type=float, default=default)
+    for flag, default in (
+        ("--lr-base", 1e-3),
+        ("--lr-mul-pos", 1.0),
+        ("--lr-mul-scale", 1.0),
+        ("--lr-mul-rot", 1.0),
+        ("--lr-mul-color", 1.0),
+        ("--lr-mul-opacity", 1.0),
+        ("--beta1", 0.9),
+        ("--beta2", 0.999),
+        ("--eps", 1e-8),
+        ("--grad-clip", 10.0),
+        ("--grad-norm-clip", 10.0),
+        ("--max-update", 0.05),
+        ("--min-scale", 1e-3),
+        ("--max-scale", 3.0),
+        ("--min-opacity", 1e-4),
+        ("--max-opacity", 0.9999),
+        ("--position-abs-max", 1e4),
+        ("--loss-grad-clip", 10.0),
+        ("--near", 0.1),
+        ("--far", 120.0),
+        ("--ema-decay", 0.95),
+        ("--scale-l2", 1e-3),
+        ("--max-anisotropy", 3.0),
+    )
+)
+TRAIN_INIT_ARGS = tuple(
+    A(flag, type=float, default=None)
+    for flag in ("--init-position-jitter", "--init-base-scale", "--init-scale-jitter", "--init-opacity", "--init-color-jitter")
+)
 COMMANDS = (
     CommandSpec(
         "train-colmap",
         "Train gaussians on a COLMAP reconstruction.",
         (
-            ArgSpec(("--colmap-root",), {"type": Path, "required": True}),
-            ArgSpec(("--sparse-subdir",), {"type": str, "default": "sparse/0"}),
-            ArgSpec(("--images-subdir",), {"type": str, "default": "images_4"}),
-            ArgSpec(("--iters",), {"type": int, "default": 1000}),
-            ArgSpec(("--max-gaussians",), {"type": int, "default": 50000}),
-            ArgSpec(("--seed",), {"type": int, "default": 1234}),
-            ArgSpec(("--width",), {"type": int, "default": 0}),
-            ArgSpec(("--height",), {"type": int, "default": 0}),
+            A("--colmap-root", type=Path, required=True),
+            A("--sparse-subdir", type=str, default="sparse/0"),
+            A("--images-subdir", type=str, default="images_4"),
+            A("--iters", type=int, default=1000),
+            A("--max-gaussians", type=int, default=50000),
+            A("--seed", type=int, default=1234),
+            A("--width", type=int, default=0),
+            A("--height", type=int, default=0),
             *COMMON_RENDER_ARGS,
-            ArgSpec(("--lr-base",), {"type": float, "default": 1e-3}),
-            ArgSpec(("--lr-mul-pos",), {"type": float, "default": 1.0}),
-            ArgSpec(("--lr-mul-scale",), {"type": float, "default": 1.0}),
-            ArgSpec(("--lr-mul-rot",), {"type": float, "default": 1.0}),
-            ArgSpec(("--lr-mul-color",), {"type": float, "default": 1.0}),
-            ArgSpec(("--lr-mul-opacity",), {"type": float, "default": 1.0}),
-            ArgSpec(("--beta1",), {"type": float, "default": 0.9}),
-            ArgSpec(("--beta2",), {"type": float, "default": 0.999}),
-            ArgSpec(("--eps",), {"type": float, "default": 1e-8}),
-            ArgSpec(("--grad-clip",), {"type": float, "default": 10.0}),
-            ArgSpec(("--grad-norm-clip",), {"type": float, "default": 10.0}),
-            ArgSpec(("--max-update",), {"type": float, "default": 0.05}),
-            ArgSpec(("--min-scale",), {"type": float, "default": 1e-3}),
-            ArgSpec(("--max-scale",), {"type": float, "default": 3.0}),
-            ArgSpec(("--min-opacity",), {"type": float, "default": 1e-4}),
-            ArgSpec(("--max-opacity",), {"type": float, "default": 0.9999}),
-            ArgSpec(("--position-abs-max",), {"type": float, "default": 1e4}),
-            ArgSpec(("--loss-grad-clip",), {"type": float, "default": 10.0}),
-            ArgSpec(("--near",), {"type": float, "default": 0.1}),
-            ArgSpec(("--far",), {"type": float, "default": 120.0}),
-            ArgSpec(("--bg",), {"type": float, "nargs": 3, "default": (0.0, 0.0, 0.0)}),
-            ArgSpec(("--ema-decay",), {"type": float, "default": 0.95}),
-            ArgSpec(("--scale-l2",), {"type": float, "default": 1e-3}),
-            ArgSpec(("--max-anisotropy",), {"type": float, "default": 3.0}),
-            ArgSpec(("--low-quality-reinit",), {"action": argparse.BooleanOptionalAction, "default": True}),
-            ArgSpec(("--init-position-jitter",), {"type": float, "default": None}),
-            ArgSpec(("--init-base-scale",), {"type": float, "default": None}),
-            ArgSpec(("--init-scale-jitter",), {"type": float, "default": None}),
-            ArgSpec(("--init-opacity",), {"type": float, "default": None}),
-            ArgSpec(("--init-color-jitter",), {"type": float, "default": None}),
-            ArgSpec(("--log-interval",), {"type": int, "default": 10}),
-            ArgSpec(("--snapshot-interval",), {"type": int, "default": 0}),
-            ArgSpec(("--snapshot-dir",), {"type": Path, "default": Path("outputs/train_snapshots")}),
+            *TRAIN_RENDER_ARGS,
+            A("--bg", type=float, nargs=3, default=(0.0, 0.0, 0.0)),
+            A("--low-quality-reinit", action=argparse.BooleanOptionalAction, default=True),
+            *TRAIN_INIT_ARGS,
+            A("--log-interval", type=int, default=10),
+            A("--snapshot-interval", type=int, default=0),
+            A("--snapshot-dir", type=Path, default=Path("outputs/train_snapshots")),
         ),
         "run_train_colmap",
     ),
@@ -280,38 +253,37 @@ COMMANDS = (
         "render-ply",
         "Render a set of views for a PLY scene.",
         (
-            ArgSpec(("--ply",), {"type": Path, "required": True}),
-            ArgSpec(("--output-dir",), {"type": Path, "default": Path("outputs/ply_views")}),
-            ArgSpec(("--views",), {"type": int, "default": 24}),
-            ArgSpec(("--log-interval",), {"type": int, "default": 5}),
-            ArgSpec(("--width",), {"type": int, "default": 1280}),
-            ArgSpec(("--height",), {"type": int, "default": 720}),
-            ArgSpec(("--fov-y",), {"type": float, "default": 60.0}),
-            ArgSpec(("--near",), {"type": float, "default": 0.1}),
-            ArgSpec(("--far",), {"type": float, "default": 120.0}),
-            ArgSpec(("--distance-multiplier",), {"type": float, "default": 1.35}),
-            ArgSpec(("--elevation-ratio",), {"type": float, "default": 0.0}),
-            ArgSpec(("--bg",), {"type": float, "nargs": 3, "default": (0.0, 0.0, 0.0)}),
+            A("--ply", type=Path, required=True),
+            A("--output-dir", type=Path, default=Path("outputs/ply_views")),
+            A("--views", type=int, default=24),
+            A("--log-interval", type=int, default=5),
+            A("--width", type=int, default=1280),
+            A("--height", type=int, default=720),
+            A("--fov-y", type=float, default=60.0),
+            A("--near", type=float, default=0.1),
+            A("--far", type=float, default=120.0),
+            A("--distance-multiplier", type=float, default=1.35),
+            A("--elevation-ratio", type=float, default=0.0),
+            A("--bg", type=float, nargs=3, default=(0.0, 0.0, 0.0)),
             *COMMON_RENDER_ARGS,
         ),
         "run_render_ply",
     ),
 )
-
 SINGLE_RENDER_ARGS = (
-    ArgSpec(("--ply",), {"type": Path, "required": True}),
-    ArgSpec(("--output",), {"type": Path, "default": Path("render.png")}),
-    ArgSpec(("--width",), {"type": int, "default": 1280}),
-    ArgSpec(("--height",), {"type": int, "default": 720}),
-    ArgSpec(("--max-splats",), {"type": int, "default": 0}),
-    ArgSpec(("--max-splat-radius-px",), {"type": float, "default": 64.0}),
-    ArgSpec(("--cam-pos",), {"type": float, "nargs": 3, "default": (0.0, 0.0, 3.0)}),
-    ArgSpec(("--cam-target",), {"type": float, "nargs": 3, "default": (0.0, 0.0, 0.0)}),
-    ArgSpec(("--fov",), {"type": float, "default": 60.0}),
-    ArgSpec(("--near",), {"type": float, "default": 0.1}),
-    ArgSpec(("--far",), {"type": float, "default": 120.0}),
-    ArgSpec(("--bg",), {"type": float, "nargs": 3, "default": (0.0, 0.0, 0.0)}),
-    ArgSpec(("--no-flip-y",), {"action": "store_true"}),
+    A("--ply", type=Path, required=True),
+    A("--output", type=Path, default=Path("render.png")),
+    A("--width", type=int, default=1280),
+    A("--height", type=int, default=720),
+    A("--max-splats", type=int, default=0),
+    A("--max-splat-radius-px", type=float, default=64.0),
+    A("--cam-pos", type=float, nargs=3, default=(0.0, 0.0, 3.0)),
+    A("--cam-target", type=float, nargs=3, default=(0.0, 0.0, 0.0)),
+    A("--fov", type=float, default=60.0),
+    A("--near", type=float, default=0.1),
+    A("--far", type=float, default=120.0),
+    A("--bg", type=float, nargs=3, default=(0.0, 0.0, 0.0)),
+    A("--no-flip-y", action="store_true"),
     *COMMON_RENDER_ARGS,
 )
 
@@ -331,26 +303,8 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def build_single_render_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Basic Slangpy Gaussian splat renderer.")
-    _add_arguments(parser, SINGLE_RENDER_ARGS)
-    parser.set_defaults(handler=run_render_single)
-    return parser
-
-
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    return build_parser().parse_args(argv)
-
-
-def parse_single_render_args(argv: list[str] | None = None) -> argparse.Namespace:
-    return build_single_render_parser().parse_args(argv)
-
-
-def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
-    return int(args.handler(args))
-
-
-def render_main(argv: list[str] | None = None) -> int:
-    args = parse_single_render_args(argv)
-    return int(args.handler(args))
+build_single_render_parser = lambda: (lambda parser: (_add_arguments(parser, SINGLE_RENDER_ARGS), parser.set_defaults(handler=run_render_single), parser)[-1])(argparse.ArgumentParser(description="Basic Slangpy Gaussian splat renderer."))
+parse_args = lambda argv=None: build_parser().parse_args(argv)
+parse_single_render_args = lambda argv=None: build_single_render_parser().parse_args(argv)
+main = lambda argv=None: (lambda args: int(args.handler(args)))(parse_args(argv))
+render_main = lambda argv=None: (lambda args: int(args.handler(args)))(parse_single_render_args(argv))

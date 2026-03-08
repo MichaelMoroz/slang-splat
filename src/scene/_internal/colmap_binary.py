@@ -11,14 +11,8 @@ COLMAP_SIMPLE_PINHOLE_MODEL_ID = 0
 COLMAP_PINHOLE_MODEL_ID = 1
 U64 = struct.Struct("<Q")
 I32 = struct.Struct("<i")
-
-
-def _read(handle, fmt: struct.Struct) -> int:
-    return int(fmt.unpack(handle.read(fmt.size))[0])
-
-
-def _read_f64_array(handle, count: int) -> tuple[float, ...]:
-    return tuple(float(v) for v in struct.unpack("<" + ("d" * count), handle.read(8 * count)))
+_read = lambda handle, fmt: int(fmt.unpack(handle.read(fmt.size))[0])
+_read_f64_array = lambda handle, count: tuple(float(v) for v in struct.unpack("<" + ("d" * count), handle.read(8 * count)))
 
 
 def _read_string(handle) -> str:
@@ -31,10 +25,8 @@ def _read_string(handle) -> str:
 
 
 def _camera_params_count(model_id: int) -> int:
-    if model_id == COLMAP_SIMPLE_PINHOLE_MODEL_ID:
-        return 3
-    if model_id == COLMAP_PINHOLE_MODEL_ID:
-        return 4
+    if model_id == COLMAP_SIMPLE_PINHOLE_MODEL_ID: return 3
+    if model_id == COLMAP_PINHOLE_MODEL_ID: return 4
     raise ValueError(f"Unsupported COLMAP camera model id {model_id}. Only SIMPLE_PINHOLE (0) and PINHOLE (1) are currently supported.")
 
 

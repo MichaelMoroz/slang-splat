@@ -20,16 +20,8 @@ INIT_SCALE_JITTER_MAX = 0.16
 INIT_OPACITY_BASE = 0.22
 INIT_OPACITY_MIN = 0.10
 INIT_OPACITY_MAX = 0.35
-
-
-def _colmap_point_positions(recon: ColmapReconstruction) -> np.ndarray:
-    points, _ = point_tables(recon)
-    points = points[np.isfinite(points).all(axis=1)]
-    return points
-
-
-def _subsample_points(points: np.ndarray, max_points: int) -> np.ndarray:
-    return points if points.shape[0] <= max_points else points[np.linspace(0, points.shape[0] - 1, num=max_points, dtype=np.int64)]
+_colmap_point_positions = lambda recon: (lambda points: points[np.isfinite(points).all(axis=1)])(point_tables(recon)[0])
+_subsample_points = lambda points, max_points: points if points.shape[0] <= max_points else points[np.linspace(0, points.shape[0] - 1, num=max_points, dtype=np.int64)]
 
 
 def _estimate_point_spacing(points: np.ndarray) -> tuple[float, float]:
@@ -70,13 +62,7 @@ def resolve_colmap_init_hparams(recon: ColmapReconstruction, max_gaussians: int,
     suggested = suggest_colmap_init_hparams(recon, max_gaussians)
     if init_hparams is None:
         return suggested
-    return GaussianInitHyperParams(
-        position_jitter_std=suggested.position_jitter_std if init_hparams.position_jitter_std is None else float(init_hparams.position_jitter_std),
-        base_scale=suggested.base_scale if init_hparams.base_scale is None else float(init_hparams.base_scale),
-        scale_jitter_ratio=suggested.scale_jitter_ratio if init_hparams.scale_jitter_ratio is None else float(init_hparams.scale_jitter_ratio),
-        initial_opacity=suggested.initial_opacity if init_hparams.initial_opacity is None else float(init_hparams.initial_opacity),
-        color_jitter_std=suggested.color_jitter_std if init_hparams.color_jitter_std is None else float(init_hparams.color_jitter_std),
-    )
+    return GaussianInitHyperParams(**{name: getattr(suggested, name) if getattr(init_hparams, name) is None else float(getattr(init_hparams, name)) for name in ("position_jitter_std", "base_scale", "scale_jitter_ratio", "initial_opacity", "color_jitter_std")})
 
 
 def build_training_frames(recon: ColmapReconstruction, images_subdir: str = "images_4") -> list[ColmapFrame]:
@@ -85,12 +71,9 @@ def build_training_frames(recon: ColmapReconstruction, images_subdir: str = "ima
         raise FileNotFoundError(f"COLMAP image directory does not exist: {images_root}")
     frames = []
     for image_id, image in sorted(recon.images.items()):
-        camera = recon.cameras.get(image.camera_id)
-        image_path = (images_root / image.name).resolve()
-        if camera is None or not image_path.exists():
-            continue
-        with Image.open(image_path) as pil_image:
-            width, height = pil_image.size
+        image_path, camera = (images_root / image.name).resolve(), recon.cameras.get(image.camera_id)
+        if camera is None or not image_path.exists(): continue
+        with Image.open(image_path) as pil_image: width, height = pil_image.size
         sx, sy = float(width) / float(camera.width), float(height) / float(camera.height)
         frames.append(ColmapFrame(image_id, image_path, image.q_wxyz.astype(np.float32), image.t_xyz.astype(np.float32), float(camera.fx) * sx, float(camera.fy) * sy, float(camera.cx) * sx, float(camera.cy) * sy, int(width), int(height)))
     if not frames:
@@ -98,9 +81,7 @@ def build_training_frames(recon: ColmapReconstruction, images_subdir: str = "ima
     return frames
 
 
-def _random_unit_quaternions(rng: np.random.Generator, count: int) -> np.ndarray:
-    q = rng.normal(size=(count, 4)).astype(np.float32)
-    return q / np.maximum(np.linalg.norm(q, axis=1, keepdims=True), 1e-8)
+_random_unit_quaternions = lambda rng, count: (lambda q: q / np.maximum(np.linalg.norm(q, axis=1, keepdims=True), 1e-8))(rng.normal(size=(count, 4)).astype(np.float32))
 
 
 def initialize_scene_from_colmap_points(recon: ColmapReconstruction, max_gaussians: int, seed: int, init_hparams: GaussianInitHyperParams | None = None) -> GaussianScene:

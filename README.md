@@ -12,7 +12,7 @@ Runtime target is Vulkan.
 - GPU compute rasterizer that blends tile-local sorted splats with `8x8` thread groups and `3x3` microtiles per thread (`24x24` effective tiles).
 - Fused raster forward/backward training path for per-splat gradients without per-pixel state buffers.
 - Fused one-thread-per-splat ADAM training kernel.
-- CPU reference implementations and tests for key algorithms.
+- CPU reference implementations in `reference_impls` plus tests for key algorithms.
 
 ## Setup
 Open an elevated PowerShell session first (Run as Administrator), then:
@@ -99,7 +99,8 @@ The budget scans only production Python entrypoints plus `src/**`.
 - `src/scene`: scene datamodel and PLY loader.
 - `src/training`: COLMAP training runtime and hyperparameter dataclasses.
 - `src/sort`: GPU radix sort wrapper.
-- `src/renderer`: camera, reference CPU algorithms, and renderer orchestration.
+- `src/renderer`: camera and renderer orchestration.
+- `reference_impls`: CPU and analytical reference implementations used by tests.
 - `src/viewer`: viewer state, UI schema, session logic, and frame presentation.
 - `shaders/radix_sort`: radix sort shader stages.
 - `shaders/renderer`: Gaussian renderer compute stages.

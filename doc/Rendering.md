@@ -85,4 +85,4 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - `generated_entries` / `written_entries` are reported with one-frame latency (`stats_latency_frames = 1`).
 - `stats_valid` indicates whether delayed stats are available yet (warm-up frame returns `False`).
 - Prepass key/value/scanline capacity is bounded by `max_prepass_memory_mb`; stats expose `prepass_entry_cap`, `max_list_entries`, `max_scanline_entries`, and `capacity_limited`.
-- The CPU reference path in `src/renderer/reference_cpu.py` now shares a single axis-parameterized scanline span solver for both X-major and Y-major ellipse traversal.
+- The CPU reference path in `reference_impls/reference_cpu.py` shares a single axis-parameterized scanline span solver for both X-major and Y-major ellipse traversal.

@@ -4,8 +4,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ..scene.gaussian_scene import GaussianScene
-from .camera import Camera
+from src.scene.gaussian_scene import GaussianScene
+from src.renderer.camera import Camera
 
 STATUS_OK = np.uint32(0)
 STATUS_NEAR_CAMERA_UNSTABLE = np.uint32(1 << 0)
@@ -13,7 +13,6 @@ STATUS_SILHOUETTE_UNSTABLE = np.uint32(1 << 1)
 STATUS_MVEE_REGULARIZED = np.uint32(1 << 2)
 STATUS_MVEE_DEGENERATE = np.uint32(1 << 3)
 STATUS_HARD_FALLBACK = np.uint32(1 << 4)
-
 _TAU = np.float32(2.0 * np.pi)
 
 
@@ -98,23 +97,14 @@ def _project_world_to_screen(
     return np.array([px, py], dtype=np.float32), z, bool(ok)
 
 
-def _fit_mvee_5pt(
-    points: np.ndarray,
-    mvee_iters: int,
-    eps: float,
-) -> tuple[np.ndarray, np.ndarray, float, np.uint32]:
+def _fit_mvee_5pt(points: np.ndarray, mvee_iters: int, eps: float) -> tuple[np.ndarray, np.ndarray, float, np.uint32]:
     d = 2.0
     points64 = points.astype(np.float64)
     norm_center = np.mean(points64, axis=0)
     norm_scale = float(np.max(np.linalg.norm(points64 - norm_center[None, :], axis=1)))
     status = STATUS_OK
     if norm_scale <= float(eps):
-        return (
-            np.zeros((2,), dtype=np.float32),
-            np.zeros((2,), dtype=np.float32),
-            0.0,
-            np.uint32(status | STATUS_MVEE_DEGENERATE),
-        )
+        return np.zeros((2,), dtype=np.float32), np.zeros((2,), dtype=np.float32), 0.0, np.uint32(status | STATUS_MVEE_DEGENERATE)
     points_n = (points64 - norm_center[None, :]) / norm_scale
     q = np.concatenate([points_n, np.ones((5, 1), dtype=np.float64)], axis=1)
     u = np.full((5,), 1.0 / 5.0, dtype=np.float64)
@@ -134,7 +124,7 @@ def _fit_mvee_5pt(
             status |= STATUS_MVEE_DEGENERATE
             break
         alpha = float(np.clip((mj - (d + 1.0)) / denom, 0.0, 1.0))
-        u *= (1.0 - alpha)
+        u *= 1.0 - alpha
         u[j] += alpha
 
     center_n = np.sum(u[:, None] * points_n, axis=0)
@@ -145,21 +135,17 @@ def _fit_mvee_5pt(
     except np.linalg.LinAlgError:
         a_mat = (1.0 / d) * np.linalg.inv(s_mat + float(eps) * np.eye(2, dtype=np.float64))
         status |= STATUS_MVEE_REGULARIZED
-
     eigvals, eigvecs = np.linalg.eigh(a_mat)
     eigvals = np.maximum(eigvals, float(eps))
     axes = (1.0 / np.sqrt(eigvals)).astype(np.float64)
     order = np.argsort(axes)[::-1]
-    axes = axes[order]
-    eigvecs = eigvecs[:, order]
-
+    axes, eigvecs = axes[order], eigvecs[:, order]
     rel = (points_n - center_n[None, :]) @ eigvecs
     denom2 = np.maximum(axes * axes, float(eps))
     qmax = float(np.max(np.sum((rel * rel) / denom2[None, :], axis=1)))
     if qmax > 1.0:
         axes *= np.sqrt(qmax)
         status |= STATUS_MVEE_REGULARIZED
-
     angle = float(np.arctan2(eigvecs[1, 0], eigvecs[0, 0]))
     center = norm_center + center_n * norm_scale
     axes = axes * norm_scale
@@ -183,17 +169,12 @@ def project_splats_sampled5_mvee(
     right, up, forward = camera.basis()
     fx, fy = camera.focal_pixels_xy(width, height)
     cx, cy = camera.principal_point(width, height)
-    focal = np.array([fx, fy], dtype=np.float32)
-    principal = np.array([cx, cy], dtype=np.float32)
-    fallback_focal = float(max(fx, fy))
-    radius_cap = float(max(width, height, 1))
-    n = scene.count
+    focal, principal = np.array([fx, fy], dtype=np.float32), np.array([cx, cy], dtype=np.float32)
+    fallback_focal, radius_cap, n = float(max(fx, fy)), float(max(width, height, 1)), scene.count
     center_radius_depth = np.zeros((n, 4), dtype=np.float32)
-    pos_local = np.zeros((n, 3), dtype=np.float32)
-    inv_scale = np.zeros((n, 3), dtype=np.float32)
+    pos_local, inv_scale = np.zeros((n, 3), dtype=np.float32), np.zeros((n, 3), dtype=np.float32)
     quat = scene.rotations.astype(np.float32).copy()
-    valid = np.zeros((n,), dtype=np.uint32)
-    status_bits = np.zeros((n,), dtype=np.uint32)
+    valid, status_bits = np.zeros((n,), dtype=np.uint32), np.zeros((n,), dtype=np.uint32)
     sample_points_screen = np.full((n, 5, 2), np.nan, dtype=np.float32)
     ellipse_center_axes = np.zeros((n, 5), dtype=np.float32)
 
@@ -203,30 +184,23 @@ def project_splats_sampled5_mvee(
         cam_distance = float(np.linalg.norm(rel))
         cam_pos = np.array([np.dot(rel, right), np.dot(rel, up), np.dot(rel, forward)], dtype=np.float32)
         depth_value = float(cam_pos[2])
-        px = float(cam_pos[0] * float(focal[0]) / max(depth_value, 1e-6) + float(principal[0]))
-        py = float(cam_pos[1] * float(focal[1]) / max(depth_value, 1e-6) + float(principal[1]))
-
-        q = quat[i]
-        scale = scene.scales[i].astype(np.float32).copy()
-        scale = scale * np.float32(radius_scale)
-        fallback_radius = float(
-            np.clip(
-                (fallback_focal * float(np.max(scale)) / max(depth_value, 1e-6)) * float(safety_scale)
-                + float(radius_pad_px),
-                1.0,
-                radius_cap,
-            )
+        center = np.array(
+            [
+                float(cam_pos[0] * float(focal[0]) / max(depth_value, 1e-6) + float(principal[0])),
+                float(cam_pos[1] * float(focal[1]) / max(depth_value, 1e-6) + float(principal[1])),
+            ],
+            dtype=np.float32,
         )
+        q = quat[i]
+        scale = scene.scales[i].astype(np.float32).copy() * np.float32(radius_scale)
+        fallback_radius = float(np.clip((fallback_focal * float(np.max(scale)) / max(depth_value, 1e-6)) * float(safety_scale) + float(radius_pad_px), 1.0, radius_cap))
         invs = 1.0 / np.maximum(scale, np.float32(1e-6))
         ro_local = (_quat_rotate(camera.position - world_pos, q) * invs).astype(np.float32)
-        pos_local[i, :] = ro_local
-        inv_scale[i, :] = invs
-
+        pos_local[i, :], inv_scale[i, :] = ro_local, invs
         local_pts, ok_silhouette = _silhouette_points_local5(ro_local, float(mvee_eps))
+        radius_px = fallback_radius
         if not ok_silhouette:
             status_bits[i] |= STATUS_SILHOUETTE_UNSTABLE
-            radius_px = fallback_radius
-            center = np.array([px, py], dtype=np.float32)
         else:
             q_inv = _quat_conj(q)
             screen_pts = np.zeros((5, 2), dtype=np.float32)
@@ -253,42 +227,31 @@ def project_splats_sampled5_mvee(
             sample_points_screen[i, :, :] = screen_pts
             if not ok_project:
                 status_bits[i] |= STATUS_NEAR_CAMERA_UNSTABLE
-                radius_px = fallback_radius
-                center = np.array([px, py], dtype=np.float32)
             else:
-                center_fit, axes_fit, angle_fit, st = _fit_mvee_5pt(
-                    screen_pts,
-                    mvee_iters=max(int(mvee_iters), 0),
-                    eps=float(mvee_eps),
-                )
+                center_fit, axes_fit, angle_fit, st = _fit_mvee_5pt(screen_pts, mvee_iters=max(int(mvee_iters), 0), eps=float(mvee_eps))
                 status_bits[i] |= st
-                center = center_fit
-                ellipse_center_axes[i, :2] = center_fit
-                ellipse_center_axes[i, 2:4] = axes_fit
-                ellipse_center_axes[i, 4] = np.float32(angle_fit)
-                if not np.all(np.isfinite(center_fit)) or not np.all(np.isfinite(axes_fit)):
-                    status_bits[i] |= STATUS_HARD_FALLBACK
-                    radius_px = fallback_radius
-                    center = np.array([px, py], dtype=np.float32)
-                else:
+                ellipse_center_axes[i, :2], ellipse_center_axes[i, 2:4], ellipse_center_axes[i, 4] = center_fit, axes_fit, np.float32(angle_fit)
+                if np.all(np.isfinite(center_fit)) and np.all(np.isfinite(axes_fit)):
+                    center = center_fit
                     radius_px = float(np.clip(float(np.max(axes_fit)) * safety_scale + radius_pad_px, 1.0, radius_cap))
-
+                else:
+                    status_bits[i] |= STATUS_HARD_FALLBACK
         center_radius_depth[i, :] = np.array([center[0], center[1], radius_px, cam_distance], dtype=np.float32)
-        is_visible = (
-            depth_value > 1e-4
+        valid[i] = np.uint32(
+            1
+            if depth_value > 1e-4
             and cam_distance > camera.near
             and cam_distance < camera.far
             and (center[0] + radius_px) >= 0.0
             and (center[0] - radius_px) < float(width)
             and (center[1] + radius_px) >= 0.0
             and (center[1] - radius_px) < float(height)
+            else 0
         )
-        valid[i] = np.uint32(1 if is_visible else 0)
 
-    color_alpha = np.concatenate([scene.colors, scene.opacities[:, None]], axis=1).astype(np.float32)
     return Sampled5MVEEProjectedSplats(
         center_radius_depth=center_radius_depth,
-        color_alpha=color_alpha,
+        color_alpha=np.concatenate([scene.colors, scene.opacities[:, None]], axis=1).astype(np.float32),
         valid=valid,
         pos_local=pos_local,
         inv_scale=inv_scale,
