@@ -45,12 +45,9 @@ GROUP_SPECS = {
         ControlSpec("move_speed", "slider_float", "Move Speed", {"value": 2.0, "min": 0.1, "max": 20.0, "flags": spy.ui.SliderFlags.logarithmic, "format": "%.3g"}),
         ControlSpec("fov", "slider_float", "FOV", {"value": 60.0, "min": 25.0, "max": 100.0}),
     ),
-    "Train Init": (
+    "Train Setup": (
         ControlSpec("gaussian_count", "slider_int", "Gaussian Count", {"value": 50000, "min": 1000, "max": 2000000, "flags": spy.ui.SliderFlags.logarithmic}),
-        ControlSpec("seed", "slider_int", "Seed", {"value": 1234, "min": 0, "max": 1000000}),
-        ControlSpec("init_pos_jitter", "input_float", "Pos Jitter", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.6f"}),
-        ControlSpec("init_scale", "input_float", "Base Scale", {"value": 0.03, "step": 1e-4, "step_fast": 1e-3, "format": "%.6f"}),
-        ControlSpec("init_scale_jitter", "input_float", "Scale Jitter", {"value": 0.2, "step": 1e-3, "step_fast": 1e-2, "format": "%.4f"}),
+        ControlSpec("seed", "slider_int", "Shuffle Seed", {"value": 1234, "min": 0, "max": 1000000}),
         ControlSpec("init_opacity", "input_float", "Init Opacity", {"value": 0.5, "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
     ),
     "Train Optimizer": (
@@ -70,7 +67,6 @@ GROUP_SPECS = {
         ControlSpec("mcmc_pos_noise_scale", "input_float", "MCMC Noise Scale", {"value": 1.0, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
         ControlSpec("mcmc_opacity_k", "input_float", "MCMC Opacity K", {"value": 100.0, "step": 0.5, "step_fast": 5.0, "format": "%.4f"}),
         ControlSpec("mcmc_opacity_t", "input_float", "MCMC Opacity T", {"value": 0.995, "step": 1e-4, "step_fast": 1e-3, "format": "%.6f"}),
-        ControlSpec("low_quality_reinit", "checkbox", "Low-Quality Reinit", {"value": True}),
         ControlSpec("grad_clip", "input_float", "Grad Clip", {"value": 10.0, "step": 0.1, "step_fast": 1.0, "format": "%.4f"}),
         ControlSpec("grad_norm_clip", "input_float", "Grad Norm Clip", {"value": 10.0, "step": 0.1, "step_fast": 1.0, "format": "%.4f"}),
         ControlSpec("max_update", "input_float", "Max Update", {"value": 0.05, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
@@ -83,6 +79,17 @@ GROUP_SPECS = {
         ControlSpec("position_abs_max", "input_float", "Pos Abs Max", {"value": 1e4, "step": 10.0, "step_fast": 100.0, "format": "%.3f"}),
         ControlSpec("train_near", "input_float", "Train Near", {"value": 0.1, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
         ControlSpec("train_far", "input_float", "Train Far", {"value": 120.0, "step": 1.0, "step_fast": 10.0, "format": "%.3f"}),
+    ),
+    "Train Density": (
+        ControlSpec("densify_from_iter", "input_float", "Densify From", {"value": 500.0, "step": 1.0, "step_fast": 10.0, "format": "%.0f"}),
+        ControlSpec("densify_until_iter", "input_float", "Densify Until", {"value": 15000.0, "step": 10.0, "step_fast": 100.0, "format": "%.0f"}),
+        ControlSpec("densification_interval", "input_float", "Densify Every", {"value": 100.0, "step": 1.0, "step_fast": 10.0, "format": "%.0f"}),
+        ControlSpec("densify_grad_threshold", "input_float", "Grad Threshold", {"value": 2e-4, "step": 1e-5, "step_fast": 1e-4, "format": "%.6f"}),
+        ControlSpec("percent_dense", "input_float", "Percent Dense", {"value": 0.01, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
+        ControlSpec("prune_min_opacity", "input_float", "Prune Min Opacity", {"value": 0.005, "step": 1e-4, "step_fast": 1e-3, "format": "%.6f"}),
+        ControlSpec("screen_size_prune_threshold", "input_float", "Screen Prune Px", {"value": 20.0, "step": 0.5, "step_fast": 5.0, "format": "%.3f"}),
+        ControlSpec("world_size_prune_ratio", "input_float", "World Prune Ratio", {"value": 0.1, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
+        ControlSpec("opacity_reset_interval", "input_float", "Opacity Reset", {"value": 3000.0, "step": 10.0, "step_fast": 100.0, "format": "%.0f"}),
     ),
 }
 
@@ -127,10 +134,13 @@ def build_ui(screen: object, app: object, renderer: object) -> ViewerUI:
     texts["loss_debug_view"] = spy.ui.Text(main_group, "View: Abs Diff")
     texts["loss_debug_frame"] = spy.ui.Text(main_group, "Frame: <none>")
     _build_group(panel, "Camera", GROUP_SPECS["Camera"], controls)
-    _build_group(panel, "Train Init", GROUP_SPECS["Train Init"], controls)
+    setup_group = _build_group(panel, "Train Setup", GROUP_SPECS["Train Setup"], controls)
+    texts["setup_hint"] = spy.ui.Text(setup_group, "COLMAP init uses direct points + NN scales")
     _build_group(panel, "Train Optimizer", GROUP_SPECS["Train Optimizer"], controls)
     stab_group = _build_group(panel, "Train Stability", GROUP_SPECS["Train Stability"], controls)
-    texts["reinit_threshold"] = spy.ui.Text(stab_group, "Reinit thresholds: Min Scale + Min Opacity")
+    texts["stability_hint"] = spy.ui.Text(stab_group, "Hard clamps are applied after every ADAM step")
+    density_group = _build_group(panel, "Train Density", GROUP_SPECS["Train Density"], controls)
+    texts["density_hint"] = spy.ui.Text(density_group, "Clone/split/prune + opacity reset schedule")
     params_group = spy.ui.Group(panel, "Render Params")
     for spec in (
         ControlSpec("radius_scale", "slider_float", "Radius Scale", {"value": float(renderer.radius_scale), "min": 0.5, "max": 4.0, "flags": spy.ui.SliderFlags.logarithmic, "format": "%.3g"}),

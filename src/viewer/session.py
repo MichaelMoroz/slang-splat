@@ -43,7 +43,7 @@ def _reset_loaded_runtime(viewer: object) -> None:
     _clear(viewer, "training_renderer")
 
 
-_scene_signature = lambda viewer: None if viewer.s.colmap_root is None or viewer.s.colmap_recon is None or not viewer.s.training_frames else (lambda init: (str(viewer.s.colmap_root.resolve()), len(viewer.s.training_frames), init.gaussian_count, init.seed, *(round(float(v), 8) for v in (init.hparams.position_jitter_std, init.hparams.base_scale, init.hparams.scale_jitter_ratio, init.hparams.initial_opacity))))(viewer.init_params())
+_scene_signature = lambda viewer: None if viewer.s.colmap_root is None or viewer.s.colmap_recon is None or not viewer.s.training_frames else (lambda init: (str(viewer.s.colmap_root.resolve()), len(viewer.s.training_frames), init.gaussian_count, init.seed, None if init.hparams.initial_opacity is None else round(float(init.hparams.initial_opacity), 8)))(viewer.init_params())
 
 
 create_debug_shaders = lambda viewer: (lambda shader_path: (setattr(viewer.s, "debug_abs_diff_kernel", viewer.device.create_compute_kernel(viewer.device.load_program(shader_path, ["csComposeAbsDiffDebug"]))), setattr(viewer.s, "debug_letterbox_kernel", viewer.device.create_compute_kernel(viewer.device.load_program(shader_path, ["csComposeLetterboxDebug"]))))) (str(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"))

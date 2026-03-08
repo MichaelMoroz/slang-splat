@@ -100,13 +100,20 @@ def fit_camera(bounds: SceneBounds, fov_y_degrees: float) -> CameraFit:
     return CameraFit(position=spy.float3(*position.tolist()), near=max(0.01, distance * CAMERA_NEAR_RATIO), far=max(distance + radius * CAMERA_FAR_RADIUS_SCALE, CAMERA_MIN_FAR), move_speed=max(MOVE_SPEED_MIN, radius * MOVE_SPEED_RADIUS_SCALE))
 
 
-def build_init_params(position_jitter_std: float, base_scale: float, scale_jitter_ratio: float, initial_opacity: float, gaussian_count: int, seed: int) -> InitParams:
+def build_init_params(
+    position_jitter_std: float | None,
+    base_scale: float | None,
+    scale_jitter_ratio: float | None,
+    initial_opacity: float | None,
+    gaussian_count: int,
+    seed: int,
+) -> InitParams:
     return InitParams(
         hparams=GaussianInitHyperParams(
-            position_jitter_std=clamp_float(position_jitter_std, 0.0, 10.0),
-            base_scale=clamp_float(base_scale, 1e-8, 1e3),
-            scale_jitter_ratio=clamp_float(scale_jitter_ratio, 0.0, 10.0),
-            initial_opacity=clamp_float(initial_opacity, 0.0, 1.0),
+            position_jitter_std=None if position_jitter_std is None else clamp_float(position_jitter_std, 0.0, 10.0),
+            base_scale=None if base_scale is None else clamp_float(base_scale, 1e-8, 1e3),
+            scale_jitter_ratio=None if scale_jitter_ratio is None else clamp_float(scale_jitter_ratio, 0.0, 10.0),
+            initial_opacity=None if initial_opacity is None else clamp_float(initial_opacity, 0.0, 1.0),
             color_jitter_std=0.0,
         ),
         gaussian_count=clamp_int(gaussian_count, 1, 10_000_000),
@@ -143,7 +150,15 @@ def build_training_params(
     mcmc_position_noise_scale: float,
     mcmc_opacity_gate_sharpness: float,
     mcmc_opacity_gate_center: float,
-    low_quality_reinit_enabled: bool,
+    densify_from_iter: int,
+    densify_until_iter: int,
+    densification_interval: int,
+    densify_grad_threshold: float,
+    percent_dense: float,
+    prune_min_opacity: float,
+    screen_size_prune_threshold: float,
+    world_size_prune_ratio: float,
+    opacity_reset_interval: int,
 ) -> AppTrainingParams:
     base_lr = clamp_float(base_lr, 1e-8, 1.0)
     adam = AdamHyperParams(
@@ -191,12 +206,21 @@ def build_training_params(
         mcmc_position_noise_scale=clamp_float(mcmc_position_noise_scale, 0.0, 1e4),
         mcmc_opacity_gate_sharpness=clamp_float(mcmc_opacity_gate_sharpness, 0.0, 1e6),
         mcmc_opacity_gate_center=clamp_float(mcmc_opacity_gate_center, 0.0, 1.0),
-        low_quality_reinit_enabled=bool(low_quality_reinit_enabled),
+        densify_from_iter=clamp_int(densify_from_iter, 0, 10_000_000),
+        densify_until_iter=clamp_int(densify_until_iter, 0, 10_000_000),
+        densification_interval=clamp_int(densification_interval, 1, 10_000_000),
+        densify_grad_threshold=clamp_float(densify_grad_threshold, 0.0, 1e6),
+        percent_dense=clamp_float(percent_dense, 0.0, 1.0),
+        prune_min_opacity=clamp_float(prune_min_opacity, 0.0, 1.0),
+        screen_size_prune_threshold=clamp_float(screen_size_prune_threshold, 0.0, 1e6),
+        world_size_prune_ratio=clamp_float(world_size_prune_ratio, 0.0, 1e6),
+        opacity_reset_interval=clamp_int(opacity_reset_interval, 0, 10_000_000),
     )
     stability.max_scale = max(stability.max_scale, stability.min_scale)
     stability.max_opacity = max(stability.max_opacity, stability.min_opacity)
     if training.far <= training.near:
         training.far = training.near + 1e-3
+    training.densify_until_iter = max(training.densify_until_iter, training.densify_from_iter)
     return AppTrainingParams(adam=adam, stability=stability, training=training)
 
 

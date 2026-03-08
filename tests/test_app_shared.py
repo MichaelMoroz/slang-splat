@@ -53,7 +53,15 @@ def test_build_training_params_clamps_ranges():
         mcmc_position_noise_scale=-5.0,
         mcmc_opacity_gate_sharpness=-1.0,
         mcmc_opacity_gate_center=2.0,
-        low_quality_reinit_enabled=False,
+        densify_from_iter=-5,
+        densify_until_iter=1,
+        densification_interval=0,
+        densify_grad_threshold=-1.0,
+        percent_dense=2.0,
+        prune_min_opacity=2.0,
+        screen_size_prune_threshold=-1.0,
+        world_size_prune_ratio=-1.0,
+        opacity_reset_interval=-1,
     )
     assert params.adam.position_lr == 10.0
     assert params.adam.scale_lr == 0.1
@@ -62,3 +70,12 @@ def test_build_training_params_clamps_ranges():
     assert params.training.far > params.training.near
     assert params.training.scale_l2_weight == 0.0
     assert params.training.lambda_dssim == 1.0
+    assert params.training.densify_from_iter == 0
+    assert params.training.densify_until_iter == 1
+    assert params.training.densification_interval == 1
+    assert params.training.densify_grad_threshold == 0.0
+    assert params.training.percent_dense == 1.0
+    assert params.training.prune_min_opacity == 1.0
+    assert params.training.screen_size_prune_threshold == 0.0
+    assert params.training.world_size_prune_ratio == 0.0
+    assert params.training.opacity_reset_interval == 0

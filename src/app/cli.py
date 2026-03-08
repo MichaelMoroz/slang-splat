@@ -49,7 +49,7 @@ def _renderer(args: argparse.Namespace, width: int, height: int) -> GaussianRend
 
 
 def _init_hparams(args: argparse.Namespace) -> GaussianInitHyperParams:
-    get = lambda name: None if getattr(args, name) is None else float(getattr(args, name))
+    get = lambda name: None if getattr(args, name, None) is None else float(getattr(args, name))
     return GaussianInitHyperParams(
         position_jitter_std=get("init_position_jitter"),
         base_scale=get("init_base_scale"),
@@ -88,7 +88,15 @@ def _training_params(args: argparse.Namespace):
         mcmc_position_noise_scale=1.0,
         mcmc_opacity_gate_sharpness=100.0,
         mcmc_opacity_gate_center=0.995,
-        low_quality_reinit_enabled=bool(args.low_quality_reinit),
+        densify_from_iter=args.densify_from_iter,
+        densify_until_iter=args.densify_until_iter,
+        densification_interval=args.densification_interval,
+        densify_grad_threshold=args.densify_grad_threshold,
+        percent_dense=args.percent_dense,
+        prune_min_opacity=args.prune_min_opacity,
+        screen_size_prune_threshold=args.screen_size_prune_threshold,
+        world_size_prune_ratio=args.world_size_prune_ratio,
+        opacity_reset_interval=args.opacity_reset_interval,
     )
 
 
@@ -223,7 +231,18 @@ TRAIN_RENDER_ARGS = tuple(
 )
 TRAIN_INIT_ARGS = tuple(
     A(flag, type=float, default=None)
-    for flag in ("--init-position-jitter", "--init-base-scale", "--init-scale-jitter", "--init-opacity", "--init-color-jitter")
+    for flag in ("--init-opacity",)
+)
+TRAIN_DENSITY_ARGS = (
+    A("--densify-from-iter", type=int, default=500),
+    A("--densify-until-iter", type=int, default=15000),
+    A("--densification-interval", type=int, default=100),
+    A("--densify-grad-threshold", type=float, default=2e-4),
+    A("--percent-dense", type=float, default=0.01),
+    A("--prune-min-opacity", type=float, default=0.005),
+    A("--screen-size-prune-threshold", type=float, default=20.0),
+    A("--world-size-prune-ratio", type=float, default=0.1),
+    A("--opacity-reset-interval", type=int, default=3000),
 )
 COMMANDS = (
     CommandSpec(
@@ -240,8 +259,8 @@ COMMANDS = (
             A("--height", type=int, default=0),
             *COMMON_RENDER_ARGS,
             *TRAIN_RENDER_ARGS,
+            *TRAIN_DENSITY_ARGS,
             A("--bg", type=float, nargs=3, default=(0.0, 0.0, 0.0)),
-            A("--low-quality-reinit", action=argparse.BooleanOptionalAction, default=True),
             *TRAIN_INIT_ARGS,
             A("--log-interval", type=int, default=10),
             A("--snapshot-interval", type=int, default=0),
