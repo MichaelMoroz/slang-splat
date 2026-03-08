@@ -786,8 +786,8 @@ void csRegenerateScene(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     if (allowGrowth && highGrad && small)
     {
-        append_output_splat(pos, scale, rot, colorAlpha, adamMPos, adamVPos, adamMScale, adamVScale, adamMQuat, adamVQuat, adamMColorAlpha, adamVColorAlpha, 0.0, 0.0);
-        append_output_splat(pos, scale, rot, colorAlpha, float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), 0.0, 0.0);
+        append_output_splat(pos, scale, rot, colorAlpha, adamMPos, adamVPos, adamMScale, adamVScale, adamMQuat, adamVQuat, adamMColorAlpha, adamVColorAlpha, gradEMA, maxScreenRadius);
+        append_output_splat(pos, scale, rot, colorAlpha, float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), gradEMA, maxScreenRadius);
         return;
     }
 
@@ -811,7 +811,7 @@ void csRegenerateScene(uint3 dispatchThreadID : SV_DispatchThreadID)
         return;
     }
 
-    append_output_splat(pos, scale, rot, colorAlpha, adamMPos, adamVPos, adamMScale, adamVScale, adamMQuat, adamVQuat, adamMColorAlpha, adamVColorAlpha, 0.0, 0.0);
+    append_output_splat(pos, scale, rot, colorAlpha, adamMPos, adamVPos, adamMScale, adamVScale, adamMQuat, adamVQuat, adamMColorAlpha, adamVColorAlpha, gradEMA, maxScreenRadius);
 }
 
 [shader("compute")]
