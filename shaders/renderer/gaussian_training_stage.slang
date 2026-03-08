@@ -2,6 +2,7 @@ import "math_constants.slang";
 import "opacity.slang";
 
 static const uint TRAIN_TILE_DIM = 16u;
+static const uint SCALE_HISTOGRAM_GUARD_BIN_COUNT = 2u;
 static const uint LOSS_SLOT_TOTAL = 0u;
 static const uint LOSS_SLOT_MSE = 1u;
 static const uint LOSS_SLOT_SSIM = 2u;
@@ -12,6 +13,7 @@ static const float SSIM_C2 = 0.0009;
 static const float OPACITY_RESET_VALUE = 0.1;
 static const uint SPLIT_CHILD_COUNT = 2u;
 static const float SPLIT_CHILD_SCALE_RATIO = 0.625;
+static const float CLAMPED_SCALE_DENSIFY_RATIO = 1.25;
 
 struct AdamParams
 {
@@ -63,10 +65,18 @@ struct DensifyParams
     float forcePruneScaleThreshold;
 };
 
+struct HistogramParams
+{
+    uint binCount;
+    float minLog10;
+    float maxLog10;
+};
+
 uniform AdamParams g_Adam;
 uniform TrainingStabilityParams g_Stability;
 uniform TrainingMCMCParams g_MCMC;
 uniform DensifyParams g_Densify;
+uniform HistogramParams g_Hist;
 uniform uint g_SplatCount;
 uniform uint g_Width;
 uniform uint g_Height;
@@ -151,6 +161,7 @@ uniform RWStructuredBuffer<float> g_OutGradNormEMA;
 uniform RWStructuredBuffer<uint> g_OutGradCount;
 uniform RWStructuredBuffer<float> g_OutMaxScreenRadius;
 uniform RWStructuredBuffer<uint> g_OutputCount;
+uniform RWStructuredBuffer<uint> g_ScaleHistogram;
 uniform StructuredBuffer<float4> g_InitPointPositions;
 uniform StructuredBuffer<float4> g_InitPointColors;
 uniform uint g_InitPointCount;
@@ -346,6 +357,17 @@ float3 clamp_scale_anisotropy(float3 scale)
 float scene_small_scale_threshold()
 {
     return max(g_Densify.percentDense * g_Densify.sceneExtent, g_Stability.minScale);
+}
+
+uint scale_histogram_bin(float3 scale)
+{
+    uint binCount = max(g_Hist.binCount, SCALE_HISTOGRAM_GUARD_BIN_COUNT);
+    uint interiorCount = max(binCount - SCALE_HISTOGRAM_GUARD_BIN_COUNT, 1u);
+    float meanLog10 = (log10(max(scale.x, TINY_VALUE)) + log10(max(scale.y, TINY_VALUE)) + log10(max(scale.z, TINY_VALUE))) * (1.0 / 3.0);
+    if (meanLog10 < g_Hist.minLog10) return 0u;
+    if (meanLog10 >= g_Hist.maxLog10) return binCount - 1u;
+    float t = saturate((meanLog10 - g_Hist.minLog10) / max(g_Hist.maxLog10 - g_Hist.minLog10, TINY_VALUE));
+    return 1u + min(uint(t * float(interiorCount)), interiorCount - 1u);
 }
 
 void write_output_splat(
@@ -767,6 +789,25 @@ void csUpdateDensificationStats(uint3 dispatchThreadID : SV_DispatchThreadID)
 
 [shader("compute")]
 [numthreads(256, 1, 1)]
+void csClearScaleHistogram(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint binId = dispatchThreadID.x;
+    if (binId >= g_Hist.binCount) return;
+    g_ScaleHistogram[binId] = 0u;
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void csAccumulateScaleHistogram(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint splatId = dispatchThreadID.x;
+    if (splatId >= g_SplatCount) return;
+    uint binId = scale_histogram_bin(max(g_ScalesRW[splatId].xyz, float3(TINY_VALUE)));
+    InterlockedAdd(g_ScaleHistogram[binId], 1u);
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
 void csRegenerateScene(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     uint splatId = dispatchThreadID.x;
@@ -788,13 +829,14 @@ void csRegenerateScene(uint3 dispatchThreadID : SV_DispatchThreadID)
     bool allowGrowth = g_Densify.maxGaussianCount > g_SplatCount;
     float opacity = opacity_from_raw(colorAlpha.w);
     float maxScale = max(scale.x, max(scale.y, scale.z));
+    bool nearMinScale = maxScale <= g_Stability.minScale * CLAMPED_SCALE_DENSIFY_RATIO;
 
     bool prune = opacity < g_Densify.pruneMinOpacity || maxScale < g_Densify.forcePruneScaleThreshold;
     if (prune) return;
 
     bool highGrad = gradEMA >= g_Densify.gradThreshold;
     bool small = maxScale <= scene_small_scale_threshold();
-    bool shouldClone = allowGrowth && g_Densify.forceSplitAll == 0u && highGrad && small;
+    bool shouldClone = allowGrowth && g_Densify.forceSplitAll == 0u && highGrad && small && !nearMinScale;
     bool shouldSplit = allowGrowth && (g_Densify.forceSplitAll != 0u || (highGrad && !small));
 
     if (shouldClone)

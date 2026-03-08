@@ -49,12 +49,12 @@ class StabilityHyperParams:
 
 @dataclass(slots=True)
 class TrainingHyperParams:
-    background: tuple[float, float, float] = (0.0, 0.0, 0.0); near: float = 0.1; far: float = 120.0; scale_l2_weight: float = 1e-3; opacity_reg_weight: float = 1e-3; mcmc_position_noise_enabled: bool = True
+    background: tuple[float, float, float] = (0.0, 0.0, 0.0); near: float = 0.1; far: float = 120.0; scale_l2_weight: float = 1e-4; opacity_reg_weight: float = 1e-3; mcmc_position_noise_enabled: bool = True
     mcmc_position_noise_scale: float = 5e5; mcmc_opacity_gate_sharpness: float = 100.0; mcmc_opacity_gate_center: float = 0.995; low_quality_reinit_enabled: bool = True; lambda_dssim: float = 0.2
     max_gaussians: int = 200000
     densify_from_iter: int = 500; densify_until_iter: int = 15000; densification_interval: int = 100; densify_grad_threshold: float = 1.5e-4
     percent_dense: float = 0.01; prune_min_opacity: float = 0.005; screen_size_prune_threshold: float = 20.0; world_size_prune_ratio: float = 0.1
-    opacity_reset_interval: int = 0
+    opacity_reset_interval: int = 3000
 
 
 @dataclass(slots=True)
@@ -69,6 +69,9 @@ class GaussianTrainer:
     _LOSS_SLOT_MSE = 1
     _LOSS_SLOT_SSIM = 2
     _PSNR_MSE_FLOOR = 1e-12
+    _SCALE_HISTOGRAM_BIN_COUNT = 34
+    _SCALE_HISTOGRAM_MIN_LOG10 = -5.0
+    _SCALE_HISTOGRAM_MAX_LOG10 = 1.0
     _ADAM_BUFFER_NAMES = ("adam_m_pos", "adam_v_pos", "adam_m_scale", "adam_v_scale", "adam_m_quat", "adam_v_quat", "adam_m_color_alpha", "adam_v_color_alpha")
     _LOSS_TEXTURE_NAMES = (
         "render_sq",
@@ -118,6 +121,8 @@ class GaussianTrainer:
         "compose_loss_grad": "csComposeMixedLossOutputGrad",
         "adam_step": "csAdamStepFused",
         "update_densification_stats": "csUpdateDensificationStats",
+        "clear_scale_histogram": "csClearScaleHistogram",
+        "accumulate_scale_histogram": "csAccumulateScaleHistogram",
         "regenerate_scene": "csRegenerateScene",
         "reset_opacity": "csResetOpacity",
         "init_from_pointcloud": "csInitializeGaussiansFromPointCloud",
@@ -180,6 +185,7 @@ class GaussianTrainer:
         self._kernels = {name: self.device.create_compute_kernel(self.device.load_program(str(self._shader_path), [entry])) for name, entry in self._KERNEL_ENTRIES.items()}
         self._buffers: dict[str, spy.Buffer] = {}
         self._regen_buffers: dict[str, spy.Buffer] = {}
+        self._hist_buffers: dict[str, spy.Buffer] = {}
         self._splat_capacity = 0
         self._regen_capacity = 0
         self._scale_reg_reference = float(max(scale_reg_reference, 1e-8)) if scale_reg_reference is not None else self._estimate_scale_reg_reference(scene)
@@ -201,6 +207,7 @@ class GaussianTrainer:
             self.renderer.bind_scene_count(self._scene_count)
         self._ensure_training_buffers(self._scene_count)
         self._ensure_regen_buffers(self._scene_count)
+        self._ensure_histogram_buffers()
         self._ensure_loss_textures()
         self._zero_optimizer_moments()
         self._zero_density_stats()
@@ -238,6 +245,12 @@ class GaussianTrainer:
         self._regen_buffers["grad_count"] = self.device.create_buffer(size=self._regen_capacity * 4, usage=usage)
         self._regen_buffers["max_screen_radius"] = self.device.create_buffer(size=self._regen_capacity * 4, usage=usage)
         self._regen_buffers["output_count"] = self.device.create_buffer(size=4, usage=usage)
+
+    def _ensure_histogram_buffers(self) -> None:
+        if self._hist_buffers:
+            return
+        usage = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
+        self._hist_buffers["scale_histogram"] = self.device.create_buffer(size=self._SCALE_HISTOGRAM_BIN_COUNT * 4, usage=usage)
 
     def _estimate_scale_reg_reference(self, scene: GaussianScene | None) -> float:
         if scene is None or scene.count <= 0:
@@ -515,6 +528,9 @@ class GaussianTrainer:
     def _regen_stat_vars(self) -> dict[str, object]:
         return self._buffer_vars(self._REGEN_STAT_SHADER_VARS, self._regen_buffers)
 
+    def _histogram_vars(self) -> dict[str, object]:
+        return {"g_ScaleHistogram": self._hist_buffers["scale_histogram"], "g_Hist": {"binCount": int(self._SCALE_HISTOGRAM_BIN_COUNT), "minLog10": float(self._SCALE_HISTOGRAM_MIN_LOG10), "maxLog10": float(self._SCALE_HISTOGRAM_MAX_LOG10)}}
+
     def _dispatch_update_densification_stats(self, encoder: spy.CommandEncoder) -> None:
         self._dispatch(
             "update_densification_stats",
@@ -528,6 +544,12 @@ class GaussianTrainer:
                 **self._common_vars(),
             },
         )
+
+    def _dispatch_clear_scale_histogram(self, encoder: spy.CommandEncoder) -> None:
+        self._dispatch("clear_scale_histogram", encoder, spy.uint3(self._SCALE_HISTOGRAM_BIN_COUNT, 1, 1), self._histogram_vars())
+
+    def _dispatch_accumulate_scale_histogram(self, encoder: spy.CommandEncoder) -> None:
+        self._dispatch("accumulate_scale_histogram", encoder, self._scene_thread_count(), {"g_SplatCount": int(self._scene_count), **self._scene_rw_vars(), **self._histogram_vars()})
 
     def _dispatch_regenerate_scene(self, encoder: spy.CommandEncoder, force_split_all: bool = False, force_prune_scale_threshold: float = 0.0) -> None:
         self._regen_buffers["output_count"].copy_from_numpy(np.array([0], dtype=np.uint32))
@@ -585,6 +607,17 @@ class GaussianTrainer:
             enc.copy_buffer(self._buffers[name], 0, self._regen_buffers[name], 0, copy_bytes_stat)
         self.device.submit_command_buffer(enc.finish())
         self.device.wait()
+
+    def build_scale_histogram_log10(self) -> tuple[np.ndarray, np.ndarray]:
+        self._ensure_histogram_buffers()
+        enc = self.device.create_command_encoder()
+        self._dispatch_clear_scale_histogram(enc)
+        self._dispatch_accumulate_scale_histogram(enc)
+        self.device.submit_command_buffer(enc.finish())
+        self.device.wait()
+        counts = np.frombuffer(self._hist_buffers["scale_histogram"].to_numpy().tobytes(), dtype=np.uint32)[: self._SCALE_HISTOGRAM_BIN_COUNT].copy()
+        edges = np.linspace(self._SCALE_HISTOGRAM_MIN_LOG10, self._SCALE_HISTOGRAM_MAX_LOG10, num=self._SCALE_HISTOGRAM_BIN_COUNT - 1, dtype=np.float32)
+        return counts, edges
 
     def split_all_gaussians(self) -> None:
         if self._scene_count <= 0:

@@ -229,7 +229,7 @@ TRAIN_RENDER_ARGS = tuple(
         ("--loss-grad-clip", 10.0),
         ("--near", 0.1),
         ("--far", 120.0),
-        ("--scale-l2", 1e-3),
+        ("--scale-l2", 1e-4),
         ("--opacity-reg", 1e-3),
         ("--lambda-dssim", 0.2),
         ("--max-anisotropy", 10.0),
@@ -248,7 +248,7 @@ TRAIN_DENSITY_ARGS = (
     A("--prune-min-opacity", type=float, default=0.005),
     A("--screen-size-prune-threshold", type=float, default=20.0),
     A("--world-size-prune-ratio", type=float, default=0.1),
-    A("--opacity-reset-interval", type=int, default=0),
+    A("--opacity-reset-interval", type=int, default=3000),
 )
 COMMANDS = (
     CommandSpec(

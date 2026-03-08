@@ -379,6 +379,31 @@ def test_update_densification_stats_tracks_visible_average_count_and_screen_radi
     np.testing.assert_allclose(_read_f32(trainer._buffers["max_screen_radius"], 3), np.array([5.0, 6.0, 7.0], dtype=np.float32), rtol=0.0, atol=1e-6)
 
 
+def test_scale_histogram_captures_underflow_interior_and_overflow(device, tmp_path: Path):
+    scene = _make_scene(count=4, seed=45)
+    scene.scales[:] = np.array(
+        [
+            [1e-6, 1e-6, 1e-6],
+            [1e-4, 1e-4, 1e-4],
+            [1.0, 1.0, 1.0],
+            [10.0, 10.0, 10.0],
+        ],
+        dtype=np.float32,
+    )
+    frame = _make_frame(tmp_path, image_name="target_hist.png")
+    renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
+    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], seed=19)
+
+    counts, edges = trainer.build_scale_histogram_log10()
+
+    assert counts.sum() == 4
+    assert counts[0] == 1
+    assert counts[-1] == 1
+    assert counts[1:-1].sum() == 2
+    assert np.isclose(edges[0], -5.0)
+    assert np.isclose(edges[-1], 1.0)
+
+
 def test_regenerate_scene_clones_small_high_gradient_gaussians_below_dense_ratio(device, tmp_path: Path):
     scene = _make_scene(count=2, seed=51)
     frame = _make_frame(tmp_path)
@@ -415,6 +440,29 @@ def test_regenerate_scene_clones_small_high_gradient_gaussians_below_dense_ratio
     np.testing.assert_allclose(_read_f32(trainer._regen_buffers["grad_ema"], 3), np.zeros((3,), dtype=np.float32), rtol=0.0, atol=1e-6)
     np.testing.assert_array_equal(_read_u32(trainer._regen_buffers["grad_count"], 3), np.zeros((3,), dtype=np.uint32))
     np.testing.assert_allclose(_read_f32(trainer._regen_buffers["max_screen_radius"], 3), np.zeros((3,), dtype=np.float32), rtol=0.0, atol=1e-6)
+
+
+def test_regenerate_scene_does_not_clone_min_scale_gaussian(device, tmp_path: Path):
+    scene = _make_scene(count=1, seed=53)
+    frame = _make_frame(tmp_path, image_name="target_min_clone.png")
+    renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
+    training = TrainingHyperParams(densify_grad_threshold=0.5, percent_dense=1.0, world_size_prune_ratio=10.0)
+    stability = StabilityHyperParams(min_scale=1e-3)
+    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], training_hparams=training, stability_hparams=stability, seed=33)
+
+    scales = _read_f32x4(renderer.scene_buffers["scales"], 1)
+    scales[0, :3] = np.array([1.0e-3, 1.0e-3, 1.0e-3], dtype=np.float32)
+    renderer.scene_buffers["scales"].copy_from_numpy(scales)
+    trainer._buffers["grad_ema"].copy_from_numpy(np.array([1.0], dtype=np.float32))
+    trainer._buffers["max_screen_radius"].copy_from_numpy(np.array([2.0], dtype=np.float32))
+    trainer._ensure_regen_buffers(1)
+
+    enc = device.create_command_encoder()
+    trainer._dispatch_regenerate_scene(enc)
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+
+    assert trainer._read_output_count() == 1
 
 
 def test_regenerate_scene_respects_max_gaussian_cap(device, tmp_path: Path):
@@ -590,6 +638,8 @@ def test_regenerate_scene_prunes_low_opacity_only(device, tmp_path: Path):
     device.wait()
 
     assert trainer._read_output_count() == 2
+
+
 
 
 def test_reset_opacity_rewrites_raw_alpha_and_clears_color_moments(device, tmp_path: Path):

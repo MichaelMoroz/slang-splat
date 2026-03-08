@@ -54,7 +54,7 @@ GROUP_SPECS = {
         ControlSpec("densify_from_iter", "slider_int", "Densify From", {"value": 500, "min": 0, "max": 100000, "flags": spy.ui.SliderFlags.logarithmic}),
         ControlSpec("densify_until_iter", "slider_int", "Densify Until", {"value": 15000, "min": 0, "max": 1000000, "flags": spy.ui.SliderFlags.logarithmic}),
         ControlSpec("densification_interval", "slider_int", "Densify Every", {"value": 100, "min": 1, "max": 100000, "flags": spy.ui.SliderFlags.logarithmic}),
-        ControlSpec("opacity_reset_interval", "slider_int", "Opacity Reset", {"value": 0, "min": 0, "max": 1000000, "flags": spy.ui.SliderFlags.logarithmic}),
+        ControlSpec("opacity_reset_interval", "slider_int", "Opacity Reset", {"value": 3000, "min": 0, "max": 1000000, "flags": spy.ui.SliderFlags.logarithmic}),
     ),
     "Train Optimizer": (
         ControlSpec("lr_base", "input_float", "Base LR", {"value": 1e-3, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
@@ -66,7 +66,7 @@ GROUP_SPECS = {
         ControlSpec("beta1", "input_float", "Beta1", {"value": 0.9, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
         ControlSpec("beta2", "input_float", "Beta2", {"value": 0.999, "step": 1e-4, "step_fast": 1e-3, "format": "%.6f"}),
         ControlSpec("eps", "input_float", "Adam Eps", {"value": 1e-8, "step": 1e-9, "step_fast": 1e-8, "format": "%.10f"}),
-        ControlSpec("scale_l2", "input_float", "Scale L2", {"value": 1e-3, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
+        ControlSpec("scale_l2", "input_float", "Scale L2", {"value": 1e-4, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
         ControlSpec("opacity_reg", "input_float", "Opacity Reg", {"value": 1e-3, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
         ControlSpec("lambda_dssim", "input_float", "Lambda DSSIM", {"value": 0.2, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
         ControlSpec("max_anisotropy", "input_float", "Max Anisotropy", {"value": 10.0, "step": 0.1, "step_fast": 0.5, "format": "%.6f"}),

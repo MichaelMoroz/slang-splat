@@ -28,6 +28,7 @@ DEFAULT_STEPS = 5_000
 DEFAULT_SEED = 1_234
 DEFAULT_HOLD_EVERY = 8
 DEFAULT_TRAIN_SPLIT = "eval"
+DEFAULT_SCALE_HISTOGRAM = False
 
 
 def srgb_to_linear(values: np.ndarray) -> np.ndarray:
@@ -67,6 +68,7 @@ def _override_training_params(params, args):
         name: value
         for name, value in {
             "max_gaussians": args.max_gaussians,
+            "scale_l2_weight": args.scale_l2_weight,
             "densify_from_iter": args.densify_from_iter,
             "densify_until_iter": args.densify_until_iter,
             "densification_interval": args.densification_interval,
@@ -117,6 +119,24 @@ def evaluate_psnr(trainer: GaussianTrainer, frames: list, background: tuple[floa
     return float(np.mean(values, dtype=np.float64))
 
 
+def print_scale_histogram(trainer: GaussianTrainer) -> None:
+    counts, edges = trainer.build_scale_histogram_log10()
+    total = int(np.sum(counts, dtype=np.int64))
+    if total <= 0:
+        print("scale_histogram=empty")
+        return
+    floor_log10 = float(np.log10(max(float(trainer.stability.min_scale), 1e-12)))
+    floor_bin = int(np.clip(np.searchsorted(edges, floor_log10, side="right") - 1, 0, max(edges.shape[0] - 2, 0)))
+    floor_share = float(counts[floor_bin + 1]) / float(total)
+    tiny_share = float(counts[0] + counts[1]) / float(total)
+    print(f"scale_histogram_total={total} tiny_share={tiny_share:.6f} floor_share={floor_share:.6f} floor_log10={floor_log10:.3f}")
+    print("scale_histogram_bins:")
+    print(f"  underflow(<{edges[0]:.3f})={int(counts[0])}")
+    for i in range(edges.shape[0] - 1):
+        print(f"  [{edges[i]:.3f},{edges[i + 1]:.3f})={int(counts[i + 1])}")
+    print(f"  overflow(>={edges[-1]:.3f})={int(counts[-1])}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Benchmark the bicycle/images_4 training profile against the paper PSNR target.")
     parser.add_argument("--steps", type=int, default=DEFAULT_STEPS)
@@ -124,6 +144,7 @@ def main() -> int:
     parser.add_argument("--hold-every", type=int, default=DEFAULT_HOLD_EVERY)
     parser.add_argument("--train-split", choices=("eval", "full"), default=DEFAULT_TRAIN_SPLIT)
     parser.add_argument("--max-gaussians", type=int, default=None)
+    parser.add_argument("--scale-l2-weight", type=float, default=None)
     parser.add_argument("--densify-from-iter", type=int, default=None)
     parser.add_argument("--densify-until-iter", type=int, default=None)
     parser.add_argument("--densification-interval", type=int, default=None)
@@ -133,6 +154,7 @@ def main() -> int:
     parser.add_argument("--screen-size-prune-threshold", type=float, default=None)
     parser.add_argument("--world-size-prune-ratio", type=float, default=None)
     parser.add_argument("--opacity-reset-interval", type=int, default=None)
+    parser.add_argument("--print-scale-histogram", action="store_true", default=DEFAULT_SCALE_HISTOGRAM)
     args = parser.parse_args()
     trainer, all_frames, test_frames, background = build_trainer(seed=int(args.seed), hold_every=int(args.hold_every), train_split=str(args.train_split), args=args)
     print(f"train_split={args.train_split} train_frames={len(trainer.frames)} eval_test_frames={len(test_frames)} total_frames={len(all_frames)} background={background}")
@@ -152,6 +174,8 @@ def main() -> int:
         f"full_dataset_psnr={full_psnr:.3f}dB eval_holdout_psnr={eval_psnr:.3f}dB target={TARGET_PSNR_DB:.2f}dB "
         f"gap={gap:.3f}dB elapsed={elapsed:.2f}s"
     )
+    if bool(args.print_scale_histogram):
+        print_scale_histogram(trainer)
     return 0
 
 

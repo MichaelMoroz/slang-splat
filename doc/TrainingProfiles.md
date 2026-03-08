@@ -6,10 +6,10 @@ Training profiles sit above the raw optimizer and density-control flags and prov
 - `legacy`
   - Keeps the existing viewer-oriented defaults.
   - MCMC position noise stays enabled.
-  - Density control follows the standard schedule controls, now with a lower default split threshold (`1.5e-4`) and opacity resets disabled by default.
+  - Density control follows the standard schedule controls, now with a lower default split threshold (`1.5e-4`) and scheduled opacity resets enabled again.
 - `bicycle-images4-psnr`
   - Selected automatically by `cli.py train-colmap` when `colmap-root` resolves to `dataset/bicycle` and `images-subdir` is `images_4`.
-  - Uses paper-like per-parameter learning rates (`xyz`, `scale`, `rotation`, `color`, `opacity`) and keeps the repaired densification path enabled with a moderate schedule tuned around explicit per-splat visibility.
+  - Uses paper-like per-parameter learning rates (`xyz`, `scale`, `rotation`, `color`, `opacity`), a mild log-scale regularizer (`1e-4`) to keep splats off the hard min-scale clamp, and the repaired densification path with a moderate schedule tuned around explicit per-splat visibility.
   - Forces `init_opacity = 0.1`.
   - Keeps the gaussian cap at `200000` so the benchmark is not blocked by initialization headroom.
 
