@@ -26,8 +26,8 @@ struct RasterState : IDifferentiable
 static const float DEBUG_GRAD_NORM_FLOOR = 1e-12;
 static const float DEBUG_GRAD_ALPHA_SCALE = 0.1;
 static const float LOG2_TO_LOG10 = 0.30102999566;
-static const float DEBUG_GRAD_LOG10_MIN = -12.0;
-static const float DEBUG_GRAD_LOG10_MAX = 0.0;
+static const float DEBUG_GRAD_LOG10_MIN = -3.0;
+static const float DEBUG_GRAD_LOG10_MAX = 1.0;
 
 void atomic_add_grad<let N : int>(RWStructuredBuffer<float> gradBuffer, uint base, vector<float, N> grad)
 {
