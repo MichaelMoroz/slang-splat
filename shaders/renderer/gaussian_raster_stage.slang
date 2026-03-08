@@ -23,6 +23,11 @@ struct RasterState : IDifferentiable
     }
 };
 
+static const float DEBUG_GRAD_NORM_FLOOR = 1e-12;
+static const float LOG2_TO_LOG10 = 0.30102999566;
+static const float DEBUG_GRAD_LOG10_MIN = -12.0;
+static const float DEBUG_GRAD_LOG10_MAX = 0.0;
+
 void atomic_add_grad<let N : int>(RWStructuredBuffer<float> gradBuffer, uint base, vector<float, N> grad)
 {
     [unroll] for (int i = 0; i < N; i++)
@@ -406,6 +411,25 @@ float4 raster_forward_output_pixel(
         return float4(float3(normalized), 1.0);
     }
 
+    if (g_Raster.debugShowGradNorm != 0u)
+    {
+        float gradLog10 = DEBUG_GRAD_LOG10_MIN;
+        uint pixelEnd = min(info.start + processedCount, info.end);
+        for (uint idx = info.start; idx < pixelEnd; idx++)
+        {
+            uint splatId = g_SortedValues[idx];
+            RasterGaussian gaussian = RasterGaussian.load_global(splatId);
+            float alpha = raster_eval_alpha_gaussian(gaussian, info.rayDir[pixelIdx]);
+            if (alpha <= 0.0) continue;
+            float gradNorm = g_DebugGradNorm[splatId];
+            if (!isfinite(gradNorm)) gradNorm = 0.0;
+            gradNorm = max(gradNorm, DEBUG_GRAD_NORM_FLOOR);
+            gradLog10 = max(gradLog10, log2(gradNorm) * LOG2_TO_LOG10);
+        }
+        float normalized = saturate((gradLog10 - DEBUG_GRAD_LOG10_MIN) / (DEBUG_GRAD_LOG10_MAX - DEBUG_GRAD_LOG10_MIN));
+        return float4(float3(normalized), 1.0);
+    }
+
     float3 finalColor = state.accum + state.trans * g_Raster.background;
     if (g_Raster.debugShowEllipses != 0u)
     {
@@ -562,7 +586,7 @@ void csRasterize(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_Gr
 [numthreads(RASTER_THREAD_TILE_DIM, RASTER_THREAD_TILE_DIM, 1)]
 void csRasterizeForwardBackward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_GroupIndex)
 {
-    if (g_Raster.debugShowProcessedCount != 0u || g_Raster.debugShowEllipses != 0u) return;
+    if (g_Raster.debugShowProcessedCount != 0u || g_Raster.debugShowEllipses != 0u || g_Raster.debugShowGradNorm != 0u) return;
 
     RasterMicrotileInfo info = resolve_raster_microtile(dispatchThreadID);
     RasterMicrotileForwardState forwardState;

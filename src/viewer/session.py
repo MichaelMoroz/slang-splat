@@ -73,6 +73,8 @@ def apply_live_params(viewer: object, force_init_defaults: bool = False) -> None
         if renderer is not None:
             for key, value in renderer_kwargs(viewer.renderer_params(allow_debug)).items():
                 setattr(renderer, key, value)
+    if viewer.s.renderer is not None:
+        viewer.s.renderer.set_debug_grad_norm_buffer(None if viewer.s.trainer is None else viewer.s.trainer.densify_grad_norm_buffer)
     if viewer.s.trainer is not None:
         params = viewer.training_params()
         viewer.s.trainer.update_hyperparams(params.adam, params.stability, params.training)

@@ -18,7 +18,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 ## 1. Project and Bin
 - Shader: `csProjectAndBin`
 - For each splat:
-  - clamp the loaded gaussian scale so each axis is at least one screen pixel wide at the splat depth (`depth / min(focal_x, focal_y)` in world units),
+  - clamp the loaded gaussian scale so each axis is at least two screen pixels wide at the splat depth (`2 * depth / min(focal_x, focal_y)` in world units),
   - project to screen space with sampled-5 MVEE fitting,
   - if sampled-5 fitting is unstable, use an analytic depth/scale fallback radius instead of hard max-radius fallback,
   - estimate projected radius,
@@ -54,7 +54,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - Raster execution is microtiled: one `8x8` thread group covers one `24x24` effective raster tile, and each thread owns a fixed `3x3` pixel block in registers.
 - Each thread resolves one tile range for its microtile, reuses each staged gaussian across all `9` local pixels, and writes per-pixel output after the forward replay.
 - The inner loop performs front-to-back blending with exponential radial falloff while reusing gaussian data already staged in shared memory.
-- The same camera-dependent one-pixel world-space scale floor is applied to the ellipsoid used by the raster loop, so subpixel gaussians do not bin wide but shade with a near-zero footprint.
+- The same camera-dependent two-pixel world-space scale floor is applied to the ellipsoid used by the raster loop, so subpixel gaussians do not bin wide but shade with a near-zero footprint.
 - The stored alpha slot is a raw sigmoid parameter; the raster stage evaluates effective opacity through `sigmoid(raw_alpha)` so backward replay differentiates through opacity directly.
 - Writes RGBA output texture.
 - Primary ray generation goes through `PinholeCamera.screen_to_world_ray(...)`.

@@ -107,7 +107,7 @@ struct PinholeCamera : ICamera
     {
         float depthSafe = max(depth, SMALL_VALUE);
         float minFocal = max(min(params.focalPixels.x, params.focalPixels.y), SMALL_VALUE);
-        return depthSafe / minFocal;
+        return 2.0 * depthSafe / minFocal;
     }
 
     float camera_depth(float3 worldPos)

@@ -41,7 +41,7 @@ clamp_int = lambda value, lo, hi: int(np.clip(int(value), int(lo), int(hi)))
 class RendererParams:
     radius_scale: float = 2.6; alpha_cutoff: float = 1.0 / 255.0; max_splat_steps: int = 32768
     transmittance_threshold: float = 0.005; sampled5_safety_scale: float = 1.0; list_capacity_multiplier: int = 64
-    max_prepass_memory_mb: int = 4096; debug_show_ellipses: bool = False; debug_show_processed_count: bool = False
+    max_prepass_memory_mb: int = 4096; debug_show_ellipses: bool = False; debug_show_processed_count: bool = False; debug_show_grad_norm: bool = False
 
 
 @dataclass(frozen=True, slots=True)

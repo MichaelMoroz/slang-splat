@@ -132,6 +132,7 @@ class GaussianTrainer:
     _adam_shader_vars = lambda self: self._buffer_vars(self._ADAM_SHADER_VARS, self._buffers)
     update_hyperparams = lambda self, adam_hparams, stability_hparams, training_hparams: setattr(self, "adam", adam_hparams) or setattr(self, "stability", stability_hparams) or setattr(self, "training", training_hparams)
     make_frame_camera = lambda self, frame_index, width, height: self._make_frame_camera(self._frame(frame_index), int(width), int(height))
+    densify_grad_norm_buffer = property(lambda self: self._buffers["grad_ema"])
     _zero_optimizer_moments = lambda self: [self._buffers[name].copy_from_numpy(np.zeros((max(int(self._scene_count), 1), 4), dtype=np.float32)) for name in self._ADAM_BUFFER_NAMES]
     frame_size = lambda self, frame_index: (int(self._frame(frame_index).width), int(self._frame(frame_index).height))
     get_frame_target_texture = lambda self, frame_index, native_resolution=True: self._frame_targets_train[int(np.clip(frame_index, 0, len(self.frames) - 1))]

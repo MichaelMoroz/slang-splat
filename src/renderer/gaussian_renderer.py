@@ -102,11 +102,12 @@ class GaussianRenderer:
     _max_prepass_entries_by_budget = lambda self: max(self._max_prepass_memory_bytes // self._PREPASS_ENTRY_BYTES, 1)
     _camera_uniforms = lambda self, camera: {"g_Camera": {**camera.gpu_params(self.width, self.height), "projDistortionK1": float(self.proj_distortion_k1), "projDistortionK2": float(self.proj_distortion_k2)}}
     _prepass_uniforms = lambda self, splat_count, sorted_count_offset=0: {"g_Prepass": {"splatCount": int(splat_count), "tileSize": int(self.tile_size), "tileWidth": int(self.tile_width), "tileHeight": int(self.tile_height), "tileCount": int(self.tile_count), "depthBits": int(self.depth_bits), "sortedCountOffset": int(sorted_count_offset), "maxListEntries": int(self._max_list_entries), "maxScanlineEntries": int(self._max_scanline_entries), "radiusScale": float(self.radius_scale), "sampled5MVEEIters": int(self.sampled5_mvee_iters), "sampled5SafetyScale": float(self.sampled5_safety_scale), "sampled5RadiusPadPx": float(self.sampled5_radius_pad_px), "sampled5Eps": float(self.sampled5_eps)}}
-    _raster_uniforms = lambda self, background: {"g_Raster": {"width": int(self.width), "height": int(self.height), "maxSplatSteps": int(self.max_splat_steps), "alphaCutoff": float(self.alpha_cutoff), "transmittanceThreshold": float(self.transmittance_threshold), "background": spy.float3(*background.tolist()), "debugShowEllipses": np.uint32(1 if self.debug_show_ellipses else 0), "debugShowProcessedCount": np.uint32(1 if self.debug_show_processed_count else 0), "debugEllipseThicknessPx": float(self.debug_ellipse_thickness_px), "debugEllipseColor": spy.float3(*self.debug_ellipse_color.tolist())}}
+    _raster_uniforms = lambda self, background: {"g_Raster": {"width": int(self.width), "height": int(self.height), "maxSplatSteps": int(self.max_splat_steps), "alphaCutoff": float(self.alpha_cutoff), "transmittanceThreshold": float(self.transmittance_threshold), "background": spy.float3(*background.tolist()), "debugShowEllipses": np.uint32(1 if self.debug_show_ellipses else 0), "debugShowProcessedCount": np.uint32(1 if self.debug_show_processed_count else 0), "debugShowGradNorm": np.uint32(1 if self.debug_show_grad_norm else 0), "debugEllipseThicknessPx": float(self.debug_ellipse_thickness_px), "debugEllipseColor": spy.float3(*self.debug_ellipse_color.tolist())}}
     _background_array = staticmethod(lambda background: np.asarray(background, dtype=np.float32).reshape(3))
     _scene_vars = lambda self: self._buffer_vars(self._SCENE_SHADER_VARS, self._scene_buffers)
     _screen_vars = lambda self: self._buffer_vars(self._SCREEN_SHADER_VARS, self._work_buffers)
     _grad_vars = lambda self: self._buffer_vars(self._GRAD_SHADER_VARS, self._work_buffers)
+    _debug_grad_norm_var = lambda self: {"g_DebugGradNorm": self._debug_grad_norm_buffer if self._debug_grad_norm_buffer is not None else self._work_buffers["debug_grad_norm"]}
     _raster_thread_count = lambda self: spy.uint3((self.width + self._raster_config.microtile_dim - 1) // self._raster_config.microtile_dim, (self.height + self._raster_config.microtile_dim - 1) // self._raster_config.microtile_dim, 1)
     _read_image = lambda self: np.asarray(self.output_texture.to_numpy(), dtype=np.float32).copy()
     _create_shaders = lambda self: [setattr(self, attr, self.device.create_compute_kernel(program) if kind == "kernel" else self.device.create_compute_pipeline(program)) for attr, kind, shader_name, entry in self._SHADERS for program in [self.device.load_program(str(Path(SHADER_ROOT / "renderer" / shader_name)), [entry])]]
@@ -137,6 +138,7 @@ class GaussianRenderer:
         proj_distortion_k2: float = 0.0,
         debug_show_ellipses: bool = False,
         debug_show_processed_count: bool = False,
+        debug_show_grad_norm: bool = False,
         debug_ellipse_thickness_px: float = 1.0,
         debug_ellipse_color: tuple[float, float, float] = (1.0, 0.15, 0.1),
     ) -> None:
@@ -154,7 +156,7 @@ class GaussianRenderer:
         self.sampled5_mvee_iters, self.sampled5_safety_scale = int(sampled5_mvee_iters), float(sampled5_safety_scale)
         self.sampled5_radius_pad_px, self.sampled5_eps = float(sampled5_radius_pad_px), float(sampled5_eps)
         self.proj_distortion_k1, self.proj_distortion_k2 = float(proj_distortion_k1), float(proj_distortion_k2)
-        self.debug_show_ellipses, self.debug_show_processed_count = bool(debug_show_ellipses), bool(debug_show_processed_count)
+        self.debug_show_ellipses, self.debug_show_processed_count, self.debug_show_grad_norm = bool(debug_show_ellipses), bool(debug_show_processed_count), bool(debug_show_grad_norm)
         self.debug_ellipse_thickness_px = float(debug_ellipse_thickness_px)
         self.debug_ellipse_color = np.asarray(debug_ellipse_color, dtype=np.float32).reshape(3)
         self.tile_width, self.tile_height = (self.width + self.tile_size - 1) // self.tile_size, (self.height + self.tile_size - 1) // self.tile_size
@@ -167,6 +169,7 @@ class GaussianRenderer:
         self._current_scene: GaussianScene | None = None
         self._scene_buffers: dict[str, spy.Buffer] = {}
         self._work_buffers: dict[str, spy.Buffer] = {}
+        self._debug_grad_norm_buffer: spy.Buffer | None = None
         self._output_texture: spy.Texture | None = None
         self._output_grad_texture: spy.Texture | None = None
         self._last_stats: dict[str, int | bool | float] = {}
@@ -216,6 +219,7 @@ class GaussianRenderer:
             "screen_center_radius_depth": max(self._work_splat_capacity, 1) * 16,
             "screen_color_alpha": max(self._work_splat_capacity, 1) * 16,
             "screen_ellipse_conic": max(self._work_splat_capacity, 1) * 16,
+            "debug_grad_norm": max(self._work_splat_capacity, 1) * self._U32_BYTES,
             "keys": self._max_list_entries * 4,
             "values": self._max_list_entries * 4,
             "counter": 4,
@@ -226,6 +230,7 @@ class GaussianRenderer:
             **{name: max(self._work_splat_capacity, 1) * 16 for name in self._GRAD_SHADER_VARS},
         }
         self._work_buffers = {name: self.device.create_buffer(size=size, usage=self._RW_BUFFER_USAGE) for name, size in sized.items()}
+        self._work_buffers["debug_grad_norm"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1),), dtype=np.float32))
         self._ensure_textures()
         if self._pending_min_list_entries > 0 and self._max_list_entries >= self._pending_min_list_entries:
             self._pending_min_list_entries = 0
@@ -301,13 +306,13 @@ class GaussianRenderer:
             compute_pass.dispatch_compute_indirect(spy.BufferOffsetPair(args_buffer, GPURadixSort.BUILD_RANGE_ARGS_OFFSET * self._U32_BYTES))
 
     def _rasterize(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray) -> None:
-        self._dispatch(self._k_raster, encoder, self._raster_thread_count(), {**self._scene_vars(), **self._screen_vars(), "g_SortedValues": self._work_buffers["values"], "g_TileRanges": self._work_buffers["tile_ranges"], "g_Output": self._output_texture, **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._camera_uniforms(camera)})
+        self._dispatch(self._k_raster, encoder, self._raster_thread_count(), {**self._scene_vars(), **self._screen_vars(), **self._debug_grad_norm_var(), "g_SortedValues": self._work_buffers["values"], "g_TileRanges": self._work_buffers["tile_ranges"], "g_Output": self._output_texture, **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._camera_uniforms(camera)})
 
     def _clear_raster_grads(self, encoder: spy.CommandEncoder, splat_count: int) -> None:
         self._dispatch(self._k_clear_raster_grads, encoder, spy.uint3(max(int(splat_count) * 4, 1), 1, 1), {**self._grad_vars(), **self._prepass_uniforms(splat_count)})
 
     def _rasterize_forward_backward(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output_grad: spy.Texture) -> None:
-        self._dispatch(self._k_raster_forward_backward, encoder, self._raster_thread_count(), {**self._scene_vars(), "g_ScreenColorAlpha": self._work_buffers["screen_color_alpha"], "g_SortedValues": self._work_buffers["values"], "g_TileRanges": self._work_buffers["tile_ranges"], "g_OutputGrad": output_grad, **self._grad_vars(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._camera_uniforms(camera)})
+        self._dispatch(self._k_raster_forward_backward, encoder, self._raster_thread_count(), {**self._scene_vars(), "g_ScreenColorAlpha": self._work_buffers["screen_color_alpha"], **self._debug_grad_norm_var(), "g_SortedValues": self._work_buffers["values"], "g_TileRanges": self._work_buffers["tile_ranges"], "g_OutputGrad": output_grad, **self._grad_vars(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._camera_uniforms(camera)})
 
     def _execute_prepass(self, scene: GaussianScene, camera: Camera, sync_counts: bool = False) -> tuple[int, int]:
         self._reset_prepass_counters()
@@ -351,6 +356,13 @@ class GaussianRenderer:
         if self._current_scene is None:
             raise RuntimeError("Scene is not set.")
         return self._current_scene
+    def set_debug_grad_norm_buffer(self, buffer: spy.Buffer | None) -> None:
+        self._debug_grad_norm_buffer = buffer
+    def upload_debug_grad_norm(self, values: np.ndarray) -> None:
+        grad = np.ascontiguousarray(values, dtype=np.float32).reshape(-1)
+        self._ensure_work_buffers(max(int(grad.shape[0]), self._scene_count, 1))
+        self._work_buffers["debug_grad_norm"].copy_from_numpy(np.pad(grad, (0, max(self._work_splat_capacity - grad.shape[0], 0))))
+        self._debug_grad_norm_buffer = None
     scene_buffers = property(lambda self: self._scene_buffers)
     work_buffers = property(lambda self: self._work_buffers)
     output_texture = property(lambda self: self._require_texture("_output_texture", "Output"))

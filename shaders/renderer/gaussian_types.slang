@@ -54,6 +54,7 @@ uniform RWStructuredBuffer<uint2> g_TileRanges;
 uniform StructuredBuffer<uint> g_SortedKeys;
 uniform StructuredBuffer<uint> g_SortedValues;
 uniform StructuredBuffer<uint> g_PrepassParams;
+uniform StructuredBuffer<float> g_DebugGradNorm;
 
 uniform RWTexture2D<float4> g_Output;
 uniform Texture2D<float4> g_OutputGrad;
@@ -91,6 +92,7 @@ struct RasterParams
     float3 background;
     uint debugShowEllipses;
     uint debugShowProcessedCount;
+    uint debugShowGradNorm;
     float debugEllipseThicknessPx;
     float3 debugEllipseColor;
 };
