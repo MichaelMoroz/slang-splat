@@ -192,7 +192,8 @@ def project_splats_sampled5_mvee(
             dtype=np.float32,
         )
         q = quat[i]
-        scale = scene.scales[i].astype(np.float32).copy() * np.float32(radius_scale)
+        min_scale_world = np.float32(camera.pixel_world_size_max(depth_value, width, height))
+        scale = np.maximum(scene.scales[i].astype(np.float32).copy() * np.float32(radius_scale), min_scale_world)
         fallback_radius = float(np.clip((fallback_focal * float(np.max(scale)) / max(depth_value, 1e-6)) * float(safety_scale) + float(radius_pad_px), 1.0, radius_cap))
         invs = 1.0 / np.maximum(scale, np.float32(1e-6))
         ro_local = (_quat_rotate(camera.position - world_pos, q) * invs).astype(np.float32)

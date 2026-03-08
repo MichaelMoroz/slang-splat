@@ -309,13 +309,21 @@ float3 local_point_to_world(float3 pLocal, float3 worldPos, float3 invScale, flo
     return worldPos + rotate_by_quat(localUnscaled, qInv);
 }
 
+float minimum_pixel_scale_world(no_diff float3 centerWorld)
+{
+    PinholeCamera camera = PinholeCamera.from_params(g_Camera);
+    float centerDepth = camera.camera_depth(centerWorld);
+    return camera.pixel_world_size_max(centerDepth);
+}
+
 [Differentiable]
 Ellipsoid build_ellipsoid(Gaussian3D gaussian)
 {
     PinholeCamera camera = PinholeCamera.from_params(g_Camera);
+    float minScaleWorld = minimum_pixel_scale_world(gaussian.position);
     Ellipsoid ellipsoid;
     ellipsoid.centerWorld = gaussian.position;
-    ellipsoid.scale = gaussian.scale * g_Prepass.radiusScale;
+    ellipsoid.scale = max(gaussian.scale * g_Prepass.radiusScale, float3(minScaleWorld));
     ellipsoid.invScale = 1.0 / max(ellipsoid.scale, float3(SMALL_VALUE));
     ellipsoid.rotation = gaussian.rotation;
     ellipsoid.roLocal = rotate_by_quat(camera.position_world() - ellipsoid.centerWorld, ellipsoid.rotation) * ellipsoid.invScale;

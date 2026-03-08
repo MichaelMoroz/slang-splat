@@ -25,6 +25,7 @@ class Camera:
     focal_pixels = lambda self, height: float(self.fy) if self.fy is not None else float(0.5 * float(height) / np.tan(0.5 * np.deg2rad(self.fov_y_degrees)))
     focal_pixels_xy = lambda self, width, height: (float(self.fx) if self.fx is not None else float(self.focal_pixels(height)), float(self.fy) if self.fy is not None else float(self.focal_pixels(height)))
     principal_point = lambda self, width, height: (float(self.cx) if self.cx is not None else 0.5 * float(width), float(self.cy) if self.cy is not None else 0.5 * float(height))
+    pixel_world_size_max = lambda self, depth, width, height: float(max(float(depth), 1e-8) / max(min(self.focal_pixels_xy(width, height)), 1e-8))
     look_at = staticmethod(lambda position, target=(0.0, 0.0, 0.0), up=(0.0, 1.0, 0.0), fov_y_degrees=60.0, near=0.1, far=100.0: Camera(position=np.asarray(position, dtype=np.float32), target=np.asarray(target, dtype=np.float32), up=np.asarray(up, dtype=np.float32), fov_y_degrees=fov_y_degrees, near=near, far=far))
 
     def __post_init__(self) -> None:

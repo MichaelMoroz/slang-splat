@@ -24,6 +24,7 @@ interface ICamera
     bool project_world_to_screen(float3 worldPos, out float2 screenPos);
     float3 screen_to_world(float2 screenPos, float depth);
     float3 screen_to_world_ray(float2 screenPos);
+    float pixel_world_size_max(float depth);
     float camera_depth(float3 worldPos);
     bool is_depth_in_range(float depthValue);
     float3 position_world();
@@ -100,6 +101,13 @@ struct PinholeCamera : ICamera
         float2 focalSafe = max(params.focalPixels, float2(SMALL_VALUE));
         float2 uv = (screenPos - params.principalPoint) / focalSafe;
         return normalize(camera_to_world(float3(uv, 1.0)));
+    }
+
+    float pixel_world_size_max(float depth)
+    {
+        float depthSafe = max(depth, SMALL_VALUE);
+        float minFocal = max(min(params.focalPixels.x, params.focalPixels.y), SMALL_VALUE);
+        return depthSafe / minFocal;
     }
 
     float camera_depth(float3 worldPos)

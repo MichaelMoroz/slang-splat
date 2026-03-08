@@ -176,6 +176,56 @@ def test_sampled5_mvee_render_smoke(device):
     assert np.all(np.isfinite(out.image))
 
 
+def test_subpixel_gaussian_uses_pixel_floor_in_projection_and_raster(device):
+    scene = GaussianScene(
+        positions=np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
+        scales=np.array([[1e-6, 1e-6, 1e-6]], dtype=np.float32),
+        rotations=np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+        opacities=np.array([0.75], dtype=np.float32),
+        colors=np.array([[0.8, 0.6, 0.2]], dtype=np.float32),
+        sh_coeffs=np.zeros((1, 1, 3), dtype=np.float32),
+    )
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    background = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+    renderer = GaussianRenderer(device, width=65, height=65, radius_scale=1.0, list_capacity_multiplier=16)
+
+    gpu_image = renderer.render(scene, camera, background=background).image
+    debug = renderer.debug_pipeline_data(scene, camera)
+    projected = project_splats(scene, camera, renderer.width, renderer.height, renderer.radius_scale)
+    keys, values, generated = build_tile_key_value_pairs(
+        projected=projected,
+        tile_width=renderer.tile_width,
+        tile_height=renderer.tile_height,
+        tile_size=renderer.tile_size,
+        depth_bits=renderer.depth_bits,
+        near_depth=camera.near,
+        far_depth=camera.far,
+        max_list_entries=renderer._max_list_entries,
+    )
+    sorted_count = min(generated, renderer._max_list_entries)
+    ref_keys, ref_values = sort_key_values(keys, values, sorted_count)
+    ref_ranges = build_tile_ranges(ref_keys, sorted_count, renderer.tile_count, renderer.depth_bits)
+    cpu_image = rasterize(
+        projected=projected,
+        sorted_values=ref_values,
+        tile_ranges=ref_ranges,
+        camera=camera,
+        width=renderer.width,
+        height=renderer.height,
+        tile_size=renderer.tile_size,
+        tile_width=renderer.tile_width,
+        background=background,
+        alpha_cutoff=renderer.alpha_cutoff,
+        max_splat_steps=renderer.max_splat_steps,
+        transmittance_threshold=renderer.transmittance_threshold,
+    )
+
+    expected_scale = camera.pixel_world_size_max(4.0, renderer.width, renderer.height)
+    np.testing.assert_allclose(projected.inv_scale[0], np.full((3,), 1.0 / expected_scale, dtype=np.float32), rtol=0.0, atol=1e-6)
+    assert float(debug["screen_center_radius_depth"][0, 2]) >= 1.0
+    np.testing.assert_allclose(gpu_image, cpu_image, rtol=0.0, atol=5e-3)
+
+
 def test_debug_ellipse_overlay_render_smoke(device):
     scene = make_scene(24, seed=31)
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
