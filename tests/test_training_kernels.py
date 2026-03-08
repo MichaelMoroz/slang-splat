@@ -553,7 +553,7 @@ def test_regenerate_scene_keeps_anisotropic_low_gradient_gaussian(device, tmp_pa
     np.testing.assert_allclose(_read_f32(trainer._regen_buffers["max_screen_radius"], 1), np.array([4.25], dtype=np.float32), rtol=0.0, atol=1e-6)
 
 
-def test_regenerate_scene_prunes_low_opacity_and_oversized_gaussians(device, tmp_path: Path):
+def test_regenerate_scene_prunes_low_opacity_only(device, tmp_path: Path):
     scene = _make_scene(count=3, seed=71)
     frame = _make_frame(tmp_path)
     renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
@@ -580,7 +580,7 @@ def test_regenerate_scene_prunes_low_opacity_and_oversized_gaussians(device, tmp
     device.submit_command_buffer(enc.finish())
     device.wait()
 
-    assert trainer._read_output_count() == 0
+    assert trainer._read_output_count() == 2
 
 
 def test_reset_opacity_rewrites_raw_alpha_and_clears_color_moments(device, tmp_path: Path):

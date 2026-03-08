@@ -802,11 +802,7 @@ void csRegenerateScene(uint3 dispatchThreadID : SV_DispatchThreadID)
     float opacity = opacity_from_raw(colorAlpha.w);
     float maxScale = max(scale.x, max(scale.y, scale.z));
 
-    bool oversized = g_Densify.enableScreenSizePrune != 0u && (
-        (g_Densify.screenSizeThreshold > 0.0 && maxScreenRadius > g_Densify.screenSizeThreshold) ||
-        (g_Densify.worldSizeRatio > 0.0 && maxScale > g_Densify.worldSizeRatio * g_Densify.sceneExtent)
-    );
-    bool prune = opacity < g_Densify.pruneMinOpacity || oversized || maxScale < g_Densify.forcePruneScaleThreshold;
+    bool prune = opacity < g_Densify.pruneMinOpacity || maxScale < g_Densify.forcePruneScaleThreshold;
     if (prune) return;
 
     bool highGrad = gradEMA >= g_Densify.gradThreshold;

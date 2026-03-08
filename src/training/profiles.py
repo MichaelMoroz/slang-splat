@@ -11,7 +11,6 @@ _BICYCLE_DATASET_NAME = "bicycle"
 _BICYCLE_IMAGES_SUBDIR = "images_4"
 _BICYCLE_INIT_OPACITY = 0.1
 _BICYCLE_MAX_GAUSSIANS = 200_000
-_BICYCLE_BACKGROUND = (1.0, 1.0, 1.0)
 _BICYCLE_DENSIFY_DISABLED_ITER = 10_000
 _PAPER_POSITION_LR = 1.6e-4
 _PAPER_SCALE_LR = 5e-3
@@ -41,7 +40,6 @@ _PROFILES = {
             "opacity_lr": _PAPER_OPACITY_LR,
         },
         training_overrides={
-            "background": _BICYCLE_BACKGROUND,
             "scale_l2_weight": 0.0,
             "opacity_reg_weight": 0.0,
             "lambda_dssim": 0.0,

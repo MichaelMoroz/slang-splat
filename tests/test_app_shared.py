@@ -110,7 +110,6 @@ def test_bicycle_images4_profile_applies_psnr_overrides():
     assert params.adam.scale_lr == 5e-3
     assert params.adam.opacity_lr == 5e-2
     assert params.training.mcmc_position_noise_enabled is False
-    assert params.training.background == (1.0, 1.0, 1.0)
     assert params.training.lambda_dssim == 0.0
     assert params.training.max_gaussians == 200000
     assert params.training.densify_from_iter == 10000

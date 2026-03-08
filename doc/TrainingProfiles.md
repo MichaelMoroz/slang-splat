@@ -9,8 +9,8 @@ Training profiles sit above the raw optimizer and density-control flags and prov
   - Density control follows the standard schedule controls.
 - `bicycle-images4-psnr`
   - Selected automatically by `cli.py train-colmap` when `colmap-root` resolves to `dataset/bicycle` and `images-subdir` is `images_4`.
-  - Uses paper-like per-parameter learning rates (`xyz`, `scale`, `rotation`, `color`, `opacity`) but disables MCMC noise, DSSIM mixing, opacity reset, and density-control pruning because the current RGB-only trainer converges more reliably in that simplified regime.
-  - Forces a white background and `init_opacity = 0.1`.
+  - Uses paper-like per-parameter learning rates (`xyz`, `scale`, `rotation`, `color`, `opacity`) but disables MCMC noise, DSSIM mixing, densification, and opacity reset because the current RGB-only trainer converges more reliably in that simplified regime on bicycle.
+  - Forces `init_opacity = 0.1`.
   - Keeps the gaussian cap at `200000` so the benchmark is not blocked by initialization headroom.
 
 ## Host Integration
@@ -20,7 +20,8 @@ Training profiles sit above the raw optimizer and density-control flags and prov
 
 ## Benchmark
 - `tools/benchmark_bicycle_training.py` runs the tuned bicycle `/4` profile for a requested step budget and prints:
-  - rolling `avg_psnr`,
+  - rolling train-set `avg_psnr`,
   - current `last_psnr`,
   - active splat count,
+  - held-out PSNR on an `every 8th frame` test split,
   - gap to the `23.18 dB` target.
