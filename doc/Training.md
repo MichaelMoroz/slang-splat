@@ -122,8 +122,8 @@ Useful options:
 - `--min-scale`, `--max-scale`, `--min-opacity`, `--max-opacity`.
 
 ## Regression Test
-- `tests/test_training_garden_regression.py` loads the tracked `dataset/garden` subset, initializes gaussians from the COLMAP point cloud with a fixed seed, and runs exactly `5000` training steps.
-- The test asserts on the final cached `avg_psnr >= 25 dB`, so post-reset recovery is part of the regression instead of being hidden by an earlier peak.
+- `tests/test_training_garden_regression.py` loads the tracked `dataset/garden` subset, initializes gaussians from the COLMAP point cloud with a fixed seed, forces `opacity_reset_interval = 1000`, and runs exactly `2000` training steps.
+- The test asserts on the final cached `avg_psnr >= 25 dB`, so one full post-reset recovery window is part of the regression instead of being hidden by an earlier peak.
 - `last_psnr` is still recorded for diagnostics, but the regression gate uses the per-frame cached average to avoid single-view cherry-picking.
 
 ## Viewer Integration
