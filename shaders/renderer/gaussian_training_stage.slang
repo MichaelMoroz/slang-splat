@@ -10,8 +10,8 @@ static const uint RNG_LINEAR_C = 1013904223u;
 static const float SSIM_C1 = 0.0001;
 static const float SSIM_C2 = 0.0009;
 static const float OPACITY_RESET_VALUE = 0.1;
-static const float SPLIT_CHILD_AXIS_SCALE_RATIO = 0.60787793565;
-static const float SPLIT_CHILD_OPACITY_RATIO = 0.70126708751;
+static const uint SPLIT_CHILD_COUNT = 2u;
+static const float SPLIT_CHILD_SCALE_RATIO = 0.625;
 
 struct AdamParams
 {
@@ -57,7 +57,6 @@ struct DensifyParams
     float pruneMinOpacity;
     float screenSizeThreshold;
     float worldSizeRatio;
-    float gradEMAAlpha;
     uint outputCapacity;
     uint enableScreenSizePrune;
     uint forceSplitAll;
@@ -132,7 +131,9 @@ uniform RWStructuredBuffer<float4> g_AdamVQuat;
 uniform RWStructuredBuffer<float4> g_AdamMColorAlpha;
 uniform RWStructuredBuffer<float4> g_AdamVColorAlpha;
 uniform RWStructuredBuffer<float> g_GradNormEMA;
+uniform RWStructuredBuffer<uint> g_GradCount;
 uniform RWStructuredBuffer<float> g_MaxScreenRadius;
+uniform StructuredBuffer<uint> g_SplatVisible;
 uniform StructuredBuffer<float4> g_ScreenCenterRadiusDepth;
 uniform RWStructuredBuffer<float4> g_OutPositionsRW;
 uniform RWStructuredBuffer<float4> g_OutScalesRW;
@@ -147,6 +148,7 @@ uniform RWStructuredBuffer<float4> g_OutAdamVQuat;
 uniform RWStructuredBuffer<float4> g_OutAdamMColorAlpha;
 uniform RWStructuredBuffer<float4> g_OutAdamVColorAlpha;
 uniform RWStructuredBuffer<float> g_OutGradNormEMA;
+uniform RWStructuredBuffer<uint> g_OutGradCount;
 uniform RWStructuredBuffer<float> g_OutMaxScreenRadius;
 uniform RWStructuredBuffer<uint> g_OutputCount;
 uniform StructuredBuffer<float4> g_InitPointPositions;
@@ -341,19 +343,6 @@ float3 clamp_scale_anisotropy(float3 scale)
     return max(scale, float3(maxScale / maxAnisotropy));
 }
 
-uint dominant_axis_index(float3 scale)
-{
-    if (scale.x >= scale.y && scale.x >= scale.z) return 0u;
-    return scale.y >= scale.z ? 1u : 2u;
-}
-
-float3 axis_unit(uint axisIndex)
-{
-    if (axisIndex == 0u) return float3(1.0, 0.0, 0.0);
-    if (axisIndex == 1u) return float3(0.0, 1.0, 0.0);
-    return float3(0.0, 0.0, 1.0);
-}
-
 float scene_small_scale_threshold()
 {
     return max(g_Densify.percentDense * g_Densify.sceneExtent, g_Stability.minScale);
@@ -372,9 +361,7 @@ void write_output_splat(
     float4 adamMQuat,
     float4 adamVQuat,
     float4 adamMColorAlpha,
-    float4 adamVColorAlpha,
-    float gradEMA,
-    float maxScreenRadius
+    float4 adamVColorAlpha
 )
 {
     if (outputId >= g_Densify.outputCapacity) return;
@@ -390,8 +377,9 @@ void write_output_splat(
     g_OutAdamVQuat[outputId] = adamVQuat;
     g_OutAdamMColorAlpha[outputId] = adamMColorAlpha;
     g_OutAdamVColorAlpha[outputId] = adamVColorAlpha;
-    g_OutGradNormEMA[outputId] = gradEMA;
-    g_OutMaxScreenRadius[outputId] = maxScreenRadius;
+    g_OutGradNormEMA[outputId] = 0.0;
+    g_OutGradCount[outputId] = 0u;
+    g_OutMaxScreenRadius[outputId] = 0.0;
 }
 
 uint append_output_splat(
@@ -406,14 +394,12 @@ uint append_output_splat(
     float4 adamMQuat,
     float4 adamVQuat,
     float4 adamMColorAlpha,
-    float4 adamVColorAlpha,
-    float gradEMA,
-    float maxScreenRadius
+    float4 adamVColorAlpha
 )
 {
     uint outputId = 0u;
     InterlockedAdd(g_OutputCount[0], 1u, outputId);
-    write_output_splat(outputId, pos, scale, rot, colorAlpha, adamMPos, adamVPos, adamMScale, adamVScale, adamMQuat, adamVQuat, adamMColorAlpha, adamVColorAlpha, gradEMA, maxScreenRadius);
+    write_output_splat(outputId, pos, scale, rot, colorAlpha, adamMPos, adamVPos, adamMScale, adamVScale, adamMQuat, adamVQuat, adamMColorAlpha, adamVColorAlpha);
     return outputId;
 }
 
@@ -760,6 +746,7 @@ void csUpdateDensificationStats(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     uint splatId = dispatchThreadID.x;
     if (splatId >= g_SplatCount) return;
+    if (g_SplatVisible[splatId] == 0u) return;
     uint gradBase = splatId * 4u;
     float3 gradPos = float3(
         g_GradPositions[gradBase + 0u],
@@ -770,10 +757,11 @@ void csUpdateDensificationStats(uint3 dispatchThreadID : SV_DispatchThreadID)
     float radius = sanitize_scalar(screen.z, g_Stability.hugeValue);
     if (!isfinite(radius) || radius <= 0.0) return;
     float gradNorm = length(sanitize_float3(gradPos, g_Stability.hugeValue));
-    float alpha = clamp(g_Densify.gradEMAAlpha, 0.0, 1.0);
+    uint nextCount = g_GradCount[splatId] + 1u;
     float prevEMA = sanitize_scalar(g_GradNormEMA[splatId], g_Stability.hugeValue);
     float prevRadius = sanitize_scalar(g_MaxScreenRadius[splatId], g_Stability.hugeValue);
-    g_GradNormEMA[splatId] = lerp(prevEMA, gradNorm, alpha);
+    g_GradNormEMA[splatId] = prevEMA + (gradNorm - prevEMA) / float(nextCount);
+    g_GradCount[splatId] = nextCount;
     g_MaxScreenRadius[splatId] = max(prevRadius, radius);
 }
 
@@ -797,7 +785,6 @@ void csRegenerateScene(uint3 dispatchThreadID : SV_DispatchThreadID)
     float4 adamMColorAlpha = g_AdamMColorAlpha[splatId];
     float4 adamVColorAlpha = g_AdamVColorAlpha[splatId];
     float gradEMA = sanitize_scalar(g_GradNormEMA[splatId], g_Stability.hugeValue);
-    float maxScreenRadius = sanitize_scalar(g_MaxScreenRadius[splatId], g_Stability.hugeValue);
     bool allowGrowth = g_Densify.maxGaussianCount > g_SplatCount;
     float opacity = opacity_from_raw(colorAlpha.w);
     float maxScale = max(scale.x, max(scale.y, scale.z));
@@ -812,35 +799,30 @@ void csRegenerateScene(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     if (shouldClone)
     {
-        append_output_splat(pos, scale, rot, colorAlpha, adamMPos, adamVPos, adamMScale, adamVScale, adamMQuat, adamVQuat, adamMColorAlpha, adamVColorAlpha, gradEMA, maxScreenRadius);
-        append_output_splat(pos, scale, rot, colorAlpha, float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), gradEMA, maxScreenRadius);
+        append_output_splat(pos, scale, rot, colorAlpha, adamMPos, adamVPos, adamMScale, adamVScale, adamMQuat, adamVQuat, adamMColorAlpha, adamVColorAlpha);
+        append_output_splat(pos, scale, rot, colorAlpha, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
         return;
     }
 
     if (shouldSplit)
     {
         float4 qInv = float4(rot.x, -rot.y, -rot.z, -rot.w);
-        uint axisIndex = dominant_axis_index(scale.xyz);
-        float3 splitAxis = axis_unit(axisIndex);
-        float axisHalfExtent = max(scale[axisIndex], g_Stability.minScale) * 0.5;
-        float3 childScale = clamp(scale.xyz, g_Stability.minScale, g_Stability.maxScale);
-        childScale[axisIndex] = clamp(max(scale[axisIndex], g_Stability.minScale) * SPLIT_CHILD_AXIS_SCALE_RATIO, g_Stability.minScale, g_Stability.maxScale);
-        float childOpacity = clamp(opacity * SPLIT_CHILD_OPACITY_RATIO, g_Stability.minOpacity, g_Stability.maxOpacity);
-        float4 childColorAlpha = colorAlpha;
-        childColorAlpha.w = raw_opacity_from_alpha(childOpacity);
-        [unroll] for (uint childIdx = 0u; childIdx < 2u; ++childIdx)
+        float3 splitStd = max(scale.xyz, float3(g_Stability.minScale));
+        float3 childScale = clamp_scale_anisotropy(clamp(splitStd * SPLIT_CHILD_SCALE_RATIO, g_Stability.minScale, g_Stability.maxScale));
+        [unroll] for (uint childIdx = 0u; childIdx < SPLIT_CHILD_COUNT; ++childIdx)
         {
-            float offsetSign = childIdx == 0u ? -1.0 : 1.0;
-            float3 localOffset = splitAxis * (offsetSign * axisHalfExtent);
+            uint rngState = hash_u32(splatId * 0x9e3779b9u ^ childIdx * 0x85ebca6bu ^ g_Adam.stepIndex * 0xc2b2ae35u ^ 0x27d4eb2fu);
+            if (rngState == 0u) rngState = 1u;
+            float3 localOffset = splitStd * rng_normal3_box_muller(rngState);
             float3 worldOffset = rotate_by_quat(localOffset, qInv);
             float4 childPos = pos;
             childPos.xyz = clamp(sanitize_float3(pos.xyz + worldOffset, g_Stability.hugeValue), -g_Stability.positionAbsMax, g_Stability.positionAbsMax);
-            append_output_splat(childPos, float4(childScale, 0.0), rot, childColorAlpha, float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), gradEMA, maxScreenRadius);
+            append_output_splat(childPos, float4(childScale, 0.0), rot, colorAlpha, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
         }
         return;
     }
 
-    append_output_splat(pos, scale, rot, colorAlpha, adamMPos, adamVPos, adamMScale, adamVScale, adamMQuat, adamVQuat, adamMColorAlpha, adamVColorAlpha, gradEMA, maxScreenRadius);
+    append_output_splat(pos, scale, rot, colorAlpha, adamMPos, adamVPos, adamMScale, adamVScale, adamMQuat, adamVQuat, adamMColorAlpha, adamVColorAlpha);
 }
 
 [shader("compute")]

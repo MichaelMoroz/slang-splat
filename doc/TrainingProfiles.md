@@ -6,10 +6,10 @@ Training profiles sit above the raw optimizer and density-control flags and prov
 - `legacy`
   - Keeps the existing viewer-oriented defaults.
   - MCMC position noise stays enabled.
-  - Density control follows the standard schedule controls.
+  - Density control follows the standard schedule controls, now with a lower default split threshold (`1.5e-4`) and opacity resets disabled by default.
 - `bicycle-images4-psnr`
   - Selected automatically by `cli.py train-colmap` when `colmap-root` resolves to `dataset/bicycle` and `images-subdir` is `images_4`.
-  - Uses paper-like per-parameter learning rates (`xyz`, `scale`, `rotation`, `color`, `opacity`) but disables MCMC noise, DSSIM mixing, densification, and opacity reset because the current RGB-only trainer converges more reliably in that simplified regime on bicycle.
+  - Uses paper-like per-parameter learning rates (`xyz`, `scale`, `rotation`, `color`, `opacity`) and keeps the repaired densification path enabled with a moderate schedule tuned around explicit per-splat visibility.
   - Forces `init_opacity = 0.1`.
   - Keeps the gaussian cap at `200000` so the benchmark is not blocked by initialization headroom.
 
@@ -23,5 +23,6 @@ Training profiles sit above the raw optimizer and density-control flags and prov
   - rolling train-set `avg_psnr`,
   - current `last_psnr`,
   - active splat count,
-  - held-out PSNR on an `every 8th frame` test split,
+  - full-dataset PSNR,
+  - eval-split PSNR on the deterministic `every 8th frame` test split,
   - gap to the `23.18 dB` target.

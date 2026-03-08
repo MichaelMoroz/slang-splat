@@ -54,7 +54,7 @@ GROUP_SPECS = {
         ControlSpec("densify_from_iter", "slider_int", "Densify From", {"value": 500, "min": 0, "max": 100000, "flags": spy.ui.SliderFlags.logarithmic}),
         ControlSpec("densify_until_iter", "slider_int", "Densify Until", {"value": 15000, "min": 0, "max": 1000000, "flags": spy.ui.SliderFlags.logarithmic}),
         ControlSpec("densification_interval", "slider_int", "Densify Every", {"value": 100, "min": 1, "max": 100000, "flags": spy.ui.SliderFlags.logarithmic}),
-        ControlSpec("opacity_reset_interval", "slider_int", "Opacity Reset", {"value": 3000, "min": 0, "max": 1000000, "flags": spy.ui.SliderFlags.logarithmic}),
+        ControlSpec("opacity_reset_interval", "slider_int", "Opacity Reset", {"value": 0, "min": 0, "max": 1000000, "flags": spy.ui.SliderFlags.logarithmic}),
     ),
     "Train Optimizer": (
         ControlSpec("lr_base", "input_float", "Base LR", {"value": 1e-3, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
@@ -88,7 +88,7 @@ GROUP_SPECS = {
         ControlSpec("train_far", "input_float", "Train Far", {"value": 120.0, "step": 1.0, "step_fast": 10.0, "format": "%.3f"}),
     ),
     "Train Density": (
-        ControlSpec("densify_grad_threshold", "input_float", "Grad Threshold", {"value": 2e-4, "step": 1e-5, "step_fast": 1e-4, "format": "%.6f"}),
+        ControlSpec("densify_grad_threshold", "input_float", "Grad Threshold", {"value": 1.5e-4, "step": 1e-5, "step_fast": 1e-4, "format": "%.6f"}),
         ControlSpec("percent_dense", "input_float", "Percent Dense", {"value": 0.01, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
         ControlSpec("prune_min_opacity", "input_float", "Prune Min Opacity", {"value": 0.005, "step": 1e-4, "step_fast": 1e-3, "format": "%.6f"}),
         ControlSpec("screen_size_prune_threshold", "input_float", "Screen Prune Px", {"value": 20.0, "step": 0.5, "step_fast": 5.0, "format": "%.3f"}),

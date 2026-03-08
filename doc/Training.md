@@ -55,11 +55,12 @@ Each trainer `step()` performs:
    - The regularization scalar is averaged over the active splat count and added to the reported loss buffer in this ADAM pass.
    - Scale is clamped to `[min_scale, max_scale]`, and a hard anisotropy clamp enforces `max(scale.xyz) / min(scale.xyz) <= max_anisotropy`.
 8. Run densification-stat update (`csUpdateDensificationStats`) to accumulate:
-   - EMA of `sqrt(dot(grad_position.xyz, grad_position.xyz))` using `1 / view_count`,
+   - visible-step running average of `sqrt(dot(grad_position.xyz, grad_position.xyz))`,
+   - visible-step count from the prepass binning stage,
    - maximum observed 2D projected radius for visible splats.
 9. On the configured schedule, run `csRegenerateScene`.
    - Clone: duplicate small high-gradient splats while preserving the original optimizer state on the kept copy and zeroing moments on the new copy.
-   - Split: replace large high-gradient splats with two children placed symmetrically on the parent's dominant local axis, with that dominant axis halved in each child.
+   - Split: replace large high-gradient splats with two stochastic local-space children and shrink all child axes by the paper-style `1 / (0.8 * 2)` factor.
    - Prune: drop splats with low opacity.
    - Regeneration resets densification stats for the new active set.
 10. On the configured schedule, run `csResetOpacity` to rewrite the stored raw opacity parameter so the effective sigmoid opacity becomes `min(alpha, 0.1)`, then clear alpha optimizer moments.
@@ -79,9 +80,8 @@ Each trainer `step()` performs:
   - Adds autodiff log-scale regularization gradients to scale gradients (`g_ScaleL2Weight`, `g_ScaleRegReference`).
   - Accumulates the averaged scale-regularization scalar contribution into `g_LossBuffer`.
   - Clamps stored scales to `[min_scale, max_scale]` and enforces `max_anisotropy`.
-- `csUpdateDensificationStats`: updates per-splat gradient EMA and maximum projected radius from the current step.
-- `csRegenerateScene`: inline clone/split/prune classification plus append-buffer regeneration into the next active scene buffers. Split uses deterministic dominant-axis placement and halves the dominant child scale. Size-based pruning is currently disabled.
-- `csRegenerateScene`: inline clone/split/prune classification plus append-buffer regeneration into the next active scene buffers. Clone keeps the original optimizer state on the retained copy and zeros it on the duplicate; split uses deterministic dominant-axis placement and halves the dominant child scale; prune currently drops only low-opacity splats.
+- `csUpdateDensificationStats`: updates per-splat visible-count gradient averages and maximum projected radius from the current step.
+- `csRegenerateScene`: inline clone/split/prune classification plus append-buffer regeneration into the next active scene buffers. Clone keeps the original optimizer state on the retained copy and zeros it on the duplicate; split uses stochastic local-space offsets and uniform child-scale shrink; prune currently drops only low-opacity splats.
 - `csResetOpacity`: rewrites the raw opacity parameter to `logit(min(sigmoid(raw_alpha), 0.1))` and clears alpha optimizer moments.
 - `csInitializeGaussiansFromPointCloud`: still exists for standalone point-buffer initialization, but the COLMAP training path now builds the initial `GaussianScene` on CPU.
 
@@ -127,7 +127,7 @@ Useful options:
 - `tests/test_training_garden_regression.py` loads the tracked `dataset/garden` subset, initializes gaussians from the COLMAP point cloud with a fixed seed, forces `opacity_reset_interval = 1000`, and runs exactly `1900` training steps.
 - The test asserts on the final cached `avg_psnr >= 25 dB`, so one full post-reset recovery window is part of the regression instead of being hidden by an earlier peak.
 - `last_psnr` is still recorded for diagnostics, but the regression gate uses the per-frame cached average to avoid single-view cherry-picking.
-- `tools/benchmark_bicycle_training.py` is the local benchmark entrypoint for the bicycle `/4` tuning target; it trains on an LLFF-style holdout split (`every 8th` frame reserved for test), estimates a constant train-border background, and reports held-out `PSNR` against the `23.18 dB` goal after the requested step budget.
+- `tools/benchmark_bicycle_training.py` is the local benchmark entrypoint for the bicycle `/4` tuning target; it supports both the official eval-style deterministic split (`every 8th` frame in filename order reserved for test) and full-dataset training, estimates a constant train-border background, and reports both full-dataset and eval-split `PSNR` against the `23.18 dB` goal after the requested step budget.
 
 ## Viewer Integration
 - `viewer.py` is a thin launcher over `src/viewer`, which is split into:

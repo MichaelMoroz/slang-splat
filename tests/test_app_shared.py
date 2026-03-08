@@ -100,7 +100,8 @@ def test_default_training_params_match_mcmc_reference_defaults():
     assert params.training.densify_from_iter == 500
     assert params.training.densify_until_iter == 15000
     assert params.training.densification_interval == 100
-    assert params.training.opacity_reset_interval == 3000
+    assert params.training.densify_grad_threshold == 1.5e-4
+    assert params.training.opacity_reset_interval == 0
 
 
 def test_bicycle_images4_profile_applies_psnr_overrides():
@@ -112,8 +113,9 @@ def test_bicycle_images4_profile_applies_psnr_overrides():
     assert params.training.mcmc_position_noise_enabled is False
     assert params.training.lambda_dssim == 0.0
     assert params.training.max_gaussians == 200000
-    assert params.training.densify_from_iter == 10000
-    assert params.training.densify_until_iter == 10000
+    assert params.training.densify_from_iter == 500
+    assert params.training.densify_until_iter == 15000
+    assert params.training.densify_grad_threshold == 1.5e-4
     assert params.training.screen_size_prune_threshold == 0.0
     assert params.training.world_size_prune_ratio == 0.0
     assert params.training.opacity_reset_interval == 0

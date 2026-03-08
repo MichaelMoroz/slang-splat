@@ -86,7 +86,7 @@ Training notes:
 - Target Y-flip is enabled by default.
 - Density control follows the original 3DGS structure more closely: gradient/radius stats are accumulated until `densify_until_iter`, then clone/split/prune runs every `densification_interval` after `densify_from_iter`, and opacity reset runs every `opacity_reset_interval`.
 - Clone duplicates small high-gradient splats, split replaces large high-gradient splats with two children, and the default prune path currently removes only low-opacity gaussians.
-- The legacy defaults still keep MCMC position noise enabled; the bicycle `/4` PSNR profile turns it off and also disables densify/reset because that simplified RGB-only pipeline converges more reliably without them on the LLFF-style holdout benchmark.
+- The legacy defaults still keep MCMC position noise enabled; the bicycle `/4` PSNR profile turns MCMC off, keeps size-pruning disabled, and now uses a moderate densification schedule tuned around the corrected visibility signal.
 - Numerical reinforcement includes clipping, finite checks, and safe quaternion normalization.
 - Scale regularization uses an autodiff log-space penalty around the initialization/reference scale, so equal multiplicative scale deviations are treated more uniformly.
 - Scale anisotropy is clamped in the ADAM step with `max(scale) / min(scale) <= max_anisotropy`.
@@ -103,7 +103,7 @@ For the local bicycle benchmark target, use:
 ```powershell
 python tools/benchmark_bicycle_training.py --steps 5000
 ```
-The benchmark trains on an LLFF-style holdout split (`every 8th` frame reserved for test), estimates a constant background color from train-frame borders, and reports held-out `PSNR` against the `23.18 dB` target.
+The benchmark supports both the official `--eval`-style deterministic split (`every 8th` image in filename order reserved for test) and full-dataset training, estimates a constant background color from train-frame borders, and reports both full-dataset and eval-split `PSNR` against the `23.18 dB` target.
 
 ## Complexity Budget
 ```powershell

@@ -75,7 +75,7 @@ def apply_live_params(viewer: object, force_init_defaults: bool = False) -> None
                 setattr(renderer, key, value)
     if viewer.s.renderer is not None:
         viewer.s.renderer.set_debug_grad_norm_buffer(None if viewer.s.trainer is None else viewer.s.trainer.densify_grad_norm_buffer)
-        viewer.s.renderer.debug_grad_norm_threshold = 2e-4 if viewer.s.trainer is None else float(viewer.s.trainer.training.densify_grad_threshold)
+        viewer.s.renderer.debug_grad_norm_threshold = 1.5e-4 if viewer.s.trainer is None else float(viewer.s.trainer.training.densify_grad_threshold)
     if viewer.s.trainer is not None:
         params = viewer.training_params()
         viewer.s.trainer.update_hyperparams(params.adam, params.stability, params.training)

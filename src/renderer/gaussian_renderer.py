@@ -84,7 +84,7 @@ class GaussianRenderer:
     _PREPASS_ENTRY_BYTES = (_SCANLINE_WORK_ITEM_UINTS + 2) * _U32_BYTES
     _RW_BUFFER_USAGE = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
     _SCENE_SHADER_VARS = {"positions": "g_Positions", "scales": "g_Scales", "rotations": "g_Rotations", "color_alpha": "g_ColorAlpha"}
-    _SCREEN_SHADER_VARS = {"screen_center_radius_depth": "g_ScreenCenterRadiusDepth", "screen_color_alpha": "g_ScreenColorAlpha", "screen_ellipse_conic": "g_ScreenEllipseConic"}
+    _SCREEN_SHADER_VARS = {"screen_center_radius_depth": "g_ScreenCenterRadiusDepth", "screen_color_alpha": "g_ScreenColorAlpha", "screen_ellipse_conic": "g_ScreenEllipseConic", "splat_visible": "g_SplatVisible"}
     _GRAD_SHADER_VARS = {"grad_positions": "g_GradPositions", "grad_scales": "g_GradScales", "grad_rotations": "g_GradRotations", "grad_color_alpha": "g_GradColorAlpha"}
     _PREPASS_CURSOR_FIELDS = ("splatCount", "tileSize", "tileWidth", "tileHeight", "tileCount", "depthBits", "sortedCountOffset", "maxListEntries", "maxScanlineEntries", "radiusScale", "sampled5MVEEIters", "sampled5SafetyScale", "sampled5RadiusPadPx", "sampled5Eps")
     _SHADERS = (
@@ -221,6 +221,7 @@ class GaussianRenderer:
             "screen_center_radius_depth": max(self._work_splat_capacity, 1) * 16,
             "screen_color_alpha": max(self._work_splat_capacity, 1) * 16,
             "screen_ellipse_conic": max(self._work_splat_capacity, 1) * 16,
+            "splat_visible": max(self._work_splat_capacity, 1) * self._U32_BYTES,
             "debug_grad_norm": max(self._work_splat_capacity, 1) * self._U32_BYTES,
             "keys": self._max_list_entries * 4,
             "values": self._max_list_entries * 4,
@@ -425,4 +426,5 @@ class GaussianRenderer:
             "screen_center_radius_depth": self._read_array(self._work_buffers["screen_center_radius_depth"], np.float32, scene.count, 4),
             "screen_color_alpha": self._read_array(self._work_buffers["screen_color_alpha"], np.float32, scene.count, 4),
             "screen_ellipse_conic": self._read_array(self._work_buffers["screen_ellipse_conic"], np.float32, scene.count, 4),
+            "splat_visible": self._read_array(self._work_buffers["splat_visible"], np.uint32, scene.count),
         }

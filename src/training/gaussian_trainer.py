@@ -52,9 +52,9 @@ class TrainingHyperParams:
     background: tuple[float, float, float] = (0.0, 0.0, 0.0); near: float = 0.1; far: float = 120.0; scale_l2_weight: float = 1e-3; opacity_reg_weight: float = 1e-3; mcmc_position_noise_enabled: bool = True
     mcmc_position_noise_scale: float = 5e5; mcmc_opacity_gate_sharpness: float = 100.0; mcmc_opacity_gate_center: float = 0.995; low_quality_reinit_enabled: bool = True; lambda_dssim: float = 0.2
     max_gaussians: int = 200000
-    densify_from_iter: int = 500; densify_until_iter: int = 15000; densification_interval: int = 100; densify_grad_threshold: float = 2e-4
+    densify_from_iter: int = 500; densify_until_iter: int = 15000; densification_interval: int = 100; densify_grad_threshold: float = 1.5e-4
     percent_dense: float = 0.01; prune_min_opacity: float = 0.005; screen_size_prune_threshold: float = 20.0; world_size_prune_ratio: float = 0.1
-    opacity_reset_interval: int = 3000
+    opacity_reset_interval: int = 0
 
 
 @dataclass(slots=True)
@@ -96,7 +96,7 @@ class GaussianTrainer:
         "adam_m_color_alpha": "g_AdamMColorAlpha",
         "adam_v_color_alpha": "g_AdamVColorAlpha",
     }
-    _DENSITY_STAT_SHADER_VARS = {"grad_ema": "g_GradNormEMA", "max_screen_radius": "g_MaxScreenRadius"}
+    _DENSITY_STAT_SHADER_VARS = {"grad_ema": "g_GradNormEMA", "grad_count": "g_GradCount", "max_screen_radius": "g_MaxScreenRadius"}
     _REGEN_SCENE_SHADER_VARS = {"positions": "g_OutPositionsRW", "scales": "g_OutScalesRW", "rotations": "g_OutRotationsRW", "color_alpha": "g_OutColorAlphaRW"}
     _REGEN_ADAM_SHADER_VARS = {
         "adam_m_pos": "g_OutAdamMPos",
@@ -108,7 +108,7 @@ class GaussianTrainer:
         "adam_m_color_alpha": "g_OutAdamMColorAlpha",
         "adam_v_color_alpha": "g_OutAdamVColorAlpha",
     }
-    _REGEN_STAT_SHADER_VARS = {"grad_ema": "g_OutGradNormEMA", "max_screen_radius": "g_OutMaxScreenRadius"}
+    _REGEN_STAT_SHADER_VARS = {"grad_ema": "g_OutGradNormEMA", "grad_count": "g_OutGradCount", "max_screen_radius": "g_OutMaxScreenRadius"}
     _SCENE_RW_SHADER_VARS = {"positions": "g_PositionsRW", "scales": "g_ScalesRW", "rotations": "g_RotationsRW", "color_alpha": "g_ColorAlphaRW"}
     _SCENE_GRAD_SHADER_VARS = {"grad_positions": "g_GradPositions", "grad_scales": "g_GradScales", "grad_rotations": "g_GradRotations", "grad_color_alpha": "g_GradColorAlpha"}
     _KERNEL_ENTRIES = {
@@ -217,6 +217,7 @@ class GaussianTrainer:
         self._buffers.setdefault("loss", self.device.create_buffer(size=12, usage=usage))
         self._buffers.setdefault("signal_max", self.device.create_buffer(size=4, usage=usage))
         self._buffers["grad_ema"] = self.device.create_buffer(size=new_capacity * 4, usage=usage)
+        self._buffers["grad_count"] = self.device.create_buffer(size=new_capacity * 4, usage=usage)
         self._buffers["max_screen_radius"] = self.device.create_buffer(size=new_capacity * 4, usage=usage)
         for name in self._ADAM_BUFFER_NAMES:
             self._buffers[name] = self.device.create_buffer(size=new_capacity * 16, usage=usage)
@@ -234,6 +235,7 @@ class GaussianTrainer:
         for name in self._ADAM_BUFFER_NAMES:
             self._regen_buffers[name] = self.device.create_buffer(size=self._regen_capacity * 16, usage=usage)
         self._regen_buffers["grad_ema"] = self.device.create_buffer(size=self._regen_capacity * 4, usage=usage)
+        self._regen_buffers["grad_count"] = self.device.create_buffer(size=self._regen_capacity * 4, usage=usage)
         self._regen_buffers["max_screen_radius"] = self.device.create_buffer(size=self._regen_capacity * 4, usage=usage)
         self._regen_buffers["output_count"] = self.device.create_buffer(size=4, usage=usage)
 
@@ -426,7 +428,6 @@ class GaussianTrainer:
                 "pruneMinOpacity": float(np.clip(self.training.prune_min_opacity, 0.0, 1.0)),
                 "screenSizeThreshold": float(max(self.training.screen_size_prune_threshold, 0.0)),
                 "worldSizeRatio": float(max(self.training.world_size_prune_ratio, 0.0)),
-                "gradEMAAlpha": float(1.0 / float(max(len(self.frames), 1))),
                 "outputCapacity": int(max(min(self._regen_capacity, self._effective_max_gaussians()), 1)),
                 "enableScreenSizePrune": np.uint32(1 if int(self.state.step + 1) > int(self.training.opacity_reset_interval) else 0),
                 "forceSplitAll": np.uint32(1 if force_split_all else 0),
@@ -497,9 +498,10 @@ class GaussianTrainer:
         self._reset_frame_order()
 
     def _zero_density_stats(self) -> None:
-        zeros = np.zeros((max(int(self._scene_count), 1),), dtype=np.float32)
-        self._buffers["grad_ema"].copy_from_numpy(zeros)
-        self._buffers["max_screen_radius"].copy_from_numpy(zeros)
+        count = max(int(self._scene_count), 1)
+        self._buffers["grad_ema"].copy_from_numpy(np.zeros((count,), dtype=np.float32))
+        self._buffers["grad_count"].copy_from_numpy(np.zeros((count,), dtype=np.uint32))
+        self._buffers["max_screen_radius"].copy_from_numpy(np.zeros((count,), dtype=np.float32))
 
     def _density_stat_vars(self) -> dict[str, object]:
         return self._buffer_vars(self._DENSITY_STAT_SHADER_VARS, self._buffers)
@@ -521,6 +523,7 @@ class GaussianTrainer:
             {
                 **self._density_stat_vars(),
                 "g_GradPositions": self.renderer.work_buffers["grad_positions"],
+                "g_SplatVisible": self.renderer.work_buffers["splat_visible"],
                 "g_ScreenCenterRadiusDepth": self.renderer.work_buffers["screen_center_radius_depth"],
                 **self._common_vars(),
             },

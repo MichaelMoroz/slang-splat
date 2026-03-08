@@ -11,7 +11,11 @@ _BICYCLE_DATASET_NAME = "bicycle"
 _BICYCLE_IMAGES_SUBDIR = "images_4"
 _BICYCLE_INIT_OPACITY = 0.1
 _BICYCLE_MAX_GAUSSIANS = 200_000
-_BICYCLE_DENSIFY_DISABLED_ITER = 10_000
+_BICYCLE_DENSIFY_FROM_ITER = 500
+_BICYCLE_DENSIFY_UNTIL_ITER = 15_000
+_BICYCLE_DENSIFICATION_INTERVAL = 100
+_BICYCLE_DENSIFY_GRAD_THRESHOLD = 1.5e-4
+_BICYCLE_PERCENT_DENSE = 0.01
 _PAPER_POSITION_LR = 1.6e-4
 _PAPER_SCALE_LR = 5e-3
 _PAPER_ROTATION_LR = 1e-3
@@ -45,8 +49,11 @@ _PROFILES = {
             "lambda_dssim": 0.0,
             "mcmc_position_noise_enabled": False,
             "max_gaussians": _BICYCLE_MAX_GAUSSIANS,
-            "densify_from_iter": _BICYCLE_DENSIFY_DISABLED_ITER,
-            "densify_until_iter": _BICYCLE_DENSIFY_DISABLED_ITER,
+            "densify_from_iter": _BICYCLE_DENSIFY_FROM_ITER,
+            "densify_until_iter": _BICYCLE_DENSIFY_UNTIL_ITER,
+            "densification_interval": _BICYCLE_DENSIFICATION_INTERVAL,
+            "densify_grad_threshold": _BICYCLE_DENSIFY_GRAD_THRESHOLD,
+            "percent_dense": _BICYCLE_PERCENT_DENSE,
             "screen_size_prune_threshold": 0.0,
             "world_size_prune_ratio": 0.0,
             "opacity_reset_interval": 0,

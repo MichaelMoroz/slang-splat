@@ -340,13 +340,14 @@ def test_opacity_regularizer_pushes_true_opacity_toward_one(device, tmp_path: Pa
     assert (after[0] - before[0]) > (after[1] - before[1])
 
 
-def test_update_densification_stats_tracks_ema_and_screen_radius(device, tmp_path: Path):
+def test_update_densification_stats_tracks_visible_average_count_and_screen_radius(device, tmp_path: Path):
     scene = _make_scene(count=3, seed=41)
     frames = [_make_frame(tmp_path, image_name=f"target_stats_{idx}.png", image_id=idx) for idx in range(4)]
     renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
     trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=frames, seed=23)
 
     trainer._buffers["grad_ema"].copy_from_numpy(np.array([2.0, 1.0, 9.0], dtype=np.float32))
+    trainer._buffers["grad_count"].copy_from_numpy(np.array([1, 2, 4], dtype=np.uint32))
     trainer._buffers["max_screen_radius"].copy_from_numpy(np.array([1.0, 6.0, 4.0], dtype=np.float32))
     grad_positions = np.array(
         [
@@ -364,6 +365,7 @@ def test_update_densification_stats_tracks_ema_and_screen_radius(device, tmp_pat
         ],
         dtype=np.float32,
     )
+    renderer.work_buffers["splat_visible"].copy_from_numpy(np.array([1, 0, 1], dtype=np.uint32))
     renderer.work_buffers["grad_positions"].copy_from_numpy(grad_positions)
     renderer.work_buffers["screen_center_radius_depth"].copy_from_numpy(screen)
 
@@ -372,7 +374,8 @@ def test_update_densification_stats_tracks_ema_and_screen_radius(device, tmp_pat
     device.submit_command_buffer(enc.finish())
     device.wait()
 
-    np.testing.assert_allclose(_read_f32(trainer._buffers["grad_ema"], 3), np.array([2.75, 1.0, 7.5], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(_read_f32(trainer._buffers["grad_ema"], 3), np.array([3.5, 1.0, 7.8], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_array_equal(_read_u32(trainer._buffers["grad_count"], 3), np.array([2, 2, 5], dtype=np.uint32))
     np.testing.assert_allclose(_read_f32(trainer._buffers["max_screen_radius"], 3), np.array([5.0, 6.0, 7.0], dtype=np.float32), rtol=0.0, atol=1e-6)
 
 
@@ -409,8 +412,9 @@ def test_regenerate_scene_clones_small_high_gradient_gaussians_below_dense_ratio
     np.testing.assert_allclose(out_scale[1], scales[0], rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(out_adam_m_pos[[0, 2]], np.full((2, 4), 1.0, dtype=np.float32), rtol=0.0, atol=1e-7)
     np.testing.assert_allclose(out_adam_m_pos[1], np.zeros((4,), dtype=np.float32), rtol=0.0, atol=1e-7)
-    np.testing.assert_allclose(_read_f32(trainer._regen_buffers["grad_ema"], 3), np.array([1.0, 1.0, 0.1], dtype=np.float32), rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(_read_f32(trainer._regen_buffers["max_screen_radius"], 3), np.array([2.5, 2.5, 1.25], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(_read_f32(trainer._regen_buffers["grad_ema"], 3), np.zeros((3,), dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_array_equal(_read_u32(trainer._regen_buffers["grad_count"], 3), np.zeros((3,), dtype=np.uint32))
+    np.testing.assert_allclose(_read_f32(trainer._regen_buffers["max_screen_radius"], 3), np.zeros((3,), dtype=np.float32), rtol=0.0, atol=1e-6)
 
 
 def test_regenerate_scene_respects_max_gaussian_cap(device, tmp_path: Path):
@@ -461,14 +465,15 @@ def test_regenerate_scene_splits_large_high_gradient_gaussians(device, tmp_path:
     out_scale = _read_f32x4(trainer._regen_buffers["scales"], 2)
     out_color_alpha = _read_f32x4(trainer._regen_buffers["color_alpha"], 2)
     assert np.all(np.isfinite(out_pos))
-    expected_scale = np.repeat(np.array([[0.5 * 0.60787793565, 0.2, 0.1]], dtype=np.float32), 2, axis=0)
+    expected_scale = np.repeat(np.array([[0.3125, 0.125, 0.0625]], dtype=np.float32), 2, axis=0)
     np.testing.assert_allclose(out_scale[:, :3], expected_scale, rtol=0.0, atol=1e-5)
-    np.testing.assert_allclose(out_pos[:, 1:], np.repeat(positions[:, 1:], 2, axis=0), rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(out_pos[:, 0], np.array([positions[0, 0] - 0.25, positions[0, 0] + 0.25], dtype=np.float32), rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(np.mean(out_pos[:, :3], axis=0), positions[0, :3], rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(_actual_opacity(out_color_alpha[:, 3]), np.full((2,), 0.5 * 0.70126708751, dtype=np.float32), rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(_read_f32(trainer._regen_buffers["grad_ema"], 2), np.array([1.0, 1.0], dtype=np.float32), rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(_read_f32(trainer._regen_buffers["max_screen_radius"], 2), np.array([3.5, 3.5], dtype=np.float32), rtol=0.0, atol=1e-6)
+    assert not np.allclose(out_pos[0, :3], positions[0, :3])
+    assert not np.allclose(out_pos[1, :3], positions[0, :3])
+    assert not np.allclose(out_pos[0, :3], out_pos[1, :3])
+    np.testing.assert_allclose(_actual_opacity(out_color_alpha[:, 3]), np.full((2,), 0.5, dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(_read_f32(trainer._regen_buffers["grad_ema"], 2), np.zeros((2,), dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_array_equal(_read_u32(trainer._regen_buffers["grad_count"], 2), np.zeros((2,), dtype=np.uint32))
+    np.testing.assert_allclose(_read_f32(trainer._regen_buffers["max_screen_radius"], 2), np.zeros((2,), dtype=np.float32), rtol=0.0, atol=1e-6)
 
 
 def test_split_all_gaussians_splits_current_scene(device, tmp_path: Path):
@@ -489,12 +494,14 @@ def test_split_all_gaussians_splits_current_scene(device, tmp_path: Path):
     out_pos = _read_f32x4(renderer.scene_buffers["positions"], 2)
     out_scale = _read_f32x4(renderer.scene_buffers["scales"], 2)
     out_color_alpha = _read_f32x4(renderer.scene_buffers["color_alpha"], 2)
-    np.testing.assert_allclose(out_scale[:, :3], np.repeat(np.array([[0.3 * 0.60787793565, 0.2, 0.1]], dtype=np.float32), 2, axis=0), rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(out_pos[:, 1:], np.repeat(positions[:, 1:], 2, axis=0), rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(out_pos[:, 0], np.array([positions[0, 0] - 0.15, positions[0, 0] + 0.15], dtype=np.float32), rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(_actual_opacity(out_color_alpha[:, 3]), np.full((2,), 0.5 * 0.70126708751, dtype=np.float32), rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(_read_f32(trainer._buffers["grad_ema"], 2), np.array([0.025, 0.025], dtype=np.float32), rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(_read_f32(trainer._buffers["max_screen_radius"], 2), np.array([6.0, 6.0], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(out_scale[:, :3], np.repeat(np.array([[0.1875, 0.125, 0.0625]], dtype=np.float32), 2, axis=0), rtol=0.0, atol=1e-6)
+    assert not np.allclose(out_pos[0, :3], positions[0, :3])
+    assert not np.allclose(out_pos[1, :3], positions[0, :3])
+    assert not np.allclose(out_pos[0, :3], out_pos[1, :3])
+    np.testing.assert_allclose(_actual_opacity(out_color_alpha[:, 3]), np.full((2,), 0.5, dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(_read_f32(trainer._buffers["grad_ema"], 2), np.zeros((2,), dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_array_equal(_read_u32(trainer._buffers["grad_count"], 2), np.zeros((2,), dtype=np.uint32))
+    np.testing.assert_allclose(_read_f32(trainer._buffers["max_screen_radius"], 2), np.zeros((2,), dtype=np.float32), rtol=0.0, atol=1e-6)
 
 
 def test_prune_small_gaussians_removes_splats_below_threshold(device, tmp_path: Path):
@@ -519,8 +526,9 @@ def test_prune_small_gaussians_removes_splats_below_threshold(device, tmp_path: 
     out_scale = _read_f32x4(renderer.scene_buffers["scales"], 1)
     np.testing.assert_allclose(out_pos[0], positions[2], rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(out_scale[0], scales[2], rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(_read_f32(trainer._buffers["grad_ema"], 1), np.array([3.0], dtype=np.float32), rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(_read_f32(trainer._buffers["max_screen_radius"], 1), np.array([6.0], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(_read_f32(trainer._buffers["grad_ema"], 1), np.zeros((1,), dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_array_equal(_read_u32(trainer._buffers["grad_count"], 1), np.zeros((1,), dtype=np.uint32))
+    np.testing.assert_allclose(_read_f32(trainer._buffers["max_screen_radius"], 1), np.zeros((1,), dtype=np.float32), rtol=0.0, atol=1e-6)
 
 
 def test_regenerate_scene_keeps_anisotropic_low_gradient_gaussian(device, tmp_path: Path):
@@ -549,8 +557,9 @@ def test_regenerate_scene_keeps_anisotropic_low_gradient_gaussian(device, tmp_pa
     out_scale = _read_f32x4(trainer._regen_buffers["scales"], 1)
     np.testing.assert_allclose(out_pos[0], positions[0], rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(out_scale[0], scales[0], rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(_read_f32(trainer._regen_buffers["grad_ema"], 1), np.array([0.75], dtype=np.float32), rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(_read_f32(trainer._regen_buffers["max_screen_radius"], 1), np.array([4.25], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(_read_f32(trainer._regen_buffers["grad_ema"], 1), np.zeros((1,), dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_array_equal(_read_u32(trainer._regen_buffers["grad_count"], 1), np.zeros((1,), dtype=np.uint32))
+    np.testing.assert_allclose(_read_f32(trainer._regen_buffers["max_screen_radius"], 1), np.zeros((1,), dtype=np.float32), rtol=0.0, atol=1e-6)
 
 
 def test_regenerate_scene_prunes_low_opacity_only(device, tmp_path: Path):

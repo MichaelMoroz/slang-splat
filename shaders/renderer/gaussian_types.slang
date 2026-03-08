@@ -42,6 +42,7 @@ uniform StructuredBuffer<float4> g_ColorAlpha;
 uniform RWStructuredBuffer<float4> g_ScreenCenterRadiusDepth;
 uniform RWStructuredBuffer<float4> g_ScreenColorAlpha;
 uniform RWStructuredBuffer<float4> g_ScreenEllipseConic;
+uniform RWStructuredBuffer<uint> g_SplatVisible;
 
 uniform RWStructuredBuffer<uint> g_Keys;
 uniform RWStructuredBuffer<uint> g_Values;

@@ -271,7 +271,7 @@ bool compute_scanline_tile_span_universal(
     return true;
 }
 
-void emit_splat_bins(SplatBinRequest request)
+bool emit_splat_bins(SplatBinRequest request)
 {
     Ellipse ellipse = request.ellipse;
     if (!ellipse.isVisible(
@@ -280,11 +280,11 @@ void emit_splat_bins(SplatBinRequest request)
         g_Camera.viewport,
         g_Camera.nearDepth,
         g_Camera.farDepth
-    )) return;
+    )) return false;
 
     float tileSize = float(g_Prepass.tileSize);
     float halfTile = 0.5 * tileSize;
-    if (!try_prepare_conic_for_binning(ellipse, halfTile)) return;
+    if (!try_prepare_conic_for_binning(ellipse, halfTile)) return false;
     float2 boundsExtent = ellipse.bboxExtent + halfTile;
     int minX = int(floor((ellipse.centerPx.x - boundsExtent.x) / tileSize));
     int maxX = int(ceil((ellipse.centerPx.x + boundsExtent.x) / tileSize));
@@ -294,18 +294,18 @@ void emit_splat_bins(SplatBinRequest request)
     maxX = clamp(maxX, 0, int(g_Prepass.tileWidth) - 1);
     minY = clamp(minY, 0, int(g_Prepass.tileHeight) - 1);
     maxY = clamp(maxY, 0, int(g_Prepass.tileHeight) - 1);
-    if (minX > maxX || minY > maxY) return;
+    if (minX > maxX || minY > maxY) return false;
 
     ScanlineLoopConfig loopCfg = build_scanline_loop_config(ellipse, minX, maxX, minY, maxY);
     uint scanlineCount = uint(loopCfg.lineEnd - loopCfg.lineStart + 1);
-    if (scanlineCount == 0u) return;
+    if (scanlineCount == 0u) return false;
 
     uint scanlineBase = 0;
     InterlockedAdd(g_ScanlineCounter[0], scanlineCount, scanlineBase);
-    if (scanlineBase >= g_Prepass.maxScanlineEntries) return;
+    if (scanlineBase >= g_Prepass.maxScanlineEntries) return false;
 
     uint scanlineWriteCount = min(scanlineCount, g_Prepass.maxScanlineEntries - scanlineBase);
-    if (scanlineWriteCount == 0u) return;
+    if (scanlineWriteCount == 0u) return false;
 
     uint writtenListCount = 0u;
     for (uint i = 0; i < scanlineWriteCount; i++)
@@ -333,11 +333,12 @@ void emit_splat_bins(SplatBinRequest request)
         uint scanlineIndex = scanlineBase + i;
         g_ScanlineWorkItems[scanlineIndex] = item;
     }
-    if (writtenListCount == 0u) return;
+    if (writtenListCount == 0u) return false;
 
     uint listBase = 0u;
     InterlockedAdd(g_ListCounter[0], writtenListCount, listBase);
     g_SplatListBases[request.splatId] = listBase;
+    return true;
 }
 
 [shader("compute")]
@@ -346,6 +347,10 @@ void csProjectAndBin(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     uint splatId = dispatchThreadID.x;
     if (splatId >= g_Prepass.splatCount) return;
+    g_ScreenCenterRadiusDepth[splatId] = 0.0;
+    g_ScreenColorAlpha[splatId] = 0.0;
+    g_ScreenEllipseConic[splatId] = 0.0;
+    g_SplatVisible[splatId] = 0u;
 
     PinholeCamera camera = PinholeCamera.from_params(g_Camera);
     Gaussian3D gaussian = Gaussian3D.load(splatId);
@@ -407,16 +412,17 @@ void csProjectAndBin(uint3 dispatchThreadID : SV_DispatchThreadID)
         }
     }
 
-    g_ScreenCenterRadiusDepth[splatId] = float4(fitCenter, fitRadius, camDistance);
-    g_ScreenColorAlpha[splatId] = gaussian.colorAlpha;
-    g_ScreenEllipseConic[splatId] = float4(fitConic, 1.0);
     SplatBinRequest binRequest;
     binRequest.splatId = splatId;
     binRequest.camDistance = camDistance;
     binRequest.depthValue = depthValue;
     binRequest.depthCode = quantizeDepth(camDistance);
     binRequest.ellipse.init(fitCenter, fitRadius, fitConic);
-    emit_splat_bins(binRequest);
+    if (!emit_splat_bins(binRequest)) return;
+    g_ScreenCenterRadiusDepth[splatId] = float4(fitCenter, fitRadius, camDistance);
+    g_ScreenColorAlpha[splatId] = gaussian.colorAlpha;
+    g_ScreenEllipseConic[splatId] = float4(fitConic, 1.0);
+    g_SplatVisible[splatId] = 1u;
 }
 
 [shader("compute")]
