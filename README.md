@@ -62,18 +62,22 @@ Quick smoke configuration:
 python cli.py train-colmap --colmap-root dataset/garden --images-subdir images_8 --iters 10 --max-gaussians 1024 --width 64 --height 64
 ```
 
+Tracked regression dataset subset:
+- `dataset/garden/images_4`
+- `dataset/garden/sparse/0`
+
 ## PLY Render CLI
 ```powershell
 python cli.py render-ply --ply D:\Datasets\3DGS\TEST\flowers.ply --output-dir outputs\flowers_views --views 24
 ```
 
 Training notes:
-- One random training image is sampled per step.
+- Training walks images sequentially and loops back to frame `0` after the last frame.
 - Training target images are stored as `rgba8_unorm_srgb` textures (not float32) so shader reads use hardware sRGB decode while keeping GPU memory usage low.
 - In viewer COLMAP mode, pointcloud XYZ/RGB are uploaded once on dataset load; gaussian reinitialization is done on GPU from those buffers.
 - Default COLMAP initialization parameters are derived from point-cloud nearest-neighbor spacing and requested gaussian count so initial splats are close-packed with limited overlap.
 - Default loss is RGB MSE.
-- Reported training metrics include total loss, EMA loss, and smoothed PSNR computed from image MSE plus an EMA signal max.
+- Reported training metrics include total loss, rolling average loss, and rolling-average PSNR computed with a signal-max window sized to one full image cycle.
 - Target Y-flip is enabled by default.
 - Per-step low-quality reinit is enabled by default: splats with `opacity <= min_opacity` or `max(scale) <= min_scale`
   can be replaced from a random valid donor splat (skip when donor is also low-quality).
@@ -86,6 +90,8 @@ Training notes:
 ```powershell
 python -m pytest -q
 ```
+
+The repo intentionally keeps only the `dataset/garden/images_4` and `dataset/garden/sparse/0` subset visible in git for the COLMAP convergence regression. `tests/test_training_garden_regression.py` runs a fixed-seed 60-second training pass and only passes when peak per-step `last_psnr` reaches `25 dB`; it records the rolling-window `avg_psnr` for diagnostics.
 
 ## Complexity Budget
 ```powershell

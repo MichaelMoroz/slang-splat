@@ -35,9 +35,9 @@ def update_ui_text(viewer: object, dt: float) -> None:
         viewer.t("training").text, viewer.t("training_loss").text = "Training: not initialized", "Loss: n/a"
     else:
         state = viewer.s.trainer.state
-        psnr_text = f"{state.ema_psnr:.2f} dB" if np.isfinite(state.ema_psnr) else "n/a"
+        psnr_text = f"{state.avg_psnr:.2f} dB" if np.isfinite(state.avg_psnr) else "n/a"
         viewer.t("training").text = f"Training: {'running' if viewer.s.training_active else 'paused'} | step={state.step:,} | frame={state.last_frame_index}"
-        viewer.t("training_loss").text = f"Loss: {state.last_loss:.6e} | EMA: {state.ema_loss:.6e} | PSNR: {psnr_text} | {state.last_instability}"
+        viewer.t("training_loss").text = f"Loss: {state.last_loss:.6e} | Avg: {state.avg_loss:.6e} | PSNR: {psnr_text} | {state.last_instability}"
     viewer.t("error").text = f"Error: {viewer.s.last_error}" if viewer.s.last_error else ""
 
 

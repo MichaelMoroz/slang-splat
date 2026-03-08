@@ -11,8 +11,8 @@ from ..app.shared import RendererParams, build_init_params, build_training_param
 from ..common import normalize3
 from ..renderer import Camera, GaussianRenderer
 from . import presenter, session
-from .state import DEFAULT_IMAGE_SUBDIR_INDEX, IMAGE_SUBDIR_OPTIONS, LOSS_DEBUG_OPTIONS, ViewerState
-from .ui import build_ui
+from .state import DEFAULT_IMAGE_SUBDIR_INDEX, DEFAULT_LIST_CAPACITY_MULTIPLIER, DEFAULT_MAX_PREPASS_MEMORY_MB, DEFAULT_VIEWER_BACKGROUND, IMAGE_SUBDIR_OPTIONS, LOSS_DEBUG_OPTIONS, ViewerState
+from .ui import build_ui, default_control_values
 
 _VIEW_VEC_EPS = 1e-6
 _SCROLL_SPEED_BASE = 1.1
@@ -45,6 +45,14 @@ _TRAINING_PARAM_KEYS = {
     "mcmc_opacity_gate_sharpness": "mcmc_opacity_k",
     "mcmc_opacity_gate_center": "mcmc_opacity_t",
 }
+_TRAIN_INIT_DEFAULTS = default_control_values("Train Init")
+_TRAINING_DEFAULTS = default_control_values("Train Optimizer", "Train Stability")
+
+
+default_images_subdir = lambda: IMAGE_SUBDIR_OPTIONS[DEFAULT_IMAGE_SUBDIR_INDEX]
+default_renderer_params = lambda max_prepass_memory_mb=DEFAULT_MAX_PREPASS_MEMORY_MB: RendererParams(list_capacity_multiplier=DEFAULT_LIST_CAPACITY_MULTIPLIER, max_prepass_memory_mb=max(int(max_prepass_memory_mb), 1))
+default_init_params = lambda: build_init_params(_TRAIN_INIT_DEFAULTS["init_pos_jitter"], _TRAIN_INIT_DEFAULTS["init_scale"], _TRAIN_INIT_DEFAULTS["init_scale_jitter"], _TRAIN_INIT_DEFAULTS["init_opacity"], _TRAIN_INIT_DEFAULTS["gaussian_count"], _TRAIN_INIT_DEFAULTS["seed"])
+default_training_params = lambda background=DEFAULT_VIEWER_BACKGROUND: build_training_params(background=background, mcmc_position_noise_enabled=bool(_TRAINING_DEFAULTS["mcmc_pos_noise_enabled"]), low_quality_reinit_enabled=bool(_TRAINING_DEFAULTS["low_quality_reinit"]), **{name: _TRAINING_DEFAULTS[control] for name, control in _TRAINING_PARAM_KEYS.items()})
 
 
 class SplatViewer(spy.AppWindow):

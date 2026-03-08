@@ -15,6 +15,7 @@
   - `sparse/0/cameras.bin`
   - `sparse/0/images.bin`
   - `sparse/0/points3D.bin`
+- The repo keeps the `dataset/garden/images_4` images plus `dataset/garden/sparse/0` tracked for the long-running COLMAP regression test; the rest of `dataset/**` stays ignored.
 - Training frames are built from an image folder (default `images_4`) and include:
   - resolved image path,
   - COLMAP extrinsics (`q_wxyz`, `t_xyz`),
@@ -35,7 +36,7 @@
 
 ## Optimization Loop
 Each trainer `step()` performs:
-1. Pick one random training frame.
+1. Pick the next training frame in sequence and wrap after the last frame.
 2. Upload frame image as target texture (Y-flip enabled by default).
 3. Run renderer prepass + raster forward.
 4. Run loss kernel (`RGB MSE`) to produce `g_OutputGrad`.
@@ -84,8 +85,8 @@ Each trainer `step()` performs:
   - if loss is non-finite, ADAM step is skipped and moments are reset.
 - Host metrics:
   - `last_mse` stores the image MSE from `csComputeMSELossGrad`,
-  - `ema_signal_max` tracks a slow EMA of per-frame target max intensity,
-  - `ema_psnr` reports a more heavily smoothed PSNR for UI/CLI display.
+  - `avg_signal_max` tracks a rolling mean of per-frame target max intensity over one full image cycle,
+  - `avg_loss` and `avg_psnr` report rolling means over that same window for UI/CLI display.
 
 ## CLI
 Example:
@@ -103,6 +104,11 @@ Useful options:
 - `--min-scale`, `--max-scale`, `--min-opacity`, `--max-opacity`.
 - `--[no-]low-quality-reinit` enables/disables per-step low-quality resampling.
 
+## Regression Test
+- `tests/test_training_garden_regression.py` loads the tracked `dataset/garden` subset, initializes gaussians from the COLMAP point cloud with a fixed seed, and runs `trainer.step()` until a 60-second deadline.
+- The test asserts on peak `last_psnr >= 25 dB`.
+- It records `avg_psnr` for failure diagnostics only; the gate uses `last_psnr` because the rolling window is meant for UI/CLI readability rather than the earliest convergence crossing.
+
 ## Viewer Integration
 - `viewer.py` is a thin launcher over `src/viewer`, which is split into:
   - state (`src/viewer/state.py`)
@@ -114,4 +120,4 @@ Useful options:
   - set train image directory,
   - initialize training scene,
   - start/stop one-step-per-frame optimization,
-  - live loss and EMA display.
+  - live loss and rolling-average display.

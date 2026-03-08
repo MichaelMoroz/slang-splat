@@ -143,7 +143,6 @@ def build_training_params(
     mcmc_opacity_gate_sharpness: float,
     mcmc_opacity_gate_center: float,
     low_quality_reinit_enabled: bool,
-    ema_decay: float = 0.95,
 ) -> AppTrainingParams:
     base_lr = clamp_float(base_lr, 1e-8, 1.0)
     adam = AdamHyperParams(
@@ -185,7 +184,6 @@ def build_training_params(
         background=tuple(float(v) for v in np.asarray(background, dtype=np.float32).reshape(3)),
         near=clamp_float(near, 1e-6, 1e4),
         far=clamp_float(far, 1e-5, 1e6),
-        ema_decay=float(ema_decay),
         scale_l2_weight=clamp_float(scale_l2_weight, 0.0, 1e4),
         mcmc_position_noise_enabled=bool(mcmc_position_noise_enabled),
         mcmc_position_noise_scale=clamp_float(mcmc_position_noise_scale, 0.0, 1e4),

@@ -27,7 +27,7 @@ class _DummyRenderer:
 
 class _DummyTrainer:
     def __init__(self) -> None:
-        self.state = SimpleNamespace(step=0, last_loss=0.0, ema_loss=0.0, last_mse=0.0, ema_psnr=0.0, last_psnr=0.0, last_frame_index=0, last_instability="")
+        self.state = SimpleNamespace(step=0, last_loss=0.0, avg_loss=0.0, last_mse=0.0, avg_psnr=0.0, last_psnr=0.0, last_frame_index=0, last_instability="")
         self.step_calls = 0
 
     def step(self) -> None:

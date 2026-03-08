@@ -86,6 +86,11 @@ GROUP_SPECS = {
 }
 
 
+def default_control_values(*group_names: str) -> dict[str, object]:
+    groups = GROUP_SPECS.values() if not group_names else (GROUP_SPECS[name] for name in group_names)
+    return {spec.key: spec.kwargs["value"] for specs in groups for spec in specs if "value" in spec.kwargs}
+
+
 def _build_group(panel: object, title: str, specs: tuple[ControlSpec, ...], controls: dict[str, object]) -> object:
     group = spy.ui.Group(panel, title)
     for spec in specs:

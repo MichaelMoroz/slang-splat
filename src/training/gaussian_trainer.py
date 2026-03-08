@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,6 +19,21 @@ class _SceneCountProxy:
 
 
 @dataclass(slots=True)
+class _RollingMetricWindow:
+    size: int
+    values: deque[float]
+
+    def push(self, value: float) -> None:
+        if np.isfinite(value):
+            if len(self.values) == self.size:
+                self.values.popleft()
+            self.values.append(float(value))
+
+    def mean(self) -> float:
+        return float(np.fromiter(self.values, dtype=np.float64).mean()) if self.values else float("nan")
+
+
+@dataclass(slots=True)
 class AdamHyperParams:
     position_lr: float = 1e-3; scale_lr: float = 2.5e-4; rotation_lr: float = 1e-3; color_lr: float = 1e-3
     opacity_lr: float = 1e-3; beta1: float = 0.9; beta2: float = 0.999; epsilon: float = 1e-8
@@ -32,15 +48,14 @@ class StabilityHyperParams:
 
 @dataclass(slots=True)
 class TrainingHyperParams:
-    background: tuple[float, float, float] = (0.0, 0.0, 0.0); near: float = 0.1; far: float = 120.0; ema_decay: float = 0.95
-    psnr_reference_decay: float = 0.995; psnr_decay: float = 0.985; scale_l2_weight: float = 1e-3; mcmc_position_noise_enabled: bool = True
+    background: tuple[float, float, float] = (0.0, 0.0, 0.0); near: float = 0.1; far: float = 120.0; scale_l2_weight: float = 1e-3; mcmc_position_noise_enabled: bool = True
     mcmc_position_noise_scale: float = 1.0; mcmc_opacity_gate_sharpness: float = 100.0; mcmc_opacity_gate_center: float = 0.995; low_quality_reinit_enabled: bool = True
 
 
 @dataclass(slots=True)
 class TrainingState:
-    step: int = 0; last_loss: float = float("nan"); ema_loss: float = float("nan"); last_mse: float = float("nan")
-    ema_signal_max: float = float("nan"); last_psnr: float = float("nan"); ema_psnr: float = float("nan"); last_frame_index: int = -1
+    step: int = 0; last_loss: float = float("nan"); avg_loss: float = float("nan"); last_mse: float = float("nan")
+    avg_signal_max: float = float("nan"); last_psnr: float = float("nan"); avg_psnr: float = float("nan"); last_frame_index: int = -1
     last_instability: str = ""
 
 
@@ -86,7 +101,6 @@ class GaussianTrainer:
     _dispatch_adam_step = lambda self, encoder: self._dispatch("adam_step", encoder, self._scene_thread_count(), {**self._scene_grad_vars(), **self._scene_rw_vars(), **self._adam_shader_vars(), **self._common_vars()})
     _dispatch_mark_low_quality_splats = lambda self, encoder: self._dispatch("mark_low_quality_splats", encoder, self._scene_thread_count(), {"g_ScalesRW": self.renderer.scene_buffers["scales"], "g_ColorAlphaRW": self.renderer.scene_buffers["color_alpha"], "g_LowQualityFlags": self._buffers["low_quality_flags"], **self._common_vars()})
     _dispatch_resample_low_quality_splats = lambda self, encoder: self._dispatch("resample_low_quality_splats", encoder, self._scene_thread_count(), {**self._scene_rw_vars(), **self._adam_shader_vars(), "g_LowQualityFlags": self._buffers["low_quality_flags"], **self._common_vars()})
-    _ema = staticmethod(lambda current, value, decay: float(value) if not np.isfinite(current) else decay * current + (1.0 - decay) * float(value))
     _dispatch_loss_grad = lambda self, encoder, target_texture: (lambda shared: (self._dispatch("clear_loss_grad", encoder, self._pixel_thread_count(), shared), self._dispatch("mse_loss_grad", encoder, self._pixel_thread_count(), {"g_Rendered": self.renderer.output_texture, "g_Target": target_texture, **shared})) )({"g_OutputGrad": self.renderer.output_grad_texture, "g_LossBuffer": self._buffers["loss"], "g_SignalMaxBuffer": self._buffers["signal_max"], **self._common_vars()})
     _read_loss_metrics = lambda self: (lambda loss_values, signal_values: (float(loss_values[self._LOSS_SLOT_TOTAL]) if loss_values.size > self._LOSS_SLOT_TOTAL else float("nan"), float(loss_values[self._LOSS_SLOT_MSE]) if loss_values.size > self._LOSS_SLOT_MSE else float("nan"), float(signal_values.view(np.float32)[0]) if signal_values.size else float("nan")))(np.frombuffer(self._buffers["loss"].to_numpy().tobytes(), dtype=np.float32), np.frombuffer(self._buffers["signal_max"].to_numpy().tobytes(), dtype=np.uint32))
 
@@ -119,7 +133,10 @@ class GaussianTrainer:
         self.scene = scene if scene is not None else _SceneCountProxy(self._scene_count)
         self.adam, self.stability, self.training = pick(adam_hparams, AdamHyperParams()), pick(stability_hparams, StabilityHyperParams()), pick(training_hparams, TrainingHyperParams())
         self.state = TrainingState()
-        self._rng = np.random.default_rng(int(seed))
+        self._metric_window_size = max(len(self.frames), 1)
+        self._loss_window = _RollingMetricWindow(size=self._metric_window_size, values=deque())
+        self._signal_max_window = _RollingMetricWindow(size=self._metric_window_size, values=deque())
+        self._psnr_window = _RollingMetricWindow(size=self._metric_window_size, values=deque())
         self._shader_path = Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang")
         self._kernels = {name: self.device.create_compute_kernel(self.device.load_program(str(self._shader_path), [entry])) for name, entry in self._KERNEL_ENTRIES.items()}
         self._buffers: dict[str, spy.Buffer] = {}
@@ -215,6 +232,11 @@ class GaussianTrainer:
                 self._frame_targets_native.append(self._create_gpu_texture(native))
                 self._frame_targets_train.append(self._create_gpu_texture(native if native.size == train_size else native.resize(train_size, resample=Image.Resampling.BILINEAR)))
 
+    def _reset_metric_windows(self) -> None:
+        self._loss_window.values.clear()
+        self._signal_max_window.values.clear()
+        self._psnr_window.values.clear()
+
     def _common_vars(self) -> dict[str, object]:
         return {
             "g_Width": int(self.renderer.width),
@@ -286,18 +308,19 @@ class GaussianTrainer:
         self.device.submit_command_buffer(enc.finish())
         self.device.wait()
         self.state = TrainingState()
+        self._reset_metric_windows()
 
     def _update_psnr_state(self, mse: float, signal_max: float) -> None:
         self.state.last_mse = float(mse)
-        ref_decay, psnr_decay = float(np.clip(self.training.psnr_reference_decay, 0.0, 0.999999)), float(np.clip(self.training.psnr_decay, 0.0, 0.999999))
-        if np.isfinite(signal_max) and signal_max > 0.0:
-            self.state.ema_signal_max = self._ema(self.state.ema_signal_max, signal_max, ref_decay)
-        self.state.last_psnr = 20.0 * float(np.log10(self.state.ema_signal_max)) - 10.0 * float(np.log10(max(float(mse), self._PSNR_MSE_FLOOR))) if np.isfinite(mse) and mse >= 0.0 and np.isfinite(self.state.ema_signal_max) and self.state.ema_signal_max > 0.0 else float("nan")
+        self._signal_max_window.push(signal_max if np.isfinite(signal_max) and signal_max > 0.0 else float("nan"))
+        self.state.avg_signal_max = self._signal_max_window.mean()
+        self.state.last_psnr = 20.0 * float(np.log10(self.state.avg_signal_max)) - 10.0 * float(np.log10(max(float(mse), self._PSNR_MSE_FLOOR))) if np.isfinite(mse) and mse >= 0.0 and np.isfinite(self.state.avg_signal_max) and self.state.avg_signal_max > 0.0 else float("nan")
         if np.isfinite(self.state.last_psnr):
-            self.state.ema_psnr = self._ema(self.state.ema_psnr, self.state.last_psnr, psnr_decay)
+            self._psnr_window.push(self.state.last_psnr)
+        self.state.avg_psnr = self._psnr_window.mean()
 
     def step(self) -> float:
-        frame_index = int(self._rng.integers(0, len(self.frames)))
+        frame_index = int(self.state.step % len(self.frames))
         frame_camera = self.make_frame_camera(frame_index, self.renderer.width, self.renderer.height)
         background = np.asarray(self.training.background, dtype=np.float32).reshape(3)
         self.renderer.execute_prepass_for_current_scene(frame_camera, sync_counts=False)
@@ -327,7 +350,7 @@ class GaussianTrainer:
         self.state.step += 1
         self.state.last_frame_index = frame_index
         self.state.last_loss = float(loss)
+        self._loss_window.push(loss)
+        self.state.avg_loss = self._loss_window.mean()
         self._update_psnr_state(image_mse, signal_max)
-        decay = float(np.clip(self.training.ema_decay, 0.0, 0.99999))
-        self.state.ema_loss = float(loss) if not np.isfinite(self.state.ema_loss) else decay * self.state.ema_loss + (1.0 - decay) * float(loss)
         return float(loss)

@@ -88,7 +88,6 @@ def _training_params(args: argparse.Namespace):
         mcmc_opacity_gate_sharpness=100.0,
         mcmc_opacity_gate_center=0.995,
         low_quality_reinit_enabled=bool(args.low_quality_reinit),
-        ema_decay=args.ema_decay,
     )
 
 
@@ -121,8 +120,8 @@ def run_train_colmap(args: argparse.Namespace) -> int:
         if step == 0 or (step + 1) % max(int(args.log_interval), 1) == 0:
             elapsed = max(time.perf_counter() - start, 1e-6)
             print(
-                f"step={step + 1:6d} loss={loss:.6e} ema={trainer.state.ema_loss:.6e} "
-                f"psnr={_format_metric(trainer.state.ema_psnr, '.2f')}dB iter/s={(step + 1) / elapsed:.2f} "
+                f"step={step + 1:6d} loss={loss:.6e} avg={trainer.state.avg_loss:.6e} "
+                f"psnr={_format_metric(trainer.state.avg_psnr, '.2f')}dB iter/s={(step + 1) / elapsed:.2f} "
                 f"instability='{trainer.state.last_instability}'"
             )
         if int(args.snapshot_interval) > 0 and (step + 1) % int(args.snapshot_interval) == 0:
@@ -216,7 +215,6 @@ TRAIN_RENDER_ARGS = tuple(
         ("--loss-grad-clip", 10.0),
         ("--near", 0.1),
         ("--far", 120.0),
-        ("--ema-decay", 0.95),
         ("--scale-l2", 1e-3),
         ("--max-anisotropy", 3.0),
     )

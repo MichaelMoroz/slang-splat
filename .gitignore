@@ -181,4 +181,12 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
-/dataset
+/dataset/*
+!/dataset/garden/
+/dataset/garden/*
+!/dataset/garden/images_4/
+!/dataset/garden/images_4/**
+!/dataset/garden/sparse/
+/dataset/garden/sparse/*
+!/dataset/garden/sparse/0/
+!/dataset/garden/sparse/0/**
