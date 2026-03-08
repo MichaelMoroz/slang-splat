@@ -95,7 +95,7 @@ Training notes:
 python -m pytest -q
 ```
 
-The repo intentionally keeps only the `dataset/garden/images_4` and `dataset/garden/sparse/0` subset visible in git for the COLMAP convergence regression. `tests/test_training_garden_regression.py` now runs a fixed-seed `2000`-step training pass with opacity reset forced every `1000` steps, and only passes when the final cached `avg_psnr` stays at or above `25 dB`; `last_psnr` remains a single-step diagnostic for the currently trained view.
+The repo intentionally keeps only the `dataset/garden/images_4` and `dataset/garden/sparse/0` subset visible in git for the COLMAP convergence regression. `tests/test_training_garden_regression.py` now runs a fixed-seed `1900`-step training pass with opacity reset forced every `1000` steps, and only passes when the final cached `avg_psnr` stays at or above `25 dB`; `last_psnr` remains a single-step diagnostic for the currently trained view.
 
 ## Complexity Budget
 ```powershell

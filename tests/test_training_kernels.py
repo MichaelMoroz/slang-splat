@@ -451,7 +451,7 @@ def test_reset_opacity_rewrites_raw_alpha_and_clears_color_moments(device, tmp_p
     device.submit_command_buffer(enc.finish())
     device.wait()
 
-    np.testing.assert_allclose(_actual_opacity(_read_f32x4(renderer.scene_buffers["color_alpha"], 2)[:, 3]), np.array([0.01, 0.005], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(_actual_opacity(_read_f32x4(renderer.scene_buffers["color_alpha"], 2)[:, 3]), np.array([0.1, 0.005], dtype=np.float32), rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(_read_f32x4(trainer._buffers["adam_m_color_alpha"], 2), np.zeros((2, 4), dtype=np.float32), rtol=0.0, atol=1e-7)
     np.testing.assert_allclose(_read_f32x4(trainer._buffers["adam_v_color_alpha"], 2), np.zeros((2, 4), dtype=np.float32), rtol=0.0, atol=1e-7)
 

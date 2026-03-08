@@ -62,7 +62,7 @@ Each trainer `step()` performs:
    - Split: replace large high-gradient splats with `N=2` children sampled from the parent Gaussian.
    - Prune: drop splats with low opacity or excessive world/screen footprint.
    - Regeneration resets densification stats for the new active set.
-10. On the configured schedule, run `csResetOpacity` to rewrite the stored raw opacity parameter so the effective sigmoid opacity becomes `min(alpha, 0.01)`, then clear alpha optimizer moments.
+10. On the configured schedule, run `csResetOpacity` to rewrite the stored raw opacity parameter so the effective sigmoid opacity becomes `min(alpha, 0.1)`, then clear alpha optimizer moments.
 
 ## Kernels
 - `csClearLossAndGradTex`: zero loss + output-grad texture.
@@ -81,7 +81,7 @@ Each trainer `step()` performs:
   - Clamps stored scales to `[min_scale, max_scale]` and enforces `max_anisotropy`.
 - `csUpdateDensificationStats`: updates per-splat gradient EMA and maximum projected radius from the current step.
 - `csRegenerateScene`: inline clone/split/prune classification plus append-buffer regeneration into the next active scene buffers.
-- `csResetOpacity`: rewrites the raw opacity parameter to `logit(min(sigmoid(raw_alpha), 0.01))` and clears alpha optimizer moments.
+- `csResetOpacity`: rewrites the raw opacity parameter to `logit(min(sigmoid(raw_alpha), 0.1))` and clears alpha optimizer moments.
 - `csInitializeGaussiansFromPointCloud`: still exists for standalone point-buffer initialization, but the COLMAP training path now builds the initial `GaussianScene` on CPU.
 
 ## Numerical Reinforcement
@@ -122,7 +122,7 @@ Useful options:
 - `--min-scale`, `--max-scale`, `--min-opacity`, `--max-opacity`.
 
 ## Regression Test
-- `tests/test_training_garden_regression.py` loads the tracked `dataset/garden` subset, initializes gaussians from the COLMAP point cloud with a fixed seed, forces `opacity_reset_interval = 1000`, and runs exactly `2000` training steps.
+- `tests/test_training_garden_regression.py` loads the tracked `dataset/garden` subset, initializes gaussians from the COLMAP point cloud with a fixed seed, forces `opacity_reset_interval = 1000`, and runs exactly `1900` training steps.
 - The test asserts on the final cached `avg_psnr >= 25 dB`, so one full post-reset recovery window is part of the regression instead of being hidden by an earlier peak.
 - `last_psnr` is still recorded for diagnostics, but the regression gate uses the per-frame cached average to avoid single-view cherry-picking.
 

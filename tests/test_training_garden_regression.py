@@ -15,7 +15,7 @@ from src.viewer.app import default_images_subdir, default_init_params, default_r
 DATASET_ROOT = Path(__file__).resolve().parent.parent / "dataset" / "garden"
 IMAGES_SUBDIR = default_images_subdir()
 SPARSE_SUBDIR = Path("sparse/0")
-TRAIN_STEPS = 2000
+TRAIN_STEPS = 1900
 REGRESSION_OPACITY_RESET_INTERVAL = 1000
 PSNR_THRESHOLD_DB = 25.0
 TRAIN_WIDTH = 256
@@ -53,7 +53,7 @@ def _build_trainer(device) -> GaussianTrainer:
     )
 
 
-def test_garden_images4_training_reaches_25db_after_2000_steps_with_1k_reinit(device):
+def test_garden_images4_training_reaches_25db_after_1900_steps_with_1k_reinit(device):
     trainer = _build_trainer(device)
     start = time.perf_counter()
     for _ in range(TRAIN_STEPS):

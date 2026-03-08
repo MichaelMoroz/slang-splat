@@ -9,7 +9,7 @@ static const uint RNG_LINEAR_A = 1664525u;
 static const uint RNG_LINEAR_C = 1013904223u;
 static const float SSIM_C1 = 0.0001;
 static const float SSIM_C2 = 0.0009;
-static const float OPACITY_RESET_VALUE = 0.01;
+static const float OPACITY_RESET_VALUE = 0.1;
 
 struct AdamParams
 {
