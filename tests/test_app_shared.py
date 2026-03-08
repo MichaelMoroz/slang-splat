@@ -5,8 +5,9 @@ import numpy as np
 from pathlib import Path
 
 from src.app.shared import apply_training_profile, build_training_params, estimate_scene_bounds
-from src.scene import GaussianScene
+from src.scene import GaussianInitHyperParams, GaussianScene
 from src.viewer.app import default_training_params
+from src.viewer.session import resolve_effective_training_setup
 from src.viewer.ui import default_control_values, default_prune_small_threshold
 
 
@@ -121,6 +122,29 @@ def test_bicycle_images4_profile_applies_psnr_overrides():
     assert params.training.screen_size_prune_threshold == 0.0
     assert params.training.world_size_prune_ratio == 0.0
     assert params.training.opacity_reset_interval == 3000
+
+
+def test_viewer_effective_training_setup_applies_auto_profile_and_init_override():
+    class _StubViewer:
+        def __init__(self) -> None:
+            self.s = type("_State", (), {"colmap_root": Path("dataset/bicycle")})()
+
+        def _selected_images_subdir(self) -> str:
+            return "images_4"
+
+        def training_params(self):
+            return default_training_params()
+
+        def init_params(self):
+            return type("_Init", (), {"seed": 1234, "hparams": GaussianInitHyperParams(initial_opacity=0.5)})()
+
+    init, params, init_hparams, profile = resolve_effective_training_setup(_StubViewer())
+    assert init.seed == 1234
+    assert profile.name == "bicycle-images4-psnr"
+    assert params.training.mcmc_position_noise_enabled is False
+    assert params.training.lambda_dssim == 0.0
+    assert params.training.scale_l2_weight == 1e-4
+    assert init_hparams.initial_opacity == 0.1
 
 
 def test_default_prune_small_threshold_tracks_min_scale_default():
