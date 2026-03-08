@@ -9,6 +9,7 @@ import slangpy as spy
 from src.filter import SeparableGaussianBlur
 from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
+from src.training.gaussian_trainer import _relocated_opacity_scale_np
 from src.training import GaussianTrainer, StabilityHyperParams, TrainingHyperParams
 
 _ADAM_BUFFER_NAMES = ("adam_m_pos", "adam_v_pos", "adam_m_scale", "adam_v_scale", "adam_m_quat", "adam_v_quat", "adam_m_color_alpha", "adam_v_color_alpha")
@@ -97,6 +98,50 @@ def test_training_step_smoke_updates_params(device, tmp_path: Path):
     assert np.isclose(trainer.state.avg_psnr, trainer.state.last_psnr)
     assert np.isclose(trainer.state.avg_ssim, trainer.state.last_ssim)
     assert np.all(np.isfinite(after))
+
+
+def test_relocated_opacity_scale_splits_opacity_and_shrinks_scale():
+    opacity, scale = _relocated_opacity_scale_np(
+        opacity=np.array([0.5], dtype=np.float32),
+        scales=np.array([[0.1, 0.2, 0.3]], dtype=np.float32),
+        family_sizes=np.array([3], dtype=np.int32),
+        min_opacity=0.005,
+        max_opacity=0.9999,
+        min_scale=1e-3,
+        max_scale=3.0,
+        max_anisotropy=10.0,
+    )
+    assert opacity.shape == (1,)
+    assert scale.shape == (1, 3)
+    assert 0.005 <= float(opacity[0]) < 0.5
+    assert np.all(np.isfinite(scale))
+    assert np.all(scale[0] >= 1e-3)
+    assert np.all(scale[0] <= 3.0)
+
+
+def test_mcmc_densify_relocates_dead_splats_and_grows_count(device, tmp_path: Path):
+    scene = _make_scene(count=24, seed=31)
+    scene.opacities[:4] = np.array([0.001, 0.002, 0.003, 0.004], dtype=np.float32)
+    frame = _make_frame(tmp_path)
+    renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(max_gaussians=32, prune_min_opacity=0.005, opacity_reset_interval=0),
+        seed=37,
+    )
+
+    trainer._run_mcmc_densify()
+
+    count = int(trainer.scene.count)
+    color_alpha = _read_f32x4(renderer.scene_buffers["color_alpha"], count)
+    assert count == 25
+    assert np.all(_actual_opacity(color_alpha[:, 3]) > 0.0049)
+    for name in _ADAM_BUFFER_NAMES:
+        values = _read_f32x4(trainer._buffers[name], count)
+        assert np.all(np.isfinite(values))
 
 
 def test_training_targets_use_srgb_textures(device, tmp_path: Path):
@@ -311,7 +356,7 @@ def test_log_scale_regularizer_pulls_scales_toward_reference(device, tmp_path: P
     assert scales_after[1, 0] < scene.scales[1, 0]
 
 
-def test_opacity_regularizer_pushes_true_opacity_toward_one(device, tmp_path: Path):
+def test_opacity_regularizer_pushes_true_opacity_down(device, tmp_path: Path):
     scene = _make_scene(count=2, seed=31)
     scene.opacities[:] = np.array([0.2, 0.8], dtype=np.float32)
     frame = _make_frame(tmp_path)
@@ -335,9 +380,8 @@ def test_opacity_regularizer_pushes_true_opacity_toward_one(device, tmp_path: Pa
     device.wait()
     after = _actual_opacity(_read_f32x4(renderer.scene_buffers["color_alpha"], 2)[:, 3])
 
-    assert after[0] > before[0]
-    assert after[1] > before[1]
-    assert (after[0] - before[0]) > (after[1] - before[1])
+    assert after[0] < before[0]
+    assert after[1] < before[1]
 
 
 def test_update_densification_stats_tracks_visible_average_count_and_screen_radius(device, tmp_path: Path):

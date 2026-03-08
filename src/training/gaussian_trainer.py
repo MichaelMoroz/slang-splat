@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+import math
 from pathlib import Path
 
 import numpy as np
@@ -12,6 +13,70 @@ from ..common import SHADER_ROOT
 from ..filter import SeparableGaussianBlur
 from ..renderer import Camera, GaussianRenderer
 from ..scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
+
+_OPACITY_EPS = 1e-6
+
+
+def _opacity_from_raw_np(raw_opacity: np.ndarray) -> np.ndarray:
+    raw = np.asarray(raw_opacity, dtype=np.float32)
+    return (1.0 / (1.0 + np.exp(-np.clip(raw, -80.0, 80.0)))).astype(np.float32, copy=False)
+
+
+def _raw_opacity_from_alpha_np(opacity: np.ndarray) -> np.ndarray:
+    alpha = np.clip(np.asarray(opacity, dtype=np.float32), _OPACITY_EPS, 1.0 - _OPACITY_EPS)
+    return (np.log(alpha) - np.log1p(-alpha)).astype(np.float32, copy=False)
+
+
+def _clamp_scale_anisotropy_np(scales: np.ndarray, min_scale: float, max_scale: float, max_anisotropy: float) -> np.ndarray:
+    clamped = np.clip(np.asarray(scales, dtype=np.float32), float(min_scale), float(max_scale))
+    axis_max = np.max(clamped, axis=1, keepdims=True)
+    return np.maximum(clamped, axis_max / max(float(max_anisotropy), 1.0)).astype(np.float32, copy=False)
+
+
+def _normalize_quaternion_np(quaternions: np.ndarray) -> np.ndarray:
+    q = np.asarray(quaternions, dtype=np.float32)
+    norm = np.linalg.norm(q, axis=1, keepdims=True)
+    safe = np.where(norm > 1e-12, q / norm, np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32))
+    return safe.astype(np.float32, copy=False)
+
+
+def _rotate_by_quaternion_np(vectors: np.ndarray, quaternions: np.ndarray) -> np.ndarray:
+    v = np.asarray(vectors, dtype=np.float32)
+    q = _normalize_quaternion_np(quaternions)
+    q_xyz = q[:, 1:4]
+    uv = np.cross(q_xyz, v)
+    uuv = np.cross(q_xyz, uv)
+    return (v + 2.0 * (q[:, :1] * uv + uuv)).astype(np.float32, copy=False)
+
+
+def _relocated_opacity_scale_np(
+    opacity: np.ndarray,
+    scales: np.ndarray,
+    family_sizes: np.ndarray,
+    *,
+    min_opacity: float,
+    max_opacity: float,
+    min_scale: float,
+    max_scale: float,
+    max_anisotropy: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    old_alpha = np.clip(np.asarray(opacity, dtype=np.float64), _OPACITY_EPS, 1.0 - _OPACITY_EPS)
+    old_scales = np.asarray(scales, dtype=np.float64)
+    family = np.maximum(np.asarray(family_sizes, dtype=np.int32), 1)
+    new_alpha = 1.0 - np.power(1.0 - old_alpha, 1.0 / family.astype(np.float64))
+    coeff = np.ones_like(old_alpha, dtype=np.float64)
+    for idx, family_size in enumerate(family.tolist()):
+        if family_size <= 1:
+            continue
+        denom = 0.0
+        alpha_i = float(new_alpha[idx])
+        for subset_size in range(1, family_size + 1):
+            for k in range(subset_size):
+                denom += math.comb(subset_size - 1, k) * (((-1.0) ** k) / math.sqrt(float(k + 1))) * (alpha_i ** float(k + 1))
+        coeff[idx] = old_alpha[idx] / max(denom, np.finfo(np.float64).eps)
+    relocated_alpha = np.clip(new_alpha.astype(np.float32), max(float(min_opacity), _OPACITY_EPS), min(float(max_opacity), 1.0 - _OPACITY_EPS))
+    relocated_scale = _clamp_scale_anisotropy_np(old_scales * coeff[:, None], min_scale, max_scale, max_anisotropy)
+    return relocated_alpha, relocated_scale
 
 
 @dataclass(slots=True)
@@ -50,7 +115,7 @@ class StabilityHyperParams:
 @dataclass(slots=True)
 class TrainingHyperParams:
     background: tuple[float, float, float] = (0.0, 0.0, 0.0); near: float = 0.1; far: float = 120.0; scale_l2_weight: float = 1e-4; opacity_reg_weight: float = 1e-3; mcmc_position_noise_enabled: bool = True
-    mcmc_position_noise_scale: float = 5e5; mcmc_opacity_gate_sharpness: float = 100.0; mcmc_opacity_gate_center: float = 0.995; low_quality_reinit_enabled: bool = True; lambda_dssim: float = 0.2
+    mcmc_position_noise_scale: float = 5e5; mcmc_opacity_gate_sharpness: float = 100.0; mcmc_opacity_gate_center: float = 0.995; low_quality_reinit_enabled: bool = False; lambda_dssim: float = 0.2
     max_gaussians: int = 200000
     densify_from_iter: int = 500; densify_until_iter: int = 15000; densification_interval: int = 100; densify_grad_threshold: float = 1.5e-4
     percent_dense: float = 0.01; prune_min_opacity: float = 0.005; screen_size_prune_threshold: float = 20.0; world_size_prune_ratio: float = 0.1
@@ -123,6 +188,8 @@ class GaussianTrainer:
         "update_densification_stats": "csUpdateDensificationStats",
         "clear_scale_histogram": "csClearScaleHistogram",
         "accumulate_scale_histogram": "csAccumulateScaleHistogram",
+        "compact_scene": "csCompactScene",
+        "append_regenerated_splats": "csAppendRegeneratedSplats",
         "regenerate_scene": "csRegenerateScene",
         "reset_opacity": "csResetOpacity",
         "init_from_pointcloud": "csInitializeGaussiansFromPointCloud",
@@ -145,6 +212,160 @@ class GaussianTrainer:
     _dispatch_adam_step = lambda self, encoder: self._dispatch("adam_step", encoder, self._scene_thread_count(), {**self._scene_grad_vars(), **self._scene_rw_vars(), **self._adam_shader_vars(), **self._common_vars()})
     _read_loss_metrics = lambda self: (lambda loss_values, signal_values: (float(loss_values[self._LOSS_SLOT_TOTAL]) if loss_values.size > self._LOSS_SLOT_TOTAL else float("nan"), float(loss_values[self._LOSS_SLOT_MSE]) if loss_values.size > self._LOSS_SLOT_MSE else float("nan"), float(loss_values[self._LOSS_SLOT_SSIM]) if loss_values.size > self._LOSS_SLOT_SSIM else float("nan"), float(signal_values.view(np.float32)[0]) if signal_values.size else float("nan")))(np.frombuffer(self._buffers["loss"].to_numpy().tobytes(), dtype=np.float32), np.frombuffer(self._buffers["signal_max"].to_numpy().tobytes(), dtype=np.uint32))
     _effective_max_gaussians = lambda self: max(int(self.training.max_gaussians), int(self._scene_count)) if int(self.training.max_gaussians) > 0 else 2147483647
+
+    def _read_array(self, buffer: spy.Buffer, dtype: np.dtype, count: int, width: int = 1) -> np.ndarray:
+        values = np.frombuffer(buffer.to_numpy().tobytes(), dtype=dtype)[: max(int(count), 0) * int(width)].copy()
+        return values if width == 1 else values.reshape(max(int(count), 0), int(width))
+
+    def _read_scene_state(self) -> dict[str, np.ndarray]:
+        count = max(int(self._scene_count), 0)
+        return {name: self._read_array(buffer, np.float32, count, 4) for name, buffer in self.renderer.scene_buffers.items()}
+
+    def _read_optimizer_state(self) -> dict[str, np.ndarray]:
+        count = max(int(self._scene_count), 0)
+        return {name: self._read_array(self._buffers[name], np.float32, count, 4) for name in self._ADAM_BUFFER_NAMES}
+
+    def _read_density_state(self) -> dict[str, np.ndarray]:
+        count = max(int(self._scene_count), 0)
+        return {
+            "grad_ema": self._read_array(self._buffers["grad_ema"], np.float32, count),
+            "grad_count": self._read_array(self._buffers["grad_count"], np.uint32, count),
+            "max_screen_radius": self._read_array(self._buffers["max_screen_radius"], np.float32, count),
+        }
+
+    def _zero_optimizer_state_indices(self, optimizer_state: dict[str, np.ndarray], density_state: dict[str, np.ndarray], indices: np.ndarray) -> None:
+        touched = np.unique(np.asarray(indices, dtype=np.int32))
+        if touched.size == 0:
+            return
+        for name in self._ADAM_BUFFER_NAMES:
+            optimizer_state[name][touched] = 0.0
+        density_state["grad_ema"][touched] = 0.0
+        density_state["grad_count"][touched] = 0
+        density_state["max_screen_radius"][touched] = 0.0
+
+    def _sample_alive_indices(self, alive_indices: np.ndarray, opacity: np.ndarray, sample_count: int) -> np.ndarray:
+        if sample_count <= 0 or alive_indices.size == 0:
+            return np.zeros((0,), dtype=np.int32)
+        weights = np.clip(np.asarray(opacity[alive_indices], dtype=np.float64), 0.0, None)
+        probs = None if float(weights.sum()) <= 0.0 else weights / float(weights.sum())
+        return np.asarray(self._frame_rng.choice(alive_indices, size=int(sample_count), replace=True, p=probs), dtype=np.int32)
+
+    def _apply_relocation_samples(
+        self,
+        scene_state: dict[str, np.ndarray],
+        optimizer_state: dict[str, np.ndarray],
+        density_state: dict[str, np.ndarray],
+        source_indices: np.ndarray,
+        target_indices: np.ndarray,
+        *,
+        append: bool,
+    ) -> None:
+        if source_indices.size == 0 or (not append and target_indices.size == 0):
+            return
+        count = int(scene_state["positions"].shape[0])
+        source_indices = np.asarray(source_indices, dtype=np.int32)
+        target_indices = np.asarray(target_indices, dtype=np.int32)
+        source_counts = np.bincount(source_indices, minlength=count).astype(np.int32, copy=False)
+        touched_sources = np.flatnonzero(source_counts > 0).astype(np.int32, copy=False)
+        family_sizes = source_counts[touched_sources] + 1
+        opacity = _opacity_from_raw_np(scene_state["color_alpha"][:, 3])
+        relocated_alpha, relocated_scale = _relocated_opacity_scale_np(
+            opacity[touched_sources],
+            scene_state["scales"][touched_sources, :3],
+            family_sizes,
+            min_opacity=max(float(self.training.prune_min_opacity), float(self.stability.min_opacity)),
+            max_opacity=float(self.stability.max_opacity),
+            min_scale=float(self.stability.min_scale),
+            max_scale=float(self.stability.max_scale),
+            max_anisotropy=float(self.stability.max_anisotropy),
+        )
+        source_raw = _raw_opacity_from_alpha_np(relocated_alpha)
+        scene_state["scales"][touched_sources, :3] = relocated_scale
+        scene_state["color_alpha"][touched_sources, 3] = source_raw
+        copy_positions = scene_state["positions"][source_indices].copy()
+        copy_scales = scene_state["scales"][source_indices].copy()
+        copy_rotations = scene_state["rotations"][source_indices].copy()
+        copy_color_alpha = scene_state["color_alpha"][source_indices].copy()
+        source_lookup = np.zeros((count,), dtype=np.int32)
+        source_lookup[touched_sources] = np.arange(touched_sources.size, dtype=np.int32)
+        copy_scales[:, :3] = relocated_scale[source_lookup[source_indices]]
+        copy_color_alpha[:, 3] = source_raw[source_lookup[source_indices]]
+        if append:
+            scene_state["positions"] = np.concatenate((scene_state["positions"], copy_positions), axis=0)
+            scene_state["scales"] = np.concatenate((scene_state["scales"], copy_scales), axis=0)
+            scene_state["rotations"] = np.concatenate((scene_state["rotations"], copy_rotations), axis=0)
+            scene_state["color_alpha"] = np.concatenate((scene_state["color_alpha"], copy_color_alpha), axis=0)
+            for name in self._ADAM_BUFFER_NAMES:
+                optimizer_state[name] = np.concatenate((optimizer_state[name], np.zeros((copy_positions.shape[0], 4), dtype=np.float32)), axis=0)
+            density_state["grad_ema"] = np.concatenate((density_state["grad_ema"], np.zeros((copy_positions.shape[0],), dtype=np.float32)), axis=0)
+            density_state["grad_count"] = np.concatenate((density_state["grad_count"], np.zeros((copy_positions.shape[0],), dtype=np.uint32)), axis=0)
+            density_state["max_screen_radius"] = np.concatenate((density_state["max_screen_radius"], np.zeros((copy_positions.shape[0],), dtype=np.float32)), axis=0)
+            self._zero_optimizer_state_indices(optimizer_state, density_state, touched_sources)
+            return
+        scene_state["positions"][target_indices] = copy_positions
+        scene_state["scales"][target_indices] = copy_scales
+        scene_state["rotations"][target_indices] = copy_rotations
+        scene_state["color_alpha"][target_indices] = copy_color_alpha
+        self._zero_optimizer_state_indices(optimizer_state, density_state, np.concatenate((touched_sources, target_indices)))
+
+    def _upload_scene_state(self, scene_state: dict[str, np.ndarray], optimizer_state: dict[str, np.ndarray], density_state: dict[str, np.ndarray]) -> None:
+        scene_count = int(scene_state["positions"].shape[0])
+        scene = GaussianScene(
+            positions=np.ascontiguousarray(scene_state["positions"][:, :3], dtype=np.float32),
+            scales=np.ascontiguousarray(scene_state["scales"][:, :3], dtype=np.float32),
+            rotations=np.ascontiguousarray(scene_state["rotations"], dtype=np.float32),
+            opacities=_opacity_from_raw_np(scene_state["color_alpha"][:, 3]),
+            colors=np.ascontiguousarray(scene_state["color_alpha"][:, :3], dtype=np.float32),
+            sh_coeffs=np.zeros((scene_count, 1, 3), dtype=np.float32),
+        )
+        self._scene_count = scene_count
+        self.scene.count = scene_count
+        self.renderer.set_scene(scene)
+        self._ensure_training_buffers(scene_count)
+        self._ensure_regen_buffers(scene_count)
+        for name in self._ADAM_BUFFER_NAMES:
+            self._buffers[name].copy_from_numpy(np.ascontiguousarray(optimizer_state[name], dtype=np.float32))
+        self._buffers["grad_ema"].copy_from_numpy(np.ascontiguousarray(density_state["grad_ema"], dtype=np.float32))
+        self._buffers["grad_count"].copy_from_numpy(np.ascontiguousarray(density_state["grad_count"], dtype=np.uint32))
+        self._buffers["max_screen_radius"].copy_from_numpy(np.ascontiguousarray(density_state["max_screen_radius"], dtype=np.float32))
+        self.renderer.set_debug_grad_norm_buffer(self._buffers["grad_ema"])
+
+    def _run_mcmc_densify(self) -> None:
+        if self._scene_count <= 0:
+            return
+        scene_state = self._read_scene_state()
+        optimizer_state = self._read_optimizer_state()
+        density_state = self._read_density_state()
+        opacity = _opacity_from_raw_np(scene_state["color_alpha"][:, 3])
+        prune_threshold = max(float(self.training.prune_min_opacity), float(self.stability.min_opacity))
+        dead_indices = np.flatnonzero(opacity <= prune_threshold).astype(np.int32, copy=False)
+        alive_indices = np.flatnonzero(opacity > prune_threshold).astype(np.int32, copy=False)
+        if dead_indices.size > 0 and alive_indices.size > 0:
+            self._apply_relocation_samples(
+                scene_state,
+                optimizer_state,
+                density_state,
+                self._sample_alive_indices(alive_indices, opacity, dead_indices.size),
+                dead_indices,
+                append=False,
+            )
+        current_count = int(scene_state["positions"].shape[0])
+        target_count = min(int(self._effective_max_gaussians()), int(math.floor(1.05 * current_count)))
+        add_count = max(target_count - current_count, 0)
+        if add_count > 0:
+            opacity = _opacity_from_raw_np(scene_state["color_alpha"][:, 3])
+            alive_indices = np.flatnonzero(opacity > 0.0).astype(np.int32, copy=False)
+            if alive_indices.size > 0:
+                self._apply_relocation_samples(
+                    scene_state,
+                    optimizer_state,
+                    density_state,
+                    self._sample_alive_indices(alive_indices, opacity, add_count),
+                    np.zeros((0,), dtype=np.int32),
+                    append=True,
+                )
+        if int(scene_state["positions"].shape[0]) != int(self._scene_count) or dead_indices.size > 0:
+            self._upload_scene_state(scene_state, optimizer_state, density_state)
 
     def __init__(
         self,
@@ -569,6 +790,39 @@ class GaussianTrainer:
             },
         )
 
+    def _dispatch_compact_scene(self, encoder: spy.CommandEncoder, force_prune_scale_threshold: float = 0.0) -> None:
+        self._regen_buffers["output_count"].copy_from_numpy(np.array([0], dtype=np.uint32))
+        self._dispatch(
+            "compact_scene",
+            encoder,
+            self._scene_thread_count(),
+            {
+                **self._scene_rw_vars(),
+                **self._adam_shader_vars(),
+                **self._density_stat_vars(),
+                **self._regen_scene_vars(),
+                **self._regen_adam_vars(),
+                **self._regen_stat_vars(),
+                "g_OutputCount": self._regen_buffers["output_count"],
+                **self._common_vars(force_prune_scale_threshold=force_prune_scale_threshold),
+            },
+        )
+
+    def _dispatch_append_regenerated_splats(self, encoder: spy.CommandEncoder, compacted_count: int, force_split_all: bool = False) -> None:
+        self._dispatch(
+            "append_regenerated_splats",
+            encoder,
+            spy.uint3(max(int(compacted_count), 1), 1, 1),
+            {
+                **self._regen_scene_vars(),
+                **self._regen_adam_vars(),
+                **self._regen_stat_vars(),
+                "g_OutputCount": self._regen_buffers["output_count"],
+                "g_CompactedCount": int(max(compacted_count, 0)),
+                **self._common_vars(force_split_all=force_split_all),
+            },
+        )
+
     def _dispatch_reset_opacity(self, encoder: spy.CommandEncoder) -> None:
         self._dispatch(
             "reset_opacity",
@@ -607,6 +861,7 @@ class GaussianTrainer:
             enc.copy_buffer(self._buffers[name], 0, self._regen_buffers[name], 0, copy_bytes_stat)
         self.device.submit_command_buffer(enc.finish())
         self.device.wait()
+        self._zero_density_stats()
 
     def build_scale_histogram_log10(self) -> tuple[np.ndarray, np.ndarray]:
         self._ensure_histogram_buffers()
@@ -623,9 +878,14 @@ class GaussianTrainer:
         if self._scene_count <= 0:
             return
         self._ensure_regen_buffers(self._scene_count)
-        enc = self.device.create_command_encoder()
-        self._dispatch_regenerate_scene(enc, force_split_all=True)
-        self.device.submit_command_buffer(enc.finish())
+        enc_compact = self.device.create_command_encoder()
+        self._dispatch_compact_scene(enc_compact)
+        self.device.submit_command_buffer(enc_compact.finish())
+        self.device.wait()
+        compacted_count = self._read_output_count()
+        enc_append = self.device.create_command_encoder()
+        self._dispatch_append_regenerated_splats(enc_append, compacted_count, force_split_all=True)
+        self.device.submit_command_buffer(enc_append.finish())
         self.device.wait()
         self._apply_regenerated_scene(max(self._read_output_count(), 1))
 
@@ -633,9 +893,9 @@ class GaussianTrainer:
         if self._scene_count <= 0:
             return
         self._ensure_regen_buffers(self._scene_count)
-        enc = self.device.create_command_encoder()
-        self._dispatch_regenerate_scene(enc, force_prune_scale_threshold=float(max(min_scale_threshold, 0.0)))
-        self.device.submit_command_buffer(enc.finish())
+        enc_compact = self.device.create_command_encoder()
+        self._dispatch_compact_scene(enc_compact, force_prune_scale_threshold=float(max(min_scale_threshold, 0.0)))
+        self.device.submit_command_buffer(enc_compact.finish())
         self.device.wait()
         self._apply_regenerated_scene(max(self._read_output_count(), 1))
 
@@ -672,15 +932,25 @@ class GaussianTrainer:
             step_index = int(self.state.step + 1)
             run_densify = self._should_densify(step_index)
             run_reset_opacity = self._should_reset_opacity(step_index)
+            use_mcmc_regen = run_densify and bool(self.training.low_quality_reinit_enabled)
             enc_opt = self.device.create_command_encoder()
             self._dispatch_adam_step(enc_opt)
             self._dispatch_update_densification_stats(enc_opt)
-            if run_densify:
-                self._ensure_regen_buffers(self._scene_count)
-                self._dispatch_regenerate_scene(enc_opt)
             self.device.submit_command_buffer(enc_opt.finish())
             self.device.wait()
-            if run_densify:
+            if use_mcmc_regen:
+                self._run_mcmc_densify()
+            elif run_densify:
+                self._ensure_regen_buffers(self._scene_count)
+                enc_compact = self.device.create_command_encoder()
+                self._dispatch_compact_scene(enc_compact)
+                self.device.submit_command_buffer(enc_compact.finish())
+                self.device.wait()
+                compacted_count = self._read_output_count()
+                enc_append = self.device.create_command_encoder()
+                self._dispatch_append_regenerated_splats(enc_append, compacted_count)
+                self.device.submit_command_buffer(enc_append.finish())
+                self.device.wait()
                 self._apply_regenerated_scene(max(self._read_output_count(), 1))
             if run_reset_opacity:
                 enc_reset = self.device.create_command_encoder()

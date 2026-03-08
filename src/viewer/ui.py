@@ -149,12 +149,12 @@ def build_ui(screen: object, app: object, renderer: object) -> ViewerUI:
     setup_group = _build_group(panel, "Train Setup", GROUP_SPECS["Train Setup"], controls)
     texts["setup_hint"] = spy.ui.Text(setup_group, "COLMAP init uses direct points + NN scales")
     schedule_group = _build_group(panel, "Train Schedule", GROUP_SPECS["Train Schedule"], controls)
-    texts["schedule_hint"] = spy.ui.Text(schedule_group, "Iteration schedule for densify and opacity reset")
+    texts["schedule_hint"] = spy.ui.Text(schedule_group, "Iteration schedule for relocate/grow and optional opacity reset")
     _build_group(panel, "Train Optimizer", GROUP_SPECS["Train Optimizer"], controls)
     stab_group = _build_group(panel, "Train Stability", GROUP_SPECS["Train Stability"], controls)
     texts["stability_hint"] = spy.ui.Text(stab_group, "Scale bounds and anisotropy are clamped after ADAM")
     density_group = _build_group(panel, "Train Density", GROUP_SPECS["Train Density"], controls)
-    texts["density_hint"] = spy.ui.Text(density_group, "Split/prune + opacity reset schedule")
+    texts["density_hint"] = spy.ui.Text(density_group, "Opacity-threshold relocate/grow with manual split/prune tools")
     params_group = spy.ui.Group(panel, "Render Params")
     for spec in (
         ControlSpec("radius_scale", "slider_float", "Radius Scale", {"value": float(renderer.radius_scale), "min": 0.5, "max": 4.0, "flags": spy.ui.SliderFlags.logarithmic, "format": "%.3g"}),

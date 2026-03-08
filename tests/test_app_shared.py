@@ -115,6 +115,7 @@ def test_bicycle_images4_profile_applies_psnr_overrides():
     assert params.training.mcmc_position_noise_enabled is False
     assert params.training.lambda_dssim == 0.0
     assert params.training.scale_l2_weight == 1e-4
+    assert params.training.opacity_reg_weight == 0.0
     assert params.training.max_gaussians == 200000
     assert params.training.densify_from_iter == 500
     assert params.training.densify_until_iter == 15000
@@ -144,6 +145,7 @@ def test_viewer_effective_training_setup_applies_auto_profile_and_init_override(
     assert params.training.mcmc_position_noise_enabled is False
     assert params.training.lambda_dssim == 0.0
     assert params.training.scale_l2_weight == 1e-4
+    assert params.training.opacity_reg_weight == 0.0
     assert init_hparams.initial_opacity == 0.1
 
 
