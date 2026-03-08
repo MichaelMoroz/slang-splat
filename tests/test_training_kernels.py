@@ -110,6 +110,7 @@ def test_training_targets_use_srgb_textures(device, tmp_path: Path):
 
     assert native_target.format == spy.Format.rgba8_unorm_srgb
     assert train_target.format == spy.Format.rgba8_unorm_srgb
+    assert native_target is train_target
 
 
 def test_separable_gaussian_blur_preserves_impulse_energy(device):

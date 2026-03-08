@@ -134,7 +134,7 @@ class GaussianTrainer:
     make_frame_camera = lambda self, frame_index, width, height: self._make_frame_camera(self._frame(frame_index), int(width), int(height))
     _zero_optimizer_moments = lambda self: [self._buffers[name].copy_from_numpy(np.zeros((max(int(self._scene_count), 1), 4), dtype=np.float32)) for name in self._ADAM_BUFFER_NAMES]
     frame_size = lambda self, frame_index: (int(self._frame(frame_index).width), int(self._frame(frame_index).height))
-    get_frame_target_texture = lambda self, frame_index, native_resolution=True: (self._frame_targets_native if native_resolution else self._frame_targets_train)[int(np.clip(frame_index, 0, len(self.frames) - 1))]
+    get_frame_target_texture = lambda self, frame_index, native_resolution=True: self._frame_targets_train[int(np.clip(frame_index, 0, len(self.frames) - 1))]
     _dispatch_raster_forward_backward = lambda self, encoder, frame_camera, background: (self.renderer.clear_raster_grads_current_scene(encoder), self.renderer.rasterize_forward_backward_current_scene(encoder=encoder, camera=frame_camera, background=background, output_grad=self.renderer.output_grad_texture))
     _dispatch_adam_step = lambda self, encoder: self._dispatch("adam_step", encoder, self._scene_thread_count(), {**self._scene_grad_vars(), **self._scene_rw_vars(), **self._adam_shader_vars(), **self._common_vars()})
     _read_loss_metrics = lambda self: (lambda loss_values, signal_values: (float(loss_values[self._LOSS_SLOT_TOTAL]) if loss_values.size > self._LOSS_SLOT_TOTAL else float("nan"), float(loss_values[self._LOSS_SLOT_MSE]) if loss_values.size > self._LOSS_SLOT_MSE else float("nan"), float(loss_values[self._LOSS_SLOT_SSIM]) if loss_values.size > self._LOSS_SLOT_SSIM else float("nan"), float(signal_values.view(np.float32)[0]) if signal_values.size else float("nan")))(np.frombuffer(self._buffers["loss"].to_numpy().tobytes(), dtype=np.float32), np.frombuffer(self._buffers["signal_max"].to_numpy().tobytes(), dtype=np.uint32))
@@ -189,7 +189,6 @@ class GaussianTrainer:
         self._init_point_positions_cpu: np.ndarray | None = None
         self._init_point_colors_cpu: np.ndarray | None = None
         self._frame_targets_train: list[spy.Texture] = []
-        self._frame_targets_native: list[spy.Texture] = []
         self._loss_textures: dict[str, spy.Texture] = {}
         self._blur = SeparableGaussianBlur(self.device, self.renderer.width, self.renderer.height)
         self._frame_rng = np.random.default_rng(self._seed)
@@ -323,11 +322,10 @@ class GaussianTrainer:
 
     def _create_dataset_textures(self) -> None:
         train_size = (int(self.renderer.width), int(self.renderer.height))
-        self._frame_targets_train, self._frame_targets_native = [], []
+        self._frame_targets_train = []
         for frame in self.frames:
             with Image.open(frame.image_path) as pil_image:
                 native = pil_image.convert("RGB")
-                self._frame_targets_native.append(self._create_gpu_texture(native))
                 self._frame_targets_train.append(self._create_gpu_texture(native if native.size == train_size else native.resize(train_size, resample=Image.Resampling.BILINEAR)))
 
     def _reset_metric_windows(self) -> None:
