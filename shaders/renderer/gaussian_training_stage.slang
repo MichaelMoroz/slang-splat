@@ -793,7 +793,6 @@ void csRegenerateScene(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     if (allowGrowth && highGrad)
     {
-        uint childCount = 2u;
         float4 qInv = float4(rot.x, -rot.y, -rot.z, -rot.w);
         uint axisIndex = dominant_axis_index(scale.xyz);
         float3 splitAxis = axis_unit(axisIndex);
@@ -807,7 +806,7 @@ void csRegenerateScene(uint3 dispatchThreadID : SV_DispatchThreadID)
             float3 worldOffset = rotate_by_quat(localOffset, qInv);
             float4 childPos = pos;
             childPos.xyz = clamp(sanitize_float3(pos.xyz + worldOffset, g_Stability.hugeValue), -g_Stability.positionAbsMax, g_Stability.positionAbsMax);
-            append_output_splat(childPos, float4(childScale, 0.0), rot, colorAlpha, float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), 0.0, 0.0);
+            append_output_splat(childPos, float4(childScale, 0.0), rot, colorAlpha, float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), gradEMA, maxScreenRadius);
         }
         return;
     }

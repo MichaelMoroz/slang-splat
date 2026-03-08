@@ -24,6 +24,7 @@ struct RasterState : IDifferentiable
 };
 
 static const float DEBUG_GRAD_NORM_FLOOR = 1e-12;
+static const float DEBUG_GRAD_ALPHA_SCALE = 0.1;
 static const float LOG2_TO_LOG10 = 0.30102999566;
 static const float DEBUG_GRAD_LOG10_MIN = -12.0;
 static const float DEBUG_GRAD_LOG10_MAX = 0.0;
@@ -204,6 +205,40 @@ uint microtile_index(uint x, uint y)
 RasterState initial_raster_state()
 {
     return { 0.0, 1.0 };
+}
+
+float jet_channel(float x)
+{
+    return saturate(1.5 - abs(4.0 * x - 3.0));
+}
+
+float3 jet_colormap(float x)
+{
+    return float3(jet_channel(x + 0.5), jet_channel(x), jet_channel(x - 0.5));
+}
+
+float raster_eval_alpha_gaussian_debug(RasterGaussian gaussian, no_diff float3 rayDir)
+{
+    return DEBUG_GRAD_ALPHA_SCALE * raster_eval_alpha_gaussian(gaussian, rayDir);
+}
+
+float raster_forward_debug_grad_pixel(RasterMicrotileInfo info, uint pixelIdx)
+{
+    float accum = 0.0;
+    float trans = 1.0;
+    for (uint idx = info.start; idx < info.end; idx++)
+    {
+        uint splatId = g_SortedValues[idx];
+        RasterGaussian gaussian = RasterGaussian.load_global(splatId);
+        float alpha = raster_eval_alpha_gaussian_debug(gaussian, info.rayDir[pixelIdx]);
+        if (alpha <= 0.0) continue;
+        float gradNorm = g_DebugGradNorm[splatId];
+        if (!isfinite(gradNorm)) gradNorm = 0.0;
+        accum += trans * alpha * max(gradNorm, 0.0);
+        trans *= 1.0 - alpha;
+        if (trans < g_Raster.transmittanceThreshold) break;
+    }
+    return accum;
 }
 
 RasterState.Differential zero_raster_state_differential()
@@ -413,21 +448,10 @@ float4 raster_forward_output_pixel(
 
     if (g_Raster.debugShowGradNorm != 0u)
     {
-        float gradLog10 = DEBUG_GRAD_LOG10_MIN;
-        uint pixelEnd = min(info.start + processedCount, info.end);
-        for (uint idx = info.start; idx < pixelEnd; idx++)
-        {
-            uint splatId = g_SortedValues[idx];
-            RasterGaussian gaussian = RasterGaussian.load_global(splatId);
-            float alpha = raster_eval_alpha_gaussian(gaussian, info.rayDir[pixelIdx]);
-            if (alpha <= 0.0) continue;
-            float gradNorm = g_DebugGradNorm[splatId];
-            if (!isfinite(gradNorm)) gradNorm = 0.0;
-            gradNorm = max(gradNorm, DEBUG_GRAD_NORM_FLOOR);
-            gradLog10 = max(gradLog10, log2(gradNorm) * LOG2_TO_LOG10);
-        }
+        float gradValue = max(raster_forward_debug_grad_pixel(info, pixelIdx), DEBUG_GRAD_NORM_FLOOR);
+        float gradLog10 = log2(gradValue) * LOG2_TO_LOG10;
         float normalized = saturate((gradLog10 - DEBUG_GRAD_LOG10_MIN) / (DEBUG_GRAD_LOG10_MAX - DEBUG_GRAD_LOG10_MIN));
-        return float4(float3(normalized), 1.0);
+        return float4(jet_colormap(normalized), 1.0);
     }
 
     float3 finalColor = state.accum + state.trans * g_Raster.background;

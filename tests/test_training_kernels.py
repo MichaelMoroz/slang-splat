@@ -415,7 +415,7 @@ def test_regenerate_scene_splits_large_high_gradient_gaussians(device, tmp_path:
     scales[0, :3] = np.array([0.5, 0.2, 0.1], dtype=np.float32)
     renderer.scene_buffers["scales"].copy_from_numpy(scales)
     trainer._buffers["grad_ema"].copy_from_numpy(np.array([1.0], dtype=np.float32))
-    trainer._buffers["max_screen_radius"].copy_from_numpy(np.zeros((1,), dtype=np.float32))
+    trainer._buffers["max_screen_radius"].copy_from_numpy(np.array([3.5], dtype=np.float32))
     trainer._ensure_regen_buffers(1)
 
     enc = device.create_command_encoder()
@@ -432,6 +432,8 @@ def test_regenerate_scene_splits_large_high_gradient_gaussians(device, tmp_path:
     np.testing.assert_allclose(out_pos[:, 1:], np.repeat(positions[:, 1:], 2, axis=0), rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(out_pos[:, 0], np.array([positions[0, 0] - 0.25, positions[0, 0] + 0.25], dtype=np.float32), rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(np.mean(out_pos[:, :3], axis=0), positions[0, :3], rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(_read_f32(trainer._regen_buffers["grad_ema"], 2), np.array([1.0, 1.0], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(_read_f32(trainer._regen_buffers["max_screen_radius"], 2), np.array([3.5, 3.5], dtype=np.float32), rtol=0.0, atol=1e-6)
 
 
 def test_regenerate_scene_keeps_anisotropic_low_gradient_gaussian(device, tmp_path: Path):
