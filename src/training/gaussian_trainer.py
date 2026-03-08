@@ -54,7 +54,7 @@ class TrainingHyperParams:
     max_gaussians: int = 50000
     densify_from_iter: int = 500; densify_until_iter: int = 15000; densification_interval: int = 100; densify_grad_threshold: float = 2e-4
     percent_dense: float = 0.01; prune_min_opacity: float = 0.005; screen_size_prune_threshold: float = 20.0; world_size_prune_ratio: float = 0.1
-    split_child_count: int = 2; opacity_reset_interval: int = 3000
+    opacity_reset_interval: int = 3000
 
 
 @dataclass(slots=True)
@@ -223,7 +223,7 @@ class GaussianTrainer:
 
     def _ensure_regen_buffers(self, splat_count: int) -> None:
         count = max(int(splat_count), 1)
-        required = count * max(int(self.training.split_child_count), 2)
+        required = count * 2
         if self._regen_buffers and required <= self._regen_capacity:
             return
         usage = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
@@ -425,7 +425,6 @@ class GaussianTrainer:
                 "screenSizeThreshold": float(max(self.training.screen_size_prune_threshold, 0.0)),
                 "worldSizeRatio": float(max(self.training.world_size_prune_ratio, 0.0)),
                 "gradEMAAlpha": float(1.0 / float(max(len(self.frames), 1))),
-                "splitChildCount": int(max(self.training.split_child_count, 2)),
                 "outputCapacity": int(max(min(self._regen_capacity, self._effective_max_gaussians()), 1)),
                 "enableScreenSizePrune": np.uint32(1 if int(self.state.step + 1) > int(self.training.opacity_reset_interval) else 0),
             },

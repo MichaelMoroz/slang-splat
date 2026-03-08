@@ -56,7 +56,7 @@ Viewer controls:
 python cli.py train-colmap --colmap-root dataset/garden --images-subdir images_4 --iters 100 --max-gaussians 50000
 ```
 Use `--scale-l2` to control autodiff log-scale regularization around the init/reference scale (default `1e-3`).
-Use `--max-anisotropy` to hard-limit each gaussian's axis scale ratio (default `10.0`).
+Use `--max-anisotropy` to set the anisotropy ratio that forces a split during density control (default `10.0`).
 
 Quick smoke configuration:
 ```powershell
@@ -87,7 +87,7 @@ Training notes:
 - MCMC position noise is now opt-in; leaving it off by default avoids the low-opacity reset interacting with max exploration noise on every splat.
 - Numerical reinforcement includes clipping, finite checks, and safe quaternion normalization.
 - Scale regularization uses an autodiff log-space penalty around the initialization/reference scale, so equal multiplicative scale deviations are treated more uniformly.
-- Scale anisotropy is constrained with a hard per-gaussian clamp on `max(scale) / min(scale)`.
+- Scale anisotropy is no longer clamped in the ADAM step; instead, gaussians whose `max(scale) / min(scale)` exceeds `max_anisotropy` are forced into the split path.
 - Shared shader math constants are centralized in `shaders/renderer/math_constants.slang`.
 
 ## Run Tests

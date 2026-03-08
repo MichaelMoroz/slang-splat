@@ -141,7 +141,7 @@ def build_ui(screen: object, app: object, renderer: object) -> ViewerUI:
     texts["setup_hint"] = spy.ui.Text(setup_group, "COLMAP init uses direct points + NN scales")
     _build_group(panel, "Train Optimizer", GROUP_SPECS["Train Optimizer"], controls)
     stab_group = _build_group(panel, "Train Stability", GROUP_SPECS["Train Stability"], controls)
-    texts["stability_hint"] = spy.ui.Text(stab_group, "Hard clamps are applied after every ADAM step")
+    texts["stability_hint"] = spy.ui.Text(stab_group, "Scale bounds are clamped after ADAM; anisotropy now drives splitting")
     density_group = _build_group(panel, "Train Density", GROUP_SPECS["Train Density"], controls)
     texts["density_hint"] = spy.ui.Text(density_group, "Clone/split/prune + opacity reset schedule")
     params_group = spy.ui.Group(panel, "Render Params")

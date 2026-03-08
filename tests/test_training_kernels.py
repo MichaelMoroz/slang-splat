@@ -251,6 +251,31 @@ def test_synthetic_base_grads_update_and_respect_constraints(device, tmp_path: P
     assert np.all(np.abs(norms - 1.0) < 1e-3)
 
 
+def test_adam_step_does_not_clamp_anisotropy(device, tmp_path: Path):
+    scene = _make_scene(count=1, seed=25)
+    scene.scales[0] = np.array([0.9, 0.05, 0.05], dtype=np.float32)
+    frame = _make_frame(tmp_path)
+    renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
+    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(scale_l2_weight=0.0), seed=27)
+    camera = frame.make_camera(near=0.1, far=20.0)
+    renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
+    device.wait()
+
+    zeros = np.zeros((scene.count * 4,), dtype=np.float32)
+    renderer.work_buffers["grad_positions"].copy_from_numpy(zeros)
+    renderer.work_buffers["grad_scales"].copy_from_numpy(zeros)
+    renderer.work_buffers["grad_rotations"].copy_from_numpy(zeros)
+    renderer.work_buffers["grad_color_alpha"].copy_from_numpy(zeros)
+
+    enc = device.create_command_encoder()
+    trainer._dispatch_adam_step(enc)
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+
+    scales = _read_f32x4(renderer.scene_buffers["scales"], 1)
+    np.testing.assert_allclose(scales[0, :3], np.array([0.9, 0.05, 0.05], dtype=np.float32), rtol=0.0, atol=1e-6)
+
+
 def test_log_scale_regularizer_pulls_scales_toward_reference(device, tmp_path: Path):
     scene = _make_scene(count=2, seed=27)
     scene.scales[:] = np.array([[0.02, 0.02, 0.02], [0.08, 0.08, 0.08]], dtype=np.float32)
@@ -382,11 +407,12 @@ def test_regenerate_scene_splits_large_high_gradient_gaussians(device, tmp_path:
     scene = _make_scene(count=1, seed=61)
     frame = _make_frame(tmp_path)
     renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
-    training = TrainingHyperParams(densify_grad_threshold=0.5, percent_dense=0.01, split_child_count=2, world_size_prune_ratio=1000.0)
+    training = TrainingHyperParams(densify_grad_threshold=0.5, percent_dense=0.01, world_size_prune_ratio=1000.0)
     trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], training_hparams=training, seed=55)
 
+    positions = _read_f32x4(renderer.scene_buffers["positions"], 1)
     scales = _read_f32x4(renderer.scene_buffers["scales"], 1)
-    scales[0, :3] = 0.5
+    scales[0, :3] = np.array([0.5, 0.2, 0.1], dtype=np.float32)
     renderer.scene_buffers["scales"].copy_from_numpy(scales)
     trainer._buffers["grad_ema"].copy_from_numpy(np.array([1.0], dtype=np.float32))
     trainer._buffers["max_screen_radius"].copy_from_numpy(np.zeros((1,), dtype=np.float32))
@@ -401,8 +427,40 @@ def test_regenerate_scene_splits_large_high_gradient_gaussians(device, tmp_path:
     out_pos = _read_f32x4(trainer._regen_buffers["positions"], 2)
     out_scale = _read_f32x4(trainer._regen_buffers["scales"], 2)
     assert np.all(np.isfinite(out_pos))
-    np.testing.assert_allclose(out_scale[:, :3], np.full((2, 3), 0.5 / 1.6, dtype=np.float32), rtol=0.0, atol=1e-5)
-    assert np.any(np.abs(out_pos[:, :3] - scene.positions[0]) > 1e-5)
+    expected_scale = np.repeat(np.array([[0.25, 0.2, 0.1]], dtype=np.float32), 2, axis=0)
+    np.testing.assert_allclose(out_scale[:, :3], expected_scale, rtol=0.0, atol=1e-5)
+    np.testing.assert_allclose(out_pos[:, 1:], np.repeat(positions[:, 1:], 2, axis=0), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(out_pos[:, 0], np.array([positions[0, 0] - 0.25, positions[0, 0] + 0.25], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(np.mean(out_pos[:, :3], axis=0), positions[0, :3], rtol=0.0, atol=1e-6)
+
+
+def test_regenerate_scene_splits_anisotropic_gaussian_without_high_gradient(device, tmp_path: Path):
+    scene = _make_scene(count=1, seed=63)
+    frame = _make_frame(tmp_path)
+    renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
+    training = TrainingHyperParams(densify_grad_threshold=10.0, percent_dense=1.0, world_size_prune_ratio=1000.0)
+    stability = StabilityHyperParams(max_anisotropy=2.0)
+    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], training_hparams=training, stability_hparams=stability, seed=57)
+
+    positions = _read_f32x4(renderer.scene_buffers["positions"], 1)
+    scales = _read_f32x4(renderer.scene_buffers["scales"], 1)
+    scales[0, :3] = np.array([0.6, 0.1, 0.1], dtype=np.float32)
+    renderer.scene_buffers["scales"].copy_from_numpy(scales)
+    trainer._buffers["grad_ema"].copy_from_numpy(np.array([0.0], dtype=np.float32))
+    trainer._buffers["max_screen_radius"].copy_from_numpy(np.zeros((1,), dtype=np.float32))
+    trainer._ensure_regen_buffers(1)
+
+    enc = device.create_command_encoder()
+    trainer._dispatch_regenerate_scene(enc)
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+
+    assert trainer._read_output_count() == 2
+    out_pos = _read_f32x4(trainer._regen_buffers["positions"], 2)
+    out_scale = _read_f32x4(trainer._regen_buffers["scales"], 2)
+    np.testing.assert_allclose(out_pos[:, 1:], np.repeat(positions[:, 1:], 2, axis=0), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(out_pos[:, 0], np.array([positions[0, 0] - 0.3, positions[0, 0] + 0.3], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(out_scale[:, :3], np.repeat(np.array([[0.3, 0.1, 0.1]], dtype=np.float32), 2, axis=0), rtol=0.0, atol=1e-6)
 
 
 def test_regenerate_scene_prunes_low_opacity_only(device, tmp_path: Path):

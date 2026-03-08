@@ -56,7 +56,6 @@ struct DensifyParams
     float screenSizeThreshold;
     float worldSizeRatio;
     float gradEMAAlpha;
-    uint splitChildCount;
     uint outputCapacity;
     uint enableScreenSizePrune;
 };
@@ -322,11 +321,25 @@ float scale_log_reference_loss(float3 scale, no_diff float referenceScale)
     return dot(logScale, logScale) * (1.0 / 3.0);
 }
 
-float3 clamp_scale_anisotropy(float3 scale)
+float scale_anisotropy(float3 scale)
 {
-    float maxAnisotropy = max(g_Stability.maxAnisotropy, 1.0);
-    float maxScale = max(scale.x, max(scale.y, scale.z));
-    return max(scale, float3(maxScale / maxAnisotropy));
+    float3 safeScale = max(scale, float3(TINY_VALUE));
+    float minScale = min(safeScale.x, min(safeScale.y, safeScale.z));
+    float maxScale = max(safeScale.x, max(safeScale.y, safeScale.z));
+    return maxScale / max(minScale, TINY_VALUE);
+}
+
+uint dominant_axis_index(float3 scale)
+{
+    if (scale.x >= scale.y && scale.x >= scale.z) return 0u;
+    return scale.y >= scale.z ? 1u : 2u;
+}
+
+float3 axis_unit(uint axisIndex)
+{
+    if (axisIndex == 0u) return float3(1.0, 0.0, 0.0);
+    if (axisIndex == 1u) return float3(0.0, 1.0, 0.0);
+    return float3(0.0, 0.0, 1.0);
 }
 
 float scene_small_scale_threshold()
@@ -700,7 +713,6 @@ void csAdamStepFused(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     pos.xyz = clamp(pos.xyz, -g_Stability.positionAbsMax, g_Stability.positionAbsMax);
     scale.xyz = clamp(scale.xyz, g_Stability.minScale, g_Stability.maxScale);
-    scale.xyz = clamp_scale_anisotropy(scale.xyz);
     rot = normalize_quaternion_safe(rot);
     colorAlpha.xyz = clamp(colorAlpha.xyz, 0.0, 1.0);
 
@@ -771,26 +783,28 @@ void csRegenerateScene(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     bool highGrad = gradEMA >= g_Densify.gradThreshold;
     bool small = maxScale <= scene_small_scale_threshold();
+    bool anisotropic = scale_anisotropy(scale.xyz) >= max(g_Stability.maxAnisotropy, 1.0);
 
-    if (allowGrowth && highGrad && small)
+    if (allowGrowth && highGrad && small && !anisotropic)
     {
         append_output_splat(pos, scale, rot, colorAlpha, adamMPos, adamVPos, adamMScale, adamVScale, adamMQuat, adamVQuat, adamMColorAlpha, adamVColorAlpha, 0.0, 0.0);
         append_output_splat(pos, scale, rot, colorAlpha, float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), 0.0, 0.0);
         return;
     }
 
-    if (allowGrowth && highGrad)
+    if (allowGrowth && (anisotropic || highGrad))
     {
-        uint childCount = max(g_Densify.splitChildCount, 2u);
+        uint childCount = 2u;
         float4 qInv = float4(rot.x, -rot.y, -rot.z, -rot.w);
-        float3 childScale = clamp_scale_anisotropy(clamp(scale.xyz / max(0.8 * float(childCount), 1.0), g_Stability.minScale, g_Stability.maxScale));
-        [unroll] for (uint childIdx = 0u; childIdx < 8u; ++childIdx)
+        uint axisIndex = dominant_axis_index(scale.xyz);
+        float3 splitAxis = axis_unit(axisIndex);
+        float axisHalfExtent = max(scale[axisIndex], g_Stability.minScale) * 0.5;
+        float3 childScale = clamp(scale.xyz, g_Stability.minScale, g_Stability.maxScale);
+        childScale[axisIndex] = clamp(max(scale[axisIndex], g_Stability.minScale) * 0.5, g_Stability.minScale, g_Stability.maxScale);
+        [unroll] for (uint childIdx = 0u; childIdx < 2u; ++childIdx)
         {
-            if (childIdx >= childCount) break;
-            uint rngSeed = splatId * 0x9e3779b9u ^ childIdx * 0x85ebca6bu ^ g_Adam.stepIndex * 0xc2b2ae35u ^ 0x27d4eb2du;
-            uint rngState = hash_u32(rngSeed);
-            if (rngState == 0u) rngState = 1u;
-            float3 localOffset = rng_normal3_box_muller(rngState) * max(scale.xyz, float3(g_Stability.minScale));
+            float offsetSign = childIdx == 0u ? -1.0 : 1.0;
+            float3 localOffset = splitAxis * (offsetSign * axisHalfExtent);
             float3 worldOffset = rotate_by_quat(localOffset, qInv);
             float4 childPos = pos;
             childPos.xyz = clamp(sanitize_float3(pos.xyz + worldOffset, g_Stability.hugeValue), -g_Stability.positionAbsMax, g_Stability.positionAbsMax);
@@ -849,7 +863,6 @@ void csInitializeGaussiansFromPointCloud(uint3 dispatchThreadID : SV_DispatchThr
     );
     float4 scale = float4(baseScale * scaleMul, 0.0);
     scale.xyz = clamp(sanitize_float3(scale.xyz, g_Stability.hugeValue), g_Stability.minScale, g_Stability.maxScale);
-    scale.xyz = clamp_scale_anisotropy(scale.xyz);
 
     float4 rot = normalize_quaternion_safe(rng_normal4_box_muller(rngState));
     float3 color = pointColor;
