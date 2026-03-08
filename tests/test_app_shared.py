@@ -5,6 +5,7 @@ import numpy as np
 from src.app.shared import build_training_params, estimate_scene_bounds
 from src.scene import GaussianScene
 from src.viewer.app import default_training_params
+from src.viewer.ui import default_control_values, default_prune_small_threshold
 
 
 def _scene() -> GaussianScene:
@@ -97,3 +98,7 @@ def test_default_training_params_match_mcmc_reference_defaults():
     assert params.training.densify_until_iter == 15000
     assert params.training.densification_interval == 100
     assert params.training.opacity_reset_interval == 3000
+
+
+def test_default_prune_small_threshold_tracks_min_scale_default():
+    assert default_prune_small_threshold() == 4.0 * float(default_control_values("Train Stability")["min_scale"])

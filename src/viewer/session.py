@@ -102,3 +102,19 @@ def split_all_gaussians(viewer: object) -> None:
         sync_scene_from_training_renderer(viewer, viewer.s.renderer, target="main", force=True)
     viewer.s.last_error = ""
     print(f"Split all gaussians: {viewer.s.trainer.scene.count:,} splats")
+
+
+def prune_small_gaussians(viewer: object) -> None:
+    if viewer.s.trainer is None:
+        initialize_training_scene(viewer)
+    if viewer.s.trainer is None or viewer.s.training_renderer is None:
+        return
+    threshold = float(max(viewer.c("prune_small_threshold").value, 0.0))
+    viewer.s.trainer.prune_small_gaussians(threshold)
+    if viewer.s.scene is not None:
+        viewer.s.scene.count = int(viewer.s.trainer.scene.count)
+    _invalidate(viewer)
+    if viewer.s.renderer is not None:
+        sync_scene_from_training_renderer(viewer, viewer.s.renderer, target="main", force=True)
+    viewer.s.last_error = ""
+    print(f"Pruned small gaussians below {threshold:.6g}: {viewer.s.trainer.scene.count:,} splats")

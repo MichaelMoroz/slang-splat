@@ -61,6 +61,7 @@ struct DensifyParams
     uint outputCapacity;
     uint enableScreenSizePrune;
     uint forceSplitAll;
+    float forcePruneScaleThreshold;
 };
 
 uniform AdamParams g_Adam;
@@ -799,12 +800,13 @@ void csRegenerateScene(uint3 dispatchThreadID : SV_DispatchThreadID)
     float maxScreenRadius = sanitize_scalar(g_MaxScreenRadius[splatId], g_Stability.hugeValue);
     bool allowGrowth = g_Densify.maxGaussianCount > g_SplatCount;
     float opacity = opacity_from_raw(colorAlpha.w);
+    float maxScale = max(scale.x, max(scale.y, scale.z));
 
-    bool prune = opacity < g_Densify.pruneMinOpacity;
+    bool prune = opacity < g_Densify.pruneMinOpacity || maxScale < g_Densify.forcePruneScaleThreshold;
     if (prune) return;
 
     bool highGrad = gradEMA >= g_Densify.gradThreshold;
-    bool small = max(scale.x, max(scale.y, scale.z)) <= scene_small_scale_threshold();
+    bool small = maxScale <= scene_small_scale_threshold();
     bool shouldSplit = g_Densify.forceSplitAll != 0u || (highGrad && !small);
 
     if (allowGrowth && shouldSplit)

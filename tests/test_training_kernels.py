@@ -494,6 +494,32 @@ def test_split_all_gaussians_splits_current_scene(device, tmp_path: Path):
     np.testing.assert_allclose(_read_f32(trainer._buffers["max_screen_radius"], 2), np.array([6.0, 6.0], dtype=np.float32), rtol=0.0, atol=1e-6)
 
 
+def test_prune_small_gaussians_removes_splats_below_threshold(device, tmp_path: Path):
+    scene = _make_scene(count=3, seed=73)
+    frame = _make_frame(tmp_path)
+    renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
+    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(densify_grad_threshold=10.0), seed=43)
+
+    positions = _read_f32x4(renderer.scene_buffers["positions"], 3)
+    scales = _read_f32x4(renderer.scene_buffers["scales"], 3)
+    scales[0, :3] = np.array([0.002, 0.002, 0.002], dtype=np.float32)
+    scales[1, :3] = np.array([0.008, 0.008, 0.008], dtype=np.float32)
+    scales[2, :3] = np.array([0.02, 0.02, 0.02], dtype=np.float32)
+    renderer.scene_buffers["scales"].copy_from_numpy(scales)
+    trainer._buffers["grad_ema"].copy_from_numpy(np.array([1.0, 2.0, 3.0], dtype=np.float32))
+    trainer._buffers["max_screen_radius"].copy_from_numpy(np.array([4.0, 5.0, 6.0], dtype=np.float32))
+
+    trainer.prune_small_gaussians(0.01)
+
+    assert trainer.scene.count == 1
+    out_pos = _read_f32x4(renderer.scene_buffers["positions"], 1)
+    out_scale = _read_f32x4(renderer.scene_buffers["scales"], 1)
+    np.testing.assert_allclose(out_pos[0], positions[2], rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(out_scale[0], scales[2], rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(_read_f32(trainer._buffers["grad_ema"], 1), np.array([3.0], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(_read_f32(trainer._buffers["max_screen_radius"], 1), np.array([6.0], dtype=np.float32), rtol=0.0, atol=1e-6)
+
+
 def test_regenerate_scene_keeps_anisotropic_low_gradient_gaussian(device, tmp_path: Path):
     scene = _make_scene(count=1, seed=63)
     frame = _make_frame(tmp_path)

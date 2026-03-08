@@ -407,7 +407,7 @@ class GaussianTrainer:
             },
         )
 
-    def _common_vars(self, force_split_all: bool = False) -> dict[str, object]:
+    def _common_vars(self, force_split_all: bool = False, force_prune_scale_threshold: float = 0.0) -> dict[str, object]:
         return {
             "g_Width": int(self.renderer.width),
             "g_Height": int(self.renderer.height),
@@ -430,6 +430,7 @@ class GaussianTrainer:
                 "outputCapacity": int(max(min(self._regen_capacity, self._effective_max_gaussians()), 1)),
                 "enableScreenSizePrune": np.uint32(1 if int(self.state.step + 1) > int(self.training.opacity_reset_interval) else 0),
                 "forceSplitAll": np.uint32(1 if force_split_all else 0),
+                "forcePruneScaleThreshold": float(max(force_prune_scale_threshold, 0.0)),
             },
             "g_Adam": {
                 "positionLR": float(self.adam.position_lr),
@@ -525,7 +526,7 @@ class GaussianTrainer:
             },
         )
 
-    def _dispatch_regenerate_scene(self, encoder: spy.CommandEncoder, force_split_all: bool = False) -> None:
+    def _dispatch_regenerate_scene(self, encoder: spy.CommandEncoder, force_split_all: bool = False, force_prune_scale_threshold: float = 0.0) -> None:
         self._regen_buffers["output_count"].copy_from_numpy(np.array([0], dtype=np.uint32))
         self._dispatch(
             "regenerate_scene",
@@ -539,7 +540,7 @@ class GaussianTrainer:
                 **self._regen_adam_vars(),
                 **self._regen_stat_vars(),
                 "g_OutputCount": self._regen_buffers["output_count"],
-                **self._common_vars(force_split_all=force_split_all),
+                **self._common_vars(force_split_all=force_split_all, force_prune_scale_threshold=force_prune_scale_threshold),
             },
         )
 
@@ -588,6 +589,16 @@ class GaussianTrainer:
         self._ensure_regen_buffers(self._scene_count)
         enc = self.device.create_command_encoder()
         self._dispatch_regenerate_scene(enc, force_split_all=True)
+        self.device.submit_command_buffer(enc.finish())
+        self.device.wait()
+        self._apply_regenerated_scene(max(self._read_output_count(), 1))
+
+    def prune_small_gaussians(self, min_scale_threshold: float) -> None:
+        if self._scene_count <= 0:
+            return
+        self._ensure_regen_buffers(self._scene_count)
+        enc = self.device.create_command_encoder()
+        self._dispatch_regenerate_scene(enc, force_prune_scale_threshold=float(max(min_scale_threshold, 0.0)))
         self.device.submit_command_buffer(enc.finish())
         self.device.wait()
         self._apply_regenerated_scene(max(self._read_output_count(), 1))

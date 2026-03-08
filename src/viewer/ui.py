@@ -102,6 +102,9 @@ def default_control_values(*group_names: str) -> dict[str, object]:
     return {spec.key: spec.kwargs["value"] for specs in groups for spec in specs if "value" in spec.kwargs}
 
 
+default_prune_small_threshold = lambda: float(default_control_values("Train Stability")["min_scale"]) * 4.0
+
+
 def _build_group(panel: object, title: str, specs: tuple[ControlSpec, ...], controls: dict[str, object]) -> object:
     group = spy.ui.Group(panel, title)
     for spec in specs:
@@ -133,10 +136,12 @@ def build_ui(screen: object, app: object, renderer: object) -> ViewerUI:
         ("Reload", lambda: session.load_scene(app, app.s.scene_path) if app.s.scene_path is not None else session.load_colmap_dataset(app, app.s.colmap_root, app._selected_images_subdir()) if app.s.colmap_root is not None else None),
         ("Reinitialize Gaussians", lambda: session.initialize_training_scene(app)),
         ("Split All Gaussians", lambda: session.split_all_gaussians(app)),
+        ("Prune Small Gaussians", lambda: session.prune_small_gaussians(app)),
         ("Start Training", lambda: session.set_training_active(app, True)),
         ("Stop Training", lambda: session.set_training_active(app, False)),
     ):
         spy.ui.Button(main_group, label, callback=callback)
+    controls["prune_small_threshold"] = spy.ui.InputFloat(main_group, "Prune Small <", value=default_prune_small_threshold(), step=1e-5, step_fast=1e-4, format="%.8f")
     texts["images_subdir"] = spy.ui.Text(main_group, f"Train images: {IMAGE_SUBDIR_OPTIONS[DEFAULT_IMAGE_SUBDIR_INDEX]}")
     texts["loss_debug_view"] = spy.ui.Text(main_group, "View: Abs Diff")
     texts["loss_debug_frame"] = spy.ui.Text(main_group, "Frame: <none>")
