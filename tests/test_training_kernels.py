@@ -428,12 +428,14 @@ def test_regenerate_scene_splits_large_high_gradient_gaussians(device, tmp_path:
     assert trainer._read_output_count() == 2
     out_pos = _read_f32x4(trainer._regen_buffers["positions"], 2)
     out_scale = _read_f32x4(trainer._regen_buffers["scales"], 2)
+    out_color_alpha = _read_f32x4(trainer._regen_buffers["color_alpha"], 2)
     assert np.all(np.isfinite(out_pos))
-    expected_scale = np.repeat(np.array([[0.25, 0.2, 0.1]], dtype=np.float32), 2, axis=0)
+    expected_scale = np.repeat(np.array([[0.5 * 0.60787793565, 0.2, 0.1]], dtype=np.float32), 2, axis=0)
     np.testing.assert_allclose(out_scale[:, :3], expected_scale, rtol=0.0, atol=1e-5)
     np.testing.assert_allclose(out_pos[:, 1:], np.repeat(positions[:, 1:], 2, axis=0), rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(out_pos[:, 0], np.array([positions[0, 0] - 0.25, positions[0, 0] + 0.25], dtype=np.float32), rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(np.mean(out_pos[:, :3], axis=0), positions[0, :3], rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(_actual_opacity(out_color_alpha[:, 3]), np.full((2,), 0.5 * 0.70126708751, dtype=np.float32), rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(_read_f32(trainer._regen_buffers["grad_ema"], 2), np.array([1.0, 1.0], dtype=np.float32), rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(_read_f32(trainer._regen_buffers["max_screen_radius"], 2), np.array([3.5, 3.5], dtype=np.float32), rtol=0.0, atol=1e-6)
 

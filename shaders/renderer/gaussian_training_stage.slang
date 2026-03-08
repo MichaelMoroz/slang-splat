@@ -10,6 +10,8 @@ static const uint RNG_LINEAR_C = 1013904223u;
 static const float SSIM_C1 = 0.0001;
 static const float SSIM_C2 = 0.0009;
 static const float OPACITY_RESET_VALUE = 0.1;
+static const float SPLIT_CHILD_AXIS_SCALE_RATIO = 0.60787793565;
+static const float SPLIT_CHILD_OPACITY_RATIO = 0.70126708751;
 
 struct AdamParams
 {
@@ -798,7 +800,10 @@ void csRegenerateScene(uint3 dispatchThreadID : SV_DispatchThreadID)
         float3 splitAxis = axis_unit(axisIndex);
         float axisHalfExtent = max(scale[axisIndex], g_Stability.minScale) * 0.5;
         float3 childScale = clamp(scale.xyz, g_Stability.minScale, g_Stability.maxScale);
-        childScale[axisIndex] = clamp(max(scale[axisIndex], g_Stability.minScale) * 0.5, g_Stability.minScale, g_Stability.maxScale);
+        childScale[axisIndex] = clamp(max(scale[axisIndex], g_Stability.minScale) * SPLIT_CHILD_AXIS_SCALE_RATIO, g_Stability.minScale, g_Stability.maxScale);
+        float childOpacity = clamp(opacity * SPLIT_CHILD_OPACITY_RATIO, g_Stability.minOpacity, g_Stability.maxOpacity);
+        float4 childColorAlpha = colorAlpha;
+        childColorAlpha.w = raw_opacity_from_alpha(childOpacity);
         [unroll] for (uint childIdx = 0u; childIdx < 2u; ++childIdx)
         {
             float offsetSign = childIdx == 0u ? -1.0 : 1.0;
@@ -806,7 +811,7 @@ void csRegenerateScene(uint3 dispatchThreadID : SV_DispatchThreadID)
             float3 worldOffset = rotate_by_quat(localOffset, qInv);
             float4 childPos = pos;
             childPos.xyz = clamp(sanitize_float3(pos.xyz + worldOffset, g_Stability.hugeValue), -g_Stability.positionAbsMax, g_Stability.positionAbsMax);
-            append_output_splat(childPos, float4(childScale, 0.0), rot, colorAlpha, float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), gradEMA, maxScreenRadius);
+            append_output_splat(childPos, float4(childScale, 0.0), rot, childColorAlpha, float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), gradEMA, maxScreenRadius);
         }
         return;
     }
