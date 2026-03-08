@@ -50,6 +50,12 @@ GROUP_SPECS = {
         ControlSpec("seed", "slider_int", "Shuffle Seed", {"value": 1234, "min": 0, "max": 1000000}),
         ControlSpec("init_opacity", "input_float", "Init Opacity", {"value": 0.5, "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
     ),
+    "Train Schedule": (
+        ControlSpec("densify_from_iter", "slider_int", "Densify From", {"value": 500, "min": 0, "max": 100000, "flags": spy.ui.SliderFlags.logarithmic}),
+        ControlSpec("densify_until_iter", "slider_int", "Densify Until", {"value": 15000, "min": 0, "max": 1000000, "flags": spy.ui.SliderFlags.logarithmic}),
+        ControlSpec("densification_interval", "slider_int", "Densify Every", {"value": 100, "min": 1, "max": 100000, "flags": spy.ui.SliderFlags.logarithmic}),
+        ControlSpec("opacity_reset_interval", "slider_int", "Opacity Reset", {"value": 3000, "min": 0, "max": 1000000, "flags": spy.ui.SliderFlags.logarithmic}),
+    ),
     "Train Optimizer": (
         ControlSpec("lr_base", "input_float", "Base LR", {"value": 1e-3, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
         ControlSpec("lr_pos_mul", "input_float", "LR Mul Position", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
@@ -81,15 +87,11 @@ GROUP_SPECS = {
         ControlSpec("train_far", "input_float", "Train Far", {"value": 120.0, "step": 1.0, "step_fast": 10.0, "format": "%.3f"}),
     ),
     "Train Density": (
-        ControlSpec("densify_from_iter", "input_float", "Densify From", {"value": 500.0, "step": 1.0, "step_fast": 10.0, "format": "%.0f"}),
-        ControlSpec("densify_until_iter", "input_float", "Densify Until", {"value": 15000.0, "step": 10.0, "step_fast": 100.0, "format": "%.0f"}),
-        ControlSpec("densification_interval", "input_float", "Densify Every", {"value": 100.0, "step": 1.0, "step_fast": 10.0, "format": "%.0f"}),
         ControlSpec("densify_grad_threshold", "input_float", "Grad Threshold", {"value": 2e-4, "step": 1e-5, "step_fast": 1e-4, "format": "%.6f"}),
         ControlSpec("percent_dense", "input_float", "Percent Dense", {"value": 0.01, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
         ControlSpec("prune_min_opacity", "input_float", "Prune Min Opacity", {"value": 0.005, "step": 1e-4, "step_fast": 1e-3, "format": "%.6f"}),
         ControlSpec("screen_size_prune_threshold", "input_float", "Screen Prune Px", {"value": 20.0, "step": 0.5, "step_fast": 5.0, "format": "%.3f"}),
         ControlSpec("world_size_prune_ratio", "input_float", "World Prune Ratio", {"value": 0.1, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
-        ControlSpec("opacity_reset_interval", "input_float", "Opacity Reset", {"value": 3000.0, "step": 10.0, "step_fast": 100.0, "format": "%.0f"}),
     ),
 }
 
@@ -140,6 +142,8 @@ def build_ui(screen: object, app: object, renderer: object) -> ViewerUI:
     _build_group(panel, "Camera", GROUP_SPECS["Camera"], controls)
     setup_group = _build_group(panel, "Train Setup", GROUP_SPECS["Train Setup"], controls)
     texts["setup_hint"] = spy.ui.Text(setup_group, "COLMAP init uses direct points + NN scales")
+    schedule_group = _build_group(panel, "Train Schedule", GROUP_SPECS["Train Schedule"], controls)
+    texts["schedule_hint"] = spy.ui.Text(schedule_group, "Iteration schedule for densify and opacity reset")
     _build_group(panel, "Train Optimizer", GROUP_SPECS["Train Optimizer"], controls)
     stab_group = _build_group(panel, "Train Stability", GROUP_SPECS["Train Stability"], controls)
     texts["stability_hint"] = spy.ui.Text(stab_group, "Scale bounds and anisotropy are clamped after ADAM")

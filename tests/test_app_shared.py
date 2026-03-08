@@ -90,3 +90,7 @@ def test_default_training_params_match_mcmc_reference_defaults():
     assert params.training.mcmc_position_noise_scale == 5e5
     assert params.training.mcmc_opacity_gate_sharpness == 100.0
     assert params.training.mcmc_opacity_gate_center == 0.995
+    assert params.training.densify_from_iter == 500
+    assert params.training.densify_until_iter == 15000
+    assert params.training.densification_interval == 100
+    assert params.training.opacity_reset_interval == 3000

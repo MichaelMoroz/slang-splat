@@ -57,7 +57,7 @@ _TRAINING_PARAM_KEYS = {
     "opacity_reset_interval": "opacity_reset_interval",
 }
 _TRAIN_SETUP_DEFAULTS = default_control_values("Train Setup")
-_TRAINING_DEFAULTS = default_control_values("Train Optimizer", "Train Stability", "Train Density")
+_TRAINING_DEFAULTS = default_control_values("Train Schedule", "Train Optimizer", "Train Stability", "Train Density")
 
 
 default_images_subdir = lambda: IMAGE_SUBDIR_OPTIONS[DEFAULT_IMAGE_SUBDIR_INDEX]
