@@ -73,6 +73,7 @@ uniform uint g_Height;
 uniform float g_InvPixelCount;
 uniform float g_LossGradClip;
 uniform float g_ScaleL2Weight;
+uniform float g_OpacityRegWeight;
 uniform float g_ScaleRegReference;
 uniform float g_LambdaDSSIM;
 
@@ -322,6 +323,14 @@ float scale_log_reference_loss(float3 scale, no_diff float referenceScale)
     float refSafe = max(referenceScale, TINY_VALUE);
     float3 logScale = log(scaleSafe / refSafe);
     return dot(logScale, logScale) * (1.0 / 3.0);
+}
+
+[Differentiable]
+float opacity_unit_target_loss(float rawOpacity)
+{
+    float opacity = opacity_from_raw(rawOpacity);
+    float delta = opacity - 1.0;
+    return delta * delta;
 }
 
 float3 clamp_scale_anisotropy(float3 scale)
@@ -655,6 +664,17 @@ void csAdamStepFused(uint3 dispatchThreadID : SV_DispatchThreadID)
         bwd_diff(scale_log_reference_loss)(dpScaleReg, scaleRegReference, scaleL2Weight * invSplatCount);
         gradScale.xyz += dpScaleReg.getDifferential();
         float lossAdd = scaleL2Weight * scaleRegLoss * invSplatCount;
+        if (isfinite(lossAdd) && lossAdd != 0.0) InterlockedAdd(g_LossBuffer[LOSS_SLOT_TOTAL], lossAdd);
+    }
+    float opacityRegWeight = max(g_OpacityRegWeight, 0.0);
+    if (opacityRegWeight > 0.0)
+    {
+        float invSplatCount = 1.0 / max(float(g_SplatCount), 1.0);
+        var dpOpacityReg = diffPair(colorAlpha.w);
+        float opacityRegLoss = opacity_unit_target_loss(colorAlpha.w);
+        bwd_diff(opacity_unit_target_loss)(dpOpacityReg, opacityRegWeight * invSplatCount);
+        gradColorAlpha.w += dpOpacityReg.getDifferential();
+        float lossAdd = opacityRegWeight * opacityRegLoss * invSplatCount;
         if (isfinite(lossAdd) && lossAdd != 0.0) InterlockedAdd(g_LossBuffer[LOSS_SLOT_TOTAL], lossAdd);
     }
 

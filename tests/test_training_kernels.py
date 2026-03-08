@@ -311,6 +311,35 @@ def test_log_scale_regularizer_pulls_scales_toward_reference(device, tmp_path: P
     assert scales_after[1, 0] < scene.scales[1, 0]
 
 
+def test_opacity_regularizer_pushes_true_opacity_toward_one(device, tmp_path: Path):
+    scene = _make_scene(count=2, seed=31)
+    scene.opacities[:] = np.array([0.2, 0.8], dtype=np.float32)
+    frame = _make_frame(tmp_path)
+    renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
+    training = TrainingHyperParams(scale_l2_weight=0.0, opacity_reg_weight=1.0, mcmc_position_noise_enabled=False, low_quality_reinit_enabled=False)
+    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], training_hparams=training, seed=41)
+    camera = frame.make_camera(near=0.1, far=20.0)
+    renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
+    device.wait()
+
+    zeros = np.zeros((scene.count * 4,), dtype=np.float32)
+    renderer.work_buffers["grad_positions"].copy_from_numpy(zeros)
+    renderer.work_buffers["grad_scales"].copy_from_numpy(zeros)
+    renderer.work_buffers["grad_rotations"].copy_from_numpy(zeros)
+    renderer.work_buffers["grad_color_alpha"].copy_from_numpy(zeros)
+
+    before = _actual_opacity(_read_f32x4(renderer.scene_buffers["color_alpha"], 2)[:, 3])
+    enc = device.create_command_encoder()
+    trainer._dispatch_adam_step(enc)
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+    after = _actual_opacity(_read_f32x4(renderer.scene_buffers["color_alpha"], 2)[:, 3])
+
+    assert after[0] > before[0]
+    assert after[1] > before[1]
+    assert (after[0] - before[0]) > (after[1] - before[1])
+
+
 def test_update_densification_stats_tracks_ema_and_screen_radius(device, tmp_path: Path):
     scene = _make_scene(count=3, seed=41)
     frames = [_make_frame(tmp_path, image_name=f"target_stats_{idx}.png", image_id=idx) for idx in range(4)]

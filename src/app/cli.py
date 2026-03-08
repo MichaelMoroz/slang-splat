@@ -83,6 +83,7 @@ def _training_params(args: argparse.Namespace):
         near=args.near,
         far=args.far,
         scale_l2_weight=args.scale_l2,
+        opacity_reg_weight=args.opacity_reg,
         lambda_dssim=args.lambda_dssim,
         mcmc_position_noise_enabled=True,
         mcmc_position_noise_scale=5e5,
@@ -226,6 +227,7 @@ TRAIN_RENDER_ARGS = tuple(
         ("--near", 0.1),
         ("--far", 120.0),
         ("--scale-l2", 1e-3),
+        ("--opacity-reg", 1e-3),
         ("--lambda-dssim", 0.2),
         ("--max-anisotropy", 10.0),
     )

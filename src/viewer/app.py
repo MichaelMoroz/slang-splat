@@ -41,6 +41,7 @@ _TRAINING_PARAM_KEYS = {
     "near": "train_near",
     "far": "train_far",
     "scale_l2_weight": "scale_l2",
+    "opacity_reg_weight": "opacity_reg",
     "lambda_dssim": "lambda_dssim",
     "mcmc_position_noise_scale": "mcmc_pos_noise_scale",
     "mcmc_opacity_gate_sharpness": "mcmc_opacity_k",

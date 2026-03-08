@@ -49,6 +49,7 @@ def test_build_training_params_clamps_ranges():
         near=5.0,
         far=1.0,
         scale_l2_weight=-1.0,
+        opacity_reg_weight=-1.0,
         lambda_dssim=2.0,
         mcmc_position_noise_enabled=True,
         mcmc_position_noise_scale=-5.0,
@@ -71,6 +72,7 @@ def test_build_training_params_clamps_ranges():
     assert params.stability.max_opacity == params.stability.min_opacity == 0.8
     assert params.training.far > params.training.near
     assert params.training.scale_l2_weight == 0.0
+    assert params.training.opacity_reg_weight == 0.0
     assert params.training.lambda_dssim == 1.0
     assert params.training.max_gaussians == 0
     assert params.training.densify_from_iter == 0
@@ -90,6 +92,7 @@ def test_default_training_params_match_mcmc_reference_defaults():
     assert params.training.mcmc_position_noise_scale == 5e5
     assert params.training.mcmc_opacity_gate_sharpness == 100.0
     assert params.training.mcmc_opacity_gate_center == 0.995
+    assert params.training.opacity_reg_weight == 1e-3
     assert params.training.densify_from_iter == 500
     assert params.training.densify_until_iter == 15000
     assert params.training.densification_interval == 100

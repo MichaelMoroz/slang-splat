@@ -49,7 +49,7 @@ class StabilityHyperParams:
 
 @dataclass(slots=True)
 class TrainingHyperParams:
-    background: tuple[float, float, float] = (0.0, 0.0, 0.0); near: float = 0.1; far: float = 120.0; scale_l2_weight: float = 1e-3; mcmc_position_noise_enabled: bool = True
+    background: tuple[float, float, float] = (0.0, 0.0, 0.0); near: float = 0.1; far: float = 120.0; scale_l2_weight: float = 1e-3; opacity_reg_weight: float = 1e-3; mcmc_position_noise_enabled: bool = True
     mcmc_position_noise_scale: float = 5e5; mcmc_opacity_gate_sharpness: float = 100.0; mcmc_opacity_gate_center: float = 0.995; low_quality_reinit_enabled: bool = True; lambda_dssim: float = 0.2
     max_gaussians: int = 50000
     densify_from_iter: int = 500; densify_until_iter: int = 15000; densification_interval: int = 100; densify_grad_threshold: float = 2e-4
@@ -415,6 +415,7 @@ class GaussianTrainer:
             "g_InvPixelCount": 1.0 / float(max(self.renderer.width * self.renderer.height, 1)),
             "g_LossGradClip": float(self.stability.loss_grad_clip),
             "g_ScaleL2Weight": float(max(self.training.scale_l2_weight, 0.0)),
+            "g_OpacityRegWeight": float(max(self.training.opacity_reg_weight, 0.0)),
             "g_ScaleRegReference": float(max(self._scale_reg_reference, 1e-8)),
             "g_LambdaDSSIM": float(np.clip(self.training.lambda_dssim, 0.0, 1.0)),
             "g_Densify": {
