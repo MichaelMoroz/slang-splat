@@ -93,6 +93,7 @@ struct RasterParams
     uint debugShowEllipses;
     uint debugShowProcessedCount;
     uint debugShowGradNorm;
+    float debugGradNormThreshold;
     float debugEllipseThicknessPx;
     float3 debugEllipseColor;
 };

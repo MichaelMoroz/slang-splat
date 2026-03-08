@@ -26,8 +26,8 @@ struct RasterState : IDifferentiable
 static const float DEBUG_GRAD_NORM_FLOOR = 1e-12;
 static const float DEBUG_GRAD_ALPHA_SCALE = 0.1;
 static const float LOG2_TO_LOG10 = 0.30102999566;
-static const float DEBUG_GRAD_LOG10_MIN = -3.0;
-static const float DEBUG_GRAD_LOG10_MAX = 1.0;
+static const float DEBUG_GRAD_THRESHOLD_MIN_SCALE = 0.001;
+static const float DEBUG_GRAD_THRESHOLD_MAX_SCALE = 10.0;
 
 void atomic_add_grad<let N : int>(RWStructuredBuffer<float> gradBuffer, uint base, vector<float, N> grad)
 {
@@ -450,7 +450,10 @@ float4 raster_forward_output_pixel(
     {
         float gradValue = max(raster_forward_debug_grad_pixel(info, pixelIdx), DEBUG_GRAD_NORM_FLOOR);
         float gradLog10 = log2(gradValue) * LOG2_TO_LOG10;
-        float normalized = saturate((gradLog10 - DEBUG_GRAD_LOG10_MIN) / (DEBUG_GRAD_LOG10_MAX - DEBUG_GRAD_LOG10_MIN));
+        float gradThreshold = max(g_Raster.debugGradNormThreshold, DEBUG_GRAD_NORM_FLOOR);
+        float gradLog10Min = log2(max(gradThreshold * DEBUG_GRAD_THRESHOLD_MIN_SCALE, DEBUG_GRAD_NORM_FLOOR)) * LOG2_TO_LOG10;
+        float gradLog10Max = log2(max(gradThreshold * DEBUG_GRAD_THRESHOLD_MAX_SCALE, DEBUG_GRAD_NORM_FLOOR)) * LOG2_TO_LOG10;
+        float normalized = saturate((gradLog10 - gradLog10Min) / max(gradLog10Max - gradLog10Min, TINY_VALUE));
         return float4(jet_colormap(normalized), 1.0);
     }
 
