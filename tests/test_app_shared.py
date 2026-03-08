@@ -4,6 +4,7 @@ import numpy as np
 
 from src.app.shared import build_training_params, estimate_scene_bounds
 from src.scene import GaussianScene
+from src.viewer.app import default_training_params
 
 
 def _scene() -> GaussianScene:
@@ -81,3 +82,8 @@ def test_build_training_params_clamps_ranges():
     assert params.training.screen_size_prune_threshold == 0.0
     assert params.training.world_size_prune_ratio == 0.0
     assert params.training.opacity_reset_interval == 0
+
+
+def test_default_training_params_disable_mcmc_position_noise():
+    params = default_training_params()
+    assert params.training.mcmc_position_noise_enabled is False

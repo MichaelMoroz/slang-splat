@@ -3,7 +3,6 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 from src.app.shared import renderer_kwargs
@@ -15,7 +14,7 @@ from src.viewer.app import default_images_subdir, default_init_params, default_r
 DATASET_ROOT = Path(__file__).resolve().parent.parent / "dataset" / "garden"
 IMAGES_SUBDIR = default_images_subdir()
 SPARSE_SUBDIR = Path("sparse/0")
-TRAIN_TIMEOUT_SECONDS = 60.0
+TRAIN_STEPS = 5000
 PSNR_THRESHOLD_DB = 25.0
 TRAIN_WIDTH = 256
 TRAIN_HEIGHT = 168
@@ -27,10 +26,6 @@ def _require_dataset() -> Path:
     if not images_root.exists() or not sparse_root.exists():
         pytest.skip(f"Garden regression dataset subset is unavailable: expected {images_root} and {sparse_root}.")
     return DATASET_ROOT
-
-
-def _finite_peak(current: float, value: float) -> float:
-    return max(current, float(value)) if np.isfinite(value) else current
 
 
 def _build_trainer(device) -> GaussianTrainer:
@@ -55,21 +50,15 @@ def _build_trainer(device) -> GaussianTrainer:
     )
 
 
-def test_garden_images4_training_reaches_25db_within_60_seconds(device):
+def test_garden_images4_training_reaches_25db_after_5000_steps(device):
     trainer = _build_trainer(device)
     start = time.perf_counter()
-    deadline = start + TRAIN_TIMEOUT_SECONDS
-    best_avg_psnr = float("-inf")
-    best_last_psnr = float("-inf")
-    while time.perf_counter() < deadline:
+    for _ in range(TRAIN_STEPS):
         trainer.step()
-        best_avg_psnr = _finite_peak(best_avg_psnr, trainer.state.avg_psnr)
-        best_last_psnr = _finite_peak(best_last_psnr, trainer.state.last_psnr)
     elapsed = time.perf_counter() - start
-    assert trainer.state.step > 0
-    assert best_avg_psnr >= PSNR_THRESHOLD_DB, (
-        f"Expected garden/{IMAGES_SUBDIR} training to reach {PSNR_THRESHOLD_DB:.1f} dB within {TRAIN_TIMEOUT_SECONDS:.0f}s; "
-        f"best_avg_psnr={best_avg_psnr:.3f} dB best_last_psnr={best_last_psnr:.3f} dB "
+    assert trainer.state.step == TRAIN_STEPS
+    assert trainer.state.avg_psnr >= PSNR_THRESHOLD_DB, (
+        f"Expected garden/{IMAGES_SUBDIR} training to stay above {PSNR_THRESHOLD_DB:.1f} dB after {TRAIN_STEPS} steps; "
         f"final_psnr={trainer.state.last_psnr:.3f} dB final_avg_psnr={trainer.state.avg_psnr:.3f} dB "
         f"steps={trainer.state.step} elapsed={elapsed:.2f}s."
     )

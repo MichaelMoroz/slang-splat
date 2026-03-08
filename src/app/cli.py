@@ -84,7 +84,7 @@ def _training_params(args: argparse.Namespace):
         far=args.far,
         scale_l2_weight=args.scale_l2,
         lambda_dssim=args.lambda_dssim,
-        mcmc_position_noise_enabled=True,
+        mcmc_position_noise_enabled=False,
         mcmc_position_noise_scale=1.0,
         mcmc_opacity_gate_sharpness=100.0,
         mcmc_opacity_gate_center=0.995,

@@ -84,6 +84,7 @@ Training notes:
 - Target Y-flip is enabled by default.
 - Density control follows the original 3DGS structure more closely: gradient/radius stats are accumulated until `densify_until_iter`, then clone/split/prune runs every `densification_interval` after `densify_from_iter`, and opacity reset runs every `opacity_reset_interval`.
 - Clone duplicates small high-gradient splats, split replaces large high-gradient splats with two children, and prune removes low-opacity or oversized splats.
+- MCMC position noise is now opt-in; leaving it off by default avoids the low-opacity reset interacting with max exploration noise on every splat.
 - Numerical reinforcement includes clipping, finite checks, and safe quaternion normalization.
 - Scale regularization uses an autodiff log-space penalty around the initialization/reference scale, so equal multiplicative scale deviations are treated more uniformly.
 - Scale anisotropy is constrained with a hard per-gaussian clamp on `max(scale) / min(scale)`.
@@ -94,7 +95,7 @@ Training notes:
 python -m pytest -q
 ```
 
-The repo intentionally keeps only the `dataset/garden/images_4` and `dataset/garden/sparse/0` subset visible in git for the COLMAP convergence regression. `tests/test_training_garden_regression.py` runs a fixed-seed 60-second training pass and only passes when peak `avg_psnr` reaches `25 dB`; `last_psnr` remains a single-step diagnostic for the currently trained view.
+The repo intentionally keeps only the `dataset/garden/images_4` and `dataset/garden/sparse/0` subset visible in git for the COLMAP convergence regression. `tests/test_training_garden_regression.py` now runs a fixed-seed `5000`-step training pass and only passes when the final cached `avg_psnr` stays at or above `25 dB`; `last_psnr` remains a single-step diagnostic for the currently trained view.
 
 ## Complexity Budget
 ```powershell
