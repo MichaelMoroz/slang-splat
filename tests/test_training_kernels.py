@@ -404,7 +404,7 @@ def test_regenerate_scene_splits_large_high_gradient_gaussians(device, tmp_path:
     assert np.any(np.abs(out_pos[:, :3] - scene.positions[0]) > 1e-5)
 
 
-def test_regenerate_scene_prunes_low_opacity_screen_and_world_outliers(device, tmp_path: Path):
+def test_regenerate_scene_prunes_low_opacity_only(device, tmp_path: Path):
     scene = _make_scene(count=3, seed=71)
     frame = _make_frame(tmp_path)
     renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
@@ -431,7 +431,7 @@ def test_regenerate_scene_prunes_low_opacity_screen_and_world_outliers(device, t
     device.submit_command_buffer(enc.finish())
     device.wait()
 
-    assert trainer._read_output_count() == 0
+    assert trainer._read_output_count() == 2
 
 
 def test_reset_opacity_rewrites_raw_alpha_and_clears_color_moments(device, tmp_path: Path):

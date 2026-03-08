@@ -83,7 +83,7 @@ Training notes:
 - `last_mse` and PSNR remain plain RGB MSE metrics even though the optimization loss is mixed photometric.
 - Target Y-flip is enabled by default.
 - Density control follows the original 3DGS structure more closely: gradient/radius stats are accumulated until `densify_until_iter`, then clone/split/prune runs every `densification_interval` after `densify_from_iter`, and opacity reset runs every `opacity_reset_interval`.
-- Clone duplicates small high-gradient splats, split replaces large high-gradient splats with two children, and prune removes low-opacity or oversized splats.
+- Clone duplicates small high-gradient splats, split replaces large high-gradient splats with two children, and prune currently removes only low-opacity splats; size-based prune is temporarily disabled.
 - MCMC position noise is now opt-in; leaving it off by default avoids the low-opacity reset interacting with max exploration noise on every splat.
 - Numerical reinforcement includes clipping, finite checks, and safe quaternion normalization.
 - Scale regularization uses an autodiff log-space penalty around the initialization/reference scale, so equal multiplicative scale deviations are treated more uniformly.

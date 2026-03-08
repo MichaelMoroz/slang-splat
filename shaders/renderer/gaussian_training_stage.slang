@@ -334,11 +334,6 @@ float scene_small_scale_threshold()
     return max(g_Densify.percentDense * g_Densify.sceneExtent, g_Stability.minScale);
 }
 
-float scene_large_scale_threshold()
-{
-    return max(g_Densify.worldSizeRatio * g_Densify.sceneExtent, g_Stability.minScale);
-}
-
 void write_output_splat(
     uint outputId,
     float4 pos,
@@ -771,9 +766,7 @@ void csRegenerateScene(uint3 dispatchThreadID : SV_DispatchThreadID)
     float opacity = opacity_from_raw(colorAlpha.w);
 
     float maxScale = max(scale.x, max(scale.y, scale.z));
-    bool largeWorld = maxScale > scene_large_scale_threshold();
-    bool largeScreen = g_Densify.enableScreenSizePrune != 0u && maxScreenRadius > g_Densify.screenSizeThreshold;
-    bool prune = opacity < g_Densify.pruneMinOpacity || largeWorld || largeScreen;
+    bool prune = opacity < g_Densify.pruneMinOpacity;
     if (prune) return;
 
     bool highGrad = gradEMA >= g_Densify.gradThreshold;
