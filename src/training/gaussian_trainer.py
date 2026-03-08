@@ -407,7 +407,7 @@ class GaussianTrainer:
             },
         )
 
-    def _common_vars(self) -> dict[str, object]:
+    def _common_vars(self, force_split_all: bool = False) -> dict[str, object]:
         return {
             "g_Width": int(self.renderer.width),
             "g_Height": int(self.renderer.height),
@@ -428,6 +428,7 @@ class GaussianTrainer:
                 "gradEMAAlpha": float(1.0 / float(max(len(self.frames), 1))),
                 "outputCapacity": int(max(min(self._regen_capacity, self._effective_max_gaussians()), 1)),
                 "enableScreenSizePrune": np.uint32(1 if int(self.state.step + 1) > int(self.training.opacity_reset_interval) else 0),
+                "forceSplitAll": np.uint32(1 if force_split_all else 0),
             },
             "g_Adam": {
                 "positionLR": float(self.adam.position_lr),
@@ -523,7 +524,7 @@ class GaussianTrainer:
             },
         )
 
-    def _dispatch_regenerate_scene(self, encoder: spy.CommandEncoder) -> None:
+    def _dispatch_regenerate_scene(self, encoder: spy.CommandEncoder, force_split_all: bool = False) -> None:
         self._regen_buffers["output_count"].copy_from_numpy(np.array([0], dtype=np.uint32))
         self._dispatch(
             "regenerate_scene",
@@ -537,7 +538,7 @@ class GaussianTrainer:
                 **self._regen_adam_vars(),
                 **self._regen_stat_vars(),
                 "g_OutputCount": self._regen_buffers["output_count"],
-                **self._common_vars(),
+                **self._common_vars(force_split_all=force_split_all),
             },
         )
 
@@ -579,6 +580,16 @@ class GaussianTrainer:
             enc.copy_buffer(self._buffers[name], 0, self._regen_buffers[name], 0, copy_bytes_stat)
         self.device.submit_command_buffer(enc.finish())
         self.device.wait()
+
+    def split_all_gaussians(self) -> None:
+        if self._scene_count <= 0:
+            return
+        self._ensure_regen_buffers(self._scene_count)
+        enc = self.device.create_command_encoder()
+        self._dispatch_regenerate_scene(enc, force_split_all=True)
+        self.device.submit_command_buffer(enc.finish())
+        self.device.wait()
+        self._apply_regenerated_scene(max(self._read_output_count(), 1))
 
     def _update_image_metric_state(self, frame_index: int, mse: float, ssim: float, signal_max: float) -> None:
         self.state.last_mse = float(mse)

@@ -129,6 +129,7 @@ def build_ui(screen: object, app: object, renderer: object) -> ViewerUI:
         ("Load COLMAP...", lambda: (lambda path: session.load_colmap_dataset(app, Path(path), app._selected_images_subdir()) if path else None)(spy.platform.choose_folder_dialog())),
         ("Reload", lambda: session.load_scene(app, app.s.scene_path) if app.s.scene_path is not None else session.load_colmap_dataset(app, app.s.colmap_root, app._selected_images_subdir()) if app.s.colmap_root is not None else None),
         ("Reinitialize Gaussians", lambda: session.initialize_training_scene(app)),
+        ("Split All Gaussians", lambda: session.split_all_gaussians(app)),
         ("Start Training", lambda: session.set_training_active(app, True)),
         ("Stop Training", lambda: session.set_training_active(app, False)),
     ):
@@ -143,7 +144,7 @@ def build_ui(screen: object, app: object, renderer: object) -> ViewerUI:
     stab_group = _build_group(panel, "Train Stability", GROUP_SPECS["Train Stability"], controls)
     texts["stability_hint"] = spy.ui.Text(stab_group, "Scale bounds and anisotropy are clamped after ADAM")
     density_group = _build_group(panel, "Train Density", GROUP_SPECS["Train Density"], controls)
-    texts["density_hint"] = spy.ui.Text(density_group, "Clone/split/prune + opacity reset schedule")
+    texts["density_hint"] = spy.ui.Text(density_group, "Split/prune + opacity reset schedule")
     params_group = spy.ui.Group(panel, "Render Params")
     for spec in (
         ControlSpec("radius_scale", "slider_float", "Radius Scale", {"value": float(renderer.radius_scale), "min": 0.5, "max": 4.0, "flags": spy.ui.SliderFlags.logarithmic, "format": "%.3g"}),

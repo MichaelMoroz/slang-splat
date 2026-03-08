@@ -60,6 +60,7 @@ struct DensifyParams
     float gradEMAAlpha;
     uint outputCapacity;
     uint enableScreenSizePrune;
+    uint forceSplitAll;
 };
 
 uniform AdamParams g_Adam;
@@ -341,11 +342,6 @@ float3 axis_unit(uint axisIndex)
     if (axisIndex == 0u) return float3(1.0, 0.0, 0.0);
     if (axisIndex == 1u) return float3(0.0, 1.0, 0.0);
     return float3(0.0, 0.0, 1.0);
-}
-
-float scene_small_scale_threshold()
-{
-    return max(g_Densify.percentDense * g_Densify.sceneExtent, g_Stability.minScale);
 }
 
 void write_output_splat(
@@ -779,21 +775,13 @@ void csRegenerateScene(uint3 dispatchThreadID : SV_DispatchThreadID)
     bool allowGrowth = g_Densify.maxGaussianCount > g_SplatCount;
     float opacity = opacity_from_raw(colorAlpha.w);
 
-    float maxScale = max(scale.x, max(scale.y, scale.z));
     bool prune = opacity < g_Densify.pruneMinOpacity;
     if (prune) return;
 
     bool highGrad = gradEMA >= g_Densify.gradThreshold;
-    bool small = maxScale <= scene_small_scale_threshold();
+    bool shouldSplit = g_Densify.forceSplitAll != 0u || highGrad;
 
-    if (allowGrowth && highGrad && small)
-    {
-        append_output_splat(pos, scale, rot, colorAlpha, adamMPos, adamVPos, adamMScale, adamVScale, adamMQuat, adamVQuat, adamMColorAlpha, adamVColorAlpha, gradEMA, maxScreenRadius);
-        append_output_splat(pos, scale, rot, colorAlpha, float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), gradEMA, maxScreenRadius);
-        return;
-    }
-
-    if (allowGrowth && highGrad)
+    if (allowGrowth && shouldSplit)
     {
         float4 qInv = float4(rot.x, -rot.y, -rot.z, -rot.w);
         uint axisIndex = dominant_axis_index(scale.xyz);

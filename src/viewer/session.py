@@ -87,3 +87,18 @@ load_scene = lambda viewer, path: (lambda scene: (_reset_loaded_runtime(viewer),
 load_colmap_dataset = lambda viewer, root, images_subdir: (lambda recon, xyz_rgb: (_reset_loaded_runtime(viewer), setattr(viewer.s, "colmap_root", Path(root)), setattr(viewer.s, "colmap_recon", recon), setattr(viewer.s, "training_frames", build_training_frames(recon, images_subdir=images_subdir)), setattr(viewer.s, "colmap_point_count", int(xyz_rgb[0].shape[0])), setattr(viewer.s, "scene_path", None), apply_live_params(viewer), viewer.apply_camera_fit(estimate_point_bounds(xyz_rgb[0])), initialize_training_scene(viewer), setattr(viewer.s, "last_error", ""), print(f"Loaded COLMAP: {root} frames={len(viewer.s.training_frames)} images={images_subdir}")))(load_colmap_reconstruction(root), _point_tables(load_colmap_reconstruction(root)))
 initialize_training_scene = lambda viewer: None if viewer.s.colmap_recon is None or not viewer.s.training_frames else (lambda init, width, height, renderer, params, init_hparams, scene: (apply_live_params(viewer), setattr(viewer.s, "trainer", GaussianTrainer(device=viewer.device, renderer=renderer, scene=scene, frames=viewer.s.training_frames, adam_hparams=params.adam, stability_hparams=params.stability, training_hparams=params.training, seed=init.seed, scale_reg_reference=float(max(init_hparams.base_scale, 1e-8)))), setattr(viewer.s, "scene", SceneCountProxy(scene.count)), (lambda enc: (renderer.copy_scene_state_to(enc, viewer.s.renderer), viewer.device.submit_command_buffer(enc.finish())))(viewer.device.create_command_encoder()), setattr(viewer.s, "training_active", False), _invalidate(viewer), setattr(viewer.s, "scene_init_signature", _scene_signature(viewer)), update_debug_frame_slider_range(viewer), _reset_loss_debug(viewer), setattr(viewer.s, "last_error", ""), print(f"Initialized training scene ({scene.count:,} gaussians)")))(viewer.init_params(), int(viewer.s.training_frames[0].width), int(viewer.s.training_frames[0].height), ensure_renderer(viewer, "training_renderer", int(viewer.s.training_frames[0].width), int(viewer.s.training_frames[0].height), allow_debug_overlays=False), viewer.training_params(), resolve_colmap_init_hparams(viewer.s.colmap_recon, 0, viewer.init_params().hparams), initialize_scene_from_colmap_points(recon=viewer.s.colmap_recon, max_gaussians=0, seed=viewer.init_params().seed, init_hparams=viewer.init_params().hparams))
 set_training_active = lambda viewer, active: (initialize_training_scene(viewer) if active and viewer.s.trainer is None else None, setattr(viewer.s, "training_active", bool(active and viewer.s.trainer is not None)))
+
+
+def split_all_gaussians(viewer: object) -> None:
+    if viewer.s.trainer is None:
+        initialize_training_scene(viewer)
+    if viewer.s.trainer is None or viewer.s.training_renderer is None:
+        return
+    viewer.s.trainer.split_all_gaussians()
+    if viewer.s.scene is not None:
+        viewer.s.scene.count = int(viewer.s.trainer.scene.count)
+    _invalidate(viewer)
+    if viewer.s.renderer is not None:
+        sync_scene_from_training_renderer(viewer, viewer.s.renderer, target="main", force=True)
+    viewer.s.last_error = ""
+    print(f"Split all gaussians: {viewer.s.trainer.scene.count:,} splats")
