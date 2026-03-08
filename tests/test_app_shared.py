@@ -84,6 +84,9 @@ def test_build_training_params_clamps_ranges():
     assert params.training.opacity_reset_interval == 0
 
 
-def test_default_training_params_disable_mcmc_position_noise():
+def test_default_training_params_match_mcmc_reference_defaults():
     params = default_training_params()
-    assert params.training.mcmc_position_noise_enabled is False
+    assert params.training.mcmc_position_noise_enabled is True
+    assert params.training.mcmc_position_noise_scale == 5e5
+    assert params.training.mcmc_opacity_gate_sharpness == 100.0
+    assert params.training.mcmc_opacity_gate_center == 0.995

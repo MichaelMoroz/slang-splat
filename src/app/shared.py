@@ -202,7 +202,7 @@ def build_training_params(
         scale_l2_weight=clamp_float(scale_l2_weight, 0.0, 1e4),
         lambda_dssim=clamp_float(lambda_dssim, 0.0, 1.0),
         mcmc_position_noise_enabled=bool(mcmc_position_noise_enabled),
-        mcmc_position_noise_scale=clamp_float(mcmc_position_noise_scale, 0.0, 1e4),
+        mcmc_position_noise_scale=clamp_float(mcmc_position_noise_scale, 0.0, 1e8),
         mcmc_opacity_gate_sharpness=clamp_float(mcmc_opacity_gate_sharpness, 0.0, 1e6),
         mcmc_opacity_gate_center=clamp_float(mcmc_opacity_gate_center, 0.0, 1.0),
         max_gaussians=clamp_int(max_gaussians, 0, 10_000_000),

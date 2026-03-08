@@ -256,7 +256,7 @@ float4 rng_normal4_box_muller(inout uint state)
 
 float opacity_noise_gate(float opacity)
 {
-    float x = -g_MCMC.opacityGateSharpness * (opacity - g_MCMC.opacityGateCenter);
+    float x = g_MCMC.opacityGateSharpness * ((1.0 - opacity) - g_MCMC.opacityGateCenter);
     x = clamp(x, -SOFTPLUS_INPUT_LIMIT, SOFTPLUS_INPUT_LIMIT);
     return 1.0 / (1.0 + exp(-x));
 }
@@ -696,17 +696,17 @@ void csAdamStepFused(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (g_MCMC.enabled != 0u && g_MCMC.positionNoiseScale > 0.0)
     {
         float4 rotSafe = normalize_quaternion_safe(rot);
-        float4 qInv = float4(rotSafe.x, -rotSafe.y, -rotSafe.z, -rotSafe.w);
-        float3 scaleSafe = max(scale.xyz, float3(g_Stability.minScale));
-        float gate = opacity_noise_gate(opacity_from_raw(colorAlpha.w));
         uint rngSeed = splatId * 0x9e3779b9u ^ g_Adam.stepIndex * 0x85ebca6bu ^ 0xc2b2ae35u;
         uint rngState = hash_u32(rngSeed);
         if (rngState == 0u) rngState = 1u;
-        float3 eta = rng_normal3_box_muller(rngState);
-        float3 localNoise = scaleSafe * eta;
-        float3 worldNoise = rotate_by_quat(localNoise, qInv);
+        float3 etaWorld = rng_normal3_box_muller(rngState);
+        float4 qInv = float4(rotSafe.x, -rotSafe.y, -rotSafe.z, -rotSafe.w);
+        float3 scaleSafe = max(scale.xyz, float3(g_Stability.minScale));
+        float gate = opacity_noise_gate(opacity_from_raw(colorAlpha.w));
+        float3 etaLocal = rotate_by_quat(etaWorld, rotSafe);
+        float3 worldNoise = rotate_by_quat(scaleSafe * scaleSafe * etaLocal, qInv);
         float noiseScale = g_Adam.positionLR * g_MCMC.positionNoiseScale * gate;
-        float3 noise = sanitize_float3(worldNoise * noiseScale, g_Stability.maxUpdate);
+        float3 noise = sanitize_float3(worldNoise * noiseScale, g_Stability.hugeValue);
         pos.xyz = sanitize_float3(pos.xyz + noise, g_Stability.hugeValue);
     }
 
