@@ -53,13 +53,13 @@ Each trainer `step()` performs:
    - Scale regularization is computed in-kernel via Slang autodiff on `scale.xyz`.
    - The term is an L2 penalty on `log(scale / referenceScale)`, where the reference scale comes from the initialization base scale when available.
    - The regularization scalar is averaged over the active splat count and added to the reported loss buffer in this ADAM pass.
-   - Scale is clamped only to `[min_scale, max_scale]`; excessive anisotropy is handled later by density control instead of being reshaped in-place.
+   - Scale is clamped to `[min_scale, max_scale]`, and a hard anisotropy clamp enforces `max(scale.xyz) / min(scale.xyz) <= max_anisotropy`.
 8. Run densification-stat update (`csUpdateDensificationStats`) to accumulate:
    - EMA of `sqrt(dot(grad_position.xyz, grad_position.xyz))` using `1 / view_count`,
    - maximum observed 2D projected radius for visible splats.
 9. On the configured schedule, run `csRegenerateScene`.
    - Clone: duplicate small high-gradient splats while preserving the original optimizer state on the kept copy and zeroing moments on the new copy.
-   - Split: replace large or overly anisotropic splats with two children placed symmetrically on the parent's dominant local axis, with that dominant axis halved in each child.
+   - Split: replace large high-gradient splats with two children placed symmetrically on the parent's dominant local axis, with that dominant axis halved in each child.
    - Prune: drop splats with low opacity.
    - Regeneration resets densification stats for the new active set.
 10. On the configured schedule, run `csResetOpacity` to rewrite the stored raw opacity parameter so the effective sigmoid opacity becomes `min(alpha, 0.1)`, then clear alpha optimizer moments.
@@ -78,9 +78,9 @@ Each trainer `step()` performs:
   - The stored opacity parameter is the raw sigmoid logit, not direct alpha.
   - Adds autodiff log-scale regularization gradients to scale gradients (`g_ScaleL2Weight`, `g_ScaleRegReference`).
   - Accumulates the averaged scale-regularization scalar contribution into `g_LossBuffer`.
-  - Clamps stored scales to `[min_scale, max_scale]`.
+  - Clamps stored scales to `[min_scale, max_scale]` and enforces `max_anisotropy`.
 - `csUpdateDensificationStats`: updates per-splat gradient EMA and maximum projected radius from the current step.
-- `csRegenerateScene`: inline clone/split/prune classification plus append-buffer regeneration into the next active scene buffers. Split uses deterministic dominant-axis placement, halves the dominant child scale, and treats `max_anisotropy` as a split threshold. Size-based pruning is currently disabled.
+- `csRegenerateScene`: inline clone/split/prune classification plus append-buffer regeneration into the next active scene buffers. Split uses deterministic dominant-axis placement and halves the dominant child scale. Size-based pruning is currently disabled.
 - `csResetOpacity`: rewrites the raw opacity parameter to `logit(min(sigmoid(raw_alpha), 0.1))` and clears alpha optimizer moments.
 - `csInitializeGaussiansFromPointCloud`: still exists for standalone point-buffer initialization, but the COLMAP training path now builds the initial `GaussianScene` on CPU.
 
@@ -117,7 +117,7 @@ Useful options:
 - `--lr`, `--beta1`, `--beta2`, `--eps`,
 - `--scale-l2` for autodiff log-scale regularization around the init/reference scale,
 - `--lambda-dssim` for the SSIM contribution in the mixed photometric loss,
-- `--max-anisotropy` for the per-gaussian scale-ratio split threshold,
+- `--max-anisotropy` for the hard per-gaussian scale-ratio cap,
 - `--grad-clip`, `--grad-norm-clip`, `--max-update`,
 - `--min-scale`, `--max-scale`, `--min-opacity`, `--max-opacity`.
 

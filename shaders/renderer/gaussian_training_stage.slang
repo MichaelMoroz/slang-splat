@@ -321,12 +321,11 @@ float scale_log_reference_loss(float3 scale, no_diff float referenceScale)
     return dot(logScale, logScale) * (1.0 / 3.0);
 }
 
-float scale_anisotropy(float3 scale)
+float3 clamp_scale_anisotropy(float3 scale)
 {
-    float3 safeScale = max(scale, float3(TINY_VALUE));
-    float minScale = min(safeScale.x, min(safeScale.y, safeScale.z));
-    float maxScale = max(safeScale.x, max(safeScale.y, safeScale.z));
-    return maxScale / max(minScale, TINY_VALUE);
+    float maxAnisotropy = max(g_Stability.maxAnisotropy, 1.0);
+    float maxScale = max(scale.x, max(scale.y, scale.z));
+    return max(scale, float3(maxScale / maxAnisotropy));
 }
 
 uint dominant_axis_index(float3 scale)
@@ -713,6 +712,7 @@ void csAdamStepFused(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     pos.xyz = clamp(pos.xyz, -g_Stability.positionAbsMax, g_Stability.positionAbsMax);
     scale.xyz = clamp(scale.xyz, g_Stability.minScale, g_Stability.maxScale);
+    scale.xyz = clamp_scale_anisotropy(scale.xyz);
     rot = normalize_quaternion_safe(rot);
     colorAlpha.xyz = clamp(colorAlpha.xyz, 0.0, 1.0);
 
@@ -783,16 +783,15 @@ void csRegenerateScene(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     bool highGrad = gradEMA >= g_Densify.gradThreshold;
     bool small = maxScale <= scene_small_scale_threshold();
-    bool anisotropic = scale_anisotropy(scale.xyz) >= max(g_Stability.maxAnisotropy, 1.0);
 
-    if (allowGrowth && highGrad && small && !anisotropic)
+    if (allowGrowth && highGrad && small)
     {
         append_output_splat(pos, scale, rot, colorAlpha, adamMPos, adamVPos, adamMScale, adamVScale, adamMQuat, adamVQuat, adamMColorAlpha, adamVColorAlpha, 0.0, 0.0);
         append_output_splat(pos, scale, rot, colorAlpha, float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), 0.0, 0.0);
         return;
     }
 
-    if (allowGrowth && (anisotropic || highGrad))
+    if (allowGrowth && highGrad)
     {
         uint childCount = 2u;
         float4 qInv = float4(rot.x, -rot.y, -rot.z, -rot.w);

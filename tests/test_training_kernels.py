@@ -251,7 +251,7 @@ def test_synthetic_base_grads_update_and_respect_constraints(device, tmp_path: P
     assert np.all(np.abs(norms - 1.0) < 1e-3)
 
 
-def test_adam_step_does_not_clamp_anisotropy(device, tmp_path: Path):
+def test_adam_step_clamps_anisotropy(device, tmp_path: Path):
     scene = _make_scene(count=1, seed=25)
     scene.scales[0] = np.array([0.9, 0.05, 0.05], dtype=np.float32)
     frame = _make_frame(tmp_path)
@@ -273,7 +273,7 @@ def test_adam_step_does_not_clamp_anisotropy(device, tmp_path: Path):
     device.wait()
 
     scales = _read_f32x4(renderer.scene_buffers["scales"], 1)
-    np.testing.assert_allclose(scales[0, :3], np.array([0.9, 0.05, 0.05], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(scales[0, :3], np.array([0.9, 0.09, 0.09], dtype=np.float32), rtol=0.0, atol=1e-6)
 
 
 def test_log_scale_regularizer_pulls_scales_toward_reference(device, tmp_path: Path):
@@ -434,7 +434,7 @@ def test_regenerate_scene_splits_large_high_gradient_gaussians(device, tmp_path:
     np.testing.assert_allclose(np.mean(out_pos[:, :3], axis=0), positions[0, :3], rtol=0.0, atol=1e-6)
 
 
-def test_regenerate_scene_splits_anisotropic_gaussian_without_high_gradient(device, tmp_path: Path):
+def test_regenerate_scene_keeps_anisotropic_low_gradient_gaussian(device, tmp_path: Path):
     scene = _make_scene(count=1, seed=63)
     frame = _make_frame(tmp_path)
     renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
@@ -455,12 +455,11 @@ def test_regenerate_scene_splits_anisotropic_gaussian_without_high_gradient(devi
     device.submit_command_buffer(enc.finish())
     device.wait()
 
-    assert trainer._read_output_count() == 2
-    out_pos = _read_f32x4(trainer._regen_buffers["positions"], 2)
-    out_scale = _read_f32x4(trainer._regen_buffers["scales"], 2)
-    np.testing.assert_allclose(out_pos[:, 1:], np.repeat(positions[:, 1:], 2, axis=0), rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(out_pos[:, 0], np.array([positions[0, 0] - 0.3, positions[0, 0] + 0.3], dtype=np.float32), rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(out_scale[:, :3], np.repeat(np.array([[0.3, 0.1, 0.1]], dtype=np.float32), 2, axis=0), rtol=0.0, atol=1e-6)
+    assert trainer._read_output_count() == 1
+    out_pos = _read_f32x4(trainer._regen_buffers["positions"], 1)
+    out_scale = _read_f32x4(trainer._regen_buffers["scales"], 1)
+    np.testing.assert_allclose(out_pos[0], positions[0], rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(out_scale[0], scales[0], rtol=0.0, atol=1e-6)
 
 
 def test_regenerate_scene_prunes_low_opacity_only(device, tmp_path: Path):
