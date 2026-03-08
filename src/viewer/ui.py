@@ -116,9 +116,9 @@ def build_ui(screen: object, app: object, renderer: object) -> ViewerUI:
         "scene_stats": "Splats: 0",
         "render_stats": "Generated: 0 | Written: 0",
         "training": "Training: idle",
-        "training_ssim": "SSIM: n/a",
-        "training_psnr": "PSNR: n/a",
-        "training_loss": "Loss: n/a",
+        "training_ssim": "SSIM Avg: n/a",
+        "training_psnr": "PSNR Avg: n/a",
+        "training_loss": "Loss Avg: n/a",
         "training_instability": "",
         "error": "",
     }.items():
