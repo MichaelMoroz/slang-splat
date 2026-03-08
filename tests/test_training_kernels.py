@@ -6,6 +6,7 @@ import numpy as np
 from PIL import Image
 import slangpy as spy
 
+from src.filter import SeparableGaussianBlur
 from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 from src.training import GaussianTrainer, StabilityHyperParams, TrainingHyperParams
@@ -33,13 +34,13 @@ def _make_scene(count: int = 24, seed: int = 7) -> GaussianScene:
     )
 
 
-def _make_frame(tmp_path: Path, width: int = 64, height: int = 64) -> ColmapFrame:
-    image_path = tmp_path / "target.png"
+def _make_frame(tmp_path: Path, width: int = 64, height: int = 64, *, image_name: str = "target.png", image_id: int = 0, green_value: int = 180) -> ColmapFrame:
+    image_path = tmp_path / image_name
     image = np.zeros((height, width, 3), dtype=np.uint8)
-    image[:, :, 1] = 180
+    image[:, :, 1] = int(green_value)
     Image.fromarray(image, mode="RGB").save(image_path)
     return ColmapFrame(
-        image_id=0,
+        image_id=image_id,
         image_path=image_path,
         q_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
         t_xyz=np.array([0.0, 0.0, 3.0], dtype=np.float32),
@@ -120,6 +121,42 @@ def test_training_targets_use_srgb_textures(device, tmp_path: Path):
 
     assert native_target.format == spy.Format.rgba8_unorm_srgb
     assert train_target.format == spy.Format.rgba8_unorm_srgb
+
+
+def test_separable_gaussian_blur_preserves_impulse_energy(device):
+    width = height = 17
+    blur = SeparableGaussianBlur(device, width=width, height=height)
+    input_tex = blur.make_texture()
+    output_tex = blur.make_texture()
+    image = np.zeros((height, width, 4), dtype=np.float32)
+    center = width // 2
+    image[center, center, 0] = 1.0
+    input_tex.copy_from_numpy(image)
+
+    enc = device.create_command_encoder()
+    blur.blur(enc, input_tex, output_tex)
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+
+    out = np.asarray(output_tex.to_numpy(), dtype=np.float32)
+    expected_weights = np.array(
+        [
+            0.00102838008447911,
+            0.00759875813523919,
+            0.03600077212843083,
+            0.10936068950970002,
+            0.21300553771125369,
+            0.26601172486179436,
+            0.21300553771125369,
+            0.10936068950970002,
+            0.03600077212843083,
+            0.00759875813523919,
+            0.00102838008447911,
+        ],
+        dtype=np.float32,
+    )
+    np.testing.assert_allclose(out[:, :, 0].sum(), 1.0, rtol=0.0, atol=1e-5)
+    np.testing.assert_allclose(out[center, center - 5 : center + 6, 0], expected_weights * expected_weights[5], rtol=0.0, atol=1e-6)
 
 
 def test_fused_adam_handles_nan_grads(device, tmp_path: Path):
@@ -523,3 +560,19 @@ def test_gpu_pointcloud_initializer_rebuilds_scene_without_cpu_upload(device, tm
     assert np.all(np.abs(np.linalg.norm(rotations, axis=1) - 1.0) < 1e-3)
     for name in _ADAM_BUFFER_NAMES:
         np.testing.assert_allclose(_read_f32x4(trainer._buffers[name], 16), np.zeros((16, 4), dtype=np.float32), rtol=0.0, atol=1e-7)
+
+
+def test_training_frame_order_covers_each_view_once_per_epoch(device, tmp_path: Path):
+    scene = _make_scene(count=12, seed=71)
+    frames = [_make_frame(tmp_path, image_name=f"target_{idx}.png", image_id=idx, green_value=64 + idx) for idx in range(4)]
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=frames, seed=91)
+
+    seen = []
+    for _ in range(8):
+        trainer.step()
+        seen.append(int(trainer.state.last_frame_index))
+
+    first_epoch, second_epoch = seen[:4], seen[4:]
+    assert sorted(first_epoch) == [0, 1, 2, 3]
+    assert sorted(second_epoch) == [0, 1, 2, 3]

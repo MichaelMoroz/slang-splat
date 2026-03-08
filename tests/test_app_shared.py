@@ -48,6 +48,7 @@ def test_build_training_params_clamps_ranges():
         near=5.0,
         far=1.0,
         scale_l2_weight=-1.0,
+        lambda_dssim=2.0,
         mcmc_position_noise_enabled=True,
         mcmc_position_noise_scale=-5.0,
         mcmc_opacity_gate_sharpness=-1.0,
@@ -60,3 +61,4 @@ def test_build_training_params_clamps_ranges():
     assert params.stability.max_opacity == params.stability.min_opacity == 0.8
     assert params.training.far > params.training.near
     assert params.training.scale_l2_weight == 0.0
+    assert params.training.lambda_dssim == 1.0

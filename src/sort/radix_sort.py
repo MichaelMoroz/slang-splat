@@ -138,7 +138,7 @@ class GPURadixSort:
         set_common = lambda cursor, shift: (
             setattr(cursor, "g_shift", shift),
             setattr(cursor, "g_useParamsBuffer", 1 if use_params_buffer else 0),
-            setattr(cursor, "g_ParamsBuffer", args_buffer if use_params_buffer else None),
+            setattr(cursor, "g_ParamsBuffer", args_buffer) if use_params_buffer else None,
             setattr(cursor, "g_elementCount", 0 if use_params_buffer else n),
             setattr(cursor, "g_numGroups", 0 if use_params_buffer else num_groups),
         )

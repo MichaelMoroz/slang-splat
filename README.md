@@ -12,6 +12,7 @@ Runtime target is Vulkan.
 - GPU compute rasterizer that blends tile-local sorted splats with `8x8` thread groups and `3x3` microtiles per thread (`24x24` effective tiles).
 - Fused raster forward/backward training path for per-splat gradients without per-pixel state buffers.
 - Fused one-thread-per-splat ADAM training kernel.
+- Reusable separable Gaussian blur utility for SSIM moment filtering and backward aggregation.
 - CPU reference implementations in `reference_impls` plus tests for key algorithms.
 
 ## Setup
@@ -72,12 +73,13 @@ python cli.py render-ply --ply D:\Datasets\3DGS\TEST\flowers.ply --output-dir ou
 ```
 
 Training notes:
-- Training walks images sequentially and loops back to frame `0` after the last frame.
+- Training walks a shuffled permutation of views and reshuffles after every full image epoch.
 - Training target images are stored as `rgba8_unorm_srgb` textures (not float32) so shader reads use hardware sRGB decode while keeping GPU memory usage low.
 - In viewer COLMAP mode, pointcloud XYZ/RGB are uploaded once on dataset load; gaussian reinitialization is done on GPU from those buffers.
 - Default COLMAP initialization parameters are derived from point-cloud nearest-neighbor spacing and requested gaussian count so initial splats are close-packed with limited overlap.
-- Default loss is RGB MSE.
+- Default loss is `(1 - lambda_dssim) * L1 + lambda_dssim * DSSIM`, with DSSIM driven by Gaussian-window SSIM moments on the GPU.
 - Reported training metrics include total loss, rolling average loss, per-step `last_psnr`, and `avg_psnr` computed from the latest PSNR stored for each training frame slot.
+- `last_mse` and PSNR remain plain RGB MSE metrics even though the optimization loss is mixed photometric.
 - Target Y-flip is enabled by default.
 - Per-step low-quality reinit is enabled by default: splats with `opacity <= min_opacity` or `max(scale) <= min_scale`
   can be replaced from a random valid donor splat (skip when donor is also low-quality).
@@ -104,6 +106,7 @@ The budget scans only production Python entrypoints plus `src/**`.
 - `src/app`: shared app parameter builders, scene bounds helpers, and CLI command implementations.
 - `src/scene`: scene datamodel and PLY loader.
 - `src/training`: COLMAP training runtime and hyperparameter dataclasses.
+- `src/filter`: reusable image-space Gaussian blur utilities.
 - `src/sort`: GPU radix sort wrapper.
 - `src/renderer`: camera and renderer orchestration.
 - `reference_impls`: CPU and analytical reference implementations used by tests.

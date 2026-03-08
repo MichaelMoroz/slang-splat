@@ -2,6 +2,8 @@
 
 `cli.py` (`train-colmap`) is a thin wrapper over `src/app/cli.py`, and `src/training/gaussian_trainer.py` remains the public training facade over dataset assets, kernel dispatch, and metric/state updates.
 
+The mixed photometric loss uses the reusable separable blur utility in `src/filter/separable_gaussian_blur.py`, backed by `shaders/filter/separable_gaussian_blur.slang`, to build SSIM moments and to aggregate backward partials back into `dLoss / dRendered`.
+
 ## Data Ingestion
 - Loader facade: `src/scene/colmap_loader.py`
 - Internal split:
@@ -36,22 +38,29 @@
 
 ## Optimization Loop
 Each trainer `step()` performs:
-1. Pick the next training frame in sequence and wrap after the last frame.
+1. Pick the next training frame from a shuffled full-view epoch; after all views are consumed once, regenerate a new permutation.
 2. Upload frame image as target texture (Y-flip enabled by default).
 3. Run renderer prepass + raster forward.
-4. Run loss kernel (`RGB MSE`) to produce `g_OutputGrad`.
-5. Run fused raster forward/backward replay to fill per-splat gradient buffers without cached per-pixel forward state.
-6. Run fused ADAM kernel (`csAdamStepFused`) with one thread per Gaussian.
+4. Pack SSIM auxiliary textures (`rendered^2`, `target^2`, `rendered * target`) and run the separable Gaussian blur utility to produce local SSIM moments.
+5. Run mixed photometric loss kernels to produce `g_OutputGrad`.
+   - Reconstruction loss is `(1 - lambda_dssim) * L1 + lambda_dssim * DSSIM`.
+   - DSSIM is computed from Gaussian-window SSIM moments.
+   - The local SSIM kernel writes partial derivatives for `G * x`, `G * x^2`, and `G * (x * y)`.
+   - Those partial maps are blurred again and composed into the final `dLoss / dRendered` texture before raster backward replay.
+6. Run fused raster forward/backward replay to fill per-splat gradient buffers without cached per-pixel forward state.
+7. Run fused ADAM kernel (`csAdamStepFused`) with one thread per Gaussian.
    - Scale regularization is computed in-kernel via Slang autodiff on `scale.xyz`.
    - The term is an L2 penalty on `log(scale / referenceScale)`, where the reference scale comes from the initialization base scale when available.
    - The regularization scalar is averaged over the active splat count and added to the reported loss buffer in this ADAM pass.
    - A hard anisotropy clamp enforces `max(scale.xyz) / min(scale.xyz) <= max_anisotropy`.
-7. Run low-quality marking kernel (`csMarkLowQualitySplats`) using stability thresholds.
-8. Run random low-quality resample kernel (`csResampleLowQualitySplatsRandom`).
+8. Run low-quality marking kernel (`csMarkLowQualitySplats`) using stability thresholds.
+9. Run random low-quality resample kernel (`csResampleLowQualitySplatsRandom`).
 
 ## Kernels
 - `csClearLossAndGradTex`: zero loss + output-grad texture.
-- `csComputeMSELossGrad`: computes RGB MSE via Slang autodiff, writes output gradients, and reduces the target signal max used for PSNR.
+- `csPackSSIMAux`: builds `rendered^2`, `target^2`, and `rendered * target` textures for SSIM moments.
+- `csComputeMixedLossGrad`: computes mixed `L1 + DSSIM` loss, writes the direct L1 output gradient, and writes SSIM partial maps for backward Gaussian filtering.
+- `csComposeMixedLossOutputGrad`: combines the blurred SSIM partial maps into the final `dLoss / dRendered`.
 - `csAdamStepFused`: updates all trainable params in one pass:
   - position,
   - scale,
@@ -84,7 +93,7 @@ Each trainer `step()` performs:
 - Host guard:
   - if loss is non-finite, ADAM step is skipped and moments are reset.
 - Host metrics:
-  - `last_mse` stores the image MSE from `csComputeMSELossGrad`,
+  - `last_mse` stores the plain image MSE metric from the mixed-loss pass,
   - `avg_signal_max` is the mean of the latest target signal-max values cached per frame,
   - `last_psnr` is the current training frame's PSNR,
   - `avg_psnr` is the mean of the latest PSNR cached per frame,
@@ -101,6 +110,7 @@ Useful options:
 - `--width/--height` for train resolution (defaults to selected image resolution),
 - `--lr`, `--beta1`, `--beta2`, `--eps`,
 - `--scale-l2` for autodiff log-scale regularization around the init/reference scale,
+- `--lambda-dssim` for the SSIM contribution in the mixed photometric loss,
 - `--max-anisotropy` for the hard per-gaussian scale-ratio cap,
 - `--grad-clip`, `--grad-norm-clip`, `--max-update`,
 - `--min-scale`, `--max-scale`, `--min-opacity`, `--max-opacity`.

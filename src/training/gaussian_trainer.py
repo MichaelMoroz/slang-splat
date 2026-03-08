@@ -9,6 +9,7 @@ from PIL import Image
 import slangpy as spy
 
 from ..common import SHADER_ROOT
+from ..filter import SeparableGaussianBlur
 from ..renderer import Camera, GaussianRenderer
 from ..scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 
@@ -49,7 +50,7 @@ class StabilityHyperParams:
 @dataclass(slots=True)
 class TrainingHyperParams:
     background: tuple[float, float, float] = (0.0, 0.0, 0.0); near: float = 0.1; far: float = 120.0; scale_l2_weight: float = 1e-3; mcmc_position_noise_enabled: bool = True
-    mcmc_position_noise_scale: float = 1.0; mcmc_opacity_gate_sharpness: float = 100.0; mcmc_opacity_gate_center: float = 0.995; low_quality_reinit_enabled: bool = True
+    mcmc_position_noise_scale: float = 1.0; mcmc_opacity_gate_sharpness: float = 100.0; mcmc_opacity_gate_center: float = 0.995; low_quality_reinit_enabled: bool = True; lambda_dssim: float = 0.2
 
 
 @dataclass(slots=True)
@@ -64,6 +65,22 @@ class GaussianTrainer:
     _LOSS_SLOT_MSE = 1
     _PSNR_MSE_FLOOR = 1e-12
     _ADAM_BUFFER_NAMES = ("adam_m_pos", "adam_v_pos", "adam_m_scale", "adam_v_scale", "adam_m_quat", "adam_v_quat", "adam_m_color_alpha", "adam_v_color_alpha")
+    _LOSS_TEXTURE_NAMES = (
+        "render_sq",
+        "target_sq",
+        "cross",
+        "mu_render",
+        "mu_target",
+        "blur_render_sq",
+        "blur_target_sq",
+        "blur_cross",
+        "grad_mu",
+        "grad_xx",
+        "grad_xy",
+        "grad_mu_blur",
+        "grad_xx_blur",
+        "grad_xy_blur",
+    )
     _ADAM_SHADER_VARS = {
         "adam_m_pos": "g_AdamMPos",
         "adam_v_pos": "g_AdamVPos",
@@ -78,7 +95,9 @@ class GaussianTrainer:
     _SCENE_GRAD_SHADER_VARS = {"grad_positions": "g_GradPositions", "grad_scales": "g_GradScales", "grad_rotations": "g_GradRotations", "grad_color_alpha": "g_GradColorAlpha"}
     _KERNEL_ENTRIES = {
         "clear_loss_grad": "csClearLossAndGradTex",
-        "mse_loss_grad": "csComputeMSELossGrad",
+        "pack_ssim_aux": "csPackSSIMAux",
+        "loss_grad": "csComputeMixedLossGrad",
+        "compose_loss_grad": "csComposeMixedLossOutputGrad",
         "adam_step": "csAdamStepFused",
         "mark_low_quality_splats": "csMarkLowQualitySplats",
         "resample_low_quality_splats": "csResampleLowQualitySplatsRandom",
@@ -101,7 +120,6 @@ class GaussianTrainer:
     _dispatch_adam_step = lambda self, encoder: self._dispatch("adam_step", encoder, self._scene_thread_count(), {**self._scene_grad_vars(), **self._scene_rw_vars(), **self._adam_shader_vars(), **self._common_vars()})
     _dispatch_mark_low_quality_splats = lambda self, encoder: self._dispatch("mark_low_quality_splats", encoder, self._scene_thread_count(), {"g_ScalesRW": self.renderer.scene_buffers["scales"], "g_ColorAlphaRW": self.renderer.scene_buffers["color_alpha"], "g_LowQualityFlags": self._buffers["low_quality_flags"], **self._common_vars()})
     _dispatch_resample_low_quality_splats = lambda self, encoder: self._dispatch("resample_low_quality_splats", encoder, self._scene_thread_count(), {**self._scene_rw_vars(), **self._adam_shader_vars(), "g_LowQualityFlags": self._buffers["low_quality_flags"], **self._common_vars()})
-    _dispatch_loss_grad = lambda self, encoder, target_texture: (lambda shared: (self._dispatch("clear_loss_grad", encoder, self._pixel_thread_count(), shared), self._dispatch("mse_loss_grad", encoder, self._pixel_thread_count(), {"g_Rendered": self.renderer.output_texture, "g_Target": target_texture, **shared})) )({"g_OutputGrad": self.renderer.output_grad_texture, "g_LossBuffer": self._buffers["loss"], "g_SignalMaxBuffer": self._buffers["signal_max"], **self._common_vars()})
     _read_loss_metrics = lambda self: (lambda loss_values, signal_values: (float(loss_values[self._LOSS_SLOT_TOTAL]) if loss_values.size > self._LOSS_SLOT_TOTAL else float("nan"), float(loss_values[self._LOSS_SLOT_MSE]) if loss_values.size > self._LOSS_SLOT_MSE else float("nan"), float(signal_values.view(np.float32)[0]) if signal_values.size else float("nan")))(np.frombuffer(self._buffers["loss"].to_numpy().tobytes(), dtype=np.float32), np.frombuffer(self._buffers["signal_max"].to_numpy().tobytes(), dtype=np.uint32))
 
     def __init__(
@@ -129,6 +147,7 @@ class GaussianTrainer:
             raise ValueError("GaussianTrainer requires either scene or scene_count.")
         pick = lambda value, fallback: fallback if value is None else value
         self.device, self.renderer, self.frames = device, renderer, frames
+        self._seed = int(seed)
         self._scene_count = int(scene.count if scene is not None else max(int(scene_count if scene_count is not None else 0), 1))
         self.scene = scene if scene is not None else _SceneCountProxy(self._scene_count)
         self.adam, self.stability, self.training = pick(adam_hparams, AdamHyperParams()), pick(stability_hparams, StabilityHyperParams()), pick(training_hparams, TrainingHyperParams())
@@ -147,14 +166,21 @@ class GaussianTrainer:
         self._init_point_count = 0
         self._frame_targets_train: list[spy.Texture] = []
         self._frame_targets_native: list[spy.Texture] = []
+        self._loss_textures: dict[str, spy.Texture] = {}
+        self._blur = SeparableGaussianBlur(self.device, self.renderer.width, self.renderer.height)
+        self._frame_rng = np.random.default_rng(self._seed)
+        self._frame_order = np.zeros((len(self.frames),), dtype=np.int32)
+        self._frame_cursor = len(self.frames)
         if upload_initial_scene and scene is not None:
             self.renderer.set_scene(scene)
         else:
             self.renderer.bind_scene_count(self._scene_count)
         self._ensure_training_buffers(self._scene_count)
+        self._ensure_loss_textures()
         self._zero_optimizer_moments()
         self._create_dataset_textures()
         self._bind_or_upload_init_pointcloud(init_point_positions, init_point_colors, init_point_positions_buffer, init_point_colors_buffer, init_point_count)
+        self._reset_frame_order()
 
     def _ensure_training_buffers(self, splat_count: int) -> None:
         count = max(int(splat_count), 1)
@@ -175,6 +201,22 @@ class GaussianTrainer:
         scales = np.asarray(scene.scales, dtype=np.float32)
         finite = np.isfinite(scales).all(axis=1)
         return 1.0 if not np.any(finite) else float(np.exp(np.mean(np.log(np.maximum(scales[finite], 1e-8)), dtype=np.float64)))
+
+    def _ensure_loss_textures(self) -> None:
+        if self._loss_textures:
+            return
+        self._loss_textures = {name: self._blur.make_texture() for name in self._LOSS_TEXTURE_NAMES}
+
+    def _reset_frame_order(self) -> None:
+        self._frame_order = self._frame_rng.permutation(len(self.frames)).astype(np.int32)
+        self._frame_cursor = 0
+
+    def _next_frame_index(self) -> int:
+        if self._frame_cursor >= len(self.frames):
+            self._reset_frame_order()
+        frame_index = int(self._frame_order[self._frame_cursor])
+        self._frame_cursor += 1
+        return frame_index
 
     def _create_init_point_buffer(self, points: np.ndarray) -> spy.Buffer:
         packed = np.ascontiguousarray(points, dtype=np.float32)
@@ -248,6 +290,67 @@ class GaussianTrainer:
             else float("nan")
         )
 
+    def _dispatch_loss_grad(self, encoder: spy.CommandEncoder, target_texture: spy.Texture) -> None:
+        common = self._common_vars()
+        shared = {"g_OutputGrad": self.renderer.output_grad_texture, "g_LossBuffer": self._buffers["loss"], "g_SignalMaxBuffer": self._buffers["signal_max"], **common}
+        self._dispatch("clear_loss_grad", encoder, self._pixel_thread_count(), shared)
+        self._dispatch(
+            "pack_ssim_aux",
+            encoder,
+            self._pixel_thread_count(),
+            {
+                "g_Rendered": self.renderer.output_texture,
+                "g_Target": target_texture,
+                "g_RenderedSq": self._loss_textures["render_sq"],
+                "g_TargetSq": self._loss_textures["target_sq"],
+                "g_RenderTarget": self._loss_textures["cross"],
+                **common,
+            },
+        )
+        self._blur.blur(encoder, self.renderer.output_texture, self._loss_textures["mu_render"])
+        self._blur.blur(encoder, target_texture, self._loss_textures["mu_target"])
+        self._blur.blur(encoder, self._loss_textures["render_sq"], self._loss_textures["blur_render_sq"])
+        self._blur.blur(encoder, self._loss_textures["target_sq"], self._loss_textures["blur_target_sq"])
+        self._blur.blur(encoder, self._loss_textures["cross"], self._loss_textures["blur_cross"])
+        self._dispatch(
+            "loss_grad",
+            encoder,
+            self._pixel_thread_count(),
+            {
+                "g_Rendered": self.renderer.output_texture,
+                "g_Target": target_texture,
+                "g_OutputGrad": self.renderer.output_grad_texture,
+                "g_LossBuffer": self._buffers["loss"],
+                "g_SignalMaxBuffer": self._buffers["signal_max"],
+                "g_MuRendered": self._loss_textures["mu_render"],
+                "g_MuTarget": self._loss_textures["mu_target"],
+                "g_BlurRenderedSq": self._loss_textures["blur_render_sq"],
+                "g_BlurTargetSq": self._loss_textures["blur_target_sq"],
+                "g_BlurRenderTarget": self._loss_textures["blur_cross"],
+                "g_GradMuRendered": self._loss_textures["grad_mu"],
+                "g_GradBlurRenderedSq": self._loss_textures["grad_xx"],
+                "g_GradBlurRenderTarget": self._loss_textures["grad_xy"],
+                **common,
+            },
+        )
+        self._blur.blur(encoder, self._loss_textures["grad_mu"], self._loss_textures["grad_mu_blur"])
+        self._blur.blur(encoder, self._loss_textures["grad_xx"], self._loss_textures["grad_xx_blur"])
+        self._blur.blur(encoder, self._loss_textures["grad_xy"], self._loss_textures["grad_xy_blur"])
+        self._dispatch(
+            "compose_loss_grad",
+            encoder,
+            self._pixel_thread_count(),
+            {
+                "g_Rendered": self.renderer.output_texture,
+                "g_Target": target_texture,
+                "g_OutputGrad": self.renderer.output_grad_texture,
+                "g_BlurredGradMuRendered": self._loss_textures["grad_mu_blur"],
+                "g_BlurredGradRenderedSq": self._loss_textures["grad_xx_blur"],
+                "g_BlurredGradRenderTarget": self._loss_textures["grad_xy_blur"],
+                **common,
+            },
+        )
+
     def _common_vars(self) -> dict[str, object]:
         return {
             "g_Width": int(self.renderer.width),
@@ -258,6 +361,7 @@ class GaussianTrainer:
             "g_LossGradClip": float(self.stability.loss_grad_clip),
             "g_ScaleL2Weight": float(max(self.training.scale_l2_weight, 0.0)),
             "g_ScaleRegReference": float(max(self._scale_reg_reference, 1e-8)),
+            "g_LambdaDSSIM": float(np.clip(self.training.lambda_dssim, 0.0, 1.0)),
             "g_Adam": {
                 "positionLR": float(self.adam.position_lr),
                 "scaleLR": float(self.adam.scale_lr),
@@ -320,6 +424,8 @@ class GaussianTrainer:
         self.device.wait()
         self.state = TrainingState()
         self._reset_metric_windows()
+        self._frame_rng = np.random.default_rng(self._seed)
+        self._reset_frame_order()
 
     def _update_psnr_state(self, frame_index: int, mse: float, signal_max: float) -> None:
         self.state.last_mse = float(mse)
@@ -331,7 +437,7 @@ class GaussianTrainer:
         self.state.avg_psnr = self._mean_finite(self._frame_psnr)
 
     def step(self) -> float:
-        frame_index = int(self.state.step % len(self.frames))
+        frame_index = self._next_frame_index()
         frame_camera = self.make_frame_camera(frame_index, self.renderer.width, self.renderer.height)
         background = np.asarray(self.training.background, dtype=np.float32).reshape(3)
         self.renderer.execute_prepass_for_current_scene(frame_camera, sync_counts=False)

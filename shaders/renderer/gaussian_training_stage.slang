@@ -5,6 +5,8 @@ static const uint LOSS_SLOT_TOTAL = 0u;
 static const uint LOSS_SLOT_MSE = 1u;
 static const uint RNG_LINEAR_A = 1664525u;
 static const uint RNG_LINEAR_C = 1013904223u;
+static const float SSIM_C1 = 0.0001;
+static const float SSIM_C2 = 0.0009;
 
 struct AdamParams
 {
@@ -52,12 +54,27 @@ uniform float g_InvPixelCount;
 uniform float g_LossGradClip;
 uniform float g_ScaleL2Weight;
 uniform float g_ScaleRegReference;
+uniform float g_LambdaDSSIM;
 
 uniform Texture2D<float4> g_Rendered;
 uniform Texture2D<float4> g_Target;
 uniform RWTexture2D<float4> g_OutputGrad;
 uniform RWStructuredBuffer<float> g_LossBuffer;
 uniform RWStructuredBuffer<uint> g_SignalMaxBuffer;
+uniform RWTexture2D<float4> g_RenderedSq;
+uniform RWTexture2D<float4> g_TargetSq;
+uniform RWTexture2D<float4> g_RenderTarget;
+uniform Texture2D<float4> g_MuRendered;
+uniform Texture2D<float4> g_MuTarget;
+uniform Texture2D<float4> g_BlurRenderedSq;
+uniform Texture2D<float4> g_BlurTargetSq;
+uniform Texture2D<float4> g_BlurRenderTarget;
+uniform RWTexture2D<float4> g_GradMuRendered;
+uniform RWTexture2D<float4> g_GradBlurRenderedSq;
+uniform RWTexture2D<float4> g_GradBlurRenderTarget;
+uniform Texture2D<float4> g_BlurredGradMuRendered;
+uniform Texture2D<float4> g_BlurredGradRenderedSq;
+uniform Texture2D<float4> g_BlurredGradRenderTarget;
 uniform Texture2D<float4> g_DebugRendered;
 uniform Texture2D<float4> g_DebugTarget;
 uniform RWTexture2D<float4> g_DebugOutput;
@@ -70,6 +87,7 @@ uniform uint g_LetterboxSourceHeight;
 uniform uint g_LetterboxOutputWidth;
 uniform uint g_LetterboxOutputHeight;
 groupshared float gsLoss[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
+groupshared float gsMSE[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
 groupshared float gsSignalMax[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
 
 uniform StructuredBuffer<float> g_GradPositions;
@@ -215,6 +233,39 @@ float rgb_mse_loss(float3 rendered, no_diff float3 target, no_diff float invPixe
     return dot(diff, diff) * (1.0 / 3.0) * invPixelCount;
 }
 
+float rgb_l1_loss(float3 rendered, no_diff float3 target, no_diff float invPixelCount)
+{
+    float3 diff = abs(rendered - target);
+    return dot(diff, float3(1.0, 1.0, 1.0)) * (1.0 / 3.0) * invPixelCount;
+}
+
+float3 rgb_l1_grad(float3 rendered, no_diff float3 target, no_diff float invPixelCount)
+{
+    float3 diff = rendered - target;
+    float3 signGrad = float3(diff.x > 0.0 ? 1.0 : diff.x < 0.0 ? -1.0 : 0.0, diff.y > 0.0 ? 1.0 : diff.y < 0.0 ? -1.0 : 0.0, diff.z > 0.0 ? 1.0 : diff.z < 0.0 ? -1.0 : 0.0);
+    return signGrad * ((1.0 / 3.0) * invPixelCount);
+}
+
+[Differentiable]
+float rgb_dssim_loss(
+    float3 muRendered,
+    no_diff float3 muTarget,
+    float3 blurRenderedSq,
+    no_diff float3 blurTargetSq,
+    float3 blurRenderTarget,
+    no_diff float invPixelCount,
+    no_diff float lambdaDSSIM
+)
+{
+    float3 sigmaRendered = blurRenderedSq - muRendered * muRendered;
+    float3 sigmaTarget = blurTargetSq - muTarget * muTarget;
+    float3 sigmaCross = blurRenderTarget - muRendered * muTarget;
+    float3 numer = (2.0 * muRendered * muTarget + SSIM_C1) * (2.0 * sigmaCross + SSIM_C2);
+    float3 denom = max(muRendered * muRendered + muTarget * muTarget + SSIM_C1, float3(TINY_VALUE)) * max(sigmaRendered + sigmaTarget + SSIM_C2, float3(TINY_VALUE));
+    float3 ssim = numer / denom;
+    return lambdaDSSIM * (1.0 - dot(ssim, float3(1.0, 1.0, 1.0)) * (1.0 / 3.0)) * invPixelCount;
+}
+
 [Differentiable]
 float scale_log_reference_loss(float3 scale, no_diff float referenceScale)
 {
@@ -285,7 +336,22 @@ void csClearLossAndGradTex(uint3 dispatchThreadID : SV_DispatchThreadID)
 
 [shader("compute")]
 [numthreads(TRAIN_TILE_DIM, TRAIN_TILE_DIM, 1)]
-void csComputeMSELossGrad(
+void csPackSSIMAux(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint px = dispatchThreadID.x;
+    uint py = dispatchThreadID.y;
+    if (px >= g_Width || py >= g_Height) return;
+    uint2 pixel = uint2(px, py);
+    float3 rendered = sanitize_float3(g_Rendered[pixel].xyz, g_Stability.hugeValue);
+    float3 target = sanitize_float3(g_Target[pixel].xyz, g_Stability.hugeValue);
+    g_RenderedSq[pixel] = float4(rendered * rendered, 0.0);
+    g_TargetSq[pixel] = float4(target * target, 0.0);
+    g_RenderTarget[pixel] = float4(rendered * target, 0.0);
+}
+
+[shader("compute")]
+[numthreads(TRAIN_TILE_DIM, TRAIN_TILE_DIM, 1)]
+void csComputeMixedLossGrad(
     uint3 dispatchThreadID : SV_DispatchThreadID,
     uint3 groupThreadID : SV_GroupThreadID
 )
@@ -295,41 +361,78 @@ void csComputeMSELossGrad(
     uint py = dispatchThreadID.y;
 
     float localLoss = 0.0;
+    float localMSE = 0.0;
     float localSignalMax = 0.0;
     if (px < g_Width && py < g_Height)
     {
         uint2 pixel = uint2(px, py);
         float3 rendered = sanitize_float3(g_Rendered[pixel].xyz, g_Stability.hugeValue);
         float3 target = sanitize_float3(g_Target[pixel].xyz, g_Stability.hugeValue);
-        float loss = rgb_mse_loss(rendered, target, g_InvPixelCount);
+        float3 muRendered = sanitize_float3(g_MuRendered[pixel].xyz, g_Stability.hugeValue);
+        float3 muTarget = sanitize_float3(g_MuTarget[pixel].xyz, g_Stability.hugeValue);
+        float3 blurRenderedSq = sanitize_float3(g_BlurRenderedSq[pixel].xyz, g_Stability.hugeValue);
+        float3 blurTargetSq = sanitize_float3(g_BlurTargetSq[pixel].xyz, g_Stability.hugeValue);
+        float3 blurRenderTarget = sanitize_float3(g_BlurRenderTarget[pixel].xyz, g_Stability.hugeValue);
+        float mseLoss = rgb_mse_loss(rendered, target, g_InvPixelCount);
+        float l1Loss = (1.0 - g_LambdaDSSIM) * rgb_l1_loss(rendered, target, g_InvPixelCount);
+        float ssimLoss = rgb_dssim_loss(muRendered, muTarget, blurRenderedSq, blurTargetSq, blurRenderTarget, g_InvPixelCount, g_LambdaDSSIM);
+        float loss = l1Loss + ssimLoss;
         localLoss = isfinite(loss) ? loss : 0.0;
+        localMSE = isfinite(mseLoss) ? mseLoss : 0.0;
         localSignalMax = max(target.x, max(target.y, target.z));
+        float3 l1Grad = (1.0 - g_LambdaDSSIM) * rgb_l1_grad(rendered, target, g_InvPixelCount);
 
-        var dpRendered = diffPair(rendered);
-        bwd_diff(rgb_mse_loss)(dpRendered, target, g_InvPixelCount, 1.0);
-        float3 dOut = sanitize_float3(dpRendered.getDifferential(), g_LossGradClip);
+        var dpMuRendered = diffPair(muRendered);
+        var dpBlurRenderedSq = diffPair(blurRenderedSq);
+        var dpBlurRenderTarget = diffPair(blurRenderTarget);
+        bwd_diff(rgb_dssim_loss)(dpMuRendered, muTarget, dpBlurRenderedSq, blurTargetSq, dpBlurRenderTarget, g_InvPixelCount, g_LambdaDSSIM, 1.0);
+
+        float3 dOut = sanitize_float3(l1Grad, g_LossGradClip);
         dOut = clamp(dOut, -g_LossGradClip, g_LossGradClip);
         g_OutputGrad[pixel] = float4(dOut, 0.0);
+        g_GradMuRendered[pixel] = float4(sanitize_float3(dpMuRendered.getDifferential(), g_LossGradClip), 0.0);
+        g_GradBlurRenderedSq[pixel] = float4(sanitize_float3(dpBlurRenderedSq.getDifferential(), g_LossGradClip), 0.0);
+        g_GradBlurRenderTarget[pixel] = float4(sanitize_float3(dpBlurRenderTarget.getDifferential(), g_LossGradClip), 0.0);
     }
 
     gsLoss[localIndex] = localLoss;
+    gsMSE[localIndex] = localMSE;
     gsSignalMax[localIndex] = isfinite(localSignalMax) ? max(localSignalMax, 0.0) : 0.0;
     GroupMemoryBarrierWithGroupSync();
     [unroll] for (uint stride = (TRAIN_TILE_DIM * TRAIN_TILE_DIM) >> 1; stride > 0; stride >>= 1)
     {
         if (localIndex < stride) gsLoss[localIndex] += gsLoss[localIndex + stride];
+        if (localIndex < stride) gsMSE[localIndex] += gsMSE[localIndex + stride];
         if (localIndex < stride) gsSignalMax[localIndex] = max(gsSignalMax[localIndex], gsSignalMax[localIndex + stride]);
         GroupMemoryBarrierWithGroupSync();
     }
     if (localIndex == 0u)
     {
-        if (isfinite(gsLoss[0]))
-        {
-            InterlockedAdd(g_LossBuffer[LOSS_SLOT_TOTAL], gsLoss[0]);
-            InterlockedAdd(g_LossBuffer[LOSS_SLOT_MSE], gsLoss[0]);
-        }
+        if (isfinite(gsLoss[0])) InterlockedAdd(g_LossBuffer[LOSS_SLOT_TOTAL], gsLoss[0]);
+        if (isfinite(gsMSE[0])) InterlockedAdd(g_LossBuffer[LOSS_SLOT_MSE], gsMSE[0]);
         InterlockedMax(g_SignalMaxBuffer[0], asuint(max(gsSignalMax[0], 0.0)));
     }
+}
+
+[shader("compute")]
+[numthreads(TRAIN_TILE_DIM, TRAIN_TILE_DIM, 1)]
+void csComposeMixedLossOutputGrad(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint px = dispatchThreadID.x;
+    uint py = dispatchThreadID.y;
+    if (px >= g_Width || py >= g_Height) return;
+
+    uint2 pixel = uint2(px, py);
+    float3 rendered = sanitize_float3(g_Rendered[pixel].xyz, g_Stability.hugeValue);
+    float3 target = sanitize_float3(g_Target[pixel].xyz, g_Stability.hugeValue);
+    float3 gradMu = sanitize_float3(g_BlurredGradMuRendered[pixel].xyz, g_LossGradClip);
+    float3 gradRenderedSq = sanitize_float3(g_BlurredGradRenderedSq[pixel].xyz, g_LossGradClip);
+    float3 gradRenderTarget = sanitize_float3(g_BlurredGradRenderTarget[pixel].xyz, g_LossGradClip);
+    float3 directGrad = sanitize_float3(g_OutputGrad[pixel].xyz, g_LossGradClip);
+    float3 totalGrad = directGrad + gradMu + 2.0 * rendered * gradRenderedSq + target * gradRenderTarget;
+    totalGrad = sanitize_float3(totalGrad, g_LossGradClip);
+    totalGrad = clamp(totalGrad, -g_LossGradClip, g_LossGradClip);
+    g_OutputGrad[pixel] = float4(totalGrad, 0.0);
 }
 
 [shader("compute")]
