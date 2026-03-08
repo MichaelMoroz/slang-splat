@@ -26,13 +26,14 @@ The mixed photometric loss uses the reusable separable blur utility in `src/filt
 - Dataset texture creation and point-cloud upload/binding are isolated inside trainer helpers instead of being interleaved with the optimization step.
 
 ## Initialization
-- Gaussians are initialized by random point-cloud sampling from COLMAP `points3D`.
-- Viewer COLMAP reinitialization path uploads COLMAP point tables once, then runs `csInitializeGaussiansFromPointCloud` to rebuild gaussian parameters directly on GPU.
+- Gaussians are initialized directly from COLMAP `points3D` on CPU.
+- Position is copied from the COLMAP point cloud.
+- Scale is the nearest-neighbor point spacing repeated across XYZ.
+- Rotation starts as identity quaternion.
+- Opacity starts from the configured constant.
 - When init hyperparameters are omitted, Python derives defaults from COLMAP point-cloud nearest-neighbor spacing and requested gaussian count so initial splats are dense but only lightly overlapping.
 - Initialization parameters:
   - count cap (`max_gaussians`, default `50000`),
-  - position jitter,
-  - base scale + scale jitter,
   - constant initial opacity,
   - color from COLMAP RGB.
 
@@ -53,8 +54,15 @@ Each trainer `step()` performs:
    - The term is an L2 penalty on `log(scale / referenceScale)`, where the reference scale comes from the initialization base scale when available.
    - The regularization scalar is averaged over the active splat count and added to the reported loss buffer in this ADAM pass.
    - A hard anisotropy clamp enforces `max(scale.xyz) / min(scale.xyz) <= max_anisotropy`.
-8. Run low-quality marking kernel (`csMarkLowQualitySplats`) using stability thresholds.
-9. Run random low-quality resample kernel (`csResampleLowQualitySplatsRandom`).
+8. Run densification-stat update (`csUpdateDensificationStats`) to accumulate:
+   - EMA of `sqrt(dot(grad_position.xyz, grad_position.xyz))` using `1 / view_count`,
+   - maximum observed 2D projected radius for visible splats.
+9. On the configured schedule, run `csRegenerateScene`.
+   - Clone: duplicate small high-gradient splats while preserving the original optimizer state on the kept copy and zeroing moments on the new copy.
+   - Split: replace large high-gradient splats with `N=2` children sampled from the parent Gaussian.
+   - Prune: drop splats with low opacity or excessive world/screen footprint.
+   - Regeneration resets densification stats for the new active set.
+10. On the configured schedule, run `csResetOpacity` to clamp alpha back down and clear alpha optimizer moments.
 
 ## Kernels
 - `csClearLossAndGradTex`: zero loss + output-grad texture.
@@ -70,13 +78,10 @@ Each trainer `step()` performs:
   - Adds autodiff log-scale regularization gradients to scale gradients (`g_ScaleL2Weight`, `g_ScaleRegReference`).
   - Accumulates the averaged scale-regularization scalar contribution into `g_LossBuffer`.
   - Clamps stored scales to `[min_scale, max_scale]` and enforces `max_anisotropy`.
-- `csMarkLowQualitySplats`: marks splats as low-quality when
-  - `opacity <= min_opacity`, or
-  - `max(scale.xyz) <= min_scale`.
-- `csResampleLowQualitySplatsRandom`: for each marked splat, picks one deterministic random donor; if donor is valid,
-  copies donor params, adds optional MCMC-scale position jitter, and resets optimizer moments.
-- `csInitializeGaussiansFromPointCloud`: initializes scene buffers and optimizer moments from preuploaded COLMAP point buffers.
-  Host binding uses the same `{python_buffer_name -> shader_variable_name}` map as the renderer/runtime passes, so COLMAP init and ADAM updates share one buffer contract.
+- `csUpdateDensificationStats`: updates per-splat gradient EMA and maximum projected radius from the current step.
+- `csRegenerateScene`: inline clone/split/prune classification plus append-buffer regeneration into the next active scene buffers.
+- `csResetOpacity`: clamps alpha to `min(alpha, 0.01)` and clears alpha optimizer moments.
+- `csInitializeGaussiansFromPointCloud`: still exists for standalone point-buffer initialization, but the COLMAP training path now builds the initial `GaussianScene` on CPU.
 
 ## Numerical Reinforcement
 - Loss/grad and optimizer math sanitize non-finite values.
@@ -114,7 +119,6 @@ Useful options:
 - `--max-anisotropy` for the hard per-gaussian scale-ratio cap,
 - `--grad-clip`, `--grad-norm-clip`, `--max-update`,
 - `--min-scale`, `--max-scale`, `--min-opacity`, `--max-opacity`.
-- `--[no-]low-quality-reinit` enables/disables per-step low-quality resampling.
 
 ## Regression Test
 - `tests/test_training_garden_regression.py` loads the tracked `dataset/garden` subset, initializes gaussians from the COLMAP point cloud with a fixed seed, and runs `trainer.step()` until a 60-second deadline.

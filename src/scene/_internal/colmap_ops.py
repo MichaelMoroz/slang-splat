@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
+from scipy.spatial import cKDTree
 
 from ..gaussian_scene import GaussianScene
 from .colmap_types import ColmapFrame, ColmapReconstruction, GaussianInitHyperParams, point_tables
@@ -82,34 +83,34 @@ def build_training_frames(recon: ColmapReconstruction, images_subdir: str = "ima
 
 
 _random_unit_quaternions = lambda rng, count: (lambda q: q / np.maximum(np.linalg.norm(q, axis=1, keepdims=True), 1e-8))(rng.normal(size=(count, 4)).astype(np.float32))
+_identity_quaternions = lambda count: np.tile(np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32), (max(int(count), 0), 1))
+
+
+def point_nn_scales(points: np.ndarray) -> np.ndarray:
+    pts = np.ascontiguousarray(points, dtype=np.float32)
+    if pts.ndim != 2 or pts.shape[0] == 0:
+        return np.zeros((0,), dtype=np.float32)
+    if pts.shape[0] == 1:
+        return np.full((1,), 1e-4, dtype=np.float32)
+    dists, _ = cKDTree(pts).query(pts, k=2, workers=-1)
+    nearest = np.asarray(dists[:, 1], dtype=np.float32)
+    return np.clip(nearest, 1e-4, 1e4).astype(np.float32)
 
 
 def initialize_scene_from_colmap_points(recon: ColmapReconstruction, max_gaussians: int, seed: int, init_hparams: GaussianInitHyperParams | None = None) -> GaussianScene:
-    params = resolve_colmap_init_hparams(recon, max_gaussians, init_hparams)
     xyz, rgb = point_tables(recon)
     if xyz.shape[0] == 0:
         raise RuntimeError("COLMAP reconstruction has no 3D points.")
-    rng = np.random.default_rng(int(seed))
-    chosen_count = xyz.shape[0] if max_gaussians <= 0 else max(int(max_gaussians), 1)
-    indices = rng.choice(xyz.shape[0], size=chosen_count, replace=chosen_count > xyz.shape[0])
-    positions, colors = xyz[indices].copy(), rgb[indices].copy()
-    if float(params.position_jitter_std) > 0.0:
-        positions += rng.normal(scale=float(params.position_jitter_std), size=positions.shape).astype(np.float32)
-    if float(params.color_jitter_std) > 0.0:
-        colors = np.clip(colors + rng.normal(scale=float(params.color_jitter_std), size=colors.shape).astype(np.float32), 0.0, 1.0)
-    base_scale = max(float(params.base_scale), 1e-4)
-    scales = np.full((chosen_count, 3), base_scale, dtype=np.float32)
-    if float(params.scale_jitter_ratio) > 0.0:
-        scales = np.clip(
-            scales * rng.uniform(1.0 - float(params.scale_jitter_ratio), 1.0 + float(params.scale_jitter_ratio), size=(chosen_count, 3)).astype(np.float32),
-            1e-4,
-            10.0,
-        )
+    chosen_count = xyz.shape[0] if max_gaussians <= 0 else min(max(int(max_gaussians), 1), xyz.shape[0])
+    positions, colors = xyz[:chosen_count].copy(), rgb[:chosen_count].copy()
+    scales_1d = point_nn_scales(positions)
+    scales = np.repeat(scales_1d[:, None], 3, axis=1).astype(np.float32)
+    opacity = 0.1 if init_hparams is None or init_hparams.initial_opacity is None else float(np.clip(init_hparams.initial_opacity, 1e-4, 0.9999))
     return GaussianScene(
         positions=positions,
         scales=scales,
-        rotations=_random_unit_quaternions(rng, chosen_count),
-        opacities=np.full((chosen_count,), float(np.clip(params.initial_opacity, 1e-4, 0.9999)), dtype=np.float32),
+        rotations=_identity_quaternions(chosen_count),
+        opacities=np.full((chosen_count,), opacity, dtype=np.float32),
         colors=colors,
         sh_coeffs=np.zeros((chosen_count, 1, 3), dtype=np.float32),
     )

@@ -104,7 +104,7 @@ def test_colmap_loader_rejects_unsupported_camera_model(tmp_path: Path):
         _ = load_colmap_reconstruction(root)
 
 
-def test_colmap_init_samples_with_replacement_when_requested_count_exceeds_points(tmp_path: Path):
+def test_colmap_init_uses_direct_pointcloud_when_requested_count_exceeds_points(tmp_path: Path):
     root = _build_tiny_colmap_tree(tmp_path, model_id=1)
     recon = load_colmap_reconstruction(root)
     requested_count = 7
@@ -116,11 +116,11 @@ def test_colmap_init_samples_with_replacement_when_requested_count_exceeds_point
         init_hparams=init_hparams,
     )
 
-    assert scene.count == requested_count
-    assert scene.positions.shape == (requested_count, 3)
-    assert scene.colors.shape == (requested_count, 3)
-    unique_positions = np.unique(scene.positions, axis=0)
-    assert unique_positions.shape[0] < requested_count
+    assert scene.count == 2
+    assert scene.positions.shape == (2, 3)
+    assert scene.colors.shape == (2, 3)
+    np.testing.assert_allclose(scene.scales, np.full((2, 3), 3.0, dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(scene.rotations, np.array([[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]], dtype=np.float32), rtol=0.0, atol=1e-6)
 
 
 def test_colmap_init_suggestions_scale_with_requested_density(tmp_path: Path):

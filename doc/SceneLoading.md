@@ -28,5 +28,5 @@ Output is `GaussianScene` with contiguous `float32` arrays.
   - `SIMPLE_PINHOLE` (id `0`)
   - `PINHOLE` (id `1`)
 - Camera intrinsics are scaled from COLMAP camera resolution to selected training image resolution.
-- `initialize_scene_from_colmap_points(...)` randomly samples COLMAP points into a trainable `GaussianScene`.
+- `initialize_scene_from_colmap_points(...)` converts the COLMAP point cloud directly into a trainable `GaussianScene`, using nearest-neighbor point spacing for initial Gaussian scale.
 - Point XYZ/RGB table extraction is centralized so viewer uploads, init heuristics, and scene initialization all consume the same data path.

@@ -75,14 +75,14 @@ python cli.py render-ply --ply D:\Datasets\3DGS\TEST\flowers.ply --output-dir ou
 Training notes:
 - Training walks a shuffled permutation of views and reshuffles after every full image epoch.
 - Training target images are stored as `rgba8_unorm_srgb` textures (not float32) so shader reads use hardware sRGB decode while keeping GPU memory usage low.
-- In viewer COLMAP mode, pointcloud XYZ/RGB are uploaded once on dataset load; gaussian reinitialization is done on GPU from those buffers.
-- Default COLMAP initialization parameters are derived from point-cloud nearest-neighbor spacing and requested gaussian count so initial splats are close-packed with limited overlap.
+- COLMAP training initialization now uses the COLMAP point cloud directly on CPU: positions come from `points3D`, per-point scale is the nearest-neighbor spacing, rotation is identity, and opacity starts from the configured constant.
+- Default COLMAP initialization parameters are still derived from point-cloud nearest-neighbor spacing and requested gaussian count for reference-scale estimation and viewer defaults.
 - Default loss is `(1 - lambda_dssim) * L1 + lambda_dssim * DSSIM`, with DSSIM driven by Gaussian-window SSIM moments on the GPU.
 - Reported training metrics include total loss, rolling average loss, per-step `last_psnr`, and `avg_psnr` computed from the latest PSNR stored for each training frame slot.
 - `last_mse` and PSNR remain plain RGB MSE metrics even though the optimization loss is mixed photometric.
 - Target Y-flip is enabled by default.
-- Per-step low-quality reinit is enabled by default: splats with `opacity <= min_opacity` or `max(scale) <= min_scale`
-  can be replaced from a random valid donor splat (skip when donor is also low-quality).
+- Density control follows the original 3DGS structure more closely: gradient/radius stats are accumulated until `densify_until_iter`, then clone/split/prune runs every `densification_interval` after `densify_from_iter`, and opacity reset runs every `opacity_reset_interval`.
+- Clone duplicates small high-gradient splats, split replaces large high-gradient splats with two children, and prune removes low-opacity or oversized splats.
 - Numerical reinforcement includes clipping, finite checks, and safe quaternion normalization.
 - Scale regularization uses an autodiff log-space penalty around the initialization/reference scale, so equal multiplicative scale deviations are treated more uniformly.
 - Scale anisotropy is constrained with a hard per-gaussian clamp on `max(scale) / min(scale)`.

@@ -63,26 +63,9 @@ def _read_u32(buffer, count: int) -> np.ndarray:
     return values[:count].copy()
 
 
-def _hash_u32(value: int) -> int:
-    x = int(value) & 0xFFFFFFFF
-    x ^= x >> 16
-    x = (x * 0x7FEB352D) & 0xFFFFFFFF
-    x ^= x >> 15
-    x = (x * 0x846CA68B) & 0xFFFFFFFF
-    x ^= x >> 16
-    return x & 0xFFFFFFFF
-
-
-def _rng_next(state: int) -> int:
-    return (1664525 * int(state) + 1013904223) & 0xFFFFFFFF
-
-
-def _expected_donor_id(splat_id: int, step_index: int, splat_count: int) -> int:
-    seed = ((int(splat_id) * 0x9E3779B9) ^ (int(step_index) * 0x85EBCA6B) ^ 0x27D4EB2D) & 0xFFFFFFFF
-    state = _hash_u32(seed)
-    if state == 0:
-        state = 1
-    return int(_rng_next(state) % int(splat_count))
+def _read_f32(buffer, count: int) -> np.ndarray:
+    values = np.frombuffer(buffer.to_numpy().tobytes(), dtype=np.float32)
+    return values[:count].copy()
 
 
 def test_training_step_smoke_updates_params(device, tmp_path: Path):
@@ -295,218 +278,155 @@ def test_log_scale_regularizer_pulls_scales_toward_reference(device, tmp_path: P
     assert scales_after[1, 0] < scene.scales[1, 0]
 
 
-def test_mark_low_quality_flags_from_stability_thresholds(device, tmp_path: Path):
-    scene = _make_scene(count=5, seed=33)
-    frame = _make_frame(tmp_path)
+def test_update_densification_stats_tracks_ema_and_screen_radius(device, tmp_path: Path):
+    scene = _make_scene(count=3, seed=41)
+    frames = [_make_frame(tmp_path, image_name=f"target_stats_{idx}.png", image_id=idx) for idx in range(4)]
     renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
-    stability = StabilityHyperParams(min_scale=0.2, max_scale=3.0, min_opacity=0.3, max_opacity=0.9999)
-    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], stability_hparams=stability, seed=17)
+    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=frames, seed=23)
 
-    scales = _read_f32x4(renderer.scene_buffers["scales"], scene.count)
-    color_alpha = _read_f32x4(renderer.scene_buffers["color_alpha"], scene.count)
-    scales[:, :3] = np.array(
+    trainer._buffers["grad_ema"].copy_from_numpy(np.array([2.0, 1.0, 9.0], dtype=np.float32))
+    trainer._buffers["max_screen_radius"].copy_from_numpy(np.array([1.0, 6.0, 4.0], dtype=np.float32))
+    grad_positions = np.array(
         [
-            [0.5, 0.5, 0.5],
-            [0.1, 0.1, 0.1],
-            [0.4, 0.2, 0.3],
-            [0.8, 0.8, 0.8],
-            [0.2, 0.2, 0.2],
+            [3.0, 4.0, 0.0, 0.0],
+            [0.0, 0.0, 2.0, 0.0],
+            [1.0, 2.0, 2.0, 0.0],
+        ],
+        dtype=np.float32,
+    ).reshape(-1)
+    screen = np.array(
+        [
+            [0.0, 0.0, 5.0, 1.0],
+            [0.0, 0.0, 0.0, 1.0],
+            [0.0, 0.0, 7.0, 1.0],
         ],
         dtype=np.float32,
     )
-    color_alpha[:, 3] = np.array([0.8, 0.8, 0.4, 0.2, 0.8], dtype=np.float32)
-    renderer.scene_buffers["scales"].copy_from_numpy(scales)
-    renderer.scene_buffers["color_alpha"].copy_from_numpy(color_alpha)
+    renderer.work_buffers["grad_positions"].copy_from_numpy(grad_positions)
+    renderer.work_buffers["screen_center_radius_depth"].copy_from_numpy(screen)
 
     enc = device.create_command_encoder()
-    trainer._dispatch_mark_low_quality_splats(enc)
+    trainer._dispatch_update_densification_stats(enc)
     device.submit_command_buffer(enc.finish())
     device.wait()
 
-    flags = _read_u32(trainer._buffers["low_quality_flags"], scene.count)
-    expected = np.array([0, 1, 0, 1, 1], dtype=np.uint32)
-    np.testing.assert_array_equal(flags, expected)
+    np.testing.assert_allclose(_read_f32(trainer._buffers["grad_ema"], 3), np.array([2.75, 1.0, 7.5], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(_read_f32(trainer._buffers["max_screen_radius"], 3), np.array([5.0, 6.0, 7.0], dtype=np.float32), rtol=0.0, atol=1e-6)
 
 
-def test_resample_low_quality_from_valid_random_donor(device, tmp_path: Path):
-    scene = _make_scene(count=8, seed=41)
+def test_regenerate_scene_clones_small_high_gradient_gaussians(device, tmp_path: Path):
+    scene = _make_scene(count=2, seed=51)
     frame = _make_frame(tmp_path)
     renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
-    stability = StabilityHyperParams(min_scale=0.2, max_scale=3.0, min_opacity=0.3, max_opacity=0.9999)
-    training = TrainingHyperParams(low_quality_reinit_enabled=True, mcmc_position_noise_scale=0.0)
-    trainer = GaussianTrainer(
-        device=device,
-        renderer=renderer,
-        scene=scene,
-        frames=[frame],
-        stability_hparams=stability,
-        training_hparams=training,
-        seed=23,
-    )
+    training = TrainingHyperParams(densify_grad_threshold=0.5, percent_dense=0.5, world_size_prune_ratio=10.0)
+    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], training_hparams=training, seed=31)
 
-    positions = _read_f32x4(renderer.scene_buffers["positions"], scene.count)
-    scales = _read_f32x4(renderer.scene_buffers["scales"], scene.count)
-    rotations = _read_f32x4(renderer.scene_buffers["rotations"], scene.count)
-    color_alpha = _read_f32x4(renderer.scene_buffers["color_alpha"], scene.count)
-    for idx in range(scene.count):
-        positions[idx, :3] = np.array([float(idx), float(idx) + 0.1, float(idx) + 0.2], dtype=np.float32)
-        scales[idx, :3] = np.array([0.6, 0.5, 0.4], dtype=np.float32)
-        rotations[idx] = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
-        color_alpha[idx] = np.array([0.1 * idx, 0.05 * idx, 0.02 * idx, 0.8], dtype=np.float32)
-
-    step_index = int(trainer.state.step + 1)
-    target_id, donor_id = -1, -1
-    for splat_id in range(scene.count):
-        candidate = _expected_donor_id(splat_id, step_index, scene.count)
-        if candidate != splat_id:
-            target_id = splat_id
-            donor_id = candidate
-            break
-    assert target_id >= 0 and donor_id >= 0
-    color_alpha[target_id, 3] = 0.05
-
-    renderer.scene_buffers["positions"].copy_from_numpy(positions)
+    positions = _read_f32x4(renderer.scene_buffers["positions"], 2)
+    scales = _read_f32x4(renderer.scene_buffers["scales"], 2)
+    scales[0, :3] = 0.05
+    scales[1, :3] = 0.2
     renderer.scene_buffers["scales"].copy_from_numpy(scales)
-    renderer.scene_buffers["rotations"].copy_from_numpy(rotations)
-    renderer.scene_buffers["color_alpha"].copy_from_numpy(color_alpha)
-
-    for name in _ADAM_BUFFER_NAMES:
-        moments = np.full((scene.count, 4), 3.25, dtype=np.float32)
-        trainer._buffers[name].copy_from_numpy(moments)
-
-    expected_pos = positions[donor_id].copy()
-    expected_scale = scales[donor_id].copy()
-    expected_rot = rotations[donor_id].copy()
-    expected_color_alpha = color_alpha[donor_id].copy()
+    trainer._buffers["grad_ema"].copy_from_numpy(np.array([1.0, 0.1], dtype=np.float32))
+    trainer._buffers["max_screen_radius"].copy_from_numpy(np.zeros((2,), dtype=np.float32))
+    for index, name in enumerate(_ADAM_BUFFER_NAMES):
+        trainer._buffers[name].copy_from_numpy(np.full((2, 4), float(index + 1), dtype=np.float32))
+    trainer._ensure_regen_buffers(2)
 
     enc = device.create_command_encoder()
-    trainer._dispatch_mark_low_quality_splats(enc)
-    trainer._dispatch_resample_low_quality_splats(enc)
+    trainer._dispatch_regenerate_scene(enc)
     device.submit_command_buffer(enc.finish())
     device.wait()
 
-    flags = _read_u32(trainer._buffers["low_quality_flags"], scene.count)
-    assert int(flags[target_id]) == 1
-    assert int(flags[donor_id]) == 0
-
-    after_pos = _read_f32x4(renderer.scene_buffers["positions"], scene.count)
-    after_scale = _read_f32x4(renderer.scene_buffers["scales"], scene.count)
-    after_rot = _read_f32x4(renderer.scene_buffers["rotations"], scene.count)
-    after_color_alpha = _read_f32x4(renderer.scene_buffers["color_alpha"], scene.count)
-    np.testing.assert_allclose(after_pos[target_id], expected_pos, rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(after_scale[target_id], expected_scale, rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(after_rot[target_id], expected_rot, rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(after_color_alpha[target_id], expected_color_alpha, rtol=0.0, atol=1e-6)
-
-    for name in _ADAM_BUFFER_NAMES:
-        moment_values = _read_f32x4(trainer._buffers[name], scene.count)
-        np.testing.assert_allclose(moment_values[target_id], np.zeros((4,), dtype=np.float32), rtol=0.0, atol=1e-7)
+    assert trainer._read_output_count() == 3
+    out_pos = _read_f32x4(trainer._regen_buffers["positions"], 3)
+    out_scale = _read_f32x4(trainer._regen_buffers["scales"], 3)
+    np.testing.assert_allclose(out_pos[0], positions[0], rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(out_pos[1], positions[0], rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(out_pos[2], positions[1], rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(out_scale[:2], np.repeat(scales[:1], 2, axis=0), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(_read_f32x4(trainer._regen_buffers["adam_m_pos"], 3)[1], np.zeros((4,), dtype=np.float32), rtol=0.0, atol=1e-7)
 
 
-def test_resample_skips_when_random_donor_is_low_quality(device, tmp_path: Path):
-    scene = _make_scene(count=8, seed=51)
+def test_regenerate_scene_splits_large_high_gradient_gaussians(device, tmp_path: Path):
+    scene = _make_scene(count=1, seed=61)
     frame = _make_frame(tmp_path)
     renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
-    stability = StabilityHyperParams(min_scale=0.2, max_scale=3.0, min_opacity=0.3, max_opacity=0.9999)
-    training = TrainingHyperParams(low_quality_reinit_enabled=True, mcmc_position_noise_scale=0.0)
-    trainer = GaussianTrainer(
-        device=device,
-        renderer=renderer,
-        scene=scene,
-        frames=[frame],
-        stability_hparams=stability,
-        training_hparams=training,
-        seed=31,
-    )
+    training = TrainingHyperParams(densify_grad_threshold=0.5, percent_dense=0.01, split_child_count=2, world_size_prune_ratio=1000.0)
+    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], training_hparams=training, seed=55)
 
-    step_index = int(trainer.state.step + 1)
-    target_id, donor_id = -1, -1
-    for splat_id in range(scene.count):
-        candidate = _expected_donor_id(splat_id, step_index, scene.count)
-        if candidate != splat_id:
-            target_id = splat_id
-            donor_id = candidate
-            break
-    assert target_id >= 0 and donor_id >= 0
-
-    positions = _read_f32x4(renderer.scene_buffers["positions"], scene.count)
-    scales = _read_f32x4(renderer.scene_buffers["scales"], scene.count)
-    rotations = _read_f32x4(renderer.scene_buffers["rotations"], scene.count)
-    color_alpha = _read_f32x4(renderer.scene_buffers["color_alpha"], scene.count)
-    scales[:, :3] = 0.6
-    color_alpha[:, 3] = 0.8
-    color_alpha[target_id, 3] = 0.05
-    color_alpha[donor_id, 3] = 0.05
-
-    renderer.scene_buffers["positions"].copy_from_numpy(positions)
+    scales = _read_f32x4(renderer.scene_buffers["scales"], 1)
+    scales[0, :3] = 0.5
     renderer.scene_buffers["scales"].copy_from_numpy(scales)
-    renderer.scene_buffers["rotations"].copy_from_numpy(rotations)
-    renderer.scene_buffers["color_alpha"].copy_from_numpy(color_alpha)
-
-    sentinel = np.full((scene.count, 4), 1.75, dtype=np.float32)
-    for name in _ADAM_BUFFER_NAMES:
-        trainer._buffers[name].copy_from_numpy(sentinel)
-
-    before_target_pos = positions[target_id].copy()
-    before_target_scale = scales[target_id].copy()
-    before_target_rot = rotations[target_id].copy()
-    before_target_color_alpha = color_alpha[target_id].copy()
+    trainer._buffers["grad_ema"].copy_from_numpy(np.array([1.0], dtype=np.float32))
+    trainer._buffers["max_screen_radius"].copy_from_numpy(np.zeros((1,), dtype=np.float32))
+    trainer._ensure_regen_buffers(1)
 
     enc = device.create_command_encoder()
-    trainer._dispatch_mark_low_quality_splats(enc)
-    trainer._dispatch_resample_low_quality_splats(enc)
+    trainer._dispatch_regenerate_scene(enc)
     device.submit_command_buffer(enc.finish())
     device.wait()
 
-    after_pos = _read_f32x4(renderer.scene_buffers["positions"], scene.count)
-    after_scale = _read_f32x4(renderer.scene_buffers["scales"], scene.count)
-    after_rot = _read_f32x4(renderer.scene_buffers["rotations"], scene.count)
-    after_color_alpha = _read_f32x4(renderer.scene_buffers["color_alpha"], scene.count)
-    np.testing.assert_allclose(after_pos[target_id], before_target_pos, rtol=0.0, atol=1e-7)
-    np.testing.assert_allclose(after_scale[target_id], before_target_scale, rtol=0.0, atol=1e-7)
-    np.testing.assert_allclose(after_rot[target_id], before_target_rot, rtol=0.0, atol=1e-7)
-    np.testing.assert_allclose(after_color_alpha[target_id], before_target_color_alpha, rtol=0.0, atol=1e-7)
-
-    for name in _ADAM_BUFFER_NAMES:
-        moment_values = _read_f32x4(trainer._buffers[name], scene.count)
-        np.testing.assert_allclose(moment_values[target_id], sentinel[target_id], rtol=0.0, atol=1e-7)
+    assert trainer._read_output_count() == 2
+    out_pos = _read_f32x4(trainer._regen_buffers["positions"], 2)
+    out_scale = _read_f32x4(trainer._regen_buffers["scales"], 2)
+    assert np.all(np.isfinite(out_pos))
+    np.testing.assert_allclose(out_scale[:, :3], np.full((2, 3), 0.5 / 1.6, dtype=np.float32), rtol=0.0, atol=1e-5)
+    assert np.any(np.abs(out_pos[:, :3] - scene.positions[0]) > 1e-5)
 
 
-def test_training_step_smoke_with_low_quality_reinit_enabled(device, tmp_path: Path):
-    scene = _make_scene(count=24, seed=61)
+def test_regenerate_scene_prunes_low_opacity_screen_and_world_outliers(device, tmp_path: Path):
+    scene = _make_scene(count=3, seed=71)
     frame = _make_frame(tmp_path)
     renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
-    stability = StabilityHyperParams(min_scale=0.05, max_scale=3.0, min_opacity=0.6, max_opacity=0.9999)
-    training = TrainingHyperParams(low_quality_reinit_enabled=True, mcmc_position_noise_scale=0.5)
-    trainer = GaussianTrainer(
-        device=device,
-        renderer=renderer,
-        scene=scene,
-        frames=[frame],
-        stability_hparams=stability,
-        training_hparams=training,
-        seed=55,
-    )
+    training = TrainingHyperParams(densify_grad_threshold=100.0, prune_min_opacity=0.2, screen_size_prune_threshold=20.0, world_size_prune_ratio=0.1, opacity_reset_interval=1)
+    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], training_hparams=training, seed=91)
+    trainer.state.step = 2
 
-    loss = trainer.step()
-    positions = _read_f32x4(renderer.scene_buffers["positions"], scene.count)
-    scales = _read_f32x4(renderer.scene_buffers["scales"], scene.count)
-    rotations = _read_f32x4(renderer.scene_buffers["rotations"], scene.count)
-    color_alpha = _read_f32x4(renderer.scene_buffers["color_alpha"], scene.count)
+    scales = _read_f32x4(renderer.scene_buffers["scales"], 3)
+    color_alpha = _read_f32x4(renderer.scene_buffers["color_alpha"], 3)
+    scales[0, :3] = 0.05
+    scales[1, :3] = 0.05
+    scales[2, :3] = trainer.training.world_size_prune_ratio * trainer._scene_extent * 2.0
+    color_alpha[0, 3] = 0.1
+    color_alpha[1, 3] = 0.8
+    color_alpha[2, 3] = 0.8
+    renderer.scene_buffers["scales"].copy_from_numpy(scales)
+    renderer.scene_buffers["color_alpha"].copy_from_numpy(color_alpha)
+    trainer._buffers["grad_ema"].copy_from_numpy(np.zeros((3,), dtype=np.float32))
+    trainer._buffers["max_screen_radius"].copy_from_numpy(np.array([0.0, 25.0, 0.0], dtype=np.float32))
+    trainer._ensure_regen_buffers(3)
 
-    assert np.isfinite(loss)
-    assert trainer.state.step == 1
-    assert np.isfinite(trainer.state.last_mse)
-    assert np.isfinite(trainer.state.last_psnr)
-    assert np.isfinite(trainer.state.avg_psnr)
-    assert np.isclose(trainer.state.avg_psnr, trainer.state.last_psnr)
-    assert np.all(np.isfinite(positions))
-    assert np.all(np.isfinite(scales))
-    assert np.all(np.isfinite(rotations))
-    assert np.all(np.isfinite(color_alpha))
+    enc = device.create_command_encoder()
+    trainer._dispatch_regenerate_scene(enc)
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+
+    assert trainer._read_output_count() == 0
 
 
-def test_gpu_pointcloud_initializer_rebuilds_scene_without_cpu_upload(device, tmp_path: Path):
+def test_reset_opacity_clamps_alpha_and_clears_color_moments(device, tmp_path: Path):
+    scene = _make_scene(count=2, seed=81)
+    frame = _make_frame(tmp_path)
+    renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
+    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], seed=17)
+
+    color_alpha = _read_f32x4(renderer.scene_buffers["color_alpha"], 2)
+    color_alpha[:, 3] = np.array([0.8, 0.005], dtype=np.float32)
+    renderer.scene_buffers["color_alpha"].copy_from_numpy(color_alpha)
+    trainer._buffers["adam_m_color_alpha"].copy_from_numpy(np.full((2, 4), 5.0, dtype=np.float32))
+    trainer._buffers["adam_v_color_alpha"].copy_from_numpy(np.full((2, 4), 7.0, dtype=np.float32))
+
+    enc = device.create_command_encoder()
+    trainer._dispatch_reset_opacity(enc)
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+
+    np.testing.assert_allclose(_read_f32x4(renderer.scene_buffers["color_alpha"], 2)[:, 3], np.array([0.01, 0.005], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(_read_f32x4(trainer._buffers["adam_m_color_alpha"], 2), np.zeros((2, 4), dtype=np.float32), rtol=0.0, atol=1e-7)
+    np.testing.assert_allclose(_read_f32x4(trainer._buffers["adam_v_color_alpha"], 2), np.zeros((2, 4), dtype=np.float32), rtol=0.0, atol=1e-7)
+
+
+def test_cpu_pointcloud_initializer_rebuilds_scene_with_nn_scales(device, tmp_path: Path):
     frame = _make_frame(tmp_path)
     renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
     point_pos = np.array(
@@ -548,18 +468,19 @@ def test_gpu_pointcloud_initializer_rebuilds_scene_without_cpu_upload(device, tm
     )
     trainer.initialize_scene_from_pointcloud(splat_count=16, init_hparams=init_params, seed=123)
 
-    positions = _read_f32x4(renderer.scene_buffers["positions"], 16)
-    scales = _read_f32x4(renderer.scene_buffers["scales"], 16)
-    rotations = _read_f32x4(renderer.scene_buffers["rotations"], 16)
-    color_alpha = _read_f32x4(renderer.scene_buffers["color_alpha"], 16)
+    positions = _read_f32x4(renderer.scene_buffers["positions"], 4)
+    scales = _read_f32x4(renderer.scene_buffers["scales"], 4)
+    rotations = _read_f32x4(renderer.scene_buffers["rotations"], 4)
+    color_alpha = _read_f32x4(renderer.scene_buffers["color_alpha"], 4)
     assert np.all(np.isfinite(positions))
     assert np.all(np.isfinite(scales))
     assert np.all(np.isfinite(rotations))
     assert np.all(np.isfinite(color_alpha))
-    assert np.all(scales[:, :3] >= 0.02 - 1e-6)
+    expected_scales = np.array([[1.0, 1.0, 1.0], [1.0, 1.0, 1.0], [1.0, 1.0, 1.0], [np.sqrt(2.0), np.sqrt(2.0), np.sqrt(2.0)]], dtype=np.float32)
+    np.testing.assert_allclose(scales[:, :3], expected_scales, rtol=0.0, atol=1e-6)
     assert np.all(np.abs(np.linalg.norm(rotations, axis=1) - 1.0) < 1e-3)
     for name in _ADAM_BUFFER_NAMES:
-        np.testing.assert_allclose(_read_f32x4(trainer._buffers[name], 16), np.zeros((16, 4), dtype=np.float32), rtol=0.0, atol=1e-7)
+        np.testing.assert_allclose(_read_f32x4(trainer._buffers[name], 4), np.zeros((4, 4), dtype=np.float32), rtol=0.0, atol=1e-7)
 
 
 def test_training_frame_order_covers_each_view_once_per_epoch(device, tmp_path: Path):
