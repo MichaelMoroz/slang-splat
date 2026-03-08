@@ -1,6 +1,7 @@
 import "gaussian_types.slang";
 import "camera.slang";
 import "math_constants.slang";
+import "opacity.slang";
 
 struct RasterState : IDifferentiable
 {
@@ -144,7 +145,7 @@ float raster_eval_alpha_gaussian(RasterGaussian gaussian, no_diff float3 rayDir)
 
     float coverage = saturate(1.0 - rho);
     coverage = coverage * coverage * (3.0 - 2.0 * coverage);
-    float alpha = saturate(gaussian.colorAlpha.w * coverage);
+    float alpha = opacity_from_raw(gaussian.colorAlpha.w) * coverage;
     if (alpha < g_Raster.alphaCutoff) return 0.0;
     return alpha;
 }

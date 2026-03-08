@@ -12,6 +12,9 @@ from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 from src.training import GaussianTrainer, StabilityHyperParams, TrainingHyperParams
 
 _ADAM_BUFFER_NAMES = ("adam_m_pos", "adam_v_pos", "adam_m_scale", "adam_v_scale", "adam_m_quat", "adam_v_quat", "adam_m_color_alpha", "adam_v_color_alpha")
+_OPACITY_EPS = 1e-6
+_raw_opacity = lambda alpha: (np.log(np.clip(np.asarray(alpha, dtype=np.float32), _OPACITY_EPS, 1.0 - _OPACITY_EPS)) - np.log1p(-np.clip(np.asarray(alpha, dtype=np.float32), _OPACITY_EPS, 1.0 - _OPACITY_EPS))).astype(np.float32, copy=False)
+_actual_opacity = lambda raw: (1.0 / (1.0 + np.exp(-np.asarray(raw, dtype=np.float32)))).astype(np.float32, copy=False)
 
 
 def _make_scene(count: int = 24, seed: int = 7) -> GaussianScene:
@@ -239,8 +242,9 @@ def test_synthetic_base_grads_update_and_respect_constraints(device, tmp_path: P
     assert np.all(scales[:, :3] <= trainer.stability.max_scale + 1e-6)
     assert np.all(color_alpha[:, :3] >= -1e-6)
     assert np.all(color_alpha[:, :3] <= 1.0 + 1e-6)
-    assert np.all(color_alpha[:, 3] >= trainer.stability.min_opacity - 1e-6)
-    assert np.all(color_alpha[:, 3] <= trainer.stability.max_opacity + 1e-6)
+    assert np.all(np.isfinite(color_alpha[:, 3]))
+    assert np.all(_actual_opacity(color_alpha[:, 3]) >= 0.0)
+    assert np.all(_actual_opacity(color_alpha[:, 3]) <= 1.0)
     norms = np.linalg.norm(rotations, axis=1)
     assert np.all(np.isfinite(norms))
     assert np.all(np.abs(norms - 1.0) < 1e-3)
@@ -413,9 +417,9 @@ def test_regenerate_scene_prunes_low_opacity_screen_and_world_outliers(device, t
     scales[0, :3] = 0.05
     scales[1, :3] = 0.05
     scales[2, :3] = trainer.training.world_size_prune_ratio * trainer._scene_extent * 2.0
-    color_alpha[0, 3] = 0.1
-    color_alpha[1, 3] = 0.8
-    color_alpha[2, 3] = 0.8
+    color_alpha[0, 3] = _raw_opacity(0.1)
+    color_alpha[1, 3] = _raw_opacity(0.8)
+    color_alpha[2, 3] = _raw_opacity(0.8)
     renderer.scene_buffers["scales"].copy_from_numpy(scales)
     renderer.scene_buffers["color_alpha"].copy_from_numpy(color_alpha)
     trainer._buffers["grad_ema"].copy_from_numpy(np.zeros((3,), dtype=np.float32))
@@ -430,14 +434,14 @@ def test_regenerate_scene_prunes_low_opacity_screen_and_world_outliers(device, t
     assert trainer._read_output_count() == 0
 
 
-def test_reset_opacity_clamps_alpha_and_clears_color_moments(device, tmp_path: Path):
+def test_reset_opacity_rewrites_raw_alpha_and_clears_color_moments(device, tmp_path: Path):
     scene = _make_scene(count=2, seed=81)
     frame = _make_frame(tmp_path)
     renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
     trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], seed=17)
 
     color_alpha = _read_f32x4(renderer.scene_buffers["color_alpha"], 2)
-    color_alpha[:, 3] = np.array([0.8, 0.005], dtype=np.float32)
+    color_alpha[:, 3] = _raw_opacity(np.array([0.8, 0.005], dtype=np.float32))
     renderer.scene_buffers["color_alpha"].copy_from_numpy(color_alpha)
     trainer._buffers["adam_m_color_alpha"].copy_from_numpy(np.full((2, 4), 5.0, dtype=np.float32))
     trainer._buffers["adam_v_color_alpha"].copy_from_numpy(np.full((2, 4), 7.0, dtype=np.float32))
@@ -447,7 +451,7 @@ def test_reset_opacity_clamps_alpha_and_clears_color_moments(device, tmp_path: P
     device.submit_command_buffer(enc.finish())
     device.wait()
 
-    np.testing.assert_allclose(_read_f32x4(renderer.scene_buffers["color_alpha"], 2)[:, 3], np.array([0.01, 0.005], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(_actual_opacity(_read_f32x4(renderer.scene_buffers["color_alpha"], 2)[:, 3]), np.array([0.01, 0.005], dtype=np.float32), rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(_read_f32x4(trainer._buffers["adam_m_color_alpha"], 2), np.zeros((2, 4), dtype=np.float32), rtol=0.0, atol=1e-7)
     np.testing.assert_allclose(_read_f32x4(trainer._buffers["adam_v_color_alpha"], 2), np.zeros((2, 4), dtype=np.float32), rtol=0.0, atol=1e-7)
 
@@ -504,6 +508,7 @@ def test_cpu_pointcloud_initializer_rebuilds_scene_with_nn_scales(device, tmp_pa
     assert np.all(np.isfinite(color_alpha))
     expected_scales = np.array([[1.0, 1.0, 1.0], [1.0, 1.0, 1.0], [1.0, 1.0, 1.0], [np.sqrt(2.0), np.sqrt(2.0), np.sqrt(2.0)]], dtype=np.float32)
     np.testing.assert_allclose(scales[:, :3], expected_scales, rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(_actual_opacity(color_alpha[:, 3]), np.full((4,), 0.5, dtype=np.float32), rtol=0.0, atol=1e-6)
     assert np.all(np.abs(np.linalg.norm(rotations, axis=1) - 1.0) < 1e-3)
     for name in _ADAM_BUFFER_NAMES:
         np.testing.assert_allclose(_read_f32x4(trainer._buffers[name], 4), np.zeros((4, 4), dtype=np.float32), rtol=0.0, atol=1e-7)

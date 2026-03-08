@@ -79,6 +79,7 @@ class GaussianRenderer:
     _COUNTER_READBACK_RING_SIZE = 2
     _SCANLINE_WORK_ITEM_UINTS = 8
     _U32_BYTES = 4
+    _OPACITY_EPS = 1e-6
     _MEBIBYTE_BYTES = 1024 * 1024
     _PREPASS_ENTRY_BYTES = (_SCANLINE_WORK_ITEM_UINTS + 2) * _U32_BYTES
     _RW_BUFFER_USAGE = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
@@ -232,8 +233,13 @@ class GaussianRenderer:
     def _pack_scene(self, scene: GaussianScene) -> dict[str, np.ndarray]:
         packed = {name: np.zeros((scene.count, 4), dtype=np.float32) for name in self._SCENE_SHADER_VARS}
         packed["positions"][:, :3], packed["scales"][:, :3] = scene.positions, scene.scales
-        packed["rotations"][:], packed["color_alpha"][:, :3], packed["color_alpha"][:, 3] = scene.rotations, scene.colors, scene.opacities
+        packed["rotations"][:], packed["color_alpha"][:, :3], packed["color_alpha"][:, 3] = scene.rotations, scene.colors, self._raw_opacity_from_alpha(scene.opacities)
         return packed
+
+    @classmethod
+    def _raw_opacity_from_alpha(cls, opacity: np.ndarray) -> np.ndarray:
+        alpha = np.clip(np.asarray(opacity, dtype=np.float32), cls._OPACITY_EPS, 1.0 - cls._OPACITY_EPS)
+        return (np.log(alpha) - np.log1p(-alpha)).astype(np.float32, copy=False)
 
     def _read_array(self, buffer: spy.Buffer, dtype: np.dtype, count: int, width: int = 1) -> np.ndarray:
         values = np.frombuffer(buffer.to_numpy().tobytes(), dtype=dtype)

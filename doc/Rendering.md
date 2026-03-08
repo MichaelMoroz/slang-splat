@@ -53,6 +53,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - Raster execution is microtiled: one `8x8` thread group covers one `24x24` effective raster tile, and each thread owns a fixed `3x3` pixel block in registers.
 - Each thread resolves one tile range for its microtile, reuses each staged gaussian across all `9` local pixels, and writes per-pixel output after the forward replay.
 - The inner loop performs front-to-back blending with exponential radial falloff while reusing gaussian data already staged in shared memory.
+- The stored alpha slot is a raw sigmoid parameter; the raster stage evaluates effective opacity through `sigmoid(raw_alpha)` so backward replay differentiates through opacity directly.
 - Writes RGBA output texture.
 - Primary ray generation goes through `PinholeCamera.screen_to_world_ray(...)`.
 
@@ -78,7 +79,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
   - finite-value sanitization,
   - gradient clipping (component and norm),
   - update clipping,
-  - position/scale/opacity/color range clamps,
+  - position/scale/color range clamps,
   - quaternion renormalization with identity fallback.
 
 ## Stats Notes

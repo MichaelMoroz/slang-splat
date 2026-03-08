@@ -62,7 +62,7 @@ Each trainer `step()` performs:
    - Split: replace large high-gradient splats with `N=2` children sampled from the parent Gaussian.
    - Prune: drop splats with low opacity or excessive world/screen footprint.
    - Regeneration resets densification stats for the new active set.
-10. On the configured schedule, run `csResetOpacity` to clamp alpha back down and clear alpha optimizer moments.
+10. On the configured schedule, run `csResetOpacity` to rewrite the stored raw opacity parameter so the effective sigmoid opacity becomes `min(alpha, 0.01)`, then clear alpha optimizer moments.
 
 ## Kernels
 - `csClearLossAndGradTex`: zero loss + output-grad texture.
@@ -75,12 +75,13 @@ Each trainer `step()` performs:
   - quaternion,
   - color,
   - opacity.
+  - The stored opacity parameter is the raw sigmoid logit, not direct alpha.
   - Adds autodiff log-scale regularization gradients to scale gradients (`g_ScaleL2Weight`, `g_ScaleRegReference`).
   - Accumulates the averaged scale-regularization scalar contribution into `g_LossBuffer`.
   - Clamps stored scales to `[min_scale, max_scale]` and enforces `max_anisotropy`.
 - `csUpdateDensificationStats`: updates per-splat gradient EMA and maximum projected radius from the current step.
 - `csRegenerateScene`: inline clone/split/prune classification plus append-buffer regeneration into the next active scene buffers.
-- `csResetOpacity`: clamps alpha to `min(alpha, 0.01)` and clears alpha optimizer moments.
+- `csResetOpacity`: rewrites the raw opacity parameter to `logit(min(sigmoid(raw_alpha), 0.01))` and clears alpha optimizer moments.
 - `csInitializeGaussiansFromPointCloud`: still exists for standalone point-buffer initialization, but the COLMAP training path now builds the initial `GaussianScene` on CPU.
 
 ## Numerical Reinforcement
@@ -92,7 +93,6 @@ Each trainer `step()` performs:
 - Parameter bounds:
   - position absolute clamp,
   - scale min/max clamp,
-  - opacity min/max clamp,
   - color clamp to `[0, 1]`.
 - Quaternion normalization each step with identity fallback.
 - Host guard:

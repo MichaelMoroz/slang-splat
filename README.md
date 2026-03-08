@@ -78,6 +78,7 @@ Training notes:
 - COLMAP training initialization now uses the COLMAP point cloud directly on CPU: positions come from `points3D`, per-point scale is the nearest-neighbor spacing, rotation is identity, and opacity starts from the configured constant.
 - Default COLMAP initialization parameters are still derived from point-cloud nearest-neighbor spacing and requested gaussian count for reference-scale estimation and viewer defaults.
 - Default loss is `(1 - lambda_dssim) * L1 + lambda_dssim * DSSIM`, with DSSIM driven by Gaussian-window SSIM moments on the GPU.
+- GPU scene buffers store opacity as a raw sigmoid parameter; rasterization, pruning, and opacity reset convert it through the same sigmoid/logit helpers so Slang autodiff differentiates through opacity directly.
 - Reported training metrics include total loss, rolling average loss, per-step `last_psnr`, and `avg_psnr` computed from the latest PSNR stored for each training frame slot.
 - `last_mse` and PSNR remain plain RGB MSE metrics even though the optimization loss is mixed photometric.
 - Target Y-flip is enabled by default.

@@ -1,4 +1,5 @@
 import "math_constants.slang";
+import "opacity.slang";
 
 static const uint TRAIN_TILE_DIM = 16u;
 static const uint LOSS_SLOT_TOTAL = 0u;
@@ -8,6 +9,7 @@ static const uint RNG_LINEAR_A = 1664525u;
 static const uint RNG_LINEAR_C = 1013904223u;
 static const float SSIM_C1 = 0.0001;
 static const float SSIM_C2 = 0.0009;
+static const float OPACITY_RESET_VALUE = 0.01;
 
 struct AdamParams
 {
@@ -689,7 +691,7 @@ void csAdamStepFused(uint3 dispatchThreadID : SV_DispatchThreadID)
         float4 rotSafe = normalize_quaternion_safe(rot);
         float4 qInv = float4(rotSafe.x, -rotSafe.y, -rotSafe.z, -rotSafe.w);
         float3 scaleSafe = max(scale.xyz, float3(g_Stability.minScale));
-        float gate = opacity_noise_gate(colorAlpha.w);
+        float gate = opacity_noise_gate(opacity_from_raw(colorAlpha.w));
         uint rngSeed = splatId * 0x9e3779b9u ^ g_Adam.stepIndex * 0x85ebca6bu ^ 0xc2b2ae35u;
         uint rngState = hash_u32(rngSeed);
         if (rngState == 0u) rngState = 1u;
@@ -706,7 +708,6 @@ void csAdamStepFused(uint3 dispatchThreadID : SV_DispatchThreadID)
     scale.xyz = clamp_scale_anisotropy(scale.xyz);
     rot = normalize_quaternion_safe(rot);
     colorAlpha.xyz = clamp(colorAlpha.xyz, 0.0, 1.0);
-    colorAlpha.w = clamp(colorAlpha.w, g_Stability.minOpacity, g_Stability.maxOpacity);
 
     g_PositionsRW[splatId] = pos;
     g_ScalesRW[splatId] = scale;
@@ -767,11 +768,12 @@ void csRegenerateScene(uint3 dispatchThreadID : SV_DispatchThreadID)
     float gradEMA = sanitize_scalar(g_GradNormEMA[splatId], g_Stability.hugeValue);
     float maxScreenRadius = sanitize_scalar(g_MaxScreenRadius[splatId], g_Stability.hugeValue);
     bool allowGrowth = g_Densify.maxGaussianCount > g_SplatCount;
+    float opacity = opacity_from_raw(colorAlpha.w);
 
     float maxScale = max(scale.x, max(scale.y, scale.z));
     bool largeWorld = maxScale > scene_large_scale_threshold();
     bool largeScreen = g_Densify.enableScreenSizePrune != 0u && maxScreenRadius > g_Densify.screenSizeThreshold;
-    bool prune = colorAlpha.w < g_Densify.pruneMinOpacity || largeWorld || largeScreen;
+    bool prune = opacity < g_Densify.pruneMinOpacity || largeWorld || largeScreen;
     if (prune) return;
 
     bool highGrad = gradEMA >= g_Densify.gradThreshold;
@@ -814,8 +816,7 @@ void csResetOpacity(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint splatId = dispatchThreadID.x;
     if (splatId >= g_SplatCount) return;
     float4 colorAlpha = g_ColorAlphaRW[splatId];
-    colorAlpha.w = min(colorAlpha.w, 0.01);
-    colorAlpha.w = clamp(colorAlpha.w, g_Stability.minOpacity, g_Stability.maxOpacity);
+    colorAlpha.w = raw_opacity_from_alpha(min(opacity_from_raw(colorAlpha.w), OPACITY_RESET_VALUE));
     g_ColorAlphaRW[splatId] = colorAlpha;
     g_AdamMColorAlpha[splatId] = 0.0;
     g_AdamVColorAlpha[splatId] = 0.0;
@@ -861,8 +862,7 @@ void csInitializeGaussiansFromPointCloud(uint3 dispatchThreadID : SV_DispatchThr
     float3 color = pointColor;
     if (g_InitColorJitterStd > 0.0) color += rng_normal3_box_muller(rngState) * g_InitColorJitterStd;
     color = clamp(sanitize_float3(color, g_Stability.hugeValue), 0.0, 1.0);
-    float opacity = clamp(g_InitInitialOpacity, g_Stability.minOpacity, g_Stability.maxOpacity);
-    float4 colorAlpha = float4(color, opacity);
+    float4 colorAlpha = float4(color, raw_opacity_from_alpha(g_InitInitialOpacity));
 
     g_PositionsRW[splatId] = pos;
     g_ScalesRW[splatId] = scale;
