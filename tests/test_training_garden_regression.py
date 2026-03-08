@@ -59,17 +59,17 @@ def test_garden_images4_training_reaches_25db_within_60_seconds(device):
     trainer = _build_trainer(device)
     start = time.perf_counter()
     deadline = start + TRAIN_TIMEOUT_SECONDS
-    best_psnr = float("-inf")
     best_avg_psnr = float("-inf")
+    best_last_psnr = float("-inf")
     while time.perf_counter() < deadline:
         trainer.step()
-        best_psnr = _finite_peak(best_psnr, trainer.state.last_psnr)
         best_avg_psnr = _finite_peak(best_avg_psnr, trainer.state.avg_psnr)
+        best_last_psnr = _finite_peak(best_last_psnr, trainer.state.last_psnr)
     elapsed = time.perf_counter() - start
     assert trainer.state.step > 0
-    assert best_psnr >= PSNR_THRESHOLD_DB, (
+    assert best_avg_psnr >= PSNR_THRESHOLD_DB, (
         f"Expected garden/{IMAGES_SUBDIR} training to reach {PSNR_THRESHOLD_DB:.1f} dB within {TRAIN_TIMEOUT_SECONDS:.0f}s; "
-        f"best_psnr={best_psnr:.3f} dB best_avg_psnr={best_avg_psnr:.3f} dB "
+        f"best_avg_psnr={best_avg_psnr:.3f} dB best_last_psnr={best_last_psnr:.3f} dB "
         f"final_psnr={trainer.state.last_psnr:.3f} dB final_avg_psnr={trainer.state.avg_psnr:.3f} dB "
         f"steps={trainer.state.step} elapsed={elapsed:.2f}s."
     )

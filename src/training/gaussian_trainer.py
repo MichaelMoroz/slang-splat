@@ -135,8 +135,8 @@ class GaussianTrainer:
         self.state = TrainingState()
         self._metric_window_size = max(len(self.frames), 1)
         self._loss_window = _RollingMetricWindow(size=self._metric_window_size, values=deque())
-        self._signal_max_window = _RollingMetricWindow(size=self._metric_window_size, values=deque())
-        self._psnr_window = _RollingMetricWindow(size=self._metric_window_size, values=deque())
+        self._frame_signal_max = np.full((len(self.frames),), np.nan, dtype=np.float32)
+        self._frame_psnr = np.full((len(self.frames),), np.nan, dtype=np.float32)
         self._shader_path = Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang")
         self._kernels = {name: self.device.create_compute_kernel(self.device.load_program(str(self._shader_path), [entry])) for name, entry in self._KERNEL_ENTRIES.items()}
         self._buffers: dict[str, spy.Buffer] = {}
@@ -234,8 +234,19 @@ class GaussianTrainer:
 
     def _reset_metric_windows(self) -> None:
         self._loss_window.values.clear()
-        self._signal_max_window.values.clear()
-        self._psnr_window.values.clear()
+        self._frame_signal_max.fill(np.nan)
+        self._frame_psnr.fill(np.nan)
+
+    def _mean_finite(self, values: np.ndarray) -> float:
+        finite = np.isfinite(values)
+        return float(np.mean(values[finite], dtype=np.float64)) if np.any(finite) else float("nan")
+
+    def _psnr_from_metrics(self, mse: float, signal_max: float) -> float:
+        return (
+            20.0 * float(np.log10(signal_max)) - 10.0 * float(np.log10(max(float(mse), self._PSNR_MSE_FLOOR)))
+            if np.isfinite(mse) and mse >= 0.0 and np.isfinite(signal_max) and signal_max > 0.0
+            else float("nan")
+        )
 
     def _common_vars(self) -> dict[str, object]:
         return {
@@ -310,14 +321,14 @@ class GaussianTrainer:
         self.state = TrainingState()
         self._reset_metric_windows()
 
-    def _update_psnr_state(self, mse: float, signal_max: float) -> None:
+    def _update_psnr_state(self, frame_index: int, mse: float, signal_max: float) -> None:
         self.state.last_mse = float(mse)
-        self._signal_max_window.push(signal_max if np.isfinite(signal_max) and signal_max > 0.0 else float("nan"))
-        self.state.avg_signal_max = self._signal_max_window.mean()
-        self.state.last_psnr = 20.0 * float(np.log10(self.state.avg_signal_max)) - 10.0 * float(np.log10(max(float(mse), self._PSNR_MSE_FLOOR))) if np.isfinite(mse) and mse >= 0.0 and np.isfinite(self.state.avg_signal_max) and self.state.avg_signal_max > 0.0 else float("nan")
-        if np.isfinite(self.state.last_psnr):
-            self._psnr_window.push(self.state.last_psnr)
-        self.state.avg_psnr = self._psnr_window.mean()
+        idx = int(np.clip(frame_index, 0, len(self.frames) - 1))
+        self._frame_signal_max[idx] = float(signal_max) if np.isfinite(signal_max) and signal_max > 0.0 else np.nan
+        self.state.avg_signal_max = self._mean_finite(self._frame_signal_max)
+        self.state.last_psnr = self._psnr_from_metrics(mse, float(self._frame_signal_max[idx]))
+        self._frame_psnr[idx] = float(self.state.last_psnr) if np.isfinite(self.state.last_psnr) else np.nan
+        self.state.avg_psnr = self._mean_finite(self._frame_psnr)
 
     def step(self) -> float:
         frame_index = int(self.state.step % len(self.frames))
@@ -352,5 +363,5 @@ class GaussianTrainer:
         self.state.last_loss = float(loss)
         self._loss_window.push(loss)
         self.state.avg_loss = self._loss_window.mean()
-        self._update_psnr_state(image_mse, signal_max)
+        self._update_psnr_state(frame_index, image_mse, signal_max)
         return float(loss)

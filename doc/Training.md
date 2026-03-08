@@ -85,8 +85,10 @@ Each trainer `step()` performs:
   - if loss is non-finite, ADAM step is skipped and moments are reset.
 - Host metrics:
   - `last_mse` stores the image MSE from `csComputeMSELossGrad`,
-  - `avg_signal_max` tracks a rolling mean of per-frame target max intensity over one full image cycle,
-  - `avg_loss` and `avg_psnr` report rolling means over that same window for UI/CLI display.
+  - `avg_signal_max` is the mean of the latest target signal-max values cached per frame,
+  - `last_psnr` is the current training frame's PSNR,
+  - `avg_psnr` is the mean of the latest PSNR cached per frame,
+  - `avg_loss` remains a rolling mean over one full image cycle for UI/CLI readability.
 
 ## CLI
 Example:
@@ -106,8 +108,8 @@ Useful options:
 
 ## Regression Test
 - `tests/test_training_garden_regression.py` loads the tracked `dataset/garden` subset, initializes gaussians from the COLMAP point cloud with a fixed seed, and runs `trainer.step()` until a 60-second deadline.
-- The test asserts on peak `last_psnr >= 25 dB`.
-- It records `avg_psnr` for failure diagnostics only; the gate uses `last_psnr` because the rolling window is meant for UI/CLI readability rather than the earliest convergence crossing.
+- The test asserts on peak `avg_psnr >= 25 dB`.
+- `last_psnr` is still recorded for diagnostics, but the regression gate uses the per-frame cached average to avoid single-view cherry-picking.
 
 ## Viewer Integration
 - `viewer.py` is a thin launcher over `src/viewer`, which is split into:

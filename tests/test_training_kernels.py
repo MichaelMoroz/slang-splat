@@ -105,6 +105,7 @@ def test_training_step_smoke_updates_params(device, tmp_path: Path):
     assert np.isfinite(trainer.state.last_mse)
     assert np.isfinite(trainer.state.last_psnr)
     assert np.isfinite(trainer.state.avg_psnr)
+    assert np.isclose(trainer.state.avg_psnr, trainer.state.last_psnr)
     assert np.all(np.isfinite(after))
 
 
@@ -461,6 +462,7 @@ def test_training_step_smoke_with_low_quality_reinit_enabled(device, tmp_path: P
     assert np.isfinite(trainer.state.last_mse)
     assert np.isfinite(trainer.state.last_psnr)
     assert np.isfinite(trainer.state.avg_psnr)
+    assert np.isclose(trainer.state.avg_psnr, trainer.state.last_psnr)
     assert np.all(np.isfinite(positions))
     assert np.all(np.isfinite(scales))
     assert np.all(np.isfinite(rotations))

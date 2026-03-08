@@ -77,7 +77,7 @@ Training notes:
 - In viewer COLMAP mode, pointcloud XYZ/RGB are uploaded once on dataset load; gaussian reinitialization is done on GPU from those buffers.
 - Default COLMAP initialization parameters are derived from point-cloud nearest-neighbor spacing and requested gaussian count so initial splats are close-packed with limited overlap.
 - Default loss is RGB MSE.
-- Reported training metrics include total loss, rolling average loss, and rolling-average PSNR computed with a signal-max window sized to one full image cycle.
+- Reported training metrics include total loss, rolling average loss, per-step `last_psnr`, and `avg_psnr` computed from the latest PSNR stored for each training frame slot.
 - Target Y-flip is enabled by default.
 - Per-step low-quality reinit is enabled by default: splats with `opacity <= min_opacity` or `max(scale) <= min_scale`
   can be replaced from a random valid donor splat (skip when donor is also low-quality).
@@ -91,7 +91,7 @@ Training notes:
 python -m pytest -q
 ```
 
-The repo intentionally keeps only the `dataset/garden/images_4` and `dataset/garden/sparse/0` subset visible in git for the COLMAP convergence regression. `tests/test_training_garden_regression.py` runs a fixed-seed 60-second training pass and only passes when peak per-step `last_psnr` reaches `25 dB`; it records the rolling-window `avg_psnr` for diagnostics.
+The repo intentionally keeps only the `dataset/garden/images_4` and `dataset/garden/sparse/0` subset visible in git for the COLMAP convergence regression. `tests/test_training_garden_regression.py` runs a fixed-seed 60-second training pass and only passes when peak `avg_psnr` reaches `25 dB`; `last_psnr` remains a single-step diagnostic for the currently trained view.
 
 ## Complexity Budget
 ```powershell
