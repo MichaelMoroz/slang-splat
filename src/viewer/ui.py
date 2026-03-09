@@ -39,6 +39,7 @@ GROUP_SPECS = {
     ),
     "Train Setup": (
         ControlSpec("max_gaussians", "slider_int", "Max Gaussians", {"value": 5900000, "min": 1000, "max": 10000000}),
+        ControlSpec("training_steps_per_frame", "slider_int", "Steps / Frame", {"value": 1, "min": 1, "max": 8}),
         ControlSpec("seed", "slider_int", "Shuffle Seed", {"value": 1234, "min": 0, "max": 1000000}),
         ControlSpec("init_opacity", "input_float", "Init Opacity", {"value": 0.5, "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
     ),
@@ -152,6 +153,7 @@ class ToolkitState:
     fps_history: deque = field(default_factory=partial(deque, maxlen=FPS_HISTORY_SIZE))
     mse_history: deque = field(default_factory=partial(deque, maxlen=LOSS_HISTORY_SIZE))
     step_history: deque = field(default_factory=partial(deque, maxlen=LOSS_HISTORY_SIZE))
+    step_time_history: deque = field(default_factory=partial(deque, maxlen=LOSS_HISTORY_SIZE))
 
 
 def _noop() -> None:
@@ -160,6 +162,18 @@ def _noop() -> None:
 
 class ToolkitWindow:
     """GLFW + OpenGL3 + Dear ImGui toolkit window (left panel)."""
+
+    @staticmethod
+    def _iters_per_second(step_history: deque, step_time_history: deque) -> float:
+        if len(step_history) < 2 or len(step_time_history) < 2:
+            return 0.0
+        sample_count = min(len(step_history), len(step_time_history), 16)
+        steps = np.array(list(step_history)[-sample_count:], dtype=np.float64)
+        times = np.array(list(step_time_history)[-sample_count:], dtype=np.float64)
+        dt = float(times[-1] - times[0])
+        if dt <= 1e-6:
+            return 0.0
+        return float(max(steps[-1] - steps[0], 0.0) / dt)
 
     def __init__(self, width: int, height: int, x: int, y: int, title: str = "Splat Toolkit"):
         if not glfw.init():
@@ -275,6 +289,7 @@ class ToolkitWindow:
             | imgui.WindowFlags_.no_bring_to_front_on_focus.value
         )
         imgui.begin("##Toolkit", flags=flags)
+        self._section_performance(ui)
         self._section_status(ui)
         self._section_scene_io(ui)
         self._section_camera(ui)
@@ -283,7 +298,6 @@ class ToolkitWindow:
         self._section_optimizer(ui)
         self._section_stability(ui)
         self._section_render_params(ui)
-        self._section_performance(ui)
         imgui.end()
 
     # -- Sections --
@@ -313,6 +327,16 @@ class ToolkitWindow:
         imgui.same_line(0, 0)
         imgui.push_style_color(imgui.Col_.text.value, fps_color)
         imgui.text(f"{fps:.1f}")
+        imgui.pop_style_color()
+
+        iters_per_second = self._iters_per_second(self.tk.step_history, self.tk.step_time_history)
+        imgui.same_line()
+        imgui.text_disabled("|")
+        imgui.same_line()
+        imgui.text("Iter/s: ")
+        imgui.same_line(0, 0)
+        imgui.push_style_color(imgui.Col_.text.value, imgui.ImVec4(0.3, 0.85, 0.5, 1.0) if iters_per_second > 0.0 else imgui.ImVec4(0.5, 0.5, 0.5, 1.0))
+        imgui.text(f"{iters_per_second:.1f}")
         imgui.pop_style_color()
 
         # Stats table
@@ -562,16 +586,19 @@ class ToolkitWindow:
         imgui.separator()
 
     def _section_performance(self, ui: ViewerUI) -> None:
-        if not imgui.collapsing_header("Performance"):
+        if not imgui.collapsing_header("Plots", imgui.TreeNodeFlags_.default_open.value):
             return
+
+        iters_per_second = self._iters_per_second(self.tk.step_history, self.tk.step_time_history)
+        if iters_per_second > 0.0:
+            imgui.text_disabled(f"iters/s {iters_per_second:.1f}")
 
         fps_arr = np.array(self.tk.fps_history, dtype=np.float64)
         if len(fps_arr) >= 2:
             imgui.text_disabled(f"avg {np.mean(fps_arr):.1f}  min {np.min(fps_arr):.1f}  max {np.max(fps_arr):.1f}")
             if implot.begin_plot("##FPS", imgui.ImVec2(-1, 110)):
-                implot.setup_axes("", "FPS", implot.AxisFlags_.no_tick_labels.value, 0)
+                implot.setup_axes("", "FPS", implot.AxisFlags_.no_tick_labels.value, implot.AxisFlags_.auto_fit.value)
                 implot.setup_axis_limits(implot.ImAxis_.x1.value, 0, len(fps_arr) - 1, implot.Cond_.always.value)
-                implot.setup_axis_limits(implot.ImAxis_.y1.value, 0, float(np.max(fps_arr)) * 1.15, implot.Cond_.always.value)
                 shade_spec = implot.Spec()
                 shade_spec.fill_alpha = 0.25
                 implot.plot_shaded("FPS", fps_arr, 0.0, spec=shade_spec)
@@ -589,8 +616,8 @@ class ToolkitWindow:
             imgui.separator_text("Loss")
             loss_spec = implot.Spec()
             loss_spec.line_color = imgui.ImVec4(1.0, 0.6, 0.2, 1.0)
-            if implot.begin_plot("##Loss", imgui.ImVec2(-1, 130)):
-                implot.setup_axes("step", "loss")
+            if implot.begin_plot("##Loss", imgui.ImVec2(-1, 180)):
+                implot.setup_axes("step", "loss", 0, implot.AxisFlags_.auto_fit.value)
                 implot.setup_axis_limits(implot.ImAxis_.x1.value, float(s[0]), float(s[-1]), implot.Cond_.always.value)
                 implot.setup_axis_scale(implot.ImAxis_.y1.value, implot.Scale_.log10.value)
                 implot.plot_line("Avg Loss", s, l, spec=loss_spec)
@@ -605,7 +632,7 @@ class ToolkitWindow:
             mse_spec = implot.Spec()
             mse_spec.line_color = imgui.ImVec4(0.3, 0.85, 0.5, 1.0)
             if implot.begin_plot("##MSE", imgui.ImVec2(-1, 130)):
-                implot.setup_axes("step", "MSE")
+                implot.setup_axes("step", "MSE", 0, implot.AxisFlags_.auto_fit.value)
                 implot.setup_axis_limits(implot.ImAxis_.x1.value, float(s[0]), float(s[-1]), implot.Cond_.always.value)
                 implot.setup_axis_scale(implot.ImAxis_.y1.value, implot.Scale_.log10.value)
                 implot.plot_line("MSE", s, m, spec=mse_spec)
@@ -646,6 +673,7 @@ class ToolkitWindow:
         "train_near": "Near clip plane for training camera",
         "train_far": "Far clip plane for training camera",
         "max_gaussians": "Maximum number of gaussians in the scene",
+        "training_steps_per_frame": "Number of training optimizer steps to run before each viewer redraw; higher improves training throughput but reduces UI refresh rate",
         "seed": "Random seed for training frame shuffle order",
         "init_opacity": "Initial opacity for new gaussians",
     }

@@ -367,22 +367,16 @@ class GaussianTrainer:
         self.renderer.rasterize_current_scene(enc, frame_camera, background)
         self._dispatch_loss_grad(enc, self.get_frame_target_texture(frame_index, native_resolution=False))
         self._dispatch_raster_forward_backward(enc, frame_camera, background)
+        self._dispatch_optimizer_step(enc)
         self.device.submit_command_buffer(enc.finish())
         self.device.wait()
 
-        image_loss, image_mse = self._read_loss_metrics()
-        if not np.isfinite(image_loss):
-            self.state.last_instability, loss = "Non-finite loss; ADAM step skipped and moments reset.", float("inf")
+        loss, image_mse = self._read_loss_metrics()
+        if not np.isfinite(loss):
+            self.state.last_instability = "Non-finite loss after ADAM; moments reset."
             self._zero_optimizer_moments()
         else:
             self.state.last_instability = ""
-            enc_opt = self.device.create_command_encoder()
-            self._dispatch_optimizer_step(enc_opt)
-            self.device.submit_command_buffer(enc_opt.finish())
-            self.device.wait()
-            loss = self._read_loss_metrics()[0]
-            if not np.isfinite(loss):
-                self.state.last_instability, loss = "Non-finite regularized loss after ADAM; using image loss.", image_loss
 
         self.state.step += 1
         self.state.last_frame_index = frame_index

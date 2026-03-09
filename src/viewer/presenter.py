@@ -11,6 +11,8 @@ from . import session
 
 _DEBUG_HUGE_VALUE = 1e8
 _DEBUG_TEXTURE_USAGE = spy.TextureUsage.shader_resource | spy.TextureUsage.unordered_access | spy.TextureUsage.copy_destination
+_DEFAULT_TRAINING_STEPS_PER_FRAME = 1
+_MAX_TRAINING_STEPS_PER_FRAME = 8
 
 
 def _debug_frame_idx(viewer: object) -> int:
@@ -28,6 +30,25 @@ def _ensure_texture(viewer: object, attr: str, width: int, height: int) -> spy.T
     created = viewer.device.create_texture(format=spy.Format.rgba32_float, width=int(width), height=int(height), usage=_DEBUG_TEXTURE_USAGE)
     setattr(viewer.s, attr, created)
     return created
+
+
+def _training_steps_per_frame(viewer: object) -> int:
+    try:
+        value = int(viewer.c("training_steps_per_frame").value)
+    except Exception:
+        return _DEFAULT_TRAINING_STEPS_PER_FRAME
+    return max(1, min(value, _MAX_TRAINING_STEPS_PER_FRAME))
+
+
+def _run_training_batch(viewer: object) -> int:
+    if not viewer.s.training_active or viewer.s.trainer is None:
+        viewer.s.last_training_batch_steps = 0
+        return 0
+    steps = _training_steps_per_frame(viewer)
+    for _ in range(steps):
+        viewer.s.trainer.step()
+    viewer.s.last_training_batch_steps = steps
+    return steps
 
 
 def _dispatch_debug_abs_diff(viewer: object, encoder: spy.CommandEncoder, rendered_tex: spy.Texture, target_tex: spy.Texture, width: int, height: int) -> spy.Texture:
@@ -85,7 +106,9 @@ def update_ui_text(viewer: object, dt: float) -> None:
         viewer.t("training_instability").text = ""
     else:
         state = viewer.s.trainer.state
-        viewer.t("training").text = f"Training: {'running' if viewer.s.training_active else 'paused'} | step={state.step:,} | frame={state.last_frame_index} | splats={int(current_splat_count):,}"
+        batch_steps = int(getattr(viewer.s, "last_training_batch_steps", 0))
+        batch_text = f" | batch={batch_steps}" if viewer.s.training_active else ""
+        viewer.t("training").text = f"Training: {'running' if viewer.s.training_active else 'paused'} | step={state.step:,} | frame={state.last_frame_index} | splats={int(current_splat_count):,}{batch_text}"
         viewer.t("training_loss").text = f"Loss Avg: {state.avg_loss:.6e}"
         viewer.t("training_mse").text = f"MSE: {state.last_mse:.6e}" if np.isfinite(state.last_mse) else "MSE: n/a"
         viewer.t("training_instability").text = state.last_instability
@@ -104,6 +127,7 @@ def _update_toolkit_history(viewer: object, dt: float) -> None:
         step = int(state.step)
         if step > 0 and (not tk.tk.step_history or step != tk.tk.step_history[-1]):
             tk.tk.step_history.append(step)
+            tk.tk.step_time_history.append(float(viewer.s.last_time))
             if np.isfinite(state.avg_loss) and state.avg_loss > 0:
                 tk.tk.loss_history.append(float(state.avg_loss))
             elif tk.tk.loss_history:
@@ -118,7 +142,7 @@ def _render_debug_view(viewer: object, image: spy.Texture, encoder: spy.CommandE
     frame_idx = _debug_frame_idx(viewer)
     debug_renderer = require_not_none(viewer.s.training_renderer, "Training renderer is not initialized.")
     debug_width, debug_height = int(debug_renderer.width), int(debug_renderer.height)
-    debug_render_tex, viewer.s.stats = debug_renderer.render_to_texture(viewer.s.trainer.make_frame_camera(frame_idx, debug_width, debug_height), background=viewer.s.background, read_stats=True)
+    debug_render_tex, viewer.s.stats = debug_renderer.render_to_texture(viewer.s.trainer.make_frame_camera(frame_idx, debug_width, debug_height), background=viewer.s.background, read_stats=True, command_encoder=encoder)
     target_tex = viewer.s.trainer.get_frame_target_texture(frame_idx, native_resolution=False)
     source_tex = debug_render_tex if _debug_view_key(viewer) == "rendered" else target_tex if _debug_view_key(viewer) == "target" else _dispatch_debug_abs_diff(viewer, encoder, debug_render_tex, target_tex, debug_width, debug_height)
     encoder.blit(image, _dispatch_debug_letterbox(viewer, encoder, source_tex, debug_width, debug_height, output_width, output_height))
@@ -129,7 +153,7 @@ def _render_debug_view(viewer: object, image: spy.Texture, encoder: spy.CommandE
 def _render_main_view(viewer: object, image: spy.Texture, encoder: spy.CommandEncoder) -> None:
     if viewer.s.trainer is not None and viewer.s.training_renderer is not None:
         session.sync_scene_from_training_renderer(viewer, viewer.s.renderer, target="main")
-    out_tex, stats = viewer.s.renderer.render_to_texture(viewer.camera(), background=viewer.s.background, read_stats=True)
+    out_tex, stats = viewer.s.renderer.render_to_texture(viewer.camera(), background=viewer.s.background, read_stats=True, command_encoder=encoder)
     viewer.s.stats = stats
     encoder.blit(image, out_tex)
 
@@ -149,8 +173,7 @@ def render_frame(viewer: object, render_context: spy.AppWindow.RenderContext) ->
         update_ui_text(viewer, dt)
         return
     try:
-        if viewer.s.training_active and viewer.s.trainer is not None:
-            viewer.s.trainer.step()
+        _run_training_batch(viewer)
         if bool(viewer.c("loss_debug").value) and viewer.s.trainer is not None and viewer.s.training_frames:
             _render_debug_view(viewer, image, encoder, iw, ih)
         else:
@@ -158,6 +181,7 @@ def render_frame(viewer: object, render_context: spy.AppWindow.RenderContext) ->
         viewer.s.last_render_exception = ""
     except Exception as exc:
         viewer.s.training_active = False
+        viewer.s.last_training_batch_steps = 0
         viewer.s.last_error = str(exc)
         if viewer.s.last_render_exception != viewer.s.last_error:
             print(f"Render/training error: {viewer.s.last_error}")

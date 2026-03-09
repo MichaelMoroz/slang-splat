@@ -632,17 +632,24 @@ class GaussianRenderer:
         self._require_scene()
         self._rasterize_forward_backward(encoder, camera, background, output_grad)
 
-    def render_to_texture(self, camera: Camera, background: np.ndarray | tuple[float, float, float] = (0.0, 0.0, 0.0), read_stats: bool = True) -> tuple[spy.Texture, dict[str, int | bool | float]]:
+    def render_to_texture(
+        self,
+        camera: Camera,
+        background: np.ndarray | tuple[float, float, float] = (0.0, 0.0, 0.0),
+        read_stats: bool = True,
+        command_encoder: spy.CommandEncoder | None = None,
+    ) -> tuple[spy.Texture, dict[str, int | bool | float]]:
         scene = self._require_scene()
         if scene.count <= 0:
             raise RuntimeError("Cannot render empty scene.")
         self._ensure_work_buffers(scene.count, self._pending_min_list_entries)
         background_np = self._background_array(background)
         self._execute_prepass(scene, camera, sync_counts=False)
-        enc = self.device.create_command_encoder()
+        enc = self.device.create_command_encoder() if command_encoder is None else command_encoder
         self._rasterize(enc, camera, background_np)
-        self.device.submit_command_buffer(enc.finish())
-        self.device.wait()
+        if command_encoder is None:
+            self.device.submit_command_buffer(enc.finish())
+            self.device.wait()
         if read_stats:
             self._update_delayed_counter_stats()
         self._last_stats = self._stats_payload(scene.count, read_stats)

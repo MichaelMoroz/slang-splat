@@ -53,6 +53,7 @@ class ViewerState:
     trainer: GaussianTrainer | None = None; training_active: bool = False; loss_debug_texture: spy.Texture | None = None
     debug_abs_diff_kernel: spy.ComputeKernel | None = None; debug_letterbox_kernel: spy.ComputeKernel | None = None; debug_present_texture: spy.Texture | None = None
     synced_step_main: int = -1; synced_step_debug: int = -1; scene_init_signature: tuple[object, ...] | None = None
+    last_training_batch_steps: int = 0
     suggested_init_hparams: GaussianInitHyperParams | None = None; suggested_init_count: int | None = None
     camera_pos: spy.float3 = field(default_factory=_default_camera_pos); yaw: float = 0.0; pitch: float = 0.0
     up: spy.float3 = field(default_factory=_default_up); fov_y: float = 60.0; near: float = 0.1; far: float = 120.0

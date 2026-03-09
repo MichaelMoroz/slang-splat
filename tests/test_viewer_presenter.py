@@ -50,6 +50,7 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         "loss_debug_frame": _control(0),
         "loss_debug_view": _control(2),
         "images_subdir": _control(0),
+        "training_steps_per_frame": _control(1),
     }
     texts = {key: _text() for key in ("fps", "images_subdir", "loss_debug_view", "loss_debug_frame", "path", "scene_stats", "render_stats", "training", "training_loss", "training_mse", "training_instability", "error")}
     viewer = SimpleNamespace()
@@ -76,6 +77,7 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         background=(0.0, 0.0, 0.0),
         last_render_exception="",
         last_error="",
+        last_training_batch_steps=0,
     )
     return viewer
 
@@ -113,4 +115,24 @@ def test_render_frame_uses_main_branch_when_visual_loss_debug_disabled(monkeypat
     presenter.render_frame(viewer, render_context)
 
     assert viewer.s.trainer.step_calls == 1
+    assert calls == ["apply", "main", "ui"]
+
+
+def test_render_frame_runs_configured_training_batch(monkeypatch):
+    viewer = _viewer(loss_debug=False)
+    viewer.c("training_steps_per_frame").value = 3
+    render_context = SimpleNamespace(surface_texture=SimpleNamespace(width=640, height=360), command_encoder=_DummyEncoder())
+    calls: list[str] = []
+
+    monkeypatch.setattr(presenter.session, "apply_live_params", lambda viewer_obj: calls.append("apply"))
+    monkeypatch.setattr(presenter.session, "recreate_renderer", lambda viewer_obj, width, height: calls.append("resize"))
+    monkeypatch.setattr(presenter.session, "update_debug_frame_slider_range", lambda viewer_obj: None)
+    monkeypatch.setattr(presenter, "_render_debug_view", lambda viewer_obj, image, encoder, width, height: calls.append("debug"))
+    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, image, encoder: calls.append("main"))
+    monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
+
+    presenter.render_frame(viewer, render_context)
+
+    assert viewer.s.trainer.step_calls == 3
+    assert viewer.s.last_training_batch_steps == 3
     assert calls == ["apply", "main", "ui"]
