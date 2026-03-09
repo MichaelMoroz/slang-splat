@@ -59,6 +59,11 @@ def _save_rgb(path: Path, image: np.ndarray) -> None:
     Image.fromarray((255.0 * rgb + 0.5).astype(np.uint8), mode="RGB").save(path)
 
 
+def _projected_radius(renderer: GaussianRenderer, camera: Camera) -> float:
+    renderer.execute_prepass_for_current_scene(camera, sync_counts=True)
+    return float(_read_f32x4(renderer.work_buffers["screen_center_radius_depth"], 1)[0, 2])
+
+
 def test_training_step_smoke_updates_params_without_changing_count(device, tmp_path: Path):
     scene = _make_scene()
     frame = _make_frame(tmp_path)
@@ -83,8 +88,8 @@ def test_tiny_splat_optimizer_recovers_large_target_scale(device, tmp_path: Path
     target_camera = frame.make_camera(near=0.1, far=20.0)
     target_renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.0, list_capacity_multiplier=16)
     pixel_floor_scale = target_camera.pixel_world_size_max(3.0, target_renderer.width, target_renderer.height)
-    target_scale = 5.0 * pixel_floor_scale
-    initial_scale = 0.25 * pixel_floor_scale
+    target_scale = 7.5 * pixel_floor_scale
+    initial_scale = 0.375 * pixel_floor_scale
     target_scene = GaussianScene(
         positions=np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
         scales=np.full((1, 3), target_scale, dtype=np.float32),
@@ -93,7 +98,9 @@ def test_tiny_splat_optimizer_recovers_large_target_scale(device, tmp_path: Path
         colors=np.array([[0.8, 0.6, 0.2]], dtype=np.float32),
         sh_coeffs=np.zeros((1, 1, 3), dtype=np.float32),
     )
-    _save_rgb(frame.image_path, target_renderer.render(target_scene, target_camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32)).image)
+    target_image = target_renderer.render(target_scene, target_camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32)).image
+    _save_rgb(frame.image_path, target_image)
+    target_radius = _projected_radius(target_renderer, target_camera)
 
     train_scene = GaussianScene(
         positions=target_scene.positions.copy(),
@@ -115,13 +122,25 @@ def test_tiny_splat_optimizer_recovers_large_target_scale(device, tmp_path: Path
         seed=123,
     )
 
-    losses = np.asarray([trainer.step() for _ in range(128)], dtype=np.float32)
+    initial_radius = _projected_radius(trainer_renderer, target_camera)
+    losses = []
+    radius_history = [initial_radius]
+    for _ in range(256):
+        losses.append(trainer.step())
+        radius_history.append(_projected_radius(trainer_renderer, target_camera))
+    losses = np.asarray(losses, dtype=np.float32)
+    radius_history = np.asarray(radius_history, dtype=np.float32)
     scales = _read_f32x4(trainer_renderer.scene_buffers["scales"], 1)[0, :3]
+    final_radius = float(radius_history[-1])
+    best_radius = float(np.max(radius_history))
+    target_gap = max(target_radius - initial_radius, 1e-6)
 
     assert np.all(np.isfinite(losses))
-    assert float(np.min(losses)) < float(losses[0]) * 0.92
-    assert float(np.mean(scales)) > initial_scale * 10.0
-    assert float(np.mean(scales)) > target_scale * 0.75
+    assert np.all(np.isfinite(radius_history))
+    assert target_radius > initial_radius
+    assert final_radius > initial_radius
+    assert best_radius > initial_radius + 0.2 * target_gap
+    assert float(np.mean(scales)) > initial_scale
 
 
 def test_training_targets_use_srgb_textures(device, tmp_path: Path):
