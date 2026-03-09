@@ -59,9 +59,21 @@ def _save_rgb(path: Path, image: np.ndarray) -> None:
     Image.fromarray((255.0 * rgb + 0.5).astype(np.uint8), mode="RGB").save(path)
 
 
-def _projected_radius(renderer: GaussianRenderer, camera: Camera) -> float:
-    renderer.execute_prepass_for_current_scene(camera, sync_counts=True)
-    return float(_read_f32x4(renderer.work_buffers["screen_center_radius_depth"], 1)[0, 2])
+def _fit_rendered_gaussian_radius(image: np.ndarray) -> float:
+    rgb = np.asarray(image, dtype=np.float32)[..., :3]
+    weights = np.mean(np.clip(rgb, 0.0, None), axis=2, dtype=np.float32)
+    weight_sum = float(np.sum(weights, dtype=np.float64))
+    if weight_sum <= 1e-8:
+        return 0.0
+    h, w = weights.shape
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    cx = float(np.sum(weights * xx, dtype=np.float64) / weight_sum)
+    cy = float(np.sum(weights * yy, dtype=np.float64) / weight_sum)
+    dx = xx - cx
+    dy = yy - cy
+    mean_r2 = float(np.sum(weights * (dx * dx + dy * dy), dtype=np.float64) / weight_sum)
+    sigma = np.sqrt(max(0.5 * mean_r2, 0.0))
+    return float(3.0 * sigma)
 
 
 def test_training_step_smoke_updates_params_without_changing_count(device, tmp_path: Path):
@@ -100,7 +112,7 @@ def test_tiny_splat_optimizer_recovers_large_target_scale(device, tmp_path: Path
     )
     target_image = target_renderer.render(target_scene, target_camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32)).image
     _save_rgb(frame.image_path, target_image)
-    target_radius = _projected_radius(target_renderer, target_camera)
+    target_radius = _fit_rendered_gaussian_radius(target_image)
 
     train_scene = GaussianScene(
         positions=target_scene.positions.copy(),
@@ -122,12 +134,14 @@ def test_tiny_splat_optimizer_recovers_large_target_scale(device, tmp_path: Path
         seed=123,
     )
 
-    initial_radius = _projected_radius(trainer_renderer, target_camera)
+    initial_image = np.asarray(trainer_renderer.render_to_texture(target_camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32))[0].to_numpy(), dtype=np.float32)
+    initial_radius = _fit_rendered_gaussian_radius(initial_image)
     losses = []
     radius_history = [initial_radius]
     for _ in range(256):
         losses.append(trainer.step())
-        radius_history.append(_projected_radius(trainer_renderer, target_camera))
+        image = np.asarray(trainer_renderer.render_to_texture(target_camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32))[0].to_numpy(), dtype=np.float32)
+        radius_history.append(_fit_rendered_gaussian_radius(image))
     losses = np.asarray(losses, dtype=np.float32)
     radius_history = np.asarray(radius_history, dtype=np.float32)
     scales = _read_f32x4(trainer_renderer.scene_buffers["scales"], 1)[0, :3]
