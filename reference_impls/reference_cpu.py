@@ -10,6 +10,7 @@ from .projection_sampled5_mvee_reference import project_splats_sampled5_mvee
 
 ELLIPSE_EPS = 1e-5
 MIN_CONIC_DET = 1e-12
+SCALE_AREA_PROXY_POWER = np.float32(2.0 / 3.0)
 
 
 @dataclass(slots=True)
@@ -17,6 +18,7 @@ class ProjectedSplats:
     center_radius_depth: np.ndarray
     ellipse_conic: np.ndarray
     color_alpha: np.ndarray
+    opacity_scale: np.ndarray
     valid: np.ndarray
     pos_local: np.ndarray
     inv_scale: np.ndarray
@@ -55,10 +57,20 @@ def project_splats(scene: GaussianScene, camera: Camera, width: int, height: int
         c, s = np.cos(angle[valid]), np.sin(angle[valid])
         inv_a2, inv_b2 = 1.0 / (major * major), 1.0 / (minor * minor)
         conic[valid] = np.stack((c * c * inv_a2 + s * s * inv_b2, c * s * (inv_a2 - inv_b2), s * s * inv_a2 + c * c * inv_b2), axis=1).astype(np.float32)
+    _, _, forward = camera.basis()
+    position_delta = scene.positions.astype(np.float32) - camera.position.astype(np.float32)
+    depth = np.sum(position_delta * forward[None, :].astype(np.float32), axis=1, dtype=np.float32)
+    min_scale_world = np.asarray([camera.pixel_world_size_max(float(value), width, height) for value in depth], dtype=np.float32)
+    raw_scale = np.maximum(scene.scales.astype(np.float32) * np.float32(radius_scale), np.float32(1e-6))
+    clamped_scale = np.maximum(raw_scale, min_scale_world[:, None])
+    raw_area = np.power(np.maximum(np.prod(raw_scale, axis=1, dtype=np.float32), np.float32(1e-6)), SCALE_AREA_PROXY_POWER).astype(np.float32)
+    clamped_area = np.power(np.maximum(np.prod(clamped_scale, axis=1, dtype=np.float32), np.float32(1e-6)), SCALE_AREA_PROXY_POWER).astype(np.float32)
+    opacity_scale = np.minimum(raw_area / np.maximum(clamped_area, np.float32(1e-6)), np.float32(1.0)).astype(np.float32)
     return ProjectedSplats(
         center_radius_depth=projected.center_radius_depth,
         ellipse_conic=conic,
         color_alpha=projected.color_alpha,
+        opacity_scale=opacity_scale,
         valid=projected.valid,
         pos_local=projected.pos_local,
         inv_scale=projected.inv_scale,
@@ -219,9 +231,10 @@ def rasterize(projected: ProjectedSplats, sorted_values: np.ndarray, tile_ranges
                 if rho >= 1.0:
                     continue
                 coverage = float((1.0 - rho) ** 2 * (1.0 + 2.0 * rho))
-                alpha = float(np.clip(projected.color_alpha[splat_id, 3] * coverage, 0.0, 1.0))
-                if alpha < alpha_cutoff:
+                base_alpha = float(np.clip(projected.color_alpha[splat_id, 3] * coverage, 0.0, 1.0))
+                if base_alpha < alpha_cutoff:
                     continue
+                alpha = float(np.clip(base_alpha * projected.opacity_scale[splat_id], 0.0, 1.0))
                 accum += trans * alpha * projected.color_alpha[splat_id, :3]
                 trans *= 1.0 - alpha
                 if trans < transmittance_threshold:

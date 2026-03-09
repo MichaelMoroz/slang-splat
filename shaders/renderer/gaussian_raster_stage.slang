@@ -49,6 +49,7 @@ struct RasterGaussian : IDifferentiable
     float3 roLocal;
     float3 invScale;
     float4 quat;
+    float opacityScale;
     float4 colorAlpha;
 
     static RasterGaussian load_global(uint splatId)
@@ -58,7 +59,7 @@ struct RasterGaussian : IDifferentiable
         float4 rotation = g_Rotations[splatId];
         float4 colorAlpha = g_ColorAlpha[splatId];
         CachedEllipsoid cached = build_cached_ellipsoid(g_Camera, g_Prepass.radiusScale, position, scale, rotation);
-        return { cached.roLocal, cached.invScale, cached.quat, colorAlpha };
+        return { cached.roLocal, cached.invScale, cached.quat, cached.opacityScale, colorAlpha };
     }
 
     [BackwardDerivative(raster_gaussian_load_shared_bwd)]
@@ -68,6 +69,7 @@ struct RasterGaussian : IDifferentiable
         gaussian.roLocal = gsRoLocal[localIdx].xyz;
         gaussian.invScale = float3(gsInvScale[localIdx].xyz);
         gaussian.quat = float4(gsQuat[localIdx]);
+        gaussian.opacityScale = float(gsInvScale[localIdx].w);
         gaussian.colorAlpha = float4(gsColorAlpha[localIdx]);
         return gaussian;
     }
@@ -76,7 +78,7 @@ struct RasterGaussian : IDifferentiable
     void store_shared(uint localIdx)
     {
         gsRoLocal[localIdx] = float4(roLocal, 0.0);
-        gsInvScale[localIdx] = half4(float4(invScale, 0.0));
+        gsInvScale[localIdx] = half4(float4(invScale, opacityScale));
         gsQuat[localIdx] = half4(quat);
         gsColorAlpha[localIdx] = half4(colorAlpha);
     }
@@ -90,6 +92,7 @@ struct RasterGaussian : IDifferentiable
         dCached.roLocal = dOut.roLocal;
         dCached.invScale = dOut.invScale;
         dCached.quat = dOut.quat;
+        dCached.opacityScale = dOut.opacityScale;
 
         float3 position = g_Positions[splatId].xyz;
         float3 scale = g_Scales[splatId].xyz;
@@ -114,7 +117,7 @@ struct RasterGaussian : IDifferentiable
 [Differentiable]
 float raster_eval_alpha_gaussian(RasterGaussian gaussian, no_diff float3 rayDir)
 {
-    return raster_eval_alpha(gaussian.roLocal, gaussian.quat, gaussian.invScale, gaussian.colorAlpha.w, rayDir, g_Raster.alphaCutoff);
+    return raster_eval_alpha(gaussian.roLocal, gaussian.quat, gaussian.invScale, gaussian.colorAlpha.w, gaussian.opacityScale, rayDir, g_Raster.alphaCutoff);
 }
 
 [Differentiable]
@@ -182,6 +185,7 @@ RasterGaussian.Differential zero_raster_gaussian_differential()
     dGaussian.roLocal = 0.0;
     dGaussian.invScale = 0.0;
     dGaussian.quat = 0.0;
+    dGaussian.opacityScale = 0.0;
     dGaussian.colorAlpha = 0.0;
     return dGaussian;
 }
@@ -423,6 +427,7 @@ void raster_backward_replay(
                     dGaussian.roLocal += dPixelGaussian.roLocal;
                     dGaussian.invScale += dPixelGaussian.invScale;
                     dGaussian.quat += dPixelGaussian.quat;
+                    dGaussian.opacityScale += dPixelGaussian.opacityScale;
                     dGaussian.colorAlpha += dPixelGaussian.colorAlpha;
                     forwardState.pixelState[pixelIdx] = prevState;
                     backwardState.pixelState[pixelIdx] = dpPrevState.getDifferential();

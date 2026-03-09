@@ -149,7 +149,7 @@ void csProjectAndBin(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (!emit_splat_bins(binRequest)) return;
     g_ScreenCenterRadiusDepth[splatId] = float4(fitCenter, fitRadius, camDistance);
     g_ScreenColorAlpha[splatId] = gaussian.colorAlpha;
-    g_ScreenEllipseConic[splatId] = float4(fitConic, 1.0);
+    g_ScreenEllipseConic[splatId] = float4(fitConic, ellipsoid.opacityScale);
     g_SplatVisible[splatId] = 1u;
 }
 

@@ -82,6 +82,7 @@ Training notes:
 - The active trainer keeps a fixed gaussian count after initialization; there is no densification, pruning, opacity reset schedule, MCMC exploration term, or SSIM loss path.
 - The training loss is direct RGB L1 with optional scale and opacity regularization accumulated in the fused ADAM kernel.
 - GPU scene buffers store opacity as a raw sigmoid parameter so rasterization and optimization differentiate through effective alpha directly.
+- Pixel-floor-clamped splats attenuate blend alpha by the ratio of raw scale area to clamped scale area, while the alpha cutoff still applies to the pre-attenuation alpha path.
 - Reported training metrics are total loss, rolling average loss, and per-step `last_mse`.
 - Target Y-flip is enabled by default.
 - The viewer exposes only fixed-count optimization controls: learning rates, regularization weights, and stability clamps.

@@ -9,6 +9,7 @@ struct CachedEllipsoid : IDifferentiable
     float3 roLocal;
     float3 invScale;
     float4 quat;
+    float opacityScale;
 };
 
 [Differentiable]
@@ -20,11 +21,11 @@ CachedEllipsoid build_cached_ellipsoid(no_diff CameraParams cameraParams, no_dif
     gaussian.rotation = rotation;
     gaussian.colorAlpha = 0.0;
     Ellipsoid ellipsoid = build_ellipsoid(cameraParams, radiusScale, gaussian);
-    return { ellipsoid.roLocal, ellipsoid.invScale, ellipsoid.rotation };
+    return { ellipsoid.roLocal, ellipsoid.invScale, ellipsoid.rotation, ellipsoid.opacityScale };
 }
 
 [Differentiable]
-float raster_eval_alpha(float3 roLocal, float4 quat, float3 invScale, float rawOpacity, no_diff float3 rayDir, no_diff float alphaCutoff)
+float raster_eval_alpha(float3 roLocal, float4 quat, float3 invScale, float rawOpacity, float opacityScale, no_diff float3 rayDir, no_diff float alphaCutoff)
 {
     float3 rdLocal = rotate_by_quat(rayDir, quat) * invScale;
     float denom = dot(rdLocal, rdLocal);
@@ -39,7 +40,7 @@ float raster_eval_alpha(float3 roLocal, float4 quat, float3 invScale, float rawO
 
     float coverage = saturate(1.0 - rho);
     coverage = coverage * coverage * (3.0 - 2.0 * coverage);
-    float alpha = opacity_from_raw(rawOpacity) * coverage;
-    if (alpha < alphaCutoff) return 0.0;
-    return alpha;
+    float baseAlpha = opacity_from_raw(rawOpacity) * coverage;
+    if (baseAlpha < alphaCutoff) return 0.0;
+    return baseAlpha * opacityScale;
 }

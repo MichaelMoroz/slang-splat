@@ -16,6 +16,7 @@ struct DebugSplat
     float2 centerPx;
     float radiusPx;
     float3 conic;
+    float opacityScale;
     float4 colorAlpha;
     float gradNorm;
 
@@ -29,6 +30,7 @@ struct DebugSplat
             centerRadiusDepth.xy,
             centerRadiusDepth.z,
             conic.xyz,
+            conic.w,
             g_ScreenColorAlpha[splatId],
             max(gradNorm, 0.0)
         };
@@ -62,8 +64,8 @@ struct DebugSplat
         if (quad >= 1.0) return 0.0;
         float coverage = saturate(1.0 - quad);
         coverage = coverage * coverage * (3.0 - 2.0 * coverage);
-        float alpha = opacity_from_raw(colorAlpha.w) * coverage;
-        return alpha >= g_Raster.alphaCutoff ? alpha : 0.0;
+        float baseAlpha = opacity_from_raw(colorAlpha.w) * coverage;
+        return baseAlpha >= g_Raster.alphaCutoff ? baseAlpha * opacityScale : 0.0;
     }
 
     float eval_edge(float2 samplePoint, float thicknessPx)

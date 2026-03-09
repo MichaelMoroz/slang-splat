@@ -54,8 +54,9 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - Raster execution is microtiled: one `8x8` thread group covers one `24x24` effective raster tile, and each thread owns a fixed `3x3` pixel block in registers.
 - Each thread resolves one tile range for its microtile, reuses each staged gaussian across all `9` local pixels, and writes per-pixel output after the forward replay.
 - The inner loop performs front-to-back blending with exponential radial falloff while reusing gaussian data already staged in shared memory.
-- The same camera-dependent two-pixel world-space scale floor is applied to the ellipsoid used by the raster loop, so subpixel gaussians do not bin wide but shade with a near-zero footprint.
-- The stored alpha slot is a raw sigmoid parameter; the raster stage evaluates effective opacity through `sigmoid(raw_alpha)` so backward replay differentiates through opacity directly.
+- The same camera-dependent two-pixel world-space scale floor is applied to the ellipsoid used by the raster loop.
+- When that floor is active, the raster stage attenuates blend alpha by `raw_area / clamped_area` using an area proxy derived from gaussian scale, so subpixel splats still carry a scale-dependent signal without changing the clamped footprint.
+- The stored alpha slot is a raw sigmoid parameter; the raster stage evaluates `base_alpha = sigmoid(raw_alpha) * coverage`, applies `alphaCutoff` to that pre-attenuation alpha, then multiplies by the clamp attenuation for the final blend alpha.
 - Writes RGBA output texture.
 - Primary ray generation goes through `PinholeCamera.screen_to_world_ray(...)`.
 

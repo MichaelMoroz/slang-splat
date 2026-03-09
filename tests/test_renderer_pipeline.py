@@ -177,17 +177,19 @@ def test_sampled5_mvee_render_smoke(device):
 
 
 def test_subpixel_gaussian_uses_pixel_floor_in_projection_and_raster(device):
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    background = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+    renderer = GaussianRenderer(device, width=65, height=65, radius_scale=1.0, list_capacity_multiplier=16)
+    expected_scale = camera.pixel_world_size_max(4.0, renderer.width, renderer.height)
+    raw_scale = 0.5 * expected_scale
     scene = GaussianScene(
         positions=np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
-        scales=np.array([[1e-6, 1e-6, 1e-6]], dtype=np.float32),
+        scales=np.full((1, 3), raw_scale, dtype=np.float32),
         rotations=np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
         opacities=np.array([0.75], dtype=np.float32),
         colors=np.array([[0.8, 0.6, 0.2]], dtype=np.float32),
         sh_coeffs=np.zeros((1, 1, 3), dtype=np.float32),
     )
-    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
-    background = np.array([0.0, 0.0, 0.0], dtype=np.float32)
-    renderer = GaussianRenderer(device, width=65, height=65, radius_scale=1.0, list_capacity_multiplier=16)
 
     gpu_image = renderer.render(scene, camera, background=background).image
     debug = renderer.debug_pipeline_data(scene, camera)
@@ -220,9 +222,13 @@ def test_subpixel_gaussian_uses_pixel_floor_in_projection_and_raster(device):
         transmittance_threshold=renderer.transmittance_threshold,
     )
 
-    expected_scale = camera.pixel_world_size_max(4.0, renderer.width, renderer.height)
+    expected_alpha = scene.opacities[0] * (raw_scale / expected_scale) ** 2
+    center_pixel = renderer.width // 2
     np.testing.assert_allclose(projected.inv_scale[0], np.full((3,), 1.0 / expected_scale, dtype=np.float32), rtol=0.0, atol=1e-6)
     assert float(debug["screen_center_radius_depth"][0, 2]) >= 2.0
+    assert np.isclose(float(debug["screen_ellipse_conic"][0, 3]), 0.25, atol=1e-4)
+    assert gpu_image[center_pixel, center_pixel, 3] < scene.opacities[0]
+    assert np.isclose(float(cpu_image[center_pixel, center_pixel, 3]), expected_alpha, atol=5e-4)
     np.testing.assert_allclose(gpu_image, cpu_image, rtol=0.0, atol=5e-3)
 
 
@@ -312,6 +318,25 @@ def test_raster_backward_smoke_and_determinism(device):
         assert grads0[name].shape == (scene.count, 4)
         assert np.all(np.isfinite(grads0[name]))
         np.testing.assert_allclose(grads0[name], grads1[name], rtol=2e-5, atol=3e-5)
+
+
+def test_clamped_subpixel_raster_backward_has_scale_gradient(device):
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    renderer = GaussianRenderer(device, width=65, height=65, radius_scale=1.0, list_capacity_multiplier=16)
+    raw_scale = 0.5 * camera.pixel_world_size_max(4.0, renderer.width, renderer.height)
+    scene = GaussianScene(
+        positions=np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
+        scales=np.full((1, 3), raw_scale, dtype=np.float32),
+        rotations=np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+        opacities=np.array([0.75], dtype=np.float32),
+        colors=np.array([[0.8, 0.6, 0.2]], dtype=np.float32),
+        sh_coeffs=np.zeros((1, 1, 3), dtype=np.float32),
+    )
+
+    grads = renderer.debug_raster_backward_grads(scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32))
+
+    assert np.all(np.isfinite(grads["grad_scales"]))
+    assert float(np.max(np.abs(grads["grad_scales"][0, :3]))) > 1e-7
 
 
 def test_prepass_capacity_budget_caps_growth(device):
