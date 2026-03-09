@@ -93,6 +93,7 @@ class GaussianRenderer:
         ("_k_clear_ranges", "kernel", "gaussian_project_stage.slang", "csClearTileRanges"),
         ("_p_build_ranges", "pipeline", "gaussian_project_stage.slang", "csBuildTileRanges"),
         ("_k_raster", "kernel", "gaussian_raster_stage.slang", "csRasterize"),
+        ("_k_debug_raster", "kernel", "gaussian_debug_stage.slang", "csRenderDebug"),
         ("_k_clear_raster_grads", "kernel", "gaussian_raster_stage.slang", "csClearRasterGrads"),
         ("_k_raster_forward_backward", "kernel", "gaussian_raster_stage.slang", "csRasterizeForwardBackward"),
     )
@@ -308,14 +309,24 @@ class GaussianRenderer:
             self._bind_prepass_cursor(cursor, self._scene_count, sorted_count_offset=18)
             compute_pass.dispatch_compute_indirect(spy.BufferOffsetPair(args_buffer, GPURadixSort.BUILD_RANGE_ARGS_OFFSET * self._U32_BYTES))
 
-    def _rasterize(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray) -> None:
-        self._dispatch(self._k_raster, encoder, self._raster_thread_count(), {**self._scene_vars(), **self._screen_vars(), **self._debug_grad_norm_var(), "g_SortedValues": self._work_buffers["values"], "g_TileRanges": self._work_buffers["tile_ranges"], "g_Output": self._output_texture, **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._camera_uniforms(camera)})
+    def _debug_render_enabled(self) -> bool:
+        return bool(self.debug_show_processed_count or self.debug_show_grad_norm or self.debug_show_ellipses)
+
+    def _debug_render_needs_base(self) -> bool:
+        return bool(self.debug_show_ellipses and not self.debug_show_processed_count and not self.debug_show_grad_norm)
+
+    def _rasterize(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output: spy.Texture | None = None) -> None:
+        target = self.output_texture if output is None else output
+        self._dispatch(self._k_raster, encoder, self._raster_thread_count(), {**self._scene_vars(), **self._screen_vars(), "g_SortedValues": self._work_buffers["values"], "g_TileRanges": self._work_buffers["tile_ranges"], "g_Output": target, **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._camera_uniforms(camera)})
+
+    def _rasterize_debug(self, encoder: spy.CommandEncoder, background: np.ndarray, output: spy.Texture, base_output: spy.Texture) -> None:
+        self._dispatch(self._k_debug_raster, encoder, spy.uint3(self.width, self.height, 1), {**self._screen_vars(), **self._debug_grad_norm_var(), "g_Output": output, "g_BaseOutput": base_output, **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background)})
 
     def _clear_raster_grads(self, encoder: spy.CommandEncoder, splat_count: int) -> None:
         self._dispatch(self._k_clear_raster_grads, encoder, spy.uint3(max(int(splat_count) * 4, 1), 1, 1), {**self._grad_vars(), **self._prepass_uniforms(splat_count)})
 
     def _rasterize_forward_backward(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output_grad: spy.Texture) -> None:
-        self._dispatch(self._k_raster_forward_backward, encoder, self._raster_thread_count(), {**self._scene_vars(), "g_ScreenColorAlpha": self._work_buffers["screen_color_alpha"], **self._debug_grad_norm_var(), "g_SortedValues": self._work_buffers["values"], "g_TileRanges": self._work_buffers["tile_ranges"], "g_OutputGrad": output_grad, **self._grad_vars(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._camera_uniforms(camera)})
+        self._dispatch(self._k_raster_forward_backward, encoder, self._raster_thread_count(), {**self._scene_vars(), "g_ScreenColorAlpha": self._work_buffers["screen_color_alpha"], "g_SortedValues": self._work_buffers["values"], "g_TileRanges": self._work_buffers["tile_ranges"], "g_OutputGrad": output_grad, **self._grad_vars(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._camera_uniforms(camera)})
 
     def _execute_prepass(self, scene: GaussianScene, camera: Camera, sync_counts: bool = False) -> tuple[int, int]:
         self._reset_prepass_counters()
@@ -383,7 +394,14 @@ class GaussianRenderer:
         background_np = self._background_array(background)
         self._execute_prepass(scene, camera, sync_counts=False)
         enc = self.device.create_command_encoder()
-        self._rasterize(enc, camera, background_np)
+        if self._debug_render_enabled():
+            if self._debug_render_needs_base():
+                self._rasterize(enc, camera, background_np, output=self.output_grad_texture)
+                self._rasterize_debug(enc, background_np, output=self.output_texture, base_output=self.output_grad_texture)
+            else:
+                self._rasterize_debug(enc, background_np, output=self.output_texture, base_output=self.output_grad_texture)
+        else:
+            self._rasterize(enc, camera, background_np)
         self.device.submit_command_buffer(enc.finish())
         self.device.wait()
         if read_stats:
@@ -402,6 +420,8 @@ class GaussianRenderer:
 
     def debug_raster_backward_grads(self, scene: GaussianScene, camera: Camera, background: np.ndarray | tuple[float, float, float] = (0.0, 0.0, 0.0)) -> dict[str, np.ndarray]:
         self.set_scene(scene)
+        if self._debug_render_enabled():
+            raise RuntimeError("Disable debug overlay rendering before requesting raster backward gradients.")
         background_np = self._background_array(background)
         self._execute_prepass(scene, camera, sync_counts=False)
         enc = self.device.create_command_encoder()

@@ -24,12 +24,6 @@ struct RasterState : IDifferentiable
     }
 };
 
-static const float DEBUG_GRAD_NORM_FLOOR = 1e-12;
-static const float DEBUG_GRAD_ALPHA_SCALE = 0.1;
-static const float LOG2_TO_LOG10 = 0.30102999566;
-static const float DEBUG_GRAD_THRESHOLD_MIN_SCALE = 0.001;
-static const float DEBUG_GRAD_THRESHOLD_MAX_SCALE = 10.0;
-
 void atomic_add_grad<let N : int>(RWStructuredBuffer<float> gradBuffer, uint base, vector<float, N> grad)
 {
     [unroll] for (int i = 0; i < N; i++)
@@ -172,40 +166,6 @@ uint microtile_index(uint x, uint y)
 RasterState initial_raster_state()
 {
     return { 0.0, 1.0 };
-}
-
-float3 jet_colormap(float x)
-{
-    float t = saturate(x);
-    return float3(
-        saturate(1.5 - abs(4.0 * t - 3.0)),
-        saturate(1.5 - abs(4.0 * t - 2.0)),
-        saturate(1.5 - abs(4.0 * t - 1.0))
-    );
-}
-
-float raster_eval_alpha_gaussian_debug(RasterGaussian gaussian, no_diff float3 rayDir)
-{
-    return DEBUG_GRAD_ALPHA_SCALE * raster_eval_alpha_gaussian(gaussian, rayDir);
-}
-
-float raster_forward_debug_grad_pixel(RasterMicrotileInfo info, uint pixelIdx)
-{
-    float accum = 0.0;
-    float trans = 1.0;
-    for (uint idx = info.start; idx < info.end; idx++)
-    {
-        uint splatId = g_SortedValues[idx];
-        RasterGaussian gaussian = RasterGaussian.load_global(splatId);
-        float alpha = raster_eval_alpha_gaussian_debug(gaussian, info.rayDir[pixelIdx]);
-        if (alpha <= 0.0) continue;
-        float gradNorm = g_DebugGradNorm[splatId];
-        if (!isfinite(gradNorm)) gradNorm = 0.0;
-        accum += trans * alpha * max(gradNorm, 0.0);
-        trans *= 1.0 - alpha;
-        if (trans < g_Raster.transmittanceThreshold) break;
-    }
-    return accum;
 }
 
 RasterState.Differential zero_raster_state_differential()
@@ -391,72 +351,12 @@ void raster_forward_replay(
 float4 raster_forward_output_pixel(
     RasterMicrotileInfo info,
     uint pixelIdx,
-    RasterState state,
-    uint processedCount
+    RasterState state
 )
 {
     if (!info.pixelActive[pixelIdx]) return float4(0.0, 0.0, 0.0, 1.0);
-
-    if (!info.hasTileRange)
-    {
-        float3 bgColor = (g_Raster.debugShowProcessedCount != 0u)
-            ? float3(0.0)
-            : pow(max(g_Raster.background, 0.0), OUTPUT_GAMMA);
-        return float4(bgColor, 1.0);
-    }
-
-    if (g_Raster.debugShowProcessedCount != 0u)
-    {
-        float processed = float(processedCount);
-        float logMax = log2(float(g_Raster.maxSplatSteps) + 1.0);
-        float normalized = (logMax > 0.0) ? saturate(log2(processed + 1.0) / logMax) : 0.0;
-        return float4(float3(normalized), 1.0);
-    }
-
-    if (g_Raster.debugShowGradNorm != 0u)
-    {
-        float gradValue = max(raster_forward_debug_grad_pixel(info, pixelIdx), DEBUG_GRAD_NORM_FLOOR);
-        float gradLog10 = log2(gradValue) * LOG2_TO_LOG10;
-        float gradThreshold = max(g_Raster.debugGradNormThreshold, DEBUG_GRAD_NORM_FLOOR);
-        float gradLog10Min = log2(max(gradThreshold * DEBUG_GRAD_THRESHOLD_MIN_SCALE, DEBUG_GRAD_NORM_FLOOR)) * LOG2_TO_LOG10;
-        float gradLog10Max = log2(max(gradThreshold * DEBUG_GRAD_THRESHOLD_MAX_SCALE, DEBUG_GRAD_NORM_FLOOR)) * LOG2_TO_LOG10;
-        float normalized = saturate((gradLog10 - gradLog10Min) / max(gradLog10Max - gradLog10Min, TINY_VALUE));
-        return float4(jet_colormap(normalized), 1.0);
-    }
-
-    float3 finalColor = state.accum + state.trans * g_Raster.background;
-    if (g_Raster.debugShowEllipses != 0u)
-    {
-        float2 samplePoint = float2(info.pixelCoord[pixelIdx]) + 0.5;
-        float maxEdge = 0.0;
-        float3 edgeColor = g_Raster.debugEllipseColor;
-        float thicknessPx = max(g_Raster.debugEllipseThicknessPx, MIN_DEBUG_THICKNESS_PX);
-        for (uint idx = info.start; idx < info.end; idx++)
-        {
-            uint splatId = g_SortedValues[idx];
-            float4 centerRadiusDepth = g_ScreenCenterRadiusDepth[splatId];
-            float2 d = samplePoint - centerRadiusDepth.xy;
-            float bound = centerRadiusDepth.z + thicknessPx;
-            if (any(abs(d) > bound)) continue;
-
-            float4 conic = g_ScreenEllipseConic[splatId];
-            if (conic.w <= 0.0) continue;
-            float2x2 conicMatrix = float2x2(conic.x, conic.y, conic.y, conic.z);
-            float2 grad = mul(conicMatrix, d);
-            float quad = dot(d, grad);
-            float gradLen = max(length(2.0 * grad), GRADIENT_LENGTH_FLOOR);
-            float edgeDistance = abs(quad - 1.0) / gradLen;
-            float edge = saturate(1.0 - edgeDistance / thicknessPx);
-            if (edge <= maxEdge) continue;
-
-            maxEdge = edge;
-            edgeColor = g_ScreenColorAlpha[splatId].xyz;
-        }
-        finalColor = lerp(finalColor, edgeColor, maxEdge);
-    }
-
-    float3 colorOut = pow(max(finalColor, 0.0), OUTPUT_GAMMA);
-    return float4(colorOut, 1.0 - state.trans);
+    if (!info.hasTileRange) return float4(pow(max(g_Raster.background, 0.0), OUTPUT_GAMMA), 1.0);
+    return raster_output_from_state(state, g_Raster.background);
 }
 
 RasterState.Differential raster_output_gradient_pixel(
@@ -569,8 +469,7 @@ void csRasterize(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_Gr
             g_Output[info.pixelCoord[pixelIdx]] = raster_forward_output_pixel(
                 info,
                 pixelIdx,
-                forwardState.pixelState[pixelIdx],
-                forwardState.processedCount[pixelIdx]
+                forwardState.pixelState[pixelIdx]
             );
         }
     }
@@ -580,8 +479,6 @@ void csRasterize(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_Gr
 [numthreads(RASTER_THREAD_TILE_DIM, RASTER_THREAD_TILE_DIM, 1)]
 void csRasterizeForwardBackward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_GroupIndex)
 {
-    if (g_Raster.debugShowProcessedCount != 0u || g_Raster.debugShowEllipses != 0u || g_Raster.debugShowGradNorm != 0u) return;
-
     RasterMicrotileInfo info = resolve_raster_microtile(dispatchThreadID);
     RasterMicrotileForwardState forwardState;
     RasterMicrotileBackwardState backwardState;

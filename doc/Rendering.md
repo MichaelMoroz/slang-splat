@@ -50,7 +50,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - Build dispatch is indirect and uses the same GPU-generated clamped count as sorting.
 
 ## 5. Rasterize
-- Shader: `csRasterize`.
+- Shader: `csRasterize` in `shaders/renderer/gaussian_raster_stage.slang`.
 - Raster execution is microtiled: one `8x8` thread group covers one `24x24` effective raster tile, and each thread owns a fixed `3x3` pixel block in registers.
 - Each thread resolves one tile range for its microtile, reuses each staged gaussian across all `9` local pixels, and writes per-pixel output after the forward replay.
 - The inner loop performs front-to-back blending with exponential radial falloff while reusing gaussian data already staged in shared memory.
@@ -59,7 +59,16 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - Writes RGBA output texture.
 - Primary ray generation goes through `PinholeCamera.screen_to_world_ray(...)`.
 
-## 6. Raster Backward
+## 6. Debug Raster
+- Shader: `csRenderDebug` in `shaders/renderer/gaussian_debug_stage.slang`.
+- Debug views are dispatched separately from the production raster kernel so the hot path stays focused on tile-list compositing.
+- The debug shader consumes the preprojected screen-space buffers and runs a direct per-pixel loop over visible splats for:
+  - processed-count visualization,
+  - gradient-norm heatmaps,
+  - ellipse overlays.
+- Ellipse overlays render the normal raster result into an intermediate texture first, then apply the overlay in the dedicated debug pass.
+
+## 7. Raster Backward
 - Shaders: `csClearRasterGrads`, `csRasterizeForwardBackward`.
 - `csClearRasterGrads` zeros per-splat gradient buffers for:
   - `g_SplatPosLocal`
@@ -71,7 +80,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - Global and groupshared raster loads are implemented via custom derivative functions; backward accumulation uses wave-reduced direct global atomics into flattened per-splat `float4` gradient buffers (`index = splat_id * 4 + component`) without an intermediate groupshared gradient cache.
 - Output gradients are supplied through `g_OutputGrad` (`Texture2D<float4>`), and chain-rule terms include gamma output mapping and alpha output (`1 - transmittance`).
 
-## 7. Training Stage
+## 8. Training Stage
 - Shader: `shaders/renderer/gaussian_training_stage.slang`.
 - Kernels:
   - `csClearLossAndGradTex`: clears `g_OutputGrad` and scalar loss buffer.
