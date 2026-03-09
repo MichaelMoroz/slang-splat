@@ -6,12 +6,6 @@ import "utility/splatting/opacity.slang";
 import "utility/splatting/params.slang";
 import "utility/splatting/raster.slang";
 
-static const float DEBUG_GRAD_NORM_FLOOR = 1e-12;
-static const float LOG2_TO_LOG10 = 0.30102999566;
-static const float DEBUG_GRAD_THRESHOLD_MIN_SCALE = 0.001;
-static const float DEBUG_GRAD_THRESHOLD_MAX_SCALE = 10.0;
-static const float DEBUG_ELLIPSE_AA_FRACTION = 0.5;
-
 struct RasterState : IDifferentiable
 {
     float3 accum;
