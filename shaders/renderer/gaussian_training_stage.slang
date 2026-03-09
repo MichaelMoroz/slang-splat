@@ -4,6 +4,7 @@ import "utility/math/constants.slang";
 import "utility/math/numeric.slang";
 import "utility/math/quaternion.slang";
 import "utility/splatting/opacity.slang";
+import "utility/splatting/params.slang";
 
 static const uint TRAIN_TILE_DIM = 16u;
 static const uint LOSS_SLOT_TOTAL = 0u;
@@ -41,24 +42,11 @@ uniform uint g_LetterboxOutputHeight;
 groupshared float gsLoss[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
 groupshared float gsMSE[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
 
-uniform StructuredBuffer<float> g_GradPositions;
-uniform StructuredBuffer<float> g_GradScales;
-uniform StructuredBuffer<float> g_GradRotations;
-uniform StructuredBuffer<float> g_GradColorAlpha;
-
-uniform RWStructuredBuffer<float4> g_PositionsRW;
-uniform RWStructuredBuffer<float4> g_ScalesRW;
-uniform RWStructuredBuffer<float4> g_RotationsRW;
-uniform RWStructuredBuffer<float4> g_ColorAlphaRW;
-
-uniform RWStructuredBuffer<float4> g_AdamMPos;
-uniform RWStructuredBuffer<float4> g_AdamVPos;
-uniform RWStructuredBuffer<float4> g_AdamMScale;
-uniform RWStructuredBuffer<float4> g_AdamVScale;
-uniform RWStructuredBuffer<float4> g_AdamMQuat;
-uniform RWStructuredBuffer<float4> g_AdamVQuat;
-uniform RWStructuredBuffer<float4> g_AdamMColorAlpha;
-uniform RWStructuredBuffer<float4> g_AdamVColorAlpha;
+uniform StructuredBuffer<float> g_ParamGrads;
+uniform RWStructuredBuffer<float> g_SplatParamsRW;
+uniform RWStructuredBuffer<float> g_AdamM;
+uniform RWStructuredBuffer<float> g_AdamV;
+uniform StructuredBuffer<float> g_ParamLRs;
 
 [shader("compute")]
 [numthreads(TRAIN_TILE_DIM, TRAIN_TILE_DIM, 1)]
@@ -168,6 +156,105 @@ void csComposeLetterboxDebug(uint3 dispatchThreadID : SV_DispatchThreadID)
     g_LetterboxOutput[uint2(px, py)] = g_LetterboxSource[uint2(srcX, srcY)];
 }
 
+struct TrainableGaussianState
+{
+    float3 position;
+    float3 scale;
+    float4 rotation;
+    float4 colorAlpha;
+
+    static TrainableGaussianState load(uint splatId)
+    {
+        TrainableGaussianState state;
+        state.position = float3(
+            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_POSITION_X, splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_POSITION_Y, splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_POSITION_Z, splatId)
+        );
+        state.scale = float3(
+            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SCALE_X, splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SCALE_Y, splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SCALE_Z, splatId)
+        );
+        state.rotation = float4(
+            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_ROTATION_X, splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_ROTATION_Y, splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_ROTATION_Z, splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_ROTATION_W, splatId)
+        );
+        state.colorAlpha = float4(
+            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_COLOR_R, splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_COLOR_G, splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_COLOR_B, splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_RAW_OPACITY, splatId)
+        );
+        return state;
+    }
+
+    void store(uint splatId)
+    {
+        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_POSITION_X, splatId, position.x);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_POSITION_Y, splatId, position.y);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_POSITION_Z, splatId, position.z);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SCALE_X, splatId, scale.x);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SCALE_Y, splatId, scale.y);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SCALE_Z, splatId, scale.z);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_ROTATION_X, splatId, rotation.x);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_ROTATION_Y, splatId, rotation.y);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_ROTATION_Z, splatId, rotation.z);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_ROTATION_W, splatId, rotation.w);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_COLOR_R, splatId, colorAlpha.x);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_COLOR_G, splatId, colorAlpha.y);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_COLOR_B, splatId, colorAlpha.z);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_RAW_OPACITY, splatId, colorAlpha.w);
+    }
+};
+
+float load_param_grad(uint paramId, uint splatId)
+{
+    return g_ParamGrads[splat_param_index(g_SplatCount, paramId, splatId)];
+}
+
+float3 load_param_grad3(uint firstParamId, uint splatId)
+{
+    return float3(
+        load_param_grad(firstParamId + 0u, splatId),
+        load_param_grad(firstParamId + 1u, splatId),
+        load_param_grad(firstParamId + 2u, splatId)
+    );
+}
+
+float4 load_param_grad4(uint firstParamId, uint splatId)
+{
+    return float4(
+        load_param_grad(firstParamId + 0u, splatId),
+        load_param_grad(firstParamId + 1u, splatId),
+        load_param_grad(firstParamId + 2u, splatId),
+        load_param_grad(firstParamId + 3u, splatId)
+    );
+}
+
+void adam_update_param_group<let N : int>(
+    uint splatId,
+    uint firstParamId,
+    inout vector<float, N> values,
+    vector<float, N> grads,
+    float biasCorr1,
+    float biasCorr2
+)
+{
+    [unroll] for (int i = 0; i < N; i++)
+    {
+        uint paramId = firstParamId + uint(i);
+        uint paramIndex = splat_param_index(g_SplatCount, paramId, splatId);
+        float momentM = g_AdamM[paramIndex];
+        float momentV = g_AdamV[paramIndex];
+        values[i] = adam_update_param_scalar(values[i], grads[i], momentM, momentV, g_ParamLRs[paramId], biasCorr1, biasCorr2, g_Adam, g_Stability);
+        g_AdamM[paramIndex] = momentM;
+        g_AdamV[paramIndex] = momentV;
+    }
+}
+
 float3 clamp_scale_anisotropy(float3 scale)
 {
     float maxAnisotropy = max(g_Stability.maxAnisotropy, 1.0);
@@ -181,46 +268,21 @@ void csAdamStepFused(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     uint splatId = dispatchThreadID.x;
     if (splatId >= g_SplatCount) return;
-    uint gradBase = splatId * 4u;
-    float4 pos = g_PositionsRW[splatId];
-    float4 scale = g_ScalesRW[splatId];
-    float4 rot = g_RotationsRW[splatId];
-    float4 colorAlpha = g_ColorAlphaRW[splatId];
-
-    float4 gradPos = float4(
-        g_GradPositions[gradBase + 0u],
-        g_GradPositions[gradBase + 1u],
-        g_GradPositions[gradBase + 2u],
-        g_GradPositions[gradBase + 3u]
-    );
-    float4 gradScale = float4(
-        g_GradScales[gradBase + 0u],
-        g_GradScales[gradBase + 1u],
-        g_GradScales[gradBase + 2u],
-        g_GradScales[gradBase + 3u]
-    );
-    float4 gradQuat = float4(
-        g_GradRotations[gradBase + 0u],
-        g_GradRotations[gradBase + 1u],
-        g_GradRotations[gradBase + 2u],
-        g_GradRotations[gradBase + 3u]
-    );
-    float4 gradColorAlpha = float4(
-        g_GradColorAlpha[gradBase + 0u],
-        g_GradColorAlpha[gradBase + 1u],
-        g_GradColorAlpha[gradBase + 2u],
-        g_GradColorAlpha[gradBase + 3u]
-    );
+    TrainableGaussianState state = TrainableGaussianState.load(splatId);
+    float3 gradPos = load_param_grad3(PARAM_POSITION_X, splatId);
+    float3 gradScale = load_param_grad3(PARAM_SCALE_X, splatId);
+    float4 gradQuat = load_param_grad4(PARAM_ROTATION_X, splatId);
+    float4 gradColorAlpha = load_param_grad4(PARAM_COLOR_R, splatId);
 
     float scaleL2Weight = max(g_ScaleL2Weight, 0.0);
     if (scaleL2Weight > 0.0)
     {
         float invSplatCount = 1.0 / max(float(g_SplatCount), 1.0);
         float scaleRegReference = max(g_ScaleRegReference, TINY_VALUE);
-        var dpScaleReg = diffPair(scale.xyz);
-        float scaleRegLoss = scale_log_reference_loss(scale.xyz, scaleRegReference);
+        var dpScaleReg = diffPair(state.scale);
+        float scaleRegLoss = scale_log_reference_loss(state.scale, scaleRegReference);
         bwd_diff(scale_log_reference_loss)(dpScaleReg, scaleRegReference, scaleL2Weight * invSplatCount);
-        gradScale.xyz += dpScaleReg.getDifferential();
+        gradScale += dpScaleReg.getDifferential();
         float lossAdd = scaleL2Weight * scaleRegLoss * invSplatCount;
         if (isfinite(lossAdd) && lossAdd != 0.0) InterlockedAdd(g_LossBuffer[LOSS_SLOT_TOTAL], lossAdd);
     }
@@ -228,17 +290,17 @@ void csAdamStepFused(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (scaleAbsRegWeight > 0.0)
     {
         float invSplatCount = 1.0 / max(float(g_SplatCount), 1.0);
-        float3 signGrad = float3(scale.x > 0.0 ? 1.0 : scale.x < 0.0 ? -1.0 : 0.0, scale.y > 0.0 ? 1.0 : scale.y < 0.0 ? -1.0 : 0.0, scale.z > 0.0 ? 1.0 : scale.z < 0.0 ? -1.0 : 0.0);
-        gradScale.xyz += signGrad * (scaleAbsRegWeight * invSplatCount * (1.0 / 3.0));
-        float lossAdd = scaleAbsRegWeight * scale_abs_l1_loss(scale.xyz) * invSplatCount;
+        float3 signGrad = float3(state.scale.x > 0.0 ? 1.0 : state.scale.x < 0.0 ? -1.0 : 0.0, state.scale.y > 0.0 ? 1.0 : state.scale.y < 0.0 ? -1.0 : 0.0, state.scale.z > 0.0 ? 1.0 : state.scale.z < 0.0 ? -1.0 : 0.0);
+        gradScale += signGrad * (scaleAbsRegWeight * invSplatCount * (1.0 / 3.0));
+        float lossAdd = scaleAbsRegWeight * scale_abs_l1_loss(state.scale) * invSplatCount;
         if (isfinite(lossAdd) && lossAdd != 0.0) InterlockedAdd(g_LossBuffer[LOSS_SLOT_TOTAL], lossAdd);
     }
     float opacityRegWeight = max(g_OpacityRegWeight, 0.0);
     if (opacityRegWeight > 0.0)
     {
         float invSplatCount = 1.0 / max(float(g_SplatCount), 1.0);
-        var dpOpacityReg = diffPair(colorAlpha.w);
-        float opacityRegLoss = opacity_l1_loss(colorAlpha.w);
+        var dpOpacityReg = diffPair(state.colorAlpha.w);
+        float opacityRegLoss = opacity_l1_loss(state.colorAlpha.w);
         bwd_diff(opacity_l1_loss)(dpOpacityReg, opacityRegWeight * invSplatCount);
         gradColorAlpha.w += dpOpacityReg.getDifferential();
         float lossAdd = opacityRegWeight * opacityRegLoss * invSplatCount;
@@ -246,12 +308,12 @@ void csAdamStepFused(uint3 dispatchThreadID : SV_DispatchThreadID)
     }
 
     float clipAbs = g_Stability.gradComponentClip;
-    gradPos = sanitize_float4(gradPos, clipAbs);
-    gradScale = sanitize_float4(gradScale, clipAbs);
+    gradPos = sanitize_float3(gradPos, clipAbs);
+    gradScale = sanitize_float3(gradScale, clipAbs);
     gradQuat = sanitize_float4(gradQuat, clipAbs);
     gradColorAlpha = sanitize_float4(gradColorAlpha, clipAbs);
-    gradPos.xyz = clip_norm3(gradPos.xyz, g_Stability.gradNormClip);
-    gradScale.xyz = clip_norm3(gradScale.xyz, g_Stability.gradNormClip);
+    gradPos = clip_norm3(gradPos, g_Stability.gradNormClip);
+    gradScale = clip_norm3(gradScale, g_Stability.gradNormClip);
     gradQuat = clip_norm4(gradQuat, g_Stability.gradNormClip);
     gradColorAlpha = clip_norm4(gradColorAlpha, g_Stability.gradNormClip);
 
@@ -260,40 +322,15 @@ void csAdamStepFused(uint3 dispatchThreadID : SV_DispatchThreadID)
     float biasCorr1 = 1.0 - beta1Pow;
     float biasCorr2 = 1.0 - beta2Pow;
 
-    float4 mPos = g_AdamMPos[splatId];
-    float4 vPos = g_AdamVPos[splatId];
-    float4 mScale = g_AdamMScale[splatId];
-    float4 vScale = g_AdamVScale[splatId];
-    float4 mQuat = g_AdamMQuat[splatId];
-    float4 vQuat = g_AdamVQuat[splatId];
-    float4 mColorAlpha = g_AdamMColorAlpha[splatId];
-    float4 vColorAlpha = g_AdamVColorAlpha[splatId];
+    adam_update_param_group<3>(splatId, PARAM_POSITION_X, state.position, gradPos, biasCorr1, biasCorr2);
+    adam_update_param_group<3>(splatId, PARAM_SCALE_X, state.scale, gradScale, biasCorr1, biasCorr2);
+    adam_update_param_group<4>(splatId, PARAM_ROTATION_X, state.rotation, gradQuat, biasCorr1, biasCorr2);
+    adam_update_param_group<4>(splatId, PARAM_COLOR_R, state.colorAlpha, gradColorAlpha, biasCorr1, biasCorr2);
 
-    float4 posLR = float4(g_Adam.positionLR, g_Adam.positionLR, g_Adam.positionLR, 0.0);
-    float4 scaleLR = float4(g_Adam.scaleLR, g_Adam.scaleLR, g_Adam.scaleLR, 0.0);
-    float4 rotLR = float4(g_Adam.rotationLR, g_Adam.rotationLR, g_Adam.rotationLR, g_Adam.rotationLR);
-    float4 colorAlphaLR = float4(g_Adam.colorLR, g_Adam.colorLR, g_Adam.colorLR, g_Adam.opacityLR);
-    pos = adam_update_param(pos, gradPos, mPos, vPos, posLR, biasCorr1, biasCorr2, g_Adam, g_Stability);
-    scale = adam_update_param(scale, gradScale, mScale, vScale, scaleLR, biasCorr1, biasCorr2, g_Adam, g_Stability);
-    rot = adam_update_param(rot, gradQuat, mQuat, vQuat, rotLR, biasCorr1, biasCorr2, g_Adam, g_Stability);
-    colorAlpha = adam_update_param(colorAlpha, gradColorAlpha, mColorAlpha, vColorAlpha, colorAlphaLR, biasCorr1, biasCorr2, g_Adam, g_Stability);
-
-    pos.xyz = clamp(pos.xyz, -g_Stability.positionAbsMax, g_Stability.positionAbsMax);
-    scale.xyz = clamp(scale.xyz, g_Stability.minScale, g_Stability.maxScale);
-    scale.xyz = clamp_scale_anisotropy(scale.xyz);
-    rot = normalize_quaternion_safe(rot);
-    colorAlpha.xyz = clamp(colorAlpha.xyz, 0.0, 1.0);
-
-    g_PositionsRW[splatId] = pos;
-    g_ScalesRW[splatId] = scale;
-    g_RotationsRW[splatId] = rot;
-    g_ColorAlphaRW[splatId] = colorAlpha;
-    g_AdamMPos[splatId] = mPos;
-    g_AdamVPos[splatId] = vPos;
-    g_AdamMScale[splatId] = mScale;
-    g_AdamVScale[splatId] = vScale;
-    g_AdamMQuat[splatId] = mQuat;
-    g_AdamVQuat[splatId] = vQuat;
-    g_AdamMColorAlpha[splatId] = mColorAlpha;
-    g_AdamVColorAlpha[splatId] = vColorAlpha;
+    state.position = clamp(state.position, -g_Stability.positionAbsMax, g_Stability.positionAbsMax);
+    state.scale = clamp(state.scale, g_Stability.minScale, g_Stability.maxScale);
+    state.scale = clamp_scale_anisotropy(state.scale);
+    state.rotation = normalize_quaternion_safe(state.rotation);
+    state.colorAlpha.xyz = clamp(state.colorAlpha.xyz, 0.0, 1.0);
+    state.store(splatId);
 }

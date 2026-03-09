@@ -10,8 +10,8 @@ Description on completion: Removed densification, pruning, MCMC, DSSIM/SSIM, PSN
 
 3) For `optimizer` *all the trainable stuff* should be packed in a single float buffer (param major [param_id * SPLAT_COUNT + splat_id]), so that the optimizer will work on any kind of params. The optimizer will also take an array of LR's for each param_id.  This means only 4-5 buffers instead of 40 or however many we have now. Epsilon in adam is not a runtime parameter!
 Test criteria: create a basic optimization problem test, like a test function, use slang autodiff to get gradients which we will pass into the optimizer module. Check for convergence. (test shaders should be in a `tests` folder)
-STATUS: Not done
-Description on completion: none
+STATUS: Done
+Description on completion: Packed all trainable splat state into one param-major float buffer (`param_id * splat_count + splat_id`) shared by renderer, raster backward, and training. Replaced per-attribute grad/moment storage with packed param-major buffers, switched ADAM to a per-param learning-rate table, and removed runtime epsilon from the optimizer module. Added a standalone autodiff-driven optimizer regression in `tests/test_optimizer_module.py` backed by `tests/optimizer_test_stage.slang`, and updated renderer/training tests to validate logical groups through the packed layout. Verified with `pytest tests/test_renderer_pipeline.py tests/test_training_kernels.py tests/test_app_shared.py tests/test_training_cli_smoke.py tests/test_viewer_presenter.py tests/test_optimizer_module.py` (38 passed).
 
 4) For `blur` it should be able to do the blur on N channels simultaneusly. Use structured buffers instead of textures for multichannel storage. (Only the dataset and rendered results should be as textures. Gradients of textures should be buffers. )
 Test criteria: create a basic N channel blur test.

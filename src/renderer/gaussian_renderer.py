@@ -83,9 +83,15 @@ class GaussianRenderer:
     _MEBIBYTE_BYTES = 1024 * 1024
     _PREPASS_ENTRY_BYTES = (_SCANLINE_WORK_ITEM_UINTS + 2) * _U32_BYTES
     _RW_BUFFER_USAGE = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
-    _SCENE_SHADER_VARS = {"positions": "g_Positions", "scales": "g_Scales", "rotations": "g_Rotations", "color_alpha": "g_ColorAlpha"}
+    PARAM_POSITION_IDS = (0, 1, 2)
+    PARAM_SCALE_IDS = (3, 4, 5)
+    PARAM_ROTATION_IDS = (6, 7, 8, 9)
+    PARAM_COLOR_IDS = (10, 11, 12)
+    PARAM_RAW_OPACITY_ID = 13
+    TRAINABLE_PARAM_COUNT = 14
+    _SCENE_SHADER_VARS = {"splat_params": "g_SplatParams"}
     _SCREEN_SHADER_VARS = {"screen_center_radius_depth": "g_ScreenCenterRadiusDepth", "screen_color_alpha": "g_ScreenColorAlpha", "screen_ellipse_conic": "g_ScreenEllipseConic", "splat_visible": "g_SplatVisible"}
-    _GRAD_SHADER_VARS = {"grad_positions": "g_GradPositions", "grad_scales": "g_GradScales", "grad_rotations": "g_GradRotations", "grad_color_alpha": "g_GradColorAlpha"}
+    _GRAD_SHADER_VARS = {"param_grads": "g_ParamGrads"}
     _PREPASS_CURSOR_FIELDS = ("splatCount", "tileSize", "tileWidth", "tileHeight", "tileCount", "depthBits", "sortedCountOffset", "maxListEntries", "maxScanlineEntries", "radiusScale", "sampled5MVEEIters", "sampled5SafetyScale", "sampled5RadiusPadPx", "sampled5Eps")
     _SHADERS = (
         ("_k_project", "kernel", "gaussian_project_stage.slang", "csProjectAndBin"),
@@ -113,7 +119,7 @@ class GaussianRenderer:
     _read_image = lambda self: np.asarray(self.output_texture.to_numpy(), dtype=np.float32).copy()
     _create_shaders = lambda self: [setattr(self, attr, self.device.create_compute_kernel(program) if kind == "kernel" else self.device.create_compute_pipeline(program)) for attr, kind, shader_name, entry in self._SHADERS for program in [self.device.load_program(str(Path(SHADER_ROOT / "renderer" / shader_name)), [entry])]]
     _ensure_textures = lambda self: [setattr(self, attr, getattr(self, attr) or self.device.create_texture(format=spy.Format.rgba32_float, width=self.width, height=self.height, usage=spy.TextureUsage.shader_resource | spy.TextureUsage.unordered_access)) for attr in ("_output_texture", "_output_grad_texture")]
-    _upload_scene = lambda self, scene: [self._scene_buffers[name].copy_from_numpy(values) for name, values in self._pack_scene(scene).items()]
+    _upload_scene = lambda self, scene: self._scene_buffers["splat_params"].copy_from_numpy(self._pack_scene(scene))
     _reset_prepass_counters = lambda self: [self._work_buffers[name].copy_from_numpy(np.array([0], dtype=np.uint32)) for name in ("counter", "scanline_counter")]
     set_scene = lambda self, scene: (self._ensure_scene_buffers(scene.count), self._ensure_work_buffers(scene.count), self._upload_scene(scene), setattr(self, "_current_scene", scene))
     bind_scene_count = lambda self, splat_count: (lambda count: (self._ensure_scene_buffers(count), self._ensure_work_buffers(count), setattr(self, "_current_scene", SceneBinding(count=count))))(max(int(splat_count), 0))
@@ -207,7 +213,8 @@ class GaussianRenderer:
             self._scene_count = splat_count
             return
         self._scene_capacity, self._scene_count = self._grow(splat_count, self._scene_capacity), splat_count
-        self._scene_buffers = {name: self.device.create_buffer(size=max(self._scene_capacity, 1) * 16, usage=self._RW_BUFFER_USAGE) for name in self._SCENE_SHADER_VARS}
+        param_bytes = max(self._scene_capacity, 1) * self.TRAINABLE_PARAM_COUNT * self._U32_BYTES
+        self._scene_buffers = {name: self.device.create_buffer(size=param_bytes, usage=self._RW_BUFFER_USAGE) for name in self._SCENE_SHADER_VARS}
 
     def _ensure_work_buffers(self, splat_count: int, min_list_entries: int = 0) -> None:
         max_entries = self._max_prepass_entries_by_budget()
@@ -231,7 +238,7 @@ class GaussianRenderer:
             "scanline_work_items": self._max_scanline_entries * self._SCANLINE_WORK_ITEM_UINTS * self._U32_BYTES,
             "scanline_counter": self._U32_BYTES,
             "tile_ranges": max(self.tile_count, 1) * 8,
-            **{name: max(self._work_splat_capacity, 1) * 16 for name in self._GRAD_SHADER_VARS},
+            **{name: max(self._work_splat_capacity, 1) * self.TRAINABLE_PARAM_COUNT * self._U32_BYTES for name in self._GRAD_SHADER_VARS},
         }
         self._work_buffers = {name: self.device.create_buffer(size=size, usage=self._RW_BUFFER_USAGE) for name, size in sized.items()}
         self._work_buffers["debug_grad_norm"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1),), dtype=np.float32))
@@ -239,10 +246,80 @@ class GaussianRenderer:
         if self._pending_min_list_entries > 0 and self._max_list_entries >= self._pending_min_list_entries:
             self._pending_min_list_entries = 0
 
-    def _pack_scene(self, scene: GaussianScene) -> dict[str, np.ndarray]:
-        packed = {name: np.zeros((scene.count, 4), dtype=np.float32) for name in self._SCENE_SHADER_VARS}
-        packed["positions"][:, :3], packed["scales"][:, :3] = scene.positions, scene.scales
-        packed["rotations"][:], packed["color_alpha"][:, :3], packed["color_alpha"][:, 3] = scene.rotations, scene.colors, self._raw_opacity_from_alpha(scene.opacities)
+    @classmethod
+    def _param_slice(cls, splat_count: int, param_id: int) -> slice:
+        start = int(param_id) * int(splat_count)
+        return slice(start, start + int(splat_count))
+
+    @classmethod
+    def _pack_scene(cls, scene: GaussianScene) -> np.ndarray:
+        count = max(int(scene.count), 0)
+        packed = np.zeros((cls.TRAINABLE_PARAM_COUNT * max(count, 1),), dtype=np.float32)
+        if count <= 0:
+            return packed
+        for axis, param_id in enumerate(cls.PARAM_POSITION_IDS):
+            packed[cls._param_slice(count, param_id)] = np.asarray(scene.positions[:, axis], dtype=np.float32)
+        for axis, param_id in enumerate(cls.PARAM_SCALE_IDS):
+            packed[cls._param_slice(count, param_id)] = np.asarray(scene.scales[:, axis], dtype=np.float32)
+        for axis, param_id in enumerate(cls.PARAM_ROTATION_IDS):
+            packed[cls._param_slice(count, param_id)] = np.asarray(scene.rotations[:, axis], dtype=np.float32)
+        for axis, param_id in enumerate(cls.PARAM_COLOR_IDS):
+            packed[cls._param_slice(count, param_id)] = np.asarray(scene.colors[:, axis], dtype=np.float32)
+        packed[cls._param_slice(count, cls.PARAM_RAW_OPACITY_ID)] = cls._raw_opacity_from_alpha(scene.opacities)
+        return packed
+
+    @classmethod
+    def _unpack_param_groups(cls, packed: np.ndarray, splat_count: int) -> dict[str, np.ndarray]:
+        count = max(int(splat_count), 0)
+        flat = np.asarray(packed, dtype=np.float32).reshape(-1)
+        groups = {
+            "positions": np.zeros((count, 4), dtype=np.float32),
+            "scales": np.zeros((count, 4), dtype=np.float32),
+            "rotations": np.zeros((count, 4), dtype=np.float32),
+            "color_alpha": np.zeros((count, 4), dtype=np.float32),
+        }
+        if count <= 0:
+            return groups
+        for axis, param_id in enumerate(cls.PARAM_POSITION_IDS):
+            groups["positions"][:, axis] = flat[cls._param_slice(count, param_id)]
+        for axis, param_id in enumerate(cls.PARAM_SCALE_IDS):
+            groups["scales"][:, axis] = flat[cls._param_slice(count, param_id)]
+        for axis, param_id in enumerate(cls.PARAM_ROTATION_IDS):
+            groups["rotations"][:, axis] = flat[cls._param_slice(count, param_id)]
+        for axis, param_id in enumerate(cls.PARAM_COLOR_IDS):
+            groups["color_alpha"][:, axis] = flat[cls._param_slice(count, param_id)]
+        groups["color_alpha"][:, 3] = flat[cls._param_slice(count, cls.PARAM_RAW_OPACITY_ID)]
+        return groups
+
+    @classmethod
+    def _pack_param_groups(
+        cls,
+        splat_count: int,
+        *,
+        positions: np.ndarray | None = None,
+        scales: np.ndarray | None = None,
+        rotations: np.ndarray | None = None,
+        color_alpha: np.ndarray | None = None,
+    ) -> np.ndarray:
+        count = max(int(splat_count), 0)
+        packed = np.zeros((cls.TRAINABLE_PARAM_COUNT * max(count, 1),), dtype=np.float32)
+        if count <= 0:
+            return packed
+        groups = {
+            "positions": np.zeros((count, 4), dtype=np.float32) if positions is None else np.asarray(positions, dtype=np.float32).reshape(count, 4),
+            "scales": np.zeros((count, 4), dtype=np.float32) if scales is None else np.asarray(scales, dtype=np.float32).reshape(count, 4),
+            "rotations": np.zeros((count, 4), dtype=np.float32) if rotations is None else np.asarray(rotations, dtype=np.float32).reshape(count, 4),
+            "color_alpha": np.zeros((count, 4), dtype=np.float32) if color_alpha is None else np.asarray(color_alpha, dtype=np.float32).reshape(count, 4),
+        }
+        for axis, param_id in enumerate(cls.PARAM_POSITION_IDS):
+            packed[cls._param_slice(count, param_id)] = groups["positions"][:, axis]
+        for axis, param_id in enumerate(cls.PARAM_SCALE_IDS):
+            packed[cls._param_slice(count, param_id)] = groups["scales"][:, axis]
+        for axis, param_id in enumerate(cls.PARAM_ROTATION_IDS):
+            packed[cls._param_slice(count, param_id)] = groups["rotations"][:, axis]
+        for axis, param_id in enumerate(cls.PARAM_COLOR_IDS):
+            packed[cls._param_slice(count, param_id)] = groups["color_alpha"][:, axis]
+        packed[cls._param_slice(count, cls.PARAM_RAW_OPACITY_ID)] = groups["color_alpha"][:, 3]
         return packed
 
     @classmethod
@@ -323,7 +400,7 @@ class GaussianRenderer:
         self._dispatch(self._k_debug_raster, encoder, spy.uint3(self.width, self.height, 1), {**self._screen_vars(), **self._debug_grad_norm_var(), "g_Output": output, "g_BaseOutput": base_output, **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background)})
 
     def _clear_raster_grads(self, encoder: spy.CommandEncoder, splat_count: int) -> None:
-        self._dispatch(self._k_clear_raster_grads, encoder, spy.uint3(max(int(splat_count) * 4, 1), 1, 1), {**self._grad_vars(), **self._prepass_uniforms(splat_count)})
+        self._dispatch(self._k_clear_raster_grads, encoder, spy.uint3(max(int(splat_count) * self.TRAINABLE_PARAM_COUNT, 1), 1, 1), {**self._grad_vars(), **self._prepass_uniforms(splat_count)})
 
     def _rasterize_forward_backward(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output_grad: spy.Texture) -> None:
         self._dispatch(self._k_raster_forward_backward, encoder, self._raster_thread_count(), {**self._scene_vars(), "g_ScreenColorAlpha": self._work_buffers["screen_color_alpha"], "g_SortedValues": self._work_buffers["values"], "g_TileRanges": self._work_buffers["tile_ranges"], "g_OutputGrad": output_grad, **self._grad_vars(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._camera_uniforms(camera)})
@@ -361,10 +438,44 @@ class GaussianRenderer:
             raise RuntimeError("Source scene is empty.")
         dst._ensure_scene_buffers(self._scene_count)
         dst._ensure_work_buffers(self._scene_count)
-        copy_bytes = self._scene_count * 16
+        copy_bytes = self._scene_count * self.TRAINABLE_PARAM_COUNT * self._U32_BYTES
         for name in self._SCENE_SHADER_VARS:
             encoder.copy_buffer(dst._scene_buffers[name], 0, self._scene_buffers[name], 0, copy_bytes)
         dst._scene_count, dst._current_scene = self._scene_count, self._current_scene
+
+    def read_scene_groups(self, splat_count: int | None = None) -> dict[str, np.ndarray]:
+        count = self._scene_count if splat_count is None else int(splat_count)
+        flat = self._read_array(self._scene_buffers["splat_params"], np.float32, max(count, 1) * self.TRAINABLE_PARAM_COUNT)
+        return self._unpack_param_groups(flat, count)
+
+    def read_grad_groups(self, splat_count: int | None = None) -> dict[str, np.ndarray]:
+        count = self._scene_count if splat_count is None else int(splat_count)
+        flat = self._read_array(self._work_buffers["param_grads"], np.float32, max(count, 1) * self.TRAINABLE_PARAM_COUNT)
+        groups = self._unpack_param_groups(flat, count)
+        return {
+            "grad_positions": groups["positions"],
+            "grad_scales": groups["scales"],
+            "grad_rotations": groups["rotations"],
+            "grad_color_alpha": groups["color_alpha"],
+        }
+
+    def write_grad_groups(
+        self,
+        splat_count: int,
+        *,
+        grad_positions: np.ndarray | None = None,
+        grad_scales: np.ndarray | None = None,
+        grad_rotations: np.ndarray | None = None,
+        grad_color_alpha: np.ndarray | None = None,
+    ) -> None:
+        packed = self._pack_param_groups(
+            splat_count,
+            positions=grad_positions,
+            scales=grad_scales,
+            rotations=grad_rotations,
+            color_alpha=grad_color_alpha,
+        )
+        self._work_buffers["param_grads"].copy_from_numpy(packed)
 
     def _require_scene(self) -> GaussianScene | SceneBinding:
         if self._current_scene is None:
@@ -430,7 +541,7 @@ class GaussianRenderer:
         self._rasterize_forward_backward(enc, camera, background_np, self.output_texture)
         self.device.submit_command_buffer(enc.finish())
         self.device.wait()
-        return {name: self._read_array(self._work_buffers[name], np.float32, scene.count, 4) for name in self._GRAD_SHADER_VARS}
+        return self.read_grad_groups(scene.count)
 
     def debug_pipeline_data(self, scene: GaussianScene, camera: Camera) -> dict[str, np.ndarray | int]:
         self._ensure_scene_buffers(scene.count)

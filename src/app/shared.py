@@ -130,7 +130,6 @@ def build_training_params(
     lr_opacity_mul: float,
     beta1: float,
     beta2: float,
-    epsilon: float,
     grad_clip: float,
     grad_norm_clip: float,
     max_update: float,
@@ -161,7 +160,6 @@ def build_training_params(
         },
         beta1=clamp_float(beta1, 0.0, 0.99999),
         beta2=clamp_float(beta2, 0.0, 0.999999),
-        epsilon=clamp_float(epsilon, 1e-12, 1e-2),
     )
     stability = StabilityHyperParams(
         **{

@@ -1,0 +1,75 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import numpy as np
+import slangpy as spy
+
+def test_generic_packed_adam_converges_on_quadratic(device):
+    shader_path = Path(__file__).with_name("optimizer_test_stage.slang")
+    grad_kernel = device.create_compute_kernel(device.load_program(str(shader_path), ["csComputeQuadraticGrad"]))
+    adam_kernel = device.create_compute_kernel(device.load_program(str(shader_path), ["csAdamStepGeneric"]))
+    param_count = 32
+    rng = np.random.default_rng(7)
+    targets = rng.normal(0.0, 0.5, size=(param_count,)).astype(np.float32)
+    params_init = (targets + rng.normal(0.0, 1.25, size=(param_count,))).astype(np.float32)
+    lrs = np.full((param_count,), 0.05, dtype=np.float32)
+    zeros = np.zeros((param_count,), dtype=np.float32)
+    usage = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
+    params = device.create_buffer(size=param_count * 4, usage=usage)
+    grads = device.create_buffer(size=param_count * 4, usage=usage)
+    adam_m = device.create_buffer(size=param_count * 4, usage=usage)
+    adam_v = device.create_buffer(size=param_count * 4, usage=usage)
+    targets_buf = device.create_buffer(size=param_count * 4, usage=usage)
+    lrs_buf = device.create_buffer(size=param_count * 4, usage=usage)
+    params.copy_from_numpy(params_init)
+    grads.copy_from_numpy(zeros)
+    adam_m.copy_from_numpy(zeros)
+    adam_v.copy_from_numpy(zeros)
+    targets_buf.copy_from_numpy(targets)
+    lrs_buf.copy_from_numpy(lrs)
+
+    common_vars = {
+        "g_ParamCount": int(param_count),
+        "g_Targets": targets_buf,
+        "g_ParamLRs": lrs_buf,
+        "g_Params": params,
+        "g_Grads": grads,
+        "g_AdamM": adam_m,
+        "g_AdamV": adam_v,
+        "g_Stability": {
+            "gradComponentClip": 1e6,
+            "gradNormClip": 1e6,
+            "maxUpdate": 1.0,
+            "minScale": 0.0,
+            "maxScale": 0.0,
+            "maxAnisotropy": 1.0,
+            "minOpacity": 0.0,
+            "maxOpacity": 0.0,
+            "positionAbsMax": 1e6,
+            "hugeValue": 1e6,
+        },
+    }
+    thread_count = spy.uint3(param_count, 1, 1)
+    start_error = float(np.mean(np.abs(params_init - targets), dtype=np.float64))
+    for step in range(1, 201):
+        enc = device.create_command_encoder()
+        grad_kernel.dispatch(
+            thread_count=thread_count,
+            vars={**common_vars, "g_Adam": {"beta1": 0.9, "beta2": 0.999, "stepIndex": int(step)}},
+            command_encoder=enc,
+        )
+        adam_kernel.dispatch(
+            thread_count=thread_count,
+            vars={**common_vars, "g_Adam": {"beta1": 0.9, "beta2": 0.999, "stepIndex": int(step)}},
+            command_encoder=enc,
+        )
+        device.submit_command_buffer(enc.finish())
+    device.wait()
+
+    final_params = np.frombuffer(params.to_numpy().tobytes(), dtype=np.float32)[:param_count].copy()
+    final_error = float(np.mean(np.abs(final_params - targets), dtype=np.float64))
+
+    assert np.all(np.isfinite(final_params))
+    assert final_error < 1e-3
+    assert final_error < start_error * 1e-3

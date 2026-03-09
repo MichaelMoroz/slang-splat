@@ -36,7 +36,7 @@ class _RollingMetricWindow:
 @dataclass(slots=True)
 class AdamHyperParams:
     position_lr: float = 1e-3; scale_lr: float = 2.5e-4; rotation_lr: float = 1e-3; color_lr: float = 1e-3
-    opacity_lr: float = 1e-3; beta1: float = 0.9; beta2: float = 0.999; epsilon: float = 1e-8
+    opacity_lr: float = 1e-3; beta1: float = 0.9; beta2: float = 0.999
 
 
 @dataclass(slots=True)
@@ -62,19 +62,10 @@ class TrainingState:
 class GaussianTrainer:
     _LOSS_SLOT_TOTAL = 0
     _LOSS_SLOT_MSE = 1
-    _ADAM_BUFFER_NAMES = ("adam_m_pos", "adam_v_pos", "adam_m_scale", "adam_v_scale", "adam_m_quat", "adam_v_quat", "adam_m_color_alpha", "adam_v_color_alpha")
-    _ADAM_SHADER_VARS = {
-        "adam_m_pos": "g_AdamMPos",
-        "adam_v_pos": "g_AdamVPos",
-        "adam_m_scale": "g_AdamMScale",
-        "adam_v_scale": "g_AdamVScale",
-        "adam_m_quat": "g_AdamMQuat",
-        "adam_v_quat": "g_AdamVQuat",
-        "adam_m_color_alpha": "g_AdamMColorAlpha",
-        "adam_v_color_alpha": "g_AdamVColorAlpha",
-    }
-    _SCENE_RW_SHADER_VARS = {"positions": "g_PositionsRW", "scales": "g_ScalesRW", "rotations": "g_RotationsRW", "color_alpha": "g_ColorAlphaRW"}
-    _SCENE_GRAD_SHADER_VARS = {"grad_positions": "g_GradPositions", "grad_scales": "g_GradScales", "grad_rotations": "g_GradRotations", "grad_color_alpha": "g_GradColorAlpha"}
+    _ADAM_BUFFER_NAMES = ("adam_m", "adam_v")
+    _ADAM_SHADER_VARS = {"adam_m": "g_AdamM", "adam_v": "g_AdamV", "param_lrs": "g_ParamLRs"}
+    _SCENE_RW_SHADER_VARS = {"splat_params": "g_SplatParamsRW"}
+    _SCENE_GRAD_SHADER_VARS = {"param_grads": "g_ParamGrads"}
     _KERNEL_ENTRIES = {
         "clear_loss_grad": "csClearLossAndGradTex",
         "loss_grad": "csComputeL1LossGrad",
@@ -88,13 +79,19 @@ class GaussianTrainer:
     _scene_grad_vars = lambda self: self._buffer_vars(self._SCENE_GRAD_SHADER_VARS, self.renderer.work_buffers)
     _adam_shader_vars = lambda self: self._buffer_vars(self._ADAM_SHADER_VARS, self._buffers)
     _frame = lambda self, frame_index: self.frames[int(np.clip(frame_index, 0, len(self.frames) - 1))]
-    update_hyperparams = lambda self, adam_hparams, stability_hparams, training_hparams: setattr(self, "adam", adam_hparams) or setattr(self, "stability", stability_hparams) or setattr(self, "training", training_hparams)
     make_frame_camera = lambda self, frame_index, width, height: self._make_frame_camera(self._frame(frame_index), int(width), int(height))
     frame_size = lambda self, frame_index: (int(self._frame(frame_index).width), int(self._frame(frame_index).height))
     get_frame_target_texture = lambda self, frame_index, native_resolution=True: self._frame_targets_train[int(np.clip(frame_index, 0, len(self.frames) - 1))]
     _dispatch_raster_forward_backward = lambda self, encoder, frame_camera, background: (self.renderer.clear_raster_grads_current_scene(encoder), self.renderer.rasterize_forward_backward_current_scene(encoder=encoder, camera=frame_camera, background=background, output_grad=self.renderer.output_grad_texture))
     _dispatch_adam_step = lambda self, encoder: self._dispatch("adam_step", encoder, self._scene_thread_count(), {**self._scene_grad_vars(), **self._scene_rw_vars(), **self._adam_shader_vars(), **self._common_vars()})
     _read_loss_metrics = lambda self: (lambda values: (float(values[self._LOSS_SLOT_TOTAL]) if values.size > self._LOSS_SLOT_TOTAL else float("nan"), float(values[self._LOSS_SLOT_MSE]) if values.size > self._LOSS_SLOT_MSE else float("nan")))(np.frombuffer(self._buffers["loss"].to_numpy().tobytes(), dtype=np.float32))
+
+    def update_hyperparams(self, adam_hparams: AdamHyperParams, stability_hparams: StabilityHyperParams, training_hparams: TrainingHyperParams) -> None:
+        self.adam = adam_hparams
+        self.stability = stability_hparams
+        self.training = training_hparams
+        if "param_lrs" in self._buffers:
+            self._buffers["param_lrs"].copy_from_numpy(self._param_lrs())
 
     def __init__(
         self,
@@ -160,19 +157,35 @@ class GaussianTrainer:
         finite = np.isfinite(scales).all(axis=1)
         return 1.0 if not np.any(finite) else float(np.exp(np.mean(np.log(np.maximum(scales[finite], 1e-8)), dtype=np.float64)))
 
+    def _param_lrs(self) -> np.ndarray:
+        lrs = np.zeros((self.renderer.TRAINABLE_PARAM_COUNT,), dtype=np.float32)
+        for param_id in self.renderer.PARAM_POSITION_IDS:
+            lrs[param_id] = float(self.adam.position_lr)
+        for param_id in self.renderer.PARAM_SCALE_IDS:
+            lrs[param_id] = float(self.adam.scale_lr)
+        for param_id in self.renderer.PARAM_ROTATION_IDS:
+            lrs[param_id] = float(self.adam.rotation_lr)
+        for param_id in self.renderer.PARAM_COLOR_IDS:
+            lrs[param_id] = float(self.adam.color_lr)
+        lrs[self.renderer.PARAM_RAW_OPACITY_ID] = float(self.adam.opacity_lr)
+        return lrs
+
     def _ensure_training_buffers(self, splat_count: int) -> None:
         count = max(int(splat_count), 1)
         if self._buffers and count <= self._splat_capacity:
+            self._buffers["param_lrs"].copy_from_numpy(self._param_lrs())
             return
         usage = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
         new_capacity = max(count, max(self._splat_capacity, 1) + max(self._splat_capacity, 1) // 2)
         self._buffers.setdefault("loss", self.device.create_buffer(size=8, usage=usage))
+        self._buffers["param_lrs"] = self.device.create_buffer(size=self.renderer.TRAINABLE_PARAM_COUNT * 4, usage=usage)
         for name in self._ADAM_BUFFER_NAMES:
-            self._buffers[name] = self.device.create_buffer(size=new_capacity * 16, usage=usage)
+            self._buffers[name] = self.device.create_buffer(size=new_capacity * self.renderer.TRAINABLE_PARAM_COUNT * 4, usage=usage)
         self._splat_capacity = new_capacity
+        self._buffers["param_lrs"].copy_from_numpy(self._param_lrs())
 
     def _zero_optimizer_moments(self) -> None:
-        zeros = np.zeros((max(int(self._scene_count), 1), 4), dtype=np.float32)
+        zeros = np.zeros((max(int(self._scene_count), 1) * self.renderer.TRAINABLE_PARAM_COUNT,), dtype=np.float32)
         for name in self._ADAM_BUFFER_NAMES:
             self._buffers[name].copy_from_numpy(zeros)
 
@@ -262,14 +275,8 @@ class GaussianTrainer:
             "g_OpacityRegWeight": float(max(self.training.opacity_reg_weight, 0.0)),
             "g_ScaleRegReference": float(max(self._scale_reg_reference, 1e-8)),
             "g_Adam": {
-                "positionLR": float(self.adam.position_lr),
-                "scaleLR": float(self.adam.scale_lr),
-                "rotationLR": float(self.adam.rotation_lr),
-                "colorLR": float(self.adam.color_lr),
-                "opacityLR": float(self.adam.opacity_lr),
                 "beta1": float(self.adam.beta1),
                 "beta2": float(self.adam.beta2),
-                "epsilon": float(self.adam.epsilon),
                 "stepIndex": int(self.state.step + 1),
             },
             "g_Stability": {

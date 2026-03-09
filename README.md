@@ -81,10 +81,13 @@ Training notes:
 - CLI and viewer scene initialization now honor the configured gaussian cap instead of always forcing the full COLMAP point cloud into the initial scene.
 - The active trainer keeps a fixed gaussian count after initialization; there is no densification, pruning, opacity reset schedule, MCMC exploration term, or SSIM loss path.
 - The training loss is direct RGB L1 with optional scale and opacity regularization accumulated in the fused ADAM kernel.
+- GPU trainable state is packed into one param-major float buffer shared by renderer and trainer: `param[param_id * splat_count + splat_id]`.
+- Raster backward gradients, ADAM first moment, and ADAM second moment use the same packed param-major layout, plus one packed per-param LR table.
 - GPU scene buffers store opacity as a raw sigmoid parameter so rasterization and optimization differentiate through effective alpha directly.
 - Pixel-floor-clamped splats attenuate blend alpha by the ratio of raw scale area to clamped scale area, while the alpha cutoff still applies to the pre-attenuation alpha path.
 - Reported training metrics are total loss, rolling average loss, and per-step `last_mse`.
 - Target Y-flip is enabled by default.
+- ADAM epsilon is compile-time shader state now; it is no longer exposed as a CLI or viewer runtime control.
 - The viewer exposes only fixed-count optimization controls: learning rates, regularization weights, and stability clamps.
 - Numerical reinforcement includes clipping, finite checks, and safe quaternion normalization.
 - Scale regularization uses an autodiff log-space penalty around the initialization/reference scale, so equal multiplicative scale deviations are treated more uniformly.

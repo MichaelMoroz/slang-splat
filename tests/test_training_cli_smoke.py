@@ -119,7 +119,6 @@ def test_train_cli_forwards_resolved_init_hparams(monkeypatch, tmp_path: Path):
         lr_mul_opacity=1.0,
         beta1=0.9,
         beta2=0.999,
-        eps=1e-8,
         grad_clip=10.0,
         grad_norm_clip=10.0,
         max_update=0.05,

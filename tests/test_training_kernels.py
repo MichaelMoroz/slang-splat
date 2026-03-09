@@ -11,7 +11,7 @@ from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TrainingHyperParams
 
-_ADAM_BUFFER_NAMES = ("adam_m_pos", "adam_v_pos", "adam_m_scale", "adam_v_scale", "adam_m_quat", "adam_v_quat", "adam_m_color_alpha", "adam_v_color_alpha")
+_ADAM_BUFFER_NAMES = ("adam_m", "adam_v")
 _OPACITY_EPS = 1e-6
 _raw_opacity = lambda alpha: (np.log(np.clip(np.asarray(alpha, dtype=np.float32), _OPACITY_EPS, 1.0 - _OPACITY_EPS)) - np.log1p(-np.clip(np.asarray(alpha, dtype=np.float32), _OPACITY_EPS, 1.0 - _OPACITY_EPS))).astype(np.float32, copy=False)
 _actual_opacity = lambda raw: (1.0 / (1.0 + np.exp(-np.asarray(raw, dtype=np.float32)))).astype(np.float32, copy=False)
@@ -49,9 +49,30 @@ def _make_frame(tmp_path: Path, width: int = 64, height: int = 64, *, image_name
     )
 
 
-def _read_f32x4(buffer, count: int) -> np.ndarray:
-    values = np.frombuffer(buffer.to_numpy().tobytes(), dtype=np.float32)
-    return values[: count * 4].reshape(count, 4).copy()
+def _read_scene_groups(renderer: GaussianRenderer, count: int) -> dict[str, np.ndarray]:
+    return renderer.read_scene_groups(count)
+
+
+def _read_grad_groups(renderer: GaussianRenderer, count: int) -> dict[str, np.ndarray]:
+    return renderer.read_grad_groups(count)
+
+
+def _write_grad_groups(
+    renderer: GaussianRenderer,
+    count: int,
+    *,
+    grad_positions: np.ndarray | None = None,
+    grad_scales: np.ndarray | None = None,
+    grad_rotations: np.ndarray | None = None,
+    grad_color_alpha: np.ndarray | None = None,
+) -> None:
+    renderer.write_grad_groups(
+        count,
+        grad_positions=grad_positions,
+        grad_scales=grad_scales,
+        grad_rotations=grad_rotations,
+        grad_color_alpha=grad_color_alpha,
+    )
 
 
 def _save_rgb(path: Path, image: np.ndarray) -> None:
@@ -117,7 +138,7 @@ def _measure_scale_grad_mean(device, frame: ColmapFrame, scale: float, target_sc
     trainer._dispatch_raster_forward_backward(enc, camera, background)
     device.submit_command_buffer(enc.finish())
     device.wait()
-    return float(np.mean(_read_f32x4(renderer.work_buffers["grad_scales"], 1)[0, :3]))
+    return float(np.mean(_read_grad_groups(renderer, 1)["grad_scales"][0, :3]))
 
 
 def test_training_step_smoke_updates_params_without_changing_count(device, tmp_path: Path):
@@ -126,9 +147,9 @@ def test_training_step_smoke_updates_params_without_changing_count(device, tmp_p
     renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
     trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], seed=123)
 
-    before = _read_f32x4(renderer.scene_buffers["positions"], scene.count).copy()
+    before = _read_scene_groups(renderer, scene.count)["positions"].copy()
     loss = trainer.step()
-    after = _read_f32x4(renderer.scene_buffers["positions"], scene.count)
+    after = _read_scene_groups(renderer, scene.count)["positions"]
 
     assert np.isfinite(loss)
     assert trainer.state.step == 1
@@ -188,7 +209,7 @@ def test_tiny_splat_optimizer_recovers_large_target_scale(device, tmp_path: Path
         radius_history.append(_fit_rendered_gaussian_radius(image))
     losses = np.asarray(losses, dtype=np.float32)
     radius_history = np.asarray(radius_history, dtype=np.float32)
-    scales = _read_f32x4(trainer_renderer.scene_buffers["scales"], 1)[0, :3]
+    scales = _read_scene_groups(trainer_renderer, 1)["scales"][0, :3]
     final_radius = float(radius_history[-1])
     best_radius = float(np.max(radius_history))
     target_gap = max(target_radius - initial_radius, 1e-6)
@@ -278,20 +299,17 @@ def test_fused_adam_handles_nan_grads(device, tmp_path: Path):
     renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
     device.wait()
 
-    nan_grads = np.full((scene.count * 4,), np.nan, dtype=np.float32)
-    renderer.work_buffers["grad_positions"].copy_from_numpy(nan_grads)
-    renderer.work_buffers["grad_scales"].copy_from_numpy(nan_grads)
-    renderer.work_buffers["grad_rotations"].copy_from_numpy(nan_grads)
-    renderer.work_buffers["grad_color_alpha"].copy_from_numpy(nan_grads)
+    nan_grads = np.full((scene.count, 4), np.nan, dtype=np.float32)
+    _write_grad_groups(renderer, scene.count, grad_positions=nan_grads, grad_scales=nan_grads, grad_rotations=nan_grads, grad_color_alpha=nan_grads)
 
     enc = device.create_command_encoder()
     trainer._dispatch_adam_step(enc)
     device.submit_command_buffer(enc.finish())
     device.wait()
 
+    scene_groups = _read_scene_groups(renderer, scene.count)
     for name in ("positions", "scales", "rotations", "color_alpha"):
-        values = np.frombuffer(renderer.scene_buffers[name].to_numpy().tobytes(), dtype=np.float32)
-        assert np.all(np.isfinite(values))
+        assert np.all(np.isfinite(scene_groups[name]))
 
 
 def test_rotation_grad_updates_quaternion(device, tmp_path: Path):
@@ -308,18 +326,15 @@ def test_rotation_grad_updates_quaternion(device, tmp_path: Path):
     grad_rot[:, 1] = -0.25
     grad_rot[:, 2] = 0.125
     grad_rot[:, 3] = -0.375
-    zeros = np.zeros((scene.count * 4,), dtype=np.float32)
-    renderer.work_buffers["grad_positions"].copy_from_numpy(zeros)
-    renderer.work_buffers["grad_scales"].copy_from_numpy(zeros)
-    renderer.work_buffers["grad_rotations"].copy_from_numpy(grad_rot.reshape(-1))
-    renderer.work_buffers["grad_color_alpha"].copy_from_numpy(zeros)
+    zeros = np.zeros((scene.count, 4), dtype=np.float32)
+    _write_grad_groups(renderer, scene.count, grad_positions=zeros, grad_scales=zeros, grad_rotations=grad_rot, grad_color_alpha=zeros)
 
-    before = _read_f32x4(renderer.scene_buffers["rotations"], scene.count).copy()
+    before = _read_scene_groups(renderer, scene.count)["rotations"].copy()
     enc = device.create_command_encoder()
     trainer._dispatch_adam_step(enc)
     device.submit_command_buffer(enc.finish())
     device.wait()
-    after = _read_f32x4(renderer.scene_buffers["rotations"], scene.count)
+    after = _read_scene_groups(renderer, scene.count)["rotations"]
 
     assert np.any(np.abs(after - before) > 0.0)
     norms = np.linalg.norm(after, axis=1)
@@ -336,21 +351,19 @@ def test_synthetic_base_grads_update_and_respect_constraints(device, tmp_path: P
     renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
     device.wait()
 
-    base_grad = np.full((scene.count * 4,), 0.25, dtype=np.float32)
-    renderer.work_buffers["grad_positions"].copy_from_numpy(base_grad)
-    renderer.work_buffers["grad_scales"].copy_from_numpy(base_grad)
-    renderer.work_buffers["grad_rotations"].copy_from_numpy(base_grad)
-    renderer.work_buffers["grad_color_alpha"].copy_from_numpy(base_grad)
+    base_grad = np.full((scene.count, 4), 0.25, dtype=np.float32)
+    _write_grad_groups(renderer, scene.count, grad_positions=base_grad, grad_scales=base_grad, grad_rotations=base_grad, grad_color_alpha=base_grad)
 
     enc = device.create_command_encoder()
     trainer._dispatch_adam_step(enc)
     device.submit_command_buffer(enc.finish())
     device.wait()
 
-    positions = _read_f32x4(renderer.scene_buffers["positions"], scene.count)
-    scales = _read_f32x4(renderer.scene_buffers["scales"], scene.count)
-    rotations = _read_f32x4(renderer.scene_buffers["rotations"], scene.count)
-    color_alpha = _read_f32x4(renderer.scene_buffers["color_alpha"], scene.count)
+    scene_groups = _read_scene_groups(renderer, scene.count)
+    positions = scene_groups["positions"]
+    scales = scene_groups["scales"]
+    rotations = scene_groups["rotations"]
+    color_alpha = scene_groups["color_alpha"]
 
     assert np.all(np.isfinite(positions))
     assert np.all(np.isfinite(scales))
@@ -375,18 +388,15 @@ def test_adam_step_clamps_anisotropy(device, tmp_path: Path):
     renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
     device.wait()
 
-    zeros = np.zeros((scene.count * 4,), dtype=np.float32)
-    renderer.work_buffers["grad_positions"].copy_from_numpy(zeros)
-    renderer.work_buffers["grad_scales"].copy_from_numpy(zeros)
-    renderer.work_buffers["grad_rotations"].copy_from_numpy(zeros)
-    renderer.work_buffers["grad_color_alpha"].copy_from_numpy(zeros)
+    zeros = np.zeros((scene.count, 4), dtype=np.float32)
+    _write_grad_groups(renderer, scene.count, grad_positions=zeros, grad_scales=zeros, grad_rotations=zeros, grad_color_alpha=zeros)
 
     enc = device.create_command_encoder()
     trainer._dispatch_adam_step(enc)
     device.submit_command_buffer(enc.finish())
     device.wait()
 
-    scales = _read_f32x4(renderer.scene_buffers["scales"], 1)
+    scales = _read_scene_groups(renderer, 1)["scales"]
     np.testing.assert_allclose(scales[0, :3], np.array([0.9, 0.09, 0.09], dtype=np.float32), rtol=0.0, atol=1e-6)
 
 
@@ -400,18 +410,15 @@ def test_log_scale_regularizer_pulls_scales_toward_reference(device, tmp_path: P
     renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
     device.wait()
 
-    zeros = np.zeros((scene.count * 4,), dtype=np.float32)
-    renderer.work_buffers["grad_positions"].copy_from_numpy(zeros)
-    renderer.work_buffers["grad_scales"].copy_from_numpy(zeros)
-    renderer.work_buffers["grad_rotations"].copy_from_numpy(zeros)
-    renderer.work_buffers["grad_color_alpha"].copy_from_numpy(zeros)
+    zeros = np.zeros((scene.count, 4), dtype=np.float32)
+    _write_grad_groups(renderer, scene.count, grad_positions=zeros, grad_scales=zeros, grad_rotations=zeros, grad_color_alpha=zeros)
 
     enc = device.create_command_encoder()
     trainer._dispatch_adam_step(enc)
     device.submit_command_buffer(enc.finish())
     device.wait()
 
-    scales_after = _read_f32x4(renderer.scene_buffers["scales"], scene.count)
+    scales_after = _read_scene_groups(renderer, scene.count)["scales"]
     assert scales_after[0, 0] > scene.scales[0, 0]
     assert scales_after[1, 0] < scene.scales[1, 0]
 
@@ -426,18 +433,15 @@ def test_opacity_regularizer_pushes_true_opacity_down(device, tmp_path: Path):
     renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
     device.wait()
 
-    zeros = np.zeros((scene.count * 4,), dtype=np.float32)
-    renderer.work_buffers["grad_positions"].copy_from_numpy(zeros)
-    renderer.work_buffers["grad_scales"].copy_from_numpy(zeros)
-    renderer.work_buffers["grad_rotations"].copy_from_numpy(zeros)
-    renderer.work_buffers["grad_color_alpha"].copy_from_numpy(zeros)
+    zeros = np.zeros((scene.count, 4), dtype=np.float32)
+    _write_grad_groups(renderer, scene.count, grad_positions=zeros, grad_scales=zeros, grad_rotations=zeros, grad_color_alpha=zeros)
 
-    before = _actual_opacity(_read_f32x4(renderer.scene_buffers["color_alpha"], 2)[:, 3])
+    before = _actual_opacity(_read_scene_groups(renderer, 2)["color_alpha"][:, 3])
     enc = device.create_command_encoder()
     trainer._dispatch_adam_step(enc)
     device.submit_command_buffer(enc.finish())
     device.wait()
-    after = _actual_opacity(_read_f32x4(renderer.scene_buffers["color_alpha"], 2)[:, 3])
+    after = _actual_opacity(_read_scene_groups(renderer, 2)["color_alpha"][:, 3])
 
     assert np.all(after < before)
 
@@ -452,10 +456,11 @@ def test_cpu_pointcloud_initializer_rebuilds_scene_with_nn_scales(device, tmp_pa
     init_params = GaussianInitHyperParams(position_jitter_std=0.0, base_scale=0.02, scale_jitter_ratio=0.0, initial_opacity=0.5, color_jitter_std=0.0)
     trainer.initialize_scene_from_pointcloud(splat_count=16, init_hparams=init_params, seed=123)
 
-    positions = _read_f32x4(renderer.scene_buffers["positions"], 4)
-    scales = _read_f32x4(renderer.scene_buffers["scales"], 4)
-    rotations = _read_f32x4(renderer.scene_buffers["rotations"], 4)
-    color_alpha = _read_f32x4(renderer.scene_buffers["color_alpha"], 4)
+    scene_groups = _read_scene_groups(renderer, 4)
+    positions = scene_groups["positions"]
+    scales = scene_groups["scales"]
+    rotations = scene_groups["rotations"]
+    color_alpha = scene_groups["color_alpha"]
     expected_scales = np.array([[1.0, 1.0, 1.0], [1.0, 1.0, 1.0], [1.0, 1.0, 1.0], [np.sqrt(2.0), np.sqrt(2.0), np.sqrt(2.0)]], dtype=np.float32)
 
     assert np.all(np.isfinite(positions))
@@ -463,7 +468,12 @@ def test_cpu_pointcloud_initializer_rebuilds_scene_with_nn_scales(device, tmp_pa
     np.testing.assert_allclose(_actual_opacity(color_alpha[:, 3]), np.full((4,), 0.5, dtype=np.float32), rtol=0.0, atol=1e-6)
     assert np.all(np.abs(np.linalg.norm(rotations, axis=1) - 1.0) < 1e-3)
     for name in _ADAM_BUFFER_NAMES:
-        np.testing.assert_allclose(_read_f32x4(trainer._buffers[name], 4), np.zeros((4, 4), dtype=np.float32), rtol=0.0, atol=1e-7)
+        np.testing.assert_allclose(
+            np.frombuffer(trainer._buffers[name].to_numpy().tobytes(), dtype=np.float32)[: 4 * renderer.TRAINABLE_PARAM_COUNT],
+            np.zeros((4 * renderer.TRAINABLE_PARAM_COUNT,), dtype=np.float32),
+            rtol=0.0,
+            atol=1e-7,
+        )
 
 
 def test_training_frame_order_covers_each_view_once_per_epoch(device, tmp_path: Path):

@@ -46,7 +46,8 @@ Each trainer `step()` performs:
    - The same pass writes `dLoss / dRendered` into `g_OutputGrad`.
 5. Run fused raster forward/backward replay to fill per-splat gradient buffers without cached per-pixel forward state.
 6. Run fused ADAM kernel (`csAdamStepFused`) with one thread per Gaussian.
-   - The kernel updates position, scale, quaternion, color, and opacity.
+   - The kernel updates position, scale, quaternion, color, and opacity through one packed param-major float table.
+   - Gradients, first moments, and second moments use the same param-major indexing, and a separate packed LR table supplies one learning rate per param id.
    - Scale regularization is computed in-kernel as a log-space penalty around a reference scale derived from the initialized scene.
    - Optional L1 penalties on scale and opacity are accumulated in the same pass.
    - Scale is clamped to `[min_scale, max_scale]`, and a hard anisotropy clamp enforces `max(scale.xyz) / min(scale.xyz) <= max_anisotropy`.
@@ -63,10 +64,12 @@ There is no densification, pruning, opacity reset schedule, MCMC exploration ter
   - quaternion,
   - color,
   - opacity.
+  - Storage layout is param-major scalar packing: `param_id * splat_count + splat_id`.
   - The stored opacity parameter is the raw sigmoid logit, not direct alpha.
   - Adds autodiff log-scale regularization gradients to scale gradients (`g_ScaleL2Weight`, `g_ScaleRegReference`).
   - Accumulates the averaged scale-regularization scalar contribution into `g_LossBuffer`.
   - Clamps stored scales to `[min_scale, max_scale]` and enforces `max_anisotropy`.
+  - ADAM epsilon is a compile-time constant in `shaders/utility/optimizer/optimizer.slang`, not a runtime parameter.
 
 ## Numerical Reinforcement
 - Loss/grad and optimizer math sanitize non-finite values.
@@ -94,7 +97,7 @@ python cli.py train-colmap --colmap-root dataset/garden --images-subdir images_4
 
 Useful options:
 - `--width/--height` for train resolution (defaults to selected image resolution),
-- `--lr`, `--beta1`, `--beta2`, `--eps`,
+- `--lr-*`, `--beta1`, `--beta2`,
 - `--scale-l2` for autodiff log-scale regularization around the init/reference scale,
 - `--max-anisotropy` for the hard per-gaussian scale-ratio cap,
 - `--grad-clip`, `--grad-norm-clip`, `--max-update`,
@@ -104,6 +107,7 @@ Useful options:
 ## Validation
 - `tests/test_training_kernels.py` covers the fixed-count trainer kernels, ADAM stability clamps, and CPU pointcloud initialization with nearest-neighbor scales.
 - `tests/test_training_cli_smoke.py` exercises the simplified CLI training path.
+- `tests/test_optimizer_module.py` verifies the packed generic optimizer with Slang autodiff gradients on a standalone quadratic objective.
 - The old PSNR regression and bicycle benchmark were removed with the deleted adaptive training code.
 
 ## Viewer Integration

@@ -40,7 +40,6 @@ def test_build_training_params_clamps_ranges():
         lr_opacity_mul=1.0,
         beta1=2.0,
         beta2=-1.0,
-        epsilon=1e-20,
         grad_clip=0.0,
         grad_norm_clip=1e9,
         max_update=0.0,

@@ -29,7 +29,6 @@ _TRAINING_PARAM_KEYS = {
     "lr_opacity_mul": "lr_opacity_mul",
     "beta1": "beta1",
     "beta2": "beta2",
-    "epsilon": "eps",
     "grad_clip": "grad_clip",
     "grad_norm_clip": "grad_norm_clip",
     "max_update": "max_update",

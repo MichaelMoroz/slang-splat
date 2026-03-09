@@ -1,4 +1,5 @@
 import "utility/splatting/common.slang";
+import "utility/splatting/params.slang";
 import "utility/math/camera.slang";
 
 static const uint UINT_MAX_VALUE = 0xFFFFFFFFu;
@@ -11,8 +12,6 @@ static const uint RASTER_MICROTILE_PIXELS = RASTER_MICROTILE_DIM * RASTER_MICROT
 static const uint RASTER_GROUP_THREADS = RASTER_THREAD_TILE_DIM * RASTER_THREAD_TILE_DIM;
 static const uint RASTER_EFFECTIVE_TILE_SIZE = RASTER_THREAD_TILE_DIM * RASTER_MICROTILE_DIM;
 static const uint RASTER_BATCH = 64u;
-static const uint SPLAT_GRAD_COMPONENTS = 4u;
-
 groupshared float4 gsRoLocal[RASTER_BATCH];
 groupshared half4 gsInvScale[RASTER_BATCH];
 groupshared half4 gsQuat[RASTER_BATCH];
@@ -20,10 +19,7 @@ groupshared half4 gsColorAlpha[RASTER_BATCH];
 groupshared uint gsBatchSplatId[RASTER_BATCH];
 groupshared uint gsStoppedMicrotiles;
 
-uniform StructuredBuffer<float4> g_Positions;
-uniform StructuredBuffer<float4> g_Scales;
-uniform StructuredBuffer<float4> g_Rotations;
-uniform StructuredBuffer<float4> g_ColorAlpha;
+uniform StructuredBuffer<float> g_SplatParams;
 
 uniform RWStructuredBuffer<float4> g_ScreenCenterRadiusDepth;
 uniform RWStructuredBuffer<float4> g_ScreenColorAlpha;
@@ -46,10 +42,7 @@ uniform StructuredBuffer<float> g_DebugGradNorm;
 uniform RWTexture2D<float4> g_Output;
 uniform Texture2D<float4> g_OutputGrad;
 
-uniform RWStructuredBuffer<float> g_GradPositions;
-uniform RWStructuredBuffer<float> g_GradScales;
-uniform RWStructuredBuffer<float> g_GradRotations;
-uniform RWStructuredBuffer<float> g_GradColorAlpha;
+uniform RWStructuredBuffer<float> g_ParamGrads;
 
 uniform CameraParams g_Camera;
 uniform PrepassParams g_Prepass;
@@ -58,9 +51,28 @@ uniform RasterParams g_Raster;
 Gaussian3D load_gaussian3d(uint splatId)
 {
     Gaussian3D gaussian;
-    gaussian.position = g_Positions[splatId].xyz;
-    gaussian.scale = g_Scales[splatId].xyz;
-    gaussian.rotation = g_Rotations[splatId];
-    gaussian.colorAlpha = g_ColorAlpha[splatId];
+    uint splatCount = g_Prepass.splatCount;
+    gaussian.position = float3(
+        load_splat_param(g_SplatParams, splatCount, PARAM_POSITION_X, splatId),
+        load_splat_param(g_SplatParams, splatCount, PARAM_POSITION_Y, splatId),
+        load_splat_param(g_SplatParams, splatCount, PARAM_POSITION_Z, splatId)
+    );
+    gaussian.scale = float3(
+        load_splat_param(g_SplatParams, splatCount, PARAM_SCALE_X, splatId),
+        load_splat_param(g_SplatParams, splatCount, PARAM_SCALE_Y, splatId),
+        load_splat_param(g_SplatParams, splatCount, PARAM_SCALE_Z, splatId)
+    );
+    gaussian.rotation = float4(
+        load_splat_param(g_SplatParams, splatCount, PARAM_ROTATION_X, splatId),
+        load_splat_param(g_SplatParams, splatCount, PARAM_ROTATION_Y, splatId),
+        load_splat_param(g_SplatParams, splatCount, PARAM_ROTATION_Z, splatId),
+        load_splat_param(g_SplatParams, splatCount, PARAM_ROTATION_W, splatId)
+    );
+    gaussian.colorAlpha = float4(
+        load_splat_param(g_SplatParams, splatCount, PARAM_COLOR_R, splatId),
+        load_splat_param(g_SplatParams, splatCount, PARAM_COLOR_G, splatId),
+        load_splat_param(g_SplatParams, splatCount, PARAM_COLOR_B, splatId),
+        load_splat_param(g_SplatParams, splatCount, PARAM_RAW_OPACITY, splatId)
+    );
     return gaussian;
 }
