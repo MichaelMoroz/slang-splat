@@ -5,6 +5,9 @@ from pathlib import Path
 import numpy as np
 import slangpy as spy
 
+_SETTINGS_U32_WIDTH = 8
+
+
 def test_generic_packed_adam_converges_on_quadratic(device):
     grad_shader_path = Path(__file__).with_name("optimizer_test_stage.slang")
     adam_shader_path = Path("shaders/utility/optimizer/optimizer.slang")
@@ -19,22 +22,22 @@ def test_generic_packed_adam_converges_on_quadratic(device):
     usage = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
     params = device.create_buffer(size=param_count * 4, usage=usage)
     grads = device.create_buffer(size=param_count * 4, usage=usage)
-    adam_m = device.create_buffer(size=param_count * 4, usage=usage)
-    adam_v = device.create_buffer(size=param_count * 4, usage=usage)
+    adam_moments = device.create_buffer(size=param_count * 8, usage=usage)
     targets_buf = device.create_buffer(size=param_count * 4, usage=usage)
-    lrs_buf = device.create_buffer(size=param_count * 4, usage=usage)
-    grad_clip_buf = device.create_buffer(size=param_count * 4, usage=usage)
-    value_min_buf = device.create_buffer(size=param_count * 4, usage=usage)
-    value_max_buf = device.create_buffer(size=param_count * 4, usage=usage)
+    settings_buf = device.create_buffer(size=param_count * _SETTINGS_U32_WIDTH * 4, usage=usage)
     params.copy_from_numpy(params_init)
     grads.copy_from_numpy(zeros)
-    adam_m.copy_from_numpy(zeros)
-    adam_v.copy_from_numpy(zeros)
+    adam_moments.copy_from_numpy(np.zeros((param_count, 2), dtype=np.float32))
     targets_buf.copy_from_numpy(targets)
-    lrs_buf.copy_from_numpy(lrs)
-    grad_clip_buf.copy_from_numpy(np.full((param_count,), 1e6, dtype=np.float32))
-    value_min_buf.copy_from_numpy(np.full((param_count,), -1e6, dtype=np.float32))
-    value_max_buf.copy_from_numpy(np.full((param_count,), 1e6, dtype=np.float32))
+    settings = np.zeros((param_count, _SETTINGS_U32_WIDTH), dtype=np.uint32)
+    settings[:, 0] = lrs.view(np.uint32)
+    settings[:, 1] = np.full((param_count,), 1e6, dtype=np.float32).view(np.uint32)
+    settings[:, 2] = np.full((param_count,), 1e6, dtype=np.float32).view(np.uint32)
+    settings[:, 3] = np.full((param_count,), -1e6, dtype=np.float32).view(np.uint32)
+    settings[:, 4] = np.full((param_count,), 1e6, dtype=np.float32).view(np.uint32)
+    settings[:, 5] = np.arange(param_count, dtype=np.uint32)
+    settings[:, 6] = 1
+    settings_buf.copy_from_numpy(settings)
 
     common_vars = {
         "g_ParamCount": int(param_count),
@@ -55,14 +58,11 @@ def test_generic_packed_adam_converges_on_quadratic(device):
         },
         "g_OptimizerParamCount": int(param_count),
         "g_OptimizerParamGroupSize": 1,
-        "g_OptimizerParamLRs": lrs_buf,
-        "g_OptimizerParamGradClipAbs": grad_clip_buf,
-        "g_OptimizerParamValueMin": value_min_buf,
-        "g_OptimizerParamValueMax": value_max_buf,
+        "g_OptimizerParamSettingsCount": int(param_count),
+        "g_OptimizerParamSettings": settings_buf,
         "g_OptimizerParams": params,
         "g_OptimizerGrads": grads,
-        "g_OptimizerAdamM": adam_m,
-        "g_OptimizerAdamV": adam_v,
+        "g_OptimizerAdamMoments": adam_moments,
         "g_OptimizerStability": {
             "gradComponentClip": 1e6,
             "gradNormClip": 1e6,

@@ -12,27 +12,7 @@ from ..renderer import GaussianRenderer
 
 class GaussianOptimizer:
     _GROUPS = ((0, 3), (3, 3), (6, 4), (10, 4))
-    _ADAM_BUFFER_NAMES = ("adam_m", "adam_v")
-    _TABLE_BUFFER_NAMES = (
-        "param_lrs",
-        "param_grad_clip_abs",
-        "param_grad_norm_clip",
-        "param_value_min",
-        "param_value_max",
-        "param_group_starts",
-        "param_group_sizes",
-    )
-    _TABLE_SHADER_VARS = {
-        "param_lrs": "g_OptimizerParamLRs",
-        "param_grad_clip_abs": "g_OptimizerParamGradClipAbs",
-        "param_grad_norm_clip": "g_OptimizerParamGradNormClip",
-        "param_value_min": "g_OptimizerParamValueMin",
-        "param_value_max": "g_OptimizerParamValueMax",
-        "param_group_starts": "g_OptimizerParamGroupStarts",
-        "param_group_sizes": "g_OptimizerParamGroupSizes",
-    }
-    _ADAM_SHADER_VARS = {"adam_m": "g_OptimizerAdamM", "adam_v": "g_OptimizerAdamV"}
-    _PACKED_SHADER_VARS = {"g_OptimizerParams": "splat_params", "g_OptimizerGrads": "param_grads"}
+    _PARAM_SETTINGS_U32_WIDTH = 8
     _RW_BUFFER_USAGE = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
     _RO_BUFFER_USAGE = spy.BufferUsage.shader_resource | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
     _clip_threads = staticmethod(lambda count: spy.uint3(int(count), 1, 1))
@@ -47,7 +27,7 @@ class GaussianOptimizer:
         self._buffers: dict[str, spy.Buffer] = {}
         self._kernels = self._create_kernels()
         self._ensure_static_buffers()
-        self._upload_tables()
+        self._upload_param_settings()
 
     def _create_kernels(self) -> dict[str, spy.ComputeKernel]:
         entries = {
@@ -65,103 +45,80 @@ class GaussianOptimizer:
         return self.device.create_buffer(size=max(int(size), 4), usage=usage)
 
     def _ensure_static_buffers(self) -> None:
-        if all(name in self._buffers for name in self._TABLE_BUFFER_NAMES):
-            return
-        param_count = self.renderer.TRAINABLE_PARAM_COUNT
-        self._buffers["param_lrs"] = self._create_buffer(param_count * 4, self._RO_BUFFER_USAGE)
-        self._buffers["param_grad_clip_abs"] = self._create_buffer(param_count * 4, self._RO_BUFFER_USAGE)
-        self._buffers["param_grad_norm_clip"] = self._create_buffer(param_count * 4, self._RO_BUFFER_USAGE)
-        self._buffers["param_value_min"] = self._create_buffer(param_count * 4, self._RO_BUFFER_USAGE)
-        self._buffers["param_value_max"] = self._create_buffer(param_count * 4, self._RO_BUFFER_USAGE)
-        self._buffers["param_group_starts"] = self._create_buffer(len(self._GROUPS) * 4, self._RO_BUFFER_USAGE)
-        self._buffers["param_group_sizes"] = self._create_buffer(len(self._GROUPS) * 4, self._RO_BUFFER_USAGE)
+        if "param_settings" not in self._buffers:
+            self._buffers["param_settings"] = self._create_buffer(self.renderer.TRAINABLE_PARAM_COUNT * self._PARAM_SETTINGS_U32_WIDTH * 4, self._RO_BUFFER_USAGE)
 
     def _ensure_state_buffers(self, splat_count: int) -> None:
         count = max(int(splat_count), 1)
-        if self._capacity >= count and all(name in self._buffers for name in self._ADAM_BUFFER_NAMES):
+        if self._capacity >= count and "adam_moments" in self._buffers:
             return
         self._capacity = max(count, max(self._capacity, 1) + max(self._capacity, 1) // 2)
-        buffer_size = self._capacity * self.renderer.TRAINABLE_PARAM_COUNT * 4
-        for name in self._ADAM_BUFFER_NAMES:
-            self._buffers[name] = self._create_buffer(buffer_size, self._RW_BUFFER_USAGE)
+        self._buffers["adam_moments"] = self._create_buffer(self._capacity * self.renderer.TRAINABLE_PARAM_COUNT * 8, self._RW_BUFFER_USAGE)
 
     @staticmethod
     def _raw_opacity_from_alpha(alpha: float) -> float:
         alpha_clamped = float(np.clip(alpha, 1e-6, 1.0 - 1e-6))
         return float(np.log(alpha_clamped) - np.log1p(-alpha_clamped))
 
-    def _param_lrs(self) -> np.ndarray:
-        lrs = np.zeros((self.renderer.TRAINABLE_PARAM_COUNT,), dtype=np.float32)
-        for param_id in self.renderer.PARAM_POSITION_IDS:
-            lrs[param_id] = float(self.adam.position_lr)
-        for param_id in self.renderer.PARAM_SCALE_IDS:
-            lrs[param_id] = float(self.adam.scale_lr)
-        for param_id in self.renderer.PARAM_ROTATION_IDS:
-            lrs[param_id] = float(self.adam.rotation_lr)
-        for param_id in self.renderer.PARAM_COLOR_IDS:
-            lrs[param_id] = float(self.adam.color_lr)
-        lrs[self.renderer.PARAM_RAW_OPACITY_ID] = float(self.adam.opacity_lr)
-        return lrs
+    def _lr_for_param(self, param_id: int) -> float:
+        if param_id in self.renderer.PARAM_POSITION_IDS: return float(self.adam.position_lr)
+        if param_id in self.renderer.PARAM_SCALE_IDS: return float(self.adam.scale_lr)
+        if param_id in self.renderer.PARAM_ROTATION_IDS: return float(self.adam.rotation_lr)
+        if param_id in self.renderer.PARAM_COLOR_IDS: return float(self.adam.color_lr)
+        return float(self.adam.opacity_lr)
 
-    def _param_grad_clip_abs(self) -> np.ndarray:
-        return np.full((self.renderer.TRAINABLE_PARAM_COUNT,), float(self.stability.grad_component_clip), dtype=np.float32)
+    def _value_min_for_param(self, param_id: int) -> float:
+        if param_id in self.renderer.PARAM_POSITION_IDS: return -float(self.stability.position_abs_max)
+        if param_id in self.renderer.PARAM_SCALE_IDS: return float(self.stability.min_scale)
+        if param_id in self.renderer.PARAM_COLOR_IDS: return 0.0
+        if param_id == self.renderer.PARAM_RAW_OPACITY_ID: return self._raw_opacity_from_alpha(float(self.stability.min_opacity))
+        return -float(self.stability.huge_value)
 
-    def _param_grad_norm_clip(self) -> np.ndarray:
-        return np.full((self.renderer.TRAINABLE_PARAM_COUNT,), float(self.stability.grad_norm_clip), dtype=np.float32)
+    def _value_max_for_param(self, param_id: int) -> float:
+        if param_id in self.renderer.PARAM_POSITION_IDS: return float(self.stability.position_abs_max)
+        if param_id in self.renderer.PARAM_SCALE_IDS: return float(self.stability.max_scale)
+        if param_id in self.renderer.PARAM_COLOR_IDS: return 1.0
+        if param_id == self.renderer.PARAM_RAW_OPACITY_ID: return self._raw_opacity_from_alpha(float(self.stability.max_opacity))
+        return float(self.stability.huge_value)
 
-    def _param_value_min(self) -> np.ndarray:
-        mins = np.full((self.renderer.TRAINABLE_PARAM_COUNT,), -float(self.stability.huge_value), dtype=np.float32)
-        for param_id in self.renderer.PARAM_POSITION_IDS:
-            mins[param_id] = -float(self.stability.position_abs_max)
-        for param_id in self.renderer.PARAM_SCALE_IDS:
-            mins[param_id] = float(self.stability.min_scale)
-        for param_id in self.renderer.PARAM_COLOR_IDS:
-            mins[param_id] = 0.0
-        mins[self.renderer.PARAM_RAW_OPACITY_ID] = self._raw_opacity_from_alpha(float(self.stability.min_opacity))
-        return mins
+    def _group_for_param(self, param_id: int) -> tuple[int, int]:
+        for group_start, group_size in self._GROUPS:
+            if group_start <= int(param_id) < group_start + group_size:
+                return int(group_start), int(group_size)
+        return int(param_id), 1
 
-    def _param_value_max(self) -> np.ndarray:
-        maxs = np.full((self.renderer.TRAINABLE_PARAM_COUNT,), float(self.stability.huge_value), dtype=np.float32)
-        for param_id in self.renderer.PARAM_POSITION_IDS:
-            maxs[param_id] = float(self.stability.position_abs_max)
-        for param_id in self.renderer.PARAM_SCALE_IDS:
-            maxs[param_id] = float(self.stability.max_scale)
-        for param_id in self.renderer.PARAM_COLOR_IDS:
-            maxs[param_id] = 1.0
-        maxs[self.renderer.PARAM_RAW_OPACITY_ID] = self._raw_opacity_from_alpha(float(self.stability.max_opacity))
-        return maxs
+    def _param_settings(self) -> np.ndarray:
+        settings = np.zeros((self.renderer.TRAINABLE_PARAM_COUNT, self._PARAM_SETTINGS_U32_WIDTH), dtype=np.uint32)
+        for param_id in range(self.renderer.TRAINABLE_PARAM_COUNT):
+            group_start, group_size = self._group_for_param(param_id)
+            settings[param_id, 0] = np.asarray([self._lr_for_param(param_id)], dtype=np.float32).view(np.uint32)[0]
+            settings[param_id, 1] = np.asarray([float(self.stability.grad_component_clip)], dtype=np.float32).view(np.uint32)[0]
+            settings[param_id, 2] = np.asarray([float(self.stability.grad_norm_clip)], dtype=np.float32).view(np.uint32)[0]
+            settings[param_id, 3] = np.asarray([self._value_min_for_param(param_id)], dtype=np.float32).view(np.uint32)[0]
+            settings[param_id, 4] = np.asarray([self._value_max_for_param(param_id)], dtype=np.float32).view(np.uint32)[0]
+            settings[param_id, 5] = np.uint32(group_start)
+            settings[param_id, 6] = np.uint32(group_size)
+        return settings
 
-    def _param_group_starts(self) -> np.ndarray:
-        return np.asarray([group[0] for group in self._GROUPS], dtype=np.uint32)
-
-    def _param_group_sizes(self) -> np.ndarray:
-        return np.asarray([group[1] for group in self._GROUPS], dtype=np.uint32)
-
-    def _upload_tables(self) -> None:
+    def _upload_param_settings(self) -> None:
         self._ensure_static_buffers()
-        self._buffers["param_lrs"].copy_from_numpy(self._param_lrs())
-        self._buffers["param_grad_clip_abs"].copy_from_numpy(self._param_grad_clip_abs())
-        self._buffers["param_grad_norm_clip"].copy_from_numpy(self._param_grad_norm_clip())
-        self._buffers["param_value_min"].copy_from_numpy(self._param_value_min())
-        self._buffers["param_value_max"].copy_from_numpy(self._param_value_max())
-        self._buffers["param_group_starts"].copy_from_numpy(self._param_group_starts())
-        self._buffers["param_group_sizes"].copy_from_numpy(self._param_group_sizes())
+        self._buffers["param_settings"].copy_from_numpy(self._param_settings())
 
     def update_hyperparams(self, adam_hparams: Any, stability_hparams: Any) -> None:
         self.adam = adam_hparams
         self.stability = stability_hparams
-        self._upload_tables()
+        self._upload_param_settings()
 
     def zero_moments(self, splat_count: int) -> None:
         self._ensure_state_buffers(splat_count)
-        zeros = np.zeros((max(int(splat_count), 1) * self.renderer.TRAINABLE_PARAM_COUNT,), dtype=np.float32)
-        for name in self._ADAM_BUFFER_NAMES:
-            self._buffers[name].copy_from_numpy(np.pad(zeros, (0, max(self._capacity * self.renderer.TRAINABLE_PARAM_COUNT - zeros.size, 0))))
+        zeros = np.zeros((self._capacity * self.renderer.TRAINABLE_PARAM_COUNT, 2), dtype=np.float32)
+        self._buffers["adam_moments"].copy_from_numpy(zeros)
 
     def _buffer_shader_vars(self) -> dict[str, object]:
-        table_vars = {shader_name: self._buffers[name] for name, shader_name in self._TABLE_SHADER_VARS.items()}
-        adam_vars = {shader_name: self._buffers[name] for name, shader_name in self._ADAM_SHADER_VARS.items()}
-        return {**table_vars, **adam_vars}
+        return {
+            "g_OptimizerParamSettings": self._buffers["param_settings"],
+            "g_OptimizerAdamMoments": self._buffers["adam_moments"],
+        }
 
     @staticmethod
     def _packed_shader_vars(scene_buffers: dict[str, spy.Buffer], work_buffers: dict[str, spy.Buffer]) -> dict[str, object]:
@@ -209,8 +166,8 @@ class GaussianOptimizer:
             },
             "g_OptimizerSplatCount": int(splat_count),
             "g_OptimizerParamCount": int(splat_count * self.renderer.TRAINABLE_PARAM_COUNT),
-            "g_OptimizerParamGroupCount": int(len(self._GROUPS)),
             "g_OptimizerParamGroupSize": int(splat_count),
+            "g_OptimizerParamSettingsCount": int(self.renderer.TRAINABLE_PARAM_COUNT),
         }
 
     def dispatch_step(
@@ -240,7 +197,7 @@ class GaussianOptimizer:
         self._kernels["accumulate_regularizers"].dispatch(thread_count=self._clip_threads(count), vars=gaussian_common, command_encoder=encoder)
         self._kernels["clip_grads"].dispatch(thread_count=self._clip_threads(count), vars={**packed_vars, **shared_buffers, **optimizer_vars}, command_encoder=encoder)
         self._kernels["adam_step"].dispatch(thread_count=self._param_threads(count, self.renderer.TRAINABLE_PARAM_COUNT), vars={**packed_vars, **shared_buffers, **optimizer_vars}, command_encoder=encoder)
-        self._kernels["project_params"].dispatch(thread_count=self._clip_threads(count), vars={**gaussian_common}, command_encoder=encoder)
+        self._kernels["project_params"].dispatch(thread_count=self._clip_threads(count), vars=gaussian_common, command_encoder=encoder)
 
     @property
     def buffers(self) -> dict[str, spy.Buffer]:

@@ -11,7 +11,7 @@ from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TrainingHyperParams
 
-_ADAM_BUFFER_NAMES = ("adam_m", "adam_v")
+_ADAM_BUFFER_NAMES = ("adam_moments",)
 _OPACITY_EPS = 1e-6
 _raw_opacity = lambda alpha: (np.log(np.clip(np.asarray(alpha, dtype=np.float32), _OPACITY_EPS, 1.0 - _OPACITY_EPS)) - np.log1p(-np.clip(np.asarray(alpha, dtype=np.float32), _OPACITY_EPS, 1.0 - _OPACITY_EPS))).astype(np.float32, copy=False)
 _actual_opacity = lambda raw: (1.0 / (1.0 + np.exp(-np.asarray(raw, dtype=np.float32)))).astype(np.float32, copy=False)
@@ -469,8 +469,8 @@ def test_cpu_pointcloud_initializer_rebuilds_scene_with_nn_scales(device, tmp_pa
     assert np.all(np.abs(np.linalg.norm(rotations, axis=1) - 1.0) < 1e-3)
     for name in _ADAM_BUFFER_NAMES:
         np.testing.assert_allclose(
-            np.frombuffer(trainer.optimizer.buffers[name].to_numpy().tobytes(), dtype=np.float32)[: 4 * renderer.TRAINABLE_PARAM_COUNT],
-            np.zeros((4 * renderer.TRAINABLE_PARAM_COUNT,), dtype=np.float32),
+            np.frombuffer(trainer.optimizer.buffers[name].to_numpy().tobytes(), dtype=np.float32)[: 8 * renderer.TRAINABLE_PARAM_COUNT],
+            np.zeros((8 * renderer.TRAINABLE_PARAM_COUNT,), dtype=np.float32),
             rtol=0.0,
             atol=1e-7,
         )

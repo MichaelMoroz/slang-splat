@@ -25,26 +25,31 @@ struct TrainingStabilityParams
     float hugeValue;
 };
 
+struct OptimizerParamSettings
+{
+    float lr;
+    float gradClipAbs;
+    float gradNormClip;
+    float valueMin;
+    float valueMax;
+    uint groupStart;
+    uint groupSize;
+    uint reserved;
+};
+
 static const uint ADAM_GROUP_SIZE = 256u;
 
 uniform AdamParams g_OptimizerAdam;
 uniform TrainingStabilityParams g_OptimizerStability;
 uniform uint g_OptimizerSplatCount;
 uniform uint g_OptimizerParamCount;
-uniform uint g_OptimizerParamGroupCount;
 uniform uint g_OptimizerParamGroupSize;
+uniform uint g_OptimizerParamSettingsCount;
 
-uniform StructuredBuffer<float> g_OptimizerParamLRs;
-uniform StructuredBuffer<float> g_OptimizerParamGradClipAbs;
-uniform StructuredBuffer<float> g_OptimizerParamGradNormClip;
-uniform StructuredBuffer<float> g_OptimizerParamValueMin;
-uniform StructuredBuffer<float> g_OptimizerParamValueMax;
-uniform StructuredBuffer<uint> g_OptimizerParamGroupStarts;
-uniform StructuredBuffer<uint> g_OptimizerParamGroupSizes;
+uniform StructuredBuffer<OptimizerParamSettings> g_OptimizerParamSettings;
 uniform RWStructuredBuffer<float> g_OptimizerParams;
 uniform RWStructuredBuffer<float> g_OptimizerGrads;
-uniform RWStructuredBuffer<float> g_OptimizerAdamM;
-uniform RWStructuredBuffer<float> g_OptimizerAdamV;
+uniform RWStructuredBuffer<float2> g_OptimizerAdamMoments;
 
 float load_optimizer_grad(uint paramId, uint splatId)
 {
@@ -63,44 +68,39 @@ void csClipPackedParamGrads(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint splatId = dispatchThreadID.x;
     if (splatId >= g_OptimizerSplatCount) return;
 
-    [unroll] for (uint groupIndex = 0u; groupIndex < g_OptimizerParamGroupCount; groupIndex++)
+    [unroll] for (uint paramId = 0u; paramId < g_OptimizerParamSettingsCount; paramId++)
     {
-        uint firstParamId = g_OptimizerParamGroupStarts[groupIndex];
-        uint groupSize = g_OptimizerParamGroupSizes[groupIndex];
-        float normClip = g_OptimizerParamGradNormClip[firstParamId];
-        if (groupSize == 3u)
+        OptimizerParamSettings settings = g_OptimizerParamSettings[paramId];
+        if (settings.groupStart != paramId) continue;
+        if (settings.groupSize == 3u)
         {
             float3 grad = float3(
-                sanitize_scalar(load_optimizer_grad(firstParamId + 0u, splatId), g_OptimizerParamGradClipAbs[firstParamId + 0u]),
-                sanitize_scalar(load_optimizer_grad(firstParamId + 1u, splatId), g_OptimizerParamGradClipAbs[firstParamId + 1u]),
-                sanitize_scalar(load_optimizer_grad(firstParamId + 2u, splatId), g_OptimizerParamGradClipAbs[firstParamId + 2u])
+                sanitize_scalar(load_optimizer_grad(paramId + 0u, splatId), g_OptimizerParamSettings[paramId + 0u].gradClipAbs),
+                sanitize_scalar(load_optimizer_grad(paramId + 1u, splatId), g_OptimizerParamSettings[paramId + 1u].gradClipAbs),
+                sanitize_scalar(load_optimizer_grad(paramId + 2u, splatId), g_OptimizerParamSettings[paramId + 2u].gradClipAbs)
             );
-            grad = clip_norm3(grad, normClip);
-            store_optimizer_grad(firstParamId + 0u, splatId, grad.x);
-            store_optimizer_grad(firstParamId + 1u, splatId, grad.y);
-            store_optimizer_grad(firstParamId + 2u, splatId, grad.z);
-        }
-        else if (groupSize == 4u)
-        {
+            grad = clip_norm3(grad, settings.gradNormClip);
+            store_optimizer_grad(paramId + 0u, splatId, grad.x);
+            store_optimizer_grad(paramId + 1u, splatId, grad.y);
+            store_optimizer_grad(paramId + 2u, splatId, grad.z);
+        } else if (settings.groupSize == 4u) {
             float4 grad = float4(
-                sanitize_scalar(load_optimizer_grad(firstParamId + 0u, splatId), g_OptimizerParamGradClipAbs[firstParamId + 0u]),
-                sanitize_scalar(load_optimizer_grad(firstParamId + 1u, splatId), g_OptimizerParamGradClipAbs[firstParamId + 1u]),
-                sanitize_scalar(load_optimizer_grad(firstParamId + 2u, splatId), g_OptimizerParamGradClipAbs[firstParamId + 2u]),
-                sanitize_scalar(load_optimizer_grad(firstParamId + 3u, splatId), g_OptimizerParamGradClipAbs[firstParamId + 3u])
+                sanitize_scalar(load_optimizer_grad(paramId + 0u, splatId), g_OptimizerParamSettings[paramId + 0u].gradClipAbs),
+                sanitize_scalar(load_optimizer_grad(paramId + 1u, splatId), g_OptimizerParamSettings[paramId + 1u].gradClipAbs),
+                sanitize_scalar(load_optimizer_grad(paramId + 2u, splatId), g_OptimizerParamSettings[paramId + 2u].gradClipAbs),
+                sanitize_scalar(load_optimizer_grad(paramId + 3u, splatId), g_OptimizerParamSettings[paramId + 3u].gradClipAbs)
             );
-            grad = clip_norm4(grad, normClip);
-            store_optimizer_grad(firstParamId + 0u, splatId, grad.x);
-            store_optimizer_grad(firstParamId + 1u, splatId, grad.y);
-            store_optimizer_grad(firstParamId + 2u, splatId, grad.z);
-            store_optimizer_grad(firstParamId + 3u, splatId, grad.w);
-        }
-        else
-        {
+            grad = clip_norm4(grad, settings.gradNormClip);
+            store_optimizer_grad(paramId + 0u, splatId, grad.x);
+            store_optimizer_grad(paramId + 1u, splatId, grad.y);
+            store_optimizer_grad(paramId + 2u, splatId, grad.z);
+            store_optimizer_grad(paramId + 3u, splatId, grad.w);
+        } else {
             [unroll] for (uint offset = 0u; offset < 4u; offset++)
             {
-                if (offset >= groupSize) break;
-                uint paramId = firstParamId + offset;
-                store_optimizer_grad(paramId, splatId, sanitize_scalar(load_optimizer_grad(paramId, splatId), g_OptimizerParamGradClipAbs[paramId]));
+                if (offset >= settings.groupSize) break;
+                uint groupParamId = paramId + offset;
+                store_optimizer_grad(groupParamId, splatId, sanitize_scalar(load_optimizer_grad(groupParamId, splatId), g_OptimizerParamSettings[groupParamId].gradClipAbs));
             }
         }
     }
@@ -115,10 +115,13 @@ void csAdamStepPacked(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     uint paramGroupSize = max(g_OptimizerParamGroupSize, 1u);
     uint paramId = paramIndex / paramGroupSize;
+    OptimizerParamSettings settings = g_OptimizerParamSettings[paramId];
     float value = sanitize_scalar(g_OptimizerParams[paramIndex], g_OptimizerStability.hugeValue);
-    float grad = sanitize_scalar(g_OptimizerGrads[paramIndex], g_OptimizerParamGradClipAbs[paramId]);
-    float momentM = sanitize_scalar(g_OptimizerAdamM[paramIndex], g_OptimizerStability.hugeValue);
-    float momentV = sanitize_scalar(g_OptimizerAdamV[paramIndex], g_OptimizerStability.hugeValue);
+    float grad = sanitize_scalar(g_OptimizerGrads[paramIndex], settings.gradClipAbs);
+    float2 moments = float2(
+        sanitize_scalar(g_OptimizerAdamMoments[paramIndex].x, g_OptimizerStability.hugeValue),
+        sanitize_scalar(g_OptimizerAdamMoments[paramIndex].y, g_OptimizerStability.hugeValue)
+    );
     float beta1Pow = pow(g_OptimizerAdam.beta1, float(g_OptimizerAdam.stepIndex));
     float beta2Pow = pow(g_OptimizerAdam.beta2, float(g_OptimizerAdam.stepIndex));
     float biasCorr1 = 1.0 - beta1Pow;
@@ -126,14 +129,13 @@ void csAdamStepPacked(uint3 dispatchThreadID : SV_DispatchThreadID)
     float oneMinusBeta1 = 1.0 - g_OptimizerAdam.beta1;
     float oneMinusBeta2 = 1.0 - g_OptimizerAdam.beta2;
 
-    momentM = sanitize_scalar(g_OptimizerAdam.beta1 * momentM + oneMinusBeta1 * grad, g_OptimizerStability.hugeValue);
-    momentV = sanitize_scalar(g_OptimizerAdam.beta2 * momentV + oneMinusBeta2 * (grad * grad), g_OptimizerStability.hugeValue);
-    float mHat = momentM / max(biasCorr1, TINY_VALUE);
-    float vHat = momentV / max(biasCorr2, TINY_VALUE);
-    float update = g_OptimizerParamLRs[paramId] * mHat / (sqrt(max(vHat, 0.0)) + ADAM_EPSILON);
+    moments.x = sanitize_scalar(g_OptimizerAdam.beta1 * moments.x + oneMinusBeta1 * grad, g_OptimizerStability.hugeValue);
+    moments.y = sanitize_scalar(g_OptimizerAdam.beta2 * moments.y + oneMinusBeta2 * (grad * grad), g_OptimizerStability.hugeValue);
+    float mHat = moments.x / max(biasCorr1, TINY_VALUE);
+    float vHat = moments.y / max(biasCorr2, TINY_VALUE);
+    float update = settings.lr * mHat / (sqrt(max(vHat, 0.0)) + ADAM_EPSILON);
     update = clamp(sanitize_scalar(update, g_OptimizerStability.maxUpdate), -g_OptimizerStability.maxUpdate, g_OptimizerStability.maxUpdate);
     float nextValue = sanitize_scalar(value - update, g_OptimizerStability.hugeValue);
-    g_OptimizerParams[paramIndex] = clamp(nextValue, g_OptimizerParamValueMin[paramId], g_OptimizerParamValueMax[paramId]);
-    g_OptimizerAdamM[paramIndex] = momentM;
-    g_OptimizerAdamV[paramIndex] = momentV;
+    g_OptimizerParams[paramIndex] = clamp(nextValue, settings.valueMin, settings.valueMax);
+    g_OptimizerAdamMoments[paramIndex] = moments;
 }

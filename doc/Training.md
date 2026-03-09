@@ -1,6 +1,6 @@
 # COLMAP Training Pipeline
 
-`cli.py` (`train-colmap`) is a thin wrapper over `src/app/cli.py`. `src/training/gaussian_trainer.py` remains the public training facade, while `src/training/optimizer.py` now owns optimizer buffers, optimizer kernel dispatch, and per-parameter optimizer tables.
+`cli.py` (`train-colmap`) is a thin wrapper over `src/app/cli.py`. `src/training/gaussian_trainer.py` remains the public training facade, while `src/training/optimizer.py` now owns optimizer buffers, optimizer kernel dispatch, and packed per-parameter settings.
 
 The active training path is intentionally minimal: initialize a fixed gaussian set from the COLMAP point cloud, render one shuffled training frame, compute a direct L1 image gradient on the GPU, replay raster backward for per-splat gradients, then run a fused ADAM update.
 
@@ -47,8 +47,8 @@ Each trainer `step()` performs:
 5. Run fused raster forward/backward replay to fill per-splat gradient buffers without cached per-pixel forward state.
 6. Run the optimizer pipeline:
    - `csAccumulateRegularizationGrads` adds scale and opacity regularizers on the packed param-major state.
-   - `csClipPackedParamGrads` clips gradients from per-parameter clip tables owned by the optimizer module.
-   - `csAdamStepPacked` applies one-thread-per-packed-parameter ADAM using packed LR and scalar range tables.
+   - `csClipPackedParamGrads` clips gradients from a structured per-parameter settings buffer owned by the optimizer module.
+   - `csAdamStepPacked` applies one-thread-per-packed-parameter ADAM using that same settings buffer plus a packed `float2` moments buffer.
    - `csProjectGaussianParams` applies the remaining Gaussian-specific post-step projection (quaternion normalization and anisotropy clamp).
 7. Update host-side rolling loss state and the last-frame MSE metric.
 
@@ -62,8 +62,8 @@ There is no densification, pruning, opacity reset schedule, MCMC exploration ter
 - `optimizer.slang` owns generic optimizer kernels and tables:
   - packed ADAM,
   - packed gradient clipping,
-  - per-parameter learning-rate table,
-  - per-parameter scalar range table.
+  - structured per-parameter settings buffer (`lr`, grad clips, scalar clamp range, group metadata),
+  - packed `float2` moments buffer (`m`, `v`).
 - `gaussian_optimizer_stage.slang` owns Gaussian-specific optimizer logic:
   - scale/opacity regularizers,
   - anisotropy clamp,
