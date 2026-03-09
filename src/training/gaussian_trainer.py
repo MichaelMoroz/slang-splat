@@ -9,6 +9,7 @@ from PIL import Image
 import slangpy as spy
 
 from ..common import SHADER_ROOT, buffer_to_numpy, clamp_index, thread_count_2d
+from ..metrics import Metrics, psnr_from_mse
 from ..renderer import Camera, GaussianRenderer
 from ..scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 from .adam import AdamOptimizer, AdamRuntimeHyperParams
@@ -57,7 +58,7 @@ class TrainingHyperParams:
 
 @dataclass(slots=True)
 class TrainingState:
-    step: int = 0; last_loss: float = float("nan"); avg_loss: float = float("nan"); last_mse: float = float("nan")
+    step: int = 0; last_loss: float = float("nan"); avg_loss: float = float("nan"); last_mse: float = float("nan"); last_psnr: float = float("nan")
     last_frame_index: int = -1; last_instability: str = ""
 
 
@@ -151,6 +152,7 @@ class GaussianTrainer:
         self.adam = AdamHyperParams() if adam_hparams is None else adam_hparams
         self.stability = StabilityHyperParams() if stability_hparams is None else stability_hparams
         self.training = TrainingHyperParams() if training_hparams is None else training_hparams
+        self.metrics = Metrics(self.device)
         self.adam_optimizer = AdamOptimizer(self.device, self.adam, self._adam_runtime_hparams())
         self.optimizer = GaussianOptimizer(self.device, self.renderer, self.adam, self.stability)
         self.compute_debug_grad_norm = False
@@ -358,6 +360,24 @@ class GaussianTrainer:
         self._frame_rng = np.random.default_rng(int(seed))
         self._reset_frame_order()
 
+    def scale_histogram(self, *, bin_count: int = 64, min_log10: float = -6.0, max_log10: float = 1.0):
+        return self.metrics.compute_scale_histogram(
+            self.renderer.scene_buffers["splat_params"],
+            self._scene_count,
+            bin_count=bin_count,
+            min_log10=min_log10,
+            max_log10=max_log10,
+        )
+
+    def anisotropy_histogram(self, *, bin_count: int = 64, min_log10: float = 0.0, max_log10: float = 2.0):
+        return self.metrics.compute_anisotropy_histogram(
+            self.renderer.scene_buffers["splat_params"],
+            self._scene_count,
+            bin_count=bin_count,
+            min_log10=min_log10,
+            max_log10=max_log10,
+        )
+
     def step(self) -> float:
         frame_index = self._next_frame_index()
         frame_camera = self.make_frame_camera(frame_index, self.renderer.width, self.renderer.height)
@@ -382,6 +402,7 @@ class GaussianTrainer:
         self.state.last_frame_index = frame_index
         self.state.last_loss = float(loss)
         self.state.last_mse = float(image_mse)
+        self.state.last_psnr = float(psnr_from_mse(image_mse))
         self._loss_window.push(loss)
         self.state.avg_loss = self._loss_window.mean()
         return float(loss)

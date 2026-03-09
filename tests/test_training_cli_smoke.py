@@ -47,6 +47,7 @@ def test_train_cli_smoke():
     assert result.returncode == 0, f"stdout:\\n{result.stdout}\\nstderr:\\n{result.stderr}"
     assert "step=" in result.stdout
     assert "mse=" in result.stdout
+    assert "psnr=" in result.stdout
 
 
 def test_train_cli_forwards_resolved_init_hparams(monkeypatch, tmp_path: Path):
@@ -83,7 +84,7 @@ def test_train_cli_forwards_resolved_init_hparams(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(
         cli,
         "GaussianTrainer",
-        lambda **kwargs: SimpleNamespace(state=SimpleNamespace(avg_loss=0.0, last_mse=0.0, last_instability="", last_frame_index=0)),
+        lambda **kwargs: SimpleNamespace(state=SimpleNamespace(avg_loss=0.0, last_mse=0.0, last_psnr=float("inf"), last_instability="", last_frame_index=0)),
     )
 
     args = Namespace(
