@@ -103,6 +103,12 @@ python -m tools.complexity_budget --check
 ```
 The budget scans only production Python entrypoints plus `src/**`.
 
+## Diagnostics
+```powershell
+python -m tools.scale_gradient_diagnostic --output-dir outputs\scale_gradient_diagnostic
+```
+This sweeps a single splat across the pixel-floor transition, records the rendered fitted blob radius, and plots the corresponding training `dL/dscale` curve against scale.
+
 ## Project Structure
 - `src/app`: shared app parameter builders, scene bounds helpers, and CLI command implementations.
 - `src/scene`: scene datamodel and PLY loader.
