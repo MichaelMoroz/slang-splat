@@ -74,7 +74,7 @@ class GaussianTrainer:
     make_frame_camera = lambda self, frame_index, width, height: self._make_frame_camera(self._frame(frame_index), int(width), int(height))
     frame_size = lambda self, frame_index: (int(self._frame(frame_index).width), int(self._frame(frame_index).height))
     get_frame_target_texture = lambda self, frame_index, native_resolution=True: self._frame_targets_train[int(np.clip(frame_index, 0, len(self.frames) - 1))]
-    _dispatch_raster_forward_backward = lambda self, encoder, frame_camera, background: (self.renderer.clear_raster_grads_current_scene(encoder), self.renderer.rasterize_forward_backward_current_scene(encoder=encoder, camera=frame_camera, background=background, output_grad=self.renderer.output_grad_texture))
+    _dispatch_raster_forward_backward = lambda self, encoder, frame_camera, background: (self.renderer.clear_raster_grads_current_scene(encoder), self.renderer.rasterize_forward_backward_current_scene(encoder=encoder, camera=frame_camera, background=background, output_grad=self.renderer.output_grad_buffer))
     _read_loss_metrics = lambda self: (lambda values: (float(values[self._LOSS_SLOT_TOTAL]) if values.size > self._LOSS_SLOT_TOTAL else float("nan"), float(values[self._LOSS_SLOT_MSE]) if values.size > self._LOSS_SLOT_MSE else float("nan")))(np.frombuffer(self._buffers["loss"].to_numpy().tobytes(), dtype=np.float32))
     _adam_runtime_hparams = lambda self: AdamRuntimeHyperParams(
         grad_component_clip=float(self.stability.grad_component_clip),
@@ -256,7 +256,7 @@ class GaussianTrainer:
         }
 
     def _dispatch_loss_grad(self, encoder: spy.CommandEncoder, target_texture: spy.Texture) -> None:
-        shared = {"g_OutputGrad": self.renderer.output_grad_texture, "g_LossBuffer": self._buffers["loss"], **self._loss_vars()}
+        shared = {"g_OutputGrad": self.renderer.output_grad_buffer, "g_LossBuffer": self._buffers["loss"], **self._loss_vars()}
         self._dispatch("clear_loss_grad", encoder, self._pixel_thread_count(), shared)
         self._dispatch(
             "loss_grad",
@@ -265,7 +265,7 @@ class GaussianTrainer:
             {
                 "g_Rendered": self.renderer.output_texture,
                 "g_Target": target_texture,
-                "g_OutputGrad": self.renderer.output_grad_texture,
+                "g_OutputGrad": self.renderer.output_grad_buffer,
                 "g_LossBuffer": self._buffers["loss"],
                 **self._loss_vars(),
             },

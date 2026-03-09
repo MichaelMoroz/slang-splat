@@ -117,7 +117,6 @@ class GaussianRenderer:
     _raster_thread_count = lambda self: spy.uint3((self.width + self._raster_config.microtile_dim - 1) // self._raster_config.microtile_dim, (self.height + self._raster_config.microtile_dim - 1) // self._raster_config.microtile_dim, 1)
     _read_image = lambda self: np.asarray(self.output_texture.to_numpy(), dtype=np.float32).copy()
     _create_shaders = lambda self: [setattr(self, attr, self.device.create_compute_kernel(program) if kind == "kernel" else self.device.create_compute_pipeline(program)) for attr, kind, shader_name, entry in self._SHADERS for program in [self.device.load_program(str(Path(SHADER_ROOT / "renderer" / shader_name)), [entry])]]
-    _ensure_textures = lambda self: [setattr(self, attr, getattr(self, attr) or self.device.create_texture(format=spy.Format.rgba32_float, width=self.width, height=self.height, usage=spy.TextureUsage.shader_resource | spy.TextureUsage.unordered_access)) for attr in ("_output_texture", "_output_grad_texture")]
     _upload_scene = lambda self, scene: self._scene_buffers["splat_params"].copy_from_numpy(self._pack_scene(scene))
     _reset_prepass_counters = lambda self: [self._work_buffers[name].copy_from_numpy(np.array([0], dtype=np.uint32)) for name in ("counter", "scanline_counter")]
     set_scene = lambda self, scene: (self._ensure_scene_buffers(scene.count), self._ensure_work_buffers(scene.count), self._upload_scene(scene), setattr(self, "_current_scene", scene))
@@ -177,7 +176,7 @@ class GaussianRenderer:
         self._work_buffers: dict[str, spy.Buffer] = {}
         self._debug_grad_norm_buffer: spy.Buffer | None = None
         self._output_texture: spy.Texture | None = None
-        self._output_grad_texture: spy.Texture | None = None
+        self._output_grad_buffer: spy.Buffer | None = None
         self._last_stats: dict[str, int | bool | float] = {}
         self._counter_readback_ring: list[spy.Buffer] = []
         self._counter_readback_capacity: list[int] = []
@@ -217,7 +216,7 @@ class GaussianRenderer:
         max_entries = self._max_prepass_entries_by_budget()
         required_splats = max(splat_count, 1)
         required_entries = min(max(splat_count * self.list_capacity_multiplier, min_list_entries, 1), max_entries)
-        if self._work_buffers and required_splats <= self._work_splat_capacity and required_entries <= self._max_list_entries and required_entries <= self._max_scanline_entries and self._output_texture is not None and self._output_grad_texture is not None:
+        if self._work_buffers and required_splats <= self._work_splat_capacity and required_entries <= self._max_list_entries and required_entries <= self._max_scanline_entries and self._output_texture is not None and self._output_grad_buffer is not None:
             return
         self._work_splat_capacity = self._grow(required_splats, self._work_splat_capacity)
         self._max_list_entries = min(self._grow(required_entries, self._max_list_entries), max_entries)
@@ -239,9 +238,26 @@ class GaussianRenderer:
         }
         self._work_buffers = {name: self.device.create_buffer(size=size, usage=self._RW_BUFFER_USAGE) for name, size in sized.items()}
         self._work_buffers["debug_grad_norm"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1),), dtype=np.float32))
-        self._ensure_textures()
+        self._ensure_output_texture()
+        self._ensure_output_grad_buffer()
         if self._pending_min_list_entries > 0 and self._max_list_entries >= self._pending_min_list_entries:
             self._pending_min_list_entries = 0
+
+    def _ensure_output_texture(self) -> None:
+        if self._output_texture is None:
+            self._output_texture = self.device.create_texture(
+                format=spy.Format.rgba32_float,
+                width=self.width,
+                height=self.height,
+                usage=spy.TextureUsage.shader_resource | spy.TextureUsage.unordered_access,
+            )
+
+    def _ensure_output_grad_buffer(self) -> None:
+        if self._output_grad_buffer is None:
+            self._output_grad_buffer = self.device.create_buffer(
+                size=max(self.width * self.height, 1) * 4 * self._U32_BYTES,
+                usage=self._RW_BUFFER_USAGE,
+            )
 
     @classmethod
     def _param_slice(cls, splat_count: int, param_id: int) -> slice:
@@ -393,7 +409,7 @@ class GaussianRenderer:
     def _clear_raster_grads(self, encoder: spy.CommandEncoder, splat_count: int) -> None:
         self._dispatch(self._k_clear_raster_grads, encoder, spy.uint3(max(int(splat_count) * self.TRAINABLE_PARAM_COUNT, 1), 1, 1), {**self._grad_vars(), **self._prepass_uniforms(splat_count)})
 
-    def _rasterize_forward_backward(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output_grad: spy.Texture) -> None:
+    def _rasterize_forward_backward(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output_grad: spy.Buffer) -> None:
         self._dispatch(self._k_raster_forward_backward, encoder, self._raster_thread_count(), {**self._scene_vars(), "g_ScreenColorAlpha": self._work_buffers["screen_color_alpha"], "g_SortedValues": self._work_buffers["values"], "g_TileRanges": self._work_buffers["tile_ranges"], "g_OutputGrad": output_grad, **self._grad_vars(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._camera_uniforms(camera)})
 
     def _execute_prepass(self, scene: GaussianScene, camera: Camera, sync_counts: bool = False) -> tuple[int, int]:
@@ -421,6 +437,15 @@ class GaussianRenderer:
         if texture is None:
             raise RuntimeError(f"{label} texture is not initialized.")
         return texture
+
+    def _require_buffer(self, attr: str, label: str) -> spy.Buffer:
+        buffer = getattr(self, attr)
+        if buffer is None:
+            raise RuntimeError(f"{label} buffer is not initialized.")
+        return buffer
+
+    def _copy_output_texture_to_grad_buffer(self) -> None:
+        self.output_grad_buffer.copy_from_numpy(np.ascontiguousarray(self._read_image().reshape(-1, 4), dtype=np.float32))
 
     def copy_scene_state_to(self, encoder: spy.CommandEncoder, dst: "GaussianRenderer") -> None:
         if self._current_scene is None:
@@ -482,7 +507,7 @@ class GaussianRenderer:
     scene_buffers = property(lambda self: self._scene_buffers)
     work_buffers = property(lambda self: self._work_buffers)
     output_texture = property(lambda self: self._require_texture("_output_texture", "Output"))
-    output_grad_texture = property(lambda self: self._require_texture("_output_grad_texture", "Output grad"))
+    output_grad_buffer = property(lambda self: self._require_buffer("_output_grad_buffer", "Output grad"))
     execute_prepass_for_current_scene = lambda self, camera, sync_counts=False: self._execute_prepass(self._require_scene(), camera, sync_counts=sync_counts)
     rasterize_current_scene = lambda self, encoder, camera, background: self._require_scene() and self._rasterize(encoder, camera, background)
     clear_raster_grads_current_scene = lambda self, encoder: self._clear_raster_grads(encoder, self._require_scene().count)
@@ -521,9 +546,13 @@ class GaussianRenderer:
         self._execute_prepass(scene, camera, sync_counts=False)
         enc = self.device.create_command_encoder()
         self._rasterize(enc, camera, background_np)
-        self._clear_raster_grads(enc, scene.count)
-        self._rasterize_forward_backward(enc, camera, background_np, self.output_texture)
         self.device.submit_command_buffer(enc.finish())
+        self.device.wait()
+        self._copy_output_texture_to_grad_buffer()
+        enc_bwd = self.device.create_command_encoder()
+        self._clear_raster_grads(enc_bwd, scene.count)
+        self._rasterize_forward_backward(enc_bwd, camera, background_np, self.output_grad_buffer)
+        self.device.submit_command_buffer(enc_bwd.finish())
         self.device.wait()
         return self.read_grad_groups(scene.count)
 

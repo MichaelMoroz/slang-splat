@@ -77,7 +77,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - `csRasterizeForwardBackward` recomputes the forward tile traversal inside the gradient pass, then walks the same batches in reverse, so no per-pixel forward-state textures are needed.
 - The reverse pass reuses one staged gaussian per thread-group lane, accumulates the microtile's pixel contributions in registers, and immediately converts them into global parameter gradients.
 - Global and groupshared raster loads are implemented via custom derivative functions; backward accumulation uses wave-reduced direct global atomics into flattened per-splat `float4` gradient buffers (`index = splat_id * 4 + component`) without an intermediate groupshared gradient cache.
-- Output gradients are supplied through `g_OutputGrad` (`Texture2D<float4>`), and chain-rule terms include gamma output mapping and alpha output (`1 - transmittance`).
+- Output gradients are supplied through `g_OutputGrad` (`StructuredBuffer<float4>`) using flat pixel indexing `y * width + x`, and chain-rule terms include gamma output mapping and alpha output (`1 - transmittance`).
 
 ## 8. Training Stage
 - Shader: `shaders/renderer/gaussian_training_stage.slang`.

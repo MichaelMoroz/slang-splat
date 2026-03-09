@@ -15,22 +15,16 @@ static const float GAUSSIAN_BLUR_WEIGHTS[GAUSSIAN_BLUR_TAP_COUNT] = {
     0.00102838008447911
 };
 
-uniform Texture2D<float4> g_BlurInput;
-uniform RWTexture2D<float4> g_BlurOutput;
+uniform StructuredBuffer<float> g_BlurInput;
+uniform RWStructuredBuffer<float> g_BlurOutput;
 uniform uint g_BlurWidth;
 uniform uint g_BlurHeight;
+uniform uint g_BlurChannelCount;
 
-uint2 clamp_blur_pixel(int2 pixel)
+uint clamp_blur_index(int2 pixel, uint channel)
 {
-    return uint2(clamp(pixel.x, 0, int(g_BlurWidth) - 1), clamp(pixel.y, 0, int(g_BlurHeight) - 1));
-}
-
-[Differentiable]
-float4 gaussian_blur_taps(float4 taps[GAUSSIAN_BLUR_TAP_COUNT])
-{
-    float4 accum = 0.0;
-    [unroll] for (uint tap = 0u; tap < GAUSSIAN_BLUR_TAP_COUNT; ++tap) accum += taps[tap] * GAUSSIAN_BLUR_WEIGHTS[tap];
-    return accum;
+    uint2 clamped = uint2(clamp(pixel.x, 0, int(g_BlurWidth) - 1), clamp(pixel.y, 0, int(g_BlurHeight) - 1));
+    return ((clamped.y * g_BlurWidth) + clamped.x) * g_BlurChannelCount + channel;
 }
 
 [shader("compute")]
@@ -39,15 +33,16 @@ void csGaussianBlurHorizontal(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     uint px = dispatchThreadID.x;
     uint py = dispatchThreadID.y;
-    if (px >= g_BlurWidth || py >= g_BlurHeight) return;
+    uint channel = dispatchThreadID.z;
+    if (px >= g_BlurWidth || py >= g_BlurHeight || channel >= g_BlurChannelCount) return;
 
-    float4 taps[GAUSSIAN_BLUR_TAP_COUNT];
+    float accum = 0.0;
     [unroll] for (uint tap = 0u; tap < GAUSSIAN_BLUR_TAP_COUNT; ++tap)
     {
         int offset = int(tap) - int(GAUSSIAN_BLUR_RADIUS);
-        taps[tap] = g_BlurInput[clamp_blur_pixel(int2(int(px) + offset, int(py)))];
+        accum += g_BlurInput[clamp_blur_index(int2(int(px) + offset, int(py)), channel)] * GAUSSIAN_BLUR_WEIGHTS[tap];
     }
-    g_BlurOutput[uint2(px, py)] = gaussian_blur_taps(taps);
+    g_BlurOutput[((py * g_BlurWidth) + px) * g_BlurChannelCount + channel] = accum;
 }
 
 [shader("compute")]
@@ -56,13 +51,14 @@ void csGaussianBlurVertical(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     uint px = dispatchThreadID.x;
     uint py = dispatchThreadID.y;
-    if (px >= g_BlurWidth || py >= g_BlurHeight) return;
+    uint channel = dispatchThreadID.z;
+    if (px >= g_BlurWidth || py >= g_BlurHeight || channel >= g_BlurChannelCount) return;
 
-    float4 taps[GAUSSIAN_BLUR_TAP_COUNT];
+    float accum = 0.0;
     [unroll] for (uint tap = 0u; tap < GAUSSIAN_BLUR_TAP_COUNT; ++tap)
     {
         int offset = int(tap) - int(GAUSSIAN_BLUR_RADIUS);
-        taps[tap] = g_BlurInput[clamp_blur_pixel(int2(int(px), int(py) + offset))];
+        accum += g_BlurInput[clamp_blur_index(int2(int(px), int(py) + offset), channel)] * GAUSSIAN_BLUR_WEIGHTS[tap];
     }
-    g_BlurOutput[uint2(px, py)] = gaussian_blur_taps(taps);
+    g_BlurOutput[((py * g_BlurWidth) + px) * g_BlurChannelCount + channel] = accum;
 }

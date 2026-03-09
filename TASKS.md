@@ -15,8 +15,8 @@ Description on completion: Packed all trainable splat state into one param-major
 
 4) For `blur` it should be able to do the blur on N channels simultaneusly. Use structured buffers instead of textures for multichannel storage. (Only the dataset and rendered results should be as textures. Gradients of textures should be buffers. )
 Test criteria: create a basic N channel blur test.
-STATUS: Not done
-Description on completion: none
+STATUS: Done
+Description on completion: Reworked `blur` to use flat structured buffers with runtime channel count and dispatch channel work in parallel as `SV_DispatchThreadID.z`, so one blur pass can process arbitrary `N`-channel tensors instead of only `float4` textures. Moved training image gradients from textures to a flat `StructuredBuffer<float4>` / `RWStructuredBuffer<float4>` path across the loss kernels, renderer bindings, and raster backward pass while keeping only dataset/rendered images as textures. Added an `N=6` separable Gaussian blur regression and verified with `pytest tests/test_training_kernels.py tests/test_renderer_pipeline.py`.
 
 5) Now that all splat data is packed in one buffer, focus on keeping only a basic backprop on an unchanging gaussian splat count. Use the MCMC loss exactly. Initialized from the COLMAP point cloud. By the way the initialization scales for the splats are not valid at the moment, they should use the neigbor distance, and not be 0.0 or near zero as they are now.
 Implement SSIM MCMC Loss into the optimizer. Separate forward and backward kernels. Avoid readbacks of splats in the training loop, do everything on the GPU. SSIM stuff should be their own kernels in `losses` submodule. Keep the L1 and regularization part inline, only SSIM needs separate kernels.

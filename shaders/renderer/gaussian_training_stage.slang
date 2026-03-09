@@ -14,7 +14,7 @@ uniform float g_HugeValue;
 
 uniform Texture2D<float4> g_Rendered;
 uniform Texture2D<float4> g_Target;
-uniform RWTexture2D<float4> g_OutputGrad;
+uniform RWStructuredBuffer<float4> g_OutputGrad;
 uniform RWStructuredBuffer<float> g_LossBuffer;
 
 uniform Texture2D<float4> g_DebugRendered;
@@ -38,7 +38,7 @@ void csClearLossAndGradTex(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     uint px = dispatchThreadID.x;
     uint py = dispatchThreadID.y;
-    if (px < g_Width && py < g_Height) g_OutputGrad[uint2(px, py)] = 0.0;
+    if (px < g_Width && py < g_Height) g_OutputGrad[py * g_Width + px] = 0.0;
     if (px == 0u && py == 0u)
     {
         g_LossBuffer[LOSS_SLOT_TOTAL] = 0.0;
@@ -69,7 +69,7 @@ void csComputeL1LossGrad(
         localLoss = isfinite(loss) ? loss : 0.0;
         localMSE = isfinite(mse) ? mse : 0.0;
         float3 dOut = clamp(sanitize_float3(rgb_l1_grad(rendered, target, g_InvPixelCount), g_LossGradClip), -g_LossGradClip, g_LossGradClip);
-        g_OutputGrad[pixel] = float4(dOut, 0.0);
+        g_OutputGrad[py * g_Width + px] = float4(dOut, 0.0);
     }
 
     gsLoss[localIndex] = localLoss;

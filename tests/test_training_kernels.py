@@ -254,22 +254,24 @@ def test_training_targets_use_srgb_textures(device, tmp_path: Path):
     assert native_target is train_target
 
 
-def test_separable_gaussian_blur_preserves_impulse_energy(device):
+def test_separable_gaussian_blur_preserves_impulse_energy_for_n_channels(device):
     width = height = 17
+    channel_count = 6
     blur = SeparableGaussianBlur(device, width=width, height=height)
-    input_tex = blur.make_texture()
-    output_tex = blur.make_texture()
-    image = np.zeros((height, width, 4), dtype=np.float32)
+    input_buffer = blur.make_buffer(channel_count)
+    output_buffer = blur.make_buffer(channel_count)
+    image = np.zeros((height, width, channel_count), dtype=np.float32)
     center = width // 2
     image[center, center, 0] = 1.0
-    input_tex.copy_from_numpy(image)
+    image[center, center, 5] = 0.5
+    input_buffer.copy_from_numpy(np.ascontiguousarray(image.reshape(-1), dtype=np.float32))
 
     enc = device.create_command_encoder()
-    blur.blur(enc, input_tex, output_tex)
+    blur.blur(enc, input_buffer, output_buffer, channel_count)
     device.submit_command_buffer(enc.finish())
     device.wait()
 
-    out = np.asarray(output_tex.to_numpy(), dtype=np.float32)
+    out = np.frombuffer(output_buffer.to_numpy().tobytes(), dtype=np.float32).reshape(height, width, channel_count)
     expected_weights = np.array(
         [
             0.00102838008447911,
@@ -287,7 +289,10 @@ def test_separable_gaussian_blur_preserves_impulse_energy(device):
         dtype=np.float32,
     )
     np.testing.assert_allclose(out[:, :, 0].sum(), 1.0, rtol=0.0, atol=1e-5)
+    np.testing.assert_allclose(out[:, :, 5].sum(), 0.5, rtol=0.0, atol=1e-5)
+    np.testing.assert_allclose(out[:, :, 3], 0.0, rtol=0.0, atol=1e-7)
     np.testing.assert_allclose(out[center, center - 5 : center + 6, 0], expected_weights * expected_weights[5], rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(out[center, center - 5 : center + 6, 5], 0.5 * expected_weights * expected_weights[5], rtol=0.0, atol=1e-6)
 
 
 def test_fused_adam_handles_nan_grads(device, tmp_path: Path):

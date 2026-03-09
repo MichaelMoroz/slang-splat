@@ -43,7 +43,7 @@ Each trainer `step()` performs:
 4. Run `csClearLossAndGradTex`, then `csComputeL1LossGrad`.
    - The loss kernel computes direct RGB L1 reconstruction loss.
    - It also records RGB MSE as a plain diagnostic metric.
-   - The same pass writes `dLoss / dRendered` into `g_OutputGrad`.
+   - The same pass writes `dLoss / dRendered` into a flat `RWStructuredBuffer<float4>` `g_OutputGrad`, indexed as `pixel = y * width + x`.
 5. Run fused raster forward/backward replay to fill per-splat gradient buffers without cached per-pixel forward state.
 6. Run the optimizer pipeline:
    - `csAccumulateRegularizationGrads` adds scale and opacity regularizers on the packed param-major state.
@@ -56,7 +56,7 @@ Each trainer `step()` performs:
 There is no densification, pruning, opacity reset schedule, MCMC exploration term, or PSNR/SSIM tracking on the active path.
 
 ## Kernels
-- `csClearLossAndGradTex`: zero loss + output-grad texture.
+- `csClearLossAndGradTex`: zero loss + output-grad buffer.
 - `csComputeL1LossGrad`: computes direct RGB L1 loss, records RGB MSE, and writes `g_OutputGrad`.
 - Packed trainable storage remains param-major scalar packing: `param_id * splat_count + splat_id`.
 - The stored opacity parameter is the raw sigmoid logit, not direct alpha.

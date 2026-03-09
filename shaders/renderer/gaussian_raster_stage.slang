@@ -370,7 +370,7 @@ RasterState.Differential raster_output_gradient_pixel(
     if (!info.pixelActive[pixelIdx] || !info.hasTileRange) return { 0.0, 0.0 };
 
     var dpState = diffPair(state);
-    bwd_diff(raster_output_from_state)(dpState, g_Raster.background, g_OutputGrad[info.pixelCoord[pixelIdx]]);
+    bwd_diff(raster_output_from_state)(dpState, g_Raster.background, g_OutputGrad[info.pixelCoord[pixelIdx].y * g_Raster.width + info.pixelCoord[pixelIdx].x]);
     return dpState.getDifferential();
 }
 

@@ -40,7 +40,7 @@ uniform StructuredBuffer<uint> g_PrepassParams;
 uniform StructuredBuffer<float> g_DebugGradNorm;
 
 uniform RWTexture2D<float4> g_Output;
-uniform Texture2D<float4> g_OutputGrad;
+uniform StructuredBuffer<float4> g_OutputGrad;
 
 uniform RWStructuredBuffer<float> g_ParamGrads;
 
