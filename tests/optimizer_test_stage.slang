@@ -6,7 +6,7 @@ uniform uint g_ParamCount;
 uniform StructuredBuffer<float> g_Targets;
 uniform RWStructuredBuffer<float> g_Params;
 uniform RWStructuredBuffer<float> g_Grads;
-uniform TrainingStabilityParams g_Stability;
+uniform OptimizerRuntimeParams g_Stability;
 
 [Differentiable]
 float quadratic_loss(float value, no_diff float target)

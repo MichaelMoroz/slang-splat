@@ -1,6 +1,6 @@
 # COLMAP Training Pipeline
 
-`cli.py` (`train-colmap`) is a thin wrapper over `src/app/cli.py`. `src/training/gaussian_trainer.py` remains the public training facade, while `src/training/optimizer.py` now owns optimizer buffers, optimizer kernel dispatch, and packed per-parameter settings.
+`cli.py` (`train-colmap`) is a thin wrapper over `src/app/cli.py`. `src/training/gaussian_trainer.py` remains the public training facade, `src/training/adam.py` owns generic ADAM buffers and generic optimizer-kernel dispatch, and `src/training/optimizer.py` keeps only Gaussian-specific optimizer logic.
 
 The active training path is intentionally minimal: initialize a fixed gaussian set from the COLMAP point cloud, render one shuffled training frame, compute a direct L1 image gradient on the GPU, replay raster backward for per-splat gradients, then run a fused ADAM update.
 

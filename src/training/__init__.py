@@ -1,3 +1,4 @@
+from .adam import AdamOptimizer, AdamRuntimeHyperParams
 from .gaussian_trainer import (
     AdamHyperParams,
     GaussianTrainer,
@@ -9,6 +10,8 @@ from .optimizer import GaussianOptimizer
 from .profiles import TRAINING_PROFILE_CHOICES, TrainingProfile, resolve_training_profile
 
 __all__ = [
+    "AdamOptimizer",
+    "AdamRuntimeHyperParams",
     "AdamHyperParams",
     "StabilityHyperParams",
     "TrainingHyperParams",

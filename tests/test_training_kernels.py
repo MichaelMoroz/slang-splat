@@ -469,7 +469,7 @@ def test_cpu_pointcloud_initializer_rebuilds_scene_with_nn_scales(device, tmp_pa
     assert np.all(np.abs(np.linalg.norm(rotations, axis=1) - 1.0) < 1e-3)
     for name in _ADAM_BUFFER_NAMES:
         np.testing.assert_allclose(
-            np.frombuffer(trainer.optimizer.buffers[name].to_numpy().tobytes(), dtype=np.float32)[: 8 * renderer.TRAINABLE_PARAM_COUNT],
+            np.frombuffer(trainer.adam_optimizer.buffers[name].to_numpy().tobytes(), dtype=np.float32)[: 8 * renderer.TRAINABLE_PARAM_COUNT],
             np.zeros((8 * renderer.TRAINABLE_PARAM_COUNT,), dtype=np.float32),
             rtol=0.0,
             atol=1e-7,

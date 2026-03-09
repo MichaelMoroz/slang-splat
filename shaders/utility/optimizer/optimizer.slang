@@ -11,17 +11,11 @@ struct AdamParams
 
 static const float ADAM_EPSILON = 1e-8;
 
-struct TrainingStabilityParams
+struct OptimizerRuntimeParams
 {
     float gradComponentClip;
     float gradNormClip;
     float maxUpdate;
-    float minScale;
-    float maxScale;
-    float maxAnisotropy;
-    float minOpacity;
-    float maxOpacity;
-    float positionAbsMax;
     float hugeValue;
 };
 
@@ -40,7 +34,7 @@ struct OptimizerParamSettings
 static const uint ADAM_GROUP_SIZE = 256u;
 
 uniform AdamParams g_OptimizerAdam;
-uniform TrainingStabilityParams g_OptimizerStability;
+uniform OptimizerRuntimeParams g_OptimizerRuntime;
 uniform uint g_OptimizerSplatCount;
 uniform uint g_OptimizerParamCount;
 uniform uint g_OptimizerParamGroupSize;
@@ -116,11 +110,11 @@ void csAdamStepPacked(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint paramGroupSize = max(g_OptimizerParamGroupSize, 1u);
     uint paramId = paramIndex / paramGroupSize;
     OptimizerParamSettings settings = g_OptimizerParamSettings[paramId];
-    float value = sanitize_scalar(g_OptimizerParams[paramIndex], g_OptimizerStability.hugeValue);
+    float value = sanitize_scalar(g_OptimizerParams[paramIndex], g_OptimizerRuntime.hugeValue);
     float grad = sanitize_scalar(g_OptimizerGrads[paramIndex], settings.gradClipAbs);
     float2 moments = float2(
-        sanitize_scalar(g_OptimizerAdamMoments[paramIndex].x, g_OptimizerStability.hugeValue),
-        sanitize_scalar(g_OptimizerAdamMoments[paramIndex].y, g_OptimizerStability.hugeValue)
+        sanitize_scalar(g_OptimizerAdamMoments[paramIndex].x, g_OptimizerRuntime.hugeValue),
+        sanitize_scalar(g_OptimizerAdamMoments[paramIndex].y, g_OptimizerRuntime.hugeValue)
     );
     float beta1Pow = pow(g_OptimizerAdam.beta1, float(g_OptimizerAdam.stepIndex));
     float beta2Pow = pow(g_OptimizerAdam.beta2, float(g_OptimizerAdam.stepIndex));
@@ -129,13 +123,13 @@ void csAdamStepPacked(uint3 dispatchThreadID : SV_DispatchThreadID)
     float oneMinusBeta1 = 1.0 - g_OptimizerAdam.beta1;
     float oneMinusBeta2 = 1.0 - g_OptimizerAdam.beta2;
 
-    moments.x = sanitize_scalar(g_OptimizerAdam.beta1 * moments.x + oneMinusBeta1 * grad, g_OptimizerStability.hugeValue);
-    moments.y = sanitize_scalar(g_OptimizerAdam.beta2 * moments.y + oneMinusBeta2 * (grad * grad), g_OptimizerStability.hugeValue);
+    moments.x = sanitize_scalar(g_OptimizerAdam.beta1 * moments.x + oneMinusBeta1 * grad, g_OptimizerRuntime.hugeValue);
+    moments.y = sanitize_scalar(g_OptimizerAdam.beta2 * moments.y + oneMinusBeta2 * (grad * grad), g_OptimizerRuntime.hugeValue);
     float mHat = moments.x / max(biasCorr1, TINY_VALUE);
     float vHat = moments.y / max(biasCorr2, TINY_VALUE);
     float update = settings.lr * mHat / (sqrt(max(vHat, 0.0)) + ADAM_EPSILON);
-    update = clamp(sanitize_scalar(update, g_OptimizerStability.maxUpdate), -g_OptimizerStability.maxUpdate, g_OptimizerStability.maxUpdate);
-    float nextValue = sanitize_scalar(value - update, g_OptimizerStability.hugeValue);
+    update = clamp(sanitize_scalar(update, g_OptimizerRuntime.maxUpdate), -g_OptimizerRuntime.maxUpdate, g_OptimizerRuntime.maxUpdate);
+    float nextValue = sanitize_scalar(value - update, g_OptimizerRuntime.hugeValue);
     g_OptimizerParams[paramIndex] = clamp(nextValue, settings.valueMin, settings.valueMax);
     g_OptimizerAdamMoments[paramIndex] = moments;
 }

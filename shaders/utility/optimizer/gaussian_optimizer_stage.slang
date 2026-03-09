@@ -1,5 +1,4 @@
 import "utility/losses/losses.slang";
-import "utility/optimizer/optimizer.slang";
 import "utility/math/constants.slang";
 import "utility/math/numeric.slang";
 import "utility/math/quaternion.slang";
@@ -8,7 +7,21 @@ import "utility/splatting/params.slang";
 static const uint LOSS_SLOT_TOTAL = 0u;
 static const uint OPTIMIZER_GROUP_SIZE = 256u;
 
-uniform TrainingStabilityParams g_Stability;
+struct GaussianStabilityParams
+{
+    float gradComponentClip;
+    float gradNormClip;
+    float maxUpdate;
+    float minScale;
+    float maxScale;
+    float maxAnisotropy;
+    float minOpacity;
+    float maxOpacity;
+    float positionAbsMax;
+    float hugeValue;
+};
+
+uniform GaussianStabilityParams g_Stability;
 uniform uint g_SplatCount;
 uniform float g_ScaleL2Weight;
 uniform float g_ScaleAbsRegWeight;

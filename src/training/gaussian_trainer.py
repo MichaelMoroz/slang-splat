@@ -11,6 +11,7 @@ import slangpy as spy
 from ..common import SHADER_ROOT
 from ..renderer import Camera, GaussianRenderer
 from ..scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
+from .adam import AdamOptimizer, AdamRuntimeHyperParams
 from .optimizer import GaussianOptimizer
 
 
@@ -75,11 +76,18 @@ class GaussianTrainer:
     get_frame_target_texture = lambda self, frame_index, native_resolution=True: self._frame_targets_train[int(np.clip(frame_index, 0, len(self.frames) - 1))]
     _dispatch_raster_forward_backward = lambda self, encoder, frame_camera, background: (self.renderer.clear_raster_grads_current_scene(encoder), self.renderer.rasterize_forward_backward_current_scene(encoder=encoder, camera=frame_camera, background=background, output_grad=self.renderer.output_grad_texture))
     _read_loss_metrics = lambda self: (lambda values: (float(values[self._LOSS_SLOT_TOTAL]) if values.size > self._LOSS_SLOT_TOTAL else float("nan"), float(values[self._LOSS_SLOT_MSE]) if values.size > self._LOSS_SLOT_MSE else float("nan")))(np.frombuffer(self._buffers["loss"].to_numpy().tobytes(), dtype=np.float32))
+    _adam_runtime_hparams = lambda self: AdamRuntimeHyperParams(
+        grad_component_clip=float(self.stability.grad_component_clip),
+        grad_norm_clip=float(self.stability.grad_norm_clip),
+        max_update=float(self.stability.max_update),
+        huge_value=float(self.stability.huge_value),
+    )
 
     def update_hyperparams(self, adam_hparams: AdamHyperParams, stability_hparams: StabilityHyperParams, training_hparams: TrainingHyperParams) -> None:
         self.adam = adam_hparams
         self.stability = stability_hparams
         self.training = training_hparams
+        self.adam_optimizer.update_hyperparams(self.adam, self._adam_runtime_hparams())
         self.optimizer.update_hyperparams(self.adam, self.stability)
 
     def _dispatch_adam_step(self, encoder: spy.CommandEncoder) -> None:
@@ -116,6 +124,7 @@ class GaussianTrainer:
         self.adam = pick(adam_hparams, AdamHyperParams())
         self.stability = pick(stability_hparams, StabilityHyperParams())
         self.training = pick(training_hparams, TrainingHyperParams())
+        self.adam_optimizer = AdamOptimizer(self.device, self.adam, self._adam_runtime_hparams())
         self.optimizer = GaussianOptimizer(self.device, self.renderer, self.adam, self.stability)
         self.state = TrainingState()
         self._loss_window = _RollingMetricWindow(size=max(len(self.frames), 1), values=deque())
@@ -160,7 +169,7 @@ class GaussianTrainer:
         self._buffers.setdefault("loss", self.device.create_buffer(size=8, usage=usage))
 
     def _zero_optimizer_moments(self) -> None:
-        self.optimizer.zero_moments(self._scene_count)
+        self.adam_optimizer.zero_moments(self._scene_count * self.renderer.TRAINABLE_PARAM_COUNT)
 
     def _reset_frame_order(self) -> None:
         self._frame_order = self._frame_rng.permutation(len(self.frames)).astype(np.int32)
@@ -262,7 +271,7 @@ class GaussianTrainer:
         )
 
     def _dispatch_optimizer_step(self, encoder: spy.CommandEncoder) -> None:
-        self.optimizer.dispatch_step(
+        self.optimizer.dispatch_regularizers(
             encoder,
             scene_buffers=self.renderer.scene_buffers,
             work_buffers=self.renderer.work_buffers,
@@ -270,7 +279,25 @@ class GaussianTrainer:
             splat_count=self._scene_count,
             training_hparams=self.training,
             scale_reg_reference=self._scale_reg_reference,
+        )
+        self.adam_optimizer.dispatch_step(
+            encoder,
+            params_buffer=self.renderer.scene_buffers["splat_params"],
+            grads_buffer=self.renderer.work_buffers["param_grads"],
+            splat_count=self._scene_count,
+            packed_param_count=self._scene_count * self.renderer.TRAINABLE_PARAM_COUNT,
+            param_group_size=self._scene_count,
+            param_settings=self.optimizer.param_settings,
+            param_settings_count=self.optimizer.param_settings_count,
             step_index=self.state.step + 1,
+        )
+        self.optimizer.dispatch_projection(
+            encoder,
+            scene_buffers=self.renderer.scene_buffers,
+            work_buffers=self.renderer.work_buffers,
+            splat_count=self._scene_count,
+            training_hparams=self.training,
+            scale_reg_reference=self._scale_reg_reference,
         )
 
     def initialize_scene_from_pointcloud(self, splat_count: int, init_hparams: GaussianInitHyperParams, seed: int) -> None:

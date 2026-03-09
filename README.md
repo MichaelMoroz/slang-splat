@@ -11,7 +11,7 @@ Runtime target is Vulkan.
 - GPU tile range build pass from sorted keys.
 - GPU compute rasterizer that blends tile-local sorted splats with `8x8` thread groups and `3x3` microtiles per thread (`24x24` effective tiles).
 - Fused raster forward/backward training path for per-splat gradients without per-pixel state buffers.
-- Fused one-thread-per-splat ADAM training kernel for a fixed gaussian count.
+- Fused one-thread-per-packed-parameter ADAM training kernel for a fixed gaussian count.
 - CPU COLMAP point-cloud initialization with nearest-neighbor scales.
 - CPU reference implementations in `reference_impls` plus tests for key algorithms.
 
@@ -83,7 +83,7 @@ Training notes:
 - The training loss is direct RGB L1 with optional scale and opacity regularization accumulated in a separate optimizer pipeline.
 - GPU trainable state is packed into one param-major float buffer shared by renderer and trainer: `param[param_id * splat_count + splat_id]`.
 - Raster backward gradients use the same packed param-major layout, optimizer settings live in one structured per-parameter buffer, and ADAM moments are packed into one `float2` buffer (`m`, `v`) per parameter element.
-- `src/training/optimizer.py` is the Python-side optimizer module; `GaussianTrainer` delegates optimizer buffer ownership and dispatch to it.
+- `src/training/adam.py` is the Python-side generic ADAM module, while `src/training/optimizer.py` keeps Gaussian-specific regularization/projection; `GaussianTrainer` composes both.
 - GPU scene buffers store opacity as a raw sigmoid parameter so rasterization and optimization differentiate through effective alpha directly.
 - Pixel-floor-clamped splats attenuate blend alpha by the ratio of raw scale area to clamped scale area, while the alpha cutoff still applies to the pre-attenuation alpha path.
 - Reported training metrics are total loss, rolling average loss, and per-step `last_mse`.
