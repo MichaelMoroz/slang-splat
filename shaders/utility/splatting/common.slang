@@ -51,7 +51,6 @@ struct RasterParams
     uint debugShowGradNorm;
     float debugGradNormThreshold;
     float debugEllipseThicknessPx;
-    float3 debugEllipseColor;
 };
 
 struct Gaussian3D : IDifferentiable

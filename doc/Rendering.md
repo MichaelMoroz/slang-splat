@@ -51,23 +51,21 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 
 ## 5. Rasterize
 - Shader: `csRasterize` in `shaders/renderer/gaussian_raster_stage.slang`.
-- Raster execution is microtiled: one `8x8` thread group covers one `24x24` effective raster tile, and each thread owns a fixed `3x3` pixel block in registers.
-- Each thread resolves one tile range for its microtile, reuses each staged gaussian across all `9` local pixels, and writes per-pixel output after the forward replay.
+- Raster execution is microtiled: one `8x8` thread group covers one `16x16` effective raster tile, and each thread owns a fixed `2x2` pixel block in registers.
+- Each thread resolves one tile range for its microtile, reuses each staged gaussian across all `4` local pixels, and writes per-pixel output after the forward replay.
 - The inner loop performs front-to-back blending with exponential radial falloff while reusing gaussian data already staged in shared memory.
 - The same camera-dependent two-pixel world-space floor is used in raster through a differentiable smooth-max scale instead of a hard `max`, so the visible footprint starts expanding before the exact clamp point.
 - The raster stage attenuates blend alpha by `raw_area / effective_area` using an area proxy derived from gaussian scale, so subpixel splats keep scale-dependent signal while following the same smooth effective footprint used by projection.
 - The stored alpha slot is a raw sigmoid parameter; the raster stage evaluates `base_alpha = sigmoid(raw_alpha) * coverage`, applies `alphaCutoff` to that pre-attenuation alpha, then multiplies by the clamp attenuation for the final blend alpha.
+- Debug processed-count, grad-norm, and ellipse-outline views are handled in the same forward replay loop as normal rendering rather than by a separate debug pass.
 - Writes RGBA output texture.
 - Primary ray generation goes through `PinholeCamera.screen_to_world_ray(...)`.
 
 ## 6. Debug Raster
-- Shader: `csRenderDebug` in `shaders/renderer/gaussian_debug_stage.slang`.
-- Debug views are dispatched separately from the production raster kernel so the hot path stays focused on tile-list compositing.
-- The debug shader consumes the preprojected screen-space buffers and runs a direct per-pixel loop over visible splats for:
-  - processed-count visualization,
-  - gradient-norm heatmaps,
-  - ellipse overlays.
-- Ellipse overlays render the normal raster result into an intermediate texture first, then apply the overlay in the dedicated debug pass.
+- Debug modes are integrated into `csRasterize`.
+- Processed-count mode outputs the per-pixel count of splats that successfully blended in the forward replay.
+- Grad-norm mode keeps the normal alpha/transmittance path and replaces each splat's RGB with a colormapped value derived from `g_DebugGradNorm[splatId]`.
+- Ellipse mode reuses the same tiled forward replay and switches splat alpha evaluation from filled-gaussian coverage to an inside-clamped outline coverage derived from the projected conic.
 
 ## 7. Raster Backward
 - Shaders: `csClearRasterGrads`, `csRasterizeForwardBackward`.
