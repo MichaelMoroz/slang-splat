@@ -110,7 +110,7 @@ def resolve_training_profile(
         dataset_name = "" if dataset_root is None else dataset_root.resolve().name.lower()
         image_dir = "" if images_subdir is None else str(images_subdir).strip().lower()
         return (
-            _PROFILES[TRAINING_PROFILE_BICYCLE_IMAGES4_PSNR]
+            _PROFILES[TRAINING_PROFILE_BICYCLE_IMAGES4_MCMC]
             if dataset_name == _BICYCLE_DATASET_NAME and image_dir == _BICYCLE_IMAGES_SUBDIR
             else _PROFILES[TRAINING_PROFILE_LEGACY]
         )

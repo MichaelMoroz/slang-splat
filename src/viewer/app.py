@@ -41,6 +41,7 @@ _TRAINING_PARAM_KEYS = {
     "near": "train_near",
     "far": "train_far",
     "scale_l2_weight": "scale_l2",
+    "scale_abs_reg_weight": "scale_abs_reg",
     "opacity_reg_weight": "opacity_reg",
     "lambda_dssim": "lambda_dssim",
     "mcmc_position_noise_scale": "mcmc_pos_noise_scale",
@@ -64,7 +65,7 @@ _TRAINING_DEFAULTS = default_control_values("Train Schedule", "Train Optimizer",
 default_images_subdir = lambda: IMAGE_SUBDIR_OPTIONS[DEFAULT_IMAGE_SUBDIR_INDEX]
 default_renderer_params = lambda max_prepass_memory_mb=DEFAULT_MAX_PREPASS_MEMORY_MB: RendererParams(list_capacity_multiplier=DEFAULT_LIST_CAPACITY_MULTIPLIER, max_prepass_memory_mb=max(int(max_prepass_memory_mb), 1))
 default_init_params = lambda: build_init_params(None, None, None, _TRAIN_SETUP_DEFAULTS["init_opacity"], _TRAIN_SETUP_DEFAULTS["seed"])
-default_training_params = lambda background=DEFAULT_VIEWER_BACKGROUND: build_training_params(background=background, mcmc_position_noise_enabled=bool(_TRAINING_DEFAULTS["mcmc_pos_noise_enabled"]), **{name: (_TRAIN_SETUP_DEFAULTS[control] if control in _TRAIN_SETUP_DEFAULTS else _TRAINING_DEFAULTS[control]) for name, control in _TRAINING_PARAM_KEYS.items()})
+default_training_params = lambda background=DEFAULT_VIEWER_BACKGROUND: build_training_params(background=background, mcmc_position_noise_enabled=bool(_TRAINING_DEFAULTS["mcmc_pos_noise_enabled"]), mcmc_densify_enabled=bool(_TRAINING_DEFAULTS["mcmc_densify_enabled"]), **{name: (_TRAIN_SETUP_DEFAULTS[control] if control in _TRAIN_SETUP_DEFAULTS else _TRAINING_DEFAULTS[control]) for name, control in _TRAINING_PARAM_KEYS.items()})
 
 
 class SplatViewer(spy.AppWindow):
@@ -78,7 +79,7 @@ class SplatViewer(spy.AppWindow):
     camera = lambda self: (lambda forward: Camera.look_at(position=self.s.camera_pos, target=self.s.camera_pos + forward, up=self.s.up, fov_y_degrees=float(self.s.fov_y), near=float(self.s.near), far=float(self.s.far)))(self._forward())
     apply_camera_fit = lambda self, bounds: (lambda fit: (setattr(self.s, "camera_pos", fit.position), setattr(self.s, "near", fit.near), setattr(self.s, "far", fit.far), setattr(self.s, "move_speed", fit.move_speed), setattr(self.c("move_speed"), "value", float(fit.move_speed)), setattr(self.s, "yaw", 0.0), setattr(self.s, "pitch", 0.0), setattr(self.s, "move_vel", spy.float3(0.0, 0.0, 0.0)), setattr(self.s, "rot_vel", spy.float2(0.0, 0.0)) ))(fit_camera(bounds, self.s.fov_y))
     on_keyboard_event = lambda self, event: self.s.keys.__setitem__(event.key, event.type == spy.KeyboardEventType.key_press) if event.type in (spy.KeyboardEventType.key_press, spy.KeyboardEventType.key_release) else None
-    training_params = lambda self: build_training_params(background=self.s.background, mcmc_position_noise_enabled=bool(self.c("mcmc_pos_noise_enabled").value), **{name: self.c(control).value for name, control in _TRAINING_PARAM_KEYS.items()})
+    training_params = lambda self: build_training_params(background=self.s.background, mcmc_position_noise_enabled=bool(self.c("mcmc_pos_noise_enabled").value), mcmc_densify_enabled=bool(self.c("mcmc_densify_enabled").value), **{name: self.c(control).value for name, control in _TRAINING_PARAM_KEYS.items()})
     on_resize = lambda self, width, height: (self.device.wait(), session.recreate_renderer(self, int(width), int(height)) if width > 0 and height > 0 and (self.s.renderer.width, self.s.renderer.height) != (int(width), int(height)) else None, setattr(self.s, "last_resize_exception", ""), setattr(self.s, "last_error", ""))
     on_mouse_event = lambda self, event: (setattr(self.s, "mouse_left", event.type == spy.MouseEventType.button_down) if event.type in (spy.MouseEventType.button_down, spy.MouseEventType.button_up) and event.button == spy.MouseButton.left else None, self.s.mouse_delta.__iadd__(spy.float2(event.pos.x - self.s.mx, event.pos.y - self.s.my)) if event.type == spy.MouseEventType.move and self.s.mx is not None and self.s.my is not None else None, setattr(self.s, "mx", event.pos.x) if event.type == spy.MouseEventType.move else None, setattr(self.s, "my", event.pos.y) if event.type == spy.MouseEventType.move else None, setattr(self.s, "scroll_delta", self.s.scroll_delta + float(event.scroll.y)) if event.type == spy.MouseEventType.scroll else None)
 

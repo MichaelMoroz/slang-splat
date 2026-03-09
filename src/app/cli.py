@@ -84,9 +84,11 @@ def _training_params(args: argparse.Namespace):
         near=args.near,
         far=args.far,
         scale_l2_weight=args.scale_l2,
+        scale_abs_reg_weight=args.scale_abs_reg,
         opacity_reg_weight=args.opacity_reg,
         lambda_dssim=args.lambda_dssim,
         mcmc_position_noise_enabled=True,
+        mcmc_densify_enabled=bool(args.mcmc_densify),
         mcmc_position_noise_scale=5e5,
         mcmc_opacity_gate_sharpness=100.0,
         mcmc_opacity_gate_center=0.995,
@@ -229,8 +231,9 @@ TRAIN_RENDER_ARGS = tuple(
         ("--loss-grad-clip", 10.0),
         ("--near", 0.1),
         ("--far", 120.0),
-        ("--scale-l2", 1e-4),
-        ("--opacity-reg", 1e-3),
+        ("--scale-l2", 0.0),
+        ("--scale-abs-reg", 0.01),
+        ("--opacity-reg", 0.01),
         ("--lambda-dssim", 0.2),
         ("--max-anisotropy", 10.0),
     )
@@ -241,14 +244,15 @@ TRAIN_INIT_ARGS = tuple(
 )
 TRAIN_DENSITY_ARGS = (
     A("--densify-from-iter", type=int, default=500),
-    A("--densify-until-iter", type=int, default=15000),
+    A("--densify-until-iter", type=int, default=25000),
     A("--densification-interval", type=int, default=100),
-    A("--densify-grad-threshold", type=float, default=1.5e-4),
+    A("--densify-grad-threshold", type=float, default=0.0),
     A("--percent-dense", type=float, default=0.01),
     A("--prune-min-opacity", type=float, default=0.005),
     A("--screen-size-prune-threshold", type=float, default=20.0),
     A("--world-size-prune-ratio", type=float, default=0.1),
     A("--opacity-reset-interval", type=int, default=0),
+    A("--mcmc-densify", action=argparse.BooleanOptionalAction, default=True),
 )
 COMMANDS = (
     CommandSpec(
@@ -259,7 +263,7 @@ COMMANDS = (
             A("--sparse-subdir", type=str, default="sparse/0"),
             A("--images-subdir", type=str, default="images_4"),
             A("--iters", type=int, default=1000),
-            A("--max-gaussians", type=int, default=300000),
+            A("--max-gaussians", type=int, default=5900000),
             A("--training-profile", type=str, default="auto", choices=TRAINING_PROFILE_CHOICES),
             A("--seed", type=int, default=1234),
             A("--width", type=int, default=0),

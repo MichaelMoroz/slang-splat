@@ -53,9 +53,11 @@ def test_build_training_params_clamps_ranges():
         near=5.0,
         far=1.0,
         scale_l2_weight=-1.0,
+        scale_abs_reg_weight=-1.0,
         opacity_reg_weight=-1.0,
         lambda_dssim=2.0,
         mcmc_position_noise_enabled=True,
+        mcmc_densify_enabled=True,
         mcmc_position_noise_scale=-5.0,
         mcmc_opacity_gate_sharpness=-1.0,
         mcmc_opacity_gate_center=2.0,
@@ -76,8 +78,10 @@ def test_build_training_params_clamps_ranges():
     assert params.stability.max_opacity == params.stability.min_opacity == 0.8
     assert params.training.far > params.training.near
     assert params.training.scale_l2_weight == 0.0
+    assert params.training.scale_abs_reg_weight == 0.0
     assert params.training.opacity_reg_weight == 0.0
     assert params.training.lambda_dssim == 1.0
+    assert params.training.mcmc_densify_enabled is True
     assert params.training.max_gaussians == 0
     assert params.training.densify_from_iter == 0
     assert params.training.densify_until_iter == 1
@@ -93,33 +97,37 @@ def test_build_training_params_clamps_ranges():
 def test_default_training_params_match_mcmc_reference_defaults():
     params = default_training_params()
     assert params.training.mcmc_position_noise_enabled is True
+    assert params.training.mcmc_densify_enabled is True
     assert params.training.mcmc_position_noise_scale == 5e5
     assert params.training.mcmc_opacity_gate_sharpness == 100.0
     assert params.training.mcmc_opacity_gate_center == 0.995
-    assert params.training.scale_l2_weight == 1e-4
-    assert params.training.opacity_reg_weight == 1e-3
-    assert params.training.max_gaussians == 300000
+    assert params.training.scale_l2_weight == 0.0
+    assert params.training.scale_abs_reg_weight == 0.01
+    assert params.training.opacity_reg_weight == 0.01
+    assert params.training.max_gaussians == 5900000
     assert params.training.densify_from_iter == 500
-    assert params.training.densify_until_iter == 15000
+    assert params.training.densify_until_iter == 25000
     assert params.training.densification_interval == 100
-    assert params.training.densify_grad_threshold == 1.5e-4
+    assert params.training.densify_grad_threshold == 0.0
     assert params.training.opacity_reset_interval == 0
 
 
-def test_bicycle_images4_profile_applies_psnr_overrides():
+def test_bicycle_images4_auto_profile_applies_mcmc_overrides():
     params, profile = apply_training_profile(default_training_params(), "auto", dataset_root=Path("dataset/bicycle"), images_subdir="images_4")
-    assert profile.name == "bicycle-images4-psnr"
+    assert profile.name == "bicycle-images4-mcmc"
     assert params.adam.position_lr == 1.6e-4
     assert params.adam.scale_lr == 5e-3
     assert params.adam.opacity_lr == 5e-2
-    assert params.training.mcmc_position_noise_enabled is False
+    assert params.training.mcmc_position_noise_enabled is True
+    assert params.training.mcmc_densify_enabled is True
     assert params.training.lambda_dssim == 0.2
-    assert params.training.scale_l2_weight == 1e-4
-    assert params.training.opacity_reg_weight == 0.0
-    assert params.training.max_gaussians == 300000
+    assert params.training.scale_l2_weight == 0.0
+    assert params.training.scale_abs_reg_weight == 0.01
+    assert params.training.opacity_reg_weight == 0.01
+    assert params.training.max_gaussians == 5900000
     assert params.training.densify_from_iter == 500
-    assert params.training.densify_until_iter == 15000
-    assert params.training.densify_grad_threshold == 1.5e-4
+    assert params.training.densify_until_iter == 25000
+    assert params.training.densify_grad_threshold == 0.0
     assert params.training.screen_size_prune_threshold == 0.0
     assert params.training.world_size_prune_ratio == 0.0
     assert params.training.opacity_reset_interval == 0
@@ -154,11 +162,13 @@ def test_viewer_effective_training_setup_applies_auto_profile_and_init_override(
 
     init, params, init_hparams, profile = resolve_effective_training_setup(_StubViewer())
     assert init.seed == 1234
-    assert profile.name == "bicycle-images4-psnr"
-    assert params.training.mcmc_position_noise_enabled is False
+    assert profile.name == "bicycle-images4-mcmc"
+    assert params.training.mcmc_position_noise_enabled is True
+    assert params.training.mcmc_densify_enabled is True
     assert params.training.lambda_dssim == 0.2
-    assert params.training.scale_l2_weight == 1e-4
-    assert params.training.opacity_reg_weight == 0.0
+    assert params.training.scale_l2_weight == 0.0
+    assert params.training.scale_abs_reg_weight == 0.01
+    assert params.training.opacity_reg_weight == 0.01
     assert init_hparams.initial_opacity == 0.1
 
 

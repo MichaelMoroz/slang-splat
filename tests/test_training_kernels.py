@@ -333,7 +333,7 @@ def test_adam_step_clamps_anisotropy(device, tmp_path: Path):
     scene.scales[0] = np.array([0.9, 0.05, 0.05], dtype=np.float32)
     frame = _make_frame(tmp_path)
     renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
-    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(scale_l2_weight=0.0), seed=27)
+    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(scale_l2_weight=0.0, scale_abs_reg_weight=0.0), seed=27)
     camera = frame.make_camera(near=0.1, far=20.0)
     renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
     device.wait()
