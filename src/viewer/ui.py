@@ -151,7 +151,7 @@ class ViewerUI:
 class ToolkitState:
     loss_history: deque = field(default_factory=partial(deque, maxlen=LOSS_HISTORY_SIZE))
     fps_history: deque = field(default_factory=partial(deque, maxlen=FPS_HISTORY_SIZE))
-    mse_history: deque = field(default_factory=partial(deque, maxlen=LOSS_HISTORY_SIZE))
+    psnr_history: deque = field(default_factory=partial(deque, maxlen=LOSS_HISTORY_SIZE))
     step_history: deque = field(default_factory=partial(deque, maxlen=LOSS_HISTORY_SIZE))
     step_time_history: deque = field(default_factory=partial(deque, maxlen=LOSS_HISTORY_SIZE))
 
@@ -436,10 +436,11 @@ class ToolkitWindow:
         training_text = ui._texts.get("training", "Training: not initialized")
         loss_text = ui._texts.get("training_loss", "Loss Avg: n/a")
         mse_text = ui._texts.get("training_mse", "MSE: n/a")
+        psnr_text = ui._texts.get("training_psnr", "PSNR: n/a")
         if imgui.begin_table("##train_info", 2, imgui.TableFlags_.sizing_stretch_same.value):
             imgui.table_setup_column("L", imgui.TableColumnFlags_.width_fixed.value, 50)
             imgui.table_setup_column("V")
-            for label, text in (("Step", training_text), ("Loss", loss_text), ("MSE", mse_text)):
+            for label, text in (("Step", training_text), ("Loss", loss_text), ("MSE", mse_text), ("PSNR", psnr_text)):
                 imgui.table_next_row()
                 imgui.table_next_column()
                 imgui.text_disabled(label)
@@ -624,19 +625,18 @@ class ToolkitWindow:
                 implot.annotation(float(s[-1]), float(l[-1]), imgui.ImVec4(1.0, 0.6, 0.2, 1.0), imgui.ImVec2(-10, -10), True, f"{l[-1]:.2e}")
                 implot.end_plot()
 
-        mse_arr = np.array(self.tk.mse_history, dtype=np.float64)
-        if len(mse_arr) >= 2 and len(step_arr) >= 2:
-            min_len = min(len(mse_arr), len(step_arr))
-            s, m = step_arr[:min_len], mse_arr[:min_len]
-            imgui.separator_text("MSE")
-            mse_spec = implot.Spec()
-            mse_spec.line_color = imgui.ImVec4(0.3, 0.85, 0.5, 1.0)
-            if implot.begin_plot("##MSE", imgui.ImVec2(-1, 130)):
-                implot.setup_axes("step", "MSE", 0, implot.AxisFlags_.auto_fit.value)
+        psnr_arr = np.array(self.tk.psnr_history, dtype=np.float64)
+        if len(psnr_arr) >= 2 and len(step_arr) >= 2:
+            min_len = min(len(psnr_arr), len(step_arr))
+            s, p = step_arr[:min_len], psnr_arr[:min_len]
+            imgui.separator_text("PSNR")
+            psnr_spec = implot.Spec()
+            psnr_spec.line_color = imgui.ImVec4(0.3, 0.85, 0.5, 1.0)
+            if implot.begin_plot("##PSNR", imgui.ImVec2(-1, 180)):
+                implot.setup_axes("step", "PSNR (dB)", 0, implot.AxisFlags_.auto_fit.value)
                 implot.setup_axis_limits(implot.ImAxis_.x1.value, float(s[0]), float(s[-1]), implot.Cond_.always.value)
-                implot.setup_axis_scale(implot.ImAxis_.y1.value, implot.Scale_.log10.value)
-                implot.plot_line("MSE", s, m, spec=mse_spec)
-                implot.annotation(float(s[-1]), float(m[-1]), imgui.ImVec4(0.3, 0.85, 0.5, 1.0), imgui.ImVec2(-10, -10), True, f"{m[-1]:.2e}")
+                implot.plot_line("PSNR", s, p, spec=psnr_spec)
+                implot.annotation(float(s[-1]), float(p[-1]), imgui.ImVec4(0.3, 0.85, 0.5, 1.0), imgui.ImVec2(-10, -10), True, f"{p[-1]:.2f}")
                 implot.end_plot()
 
     # -- Helpers --
@@ -760,7 +760,7 @@ def build_ui(renderer) -> ViewerUI:
     texts: dict[str, str] = {
         key: "" for key in (
             "fps", "path", "scene_stats", "render_stats", "training",
-            "training_loss", "training_mse", "training_instability", "error",
+            "training_loss", "training_mse", "training_psnr", "training_instability", "error",
             "images_subdir", "loss_debug_view", "loss_debug_frame",
             "setup_hint", "stability_hint",
         )
