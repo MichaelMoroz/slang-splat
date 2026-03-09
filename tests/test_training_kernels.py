@@ -9,7 +9,7 @@ import slangpy as spy
 from src.filter import SeparableGaussianBlur
 from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
-from src.training import GaussianTrainer, TrainingHyperParams
+from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TrainingHyperParams
 
 _ADAM_BUFFER_NAMES = ("adam_m_pos", "adam_v_pos", "adam_m_scale", "adam_v_scale", "adam_m_quat", "adam_v_quat", "adam_m_color_alpha", "adam_v_color_alpha")
 _OPACITY_EPS = 1e-6
@@ -54,6 +54,11 @@ def _read_f32x4(buffer, count: int) -> np.ndarray:
     return values[: count * 4].reshape(count, 4).copy()
 
 
+def _save_rgb(path: Path, image: np.ndarray) -> None:
+    rgb = np.clip(np.asarray(image, dtype=np.float32)[..., :3], 0.0, 1.0)
+    Image.fromarray((255.0 * rgb + 0.5).astype(np.uint8), mode="RGB").save(path)
+
+
 def test_training_step_smoke_updates_params_without_changing_count(device, tmp_path: Path):
     scene = _make_scene()
     frame = _make_frame(tmp_path)
@@ -71,6 +76,52 @@ def test_training_step_smoke_updates_params_without_changing_count(device, tmp_p
     assert trainer.scene.count == scene.count
     assert np.all(np.isfinite(after))
     assert np.any(np.abs(after - before) > 0.0)
+
+
+def test_tiny_splat_optimizer_recovers_large_target_scale(device, tmp_path: Path):
+    frame = _make_frame(tmp_path, image_name="tiny_target.png")
+    target_camera = frame.make_camera(near=0.1, far=20.0)
+    target_renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.0, list_capacity_multiplier=16)
+    pixel_floor_scale = target_camera.pixel_world_size_max(3.0, target_renderer.width, target_renderer.height)
+    target_scale = 5.0 * pixel_floor_scale
+    initial_scale = 0.25 * pixel_floor_scale
+    target_scene = GaussianScene(
+        positions=np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
+        scales=np.full((1, 3), target_scale, dtype=np.float32),
+        rotations=np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+        opacities=np.array([0.75], dtype=np.float32),
+        colors=np.array([[0.8, 0.6, 0.2]], dtype=np.float32),
+        sh_coeffs=np.zeros((1, 1, 3), dtype=np.float32),
+    )
+    _save_rgb(frame.image_path, target_renderer.render(target_scene, target_camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32)).image)
+
+    train_scene = GaussianScene(
+        positions=target_scene.positions.copy(),
+        scales=np.full((1, 3), initial_scale, dtype=np.float32),
+        rotations=target_scene.rotations.copy(),
+        opacities=target_scene.opacities.copy(),
+        colors=target_scene.colors.copy(),
+        sh_coeffs=target_scene.sh_coeffs.copy(),
+    )
+    trainer_renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.0, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=trainer_renderer,
+        scene=train_scene,
+        frames=[frame],
+        adam_hparams=AdamHyperParams(position_lr=0.0, scale_lr=0.1, rotation_lr=0.0, color_lr=0.0, opacity_lr=0.0),
+        stability_hparams=StabilityHyperParams(max_update=0.5, min_scale=1e-5, max_scale=target_scale * 2.0),
+        training_hparams=TrainingHyperParams(scale_l2_weight=0.0, scale_abs_reg_weight=0.0, opacity_reg_weight=0.0),
+        seed=123,
+    )
+
+    losses = np.asarray([trainer.step() for _ in range(128)], dtype=np.float32)
+    scales = _read_f32x4(trainer_renderer.scene_buffers["scales"], 1)[0, :3]
+
+    assert np.all(np.isfinite(losses))
+    assert float(np.min(losses)) < float(losses[0]) * 0.92
+    assert float(np.mean(scales)) > initial_scale * 10.0
+    assert float(np.mean(scales)) > target_scale * 0.75
 
 
 def test_training_targets_use_srgb_textures(device, tmp_path: Path):
