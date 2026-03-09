@@ -26,13 +26,44 @@ struct RasterState : IDifferentiable
     }
 };
 
-void atomic_add_param_grad_wave<let N : int>(uint splatCount, uint firstParamId, uint splatId, vector<float, N> grad)
+void atomic_add_param_grad<let N : int>(uint splatCount, uint firstParamId, uint splatId, vector<float, N> grad)
+{
+    [unroll] for (int i = 0; i < N; i++)
+    {
+        float value = grad[i];
+        if (value == 0.0) continue;
+        InterlockedAdd(g_ParamGrads[splat_param_index(splatCount, firstParamId + uint(i), splatId)], value);
+    }
+}
+
+uint grad_state_base(uint localIdx, uint fieldOffset)
+{
+    return localIdx * SPLAT_GRAD_STATE_STRIDE + fieldOffset;
+}
+
+void atomic_add_grad_shared<let N : int>(uint base, vector<float, N> grad)
 {
     [unroll] for (int i = 0; i < N; i++)
     {
         float waveSum = WaveActiveSum(grad[i]);
         if (!WaveIsFirstLane() || waveSum == 0.0) continue;
-        InterlockedAdd(g_ParamGrads[splat_param_index(splatCount, firstParamId + uint(i), splatId)], waveSum);
+        InterlockedAdd(gsGradState[base + uint(i)], waveSum);
+    }
+}
+
+vector<float, N> load_grad_shared<let N : int>(uint base)
+{
+    vector<float, N> grad = 0.0;
+    [unroll] for (int i = 0; i < N; i++) grad[i] = gsGradState[base + uint(i)];
+    return grad;
+}
+
+void clear_batch_gradient_cache(uint batchCount, uint lane)
+{
+    for (uint localIdx = lane; localIdx < batchCount; localIdx += RASTER_GROUP_THREADS)
+    {
+        uint base = grad_state_base(localIdx, 0u);
+        [unroll] for (uint i = 0u; i < SPLAT_GRAD_STATE_STRIDE; i++) gsGradState[base + i] = 0.0;
     }
 }
 
@@ -56,9 +87,9 @@ struct RasterGaussian : IDifferentiable
     {
         RasterGaussian gaussian;
         gaussian.roLocal = gsRoLocal[localIdx].xyz;
-        gaussian.invScale = float3(gsInvScale[localIdx].xyz);
+        gaussian.invScale = float3(gsInvScale[localIdx]);
         gaussian.quat = float4(gsQuat[localIdx]);
-        gaussian.opacityScale = float(gsInvScale[localIdx].w);
+        gaussian.opacityScale = gsRoLocal[localIdx].w;
         gaussian.colorAlpha = float4(gsColorAlpha[localIdx]);
         return gaussian;
     }
@@ -66,22 +97,40 @@ struct RasterGaussian : IDifferentiable
     [mutating]
     void store_shared(uint localIdx)
     {
-        gsRoLocal[localIdx] = float4(roLocal, 0.0);
-        gsInvScale[localIdx] = half4(float4(invScale, opacityScale));
+        gsRoLocal[localIdx] = float4(roLocal, opacityScale);
+        gsInvScale[localIdx] = half3(invScale);
         gsQuat[localIdx] = half4(quat);
         gsColorAlpha[localIdx] = half4(colorAlpha);
     }
 
-    static void accumulate_gradients_global(uint localIdx, Differential dOut)
+    static void accumulate_gradients_shared(uint localIdx, Differential dOut)
+    {
+        atomic_add_grad_shared<4>(grad_state_base(localIdx, SPLAT_GRAD_STATE_RO_LOCAL_OPACITY_OFFSET), float4(dOut.roLocal, dOut.opacityScale));
+        atomic_add_grad_shared<3>(grad_state_base(localIdx, SPLAT_GRAD_STATE_INV_SCALE_OFFSET), dOut.invScale);
+        atomic_add_grad_shared<4>(grad_state_base(localIdx, SPLAT_GRAD_STATE_QUAT_OFFSET), dOut.quat);
+        atomic_add_grad_shared<4>(grad_state_base(localIdx, SPLAT_GRAD_STATE_COLOR_ALPHA_OFFSET), dOut.colorAlpha);
+    }
+
+    static void raster_gaussian_load_shared_bwd(uint localIdx, Differential dOut)
+    {
+        accumulate_gradients_shared(localIdx, dOut);
+    }
+};
+
+void flush_batch_gradient_cache(uint batchCount, uint lane)
+{
+    for (uint localIdx = lane; localIdx < batchCount; localIdx += RASTER_GROUP_THREADS)
     {
         uint splatId = gsBatchSplatId[localIdx];
         uint splatCount = g_Prepass.splatCount;
 
         CachedEllipsoid.Differential dCached;
-        dCached.roLocal = dOut.roLocal;
-        dCached.invScale = dOut.invScale;
-        dCached.quat = dOut.quat;
-        dCached.opacityScale = dOut.opacityScale;
+        float4 dRoLocalOpacity = load_grad_shared<4>(grad_state_base(localIdx, SPLAT_GRAD_STATE_RO_LOCAL_OPACITY_OFFSET));
+        dCached.roLocal = dRoLocalOpacity.xyz;
+        dCached.opacityScale = dRoLocalOpacity.w;
+        dCached.invScale = load_grad_shared<3>(grad_state_base(localIdx, SPLAT_GRAD_STATE_INV_SCALE_OFFSET));
+        dCached.quat = load_grad_shared<4>(grad_state_base(localIdx, SPLAT_GRAD_STATE_QUAT_OFFSET));
+        float4 dColorAlpha = load_grad_shared<4>(grad_state_base(localIdx, SPLAT_GRAD_STATE_COLOR_ALPHA_OFFSET));
 
         Gaussian3D gaussian = load_gaussian3d(splatId);
         var dpPosition = diffPair(gaussian.position);
@@ -89,17 +138,12 @@ struct RasterGaussian : IDifferentiable
         var dpRotation = diffPair(gaussian.rotation);
         bwd_diff(build_cached_ellipsoid)(g_Camera, g_Prepass.radiusScale, dpPosition, dpScale, dpRotation, dCached);
 
-        atomic_add_param_grad_wave<3>(splatCount, PARAM_POSITION_X, splatId, dpPosition.getDifferential());
-        atomic_add_param_grad_wave<3>(splatCount, PARAM_SCALE_X, splatId, dpScale.getDifferential());
-        atomic_add_param_grad_wave<4>(splatCount, PARAM_ROTATION_X, splatId, dpRotation.getDifferential());
-        atomic_add_param_grad_wave<4>(splatCount, PARAM_COLOR_R, splatId, dOut.colorAlpha);
+        atomic_add_param_grad<3>(splatCount, PARAM_POSITION_X, splatId, dpPosition.getDifferential());
+        atomic_add_param_grad<3>(splatCount, PARAM_SCALE_X, splatId, dpScale.getDifferential());
+        atomic_add_param_grad<4>(splatCount, PARAM_ROTATION_X, splatId, dpRotation.getDifferential());
+        atomic_add_param_grad<4>(splatCount, PARAM_COLOR_R, splatId, dColorAlpha);
     }
-
-    static void raster_gaussian_load_shared_bwd(uint localIdx, Differential dOut)
-    {
-        accumulate_gradients_global(localIdx, dOut);
-    }
-};
+}
 
 [Differentiable]
 float raster_eval_alpha_gaussian(RasterGaussian gaussian, no_diff uint splatId, no_diff float3 rayDir, no_diff float2 samplePoint)
@@ -389,6 +433,7 @@ void raster_backward_replay(
         uint batchCount = batchBase - batchStart;
 
         prefetch_batch_from_global(batchStart, batchBase, lane);
+        clear_batch_gradient_cache(batchCount, lane);
         GroupMemoryBarrierWithGroupSync();
 
         for (uint rev = 0u; rev < batchCount; rev++)
@@ -423,10 +468,11 @@ void raster_backward_replay(
                 forwardState.pixelState[pix] = prevState;
                 backwardState.pixelState[pix] = dpPrevState.getDifferential();
             }
-
-            RasterGaussian.accumulate_gradients_global(localIdx, dGaussian);
+            RasterGaussian.accumulate_gradients_shared(localIdx, dGaussian);
         }
 
+        GroupMemoryBarrierWithGroupSync();
+        flush_batch_gradient_cache(batchCount, lane);
         GroupMemoryBarrierWithGroupSync();
         batchBase = batchStart;
     }
