@@ -2,7 +2,7 @@
 
 `cli.py` (`train-colmap`) is a thin wrapper over `src/app/cli.py`, and `src/training/gaussian_trainer.py` remains the public training facade over dataset assets, kernel dispatch, and metric/state updates.
 
-The mixed photometric loss uses the reusable separable blur utility in `src/filter/separable_gaussian_blur.py`, backed by `shaders/filter/separable_gaussian_blur.slang`, to build SSIM moments and to aggregate backward partials back into `dLoss / dRendered`.
+The mixed photometric loss uses the reusable separable blur utility in `src/filter/separable_gaussian_blur.py`, backed by `shaders/utility/blur/separable_gaussian_blur.slang`, to build SSIM moments and to aggregate backward partials back into `dLoss / dRendered`.
 
 ## Data Ingestion
 - Loader facade: `src/scene/colmap_loader.py`

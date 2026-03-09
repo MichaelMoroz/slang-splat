@@ -7,7 +7,7 @@
 - Keeping it outside the trainer avoids duplicating scan code inside unrelated shaders and gives the scan path its own test surface.
 
 ## Implementation
-- Shader kernels live in `shaders/prefix_sum/prefix_sum.slang`.
+- Shader kernels live in `shaders/utility/prefix_sum/prefix_sum.slang`.
 - The implementation uses a hierarchical block scan with `256` threads per block.
 - Each level scans block-local prefixes, writes one block-sum buffer, recursively scans that block-sum buffer, then adds the scanned block offsets back into the lower level.
 - `GPUPrefixSum.scan_float(...)` can also write the final total sum into a separate one-element buffer, which the MCMC sampler uses as the roulette-wheel normalization constant.

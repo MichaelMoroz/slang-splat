@@ -1,8 +1,8 @@
 # Radix Sorting
 
 GPU radix sort implementation is copied/adapted from prior project code:
-- `src/radix_sort.py`
-- `shaders/radix_sort/*`
+- `src/sort/radix_sort.py`
+- `shaders/utility/radix_sort/*`
 
 Adaptations in this repository:
 - Local import paths and shader root wiring.

@@ -23,4 +23,4 @@ The shader code now treats reusable GPU logic as a first-class utility submodule
 - `src/scan/prefix_sum.py` loads scan kernels from `shaders/utility/prefix_sum`.
 - `src/sort/radix_sort.py` loads sort kernels from `shaders/utility/radix_sort`.
 
-The old shader locations remain as compatibility surfaces where practical, but the implementation source of truth for reusable utility logic is now the `shaders/utility` tree.
+`shaders/utility` is the only implementation source of truth for reusable shader logic. The old wrapper paths were removed to keep the dependency graph explicit.

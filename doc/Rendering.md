@@ -4,11 +4,11 @@
 Prepass scheduling is GPU-driven via indirect dispatch arguments generated from the GPU list counter.
 
 ## Uniform Parameter Layout
-- Camera parameters and camera-space math are centralized in `shaders/renderer/camera.slang`:
+- Camera parameters and camera-space math are centralized in `shaders/utility/math/camera.slang`:
   - `CameraParams`
   - `ICamera`
   - `PinholeCamera`
-- Shared renderer parameters remain grouped in `shaders/renderer/gaussian_types.slang`:
+- Shared splat data structures and reusable projection/raster math live under `shaders/utility/splatting`, while renderer bindings remain grouped in `shaders/renderer/gaussian_types.slang`:
   - `g_Camera` (`CameraParams`) for camera basis/position, anisotropic intrinsics (`focalPixels: float2`, `principalPoint: float2`), clip range, and lens distortion.
   - `g_Prepass` (`PrepassParams`) for splat counts, tile/depth packing, prepass capacities, and sampled-5 MVEE controls.
   - `g_Raster` (`RasterParams`) for raster resolution, alpha/transmittance thresholds, background, and debug overlays.
