@@ -259,7 +259,7 @@ COMMANDS = (
             A("--sparse-subdir", type=str, default="sparse/0"),
             A("--images-subdir", type=str, default="images_4"),
             A("--iters", type=int, default=1000),
-            A("--max-gaussians", type=int, default=200000),
+            A("--max-gaussians", type=int, default=300000),
             A("--training-profile", type=str, default="auto", choices=TRAINING_PROFILE_CHOICES),
             A("--seed", type=int, default=1234),
             A("--width", type=int, default=0),
