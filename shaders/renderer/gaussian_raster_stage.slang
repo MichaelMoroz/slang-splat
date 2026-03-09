@@ -112,10 +112,11 @@ float raster_eval_alpha_gaussian(RasterGaussian gaussian, no_diff uint splatId, 
         float2 grad = mul(float2x2(conicAndOpacity.x, conicAndOpacity.y, conicAndOpacity.y, conicAndOpacity.z), delta);
         float quad = dot(delta, grad);
         float gradLen = max(length(2.0 * grad), GRADIENT_LENGTH_FLOOR);
-        float halfWidth = max(g_Raster.debugEllipseThicknessPx, MIN_DEBUG_THICKNESS_PX);
-        float aaWidth = max(halfWidth * DEBUG_ELLIPSE_AA_FRACTION, MIN_DEBUG_THICKNESS_PX);
+        float fullWidth = max(g_Raster.debugEllipseThicknessPx, 2.0 * MIN_DEBUG_THICKNESS_PX);
+        float halfWidth = 0.5 * fullWidth;
         float edgeDistance = abs((quad - 1.0) / gradLen);
-        float coverage = 1.0 - smoothstep(max(halfWidth - aaWidth, 0.0), halfWidth + aaWidth, edgeDistance);
+        float coverage = saturate(1.0 - edgeDistance / halfWidth);
+        coverage = coverage * coverage * (3.0 - 2.0 * coverage);
         float baseAlpha = opacity_from_raw(gaussian.colorAlpha.w) * coverage;
         return baseAlpha >= g_Raster.alphaCutoff ? baseAlpha * gaussian.opacityScale : 0.0;
     }

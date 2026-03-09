@@ -23,7 +23,6 @@ static const float DEBUG_GRAD_NORM_FLOOR = 1e-12;
 static const float LOG2_TO_LOG10 = 0.30102999566;
 static const float DEBUG_GRAD_THRESHOLD_MIN_SCALE = 0.001;
 static const float DEBUG_GRAD_THRESHOLD_MAX_SCALE = 10.0;
-static const float DEBUG_ELLIPSE_AA_FRACTION = 0.5;
 
 // Misc math helpers
 static const float TAU_RADIANS = 6.28318530718;
