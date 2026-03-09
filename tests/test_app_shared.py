@@ -8,7 +8,7 @@ from src.app.shared import apply_training_profile, build_training_params, estima
 from src.scene import GaussianInitHyperParams, GaussianScene
 from src.viewer.app import default_training_params
 from src.viewer.session import resolve_effective_training_setup
-from src.viewer.ui import default_control_values, default_prune_small_threshold
+from src.viewer.ui import default_control_values
 
 
 def _scene() -> GaussianScene:
@@ -58,6 +58,7 @@ def test_build_training_params_clamps_ranges():
         lambda_dssim=2.0,
         mcmc_position_noise_enabled=True,
         mcmc_densify_enabled=True,
+        mcmc_growth_ratio=2.0,
         mcmc_position_noise_scale=-5.0,
         mcmc_opacity_gate_sharpness=-1.0,
         mcmc_opacity_gate_center=2.0,
@@ -82,6 +83,7 @@ def test_build_training_params_clamps_ranges():
     assert params.training.opacity_reg_weight == 0.0
     assert params.training.lambda_dssim == 1.0
     assert params.training.mcmc_densify_enabled is True
+    assert params.training.mcmc_growth_ratio == 1.0
     assert params.training.max_gaussians == 0
     assert params.training.densify_from_iter == 0
     assert params.training.densify_until_iter == 1
@@ -98,6 +100,7 @@ def test_default_training_params_match_mcmc_reference_defaults():
     params = default_training_params()
     assert params.training.mcmc_position_noise_enabled is True
     assert params.training.mcmc_densify_enabled is True
+    assert params.training.mcmc_growth_ratio == 0.05
     assert params.training.mcmc_position_noise_scale == 5e5
     assert params.training.mcmc_opacity_gate_sharpness == 100.0
     assert params.training.mcmc_opacity_gate_center == 0.995
@@ -120,6 +123,7 @@ def test_bicycle_images4_auto_profile_applies_mcmc_overrides():
     assert params.adam.opacity_lr == 5e-2
     assert params.training.mcmc_position_noise_enabled is True
     assert params.training.mcmc_densify_enabled is True
+    assert params.training.mcmc_growth_ratio == 0.05
     assert params.training.lambda_dssim == 0.2
     assert params.training.scale_l2_weight == 0.0
     assert params.training.scale_abs_reg_weight == 0.01
@@ -141,6 +145,7 @@ def test_bicycle_images4_mcmc_profile_applies_paper_overrides():
     assert params.training.opacity_reg_weight == 0.01
     assert params.training.mcmc_position_noise_enabled is True
     assert params.training.mcmc_densify_enabled is True
+    assert params.training.mcmc_growth_ratio == 0.05
     assert params.training.max_gaussians == 5900000
     assert params.training.densify_until_iter == 25000
     assert params.training.opacity_reset_interval == 0
@@ -165,12 +170,15 @@ def test_viewer_effective_training_setup_applies_auto_profile_and_init_override(
     assert profile.name == "bicycle-images4-mcmc"
     assert params.training.mcmc_position_noise_enabled is True
     assert params.training.mcmc_densify_enabled is True
+    assert params.training.mcmc_growth_ratio == 0.05
     assert params.training.lambda_dssim == 0.2
     assert params.training.scale_l2_weight == 0.0
     assert params.training.scale_abs_reg_weight == 0.01
     assert params.training.opacity_reg_weight == 0.01
     assert init_hparams.initial_opacity == 0.1
-
-
-def test_default_prune_small_threshold_tracks_min_scale_default():
-    assert default_prune_small_threshold() == 4.0 * float(default_control_values("Train Stability")["min_scale"])
+def test_viewer_defaults_expose_mcmc_controls_and_hide_legacy_density_controls():
+    defaults = default_control_values("Train MCMC")
+    assert "mcmc_growth_ratio" in defaults
+    assert "mcmc_noise_lr_scale" in defaults
+    assert "opacity_reset_interval" not in defaults
+    assert "screen_size_prune_threshold" not in defaults

@@ -51,7 +51,7 @@ class StabilityHyperParams:
 @dataclass(slots=True)
 class TrainingHyperParams:
     background: tuple[float, float, float] = (0.0, 0.0, 0.0); near: float = 0.1; far: float = 120.0; scale_l2_weight: float = 0.0; scale_abs_reg_weight: float = 0.01; opacity_reg_weight: float = 0.01; mcmc_position_noise_enabled: bool = True
-    mcmc_position_noise_scale: float = 5e5; mcmc_opacity_gate_sharpness: float = 100.0; mcmc_opacity_gate_center: float = 0.995; mcmc_densify_enabled: bool = True; low_quality_reinit_enabled: bool = False; lambda_dssim: float = 0.2
+    mcmc_position_noise_scale: float = 5e5; mcmc_opacity_gate_sharpness: float = 100.0; mcmc_opacity_gate_center: float = 0.995; mcmc_densify_enabled: bool = True; mcmc_growth_ratio: float = 0.05; low_quality_reinit_enabled: bool = False; lambda_dssim: float = 0.2
     max_gaussians: int = 5900000
     densify_from_iter: int = 500; densify_until_iter: int = 25000; densification_interval: int = 100; densify_grad_threshold: float = 0.0
     percent_dense: float = 0.01; prune_min_opacity: float = 0.005; screen_size_prune_threshold: float = 20.0; world_size_prune_ratio: float = 0.1
@@ -161,7 +161,11 @@ class GaussianTrainer:
         if self._scene_count <= 0:
             return
         current_count = int(self._scene_count)
-        target_count = min(int(self._effective_max_gaussians()), int(math.floor(1.05 * current_count)))
+        growth_ratio = float(np.clip(self.training.mcmc_growth_ratio, 0.0, 1.0))
+        add_count = int(math.floor(growth_ratio * current_count))
+        if growth_ratio > 0.0 and add_count == 0 and current_count < int(self._effective_max_gaussians()):
+            add_count = 1
+        target_count = min(int(self._effective_max_gaussians()), current_count + add_count)
         add_count = max(target_count - current_count, 0)
         self._ensure_regen_buffers(max(current_count + add_count, 1))
         self._ensure_mcmc_buffers(current_count)

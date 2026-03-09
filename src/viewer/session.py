@@ -87,8 +87,8 @@ def apply_live_params(viewer: object, force_init_defaults: bool = False) -> None
             for key, value in renderer_kwargs(viewer.renderer_params(allow_debug)).items():
                 setattr(renderer, key, value)
     if viewer.s.renderer is not None:
-        viewer.s.renderer.set_debug_grad_norm_buffer(None if viewer.s.trainer is None else viewer.s.trainer.densify_grad_norm_buffer)
-        viewer.s.renderer.debug_grad_norm_threshold = 1.5e-4 if viewer.s.trainer is None else float(viewer.s.trainer.training.densify_grad_threshold)
+        viewer.s.renderer.set_debug_grad_norm_buffer(None)
+        viewer.s.renderer.debug_grad_norm_threshold = 0.0
     if viewer.s.trainer is not None:
         _, params, _, _ = resolve_effective_training_setup(viewer)
         viewer.s.trainer.update_hyperparams(params.adam, params.stability, params.training)
@@ -132,34 +132,3 @@ def initialize_training_scene(viewer: object) -> None:
     viewer.s.last_error = ""
     print(f"Initialized training scene ({scene.count:,} gaussians, profile={profile.name})")
 set_training_active = lambda viewer, active: (initialize_training_scene(viewer) if active and viewer.s.trainer is None else None, setattr(viewer.s, "training_active", bool(active and viewer.s.trainer is not None)))
-
-
-def split_all_gaussians(viewer: object) -> None:
-    if viewer.s.trainer is None:
-        initialize_training_scene(viewer)
-    if viewer.s.trainer is None or viewer.s.training_renderer is None:
-        return
-    viewer.s.trainer.split_all_gaussians()
-    if viewer.s.scene is not None:
-        viewer.s.scene.count = int(viewer.s.trainer.scene.count)
-    _invalidate(viewer)
-    if viewer.s.renderer is not None:
-        sync_scene_from_training_renderer(viewer, viewer.s.renderer, target="main", force=True)
-    viewer.s.last_error = ""
-    print(f"Split all gaussians: {viewer.s.trainer.scene.count:,} splats")
-
-
-def prune_small_gaussians(viewer: object) -> None:
-    if viewer.s.trainer is None:
-        initialize_training_scene(viewer)
-    if viewer.s.trainer is None or viewer.s.training_renderer is None:
-        return
-    threshold = float(max(viewer.c("prune_small_threshold").value, 0.0))
-    viewer.s.trainer.prune_small_gaussians(threshold)
-    if viewer.s.scene is not None:
-        viewer.s.scene.count = int(viewer.s.trainer.scene.count)
-    _invalidate(viewer)
-    if viewer.s.renderer is not None:
-        sync_scene_from_training_renderer(viewer, viewer.s.renderer, target="main", force=True)
-    viewer.s.last_error = ""
-    print(f"Pruned small gaussians below {threshold:.6g}: {viewer.s.trainer.scene.count:,} splats")

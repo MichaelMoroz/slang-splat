@@ -89,6 +89,7 @@ def _training_params(args: argparse.Namespace):
         lambda_dssim=args.lambda_dssim,
         mcmc_position_noise_enabled=True,
         mcmc_densify_enabled=bool(args.mcmc_densify),
+        mcmc_growth_ratio=args.mcmc_growth_ratio,
         mcmc_position_noise_scale=5e5,
         mcmc_opacity_gate_sharpness=100.0,
         mcmc_opacity_gate_center=0.995,
@@ -253,6 +254,7 @@ TRAIN_DENSITY_ARGS = (
     A("--world-size-prune-ratio", type=float, default=0.1),
     A("--opacity-reset-interval", type=int, default=0),
     A("--mcmc-densify", action=argparse.BooleanOptionalAction, default=True),
+    A("--mcmc-growth-ratio", type=float, default=0.05),
 )
 COMMANDS = (
     CommandSpec(

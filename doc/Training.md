@@ -96,7 +96,7 @@ Each trainer `step()` performs:
   - scale min/max clamp,
   - color clamp to `[0, 1]`.
 - Quaternion normalization each step with identity fallback.
-- MCMC position noise remains available; the legacy defaults keep it enabled, while the bicycle `/4` PSNR profile disables it because the simplified RGB-only trainer converges more reliably without the exploration term.
+- MCMC position noise remains available; the shared defaults keep the MCMC path enabled, while the bicycle `/4` PSNR profile disables it because the simplified RGB-only trainer converges more reliably without the exploration term.
 - Host guard:
   - if loss is non-finite, ADAM step is skipped and moments are reset.
 - Host metrics:

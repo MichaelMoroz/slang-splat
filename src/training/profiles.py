@@ -82,6 +82,7 @@ _PROFILES = {
             "lambda_dssim": 0.2,
             "mcmc_position_noise_enabled": True,
             "mcmc_densify_enabled": True,
+            "mcmc_growth_ratio": 0.05,
             "max_gaussians": _BICYCLE_MCMC_MAX_GAUSSIANS,
             "densify_from_iter": _BICYCLE_DENSIFY_FROM_ITER,
             "densify_until_iter": _MCMC_DENSIFY_UNTIL_ITER,

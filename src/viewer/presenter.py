@@ -34,15 +34,25 @@ def update_ui_text(viewer: object, dt: float) -> None:
     viewer.t("render_stats").text = "Generated: 0 | Written: 0" if not stats else f"Generated: {int(stats['generated_entries']):,} | Written: {int(stats['written_entries']):,} | Overflow: {bool(stats['overflow'])}{' [cap]' if bool(stats.get('capacity_limited', False)) else ''}{' (delayed)' if bool(stats.get('stats_latency_frames', 0)) else ''}{'' if bool(stats.get('stats_valid', True)) else ' [warming]'}"
     if viewer.s.trainer is None:
         viewer.t("training").text = "Training: not initialized"
+        viewer.t("training_mcmc").text = "MCMC: n/a"
         viewer.t("training_ssim").text = "SSIM Avg: n/a"
         viewer.t("training_psnr").text = "PSNR Avg: n/a"
         viewer.t("training_loss").text = "Loss Avg: n/a"
         viewer.t("training_instability").text = ""
     else:
         state = viewer.s.trainer.state
+        training = viewer.s.trainer.training
+        adam = viewer.s.trainer.adam
         avg_ssim = f"{state.avg_ssim:.4f}" if np.isfinite(state.avg_ssim) else "n/a"
         avg_psnr = f"{state.avg_psnr:.2f} dB" if np.isfinite(state.avg_psnr) else "n/a"
         viewer.t("training").text = f"Training: {'running' if viewer.s.training_active else 'paused'} | step={state.step:,} | frame={state.last_frame_index} | splats={int(current_splat_count):,}"
+        viewer.t("training_mcmc").text = (
+            f"MCMC: {'on' if training.mcmc_densify_enabled else 'off'} | "
+            f"grow={100.0 * float(training.mcmc_growth_ratio):.1f}% | "
+            f"noise=posLR*{float(training.mcmc_position_noise_scale):.3g}="
+            f"{float(adam.position_lr * training.mcmc_position_noise_scale):.3g} | "
+            f"dead<={float(training.prune_min_opacity):.4f}"
+        )
         viewer.t("training_ssim").text = f"SSIM Avg: {avg_ssim}"
         viewer.t("training_psnr").text = f"PSNR Avg: {avg_psnr}"
         viewer.t("training_loss").text = f"Loss Avg: {state.avg_loss:.6e}"

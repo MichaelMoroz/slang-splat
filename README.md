@@ -84,9 +84,9 @@ Training notes:
 - Reported training metrics include total loss, rolling average loss, per-step `last_psnr`, and `avg_psnr` computed from the latest PSNR stored for each training frame slot.
 - `last_mse` and PSNR remain plain RGB MSE metrics even though the optimization loss is mixed photometric.
 - Target Y-flip is enabled by default.
-- Density control follows the original 3DGS structure more closely: gradient/radius stats are accumulated until `densify_until_iter`, then clone/split/prune runs every `densification_interval` after `densify_from_iter`, and opacity reset runs every `opacity_reset_interval`.
-- Clone duplicates small high-gradient splats, split replaces large high-gradient splats with two children, and the default prune path currently removes only low-opacity gaussians.
-- The legacy defaults still keep MCMC position noise enabled; the bicycle `/4` PSNR profile turns MCMC off, keeps size-pruning disabled, and now uses a moderate densification schedule tuned around the corrected visibility signal.
+- Default density control is now the paper-style MCMC path: visible-count stats are accumulated until `densify_until_iter`, then densification runs every `densification_interval` after `densify_from_iter` as `relocate dead -> append (mcmc_growth_ratio * count)`.
+- The viewer exposes only the live MCMC controls by default: growth ratio, LR-scaled position noise, opacity gate, and low-opacity death threshold. Legacy manual split/prune/reset controls remain available in code and tests but are no longer part of the default viewer workflow.
+- The default bicycle `/4` path uses the paper learning rates, MCMC densification, and `0.01` scale/opacity regularization.
 - Numerical reinforcement includes clipping, finite checks, and safe quaternion normalization.
 - Scale regularization uses an autodiff log-space penalty around the initialization/reference scale, so equal multiplicative scale deviations are treated more uniformly.
 - Scale anisotropy is clamped in the ADAM step with `max(scale) / min(scale) <= max_anisotropy`.
