@@ -18,9 +18,13 @@ Test criteria: create a basic N channel blur test.
 STATUS: Done
 Description on completion: Reworked `blur` to use flat structured buffers with runtime channel count and dispatch channel work in parallel as `SV_DispatchThreadID.z`, so one blur pass can process arbitrary `N`-channel tensors instead of only `float4` textures. Moved training image gradients from textures to a flat `StructuredBuffer<float4>` / `RWStructuredBuffer<float4>` path across the loss kernels, renderer bindings, and raster backward pass while keeping only dataset/rendered images as textures. Added an `N=6` separable Gaussian blur regression and verified with `pytest tests/test_training_kernels.py tests/test_renderer_pipeline.py`.
 
-5) Now that all splat data is packed in one buffer, focus on keeping only a basic backprop on an unchanging gaussian splat count. Use the MCMC loss exactly. Initialized from the COLMAP point cloud. By the way the initialization scales for the splats are not valid at the moment, they should use the neigbor distance, and not be 0.0 or near zero as they are now.
-Implement SSIM MCMC Loss into the optimizer. Separate forward and backward kernels. Avoid readbacks of splats in the training loop, do everything on the GPU. SSIM stuff should be their own kernels in `losses` submodule. Keep the L1 and regularization part inline, only SSIM needs separate kernels.
-Loss: 
+5) Keep only a basic backprop training path on an unchanging gaussian splat count. Initialize the splats from the COLMAP point cloud, fix initialization scales to use neighbor distance, and ensure scales are never 0.0 or near-zero. Separate forward and backward kernels for this fixed-count training path.
+Test criteria: add or update coverage validating that COLMAP initialization produces non-degenerate scales from neighbor distance and that the fixed-count training path runs through separate forward and backward kernels without densification or pruning hooks.
+STATUS: Not done
+Description on completion: none
+
+6) Implement the SSIM-based MCMC reconstruction loss exactly, with SSIM-related logic in dedicated kernels under the `losses` submodule. Keep the L1 and regularization terms inline in the main training flow; only SSIM work should be split into separate kernels.
+Loss:
 ```
 # Inputs
 #   G = {g_i}_{i=1..N}              # set of N Gaussians
@@ -62,14 +66,6 @@ function TOTAL_LOSS(G, cam_j, I_gt_j):
 
     return L_total
 ```
-Defaults:
-```
-L_total =
-    0.8 * L1(I_pred, I_gt)
-  + 0.2 * (1 - SSIM(I_pred, I_gt))
-  + 0.01  * sum_i |o_i|
-  + 0.01  * sum_i sum_j |sqrt(eig_j(Sigma_i))|
-  ```
 SSIM evaluation:
 ```
 # img_pred, img_gt: shape [C, H, W], values typically in [0, 1]
@@ -121,6 +117,24 @@ function RECON_LOSS_FOR_3DGS(img_pred, img_gt, lambda_dssim=0.2):
     dssim = DSSIM_LOSS_FOR_3DGS(img_pred, img_gt)
     return (1 - lambda_dssim) * l1 + lambda_dssim * dssim
 ```
-Test criteria: create a dummy dataset from procedurally generated splats (random sizes exp(rand()), random colors, random rotations and positions within a box, 16k splats), render those from 64 views and save those renderes as a training dataset. Add a small random offset to the splats and run the optimizer on them as initialization. Ideally should converge nearly perfectly, at least 50dB I expect. The random offset needs to be visible, i.e. around 1-5% difference between groundtruth images and disorted splat renders.
+Test criteria: add a focused SSIM or DSSIM kernel test that validates the forward value on controlled inputs and exercises the intended multi-channel blur intermediate layout.
+STATUS: Not done
+Description on completion: none
+
+7) Integrate the full MCMC loss into the packed-parameter optimizer path and keep the training loop entirely on the GPU. Avoid splat readbacks during optimization, and wire the full reconstruction plus regularization loss through the fixed-count trainer.
+Defaults:
+```
+L_total =
+    0.8 * L1(I_pred, I_gt)
+  + 0.2 * (1 - SSIM(I_pred, I_gt))
+  + 0.01  * sum_i |o_i|
+  + 0.01  * sum_i sum_j |sqrt(eig_j(Sigma_i))|
+```
+Test criteria: add or update training pipeline coverage to confirm optimizer steps consume GPU-resident buffers end-to-end without CPU splat readbacks inside the training loop.
+STATUS: Not done
+Description on completion: none
+
+8) Add an end-to-end synthetic convergence regression for the fixed-count trainer. Create a dummy dataset from procedurally generated splats (random sizes `exp(rand())`, random colors, random rotations, and positions within a box, 16k splats), render 64 training views, perturb the splats with a visible random offset, and optimize from that initialization.
+Test criteria: the synthetic regression should start from a visible mismatch, around 1-5% difference between ground-truth images and distorted renders, and converge nearly perfectly, ideally reaching at least 50 dB PSNR.
 STATUS: Not done
 Description on completion: none
