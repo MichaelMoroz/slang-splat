@@ -100,8 +100,7 @@ def run_train_colmap(args: argparse.Namespace) -> int:
     params, profile = apply_training_profile(_training_params(args), args.training_profile, dataset_root=root, images_subdir=args.images_subdir)
     init_hparams = replace(init_hparams, initial_opacity=profile.init_opacity_override) if init_hparams.initial_opacity is None and profile.init_opacity_override is not None else init_hparams
     resolved_init = resolve_colmap_init_hparams(recon, params.training.max_gaussians, init_hparams)
-    scene_init = replace(init_hparams, initial_opacity=resolved_init.initial_opacity)
-    scene = initialize_scene_from_colmap_points(recon=recon, max_gaussians=params.training.max_gaussians, seed=int(args.seed), init_hparams=scene_init)
+    scene = initialize_scene_from_colmap_points(recon=recon, max_gaussians=params.training.max_gaussians, seed=int(args.seed), init_hparams=resolved_init)
     renderer = _renderer(args, width, height)
     trainer = GaussianTrainer(
         device=renderer.device,

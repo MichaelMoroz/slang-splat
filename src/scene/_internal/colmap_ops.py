@@ -9,9 +9,7 @@ from scipy.spatial import cKDTree
 from ..gaussian_scene import GaussianScene
 from .colmap_types import ColmapFrame, ColmapReconstruction, GaussianInitHyperParams, point_tables
 
-DEFAULT_RENDER_RADIUS_SCALE = 2.6
-INIT_TARGET_RADIUS_RATIO = 0.20
-INIT_BASE_SCALE_SPACING_RATIO = INIT_TARGET_RADIUS_RATIO / DEFAULT_RENDER_RADIUS_SCALE
+INIT_BASE_SCALE_SPACING_RATIO = 1.0
 INIT_JITTER_SPACING_RATIO = 1.0 / np.sqrt(12.0)
 INIT_REPLACEMENT_JITTER_BOOST = 1.5
 INIT_SCALE_JITTER_BASE = 0.03

@@ -27,7 +27,7 @@ The active training path is intentionally minimal: initialize a fixed gaussian s
 ## Initialization
 - Gaussians are initialized directly from COLMAP `points3D` on CPU.
 - Position is copied from the COLMAP point cloud.
-- Scale starts from the nearest-neighbor point spacing repeated across XYZ.
+- Scale starts from nearest-neighbor point spacing repeated across XYZ; the default resolved `base_scale` matches that spacing after the requested-count density adjustment instead of shrinking it again by render-radius heuristics.
 - Rotation starts as identity quaternion.
 - Opacity starts from the configured constant.
 - Initialization parameters:
