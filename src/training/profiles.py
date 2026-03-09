@@ -47,7 +47,7 @@ _PROFILES = {
         training_overrides={
             "scale_l2_weight": _BICYCLE_SCALE_L2_WEIGHT,
             "opacity_reg_weight": 0.0,
-            "lambda_dssim": 0.0,
+            "lambda_dssim": 0.2,
             "mcmc_position_noise_enabled": False,
             "max_gaussians": _BICYCLE_MAX_GAUSSIANS,
             "densify_from_iter": _BICYCLE_DENSIFY_FROM_ITER,
@@ -57,7 +57,7 @@ _PROFILES = {
             "percent_dense": _BICYCLE_PERCENT_DENSE,
             "screen_size_prune_threshold": 0.0,
             "world_size_prune_ratio": 0.0,
-            "opacity_reset_interval": 3000,
+            "opacity_reset_interval": 0,
         },
         init_opacity_override=_BICYCLE_INIT_OPACITY,
     ),

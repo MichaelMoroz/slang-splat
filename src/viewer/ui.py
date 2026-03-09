@@ -54,7 +54,7 @@ GROUP_SPECS = {
         ControlSpec("densify_from_iter", "slider_int", "Densify From", {"value": 500, "min": 0, "max": 100000, "flags": spy.ui.SliderFlags.logarithmic}),
         ControlSpec("densify_until_iter", "slider_int", "Densify Until", {"value": 15000, "min": 0, "max": 1000000, "flags": spy.ui.SliderFlags.logarithmic}),
         ControlSpec("densification_interval", "slider_int", "Densify Every", {"value": 100, "min": 1, "max": 100000, "flags": spy.ui.SliderFlags.logarithmic}),
-        ControlSpec("opacity_reset_interval", "slider_int", "Opacity Reset", {"value": 3000, "min": 0, "max": 1000000, "flags": spy.ui.SliderFlags.logarithmic}),
+        ControlSpec("opacity_reset_interval", "slider_int", "Opacity Reset", {"value": 0, "min": 0, "max": 1000000, "flags": spy.ui.SliderFlags.logarithmic}),
     ),
     "Train Optimizer": (
         ControlSpec("lr_base", "input_float", "Base LR", {"value": 1e-3, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),

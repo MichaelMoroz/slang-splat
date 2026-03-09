@@ -119,7 +119,7 @@ class TrainingHyperParams:
     max_gaussians: int = 200000
     densify_from_iter: int = 500; densify_until_iter: int = 15000; densification_interval: int = 100; densify_grad_threshold: float = 1.5e-4
     percent_dense: float = 0.01; prune_min_opacity: float = 0.005; screen_size_prune_threshold: float = 20.0; world_size_prune_ratio: float = 0.1
-    opacity_reset_interval: int = 3000
+    opacity_reset_interval: int = 0
 
 
 @dataclass(slots=True)
@@ -663,7 +663,7 @@ class GaussianTrainer:
                 "screenSizeThreshold": float(max(self.training.screen_size_prune_threshold, 0.0)),
                 "worldSizeRatio": float(max(self.training.world_size_prune_ratio, 0.0)),
                 "outputCapacity": int(max(min(self._regen_capacity, self._effective_max_gaussians()), 1)),
-                "enableScreenSizePrune": np.uint32(1 if int(self.state.step + 1) > int(self.training.opacity_reset_interval) else 0),
+                "enableScreenSizePrune": np.uint32(1 if int(self.training.opacity_reset_interval) > 0 and int(self.state.step + 1) > int(self.training.opacity_reset_interval) else 0),
                 "forceSplitAll": np.uint32(1 if force_split_all else 0),
                 "forcePruneScaleThreshold": float(max(force_prune_scale_threshold, 0.0)),
             },

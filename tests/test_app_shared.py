@@ -103,7 +103,7 @@ def test_default_training_params_match_mcmc_reference_defaults():
     assert params.training.densify_until_iter == 15000
     assert params.training.densification_interval == 100
     assert params.training.densify_grad_threshold == 1.5e-4
-    assert params.training.opacity_reset_interval == 3000
+    assert params.training.opacity_reset_interval == 0
 
 
 def test_bicycle_images4_profile_applies_psnr_overrides():
@@ -113,7 +113,7 @@ def test_bicycle_images4_profile_applies_psnr_overrides():
     assert params.adam.scale_lr == 5e-3
     assert params.adam.opacity_lr == 5e-2
     assert params.training.mcmc_position_noise_enabled is False
-    assert params.training.lambda_dssim == 0.0
+    assert params.training.lambda_dssim == 0.2
     assert params.training.scale_l2_weight == 1e-4
     assert params.training.opacity_reg_weight == 0.0
     assert params.training.max_gaussians == 200000
@@ -122,7 +122,7 @@ def test_bicycle_images4_profile_applies_psnr_overrides():
     assert params.training.densify_grad_threshold == 1.5e-4
     assert params.training.screen_size_prune_threshold == 0.0
     assert params.training.world_size_prune_ratio == 0.0
-    assert params.training.opacity_reset_interval == 3000
+    assert params.training.opacity_reset_interval == 0
 
 
 def test_viewer_effective_training_setup_applies_auto_profile_and_init_override():
@@ -143,7 +143,7 @@ def test_viewer_effective_training_setup_applies_auto_profile_and_init_override(
     assert init.seed == 1234
     assert profile.name == "bicycle-images4-psnr"
     assert params.training.mcmc_position_noise_enabled is False
-    assert params.training.lambda_dssim == 0.0
+    assert params.training.lambda_dssim == 0.2
     assert params.training.scale_l2_weight == 1e-4
     assert params.training.opacity_reg_weight == 0.0
     assert init_hparams.initial_opacity == 0.1

@@ -248,7 +248,7 @@ TRAIN_DENSITY_ARGS = (
     A("--prune-min-opacity", type=float, default=0.005),
     A("--screen-size-prune-threshold", type=float, default=20.0),
     A("--world-size-prune-ratio", type=float, default=0.1),
-    A("--opacity-reset-interval", type=int, default=3000),
+    A("--opacity-reset-interval", type=int, default=0),
 )
 COMMANDS = (
     CommandSpec(
