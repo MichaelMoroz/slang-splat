@@ -5,13 +5,15 @@ from pathlib import Path
 import numpy as np
 import slangpy as spy
 
-from ..common import SHADER_ROOT
+from ..common import SHADER_ROOT, thread_count_2d
 
 
 class SeparableGaussianBlur:
     _BUFFER_USAGE = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
     _KERNEL_ENTRIES = {"horizontal": "csGaussianBlurHorizontal", "vertical": "csGaussianBlurVertical"}
-    _dispatch = lambda self, kernel, encoder, channel_count, vars: self._kernels[kernel].dispatch(thread_count=spy.uint3(self.width, self.height, int(channel_count)), vars=vars, command_encoder=encoder)
+
+    def _dispatch(self, kernel: str, encoder: spy.CommandEncoder, channel_count: int, vars: dict[str, object]) -> None:
+        self._kernels[kernel].dispatch(thread_count=thread_count_2d(self.width, self.height, channel_count), vars=vars, command_encoder=encoder)
 
     def __init__(self, device: spy.Device, width: int, height: int) -> None:
         self.device, self.width, self.height = device, int(width), int(height)

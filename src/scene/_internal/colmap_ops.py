@@ -19,8 +19,15 @@ INIT_SCALE_JITTER_MAX = 0.16
 INIT_OPACITY_BASE = 0.22
 INIT_OPACITY_MIN = 0.10
 INIT_OPACITY_MAX = 0.35
-_colmap_point_positions = lambda recon: (lambda points: points[np.isfinite(points).all(axis=1)])(point_tables(recon)[0])
-_subsample_points = lambda points, max_points: points if points.shape[0] <= max_points else points[np.linspace(0, points.shape[0] - 1, num=max_points, dtype=np.int64)]
+
+
+def _colmap_point_positions(recon: ColmapReconstruction) -> np.ndarray:
+    points = point_tables(recon)[0]
+    return points[np.isfinite(points).all(axis=1)]
+
+
+def _subsample_points(points: np.ndarray, max_points: int) -> np.ndarray:
+    return points if points.shape[0] <= max_points else points[np.linspace(0, points.shape[0] - 1, num=max_points, dtype=np.int64)]
 
 
 def _estimate_point_spacing(points: np.ndarray) -> tuple[float, float]:
@@ -80,8 +87,13 @@ def build_training_frames(recon: ColmapReconstruction, images_subdir: str = "ima
     return frames
 
 
-_random_unit_quaternions = lambda rng, count: (lambda q: q / np.maximum(np.linalg.norm(q, axis=1, keepdims=True), 1e-8))(rng.normal(size=(count, 4)).astype(np.float32))
-_identity_quaternions = lambda count: np.tile(np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32), (max(int(count), 0), 1))
+def _random_unit_quaternions(rng: np.random.Generator, count: int) -> np.ndarray:
+    q = rng.normal(size=(count, 4)).astype(np.float32)
+    return q / np.maximum(np.linalg.norm(q, axis=1, keepdims=True), 1e-8)
+
+
+def _identity_quaternions(count: int) -> np.ndarray:
+    return np.tile(np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32), (max(int(count), 0), 1))
 
 
 def point_nn_scales(points: np.ndarray) -> np.ndarray:

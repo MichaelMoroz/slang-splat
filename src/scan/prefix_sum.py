@@ -12,13 +12,13 @@ class GPUPrefixSum:
     def __init__(self, device: spy.Device):
         self.device = device
         load = device.load_program
-        mk_kernel = lambda entry: device.create_compute_kernel(load(str(SHADER_DIR / "prefix_sum.slang"), [entry]))
-        self.clear_uint = mk_kernel("csClearUIntBuffer")
-        self.scan_float_blocks = mk_kernel("csScanFloatBlocks")
-        self.scan_uint_blocks = mk_kernel("csScanUIntBlocks")
-        self.add_float_block_offsets = mk_kernel("csAddFloatBlockOffsets")
-        self.add_uint_block_offsets = mk_kernel("csAddUIntBlockOffsets")
-        self.write_float_total_kernel = mk_kernel("csWriteFloatScanTotal")
+        shader_path = str(SHADER_DIR / "prefix_sum.slang")
+        self.clear_uint = device.create_compute_kernel(load(shader_path, ["csClearUIntBuffer"]))
+        self.scan_float_blocks = device.create_compute_kernel(load(shader_path, ["csScanFloatBlocks"]))
+        self.scan_uint_blocks = device.create_compute_kernel(load(shader_path, ["csScanUIntBlocks"]))
+        self.add_float_block_offsets = device.create_compute_kernel(load(shader_path, ["csAddFloatBlockOffsets"]))
+        self.add_uint_block_offsets = device.create_compute_kernel(load(shader_path, ["csAddUIntBlockOffsets"]))
+        self.write_float_total_kernel = device.create_compute_kernel(load(shader_path, ["csWriteFloatScanTotal"]))
         self._float_levels: list[tuple[spy.Buffer, spy.Buffer, int]] = []
         self._uint_levels: list[tuple[spy.Buffer, spy.Buffer, int]] = []
 

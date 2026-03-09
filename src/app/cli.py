@@ -33,7 +33,13 @@ def A(*flags: str, **kwargs: object) -> ArgSpec:
     return ArgSpec(flags=tuple(flags), kwargs=dict(kwargs))
 
 
-_format_metric = lambda value, fmt: format(value, fmt) if np.isfinite(value) else "n/a"
+def _format_metric(value: float, fmt: str) -> str:
+    return format(value, fmt) if np.isfinite(value) else "n/a"
+
+
+def _optional_float_arg(args: argparse.Namespace, name: str) -> float | None:
+    value = getattr(args, name, None)
+    return None if value is None else float(value)
 
 
 def _renderer(args: argparse.Namespace, width: int, height: int) -> GaussianRenderer:
@@ -50,13 +56,12 @@ def _renderer(args: argparse.Namespace, width: int, height: int) -> GaussianRend
 
 
 def _init_hparams(args: argparse.Namespace) -> GaussianInitHyperParams:
-    get = lambda name: None if getattr(args, name, None) is None else float(getattr(args, name))
     return GaussianInitHyperParams(
-        position_jitter_std=get("init_position_jitter"),
-        base_scale=get("init_base_scale"),
-        scale_jitter_ratio=get("init_scale_jitter"),
-        initial_opacity=get("init_opacity"),
-        color_jitter_std=get("init_color_jitter"),
+        position_jitter_std=_optional_float_arg(args, "init_position_jitter"),
+        base_scale=_optional_float_arg(args, "init_base_scale"),
+        scale_jitter_ratio=_optional_float_arg(args, "init_scale_jitter"),
+        initial_opacity=_optional_float_arg(args, "init_opacity"),
+        color_jitter_std=_optional_float_arg(args, "init_color_jitter"),
     )
 
 
@@ -301,8 +306,26 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-build_single_render_parser = lambda: (lambda parser: (_add_arguments(parser, SINGLE_RENDER_ARGS), parser.set_defaults(handler=run_render_single), parser)[-1])(argparse.ArgumentParser(description="Basic Slangpy Gaussian splat renderer."))
-parse_args = lambda argv=None: build_parser().parse_args(argv)
-parse_single_render_args = lambda argv=None: build_single_render_parser().parse_args(argv)
-main = lambda argv=None: (lambda args: int(args.handler(args)))(parse_args(argv))
-render_main = lambda argv=None: (lambda args: int(args.handler(args)))(parse_single_render_args(argv))
+def build_single_render_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Basic Slangpy Gaussian splat renderer.")
+    _add_arguments(parser, SINGLE_RENDER_ARGS)
+    parser.set_defaults(handler=run_render_single)
+    return parser
+
+
+def parse_args(argv=None):
+    return build_parser().parse_args(argv)
+
+
+def parse_single_render_args(argv=None):
+    return build_single_render_parser().parse_args(argv)
+
+
+def main(argv=None) -> int:
+    args = parse_args(argv)
+    return int(args.handler(args))
+
+
+def render_main(argv=None) -> int:
+    args = parse_single_render_args(argv)
+    return int(args.handler(args))

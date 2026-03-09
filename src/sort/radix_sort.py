@@ -21,24 +21,64 @@ INDIRECT_ARGS_UINT_COUNT = 25
 
 class GPURadixSort:
     BUILD_RANGE_ARGS_OFFSET = BUILD_RANGE_ARGS_OFFSET
-    level_size = lambda self, value, level: reduce(lambda current, _: (current + BLOCK_SIZE - 1) // BLOCK_SIZE, range(level), value)
-    level_offset = lambda self, total_size, level: reduce(lambda state, lvl: (state[0] + ((state[1] + 1) // 2 if lvl == 0 else state[1]), (state[1] + BLOCK_SIZE - 1) // BLOCK_SIZE), range(level), (0, total_size))[0]
-    ensure_indirect_args = lambda self: self.indirect_args if self.indirect_args is not None else (setattr(self, "indirect_args", self.device.create_buffer(size=INDIRECT_ARGS_UINT_COUNT * 4, usage=spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.indirect_argument)) or self.indirect_args)
-    compute_indirect_args_from_buffer_dispatch = lambda self, encoder, count_buffer, count_offset, max_element_count, args_buffer: (encoder.push_debug_group("Compute Indirect Args", debug_color(0)), self.compute_args_from_buffer.dispatch(thread_count=spy.uint3(1, 1, 1), vars={"g_ElementCountBuffer": count_buffer, "g_elementCountOffset": count_offset, "g_maxElementCount": int(max_element_count), "g_IndirectArgs": args_buffer}, command_encoder=encoder), encoder.pop_debug_group())
-    sort_key_values = lambda self, encoder, keys_buffer, values_buffer, n, max_bits=32: None if n <= 0 else (encoder.push_debug_group("Radix Sort", debug_color(1)), (lambda working_buffers, args_buffer: (self.compute_args.dispatch(thread_count=spy.uint3(1, 1, 1), vars={"g_elementCount": n, "g_maxElementCount": n, "g_IndirectArgs": args_buffer}, command_encoder=encoder), self.sort_key_values_indirect(encoder, keys_buffer, values_buffer, n, args_buffer, working_buffers, max_bits=max_bits)))(self.ensure_buffers(n), self.ensure_indirect_args()), encoder.pop_debug_group())
+
+    def level_size(self, value: int, level: int) -> int:
+        current = value
+        for _ in range(level):
+            current = (current + BLOCK_SIZE - 1) // BLOCK_SIZE
+        return current
+
+    def level_offset(self, total_size: int, level: int) -> int:
+        offset, current = 0, total_size
+        for lvl in range(level):
+            offset += (current + 1) // 2 if lvl == 0 else current
+            current = (current + BLOCK_SIZE - 1) // BLOCK_SIZE
+        return offset
+
+    def ensure_indirect_args(self) -> spy.Buffer:
+        if self.indirect_args is None:
+            self.indirect_args = self.device.create_buffer(
+                size=INDIRECT_ARGS_UINT_COUNT * 4,
+                usage=spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.indirect_argument,
+            )
+        return self.indirect_args
+
+    def compute_indirect_args_from_buffer_dispatch(self, encoder: spy.CommandEncoder, count_buffer: spy.Buffer, count_offset: int, max_element_count: int, args_buffer: spy.Buffer) -> None:
+        encoder.push_debug_group("Compute Indirect Args", debug_color(0))
+        self.compute_args_from_buffer.dispatch(
+            thread_count=spy.uint3(1, 1, 1),
+            vars={
+                "g_ElementCountBuffer": count_buffer,
+                "g_elementCountOffset": count_offset,
+                "g_maxElementCount": int(max_element_count),
+                "g_IndirectArgs": args_buffer,
+            },
+            command_encoder=encoder,
+        )
+        encoder.pop_debug_group()
+
+    def sort_key_values(self, encoder: spy.CommandEncoder, keys_buffer: spy.Buffer, values_buffer: spy.Buffer, n: int, max_bits: int = 32) -> None:
+        if n <= 0:
+            return
+        encoder.push_debug_group("Radix Sort", debug_color(1))
+        working_buffers = self.ensure_buffers(n)
+        args_buffer = self.ensure_indirect_args()
+        self.compute_args.dispatch(
+            thread_count=spy.uint3(1, 1, 1),
+            vars={"g_elementCount": n, "g_maxElementCount": n, "g_IndirectArgs": args_buffer},
+            command_encoder=encoder,
+        )
+        self.sort_key_values_indirect(encoder, keys_buffer, values_buffer, n, args_buffer, working_buffers, max_bits=max_bits)
+        encoder.pop_debug_group()
 
     def __init__(self, device: spy.Device):
         self.device = device
         load = device.load_program
-        mk_kernel = lambda name, entry: device.create_compute_kernel(load(str(SHADER_DIR / name), [entry]))
-        mk_pipe = lambda name, entry: device.create_compute_pipeline(load(str(SHADER_DIR / name), [entry]))
-        self.compute_args = mk_kernel("compute_indirect_args.slang", "csComputeIndirectArgs")
-        self.compute_args_from_buffer = mk_kernel(
-            "compute_indirect_args_from_buffer.slang", "csComputeIndirectArgsFromBuffer"
-        )
-        self.histogram = mk_pipe("histogram.slang", "csHistogram")
-        self.prefix_block = mk_pipe("prefix_block.slang", "csPrefixBlock")
-        self.scatter = mk_pipe("scatter.slang", "csScatter")
+        self.compute_args = device.create_compute_kernel(load(str(SHADER_DIR / "compute_indirect_args.slang"), ["csComputeIndirectArgs"]))
+        self.compute_args_from_buffer = device.create_compute_kernel(load(str(SHADER_DIR / "compute_indirect_args_from_buffer.slang"), ["csComputeIndirectArgsFromBuffer"]))
+        self.histogram = device.create_compute_pipeline(load(str(SHADER_DIR / "histogram.slang"), ["csHistogram"]))
+        self.prefix_block = device.create_compute_pipeline(load(str(SHADER_DIR / "prefix_block.slang"), ["csPrefixBlock"]))
+        self.scatter = device.create_compute_pipeline(load(str(SHADER_DIR / "scatter.slang"), ["csScatter"]))
         self._capacity_n = 0
         self._buffers: dict[str, object] | None = None
         self.indirect_args: spy.Buffer | None = None
@@ -71,10 +111,9 @@ class GPURadixSort:
         layout = self._layout(grow_n)
         usage = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access
         copy_usage = usage | spy.BufferUsage.copy_source
-        mk = lambda size: self.device.create_buffer(size=max(size, 1) * 4, usage=copy_usage)
         self._buffers = {
-            "keys": [mk(grow_n), mk(grow_n)],
-            "values": [mk(grow_n), mk(grow_n)],
+            "keys": [self.device.create_buffer(size=max(grow_n, 1) * 4, usage=copy_usage), self.device.create_buffer(size=max(grow_n, 1) * 4, usage=copy_usage)],
+            "values": [self.device.create_buffer(size=max(grow_n, 1) * 4, usage=copy_usage), self.device.create_buffer(size=max(grow_n, 1) * 4, usage=copy_usage)],
             "histogram": self.device.create_buffer(size=max(layout["packed_hist_n"], 1) * 4, usage=usage),
             "prefix": self.device.create_buffer(size=max(layout["total_prefix_size"], 1) * 4, usage=usage),
         }
@@ -134,14 +173,16 @@ class GPURadixSort:
         total_n = layout["total_n"]
         num_levels = layout["num_levels"]
 
-        indirect = lambda offset: spy.BufferOffsetPair(args_buffer, offset * 4)
-        set_common = lambda cursor, shift: (
-            setattr(cursor, "g_shift", shift),
-            setattr(cursor, "g_useParamsBuffer", 1 if use_params_buffer else 0),
-            setattr(cursor, "g_ParamsBuffer", args_buffer) if use_params_buffer else None,
-            setattr(cursor, "g_elementCount", 0 if use_params_buffer else n),
-            setattr(cursor, "g_numGroups", 0 if use_params_buffer else num_groups),
-        )
+        def indirect(offset: int) -> spy.BufferOffsetPair:
+            return spy.BufferOffsetPair(args_buffer, offset * 4)
+
+        def set_common(cursor: spy.ShaderCursor, shift: int) -> None:
+            cursor.g_shift = shift
+            cursor.g_useParamsBuffer = 1 if use_params_buffer else 0
+            if use_params_buffer:
+                cursor.g_ParamsBuffer = args_buffer
+            cursor.g_elementCount = 0 if use_params_buffer else n
+            cursor.g_numGroups = 0 if use_params_buffer else num_groups
 
         passes = max((max_bits + BITS_PER_PASS - 1) // BITS_PER_PASS, 1)
         keys_in, keys_out = keys_buffer, working_buffers["keys"][0]

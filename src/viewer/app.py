@@ -8,7 +8,7 @@ from slangpy import math as smath
 
 from .. import create_default_device
 from ..app.shared import RendererParams, build_init_params, build_training_params, fit_camera
-from ..common import normalize3
+from ..common import clamp_index, normalize3
 from ..renderer import Camera, GaussianRenderer
 from ..training import TrainingHyperParams
 from . import presenter, session
@@ -51,27 +51,109 @@ _TRAINING_PARAM_KEYS = {
 }
 _TRAIN_SETUP_DEFAULTS = default_control_values("Train Setup")
 _TRAINING_DEFAULTS = default_control_values("Train Optimizer", "Train Stability")
-_training_kwargs = lambda value_for: {name: value_for(control) for name, control in _TRAINING_PARAM_KEYS.items()}
 
-default_images_subdir = lambda: IMAGE_SUBDIR_OPTIONS[DEFAULT_IMAGE_SUBDIR_INDEX]
-default_renderer_params = lambda max_prepass_memory_mb=DEFAULT_MAX_PREPASS_MEMORY_MB: RendererParams(list_capacity_multiplier=DEFAULT_LIST_CAPACITY_MULTIPLIER, max_prepass_memory_mb=max(int(max_prepass_memory_mb), 1))
-default_init_params = lambda: build_init_params(None, None, None, _TRAIN_SETUP_DEFAULTS["init_opacity"], _TRAIN_SETUP_DEFAULTS["seed"])
-default_training_params = lambda background=DEFAULT_VIEWER_BACKGROUND: build_training_params(background=background, **_training_kwargs(lambda control: _TRAIN_SETUP_DEFAULTS[control] if control in _TRAIN_SETUP_DEFAULTS else _TRAINING_DEFAULTS[control]))
+
+def _training_kwargs(value_for) -> dict[str, object]:
+    return {name: value_for(control) for name, control in _TRAINING_PARAM_KEYS.items()}
+
+
+def _default_training_control_value(control: str) -> object:
+    return _TRAIN_SETUP_DEFAULTS[control] if control in _TRAIN_SETUP_DEFAULTS else _TRAINING_DEFAULTS[control]
+
+
+
+def default_images_subdir() -> str:
+    return IMAGE_SUBDIR_OPTIONS[DEFAULT_IMAGE_SUBDIR_INDEX]
+
+
+def default_renderer_params(max_prepass_memory_mb: int = DEFAULT_MAX_PREPASS_MEMORY_MB) -> RendererParams:
+    return RendererParams(list_capacity_multiplier=DEFAULT_LIST_CAPACITY_MULTIPLIER, max_prepass_memory_mb=max(int(max_prepass_memory_mb), 1))
+
+
+def default_init_params():
+    return build_init_params(None, None, None, _TRAIN_SETUP_DEFAULTS["init_opacity"], _TRAIN_SETUP_DEFAULTS["seed"])
+
+
+def default_training_params(background=DEFAULT_VIEWER_BACKGROUND):
+    return build_training_params(background=background, **_training_kwargs(_default_training_control_value))
 
 
 class SplatViewer(spy.AppWindow):
-    c = lambda self, key: self.ui.control(key)
-    t = lambda self, key: self.ui.text(key)
-    _selected_images_subdir = lambda self: self.image_subdir_options[min(max(int(self.c("images_subdir").value), 0), len(self.image_subdir_options) - 1)]
-    renderer_params = lambda self, allow_debug_overlays: RendererParams(radius_scale=float(self.c("radius_scale").value), alpha_cutoff=float(self.c("alpha_cutoff").value), max_splat_steps=int(self.c("max_splat_steps").value), transmittance_threshold=float(self.c("trans_threshold").value), sampled5_safety_scale=float(self.c("sampled5_safety").value), list_capacity_multiplier=self.s.list_capacity_multiplier, max_prepass_memory_mb=self.s.max_prepass_memory_mb, debug_show_ellipses=bool(self.c("debug_ellipse").value) if allow_debug_overlays else False, debug_show_processed_count=bool(self.c("debug_processed_count").value) if allow_debug_overlays else False, debug_show_grad_norm=bool(self.c("debug_grad_norm").value) if allow_debug_overlays else False)
-    init_params = lambda self: build_init_params(None, None, None, self.c("init_opacity").value, self.c("seed").value)
-    _forward = lambda self: (lambda cy, sy, cp, sp: normalize3(spy.float3(cp * sy, sp, cp * cy), eps=_VIEW_VEC_EPS))(math.cos(self.s.yaw), math.sin(self.s.yaw), math.cos(self.s.pitch), math.sin(self.s.pitch))
-    camera = lambda self: (lambda forward: Camera.look_at(position=self.s.camera_pos, target=self.s.camera_pos + forward, up=self.s.up, fov_y_degrees=float(self.s.fov_y), near=float(self.s.near), far=float(self.s.far)))(self._forward())
-    apply_camera_fit = lambda self, bounds: (lambda fit: (setattr(self.s, "camera_pos", fit.position), setattr(self.s, "near", fit.near), setattr(self.s, "far", fit.far), setattr(self.s, "move_speed", fit.move_speed), setattr(self.c("move_speed"), "value", float(fit.move_speed)), setattr(self.s, "yaw", 0.0), setattr(self.s, "pitch", 0.0), setattr(self.s, "move_vel", spy.float3(0.0, 0.0, 0.0)), setattr(self.s, "rot_vel", spy.float2(0.0, 0.0))))(fit_camera(bounds, self.s.fov_y))
-    on_keyboard_event = lambda self, event: self.s.keys.__setitem__(event.key, event.type == spy.KeyboardEventType.key_press) if event.type in (spy.KeyboardEventType.key_press, spy.KeyboardEventType.key_release) else None
-    training_params = lambda self: build_training_params(background=self.s.background, **_training_kwargs(lambda control: self.c(control).value))
-    on_resize = lambda self, width, height: (self.device.wait(), session.recreate_renderer(self, int(width), int(height)) if width > 0 and height > 0 and (self.s.renderer.width, self.s.renderer.height) != (int(width), int(height)) else None, setattr(self.s, "last_resize_exception", ""), setattr(self.s, "last_error", ""))
-    on_mouse_event = lambda self, event: (setattr(self.s, "mouse_left", event.type == spy.MouseEventType.button_down) if event.type in (spy.MouseEventType.button_down, spy.MouseEventType.button_up) and event.button == spy.MouseButton.left else None, self.s.mouse_delta.__iadd__(spy.float2(event.pos.x - self.s.mx, event.pos.y - self.s.my)) if event.type == spy.MouseEventType.move and self.s.mx is not None and self.s.my is not None else None, setattr(self.s, "mx", event.pos.x) if event.type == spy.MouseEventType.move else None, setattr(self.s, "my", event.pos.y) if event.type == spy.MouseEventType.move else None, setattr(self.s, "scroll_delta", self.s.scroll_delta + float(event.scroll.y)) if event.type == spy.MouseEventType.scroll else None)
+
+    def c(self, key: str):
+        return self.ui.control(key)
+
+    def t(self, key: str):
+        return self.ui.text(key)
+
+    def _selected_images_subdir(self) -> str:
+        return self.image_subdir_options[clamp_index(int(self.c("images_subdir").value), len(self.image_subdir_options))]
+
+    def renderer_params(self, allow_debug_overlays: bool) -> RendererParams:
+        return RendererParams(
+            radius_scale=float(self.c("radius_scale").value),
+            alpha_cutoff=float(self.c("alpha_cutoff").value),
+            max_splat_steps=int(self.c("max_splat_steps").value),
+            transmittance_threshold=float(self.c("trans_threshold").value),
+            sampled5_safety_scale=float(self.c("sampled5_safety").value),
+            list_capacity_multiplier=self.s.list_capacity_multiplier,
+            max_prepass_memory_mb=self.s.max_prepass_memory_mb,
+            debug_show_ellipses=bool(self.c("debug_ellipse").value) if allow_debug_overlays else False,
+            debug_show_processed_count=bool(self.c("debug_processed_count").value) if allow_debug_overlays else False,
+            debug_show_grad_norm=bool(self.c("debug_grad_norm").value) if allow_debug_overlays else False,
+        )
+
+    def init_params(self):
+        return build_init_params(None, None, None, self.c("init_opacity").value, self.c("seed").value)
+
+    def _forward(self) -> spy.float3:
+        cy, sy = math.cos(self.s.yaw), math.sin(self.s.yaw)
+        cp, sp = math.cos(self.s.pitch), math.sin(self.s.pitch)
+        return normalize3(spy.float3(cp * sy, sp, cp * cy), eps=_VIEW_VEC_EPS)
+
+    def camera(self) -> Camera:
+        forward = self._forward()
+        return Camera.look_at(position=self.s.camera_pos, target=self.s.camera_pos + forward, up=self.s.up, fov_y_degrees=float(self.s.fov_y), near=float(self.s.near), far=float(self.s.far))
+
+    def apply_camera_fit(self, bounds) -> None:
+        fit = fit_camera(bounds, self.s.fov_y)
+        self.s.camera_pos = fit.position
+        self.s.near = fit.near
+        self.s.far = fit.far
+        self.s.move_speed = fit.move_speed
+        self.c("move_speed").value = float(fit.move_speed)
+        self.s.yaw = 0.0
+        self.s.pitch = 0.0
+        self.s.move_vel = spy.float3(0.0, 0.0, 0.0)
+        self.s.rot_vel = spy.float2(0.0, 0.0)
+
+    def on_keyboard_event(self, event) -> None:
+        if event.type in (spy.KeyboardEventType.key_press, spy.KeyboardEventType.key_release):
+            self.s.keys[event.key] = event.type == spy.KeyboardEventType.key_press
+
+    def training_params(self):
+        return build_training_params(background=self.s.background, **_training_kwargs(self._training_control_value))
+
+    def _training_control_value(self, control: str) -> object:
+        return self.c(control).value
+
+    def on_resize(self, width: int, height: int) -> None:
+        self.device.wait()
+        if width > 0 and height > 0 and (self.s.renderer.width, self.s.renderer.height) != (int(width), int(height)):
+            session.recreate_renderer(self, int(width), int(height))
+        self.s.last_resize_exception = ""
+        self.s.last_error = ""
+
+    def on_mouse_event(self, event) -> None:
+        if event.type in (spy.MouseEventType.button_down, spy.MouseEventType.button_up) and event.button == spy.MouseButton.left:
+            self.s.mouse_left = event.type == spy.MouseEventType.button_down
+        if event.type == spy.MouseEventType.move:
+            if self.s.mx is not None and self.s.my is not None:
+                self.s.mouse_delta += spy.float2(event.pos.x - self.s.mx, event.pos.y - self.s.my)
+            self.s.mx = event.pos.x
+            self.s.my = event.pos.y
+        if event.type == spy.MouseEventType.scroll:
+            self.s.scroll_delta += float(event.scroll.y)
 
     def __init__(self, app: spy.App, width: int = 1280, height: int = 720, title: str = "Slang Splat Viewer", max_prepass_memory_mb: int = 4096) -> None:
         super().__init__(app, width=width, height=height, title=title, resizable=True, enable_vsync=False)
@@ -86,12 +168,37 @@ class SplatViewer(spy.AppWindow):
 
     def _bind_toolkit_callbacks(self) -> None:
         cb = self.toolkit.callbacks
-        cb.load_ply = lambda: (lambda path: session.load_scene(self, Path(path)) if path else None)(spy.platform.open_file_dialog([spy.platform.FileDialogFilter("PLY Files", "*.ply")]))
-        cb.load_colmap = lambda: (lambda path: session.load_colmap_dataset(self, Path(path), self._selected_images_subdir()) if path else None)(spy.platform.choose_folder_dialog())
-        cb.reload = lambda: session.load_scene(self, self.s.scene_path) if self.s.scene_path is not None else session.load_colmap_dataset(self, self.s.colmap_root, self._selected_images_subdir()) if self.s.colmap_root is not None else None
-        cb.reinitialize = lambda: session.initialize_training_scene(self)
-        cb.start_training = lambda: session.set_training_active(self, True)
-        cb.stop_training = lambda: session.set_training_active(self, False)
+        cb.load_ply = self._load_ply_callback
+        cb.load_colmap = self._load_colmap_callback
+        cb.reload = self._reload_callback
+        cb.reinitialize = self._reinitialize_callback
+        cb.start_training = self._start_training_callback
+        cb.stop_training = self._stop_training_callback
+
+    def _load_ply_callback(self) -> None:
+        path = spy.platform.open_file_dialog([spy.platform.FileDialogFilter("PLY Files", "*.ply")])
+        if path:
+            session.load_scene(self, Path(path))
+
+    def _load_colmap_callback(self) -> None:
+        path = spy.platform.choose_folder_dialog()
+        if path:
+            session.load_colmap_dataset(self, Path(path), self._selected_images_subdir())
+
+    def _reload_callback(self) -> None:
+        if self.s.scene_path is not None:
+            session.load_scene(self, self.s.scene_path)
+        elif self.s.colmap_root is not None:
+            session.load_colmap_dataset(self, self.s.colmap_root, self._selected_images_subdir())
+
+    def _reinitialize_callback(self) -> None:
+        session.initialize_training_scene(self)
+
+    def _start_training_callback(self) -> None:
+        session.set_training_active(self, True)
+
+    def _stop_training_callback(self) -> None:
+        session.set_training_active(self, False)
 
     def render(self, render_context) -> None:
         presenter.render_frame(self, render_context)

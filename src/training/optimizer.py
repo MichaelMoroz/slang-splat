@@ -6,7 +6,7 @@ from typing import Any
 import numpy as np
 import slangpy as spy
 
-from ..common import SHADER_ROOT
+from ..common import SHADER_ROOT, thread_count_1d
 from ..renderer import GaussianRenderer
 
 
@@ -14,7 +14,7 @@ class GaussianOptimizer:
     _GROUPS = ((0, 3), (3, 3), (6, 4), (10, 4))
     _PARAM_SETTINGS_U32_WIDTH = 8
     _RO_BUFFER_USAGE = spy.BufferUsage.shader_resource | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
-    _threads = staticmethod(lambda count: spy.uint3(int(count), 1, 1))
+    _threads = staticmethod(thread_count_1d)
 
     def __init__(self, device: spy.Device, renderer: GaussianRenderer, adam_hparams: Any, stability_hparams: Any) -> None:
         self.device = device

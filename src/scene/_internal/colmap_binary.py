@@ -11,8 +11,14 @@ COLMAP_SIMPLE_PINHOLE_MODEL_ID = 0
 COLMAP_PINHOLE_MODEL_ID = 1
 U64 = struct.Struct("<Q")
 I32 = struct.Struct("<i")
-_read = lambda handle, fmt: int(fmt.unpack(handle.read(fmt.size))[0])
-_read_f64_array = lambda handle, count: tuple(float(v) for v in struct.unpack("<" + ("d" * count), handle.read(8 * count)))
+
+
+def _read(handle, fmt: struct.Struct) -> int:
+    return int(fmt.unpack(handle.read(fmt.size))[0])
+
+
+def _read_f64_array(handle, count: int) -> tuple[float, ...]:
+    return tuple(float(v) for v in struct.unpack("<" + ("d" * count), handle.read(8 * count)))
 
 
 def _read_string(handle) -> str:

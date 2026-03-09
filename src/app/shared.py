@@ -7,6 +7,7 @@ import numpy as np
 from PIL import Image
 import slangpy as spy
 
+from ..common import clamp_float, clamp_int
 from ..scene import GaussianInitHyperParams, GaussianScene
 from ..training import AdamHyperParams, StabilityHyperParams, TrainingHyperParams, resolve_training_profile
 
@@ -33,8 +34,6 @@ _CLAMP_LIMITS = {
     "position_abs_max": (1e-3, 1e9),
     "loss_grad_clip": (1e-5, 1e6),
 }
-clamp_float = lambda value, lo, hi: float(np.clip(float(value), float(lo), float(hi)))
-clamp_int = lambda value, lo, hi: int(np.clip(int(value), int(lo), int(hi)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,8 +63,19 @@ class CameraFit:
     position: spy.float3; near: float; far: float; move_speed: float
 
 
-_filtered_rows = lambda values: (lambda rows: np.zeros((0, 3), dtype=np.float32) if rows.ndim != 2 or rows.shape[1] < 3 else rows[np.isfinite(rows[:, :3]).all(axis=1), :3])(np.ascontiguousarray(values, dtype=np.float32))
-_fit_vector = lambda values, size, fill=0.0: np.full((size,), fill, dtype=np.float32) if values is None else np.pad(np.asarray(values, dtype=np.float32).reshape(-1)[:size], (0, max(size - np.asarray(values).size, 0)), constant_values=fill)[:size].astype(np.float32)
+def _filtered_rows(values: np.ndarray) -> np.ndarray:
+    rows = np.ascontiguousarray(values, dtype=np.float32)
+    if rows.ndim != 2 or rows.shape[1] < 3:
+        return np.zeros((0, 3), dtype=np.float32)
+    return rows[np.isfinite(rows[:, :3]).all(axis=1), :3]
+
+
+def _fit_vector(values: np.ndarray | None, size: int, fill: float = 0.0) -> np.ndarray:
+    if values is None:
+        return np.full((size,), fill, dtype=np.float32)
+    flat = np.asarray(values, dtype=np.float32).reshape(-1)
+    padded = np.pad(flat[:size], (0, max(size - flat.size, 0)), constant_values=fill)
+    return padded[:size].astype(np.float32)
 
 
 def _weighted_bounds(points: np.ndarray, extents: np.ndarray | None = None, weights: np.ndarray | None = None) -> SceneBounds:
@@ -89,8 +99,12 @@ def _weighted_bounds(points: np.ndarray, extents: np.ndarray | None = None, weig
     return SceneBounds(center=center.astype(np.float32), radius=radius)
 
 
-estimate_scene_bounds = lambda scene: _weighted_bounds(scene.positions, extents=2.0 * np.max(np.asarray(scene.scales, dtype=np.float32), axis=1), weights=scene.opacities)
-estimate_point_bounds = lambda points: _weighted_bounds(points)
+def estimate_scene_bounds(scene: GaussianScene) -> SceneBounds:
+    return _weighted_bounds(scene.positions, extents=2.0 * np.max(np.asarray(scene.scales, dtype=np.float32), axis=1), weights=scene.opacities)
+
+
+def estimate_point_bounds(points: np.ndarray) -> SceneBounds:
+    return _weighted_bounds(points)
 
 
 def fit_camera(bounds: SceneBounds, fov_y_degrees: float) -> CameraFit:
@@ -215,7 +229,8 @@ def apply_training_profile(
     )
 
 
-renderer_kwargs = lambda params: {name: getattr(params, name) for name in RendererParams.__dataclass_fields__}
+def renderer_kwargs(params: RendererParams) -> dict[str, object]:
+    return {name: getattr(params, name) for name in RendererParams.__dataclass_fields__}
 
 
 def save_snapshot(path: Path, rgba: np.ndarray, flip_y: bool = True) -> None:

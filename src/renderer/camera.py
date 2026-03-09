@@ -22,11 +22,30 @@ class Camera:
     cx: float | None = None
     cy: float | None = None
     basis_override: np.ndarray | None = None
-    focal_pixels = lambda self, height: float(self.fy) if self.fy is not None else float(0.5 * float(height) / np.tan(0.5 * np.deg2rad(self.fov_y_degrees)))
-    focal_pixels_xy = lambda self, width, height: (float(self.fx) if self.fx is not None else float(self.focal_pixels(height)), float(self.fy) if self.fy is not None else float(self.focal_pixels(height)))
-    principal_point = lambda self, width, height: (float(self.cx) if self.cx is not None else 0.5 * float(width), float(self.cy) if self.cy is not None else 0.5 * float(height))
-    pixel_world_size_max = lambda self, depth, width, height: float(2.0 * max(float(depth), 1e-8) / max(min(self.focal_pixels_xy(width, height)), 1e-8))
-    look_at = staticmethod(lambda position, target=(0.0, 0.0, 0.0), up=(0.0, 1.0, 0.0), fov_y_degrees=60.0, near=0.1, far=100.0: Camera(position=np.asarray(position, dtype=np.float32), target=np.asarray(target, dtype=np.float32), up=np.asarray(up, dtype=np.float32), fov_y_degrees=fov_y_degrees, near=near, far=far))
+
+    def focal_pixels(self, height: int) -> float:
+        return float(self.fy) if self.fy is not None else float(0.5 * float(height) / np.tan(0.5 * np.deg2rad(self.fov_y_degrees)))
+
+    def focal_pixels_xy(self, width: int, height: int) -> tuple[float, float]:
+        focal_y = self.focal_pixels(height)
+        return float(self.fx) if self.fx is not None else float(focal_y), float(self.fy) if self.fy is not None else float(focal_y)
+
+    def principal_point(self, width: int, height: int) -> tuple[float, float]:
+        return float(self.cx) if self.cx is not None else 0.5 * float(width), float(self.cy) if self.cy is not None else 0.5 * float(height)
+
+    def pixel_world_size_max(self, depth: float, width: int, height: int) -> float:
+        return float(2.0 * max(float(depth), 1e-8) / max(min(self.focal_pixels_xy(width, height)), 1e-8))
+
+    @staticmethod
+    def look_at(position, target=(0.0, 0.0, 0.0), up=(0.0, 1.0, 0.0), fov_y_degrees=60.0, near=0.1, far=100.0) -> "Camera":
+        return Camera(
+            position=np.asarray(position, dtype=np.float32),
+            target=np.asarray(target, dtype=np.float32),
+            up=np.asarray(up, dtype=np.float32),
+            fov_y_degrees=fov_y_degrees,
+            near=near,
+            far=far,
+        )
 
     def __post_init__(self) -> None:
         self.position = np.asarray(self.position, dtype=np.float32).reshape(3)

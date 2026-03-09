@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
+from functools import partial
 from types import SimpleNamespace
 
 import numpy as np
@@ -130,8 +131,13 @@ class ViewerUI:
     _values: dict[str, object] = field(default_factory=dict)
     _texts: dict[str, str] = field(default_factory=dict)
 
-    controls = property(lambda self: {k: _ControlProxy(self._values, k) for k in self._values})
-    texts = property(lambda self: {k: _TextProxy(self._texts, k) for k in self._texts})
+    @property
+    def controls(self):
+        return {k: _ControlProxy(self._values, k) for k in self._values}
+
+    @property
+    def texts(self):
+        return {k: _TextProxy(self._texts, k) for k in self._texts}
 
     def control(self, key: str) -> _ControlProxy:
         return _ControlProxy(self._values, key)
@@ -142,10 +148,14 @@ class ViewerUI:
 
 @dataclass(slots=True)
 class ToolkitState:
-    loss_history: deque = field(default_factory=lambda: deque(maxlen=LOSS_HISTORY_SIZE))
-    fps_history: deque = field(default_factory=lambda: deque(maxlen=FPS_HISTORY_SIZE))
-    mse_history: deque = field(default_factory=lambda: deque(maxlen=LOSS_HISTORY_SIZE))
-    step_history: deque = field(default_factory=lambda: deque(maxlen=LOSS_HISTORY_SIZE))
+    loss_history: deque = field(default_factory=partial(deque, maxlen=LOSS_HISTORY_SIZE))
+    fps_history: deque = field(default_factory=partial(deque, maxlen=FPS_HISTORY_SIZE))
+    mse_history: deque = field(default_factory=partial(deque, maxlen=LOSS_HISTORY_SIZE))
+    step_history: deque = field(default_factory=partial(deque, maxlen=LOSS_HISTORY_SIZE))
+
+
+def _noop() -> None:
+    return None
 
 
 class ToolkitWindow:
@@ -179,12 +189,12 @@ class ToolkitWindow:
         self._apply_theme()
 
         self.callbacks = SimpleNamespace(
-            load_ply=lambda: None,
-            load_colmap=lambda: None,
-            reload=lambda: None,
-            reinitialize=lambda: None,
-            start_training=lambda: None,
-            stop_training=lambda: None,
+            load_ply=_noop,
+            load_colmap=_noop,
+            reload=_noop,
+            reinitialize=_noop,
+            start_training=_noop,
+            stop_training=_noop,
         )
         self.tk = ToolkitState()
         self._alive = True

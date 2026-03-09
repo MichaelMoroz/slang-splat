@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 import slangpy as spy
 
-from ..common import SHADER_ROOT
+from ..common import SHADER_ROOT, thread_count_1d
 
 
 @dataclass(slots=True)
@@ -20,9 +20,10 @@ class AdamRuntimeHyperParams:
 
 class AdamOptimizer:
     _RW_BUFFER_USAGE = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
-    _clip_threads = staticmethod(lambda count: spy.uint3(int(count), 1, 1))
-    _grad_norm_threads = staticmethod(lambda count: spy.uint3(int(count), 1, 1))
-    _param_threads = staticmethod(lambda count: spy.uint3(int(count), 1, 1))
+
+    _clip_threads = staticmethod(thread_count_1d)
+    _grad_norm_threads = staticmethod(thread_count_1d)
+    _param_threads = staticmethod(thread_count_1d)
 
     def __init__(self, device: spy.Device, adam_hparams: Any, runtime_hparams: AdamRuntimeHyperParams) -> None:
         self.device = device

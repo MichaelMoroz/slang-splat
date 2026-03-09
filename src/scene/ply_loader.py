@@ -9,7 +9,10 @@ from plyfile import PlyData
 from .gaussian_scene import GaussianScene
 
 SH_C0 = 0.28209479177387814
-_sigmoid = lambda values: 1.0 / (1.0 + np.exp(-values))
+
+
+def _sigmoid(values: np.ndarray) -> np.ndarray:
+    return 1.0 / (1.0 + np.exp(-values))
 
 
 def _sorted_props(names: Iterable[str], prefix: str) -> list[str]:

@@ -7,7 +7,7 @@ import numpy as np
 import slangpy as spy
 
 from ..app.shared import apply_training_profile, estimate_point_bounds, estimate_scene_bounds, renderer_kwargs
-from ..common import SHADER_ROOT
+from ..common import SHADER_ROOT, clamp_index
 from ..renderer import GaussianRenderer
 from ..scene import GaussianScene, build_training_frames, initialize_scene_from_colmap_points, load_colmap_reconstruction, load_gaussian_ply, resolve_colmap_init_hparams
 from ..training import GaussianTrainer
@@ -23,13 +23,23 @@ def _clear(viewer: object, *attrs: str) -> None:
             del value
 
 
-_point_tables = lambda recon: (lambda xyz, rgb: (xyz, rgb) if xyz.shape[0] == rgb.shape[0] and xyz.shape[0] > 0 else (_ for _ in ()).throw(RuntimeError("COLMAP point tables are empty or mismatched.")))(*point_tables(recon))
+def _point_tables(recon: object) -> tuple[np.ndarray, np.ndarray]:
+    xyz, rgb = point_tables(recon)
+    if xyz.shape[0] != rgb.shape[0] or xyz.shape[0] <= 0:
+        raise RuntimeError("COLMAP point tables are empty or mismatched.")
+    return xyz, rgb
 
 
-_invalidate = lambda viewer, *targets: [setattr(viewer.s, f"synced_step_{target}", -1) for target in (targets or ("main", "debug"))]
+def _invalidate(viewer: object, *targets: str) -> None:
+    for target in targets or ("main", "debug"):
+        setattr(viewer.s, f"synced_step_{target}", -1)
 
 
-_reset_loss_debug = lambda viewer: (setattr(viewer.s, "loss_debug_texture", None), setattr(viewer.s, "debug_present_texture", None), _clear(viewer, "debug_renderer"), _invalidate(viewer, "debug"))
+def _reset_loss_debug(viewer: object) -> None:
+    viewer.s.loss_debug_texture = None
+    viewer.s.debug_present_texture = None
+    _clear(viewer, "debug_renderer")
+    _invalidate(viewer, "debug")
 
 
 def _reset_loaded_runtime(viewer: object) -> None:
@@ -46,13 +56,31 @@ def _reset_loaded_runtime(viewer: object) -> None:
     _clear(viewer, "training_renderer")
 
 
-_scene_signature = lambda viewer: None if viewer.s.colmap_root is None or viewer.s.colmap_recon is None or not viewer.s.training_frames else (lambda init: (str(viewer.s.colmap_root.resolve()), len(viewer.s.training_frames), init.seed, None if init.hparams.initial_opacity is None else round(float(init.hparams.initial_opacity), 8)))(viewer.init_params())
+def _scene_signature(viewer: object):
+    if viewer.s.colmap_root is None or viewer.s.colmap_recon is None or not viewer.s.training_frames:
+        return None
+    init = viewer.init_params()
+    return (
+        str(viewer.s.colmap_root.resolve()),
+        len(viewer.s.training_frames),
+        init.seed,
+        None if init.hparams.initial_opacity is None else round(float(init.hparams.initial_opacity), 8),
+    )
 
 
-create_debug_shaders = lambda viewer: (lambda shader_path: (setattr(viewer.s, "debug_abs_diff_kernel", viewer.device.create_compute_kernel(viewer.device.load_program(shader_path, ["csComposeAbsDiffDebug"]))), setattr(viewer.s, "debug_letterbox_kernel", viewer.device.create_compute_kernel(viewer.device.load_program(shader_path, ["csComposeLetterboxDebug"]))))) (str(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"))
+def create_debug_shaders(viewer: object) -> None:
+    shader_path = str(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang")
+    viewer.s.debug_abs_diff_kernel = viewer.device.create_compute_kernel(viewer.device.load_program(shader_path, ["csComposeAbsDiffDebug"]))
+    viewer.s.debug_letterbox_kernel = viewer.device.create_compute_kernel(viewer.device.load_program(shader_path, ["csComposeLetterboxDebug"]))
 
 
-update_debug_frame_slider_range = lambda viewer: (lambda slider, max_index: (setattr(slider, "min", 0), setattr(slider, "max", int(max_index)), setattr(slider, "value", int(np.clip(int(slider.value), 0, max_index)))) if hasattr(slider, "min") else setattr(slider, "value", int(np.clip(int(slider.value), 0, max_index))))(viewer.c("loss_debug_frame"), max(len(viewer.s.training_frames) - 1, 0))
+def update_debug_frame_slider_range(viewer: object) -> None:
+    slider = viewer.c("loss_debug_frame")
+    max_index = max(len(viewer.s.training_frames) - 1, 0)
+    if hasattr(slider, "min"):
+        slider.min = 0
+        slider.max = int(max_index)
+    slider.value = clamp_index(int(slider.value), max_index + 1)
 
 
 def ensure_renderer(viewer: object, attr: str, width: int, height: int, allow_debug_overlays: bool) -> GaussianRenderer:
@@ -68,7 +96,9 @@ def ensure_renderer(viewer: object, attr: str, width: int, height: int, allow_de
     return renderer
 
 
-recreate_renderer = lambda viewer, width, height: (ensure_renderer(viewer, "renderer", width, height, allow_debug_overlays=True), _reset_loss_debug(viewer))
+def recreate_renderer(viewer: object, width: int, height: int) -> None:
+    ensure_renderer(viewer, "renderer", width, height, allow_debug_overlays=True)
+    _reset_loss_debug(viewer)
 
 
 def resolve_effective_training_setup(viewer: object):
@@ -100,10 +130,46 @@ def apply_live_params(viewer: object, force_init_defaults: bool = False) -> None
         viewer.s.trainer.update_hyperparams(params.adam, params.stability, params.training)
 
 
-sync_scene_from_training_renderer = lambda viewer, dst_renderer, target, force=False: None if viewer.s.training_renderer is None or viewer.s.trainer is None or (not force and getattr(viewer.s, f"synced_step_{target}") == int(viewer.s.trainer.state.step)) else (lambda step, enc: (viewer.s.training_renderer.copy_scene_state_to(enc, dst_renderer), viewer.device.submit_command_buffer(enc.finish()), setattr(viewer.s, f"synced_step_{target}", step)))(int(viewer.s.trainer.state.step), viewer.device.create_command_encoder())
+def sync_scene_from_training_renderer(viewer: object, dst_renderer: GaussianRenderer, target: str, force: bool = False) -> None:
+    if viewer.s.training_renderer is None or viewer.s.trainer is None:
+        return
+    step = int(viewer.s.trainer.state.step)
+    if not force and getattr(viewer.s, f"synced_step_{target}") == step:
+        return
+    enc = viewer.device.create_command_encoder()
+    viewer.s.training_renderer.copy_scene_state_to(enc, dst_renderer)
+    viewer.device.submit_command_buffer(enc.finish())
+    setattr(viewer.s, f"synced_step_{target}", step)
 
-load_scene = lambda viewer, path: (lambda scene: (_reset_loaded_runtime(viewer), setattr(viewer.s, "scene", scene), setattr(viewer.s, "scene_path", path), setattr(viewer.s, "colmap_root", None), setattr(viewer.s, "colmap_recon", None), setattr(viewer.s, "training_frames", []), viewer.s.renderer.set_scene(scene), viewer.apply_camera_fit(estimate_scene_bounds(scene)), setattr(viewer.s, "last_error", ""), print(f"Loaded scene: {path} ({scene.count:,} splats)")))(load_gaussian_ply(path))
-load_colmap_dataset = lambda viewer, root, images_subdir: (lambda recon, xyz_rgb: (_reset_loaded_runtime(viewer), setattr(viewer.s, "colmap_root", Path(root)), setattr(viewer.s, "colmap_recon", recon), setattr(viewer.s, "training_frames", build_training_frames(recon, images_subdir=images_subdir)), setattr(viewer.s, "colmap_point_count", int(xyz_rgb[0].shape[0])), setattr(viewer.s, "scene_path", None), apply_live_params(viewer), viewer.apply_camera_fit(estimate_point_bounds(xyz_rgb[0])), initialize_training_scene(viewer), setattr(viewer.s, "last_error", ""), print(f"Loaded COLMAP: {root} frames={len(viewer.s.training_frames)} images={images_subdir}")))(load_colmap_reconstruction(root), _point_tables(load_colmap_reconstruction(root)))
+
+def load_scene(viewer: object, path: Path) -> None:
+    scene = load_gaussian_ply(path)
+    _reset_loaded_runtime(viewer)
+    viewer.s.scene = scene
+    viewer.s.scene_path = path
+    viewer.s.colmap_root = None
+    viewer.s.colmap_recon = None
+    viewer.s.training_frames = []
+    viewer.s.renderer.set_scene(scene)
+    viewer.apply_camera_fit(estimate_scene_bounds(scene))
+    viewer.s.last_error = ""
+    print(f"Loaded scene: {path} ({scene.count:,} splats)")
+
+
+def load_colmap_dataset(viewer: object, root: Path, images_subdir: str) -> None:
+    recon = load_colmap_reconstruction(root)
+    xyz, rgb = _point_tables(recon)
+    _reset_loaded_runtime(viewer)
+    viewer.s.colmap_root = Path(root)
+    viewer.s.colmap_recon = recon
+    viewer.s.training_frames = build_training_frames(recon, images_subdir=images_subdir)
+    viewer.s.colmap_point_count = int(xyz.shape[0])
+    viewer.s.scene_path = None
+    apply_live_params(viewer)
+    viewer.apply_camera_fit(estimate_point_bounds(xyz))
+    initialize_training_scene(viewer)
+    viewer.s.last_error = ""
+    print(f"Loaded COLMAP: {root} frames={len(viewer.s.training_frames)} images={images_subdir}")
 
 
 def initialize_training_scene(viewer: object) -> None:
@@ -137,4 +203,7 @@ def initialize_training_scene(viewer: object) -> None:
     _reset_loss_debug(viewer)
     viewer.s.last_error = ""
     print(f"Initialized training scene ({scene.count:,} gaussians, profile={profile.name})")
-set_training_active = lambda viewer, active: (initialize_training_scene(viewer) if active and viewer.s.trainer is None else None, setattr(viewer.s, "training_active", bool(active and viewer.s.trainer is not None)))
+def set_training_active(viewer: object, active: bool) -> None:
+    if active and viewer.s.trainer is None:
+        initialize_training_scene(viewer)
+    viewer.s.training_active = bool(active and viewer.s.trainer is not None)

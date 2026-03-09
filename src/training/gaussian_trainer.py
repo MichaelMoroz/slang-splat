@@ -8,7 +8,7 @@ import numpy as np
 from PIL import Image
 import slangpy as spy
 
-from ..common import SHADER_ROOT
+from ..common import SHADER_ROOT, buffer_to_numpy, clamp_index, thread_count_2d
 from ..renderer import Camera, GaussianRenderer
 from ..scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 from .adam import AdamOptimizer, AdamRuntimeHyperParams
@@ -68,20 +68,48 @@ class GaussianTrainer:
         "clear_loss_grad": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csClearLossAndGradTex"),
         "loss_grad": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csComputeL1LossGrad"),
     }
-    _dispatch = lambda self, kernel, encoder, thread_count, vars: self._kernels[kernel].dispatch(thread_count=thread_count, vars=vars, command_encoder=encoder)
-    _pixel_thread_count = lambda self: spy.uint3(self.renderer.width, self.renderer.height, 1)
-    _frame = lambda self, frame_index: self.frames[int(np.clip(frame_index, 0, len(self.frames) - 1))]
-    make_frame_camera = lambda self, frame_index, width, height: self._make_frame_camera(self._frame(frame_index), int(width), int(height))
-    frame_size = lambda self, frame_index: (int(self._frame(frame_index).width), int(self._frame(frame_index).height))
-    get_frame_target_texture = lambda self, frame_index, native_resolution=True: self._frame_targets_train[int(np.clip(frame_index, 0, len(self.frames) - 1))]
-    _dispatch_raster_forward_backward = lambda self, encoder, frame_camera, background: (self.renderer.clear_raster_grads_current_scene(encoder), self.renderer.rasterize_forward_backward_current_scene(encoder=encoder, camera=frame_camera, background=background, output_grad=self.renderer.output_grad_buffer))
-    _read_loss_metrics = lambda self: (lambda values: (float(values[self._LOSS_SLOT_TOTAL]) if values.size > self._LOSS_SLOT_TOTAL else float("nan"), float(values[self._LOSS_SLOT_MSE]) if values.size > self._LOSS_SLOT_MSE else float("nan")))(np.frombuffer(self._buffers["loss"].to_numpy().tobytes(), dtype=np.float32))
-    _adam_runtime_hparams = lambda self: AdamRuntimeHyperParams(
-        grad_component_clip=float(self.stability.grad_component_clip),
-        grad_norm_clip=float(self.stability.grad_norm_clip),
-        max_update=float(self.stability.max_update),
-        huge_value=float(self.stability.huge_value),
-    )
+
+    def _pixel_thread_count(self) -> spy.uint3:
+        return thread_count_2d(self.renderer.width, self.renderer.height)
+
+    def _frame(self, frame_index: int) -> ColmapFrame:
+        return self.frames[clamp_index(frame_index, len(self.frames))]
+
+    def make_frame_camera(self, frame_index: int, width: int, height: int) -> Camera:
+        return self._make_frame_camera(self._frame(frame_index), int(width), int(height))
+
+    def frame_size(self, frame_index: int) -> tuple[int, int]:
+        frame = self._frame(frame_index)
+        return int(frame.width), int(frame.height)
+
+    def get_frame_target_texture(self, frame_index: int, native_resolution: bool = True) -> spy.Texture:
+        return self._frame_targets_train[clamp_index(frame_index, len(self.frames))]
+
+    def _adam_runtime_hparams(self) -> AdamRuntimeHyperParams:
+        return AdamRuntimeHyperParams(
+            grad_component_clip=float(self.stability.grad_component_clip),
+            grad_norm_clip=float(self.stability.grad_norm_clip),
+            max_update=float(self.stability.max_update),
+            huge_value=float(self.stability.huge_value),
+        )
+
+    def _dispatch(self, kernel: str, encoder: spy.CommandEncoder, thread_count: spy.uint3, vars: dict[str, object]) -> None:
+        self._kernels[kernel].dispatch(thread_count=thread_count, vars=vars, command_encoder=encoder)
+
+    def _dispatch_raster_forward_backward(self, encoder: spy.CommandEncoder, frame_camera: Camera, background: np.ndarray) -> None:
+        self.renderer.clear_raster_grads_current_scene(encoder)
+        self.renderer.rasterize_forward_backward_current_scene(
+            encoder=encoder,
+            camera=frame_camera,
+            background=background,
+            output_grad=self.renderer.output_grad_buffer,
+        )
+
+    def _read_loss_metrics(self) -> tuple[float, float]:
+        values = buffer_to_numpy(self._buffers["loss"], np.float32)
+        total = float(values[self._LOSS_SLOT_TOTAL]) if values.size > self._LOSS_SLOT_TOTAL else float("nan")
+        mse = float(values[self._LOSS_SLOT_MSE]) if values.size > self._LOSS_SLOT_MSE else float("nan")
+        return total, mse
 
     def update_hyperparams(self, adam_hparams: AdamHyperParams, stability_hparams: StabilityHyperParams, training_hparams: TrainingHyperParams) -> None:
         self.adam = adam_hparams
@@ -116,14 +144,13 @@ class GaussianTrainer:
             raise ValueError("Training requires at least one COLMAP frame.")
         if scene is None and scene_count is None:
             raise ValueError("GaussianTrainer requires either scene or scene_count.")
-        pick = lambda value, fallback: fallback if value is None else value
         self.device, self.renderer, self.frames = device, renderer, frames
         self._seed = int(seed)
         self._scene_count = int(scene.count if scene is not None else max(int(scene_count if scene_count is not None else 0), 1))
         self.scene = _SceneCountProxy(self._scene_count)
-        self.adam = pick(adam_hparams, AdamHyperParams())
-        self.stability = pick(stability_hparams, StabilityHyperParams())
-        self.training = pick(training_hparams, TrainingHyperParams())
+        self.adam = AdamHyperParams() if adam_hparams is None else adam_hparams
+        self.stability = StabilityHyperParams() if stability_hparams is None else stability_hparams
+        self.training = TrainingHyperParams() if training_hparams is None else training_hparams
         self.adam_optimizer = AdamOptimizer(self.device, self.adam, self._adam_runtime_hparams())
         self.optimizer = GaussianOptimizer(self.device, self.renderer, self.adam, self.stability)
         self.compute_debug_grad_norm = False

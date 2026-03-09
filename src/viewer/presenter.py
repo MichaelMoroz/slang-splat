@@ -6,26 +6,72 @@ import time
 import numpy as np
 import slangpy as spy
 
+from ..common import clamp_index, require_not_none
 from . import session
 
 _DEBUG_HUGE_VALUE = 1e8
 _DEBUG_TEXTURE_USAGE = spy.TextureUsage.shader_resource | spy.TextureUsage.unordered_access | spy.TextureUsage.copy_destination
-_debug_frame_idx = lambda viewer: int(np.clip(int(viewer.c("loss_debug_frame").value), 0, max(len(viewer.s.training_frames) - 1, 0)))
-_debug_view_key = lambda viewer: viewer.loss_debug_view_options[int(np.clip(int(viewer.c("loss_debug_view").value), 0, len(viewer.loss_debug_view_options) - 1))][0]
-_require = lambda value, message: value if value is not None else (_ for _ in ()).throw(RuntimeError(message))
-_ensure_texture = lambda viewer, attr, width, height: (lambda texture: texture if texture is not None and int(texture.width) == int(width) and int(texture.height) == int(height) else (lambda created: (setattr(viewer.s, attr, created), created)[1])(viewer.device.create_texture(format=spy.Format.rgba32_float, width=int(width), height=int(height), usage=_DEBUG_TEXTURE_USAGE)))(getattr(viewer.s, attr))
-_dispatch_debug_abs_diff = lambda viewer, encoder, rendered_tex, target_tex, width, height: (lambda output: (_require(viewer.s.debug_abs_diff_kernel, "Debug abs-diff kernel is not initialized.").dispatch(thread_count=spy.uint3(int(width), int(height), 1), vars={"g_DebugRendered": rendered_tex, "g_DebugTarget": target_tex, "g_DebugOutput": output, "g_DebugWidth": int(width), "g_DebugHeight": int(height), "g_HugeValue": _DEBUG_HUGE_VALUE}, command_encoder=encoder), output)[1])(_ensure_texture(viewer, "loss_debug_texture", width, height))
-_dispatch_debug_letterbox = lambda viewer, encoder, source_tex, source_width, source_height, output_width, output_height: (lambda output: (_require(viewer.s.debug_letterbox_kernel, "Debug letterbox kernel is not initialized.").dispatch(thread_count=spy.uint3(int(output_width), int(output_height), 1), vars={"g_LetterboxSource": source_tex, "g_LetterboxOutput": output, "g_LetterboxSourceWidth": int(source_width), "g_LetterboxSourceHeight": int(source_height), "g_LetterboxOutputWidth": int(output_width), "g_LetterboxOutputHeight": int(output_height)}, command_encoder=encoder), output)[1])(_ensure_texture(viewer, "debug_present_texture", output_width, output_height))
+
+
+def _debug_frame_idx(viewer: object) -> int:
+    return clamp_index(int(viewer.c("loss_debug_frame").value), len(viewer.s.training_frames))
+
+
+def _debug_view_key(viewer: object) -> str:
+    return viewer.loss_debug_view_options[clamp_index(int(viewer.c("loss_debug_view").value), len(viewer.loss_debug_view_options))][0]
+
+
+def _ensure_texture(viewer: object, attr: str, width: int, height: int) -> spy.Texture:
+    texture = getattr(viewer.s, attr)
+    if texture is not None and int(texture.width) == int(width) and int(texture.height) == int(height):
+        return texture
+    created = viewer.device.create_texture(format=spy.Format.rgba32_float, width=int(width), height=int(height), usage=_DEBUG_TEXTURE_USAGE)
+    setattr(viewer.s, attr, created)
+    return created
+
+
+def _dispatch_debug_abs_diff(viewer: object, encoder: spy.CommandEncoder, rendered_tex: spy.Texture, target_tex: spy.Texture, width: int, height: int) -> spy.Texture:
+    output = _ensure_texture(viewer, "loss_debug_texture", width, height)
+    require_not_none(viewer.s.debug_abs_diff_kernel, "Debug abs-diff kernel is not initialized.").dispatch(
+        thread_count=spy.uint3(int(width), int(height), 1),
+        vars={
+            "g_DebugRendered": rendered_tex,
+            "g_DebugTarget": target_tex,
+            "g_DebugOutput": output,
+            "g_DebugWidth": int(width),
+            "g_DebugHeight": int(height),
+            "g_HugeValue": _DEBUG_HUGE_VALUE,
+        },
+        command_encoder=encoder,
+    )
+    return output
+
+
+def _dispatch_debug_letterbox(viewer: object, encoder: spy.CommandEncoder, source_tex: spy.Texture, source_width: int, source_height: int, output_width: int, output_height: int) -> spy.Texture:
+    output = _ensure_texture(viewer, "debug_present_texture", output_width, output_height)
+    require_not_none(viewer.s.debug_letterbox_kernel, "Debug letterbox kernel is not initialized.").dispatch(
+        thread_count=spy.uint3(int(output_width), int(output_height), 1),
+        vars={
+            "g_LetterboxSource": source_tex,
+            "g_LetterboxOutput": output,
+            "g_LetterboxSourceWidth": int(source_width),
+            "g_LetterboxSourceHeight": int(source_height),
+            "g_LetterboxOutputWidth": int(output_width),
+            "g_LetterboxOutputHeight": int(output_height),
+        },
+        command_encoder=encoder,
+    )
+    return output
 
 
 def update_ui_text(viewer: object, dt: float) -> None:
     viewer.s.fps_smooth += (1.0 / max(dt, 1e-5) - viewer.s.fps_smooth) * min(dt * 5.0, 1.0)
     session.update_debug_frame_slider_range(viewer)
     frame_idx = _debug_frame_idx(viewer)
-    debug_idx = int(np.clip(int(viewer.c("loss_debug_view").value), 0, len(viewer.loss_debug_view_options) - 1))
+    debug_idx = clamp_index(int(viewer.c("loss_debug_view").value), len(viewer.loss_debug_view_options))
     stats = viewer.s.stats
     viewer.t("fps").text = f"FPS: {viewer.s.fps_smooth:.1f}"
-    viewer.t("images_subdir").text = f"Train images: {viewer.image_subdir_options[int(np.clip(int(viewer.c('images_subdir').value), 0, len(viewer.image_subdir_options) - 1))]}"
+    viewer.t("images_subdir").text = f"Train images: {viewer.image_subdir_options[clamp_index(int(viewer.c('images_subdir').value), len(viewer.image_subdir_options))]}"
     viewer.t("loss_debug_view").text = f"View: {viewer.loss_debug_view_options[debug_idx][1]}"
     viewer.t("loss_debug_frame").text = f"Frame[{frame_idx}]: {Path(viewer.s.training_frames[frame_idx].image_path).name}" if viewer.s.training_frames else "Frame: <none>"
     viewer.t("path").text = f"Scene: {viewer.s.scene_path.name} [PLY]" if viewer.s.scene_path is not None else f"Scene: {viewer.s.colmap_root.name} [COLMAP]" if viewer.s.colmap_root is not None else "Scene: <none>"
@@ -70,7 +116,7 @@ def _update_toolkit_history(viewer: object, dt: float) -> None:
 
 def _render_debug_view(viewer: object, image: spy.Texture, encoder: spy.CommandEncoder, output_width: int, output_height: int) -> None:
     frame_idx = _debug_frame_idx(viewer)
-    debug_renderer = _require(viewer.s.training_renderer, "Training renderer is not initialized.")
+    debug_renderer = require_not_none(viewer.s.training_renderer, "Training renderer is not initialized.")
     debug_width, debug_height = int(debug_renderer.width), int(debug_renderer.height)
     debug_render_tex, viewer.s.stats = debug_renderer.render_to_texture(viewer.s.trainer.make_frame_camera(frame_idx, debug_width, debug_height), background=viewer.s.background, read_stats=True)
     target_tex = viewer.s.trainer.get_frame_target_texture(frame_idx, native_resolution=False)
@@ -78,7 +124,14 @@ def _render_debug_view(viewer: object, image: spy.Texture, encoder: spy.CommandE
     encoder.blit(image, _dispatch_debug_letterbox(viewer, encoder, source_tex, debug_width, debug_height, output_width, output_height))
 
 
-_render_main_view = lambda viewer, image, encoder: ((session.sync_scene_from_training_renderer(viewer, viewer.s.renderer, target="main") if viewer.s.trainer is not None and viewer.s.training_renderer is not None else None), (lambda out_tex, stats: (setattr(viewer.s, "stats", stats), encoder.blit(image, out_tex)))(*viewer.s.renderer.render_to_texture(viewer.camera(), background=viewer.s.background, read_stats=True)))
+
+
+def _render_main_view(viewer: object, image: spy.Texture, encoder: spy.CommandEncoder) -> None:
+    if viewer.s.trainer is not None and viewer.s.training_renderer is not None:
+        session.sync_scene_from_training_renderer(viewer, viewer.s.renderer, target="main")
+    out_tex, stats = viewer.s.renderer.render_to_texture(viewer.camera(), background=viewer.s.background, read_stats=True)
+    viewer.s.stats = stats
+    encoder.blit(image, out_tex)
 
 
 def render_frame(viewer: object, render_context: spy.AppWindow.RenderContext) -> None:
