@@ -196,21 +196,42 @@ class ToolkitWindow:
         style.frame_rounding = 3.0
         style.grab_rounding = 2.0
         style.scrollbar_rounding = 4.0
+        style.tab_rounding = 3.0
+        style.popup_rounding = 3.0
+        style.child_rounding = 3.0
         style.window_border_size = 1.0
         style.frame_border_size = 0.0
         style.item_spacing = imgui.ImVec2(8, 5)
+        style.item_inner_spacing = imgui.ImVec2(6, 4)
         style.frame_padding = imgui.ImVec2(6, 4)
-        style.set_color_(imgui.Col_.title_bg_active, imgui.ImVec4(0.18, 0.35, 0.58, 1.0))
-        style.set_color_(imgui.Col_.header, imgui.ImVec4(0.22, 0.40, 0.62, 0.55))
-        style.set_color_(imgui.Col_.header_hovered, imgui.ImVec4(0.26, 0.50, 0.74, 0.80))
-        style.set_color_(imgui.Col_.header_active, imgui.ImVec4(0.26, 0.50, 0.74, 1.00))
-        style.set_color_(imgui.Col_.button, imgui.ImVec4(0.20, 0.40, 0.60, 0.62))
-        style.set_color_(imgui.Col_.button_hovered, imgui.ImVec4(0.26, 0.50, 0.74, 0.80))
-        style.set_color_(imgui.Col_.button_active, imgui.ImVec4(0.20, 0.40, 0.60, 1.00))
-        style.set_color_(imgui.Col_.tab, imgui.ImVec4(0.14, 0.28, 0.45, 0.86))
-        style.set_color_(imgui.Col_.tab_hovered, imgui.ImVec4(0.26, 0.50, 0.74, 0.80))
-        style.set_color_(imgui.Col_.separator, imgui.ImVec4(0.35, 0.35, 0.45, 0.50))
-        style.set_color_(imgui.Col_.plot_lines, imgui.ImVec4(0.40, 0.75, 1.00, 1.00))
+        style.indent_spacing = 18.0
+        style.scrollbar_size = 12.0
+        _c = style.set_color_
+        _c(imgui.Col_.title_bg_active, imgui.ImVec4(0.18, 0.35, 0.58, 1.0))
+        _c(imgui.Col_.header, imgui.ImVec4(0.22, 0.40, 0.62, 0.55))
+        _c(imgui.Col_.header_hovered, imgui.ImVec4(0.26, 0.50, 0.74, 0.80))
+        _c(imgui.Col_.header_active, imgui.ImVec4(0.26, 0.50, 0.74, 1.00))
+        _c(imgui.Col_.button, imgui.ImVec4(0.20, 0.40, 0.60, 0.62))
+        _c(imgui.Col_.button_hovered, imgui.ImVec4(0.26, 0.50, 0.74, 0.80))
+        _c(imgui.Col_.button_active, imgui.ImVec4(0.20, 0.40, 0.60, 1.00))
+        _c(imgui.Col_.tab, imgui.ImVec4(0.14, 0.28, 0.45, 0.86))
+        _c(imgui.Col_.tab_hovered, imgui.ImVec4(0.26, 0.50, 0.74, 0.80))
+        _c(imgui.Col_.tab_selected, imgui.ImVec4(0.20, 0.42, 0.68, 1.00))
+        _c(imgui.Col_.separator, imgui.ImVec4(0.35, 0.35, 0.45, 0.50))
+        _c(imgui.Col_.plot_lines, imgui.ImVec4(0.40, 0.75, 1.00, 1.00))
+        _c(imgui.Col_.frame_bg, imgui.ImVec4(0.12, 0.16, 0.22, 0.90))
+        _c(imgui.Col_.frame_bg_hovered, imgui.ImVec4(0.18, 0.28, 0.42, 1.00))
+        _c(imgui.Col_.frame_bg_active, imgui.ImVec4(0.20, 0.34, 0.52, 1.00))
+        _c(imgui.Col_.slider_grab, imgui.ImVec4(0.30, 0.55, 0.82, 0.78))
+        _c(imgui.Col_.slider_grab_active, imgui.ImVec4(0.36, 0.62, 0.90, 1.00))
+        _c(imgui.Col_.check_mark, imgui.ImVec4(0.40, 0.75, 1.00, 1.00))
+        _c(imgui.Col_.scrollbar_grab, imgui.ImVec4(0.24, 0.36, 0.52, 0.60))
+        _c(imgui.Col_.scrollbar_grab_hovered, imgui.ImVec4(0.30, 0.46, 0.64, 0.80))
+        _c(imgui.Col_.scrollbar_grab_active, imgui.ImVec4(0.30, 0.46, 0.64, 1.00))
+        _c(imgui.Col_.separator_hovered, imgui.ImVec4(0.30, 0.55, 0.82, 0.78))
+        _c(imgui.Col_.resize_grip, imgui.ImVec4(0.26, 0.50, 0.74, 0.25))
+        _c(imgui.Col_.resize_grip_hovered, imgui.ImVec4(0.26, 0.50, 0.74, 0.67))
+        _c(imgui.Col_.resize_grip_active, imgui.ImVec4(0.26, 0.50, 0.74, 0.95))
 
     @property
     def alive(self) -> bool:
@@ -260,12 +281,59 @@ class ToolkitWindow:
     def _section_status(self, ui: ViewerUI) -> None:
         if not imgui.collapsing_header("Status", imgui.TreeNodeFlags_.default_open.value):
             return
-        imgui.text(ui._texts.get("fps", "FPS: 0.0"))
-        imgui.text(ui._texts.get("path", "Scene: <none>"))
-        imgui.text(ui._texts.get("scene_stats", "Splats: 0"))
-        imgui.text(ui._texts.get("render_stats", "Generated: 0 | Written: 0"))
+        # Training state indicator
+        training_text = ui._texts.get("training", "Training: not initialized")
+        if "running" in training_text:
+            imgui.push_style_color(imgui.Col_.text.value, imgui.ImVec4(0.2, 0.9, 0.3, 1.0))
+            imgui.bullet_text("Training active")
+            imgui.pop_style_color()
+        elif "paused" in training_text:
+            imgui.push_style_color(imgui.Col_.text.value, imgui.ImVec4(1.0, 0.85, 0.2, 1.0))
+            imgui.bullet_text("Training paused")
+            imgui.pop_style_color()
+        else:
+            imgui.push_style_color(imgui.Col_.text.value, imgui.ImVec4(0.5, 0.5, 0.5, 1.0))
+            imgui.bullet_text("Idle")
+            imgui.pop_style_color()
+
+        # FPS with color gradient (green=good, yellow=ok, red=bad)
+        fps = self.tk.fps_history[-1] if self.tk.fps_history else 0.0
+        fps_color = imgui.ImVec4(0.2, 0.9, 0.3, 1.0) if fps >= 30 else imgui.ImVec4(1.0, 0.85, 0.2, 1.0) if fps >= 15 else imgui.ImVec4(1.0, 0.3, 0.3, 1.0)
+        imgui.text("FPS: ")
+        imgui.same_line(0, 0)
+        imgui.push_style_color(imgui.Col_.text.value, fps_color)
+        imgui.text(f"{fps:.1f}")
+        imgui.pop_style_color()
+
+        # Stats table
+        tbl_flags = imgui.TableFlags_.sizing_stretch_same.value | imgui.TableFlags_.no_borders_in_body.value
+        if imgui.begin_table("##status_tbl", 2, tbl_flags):
+            imgui.table_setup_column("Label", imgui.TableColumnFlags_.width_fixed.value, 60)
+            imgui.table_setup_column("Value")
+            for label, key, fallback in (
+                ("Scene", "path", "Scene: <none>"),
+                ("Splats", "scene_stats", "Splats: 0"),
+            ):
+                imgui.table_next_row()
+                imgui.table_next_column()
+                imgui.text_disabled(label)
+                imgui.table_next_column()
+                raw = ui._texts.get(key, fallback)
+                imgui.text(raw.split(": ", 1)[-1] if ": " in raw else raw)
+            imgui.end_table()
+
+        # Render stats with tooltip
+        render_stats = ui._texts.get("render_stats", "")
+        if render_stats:
+            imgui.text_disabled("Render:")
+            imgui.same_line()
+            imgui.text(render_stats.split(": ", 1)[-1] if "Generated:" in render_stats else render_stats)
+            if imgui.is_item_hovered():
+                imgui.set_item_tooltip("Generated = splat entries created, Written = pixels rasterized")
+
         error = ui._texts.get("error", "")
         if error:
+            imgui.spacing()
             imgui.push_style_color(imgui.Col_.text.value, imgui.ImVec4(1.0, 0.3, 0.3, 1.0))
             imgui.text_wrapped(error)
             imgui.pop_style_color()
@@ -277,35 +345,52 @@ class ToolkitWindow:
         btn_w = imgui.get_content_region_avail().x
         if imgui.button("Load PLY...", imgui.ImVec2(btn_w, 0)):
             self.callbacks.load_ply()
+        if imgui.is_item_hovered():
+            imgui.set_item_tooltip("Load a pre-trained .ply splat file for viewing")
         if imgui.button("Load COLMAP...", imgui.ImVec2(btn_w, 0)):
             self.callbacks.load_colmap()
+        if imgui.is_item_hovered():
+            imgui.set_item_tooltip("Load a COLMAP dataset folder for training")
         if imgui.button("Reload", imgui.ImVec2(btn_w, 0)):
             self.callbacks.reload()
+        if imgui.is_item_hovered():
+            imgui.set_item_tooltip("Reload the current scene from disk")
 
-        changed, val = imgui.slider_int(
-            "Image Dir", int(ui._values["images_subdir"]),
-            0, len(IMAGE_SUBDIR_OPTIONS) - 1
-        )
-        if changed:
-            ui._values["images_subdir"] = val
+        # Combo for image directory selection
+        imgui.spacing()
         idx = min(max(int(ui._values["images_subdir"]), 0), len(IMAGE_SUBDIR_OPTIONS) - 1)
-        imgui.same_line()
-        imgui.text_disabled(IMAGE_SUBDIR_OPTIONS[idx])
+        imgui.push_item_width(-1)
+        if imgui.begin_combo("##imgdir", IMAGE_SUBDIR_OPTIONS[idx]):
+            for i, name in enumerate(IMAGE_SUBDIR_OPTIONS):
+                selected = (i == idx)
+                if imgui.selectable(name, selected)[0]:
+                    ui._values["images_subdir"] = i
+                if selected:
+                    imgui.set_item_default_focus()
+            imgui.end_combo()
+        imgui.pop_item_width()
+        if imgui.is_item_hovered():
+            imgui.set_item_tooltip("Training image resolution (images_8 = 1/8th, images = full)")
         self._ctx_reset("scene_io_ctx", ui, ("images_subdir",))
         imgui.separator()
 
     def _section_camera(self, ui: ViewerUI) -> None:
         if not imgui.collapsing_header("Camera", imgui.TreeNodeFlags_.default_open.value):
             return
-        changed, val = imgui.slider_float(
+        changed, val = imgui.drag_float(
             "Move Speed", float(ui._values["move_speed"]),
-            0.1, 20.0, "%.3g", imgui.SliderFlags_.logarithmic.value
+            0.05, 0.1, 20.0, "%.2f", imgui.SliderFlags_.logarithmic.value
         )
         if changed:
-            ui._values["move_speed"] = val
-        changed, val = imgui.slider_float("FOV", float(ui._values["fov"]), 25.0, 100.0)
+            ui._values["move_speed"] = max(0.1, min(val, 20.0))
+        if imgui.is_item_hovered():
+            imgui.set_item_tooltip("Camera movement speed (scroll wheel also adjusts)")
+        changed, val = imgui.slider_float("FOV", float(ui._values["fov"]), 25.0, 100.0, "%.1f\u00b0")
         if changed:
             ui._values["fov"] = val
+        if imgui.is_item_hovered():
+            imgui.set_item_tooltip("Vertical field of view in degrees")
+        imgui.spacing()
         imgui.text_disabled("LMB drag=look | WASDQE=move | Wheel=speed")
         self._ctx_reset("camera_ctx", ui, ("move_speed", "fov"))
         imgui.separator()
@@ -313,46 +398,77 @@ class ToolkitWindow:
     def _section_training_control(self, ui: ViewerUI) -> None:
         if not imgui.collapsing_header("Training", imgui.TreeNodeFlags_.default_open.value):
             return
-        imgui.text(ui._texts.get("training", "Training: not initialized"))
-        imgui.text(ui._texts.get("training_loss", "Loss Avg: n/a"))
-        imgui.text(ui._texts.get("training_mse", "MSE: n/a"))
+        # Training info in compact table
+        training_text = ui._texts.get("training", "Training: not initialized")
+        loss_text = ui._texts.get("training_loss", "Loss Avg: n/a")
+        mse_text = ui._texts.get("training_mse", "MSE: n/a")
+        if imgui.begin_table("##train_info", 2, imgui.TableFlags_.sizing_stretch_same.value):
+            imgui.table_setup_column("L", imgui.TableColumnFlags_.width_fixed.value, 50)
+            imgui.table_setup_column("V")
+            for label, text in (("Step", training_text), ("Loss", loss_text), ("MSE", mse_text)):
+                imgui.table_next_row()
+                imgui.table_next_column()
+                imgui.text_disabled(label)
+                imgui.table_next_column()
+                imgui.text(text.split(": ", 1)[-1] if ": " in text else text)
+            imgui.end_table()
+
         instability = ui._texts.get("training_instability", "")
         if instability:
             imgui.push_style_color(imgui.Col_.text.value, imgui.ImVec4(1.0, 0.85, 0.2, 1.0))
             imgui.text_wrapped(instability)
             imgui.pop_style_color()
+
+        # Colored Start/Stop buttons
+        imgui.spacing()
         half_w = imgui.get_content_region_avail().x * 0.48
+        imgui.push_style_color(imgui.Col_.button.value, imgui.ImVec4(0.15, 0.55, 0.22, 0.80))
+        imgui.push_style_color(imgui.Col_.button_hovered.value, imgui.ImVec4(0.20, 0.68, 0.28, 0.90))
+        imgui.push_style_color(imgui.Col_.button_active.value, imgui.ImVec4(0.15, 0.55, 0.22, 1.00))
         if imgui.button("Start", imgui.ImVec2(half_w, 0)):
             self.callbacks.start_training()
+        imgui.pop_style_color(3)
         imgui.same_line()
+        imgui.push_style_color(imgui.Col_.button.value, imgui.ImVec4(0.65, 0.15, 0.15, 0.80))
+        imgui.push_style_color(imgui.Col_.button_hovered.value, imgui.ImVec4(0.80, 0.20, 0.20, 0.90))
+        imgui.push_style_color(imgui.Col_.button_active.value, imgui.ImVec4(0.65, 0.15, 0.15, 1.00))
         if imgui.button("Stop", imgui.ImVec2(half_w, 0)):
             self.callbacks.stop_training()
+        imgui.pop_style_color(3)
+
         if imgui.button("Reinitialize Gaussians", imgui.ImVec2(imgui.get_content_region_avail().x, 0)):
             self.callbacks.reinitialize()
+        if imgui.is_item_hovered():
+            imgui.set_item_tooltip("Re-initialize all gaussians from the point cloud")
 
+        # Debug section with indent
+        imgui.spacing()
         changed, val = imgui.checkbox("Visual Loss Debug", bool(ui._values["loss_debug"]))
         if changed:
             ui._values["loss_debug"] = val
 
         if bool(ui._values["loss_debug"]):
-            changed, val = imgui.slider_int(
-                "Debug View", int(ui._values["loss_debug_view"]),
-                0, len(LOSS_DEBUG_OPTIONS) - 1
-            )
-            if changed:
-                ui._values["loss_debug_view"] = val
+            imgui.indent()
+            # Combo for debug view selection
             view_idx = min(max(int(ui._values["loss_debug_view"]), 0), len(LOSS_DEBUG_OPTIONS) - 1)
-            imgui.same_line()
-            imgui.text_disabled(LOSS_DEBUG_OPTIONS[view_idx][1])
+            if imgui.begin_combo("##debugview", LOSS_DEBUG_OPTIONS[view_idx][1]):
+                for i, (key, name) in enumerate(LOSS_DEBUG_OPTIONS):
+                    if imgui.selectable(name, i == view_idx)[0]:
+                        ui._values["loss_debug_view"] = i
+                    if i == view_idx:
+                        imgui.set_item_default_focus()
+                imgui.end_combo()
 
             frame_max = max(int(ui._values.get("_loss_debug_frame_max", 0)), 0)
             changed, val = imgui.slider_int(
-                "Debug Frame", int(ui._values["loss_debug_frame"]),
-                0, frame_max
+                "Frame", int(ui._values["loss_debug_frame"]), 0, frame_max
             )
             if changed:
                 ui._values["loss_debug_frame"] = val
-            imgui.text(ui._texts.get("loss_debug_frame", "Frame: <none>"))
+            frame_text = ui._texts.get("loss_debug_frame", "")
+            if frame_text:
+                imgui.text_disabled(frame_text.split(": ", 1)[-1] if ": " in frame_text else frame_text)
+            imgui.unindent()
         imgui.separator()
 
     def _section_training_setup(self, ui: ViewerUI) -> None:
@@ -367,30 +483,70 @@ class ToolkitWindow:
     def _section_optimizer(self, ui: ViewerUI) -> None:
         if not imgui.collapsing_header("Optimizer"):
             return
-        if imgui.tree_node("Learning Rates"):
-            for spec in GROUP_SPECS["Train Optimizer"][:6]:
-                self._draw_control(ui, spec)
-            imgui.tree_pop()
-        if imgui.tree_node("Adam & Regularization"):
-            for spec in GROUP_SPECS["Train Optimizer"][6:]:
-                self._draw_control(ui, spec)
-            imgui.tree_pop()
+        if imgui.begin_tab_bar("##optim_tabs"):
+            if imgui.begin_tab_item("Learning Rates")[0]:
+                imgui.spacing()
+                for spec in GROUP_SPECS["Train Optimizer"][:6]:
+                    self._draw_control(ui, spec)
+                imgui.end_tab_item()
+            if imgui.begin_tab_item("Adam")[0]:
+                imgui.spacing()
+                for spec in GROUP_SPECS["Train Optimizer"][6:8]:
+                    self._draw_control(ui, spec)
+                imgui.end_tab_item()
+            if imgui.begin_tab_item("Regularization")[0]:
+                imgui.spacing()
+                for spec in GROUP_SPECS["Train Optimizer"][8:]:
+                    self._draw_control(ui, spec)
+                imgui.end_tab_item()
+            imgui.end_tab_bar()
         self._ctx_reset("optimizer_ctx", ui, [s.key for s in GROUP_SPECS["Train Optimizer"]])
         imgui.separator()
 
     def _section_stability(self, ui: ViewerUI) -> None:
         if not imgui.collapsing_header("Stability"):
             return
+        # Paired min/max controls in a two-column table
+        pairs = (
+            ("min_scale", "max_scale", "Scale"),
+            ("min_opacity", "max_opacity", "Opacity"),
+        )
+        if imgui.begin_table("##stab_pairs", 2, imgui.TableFlags_.sizing_stretch_same.value | imgui.TableFlags_.no_borders_in_body.value):
+            imgui.table_setup_column("Min")
+            imgui.table_setup_column("Max")
+            for min_key, max_key, label in pairs:
+                min_spec = next(s for s in GROUP_SPECS["Train Stability"] if s.key == min_key)
+                max_spec = next(s for s in GROUP_SPECS["Train Stability"] if s.key == max_key)
+                imgui.table_next_row()
+                imgui.table_next_column()
+                imgui.push_item_width(-1)
+                self._draw_control(ui, min_spec)
+                imgui.pop_item_width()
+                imgui.table_next_column()
+                imgui.push_item_width(-1)
+                self._draw_control(ui, max_spec)
+                imgui.pop_item_width()
+            imgui.end_table()
+
+        # Remaining non-paired controls
+        paired_keys = {k for min_k, max_k, _ in pairs for k in (min_k, max_k)}
         for spec in GROUP_SPECS["Train Stability"]:
-            self._draw_control(ui, spec)
-        imgui.text_disabled("Scale bounds and anisotropy clamped after ADAM")
+            if spec.key not in paired_keys:
+                self._draw_control(ui, spec)
+        imgui.text_disabled("Bounds and anisotropy are clamped after each ADAM step")
         self._ctx_reset("stability_ctx", ui, [s.key for s in GROUP_SPECS["Train Stability"]])
         imgui.separator()
 
     def _section_render_params(self, ui: ViewerUI) -> None:
         if not imgui.collapsing_header("Render Params"):
             return
-        for spec in RENDER_PARAM_SPECS:
+        # Main render parameters
+        for spec in RENDER_PARAM_SPECS[:5]:
+            self._draw_control(ui, spec)
+
+        # Debug overlay group
+        imgui.separator_text("Debug Overlays")
+        for spec in RENDER_PARAM_SPECS[5:]:
             self._draw_control(ui, spec)
         self._ctx_reset("render_ctx", ui, [s.key for s in RENDER_PARAM_SPECS])
         imgui.separator()
@@ -398,38 +554,91 @@ class ToolkitWindow:
     def _section_performance(self, ui: ViewerUI) -> None:
         if not imgui.collapsing_header("Performance"):
             return
+
         fps_arr = np.array(self.tk.fps_history, dtype=np.float64)
         if len(fps_arr) >= 2:
-            if implot.begin_plot("##FPS", imgui.ImVec2(-1, 100)):
+            imgui.text_disabled(f"avg {np.mean(fps_arr):.1f}  min {np.min(fps_arr):.1f}  max {np.max(fps_arr):.1f}")
+            if implot.begin_plot("##FPS", imgui.ImVec2(-1, 110)):
                 implot.setup_axes("", "FPS", implot.AxisFlags_.no_tick_labels.value, 0)
                 implot.setup_axis_limits(implot.ImAxis_.x1.value, 0, len(fps_arr) - 1, implot.Cond_.always.value)
+                implot.setup_axis_limits(implot.ImAxis_.y1.value, 0, float(np.max(fps_arr)) * 1.15, implot.Cond_.always.value)
+                shade_spec = implot.Spec()
+                shade_spec.fill_alpha = 0.25
+                implot.plot_shaded("FPS", fps_arr, 0.0, spec=shade_spec)
                 implot.plot_line("FPS", fps_arr)
+                implot.annotation(float(len(fps_arr) - 1), float(fps_arr[-1]), imgui.ImVec4(0.4, 0.75, 1.0, 1.0), imgui.ImVec2(-10, -10), True, f"{fps_arr[-1]:.0f}")
                 implot.end_plot()
+        else:
+            imgui.text_disabled("Waiting for FPS data...")
 
         loss_arr = np.array(self.tk.loss_history, dtype=np.float64)
         step_arr = np.array(self.tk.step_history, dtype=np.float64)
         if len(loss_arr) >= 2 and len(step_arr) >= 2:
-            if implot.begin_plot("##Loss", imgui.ImVec2(-1, 120)):
+            min_len = min(len(loss_arr), len(step_arr))
+            s, l = step_arr[:min_len], loss_arr[:min_len]
+            imgui.separator_text("Loss")
+            loss_spec = implot.Spec()
+            loss_spec.line_color = imgui.ImVec4(1.0, 0.6, 0.2, 1.0)
+            if implot.begin_plot("##Loss", imgui.ImVec2(-1, 130)):
                 implot.setup_axes("step", "loss")
-                implot.setup_axis_limits(implot.ImAxis_.x1.value, float(step_arr[0]), float(step_arr[-1]), implot.Cond_.always.value)
+                implot.setup_axis_limits(implot.ImAxis_.x1.value, float(s[0]), float(s[-1]), implot.Cond_.always.value)
                 implot.setup_axis_scale(implot.ImAxis_.y1.value, implot.Scale_.log10.value)
-                implot.plot_line("Avg Loss", step_arr, loss_arr)
+                implot.plot_line("Avg Loss", s, l, spec=loss_spec)
+                implot.annotation(float(s[-1]), float(l[-1]), imgui.ImVec4(1.0, 0.6, 0.2, 1.0), imgui.ImVec2(-10, -10), True, f"{l[-1]:.2e}")
                 implot.end_plot()
 
         mse_arr = np.array(self.tk.mse_history, dtype=np.float64)
         if len(mse_arr) >= 2 and len(step_arr) >= 2:
-            if implot.begin_plot("##MSE", imgui.ImVec2(-1, 120)):
+            min_len = min(len(mse_arr), len(step_arr))
+            s, m = step_arr[:min_len], mse_arr[:min_len]
+            imgui.separator_text("MSE")
+            mse_spec = implot.Spec()
+            mse_spec.line_color = imgui.ImVec4(0.3, 0.85, 0.5, 1.0)
+            if implot.begin_plot("##MSE", imgui.ImVec2(-1, 130)):
                 implot.setup_axes("step", "MSE")
-                implot.setup_axis_limits(implot.ImAxis_.x1.value, float(step_arr[0]), float(step_arr[-1]), implot.Cond_.always.value)
+                implot.setup_axis_limits(implot.ImAxis_.x1.value, float(s[0]), float(s[-1]), implot.Cond_.always.value)
                 implot.setup_axis_scale(implot.ImAxis_.y1.value, implot.Scale_.log10.value)
-                implot.plot_line("MSE", step_arr, mse_arr)
+                implot.plot_line("MSE", s, m, spec=mse_spec)
+                implot.annotation(float(s[-1]), float(m[-1]), imgui.ImVec4(0.3, 0.85, 0.5, 1.0), imgui.ImVec2(-10, -10), True, f"{m[-1]:.2e}")
                 implot.end_plot()
 
-        stats = ui._texts.get("render_stats", "")
-        if stats:
-            imgui.text_wrapped(stats)
-
     # -- Helpers --
+
+    _TOOLTIPS = {
+        "radius_scale": "Multiplier on gaussian splat radius for rendering",
+        "alpha_cutoff": "Minimum alpha threshold — splats below this are skipped",
+        "max_splat_steps": "Maximum rasterization steps per pixel ray",
+        "trans_threshold": "Transmittance threshold for early ray termination",
+        "sampled5_safety": "Safety margin for MVEE bounding ellipsoid",
+        "debug_ellipse": "Show ellipse outlines around each gaussian",
+        "debug_processed_count": "Heatmap of processed splats per pixel",
+        "debug_grad_norm": "Heatmap of gradient norms per pixel",
+        "lr_base": "Base learning rate for all parameters",
+        "lr_pos_mul": "Learning rate multiplier for position",
+        "lr_scale_mul": "Learning rate multiplier for scale",
+        "lr_rot_mul": "Learning rate multiplier for rotation",
+        "lr_color_mul": "Learning rate multiplier for color/SH",
+        "lr_opacity_mul": "Learning rate multiplier for opacity",
+        "beta1": "Adam first moment decay (momentum)",
+        "beta2": "Adam second moment decay (RMSprop)",
+        "grad_clip": "Per-parameter gradient clipping threshold",
+        "grad_norm_clip": "Global gradient norm clipping threshold",
+        "max_update": "Maximum per-step parameter update magnitude",
+        "scale_l2": "L2 regularization on log-scale",
+        "scale_abs_reg": "Absolute scale regularization weight",
+        "opacity_reg": "Opacity regularization weight (pushes toward 0 or 1)",
+        "max_anisotropy": "Maximum ratio between largest and smallest scale axes",
+        "min_scale": "Floor for gaussian scale (prevents degenerate splats)",
+        "max_scale": "Ceiling for gaussian scale",
+        "min_opacity": "Floor for opacity",
+        "max_opacity": "Ceiling for opacity",
+        "position_abs_max": "Absolute position bounding box (per axis)",
+        "train_near": "Near clip plane for training camera",
+        "train_far": "Far clip plane for training camera",
+        "max_gaussians": "Maximum number of gaussians in the scene",
+        "seed": "Random seed for training frame shuffle order",
+        "init_opacity": "Initial opacity for new gaussians",
+    }
 
     def _draw_control(self, ui: ViewerUI, spec: ControlSpec) -> None:
         key = spec.key
@@ -464,6 +673,9 @@ class ToolkitWindow:
             changed, val = imgui.checkbox(spec.label, bool(ui._values[key]))
             if changed:
                 ui._values[key] = val
+        tip = self._TOOLTIPS.get(key)
+        if tip and imgui.is_item_hovered():
+            imgui.set_item_tooltip(tip)
 
     def _ctx_reset(self, ctx_id: str, ui: ViewerUI, keys) -> None:
         if imgui.begin_popup_context_item(ctx_id):
@@ -471,6 +683,10 @@ class ToolkitWindow:
                 for key in keys:
                     if key in _ALL_DEFAULTS:
                         ui._values[key] = _ALL_DEFAULTS[key]
+            imgui.separator()
+            if imgui.selectable("Copy Values to Clipboard")[0]:
+                lines = [f"{k}={ui._values.get(k, '?')}" for k in keys if k in ui._values]
+                imgui.set_clipboard_text("\n".join(lines))
             imgui.end_popup()
 
     def shutdown(self) -> None:
