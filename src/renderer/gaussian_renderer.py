@@ -145,7 +145,7 @@ class GaussianRenderer:
         debug_show_processed_count: bool = False,
         debug_show_grad_norm: bool = False,
         debug_grad_norm_threshold: float = 2e-4,
-        debug_ellipse_thickness_px: float = 1.0,
+        debug_ellipse_thickness_px: float = 2.0,
     ) -> None:
         self.device, self.width, self.height = device, int(width), int(height)
         self._types_shader_path = Path(SHADER_ROOT / "renderer" / "gaussian_types.slang")

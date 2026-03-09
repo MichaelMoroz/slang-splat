@@ -249,6 +249,47 @@ def test_debug_ellipse_overlay_render_smoke(device):
     assert np.all(np.isfinite(out.image))
 
 
+def test_debug_ellipse_overlay_defaults_to_2px_half_width(device):
+    renderer = GaussianRenderer(device, width=64, height=64)
+    assert renderer.debug_ellipse_thickness_px == 2.0
+
+
+def test_debug_ellipse_overlay_antialiases_across_boundary(device):
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    scene = GaussianScene(
+        positions=np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
+        scales=np.full((1, 3), 0.08, dtype=np.float32),
+        rotations=np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+        opacities=np.array([0.85], dtype=np.float32),
+        colors=np.array([[1.0, 1.0, 1.0]], dtype=np.float32),
+        sh_coeffs=np.zeros((1, 1, 3), dtype=np.float32),
+    )
+    renderer = GaussianRenderer(
+        device,
+        width=65,
+        height=65,
+        radius_scale=1.6,
+        list_capacity_multiplier=16,
+        debug_show_ellipses=True,
+    )
+
+    out = renderer.render(scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32))
+    debug = renderer.debug_pipeline_data(scene, camera)
+    center = debug["screen_center_radius_depth"][0, :2]
+    conic = debug["screen_ellipse_conic"][0, :3]
+    ys, xs = np.mgrid[0 : renderer.height, 0 : renderer.width]
+    delta = np.stack((xs + 0.5 - center[0], ys + 0.5 - center[1]), axis=-1).astype(np.float32)
+    quad = (
+        conic[0] * delta[..., 0] * delta[..., 0]
+        + 2.0 * conic[1] * delta[..., 0] * delta[..., 1]
+        + conic[2] * delta[..., 1] * delta[..., 1]
+    )
+    outside_ring = (quad >= 1.0) & (quad <= 1.25)
+
+    assert np.any(outside_ring)
+    assert float(np.max(out.image[..., 3][outside_ring])) > 1e-4
+
+
 def test_debug_processed_count_render_smoke(device):
     scene = make_scene(24, seed=37)
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)

@@ -10,6 +10,7 @@ static const float DEBUG_GRAD_NORM_FLOOR = 1e-12;
 static const float LOG2_TO_LOG10 = 0.30102999566;
 static const float DEBUG_GRAD_THRESHOLD_MIN_SCALE = 0.001;
 static const float DEBUG_GRAD_THRESHOLD_MAX_SCALE = 10.0;
+static const float DEBUG_ELLIPSE_AA_FRACTION = 0.5;
 
 struct RasterState : IDifferentiable
 {
@@ -116,11 +117,11 @@ float raster_eval_alpha_gaussian(RasterGaussian gaussian, no_diff uint splatId, 
         float2 delta = samplePoint - centerRadiusDepth.xy;
         float2 grad = mul(float2x2(conicAndOpacity.x, conicAndOpacity.y, conicAndOpacity.y, conicAndOpacity.z), delta);
         float quad = dot(delta, grad);
-        if (quad >= 1.0) return 0.0;
-
         float gradLen = max(length(2.0 * grad), GRADIENT_LENGTH_FLOOR);
-        float edgeDistance = abs(quad - 1.0) / gradLen;
-        float coverage = saturate(1.0 - edgeDistance / max(g_Raster.debugEllipseThicknessPx, MIN_DEBUG_THICKNESS_PX));
+        float halfWidth = max(g_Raster.debugEllipseThicknessPx, MIN_DEBUG_THICKNESS_PX);
+        float aaWidth = max(halfWidth * DEBUG_ELLIPSE_AA_FRACTION, MIN_DEBUG_THICKNESS_PX);
+        float edgeDistance = abs((quad - 1.0) / gradLen);
+        float coverage = 1.0 - smoothstep(max(halfWidth - aaWidth, 0.0), halfWidth + aaWidth, edgeDistance);
         float baseAlpha = opacity_from_raw(gaussian.colorAlpha.w) * coverage;
         return baseAlpha >= g_Raster.alphaCutoff ? baseAlpha * gaussian.opacityScale : 0.0;
     }
