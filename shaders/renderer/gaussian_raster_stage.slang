@@ -1,7 +1,8 @@
 import "gaussian_types.slang";
-import "camera.slang";
-import "math_constants.slang";
-import "opacity.slang";
+import "utility/math/camera.slang";
+import "utility/math/constants.slang";
+import "utility/splatting/common.slang";
+import "utility/splatting/raster.slang";
 
 struct RasterState : IDifferentiable
 {
@@ -49,25 +50,6 @@ void atomic_add_grad_wave<let N : int>(RWStructuredBuffer<float> gradBuffer, uin
     }
 }
 
-struct CachedEllipsoid : IDifferentiable
-{
-    float3 roLocal;
-    float3 invScale;
-    float4 quat;
-};
-
-[Differentiable]
-CachedEllipsoid build_cached_ellipsoid(float3 position, float3 scale, float4 rotation)
-{
-    Gaussian3D gaussian;
-    gaussian.position = position;
-    gaussian.scale = scale;
-    gaussian.rotation = rotation;
-    gaussian.colorAlpha = 0.0;
-    Ellipsoid ellipsoid = build_ellipsoid(gaussian);
-    return { ellipsoid.roLocal, ellipsoid.invScale, ellipsoid.rotation };
-}
-
 struct RasterGaussian : IDifferentiable
 {
     float3 roLocal;
@@ -81,7 +63,7 @@ struct RasterGaussian : IDifferentiable
         float3 scale = g_Scales[splatId].xyz;
         float4 rotation = g_Rotations[splatId];
         float4 colorAlpha = g_ColorAlpha[splatId];
-        CachedEllipsoid cached = build_cached_ellipsoid(position, scale, rotation);
+        CachedEllipsoid cached = build_cached_ellipsoid(g_Camera, g_Prepass.radiusScale, position, scale, rotation);
         return { cached.roLocal, cached.invScale, cached.quat, colorAlpha };
     }
 
@@ -121,7 +103,7 @@ struct RasterGaussian : IDifferentiable
         var dpPosition = diffPair(position);
         var dpScale = diffPair(scale);
         var dpRotation = diffPair(rotation);
-        bwd_diff(build_cached_ellipsoid)(dpPosition, dpScale, dpRotation, dCached);
+        bwd_diff(build_cached_ellipsoid)(g_Camera, g_Prepass.radiusScale, dpPosition, dpScale, dpRotation, dCached);
 
         atomic_add_grad_wave<4>(g_GradPositions, splatBase, float4(dpPosition.getDifferential(), 0.0));
         atomic_add_grad_wave<4>(g_GradScales, splatBase, float4(dpScale.getDifferential(), 0.0));
@@ -138,22 +120,7 @@ struct RasterGaussian : IDifferentiable
 [Differentiable]
 float raster_eval_alpha_gaussian(RasterGaussian gaussian, no_diff float3 rayDir)
 {
-    float3 rdLocal = rotate_by_quat(rayDir, gaussian.quat) * gaussian.invScale;
-    float denom = dot(rdLocal, rdLocal);
-    if (denom <= RAY_DENOMINATOR_FLOOR) return 0.0;
-
-    float tClosest = dot(rdLocal, -gaussian.roLocal) / denom;
-    if (tClosest <= 0.0) return 0.0;
-
-    float3 closest = gaussian.roLocal + rdLocal * tClosest;
-    float rho = length(closest);
-    if (rho >= 1.0) return 0.0;
-
-    float coverage = saturate(1.0 - rho);
-    coverage = coverage * coverage * (3.0 - 2.0 * coverage);
-    float alpha = opacity_from_raw(gaussian.colorAlpha.w) * coverage;
-    if (alpha < g_Raster.alphaCutoff) return 0.0;
-    return alpha;
+    return raster_eval_alpha(gaussian.roLocal, gaussian.quat, gaussian.invScale, gaussian.colorAlpha.w, rayDir, g_Raster.alphaCutoff);
 }
 
 [Differentiable]

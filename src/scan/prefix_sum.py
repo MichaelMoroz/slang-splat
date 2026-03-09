@@ -4,7 +4,7 @@ import slangpy as spy
 
 from ..common import ROOT
 
-SHADER_DIR = ROOT / "shaders" / "prefix_sum"
+SHADER_DIR = ROOT / "shaders" / "utility" / "prefix_sum"
 BLOCK_SIZE = 256
 
 

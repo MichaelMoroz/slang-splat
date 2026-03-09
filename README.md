@@ -90,7 +90,7 @@ Training notes:
 - Numerical reinforcement includes clipping, finite checks, and safe quaternion normalization.
 - Scale regularization uses an autodiff log-space penalty around the initialization/reference scale, so equal multiplicative scale deviations are treated more uniformly.
 - Scale anisotropy is clamped in the ADAM step with `max(scale) / min(scale) <= max_anisotropy`.
-- Shared shader math constants are centralized in `shaders/renderer/math_constants.slang`.
+- Shared shader utilities are centralized in `shaders/utility`; see `doc/ShaderUtilities.md`.
 
 ## Run Tests
 ```powershell
@@ -121,6 +121,6 @@ The budget scans only production Python entrypoints plus `src/**`.
 - `src/renderer`: camera and renderer orchestration.
 - `reference_impls`: CPU and analytical reference implementations used by tests.
 - `src/viewer`: viewer state, UI schema, session logic, and frame presentation.
-- `shaders/radix_sort`: radix sort shader stages.
+- `shaders/utility`: reusable shader math, splatting, loss, optimizer, blur, prefix-sum, and radix-sort modules.
 - `shaders/renderer`: Gaussian renderer compute stages.
 - `tests`: correctness tests against CPU references.

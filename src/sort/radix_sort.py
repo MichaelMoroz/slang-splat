@@ -8,7 +8,7 @@ import slangpy as spy
 
 from ..common import ROOT, debug_color
 
-SHADER_DIR = ROOT / "shaders" / "radix_sort"
+SHADER_DIR = ROOT / "shaders" / "utility" / "radix_sort"
 GROUP_SIZE = 128
 HISTOGRAM_SIZE = 256
 PACKED_HIST_SIZE = 64

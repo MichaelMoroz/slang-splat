@@ -14,7 +14,7 @@ class SeparableGaussianBlur:
 
     def __init__(self, device: spy.Device, width: int, height: int) -> None:
         self.device, self.width, self.height = device, int(width), int(height)
-        self._shader_path = Path(SHADER_ROOT / "filter" / "separable_gaussian_blur.slang")
+        self._shader_path = Path(SHADER_ROOT / "utility" / "blur" / "separable_gaussian_blur.slang")
         self._kernels = {name: self.device.create_compute_kernel(self.device.load_program(str(self._shader_path), [entry])) for name, entry in self._KERNEL_ENTRIES.items()}
         self._scratch_texture: spy.Texture | None = None
 

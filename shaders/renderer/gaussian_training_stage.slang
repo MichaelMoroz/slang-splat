@@ -1,48 +1,22 @@
-import "math_constants.slang";
-import "opacity.slang";
+import "utility/losses/losses.slang";
+import "utility/optimizer/optimizer.slang";
+import "utility/random/random.slang";
+import "utility/math/constants.slang";
+import "utility/math/numeric.slang";
+import "utility/math/quaternion.slang";
+import "utility/splatting/opacity.slang";
 
 static const uint TRAIN_TILE_DIM = 16u;
 static const uint SCALE_HISTOGRAM_GUARD_BIN_COUNT = 2u;
 static const uint LOSS_SLOT_TOTAL = 0u;
 static const uint LOSS_SLOT_MSE = 1u;
 static const uint LOSS_SLOT_SSIM = 2u;
-static const uint RNG_LINEAR_A = 1664525u;
-static const uint RNG_LINEAR_C = 1013904223u;
-static const float SSIM_C1 = 0.0001;
-static const float SSIM_C2 = 0.0009;
 static const float OPACITY_RESET_VALUE = 0.1;
 static const uint SPLIT_CHILD_COUNT = 2u;
 static const float SPLIT_CHILD_SCALE_RATIO = 0.625;
 static const float CLAMPED_SCALE_DENSIFY_RATIO = 1.25;
 static const uint INVALID_SPLAT_INDEX = 0xFFFFFFFFu;
 static const uint MCMC_RELOCATION_N_MAX = 51u;
-
-struct AdamParams
-{
-    float positionLR;
-    float scaleLR;
-    float rotationLR;
-    float colorLR;
-    float opacityLR;
-    float beta1;
-    float beta2;
-    float epsilon;
-    uint stepIndex;
-};
-
-struct TrainingStabilityParams
-{
-    float gradComponentClip;
-    float gradNormClip;
-    float maxUpdate;
-    float minScale;
-    float maxScale;
-    float maxAnisotropy;
-    float minOpacity;
-    float maxOpacity;
-    float positionAbsMax;
-    float hugeValue;
-};
 
 struct TrainingMCMCParams
 {
@@ -188,116 +162,11 @@ uniform float g_InitScaleJitterRatio;
 uniform float g_InitInitialOpacity;
 uniform float g_InitColorJitterStd;
 
-float sanitize_scalar(float value, float clampAbs)
-{
-    if (!isfinite(value)) return 0.0;
-    return clamp(value, -clampAbs, clampAbs);
-}
-
-float3 sanitize_float3(float3 value, float clampAbs)
-{
-    return float3(
-        sanitize_scalar(value.x, clampAbs),
-        sanitize_scalar(value.y, clampAbs),
-        sanitize_scalar(value.z, clampAbs)
-    );
-}
-
-float4 sanitize_float4(float4 value, float clampAbs)
-{
-    return float4(
-        sanitize_scalar(value.x, clampAbs),
-        sanitize_scalar(value.y, clampAbs),
-        sanitize_scalar(value.z, clampAbs),
-        sanitize_scalar(value.w, clampAbs)
-    );
-}
-
-float3 clip_norm3(float3 value, float maxNorm)
-{
-    if (maxNorm <= 0.0) return value;
-    float len = length(value);
-    if (!isfinite(len) || len <= maxNorm) return value;
-    return value * (maxNorm / max(len, TINY_VALUE));
-}
-
-float4 clip_norm4(float4 value, float maxNorm)
-{
-    if (maxNorm <= 0.0) return value;
-    float len = length(value);
-    if (!isfinite(len) || len <= maxNorm) return value;
-    return value * (maxNorm / max(len, TINY_VALUE));
-}
-
-float4 normalize_quaternion_safe(float4 q)
-{
-    float normQ = length(q);
-    if (!isfinite(normQ) || normQ < TINY_VALUE) return float4(1.0, 0.0, 0.0, 0.0);
-    return q / normQ;
-}
-
-float3 rotate_by_quat(float3 v, float4 q)
-{
-    float3 qv = q.yzw;
-    return v + 2.0 * cross(cross(v, qv) + q.x * v, qv);
-}
-
-uint rng_next(inout uint state)
-{
-    state = RNG_LINEAR_A * state + RNG_LINEAR_C;
-    return state;
-}
-
-uint hash_u32(uint x)
-{
-    x ^= x >> 16;
-    x *= 0x7feb352du;
-    x ^= x >> 15;
-    x *= 0x846ca68bu;
-    x ^= x >> 16;
-    return x;
-}
-
-float rng_uniform_open01(inout uint state)
-{
-    uint bits = rng_next(state);
-    return (float(bits) + 1.0) * RNG_OPEN01_SCALE;
-}
-
-float2 rng_normal2_box_muller(inout uint state)
-{
-    float u1 = max(rng_uniform_open01(state), TINY_VALUE);
-    float u2 = rng_uniform_open01(state);
-    float radius = sqrt(max(-2.0 * log(u1), 0.0));
-    float s, c;
-    sincos(TAU_RADIANS * u2, s, c);
-    return radius * float2(c, s);
-}
-
-float3 rng_normal3_box_muller(inout uint state)
-{
-    float2 n01 = rng_normal2_box_muller(state);
-    float2 n23 = rng_normal2_box_muller(state);
-    return float3(n01.x, n01.y, n23.x);
-}
-
-float4 rng_normal4_box_muller(inout uint state)
-{
-    float2 n01 = rng_normal2_box_muller(state);
-    float2 n23 = rng_normal2_box_muller(state);
-    return float4(n01.x, n01.y, n23.x, n23.y);
-}
-
 float opacity_noise_gate(float opacity)
 {
     float x = g_MCMC.opacityGateSharpness * ((1.0 - opacity) - g_MCMC.opacityGateCenter);
     x = clamp(x, -SOFTPLUS_INPUT_LIMIT, SOFTPLUS_INPUT_LIMIT);
     return 1.0 / (1.0 + exp(-x));
-}
-
-float scale_abs_l1_loss(float3 scale)
-{
-    return (abs(scale.x) + abs(scale.y) + abs(scale.z)) * (1.0 / 3.0);
 }
 
 uint mcmc_relocation_family_size(uint sampleCount)
@@ -342,72 +211,6 @@ void mcmc_relocate_opacity_scale(float oldOpacity, float3 oldScale, uint sampleC
     float coeff = mcmc_relocation_scale_coeff(alpha, relocatedAlpha, familySize);
     newOpacity = clamp(relocatedAlpha, max(g_Densify.pruneMinOpacity, g_Stability.minOpacity), min(g_Stability.maxOpacity, 1.0 - TINY_VALUE));
     newScale = clamp_scale_anisotropy(clamp(oldScale * coeff, g_Stability.minScale, g_Stability.maxScale));
-}
-
-[Differentiable]
-float rgb_mse_loss(float3 rendered, no_diff float3 target, no_diff float invPixelCount)
-{
-    float3 diff = rendered - target;
-    return dot(diff, diff) * (1.0 / 3.0) * invPixelCount;
-}
-
-float rgb_l1_loss(float3 rendered, no_diff float3 target, no_diff float invPixelCount)
-{
-    float3 diff = abs(rendered - target);
-    return dot(diff, float3(1.0, 1.0, 1.0)) * (1.0 / 3.0) * invPixelCount;
-}
-
-float3 rgb_l1_grad(float3 rendered, no_diff float3 target, no_diff float invPixelCount)
-{
-    float3 diff = rendered - target;
-    float3 signGrad = float3(diff.x > 0.0 ? 1.0 : diff.x < 0.0 ? -1.0 : 0.0, diff.y > 0.0 ? 1.0 : diff.y < 0.0 ? -1.0 : 0.0, diff.z > 0.0 ? 1.0 : diff.z < 0.0 ? -1.0 : 0.0);
-    return signGrad * ((1.0 / 3.0) * invPixelCount);
-}
-
-[Differentiable]
-float rgb_dssim_loss(
-    float3 muRendered,
-    no_diff float3 muTarget,
-    float3 blurRenderedSq,
-    no_diff float3 blurTargetSq,
-    float3 blurRenderTarget,
-    no_diff float invPixelCount,
-    no_diff float lambdaDSSIM
-)
-{
-    float3 sigmaRendered = blurRenderedSq - muRendered * muRendered;
-    float3 sigmaTarget = blurTargetSq - muTarget * muTarget;
-    float3 sigmaCross = blurRenderTarget - muRendered * muTarget;
-    float3 numer = (2.0 * muRendered * muTarget + SSIM_C1) * (2.0 * sigmaCross + SSIM_C2);
-    float3 denom = max(muRendered * muRendered + muTarget * muTarget + SSIM_C1, float3(TINY_VALUE)) * max(sigmaRendered + sigmaTarget + SSIM_C2, float3(TINY_VALUE));
-    float3 ssim = numer / denom;
-    return lambdaDSSIM * (1.0 - dot(ssim, float3(1.0, 1.0, 1.0)) * (1.0 / 3.0)) * invPixelCount;
-}
-
-float rgb_ssim_metric(float3 muRendered, float3 muTarget, float3 blurRenderedSq, float3 blurTargetSq, float3 blurRenderTarget)
-{
-    float3 sigmaRendered = blurRenderedSq - muRendered * muRendered;
-    float3 sigmaTarget = blurTargetSq - muTarget * muTarget;
-    float3 sigmaCross = blurRenderTarget - muRendered * muTarget;
-    float3 numer = (2.0 * muRendered * muTarget + SSIM_C1) * (2.0 * sigmaCross + SSIM_C2);
-    float3 denom = max(muRendered * muRendered + muTarget * muTarget + SSIM_C1, float3(TINY_VALUE)) * max(sigmaRendered + sigmaTarget + SSIM_C2, float3(TINY_VALUE));
-    float3 ssim = numer / denom;
-    return dot(ssim, float3(1.0, 1.0, 1.0)) * (1.0 / 3.0);
-}
-
-[Differentiable]
-float scale_log_reference_loss(float3 scale, no_diff float referenceScale)
-{
-    float3 scaleSafe = max(scale, float3(TINY_VALUE));
-    float refSafe = max(referenceScale, TINY_VALUE);
-    float3 logScale = log(scaleSafe / refSafe);
-    return dot(logScale, logScale) * (1.0 / 3.0);
-}
-
-[Differentiable]
-float opacity_l1_loss(float rawOpacity)
-{
-    return opacity_from_raw(rawOpacity);
 }
 
 float3 clamp_scale_anisotropy(float3 scale)
@@ -507,37 +310,6 @@ uint append_output_splat(
     if (!reserve_output_slot(outputId)) return g_Densify.outputCapacity;
     write_output_splat(outputId, pos, scale, rot, colorAlpha, adamMPos, adamVPos, adamMScale, adamVScale, adamMQuat, adamVQuat, adamMColorAlpha, adamVColorAlpha, 0.0, 0u, 0.0);
     return outputId;
-}
-
-float4 adam_update_param(
-    float4 param,
-    float4 grad,
-    inout float4 momentM,
-    inout float4 momentV,
-    float4 lr,
-    float biasCorr1,
-    float biasCorr2
-)
-{
-    float beta1 = g_Adam.beta1;
-    float beta2 = g_Adam.beta2;
-    float oneMinusBeta1 = 1.0 - beta1;
-    float oneMinusBeta2 = 1.0 - beta2;
-
-    momentM = sanitize_float4(momentM, g_Stability.hugeValue);
-    momentV = sanitize_float4(momentV, g_Stability.hugeValue);
-    momentM = beta1 * momentM + oneMinusBeta1 * grad;
-    momentV = beta2 * momentV + oneMinusBeta2 * (grad * grad);
-    momentM = sanitize_float4(momentM, g_Stability.hugeValue);
-    momentV = sanitize_float4(momentV, g_Stability.hugeValue);
-
-    float4 mHat = momentM / max(biasCorr1, TINY_VALUE);
-    float4 vHat = momentV / max(biasCorr2, TINY_VALUE);
-    float4 update = lr * mHat / (sqrt(max(vHat, 0.0)) + g_Adam.epsilon);
-    update = sanitize_float4(update, g_Stability.maxUpdate);
-    update = clamp(update, -g_Stability.maxUpdate, g_Stability.maxUpdate);
-    float4 nextParam = sanitize_float4(param - update, g_Stability.hugeValue);
-    return nextParam;
 }
 
 [shader("compute")]
@@ -813,10 +585,10 @@ void csAdamStepFused(uint3 dispatchThreadID : SV_DispatchThreadID)
     float4 scaleLR = float4(g_Adam.scaleLR, g_Adam.scaleLR, g_Adam.scaleLR, 0.0);
     float4 rotLR = float4(g_Adam.rotationLR, g_Adam.rotationLR, g_Adam.rotationLR, g_Adam.rotationLR);
     float4 colorAlphaLR = float4(g_Adam.colorLR, g_Adam.colorLR, g_Adam.colorLR, g_Adam.opacityLR);
-    pos = adam_update_param(pos, gradPos, mPos, vPos, posLR, biasCorr1, biasCorr2);
-    scale = adam_update_param(scale, gradScale, mScale, vScale, scaleLR, biasCorr1, biasCorr2);
-    rot = adam_update_param(rot, gradQuat, mQuat, vQuat, rotLR, biasCorr1, biasCorr2);
-    colorAlpha = adam_update_param(colorAlpha, gradColorAlpha, mColorAlpha, vColorAlpha, colorAlphaLR, biasCorr1, biasCorr2);
+    pos = adam_update_param(pos, gradPos, mPos, vPos, posLR, biasCorr1, biasCorr2, g_Adam, g_Stability);
+    scale = adam_update_param(scale, gradScale, mScale, vScale, scaleLR, biasCorr1, biasCorr2, g_Adam, g_Stability);
+    rot = adam_update_param(rot, gradQuat, mQuat, vQuat, rotLR, biasCorr1, biasCorr2, g_Adam, g_Stability);
+    colorAlpha = adam_update_param(colorAlpha, gradColorAlpha, mColorAlpha, vColorAlpha, colorAlphaLR, biasCorr1, biasCorr2, g_Adam, g_Stability);
 
     if (g_MCMC.enabled != 0u && g_MCMC.positionNoiseScale > 0.0)
     {
