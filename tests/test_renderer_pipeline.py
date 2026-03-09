@@ -263,6 +263,8 @@ def test_debug_processed_count_render_smoke(device):
     out = renderer.render(scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32))
     assert out.image.shape == (64, 64, 4)
     assert np.all(np.isfinite(out.image))
+    channel_spread = np.max(out.image[..., :3], axis=-1) - np.min(out.image[..., :3], axis=-1)
+    assert float(np.max(channel_spread)) > 1e-4
 
 
 def test_debug_grad_norm_render_smoke(device):

@@ -166,7 +166,7 @@ float3 raster_processed_count_color(uint processedCount)
 {
     float logMax = log2(float(g_Raster.maxSplatSteps) + 1.0);
     float normalized = (logMax > 0.0) ? saturate(log2(float(processedCount) + 1.0) / logMax) : 0.0;
-    return float3(normalized);
+    return jet_colormap(normalized);
 }
 
 [Differentiable]
