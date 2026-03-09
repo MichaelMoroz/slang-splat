@@ -133,21 +133,6 @@ RasterState raster_blend_step_gaussian(RasterState state, RasterGaussian gaussia
     return state.blend(gaussian.colorAlpha.xyz, alpha);
 }
 
-RasterState raster_undo_blend_step(RasterState nextState, float4 colorAlpha, float alpha)
-{
-    return nextState.undo(colorAlpha.xyz, alpha);
-}
-
-bool raster_show_processed_count()
-{
-    return g_Raster.debugShowProcessedCount != 0u;
-}
-
-bool raster_show_grad_norm()
-{
-    return g_Raster.debugShowGradNorm != 0u;
-}
-
 float3 jet_colormap(float x)
 {
     float t = saturate(x);
@@ -170,8 +155,8 @@ float raster_normalize_grad_norm(float gradNorm)
 
 float3 raster_forward_color(RasterGaussian gaussian, uint splatId)
 {
-    if (raster_show_processed_count()) return 0.0;
-    if (!raster_show_grad_norm()) return gaussian.colorAlpha.xyz;
+    if (g_Raster.debugShowProcessedCount != 0u) return 0.0;
+    if (g_Raster.debugShowGradNorm == 0u) return gaussian.colorAlpha.xyz;
     float gradNorm = g_DebugGradNorm[splatId];
     if (!isfinite(gradNorm)) gradNorm = 0.0;
     return jet_colormap(raster_normalize_grad_norm(max(gradNorm, 0.0)));
@@ -215,35 +200,11 @@ struct RasterMicrotileBackwardState
     RasterState.Differential pixelState[RASTER_MICROTILE_PIXELS];
 };
 
-RasterState initial_raster_state()
-{
-    return { 0.0, 1.0 };
-}
-
-RasterState.Differential zero_raster_state_differential()
-{
-    RasterState.Differential dState;
-    dState.accum = 0.0;
-    dState.trans = 0.0;
-    return dState;
-}
-
-RasterGaussian.Differential zero_raster_gaussian_differential()
-{
-    RasterGaussian.Differential dGaussian;
-    dGaussian.roLocal = 0.0;
-    dGaussian.invScale = 0.0;
-    dGaussian.quat = 0.0;
-    dGaussian.opacityScale = 0.0;
-    dGaussian.colorAlpha = 0.0;
-    return dGaussian;
-}
-
 void init_raster_microtile_forward_state(RasterMicrotileInfo info, out RasterMicrotileForwardState forwardState)
 {
     [unroll] for (uint pix = 0u; pix < RASTER_MICROTILE_PIXELS; pix++)
     {
-        forwardState.pixelState[pix] = initial_raster_state();
+        forwardState.pixelState[pix] = { 0.0, 1.0 };
         forwardState.processedCount[pix] = 0u;
         forwardState.processedEnd[pix] = info.start;
     }
@@ -253,7 +214,7 @@ void init_raster_microtile_backward_state(out RasterMicrotileBackwardState backw
 {
     [unroll] for (uint pix = 0u; pix < RASTER_MICROTILE_PIXELS; pix++)
     {
-        backwardState.pixelState[pix] = zero_raster_state_differential();
+        backwardState.pixelState[pix] = { 0.0, 0.0 };
     }
 }
 
@@ -394,7 +355,7 @@ float4 raster_forward_output_pixel(
 )
 {
     if (!info.pixelActive[pixelIdx]) return float4(0.0, 0.0, 0.0, 1.0);
-    if (raster_show_processed_count()) return float4(raster_processed_count_color(processedCount), 1.0);
+    if (g_Raster.debugShowProcessedCount != 0u) return float4(raster_processed_count_color(processedCount), 1.0);
     return info.hasTileRange
         ? raster_output_from_state(state, g_Raster.background)
         : float4(pow(max(g_Raster.background, 0.0), OUTPUT_GAMMA), 1.0);
@@ -406,7 +367,7 @@ RasterState.Differential raster_output_gradient_pixel(
     RasterState state
 )
 {
-    if (!info.pixelActive[pixelIdx] || !info.hasTileRange) return zero_raster_state_differential();
+    if (!info.pixelActive[pixelIdx] || !info.hasTileRange) return { 0.0, 0.0 };
 
     var dpState = diffPair(state);
     bwd_diff(raster_output_from_state)(dpState, g_Raster.background, g_OutputGrad[info.pixelCoord[pixelIdx]]);
@@ -439,7 +400,7 @@ void raster_backward_replay(
             uint localIdx = batchCount - 1u - rev;
             uint globalIdx = batchStart + localIdx;
             RasterGaussian gaussian = RasterGaussian.load_shared(localIdx);
-            RasterGaussian.Differential dGaussian = zero_raster_gaussian_differential();
+            RasterGaussian.Differential dGaussian = { 0.0, 0.0, 0.0, 0.0, 0.0 };
 
             [unroll] for (uint pix = 0u; pix < RASTER_MICROTILE_PIXELS; pix++)
             {
@@ -449,7 +410,7 @@ void raster_backward_replay(
                 if (alpha <= 0.0) continue;
 
                 RasterState state = forwardState.pixelState[pix];
-                RasterState prevState = raster_undo_blend_step(state, gaussian.colorAlpha, alpha);
+                RasterState prevState = state.undo(gaussian.colorAlpha.xyz, alpha);
 
                 var dpPrevState = diffPair(prevState);
                 var dpGaussian = diffPair(gaussian);
