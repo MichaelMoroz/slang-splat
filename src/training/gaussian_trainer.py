@@ -272,23 +272,22 @@ class GaussianTrainer:
                 resized = native if native.size == train_size else native.resize(train_size, resample=Image.Resampling.BILINEAR)
                 self._frame_targets_train.append(self._create_gpu_texture(resized))
 
-    def _common_vars(self) -> dict[str, object]:
+    def _loss_vars(self) -> dict[str, object]:
         return {
             "g_Width": int(self.renderer.width),
             "g_Height": int(self.renderer.height),
-            "g_SplatCount": int(self._scene_count),
-            "g_ParamCount": int(self._scene_count * self.renderer.TRAINABLE_PARAM_COUNT),
             "g_InvPixelCount": 1.0 / float(max(self.renderer.width * self.renderer.height, 1)),
             "g_LossGradClip": float(self.stability.loss_grad_clip),
+            "g_HugeValue": float(self.stability.huge_value),
+        }
+
+    def _optimizer_vars(self) -> dict[str, object]:
+        return {
+            "g_SplatCount": int(self._scene_count),
             "g_ScaleL2Weight": float(max(self.training.scale_l2_weight, 0.0)),
             "g_ScaleAbsRegWeight": float(max(self.training.scale_abs_reg_weight, 0.0)),
             "g_OpacityRegWeight": float(max(self.training.opacity_reg_weight, 0.0)),
             "g_ScaleRegReference": float(max(self._scale_reg_reference, 1e-8)),
-            "g_Adam": {
-                "beta1": float(self.adam.beta1),
-                "beta2": float(self.adam.beta2),
-                "stepIndex": int(self.state.step + 1),
-            },
             "g_OptimizerAdam": {
                 "beta1": float(self.adam.beta1),
                 "beta2": float(self.adam.beta2),
@@ -323,7 +322,7 @@ class GaussianTrainer:
         }
 
     def _dispatch_loss_grad(self, encoder: spy.CommandEncoder, target_texture: spy.Texture) -> None:
-        shared = {"g_OutputGrad": self.renderer.output_grad_texture, "g_LossBuffer": self._buffers["loss"], **self._common_vars()}
+        shared = {"g_OutputGrad": self.renderer.output_grad_texture, "g_LossBuffer": self._buffers["loss"], **self._loss_vars()}
         self._dispatch("clear_loss_grad", encoder, self._pixel_thread_count(), shared)
         self._dispatch(
             "loss_grad",
@@ -334,15 +333,15 @@ class GaussianTrainer:
                 "g_Target": target_texture,
                 "g_OutputGrad": self.renderer.output_grad_texture,
                 "g_LossBuffer": self._buffers["loss"],
-                **self._common_vars(),
+                **self._loss_vars(),
             },
         )
 
     def _dispatch_optimizer_step(self, encoder: spy.CommandEncoder) -> None:
-        common = {**self._scene_grad_vars(), **self._scene_rw_vars(), **self._adam_shader_vars(), **self._common_vars()}
+        common = {**self._scene_grad_vars(), **self._scene_rw_vars(), **self._adam_shader_vars(), **self._optimizer_vars()}
         self._dispatch("accumulate_regularizers", encoder, self._scene_thread_count(), common)
         self._dispatch("clip_grads", encoder, self._scene_thread_count(), common)
-        self._dispatch("adam_step", encoder, self._param_thread_count(), {**self._adam_step_vars(), **self._common_vars()})
+        self._dispatch("adam_step", encoder, self._param_thread_count(), {**self._adam_step_vars(), **self._optimizer_vars()})
         self._dispatch("project_params", encoder, self._scene_thread_count(), common)
 
     def initialize_scene_from_pointcloud(self, splat_count: int, init_hparams: GaussianInitHyperParams, seed: int) -> None:

@@ -1,5 +1,4 @@
 import "utility/losses/losses.slang";
-import "utility/optimizer/optimizer.slang";
 import "utility/math/constants.slang";
 import "utility/math/numeric.slang";
 
@@ -7,11 +6,11 @@ static const uint TRAIN_TILE_DIM = 16u;
 static const uint LOSS_SLOT_TOTAL = 0u;
 static const uint LOSS_SLOT_MSE = 1u;
 
-uniform TrainingStabilityParams g_Stability;
 uniform uint g_Width;
 uniform uint g_Height;
 uniform float g_InvPixelCount;
 uniform float g_LossGradClip;
+uniform float g_HugeValue;
 
 uniform Texture2D<float4> g_Rendered;
 uniform Texture2D<float4> g_Target;
@@ -63,8 +62,8 @@ void csComputeL1LossGrad(
     if (px < g_Width && py < g_Height)
     {
         uint2 pixel = uint2(px, py);
-        float3 rendered = sanitize_float3(g_Rendered[pixel].xyz, g_Stability.hugeValue);
-        float3 target = sanitize_float3(g_Target[pixel].xyz, g_Stability.hugeValue);
+        float3 rendered = sanitize_float3(g_Rendered[pixel].xyz, g_HugeValue);
+        float3 target = sanitize_float3(g_Target[pixel].xyz, g_HugeValue);
         float loss = rgb_l1_loss(rendered, target, g_InvPixelCount);
         float mse = rgb_mse_loss(rendered, target, g_InvPixelCount);
         localLoss = isfinite(loss) ? loss : 0.0;
@@ -99,7 +98,7 @@ void csComposeAbsDiffDebug(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint2 pixel = uint2(px, py);
     float3 rendered = g_DebugRendered[pixel].xyz;
     float3 target = g_DebugTarget[pixel].xyz;
-    float3 diff = abs(sanitize_float3(rendered - target, g_Stability.hugeValue));
+    float3 diff = abs(sanitize_float3(rendered - target, g_HugeValue));
     g_DebugOutput[pixel] = float4(diff, 1.0);
 }
 
