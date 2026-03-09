@@ -63,27 +63,31 @@ class GaussianTrainer:
     _LOSS_SLOT_TOTAL = 0
     _LOSS_SLOT_MSE = 1
     _ADAM_BUFFER_NAMES = ("adam_m", "adam_v")
-    _ADAM_SHADER_VARS = {"adam_m": "g_AdamM", "adam_v": "g_AdamV", "param_lrs": "g_ParamLRs"}
+    _ADAM_SHADER_VARS = {"adam_m": "g_OptimizerAdamM", "adam_v": "g_OptimizerAdamV", "param_lrs": "g_OptimizerParamLRs"}
     _SCENE_RW_SHADER_VARS = {"splat_params": "g_SplatParamsRW"}
     _SCENE_GRAD_SHADER_VARS = {"param_grads": "g_ParamGrads"}
     _KERNEL_ENTRIES = {
-        "clear_loss_grad": "csClearLossAndGradTex",
-        "loss_grad": "csComputeL1LossGrad",
-        "adam_step": "csAdamStepFused",
+        "clear_loss_grad": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csClearLossAndGradTex"),
+        "loss_grad": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csComputeL1LossGrad"),
+        "accumulate_regularizers": (Path(SHADER_ROOT / "utility" / "optimizer" / "gaussian_optimizer_stage.slang"), "csAccumulateRegularizationGrads"),
+        "clip_grads": (Path(SHADER_ROOT / "utility" / "optimizer" / "gaussian_optimizer_stage.slang"), "csClipGaussianParamGrads"),
+        "adam_step": (Path(SHADER_ROOT / "utility" / "optimizer" / "optimizer.slang"), "csAdamStepPacked"),
+        "project_params": (Path(SHADER_ROOT / "utility" / "optimizer" / "gaussian_optimizer_stage.slang"), "csProjectGaussianParams"),
     }
     _buffer_vars = staticmethod(lambda mapping, source: {shader_name: source[name] for name, shader_name in mapping.items()})
     _dispatch = lambda self, kernel, encoder, thread_count, vars: self._kernels[kernel].dispatch(thread_count=thread_count, vars=vars, command_encoder=encoder)
     _scene_thread_count = lambda self: spy.uint3(self._scene_count, 1, 1)
+    _param_thread_count = lambda self: spy.uint3(self._scene_count * self.renderer.TRAINABLE_PARAM_COUNT, 1, 1)
     _pixel_thread_count = lambda self: spy.uint3(self.renderer.width, self.renderer.height, 1)
     _scene_rw_vars = lambda self: self._buffer_vars(self._SCENE_RW_SHADER_VARS, self.renderer.scene_buffers)
     _scene_grad_vars = lambda self: self._buffer_vars(self._SCENE_GRAD_SHADER_VARS, self.renderer.work_buffers)
     _adam_shader_vars = lambda self: self._buffer_vars(self._ADAM_SHADER_VARS, self._buffers)
+    _adam_step_vars = lambda self: {"g_OptimizerParams": self.renderer.scene_buffers["splat_params"], "g_OptimizerGrads": self.renderer.work_buffers["param_grads"], **self._adam_shader_vars()}
     _frame = lambda self, frame_index: self.frames[int(np.clip(frame_index, 0, len(self.frames) - 1))]
     make_frame_camera = lambda self, frame_index, width, height: self._make_frame_camera(self._frame(frame_index), int(width), int(height))
     frame_size = lambda self, frame_index: (int(self._frame(frame_index).width), int(self._frame(frame_index).height))
     get_frame_target_texture = lambda self, frame_index, native_resolution=True: self._frame_targets_train[int(np.clip(frame_index, 0, len(self.frames) - 1))]
     _dispatch_raster_forward_backward = lambda self, encoder, frame_camera, background: (self.renderer.clear_raster_grads_current_scene(encoder), self.renderer.rasterize_forward_backward_current_scene(encoder=encoder, camera=frame_camera, background=background, output_grad=self.renderer.output_grad_texture))
-    _dispatch_adam_step = lambda self, encoder: self._dispatch("adam_step", encoder, self._scene_thread_count(), {**self._scene_grad_vars(), **self._scene_rw_vars(), **self._adam_shader_vars(), **self._common_vars()})
     _read_loss_metrics = lambda self: (lambda values: (float(values[self._LOSS_SLOT_TOTAL]) if values.size > self._LOSS_SLOT_TOTAL else float("nan"), float(values[self._LOSS_SLOT_MSE]) if values.size > self._LOSS_SLOT_MSE else float("nan")))(np.frombuffer(self._buffers["loss"].to_numpy().tobytes(), dtype=np.float32))
 
     def update_hyperparams(self, adam_hparams: AdamHyperParams, stability_hparams: StabilityHyperParams, training_hparams: TrainingHyperParams) -> None:
@@ -92,6 +96,9 @@ class GaussianTrainer:
         self.training = training_hparams
         if "param_lrs" in self._buffers:
             self._buffers["param_lrs"].copy_from_numpy(self._param_lrs())
+
+    def _dispatch_adam_step(self, encoder: spy.CommandEncoder) -> None:
+        self._dispatch_optimizer_step(encoder)
 
     def __init__(
         self,
@@ -126,8 +133,10 @@ class GaussianTrainer:
         self.training = pick(training_hparams, TrainingHyperParams())
         self.state = TrainingState()
         self._loss_window = _RollingMetricWindow(size=max(len(self.frames), 1), values=deque())
-        self._shader_path = Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang")
-        self._kernels = {name: self.device.create_compute_kernel(self.device.load_program(str(self._shader_path), [entry])) for name, entry in self._KERNEL_ENTRIES.items()}
+        self._kernels = {
+            name: self.device.create_compute_kernel(self.device.load_program(str(shader_path), [entry]))
+            for name, (shader_path, entry) in self._KERNEL_ENTRIES.items()
+        }
         self._buffers: dict[str, spy.Buffer] = {}
         self._splat_capacity = 0
         self._scale_reg_reference = float(max(scale_reg_reference, 1e-8)) if scale_reg_reference is not None else self._estimate_scale_reg_reference(scene)
@@ -268,6 +277,7 @@ class GaussianTrainer:
             "g_Width": int(self.renderer.width),
             "g_Height": int(self.renderer.height),
             "g_SplatCount": int(self._scene_count),
+            "g_ParamCount": int(self._scene_count * self.renderer.TRAINABLE_PARAM_COUNT),
             "g_InvPixelCount": 1.0 / float(max(self.renderer.width * self.renderer.height, 1)),
             "g_LossGradClip": float(self.stability.loss_grad_clip),
             "g_ScaleL2Weight": float(max(self.training.scale_l2_weight, 0.0)),
@@ -279,7 +289,26 @@ class GaussianTrainer:
                 "beta2": float(self.adam.beta2),
                 "stepIndex": int(self.state.step + 1),
             },
+            "g_OptimizerAdam": {
+                "beta1": float(self.adam.beta1),
+                "beta2": float(self.adam.beta2),
+                "stepIndex": int(self.state.step + 1),
+            },
+            "g_OptimizerParamCount": int(self._scene_count * self.renderer.TRAINABLE_PARAM_COUNT),
+            "g_OptimizerParamGroupSize": int(self._scene_count),
             "g_Stability": {
+                "gradComponentClip": float(self.stability.grad_component_clip),
+                "gradNormClip": float(self.stability.grad_norm_clip),
+                "maxUpdate": float(self.stability.max_update),
+                "minScale": float(self.stability.min_scale),
+                "maxScale": float(self.stability.max_scale),
+                "maxAnisotropy": float(max(self.stability.max_anisotropy, 1.0)),
+                "minOpacity": float(self.stability.min_opacity),
+                "maxOpacity": float(self.stability.max_opacity),
+                "positionAbsMax": float(self.stability.position_abs_max),
+                "hugeValue": float(self.stability.huge_value),
+            },
+            "g_OptimizerStability": {
                 "gradComponentClip": float(self.stability.grad_component_clip),
                 "gradNormClip": float(self.stability.grad_norm_clip),
                 "maxUpdate": float(self.stability.max_update),
@@ -308,6 +337,13 @@ class GaussianTrainer:
                 **self._common_vars(),
             },
         )
+
+    def _dispatch_optimizer_step(self, encoder: spy.CommandEncoder) -> None:
+        common = {**self._scene_grad_vars(), **self._scene_rw_vars(), **self._adam_shader_vars(), **self._common_vars()}
+        self._dispatch("accumulate_regularizers", encoder, self._scene_thread_count(), common)
+        self._dispatch("clip_grads", encoder, self._scene_thread_count(), common)
+        self._dispatch("adam_step", encoder, self._param_thread_count(), {**self._adam_step_vars(), **self._common_vars()})
+        self._dispatch("project_params", encoder, self._scene_thread_count(), common)
 
     def initialize_scene_from_pointcloud(self, splat_count: int, init_hparams: GaussianInitHyperParams, seed: int) -> None:
         if self._init_point_positions_cpu is None or self._init_point_colors_cpu is None or self._init_point_count <= 0:
@@ -357,7 +393,7 @@ class GaussianTrainer:
         else:
             self.state.last_instability = ""
             enc_opt = self.device.create_command_encoder()
-            self._dispatch_adam_step(enc_opt)
+            self._dispatch_optimizer_step(enc_opt)
             self.device.submit_command_buffer(enc_opt.finish())
             self.device.wait()
             loss = self._read_loss_metrics()[0]

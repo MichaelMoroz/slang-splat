@@ -6,9 +6,10 @@ import numpy as np
 import slangpy as spy
 
 def test_generic_packed_adam_converges_on_quadratic(device):
-    shader_path = Path(__file__).with_name("optimizer_test_stage.slang")
-    grad_kernel = device.create_compute_kernel(device.load_program(str(shader_path), ["csComputeQuadraticGrad"]))
-    adam_kernel = device.create_compute_kernel(device.load_program(str(shader_path), ["csAdamStepGeneric"]))
+    grad_shader_path = Path(__file__).with_name("optimizer_test_stage.slang")
+    adam_shader_path = Path("shaders/utility/optimizer/optimizer.slang")
+    grad_kernel = device.create_compute_kernel(device.load_program(str(grad_shader_path), ["csComputeQuadraticGrad"]))
+    adam_kernel = device.create_compute_kernel(device.load_program(str(adam_shader_path), ["csAdamStepPacked"]))
     param_count = 32
     rng = np.random.default_rng(7)
     targets = rng.normal(0.0, 0.5, size=(param_count,)).astype(np.float32)
@@ -32,12 +33,28 @@ def test_generic_packed_adam_converges_on_quadratic(device):
     common_vars = {
         "g_ParamCount": int(param_count),
         "g_Targets": targets_buf,
-        "g_ParamLRs": lrs_buf,
         "g_Params": params,
         "g_Grads": grads,
-        "g_AdamM": adam_m,
-        "g_AdamV": adam_v,
         "g_Stability": {
+            "gradComponentClip": 1e6,
+            "gradNormClip": 1e6,
+            "maxUpdate": 1.0,
+            "minScale": 0.0,
+            "maxScale": 0.0,
+            "maxAnisotropy": 1.0,
+            "minOpacity": 0.0,
+            "maxOpacity": 0.0,
+            "positionAbsMax": 1e6,
+            "hugeValue": 1e6,
+        },
+        "g_OptimizerParamCount": int(param_count),
+        "g_OptimizerParamGroupSize": 1,
+        "g_OptimizerParamLRs": lrs_buf,
+        "g_OptimizerParams": params,
+        "g_OptimizerGrads": grads,
+        "g_OptimizerAdamM": adam_m,
+        "g_OptimizerAdamV": adam_v,
+        "g_OptimizerStability": {
             "gradComponentClip": 1e6,
             "gradNormClip": 1e6,
             "maxUpdate": 1.0,
@@ -61,7 +78,7 @@ def test_generic_packed_adam_converges_on_quadratic(device):
         )
         adam_kernel.dispatch(
             thread_count=thread_count,
-            vars={**common_vars, "g_Adam": {"beta1": 0.9, "beta2": 0.999, "stepIndex": int(step)}},
+            vars={**common_vars, "g_OptimizerAdam": {"beta1": 0.9, "beta2": 0.999, "stepIndex": int(step)}},
             command_encoder=enc,
         )
         device.submit_command_buffer(enc.finish())
