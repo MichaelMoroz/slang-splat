@@ -23,12 +23,18 @@ def test_generic_packed_adam_converges_on_quadratic(device):
     adam_v = device.create_buffer(size=param_count * 4, usage=usage)
     targets_buf = device.create_buffer(size=param_count * 4, usage=usage)
     lrs_buf = device.create_buffer(size=param_count * 4, usage=usage)
+    grad_clip_buf = device.create_buffer(size=param_count * 4, usage=usage)
+    value_min_buf = device.create_buffer(size=param_count * 4, usage=usage)
+    value_max_buf = device.create_buffer(size=param_count * 4, usage=usage)
     params.copy_from_numpy(params_init)
     grads.copy_from_numpy(zeros)
     adam_m.copy_from_numpy(zeros)
     adam_v.copy_from_numpy(zeros)
     targets_buf.copy_from_numpy(targets)
     lrs_buf.copy_from_numpy(lrs)
+    grad_clip_buf.copy_from_numpy(np.full((param_count,), 1e6, dtype=np.float32))
+    value_min_buf.copy_from_numpy(np.full((param_count,), -1e6, dtype=np.float32))
+    value_max_buf.copy_from_numpy(np.full((param_count,), 1e6, dtype=np.float32))
 
     common_vars = {
         "g_ParamCount": int(param_count),
@@ -50,6 +56,9 @@ def test_generic_packed_adam_converges_on_quadratic(device):
         "g_OptimizerParamCount": int(param_count),
         "g_OptimizerParamGroupSize": 1,
         "g_OptimizerParamLRs": lrs_buf,
+        "g_OptimizerParamGradClipAbs": grad_clip_buf,
+        "g_OptimizerParamValueMin": value_min_buf,
+        "g_OptimizerParamValueMax": value_max_buf,
         "g_OptimizerParams": params,
         "g_OptimizerGrads": grads,
         "g_OptimizerAdamM": adam_m,

@@ -3,7 +3,6 @@ import "utility/optimizer/optimizer.slang";
 import "utility/math/constants.slang";
 import "utility/math/numeric.slang";
 import "utility/math/quaternion.slang";
-import "utility/splatting/opacity.slang";
 import "utility/splatting/params.slang";
 
 static const uint LOSS_SLOT_TOTAL = 0u;
@@ -125,13 +124,6 @@ float3 clamp_scale_anisotropy(float3 scale)
     return max(scale, float3(maxScale / maxAnisotropy));
 }
 
-float clamp_raw_opacity(float rawOpacity)
-{
-    float minAlpha = clamp(g_Stability.minOpacity, TINY_VALUE, 1.0 - TINY_VALUE);
-    float maxAlpha = clamp(max(g_Stability.maxOpacity, minAlpha), TINY_VALUE, 1.0 - TINY_VALUE);
-    return clamp(rawOpacity, raw_opacity_from_alpha(minAlpha), raw_opacity_from_alpha(maxAlpha));
-}
-
 [shader("compute")]
 [numthreads(OPTIMIZER_GROUP_SIZE, 1, 1)]
 void csAccumulateRegularizationGrads(uint3 dispatchThreadID : SV_DispatchThreadID)
@@ -182,36 +174,13 @@ void csAccumulateRegularizationGrads(uint3 dispatchThreadID : SV_DispatchThreadI
 
 [shader("compute")]
 [numthreads(OPTIMIZER_GROUP_SIZE, 1, 1)]
-void csClipGaussianParamGrads(uint3 dispatchThreadID : SV_DispatchThreadID)
-{
-    uint splatId = dispatchThreadID.x;
-    if (splatId >= g_SplatCount) return;
-
-    float clipAbs = g_Stability.gradComponentClip;
-    float3 gradPos = clip_norm3(sanitize_float3(load_param_grad3(PARAM_POSITION_X, splatId), clipAbs), g_Stability.gradNormClip);
-    float3 gradScale = clip_norm3(sanitize_float3(load_param_grad3(PARAM_SCALE_X, splatId), clipAbs), g_Stability.gradNormClip);
-    float4 gradQuat = clip_norm4(sanitize_float4(load_param_grad4(PARAM_ROTATION_X, splatId), clipAbs), g_Stability.gradNormClip);
-    float4 gradColorAlpha = clip_norm4(sanitize_float4(load_param_grad4(PARAM_COLOR_R, splatId), clipAbs), g_Stability.gradNormClip);
-
-    store_param_grad3(PARAM_POSITION_X, splatId, gradPos);
-    store_param_grad3(PARAM_SCALE_X, splatId, gradScale);
-    store_param_grad4(PARAM_ROTATION_X, splatId, gradQuat);
-    store_param_grad4(PARAM_COLOR_R, splatId, gradColorAlpha);
-}
-
-[shader("compute")]
-[numthreads(OPTIMIZER_GROUP_SIZE, 1, 1)]
 void csProjectGaussianParams(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     uint splatId = dispatchThreadID.x;
     if (splatId >= g_SplatCount) return;
 
     TrainableGaussianState state = TrainableGaussianState.load(splatId);
-    state.position = clamp(sanitize_float3(state.position, g_Stability.hugeValue), -g_Stability.positionAbsMax, g_Stability.positionAbsMax);
-    state.scale = clamp(sanitize_float3(state.scale, g_Stability.hugeValue), g_Stability.minScale, g_Stability.maxScale);
-    state.scale = clamp_scale_anisotropy(state.scale);
+    state.scale = clamp_scale_anisotropy(sanitize_float3(state.scale, g_Stability.hugeValue));
     state.rotation = normalize_quaternion_safe(sanitize_float4(state.rotation, g_Stability.hugeValue));
-    state.colorAlpha.xyz = clamp(sanitize_float3(state.colorAlpha.xyz, g_Stability.hugeValue), 0.0, 1.0);
-    state.colorAlpha.w = clamp_raw_opacity(sanitize_scalar(state.colorAlpha.w, g_Stability.hugeValue));
     state.store(splatId);
 }

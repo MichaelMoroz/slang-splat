@@ -1,6 +1,6 @@
 # COLMAP Training Pipeline
 
-`cli.py` (`train-colmap`) is a thin wrapper over `src/app/cli.py`, and `src/training/gaussian_trainer.py` remains the public training facade over dataset assets, kernel dispatch, and metric/state updates.
+`cli.py` (`train-colmap`) is a thin wrapper over `src/app/cli.py`. `src/training/gaussian_trainer.py` remains the public training facade, while `src/training/optimizer.py` now owns optimizer buffers, optimizer kernel dispatch, and per-parameter optimizer tables.
 
 The active training path is intentionally minimal: initialize a fixed gaussian set from the COLMAP point cloud, render one shuffled training frame, compute a direct L1 image gradient on the GPU, replay raster backward for per-splat gradients, then run a fused ADAM update.
 
@@ -45,12 +45,11 @@ Each trainer `step()` performs:
    - It also records RGB MSE as a plain diagnostic metric.
    - The same pass writes `dLoss / dRendered` into `g_OutputGrad`.
 5. Run fused raster forward/backward replay to fill per-splat gradient buffers without cached per-pixel forward state.
-6. Run fused ADAM kernel (`csAdamStepFused`) with one thread per Gaussian.
-   - The kernel updates position, scale, quaternion, color, and opacity through one packed param-major float table.
-   - Gradients, first moments, and second moments use the same param-major indexing, and a separate packed LR table supplies one learning rate per param id.
-   - Scale regularization is computed in-kernel as a log-space penalty around a reference scale derived from the initialized scene.
-   - Optional L1 penalties on scale and opacity are accumulated in the same pass.
-   - Scale is clamped to `[min_scale, max_scale]`, and a hard anisotropy clamp enforces `max(scale.xyz) / min(scale.xyz) <= max_anisotropy`.
+6. Run the optimizer pipeline:
+   - `csAccumulateRegularizationGrads` adds scale and opacity regularizers on the packed param-major state.
+   - `csClipPackedParamGrads` clips gradients from per-parameter clip tables owned by the optimizer module.
+   - `csAdamStepPacked` applies one-thread-per-packed-parameter ADAM using packed LR and scalar range tables.
+   - `csProjectGaussianParams` applies the remaining Gaussian-specific post-step projection (quaternion normalization and anisotropy clamp).
 7. Update host-side rolling loss state and the last-frame MSE metric.
 
 There is no densification, pruning, opacity reset schedule, MCMC exploration term, or PSNR/SSIM tracking on the active path.
@@ -58,18 +57,18 @@ There is no densification, pruning, opacity reset schedule, MCMC exploration ter
 ## Kernels
 - `csClearLossAndGradTex`: zero loss + output-grad texture.
 - `csComputeL1LossGrad`: computes direct RGB L1 loss, records RGB MSE, and writes `g_OutputGrad`.
-- `csAdamStepFused`: updates all trainable params in one pass:
-  - position,
-  - scale,
-  - quaternion,
-  - color,
-  - opacity.
-  - Storage layout is param-major scalar packing: `param_id * splat_count + splat_id`.
-  - The stored opacity parameter is the raw sigmoid logit, not direct alpha.
-  - Adds autodiff log-scale regularization gradients to scale gradients (`g_ScaleL2Weight`, `g_ScaleRegReference`).
-  - Accumulates the averaged scale-regularization scalar contribution into `g_LossBuffer`.
-  - Clamps stored scales to `[min_scale, max_scale]` and enforces `max_anisotropy`.
-  - ADAM epsilon is a compile-time constant in `shaders/utility/optimizer/optimizer.slang`, not a runtime parameter.
+- Packed trainable storage remains param-major scalar packing: `param_id * splat_count + splat_id`.
+- The stored opacity parameter is the raw sigmoid logit, not direct alpha.
+- `optimizer.slang` owns generic optimizer kernels and tables:
+  - packed ADAM,
+  - packed gradient clipping,
+  - per-parameter learning-rate table,
+  - per-parameter scalar range table.
+- `gaussian_optimizer_stage.slang` owns Gaussian-specific optimizer logic:
+  - scale/opacity regularizers,
+  - anisotropy clamp,
+  - quaternion normalization.
+- ADAM epsilon is a compile-time constant in `shaders/utility/optimizer/optimizer.slang`, not a runtime parameter.
 
 ## Numerical Reinforcement
 - Loss/grad and optimizer math sanitize non-finite values.

@@ -80,9 +80,10 @@ Training notes:
 - The resolved COLMAP init bundle is shared by the CLI and viewer, so `base_scale`, jitter, and opacity overrides flow through the same path in both entrypoints.
 - CLI and viewer scene initialization now honor the configured gaussian cap instead of always forcing the full COLMAP point cloud into the initial scene.
 - The active trainer keeps a fixed gaussian count after initialization; there is no densification, pruning, opacity reset schedule, MCMC exploration term, or SSIM loss path.
-- The training loss is direct RGB L1 with optional scale and opacity regularization accumulated in the fused ADAM kernel.
+- The training loss is direct RGB L1 with optional scale and opacity regularization accumulated in a separate optimizer pipeline.
 - GPU trainable state is packed into one param-major float buffer shared by renderer and trainer: `param[param_id * splat_count + splat_id]`.
-- Raster backward gradients, ADAM first moment, and ADAM second moment use the same packed param-major layout, plus one packed per-param LR table.
+- Raster backward gradients, ADAM first moment, and ADAM second moment use the same packed param-major layout, plus packed per-param optimizer tables for LR, grad clipping, and scalar clamp ranges.
+- `src/training/optimizer.py` is the Python-side optimizer module; `GaussianTrainer` delegates optimizer buffer ownership and dispatch to it.
 - GPU scene buffers store opacity as a raw sigmoid parameter so rasterization and optimization differentiate through effective alpha directly.
 - Pixel-floor-clamped splats attenuate blend alpha by the ratio of raw scale area to clamped scale area, while the alpha cutoff still applies to the pre-attenuation alpha path.
 - Reported training metrics are total loss, rolling average loss, and per-step `last_mse`.
