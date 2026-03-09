@@ -35,7 +35,7 @@ class AdamOptimizer:
     def _create_kernels(self) -> dict[str, spy.ComputeKernel]:
         shader_path = Path(SHADER_ROOT / "utility" / "optimizer" / "optimizer.slang")
         entries = {
-            "compute_grad_norms": "csComputePackedSplatGradNorms",
+            "compute_grad_norms": "csComputePackedElementGradNorms",
             "clip_grads": "csClipPackedParamGrads",
             "adam_step": "csAdamStepPacked",
         }
@@ -72,7 +72,7 @@ class AdamOptimizer:
             "g_OptimizerParamSettings": param_settings,
         }
 
-    def _optimizer_vars(self, splat_count: int, packed_param_count: int, param_group_size: int, param_settings_count: int, step_index: int) -> dict[str, object]:
+    def _optimizer_vars(self, element_count: int, packed_param_count: int, param_group_size: int, param_settings_count: int, step_index: int) -> dict[str, object]:
         return {
             "g_OptimizerAdam": {
                 "beta1": float(self.adam.beta1),
@@ -85,7 +85,7 @@ class AdamOptimizer:
                 "maxUpdate": float(self.runtime.max_update),
                 "hugeValue": float(self.runtime.huge_value),
             },
-            "g_OptimizerSplatCount": int(splat_count),
+            "g_OptimizerElementCount": int(element_count),
             "g_OptimizerParamCount": int(packed_param_count),
             "g_OptimizerParamGroupSize": int(param_group_size),
             "g_OptimizerParamSettingsCount": int(param_settings_count),
@@ -97,26 +97,26 @@ class AdamOptimizer:
         *,
         params_buffer: spy.Buffer,
         grads_buffer: spy.Buffer,
-        splat_count: int,
+        element_count: int,
         packed_param_count: int,
         param_group_size: int,
         param_settings: spy.Buffer,
         param_settings_count: int,
         step_index: int,
-        debug_grad_norm_buffer: spy.Buffer | None = None,
+        debug_element_grad_norm_buffer: spy.Buffer | None = None,
     ) -> None:
         count = max(int(packed_param_count), 1)
         self._ensure_state_buffers(count)
         vars = {
             **self._packed_shader_vars(params_buffer, grads_buffer, param_settings),
             **self._buffer_shader_vars(),
-            **self._optimizer_vars(splat_count, count, param_group_size, param_settings_count, step_index),
+            **self._optimizer_vars(element_count, count, param_group_size, param_settings_count, step_index),
         }
-        self._kernels["clip_grads"].dispatch(thread_count=self._clip_threads(splat_count), vars=vars, command_encoder=encoder)
-        if debug_grad_norm_buffer is not None:
+        self._kernels["clip_grads"].dispatch(thread_count=self._clip_threads(element_count), vars=vars, command_encoder=encoder)
+        if debug_element_grad_norm_buffer is not None:
             self._kernels["compute_grad_norms"].dispatch(
-                thread_count=self._grad_norm_threads(splat_count),
-                vars={**vars, "g_OptimizerSplatGradNorms": debug_grad_norm_buffer},
+                thread_count=self._grad_norm_threads(element_count),
+                vars={**vars, "g_OptimizerElementGradNorms": debug_element_grad_norm_buffer},
                 command_encoder=encoder,
             )
         self._kernels["adam_step"].dispatch(thread_count=self._param_threads(count), vars=vars, command_encoder=encoder)

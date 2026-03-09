@@ -285,13 +285,13 @@ class GaussianTrainer:
             encoder,
             params_buffer=self.renderer.scene_buffers["splat_params"],
             grads_buffer=self.renderer.work_buffers["param_grads"],
-            splat_count=self._scene_count,
+            element_count=self._scene_count,
             packed_param_count=self._scene_count * self.renderer.TRAINABLE_PARAM_COUNT,
             param_group_size=self._scene_count,
             param_settings=self.optimizer.param_settings,
             param_settings_count=self.optimizer.param_settings_count,
             step_index=self.state.step + 1,
-            debug_grad_norm_buffer=self.renderer.work_buffers["debug_grad_norm"] if self.compute_debug_grad_norm else None,
+            debug_element_grad_norm_buffer=self.renderer.work_buffers["debug_grad_norm"] if self.compute_debug_grad_norm else None,
         )
         self.optimizer.dispatch_projection(
             encoder,
