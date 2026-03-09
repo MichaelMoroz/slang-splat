@@ -190,3 +190,4 @@ cython_debug/
 /dataset/garden/sparse/*
 !/dataset/garden/sparse/0/
 !/dataset/garden/sparse/0/**
+imgui.ini

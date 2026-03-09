@@ -18,12 +18,13 @@ Test criteria: create a basic N channel blur test.
 STATUS: Done
 Description on completion: Reworked `blur` to use flat structured buffers with runtime channel count and dispatch channel work in parallel as `SV_DispatchThreadID.z`, so one blur pass can process arbitrary `N`-channel tensors instead of only `float4` textures. Moved training image gradients from textures to a flat `StructuredBuffer<float4>` / `RWStructuredBuffer<float4>` path across the loss kernels, renderer bindings, and raster backward pass while keeping only dataset/rendered images as textures. Added an `N=6` separable Gaussian blur regression and verified with `pytest tests/test_training_kernels.py tests/test_renderer_pipeline.py`.
 
-5) Keep only a basic backprop training path on an unchanging gaussian splat count. Initialize the splats from the COLMAP point cloud, fix initialization scales to use neighbor distance, and ensure scales are never 0.0 or near-zero. Separate forward and backward kernels for this fixed-count training path.
-Test criteria: add or update coverage validating that COLMAP initialization produces non-degenerate scales from neighbor distance and that the fixed-count training path runs through separate forward and backward kernels without densification or pruning hooks.
+5) Keep only a basic backprop training path on an unchanging gaussian splat count. Separate forward and backward kernels for this fixed-count training path.
+Test criteria: tests passing.
 STATUS: Not done
 Description on completion: none
 
 6) Implement the SSIM-based MCMC reconstruction loss exactly, with SSIM-related logic in dedicated kernels under the `losses` submodule. Keep the L1 and regularization terms inline in the main training flow; only SSIM work should be split into separate kernels.
+Additionally implmement debug view modes to see the SSIM blur components of the loss for visual validation.
 Loss:
 ```
 # Inputs
