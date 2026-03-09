@@ -6,17 +6,22 @@ from pathlib import Path
 TRAINING_PROFILE_AUTO = "auto"
 TRAINING_PROFILE_LEGACY = "legacy"
 TRAINING_PROFILE_BICYCLE_IMAGES4_PSNR = "bicycle-images4-psnr"
+TRAINING_PROFILE_BICYCLE_IMAGES4_MCMC = "bicycle-images4-mcmc"
 
 _BICYCLE_DATASET_NAME = "bicycle"
 _BICYCLE_IMAGES_SUBDIR = "images_4"
 _BICYCLE_INIT_OPACITY = 0.1
 _BICYCLE_MAX_GAUSSIANS = 300_000
+_BICYCLE_MCMC_MAX_GAUSSIANS = 5_900_000
 _BICYCLE_DENSIFY_FROM_ITER = 500
 _BICYCLE_DENSIFY_UNTIL_ITER = 15_000
 _BICYCLE_DENSIFICATION_INTERVAL = 100
 _BICYCLE_DENSIFY_GRAD_THRESHOLD = 1.5e-4
 _BICYCLE_PERCENT_DENSE = 0.01
 _BICYCLE_SCALE_L2_WEIGHT = 1e-4
+_MCMC_SCALE_REG_WEIGHT = 0.01
+_MCMC_OPACITY_REG_WEIGHT = 0.01
+_MCMC_DENSIFY_UNTIL_ITER = 25_000
 _PAPER_POSITION_LR = 1.6e-4
 _PAPER_SCALE_LR = 5e-3
 _PAPER_ROTATION_LR = 1e-3
@@ -54,6 +59,34 @@ _PROFILES = {
             "densify_until_iter": _BICYCLE_DENSIFY_UNTIL_ITER,
             "densification_interval": _BICYCLE_DENSIFICATION_INTERVAL,
             "densify_grad_threshold": _BICYCLE_DENSIFY_GRAD_THRESHOLD,
+            "percent_dense": _BICYCLE_PERCENT_DENSE,
+            "screen_size_prune_threshold": 0.0,
+            "world_size_prune_ratio": 0.0,
+            "opacity_reset_interval": 0,
+        },
+        init_opacity_override=_BICYCLE_INIT_OPACITY,
+    ),
+    TRAINING_PROFILE_BICYCLE_IMAGES4_MCMC: TrainingProfile(
+        name=TRAINING_PROFILE_BICYCLE_IMAGES4_MCMC,
+        adam_overrides={
+            "position_lr": _PAPER_POSITION_LR,
+            "scale_lr": _PAPER_SCALE_LR,
+            "rotation_lr": _PAPER_ROTATION_LR,
+            "color_lr": _PAPER_COLOR_LR,
+            "opacity_lr": _PAPER_OPACITY_LR,
+        },
+        training_overrides={
+            "scale_l2_weight": 0.0,
+            "scale_abs_reg_weight": _MCMC_SCALE_REG_WEIGHT,
+            "opacity_reg_weight": _MCMC_OPACITY_REG_WEIGHT,
+            "lambda_dssim": 0.2,
+            "mcmc_position_noise_enabled": True,
+            "mcmc_densify_enabled": True,
+            "max_gaussians": _BICYCLE_MCMC_MAX_GAUSSIANS,
+            "densify_from_iter": _BICYCLE_DENSIFY_FROM_ITER,
+            "densify_until_iter": _MCMC_DENSIFY_UNTIL_ITER,
+            "densification_interval": _BICYCLE_DENSIFICATION_INTERVAL,
+            "densify_grad_threshold": 0.0,
             "percent_dense": _BICYCLE_PERCENT_DENSE,
             "screen_size_prune_threshold": 0.0,
             "world_size_prune_ratio": 0.0,

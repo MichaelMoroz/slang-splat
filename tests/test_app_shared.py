@@ -125,6 +125,19 @@ def test_bicycle_images4_profile_applies_psnr_overrides():
     assert params.training.opacity_reset_interval == 0
 
 
+def test_bicycle_images4_mcmc_profile_applies_paper_overrides():
+    params, profile = apply_training_profile(default_training_params(), "bicycle-images4-mcmc", dataset_root=Path("dataset/bicycle"), images_subdir="images_4")
+    assert profile.name == "bicycle-images4-mcmc"
+    assert params.training.scale_l2_weight == 0.0
+    assert params.training.scale_abs_reg_weight == 0.01
+    assert params.training.opacity_reg_weight == 0.01
+    assert params.training.mcmc_position_noise_enabled is True
+    assert params.training.mcmc_densify_enabled is True
+    assert params.training.max_gaussians == 5900000
+    assert params.training.densify_until_iter == 25000
+    assert params.training.opacity_reset_interval == 0
+
+
 def test_viewer_effective_training_setup_applies_auto_profile_and_init_override():
     class _StubViewer:
         def __init__(self) -> None:

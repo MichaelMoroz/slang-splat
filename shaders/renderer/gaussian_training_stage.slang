@@ -14,6 +14,8 @@ static const float OPACITY_RESET_VALUE = 0.1;
 static const uint SPLIT_CHILD_COUNT = 2u;
 static const float SPLIT_CHILD_SCALE_RATIO = 0.625;
 static const float CLAMPED_SCALE_DENSIFY_RATIO = 1.25;
+static const uint INVALID_SPLAT_INDEX = 0xFFFFFFFFu;
+static const uint MCMC_RELOCATION_N_MAX = 51u;
 
 struct AdamParams
 {
@@ -84,9 +86,13 @@ uniform uint g_Height;
 uniform float g_InvPixelCount;
 uniform float g_LossGradClip;
 uniform float g_ScaleL2Weight;
+uniform float g_ScaleAbsRegWeight;
 uniform float g_OpacityRegWeight;
 uniform float g_ScaleRegReference;
 uniform float g_LambdaDSSIM;
+uniform uint g_ScanElementCount;
+uniform uint g_MCMCAppendBaseIndex;
+uniform uint g_MCMCSampleSeed;
 
 uniform Texture2D<float4> g_Rendered;
 uniform Texture2D<float4> g_Target;
@@ -163,6 +169,15 @@ uniform RWStructuredBuffer<uint> g_OutGradCount;
 uniform RWStructuredBuffer<float> g_OutMaxScreenRadius;
 uniform RWStructuredBuffer<uint> g_OutputCount;
 uniform RWStructuredBuffer<uint> g_ScaleHistogram;
+uniform RWStructuredBuffer<float> g_MCMCWeights;
+uniform RWStructuredBuffer<uint> g_MCMCFlags;
+uniform StructuredBuffer<float> g_MCMCWeightPrefix;
+uniform StructuredBuffer<uint> g_MCMCFlagPrefix;
+uniform RWStructuredBuffer<float> g_MCMCWeightTotal;
+uniform RWStructuredBuffer<uint> g_MCMCDeadIndices;
+uniform RWStructuredBuffer<uint> g_MCMCSampleSources;
+uniform RWStructuredBuffer<uint> g_MCMCFamilyCounts;
+uniform RWStructuredBuffer<uint> g_MCMCSampleCount;
 uniform StructuredBuffer<float4> g_InitPointPositions;
 uniform StructuredBuffer<float4> g_InitPointColors;
 uniform uint g_InitPointCount;
@@ -278,6 +293,55 @@ float opacity_noise_gate(float opacity)
     float x = g_MCMC.opacityGateSharpness * ((1.0 - opacity) - g_MCMC.opacityGateCenter);
     x = clamp(x, -SOFTPLUS_INPUT_LIMIT, SOFTPLUS_INPUT_LIMIT);
     return 1.0 / (1.0 + exp(-x));
+}
+
+float scale_abs_l1_loss(float3 scale)
+{
+    return (abs(scale.x) + abs(scale.y) + abs(scale.z)) * (1.0 / 3.0);
+}
+
+uint mcmc_relocation_family_size(uint sampleCount)
+{
+    return min(max(sampleCount + 1u, 1u), MCMC_RELOCATION_N_MAX - 1u);
+}
+
+float mcmc_binom_term(uint n, uint k)
+{
+    if (k > n) return 0.0;
+    float result = 1.0;
+    [unroll] for (uint i = 1u; i <= 50u; ++i)
+    {
+        if (i > k) break;
+        result *= float(n + 1u - i) / float(i);
+    }
+    return result;
+}
+
+float mcmc_relocation_scale_coeff(float oldAlpha, float newAlpha, uint familySize)
+{
+    if (familySize <= 1u) return 1.0;
+    float denom = 0.0;
+    [unroll] for (uint subsetSize = 1u; subsetSize < MCMC_RELOCATION_N_MAX; ++subsetSize)
+    {
+        if (subsetSize > familySize) break;
+        [unroll] for (uint k = 0u; k < MCMC_RELOCATION_N_MAX; ++k)
+        {
+            if (k >= subsetSize) break;
+            float sign = ((k & 1u) == 0u) ? 1.0 : -1.0;
+            denom += mcmc_binom_term(subsetSize - 1u, k) * sign * pow(newAlpha, float(k + 1u)) * rsqrt(float(k + 1u));
+        }
+    }
+    return oldAlpha / max(denom, TINY_VALUE);
+}
+
+void mcmc_relocate_opacity_scale(float oldOpacity, float3 oldScale, uint sampleCount, out float newOpacity, out float3 newScale)
+{
+    uint familySize = mcmc_relocation_family_size(sampleCount);
+    float alpha = clamp(oldOpacity, TINY_VALUE, 1.0 - TINY_VALUE);
+    float relocatedAlpha = 1.0 - pow(1.0 - alpha, 1.0 / float(familySize));
+    float coeff = mcmc_relocation_scale_coeff(alpha, relocatedAlpha, familySize);
+    newOpacity = clamp(relocatedAlpha, max(g_Densify.pruneMinOpacity, g_Stability.minOpacity), min(g_Stability.maxOpacity, 1.0 - TINY_VALUE));
+    newScale = clamp_scale_anisotropy(clamp(oldScale * coeff, g_Stability.minScale, g_Stability.maxScale));
 }
 
 [Differentiable]
@@ -700,6 +764,15 @@ void csAdamStepFused(uint3 dispatchThreadID : SV_DispatchThreadID)
         float lossAdd = scaleL2Weight * scaleRegLoss * invSplatCount;
         if (isfinite(lossAdd) && lossAdd != 0.0) InterlockedAdd(g_LossBuffer[LOSS_SLOT_TOTAL], lossAdd);
     }
+    float scaleAbsRegWeight = max(g_ScaleAbsRegWeight, 0.0);
+    if (scaleAbsRegWeight > 0.0)
+    {
+        float invSplatCount = 1.0 / max(float(g_SplatCount), 1.0);
+        float3 signGrad = float3(scale.x > 0.0 ? 1.0 : scale.x < 0.0 ? -1.0 : 0.0, scale.y > 0.0 ? 1.0 : scale.y < 0.0 ? -1.0 : 0.0, scale.z > 0.0 ? 1.0 : scale.z < 0.0 ? -1.0 : 0.0);
+        gradScale.xyz += signGrad * (scaleAbsRegWeight * invSplatCount * (1.0 / 3.0));
+        float lossAdd = scaleAbsRegWeight * scale_abs_l1_loss(scale.xyz) * invSplatCount;
+        if (isfinite(lossAdd) && lossAdd != 0.0) InterlockedAdd(g_LossBuffer[LOSS_SLOT_TOTAL], lossAdd);
+    }
     float opacityRegWeight = max(g_OpacityRegWeight, 0.0);
     if (opacityRegWeight > 0.0)
     {
@@ -824,6 +897,144 @@ void csAccumulateScaleHistogram(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (splatId >= g_SplatCount) return;
     uint binId = scale_histogram_bin(max(g_ScalesRW[splatId].xyz, float3(TINY_VALUE)));
     InterlockedAdd(g_ScaleHistogram[binId], 1u);
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void csPrepareMCMCRelocationWeights(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint splatId = dispatchThreadID.x;
+    if (splatId >= g_SplatCount) return;
+    float opacity = opacity_from_raw(g_ColorAlphaRW[splatId].w);
+    bool dead = opacity <= g_Densify.pruneMinOpacity;
+    g_MCMCWeights[splatId] = dead ? 0.0 : max(opacity, 0.0);
+    g_MCMCFlags[splatId] = dead ? 1u : 0u;
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void csPrepareMCMCAppendWeights(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint splatId = dispatchThreadID.x;
+    if (splatId >= g_SplatCount) return;
+    float opacity = opacity_from_raw(g_ColorAlphaRW[splatId].w);
+    g_MCMCWeights[splatId] = max(opacity, 0.0);
+    g_MCMCFlags[splatId] = 0u;
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void csCompactDeadIndices(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint splatId = dispatchThreadID.x;
+    if (splatId >= g_ScanElementCount) return;
+    uint flag = g_MCMCFlags[splatId];
+    uint prefix = g_MCMCFlagPrefix[splatId];
+    if (flag != 0u && prefix > 0u) g_MCMCDeadIndices[prefix - 1u] = splatId;
+    if (splatId + 1u == g_ScanElementCount) g_MCMCSampleCount[0] = prefix;
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void csSampleMCMCSources(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint sampleId = dispatchThreadID.x;
+    uint sampleCount = g_MCMCSampleCount[0];
+    if (sampleId >= sampleCount) return;
+    float totalWeight = g_MCMCWeightTotal[0];
+    if (!isfinite(totalWeight) || totalWeight <= 0.0)
+    {
+        g_MCMCSampleSources[sampleId] = INVALID_SPLAT_INDEX;
+        return;
+    }
+    uint rngState = hash_u32(g_MCMCSampleSeed ^ sampleId * 0x85ebca6bu);
+    if (rngState == 0u) rngState = 1u;
+    float target = rng_uniform_open01(rngState) * totalWeight;
+    uint lo = 0u;
+    uint hi = max(g_SplatCount, 1u);
+    while (lo < hi)
+    {
+        uint mid = (lo + hi) >> 1u;
+        float prefix = g_MCMCWeightPrefix[mid];
+        if (prefix > target) hi = mid;
+        else lo = mid + 1u;
+    }
+    uint sourceId = min(lo, max(g_SplatCount, 1u) - 1u);
+    g_MCMCSampleSources[sampleId] = sourceId;
+    InterlockedAdd(g_MCMCFamilyCounts[sourceId], 1u);
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void csUpdateMCMCSources(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint splatId = dispatchThreadID.x;
+    if (splatId >= g_SplatCount) return;
+    uint sampleCount = g_MCMCFamilyCounts[splatId];
+    if (sampleCount == 0u) return;
+    float4 scale = g_ScalesRW[splatId];
+    float4 colorAlpha = g_ColorAlphaRW[splatId];
+    float newOpacity = 0.0;
+    float3 newScale = 0.0;
+    mcmc_relocate_opacity_scale(opacity_from_raw(colorAlpha.w), scale.xyz, sampleCount, newOpacity, newScale);
+    g_ScalesRW[splatId] = float4(newScale, 0.0);
+    colorAlpha.w = raw_opacity_from_alpha(newOpacity);
+    g_ColorAlphaRW[splatId] = colorAlpha;
+    g_AdamMPos[splatId] = 0.0;
+    g_AdamVPos[splatId] = 0.0;
+    g_AdamMScale[splatId] = 0.0;
+    g_AdamVScale[splatId] = 0.0;
+    g_AdamMQuat[splatId] = 0.0;
+    g_AdamVQuat[splatId] = 0.0;
+    g_AdamMColorAlpha[splatId] = 0.0;
+    g_AdamVColorAlpha[splatId] = 0.0;
+    g_GradNormEMA[splatId] = 0.0;
+    g_GradCount[splatId] = 0u;
+    g_MaxScreenRadius[splatId] = 0.0;
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void csApplyMCMCRelocationSamples(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint sampleId = dispatchThreadID.x;
+    uint sampleCount = g_MCMCSampleCount[0];
+    if (sampleId >= sampleCount) return;
+    uint sourceId = g_MCMCSampleSources[sampleId];
+    if (sourceId == INVALID_SPLAT_INDEX || sourceId >= g_SplatCount) return;
+    uint targetId = g_MCMCDeadIndices[sampleId];
+    if (targetId >= g_SplatCount) return;
+    g_PositionsRW[targetId] = g_PositionsRW[sourceId];
+    g_ScalesRW[targetId] = g_ScalesRW[sourceId];
+    g_RotationsRW[targetId] = g_RotationsRW[sourceId];
+    g_ColorAlphaRW[targetId] = g_ColorAlphaRW[sourceId];
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void csAppendMCMCSamples(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint sampleId = dispatchThreadID.x;
+    uint sampleCount = g_MCMCSampleCount[0];
+    if (sampleId >= sampleCount) return;
+    uint sourceId = g_MCMCSampleSources[sampleId];
+    uint targetId = g_MCMCAppendBaseIndex + sampleId;
+    if (sourceId == INVALID_SPLAT_INDEX || sourceId >= g_SplatCount || targetId >= g_Densify.outputCapacity) return;
+    g_PositionsRW[targetId] = g_PositionsRW[sourceId];
+    g_ScalesRW[targetId] = g_ScalesRW[sourceId];
+    g_RotationsRW[targetId] = g_RotationsRW[sourceId];
+    g_ColorAlphaRW[targetId] = g_ColorAlphaRW[sourceId];
+    g_AdamMPos[targetId] = 0.0;
+    g_AdamVPos[targetId] = 0.0;
+    g_AdamMScale[targetId] = 0.0;
+    g_AdamVScale[targetId] = 0.0;
+    g_AdamMQuat[targetId] = 0.0;
+    g_AdamVQuat[targetId] = 0.0;
+    g_AdamMColorAlpha[targetId] = 0.0;
+    g_AdamVColorAlpha[targetId] = 0.0;
+    g_GradNormEMA[targetId] = 0.0;
+    g_GradCount[targetId] = 0u;
+    g_MaxScreenRadius[targetId] = 0.0;
 }
 
 [shader("compute")]

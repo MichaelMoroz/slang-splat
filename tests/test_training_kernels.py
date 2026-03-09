@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import numpy as np
@@ -9,13 +10,44 @@ import slangpy as spy
 from src.filter import SeparableGaussianBlur
 from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
-from src.training.gaussian_trainer import _relocated_opacity_scale_np
 from src.training import GaussianTrainer, StabilityHyperParams, TrainingHyperParams
 
 _ADAM_BUFFER_NAMES = ("adam_m_pos", "adam_v_pos", "adam_m_scale", "adam_v_scale", "adam_m_quat", "adam_v_quat", "adam_m_color_alpha", "adam_v_color_alpha")
 _OPACITY_EPS = 1e-6
 _raw_opacity = lambda alpha: (np.log(np.clip(np.asarray(alpha, dtype=np.float32), _OPACITY_EPS, 1.0 - _OPACITY_EPS)) - np.log1p(-np.clip(np.asarray(alpha, dtype=np.float32), _OPACITY_EPS, 1.0 - _OPACITY_EPS))).astype(np.float32, copy=False)
 _actual_opacity = lambda raw: (1.0 / (1.0 + np.exp(-np.asarray(raw, dtype=np.float32)))).astype(np.float32, copy=False)
+
+
+def _relocated_opacity_scale_np(
+    opacity: np.ndarray,
+    scales: np.ndarray,
+    family_sizes: np.ndarray,
+    *,
+    min_opacity: float,
+    max_opacity: float,
+    min_scale: float,
+    max_scale: float,
+    max_anisotropy: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    old_alpha = np.clip(np.asarray(opacity, dtype=np.float64), _OPACITY_EPS, 1.0 - _OPACITY_EPS)
+    old_scales = np.clip(np.asarray(scales, dtype=np.float64), float(min_scale), float(max_scale))
+    family = np.maximum(np.asarray(family_sizes, dtype=np.int32), 1)
+    new_alpha = 1.0 - np.power(1.0 - old_alpha, 1.0 / family.astype(np.float64))
+    coeff = np.ones_like(old_alpha, dtype=np.float64)
+    for idx, family_size in enumerate(family.tolist()):
+        if family_size <= 1:
+            continue
+        denom = 0.0
+        alpha_i = float(new_alpha[idx])
+        for subset_size in range(1, family_size + 1):
+            for k in range(subset_size):
+                denom += float(math.comb(subset_size - 1, k)) * (((-1.0) ** k) / np.sqrt(float(k + 1))) * (alpha_i ** float(k + 1))
+        coeff[idx] = old_alpha[idx] / max(denom, np.finfo(np.float64).eps)
+    relocated_alpha = np.clip(new_alpha.astype(np.float32), max(float(min_opacity), _OPACITY_EPS), min(float(max_opacity), 1.0 - _OPACITY_EPS))
+    relocated_scale = np.clip(old_scales * coeff[:, None], float(min_scale), float(max_scale))
+    axis_max = np.max(relocated_scale, axis=1, keepdims=True)
+    relocated_scale = np.maximum(relocated_scale, axis_max / max(float(max_anisotropy), 1.0)).astype(np.float32, copy=False)
+    return relocated_alpha, relocated_scale
 
 
 def _make_scene(count: int = 24, seed: int = 7) -> GaussianScene:

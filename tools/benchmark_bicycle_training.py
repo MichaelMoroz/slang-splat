@@ -85,7 +85,7 @@ def _override_training_params(params, args):
 
 
 def build_trainer(seed: int, hold_every: int, train_split: str, args) -> tuple[GaussianTrainer, list, list, tuple[float, float, float]]:
-    params, profile = apply_training_profile(default_training_params(), "auto", dataset_root=DATASET_ROOT, images_subdir=IMAGES_SUBDIR)
+    params, profile = apply_training_profile(default_training_params(), args.training_profile, dataset_root=DATASET_ROOT, images_subdir=IMAGES_SUBDIR)
     params = _override_training_params(params, args)
     recon = load_colmap_reconstruction(DATASET_ROOT, sparse_subdir=SPARSE_SUBDIR)
     frames = build_training_frames(recon, images_subdir=IMAGES_SUBDIR)
@@ -143,6 +143,7 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--hold-every", type=int, default=DEFAULT_HOLD_EVERY)
     parser.add_argument("--train-split", choices=("eval", "full"), default=DEFAULT_TRAIN_SPLIT)
+    parser.add_argument("--training-profile", type=str, default="auto")
     parser.add_argument("--max-gaussians", type=int, default=None)
     parser.add_argument("--scale-l2-weight", type=float, default=None)
     parser.add_argument("--densify-from-iter", type=int, default=None)

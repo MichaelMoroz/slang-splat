@@ -12,6 +12,10 @@ Training profiles sit above the raw optimizer and density-control flags and prov
   - Uses paper-like per-parameter learning rates (`xyz`, `scale`, `rotation`, `color`, `opacity`), a mild log-scale regularizer (`1e-4`) to keep splats off the hard min-scale clamp, and the repaired densification path with a moderate schedule tuned around explicit per-splat visibility.
   - Forces `init_opacity = 0.1`.
   - Raises the gaussian cap to `300000`, which slightly reduces the COLMAP initialization scale and improves early densification headroom without changing the active 5k splat count ceiling.
+- `bicycle-images4-mcmc`
+  - Keeps the paper learning rates, enables the MCMC position-noise term, swaps the legacy split/clone densifier for the paper’s `relocate dead -> append +5%` schedule, and uses the paper-style `L1` scale/opacity regularizers (`0.01`).
+  - Extends densification to `25000` iterations and lifts the cap to the paper’s bicycle setting (`5900000`), so 5k-step runs can grow well past the old default cap.
+  - Uses the GPU prefix-sum/CDF sampler in `src/scan/prefix_sum.py` instead of the old host-side relocation fallback.
 
 ## Host Integration
 - Profile resolution lives in `src/training/profiles.py`.

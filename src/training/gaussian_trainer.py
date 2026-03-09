@@ -12,72 +12,8 @@ import slangpy as spy
 from ..common import SHADER_ROOT
 from ..filter import SeparableGaussianBlur
 from ..renderer import Camera, GaussianRenderer
+from ..scan import GPUPrefixSum
 from ..scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
-
-_OPACITY_EPS = 1e-6
-
-
-def _opacity_from_raw_np(raw_opacity: np.ndarray) -> np.ndarray:
-    raw = np.asarray(raw_opacity, dtype=np.float32)
-    return (1.0 / (1.0 + np.exp(-np.clip(raw, -80.0, 80.0)))).astype(np.float32, copy=False)
-
-
-def _raw_opacity_from_alpha_np(opacity: np.ndarray) -> np.ndarray:
-    alpha = np.clip(np.asarray(opacity, dtype=np.float32), _OPACITY_EPS, 1.0 - _OPACITY_EPS)
-    return (np.log(alpha) - np.log1p(-alpha)).astype(np.float32, copy=False)
-
-
-def _clamp_scale_anisotropy_np(scales: np.ndarray, min_scale: float, max_scale: float, max_anisotropy: float) -> np.ndarray:
-    clamped = np.clip(np.asarray(scales, dtype=np.float32), float(min_scale), float(max_scale))
-    axis_max = np.max(clamped, axis=1, keepdims=True)
-    return np.maximum(clamped, axis_max / max(float(max_anisotropy), 1.0)).astype(np.float32, copy=False)
-
-
-def _normalize_quaternion_np(quaternions: np.ndarray) -> np.ndarray:
-    q = np.asarray(quaternions, dtype=np.float32)
-    norm = np.linalg.norm(q, axis=1, keepdims=True)
-    safe = np.where(norm > 1e-12, q / norm, np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32))
-    return safe.astype(np.float32, copy=False)
-
-
-def _rotate_by_quaternion_np(vectors: np.ndarray, quaternions: np.ndarray) -> np.ndarray:
-    v = np.asarray(vectors, dtype=np.float32)
-    q = _normalize_quaternion_np(quaternions)
-    q_xyz = q[:, 1:4]
-    uv = np.cross(q_xyz, v)
-    uuv = np.cross(q_xyz, uv)
-    return (v + 2.0 * (q[:, :1] * uv + uuv)).astype(np.float32, copy=False)
-
-
-def _relocated_opacity_scale_np(
-    opacity: np.ndarray,
-    scales: np.ndarray,
-    family_sizes: np.ndarray,
-    *,
-    min_opacity: float,
-    max_opacity: float,
-    min_scale: float,
-    max_scale: float,
-    max_anisotropy: float,
-) -> tuple[np.ndarray, np.ndarray]:
-    old_alpha = np.clip(np.asarray(opacity, dtype=np.float64), _OPACITY_EPS, 1.0 - _OPACITY_EPS)
-    old_scales = np.asarray(scales, dtype=np.float64)
-    family = np.maximum(np.asarray(family_sizes, dtype=np.int32), 1)
-    new_alpha = 1.0 - np.power(1.0 - old_alpha, 1.0 / family.astype(np.float64))
-    coeff = np.ones_like(old_alpha, dtype=np.float64)
-    for idx, family_size in enumerate(family.tolist()):
-        if family_size <= 1:
-            continue
-        denom = 0.0
-        alpha_i = float(new_alpha[idx])
-        for subset_size in range(1, family_size + 1):
-            for k in range(subset_size):
-                denom += math.comb(subset_size - 1, k) * (((-1.0) ** k) / math.sqrt(float(k + 1))) * (alpha_i ** float(k + 1))
-        coeff[idx] = old_alpha[idx] / max(denom, np.finfo(np.float64).eps)
-    relocated_alpha = np.clip(new_alpha.astype(np.float32), max(float(min_opacity), _OPACITY_EPS), min(float(max_opacity), 1.0 - _OPACITY_EPS))
-    relocated_scale = _clamp_scale_anisotropy_np(old_scales * coeff[:, None], min_scale, max_scale, max_anisotropy)
-    return relocated_alpha, relocated_scale
-
 
 @dataclass(slots=True)
 class _SceneCountProxy:
@@ -114,8 +50,8 @@ class StabilityHyperParams:
 
 @dataclass(slots=True)
 class TrainingHyperParams:
-    background: tuple[float, float, float] = (0.0, 0.0, 0.0); near: float = 0.1; far: float = 120.0; scale_l2_weight: float = 1e-4; opacity_reg_weight: float = 1e-3; mcmc_position_noise_enabled: bool = True
-    mcmc_position_noise_scale: float = 5e5; mcmc_opacity_gate_sharpness: float = 100.0; mcmc_opacity_gate_center: float = 0.995; low_quality_reinit_enabled: bool = False; lambda_dssim: float = 0.2
+    background: tuple[float, float, float] = (0.0, 0.0, 0.0); near: float = 0.1; far: float = 120.0; scale_l2_weight: float = 1e-4; scale_abs_reg_weight: float = 0.0; opacity_reg_weight: float = 1e-3; mcmc_position_noise_enabled: bool = True
+    mcmc_position_noise_scale: float = 5e5; mcmc_opacity_gate_sharpness: float = 100.0; mcmc_opacity_gate_center: float = 0.995; mcmc_densify_enabled: bool = False; low_quality_reinit_enabled: bool = False; lambda_dssim: float = 0.2
     max_gaussians: int = 300000
     densify_from_iter: int = 500; densify_until_iter: int = 15000; densification_interval: int = 100; densify_grad_threshold: float = 1.5e-4
     percent_dense: float = 0.01; prune_min_opacity: float = 0.005; screen_size_prune_threshold: float = 20.0; world_size_prune_ratio: float = 0.1
@@ -191,6 +127,13 @@ class GaussianTrainer:
         "compact_scene": "csCompactScene",
         "append_regenerated_splats": "csAppendRegeneratedSplats",
         "regenerate_scene": "csRegenerateScene",
+        "prepare_mcmc_relocation": "csPrepareMCMCRelocationWeights",
+        "prepare_mcmc_append": "csPrepareMCMCAppendWeights",
+        "compact_dead_indices": "csCompactDeadIndices",
+        "sample_mcmc_sources": "csSampleMCMCSources",
+        "update_mcmc_sources": "csUpdateMCMCSources",
+        "apply_mcmc_relocation": "csApplyMCMCRelocationSamples",
+        "append_mcmc_samples": "csAppendMCMCSamples",
         "reset_opacity": "csResetOpacity",
         "init_from_pointcloud": "csInitializeGaussiansFromPointCloud",
     }
@@ -200,6 +143,7 @@ class GaussianTrainer:
     _pixel_thread_count = lambda self: spy.uint3(self.renderer.width, self.renderer.height, 1)
     _scene_rw_vars = lambda self: self._buffer_vars(self._SCENE_RW_SHADER_VARS, self.renderer.scene_buffers)
     _scene_grad_vars = lambda self: self._buffer_vars(self._SCENE_GRAD_SHADER_VARS, self.renderer.work_buffers)
+    _scene_state_vars = lambda self, source: {**self._buffer_vars(self._SCENE_RW_SHADER_VARS, source), **self._buffer_vars(self._ADAM_SHADER_VARS, source), **self._buffer_vars(self._DENSITY_STAT_SHADER_VARS, source)}
     _frame = lambda self, frame_index: self.frames[int(np.clip(frame_index, 0, len(self.frames) - 1))]
     _adam_shader_vars = lambda self: self._buffer_vars(self._ADAM_SHADER_VARS, self._buffers)
     update_hyperparams = lambda self, adam_hparams, stability_hparams, training_hparams: setattr(self, "adam", adam_hparams) or setattr(self, "stability", stability_hparams) or setattr(self, "training", training_hparams)
@@ -213,159 +157,39 @@ class GaussianTrainer:
     _read_loss_metrics = lambda self: (lambda loss_values, signal_values: (float(loss_values[self._LOSS_SLOT_TOTAL]) if loss_values.size > self._LOSS_SLOT_TOTAL else float("nan"), float(loss_values[self._LOSS_SLOT_MSE]) if loss_values.size > self._LOSS_SLOT_MSE else float("nan"), float(loss_values[self._LOSS_SLOT_SSIM]) if loss_values.size > self._LOSS_SLOT_SSIM else float("nan"), float(signal_values.view(np.float32)[0]) if signal_values.size else float("nan")))(np.frombuffer(self._buffers["loss"].to_numpy().tobytes(), dtype=np.float32), np.frombuffer(self._buffers["signal_max"].to_numpy().tobytes(), dtype=np.uint32))
     _effective_max_gaussians = lambda self: max(int(self.training.max_gaussians), int(self._scene_count)) if int(self.training.max_gaussians) > 0 else 2147483647
 
-    def _read_array(self, buffer: spy.Buffer, dtype: np.dtype, count: int, width: int = 1) -> np.ndarray:
-        values = np.frombuffer(buffer.to_numpy().tobytes(), dtype=dtype)[: max(int(count), 0) * int(width)].copy()
-        return values if width == 1 else values.reshape(max(int(count), 0), int(width))
-
-    def _read_scene_state(self) -> dict[str, np.ndarray]:
-        count = max(int(self._scene_count), 0)
-        return {name: self._read_array(buffer, np.float32, count, 4) for name, buffer in self.renderer.scene_buffers.items()}
-
-    def _read_optimizer_state(self) -> dict[str, np.ndarray]:
-        count = max(int(self._scene_count), 0)
-        return {name: self._read_array(self._buffers[name], np.float32, count, 4) for name in self._ADAM_BUFFER_NAMES}
-
-    def _read_density_state(self) -> dict[str, np.ndarray]:
-        count = max(int(self._scene_count), 0)
-        return {
-            "grad_ema": self._read_array(self._buffers["grad_ema"], np.float32, count),
-            "grad_count": self._read_array(self._buffers["grad_count"], np.uint32, count),
-            "max_screen_radius": self._read_array(self._buffers["max_screen_radius"], np.float32, count),
-        }
-
-    def _zero_optimizer_state_indices(self, optimizer_state: dict[str, np.ndarray], density_state: dict[str, np.ndarray], indices: np.ndarray) -> None:
-        touched = np.unique(np.asarray(indices, dtype=np.int32))
-        if touched.size == 0:
-            return
-        for name in self._ADAM_BUFFER_NAMES:
-            optimizer_state[name][touched] = 0.0
-        density_state["grad_ema"][touched] = 0.0
-        density_state["grad_count"][touched] = 0
-        density_state["max_screen_radius"][touched] = 0.0
-
-    def _sample_alive_indices(self, alive_indices: np.ndarray, opacity: np.ndarray, sample_count: int) -> np.ndarray:
-        if sample_count <= 0 or alive_indices.size == 0:
-            return np.zeros((0,), dtype=np.int32)
-        weights = np.clip(np.asarray(opacity[alive_indices], dtype=np.float64), 0.0, None)
-        probs = None if float(weights.sum()) <= 0.0 else weights / float(weights.sum())
-        return np.asarray(self._frame_rng.choice(alive_indices, size=int(sample_count), replace=True, p=probs), dtype=np.int32)
-
-    def _apply_relocation_samples(
-        self,
-        scene_state: dict[str, np.ndarray],
-        optimizer_state: dict[str, np.ndarray],
-        density_state: dict[str, np.ndarray],
-        source_indices: np.ndarray,
-        target_indices: np.ndarray,
-        *,
-        append: bool,
-    ) -> None:
-        if source_indices.size == 0 or (not append and target_indices.size == 0):
-            return
-        count = int(scene_state["positions"].shape[0])
-        source_indices = np.asarray(source_indices, dtype=np.int32)
-        target_indices = np.asarray(target_indices, dtype=np.int32)
-        source_counts = np.bincount(source_indices, minlength=count).astype(np.int32, copy=False)
-        touched_sources = np.flatnonzero(source_counts > 0).astype(np.int32, copy=False)
-        family_sizes = source_counts[touched_sources] + 1
-        opacity = _opacity_from_raw_np(scene_state["color_alpha"][:, 3])
-        relocated_alpha, relocated_scale = _relocated_opacity_scale_np(
-            opacity[touched_sources],
-            scene_state["scales"][touched_sources, :3],
-            family_sizes,
-            min_opacity=max(float(self.training.prune_min_opacity), float(self.stability.min_opacity)),
-            max_opacity=float(self.stability.max_opacity),
-            min_scale=float(self.stability.min_scale),
-            max_scale=float(self.stability.max_scale),
-            max_anisotropy=float(self.stability.max_anisotropy),
-        )
-        source_raw = _raw_opacity_from_alpha_np(relocated_alpha)
-        scene_state["scales"][touched_sources, :3] = relocated_scale
-        scene_state["color_alpha"][touched_sources, 3] = source_raw
-        copy_positions = scene_state["positions"][source_indices].copy()
-        copy_scales = scene_state["scales"][source_indices].copy()
-        copy_rotations = scene_state["rotations"][source_indices].copy()
-        copy_color_alpha = scene_state["color_alpha"][source_indices].copy()
-        source_lookup = np.zeros((count,), dtype=np.int32)
-        source_lookup[touched_sources] = np.arange(touched_sources.size, dtype=np.int32)
-        copy_scales[:, :3] = relocated_scale[source_lookup[source_indices]]
-        copy_color_alpha[:, 3] = source_raw[source_lookup[source_indices]]
-        if append:
-            scene_state["positions"] = np.concatenate((scene_state["positions"], copy_positions), axis=0)
-            scene_state["scales"] = np.concatenate((scene_state["scales"], copy_scales), axis=0)
-            scene_state["rotations"] = np.concatenate((scene_state["rotations"], copy_rotations), axis=0)
-            scene_state["color_alpha"] = np.concatenate((scene_state["color_alpha"], copy_color_alpha), axis=0)
-            for name in self._ADAM_BUFFER_NAMES:
-                optimizer_state[name] = np.concatenate((optimizer_state[name], np.zeros((copy_positions.shape[0], 4), dtype=np.float32)), axis=0)
-            density_state["grad_ema"] = np.concatenate((density_state["grad_ema"], np.zeros((copy_positions.shape[0],), dtype=np.float32)), axis=0)
-            density_state["grad_count"] = np.concatenate((density_state["grad_count"], np.zeros((copy_positions.shape[0],), dtype=np.uint32)), axis=0)
-            density_state["max_screen_radius"] = np.concatenate((density_state["max_screen_radius"], np.zeros((copy_positions.shape[0],), dtype=np.float32)), axis=0)
-            self._zero_optimizer_state_indices(optimizer_state, density_state, touched_sources)
-            return
-        scene_state["positions"][target_indices] = copy_positions
-        scene_state["scales"][target_indices] = copy_scales
-        scene_state["rotations"][target_indices] = copy_rotations
-        scene_state["color_alpha"][target_indices] = copy_color_alpha
-        self._zero_optimizer_state_indices(optimizer_state, density_state, np.concatenate((touched_sources, target_indices)))
-
-    def _upload_scene_state(self, scene_state: dict[str, np.ndarray], optimizer_state: dict[str, np.ndarray], density_state: dict[str, np.ndarray]) -> None:
-        scene_count = int(scene_state["positions"].shape[0])
-        scene = GaussianScene(
-            positions=np.ascontiguousarray(scene_state["positions"][:, :3], dtype=np.float32),
-            scales=np.ascontiguousarray(scene_state["scales"][:, :3], dtype=np.float32),
-            rotations=np.ascontiguousarray(scene_state["rotations"], dtype=np.float32),
-            opacities=_opacity_from_raw_np(scene_state["color_alpha"][:, 3]),
-            colors=np.ascontiguousarray(scene_state["color_alpha"][:, :3], dtype=np.float32),
-            sh_coeffs=np.zeros((scene_count, 1, 3), dtype=np.float32),
-        )
-        self._scene_count = scene_count
-        self.scene.count = scene_count
-        self.renderer.set_scene(scene)
-        self._ensure_training_buffers(scene_count)
-        self._ensure_regen_buffers(scene_count)
-        for name in self._ADAM_BUFFER_NAMES:
-            self._buffers[name].copy_from_numpy(np.ascontiguousarray(optimizer_state[name], dtype=np.float32))
-        self._buffers["grad_ema"].copy_from_numpy(np.ascontiguousarray(density_state["grad_ema"], dtype=np.float32))
-        self._buffers["grad_count"].copy_from_numpy(np.ascontiguousarray(density_state["grad_count"], dtype=np.uint32))
-        self._buffers["max_screen_radius"].copy_from_numpy(np.ascontiguousarray(density_state["max_screen_radius"], dtype=np.float32))
-        self.renderer.set_debug_grad_norm_buffer(self._buffers["grad_ema"])
-
     def _run_mcmc_densify(self) -> None:
         if self._scene_count <= 0:
             return
-        scene_state = self._read_scene_state()
-        optimizer_state = self._read_optimizer_state()
-        density_state = self._read_density_state()
-        opacity = _opacity_from_raw_np(scene_state["color_alpha"][:, 3])
-        prune_threshold = max(float(self.training.prune_min_opacity), float(self.stability.min_opacity))
-        dead_indices = np.flatnonzero(opacity <= prune_threshold).astype(np.int32, copy=False)
-        alive_indices = np.flatnonzero(opacity > prune_threshold).astype(np.int32, copy=False)
-        if dead_indices.size > 0 and alive_indices.size > 0:
-            self._apply_relocation_samples(
-                scene_state,
-                optimizer_state,
-                density_state,
-                self._sample_alive_indices(alive_indices, opacity, dead_indices.size),
-                dead_indices,
-                append=False,
-            )
-        current_count = int(scene_state["positions"].shape[0])
+        current_count = int(self._scene_count)
         target_count = min(int(self._effective_max_gaussians()), int(math.floor(1.05 * current_count)))
         add_count = max(target_count - current_count, 0)
+        self._ensure_regen_buffers(max(current_count + add_count, 1))
+        self._ensure_mcmc_buffers(current_count)
+        self._regen_buffers["output_count"].copy_from_numpy(np.array([current_count + add_count], dtype=np.uint32))
+        enc_relocate = self.device.create_command_encoder()
+        self._copy_main_state_to_regen(enc_relocate, current_count)
+        self._dispatch_prepare_mcmc_weights(enc_relocate, self._regen_buffers, append_mode=False)
+        self._dispatch_scan_float_recursive(enc_relocate, self._mcmc_buffers["weights"], self._mcmc_buffers["weight_prefix"], current_count)
+        self._dispatch_write_float_scan_total(enc_relocate, self._mcmc_buffers["weight_prefix"], current_count)
+        self._dispatch_scan_uint_recursive(enc_relocate, self._mcmc_buffers["flags"], self._mcmc_buffers["flag_prefix"], current_count)
+        self._dispatch_compact_dead_indices(enc_relocate)
+        self._dispatch_sample_mcmc_sources(enc_relocate)
+        self._dispatch_update_mcmc_sources(enc_relocate)
+        self._dispatch_apply_mcmc_relocation(enc_relocate)
+        self.device.submit_command_buffer(enc_relocate.finish())
+        self.device.wait()
         if add_count > 0:
-            opacity = _opacity_from_raw_np(scene_state["color_alpha"][:, 3])
-            alive_indices = np.flatnonzero(opacity > 0.0).astype(np.int32, copy=False)
-            if alive_indices.size > 0:
-                self._apply_relocation_samples(
-                    scene_state,
-                    optimizer_state,
-                    density_state,
-                    self._sample_alive_indices(alive_indices, opacity, add_count),
-                    np.zeros((0,), dtype=np.int32),
-                    append=True,
-                )
-        if int(scene_state["positions"].shape[0]) != int(self._scene_count) or dead_indices.size > 0:
-            self._upload_scene_state(scene_state, optimizer_state, density_state)
+            self._mcmc_buffers["sample_count"].copy_from_numpy(np.array([add_count], dtype=np.uint32))
+            enc_append = self.device.create_command_encoder()
+            self._dispatch_prepare_mcmc_weights(enc_append, self._regen_buffers, append_mode=True)
+            self._dispatch_scan_float_recursive(enc_append, self._mcmc_buffers["weights"], self._mcmc_buffers["weight_prefix"], current_count)
+            self._dispatch_write_float_scan_total(enc_append, self._mcmc_buffers["weight_prefix"], current_count)
+            self._dispatch_sample_mcmc_sources(enc_append)
+            self._dispatch_update_mcmc_sources(enc_append)
+            self._dispatch_append_mcmc_samples(enc_append, current_count)
+            self.device.submit_command_buffer(enc_append.finish())
+            self.device.wait()
+        self._apply_regenerated_scene(max(current_count + add_count, 1))
 
     def __init__(
         self,
@@ -404,11 +228,14 @@ class GaussianTrainer:
         self._frame_ssim = np.full((len(self.frames),), np.nan, dtype=np.float32)
         self._shader_path = Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang")
         self._kernels = {name: self.device.create_compute_kernel(self.device.load_program(str(self._shader_path), [entry])) for name, entry in self._KERNEL_ENTRIES.items()}
+        self._prefix_sum = GPUPrefixSum(self.device)
         self._buffers: dict[str, spy.Buffer] = {}
         self._regen_buffers: dict[str, spy.Buffer] = {}
         self._hist_buffers: dict[str, spy.Buffer] = {}
+        self._mcmc_buffers: dict[str, spy.Buffer] = {}
         self._splat_capacity = 0
         self._regen_capacity = 0
+        self._mcmc_capacity = 0
         self._scale_reg_reference = float(max(scale_reg_reference, 1e-8)) if scale_reg_reference is not None else self._estimate_scale_reg_reference(scene)
         self._scene_extent = self._estimate_scene_extent(scene)
         self._init_point_positions_buffer: spy.Buffer | None = None
@@ -472,6 +299,23 @@ class GaussianTrainer:
             return
         usage = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
         self._hist_buffers["scale_histogram"] = self.device.create_buffer(size=self._SCALE_HISTOGRAM_BIN_COUNT * 4, usage=usage)
+
+    def _ensure_mcmc_buffers(self, splat_count: int) -> None:
+        count = max(int(splat_count), 1)
+        if self._mcmc_buffers and count <= self._mcmc_capacity:
+            return
+        usage = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
+        new_capacity = max(count, max(self._mcmc_capacity, 1) + max(self._mcmc_capacity, 1) // 2)
+        self._mcmc_buffers["weights"] = self.device.create_buffer(size=new_capacity * 4, usage=usage)
+        self._mcmc_buffers["weight_prefix"] = self.device.create_buffer(size=new_capacity * 4, usage=usage)
+        self._mcmc_buffers["flags"] = self.device.create_buffer(size=new_capacity * 4, usage=usage)
+        self._mcmc_buffers["flag_prefix"] = self.device.create_buffer(size=new_capacity * 4, usage=usage)
+        self._mcmc_buffers["dead_indices"] = self.device.create_buffer(size=new_capacity * 4, usage=usage)
+        self._mcmc_buffers["sample_sources"] = self.device.create_buffer(size=new_capacity * 4, usage=usage)
+        self._mcmc_buffers["family_counts"] = self.device.create_buffer(size=new_capacity * 4, usage=usage)
+        self._mcmc_buffers["weight_total"] = self.device.create_buffer(size=4, usage=usage)
+        self._mcmc_buffers["sample_count"] = self.device.create_buffer(size=4, usage=usage)
+        self._mcmc_capacity = new_capacity
 
     def _estimate_scale_reg_reference(self, scene: GaussianScene | None) -> float:
         if scene is None or scene.count <= 0:
@@ -651,6 +495,7 @@ class GaussianTrainer:
             "g_InvPixelCount": 1.0 / float(max(self.renderer.width * self.renderer.height, 1)),
             "g_LossGradClip": float(self.stability.loss_grad_clip),
             "g_ScaleL2Weight": float(max(self.training.scale_l2_weight, 0.0)),
+            "g_ScaleAbsRegWeight": float(max(self.training.scale_abs_reg_weight, 0.0)),
             "g_OpacityRegWeight": float(max(self.training.opacity_reg_weight, 0.0)),
             "g_ScaleRegReference": float(max(self._scale_reg_reference, 1e-8)),
             "g_LambdaDSSIM": float(np.clip(self.training.lambda_dssim, 0.0, 1.0)),
@@ -752,6 +597,28 @@ class GaussianTrainer:
     def _histogram_vars(self) -> dict[str, object]:
         return {"g_ScaleHistogram": self._hist_buffers["scale_histogram"], "g_Hist": {"binCount": int(self._SCALE_HISTOGRAM_BIN_COUNT), "minLog10": float(self._SCALE_HISTOGRAM_MIN_LOG10), "maxLog10": float(self._SCALE_HISTOGRAM_MAX_LOG10)}}
 
+    def _dispatch_clear_uint_buffer(self, encoder: spy.CommandEncoder, buffer: spy.Buffer, element_count: int, clear_value: int = 0) -> None:
+        self._prefix_sum.clear_u32(encoder, buffer, element_count, clear_value)
+
+    def _dispatch_scan_float_recursive(self, encoder: spy.CommandEncoder, input_buffer: spy.Buffer, output_buffer: spy.Buffer, element_count: int, level: int = 0) -> None:
+        self._prefix_sum.scan_float(encoder, input_buffer, output_buffer, element_count, None, level)
+
+    def _dispatch_scan_uint_recursive(self, encoder: spy.CommandEncoder, input_buffer: spy.Buffer, output_buffer: spy.Buffer, element_count: int, level: int = 0) -> None:
+        self._prefix_sum.scan_uint(encoder, input_buffer, output_buffer, element_count, level)
+
+    def _dispatch_write_float_scan_total(self, encoder: spy.CommandEncoder, prefix_buffer: spy.Buffer, element_count: int) -> None:
+        self._prefix_sum.write_float_total(encoder, prefix_buffer, self._mcmc_buffers["weight_total"], element_count)
+
+    def _copy_main_state_to_regen(self, encoder: spy.CommandEncoder, count: int) -> None:
+        copy_bytes_scene = max(int(count), 0) * 16
+        copy_bytes_stat = max(int(count), 0) * 4
+        for name in self._SCENE_RW_SHADER_VARS:
+            encoder.copy_buffer(self._regen_buffers[name], 0, self.renderer.scene_buffers[name], 0, copy_bytes_scene)
+        for name in self._ADAM_BUFFER_NAMES:
+            encoder.copy_buffer(self._regen_buffers[name], 0, self._buffers[name], 0, copy_bytes_scene)
+        for name in self._DENSITY_STAT_SHADER_VARS:
+            encoder.copy_buffer(self._regen_buffers[name], 0, self._buffers[name], 0, copy_bytes_stat)
+
     def _dispatch_update_densification_stats(self, encoder: spy.CommandEncoder) -> None:
         self._dispatch(
             "update_densification_stats",
@@ -820,6 +687,99 @@ class GaussianTrainer:
                 "g_OutputCount": self._regen_buffers["output_count"],
                 "g_CompactedCount": int(max(compacted_count, 0)),
                 **self._common_vars(force_split_all=force_split_all),
+            },
+        )
+
+    def _dispatch_prepare_mcmc_weights(self, encoder: spy.CommandEncoder, scene_buffers: dict[str, spy.Buffer], *, append_mode: bool) -> None:
+        kernel = "prepare_mcmc_append" if append_mode else "prepare_mcmc_relocation"
+        self._dispatch(
+            kernel,
+            encoder,
+            spy.uint3(max(int(self._scene_count), 1), 1, 1),
+            {
+                **self._buffer_vars(self._SCENE_RW_SHADER_VARS, scene_buffers),
+                "g_MCMCWeights": self._mcmc_buffers["weights"],
+                "g_MCMCFlags": self._mcmc_buffers["flags"],
+                "g_SplatCount": int(self._scene_count),
+                **self._common_vars(),
+            },
+        )
+
+    def _dispatch_compact_dead_indices(self, encoder: spy.CommandEncoder) -> None:
+        self._mcmc_buffers["sample_count"].copy_from_numpy(np.array([0], dtype=np.uint32))
+        self._dispatch(
+            "compact_dead_indices",
+            encoder,
+            spy.uint3(max(int(self._scene_count), 1), 1, 1),
+            {
+                "g_MCMCFlags": self._mcmc_buffers["flags"],
+                "g_MCMCFlagPrefix": self._mcmc_buffers["flag_prefix"],
+                "g_MCMCDeadIndices": self._mcmc_buffers["dead_indices"],
+                "g_MCMCSampleCount": self._mcmc_buffers["sample_count"],
+                "g_ScanElementCount": int(self._scene_count),
+            },
+        )
+
+    def _dispatch_sample_mcmc_sources(self, encoder: spy.CommandEncoder, sample_count: int | None = None) -> None:
+        if sample_count is not None:
+            self._mcmc_buffers["sample_count"].copy_from_numpy(np.array([max(int(sample_count), 0)], dtype=np.uint32))
+        self._dispatch_clear_uint_buffer(encoder, self._mcmc_buffers["family_counts"], self._scene_count, 0)
+        self._dispatch_clear_uint_buffer(encoder, self._mcmc_buffers["sample_sources"], self._scene_count, 0xFFFFFFFF)
+        self._dispatch(
+            "sample_mcmc_sources",
+            encoder,
+            spy.uint3(max(int(self._scene_count), 1), 1, 1),
+            {
+                "g_MCMCWeights": self._mcmc_buffers["weights"],
+                "g_MCMCWeightPrefix": self._mcmc_buffers["weight_prefix"],
+                "g_MCMCWeightTotal": self._mcmc_buffers["weight_total"],
+                "g_MCMCSampleSources": self._mcmc_buffers["sample_sources"],
+                "g_MCMCFamilyCounts": self._mcmc_buffers["family_counts"],
+                "g_MCMCSampleCount": self._mcmc_buffers["sample_count"],
+                "g_SplatCount": int(self._scene_count),
+                "g_MCMCSampleSeed": np.uint32((int(self._seed) ^ ((int(self.state.step) + 1) * 0x9E3779B9)) & 0xFFFFFFFF),
+            },
+        )
+
+    def _dispatch_update_mcmc_sources(self, encoder: spy.CommandEncoder) -> None:
+        self._dispatch(
+            "update_mcmc_sources",
+            encoder,
+            spy.uint3(max(int(self._scene_count), 1), 1, 1),
+            {
+                **self._scene_state_vars(self._regen_buffers),
+                "g_MCMCFamilyCounts": self._mcmc_buffers["family_counts"],
+                "g_SplatCount": int(self._scene_count),
+                **self._common_vars(),
+            },
+        )
+
+    def _dispatch_apply_mcmc_relocation(self, encoder: spy.CommandEncoder) -> None:
+        self._dispatch(
+            "apply_mcmc_relocation",
+            encoder,
+            spy.uint3(max(int(self._scene_count), 1), 1, 1),
+            {
+                **self._scene_state_vars(self._regen_buffers),
+                "g_MCMCDeadIndices": self._mcmc_buffers["dead_indices"],
+                "g_MCMCSampleSources": self._mcmc_buffers["sample_sources"],
+                "g_MCMCSampleCount": self._mcmc_buffers["sample_count"],
+                "g_SplatCount": int(self._scene_count),
+            },
+        )
+
+    def _dispatch_append_mcmc_samples(self, encoder: spy.CommandEncoder, append_base_index: int) -> None:
+        self._dispatch(
+            "append_mcmc_samples",
+            encoder,
+            spy.uint3(max(int(self._scene_count), 1), 1, 1),
+            {
+                **self._scene_state_vars(self._regen_buffers),
+                "g_MCMCSampleSources": self._mcmc_buffers["sample_sources"],
+                "g_MCMCSampleCount": self._mcmc_buffers["sample_count"],
+                "g_MCMCAppendBaseIndex": int(max(append_base_index, 0)),
+                "g_SplatCount": int(self._scene_count),
+                **self._common_vars(),
             },
         )
 
@@ -932,7 +892,7 @@ class GaussianTrainer:
             step_index = int(self.state.step + 1)
             run_densify = self._should_densify(step_index)
             run_reset_opacity = self._should_reset_opacity(step_index)
-            use_mcmc_regen = run_densify and bool(self.training.low_quality_reinit_enabled)
+            use_mcmc_regen = run_densify and bool(self.training.mcmc_densify_enabled or self.training.low_quality_reinit_enabled)
             enc_opt = self.device.create_command_encoder()
             self._dispatch_adam_step(enc_opt)
             self._dispatch_update_densification_stats(enc_opt)
