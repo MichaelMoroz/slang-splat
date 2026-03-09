@@ -84,7 +84,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - Shader: `shaders/renderer/gaussian_training_stage.slang`.
 - Kernels:
   - `csClearLossAndGradTex`: clears `g_OutputGrad` and scalar loss buffer.
-  - `csComputeMSELossGrad`: computes RGB MSE with autodiff, writes output gradients, and reduces the target signal max used for PSNR.
+  - `csComputeL1LossGrad`: computes RGB L1 loss and RGB MSE, writes `g_OutputGrad`, and stores the scalar metrics used by the host.
   - `csAdamStepFused`: one-thread-per-splat fused ADAM update over position, scale, quaternion, color, and opacity.
 - Stability measures in `csAdamStepFused` include:
   - finite-value sanitization,

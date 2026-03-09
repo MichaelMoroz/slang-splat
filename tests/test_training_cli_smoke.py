@@ -41,4 +41,4 @@ def test_train_cli_smoke():
     )
     assert result.returncode == 0, f"stdout:\\n{result.stdout}\\nstderr:\\n{result.stderr}"
     assert "step=" in result.stdout
-    assert "psnr=" in result.stdout
+    assert "mse=" in result.stdout

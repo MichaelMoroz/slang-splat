@@ -5,8 +5,8 @@ Description on completion: Moved reusable shader logic into `shaders/utility` (`
 
 2) Nuke all old densification as well as MCMC code, including the SSIM loss, keep basic L1 loss fused in the forwardbackward kernel, only basic optimization from initialization should be active. This includes the UI, python bindings, tests, and kernels related to densification, pruning, etc. That includes the PSNR regression tests.
 Test criteria: all except deleted ones.
-STATUS: Not done
-Description on completion: none
+STATUS: Done
+Description on completion: Removed densification, pruning, MCMC, DSSIM/SSIM, PSNR regression, and bicycle benchmark code from the active training path across shaders, Python bindings, UI, and tests. The trainer now does fixed-count COLMAP point initialization with nearest-neighbor scales, fused L1 loss gradient, raster backward replay, and fused ADAM updates with scale/opacity regularization. Updated docs to match the simplified pipeline and verified with `pytest tests/test_app_shared.py tests/test_viewer_presenter.py tests/test_training_cli_smoke.py tests/test_training_kernels.py tests/test_renderer_pipeline.py`.
 
 3) For `optimizer` *all the trainable stuff* should be packed in a single float buffer (param major [param_id * SPLAT_COUNT + splat_id]), so that the optimizer will work on any kind of params. The optimizer will also take an array of LR's for each param_id.  This means only 4-5 buffers instead of 40 or however many we have now. Epsilon in adam is not a runtime parameter!
 Test criteria: create a basic optimization problem test, like a test function, use slang autodiff to get gradients which we will pass into the optimizer module. Check for convergence. (test shaders should be in a `tests` folder)

@@ -3,14 +3,14 @@
 `src/scan/prefix_sum.py` provides a reusable GPU inclusive-scan helper for `float` and `uint` buffers.
 
 ## Purpose
-- The trainer uses it to build the opacity CDF and compact dead-splat indices for the MCMC densification path.
-- Keeping it outside the trainer avoids duplicating scan code inside unrelated shaders and gives the scan path its own test surface.
+- Prefix sum remains a standalone utility for generic GPU compaction and accumulation tasks.
+- The current fixed-count training path does not depend on it, which keeps training dispatch simpler and lets the scan code evolve independently.
 
 ## Implementation
 - Shader kernels live in `shaders/utility/prefix_sum/prefix_sum.slang`.
 - The implementation uses a hierarchical block scan with `256` threads per block.
 - Each level scans block-local prefixes, writes one block-sum buffer, recursively scans that block-sum buffer, then adds the scanned block offsets back into the lower level.
-- `GPUPrefixSum.scan_float(...)` can also write the final total sum into a separate one-element buffer, which the MCMC sampler uses as the roulette-wheel normalization constant.
+- `GPUPrefixSum.scan_float(...)` can also write the final total sum into a separate one-element buffer for callers that need both prefixes and the overall reduction.
 
 ## Tests
 - `tests/test_prefix_sum.py` covers:

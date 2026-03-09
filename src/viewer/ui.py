@@ -50,11 +50,6 @@ GROUP_SPECS = {
         ControlSpec("seed", "slider_int", "Shuffle Seed", {"value": 1234, "min": 0, "max": 1000000}),
         ControlSpec("init_opacity", "input_float", "Init Opacity", {"value": 0.5, "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
     ),
-    "Train Schedule": (
-        ControlSpec("densify_from_iter", "slider_int", "Densify From", {"value": 500, "min": 0, "max": 100000, "flags": spy.ui.SliderFlags.logarithmic}),
-        ControlSpec("densify_until_iter", "slider_int", "Densify Until", {"value": 25000, "min": 0, "max": 1000000, "flags": spy.ui.SliderFlags.logarithmic}),
-        ControlSpec("densification_interval", "slider_int", "Densify Every", {"value": 100, "min": 1, "max": 100000, "flags": spy.ui.SliderFlags.logarithmic}),
-    ),
     "Train Optimizer": (
         ControlSpec("lr_base", "input_float", "Base LR", {"value": 1e-3, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
         ControlSpec("lr_pos_mul", "input_float", "LR Mul Position", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
@@ -65,9 +60,9 @@ GROUP_SPECS = {
         ControlSpec("beta1", "input_float", "Beta1", {"value": 0.9, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
         ControlSpec("beta2", "input_float", "Beta2", {"value": 0.999, "step": 1e-4, "step_fast": 1e-3, "format": "%.6f"}),
         ControlSpec("eps", "input_float", "Adam Eps", {"value": 1e-8, "step": 1e-9, "step_fast": 1e-8, "format": "%.10f"}),
+        ControlSpec("scale_l2", "input_float", "Scale Log Reg", {"value": 0.0, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
         ControlSpec("scale_abs_reg", "input_float", "Scale Abs Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
         ControlSpec("opacity_reg", "input_float", "Opacity Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
-        ControlSpec("lambda_dssim", "input_float", "Lambda DSSIM", {"value": 0.2, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
         ControlSpec("max_anisotropy", "input_float", "Max Anisotropy", {"value": 10.0, "step": 0.1, "step_fast": 0.5, "format": "%.6f"}),
         ControlSpec("grad_clip", "input_float", "Grad Clip", {"value": 10.0, "step": 0.1, "step_fast": 1.0, "format": "%.4f"}),
         ControlSpec("grad_norm_clip", "input_float", "Grad Norm Clip", {"value": 10.0, "step": 0.1, "step_fast": 1.0, "format": "%.4f"}),
@@ -81,15 +76,6 @@ GROUP_SPECS = {
         ControlSpec("position_abs_max", "input_float", "Pos Abs Max", {"value": 1e4, "step": 10.0, "step_fast": 100.0, "format": "%.3f"}),
         ControlSpec("train_near", "input_float", "Train Near", {"value": 0.1, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
         ControlSpec("train_far", "input_float", "Train Far", {"value": 120.0, "step": 1.0, "step_fast": 10.0, "format": "%.3f"}),
-    ),
-    "Train MCMC": (
-        ControlSpec("mcmc_densify_enabled", "checkbox", "MCMC Densify", {"value": True}),
-        ControlSpec("mcmc_pos_noise_enabled", "checkbox", "MCMC Pos Noise", {"value": True}),
-        ControlSpec("mcmc_growth_ratio", "input_float", "Growth Ratio", {"value": 0.05, "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
-        ControlSpec("mcmc_noise_lr_scale", "input_float", "Noise / Pos LR", {"value": 5e5, "step": 1e3, "step_fast": 1e4, "format": "%.3g"}),
-        ControlSpec("mcmc_opacity_k", "input_float", "Opacity Gate K", {"value": 100.0, "step": 0.5, "step_fast": 5.0, "format": "%.4f"}),
-        ControlSpec("mcmc_opacity_t", "input_float", "Opacity Gate T", {"value": 0.995, "step": 1e-4, "step_fast": 1e-3, "format": "%.6f"}),
-        ControlSpec("prune_min_opacity", "input_float", "Prune Min Opacity", {"value": 0.005, "step": 1e-4, "step_fast": 1e-3, "format": "%.6f"}),
     ),
 }
 
@@ -116,10 +102,8 @@ def build_ui(screen: object, app: object, renderer: object) -> ViewerUI:
         "scene_stats": "Splats: 0",
         "render_stats": "Generated: 0 | Written: 0",
         "training": "Training: idle",
-        "training_mcmc": "MCMC: n/a",
-        "training_ssim": "SSIM Avg: n/a",
-        "training_psnr": "PSNR Avg: n/a",
         "training_loss": "Loss Avg: n/a",
+        "training_mse": "MSE: n/a",
         "training_instability": "",
         "error": "",
     }.items():
@@ -140,13 +124,9 @@ def build_ui(screen: object, app: object, renderer: object) -> ViewerUI:
     _build_group(panel, "Camera", GROUP_SPECS["Camera"], controls)
     setup_group = _build_group(panel, "Train Setup", GROUP_SPECS["Train Setup"], controls)
     texts["setup_hint"] = spy.ui.Text(setup_group, "COLMAP init uses direct points + NN scales")
-    schedule_group = _build_group(panel, "Train Schedule", GROUP_SPECS["Train Schedule"], controls)
-    texts["schedule_hint"] = spy.ui.Text(schedule_group, "Iteration schedule for MCMC relocate/append")
     _build_group(panel, "Train Optimizer", GROUP_SPECS["Train Optimizer"], controls)
     stab_group = _build_group(panel, "Train Stability", GROUP_SPECS["Train Stability"], controls)
     texts["stability_hint"] = spy.ui.Text(stab_group, "Scale bounds and anisotropy are clamped after ADAM")
-    mcmc_group = _build_group(panel, "Train MCMC", GROUP_SPECS["Train MCMC"], controls)
-    texts["mcmc_hint"] = spy.ui.Text(mcmc_group, "Noise = position LR * (Noise / Pos LR) * opacity gate")
     params_group = spy.ui.Group(panel, "Render Params")
     for spec in (
         ControlSpec("radius_scale", "slider_float", "Radius Scale", {"value": float(renderer.radius_scale), "min": 0.5, "max": 4.0, "flags": spy.ui.SliderFlags.logarithmic, "format": "%.3g"}),

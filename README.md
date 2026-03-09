@@ -11,8 +11,8 @@ Runtime target is Vulkan.
 - GPU tile range build pass from sorted keys.
 - GPU compute rasterizer that blends tile-local sorted splats with `8x8` thread groups and `3x3` microtiles per thread (`24x24` effective tiles).
 - Fused raster forward/backward training path for per-splat gradients without per-pixel state buffers.
-- Fused one-thread-per-splat ADAM training kernel.
-- Reusable separable Gaussian blur utility for SSIM moment filtering and backward aggregation.
+- Fused one-thread-per-splat ADAM training kernel for a fixed gaussian count.
+- CPU COLMAP point-cloud initialization with nearest-neighbor scales.
 - CPU reference implementations in `reference_impls` plus tests for key algorithms.
 
 ## Setup
@@ -55,9 +55,9 @@ Viewer controls:
 ```powershell
 python cli.py train-colmap --colmap-root dataset/garden --images-subdir images_4 --iters 100 --max-gaussians 50000
 ```
-Use `--scale-l2` to control autodiff log-scale regularization around the init/reference scale (default `1e-3`).
+Use `--scale-l2` to control autodiff log-scale regularization around the init/reference scale (default `0.0`).
 Use `--max-anisotropy` to cap each gaussian's axis scale ratio during the ADAM update (default `10.0`).
-`train-colmap` also accepts `--training-profile`; `auto` selects a tuned `bicycle-images4-psnr` preset for `dataset/bicycle` + `images_4`, otherwise it keeps the legacy defaults.
+`train-colmap` also accepts `--training-profile`; `auto` currently resolves to `legacy`.
 
 Quick smoke configuration:
 ```powershell
@@ -78,15 +78,12 @@ Training notes:
 - Training target images are stored as `rgba8_unorm_srgb` textures (not float32) so shader reads use hardware sRGB decode while keeping GPU memory usage low.
 - COLMAP training initialization now uses the COLMAP point cloud directly on CPU: positions come from `points3D`, per-point scale is the nearest-neighbor spacing, rotation is identity, and opacity starts from the configured constant.
 - CLI and viewer scene initialization now honor the configured gaussian cap instead of always forcing the full COLMAP point cloud into the initial scene.
-- Default COLMAP initialization parameters are still derived from point-cloud nearest-neighbor spacing and requested gaussian count for reference-scale estimation and viewer defaults.
-- Default loss is `(1 - lambda_dssim) * L1 + lambda_dssim * DSSIM`, with DSSIM driven by Gaussian-window SSIM moments on the GPU.
-- GPU scene buffers store opacity as a raw sigmoid parameter; rasterization, pruning, and opacity reset convert it through the same sigmoid/logit helpers so Slang autodiff differentiates through opacity directly.
-- Reported training metrics include total loss, rolling average loss, per-step `last_psnr`, and `avg_psnr` computed from the latest PSNR stored for each training frame slot.
-- `last_mse` and PSNR remain plain RGB MSE metrics even though the optimization loss is mixed photometric.
+- The active trainer keeps a fixed gaussian count after initialization; there is no densification, pruning, opacity reset schedule, MCMC exploration term, or SSIM loss path.
+- The training loss is direct RGB L1 with optional scale and opacity regularization accumulated in the fused ADAM kernel.
+- GPU scene buffers store opacity as a raw sigmoid parameter so rasterization and optimization differentiate through effective alpha directly.
+- Reported training metrics are total loss, rolling average loss, and per-step `last_mse`.
 - Target Y-flip is enabled by default.
-- Default density control is now the paper-style MCMC path: visible-count stats are accumulated until `densify_until_iter`, then densification runs every `densification_interval` after `densify_from_iter` as `relocate dead -> append (mcmc_growth_ratio * count)`.
-- The viewer exposes only the live MCMC controls by default: growth ratio, LR-scaled position noise, opacity gate, and low-opacity death threshold. Legacy manual split/prune/reset controls remain available in code and tests but are no longer part of the default viewer workflow.
-- The default bicycle `/4` path uses the paper learning rates, MCMC densification, and `0.01` scale/opacity regularization.
+- The viewer exposes only fixed-count optimization controls: learning rates, regularization weights, and stability clamps.
 - Numerical reinforcement includes clipping, finite checks, and safe quaternion normalization.
 - Scale regularization uses an autodiff log-space penalty around the initialization/reference scale, so equal multiplicative scale deviations are treated more uniformly.
 - Scale anisotropy is clamped in the ADAM step with `max(scale) / min(scale) <= max_anisotropy`.
@@ -96,14 +93,6 @@ Training notes:
 ```powershell
 python -m pytest -q
 ```
-
-The repo intentionally keeps only the `dataset/garden/images_4` and `dataset/garden/sparse/0` subset visible in git for the COLMAP convergence regression. `tests/test_training_garden_regression.py` now runs a fixed-seed `1900`-step training pass with opacity reset forced every `1000` steps, and only passes when the final cached `avg_psnr` stays at or above `25 dB`; `last_psnr` remains a single-step diagnostic for the currently trained view.
-
-For the local bicycle benchmark target, use:
-```powershell
-python tools/benchmark_bicycle_training.py --steps 5000
-```
-The benchmark supports both the official `--eval`-style deterministic split (`every 8th` image in filename order reserved for test) and full-dataset training, estimates a constant background color from train-frame borders, and reports both full-dataset and eval-split `PSNR` against the `23.18 dB` target.
 
 ## Complexity Budget
 ```powershell

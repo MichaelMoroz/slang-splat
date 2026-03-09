@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
-import math
 from pathlib import Path
 
 import numpy as np
@@ -10,10 +9,9 @@ from PIL import Image
 import slangpy as spy
 
 from ..common import SHADER_ROOT
-from ..filter import SeparableGaussianBlur
 from ..renderer import Camera, GaussianRenderer
-from ..scan import GPUPrefixSum
 from ..scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
+
 
 @dataclass(slots=True)
 class _SceneCountProxy:
@@ -50,46 +48,21 @@ class StabilityHyperParams:
 
 @dataclass(slots=True)
 class TrainingHyperParams:
-    background: tuple[float, float, float] = (0.0, 0.0, 0.0); near: float = 0.1; far: float = 120.0; scale_l2_weight: float = 0.0; scale_abs_reg_weight: float = 0.01; opacity_reg_weight: float = 0.01; mcmc_position_noise_enabled: bool = True
-    mcmc_position_noise_scale: float = 5e5; mcmc_opacity_gate_sharpness: float = 100.0; mcmc_opacity_gate_center: float = 0.995; mcmc_densify_enabled: bool = True; mcmc_growth_ratio: float = 0.05; low_quality_reinit_enabled: bool = False; lambda_dssim: float = 0.2
-    max_gaussians: int = 5900000
-    densify_from_iter: int = 500; densify_until_iter: int = 25000; densification_interval: int = 100; densify_grad_threshold: float = 0.0
-    percent_dense: float = 0.01; prune_min_opacity: float = 0.005; screen_size_prune_threshold: float = 20.0; world_size_prune_ratio: float = 0.1
-    opacity_reset_interval: int = 0
+    background: tuple[float, float, float] = (0.0, 0.0, 0.0); near: float = 0.1; far: float = 120.0
+    scale_l2_weight: float = 0.0; scale_abs_reg_weight: float = 0.01; opacity_reg_weight: float = 0.01
+    max_gaussians: int = 5_900_000
 
 
 @dataclass(slots=True)
 class TrainingState:
     step: int = 0; last_loss: float = float("nan"); avg_loss: float = float("nan"); last_mse: float = float("nan")
-    last_ssim: float = float("nan"); avg_ssim: float = float("nan"); avg_signal_max: float = float("nan"); last_psnr: float = float("nan"); avg_psnr: float = float("nan"); last_frame_index: int = -1
-    last_instability: str = ""
+    last_frame_index: int = -1; last_instability: str = ""
 
 
 class GaussianTrainer:
     _LOSS_SLOT_TOTAL = 0
     _LOSS_SLOT_MSE = 1
-    _LOSS_SLOT_SSIM = 2
-    _PSNR_MSE_FLOOR = 1e-12
-    _SCALE_HISTOGRAM_BIN_COUNT = 34
-    _SCALE_HISTOGRAM_MIN_LOG10 = -5.0
-    _SCALE_HISTOGRAM_MAX_LOG10 = 1.0
     _ADAM_BUFFER_NAMES = ("adam_m_pos", "adam_v_pos", "adam_m_scale", "adam_v_scale", "adam_m_quat", "adam_v_quat", "adam_m_color_alpha", "adam_v_color_alpha")
-    _LOSS_TEXTURE_NAMES = (
-        "render_sq",
-        "target_sq",
-        "cross",
-        "mu_render",
-        "mu_target",
-        "blur_render_sq",
-        "blur_target_sq",
-        "blur_cross",
-        "grad_mu",
-        "grad_xx",
-        "grad_xy",
-        "grad_mu_blur",
-        "grad_xx_blur",
-        "grad_xy_blur",
-    )
     _ADAM_SHADER_VARS = {
         "adam_m_pos": "g_AdamMPos",
         "adam_v_pos": "g_AdamVPos",
@@ -100,42 +73,12 @@ class GaussianTrainer:
         "adam_m_color_alpha": "g_AdamMColorAlpha",
         "adam_v_color_alpha": "g_AdamVColorAlpha",
     }
-    _DENSITY_STAT_SHADER_VARS = {"grad_ema": "g_GradNormEMA", "grad_count": "g_GradCount", "max_screen_radius": "g_MaxScreenRadius"}
-    _REGEN_SCENE_SHADER_VARS = {"positions": "g_OutPositionsRW", "scales": "g_OutScalesRW", "rotations": "g_OutRotationsRW", "color_alpha": "g_OutColorAlphaRW"}
-    _REGEN_ADAM_SHADER_VARS = {
-        "adam_m_pos": "g_OutAdamMPos",
-        "adam_v_pos": "g_OutAdamVPos",
-        "adam_m_scale": "g_OutAdamMScale",
-        "adam_v_scale": "g_OutAdamVScale",
-        "adam_m_quat": "g_OutAdamMQuat",
-        "adam_v_quat": "g_OutAdamVQuat",
-        "adam_m_color_alpha": "g_OutAdamMColorAlpha",
-        "adam_v_color_alpha": "g_OutAdamVColorAlpha",
-    }
-    _REGEN_STAT_SHADER_VARS = {"grad_ema": "g_OutGradNormEMA", "grad_count": "g_OutGradCount", "max_screen_radius": "g_OutMaxScreenRadius"}
     _SCENE_RW_SHADER_VARS = {"positions": "g_PositionsRW", "scales": "g_ScalesRW", "rotations": "g_RotationsRW", "color_alpha": "g_ColorAlphaRW"}
     _SCENE_GRAD_SHADER_VARS = {"grad_positions": "g_GradPositions", "grad_scales": "g_GradScales", "grad_rotations": "g_GradRotations", "grad_color_alpha": "g_GradColorAlpha"}
     _KERNEL_ENTRIES = {
         "clear_loss_grad": "csClearLossAndGradTex",
-        "pack_ssim_aux": "csPackSSIMAux",
-        "loss_grad": "csComputeMixedLossGrad",
-        "compose_loss_grad": "csComposeMixedLossOutputGrad",
+        "loss_grad": "csComputeL1LossGrad",
         "adam_step": "csAdamStepFused",
-        "update_densification_stats": "csUpdateDensificationStats",
-        "clear_scale_histogram": "csClearScaleHistogram",
-        "accumulate_scale_histogram": "csAccumulateScaleHistogram",
-        "compact_scene": "csCompactScene",
-        "append_regenerated_splats": "csAppendRegeneratedSplats",
-        "regenerate_scene": "csRegenerateScene",
-        "prepare_mcmc_relocation": "csPrepareMCMCRelocationWeights",
-        "prepare_mcmc_append": "csPrepareMCMCAppendWeights",
-        "compact_dead_indices": "csCompactDeadIndices",
-        "sample_mcmc_sources": "csSampleMCMCSources",
-        "update_mcmc_sources": "csUpdateMCMCSources",
-        "apply_mcmc_relocation": "csApplyMCMCRelocationSamples",
-        "append_mcmc_samples": "csAppendMCMCSamples",
-        "reset_opacity": "csResetOpacity",
-        "init_from_pointcloud": "csInitializeGaussiansFromPointCloud",
     }
     _buffer_vars = staticmethod(lambda mapping, source: {shader_name: source[name] for name, shader_name in mapping.items()})
     _dispatch = lambda self, kernel, encoder, thread_count, vars: self._kernels[kernel].dispatch(thread_count=thread_count, vars=vars, command_encoder=encoder)
@@ -143,57 +86,15 @@ class GaussianTrainer:
     _pixel_thread_count = lambda self: spy.uint3(self.renderer.width, self.renderer.height, 1)
     _scene_rw_vars = lambda self: self._buffer_vars(self._SCENE_RW_SHADER_VARS, self.renderer.scene_buffers)
     _scene_grad_vars = lambda self: self._buffer_vars(self._SCENE_GRAD_SHADER_VARS, self.renderer.work_buffers)
-    _scene_state_vars = lambda self, source: {**self._buffer_vars(self._SCENE_RW_SHADER_VARS, source), **self._buffer_vars(self._ADAM_SHADER_VARS, source), **self._buffer_vars(self._DENSITY_STAT_SHADER_VARS, source)}
-    _frame = lambda self, frame_index: self.frames[int(np.clip(frame_index, 0, len(self.frames) - 1))]
     _adam_shader_vars = lambda self: self._buffer_vars(self._ADAM_SHADER_VARS, self._buffers)
+    _frame = lambda self, frame_index: self.frames[int(np.clip(frame_index, 0, len(self.frames) - 1))]
     update_hyperparams = lambda self, adam_hparams, stability_hparams, training_hparams: setattr(self, "adam", adam_hparams) or setattr(self, "stability", stability_hparams) or setattr(self, "training", training_hparams)
     make_frame_camera = lambda self, frame_index, width, height: self._make_frame_camera(self._frame(frame_index), int(width), int(height))
-    densify_grad_norm_buffer = property(lambda self: self._buffers["grad_ema"])
-    _zero_optimizer_moments = lambda self: [self._buffers[name].copy_from_numpy(np.zeros((max(int(self._scene_count), 1), 4), dtype=np.float32)) for name in self._ADAM_BUFFER_NAMES]
     frame_size = lambda self, frame_index: (int(self._frame(frame_index).width), int(self._frame(frame_index).height))
     get_frame_target_texture = lambda self, frame_index, native_resolution=True: self._frame_targets_train[int(np.clip(frame_index, 0, len(self.frames) - 1))]
     _dispatch_raster_forward_backward = lambda self, encoder, frame_camera, background: (self.renderer.clear_raster_grads_current_scene(encoder), self.renderer.rasterize_forward_backward_current_scene(encoder=encoder, camera=frame_camera, background=background, output_grad=self.renderer.output_grad_texture))
     _dispatch_adam_step = lambda self, encoder: self._dispatch("adam_step", encoder, self._scene_thread_count(), {**self._scene_grad_vars(), **self._scene_rw_vars(), **self._adam_shader_vars(), **self._common_vars()})
-    _read_loss_metrics = lambda self: (lambda loss_values, signal_values: (float(loss_values[self._LOSS_SLOT_TOTAL]) if loss_values.size > self._LOSS_SLOT_TOTAL else float("nan"), float(loss_values[self._LOSS_SLOT_MSE]) if loss_values.size > self._LOSS_SLOT_MSE else float("nan"), float(loss_values[self._LOSS_SLOT_SSIM]) if loss_values.size > self._LOSS_SLOT_SSIM else float("nan"), float(signal_values.view(np.float32)[0]) if signal_values.size else float("nan")))(np.frombuffer(self._buffers["loss"].to_numpy().tobytes(), dtype=np.float32), np.frombuffer(self._buffers["signal_max"].to_numpy().tobytes(), dtype=np.uint32))
-    _effective_max_gaussians = lambda self: max(int(self.training.max_gaussians), int(self._scene_count)) if int(self.training.max_gaussians) > 0 else 2147483647
-
-    def _run_mcmc_densify(self) -> None:
-        if self._scene_count <= 0:
-            return
-        current_count = int(self._scene_count)
-        growth_ratio = float(np.clip(self.training.mcmc_growth_ratio, 0.0, 1.0))
-        add_count = int(math.floor(growth_ratio * current_count))
-        if growth_ratio > 0.0 and add_count == 0 and current_count < int(self._effective_max_gaussians()):
-            add_count = 1
-        target_count = min(int(self._effective_max_gaussians()), current_count + add_count)
-        add_count = max(target_count - current_count, 0)
-        self._ensure_regen_buffers(max(current_count + add_count, 1))
-        self._ensure_mcmc_buffers(current_count)
-        self._regen_buffers["output_count"].copy_from_numpy(np.array([current_count + add_count], dtype=np.uint32))
-        enc_relocate = self.device.create_command_encoder()
-        self._copy_main_state_to_regen(enc_relocate, current_count)
-        self._dispatch_prepare_mcmc_weights(enc_relocate, self._regen_buffers, append_mode=False)
-        self._dispatch_scan_float_recursive(enc_relocate, self._mcmc_buffers["weights"], self._mcmc_buffers["weight_prefix"], current_count)
-        self._dispatch_write_float_scan_total(enc_relocate, self._mcmc_buffers["weight_prefix"], current_count)
-        self._dispatch_scan_uint_recursive(enc_relocate, self._mcmc_buffers["flags"], self._mcmc_buffers["flag_prefix"], current_count)
-        self._dispatch_compact_dead_indices(enc_relocate)
-        self._dispatch_sample_mcmc_sources(enc_relocate)
-        self._dispatch_update_mcmc_sources(enc_relocate)
-        self._dispatch_apply_mcmc_relocation(enc_relocate)
-        self.device.submit_command_buffer(enc_relocate.finish())
-        self.device.wait()
-        if add_count > 0:
-            self._mcmc_buffers["sample_count"].copy_from_numpy(np.array([add_count], dtype=np.uint32))
-            enc_append = self.device.create_command_encoder()
-            self._dispatch_prepare_mcmc_weights(enc_append, self._regen_buffers, append_mode=True)
-            self._dispatch_scan_float_recursive(enc_append, self._mcmc_buffers["weights"], self._mcmc_buffers["weight_prefix"], current_count)
-            self._dispatch_write_float_scan_total(enc_append, self._mcmc_buffers["weight_prefix"], current_count)
-            self._dispatch_sample_mcmc_sources(enc_append)
-            self._dispatch_update_mcmc_sources(enc_append)
-            self._dispatch_append_mcmc_samples(enc_append, current_count)
-            self.device.submit_command_buffer(enc_append.finish())
-            self.device.wait()
-        self._apply_regenerated_scene(max(current_count + add_count, 1))
+    _read_loss_metrics = lambda self: (lambda values: (float(values[self._LOSS_SLOT_TOTAL]) if values.size > self._LOSS_SLOT_TOTAL else float("nan"), float(values[self._LOSS_SLOT_MSE]) if values.size > self._LOSS_SLOT_MSE else float("nan")))(np.frombuffer(self._buffers["loss"].to_numpy().tobytes(), dtype=np.float32))
 
     def __init__(
         self,
@@ -223,33 +124,22 @@ class GaussianTrainer:
         self._seed = int(seed)
         self._scene_count = int(scene.count if scene is not None else max(int(scene_count if scene_count is not None else 0), 1))
         self.scene = _SceneCountProxy(self._scene_count)
-        self.adam, self.stability, self.training = pick(adam_hparams, AdamHyperParams()), pick(stability_hparams, StabilityHyperParams()), pick(training_hparams, TrainingHyperParams())
+        self.adam = pick(adam_hparams, AdamHyperParams())
+        self.stability = pick(stability_hparams, StabilityHyperParams())
+        self.training = pick(training_hparams, TrainingHyperParams())
         self.state = TrainingState()
-        self._metric_window_size = max(len(self.frames), 1)
-        self._loss_window = _RollingMetricWindow(size=self._metric_window_size, values=deque())
-        self._frame_signal_max = np.full((len(self.frames),), np.nan, dtype=np.float32)
-        self._frame_psnr = np.full((len(self.frames),), np.nan, dtype=np.float32)
-        self._frame_ssim = np.full((len(self.frames),), np.nan, dtype=np.float32)
+        self._loss_window = _RollingMetricWindow(size=max(len(self.frames), 1), values=deque())
         self._shader_path = Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang")
         self._kernels = {name: self.device.create_compute_kernel(self.device.load_program(str(self._shader_path), [entry])) for name, entry in self._KERNEL_ENTRIES.items()}
-        self._prefix_sum = GPUPrefixSum(self.device)
         self._buffers: dict[str, spy.Buffer] = {}
-        self._regen_buffers: dict[str, spy.Buffer] = {}
-        self._hist_buffers: dict[str, spy.Buffer] = {}
-        self._mcmc_buffers: dict[str, spy.Buffer] = {}
         self._splat_capacity = 0
-        self._regen_capacity = 0
-        self._mcmc_capacity = 0
         self._scale_reg_reference = float(max(scale_reg_reference, 1e-8)) if scale_reg_reference is not None else self._estimate_scale_reg_reference(scene)
-        self._scene_extent = self._estimate_scene_extent(scene)
         self._init_point_positions_buffer: spy.Buffer | None = None
         self._init_point_colors_buffer: spy.Buffer | None = None
         self._init_point_count = 0
         self._init_point_positions_cpu: np.ndarray | None = None
         self._init_point_colors_cpu: np.ndarray | None = None
         self._frame_targets_train: list[spy.Texture] = []
-        self._loss_textures: dict[str, spy.Texture] = {}
-        self._blur = SeparableGaussianBlur(self.device, self.renderer.width, self.renderer.height)
         self._frame_rng = np.random.default_rng(self._seed)
         self._frame_order = np.zeros((len(self.frames),), dtype=np.int32)
         self._frame_cursor = len(self.frames)
@@ -258,68 +148,10 @@ class GaussianTrainer:
         else:
             self.renderer.bind_scene_count(self._scene_count)
         self._ensure_training_buffers(self._scene_count)
-        self._ensure_regen_buffers(self._scene_count)
-        self._ensure_histogram_buffers()
-        self._ensure_loss_textures()
         self._zero_optimizer_moments()
-        self._zero_density_stats()
         self._create_dataset_textures()
         self._bind_or_upload_init_pointcloud(init_point_positions, init_point_colors, init_point_positions_buffer, init_point_colors_buffer, init_point_count)
         self._reset_frame_order()
-
-    def _ensure_training_buffers(self, splat_count: int) -> None:
-        count = max(int(splat_count), 1)
-        if self._buffers and count <= self._splat_capacity:
-            return
-        usage = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
-        new_capacity = max(count, max(self._splat_capacity, 1) + max(self._splat_capacity, 1) // 2)
-        self._buffers.setdefault("loss", self.device.create_buffer(size=12, usage=usage))
-        self._buffers.setdefault("signal_max", self.device.create_buffer(size=4, usage=usage))
-        self._buffers["grad_ema"] = self.device.create_buffer(size=new_capacity * 4, usage=usage)
-        self._buffers["grad_count"] = self.device.create_buffer(size=new_capacity * 4, usage=usage)
-        self._buffers["max_screen_radius"] = self.device.create_buffer(size=new_capacity * 4, usage=usage)
-        for name in self._ADAM_BUFFER_NAMES:
-            self._buffers[name] = self.device.create_buffer(size=new_capacity * 16, usage=usage)
-        self._splat_capacity = new_capacity
-
-    def _ensure_regen_buffers(self, splat_count: int) -> None:
-        count = max(int(splat_count), 1)
-        required = count * 2
-        if self._regen_buffers and required <= self._regen_capacity:
-            return
-        usage = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
-        self._regen_capacity = max(required, max(self._regen_capacity, 1) + max(self._regen_capacity, 1) // 2)
-        for name in self._SCENE_RW_SHADER_VARS:
-            self._regen_buffers[name] = self.device.create_buffer(size=self._regen_capacity * 16, usage=usage)
-        for name in self._ADAM_BUFFER_NAMES:
-            self._regen_buffers[name] = self.device.create_buffer(size=self._regen_capacity * 16, usage=usage)
-        self._regen_buffers["grad_ema"] = self.device.create_buffer(size=self._regen_capacity * 4, usage=usage)
-        self._regen_buffers["grad_count"] = self.device.create_buffer(size=self._regen_capacity * 4, usage=usage)
-        self._regen_buffers["max_screen_radius"] = self.device.create_buffer(size=self._regen_capacity * 4, usage=usage)
-        self._regen_buffers["output_count"] = self.device.create_buffer(size=4, usage=usage)
-
-    def _ensure_histogram_buffers(self) -> None:
-        if self._hist_buffers:
-            return
-        usage = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
-        self._hist_buffers["scale_histogram"] = self.device.create_buffer(size=self._SCALE_HISTOGRAM_BIN_COUNT * 4, usage=usage)
-
-    def _ensure_mcmc_buffers(self, splat_count: int) -> None:
-        count = max(int(splat_count), 1)
-        if self._mcmc_buffers and count <= self._mcmc_capacity:
-            return
-        usage = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
-        new_capacity = max(count, max(self._mcmc_capacity, 1) + max(self._mcmc_capacity, 1) // 2)
-        self._mcmc_buffers["weights"] = self.device.create_buffer(size=new_capacity * 4, usage=usage)
-        self._mcmc_buffers["weight_prefix"] = self.device.create_buffer(size=new_capacity * 4, usage=usage)
-        self._mcmc_buffers["flags"] = self.device.create_buffer(size=new_capacity * 4, usage=usage)
-        self._mcmc_buffers["flag_prefix"] = self.device.create_buffer(size=new_capacity * 4, usage=usage)
-        self._mcmc_buffers["dead_indices"] = self.device.create_buffer(size=new_capacity * 4, usage=usage)
-        self._mcmc_buffers["sample_sources"] = self.device.create_buffer(size=new_capacity * 4, usage=usage)
-        self._mcmc_buffers["family_counts"] = self.device.create_buffer(size=new_capacity * 4, usage=usage)
-        self._mcmc_buffers["weight_total"] = self.device.create_buffer(size=4, usage=usage)
-        self._mcmc_buffers["sample_count"] = self.device.create_buffer(size=4, usage=usage)
-        self._mcmc_capacity = new_capacity
 
     def _estimate_scale_reg_reference(self, scene: GaussianScene | None) -> float:
         if scene is None or scene.count <= 0:
@@ -328,21 +160,21 @@ class GaussianTrainer:
         finite = np.isfinite(scales).all(axis=1)
         return 1.0 if not np.any(finite) else float(np.exp(np.mean(np.log(np.maximum(scales[finite], 1e-8)), dtype=np.float64)))
 
-    def _estimate_scene_extent(self, scene: GaussianScene | None) -> float:
-        if scene is None or scene.count <= 0:
-            return 1.0
-        positions = np.asarray(scene.positions, dtype=np.float32)
-        finite = np.isfinite(positions).all(axis=1)
-        if not np.any(finite):
-            return 1.0
-        pts = positions[finite]
-        center = np.mean(pts, axis=0, dtype=np.float32)
-        return float(max(np.max(np.linalg.norm(pts - center[None, :], axis=1)), 1e-3))
-
-    def _ensure_loss_textures(self) -> None:
-        if self._loss_textures:
+    def _ensure_training_buffers(self, splat_count: int) -> None:
+        count = max(int(splat_count), 1)
+        if self._buffers and count <= self._splat_capacity:
             return
-        self._loss_textures = {name: self._blur.make_texture() for name in self._LOSS_TEXTURE_NAMES}
+        usage = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
+        new_capacity = max(count, max(self._splat_capacity, 1) + max(self._splat_capacity, 1) // 2)
+        self._buffers.setdefault("loss", self.device.create_buffer(size=8, usage=usage))
+        for name in self._ADAM_BUFFER_NAMES:
+            self._buffers[name] = self.device.create_buffer(size=new_capacity * 16, usage=usage)
+        self._splat_capacity = new_capacity
+
+    def _zero_optimizer_moments(self) -> None:
+        zeros = np.zeros((max(int(self._scene_count), 1), 4), dtype=np.float32)
+        for name in self._ADAM_BUFFER_NAMES:
+            self._buffers[name].copy_from_numpy(zeros)
 
     def _reset_frame_order(self) -> None:
         self._frame_order = self._frame_rng.permutation(len(self.frames)).astype(np.int32)
@@ -381,11 +213,15 @@ class GaussianTrainer:
             return
         if positions is None or colors is None:
             return
-        pos, col = np.ascontiguousarray(positions, dtype=np.float32), np.ascontiguousarray(colors, dtype=np.float32)
+        pos = np.ascontiguousarray(positions, dtype=np.float32)
+        col = np.ascontiguousarray(colors, dtype=np.float32)
         if pos.shape[0] != col.shape[0]:
             raise ValueError("init_point_positions and init_point_colors must have matching row count.")
-        self._init_point_positions_buffer, self._init_point_colors_buffer, self._init_point_count = self._create_init_point_buffer(pos), self._create_init_point_buffer(col), int(pos.shape[0])
-        self._init_point_positions_cpu, self._init_point_colors_cpu = pos[:, :3].copy(), col[:, :3].copy()
+        self._init_point_positions_buffer = self._create_init_point_buffer(pos)
+        self._init_point_colors_buffer = self._create_init_point_buffer(col)
+        self._init_point_count = int(pos.shape[0])
+        self._init_point_positions_cpu = pos[:, :3].copy()
+        self._init_point_colors_cpu = col[:, :3].copy()
 
     def _make_frame_camera(self, frame: ColmapFrame, width: int, height: int) -> Camera:
         camera = frame.make_camera(near=float(self.training.near), far=float(self.training.far))
@@ -411,87 +247,10 @@ class GaussianTrainer:
         for frame in self.frames:
             with Image.open(frame.image_path) as pil_image:
                 native = pil_image.convert("RGB")
-                self._frame_targets_train.append(self._create_gpu_texture(native if native.size == train_size else native.resize(train_size, resample=Image.Resampling.BILINEAR)))
+                resized = native if native.size == train_size else native.resize(train_size, resample=Image.Resampling.BILINEAR)
+                self._frame_targets_train.append(self._create_gpu_texture(resized))
 
-    def _reset_metric_windows(self) -> None:
-        self._loss_window.values.clear()
-        self._frame_signal_max.fill(np.nan)
-        self._frame_psnr.fill(np.nan)
-        self._frame_ssim.fill(np.nan)
-
-    def _mean_finite(self, values: np.ndarray) -> float:
-        finite = np.isfinite(values)
-        return float(np.mean(values[finite], dtype=np.float64)) if np.any(finite) else float("nan")
-
-    def _psnr_from_metrics(self, mse: float, signal_max: float) -> float:
-        return (
-            20.0 * float(np.log10(signal_max)) - 10.0 * float(np.log10(max(float(mse), self._PSNR_MSE_FLOOR)))
-            if np.isfinite(mse) and mse >= 0.0 and np.isfinite(signal_max) and signal_max > 0.0
-            else float("nan")
-        )
-
-    def _dispatch_loss_grad(self, encoder: spy.CommandEncoder, target_texture: spy.Texture) -> None:
-        common = self._common_vars()
-        shared = {"g_OutputGrad": self.renderer.output_grad_texture, "g_LossBuffer": self._buffers["loss"], "g_SignalMaxBuffer": self._buffers["signal_max"], **common}
-        self._dispatch("clear_loss_grad", encoder, self._pixel_thread_count(), shared)
-        self._dispatch(
-            "pack_ssim_aux",
-            encoder,
-            self._pixel_thread_count(),
-            {
-                "g_Rendered": self.renderer.output_texture,
-                "g_Target": target_texture,
-                "g_RenderedSq": self._loss_textures["render_sq"],
-                "g_TargetSq": self._loss_textures["target_sq"],
-                "g_RenderTarget": self._loss_textures["cross"],
-                **common,
-            },
-        )
-        self._blur.blur(encoder, self.renderer.output_texture, self._loss_textures["mu_render"])
-        self._blur.blur(encoder, target_texture, self._loss_textures["mu_target"])
-        self._blur.blur(encoder, self._loss_textures["render_sq"], self._loss_textures["blur_render_sq"])
-        self._blur.blur(encoder, self._loss_textures["target_sq"], self._loss_textures["blur_target_sq"])
-        self._blur.blur(encoder, self._loss_textures["cross"], self._loss_textures["blur_cross"])
-        self._dispatch(
-            "loss_grad",
-            encoder,
-            self._pixel_thread_count(),
-            {
-                "g_Rendered": self.renderer.output_texture,
-                "g_Target": target_texture,
-                "g_OutputGrad": self.renderer.output_grad_texture,
-                "g_LossBuffer": self._buffers["loss"],
-                "g_SignalMaxBuffer": self._buffers["signal_max"],
-                "g_MuRendered": self._loss_textures["mu_render"],
-                "g_MuTarget": self._loss_textures["mu_target"],
-                "g_BlurRenderedSq": self._loss_textures["blur_render_sq"],
-                "g_BlurTargetSq": self._loss_textures["blur_target_sq"],
-                "g_BlurRenderTarget": self._loss_textures["blur_cross"],
-                "g_GradMuRendered": self._loss_textures["grad_mu"],
-                "g_GradBlurRenderedSq": self._loss_textures["grad_xx"],
-                "g_GradBlurRenderTarget": self._loss_textures["grad_xy"],
-                **common,
-            },
-        )
-        self._blur.blur(encoder, self._loss_textures["grad_mu"], self._loss_textures["grad_mu_blur"])
-        self._blur.blur(encoder, self._loss_textures["grad_xx"], self._loss_textures["grad_xx_blur"])
-        self._blur.blur(encoder, self._loss_textures["grad_xy"], self._loss_textures["grad_xy_blur"])
-        self._dispatch(
-            "compose_loss_grad",
-            encoder,
-            self._pixel_thread_count(),
-            {
-                "g_Rendered": self.renderer.output_texture,
-                "g_Target": target_texture,
-                "g_OutputGrad": self.renderer.output_grad_texture,
-                "g_BlurredGradMuRendered": self._loss_textures["grad_mu_blur"],
-                "g_BlurredGradRenderedSq": self._loss_textures["grad_xx_blur"],
-                "g_BlurredGradRenderTarget": self._loss_textures["grad_xy_blur"],
-                **common,
-            },
-        )
-
-    def _common_vars(self, force_split_all: bool = False, force_prune_scale_threshold: float = 0.0) -> dict[str, object]:
+    def _common_vars(self) -> dict[str, object]:
         return {
             "g_Width": int(self.renderer.width),
             "g_Height": int(self.renderer.height),
@@ -502,20 +261,6 @@ class GaussianTrainer:
             "g_ScaleAbsRegWeight": float(max(self.training.scale_abs_reg_weight, 0.0)),
             "g_OpacityRegWeight": float(max(self.training.opacity_reg_weight, 0.0)),
             "g_ScaleRegReference": float(max(self._scale_reg_reference, 1e-8)),
-            "g_LambdaDSSIM": float(np.clip(self.training.lambda_dssim, 0.0, 1.0)),
-            "g_Densify": {
-                "maxGaussianCount": int(self._effective_max_gaussians()),
-                "gradThreshold": float(max(self.training.densify_grad_threshold, 0.0)),
-                "percentDense": float(max(self.training.percent_dense, 0.0)),
-                "sceneExtent": float(max(self._scene_extent, 1e-6)),
-                "pruneMinOpacity": float(np.clip(self.training.prune_min_opacity, 0.0, 1.0)),
-                "screenSizeThreshold": float(max(self.training.screen_size_prune_threshold, 0.0)),
-                "worldSizeRatio": float(max(self.training.world_size_prune_ratio, 0.0)),
-                "outputCapacity": int(max(min(self._regen_capacity, self._effective_max_gaussians()), 1)),
-                "enableScreenSizePrune": np.uint32(1 if int(self.training.opacity_reset_interval) > 0 and int(self.state.step + 1) > int(self.training.opacity_reset_interval) else 0),
-                "forceSplitAll": np.uint32(1 if force_split_all else 0),
-                "forcePruneScaleThreshold": float(max(force_prune_scale_threshold, 0.0)),
-            },
             "g_Adam": {
                 "positionLR": float(self.adam.position_lr),
                 "scaleLR": float(self.adam.scale_lr),
@@ -539,18 +284,27 @@ class GaussianTrainer:
                 "positionAbsMax": float(self.stability.position_abs_max),
                 "hugeValue": float(self.stability.huge_value),
             },
-            "g_MCMC": {
-                "enabled": np.uint32(1 if self.training.mcmc_position_noise_enabled else 0),
-                "positionNoiseScale": float(max(self.training.mcmc_position_noise_scale, 0.0)),
-                "opacityGateSharpness": float(max(self.training.mcmc_opacity_gate_sharpness, 0.0)),
-                "opacityGateCenter": float(np.clip(self.training.mcmc_opacity_gate_center, 0.0, 1.0)),
-            },
         }
+
+    def _dispatch_loss_grad(self, encoder: spy.CommandEncoder, target_texture: spy.Texture) -> None:
+        shared = {"g_OutputGrad": self.renderer.output_grad_texture, "g_LossBuffer": self._buffers["loss"], **self._common_vars()}
+        self._dispatch("clear_loss_grad", encoder, self._pixel_thread_count(), shared)
+        self._dispatch(
+            "loss_grad",
+            encoder,
+            self._pixel_thread_count(),
+            {
+                "g_Rendered": self.renderer.output_texture,
+                "g_Target": target_texture,
+                "g_OutputGrad": self.renderer.output_grad_texture,
+                "g_LossBuffer": self._buffers["loss"],
+                **self._common_vars(),
+            },
+        )
 
     def initialize_scene_from_pointcloud(self, splat_count: int, init_hparams: GaussianInitHyperParams, seed: int) -> None:
         if self._init_point_positions_cpu is None or self._init_point_colors_cpu is None or self._init_point_count <= 0:
             raise RuntimeError("Pointcloud initializer buffers are not available.")
-        from ..scene import GaussianScene
         from ..scene._internal.colmap_ops import point_nn_scales
 
         count = min(max(int(splat_count), 1), int(self._init_point_count))
@@ -567,313 +321,15 @@ class GaussianTrainer:
             colors=colors,
             sh_coeffs=np.zeros((count, 1, 3), dtype=np.float32),
         )
-        self._scene_extent = self._estimate_scene_extent(scene)
         self._scene_count, self.scene = count, _SceneCountProxy(count)
         self.renderer.set_scene(scene)
         self._ensure_training_buffers(self._scene_count)
-        self._ensure_regen_buffers(self._scene_count)
         self._scale_reg_reference = float(max(np.median(scales[:, 0]), 1e-8))
         self._zero_optimizer_moments()
-        self._zero_density_stats()
         self.state = TrainingState()
-        self._reset_metric_windows()
-        self._frame_rng = np.random.default_rng(self._seed)
+        self._loss_window.values.clear()
+        self._frame_rng = np.random.default_rng(int(seed))
         self._reset_frame_order()
-
-    def _zero_density_stats(self) -> None:
-        count = max(int(self._scene_count), 1)
-        self._buffers["grad_ema"].copy_from_numpy(np.zeros((count,), dtype=np.float32))
-        self._buffers["grad_count"].copy_from_numpy(np.zeros((count,), dtype=np.uint32))
-        self._buffers["max_screen_radius"].copy_from_numpy(np.zeros((count,), dtype=np.float32))
-
-    def _density_stat_vars(self) -> dict[str, object]:
-        return self._buffer_vars(self._DENSITY_STAT_SHADER_VARS, self._buffers)
-
-    def _regen_scene_vars(self) -> dict[str, object]:
-        return self._buffer_vars(self._REGEN_SCENE_SHADER_VARS, self._regen_buffers)
-
-    def _regen_adam_vars(self) -> dict[str, object]:
-        return self._buffer_vars(self._REGEN_ADAM_SHADER_VARS, self._regen_buffers)
-
-    def _regen_stat_vars(self) -> dict[str, object]:
-        return self._buffer_vars(self._REGEN_STAT_SHADER_VARS, self._regen_buffers)
-
-    def _histogram_vars(self) -> dict[str, object]:
-        return {"g_ScaleHistogram": self._hist_buffers["scale_histogram"], "g_Hist": {"binCount": int(self._SCALE_HISTOGRAM_BIN_COUNT), "minLog10": float(self._SCALE_HISTOGRAM_MIN_LOG10), "maxLog10": float(self._SCALE_HISTOGRAM_MAX_LOG10)}}
-
-    def _dispatch_clear_uint_buffer(self, encoder: spy.CommandEncoder, buffer: spy.Buffer, element_count: int, clear_value: int = 0) -> None:
-        self._prefix_sum.clear_u32(encoder, buffer, element_count, clear_value)
-
-    def _dispatch_scan_float_recursive(self, encoder: spy.CommandEncoder, input_buffer: spy.Buffer, output_buffer: spy.Buffer, element_count: int, level: int = 0) -> None:
-        self._prefix_sum.scan_float(encoder, input_buffer, output_buffer, element_count, None, level)
-
-    def _dispatch_scan_uint_recursive(self, encoder: spy.CommandEncoder, input_buffer: spy.Buffer, output_buffer: spy.Buffer, element_count: int, level: int = 0) -> None:
-        self._prefix_sum.scan_uint(encoder, input_buffer, output_buffer, element_count, level)
-
-    def _dispatch_write_float_scan_total(self, encoder: spy.CommandEncoder, prefix_buffer: spy.Buffer, element_count: int) -> None:
-        self._prefix_sum.write_float_total(encoder, prefix_buffer, self._mcmc_buffers["weight_total"], element_count)
-
-    def _copy_main_state_to_regen(self, encoder: spy.CommandEncoder, count: int) -> None:
-        copy_bytes_scene = max(int(count), 0) * 16
-        copy_bytes_stat = max(int(count), 0) * 4
-        for name in self._SCENE_RW_SHADER_VARS:
-            encoder.copy_buffer(self._regen_buffers[name], 0, self.renderer.scene_buffers[name], 0, copy_bytes_scene)
-        for name in self._ADAM_BUFFER_NAMES:
-            encoder.copy_buffer(self._regen_buffers[name], 0, self._buffers[name], 0, copy_bytes_scene)
-        for name in self._DENSITY_STAT_SHADER_VARS:
-            encoder.copy_buffer(self._regen_buffers[name], 0, self._buffers[name], 0, copy_bytes_stat)
-
-    def _dispatch_update_densification_stats(self, encoder: spy.CommandEncoder) -> None:
-        self._dispatch(
-            "update_densification_stats",
-            encoder,
-            self._scene_thread_count(),
-            {
-                **self._density_stat_vars(),
-                "g_GradPositions": self.renderer.work_buffers["grad_positions"],
-                "g_SplatVisible": self.renderer.work_buffers["splat_visible"],
-                "g_ScreenCenterRadiusDepth": self.renderer.work_buffers["screen_center_radius_depth"],
-                **self._common_vars(),
-            },
-        )
-
-    def _dispatch_clear_scale_histogram(self, encoder: spy.CommandEncoder) -> None:
-        self._dispatch("clear_scale_histogram", encoder, spy.uint3(self._SCALE_HISTOGRAM_BIN_COUNT, 1, 1), self._histogram_vars())
-
-    def _dispatch_accumulate_scale_histogram(self, encoder: spy.CommandEncoder) -> None:
-        self._dispatch("accumulate_scale_histogram", encoder, self._scene_thread_count(), {"g_SplatCount": int(self._scene_count), **self._scene_rw_vars(), **self._histogram_vars()})
-
-    def _dispatch_regenerate_scene(self, encoder: spy.CommandEncoder, force_split_all: bool = False, force_prune_scale_threshold: float = 0.0) -> None:
-        self._regen_buffers["output_count"].copy_from_numpy(np.array([0], dtype=np.uint32))
-        self._dispatch(
-            "regenerate_scene",
-            encoder,
-            self._scene_thread_count(),
-            {
-                **self._scene_rw_vars(),
-                **self._adam_shader_vars(),
-                **self._density_stat_vars(),
-                **self._regen_scene_vars(),
-                **self._regen_adam_vars(),
-                **self._regen_stat_vars(),
-                "g_OutputCount": self._regen_buffers["output_count"],
-                **self._common_vars(force_split_all=force_split_all, force_prune_scale_threshold=force_prune_scale_threshold),
-            },
-        )
-
-    def _dispatch_compact_scene(self, encoder: spy.CommandEncoder, force_prune_scale_threshold: float = 0.0) -> None:
-        self._regen_buffers["output_count"].copy_from_numpy(np.array([0], dtype=np.uint32))
-        self._dispatch(
-            "compact_scene",
-            encoder,
-            self._scene_thread_count(),
-            {
-                **self._scene_rw_vars(),
-                **self._adam_shader_vars(),
-                **self._density_stat_vars(),
-                **self._regen_scene_vars(),
-                **self._regen_adam_vars(),
-                **self._regen_stat_vars(),
-                "g_OutputCount": self._regen_buffers["output_count"],
-                **self._common_vars(force_prune_scale_threshold=force_prune_scale_threshold),
-            },
-        )
-
-    def _dispatch_append_regenerated_splats(self, encoder: spy.CommandEncoder, compacted_count: int, force_split_all: bool = False) -> None:
-        self._dispatch(
-            "append_regenerated_splats",
-            encoder,
-            spy.uint3(max(int(compacted_count), 1), 1, 1),
-            {
-                **self._regen_scene_vars(),
-                **self._regen_adam_vars(),
-                **self._regen_stat_vars(),
-                "g_OutputCount": self._regen_buffers["output_count"],
-                "g_CompactedCount": int(max(compacted_count, 0)),
-                **self._common_vars(force_split_all=force_split_all),
-            },
-        )
-
-    def _dispatch_prepare_mcmc_weights(self, encoder: spy.CommandEncoder, scene_buffers: dict[str, spy.Buffer], *, append_mode: bool) -> None:
-        kernel = "prepare_mcmc_append" if append_mode else "prepare_mcmc_relocation"
-        self._dispatch(
-            kernel,
-            encoder,
-            spy.uint3(max(int(self._scene_count), 1), 1, 1),
-            {
-                **self._buffer_vars(self._SCENE_RW_SHADER_VARS, scene_buffers),
-                "g_MCMCWeights": self._mcmc_buffers["weights"],
-                "g_MCMCFlags": self._mcmc_buffers["flags"],
-                "g_SplatCount": int(self._scene_count),
-                **self._common_vars(),
-            },
-        )
-
-    def _dispatch_compact_dead_indices(self, encoder: spy.CommandEncoder) -> None:
-        self._mcmc_buffers["sample_count"].copy_from_numpy(np.array([0], dtype=np.uint32))
-        self._dispatch(
-            "compact_dead_indices",
-            encoder,
-            spy.uint3(max(int(self._scene_count), 1), 1, 1),
-            {
-                "g_MCMCFlags": self._mcmc_buffers["flags"],
-                "g_MCMCFlagPrefix": self._mcmc_buffers["flag_prefix"],
-                "g_MCMCDeadIndices": self._mcmc_buffers["dead_indices"],
-                "g_MCMCSampleCount": self._mcmc_buffers["sample_count"],
-                "g_ScanElementCount": int(self._scene_count),
-            },
-        )
-
-    def _dispatch_sample_mcmc_sources(self, encoder: spy.CommandEncoder, sample_count: int | None = None) -> None:
-        if sample_count is not None:
-            self._mcmc_buffers["sample_count"].copy_from_numpy(np.array([max(int(sample_count), 0)], dtype=np.uint32))
-        self._dispatch_clear_uint_buffer(encoder, self._mcmc_buffers["family_counts"], self._scene_count, 0)
-        self._dispatch_clear_uint_buffer(encoder, self._mcmc_buffers["sample_sources"], self._scene_count, 0xFFFFFFFF)
-        self._dispatch(
-            "sample_mcmc_sources",
-            encoder,
-            spy.uint3(max(int(self._scene_count), 1), 1, 1),
-            {
-                "g_MCMCWeights": self._mcmc_buffers["weights"],
-                "g_MCMCWeightPrefix": self._mcmc_buffers["weight_prefix"],
-                "g_MCMCWeightTotal": self._mcmc_buffers["weight_total"],
-                "g_MCMCSampleSources": self._mcmc_buffers["sample_sources"],
-                "g_MCMCFamilyCounts": self._mcmc_buffers["family_counts"],
-                "g_MCMCSampleCount": self._mcmc_buffers["sample_count"],
-                "g_SplatCount": int(self._scene_count),
-                "g_MCMCSampleSeed": np.uint32((int(self._seed) ^ ((int(self.state.step) + 1) * 0x9E3779B9)) & 0xFFFFFFFF),
-            },
-        )
-
-    def _dispatch_update_mcmc_sources(self, encoder: spy.CommandEncoder) -> None:
-        self._dispatch(
-            "update_mcmc_sources",
-            encoder,
-            spy.uint3(max(int(self._scene_count), 1), 1, 1),
-            {
-                **self._scene_state_vars(self._regen_buffers),
-                "g_MCMCFamilyCounts": self._mcmc_buffers["family_counts"],
-                "g_SplatCount": int(self._scene_count),
-                **self._common_vars(),
-            },
-        )
-
-    def _dispatch_apply_mcmc_relocation(self, encoder: spy.CommandEncoder) -> None:
-        self._dispatch(
-            "apply_mcmc_relocation",
-            encoder,
-            spy.uint3(max(int(self._scene_count), 1), 1, 1),
-            {
-                **self._scene_state_vars(self._regen_buffers),
-                "g_MCMCDeadIndices": self._mcmc_buffers["dead_indices"],
-                "g_MCMCSampleSources": self._mcmc_buffers["sample_sources"],
-                "g_MCMCSampleCount": self._mcmc_buffers["sample_count"],
-                "g_SplatCount": int(self._scene_count),
-            },
-        )
-
-    def _dispatch_append_mcmc_samples(self, encoder: spy.CommandEncoder, append_base_index: int) -> None:
-        self._dispatch(
-            "append_mcmc_samples",
-            encoder,
-            spy.uint3(max(int(self._scene_count), 1), 1, 1),
-            {
-                **self._scene_state_vars(self._regen_buffers),
-                "g_MCMCSampleSources": self._mcmc_buffers["sample_sources"],
-                "g_MCMCSampleCount": self._mcmc_buffers["sample_count"],
-                "g_MCMCAppendBaseIndex": int(max(append_base_index, 0)),
-                "g_SplatCount": int(self._scene_count),
-                **self._common_vars(),
-            },
-        )
-
-    def _dispatch_reset_opacity(self, encoder: spy.CommandEncoder) -> None:
-        self._dispatch(
-            "reset_opacity",
-            encoder,
-            self._scene_thread_count(),
-            {**self._scene_rw_vars(), **self._adam_shader_vars(), **self._common_vars()},
-        )
-
-    def _read_output_count(self) -> int:
-        return int(np.frombuffer(self._regen_buffers["output_count"].to_numpy().tobytes(), dtype=np.uint32)[0])
-
-    def _should_densify(self, step_index: int) -> bool:
-        return (
-            step_index >= int(self.training.densify_from_iter)
-            and step_index <= int(self.training.densify_until_iter)
-            and int(self.training.densification_interval) > 0
-            and step_index % int(self.training.densification_interval) == 0
-        )
-
-    def _should_reset_opacity(self, step_index: int) -> bool:
-        return int(self.training.opacity_reset_interval) > 0 and step_index % int(self.training.opacity_reset_interval) == 0
-
-    def _apply_regenerated_scene(self, new_count: int) -> None:
-        self._scene_count = max(min(int(new_count), self._effective_max_gaussians()), 1)
-        self.scene.count = self._scene_count
-        self.renderer.bind_scene_count(self._scene_count)
-        self._ensure_training_buffers(self._scene_count)
-        copy_bytes_scene = self._scene_count * 16
-        copy_bytes_stat = self._scene_count * 4
-        enc = self.device.create_command_encoder()
-        for name in self._SCENE_RW_SHADER_VARS:
-            enc.copy_buffer(self.renderer.scene_buffers[name], 0, self._regen_buffers[name], 0, copy_bytes_scene)
-        for name in self._ADAM_BUFFER_NAMES:
-            enc.copy_buffer(self._buffers[name], 0, self._regen_buffers[name], 0, copy_bytes_scene)
-        for name in self._DENSITY_STAT_SHADER_VARS:
-            enc.copy_buffer(self._buffers[name], 0, self._regen_buffers[name], 0, copy_bytes_stat)
-        self.device.submit_command_buffer(enc.finish())
-        self.device.wait()
-        self._zero_density_stats()
-
-    def build_scale_histogram_log10(self) -> tuple[np.ndarray, np.ndarray]:
-        self._ensure_histogram_buffers()
-        enc = self.device.create_command_encoder()
-        self._dispatch_clear_scale_histogram(enc)
-        self._dispatch_accumulate_scale_histogram(enc)
-        self.device.submit_command_buffer(enc.finish())
-        self.device.wait()
-        counts = np.frombuffer(self._hist_buffers["scale_histogram"].to_numpy().tobytes(), dtype=np.uint32)[: self._SCALE_HISTOGRAM_BIN_COUNT].copy()
-        edges = np.linspace(self._SCALE_HISTOGRAM_MIN_LOG10, self._SCALE_HISTOGRAM_MAX_LOG10, num=self._SCALE_HISTOGRAM_BIN_COUNT - 1, dtype=np.float32)
-        return counts, edges
-
-    def split_all_gaussians(self) -> None:
-        if self._scene_count <= 0:
-            return
-        self._ensure_regen_buffers(self._scene_count)
-        enc_compact = self.device.create_command_encoder()
-        self._dispatch_compact_scene(enc_compact)
-        self.device.submit_command_buffer(enc_compact.finish())
-        self.device.wait()
-        compacted_count = self._read_output_count()
-        enc_append = self.device.create_command_encoder()
-        self._dispatch_append_regenerated_splats(enc_append, compacted_count, force_split_all=True)
-        self.device.submit_command_buffer(enc_append.finish())
-        self.device.wait()
-        self._apply_regenerated_scene(max(self._read_output_count(), 1))
-
-    def prune_small_gaussians(self, min_scale_threshold: float) -> None:
-        if self._scene_count <= 0:
-            return
-        self._ensure_regen_buffers(self._scene_count)
-        enc_compact = self.device.create_command_encoder()
-        self._dispatch_compact_scene(enc_compact, force_prune_scale_threshold=float(max(min_scale_threshold, 0.0)))
-        self.device.submit_command_buffer(enc_compact.finish())
-        self.device.wait()
-        self._apply_regenerated_scene(max(self._read_output_count(), 1))
-
-    def _update_image_metric_state(self, frame_index: int, mse: float, ssim: float, signal_max: float) -> None:
-        self.state.last_mse = float(mse)
-        idx = int(np.clip(frame_index, 0, len(self.frames) - 1))
-        self._frame_signal_max[idx] = float(signal_max) if np.isfinite(signal_max) and signal_max > 0.0 else np.nan
-        self.state.avg_signal_max = self._mean_finite(self._frame_signal_max)
-        self.state.last_psnr = self._psnr_from_metrics(mse, float(self._frame_signal_max[idx]))
-        self._frame_psnr[idx] = float(self.state.last_psnr) if np.isfinite(self.state.last_psnr) else np.nan
-        self.state.avg_psnr = self._mean_finite(self._frame_psnr)
-        self.state.last_ssim = float(ssim) if np.isfinite(ssim) else float("nan")
-        self._frame_ssim[idx] = float(self.state.last_ssim) if np.isfinite(self.state.last_ssim) else np.nan
-        self.state.avg_ssim = self._mean_finite(self._frame_ssim)
 
     def step(self) -> float:
         frame_index = self._next_frame_index()
@@ -887,40 +343,16 @@ class GaussianTrainer:
         self.device.submit_command_buffer(enc.finish())
         self.device.wait()
 
-        image_loss, image_mse, image_ssim, signal_max = self._read_loss_metrics()
+        image_loss, image_mse = self._read_loss_metrics()
         if not np.isfinite(image_loss):
             self.state.last_instability, loss = "Non-finite loss; ADAM step skipped and moments reset.", float("inf")
             self._zero_optimizer_moments()
         else:
             self.state.last_instability = ""
-            step_index = int(self.state.step + 1)
-            run_densify = self._should_densify(step_index)
-            run_reset_opacity = self._should_reset_opacity(step_index)
-            use_mcmc_regen = run_densify and bool(self.training.mcmc_densify_enabled or self.training.low_quality_reinit_enabled)
             enc_opt = self.device.create_command_encoder()
             self._dispatch_adam_step(enc_opt)
-            self._dispatch_update_densification_stats(enc_opt)
             self.device.submit_command_buffer(enc_opt.finish())
             self.device.wait()
-            if use_mcmc_regen:
-                self._run_mcmc_densify()
-            elif run_densify:
-                self._ensure_regen_buffers(self._scene_count)
-                enc_compact = self.device.create_command_encoder()
-                self._dispatch_compact_scene(enc_compact)
-                self.device.submit_command_buffer(enc_compact.finish())
-                self.device.wait()
-                compacted_count = self._read_output_count()
-                enc_append = self.device.create_command_encoder()
-                self._dispatch_append_regenerated_splats(enc_append, compacted_count)
-                self.device.submit_command_buffer(enc_append.finish())
-                self.device.wait()
-                self._apply_regenerated_scene(max(self._read_output_count(), 1))
-            if run_reset_opacity:
-                enc_reset = self.device.create_command_encoder()
-                self._dispatch_reset_opacity(enc_reset)
-                self.device.submit_command_buffer(enc_reset.finish())
-                self.device.wait()
             loss = self._read_loss_metrics()[0]
             if not np.isfinite(loss):
                 self.state.last_instability, loss = "Non-finite regularized loss after ADAM; using image loss.", image_loss
@@ -928,7 +360,7 @@ class GaussianTrainer:
         self.state.step += 1
         self.state.last_frame_index = frame_index
         self.state.last_loss = float(loss)
+        self.state.last_mse = float(image_mse)
         self._loss_window.push(loss)
         self.state.avg_loss = self._loss_window.mean()
-        self._update_image_metric_state(frame_index, image_mse, image_ssim, signal_max)
         return float(loss)

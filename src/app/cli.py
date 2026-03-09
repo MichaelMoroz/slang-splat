@@ -86,23 +86,7 @@ def _training_params(args: argparse.Namespace):
         scale_l2_weight=args.scale_l2,
         scale_abs_reg_weight=args.scale_abs_reg,
         opacity_reg_weight=args.opacity_reg,
-        lambda_dssim=args.lambda_dssim,
-        mcmc_position_noise_enabled=True,
-        mcmc_densify_enabled=bool(args.mcmc_densify),
-        mcmc_growth_ratio=args.mcmc_growth_ratio,
-        mcmc_position_noise_scale=5e5,
-        mcmc_opacity_gate_sharpness=100.0,
-        mcmc_opacity_gate_center=0.995,
         max_gaussians=args.max_gaussians,
-        densify_from_iter=args.densify_from_iter,
-        densify_until_iter=args.densify_until_iter,
-        densification_interval=args.densification_interval,
-        densify_grad_threshold=args.densify_grad_threshold,
-        percent_dense=args.percent_dense,
-        prune_min_opacity=args.prune_min_opacity,
-        screen_size_prune_threshold=args.screen_size_prune_threshold,
-        world_size_prune_ratio=args.world_size_prune_ratio,
-        opacity_reset_interval=args.opacity_reset_interval,
     )
 
 
@@ -138,7 +122,7 @@ def run_train_colmap(args: argparse.Namespace) -> int:
             elapsed = max(time.perf_counter() - start, 1e-6)
             print(
                 f"step={step + 1:6d} loss={loss:.6e} avg={trainer.state.avg_loss:.6e} "
-                f"psnr={_format_metric(trainer.state.avg_psnr, '.2f')}dB iter/s={(step + 1) / elapsed:.2f} "
+                f"mse={_format_metric(trainer.state.last_mse, '.6e')} iter/s={(step + 1) / elapsed:.2f} "
                 f"instability='{trainer.state.last_instability}'"
             )
         if int(args.snapshot_interval) > 0 and (step + 1) % int(args.snapshot_interval) == 0:
@@ -235,26 +219,12 @@ TRAIN_RENDER_ARGS = tuple(
         ("--scale-l2", 0.0),
         ("--scale-abs-reg", 0.01),
         ("--opacity-reg", 0.01),
-        ("--lambda-dssim", 0.2),
         ("--max-anisotropy", 10.0),
     )
 )
 TRAIN_INIT_ARGS = tuple(
     A(flag, type=float, default=None)
     for flag in ("--init-opacity",)
-)
-TRAIN_DENSITY_ARGS = (
-    A("--densify-from-iter", type=int, default=500),
-    A("--densify-until-iter", type=int, default=25000),
-    A("--densification-interval", type=int, default=100),
-    A("--densify-grad-threshold", type=float, default=0.0),
-    A("--percent-dense", type=float, default=0.01),
-    A("--prune-min-opacity", type=float, default=0.005),
-    A("--screen-size-prune-threshold", type=float, default=20.0),
-    A("--world-size-prune-ratio", type=float, default=0.1),
-    A("--opacity-reset-interval", type=int, default=0),
-    A("--mcmc-densify", action=argparse.BooleanOptionalAction, default=True),
-    A("--mcmc-growth-ratio", type=float, default=0.05),
 )
 COMMANDS = (
     CommandSpec(
@@ -272,7 +242,6 @@ COMMANDS = (
             A("--height", type=int, default=0),
             *COMMON_RENDER_ARGS,
             *TRAIN_RENDER_ARGS,
-            *TRAIN_DENSITY_ARGS,
             A("--bg", type=float, nargs=3, default=(0.0, 0.0, 0.0)),
             *TRAIN_INIT_ARGS,
             A("--log-interval", type=int, default=10),
