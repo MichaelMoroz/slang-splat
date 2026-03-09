@@ -36,6 +36,8 @@ def _reset_loaded_runtime(viewer: object) -> None:
     viewer.s.scene_init_signature = None
     viewer.s.training_active = False
     viewer.s.trainer = None
+    if viewer.s.renderer is not None:
+        viewer.s.renderer.set_debug_grad_norm_buffer(None)
     viewer.s.colmap_point_positions_buffer = viewer.s.colmap_point_colors_buffer = None
     viewer.s.colmap_point_count = 0
     viewer.s.suggested_init_hparams = viewer.s.suggested_init_count = None
@@ -87,9 +89,13 @@ def apply_live_params(viewer: object, force_init_defaults: bool = False) -> None
             for key, value in renderer_kwargs(viewer.renderer_params(allow_debug)).items():
                 setattr(renderer, key, value)
     if viewer.s.renderer is not None:
-        viewer.s.renderer.set_debug_grad_norm_buffer(None)
-        viewer.s.renderer.debug_grad_norm_threshold = 0.0
+        viewer.s.renderer.set_debug_grad_norm_buffer(
+            viewer.s.training_renderer.work_buffers["debug_grad_norm"]
+            if viewer.s.training_renderer is not None and viewer.s.trainer is not None
+            else None
+        )
     if viewer.s.trainer is not None:
+        viewer.s.trainer.compute_debug_grad_norm = bool(viewer.s.renderer is not None and viewer.s.renderer.debug_show_grad_norm)
         _, params, _, _ = resolve_effective_training_setup(viewer)
         viewer.s.trainer.update_hyperparams(params.adam, params.stability, params.training)
 

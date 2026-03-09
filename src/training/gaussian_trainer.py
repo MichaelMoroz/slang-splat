@@ -126,6 +126,7 @@ class GaussianTrainer:
         self.training = pick(training_hparams, TrainingHyperParams())
         self.adam_optimizer = AdamOptimizer(self.device, self.adam, self._adam_runtime_hparams())
         self.optimizer = GaussianOptimizer(self.device, self.renderer, self.adam, self.stability)
+        self.compute_debug_grad_norm = False
         self.state = TrainingState()
         self._loss_window = _RollingMetricWindow(size=max(len(self.frames), 1), values=deque())
         self._kernels = {
@@ -290,6 +291,7 @@ class GaussianTrainer:
             param_settings=self.optimizer.param_settings,
             param_settings_count=self.optimizer.param_settings_count,
             step_index=self.state.step + 1,
+            debug_grad_norm_buffer=self.renderer.work_buffers["debug_grad_norm"] if self.compute_debug_grad_norm else None,
         )
         self.optimizer.dispatch_projection(
             encoder,

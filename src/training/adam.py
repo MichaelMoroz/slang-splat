@@ -21,6 +21,7 @@ class AdamRuntimeHyperParams:
 class AdamOptimizer:
     _RW_BUFFER_USAGE = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
     _clip_threads = staticmethod(lambda count: spy.uint3(int(count), 1, 1))
+    _grad_norm_threads = staticmethod(lambda count: spy.uint3(int(count), 1, 1))
     _param_threads = staticmethod(lambda count: spy.uint3(int(count), 1, 1))
 
     def __init__(self, device: spy.Device, adam_hparams: Any, runtime_hparams: AdamRuntimeHyperParams) -> None:
@@ -34,6 +35,7 @@ class AdamOptimizer:
     def _create_kernels(self) -> dict[str, spy.ComputeKernel]:
         shader_path = Path(SHADER_ROOT / "utility" / "optimizer" / "optimizer.slang")
         entries = {
+            "compute_grad_norms": "csComputePackedSplatGradNorms",
             "clip_grads": "csClipPackedParamGrads",
             "adam_step": "csAdamStepPacked",
         }
@@ -101,6 +103,7 @@ class AdamOptimizer:
         param_settings: spy.Buffer,
         param_settings_count: int,
         step_index: int,
+        debug_grad_norm_buffer: spy.Buffer | None = None,
     ) -> None:
         count = max(int(packed_param_count), 1)
         self._ensure_state_buffers(count)
@@ -110,6 +113,12 @@ class AdamOptimizer:
             **self._optimizer_vars(splat_count, count, param_group_size, param_settings_count, step_index),
         }
         self._kernels["clip_grads"].dispatch(thread_count=self._clip_threads(splat_count), vars=vars, command_encoder=encoder)
+        if debug_grad_norm_buffer is not None:
+            self._kernels["compute_grad_norms"].dispatch(
+                thread_count=self._grad_norm_threads(splat_count),
+                vars={**vars, "g_OptimizerSplatGradNorms": debug_grad_norm_buffer},
+                command_encoder=encoder,
+            )
         self._kernels["adam_step"].dispatch(thread_count=self._param_threads(count), vars=vars, command_encoder=encoder)
 
     @property

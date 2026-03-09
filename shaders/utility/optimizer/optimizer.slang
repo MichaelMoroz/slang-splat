@@ -44,6 +44,7 @@ uniform StructuredBuffer<OptimizerParamSettings> g_OptimizerParamSettings;
 uniform RWStructuredBuffer<float> g_OptimizerParams;
 uniform RWStructuredBuffer<float> g_OptimizerGrads;
 uniform RWStructuredBuffer<float2> g_OptimizerAdamMoments;
+uniform RWStructuredBuffer<float> g_OptimizerSplatGradNorms;
 
 float load_optimizer_grad(uint paramId, uint splatId)
 {
@@ -53,6 +54,22 @@ float load_optimizer_grad(uint paramId, uint splatId)
 void store_optimizer_grad(uint paramId, uint splatId, float value)
 {
     g_OptimizerGrads[splat_param_index(g_OptimizerSplatCount, paramId, splatId)] = value;
+}
+
+[shader("compute")]
+[numthreads(ADAM_GROUP_SIZE, 1, 1)]
+void csComputePackedSplatGradNorms(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint splatId = dispatchThreadID.x;
+    if (splatId >= g_OptimizerSplatCount) return;
+
+    float gradNorm2 = 0.0;
+    [unroll] for (uint paramId = 0u; paramId < g_OptimizerParamSettingsCount; paramId++)
+    {
+        float grad = sanitize_scalar(load_optimizer_grad(paramId, splatId), g_OptimizerParamSettings[paramId].gradClipAbs);
+        gradNorm2 += grad * grad;
+    }
+    g_OptimizerSplatGradNorms[splatId] = sqrt(max(gradNorm2, 0.0));
 }
 
 [shader("compute")]

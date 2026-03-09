@@ -48,6 +48,7 @@ Each trainer `step()` performs:
 6. Run the optimizer pipeline:
    - `csAccumulateRegularizationGrads` adds scale and opacity regularizers on the packed param-major state.
    - `csClipPackedParamGrads` clips gradients from a structured per-parameter settings buffer owned by the optimizer module.
+   - `csComputePackedSplatGradNorms` can optionally reduce the packed gradient vector of each splat into one scalar `L2` norm for debug visualization.
    - `csAdamStepPacked` applies one-thread-per-packed-parameter ADAM using that same settings buffer plus a packed `float2` moments buffer.
    - `csProjectGaussianParams` applies the remaining Gaussian-specific post-step projection (quaternion normalization and anisotropy clamp).
 7. Update host-side rolling loss state and the last-frame MSE metric.
@@ -62,6 +63,7 @@ There is no densification, pruning, opacity reset schedule, MCMC exploration ter
 - `optimizer.slang` owns generic optimizer kernels and tables:
   - packed ADAM,
   - packed gradient clipping,
+  - optional packed per-splat gradient-norm reduction,
   - structured per-parameter settings buffer (`lr`, grad clips, scalar clamp range, group metadata),
   - packed `float2` moments buffer (`m`, `v`).
 - `gaussian_optimizer_stage.slang` owns Gaussian-specific optimizer logic:
@@ -120,4 +122,5 @@ Useful options:
   - set train image directory,
   - initialize training scene,
   - start/stop one-step-per-frame optimization,
-  - live loss and MSE display.
+  - live loss and MSE display,
+  - grad-norm raster debug sourced from the optimizer's per-splat packed-gradient reduction.

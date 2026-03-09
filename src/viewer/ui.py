@@ -135,6 +135,7 @@ def build_ui(screen: object, app: object, renderer: object) -> ViewerUI:
         ControlSpec("sampled5_safety", "slider_float", "MVEE Safety", {"value": float(renderer.sampled5_safety_scale), "min": 1.0, "max": 1.2}),
         ControlSpec("debug_ellipse", "checkbox", "Debug Ellipse Outlines", {"value": bool(renderer.debug_show_ellipses)}),
         ControlSpec("debug_processed_count", "checkbox", "Debug Processed Count", {"value": bool(renderer.debug_show_processed_count)}),
+        ControlSpec("debug_grad_norm", "checkbox", "Debug Grad Norm", {"value": bool(renderer.debug_show_grad_norm)}),
     ):
         controls[spec.key] = WIDGETS[spec.kind](params_group, spec.label, **spec.kwargs)
     spy.ui.Text(panel, "Controls: LMB drag=look | WASDQE=move | Wheel=speed")
