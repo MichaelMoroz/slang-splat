@@ -44,6 +44,28 @@ def update_ui_text(viewer: object, dt: float) -> None:
         viewer.t("training_mse").text = f"MSE: {state.last_mse:.6e}" if np.isfinite(state.last_mse) else "MSE: n/a"
         viewer.t("training_instability").text = state.last_instability
     viewer.t("error").text = f"Error: {viewer.s.last_error}" if viewer.s.last_error else ""
+    _update_toolkit_history(viewer, dt)
+
+
+def _update_toolkit_history(viewer: object, dt: float) -> None:
+    tk = getattr(viewer, "toolkit", None)
+    if tk is None:
+        return
+    tk.tk.fps_history.append(viewer.s.fps_smooth)
+    viewer.ui._values["_loss_debug_frame_max"] = max(len(viewer.s.training_frames) - 1, 0)
+    if viewer.s.trainer is not None:
+        state = viewer.s.trainer.state
+        step = int(state.step)
+        if step > 0 and (not tk.tk.step_history or step != tk.tk.step_history[-1]):
+            tk.tk.step_history.append(step)
+            if np.isfinite(state.avg_loss) and state.avg_loss > 0:
+                tk.tk.loss_history.append(float(state.avg_loss))
+            elif tk.tk.loss_history:
+                tk.tk.loss_history.append(tk.tk.loss_history[-1])
+            if np.isfinite(state.last_mse) and state.last_mse > 0:
+                tk.tk.mse_history.append(float(state.last_mse))
+            elif tk.tk.mse_history:
+                tk.tk.mse_history.append(tk.tk.mse_history[-1])
 
 
 def _render_debug_view(viewer: object, image: spy.Texture, encoder: spy.CommandEncoder, output_width: int, output_height: int) -> None:
