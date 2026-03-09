@@ -76,6 +76,50 @@ def _fit_rendered_gaussian_radius(image: np.ndarray) -> float:
     return float(3.0 * sigma)
 
 
+def _measure_scale_grad_mean(device, frame: ColmapFrame, scale: float, target_scale: float) -> float:
+    background = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+    camera = frame.make_camera(near=0.1, far=20.0)
+    target_renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.0, list_capacity_multiplier=16)
+    target_scene = GaussianScene(
+        positions=np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
+        scales=np.full((1, 3), target_scale, dtype=np.float32),
+        rotations=np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+        opacities=np.array([0.75], dtype=np.float32),
+        colors=np.array([[0.8, 0.6, 0.2]], dtype=np.float32),
+        sh_coeffs=np.zeros((1, 1, 3), dtype=np.float32),
+    )
+    _save_rgb(frame.image_path, target_renderer.render(target_scene, camera, background=background).image)
+
+    train_scene = GaussianScene(
+        positions=target_scene.positions.copy(),
+        scales=np.full((1, 3), scale, dtype=np.float32),
+        rotations=target_scene.rotations.copy(),
+        opacities=target_scene.opacities.copy(),
+        colors=target_scene.colors.copy(),
+        sh_coeffs=target_scene.sh_coeffs.copy(),
+    )
+    renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.0, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=train_scene,
+        frames=[frame],
+        adam_hparams=AdamHyperParams(position_lr=0.0, scale_lr=0.1, rotation_lr=0.0, color_lr=0.0, opacity_lr=0.0),
+        stability_hparams=StabilityHyperParams(max_update=0.5, min_scale=1e-5, max_scale=target_scale * 2.0),
+        training_hparams=TrainingHyperParams(scale_l2_weight=0.0, scale_abs_reg_weight=0.0, opacity_reg_weight=0.0),
+        seed=123,
+    )
+
+    renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
+    enc = device.create_command_encoder()
+    renderer.rasterize_current_scene(enc, camera, background)
+    trainer._dispatch_loss_grad(enc, trainer.get_frame_target_texture(0, native_resolution=False))
+    trainer._dispatch_raster_forward_backward(enc, camera, background)
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+    return float(np.mean(_read_f32x4(renderer.work_buffers["grad_scales"], 1)[0, :3]))
+
+
 def test_training_step_smoke_updates_params_without_changing_count(device, tmp_path: Path):
     scene = _make_scene()
     frame = _make_frame(tmp_path)
@@ -155,6 +199,24 @@ def test_tiny_splat_optimizer_recovers_large_target_scale(device, tmp_path: Path
     assert final_radius > initial_radius
     assert best_radius > initial_radius + 0.2 * target_gap
     assert float(np.mean(scales)) > initial_scale
+
+
+def test_subpixel_scale_gradient_stays_growth_directed_near_pixel_floor(device, tmp_path: Path):
+    frame = _make_frame(tmp_path, image_name="tiny_grad_target.png")
+    camera = frame.make_camera(near=0.1, far=20.0)
+    renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.0, list_capacity_multiplier=16)
+    pixel_floor_scale = camera.pixel_world_size_max(3.0, renderer.width, renderer.height)
+    target_scale = 7.5 * pixel_floor_scale
+    grad_samples = np.asarray(
+        [
+            _measure_scale_grad_mean(device, frame, scale_mul * pixel_floor_scale, target_scale)
+            for scale_mul in (0.95, 1.0, 1.05, 1.2)
+        ],
+        dtype=np.float32,
+    )
+
+    assert np.all(np.isfinite(grad_samples))
+    assert np.all(grad_samples < 0.0)
 
 
 def test_training_targets_use_srgb_textures(device, tmp_path: Path):

@@ -6,6 +6,7 @@ import "utility/math/quaternion.slang";
 static const uint MVEE_POINT_COUNT = 5u;
 static const uint MVEE_MAX_ITERS = 8u;
 static const float SCALE_AREA_PROXY_POWER = 2.0 / 3.0;
+static const float SCALE_FLOOR_SMOOTH_RATIO = 1.0;
 
 struct ScanlineWorkItem
 {
@@ -232,6 +233,14 @@ float scale_area_proxy(float3 scale)
 }
 
 [Differentiable]
+float3 smooth_max_scale(float3 rawScale, float3 minScale)
+{
+    float3 smoothness = max(minScale * SCALE_FLOOR_SMOOTH_RATIO, float3(SMALL_VALUE));
+    float3 delta = rawScale - minScale;
+    return 0.5 * (rawScale + minScale + sqrt(delta * delta + smoothness * smoothness));
+}
+
+[Differentiable]
 float opacity_scale_from_clamp(float3 rawScale, float3 clampedScale)
 {
     float rawArea = scale_area_proxy(rawScale);
@@ -245,7 +254,7 @@ Ellipsoid build_ellipsoid(no_diff CameraParams cameraParams, no_diff float radiu
     PinholeCamera camera = PinholeCamera.from_params(cameraParams);
     float minScaleWorld = minimum_pixel_scale_world(cameraParams, gaussian.position);
     float3 rawScale = max(gaussian.scale * radiusScale, float3(SMALL_VALUE));
-    float3 clampedScale = max(rawScale, float3(minScaleWorld));
+    float3 clampedScale = smooth_max_scale(rawScale, float3(minScaleWorld));
     Ellipsoid ellipsoid;
     ellipsoid.centerWorld = gaussian.position;
     ellipsoid.scale = clampedScale;

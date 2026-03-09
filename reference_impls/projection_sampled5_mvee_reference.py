@@ -14,6 +14,7 @@ STATUS_MVEE_REGULARIZED = np.uint32(1 << 2)
 STATUS_MVEE_DEGENERATE = np.uint32(1 << 3)
 STATUS_HARD_FALLBACK = np.uint32(1 << 4)
 _TAU = np.float32(2.0 * np.pi)
+_SCALE_FLOOR_SMOOTH_RATIO = np.float32(1.0)
 
 
 @dataclass(slots=True)
@@ -43,6 +44,12 @@ def _quat_rotate(v: np.ndarray, q_wxyz: np.ndarray) -> np.ndarray:
 
 def _quat_conj(q_wxyz: np.ndarray) -> np.ndarray:
     return np.array([q_wxyz[0], -q_wxyz[1], -q_wxyz[2], -q_wxyz[3]], dtype=np.float32)
+
+
+def _smooth_max_scale(raw_scale: np.ndarray, min_scale: np.ndarray) -> np.ndarray:
+    smoothness = np.maximum(np.asarray(min_scale, dtype=np.float32) * _SCALE_FLOOR_SMOOTH_RATIO, np.float32(1e-6))
+    delta = np.asarray(raw_scale, dtype=np.float32) - np.asarray(min_scale, dtype=np.float32)
+    return (0.5 * (np.asarray(raw_scale, dtype=np.float32) + np.asarray(min_scale, dtype=np.float32) + np.sqrt(delta * delta + smoothness * smoothness))).astype(np.float32)
 
 
 def _silhouette_points_local5(ro_local: np.ndarray, eps: float) -> tuple[np.ndarray, bool]:
@@ -193,7 +200,8 @@ def project_splats_sampled5_mvee(
         )
         q = quat[i]
         min_scale_world = np.float32(camera.pixel_world_size_max(depth_value, width, height))
-        scale = np.maximum(scene.scales[i].astype(np.float32).copy() * np.float32(radius_scale), min_scale_world)
+        raw_scale = np.maximum(scene.scales[i].astype(np.float32).copy() * np.float32(radius_scale), np.float32(1e-6))
+        scale = _smooth_max_scale(raw_scale, np.full((3,), min_scale_world, dtype=np.float32))
         fallback_radius = float(np.clip((fallback_focal * float(np.max(scale)) / max(depth_value, 1e-6)) * float(safety_scale) + float(radius_pad_px), 1.0, radius_cap))
         invs = 1.0 / np.maximum(scale, np.float32(1e-6))
         ro_local = (_quat_rotate(camera.position - world_pos, q) * invs).astype(np.float32)
