@@ -56,6 +56,10 @@ def _panel_rect(width: int, height: int, menu_bar_height: float) -> tuple[float,
     return 0.0, top, panel_width, max(float(height) - top, 1.0)
 
 
+def _menu_item(label: str, shortcut: str = "", selected: bool = False, enabled: bool = True) -> bool:
+    return bool(imgui.menu_item(label, shortcut, selected, enabled)[0])
+
+
 @dataclass(frozen=True, slots=True)
 class ControlSpec:
     key: str
@@ -349,24 +353,24 @@ class ToolkitWindow:
         if not imgui.begin_main_menu_bar():
             return 0.0
         if imgui.begin_menu("File"):
-            if imgui.menu_item("Load PLY...")[0]:
+            if _menu_item("Load PLY..."):
                 self.callbacks.load_ply()
-            if imgui.menu_item("Load COLMAP...")[0]:
+            if _menu_item("Load COLMAP..."):
                 self.callbacks.load_colmap()
-            if imgui.menu_item("Reload")[0]:
+            if _menu_item("Reload"):
                 self.callbacks.reload()
             imgui.separator()
-            if imgui.menu_item("Reinitialize Gaussians")[0]:
+            if _menu_item("Reinitialize Gaussians"):
                 self.callbacks.reinitialize()
             imgui.end_menu()
         if imgui.begin_menu("Help"):
-            if imgui.menu_item("Documentation")[0]:
+            if _menu_item("Documentation"):
                 self._show_docs = True
-            if imgui.menu_item("About")[0]:
+            if _menu_item("About"):
                 self._show_about = True
             imgui.end_menu()
         menu_bar_height = float(imgui.get_window_height())
-        imgui.end_menu_bar()
+        imgui.end_main_menu_bar()
         return menu_bar_height
 
     def _draw_about_window(self) -> None:
