@@ -17,3 +17,12 @@ def test_documentation_text_loads_local_viewer_doc() -> None:
     assert "Viewer Documentation" in text
     assert "Frame Flow" in text
     assert "Input Routing" in text
+
+
+def test_panel_rect_starts_below_menu_bar() -> None:
+    x, y, w, h = ui._panel_rect(1600, 900, 24.0)
+
+    assert x == 0.0
+    assert y == 24.0
+    assert w == 280.0
+    assert h == 876.0

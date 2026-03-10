@@ -50,6 +50,12 @@ def _build_documentation_text() -> str:
     return text if text else "Documentation is unavailable."
 
 
+def _panel_rect(width: int, height: int, menu_bar_height: float) -> tuple[float, float, float, float]:
+    panel_width = float(max(int(width * TOOLKIT_WIDTH_FRACTION), 280))
+    top = max(float(menu_bar_height), 0.0)
+    return 0.0, top, panel_width, max(float(height) - top, 1.0)
+
+
 @dataclass(frozen=True, slots=True)
 class ControlSpec:
     key: str
@@ -231,6 +237,7 @@ class ToolkitWindow:
         self._show_docs = False
         self._about_text = _build_about_text()
         self._documentation_text = _build_documentation_text()
+        self._menu_bar_height = 0.0
 
     def _set_current_context(self) -> None:
         imgui.set_current_context(self.ctx)
@@ -306,6 +313,7 @@ class ToolkitWindow:
         self._last_frame_time = now
         self._set_current_context()
         simgui.begin_frame(width, height, dt)
+        self._menu_bar_height = self._draw_main_menu_bar()
         self._draw_panel(ui, width, height)
         imgui.render()
         draw_data = imgui.get_draw_data()
@@ -313,12 +321,10 @@ class ToolkitWindow:
         simgui.render_imgui_draw_data(self.renderer, draw_data, surface_texture, command_encoder)
 
     def _draw_panel(self, ui: ViewerUI, width: int, height: int) -> None:
-        panel_width = max(int(width * TOOLKIT_WIDTH_FRACTION), 280)
-        imgui.set_next_window_pos(imgui.ImVec2(0.0, 0.0))
-        imgui.set_next_window_size(imgui.ImVec2(float(panel_width), float(height)))
+        panel_x, panel_y, panel_width, panel_height = _panel_rect(width, height, self._menu_bar_height)
+        imgui.set_next_window_pos(imgui.ImVec2(panel_x, panel_y))
+        imgui.set_next_window_size(imgui.ImVec2(panel_width, panel_height))
         flags = (
-            imgui.WindowFlags_.menu_bar.value
-            |
             imgui.WindowFlags_.no_title_bar.value
             | imgui.WindowFlags_.no_resize.value
             | imgui.WindowFlags_.no_move.value
@@ -326,7 +332,6 @@ class ToolkitWindow:
             | imgui.WindowFlags_.no_bring_to_front_on_focus.value
         )
         imgui.begin("##Toolkit", flags=flags)
-        self._draw_menu_bar()
         self._section_performance(ui)
         self._section_status(ui)
         self._section_scene_io(ui)
@@ -340,9 +345,9 @@ class ToolkitWindow:
         self._draw_about_window()
         self._draw_documentation_window()
 
-    def _draw_menu_bar(self) -> None:
-        if not imgui.begin_menu_bar():
-            return
+    def _draw_main_menu_bar(self) -> float:
+        if not imgui.begin_main_menu_bar():
+            return 0.0
         if imgui.begin_menu("File"):
             if imgui.menu_item("Load PLY...")[0]:
                 self.callbacks.load_ply()
@@ -360,11 +365,14 @@ class ToolkitWindow:
             if imgui.menu_item("About")[0]:
                 self._show_about = True
             imgui.end_menu()
+        menu_bar_height = float(imgui.get_window_height())
         imgui.end_menu_bar()
+        return menu_bar_height
 
     def _draw_about_window(self) -> None:
         if not self._show_about:
             return
+        imgui.set_next_window_pos(imgui.ImVec2(24.0, self._menu_bar_height + 24.0), imgui.Cond_.first_use_ever.value)
         imgui.set_next_window_size(imgui.ImVec2(420.0, 220.0), imgui.Cond_.first_use_ever.value)
         opened, self._show_about = imgui.begin("About", True)
         if opened:
@@ -374,6 +382,7 @@ class ToolkitWindow:
     def _draw_documentation_window(self) -> None:
         if not self._show_docs:
             return
+        imgui.set_next_window_pos(imgui.ImVec2(40.0, self._menu_bar_height + 32.0), imgui.Cond_.first_use_ever.value)
         imgui.set_next_window_size(imgui.ImVec2(760.0, 620.0), imgui.Cond_.first_use_ever.value)
         opened, self._show_docs = imgui.begin("Documentation", True)
         if opened:

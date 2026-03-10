@@ -8,6 +8,7 @@ The overlay uses a left-side control panel with a menu bar:
 
 - `File`: scene load, reload, and gaussian reinitialization actions
 - `Help`: `Documentation` and `About` windows
+- The menu bar spans the full viewport width and the left control panel starts below it to avoid overlap.
 
 `src/viewer` is split into:
 - `app.py`: window lifecycle, camera input, and UI event routing
