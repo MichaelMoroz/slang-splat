@@ -562,6 +562,24 @@ class GaussianRenderer:
         flat = self._read_array(self._scene_buffers["splat_params"], np.float32, max(count, 1) * self.TRAINABLE_PARAM_COUNT)
         return self._unpack_param_groups(flat, count)
 
+    def write_scene_groups(
+        self,
+        splat_count: int,
+        *,
+        positions: np.ndarray,
+        scales: np.ndarray,
+        rotations: np.ndarray,
+        color_alpha: np.ndarray,
+    ) -> None:
+        packed = self._pack_param_groups(
+            splat_count,
+            positions=positions,
+            scales=scales,
+            rotations=rotations,
+            color_alpha=color_alpha,
+        )
+        self._scene_buffers["splat_params"].copy_from_numpy(packed)
+
     def read_grad_groups(self, splat_count: int | None = None) -> dict[str, np.ndarray]:
         count = self._scene_count if splat_count is None else int(splat_count)
         flat = self._read_array(self._work_buffers["param_grads"], np.float32, max(count, 1) * self.TRAINABLE_PARAM_COUNT)
