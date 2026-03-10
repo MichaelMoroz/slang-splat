@@ -4,6 +4,11 @@
 
 The realtime viewer is a single `spy.AppWindow` that renders both the Gaussian scene and the control UI into the same swapchain image.
 
+The overlay uses a left-side control panel with a menu bar:
+
+- `File`: scene load, reload, and gaussian reinitialization actions
+- `Help`: `Documentation` and `About` windows
+
 `src/viewer` is split into:
 - `app.py`: window lifecycle, camera input, and UI event routing
 - `ui.py`: `imgui_bundle` overlay state, widget layout, and draw-data submission

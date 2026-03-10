@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field
 from functools import partial
+from pathlib import Path
 from types import SimpleNamespace
 import time
 
@@ -17,6 +18,36 @@ TOOLKIT_WIDTH_FRACTION = 0.15
 VIEW_WIDTH_FRACTION = 0.85
 LOSS_HISTORY_SIZE = 512
 FPS_HISTORY_SIZE = 128
+_DOC_MAX_WIDTH = 104
+_SHORTCUTS_TEXT = "Controls: LMB drag look | WASDQE move | wheel speed"
+
+
+def _read_text_if_exists(path: Path) -> str:
+    return path.read_text(encoding="utf-8") if path.exists() else ""
+
+
+def _build_about_text() -> str:
+    return "\n".join(
+        (
+            "Slang Splat Viewer",
+            "",
+            "Single-window Gaussian splat viewer and trainer built on Slangpy.",
+            "The scene and imgui_bundle UI are rendered into the same swapchain image.",
+            "",
+            _SHORTCUTS_TEXT,
+        )
+    )
+
+
+def _build_documentation_text() -> str:
+    repo_root = Path(__file__).resolve().parents[2]
+    parts = [
+        "Viewer Documentation",
+        "",
+        _read_text_if_exists(repo_root / "doc" / "Viewer.md").strip(),
+    ]
+    text = "\n\n".join(part for part in parts if part)
+    return text if text else "Documentation is unavailable."
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,6 +227,10 @@ class ToolkitWindow:
         self._alive = True
         self._frame_textures: list[spy.Texture] = []
         self._last_frame_time = time.perf_counter()
+        self._show_about = False
+        self._show_docs = False
+        self._about_text = _build_about_text()
+        self._documentation_text = _build_documentation_text()
 
     def _set_current_context(self) -> None:
         imgui.set_current_context(self.ctx)
@@ -282,6 +317,8 @@ class ToolkitWindow:
         imgui.set_next_window_pos(imgui.ImVec2(0.0, 0.0))
         imgui.set_next_window_size(imgui.ImVec2(float(panel_width), float(height)))
         flags = (
+            imgui.WindowFlags_.menu_bar.value
+            |
             imgui.WindowFlags_.no_title_bar.value
             | imgui.WindowFlags_.no_resize.value
             | imgui.WindowFlags_.no_move.value
@@ -289,6 +326,7 @@ class ToolkitWindow:
             | imgui.WindowFlags_.no_bring_to_front_on_focus.value
         )
         imgui.begin("##Toolkit", flags=flags)
+        self._draw_menu_bar()
         self._section_performance(ui)
         self._section_status(ui)
         self._section_scene_io(ui)
@@ -298,6 +336,54 @@ class ToolkitWindow:
         self._section_optimizer(ui)
         self._section_stability(ui)
         self._section_render_params(ui)
+        imgui.end()
+        self._draw_about_window()
+        self._draw_documentation_window()
+
+    def _draw_menu_bar(self) -> None:
+        if not imgui.begin_menu_bar():
+            return
+        if imgui.begin_menu("File"):
+            if imgui.menu_item("Load PLY...")[0]:
+                self.callbacks.load_ply()
+            if imgui.menu_item("Load COLMAP...")[0]:
+                self.callbacks.load_colmap()
+            if imgui.menu_item("Reload")[0]:
+                self.callbacks.reload()
+            imgui.separator()
+            if imgui.menu_item("Reinitialize Gaussians")[0]:
+                self.callbacks.reinitialize()
+            imgui.end_menu()
+        if imgui.begin_menu("Help"):
+            if imgui.menu_item("Documentation")[0]:
+                self._show_docs = True
+            if imgui.menu_item("About")[0]:
+                self._show_about = True
+            imgui.end_menu()
+        imgui.end_menu_bar()
+
+    def _draw_about_window(self) -> None:
+        if not self._show_about:
+            return
+        imgui.set_next_window_size(imgui.ImVec2(420.0, 220.0), imgui.Cond_.first_use_ever.value)
+        opened, self._show_about = imgui.begin("About", True)
+        if opened:
+            imgui.text_wrapped(self._about_text)
+        imgui.end()
+
+    def _draw_documentation_window(self) -> None:
+        if not self._show_docs:
+            return
+        imgui.set_next_window_size(imgui.ImVec2(760.0, 620.0), imgui.Cond_.first_use_ever.value)
+        opened, self._show_docs = imgui.begin("Documentation", True)
+        if opened:
+            imgui.text_disabled("Local viewer documentation")
+            imgui.separator()
+            if imgui.begin_child("##docs_scroll", imgui.ImVec2(0.0, 0.0), imgui.ChildFlags_.borders.value):
+                imgui.push_text_wrap_pos(_DOC_MAX_WIDTH * imgui.get_font_size() * 0.5)
+                imgui.text_unformatted(self._documentation_text)
+                imgui.pop_text_wrap_pos()
+                imgui.end_child()
         imgui.end()
 
     # -- Sections --
@@ -376,19 +462,8 @@ class ToolkitWindow:
     def _section_scene_io(self, ui: ViewerUI) -> None:
         if not imgui.collapsing_header("Scene I/O", imgui.TreeNodeFlags_.default_open.value):
             return
-        btn_w = imgui.get_content_region_avail().x
-        if imgui.button("Load PLY...", imgui.ImVec2(btn_w, 0)):
-            self.callbacks.load_ply()
-        if imgui.is_item_hovered():
-            imgui.set_item_tooltip("Load a pre-trained .ply splat file for viewing")
-        if imgui.button("Load COLMAP...", imgui.ImVec2(btn_w, 0)):
-            self.callbacks.load_colmap()
-        if imgui.is_item_hovered():
-            imgui.set_item_tooltip("Load a COLMAP dataset folder for training")
-        if imgui.button("Reload", imgui.ImVec2(btn_w, 0)):
-            self.callbacks.reload()
-        if imgui.is_item_hovered():
-            imgui.set_item_tooltip("Reload the current scene from disk")
+        imgui.text_disabled("Use File for scene load and reload actions.")
+        imgui.text_disabled("Use Help for About and Documentation.")
 
         # Combo for image directory selection
         imgui.spacing()
