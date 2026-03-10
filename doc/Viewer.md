@@ -32,3 +32,11 @@ Keyboard and mouse events are forwarded to the overlay first.
 - If ImGui does not capture the event, the existing camera controls run unchanged.
 
 This avoids camera movement while using sliders, combo boxes, text inputs, plot interactions, or scrollable UI regions.
+
+## Training Metrics
+
+The training panel shows both short-horizon and run-level throughput data.
+
+- `Iter/s` in the status and plot sections is computed from the recent history window used for viewer plots.
+- `Avg it/s` in the training table is computed from total optimizer steps divided by total accumulated active training time for the current initialized scene.
+- `Time` is pause/resume-aware and accumulates only while training is active.

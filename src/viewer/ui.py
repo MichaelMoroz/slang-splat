@@ -434,13 +434,15 @@ class ToolkitWindow:
             return
         # Training info in compact table
         training_text = ui._texts.get("training", "Training: not initialized")
+        time_text = ui._texts.get("training_time", "Time: n/a")
+        avg_iters_text = ui._texts.get("training_iters_avg", "Avg it/s: n/a")
         loss_text = ui._texts.get("training_loss", "Loss Avg: n/a")
         mse_text = ui._texts.get("training_mse", "MSE: n/a")
         psnr_text = ui._texts.get("training_psnr", "PSNR: n/a")
         if imgui.begin_table("##train_info", 2, imgui.TableFlags_.sizing_stretch_same.value):
             imgui.table_setup_column("L", imgui.TableColumnFlags_.width_fixed.value, 50)
             imgui.table_setup_column("V")
-            for label, text in (("Step", training_text), ("Loss", loss_text), ("MSE", mse_text), ("PSNR", psnr_text)):
+            for label, text in (("Step", training_text), ("Time", time_text), ("Avg", avg_iters_text), ("Loss", loss_text), ("MSE", mse_text), ("PSNR", psnr_text)):
                 imgui.table_next_row()
                 imgui.table_next_column()
                 imgui.text_disabled(label)
@@ -759,7 +761,7 @@ def build_ui(renderer) -> ViewerUI:
     texts: dict[str, str] = {
         key: "" for key in (
             "fps", "path", "scene_stats", "render_stats", "training",
-            "training_loss", "training_mse", "training_psnr", "training_instability", "error",
+            "training_time", "training_iters_avg", "training_loss", "training_mse", "training_psnr", "training_instability", "error",
             "images_subdir", "loss_debug_view", "loss_debug_frame",
             "setup_hint", "stability_hint",
         )

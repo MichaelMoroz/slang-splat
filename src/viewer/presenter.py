@@ -15,6 +15,13 @@ _DEFAULT_TRAINING_STEPS_PER_FRAME = 1
 _MAX_TRAINING_STEPS_PER_FRAME = 8
 
 
+def _format_duration(seconds: float) -> str:
+    total_seconds = max(int(seconds), 0)
+    hours, rem = divmod(total_seconds, 3600)
+    minutes, secs = divmod(rem, 60)
+    return f"{hours:d}:{minutes:02d}:{secs:02d}" if hours > 0 else f"{minutes:02d}:{secs:02d}"
+
+
 def _debug_frame_idx(viewer: object) -> int:
     return clamp_index(int(viewer.c("loss_debug_frame").value), len(viewer.s.training_frames))
 
@@ -101,6 +108,8 @@ def update_ui_text(viewer: object, dt: float) -> None:
     viewer.t("render_stats").text = "Generated: 0 | Written: 0" if not stats else f"Generated: {int(stats['generated_entries']):,} | Written: {int(stats['written_entries']):,} | Overflow: {bool(stats['overflow'])}{' [cap]' if bool(stats.get('capacity_limited', False)) else ''}{' (delayed)' if bool(stats.get('stats_latency_frames', 0)) else ''}{'' if bool(stats.get('stats_valid', True)) else ' [warming]'}"
     if viewer.s.trainer is None:
         viewer.t("training").text = "Training: not initialized"
+        viewer.t("training_time").text = "Time: n/a"
+        viewer.t("training_iters_avg").text = "Avg it/s: n/a"
         viewer.t("training_loss").text = "Loss Avg: n/a"
         viewer.t("training_mse").text = "MSE Avg: n/a"
         viewer.t("training_psnr").text = "PSNR Avg: n/a"
@@ -109,7 +118,11 @@ def update_ui_text(viewer: object, dt: float) -> None:
         state = viewer.s.trainer.state
         batch_steps = int(getattr(viewer.s, "last_training_batch_steps", 0))
         batch_text = f" | batch={batch_steps}" if viewer.s.training_active else ""
+        training_elapsed_s = float(session.training_elapsed_seconds(viewer, now=viewer.s.last_time))
+        avg_iters_s = float(state.step) / training_elapsed_s if training_elapsed_s > 1e-6 else 0.0
         viewer.t("training").text = f"Training: {'running' if viewer.s.training_active else 'paused'} | step={state.step:,} | frame={state.last_frame_index} | splats={int(current_splat_count):,}{batch_text}"
+        viewer.t("training_time").text = f"Time: {_format_duration(training_elapsed_s)}"
+        viewer.t("training_iters_avg").text = f"Avg it/s: {avg_iters_s:.2f}" if training_elapsed_s > 1e-6 else "Avg it/s: n/a"
         viewer.t("training_loss").text = f"Loss Avg: {state.avg_loss:.6e}"
         viewer.t("training_mse").text = f"MSE Avg: {state.avg_mse:.6e}" if np.isfinite(state.avg_mse) else "MSE Avg: n/a"
         viewer.t("training_psnr").text = f"PSNR Avg: {state.avg_psnr:.3f} dB" if np.isfinite(state.avg_psnr) else "PSNR Avg: inf" if state.avg_psnr == float("inf") else "PSNR Avg: n/a"

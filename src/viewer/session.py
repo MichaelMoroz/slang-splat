@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+import time
 
 import numpy as np
 import slangpy as spy
@@ -45,6 +46,8 @@ def _reset_loss_debug(viewer: object) -> None:
 def _reset_loaded_runtime(viewer: object) -> None:
     viewer.s.scene_init_signature = None
     viewer.s.training_active = False
+    viewer.s.training_elapsed_s = 0.0
+    viewer.s.training_resume_time = None
     viewer.s.trainer = None
     if viewer.s.renderer is not None:
         viewer.s.renderer.set_debug_grad_norm_buffer(None)
@@ -197,13 +200,32 @@ def initialize_training_scene(viewer: object) -> None:
     renderer.copy_scene_state_to(enc, viewer.s.renderer)
     viewer.device.submit_command_buffer(enc.finish())
     viewer.s.training_active = False
+    viewer.s.training_elapsed_s = 0.0
+    viewer.s.training_resume_time = None
     _invalidate(viewer)
     viewer.s.scene_init_signature = _scene_signature(viewer)
     update_debug_frame_slider_range(viewer)
     _reset_loss_debug(viewer)
     viewer.s.last_error = ""
     print(f"Initialized training scene ({scene.count:,} gaussians, profile={profile.name})")
+
+
+def training_elapsed_seconds(viewer: object, now: float | None = None) -> float:
+    elapsed = float(getattr(viewer.s, "training_elapsed_s", 0.0))
+    resume_time = getattr(viewer.s, "training_resume_time", None)
+    if viewer.s.training_active and resume_time is not None:
+        current_time = float(time.perf_counter() if now is None else now)
+        elapsed += max(current_time - float(resume_time), 0.0)
+    return elapsed
+
+
 def set_training_active(viewer: object, active: bool) -> None:
     if active and viewer.s.trainer is None:
         initialize_training_scene(viewer)
+    now = float(time.perf_counter())
+    if viewer.s.training_active and viewer.s.training_resume_time is not None:
+        viewer.s.training_elapsed_s += max(now - float(viewer.s.training_resume_time), 0.0)
+        viewer.s.training_resume_time = None
     viewer.s.training_active = bool(active and viewer.s.trainer is not None)
+    if viewer.s.training_active:
+        viewer.s.training_resume_time = now

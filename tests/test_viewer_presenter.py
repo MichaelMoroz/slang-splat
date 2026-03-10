@@ -58,7 +58,7 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         "images_subdir": _control(0),
         "training_steps_per_frame": _control(1),
     }
-    texts = {key: _text() for key in ("fps", "images_subdir", "loss_debug_view", "loss_debug_frame", "path", "scene_stats", "render_stats", "training", "training_loss", "training_mse", "training_psnr", "training_instability", "error")}
+    texts = {key: _text() for key in ("fps", "images_subdir", "loss_debug_view", "loss_debug_frame", "path", "scene_stats", "render_stats", "training", "training_time", "training_iters_avg", "training_loss", "training_mse", "training_psnr", "training_instability", "error")}
     viewer = SimpleNamespace()
     viewer.device = SimpleNamespace()
     viewer.loss_debug_view_options = (("rendered", "Rendered"), ("target", "Target"), ("abs_diff", "Abs Diff"))
@@ -82,6 +82,8 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         training_active=True,
         training_renderer=_DummyRenderer(),
         background=(0.0, 0.0, 0.0),
+        training_elapsed_s=0.0,
+        training_resume_time=None,
         last_render_exception="",
         last_error="",
         last_training_batch_steps=0,
@@ -150,9 +152,13 @@ def test_update_ui_text_uses_permutation_averages() -> None:
     viewer.s.trainer.state.avg_loss = 1.25
     viewer.s.trainer.state.avg_mse = 2.5e-3
     viewer.s.trainer.state.avg_psnr = 26.75
+    viewer.s.trainer.state.step = 120
+    viewer.s.training_elapsed_s = 30.0
 
     presenter.update_ui_text(viewer, 1.0 / 60.0)
 
+    assert viewer.t("training_time").text == "Time: 00:30"
+    assert viewer.t("training_iters_avg").text == "Avg it/s: 4.00"
     assert viewer.t("training_loss").text == "Loss Avg: 1.250000e+00"
     assert viewer.t("training_mse").text == "MSE Avg: 2.500000e-03"
     assert viewer.t("training_psnr").text == "PSNR Avg: 26.750 dB"
