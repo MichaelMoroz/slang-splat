@@ -4,10 +4,11 @@ from collections import deque
 from dataclasses import dataclass, field
 from functools import partial
 from types import SimpleNamespace
+import time
 
 import numpy as np
-import glfw
-import OpenGL.GL as gl
+import slangpy as spy
+import slangpy.ui.imgui_bundle as simgui
 from imgui_bundle import imgui, implot
 
 from .state import DEFAULT_IMAGE_SUBDIR_INDEX, IMAGE_SUBDIR_OPTIONS, LOSS_DEBUG_OPTIONS
@@ -161,7 +162,7 @@ def _noop() -> None:
 
 
 class ToolkitWindow:
-    """GLFW + OpenGL3 + Dear ImGui toolkit window (left panel)."""
+    """Dear ImGui overlay rendered into the active Slangpy AppWindow surface."""
 
     @staticmethod
     def _iters_per_second(step_history: deque, step_time_history: deque) -> float:
@@ -175,33 +176,14 @@ class ToolkitWindow:
             return 0.0
         return float(max(steps[-1] - steps[0], 0.0) / dt)
 
-    def __init__(self, width: int, height: int, x: int, y: int, title: str = "Splat Toolkit"):
-        if not glfw.init():
-            raise RuntimeError("Failed to initialize GLFW")
-        glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 3)
-        glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 3)
-        glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
-        glfw.window_hint(glfw.OPENGL_FORWARD_COMPAT, glfw.TRUE)
-        glfw.window_hint(glfw.RESIZABLE, glfw.TRUE)
-        self.window = glfw.create_window(width, height, title, None, None)
-        if not self.window:
-            glfw.terminate()
-            raise RuntimeError("Failed to create GLFW window")
-        glfw.set_window_pos(self.window, x, y)
-        glfw.make_context_current(self.window)
-        glfw.swap_interval(0)
-
-        self.ctx = imgui.create_context()
-        implot.create_context()
+    def __init__(self, device: spy.Device, width: int, height: int):
+        self.device = device
+        self.ctx = simgui.create_imgui_context(width, height)
         imgui.set_current_context(self.ctx)
-        io = imgui.get_io()
-        io.config_flags |= imgui.ConfigFlags_.docking_enable.value
-
-        from imgui_bundle.python_backends.glfw_backend import GlfwRenderer
-        self.impl = GlfwRenderer(self.window, attach_callbacks=True)
-
+        implot.create_context()
+        imgui.get_io().config_flags |= imgui.ConfigFlags_.docking_enable.value
+        self.renderer = spy.ui.Context(device)
         self._apply_theme()
-
         self.callbacks = SimpleNamespace(
             load_ply=_noop,
             load_colmap=_noop,
@@ -212,8 +194,14 @@ class ToolkitWindow:
         )
         self.tk = ToolkitState()
         self._alive = True
+        self._frame_textures: list[spy.Texture] = []
+        self._last_frame_time = time.perf_counter()
+
+    def _set_current_context(self) -> None:
+        imgui.set_current_context(self.ctx)
 
     def _apply_theme(self):
+        self._set_current_context()
         imgui.style_colors_dark()
         style = imgui.get_style()
         style.window_rounding = 4.0
@@ -259,28 +247,40 @@ class ToolkitWindow:
 
     @property
     def alive(self) -> bool:
-        return self._alive and not glfw.window_should_close(self.window)
+        return self._alive
 
-    def tick(self, ui: ViewerUI) -> None:
-        if not self.alive:
+    def handle_keyboard_event(self, event) -> bool:
+        if not self._alive:
+            return False
+        self._set_current_context()
+        return bool(simgui.handle_keyboard_event(event))
+
+    def handle_mouse_event(self, event) -> bool:
+        if not self._alive:
+            return False
+        self._set_current_context()
+        return bool(simgui.handle_mouse_event(event))
+
+    def render(self, ui: ViewerUI, surface_texture: spy.Texture, command_encoder: spy.CommandEncoder) -> None:
+        if not self._alive:
             return
-        glfw.make_context_current(self.window)
-        glfw.poll_events()
-        self.impl.process_inputs()
-        imgui.new_frame()
-        self._draw_panel(ui)
+        width = int(surface_texture.width)
+        height = int(surface_texture.height)
+        now = time.perf_counter()
+        dt = max(now - self._last_frame_time, 1e-5)
+        self._last_frame_time = now
+        self._set_current_context()
+        simgui.begin_frame(width, height, dt)
+        self._draw_panel(ui, width, height)
         imgui.render()
-        w, h = glfw.get_framebuffer_size(self.window)
-        gl.glViewport(0, 0, w, h)
-        gl.glClearColor(0.08, 0.08, 0.10, 1.0)
-        gl.glClear(gl.GL_COLOR_BUFFER_BIT)
-        self.impl.render(imgui.get_draw_data())
-        glfw.swap_buffers(self.window)
+        draw_data = imgui.get_draw_data()
+        self._frame_textures = simgui.sync_draw_data_textures(self.device, self.renderer, draw_data)
+        simgui.render_imgui_draw_data(self.renderer, draw_data, surface_texture, command_encoder)
 
-    def _draw_panel(self, ui: ViewerUI) -> None:
-        vp = imgui.get_main_viewport()
-        imgui.set_next_window_pos(vp.pos)
-        imgui.set_next_window_size(vp.size)
+    def _draw_panel(self, ui: ViewerUI, width: int, height: int) -> None:
+        panel_width = max(int(width * TOOLKIT_WIDTH_FRACTION), 280)
+        imgui.set_next_window_pos(imgui.ImVec2(0.0, 0.0))
+        imgui.set_next_window_size(imgui.ImVec2(float(panel_width), float(height)))
         flags = (
             imgui.WindowFlags_.no_title_bar.value
             | imgui.WindowFlags_.no_resize.value
@@ -731,11 +731,10 @@ class ToolkitWindow:
         if not self._alive:
             return
         self._alive = False
-        imgui.set_current_context(self.ctx)
+        self._frame_textures.clear()
+        self._set_current_context()
         implot.destroy_context()
-        self.impl.shutdown()
         imgui.destroy_context(self.ctx)
-        glfw.destroy_window(self.window)
 
 
 def build_ui(renderer) -> ViewerUI:
@@ -768,16 +767,5 @@ def build_ui(renderer) -> ViewerUI:
     return ViewerUI(_values=values, _texts=texts)
 
 
-def create_toolkit_window() -> ToolkitWindow:
-    """Create the ImGui toolkit window positioned on the left side of the primary monitor."""
-    if not glfw.init():
-        raise RuntimeError("Failed to initialize GLFW for monitor query")
-    monitor = glfw.get_primary_monitor()
-    if monitor:
-        mode = glfw.get_video_mode(monitor)
-        screen_w, screen_h = mode.size.width, mode.size.height
-    else:
-        screen_w, screen_h = 1920, 1080
-    tk_w = max(int(screen_w * TOOLKIT_WIDTH_FRACTION), 280)
-    tk_h = screen_h - 80
-    return ToolkitWindow(width=tk_w, height=tk_h, x=0, y=0)
+def create_toolkit_window(device: spy.Device, width: int, height: int) -> ToolkitWindow:
+    return ToolkitWindow(device=device, width=width, height=height)

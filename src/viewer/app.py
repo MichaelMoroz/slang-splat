@@ -17,7 +17,7 @@ from .state import (
     DEFAULT_MAX_PREPASS_MEMORY_MB, DEFAULT_VIEWER_BACKGROUND,
     IMAGE_SUBDIR_OPTIONS, LOSS_DEBUG_OPTIONS, ViewerState,
 )
-from .ui import build_ui, create_toolkit_window, default_control_values, VIEW_WIDTH_FRACTION, TOOLKIT_WIDTH_FRACTION
+from .ui import build_ui, create_toolkit_window, default_control_values
 
 _VIEW_VEC_EPS = 1e-6
 _SCROLL_SPEED_BASE = 1.1
@@ -128,6 +128,10 @@ class SplatViewer(spy.AppWindow):
         self.s.rot_vel = spy.float2(0.0, 0.0)
 
     def on_keyboard_event(self, event) -> None:
+        if self.toolkit.handle_keyboard_event(event):
+            if event.type == spy.KeyboardEventType.key_release:
+                self.s.keys[event.key] = False
+            return
         if event.type in (spy.KeyboardEventType.key_press, spy.KeyboardEventType.key_release):
             self.s.keys[event.key] = event.type == spy.KeyboardEventType.key_press
 
@@ -145,6 +149,14 @@ class SplatViewer(spy.AppWindow):
         self.s.last_error = ""
 
     def on_mouse_event(self, event) -> None:
+        if self.toolkit.handle_mouse_event(event):
+            if event.type == spy.MouseEventType.move:
+                self.s.mx = event.pos.x
+                self.s.my = event.pos.y
+                self.s.mouse_delta = spy.float2(0.0, 0.0)
+            elif event.type in (spy.MouseEventType.button_down, spy.MouseEventType.button_up) and event.button == spy.MouseButton.left:
+                self.s.mouse_left = False
+            return
         if event.type in (spy.MouseEventType.button_down, spy.MouseEventType.button_up) and event.button == spy.MouseButton.left:
             self.s.mouse_left = event.type == spy.MouseEventType.button_down
         if event.type == spy.MouseEventType.move:
@@ -162,7 +174,7 @@ class SplatViewer(spy.AppWindow):
         self.s.renderer = GaussianRenderer(self.device, width=width, height=height, list_capacity_multiplier=self.s.list_capacity_multiplier, max_prepass_memory_mb=self.s.max_prepass_memory_mb)
         self.ui = build_ui(self.s.renderer)
         self.c("images_subdir").value = int(DEFAULT_IMAGE_SUBDIR_INDEX)
-        self.toolkit = create_toolkit_window()
+        self.toolkit = create_toolkit_window(self.device, width, height)
         self._bind_toolkit_callbacks()
         session.create_debug_shaders(self)
 
@@ -202,8 +214,7 @@ class SplatViewer(spy.AppWindow):
 
     def render(self, render_context) -> None:
         presenter.render_frame(self, render_context)
-        if self.toolkit.alive:
-            self.toolkit.tick(self.ui)
+        self.toolkit.render(self.ui, render_context.surface_texture, render_context.command_encoder)
 
     def update_camera(self, dt: float) -> None:
         self.s.move_speed, self.s.fov_y = float(self.c("move_speed").value), float(self.c("fov").value)
@@ -225,46 +236,27 @@ class SplatViewer(spy.AppWindow):
         self.s.camera_pos += (up * self.s.move_vel.x + right * self.s.move_vel.y + forward * self.s.move_vel.z) * dt
 
 
-def _compute_view_geometry() -> tuple[int, int, int]:
-    """Compute view window (width, height, x_offset) for the right portion of screen."""
-    import glfw as _glfw
-    if not _glfw.init():
-        return 1280, 720, 280
-    monitor = _glfw.get_primary_monitor()
-    if monitor:
-        mode = _glfw.get_video_mode(monitor)
-        sw, sh = mode.size.width, mode.size.height
-    else:
-        sw, sh = 1920, 1080
-    tk_w = max(int(sw * TOOLKIT_WIDTH_FRACTION), 280)
-    view_w = sw - tk_w
-    view_h = sh - 80
-    return view_w, view_h, tk_w
-
-
-def _position_view_window(title: str, x: int, y: int) -> None:
-    """Move the slangpy view window using Win32 API (no-op on non-Windows)."""
+def _compute_view_geometry() -> tuple[int, int]:
+    """Pick a single-window viewer size based on the current desktop size."""
     import sys
-    if sys.platform != "win32":
-        return
-    import ctypes
-    user32 = ctypes.windll.user32
-    hwnd = user32.FindWindowW(None, title)
-    if hwnd:
-        SWP_NOSIZE = 0x0001
-        SWP_NOZORDER = 0x0004
-        user32.SetWindowPos(hwnd, 0, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER)
+    if sys.platform == "win32":
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        screen_width = int(user32.GetSystemMetrics(0))
+        screen_height = int(user32.GetSystemMetrics(1))
+        return max(min(int(screen_width * 0.9), 1920), 1280), max(min(int(screen_height * 0.9), 1200), 720)
+    return 1600, 900
 
 
 _VIEW_TITLE = "Slang Splat Viewer"
 
 
 def main() -> int:
-    view_w, view_h, view_x = _compute_view_geometry()
+    view_w, view_h = _compute_view_geometry()
     device = create_default_device(enable_debug_layers=False)
     app = spy.App(device=device)
     viewer = SplatViewer(app, width=view_w, height=view_h, title=_VIEW_TITLE, max_prepass_memory_mb=4096)
-    _position_view_window(_VIEW_TITLE, view_x, 0)
     try:
         app.run()
     finally:

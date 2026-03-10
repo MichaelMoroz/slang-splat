@@ -42,7 +42,9 @@ Raster tile sizing is internal: the renderer uses fixed `24x24` effective tiles 
 ```powershell
 python viewer.py
 ```
-Load scenes from the UI (`Load PLY...` / `Load COLMAP...`).
+Load scenes from the in-window overlay (`Load PLY...` / `Load COLMAP...`).
+
+The viewer now runs as a single Slangpy window. The renderer draws the scene first, then composites the `imgui_bundle` overlay into the same swapchain image through Slangpy's UI draw-data bridge.
 
 Viewer controls:
 - `LMB + drag`: look around
