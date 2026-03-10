@@ -27,7 +27,7 @@ class _DummyRenderer:
 
 class _DummyTrainer:
     def __init__(self) -> None:
-        self.state = SimpleNamespace(step=0, last_loss=0.0, avg_loss=0.0, last_mse=0.0, last_psnr=float("inf"), last_frame_index=0, last_instability="")
+        self.state = SimpleNamespace(step=0, last_loss=0.0, avg_loss=0.0, last_mse=0.0, avg_mse=0.0, last_psnr=float("inf"), avg_psnr=float("inf"), last_frame_index=0, last_instability="")
         self.scene = SimpleNamespace(count=4)
         self.step_calls = 0
 
@@ -136,3 +136,16 @@ def test_render_frame_runs_configured_training_batch(monkeypatch):
     assert viewer.s.trainer.step_calls == 3
     assert viewer.s.last_training_batch_steps == 3
     assert calls == ["apply", "main", "ui"]
+
+
+def test_update_ui_text_uses_permutation_averages() -> None:
+    viewer = _viewer(loss_debug=False)
+    viewer.s.trainer.state.avg_loss = 1.25
+    viewer.s.trainer.state.avg_mse = 2.5e-3
+    viewer.s.trainer.state.avg_psnr = 26.75
+
+    presenter.update_ui_text(viewer, 1.0 / 60.0)
+
+    assert viewer.t("training_loss").text == "Loss Avg: 1.250000e+00"
+    assert viewer.t("training_mse").text == "MSE Avg: 2.500000e-03"
+    assert viewer.t("training_psnr").text == "PSNR Avg: 26.750 dB"

@@ -102,8 +102,8 @@ def update_ui_text(viewer: object, dt: float) -> None:
     if viewer.s.trainer is None:
         viewer.t("training").text = "Training: not initialized"
         viewer.t("training_loss").text = "Loss Avg: n/a"
-        viewer.t("training_mse").text = "MSE: n/a"
-        viewer.t("training_psnr").text = "PSNR: n/a"
+        viewer.t("training_mse").text = "MSE Avg: n/a"
+        viewer.t("training_psnr").text = "PSNR Avg: n/a"
         viewer.t("training_instability").text = ""
     else:
         state = viewer.s.trainer.state
@@ -111,8 +111,8 @@ def update_ui_text(viewer: object, dt: float) -> None:
         batch_text = f" | batch={batch_steps}" if viewer.s.training_active else ""
         viewer.t("training").text = f"Training: {'running' if viewer.s.training_active else 'paused'} | step={state.step:,} | frame={state.last_frame_index} | splats={int(current_splat_count):,}{batch_text}"
         viewer.t("training_loss").text = f"Loss Avg: {state.avg_loss:.6e}"
-        viewer.t("training_mse").text = f"MSE: {state.last_mse:.6e}" if np.isfinite(state.last_mse) else "MSE: n/a"
-        viewer.t("training_psnr").text = f"PSNR: {state.last_psnr:.3f} dB" if np.isfinite(state.last_psnr) else "PSNR: inf" if state.last_psnr == float("inf") else "PSNR: n/a"
+        viewer.t("training_mse").text = f"MSE Avg: {state.avg_mse:.6e}" if np.isfinite(state.avg_mse) else "MSE Avg: n/a"
+        viewer.t("training_psnr").text = f"PSNR Avg: {state.avg_psnr:.3f} dB" if np.isfinite(state.avg_psnr) else "PSNR Avg: inf" if state.avg_psnr == float("inf") else "PSNR Avg: n/a"
         viewer.t("training_instability").text = state.last_instability
     viewer.t("error").text = f"Error: {viewer.s.last_error}" if viewer.s.last_error else ""
     _update_toolkit_history(viewer, dt)
@@ -134,8 +134,8 @@ def _update_toolkit_history(viewer: object, dt: float) -> None:
                 tk.tk.loss_history.append(float(state.avg_loss))
             elif tk.tk.loss_history:
                 tk.tk.loss_history.append(tk.tk.loss_history[-1])
-            if np.isfinite(state.last_psnr):
-                tk.tk.psnr_history.append(float(state.last_psnr))
+            if np.isfinite(state.avg_psnr):
+                tk.tk.psnr_history.append(float(state.avg_psnr))
             elif tk.tk.psnr_history:
                 tk.tk.psnr_history.append(tk.tk.psnr_history[-1])
 

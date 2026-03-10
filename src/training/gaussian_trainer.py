@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -22,18 +21,39 @@ class _SceneCountProxy:
 
 
 @dataclass(slots=True)
-class _RollingMetricWindow:
-    size: int
-    values: deque[float]
+class _FrameMetricBookkeeper:
+    loss: np.ndarray
+    mse: np.ndarray
+    psnr: np.ndarray
+    visited: np.ndarray
 
-    def push(self, value: float) -> None:
-        if np.isfinite(value):
-            if len(self.values) == self.size:
-                self.values.popleft()
-            self.values.append(float(value))
+    @classmethod
+    def create(cls, frame_count: int) -> "_FrameMetricBookkeeper":
+        count = max(int(frame_count), 1)
+        return cls(
+            loss=np.full((count,), np.nan, dtype=np.float64),
+            mse=np.full((count,), np.nan, dtype=np.float64),
+            psnr=np.full((count,), np.nan, dtype=np.float64),
+            visited=np.zeros((count,), dtype=bool),
+        )
 
-    def mean(self) -> float:
-        return float(np.fromiter(self.values, dtype=np.float64).mean()) if self.values else float("nan")
+    def reset(self) -> None:
+        self.loss.fill(np.nan)
+        self.mse.fill(np.nan)
+        self.psnr.fill(np.nan)
+        self.visited.fill(False)
+
+    def update(self, frame_index: int, loss: float, mse: float, psnr: float) -> None:
+        idx = int(frame_index)
+        self.loss[idx] = float(loss)
+        self.mse[idx] = float(mse)
+        self.psnr[idx] = float(psnr)
+        self.visited[idx] = True
+
+    def mean(self, name: str) -> float:
+        values = getattr(self, name)
+        valid = self.visited & np.isfinite(values)
+        return float(np.mean(values[valid], dtype=np.float64)) if np.any(valid) else float("nan")
 
 
 @dataclass(slots=True)
@@ -58,7 +78,7 @@ class TrainingHyperParams:
 
 @dataclass(slots=True)
 class TrainingState:
-    step: int = 0; last_loss: float = float("nan"); avg_loss: float = float("nan"); last_mse: float = float("nan"); last_psnr: float = float("nan")
+    step: int = 0; last_loss: float = float("nan"); avg_loss: float = float("nan"); last_mse: float = float("nan"); avg_mse: float = float("nan"); last_psnr: float = float("nan"); avg_psnr: float = float("nan")
     last_frame_index: int = -1; last_instability: str = ""
 
 
@@ -157,7 +177,7 @@ class GaussianTrainer:
         self.optimizer = GaussianOptimizer(self.device, self.renderer, self.adam, self.stability)
         self.compute_debug_grad_norm = False
         self.state = TrainingState()
-        self._loss_window = _RollingMetricWindow(size=max(len(self.frames), 1), values=deque())
+        self._frame_metrics = _FrameMetricBookkeeper.create(len(self.frames))
         self._kernels = {
             name: self.device.create_compute_kernel(self.device.load_program(str(shader_path), [entry]))
             for name, (shader_path, entry) in self._KERNEL_ENTRIES.items()
@@ -204,6 +224,7 @@ class GaussianTrainer:
     def _reset_frame_order(self) -> None:
         self._frame_order = self._frame_rng.permutation(len(self.frames)).astype(np.int32)
         self._frame_cursor = 0
+        self._frame_metrics.reset()
 
     def _next_frame_index(self) -> int:
         if self._frame_cursor >= len(self.frames):
@@ -356,7 +377,7 @@ class GaussianTrainer:
         self._scale_reg_reference = float(max(np.median(scales[:, 0]), 1e-8))
         self._zero_optimizer_moments()
         self.state = TrainingState()
-        self._loss_window.values.clear()
+        self._frame_metrics.reset()
         self._frame_rng = np.random.default_rng(int(seed))
         self._reset_frame_order()
 
@@ -403,6 +424,8 @@ class GaussianTrainer:
         self.state.last_loss = float(loss)
         self.state.last_mse = float(image_mse)
         self.state.last_psnr = float(psnr_from_mse(image_mse))
-        self._loss_window.push(loss)
-        self.state.avg_loss = self._loss_window.mean()
+        self._frame_metrics.update(frame_index, self.state.last_loss, self.state.last_mse, self.state.last_psnr)
+        self.state.avg_loss = self._frame_metrics.mean("loss")
+        self.state.avg_mse = self._frame_metrics.mean("mse")
+        self.state.avg_psnr = self._frame_metrics.mean("psnr")
         return float(loss)
