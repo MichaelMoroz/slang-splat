@@ -114,7 +114,7 @@ def resolve_effective_training_setup(viewer: object):
 
 
 def apply_live_params(viewer: object, force_init_defaults: bool = False) -> None:
-    for renderer, allow_debug in ((viewer.s.renderer, True), (viewer.s.training_renderer, False), (viewer.s.debug_renderer, False)):
+    for renderer, allow_debug in ((viewer.s.renderer, True), (viewer.s.training_renderer, False), (viewer.s.debug_renderer, True)):
         if renderer is not None:
             for key, value in renderer_kwargs(viewer.renderer_params(allow_debug)).items():
                 setattr(renderer, key, value)

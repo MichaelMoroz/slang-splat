@@ -24,6 +24,9 @@ class _DummyRenderer:
         self.width = width
         self.height = height
 
+    def render_to_texture(self, camera: object, background: object, read_stats: bool, command_encoder: object) -> tuple[object, dict[str, int | bool | float]]:
+        return object(), {"generated_entries": 1, "written_entries": 2, "overflow": False}
+
 
 class _DummyTrainer:
     def __init__(self) -> None:
@@ -33,6 +36,9 @@ class _DummyTrainer:
 
     def step(self) -> None:
         self.step_calls += 1
+
+    def make_frame_camera(self, frame_index: int, width: int, height: int) -> tuple[int, int, int]:
+        return (frame_index, width, height)
 
 
 def _control(value: object) -> SimpleNamespace:
@@ -66,6 +72,7 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         fps_smooth=60.0,
         last_time=time.perf_counter(),
         renderer=_DummyRenderer(),
+        debug_renderer=None,
         scene=SimpleNamespace(count=4),
         stats={},
         scene_path=None,
@@ -73,7 +80,7 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         training_frames=[SimpleNamespace(image_path=Path("frame.png"))],
         trainer=trainer,
         training_active=True,
-        training_renderer=object(),
+        training_renderer=_DummyRenderer(),
         background=(0.0, 0.0, 0.0),
         last_render_exception="",
         last_error="",
@@ -149,3 +156,36 @@ def test_update_ui_text_uses_permutation_averages() -> None:
     assert viewer.t("training_loss").text == "Loss Avg: 1.250000e+00"
     assert viewer.t("training_mse").text == "MSE Avg: 2.500000e-03"
     assert viewer.t("training_psnr").text == "PSNR Avg: 26.750 dB"
+
+
+def test_render_debug_source_uses_overlay_renderer_for_rendered_view(monkeypatch) -> None:
+    viewer = _viewer(loss_debug=True)
+    viewer.c("loss_debug_view").value = 0
+    overlay_renderer = _DummyRenderer()
+    calls: list[tuple[str, object]] = []
+
+    monkeypatch.setattr(presenter.session, "ensure_renderer", lambda viewer_obj, attr, width, height, allow_debug_overlays: calls.append(("ensure", allow_debug_overlays)) or overlay_renderer)
+    monkeypatch.setattr(presenter.session, "sync_scene_from_training_renderer", lambda viewer_obj, dst_renderer, target: calls.append(("sync", target)))
+
+    source_tex, stats, width, height = presenter._render_debug_source(viewer, _DummyEncoder(), 0)
+
+    assert width == 640
+    assert height == 360
+    assert stats["generated_entries"] == 1
+    assert calls == [("ensure", True), ("sync", "debug")]
+
+
+def test_render_debug_source_uses_training_renderer_for_abs_diff(monkeypatch) -> None:
+    viewer = _viewer(loss_debug=True)
+    viewer.c("loss_debug_view").value = 2
+    calls: list[str] = []
+
+    monkeypatch.setattr(presenter.session, "ensure_renderer", lambda *args, **kwargs: calls.append("ensure"))
+    monkeypatch.setattr(presenter.session, "sync_scene_from_training_renderer", lambda *args, **kwargs: calls.append("sync"))
+
+    source_tex, stats, width, height = presenter._render_debug_source(viewer, _DummyEncoder(), 0)
+
+    assert width == 640
+    assert height == 360
+    assert stats["written_entries"] == 2
+    assert calls == []
