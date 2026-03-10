@@ -19,7 +19,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 ## 1. Project and Bin
 - Shader: `csProjectAndBin`
 - For each splat:
-  - smoothly clamp the loaded gaussian scale toward a two-screen-pixel floor at the splat depth (`2 * depth / min(focal_x, focal_y)` in world units),
+  - smoothly clamp the loaded gaussian scale toward a `0.75`-screen-pixel floor at the splat depth (`0.75 * depth / min(focal_x, focal_y)` in world units),
   - project to screen space with sampled-5 MVEE fitting,
   - if sampled-5 fitting is unstable, use an analytic depth/scale fallback radius instead of hard max-radius fallback,
   - estimate projected radius,
@@ -55,7 +55,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - Raster execution is microtiled: one `8x8` thread group covers one `16x16` effective raster tile, and each thread owns a fixed `2x2` pixel block in registers.
 - Each thread resolves one tile range for its microtile, reuses each staged gaussian across all `4` local pixels, and writes per-pixel output after the forward replay.
 - The inner loop performs front-to-back blending with exponential radial falloff while reusing gaussian data already staged in shared memory.
-- The same camera-dependent two-pixel world-space floor is used in raster through a differentiable smooth-max scale instead of a hard `max`, so the visible footprint starts expanding before the exact clamp point.
+- The same camera-dependent `0.75`-pixel world-space floor is used in raster through a differentiable smooth-max scale instead of a hard `max`, so the visible footprint starts expanding before the exact clamp point.
 - The raster stage attenuates blend alpha by `raw_area / effective_area` using an area proxy derived from gaussian scale, so subpixel splats keep scale-dependent signal while following the same smooth effective footprint used by projection.
 - The stored alpha slot is a raw sigmoid parameter; the raster stage evaluates `base_alpha = sigmoid(raw_alpha) * coverage`, applies `alphaCutoff` to that pre-attenuation alpha, then multiplies by the clamp attenuation for the final blend alpha.
 - Debug processed-count, grad-norm, and ellipse-outline views are handled in the same forward replay loop as normal rendering rather than by a separate debug pass.

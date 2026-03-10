@@ -226,7 +226,7 @@ def test_subpixel_gaussian_uses_pixel_floor_in_projection_and_raster(device):
     expected_alpha = scene.opacities[0] * (raw_scale / effective_scale) ** 2
     center_pixel = renderer.width // 2
     assert expected_scale < effective_scale < 1.5 * expected_scale
-    assert float(debug["screen_center_radius_depth"][0, 2]) >= 2.0
+    assert float(debug["screen_center_radius_depth"][0, 2]) >= 0.75
     assert 0.1 <= float(debug["screen_ellipse_conic"][0, 3]) <= 0.25
     assert gpu_image[center_pixel, center_pixel, 3] < scene.opacities[0]
     assert np.isclose(float(cpu_image[center_pixel, center_pixel, 3]), expected_alpha, atol=2e-3)

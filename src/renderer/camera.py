@@ -8,6 +8,8 @@ from slangpy import math as smath
 
 from ..common import VEC_EPS, as_float3, normalize3
 
+SPLAT_PIXEL_CLAMP_PX = 0.75
+
 
 @dataclass(slots=True)
 class Camera:
@@ -34,7 +36,7 @@ class Camera:
         return float(self.cx) if self.cx is not None else 0.5 * float(width), float(self.cy) if self.cy is not None else 0.5 * float(height)
 
     def pixel_world_size_max(self, depth: float, width: int, height: int) -> float:
-        return float(2.0 * max(float(depth), 1e-8) / max(min(self.focal_pixels_xy(width, height)), 1e-8))
+        return float(SPLAT_PIXEL_CLAMP_PX * max(float(depth), 1e-8) / max(min(self.focal_pixels_xy(width, height)), 1e-8))
 
     @staticmethod
     def look_at(position, target=(0.0, 0.0, 0.0), up=(0.0, 1.0, 0.0), fov_y_degrees=60.0, near=0.1, far=100.0) -> "Camera":

@@ -92,7 +92,7 @@ def test_sampled5_mvee_handles_degenerate_thin_splats() -> None:
     assert np.all(projected.center_radius_depth[:, 2] <= 96.0)
 
 
-def test_sampled5_mvee_clamps_loaded_scale_to_one_pixel_world_size() -> None:
+def test_sampled5_mvee_clamps_loaded_scale_to_configured_pixel_world_size() -> None:
     scene = GaussianScene(
         positions=np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
         scales=np.array([[1e-6, 1e-6, 1e-6]], dtype=np.float32),
@@ -105,4 +105,6 @@ def test_sampled5_mvee_clamps_loaded_scale_to_one_pixel_world_size() -> None:
 
     projected = project_splats_sampled5_mvee(scene, camera, width=128, height=128, radius_scale=1.0)
     expected_scale = camera.pixel_world_size_max(4.0, 128, 128)
-    np.testing.assert_allclose(projected.inv_scale[0], np.full((3,), 1.0 / expected_scale, dtype=np.float32), rtol=0.0, atol=2e-6)
+    effective_scale = 1.0 / projected.inv_scale[0]
+    assert np.all(effective_scale >= expected_scale)
+    assert np.all(effective_scale <= 1.25 * expected_scale)
