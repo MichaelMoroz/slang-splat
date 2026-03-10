@@ -40,6 +40,17 @@ class _DummyTrainer:
     def make_frame_camera(self, frame_index: int, width: int, height: int) -> tuple[int, int, int]:
         return (frame_index, width, height)
 
+    def get_frame_target_texture(self, frame_index: int, native_resolution: bool = True) -> str:
+        return f"target_tex_{frame_index}_{native_resolution}"
+
+
+class _CaptureKernel:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def dispatch(self, *, thread_count: object, vars: dict[str, object], command_encoder: object) -> None:
+        self.calls.append({"thread_count": thread_count, "vars": vars, "command_encoder": command_encoder})
+
 
 def _control(value: object) -> SimpleNamespace:
     return SimpleNamespace(value=value)
@@ -55,6 +66,7 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         "loss_debug": _control(loss_debug),
         "loss_debug_frame": _control(0),
         "loss_debug_view": _control(2),
+        "loss_debug_abs_scale": _control(1.0),
         "images_subdir": _control(0),
         "training_steps_per_frame": _control(1),
     }
@@ -195,3 +207,19 @@ def test_render_debug_source_uses_training_renderer_for_abs_diff(monkeypatch) ->
     assert height == 360
     assert stats["written_entries"] == 2
     assert calls == []
+
+
+def test_dispatch_debug_abs_diff_uses_runtime_ui_scale(monkeypatch) -> None:
+    viewer = _viewer(loss_debug=True)
+    viewer.c("loss_debug_abs_scale").value = 3.5
+    viewer.s.debug_abs_diff_kernel = _CaptureKernel()
+    encoder = _DummyEncoder()
+    output = SimpleNamespace(width=640, height=360)
+
+    monkeypatch.setattr(presenter, "_ensure_texture", lambda viewer_obj, attr, width, height: output)
+
+    result = presenter._dispatch_debug_abs_diff(viewer, encoder, "rendered_tex", "target_tex", 640, 360)
+
+    assert result is output
+    assert len(viewer.s.debug_abs_diff_kernel.calls) == 1
+    assert viewer.s.debug_abs_diff_kernel.calls[0]["vars"]["g_DebugDiffScale"] == 3.5

@@ -11,6 +11,9 @@ from . import session
 
 _DEBUG_HUGE_VALUE = 1e8
 _DEBUG_TEXTURE_USAGE = spy.TextureUsage.shader_resource | spy.TextureUsage.unordered_access | spy.TextureUsage.copy_destination
+_DEBUG_ABS_DIFF_SCALE_DEFAULT = 1.0
+_DEBUG_ABS_DIFF_SCALE_MIN = 0.125
+_DEBUG_ABS_DIFF_SCALE_MAX = 64.0
 _DEFAULT_TRAINING_STEPS_PER_FRAME = 1
 _MAX_TRAINING_STEPS_PER_FRAME = 8
 
@@ -47,6 +50,14 @@ def _training_steps_per_frame(viewer: object) -> int:
     return max(1, min(value, _MAX_TRAINING_STEPS_PER_FRAME))
 
 
+def _debug_abs_diff_scale(viewer: object) -> float:
+    try:
+        value = float(viewer.c("loss_debug_abs_scale").value)
+    except Exception:
+        return _DEBUG_ABS_DIFF_SCALE_DEFAULT
+    return max(_DEBUG_ABS_DIFF_SCALE_MIN, min(value, _DEBUG_ABS_DIFF_SCALE_MAX))
+
+
 def _run_training_batch(viewer: object) -> int:
     if not viewer.s.training_active or viewer.s.trainer is None:
         viewer.s.last_training_batch_steps = 0
@@ -68,6 +79,7 @@ def _dispatch_debug_abs_diff(viewer: object, encoder: spy.CommandEncoder, render
             "g_DebugOutput": output,
             "g_DebugWidth": int(width),
             "g_DebugHeight": int(height),
+            "g_DebugDiffScale": _debug_abs_diff_scale(viewer),
             "g_HugeValue": _DEBUG_HUGE_VALUE,
         },
         command_encoder=encoder,

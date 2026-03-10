@@ -39,6 +39,14 @@ Keyboard and mouse events are forwarded to the overlay first.
 
 This avoids camera movement while using sliders, combo boxes, text inputs, plot interactions, or scrollable UI regions.
 
+## Debug Views
+
+The loss-debug controls expose a runtime `Abs Diff Scale` slider when `View = Abs Diff`.
+
+- The shader computes `abs(rendered - target) * scale` in linear RGB.
+- `scale = 1.0` shows the raw absolute color difference.
+- Higher values amplify subtle differences without changing the rendered or target views.
+
 ## Training Metrics
 
 The training panel shows both short-horizon and run-level throughput data.

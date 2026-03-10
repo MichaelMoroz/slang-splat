@@ -22,6 +22,7 @@ uniform Texture2D<float4> g_DebugTarget;
 uniform RWTexture2D<float4> g_DebugOutput;
 uniform uint g_DebugWidth;
 uniform uint g_DebugHeight;
+uniform float g_DebugDiffScale;
 uniform Texture2D<float4> g_LetterboxSource;
 uniform RWTexture2D<float4> g_LetterboxOutput;
 uniform uint g_LetterboxSourceWidth;
@@ -98,7 +99,7 @@ void csComposeAbsDiffDebug(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint2 pixel = uint2(px, py);
     float3 rendered = g_DebugRendered[pixel].xyz;
     float3 target = g_DebugTarget[pixel].xyz;
-    float3 diff = abs(sanitize_float3(rendered - target, g_HugeValue));
+    float3 diff = abs(sanitize_float3(rendered - target, g_HugeValue)) * max(g_DebugDiffScale, 0.0);
     g_DebugOutput[pixel] = float4(diff, 1.0);
 }
 

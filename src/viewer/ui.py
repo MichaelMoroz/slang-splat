@@ -20,6 +20,10 @@ LOSS_HISTORY_SIZE = 512
 FPS_HISTORY_SIZE = 128
 _DOC_MAX_WIDTH = 104
 _SHORTCUTS_TEXT = "Controls: LMB drag look | WASDQE move | wheel speed"
+_LOSS_DEBUG_ABS_SCALE_DEFAULT = 1.0
+_LOSS_DEBUG_ABS_SCALE_MIN = 0.125
+_LOSS_DEBUG_ABS_SCALE_MAX = 64.0
+_LOSS_DEBUG_ABS_SCALE_KEY = "loss_debug_abs_scale"
 
 
 def _read_text_if_exists(path: Path) -> str:
@@ -74,6 +78,7 @@ GROUP_SPECS = {
         ControlSpec("loss_debug", "checkbox", "Visual Loss Debug", {"value": False}),
         ControlSpec("loss_debug_view", "slider_int", "Debug View", {"value": 2, "min": 0, "max": len(LOSS_DEBUG_OPTIONS) - 1}),
         ControlSpec("loss_debug_frame", "slider_int", "Debug Frame", {"value": 0, "min": 0, "max": 10000}),
+        ControlSpec(_LOSS_DEBUG_ABS_SCALE_KEY, "slider_float", "Abs Diff Scale", {"value": _LOSS_DEBUG_ABS_SCALE_DEFAULT, "min": _LOSS_DEBUG_ABS_SCALE_MIN, "max": _LOSS_DEBUG_ABS_SCALE_MAX, "format": "%.3gx", "logarithmic": True}),
     ),
     "Camera": (
         ControlSpec("move_speed", "slider_float", "Move Speed", {"value": 2.0, "min": 0.1, "max": 20.0}),
@@ -583,6 +588,8 @@ class ToolkitWindow:
                     if i == view_idx:
                         imgui.set_item_default_focus()
                 imgui.end_combo()
+            if LOSS_DEBUG_OPTIONS[view_idx][0] == "abs_diff":
+                self._draw_control(ui, next(spec for spec in GROUP_SPECS["Main"] if spec.key == _LOSS_DEBUG_ABS_SCALE_KEY))
 
             frame_max = max(int(ui._values.get("_loss_debug_frame_max", 0)), 0)
             changed, val = imgui.slider_int(
@@ -764,6 +771,7 @@ class ToolkitWindow:
         "train_far": "Far clip plane for training camera",
         "max_gaussians": "Maximum number of gaussians in the scene",
         "training_steps_per_frame": "Number of training optimizer steps to run before each viewer redraw; higher improves training throughput but reduces UI refresh rate",
+        _LOSS_DEBUG_ABS_SCALE_KEY: "Multiplier applied to absolute RGB difference before presenting the debug texture",
         "seed": "Random seed for training frame shuffle order",
         "init_opacity": "Initial opacity for new gaussians",
     }
