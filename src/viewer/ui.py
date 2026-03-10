@@ -12,7 +12,7 @@ import slangpy as spy
 import slangpy.ui.imgui_bundle as simgui
 from imgui_bundle import imgui, implot
 
-from .state import DEFAULT_IMAGE_SUBDIR_INDEX, IMAGE_SUBDIR_OPTIONS, LOSS_DEBUG_OPTIONS
+from .state import LOSS_DEBUG_OPTIONS
 
 TOOLKIT_WIDTH_FRACTION = 0.15
 VIEW_WIDTH_FRACTION = 0.85
@@ -24,6 +24,7 @@ _LOSS_DEBUG_ABS_SCALE_DEFAULT = 1.0
 _LOSS_DEBUG_ABS_SCALE_MIN = 0.125
 _LOSS_DEBUG_ABS_SCALE_MAX = 64.0
 _LOSS_DEBUG_ABS_SCALE_KEY = "loss_debug_abs_scale"
+_COLMAP_INIT_MODE_LABELS = ("COLMAP Pointcloud", "Custom PLY")
 
 
 def _read_text_if_exists(path: Path) -> str:
@@ -74,7 +75,6 @@ class ControlSpec:
 
 GROUP_SPECS = {
     "Main": (
-        ControlSpec("images_subdir", "slider_int", "Image Dir", {"value": DEFAULT_IMAGE_SUBDIR_INDEX, "min": 0, "max": len(IMAGE_SUBDIR_OPTIONS) - 1}),
         ControlSpec("loss_debug", "checkbox", "Visual Loss Debug", {"value": False}),
         ControlSpec("loss_debug_view", "slider_int", "Debug View", {"value": 2, "min": 0, "max": len(LOSS_DEBUG_OPTIONS) - 1}),
         ControlSpec("loss_debug_frame", "slider_int", "Debug Frame", {"value": 0, "min": 0, "max": 10000}),
@@ -232,7 +232,10 @@ class ToolkitWindow:
         self._apply_theme()
         self.callbacks = SimpleNamespace(
             load_ply=_noop,
-            load_colmap=_noop,
+            browse_colmap_database=_noop,
+            browse_colmap_images=_noop,
+            browse_colmap_ply=_noop,
+            import_colmap=_noop,
             reload=_noop,
             reinitialize=_noop,
             start_training=_noop,
@@ -244,6 +247,7 @@ class ToolkitWindow:
         self._last_frame_time = time.perf_counter()
         self._show_about = False
         self._show_docs = False
+        self._show_colmap_import = False
         self._about_text = _build_about_text()
         self._documentation_text = _build_documentation_text()
         self._menu_bar_height = 0.0
@@ -353,6 +357,7 @@ class ToolkitWindow:
         imgui.end()
         self._draw_about_window()
         self._draw_documentation_window()
+        self._draw_colmap_import_window(ui)
 
     def _draw_main_menu_bar(self) -> float:
         if not imgui.begin_main_menu_bar():
@@ -361,7 +366,7 @@ class ToolkitWindow:
             if _menu_item("Load PLY..."):
                 self.callbacks.load_ply()
             if _menu_item("Load COLMAP..."):
-                self.callbacks.load_colmap()
+                self._show_colmap_import = True
             if _menu_item("Reload"):
                 self.callbacks.reload()
             imgui.separator()
@@ -402,6 +407,65 @@ class ToolkitWindow:
                 imgui.text_unformatted(self._documentation_text)
                 imgui.pop_text_wrap_pos()
                 imgui.end_child()
+        imgui.end()
+
+    def close_colmap_import_window(self) -> None:
+        self._show_colmap_import = False
+
+    @staticmethod
+    def _path_text(ui: ViewerUI, key: str, empty_text: str = "<not selected>") -> str:
+        value = str(ui._values.get(key, "")).strip()
+        return value if value else empty_text
+
+    def _draw_import_path_selector(self, ui: ViewerUI, *, label: str, key: str, button_label: str, callback) -> None:
+        imgui.text_disabled(label)
+        imgui.text_wrapped(self._path_text(ui, key))
+        if imgui.button(button_label):
+            callback()
+
+    def _draw_colmap_import_window(self, ui: ViewerUI) -> None:
+        if not self._show_colmap_import:
+            return
+        imgui.set_next_window_pos(imgui.ImVec2(56.0, self._menu_bar_height + 40.0), imgui.Cond_.first_use_ever.value)
+        imgui.set_next_window_size(imgui.ImVec2(540.0, 0.0), imgui.Cond_.first_use_ever.value)
+        opened, self._show_colmap_import = imgui.begin("COLMAP Import", True)
+        if opened:
+            imgui.text_wrapped("Select a COLMAP database, verify the image folder, choose the gaussian initialization source, then import the dataset.")
+            imgui.separator()
+            self._draw_import_path_selector(ui, label="COLMAP Database", key="colmap_database_path", button_label="Browse Database...", callback=self.callbacks.browse_colmap_database)
+            imgui.spacing()
+            self._draw_import_path_selector(ui, label="Image Folder", key="colmap_images_root", button_label="Browse Image Folder...", callback=self.callbacks.browse_colmap_images)
+            imgui.spacing()
+            mode_idx = max(0, min(int(ui._values.get("colmap_init_mode", 0)), len(_COLMAP_INIT_MODE_LABELS) - 1))
+            if imgui.begin_combo("Initialization", _COLMAP_INIT_MODE_LABELS[mode_idx]):
+                for idx, label in enumerate(_COLMAP_INIT_MODE_LABELS):
+                    selected = idx == mode_idx
+                    if imgui.selectable(label, selected)[0]:
+                        ui._values["colmap_init_mode"] = idx
+                        mode_idx = idx
+                    if selected:
+                        imgui.set_item_default_focus()
+                imgui.end_combo()
+            if mode_idx == 0:
+                changed, value = imgui.drag_float(
+                    "NN Radius Scale Coef",
+                    float(ui._values.get("colmap_nn_radius_scale_coef", 0.25)),
+                    0.01,
+                    1e-4,
+                    16.0,
+                    "%.4f",
+                    imgui.SliderFlags_.logarithmic.value,
+                )
+                if changed:
+                    ui._values["colmap_nn_radius_scale_coef"] = max(float(value), 1e-4)
+                if imgui.is_item_hovered():
+                    imgui.set_item_tooltip("Multiplier applied to the median COLMAP nearest-neighbor radius when initializing gaussian scales.")
+            else:
+                imgui.spacing()
+                self._draw_import_path_selector(ui, label="Custom PLY", key="colmap_custom_ply_path", button_label="Browse PLY...", callback=self.callbacks.browse_colmap_ply)
+            imgui.spacing()
+            if imgui.button("Import", imgui.ImVec2(imgui.get_content_region_avail().x, 0.0)):
+                self.callbacks.import_colmap()
         imgui.end()
 
     # -- Sections --
@@ -481,24 +545,16 @@ class ToolkitWindow:
         if not imgui.collapsing_header("Scene I/O", imgui.TreeNodeFlags_.default_open.value):
             return
         imgui.text_disabled("Use File for scene load and reload actions.")
-        imgui.text_disabled("Use Help for About and Documentation.")
-
-        # Combo for image directory selection
+        imgui.text_disabled("Load COLMAP opens a dedicated import window.")
+        if imgui.button("Open COLMAP Import", imgui.ImVec2(imgui.get_content_region_avail().x, 0.0)):
+            self._show_colmap_import = True
+        database_text = self._path_text(ui, "colmap_database_path", "<none>")
+        images_text = self._path_text(ui, "colmap_images_root", "<none>")
+        mode_idx = max(0, min(int(ui._values.get("colmap_init_mode", 0)), len(_COLMAP_INIT_MODE_LABELS) - 1))
         imgui.spacing()
-        idx = min(max(int(ui._values["images_subdir"]), 0), len(IMAGE_SUBDIR_OPTIONS) - 1)
-        imgui.push_item_width(-1)
-        if imgui.begin_combo("##imgdir", IMAGE_SUBDIR_OPTIONS[idx]):
-            for i, name in enumerate(IMAGE_SUBDIR_OPTIONS):
-                selected = (i == idx)
-                if imgui.selectable(name, selected)[0]:
-                    ui._values["images_subdir"] = i
-                if selected:
-                    imgui.set_item_default_focus()
-            imgui.end_combo()
-        imgui.pop_item_width()
-        if imgui.is_item_hovered():
-            imgui.set_item_tooltip("Training image resolution (images_8 = 1/8th, images = full)")
-        self._ctx_reset("scene_io_ctx", ui, ("images_subdir",))
+        imgui.text_disabled(f"Database: {Path(database_text).name if database_text != '<none>' else database_text}")
+        imgui.text_disabled(f"Images: {Path(images_text).name if images_text != '<none>' else images_text}")
+        imgui.text_disabled(f"Init: {_COLMAP_INIT_MODE_LABELS[mode_idx]}")
         imgui.separator()
 
     def _section_camera(self, ui: ViewerUI) -> None:
@@ -608,7 +664,7 @@ class ToolkitWindow:
             return
         for spec in GROUP_SPECS["Train Setup"]:
             self._draw_control(ui, spec)
-        imgui.text_disabled("COLMAP init uses direct points + NN scales")
+        imgui.text_disabled("COLMAP import chooses pointcloud NN-scale init or a custom PLY scene.")
         self._ctx_reset("train_setup_ctx", ui, [s.key for s in GROUP_SPECS["Train Setup"]])
         imgui.separator()
 
@@ -852,13 +908,18 @@ def build_ui(renderer) -> ViewerUI:
     values["debug_ellipse"] = bool(renderer.debug_show_ellipses)
     values["debug_processed_count"] = bool(renderer.debug_show_processed_count)
     values["debug_grad_norm"] = bool(renderer.debug_show_grad_norm)
+    values["colmap_database_path"] = ""
+    values["colmap_images_root"] = ""
+    values["colmap_init_mode"] = 0
+    values["colmap_custom_ply_path"] = ""
+    values["colmap_nn_radius_scale_coef"] = 0.25
     values["_loss_debug_frame_max"] = 0
 
     texts: dict[str, str] = {
         key: "" for key in (
             "fps", "path", "scene_stats", "render_stats", "training",
             "training_time", "training_iters_avg", "training_loss", "training_mse", "training_psnr", "training_instability", "error",
-            "images_subdir", "loss_debug_view", "loss_debug_frame",
+            "loss_debug_view", "loss_debug_frame",
             "setup_hint", "stability_hint",
         )
     }

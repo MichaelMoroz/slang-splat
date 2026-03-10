@@ -6,7 +6,7 @@ The realtime viewer is a single `spy.AppWindow` that renders both the Gaussian s
 
 The overlay uses a left-side control panel with a menu bar:
 
-- `File`: scene load, reload, and gaussian reinitialization actions
+- `File`: scene load, COLMAP import, reload, and gaussian reinitialization actions
 - `Help`: `Documentation` and `About` windows
 - The menu bar spans the full viewport width and the left control panel starts below it to avoid overlap.
 
@@ -38,6 +38,21 @@ Keyboard and mouse events are forwarded to the overlay first.
 - If ImGui does not capture the event, the existing camera controls run unchanged.
 
 This avoids camera movement while using sliders, combo boxes, text inputs, plot interactions, or scrollable UI regions.
+
+## COLMAP Import
+
+`File -> Load COLMAP...` opens a dedicated import window instead of using an image-subdirectory selector in the main panel.
+
+The import window collects:
+
+- the COLMAP database path
+- the image folder used for training frames
+- the initialization mode: `COLMAP Pointcloud` or `Custom PLY`
+- the nearest-neighbor radius scale coefficient used by COLMAP pointcloud initialization
+
+After the database is selected, the viewer samples the COLMAP `images` table and tries to infer the matching image root automatically. The image folder can still be overridden manually before pressing `Import`.
+
+Pointcloud initialization builds gaussians from the COLMAP sparse points and scales them from the median nearest-neighbor spacing multiplied by the selected coefficient. Custom PLY initialization keeps the COLMAP cameras and training frames, but seeds the scene from the chosen `.ply` file instead.
 
 ## Debug Views
 

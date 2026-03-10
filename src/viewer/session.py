@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+import sqlite3
 import time
 
 import numpy as np
@@ -10,10 +11,16 @@ import slangpy as spy
 from ..app.shared import apply_training_profile, estimate_point_bounds, estimate_scene_bounds, renderer_kwargs
 from ..common import SHADER_ROOT, clamp_index
 from ..renderer import GaussianRenderer
-from ..scene import GaussianScene, build_training_frames, initialize_scene_from_colmap_points, load_colmap_reconstruction, load_gaussian_ply, resolve_colmap_init_hparams
+from ..scene import GaussianScene, build_training_frames_from_root, initialize_scene_from_colmap_points, load_colmap_reconstruction, load_gaussian_ply, resolve_colmap_init_hparams
+from ..scene._internal.colmap_ops import point_nn_scales
 from ..training import GaussianTrainer
 from ..scene._internal.colmap_types import point_tables
-from .state import SceneCountProxy
+from .state import ColmapImportSettings, SceneCountProxy
+
+_COLMAP_IMPORT_POINTCLOUD = "pointcloud"
+_COLMAP_IMPORT_CUSTOM_PLY = "custom_ply"
+_COLMAP_DEFAULT_IMAGE_DIRS = ("images", "images_4", "images_2", "images_8")
+_COLMAP_DB_SAMPLE_LIMIT = 64
 
 
 def _clear(viewer: object, *attrs: str) -> None:
@@ -29,6 +36,133 @@ def _point_tables(recon: object) -> tuple[np.ndarray, np.ndarray]:
     if xyz.shape[0] != rgb.shape[0] or xyz.shape[0] <= 0:
         raise RuntimeError("COLMAP point tables are empty or mismatched.")
     return xyz, rgb
+
+
+def _ui_path_string(viewer: object, key: str) -> str:
+    return str(viewer.ui._values.get(key, "")).strip()
+
+
+def _set_ui_path(viewer: object, key: str, path: Path | None) -> None:
+    viewer.ui._values[key] = "" if path is None else str(Path(path).resolve())
+
+
+def _ui_import_mode(viewer: object) -> str:
+    return _COLMAP_IMPORT_CUSTOM_PLY if int(viewer.ui._values.get("colmap_init_mode", 0)) == 1 else _COLMAP_IMPORT_POINTCLOUD
+
+
+def _profile_images_subdir(viewer: object) -> str | None:
+    images_root = viewer.s.colmap_import.images_root
+    if viewer.s.colmap_root is None or images_root is None:
+        return None
+    root = Path(viewer.s.colmap_root).resolve()
+    images_path = Path(images_root).resolve()
+    try:
+        return str(images_path.relative_to(root)).replace("\\", "/")
+    except ValueError:
+        return images_path.name
+
+
+def _resolve_colmap_root_from_database(database_path: Path) -> Path:
+    db_path = Path(database_path).resolve()
+    for candidate in (db_path.parent, *db_path.parents):
+        sparse_dir = candidate / "sparse" / "0"
+        if all((sparse_dir / name).exists() for name in ("cameras.bin", "images.bin", "points3D.bin")):
+            return candidate
+    raise FileNotFoundError(f"Could not infer COLMAP root from database path: {db_path}")
+
+
+def _database_image_names(database_path: Path, limit: int = _COLMAP_DB_SAMPLE_LIMIT) -> list[str]:
+    db_path = Path(database_path).resolve()
+    with sqlite3.connect(str(db_path)) as conn:
+        table = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='images'").fetchone()
+        if table is None:
+            raise RuntimeError(f"COLMAP database has no images table: {db_path}")
+        rows = conn.execute("SELECT name FROM images ORDER BY image_id LIMIT ?", (int(max(limit, 1)),)).fetchall()
+    names = [str(row[0]).strip() for row in rows if row and str(row[0]).strip()]
+    if not names:
+        raise RuntimeError(f"COLMAP database has no image names: {db_path}")
+    return names
+
+
+def _suggest_images_root_from_database(database_path: Path) -> Path:
+    db_path = Path(database_path).resolve()
+    image_names = _database_image_names(db_path)
+    root = _resolve_colmap_root_from_database(db_path)
+    candidates: list[Path] = []
+    for base in (db_path.parent, root, root.parent):
+        if base is None:
+            continue
+        candidates.append(base.resolve())
+        candidates.extend((base / name).resolve() for name in _COLMAP_DEFAULT_IMAGE_DIRS)
+    unique_candidates: list[Path] = []
+    for candidate in candidates:
+        if candidate in unique_candidates:
+            continue
+        unique_candidates.append(candidate)
+    best_root = None
+    best_score = -1
+    sample_names = image_names[: min(len(image_names), _COLMAP_DB_SAMPLE_LIMIT)]
+    for candidate in unique_candidates:
+        if not candidate.exists() or not candidate.is_dir():
+            continue
+        score = sum(int((candidate / name).exists()) for name in sample_names)
+        if score > best_score:
+            best_root = candidate
+            best_score = score
+    if best_root is not None and best_score > 0:
+        return best_root
+    for fallback in ((root / "images").resolve(), root.resolve(), db_path.parent.resolve()):
+        if fallback.exists() and fallback.is_dir():
+            return fallback
+    return root.resolve()
+
+
+def _update_import_settings(
+    viewer: object,
+    *,
+    database_path: Path,
+    images_root: Path,
+    init_mode: str,
+    custom_ply_path: Path | None,
+    nn_radius_scale_coef: float,
+) -> None:
+    viewer.s.colmap_import = ColmapImportSettings(
+        database_path=Path(database_path).resolve(),
+        images_root=Path(images_root).resolve(),
+        init_mode=str(init_mode),
+        custom_ply_path=None if custom_ply_path is None else Path(custom_ply_path).resolve(),
+        nn_radius_scale_coef=float(max(nn_radius_scale_coef, 1e-4)),
+    )
+    _set_ui_path(viewer, "colmap_database_path", database_path)
+    _set_ui_path(viewer, "colmap_images_root", images_root)
+    viewer.ui._values["colmap_init_mode"] = 1 if str(init_mode) == _COLMAP_IMPORT_CUSTOM_PLY else 0
+    _set_ui_path(viewer, "colmap_custom_ply_path", custom_ply_path)
+    viewer.ui._values["colmap_nn_radius_scale_coef"] = float(max(nn_radius_scale_coef, 1e-4))
+
+
+def choose_colmap_database(viewer: object, database_path: Path) -> None:
+    db_path = Path(database_path).resolve()
+    _set_ui_path(viewer, "colmap_database_path", db_path)
+    _set_ui_path(viewer, "colmap_images_root", _suggest_images_root_from_database(db_path))
+    viewer.s.last_error = ""
+
+
+def choose_colmap_images_root(viewer: object, images_root: Path) -> None:
+    _set_ui_path(viewer, "colmap_images_root", Path(images_root).resolve())
+    viewer.s.last_error = ""
+
+
+def choose_colmap_custom_ply(viewer: object, ply_path: Path) -> None:
+    _set_ui_path(viewer, "colmap_custom_ply_path", Path(ply_path).resolve())
+    viewer.s.last_error = ""
+
+
+def _pointcloud_init_hparams(recon: object, max_gaussians: int, init_hparams: object, nn_radius_scale_coef: float):
+    resolved = resolve_colmap_init_hparams(recon, max_gaussians, init_hparams)
+    xyz, _ = _point_tables(recon)
+    chosen_count = xyz.shape[0] if max_gaussians <= 0 else min(max(int(max_gaussians), 1), xyz.shape[0])
+    median_nn_scale = float(np.median(point_nn_scales(np.ascontiguousarray(xyz[:chosen_count], dtype=np.float32)))) if chosen_count > 0 else 1.0
+    return replace(resolved, base_scale=float(max(float(nn_radius_scale_coef), 1e-4) * max(median_nn_scale, 1e-6)))
 
 
 def _invalidate(viewer: object, *targets: str) -> None:
@@ -63,10 +197,15 @@ def _scene_signature(viewer: object):
     if viewer.s.colmap_root is None or viewer.s.colmap_recon is None or not viewer.s.training_frames:
         return None
     init = viewer.init_params()
+    import_cfg = viewer.s.colmap_import
     return (
         str(viewer.s.colmap_root.resolve()),
         len(viewer.s.training_frames),
         init.seed,
+        str(import_cfg.init_mode),
+        None if import_cfg.images_root is None else str(import_cfg.images_root.resolve()),
+        None if import_cfg.custom_ply_path is None else str(import_cfg.custom_ply_path.resolve()),
+        round(float(import_cfg.nn_radius_scale_coef), 6),
         None if init.hparams.initial_opacity is None else round(float(init.hparams.initial_opacity), 8),
     )
 
@@ -110,7 +249,7 @@ def resolve_effective_training_setup(viewer: object):
         viewer.training_params(),
         "auto",
         dataset_root=viewer.s.colmap_root,
-        images_subdir=viewer._selected_images_subdir() if viewer.s.colmap_root is not None else None,
+        images_subdir=_profile_images_subdir(viewer),
     )
     init_hparams = init.hparams if profile.init_opacity_override is None else replace(init.hparams, initial_opacity=profile.init_opacity_override)
     return init, params, init_hparams, profile
@@ -159,20 +298,63 @@ def load_scene(viewer: object, path: Path) -> None:
     print(f"Loaded scene: {path} ({scene.count:,} splats)")
 
 
-def load_colmap_dataset(viewer: object, root: Path, images_subdir: str) -> None:
+def import_colmap_dataset(
+    viewer: object,
+    *,
+    database_path: Path,
+    images_root: Path,
+    init_mode: str,
+    custom_ply_path: Path | None,
+    nn_radius_scale_coef: float,
+) -> None:
+    root = _resolve_colmap_root_from_database(database_path)
     recon = load_colmap_reconstruction(root)
-    xyz, rgb = _point_tables(recon)
+    xyz, _ = _point_tables(recon)
     _reset_loaded_runtime(viewer)
+    _update_import_settings(
+        viewer,
+        database_path=database_path,
+        images_root=images_root,
+        init_mode=init_mode,
+        custom_ply_path=custom_ply_path,
+        nn_radius_scale_coef=nn_radius_scale_coef,
+    )
     viewer.s.colmap_root = Path(root)
     viewer.s.colmap_recon = recon
-    viewer.s.training_frames = build_training_frames(recon, images_subdir=images_subdir)
+    viewer.s.training_frames = build_training_frames_from_root(recon, images_root)
     viewer.s.colmap_point_count = int(xyz.shape[0])
     viewer.s.scene_path = None
     apply_live_params(viewer)
     viewer.apply_camera_fit(estimate_point_bounds(xyz))
     initialize_training_scene(viewer)
     viewer.s.last_error = ""
-    print(f"Loaded COLMAP: {root} frames={len(viewer.s.training_frames)} images={images_subdir}")
+    print(
+        f"Loaded COLMAP: db={Path(database_path).resolve()} root={root} "
+        f"frames={len(viewer.s.training_frames)} images={Path(images_root).resolve()} init={init_mode}"
+    )
+
+
+def import_colmap_from_ui(viewer: object) -> None:
+    database_path = Path(_ui_path_string(viewer, "colmap_database_path")).expanduser()
+    images_root = Path(_ui_path_string(viewer, "colmap_images_root")).expanduser()
+    init_mode = _ui_import_mode(viewer)
+    custom_ply_text = _ui_path_string(viewer, "colmap_custom_ply_path")
+    custom_ply_path = None if not custom_ply_text else Path(custom_ply_text).expanduser()
+    nn_radius_scale_coef = float(viewer.ui._values.get("colmap_nn_radius_scale_coef", 0.25))
+    if not database_path.exists():
+        raise FileNotFoundError(f"COLMAP database does not exist: {database_path}")
+    if not images_root.exists():
+        raise FileNotFoundError(f"COLMAP image folder does not exist: {images_root}")
+    if init_mode == _COLMAP_IMPORT_CUSTOM_PLY and (custom_ply_path is None or not custom_ply_path.exists()):
+        raise FileNotFoundError(f"Custom PLY does not exist: {custom_ply_path}")
+    import_colmap_dataset(
+        viewer,
+        database_path=database_path,
+        images_root=images_root,
+        init_mode=init_mode,
+        custom_ply_path=custom_ply_path,
+        nn_radius_scale_coef=nn_radius_scale_coef,
+    )
 
 
 def initialize_training_scene(viewer: object) -> None:
@@ -181,10 +363,24 @@ def initialize_training_scene(viewer: object) -> None:
     init, params, init_hparams, profile = resolve_effective_training_setup(viewer)
     width, height = int(viewer.s.training_frames[0].width), int(viewer.s.training_frames[0].height)
     renderer = ensure_renderer(viewer, "training_renderer", width, height, allow_debug_overlays=False)
-    resolved_init = resolve_colmap_init_hparams(viewer.s.colmap_recon, params.training.max_gaussians, init_hparams)
-    scene = initialize_scene_from_colmap_points(recon=viewer.s.colmap_recon, max_gaussians=params.training.max_gaussians, seed=init.seed, init_hparams=resolved_init)
+    import_cfg = viewer.s.colmap_import
+    resolved_init = None
+    if import_cfg.init_mode == _COLMAP_IMPORT_CUSTOM_PLY:
+        if import_cfg.custom_ply_path is None:
+            raise RuntimeError("Custom PLY initialization requires a selected PLY file.")
+        scene = load_gaussian_ply(import_cfg.custom_ply_path)
+        scale_reg_reference = None
+    else:
+        resolved_init = _pointcloud_init_hparams(viewer.s.colmap_recon, params.training.max_gaussians, init_hparams, import_cfg.nn_radius_scale_coef)
+        scene = initialize_scene_from_colmap_points(
+            recon=viewer.s.colmap_recon,
+            max_gaussians=params.training.max_gaussians,
+            seed=init.seed,
+            init_hparams=resolved_init,
+        )
+        scale_reg_reference = float(max(resolved_init.base_scale, 1e-8))
     apply_live_params(viewer)
-    viewer.s.trainer = GaussianTrainer(
+    trainer_kwargs = dict(
         device=viewer.device,
         renderer=renderer,
         scene=scene,
@@ -193,9 +389,12 @@ def initialize_training_scene(viewer: object) -> None:
         stability_hparams=params.stability,
         training_hparams=params.training,
         seed=init.seed,
-        scale_reg_reference=float(max(resolved_init.base_scale, 1e-8)),
     )
+    if scale_reg_reference is not None:
+        trainer_kwargs["scale_reg_reference"] = scale_reg_reference
+    viewer.s.trainer = GaussianTrainer(**trainer_kwargs)
     viewer.s.scene = SceneCountProxy(scene.count)
+    viewer.apply_camera_fit(estimate_scene_bounds(scene))
     enc = viewer.device.create_command_encoder()
     renderer.copy_scene_state_to(enc, viewer.s.renderer)
     viewer.device.submit_command_buffer(enc.finish())

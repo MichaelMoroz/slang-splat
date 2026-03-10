@@ -71,8 +71,8 @@ def resolve_colmap_init_hparams(recon: ColmapReconstruction, max_gaussians: int,
     return GaussianInitHyperParams(**{name: getattr(suggested, name) if getattr(init_hparams, name) is None else float(getattr(init_hparams, name)) for name in ("position_jitter_std", "base_scale", "scale_jitter_ratio", "initial_opacity", "color_jitter_std")})
 
 
-def build_training_frames(recon: ColmapReconstruction, images_subdir: str = "images_4") -> list[ColmapFrame]:
-    images_root = (recon.root / images_subdir).resolve()
+def build_training_frames_from_root(recon: ColmapReconstruction, images_root: Path) -> list[ColmapFrame]:
+    images_root = Path(images_root).resolve()
     if not images_root.exists():
         raise FileNotFoundError(f"COLMAP image directory does not exist: {images_root}")
     frames = []
@@ -85,6 +85,10 @@ def build_training_frames(recon: ColmapReconstruction, images_subdir: str = "ima
     if not frames:
         raise RuntimeError(f"No training frames were found in {images_root}.")
     return frames
+
+
+def build_training_frames(recon: ColmapReconstruction, images_subdir: str = "images_4") -> list[ColmapFrame]:
+    return build_training_frames_from_root(recon, recon.root / images_subdir)
 
 
 def _random_unit_quaternions(rng: np.random.Generator, count: int) -> np.ndarray:

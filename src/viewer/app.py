@@ -8,14 +8,13 @@ from slangpy import math as smath
 
 from .. import create_default_device
 from ..app.shared import RendererParams, build_init_params, build_training_params, fit_camera
-from ..common import clamp_index, normalize3
+from ..common import normalize3
 from ..renderer import Camera, GaussianRenderer
-from ..training import TrainingHyperParams
 from . import presenter, session
 from .state import (
-    DEFAULT_IMAGE_SUBDIR_INDEX, DEFAULT_LIST_CAPACITY_MULTIPLIER,
+    DEFAULT_LIST_CAPACITY_MULTIPLIER,
     DEFAULT_MAX_PREPASS_MEMORY_MB, DEFAULT_VIEWER_BACKGROUND,
-    IMAGE_SUBDIR_OPTIONS, LOSS_DEBUG_OPTIONS, ViewerState,
+    LOSS_DEBUG_OPTIONS, ViewerState,
 )
 from .ui import build_ui, create_toolkit_window, default_control_values
 
@@ -61,11 +60,6 @@ def _default_training_control_value(control: str) -> object:
     return _TRAIN_SETUP_DEFAULTS[control] if control in _TRAIN_SETUP_DEFAULTS else _TRAINING_DEFAULTS[control]
 
 
-
-def default_images_subdir() -> str:
-    return IMAGE_SUBDIR_OPTIONS[DEFAULT_IMAGE_SUBDIR_INDEX]
-
-
 def default_renderer_params(max_prepass_memory_mb: int = DEFAULT_MAX_PREPASS_MEMORY_MB) -> RendererParams:
     return RendererParams(list_capacity_multiplier=DEFAULT_LIST_CAPACITY_MULTIPLIER, max_prepass_memory_mb=max(int(max_prepass_memory_mb), 1))
 
@@ -85,9 +79,6 @@ class SplatViewer(spy.AppWindow):
 
     def t(self, key: str):
         return self.ui.text(key)
-
-    def _selected_images_subdir(self) -> str:
-        return self.image_subdir_options[clamp_index(int(self.c("images_subdir").value), len(self.image_subdir_options))]
 
     def renderer_params(self, allow_debug_overlays: bool) -> RendererParams:
         return RendererParams(
@@ -169,11 +160,10 @@ class SplatViewer(spy.AppWindow):
 
     def __init__(self, app: spy.App, width: int = 1280, height: int = 720, title: str = "Slang Splat Viewer", max_prepass_memory_mb: int = 4096) -> None:
         super().__init__(app, width=width, height=height, title=title, resizable=True, enable_vsync=False)
-        self.image_subdir_options, self.loss_debug_view_options = IMAGE_SUBDIR_OPTIONS, LOSS_DEBUG_OPTIONS
+        self.loss_debug_view_options = LOSS_DEBUG_OPTIONS
         self.s = ViewerState(max_prepass_memory_mb=max(int(max_prepass_memory_mb), 1))
         self.s.renderer = GaussianRenderer(self.device, width=width, height=height, list_capacity_multiplier=self.s.list_capacity_multiplier, max_prepass_memory_mb=self.s.max_prepass_memory_mb)
         self.ui = build_ui(self.s.renderer)
-        self.c("images_subdir").value = int(DEFAULT_IMAGE_SUBDIR_INDEX)
         self.toolkit = create_toolkit_window(self.device, width, height)
         self._bind_toolkit_callbacks()
         session.create_debug_shaders(self)
@@ -181,27 +171,66 @@ class SplatViewer(spy.AppWindow):
     def _bind_toolkit_callbacks(self) -> None:
         cb = self.toolkit.callbacks
         cb.load_ply = self._load_ply_callback
-        cb.load_colmap = self._load_colmap_callback
+        cb.browse_colmap_database = self._browse_colmap_database_callback
+        cb.browse_colmap_images = self._browse_colmap_images_callback
+        cb.browse_colmap_ply = self._browse_colmap_ply_callback
+        cb.import_colmap = self._import_colmap_callback
         cb.reload = self._reload_callback
         cb.reinitialize = self._reinitialize_callback
         cb.start_training = self._start_training_callback
         cb.stop_training = self._stop_training_callback
 
+    def _run_action(self, action, *, close_colmap_import: bool = False) -> None:
+        try:
+            action()
+        except Exception as exc:
+            self.s.last_error = str(exc)
+        else:
+            self.s.last_error = ""
+            if close_colmap_import:
+                self.toolkit.close_colmap_import_window()
+
     def _load_ply_callback(self) -> None:
         path = spy.platform.open_file_dialog([spy.platform.FileDialogFilter("PLY Files", "*.ply")])
         if path:
-            session.load_scene(self, Path(path))
+            self._run_action(lambda: session.load_scene(self, Path(path)))
 
-    def _load_colmap_callback(self) -> None:
+    def _browse_colmap_database_callback(self) -> None:
+        path = spy.platform.open_file_dialog([spy.platform.FileDialogFilter("COLMAP Database", "*.*")])
+        if path:
+            self._run_action(lambda: session.choose_colmap_database(self, Path(path)))
+
+    def _browse_colmap_images_callback(self) -> None:
         path = spy.platform.choose_folder_dialog()
         if path:
-            session.load_colmap_dataset(self, Path(path), self._selected_images_subdir())
+            self._run_action(lambda: session.choose_colmap_images_root(self, Path(path)))
+
+    def _browse_colmap_ply_callback(self) -> None:
+        path = spy.platform.open_file_dialog([spy.platform.FileDialogFilter("PLY Files", "*.ply")])
+        if path:
+            self._run_action(lambda: session.choose_colmap_custom_ply(self, Path(path)))
+
+    def _import_colmap_callback(self) -> None:
+        self._run_action(lambda: session.import_colmap_from_ui(self), close_colmap_import=True)
 
     def _reload_callback(self) -> None:
         if self.s.scene_path is not None:
-            session.load_scene(self, self.s.scene_path)
+            self._run_action(lambda: session.load_scene(self, self.s.scene_path))
         elif self.s.colmap_root is not None:
-            session.load_colmap_dataset(self, self.s.colmap_root, self._selected_images_subdir())
+            import_cfg = self.s.colmap_import
+            if import_cfg.database_path is None or import_cfg.images_root is None:
+                self.s.last_error = "COLMAP reload requires a stored database path and image folder."
+                return
+            self._run_action(
+                lambda: session.import_colmap_dataset(
+                    self,
+                    database_path=import_cfg.database_path,
+                    images_root=import_cfg.images_root,
+                    init_mode=import_cfg.init_mode,
+                    custom_ply_path=import_cfg.custom_ply_path,
+                    nn_radius_scale_coef=import_cfg.nn_radius_scale_coef,
+                )
+            )
 
     def _reinitialize_callback(self) -> None:
         session.initialize_training_scene(self)

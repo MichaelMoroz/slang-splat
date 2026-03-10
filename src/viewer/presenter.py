@@ -111,7 +111,6 @@ def update_ui_text(viewer: object, dt: float) -> None:
     debug_idx = clamp_index(int(viewer.c("loss_debug_view").value), len(viewer.loss_debug_view_options))
     stats = viewer.s.stats
     viewer.t("fps").text = f"FPS: {viewer.s.fps_smooth:.1f}"
-    viewer.t("images_subdir").text = f"Train images: {viewer.image_subdir_options[clamp_index(int(viewer.c('images_subdir').value), len(viewer.image_subdir_options))]}"
     viewer.t("loss_debug_view").text = f"View: {viewer.loss_debug_view_options[debug_idx][1]}"
     viewer.t("loss_debug_frame").text = f"Frame[{frame_idx}]: {Path(viewer.s.training_frames[frame_idx].image_path).name}" if viewer.s.training_frames else "Frame: <none>"
     viewer.t("path").text = f"Scene: {viewer.s.scene_path.name} [PLY]" if viewer.s.scene_path is not None else f"Scene: {viewer.s.colmap_root.name} [COLMAP]" if viewer.s.colmap_root is not None else "Scene: <none>"

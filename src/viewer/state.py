@@ -19,6 +19,15 @@ class SceneCountProxy:
     count: int
 
 
+@dataclass(slots=True)
+class ColmapImportSettings:
+    database_path: Path | None = None
+    images_root: Path | None = None
+    init_mode: str = "pointcloud"
+    custom_ply_path: Path | None = None
+    nn_radius_scale_coef: float = 0.25
+
+
 def _default_camera_pos() -> spy.float3:
     return spy.float3(0.0, 0.0, -3.0)
 
@@ -49,6 +58,7 @@ class ViewerState:
     renderer: GaussianRenderer | None = None; training_renderer: GaussianRenderer | None = None; debug_renderer: GaussianRenderer | None = None
     scene: GaussianScene | SceneCountProxy | None = None; scene_path: Path | None = None; stats: dict[str, int | bool | float] = field(default_factory=dict)
     colmap_root: Path | None = None; colmap_recon: ColmapReconstruction | None = None; training_frames: list = field(default_factory=list)
+    colmap_import: ColmapImportSettings = field(default_factory=ColmapImportSettings)
     colmap_point_positions_buffer: spy.Buffer | None = None; colmap_point_colors_buffer: spy.Buffer | None = None; colmap_point_count: int = 0
     trainer: GaussianTrainer | None = None; training_active: bool = False; loss_debug_texture: spy.Texture | None = None
     debug_abs_diff_kernel: spy.ComputeKernel | None = None; debug_letterbox_kernel: spy.ComputeKernel | None = None; debug_present_texture: spy.Texture | None = None
@@ -63,8 +73,4 @@ class ViewerState:
     scroll_delta: float = 0.0; move_vel: spy.float3 = field(default_factory=_default_move_vel); rot_vel: spy.float2 = field(default_factory=_default_rot_vel)
     mx: float | None = None; my: float | None = None; last_time: float = field(default_factory=time.perf_counter); fps_smooth: float = 60.0
     last_error: str = ""; last_resize_exception: str = ""; last_render_exception: str = ""
-
-
 LOSS_DEBUG_OPTIONS = (("rendered", "Rendered"), ("target", "Target"), ("abs_diff", "Abs Diff"))
-IMAGE_SUBDIR_OPTIONS = ("images_8", "images_4", "images_2", "images")
-DEFAULT_IMAGE_SUBDIR_INDEX = 1
