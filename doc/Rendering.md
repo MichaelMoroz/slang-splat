@@ -58,7 +58,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - Shared gaussian staging uses `256`-splat batches.
 - The same camera-dependent `0.75`-pixel world-space floor is used in raster through a differentiable smooth-max scale instead of a hard `max`, so the visible footprint starts expanding before the exact clamp point.
 - The raster stage attenuates blend alpha by `raw_area / effective_area` using an area proxy derived from gaussian scale, so subpixel splats keep scale-dependent signal while following the same smooth effective footprint used by projection.
-- The stored alpha slot is a raw sigmoid parameter; the raster stage evaluates `base_alpha = sigmoid(raw_alpha) * coverage`, applies `alphaCutoff` to that pre-attenuation alpha, then multiplies by the clamp attenuation for the final blend alpha.
+- The cached alpha slot stores the clamp-attenuated opacity scalar produced in prepass; the raster stage multiplies that fused alpha by coverage and applies `alphaCutoff` to the fused result.
 - Debug processed-count, grad-norm, and ellipse-outline views are handled in the same forward replay loop as normal rendering rather than by a separate debug pass.
 - Writes RGBA output texture.
 - Primary ray generation goes through `PinholeCamera.screen_to_world_ray(...)`.
@@ -75,7 +75,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - `csRasterizeTrainingForward` runs the raster forward path for the fixed-count trainer, writes the rendered output, and caches one per-pixel forward state record plus `processedEnd` for backward replay.
 - `csRasterizeBackward` is a pure backward replay kernel: it loads the cached per-pixel forward state, derives `dLoss / dRasterState` from `g_OutputGrad`, walks the staged splats in reverse without replaying forward internally, and accumulates signed Q16.16 gradients for the precomputed raster cache fields.
 - The reverse pass reuses one staged gaussian per thread-group lane, accumulates one pixel's contributions in registers, and writes them into the fixed-point cached-raster intermediate.
-- `csBackpropCachedRasterGrads` runs one thread per splat, decodes the fixed-point cached-raster gradient record inline, backprops the `CachedEllipsoid` fields through `build_cached_ellipsoid`, and writes final float scene-parameter gradients into `g_ParamGrads` with the caller-provided final scale.
+- `csBackpropCachedRasterGrads` runs one thread per splat, decodes the fixed-point cached-raster gradient record inline, backprops cached ellipsoid geometry through `build_cached_ellipsoid`, backprops the fused cached alpha through the clamp-aware opacity helper, and writes final float scene-parameter gradients into `g_ParamGrads` with the caller-provided final scale.
 - Output gradients are supplied through `g_OutputGrad` (`StructuredBuffer<float4>`) using flat pixel indexing `y * width + x`, and chain-rule terms include gamma output mapping and alpha output (`1 - transmittance`).
 
 ## 8. Training Stage

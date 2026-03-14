@@ -70,7 +70,7 @@ There is no densification, pruning, opacity reset schedule, MCMC exploration ter
 - `csComputeL1LossForward`: computes direct RGB L1 loss and RGB MSE only.
 - `csComputeL1LossBackward`: computes only the image-space L1 gradient into `g_OutputGrad`.
 - Packed trainable storage remains param-major scalar packing: `param_id * splat_count + splat_id`.
-- Raster backward uses a separate param-major Q16.16 int accumulation buffer and a decode pass boundary before optimizer consumption.
+- Raster backward uses a separate param-major Q16.16 int accumulation buffer for cached raster-field gradients, then backprops that intermediate into final float scene-parameter gradients before optimizer consumption.
 - The stored opacity parameter is the raw sigmoid logit, not direct alpha.
 - `optimizer.slang` owns generic optimizer kernels and tables:
   - packed ADAM,

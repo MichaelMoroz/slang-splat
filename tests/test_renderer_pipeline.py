@@ -169,9 +169,9 @@ def test_prepass_populates_raster_cache(device):
     debug = renderer.debug_pipeline_data(scene, camera)
 
     raster_cache = np.asarray(debug["raster_cache"], dtype=np.float32)
-    assert raster_cache.shape == (scene.count, 15)
+    assert raster_cache.shape == (scene.count, 14)
     assert np.all(np.isfinite(raster_cache))
-    assert float(np.max(np.abs(raster_cache[:, :11]))) > 0.0
+    assert float(np.max(np.abs(raster_cache[:, :10]))) > 0.0
 
 
 def test_sampled5_mvee_render_smoke(device):
@@ -385,7 +385,7 @@ def test_raster_backward_decodes_q16_16_grad_grid(device):
     grads = renderer.debug_raster_backward_grads(scene, camera, background=np.array([0.05, 0.1, 0.15], dtype=np.float32))
 
     values = np.asarray(grads["cached_raster_grads_fixed"], dtype=np.int32)
-    assert values.shape == (scene.count, 15)
+    assert values.shape == (scene.count, 14)
     nonzero = values[values != 0]
     assert nonzero.size > 0
     decoded = nonzero.astype(np.float32) / _RASTER_GRAD_FIXED_SCALE

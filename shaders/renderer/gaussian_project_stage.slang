@@ -27,11 +27,10 @@ void store_raster_cache(uint splatId, CachedEllipsoid cached, float4 colorAlpha)
     g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_QUAT_Y, splatId)] = cached.quat.y;
     g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_QUAT_Z, splatId)] = cached.quat.z;
     g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_QUAT_W, splatId)] = cached.quat.w;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_OPACITY_SCALE, splatId)] = cached.opacityScale;
     g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_COLOR_R, splatId)] = colorAlpha.x;
     g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_COLOR_G, splatId)] = colorAlpha.y;
     g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_COLOR_B, splatId)] = colorAlpha.z;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_COLOR_A, splatId)] = colorAlpha.w;
+    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_FUSED_OPACITY, splatId)] = colorAlpha.w;
 }
 
 bool emit_splat_bins(SplatBinRequest request)
@@ -119,7 +118,11 @@ void csProjectAndBin(uint3 dispatchThreadID : SV_DispatchThreadID)
     PinholeCamera camera = PinholeCamera.from_params(g_Camera);
     Gaussian3D gaussian = load_gaussian3d(splatId);
     Ellipsoid ellipsoid = build_ellipsoid(g_Camera, g_Prepass.radiusScale, gaussian);
-    CachedEllipsoid cached = { ellipsoid.roLocal, ellipsoid.invScale, ellipsoid.rotation, ellipsoid.opacityScale };
+    CachedEllipsoid cached = { ellipsoid.roLocal, ellipsoid.invScale, ellipsoid.rotation };
+    float4 rasterColorAlpha = float4(
+        gaussian.colorAlpha.xyz,
+        build_raster_fused_opacity(g_Camera, g_Prepass.radiusScale, gaussian.position, gaussian.scale, gaussian.colorAlpha.w)
+    );
     float3 cameraOffset = ellipsoid.centerWorld - camera.position_world();
     float3 camPos = camera.world_to_camera(cameraOffset);
     float camDistance = length(cameraOffset);
@@ -183,7 +186,7 @@ void csProjectAndBin(uint3 dispatchThreadID : SV_DispatchThreadID)
     g_ScreenColorAlpha[splatId] = gaussian.colorAlpha;
     g_ScreenEllipseConic[splatId] = float4(fitConic, ellipsoid.opacityScale);
     g_SplatVisible[splatId] = 1u;
-    store_raster_cache(splatId, cached, gaussian.colorAlpha);
+    store_raster_cache(splatId, cached, rasterColorAlpha);
 }
 
 [shader("compute")]

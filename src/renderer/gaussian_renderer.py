@@ -82,7 +82,7 @@ class GaussianRenderer:
     _OPACITY_EPS = 1e-6
     _MEBIBYTE_BYTES = 1024 * 1024
     _PREPASS_ENTRY_BYTES = (_SCANLINE_WORK_ITEM_UINTS + 2) * _U32_BYTES
-    _RASTER_CACHE_PARAM_COUNT = 15
+    _RASTER_CACHE_PARAM_COUNT = 14
     _RW_BUFFER_USAGE = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
     PARAM_POSITION_IDS = (0, 1, 2)
     PARAM_SCALE_IDS = (3, 4, 5)

@@ -69,7 +69,6 @@ struct RasterGaussian : IDifferentiable
     float3 roLocal;
     float3 invScale;
     float4 quat;
-    float opacityScale;
     float4 colorAlpha;
 
     static RasterGaussian load_global(uint splatId)
@@ -92,12 +91,11 @@ struct RasterGaussian : IDifferentiable
             g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_QUAT_Z, splatId)],
             g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_QUAT_W, splatId)]
         );
-        gaussian.opacityScale = g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_OPACITY_SCALE, splatId)];
         gaussian.colorAlpha = float4(
             g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_COLOR_R, splatId)],
             g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_COLOR_G, splatId)],
             g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_COLOR_B, splatId)],
-            g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_COLOR_A, splatId)]
+            g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_FUSED_OPACITY, splatId)]
         );
         return gaussian;
     }
@@ -108,7 +106,6 @@ struct RasterGaussian : IDifferentiable
         gaussian.roLocal = gsRoLocal[localIdx].xyz;
         gaussian.invScale = float3(gsInvScale[localIdx]);
         gaussian.quat = float4(gsQuat[localIdx]);
-        gaussian.opacityScale = gsRoLocal[localIdx].w;
         gaussian.colorAlpha = float4(gsColorAlpha[localIdx]);
         return gaussian;
     }
@@ -116,7 +113,7 @@ struct RasterGaussian : IDifferentiable
     [mutating]
     void store_shared(uint localIdx)
     {
-        gsRoLocal[localIdx] = float4(roLocal, opacityScale);
+        gsRoLocal[localIdx] = float4(roLocal, 0.0);
         gsInvScale[localIdx] = half3(invScale);
         gsQuat[localIdx] = half4(quat);
         gsColorAlpha[localIdx] = half4(colorAlpha);
@@ -129,7 +126,6 @@ struct RasterGaussian : IDifferentiable
         atomic_add_raster_cache_grad_fixed<3>(splatCount, RASTER_CACHE_RO_LOCAL_X, splatId, dOut.roLocal);
         atomic_add_raster_cache_grad_fixed<3>(splatCount, RASTER_CACHE_INV_SCALE_X, splatId, dOut.invScale);
         atomic_add_raster_cache_grad_fixed<4>(splatCount, RASTER_CACHE_QUAT_X, splatId, dOut.quat);
-        atomic_add_raster_cache_grad_fixed<1>(splatCount, RASTER_CACHE_OPACITY_SCALE, splatId, float1(dOut.opacityScale));
         atomic_add_raster_cache_grad_fixed<4>(splatCount, RASTER_CACHE_COLOR_R, splatId, dOut.colorAlpha);
     }
 };
@@ -154,12 +150,11 @@ RasterGaussian.Differential load_cached_raster_grad(uint splatId)
         raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_QUAT_Z, splatId)]),
         raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_QUAT_W, splatId)])
     );
-    grad.opacityScale = raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_OPACITY_SCALE, splatId)]);
     grad.colorAlpha = float4(
         raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_COLOR_R, splatId)]),
         raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_COLOR_G, splatId)]),
         raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_COLOR_B, splatId)]),
-        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_COLOR_A, splatId)])
+        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_FUSED_OPACITY, splatId)])
     );
     return grad;
 }
@@ -180,10 +175,10 @@ float raster_eval_alpha_gaussian(RasterGaussian gaussian, no_diff uint splatId, 
         float edgeDistance = abs((quad - 1.0) / gradLen);
         float coverage = saturate(1.0 - edgeDistance / halfWidth);
         coverage = coverage * coverage * (3.0 - 2.0 * coverage);
-        float baseAlpha = opacity_from_raw(gaussian.colorAlpha.w) * coverage;
-        return baseAlpha >= g_Raster.alphaCutoff ? baseAlpha * gaussian.opacityScale : 0.0;
+        float alpha = gaussian.colorAlpha.w * coverage;
+        return alpha >= g_Raster.alphaCutoff ? alpha : 0.0;
     }
-    return raster_eval_alpha(gaussian.roLocal, gaussian.quat, gaussian.invScale, gaussian.colorAlpha.w, gaussian.opacityScale, rayDir, g_Raster.alphaCutoff);
+    return raster_eval_alpha(gaussian.roLocal, gaussian.quat, gaussian.invScale, gaussian.colorAlpha.w, rayDir, g_Raster.alphaCutoff);
 }
 
 [Differentiable]
@@ -424,7 +419,7 @@ void raster_backward_replay(
             uint localIdx = batchCount - 1u - rev;
             uint globalIdx = batchStart + localIdx;
             RasterGaussian gaussian = RasterGaussian.load_shared(localIdx);
-            RasterGaussian.Differential dGaussian = { 0.0, 0.0, 0.0, 0.0, 0.0 };
+            RasterGaussian.Differential dGaussian = { 0.0, 0.0, 0.0, 0.0 };
             if (info.pixelActive && globalIdx < forwardState.processedEnd)
             {
                 float alpha = raster_eval_alpha_gaussian(gaussian, gsBatchSplatId[localIdx], info.rayDir, info.samplePoint);
@@ -443,7 +438,6 @@ void raster_backward_replay(
                     dGaussian.roLocal += dPixelGaussian.roLocal;
                     dGaussian.invScale += dPixelGaussian.invScale;
                     dGaussian.quat += dPixelGaussian.quat;
-                    dGaussian.opacityScale += dPixelGaussian.opacityScale;
                     dGaussian.colorAlpha += dPixelGaussian.colorAlpha;
                     forwardState.pixelState = prevState;
                     backwardState.pixelState = dpPrevState.getDifferential();
@@ -480,19 +474,23 @@ void csBackpropCachedRasterGrads(uint3 dispatchThreadID : SV_DispatchThreadID)
     dCached.roLocal = dRaster.roLocal;
     dCached.invScale = dRaster.invScale;
     dCached.quat = dRaster.quat;
-    dCached.opacityScale = dRaster.opacityScale;
 
     Gaussian3D gaussian = load_gaussian3d(splatId);
-    var dpPosition = diffPair(gaussian.position);
-    var dpScale = diffPair(gaussian.scale);
+    var dpCachedPosition = diffPair(gaussian.position);
+    var dpCachedScale = diffPair(gaussian.scale);
     var dpRotation = diffPair(gaussian.rotation);
-    bwd_diff(build_cached_ellipsoid)(g_Camera, g_Prepass.radiusScale, dpPosition, dpScale, dpRotation, dCached);
+    var dpOpacityPosition = diffPair(gaussian.position);
+    var dpOpacityScale = diffPair(gaussian.scale);
+    var dpRawOpacity = diffPair(gaussian.colorAlpha.w);
+    bwd_diff(build_cached_ellipsoid)(g_Camera, g_Prepass.radiusScale, dpCachedPosition, dpCachedScale, dpRotation, dCached);
+    bwd_diff(build_raster_fused_opacity)(g_Camera, g_Prepass.radiusScale, dpOpacityPosition, dpOpacityScale, dpRawOpacity, dRaster.colorAlpha.w);
 
     float gradScale = g_RasterGradDecodeScale;
-    store_param_grad<3>(g_Prepass.splatCount, PARAM_POSITION_X, splatId, dpPosition.getDifferential() * gradScale);
-    store_param_grad<3>(g_Prepass.splatCount, PARAM_SCALE_X, splatId, dpScale.getDifferential() * gradScale);
+    store_param_grad<3>(g_Prepass.splatCount, PARAM_POSITION_X, splatId, (dpCachedPosition.getDifferential() + dpOpacityPosition.getDifferential()) * gradScale);
+    store_param_grad<3>(g_Prepass.splatCount, PARAM_SCALE_X, splatId, (dpCachedScale.getDifferential() + dpOpacityScale.getDifferential()) * gradScale);
     store_param_grad<4>(g_Prepass.splatCount, PARAM_ROTATION_X, splatId, dpRotation.getDifferential() * gradScale);
-    store_param_grad<4>(g_Prepass.splatCount, PARAM_COLOR_R, splatId, dRaster.colorAlpha * gradScale);
+    store_param_grad<3>(g_Prepass.splatCount, PARAM_COLOR_R, splatId, dRaster.colorAlpha.xyz * gradScale);
+    store_param_grad<1>(g_Prepass.splatCount, PARAM_RAW_OPACITY, splatId, dpRawOpacity.getDifferential() * gradScale);
 }
 
 [shader("compute")]
