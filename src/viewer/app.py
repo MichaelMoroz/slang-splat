@@ -218,8 +218,8 @@ class SplatViewer(spy.AppWindow):
             self._run_action(lambda: session.load_scene(self, self.s.scene_path))
         elif self.s.colmap_root is not None:
             import_cfg = self.s.colmap_import
-            if import_cfg.database_path is None or import_cfg.images_root is None:
-                self.s.last_error = "COLMAP reload requires a stored database path and image folder."
+            if import_cfg.images_root is None:
+                self.s.last_error = "COLMAP reload requires a stored image folder."
                 return
             self._run_action(
                 lambda: session.import_colmap_dataset(

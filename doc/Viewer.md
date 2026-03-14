@@ -50,7 +50,7 @@ The import window collects:
 - the initialization mode: `COLMAP Pointcloud` or `Custom PLY`
 - the nearest-neighbor radius scale coefficient used by COLMAP pointcloud initialization
 
-After the dataset root is selected, the viewer recursively finds the first valid COLMAP database under that tree, then walks the root and its subfolders until it finds the first directory that contains one of the sampled COLMAP image entries. The image folder can still be overridden manually before pressing `Import`.
+After the dataset root is selected, the viewer resolves the COLMAP reconstruction from `sparse/0`. If a COLMAP database is present it samples image names from the `images` table; otherwise it falls back to the image names stored in `images.bin`. It then walks the selected root and its subfolders until it finds the first directory that contains one of those image entries. The image folder can still be overridden manually before pressing `Import`.
 
 Pointcloud initialization builds gaussians from the COLMAP sparse points and scales them from the median nearest-neighbor spacing multiplied by the selected coefficient. Custom PLY initialization keeps the COLMAP cameras and training frames, but seeds the scene from the chosen `.ply` file instead.
 

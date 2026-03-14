@@ -98,6 +98,13 @@ def _find_colmap_database(dataset_root: Path) -> Path:
     raise FileNotFoundError(f"Could not find a COLMAP database under {root}")
 
 
+def _find_optional_colmap_database(dataset_root: Path) -> Path | None:
+    try:
+        return _find_colmap_database(dataset_root)
+    except FileNotFoundError:
+        return None
+
+
 def _resolve_colmap_root_from_selection(dataset_root: Path) -> Path:
     root = Path(dataset_root).resolve()
     candidates = [root]
@@ -121,6 +128,14 @@ def _database_image_names(database_path: Path, limit: int = _COLMAP_DB_SAMPLE_LI
     return names
 
 
+def _reconstruction_image_names(colmap_root: Path, limit: int = _COLMAP_DB_SAMPLE_LIMIT) -> list[str]:
+    recon = load_colmap_reconstruction(Path(colmap_root).resolve())
+    names = [str(image.name).strip() for _, image in sorted(recon.images.items()) if str(image.name).strip()]
+    if not names:
+        raise RuntimeError(f"COLMAP reconstruction has no image names: {Path(colmap_root).resolve()}")
+    return names[: int(max(limit, 1))]
+
+
 def _dataset_directories(dataset_root: Path) -> list[Path]:
     root = Path(dataset_root).resolve()
     candidates = [root]
@@ -141,14 +156,14 @@ def _update_import_settings(
     viewer: object,
     *,
     dataset_root: Path,
-    database_path: Path,
+    database_path: Path | None,
     images_root: Path,
     init_mode: str,
     custom_ply_path: Path | None,
     nn_radius_scale_coef: float,
 ) -> None:
     viewer.s.colmap_import = ColmapImportSettings(
-        database_path=Path(database_path).resolve(),
+        database_path=None if database_path is None else Path(database_path).resolve(),
         images_root=Path(images_root).resolve(),
         init_mode=str(init_mode),
         custom_ply_path=None if custom_ply_path is None else Path(custom_ply_path).resolve(),
@@ -164,8 +179,9 @@ def _update_import_settings(
 
 def choose_colmap_root(viewer: object, dataset_root: Path) -> None:
     root = Path(dataset_root).resolve()
-    db_path = _find_colmap_database(root)
-    image_names = _database_image_names(db_path)
+    colmap_root = _resolve_colmap_root_from_selection(root)
+    db_path = _find_optional_colmap_database(root)
+    image_names = _reconstruction_image_names(colmap_root) if db_path is None else _database_image_names(db_path)
     _set_ui_path(viewer, "colmap_root_path", root)
     _set_ui_path(viewer, "colmap_database_path", db_path)
     _set_ui_path(viewer, "colmap_images_root", _suggest_images_root_from_dataset_root(root, image_names))
@@ -327,7 +343,7 @@ def import_colmap_dataset(
     viewer: object,
     *,
     colmap_root: Path,
-    database_path: Path,
+    database_path: Path | None,
     images_root: Path,
     init_mode: str,
     custom_ply_path: Path | None,
@@ -356,14 +372,15 @@ def import_colmap_dataset(
     initialize_training_scene(viewer)
     viewer.s.last_error = ""
     print(
-        f"Loaded COLMAP: db={Path(database_path).resolve()} root={root} "
+        f"Loaded COLMAP: db={None if database_path is None else Path(database_path).resolve()} root={root} "
         f"frames={len(viewer.s.training_frames)} images={Path(images_root).resolve()} init={init_mode}"
     )
 
 
 def import_colmap_from_ui(viewer: object) -> None:
     colmap_root = Path(_ui_path_string(viewer, "colmap_root_path")).expanduser()
-    database_path = Path(_ui_path_string(viewer, "colmap_database_path")).expanduser()
+    database_path_text = _ui_path_string(viewer, "colmap_database_path")
+    database_path = None if not database_path_text else Path(database_path_text).expanduser()
     images_root = Path(_ui_path_string(viewer, "colmap_images_root")).expanduser()
     init_mode = _ui_import_mode(viewer)
     custom_ply_text = _ui_path_string(viewer, "colmap_custom_ply_path")
@@ -373,8 +390,8 @@ def import_colmap_from_ui(viewer: object) -> None:
         raise FileNotFoundError(f"COLMAP root does not exist: {colmap_root}")
     if not _has_colmap_sparse(colmap_root):
         colmap_root = _resolve_colmap_root_from_selection(colmap_root)
-    if not database_path.exists():
-        database_path = _find_colmap_database(colmap_root)
+    if database_path is not None and not database_path.exists():
+        database_path = _find_optional_colmap_database(colmap_root)
     if not images_root.exists():
         raise FileNotFoundError(f"COLMAP image folder does not exist: {images_root}")
     if init_mode == _COLMAP_IMPORT_CUSTOM_PLY and (custom_ply_path is None or not custom_ply_path.exists()):

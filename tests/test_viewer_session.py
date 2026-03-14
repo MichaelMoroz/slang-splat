@@ -81,6 +81,22 @@ def _build_colmap_tree(tmp_path: Path, *, image_names: list[str], image_root_rel
     return database_path, images_root.resolve()
 
 
+def _build_colmap_tree_without_database(tmp_path: Path, *, image_names: list[str], image_root_rel: Path) -> tuple[Path, Path]:
+    root = tmp_path / "scene_no_db"
+    sparse = root / "sparse" / "0"
+    images_root = root / image_root_rel
+    sparse.mkdir(parents=True)
+    images_root.mkdir(parents=True, exist_ok=True)
+    _write_cameras_bin(sparse / "cameras.bin")
+    _write_images_bin(sparse / "images.bin", image_names)
+    _write_points3d_bin(sparse / "points3D.bin")
+    for image_name in image_names:
+        image_path = (images_root / image_name).resolve()
+        image_path.parent.mkdir(parents=True, exist_ok=True)
+        Image.fromarray(np.full((8, 8, 3), 127, dtype=np.uint8)).save(image_path)
+    return root.resolve(), images_root.resolve()
+
+
 def test_set_training_active_accumulates_elapsed_time_on_pause(monkeypatch) -> None:
     viewer = _viewer()
     times = iter((10.0, 14.5))
@@ -136,3 +152,22 @@ def test_choose_colmap_root_keeps_dataset_root_for_relative_image_subdirs(tmp_pa
     session.choose_colmap_root(viewer, database_path.parents[1])
 
     assert viewer.ui._values["colmap_images_root"] == str(database_path.resolve().parents[1])
+
+
+def test_choose_colmap_root_works_without_database(tmp_path: Path) -> None:
+    root, images_root = _build_colmap_tree_without_database(
+        tmp_path,
+        image_names=["images_4/frame_000.png", "images_4/frame_001.png"],
+        image_root_rel=Path("."),
+    )
+    viewer = SimpleNamespace(
+        ui=SimpleNamespace(_values={}),
+        s=SimpleNamespace(last_error="stale"),
+    )
+
+    session.choose_colmap_root(viewer, root)
+
+    assert viewer.ui._values["colmap_root_path"] == str(root)
+    assert viewer.ui._values["colmap_database_path"] == ""
+    assert viewer.ui._values["colmap_images_root"] == str(root)
+    assert viewer.s.last_error == ""
