@@ -8,6 +8,7 @@ from PIL import Image
 import slangpy as spy
 
 from ..common import SHADER_ROOT, buffer_to_numpy, clamp_index, thread_count_2d
+from ..filter import SeparableGaussianBlur
 from ..metrics import Metrics, psnr_from_mse
 from ..renderer import Camera, GaussianRenderer
 from ..scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
@@ -16,6 +17,8 @@ from .optimizer import GaussianOptimizer
 
 TRAIN_DOWNSCALE_MODE_AUTO = 0
 TRAIN_DOWNSCALE_MAX_FACTOR = 16
+_GAUSSIAN_PREFILTER_SIGMA_SCALE = float(1.0 / np.sqrt(12.0))
+_GAUSSIAN_PREFILTER_RADIUS_STD_DEVS = 3.0
 
 
 def resolve_training_resolution(width: int, height: int, downscale_factor: int) -> tuple[int, int]:
@@ -128,7 +131,7 @@ class GaussianTrainer:
     _LOSS_SLOT_TOTAL = 0
     _LOSS_SLOT_MSE = 1
     _KERNEL_ENTRIES = {
-        "downscale_target": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csDownscaleTarget"),
+        "downscale_target": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csResampleDownscaledTargetNearest"),
         "clear_loss_grad": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csClearLossAndGradTex"),
         "loss_grad": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csComputeL1LossGrad"),
     }
@@ -161,7 +164,8 @@ class GaussianTrainer:
         encoder: spy.CommandEncoder | None = None,
     ) -> spy.Texture:
         frame_index = clamp_index(frame_index, len(self.frames))
-        if native_resolution:
+        factor = self.effective_train_downscale_factor()
+        if native_resolution or factor <= 1:
             return self._frame_targets_native[frame_index]
         self._ensure_train_target_texture()
         if encoder is None:
@@ -260,6 +264,9 @@ class GaussianTrainer:
         self._init_point_positions_cpu: np.ndarray | None = None
         self._init_point_colors_cpu: np.ndarray | None = None
         self._frame_targets_native: list[spy.Texture] = []
+        self._target_prefilter: SeparableGaussianBlur | None = None
+        self._target_prefilter_size: tuple[int, int] | None = None
+        self._target_prefilter_texture: spy.Texture | None = None
         self._train_target_texture: spy.Texture | None = None
         self._downscaled_target_key: tuple[int, int, int, int] | None = None
         self._frame_rng = np.random.default_rng(self._seed)
@@ -368,8 +375,29 @@ class GaussianTrainer:
             raise RuntimeError("Training target texture is not initialized.")
         return self._train_target_texture
 
+    def _require_prefilter_texture(self) -> spy.Texture:
+        if self._target_prefilter_texture is None:
+            raise RuntimeError("Training prefilter texture is not initialized.")
+        return self._target_prefilter_texture
+
     def _invalidate_downscaled_target(self) -> None:
         self._downscaled_target_key = None
+
+    def _gaussian_prefilter_sigma(self, factor: int) -> float:
+        return max(float(factor) * _GAUSSIAN_PREFILTER_SIGMA_SCALE, 1e-6)
+
+    def _gaussian_prefilter_radius(self, factor: int) -> int:
+        return max(int(np.ceil(self._gaussian_prefilter_sigma(factor) * _GAUSSIAN_PREFILTER_RADIUS_STD_DEVS)), 0)
+
+    def _ensure_target_prefilter(self, width: int, height: int) -> SeparableGaussianBlur:
+        size = (max(int(width), 1), max(int(height), 1))
+        if self._target_prefilter is not None and self._target_prefilter_size == size:
+            return self._target_prefilter
+        self._target_prefilter = SeparableGaussianBlur(self.device, width=size[0], height=size[1])
+        self._target_prefilter_size = size
+        self._target_prefilter_texture = self._target_prefilter.make_texture(spy.Format.rgba32_float)
+        self._invalidate_downscaled_target()
+        return self._target_prefilter
 
     def _ensure_train_target_texture(self) -> None:
         width = max(int(self.renderer.width), 1)
@@ -396,14 +424,29 @@ class GaussianTrainer:
             "g_TargetHeight": int(self.renderer.height),
         }
 
+    def _dispatch_prefilter_target(self, encoder: spy.CommandEncoder, frame_index: int) -> spy.Texture:
+        frame = self._frame(frame_index)
+        factor = self.effective_train_downscale_factor()
+        blur = self._ensure_target_prefilter(int(frame.width), int(frame.height))
+        return blur.blur_texture(
+            encoder,
+            self._frame_targets_native[frame_index],
+            self._require_prefilter_texture(),
+            self._gaussian_prefilter_radius(factor),
+            self._gaussian_prefilter_sigma(factor),
+        )
+
     def _dispatch_downscale_target(self, encoder: spy.CommandEncoder, frame_index: int) -> None:
+        if self.effective_train_downscale_factor() <= 1:
+            return
         self._ensure_train_target_texture()
+        blurred = self._dispatch_prefilter_target(encoder, frame_index)
         self._dispatch(
             "downscale_target",
             encoder,
             self._pixel_thread_count(),
             {
-                "g_SourceTarget": self._frame_targets_native[frame_index],
+                "g_BlurredTarget": blurred,
                 "g_DownscaledTarget": self._require_train_target_texture(),
                 **self._downscale_vars(frame_index),
             },
@@ -411,6 +454,9 @@ class GaussianTrainer:
 
     def _refresh_train_target(self, encoder: spy.CommandEncoder, frame_index: int) -> None:
         factor = self.effective_train_downscale_factor()
+        if factor <= 1:
+            self._invalidate_downscaled_target()
+            return
         key = (
             int(frame_index),
             int(factor),

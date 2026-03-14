@@ -17,7 +17,7 @@ uniform Texture2D<float4> g_Target;
 uniform RWStructuredBuffer<float4> g_OutputGrad;
 uniform RWStructuredBuffer<float> g_LossBuffer;
 
-uniform Texture2D<float4> g_SourceTarget;
+uniform Texture2D<float4> g_BlurredTarget;
 uniform RWTexture2D<float4> g_DownscaledTarget;
 uniform uint g_SourceWidth;
 uniform uint g_SourceHeight;
@@ -43,7 +43,7 @@ groupshared float gsMSE[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
 
 [shader("compute")]
 [numthreads(TRAIN_TILE_DIM, TRAIN_TILE_DIM, 1)]
-void csDownscaleTarget(uint3 dispatchThreadID : SV_DispatchThreadID)
+void csResampleDownscaledTargetNearest(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     uint px = dispatchThreadID.x;
     uint py = dispatchThreadID.y;
@@ -54,19 +54,9 @@ void csDownscaleTarget(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint srcY0 = py * factor;
     uint srcX1 = min(srcX0 + factor, g_SourceWidth);
     uint srcY1 = min(srcY0 + factor, g_SourceHeight);
-
-    float4 sum = 0.0;
-    uint sampleCount = 0u;
-    for (uint sy = srcY0; sy < srcY1; sy++)
-    {
-        for (uint sx = srcX0; sx < srcX1; sx++)
-        {
-            sum += g_SourceTarget[uint2(sx, sy)];
-            sampleCount++;
-        }
-    }
-    float invSampleCount = 1.0 / max(float(sampleCount), 1.0);
-    g_DownscaledTarget[uint2(px, py)] = sum * invSampleCount;
+    uint srcX = min((srcX0 + max(srcX1, srcX0 + 1u) - 1u) >> 1, g_SourceWidth - 1u);
+    uint srcY = min((srcY0 + max(srcY1, srcY0 + 1u) - 1u) >> 1, g_SourceHeight - 1u);
+    g_DownscaledTarget[uint2(px, py)] = g_BlurredTarget[uint2(srcX, srcY)];
 }
 
 [shader("compute")]
