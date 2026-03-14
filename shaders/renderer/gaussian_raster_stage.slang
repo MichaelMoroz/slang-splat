@@ -414,6 +414,35 @@ RasterState.Differential raster_output_gradient_pixel(
     return dpState.getDifferential();
 }
 
+uint raster_pixel_index(uint2 pixelCoord)
+{
+    return pixelCoord.y * g_Raster.width + pixelCoord.x;
+}
+
+void store_training_forward_cache(RasterMicrotileInfo info, RasterMicrotileForwardState forwardState)
+{
+    [unroll] for (uint pix = 0u; pix < RASTER_MICROTILE_PIXELS; pix++)
+    {
+        if (!info.pixelActive[pix]) continue;
+        uint pixelIndex = raster_pixel_index(info.pixelCoord[pix]);
+        g_TrainingForwardState[pixelIndex] = float4(forwardState.pixelState[pix].accum, forwardState.pixelState[pix].trans);
+        g_TrainingProcessedEnd[pixelIndex] = forwardState.processedEnd[pix];
+    }
+}
+
+void load_training_forward_cache(RasterMicrotileInfo info, out RasterMicrotileForwardState forwardState)
+{
+    init_raster_microtile_forward_state(info, forwardState);
+    [unroll] for (uint pix = 0u; pix < RASTER_MICROTILE_PIXELS; pix++)
+    {
+        if (!info.pixelActive[pix]) continue;
+        uint pixelIndex = raster_pixel_index(info.pixelCoord[pix]);
+        float4 cachedState = g_TrainingForwardState[pixelIndex];
+        forwardState.pixelState[pix] = { cachedState.xyz, cachedState.w };
+        forwardState.processedEnd[pix] = g_TrainingProcessedEnd[pixelIndex];
+    }
+}
+
 void raster_backward_replay(
     RasterMicrotileInfo info,
     inout RasterMicrotileForwardState forwardState,
@@ -512,14 +541,35 @@ void csRasterize(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_Gr
 
 [shader("compute")]
 [numthreads(RASTER_THREAD_TILE_DIM, RASTER_THREAD_TILE_DIM, 1)]
-void csRasterizeForwardBackward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_GroupIndex)
+void csRasterizeTrainingForward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_GroupIndex)
+{
+    RasterMicrotileInfo info = resolve_raster_microtile(dispatchThreadID);
+    RasterMicrotileForwardState forwardState;
+    init_raster_microtile_forward_state(info, forwardState);
+    if (info.hasTileRange) raster_forward_replay(info, lane, forwardState);
+    store_training_forward_cache(info, forwardState);
+
+    [unroll] for (uint pix = 0u; pix < RASTER_MICROTILE_PIXELS; pix++)
+    {
+        if (!info.pixelActive[pix]) continue;
+        g_Output[info.pixelCoord[pix]] = raster_forward_output_pixel(
+            info,
+            pix,
+            forwardState.pixelState[pix],
+            forwardState.processedCount[pix]
+        );
+    }
+}
+
+[shader("compute")]
+[numthreads(RASTER_THREAD_TILE_DIM, RASTER_THREAD_TILE_DIM, 1)]
+void csRasterizeBackward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_GroupIndex)
 {
     RasterMicrotileInfo info = resolve_raster_microtile(dispatchThreadID);
     RasterMicrotileForwardState forwardState;
     RasterMicrotileBackwardState backwardState;
-    init_raster_microtile_forward_state(info, forwardState);
+    load_training_forward_cache(info, forwardState);
     init_raster_microtile_backward_state(backwardState);
-    if (info.hasTileRange) raster_forward_replay(info, lane, forwardState);
 
     [unroll] for (uint pix = 0u; pix < RASTER_MICROTILE_PIXELS; pix++)
     {

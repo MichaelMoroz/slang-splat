@@ -47,12 +47,12 @@ Each trainer `step()` performs:
 3. Use the cached native target texture for that frame and, when needed, refresh the reusable train target texture with an exact `NxN` box filter on the GPU.
 4. Run renderer prepass + raster forward.
 5. Run the fixed-count forward stage:
-   - raster forward renders the current image,
+   - `csRasterizeTrainingForward` renders the current image and stores per-pixel raster forward cache data for backward,
    - `csClearLossBuffer` resets the scalar loss slots,
    - `csComputeL1LossForward` computes direct RGB L1 reconstruction loss and RGB MSE and reduces those metrics into the loss buffer.
 6. Run the fixed-count backward stage:
    - `csComputeL1LossBackward` writes `dLoss / dRendered` into flat `RWStructuredBuffer<float4>` `g_OutputGrad`, indexed as `pixel = y * width + x`,
-   - raster forward/backward replay uses that image-space gradient to fill packed per-splat gradients without cached per-pixel forward state.
+   - `csRasterizeBackward` consumes the cached raster forward state and uses that image-space gradient to fill packed per-splat gradients.
 7. Run the optimizer pipeline:
    - `csAccumulateRegularizationGrads` adds scale and opacity regularizers on the packed param-major state.
    - `csClipPackedParamGrads` clips gradients from a structured per-parameter settings buffer owned by the optimizer module.

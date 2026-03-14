@@ -186,9 +186,16 @@ class GaussianTrainer:
         with debug_region(encoder, f"Trainer::{kernel}", 40 + len(kernel)):
             self._kernels[kernel].dispatch(thread_count=thread_count, vars=vars, command_encoder=encoder)
 
-    def _dispatch_raster_forward_backward(self, encoder: spy.CommandEncoder, frame_camera: Camera, background: np.ndarray) -> None:
+    def _dispatch_raster_training_forward(self, encoder: spy.CommandEncoder, frame_camera: Camera, background: np.ndarray) -> None:
+        self.renderer.rasterize_training_forward_current_scene(
+            encoder=encoder,
+            camera=frame_camera,
+            background=background,
+        )
+
+    def _dispatch_raster_backward(self, encoder: spy.CommandEncoder, frame_camera: Camera, background: np.ndarray) -> None:
         self.renderer.clear_raster_grads_current_scene(encoder)
-        self.renderer.rasterize_forward_backward_current_scene(
+        self.renderer.rasterize_backward_current_scene(
             encoder=encoder,
             camera=frame_camera,
             background=background,
@@ -465,13 +472,13 @@ class GaussianTrainer:
 
     def _dispatch_training_forward(self, encoder: spy.CommandEncoder, frame_camera: Camera, background: np.ndarray, target_texture: spy.Texture) -> None:
         with debug_region(encoder, "Trainer Forward", 50):
-            self.renderer.rasterize_current_scene(encoder, frame_camera, background)
+            self._dispatch_raster_training_forward(encoder, frame_camera, background)
             self._dispatch_loss_forward(encoder, target_texture)
 
     def _dispatch_training_backward(self, encoder: spy.CommandEncoder, frame_camera: Camera, background: np.ndarray, target_texture: spy.Texture) -> None:
         with debug_region(encoder, "Trainer Backward", 51):
             self._dispatch_loss_backward(encoder, target_texture)
-            self._dispatch_raster_forward_backward(encoder, frame_camera, background)
+            self._dispatch_raster_backward(encoder, frame_camera, background)
 
     def _dispatch_optimizer_step(self, encoder: spy.CommandEncoder) -> None:
         with debug_region(encoder, "Trainer Optimizer", 52):

@@ -152,11 +152,11 @@ class _ScaleGradProbe:
     def dispatch_gradient(self) -> None:
         self.renderer.execute_prepass_for_current_scene(self.camera, sync_counts=False)
         enc = self.device.create_command_encoder()
-        self.renderer.rasterize_current_scene(enc, self.camera, self.background)
+        self.trainer._dispatch_raster_training_forward(enc, self.camera, self.background)
         target_texture = self.trainer.get_frame_target_texture(0, native_resolution=False, encoder=enc)
         self.trainer._dispatch_loss_forward(enc, target_texture)
         self.trainer._dispatch_loss_backward(enc, target_texture)
-        self.trainer._dispatch_raster_forward_backward(enc, self.camera, self.background)
+        self.trainer._dispatch_raster_backward(enc, self.camera, self.background)
         self.device.submit_command_buffer(enc.finish())
         self.device.wait()
 
@@ -204,7 +204,7 @@ def test_split_loss_forward_backward_separates_metrics_from_output_grads(device,
     renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
     renderer.output_grad_buffer.copy_from_numpy(np.zeros((renderer.width * renderer.height, 4), dtype=np.float32))
     enc = device.create_command_encoder()
-    renderer.rasterize_current_scene(enc, camera, background)
+    trainer._dispatch_raster_training_forward(enc, camera, background)
     target_texture = trainer.get_frame_target_texture(0, native_resolution=False, encoder=enc)
     trainer._dispatch_loss_forward(enc, target_texture)
     device.submit_command_buffer(enc.finish())
@@ -225,6 +225,38 @@ def test_split_loss_forward_backward_separates_metrics_from_output_grads(device,
     assert np.allclose(grads_after_forward, 0.0)
     assert np.any(np.abs(grads_after_backward[..., :3]) > 0.0)
     assert np.all(np.isfinite(grads_after_backward))
+
+
+def test_split_raster_backward_consumes_forward_cache_only(device, tmp_path: Path):
+    scene = _make_scene(count=10, seed=23)
+    frame = _make_frame(tmp_path, image_name="split_raster_target.png")
+    renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], seed=29)
+    camera = frame.make_camera(near=0.1, far=20.0)
+    background = np.asarray(trainer.training.background, dtype=np.float32)
+
+    renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
+    target_texture = trainer.get_frame_target_texture(0, native_resolution=False)
+
+    enc = device.create_command_encoder()
+    trainer._dispatch_raster_training_forward(enc, camera, background)
+    trainer._dispatch_loss_backward(enc, target_texture)
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+
+    grads_after_forward = _read_grad_groups(renderer, scene.count)
+    for name in grads_after_forward:
+        assert np.allclose(grads_after_forward[name], 0.0)
+
+    enc = device.create_command_encoder()
+    trainer._dispatch_raster_backward(enc, camera, background)
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+
+    grads_after_backward = _read_grad_groups(renderer, scene.count)
+    assert any(np.any(np.abs(grads_after_backward[name]) > 0.0) for name in grads_after_backward)
+    for name in grads_after_backward:
+        assert np.all(np.isfinite(grads_after_backward[name]))
 
 
 def test_scale_gradient_stays_growth_directed_for_large_target_scales(device, tmp_path: Path):

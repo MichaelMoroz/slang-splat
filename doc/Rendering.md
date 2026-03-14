@@ -69,13 +69,14 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - Ellipse mode reuses the same tiled forward replay and switches splat alpha evaluation from filled-gaussian coverage to a symmetric antialiased outline band derived from the projected conic's signed edge distance. `debugEllipseThicknessPx` is the full outline thickness in pixels, and the default is `2`, so the visible ring spans both sides of the projected ellipse boundary instead of being clipped to the interior.
 
 ## 7. Raster Backward
-- Shaders: `csClearRasterGrads`, `csRasterizeForwardBackward`.
+- Shaders: `csClearRasterGrads`, `csRasterizeTrainingForward`, `csRasterizeBackward`.
 - `csClearRasterGrads` zeros per-splat gradient buffers for:
   - `g_SplatPosLocal`
   - `g_SplatInvScale`
   - `g_SplatQuat`
   - `g_ScreenColorAlpha`
-- `csRasterizeForwardBackward` recomputes the forward tile traversal inside the gradient pass, then walks the same batches in reverse, so no per-pixel forward-state textures are needed.
+- `csRasterizeTrainingForward` runs the raster forward path for the fixed-count trainer, writes the rendered output, and caches one per-pixel forward state record plus `processedEnd` for backward replay.
+- `csRasterizeBackward` is a pure backward kernel: it loads the cached per-pixel forward state, derives `dLoss / dRasterState` from `g_OutputGrad`, and walks the staged splats in reverse without replaying forward internally.
 - The reverse pass reuses one staged gaussian per thread-group lane, accumulates the microtile's pixel contributions in registers, and immediately converts them into global parameter gradients.
 - Global and groupshared raster loads are implemented via custom derivative functions; backward accumulation uses wave-reduced direct global atomics into flattened per-splat `float4` gradient buffers (`index = splat_id * 4 + component`) without an intermediate groupshared gradient cache.
 - Output gradients are supplied through `g_OutputGrad` (`StructuredBuffer<float4>`) using flat pixel indexing `y * width + x`, and chain-rule terms include gamma output mapping and alpha output (`1 - transmittance`).
