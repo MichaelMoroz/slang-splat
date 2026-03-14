@@ -83,15 +83,10 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 ## 8. Training Stage
 - Shader: `shaders/renderer/gaussian_training_stage.slang`.
 - Kernels:
-  - `csClearLossAndGradTex`: clears `g_OutputGrad` and scalar loss buffer.
-  - `csComputeL1LossGrad`: computes RGB L1 loss and RGB MSE, writes `g_OutputGrad`, and stores the scalar metrics used by the host.
-  - `csAdamStepFused`: one-thread-per-splat fused ADAM update over position, scale, quaternion, color, and opacity.
-- Stability measures in `csAdamStepFused` include:
-  - finite-value sanitization,
-  - gradient clipping (component and norm),
-  - update clipping,
-  - position/scale/color range clamps,
-  - quaternion renormalization with identity fallback.
+  - `csClearLossBuffer`: clears the scalar loss buffer for the current fixed-count step.
+  - `csComputeL1LossForward`: computes RGB L1 loss and RGB MSE only, reducing them into the scalar metrics buffer used by the host.
+  - `csComputeL1LossBackward`: computes only the image-space RGB L1 gradient into `g_OutputGrad`.
+- The fixed-count trainer runs forward as `rasterize -> loss forward`, then backward as `loss backward -> raster backward -> optimizer`, so the training path keeps distinct forward and backward kernels while still reusing the packed-parameter optimizer path.
 
 ## Stats Notes
 - `generated_entries` / `written_entries` are reported with one-frame latency (`stats_latency_frames = 1`).

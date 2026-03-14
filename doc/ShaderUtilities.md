@@ -16,7 +16,7 @@ The shader code now treats reusable GPU logic as a first-class utility submodule
 - `shaders/renderer/gaussian_types.slang` now owns renderer bindings, group-shared declarations, and raster-size constants.
 - `shaders/renderer/gaussian_project_stage.slang` now focuses on projection/binning entry points and imports reusable splatting geometry from `shaders/utility/splatting`.
 - `shaders/renderer/gaussian_raster_stage.slang` now focuses on raster forward/backward control flow and imports reusable raster math from `shaders/utility/splatting`.
-- `shaders/renderer/gaussian_training_stage.slang` now keeps only the fixed-count training entry points: clear loss/output-grad, fused L1 loss gradient, and fused ADAM update.
+- `shaders/renderer/gaussian_training_stage.slang` now keeps only the fixed-count training entry points for target downscaling, scalar loss forward reduction, image-gradient backward generation, and training/debug visualization helpers.
 
 ## Python Bindings
 - `src/filter/separable_gaussian_blur.py` loads blur kernels from `shaders/utility/blur`.

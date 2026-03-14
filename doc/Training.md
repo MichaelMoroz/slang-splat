@@ -2,7 +2,7 @@
 
 `cli.py` (`train-colmap`) is a thin wrapper over `src/app/cli.py`. `src/training/gaussian_trainer.py` remains the public training facade, `src/training/adam.py` owns generic ADAM buffers and generic optimizer-kernel dispatch, and `src/training/optimizer.py` keeps only Gaussian-specific optimizer logic.
 
-The active training path is intentionally minimal: initialize a fixed gaussian set from the COLMAP point cloud, render one shuffled training frame, compute a direct L1 image gradient on the GPU, replay raster backward for per-splat gradients, then run a fused ADAM update.
+The active training path is intentionally minimal: initialize a fixed gaussian set from the COLMAP point cloud, run an explicit forward pass for rendering and scalar loss evaluation, run a separate backward pass for image gradients and raster replay, then apply the packed ADAM update.
 
 ## Data Ingestion
 - Loader facade: `src/scene/colmap_loader.py`
@@ -46,11 +46,13 @@ Each trainer `step()` performs:
    - Auto mode starts from `train_auto_start_downscale` and descends toward `1x` with per-phase duration `train_downscale_base_iters + level_index * train_downscale_iter_step`.
 3. Use the cached native target texture for that frame and, when needed, refresh the reusable train target texture with an exact `NxN` box filter on the GPU.
 4. Run renderer prepass + raster forward.
-5. Run `csClearLossAndGradTex`, then `csComputeL1LossGrad`.
-   - The loss kernel computes direct RGB L1 reconstruction loss.
-   - It also records RGB MSE as a plain diagnostic metric.
-   - The same pass writes `dLoss / dRendered` into a flat `RWStructuredBuffer<float4>` `g_OutputGrad`, indexed as `pixel = y * width + x`.
-6. Run fused raster forward/backward replay to fill per-splat gradient buffers without cached per-pixel forward state.
+5. Run the fixed-count forward stage:
+   - raster forward renders the current image,
+   - `csClearLossBuffer` resets the scalar loss slots,
+   - `csComputeL1LossForward` computes direct RGB L1 reconstruction loss and RGB MSE and reduces those metrics into the loss buffer.
+6. Run the fixed-count backward stage:
+   - `csComputeL1LossBackward` writes `dLoss / dRendered` into flat `RWStructuredBuffer<float4>` `g_OutputGrad`, indexed as `pixel = y * width + x`,
+   - raster forward/backward replay uses that image-space gradient to fill packed per-splat gradients without cached per-pixel forward state.
 7. Run the optimizer pipeline:
    - `csAccumulateRegularizationGrads` adds scale and opacity regularizers on the packed param-major state.
    - `csClipPackedParamGrads` clips gradients from a structured per-parameter settings buffer owned by the optimizer module.
@@ -63,8 +65,9 @@ There is no densification, pruning, opacity reset schedule, MCMC exploration ter
 
 ## Kernels
 - `csDownscaleTarget`: exact integer-factor box-filter downscale from the native dataset texture into the reusable train target.
-- `csClearLossAndGradTex`: zero loss + output-grad buffer.
-- `csComputeL1LossGrad`: computes direct RGB L1 loss, records RGB MSE, and writes `g_OutputGrad`.
+- `csClearLossBuffer`: zero scalar loss slots for the current training step.
+- `csComputeL1LossForward`: computes direct RGB L1 loss and RGB MSE only.
+- `csComputeL1LossBackward`: computes only the image-space L1 gradient into `g_OutputGrad`.
 - Packed trainable storage remains param-major scalar packing: `param_id * splat_count + splat_id`.
 - The stored opacity parameter is the raw sigmoid logit, not direct alpha.
 - `optimizer.slang` owns generic optimizer kernels and tables:

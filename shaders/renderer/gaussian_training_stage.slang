@@ -17,7 +17,7 @@ uniform Texture2D<float4> g_Target;
 uniform RWStructuredBuffer<float4> g_OutputGrad;
 uniform RWStructuredBuffer<float> g_LossBuffer;
 
-uniform Texture2D<float4> g_BlurredTarget;
+uniform Texture2D<float4> g_SourceTarget;
 uniform RWTexture2D<float4> g_DownscaledTarget;
 uniform uint g_SourceWidth;
 uniform uint g_SourceHeight;
@@ -54,18 +54,25 @@ void csResampleDownscaledTargetNearest(uint3 dispatchThreadID : SV_DispatchThrea
     uint srcY0 = py * factor;
     uint srcX1 = min(srcX0 + factor, g_SourceWidth);
     uint srcY1 = min(srcY0 + factor, g_SourceHeight);
-    uint srcX = min((srcX0 + max(srcX1, srcX0 + 1u) - 1u) >> 1, g_SourceWidth - 1u);
-    uint srcY = min((srcY0 + max(srcY1, srcY0 + 1u) - 1u) >> 1, g_SourceHeight - 1u);
-    g_DownscaledTarget[uint2(px, py)] = g_BlurredTarget[uint2(srcX, srcY)];
+    float4 accum = 0.0;
+    uint sampleCount = 0u;
+    for (uint srcY = srcY0; srcY < srcY1; srcY++)
+    {
+        for (uint srcX = srcX0; srcX < srcX1; srcX++)
+        {
+            accum += g_SourceTarget[uint2(srcX, srcY)];
+            sampleCount += 1u;
+        }
+    }
+    g_DownscaledTarget[uint2(px, py)] = accum / max(float(sampleCount), 1.0);
 }
 
 [shader("compute")]
 [numthreads(TRAIN_TILE_DIM, TRAIN_TILE_DIM, 1)]
-void csClearLossAndGradTex(uint3 dispatchThreadID : SV_DispatchThreadID)
+void csClearLossBuffer(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     uint px = dispatchThreadID.x;
     uint py = dispatchThreadID.y;
-    if (px < g_Width && py < g_Height) g_OutputGrad[py * g_Width + px] = 0.0;
     if (px == 0u && py == 0u)
     {
         g_LossBuffer[LOSS_SLOT_TOTAL] = 0.0;
@@ -75,7 +82,7 @@ void csClearLossAndGradTex(uint3 dispatchThreadID : SV_DispatchThreadID)
 
 [shader("compute")]
 [numthreads(TRAIN_TILE_DIM, TRAIN_TILE_DIM, 1)]
-void csComputeL1LossGrad(
+void csComputeL1LossForward(
     uint3 dispatchThreadID : SV_DispatchThreadID,
     uint3 groupThreadID : SV_GroupThreadID
 )
@@ -95,8 +102,6 @@ void csComputeL1LossGrad(
         float mse = rgb_mse_loss(rendered, target, g_InvPixelCount);
         localLoss = isfinite(loss) ? loss : 0.0;
         localMSE = isfinite(mse) ? mse : 0.0;
-        float3 dOut = clamp(sanitize_float3(rgb_l1_grad(rendered, target, g_InvPixelCount), g_LossGradClip), -g_LossGradClip, g_LossGradClip);
-        g_OutputGrad[py * g_Width + px] = float4(dOut, 0.0);
     }
 
     gsLoss[localIndex] = localLoss;
@@ -113,6 +118,21 @@ void csComputeL1LossGrad(
         if (isfinite(gsLoss[0])) InterlockedAdd(g_LossBuffer[LOSS_SLOT_TOTAL], gsLoss[0]);
         if (isfinite(gsMSE[0])) InterlockedAdd(g_LossBuffer[LOSS_SLOT_MSE], gsMSE[0]);
     }
+}
+
+[shader("compute")]
+[numthreads(TRAIN_TILE_DIM, TRAIN_TILE_DIM, 1)]
+void csComputeL1LossBackward(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint px = dispatchThreadID.x;
+    uint py = dispatchThreadID.y;
+    if (px >= g_Width || py >= g_Height) return;
+
+    uint2 pixel = uint2(px, py);
+    float3 rendered = sanitize_float3(g_Rendered[pixel].xyz, g_HugeValue);
+    float3 target = sanitize_float3(g_Target[pixel].xyz, g_HugeValue);
+    float3 dOut = clamp(sanitize_float3(rgb_l1_grad(rendered, target, g_InvPixelCount), g_LossGradClip), -g_LossGradClip, g_LossGradClip);
+    g_OutputGrad[py * g_Width + px] = float4(dOut, 0.0);
 }
 
 [shader("compute")]

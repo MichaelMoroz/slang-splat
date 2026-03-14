@@ -138,7 +138,7 @@ def test_colmap_init_suggestions_scale_with_requested_density(tmp_path: Path):
     assert dense.base_scale is not None
     assert dense.position_jitter_std is not None
     assert dense.initial_opacity is not None
-    assert np.isclose(direct.base_scale, 3.0)
+    assert np.isclose(direct.base_scale, 0.75)
     assert coarse.base_scale > dense.base_scale
     assert coarse.position_jitter_std > dense.position_jitter_std
     assert coarse.initial_opacity >= dense.initial_opacity
@@ -186,5 +186,5 @@ def test_colmap_init_resolver_uses_nn_spacing_as_default_base_scale(tmp_path: Pa
     )
 
     assert resolved.base_scale is not None
-    assert np.isclose(resolved.base_scale, 3.0)
-    np.testing.assert_allclose(scene.scales, np.full((2, 3), 3.0, dtype=np.float32), rtol=0.0, atol=1e-6)
+    assert np.isclose(resolved.base_scale, 0.75)
+    np.testing.assert_allclose(scene.scales, np.full((2, 3), 0.75, dtype=np.float32), rtol=0.0, atol=1e-6)

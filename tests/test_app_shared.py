@@ -85,7 +85,16 @@ def test_auto_profile_resolves_to_legacy_defaults():
 def test_viewer_effective_training_setup_keeps_requested_init_opacity():
     class _StubViewer:
         def __init__(self) -> None:
-            self.s = type("_State", (), {"colmap_root": Path("dataset/bicycle")})()
+            self.s = type(
+                "_State",
+                (),
+                {
+                    "colmap_root": Path("dataset/bicycle"),
+                    "cached_training_setup_signature": None,
+                    "cached_training_setup": None,
+                    "colmap_import": None,
+                },
+            )()
 
         def _selected_images_subdir(self) -> str:
             return "images_4"

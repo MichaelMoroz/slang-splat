@@ -35,6 +35,7 @@ class _DummyTrainer:
     def __init__(self) -> None:
         self.state = SimpleNamespace(step=0, last_loss=0.0, avg_loss=0.0, last_mse=0.0, avg_mse=0.0, last_psnr=float("inf"), avg_psnr=float("inf"), last_frame_index=0, last_instability="")
         self.scene = SimpleNamespace(count=4)
+        self.training = SimpleNamespace(train_downscale_mode=1, train_auto_start_downscale=1, train_downscale_max_iters=30000)
         self.step_calls = 0
 
     def step(self) -> None:
@@ -42,6 +43,9 @@ class _DummyTrainer:
 
     def make_frame_camera(self, frame_index: int, width: int, height: int) -> tuple[int, int, int]:
         return (frame_index, width, height)
+
+    def effective_train_downscale_factor(self) -> int:
+        return 1
 
     def get_frame_target_texture(self, frame_index: int, native_resolution: bool = True, encoder: object | None = None) -> str:
         return f"target_tex_{frame_index}_{native_resolution}"
@@ -74,7 +78,7 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         "training_steps_per_frame": _control(1),
         "train_downscale_factor": _control(1),
     }
-    texts = {key: _text() for key in ("fps", "images_subdir", "loss_debug_view", "loss_debug_frame", "path", "scene_stats", "render_stats", "training", "training_time", "training_iters_avg", "training_loss", "training_mse", "training_psnr", "training_instability", "training_resolution", "error")}
+    texts = {key: _text() for key in ("fps", "images_subdir", "loss_debug_view", "loss_debug_frame", "path", "scene_stats", "render_stats", "training", "training_time", "training_iters_avg", "training_loss", "training_mse", "training_psnr", "training_instability", "training_resolution", "training_downscale", "error")}
     viewer = SimpleNamespace()
     viewer.device = SimpleNamespace()
     viewer.loss_debug_view_options = (("rendered", "Rendered"), ("target", "Target"), ("abs_diff", "Abs Diff"))
@@ -123,7 +127,7 @@ def test_render_frame_uses_debug_branch_when_visual_loss_debug_enabled(monkeypat
     presenter.render_frame(viewer, render_context)
 
     assert viewer.s.trainer.step_calls == 1
-    assert calls == ["apply", "train_resize", "debug", "ui"]
+    assert calls == ["apply", "debug", "ui"]
 
 
 def test_render_frame_uses_main_branch_when_visual_loss_debug_disabled(monkeypatch):
@@ -142,7 +146,7 @@ def test_render_frame_uses_main_branch_when_visual_loss_debug_disabled(monkeypat
     presenter.render_frame(viewer, render_context)
 
     assert viewer.s.trainer.step_calls == 1
-    assert calls == ["apply", "train_resize", "main", "ui"]
+    assert calls == ["apply", "main", "ui"]
 
 
 def test_render_frame_runs_configured_training_batch(monkeypatch):
@@ -163,7 +167,7 @@ def test_render_frame_runs_configured_training_batch(monkeypatch):
 
     assert viewer.s.trainer.step_calls == 3
     assert viewer.s.last_training_batch_steps == 3
-    assert calls == ["apply", "train_resize", "main", "ui"]
+    assert calls == ["apply", "main", "ui"]
 
 
 def test_update_ui_text_uses_permutation_averages() -> None:

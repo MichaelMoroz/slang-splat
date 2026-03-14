@@ -20,8 +20,8 @@ Description on completion: Reworked `blur` to use flat structured buffers with r
 
 5) Keep only a basic backprop training path on an unchanging gaussian splat count. Separate forward and backward kernels for this fixed-count training path.
 Test criteria: tests passing.
-STATUS: Not done
-Description on completion: none
+STATUS: Done
+Description on completion: Split the fixed-count training path into explicit forward and backward stages. `shaders/renderer/gaussian_training_stage.slang` now has separate `csComputeL1LossForward` and `csComputeL1LossBackward` kernels, `GaussianTrainer` dispatches them as `rasterize -> loss forward -> loss backward -> raster backward -> optimizer`, and the training tests now validate that scalar metrics are accumulated in the forward pass while image gradients are produced only by the backward pass. Verified with `pytest tests/test_training_kernels.py tests/test_training_cli_smoke.py tests/test_viewer_presenter.py tests/test_renderer_pipeline.py`.
 
 6) Implement the SSIM-based MCMC reconstruction loss exactly, with SSIM-related logic in dedicated kernels under the `losses` submodule. Keep the L1 and regularization terms inline in the main training flow; only SSIM work should be split into separate kernels.
 Additionally implmement debug view modes to see the SSIM blur components of the loss for visual validation.
