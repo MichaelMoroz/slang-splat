@@ -21,7 +21,10 @@ The active training path is intentionally minimal: initialize a fixed gaussian s
   - resolved image path,
   - COLMAP extrinsics (`q_wxyz`, `t_xyz`),
   - scaled intrinsics (`fx`, `fy`, `cx`, `cy`) for the selected image resolution.
-- Frame target textures are stored on GPU as a single train-resolution `rgba8_unorm` set to reduce memory usage.
+- Frame target handling is split into:
+  - native dataset textures cached as `rgba8_unorm_srgb`,
+  - one reusable train target texture in `rgba32_float`,
+  - a GPU box-filter downscale dispatch that writes the current frame into the train target.
 - Dataset texture creation and point-cloud upload/binding are isolated inside trainer helpers instead of being interleaved with the optimization step.
 
 ## Initialization
@@ -38,24 +41,26 @@ The active training path is intentionally minimal: initialize a fixed gaussian s
 ## Optimization Loop
 Each trainer `step()` performs:
 1. Pick the next training frame from a shuffled full-view epoch; after all views are consumed once, regenerate a new permutation.
-2. Use the cached target texture for that frame at train resolution.
-3. Run renderer prepass + raster forward.
-4. Run `csClearLossAndGradTex`, then `csComputeL1LossGrad`.
+2. Resolve the active train resolution as `ceil(native / N)` from the current `train_downscale_factor`.
+3. Use the cached native target texture for that frame and, when needed, refresh the reusable train target texture with an exact `NxN` box filter on the GPU.
+4. Run renderer prepass + raster forward.
+5. Run `csClearLossAndGradTex`, then `csComputeL1LossGrad`.
    - The loss kernel computes direct RGB L1 reconstruction loss.
    - It also records RGB MSE as a plain diagnostic metric.
    - The same pass writes `dLoss / dRendered` into a flat `RWStructuredBuffer<float4>` `g_OutputGrad`, indexed as `pixel = y * width + x`.
-5. Run fused raster forward/backward replay to fill per-splat gradient buffers without cached per-pixel forward state.
-6. Run the optimizer pipeline:
+6. Run fused raster forward/backward replay to fill per-splat gradient buffers without cached per-pixel forward state.
+7. Run the optimizer pipeline:
    - `csAccumulateRegularizationGrads` adds scale and opacity regularizers on the packed param-major state.
    - `csClipPackedParamGrads` clips gradients from a structured per-parameter settings buffer owned by the optimizer module.
    - `csComputePackedSplatGradNorms` can optionally reduce the packed gradient vector of each splat into one scalar `L2` norm for debug visualization.
    - `csAdamStepPacked` applies one-thread-per-packed-parameter ADAM using that same settings buffer plus a packed `float2` moments buffer.
    - `csProjectGaussianParams` applies the remaining Gaussian-specific post-step projection (quaternion normalization and anisotropy clamp).
-7. Update host-side rolling loss state and the last-frame MSE metric.
+8. Update host-side rolling loss state and the last-frame MSE metric.
 
 There is no densification, pruning, opacity reset schedule, MCMC exploration term, or PSNR/SSIM tracking on the active path.
 
 ## Kernels
+- `csDownscaleTarget`: exact integer-factor box-filter downscale from the native dataset texture into the reusable train target.
 - `csClearLossAndGradTex`: zero loss + output-grad buffer.
 - `csComputeL1LossGrad`: computes direct RGB L1 loss, records RGB MSE, and writes `g_OutputGrad`.
 - Packed trainable storage remains param-major scalar packing: `param_id * splat_count + splat_id`.
@@ -122,5 +127,6 @@ Useful options:
   - set train image directory,
   - initialize training scene,
   - start/stop one-step-per-frame optimization,
+  - change live train downscale while preserving optimizer state,
   - live loss and MSE display,
   - grad-norm raster debug sourced from the optimizer's per-splat packed-gradient reduction.

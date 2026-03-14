@@ -62,6 +62,17 @@ The loss-debug controls expose a runtime `Abs Diff Scale` slider when `View = Ab
 - `scale = 1.0` shows the raw absolute color difference.
 - Higher values amplify subtle differences without changing the rendered or target views.
 
+## Training Resolution
+
+The `Train Setup` section exposes a live `Train Downscale` integer control.
+
+- `N = 1` keeps native dataset resolution.
+- Training render resolution becomes `ceil(native_width / N) x ceil(native_height / N)`.
+- Loss targets are generated from the native dataset image with an exact `NxN` box filter on the GPU.
+- Changing the factor while training is active recreates only the train-resolution renderer and target resources; scene state, ADAM moments, shuffle order, step counter, and pause/run state are preserved.
+
+The panel also shows the resolved active train resolution so the loss target, training renderer, and debug target view are easy to verify.
+
 ## Training Metrics
 
 The training panel shows both short-horizon and run-level throughput data.

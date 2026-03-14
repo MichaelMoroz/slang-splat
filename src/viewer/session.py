@@ -13,7 +13,7 @@ from ..common import SHADER_ROOT, clamp_index
 from ..renderer import GaussianRenderer
 from ..scene import GaussianScene, build_training_frames_from_root, initialize_scene_from_colmap_points, load_colmap_reconstruction, load_gaussian_ply, resolve_colmap_init_hparams
 from ..scene._internal.colmap_ops import point_nn_scales
-from ..training import GaussianTrainer
+from ..training import GaussianTrainer, resolve_training_resolution
 from ..scene._internal.colmap_types import point_tables
 from .state import ColmapImportSettings, SceneCountProxy
 
@@ -51,7 +51,8 @@ def _ui_import_mode(viewer: object) -> str:
 
 
 def _profile_images_subdir(viewer: object) -> str | None:
-    images_root = viewer.s.colmap_import.images_root
+    import_state = getattr(viewer.s, "colmap_import", None)
+    images_root = None if import_state is None else import_state.images_root
     if viewer.s.colmap_root is None or images_root is None:
         return None
     root = Path(viewer.s.colmap_root).resolve()
@@ -279,8 +280,35 @@ def ensure_renderer(viewer: object, attr: str, width: int, height: int, allow_de
     return renderer
 
 
+def _create_renderer(viewer: object, width: int, height: int, allow_debug_overlays: bool) -> GaussianRenderer:
+    return GaussianRenderer(viewer.device, width=int(width), height=int(height), **renderer_kwargs(viewer.renderer_params(allow_debug_overlays)))
+
+
 def recreate_renderer(viewer: object, width: int, height: int) -> None:
     ensure_renderer(viewer, "renderer", width, height, allow_debug_overlays=True)
+    _reset_loss_debug(viewer)
+
+
+def ensure_training_runtime_resolution(viewer: object) -> None:
+    if viewer.s.trainer is None or viewer.s.training_renderer is None or not viewer.s.training_frames:
+        return
+    desired_width, desired_height = viewer.s.trainer.training_resolution(0)
+    current_size = (int(viewer.s.training_renderer.width), int(viewer.s.training_renderer.height))
+    desired_size = (int(desired_width), int(desired_height))
+    if current_size == desired_size:
+        return
+    previous_renderer = viewer.s.training_renderer
+    renderer = _create_renderer(viewer, desired_size[0], desired_size[1], allow_debug_overlays=False)
+    enc = viewer.device.create_command_encoder()
+    previous_renderer.copy_scene_state_to(enc, renderer)
+    viewer.device.submit_command_buffer(enc.finish())
+    viewer.s.training_renderer = renderer
+    viewer.s.trainer.rebind_renderer(renderer)
+    if viewer.s.renderer is not None:
+        viewer.s.renderer.set_debug_grad_norm_buffer(
+            renderer.work_buffers["debug_grad_norm"] if viewer.s.trainer.compute_debug_grad_norm else None
+        )
+    _invalidate(viewer)
     _reset_loss_debug(viewer)
 
 
@@ -411,7 +439,11 @@ def initialize_training_scene(viewer: object) -> None:
     if viewer.s.colmap_recon is None or not viewer.s.training_frames:
         return
     init, params, init_hparams, profile = resolve_effective_training_setup(viewer)
-    width, height = int(viewer.s.training_frames[0].width), int(viewer.s.training_frames[0].height)
+    width, height = resolve_training_resolution(
+        int(viewer.s.training_frames[0].width),
+        int(viewer.s.training_frames[0].height),
+        int(params.training.train_downscale_factor),
+    )
     renderer = ensure_renderer(viewer, "training_renderer", width, height, allow_debug_overlays=False)
     import_cfg = viewer.s.colmap_import
     resolved_init = None

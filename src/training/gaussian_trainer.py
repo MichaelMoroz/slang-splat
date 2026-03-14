@@ -15,6 +15,13 @@ from .adam import AdamOptimizer, AdamRuntimeHyperParams
 from .optimizer import GaussianOptimizer
 
 
+def resolve_training_resolution(width: int, height: int, downscale_factor: int) -> tuple[int, int]:
+    factor = max(int(downscale_factor), 1)
+    native_width = max(int(width), 1)
+    native_height = max(int(height), 1)
+    return (native_width + factor - 1) // factor, (native_height + factor - 1) // factor
+
+
 @dataclass(slots=True)
 class _SceneCountProxy:
     count: int
@@ -73,7 +80,7 @@ class StabilityHyperParams:
 class TrainingHyperParams:
     background: tuple[float, float, float] = (0.0, 0.0, 0.0); near: float = 0.1; far: float = 120.0
     scale_l2_weight: float = 0.0; scale_abs_reg_weight: float = 0.01; opacity_reg_weight: float = 0.01
-    max_gaussians: int = 5_900_000
+    max_gaussians: int = 5_900_000; train_downscale_factor: int = 1
 
 
 @dataclass(slots=True)
@@ -86,6 +93,7 @@ class GaussianTrainer:
     _LOSS_SLOT_TOTAL = 0
     _LOSS_SLOT_MSE = 1
     _KERNEL_ENTRIES = {
+        "downscale_target": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csDownscaleTarget"),
         "clear_loss_grad": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csClearLossAndGradTex"),
         "loss_grad": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csComputeL1LossGrad"),
     }
@@ -103,8 +111,28 @@ class GaussianTrainer:
         frame = self._frame(frame_index)
         return int(frame.width), int(frame.height)
 
-    def get_frame_target_texture(self, frame_index: int, native_resolution: bool = True) -> spy.Texture:
-        return self._frame_targets_train[clamp_index(frame_index, len(self.frames))]
+    def training_resolution(self, frame_index: int = 0) -> tuple[int, int]:
+        width, height = self.frame_size(frame_index)
+        return resolve_training_resolution(width, height, self.training.train_downscale_factor)
+
+    def get_frame_target_texture(
+        self,
+        frame_index: int,
+        native_resolution: bool = True,
+        encoder: spy.CommandEncoder | None = None,
+    ) -> spy.Texture:
+        frame_index = clamp_index(frame_index, len(self.frames))
+        if native_resolution:
+            return self._frame_targets_native[frame_index]
+        self._ensure_train_target_texture()
+        if encoder is None:
+            local_encoder = self.device.create_command_encoder()
+            self._refresh_train_target(local_encoder, frame_index)
+            self.device.submit_command_buffer(local_encoder.finish())
+            self.device.wait()
+        else:
+            self._refresh_train_target(encoder, frame_index)
+        return self._require_train_target_texture()
 
     def _adam_runtime_hparams(self) -> AdamRuntimeHyperParams:
         return AdamRuntimeHyperParams(
@@ -138,6 +166,7 @@ class GaussianTrainer:
         self.training = training_hparams
         self.adam_optimizer.update_hyperparams(self.adam, self._adam_runtime_hparams())
         self.optimizer.update_hyperparams(self.adam, self.stability)
+        self._invalidate_downscaled_target()
 
     def _dispatch_adam_step(self, encoder: spy.CommandEncoder) -> None:
         self._dispatch_optimizer_step(encoder)
@@ -190,7 +219,9 @@ class GaussianTrainer:
         self._init_point_count = 0
         self._init_point_positions_cpu: np.ndarray | None = None
         self._init_point_colors_cpu: np.ndarray | None = None
-        self._frame_targets_train: list[spy.Texture] = []
+        self._frame_targets_native: list[spy.Texture] = []
+        self._train_target_texture: spy.Texture | None = None
+        self._downscaled_target_key: tuple[int, int, int, int] | None = None
         self._frame_rng = np.random.default_rng(self._seed)
         self._frame_order = np.zeros((len(self.frames),), dtype=np.int32)
         self._frame_cursor = len(self.frames)
@@ -287,13 +318,67 @@ class GaussianTrainer:
         return tex
 
     def _create_dataset_textures(self) -> None:
-        train_size = (int(self.renderer.width), int(self.renderer.height))
-        self._frame_targets_train = []
+        self._frame_targets_native = []
         for frame in self.frames:
             with Image.open(frame.image_path) as pil_image:
-                native = pil_image.convert("RGB")
-                resized = native if native.size == train_size else native.resize(train_size, resample=Image.Resampling.BILINEAR)
-                self._frame_targets_train.append(self._create_gpu_texture(resized))
+                self._frame_targets_native.append(self._create_gpu_texture(pil_image))
+
+    def _require_train_target_texture(self) -> spy.Texture:
+        if self._train_target_texture is None:
+            raise RuntimeError("Training target texture is not initialized.")
+        return self._train_target_texture
+
+    def _invalidate_downscaled_target(self) -> None:
+        self._downscaled_target_key = None
+
+    def _ensure_train_target_texture(self) -> None:
+        width = max(int(self.renderer.width), 1)
+        height = max(int(self.renderer.height), 1)
+        texture = self._train_target_texture
+        if texture is not None and int(texture.width) == width and int(texture.height) == height:
+            return
+        self._train_target_texture = self.device.create_texture(
+            format=spy.Format.rgba32_float,
+            width=width,
+            height=height,
+            usage=spy.TextureUsage.shader_resource | spy.TextureUsage.unordered_access,
+        )
+        self._invalidate_downscaled_target()
+
+    def _downscale_vars(self, frame_index: int) -> dict[str, object]:
+        frame = self._frame(frame_index)
+        return {
+            "g_DownscaleFactor": int(max(self.training.train_downscale_factor, 1)),
+            "g_SourceWidth": int(frame.width),
+            "g_SourceHeight": int(frame.height),
+            "g_TargetWidth": int(self.renderer.width),
+            "g_TargetHeight": int(self.renderer.height),
+        }
+
+    def _dispatch_downscale_target(self, encoder: spy.CommandEncoder, frame_index: int) -> None:
+        self._ensure_train_target_texture()
+        self._dispatch(
+            "downscale_target",
+            encoder,
+            self._pixel_thread_count(),
+            {
+                "g_SourceTarget": self._frame_targets_native[frame_index],
+                "g_DownscaledTarget": self._require_train_target_texture(),
+                **self._downscale_vars(frame_index),
+            },
+        )
+
+    def _refresh_train_target(self, encoder: spy.CommandEncoder, frame_index: int) -> None:
+        key = (
+            int(frame_index),
+            int(max(self.training.train_downscale_factor, 1)),
+            int(self.renderer.width),
+            int(self.renderer.height),
+        )
+        if self._downscaled_target_key == key:
+            return
+        self._dispatch_downscale_target(encoder, frame_index)
+        self._downscaled_target_key = key
 
     def _loss_vars(self) -> dict[str, object]:
         return {
@@ -379,6 +464,14 @@ class GaussianTrainer:
         self._frame_metrics.reset()
         self._frame_rng = np.random.default_rng(int(seed))
         self._reset_frame_order()
+        self._invalidate_downscaled_target()
+
+    def rebind_renderer(self, renderer: GaussianRenderer) -> None:
+        self.renderer = renderer
+        self.optimizer.renderer = renderer
+        self._ensure_training_buffers(self._scene_count)
+        self._ensure_train_target_texture()
+        self._invalidate_downscaled_target()
 
     def scale_histogram(self, *, bin_count: int = 64, min_log10: float = -6.0, max_log10: float = 1.0):
         return self.metrics.compute_scale_histogram(
@@ -405,7 +498,7 @@ class GaussianTrainer:
         self.renderer.execute_prepass_for_current_scene(frame_camera, sync_counts=False)
         enc = self.device.create_command_encoder()
         self.renderer.rasterize_current_scene(enc, frame_camera, background)
-        self._dispatch_loss_grad(enc, self.get_frame_target_texture(frame_index, native_resolution=False))
+        self._dispatch_loss_grad(enc, self.get_frame_target_texture(frame_index, native_resolution=False, encoder=enc))
         self._dispatch_raster_forward_backward(enc, frame_camera, background)
         self._dispatch_optimizer_step(enc)
         self.device.submit_command_buffer(enc.finish())

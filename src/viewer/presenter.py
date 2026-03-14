@@ -69,6 +69,20 @@ def _run_training_batch(viewer: object) -> int:
     return steps
 
 
+def _training_resolution_text(viewer: object) -> str:
+    if viewer.s.training_frames:
+        factor = max(int(viewer.c("train_downscale_factor").value), 1)
+        native_width = max(int(viewer.s.training_frames[0].width), 1)
+        native_height = max(int(viewer.s.training_frames[0].height), 1)
+        width = (native_width + factor - 1) // factor
+        height = (native_height + factor - 1) // factor
+        return f"Train Res: {width}x{height} (N={factor})"
+    if viewer.s.training_renderer is not None and viewer.s.trainer is not None:
+        factor = max(int(viewer.s.trainer.training.train_downscale_factor), 1)
+        return f"Train Res: {int(viewer.s.training_renderer.width)}x{int(viewer.s.training_renderer.height)} (N={factor})"
+    return "Train Res: n/a"
+
+
 def _dispatch_debug_abs_diff(viewer: object, encoder: spy.CommandEncoder, rendered_tex: spy.Texture, target_tex: spy.Texture, width: int, height: int) -> spy.Texture:
     output = _ensure_texture(viewer, "loss_debug_texture", width, height)
     require_not_none(viewer.s.debug_abs_diff_kernel, "Debug abs-diff kernel is not initialized.").dispatch(
@@ -116,6 +130,7 @@ def update_ui_text(viewer: object, dt: float) -> None:
     viewer.t("path").text = f"Scene: {viewer.s.scene_path.name} [PLY]" if viewer.s.scene_path is not None else f"Scene: {viewer.s.colmap_root.name} [COLMAP]" if viewer.s.colmap_root is not None else "Scene: <none>"
     current_splat_count = viewer.s.trainer.scene.count if viewer.s.trainer is not None else (viewer.s.scene.count if viewer.s.scene is not None else 0)
     viewer.t("scene_stats").text = f"Splats: {int(current_splat_count):,}"
+    viewer.t("training_resolution").text = _training_resolution_text(viewer)
     viewer.t("render_stats").text = "Generated: 0 | Written: 0" if not stats else f"Generated: {int(stats['generated_entries']):,} | Written: {int(stats['written_entries']):,} | Overflow: {bool(stats['overflow'])}{' [cap]' if bool(stats.get('capacity_limited', False)) else ''}{' (delayed)' if bool(stats.get('stats_latency_frames', 0)) else ''}{'' if bool(stats.get('stats_valid', True)) else ' [warming]'}"
     if viewer.s.trainer is None:
         viewer.t("training").text = "Training: not initialized"
@@ -181,7 +196,7 @@ def _render_debug_source(viewer: object, encoder: spy.CommandEncoder, frame_idx:
 def _render_debug_view(viewer: object, image: spy.Texture, encoder: spy.CommandEncoder, output_width: int, output_height: int) -> None:
     frame_idx = _debug_frame_idx(viewer)
     debug_render_tex, viewer.s.stats, debug_width, debug_height = _render_debug_source(viewer, encoder, frame_idx)
-    target_tex = viewer.s.trainer.get_frame_target_texture(frame_idx, native_resolution=False)
+    target_tex = viewer.s.trainer.get_frame_target_texture(frame_idx, native_resolution=False, encoder=encoder)
     source_tex = debug_render_tex if _debug_view_key(viewer) == "rendered" else target_tex if _debug_view_key(viewer) == "target" else _dispatch_debug_abs_diff(viewer, encoder, debug_render_tex, target_tex, debug_width, debug_height)
     encoder.blit(image, _dispatch_debug_letterbox(viewer, encoder, source_tex, debug_width, debug_height, output_width, output_height))
 
@@ -203,6 +218,7 @@ def render_frame(viewer: object, render_context: spy.AppWindow.RenderContext) ->
     viewer.s.last_time = now
     viewer.update_camera(dt)
     session.apply_live_params(viewer)
+    session.ensure_training_runtime_resolution(viewer)
     iw, ih = int(image.width), int(image.height)
     if (viewer.s.renderer.width, viewer.s.renderer.height) != (iw, ih):
         session.recreate_renderer(viewer, iw, ih)

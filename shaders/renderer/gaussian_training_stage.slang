@@ -17,6 +17,14 @@ uniform Texture2D<float4> g_Target;
 uniform RWStructuredBuffer<float4> g_OutputGrad;
 uniform RWStructuredBuffer<float> g_LossBuffer;
 
+uniform Texture2D<float4> g_SourceTarget;
+uniform RWTexture2D<float4> g_DownscaledTarget;
+uniform uint g_SourceWidth;
+uniform uint g_SourceHeight;
+uniform uint g_TargetWidth;
+uniform uint g_TargetHeight;
+uniform uint g_DownscaleFactor;
+
 uniform Texture2D<float4> g_DebugRendered;
 uniform Texture2D<float4> g_DebugTarget;
 uniform RWTexture2D<float4> g_DebugOutput;
@@ -32,6 +40,34 @@ uniform uint g_LetterboxOutputHeight;
 
 groupshared float gsLoss[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
 groupshared float gsMSE[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
+
+[shader("compute")]
+[numthreads(TRAIN_TILE_DIM, TRAIN_TILE_DIM, 1)]
+void csDownscaleTarget(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint px = dispatchThreadID.x;
+    uint py = dispatchThreadID.y;
+    if (px >= g_TargetWidth || py >= g_TargetHeight) return;
+
+    uint factor = max(g_DownscaleFactor, 1u);
+    uint srcX0 = px * factor;
+    uint srcY0 = py * factor;
+    uint srcX1 = min(srcX0 + factor, g_SourceWidth);
+    uint srcY1 = min(srcY0 + factor, g_SourceHeight);
+
+    float4 sum = 0.0;
+    uint sampleCount = 0u;
+    for (uint sy = srcY0; sy < srcY1; sy++)
+    {
+        for (uint sx = srcX0; sx < srcX1; sx++)
+        {
+            sum += g_SourceTarget[uint2(sx, sy)];
+            sampleCount++;
+        }
+    }
+    float invSampleCount = 1.0 / max(float(sampleCount), 1.0);
+    g_DownscaledTarget[uint2(px, py)] = sum * invSampleCount;
+}
 
 [shader("compute")]
 [numthreads(TRAIN_TILE_DIM, TRAIN_TILE_DIM, 1)]

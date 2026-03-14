@@ -5,6 +5,7 @@ from .gaussian_trainer import (
     StabilityHyperParams,
     TrainingHyperParams,
     TrainingState,
+    resolve_training_resolution,
 )
 from .optimizer import GaussianOptimizer
 from .profiles import TRAINING_PROFILE_CHOICES, TrainingProfile, resolve_training_profile
@@ -17,6 +18,7 @@ __all__ = [
     "TrainingHyperParams",
     "TrainingState",
     "GaussianTrainer",
+    "resolve_training_resolution",
     "GaussianOptimizer",
     "TrainingProfile",
     "TRAINING_PROFILE_CHOICES",

@@ -159,6 +159,7 @@ def build_training_params(
     scale_abs_reg_weight: float,
     opacity_reg_weight: float,
     max_gaussians: int,
+    train_downscale_factor: int = 1,
 ) -> AppTrainingParams:
     base_lr = clamp_float(base_lr, 1e-8, 1.0)
     adam = AdamHyperParams(
@@ -203,6 +204,7 @@ def build_training_params(
         scale_abs_reg_weight=clamp_float(scale_abs_reg_weight, 0.0, 1e4),
         opacity_reg_weight=clamp_float(opacity_reg_weight, 0.0, 1e4),
         max_gaussians=clamp_int(max_gaussians, 0, 10_000_000),
+        train_downscale_factor=clamp_int(train_downscale_factor, 1, 16),
     )
     stability.max_scale = max(stability.max_scale, stability.min_scale)
     stability.max_opacity = max(stability.max_opacity, stability.min_opacity)

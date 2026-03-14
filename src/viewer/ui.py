@@ -87,6 +87,7 @@ GROUP_SPECS = {
     "Train Setup": (
         ControlSpec("max_gaussians", "slider_int", "Max Gaussians", {"value": 5900000, "min": 1000, "max": 10000000}),
         ControlSpec("training_steps_per_frame", "slider_int", "Steps / Frame", {"value": 1, "min": 1, "max": 8}),
+        ControlSpec("train_downscale_factor", "slider_int", "Train Downscale", {"value": 1, "min": 1, "max": 16}),
         ControlSpec("seed", "slider_int", "Shuffle Seed", {"value": 1234, "min": 0, "max": 1000000}),
         ControlSpec("init_opacity", "input_float", "Init Opacity", {"value": 0.5, "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
     ),
@@ -664,6 +665,9 @@ class ToolkitWindow:
             return
         for spec in GROUP_SPECS["Train Setup"]:
             self._draw_control(ui, spec)
+        train_resolution = ui._texts.get("training_resolution", "")
+        if train_resolution:
+            imgui.text_disabled(train_resolution.split(": ", 1)[-1] if ": " in train_resolution else train_resolution)
         imgui.text_disabled("COLMAP import chooses pointcloud NN-scale init or a custom PLY scene.")
         self._ctx_reset("train_setup_ctx", ui, [s.key for s in GROUP_SPECS["Train Setup"]])
         imgui.separator()
@@ -827,6 +831,7 @@ class ToolkitWindow:
         "train_far": "Far clip plane for training camera",
         "max_gaussians": "Maximum number of gaussians in the scene",
         "training_steps_per_frame": "Number of training optimizer steps to run before each viewer redraw; higher improves training throughput but reduces UI refresh rate",
+        "train_downscale_factor": "Integer factor N used for ceil(native/N) training resolution and box-filtered loss targets",
         _LOSS_DEBUG_ABS_SCALE_KEY: "Multiplier applied to absolute RGB difference before presenting the debug texture",
         "seed": "Random seed for training frame shuffle order",
         "init_opacity": "Initial opacity for new gaussians",
@@ -921,6 +926,7 @@ def build_ui(renderer) -> ViewerUI:
             "fps", "path", "scene_stats", "render_stats", "training",
             "training_time", "training_iters_avg", "training_loss", "training_mse", "training_psnr", "training_instability", "error",
             "loss_debug_view", "loss_debug_frame",
+            "training_resolution",
             "setup_hint", "stability_hint",
         )
     }

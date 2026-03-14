@@ -9,7 +9,7 @@ import slangpy as spy
 from src.filter import SeparableGaussianBlur
 from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
-from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TrainingHyperParams
+from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TrainingHyperParams, resolve_training_resolution
 
 _ADAM_BUFFER_NAMES = ("adam_moments",)
 _OPACITY_EPS = 1e-6
@@ -112,7 +112,7 @@ class _ScaleGradProbe:
             seed=123,
         )
         self.scene_groups = _read_scene_groups(self.renderer, 1)
-        self.target_texture = self.trainer.get_frame_target_texture(0, native_resolution=False)
+        self.target_texture = self.trainer.get_frame_target_texture(0, native_resolution=True)
         self._last_target_scale = float("nan")
 
     def upload_target_scale(self, target_scale: float) -> None:
@@ -130,6 +130,7 @@ class _ScaleGradProbe:
         rgba[..., :3] = (255.0 * rgb + 0.5).astype(np.uint8)
         rgba[..., 3] = 255
         self.target_texture.copy_from_numpy(np.ascontiguousarray(rgba, dtype=np.uint8))
+        self.trainer._invalidate_downscaled_target()
         self._last_target_scale = float(target_scale)
 
     def upload_train_scale(self, scale: float) -> None:
@@ -146,7 +147,7 @@ class _ScaleGradProbe:
         self.renderer.execute_prepass_for_current_scene(self.camera, sync_counts=False)
         enc = self.device.create_command_encoder()
         self.renderer.rasterize_current_scene(enc, self.camera, self.background)
-        self.trainer._dispatch_loss_grad(enc, self.target_texture)
+        self.trainer._dispatch_loss_grad(enc, self.trainer.get_frame_target_texture(0, native_resolution=False, encoder=enc))
         self.trainer._dispatch_raster_forward_backward(enc, self.camera, self.background)
         self.device.submit_command_buffer(enc.finish())
         self.device.wait()
@@ -210,8 +211,64 @@ def test_training_targets_use_srgb_textures(device, tmp_path: Path):
     train_target = trainer.get_frame_target_texture(0, native_resolution=False)
 
     assert native_target.format == spy.Format.rgba8_unorm_srgb
-    assert train_target.format == spy.Format.rgba8_unorm_srgb
-    assert native_target is train_target
+    assert train_target.format == spy.Format.rgba32_float
+    assert native_target is not train_target
+
+
+def test_resolve_training_resolution_uses_ceil_division() -> None:
+    assert resolve_training_resolution(64, 32, 1) == (64, 32)
+    assert resolve_training_resolution(63, 65, 2) == (32, 33)
+    assert resolve_training_resolution(1, 1, 16) == (1, 1)
+
+
+def test_box_downscale_matches_expected_mean(device, tmp_path: Path) -> None:
+    image_path = tmp_path / "downscale_target.png"
+    image = np.array(
+        [
+            [[0, 0, 0], [255, 0, 0], [0, 255, 0]],
+            [[0, 0, 255], [255, 255, 255], [255, 255, 0]],
+            [[255, 0, 255], [0, 255, 255], [128, 128, 128]],
+        ],
+        dtype=np.uint8,
+    )
+    Image.fromarray(image, mode="RGB").save(image_path)
+    frame = ColmapFrame(
+        image_id=0,
+        image_path=image_path,
+        q_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        t_xyz=np.array([0.0, 0.0, 3.0], dtype=np.float32),
+        fx=72.0,
+        fy=72.0,
+        cx=1.5,
+        cy=1.5,
+        width=3,
+        height=3,
+    )
+    scene = _make_scene(count=4, seed=123)
+    renderer = GaussianRenderer(device, width=2, height=2, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(train_downscale_factor=2),
+        seed=5,
+    )
+
+    target = trainer.get_frame_target_texture(0, native_resolution=False)
+    target_np = np.asarray(target.to_numpy(), dtype=np.float32)
+    srgb = image.astype(np.float32) / 255.0
+    linear = np.where(srgb <= 0.04045, srgb / 12.92, np.power((srgb + 0.055) / 1.055, 2.4))
+    expected = np.array(
+        [
+            [np.mean(linear[0:2, 0:2], axis=(0, 1)), np.mean(linear[0:2, 2:3], axis=(0, 1))],
+            [np.mean(linear[2:3, 0:2], axis=(0, 1)), np.mean(linear[2:3, 2:3], axis=(0, 1))],
+        ],
+        dtype=np.float32,
+    )
+
+    np.testing.assert_allclose(target_np[:, :, :3], expected, rtol=0.0, atol=5e-5)
+    np.testing.assert_allclose(target_np[:, :, 3], np.ones((2, 2), dtype=np.float32), rtol=0.0, atol=1e-6)
 
 
 def test_separable_gaussian_blur_preserves_impulse_energy_for_n_channels(device):

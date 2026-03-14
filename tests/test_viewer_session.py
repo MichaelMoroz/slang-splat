@@ -119,6 +119,63 @@ def test_training_elapsed_seconds_includes_current_active_segment() -> None:
     assert session.training_elapsed_seconds(viewer, now=27.5) == 19.5
 
 
+def test_ensure_training_runtime_resolution_rebinds_renderer_without_reset(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+
+    class _Encoder:
+        def finish(self) -> str:
+            return "finished"
+
+    class _OldRenderer:
+        width = 64
+        height = 64
+
+        def copy_scene_state_to(self, encoder, dst) -> None:
+            calls.append(("copy", dst))
+
+    class _MainRenderer:
+        def __init__(self) -> None:
+            self.bound = None
+
+        def set_debug_grad_norm_buffer(self, buffer) -> None:
+            self.bound = buffer
+
+    new_renderer = SimpleNamespace(width=32, height=32, work_buffers={"debug_grad_norm": "grad_norm"})
+    trainer = SimpleNamespace(
+        compute_debug_grad_norm=True,
+        training_resolution=lambda frame_index=0: (32, 32),
+        rebind_renderer=lambda renderer: calls.append(("rebind", renderer)),
+    )
+    viewer = SimpleNamespace(
+        device=SimpleNamespace(
+            create_command_encoder=lambda: _Encoder(),
+            submit_command_buffer=lambda command_buffer: calls.append(("submit", command_buffer)),
+        ),
+        s=SimpleNamespace(
+            trainer=trainer,
+            training_renderer=_OldRenderer(),
+            training_frames=[SimpleNamespace(width=64, height=64)],
+            renderer=_MainRenderer(),
+        ),
+    )
+
+    monkeypatch.setattr(session, "_create_renderer", lambda viewer_obj, width, height, allow_debug_overlays: new_renderer)
+    monkeypatch.setattr(session, "_invalidate", lambda viewer_obj, *targets: calls.append(("invalidate", targets)))
+    monkeypatch.setattr(session, "_reset_loss_debug", lambda viewer_obj: calls.append(("reset_loss_debug", None)))
+
+    session.ensure_training_runtime_resolution(viewer)
+
+    assert viewer.s.training_renderer is new_renderer
+    assert viewer.s.renderer.bound == "grad_norm"
+    assert calls == [
+        ("copy", new_renderer),
+        ("submit", "finished"),
+        ("rebind", new_renderer),
+        ("invalidate", ()),
+        ("reset_loss_debug", None),
+    ]
+
+
 def test_choose_colmap_root_auto_selects_first_matching_image_folder(tmp_path: Path) -> None:
     database_path, images_root = _build_colmap_tree(
         tmp_path,
