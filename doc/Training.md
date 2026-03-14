@@ -41,7 +41,9 @@ The active training path is intentionally minimal: initialize a fixed gaussian s
 ## Optimization Loop
 Each trainer `step()` performs:
 1. Pick the next training frame from a shuffled full-view epoch; after all views are consumed once, regenerate a new permutation.
-2. Resolve the active train resolution as `ceil(native / N)` from the current `train_downscale_factor`.
+2. Resolve the active train resolution as `ceil(native / N)` from the current effective train downscale factor.
+   - Manual mode uses the selected fixed factor directly.
+   - Auto mode starts from `train_auto_start_downscale` and descends toward `1x` with per-phase duration `train_downscale_base_iters + level_index * train_downscale_iter_step`.
 3. Use the cached native target texture for that frame and, when needed, refresh the reusable train target texture with an exact `NxN` box filter on the GPU.
 4. Run renderer prepass + raster forward.
 5. Run `csClearLossAndGradTex`, then `csComputeL1LossGrad`.
@@ -127,6 +129,6 @@ Useful options:
   - set train image directory,
   - initialize training scene,
   - start/stop one-step-per-frame optimization,
-  - change live train downscale while preserving optimizer state,
+  - switch between auto-scheduled and fixed manual train downscale while preserving optimizer state,
   - live loss and MSE display,
   - grad-norm raster debug sourced from the optimizer's per-splat packed-gradient reduction.

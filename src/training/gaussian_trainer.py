@@ -14,12 +14,33 @@ from ..scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 from .adam import AdamOptimizer, AdamRuntimeHyperParams
 from .optimizer import GaussianOptimizer
 
+TRAIN_DOWNSCALE_MODE_AUTO = 0
+TRAIN_DOWNSCALE_MAX_FACTOR = 16
+
 
 def resolve_training_resolution(width: int, height: int, downscale_factor: int) -> tuple[int, int]:
     factor = max(int(downscale_factor), 1)
     native_width = max(int(width), 1)
     native_height = max(int(height), 1)
     return (native_width + factor - 1) // factor, (native_height + factor - 1) // factor
+
+
+def resolve_effective_train_downscale_factor(training_hparams: "TrainingHyperParams", step: int) -> int:
+    resolved_step = max(int(step), 0)
+    mode = int(training_hparams.train_downscale_mode)
+    if mode != TRAIN_DOWNSCALE_MODE_AUTO:
+        return min(max(mode, 1), TRAIN_DOWNSCALE_MAX_FACTOR)
+    start_factor = min(max(int(training_hparams.train_auto_start_downscale), 1), TRAIN_DOWNSCALE_MAX_FACTOR)
+    base_iters = max(int(training_hparams.train_downscale_base_iters), 1)
+    iter_step = max(int(training_hparams.train_downscale_iter_step), 0)
+    elapsed = 0
+    for factor in range(start_factor, 0, -1):
+        duration = max(base_iters + (start_factor - factor) * iter_step, 1)
+        next_elapsed = elapsed + duration
+        if resolved_step < next_elapsed:
+            return factor
+        elapsed = next_elapsed
+    return 1
 
 
 @dataclass(slots=True)
@@ -80,7 +101,21 @@ class StabilityHyperParams:
 class TrainingHyperParams:
     background: tuple[float, float, float] = (0.0, 0.0, 0.0); near: float = 0.1; far: float = 120.0
     scale_l2_weight: float = 0.0; scale_abs_reg_weight: float = 0.01; opacity_reg_weight: float = 0.01
-    max_gaussians: int = 5_900_000; train_downscale_factor: int = 1
+    max_gaussians: int = 5_900_000; train_downscale_mode: int = 1; train_auto_start_downscale: int = 16
+    train_downscale_base_iters: int = 200; train_downscale_iter_step: int = 50; train_downscale_max_iters: int = 30_000
+    train_downscale_factor: int = 1
+
+    def __post_init__(self) -> None:
+        mode = int(self.train_downscale_mode)
+        legacy_factor = min(max(int(self.train_downscale_factor), 1), TRAIN_DOWNSCALE_MAX_FACTOR)
+        if mode == 1 and legacy_factor != 1:
+            mode = legacy_factor
+        self.train_downscale_mode = TRAIN_DOWNSCALE_MODE_AUTO if mode == TRAIN_DOWNSCALE_MODE_AUTO else min(max(mode, 1), TRAIN_DOWNSCALE_MAX_FACTOR)
+        self.train_auto_start_downscale = min(max(int(self.train_auto_start_downscale), 1), TRAIN_DOWNSCALE_MAX_FACTOR)
+        self.train_downscale_base_iters = max(int(self.train_downscale_base_iters), 1)
+        self.train_downscale_iter_step = max(int(self.train_downscale_iter_step), 0)
+        self.train_downscale_max_iters = max(int(self.train_downscale_max_iters), 1)
+        self.train_downscale_factor = resolve_effective_train_downscale_factor(self, 0)
 
 
 @dataclass(slots=True)
@@ -111,9 +146,13 @@ class GaussianTrainer:
         frame = self._frame(frame_index)
         return int(frame.width), int(frame.height)
 
-    def training_resolution(self, frame_index: int = 0) -> tuple[int, int]:
+    def effective_train_downscale_factor(self, step: int | None = None) -> int:
+        resolved_step = self.state.step if step is None else int(step)
+        return resolve_effective_train_downscale_factor(self.training, resolved_step)
+
+    def training_resolution(self, frame_index: int = 0, step: int | None = None) -> tuple[int, int]:
         width, height = self.frame_size(frame_index)
-        return resolve_training_resolution(width, height, self.training.train_downscale_factor)
+        return resolve_training_resolution(width, height, self.effective_train_downscale_factor(step))
 
     def get_frame_target_texture(
         self,
@@ -164,6 +203,7 @@ class GaussianTrainer:
         self.adam = adam_hparams
         self.stability = stability_hparams
         self.training = training_hparams
+        self.training.train_downscale_factor = self.effective_train_downscale_factor(self.state.step)
         self.adam_optimizer.update_hyperparams(self.adam, self._adam_runtime_hparams())
         self.optimizer.update_hyperparams(self.adam, self.stability)
         self._invalidate_downscaled_target()
@@ -347,8 +387,9 @@ class GaussianTrainer:
 
     def _downscale_vars(self, frame_index: int) -> dict[str, object]:
         frame = self._frame(frame_index)
+        factor = self.effective_train_downscale_factor()
         return {
-            "g_DownscaleFactor": int(max(self.training.train_downscale_factor, 1)),
+            "g_DownscaleFactor": int(factor),
             "g_SourceWidth": int(frame.width),
             "g_SourceHeight": int(frame.height),
             "g_TargetWidth": int(self.renderer.width),
@@ -369,9 +410,10 @@ class GaussianTrainer:
         )
 
     def _refresh_train_target(self, encoder: spy.CommandEncoder, frame_index: int) -> None:
+        factor = self.effective_train_downscale_factor()
         key = (
             int(frame_index),
-            int(max(self.training.train_downscale_factor, 1)),
+            int(factor),
             int(self.renderer.width),
             int(self.renderer.height),
         )
@@ -469,6 +511,7 @@ class GaussianTrainer:
     def rebind_renderer(self, renderer: GaussianRenderer) -> None:
         self.renderer = renderer
         self.optimizer.renderer = renderer
+        self.training.train_downscale_factor = self.effective_train_downscale_factor(self.state.step)
         self._ensure_training_buffers(self._scene_count)
         self._ensure_train_target_texture()
         self._invalidate_downscaled_target()
@@ -492,6 +535,7 @@ class GaussianTrainer:
         )
 
     def step(self) -> float:
+        self.training.train_downscale_factor = self.effective_train_downscale_factor(self.state.step)
         frame_index = self._next_frame_index()
         frame_camera = self.make_frame_camera(frame_index, self.renderer.width, self.renderer.height)
         background = np.asarray(self.training.background, dtype=np.float32).reshape(3)

@@ -64,14 +64,27 @@ The loss-debug controls expose a runtime `Abs Diff Scale` slider when `View = Ab
 
 ## Training Resolution
 
-The `Train Setup` section exposes a live `Train Downscale` integer control.
+The `Train Setup` section exposes train downscale as a mode selector:
 
-- `N = 1` keeps native dataset resolution.
-- Training render resolution becomes `ceil(native_width / N) x ceil(native_height / N)`.
+- `Auto`
+- manual `1x` through `16x`
+
+Auto mode has its own `Auto Start Downscale` parameter and schedule controls:
+
+- `Downscale Base Iters`
+- `Downscale Iter Step`
+- `Downscale Max Iters`
+
+Behavior:
+
+- Manual modes force a fixed training downscale immediately.
+- Auto mode starts from `Auto Start Downscale`, then descends toward `1x`.
+- Each lower factor lasts `base_iters + level_index * iter_step`.
+- Training render resolution is always `ceil(native_width / N) x ceil(native_height / N)` for the effective factor.
 - Loss targets are generated from the native dataset image with an exact `NxN` box filter on the GPU.
-- Changing the factor while training is active recreates only the train-resolution renderer and target resources; scene state, ADAM moments, shuffle order, step counter, and pause/run state are preserved.
+- Changing mode or crossing an auto schedule boundary recreates only the train-resolution renderer and target resources; scene state, ADAM moments, shuffle order, step counter, and pause/run state are preserved.
 
-The panel also shows the resolved active train resolution so the loss target, training renderer, and debug target view are easy to verify.
+The panel shows both the resolved active train resolution and the current downscale status so the training renderer, loss target, and debug target view are easy to verify.
 
 ## Training Metrics
 

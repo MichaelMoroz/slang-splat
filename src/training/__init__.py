@@ -3,8 +3,10 @@ from .gaussian_trainer import (
     AdamHyperParams,
     GaussianTrainer,
     StabilityHyperParams,
+    TRAIN_DOWNSCALE_MODE_AUTO,
     TrainingHyperParams,
     TrainingState,
+    resolve_effective_train_downscale_factor,
     resolve_training_resolution,
 )
 from .optimizer import GaussianOptimizer
@@ -15,9 +17,11 @@ __all__ = [
     "AdamRuntimeHyperParams",
     "AdamHyperParams",
     "StabilityHyperParams",
+    "TRAIN_DOWNSCALE_MODE_AUTO",
     "TrainingHyperParams",
     "TrainingState",
     "GaussianTrainer",
+    "resolve_effective_train_downscale_factor",
     "resolve_training_resolution",
     "GaussianOptimizer",
     "TrainingProfile",

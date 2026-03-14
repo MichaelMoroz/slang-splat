@@ -25,6 +25,7 @@ _LOSS_DEBUG_ABS_SCALE_MIN = 0.125
 _LOSS_DEBUG_ABS_SCALE_MAX = 64.0
 _LOSS_DEBUG_ABS_SCALE_KEY = "loss_debug_abs_scale"
 _COLMAP_INIT_MODE_LABELS = ("COLMAP Pointcloud", "Custom PLY")
+_TRAIN_DOWNSCALE_MODE_LABELS = ("Auto",) + tuple(f"{i}x" for i in range(1, 17))
 
 
 def _read_text_if_exists(path: Path) -> str:
@@ -87,7 +88,11 @@ GROUP_SPECS = {
     "Train Setup": (
         ControlSpec("max_gaussians", "slider_int", "Max Gaussians", {"value": 5900000, "min": 1000, "max": 10000000}),
         ControlSpec("training_steps_per_frame", "slider_int", "Steps / Frame", {"value": 1, "min": 1, "max": 8}),
-        ControlSpec("train_downscale_factor", "slider_int", "Train Downscale", {"value": 1, "min": 1, "max": 16}),
+        ControlSpec("train_downscale_mode", "combo", "Downscale Mode", {"value": 0, "options": _TRAIN_DOWNSCALE_MODE_LABELS}),
+        ControlSpec("train_auto_start_downscale", "slider_int", "Auto Start Downscale", {"value": 16, "min": 1, "max": 16}),
+        ControlSpec("train_downscale_base_iters", "input_int", "Downscale Base Iters", {"value": 200, "step": 25, "step_fast": 100}),
+        ControlSpec("train_downscale_iter_step", "input_int", "Downscale Iter Step", {"value": 50, "step": 10, "step_fast": 50}),
+        ControlSpec("train_downscale_max_iters", "input_int", "Downscale Max Iters", {"value": 30000, "step": 1000, "step_fast": 5000}),
         ControlSpec("seed", "slider_int", "Shuffle Seed", {"value": 1234, "min": 0, "max": 1000000}),
         ControlSpec("init_opacity", "input_float", "Init Opacity", {"value": 0.5, "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
     ),
@@ -663,11 +668,19 @@ class ToolkitWindow:
     def _section_training_setup(self, ui: ViewerUI) -> None:
         if not imgui.collapsing_header("Train Setup"):
             return
-        for spec in GROUP_SPECS["Train Setup"]:
-            self._draw_control(ui, spec)
+        for key in ("max_gaussians", "training_steps_per_frame", "train_downscale_mode"):
+            self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Setup"] if spec.key == key))
+        if int(ui._values.get("train_downscale_mode", 0)) == 0:
+            for key in ("train_auto_start_downscale", "train_downscale_base_iters", "train_downscale_iter_step", "train_downscale_max_iters"):
+                self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Setup"] if spec.key == key))
+        for key in ("seed", "init_opacity"):
+            self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Setup"] if spec.key == key))
         train_resolution = ui._texts.get("training_resolution", "")
         if train_resolution:
             imgui.text_disabled(train_resolution.split(": ", 1)[-1] if ": " in train_resolution else train_resolution)
+        downscale_status = ui._texts.get("training_downscale", "")
+        if downscale_status:
+            imgui.text_disabled(downscale_status.split(": ", 1)[-1] if ": " in downscale_status else downscale_status)
         imgui.text_disabled("COLMAP import chooses pointcloud NN-scale init or a custom PLY scene.")
         self._ctx_reset("train_setup_ctx", ui, [s.key for s in GROUP_SPECS["Train Setup"]])
         imgui.separator()
@@ -831,7 +844,11 @@ class ToolkitWindow:
         "train_far": "Far clip plane for training camera",
         "max_gaussians": "Maximum number of gaussians in the scene",
         "training_steps_per_frame": "Number of training optimizer steps to run before each viewer redraw; higher improves training throughput but reduces UI refresh rate",
-        "train_downscale_factor": "Integer factor N used for ceil(native/N) training resolution and box-filtered loss targets",
+        "train_downscale_mode": "Use Auto for scheduled downscale descent or choose a fixed manual override from 1x to 16x",
+        "train_auto_start_downscale": "Initial downscale factor used at step 0 when Downscale Mode is Auto",
+        "train_downscale_base_iters": "Number of iterations spent at the auto start factor before descending",
+        "train_downscale_iter_step": "Additional iterations added to each lower auto downscale phase",
+        "train_downscale_max_iters": "Displayed training schedule budget for the auto downscale progression; training does not stop automatically",
         _LOSS_DEBUG_ABS_SCALE_KEY: "Multiplier applied to absolute RGB difference before presenting the debug texture",
         "seed": "Random seed for training frame shuffle order",
         "init_opacity": "Initial opacity for new gaussians",
@@ -857,6 +874,28 @@ class ToolkitWindow:
             )
             if changed:
                 ui._values[key] = val
+        elif spec.kind == "input_int":
+            changed, val = imgui.input_int(
+                spec.label,
+                int(ui._values[key]),
+                int(spec.kwargs.get("step", 1)),
+                int(spec.kwargs.get("step_fast", 10)),
+            )
+            if changed:
+                ui._values[key] = val
+        elif spec.kind == "combo":
+            options = tuple(spec.kwargs.get("options", ()))
+            option_count = max(len(options), 1)
+            current = min(max(int(ui._values[key]), 0), option_count - 1)
+            preview = str(options[current]) if options else str(current)
+            if imgui.begin_combo(spec.label, preview):
+                for idx, option in enumerate(options):
+                    selected = idx == current
+                    if imgui.selectable(str(option), selected)[0]:
+                        ui._values[key] = idx
+                    if selected:
+                        imgui.set_item_default_focus()
+                imgui.end_combo()
         elif spec.kind == "input_float":
             changed, val = imgui.input_float(
                 spec.label, float(ui._values[key]),
@@ -926,7 +965,7 @@ def build_ui(renderer) -> ViewerUI:
             "fps", "path", "scene_stats", "render_stats", "training",
             "training_time", "training_iters_avg", "training_loss", "training_mse", "training_psnr", "training_instability", "error",
             "loss_debug_view", "loss_debug_frame",
-            "training_resolution",
+            "training_resolution", "training_downscale",
             "setup_hint", "stability_hint",
         )
     }

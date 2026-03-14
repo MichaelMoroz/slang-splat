@@ -13,7 +13,7 @@ from ..common import SHADER_ROOT, clamp_index
 from ..renderer import GaussianRenderer
 from ..scene import GaussianScene, build_training_frames_from_root, initialize_scene_from_colmap_points, load_colmap_reconstruction, load_gaussian_ply, resolve_colmap_init_hparams
 from ..scene._internal.colmap_ops import point_nn_scales
-from ..training import GaussianTrainer, resolve_training_resolution
+from ..training import GaussianTrainer, resolve_effective_train_downscale_factor, resolve_training_resolution
 from ..scene._internal.colmap_types import point_tables
 from .state import ColmapImportSettings, SceneCountProxy
 
@@ -439,10 +439,11 @@ def initialize_training_scene(viewer: object) -> None:
     if viewer.s.colmap_recon is None or not viewer.s.training_frames:
         return
     init, params, init_hparams, profile = resolve_effective_training_setup(viewer)
+    factor = resolve_effective_train_downscale_factor(params.training, 0)
     width, height = resolve_training_resolution(
         int(viewer.s.training_frames[0].width),
         int(viewer.s.training_frames[0].height),
-        int(params.training.train_downscale_factor),
+        int(factor),
     )
     renderer = ensure_renderer(viewer, "training_renderer", width, height, allow_debug_overlays=False)
     import_cfg = viewer.s.colmap_import

@@ -47,7 +47,11 @@ _TRAINING_PARAM_KEYS = {
     "scale_abs_reg_weight": "scale_abs_reg",
     "opacity_reg_weight": "opacity_reg",
     "max_gaussians": "max_gaussians",
-    "train_downscale_factor": "train_downscale_factor",
+    "train_downscale_mode": "train_downscale_mode",
+    "train_auto_start_downscale": "train_auto_start_downscale",
+    "train_downscale_base_iters": "train_downscale_base_iters",
+    "train_downscale_iter_step": "train_downscale_iter_step",
+    "train_downscale_max_iters": "train_downscale_max_iters",
 }
 _TRAIN_SETUP_DEFAULTS = default_control_values("Train Setup")
 _TRAINING_DEFAULTS = default_control_values("Train Optimizer", "Train Stability")

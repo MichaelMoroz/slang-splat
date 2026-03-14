@@ -159,6 +159,11 @@ def build_training_params(
     scale_abs_reg_weight: float,
     opacity_reg_weight: float,
     max_gaussians: int,
+    train_downscale_mode: int = 1,
+    train_auto_start_downscale: int = 16,
+    train_downscale_base_iters: int = 200,
+    train_downscale_iter_step: int = 50,
+    train_downscale_max_iters: int = 30_000,
     train_downscale_factor: int = 1,
 ) -> AppTrainingParams:
     base_lr = clamp_float(base_lr, 1e-8, 1.0)
@@ -204,6 +209,11 @@ def build_training_params(
         scale_abs_reg_weight=clamp_float(scale_abs_reg_weight, 0.0, 1e4),
         opacity_reg_weight=clamp_float(opacity_reg_weight, 0.0, 1e4),
         max_gaussians=clamp_int(max_gaussians, 0, 10_000_000),
+        train_downscale_mode=clamp_int(train_downscale_mode, 0, 16),
+        train_auto_start_downscale=clamp_int(train_auto_start_downscale, 1, 16),
+        train_downscale_base_iters=clamp_int(train_downscale_base_iters, 1, 1_000_000_000),
+        train_downscale_iter_step=clamp_int(train_downscale_iter_step, 0, 1_000_000_000),
+        train_downscale_max_iters=clamp_int(train_downscale_max_iters, 1, 1_000_000_000),
         train_downscale_factor=clamp_int(train_downscale_factor, 1, 16),
     )
     stability.max_scale = max(stability.max_scale, stability.min_scale)

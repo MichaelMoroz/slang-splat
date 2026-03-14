@@ -13,7 +13,7 @@ Runtime target is Vulkan.
 - Fused raster forward/backward training path for per-splat gradients without per-pixel state buffers.
 - Fused one-thread-per-packed-parameter ADAM training kernel for a fixed gaussian count.
 - CPU COLMAP point-cloud initialization with nearest-neighbor scales.
-- Dynamic training loss downscale in the viewer with live `NxN` box-filtered dataset targets.
+- Dynamic training loss downscale in the viewer with auto schedule and manual override modes.
 - CPU reference implementations in `reference_impls` plus tests for key algorithms.
 
 ## Setup
@@ -79,7 +79,7 @@ python cli.py render-ply --ply D:\Datasets\3DGS\TEST\flowers.ply --output-dir ou
 Training notes:
 - Training walks a shuffled permutation of views and reshuffles after every full image epoch.
 - Training target images are stored as `rgba8_unorm_srgb` textures (not float32) so shader reads use hardware sRGB decode while keeping GPU memory usage low.
-- Viewer training can downscale loss targets and training renders by an integer factor `N`; the trainer caches native `rgba8_unorm_srgb` dataset textures and generates a reusable float train target with an exact `NxN` box filter on-GPU.
+- Viewer training can run with `Auto` downscale scheduling or a fixed manual downscale override; the trainer caches native `rgba8_unorm_srgb` dataset textures and generates a reusable float train target with an exact `NxN` box filter on-GPU.
 - COLMAP training initialization now uses the COLMAP point cloud directly on CPU: positions come from `points3D`, per-point scale is the nearest-neighbor spacing after requested-count density adjustment, rotation is identity, and opacity starts from the configured constant.
 - The resolved COLMAP init bundle is shared by the CLI and viewer, so `base_scale`, jitter, and opacity overrides flow through the same path in both entrypoints.
 - CLI and viewer scene initialization now honor the configured gaussian cap instead of always forcing the full COLMAP point cloud into the initial scene.
@@ -94,7 +94,7 @@ Training notes:
 - Target Y-flip is enabled by default.
 - ADAM epsilon is compile-time shader state now; it is no longer exposed as a CLI or viewer runtime control.
 - The viewer exposes only fixed-count optimization controls: learning rates, regularization weights, and stability clamps.
-- The viewer `Train Setup` panel includes a live `Train Downscale` control; changing it while training is running recreates only the train-resolution renderer resources and keeps scene state, ADAM moments, and step counters.
+- The viewer `Train Setup` panel includes `Auto` and manual train-downscale modes. Auto starts from a separate initial factor and walks toward `1x` over training, while manual modes force a fixed factor immediately.
 - Numerical reinforcement includes clipping, finite checks, and safe quaternion normalization.
 - Scale regularization uses an autodiff log-space penalty around the initialization/reference scale, so equal multiplicative scale deviations are treated more uniformly.
 - Scale anisotropy is clamped in the ADAM step with `max(scale) / min(scale) <= max_anisotropy`.

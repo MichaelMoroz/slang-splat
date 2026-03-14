@@ -16,6 +16,7 @@ _DEBUG_ABS_DIFF_SCALE_MIN = 0.125
 _DEBUG_ABS_DIFF_SCALE_MAX = 64.0
 _DEFAULT_TRAINING_STEPS_PER_FRAME = 1
 _MAX_TRAINING_STEPS_PER_FRAME = 8
+_TRAIN_DOWNSCALE_MODE_AUTO = 0
 
 
 def _format_duration(seconds: float) -> str:
@@ -69,18 +70,42 @@ def _run_training_batch(viewer: object) -> int:
     return steps
 
 
+def _preview_train_downscale_factor(viewer: object) -> int:
+    mode = int(viewer.c("train_downscale_mode").value)
+    return max(int(viewer.c("train_auto_start_downscale").value), 1) if mode == _TRAIN_DOWNSCALE_MODE_AUTO else max(mode, 1)
+
+
 def _training_resolution_text(viewer: object) -> str:
+    if viewer.s.training_renderer is not None and viewer.s.trainer is not None:
+        factor = max(int(viewer.s.trainer.effective_train_downscale_factor()), 1)
+        return f"Train Res: {int(viewer.s.training_renderer.width)}x{int(viewer.s.training_renderer.height)} (N={factor})"
     if viewer.s.training_frames:
-        factor = max(int(viewer.c("train_downscale_factor").value), 1)
+        factor = _preview_train_downscale_factor(viewer)
         native_width = max(int(viewer.s.training_frames[0].width), 1)
         native_height = max(int(viewer.s.training_frames[0].height), 1)
         width = (native_width + factor - 1) // factor
         height = (native_height + factor - 1) // factor
         return f"Train Res: {width}x{height} (N={factor})"
-    if viewer.s.training_renderer is not None and viewer.s.trainer is not None:
-        factor = max(int(viewer.s.trainer.training.train_downscale_factor), 1)
-        return f"Train Res: {int(viewer.s.training_renderer.width)}x{int(viewer.s.training_renderer.height)} (N={factor})"
     return "Train Res: n/a"
+
+
+def _training_downscale_text(viewer: object) -> str:
+    if viewer.s.trainer is not None:
+        training = viewer.s.trainer.training
+        current = int(viewer.s.trainer.effective_train_downscale_factor())
+        if int(training.train_downscale_mode) == _TRAIN_DOWNSCALE_MODE_AUTO:
+            return (
+                f"Downscale: Auto | start={int(training.train_auto_start_downscale)}x | "
+                f"current={current}x | step {int(viewer.s.trainer.state.step)}/{int(training.train_downscale_max_iters)}"
+            )
+        return f"Downscale: Manual {current}x"
+    mode = int(viewer.c("train_downscale_mode").value)
+    if mode == _TRAIN_DOWNSCALE_MODE_AUTO:
+        return (
+            f"Downscale: Auto | start={max(int(viewer.c('train_auto_start_downscale').value), 1)}x | "
+            f"current={_preview_train_downscale_factor(viewer)}x | step 0/{max(int(viewer.c('train_downscale_max_iters').value), 1)}"
+        )
+    return f"Downscale: Manual {max(mode, 1)}x"
 
 
 def _dispatch_debug_abs_diff(viewer: object, encoder: spy.CommandEncoder, rendered_tex: spy.Texture, target_tex: spy.Texture, width: int, height: int) -> spy.Texture:
@@ -131,6 +156,7 @@ def update_ui_text(viewer: object, dt: float) -> None:
     current_splat_count = viewer.s.trainer.scene.count if viewer.s.trainer is not None else (viewer.s.scene.count if viewer.s.scene is not None else 0)
     viewer.t("scene_stats").text = f"Splats: {int(current_splat_count):,}"
     viewer.t("training_resolution").text = _training_resolution_text(viewer)
+    viewer.t("training_downscale").text = _training_downscale_text(viewer)
     viewer.t("render_stats").text = "Generated: 0 | Written: 0" if not stats else f"Generated: {int(stats['generated_entries']):,} | Written: {int(stats['written_entries']):,} | Overflow: {bool(stats['overflow'])}{' [cap]' if bool(stats.get('capacity_limited', False)) else ''}{' (delayed)' if bool(stats.get('stats_latency_frames', 0)) else ''}{'' if bool(stats.get('stats_valid', True)) else ' [warming]'}"
     if viewer.s.trainer is None:
         viewer.t("training").text = "Training: not initialized"
@@ -228,6 +254,7 @@ def render_frame(viewer: object, render_context: spy.AppWindow.RenderContext) ->
         return
     try:
         _run_training_batch(viewer)
+        session.ensure_training_runtime_resolution(viewer)
         if bool(viewer.c("loss_debug").value) and viewer.s.trainer is not None and viewer.s.training_frames:
             _render_debug_view(viewer, image, encoder, iw, ih)
         else:
