@@ -230,6 +230,14 @@ def _reset_loaded_runtime(viewer: object) -> None:
     viewer.s.colmap_point_positions_buffer = viewer.s.colmap_point_colors_buffer = None
     viewer.s.colmap_point_count = 0
     viewer.s.suggested_init_hparams = viewer.s.suggested_init_count = None
+    viewer.s.applied_renderer_params_main = None
+    viewer.s.applied_renderer_params_training = None
+    viewer.s.applied_renderer_params_debug = None
+    viewer.s.applied_training_signature = None
+    viewer.s.applied_training_runtime_factor = None
+    viewer.s.cached_training_setup_signature = None
+    viewer.s.cached_training_setup = None
+    viewer.s.pending_training_runtime_resize = False
     update_debug_frame_slider_range(viewer)
     _reset_loss_debug(viewer)
     _clear(viewer, "training_renderer")
@@ -284,6 +292,17 @@ def _create_renderer(viewer: object, width: int, height: int, allow_debug_overla
     return GaussianRenderer(viewer.device, width=int(width), height=int(height), **renderer_kwargs(viewer.renderer_params(allow_debug_overlays)))
 
 
+def _renderer_params_signature(params: object) -> tuple[object, ...]:
+    return tuple(getattr(params, name) for name in params.__dataclass_fields__)
+
+
+def _training_params_signature(params: object) -> tuple[object, ...]:
+    adam = tuple(getattr(params.adam, name) for name in params.adam.__dataclass_fields__)
+    stability = tuple(getattr(params.stability, name) for name in params.stability.__dataclass_fields__)
+    training = tuple(getattr(params.training, name) for name in params.training.__dataclass_fields__)
+    return adam + stability + training
+
+
 def recreate_renderer(viewer: object, width: int, height: int) -> None:
     ensure_renderer(viewer, "renderer", width, height, allow_debug_overlays=True)
     _reset_loss_debug(viewer)
@@ -292,10 +311,17 @@ def recreate_renderer(viewer: object, width: int, height: int) -> None:
 def ensure_training_runtime_resolution(viewer: object) -> None:
     if viewer.s.trainer is None or viewer.s.training_renderer is None or not viewer.s.training_frames:
         return
-    desired_width, desired_height = viewer.s.trainer.training_resolution(0)
+    current_factor = int(viewer.s.trainer.effective_train_downscale_factor())
     current_size = (int(viewer.s.training_renderer.width), int(viewer.s.training_renderer.height))
+    if viewer.s.applied_training_runtime_factor == current_factor:
+        desired_width, desired_height = viewer.s.trainer.training_resolution(0)
+        if current_size == (int(desired_width), int(desired_height)):
+            return
+    desired_width, desired_height = viewer.s.trainer.training_resolution(0)
     desired_size = (int(desired_width), int(desired_height))
     if current_size == desired_size:
+        viewer.s.applied_training_runtime_factor = current_factor
+        viewer.s.pending_training_runtime_resize = False
         return
     previous_renderer = viewer.s.training_renderer
     renderer = _create_renderer(viewer, desired_size[0], desired_size[1], allow_debug_overlays=False)
@@ -308,27 +334,55 @@ def ensure_training_runtime_resolution(viewer: object) -> None:
         viewer.s.renderer.set_debug_grad_norm_buffer(
             renderer.work_buffers["debug_grad_norm"] if viewer.s.trainer.compute_debug_grad_norm else None
         )
+    viewer.s.applied_training_runtime_factor = current_factor
+    viewer.s.pending_training_runtime_resize = False
     _invalidate(viewer)
     _reset_loss_debug(viewer)
 
 
+def _resolve_training_setup_signature(viewer: object, init: object, params: object, images_subdir: str | None) -> tuple[object, ...]:
+    return (
+        int(init.seed),
+        None if init.hparams.initial_opacity is None else round(float(init.hparams.initial_opacity), 8),
+        *(_training_params_signature(params)),
+        None if viewer.s.colmap_root is None else str(viewer.s.colmap_root.resolve()),
+        images_subdir,
+    )
+
+
 def resolve_effective_training_setup(viewer: object):
     init = viewer.init_params()
-    params, profile = apply_training_profile(
-        viewer.training_params(),
-        "auto",
-        dataset_root=viewer.s.colmap_root,
-        images_subdir=_profile_images_subdir(viewer),
-    )
+    raw_params = viewer.training_params()
+    images_subdir = _profile_images_subdir(viewer)
+    signature = _resolve_training_setup_signature(viewer, init, raw_params, images_subdir)
+    if viewer.s.cached_training_setup_signature == signature and viewer.s.cached_training_setup is not None:
+        return viewer.s.cached_training_setup
+    params, profile = apply_training_profile(raw_params, "auto", dataset_root=viewer.s.colmap_root, images_subdir=images_subdir)
     init_hparams = init.hparams if profile.init_opacity_override is None else replace(init.hparams, initial_opacity=profile.init_opacity_override)
-    return init, params, init_hparams, profile
+    viewer.s.cached_training_setup_signature = signature
+    viewer.s.cached_training_setup = (init, params, init_hparams, profile)
+    return viewer.s.cached_training_setup
 
 
 def apply_live_params(viewer: object, force_init_defaults: bool = False) -> None:
-    for renderer, allow_debug in ((viewer.s.renderer, True), (viewer.s.training_renderer, False), (viewer.s.debug_renderer, True)):
-        if renderer is not None:
-            for key, value in renderer_kwargs(viewer.renderer_params(allow_debug)).items():
-                setattr(renderer, key, value)
+    del force_init_defaults
+    renderer_specs = (
+        ("renderer", True, "applied_renderer_params_main"),
+        ("training_renderer", False, "applied_renderer_params_training"),
+        ("debug_renderer", True, "applied_renderer_params_debug"),
+    )
+    for attr, allow_debug, state_attr in renderer_specs:
+        renderer = getattr(viewer.s, attr)
+        if renderer is None:
+            setattr(viewer.s, state_attr, None)
+            continue
+        params = viewer.renderer_params(allow_debug)
+        signature = _renderer_params_signature(params)
+        if getattr(viewer.s, state_attr) == signature:
+            continue
+        for key, value in renderer_kwargs(params).items():
+            setattr(renderer, key, value)
+        setattr(viewer.s, state_attr, signature)
     if viewer.s.renderer is not None:
         viewer.s.renderer.set_debug_grad_norm_buffer(
             viewer.s.training_renderer.work_buffers["debug_grad_norm"]
@@ -338,7 +392,11 @@ def apply_live_params(viewer: object, force_init_defaults: bool = False) -> None
     if viewer.s.trainer is not None:
         viewer.s.trainer.compute_debug_grad_norm = bool(viewer.s.renderer is not None and viewer.s.renderer.debug_show_grad_norm)
         _, params, _, _ = resolve_effective_training_setup(viewer)
-        viewer.s.trainer.update_hyperparams(params.adam, params.stability, params.training)
+        signature = _training_params_signature(params)
+        if viewer.s.applied_training_signature != signature:
+            viewer.s.trainer.update_hyperparams(params.adam, params.stability, params.training)
+            viewer.s.applied_training_signature = signature
+            viewer.s.pending_training_runtime_resize = True
 
 
 def sync_scene_from_training_renderer(viewer: object, dst_renderer: GaussianRenderer, target: str, force: bool = False) -> None:
@@ -484,6 +542,10 @@ def initialize_training_scene(viewer: object) -> None:
     viewer.s.training_active = False
     viewer.s.training_elapsed_s = 0.0
     viewer.s.training_resume_time = None
+    viewer.s.applied_renderer_params_training = _renderer_params_signature(viewer.renderer_params(False))
+    viewer.s.applied_training_signature = _training_params_signature(params)
+    viewer.s.applied_training_runtime_factor = int(viewer.s.trainer.effective_train_downscale_factor(0))
+    viewer.s.pending_training_runtime_resize = False
     _invalidate(viewer)
     viewer.s.scene_init_signature = _scene_signature(viewer)
     update_debug_frame_slider_range(viewer)

@@ -63,6 +63,10 @@ class ViewerState:
     trainer: GaussianTrainer | None = None; training_active: bool = False; loss_debug_texture: spy.Texture | None = None
     debug_abs_diff_kernel: spy.ComputeKernel | None = None; debug_letterbox_kernel: spy.ComputeKernel | None = None; debug_present_texture: spy.Texture | None = None
     synced_step_main: int = -1; synced_step_debug: int = -1; scene_init_signature: tuple[object, ...] | None = None
+    applied_renderer_params_main: tuple[object, ...] | None = None; applied_renderer_params_training: tuple[object, ...] | None = None; applied_renderer_params_debug: tuple[object, ...] | None = None
+    applied_training_signature: tuple[object, ...] | None = None; applied_training_runtime_factor: int | None = None
+    cached_training_setup_signature: tuple[object, ...] | None = None; cached_training_setup: tuple[object, object, object, object] | None = None
+    training_runtime_factor_changed: bool = False; pending_training_runtime_resize: bool = False
     last_training_batch_steps: int = 0
     training_elapsed_s: float = 0.0; training_resume_time: float | None = None
     suggested_init_hparams: GaussianInitHyperParams | None = None; suggested_init_count: int | None = None

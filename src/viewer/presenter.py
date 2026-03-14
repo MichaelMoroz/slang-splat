@@ -61,11 +61,14 @@ def _debug_abs_diff_scale(viewer: object) -> float:
 
 def _run_training_batch(viewer: object) -> int:
     if not viewer.s.training_active or viewer.s.trainer is None:
+        viewer.s.training_runtime_factor_changed = False
         viewer.s.last_training_batch_steps = 0
         return 0
+    factor_before = int(viewer.s.trainer.effective_train_downscale_factor())
     steps = _training_steps_per_frame(viewer)
     for _ in range(steps):
         viewer.s.trainer.step()
+    viewer.s.training_runtime_factor_changed = int(viewer.s.trainer.effective_train_downscale_factor()) != factor_before
     viewer.s.last_training_batch_steps = steps
     return steps
 
@@ -244,7 +247,8 @@ def render_frame(viewer: object, render_context: spy.AppWindow.RenderContext) ->
     viewer.s.last_time = now
     viewer.update_camera(dt)
     session.apply_live_params(viewer)
-    session.ensure_training_runtime_resolution(viewer)
+    if bool(getattr(viewer.s, "pending_training_runtime_resize", False)):
+        session.ensure_training_runtime_resolution(viewer)
     iw, ih = int(image.width), int(image.height)
     if (viewer.s.renderer.width, viewer.s.renderer.height) != (iw, ih):
         session.recreate_renderer(viewer, iw, ih)
@@ -254,7 +258,9 @@ def render_frame(viewer: object, render_context: spy.AppWindow.RenderContext) ->
         return
     try:
         _run_training_batch(viewer)
-        session.ensure_training_runtime_resolution(viewer)
+        if bool(getattr(viewer.s, "training_runtime_factor_changed", False)):
+            session.ensure_training_runtime_resolution(viewer)
+        viewer.s.training_runtime_factor_changed = False
         if bool(viewer.c("loss_debug").value) and viewer.s.trainer is not None and viewer.s.training_frames:
             _render_debug_view(viewer, image, encoder, iw, ih)
         else:
