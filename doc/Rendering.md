@@ -75,7 +75,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - `csRasterizeBackward` is a pure backward kernel: it loads the cached per-pixel forward state, derives `dLoss / dRasterState` from `g_OutputGrad`, and walks the staged splats in reverse without replaying forward internally.
 - The reverse pass reuses one staged gaussian per thread-group lane, accumulates the microtile's pixel contributions in registers, and writes them into a fixed-point accumulation path.
 - Global and groupshared raster loads are implemented via custom derivative functions; backward accumulation uses wave-reduced signed Q16.16 int atomics into `groupshared int` state first, then into a packed global int buffer (`g_ParamGradsFixed`).
-- `csDecodeRasterGradsFixed` converts that packed int buffer back into the packed float gradient buffer (`g_ParamGrads`) exactly once before regularizers, clipping, ADAM, and Python readback.
+- `csDecodeRasterGradsFixed` converts that packed int buffer back into the packed float gradient buffer (`g_ParamGrads`) exactly once and applies the caller-provided final gradient scale before regularizers, clipping, ADAM, and Python readback.
 - Output gradients are supplied through `g_OutputGrad` (`StructuredBuffer<float4>`) using flat pixel indexing `y * width + x`, and chain-rule terms include gamma output mapping and alpha output (`1 - transmittance`).
 
 ## 8. Training Stage

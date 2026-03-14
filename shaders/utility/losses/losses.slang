@@ -14,11 +14,11 @@ float rgb_l1_loss(float3 rendered, no_diff float3 target, no_diff float invPixel
     return dot(diff, float3(1.0, 1.0, 1.0)) * (1.0 / 3.0) * invPixelCount;
 }
 
-float3 rgb_l1_grad(float3 rendered, no_diff float3 target, no_diff float invPixelCount)
+float3 rgb_l1_grad(float3 rendered, no_diff float3 target)
 {
     float3 diff = rendered - target;
     float3 signGrad = float3(diff.x > 0.0 ? 1.0 : diff.x < 0.0 ? -1.0 : 0.0, diff.y > 0.0 ? 1.0 : diff.y < 0.0 ? -1.0 : 0.0, diff.z > 0.0 ? 1.0 : diff.z < 0.0 ? -1.0 : 0.0);
-    return signGrad * ((1.0 / 3.0) * invPixelCount);
+    return signGrad * (1.0 / 3.0);
 }
 
 [Differentiable]

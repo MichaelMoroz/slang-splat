@@ -53,6 +53,7 @@ uniform RWStructuredBuffer<uint> g_TrainingProcessedEnd;
 
 uniform RWStructuredBuffer<float> g_ParamGrads;
 uniform RWStructuredBuffer<int> g_ParamGradsFixed;
+uniform float g_RasterGradDecodeScale;
 
 uniform CameraParams g_Camera;
 uniform PrepassParams g_Prepass;

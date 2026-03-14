@@ -194,12 +194,14 @@ class GaussianTrainer:
         )
 
     def _dispatch_raster_backward(self, encoder: spy.CommandEncoder, frame_camera: Camera, background: np.ndarray) -> None:
+        grad_scale = 1.0 / float(max(self.renderer.width * self.renderer.height, 1))
         self.renderer.clear_raster_grads_current_scene(encoder)
         self.renderer.rasterize_backward_current_scene(
             encoder=encoder,
             camera=frame_camera,
             background=background,
             output_grad=self.renderer.output_grad_buffer,
+            grad_scale=grad_scale,
         )
 
     def _read_loss_metrics(self) -> tuple[float, float]:

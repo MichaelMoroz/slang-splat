@@ -131,7 +131,7 @@ void csComputeL1LossBackward(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint2 pixel = uint2(px, py);
     float3 rendered = sanitize_float3(g_Rendered[pixel].xyz, g_HugeValue);
     float3 target = sanitize_float3(g_Target[pixel].xyz, g_HugeValue);
-    float3 dOut = clamp(sanitize_float3(rgb_l1_grad(rendered, target, g_InvPixelCount), g_LossGradClip), -g_LossGradClip, g_LossGradClip);
+    float3 dOut = clamp(sanitize_float3(rgb_l1_grad(rendered, target), g_LossGradClip), -g_LossGradClip, g_LossGradClip);
     g_OutputGrad[py * g_Width + px] = float4(dOut, 0.0);
 }
 

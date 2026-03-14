@@ -595,7 +595,7 @@ void csDecodeRasterGradsFixed(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint idx = dispatchThreadID.x;
     if (idx >= gradCount) return;
 
-    g_ParamGrads[idx] = raster_grad_fixed_decode(g_ParamGradsFixed[idx]);
+    g_ParamGrads[idx] = raster_grad_fixed_decode(g_ParamGradsFixed[idx]) * g_RasterGradDecodeScale;
 }
 
 [shader("compute")]

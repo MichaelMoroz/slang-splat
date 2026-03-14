@@ -51,9 +51,9 @@ Each trainer `step()` performs:
    - `csClearLossBuffer` resets the scalar loss slots,
    - `csComputeL1LossForward` computes direct RGB L1 reconstruction loss and RGB MSE and reduces those metrics into the loss buffer.
 6. Run the fixed-count backward stage:
-   - `csComputeL1LossBackward` writes `dLoss / dRendered` into flat `RWStructuredBuffer<float4>` `g_OutputGrad`, indexed as `pixel = y * width + x`,
+   - `csComputeL1LossBackward` writes the unnormalized per-pixel RGB L1 sign gradient into flat `RWStructuredBuffer<float4>` `g_OutputGrad`, indexed as `pixel = y * width + x`,
    - `csRasterizeBackward` consumes the cached raster forward state and accumulates packed per-splat gradients into a separate Q16.16 int buffer with int atomics,
-   - `csDecodeRasterGradsFixed` decodes that packed int buffer into the float packed gradient buffer used by the rest of training.
+   - `csDecodeRasterGradsFixed` decodes that packed int buffer into the float packed gradient buffer and applies the final `1 / pixel_count` normalization before the rest of training.
 7. Run the optimizer pipeline:
    - `csAccumulateRegularizationGrads` adds scale and opacity regularizers on the packed param-major state.
    - `csClipPackedParamGrads` clips gradients from a structured per-parameter settings buffer owned by the optimizer module.
