@@ -224,7 +224,6 @@ class GaussianTrainer:
     def _reset_frame_order(self) -> None:
         self._frame_order = self._frame_rng.permutation(len(self.frames)).astype(np.int32)
         self._frame_cursor = 0
-        self._frame_metrics.reset()
 
     def _next_frame_index(self) -> int:
         if self._frame_cursor >= len(self.frames):
