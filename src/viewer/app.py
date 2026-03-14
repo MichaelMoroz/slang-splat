@@ -216,7 +216,7 @@ class SplatViewer(spy.AppWindow):
             self._run_action(lambda: session.choose_colmap_custom_ply(self, Path(path)))
 
     def _import_colmap_callback(self) -> None:
-        self._run_action(lambda: session.import_colmap_from_ui(self), close_colmap_import=True)
+        self._run_action(lambda: session.import_colmap_from_ui(self))
 
     def _reload_callback(self) -> None:
         if self.s.scene_path is not None:

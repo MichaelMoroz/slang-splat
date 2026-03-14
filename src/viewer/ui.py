@@ -559,9 +559,23 @@ class ToolkitWindow:
         imgui.set_next_window_pos(imgui.ImVec2(56.0, self._menu_bar_height + 40.0), imgui.Cond_.first_use_ever.value)
         imgui.set_next_window_size(imgui.ImVec2(540.0, 0.0), imgui.Cond_.first_use_ever.value)
         opened, self._show_colmap_import = imgui.begin("COLMAP Import", True)
+        import_active = bool(ui._values.get("_colmap_import_active", False))
+        if import_active and not self._show_colmap_import:
+            self._show_colmap_import = True
         if opened:
             imgui.text_wrapped("Select the dataset root, verify the auto-detected image folder, choose the gaussian initialization source, then import the dataset.")
             imgui.separator()
+            if import_active:
+                status = ui._texts.get("colmap_import_status", "")
+                current_name = ui._texts.get("colmap_import_current", "")
+                progress = max(0.0, min(float(ui._values.get("_colmap_import_fraction", 0.0)), 1.0))
+                if status:
+                    imgui.text_wrapped(status)
+                imgui.progress_bar(progress, imgui.ImVec2(-1.0, 0.0))
+                if current_name:
+                    imgui.text_disabled(current_name)
+                imgui.spacing()
+            imgui.begin_disabled(import_active)
             self._draw_import_path_selector(ui, label="COLMAP Root", key="colmap_root_path", button_label="Browse Root...", callback=self.callbacks.browse_colmap_root)
             imgui.spacing()
             self._draw_import_path_selector(ui, label="Image Folder", key="colmap_images_root", button_label="Browse Image Folder...", callback=self.callbacks.browse_colmap_images)
@@ -594,8 +608,9 @@ class ToolkitWindow:
                 imgui.spacing()
                 self._draw_import_path_selector(ui, label="Custom PLY", key="colmap_custom_ply_path", button_label="Browse PLY...", callback=self.callbacks.browse_colmap_ply)
             imgui.spacing()
-            if imgui.button("Import", imgui.ImVec2(imgui.get_content_region_avail().x, 0.0)):
+            if imgui.button("Importing..." if import_active else "Import", imgui.ImVec2(imgui.get_content_region_avail().x, 0.0)):
                 self.callbacks.import_colmap()
+            imgui.end_disabled()
         imgui.end()
 
     # -- Sections --
@@ -1084,12 +1099,15 @@ def build_ui(renderer) -> ViewerUI:
     values["colmap_custom_ply_path"] = ""
     values["colmap_nn_radius_scale_coef"] = 0.25
     values["_loss_debug_frame_max"] = 0
+    values["_colmap_import_active"] = False
+    values["_colmap_import_fraction"] = 0.0
 
     texts: dict[str, str] = {
         key: "" for key in (
             "fps", "path", "scene_stats", "render_stats", "training",
             "training_time", "training_iters_avg", "training_loss", "training_mse", "training_psnr", "training_instability", "error",
             "loss_debug_view", "loss_debug_frame",
+            "colmap_import_status", "colmap_import_current",
             "training_resolution", "training_downscale",
             "setup_hint", "stability_hint",
         )

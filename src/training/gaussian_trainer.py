@@ -240,6 +240,7 @@ class GaussianTrainer:
         init_point_colors_buffer: spy.Buffer | None = None,
         init_point_count: int = 0,
         scale_reg_reference: float | None = None,
+        frame_targets_native: list[spy.Texture] | None = None,
     ) -> None:
         if not frames:
             raise ValueError("Training requires at least one COLMAP frame.")
@@ -282,7 +283,12 @@ class GaussianTrainer:
             self.renderer.bind_scene_count(self._scene_count)
         self._ensure_training_buffers(self._scene_count)
         self._zero_optimizer_moments()
-        self._create_dataset_textures()
+        if frame_targets_native is None:
+            self._create_dataset_textures()
+        else:
+            if len(frame_targets_native) != len(self.frames):
+                raise ValueError("frame_targets_native must match the number of training frames.")
+            self._frame_targets_native = list(frame_targets_native)
         self._bind_or_upload_init_pointcloud(init_point_positions, init_point_colors, init_point_positions_buffer, init_point_colors_buffer, init_point_count)
         self._reset_frame_order()
 

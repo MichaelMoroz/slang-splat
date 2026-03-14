@@ -6,6 +6,7 @@ import sqlite3
 import time
 
 import numpy as np
+from PIL import Image
 import slangpy as spy
 
 from ..app.shared import apply_training_profile, estimate_point_bounds, estimate_scene_bounds, renderer_kwargs
@@ -14,13 +15,14 @@ from ..renderer import GaussianRenderer
 from ..scene import GaussianScene, build_training_frames_from_root, initialize_scene_from_colmap_points, load_colmap_reconstruction, load_gaussian_ply, resolve_colmap_init_hparams
 from ..scene._internal.colmap_ops import point_nn_scales
 from ..training import GaussianTrainer, resolve_effective_train_downscale_factor, resolve_training_resolution
-from ..scene._internal.colmap_types import point_tables
-from .state import ColmapImportSettings, SceneCountProxy
+from ..scene._internal.colmap_types import ColmapFrame, point_tables
+from .state import ColmapImportProgress, ColmapImportSettings, SceneCountProxy
 
 _COLMAP_IMPORT_POINTCLOUD = "pointcloud"
 _COLMAP_IMPORT_CUSTOM_PLY = "custom_ply"
 _COLMAP_DB_SAMPLE_LIMIT = 64
 _COLMAP_DB_SEARCH_PATTERNS = ("database.db", "*.db", "*.sqlite", "*.sqlite3")
+_COLMAP_IMPORT_IMAGES_PER_TICK = 1
 
 
 def _clear(viewer: object, *attrs: str) -> None:
@@ -178,6 +180,45 @@ def _update_import_settings(
     viewer.ui._values["colmap_nn_radius_scale_coef"] = float(max(nn_radius_scale_coef, 1e-4))
 
 
+def _append_training_frame(progress: ColmapImportProgress, image_id: int, image: object) -> None:
+    if progress.recon is None:
+        raise RuntimeError("COLMAP import progress is missing reconstruction state.")
+    image_path = (progress.images_root / image.name).resolve()
+    camera = progress.recon.cameras.get(image.camera_id)
+    if camera is None or not image_path.exists():
+        return
+    with Image.open(image_path) as pil_image:
+        width, height = pil_image.size
+    sx, sy = float(width) / float(camera.width), float(height) / float(camera.height)
+    progress.frames.append(
+        ColmapFrame(
+            image_id,
+            image_path,
+            image.q_wxyz.astype(np.float32),
+            image.t_xyz.astype(np.float32),
+            float(camera.fx) * sx,
+            float(camera.fy) * sy,
+            float(camera.cx) * sx,
+            float(camera.cy) * sy,
+            int(width),
+            int(height),
+        )
+    )
+
+
+def _create_native_dataset_texture(viewer: object, image_path: Path) -> spy.Texture:
+    with Image.open(image_path) as pil_image:
+        rgba8 = np.array(pil_image.convert("RGBA"), dtype=np.uint8, order="C", copy=True)
+    texture = viewer.device.create_texture(
+        format=spy.Format.rgba8_unorm_srgb,
+        width=int(rgba8.shape[1]),
+        height=int(rgba8.shape[0]),
+        usage=spy.TextureUsage.shader_resource | spy.TextureUsage.copy_destination,
+    )
+    texture.copy_from_numpy(np.ascontiguousarray(rgba8, dtype=np.uint8))
+    return texture
+
+
 def choose_colmap_root(viewer: object, dataset_root: Path) -> None:
     root = Path(dataset_root).resolve()
     colmap_root = _resolve_colmap_root_from_selection(root)
@@ -220,6 +261,7 @@ def _reset_loss_debug(viewer: object) -> None:
 
 
 def _reset_loaded_runtime(viewer: object) -> None:
+    viewer.s.colmap_import_progress = None
     viewer.s.scene_init_signature = None
     viewer.s.training_active = False
     viewer.s.training_elapsed_s = 0.0
@@ -425,6 +467,45 @@ def load_scene(viewer: object, path: Path) -> None:
     print(f"Loaded scene: {path} ({scene.count:,} splats)")
 
 
+def _finish_import_colmap_dataset(
+    viewer: object,
+    *,
+    colmap_root: Path,
+    database_path: Path | None,
+    images_root: Path,
+    init_mode: str,
+    custom_ply_path: Path | None,
+    nn_radius_scale_coef: float,
+    recon: object,
+    training_frames: list[ColmapFrame],
+    frame_targets_native: list[spy.Texture] | None = None,
+) -> None:
+    xyz, _ = _point_tables(recon)
+    _reset_loaded_runtime(viewer)
+    _update_import_settings(
+        viewer,
+        dataset_root=colmap_root,
+        database_path=database_path,
+        images_root=images_root,
+        init_mode=init_mode,
+        custom_ply_path=custom_ply_path,
+        nn_radius_scale_coef=nn_radius_scale_coef,
+    )
+    viewer.s.colmap_root = Path(colmap_root)
+    viewer.s.colmap_recon = recon
+    viewer.s.training_frames = list(training_frames)
+    viewer.s.colmap_point_count = int(xyz.shape[0])
+    viewer.s.scene_path = None
+    apply_live_params(viewer)
+    viewer.apply_camera_fit(estimate_point_bounds(xyz))
+    initialize_training_scene(viewer, frame_targets_native=frame_targets_native)
+    viewer.s.last_error = ""
+    print(
+        f"Loaded COLMAP: db={None if database_path is None else Path(database_path).resolve()} root={colmap_root} "
+        f"frames={len(training_frames)} images={Path(images_root).resolve()} init={init_mode}"
+    )
+
+
 def import_colmap_dataset(
     viewer: object,
     *,
@@ -437,29 +518,17 @@ def import_colmap_dataset(
 ) -> None:
     root = Path(colmap_root).resolve()
     recon = load_colmap_reconstruction(root)
-    xyz, _ = _point_tables(recon)
-    _reset_loaded_runtime(viewer)
-    _update_import_settings(
+    training_frames = build_training_frames_from_root(recon, images_root)
+    _finish_import_colmap_dataset(
         viewer,
-        dataset_root=root,
+        colmap_root=root,
         database_path=database_path,
         images_root=images_root,
         init_mode=init_mode,
         custom_ply_path=custom_ply_path,
         nn_radius_scale_coef=nn_radius_scale_coef,
-    )
-    viewer.s.colmap_root = Path(root)
-    viewer.s.colmap_recon = recon
-    viewer.s.training_frames = build_training_frames_from_root(recon, images_root)
-    viewer.s.colmap_point_count = int(xyz.shape[0])
-    viewer.s.scene_path = None
-    apply_live_params(viewer)
-    viewer.apply_camera_fit(estimate_point_bounds(xyz))
-    initialize_training_scene(viewer)
-    viewer.s.last_error = ""
-    print(
-        f"Loaded COLMAP: db={None if database_path is None else Path(database_path).resolve()} root={root} "
-        f"frames={len(viewer.s.training_frames)} images={Path(images_root).resolve()} init={init_mode}"
+        recon=recon,
+        training_frames=training_frames,
     )
 
 
@@ -482,18 +551,85 @@ def import_colmap_from_ui(viewer: object) -> None:
         raise FileNotFoundError(f"COLMAP image folder does not exist: {images_root}")
     if init_mode == _COLMAP_IMPORT_CUSTOM_PLY and (custom_ply_path is None or not custom_ply_path.exists()):
         raise FileNotFoundError(f"Custom PLY does not exist: {custom_ply_path}")
-    import_colmap_dataset(
-        viewer,
-        colmap_root=colmap_root,
-        database_path=database_path,
-        images_root=images_root,
+    viewer.s.colmap_import_progress = ColmapImportProgress(
+        dataset_root=Path(_ui_path_string(viewer, "colmap_root_path")).expanduser().resolve(),
+        colmap_root=colmap_root.resolve(),
+        database_path=None if database_path is None else database_path.resolve(),
+        images_root=images_root.resolve(),
         init_mode=init_mode,
-        custom_ply_path=custom_ply_path,
-        nn_radius_scale_coef=nn_radius_scale_coef,
+        custom_ply_path=None if custom_ply_path is None else custom_ply_path.resolve(),
+        nn_radius_scale_coef=float(max(nn_radius_scale_coef, 1e-4)),
     )
+    viewer.s.last_error = ""
 
 
-def initialize_training_scene(viewer: object) -> None:
+def advance_colmap_import(viewer: object) -> None:
+    progress = getattr(viewer.s, "colmap_import_progress", None)
+    if progress is None:
+        return
+    try:
+        if progress.phase == "prepare":
+            progress.recon = load_colmap_reconstruction(progress.colmap_root)
+            progress.image_items = sorted(progress.recon.images.items())
+            progress.total = max(len(progress.image_items), 1)
+            progress.current = 0
+            progress.current_name = ""
+            progress.phase = "scan_frames"
+            return
+        if progress.phase == "scan_frames":
+            for _ in range(_COLMAP_IMPORT_IMAGES_PER_TICK):
+                if progress.current >= len(progress.image_items):
+                    break
+                image_id, image = progress.image_items[progress.current]
+                progress.current_name = Path(str(image.name)).name
+                _append_training_frame(progress, image_id, image)
+                progress.current += 1
+            if progress.current < len(progress.image_items):
+                return
+            if not progress.frames:
+                raise RuntimeError(f"No training frames were found in {progress.images_root}.")
+            progress.phase = "load_textures"
+            progress.total = len(progress.frames)
+            progress.current = 0
+            progress.current_name = ""
+            return
+        if progress.phase == "load_textures":
+            for _ in range(_COLMAP_IMPORT_IMAGES_PER_TICK):
+                if progress.current >= len(progress.frames):
+                    break
+                frame = progress.frames[progress.current]
+                progress.current_name = Path(frame.image_path).name
+                progress.native_textures.append(_create_native_dataset_texture(viewer, frame.image_path))
+                progress.current += 1
+            if progress.current < len(progress.frames):
+                return
+            progress.phase = "finalize"
+            progress.current_name = ""
+            return
+        if progress.phase == "finalize":
+            if progress.recon is None:
+                raise RuntimeError("COLMAP import lost reconstruction state before finalize.")
+            _finish_import_colmap_dataset(
+                viewer,
+                colmap_root=progress.colmap_root,
+                database_path=progress.database_path,
+                images_root=progress.images_root,
+                init_mode=progress.init_mode,
+                custom_ply_path=progress.custom_ply_path,
+                nn_radius_scale_coef=progress.nn_radius_scale_coef,
+                recon=progress.recon,
+                training_frames=progress.frames,
+                frame_targets_native=progress.native_textures,
+            )
+            viewer.toolkit.close_colmap_import_window()
+            return
+        raise RuntimeError(f"Unknown COLMAP import phase: {progress.phase}")
+    except Exception:
+        viewer.s.colmap_import_progress = None
+        raise
+
+
+def initialize_training_scene(viewer: object, frame_targets_native: list[spy.Texture] | None = None) -> None:
     if viewer.s.colmap_recon is None or not viewer.s.training_frames:
         return
     init, params, init_hparams, profile = resolve_effective_training_setup(viewer)
@@ -533,6 +669,8 @@ def initialize_training_scene(viewer: object) -> None:
     )
     if scale_reg_reference is not None:
         trainer_kwargs["scale_reg_reference"] = scale_reg_reference
+    if frame_targets_native is not None:
+        trainer_kwargs["frame_targets_native"] = frame_targets_native
     viewer.s.trainer = GaussianTrainer(**trainer_kwargs)
     viewer.s.scene = SceneCountProxy(scene.count)
     viewer.apply_camera_fit(estimate_scene_bounds(scene))

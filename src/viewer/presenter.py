@@ -158,6 +158,19 @@ def update_ui_text(viewer: object, dt: float) -> None:
     viewer.t("loss_debug_view").text = f"View: {viewer.loss_debug_view_options[debug_idx][1]}"
     viewer.t("loss_debug_frame").text = f"Frame[{frame_idx}]: {Path(viewer.s.training_frames[frame_idx].image_path).name}" if viewer.s.training_frames else "Frame: <none>"
     viewer.t("path").text = f"Scene: {viewer.s.scene_path.name} [PLY]" if viewer.s.scene_path is not None else f"Scene: {viewer.s.colmap_root.name} [COLMAP]" if viewer.s.colmap_root is not None else "Scene: <none>"
+    import_progress = getattr(viewer.s, "colmap_import_progress", None)
+    viewer.ui._values["_colmap_import_active"] = bool(import_progress is not None)
+    viewer.ui._values["_colmap_import_fraction"] = 0.0 if import_progress is None else float(import_progress.fraction)
+    viewer.t("colmap_import_status").text = "" if import_progress is None else (
+        "Preparing COLMAP import..."
+        if import_progress.phase == "prepare"
+        else f"Scanning image metadata: {import_progress.current}/{import_progress.total}"
+        if import_progress.phase == "scan_frames"
+        else f"Loading images: {import_progress.current}/{import_progress.total}"
+        if import_progress.phase == "load_textures"
+        else "Finalizing import..."
+    )
+    viewer.t("colmap_import_current").text = "" if import_progress is None else import_progress.current_name
     current_splat_count = viewer.s.trainer.scene.count if viewer.s.trainer is not None else (viewer.s.scene.count if viewer.s.scene is not None else 0)
     viewer.t("scene_stats").text = f"Splats: {int(current_splat_count):,}"
     viewer.t("training_resolution").text = _training_resolution_text(viewer)
@@ -249,6 +262,7 @@ def render_frame(viewer: object, render_context: spy.AppWindow.RenderContext) ->
     viewer.s.last_time = now
     viewer.update_camera(dt)
     session.apply_live_params(viewer)
+    session.advance_colmap_import(viewer)
     if bool(getattr(viewer.s, "pending_training_runtime_resize", False)):
         session.ensure_training_runtime_resolution(viewer)
     iw, ih = int(image.width), int(image.height)

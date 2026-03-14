@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import time
 
 from src.viewer import presenter
+from src.viewer.state import ColmapImportProgress
 
 
 class _DummyEncoder:
@@ -78,12 +79,12 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         "training_steps_per_frame": _control(1),
         "train_downscale_factor": _control(1),
     }
-    texts = {key: _text() for key in ("fps", "images_subdir", "loss_debug_view", "loss_debug_frame", "path", "scene_stats", "render_stats", "training", "training_time", "training_iters_avg", "training_loss", "training_mse", "training_psnr", "training_instability", "training_resolution", "training_downscale", "error")}
+    texts = {key: _text() for key in ("fps", "images_subdir", "loss_debug_view", "loss_debug_frame", "path", "scene_stats", "render_stats", "training", "training_time", "training_iters_avg", "training_loss", "training_mse", "training_psnr", "training_instability", "training_resolution", "training_downscale", "colmap_import_status", "colmap_import_current", "error")}
     viewer = SimpleNamespace()
     viewer.device = SimpleNamespace()
     viewer.loss_debug_view_options = (("rendered", "Rendered"), ("target", "Target"), ("abs_diff", "Abs Diff"))
     viewer.image_subdir_options = ("images_8",)
-    viewer.ui = SimpleNamespace(controls=controls, texts=texts)
+    viewer.ui = SimpleNamespace(controls=controls, texts=texts, _values={}, _texts={key: value.text for key, value in texts.items()})
     viewer.c = lambda key: viewer.ui.controls[key]
     viewer.t = lambda key: viewer.ui.texts[key]
     viewer.camera = lambda: "camera"
@@ -107,6 +108,7 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         last_render_exception="",
         last_error="",
         last_training_batch_steps=0,
+        colmap_import_progress=None,
     )
     return viewer
 
@@ -186,6 +188,30 @@ def test_update_ui_text_uses_permutation_averages() -> None:
     assert viewer.t("training_mse").text == "MSE Avg: 2.500000e-03"
     assert viewer.t("training_psnr").text == "PSNR Avg: 26.750 dB"
     assert viewer.t("training_resolution").text == "Train Res: 640x360 (N=1)"
+
+
+def test_update_ui_text_populates_colmap_import_progress_fields() -> None:
+    viewer = _viewer(loss_debug=False)
+    viewer.s.colmap_import_progress = ColmapImportProgress(
+        dataset_root=Path("dataset"),
+        colmap_root=Path("dataset"),
+        database_path=None,
+        images_root=Path("dataset/images"),
+        init_mode="pointcloud",
+        custom_ply_path=None,
+        nn_radius_scale_coef=0.25,
+        phase="load_textures",
+        current=3,
+        total=8,
+        current_name="frame_003.png",
+    )
+
+    presenter.update_ui_text(viewer, 1.0 / 60.0)
+
+    assert viewer.ui._values["_colmap_import_active"] is True
+    assert viewer.ui._values["_colmap_import_fraction"] == 3.0 / 8.0
+    assert viewer.t("colmap_import_status").text == "Loading images: 3/8"
+    assert viewer.t("colmap_import_current").text == "frame_003.png"
 
 
 def test_render_debug_source_uses_overlay_renderer_for_rendered_view(monkeypatch) -> None:

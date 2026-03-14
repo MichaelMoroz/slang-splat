@@ -9,6 +9,7 @@ import numpy as np
 from PIL import Image
 
 from src.viewer import session
+from src.viewer.state import ColmapImportProgress
 
 
 def _viewer() -> SimpleNamespace:
@@ -231,3 +232,50 @@ def test_choose_colmap_root_works_without_database(tmp_path: Path) -> None:
     assert viewer.ui._values["colmap_database_path"] == ""
     assert viewer.ui._values["colmap_images_root"] == str(root)
     assert viewer.s.last_error == ""
+
+
+def test_advance_colmap_import_processes_images_incrementally(tmp_path: Path, monkeypatch) -> None:
+    _, images_root = _build_colmap_tree(
+        tmp_path,
+        image_names=["frame_000.png", "frame_001.png"],
+        image_root_rel=Path("images"),
+    )
+    recon = SimpleNamespace(
+        images={
+            1: SimpleNamespace(name="frame_000.png", camera_id=7, q_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32), t_xyz=np.array([0.0, 0.0, -2.0], dtype=np.float32)),
+            2: SimpleNamespace(name="frame_001.png", camera_id=7, q_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32), t_xyz=np.array([0.0, 0.0, -2.0], dtype=np.float32)),
+        },
+        cameras={7: SimpleNamespace(width=8, height=8, fx=64.0, fy=64.0, cx=4.0, cy=4.0)},
+    )
+    calls: list[object] = []
+    viewer = SimpleNamespace(
+        toolkit=SimpleNamespace(close_colmap_import_window=lambda: calls.append("close")),
+        s=SimpleNamespace(
+            colmap_import_progress=ColmapImportProgress(
+                dataset_root=images_root.parent,
+                colmap_root=images_root.parent,
+                database_path=None,
+                images_root=images_root,
+                init_mode="pointcloud",
+                custom_ply_path=None,
+                nn_radius_scale_coef=0.25,
+            ),
+        ),
+    )
+
+    monkeypatch.setattr(session, "load_colmap_reconstruction", lambda root: recon)
+    monkeypatch.setattr(session, "_create_native_dataset_texture", lambda viewer_obj, image_path: f"tex:{Path(image_path).name}")
+
+    def _finish(viewer_obj, **kwargs) -> None:
+        calls.append(("finish", len(kwargs["training_frames"]), list(kwargs["frame_targets_native"])))
+        viewer_obj.s.colmap_import_progress = None
+
+    monkeypatch.setattr(session, "_finish_import_colmap_dataset", _finish)
+
+    while viewer.s.colmap_import_progress is not None:
+        session.advance_colmap_import(viewer)
+
+    assert calls == [
+        ("finish", 2, ["tex:frame_000.png", "tex:frame_001.png"]),
+        "close",
+    ]

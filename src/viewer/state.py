@@ -6,7 +6,7 @@ import time
 
 import slangpy as spy
 
-from ..scene import ColmapReconstruction, GaussianInitHyperParams, GaussianScene
+from ..scene import ColmapFrame, ColmapReconstruction, GaussianInitHyperParams, GaussianScene
 from ..training import GaussianTrainer
 from ..renderer import GaussianRenderer
 
@@ -26,6 +26,29 @@ class ColmapImportSettings:
     init_mode: str = "pointcloud"
     custom_ply_path: Path | None = None
     nn_radius_scale_coef: float = 0.25
+
+
+@dataclass(slots=True)
+class ColmapImportProgress:
+    dataset_root: Path
+    colmap_root: Path
+    database_path: Path | None
+    images_root: Path
+    init_mode: str
+    custom_ply_path: Path | None
+    nn_radius_scale_coef: float
+    phase: str = "prepare"
+    current: int = 0
+    total: int = 1
+    current_name: str = ""
+    recon: ColmapReconstruction | None = None
+    image_items: list[tuple[int, object]] = field(default_factory=list)
+    frames: list[ColmapFrame] = field(default_factory=list)
+    native_textures: list[spy.Texture] = field(default_factory=list)
+
+    @property
+    def fraction(self) -> float:
+        return 1.0 if self.total <= 0 else min(max(float(self.current) / float(self.total), 0.0), 1.0)
 
 
 def _default_camera_pos() -> spy.float3:
@@ -59,6 +82,7 @@ class ViewerState:
     scene: GaussianScene | SceneCountProxy | None = None; scene_path: Path | None = None; stats: dict[str, int | bool | float] = field(default_factory=dict)
     colmap_root: Path | None = None; colmap_recon: ColmapReconstruction | None = None; training_frames: list = field(default_factory=list)
     colmap_import: ColmapImportSettings = field(default_factory=ColmapImportSettings)
+    colmap_import_progress: ColmapImportProgress | None = None
     colmap_point_positions_buffer: spy.Buffer | None = None; colmap_point_colors_buffer: spy.Buffer | None = None; colmap_point_count: int = 0
     trainer: GaussianTrainer | None = None; training_active: bool = False; loss_debug_texture: spy.Texture | None = None
     debug_abs_diff_kernel: spy.ComputeKernel | None = None; debug_letterbox_kernel: spy.ComputeKernel | None = None; debug_present_texture: spy.Texture | None = None
