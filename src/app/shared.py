@@ -162,7 +162,7 @@ def build_training_params(
     train_downscale_mode: int = 1,
     train_auto_start_downscale: int = 16,
     train_downscale_base_iters: int = 200,
-    train_downscale_iter_step: int = 50,
+    train_downscale_iter_step: int = 200,
     train_downscale_max_iters: int = 30_000,
     train_downscale_factor: int = 1,
 ) -> AppTrainingParams:
