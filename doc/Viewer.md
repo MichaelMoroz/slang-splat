@@ -45,12 +45,12 @@ This avoids camera movement while using sliders, combo boxes, text inputs, plot 
 
 The import window collects:
 
-- the COLMAP database path
+- the top-level dataset root
 - the image folder used for training frames
 - the initialization mode: `COLMAP Pointcloud` or `Custom PLY`
 - the nearest-neighbor radius scale coefficient used by COLMAP pointcloud initialization
 
-After the database is selected, the viewer samples the COLMAP `images` table and tries to infer the matching image root automatically. The image folder can still be overridden manually before pressing `Import`.
+After the dataset root is selected, the viewer recursively finds the first valid COLMAP database under that tree, then walks the root and its subfolders until it finds the first directory that contains one of the sampled COLMAP image entries. The image folder can still be overridden manually before pressing `Import`.
 
 Pointcloud initialization builds gaussians from the COLMAP sparse points and scales them from the median nearest-neighbor spacing multiplied by the selected coefficient. Custom PLY initialization keeps the COLMAP cameras and training frames, but seeds the scene from the chosen `.ply` file instead.
 

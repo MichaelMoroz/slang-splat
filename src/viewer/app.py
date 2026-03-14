@@ -171,7 +171,7 @@ class SplatViewer(spy.AppWindow):
     def _bind_toolkit_callbacks(self) -> None:
         cb = self.toolkit.callbacks
         cb.load_ply = self._load_ply_callback
-        cb.browse_colmap_database = self._browse_colmap_database_callback
+        cb.browse_colmap_root = self._browse_colmap_root_callback
         cb.browse_colmap_images = self._browse_colmap_images_callback
         cb.browse_colmap_ply = self._browse_colmap_ply_callback
         cb.import_colmap = self._import_colmap_callback
@@ -195,10 +195,10 @@ class SplatViewer(spy.AppWindow):
         if path:
             self._run_action(lambda: session.load_scene(self, Path(path)))
 
-    def _browse_colmap_database_callback(self) -> None:
-        path = spy.platform.open_file_dialog([spy.platform.FileDialogFilter("COLMAP Database", "*.*")])
+    def _browse_colmap_root_callback(self) -> None:
+        path = spy.platform.choose_folder_dialog()
         if path:
-            self._run_action(lambda: session.choose_colmap_database(self, Path(path)))
+            self._run_action(lambda: session.choose_colmap_root(self, Path(path)))
 
     def _browse_colmap_images_callback(self) -> None:
         path = spy.platform.choose_folder_dialog()
@@ -224,6 +224,7 @@ class SplatViewer(spy.AppWindow):
             self._run_action(
                 lambda: session.import_colmap_dataset(
                     self,
+                    colmap_root=self.s.colmap_root,
                     database_path=import_cfg.database_path,
                     images_root=import_cfg.images_root,
                     init_mode=import_cfg.init_mode,

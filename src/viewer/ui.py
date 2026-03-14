@@ -232,7 +232,7 @@ class ToolkitWindow:
         self._apply_theme()
         self.callbacks = SimpleNamespace(
             load_ply=_noop,
-            browse_colmap_database=_noop,
+            browse_colmap_root=_noop,
             browse_colmap_images=_noop,
             browse_colmap_ply=_noop,
             import_colmap=_noop,
@@ -430,9 +430,9 @@ class ToolkitWindow:
         imgui.set_next_window_size(imgui.ImVec2(540.0, 0.0), imgui.Cond_.first_use_ever.value)
         opened, self._show_colmap_import = imgui.begin("COLMAP Import", True)
         if opened:
-            imgui.text_wrapped("Select a COLMAP database, verify the image folder, choose the gaussian initialization source, then import the dataset.")
+            imgui.text_wrapped("Select the dataset root, verify the auto-detected image folder, choose the gaussian initialization source, then import the dataset.")
             imgui.separator()
-            self._draw_import_path_selector(ui, label="COLMAP Database", key="colmap_database_path", button_label="Browse Database...", callback=self.callbacks.browse_colmap_database)
+            self._draw_import_path_selector(ui, label="COLMAP Root", key="colmap_root_path", button_label="Browse Root...", callback=self.callbacks.browse_colmap_root)
             imgui.spacing()
             self._draw_import_path_selector(ui, label="Image Folder", key="colmap_images_root", button_label="Browse Image Folder...", callback=self.callbacks.browse_colmap_images)
             imgui.spacing()
@@ -548,11 +548,11 @@ class ToolkitWindow:
         imgui.text_disabled("Load COLMAP opens a dedicated import window.")
         if imgui.button("Open COLMAP Import", imgui.ImVec2(imgui.get_content_region_avail().x, 0.0)):
             self._show_colmap_import = True
-        database_text = self._path_text(ui, "colmap_database_path", "<none>")
+        root_text = self._path_text(ui, "colmap_root_path", "<none>")
         images_text = self._path_text(ui, "colmap_images_root", "<none>")
         mode_idx = max(0, min(int(ui._values.get("colmap_init_mode", 0)), len(_COLMAP_INIT_MODE_LABELS) - 1))
         imgui.spacing()
-        imgui.text_disabled(f"Database: {Path(database_text).name if database_text != '<none>' else database_text}")
+        imgui.text_disabled(f"Root: {Path(root_text).name if root_text != '<none>' else root_text}")
         imgui.text_disabled(f"Images: {Path(images_text).name if images_text != '<none>' else images_text}")
         imgui.text_disabled(f"Init: {_COLMAP_INIT_MODE_LABELS[mode_idx]}")
         imgui.separator()
@@ -908,6 +908,7 @@ def build_ui(renderer) -> ViewerUI:
     values["debug_ellipse"] = bool(renderer.debug_show_ellipses)
     values["debug_processed_count"] = bool(renderer.debug_show_processed_count)
     values["debug_grad_norm"] = bool(renderer.debug_show_grad_norm)
+    values["colmap_root_path"] = ""
     values["colmap_database_path"] = ""
     values["colmap_images_root"] = ""
     values["colmap_init_mode"] = 0
