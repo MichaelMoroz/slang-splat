@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
-from functools import partial
+from functools import lru_cache, partial
+import math
 from pathlib import Path
+import re
 from types import SimpleNamespace
 import time
 
@@ -26,6 +28,29 @@ _LOSS_DEBUG_ABS_SCALE_MAX = 64.0
 _LOSS_DEBUG_ABS_SCALE_KEY = "loss_debug_abs_scale"
 _COLMAP_INIT_MODE_LABELS = ("COLMAP Pointcloud", "Custom PLY")
 _TRAIN_DOWNSCALE_MODE_LABELS = ("Auto",) + tuple(f"{i}x" for i in range(1, 17))
+_DEBUG_GRAD_NORM_THRESHOLD_DEFAULT = 2e-4
+_DEBUG_COLORBAR_WIDTH = 18.0
+_DEBUG_COLORBAR_HEIGHT = 240.0
+_DEBUG_COLORBAR_MARGIN = 22.0
+_DEBUG_COLORBAR_TICKS = 5
+_DEBUG_COLORBAR_STEPS = 96
+_DEBUG_COLORBAR_LEFT_PAD = 56.0
+_DEBUG_COLORBAR_RIGHT_PAD = 64.0
+_DEBUG_COLORBAR_TOP_PAD = 28.0
+_DEBUG_COLORBAR_BOTTOM_PAD = 12.0
+
+
+@lru_cache(maxsize=1)
+def _shader_debug_constants() -> dict[str, float]:
+    source = (Path(__file__).resolve().parents[2] / "shaders" / "utility" / "math" / "constants.slang").read_text(encoding="utf-8")
+    names = ("DEBUG_GRAD_NORM_FLOOR", "DEBUG_GRAD_THRESHOLD_MIN_SCALE", "DEBUG_GRAD_THRESHOLD_MAX_SCALE")
+    constants: dict[str, float] = {}
+    for name in names:
+        match = re.search(rf"static\s+const\s+float\s+{name}\s*=\s*([^;]+);", source)
+        if match is None:
+            raise RuntimeError(f"Missing shader debug constant: {name}")
+        constants[name] = float(match.group(1).strip())
+    return constants
 
 
 def _read_text_if_exists(path: Path) -> str:
@@ -64,6 +89,44 @@ def _panel_rect(width: int, height: int, menu_bar_height: float) -> tuple[float,
 
 def _menu_item(label: str, shortcut: str = "", selected: bool = False, enabled: bool = True) -> bool:
     return bool(imgui.menu_item(label, shortcut, selected, enabled)[0])
+
+
+def _saturate(value: float) -> float:
+    return max(0.0, min(float(value), 1.0))
+
+
+def _jet_colormap(value: float) -> tuple[float, float, float]:
+    t = _saturate(value)
+    return (
+        _saturate(1.5 - abs(4.0 * t - 3.0)),
+        _saturate(1.5 - abs(4.0 * t - 2.0)),
+        _saturate(1.5 - abs(4.0 * t - 1.0)),
+    )
+
+
+def _color_u32(r: float, g: float, b: float, a: float = 1.0) -> int:
+    return imgui.color_convert_float4_to_u32(imgui.ImVec4(float(r), float(g), float(b), float(a)))
+
+
+def _debug_colorbar_mode(ui: "ViewerUI") -> str | None:
+    if bool(ui._values.get("debug_processed_count", False)):
+        return "processed_count"
+    if bool(ui._values.get("debug_grad_norm", False)):
+        return "grad_norm"
+    return None
+
+
+def _processed_count_tick_value(t: float, max_splat_steps: int) -> float:
+    return math.pow(2.0, _saturate(t) * math.log2(max(max_splat_steps, 0) + 1.0)) - 1.0
+
+
+def _grad_norm_tick_value(t: float, threshold: float) -> float:
+    constants = _shader_debug_constants()
+    grad_norm_floor = constants["DEBUG_GRAD_NORM_FLOOR"]
+    grad_threshold = max(float(threshold), grad_norm_floor)
+    lo = math.log10(max(grad_threshold * constants["DEBUG_GRAD_THRESHOLD_MIN_SCALE"], grad_norm_floor))
+    hi = math.log10(max(grad_threshold * constants["DEBUG_GRAD_THRESHOLD_MAX_SCALE"], grad_norm_floor))
+    return math.pow(10.0, lo + _saturate(t) * (hi - lo))
 
 
 @dataclass(frozen=True, slots=True)
@@ -334,6 +397,7 @@ class ToolkitWindow:
         simgui.begin_frame(width, height, dt)
         self._menu_bar_height = self._draw_main_menu_bar()
         self._draw_panel(ui, width, height)
+        self._draw_debug_colorbar(ui, width, height)
         imgui.render()
         draw_data = imgui.get_draw_data()
         self._frame_textures = simgui.sync_draw_data_textures(self.device, self.renderer, draw_data)
@@ -364,6 +428,66 @@ class ToolkitWindow:
         self._draw_about_window()
         self._draw_documentation_window()
         self._draw_colmap_import_window(ui)
+
+    def _draw_debug_colorbar(self, ui: ViewerUI, width: int, height: int) -> None:
+        mode = _debug_colorbar_mode(ui)
+        if mode is None:
+            return
+        draw_list = imgui.get_foreground_draw_list()
+        bar_height = min(_DEBUG_COLORBAR_HEIGHT, max(float(height) - self._menu_bar_height - 2.0 * _DEBUG_COLORBAR_MARGIN, 80.0))
+        panel_x, _, panel_width, _ = _panel_rect(width, height, self._menu_bar_height)
+        box_width = _DEBUG_COLORBAR_LEFT_PAD + _DEBUG_COLORBAR_WIDTH + _DEBUG_COLORBAR_RIGHT_PAD
+        box_height = _DEBUG_COLORBAR_TOP_PAD + bar_height + _DEBUG_COLORBAR_BOTTOM_PAD
+        box_min_x = panel_x + panel_width + 8.0
+        box_max_x = float(width) - _DEBUG_COLORBAR_MARGIN - box_width
+        box_x = max(min(float(width) - _DEBUG_COLORBAR_MARGIN - box_width, box_max_x), box_min_x)
+        if box_x + box_width > float(width) - 4.0:
+            box_x = max(float(width) - 4.0 - box_width, 0.0)
+        box_y = min(max(self._menu_bar_height + _DEBUG_COLORBAR_MARGIN, 0.0), max(float(height) - box_height - 4.0, self._menu_bar_height))
+        x0 = box_x + _DEBUG_COLORBAR_LEFT_PAD
+        y0 = box_y + _DEBUG_COLORBAR_TOP_PAD
+        x1 = x0 + _DEBUG_COLORBAR_WIDTH
+        y1 = y0 + bar_height
+        draw_list.add_rect_filled(
+            imgui.ImVec2(box_x, box_y),
+            imgui.ImVec2(box_x + box_width, box_y + box_height),
+            _color_u32(0.05, 0.06, 0.08, 0.58),
+            8.0,
+        )
+        draw_list.add_text(imgui.ImVec2(box_x, box_y + 6.0), _color_u32(0.85, 0.88, 0.92), self._debug_colorbar_title(mode))
+        self._draw_debug_colorbar_gradient(draw_list, x0, y0, x1, y1)
+        draw_list.add_rect(imgui.ImVec2(x0, y0), imgui.ImVec2(x1, y1), _color_u32(0.95, 0.97, 1.0, 0.95), 2.0, 0, 1.0)
+        self._draw_debug_colorbar_ticks(draw_list, mode, x0, y0, x1, y1, ui)
+
+    def _draw_debug_colorbar_gradient(self, draw_list: object, x0: float, y0: float, x1: float, y1: float) -> None:
+        height = max(y1 - y0, 1.0)
+        for idx in range(_DEBUG_COLORBAR_STEPS):
+            t0 = idx / _DEBUG_COLORBAR_STEPS
+            t1 = (idx + 1) / _DEBUG_COLORBAR_STEPS
+            rgb = _jet_colormap(1.0 - 0.5 * (t0 + t1))
+            draw_list.add_rect_filled(
+                imgui.ImVec2(x0, y0 + t0 * height),
+                imgui.ImVec2(x1, y0 + t1 * height),
+                _color_u32(*rgb),
+            )
+
+    def _draw_debug_colorbar_ticks(self, draw_list: object, mode: str, x0: float, y0: float, x1: float, y1: float, ui: ViewerUI) -> None:
+        for idx in range(_DEBUG_COLORBAR_TICKS):
+            t = 1.0 - idx / max(_DEBUG_COLORBAR_TICKS - 1, 1)
+            y = y0 + (1.0 - t) * (y1 - y0)
+            draw_list.add_line(imgui.ImVec2(x1 + 2.0, y), imgui.ImVec2(x1 + 8.0, y), _color_u32(0.85, 0.88, 0.92, 0.9), 1.0)
+            draw_list.add_text(imgui.ImVec2(x1 + 12.0, y - 6.0), _color_u32(0.85, 0.88, 0.92, 0.95), self._debug_colorbar_tick_label(mode, t, ui))
+
+    def _debug_colorbar_title(self, mode: str) -> str:
+        return "Processed Count" if mode == "processed_count" else "Grad Norm"
+
+    def _debug_colorbar_tick_label(self, mode: str, t: float, ui: ViewerUI) -> str:
+        if mode == "processed_count":
+            max_splat_steps = int(ui._values.get("max_splat_steps", 32768))
+            value = _processed_count_tick_value(t, max_splat_steps)
+            return f"{int(round(value)):,}"
+        threshold = float(ui._values.get("debug_grad_norm_threshold", _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT))
+        return f"{_grad_norm_tick_value(t, threshold):.1e}"
 
     def _draw_main_menu_bar(self) -> float:
         if not imgui.begin_main_menu_bar():
@@ -952,6 +1076,7 @@ def build_ui(renderer) -> ViewerUI:
     values["debug_ellipse"] = bool(renderer.debug_show_ellipses)
     values["debug_processed_count"] = bool(renderer.debug_show_processed_count)
     values["debug_grad_norm"] = bool(renderer.debug_show_grad_norm)
+    values["debug_grad_norm_threshold"] = float(getattr(renderer, "debug_grad_norm_threshold", _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT))
     values["colmap_root_path"] = ""
     values["colmap_database_path"] = ""
     values["colmap_images_root"] = ""
