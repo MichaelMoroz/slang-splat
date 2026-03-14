@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import slangpy as spy
 
-from ..common import SHADER_ROOT, thread_count_2d
+from ..common import SHADER_ROOT, debug_region, thread_count_2d
 
 
 class SeparableGaussianBlur:
@@ -21,7 +21,8 @@ class SeparableGaussianBlur:
     }
 
     def _dispatch(self, kernel: str, encoder: spy.CommandEncoder, channel_count: int, vars: dict[str, object]) -> None:
-        self._kernels[kernel].dispatch(thread_count=thread_count_2d(self.width, self.height, channel_count), vars=vars, command_encoder=encoder)
+        with debug_region(encoder, f"Blur::{kernel}", 80 + len(kernel)):
+            self._kernels[kernel].dispatch(thread_count=thread_count_2d(self.width, self.height, channel_count), vars=vars, command_encoder=encoder)
 
     def __init__(self, device: spy.Device, width: int, height: int) -> None:
         self.device, self.width, self.height = device, int(width), int(height)

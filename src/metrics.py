@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import slangpy as spy
 
-from .common import SHADER_ROOT, buffer_to_numpy, thread_count_1d, thread_count_2d
+from .common import SHADER_ROOT, buffer_to_numpy, debug_region, thread_count_1d, thread_count_2d
 
 
 _METRICS_SHADER = Path(SHADER_ROOT / "utility" / "metrics" / "metrics.slang")
@@ -93,24 +93,27 @@ class Metrics:
         self._histogram_buffer = self._create_uint_buffer(self._histogram_capacity)
 
     def _clear_uint_buffer(self, encoder: spy.CommandEncoder, buffer: spy.Buffer, count: int) -> None:
-        self._k_clear_uint.dispatch(thread_count=thread_count_1d(count), vars={"g_ClearUIntBuffer": buffer, "g_ClearCount": int(count)}, command_encoder=encoder)
+        with debug_region(encoder, "Metrics Clear UInt", 90):
+            self._k_clear_uint.dispatch(thread_count=thread_count_1d(count), vars={"g_ClearUIntBuffer": buffer, "g_ClearCount": int(count)}, command_encoder=encoder)
 
     def _clear_float_buffer(self, encoder: spy.CommandEncoder, buffer: spy.Buffer, count: int) -> None:
-        self._k_clear_float.dispatch(thread_count=thread_count_1d(count), vars={"g_ClearFloatBuffer": buffer, "g_ClearCount": int(count)}, command_encoder=encoder)
+        with debug_region(encoder, "Metrics Clear Float", 91):
+            self._k_clear_float.dispatch(thread_count=thread_count_1d(count), vars={"g_ClearFloatBuffer": buffer, "g_ClearCount": int(count)}, command_encoder=encoder)
 
     def _dispatch_histogram(self, encoder: spy.CommandEncoder, kernel: spy.ComputeKernel, splat_params: spy.Buffer, splat_count: int, bin_count: int, min_log10: float, inv_bin_size: float) -> None:
-        kernel.dispatch(
-            thread_count=thread_count_1d(splat_count),
-            vars={
-                "g_SplatParams": splat_params,
-                "g_SplatCount": int(splat_count),
-                "g_BinCount": int(bin_count),
-                "g_Log10Min": float(min_log10),
-                "g_Log10InvBinSize": float(inv_bin_size),
-                "g_Histogram": self._histogram_buffer,
-            },
-            command_encoder=encoder,
-        )
+        with debug_region(encoder, "Metrics Histogram", 92):
+            kernel.dispatch(
+                thread_count=thread_count_1d(splat_count),
+                vars={
+                    "g_SplatParams": splat_params,
+                    "g_SplatCount": int(splat_count),
+                    "g_BinCount": int(bin_count),
+                    "g_Log10Min": float(min_log10),
+                    "g_Log10InvBinSize": float(inv_bin_size),
+                    "g_Histogram": self._histogram_buffer,
+                },
+                command_encoder=encoder,
+            )
 
     def _read_histogram(self, bin_count: int, min_log10: float, max_log10: float) -> Log10Histogram:
         counts = buffer_to_numpy(self._histogram_buffer, np.uint32)[:bin_count].astype(np.int64, copy=True)
@@ -138,18 +141,19 @@ class Metrics:
 
     def dispatch_image_mse(self, encoder: spy.CommandEncoder, rendered: spy.Texture, target: spy.Texture, width: int, height: int) -> None:
         self._clear_float_buffer(encoder, self._image_metric_buffer, self._METRIC_BUFFER_FLOATS)
-        self._k_image_mse.dispatch(
-            thread_count=thread_count_2d(width, height),
-            vars={
-                "g_Width": int(width),
-                "g_Height": int(height),
-                "g_InvPixelCount": 1.0 / float(max(int(width) * int(height), 1)),
-                "g_Rendered": rendered,
-                "g_Target": target,
-                "g_ImageMetricBuffer": self._image_metric_buffer,
-            },
-            command_encoder=encoder,
-        )
+        with debug_region(encoder, "Metrics Image MSE", 93):
+            self._k_image_mse.dispatch(
+                thread_count=thread_count_2d(width, height),
+                vars={
+                    "g_Width": int(width),
+                    "g_Height": int(height),
+                    "g_InvPixelCount": 1.0 / float(max(int(width) * int(height), 1)),
+                    "g_Rendered": rendered,
+                    "g_Target": target,
+                    "g_ImageMetricBuffer": self._image_metric_buffer,
+                },
+                command_encoder=encoder,
+            )
 
     def read_image_mse(self) -> float:
         values = buffer_to_numpy(self._image_metric_buffer, np.float32)

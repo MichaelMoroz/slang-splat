@@ -6,7 +6,7 @@ from typing import Any
 import numpy as np
 import slangpy as spy
 
-from ..common import SHADER_ROOT, thread_count_1d
+from ..common import SHADER_ROOT, debug_region, thread_count_1d
 from ..renderer import GaussianRenderer
 
 
@@ -129,16 +129,17 @@ class GaussianOptimizer:
         training_hparams: Any,
         scale_reg_reference: float,
     ) -> None:
-        self._kernels["accumulate_regularizers"].dispatch(
-            thread_count=self._threads(splat_count),
-            vars={
-                "g_LossBuffer": loss_buffer,
-                "g_ParamGrads": work_buffers["param_grads"],
-                "g_SplatParamsRW": scene_buffers["splat_params"],
-                **self._vars(splat_count, training_hparams, scale_reg_reference),
-            },
-            command_encoder=encoder,
-        )
+        with debug_region(encoder, "Gaussian Regularizers", 70):
+            self._kernels["accumulate_regularizers"].dispatch(
+                thread_count=self._threads(splat_count),
+                vars={
+                    "g_LossBuffer": loss_buffer,
+                    "g_ParamGrads": work_buffers["param_grads"],
+                    "g_SplatParamsRW": scene_buffers["splat_params"],
+                    **self._vars(splat_count, training_hparams, scale_reg_reference),
+                },
+                command_encoder=encoder,
+            )
 
     @property
     def param_settings(self) -> spy.Buffer:
@@ -158,12 +159,13 @@ class GaussianOptimizer:
         training_hparams: Any,
         scale_reg_reference: float,
     ) -> None:
-        self._kernels["project_params"].dispatch(
-            thread_count=self._threads(splat_count),
-            vars={
-                "g_ParamGrads": work_buffers["param_grads"],
-                "g_SplatParamsRW": scene_buffers["splat_params"],
-                **self._vars(splat_count, training_hparams, scale_reg_reference),
-            },
-            command_encoder=encoder,
-        )
+        with debug_region(encoder, "Gaussian Param Projection", 71):
+            self._kernels["project_params"].dispatch(
+                thread_count=self._threads(splat_count),
+                vars={
+                    "g_ParamGrads": work_buffers["param_grads"],
+                    "g_SplatParamsRW": scene_buffers["splat_params"],
+                    **self._vars(splat_count, training_hparams, scale_reg_reference),
+                },
+                command_encoder=encoder,
+            )

@@ -7,7 +7,7 @@ import numpy as np
 from PIL import Image
 import slangpy as spy
 
-from ..common import SHADER_ROOT, buffer_to_numpy, clamp_index, thread_count_2d
+from ..common import SHADER_ROOT, buffer_to_numpy, clamp_index, debug_region, thread_count_2d
 from ..metrics import Metrics, psnr_from_mse
 from ..renderer import Camera, GaussianRenderer
 from ..scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
@@ -183,7 +183,8 @@ class GaussianTrainer:
         )
 
     def _dispatch(self, kernel: str, encoder: spy.CommandEncoder, thread_count: spy.uint3, vars: dict[str, object]) -> None:
-        self._kernels[kernel].dispatch(thread_count=thread_count, vars=vars, command_encoder=encoder)
+        with debug_region(encoder, f"Trainer::{kernel}", 40 + len(kernel)):
+            self._kernels[kernel].dispatch(thread_count=thread_count, vars=vars, command_encoder=encoder)
 
     def _dispatch_raster_forward_backward(self, encoder: spy.CommandEncoder, frame_camera: Camera, background: np.ndarray) -> None:
         self.renderer.clear_raster_grads_current_scene(encoder)
@@ -463,43 +464,46 @@ class GaussianTrainer:
         )
 
     def _dispatch_training_forward(self, encoder: spy.CommandEncoder, frame_camera: Camera, background: np.ndarray, target_texture: spy.Texture) -> None:
-        self.renderer.rasterize_current_scene(encoder, frame_camera, background)
-        self._dispatch_loss_forward(encoder, target_texture)
+        with debug_region(encoder, "Trainer Forward", 50):
+            self.renderer.rasterize_current_scene(encoder, frame_camera, background)
+            self._dispatch_loss_forward(encoder, target_texture)
 
     def _dispatch_training_backward(self, encoder: spy.CommandEncoder, frame_camera: Camera, background: np.ndarray, target_texture: spy.Texture) -> None:
-        self._dispatch_loss_backward(encoder, target_texture)
-        self._dispatch_raster_forward_backward(encoder, frame_camera, background)
+        with debug_region(encoder, "Trainer Backward", 51):
+            self._dispatch_loss_backward(encoder, target_texture)
+            self._dispatch_raster_forward_backward(encoder, frame_camera, background)
 
     def _dispatch_optimizer_step(self, encoder: spy.CommandEncoder) -> None:
-        self.optimizer.dispatch_regularizers(
-            encoder,
-            scene_buffers=self.renderer.scene_buffers,
-            work_buffers=self.renderer.work_buffers,
-            loss_buffer=self._buffers["loss"],
-            splat_count=self._scene_count,
-            training_hparams=self.training,
-            scale_reg_reference=self._scale_reg_reference,
-        )
-        self.adam_optimizer.dispatch_step(
-            encoder,
-            params_buffer=self.renderer.scene_buffers["splat_params"],
-            grads_buffer=self.renderer.work_buffers["param_grads"],
-            element_count=self._scene_count,
-            packed_param_count=self._scene_count * self.renderer.TRAINABLE_PARAM_COUNT,
-            param_group_size=self._scene_count,
-            param_settings=self.optimizer.param_settings,
-            param_settings_count=self.optimizer.param_settings_count,
-            step_index=self.state.step + 1,
-            debug_element_grad_norm_buffer=self.renderer.work_buffers["debug_grad_norm"] if self.compute_debug_grad_norm else None,
-        )
-        self.optimizer.dispatch_projection(
-            encoder,
-            scene_buffers=self.renderer.scene_buffers,
-            work_buffers=self.renderer.work_buffers,
-            splat_count=self._scene_count,
-            training_hparams=self.training,
-            scale_reg_reference=self._scale_reg_reference,
-        )
+        with debug_region(encoder, "Trainer Optimizer", 52):
+            self.optimizer.dispatch_regularizers(
+                encoder,
+                scene_buffers=self.renderer.scene_buffers,
+                work_buffers=self.renderer.work_buffers,
+                loss_buffer=self._buffers["loss"],
+                splat_count=self._scene_count,
+                training_hparams=self.training,
+                scale_reg_reference=self._scale_reg_reference,
+            )
+            self.adam_optimizer.dispatch_step(
+                encoder,
+                params_buffer=self.renderer.scene_buffers["splat_params"],
+                grads_buffer=self.renderer.work_buffers["param_grads"],
+                element_count=self._scene_count,
+                packed_param_count=self._scene_count * self.renderer.TRAINABLE_PARAM_COUNT,
+                param_group_size=self._scene_count,
+                param_settings=self.optimizer.param_settings,
+                param_settings_count=self.optimizer.param_settings_count,
+                step_index=self.state.step + 1,
+                debug_element_grad_norm_buffer=self.renderer.work_buffers["debug_grad_norm"] if self.compute_debug_grad_norm else None,
+            )
+            self.optimizer.dispatch_projection(
+                encoder,
+                scene_buffers=self.renderer.scene_buffers,
+                work_buffers=self.renderer.work_buffers,
+                splat_count=self._scene_count,
+                training_hparams=self.training,
+                scale_reg_reference=self._scale_reg_reference,
+            )
 
     def initialize_scene_from_pointcloud(self, splat_count: int, init_hparams: GaussianInitHyperParams, seed: int) -> None:
         if self._init_point_positions_cpu is None or self._init_point_colors_cpu is None or self._init_point_count <= 0:

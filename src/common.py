@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -61,6 +62,20 @@ def debug_color(index: int, weight: float = 0.05) -> spy.float3:
     )
 
 
+@contextmanager
+def debug_region(target: object, label: str, color_index: int):
+    push = getattr(target, "push_debug_group", None)
+    pop = getattr(target, "pop_debug_group", None)
+    active = callable(push) and callable(pop)
+    if active:
+        push(str(label), debug_color(int(color_index)))
+    try:
+        yield target
+    finally:
+        if active:
+            pop()
+
+
 def as_float3(value: object) -> spy.float3:
     xyz = np.asarray(value, dtype=np.float32).reshape(3)
     return spy.float3(float(xyz[0]), float(xyz[1]), float(xyz[2]))
@@ -71,9 +86,12 @@ def normalize3(value: object, eps: float = VEC_EPS) -> spy.float3:
     return smath.normalize(vec) if float(smath.length(vec)) > float(eps) else spy.float3(0.0, 0.0, 0.0)
 
 
-def create_default_device(device_type: spy.DeviceType = spy.DeviceType.vulkan, enable_debug_layers: bool = False) -> spy.Device:
+def create_default_device(device_type: spy.DeviceType = spy.DeviceType.vulkan, enable_debug_layers: bool = True) -> spy.Device:
     return spy.create_device(
         device_type,
         include_paths=(SHADER_ROOT, SHADER_ROOT / "renderer", SHADER_ROOT / "utility"),
-        enable_debug_layers=enable_debug_layers,
+        enable_debug_layers=bool(enable_debug_layers),
+        enable_print=True,
+        enable_hot_reload=True,
+        enable_compilation_reports=True,
     )

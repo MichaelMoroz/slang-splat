@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 import slangpy as spy
 
-from ..common import SHADER_ROOT, thread_count_1d
+from ..common import SHADER_ROOT, debug_region, thread_count_1d
 
 
 @dataclass(slots=True)
@@ -113,14 +113,17 @@ class AdamOptimizer:
             **self._buffer_shader_vars(),
             **self._optimizer_vars(element_count, count, param_group_size, param_settings_count, step_index),
         }
-        self._kernels["clip_grads"].dispatch(thread_count=self._clip_threads(element_count), vars=vars, command_encoder=encoder)
+        with debug_region(encoder, "Adam Clip Grads", 60):
+            self._kernels["clip_grads"].dispatch(thread_count=self._clip_threads(element_count), vars=vars, command_encoder=encoder)
         if debug_element_grad_norm_buffer is not None:
-            self._kernels["compute_grad_norms"].dispatch(
-                thread_count=self._grad_norm_threads(element_count),
-                vars={**vars, "g_OptimizerElementGradNorms": debug_element_grad_norm_buffer},
-                command_encoder=encoder,
-            )
-        self._kernels["adam_step"].dispatch(thread_count=self._param_threads(count), vars=vars, command_encoder=encoder)
+            with debug_region(encoder, "Adam Compute Grad Norms", 61):
+                self._kernels["compute_grad_norms"].dispatch(
+                    thread_count=self._grad_norm_threads(element_count),
+                    vars={**vars, "g_OptimizerElementGradNorms": debug_element_grad_norm_buffer},
+                    command_encoder=encoder,
+                )
+        with debug_region(encoder, "Adam Step", 62):
+            self._kernels["adam_step"].dispatch(thread_count=self._param_threads(count), vars=vars, command_encoder=encoder)
 
     @property
     def buffers(self) -> dict[str, spy.Buffer]:

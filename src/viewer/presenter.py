@@ -6,7 +6,7 @@ import time
 import numpy as np
 import slangpy as spy
 
-from ..common import clamp_index, require_not_none
+from ..common import clamp_index, debug_region, require_not_none
 from . import session
 
 _DEBUG_HUGE_VALUE = 1e8
@@ -113,36 +113,38 @@ def _training_downscale_text(viewer: object) -> str:
 
 def _dispatch_debug_abs_diff(viewer: object, encoder: spy.CommandEncoder, rendered_tex: spy.Texture, target_tex: spy.Texture, width: int, height: int) -> spy.Texture:
     output = _ensure_texture(viewer, "loss_debug_texture", width, height)
-    require_not_none(viewer.s.debug_abs_diff_kernel, "Debug abs-diff kernel is not initialized.").dispatch(
-        thread_count=spy.uint3(int(width), int(height), 1),
-        vars={
-            "g_DebugRendered": rendered_tex,
-            "g_DebugTarget": target_tex,
-            "g_DebugOutput": output,
-            "g_DebugWidth": int(width),
-            "g_DebugHeight": int(height),
-            "g_DebugDiffScale": _debug_abs_diff_scale(viewer),
-            "g_HugeValue": _DEBUG_HUGE_VALUE,
-        },
-        command_encoder=encoder,
-    )
+    with debug_region(encoder, "Viewer Debug Abs Diff", 150):
+        require_not_none(viewer.s.debug_abs_diff_kernel, "Debug abs-diff kernel is not initialized.").dispatch(
+            thread_count=spy.uint3(int(width), int(height), 1),
+            vars={
+                "g_DebugRendered": rendered_tex,
+                "g_DebugTarget": target_tex,
+                "g_DebugOutput": output,
+                "g_DebugWidth": int(width),
+                "g_DebugHeight": int(height),
+                "g_DebugDiffScale": _debug_abs_diff_scale(viewer),
+                "g_HugeValue": _DEBUG_HUGE_VALUE,
+            },
+            command_encoder=encoder,
+        )
     return output
 
 
 def _dispatch_debug_letterbox(viewer: object, encoder: spy.CommandEncoder, source_tex: spy.Texture, source_width: int, source_height: int, output_width: int, output_height: int) -> spy.Texture:
     output = _ensure_texture(viewer, "debug_present_texture", output_width, output_height)
-    require_not_none(viewer.s.debug_letterbox_kernel, "Debug letterbox kernel is not initialized.").dispatch(
-        thread_count=spy.uint3(int(output_width), int(output_height), 1),
-        vars={
-            "g_LetterboxSource": source_tex,
-            "g_LetterboxOutput": output,
-            "g_LetterboxSourceWidth": int(source_width),
-            "g_LetterboxSourceHeight": int(source_height),
-            "g_LetterboxOutputWidth": int(output_width),
-            "g_LetterboxOutputHeight": int(output_height),
-        },
-        command_encoder=encoder,
-    )
+    with debug_region(encoder, "Viewer Debug Letterbox", 151):
+        require_not_none(viewer.s.debug_letterbox_kernel, "Debug letterbox kernel is not initialized.").dispatch(
+            thread_count=spy.uint3(int(output_width), int(output_height), 1),
+            vars={
+                "g_LetterboxSource": source_tex,
+                "g_LetterboxOutput": output,
+                "g_LetterboxSourceWidth": int(source_width),
+                "g_LetterboxSourceHeight": int(source_height),
+                "g_LetterboxOutputWidth": int(output_width),
+                "g_LetterboxOutputHeight": int(output_height),
+            },
+            command_encoder=encoder,
+        )
     return output
 
 

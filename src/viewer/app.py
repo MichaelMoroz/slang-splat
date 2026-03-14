@@ -289,7 +289,7 @@ _VIEW_TITLE = "Slang Splat Viewer"
 
 def main() -> int:
     view_w, view_h = _compute_view_geometry()
-    device = create_default_device(enable_debug_layers=False)
+    device = create_default_device(enable_debug_layers=True)
     app = spy.App(device=device)
     viewer = SplatViewer(app, width=view_w, height=view_h, title=_VIEW_TITLE, max_prepass_memory_mb=4096)
     try:
