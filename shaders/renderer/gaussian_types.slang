@@ -12,6 +12,7 @@ static const uint RASTER_MICROTILE_PIXELS = RASTER_MICROTILE_DIM * RASTER_MICROT
 static const uint RASTER_GROUP_THREADS = RASTER_THREAD_TILE_DIM * RASTER_THREAD_TILE_DIM;
 static const uint RASTER_EFFECTIVE_TILE_SIZE = RASTER_THREAD_TILE_DIM * RASTER_MICROTILE_DIM;
 static const uint RASTER_BATCH = 64u;
+static const uint RASTER_GRAD_FIXED_FRAC_BITS = 16u;
 static const uint SPLAT_GRAD_STATE_RO_LOCAL_OPACITY_OFFSET = 0u;
 static const uint SPLAT_GRAD_STATE_INV_SCALE_OFFSET = 4u;
 static const uint SPLAT_GRAD_STATE_QUAT_OFFSET = 7u;
@@ -22,7 +23,7 @@ groupshared half3 gsInvScale[RASTER_BATCH];
 groupshared half4 gsQuat[RASTER_BATCH];
 groupshared half4 gsColorAlpha[RASTER_BATCH];
 groupshared uint gsBatchSplatId[RASTER_BATCH];
-groupshared float gsGradState[RASTER_BATCH * SPLAT_GRAD_STATE_STRIDE];
+groupshared int gsGradState[RASTER_BATCH * SPLAT_GRAD_STATE_STRIDE];
 groupshared uint gsStoppedMicrotiles;
 
 uniform StructuredBuffer<float> g_SplatParams;
@@ -51,6 +52,7 @@ uniform RWStructuredBuffer<float4> g_TrainingForwardState;
 uniform RWStructuredBuffer<uint> g_TrainingProcessedEnd;
 
 uniform RWStructuredBuffer<float> g_ParamGrads;
+uniform RWStructuredBuffer<int> g_ParamGradsFixed;
 
 uniform CameraParams g_Camera;
 uniform PrepassParams g_Prepass;

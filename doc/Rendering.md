@@ -69,16 +69,13 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - Ellipse mode reuses the same tiled forward replay and switches splat alpha evaluation from filled-gaussian coverage to a symmetric antialiased outline band derived from the projected conic's signed edge distance. `debugEllipseThicknessPx` is the full outline thickness in pixels, and the default is `2`, so the visible ring spans both sides of the projected ellipse boundary instead of being clipped to the interior.
 
 ## 7. Raster Backward
-- Shaders: `csClearRasterGrads`, `csRasterizeTrainingForward`, `csRasterizeBackward`.
-- `csClearRasterGrads` zeros per-splat gradient buffers for:
-  - `g_SplatPosLocal`
-  - `g_SplatInvScale`
-  - `g_SplatQuat`
-  - `g_ScreenColorAlpha`
+- Shaders: `csClearRasterGrads`, `csRasterizeTrainingForward`, `csRasterizeBackward`, `csDecodeRasterGradsFixed`.
+- `csClearRasterGrads` zeros both the float packed gradient buffer and the raster-backward fixed-point accumulation buffer.
 - `csRasterizeTrainingForward` runs the raster forward path for the fixed-count trainer, writes the rendered output, and caches one per-pixel forward state record plus `processedEnd` for backward replay.
 - `csRasterizeBackward` is a pure backward kernel: it loads the cached per-pixel forward state, derives `dLoss / dRasterState` from `g_OutputGrad`, and walks the staged splats in reverse without replaying forward internally.
-- The reverse pass reuses one staged gaussian per thread-group lane, accumulates the microtile's pixel contributions in registers, and immediately converts them into global parameter gradients.
-- Global and groupshared raster loads are implemented via custom derivative functions; backward accumulation uses wave-reduced direct global atomics into flattened per-splat `float4` gradient buffers (`index = splat_id * 4 + component`) without an intermediate groupshared gradient cache.
+- The reverse pass reuses one staged gaussian per thread-group lane, accumulates the microtile's pixel contributions in registers, and writes them into a fixed-point accumulation path.
+- Global and groupshared raster loads are implemented via custom derivative functions; backward accumulation uses wave-reduced signed Q16.16 int atomics into `groupshared int` state first, then into a packed global int buffer (`g_ParamGradsFixed`).
+- `csDecodeRasterGradsFixed` converts that packed int buffer back into the packed float gradient buffer (`g_ParamGrads`) exactly once before regularizers, clipping, ADAM, and Python readback.
 - Output gradients are supplied through `g_OutputGrad` (`StructuredBuffer<float4>`) using flat pixel indexing `y * width + x`, and chain-rule terms include gamma output mapping and alpha output (`1 - transmittance`).
 
 ## 8. Training Stage

@@ -26,13 +26,69 @@ struct RasterState : IDifferentiable
     }
 };
 
+static const float RASTER_GRAD_FIXED_SCALE = float(1u << RASTER_GRAD_FIXED_FRAC_BITS);
+static const float RASTER_GRAD_FIXED_INV_SCALE = 1.0 / RASTER_GRAD_FIXED_SCALE;
+static const float RASTER_GRAD_FIXED_INT_MIN_F = -2147483648.0;
+static const float RASTER_GRAD_FIXED_INT_MAX_F = 2147483647.0;
+
+int raster_grad_fixed_encode(float value)
+{
+    float scaled = round(value * RASTER_GRAD_FIXED_SCALE);
+    if (scaled <= RASTER_GRAD_FIXED_INT_MIN_F) return -2147483648;
+    if (scaled >= RASTER_GRAD_FIXED_INT_MAX_F) return 2147483647;
+    return int(scaled);
+}
+
+float raster_grad_fixed_decode(int value)
+{
+    return float(value) * RASTER_GRAD_FIXED_INV_SCALE;
+}
+
+int3 raster_grad_fixed_encode3(float3 value)
+{
+    return int3(
+        raster_grad_fixed_encode(value.x),
+        raster_grad_fixed_encode(value.y),
+        raster_grad_fixed_encode(value.z)
+    );
+}
+
+int4 raster_grad_fixed_encode4(float4 value)
+{
+    return int4(
+        raster_grad_fixed_encode(value.x),
+        raster_grad_fixed_encode(value.y),
+        raster_grad_fixed_encode(value.z),
+        raster_grad_fixed_encode(value.w)
+    );
+}
+
+float3 raster_grad_fixed_decode3(int3 value)
+{
+    return float3(
+        raster_grad_fixed_decode(value.x),
+        raster_grad_fixed_decode(value.y),
+        raster_grad_fixed_decode(value.z)
+    );
+}
+
+float4 raster_grad_fixed_decode4(int4 value)
+{
+    return float4(
+        raster_grad_fixed_decode(value.x),
+        raster_grad_fixed_decode(value.y),
+        raster_grad_fixed_decode(value.z),
+        raster_grad_fixed_decode(value.w)
+    );
+}
+
 void atomic_add_param_grad<let N : int>(uint splatCount, uint firstParamId, uint splatId, vector<float, N> grad)
 {
     [unroll] for (int i = 0; i < N; i++)
     {
-        float value = grad[i];
-        if (value == 0.0) continue;
-        InterlockedAdd(g_ParamGrads[splat_param_index(splatCount, firstParamId + uint(i), splatId)], value);
+        int value = raster_grad_fixed_encode(grad[i]);
+        if (value == 0) continue;
+        InterlockedAdd(g_ParamGradsFixed[splat_param_index(splatCount, firstParamId + uint(i), splatId)], value);
     }
 }
 
@@ -41,21 +97,33 @@ uint grad_state_base(uint localIdx, uint fieldOffset)
     return localIdx * SPLAT_GRAD_STATE_STRIDE + fieldOffset;
 }
 
-void atomic_add_grad_shared<let N : int>(uint base, vector<float, N> grad)
+void atomic_add_grad_shared(uint base, float3 grad)
 {
-    [unroll] for (int i = 0; i < N; i++)
-    {
-        float waveSum = WaveActiveSum(grad[i]);
-        if (!WaveIsFirstLane() || waveSum == 0.0) continue;
-        InterlockedAdd(gsGradState[base + uint(i)], waveSum);
-    }
+    int3 fixedWaveSum = raster_grad_fixed_encode3(float3(WaveActiveSum(grad.x), WaveActiveSum(grad.y), WaveActiveSum(grad.z)));
+    if (!WaveIsFirstLane()) return;
+    if (fixedWaveSum.x != 0) InterlockedAdd(gsGradState[base + 0u], fixedWaveSum.x);
+    if (fixedWaveSum.y != 0) InterlockedAdd(gsGradState[base + 1u], fixedWaveSum.y);
+    if (fixedWaveSum.z != 0) InterlockedAdd(gsGradState[base + 2u], fixedWaveSum.z);
 }
 
-vector<float, N> load_grad_shared<let N : int>(uint base)
+void atomic_add_grad_shared(uint base, float4 grad)
 {
-    vector<float, N> grad = 0.0;
-    [unroll] for (int i = 0; i < N; i++) grad[i] = gsGradState[base + uint(i)];
-    return grad;
+    int4 fixedWaveSum = raster_grad_fixed_encode4(float4(WaveActiveSum(grad.x), WaveActiveSum(grad.y), WaveActiveSum(grad.z), WaveActiveSum(grad.w)));
+    if (!WaveIsFirstLane()) return;
+    if (fixedWaveSum.x != 0) InterlockedAdd(gsGradState[base + 0u], fixedWaveSum.x);
+    if (fixedWaveSum.y != 0) InterlockedAdd(gsGradState[base + 1u], fixedWaveSum.y);
+    if (fixedWaveSum.z != 0) InterlockedAdd(gsGradState[base + 2u], fixedWaveSum.z);
+    if (fixedWaveSum.w != 0) InterlockedAdd(gsGradState[base + 3u], fixedWaveSum.w);
+}
+
+float3 load_grad_shared3(uint base)
+{
+    return raster_grad_fixed_decode3(int3(gsGradState[base + 0u], gsGradState[base + 1u], gsGradState[base + 2u]));
+}
+
+float4 load_grad_shared4(uint base)
+{
+    return raster_grad_fixed_decode4(int4(gsGradState[base + 0u], gsGradState[base + 1u], gsGradState[base + 2u], gsGradState[base + 3u]));
 }
 
 void clear_batch_gradient_cache(uint batchCount, uint lane)
@@ -63,7 +131,7 @@ void clear_batch_gradient_cache(uint batchCount, uint lane)
     for (uint localIdx = lane; localIdx < batchCount; localIdx += RASTER_GROUP_THREADS)
     {
         uint base = grad_state_base(localIdx, 0u);
-        [unroll] for (uint i = 0u; i < SPLAT_GRAD_STATE_STRIDE; i++) gsGradState[base + i] = 0.0;
+        [unroll] for (uint i = 0u; i < SPLAT_GRAD_STATE_STRIDE; i++) gsGradState[base + i] = 0;
     }
 }
 
@@ -105,10 +173,10 @@ struct RasterGaussian : IDifferentiable
 
     static void accumulate_gradients_shared(uint localIdx, Differential dOut)
     {
-        atomic_add_grad_shared<4>(grad_state_base(localIdx, SPLAT_GRAD_STATE_RO_LOCAL_OPACITY_OFFSET), float4(dOut.roLocal, dOut.opacityScale));
-        atomic_add_grad_shared<3>(grad_state_base(localIdx, SPLAT_GRAD_STATE_INV_SCALE_OFFSET), dOut.invScale);
-        atomic_add_grad_shared<4>(grad_state_base(localIdx, SPLAT_GRAD_STATE_QUAT_OFFSET), dOut.quat);
-        atomic_add_grad_shared<4>(grad_state_base(localIdx, SPLAT_GRAD_STATE_COLOR_ALPHA_OFFSET), dOut.colorAlpha);
+        atomic_add_grad_shared(grad_state_base(localIdx, SPLAT_GRAD_STATE_RO_LOCAL_OPACITY_OFFSET), float4(dOut.roLocal, dOut.opacityScale));
+        atomic_add_grad_shared(grad_state_base(localIdx, SPLAT_GRAD_STATE_INV_SCALE_OFFSET), dOut.invScale);
+        atomic_add_grad_shared(grad_state_base(localIdx, SPLAT_GRAD_STATE_QUAT_OFFSET), dOut.quat);
+        atomic_add_grad_shared(grad_state_base(localIdx, SPLAT_GRAD_STATE_COLOR_ALPHA_OFFSET), dOut.colorAlpha);
     }
 
     static void raster_gaussian_load_shared_bwd(uint localIdx, Differential dOut)
@@ -125,12 +193,12 @@ void flush_batch_gradient_cache(uint batchCount, uint lane)
         uint splatCount = g_Prepass.splatCount;
 
         CachedEllipsoid.Differential dCached;
-        float4 dRoLocalOpacity = load_grad_shared<4>(grad_state_base(localIdx, SPLAT_GRAD_STATE_RO_LOCAL_OPACITY_OFFSET));
+        float4 dRoLocalOpacity = load_grad_shared4(grad_state_base(localIdx, SPLAT_GRAD_STATE_RO_LOCAL_OPACITY_OFFSET));
         dCached.roLocal = dRoLocalOpacity.xyz;
         dCached.opacityScale = dRoLocalOpacity.w;
-        dCached.invScale = load_grad_shared<3>(grad_state_base(localIdx, SPLAT_GRAD_STATE_INV_SCALE_OFFSET));
-        dCached.quat = load_grad_shared<4>(grad_state_base(localIdx, SPLAT_GRAD_STATE_QUAT_OFFSET));
-        float4 dColorAlpha = load_grad_shared<4>(grad_state_base(localIdx, SPLAT_GRAD_STATE_COLOR_ALPHA_OFFSET));
+        dCached.invScale = load_grad_shared3(grad_state_base(localIdx, SPLAT_GRAD_STATE_INV_SCALE_OFFSET));
+        dCached.quat = load_grad_shared4(grad_state_base(localIdx, SPLAT_GRAD_STATE_QUAT_OFFSET));
+        float4 dColorAlpha = load_grad_shared4(grad_state_base(localIdx, SPLAT_GRAD_STATE_COLOR_ALPHA_OFFSET));
 
         Gaussian3D gaussian = load_gaussian3d(splatId);
         var dpPosition = diffPair(gaussian.position);
@@ -516,6 +584,18 @@ void csClearRasterGrads(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (idx >= gradCount) return;
 
     g_ParamGrads[idx] = 0.0;
+    g_ParamGradsFixed[idx] = 0;
+}
+
+[shader("compute")]
+[numthreads(TILE_GROUP_SIZE, 1, 1)]
+void csDecodeRasterGradsFixed(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint gradCount = g_Prepass.splatCount * TRAINABLE_PARAM_COUNT;
+    uint idx = dispatchThreadID.x;
+    if (idx >= gradCount) return;
+
+    g_ParamGrads[idx] = raster_grad_fixed_decode(g_ParamGradsFixed[idx]);
 }
 
 [shader("compute")]

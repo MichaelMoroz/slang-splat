@@ -16,6 +16,8 @@ from src.common import SHADER_ROOT
 from src.renderer import Camera, GaussianRenderer
 from src.scene import GaussianScene
 
+_RASTER_GRAD_FIXED_SCALE = 65536.0
+
 
 def make_scene(count: int, seed: int = 0) -> GaussianScene:
     rng = np.random.default_rng(seed)
@@ -362,6 +364,21 @@ def test_raster_backward_smoke_and_determinism(device):
         assert grads0[name].shape == (scene.count, 4)
         assert np.all(np.isfinite(grads0[name]))
         np.testing.assert_allclose(grads0[name], grads1[name], rtol=2e-5, atol=3e-5)
+
+
+def test_raster_backward_decodes_q16_16_grad_grid(device):
+    scene = make_scene(20, seed=79)
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, list_capacity_multiplier=32)
+    grads = renderer.debug_raster_backward_grads(scene, camera, background=np.array([0.05, 0.1, 0.15], dtype=np.float32))
+
+    for name in ("grad_positions", "grad_scales", "grad_rotations", "grad_color_alpha"):
+        values = np.asarray(grads[name], dtype=np.float32)
+        assert np.all(np.isfinite(values))
+        nonzero = values[np.abs(values) > 0.0]
+        if nonzero.size == 0:
+            continue
+        np.testing.assert_allclose(nonzero * _RASTER_GRAD_FIXED_SCALE, np.rint(nonzero * _RASTER_GRAD_FIXED_SCALE), rtol=0.0, atol=1e-4)
 
 
 def test_clamped_subpixel_raster_backward_has_scale_gradient(device):

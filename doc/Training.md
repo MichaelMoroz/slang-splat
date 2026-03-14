@@ -52,7 +52,8 @@ Each trainer `step()` performs:
    - `csComputeL1LossForward` computes direct RGB L1 reconstruction loss and RGB MSE and reduces those metrics into the loss buffer.
 6. Run the fixed-count backward stage:
    - `csComputeL1LossBackward` writes `dLoss / dRendered` into flat `RWStructuredBuffer<float4>` `g_OutputGrad`, indexed as `pixel = y * width + x`,
-   - `csRasterizeBackward` consumes the cached raster forward state and uses that image-space gradient to fill packed per-splat gradients.
+   - `csRasterizeBackward` consumes the cached raster forward state and accumulates packed per-splat gradients into a separate Q16.16 int buffer with int atomics,
+   - `csDecodeRasterGradsFixed` decodes that packed int buffer into the float packed gradient buffer used by the rest of training.
 7. Run the optimizer pipeline:
    - `csAccumulateRegularizationGrads` adds scale and opacity regularizers on the packed param-major state.
    - `csClipPackedParamGrads` clips gradients from a structured per-parameter settings buffer owned by the optimizer module.
@@ -69,6 +70,7 @@ There is no densification, pruning, opacity reset schedule, MCMC exploration ter
 - `csComputeL1LossForward`: computes direct RGB L1 loss and RGB MSE only.
 - `csComputeL1LossBackward`: computes only the image-space L1 gradient into `g_OutputGrad`.
 - Packed trainable storage remains param-major scalar packing: `param_id * splat_count + splat_id`.
+- Raster backward uses a separate param-major Q16.16 int accumulation buffer and a decode pass boundary before optimizer consumption.
 - The stored opacity parameter is the raw sigmoid logit, not direct alpha.
 - `optimizer.slang` owns generic optimizer kernels and tables:
   - packed ADAM,
