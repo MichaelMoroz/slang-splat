@@ -11,17 +11,11 @@ static const uint RASTER_GROUP_THREADS = RASTER_THREAD_TILE_DIM * RASTER_THREAD_
 static const uint RASTER_TILE_SIZE = RASTER_THREAD_TILE_DIM;
 static const uint RASTER_BATCH = 256u;
 static const uint RASTER_GRAD_FIXED_FRAC_BITS = 16u;
-static const uint SPLAT_GRAD_STATE_RO_LOCAL_OPACITY_OFFSET = 0u;
-static const uint SPLAT_GRAD_STATE_INV_SCALE_OFFSET = 4u;
-static const uint SPLAT_GRAD_STATE_QUAT_OFFSET = 7u;
-static const uint SPLAT_GRAD_STATE_COLOR_ALPHA_OFFSET = 11u;
-static const uint SPLAT_GRAD_STATE_STRIDE = 15u;
 groupshared float4 gsRoLocal[RASTER_BATCH];
 groupshared half3 gsInvScale[RASTER_BATCH];
 groupshared half4 gsQuat[RASTER_BATCH];
 groupshared half4 gsColorAlpha[RASTER_BATCH];
 groupshared uint gsBatchSplatId[RASTER_BATCH];
-groupshared int gsGradState[RASTER_BATCH * SPLAT_GRAD_STATE_STRIDE];
 
 uniform StructuredBuffer<float> g_SplatParams;
 
