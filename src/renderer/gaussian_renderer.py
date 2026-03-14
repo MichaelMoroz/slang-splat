@@ -78,9 +78,11 @@ class GaussianRenderer:
     _COUNTER_READBACK_RING_SIZE = 2
     _SCANLINE_WORK_ITEM_UINTS = 8
     _U32_BYTES = 4
+    _F32X4_BYTES = 16
     _OPACITY_EPS = 1e-6
     _MEBIBYTE_BYTES = 1024 * 1024
     _PREPASS_ENTRY_BYTES = (_SCANLINE_WORK_ITEM_UINTS + 2) * _U32_BYTES
+    _RASTER_CACHE_PARAM_COUNT = 15
     _RW_BUFFER_USAGE = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
     PARAM_POSITION_IDS = (0, 1, 2)
     PARAM_SCALE_IDS = (3, 4, 5)
@@ -91,7 +93,8 @@ class GaussianRenderer:
     _SCENE_SHADER_VARS = {"splat_params": "g_SplatParams"}
     _SCREEN_SHADER_VARS = {"screen_center_radius_depth": "g_ScreenCenterRadiusDepth", "screen_color_alpha": "g_ScreenColorAlpha", "screen_ellipse_conic": "g_ScreenEllipseConic", "splat_visible": "g_SplatVisible"}
     _GRAD_SHADER_VARS = {"param_grads": "g_ParamGrads"}
-    _RASTER_GRAD_SHADER_VARS = {"param_grads": "g_ParamGrads", "param_grads_fixed": "g_ParamGradsFixed"}
+    _RASTER_CACHE_SHADER_VARS = {"raster_cache": "g_RasterCache"}
+    _RASTER_GRAD_SHADER_VARS = {"param_grads": "g_ParamGrads", "cached_raster_grads_fixed": "g_CachedRasterGradsFixed"}
     _PREPASS_CURSOR_FIELDS = ("splatCount", "tileSize", "tileWidth", "tileHeight", "tileCount", "depthBits", "sortedCountOffset", "maxListEntries", "maxScanlineEntries", "radiusScale", "sampled5MVEEIters", "sampled5SafetyScale", "sampled5RadiusPadPx", "sampled5Eps")
     _SHADERS = (
         ("_k_project", "kernel", "gaussian_project_stage.slang", "csProjectAndBin"),
@@ -102,7 +105,7 @@ class GaussianRenderer:
         ("_k_raster_training_forward", "kernel", "gaussian_raster_stage.slang", "csRasterizeTrainingForward"),
         ("_k_clear_raster_grads", "kernel", "gaussian_raster_stage.slang", "csClearRasterGrads"),
         ("_k_raster_backward", "kernel", "gaussian_raster_stage.slang", "csRasterizeBackward"),
-        ("_k_decode_raster_grads_fixed", "kernel", "gaussian_raster_stage.slang", "csDecodeRasterGradsFixed"),
+        ("_k_backprop_cached_raster_grads", "kernel", "gaussian_raster_stage.slang", "csBackpropCachedRasterGrads"),
     )
     _buffer_vars = staticmethod(remap_named_buffers)
 
@@ -175,6 +178,9 @@ class GaussianRenderer:
 
     def _grad_vars(self) -> dict[str, object]:
         return self._buffer_vars(self._GRAD_SHADER_VARS, self._work_buffers)
+
+    def _raster_cache_vars(self) -> dict[str, object]:
+        return self._buffer_vars(self._RASTER_CACHE_SHADER_VARS, self._work_buffers)
 
     def _raster_grad_vars(self) -> dict[str, object]:
         return self._buffer_vars(self._RASTER_GRAD_SHADER_VARS, self._work_buffers)
@@ -326,9 +332,9 @@ class GaussianRenderer:
         self._max_list_entries = min(self._grow(required_entries, self._max_list_entries), max_entries)
         self._max_scanline_entries = min(self._grow(required_entries, self._max_scanline_entries), max_entries)
         sized = {
-            "screen_center_radius_depth": max(self._work_splat_capacity, 1) * 16,
-            "screen_color_alpha": max(self._work_splat_capacity, 1) * 16,
-            "screen_ellipse_conic": max(self._work_splat_capacity, 1) * 16,
+            "screen_center_radius_depth": max(self._work_splat_capacity, 1) * self._F32X4_BYTES,
+            "screen_color_alpha": max(self._work_splat_capacity, 1) * self._F32X4_BYTES,
+            "screen_ellipse_conic": max(self._work_splat_capacity, 1) * self._F32X4_BYTES,
             "splat_visible": max(self._work_splat_capacity, 1) * self._U32_BYTES,
             "debug_grad_norm": max(self._work_splat_capacity, 1) * self._U32_BYTES,
             "keys": self._max_list_entries * 4,
@@ -338,10 +344,11 @@ class GaussianRenderer:
             "scanline_work_items": self._max_scanline_entries * self._SCANLINE_WORK_ITEM_UINTS * self._U32_BYTES,
             "scanline_counter": self._U32_BYTES,
             "tile_ranges": max(self.tile_count, 1) * 8,
-            "training_forward_state": max(self.width * self.height, 1) * 16,
+            "training_forward_state": max(self.width * self.height, 1) * self._F32X4_BYTES,
             "training_processed_end": max(self.width * self.height, 1) * self._U32_BYTES,
+            "raster_cache": max(self._work_splat_capacity, 1) * self._RASTER_CACHE_PARAM_COUNT * self._U32_BYTES,
             **{name: max(self._work_splat_capacity, 1) * self.TRAINABLE_PARAM_COUNT * self._U32_BYTES for name in self._GRAD_SHADER_VARS},
-            "param_grads_fixed": max(self._work_splat_capacity, 1) * self.TRAINABLE_PARAM_COUNT * self._U32_BYTES,
+            "cached_raster_grads_fixed": max(self._work_splat_capacity, 1) * self._RASTER_CACHE_PARAM_COUNT * self._U32_BYTES,
         }
         self._work_buffers = {name: self.device.create_buffer(size=size, usage=self._RW_BUFFER_USAGE) for name, size in sized.items()}
         self._work_buffers["debug_grad_norm"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1),), dtype=np.float32))
@@ -481,7 +488,7 @@ class GaussianRenderer:
         return {"generated_entries": generated, "written_entries": written, "overflow": overflow, "capacity_limited": overflow, "depth_bits": int(self.depth_bits), "tile_count": int(self.tile_count), "splat_count": int(splat_count), "max_list_entries": int(self._max_list_entries), "max_scanline_entries": int(self._max_scanline_entries), "prepass_entry_cap": int(self._max_prepass_entries_by_budget()), "prepass_memory_mb": int(self.max_prepass_memory_mb), "stats_valid": bool(valid) if read_stats else False, "stats_latency_frames": 1}
 
     def _project_and_bin(self, encoder: spy.CommandEncoder, scene: GaussianScene, camera: Camera) -> None:
-        self._dispatch(self._k_project, encoder, spy.uint3(scene.count, 1, 1), {**self._scene_vars(), **self._screen_vars(), "g_Keys": self._work_buffers["keys"], "g_Values": self._work_buffers["values"], "g_ListCounter": self._work_buffers["counter"], "g_SplatListBases": self._work_buffers["splat_list_bases"], "g_ScanlineWorkItems": self._work_buffers["scanline_work_items"], "g_ScanlineCounter": self._work_buffers["scanline_counter"], **self._prepass_uniforms(scene.count), **self._camera_uniforms(camera)}, "Project And Bin", 20)
+        self._dispatch(self._k_project, encoder, spy.uint3(scene.count, 1, 1), {**self._scene_vars(), **self._screen_vars(), **self._raster_cache_vars(), "g_Keys": self._work_buffers["keys"], "g_Values": self._work_buffers["values"], "g_ListCounter": self._work_buffers["counter"], "g_SplatListBases": self._work_buffers["splat_list_bases"], "g_ScanlineWorkItems": self._work_buffers["scanline_work_items"], "g_ScanlineCounter": self._work_buffers["scanline_counter"], **self._prepass_uniforms(scene.count), **self._camera_uniforms(camera)}, "Project And Bin", 20)
 
     def _compute_scanline_dispatch_args(self, encoder: spy.CommandEncoder) -> spy.Buffer:
         args_buffer = self._sorter.ensure_indirect_args()
@@ -513,20 +520,21 @@ class GaussianRenderer:
 
     def _rasterize(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output: spy.Texture | None = None) -> None:
         target = self.output_texture if output is None else output
-        self._dispatch(self._k_raster, encoder, self._raster_thread_count(), {**self._scene_vars(), **self._screen_vars(), **self._debug_grad_norm_var(), "g_SortedValues": self._work_buffers["values"], "g_TileRanges": self._work_buffers["tile_ranges"], "g_Output": target, **self._raster_grad_decode_scale_var(1.0), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._camera_uniforms(camera)}, "Rasterize", 24)
+        self._dispatch(self._k_raster, encoder, self._raster_thread_count(), {**self._scene_vars(), **self._screen_vars(), **self._raster_cache_vars(), **self._debug_grad_norm_var(), "g_SortedValues": self._work_buffers["values"], "g_TileRanges": self._work_buffers["tile_ranges"], "g_Output": target, **self._raster_grad_decode_scale_var(1.0), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._camera_uniforms(camera)}, "Rasterize", 24)
 
     def _clear_raster_grads(self, encoder: spy.CommandEncoder, splat_count: int) -> None:
-        self._dispatch(self._k_clear_raster_grads, encoder, spy.uint3(max(int(splat_count) * self.TRAINABLE_PARAM_COUNT, 1), 1, 1), {**self._raster_grad_vars(), **self._raster_grad_decode_scale_var(1.0), **self._prepass_uniforms(splat_count)}, "Clear Raster Grads", 25)
+        clear_count = max(int(splat_count) * max(self.TRAINABLE_PARAM_COUNT, self._RASTER_CACHE_PARAM_COUNT), 1)
+        self._dispatch(self._k_clear_raster_grads, encoder, spy.uint3(clear_count, 1, 1), {**self._raster_grad_vars(), **self._raster_grad_decode_scale_var(1.0), **self._prepass_uniforms(splat_count)}, "Clear Raster Grads", 25)
 
     def _rasterize_training_forward(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output: spy.Texture | None = None) -> None:
         target = self.output_texture if output is None else output
-        self._dispatch(self._k_raster_training_forward, encoder, self._raster_thread_count(), {**self._scene_vars(), **self._screen_vars(), "g_SortedValues": self._work_buffers["values"], "g_TileRanges": self._work_buffers["tile_ranges"], "g_Output": target, "g_TrainingForwardState": self._work_buffers["training_forward_state"], "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"], **self._raster_grad_decode_scale_var(1.0), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._camera_uniforms(camera)}, "Rasterize Training Forward", 26)
+        self._dispatch(self._k_raster_training_forward, encoder, self._raster_thread_count(), {**self._scene_vars(), **self._screen_vars(), **self._raster_cache_vars(), "g_SortedValues": self._work_buffers["values"], "g_TileRanges": self._work_buffers["tile_ranges"], "g_Output": target, "g_TrainingForwardState": self._work_buffers["training_forward_state"], "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"], **self._raster_grad_decode_scale_var(1.0), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._camera_uniforms(camera)}, "Rasterize Training Forward", 26)
 
     def _rasterize_backward(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output_grad: spy.Buffer) -> None:
-        self._dispatch(self._k_raster_backward, encoder, self._raster_thread_count(), {**self._scene_vars(), "g_ScreenColorAlpha": self._work_buffers["screen_color_alpha"], "g_SortedValues": self._work_buffers["values"], "g_TileRanges": self._work_buffers["tile_ranges"], "g_OutputGrad": output_grad, "g_TrainingForwardState": self._work_buffers["training_forward_state"], "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"], **self._raster_grad_vars(), **self._raster_grad_decode_scale_var(1.0), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._camera_uniforms(camera)}, "Rasterize Backward", 27)
+        self._dispatch(self._k_raster_backward, encoder, self._raster_thread_count(), {**self._scene_vars(), **self._raster_cache_vars(), "g_SortedValues": self._work_buffers["values"], "g_TileRanges": self._work_buffers["tile_ranges"], "g_OutputGrad": output_grad, "g_TrainingForwardState": self._work_buffers["training_forward_state"], "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"], **self._raster_grad_vars(), **self._raster_grad_decode_scale_var(1.0), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._camera_uniforms(camera)}, "Rasterize Backward", 27)
 
-    def _decode_raster_grads_fixed(self, encoder: spy.CommandEncoder, splat_count: int, grad_scale: float = 1.0) -> None:
-        self._dispatch(self._k_decode_raster_grads_fixed, encoder, spy.uint3(max(int(splat_count) * self.TRAINABLE_PARAM_COUNT, 1), 1, 1), {**self._raster_grad_vars(), **self._raster_grad_decode_scale_var(grad_scale), **self._prepass_uniforms(splat_count)}, "Decode Raster Grads Fixed", 28)
+    def _backprop_cached_raster_grads(self, encoder: spy.CommandEncoder, splat_count: int, camera: Camera, grad_scale: float = 1.0) -> None:
+        self._dispatch(self._k_backprop_cached_raster_grads, encoder, spy.uint3(max(int(splat_count), 1), 1, 1), {**self._scene_vars(), **self._raster_cache_vars(), **self._raster_grad_vars(), **self._raster_grad_decode_scale_var(grad_scale), **self._prepass_uniforms(splat_count), **self._camera_uniforms(camera)}, "Backprop Cached Raster Grads", 28)
 
     def _execute_prepass(self, scene: GaussianScene, camera: Camera, sync_counts: bool = False) -> tuple[int, int]:
         self._reset_prepass_counters()
@@ -610,6 +618,14 @@ class GaussianRenderer:
             "grad_color_alpha": groups["color_alpha"],
         }
 
+    def read_raster_cache(self, splat_count: int | None = None) -> np.ndarray:
+        count = self._scene_count if splat_count is None else int(splat_count)
+        return self._read_array(self._work_buffers["raster_cache"], np.float32, self._RASTER_CACHE_PARAM_COUNT, max(count, 1)).T[:count].copy()
+
+    def read_cached_raster_grads_fixed(self, splat_count: int | None = None) -> np.ndarray:
+        count = self._scene_count if splat_count is None else int(splat_count)
+        return self._read_array(self._work_buffers["cached_raster_grads_fixed"], np.int32, self._RASTER_CACHE_PARAM_COUNT, max(count, 1)).T[:count].copy()
+
     def write_grad_groups(
         self,
         splat_count: int,
@@ -672,13 +688,13 @@ class GaussianRenderer:
     def rasterize_backward_current_scene(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output_grad: spy.Buffer, grad_scale: float = 1.0) -> None:
         self._require_scene()
         self._rasterize_backward(encoder, camera, background, output_grad)
-        self._decode_raster_grads_fixed(encoder, self._scene_count, grad_scale)
+        self._backprop_cached_raster_grads(encoder, self._scene_count, camera, grad_scale)
 
     def rasterize_forward_backward_current_scene(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output_grad: spy.Buffer, grad_scale: float = 1.0) -> None:
         self._require_scene()
         self._rasterize_training_forward(encoder, camera, background)
         self._rasterize_backward(encoder, camera, background, output_grad)
-        self._decode_raster_grads_fixed(encoder, self._scene_count, grad_scale)
+        self._backprop_cached_raster_grads(encoder, self._scene_count, camera, grad_scale)
 
     def render_to_texture(
         self,
@@ -732,7 +748,9 @@ class GaussianRenderer:
             self.rasterize_backward_current_scene(enc_bwd, camera, background_np, self.output_grad_buffer)
         self.device.submit_command_buffer(enc_bwd.finish())
         self.device.wait()
-        return self.read_grad_groups(scene.count)
+        grads = self.read_grad_groups(scene.count)
+        grads["cached_raster_grads_fixed"] = self.read_cached_raster_grads_fixed(scene.count)
+        return grads
 
     def debug_pipeline_data(self, scene: GaussianScene, camera: Camera) -> dict[str, np.ndarray | int]:
         self._ensure_scene_buffers(scene.count)
@@ -749,4 +767,5 @@ class GaussianRenderer:
             "screen_color_alpha": self._read_array(self._work_buffers["screen_color_alpha"], np.float32, scene.count, 4),
             "screen_ellipse_conic": self._read_array(self._work_buffers["screen_ellipse_conic"], np.float32, scene.count, 4),
             "splat_visible": self._read_array(self._work_buffers["splat_visible"], np.uint32, scene.count),
+            "raster_cache": self.read_raster_cache(scene.count),
         }

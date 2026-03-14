@@ -162,6 +162,18 @@ def test_sampled5_mvee_projection_matches_cpu_reference(device):
     assert float(np.max(radius_err)) < 0.8
 
 
+def test_prepass_populates_raster_cache(device):
+    scene = make_scene(12, seed=9)
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, list_capacity_multiplier=32)
+    debug = renderer.debug_pipeline_data(scene, camera)
+
+    raster_cache = np.asarray(debug["raster_cache"], dtype=np.float32)
+    assert raster_cache.shape == (scene.count, 15)
+    assert np.all(np.isfinite(raster_cache))
+    assert float(np.max(np.abs(raster_cache[:, :11]))) > 0.0
+
+
 def test_sampled5_mvee_render_smoke(device):
     scene = make_scene(20, seed=13)
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
@@ -372,13 +384,34 @@ def test_raster_backward_decodes_q16_16_grad_grid(device):
     renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, list_capacity_multiplier=32)
     grads = renderer.debug_raster_backward_grads(scene, camera, background=np.array([0.05, 0.1, 0.15], dtype=np.float32))
 
-    for name in ("grad_positions", "grad_scales", "grad_rotations", "grad_color_alpha"):
-        values = np.asarray(grads[name], dtype=np.float32)
-        assert np.all(np.isfinite(values))
-        nonzero = values[np.abs(values) > 0.0]
-        if nonzero.size == 0:
-            continue
-        np.testing.assert_allclose(nonzero * _RASTER_GRAD_FIXED_SCALE, np.rint(nonzero * _RASTER_GRAD_FIXED_SCALE), rtol=0.0, atol=1e-4)
+    values = np.asarray(grads["cached_raster_grads_fixed"], dtype=np.int32)
+    assert values.shape == (scene.count, 15)
+    nonzero = values[values != 0]
+    assert nonzero.size > 0
+    decoded = nonzero.astype(np.float32) / _RASTER_GRAD_FIXED_SCALE
+    np.testing.assert_allclose(decoded * _RASTER_GRAD_FIXED_SCALE, np.rint(decoded * _RASTER_GRAD_FIXED_SCALE), rtol=0.0, atol=1e-4)
+
+
+def test_raster_backward_produces_float_final_grads_and_fixed_intermediate(device):
+    scene = make_scene(18, seed=83)
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, list_capacity_multiplier=32)
+    grads = renderer.debug_raster_backward_grads(scene, camera, background=np.array([0.02, 0.04, 0.06], dtype=np.float32))
+
+    fixed_nonzero = np.asarray(grads["cached_raster_grads_fixed"], dtype=np.int32)
+    assert np.any(fixed_nonzero != 0)
+
+    final_values = np.concatenate(
+        [
+            np.asarray(grads["grad_positions"], dtype=np.float32).reshape(-1),
+            np.asarray(grads["grad_scales"], dtype=np.float32).reshape(-1),
+            np.asarray(grads["grad_rotations"], dtype=np.float32).reshape(-1),
+            np.asarray(grads["grad_color_alpha"], dtype=np.float32).reshape(-1),
+        ]
+    )
+    final_nonzero = final_values[np.abs(final_values) > 0.0]
+    assert final_nonzero.size > 0
+    assert np.any(np.abs(final_nonzero * _RASTER_GRAD_FIXED_SCALE - np.rint(final_nonzero * _RASTER_GRAD_FIXED_SCALE)) > 1e-4)
 
 
 def test_clamped_subpixel_raster_backward_has_scale_gradient(device):

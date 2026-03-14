@@ -11,6 +11,22 @@ static const uint RASTER_GROUP_THREADS = RASTER_THREAD_TILE_DIM * RASTER_THREAD_
 static const uint RASTER_TILE_SIZE = RASTER_THREAD_TILE_DIM;
 static const uint RASTER_BATCH = 256u;
 static const uint RASTER_GRAD_FIXED_FRAC_BITS = 16u;
+static const uint RASTER_CACHE_RO_LOCAL_X = 0u;
+static const uint RASTER_CACHE_RO_LOCAL_Y = 1u;
+static const uint RASTER_CACHE_RO_LOCAL_Z = 2u;
+static const uint RASTER_CACHE_INV_SCALE_X = 3u;
+static const uint RASTER_CACHE_INV_SCALE_Y = 4u;
+static const uint RASTER_CACHE_INV_SCALE_Z = 5u;
+static const uint RASTER_CACHE_QUAT_X = 6u;
+static const uint RASTER_CACHE_QUAT_Y = 7u;
+static const uint RASTER_CACHE_QUAT_Z = 8u;
+static const uint RASTER_CACHE_QUAT_W = 9u;
+static const uint RASTER_CACHE_OPACITY_SCALE = 10u;
+static const uint RASTER_CACHE_COLOR_R = 11u;
+static const uint RASTER_CACHE_COLOR_G = 12u;
+static const uint RASTER_CACHE_COLOR_B = 13u;
+static const uint RASTER_CACHE_COLOR_A = 14u;
+static const uint RASTER_CACHE_PARAM_COUNT = 15u;
 groupshared float4 gsRoLocal[RASTER_BATCH];
 groupshared half3 gsInvScale[RASTER_BATCH];
 groupshared half4 gsQuat[RASTER_BATCH];
@@ -23,6 +39,7 @@ uniform RWStructuredBuffer<float4> g_ScreenCenterRadiusDepth;
 uniform RWStructuredBuffer<float4> g_ScreenColorAlpha;
 uniform RWStructuredBuffer<float4> g_ScreenEllipseConic;
 uniform RWStructuredBuffer<uint> g_SplatVisible;
+uniform RWStructuredBuffer<float> g_RasterCache;
 
 uniform RWStructuredBuffer<uint> g_Keys;
 uniform RWStructuredBuffer<uint> g_Values;
@@ -43,7 +60,7 @@ uniform RWStructuredBuffer<float4> g_TrainingForwardState;
 uniform RWStructuredBuffer<uint> g_TrainingProcessedEnd;
 
 uniform RWStructuredBuffer<float> g_ParamGrads;
-uniform RWStructuredBuffer<int> g_ParamGradsFixed;
+uniform RWStructuredBuffer<int> g_CachedRasterGradsFixed;
 uniform float g_RasterGradDecodeScale;
 
 uniform CameraParams g_Camera;
@@ -77,4 +94,9 @@ Gaussian3D load_gaussian3d(uint splatId)
         load_splat_param(g_SplatParams, splatCount, PARAM_RAW_OPACITY, splatId)
     );
     return gaussian;
+}
+
+uint raster_cache_index(uint splatCount, uint fieldId, uint splatId)
+{
+    return fieldId * splatCount + splatId;
 }

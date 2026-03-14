@@ -3,6 +3,36 @@ import "utility/math/camera.slang";
 import "utility/math/constants.slang";
 import "utility/splatting/common.slang";
 import "utility/splatting/projection.slang";
+import "utility/splatting/raster.slang";
+
+void store_raster_cache_zero(uint splatId)
+{
+    uint splatCount = g_Prepass.splatCount;
+    [unroll] for (uint fieldId = 0u; fieldId < RASTER_CACHE_PARAM_COUNT; fieldId++)
+    {
+        g_RasterCache[raster_cache_index(splatCount, fieldId, splatId)] = 0.0;
+    }
+}
+
+void store_raster_cache(uint splatId, CachedEllipsoid cached, float4 colorAlpha)
+{
+    uint splatCount = g_Prepass.splatCount;
+    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_X, splatId)] = cached.roLocal.x;
+    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_Y, splatId)] = cached.roLocal.y;
+    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_Z, splatId)] = cached.roLocal.z;
+    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_INV_SCALE_X, splatId)] = cached.invScale.x;
+    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_INV_SCALE_Y, splatId)] = cached.invScale.y;
+    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_INV_SCALE_Z, splatId)] = cached.invScale.z;
+    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_QUAT_X, splatId)] = cached.quat.x;
+    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_QUAT_Y, splatId)] = cached.quat.y;
+    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_QUAT_Z, splatId)] = cached.quat.z;
+    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_QUAT_W, splatId)] = cached.quat.w;
+    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_OPACITY_SCALE, splatId)] = cached.opacityScale;
+    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_COLOR_R, splatId)] = colorAlpha.x;
+    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_COLOR_G, splatId)] = colorAlpha.y;
+    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_COLOR_B, splatId)] = colorAlpha.z;
+    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_COLOR_A, splatId)] = colorAlpha.w;
+}
 
 bool emit_splat_bins(SplatBinRequest request)
 {
@@ -84,10 +114,12 @@ void csProjectAndBin(uint3 dispatchThreadID : SV_DispatchThreadID)
     g_ScreenColorAlpha[splatId] = 0.0;
     g_ScreenEllipseConic[splatId] = 0.0;
     g_SplatVisible[splatId] = 0u;
+    store_raster_cache_zero(splatId);
 
     PinholeCamera camera = PinholeCamera.from_params(g_Camera);
     Gaussian3D gaussian = load_gaussian3d(splatId);
     Ellipsoid ellipsoid = build_ellipsoid(g_Camera, g_Prepass.radiusScale, gaussian);
+    CachedEllipsoid cached = { ellipsoid.roLocal, ellipsoid.invScale, ellipsoid.rotation, ellipsoid.opacityScale };
     float3 cameraOffset = ellipsoid.centerWorld - camera.position_world();
     float3 camPos = camera.world_to_camera(cameraOffset);
     float camDistance = length(cameraOffset);
@@ -151,6 +183,7 @@ void csProjectAndBin(uint3 dispatchThreadID : SV_DispatchThreadID)
     g_ScreenColorAlpha[splatId] = gaussian.colorAlpha;
     g_ScreenEllipseConic[splatId] = float4(fitConic, ellipsoid.opacityScale);
     g_SplatVisible[splatId] = 1u;
+    store_raster_cache(splatId, cached, gaussian.colorAlpha);
 }
 
 [shader("compute")]

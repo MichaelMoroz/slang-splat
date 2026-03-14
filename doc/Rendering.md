@@ -53,7 +53,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 ## 5. Rasterize
 - Shader: `csRasterize` in `shaders/renderer/gaussian_raster_stage.slang`.
 - Raster execution uses fixed `8x8` tiles: one `8x8` thread group covers one raster tile, and each thread owns exactly one pixel.
-- Each thread resolves the tile range for its pixel, reuses each staged gaussian for that single forward replay, and writes one output pixel.
+- Each thread resolves the tile range for its pixel, reuses each staged gaussian loaded from the prepass raster cache for that single forward replay, and writes one output pixel.
 - The inner loop performs front-to-back blending with exponential radial falloff while reusing gaussian data already staged in shared memory.
 - Shared gaussian staging uses `256`-splat batches.
 - The same camera-dependent `0.75`-pixel world-space floor is used in raster through a differentiable smooth-max scale instead of a hard `max`, so the visible footprint starts expanding before the exact clamp point.
@@ -70,13 +70,12 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - Ellipse mode reuses the same tiled forward replay and switches splat alpha evaluation from filled-gaussian coverage to a symmetric antialiased outline band derived from the projected conic's signed edge distance. `debugEllipseThicknessPx` is the full outline thickness in pixels, and the default is `2`, so the visible ring spans both sides of the projected ellipse boundary instead of being clipped to the interior.
 
 ## 7. Raster Backward
-- Shaders: `csClearRasterGrads`, `csRasterizeTrainingForward`, `csRasterizeBackward`, `csDecodeRasterGradsFixed`.
+- Shaders: `csClearRasterGrads`, `csRasterizeTrainingForward`, `csRasterizeBackward`, `csBackpropCachedRasterGrads`.
 - `csClearRasterGrads` zeros both the float packed gradient buffer and the raster-backward fixed-point accumulation buffer.
 - `csRasterizeTrainingForward` runs the raster forward path for the fixed-count trainer, writes the rendered output, and caches one per-pixel forward state record plus `processedEnd` for backward replay.
-- `csRasterizeBackward` is a pure backward kernel: it loads the cached per-pixel forward state, derives `dLoss / dRasterState` from `g_OutputGrad`, and walks the staged splats in reverse without replaying forward internally.
-- The reverse pass reuses one staged gaussian per thread-group lane, accumulates one pixel's contributions in registers, and writes them into a fixed-point accumulation path.
-- Global and groupshared raster loads are implemented via custom derivative functions; backward accumulation converts cached-ellipsoid differentials to scene-parameter differentials immediately, wave-reduces each component, and writes signed Q16.16 int atomics directly into the packed global buffer (`g_ParamGradsFixed`).
-- `csDecodeRasterGradsFixed` converts that packed int buffer back into the packed float gradient buffer (`g_ParamGrads`) exactly once and applies the caller-provided final gradient scale before regularizers, clipping, ADAM, and Python readback.
+- `csRasterizeBackward` is a pure backward replay kernel: it loads the cached per-pixel forward state, derives `dLoss / dRasterState` from `g_OutputGrad`, walks the staged splats in reverse without replaying forward internally, and accumulates signed Q16.16 gradients for the precomputed raster cache fields.
+- The reverse pass reuses one staged gaussian per thread-group lane, accumulates one pixel's contributions in registers, and writes them into the fixed-point cached-raster intermediate.
+- `csBackpropCachedRasterGrads` runs one thread per splat, decodes the fixed-point cached-raster gradient record inline, backprops the `CachedEllipsoid` fields through `build_cached_ellipsoid`, and writes final float scene-parameter gradients into `g_ParamGrads` with the caller-provided final scale.
 - Output gradients are supplied through `g_OutputGrad` (`StructuredBuffer<float4>`) using flat pixel indexing `y * width + x`, and chain-rule terms include gamma output mapping and alpha output (`1 - transmittance`).
 
 ## 8. Training Stage

@@ -44,26 +44,7 @@ float raster_grad_fixed_decode(int value)
     return float(value) * RASTER_GRAD_FIXED_INV_SCALE;
 }
 
-int3 raster_grad_fixed_encode3(float3 value)
-{
-    return int3(
-        raster_grad_fixed_encode(value.x),
-        raster_grad_fixed_encode(value.y),
-        raster_grad_fixed_encode(value.z)
-    );
-}
-
-int4 raster_grad_fixed_encode4(float4 value)
-{
-    return int4(
-        raster_grad_fixed_encode(value.x),
-        raster_grad_fixed_encode(value.y),
-        raster_grad_fixed_encode(value.z),
-        raster_grad_fixed_encode(value.w)
-    );
-}
-
-void atomic_add_param_grad<let N : int>(uint splatCount, uint firstParamId, uint splatId, vector<float, N> grad)
+void atomic_add_raster_cache_grad_fixed<let N : int>(uint splatCount, uint firstFieldId, uint splatId, vector<float, N> grad)
 {
     [unroll] for (int i = 0; i < N; i++)
     {
@@ -71,7 +52,15 @@ void atomic_add_param_grad<let N : int>(uint splatCount, uint firstParamId, uint
         if (!WaveIsFirstLane()) continue;
         int value = raster_grad_fixed_encode(waveGrad);
         if (value == 0) continue;
-        InterlockedAdd(g_ParamGradsFixed[splat_param_index(splatCount, firstParamId + uint(i), splatId)], value);
+        InterlockedAdd(g_CachedRasterGradsFixed[raster_cache_index(splatCount, firstFieldId + uint(i), splatId)], value);
+    }
+}
+
+void store_param_grad<let N : int>(uint splatCount, uint firstParamId, uint splatId, vector<float, N> grad)
+{
+    [unroll] for (int i = 0; i < N; i++)
+    {
+        g_ParamGrads[splat_param_index(splatCount, firstParamId + uint(i), splatId)] = grad[i];
     }
 }
 
@@ -85,9 +74,32 @@ struct RasterGaussian : IDifferentiable
 
     static RasterGaussian load_global(uint splatId)
     {
-        Gaussian3D gaussian = load_gaussian3d(splatId);
-        CachedEllipsoid cached = build_cached_ellipsoid(g_Camera, g_Prepass.radiusScale, gaussian.position, gaussian.scale, gaussian.rotation);
-        return { cached.roLocal, cached.invScale, cached.quat, cached.opacityScale, gaussian.colorAlpha };
+        uint splatCount = g_Prepass.splatCount;
+        RasterGaussian gaussian;
+        gaussian.roLocal = float3(
+            g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_X, splatId)],
+            g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_Y, splatId)],
+            g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_Z, splatId)]
+        );
+        gaussian.invScale = float3(
+            g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_INV_SCALE_X, splatId)],
+            g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_INV_SCALE_Y, splatId)],
+            g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_INV_SCALE_Z, splatId)]
+        );
+        gaussian.quat = float4(
+            g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_QUAT_X, splatId)],
+            g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_QUAT_Y, splatId)],
+            g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_QUAT_Z, splatId)],
+            g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_QUAT_W, splatId)]
+        );
+        gaussian.opacityScale = g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_OPACITY_SCALE, splatId)];
+        gaussian.colorAlpha = float4(
+            g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_COLOR_R, splatId)],
+            g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_COLOR_G, splatId)],
+            g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_COLOR_B, splatId)],
+            g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_COLOR_A, splatId)]
+        );
+        return gaussian;
     }
 
     static RasterGaussian load_shared(uint localIdx)
@@ -110,29 +122,47 @@ struct RasterGaussian : IDifferentiable
         gsColorAlpha[localIdx] = half4(colorAlpha);
     }
 
-    static void accumulate_gradients_global(uint localIdx, Differential dOut)
+    static void accumulate_gradients_fixed(uint localIdx, Differential dOut)
     {
         uint splatId = gsBatchSplatId[localIdx];
         uint splatCount = g_Prepass.splatCount;
-
-        CachedEllipsoid.Differential dCached;
-        dCached.roLocal = dOut.roLocal;
-        dCached.opacityScale = dOut.opacityScale;
-        dCached.invScale = dOut.invScale;
-        dCached.quat = dOut.quat;
-
-        Gaussian3D gaussian = load_gaussian3d(splatId);
-        var dpPosition = diffPair(gaussian.position);
-        var dpScale = diffPair(gaussian.scale);
-        var dpRotation = diffPair(gaussian.rotation);
-        bwd_diff(build_cached_ellipsoid)(g_Camera, g_Prepass.radiusScale, dpPosition, dpScale, dpRotation, dCached);
-
-        atomic_add_param_grad<3>(splatCount, PARAM_POSITION_X, splatId, dpPosition.getDifferential());
-        atomic_add_param_grad<3>(splatCount, PARAM_SCALE_X, splatId, dpScale.getDifferential());
-        atomic_add_param_grad<4>(splatCount, PARAM_ROTATION_X, splatId, dpRotation.getDifferential());
-        atomic_add_param_grad<4>(splatCount, PARAM_COLOR_R, splatId, dOut.colorAlpha);
+        atomic_add_raster_cache_grad_fixed<3>(splatCount, RASTER_CACHE_RO_LOCAL_X, splatId, dOut.roLocal);
+        atomic_add_raster_cache_grad_fixed<3>(splatCount, RASTER_CACHE_INV_SCALE_X, splatId, dOut.invScale);
+        atomic_add_raster_cache_grad_fixed<4>(splatCount, RASTER_CACHE_QUAT_X, splatId, dOut.quat);
+        atomic_add_raster_cache_grad_fixed<1>(splatCount, RASTER_CACHE_OPACITY_SCALE, splatId, float1(dOut.opacityScale));
+        atomic_add_raster_cache_grad_fixed<4>(splatCount, RASTER_CACHE_COLOR_R, splatId, dOut.colorAlpha);
     }
 };
+
+RasterGaussian.Differential load_cached_raster_grad(uint splatId)
+{
+    uint splatCount = g_Prepass.splatCount;
+    RasterGaussian.Differential grad;
+    grad.roLocal = float3(
+        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_X, splatId)]),
+        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_Y, splatId)]),
+        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_Z, splatId)])
+    );
+    grad.invScale = float3(
+        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_INV_SCALE_X, splatId)]),
+        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_INV_SCALE_Y, splatId)]),
+        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_INV_SCALE_Z, splatId)])
+    );
+    grad.quat = float4(
+        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_QUAT_X, splatId)]),
+        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_QUAT_Y, splatId)]),
+        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_QUAT_Z, splatId)]),
+        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_QUAT_W, splatId)])
+    );
+    grad.opacityScale = raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_OPACITY_SCALE, splatId)]);
+    grad.colorAlpha = float4(
+        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_COLOR_R, splatId)]),
+        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_COLOR_G, splatId)]),
+        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_COLOR_B, splatId)]),
+        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_COLOR_A, splatId)])
+    );
+    return grad;
+}
 
 [Differentiable]
 float raster_eval_alpha_gaussian(RasterGaussian gaussian, no_diff uint splatId, no_diff float3 rayDir, no_diff float2 samplePoint)
@@ -419,7 +449,7 @@ void raster_backward_replay(
                     backwardState.pixelState = dpPrevState.getDifferential();
                 }
             }
-            RasterGaussian.accumulate_gradients_global(localIdx, dGaussian);
+            RasterGaussian.accumulate_gradients_fixed(localIdx, dGaussian);
         }
 
         GroupMemoryBarrierWithGroupSync();
@@ -432,22 +462,37 @@ void raster_backward_replay(
 void csClearRasterGrads(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     uint gradCount = g_Prepass.splatCount * TRAINABLE_PARAM_COUNT;
+    uint cachedGradCount = g_Prepass.splatCount * RASTER_CACHE_PARAM_COUNT;
     uint idx = dispatchThreadID.x;
-    if (idx >= gradCount) return;
-
-    g_ParamGrads[idx] = 0.0;
-    g_ParamGradsFixed[idx] = 0;
+    if (idx < gradCount) g_ParamGrads[idx] = 0.0;
+    if (idx < cachedGradCount) g_CachedRasterGradsFixed[idx] = 0;
 }
 
 [shader("compute")]
 [numthreads(TILE_GROUP_SIZE, 1, 1)]
-void csDecodeRasterGradsFixed(uint3 dispatchThreadID : SV_DispatchThreadID)
+void csBackpropCachedRasterGrads(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
-    uint gradCount = g_Prepass.splatCount * TRAINABLE_PARAM_COUNT;
-    uint idx = dispatchThreadID.x;
-    if (idx >= gradCount) return;
+    uint splatId = dispatchThreadID.x;
+    if (splatId >= g_Prepass.splatCount) return;
 
-    g_ParamGrads[idx] = raster_grad_fixed_decode(g_ParamGradsFixed[idx]) * g_RasterGradDecodeScale;
+    RasterGaussian.Differential dRaster = load_cached_raster_grad(splatId);
+    CachedEllipsoid.Differential dCached;
+    dCached.roLocal = dRaster.roLocal;
+    dCached.invScale = dRaster.invScale;
+    dCached.quat = dRaster.quat;
+    dCached.opacityScale = dRaster.opacityScale;
+
+    Gaussian3D gaussian = load_gaussian3d(splatId);
+    var dpPosition = diffPair(gaussian.position);
+    var dpScale = diffPair(gaussian.scale);
+    var dpRotation = diffPair(gaussian.rotation);
+    bwd_diff(build_cached_ellipsoid)(g_Camera, g_Prepass.radiusScale, dpPosition, dpScale, dpRotation, dCached);
+
+    float gradScale = g_RasterGradDecodeScale;
+    store_param_grad<3>(g_Prepass.splatCount, PARAM_POSITION_X, splatId, dpPosition.getDifferential() * gradScale);
+    store_param_grad<3>(g_Prepass.splatCount, PARAM_SCALE_X, splatId, dpScale.getDifferential() * gradScale);
+    store_param_grad<4>(g_Prepass.splatCount, PARAM_ROTATION_X, splatId, dpRotation.getDifferential() * gradScale);
+    store_param_grad<4>(g_Prepass.splatCount, PARAM_COLOR_R, splatId, dRaster.colorAlpha * gradScale);
 }
 
 [shader("compute")]
