@@ -99,21 +99,19 @@ uint grad_state_base(uint localIdx, uint fieldOffset)
 
 void atomic_add_grad_shared(uint base, float3 grad)
 {
-    int3 fixedWaveSum = raster_grad_fixed_encode3(float3(WaveActiveSum(grad.x), WaveActiveSum(grad.y), WaveActiveSum(grad.z)));
-    if (!WaveIsFirstLane()) return;
-    if (fixedWaveSum.x != 0) InterlockedAdd(gsGradState[base + 0u], fixedWaveSum.x);
-    if (fixedWaveSum.y != 0) InterlockedAdd(gsGradState[base + 1u], fixedWaveSum.y);
-    if (fixedWaveSum.z != 0) InterlockedAdd(gsGradState[base + 2u], fixedWaveSum.z);
+    int3 fixedGrad = raster_grad_fixed_encode3(grad);
+    if (fixedGrad.x != 0) InterlockedAdd(gsGradState[base + 0u], fixedGrad.x);
+    if (fixedGrad.y != 0) InterlockedAdd(gsGradState[base + 1u], fixedGrad.y);
+    if (fixedGrad.z != 0) InterlockedAdd(gsGradState[base + 2u], fixedGrad.z);
 }
 
 void atomic_add_grad_shared(uint base, float4 grad)
 {
-    int4 fixedWaveSum = raster_grad_fixed_encode4(float4(WaveActiveSum(grad.x), WaveActiveSum(grad.y), WaveActiveSum(grad.z), WaveActiveSum(grad.w)));
-    if (!WaveIsFirstLane()) return;
-    if (fixedWaveSum.x != 0) InterlockedAdd(gsGradState[base + 0u], fixedWaveSum.x);
-    if (fixedWaveSum.y != 0) InterlockedAdd(gsGradState[base + 1u], fixedWaveSum.y);
-    if (fixedWaveSum.z != 0) InterlockedAdd(gsGradState[base + 2u], fixedWaveSum.z);
-    if (fixedWaveSum.w != 0) InterlockedAdd(gsGradState[base + 3u], fixedWaveSum.w);
+    int4 fixedGrad = raster_grad_fixed_encode4(grad);
+    if (fixedGrad.x != 0) InterlockedAdd(gsGradState[base + 0u], fixedGrad.x);
+    if (fixedGrad.y != 0) InterlockedAdd(gsGradState[base + 1u], fixedGrad.y);
+    if (fixedGrad.z != 0) InterlockedAdd(gsGradState[base + 2u], fixedGrad.z);
+    if (fixedGrad.w != 0) InterlockedAdd(gsGradState[base + 3u], fixedGrad.w);
 }
 
 float3 load_grad_shared3(uint base)
@@ -284,82 +282,58 @@ float4 raster_output_from_state(RasterState state, no_diff float3 background)
     return float4(pow(max(finalColor, 0.0), OUTPUT_GAMMA), 1.0 - state.trans);
 }
 
-struct RasterMicrotileInfo
+struct RasterPixelInfo
 {
-    bool hasAnyPixelActive;
+    bool pixelActive;
     bool hasTileRange;
     uint start;
     uint end;
-    uint2 pixelCoord[RASTER_MICROTILE_PIXELS];
-    bool pixelActive[RASTER_MICROTILE_PIXELS];
-    float2 samplePoint[RASTER_MICROTILE_PIXELS];
-    float3 rayDir[RASTER_MICROTILE_PIXELS];
+    uint2 pixelCoord;
+    float2 samplePoint;
+    float3 rayDir;
 };
 
-struct RasterMicrotileForwardState
+struct RasterForwardState
 {
-    RasterState pixelState[RASTER_MICROTILE_PIXELS];
-    uint processedCount[RASTER_MICROTILE_PIXELS];
-    uint processedEnd[RASTER_MICROTILE_PIXELS];
+    RasterState pixelState;
+    uint processedCount;
+    uint processedEnd;
 };
 
-struct RasterMicrotileBackwardState
+struct RasterBackwardState
 {
-    RasterState.Differential pixelState[RASTER_MICROTILE_PIXELS];
+    RasterState.Differential pixelState;
 };
 
-void init_raster_microtile_forward_state(RasterMicrotileInfo info, out RasterMicrotileForwardState forwardState)
+void init_raster_forward_state(RasterPixelInfo info, out RasterForwardState forwardState)
 {
-    [unroll] for (uint pix = 0u; pix < RASTER_MICROTILE_PIXELS; pix++)
-    {
-        forwardState.pixelState[pix] = { 0.0, 1.0 };
-        forwardState.processedCount[pix] = 0u;
-        forwardState.processedEnd[pix] = info.start;
-    }
+    forwardState.pixelState = { 0.0, 1.0 };
+    forwardState.processedCount = 0u;
+    forwardState.processedEnd = info.start;
 }
 
-void init_raster_microtile_backward_state(out RasterMicrotileBackwardState backwardState)
+void init_raster_backward_state(out RasterBackwardState backwardState)
 {
-    [unroll] for (uint pix = 0u; pix < RASTER_MICROTILE_PIXELS; pix++)
-    {
-        backwardState.pixelState[pix] = { 0.0, 0.0 };
-    }
+    backwardState.pixelState = { 0.0, 0.0 };
 }
 
-RasterMicrotileInfo resolve_raster_microtile(uint3 dispatchThreadID)
+RasterPixelInfo resolve_raster_pixel(uint3 dispatchThreadID)
 {
-    RasterMicrotileInfo info;
-    info.hasAnyPixelActive = false;
+    RasterPixelInfo info;
+    info.pixelCoord = dispatchThreadID.xy;
+    info.pixelActive = info.pixelCoord.x < g_Raster.width && info.pixelCoord.y < g_Raster.height;
     info.hasTileRange = false;
     info.start = 0u;
     info.end = 0u;
+    info.samplePoint = float2(info.pixelCoord) + 0.5;
 
     PinholeCamera camera = PinholeCamera.from_params(g_Camera);
-    uint2 basePixel = uint2(
-        dispatchThreadID.x * RASTER_MICROTILE_DIM,
-        dispatchThreadID.y * RASTER_MICROTILE_DIM
-    );
+    uint samplePx = min(info.pixelCoord.x, g_Raster.width - 1u);
+    uint samplePy = min(info.pixelCoord.y, g_Raster.height - 1u);
+    info.rayDir = camera.screen_to_world_ray(float2(samplePx, samplePy) + 0.5);
 
-    [unroll] for (uint pix = 0u; pix < RASTER_MICROTILE_PIXELS; pix++)
-    {
-        uint y = pix / RASTER_MICROTILE_DIM;
-        uint x = pix - y * RASTER_MICROTILE_DIM;
-        uint px = basePixel.x + x;
-        uint py = basePixel.y + y;
-        info.pixelCoord[pix] = uint2(px, py);
-        info.pixelActive[pix] = px < g_Raster.width && py < g_Raster.height;
-        info.hasAnyPixelActive = info.hasAnyPixelActive || info.pixelActive[pix];
-        info.samplePoint[pix] = float2(px, py) + 0.5;
-
-        uint samplePx = min(px, g_Raster.width - 1u);
-        uint samplePy = min(py, g_Raster.height - 1u);
-        info.rayDir[pix] = camera.screen_to_world_ray(float2(samplePx, samplePy) + 0.5);
-    }
-
-    uint sampleBaseX = min(basePixel.x, g_Raster.width - 1u);
-    uint sampleBaseY = min(basePixel.y, g_Raster.height - 1u);
-    uint tileX = sampleBaseX / g_Prepass.tileSize;
-    uint tileY = sampleBaseY / g_Prepass.tileSize;
+    uint tileX = samplePx / g_Prepass.tileSize;
+    uint tileY = samplePy / g_Prepass.tileSize;
     uint tileId = tileY * g_Prepass.tileWidth + tileX;
     uint2 range = g_TileRanges[tileId];
     info.hasTileRange = range.x != INVALID_START && range.y > range.x;
@@ -381,27 +355,13 @@ void prefetch_batch_from_global(uint batchStart, uint batchEnd, uint lane)
 }
 
 void raster_forward_replay(
-    RasterMicrotileInfo info,
+    RasterPixelInfo info,
     uint lane,
-    inout RasterMicrotileForwardState forwardState
+    inout RasterForwardState forwardState
 )
 {
-    bool pixelDone[RASTER_MICROTILE_PIXELS];
-    uint replayCount[RASTER_MICROTILE_PIXELS];
-    uint activePixelCount = 0u;
-    uint finishedPixelCount = 0u;
-
-    [unroll] for (uint pix = 0u; pix < RASTER_MICROTILE_PIXELS; pix++)
-    {
-        pixelDone[pix] = !info.pixelActive[pix];
-        replayCount[pix] = 0u;
-        if (info.pixelActive[pix]) activePixelCount += 1u;
-    }
-
-    bool microtileDone = activePixelCount == 0u;
-    if (lane == 0u) gsStoppedMicrotiles = 0u;
-    GroupMemoryBarrierWithGroupSync();
-    if (microtileDone) InterlockedAdd(gsStoppedMicrotiles, 1u);
+    bool pixelDone = !info.pixelActive;
+    uint replayCount = 0u;
 
     for (uint batchStart = info.start; batchStart < info.end; batchStart += RASTER_BATCH)
     {
@@ -410,59 +370,40 @@ void raster_forward_replay(
         prefetch_batch_from_global(batchStart, batchEnd, lane);
         GroupMemoryBarrierWithGroupSync();
 
-        if (!microtileDone)
+        if (!pixelDone)
         {
             for (uint localIdx = 0u; localIdx < batchCount; localIdx++)
             {
                 RasterGaussian gaussian = RasterGaussian.load_shared(localIdx);
                 uint splatId = gsBatchSplatId[localIdx];
                 float3 color = raster_forward_color(gaussian, splatId);
+                replayCount += 1u;
+                float alpha = raster_eval_alpha_gaussian(gaussian, splatId, info.rayDir, info.samplePoint);
+                if (alpha <= 0.0) continue;
 
-                [unroll] for (uint pix = 0u; pix < RASTER_MICROTILE_PIXELS; pix++)
-                {
-                    if (pixelDone[pix]) continue;
+                RasterState state = forwardState.pixelState;
+                state = state.blend(color, alpha);
+                forwardState.pixelState = state;
+                forwardState.processedCount += 1u;
+                if (state.trans >= g_Raster.transmittanceThreshold) continue;
 
-                    replayCount[pix] += 1u;
-                    float alpha = raster_eval_alpha_gaussian(gaussian, splatId, info.rayDir[pix], info.samplePoint[pix]);
-                    if (alpha <= 0.0) continue;
-
-                    RasterState state = forwardState.pixelState[pix];
-                    state = state.blend(color, alpha);
-                    forwardState.pixelState[pix] = state;
-                    forwardState.processedCount[pix] += 1u;
-                    if (state.trans >= g_Raster.transmittanceThreshold) continue;
-
-                    pixelDone[pix] = true;
-                    finishedPixelCount += 1u;
-                }
-
-                if (finishedPixelCount == activePixelCount)
-                {
-                    microtileDone = true;
-                    InterlockedAdd(gsStoppedMicrotiles, 1u);
-                    break;
-                }
+                pixelDone = true;
+                break;
             }
         }
 
         GroupMemoryBarrierWithGroupSync();
-        if (gsStoppedMicrotiles == RASTER_GROUP_THREADS) break;
     }
-
-    [unroll] for (uint pix = 0u; pix < RASTER_MICROTILE_PIXELS; pix++)
-    {
-        forwardState.processedEnd[pix] = info.start + replayCount[pix];
-    }
+    forwardState.processedEnd = info.start + replayCount;
 }
 
 float4 raster_forward_output_pixel(
-    RasterMicrotileInfo info,
-    uint pixelIdx,
+    RasterPixelInfo info,
     RasterState state,
     uint processedCount
 )
 {
-    if (!info.pixelActive[pixelIdx]) return float4(0.0, 0.0, 0.0, 1.0);
+    if (!info.pixelActive) return float4(0.0, 0.0, 0.0, 1.0);
     if (g_Raster.debugShowProcessedCount != 0u) return float4(raster_processed_count_color(processedCount), 1.0);
     return info.hasTileRange
         ? raster_output_from_state(state, g_Raster.background)
@@ -470,15 +411,14 @@ float4 raster_forward_output_pixel(
 }
 
 RasterState.Differential raster_output_gradient_pixel(
-    RasterMicrotileInfo info,
-    uint pixelIdx,
+    RasterPixelInfo info,
     RasterState state
 )
 {
-    if (!info.pixelActive[pixelIdx] || !info.hasTileRange) return { 0.0, 0.0 };
+    if (!info.pixelActive || !info.hasTileRange) return { 0.0, 0.0 };
 
     var dpState = diffPair(state);
-    bwd_diff(raster_output_from_state)(dpState, g_Raster.background, g_OutputGrad[info.pixelCoord[pixelIdx].y * g_Raster.width + info.pixelCoord[pixelIdx].x]);
+    bwd_diff(raster_output_from_state)(dpState, g_Raster.background, g_OutputGrad[info.pixelCoord.y * g_Raster.width + info.pixelCoord.x]);
     return dpState.getDifferential();
 }
 
@@ -487,34 +427,28 @@ uint raster_pixel_index(uint2 pixelCoord)
     return pixelCoord.y * g_Raster.width + pixelCoord.x;
 }
 
-void store_training_forward_cache(RasterMicrotileInfo info, RasterMicrotileForwardState forwardState)
+void store_training_forward_cache(RasterPixelInfo info, RasterForwardState forwardState)
 {
-    [unroll] for (uint pix = 0u; pix < RASTER_MICROTILE_PIXELS; pix++)
-    {
-        if (!info.pixelActive[pix]) continue;
-        uint pixelIndex = raster_pixel_index(info.pixelCoord[pix]);
-        g_TrainingForwardState[pixelIndex] = float4(forwardState.pixelState[pix].accum, forwardState.pixelState[pix].trans);
-        g_TrainingProcessedEnd[pixelIndex] = forwardState.processedEnd[pix];
-    }
+    if (!info.pixelActive) return;
+    uint pixelIndex = raster_pixel_index(info.pixelCoord);
+    g_TrainingForwardState[pixelIndex] = float4(forwardState.pixelState.accum, forwardState.pixelState.trans);
+    g_TrainingProcessedEnd[pixelIndex] = forwardState.processedEnd;
 }
 
-void load_training_forward_cache(RasterMicrotileInfo info, out RasterMicrotileForwardState forwardState)
+void load_training_forward_cache(RasterPixelInfo info, out RasterForwardState forwardState)
 {
-    init_raster_microtile_forward_state(info, forwardState);
-    [unroll] for (uint pix = 0u; pix < RASTER_MICROTILE_PIXELS; pix++)
-    {
-        if (!info.pixelActive[pix]) continue;
-        uint pixelIndex = raster_pixel_index(info.pixelCoord[pix]);
-        float4 cachedState = g_TrainingForwardState[pixelIndex];
-        forwardState.pixelState[pix] = { cachedState.xyz, cachedState.w };
-        forwardState.processedEnd[pix] = g_TrainingProcessedEnd[pixelIndex];
-    }
+    init_raster_forward_state(info, forwardState);
+    if (!info.pixelActive) return;
+    uint pixelIndex = raster_pixel_index(info.pixelCoord);
+    float4 cachedState = g_TrainingForwardState[pixelIndex];
+    forwardState.pixelState = { cachedState.xyz, cachedState.w };
+    forwardState.processedEnd = g_TrainingProcessedEnd[pixelIndex];
 }
 
 void raster_backward_replay(
-    RasterMicrotileInfo info,
-    inout RasterMicrotileForwardState forwardState,
-    inout RasterMicrotileBackwardState backwardState,
+    RasterPixelInfo info,
+    inout RasterForwardState forwardState,
+    inout RasterBackwardState backwardState,
     uint lane
 )
 {
@@ -539,31 +473,29 @@ void raster_backward_replay(
             uint globalIdx = batchStart + localIdx;
             RasterGaussian gaussian = RasterGaussian.load_shared(localIdx);
             RasterGaussian.Differential dGaussian = { 0.0, 0.0, 0.0, 0.0, 0.0 };
-
-            [unroll] for (uint pix = 0u; pix < RASTER_MICROTILE_PIXELS; pix++)
+            if (info.pixelActive && globalIdx < forwardState.processedEnd)
             {
-                if (!info.pixelActive[pix] || globalIdx >= forwardState.processedEnd[pix]) continue;
+                float alpha = raster_eval_alpha_gaussian(gaussian, gsBatchSplatId[localIdx], info.rayDir, info.samplePoint);
+                if (alpha > 0.0)
+                {
+                    RasterState state = forwardState.pixelState;
+                    RasterState prevState = state.undo(gaussian.colorAlpha.xyz, alpha);
 
-                float alpha = raster_eval_alpha_gaussian(gaussian, gsBatchSplatId[localIdx], info.rayDir[pix], info.samplePoint[pix]);
-                if (alpha <= 0.0) continue;
+                    var dpPrevState = diffPair(prevState);
+                    var dpGaussian = diffPair(gaussian);
+                    var dpAlpha = diffPair(alpha);
+                    bwd_diff(raster_blend_step_gaussian)(dpPrevState, dpGaussian, dpAlpha, backwardState.pixelState);
+                    bwd_diff(raster_eval_alpha_gaussian)(dpGaussian, gsBatchSplatId[localIdx], info.rayDir, info.samplePoint, dpAlpha.getDifferential());
 
-                RasterState state = forwardState.pixelState[pix];
-                RasterState prevState = state.undo(gaussian.colorAlpha.xyz, alpha);
-
-                var dpPrevState = diffPair(prevState);
-                var dpGaussian = diffPair(gaussian);
-                var dpAlpha = diffPair(alpha);
-                bwd_diff(raster_blend_step_gaussian)(dpPrevState, dpGaussian, dpAlpha, backwardState.pixelState[pix]);
-                bwd_diff(raster_eval_alpha_gaussian)(dpGaussian, gsBatchSplatId[localIdx], info.rayDir[pix], info.samplePoint[pix], dpAlpha.getDifferential());
-
-                RasterGaussian.Differential dPixelGaussian = dpGaussian.getDifferential();
-                dGaussian.roLocal += dPixelGaussian.roLocal;
-                dGaussian.invScale += dPixelGaussian.invScale;
-                dGaussian.quat += dPixelGaussian.quat;
-                dGaussian.opacityScale += dPixelGaussian.opacityScale;
-                dGaussian.colorAlpha += dPixelGaussian.colorAlpha;
-                forwardState.pixelState[pix] = prevState;
-                backwardState.pixelState[pix] = dpPrevState.getDifferential();
+                    RasterGaussian.Differential dPixelGaussian = dpGaussian.getDifferential();
+                    dGaussian.roLocal += dPixelGaussian.roLocal;
+                    dGaussian.invScale += dPixelGaussian.invScale;
+                    dGaussian.quat += dPixelGaussian.quat;
+                    dGaussian.opacityScale += dPixelGaussian.opacityScale;
+                    dGaussian.colorAlpha += dPixelGaussian.colorAlpha;
+                    forwardState.pixelState = prevState;
+                    backwardState.pixelState = dpPrevState.getDifferential();
+                }
             }
             RasterGaussian.accumulate_gradients_shared(localIdx, dGaussian);
         }
@@ -602,63 +534,37 @@ void csDecodeRasterGradsFixed(uint3 dispatchThreadID : SV_DispatchThreadID)
 [numthreads(RASTER_THREAD_TILE_DIM, RASTER_THREAD_TILE_DIM, 1)]
 void csRasterize(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_GroupIndex)
 {
-    RasterMicrotileInfo info = resolve_raster_microtile(dispatchThreadID);
-    RasterMicrotileForwardState forwardState;
-    init_raster_microtile_forward_state(info, forwardState);
+    RasterPixelInfo info = resolve_raster_pixel(dispatchThreadID);
+    RasterForwardState forwardState;
+    init_raster_forward_state(info, forwardState);
     if (info.hasTileRange) raster_forward_replay(info, lane, forwardState);
-
-    [unroll] for (uint pix = 0u; pix < RASTER_MICROTILE_PIXELS; pix++)
-    {
-        if (!info.pixelActive[pix]) continue;
-        g_Output[info.pixelCoord[pix]] = raster_forward_output_pixel(
-            info,
-            pix,
-            forwardState.pixelState[pix],
-            forwardState.processedCount[pix]
-        );
-    }
+    if (!info.pixelActive) return;
+    g_Output[info.pixelCoord] = raster_forward_output_pixel(info, forwardState.pixelState, forwardState.processedCount);
 }
 
 [shader("compute")]
 [numthreads(RASTER_THREAD_TILE_DIM, RASTER_THREAD_TILE_DIM, 1)]
 void csRasterizeTrainingForward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_GroupIndex)
 {
-    RasterMicrotileInfo info = resolve_raster_microtile(dispatchThreadID);
-    RasterMicrotileForwardState forwardState;
-    init_raster_microtile_forward_state(info, forwardState);
+    RasterPixelInfo info = resolve_raster_pixel(dispatchThreadID);
+    RasterForwardState forwardState;
+    init_raster_forward_state(info, forwardState);
     if (info.hasTileRange) raster_forward_replay(info, lane, forwardState);
     store_training_forward_cache(info, forwardState);
-
-    [unroll] for (uint pix = 0u; pix < RASTER_MICROTILE_PIXELS; pix++)
-    {
-        if (!info.pixelActive[pix]) continue;
-        g_Output[info.pixelCoord[pix]] = raster_forward_output_pixel(
-            info,
-            pix,
-            forwardState.pixelState[pix],
-            forwardState.processedCount[pix]
-        );
-    }
+    if (!info.pixelActive) return;
+    g_Output[info.pixelCoord] = raster_forward_output_pixel(info, forwardState.pixelState, forwardState.processedCount);
 }
 
 [shader("compute")]
 [numthreads(RASTER_THREAD_TILE_DIM, RASTER_THREAD_TILE_DIM, 1)]
 void csRasterizeBackward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_GroupIndex)
 {
-    RasterMicrotileInfo info = resolve_raster_microtile(dispatchThreadID);
-    RasterMicrotileForwardState forwardState;
-    RasterMicrotileBackwardState backwardState;
+    RasterPixelInfo info = resolve_raster_pixel(dispatchThreadID);
+    RasterForwardState forwardState;
+    RasterBackwardState backwardState;
     load_training_forward_cache(info, forwardState);
-    init_raster_microtile_backward_state(backwardState);
-
-    [unroll] for (uint pix = 0u; pix < RASTER_MICROTILE_PIXELS; pix++)
-    {
-        backwardState.pixelState[pix] = raster_output_gradient_pixel(
-            info,
-            pix,
-            forwardState.pixelState[pix]
-        );
-    }
+    init_raster_backward_state(backwardState);
+    backwardState.pixelState = raster_output_gradient_pixel(info, forwardState.pixelState);
 
     raster_backward_replay(info, forwardState, backwardState, lane);
 }

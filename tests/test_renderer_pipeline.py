@@ -45,9 +45,9 @@ def test_renderer_loads_raster_constants_from_shader(device):
     renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, list_capacity_multiplier=32)
     config = GaussianRenderer._load_raster_config(Path(SHADER_ROOT / "renderer" / "gaussian_types.slang"))
 
-    assert renderer.tile_size == config.effective_tile_size
+    assert renderer.tile_size == config.tile_size
     assert renderer._raster_config.thread_tile_dim == config.thread_tile_dim
-    assert renderer._raster_config.microtile_dim == config.microtile_dim
+    assert renderer._raster_config.tile_size == config.tile_size
     assert renderer._raster_config.batch == config.batch
 
 
@@ -428,7 +428,7 @@ def test_prepass_capacity_budget_caps_growth(device):
     assert int(stats1["prepass_memory_mb"]) == 1
 
 
-def test_partial_microtile_render_matches_cpu_reference(device):
+def test_partial_tile_render_matches_cpu_reference(device):
     scene = make_scene(22, seed=101)
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
     background = np.array([0.12, 0.08, 0.18], dtype=np.float32)

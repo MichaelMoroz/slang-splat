@@ -7,11 +7,9 @@ static const uint INVALID_START = UINT_MAX_VALUE;
 static const uint PROJECT_GROUP_SIZE = 256u;
 static const uint TILE_GROUP_SIZE = 256u;
 static const uint RASTER_THREAD_TILE_DIM = 8u;
-static const uint RASTER_MICROTILE_DIM = 1u;
-static const uint RASTER_MICROTILE_PIXELS = RASTER_MICROTILE_DIM * RASTER_MICROTILE_DIM;
 static const uint RASTER_GROUP_THREADS = RASTER_THREAD_TILE_DIM * RASTER_THREAD_TILE_DIM;
-static const uint RASTER_EFFECTIVE_TILE_SIZE = RASTER_THREAD_TILE_DIM * RASTER_MICROTILE_DIM;
-static const uint RASTER_BATCH = 64u;
+static const uint RASTER_TILE_SIZE = RASTER_THREAD_TILE_DIM;
+static const uint RASTER_BATCH = 256u;
 static const uint RASTER_GRAD_FIXED_FRAC_BITS = 16u;
 static const uint SPLAT_GRAD_STATE_RO_LOCAL_OPACITY_OFFSET = 0u;
 static const uint SPLAT_GRAD_STATE_INV_SCALE_OFFSET = 4u;
@@ -24,7 +22,6 @@ groupshared half4 gsQuat[RASTER_BATCH];
 groupshared half4 gsColorAlpha[RASTER_BATCH];
 groupshared uint gsBatchSplatId[RASTER_BATCH];
 groupshared int gsGradState[RASTER_BATCH * SPLAT_GRAD_STATE_STRIDE];
-groupshared uint gsStoppedMicrotiles;
 
 uniform StructuredBuffer<float> g_SplatParams;
 

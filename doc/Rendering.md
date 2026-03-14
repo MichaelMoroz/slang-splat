@@ -52,9 +52,10 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 
 ## 5. Rasterize
 - Shader: `csRasterize` in `shaders/renderer/gaussian_raster_stage.slang`.
-- Raster execution is microtiled: one `8x8` thread group covers one `16x16` effective raster tile, and each thread owns a fixed `2x2` pixel block in registers.
-- Each thread resolves one tile range for its microtile, reuses each staged gaussian across all `4` local pixels, and writes per-pixel output after the forward replay.
+- Raster execution uses fixed `8x8` tiles: one `8x8` thread group covers one raster tile, and each thread owns exactly one pixel.
+- Each thread resolves the tile range for its pixel, reuses each staged gaussian for that single forward replay, and writes one output pixel.
 - The inner loop performs front-to-back blending with exponential radial falloff while reusing gaussian data already staged in shared memory.
+- Shared gaussian staging uses `256`-splat batches.
 - The same camera-dependent `0.75`-pixel world-space floor is used in raster through a differentiable smooth-max scale instead of a hard `max`, so the visible footprint starts expanding before the exact clamp point.
 - The raster stage attenuates blend alpha by `raw_area / effective_area` using an area proxy derived from gaussian scale, so subpixel splats keep scale-dependent signal while following the same smooth effective footprint used by projection.
 - The stored alpha slot is a raw sigmoid parameter; the raster stage evaluates `base_alpha = sigmoid(raw_alpha) * coverage`, applies `alphaCutoff` to that pre-attenuation alpha, then multiplies by the clamp attenuation for the final blend alpha.
@@ -73,8 +74,8 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - `csClearRasterGrads` zeros both the float packed gradient buffer and the raster-backward fixed-point accumulation buffer.
 - `csRasterizeTrainingForward` runs the raster forward path for the fixed-count trainer, writes the rendered output, and caches one per-pixel forward state record plus `processedEnd` for backward replay.
 - `csRasterizeBackward` is a pure backward kernel: it loads the cached per-pixel forward state, derives `dLoss / dRasterState` from `g_OutputGrad`, and walks the staged splats in reverse without replaying forward internally.
-- The reverse pass reuses one staged gaussian per thread-group lane, accumulates the microtile's pixel contributions in registers, and writes them into a fixed-point accumulation path.
-- Global and groupshared raster loads are implemented via custom derivative functions; backward accumulation uses wave-reduced signed Q16.16 int atomics into `groupshared int` state first, then into a packed global int buffer (`g_ParamGradsFixed`).
+- The reverse pass reuses one staged gaussian per thread-group lane, accumulates one pixel's contributions in registers, and writes them into a fixed-point accumulation path.
+- Global and groupshared raster loads are implemented via custom derivative functions; backward accumulation uses signed Q16.16 int atomics into `groupshared int` state first, then into a packed global int buffer (`g_ParamGradsFixed`).
 - `csDecodeRasterGradsFixed` converts that packed int buffer back into the packed float gradient buffer (`g_ParamGrads`) exactly once and applies the caller-provided final gradient scale before regularizers, clipping, ADAM, and Python readback.
 - Output gradients are supplied through `g_OutputGrad` (`StructuredBuffer<float4>`) using flat pixel indexing `y * width + x`, and chain-rule terms include gamma output mapping and alpha output (`1 - transmittance`).
 

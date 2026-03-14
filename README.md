@@ -9,7 +9,7 @@ Runtime target is Vulkan.
 - GPU scanline work-item binning pass followed by key/value composition.
 - GPU radix sort integration (copied/adapted from prior project code).
 - GPU tile range build pass from sorted keys.
-- GPU compute rasterizer that blends tile-local sorted splats with `8x8` thread groups and `3x3` microtiles per thread (`24x24` effective tiles).
+- GPU compute rasterizer that blends tile-local sorted splats with fixed `8x8` tiles, one pixel per thread, and `256`-splat shared batches.
 - Fused raster forward/backward training path for per-splat gradients without per-pixel state buffers.
 - Fused one-thread-per-packed-parameter ADAM training kernel for a fixed gaussian count.
 - CPU COLMAP point-cloud initialization with nearest-neighbor scales.
@@ -37,7 +37,7 @@ If you have a local Slangpy checkout, replace the last command with `python -m p
 python render.py --ply C:\path\to\scene.ply --output render.png --width 1280 --height 720
 ```
 Use `--prepass-memory-mb` to cap prepass GPU memory for very large scenes.
-Raster tile sizing is internal: the renderer uses fixed `24x24` effective tiles derived from `8x8` thread groups and `3x3` microtiles.
+Raster tile sizing is internal: the renderer uses fixed `8x8` tiles with one pixel per thread.
 
 ## Realtime Viewer
 ```powershell

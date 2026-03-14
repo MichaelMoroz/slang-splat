@@ -30,8 +30,7 @@ class SceneBinding:
 @dataclass(frozen=True, slots=True)
 class RasterConfig:
     thread_tile_dim: int
-    microtile_dim: int
-    effective_tile_size: int
+    tile_size: int
     batch: int
 
 
@@ -188,11 +187,7 @@ class GaussianRenderer:
         return {"g_DebugGradNorm": self._debug_grad_norm_buffer if self._debug_grad_norm_buffer is not None else self._work_buffers["debug_grad_norm"]}
 
     def _raster_thread_count(self) -> spy.uint3:
-        return spy.uint3(
-            (self.width + self._raster_config.microtile_dim - 1) // self._raster_config.microtile_dim,
-            (self.height + self._raster_config.microtile_dim - 1) // self._raster_config.microtile_dim,
-            1,
-        )
+        return spy.uint3(self.width, self.height, 1)
 
     def _read_image(self) -> np.ndarray:
         return np.asarray(self.output_texture.to_numpy(), dtype=np.float32).copy()
@@ -261,7 +256,7 @@ class GaussianRenderer:
         self._project_shader_path = Path(SHADER_ROOT / "renderer" / "gaussian_project_stage.slang")
         self._raster_shader_path = Path(SHADER_ROOT / "renderer" / "gaussian_raster_stage.slang")
         self._raster_config = self._load_raster_config(self._types_shader_path)
-        self.tile_size = self._raster_config.effective_tile_size
+        self.tile_size = self._raster_config.tile_size
         self.radius_scale, self.alpha_cutoff = float(radius_scale), float(alpha_cutoff)
         self.max_splat_steps, self.transmittance_threshold = int(max_splat_steps), float(transmittance_threshold)
         self.list_capacity_multiplier = int(list_capacity_multiplier)
@@ -307,11 +302,11 @@ class GaussianRenderer:
         constants: dict[str, int] = {}
         for name, expr in re.compile(r"static\s+const\s+uint\s+(\w+)\s*=\s*([^;]+);").findall(source):
             constants[name] = cls._eval_uint_constant_expr(re.sub(r"(?<=[0-9A-Fa-f])[uU]\b", "", expr).strip(), constants)
-        required = ("RASTER_THREAD_TILE_DIM", "RASTER_MICROTILE_DIM", "RASTER_EFFECTIVE_TILE_SIZE", "RASTER_BATCH")
+        required = ("RASTER_THREAD_TILE_DIM", "RASTER_TILE_SIZE", "RASTER_BATCH")
         missing = [name for name in required if name not in constants]
         if missing:
             raise RuntimeError(f"Missing raster constants in {shader_path}: {', '.join(missing)}")
-        return RasterConfig(constants["RASTER_THREAD_TILE_DIM"], constants["RASTER_MICROTILE_DIM"], constants["RASTER_EFFECTIVE_TILE_SIZE"], constants["RASTER_BATCH"])
+        return RasterConfig(constants["RASTER_THREAD_TILE_DIM"], constants["RASTER_TILE_SIZE"], constants["RASTER_BATCH"])
 
     def _ensure_scene_buffers(self, splat_count: int) -> None:
         if self._scene_buffers and splat_count <= self._scene_capacity:
