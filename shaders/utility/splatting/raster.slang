@@ -23,19 +23,13 @@ CachedEllipsoid build_cached_ellipsoid(no_diff CameraParams cameraParams, no_dif
     gaussian.rotation = rotation;
     gaussian.colorAlpha = 0.0;
     Ellipsoid ellipsoid = build_ellipsoid(cameraParams, radiusScale, gaussian);
-    return { ellipsoid.roLocal, ellipsoid.invScale, ellipsoid.rotation };
+    return { ellipsoid.rasterRoLocal, ellipsoid.rasterInvScale, ellipsoid.rotation };
 }
 
 [Differentiable]
 float build_raster_fused_opacity(no_diff CameraParams cameraParams, no_diff float radiusScale, float3 position, float3 logScale, float rawOpacity)
 {
-    Gaussian3D gaussian;
-    gaussian.position = position;
-    gaussian.logScale = logScale;
-    gaussian.rotation = float4(1.0, 0.0, 0.0, 0.0);
-    gaussian.colorAlpha = 0.0;
-    Ellipsoid ellipsoid = build_ellipsoid(cameraParams, radiusScale, gaussian);
-    return opacity_from_raw(rawOpacity) * ellipsoid.opacityScale;
+    return opacity_from_raw(rawOpacity);
 }
 
 [Differentiable]

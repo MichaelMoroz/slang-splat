@@ -118,7 +118,7 @@ void csProjectAndBin(uint3 dispatchThreadID : SV_DispatchThreadID)
     PinholeCamera camera = PinholeCamera.from_params(g_Camera);
     Gaussian3D gaussian = load_gaussian3d(splatId);
     Ellipsoid ellipsoid = build_ellipsoid(g_Camera, g_Prepass.radiusScale, gaussian);
-    CachedEllipsoid cached = { ellipsoid.roLocal, ellipsoid.invScale, ellipsoid.rotation };
+    CachedEllipsoid cached = { ellipsoid.rasterRoLocal, ellipsoid.rasterInvScale, ellipsoid.rotation };
     float4 rasterColorAlpha = float4(
         gaussian.colorAlpha.xyz,
         build_raster_fused_opacity(g_Camera, g_Prepass.radiusScale, gaussian.position, gaussian.logScale, gaussian.colorAlpha.w)
@@ -130,7 +130,7 @@ void csProjectAndBin(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     float invDepth = 1.0 / max(depthValue, SMALL_VALUE);
     float2 fitCenter = camera.project_camera_to_screen_linear(camPos);
-    float maxAxisWorld = max(ellipsoid.scale.x, max(ellipsoid.scale.y, ellipsoid.scale.z));
+    float maxAxisWorld = max(ellipsoid.projectedScale.x, max(ellipsoid.projectedScale.y, ellipsoid.projectedScale.z));
     float fallbackFocal = max(g_Camera.focalPixels.x, g_Camera.focalPixels.y);
     float radiusCap = screen_radius_cap(g_Camera.viewport);
     float fallbackRadius = fallbackFocal * maxAxisWorld * invDepth;
@@ -143,13 +143,13 @@ void csProjectAndBin(uint3 dispatchThreadID : SV_DispatchThreadID)
     float3 fitConic = float3(invFitRadius2, 0.0, invFitRadius2);
 
     float3 localPoints[MVEE_POINT_COUNT];
-    bool silhouetteOk = generate_silhouette_points_local5(ellipsoid.roLocal, g_Prepass.sampled5Eps, localPoints);
+    bool silhouetteOk = generate_silhouette_points_local5(ellipsoid.projectedRoLocal, g_Prepass.sampled5Eps, localPoints);
     if (silhouetteOk)
     {
         float2 screenPoints[MVEE_POINT_COUNT];
         [unroll] for (uint i = 0; i < MVEE_POINT_COUNT; i++)
         {
-            float3 worldPt = local_point_to_world(localPoints[i], ellipsoid.centerWorld, ellipsoid.invScale, ellipsoid.rotation);
+            float3 worldPt = local_point_to_world(localPoints[i], ellipsoid.centerWorld, ellipsoid.projectedInvScale, ellipsoid.rotation);
             float2 screenPt = 0.0;
             bool pointOk = camera.project_world_to_screen(worldPt, screenPt);
             screenPoints[i] = screenPt;

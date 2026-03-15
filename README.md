@@ -90,8 +90,8 @@ Training notes:
 - Optimizer settings live in one structured per-parameter buffer, and ADAM moments are packed into one `float2` buffer (`m`, `v`) per parameter element.
 - `src/training/adam.py` is the Python-side generic ADAM module, while `src/training/optimizer.py` keeps Gaussian-specific regularization/projection; `GaussianTrainer` composes both.
 - GPU scene buffers store opacity as a raw sigmoid parameter so rasterization and optimization differentiate through effective alpha directly.
-- GPU scene buffers store gaussian scale in standard 3DGS log-scale form; rendering decodes `exp(log_scale)` and uses `radius_scale=1.0` as the calibrated default 3DGS render size for this rasterizer.
-- Pixel-floor-clamped splats attenuate blend alpha by the ratio of raw scale area to clamped scale area, while the alpha cutoff still applies to the pre-attenuation alpha path.
+- GPU scene buffers store gaussian scale in standard 3DGS log-scale form; rendering decodes `exp(log_scale)`, rasterizes with the true decoded support, and uses `radius_scale=1.0` as the default 3DGS render size.
+- Pixel-floor clamping is used only to keep projection/binning conservative for tiny splats; raster alpha still evaluates the true decoded gaussian support.
 - Reported training metrics are total loss, rolling average loss, and per-step `last_mse`.
 - Target Y-flip is enabled by default.
 - ADAM epsilon is compile-time shader state now; it is no longer exposed as a CLI or viewer runtime control.

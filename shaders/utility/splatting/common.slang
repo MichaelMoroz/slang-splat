@@ -7,7 +7,7 @@ static const uint MVEE_POINT_COUNT = 5u;
 static const uint MVEE_MAX_ITERS = 8u;
 static const float SCALE_AREA_PROXY_POWER = 2.0 / 3.0;
 static const float SCALE_FLOOR_SMOOTH_RATIO = 1.0;
-static const float GAUSSIAN_SUPPORT_SIGMA_RADIUS = 2.6;
+static const float GAUSSIAN_SUPPORT_SIGMA_RADIUS = 3.0;
 
 struct ScanlineWorkItem
 {
@@ -65,10 +65,13 @@ struct Gaussian3D : IDifferentiable
 struct Ellipsoid : IDifferentiable
 {
     float3 centerWorld;
-    float3 scale;
-    float3 invScale;
+    float3 rasterScale;
+    float3 rasterInvScale;
+    float3 projectedScale;
+    float3 projectedInvScale;
     float4 rotation;
-    float3 roLocal;
+    float3 rasterRoLocal;
+    float3 projectedRoLocal;
     float opacityScale;
 };
 
@@ -255,13 +258,17 @@ Ellipsoid build_ellipsoid(no_diff CameraParams cameraParams, no_diff float radiu
     float minScaleWorld = minimum_pixel_scale_world(cameraParams, gaussian.position);
     float3 sigma = exp(gaussian.logScale);
     float3 rawSupportScale = max(sigma * (radiusScale * GAUSSIAN_SUPPORT_SIGMA_RADIUS), float3(SMALL_VALUE));
-    float3 clampedScale = smooth_max_scale(rawSupportScale, float3(minScaleWorld));
+    float3 projectedScale = smooth_max_scale(rawSupportScale, float3(minScaleWorld));
     Ellipsoid ellipsoid;
     ellipsoid.centerWorld = gaussian.position;
-    ellipsoid.scale = clampedScale;
-    ellipsoid.invScale = 1.0 / max(ellipsoid.scale, float3(SMALL_VALUE));
+    ellipsoid.rasterScale = rawSupportScale;
+    ellipsoid.rasterInvScale = 1.0 / max(ellipsoid.rasterScale, float3(SMALL_VALUE));
+    ellipsoid.projectedScale = projectedScale;
+    ellipsoid.projectedInvScale = 1.0 / max(ellipsoid.projectedScale, float3(SMALL_VALUE));
     ellipsoid.rotation = gaussian.rotation;
-    ellipsoid.roLocal = rotate_by_quat(camera.position_world() - ellipsoid.centerWorld, ellipsoid.rotation) * ellipsoid.invScale;
-    ellipsoid.opacityScale = opacity_scale_from_clamp(rawSupportScale, clampedScale);
+    float3 cameraOffset = rotate_by_quat(camera.position_world() - ellipsoid.centerWorld, ellipsoid.rotation);
+    ellipsoid.rasterRoLocal = cameraOffset * ellipsoid.rasterInvScale;
+    ellipsoid.projectedRoLocal = cameraOffset * ellipsoid.projectedInvScale;
+    ellipsoid.opacityScale = opacity_scale_from_clamp(rawSupportScale, projectedScale);
     return ellipsoid;
 }

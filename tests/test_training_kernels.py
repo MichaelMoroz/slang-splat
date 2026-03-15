@@ -17,7 +17,7 @@ _OPACITY_EPS = 1e-6
 _raw_opacity = lambda alpha: (np.log(np.clip(np.asarray(alpha, dtype=np.float32), _OPACITY_EPS, 1.0 - _OPACITY_EPS)) - np.log1p(-np.clip(np.asarray(alpha, dtype=np.float32), _OPACITY_EPS, 1.0 - _OPACITY_EPS))).astype(np.float32, copy=False)
 _actual_opacity = lambda raw: (1.0 / (1.0 + np.exp(-np.asarray(raw, dtype=np.float32)))).astype(np.float32, copy=False)
 _actual_scale = lambda log_scale: np.exp(np.asarray(log_scale, dtype=np.float32))
-_GAUSSIAN_SUPPORT_SIGMA_RADIUS = 2.6
+_GAUSSIAN_SUPPORT_SIGMA_RADIUS = 3.0
 _log_sigma = lambda sigma: np.log(np.asarray(sigma, dtype=np.float32))
 _stored_from_support_scale = lambda support_scale: np.log(np.asarray(support_scale, dtype=np.float32) / _GAUSSIAN_SUPPORT_SIGMA_RADIUS)
 _SCALE_GRAD_MULS = (0.015625, 0.03125, 0.0625, 0.125, 0.25, 0.5, 0.75, 0.875, 0.9375, 0.96875, 1.0, 1.05)

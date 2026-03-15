@@ -17,7 +17,7 @@ from src.renderer import Camera, GaussianRenderer
 from src.scene import GaussianScene
 
 _RASTER_GRAD_FIXED_SCALE = 65536.0
-_GAUSSIAN_SUPPORT_SIGMA_RADIUS = 2.6
+_GAUSSIAN_SUPPORT_SIGMA_RADIUS = 3.0
 
 _log_sigma = lambda sigma: np.log(np.asarray(sigma, dtype=np.float32))
 _stored_from_support_scale = lambda support_scale: np.log(np.asarray(support_scale, dtype=np.float32) / _GAUSSIAN_SUPPORT_SIGMA_RADIUS)
@@ -239,7 +239,7 @@ def test_radius_scale_scales_true_3dgs_size_without_hidden_fudge(device):
     assert np.isclose(projected_footprint_2x.center_radius_depth[0, 2] / projected_footprint_1x.center_radius_depth[0, 2], 2.0, rtol=1e-3, atol=1e-4)
 
 
-def test_subpixel_gaussian_uses_pixel_floor_in_projection_and_raster(device):
+def test_subpixel_gaussian_uses_pixel_floor_in_projection_but_preserves_raster_scale(device):
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
     background = np.array([0.0, 0.0, 0.0], dtype=np.float32)
     renderer = GaussianRenderer(device, width=65, height=65, radius_scale=1.0, list_capacity_multiplier=16)
@@ -286,13 +286,12 @@ def test_subpixel_gaussian_uses_pixel_floor_in_projection_and_raster(device):
     )
 
     effective_scale = float(np.mean(1.0 / projected.inv_scale[0]))
-    expected_alpha = scene.opacities[0] * (raw_scale / effective_scale) ** 2
     center_pixel = renderer.width // 2
-    assert expected_scale < effective_scale < 1.5 * expected_scale
+    assert np.isclose(effective_scale, raw_scale, rtol=0.0, atol=1e-6)
     assert float(debug["screen_center_radius_depth"][0, 2]) >= 0.75
     assert 0.1 <= float(debug["screen_ellipse_conic"][0, 3]) <= 0.25
-    assert gpu_image[center_pixel, center_pixel, 3] < scene.opacities[0]
-    assert np.isclose(float(cpu_image[center_pixel, center_pixel, 3]), expected_alpha, atol=2e-3)
+    assert np.isclose(float(cpu_image[center_pixel, center_pixel, 3]), float(scene.opacities[0]), atol=2e-3)
+    assert np.isclose(float(gpu_image[center_pixel, center_pixel, 3]), float(scene.opacities[0]), atol=2e-3)
     np.testing.assert_allclose(gpu_image, cpu_image, rtol=0.0, atol=5e-3)
 
 
@@ -463,7 +462,7 @@ def test_raster_backward_produces_float_final_grads_and_fixed_intermediate(devic
     assert np.any(np.abs(final_nonzero * _RASTER_GRAD_FIXED_SCALE - np.rint(final_nonzero * _RASTER_GRAD_FIXED_SCALE)) > 1e-4)
 
 
-def test_clamped_subpixel_raster_backward_has_scale_gradient(device):
+def test_projection_only_subpixel_floor_does_not_inject_raster_scale_gradient(device):
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
     renderer = GaussianRenderer(device, width=65, height=65, radius_scale=1.0, list_capacity_multiplier=16)
     raw_scale = 0.5 * camera.pixel_world_size_max(4.0, renderer.width, renderer.height)
@@ -479,7 +478,7 @@ def test_clamped_subpixel_raster_backward_has_scale_gradient(device):
     grads = renderer.debug_raster_backward_grads(scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32))
 
     assert np.all(np.isfinite(grads["grad_scales"]))
-    assert float(np.max(np.abs(grads["grad_scales"][0, :3]))) > 1e-7
+    assert float(np.max(np.abs(grads["grad_scales"][0, :3]))) < 1e-7
 
 
 def test_prepass_capacity_budget_caps_growth(device):

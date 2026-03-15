@@ -10,9 +10,8 @@ from .projection_sampled5_mvee_reference import project_splats_sampled5_mvee
 
 ELLIPSE_EPS = 1e-5
 MIN_CONIC_DET = 1e-12
-SCALE_AREA_PROXY_POWER = np.float32(2.0 / 3.0)
 SCALE_FLOOR_SMOOTH_RATIO = np.float32(1.0)
-GAUSSIAN_SUPPORT_SIGMA_RADIUS = np.float32(2.6)
+GAUSSIAN_SUPPORT_SIGMA_RADIUS = np.float32(3.0)
 
 
 @dataclass(slots=True)
@@ -68,17 +67,11 @@ def project_splats(scene: GaussianScene, camera: Camera, width: int, height: int
     _, _, forward = camera.basis()
     position_delta = scene.positions.astype(np.float32) - camera.position.astype(np.float32)
     depth = np.sum(position_delta * forward[None, :].astype(np.float32), axis=1, dtype=np.float32)
-    min_scale_world = np.asarray([camera.pixel_world_size_max(float(value), width, height) for value in depth], dtype=np.float32)
-    raw_scale = np.maximum(np.exp(scene.scales.astype(np.float32)) * (np.float32(radius_scale) * GAUSSIAN_SUPPORT_SIGMA_RADIUS), np.float32(1e-6))
-    clamped_scale = _smooth_max_scale(raw_scale, np.repeat(min_scale_world[:, None], 3, axis=1))
-    raw_area = np.power(np.maximum(np.prod(raw_scale, axis=1, dtype=np.float32), np.float32(1e-6)), SCALE_AREA_PROXY_POWER).astype(np.float32)
-    clamped_area = np.power(np.maximum(np.prod(clamped_scale, axis=1, dtype=np.float32), np.float32(1e-6)), SCALE_AREA_PROXY_POWER).astype(np.float32)
-    opacity_scale = np.minimum(raw_area / np.maximum(clamped_area, np.float32(1e-6)), np.float32(1.0)).astype(np.float32)
     return ProjectedSplats(
         center_radius_depth=projected.center_radius_depth,
         ellipse_conic=conic,
         color_alpha=projected.color_alpha,
-        opacity_scale=opacity_scale,
+        opacity_scale=np.ones((scene.count,), dtype=np.float32),
         valid=projected.valid,
         pos_local=projected.pos_local,
         inv_scale=projected.inv_scale,

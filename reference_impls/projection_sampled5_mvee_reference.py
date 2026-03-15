@@ -15,7 +15,7 @@ STATUS_MVEE_DEGENERATE = np.uint32(1 << 3)
 STATUS_HARD_FALLBACK = np.uint32(1 << 4)
 _TAU = np.float32(2.0 * np.pi)
 _SCALE_FLOOR_SMOOTH_RATIO = np.float32(1.0)
-_GAUSSIAN_SUPPORT_SIGMA_RADIUS = np.float32(2.6)
+_GAUSSIAN_SUPPORT_SIGMA_RADIUS = np.float32(3.0)
 
 
 @dataclass(slots=True)
@@ -203,12 +203,13 @@ def project_splats_sampled5_mvee(
         min_scale_world = np.float32(camera.pixel_world_size_max(depth_value, width, height))
         sigma = np.exp(scene.scales[i].astype(np.float32).copy())
         raw_scale = np.maximum(sigma * (np.float32(radius_scale) * _GAUSSIAN_SUPPORT_SIGMA_RADIUS), np.float32(1e-6))
-        scale = _smooth_max_scale(raw_scale, np.full((3,), min_scale_world, dtype=np.float32))
-        fallback_radius = float(np.clip((fallback_focal * float(np.max(scale)) / max(depth_value, 1e-6)) * float(safety_scale) + float(radius_pad_px), 1.0, radius_cap))
-        invs = 1.0 / np.maximum(scale, np.float32(1e-6))
+        projected_scale = _smooth_max_scale(raw_scale, np.full((3,), min_scale_world, dtype=np.float32))
+        fallback_radius = float(np.clip((fallback_focal * float(np.max(projected_scale)) / max(depth_value, 1e-6)) * float(safety_scale) + float(radius_pad_px), 1.0, radius_cap))
+        invs = 1.0 / np.maximum(raw_scale, np.float32(1e-6))
+        projected_invs = 1.0 / np.maximum(projected_scale, np.float32(1e-6))
         ro_local = (_quat_rotate(camera.position - world_pos, q) * invs).astype(np.float32)
         pos_local[i, :], inv_scale[i, :] = ro_local, invs
-        local_pts, ok_silhouette = _silhouette_points_local5(ro_local, float(mvee_eps))
+        local_pts, ok_silhouette = _silhouette_points_local5((_quat_rotate(camera.position - world_pos, q) * projected_invs).astype(np.float32), float(mvee_eps))
         radius_px = fallback_radius
         if not ok_silhouette:
             status_bits[i] |= STATUS_SILHOUETTE_UNSTABLE
@@ -217,7 +218,7 @@ def project_splats_sampled5_mvee(
             screen_pts = np.zeros((5, 2), dtype=np.float32)
             ok_project = True
             for j in range(5):
-                world_sample = world_pos + _quat_rotate(local_pts[j] / np.maximum(invs, 1e-6), q_inv)
+                world_sample = world_pos + _quat_rotate(local_pts[j] / np.maximum(projected_invs, 1e-6), q_inv)
                 screen_p, _, valid_p = _project_world_to_screen(
                     world_sample,
                     camera.position,
