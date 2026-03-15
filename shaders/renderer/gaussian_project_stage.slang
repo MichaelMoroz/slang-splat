@@ -121,7 +121,7 @@ void csProjectAndBin(uint3 dispatchThreadID : SV_DispatchThreadID)
     CachedEllipsoid cached = { ellipsoid.roLocal, ellipsoid.invScale, ellipsoid.rotation };
     float4 rasterColorAlpha = float4(
         gaussian.colorAlpha.xyz,
-        build_raster_fused_opacity(g_Camera, g_Prepass.radiusScale, gaussian.position, gaussian.scale, gaussian.colorAlpha.w)
+        build_raster_fused_opacity(g_Camera, g_Prepass.radiusScale, gaussian.position, gaussian.logScale, gaussian.colorAlpha.w)
     );
     float3 cameraOffset = ellipsoid.centerWorld - camera.position_world();
     float3 camPos = camera.world_to_camera(cameraOffset);

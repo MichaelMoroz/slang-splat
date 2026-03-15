@@ -194,7 +194,7 @@ def default_control_values(*group_names: str) -> dict[str, object]:
 
 
 RENDER_PARAM_SPECS = (
-    ControlSpec("radius_scale", "slider_float", "Radius Scale", {"value": 2.6, "min": 0.5, "max": 4.0, "format": "%.3g"}),
+    ControlSpec("radius_scale", "slider_float", "Radius Scale", {"value": 1.0, "min": 0.25, "max": 4.0, "format": "%.3g"}),
     ControlSpec("alpha_cutoff", "slider_float", "Alpha Cutoff", {"value": 0.0039, "min": 0.0001, "max": 0.1, "format": "%.2e"}),
     ControlSpec("max_splat_steps", "slider_int", "Max Splat Steps", {"value": 32768, "min": 16, "max": 32768}),
     ControlSpec("trans_threshold", "slider_float", "Trans Threshold", {"value": 0.005, "min": 0.001, "max": 0.2, "format": "%.2e"}),
@@ -951,7 +951,7 @@ class ToolkitWindow:
     # -- Helpers --
 
     _TOOLTIPS = {
-        "radius_scale": "Multiplier on gaussian splat radius for rendering",
+        "radius_scale": "Multiplier on top of true 3DGS gaussian size for rendering",
         "alpha_cutoff": "Minimum alpha threshold — splats below this are skipped",
         "max_splat_steps": "Maximum rasterization steps per pixel ray",
         "trans_threshold": "Transmittance threshold for early ray termination",
@@ -974,8 +974,8 @@ class ToolkitWindow:
         "scale_abs_reg": "Absolute scale regularization weight",
         "opacity_reg": "Opacity regularization weight (pushes toward 0 or 1)",
         "max_anisotropy": "Maximum ratio between largest and smallest scale axes",
-        "min_scale": "Floor for gaussian scale (prevents degenerate splats)",
-        "max_scale": "Ceiling for gaussian scale",
+        "min_scale": "Floor for decoded gaussian sigma",
+        "max_scale": "Ceiling for decoded gaussian sigma",
         "min_opacity": "Floor for opacity",
         "max_opacity": "Ceiling for opacity",
         "position_abs_max": "Absolute position bounding box (per axis)",

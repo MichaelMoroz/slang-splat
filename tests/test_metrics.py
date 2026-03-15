@@ -9,6 +9,8 @@ from src.metrics import Metrics, psnr_from_mse
 from src.renderer import GaussianRenderer
 from src.scene import GaussianScene
 
+_log_scale = lambda scales: np.log(np.asarray(scales, dtype=np.float32))
+
 
 def _scene(scales: np.ndarray) -> GaussianScene:
     count = int(scales.shape[0])
@@ -26,7 +28,7 @@ def _scene(scales: np.ndarray) -> GaussianScene:
 
 def test_gpu_scale_histogram_buckets_geometric_mean(device) -> None:
     renderer = GaussianRenderer(device, width=8, height=8)
-    renderer.set_scene(_scene(np.array([[1e-2, 1e-2, 1e-2], [1e-1, 1e-1, 1e-1], [1.0, 1.0, 1.0]], dtype=np.float32)))
+    renderer.set_scene(_scene(_log_scale(np.array([[1e-2, 1e-2, 1e-2], [1e-1, 1e-1, 1e-1], [1.0, 1.0, 1.0]], dtype=np.float32))))
     metrics = Metrics(device)
 
     hist = metrics.compute_scale_histogram(renderer.scene_buffers["splat_params"], 3, bin_count=3, min_log10=-2.0, max_log10=1.0)
@@ -37,7 +39,7 @@ def test_gpu_scale_histogram_buckets_geometric_mean(device) -> None:
 
 def test_gpu_anisotropy_histogram_buckets_max_over_min_ratio(device) -> None:
     renderer = GaussianRenderer(device, width=8, height=8)
-    renderer.set_scene(_scene(np.array([[1.0, 1.0, 1.0], [10.0, 1.0, 1.0], [100.0, 10.0, 1.0]], dtype=np.float32)))
+    renderer.set_scene(_scene(_log_scale(np.array([[1.0, 1.0, 1.0], [10.0, 1.0, 1.0], [100.0, 10.0, 1.0]], dtype=np.float32))))
     metrics = Metrics(device)
 
     hist = metrics.compute_anisotropy_histogram(renderer.scene_buffers["splat_params"], 3, bin_count=3, min_log10=0.0, max_log10=3.0)
@@ -47,7 +49,7 @@ def test_gpu_anisotropy_histogram_buckets_max_over_min_ratio(device) -> None:
 
 def test_gpu_histograms_ignore_nonfinite_rows(device) -> None:
     renderer = GaussianRenderer(device, width=8, height=8)
-    renderer.set_scene(_scene(np.array([[0.1, 0.1, 0.1], [np.nan, 0.2, 0.2], [0.3, np.inf, 0.3]], dtype=np.float32)))
+    renderer.set_scene(_scene(np.array([[-2.3025851, -2.3025851, -2.3025851], [np.nan, -1.609438, -1.609438], [-1.2039728, np.inf, -1.2039728]], dtype=np.float32)))
     metrics = Metrics(device)
 
     scale_hist = metrics.compute_scale_histogram(renderer.scene_buffers["splat_params"], 3, bin_count=2, min_log10=-2.0, max_log10=0.0)

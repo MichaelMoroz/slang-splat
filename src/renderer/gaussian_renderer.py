@@ -244,7 +244,7 @@ class GaussianRenderer:
         device: spy.Device,
         width: int,
         height: int,
-        radius_scale: float = 2.6,
+        radius_scale: float = 1.0,
         alpha_cutoff: float = 1.0 / 255.0,
         max_splat_steps: int = 32768,
         transmittance_threshold: float = 0.005,

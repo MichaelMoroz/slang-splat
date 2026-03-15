@@ -307,7 +307,7 @@ class GaussianTrainer:
             return 1.0
         scales = np.asarray(scene.scales, dtype=np.float32)
         finite = np.isfinite(scales).all(axis=1)
-        return 1.0 if not np.any(finite) else float(np.exp(np.mean(np.log(np.maximum(scales[finite], 1e-8)), dtype=np.float64)))
+        return 1.0 if not np.any(finite) else float(np.exp(np.mean(scales[finite], dtype=np.float64)))
 
     def _ensure_training_buffers(self, splat_count: int, batch_step_count: int = 1) -> None:
         count = max(int(splat_count), 1)
@@ -553,7 +553,7 @@ class GaussianTrainer:
         count = min(max(int(splat_count), 1), int(self._init_point_count))
         positions = np.ascontiguousarray(self._init_point_positions_cpu[:count], dtype=np.float32)
         colors = np.ascontiguousarray(self._init_point_colors_cpu[:count], dtype=np.float32)
-        scales = np.repeat(point_nn_scales(positions)[:, None], 3, axis=1).astype(np.float32)
+        scales = np.log(np.repeat(point_nn_scales(positions)[:, None], 3, axis=1).astype(np.float32))
         rotations = np.zeros((count, 4), dtype=np.float32)
         rotations[:, 0] = 1.0
         scene = GaussianScene(
@@ -567,7 +567,7 @@ class GaussianTrainer:
         self._scene_count, self.scene = count, _SceneCountProxy(count)
         self.renderer.set_scene(scene)
         self._ensure_training_buffers(self._scene_count, 1)
-        self._scale_reg_reference = float(max(np.median(scales[:, 0]), 1e-8))
+        self._scale_reg_reference = float(max(np.exp(np.median(scales[:, 0])), 1e-8))
         self._zero_optimizer_moments()
         self.state = TrainingState()
         self._frame_metrics.reset()

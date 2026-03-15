@@ -16,6 +16,10 @@ _ADAM_BUFFER_NAMES = ("adam_moments",)
 _OPACITY_EPS = 1e-6
 _raw_opacity = lambda alpha: (np.log(np.clip(np.asarray(alpha, dtype=np.float32), _OPACITY_EPS, 1.0 - _OPACITY_EPS)) - np.log1p(-np.clip(np.asarray(alpha, dtype=np.float32), _OPACITY_EPS, 1.0 - _OPACITY_EPS))).astype(np.float32, copy=False)
 _actual_opacity = lambda raw: (1.0 / (1.0 + np.exp(-np.asarray(raw, dtype=np.float32)))).astype(np.float32, copy=False)
+_actual_scale = lambda log_scale: np.exp(np.asarray(log_scale, dtype=np.float32))
+_GAUSSIAN_SUPPORT_SIGMA_RADIUS = 3.0
+_log_sigma = lambda sigma: np.log(np.asarray(sigma, dtype=np.float32))
+_stored_from_support_scale = lambda support_scale: np.log(np.asarray(support_scale, dtype=np.float32) / _GAUSSIAN_SUPPORT_SIGMA_RADIUS)
 _SCALE_GRAD_MULS = (0.015625, 0.03125, 0.0625, 0.125, 0.25, 0.5, 0.75, 0.875, 0.9375, 0.96875, 1.0, 1.05)
 _TARGET_MULS = (2.0, 3.0, 4.0, 6.0, 7.5)
 
@@ -24,7 +28,7 @@ def _make_scene(count: int = 24, seed: int = 7) -> GaussianScene:
     rng = np.random.default_rng(seed)
     positions = rng.uniform(-1.0, 1.0, size=(count, 3)).astype(np.float32)
     positions[:, 2] += 2.0
-    scales = np.full((count, 3), 0.03, dtype=np.float32)
+    scales = _log_sigma(np.full((count, 3), 0.03, dtype=np.float32))
     rotations = np.zeros((count, 4), dtype=np.float32)
     rotations[:, 0] = 1.0
     opacities = np.full((count,), 0.5, dtype=np.float32)
@@ -93,7 +97,7 @@ class _ScaleGradProbe:
         self.pixel_floor_scale = self.camera.pixel_world_size_max(3.0, self.target_renderer.width, self.target_renderer.height)
         self.target_scene = GaussianScene(
             positions=np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
-            scales=np.full((1, 3), self.pixel_floor_scale, dtype=np.float32),
+            scales=np.full((1, 3), _stored_from_support_scale(self.pixel_floor_scale), dtype=np.float32),
             rotations=np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
             opacities=np.array([0.75], dtype=np.float32),
             colors=np.array([[0.8, 0.6, 0.2]], dtype=np.float32),
@@ -105,7 +109,7 @@ class _ScaleGradProbe:
             renderer=self.renderer,
             scene=GaussianScene(
                 positions=self.target_scene.positions.copy(),
-                scales=np.full((1, 3), self.pixel_floor_scale, dtype=np.float32),
+                scales=np.full((1, 3), _stored_from_support_scale(self.pixel_floor_scale), dtype=np.float32),
                 rotations=self.target_scene.rotations.copy(),
                 opacities=self.target_scene.opacities.copy(),
                 colors=self.target_scene.colors.copy(),
@@ -123,7 +127,7 @@ class _ScaleGradProbe:
 
     def upload_target_scale(self, target_scale: float) -> None:
         if float(target_scale) == self._last_target_scale: return
-        self.target_scene.scales[...] = float(target_scale)
+        self.target_scene.scales[...] = _stored_from_support_scale(float(target_scale))
         rgb = np.clip(
             np.asarray(
                 self.target_renderer.render(self.target_scene, self.camera, background=self.background).image,
@@ -140,7 +144,7 @@ class _ScaleGradProbe:
         self._last_target_scale = float(target_scale)
 
     def upload_train_scale(self, scale: float) -> None:
-        self.scene_groups["scales"][0, :3] = float(scale)
+        self.scene_groups["scales"][0, :3] = _stored_from_support_scale(float(scale))
         self.renderer.write_scene_groups(
             1,
             positions=self.scene_groups["positions"],
@@ -513,8 +517,9 @@ def test_synthetic_base_grads_update_and_respect_constraints(device, tmp_path: P
     assert np.all(np.isfinite(rotations))
     assert np.all(np.isfinite(color_alpha))
     assert np.all(np.abs(positions[:, :3]) <= trainer.stability.position_abs_max + 1e-5)
-    assert np.all(scales[:, :3] >= trainer.stability.min_scale - 1e-6)
-    assert np.all(scales[:, :3] <= trainer.stability.max_scale + 1e-6)
+    actual_scales = _actual_scale(scales[:, :3])
+    assert np.all(actual_scales >= trainer.stability.min_scale - 1e-6)
+    assert np.all(actual_scales <= trainer.stability.max_scale + 1e-6)
     assert np.all(color_alpha[:, :3] >= -1e-6)
     assert np.all(color_alpha[:, :3] <= 1.0 + 1e-6)
     assert np.all(_actual_opacity(color_alpha[:, 3]) >= 0.0)
@@ -523,7 +528,7 @@ def test_synthetic_base_grads_update_and_respect_constraints(device, tmp_path: P
 
 def test_adam_step_clamps_anisotropy(device, tmp_path: Path):
     scene = _make_scene(count=1, seed=25)
-    scene.scales[0] = np.array([0.9, 0.05, 0.05], dtype=np.float32)
+    scene.scales[0] = _log_sigma(np.array([0.9, 0.05, 0.05], dtype=np.float32))
     frame = _make_frame(tmp_path)
     renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
     trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(scale_l2_weight=0.0, scale_abs_reg_weight=0.0), seed=27)
@@ -540,12 +545,12 @@ def test_adam_step_clamps_anisotropy(device, tmp_path: Path):
     device.wait()
 
     scales = _read_scene_groups(renderer, 1)["scales"]
-    np.testing.assert_allclose(scales[0, :3], np.array([0.9, 0.09, 0.09], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(_actual_scale(scales[0, :3]), np.array([0.9, 0.09, 0.09], dtype=np.float32), rtol=0.0, atol=1e-6)
 
 
 def test_log_scale_regularizer_pulls_scales_toward_reference(device, tmp_path: Path):
     scene = _make_scene(count=2, seed=27)
-    scene.scales[:] = np.array([[0.02, 0.02, 0.02], [0.08, 0.08, 0.08]], dtype=np.float32)
+    scene.scales[:] = _log_sigma(np.array([[0.02, 0.02, 0.02], [0.08, 0.08, 0.08]], dtype=np.float32))
     frame = _make_frame(tmp_path)
     renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
     trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(scale_l2_weight=1.0), scale_reg_reference=0.04, seed=29)
@@ -607,7 +612,7 @@ def test_cpu_pointcloud_initializer_rebuilds_scene_with_nn_scales(device, tmp_pa
     expected_scales = np.array([[1.0, 1.0, 1.0], [1.0, 1.0, 1.0], [1.0, 1.0, 1.0], [np.sqrt(2.0), np.sqrt(2.0), np.sqrt(2.0)]], dtype=np.float32)
 
     assert np.all(np.isfinite(positions))
-    np.testing.assert_allclose(scales[:, :3], expected_scales, rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(_actual_scale(scales[:, :3]), expected_scales, rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(_actual_opacity(color_alpha[:, 3]), np.full((4,), 0.5, dtype=np.float32), rtol=0.0, atol=1e-6)
     assert np.all(np.abs(np.linalg.norm(rotations, axis=1) - 1.0) < 1e-3)
     for name in _ADAM_BUFFER_NAMES:

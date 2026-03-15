@@ -22,12 +22,11 @@ float3 rgb_l1_grad(float3 rendered, no_diff float3 target)
 }
 
 [Differentiable]
-float scale_log_reference_loss(float3 scale, no_diff float referenceScale)
+float scale_log_reference_loss(float3 logScale, no_diff float referenceScale)
 {
-    float3 scaleSafe = max(scale, float3(TINY_VALUE));
-    float refSafe = max(referenceScale, TINY_VALUE);
-    float3 logScale = log(scaleSafe / refSafe);
-    return dot(logScale, logScale) * (1.0 / 3.0);
+    float logReference = log(max(referenceScale, TINY_VALUE));
+    float3 delta = logScale - float3(logReference);
+    return dot(delta, delta) * (1.0 / 3.0);
 }
 
 [Differentiable]
@@ -36,7 +35,9 @@ float opacity_l1_loss(float rawOpacity)
     return opacity_from_raw(rawOpacity);
 }
 
-float scale_abs_l1_loss(float3 scale)
+[Differentiable]
+float scale_abs_l1_loss(float3 logScale)
 {
-    return (abs(scale.x) + abs(scale.y) + abs(scale.z)) * (1.0 / 3.0);
+    float3 scale = exp(logScale);
+    return (scale.x + scale.y + scale.z) * (1.0 / 3.0);
 }

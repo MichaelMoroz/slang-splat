@@ -35,7 +35,7 @@ uniform RWStructuredBuffer<float> g_SplatParamsRW;
 struct TrainableGaussianState
 {
     float3 position;
-    float3 scale;
+    float3 logScale;
     float4 rotation;
     float4 colorAlpha;
 
@@ -47,7 +47,7 @@ struct TrainableGaussianState
             load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_POSITION_Y, splatId),
             load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_POSITION_Z, splatId)
         );
-        state.scale = float3(
+        state.logScale = float3(
             load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SCALE_X, splatId),
             load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SCALE_Y, splatId),
             load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SCALE_Z, splatId)
@@ -72,9 +72,9 @@ struct TrainableGaussianState
         store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_POSITION_X, splatId, position.x);
         store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_POSITION_Y, splatId, position.y);
         store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_POSITION_Z, splatId, position.z);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SCALE_X, splatId, scale.x);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SCALE_Y, splatId, scale.y);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SCALE_Z, splatId, scale.z);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SCALE_X, splatId, logScale.x);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SCALE_Y, splatId, logScale.y);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SCALE_Z, splatId, logScale.z);
         store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_ROTATION_X, splatId, rotation.x);
         store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_ROTATION_Y, splatId, rotation.y);
         store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_ROTATION_Z, splatId, rotation.z);
@@ -130,11 +130,12 @@ void store_param_grad4(uint firstParamId, uint splatId, float4 value)
     store_param_grad(firstParamId + 3u, splatId, value.w);
 }
 
-float3 clamp_scale_anisotropy(float3 scale)
+float3 clamp_scale_anisotropy(float3 logScale)
 {
     float maxAnisotropy = max(g_Stability.maxAnisotropy, 1.0);
-    float maxScale = max(scale.x, max(scale.y, scale.z));
-    return max(scale, float3(maxScale / maxAnisotropy));
+    float maxLogScale = max(logScale.x, max(logScale.y, logScale.z));
+    float minAllowedLogScale = maxLogScale - log(maxAnisotropy);
+    return max(logScale, float3(minAllowedLogScale));
 }
 
 [shader("compute")]
@@ -153,8 +154,8 @@ void csAccumulateRegularizationGrads(uint3 dispatchThreadID : SV_DispatchThreadI
     if (scaleL2Weight > 0.0)
     {
         float scaleRegReference = max(g_ScaleRegReference, TINY_VALUE);
-        var dpScaleReg = diffPair(state.scale);
-        float scaleRegLoss = scale_log_reference_loss(state.scale, scaleRegReference);
+        var dpScaleReg = diffPair(state.logScale);
+        float scaleRegLoss = scale_log_reference_loss(state.logScale, scaleRegReference);
         bwd_diff(scale_log_reference_loss)(dpScaleReg, scaleRegReference, scaleL2Weight * invSplatCount);
         gradScale += dpScaleReg.getDifferential();
         float lossAdd = scaleL2Weight * scaleRegLoss * invSplatCount;
@@ -164,9 +165,11 @@ void csAccumulateRegularizationGrads(uint3 dispatchThreadID : SV_DispatchThreadI
     float scaleAbsRegWeight = max(g_ScaleAbsRegWeight, 0.0);
     if (scaleAbsRegWeight > 0.0)
     {
-        float3 signGrad = float3(state.scale.x > 0.0 ? 1.0 : state.scale.x < 0.0 ? -1.0 : 0.0, state.scale.y > 0.0 ? 1.0 : state.scale.y < 0.0 ? -1.0 : 0.0, state.scale.z > 0.0 ? 1.0 : state.scale.z < 0.0 ? -1.0 : 0.0);
-        gradScale += signGrad * (scaleAbsRegWeight * invSplatCount * (1.0 / 3.0));
-        float lossAdd = scaleAbsRegWeight * scale_abs_l1_loss(state.scale) * invSplatCount;
+        var dpScaleAbsReg = diffPair(state.logScale);
+        float scaleAbsRegLoss = scale_abs_l1_loss(state.logScale);
+        bwd_diff(scale_abs_l1_loss)(dpScaleAbsReg, scaleAbsRegWeight * invSplatCount);
+        gradScale += dpScaleAbsReg.getDifferential();
+        float lossAdd = scaleAbsRegWeight * scaleAbsRegLoss * invSplatCount;
         if (isfinite(lossAdd) && lossAdd != 0.0) InterlockedAdd(g_LossBuffer[LOSS_SLOT_TOTAL], lossAdd);
     }
 
@@ -193,7 +196,7 @@ void csProjectGaussianParams(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (splatId >= g_SplatCount) return;
 
     TrainableGaussianState state = TrainableGaussianState.load(splatId);
-    state.scale = clamp_scale_anisotropy(sanitize_float3(state.scale, g_Stability.hugeValue));
+    state.logScale = clamp_scale_anisotropy(sanitize_float3(state.logScale, g_Stability.hugeValue));
     state.rotation = normalize_quaternion_safe(sanitize_float4(state.rotation, g_Stability.hugeValue));
     state.store(splatId);
 }

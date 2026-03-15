@@ -51,10 +51,9 @@ def load_gaussian_ply(path: str | Path) -> GaussianScene:
 
     scale_names = _sorted_props(property_names, "scale_")
     if scale_names:
-        raw_scales = np.stack([np.asarray(vertex[name], dtype=np.float32) for name in scale_names], axis=1)
-        scales = np.exp(raw_scales)
+        scales = np.stack([np.asarray(vertex[name], dtype=np.float32) for name in scale_names], axis=1)
     else:
-        scales = np.ones((n, 3), dtype=np.float32)
+        scales = np.zeros((n, 3), dtype=np.float32)
 
     rot_names = _sorted_props(property_names, "rot")
     if rot_names:

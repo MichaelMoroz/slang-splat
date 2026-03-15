@@ -30,7 +30,7 @@ The active training path is intentionally minimal: initialize a fixed gaussian s
 ## Initialization
 - Gaussians are initialized directly from COLMAP `points3D` on CPU.
 - Position is copied from the COLMAP point cloud.
-- Scale starts from nearest-neighbor point spacing repeated across XYZ; the default resolved `base_scale` matches that spacing after the requested-count density adjustment instead of shrinking it again by render-radius heuristics.
+- Scale starts from nearest-neighbor point spacing repeated across XYZ; the default resolved `base_scale` matches that sigma after the requested-count density adjustment, and the trainable scene stores it as 3DGS log-scale.
 - Rotation starts as identity quaternion.
 - Opacity starts from the configured constant.
 - Initialization parameters:
@@ -95,6 +95,7 @@ There is no densification, pruning, opacity reset schedule, MCMC exploration ter
   - position absolute clamp,
   - scale min/max clamp,
   - color clamp to `[0, 1]`.
+- Scale-related runtime controls (`base_scale`, `scale_reg_reference`, `min_scale`, `max_scale`) remain user-facing linear sigma values and are converted to stored log-scale at the optimizer boundary.
 - Quaternion normalization each step with identity fallback.
 - Host guard:
   - if loss is non-finite, ADAM step is skipped and moments are reset.

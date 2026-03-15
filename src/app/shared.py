@@ -21,6 +21,7 @@ CAMERA_FAR_RADIUS_SCALE = 4.0
 CAMERA_MIN_FAR = 80.0
 MOVE_SPEED_RADIUS_SCALE = 0.15
 MOVE_SPEED_MIN = 0.25
+GAUSSIAN_SIGMA_SUPPORT = 3.0
 _LR_LIMITS = (0.1, 10.0)
 _CLAMP_LIMITS = {
     "grad_component_clip": (1e-5, 1e6),
@@ -38,7 +39,7 @@ _CLAMP_LIMITS = {
 
 @dataclass(frozen=True, slots=True)
 class RendererParams:
-    radius_scale: float = 2.6; alpha_cutoff: float = 1.0 / 255.0; max_splat_steps: int = 32768
+    radius_scale: float = 1.0; alpha_cutoff: float = 1.0 / 255.0; max_splat_steps: int = 32768
     transmittance_threshold: float = 0.005; sampled5_safety_scale: float = 1.0; list_capacity_multiplier: int = 64
     max_prepass_memory_mb: int = 4096; debug_show_ellipses: bool = False; debug_show_processed_count: bool = False; debug_show_grad_norm: bool = False
 
@@ -100,7 +101,8 @@ def _weighted_bounds(points: np.ndarray, extents: np.ndarray | None = None, weig
 
 
 def estimate_scene_bounds(scene: GaussianScene) -> SceneBounds:
-    return _weighted_bounds(scene.positions, extents=2.0 * np.max(np.asarray(scene.scales, dtype=np.float32), axis=1), weights=scene.opacities)
+    support_extents = GAUSSIAN_SIGMA_SUPPORT * np.max(np.exp(np.asarray(scene.scales, dtype=np.float32)), axis=1)
+    return _weighted_bounds(scene.positions, extents=2.0 * support_extents, weights=scene.opacities)
 
 
 def estimate_point_bounds(points: np.ndarray) -> SceneBounds:

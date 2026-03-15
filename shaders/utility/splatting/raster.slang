@@ -4,7 +4,7 @@ import "utility/math/quaternion.slang";
 import "utility/splatting/common.slang";
 import "utility/splatting/opacity.slang";
 
-static const float ENVELOPE_SIGMA_RADIUS = 3.0;
+static const float ENVELOPE_SIGMA_RADIUS = GAUSSIAN_SUPPORT_SIGMA_RADIUS;
 static const float ENVELOPE_EXPONENT_SCALE = 0.5 * ENVELOPE_SIGMA_RADIUS * ENVELOPE_SIGMA_RADIUS;
 
 struct CachedEllipsoid : IDifferentiable
@@ -15,11 +15,11 @@ struct CachedEllipsoid : IDifferentiable
 };
 
 [Differentiable]
-CachedEllipsoid build_cached_ellipsoid(no_diff CameraParams cameraParams, no_diff float radiusScale, float3 position, float3 scale, float4 rotation)
+CachedEllipsoid build_cached_ellipsoid(no_diff CameraParams cameraParams, no_diff float radiusScale, float3 position, float3 logScale, float4 rotation)
 {
     Gaussian3D gaussian;
     gaussian.position = position;
-    gaussian.scale = scale;
+    gaussian.logScale = logScale;
     gaussian.rotation = rotation;
     gaussian.colorAlpha = 0.0;
     Ellipsoid ellipsoid = build_ellipsoid(cameraParams, radiusScale, gaussian);
@@ -27,11 +27,11 @@ CachedEllipsoid build_cached_ellipsoid(no_diff CameraParams cameraParams, no_dif
 }
 
 [Differentiable]
-float build_raster_fused_opacity(no_diff CameraParams cameraParams, no_diff float radiusScale, float3 position, float3 scale, float rawOpacity)
+float build_raster_fused_opacity(no_diff CameraParams cameraParams, no_diff float radiusScale, float3 position, float3 logScale, float rawOpacity)
 {
     Gaussian3D gaussian;
     gaussian.position = position;
-    gaussian.scale = scale;
+    gaussian.logScale = logScale;
     gaussian.rotation = float4(1.0, 0.0, 0.0, 0.0);
     gaussian.colorAlpha = 0.0;
     Ellipsoid ellipsoid = build_ellipsoid(cameraParams, radiusScale, gaussian);

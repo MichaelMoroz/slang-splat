@@ -189,7 +189,7 @@ def run_render_single(args: argparse.Namespace) -> int:
 
 COMMON_RENDER_ARGS = (
     A("--prepass-memory-mb", type=int, default=4096),
-    A("--radius-scale", type=float, default=2.6),
+    A("--radius-scale", type=float, default=1.0),
     A("--alpha-cutoff", type=float, default=1.0 / 255.0),
     A("--max-splat-steps", type=int, default=32768),
     A("--trans-threshold", type=float, default=0.005),

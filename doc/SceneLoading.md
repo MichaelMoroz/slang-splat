@@ -12,11 +12,11 @@
 - Opacity logit: `opacity`
 - SH DC: `f_dc_0`, `f_dc_1`, `f_dc_2`
 - SH extra coefficients: `f_rest_*` (optional)
-- Log scales: `scale_*` (optional, defaults to `1`)
+- Log scales: `scale_*` (optional, defaults to `0`)
 - Rotation quaternion: `rot_*` (optional, defaults to identity)
 
 ## Runtime Conversion
-- Scales: `exp(raw_scale)`
+- Scales: preserved as 3DGS log-scale values
 - Opacity: `sigmoid(raw_opacity)`
 - Rotation: normalized quaternion
 - Display color: `0.5 + SH_C0 * SH_DC`, clamped to `[0, 1]`
@@ -28,6 +28,6 @@ Output is `GaussianScene` with contiguous `float32` arrays.
   - `SIMPLE_PINHOLE` (id `0`)
   - `PINHOLE` (id `1`)
 - Camera intrinsics are scaled from COLMAP camera resolution to selected training image resolution.
-- `initialize_scene_from_colmap_points(...)` converts the COLMAP point cloud directly into a trainable `GaussianScene`, using nearest-neighbor point spacing as the initial scale reference and repeating it across XYZ.
+- `initialize_scene_from_colmap_points(...)` converts the COLMAP point cloud directly into a trainable `GaussianScene`, using nearest-neighbor point spacing as the initial sigma reference, repeating it across XYZ, and storing it as log-scale.
 - `resolve_colmap_init_hparams(...)` derives the default COLMAP init bundle from point-cloud spacing and requested gaussian count, and both the CLI and viewer pass that resolved bundle through unchanged.
 - Point XYZ/RGB table extraction is centralized so viewer uploads, init heuristics, and scene initialization all consume the same data path.

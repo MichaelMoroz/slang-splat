@@ -17,6 +17,10 @@ from src.renderer import Camera, GaussianRenderer
 from src.scene import GaussianScene
 
 _RASTER_GRAD_FIXED_SCALE = 65536.0
+_GAUSSIAN_SUPPORT_SIGMA_RADIUS = 3.0
+
+_log_sigma = lambda sigma: np.log(np.asarray(sigma, dtype=np.float32))
+_stored_from_support_scale = lambda support_scale: np.log(np.asarray(support_scale, dtype=np.float32) / _GAUSSIAN_SUPPORT_SIGMA_RADIUS)
 
 
 def make_scene(count: int, seed: int = 0) -> GaussianScene:
@@ -25,7 +29,7 @@ def make_scene(count: int, seed: int = 0) -> GaussianScene:
     positions[:, 0] = rng.uniform(-1.2, 1.2, size=count).astype(np.float32)
     positions[:, 1] = rng.uniform(-0.9, 0.9, size=count).astype(np.float32)
     positions[:, 2] = np.linspace(-1.0, 1.0, count, dtype=np.float32)
-    scales = np.full((count, 3), 0.04, dtype=np.float32)
+    scales = _log_sigma(np.full((count, 3), 0.04, dtype=np.float32))
     rotations = np.zeros((count, 4), dtype=np.float32)
     rotations[:, 0] = 1.0
     opacities = np.linspace(0.25, 0.75, count, dtype=np.float32)
@@ -190,6 +194,27 @@ def test_sampled5_mvee_render_smoke(device):
     assert np.all(np.isfinite(out.image))
 
 
+def test_radius_scale_scales_true_3dgs_size_without_hidden_fudge(device):
+    scene = GaussianScene(
+        positions=np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
+        scales=np.full((1, 3), _log_sigma(0.2), dtype=np.float32),
+        rotations=np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+        opacities=np.array([0.75], dtype=np.float32),
+        colors=np.array([[0.8, 0.6, 0.2]], dtype=np.float32),
+        sh_coeffs=np.zeros((1, 1, 3), dtype=np.float32),
+    )
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    projected_1x = project_splats(scene, camera, width=128, height=128, radius_scale=1.0)
+    projected_2x = project_splats(scene, camera, width=128, height=128, radius_scale=2.0)
+
+    support_1x = 1.0 / projected_1x.inv_scale[0]
+    support_2x = 1.0 / projected_2x.inv_scale[0]
+
+    np.testing.assert_allclose(support_1x, np.full((3,), 0.2 * _GAUSSIAN_SUPPORT_SIGMA_RADIUS, dtype=np.float32), rtol=0.0, atol=5e-4)
+    np.testing.assert_allclose(support_2x / support_1x, np.full((3,), 2.0, dtype=np.float32), rtol=5e-4, atol=1e-6)
+    assert np.isclose(projected_2x.center_radius_depth[0, 2] / projected_1x.center_radius_depth[0, 2], 2.0, rtol=1e-2, atol=1e-3)
+
+
 def test_subpixel_gaussian_uses_pixel_floor_in_projection_and_raster(device):
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
     background = np.array([0.0, 0.0, 0.0], dtype=np.float32)
@@ -198,7 +223,7 @@ def test_subpixel_gaussian_uses_pixel_floor_in_projection_and_raster(device):
     raw_scale = 0.5 * expected_scale
     scene = GaussianScene(
         positions=np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
-        scales=np.full((1, 3), raw_scale, dtype=np.float32),
+        scales=np.full((1, 3), _stored_from_support_scale(raw_scale), dtype=np.float32),
         rotations=np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
         opacities=np.array([0.75], dtype=np.float32),
         colors=np.array([[0.8, 0.6, 0.2]], dtype=np.float32),
@@ -272,7 +297,7 @@ def test_debug_ellipse_overlay_antialiases_across_boundary(device):
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
     scene = GaussianScene(
         positions=np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
-        scales=np.full((1, 3), 0.08, dtype=np.float32),
+        scales=np.full((1, 3), _log_sigma(0.08), dtype=np.float32),
         rotations=np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
         opacities=np.array([0.85], dtype=np.float32),
         colors=np.array([[1.0, 1.0, 1.0]], dtype=np.float32),
@@ -420,7 +445,7 @@ def test_clamped_subpixel_raster_backward_has_scale_gradient(device):
     raw_scale = 0.5 * camera.pixel_world_size_max(4.0, renderer.width, renderer.height)
     scene = GaussianScene(
         positions=np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
-        scales=np.full((1, 3), raw_scale, dtype=np.float32),
+        scales=np.full((1, 3), _stored_from_support_scale(raw_scale), dtype=np.float32),
         rotations=np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
         opacities=np.array([0.75], dtype=np.float32),
         colors=np.array([[0.8, 0.6, 0.2]], dtype=np.float32),

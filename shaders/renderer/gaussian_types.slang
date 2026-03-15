@@ -75,7 +75,7 @@ Gaussian3D load_gaussian3d(uint splatId)
         load_splat_param(g_SplatParams, splatCount, PARAM_POSITION_Y, splatId),
         load_splat_param(g_SplatParams, splatCount, PARAM_POSITION_Z, splatId)
     );
-    gaussian.scale = float3(
+    gaussian.logScale = float3(
         load_splat_param(g_SplatParams, splatCount, PARAM_SCALE_X, splatId),
         load_splat_param(g_SplatParams, splatCount, PARAM_SCALE_Y, splatId),
         load_splat_param(g_SplatParams, splatCount, PARAM_SCALE_Z, splatId)

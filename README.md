@@ -90,6 +90,7 @@ Training notes:
 - Optimizer settings live in one structured per-parameter buffer, and ADAM moments are packed into one `float2` buffer (`m`, `v`) per parameter element.
 - `src/training/adam.py` is the Python-side generic ADAM module, while `src/training/optimizer.py` keeps Gaussian-specific regularization/projection; `GaussianTrainer` composes both.
 - GPU scene buffers store opacity as a raw sigmoid parameter so rasterization and optimization differentiate through effective alpha directly.
+- GPU scene buffers store gaussian scale in standard 3DGS log-scale form; rendering decodes `exp(log_scale)` and uses `radius_scale=1.0` as true 3DGS size.
 - Pixel-floor-clamped splats attenuate blend alpha by the ratio of raw scale area to clamped scale area, while the alpha cutoff still applies to the pre-attenuation alpha path.
 - Reported training metrics are total loss, rolling average loss, and per-step `last_mse`.
 - Target Y-flip is enabled by default.
@@ -98,6 +99,7 @@ Training notes:
 - The viewer `Train Setup` panel includes `Auto` and manual train-downscale modes. Auto starts from a separate initial factor and walks toward `1x` over training, while manual modes force a fixed factor immediately.
 - Numerical reinforcement includes clipping, finite checks, and safe quaternion normalization.
 - Scale regularization uses an autodiff log-space penalty around the initialization/reference scale, so equal multiplicative scale deviations are treated more uniformly.
+- Min/max scale and the scale regularization reference stay user-facing linear sigma values; conversion to stored log-scale happens inside the optimizer path.
 - Scale anisotropy is clamped in the ADAM step with `max(scale) / min(scale) <= max_anisotropy`.
 - Shared shader utilities are centralized in `shaders/utility`; see `doc/ShaderUtilities.md`.
 

@@ -471,10 +471,10 @@ void csBackpropCachedRasterGrads(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     Gaussian3D gaussian = load_gaussian3d(splatId);
     var dpCachedPosition = diffPair(gaussian.position);
-    var dpCachedScale = diffPair(gaussian.scale);
+    var dpCachedScale = diffPair(gaussian.logScale);
     var dpRotation = diffPair(gaussian.rotation);
     var dpOpacityPosition = diffPair(gaussian.position);
-    var dpOpacityScale = diffPair(gaussian.scale);
+    var dpOpacityScale = diffPair(gaussian.logScale);
     var dpRawOpacity = diffPair(gaussian.colorAlpha.w);
     bwd_diff(build_cached_ellipsoid)(g_Camera, g_Prepass.radiusScale, dpCachedPosition, dpCachedScale, dpRotation, dCached);
     bwd_diff(build_raster_fused_opacity)(g_Camera, g_Prepass.radiusScale, dpOpacityPosition, dpOpacityScale, dpRawOpacity, dRaster.colorAlpha.w);

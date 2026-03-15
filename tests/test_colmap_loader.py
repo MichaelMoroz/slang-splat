@@ -16,6 +16,8 @@ from src.scene import (
     suggest_colmap_init_hparams,
 )
 
+_actual_scale = lambda log_scale: np.exp(np.asarray(log_scale, dtype=np.float32))
+
 
 def _write_cameras_bin(path: Path, model_id: int = 1) -> None:
     with path.open("wb") as handle:
@@ -119,7 +121,7 @@ def test_colmap_init_uses_direct_pointcloud_when_requested_count_exceeds_points(
     assert scene.count == 2
     assert scene.positions.shape == (2, 3)
     assert scene.colors.shape == (2, 3)
-    np.testing.assert_allclose(scene.scales, np.full((2, 3), 3.0, dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(_actual_scale(scene.scales), np.full((2, 3), 3.0, dtype=np.float32), rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(scene.rotations, np.array([[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]], dtype=np.float32), rtol=0.0, atol=1e-6)
 
 
@@ -187,4 +189,4 @@ def test_colmap_init_resolver_uses_nn_spacing_as_default_base_scale(tmp_path: Pa
 
     assert resolved.base_scale is not None
     assert np.isclose(resolved.base_scale, 0.75)
-    np.testing.assert_allclose(scene.scales, np.full((2, 3), 0.75, dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(_actual_scale(scene.scales), np.full((2, 3), 0.75, dtype=np.float32), rtol=0.0, atol=1e-6)

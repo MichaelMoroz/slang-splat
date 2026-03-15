@@ -6,6 +6,8 @@ from reference_impls.projection_sampled5_mvee_reference import project_splats_sa
 from src.renderer import Camera
 from src.scene import GaussianScene
 
+_log_sigma = lambda sigma: np.log(np.asarray(sigma, dtype=np.float32))
+
 
 def make_scene(count: int, seed: int = 123) -> GaussianScene:
     rng = np.random.default_rng(seed)
@@ -13,7 +15,7 @@ def make_scene(count: int, seed: int = 123) -> GaussianScene:
     positions[:, 0] = rng.uniform(-1.5, 1.5, size=count).astype(np.float32)
     positions[:, 1] = rng.uniform(-1.0, 1.0, size=count).astype(np.float32)
     positions[:, 2] = rng.uniform(-1.5, 1.5, size=count).astype(np.float32)
-    scales = np.exp(rng.uniform(-3.0, -0.6, size=(count, 3))).astype(np.float32)
+    scales = rng.uniform(-3.0, -0.6, size=(count, 3)).astype(np.float32)
     rotations = rng.normal(size=(count, 4)).astype(np.float32)
     rotations /= np.maximum(np.linalg.norm(rotations, axis=1, keepdims=True), 1e-8)
     opacities = rng.uniform(0.1, 0.9, size=count).astype(np.float32)
@@ -84,7 +86,7 @@ def test_sampled5_mvee_reference_is_deterministic() -> None:
 
 def test_sampled5_mvee_handles_degenerate_thin_splats() -> None:
     scene = make_scene(32, seed=3)
-    scene.scales[:] = np.array([1e-5, 0.3, 1e-5], dtype=np.float32)
+    scene.scales[:] = _log_sigma(np.array([1e-5, 0.3, 1e-5], dtype=np.float32))
     camera = Camera.look_at(position=(0.0, 0.0, 2.5), target=(0.0, 0.0, 0.0), near=0.05, far=10.0)
 
     projected = project_splats_sampled5_mvee(scene, camera, width=96, height=96, radius_scale=2.0)
@@ -95,7 +97,7 @@ def test_sampled5_mvee_handles_degenerate_thin_splats() -> None:
 def test_sampled5_mvee_clamps_loaded_scale_to_configured_pixel_world_size() -> None:
     scene = GaussianScene(
         positions=np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
-        scales=np.array([[1e-6, 1e-6, 1e-6]], dtype=np.float32),
+        scales=_log_sigma(np.array([[1e-6, 1e-6, 1e-6]], dtype=np.float32)),
         rotations=np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
         opacities=np.array([0.5], dtype=np.float32),
         colors=np.array([[1.0, 1.0, 1.0]], dtype=np.float32),

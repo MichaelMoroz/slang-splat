@@ -7,6 +7,7 @@ static const uint MVEE_POINT_COUNT = 5u;
 static const uint MVEE_MAX_ITERS = 8u;
 static const float SCALE_AREA_PROXY_POWER = 2.0 / 3.0;
 static const float SCALE_FLOOR_SMOOTH_RATIO = 1.0;
+static const float GAUSSIAN_SUPPORT_SIGMA_RADIUS = 3.0;
 
 struct ScanlineWorkItem
 {
@@ -56,7 +57,7 @@ struct RasterParams
 struct Gaussian3D : IDifferentiable
 {
     float3 position;
-    float3 scale;
+    float3 logScale;
     float4 rotation;
     float4 colorAlpha;
 };
@@ -226,24 +227,24 @@ float minimum_pixel_scale_world(CameraParams cameraParams, no_diff float3 center
 }
 
 [Differentiable]
-float scale_area_proxy(float3 scale)
+float scale_area_proxy(float3 supportScale)
 {
-    return pow(max(scale.x * scale.y * scale.z, SMALL_VALUE), SCALE_AREA_PROXY_POWER);
+    return pow(max(supportScale.x * supportScale.y * supportScale.z, SMALL_VALUE), SCALE_AREA_PROXY_POWER);
 }
 
 [Differentiable]
-float3 smooth_max_scale(float3 rawScale, float3 minScale)
+float3 smooth_max_scale(float3 supportScale, float3 minSupportScale)
 {
-    float3 smoothness = max(minScale * SCALE_FLOOR_SMOOTH_RATIO, float3(SMALL_VALUE));
-    float3 delta = rawScale - minScale;
-    return 0.5 * (rawScale + minScale + sqrt(delta * delta + smoothness * smoothness));
+    float3 smoothness = max(minSupportScale * SCALE_FLOOR_SMOOTH_RATIO, float3(SMALL_VALUE));
+    float3 delta = supportScale - minSupportScale;
+    return 0.5 * (supportScale + minSupportScale + sqrt(delta * delta + smoothness * smoothness));
 }
 
 [Differentiable]
-float opacity_scale_from_clamp(float3 rawScale, float3 clampedScale)
+float opacity_scale_from_clamp(float3 rawSupportScale, float3 clampedSupportScale)
 {
-    float rawArea = scale_area_proxy(rawScale);
-    float clampedArea = scale_area_proxy(clampedScale);
+    float rawArea = scale_area_proxy(rawSupportScale);
+    float clampedArea = scale_area_proxy(clampedSupportScale);
     return min(rawArea / max(clampedArea, SMALL_VALUE), 1.0);
 }
 
@@ -252,14 +253,15 @@ Ellipsoid build_ellipsoid(no_diff CameraParams cameraParams, no_diff float radiu
 {
     PinholeCamera camera = PinholeCamera.from_params(cameraParams);
     float minScaleWorld = minimum_pixel_scale_world(cameraParams, gaussian.position);
-    float3 rawScale = max(gaussian.scale * radiusScale, float3(SMALL_VALUE));
-    float3 clampedScale = smooth_max_scale(rawScale, float3(minScaleWorld));
+    float3 sigma = exp(gaussian.logScale);
+    float3 rawSupportScale = max(sigma * (radiusScale * GAUSSIAN_SUPPORT_SIGMA_RADIUS), float3(SMALL_VALUE));
+    float3 clampedScale = smooth_max_scale(rawSupportScale, float3(minScaleWorld));
     Ellipsoid ellipsoid;
     ellipsoid.centerWorld = gaussian.position;
     ellipsoid.scale = clampedScale;
     ellipsoid.invScale = 1.0 / max(ellipsoid.scale, float3(SMALL_VALUE));
     ellipsoid.rotation = gaussian.rotation;
     ellipsoid.roLocal = rotate_by_quat(camera.position_world() - ellipsoid.centerWorld, ellipsoid.rotation) * ellipsoid.invScale;
-    ellipsoid.opacityScale = opacity_scale_from_clamp(rawScale, clampedScale);
+    ellipsoid.opacityScale = opacity_scale_from_clamp(rawSupportScale, clampedScale);
     return ellipsoid;
 }

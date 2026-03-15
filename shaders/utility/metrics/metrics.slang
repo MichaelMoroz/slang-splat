@@ -65,15 +65,16 @@ void csHistogramScaleLog10(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint splatId = dispatchThreadID.x;
     if (splatId >= g_SplatCount || g_BinCount == 0u) return;
 
-    float3 scale = abs(float3(
+    float3 logScale = float3(
         load_splat_param(g_SplatParams, g_SplatCount, PARAM_SCALE_X, splatId),
         load_splat_param(g_SplatParams, g_SplatCount, PARAM_SCALE_Y, splatId),
         load_splat_param(g_SplatParams, g_SplatCount, PARAM_SCALE_Z, splatId)
-    ));
-    if (!all(isfinite(scale))) return;
+    );
+    if (!all(isfinite(logScale))) return;
 
-    float logScale = (safe_log10(scale.x) + safe_log10(scale.y) + safe_log10(scale.z)) * (1.0 / 3.0);
-    InterlockedAdd(g_Histogram[histogram_bin(logScale)], 1u);
+    float3 scale = exp(logScale);
+    float scaleLog10 = (safe_log10(scale.x) + safe_log10(scale.y) + safe_log10(scale.z)) * (1.0 / 3.0);
+    InterlockedAdd(g_Histogram[histogram_bin(scaleLog10)], 1u);
 }
 
 [shader("compute")]
@@ -83,13 +84,14 @@ void csHistogramAnisotropyLog10(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint splatId = dispatchThreadID.x;
     if (splatId >= g_SplatCount || g_BinCount == 0u) return;
 
-    float3 scale = abs(float3(
+    float3 logScale = float3(
         load_splat_param(g_SplatParams, g_SplatCount, PARAM_SCALE_X, splatId),
         load_splat_param(g_SplatParams, g_SplatCount, PARAM_SCALE_Y, splatId),
         load_splat_param(g_SplatParams, g_SplatCount, PARAM_SCALE_Z, splatId)
-    ));
-    if (!all(isfinite(scale))) return;
+    );
+    if (!all(isfinite(logScale))) return;
 
+    float3 scale = exp(logScale);
     float minScale = max(min(scale.x, min(scale.y, scale.z)), TINY_VALUE);
     float maxScale = max(scale.x, max(scale.y, scale.z));
     InterlockedAdd(g_Histogram[histogram_bin(safe_log10(maxScale / minScale))], 1u);

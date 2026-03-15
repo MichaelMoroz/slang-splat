@@ -103,7 +103,7 @@ def test_train_cli_forwards_resolved_init_hparams(monkeypatch, tmp_path: Path):
         init_scale_jitter=None,
         init_opacity=None,
         init_color_jitter=None,
-        radius_scale=2.6,
+        radius_scale=1.0,
         alpha_cutoff=1.0 / 255.0,
         max_splat_steps=32768,
         trans_threshold=0.005,

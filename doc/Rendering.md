@@ -15,11 +15,12 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - Shared constants stay in `shaders/utility/math/constants.slang`, organized with commented sections for generic numeric floors, rendering constants, and debug-visualization tuning instead of being split into tiny constants-only files.
 - Python-side raster layout defaults are sourced from `shaders/renderer/gaussian_types.slang` by parsing the `static const uint` raster constants instead of duplicating them manually in `GaussianRenderer`.
 - Python bindings in `GaussianRenderer` mirror this layout by building reusable grouped binding dictionaries for scene buffers, prepass uniforms, raster uniforms, and readback state.
+- Stored gaussian scale follows 3DGS semantics (`log(sigma)` per axis). Rendering decodes `exp(log_scale)` and converts sigma to finite-support ellipsoid radius with `radius_scale * 3.0`.
 
 ## 1. Project and Bin
 - Shader: `csProjectAndBin`
 - For each splat:
-  - smoothly clamp the loaded gaussian scale toward a `0.75`-screen-pixel floor at the splat depth (`0.75 * depth / min(focal_x, focal_y)` in world units),
+  - decode the stored 3DGS log-scale to sigma, convert it to finite-support ellipsoid radius with `radius_scale * 3.0`, then smoothly clamp that support radius toward a `0.75`-screen-pixel floor at the splat depth (`0.75 * depth / min(focal_x, focal_y)` in world units),
   - project to screen space with sampled-5 MVEE fitting,
   - if sampled-5 fitting is unstable, use an analytic depth/scale fallback radius instead of hard max-radius fallback,
   - estimate projected radius,
@@ -56,7 +57,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - Each thread resolves the tile range for its pixel, reuses each staged gaussian loaded from the prepass raster cache for that single forward replay, and writes one output pixel.
 - The inner loop performs front-to-back blending with exponential radial falloff while reusing gaussian data already staged in shared memory.
 - Shared gaussian staging uses `256`-splat batches.
-- The same camera-dependent `0.75`-pixel world-space floor is used in raster through a differentiable smooth-max scale instead of a hard `max`, so the visible footprint starts expanding before the exact clamp point.
+- The same camera-dependent `0.75`-pixel world-space floor is used in raster through a differentiable smooth-max support-radius clamp instead of a hard `max`, so the visible footprint starts expanding before the exact clamp point.
 - The raster stage attenuates blend alpha by `raw_area / effective_area` using an area proxy derived from gaussian scale, so subpixel splats keep scale-dependent signal while following the same smooth effective footprint used by projection.
 - The cached alpha slot stores the clamp-attenuated opacity scalar produced in prepass; the raster stage multiplies that fused alpha by coverage and applies `alphaCutoff` to the fused result.
 - Debug processed-count, grad-norm, and ellipse-outline views are handled in the same forward replay loop as normal rendering rather than by a separate debug pass.
