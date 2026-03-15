@@ -312,7 +312,7 @@ def test_split_raster_backward_consumes_forward_cache_only(device, tmp_path: Pat
 
 def test_scale_gradient_stays_growth_directed_for_large_target_scales(device, tmp_path: Path):
     probe = _ScaleGradProbe(device, tmp_path, image_name="tiny_grad_target.png")
-    max_growth_eps = 3e-6
+    max_growth_eps = 4e-6
     pairs = _scale_target_pairs(_SCALE_GRAD_MULS, _TARGET_MULS)
     grad_samples = np.asarray(
         [

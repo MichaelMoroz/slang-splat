@@ -58,7 +58,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - The inner loop performs front-to-back blending with exponential radial falloff while reusing gaussian data already staged in shared memory.
 - Shared gaussian staging uses `256`-splat batches.
 - Raster evaluation uses the true decoded support cached in prepass rather than the floor-clamped projection support, so subpixel splats keep their original 3DGS footprint.
-- The pixel floor affects only conservative projection/binning support and debug readback; the cached raster alpha is just decoded opacity and the raster stage multiplies that by gaussian coverage before applying `alphaCutoff`.
+- The pixel floor still contributes a render-time low-pass fallback: raster keeps the raw world-space gaussian response, evaluates an additional screen-space alpha from the clamped projected ellipse for floor-limited splats, and uses the larger of the two before applying `alphaCutoff`.
 - Debug processed-count, grad-norm, and ellipse-outline views are handled in the same forward replay loop as normal rendering rather than by a separate debug pass.
 - Writes RGBA output texture.
 - Primary ray generation goes through `PinholeCamera.screen_to_world_ray(...)`.
