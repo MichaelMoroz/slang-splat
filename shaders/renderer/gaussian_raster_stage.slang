@@ -33,10 +33,7 @@ static const float RASTER_GRAD_FIXED_INT_MAX_F = 2147483647.0;
 
 int raster_grad_fixed_encode(float value)
 {
-    float scaled = round(value * RASTER_GRAD_FIXED_SCALE);
-    if (scaled <= RASTER_GRAD_FIXED_INT_MIN_F) return -2147483648;
-    if (scaled >= RASTER_GRAD_FIXED_INT_MAX_F) return 2147483647;
-    return int(scaled);
+    return int(value * RASTER_GRAD_FIXED_SCALE + 0.5);
 }
 
 float raster_grad_fixed_decode(int value)
@@ -48,8 +45,9 @@ void atomic_add_raster_cache_grad_fixed<let N : int>(uint splatCount, uint first
 {
     [unroll] for (int i = 0; i < N; i++)
     {
-        float waveGrad = WaveActiveSum(grad[i]);
-        if (!WaveIsFirstLane()) continue;
+        // float waveGrad = WaveActiveSum(grad[i]);
+        // if (!WaveIsFirstLane()) continue;
+        float waveGrad = grad[i];
         int value = raster_grad_fixed_encode(waveGrad);
         if (value == 0) continue;
         InterlockedAdd(g_CachedRasterGradsFixed[raster_cache_index(splatCount, firstFieldId + uint(i), splatId)], value);
@@ -434,16 +432,12 @@ void raster_backward_replay(
                     bwd_diff(raster_blend_step_gaussian)(dpPrevState, dpGaussian, dpAlpha, backwardState.pixelState);
                     bwd_diff(raster_eval_alpha_gaussian)(dpGaussian, gsBatchSplatId[localIdx], info.rayDir, info.samplePoint, dpAlpha.getDifferential());
 
-                    RasterGaussian.Differential dPixelGaussian = dpGaussian.getDifferential();
-                    dGaussian.roLocal += dPixelGaussian.roLocal;
-                    dGaussian.invScale += dPixelGaussian.invScale;
-                    dGaussian.quat += dPixelGaussian.quat;
-                    dGaussian.colorAlpha += dPixelGaussian.colorAlpha;
                     forwardState.pixelState = prevState;
                     backwardState.pixelState = dpPrevState.getDifferential();
+
+                    RasterGaussian.accumulate_gradients_fixed(localIdx, dpGaussian.getDifferential());
                 }
             }
-            RasterGaussian.accumulate_gradients_fixed(localIdx, dGaussian);
         }
 
         GroupMemoryBarrierWithGroupSync();
