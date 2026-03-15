@@ -103,7 +103,7 @@ struct RasterGaussian : IDifferentiable
     static RasterGaussian load_shared(uint localIdx)
     {
         RasterGaussian gaussian;
-        gaussian.roLocal = gsRoLocal[localIdx].xyz;
+        gaussian.roLocal = gsRoLocal[localIdx];
         gaussian.invScale = float3(gsInvScale[localIdx]);
         gaussian.quat = float4(gsQuat[localIdx]);
         gaussian.colorAlpha = float4(gsColorAlpha[localIdx]);
@@ -113,7 +113,7 @@ struct RasterGaussian : IDifferentiable
     [mutating]
     void store_shared(uint localIdx)
     {
-        gsRoLocal[localIdx] = float4(roLocal, 0.0);
+        gsRoLocal[localIdx] = roLocal;
         gsInvScale[localIdx] = half3(invScale);
         gsQuat[localIdx] = half4(quat);
         gsColorAlpha[localIdx] = half4(colorAlpha);

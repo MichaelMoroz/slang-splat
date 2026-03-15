@@ -26,7 +26,7 @@ static const uint RASTER_CACHE_COLOR_G = 11u;
 static const uint RASTER_CACHE_COLOR_B = 12u;
 static const uint RASTER_CACHE_FUSED_OPACITY = 13u;
 static const uint RASTER_CACHE_PARAM_COUNT = 14u;
-groupshared float4 gsRoLocal[RASTER_BATCH];
+groupshared float3 gsRoLocal[RASTER_BATCH];
 groupshared half3 gsInvScale[RASTER_BATCH];
 groupshared half4 gsQuat[RASTER_BATCH];
 groupshared half4 gsColorAlpha[RASTER_BATCH];
