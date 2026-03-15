@@ -11,11 +11,13 @@ uniform uint g_Height;
 uniform float g_InvPixelCount;
 uniform float g_LossGradClip;
 uniform float g_HugeValue;
+uniform uint g_BatchStepIndex;
 
 uniform Texture2D<float4> g_Rendered;
 uniform Texture2D<float4> g_Target;
 uniform RWStructuredBuffer<float4> g_OutputGrad;
 uniform RWStructuredBuffer<float> g_LossBuffer;
+uniform RWStructuredBuffer<float4> g_BatchStepInfo;
 
 uniform Texture2D<float4> g_SourceTarget;
 uniform RWTexture2D<float4> g_DownscaledTarget;
@@ -133,6 +135,14 @@ void csComputeL1LossBackward(uint3 dispatchThreadID : SV_DispatchThreadID)
     float3 target = sanitize_float3(g_Target[pixel].xyz, g_HugeValue);
     float3 dOut = clamp(sanitize_float3(rgb_l1_grad(rendered, target), g_LossGradClip), -g_LossGradClip, g_LossGradClip);
     g_OutputGrad[py * g_Width + px] = float4(dOut, 0.0);
+}
+
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void csCacheTrainingStepInfo(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    if (dispatchThreadID.x != 0u || dispatchThreadID.y != 0u || dispatchThreadID.z != 0u) return;
+    g_BatchStepInfo[g_BatchStepIndex] = float4(g_LossBuffer[LOSS_SLOT_TOTAL], g_LossBuffer[LOSS_SLOT_MSE], 0.0, 0.0);
 }
 
 [shader("compute")]

@@ -193,6 +193,26 @@ def test_training_step_smoke_updates_params_without_changing_count(device, tmp_p
     assert np.any(np.abs(after - before) > 0.0)
 
 
+def test_training_step_batch_updates_params_without_changing_count(device, tmp_path: Path):
+    scene = _make_scene()
+    frame = _make_frame(tmp_path, image_name="batch_target.png", image_id=1)
+    renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
+    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], seed=123)
+
+    before = _read_scene_groups(renderer, scene.count)["positions"].copy()
+    executed = trainer.step_batch(3)
+    after = _read_scene_groups(renderer, scene.count)["positions"]
+
+    assert executed == 3
+    assert trainer.state.step == 3
+    assert np.isfinite(trainer.state.last_loss)
+    assert np.isfinite(trainer.state.last_mse)
+    assert np.isfinite(trainer.state.avg_loss)
+    assert trainer.scene.count == scene.count
+    assert np.all(np.isfinite(after))
+    assert np.any(np.abs(after - before) > 0.0)
+
+
 def test_split_loss_forward_backward_separates_metrics_from_output_grads(device, tmp_path: Path):
     scene = _make_scene(count=8, seed=19)
     frame = _make_frame(tmp_path, image_name="split_loss_target.png")

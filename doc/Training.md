@@ -69,6 +69,7 @@ There is no densification, pruning, opacity reset schedule, MCMC exploration ter
 - `csClearLossBuffer`: zero scalar loss slots for the current training step.
 - `csComputeL1LossForward`: computes direct RGB L1 loss and RGB MSE only.
 - `csComputeL1LossBackward`: computes only the image-space L1 gradient into `g_OutputGrad`.
+- UI-driven multi-step training batches keep per-substep loss/MSE records on the GPU and defer the single CPU readback until the batch finishes, rather than synchronizing after every substep.
 - Packed trainable storage remains param-major scalar packing: `param_id * splat_count + splat_id`.
 - Raster backward uses a separate param-major Q16.16 int accumulation buffer for cached raster-field gradients, then backprops that intermediate into final float scene-parameter gradients before optimizer consumption.
 - The stored opacity parameter is the raw sigmoid logit, not direct alpha.

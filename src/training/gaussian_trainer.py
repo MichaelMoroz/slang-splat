@@ -127,11 +127,13 @@ class TrainingState:
 class GaussianTrainer:
     _LOSS_SLOT_TOTAL = 0
     _LOSS_SLOT_MSE = 1
+    _BATCH_STEP_INFO_STRIDE = 4
     _KERNEL_ENTRIES = {
         "downscale_target": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csResampleDownscaledTargetNearest"),
         "clear_loss": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csClearLossBuffer"),
         "loss_forward": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csComputeL1LossForward"),
         "loss_backward": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csComputeL1LossBackward"),
+        "cache_step_info": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csCacheTrainingStepInfo"),
     }
 
     def _pixel_thread_count(self) -> spy.uint3:
@@ -210,6 +212,13 @@ class GaussianTrainer:
         mse = float(values[self._LOSS_SLOT_MSE]) if values.size > self._LOSS_SLOT_MSE else float("nan")
         return total, mse
 
+    def _read_batch_step_metrics(self, step_count: int) -> np.ndarray:
+        count = max(int(step_count), 0)
+        values = buffer_to_numpy(self._buffers["batch_step_info"], np.float32)
+        if count <= 0:
+            return np.zeros((0, self._BATCH_STEP_INFO_STRIDE), dtype=np.float32)
+        return np.asarray(values[: count * self._BATCH_STEP_INFO_STRIDE], dtype=np.float32).reshape(count, self._BATCH_STEP_INFO_STRIDE).copy()
+
     def update_hyperparams(self, adam_hparams: AdamHyperParams, stability_hparams: StabilityHyperParams, training_hparams: TrainingHyperParams) -> None:
         self.adam = adam_hparams
         self.stability = stability_hparams
@@ -220,7 +229,7 @@ class GaussianTrainer:
         self._invalidate_downscaled_target()
 
     def _dispatch_adam_step(self, encoder: spy.CommandEncoder) -> None:
-        self._dispatch_optimizer_step(encoder)
+        self._dispatch_optimizer_step(encoder, self.state.step + 1)
 
     def __init__(
         self,
@@ -265,6 +274,7 @@ class GaussianTrainer:
         }
         self._buffers: dict[str, spy.Buffer] = {}
         self._splat_capacity = 0
+        self._batch_step_capacity = 0
         self._scale_reg_reference = float(max(scale_reg_reference, 1e-8)) if scale_reg_reference is not None else self._estimate_scale_reg_reference(scene)
         self._init_point_positions_buffer: spy.Buffer | None = None
         self._init_point_colors_buffer: spy.Buffer | None = None
@@ -281,7 +291,7 @@ class GaussianTrainer:
             self.renderer.set_scene(scene)
         else:
             self.renderer.bind_scene_count(self._scene_count)
-        self._ensure_training_buffers(self._scene_count)
+        self._ensure_training_buffers(self._scene_count, 1)
         self._zero_optimizer_moments()
         if frame_targets_native is None:
             self._create_dataset_textures()
@@ -299,12 +309,15 @@ class GaussianTrainer:
         finite = np.isfinite(scales).all(axis=1)
         return 1.0 if not np.any(finite) else float(np.exp(np.mean(np.log(np.maximum(scales[finite], 1e-8)), dtype=np.float64)))
 
-    def _ensure_training_buffers(self, splat_count: int) -> None:
+    def _ensure_training_buffers(self, splat_count: int, batch_step_count: int = 1) -> None:
         count = max(int(splat_count), 1)
-        if self._buffers and count <= self._splat_capacity: return
+        required_batch_steps = max(int(batch_step_count), 1)
+        if self._buffers and count <= self._splat_capacity and required_batch_steps <= self._batch_step_capacity: return
         usage = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
         self._splat_capacity = max(count, max(self._splat_capacity, 1) + max(self._splat_capacity, 1) // 2)
+        self._batch_step_capacity = max(required_batch_steps, max(self._batch_step_capacity, 1) + max(self._batch_step_capacity, 1) // 2)
         self._buffers.setdefault("loss", self.device.create_buffer(size=8, usage=usage))
+        self._buffers["batch_step_info"] = self.device.create_buffer(size=self._batch_step_capacity * self._BATCH_STEP_INFO_STRIDE * 4, usage=usage)
 
     def _zero_optimizer_moments(self) -> None:
         self.adam_optimizer.zero_moments(self._scene_count * self.renderer.TRAINABLE_PARAM_COUNT)
@@ -488,7 +501,19 @@ class GaussianTrainer:
             self._dispatch_loss_backward(encoder, target_texture)
             self._dispatch_raster_backward(encoder, frame_camera, background)
 
-    def _dispatch_optimizer_step(self, encoder: spy.CommandEncoder) -> None:
+    def _dispatch_cache_step_info(self, encoder: spy.CommandEncoder, batch_step_index: int) -> None:
+        self._dispatch(
+            "cache_step_info",
+            encoder,
+            spy.uint3(1, 1, 1),
+            {
+                "g_LossBuffer": self._buffers["loss"],
+                "g_BatchStepInfo": self._buffers["batch_step_info"],
+                "g_BatchStepIndex": int(batch_step_index),
+            },
+        )
+
+    def _dispatch_optimizer_step(self, encoder: spy.CommandEncoder, step_index: int) -> None:
         with debug_region(encoder, "Trainer Optimizer", 52):
             self.optimizer.dispatch_regularizers(
                 encoder,
@@ -508,7 +533,7 @@ class GaussianTrainer:
                 param_group_size=self._scene_count,
                 param_settings=self.optimizer.param_settings,
                 param_settings_count=self.optimizer.param_settings_count,
-                step_index=self.state.step + 1,
+                step_index=int(step_index),
                 debug_element_grad_norm_buffer=self.renderer.work_buffers["debug_grad_norm"] if self.compute_debug_grad_norm else None,
             )
             self.optimizer.dispatch_projection(
@@ -541,7 +566,7 @@ class GaussianTrainer:
         )
         self._scene_count, self.scene = count, _SceneCountProxy(count)
         self.renderer.set_scene(scene)
-        self._ensure_training_buffers(self._scene_count)
+        self._ensure_training_buffers(self._scene_count, 1)
         self._scale_reg_reference = float(max(np.median(scales[:, 0]), 1e-8))
         self._zero_optimizer_moments()
         self.state = TrainingState()
@@ -554,7 +579,7 @@ class GaussianTrainer:
         self.renderer = renderer
         self.optimizer.renderer = renderer
         self.training.train_downscale_factor = self.effective_train_downscale_factor(self.state.step)
-        self._ensure_training_buffers(self._scene_count)
+        self._ensure_training_buffers(self._scene_count, 1)
         self._ensure_train_target_texture()
         self._invalidate_downscaled_target()
 
@@ -576,34 +601,59 @@ class GaussianTrainer:
             max_log10=max_log10,
         )
 
-    def step(self) -> float:
-        self.training.train_downscale_factor = self.effective_train_downscale_factor(self.state.step)
-        frame_index = self._next_frame_index()
-        frame_camera = self.make_frame_camera(frame_index, self.renderer.width, self.renderer.height)
+    def step_batch(self, step_count: int) -> int:
+        requested = max(int(step_count), 0)
+        if requested <= 0:
+            return 0
+
+        first_factor = self.effective_train_downscale_factor(self.state.step)
+        batch_steps = 0
+        while batch_steps < requested and self.effective_train_downscale_factor(self.state.step + batch_steps) == first_factor:
+            batch_steps += 1
+        if batch_steps <= 0:
+            return 0
+
+        self.training.train_downscale_factor = first_factor
+        self._ensure_training_buffers(self._scene_count, batch_steps)
         background = np.asarray(self.training.background, dtype=np.float32).reshape(3)
-        self.renderer.execute_prepass_for_current_scene(frame_camera, sync_counts=False)
+        frame_indices: list[int] = []
         enc = self.device.create_command_encoder()
-        target_texture = self.get_frame_target_texture(frame_index, native_resolution=False, encoder=enc)
-        self._dispatch_training_forward(enc, frame_camera, background, target_texture)
-        self._dispatch_training_backward(enc, frame_camera, background, target_texture)
-        self._dispatch_optimizer_step(enc)
+        for batch_index in range(batch_steps):
+            frame_index = self._next_frame_index()
+            frame_indices.append(frame_index)
+            frame_camera = self.make_frame_camera(frame_index, self.renderer.width, self.renderer.height)
+            self.renderer.record_prepass_for_current_scene(enc, frame_camera)
+            target_texture = self.get_frame_target_texture(frame_index, native_resolution=False, encoder=enc)
+            self._dispatch_training_forward(enc, frame_camera, background, target_texture)
+            self._dispatch_training_backward(enc, frame_camera, background, target_texture)
+            self._dispatch_optimizer_step(enc, self.state.step + batch_index + 1)
+            self._dispatch_cache_step_info(enc, batch_index)
         self.device.submit_command_buffer(enc.finish())
         self.device.wait()
 
-        loss, image_mse = self._read_loss_metrics()
-        if not np.isfinite(loss):
-            self.state.last_instability = "Non-finite loss after ADAM; moments reset."
+        step_metrics = self._read_batch_step_metrics(batch_steps)
+        had_nonfinite = False
+        for batch_index, frame_index in enumerate(frame_indices):
+            loss = float(step_metrics[batch_index, self._LOSS_SLOT_TOTAL])
+            image_mse = float(step_metrics[batch_index, self._LOSS_SLOT_MSE])
+            had_nonfinite = had_nonfinite or not np.isfinite(loss)
+            self.state.step += 1
+            self.state.last_frame_index = frame_index
+            self.state.last_loss = loss
+            self.state.last_mse = image_mse
+            self.state.last_psnr = float(psnr_from_mse(image_mse))
+            self._frame_metrics.update(frame_index, self.state.last_loss, self.state.last_mse, self.state.last_psnr)
+        if had_nonfinite:
+            self.state.last_instability = "Non-finite loss after batched ADAM; moments reset."
             self._zero_optimizer_moments()
         else:
             self.state.last_instability = ""
-
-        self.state.step += 1
-        self.state.last_frame_index = frame_index
-        self.state.last_loss = float(loss)
-        self.state.last_mse = float(image_mse)
-        self.state.last_psnr = float(psnr_from_mse(image_mse))
-        self._frame_metrics.update(frame_index, self.state.last_loss, self.state.last_mse, self.state.last_psnr)
         self.state.avg_loss = self._frame_metrics.mean("loss")
         self.state.avg_mse = self._frame_metrics.mean("mse")
         self.state.avg_psnr = self._frame_metrics.mean("psnr")
-        return float(loss)
+        self.training.train_downscale_factor = self.effective_train_downscale_factor(self.state.step)
+        return batch_steps
+
+    def step(self) -> float:
+        self.step_batch(1)
+        return float(self.state.last_loss)

@@ -38,9 +38,15 @@ class _DummyTrainer:
         self.scene = SimpleNamespace(count=4)
         self.training = SimpleNamespace(train_downscale_mode=1, train_auto_start_downscale=1, train_downscale_max_iters=30000)
         self.step_calls = 0
+        self.step_batch_calls: list[int] = []
 
     def step(self) -> None:
         self.step_calls += 1
+
+    def step_batch(self, steps: int) -> int:
+        self.step_batch_calls.append(int(steps))
+        self.step_calls += int(steps)
+        return int(steps)
 
     def make_frame_camera(self, frame_index: int, width: int, height: int) -> tuple[int, int, int]:
         return (frame_index, width, height)
@@ -168,6 +174,7 @@ def test_render_frame_runs_configured_training_batch(monkeypatch):
     presenter.render_frame(viewer, render_context)
 
     assert viewer.s.trainer.step_calls == 3
+    assert viewer.s.trainer.step_batch_calls == [3]
     assert viewer.s.last_training_batch_steps == 3
     assert calls == ["apply", "main", "ui"]
 

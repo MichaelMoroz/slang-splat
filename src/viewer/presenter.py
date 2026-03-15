@@ -66,8 +66,11 @@ def _run_training_batch(viewer: object) -> int:
         return 0
     factor_before = int(viewer.s.trainer.effective_train_downscale_factor())
     steps = _training_steps_per_frame(viewer)
-    for _ in range(steps):
-        viewer.s.trainer.step()
+    if hasattr(viewer.s.trainer, "step_batch"):
+        steps = int(viewer.s.trainer.step_batch(steps))
+    else:
+        for _ in range(steps):
+            viewer.s.trainer.step()
     viewer.s.training_runtime_factor_changed = int(viewer.s.trainer.effective_train_downscale_factor()) != factor_before
     viewer.s.last_training_batch_steps = steps
     return steps

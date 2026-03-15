@@ -540,12 +540,7 @@ class GaussianRenderer:
         self._reset_prepass_counters()
         enc = self.device.create_command_encoder()
         with debug_region(enc, "Renderer Prepass", 19):
-            self._project_and_bin(enc, scene, camera)
-            self._compose_scanline_key_values_indirect(enc, self._compute_scanline_dispatch_args(enc))
-            self._enqueue_counter_readback(enc)
-            self._clear_tile_ranges(enc)
-            args_buffer = self._sorter.sort_key_values_from_count_buffer(encoder=enc, keys_buffer=self._work_buffers["keys"], values_buffer=self._work_buffers["values"], count_buffer=self._work_buffers["counter"], count_offset=0, max_count=self._max_list_entries, max_bits=self.sort_bits)
-            self._build_tile_ranges_indirect(enc, args_buffer)
+            self._record_prepass(enc, scene, camera, enqueue_counter_readback=True)
         self.device.submit_command_buffer(enc.finish())
         if sync_counts:
             self.device.wait()
@@ -556,6 +551,24 @@ class GaussianRenderer:
             sorted_count = self._delayed_written_entries if self._delayed_stats_valid else 0
         self._counter_readback_frame_id += 1
         return generated, sorted_count
+
+    def _record_prepass(self, encoder: spy.CommandEncoder, scene: GaussianScene, camera: Camera, enqueue_counter_readback: bool) -> None:
+        self._reset_prepass_counters()
+        self._project_and_bin(encoder, scene, camera)
+        self._compose_scanline_key_values_indirect(encoder, self._compute_scanline_dispatch_args(encoder))
+        if enqueue_counter_readback:
+            self._enqueue_counter_readback(encoder)
+        self._clear_tile_ranges(encoder)
+        args_buffer = self._sorter.sort_key_values_from_count_buffer(
+            encoder=encoder,
+            keys_buffer=self._work_buffers["keys"],
+            values_buffer=self._work_buffers["values"],
+            count_buffer=self._work_buffers["counter"],
+            count_offset=0,
+            max_count=self._max_list_entries,
+            max_bits=self.sort_bits,
+        )
+        self._build_tile_ranges_indirect(encoder, args_buffer)
 
     def _require_texture(self, attr: str, label: str) -> spy.Texture:
         texture = getattr(self, attr)
@@ -673,6 +686,10 @@ class GaussianRenderer:
 
     def execute_prepass_for_current_scene(self, camera: Camera, sync_counts: bool = False) -> tuple[int, int]:
         return self._execute_prepass(self._require_scene(), camera, sync_counts=sync_counts)
+
+    def record_prepass_for_current_scene(self, encoder: spy.CommandEncoder, camera: Camera) -> None:
+        scene = self._require_scene()
+        self._record_prepass(encoder, scene, camera, enqueue_counter_readback=False)
 
     def rasterize_current_scene(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray) -> None:
         self._require_scene()
