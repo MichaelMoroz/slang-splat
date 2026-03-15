@@ -213,6 +213,33 @@ def test_training_step_batch_updates_params_without_changing_count(device, tmp_p
     assert np.any(np.abs(after - before) > 0.0)
 
 
+def test_training_step_batch_matches_two_single_steps(device, tmp_path: Path):
+    scene = _make_scene(count=8, seed=31)
+    frame = _make_frame(tmp_path, image_name="batch_match_target.png", image_id=2)
+    renderer_seq = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
+    renderer_batch = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
+    trainer_seq = GaussianTrainer(device=device, renderer=renderer_seq, scene=scene, frames=[frame], seed=123)
+    trainer_batch = GaussianTrainer(device=device, renderer=renderer_batch, scene=scene, frames=[frame], seed=123)
+
+    trainer_seq.step()
+    trainer_seq.step()
+    executed = trainer_batch.step_batch(2)
+
+    assert executed == 2
+    np.testing.assert_allclose(
+        _read_scene_groups(renderer_batch, scene.count)["positions"],
+        _read_scene_groups(renderer_seq, scene.count)["positions"],
+        rtol=1e-5,
+        atol=1e-7,
+    )
+    np.testing.assert_allclose(
+        _read_scene_groups(renderer_batch, scene.count)["scales"],
+        _read_scene_groups(renderer_seq, scene.count)["scales"],
+        rtol=1e-5,
+        atol=1e-7,
+    )
+
+
 def test_split_loss_forward_backward_separates_metrics_from_output_grads(device, tmp_path: Path):
     scene = _make_scene(count=8, seed=19)
     frame = _make_frame(tmp_path, image_name="split_loss_target.png")

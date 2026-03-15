@@ -207,9 +207,14 @@ class GaussianRenderer:
     def _upload_scene(self, scene: GaussianScene) -> None:
         self._scene_buffers["splat_params"].copy_from_numpy(self._pack_scene(scene))
 
-    def _reset_prepass_counters(self) -> None:
+    def _reset_prepass_counters(self, encoder: spy.CommandEncoder | None = None) -> None:
+        if encoder is None:
+            zero = np.array([0], dtype=np.uint32)
+            for name in ("counter", "scanline_counter"):
+                self._work_buffers[name].copy_from_numpy(zero)
+            return
         for name in ("counter", "scanline_counter"):
-            self._work_buffers[name].copy_from_numpy(np.array([0], dtype=np.uint32))
+            encoder.copy_buffer(self._work_buffers[name], 0, self._zero_u32_buffer, 0, self._U32_BYTES)
 
     def set_scene(self, scene: GaussianScene) -> None:
         self._ensure_scene_buffers(scene.count)
@@ -293,6 +298,8 @@ class GaussianRenderer:
         self._counter_readback_frame_id = 0
         self._pending_min_list_entries = self._delayed_generated_entries = self._delayed_written_entries = 0
         self._delayed_overflow = self._delayed_stats_valid = False
+        self._zero_u32_buffer = self.device.create_buffer(size=self._U32_BYTES, usage=spy.BufferUsage.shader_resource | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination)
+        self._zero_u32_buffer.copy_from_numpy(np.array([0], dtype=np.uint32))
 
     @staticmethod
     def _eval_uint_constant_expr(expr: str, constants: dict[str, int]) -> int:
@@ -537,7 +544,6 @@ class GaussianRenderer:
         self._dispatch(self._k_backprop_cached_raster_grads, encoder, spy.uint3(max(int(splat_count), 1), 1, 1), {**self._scene_vars(), **self._raster_cache_vars(), **self._raster_grad_vars(), **self._raster_grad_decode_scale_var(grad_scale), **self._prepass_uniforms(splat_count), **self._camera_uniforms(camera)}, "Backprop Cached Raster Grads", 28)
 
     def _execute_prepass(self, scene: GaussianScene, camera: Camera, sync_counts: bool = False) -> tuple[int, int]:
-        self._reset_prepass_counters()
         enc = self.device.create_command_encoder()
         with debug_region(enc, "Renderer Prepass", 19):
             self._record_prepass(enc, scene, camera, enqueue_counter_readback=True)
@@ -553,7 +559,7 @@ class GaussianRenderer:
         return generated, sorted_count
 
     def _record_prepass(self, encoder: spy.CommandEncoder, scene: GaussianScene, camera: Camera, enqueue_counter_readback: bool) -> None:
-        self._reset_prepass_counters()
+        self._reset_prepass_counters(encoder)
         self._project_and_bin(encoder, scene, camera)
         self._compose_scanline_key_values_indirect(encoder, self._compute_scanline_dispatch_args(encoder))
         if enqueue_counter_readback:
