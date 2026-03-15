@@ -15,12 +15,12 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - Shared constants stay in `shaders/utility/math/constants.slang`, organized with commented sections for generic numeric floors, rendering constants, and debug-visualization tuning instead of being split into tiny constants-only files.
 - Python-side raster layout defaults are sourced from `shaders/renderer/gaussian_types.slang` by parsing the `static const uint` raster constants instead of duplicating them manually in `GaussianRenderer`.
 - Python bindings in `GaussianRenderer` mirror this layout by building reusable grouped binding dictionaries for scene buffers, prepass uniforms, raster uniforms, and readback state.
-- Stored gaussian scale follows 3DGS semantics (`log(sigma)` per axis). Rendering decodes `exp(log_scale)` and converts sigma to finite-support ellipsoid radius with `radius_scale * 3.0`.
+- Stored gaussian scale follows 3DGS semantics (`log(sigma)` per axis). Rendering decodes `exp(log_scale)` and converts sigma to finite-support ellipsoid radius with `radius_scale * 2.6`.
 
 ## 1. Project and Bin
 - Shader: `csProjectAndBin`
 - For each splat:
-  - decode the stored 3DGS log-scale to sigma, convert it to finite-support ellipsoid radius with `radius_scale * 3.0`, then smoothly clamp that support radius toward a `0.75`-screen-pixel floor at the splat depth (`0.75 * depth / min(focal_x, focal_y)` in world units),
+  - decode the stored 3DGS log-scale to sigma, convert it to the rasterizer's calibrated finite-support ellipsoid radius with `radius_scale * 2.6`, then smoothly clamp that support radius toward a `0.75`-screen-pixel floor at the splat depth (`0.75 * depth / min(focal_x, focal_y)` in world units),
   - project to screen space with sampled-5 MVEE fitting,
   - if sampled-5 fitting is unstable, use an analytic depth/scale fallback radius instead of hard max-radius fallback,
   - estimate projected radius,

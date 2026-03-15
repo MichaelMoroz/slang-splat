@@ -17,7 +17,7 @@ from src.renderer import Camera, GaussianRenderer
 from src.scene import GaussianScene
 
 _RASTER_GRAD_FIXED_SCALE = 65536.0
-_GAUSSIAN_SUPPORT_SIGMA_RADIUS = 3.0
+_GAUSSIAN_SUPPORT_SIGMA_RADIUS = 2.6
 
 _log_sigma = lambda sigma: np.log(np.asarray(sigma, dtype=np.float32))
 _stored_from_support_scale = lambda support_scale: np.log(np.asarray(support_scale, dtype=np.float32) / _GAUSSIAN_SUPPORT_SIGMA_RADIUS)
@@ -204,15 +204,39 @@ def test_radius_scale_scales_true_3dgs_size_without_hidden_fudge(device):
         sh_coeffs=np.zeros((1, 1, 3), dtype=np.float32),
     )
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
-    projected_1x = project_splats(scene, camera, width=128, height=128, radius_scale=1.0)
-    projected_2x = project_splats(scene, camera, width=128, height=128, radius_scale=2.0)
+    projected_1x = project_splats(scene, camera, width=512, height=512, radius_scale=1.0)
+    projected_2x = project_splats(scene, camera, width=512, height=512, radius_scale=2.0)
 
     support_1x = 1.0 / projected_1x.inv_scale[0]
     support_2x = 1.0 / projected_2x.inv_scale[0]
 
     np.testing.assert_allclose(support_1x, np.full((3,), 0.2 * _GAUSSIAN_SUPPORT_SIGMA_RADIUS, dtype=np.float32), rtol=0.0, atol=5e-4)
     np.testing.assert_allclose(support_2x / support_1x, np.full((3,), 2.0, dtype=np.float32), rtol=5e-4, atol=1e-6)
-    assert np.isclose(projected_2x.center_radius_depth[0, 2] / projected_1x.center_radius_depth[0, 2], 2.0, rtol=1e-2, atol=1e-3)
+
+    far_camera = Camera.look_at(position=(0.0, 0.0, 20.0), target=(0.0, 0.0, 0.0), near=0.1, far=100.0)
+    projected_footprint_1x = project_splats_sampled5_mvee(
+        scene=scene,
+        camera=far_camera,
+        width=512,
+        height=512,
+        radius_scale=1.0,
+        mvee_iters=6,
+        safety_scale=1.0,
+        radius_pad_px=0.0,
+        mvee_eps=1e-6,
+    )
+    projected_footprint_2x = project_splats_sampled5_mvee(
+        scene=scene,
+        camera=far_camera,
+        width=512,
+        height=512,
+        radius_scale=2.0,
+        mvee_iters=6,
+        safety_scale=1.0,
+        radius_pad_px=0.0,
+        mvee_eps=1e-6,
+    )
+    assert np.isclose(projected_footprint_2x.center_radius_depth[0, 2] / projected_footprint_1x.center_radius_depth[0, 2], 2.0, rtol=1e-3, atol=1e-4)
 
 
 def test_subpixel_gaussian_uses_pixel_floor_in_projection_and_raster(device):

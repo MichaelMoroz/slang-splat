@@ -15,7 +15,7 @@ STATUS_MVEE_DEGENERATE = np.uint32(1 << 3)
 STATUS_HARD_FALLBACK = np.uint32(1 << 4)
 _TAU = np.float32(2.0 * np.pi)
 _SCALE_FLOOR_SMOOTH_RATIO = np.float32(1.0)
-_GAUSSIAN_SUPPORT_SIGMA_RADIUS = np.float32(3.0)
+_GAUSSIAN_SUPPORT_SIGMA_RADIUS = np.float32(2.6)
 
 
 @dataclass(slots=True)

@@ -7,7 +7,7 @@ static const uint MVEE_POINT_COUNT = 5u;
 static const uint MVEE_MAX_ITERS = 8u;
 static const float SCALE_AREA_PROXY_POWER = 2.0 / 3.0;
 static const float SCALE_FLOOR_SMOOTH_RATIO = 1.0;
-static const float GAUSSIAN_SUPPORT_SIGMA_RADIUS = 3.0;
+static const float GAUSSIAN_SUPPORT_SIGMA_RADIUS = 2.6;
 
 struct ScanlineWorkItem
 {
