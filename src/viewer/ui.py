@@ -36,7 +36,7 @@ _INTERFACE_SCALE_OPTIONS = (
     ("175%", 1.75),
     ("200%", 2.0),
 )
-_DEFAULT_INTERFACE_SCALE_INDEX = 1
+_DEFAULT_INTERFACE_SCALE_INDEX = 3
 _BASE_FONT_SIZE_PX = 16.0
 _FONT_ATLAS_SIZE_PX = _BASE_FONT_SIZE_PX * _INTERFACE_SCALE_OPTIONS[-1][1]
 _COLMAP_INIT_MODE_LABELS = ("COLMAP Pointcloud", "Custom PLY")
@@ -168,7 +168,7 @@ GROUP_SPECS = {
     "Train Setup": (
         ControlSpec("max_gaussians", "slider_int", "Max Gaussians", {"value": 5900000, "min": 1000, "max": 10000000}),
         ControlSpec("training_steps_per_frame", "slider_int", "Steps / Frame", {"value": 1, "min": 1, "max": 8}),
-        ControlSpec("train_downscale_mode", "combo", "Downscale Mode", {"value": 0, "options": _TRAIN_DOWNSCALE_MODE_LABELS}),
+        ControlSpec("train_downscale_mode", "combo", "Downscale Mode", {"value": 1, "options": _TRAIN_DOWNSCALE_MODE_LABELS}),
         ControlSpec("train_auto_start_downscale", "slider_int", "Auto Start Downscale", {"value": 16, "min": 1, "max": 16}),
         ControlSpec("train_downscale_base_iters", "input_int", "Downscale Base Iters", {"value": 200, "step": 25, "step_fast": 100}),
         ControlSpec("train_downscale_iter_step", "input_int", "Downscale Iter Step", {"value": 50, "step": 10, "step_fast": 50}),
@@ -1173,7 +1173,7 @@ def build_ui(renderer) -> ViewerUI:
     values["colmap_images_root"] = ""
     values["colmap_init_mode"] = 0
     values["colmap_custom_ply_path"] = ""
-    values["colmap_nn_radius_scale_coef"] = 0.25
+    values["colmap_nn_radius_scale_coef"] = 1.0
     values["_loss_debug_frame_max"] = 0
     values["_colmap_import_active"] = False
     values["_colmap_import_fraction"] = 0.0
