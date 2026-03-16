@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field
 from functools import lru_cache, partial
+import importlib
 import math
 from pathlib import Path
 import re
@@ -36,6 +37,8 @@ _INTERFACE_SCALE_OPTIONS = (
     ("200%", 2.0),
 )
 _DEFAULT_INTERFACE_SCALE_INDEX = 1
+_BASE_FONT_SIZE_PX = 16.0
+_FONT_ATLAS_SIZE_PX = _BASE_FONT_SIZE_PX * _INTERFACE_SCALE_OPTIONS[-1][1]
 _COLMAP_INIT_MODE_LABELS = ("COLMAP Pointcloud", "Custom PLY")
 _TRAIN_DOWNSCALE_MODE_LABELS = ("Auto",) + tuple(f"{i}x" for i in range(1, 17))
 _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT = 2e-4
@@ -91,10 +94,11 @@ def _build_documentation_text() -> str:
     return text if text else "Documentation is unavailable."
 
 
-def _panel_rect(width: int, height: int, menu_bar_height: float) -> tuple[float, float, float, float]:
-    panel_width = float(max(int(width * TOOLKIT_WIDTH_FRACTION), 280))
-    top = max(float(menu_bar_height), 0.0)
-    return 0.0, top, panel_width, max(float(height) - top, 1.0)
+@lru_cache(maxsize=1)
+def _default_font_path() -> Path | None:
+    package = importlib.import_module("imgui_bundle")
+    path = Path(package.__file__).resolve().parent / "assets" / "fonts" / "DroidSans.ttf"
+    return path if path.exists() else None
 
 
 def _menu_item(label: str, shortcut: str = "", selected: bool = False, enabled: bool = True) -> bool:
@@ -311,6 +315,7 @@ class ToolkitWindow:
         implot.create_context()
         imgui.get_io().config_flags |= imgui.ConfigFlags_.docking_enable.value
         self.renderer = spy.ui.Context(device)
+        self._configure_default_font()
         self._apply_theme()
         self.callbacks = SimpleNamespace(
             load_ply=_noop,
@@ -334,6 +339,14 @@ class ToolkitWindow:
         self._documentation_text = _build_documentation_text()
         self._menu_bar_height = 0.0
         self._applied_interface_scale = -1.0
+        self._dockspace_id = 0
+        self._toolkit_window_open = True
+        self._toolkit_rect = (
+            0.0,
+            0.0,
+            float(max(int(width * TOOLKIT_WIDTH_FRACTION), 280)),
+            max(float(height), 1.0),
+        )
         self._set_interface_scale(_INTERFACE_SCALE_OPTIONS[_DEFAULT_INTERFACE_SCALE_INDEX][1])
 
     def _set_current_context(self) -> None:
@@ -384,6 +397,15 @@ class ToolkitWindow:
         _c(imgui.Col_.resize_grip_hovered, imgui.ImVec4(0.26, 0.50, 0.74, 0.67))
         _c(imgui.Col_.resize_grip_active, imgui.ImVec4(0.26, 0.50, 0.74, 0.95))
 
+    def _configure_default_font(self) -> None:
+        io = imgui.get_io()
+        atlas = io.fonts
+        atlas.clear()
+        font_path = _default_font_path()
+        io.font_default = atlas.add_font_from_file_ttf(str(font_path), _FONT_ATLAS_SIZE_PX) if font_path is not None else atlas.add_font_default()
+        if atlas.tex_data is not None:
+            atlas.tex_data.get_pixels_array()
+
     def _interface_scale_factor(self, ui: ViewerUI) -> float:
         idx = min(max(int(ui._values.get(_INTERFACE_SCALE_KEY, _DEFAULT_INTERFACE_SCALE_INDEX)), 0), len(_INTERFACE_SCALE_OPTIONS) - 1)
         return float(_INTERFACE_SCALE_OPTIONS[idx][1])
@@ -394,8 +416,9 @@ class ToolkitWindow:
             return
         self._set_current_context()
         self._apply_theme()
-        imgui.get_style().scale_all_sizes(clamped_scale)
-        imgui.get_io().font_global_scale = clamped_scale
+        style = imgui.get_style()
+        style.scale_all_sizes(clamped_scale)
+        style.font_scale_main = clamped_scale * (_BASE_FONT_SIZE_PX / _FONT_ATLAS_SIZE_PX)
         self._applied_interface_scale = clamped_scale
 
     def _sync_interface_scale(self, ui: ViewerUI) -> None:
@@ -426,9 +449,10 @@ class ToolkitWindow:
         dt = max(now - self._last_frame_time, 1e-5)
         self._last_frame_time = now
         self._set_current_context()
-        self._sync_interface_scale(ui)
         simgui.begin_frame(width, height, dt)
+        self._sync_interface_scale(ui)
         self._menu_bar_height = self._draw_main_menu_bar(ui)
+        self._draw_dockspace()
         self._draw_panel(ui, width, height)
         self._draw_debug_colorbar(ui, width, height)
         imgui.render()
@@ -436,27 +460,37 @@ class ToolkitWindow:
         self._frame_textures = simgui.sync_draw_data_textures(self.device, self.renderer, draw_data)
         simgui.render_imgui_draw_data(self.renderer, draw_data, surface_texture, command_encoder)
 
-    def _draw_panel(self, ui: ViewerUI, width: int, height: int) -> None:
-        panel_x, panel_y, panel_width, panel_height = _panel_rect(width, height, self._menu_bar_height)
-        imgui.set_next_window_pos(imgui.ImVec2(panel_x, panel_y))
-        imgui.set_next_window_size(imgui.ImVec2(panel_width, panel_height))
-        flags = (
-            imgui.WindowFlags_.no_title_bar.value
-            | imgui.WindowFlags_.no_resize.value
-            | imgui.WindowFlags_.no_move.value
-            | imgui.WindowFlags_.no_collapse.value
-            | imgui.WindowFlags_.no_bring_to_front_on_focus.value
+    def _draw_dockspace(self) -> None:
+        viewport = imgui.get_main_viewport()
+        self._dockspace_id = int(
+            imgui.dock_space_over_viewport(
+                viewport=viewport,
+                flags=imgui.DockNodeFlags_.passthru_central_node.value,
+            )
         )
-        imgui.begin("##Toolkit", flags=flags)
-        self._section_performance(ui)
-        self._section_status(ui)
-        self._section_scene_io(ui)
-        self._section_camera(ui)
-        self._section_training_control(ui)
-        self._section_training_setup(ui)
-        self._section_optimizer(ui)
-        self._section_stability(ui)
-        self._section_render_params(ui)
+
+    def _draw_panel(self, ui: ViewerUI, width: int, height: int) -> None:
+        panel_width = float(max(int(width * TOOLKIT_WIDTH_FRACTION), 280))
+        panel_height = max(float(height) - self._menu_bar_height, 1.0)
+        imgui.set_next_window_pos(imgui.ImVec2(0.0, self._menu_bar_height), imgui.Cond_.first_use_ever.value)
+        imgui.set_next_window_size(imgui.ImVec2(panel_width, panel_height), imgui.Cond_.first_use_ever.value)
+        if self._dockspace_id != 0:
+            imgui.set_next_window_dock_id(self._dockspace_id, imgui.Cond_.first_use_ever.value)
+        flags = imgui.WindowFlags_.no_collapse.value
+        opened, self._toolkit_window_open = imgui.begin("Toolkit", self._toolkit_window_open, flags=flags)
+        if opened:
+            pos = imgui.get_window_pos()
+            size = imgui.get_window_size()
+            self._toolkit_rect = (float(pos.x), float(pos.y), float(size.x), float(size.y))
+            self._section_performance(ui)
+            self._section_status(ui)
+            self._section_scene_io(ui)
+            self._section_camera(ui)
+            self._section_training_control(ui)
+            self._section_training_setup(ui)
+            self._section_optimizer(ui)
+            self._section_stability(ui)
+            self._section_render_params(ui)
         imgui.end()
         self._draw_about_window()
         self._draw_documentation_window()
@@ -468,7 +502,7 @@ class ToolkitWindow:
             return
         draw_list = imgui.get_foreground_draw_list()
         bar_height = min(_DEBUG_COLORBAR_HEIGHT, max(float(height) - self._menu_bar_height - 2.0 * _DEBUG_COLORBAR_MARGIN, 80.0))
-        panel_x, _, panel_width, _ = _panel_rect(width, height, self._menu_bar_height)
+        panel_x, _, panel_width, _ = self._toolkit_rect
         box_width = _DEBUG_COLORBAR_LEFT_PAD + _DEBUG_COLORBAR_WIDTH + _DEBUG_COLORBAR_RIGHT_PAD
         box_height = _DEBUG_COLORBAR_TOP_PAD + bar_height + _DEBUG_COLORBAR_BOTTOM_PAD
         box_min_x = panel_x + panel_width + 8.0
