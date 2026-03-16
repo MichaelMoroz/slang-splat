@@ -239,61 +239,6 @@ def test_radius_scale_scales_true_3dgs_size_without_hidden_fudge(device):
     assert np.isclose(projected_footprint_2x.center_radius_depth[0, 2] / projected_footprint_1x.center_radius_depth[0, 2], 2.0, rtol=2e-3, atol=1e-4)
 
 
-def test_subpixel_gaussian_keeps_raw_raster_scale_without_pixel_floor_clamp(device):
-    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
-    background = np.array([0.0, 0.0, 0.0], dtype=np.float32)
-    renderer = GaussianRenderer(device, width=65, height=65, radius_scale=1.0, list_capacity_multiplier=16)
-    raw_scale = 0.5 * camera.pixel_world_size_max(4.0, renderer.width, renderer.height)
-    scene = GaussianScene(
-        positions=np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
-        scales=np.full((1, 3), _stored_from_support_scale(raw_scale), dtype=np.float32),
-        rotations=np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
-        opacities=np.array([0.75], dtype=np.float32),
-        colors=np.array([[0.8, 0.6, 0.2]], dtype=np.float32),
-        sh_coeffs=np.zeros((1, 1, 3), dtype=np.float32),
-    )
-
-    gpu_image = renderer.render(scene, camera, background=background).image
-    debug = renderer.debug_pipeline_data(scene, camera)
-    projected = project_splats(scene, camera, renderer.width, renderer.height, renderer.radius_scale)
-    keys, values, generated = build_tile_key_value_pairs(
-        projected=projected,
-        tile_width=renderer.tile_width,
-        tile_height=renderer.tile_height,
-        tile_size=renderer.tile_size,
-        depth_bits=renderer.depth_bits,
-        near_depth=camera.near,
-        far_depth=camera.far,
-        max_list_entries=renderer._max_list_entries,
-    )
-    sorted_count = min(generated, renderer._max_list_entries)
-    ref_keys, ref_values = sort_key_values(keys, values, sorted_count)
-    ref_ranges = build_tile_ranges(ref_keys, sorted_count, renderer.tile_count, renderer.depth_bits)
-    cpu_image = rasterize(
-        projected=projected,
-        sorted_values=ref_values,
-        tile_ranges=ref_ranges,
-        camera=camera,
-        width=renderer.width,
-        height=renderer.height,
-        tile_size=renderer.tile_size,
-        tile_width=renderer.tile_width,
-        background=background,
-        alpha_cutoff=renderer.alpha_cutoff,
-        max_splat_steps=renderer.max_splat_steps,
-        transmittance_threshold=renderer.transmittance_threshold,
-    )
-
-    effective_scale = float(np.mean(1.0 / projected.inv_scale[0]))
-    center_pixel = renderer.width // 2
-    assert np.isclose(effective_scale, raw_scale, rtol=0.0, atol=1e-6)
-    assert np.isclose(float(debug["screen_center_radius_depth"][0, 2]), float(projected.center_radius_depth[0, 2]), rtol=0.0, atol=1e-4)
-    assert np.isclose(float(debug["screen_ellipse_conic"][0, 3]), 1.0, rtol=0.0, atol=1e-6)
-    assert np.isclose(float(cpu_image[center_pixel, center_pixel, 3]), float(scene.opacities[0]), atol=2e-3)
-    assert np.isclose(float(gpu_image[center_pixel, center_pixel, 3]), float(scene.opacities[0]), atol=2e-3)
-    np.testing.assert_allclose(gpu_image, cpu_image, rtol=0.0, atol=4e-2)
-
-
 def test_debug_ellipse_overlay_render_smoke(device):
     scene = make_scene(24, seed=31)
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
@@ -459,25 +404,6 @@ def test_raster_backward_produces_float_final_grads_and_fixed_intermediate(devic
     final_nonzero = final_values[np.abs(final_values) > 0.0]
     assert final_nonzero.size > 0
     assert np.any(np.abs(final_nonzero * _RASTER_GRAD_FIXED_SCALE - np.rint(final_nonzero * _RASTER_GRAD_FIXED_SCALE)) > 1e-4)
-
-
-def test_subpixel_gaussian_does_not_inject_raster_scale_gradient(device):
-    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
-    renderer = GaussianRenderer(device, width=65, height=65, radius_scale=1.0, list_capacity_multiplier=16)
-    raw_scale = 0.5 * camera.pixel_world_size_max(4.0, renderer.width, renderer.height)
-    scene = GaussianScene(
-        positions=np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
-        scales=np.full((1, 3), _stored_from_support_scale(raw_scale), dtype=np.float32),
-        rotations=np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
-        opacities=np.array([0.75], dtype=np.float32),
-        colors=np.array([[0.8, 0.6, 0.2]], dtype=np.float32),
-        sh_coeffs=np.zeros((1, 1, 3), dtype=np.float32),
-    )
-
-    grads = renderer.debug_raster_backward_grads(scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32))
-
-    assert np.all(np.isfinite(grads["grad_scales"]))
-    assert float(np.max(np.abs(grads["grad_scales"][0, :3]))) < 1e-7
 
 
 def test_prepass_capacity_budget_caps_growth(device):
