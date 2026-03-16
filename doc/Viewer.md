@@ -63,6 +63,15 @@ The loss-debug controls expose a runtime `Abs Diff Scale` slider when `View = Ab
 - `scale = 1.0` shows the raw absolute color difference.
 - Higher values amplify subtle differences without changing the rendered or target views.
 
+## Histogram Window
+
+`Debug -> Histograms` opens a dedicated histogram window for cached ellipse gradient components.
+
+- The window inspects the active cached ellipse gradient accumulation mode only.
+- Histogram values are computed over `log10(abs(component_gradient))`.
+- Components are grouped as `roLocal`, `invScale`, `quat`, `color`, and `opacity`.
+- `Auto Refresh` recomputes only when the relevant training/debug signature changes; manual refresh is available for paused inspection.
+
 ## Cached Gradient Atomics
 
 `Render Params` includes a `Cached Grad Atomics` selector:

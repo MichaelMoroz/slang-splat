@@ -59,6 +59,48 @@ def test_gpu_histograms_ignore_nonfinite_rows(device) -> None:
     assert int(anisotropy_hist.counts.sum()) == 1
 
 
+def test_gpu_param_tensor_histograms_bucket_per_param(device) -> None:
+    metrics = Metrics(device)
+    tensor = device.create_buffer(
+        size=6 * 4,
+        usage=spy.BufferUsage.shader_resource | spy.BufferUsage.copy_destination | spy.BufferUsage.copy_source | spy.BufferUsage.unordered_access,
+    )
+    tensor.copy_from_numpy(np.array([1e-3, 1e-2, 1e-1, 1.0, 10.0, 100.0], dtype=np.float32))
+
+    hist = metrics.compute_param_tensor_log10_histograms(
+        tensor,
+        2,
+        3,
+        bin_count=3,
+        min_log10=-3.0,
+        max_log10=3.0,
+        param_labels=("first", "second"),
+    )
+
+    np.testing.assert_array_equal(hist.counts, np.array([[2, 1, 0], [0, 1, 2]], dtype=np.int64))
+    assert hist.param_labels == ("first", "second")
+
+
+def test_gpu_param_tensor_histograms_ignore_zero_and_nonfinite_values(device) -> None:
+    metrics = Metrics(device)
+    tensor = device.create_buffer(
+        size=8 * 4,
+        usage=spy.BufferUsage.shader_resource | spy.BufferUsage.copy_destination | spy.BufferUsage.copy_source | spy.BufferUsage.unordered_access,
+    )
+    tensor.copy_from_numpy(np.array([0.0, np.nan, -1e-3, np.inf, -1e-2, 0.0, 1e-1, -1.0], dtype=np.float32))
+
+    hist = metrics.compute_param_tensor_log10_histograms(
+        tensor,
+        2,
+        4,
+        bin_count=4,
+        min_log10=-3.0,
+        max_log10=1.0,
+    )
+
+    np.testing.assert_array_equal(hist.counts.sum(axis=1), np.array([1, 3], dtype=np.int64))
+
+
 def test_psnr_from_mse_zero_is_infinite() -> None:
     assert math.isinf(psnr_from_mse(0.0))
 

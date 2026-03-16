@@ -6,6 +6,7 @@ import time
 
 import slangpy as spy
 
+from ..metrics import ParamLog10Histograms
 from ..scene import ColmapFrame, ColmapReconstruction, GaussianInitHyperParams, GaussianScene
 from ..training import GaussianTrainer
 from ..renderer import GaussianRenderer
@@ -94,6 +95,12 @@ class ViewerState:
     last_training_batch_steps: int = 0
     training_elapsed_s: float = 0.0; training_resume_time: float | None = None
     suggested_init_hparams: GaussianInitHyperParams | None = None; suggested_init_count: int | None = None
+    cached_raster_grad_histograms: ParamLog10Histograms | None = None
+    cached_raster_grad_histogram_mode: str = ""
+    cached_raster_grad_histogram_step: int = -1
+    cached_raster_grad_histogram_scene_count: int = -1
+    cached_raster_grad_histogram_signature: tuple[object, ...] | None = None
+    cached_raster_grad_histogram_status: str = ""
     camera_pos: spy.float3 = field(default_factory=_default_camera_pos); yaw: float = 0.0; pitch: float = 0.0
     up: spy.float3 = field(default_factory=_default_up); fov_y: float = 60.0; near: float = 0.1; far: float = 120.0
     move_speed: float = 2.0; look_speed: float = 0.003; background: spy.float3 = field(default_factory=_default_background)

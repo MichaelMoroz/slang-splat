@@ -178,6 +178,8 @@ def update_ui_text(viewer: object, dt: float) -> None:
     viewer.t("scene_stats").text = f"Splats: {int(current_splat_count):,}"
     viewer.t("training_resolution").text = _training_resolution_text(viewer)
     viewer.t("training_downscale").text = _training_downscale_text(viewer)
+    viewer.t("histogram_status").text = str(getattr(viewer.s, "cached_raster_grad_histogram_status", ""))
+    viewer.ui._values["_histogram_payload"] = getattr(viewer.s, "cached_raster_grad_histograms", None)
     viewer.t("render_stats").text = "Generated: 0 | Written: 0" if not stats else f"Generated: {int(stats['generated_entries']):,} | Written: {int(stats['written_entries']):,} | Overflow: {bool(stats['overflow'])}{' [cap]' if bool(stats.get('capacity_limited', False)) else ''}{' (delayed)' if bool(stats.get('stats_latency_frames', 0)) else ''}{'' if bool(stats.get('stats_valid', True)) else ' [warming]'}"
     if viewer.s.trainer is None:
         viewer.t("training").text = "Training: not initialized"
@@ -284,6 +286,8 @@ def render_frame(viewer: object, render_context: spy.AppWindow.RenderContext) ->
             _render_debug_view(viewer, image, encoder, iw, ih)
         else:
             _render_main_view(viewer, image, encoder)
+        if bool(viewer.ui._values.get("show_histograms", False)):
+            session.refresh_cached_raster_grad_histograms(viewer)
         viewer.s.last_render_exception = ""
     except Exception as exc:
         viewer.s.training_active = False

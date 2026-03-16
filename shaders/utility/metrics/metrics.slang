@@ -14,10 +14,16 @@ uniform RWStructuredBuffer<float> g_ClearFloatBuffer;
 
 uniform StructuredBuffer<float> g_SplatParams;
 uniform uint g_SplatCount;
+uniform StructuredBuffer<float> g_Tensor;
+uniform StructuredBuffer<int> g_FixedIntBuffer;
+uniform uint g_ParamCount;
+uniform uint g_ItemCount;
 uniform uint g_BinCount;
 uniform float g_Log10Min;
 uniform float g_Log10InvBinSize;
+uniform float g_DecodeScale;
 uniform RWStructuredBuffer<uint> g_Histogram;
+uniform RWStructuredBuffer<float> g_DecodedFloatBuffer;
 
 uniform uint g_Width;
 uniform uint g_Height;
@@ -95,6 +101,28 @@ void csHistogramAnisotropyLog10(uint3 dispatchThreadID : SV_DispatchThreadID)
     float minScale = max(min(scale.x, min(scale.y, scale.z)), TINY_VALUE);
     float maxScale = max(scale.x, max(scale.y, scale.z));
     InterlockedAdd(g_Histogram[histogram_bin(safe_log10(maxScale / minScale))], 1u);
+}
+
+[shader("compute")]
+[numthreads(METRICS_TILE_DIM, METRICS_TILE_DIM, 1)]
+void csHistogramParamTensorLog10(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint itemId = dispatchThreadID.x;
+    uint paramId = dispatchThreadID.y;
+    if (paramId >= g_ParamCount || itemId >= g_ItemCount || g_BinCount == 0u) return;
+
+    float value = g_Tensor[paramId * g_ItemCount + itemId];
+    if (!isfinite(value) || value == 0.0) return;
+    InterlockedAdd(g_Histogram[paramId * g_BinCount + histogram_bin(safe_log10(abs(value)))], 1u);
+}
+
+[shader("compute")]
+[numthreads(METRICS_GROUP_SIZE, 1, 1)]
+void csDecodeFixedIntBufferToFloat(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint idx = dispatchThreadID.x;
+    if (idx >= g_ClearCount) return;
+    g_DecodedFloatBuffer[idx] = float(g_FixedIntBuffer[idx]) * g_DecodeScale;
 }
 
 [shader("compute")]

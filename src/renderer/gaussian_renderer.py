@@ -10,7 +10,8 @@ import re
 import numpy as np
 import slangpy as spy
 
-from ..common import SHADER_ROOT, buffer_to_numpy, debug_region, remap_named_buffers
+from ..common import SHADER_ROOT, buffer_to_numpy, debug_region, remap_named_buffers, thread_count_1d
+from ..metrics import Metrics, ParamLog10Histograms
 from ..scene.gaussian_scene import GaussianScene
 from ..sort.radix_sort import GPURadixSort
 from .camera import Camera
@@ -94,6 +95,7 @@ class GaussianRenderer:
     _MEBIBYTE_BYTES = 1024 * 1024
     _PREPASS_ENTRY_BYTES = (_SCANLINE_WORK_ITEM_UINTS + 2) * _U32_BYTES
     _RASTER_CACHE_PARAM_COUNT = 14
+    _RASTER_GRAD_FIXED_DECODE_SCALE = 1.0 / 65536.0
     _RW_BUFFER_USAGE = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
     PARAM_POSITION_IDS = (0, 1, 2)
     PARAM_SCALE_IDS = (3, 4, 5)
@@ -101,6 +103,12 @@ class GaussianRenderer:
     PARAM_COLOR_IDS = (10, 11, 12)
     PARAM_RAW_OPACITY_ID = 13
     TRAINABLE_PARAM_COUNT = 14
+    CACHED_RASTER_GRAD_COMPONENT_LABELS = (
+        "roLocal.x", "roLocal.y", "roLocal.z",
+        "invScale.x", "invScale.y", "invScale.z",
+        "quat.x", "quat.y", "quat.z", "quat.w",
+        "color.r", "color.g", "color.b", "opacity",
+    )
     _SCENE_SHADER_VARS = {"splat_params": "g_SplatParams"}
     _SCREEN_SHADER_VARS = {"screen_center_radius_depth": "g_ScreenCenterRadiusDepth", "screen_color_alpha": "g_ScreenColorAlpha", "screen_ellipse_conic": "g_ScreenEllipseConic", "splat_visible": "g_SplatVisible"}
     _GRAD_SHADER_VARS = {"param_grads": "g_ParamGrads"}
@@ -215,6 +223,8 @@ class GaussianRenderer:
             shader = self.device.create_compute_kernel(program) if kind == "kernel" else self.device.create_compute_pipeline(program)
             setattr(self, attr, shader)
         self._fixed_raster_grad_shaders = self._load_raster_grad_shaders("gaussian_raster_stage.slang")
+        metrics_shader = str(Path(SHADER_ROOT / "utility" / "metrics" / "metrics.slang"))
+        self._k_decode_fixed_buffer_to_float = self.device.create_compute_kernel(self.device.load_program(metrics_shader, ["csDecodeFixedIntBufferToFloat"]))
 
     def _load_raster_grad_shaders(self, shader_name: str) -> _RasterGradShaderSet:
         shader_path = str(Path(SHADER_ROOT / "renderer" / shader_name))
@@ -411,6 +421,7 @@ class GaussianRenderer:
             **{name: max(self._work_splat_capacity, 1) * self.TRAINABLE_PARAM_COUNT * self._U32_BYTES for name in self._GRAD_SHADER_VARS},
             "cached_raster_grads_fixed": max(self._work_splat_capacity, 1) * self._RASTER_CACHE_PARAM_COUNT * self._U32_BYTES,
             "cached_raster_grads_float": max(self._work_splat_capacity, 1) * self._RASTER_CACHE_PARAM_COUNT * self._U32_BYTES,
+            "cached_raster_grads_metrics_float": max(self._work_splat_capacity, 1) * self._RASTER_CACHE_PARAM_COUNT * self._U32_BYTES,
         }
         self._work_buffers = {name: self.device.create_buffer(size=size, usage=self._RW_BUFFER_USAGE) for name, size in sized.items()}
         self._work_buffers["debug_grad_norm"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1),), dtype=np.float32))
@@ -703,6 +714,62 @@ class GaussianRenderer:
     def read_cached_raster_grads_float(self, splat_count: int | None = None) -> np.ndarray:
         count = self._scene_count if splat_count is None else int(splat_count)
         return self._read_array(self._work_buffers["cached_raster_grads_float"], np.float32, self._RASTER_CACHE_PARAM_COUNT, max(count, 1)).T[:count].copy()
+
+    def _prepare_active_cached_raster_grads_float_tensor(self, splat_count: int, command_encoder: spy.CommandEncoder) -> spy.Buffer:
+        if self.cached_raster_grad_atomic_mode == self.CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT:
+            return self._work_buffers["cached_raster_grads_float"]
+        element_count = max(int(splat_count) * self._RASTER_CACHE_PARAM_COUNT, 1)
+        with debug_region(command_encoder, "Decode Cached Raster Grads", 30):
+            self._k_decode_fixed_buffer_to_float.dispatch(
+                thread_count=thread_count_1d(element_count),
+                vars={
+                    "g_ClearCount": int(element_count),
+                    "g_FixedIntBuffer": self._work_buffers["cached_raster_grads_fixed"],
+                    "g_DecodedFloatBuffer": self._work_buffers["cached_raster_grads_metrics_float"],
+                    "g_DecodeScale": float(self._RASTER_GRAD_FIXED_DECODE_SCALE),
+                },
+                command_encoder=command_encoder,
+            )
+        return self._work_buffers["cached_raster_grads_metrics_float"]
+
+    def prepare_active_cached_raster_grads_float_tensor(self, splat_count: int | None = None, command_encoder: spy.CommandEncoder | None = None) -> spy.Buffer:
+        count = self._scene_count if splat_count is None else int(splat_count)
+        if count < 0:
+            raise ValueError("splat_count must be non-negative.")
+        self._ensure_work_buffers(count)
+        if command_encoder is not None:
+            return self._prepare_active_cached_raster_grads_float_tensor(count, command_encoder)
+        encoder = self.device.create_command_encoder()
+        buffer = self._prepare_active_cached_raster_grads_float_tensor(count, encoder)
+        self.device.submit_command_buffer(encoder.finish())
+        self.device.wait()
+        return buffer
+
+    def read_active_cached_raster_grads_float_tensor(self, splat_count: int | None = None) -> np.ndarray:
+        count = self._scene_count if splat_count is None else int(splat_count)
+        buffer = self.prepare_active_cached_raster_grads_float_tensor(count)
+        return self._read_array(buffer, np.float32, self._RASTER_CACHE_PARAM_COUNT, max(count, 1)).T[:count].copy()
+
+    def compute_cached_raster_grad_component_histograms(
+        self,
+        metrics: Metrics,
+        splat_count: int | None = None,
+        *,
+        bin_count: int = 64,
+        min_log10: float = -8.0,
+        max_log10: float = 2.0,
+    ) -> ParamLog10Histograms:
+        count = self._scene_count if splat_count is None else int(splat_count)
+        tensor = self.prepare_active_cached_raster_grads_float_tensor(count)
+        return metrics.compute_param_tensor_log10_histograms(
+            tensor,
+            self._RASTER_CACHE_PARAM_COUNT,
+            count,
+            bin_count=bin_count,
+            min_log10=min_log10,
+            max_log10=max_log10,
+            param_labels=self.CACHED_RASTER_GRAD_COMPONENT_LABELS,
+        )
 
     def write_grad_groups(
         self,

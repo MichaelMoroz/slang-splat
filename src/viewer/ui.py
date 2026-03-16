@@ -51,6 +51,16 @@ _DEBUG_COLORBAR_LEFT_PAD = 56.0
 _DEBUG_COLORBAR_RIGHT_PAD = 64.0
 _DEBUG_COLORBAR_TOP_PAD = 28.0
 _DEBUG_COLORBAR_BOTTOM_PAD = 12.0
+_HISTOGRAM_BIN_COUNT_DEFAULT = 64
+_HISTOGRAM_MIN_LOG10_DEFAULT = -8.0
+_HISTOGRAM_MAX_LOG10_DEFAULT = 2.0
+_HISTOGRAM_GROUPS = (
+    ("roLocal", (0, 1, 2)),
+    ("invScale", (3, 4, 5)),
+    ("quat", (6, 7, 8, 9)),
+    ("color", (10, 11, 12)),
+    ("opacity", (13,)),
+)
 _CACHED_RASTER_GRAD_ATOMIC_MODE_LABELS = ("Float Atomics", "Fixed Point")
 
 
@@ -93,6 +103,11 @@ def _build_documentation_text() -> str:
     ]
     text = "\n\n".join(part for part in parts if part)
     return text if text else "Documentation is unavailable."
+
+
+def _panel_rect(width: int, height: int, menu_bar_height: float) -> tuple[float, float, float, float]:
+    panel_width = float(max(int(width * TOOLKIT_WIDTH_FRACTION), 280))
+    return 0.0, float(menu_bar_height), panel_width, max(float(height) - float(menu_bar_height), 1.0)
 
 
 @lru_cache(maxsize=1)
@@ -457,6 +472,7 @@ class ToolkitWindow:
         self._draw_dockspace()
         self._draw_panel(ui, width, height)
         self._draw_debug_colorbar(ui, width, height)
+        self._draw_histogram_window(ui)
         imgui.render()
         draw_data = imgui.get_draw_data()
         self._frame_textures = simgui.sync_draw_data_textures(self.device, self.renderer, draw_data)
@@ -472,9 +488,8 @@ class ToolkitWindow:
         )
 
     def _draw_panel(self, ui: ViewerUI, width: int, height: int) -> None:
-        panel_width = float(max(int(width * TOOLKIT_WIDTH_FRACTION), 280))
-        panel_height = max(float(height) - self._menu_bar_height, 1.0)
-        imgui.set_next_window_pos(imgui.ImVec2(0.0, self._menu_bar_height), imgui.Cond_.first_use_ever.value)
+        panel_x, panel_y, panel_width, panel_height = _panel_rect(width, height, self._menu_bar_height)
+        imgui.set_next_window_pos(imgui.ImVec2(panel_x, panel_y), imgui.Cond_.first_use_ever.value)
         imgui.set_next_window_size(imgui.ImVec2(panel_width, panel_height), imgui.Cond_.first_use_ever.value)
         if self._dockspace_id != 0:
             imgui.set_next_window_dock_id(self._dockspace_id, imgui.Cond_.first_use_ever.value)
@@ -580,6 +595,11 @@ class ToolkitWindow:
             imgui.separator()
             if _menu_item("Reset Interface Scale"):
                 ui._values[_INTERFACE_SCALE_KEY] = _DEFAULT_INTERFACE_SCALE_INDEX
+            imgui.end_menu()
+        if imgui.begin_menu("Debug"):
+            selected = bool(ui._values.get("show_histograms", False))
+            if _menu_item("Histograms", selected=selected):
+                ui._values["show_histograms"] = not selected
             imgui.end_menu()
         if imgui.begin_menu("Help"):
             if _menu_item("Documentation"):
@@ -690,6 +710,80 @@ class ToolkitWindow:
                 self.callbacks.import_colmap()
             imgui.end_disabled()
         imgui.end()
+
+    def _draw_histogram_window(self, ui: ViewerUI) -> None:
+        if not bool(ui._values.get("show_histograms", False)):
+            return
+        imgui.set_next_window_pos(imgui.ImVec2(72.0, self._menu_bar_height + 56.0), imgui.Cond_.first_use_ever.value)
+        imgui.set_next_window_size(imgui.ImVec2(980.0, 720.0), imgui.Cond_.first_use_ever.value)
+        opened, show = imgui.begin("Histograms", True)
+        ui._values["show_histograms"] = bool(show)
+        if opened:
+            self._draw_histogram_controls(ui)
+            status = str(ui._texts.get("histogram_status", "")).strip()
+            payload = ui._values.get("_histogram_payload")
+            if status:
+                imgui.text_disabled(status)
+                imgui.separator()
+            if payload is None or getattr(payload, "counts", np.zeros((0, 0), dtype=np.int64)).size == 0 or int(np.sum(payload.counts)) == 0:
+                imgui.text_wrapped("No cached ellipse gradient histogram data is available yet.")
+            else:
+                self._draw_histogram_groups(payload)
+        imgui.end()
+
+    def _draw_histogram_controls(self, ui: ViewerUI) -> None:
+        changed, value = imgui.checkbox("Auto Refresh", bool(ui._values.get("hist_auto_refresh", True)))
+        if changed:
+            ui._values["hist_auto_refresh"] = bool(value)
+        imgui.same_line()
+        if imgui.button("Refresh"):
+            ui._values["_histograms_refresh_requested"] = True
+        imgui.push_item_width(160.0)
+        changed, value = imgui.input_int("Bin Count", int(ui._values.get("hist_bin_count", _HISTOGRAM_BIN_COUNT_DEFAULT)), 8, 32)
+        if changed:
+            ui._values["hist_bin_count"] = max(int(value), 1)
+        imgui.pop_item_width()
+        imgui.same_line()
+        imgui.push_item_width(160.0)
+        changed, value = imgui.input_float("Min Log10", float(ui._values.get("hist_min_log10", _HISTOGRAM_MIN_LOG10_DEFAULT)), 0.25, 1.0, "%.3f")
+        if changed:
+            ui._values["hist_min_log10"] = float(value)
+        imgui.pop_item_width()
+        imgui.same_line()
+        imgui.push_item_width(160.0)
+        changed, value = imgui.input_float("Max Log10", float(ui._values.get("hist_max_log10", _HISTOGRAM_MAX_LOG10_DEFAULT)), 0.25, 1.0, "%.3f")
+        if changed:
+            ui._values["hist_max_log10"] = float(value)
+        imgui.pop_item_width()
+        imgui.separator()
+
+    def _draw_histogram_groups(self, payload: object) -> None:
+        labels = tuple(str(label) for label in getattr(payload, "param_labels", ()))
+        centers = np.asarray(getattr(payload, "bin_centers_log10", np.zeros((0,), dtype=np.float64)), dtype=np.float64)
+        counts = np.asarray(getattr(payload, "counts", np.zeros((0, 0), dtype=np.int64)), dtype=np.float64)
+        if counts.ndim != 2 or centers.size == 0:
+            imgui.text_wrapped("Histogram payload is malformed.")
+            return
+        for group_name, indices in _HISTOGRAM_GROUPS:
+            valid = tuple(index for index in indices if 0 <= int(index) < counts.shape[0])
+            if not valid:
+                continue
+            imgui.separator_text(group_name)
+            if imgui.begin_table(f"##hist_{group_name}", 2, imgui.TableFlags_.sizing_stretch_same.value):
+                for index in valid:
+                    imgui.table_next_column()
+                    self._draw_histogram_plot(labels[index] if index < len(labels) else f"param {index}", centers, counts[index])
+                imgui.end_table()
+
+    def _draw_histogram_plot(self, label: str, centers: np.ndarray, counts: np.ndarray) -> None:
+        imgui.text_disabled(label)
+        plot_id = f"##plot_{label}"
+        if implot.begin_plot(plot_id, imgui.ImVec2(-1, 180)):
+            implot.setup_axes("log10(abs(grad))", "count", 0, implot.AxisFlags_.auto_fit.value)
+            if centers.size > 0:
+                implot.setup_axis_limits(implot.ImAxis_.x1.value, float(centers[0]), float(centers[-1]), implot.Cond_.always.value)
+            implot.plot_line(label, centers, np.asarray(counts, dtype=np.float64))
+            implot.end_plot()
 
     # -- Sections --
 
@@ -1178,6 +1272,13 @@ def build_ui(renderer) -> ViewerUI:
     values["colmap_init_mode"] = 0
     values["colmap_custom_ply_path"] = ""
     values["colmap_nn_radius_scale_coef"] = 1.0
+    values["show_histograms"] = False
+    values["hist_auto_refresh"] = True
+    values["hist_bin_count"] = _HISTOGRAM_BIN_COUNT_DEFAULT
+    values["hist_min_log10"] = _HISTOGRAM_MIN_LOG10_DEFAULT
+    values["hist_max_log10"] = _HISTOGRAM_MAX_LOG10_DEFAULT
+    values["_histograms_refresh_requested"] = False
+    values["_histogram_payload"] = None
     values["_loss_debug_frame_max"] = 0
     values["_colmap_import_active"] = False
     values["_colmap_import_fraction"] = 0.0
@@ -1189,6 +1290,7 @@ def build_ui(renderer) -> ViewerUI:
             "loss_debug_view", "loss_debug_frame",
             "colmap_import_status", "colmap_import_current",
             "training_resolution", "training_downscale",
+            "histogram_status",
             "setup_hint", "stability_hint",
         )
     }

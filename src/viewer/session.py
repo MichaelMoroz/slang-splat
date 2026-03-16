@@ -280,6 +280,12 @@ def _reset_loaded_runtime(viewer: object) -> None:
     viewer.s.cached_training_setup_signature = None
     viewer.s.cached_training_setup = None
     viewer.s.pending_training_runtime_resize = False
+    viewer.s.cached_raster_grad_histograms = None
+    viewer.s.cached_raster_grad_histogram_mode = ""
+    viewer.s.cached_raster_grad_histogram_step = -1
+    viewer.s.cached_raster_grad_histogram_scene_count = -1
+    viewer.s.cached_raster_grad_histogram_signature = None
+    viewer.s.cached_raster_grad_histogram_status = ""
     update_debug_frame_slider_range(viewer)
     _reset_loss_debug(viewer)
     _clear(viewer, "training_renderer")
@@ -451,6 +457,43 @@ def sync_scene_from_training_renderer(viewer: object, dst_renderer: GaussianRend
     viewer.s.training_renderer.copy_scene_state_to(enc, dst_renderer)
     viewer.device.submit_command_buffer(enc.finish())
     setattr(viewer.s, f"synced_step_{target}", step)
+
+
+def refresh_cached_raster_grad_histograms(viewer: object, force: bool = False) -> None:
+    refresh_requested = bool(force or viewer.ui._values.get("_histograms_refresh_requested", False))
+    if viewer.s.trainer is None or viewer.s.training_renderer is None:
+        viewer.s.cached_raster_grad_histograms = None
+        viewer.s.cached_raster_grad_histogram_status = "Histograms require an initialized training scene."
+        viewer.ui._values["_histograms_refresh_requested"] = False
+        return
+    bin_count = max(int(viewer.ui._values.get("hist_bin_count", 64)), 1)
+    min_log10 = float(viewer.ui._values.get("hist_min_log10", -8.0))
+    max_log10 = float(viewer.ui._values.get("hist_max_log10", 2.0))
+    step = int(viewer.s.trainer.state.step)
+    scene_count = int(viewer.s.trainer.scene.count)
+    mode = str(viewer.s.training_renderer.cached_raster_grad_atomic_mode)
+    signature = (step, mode, scene_count, bin_count, min_log10, max_log10)
+    auto_refresh = bool(viewer.ui._values.get("hist_auto_refresh", True))
+    if not refresh_requested and (not auto_refresh or viewer.s.cached_raster_grad_histogram_signature == signature):
+        return
+    viewer.s.cached_raster_grad_histograms = viewer.s.training_renderer.compute_cached_raster_grad_component_histograms(
+        viewer.s.trainer.metrics,
+        scene_count,
+        bin_count=bin_count,
+        min_log10=min_log10,
+        max_log10=max_log10,
+    )
+    viewer.s.cached_raster_grad_histogram_mode = mode
+    viewer.s.cached_raster_grad_histogram_step = step
+    viewer.s.cached_raster_grad_histogram_scene_count = scene_count
+    viewer.s.cached_raster_grad_histogram_signature = signature
+    total = int(np.sum(viewer.s.cached_raster_grad_histograms.counts))
+    viewer.s.cached_raster_grad_histogram_status = (
+        f"Cached ellipse grads | mode={mode} | step={step:,} | samples={scene_count:,} | populated={total:,}"
+        if total > 0 or step > 0
+        else "No cached ellipse backward gradients have been produced yet."
+    )
+    viewer.ui._values["_histograms_refresh_requested"] = False
 
 
 def load_scene(viewer: object, path: Path) -> None:

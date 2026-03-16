@@ -85,12 +85,12 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         "training_steps_per_frame": _control(1),
         "train_downscale_factor": _control(1),
     }
-    texts = {key: _text() for key in ("fps", "images_subdir", "loss_debug_view", "loss_debug_frame", "path", "scene_stats", "render_stats", "training", "training_time", "training_iters_avg", "training_loss", "training_mse", "training_psnr", "training_instability", "training_resolution", "training_downscale", "colmap_import_status", "colmap_import_current", "error")}
+    texts = {key: _text() for key in ("fps", "images_subdir", "loss_debug_view", "loss_debug_frame", "path", "scene_stats", "render_stats", "training", "training_time", "training_iters_avg", "training_loss", "training_mse", "training_psnr", "training_instability", "training_resolution", "training_downscale", "colmap_import_status", "colmap_import_current", "histogram_status", "error")}
     viewer = SimpleNamespace()
     viewer.device = SimpleNamespace()
     viewer.loss_debug_view_options = (("rendered", "Rendered"), ("target", "Target"), ("abs_diff", "Abs Diff"))
     viewer.image_subdir_options = ("images_8",)
-    viewer.ui = SimpleNamespace(controls=controls, texts=texts, _values={}, _texts={key: value.text for key, value in texts.items()})
+    viewer.ui = SimpleNamespace(controls=controls, texts=texts, _values={"show_histograms": False, "_histogram_payload": None}, _texts={key: value.text for key, value in texts.items()})
     viewer.c = lambda key: viewer.ui.controls[key]
     viewer.t = lambda key: viewer.ui.texts[key]
     viewer.camera = lambda: "camera"
@@ -177,6 +177,24 @@ def test_render_frame_runs_configured_training_batch(monkeypatch):
     assert viewer.s.trainer.step_batch_calls == [3]
     assert viewer.s.last_training_batch_steps == 3
     assert calls == ["apply", "main", "ui"]
+
+
+def test_render_frame_refreshes_histograms_when_window_open(monkeypatch):
+    viewer = _viewer(loss_debug=False)
+    viewer.ui._values["show_histograms"] = True
+    render_context = SimpleNamespace(surface_texture=SimpleNamespace(width=640, height=360), command_encoder=_DummyEncoder())
+    calls: list[str] = []
+
+    monkeypatch.setattr(presenter.session, "apply_live_params", lambda viewer_obj: calls.append("apply"))
+    monkeypatch.setattr(presenter.session, "ensure_training_runtime_resolution", lambda viewer_obj: calls.append("train_resize"))
+    monkeypatch.setattr(presenter.session, "recreate_renderer", lambda viewer_obj, width, height: calls.append("resize"))
+    monkeypatch.setattr(presenter.session, "refresh_cached_raster_grad_histograms", lambda viewer_obj: calls.append("hist"))
+    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, image, encoder: calls.append("main"))
+    monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
+
+    presenter.render_frame(viewer, render_context)
+
+    assert calls == ["apply", "main", "hist", "ui"]
 
 
 def test_update_ui_text_uses_permutation_averages() -> None:

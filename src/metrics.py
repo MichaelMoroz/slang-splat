@@ -28,6 +28,21 @@ class Log10Histogram:
         return np.power(10.0, self.bin_centers_log10)
 
 
+@dataclass(frozen=True, slots=True)
+class ParamLog10Histograms:
+    counts: np.ndarray
+    bin_edges_log10: np.ndarray
+    param_labels: tuple[str, ...] = ()
+
+    @property
+    def bin_centers_log10(self) -> np.ndarray:
+        return 0.5 * (self.bin_edges_log10[:-1] + self.bin_edges_log10[1:])
+
+    @property
+    def bin_centers(self) -> np.ndarray:
+        return np.power(10.0, self.bin_centers_log10)
+
+
 def psnr_from_mse(mse: float, *, peak_value: float = 1.0) -> float:
     peak = float(peak_value)
     if not math.isfinite(peak) or peak <= 0.0:
@@ -67,6 +82,7 @@ class Metrics:
         self._k_clear_float = self.device.create_compute_kernel(self.device.load_program(str(_METRICS_SHADER), ["csClearFloatBuffer"]))
         self._k_scale_hist = self.device.create_compute_kernel(self.device.load_program(str(_METRICS_SHADER), ["csHistogramScaleLog10"]))
         self._k_anisotropy_hist = self.device.create_compute_kernel(self.device.load_program(str(_METRICS_SHADER), ["csHistogramAnisotropyLog10"]))
+        self._k_param_tensor_hist = self.device.create_compute_kernel(self.device.load_program(str(_METRICS_SHADER), ["csHistogramParamTensorLog10"]))
         self._k_image_mse = self.device.create_compute_kernel(self.device.load_program(str(_METRICS_SHADER), ["csAccumulateImageMSE"]))
 
     @staticmethod
@@ -115,9 +131,29 @@ class Metrics:
                 command_encoder=encoder,
             )
 
+    def _dispatch_param_tensor_histogram(self, encoder: spy.CommandEncoder, tensor: spy.Buffer, param_count: int, item_count: int, bin_count: int, min_log10: float, inv_bin_size: float) -> None:
+        with debug_region(encoder, "Metrics Tensor Histogram", 94):
+            self._k_param_tensor_hist.dispatch(
+                thread_count=thread_count_2d(item_count, param_count),
+                vars={
+                    "g_Tensor": tensor,
+                    "g_ParamCount": int(param_count),
+                    "g_ItemCount": int(item_count),
+                    "g_BinCount": int(bin_count),
+                    "g_Log10Min": float(min_log10),
+                    "g_Log10InvBinSize": float(inv_bin_size),
+                    "g_Histogram": self._histogram_buffer,
+                },
+                command_encoder=encoder,
+            )
+
     def _read_histogram(self, bin_count: int, min_log10: float, max_log10: float) -> Log10Histogram:
         counts = buffer_to_numpy(self._histogram_buffer, np.uint32)[:bin_count].astype(np.int64, copy=True)
         return Log10Histogram(counts=counts, bin_edges_log10=self._histogram_edges(bin_count, min_log10, max_log10))
+
+    def _read_param_histograms(self, param_count: int, bin_count: int, min_log10: float, max_log10: float, labels: tuple[str, ...]) -> ParamLog10Histograms:
+        counts = buffer_to_numpy(self._histogram_buffer, np.uint32)[: param_count * bin_count].astype(np.int64, copy=True).reshape(param_count, bin_count)
+        return ParamLog10Histograms(counts=counts, bin_edges_log10=self._histogram_edges(bin_count, min_log10, max_log10), param_labels=labels)
 
     def compute_scale_histogram(self, splat_params: spy.Buffer, splat_count: int, *, bin_count: int = 64, min_log10: float = -6.0, max_log10: float = 1.0) -> Log10Histogram:
         bins, lo, hi, inv_bin_size = self._validate_histogram_args(bin_count, min_log10, max_log10)
@@ -138,6 +174,32 @@ class Metrics:
         self.device.submit_command_buffer(encoder.finish())
         self.device.wait()
         return self._read_histogram(bins, lo, hi)
+
+    def compute_param_tensor_log10_histograms(
+        self,
+        tensor: spy.Buffer,
+        param_count: int,
+        item_count: int,
+        *,
+        bin_count: int = 64,
+        min_log10: float = -8.0,
+        max_log10: float = 2.0,
+        param_labels: tuple[str, ...] | list[str] = (),
+    ) -> ParamLog10Histograms:
+        bins, lo, hi, inv_bin_size = self._validate_histogram_args(bin_count, min_log10, max_log10)
+        params = max(int(param_count), 0)
+        items = max(int(item_count), 0)
+        labels = tuple(str(label) for label in param_labels)
+        if labels and len(labels) != params:
+            raise ValueError("param_labels length must match param_count.")
+        self._ensure_histogram_capacity(max(params * bins, 1))
+        encoder = self.device.create_command_encoder()
+        self._clear_uint_buffer(encoder, self._histogram_buffer, max(params * bins, 1))
+        if params > 0 and items > 0:
+            self._dispatch_param_tensor_histogram(encoder, tensor, params, items, bins, lo, inv_bin_size)
+        self.device.submit_command_buffer(encoder.finish())
+        self.device.wait()
+        return self._read_param_histograms(params, bins, lo, hi, labels)
 
     def dispatch_image_mse(self, encoder: spy.CommandEncoder, rendered: spy.Texture, target: spy.Texture, width: int, height: int) -> None:
         self._clear_float_buffer(encoder, self._image_metric_buffer, self._METRIC_BUFFER_FLOATS)
@@ -170,4 +232,4 @@ class Metrics:
         return psnr_from_mse(self.compute_image_mse(rendered, target, width, height), peak_value=peak_value)
 
 
-__all__ = ["Metrics", "Log10Histogram", "psnr_from_mse"]
+__all__ = ["Metrics", "Log10Histogram", "ParamLog10Histograms", "psnr_from_mse"]
