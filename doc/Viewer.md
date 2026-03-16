@@ -63,6 +63,15 @@ The loss-debug controls expose a runtime `Abs Diff Scale` slider when `View = Ab
 - `scale = 1.0` shows the raw absolute color difference.
 - Higher values amplify subtle differences without changing the rendered or target views.
 
+## Cached Gradient Atomics
+
+`Render Params` includes a `Cached Grad Atomics` selector:
+
+- `Float Atomics`
+- `Fixed Point`
+
+`Float Atomics` is the default and drives cached ellipsoid gradient accumulation directly in float space during raster backward. `Fixed Point` keeps the prior Q16.16 accumulation path for regression comparison and fallback use. Changing this setting only swaps the raster-backward shader/buffer path; it does not reset scene state, optimizer state, or training progress.
+
 ## Training Resolution
 
 The `Train Setup` section exposes train downscale as a mode selector:

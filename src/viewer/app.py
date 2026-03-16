@@ -55,6 +55,7 @@ _TRAINING_PARAM_KEYS = {
 }
 _TRAIN_SETUP_DEFAULTS = default_control_values("Train Setup")
 _TRAINING_DEFAULTS = default_control_values("Train Optimizer", "Train Stability")
+_CACHED_RASTER_GRAD_ATOMIC_MODE_VALUES = ("float", "fixed")
 
 
 def _training_kwargs(value_for) -> dict[str, object]:
@@ -86,6 +87,7 @@ class SplatViewer(spy.AppWindow):
         return self.ui.text(key)
 
     def renderer_params(self, allow_debug_overlays: bool) -> RendererParams:
+        atomic_mode_index = min(max(int(self.c("cached_raster_grad_atomic_mode").value), 0), len(_CACHED_RASTER_GRAD_ATOMIC_MODE_VALUES) - 1)
         return RendererParams(
             radius_scale=float(self.c("radius_scale").value),
             alpha_cutoff=float(self.c("alpha_cutoff").value),
@@ -94,6 +96,7 @@ class SplatViewer(spy.AppWindow):
             sampled5_safety_scale=float(self.c("sampled5_safety").value),
             list_capacity_multiplier=self.s.list_capacity_multiplier,
             max_prepass_memory_mb=self.s.max_prepass_memory_mb,
+            cached_raster_grad_atomic_mode=_CACHED_RASTER_GRAD_ATOMIC_MODE_VALUES[atomic_mode_index],
             debug_show_ellipses=bool(self.c("debug_ellipse").value) if allow_debug_overlays else False,
             debug_show_processed_count=bool(self.c("debug_processed_count").value) if allow_debug_overlays else False,
             debug_show_grad_norm=bool(self.c("debug_grad_norm").value) if allow_debug_overlays else False,

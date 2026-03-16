@@ -51,6 +51,7 @@ _DEBUG_COLORBAR_LEFT_PAD = 56.0
 _DEBUG_COLORBAR_RIGHT_PAD = 64.0
 _DEBUG_COLORBAR_TOP_PAD = 28.0
 _DEBUG_COLORBAR_BOTTOM_PAD = 12.0
+_CACHED_RASTER_GRAD_ATOMIC_MODE_LABELS = ("Float Atomics", "Fixed Point")
 
 
 @lru_cache(maxsize=1)
@@ -216,6 +217,7 @@ RENDER_PARAM_SPECS = (
     ControlSpec("max_splat_steps", "slider_int", "Max Splat Steps", {"value": 32768, "min": 16, "max": 32768}),
     ControlSpec("trans_threshold", "slider_float", "Trans Threshold", {"value": 0.005, "min": 0.001, "max": 0.2, "format": "%.2e"}),
     ControlSpec("sampled5_safety", "slider_float", "MVEE Safety", {"value": 1.0, "min": 1.0, "max": 1.2}),
+    ControlSpec("cached_raster_grad_atomic_mode", "combo", "Cached Grad Atomics", {"value": 0, "options": _CACHED_RASTER_GRAD_ATOMIC_MODE_LABELS}),
     ControlSpec("debug_ellipse", "checkbox", "Debug Ellipse Outlines", {"value": False}),
     ControlSpec("debug_processed_count", "checkbox", "Debug Processed Count", {"value": False}),
     ControlSpec("debug_grad_norm", "checkbox", "Debug Grad Norm", {"value": False}),
@@ -961,12 +963,12 @@ class ToolkitWindow:
         if not imgui.collapsing_header("Render Params"):
             return
         # Main render parameters
-        for spec in RENDER_PARAM_SPECS[:5]:
+        for spec in RENDER_PARAM_SPECS[:6]:
             self._draw_control(ui, spec)
 
         # Debug overlay group
         imgui.separator_text("Debug Overlays")
-        for spec in RENDER_PARAM_SPECS[5:]:
+        for spec in RENDER_PARAM_SPECS[6:]:
             self._draw_control(ui, spec)
         self._ctx_reset("render_ctx", ui, [s.key for s in RENDER_PARAM_SPECS])
         imgui.separator()
@@ -1032,6 +1034,7 @@ class ToolkitWindow:
         "max_splat_steps": "Maximum rasterization steps per pixel ray",
         "trans_threshold": "Transmittance threshold for early ray termination",
         "sampled5_safety": "Safety margin for MVEE bounding ellipsoid",
+        "cached_raster_grad_atomic_mode": "Choose float atomics or Q16.16 fixed-point atomics for cached ellipsoid gradient accumulation during raster backward",
         "debug_ellipse": "Show ellipse outlines around each gaussian",
         "debug_processed_count": "Heatmap of processed splats per pixel",
         "debug_grad_norm": "Heatmap of gradient norms per pixel",
@@ -1164,6 +1167,7 @@ def build_ui(renderer) -> ViewerUI:
     values["max_splat_steps"] = int(renderer.max_splat_steps)
     values["trans_threshold"] = float(renderer.transmittance_threshold)
     values["sampled5_safety"] = float(renderer.sampled5_safety_scale)
+    values["cached_raster_grad_atomic_mode"] = 0 if getattr(renderer, "cached_raster_grad_atomic_mode", "float") == "float" else 1
     values["debug_ellipse"] = bool(renderer.debug_show_ellipses)
     values["debug_processed_count"] = bool(renderer.debug_show_processed_count)
     values["debug_grad_norm"] = bool(renderer.debug_show_grad_norm)

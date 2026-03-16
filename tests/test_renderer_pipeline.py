@@ -12,6 +12,7 @@ from reference_impls.reference_cpu import (
     rasterize,
     sort_key_values,
 )
+from src.app.shared import RendererParams, renderer_kwargs
 from src.common import SHADER_ROOT
 from src.renderer import Camera, GaussianRenderer
 from src.scene import GaussianScene
@@ -53,6 +54,14 @@ def test_renderer_loads_raster_constants_from_shader(device):
     assert renderer._raster_config.thread_tile_dim == config.thread_tile_dim
     assert renderer._raster_config.tile_size == config.tile_size
     assert renderer._raster_config.batch == config.batch
+
+
+def test_renderer_params_default_to_float_cached_grad_atomics():
+    params = RendererParams()
+    kwargs = renderer_kwargs(params)
+
+    assert params.cached_raster_grad_atomic_mode == "float"
+    assert kwargs["cached_raster_grad_atomic_mode"] == "float"
 
 
 def test_tile_keys_and_ranges_match_reference(device):
@@ -359,6 +368,15 @@ def test_raster_backward_smoke_and_determinism(device):
     grads0 = renderer.debug_raster_backward_grads(scene, camera, background=np.array([0.1, 0.15, 0.2], dtype=np.float32))
     grads1 = renderer.debug_raster_backward_grads(scene, camera, background=np.array([0.1, 0.15, 0.2], dtype=np.float32))
 
+    assert renderer.cached_raster_grad_atomic_mode == "float"
+    assert grads0["cached_raster_grads_mode"] == "float"
+    np.testing.assert_allclose(
+        np.asarray(grads0["cached_raster_grads_active"], dtype=np.float32),
+        np.asarray(grads1["cached_raster_grads_active"], dtype=np.float32),
+        rtol=2e-5,
+        atol=3e-5,
+    )
+
     for name in (
         "grad_positions",
         "grad_scales",
@@ -373,9 +391,10 @@ def test_raster_backward_smoke_and_determinism(device):
 def test_raster_backward_decodes_q16_16_grad_grid(device):
     scene = make_scene(20, seed=79)
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
-    renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, list_capacity_multiplier=32)
+    renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, list_capacity_multiplier=32, cached_raster_grad_atomic_mode="fixed")
     grads = renderer.debug_raster_backward_grads(scene, camera, background=np.array([0.05, 0.1, 0.15], dtype=np.float32))
 
+    assert grads["cached_raster_grads_mode"] == "fixed"
     values = np.asarray(grads["cached_raster_grads_fixed"], dtype=np.int32)
     assert values.shape == (scene.count, 14)
     nonzero = values[values != 0]
@@ -384,14 +403,18 @@ def test_raster_backward_decodes_q16_16_grad_grid(device):
     np.testing.assert_allclose(decoded * _RASTER_GRAD_FIXED_SCALE, np.rint(decoded * _RASTER_GRAD_FIXED_SCALE), rtol=0.0, atol=1e-4)
 
 
-def test_raster_backward_produces_float_final_grads_and_fixed_intermediate(device):
+def test_raster_backward_float_mode_produces_float_intermediate_and_final_grads(device):
     scene = make_scene(18, seed=83)
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
     renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, list_capacity_multiplier=32)
     grads = renderer.debug_raster_backward_grads(scene, camera, background=np.array([0.02, 0.04, 0.06], dtype=np.float32))
 
-    fixed_nonzero = np.asarray(grads["cached_raster_grads_fixed"], dtype=np.int32)
-    assert np.any(fixed_nonzero != 0)
+    float_nonzero = np.asarray(grads["cached_raster_grads_float"], dtype=np.float32)
+    assert grads["cached_raster_grads_mode"] == "float"
+    assert np.any(float_nonzero != 0.0)
+    active_nonzero = float_nonzero[np.abs(float_nonzero) > 0.0]
+    assert active_nonzero.size > 0
+    assert np.any(np.abs(active_nonzero * _RASTER_GRAD_FIXED_SCALE - np.rint(active_nonzero * _RASTER_GRAD_FIXED_SCALE)) > 1e-4)
 
     final_values = np.concatenate(
         [

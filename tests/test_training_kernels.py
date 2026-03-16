@@ -197,6 +197,22 @@ def test_training_step_smoke_updates_params_without_changing_count(device, tmp_p
     assert np.any(np.abs(after - before) > 0.0)
 
 
+def test_training_step_smoke_updates_params_in_fixed_atomic_mode(device, tmp_path: Path):
+    scene = _make_scene()
+    frame = _make_frame(tmp_path, image_name="fixed_mode_target.png", image_id=7)
+    renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32, cached_raster_grad_atomic_mode="fixed")
+    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], seed=321)
+
+    before = _read_scene_groups(renderer, scene.count)["positions"].copy()
+    loss = trainer.step()
+    after = _read_scene_groups(renderer, scene.count)["positions"]
+
+    assert renderer.cached_raster_grad_atomic_mode == "fixed"
+    assert np.isfinite(loss)
+    assert np.all(np.isfinite(after))
+    assert np.any(np.abs(after - before) > 0.0)
+
+
 def test_training_step_batch_updates_params_without_changing_count(device, tmp_path: Path):
     scene = _make_scene()
     frame = _make_frame(tmp_path, image_name="batch_target.png", image_id=1)

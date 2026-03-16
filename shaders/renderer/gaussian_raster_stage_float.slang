@@ -26,31 +26,13 @@ struct RasterState : IDifferentiable
     }
 };
 
-static const float RASTER_GRAD_FIXED_SCALE = float(1u << RASTER_GRAD_FIXED_FRAC_BITS);
-static const float RASTER_GRAD_FIXED_INV_SCALE = 1.0 / RASTER_GRAD_FIXED_SCALE;
-static const float RASTER_GRAD_FIXED_INT_MIN_F = -2147483648.0;
-static const float RASTER_GRAD_FIXED_INT_MAX_F = 2147483647.0;
-
-int raster_grad_fixed_encode(float value)
-{
-    return int(value * RASTER_GRAD_FIXED_SCALE + 0.5);
-}
-
-float raster_grad_fixed_decode(int value)
-{
-    return float(value) * RASTER_GRAD_FIXED_INV_SCALE;
-}
-
-void atomic_add_raster_cache_grad_fixed<let N : int>(uint splatCount, uint firstFieldId, uint splatId, vector<float, N> grad)
+void atomic_add_raster_cache_grad_float<let N : int>(uint splatCount, uint firstFieldId, uint splatId, vector<float, N> grad)
 {
     [unroll] for (int i = 0; i < N; i++)
     {
-        // float waveGrad = WaveActiveSum(grad[i]);
-        // if (!WaveIsFirstLane()) continue;
         float waveGrad = grad[i];
-        int value = raster_grad_fixed_encode(waveGrad);
-        if (value == 0) continue;
-        InterlockedAdd(g_CachedRasterGradsFixed[raster_cache_index(splatCount, firstFieldId + uint(i), splatId)], value);
+        if (waveGrad == 0.0) continue;
+        InterlockedAdd(g_CachedRasterGradsFloat[raster_cache_index(splatCount, firstFieldId + uint(i), splatId)], waveGrad);
     }
 }
 
@@ -117,14 +99,14 @@ struct RasterGaussian : IDifferentiable
         gsColorAlpha[localIdx] = half4(colorAlpha);
     }
 
-    static void accumulate_gradients_fixed(uint localIdx, Differential dOut)
+    static void accumulate_gradients_float(uint localIdx, Differential dOut)
     {
         uint splatId = gsBatchSplatId[localIdx];
         uint splatCount = g_Prepass.splatCount;
-        atomic_add_raster_cache_grad_fixed<3>(splatCount, RASTER_CACHE_RO_LOCAL_X, splatId, dOut.roLocal);
-        atomic_add_raster_cache_grad_fixed<3>(splatCount, RASTER_CACHE_INV_SCALE_X, splatId, dOut.invScale);
-        atomic_add_raster_cache_grad_fixed<4>(splatCount, RASTER_CACHE_QUAT_X, splatId, dOut.quat);
-        atomic_add_raster_cache_grad_fixed<4>(splatCount, RASTER_CACHE_COLOR_R, splatId, dOut.colorAlpha);
+        atomic_add_raster_cache_grad_float<3>(splatCount, RASTER_CACHE_RO_LOCAL_X, splatId, dOut.roLocal);
+        atomic_add_raster_cache_grad_float<3>(splatCount, RASTER_CACHE_INV_SCALE_X, splatId, dOut.invScale);
+        atomic_add_raster_cache_grad_float<4>(splatCount, RASTER_CACHE_QUAT_X, splatId, dOut.quat);
+        atomic_add_raster_cache_grad_float<4>(splatCount, RASTER_CACHE_COLOR_R, splatId, dOut.colorAlpha);
     }
 };
 
@@ -133,26 +115,26 @@ RasterGaussian.Differential load_cached_raster_grad(uint splatId)
     uint splatCount = g_Prepass.splatCount;
     RasterGaussian.Differential grad;
     grad.roLocal = float3(
-        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_X, splatId)]),
-        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_Y, splatId)]),
-        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_Z, splatId)])
+        g_CachedRasterGradsFloat[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_X, splatId)],
+        g_CachedRasterGradsFloat[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_Y, splatId)],
+        g_CachedRasterGradsFloat[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_Z, splatId)]
     );
     grad.invScale = float3(
-        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_INV_SCALE_X, splatId)]),
-        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_INV_SCALE_Y, splatId)]),
-        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_INV_SCALE_Z, splatId)])
+        g_CachedRasterGradsFloat[raster_cache_index(splatCount, RASTER_CACHE_INV_SCALE_X, splatId)],
+        g_CachedRasterGradsFloat[raster_cache_index(splatCount, RASTER_CACHE_INV_SCALE_Y, splatId)],
+        g_CachedRasterGradsFloat[raster_cache_index(splatCount, RASTER_CACHE_INV_SCALE_Z, splatId)]
     );
     grad.quat = float4(
-        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_QUAT_X, splatId)]),
-        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_QUAT_Y, splatId)]),
-        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_QUAT_Z, splatId)]),
-        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_QUAT_W, splatId)])
+        g_CachedRasterGradsFloat[raster_cache_index(splatCount, RASTER_CACHE_QUAT_X, splatId)],
+        g_CachedRasterGradsFloat[raster_cache_index(splatCount, RASTER_CACHE_QUAT_Y, splatId)],
+        g_CachedRasterGradsFloat[raster_cache_index(splatCount, RASTER_CACHE_QUAT_Z, splatId)],
+        g_CachedRasterGradsFloat[raster_cache_index(splatCount, RASTER_CACHE_QUAT_W, splatId)]
     );
     grad.colorAlpha = float4(
-        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_COLOR_R, splatId)]),
-        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_COLOR_G, splatId)]),
-        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_COLOR_B, splatId)]),
-        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_FUSED_OPACITY, splatId)])
+        g_CachedRasterGradsFloat[raster_cache_index(splatCount, RASTER_CACHE_COLOR_R, splatId)],
+        g_CachedRasterGradsFloat[raster_cache_index(splatCount, RASTER_CACHE_COLOR_G, splatId)],
+        g_CachedRasterGradsFloat[raster_cache_index(splatCount, RASTER_CACHE_COLOR_B, splatId)],
+        g_CachedRasterGradsFloat[raster_cache_index(splatCount, RASTER_CACHE_FUSED_OPACITY, splatId)]
     );
     return grad;
 }
@@ -436,7 +418,7 @@ void raster_backward_replay(
                     forwardState.pixelState = prevState;
                     backwardState.pixelState = dpPrevState.getDifferential();
 
-                    RasterGaussian.accumulate_gradients_fixed(localIdx, dpGaussian.getDifferential());
+                    RasterGaussian.accumulate_gradients_float(localIdx, dpGaussian.getDifferential());
                 }
             }
         }
