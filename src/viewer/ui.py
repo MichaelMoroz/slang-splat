@@ -26,6 +26,16 @@ _LOSS_DEBUG_ABS_SCALE_DEFAULT = 1.0
 _LOSS_DEBUG_ABS_SCALE_MIN = 0.125
 _LOSS_DEBUG_ABS_SCALE_MAX = 64.0
 _LOSS_DEBUG_ABS_SCALE_KEY = "loss_debug_abs_scale"
+_INTERFACE_SCALE_KEY = "interface_scale"
+_INTERFACE_SCALE_OPTIONS = (
+    ("75%", 0.75),
+    ("100%", 1.0),
+    ("125%", 1.25),
+    ("150%", 1.5),
+    ("175%", 1.75),
+    ("200%", 2.0),
+)
+_DEFAULT_INTERFACE_SCALE_INDEX = 1
 _COLMAP_INIT_MODE_LABELS = ("COLMAP Pointcloud", "Custom PLY")
 _TRAIN_DOWNSCALE_MODE_LABELS = ("Auto",) + tuple(f"{i}x" for i in range(1, 17))
 _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT = 2e-4
@@ -138,6 +148,9 @@ class ControlSpec:
 
 
 GROUP_SPECS = {
+    "View": (
+        ControlSpec(_INTERFACE_SCALE_KEY, "combo", "Interface Scale", {"value": _DEFAULT_INTERFACE_SCALE_INDEX, "options": tuple(label for label, _ in _INTERFACE_SCALE_OPTIONS)}),
+    ),
     "Main": (
         ControlSpec("loss_debug", "checkbox", "Visual Loss Debug", {"value": False}),
         ControlSpec("loss_debug_view", "slider_int", "Debug View", {"value": 2, "min": 0, "max": len(LOSS_DEBUG_OPTIONS) - 1}),
@@ -320,6 +333,8 @@ class ToolkitWindow:
         self._about_text = _build_about_text()
         self._documentation_text = _build_documentation_text()
         self._menu_bar_height = 0.0
+        self._applied_interface_scale = -1.0
+        self._set_interface_scale(_INTERFACE_SCALE_OPTIONS[_DEFAULT_INTERFACE_SCALE_INDEX][1])
 
     def _set_current_context(self) -> None:
         imgui.set_current_context(self.ctx)
@@ -369,6 +384,23 @@ class ToolkitWindow:
         _c(imgui.Col_.resize_grip_hovered, imgui.ImVec4(0.26, 0.50, 0.74, 0.67))
         _c(imgui.Col_.resize_grip_active, imgui.ImVec4(0.26, 0.50, 0.74, 0.95))
 
+    def _interface_scale_factor(self, ui: ViewerUI) -> float:
+        idx = min(max(int(ui._values.get(_INTERFACE_SCALE_KEY, _DEFAULT_INTERFACE_SCALE_INDEX)), 0), len(_INTERFACE_SCALE_OPTIONS) - 1)
+        return float(_INTERFACE_SCALE_OPTIONS[idx][1])
+
+    def _set_interface_scale(self, scale: float) -> None:
+        clamped_scale = max(float(scale), 0.5)
+        if abs(clamped_scale - self._applied_interface_scale) <= 1e-6:
+            return
+        self._set_current_context()
+        self._apply_theme()
+        imgui.get_style().scale_all_sizes(clamped_scale)
+        imgui.get_io().font_global_scale = clamped_scale
+        self._applied_interface_scale = clamped_scale
+
+    def _sync_interface_scale(self, ui: ViewerUI) -> None:
+        self._set_interface_scale(self._interface_scale_factor(ui))
+
     @property
     def alive(self) -> bool:
         return self._alive
@@ -394,8 +426,9 @@ class ToolkitWindow:
         dt = max(now - self._last_frame_time, 1e-5)
         self._last_frame_time = now
         self._set_current_context()
+        self._sync_interface_scale(ui)
         simgui.begin_frame(width, height, dt)
-        self._menu_bar_height = self._draw_main_menu_bar()
+        self._menu_bar_height = self._draw_main_menu_bar(ui)
         self._draw_panel(ui, width, height)
         self._draw_debug_colorbar(ui, width, height)
         imgui.render()
@@ -489,7 +522,7 @@ class ToolkitWindow:
         threshold = float(ui._values.get("debug_grad_norm_threshold", _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT))
         return f"{_grad_norm_tick_value(t, threshold):.1e}"
 
-    def _draw_main_menu_bar(self) -> float:
+    def _draw_main_menu_bar(self, ui: ViewerUI) -> float:
         if not imgui.begin_main_menu_bar():
             return 0.0
         if imgui.begin_menu("File"):
@@ -502,6 +535,15 @@ class ToolkitWindow:
             imgui.separator()
             if _menu_item("Reinitialize Gaussians"):
                 self.callbacks.reinitialize()
+            imgui.end_menu()
+        if imgui.begin_menu("View"):
+            active_idx = min(max(int(ui._values.get(_INTERFACE_SCALE_KEY, _DEFAULT_INTERFACE_SCALE_INDEX)), 0), len(_INTERFACE_SCALE_OPTIONS) - 1)
+            for idx, (label, _) in enumerate(_INTERFACE_SCALE_OPTIONS):
+                if _menu_item(label, selected=idx == active_idx):
+                    ui._values[_INTERFACE_SCALE_KEY] = idx
+            imgui.separator()
+            if _menu_item("Reset Interface Scale"):
+                ui._values[_INTERFACE_SCALE_KEY] = _DEFAULT_INTERFACE_SCALE_INDEX
             imgui.end_menu()
         if imgui.begin_menu("Help"):
             if _menu_item("Documentation"):

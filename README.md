@@ -53,6 +53,7 @@ Viewer controls:
 - `Mouse wheel`: adjust move speed
 - `Load PLY...`: open another scene
 - `Load COLMAP...`: open COLMAP dataset root for training setup
+- `View -> Interface Scale`: resize the Dear ImGui overlay from `75%` to `200%`
 
 ## Training CLI
 ```powershell
