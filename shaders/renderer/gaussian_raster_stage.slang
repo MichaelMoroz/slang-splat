@@ -158,18 +158,6 @@ RasterGaussian.Differential load_cached_raster_grad(uint splatId)
 }
 
 [Differentiable]
-float raster_eval_clamped_screen_alpha(no_diff uint splatId, float fusedOpacity, no_diff float2 samplePoint)
-{
-    float opacityScale = g_ScreenEllipseConic[splatId].w;
-    if (opacityScale >= 1.0) return 0.0;
-    float2 delta = samplePoint - g_ScreenCenterRadiusDepth[splatId].xy;
-    float3 conic = g_ScreenEllipseConic[splatId].xyz;
-    float quad = dot(delta, mul(float2x2(conic.x, conic.y, conic.y, conic.z), delta));
-    if (quad >= 1.0) return 0.0;
-    return fusedOpacity * exp(-ENVELOPE_EXPONENT_SCALE * quad) * opacityScale;
-}
-
-[Differentiable]
 float raster_eval_alpha_gaussian(RasterGaussian gaussian, no_diff uint splatId, no_diff float3 rayDir, no_diff float2 samplePoint)
 {
     if (g_Raster.debugShowEllipses != 0u && g_Raster.debugShowProcessedCount == 0u && g_Raster.debugShowGradNorm == 0u)
@@ -188,9 +176,7 @@ float raster_eval_alpha_gaussian(RasterGaussian gaussian, no_diff uint splatId, 
         float alpha = gaussian.colorAlpha.w * coverage;
         return alpha >= g_Raster.alphaCutoff ? alpha : 0.0;
     }
-    float rawAlpha = raster_eval_alpha(gaussian.roLocal, gaussian.quat, gaussian.invScale, gaussian.colorAlpha.w, rayDir, 0.0);
-    float clampedAlpha = raster_eval_clamped_screen_alpha(splatId, gaussian.colorAlpha.w, samplePoint);
-    float alpha = max(rawAlpha, clampedAlpha);
+    float alpha = raster_eval_alpha(gaussian.roLocal, gaussian.quat, gaussian.invScale, gaussian.colorAlpha.w, rayDir, 0.0);
     return alpha >= g_Raster.alphaCutoff ? alpha : 0.0;
 }
 

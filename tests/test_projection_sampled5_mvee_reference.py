@@ -94,7 +94,7 @@ def test_sampled5_mvee_handles_degenerate_thin_splats() -> None:
     assert np.all(projected.center_radius_depth[:, 2] <= 96.0)
 
 
-def test_sampled5_mvee_clamps_loaded_scale_to_configured_pixel_world_size() -> None:
+def test_sampled5_mvee_keeps_loaded_scale_without_pixel_floor_clamp() -> None:
     scene = GaussianScene(
         positions=np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
         scales=_log_sigma(np.array([[1e-6, 1e-6, 1e-6]], dtype=np.float32)),

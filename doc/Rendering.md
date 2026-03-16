@@ -20,7 +20,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 ## 1. Project and Bin
 - Shader: `csProjectAndBin`
 - For each splat:
-  - decode the stored 3DGS log-scale to sigma, convert it to finite-support ellipsoid radius with `radius_scale * 3.0`, keep that true support for raster evaluation, and only smoothly clamp the projection/binning support toward a `0.75`-screen-pixel floor at the splat depth (`0.75 * depth / min(focal_x, focal_y)` in world units),
+  - decode the stored 3DGS log-scale to sigma, convert it to finite-support ellipsoid radius with `radius_scale * 3.0`, and use that same support consistently for projection, binning, and raster evaluation,
   - project to screen space with sampled-5 MVEE fitting,
   - if sampled-5 fitting is unstable, use an analytic depth/scale fallback radius instead of hard max-radius fallback,
   - estimate projected radius,
@@ -57,8 +57,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - Each thread resolves the tile range for its pixel, reuses each staged gaussian loaded from the prepass raster cache for that single forward replay, and writes one output pixel.
 - The inner loop performs front-to-back blending with exponential radial falloff while reusing gaussian data already staged in shared memory.
 - Shared gaussian staging uses `256`-splat batches.
-- Raster evaluation uses the true decoded support cached in prepass rather than the floor-clamped projection support, so subpixel splats keep their original 3DGS footprint.
-- The pixel floor still contributes a render-time low-pass fallback: raster keeps the raw world-space gaussian response, evaluates an additional screen-space alpha from the clamped projected ellipse for floor-limited splats, and uses the larger of the two before applying `alphaCutoff`.
+- Raster evaluation uses the true decoded support cached in prepass with no separate pixel-floor clamp or fallback alpha branch.
 - Debug processed-count, grad-norm, and ellipse-outline views are handled in the same forward replay loop as normal rendering rather than by a separate debug pass.
 - Writes RGBA output texture.
 - Primary ray generation goes through `PinholeCamera.screen_to_world_ray(...)`.

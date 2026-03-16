@@ -202,7 +202,7 @@ class ScaleGradientDiagnostic:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Sweep one-splat scale across the pixel-floor transition and record rendered radius plus training gradients.")
+    parser = argparse.ArgumentParser(description="Sweep one-splat scale across a wide range and record rendered radius plus training gradients.")
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/scale_gradient_diagnostic"))
     parser.add_argument("--target-scale-mul", type=float, default=7.5)
     parser.add_argument("--init-opacity", type=float, default=0.75)

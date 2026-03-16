@@ -5,8 +5,6 @@ import "utility/math/quaternion.slang";
 
 static const uint MVEE_POINT_COUNT = 5u;
 static const uint MVEE_MAX_ITERS = 8u;
-static const float SCALE_AREA_PROXY_POWER = 2.0 / 3.0;
-static const float SCALE_FLOOR_SMOOTH_RATIO = 1.0;
 static const float GAUSSIAN_SUPPORT_SIGMA_RADIUS = 3.0;
 
 struct ScanlineWorkItem
@@ -222,53 +220,22 @@ float3 local_point_to_world(float3 pLocal, float3 worldPos, float3 invScale, flo
     return worldPos + rotate_by_quat(localUnscaled, qInv);
 }
 
-float minimum_pixel_scale_world(CameraParams cameraParams, no_diff float3 centerWorld)
-{
-    PinholeCamera camera = PinholeCamera.from_params(cameraParams);
-    float centerDepth = camera.camera_depth(centerWorld);
-    return camera.pixel_world_size_max(centerDepth);
-}
-
-[Differentiable]
-float scale_area_proxy(float3 supportScale)
-{
-    return pow(max(supportScale.x * supportScale.y * supportScale.z, SMALL_VALUE), SCALE_AREA_PROXY_POWER);
-}
-
-[Differentiable]
-float3 smooth_max_scale(float3 supportScale, float3 minSupportScale)
-{
-    float3 smoothness = max(minSupportScale * SCALE_FLOOR_SMOOTH_RATIO, float3(SMALL_VALUE));
-    float3 delta = supportScale - minSupportScale;
-    return 0.5 * (supportScale + minSupportScale + sqrt(delta * delta + smoothness * smoothness));
-}
-
-[Differentiable]
-float opacity_scale_from_clamp(float3 rawSupportScale, float3 clampedSupportScale)
-{
-    float rawArea = scale_area_proxy(rawSupportScale);
-    float clampedArea = scale_area_proxy(clampedSupportScale);
-    return min(rawArea / max(clampedArea, SMALL_VALUE), 1.0);
-}
-
 [Differentiable]
 Ellipsoid build_ellipsoid(no_diff CameraParams cameraParams, no_diff float radiusScale, Gaussian3D gaussian)
 {
     PinholeCamera camera = PinholeCamera.from_params(cameraParams);
-    float minScaleWorld = minimum_pixel_scale_world(cameraParams, gaussian.position);
     float3 sigma = exp(gaussian.logScale);
     float3 rawSupportScale = max(sigma * (radiusScale * GAUSSIAN_SUPPORT_SIGMA_RADIUS), float3(SMALL_VALUE));
-    float3 projectedScale = smooth_max_scale(rawSupportScale, float3(minScaleWorld));
     Ellipsoid ellipsoid;
     ellipsoid.centerWorld = gaussian.position;
     ellipsoid.rasterScale = rawSupportScale;
     ellipsoid.rasterInvScale = 1.0 / max(ellipsoid.rasterScale, float3(SMALL_VALUE));
-    ellipsoid.projectedScale = projectedScale;
-    ellipsoid.projectedInvScale = 1.0 / max(ellipsoid.projectedScale, float3(SMALL_VALUE));
+    ellipsoid.projectedScale = ellipsoid.rasterScale;
+    ellipsoid.projectedInvScale = ellipsoid.rasterInvScale;
     ellipsoid.rotation = gaussian.rotation;
     float3 cameraOffset = rotate_by_quat(camera.position_world() - ellipsoid.centerWorld, ellipsoid.rotation);
     ellipsoid.rasterRoLocal = cameraOffset * ellipsoid.rasterInvScale;
-    ellipsoid.projectedRoLocal = cameraOffset * ellipsoid.projectedInvScale;
-    ellipsoid.opacityScale = opacity_scale_from_clamp(rawSupportScale, projectedScale);
+    ellipsoid.projectedRoLocal = ellipsoid.rasterRoLocal;
+    ellipsoid.opacityScale = 1.0;
     return ellipsoid;
 }

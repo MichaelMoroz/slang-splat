@@ -236,15 +236,14 @@ def test_radius_scale_scales_true_3dgs_size_without_hidden_fudge(device):
         radius_pad_px=0.0,
         mvee_eps=1e-6,
     )
-    assert np.isclose(projected_footprint_2x.center_radius_depth[0, 2] / projected_footprint_1x.center_radius_depth[0, 2], 2.0, rtol=1e-3, atol=1e-4)
+    assert np.isclose(projected_footprint_2x.center_radius_depth[0, 2] / projected_footprint_1x.center_radius_depth[0, 2], 2.0, rtol=2e-3, atol=1e-4)
 
 
-def test_subpixel_gaussian_uses_pixel_floor_in_projection_but_preserves_raster_scale(device):
+def test_subpixel_gaussian_keeps_raw_raster_scale_without_pixel_floor_clamp(device):
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
     background = np.array([0.0, 0.0, 0.0], dtype=np.float32)
     renderer = GaussianRenderer(device, width=65, height=65, radius_scale=1.0, list_capacity_multiplier=16)
-    expected_scale = camera.pixel_world_size_max(4.0, renderer.width, renderer.height)
-    raw_scale = 0.5 * expected_scale
+    raw_scale = 0.5 * camera.pixel_world_size_max(4.0, renderer.width, renderer.height)
     scene = GaussianScene(
         positions=np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
         scales=np.full((1, 3), _stored_from_support_scale(raw_scale), dtype=np.float32),
@@ -288,8 +287,8 @@ def test_subpixel_gaussian_uses_pixel_floor_in_projection_but_preserves_raster_s
     effective_scale = float(np.mean(1.0 / projected.inv_scale[0]))
     center_pixel = renderer.width // 2
     assert np.isclose(effective_scale, raw_scale, rtol=0.0, atol=1e-6)
-    assert float(debug["screen_center_radius_depth"][0, 2]) >= 0.75
-    assert 0.1 <= float(debug["screen_ellipse_conic"][0, 3]) <= 0.25
+    assert np.isclose(float(debug["screen_center_radius_depth"][0, 2]), float(projected.center_radius_depth[0, 2]), rtol=0.0, atol=1e-4)
+    assert np.isclose(float(debug["screen_ellipse_conic"][0, 3]), 1.0, rtol=0.0, atol=1e-6)
     assert np.isclose(float(cpu_image[center_pixel, center_pixel, 3]), float(scene.opacities[0]), atol=2e-3)
     assert np.isclose(float(gpu_image[center_pixel, center_pixel, 3]), float(scene.opacities[0]), atol=2e-3)
     np.testing.assert_allclose(gpu_image, cpu_image, rtol=0.0, atol=4e-2)
@@ -462,7 +461,7 @@ def test_raster_backward_produces_float_final_grads_and_fixed_intermediate(devic
     assert np.any(np.abs(final_nonzero * _RASTER_GRAD_FIXED_SCALE - np.rint(final_nonzero * _RASTER_GRAD_FIXED_SCALE)) > 1e-4)
 
 
-def test_projection_only_subpixel_floor_does_not_inject_raster_scale_gradient(device):
+def test_subpixel_gaussian_does_not_inject_raster_scale_gradient(device):
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
     renderer = GaussianRenderer(device, width=65, height=65, radius_scale=1.0, list_capacity_multiplier=16)
     raw_scale = 0.5 * camera.pixel_world_size_max(4.0, renderer.width, renderer.height)

@@ -10,8 +10,6 @@ from .projection_sampled5_mvee_reference import project_splats_sampled5_mvee
 
 ELLIPSE_EPS = 1e-5
 MIN_CONIC_DET = 1e-12
-SCALE_AREA_PROXY_POWER = np.float32(2.0 / 3.0)
-SCALE_FLOOR_SMOOTH_RATIO = np.float32(1.0)
 GAUSSIAN_SUPPORT_SIGMA_RADIUS = np.float32(3.0)
 
 
@@ -31,12 +29,6 @@ def quantize_depth(depth: float, near_depth: float, far_depth: float, depth_bits
     max_value = (1 << depth_bits) - 1
     t = np.float32(np.clip((depth - near_depth) / max(far_depth - near_depth, 1e-6), 0.0, 1.0))
     return np.uint32(np.floor(np.float32(t * max_value) + np.float32(0.5)))
-
-
-def _smooth_max_scale(raw_scale: np.ndarray, min_scale: np.ndarray) -> np.ndarray:
-    smoothness = np.maximum(np.asarray(min_scale, dtype=np.float32) * SCALE_FLOOR_SMOOTH_RATIO, np.float32(1e-6))
-    delta = np.asarray(raw_scale, dtype=np.float32) - np.asarray(min_scale, dtype=np.float32)
-    return (0.5 * (np.asarray(raw_scale, dtype=np.float32) + np.asarray(min_scale, dtype=np.float32) + np.sqrt(delta * delta + smoothness * smoothness))).astype(np.float32)
 
 
 def project_splats(scene: GaussianScene, camera: Camera, width: int, height: int, radius_scale: float) -> ProjectedSplats:
@@ -65,15 +57,7 @@ def project_splats(scene: GaussianScene, camera: Camera, width: int, height: int
         c, s = np.cos(angle[valid]), np.sin(angle[valid])
         inv_a2, inv_b2 = 1.0 / (major * major), 1.0 / (minor * minor)
         conic[valid] = np.stack((c * c * inv_a2 + s * s * inv_b2, c * s * (inv_a2 - inv_b2), s * s * inv_a2 + c * c * inv_b2), axis=1).astype(np.float32)
-    _, _, forward = camera.basis()
-    position_delta = scene.positions.astype(np.float32) - camera.position.astype(np.float32)
-    depth = np.sum(position_delta * forward[None, :].astype(np.float32), axis=1, dtype=np.float32)
-    min_scale_world = np.asarray([camera.pixel_world_size_max(float(value), width, height) for value in depth], dtype=np.float32)
-    raw_scale = np.maximum(np.exp(scene.scales.astype(np.float32)) * (np.float32(radius_scale) * GAUSSIAN_SUPPORT_SIGMA_RADIUS), np.float32(1e-6))
-    clamped_scale = _smooth_max_scale(raw_scale, np.repeat(min_scale_world[:, None], 3, axis=1))
-    raw_area = np.power(np.maximum(np.prod(raw_scale, axis=1, dtype=np.float32), np.float32(1e-6)), SCALE_AREA_PROXY_POWER).astype(np.float32)
-    clamped_area = np.power(np.maximum(np.prod(clamped_scale, axis=1, dtype=np.float32), np.float32(1e-6)), SCALE_AREA_PROXY_POWER).astype(np.float32)
-    opacity_scale = np.minimum(raw_area / np.maximum(clamped_area, np.float32(1e-6)), np.float32(1.0)).astype(np.float32)
+    opacity_scale = np.ones((scene.count,), dtype=np.float32)
     return ProjectedSplats(
         center_radius_depth=projected.center_radius_depth,
         ellipse_conic=conic,
@@ -239,12 +223,7 @@ def rasterize(projected: ProjectedSplats, sorted_values: np.ndarray, tile_ranges
                 if rho >= 1.0:
                     continue
                 coverage = float((1.0 - rho) ** 2 * (1.0 + 2.0 * rho))
-                raw_alpha = float(np.clip(projected.color_alpha[splat_id, 3] * coverage, 0.0, 1.0))
-                delta = np.array([float(px) + 0.5 - float(projected.center_radius_depth[splat_id, 0]), float(py) + 0.5 - float(projected.center_radius_depth[splat_id, 1])], dtype=np.float32)
-                conic = projected.ellipse_conic[splat_id]
-                quad = float(conic[0] * delta[0] * delta[0] + 2.0 * conic[1] * delta[0] * delta[1] + conic[2] * delta[1] * delta[1])
-                clamped_alpha = 0.0 if projected.opacity_scale[splat_id] >= 1.0 or quad >= 1.0 else float(np.clip(projected.color_alpha[splat_id, 3] * projected.opacity_scale[splat_id] * np.exp(-0.5 * (GAUSSIAN_SUPPORT_SIGMA_RADIUS ** 2) * quad), 0.0, 1.0))
-                alpha = max(raw_alpha, clamped_alpha)
+                alpha = float(np.clip(projected.color_alpha[splat_id, 3] * coverage, 0.0, 1.0))
                 if alpha < alpha_cutoff:
                     continue
                 accum += trans * alpha * projected.color_alpha[splat_id, :3]

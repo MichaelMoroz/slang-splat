@@ -91,7 +91,7 @@ Training notes:
 - `src/training/adam.py` is the Python-side generic ADAM module, while `src/training/optimizer.py` keeps Gaussian-specific regularization/projection; `GaussianTrainer` composes both.
 - GPU scene buffers store opacity as a raw sigmoid parameter so rasterization and optimization differentiate through effective alpha directly.
 - GPU scene buffers store gaussian scale in standard 3DGS log-scale form; rendering decodes `exp(log_scale)`, rasterizes with the true decoded support, and uses `radius_scale=1.0` as the default 3DGS render size.
-- Pixel-floor clamping is used only to keep projection/binning conservative for tiny splats; raster alpha still evaluates the true decoded gaussian support.
+- The renderer and trainer now use the true decoded gaussian support directly for both projection/binning and raster alpha; there is no separate pixel-floor clamp path.
 - Reported training metrics are total loss, rolling average loss, and per-step `last_mse`.
 - Target Y-flip is enabled by default.
 - ADAM epsilon is compile-time shader state now; it is no longer exposed as a CLI or viewer runtime control.
@@ -119,7 +119,7 @@ The budget scans only production Python entrypoints plus `src/**`.
 ```powershell
 python -m tools.scale_gradient_diagnostic --output-dir outputs\scale_gradient_diagnostic
 ```
-This sweeps a single splat across the pixel-floor transition, records the rendered fitted blob radius, and plots the corresponding training `dL/dscale` curve against scale.
+This sweeps a single splat across a wide scale range, records the rendered fitted blob radius, and plots the corresponding training `dL/dscale` curve against scale.
 
 ## Project Structure
 - `src/app`: shared app parameter builders, scene bounds helpers, and CLI command implementations.
