@@ -44,12 +44,12 @@ _MAX_ALPHA = 0.9999
 _MIN_SCALE = 1e-4
 _MAX_SCALE = 3.0
 _OUTPUT_RENDER_SUBDIR = "renders"
-_DEFAULT_CACHED_RASTER_GRAD_ATOMIC_MODE = "float"
-_DEFAULT_CACHED_RASTER_GRAD_FIXED_RO_LOCAL_RANGE = 10.0
-_DEFAULT_CACHED_RASTER_GRAD_FIXED_LOG_L_DIAG_RANGE = 10.0
-_DEFAULT_CACHED_RASTER_GRAD_FIXED_L_OFFDIAG_RANGE = 10.0
-_DEFAULT_CACHED_RASTER_GRAD_FIXED_COLOR_RANGE = 200.0
-_DEFAULT_CACHED_RASTER_GRAD_FIXED_OPACITY_RANGE = 200.0
+_DEFAULT_CACHED_RASTER_GRAD_ATOMIC_MODE = "fixed"
+_DEFAULT_CACHED_RASTER_GRAD_FIXED_RO_LOCAL_RANGE = 0.01
+_DEFAULT_CACHED_RASTER_GRAD_FIXED_LOG_L_DIAG_RANGE = 0.01
+_DEFAULT_CACHED_RASTER_GRAD_FIXED_L_OFFDIAG_RANGE = 0.01
+_DEFAULT_CACHED_RASTER_GRAD_FIXED_COLOR_RANGE = 0.2
+_DEFAULT_CACHED_RASTER_GRAD_FIXED_OPACITY_RANGE = 0.2
 _DEFAULT_THROUGHPUT_WARMUP_STEPS = 1
 _DEFAULT_THROUGHPUT_WINDOW = 32
 
@@ -611,7 +611,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Small torch-side COLMAP trainer example for dataset/garden.")
     parser.add_argument("--colmap-root", type=Path, default=Path("dataset/garden"))
     parser.add_argument("--images-subdir", type=str, default="images_4")
-    parser.add_argument("--iters", type=int, default=1000)
+    parser.add_argument("--iters", type=int, default=5000)
     parser.add_argument("--max-gaussians", type=int, default=0)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--save-every", type=int, default=1000)
