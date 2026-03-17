@@ -13,10 +13,11 @@ python torch_examples/train_colmap_garden_torch.py
 Default behavior:
 - loads `dataset/garden`
 - uses `images_4`
-- initializes the scene from the COLMAP point cloud
+- initializes from the full COLMAP point cloud (`--max-gaussians 0`)
 - runs `30000` Adam steps
 - uses native image resolution
 - uses float cached raster gradients so native-resolution mean L1 gradients do not underflow
+- optimizes PSNR-aligned RGB MSE with light scale/opacity regularization and late-stage cosine LR decay
 - shows `tqdm` progress with loss and PSNR
 
 Prerequisites:

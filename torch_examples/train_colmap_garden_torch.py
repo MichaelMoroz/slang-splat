@@ -40,7 +40,7 @@ _DEFAULT_FAR = 120.0
 _MIN_ALPHA = 1e-4
 _MAX_ALPHA = 0.9999
 _MIN_SCALE = 1e-4
-_MAX_SCALE = 10.0
+_MAX_SCALE = 3.0
 _OUTPUT_RENDER_SUBDIR = "renders"
 
 
@@ -57,7 +57,7 @@ class TorchGardenTrainConfig:
     colmap_root: Path = Path("dataset/garden")
     images_subdir: str = "images_4"
     iters: int = 30000
-    max_gaussians: int = 4096
+    max_gaussians: int = 0
     seed: int = 0
     save_every: int = 1000
     output_dir: Path = Path("outputs/torch_examples/garden_torch")
@@ -68,6 +68,13 @@ class TorchGardenTrainConfig:
     rotation_lr: float = 1e-3
     color_lr: float = 1e-3
     alpha_lr: float = 1e-3
+    rgb_mse_weight: float = 1.0
+    rgb_l1_weight: float = 0.0
+    scale_abs_reg_weight: float = 0.01
+    opacity_reg_weight: float = 0.01
+    grad_norm_clip: float = 10.0
+    lr_final_ratio: float = 0.1
+    lr_decay_start_fraction: float = 0.75
     cached_raster_grad_atomic_mode: str = "float"
     enable_saves: bool = True
     torch_device: str | None = None
@@ -78,7 +85,7 @@ class TorchGardenTrainConfig:
         self.output_dir = Path(self.output_dir).resolve()
         self.images_subdir = str(self.images_subdir)
         self.iters = max(int(self.iters), 1)
-        self.max_gaussians = max(int(self.max_gaussians), 1)
+        self.max_gaussians = max(int(self.max_gaussians), 0)
         self.seed = int(self.seed)
         self.save_every = max(int(self.save_every), 0)
         self.near = float(self.near)
@@ -88,6 +95,13 @@ class TorchGardenTrainConfig:
         self.rotation_lr = float(self.rotation_lr)
         self.color_lr = float(self.color_lr)
         self.alpha_lr = float(self.alpha_lr)
+        self.rgb_mse_weight = max(float(self.rgb_mse_weight), 0.0)
+        self.rgb_l1_weight = max(float(self.rgb_l1_weight), 0.0)
+        self.scale_abs_reg_weight = max(float(self.scale_abs_reg_weight), 0.0)
+        self.opacity_reg_weight = max(float(self.opacity_reg_weight), 0.0)
+        self.grad_norm_clip = max(float(self.grad_norm_clip), 0.0)
+        self.lr_final_ratio = min(max(float(self.lr_final_ratio), 0.0), 1.0)
+        self.lr_decay_start_fraction = min(max(float(self.lr_decay_start_fraction), 0.0), 1.0)
         self.cached_raster_grad_atomic_mode = str(self.cached_raster_grad_atomic_mode)
         self.enable_saves = bool(self.enable_saves)
         if self.max_frames is not None:
@@ -254,6 +268,28 @@ def compute_rgb_loss_metrics(rendered_rgb: Any, target_rgb: Any) -> tuple[Any, f
     return loss, mse, float(psnr_from_mse(mse))
 
 
+def compute_training_loss_terms(
+    rendered_rgb: Any,
+    target_rgb: Any,
+    params_dict: dict[str, Any],
+    config: TorchGardenTrainConfig,
+) -> tuple[Any, float, float, float]:
+    torch_mod = _require_torch()
+    diff = rendered_rgb - target_rgb
+    mse = torch_mod.mean(diff * diff)
+    l1 = torch_mod.mean(torch_mod.abs(diff))
+    scale_abs = torch_mod.mean(torch_mod.exp(params_dict["log_scales"]))
+    opacity_mean = torch_mod.mean(params_dict["alpha"])
+    total = (
+        config.rgb_mse_weight * mse
+        + config.rgb_l1_weight * l1
+        + config.scale_abs_reg_weight * scale_abs
+        + config.opacity_reg_weight * opacity_mean
+    )
+    mse_value = float(mse.detach().item())
+    return total, float(l1.detach().item()), mse_value, float(psnr_from_mse(mse_value))
+
+
 def build_render_settings(frame: ColmapFrame, config: TorchGardenTrainConfig) -> TorchGaussianRenderSettings:
     return TorchGaussianRenderSettings(
         width=frame.width,
@@ -291,6 +327,28 @@ def _optimizer_for_params(params_dict: dict[str, Any], config: TorchGardenTrainC
             {"params": [params_dict["alpha"]], "lr": config.alpha_lr},
         ]
     )
+
+
+def _scheduler_for_optimizer(optimizer: Any, config: TorchGardenTrainConfig):
+    torch_mod = _require_torch()
+    if config.iters <= 1 or config.lr_final_ratio >= 1.0:
+        return None
+
+    def lr_lambda(step: int) -> float:
+        progress = min(max(float(step) / float(max(config.iters - 1, 1)), 0.0), 1.0)
+        if progress <= config.lr_decay_start_fraction:
+            return 1.0
+        tail = max(1.0 - config.lr_decay_start_fraction, 1e-6)
+        local = min(max((progress - config.lr_decay_start_fraction) / tail, 0.0), 1.0)
+        cosine = 0.5 * (1.0 + math.cos(math.pi * local))
+        return float(config.lr_final_ratio + (1.0 - config.lr_final_ratio) * cosine)
+
+    return torch_mod.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
+
+
+def _optimizer_lr(optimizer: Any) -> float:
+    group = optimizer.param_groups[0] if optimizer.param_groups else {"lr": float("nan")}
+    return float(group["lr"])
 
 
 def _ensure_output_dirs(config: TorchGardenTrainConfig) -> tuple[Path, Path]:
@@ -340,12 +398,13 @@ def run_training(config: TorchGardenTrainConfig) -> dict[str, object]:
     scene = initialize_scene_from_colmap_points(recon, max_gaussians=config.max_gaussians, seed=config.seed, init_hparams=resolved_init)
     params_dict = scene_to_torch_params(scene, device)
     optimizer = _optimizer_for_params(params_dict, config)
+    scheduler = _scheduler_for_optimizer(optimizer, config)
     context = TorchGaussianRendererContext(torch_device=device)
     targets_cpu = load_target_cache(frames)
     frame_state = FrameOrderState.create(len(frames), config.seed)
     frame_metrics = FrameMetricTracker.create(len(frames))
     render_dir, checkpoint_path = _ensure_output_dirs(config)
-    history: dict[str, list[float]] = {"loss": [], "mse": [], "psnr": [], "frame_index": []}
+    history: dict[str, list[float]] = {"loss": [], "l1": [], "mse": [], "psnr": [], "lr": [], "frame_index": []}
     last_rendered = last_loss = last_psnr = last_mse = None
 
     progress = tqdm(range(config.iters), total=config.iters, desc="torch-colmap", dynamic_ncols=True)
@@ -361,22 +420,29 @@ def run_training(config: TorchGardenTrainConfig) -> dict[str, object]:
         splats = pack_torch_splats(params_dict)
         rendered = render_gaussian_splats_torch(splats, camera, settings, context)
         rendered_rgb = rendered[..., :3]
-        loss, mse, psnr = compute_rgb_loss_metrics(rendered_rgb, target_linear)
+        loss, l1_value, mse, psnr = compute_training_loss_terms(rendered_rgb, target_linear, params_dict, config)
         loss.backward()
+        if config.grad_norm_clip > 0.0:
+            torch_mod.nn.utils.clip_grad_norm_(list(params_dict.values()), max_norm=config.grad_norm_clip)
         optimizer.step()
+        if scheduler is not None:
+            scheduler.step()
         project_scene_params_(params_dict)
 
         loss_value = float(loss.detach().item())
         frame_metrics.update(frame_index, loss_value, mse, psnr)
         history["loss"].append(loss_value)
+        history["l1"].append(l1_value)
         history["mse"].append(mse)
         history["psnr"].append(psnr)
+        history["lr"].append(_optimizer_lr(optimizer))
         history["frame_index"].append(float(frame_index))
         progress.set_postfix(
             loss=f"{loss_value:.6f}",
             psnr=f"{psnr:.2f}",
             avg_loss=f"{frame_metrics.mean('loss'):.6f}",
             avg_psnr=f"{frame_metrics.mean('psnr'):.2f}",
+            lr=f"{_optimizer_lr(optimizer):.2e}",
             frame=frame.image_path.name,
         )
 
@@ -406,7 +472,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--colmap-root", type=Path, default=Path("dataset/garden"))
     parser.add_argument("--images-subdir", type=str, default="images_4")
     parser.add_argument("--iters", type=int, default=30000)
-    parser.add_argument("--max-gaussians", type=int, default=4096)
+    parser.add_argument("--max-gaussians", type=int, default=0)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--save-every", type=int, default=1000)
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/torch_examples/garden_torch"))
@@ -417,6 +483,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rotation-lr", type=float, default=1e-3)
     parser.add_argument("--color-lr", type=float, default=1e-3)
     parser.add_argument("--alpha-lr", type=float, default=1e-3)
+    parser.add_argument("--rgb-mse-weight", type=float, default=1.0)
+    parser.add_argument("--rgb-l1-weight", type=float, default=0.0)
+    parser.add_argument("--scale-abs-reg-weight", type=float, default=0.01)
+    parser.add_argument("--opacity-reg-weight", type=float, default=0.01)
+    parser.add_argument("--grad-norm-clip", type=float, default=10.0)
+    parser.add_argument("--lr-final-ratio", type=float, default=0.1)
+    parser.add_argument("--lr-decay-start-fraction", type=float, default=0.75)
     parser.add_argument("--cached-raster-grad-atomic-mode", type=str, default="float")
     parser.add_argument("--torch-device", type=str, default=None)
     parser.add_argument("--max-frames", type=int, default=None)
@@ -441,6 +514,13 @@ def main() -> int:
         rotation_lr=args.rotation_lr,
         color_lr=args.color_lr,
         alpha_lr=args.alpha_lr,
+        rgb_mse_weight=args.rgb_mse_weight,
+        rgb_l1_weight=args.rgb_l1_weight,
+        scale_abs_reg_weight=args.scale_abs_reg_weight,
+        opacity_reg_weight=args.opacity_reg_weight,
+        grad_norm_clip=args.grad_norm_clip,
+        lr_final_ratio=args.lr_final_ratio,
+        lr_decay_start_fraction=args.lr_decay_start_fraction,
         cached_raster_grad_atomic_mode=args.cached_raster_grad_atomic_mode,
         enable_saves=not bool(args.disable_saves),
         torch_device=args.torch_device,
