@@ -70,6 +70,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 
 ## 7. Raster Backward
 - Shaders: `csClearRasterGrads`, `csRasterizeTrainingForward`, `csRasterizeBackward`, `csBackpropCachedRasterGrads`.
+- Float and fixed cached-gradient variants are compiled from the same `shaders/renderer/gaussian_raster_stage.slang` source. The host loads mode-specific suffixed entrypoints from that file rather than keeping separate shader sources.
 - `csClearRasterGrads` zeros the float packed gradient buffer plus both cached-raster intermediate buffers: the float-atomic buffer and the fixed-point fallback/debug buffer.
 - `csRasterizeTrainingForward` runs the raster forward path for the fixed-count trainer, writes the rendered output, and caches one per-pixel forward state record plus `processedEnd` for backward replay.
 - `csRasterizeBackward` is a pure backward replay kernel: it loads the cached per-pixel forward state, derives `dLoss / dRasterState` from `g_OutputGrad`, walks the staged splats in reverse without replaying forward internally, and accumulates cached raster-field gradients into the selected intermediate buffer.
