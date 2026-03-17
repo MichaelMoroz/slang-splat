@@ -159,6 +159,27 @@ def test_torch_renderer_alpha_gradient_is_public_alpha_space(torch_cuda_device: 
     np.testing.assert_allclose(alpha_grad, _public_reference_grads(splats.detach(), reference)[:, 13], rtol=2e-5, atol=3e-5)
 
 
+def test_torch_renderer_float_cached_grad_mode_preserves_small_high_res_l1_gradients(torch_cuda_device: torch.device):
+    settings = TorchGaussianRenderSettings(
+        width=1024,
+        height=1024,
+        list_capacity_multiplier=16,
+        cached_raster_grad_atomic_mode=GaussianRenderer.CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT,
+    )
+    context = TorchGaussianRendererContext(torch_device=torch_cuda_device)
+    splats = _make_splats(torch_cuda_device, count=8).requires_grad_(True)
+    camera_params = _make_camera_params(torch_cuda_device)
+
+    loss = torch.mean(torch.abs(render_gaussian_splats_torch(splats, camera_params, settings, context)[..., :3]))
+    loss.backward()
+    grad = splats.grad.detach()
+
+    assert float(torch.max(torch.abs(grad[:, 0:3])).item()) > 0.0
+    assert float(torch.max(torch.abs(grad[:, 3:6])).item()) > 0.0
+    assert float(torch.max(torch.abs(grad[:, 10:13])).item()) > 0.0
+    assert float(torch.max(torch.abs(grad[:, 13])).item()) > 0.0
+
+
 def test_torch_renderer_rejects_invalid_inputs(torch_cuda_device: torch.device):
     settings = TorchGaussianRenderSettings(width=32, height=32)
     context = TorchGaussianRendererContext(torch_device=torch_cuda_device)

@@ -14,6 +14,7 @@ from torch_examples.train_colmap_garden_torch import (
     FrameMetricTracker,
     FrameOrderState,
     TorchGardenTrainConfig,
+    build_render_settings,
     compute_rgb_loss_metrics,
     frame_to_camera_tensor,
     linear_rgb_to_srgb8,
@@ -73,6 +74,16 @@ def test_frame_to_camera_tensor_uses_colmap_layout(torch_cuda_or_cpu_device):
         tensor,
         np.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 3.0, 100.0, 110.0, 50.0, 55.0, 0.25, 90.0, 0.0, 0.0], dtype=np.float32),
     )
+
+
+def test_build_render_settings_uses_native_resolution_and_float_grad_mode() -> None:
+    frame = _make_frame()
+    config = TorchGardenTrainConfig(colmap_root=Path("dataset/garden"), output_dir=Path("outputs/torch_examples/test"))
+    settings = build_render_settings(frame, config)
+
+    assert settings.width == frame.width
+    assert settings.height == frame.height
+    assert settings.cached_raster_grad_atomic_mode == "float"
 
 
 def test_frame_order_matches_trainer_permutation_behavior() -> None:

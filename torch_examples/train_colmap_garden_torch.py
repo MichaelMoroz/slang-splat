@@ -68,6 +68,7 @@ class TorchGardenTrainConfig:
     rotation_lr: float = 1e-3
     color_lr: float = 1e-3
     alpha_lr: float = 1e-3
+    cached_raster_grad_atomic_mode: str = "float"
     enable_saves: bool = True
     torch_device: str | None = None
     max_frames: int | None = None
@@ -87,6 +88,7 @@ class TorchGardenTrainConfig:
         self.rotation_lr = float(self.rotation_lr)
         self.color_lr = float(self.color_lr)
         self.alpha_lr = float(self.alpha_lr)
+        self.cached_raster_grad_atomic_mode = str(self.cached_raster_grad_atomic_mode)
         self.enable_saves = bool(self.enable_saves)
         if self.max_frames is not None:
             self.max_frames = max(int(self.max_frames), 1)
@@ -252,6 +254,14 @@ def compute_rgb_loss_metrics(rendered_rgb: Any, target_rgb: Any) -> tuple[Any, f
     return loss, mse, float(psnr_from_mse(mse))
 
 
+def build_render_settings(frame: ColmapFrame, config: TorchGardenTrainConfig) -> TorchGaussianRenderSettings:
+    return TorchGaussianRenderSettings(
+        width=frame.width,
+        height=frame.height,
+        cached_raster_grad_atomic_mode=config.cached_raster_grad_atomic_mode,
+    )
+
+
 def _torch_device_from_config(config: TorchGardenTrainConfig):
     torch_mod = _require_torch()
     if not torch_mod.cuda.is_available():
@@ -344,7 +354,7 @@ def run_training(config: TorchGardenTrainConfig) -> dict[str, object]:
         frame = frames[frame_index]
         target = torch_mod.from_numpy(targets_cpu[frame_index]).to(device=device, non_blocking=True)
         target_linear = rgb8_to_linear_rgb(target)
-        settings = TorchGaussianRenderSettings(width=frame.width, height=frame.height)
+        settings = build_render_settings(frame, config)
         camera = frame_to_camera_tensor(frame, device, near=config.near, far=config.far)
 
         optimizer.zero_grad(set_to_none=True)
@@ -407,6 +417,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rotation-lr", type=float, default=1e-3)
     parser.add_argument("--color-lr", type=float, default=1e-3)
     parser.add_argument("--alpha-lr", type=float, default=1e-3)
+    parser.add_argument("--cached-raster-grad-atomic-mode", type=str, default="float")
     parser.add_argument("--torch-device", type=str, default=None)
     parser.add_argument("--max-frames", type=int, default=None)
     parser.add_argument("--disable-saves", action="store_true")
@@ -430,6 +441,7 @@ def main() -> int:
         rotation_lr=args.rotation_lr,
         color_lr=args.color_lr,
         alpha_lr=args.alpha_lr,
+        cached_raster_grad_atomic_mode=args.cached_raster_grad_atomic_mode,
         enable_saves=not bool(args.disable_saves),
         torch_device=args.torch_device,
         max_frames=args.max_frames,

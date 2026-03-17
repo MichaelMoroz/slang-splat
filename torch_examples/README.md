@@ -16,6 +16,7 @@ Default behavior:
 - initializes the scene from the COLMAP point cloud
 - runs `30000` Adam steps
 - uses native image resolution
+- uses float cached raster gradients so native-resolution mean L1 gradients do not underflow
 - shows `tqdm` progress with loss and PSNR
 
 Prerequisites:
