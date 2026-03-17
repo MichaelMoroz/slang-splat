@@ -524,58 +524,89 @@ void load_training_forward_cache(RasterPixelInfo info, out RasterForwardState fo
     forwardState.processedEnd = g_TrainingProcessedEnd[pixelIndex];
 }
 
-#define DECLARE_RASTER_BACKWARD_REPLAY(Suffix, AccumulateFn) \
-void raster_backward_replay##Suffix( \
-    RasterPixelInfo info, \
-    inout RasterForwardState forwardState, \
-    inout RasterBackwardState backwardState, \
-    uint lane) \
-{ \
-    if (!info.hasTileRange) \
-    { \
-        GroupMemoryBarrierWithGroupSync(); \
-        return; \
-    } \
-    for (uint batchBase = info.end; batchBase > info.start;) \
-    { \
-        uint batchStart = (batchBase > info.start + RASTER_BATCH) ? (batchBase - RASTER_BATCH) : info.start; \
-        uint batchCount = batchBase - batchStart; \
-        prefetch_batch_from_global(batchStart, batchBase, lane); \
-        GroupMemoryBarrierWithGroupSync(); \
-        for (uint rev = 0u; rev < batchCount; rev++) \
-        { \
-            uint localIdx = batchCount - 1u - rev; \
-            uint globalIdx = batchStart + localIdx; \
-            RasterGaussian gaussian = RasterGaussian.load_shared(localIdx); \
-            if (info.pixelActive && globalIdx < forwardState.processedEnd) \
-            { \
-                float alpha = raster_eval_alpha_gaussian(gaussian, gsBatchSplatId[localIdx], info.rayDir, info.samplePoint); \
-                if (alpha > 0.0) \
-                { \
-                    RasterState state = forwardState.pixelState; \
-                    RasterState prevState = state.undo(gaussian.colorAlpha.xyz, alpha); \
-                    var dpPrevState = diffPair(prevState); \
-                    var dpGaussian = diffPair(gaussian); \
-                    var dpColorAlpha = diffPair(gaussian.colorAlpha); \
-                    var dpAlpha = diffPair(alpha); \
-                    bwd_diff(raster_blend_step_color_alpha)(dpPrevState, dpColorAlpha, dpAlpha, backwardState.pixelState); \
-                    bwd_diff(raster_eval_alpha_gaussian)(dpGaussian, gsBatchSplatId[localIdx], info.rayDir, info.samplePoint, dpAlpha.getDifferential()); \
-                    forwardState.pixelState = prevState; \
-                    backwardState.pixelState = dpPrevState.getDifferential(); \
-                    RasterGaussian.Differential dGaussian = dpGaussian.getDifferential(); \
-                    dGaussian.colorAlpha += dpColorAlpha.getDifferential(); \
-                    AccumulateFn(localIdx, dGaussian); \
-                } \
-            } \
-        } \
-        GroupMemoryBarrierWithGroupSync(); \
-        batchBase = batchStart; \
-    } \
+interface IRasterGradVariant
+{
+    static RasterGaussian.Differential load_cached_raster_grad(uint splatId);
+    static void accumulate_cached_raster_grad(uint localIdx, RasterGaussian.Differential dGaussian);
 }
 
-DECLARE_RASTER_BACKWARD_REPLAY(Fixed, RasterGaussian.accumulate_gradients_fixed)
-DECLARE_RASTER_BACKWARD_REPLAY(Float, RasterGaussian.accumulate_gradients_float)
-#undef DECLARE_RASTER_BACKWARD_REPLAY
+struct FixedRasterGradVariant : IRasterGradVariant
+{
+    static RasterGaussian.Differential load_cached_raster_grad(uint splatId)
+    {
+        return load_cached_raster_grad_fixed(splatId);
+    }
+
+    static void accumulate_cached_raster_grad(uint localIdx, RasterGaussian.Differential dGaussian)
+    {
+        RasterGaussian.accumulate_gradients_fixed(localIdx, dGaussian);
+    }
+}
+
+struct FloatRasterGradVariant : IRasterGradVariant
+{
+    static RasterGaussian.Differential load_cached_raster_grad(uint splatId)
+    {
+        return load_cached_raster_grad_float(splatId);
+    }
+
+    static void accumulate_cached_raster_grad(uint localIdx, RasterGaussian.Differential dGaussian)
+    {
+        RasterGaussian.accumulate_gradients_float(localIdx, dGaussian);
+    }
+}
+
+void raster_backward_replay<T : IRasterGradVariant>(
+    RasterPixelInfo info,
+    inout RasterForwardState forwardState,
+    inout RasterBackwardState backwardState,
+    uint lane
+)
+{
+    if (!info.hasTileRange)
+    {
+        GroupMemoryBarrierWithGroupSync();
+        return;
+    }
+
+    for (uint batchBase = info.end; batchBase > info.start;)
+    {
+        uint batchStart = (batchBase > info.start + RASTER_BATCH) ? (batchBase - RASTER_BATCH) : info.start;
+        uint batchCount = batchBase - batchStart;
+        prefetch_batch_from_global(batchStart, batchBase, lane);
+        GroupMemoryBarrierWithGroupSync();
+
+        for (uint rev = 0u; rev < batchCount; rev++)
+        {
+            uint localIdx = batchCount - 1u - rev;
+            uint globalIdx = batchStart + localIdx;
+            RasterGaussian gaussian = RasterGaussian.load_shared(localIdx);
+            if (info.pixelActive && globalIdx < forwardState.processedEnd)
+            {
+                float alpha = raster_eval_alpha_gaussian(gaussian, gsBatchSplatId[localIdx], info.rayDir, info.samplePoint);
+                if (alpha <= 0.0) continue;
+
+                RasterState state = forwardState.pixelState;
+                RasterState prevState = state.undo(gaussian.colorAlpha.xyz, alpha);
+                var dpPrevState = diffPair(prevState);
+                var dpGaussian = diffPair(gaussian);
+                var dpColorAlpha = diffPair(gaussian.colorAlpha);
+                var dpAlpha = diffPair(alpha);
+                bwd_diff(raster_blend_step_color_alpha)(dpPrevState, dpColorAlpha, dpAlpha, backwardState.pixelState);
+                bwd_diff(raster_eval_alpha_gaussian)(dpGaussian, gsBatchSplatId[localIdx], info.rayDir, info.samplePoint, dpAlpha.getDifferential());
+
+                forwardState.pixelState = prevState;
+                backwardState.pixelState = dpPrevState.getDifferential();
+                RasterGaussian.Differential dGaussian = dpGaussian.getDifferential();
+                dGaussian.colorAlpha += dpColorAlpha.getDifferential();
+                T.accumulate_cached_raster_grad(localIdx, dGaussian);
+            }
+        }
+
+        GroupMemoryBarrierWithGroupSync();
+        batchBase = batchStart;
+    }
+}
 
 [shader("compute")]
 [numthreads(RASTER_THREAD_TILE_DIM, RASTER_THREAD_TILE_DIM, 1)]
@@ -589,70 +620,119 @@ void csRasterize(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_Gr
     g_Output[info.pixelCoord] = raster_forward_output_pixel(info, forwardState.pixelState, forwardState.processedCount);
 }
 
-#define DECLARE_RASTER_GRAD_VARIANT(Suffix, LoadGradFn, ReplayFn) \
-[shader("compute")] \
-[numthreads(TILE_GROUP_SIZE, 1, 1)] \
-void csClearRasterGrads##Suffix(uint3 dispatchThreadID : SV_DispatchThreadID) \
-{ \
-    uint gradCount = g_Prepass.splatCount * TRAINABLE_PARAM_COUNT; \
-    uint cachedGradCount = g_Prepass.splatCount * RASTER_CACHE_PARAM_COUNT; \
-    uint idx = dispatchThreadID.x; \
-    if (idx < gradCount) g_ParamGrads[idx] = 0.0; \
-    if (idx < cachedGradCount) g_CachedRasterGradsFixed[idx] = 0; \
-    if (idx < cachedGradCount) g_CachedRasterGradsFloat[idx] = 0.0; \
-} \
-[shader("compute")] \
-[numthreads(TILE_GROUP_SIZE, 1, 1)] \
-void csBackpropCachedRasterGrads##Suffix(uint3 dispatchThreadID : SV_DispatchThreadID) \
-{ \
-    uint splatId = dispatchThreadID.x; \
-    if (splatId >= g_Prepass.splatCount) return; \
-    RasterGaussian.Differential dRaster = LoadGradFn(splatId); \
-    CachedEllipsoid.Differential dCached; \
-    dCached.roLocal = dRaster.roLocal; \
-    dCached.logLDiag = dRaster.logLDiag; \
-    dCached.lOffDiag = dRaster.lOffDiag; \
-    Gaussian3D gaussian = load_gaussian3d(splatId); \
-    var dpCachedPosition = diffPair(gaussian.position); \
-    var dpCachedScale = diffPair(gaussian.logScale); \
-    var dpRotation = diffPair(gaussian.rotation); \
-    var dpOpacityPosition = diffPair(gaussian.position); \
-    var dpOpacityScale = diffPair(gaussian.logScale); \
-    var dpRawOpacity = diffPair(gaussian.colorAlpha.w); \
-    bwd_diff(build_cached_ellipsoid)(g_Camera, g_Prepass.radiusScale, dpCachedPosition, dpCachedScale, dpRotation, dCached); \
-    bwd_diff(build_raster_fused_opacity)(g_Camera, g_Prepass.radiusScale, dpOpacityPosition, dpOpacityScale, dpRawOpacity, dRaster.colorAlpha.w); \
-    float gradScale = g_RasterGradDecodeScale; \
-    store_param_grad<3>(g_Prepass.splatCount, PARAM_POSITION_X, splatId, (dpCachedPosition.getDifferential() + dpOpacityPosition.getDifferential()) * gradScale); \
-    store_param_grad<3>(g_Prepass.splatCount, PARAM_SCALE_X, splatId, (dpCachedScale.getDifferential() + dpOpacityScale.getDifferential()) * gradScale); \
-    store_param_grad<4>(g_Prepass.splatCount, PARAM_ROTATION_X, splatId, dpRotation.getDifferential() * gradScale); \
-    store_param_grad<3>(g_Prepass.splatCount, PARAM_COLOR_R, splatId, dRaster.colorAlpha.xyz * gradScale); \
-    store_param_grad<1>(g_Prepass.splatCount, PARAM_RAW_OPACITY, splatId, dpRawOpacity.getDifferential() * gradScale); \
-} \
-[shader("compute")] \
-[numthreads(RASTER_THREAD_TILE_DIM, RASTER_THREAD_TILE_DIM, 1)] \
-void csRasterizeTrainingForward##Suffix(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_GroupIndex) \
-{ \
-    RasterPixelInfo info = resolve_raster_pixel(dispatchThreadID); \
-    RasterForwardState forwardState; \
-    init_raster_forward_state(info, forwardState); \
-    if (info.hasTileRange) raster_forward_replay(info, lane, forwardState); \
-    store_training_forward_cache(info, forwardState); \
-    if (!info.pixelActive) return; \
-    g_Output[info.pixelCoord] = raster_forward_output_pixel(info, forwardState.pixelState, forwardState.processedCount); \
-} \
-[shader("compute")] \
-[numthreads(RASTER_THREAD_TILE_DIM, RASTER_THREAD_TILE_DIM, 1)] \
-void csRasterizeBackward##Suffix(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_GroupIndex) \
-{ \
-    RasterPixelInfo info = resolve_raster_pixel(dispatchThreadID); \
-    RasterForwardState forwardState; \
-    RasterBackwardState backwardState; \
-    load_training_forward_cache(info, forwardState); \
-    init_raster_backward_state(backwardState); \
-    backwardState.pixelState = raster_output_gradient_pixel(info, forwardState.pixelState); \
-    ReplayFn(info, forwardState, backwardState, lane); \
+void clear_raster_grads(uint3 dispatchThreadID)
+{
+    uint gradCount = g_Prepass.splatCount * TRAINABLE_PARAM_COUNT;
+    uint cachedGradCount = g_Prepass.splatCount * RASTER_CACHE_PARAM_COUNT;
+    uint idx = dispatchThreadID.x;
+    if (idx < gradCount) g_ParamGrads[idx] = 0.0;
+    if (idx < cachedGradCount) g_CachedRasterGradsFixed[idx] = 0;
+    if (idx < cachedGradCount) g_CachedRasterGradsFloat[idx] = 0.0;
 }
 
-DECLARE_RASTER_GRAD_VARIANT(Fixed, load_cached_raster_grad_fixed, raster_backward_replayFixed)
-DECLARE_RASTER_GRAD_VARIANT(Float, load_cached_raster_grad_float, raster_backward_replayFloat)
-#undef DECLARE_RASTER_GRAD_VARIANT
+void backprop_cached_raster_grads<T : IRasterGradVariant>(uint3 dispatchThreadID)
+{
+    uint splatId = dispatchThreadID.x;
+    if (splatId >= g_Prepass.splatCount) return;
+
+    RasterGaussian.Differential dRaster = T.load_cached_raster_grad(splatId);
+    CachedEllipsoid.Differential dCached;
+    dCached.roLocal = dRaster.roLocal;
+    dCached.logLDiag = dRaster.logLDiag;
+    dCached.lOffDiag = dRaster.lOffDiag;
+
+    Gaussian3D gaussian = load_gaussian3d(splatId);
+    var dpCachedPosition = diffPair(gaussian.position);
+    var dpCachedScale = diffPair(gaussian.logScale);
+    var dpRotation = diffPair(gaussian.rotation);
+    var dpOpacityPosition = diffPair(gaussian.position);
+    var dpOpacityScale = diffPair(gaussian.logScale);
+    var dpRawOpacity = diffPair(gaussian.colorAlpha.w);
+    bwd_diff(build_cached_ellipsoid)(g_Camera, g_Prepass.radiusScale, dpCachedPosition, dpCachedScale, dpRotation, dCached);
+    bwd_diff(build_raster_fused_opacity)(g_Camera, g_Prepass.radiusScale, dpOpacityPosition, dpOpacityScale, dpRawOpacity, dRaster.colorAlpha.w);
+
+    float gradScale = g_RasterGradDecodeScale;
+    store_param_grad<3>(g_Prepass.splatCount, PARAM_POSITION_X, splatId, (dpCachedPosition.getDifferential() + dpOpacityPosition.getDifferential()) * gradScale);
+    store_param_grad<3>(g_Prepass.splatCount, PARAM_SCALE_X, splatId, (dpCachedScale.getDifferential() + dpOpacityScale.getDifferential()) * gradScale);
+    store_param_grad<4>(g_Prepass.splatCount, PARAM_ROTATION_X, splatId, dpRotation.getDifferential() * gradScale);
+    store_param_grad<3>(g_Prepass.splatCount, PARAM_COLOR_R, splatId, dRaster.colorAlpha.xyz * gradScale);
+    store_param_grad<1>(g_Prepass.splatCount, PARAM_RAW_OPACITY, splatId, dpRawOpacity.getDifferential() * gradScale);
+}
+
+void rasterize_training_forward_variant(uint3 dispatchThreadID, uint lane)
+{
+    RasterPixelInfo info = resolve_raster_pixel(dispatchThreadID);
+    RasterForwardState forwardState;
+    init_raster_forward_state(info, forwardState);
+    if (info.hasTileRange) raster_forward_replay(info, lane, forwardState);
+    store_training_forward_cache(info, forwardState);
+    if (!info.pixelActive) return;
+    g_Output[info.pixelCoord] = raster_forward_output_pixel(info, forwardState.pixelState, forwardState.processedCount);
+}
+
+void rasterize_backward_variant<T : IRasterGradVariant>(uint3 dispatchThreadID, uint lane)
+{
+    RasterPixelInfo info = resolve_raster_pixel(dispatchThreadID);
+    RasterForwardState forwardState;
+    RasterBackwardState backwardState;
+    load_training_forward_cache(info, forwardState);
+    init_raster_backward_state(backwardState);
+    backwardState.pixelState = raster_output_gradient_pixel(info, forwardState.pixelState);
+    raster_backward_replay<T>(info, forwardState, backwardState, lane);
+}
+
+[shader("compute")]
+[numthreads(TILE_GROUP_SIZE, 1, 1)]
+void csClearRasterGradsFixed(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    clear_raster_grads(dispatchThreadID);
+}
+
+[shader("compute")]
+[numthreads(TILE_GROUP_SIZE, 1, 1)]
+void csClearRasterGradsFloat(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    clear_raster_grads(dispatchThreadID);
+}
+
+[shader("compute")]
+[numthreads(TILE_GROUP_SIZE, 1, 1)]
+void csBackpropCachedRasterGradsFixed(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    backprop_cached_raster_grads<FixedRasterGradVariant>(dispatchThreadID);
+}
+
+[shader("compute")]
+[numthreads(TILE_GROUP_SIZE, 1, 1)]
+void csBackpropCachedRasterGradsFloat(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    backprop_cached_raster_grads<FloatRasterGradVariant>(dispatchThreadID);
+}
+
+[shader("compute")]
+[numthreads(RASTER_THREAD_TILE_DIM, RASTER_THREAD_TILE_DIM, 1)]
+void csRasterizeTrainingForwardFixed(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_GroupIndex)
+{
+    rasterize_training_forward_variant(dispatchThreadID, lane);
+}
+
+[shader("compute")]
+[numthreads(RASTER_THREAD_TILE_DIM, RASTER_THREAD_TILE_DIM, 1)]
+void csRasterizeTrainingForwardFloat(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_GroupIndex)
+{
+    rasterize_training_forward_variant(dispatchThreadID, lane);
+}
+
+[shader("compute")]
+[numthreads(RASTER_THREAD_TILE_DIM, RASTER_THREAD_TILE_DIM, 1)]
+void csRasterizeBackwardFixed(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_GroupIndex)
+{
+    rasterize_backward_variant<FixedRasterGradVariant>(dispatchThreadID, lane);
+}
+
+[shader("compute")]
+[numthreads(RASTER_THREAD_TILE_DIM, RASTER_THREAD_TILE_DIM, 1)]
+void csRasterizeBackwardFloat(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_GroupIndex)
+{
+    rasterize_backward_variant<FloatRasterGradVariant>(dispatchThreadID, lane);
+}
