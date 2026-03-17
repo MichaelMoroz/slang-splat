@@ -52,7 +52,7 @@ def _renderer(args: argparse.Namespace, width: int, height: int) -> GaussianRend
         max_prepass_memory_mb=int(args.prepass_memory_mb),
         list_capacity_multiplier=int(getattr(args, "list_capacity_multiplier", 64)),
     )
-    return GaussianRenderer(create_default_device(enable_debug_layers=True), width=int(width), height=int(height), **renderer_kwargs(params))
+    return GaussianRenderer(create_default_device(enable_debug_layers=False), width=int(width), height=int(height), **renderer_kwargs(params))
 
 
 def _init_hparams(args: argparse.Namespace) -> GaussianInitHyperParams:

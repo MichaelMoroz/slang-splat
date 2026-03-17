@@ -86,12 +86,12 @@ def normalize3(value: object, eps: float = VEC_EPS) -> spy.float3:
     return smath.normalize(vec) if float(smath.length(vec)) > float(eps) else spy.float3(0.0, 0.0, 0.0)
 
 
-def create_default_device(device_type: spy.DeviceType = spy.DeviceType.vulkan, enable_debug_layers: bool = True) -> spy.Device:
+def create_default_device(device_type: spy.DeviceType = spy.DeviceType.vulkan, enable_debug_layers: bool = False) -> spy.Device:
     return spy.create_device(
         device_type,
         include_paths=(SHADER_ROOT, SHADER_ROOT / "renderer", SHADER_ROOT / "utility"),
         enable_debug_layers=bool(enable_debug_layers),
-        enable_print=True,
+        enable_print=False,
         enable_hot_reload=True,
         enable_compilation_reports=True,
     )

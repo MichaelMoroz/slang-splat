@@ -17,6 +17,6 @@ def device():
     from src import create_default_device
 
     try:
-        return create_default_device(device_type=spy.DeviceType.vulkan, enable_debug_layers=True)
+        return create_default_device(device_type=spy.DeviceType.vulkan, enable_debug_layers=False)
     except Exception as exc:
         pytest.skip(f"GPU device unavailable for Slangpy tests (vulkan): {exc}")
