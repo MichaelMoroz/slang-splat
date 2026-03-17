@@ -117,6 +117,7 @@ class GaussianRenderer:
         "lOffDiag.yx", "lOffDiag.zx", "lOffDiag.zy",
         "color.r", "color.g", "color.b", "opacity",
     )
+    CACHED_RASTER_GRAD_COMPONENT_SLICES = tuple((label, slice(index, index + 1)) for index, label in enumerate(CACHED_RASTER_GRAD_COMPONENT_LABELS))
     _SCENE_SHADER_VARS = {"splat_params": "g_SplatParams"}
     _SCREEN_SHADER_VARS = {"screen_center_radius_depth": "g_ScreenCenterRadiusDepth", "screen_color_alpha": "g_ScreenColorAlpha", "screen_ellipse_conic": "g_ScreenEllipseConic", "splat_visible": "g_SplatVisible"}
     _GRAD_SHADER_VARS = {"param_grads": "g_ParamGrads"}
@@ -801,6 +802,79 @@ class GaussianRenderer:
             color_alpha=grad_color_alpha,
         )
         self._work_buffers["param_grads"].copy_from_numpy(packed)
+
+    def _zero_param_grads(self, splat_count: int) -> None:
+        self.write_grad_groups(
+            splat_count,
+            grad_positions=np.zeros((splat_count, 4), dtype=np.float32),
+            grad_scales=np.zeros((splat_count, 4), dtype=np.float32),
+            grad_rotations=np.zeros((splat_count, 4), dtype=np.float32),
+            grad_color_alpha=np.zeros((splat_count, 4), dtype=np.float32),
+        )
+
+    def write_cached_raster_grads_fixed(self, splat_count: int, values: np.ndarray) -> None:
+        count = int(splat_count)
+        data = np.asarray(values, dtype=np.int32).reshape(count, self._RASTER_CACHE_PARAM_COUNT)
+        self._work_buffers["cached_raster_grads_fixed"].copy_from_numpy(np.ascontiguousarray(data.T.reshape(-1), dtype=np.int32))
+
+    def write_cached_raster_grads_float(self, splat_count: int, values: np.ndarray) -> None:
+        count = int(splat_count)
+        data = np.asarray(values, dtype=np.float32).reshape(count, self._RASTER_CACHE_PARAM_COUNT)
+        self._work_buffers["cached_raster_grads_float"].copy_from_numpy(np.ascontiguousarray(data.T.reshape(-1), dtype=np.float32))
+
+    def _replay_backprop_cached_raster_grads(self, camera: Camera, splat_count: int, grad_scale: float = 1.0) -> dict[str, np.ndarray]:
+        self._zero_param_grads(splat_count)
+        encoder = self.device.create_command_encoder()
+        self._backprop_cached_raster_grads(encoder, splat_count, camera, grad_scale)
+        self.device.submit_command_buffer(encoder.finish())
+        self.device.wait()
+        return self.read_grad_groups(splat_count)
+
+    def debug_cached_raster_backprop_contributions_against_target(
+        self,
+        scene: GaussianScene,
+        camera: Camera,
+        target_image: np.ndarray,
+        background: np.ndarray | tuple[float, float, float] = (0.0, 0.0, 0.0),
+        component_slices: tuple[tuple[str, slice], ...] | None = None,
+    ) -> dict[str, object]:
+        grads = self.debug_raster_backward_grads_against_target(scene, camera, target_image, background=background)
+        count = int(scene.count)
+        specs = self.CACHED_RASTER_GRAD_COMPONENT_SLICES if component_slices is None else tuple(component_slices)
+        full = {
+            "grad_scales": np.asarray(grads["grad_scales"], dtype=np.float32).copy(),
+            "grad_rotations": np.asarray(grads["grad_rotations"], dtype=np.float32).copy(),
+        }
+        contributions: dict[str, dict[str, np.ndarray]] = {}
+        if self.cached_raster_grad_atomic_mode == self.CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT:
+            active = np.asarray(grads["cached_raster_grads_float"], dtype=np.float32).copy()
+            zeros = np.zeros_like(active)
+            for label, component_slice in specs:
+                masked = zeros.copy()
+                masked[:, component_slice] = active[:, component_slice]
+                self.write_cached_raster_grads_float(count, masked)
+                contribution = self._replay_backprop_cached_raster_grads(camera, count)
+                contributions[label] = {
+                    "grad_scales": np.asarray(contribution["grad_scales"], dtype=np.float32).copy(),
+                    "grad_rotations": np.asarray(contribution["grad_rotations"], dtype=np.float32).copy(),
+                }
+            self.write_cached_raster_grads_float(count, active)
+        else:
+            active = np.asarray(grads["cached_raster_grads_fixed"], dtype=np.int32).copy()
+            zeros = np.zeros_like(active)
+            for label, component_slice in specs:
+                masked = zeros.copy()
+                masked[:, component_slice] = active[:, component_slice]
+                self.write_cached_raster_grads_fixed(count, masked)
+                contribution = self._replay_backprop_cached_raster_grads(camera, count)
+                contributions[label] = {
+                    "grad_scales": np.asarray(contribution["grad_scales"], dtype=np.float32).copy(),
+                    "grad_rotations": np.asarray(contribution["grad_rotations"], dtype=np.float32).copy(),
+                }
+            self.write_cached_raster_grads_fixed(count, active)
+        grads["backprop_full"] = full
+        grads["backprop_contributions"] = contributions
+        return grads
 
     def _require_scene(self) -> GaussianScene | SceneBinding:
         if self._current_scene is None:
