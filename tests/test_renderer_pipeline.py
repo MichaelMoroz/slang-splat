@@ -415,6 +415,7 @@ def test_raster_backward_float_mode_produces_float_intermediate_and_final_grads(
     active_nonzero = float_nonzero[np.abs(float_nonzero) > 0.0]
     assert active_nonzero.size > 0
     assert np.any(np.abs(active_nonzero * _RASTER_GRAD_FIXED_SCALE - np.rint(active_nonzero * _RASTER_GRAD_FIXED_SCALE)) > 1e-4)
+    assert np.count_nonzero(float_nonzero[:, 10:13]) > 0
 
     final_values = np.concatenate(
         [
@@ -427,6 +428,7 @@ def test_raster_backward_float_mode_produces_float_intermediate_and_final_grads(
     final_nonzero = final_values[np.abs(final_values) > 0.0]
     assert final_nonzero.size > 0
     assert np.any(np.abs(final_nonzero * _RASTER_GRAD_FIXED_SCALE - np.rint(final_nonzero * _RASTER_GRAD_FIXED_SCALE)) > 1e-4)
+    assert np.count_nonzero(np.asarray(grads["grad_color_alpha"], dtype=np.float32)[:, :3]) > 0
 
 
 def test_active_cached_raster_grad_metrics_tensor_matches_float_mode_buffer(device):

@@ -186,6 +186,12 @@ RasterState raster_blend_step_gaussian(RasterState state, RasterGaussian gaussia
     return state.blend(gaussian.colorAlpha.xyz, alpha);
 }
 
+[Differentiable]
+RasterState raster_blend_step_color_alpha(RasterState state, float4 colorAlpha, float alpha)
+{
+    return state.blend(colorAlpha.xyz, alpha);
+}
+
 float3 jet_colormap(float x)
 {
     float t = saturate(x);
@@ -429,14 +435,16 @@ void raster_backward_replay(
 
                     var dpPrevState = diffPair(prevState);
                     var dpGaussian = diffPair(gaussian);
+                    var dpColorAlpha = diffPair(gaussian.colorAlpha);
                     var dpAlpha = diffPair(alpha);
-                    bwd_diff(raster_blend_step_gaussian)(dpPrevState, dpGaussian, dpAlpha, backwardState.pixelState);
+                    bwd_diff(raster_blend_step_color_alpha)(dpPrevState, dpColorAlpha, dpAlpha, backwardState.pixelState);
                     bwd_diff(raster_eval_alpha_gaussian)(dpGaussian, gsBatchSplatId[localIdx], info.rayDir, info.samplePoint, dpAlpha.getDifferential());
 
                     forwardState.pixelState = prevState;
                     backwardState.pixelState = dpPrevState.getDifferential();
-
-                    RasterGaussian.accumulate_gradients_fixed(localIdx, dpGaussian.getDifferential());
+                    RasterGaussian.Differential dGaussian = dpGaussian.getDifferential();
+                    dGaussian.colorAlpha += dpColorAlpha.getDifferential();
+                    RasterGaussian.accumulate_gradients_fixed(localIdx, dGaussian);
                 }
             }
         }
