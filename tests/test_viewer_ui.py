@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import numpy as np
+
 from src.viewer import ui
 
 
@@ -51,3 +53,16 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["hist_bin_count"] == 64
     assert viewer_ui._values["hist_y_limit"] == 1.0
     assert viewer_ui._values["_histogram_update_y_limit"] is True
+    assert viewer_ui._values["_histogram_update_log_range"] is False
+
+
+def test_histogram_log_range_from_ranges_uses_nonzero_finite_extrema() -> None:
+    payload = SimpleNamespace(
+        min_values=np.array([0.0, -1e-4, -1.0, np.nan], dtype=np.float32),
+        max_values=np.array([0.0, 1e-2, 10.0, np.inf], dtype=np.float32),
+    )
+
+    lo, hi = ui._histogram_log_range_from_ranges(payload)
+
+    assert np.isclose(lo, -2.0)
+    assert np.isclose(hi, 1.0)
