@@ -30,15 +30,6 @@ static const float RASTER_GRAD_FIXED_INT_MIN_F = -2147483648.0;
 static const float RASTER_GRAD_FIXED_INT_MAX_F = 2147483647.0;
 static const float RASTER_GRAD_FIXED_L_OFFDIAG_REF_FLOOR = 0.25;
 
-float raster_grad_fixed_range(uint fieldId)
-{
-    return fieldId < RASTER_CACHE_LOG_L_DIAG_X ? g_CachedRasterGradFixedROLocalRange :
-        fieldId < RASTER_CACHE_L_OFFDIAG_YX ? g_CachedRasterGradFixedLogLDiagRange :
-        fieldId < RASTER_CACHE_COLOR_R ? g_CachedRasterGradFixedLOffdiagRange :
-        fieldId < RASTER_CACHE_FUSED_OPACITY ? g_CachedRasterGradFixedColorRange :
-        g_CachedRasterGradFixedOpacityRange;
-}
-
 int raster_grad_fixed_quantize(float value, float range)
 {
     float safeRange = max(range, SMALL_VALUE);
@@ -60,7 +51,7 @@ float raster_grad_fixed_shape_alpha(float3 roLocal, float3 logLDiag)
     return max(pow(max(lDiag.x * lDiag.y * lDiag.z, SMALL_VALUE), 1.0 / 3.0), RASTER_GRAD_FIXED_L_OFFDIAG_REF_FLOOR);
 }
 
-void atomic_add_raster_cache_grad_fixed<let N : int>(uint splatCount, uint firstFieldId, uint splatId, vector<float, N> grad)
+void atomic_add_raster_cache_grad_fixed<let N : int>(uint splatCount, uint firstFieldId, uint splatId, vector<float, N> grad, float range)
 {
     [unroll] for (int i = 0; i < N; i++)
     {
@@ -68,7 +59,7 @@ void atomic_add_raster_cache_grad_fixed<let N : int>(uint splatCount, uint first
         // if (!WaveIsFirstLane()) continue;
         float waveGrad = grad[i];
         uint fieldId = firstFieldId + uint(i);
-        int value = raster_grad_fixed_quantize(waveGrad, raster_grad_fixed_range(fieldId));
+        int value = raster_grad_fixed_quantize(waveGrad, range);
         if (value == 0) continue;
         InterlockedAdd(g_CachedRasterGradsFixed[raster_cache_index(splatCount, fieldId, splatId)], value);
     }
@@ -152,10 +143,10 @@ struct RasterGaussian : IDifferentiable
         uint splatCount = g_Prepass.splatCount;
         RasterGaussian gaussian = load_shared(localIdx);
         float shapeAlpha = raster_grad_fixed_shape_alpha(gaussian.roLocal, gaussian.logLDiag);
-        atomic_add_raster_cache_grad_fixed<3>(splatCount, RASTER_CACHE_RO_LOCAL_X, splatId, dOut.roLocal / shapeAlpha);
-        atomic_add_raster_cache_grad_fixed<3>(splatCount, RASTER_CACHE_LOG_L_DIAG_X, splatId, dOut.logLDiag / shapeAlpha);
-        atomic_add_raster_cache_grad_fixed<3>(splatCount, RASTER_CACHE_L_OFFDIAG_YX, splatId, dOut.lOffDiag / shapeAlpha);
-        atomic_add_raster_cache_grad_fixed<4>(splatCount, RASTER_CACHE_COLOR_R, splatId, dOut.colorAlpha);
+        atomic_add_raster_cache_grad_fixed<3>(splatCount, RASTER_CACHE_RO_LOCAL_X, splatId, dOut.roLocal / shapeAlpha, g_CachedRasterGradFixedROLocalRange);
+        atomic_add_raster_cache_grad_fixed<3>(splatCount, RASTER_CACHE_LOG_L_DIAG_X, splatId, dOut.logLDiag / shapeAlpha, g_CachedRasterGradFixedLogLDiagRange);
+        atomic_add_raster_cache_grad_fixed<3>(splatCount, RASTER_CACHE_L_OFFDIAG_YX, splatId, dOut.lOffDiag / shapeAlpha, g_CachedRasterGradFixedLOffdiagRange);
+        atomic_add_raster_cache_grad_fixed<4>(splatCount, RASTER_CACHE_COLOR_R, splatId, dOut.colorAlpha, g_CachedRasterGradFixedColorRange);
     }
 
     static void accumulate_gradients_float(uint localIdx, Differential dOut)
