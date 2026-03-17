@@ -25,11 +25,21 @@ static const uint RASTER_CACHE_COLOR_G = 10u;
 static const uint RASTER_CACHE_COLOR_B = 11u;
 static const uint RASTER_CACHE_FUSED_OPACITY = 12u;
 static const uint RASTER_CACHE_PARAM_COUNT = 13u;
+static const uint RASTER_GRAD_CAPTURE_RECORD_FLOAT4_COUNT = 5u;
 groupshared float3 gsRoLocal[RASTER_BATCH];
 groupshared float3 gsLogDiag[RASTER_BATCH];
 groupshared float3 gsNormOffDiag[RASTER_BATCH];
 groupshared half4 gsColorAlpha[RASTER_BATCH];
 groupshared uint gsBatchSplatId[RASTER_BATCH];
+
+struct RasterGradContributionRecord
+{
+    float4 meta;
+    float4 grad0;
+    float4 grad1;
+    float4 grad2;
+    float4 grad3;
+};
 
 uniform StructuredBuffer<float> g_SplatParams;
 
@@ -60,8 +70,14 @@ uniform RWStructuredBuffer<uint> g_TrainingProcessedEnd;
 uniform RWStructuredBuffer<float> g_ParamGrads;
 uniform RWStructuredBuffer<int> g_CachedRasterGradsFixed;
 uniform RWStructuredBuffer<float> g_CachedRasterGradsFloat;
+uniform StructuredBuffer<uint> g_CachedRasterGradContributionSelect;
+uniform RWStructuredBuffer<uint> g_CachedRasterGradContributionCounter;
+uniform RWStructuredBuffer<RasterGradContributionRecord> g_CachedRasterGradContributionRecords;
 uniform float g_RasterGradDecodeScale;
 uniform float g_CachedRasterGradFixedScale;
+uniform uint g_CachedRasterGradContributionCaptureEnabled;
+uniform uint g_CachedRasterGradContributionSelectedCount;
+uniform uint g_CachedRasterGradContributionPerSplatCapacity;
 
 uniform CameraParams g_Camera;
 uniform PrepassParams g_Prepass;
@@ -99,4 +115,9 @@ Gaussian3D load_gaussian3d(uint splatId)
 uint raster_cache_index(uint splatCount, uint fieldId, uint splatId)
 {
     return fieldId * splatCount + splatId;
+}
+
+bool raster_grad_contribution_capture_enabled()
+{
+    return g_CachedRasterGradContributionCaptureEnabled != 0u;
 }

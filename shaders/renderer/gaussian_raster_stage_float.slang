@@ -98,10 +98,34 @@ struct RasterGaussian : IDifferentiable
         gsColorAlpha[localIdx] = half4(colorAlpha);
     }
 
-    static void accumulate_gradients_float(uint localIdx, Differential dOut)
+    static void capture_gradient_contribution(uint splatId, uint2 pixelCoord, uint globalIdx, Differential grad)
+    {
+        if (!raster_grad_contribution_capture_enabled()) return;
+        uint slotPlusOne = g_CachedRasterGradContributionSelect[splatId];
+        if (slotPlusOne == 0u) return;
+        uint slot = slotPlusOne - 1u;
+        uint captureIdx;
+        InterlockedAdd(g_CachedRasterGradContributionCounter[slot], 1u, captureIdx);
+        if (captureIdx >= g_CachedRasterGradContributionPerSplatCapacity)
+        {
+            InterlockedAdd(g_CachedRasterGradContributionCounter[g_CachedRasterGradContributionSelectedCount], 1u);
+            return;
+        }
+
+        RasterGradContributionRecord record;
+        record.meta = float4(float(splatId), float(pixelCoord.x), float(pixelCoord.y), float(globalIdx));
+        record.grad0 = float4(grad.roLocal, grad.logLDiag.x);
+        record.grad1 = float4(grad.logLDiag.yz, grad.lOffDiag.xy);
+        record.grad2 = float4(grad.lOffDiag.z, grad.colorAlpha.xyz);
+        record.grad3 = float4(grad.colorAlpha.w, 0.0, 0.0, 0.0);
+        g_CachedRasterGradContributionRecords[slot * g_CachedRasterGradContributionPerSplatCapacity + captureIdx] = record;
+    }
+
+    static void accumulate_gradients_float(uint localIdx, uint2 pixelCoord, uint globalIdx, Differential dOut)
     {
         uint splatId = gsBatchSplatId[localIdx];
         uint splatCount = g_Prepass.splatCount;
+        capture_gradient_contribution(splatId, pixelCoord, globalIdx, dOut);
         atomic_add_raster_cache_grad_float<3>(splatCount, RASTER_CACHE_RO_LOCAL_X, splatId, dOut.roLocal);
         atomic_add_raster_cache_grad_float<3>(splatCount, RASTER_CACHE_LOG_L_DIAG_X, splatId, dOut.logLDiag);
         atomic_add_raster_cache_grad_float<3>(splatCount, RASTER_CACHE_L_OFFDIAG_YX, splatId, dOut.lOffDiag);
@@ -424,7 +448,7 @@ void raster_backward_replay(
                     backwardState.pixelState = dpPrevState.getDifferential();
                     RasterGaussian.Differential dGaussian = dpGaussian.getDifferential();
                     dGaussian.colorAlpha += dpColorAlpha.getDifferential();
-                    RasterGaussian.accumulate_gradients_float(localIdx, dGaussian);
+                    RasterGaussian.accumulate_gradients_float(localIdx, info.pixelCoord, globalIdx, dGaussian);
                 }
             }
         }
@@ -444,6 +468,7 @@ void csClearRasterGrads(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (idx < gradCount) g_ParamGrads[idx] = 0.0;
     if (idx < cachedGradCount) g_CachedRasterGradsFixed[idx] = 0;
     if (idx < cachedGradCount) g_CachedRasterGradsFloat[idx] = 0.0;
+    if (idx < g_CachedRasterGradContributionSelectedCount + 1u) g_CachedRasterGradContributionCounter[idx] = 0u;
 }
 
 [shader("compute")]
