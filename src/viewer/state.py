@@ -6,7 +6,7 @@ import time
 
 import slangpy as spy
 
-from ..metrics import ParamLog10Histograms
+from ..metrics import ParamLog10Histograms, ParamTensorRanges
 from ..scene import ColmapFrame, ColmapReconstruction, GaussianInitHyperParams, GaussianScene
 from ..training import GaussianTrainer
 from ..renderer import GaussianRenderer
@@ -96,6 +96,7 @@ class ViewerState:
     training_elapsed_s: float = 0.0; training_resume_time: float | None = None
     suggested_init_hparams: GaussianInitHyperParams | None = None; suggested_init_count: int | None = None
     cached_raster_grad_histograms: ParamLog10Histograms | None = None
+    cached_raster_grad_ranges: ParamTensorRanges | None = None
     cached_raster_grad_histogram_mode: str = ""
     cached_raster_grad_histogram_step: int = -1
     cached_raster_grad_histogram_scene_count: int = -1

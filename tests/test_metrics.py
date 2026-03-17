@@ -101,6 +101,22 @@ def test_gpu_param_tensor_histograms_ignore_zero_and_nonfinite_values(device) ->
     np.testing.assert_array_equal(hist.counts.sum(axis=1), np.array([1, 3], dtype=np.int64))
 
 
+def test_gpu_param_tensor_ranges_track_signed_extrema(device) -> None:
+    metrics = Metrics(device)
+    tensor = device.create_buffer(
+        size=8 * 4,
+        usage=spy.BufferUsage.shader_resource | spy.BufferUsage.copy_destination | spy.BufferUsage.copy_source | spy.BufferUsage.unordered_access,
+    )
+    tensor.copy_from_numpy(np.array([-4.0, 1.5, 0.0, np.nan, -0.25, 9.0, -2.0, np.inf], dtype=np.float32))
+
+    ranges = metrics.compute_param_tensor_ranges(tensor, 2, 4, param_labels=("first", "second"))
+
+    np.testing.assert_allclose(ranges.min_values, np.array([-4.0, -2.0], dtype=np.float32), rtol=0.0, atol=0.0)
+    np.testing.assert_allclose(ranges.max_values, np.array([1.5, 9.0], dtype=np.float32), rtol=0.0, atol=0.0)
+    np.testing.assert_allclose(ranges.max_abs_values, np.array([4.0, 9.0], dtype=np.float32), rtol=0.0, atol=0.0)
+    assert ranges.param_labels == ("first", "second")
+
+
 def test_psnr_from_mse_zero_is_infinite() -> None:
     assert math.isinf(psnr_from_mse(0.0))
 

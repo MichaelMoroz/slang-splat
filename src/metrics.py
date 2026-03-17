@@ -43,6 +43,17 @@ class ParamLog10Histograms:
         return np.power(10.0, self.bin_centers_log10)
 
 
+@dataclass(frozen=True, slots=True)
+class ParamTensorRanges:
+    min_values: np.ndarray
+    max_values: np.ndarray
+    param_labels: tuple[str, ...] = ()
+
+    @property
+    def max_abs_values(self) -> np.ndarray:
+        return np.maximum(np.abs(self.min_values), np.abs(self.max_values))
+
+
 def psnr_from_mse(mse: float, *, peak_value: float = 1.0) -> float:
     peak = float(peak_value)
     if not math.isfinite(peak) or peak <= 0.0:
@@ -68,6 +79,8 @@ class Metrics:
         )
         self._histogram_capacity = max(int(max_bin_count), 1)
         self._histogram_buffer = self._create_uint_buffer(self._histogram_capacity)
+        self._range_capacity = 1
+        self._range_buffer = self._create_uint_buffer(self._range_capacity * 2)
         self._image_metric_buffer = self._create_float_buffer(self._METRIC_BUFFER_FLOATS)
         self._create_kernels()
 
@@ -83,6 +96,8 @@ class Metrics:
         self._k_scale_hist = self.device.create_compute_kernel(self.device.load_program(str(_METRICS_SHADER), ["csHistogramScaleLog10"]))
         self._k_anisotropy_hist = self.device.create_compute_kernel(self.device.load_program(str(_METRICS_SHADER), ["csHistogramAnisotropyLog10"]))
         self._k_param_tensor_hist = self.device.create_compute_kernel(self.device.load_program(str(_METRICS_SHADER), ["csHistogramParamTensorLog10"]))
+        self._k_init_param_ranges = self.device.create_compute_kernel(self.device.load_program(str(_METRICS_SHADER), ["csInitParamTensorRanges"]))
+        self._k_param_tensor_range = self.device.create_compute_kernel(self.device.load_program(str(_METRICS_SHADER), ["csRangeParamTensor"]))
         self._k_image_mse = self.device.create_compute_kernel(self.device.load_program(str(_METRICS_SHADER), ["csAccumulateImageMSE"]))
 
     @staticmethod
@@ -107,6 +122,12 @@ class Metrics:
             return
         self._histogram_capacity = max(int(bin_count), self._histogram_capacity + self._histogram_capacity // 2)
         self._histogram_buffer = self._create_uint_buffer(self._histogram_capacity)
+
+    def _ensure_range_capacity(self, param_count: int) -> None:
+        if int(param_count) <= self._range_capacity:
+            return
+        self._range_capacity = max(int(param_count), self._range_capacity + self._range_capacity // 2)
+        self._range_buffer = self._create_uint_buffer(self._range_capacity * 2)
 
     def _clear_uint_buffer(self, encoder: spy.CommandEncoder, buffer: spy.Buffer, count: int) -> None:
         with debug_region(encoder, "Metrics Clear UInt", 90):
@@ -147,6 +168,27 @@ class Metrics:
                 command_encoder=encoder,
             )
 
+    def _init_param_tensor_ranges(self, encoder: spy.CommandEncoder, param_count: int) -> None:
+        with debug_region(encoder, "Metrics Init Tensor Ranges", 95):
+            self._k_init_param_ranges.dispatch(
+                thread_count=thread_count_1d(param_count),
+                vars={"g_ParamCount": int(param_count), "g_ParamRanges": self._range_buffer},
+                command_encoder=encoder,
+            )
+
+    def _dispatch_param_tensor_ranges(self, encoder: spy.CommandEncoder, tensor: spy.Buffer, param_count: int, item_count: int) -> None:
+        with debug_region(encoder, "Metrics Tensor Ranges", 96):
+            self._k_param_tensor_range.dispatch(
+                thread_count=thread_count_2d(item_count, param_count),
+                vars={
+                    "g_Tensor": tensor,
+                    "g_ParamCount": int(param_count),
+                    "g_ItemCount": int(item_count),
+                    "g_ParamRanges": self._range_buffer,
+                },
+                command_encoder=encoder,
+            )
+
     def _read_histogram(self, bin_count: int, min_log10: float, max_log10: float) -> Log10Histogram:
         counts = buffer_to_numpy(self._histogram_buffer, np.uint32)[:bin_count].astype(np.int64, copy=True)
         return Log10Histogram(counts=counts, bin_edges_log10=self._histogram_edges(bin_count, min_log10, max_log10))
@@ -154,6 +196,18 @@ class Metrics:
     def _read_param_histograms(self, param_count: int, bin_count: int, min_log10: float, max_log10: float, labels: tuple[str, ...]) -> ParamLog10Histograms:
         counts = buffer_to_numpy(self._histogram_buffer, np.uint32)[: param_count * bin_count].astype(np.int64, copy=True).reshape(param_count, bin_count)
         return ParamLog10Histograms(counts=counts, bin_edges_log10=self._histogram_edges(bin_count, min_log10, max_log10), param_labels=labels)
+
+    @staticmethod
+    def _ordered_uints_to_floats(values: np.ndarray) -> np.ndarray:
+        ordered = np.asarray(values, dtype=np.uint32)
+        bits = np.where((ordered & np.uint32(0x80000000)) != 0, ordered & np.uint32(0x7FFFFFFF), np.bitwise_not(ordered))
+        return bits.view(np.float32)
+
+    def _read_param_ranges(self, param_count: int, labels: tuple[str, ...]) -> ParamTensorRanges:
+        raw = buffer_to_numpy(self._range_buffer, np.uint32)[: param_count * 2].astype(np.uint32, copy=True).reshape(param_count, 2)
+        min_values = self._ordered_uints_to_floats(raw[:, 0]).astype(np.float32, copy=False)
+        max_values = self._ordered_uints_to_floats(raw[:, 1]).astype(np.float32, copy=False)
+        return ParamTensorRanges(min_values=min_values.copy(), max_values=max_values.copy(), param_labels=labels)
 
     def compute_scale_histogram(self, splat_params: spy.Buffer, splat_count: int, *, bin_count: int = 64, min_log10: float = -6.0, max_log10: float = 1.0) -> Log10Histogram:
         bins, lo, hi, inv_bin_size = self._validate_histogram_args(bin_count, min_log10, max_log10)
@@ -201,6 +255,29 @@ class Metrics:
         self.device.wait()
         return self._read_param_histograms(params, bins, lo, hi, labels)
 
+    def compute_param_tensor_ranges(
+        self,
+        tensor: spy.Buffer,
+        param_count: int,
+        item_count: int,
+        *,
+        param_labels: tuple[str, ...] | list[str] = (),
+    ) -> ParamTensorRanges:
+        params = max(int(param_count), 0)
+        items = max(int(item_count), 0)
+        labels = tuple(str(label) for label in param_labels)
+        if labels and len(labels) != params:
+            raise ValueError("param_labels length must match param_count.")
+        self._ensure_range_capacity(max(params, 1))
+        encoder = self.device.create_command_encoder()
+        if params > 0:
+            self._init_param_tensor_ranges(encoder, params)
+            if items > 0:
+                self._dispatch_param_tensor_ranges(encoder, tensor, params, items)
+        self.device.submit_command_buffer(encoder.finish())
+        self.device.wait()
+        return self._read_param_ranges(params, labels)
+
     def dispatch_image_mse(self, encoder: spy.CommandEncoder, rendered: spy.Texture, target: spy.Texture, width: int, height: int) -> None:
         self._clear_float_buffer(encoder, self._image_metric_buffer, self._METRIC_BUFFER_FLOATS)
         with debug_region(encoder, "Metrics Image MSE", 93):
@@ -232,4 +309,4 @@ class Metrics:
         return psnr_from_mse(self.compute_image_mse(rendered, target, width, height), peak_value=peak_value)
 
 
-__all__ = ["Metrics", "Log10Histogram", "ParamLog10Histograms", "psnr_from_mse"]
+__all__ = ["Metrics", "Log10Histogram", "ParamLog10Histograms", "ParamTensorRanges", "psnr_from_mse"]

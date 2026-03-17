@@ -49,3 +49,5 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["show_histograms"] is False
     assert viewer_ui._values["hist_auto_refresh"] is True
     assert viewer_ui._values["hist_bin_count"] == 64
+    assert viewer_ui._values["hist_y_limit"] == 1.0
+    assert viewer_ui._values["_histogram_update_y_limit"] is True

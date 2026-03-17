@@ -11,7 +11,7 @@ import numpy as np
 import slangpy as spy
 
 from ..common import SHADER_ROOT, buffer_to_numpy, debug_region, remap_named_buffers, thread_count_1d
-from ..metrics import Metrics, ParamLog10Histograms
+from ..metrics import Metrics, ParamLog10Histograms, ParamTensorRanges
 from ..scene.gaussian_scene import GaussianScene
 from ..sort.radix_sort import GPURadixSort
 from .camera import Camera
@@ -770,6 +770,11 @@ class GaussianRenderer:
             max_log10=max_log10,
             param_labels=self.CACHED_RASTER_GRAD_COMPONENT_LABELS,
         )
+
+    def compute_cached_raster_grad_component_ranges(self, metrics: Metrics, splat_count: int | None = None) -> ParamTensorRanges:
+        count = self._scene_count if splat_count is None else int(splat_count)
+        tensor = self.prepare_active_cached_raster_grads_float_tensor(count)
+        return metrics.compute_param_tensor_ranges(tensor, self._RASTER_CACHE_PARAM_COUNT, count, param_labels=self.CACHED_RASTER_GRAD_COMPONENT_LABELS)
 
     def write_grad_groups(
         self,

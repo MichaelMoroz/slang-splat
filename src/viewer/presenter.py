@@ -180,6 +180,7 @@ def update_ui_text(viewer: object, dt: float) -> None:
     viewer.t("training_downscale").text = _training_downscale_text(viewer)
     viewer.t("histogram_status").text = str(getattr(viewer.s, "cached_raster_grad_histogram_status", ""))
     viewer.ui._values["_histogram_payload"] = getattr(viewer.s, "cached_raster_grad_histograms", None)
+    viewer.ui._values["_histogram_range_payload"] = getattr(viewer.s, "cached_raster_grad_ranges", None)
     viewer.t("render_stats").text = "Generated: 0 | Written: 0" if not stats else f"Generated: {int(stats['generated_entries']):,} | Written: {int(stats['written_entries']):,} | Overflow: {bool(stats['overflow'])}{' [cap]' if bool(stats.get('capacity_limited', False)) else ''}{' (delayed)' if bool(stats.get('stats_latency_frames', 0)) else ''}{'' if bool(stats.get('stats_valid', True)) else ' [warming]'}"
     if viewer.s.trainer is None:
         viewer.t("training").text = "Training: not initialized"

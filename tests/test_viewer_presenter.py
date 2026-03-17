@@ -90,7 +90,7 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
     viewer.device = SimpleNamespace()
     viewer.loss_debug_view_options = (("rendered", "Rendered"), ("target", "Target"), ("abs_diff", "Abs Diff"))
     viewer.image_subdir_options = ("images_8",)
-    viewer.ui = SimpleNamespace(controls=controls, texts=texts, _values={"show_histograms": False, "_histogram_payload": None}, _texts={key: value.text for key, value in texts.items()})
+    viewer.ui = SimpleNamespace(controls=controls, texts=texts, _values={"show_histograms": False, "_histogram_payload": None, "_histogram_range_payload": None}, _texts={key: value.text for key, value in texts.items()})
     viewer.c = lambda key: viewer.ui.controls[key]
     viewer.t = lambda key: viewer.ui.texts[key]
     viewer.camera = lambda: "camera"
@@ -115,6 +115,7 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         last_error="",
         last_training_batch_steps=0,
         colmap_import_progress=None,
+        cached_raster_grad_ranges=None,
     )
     return viewer
 

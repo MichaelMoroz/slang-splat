@@ -7,6 +7,9 @@ static const uint METRICS_GROUP_SIZE = 256u;
 static const uint METRICS_TILE_DIM = 16u;
 static const float METRICS_SANITIZE_ABS = 1e8;
 static const uint IMAGE_METRIC_SLOT_MSE = 0u;
+static const uint FLOAT_SIGN_MASK = 0x80000000u;
+static const float POSITIVE_INFINITY_F = asfloat(0x7F800000u);
+static const float NEGATIVE_INFINITY_F = asfloat(0xFF800000u);
 
 uniform uint g_ClearCount;
 uniform RWStructuredBuffer<uint> g_ClearUIntBuffer;
@@ -23,6 +26,7 @@ uniform float g_Log10Min;
 uniform float g_Log10InvBinSize;
 uniform float g_DecodeScale;
 uniform RWStructuredBuffer<uint> g_Histogram;
+uniform RWStructuredBuffer<uint2> g_ParamRanges;
 uniform RWStructuredBuffer<float> g_DecodedFloatBuffer;
 
 uniform uint g_Width;
@@ -44,6 +48,18 @@ uint histogram_bin(float logValue)
     float scaled = (logValue - g_Log10Min) * g_Log10InvBinSize;
     int bin = int(floor(scaled));
     return uint(clamp(bin, 0, int(g_BinCount) - 1));
+}
+
+uint float_to_ordered_uint(float value)
+{
+    uint bits = asuint(value);
+    return (bits & FLOAT_SIGN_MASK) != 0u ? ~bits : (bits | FLOAT_SIGN_MASK);
+}
+
+float ordered_uint_to_float(uint value)
+{
+    uint bits = (value & FLOAT_SIGN_MASK) != 0u ? (value & ~FLOAT_SIGN_MASK) : ~value;
+    return asfloat(bits);
 }
 
 [shader("compute")]
@@ -114,6 +130,30 @@ void csHistogramParamTensorLog10(uint3 dispatchThreadID : SV_DispatchThreadID)
     float value = g_Tensor[paramId * g_ItemCount + itemId];
     if (!isfinite(value) || value == 0.0) return;
     InterlockedAdd(g_Histogram[paramId * g_BinCount + histogram_bin(safe_log10(abs(value)))], 1u);
+}
+
+[shader("compute")]
+[numthreads(METRICS_GROUP_SIZE, 1, 1)]
+void csInitParamTensorRanges(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint paramId = dispatchThreadID.x;
+    if (paramId >= g_ParamCount) return;
+    g_ParamRanges[paramId] = uint2(float_to_ordered_uint(POSITIVE_INFINITY_F), float_to_ordered_uint(NEGATIVE_INFINITY_F));
+}
+
+[shader("compute")]
+[numthreads(METRICS_TILE_DIM, METRICS_TILE_DIM, 1)]
+void csRangeParamTensor(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint itemId = dispatchThreadID.x;
+    uint paramId = dispatchThreadID.y;
+    if (paramId >= g_ParamCount || itemId >= g_ItemCount) return;
+
+    float value = g_Tensor[paramId * g_ItemCount + itemId];
+    if (!isfinite(value)) return;
+    uint ordered = float_to_ordered_uint(value);
+    InterlockedMin(g_ParamRanges[paramId].x, ordered);
+    InterlockedMax(g_ParamRanges[paramId].y, ordered);
 }
 
 [shader("compute")]

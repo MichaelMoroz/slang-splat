@@ -54,6 +54,7 @@ _DEBUG_COLORBAR_BOTTOM_PAD = 12.0
 _HISTOGRAM_BIN_COUNT_DEFAULT = 64
 _HISTOGRAM_MIN_LOG10_DEFAULT = -8.0
 _HISTOGRAM_MAX_LOG10_DEFAULT = 2.0
+_HISTOGRAM_Y_LIMIT_DEFAULT = 1.0
 _HISTOGRAM_GROUPS = (
     ("roLocal", (0, 1, 2)),
     ("invScale", (3, 4, 5)),
@@ -722,13 +723,17 @@ class ToolkitWindow:
             self._draw_histogram_controls(ui)
             status = str(ui._texts.get("histogram_status", "")).strip()
             payload = ui._values.get("_histogram_payload")
+            range_payload = ui._values.get("_histogram_range_payload")
             if status:
                 imgui.text_disabled(status)
                 imgui.separator()
             if payload is None or getattr(payload, "counts", np.zeros((0, 0), dtype=np.int64)).size == 0 or int(np.sum(payload.counts)) == 0:
                 imgui.text_wrapped("No cached ellipse gradient histogram data is available yet.")
             else:
-                self._draw_histogram_groups(payload)
+                self._update_histogram_y_limit(ui, payload)
+                self._draw_histogram_groups(ui, payload)
+                imgui.separator()
+                self._draw_histogram_range_debug(range_payload)
         imgui.end()
 
     def _draw_histogram_controls(self, ui: ViewerUI) -> None:
@@ -738,6 +743,9 @@ class ToolkitWindow:
         imgui.same_line()
         if imgui.button("Refresh"):
             ui._values["_histograms_refresh_requested"] = True
+        imgui.same_line()
+        if imgui.button("Update Y Scale"):
+            ui._values["_histogram_update_y_limit"] = True
         imgui.push_item_width(160.0)
         changed, value = imgui.input_int("Bin Count", int(ui._values.get("hist_bin_count", _HISTOGRAM_BIN_COUNT_DEFAULT)), 8, 32)
         if changed:
@@ -755,15 +763,29 @@ class ToolkitWindow:
         if changed:
             ui._values["hist_max_log10"] = float(value)
         imgui.pop_item_width()
+        imgui.same_line()
+        imgui.push_item_width(160.0)
+        changed, value = imgui.input_float("Y Limit", float(ui._values.get("hist_y_limit", _HISTOGRAM_Y_LIMIT_DEFAULT)), 1.0, 10.0, "%.1f")
+        if changed:
+            ui._values["hist_y_limit"] = max(float(value), 1.0)
+        imgui.pop_item_width()
         imgui.separator()
 
-    def _draw_histogram_groups(self, payload: object) -> None:
+    def _update_histogram_y_limit(self, ui: ViewerUI, payload: object) -> None:
+        if not bool(ui._values.get("_histogram_update_y_limit", False)):
+            return
+        counts = np.asarray(getattr(payload, "counts", np.zeros((0, 0), dtype=np.int64)), dtype=np.float64)
+        ui._values["hist_y_limit"] = max(1.3 * float(np.max(counts) if counts.size > 0 else 0.0), 1.0)
+        ui._values["_histogram_update_y_limit"] = False
+
+    def _draw_histogram_groups(self, ui: ViewerUI, payload: object) -> None:
         labels = tuple(str(label) for label in getattr(payload, "param_labels", ()))
         centers = np.asarray(getattr(payload, "bin_centers_log10", np.zeros((0,), dtype=np.float64)), dtype=np.float64)
         counts = np.asarray(getattr(payload, "counts", np.zeros((0, 0), dtype=np.int64)), dtype=np.float64)
         if counts.ndim != 2 or centers.size == 0:
             imgui.text_wrapped("Histogram payload is malformed.")
             return
+        y_limit = float(ui._values.get("hist_y_limit", _HISTOGRAM_Y_LIMIT_DEFAULT))
         for group_name, indices in _HISTOGRAM_GROUPS:
             valid = tuple(index for index in indices if 0 <= int(index) < counts.shape[0])
             if not valid:
@@ -772,18 +794,58 @@ class ToolkitWindow:
             if imgui.begin_table(f"##hist_{group_name}", 2, imgui.TableFlags_.sizing_stretch_same.value):
                 for index in valid:
                     imgui.table_next_column()
-                    self._draw_histogram_plot(labels[index] if index < len(labels) else f"param {index}", centers, counts[index])
+                    self._draw_histogram_plot(labels[index] if index < len(labels) else f"param {index}", centers, counts[index], y_limit)
                 imgui.end_table()
 
-    def _draw_histogram_plot(self, label: str, centers: np.ndarray, counts: np.ndarray) -> None:
+    def _draw_histogram_plot(self, label: str, centers: np.ndarray, counts: np.ndarray, y_limit: float) -> None:
         imgui.text_disabled(label)
         plot_id = f"##plot_{label}"
         if implot.begin_plot(plot_id, imgui.ImVec2(-1, 180)):
-            implot.setup_axes("log10(abs(grad))", "count", 0, implot.AxisFlags_.auto_fit.value)
+            implot.setup_axes("log10(abs(grad))", "count", 0, 0)
             if centers.size > 0:
                 implot.setup_axis_limits(implot.ImAxis_.x1.value, float(centers[0]), float(centers[-1]), implot.Cond_.always.value)
+            implot.setup_axis_limits(implot.ImAxis_.y1.value, 0.0, max(float(y_limit), 1.0), implot.Cond_.always.value)
             implot.plot_line(label, centers, np.asarray(counts, dtype=np.float64))
             implot.end_plot()
+
+    def _draw_histogram_range_debug(self, payload: object) -> None:
+        imgui.separator_text("Range Debug")
+        if payload is None:
+            imgui.text_wrapped("Range debug data is unavailable.")
+            return
+        labels = tuple(str(label) for label in getattr(payload, "param_labels", ()))
+        min_values = np.asarray(getattr(payload, "min_values", np.zeros((0,), dtype=np.float32)), dtype=np.float32)
+        max_values = np.asarray(getattr(payload, "max_values", np.zeros((0,), dtype=np.float32)), dtype=np.float32)
+        if min_values.ndim != 1 or max_values.ndim != 1 or min_values.size != max_values.size:
+            imgui.text_wrapped("Range payload is malformed.")
+            return
+        flags = imgui.TableFlags_.row_bg.value | imgui.TableFlags_.borders.value | imgui.TableFlags_.sizing_stretch_same.value
+        if not imgui.begin_table("##hist_range_debug", 4, flags):
+            return
+        imgui.table_setup_column("Component")
+        imgui.table_setup_column("Min")
+        imgui.table_setup_column("Max")
+        imgui.table_setup_column("Max Abs")
+        imgui.table_headers_row()
+        for index in range(min_values.size):
+            label = labels[index] if index < len(labels) else f"param {index}"
+            min_value = float(min_values[index])
+            max_value = float(max_values[index])
+            max_abs = max(abs(min_value), abs(max_value))
+            imgui.table_next_row()
+            imgui.table_next_column()
+            imgui.text_unformatted(label)
+            imgui.table_next_column()
+            imgui.text_unformatted(self._format_histogram_range_value(min_value))
+            imgui.table_next_column()
+            imgui.text_unformatted(self._format_histogram_range_value(max_value))
+            imgui.table_next_column()
+            imgui.text_unformatted(self._format_histogram_range_value(max_abs))
+        imgui.end_table()
+
+    @staticmethod
+    def _format_histogram_range_value(value: float) -> str:
+        return "n/a" if not np.isfinite(value) else f"{value:.3e}"
 
     # -- Sections --
 
@@ -1277,8 +1339,11 @@ def build_ui(renderer) -> ViewerUI:
     values["hist_bin_count"] = _HISTOGRAM_BIN_COUNT_DEFAULT
     values["hist_min_log10"] = _HISTOGRAM_MIN_LOG10_DEFAULT
     values["hist_max_log10"] = _HISTOGRAM_MAX_LOG10_DEFAULT
+    values["hist_y_limit"] = _HISTOGRAM_Y_LIMIT_DEFAULT
     values["_histograms_refresh_requested"] = False
+    values["_histogram_update_y_limit"] = True
     values["_histogram_payload"] = None
+    values["_histogram_range_payload"] = None
     values["_loss_debug_frame_max"] = 0
     values["_colmap_import_active"] = False
     values["_colmap_import_fraction"] = 0.0

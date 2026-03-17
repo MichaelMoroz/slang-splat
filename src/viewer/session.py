@@ -281,6 +281,7 @@ def _reset_loaded_runtime(viewer: object) -> None:
     viewer.s.cached_training_setup = None
     viewer.s.pending_training_runtime_resize = False
     viewer.s.cached_raster_grad_histograms = None
+    viewer.s.cached_raster_grad_ranges = None
     viewer.s.cached_raster_grad_histogram_mode = ""
     viewer.s.cached_raster_grad_histogram_step = -1
     viewer.s.cached_raster_grad_histogram_scene_count = -1
@@ -463,6 +464,7 @@ def refresh_cached_raster_grad_histograms(viewer: object, force: bool = False) -
     refresh_requested = bool(force or viewer.ui._values.get("_histograms_refresh_requested", False))
     if viewer.s.trainer is None or viewer.s.training_renderer is None:
         viewer.s.cached_raster_grad_histograms = None
+        viewer.s.cached_raster_grad_ranges = None
         viewer.s.cached_raster_grad_histogram_status = "Histograms require an initialized training scene."
         viewer.ui._values["_histograms_refresh_requested"] = False
         return
@@ -483,6 +485,7 @@ def refresh_cached_raster_grad_histograms(viewer: object, force: bool = False) -
         min_log10=min_log10,
         max_log10=max_log10,
     )
+    viewer.s.cached_raster_grad_ranges = viewer.s.training_renderer.compute_cached_raster_grad_component_ranges(viewer.s.trainer.metrics, scene_count)
     viewer.s.cached_raster_grad_histogram_mode = mode
     viewer.s.cached_raster_grad_histogram_step = step
     viewer.s.cached_raster_grad_histogram_scene_count = scene_count
