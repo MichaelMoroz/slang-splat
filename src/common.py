@@ -9,6 +9,8 @@ from slangpy import math as smath
 
 ROOT = Path(__file__).resolve().parent.parent
 SHADER_ROOT = ROOT / "shaders"
+SLANGPY_SHADER_ROOT = Path(spy.__file__).resolve().parent / "slang"
+SHADER_INCLUDE_PATHS = (SLANGPY_SHADER_ROOT, SHADER_ROOT, SHADER_ROOT / "renderer", SHADER_ROOT / "utility")
 VEC_EPS = 1e-8
 
 
@@ -87,10 +89,11 @@ def normalize3(value: object, eps: float = VEC_EPS) -> spy.float3:
 
 
 def create_default_device(device_type: spy.DeviceType = spy.DeviceType.vulkan, enable_debug_layers: bool = False) -> spy.Device:
-    return spy.create_device(
-        device_type,
-        include_paths=(SHADER_ROOT, SHADER_ROOT / "renderer", SHADER_ROOT / "utility"),
+    return spy.Device(
+        type=device_type,
+        compiler_options={"include_paths": [str(path) for path in SHADER_INCLUDE_PATHS]},
         enable_debug_layers=bool(enable_debug_layers),
+        enable_rhi_validation=False,
         enable_print=False,
         enable_hot_reload=True,
         enable_compilation_reports=True,

@@ -6,6 +6,7 @@ import slangpy as spy
 
 torch = pytest.importorskip("torch")
 
+from src.common import SHADER_INCLUDE_PATHS
 from src.renderer import Camera, GaussianRenderer, TorchGaussianRenderSettings, TorchGaussianRendererContext, render_gaussian_splats_torch
 from src.scene import GaussianScene
 
@@ -223,14 +224,21 @@ def test_torch_renderer_context_reuses_renderer_across_scene_sizes(torch_cuda_de
 
 
 def test_torch_renderer_cuda_device_smoke(torch_cuda_device: torch.device):
-    device = spy.create_torch_device(
+    torch.cuda.init()
+    torch.cuda.current_device()
+    torch.cuda.current_stream()
+    with torch.device(torch_cuda_device):
+        handles = spy.get_cuda_current_context_native_handles()
+    device = spy.Device(
         type=spy.DeviceType.cuda,
-        torch_device=torch_cuda_device,
-        include_paths=("c:/Development/slang-splat/shaders", "c:/Development/slang-splat/shaders/renderer", "c:/Development/slang-splat/shaders/utility"),
+        compiler_options={"include_paths": [str(path) for path in SHADER_INCLUDE_PATHS]},
         enable_debug_layers=False,
+        enable_rhi_validation=False,
+        enable_cuda_interop=False,
         enable_print=False,
         enable_hot_reload=False,
         enable_compilation_reports=False,
+        existing_device_handles=handles,
     )
     buffer = device.create_buffer(size=16, usage=spy.BufferUsage.shared | spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access)
     src = torch.tensor([1.0, 2.0, 3.0, 4.0], device=torch_cuda_device, dtype=torch.float32)
