@@ -94,13 +94,13 @@ class GaussianRenderer:
     _OPACITY_EPS = 1e-6
     _MEBIBYTE_BYTES = 1024 * 1024
     _PREPASS_ENTRY_BYTES = (_SCANLINE_WORK_ITEM_UINTS + 2) * _U32_BYTES
-    _RASTER_CACHE_PARAM_COUNT = 14
+    _RASTER_CACHE_PARAM_COUNT = 13
     _RASTER_GRAD_FIXED_DECODE_SCALES = np.array(
         [
-            1.0 / 16777216.0, 1.0 / 16777216.0, 1.0 / 16777216.0,
-            1.0 / 8388608.0, 1.0 / 8388608.0, 1.0 / 8388608.0,
-            1.0 / 4194304.0, 1.0 / 4194304.0, 1.0 / 4194304.0, 1.0 / 4194304.0,
-            1.0 / 67108864.0, 1.0 / 67108864.0, 1.0 / 67108864.0, 1.0 / 4194304.0,
+            1.0 / 268435456.0, 1.0 / 268435456.0, 1.0 / 268435456.0,
+            1.0 / 536870912.0, 1.0 / 536870912.0, 1.0 / 536870912.0,
+            1.0 / 268435456.0, 1.0 / 268435456.0, 1.0 / 268435456.0,
+            1.0 / 2147483648.0, 1.0 / 2147483648.0, 1.0 / 2147483648.0, 1.0 / 67108864.0,
         ],
         dtype=np.float32,
     )
@@ -113,8 +113,8 @@ class GaussianRenderer:
     TRAINABLE_PARAM_COUNT = 14
     CACHED_RASTER_GRAD_COMPONENT_LABELS = (
         "roLocal.x", "roLocal.y", "roLocal.z",
-        "logInvScale.x", "logInvScale.y", "logInvScale.z",
-        "quat.x", "quat.y", "quat.z", "quat.w",
+        "logLDiag.x", "logLDiag.y", "logLDiag.z",
+        "lOffDiag.yx", "lOffDiag.zx", "lOffDiag.zy",
         "color.r", "color.g", "color.b", "opacity",
     )
     _SCENE_SHADER_VARS = {"splat_params": "g_SplatParams"}

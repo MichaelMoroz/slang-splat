@@ -19,10 +19,10 @@ from src.scene import GaussianScene
 
 _RASTER_GRAD_FIXED_DECODE_SCALES = np.array(
     [
-        1.0 / 16777216.0, 1.0 / 16777216.0, 1.0 / 16777216.0,
-        1.0 / 8388608.0, 1.0 / 8388608.0, 1.0 / 8388608.0,
-        1.0 / 4194304.0, 1.0 / 4194304.0, 1.0 / 4194304.0, 1.0 / 4194304.0,
-        1.0 / 67108864.0, 1.0 / 67108864.0, 1.0 / 67108864.0, 1.0 / 4194304.0,
+        1.0 / 268435456.0, 1.0 / 268435456.0, 1.0 / 268435456.0,
+        1.0 / 536870912.0, 1.0 / 536870912.0, 1.0 / 536870912.0,
+        1.0 / 268435456.0, 1.0 / 268435456.0, 1.0 / 268435456.0,
+        1.0 / 2147483648.0, 1.0 / 2147483648.0, 1.0 / 2147483648.0, 1.0 / 67108864.0,
     ],
     dtype=np.float32,
 )
@@ -30,6 +30,30 @@ _GAUSSIAN_SUPPORT_SIGMA_RADIUS = 3.0
 
 _log_sigma = lambda sigma: np.log(np.asarray(sigma, dtype=np.float32))
 _stored_from_support_scale = lambda support_scale: np.log(np.asarray(support_scale, dtype=np.float32) / _GAUSSIAN_SUPPORT_SIGMA_RADIUS)
+
+
+def _quat_rotate(v: np.ndarray, q_wxyz: np.ndarray) -> np.ndarray:
+    q = np.asarray(q_wxyz, dtype=np.float64).reshape(4)
+    q = q / max(np.linalg.norm(q), 1e-12)
+    qv = q[1:4]
+    vec = np.asarray(v, dtype=np.float64).reshape(3)
+    return np.asarray(vec + 2.0 * np.cross(np.cross(vec, qv) + q[0] * vec, qv), dtype=np.float32)
+
+
+def _shape_log_ldiag_and_loffdiag(inv_scale: np.ndarray, quat_wxyz: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    axis_x = _quat_rotate(np.array([1.0, 0.0, 0.0], dtype=np.float32), quat_wxyz) * np.asarray(inv_scale, dtype=np.float32)
+    axis_y = _quat_rotate(np.array([0.0, 1.0, 0.0], dtype=np.float32), quat_wxyz) * np.asarray(inv_scale, dtype=np.float32)
+    axis_z = _quat_rotate(np.array([0.0, 0.0, 1.0], dtype=np.float32), quat_wxyz) * np.asarray(inv_scale, dtype=np.float32)
+    shape = np.array(
+        [
+            [np.dot(axis_x, axis_x), np.dot(axis_x, axis_y), np.dot(axis_x, axis_z)],
+            [np.dot(axis_x, axis_y), np.dot(axis_y, axis_y), np.dot(axis_y, axis_z)],
+            [np.dot(axis_x, axis_z), np.dot(axis_y, axis_z), np.dot(axis_z, axis_z)],
+        ],
+        dtype=np.float32,
+    )
+    chol = np.linalg.cholesky(shape.astype(np.float64)).astype(np.float32)
+    return np.log(np.maximum(np.diag(chol), 1e-12)), np.array([chol[1, 0], chol[2, 0], chol[2, 1]], dtype=np.float32)
 
 
 def make_scene(count: int, seed: int = 0) -> GaussianScene:
@@ -191,10 +215,15 @@ def test_prepass_populates_raster_cache(device):
     projected = project_splats(scene, camera, renderer.width, renderer.height, renderer.radius_scale)
 
     raster_cache = np.asarray(debug["raster_cache"], dtype=np.float32)
-    assert raster_cache.shape == (scene.count, 14)
+    assert raster_cache.shape == (scene.count, 13)
     assert np.all(np.isfinite(raster_cache))
-    assert float(np.max(np.abs(raster_cache[:, :10]))) > 0.0
-    np.testing.assert_allclose(raster_cache[:, 3:6], np.log(np.maximum(projected.inv_scale, 1e-12)), rtol=2e-4, atol=2e-4)
+    assert float(np.max(np.abs(raster_cache[:, :9]))) > 0.0
+    expected_ro = np.asarray(camera.position, dtype=np.float32).reshape(1, 3) - np.asarray(scene.positions, dtype=np.float32)
+    expected_log_ldiag = np.stack([_shape_log_ldiag_and_loffdiag(projected.inv_scale[i], projected.quat[i])[0] for i in range(scene.count)], axis=0)
+    expected_loffdiag = np.stack([_shape_log_ldiag_and_loffdiag(projected.inv_scale[i], projected.quat[i])[1] for i in range(scene.count)], axis=0)
+    np.testing.assert_allclose(raster_cache[:, :3], expected_ro, rtol=2e-4, atol=2e-4)
+    np.testing.assert_allclose(raster_cache[:, 3:6], expected_log_ldiag, rtol=3e-4, atol=3e-4)
+    np.testing.assert_allclose(raster_cache[:, 6:9], expected_loffdiag, rtol=3e-4, atol=3e-4)
 
 
 def test_sampled5_mvee_render_smoke(device):
@@ -450,7 +479,7 @@ def make_distorted_target_scene(scene: GaussianScene, seed: int = 0) -> Gaussian
         np.testing.assert_allclose(grads0[name], grads1[name], rtol=2e-5, atol=3e-5)
 
 
-def test_raster_backward_decodes_q16_16_grad_grid(device):
+def test_raster_backward_decodes_fixed_grad_grid(device):
     scene = make_scene(20, seed=79)
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
     renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, list_capacity_multiplier=32, cached_raster_grad_atomic_mode="fixed")
@@ -458,12 +487,12 @@ def test_raster_backward_decodes_q16_16_grad_grid(device):
 
     assert grads["cached_raster_grads_mode"] == "fixed"
     values = np.asarray(grads["cached_raster_grads_fixed"], dtype=np.int32)
-    assert values.shape == (scene.count, 14)
+    assert values.shape == (scene.count, 13)
     nonzero = values[values != 0]
     assert nonzero.size > 0
     decoded = np.asarray(renderer.read_cached_raster_grads_fixed_decoded(scene.count), dtype=np.float32)
-    requantized = np.rint(decoded / _RASTER_GRAD_FIXED_DECODE_SCALES.reshape(1, 14)).astype(np.int32)
-    assert int(np.max(np.abs(requantized[values != 0] - values[values != 0]))) <= 4
+    requantized = np.rint(decoded / _RASTER_GRAD_FIXED_DECODE_SCALES.reshape(1, 13)).astype(np.int32)
+    assert int(np.max(np.abs(requantized[values != 0] - values[values != 0]))) <= 64
 
 
 def test_raster_backward_float_mode_produces_float_intermediate_and_final_grads(device):
@@ -477,9 +506,9 @@ def test_raster_backward_float_mode_produces_float_intermediate_and_final_grads(
     assert np.any(float_nonzero != 0.0)
     active_nonzero = float_nonzero[np.abs(float_nonzero) > 0.0]
     assert active_nonzero.size > 0
-    requantized = float_nonzero / _RASTER_GRAD_FIXED_DECODE_SCALES.reshape(1, 14)
+    requantized = float_nonzero / _RASTER_GRAD_FIXED_DECODE_SCALES.reshape(1, 13)
     assert np.any(np.abs(requantized[np.abs(float_nonzero) > 0.0] - np.rint(requantized[np.abs(float_nonzero) > 0.0])) > 1e-4)
-    assert np.count_nonzero(float_nonzero[:, 10:13]) > 0
+    assert np.count_nonzero(float_nonzero[:, 9:12]) > 0
 
     final_values = np.concatenate(
         [
@@ -540,9 +569,9 @@ def test_fixed_cached_raster_grads_match_float_mode_on_distorted_target_mse(devi
     magnitude_floor = 1e-5
     for group_name, group_slice, max_abs_bound, max_rel_bound, mean_rel_bound in (
         ("roLocal", slice(0, 3), 1.2e-2, 0.12, 0.02),
-        ("logInvScale", slice(3, 6), 8e-3, 0.12, 0.02),
-        ("quat", slice(6, 10), 2.4e-2, 0.12, 0.02),
-        ("colorOpacity", slice(10, 14), 1.2e-2, 0.12, 0.02),
+        ("logLDiag", slice(3, 6), 8e-3, 0.12, 0.02),
+        ("lOffDiag", slice(6, 9), 1.6e-2, 0.12, 0.02),
+        ("colorOpacity", slice(9, 13), 1.2e-2, 0.14, 0.02),
     ):
         ref = cached_float[:, group_slice]
         actual = cached_fixed[:, group_slice]

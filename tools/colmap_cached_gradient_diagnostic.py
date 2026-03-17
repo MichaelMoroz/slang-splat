@@ -203,10 +203,10 @@ class ColmapCachedGradientDiagnostic:
     def _group_stats(self, rows: list[ComponentStats]) -> list[GroupStats]:
         groups = (
             ("roLocal", slice(0, 3)),
-            ("logInvScale", slice(3, 6)),
-            ("quat", slice(6, 10)),
-            ("color", slice(10, 13)),
-            ("opacity", slice(13, 14)),
+            ("logLDiag", slice(3, 6)),
+            ("lOffDiag", slice(6, 9)),
+            ("color", slice(9, 12)),
+            ("opacity", slice(12, 13)),
         )
         grouped: list[GroupStats] = []
         for label, group_slice in groups:

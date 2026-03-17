@@ -30,31 +30,31 @@ static const float RASTER_GRAD_FIXED_SCALE = float(1u << RASTER_GRAD_FIXED_FRAC_
 static const float RASTER_GRAD_FIXED_INV_SCALE = 1.0 / RASTER_GRAD_FIXED_SCALE;
 static const float RASTER_GRAD_FIXED_INT_MIN_F = -2147483648.0;
 static const float RASTER_GRAD_FIXED_INT_MAX_F = 2147483647.0;
-static const float RASTER_GRAD_FIXED_SCALE_RO_LOCAL = 16777216.0;
+static const float RASTER_GRAD_FIXED_SCALE_RO_LOCAL = 268435456.0;
 static const float RASTER_GRAD_FIXED_INV_SCALE_RO_LOCAL = 1.0 / RASTER_GRAD_FIXED_SCALE_RO_LOCAL;
-static const float RASTER_GRAD_FIXED_SCALE_LOG_INV_SCALE = 8388608.0;
-static const float RASTER_GRAD_FIXED_INV_SCALE_LOG_INV_SCALE = 1.0 / RASTER_GRAD_FIXED_SCALE_LOG_INV_SCALE;
-static const float RASTER_GRAD_FIXED_SCALE_QUAT = 4194304.0;
-static const float RASTER_GRAD_FIXED_INV_SCALE_QUAT = 1.0 / RASTER_GRAD_FIXED_SCALE_QUAT;
-static const float RASTER_GRAD_FIXED_SCALE_COLOR = 67108864.0;
+static const float RASTER_GRAD_FIXED_SCALE_LOG_L_DIAG = 536870912.0;
+static const float RASTER_GRAD_FIXED_INV_SCALE_LOG_L_DIAG = 1.0 / RASTER_GRAD_FIXED_SCALE_LOG_L_DIAG;
+static const float RASTER_GRAD_FIXED_SCALE_L_OFFDIAG = 268435456.0;
+static const float RASTER_GRAD_FIXED_INV_SCALE_L_OFFDIAG = 1.0 / RASTER_GRAD_FIXED_SCALE_L_OFFDIAG;
+static const float RASTER_GRAD_FIXED_SCALE_COLOR = 2147483648.0;
 static const float RASTER_GRAD_FIXED_INV_SCALE_COLOR = 1.0 / RASTER_GRAD_FIXED_SCALE_COLOR;
-static const float RASTER_GRAD_FIXED_SCALE_OPACITY = 4194304.0;
+static const float RASTER_GRAD_FIXED_SCALE_OPACITY = 67108864.0;
 static const float RASTER_GRAD_FIXED_INV_SCALE_OPACITY = 1.0 / RASTER_GRAD_FIXED_SCALE_OPACITY;
 
 float raster_grad_fixed_encode_scale(uint fieldId)
 {
-    if (fieldId < RASTER_CACHE_INV_SCALE_X) return RASTER_GRAD_FIXED_SCALE_RO_LOCAL;
-    if (fieldId < RASTER_CACHE_QUAT_X) return RASTER_GRAD_FIXED_SCALE_LOG_INV_SCALE;
-    if (fieldId < RASTER_CACHE_COLOR_R) return RASTER_GRAD_FIXED_SCALE_QUAT;
+    if (fieldId < RASTER_CACHE_LOG_L_DIAG_X) return RASTER_GRAD_FIXED_SCALE_RO_LOCAL;
+    if (fieldId < RASTER_CACHE_L_OFFDIAG_YX) return RASTER_GRAD_FIXED_SCALE_LOG_L_DIAG;
+    if (fieldId < RASTER_CACHE_COLOR_R) return RASTER_GRAD_FIXED_SCALE_L_OFFDIAG;
     if (fieldId < RASTER_CACHE_FUSED_OPACITY) return RASTER_GRAD_FIXED_SCALE_COLOR;
     return RASTER_GRAD_FIXED_SCALE_OPACITY;
 }
 
 float raster_grad_fixed_decode_scale(uint fieldId)
 {
-    if (fieldId < RASTER_CACHE_INV_SCALE_X) return RASTER_GRAD_FIXED_INV_SCALE_RO_LOCAL;
-    if (fieldId < RASTER_CACHE_QUAT_X) return RASTER_GRAD_FIXED_INV_SCALE_LOG_INV_SCALE;
-    if (fieldId < RASTER_CACHE_COLOR_R) return RASTER_GRAD_FIXED_INV_SCALE_QUAT;
+    if (fieldId < RASTER_CACHE_LOG_L_DIAG_X) return RASTER_GRAD_FIXED_INV_SCALE_RO_LOCAL;
+    if (fieldId < RASTER_CACHE_L_OFFDIAG_YX) return RASTER_GRAD_FIXED_INV_SCALE_LOG_L_DIAG;
+    if (fieldId < RASTER_CACHE_COLOR_R) return RASTER_GRAD_FIXED_INV_SCALE_L_OFFDIAG;
     if (fieldId < RASTER_CACHE_FUSED_OPACITY) return RASTER_GRAD_FIXED_INV_SCALE_COLOR;
     return RASTER_GRAD_FIXED_INV_SCALE_OPACITY;
 }
@@ -95,8 +95,8 @@ void store_param_grad<let N : int>(uint splatCount, uint firstParamId, uint spla
 struct RasterGaussian : IDifferentiable
 {
     float3 roLocal;
-    float3 logInvScale;
-    float4 quat;
+    float3 logLDiag;
+    float3 lOffDiag;
     float4 colorAlpha;
 
     static RasterGaussian load_global(uint splatId)
@@ -108,16 +108,15 @@ struct RasterGaussian : IDifferentiable
             g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_Y, splatId)],
             g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_Z, splatId)]
         );
-        gaussian.logInvScale = float3(
-            g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_INV_SCALE_X, splatId)],
-            g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_INV_SCALE_Y, splatId)],
-            g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_INV_SCALE_Z, splatId)]
+        gaussian.logLDiag = float3(
+            g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_LOG_L_DIAG_X, splatId)],
+            g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_LOG_L_DIAG_Y, splatId)],
+            g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_LOG_L_DIAG_Z, splatId)]
         );
-        gaussian.quat = float4(
-            g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_QUAT_X, splatId)],
-            g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_QUAT_Y, splatId)],
-            g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_QUAT_Z, splatId)],
-            g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_QUAT_W, splatId)]
+        gaussian.lOffDiag = float3(
+            g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_L_OFFDIAG_YX, splatId)],
+            g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_L_OFFDIAG_ZX, splatId)],
+            g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_L_OFFDIAG_ZY, splatId)]
         );
         gaussian.colorAlpha = float4(
             g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_COLOR_R, splatId)],
@@ -132,8 +131,8 @@ struct RasterGaussian : IDifferentiable
     {
         RasterGaussian gaussian;
         gaussian.roLocal = gsRoLocal[localIdx];
-        gaussian.logInvScale = float3(gsInvScale[localIdx]);
-        gaussian.quat = float4(gsQuat[localIdx]);
+        gaussian.logLDiag = gsLogDiag[localIdx];
+        gaussian.lOffDiag = gsNormOffDiag[localIdx];
         gaussian.colorAlpha = float4(gsColorAlpha[localIdx]);
         return gaussian;
     }
@@ -142,8 +141,8 @@ struct RasterGaussian : IDifferentiable
     void store_shared(uint localIdx)
     {
         gsRoLocal[localIdx] = roLocal;
-        gsInvScale[localIdx] = half3(logInvScale);
-        gsQuat[localIdx] = half4(quat);
+        gsLogDiag[localIdx] = logLDiag;
+        gsNormOffDiag[localIdx] = lOffDiag;
         gsColorAlpha[localIdx] = half4(colorAlpha);
     }
 
@@ -152,8 +151,8 @@ struct RasterGaussian : IDifferentiable
         uint splatId = gsBatchSplatId[localIdx];
         uint splatCount = g_Prepass.splatCount;
         atomic_add_raster_cache_grad_fixed<3>(splatCount, RASTER_CACHE_RO_LOCAL_X, splatId, dOut.roLocal);
-        atomic_add_raster_cache_grad_fixed<3>(splatCount, RASTER_CACHE_INV_SCALE_X, splatId, dOut.logInvScale);
-        atomic_add_raster_cache_grad_fixed<4>(splatCount, RASTER_CACHE_QUAT_X, splatId, dOut.quat);
+        atomic_add_raster_cache_grad_fixed<3>(splatCount, RASTER_CACHE_LOG_L_DIAG_X, splatId, dOut.logLDiag);
+        atomic_add_raster_cache_grad_fixed<3>(splatCount, RASTER_CACHE_L_OFFDIAG_YX, splatId, dOut.lOffDiag);
         atomic_add_raster_cache_grad_fixed<4>(splatCount, RASTER_CACHE_COLOR_R, splatId, dOut.colorAlpha);
     }
 };
@@ -167,16 +166,15 @@ RasterGaussian.Differential load_cached_raster_grad(uint splatId)
         raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_Y, splatId)], RASTER_CACHE_RO_LOCAL_Y),
         raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_Z, splatId)], RASTER_CACHE_RO_LOCAL_Z)
     );
-    grad.logInvScale = float3(
-        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_INV_SCALE_X, splatId)], RASTER_CACHE_INV_SCALE_X),
-        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_INV_SCALE_Y, splatId)], RASTER_CACHE_INV_SCALE_Y),
-        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_INV_SCALE_Z, splatId)], RASTER_CACHE_INV_SCALE_Z)
+    grad.logLDiag = float3(
+        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_LOG_L_DIAG_X, splatId)], RASTER_CACHE_LOG_L_DIAG_X),
+        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_LOG_L_DIAG_Y, splatId)], RASTER_CACHE_LOG_L_DIAG_Y),
+        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_LOG_L_DIAG_Z, splatId)], RASTER_CACHE_LOG_L_DIAG_Z)
     );
-    grad.quat = float4(
-        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_QUAT_X, splatId)], RASTER_CACHE_QUAT_X),
-        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_QUAT_Y, splatId)], RASTER_CACHE_QUAT_Y),
-        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_QUAT_Z, splatId)], RASTER_CACHE_QUAT_Z),
-        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_QUAT_W, splatId)], RASTER_CACHE_QUAT_W)
+    grad.lOffDiag = float3(
+        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_L_OFFDIAG_YX, splatId)], RASTER_CACHE_L_OFFDIAG_YX),
+        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_L_OFFDIAG_ZX, splatId)], RASTER_CACHE_L_OFFDIAG_ZX),
+        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_L_OFFDIAG_ZY, splatId)], RASTER_CACHE_L_OFFDIAG_ZY)
     );
     grad.colorAlpha = float4(
         raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_COLOR_R, splatId)], RASTER_CACHE_COLOR_R),
@@ -206,7 +204,7 @@ float raster_eval_alpha_gaussian(RasterGaussian gaussian, no_diff uint splatId, 
         float alpha = gaussian.colorAlpha.w * coverage;
         return alpha >= g_Raster.alphaCutoff ? alpha : 0.0;
     }
-    float alpha = raster_eval_alpha(gaussian.roLocal, gaussian.quat, gaussian.logInvScale, gaussian.colorAlpha.w, rayDir, 0.0);
+    float alpha = raster_eval_alpha(gaussian.roLocal, gaussian.logLDiag, gaussian.lOffDiag, gaussian.colorAlpha.w, rayDir, 0.0);
     return alpha >= g_Raster.alphaCutoff ? alpha : 0.0;
 }
 
@@ -506,8 +504,8 @@ void csBackpropCachedRasterGrads(uint3 dispatchThreadID : SV_DispatchThreadID)
     RasterGaussian.Differential dRaster = load_cached_raster_grad(splatId);
     CachedEllipsoid.Differential dCached;
     dCached.roLocal = dRaster.roLocal;
-    dCached.logInvScale = dRaster.logInvScale;
-    dCached.quat = dRaster.quat;
+    dCached.logLDiag = dRaster.logLDiag;
+    dCached.lOffDiag = dRaster.lOffDiag;
 
     Gaussian3D gaussian = load_gaussian3d(splatId);
     var dpCachedPosition = diffPair(gaussian.position);

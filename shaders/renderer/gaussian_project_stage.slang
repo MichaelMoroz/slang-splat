@@ -20,13 +20,12 @@ void store_raster_cache(uint splatId, CachedEllipsoid cached, float4 colorAlpha)
     g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_X, splatId)] = cached.roLocal.x;
     g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_Y, splatId)] = cached.roLocal.y;
     g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_Z, splatId)] = cached.roLocal.z;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_INV_SCALE_X, splatId)] = cached.logInvScale.x;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_INV_SCALE_Y, splatId)] = cached.logInvScale.y;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_INV_SCALE_Z, splatId)] = cached.logInvScale.z;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_QUAT_X, splatId)] = cached.quat.x;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_QUAT_Y, splatId)] = cached.quat.y;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_QUAT_Z, splatId)] = cached.quat.z;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_QUAT_W, splatId)] = cached.quat.w;
+    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_LOG_L_DIAG_X, splatId)] = cached.logLDiag.x;
+    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_LOG_L_DIAG_Y, splatId)] = cached.logLDiag.y;
+    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_LOG_L_DIAG_Z, splatId)] = cached.logLDiag.z;
+    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_L_OFFDIAG_YX, splatId)] = cached.lOffDiag.x;
+    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_L_OFFDIAG_ZX, splatId)] = cached.lOffDiag.y;
+    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_L_OFFDIAG_ZY, splatId)] = cached.lOffDiag.z;
     g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_COLOR_R, splatId)] = colorAlpha.x;
     g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_COLOR_G, splatId)] = colorAlpha.y;
     g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_COLOR_B, splatId)] = colorAlpha.z;
@@ -118,7 +117,7 @@ void csProjectAndBin(uint3 dispatchThreadID : SV_DispatchThreadID)
     PinholeCamera camera = PinholeCamera.from_params(g_Camera);
     Gaussian3D gaussian = load_gaussian3d(splatId);
     Ellipsoid ellipsoid = build_ellipsoid(g_Camera, g_Prepass.radiusScale, gaussian);
-    CachedEllipsoid cached = { ellipsoid.rasterRoLocal, log(max(ellipsoid.rasterInvScale, float3(SMALL_VALUE))), ellipsoid.rotation };
+    CachedEllipsoid cached = build_cached_ellipsoid(g_Camera, g_Prepass.radiusScale, gaussian.position, gaussian.logScale, gaussian.rotation);
     float4 rasterColorAlpha = float4(
         gaussian.colorAlpha.xyz,
         build_raster_fused_opacity(g_Camera, g_Prepass.radiusScale, gaussian.position, gaussian.logScale, gaussian.colorAlpha.w)

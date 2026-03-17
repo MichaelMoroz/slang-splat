@@ -283,8 +283,8 @@ def test_advance_colmap_import_processes_images_incrementally(tmp_path: Path, mo
 
 def test_refresh_cached_raster_grad_histograms_caches_by_signature() -> None:
     calls: list[tuple[int, int, float, float]] = []
-    hist = SimpleNamespace(counts=np.ones((14, 8), dtype=np.int64), param_labels=("p",) * 14)
-    ranges = SimpleNamespace(min_values=np.full((14,), -1.0, dtype=np.float32), max_values=np.full((14,), 2.0, dtype=np.float32), param_labels=("p",) * 14)
+    hist = SimpleNamespace(counts=np.ones((13, 8), dtype=np.int64), param_labels=("p",) * 13)
+    ranges = SimpleNamespace(min_values=np.full((13,), -1.0, dtype=np.float32), max_values=np.full((13,), 2.0, dtype=np.float32), param_labels=("p",) * 13)
     renderer = SimpleNamespace(
         cached_raster_grad_atomic_mode="float",
         compute_cached_raster_grad_component_histograms=lambda metrics, scene_count, *, bin_count, min_log10, max_log10: calls.append((scene_count, bin_count, min_log10, max_log10)) or hist,
@@ -318,8 +318,8 @@ def test_refresh_cached_raster_grad_histograms_honors_manual_refresh() -> None:
     calls: list[int] = []
     renderer = SimpleNamespace(
         cached_raster_grad_atomic_mode="fixed",
-        compute_cached_raster_grad_component_histograms=lambda metrics, scene_count, *, bin_count, min_log10, max_log10: calls.append(scene_count) or SimpleNamespace(counts=np.zeros((14, bin_count), dtype=np.int64), param_labels=()),
-        compute_cached_raster_grad_component_ranges=lambda metrics, scene_count: SimpleNamespace(min_values=np.zeros((14,), dtype=np.float32), max_values=np.zeros((14,), dtype=np.float32), param_labels=()),
+        compute_cached_raster_grad_component_histograms=lambda metrics, scene_count, *, bin_count, min_log10, max_log10: calls.append(scene_count) or SimpleNamespace(counts=np.zeros((13, bin_count), dtype=np.int64), param_labels=()),
+        compute_cached_raster_grad_component_ranges=lambda metrics, scene_count: SimpleNamespace(min_values=np.zeros((13,), dtype=np.float32), max_values=np.zeros((13,), dtype=np.float32), param_labels=()),
     )
     viewer = SimpleNamespace(
         ui=SimpleNamespace(_values={"hist_bin_count": 4, "hist_min_log10": -8.0, "hist_max_log10": 2.0, "hist_auto_refresh": False, "_histograms_refresh_requested": True}),

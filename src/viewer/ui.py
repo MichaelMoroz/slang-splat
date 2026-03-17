@@ -57,10 +57,10 @@ _HISTOGRAM_MAX_LOG10_DEFAULT = 2.0
 _HISTOGRAM_Y_LIMIT_DEFAULT = 1.0
 _HISTOGRAM_GROUPS = (
     ("roLocal", (0, 1, 2)),
-    ("logInvScale", (3, 4, 5)),
-    ("quat", (6, 7, 8, 9)),
-    ("color", (10, 11, 12)),
-    ("opacity", (13,)),
+    ("logLDiag", (3, 4, 5)),
+    ("lOffDiag", (6, 7, 8)),
+    ("color", (9, 10, 11)),
+    ("opacity", (12,)),
 )
 _CACHED_RASTER_GRAD_ATOMIC_MODE_LABELS = ("Float Atomics", "Fixed Point")
 
