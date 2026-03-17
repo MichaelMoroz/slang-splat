@@ -88,21 +88,6 @@ float raster_grad_fixed_shape_alpha(float3 roLocal, float3 logLDiag)
     return alpha * pow(max(length(roLocal), SMALL_VALUE), g_CachedRasterGradFixedLDistanceNormPower);
 }
 
-float3 raster_grad_fixed_l_refs(float3 roLocal, float3 logLDiag)
-{
-    return float3(raster_grad_fixed_shape_alpha(roLocal, logLDiag) * g_CachedRasterGradFixedLRefScale);
-}
-
-float3 raster_grad_fixed_ro_local_refs(float3 roLocal, float3 logLDiag)
-{
-    return float3(raster_grad_fixed_shape_alpha(roLocal, logLDiag) * g_CachedRasterGradFixedROLocalRefScale);
-}
-
-float3 raster_grad_fixed_loffdiag_refs(float3 roLocal, float3 logLDiag)
-{
-    return raster_grad_fixed_l_refs(roLocal, logLDiag) * g_CachedRasterGradFixedLOffdiagRefScale;
-}
-
 void atomic_add_raster_cache_grad_fixed<let N : int>(uint splatCount, uint firstFieldId, uint splatId, vector<float, N> grad, vector<float, N> refs)
 {
     [unroll] for (int i = 0; i < N; i++)
@@ -194,9 +179,10 @@ struct RasterGaussian : IDifferentiable
         uint splatId = gsBatchSplatId[localIdx];
         uint splatCount = g_Prepass.splatCount;
         RasterGaussian gaussian = load_shared(localIdx);
-        float3 roLocalRefs = raster_grad_fixed_ro_local_refs(gaussian.roLocal, gaussian.logLDiag);
-        float3 logLDiagRefs = raster_grad_fixed_l_refs(gaussian.roLocal, gaussian.logLDiag);
-        float3 lOffDiagRefs = raster_grad_fixed_loffdiag_refs(gaussian.roLocal, gaussian.logLDiag);
+        float shapeAlpha = raster_grad_fixed_shape_alpha(gaussian.roLocal, gaussian.logLDiag);
+        float3 roLocalRefs = float3(shapeAlpha * g_CachedRasterGradFixedROLocalRefScale);
+        float3 logLDiagRefs = float3(shapeAlpha * g_CachedRasterGradFixedLRefScale);
+        float3 lOffDiagRefs = logLDiagRefs * g_CachedRasterGradFixedLOffdiagRefScale;
         atomic_add_raster_cache_grad_fixed<3>(splatCount, RASTER_CACHE_RO_LOCAL_X, splatId, dOut.roLocal, roLocalRefs);
         atomic_add_raster_cache_grad_fixed<3>(splatCount, RASTER_CACHE_LOG_L_DIAG_X, splatId, dOut.logLDiag, logLDiagRefs);
         atomic_add_raster_cache_grad_fixed<3>(splatCount, RASTER_CACHE_L_OFFDIAG_YX, splatId, dOut.lOffDiag, lOffDiagRefs);
@@ -227,9 +213,10 @@ RasterGaussian.Differential load_cached_raster_grad_fixed(uint splatId)
         g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_Y, splatId)],
         g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_Z, splatId)]
     );
-    float3 roLocalRefs = raster_grad_fixed_ro_local_refs(cachedRoLocal, cachedLogLDiag);
-    float3 logLDiagRefs = raster_grad_fixed_l_refs(cachedRoLocal, cachedLogLDiag);
-    float3 lOffDiagRefs = raster_grad_fixed_loffdiag_refs(cachedRoLocal, cachedLogLDiag);
+    float shapeAlpha = raster_grad_fixed_shape_alpha(cachedRoLocal, cachedLogLDiag);
+    float3 roLocalRefs = float3(shapeAlpha * g_CachedRasterGradFixedROLocalRefScale);
+    float3 logLDiagRefs = float3(shapeAlpha * g_CachedRasterGradFixedLRefScale);
+    float3 lOffDiagRefs = logLDiagRefs * g_CachedRasterGradFixedLOffdiagRefScale;
     RasterGaussian.Differential grad;
     grad.roLocal = float3(
         raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_X, splatId)], RASTER_CACHE_RO_LOCAL_X, roLocalRefs.x),
