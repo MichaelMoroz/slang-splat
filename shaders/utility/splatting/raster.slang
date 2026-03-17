@@ -10,7 +10,7 @@ static const float ENVELOPE_EXPONENT_SCALE = 0.5 * ENVELOPE_SIGMA_RADIUS * ENVEL
 struct CachedEllipsoid : IDifferentiable
 {
     float3 roLocal;
-    float3 invScale;
+    float3 logInvScale;
     float4 quat;
 };
 
@@ -23,7 +23,7 @@ CachedEllipsoid build_cached_ellipsoid(no_diff CameraParams cameraParams, no_dif
     gaussian.rotation = rotation;
     gaussian.colorAlpha = 0.0;
     Ellipsoid ellipsoid = build_ellipsoid(cameraParams, radiusScale, gaussian);
-    return { ellipsoid.rasterRoLocal, ellipsoid.rasterInvScale, ellipsoid.rotation };
+    return { ellipsoid.rasterRoLocal, log(max(ellipsoid.rasterInvScale, float3(SMALL_VALUE))), ellipsoid.rotation };
 }
 
 [Differentiable]
@@ -40,8 +40,9 @@ float envelope(float rho)
 }
 
 [Differentiable]
-float raster_eval_alpha(float3 roLocal, float4 quat, float3 invScale, float fusedOpacity, no_diff float3 rayDir, no_diff float alphaCutoff)
+float raster_eval_alpha(float3 roLocal, float4 quat, float3 logInvScale, float fusedOpacity, no_diff float3 rayDir, no_diff float alphaCutoff)
 {
+    float3 invScale = exp(logInvScale);
     float3 rdLocal = rotate_by_quat(rayDir, quat) * invScale;
     float denom = dot(rdLocal, rdLocal);
     if (denom <= RAY_DENOMINATOR_FLOOR) return 0.0;

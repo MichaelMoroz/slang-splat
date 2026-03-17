@@ -57,7 +57,7 @@ _HISTOGRAM_MAX_LOG10_DEFAULT = 2.0
 _HISTOGRAM_Y_LIMIT_DEFAULT = 1.0
 _HISTOGRAM_GROUPS = (
     ("roLocal", (0, 1, 2)),
-    ("invScale", (3, 4, 5)),
+    ("logInvScale", (3, 4, 5)),
     ("quat", (6, 7, 8, 9)),
     ("color", (10, 11, 12)),
     ("opacity", (13,)),

@@ -20,9 +20,9 @@ void store_raster_cache(uint splatId, CachedEllipsoid cached, float4 colorAlpha)
     g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_X, splatId)] = cached.roLocal.x;
     g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_Y, splatId)] = cached.roLocal.y;
     g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_Z, splatId)] = cached.roLocal.z;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_INV_SCALE_X, splatId)] = cached.invScale.x;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_INV_SCALE_Y, splatId)] = cached.invScale.y;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_INV_SCALE_Z, splatId)] = cached.invScale.z;
+    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_INV_SCALE_X, splatId)] = cached.logInvScale.x;
+    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_INV_SCALE_Y, splatId)] = cached.logInvScale.y;
+    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_INV_SCALE_Z, splatId)] = cached.logInvScale.z;
     g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_QUAT_X, splatId)] = cached.quat.x;
     g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_QUAT_Y, splatId)] = cached.quat.y;
     g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_QUAT_Z, splatId)] = cached.quat.z;
@@ -118,7 +118,7 @@ void csProjectAndBin(uint3 dispatchThreadID : SV_DispatchThreadID)
     PinholeCamera camera = PinholeCamera.from_params(g_Camera);
     Gaussian3D gaussian = load_gaussian3d(splatId);
     Ellipsoid ellipsoid = build_ellipsoid(g_Camera, g_Prepass.radiusScale, gaussian);
-    CachedEllipsoid cached = { ellipsoid.rasterRoLocal, ellipsoid.rasterInvScale, ellipsoid.rotation };
+    CachedEllipsoid cached = { ellipsoid.rasterRoLocal, log(max(ellipsoid.rasterInvScale, float3(SMALL_VALUE))), ellipsoid.rotation };
     float4 rasterColorAlpha = float4(
         gaussian.colorAlpha.xyz,
         build_raster_fused_opacity(g_Camera, g_Prepass.radiusScale, gaussian.position, gaussian.logScale, gaussian.colorAlpha.w)

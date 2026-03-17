@@ -105,7 +105,7 @@ class GaussianRenderer:
     TRAINABLE_PARAM_COUNT = 14
     CACHED_RASTER_GRAD_COMPONENT_LABELS = (
         "roLocal.x", "roLocal.y", "roLocal.z",
-        "invScale.x", "invScale.y", "invScale.z",
+        "logInvScale.x", "logInvScale.y", "logInvScale.z",
         "quat.x", "quat.y", "quat.z", "quat.w",
         "color.r", "color.g", "color.b", "opacity",
     )

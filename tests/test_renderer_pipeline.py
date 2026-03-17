@@ -180,11 +180,13 @@ def test_prepass_populates_raster_cache(device):
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
     renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, list_capacity_multiplier=32)
     debug = renderer.debug_pipeline_data(scene, camera)
+    projected = project_splats(scene, camera, renderer.width, renderer.height, renderer.radius_scale)
 
     raster_cache = np.asarray(debug["raster_cache"], dtype=np.float32)
     assert raster_cache.shape == (scene.count, 14)
     assert np.all(np.isfinite(raster_cache))
     assert float(np.max(np.abs(raster_cache[:, :10]))) > 0.0
+    np.testing.assert_allclose(raster_cache[:, 3:6], np.log(np.maximum(projected.inv_scale, 1e-12)), rtol=2e-4, atol=2e-4)
 
 
 def test_sampled5_mvee_render_smoke(device):
