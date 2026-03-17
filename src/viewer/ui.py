@@ -249,11 +249,11 @@ RENDER_PARAM_SPECS = (
     ControlSpec("trans_threshold", "slider_float", "Trans Threshold", {"value": 0.005, "min": 0.001, "max": 0.2, "format": "%.2e"}),
     ControlSpec("sampled5_safety", "slider_float", "MVEE Safety", {"value": 1.0, "min": 1.0, "max": 1.2}),
     ControlSpec("cached_raster_grad_atomic_mode", "combo", "Cached Grad Atomics", {"value": 1, "options": _CACHED_RASTER_GRAD_ATOMIC_MODE_LABELS}),
-    ControlSpec("cached_raster_grad_fixed_ro_local_range", "slider_float", "Cached Grad Pos Range", {"value": 10.0, "min": 0.25, "max": 1024.0, "format": "%.4g", "logarithmic": True}),
-    ControlSpec("cached_raster_grad_fixed_log_l_diag_range", "slider_float", "Cached Grad Scale Range", {"value": 10.0, "min": 0.25, "max": 1024.0, "format": "%.4g", "logarithmic": True}),
-    ControlSpec("cached_raster_grad_fixed_l_offdiag_range", "slider_float", "Cached Grad Rot Range", {"value": 10.0, "min": 0.25, "max": 1024.0, "format": "%.4g", "logarithmic": True}),
-    ControlSpec("cached_raster_grad_fixed_color_range", "slider_float", "Cached Grad Color Range", {"value": 200.0, "min": 0.25, "max": 2048.0, "format": "%.4g", "logarithmic": True}),
-    ControlSpec("cached_raster_grad_fixed_opacity_range", "slider_float", "Cached Grad Opacity Range", {"value": 200.0, "min": 0.25, "max": 2048.0, "format": "%.4g", "logarithmic": True}),
+    ControlSpec("cached_raster_grad_fixed_ro_local_range", "slider_float", "Cached Grad Pos Range", {"value": 0.01, "min": 1e-4, "max": 1024.0, "format": "%.4g", "logarithmic": True}),
+    ControlSpec("cached_raster_grad_fixed_log_l_diag_range", "slider_float", "Cached Grad Scale Range", {"value": 0.01, "min": 1e-4, "max": 1024.0, "format": "%.4g", "logarithmic": True}),
+    ControlSpec("cached_raster_grad_fixed_l_offdiag_range", "slider_float", "Cached Grad Rot Range", {"value": 0.01, "min": 1e-4, "max": 1024.0, "format": "%.4g", "logarithmic": True}),
+    ControlSpec("cached_raster_grad_fixed_color_range", "slider_float", "Cached Grad Color Range", {"value": 0.2, "min": 1e-4, "max": 2048.0, "format": "%.4g", "logarithmic": True}),
+    ControlSpec("cached_raster_grad_fixed_opacity_range", "slider_float", "Cached Grad Opacity Range", {"value": 0.2, "min": 1e-4, "max": 2048.0, "format": "%.4g", "logarithmic": True}),
     ControlSpec("debug_ellipse", "checkbox", "Debug Ellipse Outlines", {"value": False}),
     ControlSpec("debug_processed_count", "checkbox", "Debug Processed Count", {"value": False}),
     ControlSpec("debug_grad_norm", "checkbox", "Debug Grad Norm", {"value": False}),
@@ -1363,11 +1363,11 @@ def build_ui(renderer) -> ViewerUI:
     values["trans_threshold"] = float(renderer.transmittance_threshold)
     values["sampled5_safety"] = float(renderer.sampled5_safety_scale)
     values["cached_raster_grad_atomic_mode"] = 0 if getattr(renderer, "cached_raster_grad_atomic_mode", "fixed") == "float" else 1
-    values["cached_raster_grad_fixed_ro_local_range"] = float(getattr(renderer, "cached_raster_grad_fixed_ro_local_range", 10.0))
-    values["cached_raster_grad_fixed_log_l_diag_range"] = float(getattr(renderer, "cached_raster_grad_fixed_log_l_diag_range", 10.0))
-    values["cached_raster_grad_fixed_l_offdiag_range"] = float(getattr(renderer, "cached_raster_grad_fixed_l_offdiag_range", 10.0))
-    values["cached_raster_grad_fixed_color_range"] = float(getattr(renderer, "cached_raster_grad_fixed_color_range", 200.0))
-    values["cached_raster_grad_fixed_opacity_range"] = float(getattr(renderer, "cached_raster_grad_fixed_opacity_range", 200.0))
+    values["cached_raster_grad_fixed_ro_local_range"] = float(getattr(renderer, "cached_raster_grad_fixed_ro_local_range", 0.01))
+    values["cached_raster_grad_fixed_log_l_diag_range"] = float(getattr(renderer, "cached_raster_grad_fixed_log_l_diag_range", 0.01))
+    values["cached_raster_grad_fixed_l_offdiag_range"] = float(getattr(renderer, "cached_raster_grad_fixed_l_offdiag_range", 0.01))
+    values["cached_raster_grad_fixed_color_range"] = float(getattr(renderer, "cached_raster_grad_fixed_color_range", 0.2))
+    values["cached_raster_grad_fixed_opacity_range"] = float(getattr(renderer, "cached_raster_grad_fixed_opacity_range", 0.2))
     values["debug_ellipse"] = bool(renderer.debug_show_ellipses)
     values["debug_processed_count"] = bool(renderer.debug_show_processed_count)
     values["debug_grad_norm"] = bool(renderer.debug_show_grad_norm)

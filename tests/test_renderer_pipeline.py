@@ -85,16 +85,16 @@ def test_renderer_params_default_to_fixed_cached_grad_atomics():
 
     assert params.cached_raster_grad_atomic_mode == "fixed"
     assert kwargs["cached_raster_grad_atomic_mode"] == "fixed"
-    assert params.cached_raster_grad_fixed_ro_local_range == 10.0
-    assert kwargs["cached_raster_grad_fixed_ro_local_range"] == 10.0
-    assert params.cached_raster_grad_fixed_log_l_diag_range == 10.0
-    assert kwargs["cached_raster_grad_fixed_log_l_diag_range"] == 10.0
-    assert params.cached_raster_grad_fixed_l_offdiag_range == 10.0
-    assert kwargs["cached_raster_grad_fixed_l_offdiag_range"] == 10.0
-    assert params.cached_raster_grad_fixed_color_range == 200.0
-    assert kwargs["cached_raster_grad_fixed_color_range"] == 200.0
-    assert params.cached_raster_grad_fixed_opacity_range == 200.0
-    assert kwargs["cached_raster_grad_fixed_opacity_range"] == 200.0
+    assert params.cached_raster_grad_fixed_ro_local_range == 0.01
+    assert kwargs["cached_raster_grad_fixed_ro_local_range"] == 0.01
+    assert params.cached_raster_grad_fixed_log_l_diag_range == 0.01
+    assert kwargs["cached_raster_grad_fixed_log_l_diag_range"] == 0.01
+    assert params.cached_raster_grad_fixed_l_offdiag_range == 0.01
+    assert kwargs["cached_raster_grad_fixed_l_offdiag_range"] == 0.01
+    assert params.cached_raster_grad_fixed_color_range == 0.2
+    assert kwargs["cached_raster_grad_fixed_color_range"] == 0.2
+    assert params.cached_raster_grad_fixed_opacity_range == 0.2
+    assert kwargs["cached_raster_grad_fixed_opacity_range"] == 0.2
 
 
 def test_tile_keys_and_ranges_match_reference(device):

@@ -88,11 +88,11 @@ class GaussianRenderer:
     CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED = "fixed"
     CACHED_RASTER_GRAD_ATOMIC_MODES = (CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT, CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED)
     _RASTER_GRAD_FIXED_INT_MAX = np.float32(2147483647.0)
-    _DEFAULT_RASTER_GRAD_FIXED_RO_LOCAL_RANGE = np.float32(10.0)
-    _DEFAULT_RASTER_GRAD_FIXED_LOG_L_DIAG_RANGE = np.float32(10.0)
-    _DEFAULT_RASTER_GRAD_FIXED_L_OFFDIAG_RANGE = np.float32(10.0)
-    _DEFAULT_RASTER_GRAD_FIXED_COLOR_RANGE = np.float32(200.0)
-    _DEFAULT_RASTER_GRAD_FIXED_OPACITY_RANGE = np.float32(200.0)
+    _DEFAULT_RASTER_GRAD_FIXED_RO_LOCAL_RANGE = np.float32(0.01)
+    _DEFAULT_RASTER_GRAD_FIXED_LOG_L_DIAG_RANGE = np.float32(0.01)
+    _DEFAULT_RASTER_GRAD_FIXED_L_OFFDIAG_RANGE = np.float32(0.01)
+    _DEFAULT_RASTER_GRAD_FIXED_COLOR_RANGE = np.float32(0.2)
+    _DEFAULT_RASTER_GRAD_FIXED_OPACITY_RANGE = np.float32(0.2)
     _COUNTER_READBACK_RING_SIZE = 2
     _SCANLINE_WORK_ITEM_UINTS = 8
     _U32_BYTES = 4
@@ -336,11 +336,11 @@ class GaussianRenderer:
         debug_grad_norm_threshold: float = 2e-4,
         debug_ellipse_thickness_px: float = 2.0,
         cached_raster_grad_atomic_mode: str = CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED,
-        cached_raster_grad_fixed_ro_local_range: float = 10.0,
-        cached_raster_grad_fixed_log_l_diag_range: float = 10.0,
-        cached_raster_grad_fixed_l_offdiag_range: float = 10.0,
-        cached_raster_grad_fixed_color_range: float = 200.0,
-        cached_raster_grad_fixed_opacity_range: float = 200.0,
+        cached_raster_grad_fixed_ro_local_range: float = 0.01,
+        cached_raster_grad_fixed_log_l_diag_range: float = 0.01,
+        cached_raster_grad_fixed_l_offdiag_range: float = 0.01,
+        cached_raster_grad_fixed_color_range: float = 0.2,
+        cached_raster_grad_fixed_opacity_range: float = 0.2,
     ) -> None:
         self.device, self.width, self.height = device, int(width), int(height)
         self._types_shader_path = Path(SHADER_ROOT / "renderer" / "gaussian_types.slang")
