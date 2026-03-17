@@ -95,12 +95,12 @@ class GaussianRenderer:
     _MEBIBYTE_BYTES = 1024 * 1024
     _PREPASS_ENTRY_BYTES = (_SCANLINE_WORK_ITEM_UINTS + 2) * _U32_BYTES
     _RASTER_CACHE_PARAM_COUNT = 13
-    _RASTER_GRAD_FIXED_DECODE_SCALES = np.array(
+    _RASTER_GRAD_FIXED_BASE_DECODE_SCALES = np.array(
         [
-            1.0 / 268435456.0, 1.0 / 268435456.0, 1.0 / 268435456.0,
-            1.0 / 536870912.0, 1.0 / 536870912.0, 1.0 / 536870912.0,
-            1.0 / 268435456.0, 1.0 / 268435456.0, 1.0 / 268435456.0,
-            1.0 / 2147483648.0, 1.0 / 2147483648.0, 1.0 / 2147483648.0, 1.0 / 67108864.0,
+            1.0 / 16777216.0, 1.0 / 16777216.0, 1.0 / 16777216.0,
+            1.0 / 33554432.0, 1.0 / 33554432.0, 1.0 / 33554432.0,
+            1.0 / 16777216.0, 1.0 / 16777216.0, 1.0 / 16777216.0,
+            1.0 / 134217728.0, 1.0 / 134217728.0, 1.0 / 134217728.0, 1.0 / 4194304.0,
         ],
         dtype=np.float32,
     )
@@ -216,6 +216,9 @@ class GaussianRenderer:
     def _raster_grad_decode_scale_var(grad_scale: float) -> dict[str, object]:
         return {"g_RasterGradDecodeScale": float(grad_scale)}
 
+    def _raster_grad_fixed_scale_var(self) -> dict[str, object]:
+        return {"g_CachedRasterGradFixedScale": float(self.cached_raster_grad_fixed_scale)}
+
     def _debug_grad_norm_var(self) -> dict[str, object]:
         return {"g_DebugGradNorm": self._debug_grad_norm_buffer if self._debug_grad_norm_buffer is not None else self._work_buffers["debug_grad_norm"]}
 
@@ -329,6 +332,7 @@ class GaussianRenderer:
         debug_grad_norm_threshold: float = 2e-4,
         debug_ellipse_thickness_px: float = 2.0,
         cached_raster_grad_atomic_mode: str = CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT,
+        cached_raster_grad_fixed_scale: float = 0.125,
     ) -> None:
         self.device, self.width, self.height = device, int(width), int(height)
         self._types_shader_path = Path(SHADER_ROOT / "renderer" / "gaussian_types.slang")
@@ -369,9 +373,11 @@ class GaussianRenderer:
         self._fixed_raster_grad_shaders: _RasterGradShaderSet
         self._float_raster_grad_shaders: _RasterGradShaderSet | None = None
         self._cached_raster_grad_atomic_mode = self.CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED
+        self._cached_raster_grad_fixed_scale = 1.0
         self._zero_u32_buffer = self.device.create_buffer(size=self._U32_BYTES, usage=spy.BufferUsage.shader_resource | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination)
         self._zero_u32_buffer.copy_from_numpy(np.array([0], dtype=np.uint32))
         self.cached_raster_grad_atomic_mode = cached_raster_grad_atomic_mode
+        self.cached_raster_grad_fixed_scale = cached_raster_grad_fixed_scale
 
     @staticmethod
     def _eval_uint_constant_expr(expr: str, constants: dict[str, int]) -> int:
@@ -601,21 +607,21 @@ class GaussianRenderer:
 
     def _rasterize(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output: spy.Texture | None = None) -> None:
         target = self.output_texture if output is None else output
-        self._dispatch(self._k_raster, encoder, self._raster_thread_count(), {**self._scene_vars(), **self._screen_vars(), **self._raster_cache_vars(), **self._debug_grad_norm_var(), "g_SortedValues": self._work_buffers["values"], "g_TileRanges": self._work_buffers["tile_ranges"], "g_Output": target, **self._raster_grad_decode_scale_var(1.0), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._camera_uniforms(camera)}, "Rasterize", 24)
+        self._dispatch(self._k_raster, encoder, self._raster_thread_count(), {**self._scene_vars(), **self._screen_vars(), **self._raster_cache_vars(), **self._debug_grad_norm_var(), "g_SortedValues": self._work_buffers["values"], "g_TileRanges": self._work_buffers["tile_ranges"], "g_Output": target, **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_scale_var(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._camera_uniforms(camera)}, "Rasterize", 24)
 
     def _clear_raster_grads(self, encoder: spy.CommandEncoder, splat_count: int) -> None:
         clear_count = max(int(splat_count) * max(self.TRAINABLE_PARAM_COUNT, self._RASTER_CACHE_PARAM_COUNT), 1)
-        self._dispatch(self._raster_grad_shader_set().clear, encoder, spy.uint3(clear_count, 1, 1), {**self._raster_grad_vars(), **self._raster_grad_decode_scale_var(1.0), **self._prepass_uniforms(splat_count)}, "Clear Raster Grads", 25)
+        self._dispatch(self._raster_grad_shader_set().clear, encoder, spy.uint3(clear_count, 1, 1), {**self._raster_grad_vars(), **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_scale_var(), **self._prepass_uniforms(splat_count)}, "Clear Raster Grads", 25)
 
     def _rasterize_training_forward(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output: spy.Texture | None = None) -> None:
         target = self.output_texture if output is None else output
-        self._dispatch(self._raster_grad_shader_set().training_forward, encoder, self._raster_thread_count(), {**self._scene_vars(), **self._screen_vars(), **self._raster_cache_vars(), "g_SortedValues": self._work_buffers["values"], "g_TileRanges": self._work_buffers["tile_ranges"], "g_Output": target, "g_TrainingForwardState": self._work_buffers["training_forward_state"], "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"], **self._raster_grad_decode_scale_var(1.0), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._camera_uniforms(camera)}, "Rasterize Training Forward", 26)
+        self._dispatch(self._raster_grad_shader_set().training_forward, encoder, self._raster_thread_count(), {**self._scene_vars(), **self._screen_vars(), **self._raster_cache_vars(), "g_SortedValues": self._work_buffers["values"], "g_TileRanges": self._work_buffers["tile_ranges"], "g_Output": target, "g_TrainingForwardState": self._work_buffers["training_forward_state"], "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"], **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_scale_var(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._camera_uniforms(camera)}, "Rasterize Training Forward", 26)
 
     def _rasterize_backward(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output_grad: spy.Buffer) -> None:
-        self._dispatch(self._raster_grad_shader_set().backward, encoder, self._raster_thread_count(), {**self._scene_vars(), **self._raster_cache_vars(), "g_SortedValues": self._work_buffers["values"], "g_TileRanges": self._work_buffers["tile_ranges"], "g_OutputGrad": output_grad, "g_TrainingForwardState": self._work_buffers["training_forward_state"], "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"], **self._raster_grad_vars(), **self._raster_grad_decode_scale_var(1.0), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._camera_uniforms(camera)}, "Rasterize Backward", 27)
+        self._dispatch(self._raster_grad_shader_set().backward, encoder, self._raster_thread_count(), {**self._scene_vars(), **self._raster_cache_vars(), "g_SortedValues": self._work_buffers["values"], "g_TileRanges": self._work_buffers["tile_ranges"], "g_OutputGrad": output_grad, "g_TrainingForwardState": self._work_buffers["training_forward_state"], "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"], **self._raster_grad_vars(), **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_scale_var(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._camera_uniforms(camera)}, "Rasterize Backward", 27)
 
     def _backprop_cached_raster_grads(self, encoder: spy.CommandEncoder, splat_count: int, camera: Camera, grad_scale: float = 1.0) -> None:
-        self._dispatch(self._raster_grad_shader_set().backprop, encoder, spy.uint3(max(int(splat_count), 1), 1, 1), {**self._scene_vars(), **self._raster_cache_vars(), **self._raster_grad_vars(), **self._raster_grad_decode_scale_var(grad_scale), **self._prepass_uniforms(splat_count), **self._camera_uniforms(camera)}, "Backprop Cached Raster Grads", 28)
+        self._dispatch(self._raster_grad_shader_set().backprop, encoder, spy.uint3(max(int(splat_count), 1), 1, 1), {**self._scene_vars(), **self._raster_cache_vars(), **self._raster_grad_vars(), **self._raster_grad_decode_scale_var(grad_scale), **self._raster_grad_fixed_scale_var(), **self._prepass_uniforms(splat_count), **self._camera_uniforms(camera)}, "Backprop Cached Raster Grads", 28)
 
     def _execute_prepass(self, scene: GaussianScene, camera: Camera, sync_counts: bool = False) -> tuple[int, int]:
         enc = self.device.create_command_encoder()
@@ -721,7 +727,7 @@ class GaussianRenderer:
 
     def read_cached_raster_grads_fixed_decoded(self, splat_count: int | None = None) -> np.ndarray:
         values = np.asarray(self.read_cached_raster_grads_fixed(splat_count), dtype=np.float32)
-        return values * self._RASTER_GRAD_FIXED_DECODE_SCALES.reshape(1, self._RASTER_CACHE_PARAM_COUNT)
+        return values * self.cached_raster_grad_fixed_decode_scales.reshape(1, self._RASTER_CACHE_PARAM_COUNT)
 
     def read_cached_raster_grads_float(self, splat_count: int | None = None) -> np.ndarray:
         count = self._scene_count if splat_count is None else int(splat_count)
@@ -811,6 +817,25 @@ class GaussianRenderer:
         if resolved == self.CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT:
             self._ensure_float_raster_grad_shaders()
         self._cached_raster_grad_atomic_mode = resolved
+
+    @staticmethod
+    def _validate_cached_raster_grad_fixed_scale(scale: float) -> float:
+        resolved = float(scale)
+        if not np.isfinite(resolved) or resolved <= 0.0:
+            raise ValueError(f"cached_raster_grad_fixed_scale must be finite and > 0, got {scale}.")
+        return resolved
+
+    @property
+    def cached_raster_grad_fixed_scale(self) -> float:
+        return self._cached_raster_grad_fixed_scale
+
+    @cached_raster_grad_fixed_scale.setter
+    def cached_raster_grad_fixed_scale(self, scale: float) -> None:
+        self._cached_raster_grad_fixed_scale = self._validate_cached_raster_grad_fixed_scale(scale)
+
+    @property
+    def cached_raster_grad_fixed_decode_scales(self) -> np.ndarray:
+        return self._RASTER_GRAD_FIXED_BASE_DECODE_SCALES / np.float32(self._cached_raster_grad_fixed_scale)
 
     def set_debug_grad_norm_buffer(self, buffer: spy.Buffer | None) -> None:
         self._debug_grad_norm_buffer = buffer

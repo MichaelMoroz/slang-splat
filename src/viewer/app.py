@@ -97,6 +97,7 @@ class SplatViewer(spy.AppWindow):
             list_capacity_multiplier=self.s.list_capacity_multiplier,
             max_prepass_memory_mb=self.s.max_prepass_memory_mb,
             cached_raster_grad_atomic_mode=_CACHED_RASTER_GRAD_ATOMIC_MODE_VALUES[atomic_mode_index],
+            cached_raster_grad_fixed_scale=float(self.c("cached_raster_grad_fixed_scale").value),
             debug_show_ellipses=bool(self.c("debug_ellipse").value) if allow_debug_overlays else False,
             debug_show_processed_count=bool(self.c("debug_processed_count").value) if allow_debug_overlays else False,
             debug_show_grad_norm=bool(self.c("debug_grad_norm").value) if allow_debug_overlays else False,

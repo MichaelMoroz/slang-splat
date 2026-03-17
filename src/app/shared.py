@@ -41,7 +41,7 @@ _CLAMP_LIMITS = {
 class RendererParams:
     radius_scale: float = 1.0; alpha_cutoff: float = 1.0 / 255.0; max_splat_steps: int = 32768
     transmittance_threshold: float = 0.005; sampled5_safety_scale: float = 1.0; list_capacity_multiplier: int = 64
-    max_prepass_memory_mb: int = 4096; cached_raster_grad_atomic_mode: str = "float"
+    max_prepass_memory_mb: int = 4096; cached_raster_grad_atomic_mode: str = "float"; cached_raster_grad_fixed_scale: float = 0.125
     debug_show_ellipses: bool = False; debug_show_processed_count: bool = False; debug_show_grad_norm: bool = False
 
 

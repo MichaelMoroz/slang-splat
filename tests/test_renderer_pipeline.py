@@ -17,15 +17,6 @@ from src.common import SHADER_ROOT
 from src.renderer import Camera, GaussianRenderer
 from src.scene import GaussianScene
 
-_RASTER_GRAD_FIXED_DECODE_SCALES = np.array(
-    [
-        1.0 / 268435456.0, 1.0 / 268435456.0, 1.0 / 268435456.0,
-        1.0 / 536870912.0, 1.0 / 536870912.0, 1.0 / 536870912.0,
-        1.0 / 268435456.0, 1.0 / 268435456.0, 1.0 / 268435456.0,
-        1.0 / 2147483648.0, 1.0 / 2147483648.0, 1.0 / 2147483648.0, 1.0 / 67108864.0,
-    ],
-    dtype=np.float32,
-)
 _GAUSSIAN_SUPPORT_SIGMA_RADIUS = 3.0
 
 _log_sigma = lambda sigma: np.log(np.asarray(sigma, dtype=np.float32))
@@ -94,6 +85,8 @@ def test_renderer_params_default_to_float_cached_grad_atomics():
 
     assert params.cached_raster_grad_atomic_mode == "float"
     assert kwargs["cached_raster_grad_atomic_mode"] == "float"
+    assert params.cached_raster_grad_fixed_scale == 0.125
+    assert kwargs["cached_raster_grad_fixed_scale"] == 0.125
 
 
 def test_tile_keys_and_ranges_match_reference(device):
@@ -491,7 +484,7 @@ def test_raster_backward_decodes_fixed_grad_grid(device):
     nonzero = values[values != 0]
     assert nonzero.size > 0
     decoded = np.asarray(renderer.read_cached_raster_grads_fixed_decoded(scene.count), dtype=np.float32)
-    requantized = np.rint(decoded / _RASTER_GRAD_FIXED_DECODE_SCALES.reshape(1, 13)).astype(np.int32)
+    requantized = np.rint(decoded / renderer.cached_raster_grad_fixed_decode_scales.reshape(1, 13)).astype(np.int32)
     assert int(np.max(np.abs(requantized[values != 0] - values[values != 0]))) <= 64
 
 
@@ -506,7 +499,7 @@ def test_raster_backward_float_mode_produces_float_intermediate_and_final_grads(
     assert np.any(float_nonzero != 0.0)
     active_nonzero = float_nonzero[np.abs(float_nonzero) > 0.0]
     assert active_nonzero.size > 0
-    requantized = float_nonzero / _RASTER_GRAD_FIXED_DECODE_SCALES.reshape(1, 13)
+    requantized = float_nonzero / renderer.cached_raster_grad_fixed_decode_scales.reshape(1, 13)
     assert np.any(np.abs(requantized[np.abs(float_nonzero) > 0.0] - np.rint(requantized[np.abs(float_nonzero) > 0.0])) > 1e-4)
     assert np.count_nonzero(float_nonzero[:, 9:12]) > 0
 
@@ -547,6 +540,17 @@ def test_active_cached_raster_grad_metrics_tensor_decodes_fixed_mode(device):
     np.testing.assert_allclose(prepared, decoded, rtol=0.0, atol=1e-7)
 
 
+def test_cached_raster_grad_fixed_scale_updates_decode_scales(device):
+    renderer = GaussianRenderer(device, width=32, height=32, cached_raster_grad_fixed_scale=2.5)
+
+    np.testing.assert_allclose(
+        renderer.cached_raster_grad_fixed_decode_scales,
+        GaussianRenderer._RASTER_GRAD_FIXED_BASE_DECODE_SCALES / np.float32(2.5),
+        rtol=0.0,
+        atol=0.0,
+    )
+
+
 def test_fixed_cached_raster_grads_match_float_mode_on_distorted_target_mse(device):
     width, height = 128, 128
     scene = make_projected_scale_scene(48, width, height, seed=123)
@@ -558,7 +562,7 @@ def test_fixed_cached_raster_grads_match_float_mode_on_distorted_target_mse(devi
     target_image = target_renderer.render(target_scene, camera, background=background).image
 
     renderer_float = GaussianRenderer(device, width=width, height=height, radius_scale=1.0, list_capacity_multiplier=64, cached_raster_grad_atomic_mode="float")
-    renderer_fixed = GaussianRenderer(device, width=width, height=height, radius_scale=1.0, list_capacity_multiplier=64, cached_raster_grad_atomic_mode="fixed")
+    renderer_fixed = GaussianRenderer(device, width=width, height=height, radius_scale=1.0, list_capacity_multiplier=64, cached_raster_grad_atomic_mode="fixed", cached_raster_grad_fixed_scale=1.0)
     grads_float = renderer_float.debug_raster_backward_grads_against_target(scene, camera, target_image, background=background)
     grads_fixed = renderer_fixed.debug_raster_backward_grads_against_target(scene, camera, target_image, background=background)
 

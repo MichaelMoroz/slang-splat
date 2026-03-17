@@ -102,7 +102,7 @@ class ColmapCachedGradientDiagnostic:
         cached_float = np.asarray(grads_float["cached_raster_grads_float"], dtype=np.float32)
         cached_fixed = np.asarray(renderer_fixed.read_cached_raster_grads_fixed_decoded(scene.count), dtype=np.float32)
         cached_raw = np.asarray(grads_fixed["cached_raster_grads_fixed"], dtype=np.int32)
-        encode_scales = 1.0 / np.asarray(renderer_fixed._RASTER_GRAD_FIXED_DECODE_SCALES, dtype=np.float32)
+        encode_scales = 1.0 / np.asarray(renderer_fixed.cached_raster_grad_fixed_decode_scales, dtype=np.float32)
 
         component_stats = self._component_stats(cached_float, cached_fixed, cached_raw, encode_scales)
         group_stats = self._group_stats(component_stats)
