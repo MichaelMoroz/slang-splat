@@ -32,6 +32,7 @@ static const float RASTER_GRAD_FIXED_INT_MIN_F = -2147483648.0;
 static const float RASTER_GRAD_FIXED_INT_MAX_F = 2147483647.0;
 static const float RASTER_GRAD_FIXED_COLOR_RANGE = 100.0;
 static const float RASTER_GRAD_FIXED_OPACITY_RANGE = 100.0;
+static const float RASTER_GRAD_FIXED_RO_LOCAL_REF_SCALE = 100.0;
 static const float RASTER_GRAD_FIXED_SCALE_RO_LOCAL = 134217728.0;
 static const float RASTER_GRAD_FIXED_INV_SCALE_RO_LOCAL = 1.0 / RASTER_GRAD_FIXED_SCALE_RO_LOCAL;
 static const float RASTER_GRAD_FIXED_SCALE_LOG_L_DIAG = 33554432.0;
@@ -97,7 +98,7 @@ float raster_grad_fixed_shape_alpha(float3 logLDiag)
 
 float3 raster_grad_fixed_ro_local_refs(float3 logLDiag)
 {
-    return float3(raster_grad_fixed_shape_alpha(logLDiag));
+    return float3(raster_grad_fixed_shape_alpha(logLDiag) * RASTER_GRAD_FIXED_RO_LOCAL_REF_SCALE);
 }
 
 float3 raster_grad_fixed_loffdiag_refs(float3 logLDiag)

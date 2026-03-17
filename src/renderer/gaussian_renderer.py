@@ -90,6 +90,7 @@ class GaussianRenderer:
     _RASTER_GRAD_FIXED_INT_MAX = np.float32(2147483647.0)
     _RASTER_GRAD_FIXED_COLOR_RANGE = np.float32(100.0)
     _RASTER_GRAD_FIXED_OPACITY_RANGE = np.float32(100.0)
+    _RASTER_GRAD_FIXED_RO_LOCAL_REF_SCALE = np.float32(100.0)
     _COUNTER_READBACK_RING_SIZE = 2
     _SCANLINE_WORK_ITEM_UINTS = 8
     _U32_BYTES = 4
@@ -1103,7 +1104,7 @@ class GaussianRenderer:
             return refs
         l_diag = np.exp(cache[:, 3:6]).astype(np.float32, copy=False)
         alpha = np.maximum(np.cbrt(np.maximum(l_diag[:, 0] * l_diag[:, 1] * l_diag[:, 2], np.float32(1e-12))), cls._RASTER_GRAD_FIXED_L_OFFDIAG_REF_FLOOR)
-        refs[:, 0:3] = alpha[:, None]
+        refs[:, 0:3] = (alpha * cls._RASTER_GRAD_FIXED_RO_LOCAL_REF_SCALE)[:, None]
         log_ldiag = np.abs(cache[:, 3:6])
         refs[:, 3:6] = np.maximum(log_ldiag, cls._RASTER_GRAD_FIXED_LOG_L_DIAG_REF_FLOOR)
         refs[:, 6:9] = alpha[:, None]
