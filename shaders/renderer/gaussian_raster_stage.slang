@@ -33,6 +33,7 @@ static const float RASTER_GRAD_FIXED_INT_MAX_F = 2147483647.0;
 static const float RASTER_GRAD_FIXED_COLOR_RANGE = 100.0;
 static const float RASTER_GRAD_FIXED_OPACITY_RANGE = 100.0;
 static const float RASTER_GRAD_FIXED_RO_LOCAL_REF_SCALE = 100.0;
+static const float RASTER_GRAD_FIXED_L_REF_SCALE = 100.0;
 static const float RASTER_GRAD_FIXED_SCALE_RO_LOCAL = 134217728.0;
 static const float RASTER_GRAD_FIXED_INV_SCALE_RO_LOCAL = 1.0 / RASTER_GRAD_FIXED_SCALE_RO_LOCAL;
 static const float RASTER_GRAD_FIXED_SCALE_LOG_L_DIAG = 33554432.0;
@@ -85,15 +86,15 @@ float raster_grad_fixed_decode(int value, uint fieldId, float refValue)
     return float(value) * raster_grad_fixed_decode_scale(fieldId, refValue);
 }
 
-float3 raster_grad_fixed_log_ldiag_refs(float3 logLDiag)
-{
-    return max(abs(logLDiag), float3(RASTER_GRAD_FIXED_LOG_L_DIAG_REF_FLOOR));
-}
-
 float raster_grad_fixed_shape_alpha(float3 logLDiag)
 {
     float3 lDiag = exp(logLDiag);
     return max(pow(max(lDiag.x * lDiag.y * lDiag.z, SMALL_VALUE), 1.0 / 3.0), RASTER_GRAD_FIXED_L_OFFDIAG_REF_FLOOR);
+}
+
+float3 raster_grad_fixed_l_refs(float3 logLDiag)
+{
+    return float3(raster_grad_fixed_shape_alpha(logLDiag) * RASTER_GRAD_FIXED_L_REF_SCALE);
 }
 
 float3 raster_grad_fixed_ro_local_refs(float3 logLDiag)
@@ -103,7 +104,7 @@ float3 raster_grad_fixed_ro_local_refs(float3 logLDiag)
 
 float3 raster_grad_fixed_loffdiag_refs(float3 logLDiag)
 {
-    return float3(raster_grad_fixed_shape_alpha(logLDiag) * g_CachedRasterGradFixedLOffdiagRefScale);
+    return raster_grad_fixed_l_refs(logLDiag) * g_CachedRasterGradFixedLOffdiagRefScale;
 }
 
 void atomic_add_raster_cache_grad_fixed<let N : int>(uint splatCount, uint firstFieldId, uint splatId, vector<float, N> grad, vector<float, N> refs)
@@ -211,7 +212,7 @@ struct RasterGaussian : IDifferentiable
         uint splatCount = g_Prepass.splatCount;
         RasterGaussian gaussian = load_shared(localIdx);
         float3 roLocalRefs = raster_grad_fixed_ro_local_refs(gaussian.logLDiag);
-        float3 logLDiagRefs = raster_grad_fixed_log_ldiag_refs(gaussian.logLDiag);
+        float3 logLDiagRefs = raster_grad_fixed_l_refs(gaussian.logLDiag);
         float3 lOffDiagRefs = raster_grad_fixed_loffdiag_refs(gaussian.logLDiag);
         capture_gradient_contribution(splatId, pixelCoord, globalIdx, dOut);
         atomic_add_raster_cache_grad_fixed<3>(splatCount, RASTER_CACHE_RO_LOCAL_X, splatId, dOut.roLocal, roLocalRefs);
@@ -230,7 +231,7 @@ RasterGaussian.Differential load_cached_raster_grad(uint splatId)
         g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_LOG_L_DIAG_Z, splatId)]
     );
     float3 roLocalRefs = raster_grad_fixed_ro_local_refs(cachedLogLDiag);
-    float3 logLDiagRefs = raster_grad_fixed_log_ldiag_refs(cachedLogLDiag);
+    float3 logLDiagRefs = raster_grad_fixed_l_refs(cachedLogLDiag);
     float3 lOffDiagRefs = raster_grad_fixed_loffdiag_refs(cachedLogLDiag);
     RasterGaussian.Differential grad;
     grad.roLocal = float3(

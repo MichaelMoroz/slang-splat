@@ -91,6 +91,7 @@ class GaussianRenderer:
     _RASTER_GRAD_FIXED_COLOR_RANGE = np.float32(100.0)
     _RASTER_GRAD_FIXED_OPACITY_RANGE = np.float32(100.0)
     _RASTER_GRAD_FIXED_RO_LOCAL_REF_SCALE = np.float32(100.0)
+    _RASTER_GRAD_FIXED_L_REF_SCALE = np.float32(100.0)
     _COUNTER_READBACK_RING_SIZE = 2
     _SCANLINE_WORK_ITEM_UINTS = 8
     _U32_BYTES = 4
@@ -111,7 +112,6 @@ class GaussianRenderer:
         ],
         dtype=np.float32,
     )
-    _RASTER_GRAD_FIXED_LOG_L_DIAG_REF_FLOOR = np.float32(0.25)
     _RASTER_GRAD_FIXED_L_OFFDIAG_REF_FLOOR = np.float32(0.25)
     _RW_BUFFER_USAGE = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
     PARAM_POSITION_IDS = (0, 1, 2)
@@ -1105,9 +1105,8 @@ class GaussianRenderer:
         l_diag = np.exp(cache[:, 3:6]).astype(np.float32, copy=False)
         alpha = np.maximum(np.cbrt(np.maximum(l_diag[:, 0] * l_diag[:, 1] * l_diag[:, 2], np.float32(1e-12))), cls._RASTER_GRAD_FIXED_L_OFFDIAG_REF_FLOOR)
         refs[:, 0:3] = (alpha * cls._RASTER_GRAD_FIXED_RO_LOCAL_REF_SCALE)[:, None]
-        log_ldiag = np.abs(cache[:, 3:6])
-        refs[:, 3:6] = np.maximum(log_ldiag, cls._RASTER_GRAD_FIXED_LOG_L_DIAG_REF_FLOOR)
-        refs[:, 6:9] = alpha[:, None]
+        refs[:, 3:6] = (alpha * cls._RASTER_GRAD_FIXED_L_REF_SCALE)[:, None]
+        refs[:, 6:9] = (alpha * cls._RASTER_GRAD_FIXED_L_REF_SCALE)[:, None]
         return refs
 
     def cached_raster_grad_fixed_decode_scale_table(self, splat_count: int | None = None, raster_cache: np.ndarray | None = None) -> np.ndarray:
