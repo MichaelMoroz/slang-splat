@@ -90,14 +90,8 @@ float3 raster_grad_fixed_log_ldiag_refs(float3 logLDiag)
 float3 raster_grad_fixed_loffdiag_refs(float3 logLDiag)
 {
     float3 lDiag = exp(logLDiag);
-    return max(
-        float3(
-            sqrt(max(lDiag.x * lDiag.y, SMALL_VALUE)),
-            sqrt(max(lDiag.x * lDiag.z, SMALL_VALUE)),
-            sqrt(max(lDiag.y * lDiag.z, SMALL_VALUE))
-        ),
-        float3(RASTER_GRAD_FIXED_L_OFFDIAG_REF_FLOOR)
-    );
+    float alpha = max(pow(max(lDiag.x * lDiag.y * lDiag.z, SMALL_VALUE), 1.0 / 3.0), RASTER_GRAD_FIXED_L_OFFDIAG_REF_FLOOR);
+    return float3(alpha * g_CachedRasterGradFixedLOffdiagRefScale);
 }
 
 void atomic_add_raster_cache_grad_fixed<let N : int>(uint splatCount, uint firstFieldId, uint splatId, vector<float, N> grad, vector<float, N> refs)

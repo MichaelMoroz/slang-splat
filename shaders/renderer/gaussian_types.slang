@@ -75,6 +75,7 @@ uniform RWStructuredBuffer<uint> g_CachedRasterGradContributionCounter;
 uniform RWStructuredBuffer<RasterGradContributionRecord> g_CachedRasterGradContributionRecords;
 uniform float g_RasterGradDecodeScale;
 uniform float g_CachedRasterGradFixedScale;
+uniform float g_CachedRasterGradFixedLOffdiagRefScale;
 uniform uint g_CachedRasterGradContributionCaptureEnabled;
 uniform uint g_CachedRasterGradContributionSelectedCount;
 uniform uint g_CachedRasterGradContributionPerSplatCapacity;

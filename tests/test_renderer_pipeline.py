@@ -87,6 +87,8 @@ def test_renderer_params_default_to_float_cached_grad_atomics():
     assert kwargs["cached_raster_grad_atomic_mode"] == "float"
     assert params.cached_raster_grad_fixed_scale == 0.125
     assert kwargs["cached_raster_grad_fixed_scale"] == 0.125
+    assert params.cached_raster_grad_fixed_loffdiag_ref_scale == 1.0
+    assert kwargs["cached_raster_grad_fixed_loffdiag_ref_scale"] == 1.0
 
 
 def test_tile_keys_and_ranges_match_reference(device):
