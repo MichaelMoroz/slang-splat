@@ -38,6 +38,8 @@ Optional PyTorch interface:
 python -m pip install <cuda-enabled-pytorch-build>
 ```
 
+Torch examples also use `tqdm`, which is included in `requirements.txt`.
+
 ## Render One Frame
 ```powershell
 python render.py --ply C:\path\to\scene.ply --output render.png --width 1280 --height 720
@@ -85,6 +87,7 @@ python cli.py render-ply --ply D:\Datasets\3DGS\TEST\flowers.ply --output-dir ou
 
 ## PyTorch CUDA Interface
 The optional differentiable CUDA/PyTorch wrapper is documented in `doc/TorchRenderer.md`.
+Small torch-side training examples live in `torch_examples/`.
 
 Training notes:
 - Training walks a shuffled permutation of views and reshuffles after every full image epoch.
