@@ -75,6 +75,7 @@ class TorchGardenTrainConfig:
     grad_norm_clip: float = 10.0
     lr_final_ratio: float = 0.1
     lr_decay_start_fraction: float = 0.75
+    target_psnr: float = 25.0
     cached_raster_grad_atomic_mode: str = "float"
     enable_saves: bool = True
     torch_device: str | None = None
@@ -102,6 +103,7 @@ class TorchGardenTrainConfig:
         self.grad_norm_clip = max(float(self.grad_norm_clip), 0.0)
         self.lr_final_ratio = min(max(float(self.lr_final_ratio), 0.0), 1.0)
         self.lr_decay_start_fraction = min(max(float(self.lr_decay_start_fraction), 0.0), 1.0)
+        self.target_psnr = float(self.target_psnr)
         self.cached_raster_grad_atomic_mode = str(self.cached_raster_grad_atomic_mode)
         self.enable_saves = bool(self.enable_saves)
         if self.max_frames is not None:
@@ -406,6 +408,8 @@ def run_training(config: TorchGardenTrainConfig) -> dict[str, object]:
     render_dir, checkpoint_path = _ensure_output_dirs(config)
     history: dict[str, list[float]] = {"loss": [], "l1": [], "mse": [], "psnr": [], "lr": [], "frame_index": []}
     last_rendered = last_loss = last_psnr = last_mse = None
+    best_psnr = float("-inf")
+    best_avg_psnr = float("-inf")
 
     progress = tqdm(range(config.iters), total=config.iters, desc="torch-colmap", dynamic_ncols=True)
     for step in progress:
@@ -431,6 +435,9 @@ def run_training(config: TorchGardenTrainConfig) -> dict[str, object]:
 
         loss_value = float(loss.detach().item())
         frame_metrics.update(frame_index, loss_value, mse, psnr)
+        avg_psnr = frame_metrics.mean("psnr")
+        best_psnr = max(best_psnr, psnr)
+        best_avg_psnr = max(best_avg_psnr, avg_psnr)
         history["loss"].append(loss_value)
         history["l1"].append(l1_value)
         history["mse"].append(mse)
@@ -441,7 +448,8 @@ def run_training(config: TorchGardenTrainConfig) -> dict[str, object]:
             loss=f"{loss_value:.6f}",
             psnr=f"{psnr:.2f}",
             avg_loss=f"{frame_metrics.mean('loss'):.6f}",
-            avg_psnr=f"{frame_metrics.mean('psnr'):.2f}",
+            avg_psnr=f"{avg_psnr:.2f}",
+            best_psnr=f"{best_psnr:.2f}",
             lr=f"{_optimizer_lr(optimizer):.2e}",
             frame=frame.image_path.name,
         )
@@ -463,6 +471,10 @@ def run_training(config: TorchGardenTrainConfig) -> dict[str, object]:
         "last_psnr": float(last_psnr if last_psnr is not None else float("nan")),
         "avg_loss": frame_metrics.mean("loss"),
         "avg_psnr": frame_metrics.mean("psnr"),
+        "best_psnr": best_psnr,
+        "best_avg_psnr": best_avg_psnr,
+        "target_psnr": float(config.target_psnr),
+        "target_reached": bool(best_avg_psnr >= config.target_psnr or best_psnr >= config.target_psnr),
         "history": history,
     }
 
@@ -490,6 +502,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--grad-norm-clip", type=float, default=10.0)
     parser.add_argument("--lr-final-ratio", type=float, default=0.1)
     parser.add_argument("--lr-decay-start-fraction", type=float, default=0.75)
+    parser.add_argument("--target-psnr", type=float, default=25.0)
     parser.add_argument("--cached-raster-grad-atomic-mode", type=str, default="float")
     parser.add_argument("--torch-device", type=str, default=None)
     parser.add_argument("--max-frames", type=int, default=None)
@@ -521,6 +534,7 @@ def main() -> int:
         grad_norm_clip=args.grad_norm_clip,
         lr_final_ratio=args.lr_final_ratio,
         lr_decay_start_fraction=args.lr_decay_start_fraction,
+        target_psnr=args.target_psnr,
         cached_raster_grad_atomic_mode=args.cached_raster_grad_atomic_mode,
         enable_saves=not bool(args.disable_saves),
         torch_device=args.torch_device,
@@ -530,7 +544,9 @@ def main() -> int:
     print(
         f"Finished {summary['step']} steps. "
         f"last_loss={summary['last_loss']:.6f} last_psnr={summary['last_psnr']:.2f} "
-        f"avg_loss={summary['avg_loss']:.6f} avg_psnr={summary['avg_psnr']:.2f}"
+        f"avg_loss={summary['avg_loss']:.6f} avg_psnr={summary['avg_psnr']:.2f} "
+        f"best_psnr={summary['best_psnr']:.2f} target={summary['target_psnr']:.2f} "
+        f"reached={summary['target_reached']}"
     )
     print(f"Checkpoint: {summary['checkpoint_path']}")
     return 0
