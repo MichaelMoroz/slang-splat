@@ -88,10 +88,10 @@ class GaussianRenderer:
     CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED = "fixed"
     CACHED_RASTER_GRAD_ATOMIC_MODES = (CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT, CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED)
     _RASTER_GRAD_FIXED_INT_MAX = np.float32(2147483647.0)
-    _RASTER_GRAD_FIXED_COLOR_RANGE = np.float32(100.0)
-    _RASTER_GRAD_FIXED_OPACITY_RANGE = np.float32(100.0)
-    _RASTER_GRAD_FIXED_RO_LOCAL_REF_SCALE = np.float32(100.0)
-    _RASTER_GRAD_FIXED_L_REF_SCALE = np.float32(100.0)
+    _DEFAULT_RASTER_GRAD_FIXED_COLOR_RANGE = np.float32(200.0)
+    _DEFAULT_RASTER_GRAD_FIXED_OPACITY_RANGE = np.float32(200.0)
+    _DEFAULT_RASTER_GRAD_FIXED_RO_LOCAL_REF_SCALE = np.float32(100.0)
+    _DEFAULT_RASTER_GRAD_FIXED_L_REF_SCALE = np.float32(100.0)
     _COUNTER_READBACK_RING_SIZE = 2
     _SCANLINE_WORK_ITEM_UINTS = 8
     _U32_BYTES = 4
@@ -105,10 +105,10 @@ class GaussianRenderer:
             1.0 / 134217728.0, 1.0 / 134217728.0, 1.0 / 134217728.0,
             1.0 / 33554432.0, 1.0 / 33554432.0, 1.0 / 33554432.0,
             1.0 / 16777216.0, 1.0 / 16777216.0, 1.0 / 16777216.0,
-            _RASTER_GRAD_FIXED_COLOR_RANGE / _RASTER_GRAD_FIXED_INT_MAX,
-            _RASTER_GRAD_FIXED_COLOR_RANGE / _RASTER_GRAD_FIXED_INT_MAX,
-            _RASTER_GRAD_FIXED_COLOR_RANGE / _RASTER_GRAD_FIXED_INT_MAX,
-            _RASTER_GRAD_FIXED_OPACITY_RANGE / _RASTER_GRAD_FIXED_INT_MAX,
+            _DEFAULT_RASTER_GRAD_FIXED_COLOR_RANGE / _RASTER_GRAD_FIXED_INT_MAX,
+            _DEFAULT_RASTER_GRAD_FIXED_COLOR_RANGE / _RASTER_GRAD_FIXED_INT_MAX,
+            _DEFAULT_RASTER_GRAD_FIXED_COLOR_RANGE / _RASTER_GRAD_FIXED_INT_MAX,
+            _DEFAULT_RASTER_GRAD_FIXED_OPACITY_RANGE / _RASTER_GRAD_FIXED_INT_MAX,
         ],
         dtype=np.float32,
     )
@@ -230,6 +230,15 @@ class GaussianRenderer:
 
     def _raster_grad_fixed_scale_var(self) -> dict[str, object]:
         return {"g_CachedRasterGradFixedScale": float(self.cached_raster_grad_fixed_scale)}
+
+    def _raster_grad_fixed_range_vars(self) -> dict[str, object]:
+        return {
+            "g_CachedRasterGradFixedROLocalRefScale": float(self.cached_raster_grad_fixed_ro_local_ref_scale),
+            "g_CachedRasterGradFixedLRefScale": float(self.cached_raster_grad_fixed_l_ref_scale),
+            "g_CachedRasterGradFixedColorRange": float(self.cached_raster_grad_fixed_color_range),
+            "g_CachedRasterGradFixedOpacityRange": float(self.cached_raster_grad_fixed_opacity_range),
+            "g_CachedRasterGradFixedLDistanceNormPower": float(self.cached_raster_grad_fixed_l_distance_norm_power),
+        }
 
     def _raster_grad_fixed_loffdiag_ref_scale_var(self) -> dict[str, object]:
         return {"g_CachedRasterGradFixedLOffdiagRefScale": float(self.cached_raster_grad_fixed_loffdiag_ref_scale)}
@@ -360,6 +369,11 @@ class GaussianRenderer:
         cached_raster_grad_atomic_mode: str = CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT,
         cached_raster_grad_fixed_scale: float = 0.125,
         cached_raster_grad_fixed_loffdiag_ref_scale: float = 1.0,
+        cached_raster_grad_fixed_ro_local_ref_scale: float = 100.0,
+        cached_raster_grad_fixed_l_ref_scale: float = 100.0,
+        cached_raster_grad_fixed_color_range: float = 200.0,
+        cached_raster_grad_fixed_opacity_range: float = 200.0,
+        cached_raster_grad_fixed_l_distance_norm_power: float = 0.0,
     ) -> None:
         self.device, self.width, self.height = device, int(width), int(height)
         self._types_shader_path = Path(SHADER_ROOT / "renderer" / "gaussian_types.slang")
@@ -402,6 +416,11 @@ class GaussianRenderer:
         self._cached_raster_grad_atomic_mode = self.CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED
         self._cached_raster_grad_fixed_scale = 1.0
         self._cached_raster_grad_fixed_loffdiag_ref_scale = 1.0
+        self._cached_raster_grad_fixed_ro_local_ref_scale = self._DEFAULT_RASTER_GRAD_FIXED_RO_LOCAL_REF_SCALE
+        self._cached_raster_grad_fixed_l_ref_scale = self._DEFAULT_RASTER_GRAD_FIXED_L_REF_SCALE
+        self._cached_raster_grad_fixed_color_range = self._DEFAULT_RASTER_GRAD_FIXED_COLOR_RANGE
+        self._cached_raster_grad_fixed_opacity_range = self._DEFAULT_RASTER_GRAD_FIXED_OPACITY_RANGE
+        self._cached_raster_grad_fixed_l_distance_norm_power = 0.0
         self._cached_raster_grad_contrib_select_buffer: spy.Buffer | None = None
         self._cached_raster_grad_contrib_counter_buffer: spy.Buffer | None = None
         self._cached_raster_grad_contrib_records_buffer: spy.Buffer | None = None
@@ -427,6 +446,11 @@ class GaussianRenderer:
         self.cached_raster_grad_atomic_mode = cached_raster_grad_atomic_mode
         self.cached_raster_grad_fixed_scale = cached_raster_grad_fixed_scale
         self.cached_raster_grad_fixed_loffdiag_ref_scale = cached_raster_grad_fixed_loffdiag_ref_scale
+        self.cached_raster_grad_fixed_ro_local_ref_scale = cached_raster_grad_fixed_ro_local_ref_scale
+        self.cached_raster_grad_fixed_l_ref_scale = cached_raster_grad_fixed_l_ref_scale
+        self.cached_raster_grad_fixed_color_range = cached_raster_grad_fixed_color_range
+        self.cached_raster_grad_fixed_opacity_range = cached_raster_grad_fixed_opacity_range
+        self.cached_raster_grad_fixed_l_distance_norm_power = cached_raster_grad_fixed_l_distance_norm_power
 
     @staticmethod
     def _eval_uint_constant_expr(expr: str, constants: dict[str, int]) -> int:
@@ -725,21 +749,21 @@ class GaussianRenderer:
 
     def _rasterize(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output: spy.Texture | None = None) -> None:
         target = self.output_texture if output is None else output
-        self._dispatch(self._k_raster, encoder, self._raster_thread_count(), {**self._scene_vars(), **self._screen_vars(), **self._raster_cache_vars(), **self._debug_grad_norm_var(), **self._raster_grad_contribution_capture_vars(), "g_SortedValues": self._work_buffers["values"], "g_TileRanges": self._work_buffers["tile_ranges"], "g_Output": target, **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_scale_var(), **self._raster_grad_fixed_loffdiag_ref_scale_var(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._camera_uniforms(camera)}, "Rasterize", 24)
+        self._dispatch(self._k_raster, encoder, self._raster_thread_count(), {**self._scene_vars(), **self._screen_vars(), **self._raster_cache_vars(), **self._debug_grad_norm_var(), **self._raster_grad_contribution_capture_vars(), "g_SortedValues": self._work_buffers["values"], "g_TileRanges": self._work_buffers["tile_ranges"], "g_Output": target, **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_scale_var(), **self._raster_grad_fixed_range_vars(), **self._raster_grad_fixed_loffdiag_ref_scale_var(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._camera_uniforms(camera)}, "Rasterize", 24)
 
     def _clear_raster_grads(self, encoder: spy.CommandEncoder, splat_count: int) -> None:
         clear_count = max(int(splat_count) * max(self.TRAINABLE_PARAM_COUNT, self._RASTER_CACHE_PARAM_COUNT), self._RASTER_GRAD_CONTRIB_COUNTER_UINT_COUNT)
-        self._dispatch(self._raster_grad_shader_set().clear, encoder, spy.uint3(clear_count, 1, 1), {**self._raster_grad_vars(), **self._raster_grad_contribution_capture_vars(), **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_scale_var(), **self._raster_grad_fixed_loffdiag_ref_scale_var(), **self._prepass_uniforms(splat_count)}, "Clear Raster Grads", 25)
+        self._dispatch(self._raster_grad_shader_set().clear, encoder, spy.uint3(clear_count, 1, 1), {**self._raster_grad_vars(), **self._raster_grad_contribution_capture_vars(), **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_scale_var(), **self._raster_grad_fixed_range_vars(), **self._raster_grad_fixed_loffdiag_ref_scale_var(), **self._prepass_uniforms(splat_count)}, "Clear Raster Grads", 25)
 
     def _rasterize_training_forward(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output: spy.Texture | None = None) -> None:
         target = self.output_texture if output is None else output
-        self._dispatch(self._raster_grad_shader_set().training_forward, encoder, self._raster_thread_count(), {**self._scene_vars(), **self._screen_vars(), **self._raster_cache_vars(), **self._raster_grad_contribution_capture_vars(), "g_SortedValues": self._work_buffers["values"], "g_TileRanges": self._work_buffers["tile_ranges"], "g_Output": target, "g_TrainingForwardState": self._work_buffers["training_forward_state"], "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"], **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_scale_var(), **self._raster_grad_fixed_loffdiag_ref_scale_var(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._camera_uniforms(camera)}, "Rasterize Training Forward", 26)
+        self._dispatch(self._raster_grad_shader_set().training_forward, encoder, self._raster_thread_count(), {**self._scene_vars(), **self._screen_vars(), **self._raster_cache_vars(), **self._raster_grad_contribution_capture_vars(), "g_SortedValues": self._work_buffers["values"], "g_TileRanges": self._work_buffers["tile_ranges"], "g_Output": target, "g_TrainingForwardState": self._work_buffers["training_forward_state"], "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"], **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_scale_var(), **self._raster_grad_fixed_range_vars(), **self._raster_grad_fixed_loffdiag_ref_scale_var(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._camera_uniforms(camera)}, "Rasterize Training Forward", 26)
 
     def _rasterize_backward(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output_grad: spy.Buffer) -> None:
-        self._dispatch(self._raster_grad_shader_set().backward, encoder, self._raster_thread_count(), {**self._scene_vars(), **self._raster_cache_vars(), **self._raster_grad_contribution_capture_vars(), "g_SortedValues": self._work_buffers["values"], "g_TileRanges": self._work_buffers["tile_ranges"], "g_OutputGrad": output_grad, "g_TrainingForwardState": self._work_buffers["training_forward_state"], "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"], **self._raster_grad_vars(), **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_scale_var(), **self._raster_grad_fixed_loffdiag_ref_scale_var(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._camera_uniforms(camera)}, "Rasterize Backward", 27)
+        self._dispatch(self._raster_grad_shader_set().backward, encoder, self._raster_thread_count(), {**self._scene_vars(), **self._raster_cache_vars(), **self._raster_grad_contribution_capture_vars(), "g_SortedValues": self._work_buffers["values"], "g_TileRanges": self._work_buffers["tile_ranges"], "g_OutputGrad": output_grad, "g_TrainingForwardState": self._work_buffers["training_forward_state"], "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"], **self._raster_grad_vars(), **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_scale_var(), **self._raster_grad_fixed_range_vars(), **self._raster_grad_fixed_loffdiag_ref_scale_var(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._camera_uniforms(camera)}, "Rasterize Backward", 27)
 
     def _backprop_cached_raster_grads(self, encoder: spy.CommandEncoder, splat_count: int, camera: Camera, grad_scale: float = 1.0) -> None:
-        self._dispatch(self._raster_grad_shader_set().backprop, encoder, spy.uint3(max(int(splat_count), 1), 1, 1), {**self._scene_vars(), **self._raster_cache_vars(), **self._raster_grad_vars(), **self._raster_grad_contribution_capture_vars(), **self._raster_grad_decode_scale_var(grad_scale), **self._raster_grad_fixed_scale_var(), **self._raster_grad_fixed_loffdiag_ref_scale_var(), **self._prepass_uniforms(splat_count), **self._camera_uniforms(camera)}, "Backprop Cached Raster Grads", 28)
+        self._dispatch(self._raster_grad_shader_set().backprop, encoder, spy.uint3(max(int(splat_count), 1), 1, 1), {**self._scene_vars(), **self._raster_cache_vars(), **self._raster_grad_vars(), **self._raster_grad_contribution_capture_vars(), **self._raster_grad_decode_scale_var(grad_scale), **self._raster_grad_fixed_scale_var(), **self._raster_grad_fixed_range_vars(), **self._raster_grad_fixed_loffdiag_ref_scale_var(), **self._prepass_uniforms(splat_count), **self._camera_uniforms(camera)}, "Backprop Cached Raster Grads", 28)
 
     def _execute_prepass(self, scene: GaussianScene, camera: Camera, sync_counts: bool = False) -> tuple[int, int]:
         enc = self.device.create_command_encoder()
@@ -1076,6 +1100,20 @@ class GaussianRenderer:
             raise ValueError(f"cached_raster_grad_fixed_loffdiag_ref_scale must be finite and > 0, got {scale}.")
         return resolved
 
+    @staticmethod
+    def _validate_positive_finite(name: str, value: float) -> float:
+        resolved = float(value)
+        if not np.isfinite(resolved) or resolved <= 0.0:
+            raise ValueError(f"{name} must be finite and > 0, got {value}.")
+        return resolved
+
+    @staticmethod
+    def _validate_finite(name: str, value: float) -> float:
+        resolved = float(value)
+        if not np.isfinite(resolved):
+            raise ValueError(f"{name} must be finite, got {value}.")
+        return resolved
+
     @property
     def cached_raster_grad_fixed_scale(self) -> float:
         return self._cached_raster_grad_fixed_scale
@@ -1093,8 +1131,59 @@ class GaussianRenderer:
         self._cached_raster_grad_fixed_loffdiag_ref_scale = self._validate_cached_raster_grad_fixed_loffdiag_ref_scale(scale)
 
     @property
+    def cached_raster_grad_fixed_ro_local_ref_scale(self) -> float:
+        return self._cached_raster_grad_fixed_ro_local_ref_scale
+
+    @cached_raster_grad_fixed_ro_local_ref_scale.setter
+    def cached_raster_grad_fixed_ro_local_ref_scale(self, scale: float) -> None:
+        self._cached_raster_grad_fixed_ro_local_ref_scale = self._validate_positive_finite("cached_raster_grad_fixed_ro_local_ref_scale", scale)
+
+    @property
+    def cached_raster_grad_fixed_l_ref_scale(self) -> float:
+        return self._cached_raster_grad_fixed_l_ref_scale
+
+    @cached_raster_grad_fixed_l_ref_scale.setter
+    def cached_raster_grad_fixed_l_ref_scale(self, scale: float) -> None:
+        self._cached_raster_grad_fixed_l_ref_scale = self._validate_positive_finite("cached_raster_grad_fixed_l_ref_scale", scale)
+
+    @property
+    def cached_raster_grad_fixed_color_range(self) -> float:
+        return self._cached_raster_grad_fixed_color_range
+
+    @cached_raster_grad_fixed_color_range.setter
+    def cached_raster_grad_fixed_color_range(self, value: float) -> None:
+        self._cached_raster_grad_fixed_color_range = self._validate_positive_finite("cached_raster_grad_fixed_color_range", value)
+
+    @property
+    def cached_raster_grad_fixed_opacity_range(self) -> float:
+        return self._cached_raster_grad_fixed_opacity_range
+
+    @cached_raster_grad_fixed_opacity_range.setter
+    def cached_raster_grad_fixed_opacity_range(self, value: float) -> None:
+        self._cached_raster_grad_fixed_opacity_range = self._validate_positive_finite("cached_raster_grad_fixed_opacity_range", value)
+
+    @property
+    def cached_raster_grad_fixed_l_distance_norm_power(self) -> float:
+        return self._cached_raster_grad_fixed_l_distance_norm_power
+
+    @cached_raster_grad_fixed_l_distance_norm_power.setter
+    def cached_raster_grad_fixed_l_distance_norm_power(self, value: float) -> None:
+        self._cached_raster_grad_fixed_l_distance_norm_power = self._validate_finite("cached_raster_grad_fixed_l_distance_norm_power", value)
+
+    @property
     def cached_raster_grad_fixed_decode_scales(self) -> np.ndarray:
-        return self._RASTER_GRAD_FIXED_BASE_DECODE_SCALES / np.float32(self._cached_raster_grad_fixed_scale)
+        return np.array(
+            [
+                1.0 / 134217728.0, 1.0 / 134217728.0, 1.0 / 134217728.0,
+                1.0 / 33554432.0, 1.0 / 33554432.0, 1.0 / 33554432.0,
+                1.0 / 16777216.0, 1.0 / 16777216.0, 1.0 / 16777216.0,
+                self.cached_raster_grad_fixed_color_range / self._RASTER_GRAD_FIXED_INT_MAX,
+                self.cached_raster_grad_fixed_color_range / self._RASTER_GRAD_FIXED_INT_MAX,
+                self.cached_raster_grad_fixed_color_range / self._RASTER_GRAD_FIXED_INT_MAX,
+                self.cached_raster_grad_fixed_opacity_range / self._RASTER_GRAD_FIXED_INT_MAX,
+            ],
+            dtype=np.float32,
+        ) / np.float32(self._cached_raster_grad_fixed_scale)
 
     @classmethod
     def _cached_raster_grad_fixed_reference_table(cls, raster_cache: np.ndarray) -> np.ndarray:
@@ -1104,16 +1193,19 @@ class GaussianRenderer:
             return refs
         l_diag = np.exp(cache[:, 3:6]).astype(np.float32, copy=False)
         alpha = np.maximum(np.cbrt(np.maximum(l_diag[:, 0] * l_diag[:, 1] * l_diag[:, 2], np.float32(1e-12))), cls._RASTER_GRAD_FIXED_L_OFFDIAG_REF_FLOOR)
-        refs[:, 0:3] = (alpha * cls._RASTER_GRAD_FIXED_RO_LOCAL_REF_SCALE)[:, None]
-        refs[:, 3:6] = (alpha * cls._RASTER_GRAD_FIXED_L_REF_SCALE)[:, None]
-        refs[:, 6:9] = (alpha * cls._RASTER_GRAD_FIXED_L_REF_SCALE)[:, None]
         return refs
 
     def cached_raster_grad_fixed_decode_scale_table(self, splat_count: int | None = None, raster_cache: np.ndarray | None = None) -> np.ndarray:
         count = self._scene_count if splat_count is None else int(splat_count)
         cache = self.read_raster_cache(count) if raster_cache is None else np.asarray(raster_cache, dtype=np.float32).reshape(count, self._RASTER_CACHE_PARAM_COUNT)
         refs = self._cached_raster_grad_fixed_reference_table(cache)
-        refs[:, 6:9] *= np.float32(self.cached_raster_grad_fixed_loffdiag_ref_scale)
+        ro_local = cache[:, 0:3]
+        l_diag = np.exp(cache[:, 3:6]).astype(np.float32, copy=False)
+        alpha = np.maximum(np.cbrt(np.maximum(l_diag[:, 0] * l_diag[:, 1] * l_diag[:, 2], np.float32(1e-12))), self._RASTER_GRAD_FIXED_L_OFFDIAG_REF_FLOOR)
+        alpha *= np.power(np.maximum(np.linalg.norm(ro_local, axis=1), np.float32(1e-12)), np.float32(self.cached_raster_grad_fixed_l_distance_norm_power), dtype=np.float32)
+        refs[:, 0:3] = (alpha * np.float32(self.cached_raster_grad_fixed_ro_local_ref_scale))[:, None]
+        refs[:, 3:6] = (alpha * np.float32(self.cached_raster_grad_fixed_l_ref_scale))[:, None]
+        refs[:, 6:9] = (alpha * np.float32(self.cached_raster_grad_fixed_l_ref_scale) * np.float32(self.cached_raster_grad_fixed_loffdiag_ref_scale))[:, None]
         return refs * self.cached_raster_grad_fixed_decode_scales.reshape(1, self._RASTER_CACHE_PARAM_COUNT)
 
     def set_debug_grad_norm_buffer(self, buffer: spy.Buffer | None) -> None:

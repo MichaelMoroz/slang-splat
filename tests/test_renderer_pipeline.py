@@ -89,6 +89,16 @@ def test_renderer_params_default_to_float_cached_grad_atomics():
     assert kwargs["cached_raster_grad_fixed_scale"] == 0.125
     assert params.cached_raster_grad_fixed_loffdiag_ref_scale == 1.0
     assert kwargs["cached_raster_grad_fixed_loffdiag_ref_scale"] == 1.0
+    assert params.cached_raster_grad_fixed_ro_local_ref_scale == 100.0
+    assert kwargs["cached_raster_grad_fixed_ro_local_ref_scale"] == 100.0
+    assert params.cached_raster_grad_fixed_l_ref_scale == 100.0
+    assert kwargs["cached_raster_grad_fixed_l_ref_scale"] == 100.0
+    assert params.cached_raster_grad_fixed_color_range == 200.0
+    assert kwargs["cached_raster_grad_fixed_color_range"] == 200.0
+    assert params.cached_raster_grad_fixed_opacity_range == 200.0
+    assert kwargs["cached_raster_grad_fixed_opacity_range"] == 200.0
+    assert params.cached_raster_grad_fixed_l_distance_norm_power == 0.0
+    assert kwargs["cached_raster_grad_fixed_l_distance_norm_power"] == 0.0
 
 
 def test_tile_keys_and_ranges_match_reference(device):
@@ -577,7 +587,7 @@ def test_fixed_cached_raster_grads_match_float_mode_on_distorted_target_mse(devi
         ("roLocal", slice(0, 3), 1.2e-2, 1.0, 0.40),
         ("logLDiag", slice(3, 6), 8e-3, 1.0, 1.0),
         ("lOffDiag", slice(6, 9), 1.6e-2, 1.0, 0.20),
-        ("colorOpacity", slice(9, 13), 1.2e-2, 0.14, 0.03),
+        ("colorOpacity", slice(9, 13), 1.2e-2, 0.14, 0.05),
     ):
         ref = cached_float[:, group_slice]
         actual = cached_fixed[:, group_slice]

@@ -42,6 +42,7 @@ class RendererParams:
     radius_scale: float = 1.0; alpha_cutoff: float = 1.0 / 255.0; max_splat_steps: int = 32768
     transmittance_threshold: float = 0.005; sampled5_safety_scale: float = 1.0; list_capacity_multiplier: int = 64
     max_prepass_memory_mb: int = 4096; cached_raster_grad_atomic_mode: str = "float"; cached_raster_grad_fixed_scale: float = 0.125; cached_raster_grad_fixed_loffdiag_ref_scale: float = 1.0
+    cached_raster_grad_fixed_ro_local_ref_scale: float = 100.0; cached_raster_grad_fixed_l_ref_scale: float = 100.0; cached_raster_grad_fixed_color_range: float = 200.0; cached_raster_grad_fixed_opacity_range: float = 200.0; cached_raster_grad_fixed_l_distance_norm_power: float = 0.0
     debug_show_ellipses: bool = False; debug_show_processed_count: bool = False; debug_show_grad_norm: bool = False
 
 
