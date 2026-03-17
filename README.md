@@ -12,6 +12,7 @@ Runtime target is Vulkan.
 - GPU compute rasterizer that blends tile-local sorted splats with fixed `8x8` tiles, one pixel per thread, and `256`-splat shared batches.
 - Fused raster forward/backward training path for per-splat gradients without per-pixel state buffers.
 - Fused one-thread-per-packed-parameter ADAM training kernel for a fixed gaussian count.
+- Pure-CUDA PyTorch renderer wrapper over the existing forward/backward raster path.
 - CPU COLMAP point-cloud initialization with nearest-neighbor scales.
 - Dynamic training loss downscale in the viewer with auto schedule and manual override modes.
 - CPU reference implementations in `reference_impls` plus tests for key algorithms.
@@ -31,6 +32,11 @@ python -m pip install -r requirements.txt
 python -m pip install slangpy
 ```
 If you have a local Slangpy checkout, replace the last command with `python -m pip install -e <path-to-slangpy>`.
+
+Optional PyTorch interface:
+```powershell
+python -m pip install <cuda-enabled-pytorch-build>
+```
 
 ## Render One Frame
 ```powershell
@@ -76,6 +82,9 @@ Tracked regression dataset subset:
 ```powershell
 python cli.py render-ply --ply D:\Datasets\3DGS\TEST\flowers.ply --output-dir outputs\flowers_views --views 24
 ```
+
+## PyTorch CUDA Interface
+The optional differentiable CUDA/PyTorch wrapper is documented in `doc/TorchRenderer.md`.
 
 Training notes:
 - Training walks a shuffled permutation of views and reshuffles after every full image epoch.
@@ -128,7 +137,7 @@ This sweeps a single splat across a wide scale range, records the rendered fitte
 - `src/training`: COLMAP training runtime and hyperparameter dataclasses.
 - `src/filter`: reusable image-space Gaussian blur utilities.
 - `src/sort`: GPU radix sort wrapper.
-- `src/renderer`: camera and renderer orchestration.
+- `src/renderer`: camera, renderer orchestration, and optional CUDA/PyTorch bridge.
 - `reference_impls`: CPU and analytical reference implementations used by tests.
 - `src/viewer`: viewer state, UI schema, session logic, and frame presentation.
 - `shaders/utility`: reusable shader math, splatting, loss, optimizer, blur, prefix-sum, and radix-sort modules.
