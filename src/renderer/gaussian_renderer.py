@@ -87,6 +87,9 @@ class GaussianRenderer:
     CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT = "float"
     CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED = "fixed"
     CACHED_RASTER_GRAD_ATOMIC_MODES = (CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT, CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED)
+    _RASTER_GRAD_FIXED_INT_MAX = np.float32(2147483647.0)
+    _RASTER_GRAD_FIXED_COLOR_RANGE = np.float32(100.0)
+    _RASTER_GRAD_FIXED_OPACITY_RANGE = np.float32(100.0)
     _COUNTER_READBACK_RING_SIZE = 2
     _SCANLINE_WORK_ITEM_UINTS = 8
     _U32_BYTES = 4
@@ -97,10 +100,13 @@ class GaussianRenderer:
     _RASTER_CACHE_PARAM_COUNT = 13
     _RASTER_GRAD_FIXED_BASE_DECODE_SCALES = np.array(
         [
-            1.0 / 16777216.0, 1.0 / 16777216.0, 1.0 / 16777216.0,
+            1.0 / 134217728.0, 1.0 / 134217728.0, 1.0 / 134217728.0,
             1.0 / 33554432.0, 1.0 / 33554432.0, 1.0 / 33554432.0,
             1.0 / 16777216.0, 1.0 / 16777216.0, 1.0 / 16777216.0,
-            1.0 / 134217728.0, 1.0 / 134217728.0, 1.0 / 134217728.0, 1.0 / 4194304.0,
+            _RASTER_GRAD_FIXED_COLOR_RANGE / _RASTER_GRAD_FIXED_INT_MAX,
+            _RASTER_GRAD_FIXED_COLOR_RANGE / _RASTER_GRAD_FIXED_INT_MAX,
+            _RASTER_GRAD_FIXED_COLOR_RANGE / _RASTER_GRAD_FIXED_INT_MAX,
+            _RASTER_GRAD_FIXED_OPACITY_RANGE / _RASTER_GRAD_FIXED_INT_MAX,
         ],
         dtype=np.float32,
     )
@@ -1095,10 +1101,11 @@ class GaussianRenderer:
         refs = np.ones_like(cache, dtype=np.float32)
         if cache.shape[0] <= 0:
             return refs
-        log_ldiag = np.abs(cache[:, 3:6])
-        refs[:, 3:6] = np.maximum(log_ldiag, cls._RASTER_GRAD_FIXED_LOG_L_DIAG_REF_FLOOR)
         l_diag = np.exp(cache[:, 3:6]).astype(np.float32, copy=False)
         alpha = np.maximum(np.cbrt(np.maximum(l_diag[:, 0] * l_diag[:, 1] * l_diag[:, 2], np.float32(1e-12))), cls._RASTER_GRAD_FIXED_L_OFFDIAG_REF_FLOOR)
+        refs[:, 0:3] = alpha[:, None]
+        log_ldiag = np.abs(cache[:, 3:6])
+        refs[:, 3:6] = np.maximum(log_ldiag, cls._RASTER_GRAD_FIXED_LOG_L_DIAG_REF_FLOOR)
         refs[:, 6:9] = alpha[:, None]
         return refs
 
