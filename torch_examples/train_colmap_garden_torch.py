@@ -44,14 +44,12 @@ _MAX_ALPHA = 0.9999
 _MIN_SCALE = 1e-4
 _MAX_SCALE = 3.0
 _OUTPUT_RENDER_SUBDIR = "renders"
-_DEFAULT_CACHED_RASTER_GRAD_ATOMIC_MODE = "fixed"
-_DEFAULT_CACHED_RASTER_GRAD_FIXED_SCALE = 16.0
-_DEFAULT_CACHED_RASTER_GRAD_FIXED_LOFFDIAG_REF_SCALE = 1.0
-_DEFAULT_CACHED_RASTER_GRAD_FIXED_RO_LOCAL_REF_SCALE = 10.0
-_DEFAULT_CACHED_RASTER_GRAD_FIXED_L_REF_SCALE = 10.0
+_DEFAULT_CACHED_RASTER_GRAD_ATOMIC_MODE = "float"
+_DEFAULT_CACHED_RASTER_GRAD_FIXED_RO_LOCAL_RANGE = 10.0
+_DEFAULT_CACHED_RASTER_GRAD_FIXED_LOG_L_DIAG_RANGE = 10.0
+_DEFAULT_CACHED_RASTER_GRAD_FIXED_L_OFFDIAG_RANGE = 10.0
 _DEFAULT_CACHED_RASTER_GRAD_FIXED_COLOR_RANGE = 200.0
 _DEFAULT_CACHED_RASTER_GRAD_FIXED_OPACITY_RANGE = 200.0
-_DEFAULT_CACHED_RASTER_GRAD_FIXED_L_DISTANCE_NORM_POWER = 0.0
 _DEFAULT_THROUGHPUT_WARMUP_STEPS = 1
 _DEFAULT_THROUGHPUT_WINDOW = 32
 
@@ -89,13 +87,11 @@ class TorchGardenTrainConfig:
     lr_decay_start_fraction: float = 0.75
     target_psnr: float = 25.0
     cached_raster_grad_atomic_mode: str = _DEFAULT_CACHED_RASTER_GRAD_ATOMIC_MODE
-    cached_raster_grad_fixed_scale: float = _DEFAULT_CACHED_RASTER_GRAD_FIXED_SCALE
-    cached_raster_grad_fixed_loffdiag_ref_scale: float = _DEFAULT_CACHED_RASTER_GRAD_FIXED_LOFFDIAG_REF_SCALE
-    cached_raster_grad_fixed_ro_local_ref_scale: float = _DEFAULT_CACHED_RASTER_GRAD_FIXED_RO_LOCAL_REF_SCALE
-    cached_raster_grad_fixed_l_ref_scale: float = _DEFAULT_CACHED_RASTER_GRAD_FIXED_L_REF_SCALE
+    cached_raster_grad_fixed_ro_local_range: float = _DEFAULT_CACHED_RASTER_GRAD_FIXED_RO_LOCAL_RANGE
+    cached_raster_grad_fixed_log_l_diag_range: float = _DEFAULT_CACHED_RASTER_GRAD_FIXED_LOG_L_DIAG_RANGE
+    cached_raster_grad_fixed_l_offdiag_range: float = _DEFAULT_CACHED_RASTER_GRAD_FIXED_L_OFFDIAG_RANGE
     cached_raster_grad_fixed_color_range: float = _DEFAULT_CACHED_RASTER_GRAD_FIXED_COLOR_RANGE
     cached_raster_grad_fixed_opacity_range: float = _DEFAULT_CACHED_RASTER_GRAD_FIXED_OPACITY_RANGE
-    cached_raster_grad_fixed_l_distance_norm_power: float = _DEFAULT_CACHED_RASTER_GRAD_FIXED_L_DISTANCE_NORM_POWER
     throughput_warmup_steps: int = _DEFAULT_THROUGHPUT_WARMUP_STEPS
     enable_saves: bool = True
     torch_device: str | None = None
@@ -125,13 +121,11 @@ class TorchGardenTrainConfig:
         self.lr_decay_start_fraction = min(max(float(self.lr_decay_start_fraction), 0.0), 1.0)
         self.target_psnr = float(self.target_psnr)
         self.cached_raster_grad_atomic_mode = str(self.cached_raster_grad_atomic_mode)
-        self.cached_raster_grad_fixed_scale = float(self.cached_raster_grad_fixed_scale)
-        self.cached_raster_grad_fixed_loffdiag_ref_scale = float(self.cached_raster_grad_fixed_loffdiag_ref_scale)
-        self.cached_raster_grad_fixed_ro_local_ref_scale = float(self.cached_raster_grad_fixed_ro_local_ref_scale)
-        self.cached_raster_grad_fixed_l_ref_scale = float(self.cached_raster_grad_fixed_l_ref_scale)
+        self.cached_raster_grad_fixed_ro_local_range = float(self.cached_raster_grad_fixed_ro_local_range)
+        self.cached_raster_grad_fixed_log_l_diag_range = float(self.cached_raster_grad_fixed_log_l_diag_range)
+        self.cached_raster_grad_fixed_l_offdiag_range = float(self.cached_raster_grad_fixed_l_offdiag_range)
         self.cached_raster_grad_fixed_color_range = float(self.cached_raster_grad_fixed_color_range)
         self.cached_raster_grad_fixed_opacity_range = float(self.cached_raster_grad_fixed_opacity_range)
-        self.cached_raster_grad_fixed_l_distance_norm_power = float(self.cached_raster_grad_fixed_l_distance_norm_power)
         self.throughput_warmup_steps = max(int(self.throughput_warmup_steps), 0)
         self.enable_saves = bool(self.enable_saves)
         if self.max_frames is not None:
@@ -359,13 +353,11 @@ def build_render_settings(frame: ColmapFrame, config: TorchGardenTrainConfig) ->
         width=frame.width,
         height=frame.height,
         cached_raster_grad_atomic_mode=config.cached_raster_grad_atomic_mode,
-        cached_raster_grad_fixed_scale=config.cached_raster_grad_fixed_scale,
-        cached_raster_grad_fixed_loffdiag_ref_scale=config.cached_raster_grad_fixed_loffdiag_ref_scale,
-        cached_raster_grad_fixed_ro_local_ref_scale=config.cached_raster_grad_fixed_ro_local_ref_scale,
-        cached_raster_grad_fixed_l_ref_scale=config.cached_raster_grad_fixed_l_ref_scale,
+        cached_raster_grad_fixed_ro_local_range=config.cached_raster_grad_fixed_ro_local_range,
+        cached_raster_grad_fixed_log_l_diag_range=config.cached_raster_grad_fixed_log_l_diag_range,
+        cached_raster_grad_fixed_l_offdiag_range=config.cached_raster_grad_fixed_l_offdiag_range,
         cached_raster_grad_fixed_color_range=config.cached_raster_grad_fixed_color_range,
         cached_raster_grad_fixed_opacity_range=config.cached_raster_grad_fixed_opacity_range,
-        cached_raster_grad_fixed_l_distance_norm_power=config.cached_raster_grad_fixed_l_distance_norm_power,
     )
 
 
@@ -619,7 +611,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Small torch-side COLMAP trainer example for dataset/garden.")
     parser.add_argument("--colmap-root", type=Path, default=Path("dataset/garden"))
     parser.add_argument("--images-subdir", type=str, default="images_4")
-    parser.add_argument("--iters", type=int, default=30000)
+    parser.add_argument("--iters", type=int, default=1000)
     parser.add_argument("--max-gaussians", type=int, default=0)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--save-every", type=int, default=1000)
@@ -640,13 +632,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lr-decay-start-fraction", type=float, default=0.75)
     parser.add_argument("--target-psnr", type=float, default=25.0)
     parser.add_argument("--cached-raster-grad-atomic-mode", type=str, default=_DEFAULT_CACHED_RASTER_GRAD_ATOMIC_MODE)
-    parser.add_argument("--cached-raster-grad-fixed-scale", type=float, default=_DEFAULT_CACHED_RASTER_GRAD_FIXED_SCALE)
-    parser.add_argument("--cached-raster-grad-fixed-loffdiag-ref-scale", type=float, default=_DEFAULT_CACHED_RASTER_GRAD_FIXED_LOFFDIAG_REF_SCALE)
-    parser.add_argument("--cached-raster-grad-fixed-ro-local-ref-scale", type=float, default=_DEFAULT_CACHED_RASTER_GRAD_FIXED_RO_LOCAL_REF_SCALE)
-    parser.add_argument("--cached-raster-grad-fixed-l-ref-scale", type=float, default=_DEFAULT_CACHED_RASTER_GRAD_FIXED_L_REF_SCALE)
+    parser.add_argument("--cached-raster-grad-fixed-ro-local-range", type=float, default=_DEFAULT_CACHED_RASTER_GRAD_FIXED_RO_LOCAL_RANGE)
+    parser.add_argument("--cached-raster-grad-fixed-log-l-diag-range", type=float, default=_DEFAULT_CACHED_RASTER_GRAD_FIXED_LOG_L_DIAG_RANGE)
+    parser.add_argument("--cached-raster-grad-fixed-l-offdiag-range", type=float, default=_DEFAULT_CACHED_RASTER_GRAD_FIXED_L_OFFDIAG_RANGE)
     parser.add_argument("--cached-raster-grad-fixed-color-range", type=float, default=_DEFAULT_CACHED_RASTER_GRAD_FIXED_COLOR_RANGE)
     parser.add_argument("--cached-raster-grad-fixed-opacity-range", type=float, default=_DEFAULT_CACHED_RASTER_GRAD_FIXED_OPACITY_RANGE)
-    parser.add_argument("--cached-raster-grad-fixed-l-distance-norm-power", type=float, default=_DEFAULT_CACHED_RASTER_GRAD_FIXED_L_DISTANCE_NORM_POWER)
     parser.add_argument("--throughput-warmup-steps", type=int, default=_DEFAULT_THROUGHPUT_WARMUP_STEPS)
     parser.add_argument("--torch-device", type=str, default=None)
     parser.add_argument("--max-frames", type=int, default=None)
@@ -680,13 +670,11 @@ def main() -> int:
         lr_decay_start_fraction=args.lr_decay_start_fraction,
         target_psnr=args.target_psnr,
         cached_raster_grad_atomic_mode=args.cached_raster_grad_atomic_mode,
-        cached_raster_grad_fixed_scale=args.cached_raster_grad_fixed_scale,
-        cached_raster_grad_fixed_loffdiag_ref_scale=args.cached_raster_grad_fixed_loffdiag_ref_scale,
-        cached_raster_grad_fixed_ro_local_ref_scale=args.cached_raster_grad_fixed_ro_local_ref_scale,
-        cached_raster_grad_fixed_l_ref_scale=args.cached_raster_grad_fixed_l_ref_scale,
+        cached_raster_grad_fixed_ro_local_range=args.cached_raster_grad_fixed_ro_local_range,
+        cached_raster_grad_fixed_log_l_diag_range=args.cached_raster_grad_fixed_log_l_diag_range,
+        cached_raster_grad_fixed_l_offdiag_range=args.cached_raster_grad_fixed_l_offdiag_range,
         cached_raster_grad_fixed_color_range=args.cached_raster_grad_fixed_color_range,
         cached_raster_grad_fixed_opacity_range=args.cached_raster_grad_fixed_opacity_range,
-        cached_raster_grad_fixed_l_distance_norm_power=args.cached_raster_grad_fixed_l_distance_norm_power,
         throughput_warmup_steps=args.throughput_warmup_steps,
         enable_saves=not bool(args.disable_saves),
         torch_device=args.torch_device,

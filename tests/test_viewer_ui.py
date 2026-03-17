@@ -40,7 +40,11 @@ def test_build_ui_initializes_histogram_controls() -> None:
         transmittance_threshold=0.005,
         sampled5_safety_scale=1.0,
         cached_raster_grad_atomic_mode="fixed",
-        cached_raster_grad_fixed_scale=0.125,
+        cached_raster_grad_fixed_ro_local_range=10.0,
+        cached_raster_grad_fixed_log_l_diag_range=10.0,
+        cached_raster_grad_fixed_l_offdiag_range=10.0,
+        cached_raster_grad_fixed_color_range=200.0,
+        cached_raster_grad_fixed_opacity_range=200.0,
         debug_show_ellipses=False,
         debug_show_processed_count=False,
         debug_show_grad_norm=False,
@@ -53,7 +57,8 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["hist_auto_refresh"] is True
     assert viewer_ui._values["hist_bin_count"] == 64
     assert viewer_ui._values["hist_y_limit"] == 1.0
-    assert viewer_ui._values["cached_raster_grad_fixed_scale"] == 0.125
+    assert viewer_ui._values["cached_raster_grad_fixed_ro_local_range"] == 10.0
+    assert viewer_ui._values["cached_raster_grad_fixed_color_range"] == 200.0
     assert viewer_ui._values["cached_raster_grad_atomic_mode"] == 1
     assert viewer_ui._values["lr_scale_mul"] == 5.0
     assert viewer_ui._values["_histogram_update_y_limit"] is True

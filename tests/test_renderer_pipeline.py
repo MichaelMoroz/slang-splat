@@ -85,20 +85,16 @@ def test_renderer_params_default_to_fixed_cached_grad_atomics():
 
     assert params.cached_raster_grad_atomic_mode == "fixed"
     assert kwargs["cached_raster_grad_atomic_mode"] == "fixed"
-    assert params.cached_raster_grad_fixed_scale == 0.125
-    assert kwargs["cached_raster_grad_fixed_scale"] == 0.125
-    assert params.cached_raster_grad_fixed_loffdiag_ref_scale == 1.0
-    assert kwargs["cached_raster_grad_fixed_loffdiag_ref_scale"] == 1.0
-    assert params.cached_raster_grad_fixed_ro_local_ref_scale == 100.0
-    assert kwargs["cached_raster_grad_fixed_ro_local_ref_scale"] == 100.0
-    assert params.cached_raster_grad_fixed_l_ref_scale == 100.0
-    assert kwargs["cached_raster_grad_fixed_l_ref_scale"] == 100.0
+    assert params.cached_raster_grad_fixed_ro_local_range == 10.0
+    assert kwargs["cached_raster_grad_fixed_ro_local_range"] == 10.0
+    assert params.cached_raster_grad_fixed_log_l_diag_range == 10.0
+    assert kwargs["cached_raster_grad_fixed_log_l_diag_range"] == 10.0
+    assert params.cached_raster_grad_fixed_l_offdiag_range == 10.0
+    assert kwargs["cached_raster_grad_fixed_l_offdiag_range"] == 10.0
     assert params.cached_raster_grad_fixed_color_range == 200.0
     assert kwargs["cached_raster_grad_fixed_color_range"] == 200.0
     assert params.cached_raster_grad_fixed_opacity_range == 200.0
     assert kwargs["cached_raster_grad_fixed_opacity_range"] == 200.0
-    assert params.cached_raster_grad_fixed_l_distance_norm_power == 0.0
-    assert kwargs["cached_raster_grad_fixed_l_distance_norm_power"] == 0.0
 
 
 def test_tile_keys_and_ranges_match_reference(device):
@@ -494,12 +490,12 @@ def test_active_cached_raster_grad_metrics_tensor_decodes_fixed_mode(device):
     np.testing.assert_allclose(prepared, decoded, rtol=0.0, atol=1e-7)
 
 
-def test_cached_raster_grad_fixed_scale_updates_decode_scales(device):
-    renderer = GaussianRenderer(device, width=32, height=32, cached_raster_grad_fixed_scale=2.5)
+def test_cached_raster_grad_fixed_range_updates_decode_scales(device):
+    renderer = GaussianRenderer(device, width=32, height=32, cached_raster_grad_fixed_ro_local_range=2.5)
 
     np.testing.assert_allclose(
-        renderer.cached_raster_grad_fixed_decode_scales,
-        GaussianRenderer._RASTER_GRAD_FIXED_BASE_DECODE_SCALES / np.float32(2.5),
+        renderer.cached_raster_grad_fixed_decode_scales[:3],
+        np.full((3,), np.float32(2.5 / GaussianRenderer._RASTER_GRAD_FIXED_INT_MAX), dtype=np.float32),
         rtol=0.0,
         atol=0.0,
     )

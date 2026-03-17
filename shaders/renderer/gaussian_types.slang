@@ -61,13 +61,11 @@ uniform RWStructuredBuffer<float> g_ParamGrads;
 uniform RWStructuredBuffer<int> g_CachedRasterGradsFixed;
 uniform RWStructuredBuffer<float> g_CachedRasterGradsFloat;
 uniform float g_RasterGradDecodeScale;
-uniform float g_CachedRasterGradFixedScale;
-uniform float g_CachedRasterGradFixedLOffdiagRefScale;
-uniform float g_CachedRasterGradFixedROLocalRefScale;
-uniform float g_CachedRasterGradFixedLRefScale;
+uniform float g_CachedRasterGradFixedROLocalRange;
+uniform float g_CachedRasterGradFixedLogLDiagRange;
+uniform float g_CachedRasterGradFixedLOffdiagRange;
 uniform float g_CachedRasterGradFixedColorRange;
 uniform float g_CachedRasterGradFixedOpacityRange;
-uniform float g_CachedRasterGradFixedLDistanceNormPower;
 
 uniform CameraParams g_Camera;
 uniform PrepassParams g_Prepass;

@@ -26,69 +26,41 @@ struct RasterState : IDifferentiable
     }
 };
 
-static const float RASTER_GRAD_FIXED_SCALE = float(1u << RASTER_GRAD_FIXED_FRAC_BITS);
-static const float RASTER_GRAD_FIXED_INV_SCALE = 1.0 / RASTER_GRAD_FIXED_SCALE;
 static const float RASTER_GRAD_FIXED_INT_MIN_F = -2147483648.0;
 static const float RASTER_GRAD_FIXED_INT_MAX_F = 2147483647.0;
-static const float RASTER_GRAD_FIXED_SCALE_RO_LOCAL = 134217728.0;
-static const float RASTER_GRAD_FIXED_INV_SCALE_RO_LOCAL = 1.0 / RASTER_GRAD_FIXED_SCALE_RO_LOCAL;
-static const float RASTER_GRAD_FIXED_SCALE_LOG_L_DIAG = 33554432.0;
-static const float RASTER_GRAD_FIXED_INV_SCALE_LOG_L_DIAG = 1.0 / RASTER_GRAD_FIXED_SCALE_LOG_L_DIAG;
-static const float RASTER_GRAD_FIXED_SCALE_L_OFFDIAG = 16777216.0;
-static const float RASTER_GRAD_FIXED_INV_SCALE_L_OFFDIAG = 1.0 / RASTER_GRAD_FIXED_SCALE_L_OFFDIAG;
 static const float RASTER_GRAD_FIXED_L_OFFDIAG_REF_FLOOR = 0.25;
 
-float raster_grad_fixed_color_decode_scale() { return max(g_CachedRasterGradFixedColorRange, SMALL_VALUE) / RASTER_GRAD_FIXED_INT_MAX_F; }
-
-float raster_grad_fixed_opacity_decode_scale() { return max(g_CachedRasterGradFixedOpacityRange, SMALL_VALUE) / RASTER_GRAD_FIXED_INT_MAX_F; }
-
-float raster_grad_fixed_base_encode_scale(uint fieldId)
+float raster_grad_fixed_range(uint fieldId)
 {
-    return fieldId < RASTER_CACHE_LOG_L_DIAG_X ? RASTER_GRAD_FIXED_SCALE_RO_LOCAL :
-        fieldId < RASTER_CACHE_L_OFFDIAG_YX ? RASTER_GRAD_FIXED_SCALE_LOG_L_DIAG :
-        fieldId < RASTER_CACHE_COLOR_R ? RASTER_GRAD_FIXED_SCALE_L_OFFDIAG :
-        fieldId < RASTER_CACHE_FUSED_OPACITY ? (1.0 / raster_grad_fixed_color_decode_scale()) :
-        (1.0 / raster_grad_fixed_opacity_decode_scale());
+    return fieldId < RASTER_CACHE_LOG_L_DIAG_X ? g_CachedRasterGradFixedROLocalRange :
+        fieldId < RASTER_CACHE_L_OFFDIAG_YX ? g_CachedRasterGradFixedLogLDiagRange :
+        fieldId < RASTER_CACHE_COLOR_R ? g_CachedRasterGradFixedLOffdiagRange :
+        fieldId < RASTER_CACHE_FUSED_OPACITY ? g_CachedRasterGradFixedColorRange :
+        g_CachedRasterGradFixedOpacityRange;
 }
 
-float raster_grad_fixed_encode_scale(uint fieldId, float refValue)
+int raster_grad_fixed_quantize(float value, float range)
 {
-    return raster_grad_fixed_base_encode_scale(fieldId) * g_CachedRasterGradFixedScale / max(refValue, SMALL_VALUE);
-}
-
-float raster_grad_fixed_base_decode_scale(uint fieldId)
-{
-    return fieldId < RASTER_CACHE_LOG_L_DIAG_X ? RASTER_GRAD_FIXED_INV_SCALE_RO_LOCAL :
-        fieldId < RASTER_CACHE_L_OFFDIAG_YX ? RASTER_GRAD_FIXED_INV_SCALE_LOG_L_DIAG :
-        fieldId < RASTER_CACHE_COLOR_R ? RASTER_GRAD_FIXED_INV_SCALE_L_OFFDIAG :
-        fieldId < RASTER_CACHE_FUSED_OPACITY ? raster_grad_fixed_color_decode_scale() :
-        raster_grad_fixed_opacity_decode_scale();
-}
-
-float raster_grad_fixed_decode_scale(uint fieldId, float refValue)
-{
-    return raster_grad_fixed_base_decode_scale(fieldId) * max(refValue, SMALL_VALUE) / g_CachedRasterGradFixedScale;
-}
-
-int raster_grad_fixed_encode(float value, uint fieldId, float refValue)
-{
-    float scaled = value * raster_grad_fixed_encode_scale(fieldId, refValue);
+    float safeRange = max(range, SMALL_VALUE);
+    float normalized = clamp(value / safeRange, -1.0, 1.0);
+    float scaled = normalized >= 0.0 ? normalized * RASTER_GRAD_FIXED_INT_MAX_F : normalized * (-RASTER_GRAD_FIXED_INT_MIN_F);
     return int(scaled >= 0.0 ? floor(scaled + 0.5) : ceil(scaled - 0.5));
 }
 
-float raster_grad_fixed_decode(int value, uint fieldId, float refValue)
+float raster_grad_fixed_dequantize(int value, float range)
 {
-    return float(value) * raster_grad_fixed_decode_scale(fieldId, refValue);
+    float safeRange = max(range, SMALL_VALUE);
+    float scale = value >= 0 ? RASTER_GRAD_FIXED_INT_MAX_F : (-RASTER_GRAD_FIXED_INT_MIN_F);
+    return float(value) * safeRange / max(scale, SMALL_VALUE);
 }
 
 float raster_grad_fixed_shape_alpha(float3 roLocal, float3 logLDiag)
 {
     float3 lDiag = exp(logLDiag);
-    float alpha = max(pow(max(lDiag.x * lDiag.y * lDiag.z, SMALL_VALUE), 1.0 / 3.0), RASTER_GRAD_FIXED_L_OFFDIAG_REF_FLOOR);
-    return alpha * pow(max(length(roLocal), SMALL_VALUE), g_CachedRasterGradFixedLDistanceNormPower);
+    return max(pow(max(lDiag.x * lDiag.y * lDiag.z, SMALL_VALUE), 1.0 / 3.0), RASTER_GRAD_FIXED_L_OFFDIAG_REF_FLOOR);
 }
 
-void atomic_add_raster_cache_grad_fixed<let N : int>(uint splatCount, uint firstFieldId, uint splatId, vector<float, N> grad, vector<float, N> refs)
+void atomic_add_raster_cache_grad_fixed<let N : int>(uint splatCount, uint firstFieldId, uint splatId, vector<float, N> grad)
 {
     [unroll] for (int i = 0; i < N; i++)
     {
@@ -96,7 +68,7 @@ void atomic_add_raster_cache_grad_fixed<let N : int>(uint splatCount, uint first
         // if (!WaveIsFirstLane()) continue;
         float waveGrad = grad[i];
         uint fieldId = firstFieldId + uint(i);
-        int value = raster_grad_fixed_encode(waveGrad, fieldId, refs[i]);
+        int value = raster_grad_fixed_quantize(waveGrad, raster_grad_fixed_range(fieldId));
         if (value == 0) continue;
         InterlockedAdd(g_CachedRasterGradsFixed[raster_cache_index(splatCount, fieldId, splatId)], value);
     }
@@ -180,13 +152,10 @@ struct RasterGaussian : IDifferentiable
         uint splatCount = g_Prepass.splatCount;
         RasterGaussian gaussian = load_shared(localIdx);
         float shapeAlpha = raster_grad_fixed_shape_alpha(gaussian.roLocal, gaussian.logLDiag);
-        float3 roLocalRefs = float3(shapeAlpha * g_CachedRasterGradFixedROLocalRefScale);
-        float3 logLDiagRefs = float3(shapeAlpha * g_CachedRasterGradFixedLRefScale);
-        float3 lOffDiagRefs = logLDiagRefs * g_CachedRasterGradFixedLOffdiagRefScale;
-        atomic_add_raster_cache_grad_fixed<3>(splatCount, RASTER_CACHE_RO_LOCAL_X, splatId, dOut.roLocal, roLocalRefs);
-        atomic_add_raster_cache_grad_fixed<3>(splatCount, RASTER_CACHE_LOG_L_DIAG_X, splatId, dOut.logLDiag, logLDiagRefs);
-        atomic_add_raster_cache_grad_fixed<3>(splatCount, RASTER_CACHE_L_OFFDIAG_YX, splatId, dOut.lOffDiag, lOffDiagRefs);
-        atomic_add_raster_cache_grad_fixed<4>(splatCount, RASTER_CACHE_COLOR_R, splatId, dOut.colorAlpha, float4(1.0));
+        atomic_add_raster_cache_grad_fixed<3>(splatCount, RASTER_CACHE_RO_LOCAL_X, splatId, dOut.roLocal / shapeAlpha);
+        atomic_add_raster_cache_grad_fixed<3>(splatCount, RASTER_CACHE_LOG_L_DIAG_X, splatId, dOut.logLDiag / shapeAlpha);
+        atomic_add_raster_cache_grad_fixed<3>(splatCount, RASTER_CACHE_L_OFFDIAG_YX, splatId, dOut.lOffDiag / shapeAlpha);
+        atomic_add_raster_cache_grad_fixed<4>(splatCount, RASTER_CACHE_COLOR_R, splatId, dOut.colorAlpha);
     }
 
     static void accumulate_gradients_float(uint localIdx, Differential dOut)
@@ -214,30 +183,27 @@ RasterGaussian.Differential load_cached_raster_grad_fixed(uint splatId)
         g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_Z, splatId)]
     );
     float shapeAlpha = raster_grad_fixed_shape_alpha(cachedRoLocal, cachedLogLDiag);
-    float3 roLocalRefs = float3(shapeAlpha * g_CachedRasterGradFixedROLocalRefScale);
-    float3 logLDiagRefs = float3(shapeAlpha * g_CachedRasterGradFixedLRefScale);
-    float3 lOffDiagRefs = logLDiagRefs * g_CachedRasterGradFixedLOffdiagRefScale;
     RasterGaussian.Differential grad;
     grad.roLocal = float3(
-        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_X, splatId)], RASTER_CACHE_RO_LOCAL_X, roLocalRefs.x),
-        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_Y, splatId)], RASTER_CACHE_RO_LOCAL_Y, roLocalRefs.y),
-        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_Z, splatId)], RASTER_CACHE_RO_LOCAL_Z, roLocalRefs.z)
+        raster_grad_fixed_dequantize(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_X, splatId)], g_CachedRasterGradFixedROLocalRange) * shapeAlpha,
+        raster_grad_fixed_dequantize(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_Y, splatId)], g_CachedRasterGradFixedROLocalRange) * shapeAlpha,
+        raster_grad_fixed_dequantize(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_Z, splatId)], g_CachedRasterGradFixedROLocalRange) * shapeAlpha
     );
     grad.logLDiag = float3(
-        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_LOG_L_DIAG_X, splatId)], RASTER_CACHE_LOG_L_DIAG_X, logLDiagRefs.x),
-        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_LOG_L_DIAG_Y, splatId)], RASTER_CACHE_LOG_L_DIAG_Y, logLDiagRefs.y),
-        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_LOG_L_DIAG_Z, splatId)], RASTER_CACHE_LOG_L_DIAG_Z, logLDiagRefs.z)
+        raster_grad_fixed_dequantize(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_LOG_L_DIAG_X, splatId)], g_CachedRasterGradFixedLogLDiagRange) * shapeAlpha,
+        raster_grad_fixed_dequantize(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_LOG_L_DIAG_Y, splatId)], g_CachedRasterGradFixedLogLDiagRange) * shapeAlpha,
+        raster_grad_fixed_dequantize(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_LOG_L_DIAG_Z, splatId)], g_CachedRasterGradFixedLogLDiagRange) * shapeAlpha
     );
     grad.lOffDiag = float3(
-        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_L_OFFDIAG_YX, splatId)], RASTER_CACHE_L_OFFDIAG_YX, lOffDiagRefs.x),
-        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_L_OFFDIAG_ZX, splatId)], RASTER_CACHE_L_OFFDIAG_ZX, lOffDiagRefs.y),
-        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_L_OFFDIAG_ZY, splatId)], RASTER_CACHE_L_OFFDIAG_ZY, lOffDiagRefs.z)
+        raster_grad_fixed_dequantize(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_L_OFFDIAG_YX, splatId)], g_CachedRasterGradFixedLOffdiagRange) * shapeAlpha,
+        raster_grad_fixed_dequantize(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_L_OFFDIAG_ZX, splatId)], g_CachedRasterGradFixedLOffdiagRange) * shapeAlpha,
+        raster_grad_fixed_dequantize(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_L_OFFDIAG_ZY, splatId)], g_CachedRasterGradFixedLOffdiagRange) * shapeAlpha
     );
     grad.colorAlpha = float4(
-        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_COLOR_R, splatId)], RASTER_CACHE_COLOR_R, 1.0),
-        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_COLOR_G, splatId)], RASTER_CACHE_COLOR_G, 1.0),
-        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_COLOR_B, splatId)], RASTER_CACHE_COLOR_B, 1.0),
-        raster_grad_fixed_decode(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_FUSED_OPACITY, splatId)], RASTER_CACHE_FUSED_OPACITY, 1.0)
+        raster_grad_fixed_dequantize(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_COLOR_R, splatId)], g_CachedRasterGradFixedColorRange),
+        raster_grad_fixed_dequantize(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_COLOR_G, splatId)], g_CachedRasterGradFixedColorRange),
+        raster_grad_fixed_dequantize(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_COLOR_B, splatId)], g_CachedRasterGradFixedColorRange),
+        raster_grad_fixed_dequantize(g_CachedRasterGradsFixed[raster_cache_index(splatCount, RASTER_CACHE_FUSED_OPACITY, splatId)], g_CachedRasterGradFixedOpacityRange)
     );
     return grad;
 }

@@ -23,10 +23,8 @@ Default behavior:
 
 Fixed-point gradient tuning flags:
 - `--cached-raster-grad-atomic-mode {fixed,float}` selects the cached ellipsoid gradient accumulation path
-- `--cached-raster-grad-fixed-scale` applies a global multiplier to the fixed-point encode scale
-- `--cached-raster-grad-fixed-ro-local-ref-scale`, `--cached-raster-grad-fixed-l-ref-scale`, and `--cached-raster-grad-fixed-loffdiag-ref-scale` tune the geometry reference magnitudes
-- `--cached-raster-grad-fixed-color-range` and `--cached-raster-grad-fixed-opacity-range` tune the decoded color and opacity ranges
-- `--cached-raster-grad-fixed-l-distance-norm-power` optionally scales geometry references by `|roLocal|^p`
+- `--cached-raster-grad-fixed-ro-local-range`, `--cached-raster-grad-fixed-log-l-diag-range`, and `--cached-raster-grad-fixed-l-offdiag-range` set symmetric `[-X, X]` ranges for shape-normalized cached geometry gradients
+- `--cached-raster-grad-fixed-color-range` and `--cached-raster-grad-fixed-opacity-range` set symmetric `[-X, X]` ranges for non-normalized cached color and opacity gradients
 - `--throughput-warmup-steps` controls how many measured optimizer steps are excluded from the `it/s` averages after the explicit compile warmup
 
 Throughput notes:

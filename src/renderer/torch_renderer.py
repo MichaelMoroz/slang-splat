@@ -60,13 +60,11 @@ class TorchGaussianRenderSettings:
     sampled5_radius_pad_px: float = 1.0
     sampled5_eps: float = 1e-6
     cached_raster_grad_atomic_mode: str = GaussianRenderer.CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED
-    cached_raster_grad_fixed_scale: float = 0.125
-    cached_raster_grad_fixed_loffdiag_ref_scale: float = 1.0
-    cached_raster_grad_fixed_ro_local_ref_scale: float = 100.0
-    cached_raster_grad_fixed_l_ref_scale: float = 100.0
+    cached_raster_grad_fixed_ro_local_range: float = 10.0
+    cached_raster_grad_fixed_log_l_diag_range: float = 10.0
+    cached_raster_grad_fixed_l_offdiag_range: float = 10.0
     cached_raster_grad_fixed_color_range: float = 200.0
     cached_raster_grad_fixed_opacity_range: float = 200.0
-    cached_raster_grad_fixed_l_distance_norm_power: float = 0.0
 
     def __post_init__(self) -> None:
         width = max(int(self.width), 1)
@@ -95,13 +93,11 @@ class TorchGaussianRenderSettings:
             "sampled5_radius_pad_px": float(self.sampled5_radius_pad_px),
             "sampled5_eps": float(self.sampled5_eps),
             "cached_raster_grad_atomic_mode": str(self.cached_raster_grad_atomic_mode),
-            "cached_raster_grad_fixed_scale": float(self.cached_raster_grad_fixed_scale),
-            "cached_raster_grad_fixed_loffdiag_ref_scale": float(self.cached_raster_grad_fixed_loffdiag_ref_scale),
-            "cached_raster_grad_fixed_ro_local_ref_scale": float(self.cached_raster_grad_fixed_ro_local_ref_scale),
-            "cached_raster_grad_fixed_l_ref_scale": float(self.cached_raster_grad_fixed_l_ref_scale),
+            "cached_raster_grad_fixed_ro_local_range": float(self.cached_raster_grad_fixed_ro_local_range),
+            "cached_raster_grad_fixed_log_l_diag_range": float(self.cached_raster_grad_fixed_log_l_diag_range),
+            "cached_raster_grad_fixed_l_offdiag_range": float(self.cached_raster_grad_fixed_l_offdiag_range),
             "cached_raster_grad_fixed_color_range": float(self.cached_raster_grad_fixed_color_range),
             "cached_raster_grad_fixed_opacity_range": float(self.cached_raster_grad_fixed_opacity_range),
-            "cached_raster_grad_fixed_l_distance_norm_power": float(self.cached_raster_grad_fixed_l_distance_norm_power),
         }
 
     def renderer_key(self) -> tuple[object, ...]:
