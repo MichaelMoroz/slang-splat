@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, field
 import math
 from pathlib import Path
+import time
 import sys
 from typing import Any
 
@@ -42,6 +44,16 @@ _MAX_ALPHA = 0.9999
 _MIN_SCALE = 1e-4
 _MAX_SCALE = 3.0
 _OUTPUT_RENDER_SUBDIR = "renders"
+_DEFAULT_CACHED_RASTER_GRAD_ATOMIC_MODE = "fixed"
+_DEFAULT_CACHED_RASTER_GRAD_FIXED_SCALE = 16.0
+_DEFAULT_CACHED_RASTER_GRAD_FIXED_LOFFDIAG_REF_SCALE = 1.0
+_DEFAULT_CACHED_RASTER_GRAD_FIXED_RO_LOCAL_REF_SCALE = 10.0
+_DEFAULT_CACHED_RASTER_GRAD_FIXED_L_REF_SCALE = 10.0
+_DEFAULT_CACHED_RASTER_GRAD_FIXED_COLOR_RANGE = 200.0
+_DEFAULT_CACHED_RASTER_GRAD_FIXED_OPACITY_RANGE = 200.0
+_DEFAULT_CACHED_RASTER_GRAD_FIXED_L_DISTANCE_NORM_POWER = 0.0
+_DEFAULT_THROUGHPUT_WARMUP_STEPS = 1
+_DEFAULT_THROUGHPUT_WINDOW = 32
 
 
 def _require_torch():
@@ -64,19 +76,27 @@ class TorchGardenTrainConfig:
     near: float = _DEFAULT_NEAR
     far: float = _DEFAULT_FAR
     position_lr: float = 1e-3
-    scale_lr: float = 2.5e-4
+    scale_lr: float = 5e-3
     rotation_lr: float = 1e-3
     color_lr: float = 1e-3
     alpha_lr: float = 1e-3
-    rgb_mse_weight: float = 1.0
-    rgb_l1_weight: float = 0.0
+    rgb_mse_weight: float = 0.0
+    rgb_l1_weight: float = 1.0
     scale_abs_reg_weight: float = 0.01
     opacity_reg_weight: float = 0.01
     grad_norm_clip: float = 10.0
     lr_final_ratio: float = 0.1
     lr_decay_start_fraction: float = 0.75
     target_psnr: float = 25.0
-    cached_raster_grad_atomic_mode: str = "float"
+    cached_raster_grad_atomic_mode: str = _DEFAULT_CACHED_RASTER_GRAD_ATOMIC_MODE
+    cached_raster_grad_fixed_scale: float = _DEFAULT_CACHED_RASTER_GRAD_FIXED_SCALE
+    cached_raster_grad_fixed_loffdiag_ref_scale: float = _DEFAULT_CACHED_RASTER_GRAD_FIXED_LOFFDIAG_REF_SCALE
+    cached_raster_grad_fixed_ro_local_ref_scale: float = _DEFAULT_CACHED_RASTER_GRAD_FIXED_RO_LOCAL_REF_SCALE
+    cached_raster_grad_fixed_l_ref_scale: float = _DEFAULT_CACHED_RASTER_GRAD_FIXED_L_REF_SCALE
+    cached_raster_grad_fixed_color_range: float = _DEFAULT_CACHED_RASTER_GRAD_FIXED_COLOR_RANGE
+    cached_raster_grad_fixed_opacity_range: float = _DEFAULT_CACHED_RASTER_GRAD_FIXED_OPACITY_RANGE
+    cached_raster_grad_fixed_l_distance_norm_power: float = _DEFAULT_CACHED_RASTER_GRAD_FIXED_L_DISTANCE_NORM_POWER
+    throughput_warmup_steps: int = _DEFAULT_THROUGHPUT_WARMUP_STEPS
     enable_saves: bool = True
     torch_device: str | None = None
     max_frames: int | None = None
@@ -105,6 +125,14 @@ class TorchGardenTrainConfig:
         self.lr_decay_start_fraction = min(max(float(self.lr_decay_start_fraction), 0.0), 1.0)
         self.target_psnr = float(self.target_psnr)
         self.cached_raster_grad_atomic_mode = str(self.cached_raster_grad_atomic_mode)
+        self.cached_raster_grad_fixed_scale = float(self.cached_raster_grad_fixed_scale)
+        self.cached_raster_grad_fixed_loffdiag_ref_scale = float(self.cached_raster_grad_fixed_loffdiag_ref_scale)
+        self.cached_raster_grad_fixed_ro_local_ref_scale = float(self.cached_raster_grad_fixed_ro_local_ref_scale)
+        self.cached_raster_grad_fixed_l_ref_scale = float(self.cached_raster_grad_fixed_l_ref_scale)
+        self.cached_raster_grad_fixed_color_range = float(self.cached_raster_grad_fixed_color_range)
+        self.cached_raster_grad_fixed_opacity_range = float(self.cached_raster_grad_fixed_opacity_range)
+        self.cached_raster_grad_fixed_l_distance_norm_power = float(self.cached_raster_grad_fixed_l_distance_norm_power)
+        self.throughput_warmup_steps = max(int(self.throughput_warmup_steps), 0)
         self.enable_saves = bool(self.enable_saves)
         if self.max_frames is not None:
             self.max_frames = max(int(self.max_frames), 1)
@@ -152,6 +180,40 @@ class FrameMetricTracker:
         values = getattr(self, name)
         valid = self.visited & np.isfinite(values)
         return float(np.mean(values[valid], dtype=np.float64)) if np.any(valid) else float("nan")
+
+
+@dataclass(slots=True)
+class IterationRateTracker:
+    warmup_steps: int = _DEFAULT_THROUGHPUT_WARMUP_STEPS
+    window_size: int = _DEFAULT_THROUGHPUT_WINDOW
+    active_steps: int = 0
+    active_seconds: float = 0.0
+    seen_steps: int = 0
+    recent_seconds: deque[float] = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.warmup_steps = max(int(self.warmup_steps), 0)
+        self.window_size = max(int(self.window_size), 1)
+        self.recent_seconds = deque(maxlen=self.window_size)
+
+    def update(self, step_seconds: float) -> None:
+        self.seen_steps += 1
+        if self.seen_steps <= self.warmup_steps:
+            return
+        duration = max(float(step_seconds), 1e-9)
+        self.active_steps += 1
+        self.active_seconds += duration
+        self.recent_seconds.append(duration)
+
+    def recent_iters_per_second(self) -> float:
+        if not self.recent_seconds:
+            return float("nan")
+        return float(len(self.recent_seconds) / sum(self.recent_seconds))
+
+    def avg_iters_per_second(self) -> float:
+        if self.active_seconds <= 0.0:
+            return float("nan")
+        return float(self.active_steps / self.active_seconds)
 
 
 def scene_to_torch_params(scene: GaussianScene, device: Any) -> dict[str, Any]:
@@ -297,6 +359,13 @@ def build_render_settings(frame: ColmapFrame, config: TorchGardenTrainConfig) ->
         width=frame.width,
         height=frame.height,
         cached_raster_grad_atomic_mode=config.cached_raster_grad_atomic_mode,
+        cached_raster_grad_fixed_scale=config.cached_raster_grad_fixed_scale,
+        cached_raster_grad_fixed_loffdiag_ref_scale=config.cached_raster_grad_fixed_loffdiag_ref_scale,
+        cached_raster_grad_fixed_ro_local_ref_scale=config.cached_raster_grad_fixed_ro_local_ref_scale,
+        cached_raster_grad_fixed_l_ref_scale=config.cached_raster_grad_fixed_l_ref_scale,
+        cached_raster_grad_fixed_color_range=config.cached_raster_grad_fixed_color_range,
+        cached_raster_grad_fixed_opacity_range=config.cached_raster_grad_fixed_opacity_range,
+        cached_raster_grad_fixed_l_distance_norm_power=config.cached_raster_grad_fixed_l_distance_norm_power,
     )
 
 
@@ -316,6 +385,20 @@ def _select_frames(frames: list[ColmapFrame], max_frames: int | None) -> list[Co
     if max_frames is None or max_frames >= len(frames):
         return frames
     return list(frames[:max_frames])
+
+
+def _build_camera_cache(frames: list[ColmapFrame], device: Any, config: TorchGardenTrainConfig) -> list[Any]:
+    return [frame_to_camera_tensor(frame, device, near=config.near, far=config.far) for frame in frames]
+
+
+def _build_render_settings_cache(frames: list[ColmapFrame], config: TorchGardenTrainConfig) -> list[TorchGaussianRenderSettings]:
+    return [build_render_settings(frame, config) for frame in frames]
+
+
+def _target_linear_from_cache(targets_cpu: list[np.ndarray], frame_index: int, device: Any) -> Any:
+    torch_mod = _require_torch()
+    target = torch_mod.from_numpy(targets_cpu[frame_index]).to(device=device, non_blocking=True)
+    return rgb8_to_linear_rgb(target)
 
 
 def _optimizer_for_params(params_dict: dict[str, Any], config: TorchGardenTrainConfig):
@@ -391,8 +474,45 @@ def _save_checkpoint(
     )
 
 
-def run_training(config: TorchGardenTrainConfig) -> dict[str, object]:
+def _prewarm_renderer(
+    params_dict: dict[str, Any],
+    target_linear: Any,
+    camera: Any,
+    settings: TorchGaussianRenderSettings,
+    context: TorchGaussianRendererContext,
+    optimizer: Any,
+    config: TorchGardenTrainConfig,
+) -> None:
+    optimizer.zero_grad(set_to_none=True)
+    rendered = render_gaussian_splats_torch(pack_torch_splats(params_dict), camera, settings, context)
+    loss, _, _, _ = compute_training_loss_terms(rendered[..., :3], target_linear, params_dict, config)
+    loss.backward()
+    optimizer.zero_grad(set_to_none=True)
+
+
+def _execute_training_step(
+    params_dict: dict[str, Any],
+    optimizer: Any,
+    target_linear: Any,
+    camera: Any,
+    settings: TorchGaussianRenderSettings,
+    context: TorchGaussianRendererContext,
+    config: TorchGardenTrainConfig,
+) -> tuple[Any, float, float, float, float]:
     torch_mod = _require_torch()
+    optimizer.zero_grad(set_to_none=True)
+    rendered = render_gaussian_splats_torch(pack_torch_splats(params_dict), camera, settings, context)
+    rendered_rgb = rendered[..., :3]
+    loss, l1_value, mse, psnr = compute_training_loss_terms(rendered_rgb, target_linear, params_dict, config)
+    loss.backward()
+    if config.grad_norm_clip > 0.0:
+        torch_mod.nn.utils.clip_grad_norm_(list(params_dict.values()), max_norm=config.grad_norm_clip)
+    optimizer.step()
+    project_scene_params_(params_dict)
+    return rendered_rgb.detach(), float(loss.detach().item()), l1_value, mse, psnr
+
+
+def run_training(config: TorchGardenTrainConfig) -> dict[str, object]:
     device = _torch_device_from_config(config)
     recon = load_colmap_reconstruction(config.colmap_root)
     frames = _select_frames(build_training_frames(recon, images_subdir=config.images_subdir), config.max_frames)
@@ -403,53 +523,67 @@ def run_training(config: TorchGardenTrainConfig) -> dict[str, object]:
     scheduler = _scheduler_for_optimizer(optimizer, config)
     context = TorchGaussianRendererContext(torch_device=device)
     targets_cpu = load_target_cache(frames)
+    camera_cache = _build_camera_cache(frames, device, config)
+    settings_cache = _build_render_settings_cache(frames, config)
     frame_state = FrameOrderState.create(len(frames), config.seed)
     frame_metrics = FrameMetricTracker.create(len(frames))
+    rate_tracker = IterationRateTracker(warmup_steps=config.throughput_warmup_steps)
     render_dir, checkpoint_path = _ensure_output_dirs(config)
-    history: dict[str, list[float]] = {"loss": [], "l1": [], "mse": [], "psnr": [], "lr": [], "frame_index": []}
+    history: dict[str, list[float]] = {"loss": [], "l1": [], "mse": [], "psnr": [], "lr": [], "frame_index": [], "iter_s": [], "avg_iter_s": []}
     last_rendered = last_loss = last_psnr = last_mse = None
     best_psnr = float("-inf")
     best_avg_psnr = float("-inf")
 
+    _prewarm_renderer(
+        params_dict,
+        _target_linear_from_cache(targets_cpu, 0, device),
+        camera_cache[0],
+        settings_cache[0],
+        context,
+        optimizer,
+        config,
+    )
     progress = tqdm(range(config.iters), total=config.iters, desc="torch-colmap", dynamic_ncols=True)
     for step in progress:
+        step_start = time.perf_counter()
         frame_index = next_frame_index(frame_state)
         frame = frames[frame_index]
-        target = torch_mod.from_numpy(targets_cpu[frame_index]).to(device=device, non_blocking=True)
-        target_linear = rgb8_to_linear_rgb(target)
-        settings = build_render_settings(frame, config)
-        camera = frame_to_camera_tensor(frame, device, near=config.near, far=config.far)
-
-        optimizer.zero_grad(set_to_none=True)
-        splats = pack_torch_splats(params_dict)
-        rendered = render_gaussian_splats_torch(splats, camera, settings, context)
-        rendered_rgb = rendered[..., :3]
-        loss, l1_value, mse, psnr = compute_training_loss_terms(rendered_rgb, target_linear, params_dict, config)
-        loss.backward()
-        if config.grad_norm_clip > 0.0:
-            torch_mod.nn.utils.clip_grad_norm_(list(params_dict.values()), max_norm=config.grad_norm_clip)
-        optimizer.step()
+        target_linear = _target_linear_from_cache(targets_cpu, frame_index, device)
+        rendered_rgb, loss_value, l1_value, mse, psnr = _execute_training_step(
+            params_dict,
+            optimizer,
+            target_linear,
+            camera_cache[frame_index],
+            settings_cache[frame_index],
+            context,
+            config,
+        )
         if scheduler is not None:
             scheduler.step()
-        project_scene_params_(params_dict)
+        rate_tracker.update(time.perf_counter() - step_start)
 
-        loss_value = float(loss.detach().item())
         frame_metrics.update(frame_index, loss_value, mse, psnr)
         avg_psnr = frame_metrics.mean("psnr")
         best_psnr = max(best_psnr, psnr)
         best_avg_psnr = max(best_avg_psnr, avg_psnr)
+        recent_iter_s = rate_tracker.recent_iters_per_second()
+        avg_iter_s = rate_tracker.avg_iters_per_second()
         history["loss"].append(loss_value)
         history["l1"].append(l1_value)
         history["mse"].append(mse)
         history["psnr"].append(psnr)
         history["lr"].append(_optimizer_lr(optimizer))
         history["frame_index"].append(float(frame_index))
+        history["iter_s"].append(recent_iter_s)
+        history["avg_iter_s"].append(avg_iter_s)
         progress.set_postfix(
             loss=f"{loss_value:.6f}",
             psnr=f"{psnr:.2f}",
             avg_loss=f"{frame_metrics.mean('loss'):.6f}",
             avg_psnr=f"{avg_psnr:.2f}",
             best_psnr=f"{best_psnr:.2f}",
+            it_s="warmup" if not math.isfinite(recent_iter_s) else f"{recent_iter_s:.1f}",
+            avg_it_s="warmup" if not math.isfinite(avg_iter_s) else f"{avg_iter_s:.1f}",
             lr=f"{_optimizer_lr(optimizer):.2e}",
             frame=frame.image_path.name,
         )
@@ -475,6 +609,8 @@ def run_training(config: TorchGardenTrainConfig) -> dict[str, object]:
         "best_avg_psnr": best_avg_psnr,
         "target_psnr": float(config.target_psnr),
         "target_reached": bool(best_avg_psnr >= config.target_psnr or best_psnr >= config.target_psnr),
+        "iter_s": rate_tracker.recent_iters_per_second(),
+        "avg_iter_s": rate_tracker.avg_iters_per_second(),
         "history": history,
     }
 
@@ -491,19 +627,27 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--near", type=float, default=_DEFAULT_NEAR)
     parser.add_argument("--far", type=float, default=_DEFAULT_FAR)
     parser.add_argument("--position-lr", type=float, default=1e-3)
-    parser.add_argument("--scale-lr", type=float, default=2.5e-4)
+    parser.add_argument("--scale-lr", type=float, default=5e-3)
     parser.add_argument("--rotation-lr", type=float, default=1e-3)
     parser.add_argument("--color-lr", type=float, default=1e-3)
     parser.add_argument("--alpha-lr", type=float, default=1e-3)
-    parser.add_argument("--rgb-mse-weight", type=float, default=1.0)
-    parser.add_argument("--rgb-l1-weight", type=float, default=0.0)
+    parser.add_argument("--rgb-mse-weight", type=float, default=0.0)
+    parser.add_argument("--rgb-l1-weight", type=float, default=1.0)
     parser.add_argument("--scale-abs-reg-weight", type=float, default=0.01)
     parser.add_argument("--opacity-reg-weight", type=float, default=0.01)
     parser.add_argument("--grad-norm-clip", type=float, default=10.0)
     parser.add_argument("--lr-final-ratio", type=float, default=0.1)
     parser.add_argument("--lr-decay-start-fraction", type=float, default=0.75)
     parser.add_argument("--target-psnr", type=float, default=25.0)
-    parser.add_argument("--cached-raster-grad-atomic-mode", type=str, default="float")
+    parser.add_argument("--cached-raster-grad-atomic-mode", type=str, default=_DEFAULT_CACHED_RASTER_GRAD_ATOMIC_MODE)
+    parser.add_argument("--cached-raster-grad-fixed-scale", type=float, default=_DEFAULT_CACHED_RASTER_GRAD_FIXED_SCALE)
+    parser.add_argument("--cached-raster-grad-fixed-loffdiag-ref-scale", type=float, default=_DEFAULT_CACHED_RASTER_GRAD_FIXED_LOFFDIAG_REF_SCALE)
+    parser.add_argument("--cached-raster-grad-fixed-ro-local-ref-scale", type=float, default=_DEFAULT_CACHED_RASTER_GRAD_FIXED_RO_LOCAL_REF_SCALE)
+    parser.add_argument("--cached-raster-grad-fixed-l-ref-scale", type=float, default=_DEFAULT_CACHED_RASTER_GRAD_FIXED_L_REF_SCALE)
+    parser.add_argument("--cached-raster-grad-fixed-color-range", type=float, default=_DEFAULT_CACHED_RASTER_GRAD_FIXED_COLOR_RANGE)
+    parser.add_argument("--cached-raster-grad-fixed-opacity-range", type=float, default=_DEFAULT_CACHED_RASTER_GRAD_FIXED_OPACITY_RANGE)
+    parser.add_argument("--cached-raster-grad-fixed-l-distance-norm-power", type=float, default=_DEFAULT_CACHED_RASTER_GRAD_FIXED_L_DISTANCE_NORM_POWER)
+    parser.add_argument("--throughput-warmup-steps", type=int, default=_DEFAULT_THROUGHPUT_WARMUP_STEPS)
     parser.add_argument("--torch-device", type=str, default=None)
     parser.add_argument("--max-frames", type=int, default=None)
     parser.add_argument("--disable-saves", action="store_true")
@@ -536,6 +680,14 @@ def main() -> int:
         lr_decay_start_fraction=args.lr_decay_start_fraction,
         target_psnr=args.target_psnr,
         cached_raster_grad_atomic_mode=args.cached_raster_grad_atomic_mode,
+        cached_raster_grad_fixed_scale=args.cached_raster_grad_fixed_scale,
+        cached_raster_grad_fixed_loffdiag_ref_scale=args.cached_raster_grad_fixed_loffdiag_ref_scale,
+        cached_raster_grad_fixed_ro_local_ref_scale=args.cached_raster_grad_fixed_ro_local_ref_scale,
+        cached_raster_grad_fixed_l_ref_scale=args.cached_raster_grad_fixed_l_ref_scale,
+        cached_raster_grad_fixed_color_range=args.cached_raster_grad_fixed_color_range,
+        cached_raster_grad_fixed_opacity_range=args.cached_raster_grad_fixed_opacity_range,
+        cached_raster_grad_fixed_l_distance_norm_power=args.cached_raster_grad_fixed_l_distance_norm_power,
+        throughput_warmup_steps=args.throughput_warmup_steps,
         enable_saves=not bool(args.disable_saves),
         torch_device=args.torch_device,
         max_frames=args.max_frames,
@@ -545,7 +697,9 @@ def main() -> int:
         f"Finished {summary['step']} steps. "
         f"last_loss={summary['last_loss']:.6f} last_psnr={summary['last_psnr']:.2f} "
         f"avg_loss={summary['avg_loss']:.6f} avg_psnr={summary['avg_psnr']:.2f} "
-        f"best_psnr={summary['best_psnr']:.2f} target={summary['target_psnr']:.2f} "
+        f"best_psnr={summary['best_psnr']:.2f} "
+        f"iter_s={summary['iter_s']:.1f} avg_iter_s={summary['avg_iter_s']:.1f} "
+        f"target={summary['target_psnr']:.2f} "
         f"reached={summary['target_reached']}"
     )
     print(f"Checkpoint: {summary['checkpoint_path']}")

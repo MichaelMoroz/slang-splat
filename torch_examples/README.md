@@ -16,9 +16,22 @@ Default behavior:
 - initializes from the full COLMAP point cloud (`--max-gaussians 0`)
 - runs `30000` Adam steps
 - uses native image resolution
-- uses float cached raster gradients so native-resolution mean L1 gradients do not underflow
-- optimizes PSNR-aligned RGB MSE with light scale/opacity regularization and late-stage cosine LR decay
-- shows `tqdm` progress with loss and PSNR
+- prewarms one forward/backward pass so shader compilation is not mixed into the reported training throughput
+- uses fixed cached raster gradients by default, with tuned fixed-point defaults (`scale=16`, `ro/local ref=10`, `L ref=10`) and the full encode controls exposed through CLI flags
+- optimizes native-resolution RGB L1 with light scale/opacity regularization and late-stage cosine LR decay
+- shows `tqdm` progress with loss, PSNR, recent `it/s`, and warm-run average `it/s`
+
+Fixed-point gradient tuning flags:
+- `--cached-raster-grad-atomic-mode {fixed,float}` selects the cached ellipsoid gradient accumulation path
+- `--cached-raster-grad-fixed-scale` applies a global multiplier to the fixed-point encode scale
+- `--cached-raster-grad-fixed-ro-local-ref-scale`, `--cached-raster-grad-fixed-l-ref-scale`, and `--cached-raster-grad-fixed-loffdiag-ref-scale` tune the geometry reference magnitudes
+- `--cached-raster-grad-fixed-color-range` and `--cached-raster-grad-fixed-opacity-range` tune the decoded color and opacity ranges
+- `--cached-raster-grad-fixed-l-distance-norm-power` optionally scales geometry references by `|roLocal|^p`
+- `--throughput-warmup-steps` controls how many measured optimizer steps are excluded from the `it/s` averages after the explicit compile warmup
+
+Throughput notes:
+- The first prewarm pass exists to compile and allocate the fixed renderer path outside the measured loop.
+- Reported `it/s` values are still hardware-dependent, but the fixed path should be materially faster than float atomics on the same scene.
 
 Prerequisites:
 - CUDA-enabled PyTorch
