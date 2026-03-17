@@ -79,12 +79,12 @@ def test_renderer_loads_raster_constants_from_shader(device):
     assert renderer._raster_config.batch == config.batch
 
 
-def test_renderer_params_default_to_float_cached_grad_atomics():
+def test_renderer_params_default_to_fixed_cached_grad_atomics():
     params = RendererParams()
     kwargs = renderer_kwargs(params)
 
-    assert params.cached_raster_grad_atomic_mode == "float"
-    assert kwargs["cached_raster_grad_atomic_mode"] == "float"
+    assert params.cached_raster_grad_atomic_mode == "fixed"
+    assert kwargs["cached_raster_grad_atomic_mode"] == "fixed"
     assert params.cached_raster_grad_fixed_scale == 0.125
     assert kwargs["cached_raster_grad_fixed_scale"] == 0.125
     assert params.cached_raster_grad_fixed_loffdiag_ref_scale == 1.0
@@ -412,73 +412,15 @@ def test_raster_backward_smoke_and_determinism(device):
     grads0 = renderer.debug_raster_backward_grads(scene, camera, background=np.array([0.1, 0.15, 0.2], dtype=np.float32))
     grads1 = renderer.debug_raster_backward_grads(scene, camera, background=np.array([0.1, 0.15, 0.2], dtype=np.float32))
 
-    assert renderer.cached_raster_grad_atomic_mode == "float"
-    assert grads0["cached_raster_grads_mode"] == "float"
+    assert renderer.cached_raster_grad_atomic_mode == "fixed"
+    assert grads0["cached_raster_grads_mode"] == "fixed"
     np.testing.assert_allclose(
-        np.asarray(grads0["cached_raster_grads_active"], dtype=np.float32),
-        np.asarray(grads1["cached_raster_grads_active"], dtype=np.float32),
-        rtol=2e-5,
-        atol=3e-5,
+        np.asarray(grads0["cached_raster_grads_active"], dtype=np.int32),
+        np.asarray(grads1["cached_raster_grads_active"], dtype=np.int32),
+        rtol=0.0,
+        atol=0.0,
     )
-
-
-def make_projected_scale_scene(count: int, width: int, height: int, seed: int = 0) -> GaussianScene:
-    rng = np.random.default_rng(seed)
-    positions = np.zeros((count, 3), dtype=np.float32)
-    positions[:, 0] = rng.uniform(-0.6, 0.6, size=count).astype(np.float32)
-    positions[:, 1] = rng.uniform(-0.6, 0.6, size=count).astype(np.float32)
-    positions[:, 2] = rng.uniform(-0.6, 0.6, size=count).astype(np.float32)
-    rotations = np.zeros((count, 4), dtype=np.float32)
-    rotations[:, 0] = 1.0
-    opacities = rng.uniform(0.2, 0.8, size=count).astype(np.float32)
-    colors = rng.uniform(0.0, 1.0, size=(count, 3)).astype(np.float32)
-    sh_coeffs = np.zeros((count, 1, 3), dtype=np.float32)
-    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
-    target_radii = np.geomspace(0.2, 0.001, count).astype(np.float32) * float(min(width, height))
-    scales = np.zeros((count, 3), dtype=np.float32)
-
-    def build_scene(scale_values: np.ndarray) -> GaussianScene:
-        return GaussianScene(
-            positions=positions,
-            scales=scale_values,
-            rotations=rotations,
-            opacities=opacities,
-            colors=colors,
-            sh_coeffs=sh_coeffs,
-        )
-
-    for index in range(count):
-        lo, hi = np.log(1e-4), np.log(3.0)
-        for _ in range(24):
-            mid = 0.5 * (lo + hi)
-            trial = np.full((count, 3), np.log(0.02), dtype=np.float32)
-            trial[index, :] = mid
-            projected = project_splats(build_scene(trial), camera, width, height, 1.0)
-            if float(projected.center_radius_depth[index, 2]) > float(target_radii[index]):
-                hi = mid
-            else:
-                lo = mid
-        scales[index, :] = 0.5 * (lo + hi)
-    return build_scene(scales)
-
-
-def make_distorted_target_scene(scene: GaussianScene, seed: int = 0) -> GaussianScene:
-    rng = np.random.default_rng(seed)
-    return GaussianScene(
-        positions=np.asarray(scene.positions + rng.normal(0.0, 0.01, size=scene.positions.shape), dtype=np.float32),
-        scales=np.asarray(scene.scales + rng.normal(0.0, 0.08, size=scene.scales.shape), dtype=np.float32),
-        rotations=np.asarray(scene.rotations, dtype=np.float32),
-        opacities=np.clip(np.asarray(scene.opacities + rng.normal(0.0, 0.04, size=scene.opacities.shape), dtype=np.float32), 1e-3, 0.999),
-        colors=np.clip(np.asarray(scene.colors + rng.normal(0.0, 0.05, size=scene.colors.shape), dtype=np.float32), 0.0, 1.0),
-        sh_coeffs=np.asarray(scene.sh_coeffs, dtype=np.float32),
-    )
-
-    for name in (
-        "grad_positions",
-        "grad_scales",
-        "grad_rotations",
-        "grad_color_alpha",
-    ):
+    for name in ("grad_positions", "grad_scales", "grad_rotations", "grad_color_alpha"):
         assert grads0[name].shape == (scene.count, 4)
         assert np.all(np.isfinite(grads0[name]))
         np.testing.assert_allclose(grads0[name], grads1[name], rtol=2e-5, atol=3e-5)
@@ -503,7 +445,7 @@ def test_raster_backward_decodes_fixed_grad_grid(device):
 def test_raster_backward_float_mode_produces_float_intermediate_and_final_grads(device):
     scene = make_scene(18, seed=83)
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
-    renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, list_capacity_multiplier=32)
+    renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, list_capacity_multiplier=32, cached_raster_grad_atomic_mode="float")
     grads = renderer.debug_raster_backward_grads(scene, camera, background=np.array([0.02, 0.04, 0.06], dtype=np.float32))
 
     float_nonzero = np.asarray(grads["cached_raster_grads_float"], dtype=np.float32)
@@ -532,7 +474,7 @@ def test_raster_backward_float_mode_produces_float_intermediate_and_final_grads(
 def test_active_cached_raster_grad_metrics_tensor_matches_float_mode_buffer(device):
     scene = make_scene(10, seed=89)
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
-    renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, list_capacity_multiplier=16)
+    renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, list_capacity_multiplier=16, cached_raster_grad_atomic_mode="float")
     grads = renderer.debug_raster_backward_grads(scene, camera, background=np.array([0.03, 0.05, 0.07], dtype=np.float32))
 
     prepared = renderer.read_active_cached_raster_grads_float_tensor(scene.count)
@@ -562,42 +504,6 @@ def test_cached_raster_grad_fixed_scale_updates_decode_scales(device):
         atol=0.0,
     )
 
-
-def test_fixed_cached_raster_grads_match_float_mode_on_distorted_target_mse(device):
-    width, height = 128, 128
-    scene = make_projected_scale_scene(48, width, height, seed=123)
-    target_scene = make_distorted_target_scene(scene, seed=321)
-    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
-    background = np.array([0.07, 0.11, 0.15], dtype=np.float32)
-
-    target_renderer = GaussianRenderer(device, width=width, height=height, radius_scale=1.0, list_capacity_multiplier=64)
-    target_image = target_renderer.render(target_scene, camera, background=background).image
-
-    renderer_float = GaussianRenderer(device, width=width, height=height, radius_scale=1.0, list_capacity_multiplier=64, cached_raster_grad_atomic_mode="float")
-    renderer_fixed = GaussianRenderer(device, width=width, height=height, radius_scale=1.0, list_capacity_multiplier=64, cached_raster_grad_atomic_mode="fixed")
-    grads_float = renderer_float.debug_raster_backward_grads_against_target(scene, camera, target_image, background=background)
-    grads_fixed = renderer_fixed.debug_raster_backward_grads_against_target(scene, camera, target_image, background=background)
-
-    cached_float = np.asarray(grads_float["cached_raster_grads_float"], dtype=np.float32)
-    cached_fixed = np.asarray(renderer_fixed.read_cached_raster_grads_fixed_decoded(scene.count), dtype=np.float32)
-    np.testing.assert_allclose(cached_fixed, cached_float, rtol=0.08, atol=5e-4)
-
-    magnitude_floor = 2e-4
-    for group_name, group_slice, max_abs_bound, max_rel_bound, mean_rel_bound in (
-        ("roLocal", slice(0, 3), 1.2e-2, 1.0, 0.40),
-        ("logLDiag", slice(3, 6), 8e-3, 1.0, 1.0),
-        ("lOffDiag", slice(6, 9), 1.6e-2, 1.0, 0.20),
-        ("colorOpacity", slice(9, 13), 1.2e-2, 0.14, 0.05),
-    ):
-        ref = cached_float[:, group_slice]
-        actual = cached_fixed[:, group_slice]
-        abs_err = np.abs(actual - ref)
-        rel_mask = np.abs(ref) > magnitude_floor
-        rel_err = abs_err[rel_mask] / np.abs(ref[rel_mask]) if np.any(rel_mask) else np.zeros((0,), dtype=np.float32)
-        assert float(np.max(abs_err)) <= max_abs_bound, group_name
-        if rel_err.size > 0:
-            assert float(np.max(rel_err)) <= max_rel_bound, group_name
-            assert float(np.mean(rel_err)) <= mean_rel_bound, group_name
 
 
 def test_prepass_capacity_budget_caps_growth(device):

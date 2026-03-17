@@ -87,7 +87,7 @@ Training notes:
 - The active trainer keeps a fixed gaussian count after initialization; there is no densification, pruning, opacity reset schedule, MCMC exploration term, or SSIM loss path.
 - The training loss is direct RGB L1 with optional scale and opacity regularization accumulated in a separate optimizer pipeline.
 - GPU trainable state is packed into one param-major float buffer shared by renderer and trainer: `param[param_id * splat_count + splat_id]`.
-- Raster backward supports selectable cached ellipsoid gradient atomics: `float` atomics by default, with a `fixed` Q16.16 fallback/debug path still available.
+- Raster backward supports selectable cached ellipsoid gradient atomics: `fixed` atomics by default, with `float` atomics still available when the backend supports them.
 - Optimizer settings live in one structured per-parameter buffer, and ADAM moments are packed into one `float2` buffer (`m`, `v`) per parameter element.
 - `src/training/adam.py` is the Python-side generic ADAM module, while `src/training/optimizer.py` keeps Gaussian-specific regularization/projection; `GaussianTrainer` composes both.
 - GPU scene buffers store opacity as a raw sigmoid parameter so rasterization and optimization differentiate through effective alpha directly.

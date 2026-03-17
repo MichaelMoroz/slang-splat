@@ -52,7 +52,7 @@ Each trainer `step()` performs:
    - `csComputeL1LossForward` computes direct RGB L1 reconstruction loss and RGB MSE and reduces those metrics into the loss buffer.
 6. Run the fixed-count backward stage:
    - `csComputeL1LossBackward` writes the unnormalized per-pixel RGB L1 sign gradient into flat `RWStructuredBuffer<float4>` `g_OutputGrad`, indexed as `pixel = y * width + x`,
-   - `csRasterizeBackward` consumes the cached raster forward state and accumulates packed Q16.16 gradients for the precomputed raster-cache fields,
+   - `csRasterizeBackward` consumes the cached raster forward state and accumulates quantized cached raster-field gradients for the precomputed raster-cache fields,
    - `csBackpropCachedRasterGrads` decodes that cached-field intermediate inline, backprops through `build_cached_ellipsoid`, and writes the final float packed scene-parameter gradient buffer with the final `1 / pixel_count` normalization before the rest of training.
 7. Run the optimizer pipeline:
    - `csAccumulateRegularizationGrads` adds scale and opacity regularizers on the packed param-major state.
@@ -71,7 +71,7 @@ There is no densification, pruning, opacity reset schedule, MCMC exploration ter
 - `csComputeL1LossBackward`: computes only the image-space L1 gradient into `g_OutputGrad`.
 - UI-driven multi-step training batches keep per-substep loss/MSE records on the GPU and defer the single CPU readback until the batch finishes, rather than synchronizing after every substep.
 - Packed trainable storage remains param-major scalar packing: `param_id * splat_count + splat_id`.
-- Raster backward uses a separate param-major Q16.16 int accumulation buffer for cached raster-field gradients, then backprops that intermediate into final float scene-parameter gradients before optimizer consumption.
+- Raster backward uses a separate param-major int accumulation buffer for cached raster-field gradients, then backprops that intermediate into final float scene-parameter gradients before optimizer consumption.
 - The stored opacity parameter is the raw sigmoid logit, not direct alpha.
 - `optimizer.slang` owns generic optimizer kernels and tables:
   - packed ADAM,

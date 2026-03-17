@@ -79,7 +79,7 @@ The loss-debug controls expose a runtime `Abs Diff Scale` slider when `View = Ab
 - `Float Atomics`
 - `Fixed Point`
 
-`Float Atomics` is the default and drives cached ellipsoid gradient accumulation directly in float space during raster backward. `Fixed Point` keeps the prior Q16.16 accumulation path for regression comparison and fallback use. Changing this setting only swaps the raster-backward shader/buffer path; it does not reset scene state, optimizer state, or training progress.
+`Fixed Point` is the default and uses the current cached-gradient quantization path. `Float Atomics` remains available as a fallback/reference path when the backend supports float atomics. Changing this setting only swaps the raster-backward shader/buffer path; it does not reset scene state, optimizer state, or training progress.
 
 ## Training Resolution
 

@@ -127,8 +127,6 @@ class GaussianRenderer:
         "color.r", "color.g", "color.b", "opacity",
     )
     CACHED_RASTER_GRAD_COMPONENT_SLICES = tuple((label, slice(index, index + 1)) for index, label in enumerate(CACHED_RASTER_GRAD_COMPONENT_LABELS))
-    _RASTER_GRAD_CONTRIB_RECORD_FLOAT_COUNT = 20
-    _RASTER_GRAD_CONTRIB_COUNTER_UINT_COUNT = 2
     _SCENE_SHADER_VARS = {"splat_params": "g_SplatParams"}
     _SCREEN_SHADER_VARS = {"screen_center_radius_depth": "g_ScreenCenterRadiusDepth", "screen_color_alpha": "g_ScreenColorAlpha", "screen_ellipse_conic": "g_ScreenEllipseConic", "splat_visible": "g_SplatVisible"}
     _GRAD_SHADER_VARS = {"param_grads": "g_ParamGrads"}
@@ -243,17 +241,6 @@ class GaussianRenderer:
     def _raster_grad_fixed_loffdiag_ref_scale_var(self) -> dict[str, object]:
         return {"g_CachedRasterGradFixedLOffdiagRefScale": float(self.cached_raster_grad_fixed_loffdiag_ref_scale)}
 
-    def _raster_grad_contribution_capture_vars(self) -> dict[str, object]:
-        enabled = self._cached_raster_grad_contrib_capture_enabled and self._cached_raster_grad_contrib_select_buffer is not None and self._cached_raster_grad_contrib_counter_buffer is not None and self._cached_raster_grad_contrib_records_buffer is not None
-        return {
-            "g_CachedRasterGradContributionSelect": self._cached_raster_grad_contrib_select_buffer if enabled else self._zero_u32_buffer,
-            "g_CachedRasterGradContributionCounter": self._cached_raster_grad_contrib_counter_buffer if enabled else self._zero_raster_grad_contrib_counter_buffer,
-            "g_CachedRasterGradContributionRecords": self._cached_raster_grad_contrib_records_buffer if enabled else self._zero_raster_grad_contrib_record_buffer,
-            "g_CachedRasterGradContributionCaptureEnabled": np.uint32(1 if enabled else 0),
-            "g_CachedRasterGradContributionSelectedCount": np.uint32(self._cached_raster_grad_contrib_selected_count if enabled else 0),
-            "g_CachedRasterGradContributionPerSplatCapacity": np.uint32(self._cached_raster_grad_contrib_per_splat_capacity if enabled else 0),
-        }
-
     def _debug_grad_norm_var(self) -> dict[str, object]:
         return {"g_DebugGradNorm": self._debug_grad_norm_buffer if self._debug_grad_norm_buffer is not None else self._work_buffers["debug_grad_norm"]}
 
@@ -268,17 +255,17 @@ class GaussianRenderer:
             program = self.device.load_program(str(Path(SHADER_ROOT / "renderer" / shader_name)), [entry])
             shader = self.device.create_compute_kernel(program) if kind == "kernel" else self.device.create_compute_pipeline(program)
             setattr(self, attr, shader)
-        self._fixed_raster_grad_shaders = self._load_raster_grad_shaders("gaussian_raster_stage.slang")
+        self._fixed_raster_grad_shaders = self._load_raster_grad_shaders("Fixed")
         metrics_shader = str(Path(SHADER_ROOT / "utility" / "metrics" / "metrics.slang"))
         self._k_decode_fixed_buffer_to_float = self.device.create_compute_kernel(self.device.load_program(metrics_shader, ["csDecodeFixedIntBufferToFloat"]))
 
-    def _load_raster_grad_shaders(self, shader_name: str) -> _RasterGradShaderSet:
-        shader_path = str(Path(SHADER_ROOT / "renderer" / shader_name))
+    def _load_raster_grad_shaders(self, entry_suffix: str) -> _RasterGradShaderSet:
+        shader_path = str(Path(SHADER_ROOT / "renderer" / "gaussian_raster_stage.slang"))
         kernels = {
-            "training_forward": self.device.create_compute_kernel(self.device.load_program(shader_path, ["csRasterizeTrainingForward"])),
-            "clear": self.device.create_compute_kernel(self.device.load_program(shader_path, ["csClearRasterGrads"])),
-            "backward": self.device.create_compute_kernel(self.device.load_program(shader_path, ["csRasterizeBackward"])),
-            "backprop": self.device.create_compute_kernel(self.device.load_program(shader_path, ["csBackpropCachedRasterGrads"])),
+            "training_forward": self.device.create_compute_kernel(self.device.load_program(shader_path, [f"csRasterizeTrainingForward{entry_suffix}"])),
+            "clear": self.device.create_compute_kernel(self.device.load_program(shader_path, [f"csClearRasterGrads{entry_suffix}"])),
+            "backward": self.device.create_compute_kernel(self.device.load_program(shader_path, [f"csRasterizeBackward{entry_suffix}"])),
+            "backprop": self.device.create_compute_kernel(self.device.load_program(shader_path, [f"csBackpropCachedRasterGrads{entry_suffix}"])),
         }
         return _RasterGradShaderSet(
             training_forward=kernels["training_forward"],
@@ -299,7 +286,7 @@ class GaussianRenderer:
         if self._float_raster_grad_shaders is not None:
             return self._float_raster_grad_shaders
         try:
-            self._float_raster_grad_shaders = self._load_raster_grad_shaders("gaussian_raster_stage_float.slang")
+            self._float_raster_grad_shaders = self._load_raster_grad_shaders("Float")
         except Exception as exc:
             raise RuntimeError(
                 "Cached raster grad atomic mode 'float' requires shader support for float atomics on the active device/backend."
@@ -366,7 +353,7 @@ class GaussianRenderer:
         debug_show_grad_norm: bool = False,
         debug_grad_norm_threshold: float = 2e-4,
         debug_ellipse_thickness_px: float = 2.0,
-        cached_raster_grad_atomic_mode: str = CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT,
+        cached_raster_grad_atomic_mode: str = CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED,
         cached_raster_grad_fixed_scale: float = 0.125,
         cached_raster_grad_fixed_loffdiag_ref_scale: float = 1.0,
         cached_raster_grad_fixed_ro_local_ref_scale: float = 100.0,
@@ -421,28 +408,8 @@ class GaussianRenderer:
         self._cached_raster_grad_fixed_color_range = self._DEFAULT_RASTER_GRAD_FIXED_COLOR_RANGE
         self._cached_raster_grad_fixed_opacity_range = self._DEFAULT_RASTER_GRAD_FIXED_OPACITY_RANGE
         self._cached_raster_grad_fixed_l_distance_norm_power = 0.0
-        self._cached_raster_grad_contrib_select_buffer: spy.Buffer | None = None
-        self._cached_raster_grad_contrib_counter_buffer: spy.Buffer | None = None
-        self._cached_raster_grad_contrib_records_buffer: spy.Buffer | None = None
-        self._cached_raster_grad_contrib_select_capacity = 0
-        self._cached_raster_grad_contrib_counter_capacity = 0
-        self._cached_raster_grad_contrib_record_capacity = 0
-        self._cached_raster_grad_contrib_capture_enabled = False
-        self._cached_raster_grad_contrib_capture_capacity = 0
-        self._cached_raster_grad_contrib_selected_count = 0
-        self._cached_raster_grad_contrib_per_splat_capacity = 0
         self._zero_u32_buffer = self.device.create_buffer(size=self._U32_BYTES, usage=spy.BufferUsage.shader_resource | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination)
         self._zero_u32_buffer.copy_from_numpy(np.array([0], dtype=np.uint32))
-        self._zero_raster_grad_contrib_counter_buffer = self.device.create_buffer(
-            size=self._RASTER_GRAD_CONTRIB_COUNTER_UINT_COUNT * self._U32_BYTES,
-            usage=self._RW_BUFFER_USAGE,
-        )
-        self._zero_raster_grad_contrib_counter_buffer.copy_from_numpy(np.zeros((self._RASTER_GRAD_CONTRIB_COUNTER_UINT_COUNT,), dtype=np.uint32))
-        self._zero_raster_grad_contrib_record_buffer = self.device.create_buffer(
-            size=self._RASTER_GRAD_CONTRIB_RECORD_FLOAT_COUNT * self._U32_BYTES,
-            usage=self._RW_BUFFER_USAGE,
-        )
-        self._zero_raster_grad_contrib_record_buffer.copy_from_numpy(np.zeros((self._RASTER_GRAD_CONTRIB_RECORD_FLOAT_COUNT,), dtype=np.float32))
         self.cached_raster_grad_atomic_mode = cached_raster_grad_atomic_mode
         self.cached_raster_grad_fixed_scale = cached_raster_grad_fixed_scale
         self.cached_raster_grad_fixed_loffdiag_ref_scale = cached_raster_grad_fixed_loffdiag_ref_scale
@@ -532,75 +499,6 @@ class GaussianRenderer:
                 size=max(self.width * self.height, 1) * 4 * self._U32_BYTES,
                 usage=self._RW_BUFFER_USAGE,
             )
-
-    def _ensure_cached_raster_grad_contribution_buffers(self, splat_count: int, selected_count: int, record_capacity: int) -> None:
-        required_splats = max(int(splat_count), 1)
-        required_counters = max(int(selected_count) + 1, self._RASTER_GRAD_CONTRIB_COUNTER_UINT_COUNT)
-        required_records = max(int(record_capacity), 1)
-        if self._cached_raster_grad_contrib_select_buffer is None or required_splats > self._cached_raster_grad_contrib_select_capacity:
-            self._cached_raster_grad_contrib_select_capacity = self._grow(required_splats, self._cached_raster_grad_contrib_select_capacity)
-            self._cached_raster_grad_contrib_select_buffer = self.device.create_buffer(
-                size=self._cached_raster_grad_contrib_select_capacity * self._U32_BYTES,
-                usage=self._RW_BUFFER_USAGE,
-            )
-        if self._cached_raster_grad_contrib_counter_buffer is None or required_counters > self._cached_raster_grad_contrib_counter_capacity:
-            self._cached_raster_grad_contrib_counter_capacity = self._grow(required_counters, self._cached_raster_grad_contrib_counter_capacity)
-            self._cached_raster_grad_contrib_counter_buffer = self.device.create_buffer(
-                size=self._cached_raster_grad_contrib_counter_capacity * self._U32_BYTES,
-                usage=self._RW_BUFFER_USAGE,
-            )
-        if self._cached_raster_grad_contrib_records_buffer is None or required_records > self._cached_raster_grad_contrib_record_capacity:
-            self._cached_raster_grad_contrib_record_capacity = self._grow(required_records, self._cached_raster_grad_contrib_record_capacity)
-            self._cached_raster_grad_contrib_records_buffer = self.device.create_buffer(
-                size=self._cached_raster_grad_contrib_record_capacity * self._RASTER_GRAD_CONTRIB_RECORD_FLOAT_COUNT * self._U32_BYTES,
-                usage=self._RW_BUFFER_USAGE,
-            )
-
-    def configure_cached_raster_grad_contribution_capture(self, splat_count: int, selected_splat_ids: np.ndarray, capacity: int) -> None:
-        count = max(int(splat_count), 0)
-        selected = np.unique(np.asarray(selected_splat_ids, dtype=np.int64).reshape(-1))
-        selected = selected[(selected >= 0) & (selected < count)]
-        selected_count = int(selected.shape[0])
-        capture_capacity = max(int(capacity), 1)
-        per_splat_capacity = max((capture_capacity + max(selected_count, 1) - 1) // max(selected_count, 1), 1)
-        self._ensure_cached_raster_grad_contribution_buffers(count, selected_count, selected_count * per_splat_capacity)
-        flags = np.zeros((max(self._cached_raster_grad_contrib_select_capacity, 1),), dtype=np.uint32)
-        if selected_count > 0:
-            flags[selected] = np.arange(1, selected_count + 1, dtype=np.uint32)
-        self._cached_raster_grad_contrib_select_buffer.copy_from_numpy(flags)
-        self._cached_raster_grad_contrib_counter_buffer.copy_from_numpy(np.zeros((max(self._cached_raster_grad_contrib_counter_capacity, 1),), dtype=np.uint32))
-        self._cached_raster_grad_contrib_capture_enabled = True
-        self._cached_raster_grad_contrib_capture_capacity = capture_capacity
-        self._cached_raster_grad_contrib_selected_count = selected_count
-        self._cached_raster_grad_contrib_per_splat_capacity = per_splat_capacity
-
-    def disable_cached_raster_grad_contribution_capture(self) -> None:
-        self._cached_raster_grad_contrib_capture_enabled = False
-        self._cached_raster_grad_contrib_capture_capacity = 0
-        self._cached_raster_grad_contrib_selected_count = 0
-        self._cached_raster_grad_contrib_per_splat_capacity = 0
-
-    def read_cached_raster_grad_contribution_capture(self) -> dict[str, np.ndarray | int]:
-        if self._cached_raster_grad_contrib_counter_buffer is None or self._cached_raster_grad_contrib_records_buffer is None:
-            return {"record_count": 0, "overflow_count": 0, "records": np.zeros((0, self._RASTER_GRAD_CONTRIB_RECORD_FLOAT_COUNT), dtype=np.float32)}
-        counters = np.asarray(buffer_to_numpy(self._cached_raster_grad_contrib_counter_buffer, np.uint32), dtype=np.uint32)
-        selected_count = max(self._cached_raster_grad_contrib_selected_count, 0)
-        per_splat_capacity = max(self._cached_raster_grad_contrib_per_splat_capacity, 1)
-        slot_counts = np.minimum(counters[:selected_count].astype(np.int64, copy=False), per_splat_capacity)
-        attempted = int(np.sum(counters[:selected_count], dtype=np.int64))
-        overflow = int(counters[selected_count]) if counters.size > selected_count else 0
-        raw = np.asarray(buffer_to_numpy(self._cached_raster_grad_contrib_records_buffer, np.float32), dtype=np.float32)
-        if selected_count <= 0 or slot_counts.size == 0:
-            return {"record_count": 0, "overflow_count": overflow, "attempted_count": attempted, "records": np.zeros((0, self._RASTER_GRAD_CONTRIB_RECORD_FLOAT_COUNT), dtype=np.float32), "slot_record_counts": np.zeros((0,), dtype=np.int32)}
-        table = raw[: selected_count * per_splat_capacity * self._RASTER_GRAD_CONTRIB_RECORD_FLOAT_COUNT].reshape(selected_count, per_splat_capacity, self._RASTER_GRAD_CONTRIB_RECORD_FLOAT_COUNT)
-        records = np.concatenate([table[slot, : int(slot_counts[slot])] for slot in range(selected_count)], axis=0) if np.any(slot_counts > 0) else np.zeros((0, self._RASTER_GRAD_CONTRIB_RECORD_FLOAT_COUNT), dtype=np.float32)
-        return {
-            "record_count": int(records.shape[0]),
-            "overflow_count": overflow,
-            "attempted_count": attempted,
-            "records": np.asarray(records, dtype=np.float32).copy(),
-            "slot_record_counts": slot_counts.astype(np.int32, copy=False),
-        }
 
     @classmethod
     def _param_slice(cls, splat_count: int, param_id: int) -> slice:
@@ -749,21 +647,21 @@ class GaussianRenderer:
 
     def _rasterize(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output: spy.Texture | None = None) -> None:
         target = self.output_texture if output is None else output
-        self._dispatch(self._k_raster, encoder, self._raster_thread_count(), {**self._scene_vars(), **self._screen_vars(), **self._raster_cache_vars(), **self._debug_grad_norm_var(), **self._raster_grad_contribution_capture_vars(), "g_SortedValues": self._work_buffers["values"], "g_TileRanges": self._work_buffers["tile_ranges"], "g_Output": target, **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_scale_var(), **self._raster_grad_fixed_range_vars(), **self._raster_grad_fixed_loffdiag_ref_scale_var(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._camera_uniforms(camera)}, "Rasterize", 24)
+        self._dispatch(self._k_raster, encoder, self._raster_thread_count(), {**self._scene_vars(), **self._screen_vars(), **self._raster_cache_vars(), **self._debug_grad_norm_var(), "g_SortedValues": self._work_buffers["values"], "g_TileRanges": self._work_buffers["tile_ranges"], "g_Output": target, **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_scale_var(), **self._raster_grad_fixed_range_vars(), **self._raster_grad_fixed_loffdiag_ref_scale_var(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._camera_uniforms(camera)}, "Rasterize", 24)
 
     def _clear_raster_grads(self, encoder: spy.CommandEncoder, splat_count: int) -> None:
-        clear_count = max(int(splat_count) * max(self.TRAINABLE_PARAM_COUNT, self._RASTER_CACHE_PARAM_COUNT), self._RASTER_GRAD_CONTRIB_COUNTER_UINT_COUNT)
-        self._dispatch(self._raster_grad_shader_set().clear, encoder, spy.uint3(clear_count, 1, 1), {**self._raster_grad_vars(), **self._raster_grad_contribution_capture_vars(), **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_scale_var(), **self._raster_grad_fixed_range_vars(), **self._raster_grad_fixed_loffdiag_ref_scale_var(), **self._prepass_uniforms(splat_count)}, "Clear Raster Grads", 25)
+        clear_count = int(splat_count) * max(self.TRAINABLE_PARAM_COUNT, self._RASTER_CACHE_PARAM_COUNT)
+        self._dispatch(self._raster_grad_shader_set().clear, encoder, spy.uint3(max(clear_count, 1), 1, 1), {**self._raster_grad_vars(), **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_scale_var(), **self._raster_grad_fixed_range_vars(), **self._raster_grad_fixed_loffdiag_ref_scale_var(), **self._prepass_uniforms(splat_count)}, "Clear Raster Grads", 25)
 
     def _rasterize_training_forward(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output: spy.Texture | None = None) -> None:
         target = self.output_texture if output is None else output
-        self._dispatch(self._raster_grad_shader_set().training_forward, encoder, self._raster_thread_count(), {**self._scene_vars(), **self._screen_vars(), **self._raster_cache_vars(), **self._raster_grad_contribution_capture_vars(), "g_SortedValues": self._work_buffers["values"], "g_TileRanges": self._work_buffers["tile_ranges"], "g_Output": target, "g_TrainingForwardState": self._work_buffers["training_forward_state"], "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"], **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_scale_var(), **self._raster_grad_fixed_range_vars(), **self._raster_grad_fixed_loffdiag_ref_scale_var(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._camera_uniforms(camera)}, "Rasterize Training Forward", 26)
+        self._dispatch(self._raster_grad_shader_set().training_forward, encoder, self._raster_thread_count(), {**self._scene_vars(), **self._screen_vars(), **self._raster_cache_vars(), "g_SortedValues": self._work_buffers["values"], "g_TileRanges": self._work_buffers["tile_ranges"], "g_Output": target, "g_TrainingForwardState": self._work_buffers["training_forward_state"], "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"], **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_scale_var(), **self._raster_grad_fixed_range_vars(), **self._raster_grad_fixed_loffdiag_ref_scale_var(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._camera_uniforms(camera)}, "Rasterize Training Forward", 26)
 
     def _rasterize_backward(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output_grad: spy.Buffer) -> None:
-        self._dispatch(self._raster_grad_shader_set().backward, encoder, self._raster_thread_count(), {**self._scene_vars(), **self._raster_cache_vars(), **self._raster_grad_contribution_capture_vars(), "g_SortedValues": self._work_buffers["values"], "g_TileRanges": self._work_buffers["tile_ranges"], "g_OutputGrad": output_grad, "g_TrainingForwardState": self._work_buffers["training_forward_state"], "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"], **self._raster_grad_vars(), **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_scale_var(), **self._raster_grad_fixed_range_vars(), **self._raster_grad_fixed_loffdiag_ref_scale_var(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._camera_uniforms(camera)}, "Rasterize Backward", 27)
+        self._dispatch(self._raster_grad_shader_set().backward, encoder, self._raster_thread_count(), {**self._scene_vars(), **self._raster_cache_vars(), "g_SortedValues": self._work_buffers["values"], "g_TileRanges": self._work_buffers["tile_ranges"], "g_OutputGrad": output_grad, "g_TrainingForwardState": self._work_buffers["training_forward_state"], "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"], **self._raster_grad_vars(), **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_scale_var(), **self._raster_grad_fixed_range_vars(), **self._raster_grad_fixed_loffdiag_ref_scale_var(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._camera_uniforms(camera)}, "Rasterize Backward", 27)
 
     def _backprop_cached_raster_grads(self, encoder: spy.CommandEncoder, splat_count: int, camera: Camera, grad_scale: float = 1.0) -> None:
-        self._dispatch(self._raster_grad_shader_set().backprop, encoder, spy.uint3(max(int(splat_count), 1), 1, 1), {**self._scene_vars(), **self._raster_cache_vars(), **self._raster_grad_vars(), **self._raster_grad_contribution_capture_vars(), **self._raster_grad_decode_scale_var(grad_scale), **self._raster_grad_fixed_scale_var(), **self._raster_grad_fixed_range_vars(), **self._raster_grad_fixed_loffdiag_ref_scale_var(), **self._prepass_uniforms(splat_count), **self._camera_uniforms(camera)}, "Backprop Cached Raster Grads", 28)
+        self._dispatch(self._raster_grad_shader_set().backprop, encoder, spy.uint3(max(int(splat_count), 1), 1, 1), {**self._scene_vars(), **self._raster_cache_vars(), **self._raster_grad_vars(), **self._raster_grad_decode_scale_var(grad_scale), **self._raster_grad_fixed_scale_var(), **self._raster_grad_fixed_range_vars(), **self._raster_grad_fixed_loffdiag_ref_scale_var(), **self._prepass_uniforms(splat_count), **self._camera_uniforms(camera)}, "Backprop Cached Raster Grads", 28)
 
     def _execute_prepass(self, scene: GaussianScene, camera: Camera, sync_counts: bool = False) -> tuple[int, int]:
         enc = self.device.create_command_encoder()
@@ -963,112 +861,6 @@ class GaussianRenderer:
         count = int(splat_count)
         data = np.asarray(values, dtype=np.float32).reshape(count, self._RASTER_CACHE_PARAM_COUNT)
         self._work_buffers["cached_raster_grads_float"].copy_from_numpy(np.ascontiguousarray(data.T.reshape(-1), dtype=np.float32))
-
-    def _replay_backprop_cached_raster_grads(self, camera: Camera, splat_count: int, grad_scale: float = 1.0) -> dict[str, np.ndarray]:
-        self._zero_param_grads(splat_count)
-        encoder = self.device.create_command_encoder()
-        self._backprop_cached_raster_grads(encoder, splat_count, camera, grad_scale)
-        self.device.submit_command_buffer(encoder.finish())
-        self.device.wait()
-        return self.read_grad_groups(splat_count)
-
-    def debug_cached_raster_backprop_contributions_against_target(
-        self,
-        scene: GaussianScene,
-        camera: Camera,
-        target_image: np.ndarray,
-        background: np.ndarray | tuple[float, float, float] = (0.0, 0.0, 0.0),
-        component_slices: tuple[tuple[str, slice], ...] | None = None,
-    ) -> dict[str, object]:
-        grads = self.debug_raster_backward_grads_against_target(scene, camera, target_image, background=background)
-        count = int(scene.count)
-        specs = self.CACHED_RASTER_GRAD_COMPONENT_SLICES if component_slices is None else tuple(component_slices)
-        full = {
-            "grad_scales": np.asarray(grads["grad_scales"], dtype=np.float32).copy(),
-            "grad_rotations": np.asarray(grads["grad_rotations"], dtype=np.float32).copy(),
-        }
-        contributions: dict[str, dict[str, np.ndarray]] = {}
-        if self.cached_raster_grad_atomic_mode == self.CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT:
-            active = np.asarray(grads["cached_raster_grads_float"], dtype=np.float32).copy()
-            zeros = np.zeros_like(active)
-            for label, component_slice in specs:
-                masked = zeros.copy()
-                masked[:, component_slice] = active[:, component_slice]
-                self.write_cached_raster_grads_float(count, masked)
-                contribution = self._replay_backprop_cached_raster_grads(camera, count)
-                contributions[label] = {
-                    "grad_scales": np.asarray(contribution["grad_scales"], dtype=np.float32).copy(),
-                    "grad_rotations": np.asarray(contribution["grad_rotations"], dtype=np.float32).copy(),
-                }
-            self.write_cached_raster_grads_float(count, active)
-        else:
-            active = np.asarray(grads["cached_raster_grads_fixed"], dtype=np.int32).copy()
-            zeros = np.zeros_like(active)
-            for label, component_slice in specs:
-                masked = zeros.copy()
-                masked[:, component_slice] = active[:, component_slice]
-                self.write_cached_raster_grads_fixed(count, masked)
-                contribution = self._replay_backprop_cached_raster_grads(camera, count)
-                contributions[label] = {
-                    "grad_scales": np.asarray(contribution["grad_scales"], dtype=np.float32).copy(),
-                    "grad_rotations": np.asarray(contribution["grad_rotations"], dtype=np.float32).copy(),
-                }
-            self.write_cached_raster_grads_fixed(count, active)
-        grads["backprop_full"] = full
-        grads["backprop_contributions"] = contributions
-        return grads
-
-    @classmethod
-    def decode_cached_raster_grad_contribution_records(cls, records: np.ndarray) -> dict[str, np.ndarray]:
-        rows = np.asarray(records, dtype=np.float32).reshape(-1, cls._RASTER_GRAD_CONTRIB_RECORD_FLOAT_COUNT)
-        if rows.shape[0] == 0:
-            return {
-                "splat_ids": np.zeros((0,), dtype=np.int32),
-                "pixel_x": np.zeros((0,), dtype=np.int32),
-                "pixel_y": np.zeros((0,), dtype=np.int32),
-                "global_indices": np.zeros((0,), dtype=np.int32),
-                "gradients": np.zeros((0, cls._RASTER_CACHE_PARAM_COUNT), dtype=np.float32),
-            }
-        gradients = np.stack(
-            (
-                rows[:, 4], rows[:, 5], rows[:, 6],
-                rows[:, 7], rows[:, 8], rows[:, 9],
-                rows[:, 10], rows[:, 11], rows[:, 12],
-                rows[:, 13], rows[:, 14], rows[:, 15], rows[:, 16],
-            ),
-            axis=1,
-        ).astype(np.float32, copy=False)
-        return {
-            "splat_ids": np.rint(rows[:, 0]).astype(np.int32),
-            "pixel_x": np.rint(rows[:, 1]).astype(np.int32),
-            "pixel_y": np.rint(rows[:, 2]).astype(np.int32),
-            "global_indices": np.rint(rows[:, 3]).astype(np.int32),
-            "gradients": gradients.copy(),
-        }
-
-    def debug_capture_raster_backward_contributions_against_target(
-        self,
-        scene: GaussianScene,
-        camera: Camera,
-        target_image: np.ndarray,
-        selected_splat_ids: np.ndarray,
-        capacity: int,
-        background: np.ndarray | tuple[float, float, float] = (0.0, 0.0, 0.0),
-    ) -> dict[str, object]:
-        self.configure_cached_raster_grad_contribution_capture(scene.count, np.asarray(selected_splat_ids), int(capacity))
-        try:
-            grads = self.debug_raster_backward_grads_against_target(scene, camera, target_image, background=background)
-            capture = self.read_cached_raster_grad_contribution_capture()
-        finally:
-            self.disable_cached_raster_grad_contribution_capture()
-        decoded = self.decode_cached_raster_grad_contribution_records(np.asarray(capture["records"], dtype=np.float32))
-        grads["cached_raster_grad_contribution_capture"] = {
-            "record_count": int(capture["record_count"]),
-            "attempted_count": int(capture["attempted_count"]),
-            "overflow_count": int(capture["overflow_count"]),
-            **decoded,
-        }
-        return grads
 
     def _require_scene(self) -> GaussianScene | SceneBinding:
         if self._current_scene is None:
@@ -1319,41 +1111,6 @@ class GaussianRenderer:
         grads["cached_raster_grads_fixed"] = self.read_cached_raster_grads_fixed(scene.count)
         grads["cached_raster_grads_float"] = self.read_cached_raster_grads_float(scene.count)
         grads["cached_raster_grads_active"] = grads["cached_raster_grads_float"] if self.cached_raster_grad_atomic_mode == self.CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT else grads["cached_raster_grads_fixed"]
-        return grads
-
-    def debug_raster_backward_grads_against_target(
-        self,
-        scene: GaussianScene,
-        camera: Camera,
-        target_image: np.ndarray,
-        background: np.ndarray | tuple[float, float, float] = (0.0, 0.0, 0.0),
-    ) -> dict[str, np.ndarray]:
-        self.set_scene(scene)
-        if self._debug_render_enabled():
-            raise RuntimeError("Disable debug overlay rendering before requesting raster backward gradients.")
-        background_np = self._background_array(background)
-        target = np.asarray(target_image, dtype=np.float32).reshape(self.height, self.width, 4)
-        self._execute_prepass(scene, camera, sync_counts=False)
-        enc = self.device.create_command_encoder()
-        with debug_region(enc, "Debug Raster Forward", 27):
-            self._rasterize_training_forward(enc, camera, background_np)
-        self.device.submit_command_buffer(enc.finish())
-        self.device.wait()
-        rendered = self._read_image()
-        output_grad = 2.0 * (rendered - target) / float(max(self.width * self.height, 1))
-        self.output_grad_buffer.copy_from_numpy(np.ascontiguousarray(output_grad.reshape(-1, 4), dtype=np.float32))
-        enc_bwd = self.device.create_command_encoder()
-        with debug_region(enc_bwd, "Debug Raster Backward", 29):
-            self._clear_raster_grads(enc_bwd, scene.count)
-            self.rasterize_backward_current_scene(enc_bwd, camera, background_np, self.output_grad_buffer)
-        self.device.submit_command_buffer(enc_bwd.finish())
-        self.device.wait()
-        grads = self.read_grad_groups(scene.count)
-        grads["cached_raster_grads_mode"] = self.cached_raster_grad_atomic_mode
-        grads["cached_raster_grads_fixed"] = self.read_cached_raster_grads_fixed(scene.count)
-        grads["cached_raster_grads_float"] = self.read_cached_raster_grads_float(scene.count)
-        grads["cached_raster_grads_active"] = grads["cached_raster_grads_float"] if self.cached_raster_grad_atomic_mode == self.CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT else grads["cached_raster_grads_fixed"]
-        grads["output_grad"] = output_grad
         return grads
 
     def debug_pipeline_data(self, scene: GaussianScene, camera: Camera) -> dict[str, np.ndarray | int]:

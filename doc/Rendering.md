@@ -73,7 +73,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - `csClearRasterGrads` zeros the float packed gradient buffer plus both cached-raster intermediate buffers: the float-atomic buffer and the fixed-point fallback/debug buffer.
 - `csRasterizeTrainingForward` runs the raster forward path for the fixed-count trainer, writes the rendered output, and caches one per-pixel forward state record plus `processedEnd` for backward replay.
 - `csRasterizeBackward` is a pure backward replay kernel: it loads the cached per-pixel forward state, derives `dLoss / dRasterState` from `g_OutputGrad`, walks the staged splats in reverse without replaying forward internally, and accumulates cached raster-field gradients into the selected intermediate buffer.
-- The reverse pass reuses one staged gaussian per thread-group lane, accumulates one pixel's contributions in registers, and writes them into either the float-atomic buffer or the fixed-point Q16.16 buffer, depending on the renderer setting.
+- The reverse pass reuses one staged gaussian per thread-group lane, accumulates one pixel's contributions in registers, and writes them into either the float-atomic buffer or the fixed-point quantized buffer, depending on the renderer setting.
 - `csBackpropCachedRasterGrads` runs one thread per splat, reads the active cached-raster gradient record inline, backprops cached ellipsoid geometry through `build_cached_ellipsoid`, backprops cached opacity through the raw-opacity helper, and writes final float scene-parameter gradients into `g_ParamGrads` with the caller-provided final scale.
 - Output gradients are supplied through `g_OutputGrad` (`StructuredBuffer<float4>`) using flat pixel indexing `y * width + x`, and chain-rule terms include gamma output mapping and alpha output (`1 - transmittance`).
 
@@ -89,7 +89,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - `src/metrics.py` now exposes both single log10 histograms and grouped per-parameter log10 histograms for generic float tensors laid out as `tensor[param_id * item_count + item_id]`.
 - The grouped tensor histogram kernel buckets `log10(abs(value))`, ignoring zeros and non-finite values.
 - Cached ellipse gradient histogramming uses that generic float-tensor path directly in float atomic mode.
-- In fixed atomic mode, the renderer decodes the Q16.16 cached gradient buffer into a float scratch buffer first, then dispatches the same grouped histogram utility.
+- In fixed atomic mode, the renderer decodes the quantized cached gradient buffer into a float scratch buffer first, then dispatches the same grouped histogram utility.
 
 ## Stats Notes
 - `generated_entries` / `written_entries` are reported with one-frame latency (`stats_latency_frames = 1`).

@@ -211,7 +211,7 @@ GROUP_SPECS = {
     "Train Optimizer": (
         ControlSpec("lr_base", "input_float", "Base LR", {"value": 1e-3, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
         ControlSpec("lr_pos_mul", "input_float", "LR Mul Position", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
-        ControlSpec("lr_scale_mul", "input_float", "LR Mul Scale", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
+        ControlSpec("lr_scale_mul", "input_float", "LR Mul Scale", {"value": 5.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
         ControlSpec("lr_rot_mul", "input_float", "LR Mul Rotation", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
         ControlSpec("lr_color_mul", "input_float", "LR Mul Color", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
         ControlSpec("lr_opacity_mul", "input_float", "LR Mul Opacity", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
@@ -248,7 +248,7 @@ RENDER_PARAM_SPECS = (
     ControlSpec("max_splat_steps", "slider_int", "Max Splat Steps", {"value": 32768, "min": 16, "max": 32768}),
     ControlSpec("trans_threshold", "slider_float", "Trans Threshold", {"value": 0.005, "min": 0.001, "max": 0.2, "format": "%.2e"}),
     ControlSpec("sampled5_safety", "slider_float", "MVEE Safety", {"value": 1.0, "min": 1.0, "max": 1.2}),
-    ControlSpec("cached_raster_grad_atomic_mode", "combo", "Cached Grad Atomics", {"value": 0, "options": _CACHED_RASTER_GRAD_ATOMIC_MODE_LABELS}),
+    ControlSpec("cached_raster_grad_atomic_mode", "combo", "Cached Grad Atomics", {"value": 1, "options": _CACHED_RASTER_GRAD_ATOMIC_MODE_LABELS}),
     ControlSpec("cached_raster_grad_fixed_scale", "slider_float", "Cached Grad Fixed Scale", {"value": 0.125, "min": 0.0625, "max": 16.0, "format": "%.4gx", "logarithmic": True}),
     ControlSpec("debug_ellipse", "checkbox", "Debug Ellipse Outlines", {"value": False}),
     ControlSpec("debug_processed_count", "checkbox", "Debug Processed Count", {"value": False}),
@@ -1220,7 +1220,7 @@ class ToolkitWindow:
         "max_splat_steps": "Maximum rasterization steps per pixel ray",
         "trans_threshold": "Transmittance threshold for early ray termination",
         "sampled5_safety": "Safety margin for MVEE bounding ellipsoid",
-        "cached_raster_grad_atomic_mode": "Choose float atomics or Q16.16 fixed-point atomics for cached ellipsoid gradient accumulation during raster backward",
+        "cached_raster_grad_atomic_mode": "Choose float atomics or fixed-point atomics for cached ellipsoid gradient accumulation during raster backward",
         "cached_raster_grad_fixed_scale": "Uniform multiplier applied to the fixed-point cached gradient encode scales",
         "debug_ellipse": "Show ellipse outlines around each gaussian",
         "debug_processed_count": "Heatmap of processed splats per pixel",
@@ -1354,7 +1354,7 @@ def build_ui(renderer) -> ViewerUI:
     values["max_splat_steps"] = int(renderer.max_splat_steps)
     values["trans_threshold"] = float(renderer.transmittance_threshold)
     values["sampled5_safety"] = float(renderer.sampled5_safety_scale)
-    values["cached_raster_grad_atomic_mode"] = 0 if getattr(renderer, "cached_raster_grad_atomic_mode", "float") == "float" else 1
+    values["cached_raster_grad_atomic_mode"] = 0 if getattr(renderer, "cached_raster_grad_atomic_mode", "fixed") == "float" else 1
     values["cached_raster_grad_fixed_scale"] = float(getattr(renderer, "cached_raster_grad_fixed_scale", 1.0))
     values["debug_ellipse"] = bool(renderer.debug_show_ellipses)
     values["debug_processed_count"] = bool(renderer.debug_show_processed_count)
