@@ -104,6 +104,8 @@ class GaussianRenderer:
         ],
         dtype=np.float32,
     )
+    _RASTER_GRAD_FIXED_LOG_L_DIAG_REF_FLOOR = np.float32(0.25)
+    _RASTER_GRAD_FIXED_L_OFFDIAG_REF_FLOOR = np.float32(0.25)
     _RW_BUFFER_USAGE = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
     PARAM_POSITION_IDS = (0, 1, 2)
     PARAM_SCALE_IDS = (3, 4, 5)
@@ -830,7 +832,8 @@ class GaussianRenderer:
 
     def read_cached_raster_grads_fixed_decoded(self, splat_count: int | None = None) -> np.ndarray:
         values = np.asarray(self.read_cached_raster_grads_fixed(splat_count), dtype=np.float32)
-        return values * self.cached_raster_grad_fixed_decode_scales.reshape(1, self._RASTER_CACHE_PARAM_COUNT)
+        decode_scales = self.cached_raster_grad_fixed_decode_scale_table(values.shape[0])
+        return values * decode_scales
 
     def read_cached_raster_grads_float(self, splat_count: int | None = None) -> np.ndarray:
         count = self._scene_count if splat_count is None else int(splat_count)
@@ -1064,6 +1067,26 @@ class GaussianRenderer:
     @property
     def cached_raster_grad_fixed_decode_scales(self) -> np.ndarray:
         return self._RASTER_GRAD_FIXED_BASE_DECODE_SCALES / np.float32(self._cached_raster_grad_fixed_scale)
+
+    @classmethod
+    def _cached_raster_grad_fixed_reference_table(cls, raster_cache: np.ndarray) -> np.ndarray:
+        cache = np.asarray(raster_cache, dtype=np.float32).reshape(-1, cls._RASTER_CACHE_PARAM_COUNT)
+        refs = np.ones_like(cache, dtype=np.float32)
+        if cache.shape[0] <= 0:
+            return refs
+        log_ldiag = np.abs(cache[:, 3:6])
+        refs[:, 3:6] = np.maximum(log_ldiag, cls._RASTER_GRAD_FIXED_LOG_L_DIAG_REF_FLOOR)
+        l_diag = np.exp(cache[:, 3:6]).astype(np.float32, copy=False)
+        refs[:, 6] = np.maximum(np.sqrt(np.maximum(l_diag[:, 0] * l_diag[:, 1], np.float32(1e-12))), cls._RASTER_GRAD_FIXED_L_OFFDIAG_REF_FLOOR)
+        refs[:, 7] = np.maximum(np.sqrt(np.maximum(l_diag[:, 0] * l_diag[:, 2], np.float32(1e-12))), cls._RASTER_GRAD_FIXED_L_OFFDIAG_REF_FLOOR)
+        refs[:, 8] = np.maximum(np.sqrt(np.maximum(l_diag[:, 1] * l_diag[:, 2], np.float32(1e-12))), cls._RASTER_GRAD_FIXED_L_OFFDIAG_REF_FLOOR)
+        return refs
+
+    def cached_raster_grad_fixed_decode_scale_table(self, splat_count: int | None = None, raster_cache: np.ndarray | None = None) -> np.ndarray:
+        count = self._scene_count if splat_count is None else int(splat_count)
+        cache = self.read_raster_cache(count) if raster_cache is None else np.asarray(raster_cache, dtype=np.float32).reshape(count, self._RASTER_CACHE_PARAM_COUNT)
+        refs = self._cached_raster_grad_fixed_reference_table(cache)
+        return refs * self.cached_raster_grad_fixed_decode_scales.reshape(1, self._RASTER_CACHE_PARAM_COUNT)
 
     def set_debug_grad_norm_buffer(self, buffer: spy.Buffer | None) -> None:
         self._debug_grad_norm_buffer = buffer

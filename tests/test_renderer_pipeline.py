@@ -484,7 +484,7 @@ def test_raster_backward_decodes_fixed_grad_grid(device):
     nonzero = values[values != 0]
     assert nonzero.size > 0
     decoded = np.asarray(renderer.read_cached_raster_grads_fixed_decoded(scene.count), dtype=np.float32)
-    requantized = np.rint(decoded / renderer.cached_raster_grad_fixed_decode_scales.reshape(1, 13)).astype(np.int32)
+    requantized = np.rint(decoded / renderer.cached_raster_grad_fixed_decode_scale_table(scene.count)).astype(np.int32)
     assert int(np.max(np.abs(requantized[values != 0] - values[values != 0]))) <= 64
 
 
@@ -499,7 +499,7 @@ def test_raster_backward_float_mode_produces_float_intermediate_and_final_grads(
     assert np.any(float_nonzero != 0.0)
     active_nonzero = float_nonzero[np.abs(float_nonzero) > 0.0]
     assert active_nonzero.size > 0
-    requantized = float_nonzero / renderer.cached_raster_grad_fixed_decode_scales.reshape(1, 13)
+    requantized = float_nonzero / renderer.cached_raster_grad_fixed_decode_scale_table(scene.count)
     assert np.any(np.abs(requantized[np.abs(float_nonzero) > 0.0] - np.rint(requantized[np.abs(float_nonzero) > 0.0])) > 1e-4)
     assert np.count_nonzero(float_nonzero[:, 9:12]) > 0
 
