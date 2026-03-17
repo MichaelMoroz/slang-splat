@@ -4,11 +4,16 @@ import argparse
 from dataclasses import dataclass
 import math
 from pathlib import Path
+import sys
 from typing import Any
 
 import numpy as np
 from PIL import Image
 from tqdm.auto import tqdm
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 from src.metrics import psnr_from_mse
 from src.renderer import TorchGaussianRenderSettings, TorchGaussianRendererContext, render_gaussian_splats_torch

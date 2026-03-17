@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import runpy
+import sys
 
 import numpy as np
 import pytest
@@ -136,6 +138,17 @@ def test_frame_metric_tracker_replaces_existing_frame_value() -> None:
 
     assert np.isclose(tracker.mean("loss"), 7.0)
     assert np.isclose(tracker.mean("psnr"), 40.0)
+
+
+def test_example_script_bootstraps_repo_root(monkeypatch: pytest.MonkeyPatch) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    script_path = repo_root / "torch_examples" / "train_colmap_garden_torch.py"
+    sanitized_path = [entry for entry in sys.path if Path(entry or ".").resolve() != repo_root]
+
+    monkeypatch.setattr(sys, "path", sanitized_path)
+    module_globals = runpy.run_path(str(script_path))
+
+    assert "run_training" in module_globals
 
 
 @pytest.fixture(scope="module")
