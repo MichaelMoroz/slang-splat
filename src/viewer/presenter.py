@@ -164,6 +164,7 @@ def update_ui_text(viewer: object, dt: float) -> None:
     import_progress = getattr(viewer.s, "colmap_import_progress", None)
     viewer.ui._values["_colmap_import_active"] = bool(import_progress is not None)
     viewer.ui._values["_colmap_import_fraction"] = 0.0 if import_progress is None else float(import_progress.fraction)
+    viewer.ui._values["_can_export_ply"] = bool(viewer.s.trainer is not None or hasattr(viewer.s.scene, "positions"))
     viewer.t("colmap_import_status").text = "" if import_progress is None else (
         "Preparing COLMAP import..."
         if import_progress.phase == "prepare"

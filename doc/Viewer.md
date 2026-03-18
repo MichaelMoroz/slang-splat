@@ -6,7 +6,7 @@ The realtime viewer is a single `spy.AppWindow` that renders both the Gaussian s
 
 The overlay uses a left-side control panel with a menu bar:
 
-- `File`: scene load, COLMAP import, reload, and gaussian reinitialization actions
+- `File`: scene load, scene export, COLMAP import, reload, and gaussian reinitialization actions
 - `View`: interface scale presets from `75%` to `200%`, with a reset action
 - `Help`: `Documentation` and `About` windows
 - The menu bar spans the full viewport width and the left control panel starts below it to avoid overlap.

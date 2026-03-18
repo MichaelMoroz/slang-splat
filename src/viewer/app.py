@@ -10,6 +10,7 @@ from .. import create_default_device
 from ..app.shared import RendererParams, build_init_params, build_training_params, fit_camera
 from ..common import normalize3
 from ..renderer import Camera, GaussianRenderer
+from ..scene import GaussianScene, save_gaussian_ply
 from . import presenter, session
 from .constants import _WINDOW_TITLE
 from .state import (
@@ -191,6 +192,7 @@ class SplatViewer(spy.AppWindow):
     def _bind_toolkit_callbacks(self) -> None:
         cb = self.toolkit.callbacks
         cb.load_ply = self._load_ply_callback
+        cb.export_ply = self._export_ply_callback
         cb.browse_colmap_root = self._browse_colmap_root_callback
         cb.browse_colmap_images = self._browse_colmap_images_callback
         cb.browse_colmap_ply = self._browse_colmap_ply_callback
@@ -214,6 +216,25 @@ class SplatViewer(spy.AppWindow):
         path = spy.platform.open_file_dialog([spy.platform.FileDialogFilter("PLY Files", "*.ply")])
         if path:
             self._run_action(lambda: session.load_scene(self, Path(path)))
+
+    def _export_source_scene(self) -> GaussianScene:
+        if self.s.trainer is not None:
+            return self.s.trainer.scene
+        if isinstance(self.s.scene, GaussianScene):
+            return self.s.scene
+        raise RuntimeError("No gaussian scene is available to export.")
+
+    def _export_ply_callback(self) -> None:
+        path = spy.platform.save_file_dialog([spy.platform.FileDialogFilter("PLY Files", "*.ply")])
+        if path is None:
+            return
+        def _export() -> None:
+            scene = SplatViewer._export_source_scene(self)
+            export_path = Path(path)
+            export_path = export_path.with_suffix(".ply") if export_path.suffix.lower() != ".ply" else export_path
+            saved_path = save_gaussian_ply(export_path, scene)
+            print(f"Exported scene: {saved_path} ({scene.count:,} splats)")
+        self._run_action(_export)
 
     def _browse_colmap_root_callback(self) -> None:
         path = spy.platform.choose_folder_dialog()

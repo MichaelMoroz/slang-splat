@@ -357,6 +357,7 @@ class ToolkitWindow:
         self._apply_theme()
         self.callbacks = SimpleNamespace(
             load_ply=_noop,
+            export_ply=_noop,
             browse_colmap_root=_noop,
             browse_colmap_images=_noop,
             browse_colmap_ply=_noop,
@@ -600,6 +601,8 @@ class ToolkitWindow:
         if imgui.begin_menu("File"):
             if _menu_item("Load PLY..."):
                 self.callbacks.load_ply()
+            if _menu_item("Export PLY...", enabled=bool(ui._values.get("_can_export_ply", False))):
+                self.callbacks.export_ply()
             if _menu_item("Load COLMAP..."):
                 self._show_colmap_import = True
             if _menu_item("Reload"):
@@ -1388,6 +1391,7 @@ def build_ui(renderer) -> ViewerUI:
     values["_loss_debug_frame_max"] = 0
     values["_colmap_import_active"] = False
     values["_colmap_import_fraction"] = 0.0
+    values["_can_export_ply"] = False
 
     texts: dict[str, str] = {
         key: "" for key in (

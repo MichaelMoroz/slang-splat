@@ -12,7 +12,7 @@ from ._internal.colmap_types import (
     ColmapReconstruction,
     GaussianInitHyperParams,
 )
-from .ply_loader import load_gaussian_ply
+from .ply_loader import load_gaussian_ply, save_gaussian_ply
 
 __all__ = [
     "GaussianScene",
@@ -20,6 +20,7 @@ __all__ = [
     "ColmapReconstruction",
     "GaussianInitHyperParams",
     "load_gaussian_ply",
+    "save_gaussian_ply",
     "load_colmap_reconstruction",
     "build_training_frames",
     "build_training_frames_from_root",

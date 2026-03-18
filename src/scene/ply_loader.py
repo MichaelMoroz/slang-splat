@@ -4,15 +4,21 @@ from pathlib import Path
 from typing import Iterable
 
 import numpy as np
-from plyfile import PlyData
+from plyfile import PlyData, PlyElement
 
 from .gaussian_scene import GaussianScene
 
 SH_C0 = 0.28209479177387814
+_LOGIT_EPS = 1e-6
 
 
 def _sigmoid(values: np.ndarray) -> np.ndarray:
     return 1.0 / (1.0 + np.exp(-values))
+
+
+def _logit(values: np.ndarray) -> np.ndarray:
+    clamped = np.clip(np.asarray(values, dtype=np.float32), _LOGIT_EPS, 1.0 - _LOGIT_EPS)
+    return np.log(clamped / (1.0 - clamped))
 
 
 def _sorted_props(names: Iterable[str], prefix: str) -> list[str]:
@@ -95,3 +101,37 @@ def load_gaussian_ply(path: str | Path) -> GaussianScene:
         colors=colors.astype(np.float32),
         sh_coeffs=sh_coeffs.astype(np.float32),
     )
+
+
+def save_gaussian_ply(path: str | Path, scene: GaussianScene) -> Path:
+    output_path = Path(path).resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    count = int(scene.count)
+    sh_coeffs = np.asarray(scene.sh_coeffs, dtype=np.float32)
+    if sh_coeffs.ndim != 3 or sh_coeffs.shape[0] != count or sh_coeffs.shape[2] != 3 or sh_coeffs.shape[1] <= 0:
+        raise ValueError("GaussianScene.sh_coeffs must have shape [count, coeff_count, 3] with coeff_count >= 1.")
+    rest_coeff_count = int(sh_coeffs.shape[1] - 1)
+    dtype = [
+        ("x", "f4"), ("y", "f4"), ("z", "f4"),
+        ("opacity", "f4"),
+        ("f_dc_0", "f4"), ("f_dc_1", "f4"), ("f_dc_2", "f4"),
+        *(("f_rest_" + str(index), "f4") for index in range(rest_coeff_count * 3)),
+        ("scale_0", "f4"), ("scale_1", "f4"), ("scale_2", "f4"),
+        ("rot_0", "f4"), ("rot_1", "f4"), ("rot_2", "f4"), ("rot_3", "f4"),
+    ]
+    rows = np.empty((count,), dtype=dtype)
+    positions = np.asarray(scene.positions, dtype=np.float32)
+    rows["x"], rows["y"], rows["z"] = positions[:, 0], positions[:, 1], positions[:, 2]
+    rows["opacity"] = _logit(scene.opacities).astype(np.float32)
+    rows["f_dc_0"], rows["f_dc_1"], rows["f_dc_2"] = sh_coeffs[:, 0, 0], sh_coeffs[:, 0, 1], sh_coeffs[:, 0, 2]
+    if rest_coeff_count > 0:
+        rest = np.transpose(sh_coeffs[:, 1:, :], (0, 2, 1)).reshape(count, rest_coeff_count * 3)
+        for index in range(rest.shape[1]):
+            rows[f"f_rest_{index}"] = rest[:, index]
+    scales = np.asarray(scene.scales, dtype=np.float32)
+    rows["scale_0"], rows["scale_1"], rows["scale_2"] = scales[:, 0], scales[:, 1], scales[:, 2]
+    rotations = np.asarray(scene.rotations, dtype=np.float32)
+    rotations = rotations / np.maximum(np.linalg.norm(rotations, axis=1, keepdims=True), 1e-8)
+    rows["rot_0"], rows["rot_1"], rows["rot_2"], rows["rot_3"] = rotations[:, 0], rotations[:, 1], rotations[:, 2], rotations[:, 3]
+    PlyData([PlyElement.describe(rows, "vertex")], text=False).write(output_path)
+    return output_path
