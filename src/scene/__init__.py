@@ -3,8 +3,10 @@ from ._internal.colmap_binary import load_colmap_reconstruction
 from ._internal.colmap_ops import (
     build_training_frames,
     build_training_frames_from_root,
+    initialize_scene_from_colmap_diffused_points,
     initialize_scene_from_colmap_points,
     resolve_colmap_init_hparams,
+    sample_colmap_diffused_points,
     suggest_colmap_init_hparams,
 )
 from ._internal.colmap_types import (
@@ -24,7 +26,9 @@ __all__ = [
     "load_colmap_reconstruction",
     "build_training_frames",
     "build_training_frames_from_root",
+    "sample_colmap_diffused_points",
     "initialize_scene_from_colmap_points",
+    "initialize_scene_from_colmap_diffused_points",
     "suggest_colmap_init_hparams",
     "resolve_colmap_init_hparams",
 ]

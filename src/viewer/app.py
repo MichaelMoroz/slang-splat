@@ -271,6 +271,8 @@ class SplatViewer(spy.AppWindow):
                     init_mode=import_cfg.init_mode,
                     custom_ply_path=import_cfg.custom_ply_path,
                     nn_radius_scale_coef=import_cfg.nn_radius_scale_coef,
+                    diffused_point_count=import_cfg.diffused_point_count,
+                    diffusion_radius=import_cfg.diffusion_radius,
                 )
             )
 

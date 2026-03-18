@@ -12,13 +12,23 @@ import slangpy as spy
 from ..app.shared import apply_training_profile, estimate_point_bounds, estimate_scene_bounds, renderer_kwargs
 from ..common import SHADER_ROOT, clamp_index
 from ..renderer import GaussianRenderSettings, GaussianRenderer
-from ..scene import GaussianScene, build_training_frames_from_root, initialize_scene_from_colmap_points, load_colmap_reconstruction, load_gaussian_ply, resolve_colmap_init_hparams
+from ..scene import (
+    GaussianScene,
+    build_training_frames_from_root,
+    initialize_scene_from_colmap_diffused_points,
+    initialize_scene_from_colmap_points,
+    load_colmap_reconstruction,
+    load_gaussian_ply,
+    resolve_colmap_init_hparams,
+    sample_colmap_diffused_points,
+)
 from ..scene._internal.colmap_ops import point_nn_scales
 from ..training import GaussianTrainer, resolve_effective_train_downscale_factor, resolve_training_resolution
 from ..scene._internal.colmap_types import ColmapFrame, point_tables
 from .state import ColmapImportProgress, ColmapImportSettings, SceneCountProxy
 
 _COLMAP_IMPORT_POINTCLOUD = "pointcloud"
+_COLMAP_IMPORT_DIFFUSED_POINTCLOUD = "diffused_pointcloud"
 _COLMAP_IMPORT_CUSTOM_PLY = "custom_ply"
 _COLMAP_DB_SAMPLE_LIMIT = 64
 _COLMAP_DB_SEARCH_PATTERNS = ("database.db", "*.db", "*.sqlite", "*.sqlite3")
@@ -49,7 +59,10 @@ def _set_ui_path(viewer: object, key: str, path: Path | None) -> None:
 
 
 def _ui_import_mode(viewer: object) -> str:
-    return _COLMAP_IMPORT_CUSTOM_PLY if int(viewer.ui._values.get("colmap_init_mode", 0)) == 1 else _COLMAP_IMPORT_POINTCLOUD
+    mode_idx = int(viewer.ui._values.get("colmap_init_mode", 0))
+    if mode_idx == 1: return _COLMAP_IMPORT_DIFFUSED_POINTCLOUD
+    if mode_idx == 2: return _COLMAP_IMPORT_CUSTOM_PLY
+    return _COLMAP_IMPORT_POINTCLOUD
 
 
 def _profile_images_subdir(viewer: object) -> str | None:
@@ -164,6 +177,8 @@ def _update_import_settings(
     init_mode: str,
     custom_ply_path: Path | None,
     nn_radius_scale_coef: float,
+    diffused_point_count: int,
+    diffusion_radius: float,
 ) -> None:
     viewer.s.colmap_import = ColmapImportSettings(
         database_path=None if database_path is None else Path(database_path).resolve(),
@@ -171,13 +186,17 @@ def _update_import_settings(
         init_mode=str(init_mode),
         custom_ply_path=None if custom_ply_path is None else Path(custom_ply_path).resolve(),
         nn_radius_scale_coef=float(max(nn_radius_scale_coef, 1e-4)),
+        diffused_point_count=max(int(diffused_point_count), 1),
+        diffusion_radius=max(float(diffusion_radius), 0.0),
     )
     _set_ui_path(viewer, "colmap_root_path", dataset_root)
     _set_ui_path(viewer, "colmap_database_path", database_path)
     _set_ui_path(viewer, "colmap_images_root", images_root)
-    viewer.ui._values["colmap_init_mode"] = 1 if str(init_mode) == _COLMAP_IMPORT_CUSTOM_PLY else 0
+    viewer.ui._values["colmap_init_mode"] = 1 if str(init_mode) == _COLMAP_IMPORT_DIFFUSED_POINTCLOUD else 2 if str(init_mode) == _COLMAP_IMPORT_CUSTOM_PLY else 0
     _set_ui_path(viewer, "colmap_custom_ply_path", custom_ply_path)
     viewer.ui._values["colmap_nn_radius_scale_coef"] = float(max(nn_radius_scale_coef, 1e-4))
+    viewer.ui._values["colmap_diffused_point_count"] = max(int(diffused_point_count), 1)
+    viewer.ui._values["colmap_diffusion_radius"] = max(float(diffusion_radius), 0.0)
 
 
 def _append_training_frame(progress: ColmapImportProgress, image_id: int, image: object) -> None:
@@ -202,6 +221,8 @@ def _append_training_frame(progress: ColmapImportProgress, image_id: int, image:
             float(camera.cy) * sy,
             int(width),
             int(height),
+            float(getattr(camera, "k1", 0.0)),
+            float(getattr(camera, "k2", 0.0)),
         )
     )
 
@@ -245,6 +266,20 @@ def _pointcloud_init_hparams(recon: object, max_gaussians: int, init_hparams: ob
     xyz, _ = _point_tables(recon)
     chosen_count = xyz.shape[0] if max_gaussians <= 0 else min(max(int(max_gaussians), 1), xyz.shape[0])
     median_nn_scale = float(np.median(point_nn_scales(np.ascontiguousarray(xyz[:chosen_count], dtype=np.float32)))) if chosen_count > 0 else 1.0
+    return replace(resolved, base_scale=float(max(float(nn_radius_scale_coef), 1e-4) * max(median_nn_scale, 1e-6)))
+
+
+def _diffused_pointcloud_init_hparams(
+    recon: object,
+    point_count: int,
+    diffusion_radius: float,
+    seed: int,
+    init_hparams: object,
+    nn_radius_scale_coef: float,
+):
+    resolved = resolve_colmap_init_hparams(recon, point_count, init_hparams)
+    positions, _ = sample_colmap_diffused_points(recon, point_count, diffusion_radius, seed)
+    median_nn_scale = float(np.median(point_nn_scales(np.ascontiguousarray(positions, dtype=np.float32)))) if positions.shape[0] > 0 else 1.0
     return replace(resolved, base_scale=float(max(float(nn_radius_scale_coef), 1e-4) * max(median_nn_scale, 1e-6)))
 
 
@@ -305,6 +340,8 @@ def _scene_signature(viewer: object):
         None if import_cfg.images_root is None else str(import_cfg.images_root.resolve()),
         None if import_cfg.custom_ply_path is None else str(import_cfg.custom_ply_path.resolve()),
         round(float(import_cfg.nn_radius_scale_coef), 6),
+        int(import_cfg.diffused_point_count),
+        round(float(import_cfg.diffusion_radius), 6),
         None if init.hparams.initial_opacity is None else round(float(init.hparams.initial_opacity), 8),
     )
 
@@ -524,6 +561,8 @@ def _finish_import_colmap_dataset(
     init_mode: str,
     custom_ply_path: Path | None,
     nn_radius_scale_coef: float,
+    diffused_point_count: int,
+    diffusion_radius: float,
     recon: object,
     training_frames: list[ColmapFrame],
     frame_targets_native: list[spy.Texture] | None = None,
@@ -538,6 +577,8 @@ def _finish_import_colmap_dataset(
         init_mode=init_mode,
         custom_ply_path=custom_ply_path,
         nn_radius_scale_coef=nn_radius_scale_coef,
+        diffused_point_count=diffused_point_count,
+        diffusion_radius=diffusion_radius,
     )
     viewer.s.colmap_root = Path(colmap_root)
     viewer.s.colmap_recon = recon
@@ -563,6 +604,8 @@ def import_colmap_dataset(
     init_mode: str,
     custom_ply_path: Path | None,
     nn_radius_scale_coef: float,
+    diffused_point_count: int,
+    diffusion_radius: float,
 ) -> None:
     root = Path(colmap_root).resolve()
     recon = load_colmap_reconstruction(root)
@@ -575,6 +618,8 @@ def import_colmap_dataset(
         init_mode=init_mode,
         custom_ply_path=custom_ply_path,
         nn_radius_scale_coef=nn_radius_scale_coef,
+        diffused_point_count=diffused_point_count,
+        diffusion_radius=diffusion_radius,
         recon=recon,
         training_frames=training_frames,
     )
@@ -589,6 +634,8 @@ def import_colmap_from_ui(viewer: object) -> None:
     custom_ply_text = _ui_path_string(viewer, "colmap_custom_ply_path")
     custom_ply_path = None if not custom_ply_text else Path(custom_ply_text).expanduser()
     nn_radius_scale_coef = float(viewer.ui._values.get("colmap_nn_radius_scale_coef", 0.25))
+    diffused_point_count = max(int(viewer.ui._values.get("colmap_diffused_point_count", 100000)), 1)
+    diffusion_radius = max(float(viewer.ui._values.get("colmap_diffusion_radius", 1.0)), 0.0)
     if not colmap_root.exists():
         raise FileNotFoundError(f"COLMAP root does not exist: {colmap_root}")
     if not _has_colmap_sparse(colmap_root):
@@ -607,6 +654,8 @@ def import_colmap_from_ui(viewer: object) -> None:
         init_mode=init_mode,
         custom_ply_path=None if custom_ply_path is None else custom_ply_path.resolve(),
         nn_radius_scale_coef=float(max(nn_radius_scale_coef, 1e-4)),
+        diffused_point_count=diffused_point_count,
+        diffusion_radius=diffusion_radius,
     )
     viewer.s.last_error = ""
 
@@ -665,6 +714,8 @@ def advance_colmap_import(viewer: object) -> None:
                 init_mode=progress.init_mode,
                 custom_ply_path=progress.custom_ply_path,
                 nn_radius_scale_coef=progress.nn_radius_scale_coef,
+                diffused_point_count=progress.diffused_point_count,
+                diffusion_radius=progress.diffusion_radius,
                 recon=progress.recon,
                 training_frames=progress.frames,
                 frame_targets_native=progress.native_textures,
@@ -695,6 +746,23 @@ def initialize_training_scene(viewer: object, frame_targets_native: list[spy.Tex
             raise RuntimeError("Custom PLY initialization requires a selected PLY file.")
         scene = load_gaussian_ply(import_cfg.custom_ply_path)
         scale_reg_reference = None
+    elif import_cfg.init_mode == _COLMAP_IMPORT_DIFFUSED_POINTCLOUD:
+        resolved_init = _diffused_pointcloud_init_hparams(
+            viewer.s.colmap_recon,
+            import_cfg.diffused_point_count,
+            import_cfg.diffusion_radius,
+            init.seed,
+            init_hparams,
+            import_cfg.nn_radius_scale_coef,
+        )
+        scene = initialize_scene_from_colmap_diffused_points(
+            recon=viewer.s.colmap_recon,
+            point_count=import_cfg.diffused_point_count,
+            diffusion_radius=import_cfg.diffusion_radius,
+            seed=init.seed,
+            init_hparams=resolved_init,
+        )
+        scale_reg_reference = float(max(resolved_init.base_scale, 1e-8))
     else:
         resolved_init = _pointcloud_init_hparams(viewer.s.colmap_recon, params.training.max_gaussians, init_hparams, import_cfg.nn_radius_scale_coef)
         scene = initialize_scene_from_colmap_points(

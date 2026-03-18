@@ -128,12 +128,16 @@ def point_nn_scales(points: np.ndarray) -> np.ndarray:
     return np.clip(nearest, 1e-4, 1e4).astype(np.float32)
 
 
-def initialize_scene_from_colmap_points(recon: ColmapReconstruction, max_gaussians: int, seed: int, init_hparams: GaussianInitHyperParams | None = None) -> GaussianScene:
-    xyz, rgb = point_tables(recon)
-    if xyz.shape[0] == 0:
-        raise RuntimeError("COLMAP reconstruction has no 3D points.")
-    chosen_count = xyz.shape[0] if max_gaussians <= 0 else min(max(int(max_gaussians), 1), xyz.shape[0])
-    positions, colors = xyz[:chosen_count].copy(), rgb[:chosen_count].copy()
+def _build_scene_from_positions_colors(
+    positions: np.ndarray,
+    colors: np.ndarray,
+    seed: int,
+    init_hparams: GaussianInitHyperParams | None = None,
+) -> GaussianScene:
+    positions = np.ascontiguousarray(positions, dtype=np.float32)
+    colors = np.ascontiguousarray(colors, dtype=np.float32)
+    if positions.shape[0] == 0 or colors.shape[0] != positions.shape[0]:
+        raise RuntimeError("Gaussian initialization requires non-empty, matched position/color tables.")
     rng = np.random.default_rng(int(seed))
     if init_hparams is not None and init_hparams.position_jitter_std is not None and float(init_hparams.position_jitter_std) > 0.0:
         positions += rng.normal(0.0, float(init_hparams.position_jitter_std), size=positions.shape).astype(np.float32)
@@ -148,11 +152,54 @@ def initialize_scene_from_colmap_points(recon: ColmapReconstruction, max_gaussia
         scales *= rng.uniform(lo, hi, size=scales.shape).astype(np.float32)
     scales = np.log(np.clip(scales, _MIN_SCALE, _MAX_SCALE)).astype(np.float32)
     opacity = 0.1 if init_hparams is None or init_hparams.initial_opacity is None else float(np.clip(init_hparams.initial_opacity, 1e-4, 0.9999))
+    count = int(positions.shape[0])
     return GaussianScene(
         positions=positions,
         scales=scales,
-        rotations=_identity_quaternions(chosen_count),
-        opacities=np.full((chosen_count,), opacity, dtype=np.float32),
+        rotations=_identity_quaternions(count),
+        opacities=np.full((count,), opacity, dtype=np.float32),
         colors=colors,
-        sh_coeffs=np.zeros((chosen_count, 1, 3), dtype=np.float32),
+        sh_coeffs=np.zeros((count, 1, 3), dtype=np.float32),
     )
+
+
+def sample_colmap_diffused_points(
+    recon: ColmapReconstruction,
+    point_count: int,
+    diffusion_radius: float,
+    seed: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    xyz, rgb = point_tables(recon)
+    if xyz.shape[0] == 0:
+        raise RuntimeError("COLMAP reconstruction has no 3D points.")
+    count = max(int(point_count), 1)
+    radius = max(float(diffusion_radius), 0.0)
+    rng = np.random.default_rng(int(seed))
+    base_indices = rng.integers(0, xyz.shape[0], size=count, dtype=np.int64)
+    positions = np.ascontiguousarray(xyz[base_indices], dtype=np.float32)
+    colors = np.ascontiguousarray(rgb[base_indices], dtype=np.float32)
+    if radius <= 0.0:
+        return positions, colors
+    original_nn = point_nn_scales(xyz)
+    local_radius = np.ascontiguousarray(original_nn[base_indices] * np.float32(radius), dtype=np.float32)
+    positions += rng.normal(0.0, 1.0, size=positions.shape).astype(np.float32) * local_radius[:, None]
+    return positions, colors
+
+
+def initialize_scene_from_colmap_points(recon: ColmapReconstruction, max_gaussians: int, seed: int, init_hparams: GaussianInitHyperParams | None = None) -> GaussianScene:
+    xyz, rgb = point_tables(recon)
+    if xyz.shape[0] == 0:
+        raise RuntimeError("COLMAP reconstruction has no 3D points.")
+    chosen_count = xyz.shape[0] if max_gaussians <= 0 else min(max(int(max_gaussians), 1), xyz.shape[0])
+    return _build_scene_from_positions_colors(xyz[:chosen_count].copy(), rgb[:chosen_count].copy(), seed, init_hparams)
+
+
+def initialize_scene_from_colmap_diffused_points(
+    recon: ColmapReconstruction,
+    point_count: int,
+    diffusion_radius: float,
+    seed: int,
+    init_hparams: GaussianInitHyperParams | None = None,
+) -> GaussianScene:
+    positions, colors = sample_colmap_diffused_points(recon, point_count, diffusion_radius, seed)
+    return _build_scene_from_positions_colors(positions, colors, seed, init_hparams)

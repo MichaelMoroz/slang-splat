@@ -34,3 +34,4 @@ Output is `GaussianScene` with contiguous `float32` arrays.
 - `initialize_scene_from_colmap_points(...)` converts the COLMAP point cloud directly into a trainable `GaussianScene`, using nearest-neighbor point spacing as the initial sigma reference, repeating it across XYZ, and storing it as log-scale.
 - `resolve_colmap_init_hparams(...)` derives the default COLMAP init bundle from point-cloud spacing and requested gaussian count, and both the CLI and viewer pass that resolved bundle through unchanged.
 - Point XYZ/RGB table extraction is centralized so viewer uploads, init heuristics, and scene initialization all consume the same data path.
+- `sample_colmap_diffused_points(...)` synthesizes viewer-side resampled points by drawing source points with replacement and offsetting each sample by `nrand3() * diffusion_radius * original_nn_distance`, where `original_nn_distance` is measured on the original COLMAP point cloud.

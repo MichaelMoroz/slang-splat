@@ -27,6 +27,8 @@ class ColmapImportSettings:
     init_mode: str = "pointcloud"
     custom_ply_path: Path | None = None
     nn_radius_scale_coef: float = 0.25
+    diffused_point_count: int = 100000
+    diffusion_radius: float = 1.0
 
 
 @dataclass(slots=True)
@@ -38,6 +40,8 @@ class ColmapImportProgress:
     init_mode: str
     custom_ply_path: Path | None
     nn_radius_scale_coef: float
+    diffused_point_count: int = 100000
+    diffusion_radius: float = 1.0
     phase: str = "prepare"
     current: int = 0
     total: int = 1

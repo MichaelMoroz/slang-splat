@@ -40,7 +40,7 @@ _INTERFACE_SCALE_OPTIONS = (
 _DEFAULT_INTERFACE_SCALE_INDEX = 3
 _BASE_FONT_SIZE_PX = 16.0
 _FONT_ATLAS_SIZE_PX = _BASE_FONT_SIZE_PX * _INTERFACE_SCALE_OPTIONS[-1][1]
-_COLMAP_INIT_MODE_LABELS = ("COLMAP Pointcloud", "Custom PLY")
+_COLMAP_INIT_MODE_LABELS = ("COLMAP Pointcloud", "Diffused Pointcloud", "Custom PLY")
 _TRAIN_DOWNSCALE_MODE_LABELS = ("Auto",) + tuple(f"{i}x" for i in range(1, 17))
 _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT = 2e-4
 _DEBUG_COLORBAR_WIDTH = 18.0
@@ -712,7 +712,32 @@ class ToolkitWindow:
                     if selected:
                         imgui.set_item_default_focus()
                 imgui.end_combo()
-            if mode_idx == 0:
+            if mode_idx in (0, 1):
+                if mode_idx == 1:
+                    changed, value = imgui.drag_int(
+                        "Point Count",
+                        int(ui._values.get("colmap_diffused_point_count", 100000)),
+                        1000.0,
+                        1,
+                        10000000,
+                    )
+                    if changed:
+                        ui._values["colmap_diffused_point_count"] = max(int(value), 1)
+                    if imgui.is_item_hovered():
+                        imgui.set_item_tooltip("Number of gaussians synthesized by resampling COLMAP points with replacement before diffusion.")
+                    changed, value = imgui.drag_float(
+                        "Diffusion Radius",
+                        float(ui._values.get("colmap_diffusion_radius", 1.0)),
+                        0.01,
+                        0.0,
+                        16.0,
+                        "%.4f",
+                        imgui.SliderFlags_.logarithmic.value,
+                    )
+                    if changed:
+                        ui._values["colmap_diffusion_radius"] = max(float(value), 0.0)
+                    if imgui.is_item_hovered():
+                        imgui.set_item_tooltip("Local diffusion multiplier applied to each sampled point's original-cloud nearest-neighbor distance.")
                 changed, value = imgui.drag_float(
                     "NN Radius Scale Coef",
                     float(ui._values.get("colmap_nn_radius_scale_coef", 0.25)),
@@ -1091,7 +1116,7 @@ class ToolkitWindow:
         downscale_status = ui._texts.get("training_downscale", "")
         if downscale_status:
             imgui.text_disabled(downscale_status.split(": ", 1)[-1] if ": " in downscale_status else downscale_status)
-        imgui.text_disabled("COLMAP import chooses pointcloud NN-scale init or a custom PLY scene.")
+        imgui.text_disabled("COLMAP import chooses direct pointcloud init, diffused pointcloud init, or a custom PLY scene.")
         self._ctx_reset("train_setup_ctx", ui, [s.key for s in GROUP_SPECS["Train Setup"]])
         imgui.separator()
 
@@ -1377,6 +1402,8 @@ def build_ui(renderer) -> ViewerUI:
     values["colmap_init_mode"] = 0
     values["colmap_custom_ply_path"] = ""
     values["colmap_nn_radius_scale_coef"] = 1.0
+    values["colmap_diffused_point_count"] = 100000
+    values["colmap_diffusion_radius"] = 1.0
     values["show_histograms"] = False
     values["hist_auto_refresh"] = True
     values["hist_bin_count"] = _HISTOGRAM_BIN_COUNT_DEFAULT
