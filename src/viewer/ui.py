@@ -248,7 +248,6 @@ RENDER_PARAM_SPECS = (
     ControlSpec("alpha_cutoff", "slider_float", "Alpha Cutoff", {"value": 0.0039, "min": 0.0001, "max": 0.1, "format": "%.2e"}),
     ControlSpec("max_splat_steps", "slider_int", "Max Splat Steps", {"value": 32768, "min": 16, "max": 32768}),
     ControlSpec("trans_threshold", "slider_float", "Trans Threshold", {"value": 0.005, "min": 0.001, "max": 0.2, "format": "%.2e"}),
-    ControlSpec("sampled5_safety", "slider_float", "MVEE Safety", {"value": 1.0, "min": 1.0, "max": 1.2}),
     ControlSpec("cached_raster_grad_atomic_mode", "combo", "Cached Grad Atomics", {"value": 1, "options": _CACHED_RASTER_GRAD_ATOMIC_MODE_LABELS}),
     ControlSpec("cached_raster_grad_fixed_ro_local_range", "slider_float", "Cached Grad Pos Range", {"value": 0.01, "min": 1e-4, "max": 1024.0, "format": "%.4g", "logarithmic": True}),
     ControlSpec("cached_raster_grad_fixed_log_l_diag_range", "slider_float", "Cached Grad Scale Range", {"value": 0.01, "min": 1e-4, "max": 1024.0, "format": "%.4g", "logarithmic": True}),
@@ -1153,13 +1152,11 @@ class ToolkitWindow:
     def _section_render_params(self, ui: ViewerUI) -> None:
         if not imgui.collapsing_header("Render Params"):
             return
-        # Main render parameters
-        for spec in RENDER_PARAM_SPECS[:6]:
+        for spec in RENDER_PARAM_SPECS[:5]:
             self._draw_control(ui, spec)
 
-        # Debug overlay group
         imgui.separator_text("Debug Overlays")
-        for spec in RENDER_PARAM_SPECS[6:]:
+        for spec in RENDER_PARAM_SPECS[5:]:
             self._draw_control(ui, spec)
         self._ctx_reset("render_ctx", ui, [s.key for s in RENDER_PARAM_SPECS])
         imgui.separator()
@@ -1224,7 +1221,6 @@ class ToolkitWindow:
         "alpha_cutoff": "Minimum alpha threshold — splats below this are skipped",
         "max_splat_steps": "Maximum rasterization steps per pixel ray",
         "trans_threshold": "Transmittance threshold for early ray termination",
-        "sampled5_safety": "Safety margin for MVEE bounding ellipsoid",
         "cached_raster_grad_atomic_mode": "Choose float atomics or fixed-point atomics for cached ellipsoid gradient accumulation during raster backward",
         "cached_raster_grad_fixed_ro_local_range": "Symmetric [-X, X] range for shapeAlpha-normalized cached position gradients",
         "cached_raster_grad_fixed_log_l_diag_range": "Symmetric [-X, X] range for shapeAlpha-normalized cached scale gradients",
@@ -1362,7 +1358,6 @@ def build_ui(renderer) -> ViewerUI:
     values["alpha_cutoff"] = float(renderer.alpha_cutoff)
     values["max_splat_steps"] = int(renderer.max_splat_steps)
     values["trans_threshold"] = float(renderer.transmittance_threshold)
-    values["sampled5_safety"] = float(renderer.sampled5_safety_scale)
     values["cached_raster_grad_atomic_mode"] = 0 if getattr(renderer, "cached_raster_grad_atomic_mode", "fixed") == "float" else 1
     values["cached_raster_grad_fixed_ro_local_range"] = float(getattr(renderer, "cached_raster_grad_fixed_ro_local_range", 0.01))
     values["cached_raster_grad_fixed_log_l_diag_range"] = float(getattr(renderer, "cached_raster_grad_fixed_log_l_diag_range", 0.01))

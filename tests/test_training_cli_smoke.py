@@ -107,7 +107,6 @@ def test_train_cli_forwards_resolved_init_hparams(monkeypatch, tmp_path: Path):
         alpha_cutoff=1.0 / 255.0,
         max_splat_steps=32768,
         trans_threshold=0.005,
-        sampled5_safety=1.0,
         prepass_memory_mb=256,
         list_capacity_multiplier=64,
         debug_layers=False,

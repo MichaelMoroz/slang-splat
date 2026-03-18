@@ -19,10 +19,6 @@ class GaussianRenderSettings:
     transmittance_threshold: float = 0.005
     list_capacity_multiplier: int = 64
     max_prepass_memory_mb: int = 4096
-    sampled5_mvee_iters: int = 6
-    sampled5_safety_scale: float = 1.0
-    sampled5_radius_pad_px: float = 1.0
-    sampled5_eps: float = 1e-6
     cached_raster_grad_atomic_mode: str = GaussianRenderer.CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED
     cached_raster_grad_fixed_ro_local_range: float = 0.01
     cached_raster_grad_fixed_log_l_diag_range: float = 0.01
@@ -55,10 +51,6 @@ class GaussianRenderSettings:
             "transmittance_threshold": float(self.transmittance_threshold),
             "list_capacity_multiplier": int(self.list_capacity_multiplier),
             "max_prepass_memory_mb": int(self.max_prepass_memory_mb),
-            "sampled5_mvee_iters": int(self.sampled5_mvee_iters),
-            "sampled5_safety_scale": float(self.sampled5_safety_scale),
-            "sampled5_radius_pad_px": float(self.sampled5_radius_pad_px),
-            "sampled5_eps": float(self.sampled5_eps),
             "cached_raster_grad_atomic_mode": str(self.cached_raster_grad_atomic_mode),
             "cached_raster_grad_fixed_ro_local_range": float(self.cached_raster_grad_fixed_ro_local_range),
             "cached_raster_grad_fixed_log_l_diag_range": float(self.cached_raster_grad_fixed_log_l_diag_range),

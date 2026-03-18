@@ -48,7 +48,6 @@ def _renderer(args: argparse.Namespace, width: int, height: int) -> GaussianRend
         alpha_cutoff=float(args.alpha_cutoff),
         max_splat_steps=int(args.max_splat_steps),
         transmittance_threshold=float(args.trans_threshold),
-        sampled5_safety_scale=float(args.sampled5_safety),
         max_prepass_memory_mb=int(args.prepass_memory_mb),
         list_capacity_multiplier=int(getattr(args, "list_capacity_multiplier", 64)),
     )
@@ -194,7 +193,6 @@ COMMON_RENDER_ARGS = (
     A("--alpha-cutoff", type=float, default=1.0 / 255.0),
     A("--max-splat-steps", type=int, default=32768),
     A("--trans-threshold", type=float, default=0.005),
-    A("--sampled5-safety", type=float, default=1.0),
     A("--debug-layers", action="store_true"),
 )
 TRAIN_RENDER_ARGS = tuple(

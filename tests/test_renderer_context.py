@@ -37,3 +37,7 @@ def test_render_settings_forward_debug_overlays_to_renderer(monkeypatch) -> None
     assert captured["kwargs"]["debug_show_ellipses"] is True
     assert captured["kwargs"]["debug_show_processed_count"] is True
     assert captured["kwargs"]["debug_show_grad_norm"] is True
+    assert "sampled5_mvee_iters" not in captured["kwargs"]
+    assert "sampled5_safety_scale" not in captured["kwargs"]
+    assert "sampled5_radius_pad_px" not in captured["kwargs"]
+    assert "sampled5_eps" not in captured["kwargs"]

@@ -39,7 +39,6 @@ def test_build_ui_initializes_histogram_controls() -> None:
         alpha_cutoff=1.0 / 255.0,
         max_splat_steps=32768,
         transmittance_threshold=0.005,
-        sampled5_safety_scale=1.0,
         cached_raster_grad_atomic_mode="fixed",
         cached_raster_grad_fixed_ro_local_range=0.01,
         cached_raster_grad_fixed_log_l_diag_range=0.01,

@@ -34,7 +34,6 @@ class RasterConfig:
     tile_size: int
     batch: int
 
-
 @dataclass(frozen=True, slots=True)
 class _RasterGradShaderSet:
     training_forward: spy.ComputeKernel
@@ -171,10 +170,10 @@ class GaussianRenderer:
                 "maxListEntries": int(self._max_list_entries),
                 "maxScanlineEntries": int(self._max_scanline_entries),
                 "radiusScale": float(self.radius_scale),
-                "sampled5MVEEIters": int(self.sampled5_mvee_iters),
-                "sampled5SafetyScale": float(self.sampled5_safety_scale),
-                "sampled5RadiusPadPx": float(self.sampled5_radius_pad_px),
-                "sampled5Eps": float(self.sampled5_eps),
+                "sampled5MVEEIters": int(self._sampled5_mvee_iters),
+                "sampled5SafetyScale": float(self._sampled5_safety_scale),
+                "sampled5RadiusPadPx": float(self._sampled5_radius_pad_px),
+                "sampled5Eps": float(self._sampled5_eps),
             }
         }
 
@@ -324,10 +323,6 @@ class GaussianRenderer:
         transmittance_threshold: float = 0.005,
         list_capacity_multiplier: int = 64,
         max_prepass_memory_mb: int = 4096,
-        sampled5_mvee_iters: int = 6,
-        sampled5_safety_scale: float = 1.0,
-        sampled5_radius_pad_px: float = 1.0,
-        sampled5_eps: float = 1e-6,
         proj_distortion_k1: float = 0.0,
         proj_distortion_k2: float = 0.0,
         debug_show_ellipses: bool = False,
@@ -347,14 +342,16 @@ class GaussianRenderer:
         self._project_shader_path = Path(SHADER_ROOT / "renderer" / "gaussian_project_stage.slang")
         self._raster_shader_path = Path(SHADER_ROOT / "renderer" / "gaussian_raster_stage.slang")
         self._raster_config = self._load_raster_config(self._types_shader_path)
+        self._sampled5_mvee_iters = self._load_uint_shader_constant(self._types_shader_path, "SAMPLED5_MVEE_ITERS")
+        self._sampled5_safety_scale = self._load_float_shader_constant(self._types_shader_path, "SAMPLED5_SAFETY_SCALE")
+        self._sampled5_radius_pad_px = self._load_float_shader_constant(self._types_shader_path, "SAMPLED5_RADIUS_PAD_PX")
+        self._sampled5_eps = self._load_float_shader_constant(self._types_shader_path, "SAMPLED5_EPS")
         self.tile_size = self._raster_config.tile_size
         self.radius_scale, self.alpha_cutoff = float(radius_scale), float(alpha_cutoff)
         self.max_splat_steps, self.transmittance_threshold = int(max_splat_steps), float(transmittance_threshold)
         self.list_capacity_multiplier = int(list_capacity_multiplier)
         self.max_prepass_memory_mb = max(int(max_prepass_memory_mb), 1)
         self._max_prepass_memory_bytes = self.max_prepass_memory_mb * self._MEBIBYTE_BYTES
-        self.sampled5_mvee_iters, self.sampled5_safety_scale = int(sampled5_mvee_iters), float(sampled5_safety_scale)
-        self.sampled5_radius_pad_px, self.sampled5_eps = float(sampled5_radius_pad_px), float(sampled5_eps)
         self.proj_distortion_k1, self.proj_distortion_k2 = float(proj_distortion_k1), float(proj_distortion_k2)
         self.debug_show_ellipses, self.debug_show_processed_count, self.debug_show_grad_norm = bool(debug_show_ellipses), bool(debug_show_processed_count), bool(debug_show_grad_norm)
         self.debug_grad_norm_threshold = float(debug_grad_norm_threshold)
@@ -414,6 +411,31 @@ class GaussianRenderer:
         if missing:
             raise RuntimeError(f"Missing raster constants in {shader_path}: {', '.join(missing)}")
         return RasterConfig(constants["RASTER_THREAD_TILE_DIM"], constants["RASTER_TILE_SIZE"], constants["RASTER_BATCH"])
+
+    @classmethod
+    @lru_cache(maxsize=1)
+    def _load_uint_shader_constants(cls, shader_path: Path) -> dict[str, int]:
+        source = shader_path.read_text(encoding="utf-8")
+        uint_constants: dict[str, int] = {}
+        for name, expr in re.compile(r"static\s+const\s+uint\s+(\w+)\s*=\s*([^;]+);").findall(source):
+            uint_constants[name] = cls._eval_uint_constant_expr(re.sub(r"(?<=[0-9A-Fa-f])[uU]\b", "", expr).strip(), uint_constants)
+        return uint_constants
+
+    @classmethod
+    def _load_uint_shader_constant(cls, shader_path: Path, name: str) -> int:
+        constants = cls._load_uint_shader_constants(shader_path)
+        if name not in constants:
+            raise RuntimeError(f"Missing shader uint constant '{name}' in {shader_path}.")
+        return constants[name]
+
+    @staticmethod
+    @lru_cache(maxsize=None)
+    def _load_float_shader_constant(shader_path: Path, name: str) -> float:
+        source = shader_path.read_text(encoding="utf-8")
+        match = re.search(rf"static\s+const\s+float\s+{name}\s*=\s*([^;]+);", source)
+        if match is None:
+            raise RuntimeError(f"Missing shader float constant '{name}' in {shader_path}.")
+        return float(match.group(1).strip().removesuffix("f").removesuffix("F"))
 
     def _ensure_scene_buffers(self, splat_count: int) -> None:
         if self._scene_buffers and splat_count <= self._scene_capacity:

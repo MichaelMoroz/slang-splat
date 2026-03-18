@@ -18,6 +18,11 @@ from src.renderer import Camera, GaussianRenderer
 from src.scene import GaussianScene
 
 _GAUSSIAN_SUPPORT_SIGMA_RADIUS = 3.0
+_TYPES_SHADER_PATH = Path(SHADER_ROOT / "renderer" / "gaussian_types.slang")
+_SAMPLED5_MVEE_ITERS = GaussianRenderer._load_uint_shader_constant(_TYPES_SHADER_PATH, "SAMPLED5_MVEE_ITERS")
+_SAMPLED5_SAFETY_SCALE = GaussianRenderer._load_float_shader_constant(_TYPES_SHADER_PATH, "SAMPLED5_SAFETY_SCALE")
+_SAMPLED5_RADIUS_PAD_PX = GaussianRenderer._load_float_shader_constant(_TYPES_SHADER_PATH, "SAMPLED5_RADIUS_PAD_PX")
+_SAMPLED5_EPS = GaussianRenderer._load_float_shader_constant(_TYPES_SHADER_PATH, "SAMPLED5_EPS")
 
 _log_sigma = lambda sigma: np.log(np.asarray(sigma, dtype=np.float32))
 _stored_from_support_scale = lambda support_scale: np.log(np.asarray(support_scale, dtype=np.float32) / _GAUSSIAN_SUPPORT_SIGMA_RADIUS)
@@ -172,17 +177,7 @@ def test_tiny_render_matches_cpu_reference(device):
 def test_sampled5_mvee_projection_matches_cpu_reference(device):
     scene = make_scene(28, seed=8)
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
-    renderer = GaussianRenderer(
-        device,
-        width=96,
-        height=96,
-        radius_scale=1.7,
-        list_capacity_multiplier=32,
-        sampled5_mvee_iters=6,
-        sampled5_safety_scale=1.05,
-        sampled5_radius_pad_px=1.0,
-        sampled5_eps=1e-6,
-    )
+    renderer = GaussianRenderer(device, width=96, height=96, radius_scale=1.7, list_capacity_multiplier=32)
     debug = renderer.debug_pipeline_data(scene, camera)
     cpu_projected = project_splats_sampled5_mvee(
         scene=scene,
@@ -190,10 +185,10 @@ def test_sampled5_mvee_projection_matches_cpu_reference(device):
         width=renderer.width,
         height=renderer.height,
         radius_scale=renderer.radius_scale,
-        mvee_iters=renderer.sampled5_mvee_iters,
-        safety_scale=renderer.sampled5_safety_scale,
-        radius_pad_px=renderer.sampled5_radius_pad_px,
-        mvee_eps=renderer.sampled5_eps,
+        mvee_iters=_SAMPLED5_MVEE_ITERS,
+        safety_scale=_SAMPLED5_SAFETY_SCALE,
+        radius_pad_px=_SAMPLED5_RADIUS_PAD_PX,
+        mvee_eps=_SAMPLED5_EPS,
         distortion_k1=renderer.proj_distortion_k1,
         distortion_k2=renderer.proj_distortion_k2,
     )

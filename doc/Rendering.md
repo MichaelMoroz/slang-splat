@@ -14,6 +14,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
   - `g_Raster` (`RasterParams`) for raster resolution, alpha/transmittance thresholds, background, and debug overlays.
 - Shared constants stay in `shaders/utility/math/constants.slang`, organized with commented sections for generic numeric floors, rendering constants, and debug-visualization tuning instead of being split into tiny constants-only files.
 - Python-side raster layout defaults are sourced from `shaders/renderer/gaussian_types.slang` by parsing the `static const uint` raster constants instead of duplicating them manually in `GaussianRenderer`.
+- Sampled-5 MVEE defaults are also shader-owned in `shaders/renderer/gaussian_types.slang`; the host reads those constants privately when populating `g_Prepass`, and they are not exposed through viewer, CLI, or public renderer settings APIs.
 - Python bindings in `GaussianRenderer` mirror this layout by building reusable grouped binding dictionaries for scene buffers, prepass uniforms, raster uniforms, and readback state.
 - Stored gaussian scale follows 3DGS semantics (`log(sigma)` per axis). Rendering decodes `exp(log_scale)` and converts sigma to finite-support ellipsoid radius with `radius_scale * 3.0`.
 

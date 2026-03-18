@@ -93,7 +93,6 @@ class SplatViewer(spy.AppWindow):
             alpha_cutoff=float(self.c("alpha_cutoff").value),
             max_splat_steps=int(self.c("max_splat_steps").value),
             transmittance_threshold=float(self.c("trans_threshold").value),
-            sampled5_safety_scale=float(self.c("sampled5_safety").value),
             list_capacity_multiplier=self.s.list_capacity_multiplier,
             max_prepass_memory_mb=self.s.max_prepass_memory_mb,
             cached_raster_grad_atomic_mode=_CACHED_RASTER_GRAD_ATOMIC_MODE_VALUES[atomic_mode_index],
