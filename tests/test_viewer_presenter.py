@@ -258,6 +258,25 @@ def test_render_frame_handles_import_failure_without_raising(monkeypatch):
     assert calls == ["apply", "ui"]
 
 
+def test_render_frame_recovers_missing_main_renderer_by_recreating_it(monkeypatch):
+    viewer = _viewer(loss_debug=False)
+    viewer.s.renderer = None
+    render_context = SimpleNamespace(surface_texture=SimpleNamespace(width=640, height=360), command_encoder=_DummyEncoder())
+    calls: list[object] = []
+    replacement_renderer = _DummyRenderer()
+
+    monkeypatch.setattr(presenter.session, "apply_live_params", lambda viewer_obj: calls.append("apply"))
+    monkeypatch.setattr(presenter.session, "advance_colmap_import", lambda viewer_obj: calls.append("import"))
+    monkeypatch.setattr(presenter.session, "recreate_renderer", lambda viewer_obj, width, height: calls.append(("resize", width, height)) or setattr(viewer_obj.s, "renderer", replacement_renderer))
+    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, image, encoder: calls.append(("main", viewer_obj.s.renderer)))
+    monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
+
+    presenter.render_frame(viewer, render_context)
+
+    assert viewer.s.renderer is replacement_renderer
+    assert calls == ["apply", "import", ("resize", 640, 360), ("main", replacement_renderer), "ui"]
+
+
 def test_update_ui_text_uses_permutation_averages() -> None:
     viewer = _viewer(loss_debug=False)
     viewer.s.trainer.state.avg_loss = 1.25

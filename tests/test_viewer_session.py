@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import numpy as np
 from PIL import Image
+import pytest
 
 from src.viewer import session
 from src.viewer.state import ColmapImportProgress
@@ -178,6 +179,32 @@ def test_ensure_training_runtime_resolution_rebinds_renderer_without_reset(monke
         ("invalidate", ()),
         ("reset_loss_debug", None),
     ]
+
+
+def test_ensure_renderer_keeps_existing_main_renderer_when_replacement_fails(monkeypatch) -> None:
+    existing_renderer = SimpleNamespace(width=64, height=64)
+    viewer = SimpleNamespace(
+        device=SimpleNamespace(),
+        renderer_params=lambda allow_debug_overlays: SimpleNamespace(),
+        s=SimpleNamespace(renderer=existing_renderer, scene=None),
+    )
+
+    monkeypatch.setattr(session, "renderer_kwargs", lambda params: {})
+
+    class _FailingSettings:
+        def __init__(self, width: int, height: int, **kwargs) -> None:
+            del width, height, kwargs
+
+        def create_renderer(self, device) -> object:
+            del device
+            raise RuntimeError("renderer create failed")
+
+    monkeypatch.setattr(session, "GaussianRenderSettings", _FailingSettings)
+
+    with pytest.raises(RuntimeError, match="renderer create failed"):
+        session.ensure_renderer(viewer, "renderer", 128, 72, allow_debug_overlays=True)
+
+    assert viewer.s.renderer is existing_renderer
 
 
 def test_choose_colmap_root_auto_selects_first_matching_image_folder(tmp_path: Path) -> None:

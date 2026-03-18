@@ -328,11 +328,13 @@ def ensure_renderer(viewer: object, attr: str, width: int, height: int, allow_de
     size, renderer = (int(width), int(height)), getattr(viewer.s, attr)
     if renderer is not None and (renderer.width, renderer.height) == size:
         return renderer
-    _clear(viewer, attr)
+    previous_renderer = renderer
     renderer = GaussianRenderSettings(width=size[0], height=size[1], **renderer_kwargs(viewer.renderer_params(allow_debug_overlays))).create_renderer(viewer.device)
     if isinstance(viewer.s.scene, GaussianScene):
         renderer.set_scene(viewer.s.scene)
     setattr(viewer.s, attr, renderer)
+    if previous_renderer is not None:
+        del previous_renderer
     _invalidate(viewer, "debug" if attr == "debug_renderer" else "main", "debug")
     return renderer
 

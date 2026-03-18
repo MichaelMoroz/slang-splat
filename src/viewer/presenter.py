@@ -273,7 +273,9 @@ def render_frame(viewer: object, render_context: spy.AppWindow.RenderContext) ->
         session.advance_colmap_import(viewer)
         if bool(getattr(viewer.s, "pending_training_runtime_resize", False)):
             session.ensure_training_runtime_resolution(viewer)
-        if (viewer.s.renderer.width, viewer.s.renderer.height) != (iw, ih):
+        if viewer.s.renderer is None:
+            session.recreate_renderer(viewer, iw, ih)
+        elif (viewer.s.renderer.width, viewer.s.renderer.height) != (iw, ih):
             session.recreate_renderer(viewer, iw, ih)
         if viewer.s.scene is None:
             encoder.clear_texture_float(image, clear_value=[0.1, 0.1, 0.12, 1.0])
