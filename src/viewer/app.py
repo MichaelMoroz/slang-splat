@@ -145,12 +145,20 @@ class SplatViewer(spy.AppWindow):
     def _training_control_value(self, control: str) -> object:
         return self.c(control).value
 
-    def on_resize(self, width: int, height: int) -> None:
+    def _apply_resize(self, width: int, height: int) -> None:
+        target_width, target_height = int(width), int(height)
         self.device.wait()
-        if width > 0 and height > 0 and (self.s.renderer.width, self.s.renderer.height) != (int(width), int(height)):
-            session.recreate_renderer(self, int(width), int(height))
+        if target_width > 0 and target_height > 0 and (self.s.renderer.width, self.s.renderer.height) != (target_width, target_height):
+            session.recreate_renderer(self, target_width, target_height)
         self.s.last_resize_exception = ""
         self.s.last_error = ""
+
+    def on_resize(self, width: int, height: int) -> None:
+        try:
+            self._apply_resize(width, height)
+        except Exception as exc:
+            self.s.last_resize_exception = str(exc)
+            self.s.last_error = self.s.last_resize_exception
 
     def on_mouse_event(self, event) -> None:
         if self.toolkit.handle_mouse_event(event):

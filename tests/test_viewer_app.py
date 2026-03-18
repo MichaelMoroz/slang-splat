@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from src.viewer import app
+from src.viewer.app import SplatViewer
 
 
 def _viewer(keyboard_capture: bool = False, mouse_capture: bool = False) -> SimpleNamespace:
@@ -89,3 +90,37 @@ def test_mouse_passthrough_keeps_existing_camera_behavior() -> None:
 
     assert viewer.s.mouse_delta.x == 4.0
     assert viewer.s.mouse_delta.y == 6.0
+
+
+def test_on_resize_records_exception_without_raising() -> None:
+    viewer = SimpleNamespace(
+        device=SimpleNamespace(wait=lambda: None),
+        s=SimpleNamespace(renderer=SimpleNamespace(width=640, height=360), last_resize_exception="", last_error=""),
+    )
+
+    def _fail_resize(width: int, height: int) -> None:
+        raise RuntimeError(f"resize failed: {width}x{height}")
+
+    viewer._apply_resize = _fail_resize
+
+    SplatViewer.on_resize(viewer, 800, 600)
+
+    assert viewer.s.last_resize_exception == "resize failed: 800x600"
+    assert viewer.s.last_error == "resize failed: 800x600"
+
+
+def test_apply_resize_recreates_renderer_only_for_size_changes(monkeypatch) -> None:
+    calls: list[tuple[int, int] | str] = []
+    viewer = SimpleNamespace(
+        device=SimpleNamespace(wait=lambda: calls.append("wait")),
+        s=SimpleNamespace(renderer=SimpleNamespace(width=640, height=360), last_resize_exception="stale resize", last_error="stale error"),
+    )
+
+    monkeypatch.setattr("src.viewer.app.session.recreate_renderer", lambda viewer_obj, width, height: calls.append((width, height)))
+
+    SplatViewer._apply_resize(viewer, 640, 360)
+    SplatViewer._apply_resize(viewer, 800, 600)
+
+    assert calls == ["wait", "wait", (800, 600)]
+    assert viewer.s.last_resize_exception == ""
+    assert viewer.s.last_error == ""

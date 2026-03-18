@@ -198,6 +198,28 @@ def test_render_frame_refreshes_histograms_when_window_open(monkeypatch):
     assert calls == ["apply", "main", "hist", "ui"]
 
 
+def test_render_frame_handles_resize_failure_without_raising(monkeypatch):
+    viewer = _viewer(loss_debug=False)
+    viewer.s.renderer.width = 320
+    viewer.s.renderer.height = 180
+    render_context = SimpleNamespace(surface_texture=SimpleNamespace(width=640, height=360), command_encoder=_DummyEncoder())
+    calls: list[str] = []
+
+    monkeypatch.setattr(presenter.session, "apply_live_params", lambda viewer_obj: calls.append("apply"))
+    monkeypatch.setattr(presenter.session, "ensure_training_runtime_resolution", lambda viewer_obj: calls.append("train_resize"))
+    monkeypatch.setattr(presenter.session, "recreate_renderer", lambda viewer_obj, width, height: (_ for _ in ()).throw(RuntimeError("resize boom")))
+    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, image, encoder: calls.append("main"))
+    monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
+
+    presenter.render_frame(viewer, render_context)
+
+    assert viewer.s.training_active is False
+    assert viewer.s.last_error == "resize boom"
+    assert viewer.s.last_render_exception == "resize boom"
+    assert render_context.command_encoder.clear_calls == [(render_context.surface_texture, [0.0, 0.0, 0.0, 1.0])]
+    assert calls == ["apply", "ui"]
+
+
 def test_update_ui_text_uses_permutation_averages() -> None:
     viewer = _viewer(loss_debug=False)
     viewer.s.trainer.state.avg_loss = 1.25
