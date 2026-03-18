@@ -124,3 +124,20 @@ def test_apply_resize_recreates_renderer_only_for_size_changes(monkeypatch) -> N
     assert calls == ["wait", "wait", (800, 600)]
     assert viewer.s.last_resize_exception == ""
     assert viewer.s.last_error == ""
+
+
+def test_render_records_toolkit_failure_without_raising() -> None:
+    viewer = SimpleNamespace(
+        s=SimpleNamespace(training_active=True, last_error="", last_render_exception=""),
+    )
+
+    def _fail_render(render_context: object) -> None:
+        raise RuntimeError("toolkit boom")
+
+    viewer._render_frame = _fail_render
+
+    SplatViewer.render(viewer, SimpleNamespace())
+
+    assert viewer.s.training_active is False
+    assert viewer.s.last_error == "toolkit boom"
+    assert viewer.s.last_render_exception == "toolkit boom"

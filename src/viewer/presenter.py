@@ -266,19 +266,20 @@ def render_frame(viewer: object, render_context: spy.AppWindow.RenderContext) ->
     now = spy.time.perf_counter() if hasattr(spy, "time") else time.perf_counter()
     dt = max(now - viewer.s.last_time, 1e-5)
     viewer.s.last_time = now
-    viewer.update_camera(dt)
-    session.apply_live_params(viewer)
-    session.advance_colmap_import(viewer)
     iw, ih = int(image.width), int(image.height)
-    if viewer.s.scene is None:
-        encoder.clear_texture_float(image, clear_value=[0.1, 0.1, 0.12, 1.0])
-        update_ui_text(viewer, dt)
-        return
     try:
+        viewer.update_camera(dt)
+        session.apply_live_params(viewer)
+        session.advance_colmap_import(viewer)
         if bool(getattr(viewer.s, "pending_training_runtime_resize", False)):
             session.ensure_training_runtime_resolution(viewer)
         if (viewer.s.renderer.width, viewer.s.renderer.height) != (iw, ih):
             session.recreate_renderer(viewer, iw, ih)
+        if viewer.s.scene is None:
+            encoder.clear_texture_float(image, clear_value=[0.1, 0.1, 0.12, 1.0])
+            viewer.s.last_render_exception = ""
+            update_ui_text(viewer, dt)
+            return
         _run_training_batch(viewer)
         if bool(getattr(viewer.s, "training_runtime_factor_changed", False)):
             session.ensure_training_runtime_resolution(viewer)

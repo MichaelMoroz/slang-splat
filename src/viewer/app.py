@@ -263,9 +263,17 @@ class SplatViewer(spy.AppWindow):
     def _stop_training_callback(self) -> None:
         session.set_training_active(self, False)
 
-    def render(self, render_context) -> None:
+    def _render_frame(self, render_context) -> None:
         presenter.render_frame(self, render_context)
         self.toolkit.render(self.ui, render_context.surface_texture, render_context.command_encoder)
+
+    def render(self, render_context) -> None:
+        try:
+            self._render_frame(render_context)
+        except Exception as exc:
+            self.s.training_active = False
+            self.s.last_error = str(exc)
+            self.s.last_render_exception = self.s.last_error
 
     def update_camera(self, dt: float) -> None:
         self.s.move_speed, self.s.fov_y = float(self.c("move_speed").value), float(self.c("fov").value)
