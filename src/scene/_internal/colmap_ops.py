@@ -83,7 +83,22 @@ def build_training_frames_from_root(recon: ColmapReconstruction, images_root: Pa
         if camera is None or not image_path.exists(): continue
         with Image.open(image_path) as pil_image: width, height = pil_image.size
         sx, sy = float(width) / float(camera.width), float(height) / float(camera.height)
-        frames.append(ColmapFrame(image_id, image_path, image.q_wxyz.astype(np.float32), image.t_xyz.astype(np.float32), float(camera.fx) * sx, float(camera.fy) * sy, float(camera.cx) * sx, float(camera.cy) * sy, int(width), int(height)))
+        frames.append(
+            ColmapFrame(
+                image_id,
+                image_path,
+                image.q_wxyz.astype(np.float32),
+                image.t_xyz.astype(np.float32),
+                float(camera.fx) * sx,
+                float(camera.fy) * sy,
+                float(camera.cx) * sx,
+                float(camera.cy) * sy,
+                int(width),
+                int(height),
+                float(getattr(camera, "k1", 0.0)),
+                float(getattr(camera, "k2", 0.0)),
+            )
+        )
     if not frames:
         raise RuntimeError(f"No training frames were found in {images_root}.")
     return frames

@@ -128,7 +128,8 @@ void csProjectAndBin(uint3 dispatchThreadID : SV_DispatchThreadID)
     float depthValue = camPos.z;
 
     float invDepth = 1.0 / max(depthValue, SMALL_VALUE);
-    float2 fitCenter = camera.project_camera_to_screen_linear(camPos);
+    float2 fitCenter = 0.0;
+    if (!camera.project_camera_to_screen(camPos, fitCenter)) fitCenter = camera.project_camera_to_screen_linear(camPos);
     float maxAxisWorld = max(ellipsoid.projectedScale.x, max(ellipsoid.projectedScale.y, ellipsoid.projectedScale.z));
     float fallbackFocal = max(g_Camera.focalPixels.x, g_Camera.focalPixels.y);
     float radiusCap = screen_radius_cap(g_Camera.viewport);

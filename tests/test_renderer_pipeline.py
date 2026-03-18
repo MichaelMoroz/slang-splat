@@ -203,6 +203,53 @@ def test_sampled5_mvee_projection_matches_cpu_reference(device):
     assert float(np.max(radius_err)) < 0.8
 
 
+def test_distorted_render_matches_cpu_reference(device):
+    scene = make_scene(18, seed=17)
+    camera = Camera.look_at(
+        position=(0.0, 0.0, 4.0),
+        target=(0.0, 0.0, 0.0),
+        near=0.1,
+        far=20.0,
+        distortion_k1=0.08,
+        distortion_k2=-0.02,
+    )
+    background = np.array([0.08, 0.12, 0.18], dtype=np.float32)
+    renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, list_capacity_multiplier=32)
+    gpu_image = renderer.render(scene, camera, background=background).image
+
+    projected = project_splats(scene, camera, renderer.width, renderer.height, renderer.radius_scale)
+    keys, values, generated = build_tile_key_value_pairs(
+        projected=projected,
+        tile_width=renderer.tile_width,
+        tile_height=renderer.tile_height,
+        tile_size=renderer.tile_size,
+        depth_bits=renderer.depth_bits,
+        near_depth=camera.near,
+        far_depth=camera.far,
+        max_list_entries=renderer._max_list_entries,
+    )
+    sorted_count = min(generated, renderer._max_list_entries)
+    ref_keys, ref_values = sort_key_values(keys, values, sorted_count)
+    ref_ranges = build_tile_ranges(ref_keys, sorted_count, renderer.tile_count, renderer.depth_bits)
+    cpu_image = rasterize(
+        projected=projected,
+        sorted_values=ref_values,
+        tile_ranges=ref_ranges,
+        camera=camera,
+        width=renderer.width,
+        height=renderer.height,
+        tile_size=renderer.tile_size,
+        tile_width=renderer.tile_width,
+        background=background,
+        alpha_cutoff=renderer.alpha_cutoff,
+        max_splat_steps=renderer.max_splat_steps,
+        transmittance_threshold=renderer.transmittance_threshold,
+    )
+
+    mean_abs_error = float(np.mean(np.abs(gpu_image - cpu_image)))
+    assert mean_abs_error < 7e-3
+
+
 def test_prepass_populates_raster_cache(device):
     scene = make_scene(12, seed=9)
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)

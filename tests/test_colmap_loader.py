@@ -30,6 +30,10 @@ def _write_cameras_bin(path: Path, model_id: int = 1) -> None:
             handle.write(struct.pack("<ddd", 420.0, 200.0, 100.0))
         elif model_id == 1:
             handle.write(struct.pack("<dddd", 400.0, 420.0, 200.0, 100.0))
+        elif model_id == 2:
+            handle.write(struct.pack("<dddd", 420.0, 200.0, 100.0, 0.07))
+        elif model_id == 3:
+            handle.write(struct.pack("<ddddd", 420.0, 200.0, 100.0, 0.07, -0.02))
         else:
             handle.write(struct.pack("<dddddddd", 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0))
 
@@ -89,6 +93,8 @@ def test_colmap_loader_and_frame_scaling(tmp_path: Path):
     assert np.isclose(frame.fy, 210.0)
     assert np.isclose(frame.cx, 100.0)
     assert np.isclose(frame.cy, 50.0)
+    assert np.isclose(frame.k1, 0.0)
+    assert np.isclose(frame.k2, 0.0)
 
     init_hparams = GaussianInitHyperParams(base_scale=0.02, initial_opacity=0.4)
     scene = initialize_scene_from_colmap_points(recon, max_gaussians=1, seed=42, init_hparams=init_hparams)
@@ -104,6 +110,36 @@ def test_colmap_loader_rejects_unsupported_camera_model(tmp_path: Path):
     root = _build_tiny_colmap_tree(tmp_path, model_id=4)
     with pytest.raises(ValueError):
         _ = load_colmap_reconstruction(root)
+
+
+def test_colmap_loader_supports_simple_radial_camera_model(tmp_path: Path):
+    root = _build_tiny_colmap_tree(tmp_path, model_id=2)
+    recon = load_colmap_reconstruction(root)
+    camera = recon.cameras[7]
+    frame = build_training_frames(recon, images_subdir="images_4")[0]
+
+    assert np.isclose(camera.fx, 420.0)
+    assert np.isclose(camera.fy, 420.0)
+    assert np.isclose(camera.k1, 0.07)
+    assert np.isclose(camera.k2, 0.0)
+    assert np.isclose(frame.fx, 210.0)
+    assert np.isclose(frame.fy, 210.0)
+    assert np.isclose(frame.k1, 0.07)
+    assert np.isclose(frame.k2, 0.0)
+
+
+def test_colmap_loader_supports_radial_camera_model(tmp_path: Path):
+    root = _build_tiny_colmap_tree(tmp_path, model_id=3)
+    recon = load_colmap_reconstruction(root)
+    camera = recon.cameras[7]
+    frame = build_training_frames(recon, images_subdir="images_4")[0]
+
+    assert np.isclose(camera.fx, 420.0)
+    assert np.isclose(camera.fy, 420.0)
+    assert np.isclose(camera.k1, 0.07)
+    assert np.isclose(camera.k2, -0.02)
+    assert np.isclose(frame.k1, 0.07)
+    assert np.isclose(frame.k2, -0.02)
 
 
 def test_colmap_init_uses_direct_pointcloud_when_requested_count_exceeds_points(tmp_path: Path):

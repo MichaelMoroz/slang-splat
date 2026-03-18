@@ -39,3 +39,21 @@ def test_colmap_camera_uses_explicit_intrinsics_and_extrinsics():
     np.testing.assert_allclose(right, np.array([1.0, 0.0, 0.0], dtype=np.float32), atol=1e-5)
     np.testing.assert_allclose(up, np.array([0.0, 1.0, 0.0], dtype=np.float32), atol=1e-5)
     np.testing.assert_allclose(forward, np.array([0.0, 0.0, 1.0], dtype=np.float32), atol=1e-5)
+
+
+def test_distorted_screen_ray_roundtrips_through_projection():
+    camera = Camera.look_at(
+        position=(0.0, 0.0, -3.0),
+        target=(0.0, 0.0, 0.0),
+        near=0.1,
+        far=20.0,
+        distortion_k1=0.08,
+        distortion_k2=-0.02,
+    )
+    screen = np.array([517.5, 201.25], dtype=np.float32)
+    ray = camera.screen_to_world_ray(screen, 640, 480)
+    point = camera.position + ray * np.float32(5.0)
+    projected, ok = camera.project_world_to_screen(point, 640, 480)
+
+    assert ok
+    np.testing.assert_allclose(projected, screen, rtol=0.0, atol=1e-4)

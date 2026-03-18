@@ -50,6 +50,8 @@ def _make_frame() -> ColmapFrame:
         cy=55.0,
         width=100,
         height=80,
+        k1=0.07,
+        k2=-0.02,
     )
 
 
@@ -72,7 +74,7 @@ def test_frame_to_camera_tensor_uses_colmap_layout(torch_cuda_or_cpu_device):
 
     np.testing.assert_allclose(
         tensor,
-        np.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 3.0, 100.0, 110.0, 50.0, 55.0, 0.25, 90.0, 0.0, 0.0], dtype=np.float32),
+        np.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 3.0, 100.0, 110.0, 50.0, 55.0, 0.25, 90.0, 0.07, -0.02], dtype=np.float32),
     )
 
 

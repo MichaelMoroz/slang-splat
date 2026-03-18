@@ -1,5 +1,7 @@
 import "utility/math/constants.slang";
 
+static const uint CAMERA_UNDISTORT_NEWTON_ITERS = 6u;
+
 struct CameraParams
 {
     float2 viewport;
@@ -67,6 +69,34 @@ struct PinholeCamera : ICamera
         return cameraPos.xy * (params.focalPixels * invDepth) + params.principalPoint;
     }
 
+    float2 distort_normalized(float2 uv)
+    {
+        float r2 = dot(uv, uv);
+        return uv * (1.0 + params.projDistortionK1 * r2 + params.projDistortionK2 * r2 * r2);
+    }
+
+    float2 undistort_normalized(float2 uvDistorted)
+    {
+        if (all(abs(float2(params.projDistortionK1, params.projDistortionK2)) <= SMALL_VALUE)) return uvDistorted;
+
+        float radiusDistorted = length(uvDistorted);
+        if (radiusDistorted <= SMALL_VALUE) return uvDistorted;
+
+        float radius = radiusDistorted;
+        [unroll] for (uint iter = 0u; iter < CAMERA_UNDISTORT_NEWTON_ITERS; iter++)
+        {
+            float r2 = radius * radius;
+            float r4 = r2 * r2;
+            float deriv = 1.0 + 3.0 * params.projDistortionK1 * r2 + 5.0 * params.projDistortionK2 * r4;
+            if (abs(deriv) <= SMALL_VALUE) break;
+
+            float nextRadius = radius - (radius * (1.0 + params.projDistortionK1 * r2 + params.projDistortionK2 * r4) - radiusDistorted) / deriv;
+            if (!isfinite(nextRadius) || nextRadius < 0.0) break;
+            radius = nextRadius;
+        }
+        return uvDistorted * (radius / max(radiusDistorted, SMALL_VALUE));
+    }
+
     bool project_camera_to_screen(float3 cameraPos, out float2 screenPos)
     {
         if (cameraPos.z <= SMALL_VALUE)
@@ -75,10 +105,7 @@ struct PinholeCamera : ICamera
             return false;
         }
 
-        float2 uv = cameraPos.xy / cameraPos.z;
-        float r2 = dot(uv, uv);
-        float distortion = 1.0 + params.projDistortionK1 * r2 + params.projDistortionK2 * r2 * r2;
-        uv *= distortion;
+        float2 uv = distort_normalized(cameraPos.xy / cameraPos.z);
         screenPos = uv * params.focalPixels + params.principalPoint;
         return all(isfinite(screenPos));
     }
@@ -92,14 +119,14 @@ struct PinholeCamera : ICamera
     {
         float2 focalSafe = max(params.focalPixels, float2(SMALL_VALUE));
         float depthSafe = max(depth, SMALL_VALUE);
-        float2 uv = (screenPos - params.principalPoint) / focalSafe;
+        float2 uv = undistort_normalized((screenPos - params.principalPoint) / focalSafe);
         return camera_point_to_world(float3(uv * depthSafe, depthSafe));
     }
 
     float3 screen_to_world_ray(float2 screenPos)
     {
         float2 focalSafe = max(params.focalPixels, float2(SMALL_VALUE));
-        float2 uv = (screenPos - params.principalPoint) / focalSafe;
+        float2 uv = undistort_normalized((screenPos - params.principalPoint) / focalSafe);
         return normalize(camera_to_world(float3(uv, 1.0)));
     }
 

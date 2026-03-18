@@ -287,6 +287,8 @@ def _camera_from_tensor(camera_params: Any) -> Camera:
         fy=float(values[8]),
         cx=float(values[9]),
         cy=float(values[10]),
+        distortion_k1=float(values[13]),
+        distortion_k2=float(values[14]),
         near=float(values[11]),
         far=float(values[12]),
     )
@@ -309,9 +311,6 @@ if torch is not None:
                 raise ValueError("splats must contain at least one gaussian.")
             packed_scene, alpha = _pack_public_splats(splats.contiguous())
             camera = _camera_from_tensor(camera_params)
-            renderer = context.ensure_renderer(settings)
-            renderer.proj_distortion_k1 = float(camera_params[13].detach().cpu())
-            renderer.proj_distortion_k2 = float(camera_params[14].detach().cpu())
             output = context.render_forward(packed_scene, camera, settings).clone()
             ctx.context = context
             ctx.camera = camera

@@ -149,11 +149,12 @@ class GaussianRenderer:
         return np.asarray(background, dtype=np.float32).reshape(3)
 
     def _camera_uniforms(self, camera: Camera) -> dict[str, object]:
+        k1, k2 = camera.distortion_coeffs(self.proj_distortion_k1, self.proj_distortion_k2)
         return {
             "g_Camera": {
                 **camera.gpu_params(self.width, self.height),
-                "projDistortionK1": float(self.proj_distortion_k1),
-                "projDistortionK2": float(self.proj_distortion_k2),
+                "projDistortionK1": float(k1),
+                "projDistortionK2": float(k2),
             }
         }
 

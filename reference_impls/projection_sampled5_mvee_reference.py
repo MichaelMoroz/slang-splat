@@ -70,34 +70,6 @@ def _silhouette_points_local5(ro_local: np.ndarray, eps: float) -> tuple[np.ndar
     return pts, True
 
 
-def _project_world_to_screen(
-    world_pos: np.ndarray,
-    cam_pos: np.ndarray,
-    cam_right: np.ndarray,
-    cam_up: np.ndarray,
-    cam_forward: np.ndarray,
-    focal_pixels: np.ndarray,
-    principal_point: np.ndarray,
-    width: int,
-    height: int,
-    distortion_k1: float = 0.0,
-    distortion_k2: float = 0.0,
-) -> tuple[np.ndarray, float, bool]:
-    rel = world_pos - cam_pos
-    cam = np.array([np.dot(rel, cam_right), np.dot(rel, cam_up), np.dot(rel, cam_forward)], dtype=np.float32)
-    z = float(cam[2])
-    if z <= 1e-6:
-        return np.zeros((2,), dtype=np.float32), z, False
-    uv = cam[:2] / z
-    r2 = float(np.dot(uv, uv))
-    distort = 1.0 + distortion_k1 * r2 + distortion_k2 * r2 * r2
-    uv = uv * distort
-    px = float(uv[0] * float(focal_pixels[0]) + float(principal_point[0]))
-    py = float(uv[1] * float(focal_pixels[1]) + float(principal_point[1]))
-    ok = np.isfinite(px) and np.isfinite(py)
-    return np.array([px, py], dtype=np.float32), z, bool(ok)
-
-
 def _fit_mvee_5pt(points: np.ndarray, mvee_iters: int, eps: float) -> tuple[np.ndarray, np.ndarray, float, np.uint32]:
     d = 2.0
     points64 = points.astype(np.float64)
@@ -171,6 +143,7 @@ def project_splats_sampled5_mvee(
     fx, fy = camera.focal_pixels_xy(width, height)
     cx, cy = camera.principal_point(width, height)
     focal, principal = np.array([fx, fy], dtype=np.float32), np.array([cx, cy], dtype=np.float32)
+    k1, k2 = camera.distortion_coeffs(distortion_k1, distortion_k2)
     fallback_focal, radius_cap, n = float(max(fx, fy)), float(max(width, height, 1)), scene.count
     center_radius_depth = np.zeros((n, 4), dtype=np.float32)
     pos_local, inv_scale = np.zeros((n, 3), dtype=np.float32), np.zeros((n, 3), dtype=np.float32)
@@ -185,13 +158,9 @@ def project_splats_sampled5_mvee(
         cam_distance = float(np.linalg.norm(rel))
         cam_pos = np.array([np.dot(rel, right), np.dot(rel, up), np.dot(rel, forward)], dtype=np.float32)
         depth_value = float(cam_pos[2])
-        center = np.array(
-            [
-                float(cam_pos[0] * float(focal[0]) / max(depth_value, 1e-6) + float(principal[0])),
-                float(cam_pos[1] * float(focal[1]) / max(depth_value, 1e-6) + float(principal[1])),
-            ],
-            dtype=np.float32,
-        )
+        center, center_ok = camera.project_camera_to_screen(cam_pos, width, height, k1, k2)
+        if not center_ok:
+            center, _ = camera.project_camera_to_screen_linear(cam_pos, width, height)
         q = quat[i]
         sigma = np.exp(scene.scales[i].astype(np.float32).copy())
         raw_scale = np.maximum(sigma * (np.float32(radius_scale) * _GAUSSIAN_SUPPORT_SIGMA_RADIUS), np.float32(1e-6))
@@ -209,19 +178,7 @@ def project_splats_sampled5_mvee(
             ok_project = True
             for j in range(5):
                 world_sample = world_pos + _quat_rotate(local_pts[j] / np.maximum(invs, 1e-6), q_inv)
-                screen_p, _, valid_p = _project_world_to_screen(
-                    world_sample,
-                    camera.position,
-                    right,
-                    up,
-                    forward,
-                    focal,
-                    principal,
-                    width,
-                    height,
-                    distortion_k1=distortion_k1,
-                    distortion_k2=distortion_k2,
-                )
+                screen_p, valid_p = camera.project_world_to_screen(world_sample, width, height, k1, k2)
                 if not valid_p:
                     ok_project = False
                     break

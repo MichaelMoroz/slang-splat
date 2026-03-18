@@ -40,6 +40,8 @@ def _camera_from_tensor(camera_params: torch.Tensor) -> Camera:
         fy=float(values[8]),
         cx=float(values[9]),
         cy=float(values[10]),
+        distortion_k1=float(values[13]),
+        distortion_k2=float(values[14]),
         near=float(values[11]),
         far=float(values[12]),
     )

@@ -13,6 +13,9 @@ The active training path is intentionally minimal: initialize a fixed gaussian s
 - Supported camera models:
   - `SIMPLE_PINHOLE` (model id `0`)
   - `PINHOLE` (model id `1`)
+  - `SIMPLE_RADIAL` (model id `2`)
+  - `RADIAL` (model id `3`)
+- Radial distortion (`k1`, `k2`) stays attached to each training frame and is applied in both projection and inverse-projection during rendering/training.
 - Files:
   - `sparse/0/cameras.bin`
   - `sparse/0/images.bin`

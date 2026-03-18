@@ -10,19 +10,8 @@ from src.scene import load_colmap_reconstruction
 
 
 def _project_point(camera: Camera, point_world: np.ndarray, width: int, height: int) -> tuple[float, float, bool]:
-    right, up, forward = camera.basis()
-    rel = point_world - camera.position
-    cam_x = float(np.dot(rel, right))
-    cam_y = float(np.dot(rel, up))
-    cam_z = float(np.dot(rel, forward))
-    if not np.isfinite(cam_z) or cam_z <= 1e-6:
-        return 0.0, 0.0, False
-    fx, fy = camera.focal_pixels_xy(width, height)
-    cx, cy = camera.principal_point(width, height)
-    px = cam_x * float(fx) / cam_z + float(cx)
-    py = cam_y * float(fy) / cam_z + float(cy)
-    ok = np.isfinite(px) and np.isfinite(py)
-    return float(px), float(py), bool(ok)
+    projected, ok = camera.project_world_to_screen(point_world, width, height)
+    return float(projected[0]), float(projected[1]), bool(ok)
 
 
 def test_colmap_projection_recovers_observed_pixels():
@@ -44,6 +33,8 @@ def test_colmap_projection_recovers_observed_pixels():
             fy=float(colmap_camera.fy),
             cx=float(colmap_camera.cx),
             cy=float(colmap_camera.cy),
+            distortion_k1=float(colmap_camera.k1),
+            distortion_k2=float(colmap_camera.k2),
             near=0.1,
             far=1000.0,
         )

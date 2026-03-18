@@ -191,9 +191,6 @@ def build_tile_ranges(sorted_keys: np.ndarray, sorted_count: int, tile_count: in
 
 def rasterize(projected: ProjectedSplats, sorted_values: np.ndarray, tile_ranges: np.ndarray, camera: Camera, width: int, height: int, tile_size: int, tile_width: int, background: np.ndarray, alpha_cutoff: float, max_splat_steps: int, transmittance_threshold: float) -> np.ndarray:
     output = np.zeros((height, width, 4), dtype=np.float32)
-    right, up, forward = camera.basis()
-    fx, fy = camera.focal_pixels_xy(width, height)
-    cx, cy = camera.principal_point(width, height)
     bg_linear = np.power(np.clip(background.reshape(3), 0.0, None), 2.2).astype(np.float32)
 
     def quat_rotate(v: np.ndarray, q: np.ndarray) -> np.ndarray:
@@ -201,15 +198,13 @@ def rasterize(projected: ProjectedSplats, sorted_values: np.ndarray, tile_ranges
 
     for py in range(height):
         tile_y = py // tile_size
-        uv_y = (float(py) + 0.5 - float(cy)) / float(fy)
         for px in range(width):
             tile = tile_y * tile_width + px // tile_size
             start, end = tile_ranges[tile]
             if start == np.uint32(0xFFFFFFFF) or int(end) <= int(start):
                 output[py, px, :3], output[py, px, 3] = bg_linear, 1.0
                 continue
-            ray = forward + ((float(px) + 0.5 - float(cx)) / float(fx)) * right + uv_y * up
-            ray = ray / max(np.linalg.norm(ray), 1e-8)
+            ray = camera.screen_to_world_ray(np.array([float(px) + 0.5, float(py) + 0.5], dtype=np.float32), width, height)
             accum, trans = np.zeros((3,), dtype=np.float32), 1.0
             for splat_id in map(int, sorted_values[int(start): int(end)][:max_splat_steps]):
                 if projected.valid[splat_id] == 0:

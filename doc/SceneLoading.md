@@ -27,6 +27,9 @@ Output is `GaussianScene` with contiguous `float32` arrays.
 - Supported camera models:
   - `SIMPLE_PINHOLE` (id `0`)
   - `PINHOLE` (id `1`)
+  - `SIMPLE_RADIAL` (id `2`)
+  - `RADIAL` (id `3`)
+- Radial distortion is preserved as per-camera `k1` / `k2` coefficients and is consumed by both screen-space projection and raster ray generation.
 - Camera intrinsics are scaled from COLMAP camera resolution to selected training image resolution.
 - `initialize_scene_from_colmap_points(...)` converts the COLMAP point cloud directly into a trainable `GaussianScene`, using nearest-neighbor point spacing as the initial sigma reference, repeating it across XYZ, and storing it as log-scale.
 - `resolve_colmap_init_hparams(...)` derives the default COLMAP init bundle from point-cloud spacing and requested gaussian count, and both the CLI and viewer pass that resolved bundle through unchanged.

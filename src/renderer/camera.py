@@ -23,6 +23,8 @@ class Camera:
     fy: float | None = None
     cx: float | None = None
     cy: float | None = None
+    distortion_k1: float | None = None
+    distortion_k2: float | None = None
     basis_override: np.ndarray | None = None
 
     def focal_pixels(self, height: int) -> float:
@@ -39,7 +41,16 @@ class Camera:
         return float(SPLAT_PIXEL_CLAMP_PX * max(float(depth), 1e-8) / max(min(self.focal_pixels_xy(width, height)), 1e-8))
 
     @staticmethod
-    def look_at(position, target=(0.0, 0.0, 0.0), up=(0.0, 1.0, 0.0), fov_y_degrees=60.0, near=0.1, far=100.0) -> "Camera":
+    def look_at(
+        position,
+        target=(0.0, 0.0, 0.0),
+        up=(0.0, 1.0, 0.0),
+        fov_y_degrees=60.0,
+        near=0.1,
+        far=100.0,
+        distortion_k1: float | None = None,
+        distortion_k2: float | None = None,
+    ) -> "Camera":
         return Camera(
             position=np.asarray(position, dtype=np.float32),
             target=np.asarray(target, dtype=np.float32),
@@ -47,15 +58,55 @@ class Camera:
             fov_y_degrees=fov_y_degrees,
             near=near,
             far=far,
+            distortion_k1=distortion_k1,
+            distortion_k2=distortion_k2,
         )
 
     def __post_init__(self) -> None:
         self.position = np.asarray(self.position, dtype=np.float32).reshape(3)
         self.target = np.asarray(self.target, dtype=np.float32).reshape(3)
         self.up = np.asarray(normalize3(self.up, eps=VEC_EPS), dtype=np.float32)
+        if self.distortion_k1 is not None:
+            self.distortion_k1 = float(self.distortion_k1)
+        if self.distortion_k2 is not None:
+            self.distortion_k2 = float(self.distortion_k2)
         if self.basis_override is not None:
             basis = np.asarray(self.basis_override, dtype=np.float32).reshape(3, 3)
             self.basis_override = basis
+
+    def distortion_coeffs(self, default_k1: float = 0.0, default_k2: float = 0.0) -> tuple[float, float]:
+        return (
+            float(default_k1 if self.distortion_k1 is None else self.distortion_k1),
+            float(default_k2 if self.distortion_k2 is None else self.distortion_k2),
+        )
+
+    @staticmethod
+    def _distort_normalized(uv: np.ndarray, k1: float, k2: float) -> np.ndarray:
+        uv_arr = np.asarray(uv, dtype=np.float32).reshape(2)
+        r2 = float(np.dot(uv_arr, uv_arr))
+        return uv_arr * np.float32(1.0 + k1 * r2 + k2 * r2 * r2)
+
+    @staticmethod
+    def _undistort_normalized(uv_distorted: np.ndarray, k1: float, k2: float, iters: int = 6) -> np.ndarray:
+        uv_d = np.asarray(uv_distorted, dtype=np.float32).reshape(2)
+        if (not np.isfinite(uv_d).all()) or (abs(k1) <= 1e-12 and abs(k2) <= 1e-12):
+            return uv_d
+        radius_d = float(np.linalg.norm(uv_d))
+        if radius_d <= 1e-12:
+            return uv_d
+        radius = radius_d
+        for _ in range(max(int(iters), 0)):
+            r2 = radius * radius
+            r4 = r2 * r2
+            deriv = 1.0 + 3.0 * k1 * r2 + 5.0 * k2 * r4
+            if abs(deriv) <= 1e-12:
+                break
+            step = (radius * (1.0 + k1 * r2 + k2 * r4) - radius_d) / deriv
+            next_radius = radius - step
+            if not np.isfinite(next_radius) or next_radius < 0.0:
+                break
+            radius = next_radius
+        return uv_d * np.float32(radius / max(radius_d, 1e-12))
 
     def basis(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         if self.basis_override is not None:
@@ -69,6 +120,64 @@ class Camera:
             np.asarray(up, dtype=np.float32),
             np.asarray(forward, dtype=np.float32),
         )
+
+    def world_to_camera(self, world_vector: np.ndarray) -> np.ndarray:
+        return np.asarray(self.basis(), dtype=np.float32) @ np.asarray(world_vector, dtype=np.float32).reshape(3)
+
+    def camera_to_world(self, camera_vector: np.ndarray) -> np.ndarray:
+        return np.asarray(self.basis(), dtype=np.float32).T @ np.asarray(camera_vector, dtype=np.float32).reshape(3)
+
+    def world_point_to_camera(self, world_pos: np.ndarray) -> np.ndarray:
+        return self.world_to_camera(np.asarray(world_pos, dtype=np.float32).reshape(3) - self.position)
+
+    def camera_point_to_world(self, camera_pos: np.ndarray) -> np.ndarray:
+        return self.position + self.camera_to_world(camera_pos)
+
+    def project_camera_to_screen_linear(self, camera_pos: np.ndarray, width: int, height: int) -> tuple[np.ndarray, bool]:
+        cam = np.asarray(camera_pos, dtype=np.float32).reshape(3)
+        depth = float(cam[2])
+        if not np.isfinite(depth) or depth <= 1e-12:
+            return np.zeros((2,), dtype=np.float32), False
+        fx, fy = self.focal_pixels_xy(width, height)
+        cx, cy = self.principal_point(width, height)
+        screen = np.array(
+            [
+                float(cam[0]) * float(fx) / depth + float(cx),
+                float(cam[1]) * float(fy) / depth + float(cy),
+            ],
+            dtype=np.float32,
+        )
+        return screen, bool(np.isfinite(screen).all())
+
+    def project_camera_to_screen(self, camera_pos: np.ndarray, width: int, height: int, default_k1: float = 0.0, default_k2: float = 0.0) -> tuple[np.ndarray, bool]:
+        cam = np.asarray(camera_pos, dtype=np.float32).reshape(3)
+        depth = float(cam[2])
+        if not np.isfinite(depth) or depth <= 1e-12:
+            return np.zeros((2,), dtype=np.float32), False
+        fx, fy = self.focal_pixels_xy(width, height)
+        cx, cy = self.principal_point(width, height)
+        k1, k2 = self.distortion_coeffs(default_k1, default_k2)
+        uv = self._distort_normalized(cam[:2] / np.float32(depth), k1, k2)
+        screen = uv * np.asarray((fx, fy), dtype=np.float32) + np.asarray((cx, cy), dtype=np.float32)
+        return screen.astype(np.float32, copy=False), bool(np.isfinite(screen).all())
+
+    def project_world_to_screen(self, world_pos: np.ndarray, width: int, height: int, default_k1: float = 0.0, default_k2: float = 0.0) -> tuple[np.ndarray, bool]:
+        return self.project_camera_to_screen(self.world_point_to_camera(world_pos), width, height, default_k1, default_k2)
+
+    def screen_to_world(self, screen_pos: np.ndarray, depth: float, width: int, height: int, default_k1: float = 0.0, default_k2: float = 0.0) -> np.ndarray:
+        fx, fy = self.focal_pixels_xy(width, height)
+        cx, cy = self.principal_point(width, height)
+        uv = (np.asarray(screen_pos, dtype=np.float32).reshape(2) - np.asarray((cx, cy), dtype=np.float32)) / np.maximum(
+            np.asarray((fx, fy), dtype=np.float32),
+            np.float32(1e-12),
+        )
+        undistorted = self._undistort_normalized(uv, *self.distortion_coeffs(default_k1, default_k2))
+        depth_safe = max(float(depth), 1e-12)
+        return self.camera_point_to_world(np.array([undistorted[0] * depth_safe, undistorted[1] * depth_safe, depth_safe], dtype=np.float32))
+
+    def screen_to_world_ray(self, screen_pos: np.ndarray, width: int, height: int, default_k1: float = 0.0, default_k2: float = 0.0) -> np.ndarray:
+        world = self.screen_to_world(screen_pos, 1.0, width, height, default_k1, default_k2)
+        return np.asarray(normalize3(world - self.position, eps=VEC_EPS), dtype=np.float32)
 
     def gpu_params(self, width: int, height: int) -> dict[str, object]:
         right, up, forward = self.basis()
@@ -111,6 +220,8 @@ class Camera:
         fy: float,
         cx: float,
         cy: float,
+        distortion_k1: float | None = None,
+        distortion_k2: float | None = None,
         near: float = 0.1,
         far: float = 100.0,
     ) -> "Camera":
@@ -130,5 +241,7 @@ class Camera:
             fy=float(fy),
             cx=float(cx),
             cy=float(cy),
+            distortion_k1=distortion_k1,
+            distortion_k2=distortion_k2,
             basis_override=rot,
         )
