@@ -17,6 +17,15 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - Python bindings in `GaussianRenderer` mirror this layout by building reusable grouped binding dictionaries for scene buffers, prepass uniforms, raster uniforms, and readback state.
 - Stored gaussian scale follows 3DGS semantics (`log(sigma)` per axis). Rendering decodes `exp(log_scale)` and converts sigma to finite-support ellipsoid radius with `radius_scale * 3.0`.
 
+## Renderer Settings API
+- `src/renderer/renderer_context.py` exposes `GaussianRenderSettings` as the immutable render-configuration object used by the viewer, CLI, and torch wrapper.
+- `GaussianRenderSettings.renderer_kwargs()` mirrors the public `GaussianRenderer` constructor arguments so cached renderer reuse stays keyed by the full behaviorally relevant configuration.
+- Debug overlay toggles are part of that settings surface:
+  - `debug_show_ellipses`
+  - `debug_show_processed_count`
+  - `debug_show_grad_norm`
+- Because those toggles participate in renderer construction and cache keys, switching them creates or reuses the correct renderer instance instead of mutating hidden renderer state.
+
 ## 1. Project and Bin
 - Shader: `csProjectAndBin`
 - For each splat:

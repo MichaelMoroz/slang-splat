@@ -29,6 +29,9 @@ class GaussianRenderSettings:
     cached_raster_grad_fixed_l_offdiag_range: float = 0.01
     cached_raster_grad_fixed_color_range: float = 0.2
     cached_raster_grad_fixed_opacity_range: float = 0.2
+    debug_show_ellipses: bool = False
+    debug_show_processed_count: bool = False
+    debug_show_grad_norm: bool = False
 
     def __post_init__(self) -> None:
         width = max(int(self.width), 1)
@@ -62,6 +65,9 @@ class GaussianRenderSettings:
             "cached_raster_grad_fixed_l_offdiag_range": float(self.cached_raster_grad_fixed_l_offdiag_range),
             "cached_raster_grad_fixed_color_range": float(self.cached_raster_grad_fixed_color_range),
             "cached_raster_grad_fixed_opacity_range": float(self.cached_raster_grad_fixed_opacity_range),
+            "debug_show_ellipses": bool(self.debug_show_ellipses),
+            "debug_show_processed_count": bool(self.debug_show_processed_count),
+            "debug_show_grad_norm": bool(self.debug_show_grad_norm),
         }
 
     def renderer_key(self) -> tuple[object, ...]:
