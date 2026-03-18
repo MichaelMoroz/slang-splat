@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +9,7 @@ import slangpy as spy
 from ..common import SHADER_INCLUDE_PATHS, SHADER_ROOT, debug_region, thread_count_2d
 from .camera import Camera
 from .gaussian_renderer import GaussianRenderer
+from .renderer_context import GaussianRenderSettings, GaussianRendererContext
 
 try:
     import torch
@@ -44,68 +44,10 @@ def _require_torch():
     return torch
 
 
-@dataclass(frozen=True, slots=True)
-class TorchGaussianRenderSettings:
-    width: int
-    height: int
-    background: tuple[float, float, float] = (0.0, 0.0, 0.0)
-    radius_scale: float = 1.0
-    alpha_cutoff: float = 1.0 / 255.0
-    max_splat_steps: int = 32768
-    transmittance_threshold: float = 0.005
-    list_capacity_multiplier: int = 64
-    max_prepass_memory_mb: int = 4096
-    sampled5_mvee_iters: int = 6
-    sampled5_safety_scale: float = 1.0
-    sampled5_radius_pad_px: float = 1.0
-    sampled5_eps: float = 1e-6
-    cached_raster_grad_atomic_mode: str = GaussianRenderer.CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED
-    cached_raster_grad_fixed_ro_local_range: float = 0.01
-    cached_raster_grad_fixed_log_l_diag_range: float = 0.01
-    cached_raster_grad_fixed_l_offdiag_range: float = 0.01
-    cached_raster_grad_fixed_color_range: float = 0.2
-    cached_raster_grad_fixed_opacity_range: float = 0.2
-
-    def __post_init__(self) -> None:
-        width = max(int(self.width), 1)
-        height = max(int(self.height), 1)
-        background = tuple(float(x) for x in self.background)
-        if len(background) != 3:
-            raise ValueError("background must contain exactly 3 floats.")
-        GaussianRenderer._validate_cached_raster_grad_atomic_mode(self.cached_raster_grad_atomic_mode)
-        object.__setattr__(self, "width", width)
-        object.__setattr__(self, "height", height)
-        object.__setattr__(self, "background", background)
-
-    def background_array(self) -> np.ndarray:
-        return np.asarray(self.background, dtype=np.float32)
-
-    def renderer_kwargs(self) -> dict[str, object]:
-        return {
-            "radius_scale": float(self.radius_scale),
-            "alpha_cutoff": float(self.alpha_cutoff),
-            "max_splat_steps": int(self.max_splat_steps),
-            "transmittance_threshold": float(self.transmittance_threshold),
-            "list_capacity_multiplier": int(self.list_capacity_multiplier),
-            "max_prepass_memory_mb": int(self.max_prepass_memory_mb),
-            "sampled5_mvee_iters": int(self.sampled5_mvee_iters),
-            "sampled5_safety_scale": float(self.sampled5_safety_scale),
-            "sampled5_radius_pad_px": float(self.sampled5_radius_pad_px),
-            "sampled5_eps": float(self.sampled5_eps),
-            "cached_raster_grad_atomic_mode": str(self.cached_raster_grad_atomic_mode),
-            "cached_raster_grad_fixed_ro_local_range": float(self.cached_raster_grad_fixed_ro_local_range),
-            "cached_raster_grad_fixed_log_l_diag_range": float(self.cached_raster_grad_fixed_log_l_diag_range),
-            "cached_raster_grad_fixed_l_offdiag_range": float(self.cached_raster_grad_fixed_l_offdiag_range),
-            "cached_raster_grad_fixed_color_range": float(self.cached_raster_grad_fixed_color_range),
-            "cached_raster_grad_fixed_opacity_range": float(self.cached_raster_grad_fixed_opacity_range),
-        }
-
-    def renderer_key(self) -> tuple[object, ...]:
-        kwargs = self.renderer_kwargs()
-        return (int(self.width), int(self.height), *(kwargs[name] for name in sorted(kwargs)))
+TorchGaussianRenderSettings = GaussianRenderSettings
 
 
-class TorchGaussianRendererContext:
+class TorchGaussianRendererContext(GaussianRendererContext):
     _output_pack_shader_path = Path(SHADER_ROOT / "renderer" / "gaussian_torch_stage.slang")
 
     def __init__(
@@ -120,7 +62,7 @@ class TorchGaussianRendererContext:
     ) -> None:
         torch_mod = _require_torch()
         self._torch_device = self._resolve_torch_device(torch_device, torch_mod)
-        self._device = (
+        device = (
             self._create_device(
                 self._torch_device,
                 enable_debug_layers=enable_debug_layers,
@@ -131,8 +73,7 @@ class TorchGaussianRendererContext:
             if device is None
             else device
         )
-        self._renderer: GaussianRenderer | None = None
-        self._renderer_key: tuple[object, ...] | None = None
+        super().__init__(device)
         self._bridge_buffers: dict[str, spy.Buffer] = {}
         self._splat_capacity = 0
         self._pixel_capacity = 0
@@ -179,8 +120,8 @@ class TorchGaussianRendererContext:
         )
 
     def _create_pack_output_kernel(self) -> spy.ComputeKernel:
-        program = self._device.load_program(str(self._output_pack_shader_path), ["csPackOutputTexture"])
-        return self._device.create_compute_kernel(program)
+        program = self.device.load_program(str(self._output_pack_shader_path), ["csPackOutputTexture"])
+        return self.device.create_compute_kernel(program)
 
     @staticmethod
     def _grow(required: int, current: int) -> int:
@@ -188,7 +129,7 @@ class TorchGaussianRendererContext:
         return max(int(required), base + base // 2)
 
     def _create_bridge_buffer(self, size: int) -> spy.Buffer:
-        return self._device.create_buffer(size=max(int(size), 1), usage=_TORCH_BRIDGE_USAGE)
+        return self.device.create_buffer(size=max(int(size), 1), usage=_TORCH_BRIDGE_USAGE)
 
     def _ensure_bridge_buffers(self, splat_count: int, pixel_count: int) -> None:
         required_splats = max(int(splat_count), 1)
@@ -204,24 +145,6 @@ class TorchGaussianRendererContext:
             self._bridge_buffers[_TORCH_IMAGE_OUTPUT_BUFFER_NAME] = self._create_bridge_buffer(byte_count)
             self._bridge_buffers[_TORCH_OUTPUT_GRAD_BUFFER_NAME] = self._create_bridge_buffer(byte_count)
 
-    def _ensure_renderer(self, settings: TorchGaussianRenderSettings) -> GaussianRenderer:
-        key = settings.renderer_key()
-        if self._renderer is not None and self._renderer_key == key:
-            return self._renderer
-        self._renderer = GaussianRenderer(self._device, width=settings.width, height=settings.height, **settings.renderer_kwargs())
-        self._renderer_key = key
-        return self._renderer
-
-    @property
-    def device(self) -> spy.Device:
-        return self._device
-
-    @property
-    def renderer(self) -> GaussianRenderer:
-        if self._renderer is None:
-            raise RuntimeError("Renderer is not initialized yet.")
-        return self._renderer
-
     @property
     def torch_device(self) -> Any:
         return self._torch_device
@@ -229,7 +152,7 @@ class TorchGaussianRendererContext:
     def _copy_scene_input(self, packed_scene: Any, renderer: GaussianRenderer, splat_count: int, encoder: spy.CommandEncoder) -> None:
         scene_input = self._bridge_buffers[_TORCH_SCENE_INPUT_BUFFER_NAME]
         spy.copy_torch_tensor_to_buffer(packed_scene, scene_input)
-        self._device.sync_to_cuda()
+        self.device.sync_to_cuda()
         byte_count = max(int(splat_count), 1) * _TORCH_RENDER_PARAM_COUNT * np.dtype(np.float32).itemsize
         encoder.copy_buffer(renderer.scene_buffers["splat_params"], 0, scene_input, 0, byte_count)
 
@@ -258,7 +181,7 @@ class TorchGaussianRendererContext:
 
     def _copy_output_grad(self, grad_output: Any) -> None:
         spy.copy_torch_tensor_to_buffer(grad_output.contiguous(), self._bridge_buffers[_TORCH_OUTPUT_GRAD_BUFFER_NAME])
-        self._device.sync_to_cuda()
+        self.device.sync_to_cuda()
 
     def _read_param_grads(self, splat_count: int):
         torch_mod = _require_torch()
@@ -273,16 +196,16 @@ class TorchGaussianRendererContext:
     def render_forward(self, packed_scene: Any, camera: Camera, settings: TorchGaussianRenderSettings):
         splat_count = int(packed_scene.numel() // _TORCH_RENDER_PARAM_COUNT)
         pixel_count = int(settings.width * settings.height)
-        renderer = self._ensure_renderer(settings)
+        renderer = self.ensure_renderer(settings)
         renderer.bind_scene_count(splat_count)
         self._ensure_bridge_buffers(splat_count, pixel_count)
-        enc = self._device.create_command_encoder()
+        enc = self.device.create_command_encoder()
         self._copy_scene_input(packed_scene, renderer, splat_count, enc)
         renderer.record_prepass_for_current_scene(enc, camera)
         renderer.rasterize_training_forward_current_scene(enc, camera, settings.background_array())
         self._dispatch_pack_output(renderer, enc)
-        self._device.submit_command_buffer(enc.finish())
-        self._device.sync_to_device()
+        self.device.submit_command_buffer(enc.finish())
+        self.device.sync_to_device()
         return self._read_output_tensor(settings)
 
     def render_backward(
@@ -295,7 +218,7 @@ class TorchGaussianRendererContext:
         renderer = self.renderer
         self._ensure_bridge_buffers(splat_count, int(settings.width * settings.height))
         self._copy_output_grad(grad_output)
-        enc = self._device.create_command_encoder()
+        enc = self.device.create_command_encoder()
         renderer.clear_raster_grads_current_scene(enc)
         renderer.rasterize_backward_current_scene(
             enc,
@@ -312,8 +235,8 @@ class TorchGaussianRendererContext:
             0,
             byte_count,
         )
-        self._device.submit_command_buffer(enc.finish())
-        self._device.sync_to_device()
+        self.device.submit_command_buffer(enc.finish())
+        self.device.sync_to_device()
         return self._read_param_grads(splat_count)
 
 
@@ -386,7 +309,7 @@ if torch is not None:
                 raise ValueError("splats must contain at least one gaussian.")
             packed_scene, alpha = _pack_public_splats(splats.contiguous())
             camera = _camera_from_tensor(camera_params)
-            renderer = context._ensure_renderer(settings)
+            renderer = context.ensure_renderer(settings)
             renderer.proj_distortion_k1 = float(camera_params[13].detach().cpu())
             renderer.proj_distortion_k2 = float(camera_params[14].detach().cpu())
             output = context.render_forward(packed_scene, camera, settings).clone()

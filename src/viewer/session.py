@@ -11,7 +11,7 @@ import slangpy as spy
 
 from ..app.shared import apply_training_profile, estimate_point_bounds, estimate_scene_bounds, renderer_kwargs
 from ..common import SHADER_ROOT, clamp_index
-from ..renderer import GaussianRenderer
+from ..renderer import GaussianRenderSettings, GaussianRenderer
 from ..scene import GaussianScene, build_training_frames_from_root, initialize_scene_from_colmap_points, load_colmap_reconstruction, load_gaussian_ply, resolve_colmap_init_hparams
 from ..scene._internal.colmap_ops import point_nn_scales
 from ..training import GaussianTrainer, resolve_effective_train_downscale_factor, resolve_training_resolution
@@ -329,7 +329,7 @@ def ensure_renderer(viewer: object, attr: str, width: int, height: int, allow_de
     if renderer is not None and (renderer.width, renderer.height) == size:
         return renderer
     _clear(viewer, attr)
-    renderer = GaussianRenderer(viewer.device, width=size[0], height=size[1], **renderer_kwargs(viewer.renderer_params(allow_debug_overlays)))
+    renderer = GaussianRenderSettings(width=size[0], height=size[1], **renderer_kwargs(viewer.renderer_params(allow_debug_overlays))).create_renderer(viewer.device)
     if isinstance(viewer.s.scene, GaussianScene):
         renderer.set_scene(viewer.s.scene)
     setattr(viewer.s, attr, renderer)
@@ -338,7 +338,7 @@ def ensure_renderer(viewer: object, attr: str, width: int, height: int, allow_de
 
 
 def _create_renderer(viewer: object, width: int, height: int, allow_debug_overlays: bool) -> GaussianRenderer:
-    return GaussianRenderer(viewer.device, width=int(width), height=int(height), **renderer_kwargs(viewer.renderer_params(allow_debug_overlays)))
+    return GaussianRenderSettings(width=int(width), height=int(height), **renderer_kwargs(viewer.renderer_params(allow_debug_overlays))).create_renderer(viewer.device)
 
 
 def _renderer_params_signature(params: object) -> tuple[object, ...]:

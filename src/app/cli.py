@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from .. import create_default_device
-from ..renderer import Camera, GaussianRenderer
+from ..renderer import Camera, GaussianRenderSettings, GaussianRenderer
 from ..scene import GaussianInitHyperParams, build_training_frames, initialize_scene_from_colmap_points, load_colmap_reconstruction, load_gaussian_ply, resolve_colmap_init_hparams
 from ..training import GaussianTrainer
 from .shared import RendererParams, apply_training_profile, build_training_params, estimate_scene_bounds, renderer_kwargs, save_snapshot
@@ -52,7 +52,8 @@ def _renderer(args: argparse.Namespace, width: int, height: int) -> GaussianRend
         max_prepass_memory_mb=int(args.prepass_memory_mb),
         list_capacity_multiplier=int(getattr(args, "list_capacity_multiplier", 64)),
     )
-    return GaussianRenderer(create_default_device(enable_debug_layers=False), width=int(width), height=int(height), **renderer_kwargs(params))
+    settings = GaussianRenderSettings(width=int(width), height=int(height), **renderer_kwargs(params))
+    return settings.create_renderer(create_default_device(enable_debug_layers=False))
 
 
 def _init_hparams(args: argparse.Namespace) -> GaussianInitHyperParams:
