@@ -5,12 +5,13 @@ from types import SimpleNamespace
 import numpy as np
 
 from src.viewer import ui
+from src.viewer.constants import _WINDOW_TITLE
 
 
 def test_about_text_mentions_single_window_viewer() -> None:
     text = ui._build_about_text()
 
-    assert "Slang Splat Viewer" in text
+    assert _WINDOW_TITLE in text
     assert "Single-window" in text
     assert "WASDQE" in text
 

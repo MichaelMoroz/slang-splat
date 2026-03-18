@@ -11,6 +11,7 @@ from ..app.shared import RendererParams, build_init_params, build_training_param
 from ..common import normalize3
 from ..renderer import Camera, GaussianRenderer
 from . import presenter, session
+from .constants import _WINDOW_TITLE
 from .state import (
     DEFAULT_LIST_CAPACITY_MULTIPLIER,
     DEFAULT_MAX_PREPASS_MEMORY_MB, DEFAULT_VIEWER_BACKGROUND,
@@ -56,7 +57,6 @@ _TRAINING_PARAM_KEYS = {
 _TRAIN_SETUP_DEFAULTS = default_control_values("Train Setup")
 _TRAINING_DEFAULTS = default_control_values("Train Optimizer", "Train Stability")
 _CACHED_RASTER_GRAD_ATOMIC_MODE_VALUES = ("float", "fixed")
-
 
 def _training_kwargs(value_for) -> dict[str, object]:
     return {name: value_for(control) for name, control in _TRAINING_PARAM_KEYS.items()}
@@ -171,7 +171,7 @@ class SplatViewer(spy.AppWindow):
         if event.type == spy.MouseEventType.scroll:
             self.s.scroll_delta += float(event.scroll.y)
 
-    def __init__(self, app: spy.App, width: int = 1280, height: int = 720, title: str = "Slang Splat Viewer", max_prepass_memory_mb: int = 4096) -> None:
+    def __init__(self, app: spy.App, width: int = 1280, height: int = 720, title: str = _WINDOW_TITLE, max_prepass_memory_mb: int = 4096) -> None:
         super().__init__(app, width=width, height=height, title=title, resizable=True, enable_vsync=False)
         self.loss_debug_view_options = LOSS_DEBUG_OPTIONS
         self.s = ViewerState(max_prepass_memory_mb=max(int(max_prepass_memory_mb), 1))
@@ -291,15 +291,11 @@ def _compute_view_geometry() -> tuple[int, int]:
         return max(min(int(screen_width * 0.9), 1920), 1280), max(min(int(screen_height * 0.9), 1200), 720)
     return 1600, 900
 
-
-_VIEW_TITLE = "Slang Splat Viewer"
-
-
 def main() -> int:
     view_w, view_h = _compute_view_geometry()
     device = create_default_device(enable_debug_layers=False)
     app = spy.App(device=device)
-    viewer = SplatViewer(app, width=view_w, height=view_h, title=_VIEW_TITLE, max_prepass_memory_mb=4096)
+    viewer = SplatViewer(app, width=view_w, height=view_h, title=_WINDOW_TITLE, max_prepass_memory_mb=4096)
     try:
         app.run()
     finally:

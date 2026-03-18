@@ -15,6 +15,7 @@ import slangpy as spy
 import slangpy.ui.imgui_bundle as simgui
 from imgui_bundle import imgui, implot
 
+from .constants import _WINDOW_TITLE
 from .state import LOSS_DEBUG_OPTIONS
 
 TOOLKIT_WIDTH_FRACTION = 0.15
@@ -85,7 +86,7 @@ def _read_text_if_exists(path: Path) -> str:
 def _build_about_text() -> str:
     return "\n".join(
         (
-            "Slang Splat Viewer",
+            _WINDOW_TITLE,
             "",
             "Single-window Gaussian splat viewer and trainer built on Slangpy.",
             "The scene and imgui_bundle UI are rendered into the same swapchain image.",
