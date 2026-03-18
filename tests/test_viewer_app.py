@@ -190,7 +190,7 @@ def test_export_ply_callback_prefers_training_scene(monkeypatch, tmp_path: Path)
     )
     saved: dict[str, object] = {}
     viewer = SimpleNamespace(
-        s=SimpleNamespace(trainer=SimpleNamespace(scene=trained_scene), scene=base_scene, last_error=""),
+        s=SimpleNamespace(trainer=SimpleNamespace(read_live_scene=lambda: trained_scene), scene=base_scene, last_error=""),
         _run_action=lambda action: action(),
     )
 

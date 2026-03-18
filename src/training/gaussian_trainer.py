@@ -16,6 +16,7 @@ from .optimizer import GaussianOptimizer
 
 TRAIN_DOWNSCALE_MODE_AUTO = 0
 TRAIN_DOWNSCALE_MAX_FACTOR = 16
+_SH_C0 = 0.28209479177387814
 
 
 def resolve_training_resolution(width: int, height: int, downscale_factor: int) -> tuple[int, int]:
@@ -589,6 +590,22 @@ class GaussianTrainer:
             bin_count=bin_count,
             min_log10=min_log10,
             max_log10=max_log10,
+        )
+
+    def read_live_scene(self) -> GaussianScene:
+        groups = self.renderer.read_scene_groups(self._scene_count)
+        color_alpha = np.asarray(groups["color_alpha"], dtype=np.float32)
+        colors = np.clip(color_alpha[:, :3], 0.0, 1.0)
+        opacities = np.reciprocal(1.0 + np.exp(-color_alpha[:, 3])).astype(np.float32, copy=False)
+        sh_coeffs = np.zeros((self._scene_count, 1, 3), dtype=np.float32)
+        sh_coeffs[:, 0, :] = ((colors - 0.5) / _SH_C0).astype(np.float32, copy=False)
+        return GaussianScene(
+            positions=np.asarray(groups["positions"][:, :3], dtype=np.float32),
+            scales=np.asarray(groups["scales"][:, :3], dtype=np.float32),
+            rotations=np.asarray(groups["rotations"], dtype=np.float32),
+            opacities=np.asarray(opacities, dtype=np.float32),
+            colors=np.asarray(colors, dtype=np.float32),
+            sh_coeffs=sh_coeffs,
         )
 
     def anisotropy_histogram(self, *, bin_count: int = 64, min_log10: float = 0.0, max_log10: float = 2.0):

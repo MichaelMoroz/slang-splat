@@ -219,7 +219,7 @@ class SplatViewer(spy.AppWindow):
 
     def _export_source_scene(self) -> GaussianScene:
         if self.s.trainer is not None:
-            return self.s.trainer.scene
+            return self.s.trainer.read_live_scene()
         if isinstance(self.s.scene, GaussianScene):
             return self.s.scene
         raise RuntimeError("No gaussian scene is available to export.")
