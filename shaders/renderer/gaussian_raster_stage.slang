@@ -146,7 +146,8 @@ struct RasterGaussian : IDifferentiable
         atomic_add_raster_cache_grad_fixed<3>(splatCount, RASTER_CACHE_RO_LOCAL_X, splatId, dOut.roLocal / shapeAlpha, g_CachedRasterGradFixedROLocalRange);
         atomic_add_raster_cache_grad_fixed<3>(splatCount, RASTER_CACHE_LOG_L_DIAG_X, splatId, dOut.logLDiag / shapeAlpha, g_CachedRasterGradFixedLogLDiagRange);
         atomic_add_raster_cache_grad_fixed<3>(splatCount, RASTER_CACHE_L_OFFDIAG_YX, splatId, dOut.lOffDiag / shapeAlpha, g_CachedRasterGradFixedLOffdiagRange);
-        atomic_add_raster_cache_grad_fixed<4>(splatCount, RASTER_CACHE_COLOR_R, splatId, dOut.colorAlpha, g_CachedRasterGradFixedColorRange);
+        atomic_add_raster_cache_grad_fixed<3>(splatCount, RASTER_CACHE_COLOR_R, splatId, dOut.colorAlpha.xyz, g_CachedRasterGradFixedColorRange);
+        atomic_add_raster_cache_grad_fixed<1>(splatCount, RASTER_CACHE_FUSED_OPACITY, splatId, float1(dOut.colorAlpha.w), g_CachedRasterGradFixedOpacityRange);
     }
 
     static void accumulate_gradients_float(uint localIdx, Differential dOut)
