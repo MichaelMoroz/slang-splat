@@ -10,6 +10,7 @@ import torch
 _ROOT = Path(__file__).resolve().parent
 _SHADERS = _ROOT / "shaders"
 _PARAM_COUNT = 14
+_PACKED_PARAM_COUNT = 4
 _CAMERA_PARAM_COUNT = 15
 _ALPHA_EPS = 1e-6
 _ALPHA_CUTOFF = 1 / 255
@@ -65,6 +66,11 @@ def _camera_dict(camera: torch.Tensor, image_size: tuple[int, int]) -> dict[str,
     }
 
 
+def _pack_params(splats: torch.Tensor) -> torch.Tensor:
+    zeros = torch.zeros((splats.shape[0], 2), device=splats.device, dtype=splats.dtype)
+    return torch.stack((splats[:, 0:4], splats[:, 4:8], splats[:, 8:12], torch.cat((splats[:, 12:14], zeros), dim=1)), dim=1)
+
+
 @dataclass
 class SplattingContext:
     device: spy.Device | None = None
@@ -98,7 +104,7 @@ class SplattingContext:
             self.tiles = {"g_TileRanges": spy.Tensor.empty(self.device, shape=(tw * th,), dtype=spy.uint2)}
             self._size = shape
         self.scene = {
-            "g_Params": spy.Tensor.empty(self.device, shape=(splat_count, _PARAM_COUNT), dtype=float),
+            "g_Params": spy.Tensor.empty(self.device, shape=(splat_count, _PACKED_PARAM_COUNT), dtype=spy.float4),
             "g_TileCounts": spy.Tensor.empty(self.device, shape=(splat_count,), dtype="uint"),
             "g_TileOffsets": spy.Tensor.empty(self.device, shape=(splat_count,), dtype="uint"),
             "g_ParamGrads": spy.Tensor.empty(self.device, shape=(splat_count, _PARAM_COUNT), dtype=float),
@@ -149,8 +155,9 @@ class SplattingContext:
         # Sort once by camera distance so the later stable tile sort preserves front-to-back splat order inside each tile.
         order = torch.argsort(torch.linalg.norm(splats[:, 0:3] - self._cam_pos(camera), dim=1), stable=True)
         sorted_splats = splats.index_select(0, order).contiguous()
+        packed_splats = _pack_params(sorted_splats)
         self._alloc(image_size, int(sorted_splats.shape[0]), 1)
-        self.scene["g_Params"].copy_from_torch(sorted_splats)
+        self.scene["g_Params"].copy_from_torch(packed_splats)
         self.device.sync_to_cuda()
         camera_vars = _camera_dict(camera, image_size)
         enc = self.device.create_command_encoder()
@@ -160,7 +167,7 @@ class SplattingContext:
         counts = self.scene["g_TileCounts"].to_torch()[: sorted_splats.shape[0]].to(dtype=torch.int64)
         total = int(counts.sum().item())
         self._alloc(image_size, int(sorted_splats.shape[0]), max(total, 1))
-        self.scene["g_Params"].copy_from_torch(sorted_splats)
+        self.scene["g_Params"].copy_from_torch(packed_splats)
         self.device.sync_to_cuda()
         enc = self.device.create_command_encoder()
         self.k_project_count.dispatch(thread_count=spy.uint3(int(sorted_splats.shape[0]), 1, 1), vars=self._vars(camera_vars, int(sorted_splats.shape[0]), 0), command_encoder=enc)

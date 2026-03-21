@@ -42,20 +42,16 @@ static const uint INVALID_START = 0xFFFFFFFFu;
 
 struct PackedSplat
 {
-    float px;
-    float py;
-    float pz;
-    float sx;
-    float sy;
-    float sz;
-    float qw;
-    float qx;
-    float qy;
-    float qz;
-    float r;
-    float g;
-    float b;
-    float a;
+    float4 posScaleX;
+    float4 scaleYZRotWX;
+    float4 rotYZRgb;
+    float4 alphaPad;
+
+    float3 position() { return posScaleX.xyz; }
+    float3 log_scale() { return float3(posScaleX.w, scaleYZRotWX.xy); }
+    float4 rotation_quat() { return normalize_quaternion_safe(float4(scaleYZRotWX.zw, rotYZRgb.xy)); }
+    float4 color_alpha() { return float4(rotYZRgb.zw, alphaPad.xy); }
+    Gaussian3D to_gaussian() { return { position(), log_scale(), rotation_quat(), color_alpha() }; }
 };
 
 struct ProjectionState
@@ -166,13 +162,7 @@ float opacity_from_raw(float x)
 Gaussian3D load_gaussian(ITensor<PackedSplat, 1> splats, uint splatId)
 {
     int[1] idx = { int(splatId) };
-    PackedSplat s = splats.load(idx);
-    Gaussian3D g;
-    g.position = float3(s.px, s.py, s.pz);
-    g.logScale = float3(s.sx, s.sy, s.sz);
-    g.rotation = normalize_quaternion_safe(float4(s.qw, s.qx, s.qy, s.qz));
-    g.colorAlpha = float4(s.r, s.g, s.b, s.a);
-    return g;
+    return splats.load(idx).to_gaussian();
 }
 
 float2 distort_normalized(CameraParams camera, float2 uv)
