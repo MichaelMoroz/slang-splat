@@ -13,6 +13,11 @@ from module import SplattingContext, render_gaussian_splats
 from src.renderer import TorchGaussianRenderSettings, TorchGaussianRendererContext, render_gaussian_splats_torch
 
 
+_SMOKE_IMAGE_SIZE = (64, 64)
+_PARITY_IMAGE_SIZE = (128, 128)
+_GRADIENT_PARITY_SPLAT_COUNT = 16_384
+
+
 def _make_splats(device: torch.device, count: int = 8, seed: int = 7) -> torch.Tensor:
     rng = np.random.default_rng(seed)
     splats = np.zeros((count, 14), dtype=np.float32)
@@ -37,14 +42,14 @@ def cuda_device() -> torch.device:
 
 
 def test_forward_smoke(cuda_device: torch.device) -> None:
-    image = render_gaussian_splats(_make_splats(cuda_device), _make_camera(cuda_device), (64, 64), context=SplattingContext())
-    assert tuple(image.shape) == (64, 64, 4)
+    image = render_gaussian_splats(_make_splats(cuda_device), _make_camera(cuda_device), _SMOKE_IMAGE_SIZE, context=SplattingContext())
+    assert tuple(image.shape) == (_SMOKE_IMAGE_SIZE[0], _SMOKE_IMAGE_SIZE[1], 4)
     assert torch.isfinite(image).all()
 
 
 def test_backward_smoke(cuda_device: torch.device) -> None:
     splats = _make_splats(cuda_device, count=6).requires_grad_(True)
-    loss = render_gaussian_splats(splats, _make_camera(cuda_device), (64, 64), context=SplattingContext()).sum()
+    loss = render_gaussian_splats(splats, _make_camera(cuda_device), _SMOKE_IMAGE_SIZE, context=SplattingContext()).sum()
     loss.backward()
     assert splats.grad is not None
     assert torch.isfinite(splats.grad).all()
@@ -55,25 +60,25 @@ def test_forward_matches_old_renderer_closely(cuda_device: torch.device) -> None
     camera = _make_camera(cuda_device)
     new_ctx = SplattingContext()
     old_ctx = TorchGaussianRendererContext(torch_device=cuda_device)
-    settings = TorchGaussianRenderSettings(width=64, height=64, list_capacity_multiplier=16, cached_raster_grad_atomic_mode="float")
-    image = render_gaussian_splats(splats, camera, (64, 64), context=new_ctx)
+    settings = TorchGaussianRenderSettings(width=_PARITY_IMAGE_SIZE[0], height=_PARITY_IMAGE_SIZE[1], list_capacity_multiplier=16, cached_raster_grad_atomic_mode="float")
+    image = render_gaussian_splats(splats, camera, _PARITY_IMAGE_SIZE, context=new_ctx)
     ref = render_gaussian_splats_torch(splats, camera, settings, old_ctx)
     torch.testing.assert_close(image, ref, rtol=1e-4, atol=1e-4)
 
 
 def test_gradient_matches_old_renderer_closely(cuda_device: torch.device) -> None:
-    new_splats = _make_splats(cuda_device, count=5).requires_grad_(True)
+    new_splats = _make_splats(cuda_device, count=_GRADIENT_PARITY_SPLAT_COUNT).requires_grad_(True)
     old_splats = new_splats.detach().clone().requires_grad_(True)
     camera = _make_camera(cuda_device)
-    new_loss = (0.5 * render_gaussian_splats(new_splats, camera, (64, 64), context=SplattingContext()).square().sum())
-    old_loss = (0.5 * render_gaussian_splats_torch(old_splats, camera, TorchGaussianRenderSettings(width=64, height=64, list_capacity_multiplier=16, cached_raster_grad_atomic_mode="float"), TorchGaussianRendererContext(torch_device=cuda_device)).square().sum())
+    new_loss = (0.5 * render_gaussian_splats(new_splats, camera, _PARITY_IMAGE_SIZE, context=SplattingContext()).square().sum())
+    old_loss = (0.5 * render_gaussian_splats_torch(old_splats, camera, TorchGaussianRenderSettings(width=_PARITY_IMAGE_SIZE[0], height=_PARITY_IMAGE_SIZE[1], list_capacity_multiplier=16, cached_raster_grad_atomic_mode="float"), TorchGaussianRendererContext(torch_device=cuda_device)).square().sum())
     new_loss.backward()
     old_loss.backward()
     torch.testing.assert_close(new_splats.grad, old_splats.grad, rtol=5e-4, atol=5e-4)
 
 
 def test_distortion_case(cuda_device: torch.device) -> None:
-    image = render_gaussian_splats(_make_splats(cuda_device), _make_camera(cuda_device, (0.05, -0.02)), (64, 64), context=SplattingContext())
+    image = render_gaussian_splats(_make_splats(cuda_device), _make_camera(cuda_device, (0.05, -0.02)), _SMOKE_IMAGE_SIZE, context=SplattingContext())
     assert torch.isfinite(image).all()
 
 
@@ -82,14 +87,14 @@ def test_stable_sorting_case(cuda_device: torch.device) -> None:
     splats[:, 0:3] = torch.tensor([[0.0, 0.0, 3.0], [0.0, 0.0, 3.0]], device=cuda_device)
     splats[0, 10:13] = torch.tensor([1.0, 0.0, 0.0], device=cuda_device)
     splats[1, 10:13] = torch.tensor([0.0, 1.0, 0.0], device=cuda_device)
-    image = render_gaussian_splats(splats, _make_camera(cuda_device), (64, 64), context=SplattingContext())
+    image = render_gaussian_splats(splats, _make_camera(cuda_device), _SMOKE_IMAGE_SIZE, context=SplattingContext())
     center = image[32, 32, :3]
     assert center[0] >= center[1]
 
 
 def test_alpha_gradient_is_public_alpha_space(cuda_device: torch.device) -> None:
     splats = _make_splats(cuda_device, count=4).requires_grad_(True)
-    render_gaussian_splats(splats, _make_camera(cuda_device), (64, 64), context=SplattingContext()).sum().backward()
+    render_gaussian_splats(splats, _make_camera(cuda_device), _SMOKE_IMAGE_SIZE, context=SplattingContext()).sum().backward()
     assert torch.isfinite(splats.grad[:, 13]).all()
     assert torch.count_nonzero(splats.grad[:, 13]).item() > 0
 
