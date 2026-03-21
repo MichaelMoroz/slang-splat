@@ -79,6 +79,8 @@ class SplattingContext:
         self._size = (0, 0)
 
     def _view(self, tensor: spy.Tensor, dtype: Any, shape: tuple[int, ...]) -> spy.Tensor:
+        if isinstance(dtype, type):
+            dtype = spy.Tensor.empty(self.device, shape=(1,), dtype=dtype).dtype
         return spy.Tensor(tensor.storage, getattr(dtype, "struct", dtype), shape)
 
     def _alloc(self, shape: tuple[int, int], splats: int, entries: int) -> None:
@@ -112,6 +114,7 @@ class SplattingContext:
             "g_TileEntries": spy.InstanceTensor(self.mod.TileEntry, (entry_count,), self._view(self.raw["g_TileEntryData"], self.mod.TileEntry, (entry_count,))),
             "g_SortedEntries": spy.InstanceTensor(self.mod.TileEntry, (entry_count,), self._view(self.raw["g_SortedEntryData"], self.mod.TileEntry, (entry_count,))),
         }
+        self.sorted_tile_ids = self.raw["g_SortedEntryData"].view((entry_count,), (2,))
 
     def _vars(self, camera: dict[str, Any], splats: int, entries: int) -> dict[str, Any]:
         w, h = self._size
@@ -178,19 +181,19 @@ class SplattingContext:
         tile_splats = tile_data[:, 1]
         perm = torch.argsort(tile_ids, stable=True)
         self.raw["g_SortedEntryData"].copy_from_torch(torch.stack((tile_ids.index_select(0, perm), tile_splats.index_select(0, perm)), dim=1).to(dtype=torch.uint32))
+        # Tile spans are built with vectorized CUDA torch ops so this stage stays off the CPU.
         tw = (image_size[0] + 7) // 8
         th = (image_size[1] + 7) // 8
-        ranges = torch.zeros((tw * th, 2), device=tile_ids.device, dtype=torch.uint32)
+        ranges = torch.zeros((tw * th, 2), device=tile_ids.device, dtype=torch.int64)
         ranges[:, 0] = 0xFFFFFFFF
         if total:
             sorted_ids = tile_ids.index_select(0, perm)
-            boundaries = torch.nonzero(torch.cat((torch.tensor([True], device=sorted_ids.device), sorted_ids[1:] != sorted_ids[:-1])), as_tuple=False).reshape(-1)
-            for bi, start in enumerate(boundaries):
-                end = boundaries[bi + 1] if bi + 1 < boundaries.numel() else torch.tensor(total, device=sorted_ids.device)
-                tile = int(sorted_ids[int(start)].item())
-                ranges[tile, 0] = int(start)
-                ranges[tile, 1] = int(end)
-        self.tiles["g_TileRanges"].copy_from_torch(ranges)
+            starts = torch.nonzero(torch.cat((torch.ones(1, device=sorted_ids.device, dtype=torch.bool), sorted_ids[1:] != sorted_ids[:-1])), as_tuple=False).reshape(-1)
+            ends = torch.cat((starts[1:], torch.tensor([total], device=sorted_ids.device, dtype=starts.dtype)))
+            tiles = sorted_ids.index_select(0, starts).to(dtype=torch.long)
+            ranges[tiles, 0] = starts
+            ranges[tiles, 1] = ends
+        self.tiles["g_TileRanges"].copy_from_torch(ranges.to(dtype=torch.uint32))
         # Raster uses the sorted tile spans plus the cached projected splat state from the projection pass.
         enc = self.device.create_command_encoder()
         self.k_raster_fwd.dispatch(thread_count=spy.uint3(image_size[0], image_size[1], 1), vars=self._vars(camera_vars, int(sorted_splats.shape[0]), total), command_encoder=enc)
