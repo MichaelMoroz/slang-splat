@@ -35,18 +35,16 @@ groupshared uint gsBatchSplatId[RASTER_BATCH];
 
 void write_cache(uint splatId, CachedEllipsoid cached, float4 colorAlpha)
 {
-    int[1] at = { int(splatId) };
     RasterState state;
     state.roLocal = cached.roLocal;
     state.scale = cached.scale;
     state.rotation = cached.rotation;
     state.colorAlpha = colorAlpha;
-    g_RasterState.store(at, state);
+    g_RasterState[int(splatId)] = state;
 }
 
 void clear_projection(uint splatId)
 {
-    int[1] i = { int(splatId) };
     ProjectionState projection;
     projection.centerRadiusDepth = 0.0;
     projection.conicOpacity = 0.0;
@@ -55,9 +53,9 @@ void clear_projection(uint splatId)
     state.scale = 0.0;
     state.rotation = 0.0;
     state.colorAlpha = 0.0;
-    g_ProjectionState.store(i, projection);
-    g_RasterState.store(i, state);
-    g_TileCounts.store(i, 0u);
+    g_ProjectionState[int(splatId)] = projection;
+    g_RasterState[int(splatId)] = state;
+    g_TileCounts[int(splatId)] = 0u;
 }
 
 bool project_splat(uint splatId, out Ellipse ellipse)
@@ -117,11 +115,10 @@ bool project_splat(uint splatId, out Ellipse ellipse)
         && (fitCenter.y - fitRadius) < g_Camera.viewport.y;
     if (!visible) return false;
     float fusedOpacity = build_raster_fused_opacity(g_Camera, g_RadiusScale, gaussian.position, gaussian.logScale, gaussian.colorAlpha.w);
-    int[1] at = { int(splatId) };
     ProjectionState projection;
     projection.centerRadiusDepth = float4(fitCenter, fitRadius, camDistance);
     projection.conicOpacity = float4(fitConic, 1.0);
-    g_ProjectionState.store(at, projection);
+    g_ProjectionState[int(splatId)] = projection;
     write_cache(splatId, cached, float4(gaussian.colorAlpha.xyz, fusedOpacity));
     return true;
 }
@@ -147,8 +144,7 @@ void csProjectCount(uint3 dispatchThreadID : SV_DispatchThreadID)
     clear_projection(splatId);
     Ellipse ellipse;
     if (!project_splat(splatId, ellipse)) return;
-    int[1] at = { int(splatId) };
-    g_TileCounts.store(at, count_tiles(ellipse));
+    g_TileCounts[int(splatId)] = count_tiles(ellipse);
 }
 
 [shader("compute")]
@@ -159,8 +155,7 @@ void csProjectFill(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (splatId >= g_SplatCount) return;
     uint tileCount = g_TileCounts[int(splatId)];
     if (tileCount == 0u) return;
-    int[1] at = { int(splatId) };
-    ProjectionState projection = g_ProjectionState.load(at);
+    ProjectionState projection = g_ProjectionState[int(splatId)];
     Ellipse ellipse;
     ellipse.centerPx = projection.centerRadiusDepth.xy;
     ellipse.radiusPx = projection.centerRadiusDepth.z;
@@ -174,10 +169,9 @@ void csProjectFill(uint3 dispatchThreadID : SV_DispatchThreadID)
     for (int y = minY; y <= maxY; y++) for (int x = minX; x <= maxX; x++)
     {
         if (!tile_intersects(ellipse, uint(x), uint(y))) continue;
-        int[1] wi = { int(writeIndex) };
         TileEntry entry;
         entry.ids = uint2(uint(y) * g_TileGrid.x + uint(x), splatId);
-        g_TileEntries.store(wi, entry);
+        g_TileEntries[int(writeIndex)] = entry;
         writeIndex++;
     }
 }
@@ -189,8 +183,7 @@ void prefetch_batch(uint batchStart, uint batchEnd, uint lane)
     {
         uint splatId = g_SortedEntries[int(batchStart + localIdx)].ids.y;
         gsBatchSplatId[localIdx] = splatId;
-        int[1] at = { int(splatId) };
-        RasterState state = g_RasterState.load(at);
+        RasterState state = g_RasterState[int(splatId)];
         gsRoLocal[localIdx] = state.roLocal;
         gsScale[localIdx] = state.scale;
         gsRotation[localIdx] = state.rotation;
@@ -247,10 +240,10 @@ void csRasterForward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : S
             GroupMemoryBarrierWithGroupSync();
         }
     }
-    int[2] p = { int(py), int(px) };
-    g_Output.store(p, (range.x == INVALID_START || range.y <= range.x) ? float4(pow(max(g_Background, 0.0), OUTPUT_GAMMA), 1.0) : raster_output(accum, trans, g_Background));
-    g_ForwardState.store(p, float4(accum, trans));
-    g_ForwardEnd.store(p, processedEnd);
+    int2 p = int2(int(py), int(px));
+    g_Output[p] = (range.x == INVALID_START || range.y <= range.x) ? float4(pow(max(g_Background, 0.0), OUTPUT_GAMMA), 1.0) : raster_output(accum, trans, g_Background);
+    g_ForwardState[p] = float4(accum, trans);
+    g_ForwardEnd[p] = processedEnd;
 }
 
 void add_param_grad(uint splatId, uint paramId, float value)
@@ -272,17 +265,17 @@ void csRasterBackward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : 
     uint tileId = tileY * g_TileGrid.x + tileX;
     uint2 range = g_TileRanges[int(tileId)];
     if (range.x == INVALID_START || range.y <= range.x) return;
-    int[2] p = { int(py), int(px) };
-    float4 state4 = g_ForwardState.load(p);
+    int2 p = int2(int(py), int(px));
+    float4 state4 = g_ForwardState[p];
     var dpAccum = diffPair(state4.xyz);
     var dpTrans = diffPair(state4.w);
-    bwd_diff(raster_output)(dpAccum, dpTrans, g_Background, g_OutputGrad.load(p));
+    bwd_diff(raster_output)(dpAccum, dpTrans, g_Background, g_OutputGrad[p]);
     float3 dAccum = dpAccum.getDifferential();
     float dTrans = dpTrans.getDifferential();
     float3 rayDir = screen_to_world_ray(g_Camera, float2(px, py) + 0.5);
     float3 accum = state4.xyz;
     float trans = state4.w;
-    uint processedEnd = g_ForwardEnd.load(p);
+    uint processedEnd = g_ForwardEnd[p];
     for (uint batchBase = range.y; batchBase > range.x;)
     {
         uint batchStart = batchBase > range.x + RASTER_BATCH ? batchBase - RASTER_BATCH : range.x;

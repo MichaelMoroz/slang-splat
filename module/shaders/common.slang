@@ -161,8 +161,7 @@ float opacity_from_raw(float x)
 
 Gaussian3D load_gaussian(ITensor<PackedSplat, 1> splats, uint splatId)
 {
-    int[1] idx = { int(splatId) };
-    return splats.load(idx).to_gaussian();
+    return splats[int(splatId)].to_gaussian();
 }
 
 float2 distort_normalized(CameraParams camera, float2 uv)
