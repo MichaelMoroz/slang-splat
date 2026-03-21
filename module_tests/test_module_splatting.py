@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+import time
 
 import numpy as np
 import pytest
@@ -17,8 +18,10 @@ _SMOKE_IMAGE_SIZE = (64, 64)
 _PARITY_IMAGE_SIZE = (128, 128)
 _GRADIENT_PARITY_SPLAT_COUNT = 16_384
 _GRADIENT_REFERENCE_IMAGE_SIZE = (32, 32)
-_GRADIENT_REFERENCE_SPLAT_COUNT = 2
+_GRADIENT_REFERENCE_SPLAT_COUNT = 128
+_GRADIENT_REFERENCE_PARAM_SAMPLES = 32
 _GRADIENT_FINITE_DIFF_EPS = 1e-3
+_GRADIENT_REFERENCE_MAX_MS = 4000.0
 
 
 def _make_splats(device: torch.device, count: int = 8, seed: int = 7) -> torch.Tensor:
@@ -47,17 +50,30 @@ def _module_gradients(splats: torch.Tensor, camera: torch.Tensor, image_size: tu
     return grads.grad.detach().clone()
 
 
-def _finite_difference_gradients(splats: torch.Tensor, camera: torch.Tensor, image_size: tuple[int, int], eps: float, context: SplattingContext) -> torch.Tensor:
-    reference = torch.zeros_like(splats)
-    for splat_idx in range(int(splats.shape[0])):
-        for param_idx in range(int(splats.shape[1])):
-            plus = splats.detach().clone()
-            minus = splats.detach().clone()
-            plus[splat_idx, param_idx] += eps
-            minus[splat_idx, param_idx] -= eps
-            loss_plus = float(_module_loss(plus, camera, image_size, context).item())
-            loss_minus = float(_module_loss(minus, camera, image_size, context).item())
-            reference[splat_idx, param_idx] = (loss_plus - loss_minus) / (2.0 * eps)
+def _sample_param_indices(splats: torch.Tensor, sample_count: int, seed: int = 123) -> torch.Tensor:
+    return torch.randperm(splats.numel(), generator=torch.Generator(device="cpu").manual_seed(seed))[:sample_count]
+
+
+def _finite_difference_samples(
+    splats: torch.Tensor,
+    camera: torch.Tensor,
+    image_size: tuple[int, int],
+    eps: float,
+    sample_indices: torch.Tensor,
+    context: SplattingContext,
+) -> torch.Tensor:
+    work = splats.detach().clone()
+    reference = torch.empty((int(sample_indices.shape[0]),), device=splats.device, dtype=splats.dtype)
+    param_count = int(splats.shape[1])
+    for sample_idx, flat_idx in enumerate(sample_indices.tolist()):
+        splat_idx, param_idx = divmod(int(flat_idx), param_count)
+        original = float(work[splat_idx, param_idx].item())
+        work[splat_idx, param_idx] = original + eps
+        loss_plus = float(_module_loss(work, camera, image_size, context).item())
+        work[splat_idx, param_idx] = original - eps
+        loss_minus = float(_module_loss(work, camera, image_size, context).item())
+        work[splat_idx, param_idx] = original
+        reference[sample_idx] = (loss_plus - loss_minus) / (2.0 * eps)
     return reference
 
 
@@ -95,12 +111,27 @@ def test_forward_matches_old_renderer_closely(cuda_device: torch.device) -> None
 
 def test_gradient_matches_finite_difference_reference(cuda_device: torch.device) -> None:
     splats = _make_splats(cuda_device, count=_GRADIENT_REFERENCE_SPLAT_COUNT)
-    splats[0, 2] = 2.6
-    splats[1, 2] = 3.4
     camera = _make_camera(cuda_device)
-    autograd = _module_gradients(splats, camera, _GRADIENT_REFERENCE_IMAGE_SIZE, SplattingContext())
-    finite_diff = _finite_difference_gradients(splats, camera, _GRADIENT_REFERENCE_IMAGE_SIZE, _GRADIENT_FINITE_DIFF_EPS, SplattingContext())
-    torch.testing.assert_close(autograd, finite_diff, rtol=5e-2, atol=2e-1)
+    sample_indices = _sample_param_indices(splats, _GRADIENT_REFERENCE_PARAM_SAMPLES)
+    autograd_context = SplattingContext()
+    finite_diff_context = SplattingContext()
+    _module_gradients(splats, camera, _GRADIENT_REFERENCE_IMAGE_SIZE, autograd_context)
+    _finite_difference_samples(splats, camera, _GRADIENT_REFERENCE_IMAGE_SIZE, _GRADIENT_FINITE_DIFF_EPS, sample_indices[:1], finite_diff_context)
+    torch.cuda.synchronize()
+    start = time.perf_counter()
+    autograd = _module_gradients(splats, camera, _GRADIENT_REFERENCE_IMAGE_SIZE, autograd_context).reshape(-1)
+    finite_diff = _finite_difference_samples(
+        splats,
+        camera,
+        _GRADIENT_REFERENCE_IMAGE_SIZE,
+        _GRADIENT_FINITE_DIFF_EPS,
+        sample_indices,
+        finite_diff_context,
+    )
+    torch.cuda.synchronize()
+    elapsed_ms = (time.perf_counter() - start) * 1000.0
+    torch.testing.assert_close(autograd.index_select(0, sample_indices.to(device=autograd.device)), finite_diff, rtol=5e-2, atol=2e-1)
+    assert elapsed_ms <= _GRADIENT_REFERENCE_MAX_MS, f"finite-difference check took {elapsed_ms:.2f} ms"
 
 
 def test_distortion_case(cuda_device: torch.device) -> None:
