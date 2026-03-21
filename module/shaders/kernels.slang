@@ -1,15 +1,13 @@
 import "slangpy";
 import "common.slang";
 
-uniform Tensor<float, 2> g_Params;
+uniform Tensor<PackedSplat, 1> g_Splats;
 uniform RWTensor<uint, 1> g_TileCounts;
 uniform Tensor<uint, 1> g_TileOffsets;
-uniform RWTensor<uint, 1> g_TileIds;
-uniform RWTensor<uint, 1> g_TileSplatIds;
-uniform RWTensor<float4, 1> g_ScreenCenterRadiusDepth;
-uniform RWTensor<float4, 1> g_ScreenConicOpacity;
-uniform RWTensor<float, 2> g_RasterCache;
-uniform Tensor<uint, 1> g_SortedSplatIds;
+uniform RWTensor<TileEntry, 1> g_TileEntries;
+uniform Tensor<TileEntry, 1> g_SortedEntries;
+uniform RWTensor<ProjectionState, 1> g_ProjectionState;
+uniform RWTensor<RasterState, 1> g_RasterState;
 uniform Tensor<uint2, 1> g_TileRanges;
 uniform RWTensor<float4, 2> g_Output;
 uniform Tensor<float4, 2> g_OutputGrad;
@@ -19,11 +17,8 @@ uniform AtomicTensor<float, 2> g_ParamGrads;
 uniform CameraParams g_Camera;
 uniform uint g_SplatCount;
 uniform uint g_SortedEntryCount;
-uniform uint g_TileWidth;
-uniform uint g_TileHeight;
-uniform float g_BackgroundR;
-uniform float g_BackgroundG;
-uniform float g_BackgroundB;
+uniform uint2 g_TileGrid;
+uniform float3 g_Background;
 uniform float g_RadiusScale;
 uniform float g_AlphaCutoff;
 uniform float g_TransmittanceThreshold;
@@ -38,43 +33,36 @@ groupshared float4 gsRotation[RASTER_BATCH];
 groupshared float4 gsColorAlpha[RASTER_BATCH];
 groupshared uint gsBatchSplatId[RASTER_BATCH];
 
-float cache_read(uint splatId, uint fieldId)
-{
-    int[2] idx = { int(splatId), int(fieldId) };
-    return g_RasterCache.load(idx);
-}
-
 void write_cache(uint splatId, CachedEllipsoid cached, float4 colorAlpha)
 {
-    store_cache(g_RasterCache, splatId, CACHE_RO_LOCAL_X, cached.roLocal.x);
-    store_cache(g_RasterCache, splatId, CACHE_RO_LOCAL_Y, cached.roLocal.y);
-    store_cache(g_RasterCache, splatId, CACHE_RO_LOCAL_Z, cached.roLocal.z);
-    store_cache(g_RasterCache, splatId, CACHE_SCALE_X, cached.scale.x);
-    store_cache(g_RasterCache, splatId, CACHE_SCALE_Y, cached.scale.y);
-    store_cache(g_RasterCache, splatId, CACHE_SCALE_Z, cached.scale.z);
-    store_cache(g_RasterCache, splatId, CACHE_QUAT_W, cached.rotation.x);
-    store_cache(g_RasterCache, splatId, CACHE_QUAT_X, cached.rotation.y);
-    store_cache(g_RasterCache, splatId, CACHE_QUAT_Y, cached.rotation.z);
-    store_cache(g_RasterCache, splatId, CACHE_QUAT_Z, cached.rotation.w);
-    store_cache(g_RasterCache, splatId, CACHE_COLOR_R, colorAlpha.x);
-    store_cache(g_RasterCache, splatId, CACHE_COLOR_G, colorAlpha.y);
-    store_cache(g_RasterCache, splatId, CACHE_COLOR_B, colorAlpha.z);
-    store_cache(g_RasterCache, splatId, CACHE_FUSED_OPACITY, colorAlpha.w);
+    int[1] at = { int(splatId) };
+    RasterState state;
+    state.roLocal = cached.roLocal;
+    state.scale = cached.scale;
+    state.rotation = cached.rotation;
+    state.colorAlpha = colorAlpha;
+    g_RasterState.store(at, state);
 }
 
 void clear_projection(uint splatId)
 {
     int[1] i = { int(splatId) };
-    g_ScreenCenterRadiusDepth.store(i, 0.0);
-    g_ScreenConicOpacity.store(i, 0.0);
-    int[1] idx = { int(splatId) };
-    g_TileCounts.store(idx, 0u);
-    [unroll] for (uint i = 0u; i < PARAM_COUNT; i++) store_cache(g_RasterCache, splatId, i, 0.0);
+    ProjectionState projection;
+    projection.centerRadiusDepth = 0.0;
+    projection.conicOpacity = 0.0;
+    RasterState state;
+    state.roLocal = 0.0;
+    state.scale = 0.0;
+    state.rotation = 0.0;
+    state.colorAlpha = 0.0;
+    g_ProjectionState.store(i, projection);
+    g_RasterState.store(i, state);
+    g_TileCounts.store(i, 0u);
 }
 
 bool project_splat(uint splatId, out Ellipse ellipse)
 {
-    Gaussian3D gaussian = load_gaussian(g_Params, splatId);
+    Gaussian3D gaussian = load_gaussian(g_Splats, splatId);
     CachedEllipsoid cached = build_cached_ellipsoid(g_Camera, g_RadiusScale, gaussian.position, gaussian.logScale, gaussian.rotation);
     float3 camPos = world_point_to_camera(g_Camera, gaussian.position);
     float depth = camPos.z;
@@ -130,18 +118,20 @@ bool project_splat(uint splatId, out Ellipse ellipse)
     if (!visible) return false;
     float fusedOpacity = build_raster_fused_opacity(g_Camera, g_RadiusScale, gaussian.position, gaussian.logScale, gaussian.colorAlpha.w);
     int[1] at = { int(splatId) };
-    g_ScreenCenterRadiusDepth.store(at, float4(fitCenter, fitRadius, camDistance));
-    g_ScreenConicOpacity.store(at, float4(fitConic, 1.0));
+    ProjectionState projection;
+    projection.centerRadiusDepth = float4(fitCenter, fitRadius, camDistance);
+    projection.conicOpacity = float4(fitConic, 1.0);
+    g_ProjectionState.store(at, projection);
     write_cache(splatId, cached, float4(gaussian.colorAlpha.xyz, fusedOpacity));
     return true;
 }
 
 uint count_tiles(Ellipse ellipse)
 {
-    int minX = clamp(int(floor((ellipse.centerPx.x - ellipse.bboxExtent.x) / TILE_SIZE)), 0, int(g_TileWidth) - 1);
-    int maxX = clamp(int(ceil((ellipse.centerPx.x + ellipse.bboxExtent.x) / TILE_SIZE)), 0, int(g_TileWidth) - 1);
-    int minY = clamp(int(floor((ellipse.centerPx.y - ellipse.bboxExtent.y) / TILE_SIZE)), 0, int(g_TileHeight) - 1);
-    int maxY = clamp(int(ceil((ellipse.centerPx.y + ellipse.bboxExtent.y) / TILE_SIZE)), 0, int(g_TileHeight) - 1);
+    int minX = clamp(int(floor((ellipse.centerPx.x - ellipse.bboxExtent.x) / TILE_SIZE)), 0, int(g_TileGrid.x) - 1);
+    int maxX = clamp(int(ceil((ellipse.centerPx.x + ellipse.bboxExtent.x) / TILE_SIZE)), 0, int(g_TileGrid.x) - 1);
+    int minY = clamp(int(floor((ellipse.centerPx.y - ellipse.bboxExtent.y) / TILE_SIZE)), 0, int(g_TileGrid.y) - 1);
+    int maxY = clamp(int(ceil((ellipse.centerPx.y + ellipse.bboxExtent.y) / TILE_SIZE)), 0, int(g_TileGrid.y) - 1);
     if (minX > maxX || minY > maxY) return 0u;
     uint count = 0u;
     for (int y = minY; y <= maxY; y++) for (int x = minX; x <= maxX; x++) if (tile_intersects(ellipse, uint(x), uint(y))) count++;
@@ -170,24 +160,24 @@ void csProjectFill(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint tileCount = g_TileCounts[int(splatId)];
     if (tileCount == 0u) return;
     int[1] at = { int(splatId) };
-    float4 centerRadiusDepth = g_ScreenCenterRadiusDepth.load(at);
-    float4 conicOpacity = g_ScreenConicOpacity.load(at);
+    ProjectionState projection = g_ProjectionState.load(at);
     Ellipse ellipse;
-    ellipse.centerPx = centerRadiusDepth.xy;
-    ellipse.radiusPx = centerRadiusDepth.z;
-    ellipse.conic = conicOpacity.xyz;
+    ellipse.centerPx = projection.centerRadiusDepth.xy;
+    ellipse.radiusPx = projection.centerRadiusDepth.z;
+    ellipse.conic = projection.conicOpacity.xyz;
     if (!prepare_conic(ellipse)) return;
-    int minX = clamp(int(floor((ellipse.centerPx.x - ellipse.bboxExtent.x) / TILE_SIZE)), 0, int(g_TileWidth) - 1);
-    int maxX = clamp(int(ceil((ellipse.centerPx.x + ellipse.bboxExtent.x) / TILE_SIZE)), 0, int(g_TileWidth) - 1);
-    int minY = clamp(int(floor((ellipse.centerPx.y - ellipse.bboxExtent.y) / TILE_SIZE)), 0, int(g_TileHeight) - 1);
-    int maxY = clamp(int(ceil((ellipse.centerPx.y + ellipse.bboxExtent.y) / TILE_SIZE)), 0, int(g_TileHeight) - 1);
+    int minX = clamp(int(floor((ellipse.centerPx.x - ellipse.bboxExtent.x) / TILE_SIZE)), 0, int(g_TileGrid.x) - 1);
+    int maxX = clamp(int(ceil((ellipse.centerPx.x + ellipse.bboxExtent.x) / TILE_SIZE)), 0, int(g_TileGrid.x) - 1);
+    int minY = clamp(int(floor((ellipse.centerPx.y - ellipse.bboxExtent.y) / TILE_SIZE)), 0, int(g_TileGrid.y) - 1);
+    int maxY = clamp(int(ceil((ellipse.centerPx.y + ellipse.bboxExtent.y) / TILE_SIZE)), 0, int(g_TileGrid.y) - 1);
     uint writeIndex = g_TileOffsets[int(splatId)];
     for (int y = minY; y <= maxY; y++) for (int x = minX; x <= maxX; x++)
     {
         if (!tile_intersects(ellipse, uint(x), uint(y))) continue;
         int[1] wi = { int(writeIndex) };
-        g_TileIds.store(wi, uint(y) * g_TileWidth + uint(x));
-        g_TileSplatIds.store(wi, splatId);
+        TileEntry entry;
+        entry.ids = uint2(uint(y) * g_TileGrid.x + uint(x), splatId);
+        g_TileEntries.store(wi, entry);
         writeIndex++;
     }
 }
@@ -197,12 +187,14 @@ void prefetch_batch(uint batchStart, uint batchEnd, uint lane)
     uint batchCount = batchEnd - batchStart;
     for (uint localIdx = lane; localIdx < batchCount; localIdx += RASTER_GROUP_THREADS)
     {
-        uint splatId = g_SortedSplatIds[int(batchStart + localIdx)];
+        uint splatId = g_SortedEntries[int(batchStart + localIdx)].ids.y;
         gsBatchSplatId[localIdx] = splatId;
-        gsRoLocal[localIdx] = float3(cache_read(splatId, CACHE_RO_LOCAL_X), cache_read(splatId, CACHE_RO_LOCAL_Y), cache_read(splatId, CACHE_RO_LOCAL_Z));
-        gsScale[localIdx] = float3(cache_read(splatId, CACHE_SCALE_X), cache_read(splatId, CACHE_SCALE_Y), cache_read(splatId, CACHE_SCALE_Z));
-        gsRotation[localIdx] = float4(cache_read(splatId, CACHE_QUAT_W), cache_read(splatId, CACHE_QUAT_X), cache_read(splatId, CACHE_QUAT_Y), cache_read(splatId, CACHE_QUAT_Z));
-        gsColorAlpha[localIdx] = float4(cache_read(splatId, CACHE_COLOR_R), cache_read(splatId, CACHE_COLOR_G), cache_read(splatId, CACHE_COLOR_B), cache_read(splatId, CACHE_FUSED_OPACITY));
+        int[1] at = { int(splatId) };
+        RasterState state = g_RasterState.load(at);
+        gsRoLocal[localIdx] = state.roLocal;
+        gsScale[localIdx] = state.scale;
+        gsRotation[localIdx] = state.rotation;
+        gsColorAlpha[localIdx] = state.colorAlpha;
     }
 }
 
@@ -221,9 +213,8 @@ void csRasterForward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : S
     if (px >= uint(g_Camera.viewport.x) || py >= uint(g_Camera.viewport.y)) return;
     uint tileX = px / TILE_SIZE;
     uint tileY = py / TILE_SIZE;
-    uint tileId = tileY * g_TileWidth + tileX;
+    uint tileId = tileY * g_TileGrid.x + tileX;
     uint2 range = g_TileRanges[int(tileId)];
-    float3 background = float3(g_BackgroundR, g_BackgroundG, g_BackgroundB);
     float3 accum = 0.0;
     float trans = 1.0;
     uint processed = 0u;
@@ -257,7 +248,7 @@ void csRasterForward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : S
         }
     }
     int[2] p = { int(py), int(px) };
-    g_Output.store(p, (range.x == INVALID_START || range.y <= range.x) ? float4(pow(max(background, 0.0), OUTPUT_GAMMA), 1.0) : raster_output(accum, trans, background));
+    g_Output.store(p, (range.x == INVALID_START || range.y <= range.x) ? float4(pow(max(g_Background, 0.0), OUTPUT_GAMMA), 1.0) : raster_output(accum, trans, g_Background));
     g_ForwardState.store(p, float4(accum, trans));
     g_ForwardEnd.store(p, processedEnd);
 }
@@ -278,15 +269,14 @@ void csRasterBackward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : 
     if (px >= uint(g_Camera.viewport.x) || py >= uint(g_Camera.viewport.y)) return;
     uint tileX = px / TILE_SIZE;
     uint tileY = py / TILE_SIZE;
-    uint tileId = tileY * g_TileWidth + tileX;
+    uint tileId = tileY * g_TileGrid.x + tileX;
     uint2 range = g_TileRanges[int(tileId)];
     if (range.x == INVALID_START || range.y <= range.x) return;
     int[2] p = { int(py), int(px) };
     float4 state4 = g_ForwardState.load(p);
-    float3 background = float3(g_BackgroundR, g_BackgroundG, g_BackgroundB);
     var dpAccum = diffPair(state4.xyz);
     var dpTrans = diffPair(state4.w);
-    bwd_diff(raster_output)(dpAccum, dpTrans, background, g_OutputGrad.load(p));
+    bwd_diff(raster_output)(dpAccum, dpTrans, g_Background, g_OutputGrad.load(p));
     float3 dAccum = dpAccum.getDifferential();
     float dTrans = dpTrans.getDifferential();
     float3 rayDir = screen_to_world_ray(g_Camera, float2(px, py) + 0.5);
@@ -314,7 +304,7 @@ void csRasterBackward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : 
             add_param_grad(gsBatchSplatId[localIdx], PARAM_COLOR_R, dColor.x);
             add_param_grad(gsBatchSplatId[localIdx], PARAM_COLOR_G, dColor.y);
             add_param_grad(gsBatchSplatId[localIdx], PARAM_COLOR_B, dColor.z);
-            Gaussian3D g = load_gaussian(g_Params, gsBatchSplatId[localIdx]);
+            Gaussian3D g = load_gaussian(g_Splats, gsBatchSplatId[localIdx]);
             CachedEllipsoid cached = { gsRoLocal[localIdx], gsScale[localIdx], gsRotation[localIdx] };
             var dpRo = diffPair(cached.roLocal);
             var dpSc = diffPair(cached.scale);

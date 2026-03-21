@@ -38,21 +38,44 @@ static const uint PARAM_COLOR_G = 11u;
 static const uint PARAM_COLOR_B = 12u;
 static const uint PARAM_RAW_OPACITY = 13u;
 static const uint PARAM_COUNT = 14u;
-static const uint CACHE_RO_LOCAL_X = 0u;
-static const uint CACHE_RO_LOCAL_Y = 1u;
-static const uint CACHE_RO_LOCAL_Z = 2u;
-static const uint CACHE_SCALE_X = 3u;
-static const uint CACHE_SCALE_Y = 4u;
-static const uint CACHE_SCALE_Z = 5u;
-static const uint CACHE_QUAT_W = 6u;
-static const uint CACHE_QUAT_X = 7u;
-static const uint CACHE_QUAT_Y = 8u;
-static const uint CACHE_QUAT_Z = 9u;
-static const uint CACHE_COLOR_R = 10u;
-static const uint CACHE_COLOR_G = 11u;
-static const uint CACHE_COLOR_B = 12u;
-static const uint CACHE_FUSED_OPACITY = 13u;
 static const uint INVALID_START = 0xFFFFFFFFu;
+
+struct PackedSplat
+{
+    float px;
+    float py;
+    float pz;
+    float sx;
+    float sy;
+    float sz;
+    float qw;
+    float qx;
+    float qy;
+    float qz;
+    float r;
+    float g;
+    float b;
+    float a;
+};
+
+struct ProjectionState
+{
+    float4 centerRadiusDepth;
+    float4 conicOpacity;
+};
+
+struct RasterState
+{
+    float3 roLocal;
+    float3 scale;
+    float4 rotation;
+    float4 colorAlpha;
+};
+
+struct TileEntry
+{
+    uint2 ids;
+};
 
 struct CameraParams
 {
@@ -140,31 +163,15 @@ float opacity_from_raw(float x)
     return z / (1.0 + z);
 }
 
-float load_param(ITensor<float, 2> params, uint splatId, uint paramId)
+Gaussian3D load_gaussian(ITensor<PackedSplat, 1> splats, uint splatId)
 {
-    int[2] idx = { int(splatId), int(paramId) };
-    return params.load(idx);
-}
-
-void store_cache(IRWTensor<float, 2> cache, uint splatId, uint fieldId, float value)
-{
-    int[2] idx = { int(splatId), int(fieldId) };
-    cache.store(idx, value);
-}
-
-float load_cache(ITensor<float, 2> cache, uint splatId, uint fieldId)
-{
-    int[2] idx = { int(splatId), int(fieldId) };
-    return cache.load(idx);
-}
-
-Gaussian3D load_gaussian(ITensor<float, 2> params, uint splatId)
-{
+    int[1] idx = { int(splatId) };
+    PackedSplat s = splats.load(idx);
     Gaussian3D g;
-    g.position = float3(load_param(params, splatId, PARAM_POSITION_X), load_param(params, splatId, PARAM_POSITION_Y), load_param(params, splatId, PARAM_POSITION_Z));
-    g.logScale = float3(load_param(params, splatId, PARAM_SCALE_X), load_param(params, splatId, PARAM_SCALE_Y), load_param(params, splatId, PARAM_SCALE_Z));
-    g.rotation = normalize_quaternion_safe(float4(load_param(params, splatId, PARAM_ROTATION_W), load_param(params, splatId, PARAM_ROTATION_X), load_param(params, splatId, PARAM_ROTATION_Y), load_param(params, splatId, PARAM_ROTATION_Z)));
-    g.colorAlpha = float4(load_param(params, splatId, PARAM_COLOR_R), load_param(params, splatId, PARAM_COLOR_G), load_param(params, splatId, PARAM_COLOR_B), load_param(params, splatId, PARAM_RAW_OPACITY));
+    g.position = float3(s.px, s.py, s.pz);
+    g.logScale = float3(s.sx, s.sy, s.sz);
+    g.rotation = normalize_quaternion_safe(float4(s.qw, s.qx, s.qy, s.qz));
+    g.colorAlpha = float4(s.r, s.g, s.b, s.a);
     return g;
 }
 

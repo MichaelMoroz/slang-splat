@@ -1,11 +1,6 @@
 import "slangpy";
 import "common.slang";
 
-struct PackedSplats
-{
-    Tensor<float, 2> params;
-}
-
 [CUDAKernel]
 void clear_ranges(RWTensor<uint2, 1> tileRanges)
 {
