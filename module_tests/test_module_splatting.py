@@ -34,6 +34,19 @@ def _make_camera(device: torch.device, distortion: tuple[float, float] = (0.0, 0
     return torch.tensor([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -3.0, 72.0, 72.0, 32.0, 32.0, 0.1, 20.0, *distortion], device=device, dtype=torch.float32)
 
 
+def _module_gradients(splats: torch.Tensor, camera: torch.Tensor) -> torch.Tensor:
+    grads = splats.detach().clone().requires_grad_(True)
+    (0.5 * render_gaussian_splats(grads, camera, _PARITY_IMAGE_SIZE, context=SplattingContext()).square().sum()).backward()
+    return grads.grad.detach().clone()
+
+
+def _old_renderer_gradients(splats: torch.Tensor, camera: torch.Tensor, cuda_device: torch.device) -> torch.Tensor:
+    grads = splats.detach().clone().requires_grad_(True)
+    settings = TorchGaussianRenderSettings(width=_PARITY_IMAGE_SIZE[0], height=_PARITY_IMAGE_SIZE[1], list_capacity_multiplier=16, cached_raster_grad_atomic_mode="float")
+    (0.5 * render_gaussian_splats_torch(grads, camera, settings, TorchGaussianRendererContext(torch_device=cuda_device)).square().sum()).backward()
+    return grads.grad.detach().clone()
+
+
 @pytest.fixture(scope="module")
 def cuda_device() -> torch.device:
     if not torch.cuda.is_available():
@@ -67,14 +80,22 @@ def test_forward_matches_old_renderer_closely(cuda_device: torch.device) -> None
 
 
 def test_gradient_matches_old_renderer_closely(cuda_device: torch.device) -> None:
-    new_splats = _make_splats(cuda_device, count=_GRADIENT_PARITY_SPLAT_COUNT).requires_grad_(True)
-    old_splats = new_splats.detach().clone().requires_grad_(True)
+    splats = _make_splats(cuda_device, count=_GRADIENT_PARITY_SPLAT_COUNT)
     camera = _make_camera(cuda_device)
-    new_loss = (0.5 * render_gaussian_splats(new_splats, camera, _PARITY_IMAGE_SIZE, context=SplattingContext()).square().sum())
-    old_loss = (0.5 * render_gaussian_splats_torch(old_splats, camera, TorchGaussianRenderSettings(width=_PARITY_IMAGE_SIZE[0], height=_PARITY_IMAGE_SIZE[1], list_capacity_multiplier=16, cached_raster_grad_atomic_mode="float"), TorchGaussianRendererContext(torch_device=cuda_device)).square().sum())
-    new_loss.backward()
-    old_loss.backward()
-    torch.testing.assert_close(new_splats.grad, old_splats.grad, rtol=5e-4, atol=5e-4)
+    # Float atomics are non-deterministic, so measure each path's self-variance before comparing them.
+    new_grad_a = _module_gradients(splats, camera)
+    new_grad_b = _module_gradients(splats, camera)
+    old_grad_a = _old_renderer_gradients(splats, camera, cuda_device)
+    old_grad_b = _old_renderer_gradients(splats, camera, cuda_device)
+    new_self_max = float((new_grad_a - new_grad_b).abs().max().item())
+    old_self_max = float((old_grad_a - old_grad_b).abs().max().item())
+    cross_max = float((new_grad_a - old_grad_a).abs().max().item())
+    try:
+        torch.testing.assert_close(new_grad_a, old_grad_a, rtol=5e-4, atol=5e-4)
+    except AssertionError as exc:
+        raise AssertionError(
+            f"{exc}\nMeasured float-atomic self-variance: module={new_self_max:.6g}, old={old_self_max:.6g}, cross={cross_max:.6g}"
+        ) from exc
 
 
 def test_distortion_case(cuda_device: torch.device) -> None:

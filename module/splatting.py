@@ -14,7 +14,7 @@ _PACKED_PARAM_COUNT = 4
 _CAMERA_PARAM_COUNT = 15
 _ALPHA_EPS = 1e-6
 _ALPHA_CUTOFF = 1 / 255
-_TRANS_THRESHOLD = 1e-4
+_TRANS_THRESHOLD = 0.005
 _RADIUS_SCALE = 1.0
 _MVEE_ITERS = 6
 _MVEE_SAFETY = 1.0
@@ -67,8 +67,10 @@ def _camera_dict(camera: torch.Tensor, image_size: tuple[int, int]) -> dict[str,
 
 
 def _pack_params(splats: torch.Tensor) -> torch.Tensor:
+    alpha = torch.clamp(splats[:, 13], _ALPHA_EPS, 1.0 - _ALPHA_EPS)
     zeros = torch.zeros((splats.shape[0], 2), device=splats.device, dtype=splats.dtype)
-    return torch.stack((splats[:, 0:4], splats[:, 4:8], splats[:, 8:12], torch.cat((splats[:, 12:14], zeros), dim=1)), dim=1)
+    alpha_raw = torch.logit(alpha).unsqueeze(1)
+    return torch.stack((splats[:, 0:4], splats[:, 4:8], splats[:, 8:12], torch.cat((splats[:, 12:13], alpha_raw, zeros), dim=1)), dim=1)
 
 
 @dataclass
@@ -213,7 +215,7 @@ class SplattingContext:
 
     def backward(self, grad_output: torch.Tensor) -> torch.Tensor:
         # Backward replays the cached forward state and writes gradients in sorted-splat order, then unsorts once.
-        self.scene["g_ParamGrads"].to_torch().zero_()
+        self.scene["g_ParamGrads"].copy_from_torch(torch.zeros((int(self._last_order.shape[0]), _PARAM_COUNT), device=grad_output.device, dtype=grad_output.dtype))
         self.frame["g_OutputGrad"].copy_from_torch(grad_output.contiguous())
         self.device.sync_to_cuda()
         enc = self.device.create_command_encoder()
