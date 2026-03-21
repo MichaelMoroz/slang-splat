@@ -10,37 +10,14 @@ static const float ENVELOPE_EXPONENT_SCALE = 0.5 * ENVELOPE_SIGMA_RADIUS * ENVEL
 struct CachedEllipsoid : IDifferentiable
 {
     float3 roLocal;
-    float3 logLDiag;
-    float3 lOffDiag;
+    float3 scale;
+    float4 rotation;
 };
 
 [Differentiable]
-float3 rotate_and_scale_axis(no_diff float3 axis, float3 invScale, float4 rotation)
+float3 world_to_local_dir(float3 dir, float3 scale, float4 rotation)
 {
-    return rotate_by_quat(axis, rotation) * invScale;
-}
-
-[Differentiable]
-float3x3 build_shape_matrix(float3 logLDiag, float3 lOffDiag)
-{
-    float3 lDiag = exp(logLDiag);
-    float3x3 lower = float3x3(
-        lDiag.x, 0.0, 0.0,
-        lOffDiag.x, lDiag.y, 0.0,
-        lOffDiag.y, lOffDiag.z, lDiag.z
-    );
-    float3x3 lowerTranspose = transpose(lower);
-    return mul(lower, lowerTranspose);
-}
-
-[Differentiable]
-float3x3 build_shape_matrix_from_axes(float3 axisX, float3 axisY, float3 axisZ)
-{
-    return float3x3(
-        dot(axisX, axisX), dot(axisX, axisY), dot(axisX, axisZ),
-        dot(axisX, axisY), dot(axisY, axisY), dot(axisY, axisZ),
-        dot(axisX, axisZ), dot(axisY, axisZ), dot(axisZ, axisZ)
-    );
+    return rotate_by_quat(dir, rotation) / max(scale, float3(SMALL_VALUE));
 }
 
 [Differentiable]
@@ -52,22 +29,10 @@ CachedEllipsoid build_cached_ellipsoid(no_diff CameraParams cameraParams, no_dif
     gaussian.rotation = rotation;
     gaussian.colorAlpha = 0.0;
     Ellipsoid ellipsoid = build_ellipsoid(cameraParams, radiusScale, gaussian);
-    PinholeCamera camera = PinholeCamera.from_params(cameraParams);
-    float3 invScale = ellipsoid.rasterInvScale;
-    float3 axisX = rotate_and_scale_axis(float3(1.0, 0.0, 0.0), invScale, ellipsoid.rotation);
-    float3 axisY = rotate_and_scale_axis(float3(0.0, 1.0, 0.0), invScale, ellipsoid.rotation);
-    float3 axisZ = rotate_and_scale_axis(float3(0.0, 0.0, 1.0), invScale, ellipsoid.rotation);
-    float3x3 shape = build_shape_matrix_from_axes(axisX, axisY, axisZ);
-    float l00 = sqrt(max(shape[0][0], SMALL_VALUE));
-    float l10 = shape[1][0] / l00;
-    float l20 = shape[2][0] / l00;
-    float l11 = sqrt(max(shape[1][1] - l10 * l10, SMALL_VALUE));
-    float l21 = (shape[2][1] - l20 * l10) / l11;
-    float l22 = sqrt(max(shape[2][2] - l20 * l20 - l21 * l21, SMALL_VALUE));
     return {
-        camera.position_world() - ellipsoid.centerWorld,
-        log(max(float3(l00, l11, l22), float3(SMALL_VALUE))),
-        float3(l10, l20, l21)
+        ellipsoid.rasterRoLocal,
+        ellipsoid.rasterScale,
+        ellipsoid.rotation
     };
 }
 
@@ -85,19 +50,18 @@ float envelope(float rho)
 }
 
 [Differentiable]
-float raster_eval_alpha(float3 roLocal, float3 logLDiag, float3 lOffDiag, float fusedOpacity, no_diff float3 rayDir, no_diff float alphaCutoff)
+float raster_eval_alpha(float3 roLocal, float3 scale, float4 rotation, float fusedOpacity, no_diff float3 rayDir, no_diff float alphaCutoff)
 {
-    float3x3 shape = build_shape_matrix(logLDiag, lOffDiag);
-    float3 shapeRay = mul(shape, rayDir);
-    float denom = dot(rayDir, shapeRay);
+    float3 rayLocal = world_to_local_dir(rayDir, scale, rotation);
+    float denom = dot(rayLocal, rayLocal);
     if (denom <= RAY_DENOMINATOR_FLOOR) return 0.0;
 
-    float3 shapeRo = mul(shape, roLocal);
-    float numer = dot(rayDir, shapeRo);
+    float numer = dot(rayLocal, roLocal);
     float tClosest = -numer / denom;
     if (tClosest <= 0.0) return 0.0;
 
-    float rho2 = dot(roLocal, shapeRo) - numer * numer / denom;
+    float3 closest = roLocal + rayLocal * tClosest;
+    float rho2 = dot(closest, closest);
     if (rho2 < 0.0) rho2 = 0.0;
     float alpha = fusedOpacity * exp(-ENVELOPE_EXPONENT_SCALE * rho2);
     if (alpha < alphaCutoff) return 0.0;

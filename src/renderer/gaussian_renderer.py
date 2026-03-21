@@ -88,8 +88,8 @@ class GaussianRenderer:
     CACHED_RASTER_GRAD_ATOMIC_MODES = (CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT, CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED)
     _RASTER_GRAD_FIXED_INT_MAX = np.float32(2147483647.0)
     _DEFAULT_RASTER_GRAD_FIXED_RO_LOCAL_RANGE = np.float32(0.01)
-    _DEFAULT_RASTER_GRAD_FIXED_LOG_L_DIAG_RANGE = np.float32(0.01)
-    _DEFAULT_RASTER_GRAD_FIXED_L_OFFDIAG_RANGE = np.float32(0.01)
+    _DEFAULT_RASTER_GRAD_FIXED_SCALE_RANGE = np.float32(0.01)
+    _DEFAULT_RASTER_GRAD_FIXED_QUAT_RANGE = np.float32(0.01)
     _DEFAULT_RASTER_GRAD_FIXED_COLOR_RANGE = np.float32(0.2)
     _DEFAULT_RASTER_GRAD_FIXED_OPACITY_RANGE = np.float32(0.2)
     _COUNTER_READBACK_RING_SIZE = 2
@@ -99,7 +99,7 @@ class GaussianRenderer:
     _OPACITY_EPS = 1e-6
     _MEBIBYTE_BYTES = 1024 * 1024
     _PREPASS_ENTRY_BYTES = (_SCANLINE_WORK_ITEM_UINTS + 2) * _U32_BYTES
-    _RASTER_CACHE_PARAM_COUNT = 13
+    _RASTER_CACHE_PARAM_COUNT = 14
     _RW_BUFFER_USAGE = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
     PARAM_POSITION_IDS = (0, 1, 2)
     PARAM_SCALE_IDS = (3, 4, 5)
@@ -109,8 +109,8 @@ class GaussianRenderer:
     TRAINABLE_PARAM_COUNT = 14
     CACHED_RASTER_GRAD_COMPONENT_LABELS = (
         "roLocal.x", "roLocal.y", "roLocal.z",
-        "logLDiag.x", "logLDiag.y", "logLDiag.z",
-        "lOffDiag.yx", "lOffDiag.zx", "lOffDiag.zy",
+        "scale.x", "scale.y", "scale.z",
+        "quat.w", "quat.x", "quat.y", "quat.z",
         "color.r", "color.g", "color.b", "opacity",
     )
     CACHED_RASTER_GRAD_COMPONENT_SLICES = tuple((label, slice(index, index + 1)) for index, label in enumerate(CACHED_RASTER_GRAD_COMPONENT_LABELS))
@@ -217,8 +217,8 @@ class GaussianRenderer:
     def _raster_grad_fixed_range_vars(self) -> dict[str, object]:
         return {
             "g_CachedRasterGradFixedROLocalRange": float(self.cached_raster_grad_fixed_ro_local_range),
-            "g_CachedRasterGradFixedLogLDiagRange": float(self.cached_raster_grad_fixed_log_l_diag_range),
-            "g_CachedRasterGradFixedLOffdiagRange": float(self.cached_raster_grad_fixed_l_offdiag_range),
+            "g_CachedRasterGradFixedScaleRange": float(self.cached_raster_grad_fixed_scale_range),
+            "g_CachedRasterGradFixedQuatRange": float(self.cached_raster_grad_fixed_quat_range),
             "g_CachedRasterGradFixedColorRange": float(self.cached_raster_grad_fixed_color_range),
             "g_CachedRasterGradFixedOpacityRange": float(self.cached_raster_grad_fixed_opacity_range),
         }
@@ -333,8 +333,8 @@ class GaussianRenderer:
         debug_ellipse_thickness_px: float = 2.0,
         cached_raster_grad_atomic_mode: str = CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED,
         cached_raster_grad_fixed_ro_local_range: float = 0.01,
-        cached_raster_grad_fixed_log_l_diag_range: float = 0.01,
-        cached_raster_grad_fixed_l_offdiag_range: float = 0.01,
+        cached_raster_grad_fixed_scale_range: float = 0.01,
+        cached_raster_grad_fixed_quat_range: float = 0.01,
         cached_raster_grad_fixed_color_range: float = 0.2,
         cached_raster_grad_fixed_opacity_range: float = 0.2,
     ) -> None:
@@ -380,16 +380,16 @@ class GaussianRenderer:
         self._float_raster_grad_shaders: _RasterGradShaderSet | None = None
         self._cached_raster_grad_atomic_mode = self.CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED
         self._cached_raster_grad_fixed_ro_local_range = self._DEFAULT_RASTER_GRAD_FIXED_RO_LOCAL_RANGE
-        self._cached_raster_grad_fixed_log_l_diag_range = self._DEFAULT_RASTER_GRAD_FIXED_LOG_L_DIAG_RANGE
-        self._cached_raster_grad_fixed_l_offdiag_range = self._DEFAULT_RASTER_GRAD_FIXED_L_OFFDIAG_RANGE
+        self._cached_raster_grad_fixed_scale_range = self._DEFAULT_RASTER_GRAD_FIXED_SCALE_RANGE
+        self._cached_raster_grad_fixed_quat_range = self._DEFAULT_RASTER_GRAD_FIXED_QUAT_RANGE
         self._cached_raster_grad_fixed_color_range = self._DEFAULT_RASTER_GRAD_FIXED_COLOR_RANGE
         self._cached_raster_grad_fixed_opacity_range = self._DEFAULT_RASTER_GRAD_FIXED_OPACITY_RANGE
         self._zero_u32_buffer = self.device.create_buffer(size=self._U32_BYTES, usage=spy.BufferUsage.shader_resource | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination)
         self._zero_u32_buffer.copy_from_numpy(np.array([0], dtype=np.uint32))
         self.cached_raster_grad_atomic_mode = cached_raster_grad_atomic_mode
         self.cached_raster_grad_fixed_ro_local_range = cached_raster_grad_fixed_ro_local_range
-        self.cached_raster_grad_fixed_log_l_diag_range = cached_raster_grad_fixed_log_l_diag_range
-        self.cached_raster_grad_fixed_l_offdiag_range = cached_raster_grad_fixed_l_offdiag_range
+        self.cached_raster_grad_fixed_scale_range = cached_raster_grad_fixed_scale_range
+        self.cached_raster_grad_fixed_quat_range = cached_raster_grad_fixed_quat_range
         self.cached_raster_grad_fixed_color_range = cached_raster_grad_fixed_color_range
         self.cached_raster_grad_fixed_opacity_range = cached_raster_grad_fixed_opacity_range
 
@@ -765,7 +765,7 @@ class GaussianRenderer:
         return self._read_array(self._work_buffers["cached_raster_grads_fixed"], np.int32, self._RASTER_CACHE_PARAM_COUNT, max(count, 1)).T[:count].copy()
 
     def read_cached_raster_grads_fixed_decoded(self, splat_count: int | None = None) -> np.ndarray:
-        values = np.asarray(self.read_cached_raster_grads_fixed(splat_count), dtype=np.float32)
+        values = np.asarray(self.read_cached_raster_grads_fixed(splat_count), dtype=np.float64)
         decode_scales = self.cached_raster_grad_fixed_decode_scale_table(values.shape[0])
         return values * decode_scales
 
@@ -900,20 +900,20 @@ class GaussianRenderer:
         self._cached_raster_grad_fixed_ro_local_range = self._validate_positive_finite("cached_raster_grad_fixed_ro_local_range", value)
 
     @property
-    def cached_raster_grad_fixed_log_l_diag_range(self) -> float:
-        return self._cached_raster_grad_fixed_log_l_diag_range
+    def cached_raster_grad_fixed_scale_range(self) -> float:
+        return self._cached_raster_grad_fixed_scale_range
 
-    @cached_raster_grad_fixed_log_l_diag_range.setter
-    def cached_raster_grad_fixed_log_l_diag_range(self, value: float) -> None:
-        self._cached_raster_grad_fixed_log_l_diag_range = self._validate_positive_finite("cached_raster_grad_fixed_log_l_diag_range", value)
+    @cached_raster_grad_fixed_scale_range.setter
+    def cached_raster_grad_fixed_scale_range(self, value: float) -> None:
+        self._cached_raster_grad_fixed_scale_range = self._validate_positive_finite("cached_raster_grad_fixed_scale_range", value)
 
     @property
-    def cached_raster_grad_fixed_l_offdiag_range(self) -> float:
-        return self._cached_raster_grad_fixed_l_offdiag_range
+    def cached_raster_grad_fixed_quat_range(self) -> float:
+        return self._cached_raster_grad_fixed_quat_range
 
-    @cached_raster_grad_fixed_l_offdiag_range.setter
-    def cached_raster_grad_fixed_l_offdiag_range(self, value: float) -> None:
-        self._cached_raster_grad_fixed_l_offdiag_range = self._validate_positive_finite("cached_raster_grad_fixed_l_offdiag_range", value)
+    @cached_raster_grad_fixed_quat_range.setter
+    def cached_raster_grad_fixed_quat_range(self, value: float) -> None:
+        self._cached_raster_grad_fixed_quat_range = self._validate_positive_finite("cached_raster_grad_fixed_quat_range", value)
 
     @property
     def cached_raster_grad_fixed_color_range(self) -> float:
@@ -938,12 +938,13 @@ class GaussianRenderer:
                 self.cached_raster_grad_fixed_ro_local_range / self._RASTER_GRAD_FIXED_INT_MAX,
                 self.cached_raster_grad_fixed_ro_local_range / self._RASTER_GRAD_FIXED_INT_MAX,
                 self.cached_raster_grad_fixed_ro_local_range / self._RASTER_GRAD_FIXED_INT_MAX,
-                self.cached_raster_grad_fixed_log_l_diag_range / self._RASTER_GRAD_FIXED_INT_MAX,
-                self.cached_raster_grad_fixed_log_l_diag_range / self._RASTER_GRAD_FIXED_INT_MAX,
-                self.cached_raster_grad_fixed_log_l_diag_range / self._RASTER_GRAD_FIXED_INT_MAX,
-                self.cached_raster_grad_fixed_l_offdiag_range / self._RASTER_GRAD_FIXED_INT_MAX,
-                self.cached_raster_grad_fixed_l_offdiag_range / self._RASTER_GRAD_FIXED_INT_MAX,
-                self.cached_raster_grad_fixed_l_offdiag_range / self._RASTER_GRAD_FIXED_INT_MAX,
+                self.cached_raster_grad_fixed_scale_range / self._RASTER_GRAD_FIXED_INT_MAX,
+                self.cached_raster_grad_fixed_scale_range / self._RASTER_GRAD_FIXED_INT_MAX,
+                self.cached_raster_grad_fixed_scale_range / self._RASTER_GRAD_FIXED_INT_MAX,
+                self.cached_raster_grad_fixed_quat_range / self._RASTER_GRAD_FIXED_INT_MAX,
+                self.cached_raster_grad_fixed_quat_range / self._RASTER_GRAD_FIXED_INT_MAX,
+                self.cached_raster_grad_fixed_quat_range / self._RASTER_GRAD_FIXED_INT_MAX,
+                self.cached_raster_grad_fixed_quat_range / self._RASTER_GRAD_FIXED_INT_MAX,
                 self.cached_raster_grad_fixed_color_range / self._RASTER_GRAD_FIXED_INT_MAX,
                 self.cached_raster_grad_fixed_color_range / self._RASTER_GRAD_FIXED_INT_MAX,
                 self.cached_raster_grad_fixed_color_range / self._RASTER_GRAD_FIXED_INT_MAX,
@@ -954,15 +955,16 @@ class GaussianRenderer:
 
     def cached_raster_grad_fixed_decode_scale_table(self, splat_count: int | None = None, raster_cache: np.ndarray | None = None) -> np.ndarray:
         count = self._scene_count if splat_count is None else int(splat_count)
-        decode_scales = np.broadcast_to(self.cached_raster_grad_fixed_decode_scales.reshape(1, self._RASTER_CACHE_PARAM_COUNT), (max(count, 0), self._RASTER_CACHE_PARAM_COUNT)).astype(np.float32, copy=True)
+        decode_scales = np.broadcast_to(self.cached_raster_grad_fixed_decode_scales.reshape(1, self._RASTER_CACHE_PARAM_COUNT), (max(count, 0), self._RASTER_CACHE_PARAM_COUNT)).astype(np.float64, copy=True)
         if count <= 0:
             return decode_scales
-        cache = self.read_raster_cache(count) if raster_cache is None else np.asarray(raster_cache, dtype=np.float32).reshape(count, self._RASTER_CACHE_PARAM_COUNT)
-        l_diag = np.exp(cache[:, 3:6]).astype(np.float32, copy=False)
-        shape_alpha = np.maximum(np.cbrt(np.maximum(l_diag[:, 0] * l_diag[:, 1] * l_diag[:, 2], np.float32(1e-12))), np.float32(0.25))
-        decode_scales[:, 0:3] *= shape_alpha[:, None]
-        decode_scales[:, 3:6] *= shape_alpha[:, None]
-        decode_scales[:, 6:9] *= shape_alpha[:, None]
+        cache = self.read_raster_cache(count) if raster_cache is None else np.asarray(raster_cache, dtype=np.float64).reshape(count, self._RASTER_CACHE_PARAM_COUNT)
+        scale = np.asarray(cache[:, 3:6], dtype=np.float64)
+        avg_scale = np.cbrt(np.maximum(scale[:, 0] * scale[:, 1] * scale[:, 2], 1e-12))
+        avg_inv_scale = np.maximum(1.0 / np.maximum(avg_scale, 1e-12), 0.25)
+        decode_scales[:, 0:3] *= avg_inv_scale[:, None]
+        decode_scales[:, 3:6] *= avg_inv_scale[:, None]
+        decode_scales[:, 6:10] *= avg_inv_scale[:, None]
         return decode_scales
 
     def set_debug_grad_norm_buffer(self, buffer: spy.Buffer | None) -> None:

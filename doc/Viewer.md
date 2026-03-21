@@ -70,7 +70,7 @@ The loss-debug controls expose a runtime `Abs Diff Scale` slider when `View = Ab
 
 - The window inspects the active cached ellipse gradient accumulation mode only.
 - Histogram values are computed over `log10(abs(component_gradient))`.
-- Components are grouped as `roLocal`, `logLDiag`, `lOffDiag`, `color`, and `opacity`.
+- Components are grouped as `roLocal`, `scale`, `quat`, `color`, and `opacity`.
 - `Auto Refresh` recomputes only when the relevant training/debug signature changes; manual refresh is available for paused inspection.
 
 ## Cached Gradient Atomics

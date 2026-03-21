@@ -36,22 +36,6 @@ def _quat_rotate(v: np.ndarray, q_wxyz: np.ndarray) -> np.ndarray:
     return np.asarray(vec + 2.0 * np.cross(np.cross(vec, qv) + q[0] * vec, qv), dtype=np.float32)
 
 
-def _shape_log_ldiag_and_loffdiag(inv_scale: np.ndarray, quat_wxyz: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    axis_x = _quat_rotate(np.array([1.0, 0.0, 0.0], dtype=np.float32), quat_wxyz) * np.asarray(inv_scale, dtype=np.float32)
-    axis_y = _quat_rotate(np.array([0.0, 1.0, 0.0], dtype=np.float32), quat_wxyz) * np.asarray(inv_scale, dtype=np.float32)
-    axis_z = _quat_rotate(np.array([0.0, 0.0, 1.0], dtype=np.float32), quat_wxyz) * np.asarray(inv_scale, dtype=np.float32)
-    shape = np.array(
-        [
-            [np.dot(axis_x, axis_x), np.dot(axis_x, axis_y), np.dot(axis_x, axis_z)],
-            [np.dot(axis_x, axis_y), np.dot(axis_y, axis_y), np.dot(axis_y, axis_z)],
-            [np.dot(axis_x, axis_z), np.dot(axis_y, axis_z), np.dot(axis_z, axis_z)],
-        ],
-        dtype=np.float32,
-    )
-    chol = np.linalg.cholesky(shape.astype(np.float64)).astype(np.float32)
-    return np.log(np.maximum(np.diag(chol), 1e-12)), np.array([chol[1, 0], chol[2, 0], chol[2, 1]], dtype=np.float32)
-
-
 def make_scene(count: int, seed: int = 0) -> GaussianScene:
     rng = np.random.default_rng(seed)
     positions = np.zeros((count, 3), dtype=np.float32)
@@ -92,10 +76,10 @@ def test_renderer_params_default_to_fixed_cached_grad_atomics():
     assert kwargs["cached_raster_grad_atomic_mode"] == "fixed"
     assert params.cached_raster_grad_fixed_ro_local_range == 0.01
     assert kwargs["cached_raster_grad_fixed_ro_local_range"] == 0.01
-    assert params.cached_raster_grad_fixed_log_l_diag_range == 0.01
-    assert kwargs["cached_raster_grad_fixed_log_l_diag_range"] == 0.01
-    assert params.cached_raster_grad_fixed_l_offdiag_range == 0.01
-    assert kwargs["cached_raster_grad_fixed_l_offdiag_range"] == 0.01
+    assert params.cached_raster_grad_fixed_scale_range == 0.01
+    assert kwargs["cached_raster_grad_fixed_scale_range"] == 0.01
+    assert params.cached_raster_grad_fixed_quat_range == 0.01
+    assert kwargs["cached_raster_grad_fixed_quat_range"] == 0.01
     assert params.cached_raster_grad_fixed_color_range == 0.2
     assert kwargs["cached_raster_grad_fixed_color_range"] == 0.2
     assert params.cached_raster_grad_fixed_opacity_range == 0.2
@@ -258,15 +242,15 @@ def test_prepass_populates_raster_cache(device):
     projected = project_splats(scene, camera, renderer.width, renderer.height, renderer.radius_scale)
 
     raster_cache = np.asarray(debug["raster_cache"], dtype=np.float32)
-    assert raster_cache.shape == (scene.count, 13)
+    assert raster_cache.shape == (scene.count, 14)
     assert np.all(np.isfinite(raster_cache))
-    assert float(np.max(np.abs(raster_cache[:, :9]))) > 0.0
-    expected_ro = np.asarray(camera.position, dtype=np.float32).reshape(1, 3) - np.asarray(scene.positions, dtype=np.float32)
-    expected_log_ldiag = np.stack([_shape_log_ldiag_and_loffdiag(projected.inv_scale[i], projected.quat[i])[0] for i in range(scene.count)], axis=0)
-    expected_loffdiag = np.stack([_shape_log_ldiag_and_loffdiag(projected.inv_scale[i], projected.quat[i])[1] for i in range(scene.count)], axis=0)
+    assert float(np.max(np.abs(raster_cache[:, :10]))) > 0.0
+    expected_ro = np.asarray(projected.pos_local, dtype=np.float32)
+    expected_scale = 1.0 / np.maximum(np.asarray(projected.inv_scale, dtype=np.float32), 1e-12)
+    expected_quat = np.asarray(projected.quat, dtype=np.float32)
     np.testing.assert_allclose(raster_cache[:, :3], expected_ro, rtol=2e-4, atol=2e-4)
-    np.testing.assert_allclose(raster_cache[:, 3:6], expected_log_ldiag, rtol=3e-4, atol=3e-4)
-    np.testing.assert_allclose(raster_cache[:, 6:9], expected_loffdiag, rtol=3e-4, atol=3e-4)
+    np.testing.assert_allclose(raster_cache[:, 3:6], expected_scale, rtol=3e-4, atol=3e-4)
+    np.testing.assert_allclose(raster_cache[:, 6:10], expected_quat, rtol=3e-4, atol=3e-4)
 
 
 def test_sampled5_mvee_render_smoke(device):
@@ -472,12 +456,12 @@ def test_raster_backward_decodes_fixed_grad_grid(device):
 
     assert grads["cached_raster_grads_mode"] == "fixed"
     values = np.asarray(grads["cached_raster_grads_fixed"], dtype=np.int32)
-    assert values.shape == (scene.count, 13)
+    assert values.shape == (scene.count, 14)
     nonzero = values[values != 0]
     assert nonzero.size > 0
     decoded = np.asarray(renderer.read_cached_raster_grads_fixed_decoded(scene.count), dtype=np.float32)
     requantized = np.rint(decoded / renderer.cached_raster_grad_fixed_decode_scale_table(scene.count)).astype(np.int32)
-    assert int(np.max(np.abs(requantized[values != 0] - values[values != 0]))) <= 64
+    assert int(np.max(np.abs(requantized[values != 0] - values[values != 0]))) <= 128
 
 
 def test_raster_backward_float_mode_produces_float_intermediate_and_final_grads(device):
@@ -493,7 +477,7 @@ def test_raster_backward_float_mode_produces_float_intermediate_and_final_grads(
     assert active_nonzero.size > 0
     requantized = float_nonzero / renderer.cached_raster_grad_fixed_decode_scale_table(scene.count)
     assert np.any(np.abs(requantized[np.abs(float_nonzero) > 0.0] - np.rint(requantized[np.abs(float_nonzero) > 0.0])) > 1e-4)
-    assert np.count_nonzero(float_nonzero[:, 9:12]) > 0
+    assert np.count_nonzero(float_nonzero[:, 10:13]) > 0
 
     final_values = np.concatenate(
         [

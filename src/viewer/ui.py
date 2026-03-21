@@ -58,10 +58,10 @@ _HISTOGRAM_MAX_LOG10_DEFAULT = 2.0
 _HISTOGRAM_Y_LIMIT_DEFAULT = 1.0
 _HISTOGRAM_GROUPS = (
     ("roLocal", (0, 1, 2)),
-    ("logLDiag", (3, 4, 5)),
-    ("lOffDiag", (6, 7, 8)),
-    ("color", (9, 10, 11)),
-    ("opacity", (12,)),
+    ("scale", (3, 4, 5)),
+    ("quat", (6, 7, 8, 9)),
+    ("color", (10, 11, 12)),
+    ("opacity", (13,)),
 )
 _CACHED_RASTER_GRAD_ATOMIC_MODE_LABELS = ("Float Atomics", "Fixed Point")
 
@@ -250,8 +250,8 @@ RENDER_PARAM_SPECS = (
     ControlSpec("trans_threshold", "slider_float", "Trans Threshold", {"value": 0.005, "min": 0.001, "max": 0.2, "format": "%.2e"}),
     ControlSpec("cached_raster_grad_atomic_mode", "combo", "Cached Grad Atomics", {"value": 1, "options": _CACHED_RASTER_GRAD_ATOMIC_MODE_LABELS}),
     ControlSpec("cached_raster_grad_fixed_ro_local_range", "slider_float", "Cached Grad Pos Range", {"value": 0.01, "min": 1e-4, "max": 1024.0, "format": "%.4g", "logarithmic": True}),
-    ControlSpec("cached_raster_grad_fixed_log_l_diag_range", "slider_float", "Cached Grad Scale Range", {"value": 0.01, "min": 1e-4, "max": 1024.0, "format": "%.4g", "logarithmic": True}),
-    ControlSpec("cached_raster_grad_fixed_l_offdiag_range", "slider_float", "Cached Grad Rot Range", {"value": 0.01, "min": 1e-4, "max": 1024.0, "format": "%.4g", "logarithmic": True}),
+    ControlSpec("cached_raster_grad_fixed_scale_range", "slider_float", "Cached Grad Scale Range", {"value": 0.01, "min": 1e-4, "max": 1024.0, "format": "%.4g", "logarithmic": True}),
+    ControlSpec("cached_raster_grad_fixed_quat_range", "slider_float", "Cached Grad Rot Range", {"value": 0.01, "min": 1e-4, "max": 1024.0, "format": "%.4g", "logarithmic": True}),
     ControlSpec("cached_raster_grad_fixed_color_range", "slider_float", "Cached Grad Color Range", {"value": 0.2, "min": 1e-4, "max": 2048.0, "format": "%.4g", "logarithmic": True}),
     ControlSpec("cached_raster_grad_fixed_opacity_range", "slider_float", "Cached Grad Opacity Range", {"value": 0.2, "min": 1e-4, "max": 2048.0, "format": "%.4g", "logarithmic": True}),
     ControlSpec("debug_ellipse", "checkbox", "Debug Ellipse Outlines", {"value": False}),
@@ -1250,9 +1250,9 @@ class ToolkitWindow:
         "max_splat_steps": "Maximum rasterization steps per pixel ray",
         "trans_threshold": "Transmittance threshold for early ray termination",
         "cached_raster_grad_atomic_mode": "Choose float atomics or fixed-point atomics for cached ellipsoid gradient accumulation during raster backward",
-        "cached_raster_grad_fixed_ro_local_range": "Symmetric [-X, X] range for shapeAlpha-normalized cached position gradients",
-        "cached_raster_grad_fixed_log_l_diag_range": "Symmetric [-X, X] range for shapeAlpha-normalized cached scale gradients",
-        "cached_raster_grad_fixed_l_offdiag_range": "Symmetric [-X, X] range for shapeAlpha-normalized cached rotation gradients",
+        "cached_raster_grad_fixed_ro_local_range": "Symmetric [-X, X] range for avgInvScale-normalized cached position gradients",
+        "cached_raster_grad_fixed_scale_range": "Symmetric [-X, X] range for avgInvScale-normalized cached scale gradients",
+        "cached_raster_grad_fixed_quat_range": "Symmetric [-X, X] range for avgInvScale-normalized cached rotation gradients",
         "cached_raster_grad_fixed_color_range": "Symmetric [-X, X] range for cached color gradients",
         "cached_raster_grad_fixed_opacity_range": "Symmetric [-X, X] range for cached opacity gradients",
         "debug_ellipse": "Show ellipse outlines around each gaussian",
@@ -1388,8 +1388,8 @@ def build_ui(renderer) -> ViewerUI:
     values["trans_threshold"] = float(renderer.transmittance_threshold)
     values["cached_raster_grad_atomic_mode"] = 0 if getattr(renderer, "cached_raster_grad_atomic_mode", "fixed") == "float" else 1
     values["cached_raster_grad_fixed_ro_local_range"] = float(getattr(renderer, "cached_raster_grad_fixed_ro_local_range", 0.01))
-    values["cached_raster_grad_fixed_log_l_diag_range"] = float(getattr(renderer, "cached_raster_grad_fixed_log_l_diag_range", 0.01))
-    values["cached_raster_grad_fixed_l_offdiag_range"] = float(getattr(renderer, "cached_raster_grad_fixed_l_offdiag_range", 0.01))
+    values["cached_raster_grad_fixed_scale_range"] = float(getattr(renderer, "cached_raster_grad_fixed_scale_range", 0.01))
+    values["cached_raster_grad_fixed_quat_range"] = float(getattr(renderer, "cached_raster_grad_fixed_quat_range", 0.01))
     values["cached_raster_grad_fixed_color_range"] = float(getattr(renderer, "cached_raster_grad_fixed_color_range", 0.2))
     values["cached_raster_grad_fixed_opacity_range"] = float(getattr(renderer, "cached_raster_grad_fixed_opacity_range", 0.2))
     values["debug_ellipse"] = bool(renderer.debug_show_ellipses)
