@@ -139,7 +139,7 @@ class SplattingContext:
         }
         self.scene_views = {
             "g_ProjectionState": spy.InstanceTensor(self.mod.ProjectionState, (splat_count,)),
-            "g_RasterState": spy.InstanceTensor(self.mod.RasterState, (splat_count,)),
+            "g_RasterState": spy.InstanceTensor(self.mod.Gaussian3D, (splat_count,)),
         }
 
     def _alloc_entries(self, entry_count: int) -> None:

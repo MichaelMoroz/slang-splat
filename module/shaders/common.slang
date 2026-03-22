@@ -84,13 +84,6 @@ struct ProjectionState {
     float4 conicOpacity;
 };
 
-struct RasterState {
-    float3 roLocal;
-    float3 scale;
-    float4 rotation;
-    float4 colorAlpha;
-};
-
 struct TileEntry {
     uint2 ids;
 };
@@ -367,19 +360,19 @@ bool fit_mvee_5pt_fixed_iters(float2 points[MVEE_POINT_COUNT], uint iters, float
 }
 
 [Differentiable]
-float raster_eval_alpha(float3 roLocal, float3 scale, float4 rotation, float fusedOpacity, no_diff float3 rayDir) {
-    float3 rayLocal = rotate_by_quat(rayDir, rotation) / max(scale, float3(SMALL_VALUE));
+float raster_eval_alpha(Gaussian3D gaussian, no_diff Camera camera, no_diff float radiusScale, no_diff float3 rayDir) {
+    CachedEllipsoid cached = Gaussian3D.build_cached_ellipsoid(gaussian, camera, radiusScale);
+    float3 rayLocal = rotate_by_quat(rayDir, cached.rotation) / max(cached.scale, float3(SMALL_VALUE));
     float denom = dot(rayLocal, rayLocal);
     if (denom <= RAY_DENOMINATOR_FLOOR) return 0.0;
-    float tClosest = -dot(rayLocal, roLocal) / denom;
+    float tClosest = -dot(rayLocal, cached.roLocal) / denom;
     if (tClosest <= 0.0) return 0.0;
-    float3 closest = roLocal + rayLocal * tClosest;
+    float3 closest = cached.roLocal + rayLocal * tClosest;
     float rho2 = max(dot(closest, closest), 0.0);
-    return fusedOpacity * exp(-0.5 * GAUSSIAN_SUPPORT_SIGMA_RADIUS * GAUSSIAN_SUPPORT_SIGMA_RADIUS * rho2);
+    return gaussian.colorAlpha.w * exp(-0.5 * GAUSSIAN_SUPPORT_SIGMA_RADIUS * GAUSSIAN_SUPPORT_SIGMA_RADIUS * rho2);
 }
 
 [Differentiable]
 float4 raster_output(float3 accum, float trans, no_diff float3 background) {
-    float3 finalColor = accum + trans * background;
-    return float4(pow(max(finalColor, 0.0), OUTPUT_GAMMA), 1.0 - trans);
+    return float4(pow(max(accum + trans * background, 0.0), OUTPUT_GAMMA), 1.0 - trans);
 }
