@@ -27,6 +27,7 @@ _ALPHA_CUTOFF = 1 / 255
 _TRANS_THRESHOLD = 0.005
 _OUTPUT_GAMMA = 2.2
 _SMALL_VALUE = 1e-6
+_PROJECTION_OUTLINE_MAX_ERROR = 1e-3
 
 
 def _make_splats(device: torch.device, count: int = 8, seed: int = 7) -> torch.Tensor:
@@ -45,6 +46,20 @@ def _make_camera(device: torch.device, distortion: tuple[float, float] = (0.0, 0
     return torch.tensor([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -3.0, 72.0, 72.0, 32.0, 32.0, 0.1, 20.0, *distortion], device=device, dtype=torch.float32)
 
 
+def _make_camera_for_image(
+    device: torch.device,
+    image_size: tuple[int, int],
+    focal_pixels: tuple[float, float] = (768.0, 768.0),
+    distortion: tuple[float, float] = (0.0, 0.0),
+) -> torch.Tensor:
+    width, height = image_size
+    return torch.tensor(
+        [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -3.0, focal_pixels[0], focal_pixels[1], width * 0.5, height * 0.5, 0.1, 20.0, *distortion],
+        device=device,
+        dtype=torch.float32,
+    )
+
+
 def _camera_basis(q: torch.Tensor) -> torch.Tensor:
     w, x, y, z = q / torch.clamp(torch.linalg.norm(q), min=1e-12)
     return torch.stack(
@@ -57,8 +72,8 @@ def _camera_basis(q: torch.Tensor) -> torch.Tensor:
 
 
 def _quat_rotate(v: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
-    qv = q[1:].expand_as(v)
-    return v + 2.0 * torch.cross(torch.cross(v, qv, dim=-1) + q[0] * v, qv, dim=-1)
+    qv = q[..., 1:].expand_as(v)
+    return v + 2.0 * torch.cross(torch.cross(v, qv, dim=-1) + q[..., :1] * v, qv, dim=-1)
 
 
 def _undistort_normalized(uv_distorted: torch.Tensor, k1: float, k2: float) -> torch.Tensor:
@@ -89,6 +104,56 @@ def _screen_to_world_rays(camera: torch.Tensor, image_size: tuple[int, int]) -> 
     uv = _undistort_normalized(uv_distorted, float(camera[13].item()), float(camera[14].item()))
     camera_rays = torch.nn.functional.normalize(torch.cat((uv, torch.ones_like(uv[..., :1])), dim=-1), dim=-1)
     return camera_rays @ _camera_basis(camera[0:4]).T
+
+
+def _project_world_to_screen(camera: torch.Tensor, world_points: torch.Tensor) -> torch.Tensor:
+    cam_points = (world_points - (-_camera_basis(camera[0:4]).T @ camera[4:7])) @ _camera_basis(camera[0:4]).T
+    uv = cam_points[..., :2] / torch.clamp(cam_points[..., 2:], min=_SMALL_VALUE)
+    radius2 = (uv * uv).sum(dim=-1, keepdim=True)
+    distortion = 1.0 + camera[13] * radius2 + camera[14] * radius2.square()
+    return uv * distortion * camera[7:9] + camera[9:11]
+
+
+def _quaternion_from_axis_angle(axis: torch.Tensor, angle_rad: float) -> torch.Tensor:
+    axis = axis / torch.clamp(torch.linalg.norm(axis), min=1e-12)
+    half_angle = 0.5 * angle_rad
+    return torch.cat((torch.tensor([np.cos(half_angle)], device=axis.device, dtype=axis.dtype), axis * np.sin(half_angle)))
+
+
+def _gaussian_outline_points(camera: torch.Tensor, gaussian: torch.Tensor) -> torch.Tensor:
+    fused_opacity = gaussian[13]
+    support_sigma_radius = torch.sqrt(torch.clamp(-2.0 * torch.log(_ALPHA_CUTOFF / fused_opacity), min=0.0))
+    support_scale = torch.clamp(torch.exp(gaussian[3:6]) * support_sigma_radius, min=_SMALL_VALUE)
+    cam_pos = -_camera_basis(camera[0:4]).T @ camera[4:7]
+    view_origin_local = _quat_rotate((cam_pos - gaussian[0:3]).unsqueeze(0), gaussian[6:10].unsqueeze(0)).squeeze(0) / support_scale
+    view_distance = torch.linalg.norm(view_origin_local)
+    view_dir_local = view_origin_local / torch.clamp(view_distance, min=_SMALL_VALUE)
+    tangent_circle_center = view_dir_local / view_distance
+    tangent_circle_radius = torch.sqrt(torch.clamp(1.0 - 1.0 / (view_distance * view_distance), min=0.0))
+    if float(view_dir_local[2].item()) < -0.999999:
+        tangent_basis_u = torch.tensor([0.0, -1.0, 0.0], device=gaussian.device, dtype=gaussian.dtype)
+        tangent_basis_v = torch.tensor([-1.0, 0.0, 0.0], device=gaussian.device, dtype=gaussian.dtype)
+    else:
+        inv_south_pole_distance = 1.0 / (1.0 + view_dir_local[2])
+        xy_mix = -view_dir_local[0] * view_dir_local[1] * inv_south_pole_distance
+        tangent_basis_u = torch.stack((1.0 - view_dir_local[0] * view_dir_local[0] * inv_south_pole_distance, xy_mix, -view_dir_local[0]))
+        tangent_basis_v = torch.stack((xy_mix, 1.0 - view_dir_local[1] * view_dir_local[1] * inv_south_pole_distance, -view_dir_local[1]))
+    points = []
+    for i in range(5):
+        theta = 2.0 * np.pi * (i / 5.0)
+        support_point_local = tangent_circle_center + tangent_circle_radius * (
+            np.cos(theta) * tangent_basis_u + np.sin(theta) * tangent_basis_v
+        )
+        world_point = gaussian[0:3] + _quat_rotate((support_point_local * support_scale).unsqueeze(0), torch.cat((gaussian[6:7], -gaussian[7:10])).unsqueeze(0)).squeeze(0)
+        points.append(world_point)
+    return _project_world_to_screen(camera, torch.stack(points))
+
+
+def _projection_conic_error(projection_row: torch.Tensor, outline_points: torch.Tensor) -> torch.Tensor:
+    center = projection_row[0, :2]
+    conic = projection_row[1, :3]
+    delta = outline_points - center
+    return conic[0] * delta[:, 0].square() + 2.0 * conic[1] * delta[:, 0] * delta[:, 1] + conic[2] * delta[:, 1].square() - 1.0
 
 
 def _ground_truth_render(splats: torch.Tensor, camera: torch.Tensor, image_size: tuple[int, int]) -> torch.Tensor:
@@ -234,6 +299,38 @@ def test_alpha_gradient_is_public_alpha_space(cuda_device: torch.device) -> None
     render_gaussian_splats(splats, _make_camera(cuda_device), _PARITY_IMAGE_SIZE, context=SplattingContext()).square().sum().backward()
     assert torch.isfinite(splats.grad[13]).all()
     assert torch.count_nonzero(splats.grad[13]).item() > 0
+
+
+@pytest.mark.parametrize(
+    ("name", "log_scale", "position_xy", "rotation"),
+    (
+        ("tiny", (-4.6, -4.7, -4.8), (0.0, 0.0), (1.0, 0.0, 0.0, 0.0)),
+        ("elongated", (-1.4, -4.8, -4.8), (0.18, -0.12), None),
+    ),
+)
+def test_projection_matches_outline_for_stress_cases(
+    cuda_device: torch.device,
+    name: str,
+    log_scale: tuple[float, float, float],
+    position_xy: tuple[float, float],
+    rotation: tuple[float, float, float, float] | None,
+) -> None:
+    image_size = (1024, 1024)
+    camera = _make_camera_for_image(cuda_device, image_size)
+    splats = _make_splats(cuda_device, count=1)
+    splats[0:3, 0] = torch.tensor([position_xy[0], position_xy[1], 6.0], device=cuda_device)
+    splats[3:6, 0] = torch.tensor(log_scale, device=cuda_device)
+    splats[13, 0] = 0.8
+    if rotation is None:
+        splats[6:10, 0] = _quaternion_from_axis_angle(torch.tensor([0.0, 0.0, 1.0], device=cuda_device), np.deg2rad(32.0))
+    else:
+        splats[6:10, 0] = torch.tensor(rotation, device=cuda_device)
+
+    projected = SplattingContext().project(splats, camera, image_size)
+    assert int(projected["tile_counts"][0].item()) > 0, f"{name} splat was culled"
+    outline_points = _gaussian_outline_points(camera, projected["sorted_splats"][:, 0])
+    errors = _projection_conic_error(projected["projection"][0], outline_points).abs()
+    assert float(errors.max().item()) <= _PROJECTION_OUTLINE_MAX_ERROR, f"{name} projection max error {float(errors.max().item()):.4e}"
 
 
 def test_budget() -> None:

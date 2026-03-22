@@ -68,18 +68,13 @@ void csProjectCount(uint3 dispatchThreadID : SV_DispatchThreadID) {
         float3 cameraPosition = g_Camera.world_point_to_camera(gaussian.position);
         float depth = cameraPosition.z;
         float cameraDistance = length(gaussian.position - g_Camera.camPos);
-        float2 screenCenter = cameraPosition.xy * (g_Camera.focalPixels / max(cameraPosition.z, SMALL_VALUE)) + g_Camera.principalPoint;
-        g_Camera.project_camera_to_screen(cameraPosition, screenCenter);
-        float screenRadius = max(
-            max(g_Camera.focalPixels.x, g_Camera.focalPixels.y) * max(cameraGaussian.logScale.x, max(cameraGaussian.logScale.y, cameraGaussian.logScale.z)) / max(depth, SMALL_VALUE),
-            MIN_SCREEN_RADIUS_PX);
         // Cheap camera-space visibility tests first, then let the outline helper decide whether a fit is worth doing.
         bool hasFit = depth > DEPTH_VISIBILITY_FLOOR
             && cameraDistance > g_Camera.nearDepth
             && cameraDistance < g_Camera.farDepth;
         Ellipse ellipse;
         if (hasFit) {
-            hasFit = compute_gaussian_outline_ellipse(gaussian, g_Camera, g_RadiusScale, supportSigmaRadius, screenCenter, screenRadius, ellipse);
+            hasFit = compute_gaussian_outline_ellipse(gaussian, g_Camera, g_RadiusScale, supportSigmaRadius, ellipse);
         }
         if (hasFit) {
             ellipse.radiusPx = max(ellipse.radiusPx * ELLIPSE_SAFETY_SCALE + ELLIPSE_RADIUS_PAD_PX, MIN_SCREEN_RADIUS_PX);

@@ -314,8 +314,6 @@ bool compute_gaussian_outline_ellipse(
     Camera camera,
     float radiusScale,
     float supportSigmaRadius,
-    float2 screenCenter,
-    float screenRadius,
     out Ellipse ellipse)
 {
     ellipse.centerPx = 0.0;
@@ -336,15 +334,13 @@ bool compute_gaussian_outline_ellipse(
     if (viewDirLocal.z < SOUTH_POLE_DOT_FLOOR) {
         tangentBasisU = float3(0.0, -1.0, 0.0);
         tangentBasisV = float3(-1.0, 0.0, 0.0);
-    }
-    else {
+    } else {
         float invSouthPoleDistance = 1.0 / (1.0 + viewDirLocal.z);
         float xyMix = -viewDirLocal.x * viewDirLocal.y * invSouthPoleDistance;
         tangentBasisU = float3(1.0 - viewDirLocal.x * viewDirLocal.x * invSouthPoleDistance, xyMix, -viewDirLocal.x);
         tangentBasisV = float3(xyMix, 1.0 - viewDirLocal.y * viewDirLocal.y * invSouthPoleDistance, -viewDirLocal.y);
     }
     if (!all(isfinite(tangentBasisU)) || !all(isfinite(tangentBasisV))) return false;
-    if (screenRadius <= ELLIPSE_EPS) return false;
     float3 worldCenter = gaussian.position;
     float2 outlinePoints[ELLIPSE_POINT_COUNT];
     float2 outlineMin = float2(1e30, 1e30);
@@ -384,17 +380,17 @@ bool compute_gaussian_outline_ellipse(
         return all(isfinite(ellipse.centerPx)) && all(isfinite(ellipse.conic)) && isfinite(ellipse.radiusPx) && ellipse.radiusPx > 0.0;
     }
 
-    // Fit the screen-space ellipse directly from the projected outline points.
+    // Fit the screen-space ellipse directly from bbox-relative coordinates.
+    float2 bboxCenter = 0.5 * (outlineMin + outlineMax);
+    float2 bboxHalfExtent = max(0.5 * (outlineMax - outlineMin), float2(ELLIPSE_EPS, ELLIPSE_EPS));
     LinearSystem<ELLIPSE_POINT_COUNT> system;
     [unroll] for (uint row = 0u; row < ELLIPSE_POINT_COUNT; row++) {
-        float2 normalizedPoint = (outlinePoints[row] - screenCenter) / screenRadius;
-        float x = normalizedPoint.x;
-        float y = normalizedPoint.y;
-        system[row, 0] = x * x;
-        system[row, 1] = 2.0 * x * y;
-        system[row, 2] = y * y;
-        system[row, 3] = x;
-        system[row, 4] = y;
+        float2 norm = (outlinePoints[row] - bboxCenter) / bboxHalfExtent;
+        system[row, 0] = norm.x * norm.x;
+        system[row, 1] = 2.0 * norm.x * norm.y;
+        system[row, 2] = norm.y * norm.y;
+        system[row, 3] = norm.x;
+        system[row, 4] = norm.y;
         system[row, ELLIPSE_POINT_COUNT] = 1.0;
     }
 
@@ -421,9 +417,12 @@ bool compute_gaussian_outline_ellipse(
     float disc = sqrt(max(0.25 * trace * trace - detA, 0.0));
     float axis0 = rsqrt(max(0.5 * trace + disc, ELLIPSE_EPS));
     float axis1 = rsqrt(max(0.5 * trace - disc, ELLIPSE_EPS));
-    ellipse.centerPx = screenCenter + ellipseCenter * screenRadius;
-    ellipse.radiusPx = max(axis0, axis1) * screenRadius;
-    ellipse.conic = conicNorm / max(screenRadius * screenRadius, ELLIPSE_EPS);
+    ellipse.centerPx = bboxCenter + ellipseCenter * bboxHalfExtent;
+    ellipse.radiusPx = max(axis0 * bboxHalfExtent.x, axis1 * bboxHalfExtent.y);
+    ellipse.conic = float3(
+        conicNorm.x / max(bboxHalfExtent.x * bboxHalfExtent.x, ELLIPSE_EPS),
+        conicNorm.y / max(bboxHalfExtent.x * bboxHalfExtent.y, ELLIPSE_EPS),
+        conicNorm.z / max(bboxHalfExtent.y * bboxHalfExtent.y, ELLIPSE_EPS));
     ellipse.bboxExtent = float2(ellipse.radiusPx, ellipse.radiusPx);
     return all(isfinite(ellipse.centerPx)) && all(isfinite(ellipse.conic)) && isfinite(ellipse.radiusPx) && ellipse.radiusPx > 0.0;
 }
