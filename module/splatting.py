@@ -1,3 +1,22 @@
+# Tile-based Gaussian splatting renderer using SlangPy for GPU compute dispatch.
+#
+# Splat parameter tensor is component-major [14, N].  The flat GPU buffer
+# is param-major: params[paramIdx * N + splatIdx].  Row semantics are
+# defined in shaders/utility/splatting/params.slang:
+#   0-2   position (x, y, z)
+#   3-5   log-scale (x, y, z)
+#   6-9   rotation quaternion (x, y, z, w)
+#   10-12 colour (r, g, b)
+#   13    opacity — stored as probability [0,1] on the Python side,
+#         converted to logit space before upload to GPU
+#
+# Camera parameter vector [15]:
+#   [0..3]   quaternion (w, x, y, z)
+#   [4..6]   translation t  (world-space camera pos = -R^T @ t)
+#   [7..8]   focal length in pixels (fx, fy)
+#   [9..10]  principal point (cx, cy)
+#   [11..12] near / far depth
+#   [13..14] radial distortion (k1, k2)
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -10,7 +29,6 @@ import torch
 _ROOT = Path(__file__).resolve().parent
 _SHADERS = _ROOT / "shaders"
 _PARAM_COUNT = 14
-_PACKED_PARAM_COUNT = 4
 _CAMERA_PARAM_COUNT = 15
 _ALPHA_EPS = 1e-6
 _ALPHA_CUTOFF = 1 / 255
@@ -22,22 +40,23 @@ _MVEE_PAD = 1.0
 _MVEE_EPS = 1e-6
 
 
-def _check_cuda_tensor(name: str, value: torch.Tensor, shape1: int | None = None) -> None:
+def _check_cuda_tensor(name: str, value: torch.Tensor, shape0: int | None = None) -> None:
     if not isinstance(value, torch.Tensor):
         raise TypeError(f"{name} must be a torch.Tensor.")
     if value.dtype != torch.float32:
         raise TypeError(f"{name} must use torch.float32.")
     if not value.is_cuda:
         raise ValueError(f"{name} must be CUDA.")
-    if value.ndim != 2 if shape1 is not None else value.ndim != 1:
+    if value.ndim != 2 if shape0 is not None else value.ndim != 1:
         raise ValueError(f"{name} has invalid rank.")
-    if shape1 is not None and value.shape[1] != shape1:
-        raise ValueError(f"{name} must have shape [N, {shape1}].")
-    if shape1 is None and value.shape[0] != _CAMERA_PARAM_COUNT:
+    if shape0 is not None and value.shape[0] != shape0:
+        raise ValueError(f"{name} must have shape [{shape0}, N].")
+    if shape0 is None and value.shape[0] != _CAMERA_PARAM_COUNT:
         raise ValueError(f"{name} must have shape [{_CAMERA_PARAM_COUNT}].")
 
 
 def _camera_dict(camera: torch.Tensor, image_size: tuple[int, int]) -> dict[str, Any]:
+    """Unpack the [15] camera tensor into the dict of SlangPy types expected by the shaders."""
     c = camera.detach()
     q = c[0:4]
     t = c[4:7]
@@ -67,14 +86,16 @@ def _camera_dict(camera: torch.Tensor, image_size: tuple[int, int]) -> dict[str,
 
 
 def _pack_params(splats: torch.Tensor) -> torch.Tensor:
-    alpha = torch.clamp(splats[:, 13], _ALPHA_EPS, 1.0 - _ALPHA_EPS)
-    zeros = torch.zeros((splats.shape[0], 2), device=splats.device, dtype=splats.dtype)
-    alpha_raw = torch.logit(alpha).unsqueeze(1)
-    return torch.stack((splats[:, 0:4], splats[:, 4:8], splats[:, 8:12], torch.cat((splats[:, 12:13], alpha_raw, zeros), dim=1)), dim=1)
+    """Clone [14, N] splats, convert opacity (row 13) to logit space, and flatten to 1-D."""
+    packed = splats.contiguous().clone()
+    packed[13] = torch.logit(torch.clamp(packed[13], _ALPHA_EPS, 1.0 - _ALPHA_EPS))
+    return packed.reshape(-1)
 
 
 @dataclass
 class SplattingContext:
+    """Persistent GPU context — holds the SlangPy device, compiled kernels, and reusable buffers."""
+
     device: spy.Device | None = None
 
     def __post_init__(self) -> None:
@@ -87,38 +108,48 @@ class SplattingContext:
         self._size = (0, 0)
 
     def _view(self, tensor: spy.Tensor, dtype: Any, shape: tuple[int, ...]) -> spy.Tensor:
+        """Reinterpret *tensor*'s storage with a different dtype/shape (no copy)."""
         if isinstance(dtype, type):
             dtype = spy.Tensor.empty(self.device, shape=(1,), dtype=dtype).dtype
         return spy.Tensor(tensor.storage, getattr(dtype, "struct", dtype), shape)
 
-    def _alloc(self, shape: tuple[int, int], splats: int, entries: int) -> None:
+    def _alloc_frame(self, shape: tuple[int, int]) -> None:
+        """Allocate per-pixel output buffers.  Only reallocates when image size changes."""
+        if self._size == shape:
+            return
         width, height = shape
-        splat_count = max(splats, 1)
-        entry_count = max(entries, 1)
-        if self._size != shape:
-            self.frame = {
-                "g_Output": spy.Tensor.empty(self.device, shape=(height, width), dtype=spy.float4),
-                "g_OutputGrad": spy.Tensor.empty(self.device, shape=(height, width), dtype=spy.float4),
-                "g_ForwardState": spy.Tensor.empty(self.device, shape=(height, width), dtype=spy.float4),
-                "g_ForwardEnd": spy.Tensor.empty(self.device, shape=(height, width), dtype="uint"),
-            }
-            tw, th = (width + 7) // 8, (height + 7) // 8
-            self.tiles = {"g_TileRanges": spy.Tensor.empty(self.device, shape=(tw * th,), dtype=spy.uint2)}
-            self._size = shape
+        self.frame = {
+            "g_Output": spy.Tensor.empty(self.device, shape=(height, width), dtype=spy.float4),
+            "g_OutputGrad": spy.Tensor.empty(self.device, shape=(height, width), dtype=spy.float4),
+            "g_ForwardState": spy.Tensor.empty(self.device, shape=(height, width), dtype=spy.float4),
+            "g_ForwardEnd": spy.Tensor.empty(self.device, shape=(height, width), dtype="uint"),
+        }
+        tw, th = (width + 7) // 8, (height + 7) // 8
+        self.tiles = {"g_TileRanges": spy.Tensor.empty(self.device, shape=(tw * th,), dtype=spy.uint2)}
+        self._size = shape
+
+    def _alloc_scene(self, splat_count: int) -> None:
+        """Allocate per-splat buffers (params, projection/raster state, gradients)."""
+        splat_count = max(splat_count, 1)
         self.scene = {
-            "g_Params": spy.Tensor.empty(self.device, shape=(splat_count, _PACKED_PARAM_COUNT), dtype=spy.float4),
+            "g_Params": spy.Tensor.empty(self.device, shape=(_PARAM_COUNT * splat_count,), dtype=float),
             "g_TileCounts": spy.Tensor.empty(self.device, shape=(splat_count,), dtype="uint"),
             "g_TileOffsets": spy.Tensor.empty(self.device, shape=(splat_count,), dtype="uint"),
-            "g_ParamGrads": spy.Tensor.empty(self.device, shape=(splat_count, _PARAM_COUNT), dtype=float),
+            "g_ParamGrads": spy.Tensor.empty(self.device, shape=(splat_count * _PARAM_COUNT,), dtype=float),
         }
+        self.scene_views = {
+            "g_ProjectionState": spy.InstanceTensor(self.mod.ProjectionState, (splat_count,)),
+            "g_RasterState": spy.InstanceTensor(self.mod.RasterState, (splat_count,)),
+        }
+
+    def _alloc_entries(self, entry_count: int) -> None:
+        """Allocate tile-entry buffers.  Does not touch scene or projection state."""
+        entry_count = max(entry_count, 1)
         self.raw = {
             "g_TileEntryData": spy.Tensor.empty(self.device, shape=(entry_count, 2), dtype="uint"),
             "g_SortedEntryData": spy.Tensor.empty(self.device, shape=(entry_count, 2), dtype="uint"),
         }
-        self.views = {
-            "g_Splats": spy.InstanceTensor(self.mod.PackedSplat, (splat_count,), self._view(self.scene["g_Params"], self.mod.PackedSplat, (splat_count,))),
-            "g_ProjectionState": spy.InstanceTensor(self.mod.ProjectionState, (splat_count,)),
-            "g_RasterState": spy.InstanceTensor(self.mod.RasterState, (splat_count,)),
+        self.entry_views = {
             "g_TileEntries": spy.InstanceTensor(self.mod.TileEntry, (entry_count,), self._view(self.raw["g_TileEntryData"], self.mod.TileEntry, (entry_count,))),
             "g_SortedEntries": spy.InstanceTensor(self.mod.TileEntry, (entry_count,), self._view(self.raw["g_SortedEntryData"], self.mod.TileEntry, (entry_count,))),
         }
@@ -131,11 +162,11 @@ class SplattingContext:
         bg = self.background
         return {
             **self.scene,
-            "g_Splats": self.views["g_Splats"].tensor,
-            "g_ProjectionState": self.views["g_ProjectionState"].tensor,
-            "g_RasterState": self.views["g_RasterState"].tensor,
-            "g_TileEntries": self.views["g_TileEntries"].tensor,
-            "g_SortedEntries": self.views["g_SortedEntries"].tensor,
+            "g_Splats": self.scene["g_Params"],
+            "g_ProjectionState": self.scene_views["g_ProjectionState"].tensor,
+            "g_RasterState": self.scene_views["g_RasterState"].tensor,
+            "g_TileEntries": self.entry_views["g_TileEntries"].tensor,
+            "g_SortedEntries": self.entry_views["g_SortedEntries"].tensor,
             **self.tiles,
             **self.frame,
             "g_Camera": camera,
@@ -153,44 +184,71 @@ class SplattingContext:
         }
 
     def render(self, splats: torch.Tensor, camera: torch.Tensor, image_size: tuple[int, int], background: tuple[float, float, float]) -> torch.Tensor:
+        """Forward rendering pipeline: project → count → fill → sort → rasterise."""
         self.background = background
-        # Sort once by camera distance so the later stable tile sort preserves front-to-back splat order inside each tile.
-        order = torch.argsort(torch.linalg.norm(splats[:, 0:3] - self._cam_pos(camera), dim=1), stable=True)
-        sorted_splats = splats.index_select(0, order).contiguous()
+
+        # Global depth sort by distance to camera.  Stable so that the later
+        # stable-sort-by-tile-id preserves front-to-back order within each tile.
+        order = torch.argsort(torch.linalg.norm(splats[0:3, :].mT - self._cam_pos(camera), dim=1), stable=True)
+        sorted_splats = splats.index_select(1, order).contiguous()
         packed_splats = _pack_params(sorted_splats)
-        self._alloc(image_size, int(sorted_splats.shape[0]), 1)
+        splat_count = int(sorted_splats.shape[1])
+
+        # Allocate frame (image-size dependent), scene (splat-count dependent),
+        # and a placeholder entry buffer.  These are split so that _alloc_entries
+        # can be called again later without destroying the projection state.
+        self._alloc_frame(image_size)
+        self._alloc_scene(splat_count)
+        self._alloc_entries(1)
+
+        # --- Pass 1: project & count -----------------------------------------------
+        # csProjectCount (1 thread/splat) projects each Gaussian to screen space,
+        # writes the tile overlap count to g_TileCounts, and caches projection
+        # state (screen conic, opacity, colour, ellipsoid data) in
+        # g_ProjectionState and g_RasterState for later reuse.
         self.scene["g_Params"].copy_from_torch(packed_splats)
         self.device.sync_to_cuda()
         camera_vars = _camera_dict(camera, image_size)
         enc = self.device.create_command_encoder()
-        self.k_project_count.dispatch(thread_count=spy.uint3(int(sorted_splats.shape[0]), 1, 1), vars=self._vars(camera_vars, int(sorted_splats.shape[0]), 0), command_encoder=enc)
+        self.k_project_count.dispatch(thread_count=spy.uint3(splat_count, 1, 1), vars=self._vars(camera_vars, splat_count, 0), command_encoder=enc)
         self.device.submit_command_buffer(enc.finish())
         self.device.sync_to_device()
-        counts = self.scene["g_TileCounts"].to_torch()[: sorted_splats.shape[0]].to(dtype=torch.int64)
+        counts = self.scene["g_TileCounts"].to_torch()[:splat_count].to(dtype=torch.int64)
         total = int(counts.sum().item())
-        self._alloc(image_size, int(sorted_splats.shape[0]), max(total, 1))
-        self.scene["g_Params"].copy_from_torch(packed_splats)
-        self.device.sync_to_cuda()
-        enc = self.device.create_command_encoder()
-        self.k_project_count.dispatch(thread_count=spy.uint3(int(sorted_splats.shape[0]), 1, 1), vars=self._vars(camera_vars, int(sorted_splats.shape[0]), 0), command_encoder=enc)
-        self.device.submit_command_buffer(enc.finish())
-        self.device.sync_to_device()
+
+        # Reallocate only entry buffers — scene and projection state survive.
+        self._alloc_entries(max(total, 1))
+
+        # --- Prefix sum → write offsets -------------------------------------------
+        # Exclusive prefix sum of tile counts gives each splat a unique write
+        # position in the tile entry array.
         offsets = torch.zeros_like(counts, dtype=torch.int64)
         if counts.numel() > 1:
             offsets[1:] = torch.cumsum(counts[:-1], 0)
         self.scene["g_TileOffsets"].copy_from_torch(offsets.to(dtype=torch.uint32))
         self.device.sync_to_cuda()
-        # Expand each projected splat into its covered tiles, then stable-sort only by tile id.
+
+        # --- Pass 2: tile fill ----------------------------------------------------
+        # csProjectFill (1 thread/splat) re-reads the cached projection state and
+        # g_TileOffsets, then writes (tileId, splatIdx) pairs into g_TileEntries.
         enc = self.device.create_command_encoder()
-        self.k_project_fill.dispatch(thread_count=spy.uint3(int(sorted_splats.shape[0]), 1, 1), vars=self._vars(camera_vars, int(sorted_splats.shape[0]), total), command_encoder=enc)
+        self.k_project_fill.dispatch(thread_count=spy.uint3(splat_count, 1, 1), vars=self._vars(camera_vars, splat_count, total), command_encoder=enc)
         self.device.submit_command_buffer(enc.finish())
         self.device.sync_to_device()
+
+        # --- Tile sort (Python/torch) ---------------------------------------------
+        # Stable sort the (tileId, splatIdx) entries by tileId.  Because the
+        # splats were already globally depth-sorted, stability guarantees
+        # front-to-back order within each tile.
         tile_data = self.raw["g_TileEntryData"].to_torch()[:total, :].to(dtype=torch.int64)
         tile_ids = tile_data[:, 0]
         tile_splats = tile_data[:, 1]
         perm = torch.argsort(tile_ids, stable=True)
         self.raw["g_SortedEntryData"].copy_from_torch(torch.stack((tile_ids.index_select(0, perm), tile_splats.index_select(0, perm)), dim=1).to(dtype=torch.uint32))
-        # Tile spans are built with vectorized CUDA torch ops so this stage stays off the CPU.
+
+        # --- Tile range computation (Python/torch) --------------------------------
+        # For each tile, find the [start, end) range into the sorted entry list.
+        # 0xFFFFFFFF sentinel marks tiles with no entries.
         tw = (image_size[0] + 7) // 8
         th = (image_size[1] + 7) // 8
         ranges = torch.zeros((tw * th, 2), device=tile_ids.device, dtype=torch.int64)
@@ -203,29 +261,57 @@ class SplattingContext:
             ranges[tiles, 0] = starts
             ranges[tiles, 1] = ends
         self.tiles["g_TileRanges"].copy_from_torch(ranges.to(dtype=torch.uint32))
-        # Raster uses the sorted tile spans plus the cached projected splat state from the projection pass.
+        self.device.sync_to_cuda()
+
+        # --- Pass 3: forward rasterisation ----------------------------------------
+        # csRasterForward (1 thread/pixel) looks up the tile range, iterates the
+        # sorted entries front-to-back, and alpha-composites using the cached
+        # projection/ellipsoid state from g_ProjectionState and g_RasterState.
+        # Writes:
+        #   g_Output       — final composited RGBA.
+        #   g_ForwardState — float4(accumulated_rgb, transmittance) per pixel.
+        #   g_ForwardEnd   — index of the last entry processed per pixel
+        #                    (backward iterates in reverse up to this index).
         enc = self.device.create_command_encoder()
-        self.k_raster_fwd.dispatch(thread_count=spy.uint3(image_size[0], image_size[1], 1), vars=self._vars(camera_vars, int(sorted_splats.shape[0]), total), command_encoder=enc)
+        self.k_raster_fwd.dispatch(thread_count=spy.uint3(image_size[0], image_size[1], 1), vars=self._vars(camera_vars, splat_count, total), command_encoder=enc)
         self.device.submit_command_buffer(enc.finish())
         self.device.sync_to_device()
+
+        # Cache state needed by backward().
         self._last_order = order
         self._last_total = total
-        self._last_alpha = torch.clamp(sorted_splats[:, 13], _ALPHA_EPS, 1 - _ALPHA_EPS)
+        # Clamped alpha for the logit gradient correction in backward().
+        self._last_alpha = torch.clamp(sorted_splats[13], _ALPHA_EPS, 1 - _ALPHA_EPS)
         return self.frame["g_Output"].to_torch().clone()
 
     def backward(self, grad_output: torch.Tensor) -> torch.Tensor:
-        # Backward replays the cached forward state and writes gradients in sorted-splat order, then unsorts once.
-        self.scene["g_ParamGrads"].copy_from_torch(torch.zeros((int(self._last_order.shape[0]), _PARAM_COUNT), device=grad_output.device, dtype=grad_output.dtype))
+        """Backward pass: dispatch csRasterBackward then fix up gradients on the CPU."""
+        # Upload dL/dOutput.
         self.frame["g_OutputGrad"].copy_from_torch(grad_output.contiguous())
         self.device.sync_to_cuda()
+
+        # csRasterBackward (1 thread/pixel) reads g_ForwardState (accumulated
+        # colour + transmittance) and g_ForwardEnd (last-processed entry index)
+        # saved by the forward pass, then iterates the sorted entry range in
+        # reverse, scattering dL/d(param) contributions into g_ParamGrads.
+        # Note: g_RasterState is *not* used here — only g_ProjectionState is.
         enc = self.device.create_command_encoder()
+        self.scene["g_ParamGrads"].clear(command_encoder=enc)
         self.k_raster_bwd.dispatch(thread_count=spy.uint3(self._size[0], self._size[1], 1), vars=self._vars(_camera_dict(self._last_camera, self._size), int(self._last_order.shape[0]), self._last_total), command_encoder=enc)
         self.device.submit_command_buffer(enc.finish())
         self.device.sync_to_device()
-        grads = self.scene["g_ParamGrads"].to_torch()[: self._last_order.shape[0], :].clone()
-        grads[:, 13] = grads[:, 13] / (self._last_alpha * (1 - self._last_alpha))
+
+        # Reshape flat [N*14] gradient buffer to [14, N] (param-major → component-major).
+        grads = self.scene["g_ParamGrads"].to_torch()[: int(self._last_order.shape[0]) * _PARAM_COUNT].clone().reshape(int(self._last_order.shape[0]), _PARAM_COUNT).mT.contiguous()
+
+        # The shader differentiated through logit(alpha), producing dL/d(logit_alpha).
+        # Chain rule: dL/d(alpha) = dL/d(logit_alpha) * d(logit_alpha)/d(alpha)
+        #           = dL/d(logit_alpha) * 1/(alpha*(1 - alpha))
+        grads[13] = grads[13] / (self._last_alpha * (1 - self._last_alpha))
+
+        # Scatter depth-sorted gradients back to the caller's original splat order.
         out = torch.empty_like(grads)
-        out[self._last_order] = grads
+        out[:, self._last_order] = grads
         return out
 
     @staticmethod

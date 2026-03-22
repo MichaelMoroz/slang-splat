@@ -5,7 +5,7 @@
 `render_gaussian_splats(splats, camera_params, image_size, background=(0, 0, 0), context=None)`
 
 Tensor contracts:
-- `splats`: CUDA `torch.float32`, shape `[N, 14]`
+- `splats`: CUDA `torch.float32`, shape `[14, N]`
 - `camera_params`: CUDA `torch.float32`, shape `[15]`
 - output: CUDA `torch.float32`, shape `[H, W, 4]`
 
