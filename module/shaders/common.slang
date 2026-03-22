@@ -48,34 +48,20 @@ struct Gaussian3D : IDifferentiable {
 
     static Gaussian3D load(Tensor<float, 1> splats, uint splatCount, uint splatId) {
         Gaussian3D gaussian;
-        int[1] at = { int(PARAM_POSITION_X * splatCount + splatId) };
-        gaussian.position.x = splats[at];
-        at[0] = int(PARAM_POSITION_Y * splatCount + splatId);
-        gaussian.position.y = splats[at];
-        at[0] = int(PARAM_POSITION_Z * splatCount + splatId);
-        gaussian.position.z = splats[at];
-        at[0] = int(PARAM_SCALE_X * splatCount + splatId);
-        gaussian.logScale.x = splats[at];
-        at[0] = int(PARAM_SCALE_Y * splatCount + splatId);
-        gaussian.logScale.y = splats[at];
-        at[0] = int(PARAM_SCALE_Z * splatCount + splatId);
-        gaussian.logScale.z = splats[at];
-        at[0] = int(PARAM_ROTATION_W * splatCount + splatId);
-        gaussian.rotation.x = splats[at];
-        at[0] = int(PARAM_ROTATION_X * splatCount + splatId);
-        gaussian.rotation.y = splats[at];
-        at[0] = int(PARAM_ROTATION_Y * splatCount + splatId);
-        gaussian.rotation.z = splats[at];
-        at[0] = int(PARAM_ROTATION_Z * splatCount + splatId);
-        gaussian.rotation.w = splats[at];
-        at[0] = int(PARAM_COLOR_R * splatCount + splatId);
-        gaussian.colorAlpha.x = splats[at];
-        at[0] = int(PARAM_COLOR_G * splatCount + splatId);
-        gaussian.colorAlpha.y = splats[at];
-        at[0] = int(PARAM_COLOR_B * splatCount + splatId);
-        gaussian.colorAlpha.z = splats[at];
-        at[0] = int(PARAM_RAW_OPACITY * splatCount + splatId);
-        gaussian.colorAlpha.w = splats[at];
+        gaussian.position.x = splats[int(PARAM_POSITION_X * splatCount + splatId)];
+        gaussian.position.y = splats[int(PARAM_POSITION_Y * splatCount + splatId)];
+        gaussian.position.z = splats[int(PARAM_POSITION_Z * splatCount + splatId)];
+        gaussian.logScale.x = splats[int(PARAM_SCALE_X * splatCount + splatId)];
+        gaussian.logScale.y = splats[int(PARAM_SCALE_Y * splatCount + splatId)];
+        gaussian.logScale.z = splats[int(PARAM_SCALE_Z * splatCount + splatId)];
+        gaussian.rotation.x = splats[int(PARAM_ROTATION_W * splatCount + splatId)];
+        gaussian.rotation.y = splats[int(PARAM_ROTATION_X * splatCount + splatId)];
+        gaussian.rotation.z = splats[int(PARAM_ROTATION_Y * splatCount + splatId)];
+        gaussian.rotation.w = splats[int(PARAM_ROTATION_Z * splatCount + splatId)];
+        gaussian.colorAlpha.x = splats[int(PARAM_COLOR_R * splatCount + splatId)];
+        gaussian.colorAlpha.y = splats[int(PARAM_COLOR_G * splatCount + splatId)];
+        gaussian.colorAlpha.z = splats[int(PARAM_COLOR_B * splatCount + splatId)];
+        gaussian.colorAlpha.w = splats[int(PARAM_RAW_OPACITY * splatCount + splatId)];
         return gaussian;
     }
 
@@ -265,18 +251,15 @@ struct MveeFitResult {
     float3 conic;
 };
 
-float minor(float3x3 m, uint i, uint j) {
-    uint2 idx0 = (uint2(i, j) + uint2(1, 1)) % 3;
-    uint2 idx1 = (uint2(i, j) + uint2(2, 2)) % 3;
-    return m[idx0.x][idx0.y] * m[idx1.x][idx1.y] - m[idx0.x][idx1.y] * m[idx1.x][idx0.y];
-}
-
 bool inverse3x3(float3x3 m, float eps, out float3x3 mInv) {
     float3x3 cofactor = 0.0;
     [unroll] for (uint i = 0u; i < 3u; i++){
         [unroll] for (uint j = 0u; j < 3u; j++){
             float sign = ((i + j) & 1u) == 0u ? 1.0 : -1.0;
-            cofactor[i][j] = sign * minor(m, i, j);
+            uint2 idx0 = (uint2(i, j) + uint2(1, 1)) % 3;
+            uint2 idx1 = (uint2(i, j) + uint2(2, 2)) % 3;
+            float minorVal = m[idx0.x][idx0.y] * m[idx1.x][idx1.y] - m[idx0.x][idx1.y] * m[idx1.x][idx0.y];
+            cofactor[i][j] = sign * minorVal;
         }
     }
     float det = dot(m[0], cofactor[0]);
@@ -288,7 +271,6 @@ bool inverse3x3(float3x3 m, float eps, out float3x3 mInv) {
     return true;
 }
 
-// generic safe normalization for vector<N> where N can be 2,3,4
 [Differentiable] vector<float, N> normalize_safe<let N : int>(vector<float, N> v) { float lenSq = dot(v, v); return lenSq > SMALL_VALUE ? v * rsqrt(lenSq) : 0.0; }
 [Differentiable] float3 rotate_by_quat(float3 v, float4 q) { return v + 2.0 * cross(cross(v, q.yzw) + q.x * v, q.yzw); }
 [Differentiable] float sigmoid(float x) { return 1.0 / (1.0 + exp(-x)); }

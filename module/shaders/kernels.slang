@@ -130,6 +130,7 @@ uint count_tiles(Ellipse ellipse) {
     return count;
 }
 
+//TODO: this can be done via a module call, instead of a dispatch
 [shader("compute")]
 [numthreads(PROJECT_GROUP_SIZE, 1, 1)]
 void csProjectCount(uint3 dispatchThreadID : SV_DispatchThreadID) {
@@ -142,6 +143,7 @@ void csProjectCount(uint3 dispatchThreadID : SV_DispatchThreadID) {
     g_TileCounts.store(at, count_tiles(ellipse));
 }
 
+// TODO: this can be done via a module call, instead of a dispatch
 [shader("compute")]
 [numthreads(PROJECT_GROUP_SIZE, 1, 1)]
 void csProjectFill(uint3 dispatchThreadID : SV_DispatchThreadID) {
@@ -226,7 +228,7 @@ void csRasterForward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : S
             GroupMemoryBarrierWithGroupSync();
         }
     }
-    int[2] p = { int(py), int(px) };
+    int2 p = int2(int(py), int(px));
     g_Output.store(p, (range.x == INVALID_START || range.y <= range.x) ? float4(pow(max(g_Background, 0.0), OUTPUT_GAMMA), 1.0) : raster_output(accum, trans, g_Background));
     g_ForwardState.store(p, float4(accum, trans));
     g_ForwardEnd.store(p, processedEnd);
@@ -234,8 +236,7 @@ void csRasterForward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : S
 
 void add_param_grad(uint splatId, uint paramId, float value) {
     if (value == 0.0) return;
-    int[1] idx = { int(splatId * PARAM_COUNT + paramId) };
-    g_ParamGrads.add(idx, value);
+    g_ParamGrads.add(int(splatId * PARAM_COUNT + paramId), value);
 }
 
 [shader("compute")]
@@ -249,7 +250,7 @@ void csRasterBackward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : 
     uint tileId = tileY * g_TileGrid.x + tileX;
     uint2 range = g_TileRanges[int(tileId)];
     if (range.x == INVALID_START || range.y <= range.x) return;
-    int[2] p = { int(py), int(px) };
+    int2 p = int2(int(py), int(px));
     float4 state4 = g_ForwardState[p];
     var dpAccum = diffPair(state4.xyz);
     var dpTrans = diffPair(state4.w);
@@ -269,18 +270,22 @@ void csRasterBackward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : 
             uint localIdx = batchCount - 1u - rev;
             uint globalIdx = batchStart + localIdx;
             if (globalIdx >= processedEnd) continue;
+            uint splatId = gsBatchSplatId[localIdx];
+            float3 roLocal = gsRoLocal[localIdx];
+            float3 scale = gsScale[localIdx];
             float4 colorAlpha = gsColorAlpha[localIdx];
-            float alpha = raster_eval_alpha(gsRoLocal[localIdx], gsScale[localIdx], gsRotation[localIdx], colorAlpha.w, rayDir);
+            float4 rotation = gsRotation[localIdx];
+            float alpha = raster_eval_alpha(roLocal, scale, rotation, colorAlpha.w, rayDir);
             if (alpha < g_AlphaCutoff) continue;
             float prevTrans = trans / max(1.0 - alpha, SMALL_VALUE);
             float3 prevAccum = accum - prevTrans * alpha * colorAlpha.xyz;
             float3 dColor = dAccum * (prevTrans * alpha);
             float dAlpha = dot(dAccum, prevTrans * colorAlpha.xyz) - dTrans * prevTrans;
-            add_param_grad(gsBatchSplatId[localIdx], PARAM_COLOR_R, dColor.x);
-            add_param_grad(gsBatchSplatId[localIdx], PARAM_COLOR_G, dColor.y);
-            add_param_grad(gsBatchSplatId[localIdx], PARAM_COLOR_B, dColor.z);
-            Gaussian3D g = Gaussian3D.load(g_Splats, g_SplatCount, gsBatchSplatId[localIdx]);
-            CachedEllipsoid cached = { gsRoLocal[localIdx], gsScale[localIdx], gsRotation[localIdx] };
+            add_param_grad(splatId, PARAM_COLOR_R, dColor.x);
+            add_param_grad(splatId, PARAM_COLOR_G, dColor.y);
+            add_param_grad(splatId, PARAM_COLOR_B, dColor.z);
+            Gaussian3D g = Gaussian3D.load(g_Splats, g_SplatCount, splatId);
+            CachedEllipsoid cached = { roLocal, scale, rotation };
             var dpRo = diffPair(cached.roLocal);
             var dpSc = diffPair(cached.scale);
             var dpRot = diffPair(cached.rotation);
@@ -297,17 +302,17 @@ void csRasterBackward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : 
             Gaussian3D.Differential dGaussian = dpGaussian.getDifferential();
             float3 dPos = dGaussian.position;
             float3 dScale = dGaussian.logScale;
-            add_param_grad(gsBatchSplatId[localIdx], PARAM_POSITION_X, dPos.x);
-            add_param_grad(gsBatchSplatId[localIdx], PARAM_POSITION_Y, dPos.y);
-            add_param_grad(gsBatchSplatId[localIdx], PARAM_POSITION_Z, dPos.z);
-            add_param_grad(gsBatchSplatId[localIdx], PARAM_SCALE_X, dScale.x);
-            add_param_grad(gsBatchSplatId[localIdx], PARAM_SCALE_Y, dScale.y);
-            add_param_grad(gsBatchSplatId[localIdx], PARAM_SCALE_Z, dScale.z);
-            add_param_grad(gsBatchSplatId[localIdx], PARAM_ROTATION_W, dGaussian.rotation.x);
-            add_param_grad(gsBatchSplatId[localIdx], PARAM_ROTATION_X, dGaussian.rotation.y);
-            add_param_grad(gsBatchSplatId[localIdx], PARAM_ROTATION_Y, dGaussian.rotation.z);
-            add_param_grad(gsBatchSplatId[localIdx], PARAM_ROTATION_Z, dGaussian.rotation.w);
-            add_param_grad(gsBatchSplatId[localIdx], PARAM_RAW_OPACITY, dRawOpacity);
+            add_param_grad(splatId, PARAM_POSITION_X, dPos.x);
+            add_param_grad(splatId, PARAM_POSITION_Y, dPos.y);
+            add_param_grad(splatId, PARAM_POSITION_Z, dPos.z);
+            add_param_grad(splatId, PARAM_SCALE_X, dScale.x);
+            add_param_grad(splatId, PARAM_SCALE_Y, dScale.y);
+            add_param_grad(splatId, PARAM_SCALE_Z, dScale.z);
+            add_param_grad(splatId, PARAM_ROTATION_W, dGaussian.rotation.x);
+            add_param_grad(splatId, PARAM_ROTATION_X, dGaussian.rotation.y);
+            add_param_grad(splatId, PARAM_ROTATION_Y, dGaussian.rotation.z);
+            add_param_grad(splatId, PARAM_ROTATION_Z, dGaussian.rotation.w);
+            add_param_grad(splatId, PARAM_RAW_OPACITY, dRawOpacity);
             accum = prevAccum;
             trans = prevTrans;
         }
