@@ -70,20 +70,21 @@ void csProjectCount(uint3 dispatchThreadID : SV_DispatchThreadID) {
         float cameraDistance = length(gaussian.position - g_Camera.camPos);
         float2 screenCenter = cameraPosition.xy * (g_Camera.focalPixels / max(cameraPosition.z, SMALL_VALUE)) + g_Camera.principalPoint;
         g_Camera.project_camera_to_screen(cameraPosition, screenCenter);
-        float screenRadius = max(g_Camera.focalPixels.x, g_Camera.focalPixels.y) * max(cameraGaussian.logScale.x, max(cameraGaussian.logScale.y, cameraGaussian.logScale.z)) / max(depth, SMALL_VALUE);
+        float screenRadius = max(
+            max(g_Camera.focalPixels.x, g_Camera.focalPixels.y) * max(cameraGaussian.logScale.x, max(cameraGaussian.logScale.y, cameraGaussian.logScale.z)) / max(depth, SMALL_VALUE),
+            MIN_SCREEN_RADIUS_PX);
+        // Cheap camera-space visibility tests first, then let the outline helper decide whether a fit is worth doing.
+        bool hasFit = depth > DEPTH_VISIBILITY_FLOOR
+            && cameraDistance > g_Camera.nearDepth
+            && cameraDistance < g_Camera.farDepth;
         Ellipse ellipse;
-        bool hasFit = compute_gaussian_outline_ellipse(gaussian, g_Camera, g_RadiusScale, supportSigmaRadius, screenCenter, max(screenRadius, MIN_SCREEN_RADIUS_PX), ellipse);
+        if (hasFit) {
+            hasFit = compute_gaussian_outline_ellipse(gaussian, g_Camera, g_RadiusScale, supportSigmaRadius, screenCenter, screenRadius, ellipse);
+        }
         if (hasFit) {
             ellipse.radiusPx = max(ellipse.radiusPx * ELLIPSE_SAFETY_SCALE + ELLIPSE_RADIUS_PAD_PX, MIN_SCREEN_RADIUS_PX);
             ellipse.bboxExtent = float2(ellipse.radiusPx, ellipse.radiusPx);
-            hasFit = ellipse.prepare_conic()
-                && depth > DEPTH_VISIBILITY_FLOOR
-                && cameraDistance > g_Camera.nearDepth
-                && cameraDistance < g_Camera.farDepth
-                && (ellipse.centerPx.x + ellipse.radiusPx) >= 0.0
-                && (ellipse.centerPx.x - ellipse.radiusPx) < g_Camera.viewport.x
-                && (ellipse.centerPx.y + ellipse.radiusPx) >= 0.0
-                && (ellipse.centerPx.y - ellipse.radiusPx) < g_Camera.viewport.y;
+            hasFit = ellipse.prepare_conic();
         }
         if (hasFit) {
             projection.centerRadiusDepth = float4(ellipse.centerPx, ellipse.radiusPx, cameraDistance);

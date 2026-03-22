@@ -346,9 +346,11 @@ bool compute_gaussian_outline_ellipse(
     if (!all(isfinite(tangentBasisU)) || !all(isfinite(tangentBasisV))) return false;
     if (screenRadius <= ELLIPSE_EPS) return false;
     float3 worldCenter = gaussian.position;
+    float2 outlinePoints[ELLIPSE_POINT_COUNT];
+    float2 outlineMin = float2(1e30, 1e30);
+    float2 outlineMax = float2(-1e30, -1e30);
 
-    // Fit the screen-space ellipse directly from one projected sample per row.
-    LinearSystem<ELLIPSE_POINT_COUNT> system;
+    // Project the outline points first so off-screen splats can be rejected before the fit.
     [unroll] for (uint row = 0u; row < ELLIPSE_POINT_COUNT; row++) {
         float theta = TAU_RADIANS * (float(row) / float(ELLIPSE_POINT_COUNT));
         float s, c;
@@ -357,7 +359,35 @@ bool compute_gaussian_outline_ellipse(
         float3 worldPoint = worldCenter + rotate_by_quat(supportPointLocal * supportGaussian.logScale, float4(gaussian.rotation.x, -gaussian.rotation.yzw));
         float2 screenPoint = 0.0;
         if (!camera.project_world_to_screen(worldPoint, screenPoint)) return false;
-        float2 normalizedPoint = (screenPoint - screenCenter) / screenRadius;
+        outlinePoints[row] = screenPoint;
+        outlineMin = min(outlineMin, screenPoint);
+        outlineMax = max(outlineMax, screenPoint);
+    }
+
+    // The projected outline never reaches the viewport.
+    // WARNING: if the points are non-uniform in screen-space then bbox might not represent the actual ellipse extent
+    if (outlineMax.x < 0.0 || outlineMin.x >= camera.viewport.x || outlineMax.y < 0.0 || outlineMin.y >= camera.viewport.y) return false;
+    float2 visibleOutlineMin = max(outlineMin, 0.0);
+    float2 visibleOutlineMax = min(outlineMax, camera.viewport - float2(TINY_VALUE, TINY_VALUE));
+    int minTileX = int(floor(visibleOutlineMin.x / TILE_SIZE));
+    int maxTileX = int(floor(visibleOutlineMax.x / TILE_SIZE));
+    int minTileY = int(floor(visibleOutlineMin.y / TILE_SIZE));
+    int maxTileY = int(floor(visibleOutlineMax.y / TILE_SIZE));
+
+    // If the visible outline fits in one tile, an axis-aligned ellipse is enough, the exact fit will not help cull more tiles.
+    if (minTileX == maxTileX && minTileY == maxTileY) {
+        float2 halfExtent = max(0.5 * (outlineMax - outlineMin), float2(ELLIPSE_EPS, ELLIPSE_EPS));
+        ellipse.centerPx = 0.5 * (outlineMin + outlineMax);
+        ellipse.radiusPx = max(halfExtent.x, halfExtent.y);
+        ellipse.conic = float3(1.0 / max(halfExtent.x * halfExtent.x, ELLIPSE_EPS), 0.0, 1.0 / max(halfExtent.y * halfExtent.y, ELLIPSE_EPS));
+        ellipse.bboxExtent = halfExtent;
+        return all(isfinite(ellipse.centerPx)) && all(isfinite(ellipse.conic)) && isfinite(ellipse.radiusPx) && ellipse.radiusPx > 0.0;
+    }
+
+    // Fit the screen-space ellipse directly from the projected outline points.
+    LinearSystem<ELLIPSE_POINT_COUNT> system;
+    [unroll] for (uint row = 0u; row < ELLIPSE_POINT_COUNT; row++) {
+        float2 normalizedPoint = (outlinePoints[row] - screenCenter) / screenRadius;
         float x = normalizedPoint.x;
         float y = normalizedPoint.y;
         system[row, 0] = x * x;
