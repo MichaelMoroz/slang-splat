@@ -32,86 +32,6 @@ void write_cache(uint splatId, Gaussian3D gaussian, float fusedOpacity) {
     g_RasterState.store(at, gaussian);
 }
 
-void clear_projection(uint splatId) {
-    int[1] i = { int(splatId) };
-    ProjectionState projection;
-    projection.centerRadiusDepth = 0.0;
-    projection.conicOpacity = 0.0;
-    Gaussian3D state;
-    state.position = 0.0;
-    state.logScale = 0.0;
-    state.rotation = 0.0;
-    state.colorAlpha = 0.0;
-    g_ProjectionState.store(i, projection);
-    g_RasterState.store(i, state);
-    g_TileCounts.store(i, 0u);
-}
-
-bool project_splat(uint splatId, out Ellipse ellipse) {
-    ellipse.centerPx = 0.0;
-    ellipse.radiusPx = 0.0;
-    ellipse.conic = 0.0;
-    ellipse.bboxExtent = 0.0;
-    Gaussian3D gaussian = Gaussian3D.load(g_Splats, g_SplatCount, splatId);
-    float fusedOpacity = gaussian.build_raster_fused_opacity();
-    if (fusedOpacity < g_AlphaCutoff) return false;
-    float supportSigmaRadius = sqrt(max(-2.0 * log(g_AlphaCutoff / fusedOpacity), 0.0));
-    Gaussian3D cached = Gaussian3D.build_cached_ellipsoid(gaussian, g_Camera, g_RadiusScale, supportSigmaRadius);
-    float3 camPos = g_Camera.world_point_to_camera(gaussian.position);
-    float depth = camPos.z;
-    float3 cameraOffset = gaussian.position - g_Camera.camPos;
-    float camDistance = length(cameraOffset);
-    float2 fitCenter = 0.0;
-    bool projected = g_Camera.project_camera_to_screen(camPos, fitCenter);
-    if (!projected) fitCenter = camPos.xy * (g_Camera.focalPixels / max(camPos.z, SMALL_VALUE)) + g_Camera.principalPoint;
-    float maxAxisWorld = max(cached.logScale.x, max(cached.logScale.y, cached.logScale.z));
-    float fallbackRadius = max(g_Camera.focalPixels.x, g_Camera.focalPixels.y) * maxAxisWorld / max(depth, SMALL_VALUE);
-    float fitRadius = max(fallbackRadius * MVEE_SAFETY_SCALE + MVEE_RADIUS_PAD_PX, MIN_SCREEN_RADIUS_PX);
-    float invFitRadius2 = 1.0 / max(fallbackRadius * fallbackRadius, SMALL_VALUE);
-    float3 fitConic = float3(invFitRadius2, 0.0, invFitRadius2);
-    float3 localPoints[MVEE_POINT_COUNT];
-    bool ok = generate_silhouette_points_local5(cached.position, MVEE_EPS, localPoints);
-    if (ok) {
-        float2 screenPts[MVEE_POINT_COUNT];
-        [unroll] for (uint i = 0u; i < MVEE_POINT_COUNT; i++) {
-            float3 worldPt = gaussian.position + rotate_by_quat(localPoints[i] * cached.logScale, float4(cached.rotation.x, -cached.rotation.yzw));
-            float2 sp = 0.0;
-            bool ptOk = g_Camera.project_camera_to_screen(g_Camera.world_point_to_camera(worldPt), sp);
-            screenPts[i] = sp;
-            ok = ok && ptOk;
-        }
-        if (ok) {
-            MveeFitResult fit;
-            bool fitOk = fit_mvee_5pt_fixed_iters(screenPts, min(MVEE_ITERS, MVEE_MAX_ITERS), MVEE_EPS, fit);
-            if (fitOk) {
-                fitCenter = fit.centerPx;
-                fitRadius = max(fit.radiusPx * MVEE_SAFETY_SCALE + MVEE_RADIUS_PAD_PX, MIN_SCREEN_RADIUS_PX);
-                fitConic = fit.conic;
-            }
-        }
-    }
-    ellipse.centerPx = fitCenter;
-    ellipse.radiusPx = fitRadius;
-    ellipse.conic = fitConic;
-    ellipse.bboxExtent = float2(fitRadius, fitRadius);
-    if (!ellipse.prepare_conic()) return false;
-    bool visible = depth > DEPTH_VISIBILITY_FLOOR
-        && camDistance > g_Camera.nearDepth
-        && camDistance < g_Camera.farDepth
-        && (fitCenter.x + fitRadius) >= 0.0
-        && (fitCenter.x - fitRadius) < g_Camera.viewport.x
-        && (fitCenter.y + fitRadius) >= 0.0
-        && (fitCenter.y - fitRadius) < g_Camera.viewport.y;
-    if (!visible) return false;
-    int[1] at = { int(splatId) };
-    ProjectionState projection;
-    projection.centerRadiusDepth = float4(fitCenter, fitRadius, camDistance);
-    projection.conicOpacity = float4(fitConic, 1.0);
-    g_ProjectionState.store(at, projection);
-    write_cache(splatId, gaussian, fusedOpacity);
-    return true;
-}
-
 uint count_tiles(Ellipse ellipse) {
     int minX = clamp(int(floor((ellipse.centerPx.x - ellipse.bboxExtent.x) / TILE_SIZE)), 0, int(g_TileGrid.x) - 1);
     int maxX = clamp(int(ceil((ellipse.centerPx.x + ellipse.bboxExtent.x) / TILE_SIZE)), 0, int(g_TileGrid.x) - 1);
@@ -129,11 +49,54 @@ uint count_tiles(Ellipse ellipse) {
 void csProjectCount(uint3 dispatchThreadID : SV_DispatchThreadID) {
     uint splatId = dispatchThreadID.x;
     if (splatId >= g_SplatCount) return;
-    clear_projection(splatId);
-    Ellipse ellipse;
-    if (!project_splat(splatId, ellipse)) return;
     int[1] at = { int(splatId) };
-    g_TileCounts.store(at, count_tiles(ellipse));
+    ProjectionState projection;
+    projection.centerRadiusDepth = 0.0;
+    projection.conicOpacity = 0.0;
+    Gaussian3D rasterGaussian;
+    rasterGaussian.position = 0.0;
+    rasterGaussian.logScale = 0.0;
+    rasterGaussian.rotation = 0.0;
+    rasterGaussian.colorAlpha = 0.0;
+    uint tileCount = 0u;
+
+    Gaussian3D gaussian = Gaussian3D.load(g_Splats, g_SplatCount, splatId);
+    float fusedOpacity = gaussian.build_raster_fused_opacity();
+    if (fusedOpacity >= g_AlphaCutoff) {
+        float supportSigmaRadius = sqrt(max(-2.0 * log(g_AlphaCutoff / fusedOpacity), 0.0));
+        Gaussian3D cameraGaussian = Gaussian3D.camera_gaussian(gaussian, g_Camera, g_RadiusScale, supportSigmaRadius);
+        float3 cameraPosition = g_Camera.world_point_to_camera(gaussian.position);
+        float depth = cameraPosition.z;
+        float cameraDistance = length(gaussian.position - g_Camera.camPos);
+        float2 screenCenter = cameraPosition.xy * (g_Camera.focalPixels / max(cameraPosition.z, SMALL_VALUE)) + g_Camera.principalPoint;
+        g_Camera.project_camera_to_screen(cameraPosition, screenCenter);
+        float screenRadius = max(g_Camera.focalPixels.x, g_Camera.focalPixels.y) * max(cameraGaussian.logScale.x, max(cameraGaussian.logScale.y, cameraGaussian.logScale.z)) / max(depth, SMALL_VALUE);
+        Ellipse ellipse;
+        bool hasFit = compute_gaussian_outline_ellipse(gaussian, g_Camera, g_RadiusScale, supportSigmaRadius, screenCenter, max(screenRadius, MIN_SCREEN_RADIUS_PX), ellipse);
+        if (hasFit) {
+            ellipse.radiusPx = max(ellipse.radiusPx * ELLIPSE_SAFETY_SCALE + ELLIPSE_RADIUS_PAD_PX, MIN_SCREEN_RADIUS_PX);
+            ellipse.bboxExtent = float2(ellipse.radiusPx, ellipse.radiusPx);
+            hasFit = ellipse.prepare_conic()
+                && depth > DEPTH_VISIBILITY_FLOOR
+                && cameraDistance > g_Camera.nearDepth
+                && cameraDistance < g_Camera.farDepth
+                && (ellipse.centerPx.x + ellipse.radiusPx) >= 0.0
+                && (ellipse.centerPx.x - ellipse.radiusPx) < g_Camera.viewport.x
+                && (ellipse.centerPx.y + ellipse.radiusPx) >= 0.0
+                && (ellipse.centerPx.y - ellipse.radiusPx) < g_Camera.viewport.y;
+        }
+        if (hasFit) {
+            projection.centerRadiusDepth = float4(ellipse.centerPx, ellipse.radiusPx, cameraDistance);
+            projection.conicOpacity = float4(ellipse.conic, 1.0);
+            rasterGaussian = gaussian;
+            rasterGaussian.colorAlpha.w = fusedOpacity;
+            tileCount = count_tiles(ellipse);
+        }
+    }
+
+    g_ProjectionState.store(at, projection);
+    g_RasterState.store(at, rasterGaussian);
+    g_TileCounts.store(at, tileCount);
 }
 
 // TODO: this can be done via a module call, instead of a dispatch

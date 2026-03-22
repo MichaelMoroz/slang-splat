@@ -5,12 +5,10 @@ static const uint PROJECT_GROUP_SIZE = 256u;
 static const uint RASTER_BATCH = 64u;
 static const uint RASTER_THREAD_TILE_DIM = TILE_SIZE;
 static const uint RASTER_GROUP_THREADS = RASTER_THREAD_TILE_DIM * RASTER_THREAD_TILE_DIM;
-static const uint MVEE_POINT_COUNT = 5u;
-static const uint MVEE_MAX_ITERS = 8u;
-static const uint MVEE_ITERS = 6u;
-static const float MVEE_SAFETY_SCALE = 1.0;
-static const float MVEE_RADIUS_PAD_PX = 1.0;
-static const float MVEE_EPS = 1e-6;
+static const uint ELLIPSE_POINT_COUNT = 5u;
+static const float ELLIPSE_SAFETY_SCALE = 1.0;
+static const float ELLIPSE_RADIUS_PAD_PX = 1.0;
+static const float ELLIPSE_EPS = 1e-6;
 static const float SMALL_VALUE = 1e-6;
 static const float TINY_VALUE = 1e-8;
 static const float RAY_DENOMINATOR_FLOOR = 1e-10;
@@ -24,7 +22,6 @@ static const float SPLAT_PIXEL_CLAMP_PX = 0.75;
 static const float MIN_SCREEN_RADIUS_PX = 1.0;
 static const float MIN_BBOX_EXTENT_PX = 1e-4;
 static const float BBOX_PAD_PX = 1.0;
-static const float MVEE_AFFINE_DIMENSION = 3.0;
 static const float OUTPUT_GAMMA = 2.2;
 static const float TAU_RADIANS = 6.28318530718;
 static const float GAUSSIAN_SUPPORT_SIGMA_RADIUS = 3.0;
@@ -53,29 +50,29 @@ struct Gaussian3D : IDifferentiable {
 
     static Gaussian3D load(Tensor<float, 1> splats, uint splatCount, uint splatId) {
         Gaussian3D gaussian;
-        gaussian.position.x = splats[int(PARAM_POSITION_X * splatCount + splatId)];
-        gaussian.position.y = splats[int(PARAM_POSITION_Y * splatCount + splatId)];
-        gaussian.position.z = splats[int(PARAM_POSITION_Z * splatCount + splatId)];
-        gaussian.logScale.x = splats[int(PARAM_SCALE_X * splatCount + splatId)];
-        gaussian.logScale.y = splats[int(PARAM_SCALE_Y * splatCount + splatId)];
-        gaussian.logScale.z = splats[int(PARAM_SCALE_Z * splatCount + splatId)];
-        gaussian.rotation.x = splats[int(PARAM_ROTATION_W * splatCount + splatId)];
-        gaussian.rotation.y = splats[int(PARAM_ROTATION_X * splatCount + splatId)];
-        gaussian.rotation.z = splats[int(PARAM_ROTATION_Y * splatCount + splatId)];
-        gaussian.rotation.w = splats[int(PARAM_ROTATION_Z * splatCount + splatId)];
-        gaussian.colorAlpha.x = splats[int(PARAM_COLOR_R * splatCount + splatId)];
-        gaussian.colorAlpha.y = splats[int(PARAM_COLOR_G * splatCount + splatId)];
-        gaussian.colorAlpha.z = splats[int(PARAM_COLOR_B * splatCount + splatId)];
-        gaussian.colorAlpha.w = splats[int(PARAM_RAW_OPACITY * splatCount + splatId)];
+        gaussian.position.x = splats[PARAM_POSITION_X * splatCount + splatId];
+        gaussian.position.y = splats[PARAM_POSITION_Y * splatCount + splatId];
+        gaussian.position.z = splats[PARAM_POSITION_Z * splatCount + splatId];
+        gaussian.logScale.x = splats[PARAM_SCALE_X * splatCount + splatId];
+        gaussian.logScale.y = splats[PARAM_SCALE_Y * splatCount + splatId];
+        gaussian.logScale.z = splats[PARAM_SCALE_Z * splatCount + splatId];
+        gaussian.rotation.x = splats[PARAM_ROTATION_W * splatCount + splatId];
+        gaussian.rotation.y = splats[PARAM_ROTATION_X * splatCount + splatId];
+        gaussian.rotation.z = splats[PARAM_ROTATION_Y * splatCount + splatId];
+        gaussian.rotation.w = splats[PARAM_ROTATION_Z * splatCount + splatId];
+        gaussian.colorAlpha.x = splats[PARAM_COLOR_R * splatCount + splatId];
+        gaussian.colorAlpha.y = splats[PARAM_COLOR_G * splatCount + splatId];
+        gaussian.colorAlpha.z = splats[PARAM_COLOR_B * splatCount + splatId];
+        gaussian.colorAlpha.w = splats[PARAM_RAW_OPACITY * splatCount + splatId];
         return gaussian;
     }
 
     [Differentiable]
-    static Gaussian3D build_cached_ellipsoid(Gaussian3D gaussian, no_diff Camera camera, no_diff float radiusScale, no_diff float supportSigmaRadius) {
-        Gaussian3D cached = gaussian;
-        cached.logScale = max(exp(gaussian.logScale) * (radiusScale * supportSigmaRadius), float3(SMALL_VALUE));
-        cached.position = rotate_by_quat(camera.camPos - gaussian.position, gaussian.rotation) / cached.logScale;
-        return cached;
+    static Gaussian3D camera_gaussian(Gaussian3D gaussian, no_diff Camera camera, no_diff float radiusScale, no_diff float supportSigmaRadius) {
+        Gaussian3D cameraGaussian = gaussian;
+        cameraGaussian.logScale = max(exp(gaussian.logScale) * (radiusScale * supportSigmaRadius), float3(SMALL_VALUE));
+        cameraGaussian.position = rotate_by_quat(camera.camPos - gaussian.position, gaussian.rotation) / cameraGaussian.logScale;
+        return cameraGaussian;
     }
 
     [Differentiable]
@@ -236,10 +233,56 @@ struct Ellipse {
     }
 };
 
-struct MveeFitResult {
-    float2 centerPx;
-    float radiusPx;
-    float3 conic;
+struct LinearSystem<let N : int> {
+    float aug[N * (N + 1)];
+
+    int flat_index(int i0, int i1) {
+        return i0 * (N + 1) + i1;
+    }
+
+    float load(int i0, int i1) {
+        return aug[flat_index(i0, i1)];
+    }
+
+    [mutating]
+    void store(int i0, int i1, float value) {
+        aug[flat_index(i0, i1)] = value;
+    }
+
+    __subscript(int i0, int i1)->float {
+        get { return this.load(i0, i1); }
+        set { this.store(i0, i1, newValue); }
+    }
+
+    [mutating]
+    bool solve(float eps, out float solution[N]) {
+        [unroll] for (uint row = 0u; row < N; row++) solution[row] = 0.0;
+        [unroll] for (uint pivot = 0u; pivot < N; pivot++) {
+            uint bestRow = pivot;
+            float bestAbs = abs(this.load(pivot, pivot));
+            [unroll] for (uint row = pivot + 1u; row < N; row++) {
+                float rowAbs = abs(this.load(row, pivot));
+                if (rowAbs > bestAbs) { bestAbs = rowAbs; bestRow = row; }
+            }
+            if (bestAbs <= eps) return false;
+            if (bestRow != pivot) {
+                [unroll] for (uint col = pivot; col <= N; col++) {
+                    float tmp = this.load(pivot, col);
+                    this.store(pivot, col, this.load(bestRow, col));
+                    this.store(bestRow, col, tmp);
+                }
+            }
+            float invPivot = 1.0 / this.load(pivot, pivot);
+            [unroll] for (uint col = pivot; col <= N; col++) this.store(pivot, col, this.load(pivot, col) * invPivot);
+            [unroll] for (uint row = 0u; row < N; row++) {
+                if (row == pivot) continue;
+                float factor = this.load(row, pivot);
+                [unroll] for (uint col = pivot; col <= N; col++) this.store(row, col, this.load(row, col) - factor * this.load(pivot, col));
+            }
+        }
+        [unroll] for (uint row = 0u; row < N; row++) solution[row] = this.load(row, N);
+        return true;
+    }
 };
 
 bool inverse3x3(float3x3 m, float eps, out float3x3 mInv) {
@@ -266,83 +309,72 @@ bool inverse3x3(float3x3 m, float eps, out float3x3 mInv) {
 [Differentiable] float3 rotate_by_quat(float3 v, float4 q) { return v + 2.0 * cross(cross(v, q.yzw) + q.x * v, q.yzw); }
 [Differentiable] float sigmoid(float x) { return 1.0 / (1.0 + exp(-x)); }
 
-bool generate_silhouette_points_local5(float3 roLocal, float eps, out float3 points[MVEE_POINT_COUNT]) {
-    [unroll] for (uint i = 0u; i < MVEE_POINT_COUNT; i++) points[i] = 0.0;
-    float d = length(roLocal);
-    if (d <= 1.0 + eps) return false;
-    float3 n = roLocal / d;
-    float3 circleCenter = n / d;
-    float circleRadius = sqrt(max(1.0 - 1.0 / (d * d), 0.0));
-    float3 u;
-    float3 v;
-    if (n.z < SOUTH_POLE_DOT_FLOOR) { u = float3(0.0, -1.0, 0.0); v = float3(-1.0, 0.0, 0.0); }
-    else {
-        float a = 1.0 / (1.0 + n.z);
-        float b = -n.x * n.y * a;
-        u = float3(1.0 - n.x * n.x * a, b, -n.x);
-        v = float3(b, 1.0 - n.y * n.y * a, -n.y);
+bool compute_gaussian_outline_ellipse(
+    Gaussian3D gaussian,
+    Camera camera,
+    float radiusScale,
+    float supportSigmaRadius,
+    float2 screenCenter,
+    float screenRadius,
+    out Ellipse ellipse)
+{
+    ellipse.centerPx = 0.0;
+    ellipse.radiusPx = 0.0;
+    ellipse.conic = 0.0;
+    ellipse.bboxExtent = 0.0;
+    Gaussian3D supportGaussian = Gaussian3D.camera_gaussian(gaussian, camera, radiusScale, supportSigmaRadius);
+
+    // Build the tangent circle on the unit ellipsoid in support-local space.
+    float3 viewOriginLocal = supportGaussian.position;
+    float viewDistance = length(viewOriginLocal);
+    if (viewDistance <= 1.0 + ELLIPSE_EPS) return false;
+    float3 viewDirLocal = viewOriginLocal / viewDistance;
+    float3 tangentCircleCenter = viewDirLocal / viewDistance;
+    float tangentCircleRadius = sqrt(max(1.0 - 1.0 / (viewDistance * viewDistance), 0.0));
+    float3 tangentBasisU;
+    float3 tangentBasisV;
+    if (viewDirLocal.z < SOUTH_POLE_DOT_FLOOR) {
+        tangentBasisU = float3(0.0, -1.0, 0.0);
+        tangentBasisV = float3(-1.0, 0.0, 0.0);
     }
-    if (!all(isfinite(u)) || !all(isfinite(v))) return false;
-    [unroll] for (uint i = 0u; i < MVEE_POINT_COUNT; i++) {
-        float theta = TAU_RADIANS * (float(i) / float(MVEE_POINT_COUNT));
+    else {
+        float invSouthPoleDistance = 1.0 / (1.0 + viewDirLocal.z);
+        float xyMix = -viewDirLocal.x * viewDirLocal.y * invSouthPoleDistance;
+        tangentBasisU = float3(1.0 - viewDirLocal.x * viewDirLocal.x * invSouthPoleDistance, xyMix, -viewDirLocal.x);
+        tangentBasisV = float3(xyMix, 1.0 - viewDirLocal.y * viewDirLocal.y * invSouthPoleDistance, -viewDirLocal.y);
+    }
+    if (!all(isfinite(tangentBasisU)) || !all(isfinite(tangentBasisV))) return false;
+    if (screenRadius <= ELLIPSE_EPS) return false;
+    float3 worldCenter = gaussian.position;
+
+    // Fit the screen-space ellipse directly from one projected sample per row.
+    LinearSystem<ELLIPSE_POINT_COUNT> system;
+    [unroll] for (uint row = 0u; row < ELLIPSE_POINT_COUNT; row++) {
+        float theta = TAU_RADIANS * (float(row) / float(ELLIPSE_POINT_COUNT));
         float s, c;
         sincos(theta, s, c);
-        points[i] = circleCenter + circleRadius * (c * u + s * v);
+        float3 supportPointLocal = tangentCircleCenter + tangentCircleRadius * (c * tangentBasisU + s * tangentBasisV);
+        float3 worldPoint = worldCenter + rotate_by_quat(supportPointLocal * supportGaussian.logScale, float4(gaussian.rotation.x, -gaussian.rotation.yzw));
+        float2 screenPoint = 0.0;
+        if (!camera.project_world_to_screen(worldPoint, screenPoint)) return false;
+        float2 normalizedPoint = (screenPoint - screenCenter) / screenRadius;
+        float x = normalizedPoint.x;
+        float y = normalizedPoint.y;
+        system[row, 0] = x * x;
+        system[row, 1] = 2.0 * x * y;
+        system[row, 2] = y * y;
+        system[row, 3] = x;
+        system[row, 4] = y;
+        system[row, ELLIPSE_POINT_COUNT] = 1.0;
     }
-    return true;
-}
 
-bool fit_mvee_5pt_fixed_iters(float2 points[MVEE_POINT_COUNT], uint iters, float eps, out MveeFitResult fit) {
-    fit.centerPx = 0.0;
-    fit.radiusPx = 0.0;
-    fit.conic = 0.0;
-    if (iters > MVEE_MAX_ITERS) return false;
-    float2 center = 0.0;
-    [unroll] for (uint i = 0u; i < MVEE_POINT_COUNT; i++) center += points[i];
-    center *= (1.0 / float(MVEE_POINT_COUNT));
-    float normScale = 0.0;
-    [unroll] for (uint i = 0u; i < MVEE_POINT_COUNT; i++) normScale = max(normScale, length(points[i] - center));
-    if (normScale <= eps) return false;
-    float2 normPts[MVEE_POINT_COUNT];
-    [unroll] for (uint i = 0u; i < MVEE_POINT_COUNT; i++) normPts[i] = (points[i] - center) / normScale;
-    float aug[5][6];
-    [unroll] for (uint row = 0u; row < MVEE_POINT_COUNT; row++) {
-        float x = normPts[row].x;
-        float y = normPts[row].y;
-        aug[row][0] = x * x;
-        aug[row][1] = 2.0 * x * y;
-        aug[row][2] = y * y;
-        aug[row][3] = x;
-        aug[row][4] = y;
-        aug[row][5] = 1.0;
-    }
-    [unroll] for (uint pivot = 0u; pivot < MVEE_POINT_COUNT; pivot++) {
-        uint bestRow = pivot;
-        float bestAbs = abs(aug[pivot][pivot]);
-        [unroll] for (uint row = pivot + 1u; row < MVEE_POINT_COUNT; row++) {
-            float rowAbs = abs(aug[row][pivot]);
-            if (rowAbs > bestAbs) { bestAbs = rowAbs; bestRow = row; }
-        }
-        if (bestAbs <= eps) return false;
-        if (bestRow != pivot) {
-            [unroll] for (uint col = pivot; col < 6u; col++) {
-                float tmp = aug[pivot][col];
-                aug[pivot][col] = aug[bestRow][col];
-                aug[bestRow][col] = tmp;
-            }
-        }
-        float invPivot = 1.0 / aug[pivot][pivot];
-        [unroll] for (uint col = pivot; col < 6u; col++) aug[pivot][col] *= invPivot;
-        [unroll] for (uint row = 0u; row < MVEE_POINT_COUNT; row++) {
-            if (row == pivot) continue;
-            float factor = aug[row][pivot];
-            [unroll] for (uint col = pivot; col < 6u; col++) aug[row][col] -= factor * aug[pivot][col];
-        }
-    }
-    float3 conicNorm = float3(aug[0][5], aug[1][5], aug[2][5]);
-    float2 linear = float2(aug[3][5], aug[4][5]);
+    // Convert the normalized implicit conic back into pixel-space ellipse data.
+    float solution[ELLIPSE_POINT_COUNT];
+    if (!system.solve(ELLIPSE_EPS, solution)) return false;
+    float3 conicNorm = float3(solution[0], solution[1], solution[2]);
+    float2 linear = float2(solution[3], solution[4]);
     float detA = conicNorm.x * conicNorm.z - conicNorm.y * conicNorm.y;
-    if (detA <= eps) return false;
+    if (detA <= ELLIPSE_EPS) return false;
     float2 ellipseCenter = 0.5 * float2(
         (conicNorm.y * linear.y - conicNorm.z * linear.x) / detA,
         (conicNorm.y * linear.x - conicNorm.x * linear.y) / detA
@@ -351,23 +383,24 @@ bool fit_mvee_5pt_fixed_iters(float2 points[MVEE_POINT_COUNT], uint iters, float
         conicNorm.x * ellipseCenter.x + conicNorm.y * ellipseCenter.y,
         conicNorm.y * ellipseCenter.x + conicNorm.z * ellipseCenter.y
     ));
-    if (centerScale <= eps) return false;
+    if (centerScale <= ELLIPSE_EPS) return false;
     conicNorm /= centerScale;
     float trace = conicNorm.x + conicNorm.z;
     detA = conicNorm.x * conicNorm.z - conicNorm.y * conicNorm.y;
-    if (detA <= eps || conicNorm.x <= eps || conicNorm.z <= eps) return false;
+    if (detA <= ELLIPSE_EPS || conicNorm.x <= ELLIPSE_EPS || conicNorm.z <= ELLIPSE_EPS) return false;
     float disc = sqrt(max(0.25 * trace * trace - detA, 0.0));
-    float axis0 = rsqrt(max(0.5 * trace + disc, eps));
-    float axis1 = rsqrt(max(0.5 * trace - disc, eps));
-    fit.centerPx = center + ellipseCenter * normScale;
-    fit.radiusPx = max(axis0, axis1) * normScale;
-    fit.conic = conicNorm / max(normScale * normScale, eps);
-    return all(isfinite(fit.centerPx)) && all(isfinite(fit.conic)) && isfinite(fit.radiusPx) && fit.radiusPx > 0.0;
+    float axis0 = rsqrt(max(0.5 * trace + disc, ELLIPSE_EPS));
+    float axis1 = rsqrt(max(0.5 * trace - disc, ELLIPSE_EPS));
+    ellipse.centerPx = screenCenter + ellipseCenter * screenRadius;
+    ellipse.radiusPx = max(axis0, axis1) * screenRadius;
+    ellipse.conic = conicNorm / max(screenRadius * screenRadius, ELLIPSE_EPS);
+    ellipse.bboxExtent = float2(ellipse.radiusPx, ellipse.radiusPx);
+    return all(isfinite(ellipse.centerPx)) && all(isfinite(ellipse.conic)) && isfinite(ellipse.radiusPx) && ellipse.radiusPx > 0.0;
 }
 
 [Differentiable]
 float raster_eval_alpha(Gaussian3D gaussian, no_diff Camera camera, no_diff float radiusScale, no_diff float3 rayDir) {
-    Gaussian3D cached = Gaussian3D.build_cached_ellipsoid(gaussian, camera, radiusScale, GAUSSIAN_SUPPORT_SIGMA_RADIUS);
+    Gaussian3D cached = Gaussian3D.camera_gaussian(gaussian, camera, radiusScale, GAUSSIAN_SUPPORT_SIGMA_RADIUS);
     float3 rayLocal = rotate_by_quat(rayDir, cached.rotation) / max(cached.logScale, float3(SMALL_VALUE));
     float denom = dot(rayLocal, rayLocal);
     if (denom <= RAY_DENOMINATOR_FLOOR) return 0.0;
