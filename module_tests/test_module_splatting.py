@@ -6,6 +6,7 @@ import sys
 import numpy as np
 import pytest
 import slangpy as spy
+from plyfile import PlyData
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -27,6 +28,7 @@ _SMALL_VALUE = 1e-6
 _ALPHA_EPS = 1e-6
 _PROJECTION_OUTLINE_MAX_ERROR = 1e-3
 _SHADERS = Path(__file__).resolve().parents[1] / "module" / "shaders"
+_GARDEN_PLY = Path(__file__).resolve().parents[1] / "test_data" / "garden" / "garden.ply"
 
 
 def _make_device(backend_name: str) -> spy.Device:
@@ -165,6 +167,10 @@ def _quaternion_from_axis_angle(axis: np.ndarray, angle_rad: float) -> np.ndarra
 
 
 def _gaussian_outline_points(camera: np.ndarray, gaussian: np.ndarray) -> np.ndarray:
+    return _gaussian_outline_points_sampled(camera, gaussian, 5)
+
+
+def _gaussian_outline_points_sampled(camera: np.ndarray, gaussian: np.ndarray, sample_count: int) -> np.ndarray:
     fused_opacity = gaussian[13]
     support_sigma_radius = np.sqrt(max(-2.0 * np.log(_ALPHA_CUTOFF / fused_opacity), 0.0))
     support_scale = np.clip(np.exp(gaussian[3:6]) * support_sigma_radius, _SMALL_VALUE, None)
@@ -184,11 +190,64 @@ def _gaussian_outline_points(camera: np.ndarray, gaussian: np.ndarray) -> np.nda
         tangent_basis_v = np.array([xy_mix, 1.0 - view_dir_local[1] * view_dir_local[1] * inv_south_pole_distance, -view_dir_local[1]], dtype=np.float32)
     world_points = []
     inv_rotation = np.concatenate((gaussian[6:7], -gaussian[7:10])).astype(np.float32)
-    for i in range(5):
-        theta = 2.0 * np.pi * (i / 5.0)
+    for i in range(sample_count):
+        theta = 2.0 * np.pi * (i / float(sample_count))
         support_point_local = tangent_circle_center + tangent_circle_radius * (np.cos(theta) * tangent_basis_u + np.sin(theta) * tangent_basis_v)
         world_points.append(gaussian[0:3] + _quat_rotate((support_point_local * support_scale)[None, :], inv_rotation)[0])
     return _project_world_to_screen(camera, np.stack(world_points))
+
+
+def _gaussian_outline_points_from_camera_dict(camera: dict[str, object], gaussian: np.ndarray, sample_count: int) -> np.ndarray:
+    cam_pos = np.array([camera["camPos"].x, camera["camPos"].y, camera["camPos"].z], dtype=np.float32)
+    cam_basis = np.array(camera["camBasis"].to_numpy(), dtype=np.float32)
+    focal = np.array([camera["focalPixels"].x, camera["focalPixels"].y], dtype=np.float32)
+    principal = np.array([camera["principalPoint"].x, camera["principalPoint"].y], dtype=np.float32)
+    fused_opacity = gaussian[13]
+    support_sigma_radius = np.sqrt(max(-2.0 * np.log(_ALPHA_CUTOFF / fused_opacity), 0.0))
+    support_scale = np.clip(np.exp(gaussian[3:6]) * support_sigma_radius, _SMALL_VALUE, None)
+    view_origin_local = _quat_rotate((cam_pos - gaussian[0:3])[None, :], gaussian[6:10])[0] / support_scale
+    view_distance = np.linalg.norm(view_origin_local)
+    view_dir_local = view_origin_local / max(view_distance, _SMALL_VALUE)
+    tangent_circle_center = view_dir_local / view_distance
+    tangent_circle_radius = np.sqrt(max(1.0 - 1.0 / (view_distance * view_distance), 0.0))
+    tangent_axis = np.array([0.0, 0.0, 1.0], dtype=np.float32) if abs(float(view_dir_local[2])) < 0.999 else np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    tangent_basis_u = np.cross(tangent_axis, view_dir_local)
+    tangent_basis_u /= max(float(np.linalg.norm(tangent_basis_u)), _SMALL_VALUE)
+    tangent_basis_v = np.cross(view_dir_local, tangent_basis_u)
+    inv_rotation = np.concatenate((gaussian[6:7], -gaussian[7:10])).astype(np.float32)
+    world_points = []
+    for i in range(sample_count):
+        theta = 2.0 * np.pi * (i / float(sample_count))
+        support_point_local = tangent_circle_center + tangent_circle_radius * (np.cos(theta) * tangent_basis_u + np.sin(theta) * tangent_basis_v)
+        world_points.append(gaussian[0:3] + _quat_rotate((support_point_local * support_scale)[None, :], inv_rotation)[0])
+    world_points = np.stack(world_points)
+    cam_points = (world_points - cam_pos) @ cam_basis.T
+    uv = cam_points[:, :2] / np.clip(cam_points[:, 2:], _SMALL_VALUE, None)
+    return uv * focal + principal
+
+
+def _load_ply_splat(path: Path, index: int) -> np.ndarray:
+    ply = PlyData.read(str(path), mmap=True)
+    vertex = ply.elements[0]
+    names = [prop.name for prop in vertex.properties]
+    row = vertex.data[index]
+    splat = np.zeros((14, 1), dtype=np.float32)
+    splat[0, 0] = np.float32(row["x"])
+    splat[1, 0] = np.float32(row["y"])
+    splat[2, 0] = np.float32(row["z"])
+    scale_names = sorted((name for name in names if name.startswith("scale_")), key=lambda name: int(name.split("_")[-1]))
+    if scale_names:
+        splat[3:6, 0] = np.array([row[name] for name in scale_names], dtype=np.float32)
+    rot_names = sorted((name for name in names if name.startswith("rot")), key=lambda name: int("".join(ch for ch in name if ch.isdigit()) or "0"))
+    if rot_names:
+        rotation = np.array([row[name] for name in rot_names], dtype=np.float32)
+        splat[6:10, 0] = rotation / max(float(np.linalg.norm(rotation)), 1e-8)
+    else:
+        splat[6, 0] = 1.0
+    sh_c0 = 0.28209479177387814
+    splat[10:13, 0] = np.clip(0.5 + sh_c0 * np.array([row["f_dc_0"], row["f_dc_1"], row["f_dc_2"]], dtype=np.float32), 0.0, 1.0)
+    splat[13, 0] = 1.0 / (1.0 + np.exp(-np.float32(row["opacity"])))
+    return splat
 
 
 def _projection_conic_error(projection_row: np.ndarray, outline_points: np.ndarray) -> np.ndarray:
@@ -476,6 +535,39 @@ def test_projection_matches_outline_for_stress_cases(
     outline_points = _gaussian_outline_points(camera, splats[:, 0])
     errors = np.abs(_projection_conic_error(projected["projection"][0], outline_points))
     assert float(errors.max()) <= _PROJECTION_OUTLINE_MAX_ERROR, f"{name} projection max error {float(errors.max()):.4e}"
+
+
+@pytest.mark.skipif(not _GARDEN_PLY.exists(), reason="garden.ply unavailable")
+def test_projection_is_stable_for_garden_far_large_splat(backend_context: SplattingContext) -> None:
+    image_size = (1600, 900)
+    target = np.array([0.47749576, 2.1900983, 0.893687], dtype=np.float32)
+    splats = _load_ply_splat(_GARDEN_PLY, 1374831)
+    for camera_x in (8.0, 8.01):
+        eye = np.array([camera_x, 2.0, -10.0], dtype=np.float32)
+        forward = target - eye
+        forward /= max(float(np.linalg.norm(forward)), 1e-8)
+        right = np.cross(np.array([0.0, 1.0, 0.0], dtype=np.float32), forward)
+        right /= max(float(np.linalg.norm(right)), 1e-8)
+        up = np.cross(forward, right)
+        focal = 0.5 * image_size[1] / np.tan(0.5 * np.deg2rad(60.0))
+        camera_dict = {
+            "camPos": spy.float3(*eye.tolist()),
+            "camBasis": spy.float3x3(np.stack((right, up, forward), axis=0)),
+            "focalPixels": spy.float2(float(focal), float(focal)),
+            "principalPoint": spy.float2(image_size[0] * 0.5, image_size[1] * 0.5),
+            "viewport": spy.float2(*map(float, image_size)),
+            "nearDepth": 0.0,
+            "farDepth": 1000.0,
+            "k1": 0.0,
+            "k2": 0.0,
+        }
+        _load_public_splats(backend_context, splats, image_size, (0.0, 0.0, 0.0))
+        total_scanlines = backend_context.project(camera_dict, splats.shape[1])
+        assert total_scanlines > 0
+        projection = np.asarray(backend_context._view(backend_context.scene_views["g_ProjectionState"].tensor, spy.float4, (1, 2)).to_numpy())[0]
+        outline_points = _gaussian_outline_points_from_camera_dict(camera_dict, splats[:, 0], 128)
+        errors = np.abs(_projection_conic_error(projection, outline_points))
+        assert float(errors.max()) <= 5e-3
 
 
 def test_core_buffer_reuse_grows_only(backend_context: SplattingContext) -> None:

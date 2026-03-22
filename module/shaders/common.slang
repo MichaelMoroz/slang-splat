@@ -17,7 +17,6 @@ static const float CONIC_DETERMINANT_FLOOR = 1e-20;
 static const float CONIC_AXIS_FLOOR = 1e-20;
 static const float CONIC_INTERSECTION_SLACK = 1e-5;
 static const float DEPTH_VISIBILITY_FLOOR = 1e-4;
-static const float SOUTH_POLE_DOT_FLOOR = -0.9999999;
 static const float SPLAT_PIXEL_CLAMP_PX = 0.75;
 static const float MIN_SCREEN_RADIUS_PX = 1.0;
 static const float MIN_BBOX_EXTENT_PX = 1e-4;
@@ -421,17 +420,11 @@ bool compute_gaussian_outline_ellipse(
     float3 viewDirLocal = viewOriginLocal / viewDistance;
     float3 tangentCircleCenter = viewDirLocal / viewDistance;
     float tangentCircleRadius = sqrt(max(1.0 - 1.0 / (viewDistance * viewDistance), 0.0));
-    float3 tangentBasisU;
-    float3 tangentBasisV;
-    if (viewDirLocal.z < SOUTH_POLE_DOT_FLOOR) {
-        tangentBasisU = float3(0.0, -1.0, 0.0);
-        tangentBasisV = float3(-1.0, 0.0, 0.0);
-    } else {
-        float invSouthPoleDistance = 1.0 / (1.0 + viewDirLocal.z);
-        float xyMix = -viewDirLocal.x * viewDirLocal.y * invSouthPoleDistance;
-        tangentBasisU = float3(1.0 - viewDirLocal.x * viewDirLocal.x * invSouthPoleDistance, xyMix, -viewDirLocal.x);
-        tangentBasisV = float3(xyMix, 1.0 - viewDirLocal.y * viewDirLocal.y * invSouthPoleDistance, -viewDirLocal.y);
-    }
+    // Build a stable tangent-frame basis even when the view direction is nearly aligned to +/-Z.
+    // The previous south-pole parameterization was exact on paper but numerically unstable here.
+    float3 tangentAxis = abs(viewDirLocal.z) < 0.999 ? float3(0.0, 0.0, 1.0) : float3(0.0, 1.0, 0.0);
+    float3 tangentBasisU = normalize_safe(cross(tangentAxis, viewDirLocal));
+    float3 tangentBasisV = cross(viewDirLocal, tangentBasisU);
     if (!all(isfinite(tangentBasisU)) || !all(isfinite(tangentBasisV))) {
         if (!fallbackValid) return false;
         float2 fallbackHalfExtent = max(0.5 * (fallbackMax - fallbackMin), float2(ELLIPSE_EPS, ELLIPSE_EPS));
