@@ -20,6 +20,9 @@ _RADIUS_SCALE = 1.0
 @dataclass
 class SplattingContext:
     device: spy.Device | None = None
+    radius_scale: float = 1.0
+    alpha_cutoff: float = 1 / 255
+    trans_threshold: float = 0.005
 
     def __post_init__(self) -> None:
         self.device = self.device or spy.create_device(type=spy.DeviceType.cuda, include_paths=[_SHADERS], enable_cuda_interop=False)
@@ -37,11 +40,15 @@ class SplattingContext:
         self.k_raster_fwd = self.device.create_compute_kernel(self.device.load_program(str(_SHADERS / "kernels.slang"), ["csRasterForward"]))
         self.k_raster_bwd = self.device.create_compute_kernel(self.device.load_program(str(_SHADERS / "kernels.slang"), ["csRasterBackward"]))
         self.util = GpuUtility(self.device)
+        self._float4_dtype = spy.Tensor.empty(self.device, shape=(1,), dtype=spy.float4).dtype
+        self._projection_dtype = self.mod.ProjectionState
+        self._gaussian_dtype = self.mod.Gaussian3D
+        self._scanline_dtype = self.mod.ScanlineEntry
         self._size = (0, 0)
 
     def _view(self, tensor: spy.Tensor, dtype: Any, shape: tuple[int, ...]) -> spy.Tensor:
-        if isinstance(dtype, type):
-            dtype = spy.Tensor.empty(self.device, shape=(1,), dtype=dtype).dtype
+        if dtype is spy.float4:
+            dtype = self._float4_dtype
         return spy.Tensor(tensor.storage, getattr(dtype, "struct", dtype), shape)
 
     def _read_uint(self, tensor: spy.Tensor) -> int:
@@ -60,8 +67,27 @@ class SplattingContext:
         splat_count = max(splat_count, 1)
         if getattr(self, "_scene_capacity", 0) >= splat_count:
             return
-        self.scene = {"g_Params": spy.Tensor.empty(self.device, shape=(_PARAM_COUNT * splat_count,), dtype=float), "g_ScanlineCounts": spy.Tensor.empty(self.device, shape=(splat_count,), dtype="uint"), "g_ScanlineOffsets": spy.Tensor.empty(self.device, shape=(splat_count,), dtype="uint"), "g_TileCounts": spy.Tensor.empty(self.device, shape=(splat_count,), dtype="uint"), "g_ParamGrads": spy.Tensor.empty(self.device, shape=(splat_count * _PARAM_COUNT,), dtype=float)}
-        self.scene_views = {"g_ProjectionState": spy.InstanceTensor(self.mod.ProjectionState, (splat_count,)), "g_RasterState": spy.InstanceTensor(self.mod.Gaussian3D, (splat_count,))}
+        self.scene = {
+            "g_Params": spy.Tensor.empty(self.device, shape=(_PARAM_COUNT * splat_count,), dtype=float),
+            "g_ScanlineCounts": spy.Tensor.empty(self.device, shape=(splat_count,), dtype="uint"),
+            "g_ScanlineOffsets": spy.Tensor.empty(self.device, shape=(splat_count,), dtype="uint"),
+            "g_TileCounts": spy.Tensor.empty(self.device, shape=(splat_count,), dtype="uint"),
+            "g_ParamGrads": spy.Tensor.empty(self.device, shape=(splat_count * _PARAM_COUNT,), dtype=float),
+            "g_ProjectionStateData": spy.Tensor.empty(self.device, shape=(splat_count, 2), dtype=spy.float4),
+            "g_RasterStateData": spy.Tensor.empty(self.device, shape=(splat_count, 4), dtype=spy.float4),
+        }
+        self.scene_views = {
+            "g_ProjectionState": spy.InstanceTensor(
+                self._projection_dtype,
+                (splat_count,),
+                self._view(self.scene["g_ProjectionStateData"], self._projection_dtype, (splat_count,)),
+            ),
+            "g_RasterState": spy.InstanceTensor(
+                self._gaussian_dtype,
+                (splat_count,),
+                self._view(self.scene["g_RasterStateData"], self._gaussian_dtype, (splat_count,)),
+            ),
+        }
         self._scene_capacity = splat_count
 
     def _alloc_splat_sort(self, splat_count: int) -> None:
@@ -89,18 +115,17 @@ class SplattingContext:
         if getattr(self, "_scanline_capacity", 0) >= scanline_count:
             return
         self.scanlines = {"g_ScanlineEntryData": spy.Tensor.empty(self.device, shape=(scanline_count, 3), dtype="uint"), "g_ScanlineTileCounts": spy.Tensor.empty(self.device, shape=(scanline_count,), dtype="uint"), "g_ScanlineTileOffsets": spy.Tensor.empty(self.device, shape=(scanline_count,), dtype="uint")}
-        self.scanline_views = {"g_ScanlineEntries": spy.InstanceTensor(self.mod.ScanlineEntry, (scanline_count,), self._view(self.scanlines["g_ScanlineEntryData"], self.mod.ScanlineEntry, (scanline_count,)))}
+        self.scanline_views = {"g_ScanlineEntries": spy.InstanceTensor(self._scanline_dtype, (scanline_count,), self._view(self.scanlines["g_ScanlineEntryData"], self._scanline_dtype, (scanline_count,)))}
         self._scanline_capacity = scanline_count
 
     def _alloc_entries(self, entry_count: int) -> None:
         entry_count = max(entry_count, 1)
         if getattr(self, "_entry_capacity", 0) >= entry_count:
             return
-        self.raw = {"g_TileEntryData": spy.Tensor.empty(self.device, shape=(entry_count, 2), dtype="uint"), "g_SortedEntryData": spy.Tensor.empty(self.device, shape=(entry_count, 2), dtype="uint")}
-        self.entry_views = {"g_TileEntries": spy.InstanceTensor(self.mod.TileEntry, (entry_count,), self._view(self.raw["g_TileEntryData"], self.mod.TileEntry, (entry_count,))), "g_SortedEntries": spy.InstanceTensor(self.mod.TileEntry, (entry_count,), self._view(self.raw["g_SortedEntryData"], self.mod.TileEntry, (entry_count,)))}
+        self.raw = {"g_TileEntryData": spy.Tensor.empty(self.device, shape=(entry_count * 2,), dtype="uint"), "g_SortedEntryData": spy.Tensor.empty(self.device, shape=(entry_count * 2,), dtype="uint")}
         self.tile_keys, self.tile_values = self.raw["g_TileEntryData"].view((entry_count,), (2,), 0), self.raw["g_TileEntryData"].view((entry_count,), (2,), 1)
         self.sorted_tile_keys, self.sorted_tile_values = self.raw["g_SortedEntryData"].view((entry_count,), (2,), 0), self.raw["g_SortedEntryData"].view((entry_count,), (2,), 1)
-        self._sorted_entries_tensor = self.entry_views["g_SortedEntries"].tensor
+        self._sorted_entries_tensor = self.raw["g_SortedEntryData"]
         self._entry_capacity = entry_count
 
     def _alloc_radix(self, count: int) -> None:
@@ -132,7 +157,7 @@ class SplattingContext:
             "g_ScanlineEntries": self.scanline_views["g_ScanlineEntries"].tensor,
             "g_ScanlineTileCounts": self.scanlines["g_ScanlineTileCounts"],
             "g_ScanlineTileOffsets": self.scanlines["g_ScanlineTileOffsets"],
-            "g_TileEntries": self.entry_views["g_TileEntries"].tensor,
+            "g_TileEntries": self.raw["g_TileEntryData"],
             "g_SortedEntries": self._sorted_entries_tensor,
             **self.tiles,
             **self.frame,
@@ -141,9 +166,9 @@ class SplattingContext:
             "g_SortedEntryCount": int(entries),
             "g_TileGrid": spy.uint2((w + 7) // 8, (h + 7) // 8),
             "g_Background": spy.float3(*map(float, self.background)),
-            "g_RadiusScale": _RADIUS_SCALE,
-            "g_AlphaCutoff": _ALPHA_CUTOFF,
-            "g_TransmittanceThreshold": _TRANS_THRESHOLD,
+            "g_RadiusScale": float(self.radius_scale),
+            "g_AlphaCutoff": float(self.alpha_cutoff),
+            "g_TransmittanceThreshold": float(self.trans_threshold),
         }
 
     def _dispatch_scanline_count(self, camera: dict[str, Any], splat_count: int) -> int:
@@ -151,6 +176,9 @@ class SplattingContext:
         self._alloc_splat_sort(splat_count)
         self._alloc_radix(splat_count)
         self._alloc_prefix(self.util.radix_histogram_elements(splat_count))
+        if splat_count == 0:
+            self._sorted_splat_order_tensor = self.sort["g_DistanceSortOrder"]
+            return 0
         enc = self.device.create_command_encoder()
         sort_vars = self._vars(camera, splat_count, 0)
         self.k_generate_distance_sort_keys.dispatch(thread_count=spy.uint3(splat_count, 1, 1), vars=sort_vars, command_encoder=enc)
@@ -190,6 +218,9 @@ class SplattingContext:
         self.device.sync_to_device()
 
     def project(self, camera: dict[str, Any], splat_count: int) -> int:
+        if splat_count == 0:
+            self._dispatch_scanline_count(camera, splat_count)
+            return 0
         total = self._dispatch_scanline_count(camera, splat_count)
         self._emit_scanlines_and_tile_counts(camera, splat_count, total)
         return total
@@ -212,12 +243,12 @@ class SplattingContext:
         self.k_clear_tile_ranges.dispatch(thread_count=spy.uint3(tile_count, 1, 1), vars=self._vars(camera, splat_count, total), command_encoder=enc)
         if total_scanlines and total:
             self.k_emit_tile_entries.dispatch(thread_count=spy.uint3(total_scanlines, 1, 1), vars=self._vars(camera, splat_count, total_scanlines), command_encoder=enc)
-        self._sorted_entries_tensor = self.entry_views["g_SortedEntries"].tensor
+        self._sorted_entries_tensor = self.raw["g_SortedEntryData"]
         if total:
             self._alloc_radix(total)
             self._alloc_prefix(self.util.radix_histogram_elements(total))
             out_buffer = self.util.radix_sort_uint32(enc, self.tile_keys, self.tile_values, self.sorted_tile_keys, self.sorted_tile_values, self.radix["g_Histogram"], self.radix["g_HistogramPrefix"], self.prefix["g_BlockSums"], self.prefix["g_BlockOffsets"], self.prefix["g_Total"], total, 0, max(1, (tw * th - 1).bit_length()))
-            self._sorted_entries_tensor = self.entry_views["g_SortedEntries"].tensor if out_buffer else self.entry_views["g_TileEntries"].tensor
+            self._sorted_entries_tensor = self.raw["g_SortedEntryData"] if out_buffer else self.raw["g_TileEntryData"]
             self.k_build_tile_ranges.dispatch(thread_count=spy.uint3(total, 1, 1), vars=self._vars(camera, splat_count, total), command_encoder=enc)
         self.k_raster_fwd.dispatch(thread_count=spy.uint3(*self._size, 1), vars=self._vars(camera, splat_count, total), command_encoder=enc)
         if command_encoder is None:

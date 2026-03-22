@@ -11,8 +11,8 @@ uniform Tensor<uint, 1> g_ScanlineOffsets;
 uniform RWTensor<ScanlineEntry, 1> g_ScanlineEntries;
 uniform RWTensor<uint, 1> g_ScanlineTileCounts;
 uniform Tensor<uint, 1> g_ScanlineTileOffsets;
-uniform RWTensor<TileEntry, 1> g_TileEntries;
-uniform Tensor<TileEntry, 1> g_SortedEntries;
+uniform RWTensor<uint, 1> g_TileEntries;
+uniform Tensor<uint, 1> g_SortedEntries;
 uniform RWTensor<ProjectionState, 1> g_ProjectionState;
 uniform RWTensor<Gaussian3D, 1> g_RasterState;
 uniform RWTensor<uint, 1> g_TileRanges;
@@ -32,6 +32,19 @@ uniform float g_TransmittanceThreshold;
 
 groupshared Gaussian3D gsGaussian[RASTER_BATCH];
 groupshared uint gsBatchSplatId[RASTER_BATCH];
+
+uint load_sorted_entry_tile(uint idx) {
+    return g_SortedEntries[int(idx * 2u)];
+}
+
+uint load_sorted_entry_splat(uint idx) {
+    return g_SortedEntries[int(idx * 2u + 1u)];
+}
+
+void store_tile_entry(uint idx, uint tileId, uint splatId) {
+    g_TileEntries.store(int(idx * 2u), tileId);
+    g_TileEntries.store(int(idx * 2u + 1u), splatId);
+}
 
 // Generate exact float ordering keys for front-to-back splat sorting.
 [shader("compute")]
@@ -68,8 +81,9 @@ uint count_scanlines(Ellipse ellipse) {
     float3 localConic;
     // Normalize the ellipse into the major-axis scanline frame before counting strips.
     ellipse.scanline_frame(transpose, localCenter, localExtent, localConic);
-    int minStrip = clamp(int(floor((localCenter.y - localExtent.y) / TILE_SIZE)), 0, int(g_TileGrid.y) - 1);
-    int maxStrip = clamp(int(ceil((localCenter.y + localExtent.y) / TILE_SIZE)), 0, int(g_TileGrid.y) - 1);
+    uint2 localGrid = transpose ? g_TileGrid.yx : g_TileGrid;
+    int minStrip = clamp(int(floor((localCenter.y - localExtent.y - TINY_VALUE) / TILE_SIZE)), 0, int(localGrid.y) - 1);
+    int maxStrip = clamp(int(ceil((localCenter.y + localExtent.y) / TILE_SIZE)), 0, int(localGrid.y) - 1);
     return maxStrip >= minStrip ? uint(maxStrip - minStrip + 1) : 0u;
 }
 
@@ -81,11 +95,12 @@ bool scanline_tile_span(ScanlineEntry scanline, out int spanTileMin, out int spa
         return false;
     }
     bool transpose = scanline.transpose != 0u;
+    uint2 localGrid = transpose ? g_TileGrid.yx : g_TileGrid;
     float2 localCenter = transpose ? ellipse.centerPx.yx : ellipse.centerPx;
     float2 localExtent = transpose ? ellipse.bboxExtent.yx : ellipse.bboxExtent;
     float3 localConic = transpose ? float3(ellipse.conic.z, ellipse.conic.y, ellipse.conic.x) : ellipse.conic;
-    int minSpan = clamp(int(floor((localCenter.x - localExtent.x) / TILE_SIZE)), 0, int(g_TileGrid.x) - 1);
-    int maxSpan = clamp(int(ceil((localCenter.x + localExtent.x) / TILE_SIZE)), 0, int(g_TileGrid.x) - 1);
+    int minSpan = clamp(int(floor((localCenter.x - localExtent.x - TINY_VALUE) / TILE_SIZE)), 0, int(localGrid.x) - 1);
+    int maxSpan = clamp(int(ceil((localCenter.x + localExtent.x) / TILE_SIZE)), 0, int(localGrid.x) - 1);
     // Convert the stored strip index back into local strip coordinates for span evaluation.
     float stripMin = scanline.stripIndex * TILE_SIZE - localCenter.y;
     float stripMax = stripMin + TILE_SIZE;
@@ -96,7 +111,7 @@ bool scanline_tile_span(ScanlineEntry scanline, out int spanTileMin, out int spa
         return false;
     }
     // Clamp the analytic span to the ellipse bbox before emitting tile coordinates.
-    spanTileMin = clamp(int(floor((spanMin + localCenter.x) / TILE_SIZE)), minSpan, maxSpan);
+    spanTileMin = clamp(int(floor((spanMin + localCenter.x - TINY_VALUE) / TILE_SIZE)), minSpan, maxSpan);
     spanTileMax = clamp(int(floor((spanMax + localCenter.x) / TILE_SIZE)), minSpan, maxSpan);
     return spanTileMin <= spanTileMax;
 }
@@ -167,7 +182,8 @@ void csEmitScanlines(uint3 dispatchThreadID : SV_DispatchThreadID) {
     float2 localCenter, localExtent;
     float3 localConic;
     ellipse.scanline_frame(transpose, localCenter, localExtent, localConic);
-    int minStrip = clamp(int(floor((localCenter.y - localExtent.y) / TILE_SIZE)), 0, int(g_TileGrid.y) - 1);
+    uint2 localGrid = transpose ? g_TileGrid.yx : g_TileGrid;
+    int minStrip = clamp(int(floor((localCenter.y - localExtent.y - TINY_VALUE) / TILE_SIZE)), 0, int(localGrid.y) - 1);
     uint writeIndex = g_ScanlineOffsets[int(splatId)];
     for (uint localStrip = 0u; localStrip < scanlineCount; localStrip++) {
         // Each work item stores the splat plus one strip index in the chosen scan frame.
@@ -203,11 +219,8 @@ void csEmitTileEntries(uint3 dispatchThreadID : SV_DispatchThreadID) {
     if (!scanline_tile_span(scanline, spanTileMin, spanTileMax)) return;
     uint writeIndex = g_ScanlineTileOffsets[int(scanlineId)];
     for (int span = spanTileMin; span <= spanTileMax; span++) {
-        int[1] wi = { int(writeIndex) };
-        TileEntry entry;
         uint2 tileXY = scanline.transpose != 0u ? uint2(scanline.stripIndex, uint(span)) : uint2(uint(span), scanline.stripIndex);
-        entry.ids = uint2(tileXY.y * g_TileGrid.x + tileXY.x, scanline.splatId);
-        g_TileEntries.store(wi, entry);
+        store_tile_entry(writeIndex, tileXY.y * g_TileGrid.x + tileXY.x, scanline.splatId);
         writeIndex++;
     }
 }
@@ -228,9 +241,9 @@ void csClearTileRanges(uint3 dispatchThreadID : SV_DispatchThreadID) {
 void csBuildTileRanges(uint3 dispatchThreadID : SV_DispatchThreadID) {
     uint idx = dispatchThreadID.x;
     if (idx >= g_SortedEntryCount) return;
-    uint tile = g_SortedEntries[int(idx)].ids.x;
-    uint prevTile = idx > 0u ? g_SortedEntries[int(idx - 1u)].ids.x : 0u;
-    uint nextTile = idx + 1u < g_SortedEntryCount ? g_SortedEntries[int(idx + 1u)].ids.x : 0u;
+    uint tile = load_sorted_entry_tile(idx);
+    uint prevTile = idx > 0u ? load_sorted_entry_tile(idx - 1u) : 0u;
+    uint nextTile = idx + 1u < g_SortedEntryCount ? load_sorted_entry_tile(idx + 1u) : 0u;
     // g_TileRanges is flattened as [start0, end0, start1, end1, ...].
     if (idx == 0u || tile != prevTile) g_TileRanges.store(int(tile * 2u), idx);
     if (idx + 1u == g_SortedEntryCount || tile != nextTile) g_TileRanges.store(int(tile * 2u + 1u), idx + 1u);
@@ -240,7 +253,7 @@ void csBuildTileRanges(uint3 dispatchThreadID : SV_DispatchThreadID) {
 void prefetch_batch(uint batchStart, uint batchEnd, uint lane) {
     uint batchCount = batchEnd - batchStart;
     for (uint localIdx = lane; localIdx < batchCount; localIdx += RASTER_GROUP_THREADS) {
-        uint splatId = g_SortedEntries[int(batchStart + localIdx)].ids.y;
+        uint splatId = load_sorted_entry_splat(batchStart + localIdx);
         gsBatchSplatId[localIdx] = splatId;
         gsGaussian[localIdx] = g_RasterState[int(splatId)];
     }
@@ -288,7 +301,7 @@ void csRasterForward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : S
             GroupMemoryBarrierWithGroupSync();
         }
     }
-    int2 p = int2(int(py), int(px));
+    int2 p = int2(int(px), int(py));
     g_Output.store(p, raster_output(accum, trans, g_Background));
     g_ForwardState.store(p, float4(accum, trans));
     g_ForwardEnd.store(p, processedEnd);
@@ -310,7 +323,7 @@ void csRasterBackward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : 
     uint tileId = (py / TILE_SIZE) * g_TileGrid.x + (px / TILE_SIZE);
     uint2 range = uint2(g_TileRanges[int(tileId * 2u)], g_TileRanges[int(tileId * 2u + 1u)]);
     if (range.x == INVALID_START || range.y <= range.x) return;
-    int2 p = int2(int(py), int(px));
+    int2 p = int2(int(px), int(py));
     float4 state4 = g_ForwardState[p];
     var dpAccum = diffPair(state4.xyz);
     var dpTrans = diffPair(state4.w);

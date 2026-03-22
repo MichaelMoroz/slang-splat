@@ -13,7 +13,7 @@ static const float SMALL_VALUE = 1e-6;
 static const float TINY_VALUE = 1e-8;
 static const float RAY_DENOMINATOR_FLOOR = 1e-10;
 static const float POSITIVE_CONIC_FLOOR = 1e-10;
-static const float CONIC_DETERMINANT_FLOOR = 1e-12;
+static const float CONIC_DETERMINANT_FLOOR = 1e-20;
 static const float CONIC_AXIS_FLOOR = 1e-20;
 static const float CONIC_INTERSECTION_SLACK = 1e-5;
 static const float DEPTH_VISIBILITY_FLOOR = 1e-4;
@@ -207,7 +207,9 @@ struct Ellipse {
         float xExtent = sqrt(max(conic.z / det, 0.0));
         float yExtent = sqrt(max(conic.x / det, 0.0));
         if (!all(isfinite(float2(xExtent, yExtent)))) return false;
-        bboxExtent = clamp(float2(xExtent, yExtent) + BBOX_PAD_PX, float2(MIN_BBOX_EXTENT_PX), float2(radiusPx));
+        // The axis-aligned bounds come from the fitted conic, not the scalar major-axis radius.
+        // Clamping them back to radiusPx drops tiles for large rotated ellipses.
+        bboxExtent = max(float2(xExtent, yExtent) + BBOX_PAD_PX, float2(MIN_BBOX_EXTENT_PX));
         return true;
     }
 
@@ -240,9 +242,14 @@ struct Ellipse {
         if (range_for_orthogonal_coord(stripConic, coord0, rangeMin, rangeMax)) { spanMin = min(spanMin, rangeMin); spanMax = max(spanMax, rangeMax); hit = true; }
         if (range_for_orthogonal_coord(stripConic, coord1, rangeMin, rangeMax)) { spanMin = min(spanMin, rangeMin); spanMax = max(spanMax, rangeMax); hit = true; }
         float det = stripConic.x * stripConic.z - stripConic.y * stripConic.y;
-        float coordCrit = stripConic.y / sqrt(max(stripConic.z * det, ELLIPSE_EPS));
-        if (coord0 <= coordCrit && coordCrit <= coord1 && range_for_orthogonal_coord(stripConic, coordCrit, rangeMin, rangeMax)) { spanMin = min(spanMin, rangeMin); spanMax = max(spanMax, rangeMax); hit = true; }
-        if (coord0 <= -coordCrit && -coordCrit <= coord1 && range_for_orthogonal_coord(stripConic, -coordCrit, rangeMin, rangeMax)) { spanMin = min(spanMin, rangeMin); spanMax = max(spanMax, rangeMax); hit = true; }
+        float critDenomSq = stripConic.z * det;
+        if (critDenomSq > 0.0) {
+            // The interior x-extrema can be far from zero for huge screen-space ellipses.
+            // Clamping this denominator to a large epsilon collapses those extrema and drops tiles.
+            float coordCrit = stripConic.y / sqrt(critDenomSq);
+            if (coord0 <= coordCrit && coordCrit <= coord1 && range_for_orthogonal_coord(stripConic, coordCrit, rangeMin, rangeMax)) { spanMin = min(spanMin, rangeMin); spanMax = max(spanMax, rangeMax); hit = true; }
+            if (coord0 <= -coordCrit && -coordCrit <= coord1 && range_for_orthogonal_coord(stripConic, -coordCrit, rangeMin, rangeMax)) { spanMin = min(spanMin, rangeMin); spanMax = max(spanMax, rangeMax); hit = true; }
+        }
         return hit;
     }
 };
@@ -332,11 +339,41 @@ bool compute_gaussian_outline_ellipse(
     ellipse.conic = 0.0;
     ellipse.bboxExtent = 0.0;
     Gaussian3D supportGaussian = Gaussian3D.camera_gaussian(gaussian, camera, radiusScale, supportSigmaRadius);
+    float3 worldCenter = gaussian.position;
+    float2 screenCenter = 0.0;
+    if (!camera.project_world_to_screen(worldCenter, screenCenter)) return false;
+    float4 invRotation = float4(gaussian.rotation.x, -gaussian.rotation.yzw);
+    float2 fallbackMin = screenCenter;
+    float2 fallbackMax = screenCenter;
+    bool fallbackValid = true;
+    [unroll] for (uint axis = 0u; axis < 3u; axis++) {
+        float3 axisLocal = 0.0;
+        axisLocal[axis] = supportGaussian.logScale[axis];
+        float2 axisScreen = 0.0;
+        if (!camera.project_world_to_screen(worldCenter + rotate_by_quat(axisLocal, invRotation), axisScreen)) fallbackValid = false;
+        else {
+            fallbackMin = min(fallbackMin, axisScreen);
+            fallbackMax = max(fallbackMax, axisScreen);
+        }
+        if (!camera.project_world_to_screen(worldCenter - rotate_by_quat(axisLocal, invRotation), axisScreen)) fallbackValid = false;
+        else {
+            fallbackMin = min(fallbackMin, axisScreen);
+            fallbackMax = max(fallbackMax, axisScreen);
+        }
+    }
 
     // Build the tangent circle on the unit ellipsoid in support-local space.
     float3 viewOriginLocal = supportGaussian.position;
     float viewDistance = length(viewOriginLocal);
-    if (viewDistance <= 1.0 + ELLIPSE_EPS) return false;
+    if (viewDistance <= 1.0 + ELLIPSE_EPS) {
+        if (!fallbackValid) return false;
+        float2 fallbackHalfExtent = max(0.5 * (fallbackMax - fallbackMin), float2(ELLIPSE_EPS, ELLIPSE_EPS));
+        ellipse.centerPx = 0.5 * (fallbackMin + fallbackMax);
+        ellipse.radiusPx = max(fallbackHalfExtent.x, fallbackHalfExtent.y);
+        ellipse.conic = float3(1.0 / max(fallbackHalfExtent.x * fallbackHalfExtent.x, ELLIPSE_EPS), 0.0, 1.0 / max(fallbackHalfExtent.y * fallbackHalfExtent.y, ELLIPSE_EPS));
+        ellipse.bboxExtent = fallbackHalfExtent;
+        return all(isfinite(ellipse.centerPx)) && all(isfinite(ellipse.conic)) && isfinite(ellipse.radiusPx) && ellipse.radiusPx > 0.0;
+    }
     float3 viewDirLocal = viewOriginLocal / viewDistance;
     float3 tangentCircleCenter = viewDirLocal / viewDistance;
     float tangentCircleRadius = sqrt(max(1.0 - 1.0 / (viewDistance * viewDistance), 0.0));
@@ -351,8 +388,15 @@ bool compute_gaussian_outline_ellipse(
         tangentBasisU = float3(1.0 - viewDirLocal.x * viewDirLocal.x * invSouthPoleDistance, xyMix, -viewDirLocal.x);
         tangentBasisV = float3(xyMix, 1.0 - viewDirLocal.y * viewDirLocal.y * invSouthPoleDistance, -viewDirLocal.y);
     }
-    if (!all(isfinite(tangentBasisU)) || !all(isfinite(tangentBasisV))) return false;
-    float3 worldCenter = gaussian.position;
+    if (!all(isfinite(tangentBasisU)) || !all(isfinite(tangentBasisV))) {
+        if (!fallbackValid) return false;
+        float2 fallbackHalfExtent = max(0.5 * (fallbackMax - fallbackMin), float2(ELLIPSE_EPS, ELLIPSE_EPS));
+        ellipse.centerPx = 0.5 * (fallbackMin + fallbackMax);
+        ellipse.radiusPx = max(fallbackHalfExtent.x, fallbackHalfExtent.y);
+        ellipse.conic = float3(1.0 / max(fallbackHalfExtent.x * fallbackHalfExtent.x, ELLIPSE_EPS), 0.0, 1.0 / max(fallbackHalfExtent.y * fallbackHalfExtent.y, ELLIPSE_EPS));
+        ellipse.bboxExtent = fallbackHalfExtent;
+        return all(isfinite(ellipse.centerPx)) && all(isfinite(ellipse.conic)) && isfinite(ellipse.radiusPx) && ellipse.radiusPx > 0.0;
+    }
     float2 outlinePoints[ELLIPSE_POINT_COUNT];
     float2 outlineMin = float2(1e30, 1e30);
     float2 outlineMax = float2(-1e30, -1e30);
@@ -363,13 +407,25 @@ bool compute_gaussian_outline_ellipse(
         float s, c;
         sincos(theta, s, c);
         float3 supportPointLocal = tangentCircleCenter + tangentCircleRadius * (c * tangentBasisU + s * tangentBasisV);
-        float3 worldPoint = worldCenter + rotate_by_quat(supportPointLocal * supportGaussian.logScale, float4(gaussian.rotation.x, -gaussian.rotation.yzw));
+        float3 worldPoint = worldCenter + rotate_by_quat(supportPointLocal * supportGaussian.logScale, invRotation);
         float2 screenPoint = 0.0;
-        if (!camera.project_world_to_screen(worldPoint, screenPoint)) return false;
+        if (!camera.project_world_to_screen(worldPoint, screenPoint)) {
+            if (!fallbackValid) return false;
+            float2 fallbackHalfExtent = max(0.5 * (fallbackMax - fallbackMin), float2(ELLIPSE_EPS, ELLIPSE_EPS));
+            ellipse.centerPx = 0.5 * (fallbackMin + fallbackMax);
+            ellipse.radiusPx = max(fallbackHalfExtent.x, fallbackHalfExtent.y);
+            ellipse.conic = float3(1.0 / max(fallbackHalfExtent.x * fallbackHalfExtent.x, ELLIPSE_EPS), 0.0, 1.0 / max(fallbackHalfExtent.y * fallbackHalfExtent.y, ELLIPSE_EPS));
+            ellipse.bboxExtent = fallbackHalfExtent;
+            return all(isfinite(ellipse.centerPx)) && all(isfinite(ellipse.conic)) && isfinite(ellipse.radiusPx) && ellipse.radiusPx > 0.0;
+        }
         outlinePoints[row] = screenPoint;
         outlineMin = min(outlineMin, screenPoint);
         outlineMax = max(outlineMax, screenPoint);
     }
+    outlineMin = min(outlineMin, screenCenter);
+    outlineMax = max(outlineMax, screenCenter);
+    float2 bboxCenter = 0.5 * (outlineMin + outlineMax);
+    float2 bboxHalfExtent = max(0.5 * (outlineMax - outlineMin), float2(ELLIPSE_EPS, ELLIPSE_EPS));
 
     // The projected outline never reaches the viewport.
     // WARNING: if the points are non-uniform in screen-space then bbox might not represent the actual ellipse extent
@@ -380,20 +436,19 @@ bool compute_gaussian_outline_ellipse(
     int maxTileX = int(floor(visibleOutlineMax.x / TILE_SIZE));
     int minTileY = int(floor(visibleOutlineMin.y / TILE_SIZE));
     int maxTileY = int(floor(visibleOutlineMax.y / TILE_SIZE));
+    uint tileSpanX = uint(maxTileX - minTileX + 1);
+    uint tileSpanY = uint(maxTileY - minTileY + 1);
 
     // If the visible outline fits in one tile, an axis-aligned ellipse is enough, the exact fit will not help cull more tiles.
     if (minTileX == maxTileX && minTileY == maxTileY) {
-        float2 halfExtent = max(0.5 * (outlineMax - outlineMin), float2(ELLIPSE_EPS, ELLIPSE_EPS));
-        ellipse.centerPx = 0.5 * (outlineMin + outlineMax);
-        ellipse.radiusPx = max(halfExtent.x, halfExtent.y);
-        ellipse.conic = float3(1.0 / max(halfExtent.x * halfExtent.x, ELLIPSE_EPS), 0.0, 1.0 / max(halfExtent.y * halfExtent.y, ELLIPSE_EPS));
-        ellipse.bboxExtent = halfExtent;
+        ellipse.centerPx = bboxCenter;
+        ellipse.radiusPx = max(bboxHalfExtent.x, bboxHalfExtent.y);
+        ellipse.conic = float3(1.0 / max(bboxHalfExtent.x * bboxHalfExtent.x, ELLIPSE_EPS), 0.0, 1.0 / max(bboxHalfExtent.y * bboxHalfExtent.y, ELLIPSE_EPS));
+        ellipse.bboxExtent = bboxHalfExtent;
         return all(isfinite(ellipse.centerPx)) && all(isfinite(ellipse.conic)) && isfinite(ellipse.radiusPx) && ellipse.radiusPx > 0.0;
     }
 
     // Fit the screen-space ellipse directly from bbox-relative coordinates.
-    float2 bboxCenter = 0.5 * (outlineMin + outlineMax);
-    float2 bboxHalfExtent = max(0.5 * (outlineMax - outlineMin), float2(ELLIPSE_EPS, ELLIPSE_EPS));
     LinearSystem<ELLIPSE_POINT_COUNT> system;
     [unroll] for (uint row = 0u; row < ELLIPSE_POINT_COUNT; row++) {
         float2 norm = (outlinePoints[row] - bboxCenter) / bboxHalfExtent;
@@ -407,11 +462,23 @@ bool compute_gaussian_outline_ellipse(
 
     // Convert the normalized implicit conic back into pixel-space ellipse data.
     float solution[ELLIPSE_POINT_COUNT];
-    if (!system.solve(ELLIPSE_EPS, solution)) return false;
+    if (!system.solve(ELLIPSE_EPS, solution)) {
+        ellipse.centerPx = bboxCenter;
+        ellipse.radiusPx = max(bboxHalfExtent.x, bboxHalfExtent.y);
+        ellipse.conic = float3(1.0 / max(bboxHalfExtent.x * bboxHalfExtent.x, ELLIPSE_EPS), 0.0, 1.0 / max(bboxHalfExtent.y * bboxHalfExtent.y, ELLIPSE_EPS));
+        ellipse.bboxExtent = bboxHalfExtent;
+        return all(isfinite(ellipse.centerPx)) && all(isfinite(ellipse.conic)) && isfinite(ellipse.radiusPx) && ellipse.radiusPx > 0.0;
+    }
     float3 conicNorm = float3(solution[0], solution[1], solution[2]);
     float2 linear = float2(solution[3], solution[4]);
     float detA = conicNorm.x * conicNorm.z - conicNorm.y * conicNorm.y;
-    if (detA <= ELLIPSE_EPS) return false;
+    if (detA <= ELLIPSE_EPS) {
+        ellipse.centerPx = bboxCenter;
+        ellipse.radiusPx = max(bboxHalfExtent.x, bboxHalfExtent.y);
+        ellipse.conic = float3(1.0 / max(bboxHalfExtent.x * bboxHalfExtent.x, ELLIPSE_EPS), 0.0, 1.0 / max(bboxHalfExtent.y * bboxHalfExtent.y, ELLIPSE_EPS));
+        ellipse.bboxExtent = bboxHalfExtent;
+        return all(isfinite(ellipse.centerPx)) && all(isfinite(ellipse.conic)) && isfinite(ellipse.radiusPx) && ellipse.radiusPx > 0.0;
+    }
     float2 ellipseCenter = 0.5 * float2(
         (conicNorm.y * linear.y - conicNorm.z * linear.x) / detA,
         (conicNorm.y * linear.x - conicNorm.x * linear.y) / detA
@@ -420,11 +487,23 @@ bool compute_gaussian_outline_ellipse(
         conicNorm.x * ellipseCenter.x + conicNorm.y * ellipseCenter.y,
         conicNorm.y * ellipseCenter.x + conicNorm.z * ellipseCenter.y
     ));
-    if (centerScale <= ELLIPSE_EPS) return false;
+    if (centerScale <= ELLIPSE_EPS) {
+        ellipse.centerPx = bboxCenter;
+        ellipse.radiusPx = max(bboxHalfExtent.x, bboxHalfExtent.y);
+        ellipse.conic = float3(1.0 / max(bboxHalfExtent.x * bboxHalfExtent.x, ELLIPSE_EPS), 0.0, 1.0 / max(bboxHalfExtent.y * bboxHalfExtent.y, ELLIPSE_EPS));
+        ellipse.bboxExtent = bboxHalfExtent;
+        return all(isfinite(ellipse.centerPx)) && all(isfinite(ellipse.conic)) && isfinite(ellipse.radiusPx) && ellipse.radiusPx > 0.0;
+    }
     conicNorm /= centerScale;
     float trace = conicNorm.x + conicNorm.z;
     detA = conicNorm.x * conicNorm.z - conicNorm.y * conicNorm.y;
-    if (detA <= ELLIPSE_EPS || conicNorm.x <= ELLIPSE_EPS || conicNorm.z <= ELLIPSE_EPS) return false;
+    if (detA <= ELLIPSE_EPS || conicNorm.x <= ELLIPSE_EPS || conicNorm.z <= ELLIPSE_EPS) {
+        ellipse.centerPx = bboxCenter;
+        ellipse.radiusPx = max(bboxHalfExtent.x, bboxHalfExtent.y);
+        ellipse.conic = float3(1.0 / max(bboxHalfExtent.x * bboxHalfExtent.x, ELLIPSE_EPS), 0.0, 1.0 / max(bboxHalfExtent.y * bboxHalfExtent.y, ELLIPSE_EPS));
+        ellipse.bboxExtent = bboxHalfExtent;
+        return all(isfinite(ellipse.centerPx)) && all(isfinite(ellipse.conic)) && isfinite(ellipse.radiusPx) && ellipse.radiusPx > 0.0;
+    }
     float disc = sqrt(max(0.25 * trace * trace - detA, 0.0));
     float axis0 = rsqrt(max(0.5 * trace + disc, ELLIPSE_EPS));
     float axis1 = rsqrt(max(0.5 * trace - disc, ELLIPSE_EPS));
@@ -434,7 +513,7 @@ bool compute_gaussian_outline_ellipse(
         conicNorm.x / max(bboxHalfExtent.x * bboxHalfExtent.x, ELLIPSE_EPS),
         conicNorm.y / max(bboxHalfExtent.x * bboxHalfExtent.y, ELLIPSE_EPS),
         conicNorm.z / max(bboxHalfExtent.y * bboxHalfExtent.y, ELLIPSE_EPS));
-    ellipse.bboxExtent = float2(ellipse.radiusPx, ellipse.radiusPx);
+    ellipse.bboxExtent = bboxHalfExtent;
     return all(isfinite(ellipse.centerPx)) && all(isfinite(ellipse.conic)) && isfinite(ellipse.radiusPx) && ellipse.radiusPx > 0.0;
 }
 

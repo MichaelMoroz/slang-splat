@@ -230,7 +230,7 @@ def _project_scene(context: SplattingContext, splats: np.ndarray, camera: np.nda
 
 def _render_scene(context: SplattingContext, splats: np.ndarray, camera: np.ndarray, image_size: tuple[int, int], background: tuple[float, float, float] = (0.0, 0.0, 0.0)) -> np.ndarray:
     _load_public_splats(context, splats, image_size, background)
-    return np.asarray(context.render(_camera_dict(camera, image_size), splats.shape[1]).to_numpy()).transpose(1, 0, 2).copy()
+    return np.asarray(context.render(_camera_dict(camera, image_size), splats.shape[1]).to_numpy()).copy()
 
 
 def _backward_scene(
@@ -243,7 +243,7 @@ def _backward_scene(
 ) -> np.ndarray:
     _load_public_splats(context, splats, image_size, background)
     context.render(_camera_dict(camera, image_size), splats.shape[1])
-    context.frame["g_OutputGrad"].copy_from_numpy(np.ascontiguousarray(grad_output.astype(np.float32, copy=False).transpose(1, 0, 2)))
+    context.frame["g_OutputGrad"].copy_from_numpy(np.ascontiguousarray(grad_output.astype(np.float32, copy=False)))
     context.device.sync_to_cuda()
     grads = np.asarray(context.backward(_camera_dict(camera, image_size), splats.shape[1]).to_numpy())[: splats.shape[1] * 14].copy()
     return grads.reshape(splats.shape[1], 14).T
@@ -276,8 +276,8 @@ def _render_signature(context: SplattingContext, splats: np.ndarray, camera: np.
     _render_scene(context, splats, camera, image_size)
     order = np.asarray(context._sorted_splat_order_tensor.to_numpy()).reshape(-1)[: splats.shape[1]].astype(np.int64, copy=True)
     entries = np.asarray(
-        context.raw["g_SortedEntryData"].to_numpy() if context._sorted_entries_tensor is context.entry_views["g_SortedEntries"].tensor else context.raw["g_TileEntryData"].to_numpy()
-    )[: context._last_total].copy()
+        context.raw["g_SortedEntryData"].to_numpy() if context._sorted_entries_tensor is context.raw["g_SortedEntryData"] else context.raw["g_TileEntryData"].to_numpy()
+    )[: context._last_total * 2].reshape(-1, 2).copy()
     ranges = np.asarray(context.tiles["g_TileRanges"].to_numpy()).reshape(-1).copy()
     return order, entries, ranges
 
@@ -371,6 +371,22 @@ def test_forward_smoke(backend_context: SplattingContext) -> None:
     assert np.isfinite(image).all()
 
 
+def test_zero_splats_smoke(backend_context: SplattingContext) -> None:
+    image = _render_scene(backend_context, np.zeros((14, 0), dtype=np.float32), _make_camera(_SMOKE_IMAGE_SIZE), _SMOKE_IMAGE_SIZE)
+    assert tuple(image.shape) == (_SMOKE_IMAGE_SIZE[1], _SMOKE_IMAGE_SIZE[0], 4)
+    assert np.isfinite(image).all()
+    np.testing.assert_allclose(image, 0.0, atol=0.0, rtol=0.0)
+    grads = _backward_scene(
+        backend_context,
+        np.zeros((14, 0), dtype=np.float32),
+        _make_camera(_SMOKE_IMAGE_SIZE),
+        _SMOKE_IMAGE_SIZE,
+        np.ones_like(image, dtype=np.float32),
+    )
+    assert grads.shape == (14, 0)
+    assert np.isfinite(grads).all()
+
+
 def test_backward_smoke(backend_context: SplattingContext) -> None:
     image_size = _SMOKE_IMAGE_SIZE
     splats = _make_splats()
@@ -460,6 +476,28 @@ def test_projection_matches_outline_for_stress_cases(
     outline_points = _gaussian_outline_points(camera, splats[:, 0])
     errors = np.abs(_projection_conic_error(projected["projection"][0], outline_points))
     assert float(errors.max()) <= _PROJECTION_OUTLINE_MAX_ERROR, f"{name} projection max error {float(errors.max()):.4e}"
+
+
+def test_core_buffer_reuse_grows_only(backend_context: SplattingContext) -> None:
+    image_size = _SMOKE_IMAGE_SIZE
+    backend_context.prepare(32, image_size, (0.0, 0.0, 0.0))
+    scene_params_small = backend_context.scene["g_Params"].storage
+    projection_small = backend_context.scene["g_ProjectionStateData"].storage
+    raster_small = backend_context.scene["g_RasterStateData"].storage
+    scanline_small = backend_context.scanlines["g_ScanlineEntryData"].storage
+    entry_small = backend_context.raw["g_TileEntryData"].storage
+
+    backend_context.prepare(16, image_size, (0.0, 0.0, 0.0))
+    assert backend_context.scene["g_Params"].storage is scene_params_small
+    assert backend_context.scene["g_ProjectionStateData"].storage is projection_small
+    assert backend_context.scene["g_RasterStateData"].storage is raster_small
+    assert backend_context.scanlines["g_ScanlineEntryData"].storage is scanline_small
+    assert backend_context.raw["g_TileEntryData"].storage is entry_small
+
+    backend_context.prepare(96, image_size, (0.0, 0.0, 0.0))
+    assert backend_context.scene["g_Params"].storage is not scene_params_small
+    assert backend_context.scene["g_ProjectionStateData"].storage is not projection_small
+    assert backend_context.scene["g_RasterStateData"].storage is not raster_small
 
 
 def test_budget() -> None:
