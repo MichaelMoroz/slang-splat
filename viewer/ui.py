@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import importlib
+import math
 from pathlib import Path
 from types import SimpleNamespace
 import time
@@ -28,6 +29,10 @@ _INTERFACE_SCALE_OPTIONS = (
 _DEFAULT_INTERFACE_SCALE_INDEX = 3
 _BASE_FONT_SIZE_PX = 16.0
 _FONT_ATLAS_SIZE_PX = _BASE_FONT_SIZE_PX * _INTERFACE_SCALE_OPTIONS[-1][1]
+_DEBUG_MODE_NORMAL = 0
+_DEBUG_MODE_PROCESSED_COUNT = 1
+_DEBUG_COLORBAR_HEIGHT = 18.0
+_DEBUG_COLORBAR_TICKS = 5
 
 
 def _noop() -> None:
@@ -44,6 +49,27 @@ def _menu_item(label: str, shortcut: str = "", selected: bool = False, enabled: 
     return bool(imgui.menu_item(label, shortcut, selected, enabled)[0])
 
 
+def _saturate(value: float) -> float:
+    return min(max(float(value), 0.0), 1.0)
+
+
+def _jet_colormap(value: float) -> tuple[float, float, float]:
+    t = _saturate(value)
+    return (
+        _saturate(1.5 - abs(4.0 * t - 3.0)),
+        _saturate(1.5 - abs(4.0 * t - 2.0)),
+        _saturate(1.5 - abs(4.0 * t - 1.0)),
+    )
+
+
+def _color_u32(r: float, g: float, b: float, a: float = 1.0) -> int:
+    return imgui.color_convert_float4_to_u32(imgui.ImVec4(float(r), float(g), float(b), float(a)))
+
+
+def _processed_count_tick_value(t: float, max_splat_steps: int) -> float:
+    return math.pow(2.0, _saturate(t) * math.log2(max(max_splat_steps, 0) + 1.0)) - 1.0
+
+
 @dataclass(slots=True)
 class ViewerUI:
     values: dict[str, object] = field(default_factory=lambda: {
@@ -55,6 +81,7 @@ class ViewerUI:
         "radius_scale": 1.0,
         "alpha_cutoff": 1.0 / 255.0,
         "trans_threshold": 0.005,
+        "debug_mode": _DEBUG_MODE_NORMAL,
         "background_r": 0.0,
         "background_g": 0.0,
         "background_b": 0.0,
@@ -73,6 +100,7 @@ class ToolkitWindow:
         self._alive = True
         self._show_about = False
         self._show_docs = False
+        self._show_render_debug = False
         self._last_frame_time = time.perf_counter()
         self._menu_bar_height = 0.0
         self._applied_interface_scale = 1.0
@@ -178,6 +206,7 @@ class ToolkitWindow:
         self._menu_bar_height = self._draw_main_menu_bar(ui)
         imgui.dock_space_over_viewport(viewport=imgui.get_main_viewport(), flags=imgui.DockNodeFlags_.passthru_central_node.value)
         self._draw_toolkit_window(ui, width, height)
+        self._draw_render_debug_window(ui)
         self._draw_about()
         self._draw_docs()
         imgui.render()
@@ -200,6 +229,10 @@ class ToolkitWindow:
             imgui.separator()
             if _menu_item("Reset Interface Scale"):
                 ui.values[_INTERFACE_SCALE_KEY] = _DEFAULT_INTERFACE_SCALE_INDEX
+            imgui.end_menu()
+        if imgui.begin_menu("Debug"):
+            if _menu_item("Rendering"):
+                self._show_render_debug = True
             imgui.end_menu()
         if imgui.begin_menu("Help"):
             if _menu_item("Documentation"):
@@ -264,6 +297,47 @@ class ToolkitWindow:
             imgui.separator()
             imgui.text_disabled("Controls: LMB drag look | WASDQE move | wheel speed")
         imgui.end()
+
+    def _draw_render_debug_window(self, ui: ViewerUI) -> None:
+        if not self._show_render_debug:
+            return
+        opened, self._show_render_debug = imgui.begin("Rendering Debug", True)
+        if opened:
+            current = int(ui.values["debug_mode"])
+            imgui.text("Mode")
+            if imgui.radio_button("Normal", current == _DEBUG_MODE_NORMAL):
+                ui.values["debug_mode"] = _DEBUG_MODE_NORMAL
+            if imgui.radio_button("Splats Per Tile Processed", current == _DEBUG_MODE_PROCESSED_COUNT):
+                ui.values["debug_mode"] = _DEBUG_MODE_PROCESSED_COUNT
+            self._draw_debug_colorbar(ui)
+        imgui.end()
+
+    def _draw_debug_colorbar(self, ui: ViewerUI) -> None:
+        if int(ui.values["debug_mode"]) != _DEBUG_MODE_PROCESSED_COUNT:
+            return
+        imgui.separator()
+        imgui.text("Processed Count Scale")
+        draw_list = imgui.get_window_draw_list()
+        width = max(float(imgui.get_content_region_avail().x), 120.0)
+        imgui.dummy(imgui.ImVec2(width, _DEBUG_COLORBAR_HEIGHT + 22.0))
+        rect_min = imgui.get_item_rect_min()
+        x0 = rect_min.x
+        y0 = rect_min.y
+        x1 = x0 + width
+        y1 = y0 + _DEBUG_COLORBAR_HEIGHT
+        for idx in range(64):
+            t0 = idx / 64.0
+            t1 = (idx + 1) / 64.0
+            rgb = _jet_colormap(0.5 * (t0 + t1))
+            draw_list.add_rect_filled(imgui.ImVec2(x0 + t0 * width, y0), imgui.ImVec2(x0 + t1 * width, y1), _color_u32(*rgb))
+        draw_list.add_rect(imgui.ImVec2(x0, y0), imgui.ImVec2(x1, y1), _color_u32(0.95, 0.97, 1.0, 0.95), 2.0, 0, 1.0)
+        max_splat_steps = max(int(ui.texts.get("max_splat_steps", "0")), 0)
+        for idx in range(_DEBUG_COLORBAR_TICKS):
+            t = idx / max(_DEBUG_COLORBAR_TICKS - 1, 1)
+            x = x0 + t * (x1 - x0)
+            draw_list.add_line(imgui.ImVec2(x, y1 + 2.0), imgui.ImVec2(x, y1 + 8.0), _color_u32(0.85, 0.88, 0.92, 0.9), 1.0)
+            value = _processed_count_tick_value(t, max_splat_steps)
+            draw_list.add_text(imgui.ImVec2(x - 8.0, y1 + 10.0), _color_u32(0.85, 0.88, 0.92, 0.95), f"{int(round(value)):,}")
 
     def _draw_about(self) -> None:
         if not self._show_about:

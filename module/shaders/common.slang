@@ -42,6 +42,8 @@ static const uint PARAM_COLOR_B = 12u;
 static const uint PARAM_RAW_OPACITY = 13u;
 static const uint PARAM_COUNT = 14u;
 static const uint INVALID_START = 0xFFFFFFFFu;
+static const uint DEBUG_MODE_NORMAL = 0u;
+static const uint DEBUG_MODE_PROCESSED_COUNT = 1u;
 
 struct Gaussian3D : IDifferentiable {
     float3 position;
@@ -204,8 +206,9 @@ struct Ellipse {
         bboxExtent = float2(radiusPx, radiusPx);
         float det = conic.x * conic.z - conic.y * conic.y;
         if (!all(isfinite(conic)) || conic.x <= POSITIVE_CONIC_FLOOR || conic.z <= POSITIVE_CONIC_FLOOR || det <= CONIC_DETERMINANT_FLOOR) return false;
-        float xExtent = sqrt(max(conic.z / det, 0.0));
-        float yExtent = sqrt(max(conic.x / det, 0.0));
+        float level = 1.0 + CONIC_INTERSECTION_SLACK;
+        float xExtent = sqrt(max(level * conic.z / det, 0.0));
+        float yExtent = sqrt(max(level * conic.x / det, 0.0));
         if (!all(isfinite(float2(xExtent, yExtent)))) return false;
         // The axis-aligned bounds come from the fitted conic, not the scalar major-axis radius.
         // Clamping them back to radiusPx drops tiles for large rotated ellipses.
@@ -222,7 +225,7 @@ struct Ellipse {
 
     bool range_for_orthogonal_coord(float3 stripConic, float coord, out float rangeMin, out float rangeMax) {
         float det = stripConic.x * stripConic.z - stripConic.y * stripConic.y;
-        float radicand = stripConic.x - det * coord * coord;
+        float radicand = stripConic.x * (1.0 + CONIC_INTERSECTION_SLACK) - det * coord * coord;
         if (radicand < 0.0) {
             rangeMin = 0.0;
             rangeMax = 0.0;
@@ -246,12 +249,38 @@ struct Ellipse {
         if (critDenomSq > 0.0) {
             // The interior x-extrema can be far from zero for huge screen-space ellipses.
             // Clamping this denominator to a large epsilon collapses those extrema and drops tiles.
-            float coordCrit = stripConic.y / sqrt(critDenomSq);
+            float coordCrit = stripConic.y * sqrt(1.0 + CONIC_INTERSECTION_SLACK) / sqrt(critDenomSq);
             if (coord0 <= coordCrit && coordCrit <= coord1 && range_for_orthogonal_coord(stripConic, coordCrit, rangeMin, rangeMax)) { spanMin = min(spanMin, rangeMin); spanMax = max(spanMax, rangeMax); hit = true; }
             if (coord0 <= -coordCrit && -coordCrit <= coord1 && range_for_orthogonal_coord(stripConic, -coordCrit, rangeMin, rangeMax)) { spanMin = min(spanMin, rangeMin); spanMax = max(spanMax, rangeMax); hit = true; }
         }
         return hit;
     }
+
+    float eval_conic(float2 localPoint) {
+        return conic.x * localPoint.x * localPoint.x + 2.0 * conic.y * localPoint.x * localPoint.y + conic.z * localPoint.y * localPoint.y;
+    }
+
+    bool tile_intersects(float2 boxMin, float2 boxMax) {
+        float minValue = 1e30;
+        minValue = min(minValue, eval_conic(float2(boxMin.x, boxMin.y)));
+        minValue = min(minValue, eval_conic(float2(boxMin.x, boxMax.y)));
+        minValue = min(minValue, eval_conic(float2(boxMax.x, boxMin.y)));
+        minValue = min(minValue, eval_conic(float2(boxMax.x, boxMax.y)));
+
+        float xAtMinY = clamp(-conic.y * boxMin.y / max(conic.x, POSITIVE_CONIC_FLOOR), boxMin.x, boxMax.x);
+        float xAtMaxY = clamp(-conic.y * boxMax.y / max(conic.x, POSITIVE_CONIC_FLOOR), boxMin.x, boxMax.x);
+        float yAtMinX = clamp(-conic.y * boxMin.x / max(conic.z, POSITIVE_CONIC_FLOOR), boxMin.y, boxMax.y);
+        float yAtMaxX = clamp(-conic.y * boxMax.x / max(conic.z, POSITIVE_CONIC_FLOOR), boxMin.y, boxMax.y);
+
+        minValue = min(minValue, eval_conic(float2(xAtMinY, boxMin.y)));
+        minValue = min(minValue, eval_conic(float2(xAtMaxY, boxMax.y)));
+        minValue = min(minValue, eval_conic(float2(boxMin.x, yAtMinX)));
+        minValue = min(minValue, eval_conic(float2(boxMax.x, yAtMaxX)));
+
+        if (boxMin.x <= 0.0 && 0.0 <= boxMax.x && boxMin.y <= 0.0 && 0.0 <= boxMax.y) minValue = 0.0;
+        return minValue <= 1.0 + CONIC_INTERSECTION_SLACK;
+    }
+
 };
 
 struct LinearSystem<let N : int> {
@@ -326,6 +355,21 @@ bool inverse3x3(float3x3 m, float eps, out float3x3 mInv) {
 [Differentiable] float3 rotate_by_quat(float3 v, float4 q) { return v + 2.0 * cross(cross(v, q.yzw) + q.x * v, q.yzw); }
 [Differentiable] float sigmoid(float x) { return 1.0 / (1.0 + exp(-x)); }
 uint float_to_ordered_uint(float value) { uint bits = asuint(value); return (bits & FLOAT_SIGN_MASK) != 0u ? ~bits : (bits | FLOAT_SIGN_MASK); }
+
+float3 jet_colormap(float x) {
+    float t = saturate(x);
+    return float3(
+        saturate(1.5 - abs(4.0 * t - 3.0)),
+        saturate(1.5 - abs(4.0 * t - 2.0)),
+        saturate(1.5 - abs(4.0 * t - 1.0))
+    );
+}
+
+float3 raster_processed_count_color(uint processedCount, uint maxSplatSteps) {
+    float logMax = log2(float(maxSplatSteps) + 1.0);
+    float normalized = (logMax > 0.0) ? saturate(log2(float(processedCount) + 1.0) / logMax) : 0.0;
+    return jet_colormap(normalized);
+}
 
 bool compute_gaussian_outline_ellipse(
     Gaussian3D gaussian,

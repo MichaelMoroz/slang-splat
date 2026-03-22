@@ -29,6 +29,8 @@ uniform float3 g_Background;
 uniform float g_RadiusScale;
 uniform float g_AlphaCutoff;
 uniform float g_TransmittanceThreshold;
+uniform uint g_DebugMode;
+uniform uint g_DebugMaxSplatSteps;
 
 groupshared Gaussian3D gsGaussian[RASTER_BATCH];
 groupshared uint gsBatchSplatId[RASTER_BATCH];
@@ -113,6 +115,22 @@ bool scanline_tile_span(ScanlineEntry scanline, out int spanTileMin, out int spa
     // Clamp the analytic span to the ellipse bbox before emitting tile coordinates.
     spanTileMin = clamp(int(floor((spanMin + localCenter.x - TINY_VALUE) / TILE_SIZE)), minSpan, maxSpan);
     spanTileMax = clamp(int(floor((spanMax + localCenter.x) / TILE_SIZE)), minSpan, maxSpan);
+    while (spanTileMin <= spanTileMax) {
+        float tileMin = spanTileMin * TILE_SIZE - localCenter.x;
+        float tileMax = tileMin + TILE_SIZE;
+        float2 boxMin = transpose ? float2(stripMin, tileMin) : float2(tileMin, stripMin);
+        float2 boxMax = transpose ? float2(stripMax, tileMax) : float2(tileMax, stripMax);
+        if (ellipse.tile_intersects(boxMin, boxMax)) break;
+        spanTileMin++;
+    }
+    while (spanTileMin <= spanTileMax) {
+        float tileMin = spanTileMax * TILE_SIZE - localCenter.x;
+        float tileMax = tileMin + TILE_SIZE;
+        float2 boxMin = transpose ? float2(stripMin, tileMin) : float2(tileMin, stripMin);
+        float2 boxMax = transpose ? float2(stripMax, tileMax) : float2(tileMax, stripMax);
+        if (ellipse.tile_intersects(boxMin, boxMax)) break;
+        spanTileMax--;
+    }
     return spanTileMin <= spanTileMax;
 }
 
@@ -302,7 +320,11 @@ void csRasterForward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : S
         }
     }
     int2 p = int2(int(px), int(py));
-    g_Output.store(p, raster_output(accum, trans, g_Background));
+    uint processedCount = range.x != INVALID_START && processedEnd >= range.x ? (processedEnd - range.x) : 0u;
+    float4 output = g_DebugMode == DEBUG_MODE_PROCESSED_COUNT
+        ? float4(raster_processed_count_color(processedCount, g_DebugMaxSplatSteps), 1.0)
+        : raster_output(accum, trans, g_Background);
+    g_Output.store(p, output);
     g_ForwardState.store(p, float4(accum, trans));
     g_ForwardEnd.store(p, processedEnd);
 }

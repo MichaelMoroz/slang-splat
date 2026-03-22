@@ -6,6 +6,9 @@ import time
 
 import slangpy as spy
 
+DEBUG_MODE_NORMAL = 0
+DEBUG_MODE_PROCESSED_COUNT = 1
+
 
 def _float2() -> spy.float2:
     return spy.float2(0.0, 0.0)
@@ -35,6 +38,7 @@ class ViewerState:
     radius_scale: float = 1.0
     alpha_cutoff: float = 1.0 / 255.0
     trans_threshold: float = 0.005
+    debug_mode: int = DEBUG_MODE_NORMAL
     keys: dict[spy.KeyCode, bool] = field(default_factory=dict)
     mouse_left: bool = False
     mouse_delta: spy.float2 = field(default_factory=_float2)

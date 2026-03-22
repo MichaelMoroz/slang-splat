@@ -17,6 +17,8 @@ _ALPHA_CUTOFF = 1 / 255
 _TRANS_THRESHOLD = 0.005
 _RADIUS_SCALE = 1.0
 _DEBUG_COLOR = spy.float3(0.91, 0.53, 0.18)
+_DEBUG_MODE_NORMAL = 0
+_DEBUG_MODE_PROCESSED_COUNT = 1
 
 
 @dataclass
@@ -25,6 +27,7 @@ class SplattingContext:
     radius_scale: float = 1.0
     alpha_cutoff: float = 1 / 255
     trans_threshold: float = 0.005
+    debug_mode: int = _DEBUG_MODE_NORMAL
 
     def __post_init__(self) -> None:
         self.device = self.device or spy.create_device(type=spy.DeviceType.cuda, include_paths=[_SHADERS], enable_cuda_interop=False)
@@ -171,6 +174,8 @@ class SplattingContext:
             "g_RadiusScale": float(self.radius_scale),
             "g_AlphaCutoff": float(self.alpha_cutoff),
             "g_TransmittanceThreshold": float(self.trans_threshold),
+            "g_DebugMode": int(self.debug_mode),
+            "g_DebugMaxSplatSteps": int(entries),
         }
 
     def _dispatch_scanline_count(self, camera: dict[str, Any], splat_count: int) -> int:

@@ -151,6 +151,7 @@ class SplatViewer(spy.AppWindow):
         self.s.radius_scale = float(self.ui.values["radius_scale"])
         self.s.alpha_cutoff = float(self.ui.values["alpha_cutoff"])
         self.s.trans_threshold = float(self.ui.values["trans_threshold"])
+        self.s.debug_mode = int(self.ui.values["debug_mode"])
         self.s.background = (
             float(self.ui.values["background_r"]),
             float(self.ui.values["background_g"]),
@@ -195,6 +196,7 @@ class SplatViewer(spy.AppWindow):
         self.ui.texts["status"] = f"FPS: {self.s.fps_smooth:.1f} | Splats: {self.s.splat_count:,}"
         self.ui.texts["scene"] = "Scene: <none>" if self.s.scene_path is None else f"Scene: {self.s.scene_path}"
         self.ui.texts["error"] = f"Error: {self.s.last_error}" if self.s.last_error else ""
+        self.ui.texts["max_splat_steps"] = str(getattr(self.renderer, "_last_total", 0))
         try:
             self.update_camera(dt)
             if self.s.splats is None:
@@ -204,9 +206,11 @@ class SplatViewer(spy.AppWindow):
                 self.renderer.radius_scale = self.s.radius_scale
                 self.renderer.alpha_cutoff = self.s.alpha_cutoff
                 self.renderer.trans_threshold = self.s.trans_threshold
+                self.renderer.debug_mode = self.s.debug_mode
                 self.renderer.prepare(self.s.splat_count, (width, height), self.s.background)
                 self._upload_scene_if_needed()
                 self.renderer.render(self.camera().gpu_params(width, height), self.s.splat_count, command_encoder=encoder)
+                self.ui.texts["max_splat_steps"] = str(getattr(self.renderer, "_last_total", 0))
                 present = self._ensure_present_texture(width, height)
                 self.blit_kernel.dispatch(
                     thread_count=spy.uint3(width, height, 1),
