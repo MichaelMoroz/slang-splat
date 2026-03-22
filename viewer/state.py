@@ -29,8 +29,8 @@ class ViewerState:
     move_speed: float = 2.0
     look_speed: float = 0.003
     fov_y: float = 60.0
-    near: float = 0.1
-    far: float = 100.0
+    near: float = 0.0
+    far: float = 1000.0
     background: tuple[float, float, float] = (0.0, 0.0, 0.0)
     radius_scale: float = 1.0
     alpha_cutoff: float = 1.0 / 255.0

@@ -19,8 +19,8 @@ class Camera:
     target: np.ndarray
     up: np.ndarray
     fov_y_degrees: float = 60.0
-    near: float = 0.1
-    far: float = 100.0
+    near: float = 0.0
+    far: float = 1000.0
     distortion_k1: float = 0.0
     distortion_k2: float = 0.0
 
@@ -30,8 +30,8 @@ class Camera:
         target: tuple[float, float, float] | np.ndarray = (0.0, 0.0, 0.0),
         up: tuple[float, float, float] | np.ndarray = (0.0, 1.0, 0.0),
         fov_y_degrees: float = 60.0,
-        near: float = 0.1,
-        far: float = 100.0,
+        near: float = 0.0,
+        far: float = 1000.0,
         distortion_k1: float = 0.0,
         distortion_k2: float = 0.0,
     ) -> "Camera":

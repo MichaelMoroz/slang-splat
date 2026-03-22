@@ -7,6 +7,7 @@ from typing import Any
 import numpy as np
 import slangpy as spy
 
+from utility.debug import debug_group
 from utility.utility import GpuUtility
 
 _ROOT = Path(__file__).resolve().parent
@@ -15,6 +16,7 @@ _PARAM_COUNT = 14
 _ALPHA_CUTOFF = 1 / 255
 _TRANS_THRESHOLD = 0.005
 _RADIUS_SCALE = 1.0
+_DEBUG_COLOR = spy.float3(0.91, 0.53, 0.18)
 
 
 @dataclass
@@ -180,26 +182,30 @@ class SplattingContext:
             self._sorted_splat_order_tensor = self.sort["g_DistanceSortOrder"]
             return 0
         enc = self.device.create_command_encoder()
-        sort_vars = self._vars(camera, splat_count, 0)
-        self.k_generate_distance_sort_keys.dispatch(thread_count=spy.uint3(splat_count, 1, 1), vars=sort_vars, command_encoder=enc)
-        out_buffer = self.util.radix_sort_uint32(
-            enc,
-            self.sort["g_DistanceKeys"],
-            self.sort["g_DistanceSortOrder"],
-            self.sort["g_SortedDistanceKeys"],
-            self.sort["g_SortedDistanceSortOrder"],
-            self.radix["g_Histogram"],
-            self.radix["g_HistogramPrefix"],
-            self.prefix["g_BlockSums"],
-            self.prefix["g_BlockOffsets"],
-            self.prefix["g_Total"],
-            splat_count,
-            0,
-            32,
-        )
-        self._sorted_splat_order_tensor = self.sort["g_SortedDistanceSortOrder"] if out_buffer else self.sort["g_DistanceSortOrder"]
-        self.k_project_scanline_count.dispatch(thread_count=spy.uint3(splat_count, 1, 1), vars=self._vars(camera, splat_count, 0), command_encoder=enc)
-        self.util.prefix_sum_uint32(enc, self.scene["g_ScanlineCounts"], self.scene["g_ScanlineOffsets"], self.prefix["g_BlockSums"], self.prefix["g_BlockOffsets"], self.prefix["g_Total"], splat_count, True)
+        with debug_group(enc, "renderer.project_scanlines", _DEBUG_COLOR):
+            sort_vars = self._vars(camera, splat_count, 0)
+            with debug_group(enc, "renderer.distance_sort", _DEBUG_COLOR):
+                self.k_generate_distance_sort_keys.dispatch(thread_count=spy.uint3(splat_count, 1, 1), vars=sort_vars, command_encoder=enc)
+                out_buffer = self.util.radix_sort_uint32(
+                    enc,
+                    self.sort["g_DistanceKeys"],
+                    self.sort["g_DistanceSortOrder"],
+                    self.sort["g_SortedDistanceKeys"],
+                    self.sort["g_SortedDistanceSortOrder"],
+                    self.radix["g_Histogram"],
+                    self.radix["g_HistogramPrefix"],
+                    self.prefix["g_BlockSums"],
+                    self.prefix["g_BlockOffsets"],
+                    self.prefix["g_Total"],
+                    splat_count,
+                    0,
+                    32,
+                )
+            self._sorted_splat_order_tensor = self.sort["g_SortedDistanceSortOrder"] if out_buffer else self.sort["g_DistanceSortOrder"]
+            with debug_group(enc, "renderer.project", _DEBUG_COLOR):
+                self.k_project_scanline_count.dispatch(thread_count=spy.uint3(splat_count, 1, 1), vars=self._vars(camera, splat_count, 0), command_encoder=enc)
+            with debug_group(enc, "renderer.scanline_prefix", _DEBUG_COLOR):
+                self.util.prefix_sum_uint32(enc, self.scene["g_ScanlineCounts"], self.scene["g_ScanlineOffsets"], self.prefix["g_BlockSums"], self.prefix["g_BlockOffsets"], self.prefix["g_Total"], splat_count, True)
         self.device.submit_command_buffer(enc.finish())
         self.device.sync_to_device()
         total = self._read_uint(self.prefix["g_Total"])
@@ -211,9 +217,10 @@ class SplattingContext:
         if total_scanlines == 0:
             return
         enc = self.device.create_command_encoder()
-        vars = self._vars(camera, splat_count, total_scanlines)
-        self.k_emit_scanlines.dispatch(thread_count=spy.uint3(splat_count, 1, 1), vars=vars, command_encoder=enc)
-        self.k_emit_scanline_tile_counts.dispatch(thread_count=spy.uint3(total_scanlines, 1, 1), vars=vars, command_encoder=enc)
+        with debug_group(enc, "renderer.emit_scanlines", _DEBUG_COLOR):
+            vars = self._vars(camera, splat_count, total_scanlines)
+            self.k_emit_scanlines.dispatch(thread_count=spy.uint3(splat_count, 1, 1), vars=vars, command_encoder=enc)
+            self.k_emit_scanline_tile_counts.dispatch(thread_count=spy.uint3(total_scanlines, 1, 1), vars=vars, command_encoder=enc)
         self.device.submit_command_buffer(enc.finish())
         self.device.sync_to_device()
 
@@ -231,7 +238,8 @@ class SplattingContext:
         if total_scanlines:
             self._alloc_prefix(total_scanlines)
             prefix_encoder = self.device.create_command_encoder()
-            self.util.prefix_sum_uint32(prefix_encoder, self.scanlines["g_ScanlineTileCounts"], self.scanlines["g_ScanlineTileOffsets"], self.prefix["g_BlockSums"], self.prefix["g_BlockOffsets"], self.prefix["g_Total"], total_scanlines, True)
+            with debug_group(prefix_encoder, "renderer.tile_prefix", _DEBUG_COLOR):
+                self.util.prefix_sum_uint32(prefix_encoder, self.scanlines["g_ScanlineTileCounts"], self.scanlines["g_ScanlineTileOffsets"], self.prefix["g_BlockSums"], self.prefix["g_BlockOffsets"], self.prefix["g_Total"], total_scanlines, True)
             self.device.submit_command_buffer(prefix_encoder.finish())
             self.device.sync_to_device()
             total = self._read_uint(self.prefix["g_Total"])
@@ -240,17 +248,22 @@ class SplattingContext:
         tw, th = (self._size[0] + 7) // 8, (self._size[1] + 7) // 8
         tile_count = tw * th
         enc = command_encoder or self.device.create_command_encoder()
-        self.k_clear_tile_ranges.dispatch(thread_count=spy.uint3(tile_count, 1, 1), vars=self._vars(camera, splat_count, total), command_encoder=enc)
-        if total_scanlines and total:
-            self.k_emit_tile_entries.dispatch(thread_count=spy.uint3(total_scanlines, 1, 1), vars=self._vars(camera, splat_count, total_scanlines), command_encoder=enc)
-        self._sorted_entries_tensor = self.raw["g_SortedEntryData"]
-        if total:
-            self._alloc_radix(total)
-            self._alloc_prefix(self.util.radix_histogram_elements(total))
-            out_buffer = self.util.radix_sort_uint32(enc, self.tile_keys, self.tile_values, self.sorted_tile_keys, self.sorted_tile_values, self.radix["g_Histogram"], self.radix["g_HistogramPrefix"], self.prefix["g_BlockSums"], self.prefix["g_BlockOffsets"], self.prefix["g_Total"], total, 0, max(1, (tw * th - 1).bit_length()))
-            self._sorted_entries_tensor = self.raw["g_SortedEntryData"] if out_buffer else self.raw["g_TileEntryData"]
-            self.k_build_tile_ranges.dispatch(thread_count=spy.uint3(total, 1, 1), vars=self._vars(camera, splat_count, total), command_encoder=enc)
-        self.k_raster_fwd.dispatch(thread_count=spy.uint3(*self._size, 1), vars=self._vars(camera, splat_count, total), command_encoder=enc)
+        with debug_group(enc, "renderer.render", _DEBUG_COLOR):
+            self.k_clear_tile_ranges.dispatch(thread_count=spy.uint3(tile_count, 1, 1), vars=self._vars(camera, splat_count, total), command_encoder=enc)
+            if total_scanlines and total:
+                with debug_group(enc, "renderer.emit_tiles", _DEBUG_COLOR):
+                    self.k_emit_tile_entries.dispatch(thread_count=spy.uint3(total_scanlines, 1, 1), vars=self._vars(camera, splat_count, total_scanlines), command_encoder=enc)
+            self._sorted_entries_tensor = self.raw["g_SortedEntryData"]
+            if total:
+                self._alloc_radix(total)
+                self._alloc_prefix(self.util.radix_histogram_elements(total))
+                with debug_group(enc, "renderer.sort_tiles", _DEBUG_COLOR):
+                    out_buffer = self.util.radix_sort_uint32(enc, self.tile_keys, self.tile_values, self.sorted_tile_keys, self.sorted_tile_values, self.radix["g_Histogram"], self.radix["g_HistogramPrefix"], self.prefix["g_BlockSums"], self.prefix["g_BlockOffsets"], self.prefix["g_Total"], total, 0, max(1, (tw * th - 1).bit_length()))
+                self._sorted_entries_tensor = self.raw["g_SortedEntryData"] if out_buffer else self.raw["g_TileEntryData"]
+                with debug_group(enc, "renderer.build_tile_ranges", _DEBUG_COLOR):
+                    self.k_build_tile_ranges.dispatch(thread_count=spy.uint3(total, 1, 1), vars=self._vars(camera, splat_count, total), command_encoder=enc)
+            with debug_group(enc, "renderer.raster_forward", _DEBUG_COLOR):
+                self.k_raster_fwd.dispatch(thread_count=spy.uint3(*self._size, 1), vars=self._vars(camera, splat_count, total), command_encoder=enc)
         if command_encoder is None:
             self.device.submit_command_buffer(enc.finish())
             self.device.sync_to_device()
@@ -259,8 +272,9 @@ class SplattingContext:
 
     def backward(self, camera: dict[str, Any], splat_count: int, command_encoder: spy.CommandEncoder | None = None) -> spy.Tensor:
         enc = command_encoder or self.device.create_command_encoder()
-        self.scene["g_ParamGrads"].clear(command_encoder=enc)
-        self.k_raster_bwd.dispatch(thread_count=spy.uint3(*self._size, 1), vars=self._vars(camera, splat_count, self._last_total), command_encoder=enc)
+        with debug_group(enc, "renderer.backward", _DEBUG_COLOR):
+            self.scene["g_ParamGrads"].clear(command_encoder=enc)
+            self.k_raster_bwd.dispatch(thread_count=spy.uint3(*self._size, 1), vars=self._vars(camera, splat_count, self._last_total), command_encoder=enc)
         if command_encoder is None:
             self.device.submit_command_buffer(enc.finish())
             self.device.sync_to_device()

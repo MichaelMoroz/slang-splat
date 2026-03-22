@@ -20,6 +20,10 @@ _INTERFACE_SCALE_OPTIONS = (
     ("150%", 1.5),
     ("175%", 1.75),
     ("200%", 2.0),
+    ("250%", 2.5),
+    ("300%", 3.0),
+    ("350%", 3.5),
+    ("400%", 4.0),
 )
 _DEFAULT_INTERFACE_SCALE_INDEX = 3
 _BASE_FONT_SIZE_PX = 16.0
@@ -46,8 +50,8 @@ class ViewerUI:
         _INTERFACE_SCALE_KEY: _DEFAULT_INTERFACE_SCALE_INDEX,
         "move_speed": 2.0,
         "fov": 60.0,
-        "near": 0.1,
-        "far": 100.0,
+        "near": 0.0,
+        "far": 1000.0,
         "radius_scale": 1.0,
         "alpha_cutoff": 1.0 / 255.0,
         "trans_threshold": 0.005,
@@ -71,7 +75,7 @@ class ToolkitWindow:
         self._show_docs = False
         self._last_frame_time = time.perf_counter()
         self._menu_bar_height = 0.0
-        self._applied_interface_scale = -1.0
+        self._applied_interface_scale = 1.0
         self._toolkit_window_open = True
         self._configure_default_font()
         self._apply_theme()
@@ -137,9 +141,8 @@ class ToolkitWindow:
         clamped_scale = max(float(scale), 0.5)
         if abs(clamped_scale - self._applied_interface_scale) <= 1e-6:
             return
-        self._apply_theme()
         style = imgui.get_style()
-        style.scale_all_sizes(clamped_scale)
+        style.scale_all_sizes(clamped_scale / self._applied_interface_scale)
         style.font_scale_main = clamped_scale * (_BASE_FONT_SIZE_PX / _FONT_ATLAS_SIZE_PX)
         self._applied_interface_scale = clamped_scale
 
@@ -229,10 +232,10 @@ class ToolkitWindow:
                     ui.values["fov"] = value
                 changed, value = imgui.input_float("Near", float(ui.values["near"]), 0.01, 0.1, "%.4f")
                 if changed:
-                    ui.values["near"] = max(value, 0.001)
+                    ui.values["near"] = max(value, 0.0)
                 changed, value = imgui.input_float("Far", float(ui.values["far"]), 1.0, 10.0, "%.3f")
                 if changed:
-                    ui.values["far"] = max(value, float(ui.values["near"]) + 0.1)
+                    ui.values["far"] = max(value, float(ui.values["near"]))
             if imgui.collapsing_header("Rendering", flags=imgui.TreeNodeFlags_.default_open.value):
                 changed, value = imgui.slider_float("Radius Scale", float(ui.values["radius_scale"]), 0.25, 4.0)
                 if changed:
