@@ -23,6 +23,7 @@ static const float MIN_SCREEN_RADIUS_PX = 1.0;
 static const float MIN_BBOX_EXTENT_PX = 1e-4;
 static const float BBOX_PAD_PX = 1.0;
 static const float OUTPUT_GAMMA = 2.2;
+static const uint FLOAT_SIGN_MASK = 0x80000000u;
 static const float TAU_RADIANS = 6.28318530718;
 static const float GAUSSIAN_SUPPORT_SIGMA_RADIUS = 3.0;
 static const uint PARAM_POSITION_X = 0u;
@@ -249,17 +250,13 @@ struct Ellipse {
 struct LinearSystem<let N : int> {
     float aug[N * (N + 1)];
 
-    int flat_index(int i0, int i1) {
-        return i0 * (N + 1) + i1;
-    }
-
     float load(int i0, int i1) {
-        return aug[flat_index(i0, i1)];
+        return aug[i0 * (N + 1) + i1];
     }
 
     [mutating]
     void store(int i0, int i1, float value) {
-        aug[flat_index(i0, i1)] = value;
+        aug[i0 * (N + 1) + i1] = value;
     }
 
     __subscript(int i0, int i1)->float {
@@ -270,27 +267,27 @@ struct LinearSystem<let N : int> {
     [mutating]
     bool solve(float eps, out float solution[N]) {
         [unroll] for (uint row = 0u; row < N; row++) solution[row] = 0.0;
-        [unroll] for (uint pivot = 0u; pivot < N; pivot++) {
+        for (uint pivot = 0u; pivot < N; pivot++) {
             uint bestRow = pivot;
             float bestAbs = abs(this.load(pivot, pivot));
-            [unroll] for (uint row = pivot + 1u; row < N; row++) {
+            for (uint row = pivot + 1u; row < N; row++) {
                 float rowAbs = abs(this.load(row, pivot));
                 if (rowAbs > bestAbs) { bestAbs = rowAbs; bestRow = row; }
             }
             if (bestAbs <= eps) return false;
             if (bestRow != pivot) {
-                [unroll] for (uint col = pivot; col <= N; col++) {
+                for (uint col = pivot; col <= N; col++) {
                     float tmp = this.load(pivot, col);
                     this.store(pivot, col, this.load(bestRow, col));
                     this.store(bestRow, col, tmp);
                 }
             }
             float invPivot = 1.0 / this.load(pivot, pivot);
-            [unroll] for (uint col = pivot; col <= N; col++) this.store(pivot, col, this.load(pivot, col) * invPivot);
-            [unroll] for (uint row = 0u; row < N; row++) {
+            for (uint col = pivot; col <= N; col++) this.store(pivot, col, this.load(pivot, col) * invPivot);
+            for (uint row = 0u; row < N; row++) {
                 if (row == pivot) continue;
                 float factor = this.load(row, pivot);
-                [unroll] for (uint col = pivot; col <= N; col++) this.store(row, col, this.load(row, col) - factor * this.load(pivot, col));
+                for (uint col = pivot; col <= N; col++) this.store(row, col, this.load(row, col) - factor * this.load(pivot, col));
             }
         }
         [unroll] for (uint row = 0u; row < N; row++) solution[row] = this.load(row, N);
@@ -321,6 +318,7 @@ bool inverse3x3(float3x3 m, float eps, out float3x3 mInv) {
 [Differentiable] vector<float, N> normalize_safe<let N : int>(vector<float, N> v) { float lenSq = dot(v, v); return lenSq > SMALL_VALUE ? v * rsqrt(lenSq) : 0.0; }
 [Differentiable] float3 rotate_by_quat(float3 v, float4 q) { return v + 2.0 * cross(cross(v, q.yzw) + q.x * v, q.yzw); }
 [Differentiable] float sigmoid(float x) { return 1.0 / (1.0 + exp(-x)); }
+uint float_to_ordered_uint(float value) { uint bits = asuint(value); return (bits & FLOAT_SIGN_MASK) != 0u ? ~bits : (bits | FLOAT_SIGN_MASK); }
 
 bool compute_gaussian_outline_ellipse(
     Gaussian3D gaussian,

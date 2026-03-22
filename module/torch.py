@@ -6,7 +6,7 @@ from typing import Any
 import slangpy as spy
 import torch
 
-from .splatting import SplattingContext as _CoreSplattingContext, _PARAM_COUNT
+from .splatting import SplattingContext as _CoreSplattingContext, _PARAM_COUNT, _SHADERS
 
 _CAMERA_PARAM_COUNT = 15
 _ALPHA_EPS = 1e-6
@@ -43,19 +43,24 @@ def _pack_params(splats: torch.Tensor) -> torch.Tensor:
 
 @dataclass
 class SplattingContext(_CoreSplattingContext):
+    def __post_init__(self) -> None:
+        self.device = self.device or spy.create_torch_device(type=spy.DeviceType.cuda, include_paths=[_SHADERS])
+        self._init_resources()
+
     def _prepare_splats(self, splats: torch.Tensor, camera: torch.Tensor, image_size: tuple[int, int], background: tuple[float, float, float]) -> tuple[torch.Tensor, torch.Tensor, int, dict[str, Any]]:
-        order = torch.argsort(torch.linalg.norm(splats[0:3].mT - self._cam_pos(camera), dim=1), stable=True)
-        sorted_splats = splats.index_select(1, order).contiguous()
-        self.prepare(int(sorted_splats.shape[1]), image_size, background)
-        self.scene["g_Params"].copy_from_torch(_pack_params(sorted_splats))
+        splat_count = int(splats.shape[1])
+        self.prepare(splat_count, image_size, background)
+        self.scene["g_Params"].copy_from_torch(_pack_params(splats))
         self.device.sync_to_cuda()
-        return order, sorted_splats, int(sorted_splats.shape[1]), _camera_dict(camera, image_size)
+        return splats.new_empty((0,), dtype=torch.long), splats, splat_count, _camera_dict(camera, image_size)
 
     def project(self, splats: torch.Tensor, camera: torch.Tensor, image_size: tuple[int, int]) -> dict[str, torch.Tensor]:
         _check_cuda_tensor("splats", splats, _PARAM_COUNT)
         _check_cuda_tensor("camera_params", camera)
-        order, sorted_splats, splat_count, camera_vars = self._prepare_splats(splats, camera, image_size, (0.0, 0.0, 0.0))
-        total_scanlines = self.project_shaders(camera_vars, splat_count)
+        _, _, splat_count, camera_vars = self._prepare_splats(splats, camera, image_size, (0.0, 0.0, 0.0))
+        total_scanlines = super().project(camera_vars, splat_count)
+        order = self._sorted_splat_order_tensor.to_torch()[:splat_count].clone().to(dtype=torch.long)
+        sorted_splats = splats.index_select(1, order).contiguous()
         if total_scanlines:
             scanline_counts = self.scanlines["g_ScanlineTileCounts"].to_torch()[:total_scanlines].to(dtype=torch.int64)
             scanline_splats = self.scanlines["g_ScanlineEntryData"].to_torch()[:total_scanlines, 0].to(dtype=torch.int64)
@@ -68,27 +73,21 @@ class SplattingContext(_CoreSplattingContext):
         return {"order": order, "sorted_splats": sorted_splats, "projection": projection, "raster": raster, "tile_counts": tile_counts}
 
     def render(self, splats: torch.Tensor, camera: torch.Tensor, image_size: tuple[int, int], background: tuple[float, float, float]) -> torch.Tensor:
-        order, sorted_splats, splat_count, camera_vars = self._prepare_splats(splats, camera, image_size, background)
-        image = self.render_shaders(camera_vars, splat_count).to_torch().clone()
+        _, _, splat_count, camera_vars = self._prepare_splats(splats, camera, image_size, background)
+        image = super().render(camera_vars, splat_count).to_torch().clone()
+        order = self._sorted_splat_order_tensor.to_torch()[:splat_count].clone().to(dtype=torch.long)
+        sorted_splats = splats.index_select(1, order).contiguous()
         self._last_order, self._last_alpha, self._last_camera = order, torch.clamp(sorted_splats[13], _ALPHA_EPS, 1 - _ALPHA_EPS), camera.detach().clone()
         return image
 
     def backward(self, grad_output: torch.Tensor) -> torch.Tensor:
         self.frame["g_OutputGrad"].copy_from_torch(grad_output.contiguous())
         self.device.sync_to_cuda()
-        grads = self.backward_shaders(_camera_dict(self._last_camera, self._size), int(self._last_order.shape[0])).to_torch()[: int(self._last_order.shape[0]) * _PARAM_COUNT].clone().reshape(int(self._last_order.shape[0]), _PARAM_COUNT).mT.contiguous()
+        grads = super().backward(_camera_dict(self._last_camera, self._size), int(self._last_order.shape[0])).to_torch()[: int(self._last_order.shape[0]) * _PARAM_COUNT].clone().reshape(int(self._last_order.shape[0]), _PARAM_COUNT).mT.contiguous()
         grads[13] /= self._last_alpha * (1 - self._last_alpha)
         out = torch.empty_like(grads)
         out[:, self._last_order] = grads
         return out
-
-    @staticmethod
-    def _cam_pos(camera: torch.Tensor) -> torch.Tensor:
-        q = camera[0:4] / torch.clamp(torch.linalg.norm(camera[0:4]), min=1e-12)
-        w, x, y, z = q
-        rot = torch.tensor([[1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)], [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)], [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)]], device=camera.device, dtype=camera.dtype)
-        return -rot.T @ camera[4:7]
-
 
 class _RenderFn(torch.autograd.Function):
     @staticmethod

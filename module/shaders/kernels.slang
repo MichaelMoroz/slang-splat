@@ -2,6 +2,9 @@ import "slangpy";
 import "common.slang";
 
 uniform Tensor<float, 1> g_Splats;
+uniform Tensor<uint, 1> g_SplatOrder;
+uniform RWTensor<uint, 1> g_DistanceKeys;
+uniform RWTensor<uint, 1> g_DistanceSortOrder;
 uniform RWTensor<uint, 1> g_TileCounts;
 uniform RWTensor<uint, 1> g_ScanlineCounts;
 uniform Tensor<uint, 1> g_ScanlineOffsets;
@@ -29,6 +32,18 @@ uniform float g_TransmittanceThreshold;
 
 groupshared Gaussian3D gsGaussian[RASTER_BATCH];
 groupshared uint gsBatchSplatId[RASTER_BATCH];
+
+// Generate exact float ordering keys for front-to-back splat sorting.
+[shader("compute")]
+[numthreads(PROJECT_GROUP_SIZE, 1, 1)]
+void csGenerateDistanceSortKeys(uint3 dispatchThreadID : SV_DispatchThreadID) {
+    uint splatId = dispatchThreadID.x;
+    if (splatId >= g_SplatCount) return;
+    Gaussian3D gaussian = Gaussian3D.load(g_Splats, g_SplatCount, splatId);
+    float distance = length(gaussian.position - g_Camera.camPos);
+    g_DistanceKeys.store(int(splatId), float_to_ordered_uint(distance));
+    g_DistanceSortOrder.store(int(splatId), splatId);
+}
 
 // Raster-state write helpers.
 void write_cache(uint splatId, Gaussian3D gaussian, float fusedOpacity) {
@@ -91,9 +106,9 @@ bool scanline_tile_span(ScanlineEntry scanline, out int spanTileMin, out int spa
 [shader("compute")]
 [numthreads(PROJECT_GROUP_SIZE, 1, 1)]
 void csProjectScanlineCount(uint3 dispatchThreadID : SV_DispatchThreadID) {
-    uint splatId = dispatchThreadID.x;
-    if (splatId >= g_SplatCount) return;
-    int[1] at = { int(splatId) };
+    uint sortedSplatId = dispatchThreadID.x;
+    if (sortedSplatId >= g_SplatCount) return;
+    int[1] at = { int(sortedSplatId) };
     ProjectionState projection;
     projection.centerRadiusDepth = 0.0;
     projection.conicOpacity = 0.0;
@@ -104,6 +119,7 @@ void csProjectScanlineCount(uint3 dispatchThreadID : SV_DispatchThreadID) {
     rasterGaussian.colorAlpha = 0.0;
     uint scanlineCount = 0u;
 
+    uint splatId = g_SplatOrder[int(sortedSplatId)];
     Gaussian3D gaussian = Gaussian3D.load(g_Splats, g_SplatCount, splatId);
     float fusedOpacity = gaussian.build_raster_fused_opacity();
     if (fusedOpacity >= g_AlphaCutoff) {
@@ -307,6 +323,7 @@ void csRasterBackward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : 
             if (globalIdx >= processedEnd) continue;
             uint splatId = gsBatchSplatId[localIdx];
             Gaussian3D gaussian = gsGaussian[localIdx];
+            uint originalSplatId = g_SplatOrder[int(splatId)];
             float alpha = raster_eval_alpha(gaussian, g_Camera, g_RadiusScale, rayDir);
             if (alpha < g_AlphaCutoff) continue;
             // Invert the forward blend step, then differentiate that exact primitive via bwd_diff(shade_step).
@@ -332,20 +349,20 @@ void csRasterBackward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : 
             float fused = max(gaussian.colorAlpha.w, SMALL_VALUE);
             // Public opacity is stored on the Python side; convert the fused-opacity differential back to raw opacity.
             float dRawOpacity = dGaussian.colorAlpha.w * fused * (1.0 - fused);
-            add_param_grad(splatId, PARAM_COLOR_R, dGaussian.colorAlpha.x);
-            add_param_grad(splatId, PARAM_COLOR_G, dGaussian.colorAlpha.y);
-            add_param_grad(splatId, PARAM_COLOR_B, dGaussian.colorAlpha.z);
-            add_param_grad(splatId, PARAM_POSITION_X, dGaussian.position.x);
-            add_param_grad(splatId, PARAM_POSITION_Y, dGaussian.position.y);
-            add_param_grad(splatId, PARAM_POSITION_Z, dGaussian.position.z);
-            add_param_grad(splatId, PARAM_SCALE_X, dGaussian.logScale.x);
-            add_param_grad(splatId, PARAM_SCALE_Y, dGaussian.logScale.y);
-            add_param_grad(splatId, PARAM_SCALE_Z, dGaussian.logScale.z);
-            add_param_grad(splatId, PARAM_ROTATION_W, dGaussian.rotation.x);
-            add_param_grad(splatId, PARAM_ROTATION_X, dGaussian.rotation.y);
-            add_param_grad(splatId, PARAM_ROTATION_Y, dGaussian.rotation.z);
-            add_param_grad(splatId, PARAM_ROTATION_Z, dGaussian.rotation.w);
-            add_param_grad(splatId, PARAM_RAW_OPACITY, dRawOpacity);
+            add_param_grad(originalSplatId, PARAM_COLOR_R, dGaussian.colorAlpha.x);
+            add_param_grad(originalSplatId, PARAM_COLOR_G, dGaussian.colorAlpha.y);
+            add_param_grad(originalSplatId, PARAM_COLOR_B, dGaussian.colorAlpha.z);
+            add_param_grad(originalSplatId, PARAM_POSITION_X, dGaussian.position.x);
+            add_param_grad(originalSplatId, PARAM_POSITION_Y, dGaussian.position.y);
+            add_param_grad(originalSplatId, PARAM_POSITION_Z, dGaussian.position.z);
+            add_param_grad(originalSplatId, PARAM_SCALE_X, dGaussian.logScale.x);
+            add_param_grad(originalSplatId, PARAM_SCALE_Y, dGaussian.logScale.y);
+            add_param_grad(originalSplatId, PARAM_SCALE_Z, dGaussian.logScale.z);
+            add_param_grad(originalSplatId, PARAM_ROTATION_W, dGaussian.rotation.x);
+            add_param_grad(originalSplatId, PARAM_ROTATION_X, dGaussian.rotation.y);
+            add_param_grad(originalSplatId, PARAM_ROTATION_Y, dGaussian.rotation.z);
+            add_param_grad(originalSplatId, PARAM_ROTATION_Z, dGaussian.rotation.w);
+            add_param_grad(originalSplatId, PARAM_RAW_OPACITY, dRawOpacity);
             accum = prevAccum;
             trans = prevTrans;
         }
