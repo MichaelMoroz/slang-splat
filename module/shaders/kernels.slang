@@ -35,6 +35,7 @@ uniform uint g_DebugMaxSplatSteps;
 
 groupshared Gaussian3D gsGaussian[RASTER_BATCH];
 groupshared uint gsBatchSplatId[RASTER_BATCH];
+groupshared uint gsDoneCount;
 
 uint load_sorted_entry_tile(uint idx) {
     return g_SortedEntries[int(idx * 2u)];
@@ -298,7 +299,10 @@ void csRasterForward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : S
     float3 rayDir = g_Camera.screen_to_world_ray(float2(px, py) + 0.5);
     if (range.x != INVALID_START && range.y > range.x) {
         bool done = false;
+        if (lane == 0u) gsDoneCount = 0u;
+        GroupMemoryBarrierWithGroupSync();
         for (uint batchStart = range.x; batchStart < range.y; batchStart += RASTER_BATCH) {
+            if (gsDoneCount == RASTER_GROUP_THREADS) break;
             uint batchEnd = min(batchStart + RASTER_BATCH, range.y);
             uint batchCount = batchEnd - batchStart;
             // Batch splats into groupshared storage so every pixel in the tile reuses the same loads.
@@ -314,7 +318,11 @@ void csRasterForward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : S
                     float4 blended = shade_step(accum, trans, gaussian, alpha);
                     accum = blended.xyz;
                     trans = blended.w;
-                    if (trans < g_TransmittanceThreshold) { done = true; break; }
+                    if (trans < g_TransmittanceThreshold) {
+                        done = true;
+                        InterlockedAdd(gsDoneCount, 1u);
+                        break;
+                    }
                 }
             }
             GroupMemoryBarrierWithGroupSync();
@@ -357,7 +365,7 @@ void csRasterBackward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : 
     float3 accum = state4.xyz;
     float trans = state4.w;
     uint processedEnd = g_ForwardEnd[p];
-    for (uint batchBase = range.y; batchBase > range.x;) {
+    for (uint batchBase = processedEnd; batchBase > range.x;) {
         uint batchStart = batchBase > range.x + RASTER_BATCH ? batchBase - RASTER_BATCH : range.x;
         uint batchCount = batchBase - batchStart;
         // Replay the same tile-local batches in reverse order from the saved forward stopping point.
@@ -366,7 +374,6 @@ void csRasterBackward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : 
         for (uint rev = 0u; rev < batchCount; rev++) {
             uint localIdx = batchCount - 1u - rev;
             uint globalIdx = batchStart + localIdx;
-            if (globalIdx >= processedEnd) continue;
             uint splatId = gsBatchSplatId[localIdx];
             Gaussian3D gaussian = gsGaussian[localIdx];
             uint originalSplatId = g_SplatOrder[int(splatId)];
