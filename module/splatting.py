@@ -34,10 +34,6 @@ _ALPHA_EPS = 1e-6
 _ALPHA_CUTOFF = 1 / 255
 _TRANS_THRESHOLD = 0.005
 _RADIUS_SCALE = 1.0
-_MVEE_ITERS = 6
-_MVEE_SAFETY = 1.0
-_MVEE_PAD = 1.0
-_MVEE_EPS = 1e-6
 
 
 def _check_cuda_tensor(name: str, value: torch.Tensor, shape0: int | None = None) -> None:
@@ -177,10 +173,6 @@ class SplattingContext:
             "g_RadiusScale": _RADIUS_SCALE,
             "g_AlphaCutoff": _ALPHA_CUTOFF,
             "g_TransmittanceThreshold": _TRANS_THRESHOLD,
-            "g_Sampled5Iters": int(_MVEE_ITERS),
-            "g_Sampled5SafetyScale": _MVEE_SAFETY,
-            "g_Sampled5RadiusPadPx": _MVEE_PAD,
-            "g_Sampled5Eps": _MVEE_EPS,
         }
 
     def render(self, splats: torch.Tensor, camera: torch.Tensor, image_size: tuple[int, int], background: tuple[float, float, float]) -> torch.Tensor:

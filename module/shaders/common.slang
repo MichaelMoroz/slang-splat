@@ -7,6 +7,10 @@ static const uint RASTER_THREAD_TILE_DIM = TILE_SIZE;
 static const uint RASTER_GROUP_THREADS = RASTER_THREAD_TILE_DIM * RASTER_THREAD_TILE_DIM;
 static const uint MVEE_POINT_COUNT = 5u;
 static const uint MVEE_MAX_ITERS = 8u;
+static const uint MVEE_ITERS = 6u;
+static const float MVEE_SAFETY_SCALE = 1.0;
+static const float MVEE_RADIUS_PAD_PX = 1.0;
+static const float MVEE_EPS = 1e-6;
 static const float SMALL_VALUE = 1e-6;
 static const float TINY_VALUE = 1e-8;
 static const float RAY_DENOMINATOR_FLOOR = 1e-10;
@@ -66,11 +70,11 @@ struct Gaussian3D : IDifferentiable {
     }
 
     [Differentiable]
-    static CachedEllipsoid build_cached_ellipsoid(Gaussian3D gaussian, no_diff Camera camera, no_diff float radiusScale) {
-        float3 sigma = exp(gaussian.logScale);
-        float3 scale = max(sigma * (radiusScale * GAUSSIAN_SUPPORT_SIGMA_RADIUS), float3(SMALL_VALUE));
-        float3 roLocal = rotate_by_quat(camera.camPos - gaussian.position, gaussian.rotation) / scale;
-        return { roLocal, scale, gaussian.rotation };
+    static Gaussian3D build_cached_ellipsoid(Gaussian3D gaussian, no_diff Camera camera, no_diff float radiusScale) {
+        Gaussian3D cached = gaussian;
+        cached.logScale = max(exp(gaussian.logScale) * (radiusScale * GAUSSIAN_SUPPORT_SIGMA_RADIUS), float3(SMALL_VALUE));
+        cached.position = rotate_by_quat(camera.camPos - gaussian.position, gaussian.rotation) / cached.logScale;
+        return cached;
     }
 
     [Differentiable]
@@ -182,13 +186,6 @@ struct Camera {
     bool is_depth_in_range(float depthValue){
         return depthValue >= nearDepth && depthValue <= farDepth;
     }
-};
-
-
-struct CachedEllipsoid : IDifferentiable {
-    float3 roLocal;
-    float3 scale;
-    float4 rotation;
 };
 
 struct Ellipse {
@@ -361,13 +358,13 @@ bool fit_mvee_5pt_fixed_iters(float2 points[MVEE_POINT_COUNT], uint iters, float
 
 [Differentiable]
 float raster_eval_alpha(Gaussian3D gaussian, no_diff Camera camera, no_diff float radiusScale, no_diff float3 rayDir) {
-    CachedEllipsoid cached = Gaussian3D.build_cached_ellipsoid(gaussian, camera, radiusScale);
-    float3 rayLocal = rotate_by_quat(rayDir, cached.rotation) / max(cached.scale, float3(SMALL_VALUE));
+    Gaussian3D cached = Gaussian3D.build_cached_ellipsoid(gaussian, camera, radiusScale);
+    float3 rayLocal = rotate_by_quat(rayDir, cached.rotation) / max(cached.logScale, float3(SMALL_VALUE));
     float denom = dot(rayLocal, rayLocal);
     if (denom <= RAY_DENOMINATOR_FLOOR) return 0.0;
-    float tClosest = -dot(rayLocal, cached.roLocal) / denom;
+    float tClosest = -dot(rayLocal, cached.position) / denom;
     if (tClosest <= 0.0) return 0.0;
-    float3 closest = cached.roLocal + rayLocal * tClosest;
+    float3 closest = cached.position + rayLocal * tClosest;
     float rho2 = max(dot(closest, closest), 0.0);
     return gaussian.colorAlpha.w * exp(-0.5 * GAUSSIAN_SUPPORT_SIGMA_RADIUS * GAUSSIAN_SUPPORT_SIGMA_RADIUS * rho2);
 }

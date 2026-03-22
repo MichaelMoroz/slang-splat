@@ -22,10 +22,6 @@ uniform float3 g_Background;
 uniform float g_RadiusScale;
 uniform float g_AlphaCutoff;
 uniform float g_TransmittanceThreshold;
-uniform uint g_Sampled5Iters;
-uniform float g_Sampled5SafetyScale;
-uniform float g_Sampled5RadiusPadPx;
-uniform float g_Sampled5Eps;
 
 groupshared Gaussian3D gsGaussian[RASTER_BATCH];
 groupshared uint gsBatchSplatId[RASTER_BATCH];
@@ -53,7 +49,7 @@ void clear_projection(uint splatId) {
 
 bool project_splat(uint splatId, out Ellipse ellipse) {
     Gaussian3D gaussian = Gaussian3D.load(g_Splats, g_SplatCount, splatId);
-    CachedEllipsoid cached = Gaussian3D.build_cached_ellipsoid(gaussian, g_Camera, g_RadiusScale);
+    Gaussian3D cached = Gaussian3D.build_cached_ellipsoid(gaussian, g_Camera, g_RadiusScale);
     float3 camPos = g_Camera.world_point_to_camera(gaussian.position);
     float depth = camPos.z;
     float3 cameraOffset = gaussian.position - g_Camera.camPos;
@@ -61,18 +57,18 @@ bool project_splat(uint splatId, out Ellipse ellipse) {
     float2 fitCenter = 0.0;
     bool projected = g_Camera.project_camera_to_screen(camPos, fitCenter);
     if (!projected) fitCenter = camPos.xy * (g_Camera.focalPixels / max(camPos.z, SMALL_VALUE)) + g_Camera.principalPoint;
-    float maxAxisWorld = max(cached.scale.x, max(cached.scale.y, cached.scale.z));
+    float maxAxisWorld = max(cached.logScale.x, max(cached.logScale.y, cached.logScale.z));
     float fallbackRadius = max(g_Camera.focalPixels.x, g_Camera.focalPixels.y) * maxAxisWorld / max(depth, SMALL_VALUE);
     float radiusCap = max(max(g_Camera.viewport.x, g_Camera.viewport.y), MIN_SCREEN_RADIUS_PX);
-    float fitRadius = clamp(fallbackRadius * g_Sampled5SafetyScale + g_Sampled5RadiusPadPx, MIN_SCREEN_RADIUS_PX, radiusCap);
+    float fitRadius = clamp(fallbackRadius * MVEE_SAFETY_SCALE + MVEE_RADIUS_PAD_PX, MIN_SCREEN_RADIUS_PX, radiusCap);
     float invFitRadius2 = 1.0 / max(fitRadius * fitRadius, SMALL_VALUE);
     float3 fitConic = float3(invFitRadius2, 0.0, invFitRadius2);
     float3 localPoints[MVEE_POINT_COUNT];
-    bool ok = generate_silhouette_points_local5(cached.roLocal, g_Sampled5Eps, localPoints);
+    bool ok = generate_silhouette_points_local5(cached.position, MVEE_EPS, localPoints);
     if (ok) {
         float2 screenPts[MVEE_POINT_COUNT];
         [unroll] for (uint i = 0u; i < MVEE_POINT_COUNT; i++) {
-            float3 worldPt = gaussian.position + rotate_by_quat(localPoints[i] * cached.scale, float4(cached.rotation.x, -cached.rotation.yzw));
+            float3 worldPt = gaussian.position + rotate_by_quat(localPoints[i] * cached.logScale, float4(cached.rotation.x, -cached.rotation.yzw));
             float2 sp = 0.0;
             bool ptOk = g_Camera.project_camera_to_screen(g_Camera.world_point_to_camera(worldPt), sp);
             screenPts[i] = sp;
@@ -80,12 +76,12 @@ bool project_splat(uint splatId, out Ellipse ellipse) {
         }
         if (ok) {
             MveeFitResult fit;
-            bool fitOk = fit_mvee_5pt_fixed_iters(screenPts, min(g_Sampled5Iters, MVEE_MAX_ITERS), g_Sampled5Eps, fit);
+            bool fitOk = fit_mvee_5pt_fixed_iters(screenPts, min(MVEE_ITERS, MVEE_MAX_ITERS), MVEE_EPS, fit);
             if (fitOk) {
                 fitCenter = fit.centerPx;
-                fitRadius = clamp(fit.radiusPx * g_Sampled5SafetyScale + g_Sampled5RadiusPadPx, MIN_SCREEN_RADIUS_PX, radiusCap);
-                float conicScale = fitRadius / max(fit.radiusPx, g_Sampled5Eps);
-                fitConic = fit.conic / max(conicScale * conicScale, g_Sampled5Eps);
+                fitRadius = clamp(fit.radiusPx * MVEE_SAFETY_SCALE + MVEE_RADIUS_PAD_PX, MIN_SCREEN_RADIUS_PX, radiusCap);
+                float conicScale = fitRadius / max(fit.radiusPx, MVEE_EPS);
+                fitConic = fit.conic / max(conicScale * conicScale, MVEE_EPS);
             }
         }
     }
