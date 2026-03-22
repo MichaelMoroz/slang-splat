@@ -36,7 +36,8 @@ class ViewerState:
     far: float = 1000.0
     background: tuple[float, float, float] = (0.0, 0.0, 0.0)
     radius_scale: float = 1.0
-    alpha_cutoff: float = 1.0 / 255.0
+    max_anisotropy: float = 12.0
+    alpha_cutoff: float = 0.02
     trans_threshold: float = 0.005
     debug_mode: int = DEBUG_MODE_NORMAL
     keys: dict[spy.KeyCode, bool] = field(default_factory=dict)

@@ -23,6 +23,7 @@ _GAUSSIAN_SUPPORT_SIGMA_RADIUS = 3.0
 _RAY_DENOMINATOR_FLOOR = 1e-10
 _ALPHA_CUTOFF = 1 / 255
 _TRANS_THRESHOLD = 0.005
+_MAX_ANISOTROPY = 12.0
 _OUTPUT_GAMMA = 2.2
 _SMALL_VALUE = 1e-6
 _ALPHA_EPS = 1e-6
@@ -174,6 +175,7 @@ def _gaussian_outline_points_sampled(camera: np.ndarray, gaussian: np.ndarray, s
     fused_opacity = gaussian[13]
     support_sigma_radius = np.sqrt(max(-2.0 * np.log(_ALPHA_CUTOFF / fused_opacity), 0.0))
     support_scale = np.clip(np.exp(gaussian[3:6]) * support_sigma_radius, _SMALL_VALUE, None)
+    support_scale = np.maximum(support_scale, np.max(support_scale) / _MAX_ANISOTROPY)
     cam_pos = -_camera_basis(camera[0:4]).T @ camera[4:7]
     view_origin_local = _quat_rotate((cam_pos - gaussian[0:3])[None, :], gaussian[6:10])[0] / support_scale
     view_distance = np.linalg.norm(view_origin_local)
@@ -205,6 +207,7 @@ def _gaussian_outline_points_from_camera_dict(camera: dict[str, object], gaussia
     fused_opacity = gaussian[13]
     support_sigma_radius = np.sqrt(max(-2.0 * np.log(_ALPHA_CUTOFF / fused_opacity), 0.0))
     support_scale = np.clip(np.exp(gaussian[3:6]) * support_sigma_radius, _SMALL_VALUE, None)
+    support_scale = np.maximum(support_scale, np.max(support_scale) / _MAX_ANISOTROPY)
     view_origin_local = _quat_rotate((cam_pos - gaussian[0:3])[None, :], gaussian[6:10])[0] / support_scale
     view_distance = np.linalg.norm(view_origin_local)
     view_dir_local = view_origin_local / max(view_distance, _SMALL_VALUE)
@@ -396,12 +399,12 @@ def _ground_truth_render(splats: np.ndarray, camera: np.ndarray, image_size: tup
     for i in range(splats.shape[1]):
         gaussian = splats[:, i]
         scale = np.clip(np.exp(gaussian[3:6]) * _GAUSSIAN_SUPPORT_SIGMA_RADIUS, _SMALL_VALUE, None)
+        scale = np.maximum(scale, np.max(scale) / _MAX_ANISOTROPY)
         ro_local = _quat_rotate(np.broadcast_to(cam_pos - gaussian[0:3], rays.shape), gaussian[6:10]) / scale
         ray_local = _quat_rotate(rays, gaussian[6:10]) / scale
         denom = np.sum(ray_local * ray_local, axis=-1)
         t_closest = -np.sum(ray_local * ro_local, axis=-1) / np.clip(denom, _RAY_DENOMINATOR_FLOOR, None)
-        closest = ro_local + ray_local * t_closest[:, None]
-        rho2 = np.sum(closest * closest, axis=-1)
+        rho2 = np.maximum(np.sum(ro_local * ro_local, axis=-1) - np.square(np.sum(ray_local * ro_local, axis=-1)) / np.clip(denom, _RAY_DENOMINATOR_FLOOR, None), 0.0)
         alpha = np.where(
             (denom > _RAY_DENOMINATOR_FLOOR) & (t_closest > 0.0),
             np.clip(gaussian[13], _ALPHA_EPS, 1.0 - _ALPHA_EPS) * np.exp(-0.5 * _GAUSSIAN_SUPPORT_SIGMA_RADIUS * _GAUSSIAN_SUPPORT_SIGMA_RADIUS * rho2),
@@ -419,7 +422,7 @@ def _ground_truth_render(splats: np.ndarray, camera: np.ndarray, image_size: tup
 @pytest.fixture
 def backend_context(backend_name: str) -> SplattingContext:
     try:
-        return SplattingContext(device=_make_device(backend_name))
+        return _configure_test_context(SplattingContext(device=_make_device(backend_name)))
     except Exception as exc:
         pytest.skip(f"{backend_name} unavailable: {exc}")
 
@@ -600,3 +603,9 @@ def test_budget() -> None:
         slang_lines += sum(1 for line in path.read_text().splitlines() if line.strip() and not line.strip().startswith("//"))
     assert py_lines <= 300
     assert slang_lines <= 1000
+def _configure_test_context(context: SplattingContext) -> SplattingContext:
+    context.alpha_cutoff = _ALPHA_CUTOFF
+    context.trans_threshold = _TRANS_THRESHOLD
+    context.max_anisotropy = _MAX_ANISOTROPY
+    return context
+

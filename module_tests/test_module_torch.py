@@ -13,8 +13,17 @@ from module import SplattingContext, render_gaussian_splats
 _SMALL_VALUE = 1e-6
 _ALPHA_CUTOFF = 1.0 / 255.0
 _TRANS_THRESHOLD = 0.005
+_MAX_ANISOTROPY = 12.0
 _GAUSSIAN_SUPPORT_SIGMA_RADIUS = 3.0
 _OUTPUT_GAMMA = 2.2
+
+
+def _make_context() -> SplattingContext:
+    context = SplattingContext()
+    context.alpha_cutoff = _ALPHA_CUTOFF
+    context.trans_threshold = _TRANS_THRESHOLD
+    context.max_anisotropy = _MAX_ANISOTROPY
+    return context
 
 
 def _make_splats(count: int = 64, seed: int = 29) -> torch.Tensor:
@@ -101,6 +110,7 @@ def _ground_truth_render_torch(splats: torch.Tensor, camera: torch.Tensor, image
         for i in range(sorted_splats.shape[1]):
             gaussian = sorted_splats[:, i]
             scale = torch.clamp(torch.exp(gaussian[3:6]) * _GAUSSIAN_SUPPORT_SIGMA_RADIUS, min=_SMALL_VALUE)
+            scale = torch.maximum(scale, torch.max(scale) / _MAX_ANISOTROPY)
             q = gaussian[6:10]
             qv = q[1:]
             ro = cam_pos - gaussian[0:3]
@@ -110,8 +120,7 @@ def _ground_truth_render_torch(splats: torch.Tensor, camera: torch.Tensor, image
             ray_local = (rays + 2.0 * cross2) / scale
             denom = torch.sum(ray_local * ray_local, dim=1)
             t_closest = -torch.sum(ray_local * ro_local[None, :], dim=1) / torch.clamp(denom, min=1e-10)
-            closest = ro_local[None, :] + ray_local * t_closest[:, None]
-            rho2 = torch.sum(closest * closest, dim=1)
+            rho2 = torch.clamp(torch.sum(ro_local[None, :] * ro_local[None, :], dim=1) - torch.square(torch.sum(ray_local * ro_local[None, :], dim=1)) / torch.clamp(denom, min=1e-10), min=0.0)
             alpha = torch.where(
                 (denom > 1e-10) & (t_closest > 0.0),
                 torch.clamp(gaussian[13], min=_SMALL_VALUE, max=1.0 - _SMALL_VALUE) * torch.exp(-0.5 * _GAUSSIAN_SUPPORT_SIGMA_RADIUS * _GAUSSIAN_SUPPORT_SIGMA_RADIUS * rho2),
@@ -208,7 +217,7 @@ def test_torch_wrapper_smoke() -> None:
     image_size = (64, 64)
     splats = _make_splats()
     camera = _make_camera(image_size)
-    context = SplattingContext()
+    context = _make_context()
     image = render_gaussian_splats(splats, camera, image_size, context=context)
     assert tuple(image.shape) == (image_size[0], image_size[1], 4)
     assert torch.isfinite(image).all()
@@ -224,7 +233,7 @@ def test_torch_wrapper_zero_splats_smoke() -> None:
     image_size = (64, 64)
     splats = torch.zeros((14, 0), dtype=torch.float32, device="cuda", requires_grad=True)
     camera = _make_camera(image_size)
-    context = SplattingContext()
+    context = _make_context()
     image = render_gaussian_splats(splats, camera, image_size, context=context)
     assert tuple(image.shape) == (image_size[0], image_size[1], 4)
     assert torch.isfinite(image).all()
@@ -242,7 +251,7 @@ def test_large_resolution_ground_truth_image_matches(image_size: tuple[int, int]
     splats = _make_large_resolution_splats(image_size)
     focal = 0.72 * image_size[0]
     camera = _make_camera(image_size, focal_pixels=(focal, focal))
-    context = SplattingContext()
+    context = _make_context()
     image = _image_hw(render_gaussian_splats(splats, camera, image_size, context=context), image_size)
     ref = _ground_truth_render_torch(splats, camera, image_size)
 
@@ -265,7 +274,7 @@ def test_large_resolution_stretched_ground_truth_image_matches(image_size: tuple
     splats = _make_large_resolution_stretched_splats(image_size)
     focal = 0.72 * image_size[0]
     camera = _make_camera(image_size, focal_pixels=(focal, focal))
-    context = SplattingContext()
+    context = _make_context()
     image = _image_hw(render_gaussian_splats(splats, camera, image_size, context=context), image_size)
     ref = _ground_truth_render_torch(splats, camera, image_size)
     alpha = image[..., 3]
@@ -282,7 +291,7 @@ def test_large_resolution_offcenter_stretched_ground_truth_image_matches() -> No
     image_size = (3840, 2160)
     splats = _make_large_resolution_offcenter_stretched_splat(image_size)
     camera = _make_camera(image_size, focal_pixels=(0.72 * image_size[0], 0.72 * image_size[0]))
-    context = SplattingContext()
+    context = _make_context()
     image = _image_hw(render_gaussian_splats(splats, camera, image_size, context=context), image_size)
     ref = _ground_truth_render_torch(splats, camera, image_size)
     alpha_error = (image[..., 3] - ref[..., 3]).abs()

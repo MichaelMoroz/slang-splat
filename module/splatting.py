@@ -13,7 +13,7 @@ from utility.utility import GpuUtility
 _ROOT = Path(__file__).resolve().parent
 _SHADERS = _ROOT / "shaders"
 _PARAM_COUNT = 14
-_ALPHA_CUTOFF = 1 / 255
+_ALPHA_CUTOFF = 0.02
 _TRANS_THRESHOLD = 0.005
 _RADIUS_SCALE = 1.0
 _DEBUG_COLOR = spy.float3(0.91, 0.53, 0.18)
@@ -25,7 +25,8 @@ _DEBUG_MODE_PROCESSED_COUNT = 1
 class SplattingContext:
     device: spy.Device | None = None
     radius_scale: float = 1.0
-    alpha_cutoff: float = 1 / 255
+    max_anisotropy: float = 12.0
+    alpha_cutoff: float = 0.02
     trans_threshold: float = 0.005
     debug_mode: int = _DEBUG_MODE_NORMAL
 
@@ -174,6 +175,7 @@ class SplattingContext:
             "g_TileGrid": spy.uint2((w + 7) // 8, (h + 7) // 8),
             "g_Background": spy.float3(*map(float, self.background)),
             "g_RadiusScale": float(self.radius_scale),
+            "g_MaxAnisotropy": float(self.max_anisotropy),
             "g_AlphaCutoff": float(self.alpha_cutoff),
             "g_TransmittanceThreshold": float(self.trans_threshold),
             "g_DebugMode": int(self.debug_mode),

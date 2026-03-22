@@ -149,6 +149,7 @@ class SplatViewer(spy.AppWindow):
         self.s.near = float(self.ui.values["near"])
         self.s.far = float(self.ui.values["far"])
         self.s.radius_scale = float(self.ui.values["radius_scale"])
+        self.s.max_anisotropy = float(self.ui.values["max_anisotropy"])
         self.s.alpha_cutoff = float(self.ui.values["alpha_cutoff"])
         self.s.trans_threshold = float(self.ui.values["trans_threshold"])
         self.s.debug_mode = int(self.ui.values["debug_mode"])
@@ -204,6 +205,7 @@ class SplatViewer(spy.AppWindow):
             else:
                 width, height = int(image.width), int(image.height)
                 self.renderer.radius_scale = self.s.radius_scale
+                self.renderer.max_anisotropy = self.s.max_anisotropy
                 self.renderer.alpha_cutoff = self.s.alpha_cutoff
                 self.renderer.trans_threshold = self.s.trans_threshold
                 self.renderer.debug_mode = self.s.debug_mode

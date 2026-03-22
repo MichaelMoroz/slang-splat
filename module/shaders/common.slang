@@ -70,9 +70,12 @@ struct Gaussian3D : IDifferentiable {
     }
 
     [Differentiable]
-    static Gaussian3D camera_gaussian(Gaussian3D gaussian, no_diff Camera camera, no_diff float radiusScale, no_diff float supportSigmaRadius) {
+    static Gaussian3D camera_gaussian(Gaussian3D gaussian, no_diff Camera camera, no_diff float radiusScale, no_diff float supportSigmaRadius, no_diff float maxAnisotropy) {
         Gaussian3D cameraGaussian = gaussian;
-        cameraGaussian.logScale = max(exp(gaussian.logScale) * (radiusScale * supportSigmaRadius), float3(SMALL_VALUE));
+        float3 supportScale = max(exp(gaussian.logScale) * (radiusScale * supportSigmaRadius), float3(SMALL_VALUE));
+        float supportMaxScale = max(supportScale.x, max(supportScale.y, supportScale.z));
+        float supportMinScale = supportMaxScale / max(maxAnisotropy, 1.0);
+        cameraGaussian.logScale = max(supportScale, float3(supportMinScale));
         cameraGaussian.position = rotate_by_quat(camera.camPos - gaussian.position, gaussian.rotation) / cameraGaussian.logScale;
         return cameraGaussian;
     }
@@ -375,13 +378,14 @@ bool compute_gaussian_outline_ellipse(
     Camera camera,
     float radiusScale,
     float supportSigmaRadius,
+    float maxAnisotropy,
     out Ellipse ellipse)
 {
     ellipse.centerPx = 0.0;
     ellipse.radiusPx = 0.0;
     ellipse.conic = 0.0;
     ellipse.bboxExtent = 0.0;
-    Gaussian3D supportGaussian = Gaussian3D.camera_gaussian(gaussian, camera, radiusScale, supportSigmaRadius);
+    Gaussian3D supportGaussian = Gaussian3D.camera_gaussian(gaussian, camera, radiusScale, supportSigmaRadius, maxAnisotropy);
     float3 worldCenter = gaussian.position;
     float2 screenCenter = 0.0;
     if (!camera.project_world_to_screen(worldCenter, screenCenter)) return false;
@@ -555,8 +559,8 @@ bool compute_gaussian_outline_ellipse(
 }
 
 [Differentiable]
-float raster_eval_alpha(Gaussian3D gaussian, no_diff Camera camera, no_diff float radiusScale, no_diff float3 rayDir) {
-    Gaussian3D cached = Gaussian3D.camera_gaussian(gaussian, camera, radiusScale, GAUSSIAN_SUPPORT_SIGMA_RADIUS);
+float raster_eval_alpha(Gaussian3D gaussian, no_diff Camera camera, no_diff float radiusScale, no_diff float maxAnisotropy, no_diff float3 rayDir) {
+    Gaussian3D cached = Gaussian3D.camera_gaussian(gaussian, camera, radiusScale, GAUSSIAN_SUPPORT_SIGMA_RADIUS, maxAnisotropy);
     float3 rayLocal = rotate_by_quat(rayDir, cached.rotation) / max(cached.logScale, float3(SMALL_VALUE));
     float denom = dot(rayLocal, rayLocal);
     if (denom <= RAY_DENOMINATOR_FLOOR) return 0.0;

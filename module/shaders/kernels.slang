@@ -27,6 +27,7 @@ uniform uint g_SortedEntryCount;
 uniform uint2 g_TileGrid;
 uniform float3 g_Background;
 uniform float g_RadiusScale;
+uniform float g_MaxAnisotropy;
 uniform float g_AlphaCutoff;
 uniform float g_TransmittanceThreshold;
 uniform uint g_DebugMode;
@@ -165,7 +166,7 @@ void csProjectScanlineCount(uint3 dispatchThreadID : SV_DispatchThreadID) {
             && cameraDistance > g_Camera.nearDepth
             && cameraDistance < g_Camera.farDepth;
         Ellipse ellipse;
-        if (hasFit) hasFit = compute_gaussian_outline_ellipse(gaussian, g_Camera, g_RadiusScale, supportSigmaRadius, ellipse);
+        if (hasFit) hasFit = compute_gaussian_outline_ellipse(gaussian, g_Camera, g_RadiusScale, supportSigmaRadius, g_MaxAnisotropy, ellipse);
         if (hasFit) {
             // Inflate the fitted ellipse before scan conversion so tile coverage stays conservative.
             ellipse.radiusPx = max(ellipse.radiusPx * ELLIPSE_SAFETY_SCALE + ELLIPSE_RADIUS_PAD_PX, MIN_SCREEN_RADIUS_PX);
@@ -308,7 +309,7 @@ void csRasterForward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : S
                     processedEnd = batchStart + localIdx + 1u;
                     Gaussian3D gaussian = gsGaussian[localIdx];
                     // The forward loop only needs alpha and the fused color/opacity carried by Gaussian3D.
-                    float alpha = raster_eval_alpha(gaussian, g_Camera, g_RadiusScale, rayDir);
+                    float alpha = raster_eval_alpha(gaussian, g_Camera, g_RadiusScale, g_MaxAnisotropy, rayDir);
                     if (alpha < g_AlphaCutoff) continue;
                     float4 blended = shade_step(accum, trans, gaussian, alpha);
                     accum = blended.xyz;
@@ -369,7 +370,7 @@ void csRasterBackward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : 
             uint splatId = gsBatchSplatId[localIdx];
             Gaussian3D gaussian = gsGaussian[localIdx];
             uint originalSplatId = g_SplatOrder[int(splatId)];
-            float alpha = raster_eval_alpha(gaussian, g_Camera, g_RadiusScale, rayDir);
+            float alpha = raster_eval_alpha(gaussian, g_Camera, g_RadiusScale, g_MaxAnisotropy, rayDir);
             if (alpha < g_AlphaCutoff) continue;
             // Invert the forward blend step, then differentiate that exact primitive via bwd_diff(shade_step).
             float prevTrans = trans / max(1.0 - alpha, SMALL_VALUE);
@@ -385,7 +386,7 @@ void csRasterBackward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : 
             dTrans = dpPrevTrans.getDifferential();
             var dpAlphaGaussian = diffPair(gaussian);
             // Propagate dAlpha back into position/scale/rotation through the ray-splat intersection path.
-            bwd_diff(raster_eval_alpha)(dpAlphaGaussian, g_Camera, g_RadiusScale, rayDir, dAlpha);
+            bwd_diff(raster_eval_alpha)(dpAlphaGaussian, g_Camera, g_RadiusScale, g_MaxAnisotropy, rayDir, dAlpha);
             Gaussian3D.Differential dGaussianAlpha = dpAlphaGaussian.getDifferential();
             dGaussian.position += dGaussianAlpha.position;
             dGaussian.logScale += dGaussianAlpha.logScale;

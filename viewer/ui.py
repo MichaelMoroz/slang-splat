@@ -79,7 +79,8 @@ class ViewerUI:
         "near": 0.0,
         "far": 1000.0,
         "radius_scale": 1.0,
-        "alpha_cutoff": 1.0 / 255.0,
+        "max_anisotropy": 12.0,
+        "alpha_cutoff": 0.02,
         "trans_threshold": 0.005,
         "debug_mode": _DEBUG_MODE_NORMAL,
         "background_r": 0.0,
@@ -273,6 +274,9 @@ class ToolkitWindow:
                 changed, value = imgui.slider_float("Radius Scale", float(ui.values["radius_scale"]), 0.25, 4.0)
                 if changed:
                     ui.values["radius_scale"] = value
+                changed, value = imgui.slider_float("Max Anisotropy", float(ui.values["max_anisotropy"]), 1.0, 64.0, "%.1f")
+                if changed:
+                    ui.values["max_anisotropy"] = value
                 changed, value = imgui.slider_float("Alpha Cutoff", float(ui.values["alpha_cutoff"]), 1e-4, 0.1, "%.4g")
                 if changed:
                     ui.values["alpha_cutoff"] = value
