@@ -215,6 +215,16 @@ void csEmitTileEntries(uint3 dispatchThreadID : SV_DispatchThreadID) {
 // Pass 4: rebuild per-tile sorted-entry ranges after the host-side key sort.
 [shader("compute")]
 [numthreads(PROJECT_GROUP_SIZE, 1, 1)]
+void csClearTileRanges(uint3 dispatchThreadID : SV_DispatchThreadID) {
+    uint tileId = dispatchThreadID.x;
+    uint tileCount = g_TileGrid.x * g_TileGrid.y;
+    if (tileId >= tileCount) return;
+    g_TileRanges.store(int(tileId * 2u), INVALID_START);
+    g_TileRanges.store(int(tileId * 2u + 1u), 0u);
+}
+
+[shader("compute")]
+[numthreads(PROJECT_GROUP_SIZE, 1, 1)]
 void csBuildTileRanges(uint3 dispatchThreadID : SV_DispatchThreadID) {
     uint idx = dispatchThreadID.x;
     if (idx >= g_SortedEntryCount) return;
