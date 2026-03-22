@@ -43,7 +43,7 @@ def _run_sort(device: spy.Device, util: GpuUtility, keys: torch.Tensor, values: 
     keys_in, values_in = _tensor(device, count), _tensor(device, count)
     keys_out, values_out = _tensor(device, count), _tensor(device, count)
     hist_count = util.radix_histogram_elements(count)
-    histogram, hist_prefix = _tensor(device, hist_count), _tensor(device, hist_count)
+    histogram, hist_prefix = _tensor(device, hist_count), _tensor(device, util.radix_prefix_elements(count))
     scratch = util.prefix_scratch_elements(hist_count)
     sums, offsets, total = _tensor(device, scratch), _tensor(device, scratch), _tensor(device, 1)
     if count:

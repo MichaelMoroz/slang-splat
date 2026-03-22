@@ -11,6 +11,7 @@ _SHADERS = _ROOT / "shaders"
 _PREFIX_BLOCK_SIZE = 512
 _RADIX_GROUP_SIZE = 128
 _RADIX_BIN_COUNT = 256
+_RADIX_PACKED_HIST_SIZE = _RADIX_BIN_COUNT // 4
 _DEBUG_COLOR = spy.float3(0.18, 0.58, 0.92)
 
 
@@ -27,6 +28,7 @@ class GpuUtility:
         self.k_prefix_add = self.device.create_compute_kernel(self.device.load_program(str(_SHADERS / "kernels.slang"), ["csPrefixAddOffsets"]))
         self.k_prefix_total = self.device.create_compute_kernel(self.device.load_program(str(_SHADERS / "kernels.slang"), ["csPrefixWriteTotal"]))
         self.k_histogram = self.device.create_compute_kernel(self.device.load_program(str(_SHADERS / "kernels.slang"), ["csRadixHistogram"]))
+        self.k_radix_prefix_level = self.device.create_compute_kernel(self.device.load_program(str(_SHADERS / "kernels.slang"), ["csRadixPrefixLevel"]))
         self.k_scatter = self.device.create_compute_kernel(self.device.load_program(str(_SHADERS / "kernels.slang"), ["csRadixScatter"]))
 
     @staticmethod
@@ -39,7 +41,21 @@ class GpuUtility:
 
     @staticmethod
     def radix_histogram_elements(count: int) -> int:
-        return max(_ceil_div(max(int(count), 1), _RADIX_GROUP_SIZE) * _RADIX_BIN_COUNT, _RADIX_BIN_COUNT)
+        return max(_ceil_div(max(int(count), 1), _RADIX_GROUP_SIZE) * _RADIX_PACKED_HIST_SIZE, _RADIX_PACKED_HIST_SIZE)
+
+    @staticmethod
+    def radix_prefix_elements(count: int) -> int:
+        total = max(_ceil_div(max(int(count), 1), _RADIX_GROUP_SIZE) * _RADIX_BIN_COUNT, _RADIX_BIN_COUNT)
+        size = total
+        packed = True
+        used = 0
+        while True:
+            used += (size + 1) // 2 if packed else size
+            if size <= _PREFIX_BLOCK_SIZE // 2:
+                break
+            size = _ceil_div(size, _PREFIX_BLOCK_SIZE // 2)
+            packed = False
+        return max(used, 1)
 
     def _slice(self, tensor: spy.Tensor, count: int, offset: int = 0) -> spy.Tensor:
         return tensor.view((count,), offset=offset)
@@ -135,7 +151,7 @@ class GpuUtility:
             return True
 
         num_groups = max(_ceil_div(count, _RADIX_GROUP_SIZE), 1)
-        hist_count = num_groups * _RADIX_BIN_COUNT
+        total_n = num_groups * _RADIX_BIN_COUNT
         passes = _ceil_div(bit_count, 8)
         src_keys, src_values = keys_in, values_in
         with debug_group(command_encoder, f"radix_sort_uint32[{count}]", _DEBUG_COLOR):
@@ -159,7 +175,23 @@ class GpuUtility:
                             "g_DigitMask": int(digit_mask),
                         },
                     )
-                    self.prefix_sum_uint32(command_encoder, histogram, histogram_prefix, prefix_block_sums, prefix_block_offsets, total_out, hist_count, True)
+                    level_size = total_n
+                    level = 0
+                    while True:
+                        self.k_radix_prefix_level.dispatch(
+                            thread_count=spy.uint3(max(_ceil_div(level_size, _PREFIX_BLOCK_SIZE // 2) * (_PREFIX_BLOCK_SIZE // 2), 1), 1, 1),
+                            command_encoder=command_encoder,
+                            vars={
+                                "g_Histogram": histogram,
+                                "g_HistogramOffsets": histogram_prefix,
+                                "g_NumGroups": int(num_groups),
+                                "g_Shift": int(level),
+                            },
+                        )
+                        if level_size <= _PREFIX_BLOCK_SIZE // 2:
+                            break
+                        level_size = _ceil_div(level_size, _PREFIX_BLOCK_SIZE // 2)
+                        level += 1
                     self.k_scatter.dispatch(
                         thread_count=spy.uint3(num_groups * _RADIX_GROUP_SIZE, 1, 1),
                         command_encoder=command_encoder,

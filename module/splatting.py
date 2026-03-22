@@ -136,11 +136,13 @@ class SplattingContext:
     def _alloc_radix(self, count: int) -> None:
         count = max(count, 1)
         hist = self.util.radix_histogram_elements(count)
-        if getattr(self, "_radix_size", 0) >= count and getattr(self, "_hist_size", 0) >= hist:
+        prefix = self.util.radix_prefix_elements(count)
+        if getattr(self, "_radix_size", 0) >= count and getattr(self, "_hist_size", 0) >= hist and getattr(self, "_hist_prefix_size", 0) >= prefix:
             return
-        self.radix = {"g_Histogram": spy.Tensor.empty(self.device, shape=(hist,), dtype="uint"), "g_HistogramPrefix": spy.Tensor.empty(self.device, shape=(hist,), dtype="uint")}
+        self.radix = {"g_Histogram": spy.Tensor.empty(self.device, shape=(hist,), dtype="uint"), "g_HistogramPrefix": spy.Tensor.empty(self.device, shape=(prefix,), dtype="uint")}
         self._radix_size = count
         self._hist_size = hist
+        self._hist_prefix_size = prefix
 
     def prepare(self, splat_count: int, image_size: tuple[int, int], background: tuple[float, float, float]) -> None:
         self.background = background
