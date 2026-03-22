@@ -204,32 +204,32 @@ struct Ellipse {
         return true;
     }
 
-    float eval_conic(float2 d) {
-        return dot(d, mul(float2x2(conic.x, conic.y, conic.y, conic.z), d));
+    bool range_for_orthogonal_coord(float3 stripConic, float coord, out float rangeMin, out float rangeMax) {
+        float det = stripConic.x * stripConic.z - stripConic.y * stripConic.y;
+        float radicand = stripConic.x - det * coord * coord;
+        if (radicand < 0.0) {
+            rangeMin = 0.0;
+            rangeMax = 0.0;
+            return false;
+        }
+        float root = sqrt(max(radicand, 0.0));
+        rangeMin = (-stripConic.y * coord - root) / stripConic.x;
+        rangeMax = (-stripConic.y * coord + root) / stripConic.x;
+        return true;
     }
 
-    float min_conic_over_tile_box(float2 boxMin, float2 boxMax) {
-        float minVal = min(min(eval_conic(float2(boxMin.x, boxMin.y)), eval_conic(float2(boxMax.x, boxMin.y))), min(eval_conic(float2(boxMin.x, boxMax.y)), eval_conic(float2(boxMax.x, boxMax.y))));
-        if (boxMin.x <= 0.0 && 0.0 <= boxMax.x && boxMin.y <= 0.0 && 0.0 <= boxMax.y) return 0.0;
-        if (conic.z > CONIC_DETERMINANT_FLOOR) {
-            float y0 = clamp(-conic.y * boxMin.x / conic.z, boxMin.y, boxMax.y);
-            float y1 = clamp(-conic.y * boxMax.x / conic.z, boxMin.y, boxMax.y);
-            minVal = min(minVal, eval_conic(float2(boxMin.x, y0)));
-            minVal = min(minVal, eval_conic(float2(boxMax.x, y1)));
-        }
-        if (conic.x > CONIC_DETERMINANT_FLOOR) {
-            float x0 = clamp(-conic.y * boxMin.y / conic.x, boxMin.x, boxMax.x);
-            float x1 = clamp(-conic.y * boxMax.y / conic.x, boxMin.x, boxMax.x);
-            minVal = min(minVal, eval_conic(float2(x0, boxMin.y)));
-            minVal = min(minVal, eval_conic(float2(x1, boxMax.y)));
-        }
-        return minVal;
-    }
-
-    bool tile_intersects(uint tileX, uint tileY) {
-        float2 boxMin = float2(tileX * TILE_SIZE, tileY * TILE_SIZE) - centerPx;
-        float2 boxMax = boxMin + float2(TILE_SIZE, TILE_SIZE);
-        return min_conic_over_tile_box(boxMin, boxMax) <= 1.0 + CONIC_INTERSECTION_SLACK;
+    bool span_for_strip(float3 stripConic, float coord0, float coord1, out float spanMin, out float spanMax) {
+        spanMin = 1e30;
+        spanMax = -1e30;
+        bool hit = false;
+        float rangeMin, rangeMax;
+        if (range_for_orthogonal_coord(stripConic, coord0, rangeMin, rangeMax)) { spanMin = min(spanMin, rangeMin); spanMax = max(spanMax, rangeMax); hit = true; }
+        if (range_for_orthogonal_coord(stripConic, coord1, rangeMin, rangeMax)) { spanMin = min(spanMin, rangeMin); spanMax = max(spanMax, rangeMax); hit = true; }
+        float det = stripConic.x * stripConic.z - stripConic.y * stripConic.y;
+        float coordCrit = stripConic.y / sqrt(max(stripConic.z * det, ELLIPSE_EPS));
+        if (coord0 <= coordCrit && coordCrit <= coord1 && range_for_orthogonal_coord(stripConic, coordCrit, rangeMin, rangeMax)) { spanMin = min(spanMin, rangeMin); spanMax = max(spanMax, rangeMax); hit = true; }
+        if (coord0 <= -coordCrit && -coordCrit <= coord1 && range_for_orthogonal_coord(stripConic, -coordCrit, rangeMin, rangeMax)) { spanMin = min(spanMin, rangeMin); spanMax = max(spanMax, rangeMax); hit = true; }
+        return hit;
     }
 };
 

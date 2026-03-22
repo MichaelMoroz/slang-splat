@@ -33,13 +33,25 @@ void write_cache(uint splatId, Gaussian3D gaussian, float fusedOpacity) {
 }
 
 uint count_tiles(Ellipse ellipse) {
-    int minX = clamp(int(floor((ellipse.centerPx.x - ellipse.bboxExtent.x) / TILE_SIZE)), 0, int(g_TileGrid.x) - 1);
-    int maxX = clamp(int(ceil((ellipse.centerPx.x + ellipse.bboxExtent.x) / TILE_SIZE)), 0, int(g_TileGrid.x) - 1);
-    int minY = clamp(int(floor((ellipse.centerPx.y - ellipse.bboxExtent.y) / TILE_SIZE)), 0, int(g_TileGrid.y) - 1);
-    int maxY = clamp(int(ceil((ellipse.centerPx.y + ellipse.bboxExtent.y) / TILE_SIZE)), 0, int(g_TileGrid.y) - 1);
-    if (minX > maxX || minY > maxY) return 0u;
+    bool transpose = ellipse.bboxExtent.x < ellipse.bboxExtent.y;
+    float2 localCenter = transpose ? ellipse.centerPx.yx : ellipse.centerPx;
+    float2 localExtent = transpose ? ellipse.bboxExtent.yx : ellipse.bboxExtent;
+    float3 localConic = transpose ? float3(ellipse.conic.z, ellipse.conic.y, ellipse.conic.x) : ellipse.conic;
+    int minSpan = clamp(int(floor((localCenter.x - localExtent.x) / TILE_SIZE)), 0, int(g_TileGrid.x) - 1);
+    int maxSpan = clamp(int(ceil((localCenter.x + localExtent.x) / TILE_SIZE)), 0, int(g_TileGrid.x) - 1);
+    int minStrip = clamp(int(floor((localCenter.y - localExtent.y) / TILE_SIZE)), 0, int(g_TileGrid.y) - 1);
+    int maxStrip = clamp(int(ceil((localCenter.y + localExtent.y) / TILE_SIZE)), 0, int(g_TileGrid.y) - 1);
+    if (minSpan > maxSpan || minStrip > maxStrip) return 0u;
     uint count = 0u;
-    for (int y = minY; y <= maxY; y++) for (int x = minX; x <= maxX; x++) if (ellipse.tile_intersects(uint(x), uint(y))) count++;
+    for (int strip = minStrip; strip <= maxStrip; strip++) {
+        float stripMin = strip * TILE_SIZE - localCenter.y;
+        float stripMax = stripMin + TILE_SIZE;
+        float spanMin, spanMax;
+        if (!ellipse.span_for_strip(localConic, stripMin, stripMax, spanMin, spanMax)) continue;
+        int spanTileMin = clamp(int(floor((spanMin + localCenter.x) / TILE_SIZE)), minSpan, maxSpan);
+        int spanTileMax = clamp(int(floor((spanMax + localCenter.x) / TILE_SIZE)), minSpan, maxSpan);
+        if (spanTileMin <= spanTileMax) count += uint(spanTileMax - spanTileMin + 1);
+    }
     return count;
 }
 
@@ -109,18 +121,30 @@ void csProjectFill(uint3 dispatchThreadID : SV_DispatchThreadID) {
     ellipse.radiusPx = projection.centerRadiusDepth.z;
     ellipse.conic = projection.conicOpacity.xyz;
     if (!ellipse.prepare_conic()) return;
-    int minX = clamp(int(floor((ellipse.centerPx.x - ellipse.bboxExtent.x) / TILE_SIZE)), 0, int(g_TileGrid.x) - 1);
-    int maxX = clamp(int(ceil((ellipse.centerPx.x + ellipse.bboxExtent.x) / TILE_SIZE)), 0, int(g_TileGrid.x) - 1);
-    int minY = clamp(int(floor((ellipse.centerPx.y - ellipse.bboxExtent.y) / TILE_SIZE)), 0, int(g_TileGrid.y) - 1);
-    int maxY = clamp(int(ceil((ellipse.centerPx.y + ellipse.bboxExtent.y) / TILE_SIZE)), 0, int(g_TileGrid.y) - 1);
+    bool transpose = ellipse.bboxExtent.x < ellipse.bboxExtent.y;
+    float2 localCenter = transpose ? ellipse.centerPx.yx : ellipse.centerPx;
+    float2 localExtent = transpose ? ellipse.bboxExtent.yx : ellipse.bboxExtent;
+    float3 localConic = transpose ? float3(ellipse.conic.z, ellipse.conic.y, ellipse.conic.x) : ellipse.conic;
+    int minSpan = clamp(int(floor((localCenter.x - localExtent.x) / TILE_SIZE)), 0, int(g_TileGrid.x) - 1);
+    int maxSpan = clamp(int(ceil((localCenter.x + localExtent.x) / TILE_SIZE)), 0, int(g_TileGrid.x) - 1);
+    int minStrip = clamp(int(floor((localCenter.y - localExtent.y) / TILE_SIZE)), 0, int(g_TileGrid.y) - 1);
+    int maxStrip = clamp(int(ceil((localCenter.y + localExtent.y) / TILE_SIZE)), 0, int(g_TileGrid.y) - 1);
     uint writeIndex = g_TileOffsets[int(splatId)];
-    for (int y = minY; y <= maxY; y++) for (int x = minX; x <= maxX; x++) {
-        if (!ellipse.tile_intersects(uint(x), uint(y))) continue;
-        int[1] wi = { int(writeIndex) };
-        TileEntry entry;
-        entry.ids = uint2(uint(y) * g_TileGrid.x + uint(x), splatId);
-        g_TileEntries.store(wi, entry);
-        writeIndex++;
+    for (int strip = minStrip; strip <= maxStrip; strip++) {
+        float stripMin = strip * TILE_SIZE - localCenter.y;
+        float stripMax = stripMin + TILE_SIZE;
+        float spanMin, spanMax;
+        if (!ellipse.span_for_strip(localConic, stripMin, stripMax, spanMin, spanMax)) continue;
+        int spanTileMin = clamp(int(floor((spanMin + localCenter.x) / TILE_SIZE)), minSpan, maxSpan);
+        int spanTileMax = clamp(int(floor((spanMax + localCenter.x) / TILE_SIZE)), minSpan, maxSpan);
+        for (int span = spanTileMin; span <= spanTileMax; span++) {
+            int[1] wi = { int(writeIndex) };
+            TileEntry entry;
+            uint2 tileXY = transpose ? uint2(uint(strip), uint(span)) : uint2(uint(span), uint(strip));
+            entry.ids = uint2(tileXY.y * g_TileGrid.x + tileXY.x, splatId);
+            g_TileEntries.store(wi, entry);
+            writeIndex++;
+        }
     }
 }
 
