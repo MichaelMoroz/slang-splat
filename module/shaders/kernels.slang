@@ -48,8 +48,15 @@ void clear_projection(uint splatId) {
 }
 
 bool project_splat(uint splatId, out Ellipse ellipse) {
+    ellipse.centerPx = 0.0;
+    ellipse.radiusPx = 0.0;
+    ellipse.conic = 0.0;
+    ellipse.bboxExtent = 0.0;
     Gaussian3D gaussian = Gaussian3D.load(g_Splats, g_SplatCount, splatId);
-    Gaussian3D cached = Gaussian3D.build_cached_ellipsoid(gaussian, g_Camera, g_RadiusScale);
+    float fusedOpacity = gaussian.build_raster_fused_opacity();
+    if (fusedOpacity < g_AlphaCutoff) return false;
+    float supportSigmaRadius = sqrt(max(-2.0 * log(g_AlphaCutoff / fusedOpacity), 0.0));
+    Gaussian3D cached = Gaussian3D.build_cached_ellipsoid(gaussian, g_Camera, g_RadiusScale, supportSigmaRadius);
     float3 camPos = g_Camera.world_point_to_camera(gaussian.position);
     float depth = camPos.z;
     float3 cameraOffset = gaussian.position - g_Camera.camPos;
@@ -59,9 +66,8 @@ bool project_splat(uint splatId, out Ellipse ellipse) {
     if (!projected) fitCenter = camPos.xy * (g_Camera.focalPixels / max(camPos.z, SMALL_VALUE)) + g_Camera.principalPoint;
     float maxAxisWorld = max(cached.logScale.x, max(cached.logScale.y, cached.logScale.z));
     float fallbackRadius = max(g_Camera.focalPixels.x, g_Camera.focalPixels.y) * maxAxisWorld / max(depth, SMALL_VALUE);
-    float radiusCap = max(max(g_Camera.viewport.x, g_Camera.viewport.y), MIN_SCREEN_RADIUS_PX);
-    float fitRadius = clamp(fallbackRadius * MVEE_SAFETY_SCALE + MVEE_RADIUS_PAD_PX, MIN_SCREEN_RADIUS_PX, radiusCap);
-    float invFitRadius2 = 1.0 / max(fitRadius * fitRadius, SMALL_VALUE);
+    float fitRadius = max(fallbackRadius * MVEE_SAFETY_SCALE + MVEE_RADIUS_PAD_PX, MIN_SCREEN_RADIUS_PX);
+    float invFitRadius2 = 1.0 / max(fallbackRadius * fallbackRadius, SMALL_VALUE);
     float3 fitConic = float3(invFitRadius2, 0.0, invFitRadius2);
     float3 localPoints[MVEE_POINT_COUNT];
     bool ok = generate_silhouette_points_local5(cached.position, MVEE_EPS, localPoints);
@@ -79,9 +85,8 @@ bool project_splat(uint splatId, out Ellipse ellipse) {
             bool fitOk = fit_mvee_5pt_fixed_iters(screenPts, min(MVEE_ITERS, MVEE_MAX_ITERS), MVEE_EPS, fit);
             if (fitOk) {
                 fitCenter = fit.centerPx;
-                fitRadius = clamp(fit.radiusPx * MVEE_SAFETY_SCALE + MVEE_RADIUS_PAD_PX, MIN_SCREEN_RADIUS_PX, radiusCap);
-                float conicScale = fitRadius / max(fit.radiusPx, MVEE_EPS);
-                fitConic = fit.conic / max(conicScale * conicScale, MVEE_EPS);
+                fitRadius = max(fit.radiusPx * MVEE_SAFETY_SCALE + MVEE_RADIUS_PAD_PX, MIN_SCREEN_RADIUS_PX);
+                fitConic = fit.conic;
             }
         }
     }
@@ -98,7 +103,6 @@ bool project_splat(uint splatId, out Ellipse ellipse) {
         && (fitCenter.y + fitRadius) >= 0.0
         && (fitCenter.y - fitRadius) < g_Camera.viewport.y;
     if (!visible) return false;
-    float fusedOpacity = gaussian.build_raster_fused_opacity();
     int[1] at = { int(splatId) };
     ProjectionState projection;
     projection.centerRadiusDepth = float4(fitCenter, fitRadius, camDistance);
@@ -210,7 +214,7 @@ void csRasterForward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : S
         }
     }
     int2 p = int2(int(py), int(px));
-    g_Output.store(p, (range.x == INVALID_START || range.y <= range.x) ? float4(pow(max(g_Background, 0.0), OUTPUT_GAMMA), 1.0) : raster_output(accum, trans, g_Background));
+    g_Output.store(p, raster_output(accum, trans, g_Background));
     g_ForwardState.store(p, float4(accum, trans));
     g_ForwardEnd.store(p, processedEnd);
 }

@@ -175,6 +175,40 @@ class SplattingContext:
             "g_TransmittanceThreshold": _TRANS_THRESHOLD,
         }
 
+    def project(self, splats: torch.Tensor, camera: torch.Tensor, image_size: tuple[int, int]) -> dict[str, torch.Tensor]:
+        """Project splats and return sorted projection state without rasterising."""
+        _check_cuda_tensor("splats", splats, _PARAM_COUNT)
+        _check_cuda_tensor("camera_params", camera)
+        self.background = (0.0, 0.0, 0.0)
+
+        order = torch.argsort(torch.linalg.norm(splats[0:3, :].mT - self._cam_pos(camera), dim=1), stable=True)
+        sorted_splats = splats.index_select(1, order).contiguous()
+        packed_splats = _pack_params(sorted_splats)
+        splat_count = int(sorted_splats.shape[1])
+
+        self._alloc_frame(image_size)
+        self._alloc_scene(splat_count)
+        self._alloc_entries(1)
+
+        self.scene["g_Params"].copy_from_torch(packed_splats)
+        self.device.sync_to_cuda()
+        camera_vars = _camera_dict(camera, image_size)
+        enc = self.device.create_command_encoder()
+        self.k_project_count.dispatch(thread_count=spy.uint3(splat_count, 1, 1), vars=self._vars(camera_vars, splat_count, 0), command_encoder=enc)
+        self.device.submit_command_buffer(enc.finish())
+        self.device.sync_to_device()
+
+        projection = self._view(self.scene_views["g_ProjectionState"].tensor, spy.float4, (splat_count, 2)).to_torch()[:splat_count].clone()
+        raster = self._view(self.scene_views["g_RasterState"].tensor, spy.float4, (splat_count, 4)).to_torch()[:splat_count].clone()
+        tile_counts = self.scene["g_TileCounts"].to_torch()[:splat_count].clone()
+        return {
+            "order": order,
+            "sorted_splats": sorted_splats,
+            "projection": projection,
+            "raster": raster,
+            "tile_counts": tile_counts,
+        }
+
     def render(self, splats: torch.Tensor, camera: torch.Tensor, image_size: tuple[int, int], background: tuple[float, float, float]) -> torch.Tensor:
         """Forward rendering pipeline: project → count → fill → sort → rasterise."""
         self.background = background

@@ -23,6 +23,7 @@ static const float SOUTH_POLE_DOT_FLOOR = -0.9999999;
 static const float SPLAT_PIXEL_CLAMP_PX = 0.75;
 static const float MIN_SCREEN_RADIUS_PX = 1.0;
 static const float MIN_BBOX_EXTENT_PX = 1e-4;
+static const float BBOX_PAD_PX = 1.0;
 static const float MVEE_AFFINE_DIMENSION = 3.0;
 static const float OUTPUT_GAMMA = 2.2;
 static const float TAU_RADIANS = 6.28318530718;
@@ -70,9 +71,9 @@ struct Gaussian3D : IDifferentiable {
     }
 
     [Differentiable]
-    static Gaussian3D build_cached_ellipsoid(Gaussian3D gaussian, no_diff Camera camera, no_diff float radiusScale) {
+    static Gaussian3D build_cached_ellipsoid(Gaussian3D gaussian, no_diff Camera camera, no_diff float radiusScale, no_diff float supportSigmaRadius) {
         Gaussian3D cached = gaussian;
-        cached.logScale = max(exp(gaussian.logScale) * (radiusScale * GAUSSIAN_SUPPORT_SIGMA_RADIUS), float3(SMALL_VALUE));
+        cached.logScale = max(exp(gaussian.logScale) * (radiusScale * supportSigmaRadius), float3(SMALL_VALUE));
         cached.position = rotate_by_quat(camera.camPos - gaussian.position, gaussian.rotation) / cached.logScale;
         return cached;
     }
@@ -202,7 +203,7 @@ struct Ellipse {
         float xExtent = sqrt(max(conic.z / det, 0.0));
         float yExtent = sqrt(max(conic.x / det, 0.0));
         if (!all(isfinite(float2(xExtent, yExtent)))) return false;
-        bboxExtent = clamp(float2(xExtent, yExtent), float2(MIN_BBOX_EXTENT_PX), float2(radiusPx));
+        bboxExtent = clamp(float2(xExtent, yExtent) + BBOX_PAD_PX, float2(MIN_BBOX_EXTENT_PX), float2(radiusPx));
         return true;
     }
 
@@ -295,6 +296,7 @@ bool fit_mvee_5pt_fixed_iters(float2 points[MVEE_POINT_COUNT], uint iters, float
     fit.centerPx = 0.0;
     fit.radiusPx = 0.0;
     fit.conic = 0.0;
+    if (iters > MVEE_MAX_ITERS) return false;
     float2 center = 0.0;
     [unroll] for (uint i = 0u; i < MVEE_POINT_COUNT; i++) center += points[i];
     center *= (1.0 / float(MVEE_POINT_COUNT));
@@ -303,62 +305,69 @@ bool fit_mvee_5pt_fixed_iters(float2 points[MVEE_POINT_COUNT], uint iters, float
     if (normScale <= eps) return false;
     float2 normPts[MVEE_POINT_COUNT];
     [unroll] for (uint i = 0u; i < MVEE_POINT_COUNT; i++) normPts[i] = (points[i] - center) / normScale;
-    float w[MVEE_POINT_COUNT];
-    [unroll] for (uint i = 0u; i < MVEE_POINT_COUNT; i++) w[i] = 1.0 / float(MVEE_POINT_COUNT);
-    [unroll] for (uint iter = 0u; iter < MVEE_MAX_ITERS; iter++) {
-        if (iter >= iters) break;
-        float3x3 xMat = 0.0;
-        [unroll] for (uint i = 0u; i < MVEE_POINT_COUNT; i++) {
-            float3 q = float3(normPts[i], 1.0);
-            xMat += w[i] * float3x3(q.x * q.x, q.x * q.y, q.x, q.y * q.x, q.y * q.y, q.y, q.x, q.y, 1.0);
-        }
-        float3x3 xInv = 0.0;
-        if (!inverse3x3(xMat, eps, xInv)) return false;
-        uint maxIdx = 0u;
-        float maxVal = -1.0;
-        [unroll] for (uint i = 0u; i < MVEE_POINT_COUNT; i++) {
-            float3 q = float3(normPts[i], 1.0);
-            float m = dot(q, mul(xInv, q));
-            if (m > maxVal) { maxVal = m; maxIdx = i; }
-        }
-        float denom = MVEE_AFFINE_DIMENSION * (maxVal - 1.0);
-        if (denom <= eps) break;
-        float alpha = saturate((maxVal - MVEE_AFFINE_DIMENSION) / denom);
-        [unroll] for (uint i = 0u; i < MVEE_POINT_COUNT; i++) w[i] *= (1.0 - alpha);
-        w[maxIdx] += alpha;
+    float aug[5][6];
+    [unroll] for (uint row = 0u; row < MVEE_POINT_COUNT; row++) {
+        float x = normPts[row].x;
+        float y = normPts[row].y;
+        aug[row][0] = x * x;
+        aug[row][1] = 2.0 * x * y;
+        aug[row][2] = y * y;
+        aug[row][3] = x;
+        aug[row][4] = y;
+        aug[row][5] = 1.0;
     }
-    float2 ellipseCenter = 0.0;
-    [unroll] for (uint i = 0u; i < MVEE_POINT_COUNT; i++) ellipseCenter += w[i] * normPts[i];
-    float3 secondMoment = 0.0;
-    [unroll] for (uint i = 0u; i < MVEE_POINT_COUNT; i++) {
-        float2 d = normPts[i] - ellipseCenter;
-        secondMoment += w[i] * float3(d.x * d.x, d.x * d.y, d.y * d.y);
+    [unroll] for (uint pivot = 0u; pivot < MVEE_POINT_COUNT; pivot++) {
+        uint bestRow = pivot;
+        float bestAbs = abs(aug[pivot][pivot]);
+        [unroll] for (uint row = pivot + 1u; row < MVEE_POINT_COUNT; row++) {
+            float rowAbs = abs(aug[row][pivot]);
+            if (rowAbs > bestAbs) { bestAbs = rowAbs; bestRow = row; }
+        }
+        if (bestAbs <= eps) return false;
+        if (bestRow != pivot) {
+            [unroll] for (uint col = pivot; col < 6u; col++) {
+                float tmp = aug[pivot][col];
+                aug[pivot][col] = aug[bestRow][col];
+                aug[bestRow][col] = tmp;
+            }
+        }
+        float invPivot = 1.0 / aug[pivot][pivot];
+        [unroll] for (uint col = pivot; col < 6u; col++) aug[pivot][col] *= invPivot;
+        [unroll] for (uint row = 0u; row < MVEE_POINT_COUNT; row++) {
+            if (row == pivot) continue;
+            float factor = aug[row][pivot];
+            [unroll] for (uint col = pivot; col < 6u; col++) aug[row][col] -= factor * aug[pivot][col];
+        }
     }
-    secondMoment += float3(eps, 0.0, eps);
-    float detS = secondMoment.x * secondMoment.z - secondMoment.y * secondMoment.y;
-    if (detS <= eps) return false;
-    float3 conicNorm = 0.5 * float3(secondMoment.z, -secondMoment.y, secondMoment.x) / detS;
-    float trace = conicNorm.x + conicNorm.z;
+    float3 conicNorm = float3(aug[0][5], aug[1][5], aug[2][5]);
+    float2 linear = float2(aug[3][5], aug[4][5]);
     float detA = conicNorm.x * conicNorm.z - conicNorm.y * conicNorm.y;
+    if (detA <= eps) return false;
+    float2 ellipseCenter = 0.5 * float2(
+        (conicNorm.y * linear.y - conicNorm.z * linear.x) / detA,
+        (conicNorm.y * linear.x - conicNorm.x * linear.y) / detA
+    );
+    float centerScale = 1.0 + dot(ellipseCenter, float2(
+        conicNorm.x * ellipseCenter.x + conicNorm.y * ellipseCenter.y,
+        conicNorm.y * ellipseCenter.x + conicNorm.z * ellipseCenter.y
+    ));
+    if (centerScale <= eps) return false;
+    conicNorm /= centerScale;
+    float trace = conicNorm.x + conicNorm.z;
+    detA = conicNorm.x * conicNorm.z - conicNorm.y * conicNorm.y;
+    if (detA <= eps || conicNorm.x <= eps || conicNorm.z <= eps) return false;
     float disc = sqrt(max(0.25 * trace * trace - detA, 0.0));
     float axis0 = rsqrt(max(0.5 * trace + disc, eps));
     float axis1 = rsqrt(max(0.5 * trace - disc, eps));
-    float maxQuad = 0.0;
-    [unroll] for (uint i = 0u; i < MVEE_POINT_COUNT; i++) {
-        float2 d = normPts[i] - ellipseCenter;
-        float quad = dot(float3(d.x * d.x, d.x * d.y, d.y * d.y), float3(conicNorm.x, 2.0 * conicNorm.y, conicNorm.z));
-        maxQuad = max(maxQuad, quad);
-    }
-    float inflate = maxQuad > 1.0 ? sqrt(maxQuad) : 1.0;
     fit.centerPx = center + ellipseCenter * normScale;
-    fit.radiusPx = max(axis0, axis1) * inflate * normScale;
-    fit.conic = conicNorm / max(inflate * inflate * normScale * normScale, eps);
+    fit.radiusPx = max(axis0, axis1) * normScale;
+    fit.conic = conicNorm / max(normScale * normScale, eps);
     return all(isfinite(fit.centerPx)) && all(isfinite(fit.conic)) && isfinite(fit.radiusPx) && fit.radiusPx > 0.0;
 }
 
 [Differentiable]
 float raster_eval_alpha(Gaussian3D gaussian, no_diff Camera camera, no_diff float radiusScale, no_diff float3 rayDir) {
-    Gaussian3D cached = Gaussian3D.build_cached_ellipsoid(gaussian, camera, radiusScale);
+    Gaussian3D cached = Gaussian3D.build_cached_ellipsoid(gaussian, camera, radiusScale, GAUSSIAN_SUPPORT_SIGMA_RADIUS);
     float3 rayLocal = rotate_by_quat(rayDir, cached.rotation) / max(cached.logScale, float3(SMALL_VALUE));
     float denom = dot(rayLocal, rayLocal);
     if (denom <= RAY_DENOMINATOR_FLOOR) return 0.0;
