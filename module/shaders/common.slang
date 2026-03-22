@@ -90,6 +90,12 @@ struct TileEntry {
     uint2 ids;
 };
 
+struct ScanlineEntry {
+    uint splatId;
+    uint stripIndex;
+    uint transpose;
+};
+
 struct Camera {
     float3 camPos;
     float3x3 camBasis;
@@ -202,6 +208,13 @@ struct Ellipse {
         if (!all(isfinite(float2(xExtent, yExtent)))) return false;
         bboxExtent = clamp(float2(xExtent, yExtent) + BBOX_PAD_PX, float2(MIN_BBOX_EXTENT_PX), float2(radiusPx));
         return true;
+    }
+
+    void scanline_frame(out bool transpose, out float2 localCenter, out float2 localExtent, out float3 localConic) {
+        transpose = bboxExtent.x < bboxExtent.y;
+        localCenter = transpose ? centerPx.yx : centerPx;
+        localExtent = transpose ? bboxExtent.yx : bboxExtent;
+        localConic = transpose ? float3(conic.z, conic.y, conic.x) : conic;
     }
 
     bool range_for_orthogonal_coord(float3 stripConic, float coord, out float rangeMin, out float rangeMax) {
