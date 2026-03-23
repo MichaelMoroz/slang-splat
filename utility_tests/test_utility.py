@@ -38,6 +38,22 @@ def _run_prefix(device: spy.Device, util: GpuUtility, values: torch.Tensor, excl
     return out.to_torch()[:count].to(dtype=torch.int64), int(total.to_torch()[0].item())
 
 
+def _run_prefix_from_count_buffer(device: spy.Device, util: GpuUtility, values: torch.Tensor, exclusive: bool) -> tuple[torch.Tensor, int]:
+    count = int(values.numel())
+    inp, out = _tensor(device, count), _tensor(device, count)
+    scratch = util.prefix_scratch_elements(count)
+    sums, offsets, total = _tensor(device, scratch), _tensor(device, scratch), _tensor(device, 1)
+    count_buffer = _tensor(device, 1)
+    count_buffer.copy_from_torch(torch.tensor([count], device="cuda", dtype=torch.uint32))
+    if count:
+        inp.copy_from_torch(values.to(dtype=torch.uint32))
+    enc = device.create_command_encoder()
+    util.prefix_sum_uint32_from_count_buffer(enc, inp, out, sums, offsets, total, count_buffer, 0, count, exclusive)
+    device.submit_command_buffer(enc.finish())
+    device.sync_to_device()
+    return out.to_torch()[:count].to(dtype=torch.int64), int(total.to_torch()[0].item())
+
+
 def _run_sort(device: spy.Device, util: GpuUtility, keys: torch.Tensor, values: torch.Tensor, start_bit: int, bit_count: int) -> tuple[torch.Tensor, torch.Tensor]:
     count = int(keys.numel())
     keys_in, values_in = _tensor(device, count), _tensor(device, count)
@@ -51,6 +67,28 @@ def _run_sort(device: spy.Device, util: GpuUtility, keys: torch.Tensor, values: 
         values_in.copy_from_torch(values.to(dtype=torch.uint32))
     enc = device.create_command_encoder()
     out_buffer = util.radix_sort_uint32(enc, keys_in, values_in, keys_out, values_out, histogram, hist_prefix, sums, offsets, total, count, start_bit, bit_count)
+    device.submit_command_buffer(enc.finish())
+    device.sync_to_device()
+    final_keys, final_values = (keys_out, values_out) if out_buffer else (keys_in, values_in)
+    return final_keys.to_torch()[:count].to(dtype=torch.int64), final_values.to_torch()[:count].to(dtype=torch.int64)
+
+
+def _run_sort_from_count_buffer(
+    device: spy.Device, util: GpuUtility, keys: torch.Tensor, values: torch.Tensor, start_bit: int, bit_count: int
+) -> tuple[torch.Tensor, torch.Tensor]:
+    count = int(keys.numel())
+    keys_in, values_in = _tensor(device, count), _tensor(device, count)
+    keys_out, values_out = _tensor(device, count), _tensor(device, count)
+    histogram, hist_prefix = _tensor(device, util.radix_histogram_elements(count)), _tensor(device, util.radix_prefix_elements(count))
+    count_buffer = _tensor(device, 1)
+    count_buffer.copy_from_torch(torch.tensor([count], device="cuda", dtype=torch.uint32))
+    if count:
+        keys_in.copy_from_torch(keys.to(dtype=torch.uint32))
+        values_in.copy_from_torch(values.to(dtype=torch.uint32))
+    enc = device.create_command_encoder()
+    out_buffer, _ = util.radix_sort_uint32_from_count_buffer(
+        enc, keys_in, values_in, keys_out, values_out, histogram, hist_prefix, count_buffer, 0, count, start_bit, bit_count
+    )
     device.submit_command_buffer(enc.finish())
     device.sync_to_device()
     final_keys, final_values = (keys_out, values_out) if out_buffer else (keys_in, values_in)
@@ -72,6 +110,17 @@ def test_prefix_sum_matches_torch(utility_context: tuple[spy.Device, GpuUtility]
     assert total == int(values.sum().item())
 
 
+@pytest.mark.parametrize("count", [0, 1, 7, 513, 4097])
+@pytest.mark.parametrize("exclusive", [False, True])
+def test_prefix_sum_from_count_buffer_matches_direct(utility_context: tuple[spy.Device, GpuUtility], count: int, exclusive: bool) -> None:
+    device, util = utility_context
+    values = torch.randint(0, 17, (count,), device="cuda", dtype=torch.int64)
+    direct_out, direct_total = _run_prefix(device, util, values, exclusive)
+    indirect_out, indirect_total = _run_prefix_from_count_buffer(device, util, values, exclusive)
+    torch.testing.assert_close(indirect_out, direct_out)
+    assert indirect_total == direct_total
+
+
 @pytest.mark.parametrize(
     ("count", "start_bit", "bit_count"),
     [(0, 0, 1), (1, 0, 32), (37, 0, 5), (128, 4, 9), (513, 0, 17), (1025, 8, 24)],
@@ -89,3 +138,22 @@ def test_radix_sort_matches_torch(utility_context: tuple[spy.Device, GpuUtility]
     perm = torch.argsort(masked, stable=True)
     torch.testing.assert_close(out_keys, keys.index_select(0, perm))
     torch.testing.assert_close(out_values, values.index_select(0, perm))
+
+
+@pytest.mark.parametrize(
+    ("count", "start_bit", "bit_count"),
+    [(0, 0, 1), (1, 0, 32), (37, 0, 5), (128, 4, 9), (513, 0, 17), (1025, 8, 24), (10147, 0, 8)],
+)
+def test_radix_sort_from_count_buffer_matches_direct(
+    utility_context: tuple[spy.Device, GpuUtility], count: int, start_bit: int, bit_count: int
+) -> None:
+    device, util = utility_context
+    keys = torch.randint(0, 2**20, (count,), device="cuda", dtype=torch.int64)
+    if count:
+        keys = keys.clone()
+        keys[::7] = int(keys[0].item())
+    values = torch.arange(count, device="cuda", dtype=torch.int64)
+    direct_keys, direct_values = _run_sort(device, util, keys, values, start_bit, bit_count)
+    indirect_keys, indirect_values = _run_sort_from_count_buffer(device, util, keys, values, start_bit, bit_count)
+    torch.testing.assert_close(indirect_keys, direct_keys)
+    torch.testing.assert_close(indirect_values, direct_values)
