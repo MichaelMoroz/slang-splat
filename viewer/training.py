@@ -25,7 +25,7 @@ class TrainingUiConfig:
     far: float = 1000.0
     radius_scale: float = 1.0
     max_anisotropy: float = 12.0
-    alpha_cutoff: float = 0.03
+    alpha_cutoff: float = 0.01
     trans_threshold: float = 0.005
     iterations: int = 3000
     position_lr_init: float = 0.00016
@@ -33,7 +33,7 @@ class TrainingUiConfig:
     position_lr_delay_mult: float = 0.01
     position_lr_max_steps: int = 30000
     feature_lr: float = 0.0025
-    opacity_lr: float = 0.01
+    opacity_lr: float = 0.05
     scaling_lr: float = 0.005
     rotation_lr: float = 0.001
     lambda_dssim: float = 0.2
@@ -48,7 +48,7 @@ class TrainingUiConfig:
     init_points: int = 50000
     init_scale_spacing_ratio: float = 0.25
     init_scale_multiplier: float = 1.0
-    init_opacity: float = 0.22
+    init_opacity: float = 0.5
     eval_interval: int = 250
     update_period: int = 1
     seed: int = 0

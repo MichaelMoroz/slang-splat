@@ -119,7 +119,7 @@ class ViewerUI:
             "far": 1000.0,
             "radius_scale": 1.0,
             "max_anisotropy": 12.0,
-            "alpha_cutoff": 0.02,
+            "alpha_cutoff": 0.01,
             "trans_threshold": 0.005,
             "debug_processed_count": False,
             "loss_debug": False,
@@ -189,6 +189,7 @@ class ToolkitWindow:
         self._show_about = False
         self._show_docs = False
         self._show_training = True
+        self._show_render_debug = False
         self._last_frame_time = time.perf_counter()
         self._menu_bar_height = 0.0
         self._applied_interface_scale = 1.0
@@ -293,6 +294,7 @@ class ToolkitWindow:
         imgui.dock_space_over_viewport(viewport=imgui.get_main_viewport(), flags=imgui.DockNodeFlags_.passthru_central_node.value)
         self._draw_panel(ui, training, width, height)
         self._draw_debug_colorbar(ui, width, height)
+        self._draw_render_debug_window(ui)
         self._draw_about()
         self._draw_docs()
         imgui.render()
@@ -317,6 +319,10 @@ class ToolkitWindow:
             imgui.separator()
             if _menu_item("Reset Interface Scale"):
                 ui.values[_INTERFACE_SCALE_KEY] = _DEFAULT_INTERFACE_SCALE_INDEX
+            imgui.end_menu()
+        if imgui.begin_menu("Debug"):
+            if _menu_item("Rendering"):
+                self._show_render_debug = True
             imgui.end_menu()
         if imgui.begin_menu("Help"):
             if _menu_item("Documentation"):
@@ -426,39 +432,6 @@ class ToolkitWindow:
         error = ui.texts.get("error", "")
         if error:
             imgui.text_colored(imgui.ImVec4(1.0, 0.45, 0.45, 1.0), error)
-        imgui.separator_text("View Debugger")
-        changed, value = imgui.checkbox("Visual Loss Debug", bool(ui.values["loss_debug"]))
-        if changed:
-            ui.values["loss_debug"] = bool(value)
-        imgui.begin_disabled(not bool(ui.values["loss_debug"]))
-        view_idx = min(max(int(ui.values["loss_debug_view"]), 0), len(_LOSS_DEBUG_OPTIONS) - 1)
-        if imgui.begin_combo("Mode", _LOSS_DEBUG_OPTIONS[view_idx][1]):
-            for idx, (_, label) in enumerate(_LOSS_DEBUG_OPTIONS):
-                selected = idx == view_idx
-                if imgui.selectable(label, selected)[0]:
-                    ui.values["loss_debug_view"] = idx
-                if selected:
-                    imgui.set_item_default_focus()
-            imgui.end_combo()
-        frame_max = max(int(ui.values.get("_loss_debug_frame_max", 0)), 0)
-        changed, value = imgui.slider_int("Frame", int(ui.values["loss_debug_frame"]), 0, frame_max)
-        if changed:
-            ui.values["loss_debug_frame"] = value
-        frame_text = ui.texts.get("loss_debug_frame", "")
-        if frame_text:
-            imgui.text_disabled(frame_text.split(": ", 1)[-1] if ": " in frame_text else frame_text)
-        if _LOSS_DEBUG_OPTIONS[view_idx][0] == "abs_diff":
-            changed, value = imgui.slider_float(
-                "Abs Diff Scale",
-                float(ui.values[_LOSS_DEBUG_ABS_SCALE_KEY]),
-                _LOSS_DEBUG_ABS_SCALE_MIN,
-                _LOSS_DEBUG_ABS_SCALE_MAX,
-                "%.3gx",
-                imgui.SliderFlags_.logarithmic.value,
-            )
-            if changed:
-                ui.values[_LOSS_DEBUG_ABS_SCALE_KEY] = float(value)
-        imgui.end_disabled()
         imgui.separator()
 
     def _section_camera(self, ui: ViewerUI) -> None:
@@ -579,9 +552,6 @@ class ToolkitWindow:
             ui.values["background_r"] = float(value.x)
             ui.values["background_g"] = float(value.y)
             ui.values["background_b"] = float(value.z)
-        changed, value = imgui.checkbox("Debug Processed Count", bool(ui.values["debug_processed_count"]))
-        if changed:
-            ui.values["debug_processed_count"] = bool(value)
         imgui.separator()
 
     def _section_training_renderer(self, training: TrainingController) -> None:
@@ -709,6 +679,52 @@ class ToolkitWindow:
                 f"Bounds min ({stats.position_min[0]:.3f}, {stats.position_min[1]:.3f}, {stats.position_min[2]:.3f}) | "
                 f"max ({stats.position_max[0]:.3f}, {stats.position_max[1]:.3f}, {stats.position_max[2]:.3f})"
             )
+
+    def _draw_render_debug_window(self, ui: ViewerUI) -> None:
+        if not self._show_render_debug:
+            return
+        opened, self._show_render_debug = imgui.begin("Rendering Debug", True)
+        if opened:
+            imgui.separator_text("View Debugger")
+            changed, value = imgui.checkbox("Visual Loss Debug", bool(ui.values["loss_debug"]))
+            if changed:
+                ui.values["loss_debug"] = bool(value)
+            imgui.begin_disabled(not bool(ui.values["loss_debug"]))
+            view_idx = min(max(int(ui.values["loss_debug_view"]), 0), len(_LOSS_DEBUG_OPTIONS) - 1)
+            if imgui.begin_combo("Mode", _LOSS_DEBUG_OPTIONS[view_idx][1]):
+                for idx, (_, label) in enumerate(_LOSS_DEBUG_OPTIONS):
+                    selected = idx == view_idx
+                    if imgui.selectable(label, selected)[0]:
+                        ui.values["loss_debug_view"] = idx
+                    if selected:
+                        imgui.set_item_default_focus()
+                imgui.end_combo()
+            frame_max = max(int(ui.values.get("_loss_debug_frame_max", 0)), 0)
+            changed, value = imgui.slider_int("Frame", int(ui.values["loss_debug_frame"]), 0, frame_max)
+            if changed:
+                ui.values["loss_debug_frame"] = value
+            frame_text = ui.texts.get("loss_debug_frame", "")
+            if frame_text:
+                imgui.text_disabled(frame_text.split(": ", 1)[-1] if ": " in frame_text else frame_text)
+            if _LOSS_DEBUG_OPTIONS[view_idx][0] == "abs_diff":
+                changed, value = imgui.slider_float(
+                    "Abs Diff Scale",
+                    float(ui.values[_LOSS_DEBUG_ABS_SCALE_KEY]),
+                    _LOSS_DEBUG_ABS_SCALE_MIN,
+                    _LOSS_DEBUG_ABS_SCALE_MAX,
+                    "%.3gx",
+                    imgui.SliderFlags_.logarithmic.value,
+                )
+                if changed:
+                    ui.values[_LOSS_DEBUG_ABS_SCALE_KEY] = float(value)
+            imgui.end_disabled()
+            imgui.separator_text("Mode")
+            changed, value = imgui.checkbox("Debug Processed Count", bool(ui.values["debug_processed_count"]))
+            if changed:
+                ui.values["debug_processed_count"] = bool(value)
+            if bool(ui.values["debug_processed_count"]):
+                imgui.text_disabled("Processed count scale is shown as an on-screen overlay.")
+        imgui.end()
 
     def _draw_debug_colorbar(self, ui: ViewerUI, width: int, height: int) -> None:
         if not bool(ui.values.get("debug_processed_count", False)):

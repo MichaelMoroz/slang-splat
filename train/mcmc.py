@@ -21,9 +21,9 @@ from .losses import get_expon_lr_func, inverse_sigmoid, l1_loss, psnr, rgb_to_nc
 _PARAM_COUNT = 14
 _N_MAX = 51
 _DEFAULT_INIT_SCALE_SPACING_RATIO = 0.25
-_DEFAULT_INIT_OPACITY = 0.22
+_DEFAULT_INIT_OPACITY = 0.5
 _MIN_SCALE = 1e-4
-_MIN_OPACITY = 0.005
+_SANITIZE_MIN_OPACITY = 1e-6
 _POSITION_LIMIT_MULTIPLIER = 4.0
 _SCALE_LIMIT_MULTIPLIER = 0.5
 _IDENTITY_QUAT = (1.0, 0.0, 0.0, 0.0)
@@ -97,7 +97,7 @@ class MCMCConfig:
     position_lr_delay_mult: float = 0.01
     position_lr_max_steps: int = 30000
     feature_lr: float = 0.0025
-    opacity_lr: float = 0.01
+    opacity_lr: float = 0.05
     scaling_lr: float = 0.005
     rotation_lr: float = 0.001
     lambda_dssim: float = 0.2
@@ -322,7 +322,7 @@ class RGBGaussianModel:
             xyz = torch.where(torch.isfinite(self._xyz), self._xyz, prev_xyz)
             color = torch.where(torch.isfinite(self._color), self._color, prev_color).clamp_(0.0, 1.0)
             opacity_logits = torch.where(torch.isfinite(self._opacity), self._opacity, prev_opacity)
-            opacity = torch.sigmoid(opacity_logits).clamp_(_MIN_OPACITY, 1.0 - torch.finfo(opacity_logits.dtype).eps)
+            opacity = torch.sigmoid(opacity_logits).clamp_(_SANITIZE_MIN_OPACITY, 1.0 - torch.finfo(opacity_logits.dtype).eps)
             log_scale = torch.where(torch.isfinite(self._log_scale), self._log_scale, prev_log_scale)
             scale = torch.exp(log_scale).clamp_(_MIN_SCALE, max_scale)
             scale = torch.maximum(scale, scale.max(dim=1, keepdim=True).values / max_anisotropy)
