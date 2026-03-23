@@ -3,14 +3,16 @@ from __future__ import annotations
 import math
 from pathlib import Path
 import time
+from typing import Any
 
 import numpy as np
 import slangpy as spy
-
+import torch
 from module.splatting import SplattingContext
 from utility.ply import load_gaussian_ply
 from .camera import Camera
 from .state import ViewerState
+from .training import TrainingController
 from .ui import _WINDOW_TITLE, build_ui, create_toolkit_window
 
 _ROOT = Path(__file__).resolve().parent
@@ -21,6 +23,7 @@ _LOOK_SMOOTH = 12.0
 _MOVE_SMOOTH = 10.0
 _PITCH_LIMIT = math.radians(89.0)
 _ALPHA_EPS = 1e-6
+_LOSS_DEBUG_VIEW_KEYS = ("rendered", "target", "abs_diff")
 
 
 def _normalize(v: np.ndarray) -> np.ndarray:
@@ -33,6 +36,40 @@ def _pack_params(splats: np.ndarray) -> np.ndarray:
     alpha = np.clip(packed[13], _ALPHA_EPS, 1.0 - _ALPHA_EPS)
     packed[13] = np.log(alpha / np.clip(1.0 - alpha, _ALPHA_EPS, 1.0))
     return packed
+
+
+def _pack_params_torch(splats: torch.Tensor) -> torch.Tensor:
+    packed = splats.contiguous().clone()
+    alpha = torch.clamp(packed[13], _ALPHA_EPS, 1.0 - _ALPHA_EPS)
+    packed[13] = torch.log(alpha / torch.clamp(1.0 - alpha, _ALPHA_EPS, 1.0))
+    return packed.reshape(-1)
+
+
+def _camera_dict(camera: torch.Tensor, image_size: tuple[int, int]) -> dict[str, Any]:
+    c = camera.detach()
+    q = c[0:4] / torch.clamp(torch.linalg.norm(c[0:4]), min=1e-12)
+    w, x, y, z = [float(v.item()) for v in q]
+    rot = torch.tensor(
+        [
+            [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+            [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+            [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
+        ],
+        device=c.device,
+        dtype=c.dtype,
+    )
+    cam_pos = (-rot.T @ c[4:7]).cpu().tolist()
+    return {
+        "camPos": spy.float3(*cam_pos),
+        "camBasis": spy.float3x3(rot.cpu().numpy()),
+        "focalPixels": spy.float2(float(c[7].item()), float(c[8].item())),
+        "principalPoint": spy.float2(float(c[9].item()), float(c[10].item())),
+        "viewport": spy.float2(*map(float, image_size)),
+        "nearDepth": float(c[11].item()),
+        "farDepth": float(c[12].item()),
+        "k1": float(c[13].item()),
+        "k2": float(c[14].item()),
+    }
 
 
 def _fit_camera(splats: np.ndarray, fov_y_degrees: float) -> tuple[spy.float3, np.ndarray, float, float, float]:
@@ -51,16 +88,35 @@ def _fit_camera(splats: np.ndarray, fov_y_degrees: float) -> tuple[spy.float3, n
     return spy.float3(*position.tolist()), center, near, far, move_speed
 
 
+def _fit_camera_to_points(points: np.ndarray, fov_y_degrees: float) -> tuple[spy.float3, np.ndarray, float, float, float]:
+    if points.size == 0:
+        return spy.float3(0.0, 0.0, -3.0), np.zeros((3,), dtype=np.float32), 0.1, 100.0, 2.0
+    center = np.mean(points, axis=0, dtype=np.float32)
+    radius = max(float(np.percentile(np.linalg.norm(points - center[None, :], axis=1), 90.0)), 0.25)
+    distance = max(radius / max(math.tan(0.5 * math.radians(float(fov_y_degrees))), 1e-4) * 0.95, radius * 1.8, 0.5)
+    position = center + np.array([0.0, 0.0, -distance], dtype=np.float32)
+    near = max(0.0, distance * 0.01)
+    far = max(distance + radius * 10.0, 1000.0)
+    move_speed = max(0.25, radius)
+    return spy.float3(*position.tolist()), center, near, far, move_speed
+
+
 class SplatViewer(spy.AppWindow):
     def __init__(self, app: spy.App, width: int = 1600, height: int = 900, title: str = _WINDOW_TITLE) -> None:
         super().__init__(app, width=width, height=height, title=title, resizable=True, enable_vsync=False)
         self.s = ViewerState()
         self.renderer = SplattingContext(device=self.device)
         self.blit_kernel = self.device.create_compute_kernel(self.device.load_program(str(_SHADERS / "kernels.slang"), ["csBlitOutput"]))
+        self.debug_letterbox_kernel = self.device.create_compute_kernel(self.device.load_program(str(_SHADERS / "kernels.slang"), ["csDebugLetterboxTensor"]))
+        self.debug_abs_diff_kernel = self.device.create_compute_kernel(self.device.load_program(str(_SHADERS / "kernels.slang"), ["csDebugAbsDiffLetterbox"]))
         self.ui = build_ui()
         self.toolkit = create_toolkit_window(self.device, width, height)
         self.toolkit.callbacks.load_ply = self._load_ply_callback
+        self.toolkit.callbacks.browse_training_dataset = self._browse_training_dataset_callback
+        self.toolkit.callbacks.browse_training_images = self._browse_training_images_callback
+        self.training = TrainingController()
         self._present_texture: spy.Texture | None = None
+        self._debug_target_tensors: dict[int, spy.Tensor] = {}
 
     def _ensure_present_texture(self, width: int, height: int) -> spy.Texture:
         if self._present_texture is not None and int(self._present_texture.width) == int(width) and int(self._present_texture.height) == int(height):
@@ -72,6 +128,34 @@ class SplatViewer(spy.AppWindow):
             usage=spy.TextureUsage.shader_resource | spy.TextureUsage.unordered_access | spy.TextureUsage.copy_source | spy.TextureUsage.copy_destination,
         )
         return self._present_texture
+
+    def _debug_view_key(self) -> str:
+        index = min(max(int(self.ui.values.get("loss_debug_view", 0)), 0), len(_LOSS_DEBUG_VIEW_KEYS) - 1)
+        return _LOSS_DEBUG_VIEW_KEYS[index]
+
+    def _debug_frame_index(self) -> int:
+        frame_count = self.training.frame_count()
+        if frame_count <= 0:
+            self.ui.values["_loss_debug_frame_max"] = 0
+            return 0
+        self.ui.values["_loss_debug_frame_max"] = frame_count - 1
+        index = min(max(int(self.ui.values.get("loss_debug_frame", 0)), 0), frame_count - 1)
+        self.ui.values["loss_debug_frame"] = index
+        return index
+
+    def _target_tensor(self, frame_index: int) -> spy.Tensor | None:
+        cached = self._debug_target_tensors.get(int(frame_index))
+        if cached is not None:
+            return cached
+        target = self.training.target_image(frame_index)
+        if target is None:
+            return None
+        h, w = int(target.shape[0]), int(target.shape[1])
+        rgba = torch.cat((target, torch.ones((h, w, 1), device=target.device, dtype=target.dtype)), dim=2).contiguous()
+        tensor = spy.Tensor.empty(self.device, shape=(h, w), dtype=spy.float4)
+        tensor.copy_from_torch(rgba)
+        self._debug_target_tensors[int(frame_index)] = tensor
+        return tensor
 
     def _forward(self) -> np.ndarray:
         cy, sy = math.cos(self.s.yaw), math.sin(self.s.yaw)
@@ -85,6 +169,14 @@ class SplatViewer(spy.AppWindow):
         return Camera.look_at(position=position, target=position + forward, up=up, fov_y_degrees=float(self.s.fov_y), near=float(self.s.near), far=float(self.s.far))
 
     def _upload_scene_if_needed(self) -> None:
+        preview = self.training.consume_preview()
+        if preview is not None:
+            params = self.renderer.scene["g_Params"].to_torch()
+            params.copy_(_pack_params_torch(preview))
+            self.renderer.device.sync_to_device()
+            self.s.scene_dirty = False
+            self.s.splat_count = int(preview.shape[1])
+            return
         if not self.s.scene_dirty:
             return
         self.renderer.scene["g_Params"].copy_from_numpy(self.s.packed_splats.reshape(-1))
@@ -113,6 +205,28 @@ class SplatViewer(spy.AppWindow):
             return
         try:
             self._load_scene(Path(path))
+        except Exception as exc:
+            self.s.last_error = str(exc)
+
+    def _browse_training_dataset_callback(self) -> None:
+        path = spy.platform.choose_folder_dialog()
+        if path is None:
+            return
+        try:
+            self._debug_target_tensors.clear()
+            self.training.set_dataset_folder(Path(path))
+            self.s.last_error = ""
+        except Exception as exc:
+            self.s.last_error = str(exc)
+
+    def _browse_training_images_callback(self) -> None:
+        path = spy.platform.choose_folder_dialog()
+        if path is None:
+            return
+        try:
+            self._debug_target_tensors.clear()
+            self.training.set_images_folder(Path(path))
+            self.s.last_error = ""
         except Exception as exc:
             self.s.last_error = str(exc)
 
@@ -152,7 +266,7 @@ class SplatViewer(spy.AppWindow):
         self.s.max_anisotropy = float(self.ui.values["max_anisotropy"])
         self.s.alpha_cutoff = float(self.ui.values["alpha_cutoff"])
         self.s.trans_threshold = float(self.ui.values["trans_threshold"])
-        self.s.debug_mode = int(self.ui.values["debug_mode"])
+        self.s.debug_mode = 1 if bool(self.ui.values.get("debug_processed_count", False)) else 0
         self.s.background = (
             float(self.ui.values["background_r"]),
             float(self.ui.values["background_g"]),
@@ -187,43 +301,154 @@ class SplatViewer(spy.AppWindow):
         position += (up * move_vel[0] + right * move_vel[1] + forward * move_vel[2]) * dt
         self.s.camera_pos = spy.float3(*position.tolist())
 
+    def _update_ui(self, training_snapshot, dt: float) -> None:
+        self.s.fps_smooth += (1.0 / dt - self.s.fps_smooth) * min(dt * 5.0, 1.0)
+        self.ui.values["_loss_debug_frame_max"] = max(self.training.frame_count() - 1, 0)
+        frame_index = self._debug_frame_index()
+        frame_name = self.training.frame_name(frame_index)
+        active_scene = None if self.s.scene_path is None else str(self.s.scene_path)
+        if active_scene is None and training_snapshot.scene_path:
+            active_scene = training_snapshot.scene_path
+        self.ui.texts["fps"] = f"FPS: {self.s.fps_smooth:.1f}"
+        self.ui.texts["scene"] = "Scene: <none>" if active_scene is None else f"Scene: {active_scene}"
+        self.ui.texts["status"] = f"Status: {'Loss Debug' if bool(self.ui.values.get('loss_debug', False)) else 'Viewer'} | Splats: {self.s.splat_count:,}"
+        self.ui.texts["render_stats"] = f"Generated: {int(getattr(self.renderer, '_last_total', 0)):,} | Processed mode: {bool(self.ui.values.get('debug_processed_count', False))}"
+        train_mode = "running" if training_snapshot.running and not training_snapshot.paused else "paused" if training_snapshot.paused else "idle"
+        self.ui.texts["training"] = f"Training: {train_mode} | step={training_snapshot.iteration:,} | splats={training_snapshot.point_count:,}"
+        self.ui.texts["training_time"] = f"Time: {time.strftime('%H:%M:%S', time.gmtime(training_snapshot.elapsed_seconds))}" if training_snapshot.elapsed_seconds > 0 else "Time: 00:00"
+        self.ui.texts["training_iters_avg"] = (
+            f"Avg it/s: {training_snapshot.iteration / training_snapshot.elapsed_seconds:.2f}"
+            if training_snapshot.elapsed_seconds > 1e-6 and training_snapshot.iteration > 0
+            else "Avg it/s: n/a"
+        )
+        self.ui.texts["training_loss"] = f"Loss Avg: {training_snapshot.avg_loss:.6e}" if math.isfinite(training_snapshot.avg_loss) else "Loss Avg: n/a"
+        self.ui.texts["training_mse"] = f"MSE Avg: {training_snapshot.avg_mse:.6e}" if math.isfinite(training_snapshot.avg_mse) else "MSE Avg: n/a"
+        self.ui.texts["training_psnr"] = f"PSNR Avg: {training_snapshot.avg_psnr:.3f} dB" if math.isfinite(training_snapshot.avg_psnr) else "PSNR Avg: n/a"
+        self.ui.texts["loss_debug_frame"] = f"Frame[{frame_index}]: {frame_name}" if self.training.frame_count() > 0 else "Frame: <none>"
+        sample = self.training.camera_sample(0)
+        self.ui.texts["training_resolution"] = (
+            f"Train Res: {sample.image_size[0]}x{sample.image_size[1]}" if sample is not None else "Train Res: n/a"
+        )
+        self.ui.texts["training_downscale"] = "Downscale: 1x"
+        self.ui.texts["error"] = f"Error: {self.s.last_error}" if self.s.last_error else ""
+        self.ui.texts["max_splat_steps"] = str(getattr(self.renderer, "_last_total", 0))
+        tk = self.toolkit.tk
+        tk.fps_history.append(self.s.fps_smooth)
+        if training_snapshot.iteration > 0 and (not tk.step_history or training_snapshot.iteration != tk.step_history[-1]):
+            tk.step_history.append(float(training_snapshot.iteration))
+            tk.step_time_history.append(float(self.s.last_time))
+            if math.isfinite(training_snapshot.avg_loss) and training_snapshot.avg_loss > 0.0:
+                tk.loss_history.append(float(training_snapshot.avg_loss))
+            elif tk.loss_history:
+                tk.loss_history.append(float(tk.loss_history[-1]))
+            if math.isfinite(training_snapshot.avg_psnr):
+                tk.psnr_history.append(float(training_snapshot.avg_psnr))
+            elif tk.psnr_history:
+                tk.psnr_history.append(float(tk.psnr_history[-1]))
+
+    def _render_debug_view(self, image: spy.Texture, encoder: spy.CommandEncoder, active_splat_count: int) -> None:
+        frame_index = self._debug_frame_index()
+        sample = self.training.camera_sample(frame_index)
+        if sample is None:
+            encoder.clear_texture_float(image, clear_value=[*self.s.background, 1.0])
+            return
+        debug_width, debug_height = map(int, sample.image_size)
+        self.renderer.radius_scale = self.s.radius_scale
+        self.renderer.max_anisotropy = self.s.max_anisotropy
+        self.renderer.alpha_cutoff = self.s.alpha_cutoff
+        self.renderer.trans_threshold = self.s.trans_threshold
+        self.renderer.debug_mode = self.s.debug_mode
+        self.renderer.prepare(active_splat_count, (debug_width, debug_height), self.s.background)
+        self._upload_scene_if_needed()
+        self.renderer.render(_camera_dict(sample.camera_params, sample.image_size), active_splat_count, command_encoder=encoder)
+        self.ui.texts["max_splat_steps"] = str(getattr(self.renderer, "_last_total", 0))
+        present = self._ensure_present_texture(int(image.width), int(image.height))
+        mode = self._debug_view_key()
+        if mode == "abs_diff":
+            target = self._target_tensor(frame_index)
+            if target is None:
+                encoder.clear_texture_float(image, clear_value=[*self.s.background, 1.0])
+                return
+            self.debug_abs_diff_kernel.dispatch(
+                thread_count=spy.uint3(int(image.width), int(image.height), 1),
+                vars={
+                    "g_DebugRendered": self.renderer.frame["g_Output"],
+                    "g_DebugTarget": target,
+                    "g_Surface": present,
+                    "g_LetterboxSourceWidth": debug_width,
+                    "g_LetterboxSourceHeight": debug_height,
+                    "g_LetterboxOutputWidth": int(image.width),
+                    "g_LetterboxOutputHeight": int(image.height),
+                    "g_DebugDiffScale": float(self.ui.values["loss_debug_abs_scale"]),
+                },
+                command_encoder=encoder,
+            )
+        else:
+            source = self.renderer.frame["g_Output"] if mode == "rendered" else self._target_tensor(frame_index)
+            if source is None:
+                encoder.clear_texture_float(image, clear_value=[*self.s.background, 1.0])
+                return
+            self.debug_letterbox_kernel.dispatch(
+                thread_count=spy.uint3(int(image.width), int(image.height), 1),
+                vars={
+                    "g_LetterboxSource": source,
+                    "g_Surface": present,
+                    "g_LetterboxSourceWidth": debug_width,
+                    "g_LetterboxSourceHeight": debug_height,
+                    "g_LetterboxOutputWidth": int(image.width),
+                    "g_LetterboxOutputHeight": int(image.height),
+                },
+                command_encoder=encoder,
+            )
+        encoder.blit(image, present)
+
     def render(self, render_context) -> None:
         image = render_context.surface_texture
         encoder = render_context.command_encoder
         now = time.perf_counter()
         dt = max(now - self.s.last_time, 1e-5)
         self.s.last_time = now
-        self.s.fps_smooth += (1.0 / dt - self.s.fps_smooth) * min(dt * 5.0, 1.0)
-        self.ui.texts["status"] = f"FPS: {self.s.fps_smooth:.1f} | Splats: {self.s.splat_count:,}"
-        self.ui.texts["scene"] = "Scene: <none>" if self.s.scene_path is None else f"Scene: {self.s.scene_path}"
-        self.ui.texts["error"] = f"Error: {self.s.last_error}" if self.s.last_error else ""
-        self.ui.texts["max_splat_steps"] = str(getattr(self.renderer, "_last_total", 0))
+        self.training.update()
+        training_snapshot = self.training.snapshot()
+        fit_points = self.training.consume_fit_points()
+        if fit_points is not None:
+            self.s.camera_pos, center, self.s.near, self.s.far, self.s.move_speed = _fit_camera_to_points(fit_points, self.s.fov_y)
+            position = np.array([self.s.camera_pos.x, self.s.camera_pos.y, self.s.camera_pos.z], dtype=np.float32)
+            forward = _normalize(center - position)
+            self.s.yaw = math.atan2(float(forward[0]), float(forward[2]))
+            self.s.pitch = math.asin(float(np.clip(forward[1], -1.0, 1.0)))
         try:
             self.update_camera(dt)
-            if self.s.splats is None:
+            has_training_preview = training_snapshot.preview_count > 0
+            if self.s.splats is None and not has_training_preview:
                 encoder.clear_texture_float(image, clear_value=[*self.s.background, 1.0])
             else:
                 width, height = int(image.width), int(image.height)
-                self.renderer.radius_scale = self.s.radius_scale
-                self.renderer.max_anisotropy = self.s.max_anisotropy
-                self.renderer.alpha_cutoff = self.s.alpha_cutoff
-                self.renderer.trans_threshold = self.s.trans_threshold
-                self.renderer.debug_mode = self.s.debug_mode
-                self.renderer.prepare(self.s.splat_count, (width, height), self.s.background)
-                self._upload_scene_if_needed()
-                self.renderer.render(self.camera().gpu_params(width, height), self.s.splat_count, command_encoder=encoder)
-                self.ui.texts["max_splat_steps"] = str(getattr(self.renderer, "_last_total", 0))
-                present = self._ensure_present_texture(width, height)
-                self.blit_kernel.dispatch(
-                    thread_count=spy.uint3(width, height, 1),
-                    vars={"g_ViewImage": self.renderer.frame["g_Output"], "g_Surface": present, "g_Viewport": spy.uint2(width, height)},
-                    command_encoder=encoder,
-                )
-                encoder.blit(image, present)
+                active_splat_count = int(training_snapshot.preview_count) if has_training_preview else int(self.s.splat_count)
+                if bool(self.ui.values.get("loss_debug", False)) and self.training.frame_count() > 0:
+                    self._render_debug_view(image, encoder, active_splat_count)
+                else:
+                    self.renderer.radius_scale = self.s.radius_scale
+                    self.renderer.max_anisotropy = self.s.max_anisotropy
+                    self.renderer.alpha_cutoff = self.s.alpha_cutoff
+                    self.renderer.trans_threshold = self.s.trans_threshold
+                    self.renderer.debug_mode = self.s.debug_mode
+                    self.renderer.prepare(active_splat_count, (width, height), self.s.background)
+                    self._upload_scene_if_needed()
+                    self.renderer.render(self.camera().gpu_params(width, height), active_splat_count, command_encoder=encoder)
+                    self.ui.texts["max_splat_steps"] = str(getattr(self.renderer, "_last_total", 0))
+                    present = self._ensure_present_texture(width, height)
+                    self.blit_kernel.dispatch(
+                        thread_count=spy.uint3(width, height, 1),
+                        vars={"g_ViewImage": self.renderer.frame["g_Output"], "g_Surface": present, "g_Viewport": spy.uint2(width, height)},
+                        command_encoder=encoder,
+                    )
+                    encoder.blit(image, present)
         except Exception as exc:
             self.s.last_error = str(exc)
             encoder.clear_texture_float(image, clear_value=[0.0, 0.0, 0.0, 1.0])
-        self.toolkit.render(self.ui, image, encoder)
+        self._update_ui(training_snapshot, dt)
+        self.toolkit.render(self.ui, self.training, image, encoder)
 
 
 def _compute_view_geometry() -> tuple[int, int]:
@@ -237,7 +462,7 @@ def _compute_view_geometry() -> tuple[int, int]:
 
 def _create_device() -> spy.Device:
     include_paths = [str(path) for path in (_SHADERS, Path(__file__).resolve().parents[1] / "module" / "shaders", Path(__file__).resolve().parents[1] / "utility" / "shaders", Path(__file__).resolve().parents[1] / "shaders")]
-    return spy.create_device(type=spy.DeviceType.vulkan, include_paths=include_paths, enable_cuda_interop=False)
+    return spy.create_torch_device(type=spy.DeviceType.vulkan, include_paths=include_paths)
 
 
 def main() -> int:
@@ -248,5 +473,6 @@ def main() -> int:
     try:
         app.run()
     finally:
+        viewer.training.shutdown()
         viewer.toolkit.shutdown()
     return 0

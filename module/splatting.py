@@ -52,6 +52,12 @@ class SplattingContext:
         self._scanline_dtype = self.mod.ScanlineEntry
         self._size = (0, 0)
 
+    def _shared_usage(self) -> spy.BufferUsage:
+        usage = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access
+        if getattr(self.device, "supports_cuda_interop", False):
+            usage |= spy.BufferUsage.shared
+        return usage
+
     def _view(self, tensor: spy.Tensor, dtype: Any, shape: tuple[int, ...]) -> spy.Tensor:
         if dtype is spy.float4:
             dtype = self._float4_dtype
@@ -74,7 +80,7 @@ class SplattingContext:
         if getattr(self, "_scene_capacity", 0) >= splat_count:
             return
         self.scene = {
-            "g_Params": spy.Tensor.empty(self.device, shape=(_PARAM_COUNT * splat_count,), dtype=float),
+            "g_Params": spy.Tensor.empty(self.device, shape=(_PARAM_COUNT * splat_count,), dtype=float, usage=self._shared_usage()),
             "g_ScanlineCounts": spy.Tensor.empty(self.device, shape=(splat_count,), dtype="uint"),
             "g_ScanlineOffsets": spy.Tensor.empty(self.device, shape=(splat_count,), dtype="uint"),
             "g_TileCounts": spy.Tensor.empty(self.device, shape=(splat_count,), dtype="uint"),
