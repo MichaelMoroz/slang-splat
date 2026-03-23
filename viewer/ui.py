@@ -26,6 +26,10 @@ _INTERFACE_SCALE_OPTIONS = (
     ("150%", 1.5),
     ("175%", 1.75),
     ("200%", 2.0),
+    ("225%", 2.25),
+    ("250%", 2.5),
+    ("275%", 2.75),
+    ("300%", 3.0),
 )
 _DEFAULT_INTERFACE_SCALE_INDEX = 3
 _BASE_FONT_SIZE_PX = 16.0
@@ -272,6 +276,12 @@ class ToolkitWindow:
     def _sync_interface_scale(self, ui: ViewerUI) -> None:
         self._set_interface_scale(self._interface_scale_factor(ui))
 
+    def _scaled_plot_height(self, base_height: float) -> float:
+        return max(float(base_height) * self._applied_interface_scale, float(base_height))
+
+    def _plot_size(self, base_height: float) -> imgui.ImVec2:
+        return imgui.ImVec2(-1, self._scaled_plot_height(base_height))
+
     def handle_keyboard_event(self, event) -> bool:
         if not self._alive:
             return False
@@ -383,7 +393,7 @@ class ToolkitWindow:
         fps_arr = np.array(self.tk.fps_history, dtype=np.float64)
         if len(fps_arr) >= 2:
             imgui.text_disabled(f"avg {np.mean(fps_arr):.1f}  min {np.min(fps_arr):.1f}  max {np.max(fps_arr):.1f}")
-            if implot.begin_plot("##FPS", imgui.ImVec2(-1, 110)):
+            if implot.begin_plot("##FPS", self._plot_size(110.0)):
                 implot.setup_axes("", "FPS", implot.AxisFlags_.no_tick_labels.value, implot.AxisFlags_.auto_fit.value)
                 implot.setup_axis_limits(implot.ImAxis_.x1.value, 0, len(fps_arr) - 1, implot.Cond_.always.value)
                 shade_spec = implot.Spec()
@@ -403,7 +413,7 @@ class ToolkitWindow:
             imgui.separator_text("Loss")
             loss_spec = implot.Spec()
             loss_spec.line_color = imgui.ImVec4(1.0, 0.6, 0.2, 1.0)
-            if implot.begin_plot("##Loss", imgui.ImVec2(-1, 180)):
+            if implot.begin_plot("##Loss", self._plot_size(180.0)):
                 implot.setup_axes("step", "loss", 0, implot.AxisFlags_.auto_fit.value)
                 implot.setup_axis_limits(implot.ImAxis_.x1.value, float(s[0]), float(s[-1]), implot.Cond_.always.value)
                 implot.setup_axis_scale(implot.ImAxis_.y1.value, implot.Scale_.log10.value)
@@ -418,7 +428,7 @@ class ToolkitWindow:
             imgui.separator_text("PSNR")
             psnr_spec = implot.Spec()
             psnr_spec.line_color = imgui.ImVec4(0.3, 0.85, 0.5, 1.0)
-            if implot.begin_plot("##PSNR", imgui.ImVec2(-1, 180)):
+            if implot.begin_plot("##PSNR", self._plot_size(180.0)):
                 implot.setup_axes("step", "PSNR (dB)", 0, implot.AxisFlags_.auto_fit.value)
                 implot.setup_axis_limits(implot.ImAxis_.x1.value, float(s[0]), float(s[-1]), implot.Cond_.always.value)
                 implot.plot_line("PSNR", s, p, spec=psnr_spec)

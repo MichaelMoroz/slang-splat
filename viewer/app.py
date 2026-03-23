@@ -152,7 +152,12 @@ class SplatViewer(spy.AppWindow):
             return None
         h, w = int(target.shape[0]), int(target.shape[1])
         rgba = torch.cat((target, torch.ones((h, w, 1), device=target.device, dtype=target.dtype)), dim=2).contiguous()
-        tensor = spy.Tensor.empty(self.device, shape=(h, w), dtype=spy.float4)
+        tensor = spy.Tensor.empty(
+            self.device,
+            shape=(h, w),
+            dtype=spy.float4,
+            usage=spy.BufferUsage.shared | spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access,
+        )
         tensor.copy_from_torch(rgba)
         self._debug_target_tensors[int(frame_index)] = tensor
         return tensor

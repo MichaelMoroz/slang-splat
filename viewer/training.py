@@ -170,6 +170,7 @@ class TrainingController:
         self._latest_preview: torch.Tensor | None = None
         self._preview_dirty = False
         self._pending_fit_points: np.ndarray | None = None
+        self._target_image_cache: dict[Path, torch.Tensor] = {}
         self._scene = None
         self._trainer: RGBMCMCTrainer | None = None
         self._pending_start = False
@@ -245,10 +246,12 @@ class TrainingController:
         root = self._resolve_colmap_root(Path(path))
         self.config.scene_path = str(root)
         self._store_images_root(root, self._suggest_images_root(root))
+        self._target_image_cache.clear()
 
     def set_images_folder(self, path: str | Path) -> None:
         root = Path(self.config.scene_path).resolve() if self.config.scene_path.strip() else Path(path).resolve().parent
         self._store_images_root(root, Path(path))
+        self._target_image_cache.clear()
 
     def shutdown(self) -> None:
         self.stop(wait=False)
@@ -307,6 +310,7 @@ class TrainingController:
         self._paused = False
         self._pending_start = False
         self._trainer = None
+        self._target_image_cache.clear()
         self._scene = None
         if not self._done and self._status not in {"Idle", "Error"}:
             self._status = "Stopped"
@@ -345,9 +349,17 @@ class TrainingController:
 
     def target_image(self, frame_index: int) -> torch.Tensor | None:
         frame = self._frame(frame_index)
-        if frame is None or self._trainer is None:
+        if frame is None:
             return None
-        return self._trainer._target_image(frame)
+        if self._trainer is not None:
+            return self._trainer._target_image(frame)
+        image = frame.image
+        if image is None:
+            image = self._target_image_cache.get(frame.image_path)
+            if image is None:
+                image = _load_image_tensor(frame.image_path, frame.camera_params.device, preload_cuda=True)
+                self._target_image_cache[frame.image_path] = image
+        return _image_to_linear_float(image) if image.dtype == torch.uint8 else image
 
     def snapshot(self) -> TrainingSnapshot:
         history = {
