@@ -16,7 +16,7 @@ _SHADERS = Path(__file__).resolve().parents[1] / "utility" / "shaders"
 
 @pytest.fixture(scope="module")
 def utility_context() -> tuple[spy.Device, GpuUtility]:
-    device = spy.create_torch_device(type=spy.DeviceType.cuda, include_paths=[_SHADERS])
+    device = spy.create_torch_device(type=spy.DeviceType.cuda, include_paths=[_SHADERS], enable_hot_reload=False)
     return device, GpuUtility(device)
 
 

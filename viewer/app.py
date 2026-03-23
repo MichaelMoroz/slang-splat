@@ -384,7 +384,7 @@ class SplatViewer(spy.AppWindow):
                 encoder.clear_texture_float(image, clear_value=[*self.s.background, 1.0])
                 return
             self.debug_abs_diff_kernel.dispatch(
-                thread_count=spy.uint3(int(image.width), int(image.height), 1),
+                thread_count=spy.uint3(int(image.width) * int(image.height), 1, 1),
                 vars={
                     "g_DebugRendered": self.renderer.frame["g_Output"],
                     "g_DebugTarget": target,
@@ -403,7 +403,7 @@ class SplatViewer(spy.AppWindow):
                 encoder.clear_texture_float(image, clear_value=[*self.s.background, 1.0])
                 return
             self.debug_letterbox_kernel.dispatch(
-                thread_count=spy.uint3(int(image.width), int(image.height), 1),
+                thread_count=spy.uint3(int(image.width) * int(image.height), 1, 1),
                 vars={
                     "g_LetterboxSource": source,
                     "g_Surface": present,
@@ -463,7 +463,7 @@ class SplatViewer(spy.AppWindow):
                     self.ui.texts["max_splat_steps"] = str(getattr(self.renderer, "_last_total", 0))
                     present = self._ensure_present_texture(width, height)
                     self.blit_kernel.dispatch(
-                        thread_count=spy.uint3(width, height, 1),
+                        thread_count=spy.uint3(width * height, 1, 1),
                         vars={"g_ViewImage": self.renderer.frame["g_Output"], "g_Surface": present, "g_Viewport": spy.uint2(width, height)},
                         command_encoder=encoder,
                     )
@@ -486,7 +486,7 @@ def _compute_view_geometry() -> tuple[int, int]:
 
 def _create_device() -> spy.Device:
     include_paths = [str(path) for path in (_SHADERS, Path(__file__).resolve().parents[1] / "module" / "shaders", Path(__file__).resolve().parents[1] / "utility" / "shaders", Path(__file__).resolve().parents[1] / "shaders")]
-    return spy.create_torch_device(type=spy.DeviceType.vulkan, include_paths=include_paths)
+    return spy.create_torch_device(type=spy.DeviceType.vulkan, include_paths=include_paths, enable_hot_reload=False)
 
 
 def main() -> int:

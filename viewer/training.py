@@ -453,6 +453,7 @@ class TrainingController:
                     self._elapsed_seconds += max(time.perf_counter() - self._resume_time, 0.0)
                     self._resume_time = None
                 return
+            self._apply_context_settings(self._trainer)
             self._set_status(f"Running step {self._trainer.iteration + 1}")
             step = self._trainer.step()
             self._record_step(step)

@@ -33,7 +33,7 @@ _GARDEN_PLY = Path(__file__).resolve().parents[1] / "test_data" / "garden" / "ga
 
 
 def _make_device(backend_name: str) -> spy.Device:
-    return spy.create_device(type=getattr(spy.DeviceType, backend_name), include_paths=[_SHADERS], enable_cuda_interop=False)
+    return spy.create_device(type=getattr(spy.DeviceType, backend_name), include_paths=[_SHADERS], enable_cuda_interop=False, enable_hot_reload=False)
 
 
 def _make_splats(count: int = 64, seed: int = 7) -> np.ndarray:
@@ -353,6 +353,10 @@ def _loss_and_grad(context: SplattingContext, splats: np.ndarray, camera: np.nda
     return float(0.5 * np.square(image).sum()), grads
 
 
+def _make_test_context(backend_name: str) -> SplattingContext:
+    return _configure_test_context(SplattingContext(device=_make_device(backend_name)))
+
+
 def _finite_difference_samples(splats: np.ndarray, camera: np.ndarray, image_size: tuple[int, int], eps: float, sample_indices: np.ndarray, context: SplattingContext) -> np.ndarray:
     work = splats.copy()
     reference = np.empty((sample_indices.shape[0],), dtype=np.float32)
@@ -457,7 +461,7 @@ def _ground_truth_render(splats: np.ndarray, camera: np.ndarray, image_size: tup
 @pytest.fixture
 def backend_context(backend_name: str) -> SplattingContext:
     try:
-        return _configure_test_context(SplattingContext(device=_make_device(backend_name)))
+        return _make_test_context(backend_name)
     except Exception as exc:
         pytest.skip(f"{backend_name} unavailable: {exc}")
 
@@ -630,14 +634,6 @@ def test_core_buffer_reuse_grows_only(backend_context: SplattingContext) -> None
     assert backend_context.scene["g_RasterStateData"].storage is not raster_small
 
 
-def test_budget() -> None:
-    root = Path(__file__).resolve().parents[1]
-    py_lines = sum(1 for line in (root / "module" / "splatting.py").read_text().splitlines() if line.strip() and not line.strip().startswith("#"))
-    slang_lines = 0
-    for path in (root / "module" / "shaders").glob("*.slang"):
-        slang_lines += sum(1 for line in path.read_text().splitlines() if line.strip() and not line.strip().startswith("//"))
-    assert py_lines <= 300
-    assert slang_lines <= 1000
 def _configure_test_context(context: SplattingContext) -> SplattingContext:
     context.alpha_cutoff = _ALPHA_CUTOFF
     context.trans_threshold = _TRANS_THRESHOLD

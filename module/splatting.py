@@ -42,7 +42,7 @@ class SplattingContext:
     debug_depth_std_range: tuple[float, float] = (0.0, 2.0)
 
     def __post_init__(self) -> None:
-        self.device = self.device or spy.create_device(type=spy.DeviceType.cuda, include_paths=[_SHADERS], enable_cuda_interop=False)
+        self.device = self.device or spy.create_device(type=spy.DeviceType.cuda, include_paths=[_SHADERS], enable_cuda_interop=False, enable_hot_reload=False)
         self._init_resources()
 
     def _init_resources(self) -> None:
@@ -107,6 +107,10 @@ class SplattingContext:
         return (self._size[0] + 7) // 8, (self._size[1] + 7) // 8
 
     def _tile_grid_uint2(self) -> spy.uint2: return spy.uint2(*self._tile_grid())
+
+    def _raster_thread_count(self) -> spy.uint3:
+        tile_width, tile_height = self._tile_grid()
+        return spy.uint3(tile_width * tile_height * 64, 1, 1)
 
     def _alloc_frame(self, shape: tuple[int, int]) -> None:
         if self._size == shape:
@@ -513,7 +517,7 @@ class SplattingContext:
         with debug_group(enc, "renderer.render", _DEBUG_COLOR):
             with debug_group(enc, "renderer.raster_forward", _DEBUG_COLOR):
                 self.k_raster_fwd.dispatch(
-                    thread_count=spy.uint3(*self._size, 1),
+                    thread_count=self._raster_thread_count(),
                     vars=self._vars(camera, splat_count, getattr(self, "_entry_capacity", 1)),
                     command_encoder=enc,
                 )
@@ -528,7 +532,7 @@ class SplattingContext:
         enc = command_encoder or self.device.create_command_encoder()
         with debug_group(enc, "renderer.backward", _DEBUG_COLOR):
             self.scene["g_ParamGrads"].clear(command_encoder=enc)
-            self.k_raster_bwd.dispatch(thread_count=spy.uint3(*self._size, 1), vars=self._vars(camera, splat_count, self._last_total), command_encoder=enc)
+            self.k_raster_bwd.dispatch(thread_count=self._raster_thread_count(), vars=self._vars(camera, splat_count, self._last_total), command_encoder=enc)
         if command_encoder is None:
             self.device.submit_command_buffer(enc.finish()); self.device.sync_to_device()
         return self.scene["g_ParamGrads"]

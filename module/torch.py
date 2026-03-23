@@ -44,7 +44,7 @@ def _pack_params(splats: torch.Tensor) -> torch.Tensor:
 @dataclass
 class SplattingContext(_CoreSplattingContext):
     def __post_init__(self) -> None:
-        self.device = self.device or spy.create_torch_device(type=spy.DeviceType.cuda, include_paths=[_SHADERS])
+        self.device = self.device or spy.create_torch_device(type=spy.DeviceType.cuda, include_paths=[_SHADERS], enable_hot_reload=False)
         self._init_resources()
 
     def _prepare_splats(

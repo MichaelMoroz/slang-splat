@@ -37,18 +37,28 @@ static int2 _sample_coord(float2 uv, uint width, uint height) {
     );
 }
 
+static uint2 _pixel_from_index(uint idx, uint width) {
+    return uint2(idx % width, idx / max(width, 1u));
+}
+
 [shader("compute")]
-[numthreads(8, 8, 1)]
+[numthreads(64, 1, 1)]
 void csBlitOutput(uint3 dispatchThreadID : SV_DispatchThreadID) {
-    uint2 pixel = dispatchThreadID.xy;
+    uint idx = dispatchThreadID.x;
+    uint total = g_Viewport.x * g_Viewport.y;
+    if (idx >= total) return;
+    uint2 pixel = _pixel_from_index(idx, g_Viewport.x);
     if (pixel.x >= g_Viewport.x || pixel.y >= g_Viewport.y) return;
     g_Surface[pixel] = g_ViewImage[int2(int(pixel.x), int(pixel.y))];
 }
 
 [shader("compute")]
-[numthreads(8, 8, 1)]
+[numthreads(64, 1, 1)]
 void csDebugLetterboxTensor(uint3 dispatchThreadID : SV_DispatchThreadID) {
-    uint2 pixel = dispatchThreadID.xy;
+    uint idx = dispatchThreadID.x;
+    uint total = g_LetterboxOutputWidth * g_LetterboxOutputHeight;
+    if (idx >= total) return;
+    uint2 pixel = _pixel_from_index(idx, g_LetterboxOutputWidth);
     if (pixel.x >= g_LetterboxOutputWidth || pixel.y >= g_LetterboxOutputHeight) return;
     float2 uv = _letterbox_uv(pixel, g_LetterboxSourceWidth, g_LetterboxSourceHeight, g_LetterboxOutputWidth, g_LetterboxOutputHeight);
     if (!_inside_letterbox(uv)) {
@@ -59,9 +69,12 @@ void csDebugLetterboxTensor(uint3 dispatchThreadID : SV_DispatchThreadID) {
 }
 
 [shader("compute")]
-[numthreads(8, 8, 1)]
+[numthreads(64, 1, 1)]
 void csDebugAbsDiffLetterbox(uint3 dispatchThreadID : SV_DispatchThreadID) {
-    uint2 pixel = dispatchThreadID.xy;
+    uint idx = dispatchThreadID.x;
+    uint total = g_LetterboxOutputWidth * g_LetterboxOutputHeight;
+    if (idx >= total) return;
+    uint2 pixel = _pixel_from_index(idx, g_LetterboxOutputWidth);
     if (pixel.x >= g_LetterboxOutputWidth || pixel.y >= g_LetterboxOutputHeight) return;
     float2 uv = _letterbox_uv(pixel, g_LetterboxSourceWidth, g_LetterboxSourceHeight, g_LetterboxOutputWidth, g_LetterboxOutputHeight);
     if (!_inside_letterbox(uv)) {
