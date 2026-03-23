@@ -43,6 +43,8 @@ static const uint PARAM_COUNT = 14u;
 static const uint INVALID_START = 0xFFFFFFFFu;
 static const uint DEBUG_MODE_NORMAL = 0u;
 static const uint DEBUG_MODE_PROCESSED_COUNT = 1u;
+static const uint DEBUG_MODE_DEPTH_MEAN = 2u;
+static const uint DEBUG_MODE_DEPTH_STD = 3u;
 
 struct Gaussian3D : IDifferentiable {
     float3 position;
@@ -358,6 +360,31 @@ bool inverse3x3(float3x3 m, float eps, out float3x3 mInv) {
 [Differentiable] float sigmoid(float x) { return 1.0 / (1.0 + exp(-x)); }
 uint float_to_ordered_uint(float value) { uint bits = asuint(value); return (bits & FLOAT_SIGN_MASK) != 0u ? ~bits : (bits | FLOAT_SIGN_MASK); }
 
+uint hash_u32(uint x) {
+    x ^= x >> 16u;
+    x *= 0x7feb352du;
+    x ^= x >> 15u;
+    x *= 0x846ca68bu;
+    x ^= x >> 16u;
+    return x;
+}
+
+uint hash_combine_u32(uint a, uint b) {
+    return hash_u32(a ^ (b + 0x9e3779b9u + (a << 6u) + (a >> 2u)));
+}
+
+float hash_to_unit_float(uint x) {
+    return float(x >> 8u) * (1.0 / 16777216.0);
+}
+
+float2 stochastic_subpixel_offset(uint pixelId, uint renderSeed) {
+    uint seed = hash_combine_u32(pixelId, renderSeed);
+    return float2(
+        hash_to_unit_float(hash_u32(seed ^ 0xa511e9b3u)),
+        hash_to_unit_float(hash_u32(seed ^ 0x63d83595u))
+    );
+}
+
 float3 jet_colormap(float x) {
     float t = saturate(x);
     return float3(
@@ -371,6 +398,14 @@ float3 raster_processed_count_color(uint processedCount, uint maxSplatSteps) {
     float logMax = log2(float(maxSplatSteps) + 1.0);
     float normalized = (logMax > 0.0) ? saturate(log2(float(processedCount) + 1.0) / logMax) : 0.0;
     return jet_colormap(normalized);
+}
+
+float debug_luminance(float3 rgb) {
+    return dot(rgb, float3(0.2126, 0.7152, 0.0722));
+}
+
+float debug_normalize_range(float value, float2 range) {
+    return saturate((value - range.x) / max(range.y - range.x, SMALL_VALUE));
 }
 
 bool compute_gaussian_outline_ellipse(

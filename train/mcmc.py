@@ -377,7 +377,14 @@ class RGBMCMCTrainer:
         return self.model.splats().detach().contiguous()
 
     def _render(self, camera: CameraSample, background: tuple[float, float, float]) -> torch.Tensor:
-        return render_gaussian_splats(self.model.splats(), camera.camera_params, camera.image_size, background=background, context=self.context)[..., :3]
+        return render_gaussian_splats(
+            self.model.splats(),
+            camera.camera_params,
+            camera.image_size,
+            background=background,
+            render_seed=self.iteration,
+            context=self.context,
+        )[..., :3]
 
     def _target_image(self, camera: CameraSample) -> torch.Tensor:
         def to_target(image: torch.Tensor) -> torch.Tensor:

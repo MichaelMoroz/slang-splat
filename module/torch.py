@@ -47,9 +47,17 @@ class SplattingContext(_CoreSplattingContext):
         self.device = self.device or spy.create_torch_device(type=spy.DeviceType.cuda, include_paths=[_SHADERS])
         self._init_resources()
 
-    def _prepare_splats(self, splats: torch.Tensor, camera: torch.Tensor, image_size: tuple[int, int], background: tuple[float, float, float]) -> tuple[torch.Tensor, torch.Tensor, int, dict[str, Any]]:
+    def _prepare_splats(
+        self,
+        splats: torch.Tensor,
+        camera: torch.Tensor,
+        image_size: tuple[int, int],
+        background: tuple[float, float, float],
+        render_seed: int,
+    ) -> tuple[torch.Tensor, torch.Tensor, int, dict[str, Any]]:
         splat_count = int(splats.shape[1])
         self.prepare(splat_count, image_size, background)
+        self.render_seed = int(render_seed)
         self.scene["g_Params"].copy_from_torch(_pack_params(splats))
         self.device.sync_to_cuda()
         return splats.new_empty((0,), dtype=torch.long), splats, splat_count, _camera_dict(camera, image_size)
@@ -57,7 +65,7 @@ class SplattingContext(_CoreSplattingContext):
     def project(self, splats: torch.Tensor, camera: torch.Tensor, image_size: tuple[int, int]) -> dict[str, torch.Tensor]:
         _check_cuda_tensor("splats", splats, _PARAM_COUNT)
         _check_cuda_tensor("camera_params", camera)
-        _, _, splat_count, camera_vars = self._prepare_splats(splats, camera, image_size, (0.0, 0.0, 0.0))
+        _, _, splat_count, camera_vars = self._prepare_splats(splats, camera, image_size, (0.0, 0.0, 0.0), 0)
         total_scanlines = super().project(camera_vars, splat_count)
         order = self._sorted_splat_order_tensor.to_torch()[:splat_count].clone().to(dtype=torch.long)
         sorted_splats = splats.index_select(1, order).contiguous()
@@ -72,33 +80,66 @@ class SplattingContext(_CoreSplattingContext):
         raster = self._view(self.scene_views["g_RasterState"].tensor, spy.float4, (splat_count, 4)).to_torch()[:splat_count].clone()
         return {"order": order, "sorted_splats": sorted_splats, "projection": projection, "raster": raster, "tile_counts": tile_counts}
 
-    def render(self, splats: torch.Tensor, camera: torch.Tensor, image_size: tuple[int, int], background: tuple[float, float, float]) -> torch.Tensor:
-        _, _, splat_count, camera_vars = self._prepare_splats(splats, camera, image_size, background)
+    def render(
+        self,
+        splats: torch.Tensor,
+        camera: torch.Tensor,
+        image_size: tuple[int, int],
+        background: tuple[float, float, float],
+        render_seed: int = 0,
+    ) -> torch.Tensor:
+        _, _, splat_count, camera_vars = self._prepare_splats(splats, camera, image_size, background, render_seed)
         image = super().render(camera_vars, splat_count).to_torch().clone()
         order = self._sorted_splat_order_tensor.to_torch()[:splat_count].clone().to(dtype=torch.long)
         sorted_splats = splats.index_select(1, order).contiguous()
-        self._last_order, self._last_alpha, self._last_camera = order, torch.clamp(sorted_splats[13], _ALPHA_EPS, 1 - _ALPHA_EPS), camera.detach().clone()
+        self._last_order = order
+        self._last_alpha = torch.clamp(sorted_splats[13], _ALPHA_EPS, 1 - _ALPHA_EPS)
+        self._last_camera = camera.detach().clone()
+        self._last_render_seed = int(render_seed)
         return image
 
     def backward(self, grad_output: torch.Tensor) -> torch.Tensor:
         self.frame["g_OutputGrad"].copy_from_torch(grad_output.contiguous())
         self.device.sync_to_cuda()
+        self.render_seed = int(getattr(self, "_last_render_seed", 0))
         grads = super().backward(_camera_dict(self._last_camera, self._size), int(self._last_order.shape[0])).to_torch()[: int(self._last_order.shape[0]) * _PARAM_COUNT].clone().reshape(int(self._last_order.shape[0]), _PARAM_COUNT).mT.contiguous()
         grads[13] /= self._last_alpha * (1 - self._last_alpha)
         return grads
 
 class _RenderFn(torch.autograd.Function):
     @staticmethod
-    def forward(ctx: Any, splats: torch.Tensor, camera: torch.Tensor, image_size: tuple[int, int], background: tuple[float, float, float], context: SplattingContext) -> torch.Tensor:
+    def forward(
+        ctx: Any,
+        splats: torch.Tensor,
+        camera: torch.Tensor,
+        image_size: tuple[int, int],
+        background: tuple[float, float, float],
+        render_seed: int,
+        context: SplattingContext,
+    ) -> torch.Tensor:
         _check_cuda_tensor("splats", splats, _PARAM_COUNT)
         _check_cuda_tensor("camera_params", camera)
         ctx.context = context
-        return context.render(splats, camera, image_size, background)
+        return context.render(splats, camera, image_size, background, render_seed=render_seed)
 
     @staticmethod
-    def backward(ctx: Any, grad_output: torch.Tensor) -> tuple[torch.Tensor, None, None, None, None]:
-        return ctx.context.backward(grad_output), None, None, None, None
+    def backward(ctx: Any, grad_output: torch.Tensor) -> tuple[torch.Tensor, None, None, None, None, None]:
+        return ctx.context.backward(grad_output), None, None, None, None, None
 
 
-def render_gaussian_splats(splats: torch.Tensor, camera_params: torch.Tensor, image_size: tuple[int, int], background: tuple[float, float, float] = (0.0, 0.0, 0.0), context: SplattingContext | None = None) -> torch.Tensor:
-    return _RenderFn.apply(splats, camera_params, tuple(map(int, image_size)), tuple(map(float, background)), context or SplattingContext())
+def render_gaussian_splats(
+    splats: torch.Tensor,
+    camera_params: torch.Tensor,
+    image_size: tuple[int, int],
+    background: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    render_seed: int = 0,
+    context: SplattingContext | None = None,
+) -> torch.Tensor:
+    return _RenderFn.apply(
+        splats,
+        camera_params,
+        tuple(map(int, image_size)),
+        tuple(map(float, background)),
+        int(render_seed),
+        context or SplattingContext(),
+    )

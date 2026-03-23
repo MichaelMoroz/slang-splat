@@ -2,7 +2,7 @@
 
 `module/splatting.py` exposes a compact CUDA+PyTorch renderer:
 
-`render_gaussian_splats(splats, camera_params, image_size, background=(0, 0, 0), context=None)`
+`render_gaussian_splats(splats, camera_params, image_size, background=(0, 0, 0), render_seed=0, context=None)`
 
 Tensor contracts:
 - `splats`: CUDA `torch.float32`, shape `[14, N]`

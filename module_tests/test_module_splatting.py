@@ -141,10 +141,45 @@ def _undistort_normalized(uv_distorted: np.ndarray, k1: float, k2: float) -> np.
     return uv_distorted * (radius / np.clip(radius_distorted, _SMALL_VALUE, None))
 
 
-def _screen_to_world_rays(camera: np.ndarray, image_size: tuple[int, int]) -> np.ndarray:
+def _hash_u32(x: np.ndarray) -> np.ndarray:
+    x = np.asarray(x, dtype=np.uint32)
+    x ^= x >> np.uint32(16)
+    x *= np.uint32(0x7FEB352D)
+    x ^= x >> np.uint32(15)
+    x *= np.uint32(0x846CA68B)
+    x ^= x >> np.uint32(16)
+    return x
+
+
+def _hash_combine_u32(a: np.ndarray, b: int) -> np.ndarray:
+    a = np.asarray(a, dtype=np.uint32)
+    b = np.uint32(b)
+    return _hash_u32(a ^ (b + np.uint32(0x9E3779B9) + (a << np.uint32(6)) + (a >> np.uint32(2))))
+
+
+def _hash_to_unit_float(x: np.ndarray) -> np.ndarray:
+    return (np.asarray(x, dtype=np.uint32) >> np.uint32(8)).astype(np.float32) * np.float32(1.0 / 16777216.0)
+
+
+def _stochastic_subpixel_offset(image_size: tuple[int, int], render_seed: int = 0) -> np.ndarray:
     width, height = image_size
     ys, xs = np.meshgrid(np.arange(height, dtype=np.float32), np.arange(width, dtype=np.float32), indexing="ij")
-    uv_distorted = (np.stack((xs + 0.5, ys + 0.5), axis=-1) - camera[9:11]) / np.clip(camera[7:9], _SMALL_VALUE, None)
+    pixel_ids = ys.astype(np.uint32) * np.uint32(width) + xs.astype(np.uint32)
+    seed = _hash_combine_u32(pixel_ids, render_seed)
+    return np.stack(
+        (
+            _hash_to_unit_float(_hash_u32(seed ^ np.uint32(0xA511E9B3))),
+            _hash_to_unit_float(_hash_u32(seed ^ np.uint32(0x63D83595))),
+        ),
+        axis=-1,
+    )
+
+
+def _screen_to_world_rays(camera: np.ndarray, image_size: tuple[int, int], render_seed: int = 0) -> np.ndarray:
+    width, height = image_size
+    ys, xs = np.meshgrid(np.arange(height, dtype=np.float32), np.arange(width, dtype=np.float32), indexing="ij")
+    sample = np.stack((xs, ys), axis=-1) + _stochastic_subpixel_offset(image_size, render_seed)
+    uv_distorted = (sample - camera[9:11]) / np.clip(camera[7:9], _SMALL_VALUE, None)
     uv = _undistort_normalized(uv_distorted, float(camera[13]), float(camera[14]))
     camera_rays = np.concatenate((uv, np.ones_like(uv[..., :1])), axis=-1)
     camera_rays /= np.clip(np.linalg.norm(camera_rays, axis=-1, keepdims=True), _SMALL_VALUE, None)
@@ -390,10 +425,10 @@ def _select_stable_param_samples(
     return np.array(selected, dtype=np.int64), np.array(reference, dtype=np.float32)
 
 
-def _ground_truth_render(splats: np.ndarray, camera: np.ndarray, image_size: tuple[int, int]) -> np.ndarray:
+def _ground_truth_render(splats: np.ndarray, camera: np.ndarray, image_size: tuple[int, int], render_seed: int = 0) -> np.ndarray:
     cam_basis = _camera_basis(camera[0:4])
     cam_pos = -cam_basis.T @ camera[4:7]
-    rays = _screen_to_world_rays(camera, image_size).reshape(-1, 3)
+    rays = _screen_to_world_rays(camera, image_size, render_seed=render_seed).reshape(-1, 3)
     accum = np.zeros((rays.shape[0], 3), dtype=np.float32)
     trans = np.ones((rays.shape[0],), dtype=np.float32)
     for i in range(splats.shape[1]):
@@ -608,4 +643,3 @@ def _configure_test_context(context: SplattingContext) -> SplattingContext:
     context.trans_threshold = _TRANS_THRESHOLD
     context.max_anisotropy = _MAX_ANISOTROPY
     return context
-

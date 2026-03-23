@@ -13,9 +13,13 @@ uniform RWTensor<uint, 1> g_ScanlineTileCounts;
 uniform Tensor<uint, 1> g_ScanlineTileOffsets;
 uniform RWTensor<uint, 1> g_TileEntries;
 uniform Tensor<uint, 1> g_SortedEntries;
+uniform StructuredBuffer<uint> g_CountParamsBuffer;
 uniform RWTensor<ProjectionState, 1> g_ProjectionState;
 uniform RWTensor<Gaussian3D, 1> g_RasterState;
 uniform RWTensor<uint, 1> g_TileRanges;
+uniform RWTensor<uint, 1> g_TotalBuffer;
+uniform Tensor<uint, 1> g_OverflowA;
+uniform Tensor<uint, 1> g_OverflowB;
 uniform RWTensor<float4, 2> g_Output;
 uniform Tensor<float4, 2> g_OutputGrad;
 uniform RWTensor<float4, 2> g_ForwardState;
@@ -24,14 +28,23 @@ uniform AtomicTensor<float, 1> g_ParamGrads;
 uniform Camera g_Camera;
 uniform uint g_SplatCount;
 uniform uint g_SortedEntryCount;
+uniform uint g_UseCountParams;
+uniform uint g_ScanlineCapacity;
+uniform uint g_TileEntryCapacity;
 uniform uint2 g_TileGrid;
 uniform float3 g_Background;
 uniform float g_RadiusScale;
 uniform float g_MaxAnisotropy;
 uniform float g_AlphaCutoff;
 uniform float g_TransmittanceThreshold;
+uniform uint g_RenderSeed;
 uniform uint g_DebugMode;
 uniform uint g_DebugMaxSplatSteps;
+uniform float2 g_DebugDepthMeanRange;
+uniform float2 g_DebugDepthStdRange;
+uniform RWTensor<uint, 1> g_ScanlineOverflow;
+uniform RWTensor<uint, 1> g_TileOverflow;
+uniform uint g_TotalCapacity;
 
 groupshared Gaussian3D gsGaussian[RASTER_BATCH];
 groupshared uint gsBatchSplatId[RASTER_BATCH];
@@ -43,6 +56,10 @@ uint load_sorted_entry_tile(uint idx) {
 
 uint load_sorted_entry_splat(uint idx) {
     return g_SortedEntries[int(idx * 2u + 1u)];
+}
+
+uint load_sorted_entry_count() {
+    return g_UseCountParams != 0u ? g_CountParamsBuffer[3] : g_SortedEntryCount;
 }
 
 void store_tile_entry(uint idx, uint tileId, uint splatId) {
@@ -207,8 +224,13 @@ void csEmitScanlines(uint3 dispatchThreadID : SV_DispatchThreadID) {
     int minStrip = clamp(int(floor((localCenter.y - localExtent.y - TINY_VALUE) / TILE_SIZE)), 0, int(localGrid.y) - 1);
     uint writeIndex = g_ScanlineOffsets[int(splatId)];
     for (uint localStrip = 0u; localStrip < scanlineCount; localStrip++) {
+        uint dst = writeIndex + localStrip;
+        if (dst >= g_ScanlineCapacity) {
+            g_ScanlineOverflow.store(0, 1u);
+            break;
+        }
         // Each work item stores the splat plus one strip index in the chosen scan frame.
-        int[1] wi = { int(writeIndex + localStrip) };
+        int[1] wi = { int(dst) };
         ScanlineEntry scanline;
         scanline.splatId = splatId;
         scanline.stripIndex = uint(minStrip) + localStrip;
@@ -222,7 +244,7 @@ void csEmitScanlines(uint3 dispatchThreadID : SV_DispatchThreadID) {
 [numthreads(PROJECT_GROUP_SIZE, 1, 1)]
 void csEmitScanlineTileCounts(uint3 dispatchThreadID : SV_DispatchThreadID) {
     uint scanlineId = dispatchThreadID.x;
-    if (scanlineId >= g_SortedEntryCount) return;
+    if (scanlineId >= load_sorted_entry_count()) return;
     ScanlineEntry scanline = g_ScanlineEntries[int(scanlineId)];
     int spanTileMin, spanTileMax;
     uint tileCount = scanline_tile_span(scanline, spanTileMin, spanTileMax) ? uint(spanTileMax - spanTileMin + 1) : 0u;
@@ -234,12 +256,16 @@ void csEmitScanlineTileCounts(uint3 dispatchThreadID : SV_DispatchThreadID) {
 [numthreads(PROJECT_GROUP_SIZE, 1, 1)]
 void csEmitTileEntries(uint3 dispatchThreadID : SV_DispatchThreadID) {
     uint scanlineId = dispatchThreadID.x;
-    if (scanlineId >= g_SortedEntryCount) return;
+    if (scanlineId >= load_sorted_entry_count()) return;
     ScanlineEntry scanline = g_ScanlineEntries[int(scanlineId)];
     int spanTileMin, spanTileMax;
     if (!scanline_tile_span(scanline, spanTileMin, spanTileMax)) return;
     uint writeIndex = g_ScanlineTileOffsets[int(scanlineId)];
     for (int span = spanTileMin; span <= spanTileMax; span++) {
+        if (writeIndex >= g_TileEntryCapacity) {
+            g_TileOverflow.store(0, 1u);
+            break;
+        }
         uint2 tileXY = scanline.transpose != 0u ? uint2(scanline.stripIndex, uint(span)) : uint2(uint(span), scanline.stripIndex);
         store_tile_entry(writeIndex, tileXY.y * g_TileGrid.x + tileXY.x, scanline.splatId);
         writeIndex++;
@@ -260,16 +286,28 @@ void csClearTileRanges(uint3 dispatchThreadID : SV_DispatchThreadID) {
 [shader("compute")]
 [numthreads(PROJECT_GROUP_SIZE, 1, 1)]
 void csBuildTileRanges(uint3 dispatchThreadID : SV_DispatchThreadID) {
+    uint sortedEntryCount = load_sorted_entry_count();
     uint idx = dispatchThreadID.x;
-    if (idx >= g_SortedEntryCount) return;
+    if (idx >= sortedEntryCount) return;
     uint tileCount = g_TileGrid.x * g_TileGrid.y;
     uint tile = load_sorted_entry_tile(idx);
     if (tile >= tileCount) return;
     uint prevTile = idx > 0u ? load_sorted_entry_tile(idx - 1u) : 0u;
-    uint nextTile = idx + 1u < g_SortedEntryCount ? load_sorted_entry_tile(idx + 1u) : 0u;
+    uint nextTile = idx + 1u < sortedEntryCount ? load_sorted_entry_tile(idx + 1u) : 0u;
     // g_TileRanges is flattened as [start0, end0, start1, end1, ...].
     if (idx == 0u || tile != prevTile) g_TileRanges.store(int(tile * 2u), idx);
-    if (idx + 1u == g_SortedEntryCount || tile != nextTile) g_TileRanges.store(int(tile * 2u + 1u), idx + 1u);
+    if (idx + 1u == sortedEntryCount || tile != nextTile) g_TileRanges.store(int(tile * 2u + 1u), idx + 1u);
+}
+
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void csFinalizeTotalWithOverflow(uint3 dispatchThreadID : SV_DispatchThreadID) {
+    uint total = g_TotalBuffer[0];
+    bool overflow = total > g_TotalCapacity || g_OverflowA[0] != 0u || g_OverflowB[0] != 0u;
+    if (overflow) {
+        g_TotalBuffer.store(0, g_TotalCapacity + 1u);
+        g_TileOverflow.store(0, 1u);
+    }
 }
 
 // Raster batching helpers shared by forward and backward passes.
@@ -308,7 +346,13 @@ void csRasterForward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : S
     float3 accum = 0.0;
     float trans = 1.0;
     uint processedEnd = range.x;
-    float3 rayDir = active ? g_Camera.screen_to_world_ray(float2(px, py) + 0.5) : 0.0;
+    uint pixelId = py * uint(g_Camera.viewport.x) + px;
+    float2 raySample = float2(px, py) + stochastic_subpixel_offset(pixelId, g_RenderSeed);
+    float3 rayDir = active ? g_Camera.screen_to_world_ray(raySample) : 0.0;
+    bool depthDebug = g_DebugMode == DEBUG_MODE_DEPTH_MEAN || g_DebugMode == DEBUG_MODE_DEPTH_STD;
+    float depthWeightSum = 0.0;
+    float depthMean = 0.0;
+    float depthM2 = 0.0;
     if (range.x != INVALID_START && range.y > range.x) {
         bool done = !active;
         if (lane == 0u) gsDoneCount = 0u;
@@ -329,6 +373,24 @@ void csRasterForward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : S
                     // The forward loop only needs alpha and the fused color/opacity carried by Gaussian3D.
                     float alpha = raster_eval_alpha(gaussian, rayDir);
                     if (alpha < g_AlphaCutoff) continue;
+                    if (depthDebug) {
+                        float contributionWeight = trans * alpha;
+                        if (contributionWeight > SMALL_VALUE) {
+                            float3 rayLocal = rotate_by_quat(rayDir, gaussian.rotation) / max(gaussian.logScale, float3(SMALL_VALUE));
+                            float denom = dot(rayLocal, rayLocal);
+                            if (denom > RAY_DENOMINATOR_FLOOR) {
+                                float tClosest = -dot(rayLocal, gaussian.position) / denom;
+                                if (tClosest > 0.0) {
+                                    contributionWeight /= tClosest + 1e-4;
+                                    float totalWeight = depthWeightSum + contributionWeight;
+                                    float delta = tClosest - depthMean;
+                                    depthMean += (contributionWeight / totalWeight) * delta;
+                                    depthM2 += depthWeightSum * contributionWeight * delta * delta / totalWeight;
+                                    depthWeightSum = totalWeight;
+                                }
+                            }
+                        }
+                    }
                     float4 blended = shade_step(accum, trans, gaussian, alpha);
                     accum = blended.xyz;
                     trans = blended.w;
@@ -345,9 +407,19 @@ void csRasterForward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : S
     if (!active) return;
     int2 p = int2(int(px), int(py));
     uint processedCount = range.x != INVALID_START && processedEnd >= range.x ? (processedEnd - range.x) : 0u;
-    float4 output = g_DebugMode == DEBUG_MODE_PROCESSED_COUNT
-        ? float4(raster_processed_count_color(processedCount, g_DebugMaxSplatSteps), 1.0)
-        : raster_output(accum, trans, g_Background);
+    float4 output = raster_output(accum, trans, g_Background);
+    if (g_DebugMode == DEBUG_MODE_PROCESSED_COUNT) {
+        output = float4(raster_processed_count_color(processedCount, g_DebugMaxSplatSteps), 1.0);
+    } else if (g_DebugMode == DEBUG_MODE_DEPTH_MEAN || g_DebugMode == DEBUG_MODE_DEPTH_STD) {
+        float debugValue = 0.0;
+        if (depthWeightSum > SMALL_VALUE) {
+            float depthStd = sqrt(max(depthM2 / depthWeightSum, 0.0));
+            debugValue = g_DebugMode == DEBUG_MODE_DEPTH_MEAN
+                ? debug_normalize_range(depthMean, g_DebugDepthMeanRange)
+                : debug_normalize_range(depthStd, g_DebugDepthStdRange);
+        }
+        output = float4(jet_colormap(debugValue), 1.0);
+    }
     g_Output.store(p, output);
     g_ForwardState.store(p, float4(accum, trans));
     g_ForwardEnd.store(p, processedEnd);
@@ -375,7 +447,9 @@ void csRasterBackward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : 
     if (active) bwd_diff(raster_output)(dpAccum, dpTrans, g_Background, g_OutputGrad[p]);
     float3 dAccum = dpAccum.getDifferential();
     float dTrans = dpTrans.getDifferential();
-    float3 rayDir = active ? g_Camera.screen_to_world_ray(float2(px, py) + 0.5) : 0.0;
+    uint pixelId = py * uint(g_Camera.viewport.x) + px;
+    float2 raySample = float2(px, py) + stochastic_subpixel_offset(pixelId, g_RenderSeed);
+    float3 rayDir = active ? g_Camera.screen_to_world_ray(raySample) : 0.0;
     float3 accum = state4.xyz;
     float trans = state4.w;
     uint processedEnd = active ? g_ForwardEnd[p] : 0u;
