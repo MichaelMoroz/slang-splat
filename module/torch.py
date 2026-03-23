@@ -85,9 +85,7 @@ class SplattingContext(_CoreSplattingContext):
         self.device.sync_to_cuda()
         grads = super().backward(_camera_dict(self._last_camera, self._size), int(self._last_order.shape[0])).to_torch()[: int(self._last_order.shape[0]) * _PARAM_COUNT].clone().reshape(int(self._last_order.shape[0]), _PARAM_COUNT).mT.contiguous()
         grads[13] /= self._last_alpha * (1 - self._last_alpha)
-        out = torch.empty_like(grads)
-        out[:, self._last_order] = grads
-        return out
+        return grads
 
 class _RenderFn(torch.autograd.Function):
     @staticmethod
