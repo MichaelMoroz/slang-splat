@@ -3,28 +3,24 @@ from __future__ import annotations
 import math
 
 import torch
-import torch.nn.functional as F
+from torchvision.transforms.functional import gaussian_blur
 
 
 def l1_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     return (pred - target).abs().mean()
 
 
-def _ssim_window(channels: int, device: torch.device, dtype: torch.dtype, size: int = 11) -> torch.Tensor:
-    coords = torch.arange(size, device=device, dtype=dtype) - size // 2
-    kernel = torch.exp(-(coords * coords) / 4.5)
-    kernel = (kernel / kernel.sum()).unsqueeze(1)
-    return (kernel @ kernel.t()).expand(channels, 1, size, size).contiguous()
+def _ssim_blur(image: torch.Tensor, window_size: int = 11) -> torch.Tensor:
+    return gaussian_blur(image, [window_size, window_size], [1.5, 1.5])
 
 
 def ssim(pred: torch.Tensor, target: torch.Tensor, window_size: int = 11) -> torch.Tensor:
-    window = _ssim_window(int(pred.shape[1]), pred.device, pred.dtype, window_size)
-    mu0 = F.conv2d(pred, window, padding=window_size // 2, groups=int(pred.shape[1]))
-    mu1 = F.conv2d(target, window, padding=window_size // 2, groups=int(target.shape[1]))
+    mu0 = _ssim_blur(pred, window_size)
+    mu1 = _ssim_blur(target, window_size)
     mu00, mu11, mu01 = mu0.square(), mu1.square(), mu0 * mu1
-    s00 = F.conv2d(pred.square(), window, padding=window_size // 2, groups=int(pred.shape[1])) - mu00
-    s11 = F.conv2d(target.square(), window, padding=window_size // 2, groups=int(target.shape[1])) - mu11
-    s01 = F.conv2d(pred * target, window, padding=window_size // 2, groups=int(pred.shape[1])) - mu01
+    s00 = _ssim_blur(pred.square(), window_size) - mu00
+    s11 = _ssim_blur(target.square(), window_size) - mu11
+    s01 = _ssim_blur(pred * target, window_size) - mu01
     return (((2.0 * mu01 + 1e-4) * (2.0 * s01 + 9e-4)) / ((mu00 + mu11 + 1e-4) * (s00 + s11 + 9e-4))).mean()
 
 
