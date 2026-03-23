@@ -11,7 +11,7 @@ import torch
 from module.splatting import SplattingContext
 from utility.ply import load_gaussian_ply
 from .camera import Camera
-from .state import ViewerState
+from .state import DEBUG_MODE_PROCESSED_COUNT, ViewerState
 from .training import TrainingController
 from .ui import _WINDOW_TITLE, build_ui, create_toolkit_window
 
@@ -266,7 +266,7 @@ class SplatViewer(spy.AppWindow):
         self.s.max_anisotropy = float(self.ui.values["max_anisotropy"])
         self.s.alpha_cutoff = float(self.ui.values["alpha_cutoff"])
         self.s.trans_threshold = float(self.ui.values["trans_threshold"])
-        self.s.debug_mode = 1 if bool(self.ui.values.get("debug_processed_count", False)) else 0
+        self.s.debug_mode = int(self.ui.values.get("debug_mode", 0))
         self.s.background = (
             float(self.ui.values["background_r"]),
             float(self.ui.values["background_g"]),
@@ -312,7 +312,7 @@ class SplatViewer(spy.AppWindow):
         self.ui.texts["fps"] = f"FPS: {self.s.fps_smooth:.1f}"
         self.ui.texts["scene"] = "Scene: <none>" if active_scene is None else f"Scene: {active_scene}"
         self.ui.texts["status"] = f"Status: {'Loss Debug' if bool(self.ui.values.get('loss_debug', False)) else 'Viewer'} | Splats: {self.s.splat_count:,}"
-        self.ui.texts["render_stats"] = f"Generated: {int(getattr(self.renderer, '_last_total', 0)):,} | Processed mode: {bool(self.ui.values.get('debug_processed_count', False))}"
+        self.ui.texts["render_stats"] = f"Generated: {int(getattr(self.renderer, '_last_total', 0)):,} | Debug mode: {int(self.ui.values.get('debug_mode', 0))}"
         train_mode = "running" if training_snapshot.running and not training_snapshot.paused else "paused" if training_snapshot.paused else "idle"
         self.ui.texts["training"] = f"Training: {train_mode} | step={training_snapshot.iteration:,} | splats={training_snapshot.point_count:,}"
         self.ui.texts["training_time"] = f"Time: {time.strftime('%H:%M:%S', time.gmtime(training_snapshot.elapsed_seconds))}" if training_snapshot.elapsed_seconds > 0 else "Time: 00:00"
@@ -346,7 +346,7 @@ class SplatViewer(spy.AppWindow):
             elif tk.psnr_history:
                 tk.psnr_history.append(float(tk.psnr_history[-1]))
 
-    def _render_debug_view(self, image: spy.Texture, encoder: spy.CommandEncoder, active_splat_count: int) -> None:
+    def _render_debug_view(self, image: spy.Texture, encoder: spy.CommandEncoder, active_splat_count: int, render_seed: int) -> None:
         frame_index = self._debug_frame_index()
         sample = self.training.camera_sample(frame_index)
         if sample is None:
@@ -357,7 +357,16 @@ class SplatViewer(spy.AppWindow):
         self.renderer.max_anisotropy = self.s.max_anisotropy
         self.renderer.alpha_cutoff = self.s.alpha_cutoff
         self.renderer.trans_threshold = self.s.trans_threshold
+        self.renderer.render_seed = int(render_seed)
         self.renderer.debug_mode = self.s.debug_mode
+        self.renderer.debug_depth_mean_range = (
+            float(self.ui.values["debug_depth_mean_min"]),
+            float(self.ui.values["debug_depth_mean_max"]),
+        )
+        self.renderer.debug_depth_std_range = (
+            float(self.ui.values["debug_depth_std_min"]),
+            float(self.ui.values["debug_depth_std_max"]),
+        )
         self.renderer.prepare(active_splat_count, (debug_width, debug_height), self.s.background)
         self._upload_scene_if_needed()
         self.renderer.render(_camera_dict(sample.camera_params, sample.image_size), active_splat_count, command_encoder=encoder)
@@ -425,14 +434,24 @@ class SplatViewer(spy.AppWindow):
             else:
                 width, height = int(image.width), int(image.height)
                 active_splat_count = int(training_snapshot.preview_count) if has_training_preview else int(self.s.splat_count)
+                render_seed = int(training_snapshot.iteration) if has_training_preview else 0
                 if bool(self.ui.values.get("loss_debug", False)) and self.training.frame_count() > 0:
-                    self._render_debug_view(image, encoder, active_splat_count)
+                    self._render_debug_view(image, encoder, active_splat_count, render_seed)
                 else:
                     self.renderer.radius_scale = self.s.radius_scale
                     self.renderer.max_anisotropy = self.s.max_anisotropy
                     self.renderer.alpha_cutoff = self.s.alpha_cutoff
                     self.renderer.trans_threshold = self.s.trans_threshold
+                    self.renderer.render_seed = render_seed
                     self.renderer.debug_mode = self.s.debug_mode
+                    self.renderer.debug_depth_mean_range = (
+                        float(self.ui.values["debug_depth_mean_min"]),
+                        float(self.ui.values["debug_depth_mean_max"]),
+                    )
+                    self.renderer.debug_depth_std_range = (
+                        float(self.ui.values["debug_depth_std_min"]),
+                        float(self.ui.values["debug_depth_std_max"]),
+                    )
                     self.renderer.prepare(active_splat_count, (width, height), self.s.background)
                     self._upload_scene_if_needed()
                     self.renderer.render(self.camera().gpu_params(width, height), active_splat_count, command_encoder=encoder)

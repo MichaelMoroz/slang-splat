@@ -13,6 +13,7 @@ import slangpy as spy
 import slangpy.ui.imgui_bundle as simgui
 from imgui_bundle import imgui, implot
 
+from .state import DEBUG_MODE_DEPTH_MEAN, DEBUG_MODE_DEPTH_STD, DEBUG_MODE_NORMAL, DEBUG_MODE_PROCESSED_COUNT
 from .training import TrainingController
 
 _WINDOW_TITLE = "Slang Splat Viewer"
@@ -36,16 +37,16 @@ _LOSS_DEBUG_ABS_SCALE_KEY = "loss_debug_abs_scale"
 _LOSS_DEBUG_ABS_SCALE_DEFAULT = 1.0
 _LOSS_DEBUG_ABS_SCALE_MIN = 0.125
 _LOSS_DEBUG_ABS_SCALE_MAX = 64.0
-_DEBUG_COLORBAR_WIDTH = 18.0
-_DEBUG_COLORBAR_HEIGHT = 240.0
-_DEBUG_COLORBAR_MARGIN = 22.0
+_DEBUG_COLORBAR_HEIGHT = 18.0
 _DEBUG_COLORBAR_TICKS = 5
-_DEBUG_COLORBAR_STEPS = 96
-_DEBUG_COLORBAR_LEFT_PAD = 56.0
-_DEBUG_COLORBAR_RIGHT_PAD = 64.0
-_DEBUG_COLORBAR_TOP_PAD = 28.0
-_DEBUG_COLORBAR_BOTTOM_PAD = 12.0
+_DEBUG_COLORBAR_STEPS = 64
 _TOOLKIT_WIDTH_FRACTION = 0.22
+_DEBUG_MODE_OPTIONS = (
+    (DEBUG_MODE_NORMAL, "Normal"),
+    (DEBUG_MODE_PROCESSED_COUNT, "Processed Count"),
+    (DEBUG_MODE_DEPTH_MEAN, "Depth Mean"),
+    (DEBUG_MODE_DEPTH_STD, "Depth Std"),
+)
 
 
 def _noop() -> None:
@@ -121,7 +122,11 @@ class ViewerUI:
             "max_anisotropy": 12.0,
             "alpha_cutoff": 0.01,
             "trans_threshold": 0.005,
-            "debug_processed_count": False,
+            "debug_mode": DEBUG_MODE_NORMAL,
+            "debug_depth_mean_min": 0.0,
+            "debug_depth_mean_max": 20.0,
+            "debug_depth_std_min": 0.0,
+            "debug_depth_std_max": 2.0,
             "loss_debug": False,
             "loss_debug_view": 0,
             "loss_debug_frame": 0,
@@ -293,7 +298,6 @@ class ToolkitWindow:
         self._menu_bar_height = self._draw_main_menu_bar(ui)
         imgui.dock_space_over_viewport(viewport=imgui.get_main_viewport(), flags=imgui.DockNodeFlags_.passthru_central_node.value)
         self._draw_panel(ui, training, width, height)
-        self._draw_debug_colorbar(ui, width, height)
         self._draw_render_debug_window(ui)
         self._draw_about()
         self._draw_docs()
@@ -719,48 +723,71 @@ class ToolkitWindow:
                     ui.values[_LOSS_DEBUG_ABS_SCALE_KEY] = float(value)
             imgui.end_disabled()
             imgui.separator_text("Mode")
-            changed, value = imgui.checkbox("Debug Processed Count", bool(ui.values["debug_processed_count"]))
+            mode_value = int(ui.values["debug_mode"])
+            mode_index = next((idx for idx, (value, _) in enumerate(_DEBUG_MODE_OPTIONS) if value == mode_value), 0)
+            if imgui.begin_combo("Renderer Debug Mode", _DEBUG_MODE_OPTIONS[mode_index][1]):
+                for idx, (value, label) in enumerate(_DEBUG_MODE_OPTIONS):
+                    selected = idx == mode_index
+                    if imgui.selectable(label, selected)[0]:
+                        ui.values["debug_mode"] = value
+                    if selected:
+                        imgui.set_item_default_focus()
+                imgui.end_combo()
+            changed, value = imgui.input_float("Depth Mean Min", float(ui.values["debug_depth_mean_min"]), 0.1, 1.0, "%.4g")
             if changed:
-                ui.values["debug_processed_count"] = bool(value)
-            if bool(ui.values["debug_processed_count"]):
-                imgui.text_disabled("Processed count scale is shown as an on-screen overlay.")
+                ui.values["debug_depth_mean_min"] = float(value)
+            changed, value = imgui.input_float("Depth Mean Max", float(ui.values["debug_depth_mean_max"]), 0.1, 1.0, "%.4g")
+            if changed:
+                ui.values["debug_depth_mean_max"] = float(value)
+            changed, value = imgui.input_float("Depth Std Min", float(ui.values["debug_depth_std_min"]), 0.01, 0.1, "%.4g")
+            if changed:
+                ui.values["debug_depth_std_min"] = float(value)
+            changed, value = imgui.input_float("Depth Std Max", float(ui.values["debug_depth_std_max"]), 0.01, 0.1, "%.4g")
+            if changed:
+                ui.values["debug_depth_std_max"] = float(value)
+            if int(ui.values["debug_mode"]) in (DEBUG_MODE_PROCESSED_COUNT, DEBUG_MODE_DEPTH_MEAN, DEBUG_MODE_DEPTH_STD):
+                self._draw_debug_colorbar(ui)
         imgui.end()
 
-    def _draw_debug_colorbar(self, ui: ViewerUI, width: int, height: int) -> None:
-        if not bool(ui.values.get("debug_processed_count", False)):
+    def _draw_debug_colorbar(self, ui: ViewerUI) -> None:
+        debug_mode = int(ui.values.get("debug_mode", DEBUG_MODE_NORMAL))
+        if debug_mode not in (DEBUG_MODE_PROCESSED_COUNT, DEBUG_MODE_DEPTH_MEAN, DEBUG_MODE_DEPTH_STD):
             return
-        draw_list = imgui.get_foreground_draw_list()
-        bar_height = min(_DEBUG_COLORBAR_HEIGHT, max(float(height) - self._menu_bar_height - 2.0 * _DEBUG_COLORBAR_MARGIN, 80.0))
-        panel_x, _, panel_width, _ = self._toolkit_rect
-        box_width = _DEBUG_COLORBAR_LEFT_PAD + _DEBUG_COLORBAR_WIDTH + _DEBUG_COLORBAR_RIGHT_PAD
-        box_height = _DEBUG_COLORBAR_TOP_PAD + bar_height + _DEBUG_COLORBAR_BOTTOM_PAD
-        box_min_x = panel_x + panel_width + 8.0
-        box_x = max(min(float(width) - _DEBUG_COLORBAR_MARGIN - box_width, float(width) - _DEBUG_COLORBAR_MARGIN - box_width), box_min_x)
-        if box_x + box_width > float(width) - 4.0:
-            box_x = max(float(width) - 4.0 - box_width, 0.0)
-        box_y = min(max(self._menu_bar_height + _DEBUG_COLORBAR_MARGIN, 0.0), max(float(height) - box_height - 4.0, self._menu_bar_height))
-        x0 = box_x + _DEBUG_COLORBAR_LEFT_PAD
-        y0 = box_y + _DEBUG_COLORBAR_TOP_PAD
-        x1 = x0 + _DEBUG_COLORBAR_WIDTH
-        y1 = y0 + bar_height
-        draw_list.add_rect_filled(imgui.ImVec2(box_x, box_y), imgui.ImVec2(box_x + box_width, box_y + box_height), _color_u32(0.05, 0.06, 0.08, 0.58), 8.0)
+        imgui.separator()
+        title = "Processed Count Scale"
+        tick_value = lambda t: _processed_count_tick_value(t, max(int(ui.texts.get("max_splat_steps", "0")), 0))
+        if debug_mode == DEBUG_MODE_DEPTH_MEAN:
+            title = "Depth Mean Scale"
+            depth_min = float(ui.values["debug_depth_mean_min"])
+            depth_max = float(ui.values["debug_depth_mean_max"])
+            tick_value = lambda t: depth_min + t * (depth_max - depth_min)
+        elif debug_mode == DEBUG_MODE_DEPTH_STD:
+            title = "Depth Std Scale"
+            depth_min = float(ui.values["debug_depth_std_min"])
+            depth_max = float(ui.values["debug_depth_std_max"])
+            tick_value = lambda t: depth_min + t * (depth_max - depth_min)
+        imgui.text(title)
+        draw_list = imgui.get_window_draw_list()
+        width = max(float(imgui.get_content_region_avail().x), 120.0)
+        imgui.dummy(imgui.ImVec2(width, _DEBUG_COLORBAR_HEIGHT + 22.0))
+        rect_min = imgui.get_item_rect_min()
+        x0 = rect_min.x
+        y0 = rect_min.y
+        x1 = x0 + width
+        y1 = y0 + _DEBUG_COLORBAR_HEIGHT
         for idx in range(_DEBUG_COLORBAR_STEPS):
-            t0 = idx / _DEBUG_COLORBAR_STEPS
+            t0 = idx / float(_DEBUG_COLORBAR_STEPS)
             t1 = (idx + 1) / _DEBUG_COLORBAR_STEPS
-            rgb = _jet_colormap(1.0 - 0.5 * (t0 + t1))
-            y_start = y0 + t0 * bar_height
-            y_end = y0 + t1 * bar_height
-            draw_list.add_rect_filled(imgui.ImVec2(x0, y_start), imgui.ImVec2(x1, y_end), _color_u32(*rgb))
+            rgb = _jet_colormap(0.5 * (t0 + t1))
+            draw_list.add_rect_filled(imgui.ImVec2(x0 + t0 * width, y0), imgui.ImVec2(x0 + t1 * width, y1), _color_u32(*rgb))
         draw_list.add_rect(imgui.ImVec2(x0, y0), imgui.ImVec2(x1, y1), _color_u32(0.95, 0.97, 1.0, 0.95), 2.0, 0, 1.0)
-        max_splat_steps = max(int(ui.texts.get("max_splat_steps", "0")), 0)
         for idx in range(_DEBUG_COLORBAR_TICKS):
             t = idx / max(_DEBUG_COLORBAR_TICKS - 1, 1)
-            y = y1 - t * (y1 - y0)
-            draw_list.add_line(imgui.ImVec2(x1 + 2.0, y), imgui.ImVec2(x1 + 8.0, y), _color_u32(0.85, 0.88, 0.92, 0.9), 1.0)
-            value = _processed_count_tick_value(t, max_splat_steps)
-            draw_list.add_text(imgui.ImVec2(x1 + 12.0, y - 6.0), _color_u32(0.85, 0.88, 0.92, 0.95), f"{int(round(value)):,}")
-        draw_list.add_text(imgui.ImVec2(box_x + 12.0, box_y + 8.0), _color_u32(0.90, 0.94, 1.0, 0.95), "Processed")
-        draw_list.add_text(imgui.ImVec2(box_x + 12.0, box_y + 24.0), _color_u32(0.90, 0.94, 1.0, 0.95), "Count")
+            x = x0 + t * (x1 - x0)
+            draw_list.add_line(imgui.ImVec2(x, y1 + 2.0), imgui.ImVec2(x, y1 + 8.0), _color_u32(0.85, 0.88, 0.92, 0.9), 1.0)
+            value = tick_value(t)
+            label = f"{value:.2f}" if debug_mode in (DEBUG_MODE_DEPTH_MEAN, DEBUG_MODE_DEPTH_STD) else f"{int(round(value)):,}"
+            draw_list.add_text(imgui.ImVec2(x - 8.0, y1 + 10.0), _color_u32(0.85, 0.88, 0.92, 0.95), label)
 
     def _draw_about(self) -> None:
         if not self._show_about:

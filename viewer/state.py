@@ -8,6 +8,8 @@ import slangpy as spy
 
 DEBUG_MODE_NORMAL = 0
 DEBUG_MODE_PROCESSED_COUNT = 1
+DEBUG_MODE_DEPTH_MEAN = 2
+DEBUG_MODE_DEPTH_STD = 3
 
 
 def _float2() -> spy.float2:
