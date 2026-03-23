@@ -87,7 +87,7 @@ uint count_scanlines(Ellipse ellipse) {
     ellipse.scanline_frame(transpose, localCenter, localExtent, localConic);
     uint2 localGrid = transpose ? g_TileGrid.yx : g_TileGrid;
     int minStrip = clamp(int(floor((localCenter.y - localExtent.y - TINY_VALUE) / TILE_SIZE)), 0, int(localGrid.y) - 1);
-    int maxStrip = clamp(int(ceil((localCenter.y + localExtent.y) / TILE_SIZE)), 0, int(localGrid.y) - 1);
+    int maxStrip = clamp(int(floor((localCenter.y + localExtent.y + TINY_VALUE) / TILE_SIZE)), 0, int(localGrid.y) - 1);
     return maxStrip >= minStrip ? uint(maxStrip - minStrip + 1) : 0u;
 }
 
@@ -104,7 +104,7 @@ bool scanline_tile_span(ScanlineEntry scanline, out int spanTileMin, out int spa
     float2 localExtent = transpose ? ellipse.bboxExtent.yx : ellipse.bboxExtent;
     float3 localConic = transpose ? float3(ellipse.conic.z, ellipse.conic.y, ellipse.conic.x) : ellipse.conic;
     int minSpan = clamp(int(floor((localCenter.x - localExtent.x - TINY_VALUE) / TILE_SIZE)), 0, int(localGrid.x) - 1);
-    int maxSpan = clamp(int(ceil((localCenter.x + localExtent.x) / TILE_SIZE)), 0, int(localGrid.x) - 1);
+    int maxSpan = clamp(int(floor((localCenter.x + localExtent.x + TINY_VALUE) / TILE_SIZE)), 0, int(localGrid.x) - 1);
     // Convert the stored strip index back into local strip coordinates for span evaluation.
     float stripMin = scanline.stripIndex * TILE_SIZE - localCenter.y;
     float stripMax = stripMin + TILE_SIZE;
@@ -116,7 +116,7 @@ bool scanline_tile_span(ScanlineEntry scanline, out int spanTileMin, out int spa
     }
     // Clamp the analytic span to the ellipse bbox before emitting tile coordinates.
     spanTileMin = clamp(int(floor((spanMin + localCenter.x - TINY_VALUE) / TILE_SIZE)), minSpan, maxSpan);
-    spanTileMax = clamp(int(floor((spanMax + localCenter.x) / TILE_SIZE)), minSpan, maxSpan);
+    spanTileMax = clamp(int(floor((spanMax + localCenter.x + TINY_VALUE) / TILE_SIZE)), minSpan, maxSpan);
     while (spanTileMin <= spanTileMax) {
         float tileMin = spanTileMin * TILE_SIZE - localCenter.x;
         float tileMax = tileMin + TILE_SIZE;
@@ -177,7 +177,8 @@ void csProjectScanlineCount(uint3 dispatchThreadID : SV_DispatchThreadID) {
         if (hasFit) {
             projection.centerRadiusDepth = float4(ellipse.centerPx, ellipse.radiusPx, cameraDistance);
             projection.conicOpacity = float4(ellipse.conic, 1.0);
-            rasterGaussian = gaussian;
+            rasterGaussian = Gaussian3D.camera_gaussian(gaussian, g_Camera, g_RadiusScale, GAUSSIAN_SUPPORT_SIGMA_RADIUS, g_MaxAnisotropy);
+            rasterGaussian.colorAlpha.xyz = gaussian.colorAlpha.xyz;
             rasterGaussian.colorAlpha.w = fusedOpacity;
             scanlineCount = count_scanlines(ellipse);
         }
@@ -261,7 +262,9 @@ void csClearTileRanges(uint3 dispatchThreadID : SV_DispatchThreadID) {
 void csBuildTileRanges(uint3 dispatchThreadID : SV_DispatchThreadID) {
     uint idx = dispatchThreadID.x;
     if (idx >= g_SortedEntryCount) return;
+    uint tileCount = g_TileGrid.x * g_TileGrid.y;
     uint tile = load_sorted_entry_tile(idx);
+    if (tile >= tileCount) return;
     uint prevTile = idx > 0u ? load_sorted_entry_tile(idx - 1u) : 0u;
     uint nextTile = idx + 1u < g_SortedEntryCount ? load_sorted_entry_tile(idx + 1u) : 0u;
     // g_TileRanges is flattened as [start0, end0, start1, end1, ...].
@@ -275,6 +278,15 @@ void prefetch_batch(uint batchStart, uint batchEnd, uint lane) {
     for (uint localIdx = lane; localIdx < batchCount; localIdx += RASTER_GROUP_THREADS) {
         uint splatId = load_sorted_entry_splat(batchStart + localIdx);
         gsBatchSplatId[localIdx] = splatId;
+        if (splatId >= g_SplatCount) {
+            Gaussian3D empty;
+            empty.position = 0.0;
+            empty.logScale = 0.0;
+            empty.rotation = 0.0;
+            empty.colorAlpha = 0.0;
+            gsGaussian[localIdx] = empty;
+            continue;
+        }
         gsGaussian[localIdx] = g_RasterState[int(splatId)];
     }
 }
@@ -290,16 +302,18 @@ float4 shade_step(float3 accum, float trans, Gaussian3D gaussian, float alpha) {
 void csRasterForward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_GroupIndex) {
     uint px = dispatchThreadID.x;
     uint py = dispatchThreadID.y;
-    if (px >= uint(g_Camera.viewport.x) || py >= uint(g_Camera.viewport.y)) return;
+    bool active = px < uint(g_Camera.viewport.x) && py < uint(g_Camera.viewport.y);
     uint tileId = (py / TILE_SIZE) * g_TileGrid.x + (px / TILE_SIZE);
     uint2 range = uint2(g_TileRanges[int(tileId * 2u)], g_TileRanges[int(tileId * 2u + 1u)]);
     float3 accum = 0.0;
     float trans = 1.0;
     uint processedEnd = range.x;
-    float3 rayDir = g_Camera.screen_to_world_ray(float2(px, py) + 0.5);
+    float3 rayDir = active ? g_Camera.screen_to_world_ray(float2(px, py) + 0.5) : 0.0;
     if (range.x != INVALID_START && range.y > range.x) {
-        bool done = false;
+        bool done = !active;
         if (lane == 0u) gsDoneCount = 0u;
+        GroupMemoryBarrierWithGroupSync();
+        if (!active) InterlockedAdd(gsDoneCount, 1u);
         GroupMemoryBarrierWithGroupSync();
         for (uint batchStart = range.x; batchStart < range.y; batchStart += RASTER_BATCH) {
             if (gsDoneCount == RASTER_GROUP_THREADS) break;
@@ -313,7 +327,7 @@ void csRasterForward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : S
                     processedEnd = batchStart + localIdx + 1u;
                     Gaussian3D gaussian = gsGaussian[localIdx];
                     // The forward loop only needs alpha and the fused color/opacity carried by Gaussian3D.
-                    float alpha = raster_eval_alpha(gaussian, g_Camera, g_RadiusScale, g_MaxAnisotropy, rayDir);
+                    float alpha = raster_eval_alpha(gaussian, rayDir);
                     if (alpha < g_AlphaCutoff) continue;
                     float4 blended = shade_step(accum, trans, gaussian, alpha);
                     accum = blended.xyz;
@@ -328,6 +342,7 @@ void csRasterForward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : S
             GroupMemoryBarrierWithGroupSync();
         }
     }
+    if (!active) return;
     int2 p = int2(int(px), int(py));
     uint processedCount = range.x != INVALID_START && processedEnd >= range.x ? (processedEnd - range.x) : 0u;
     float4 output = g_DebugMode == DEBUG_MODE_PROCESSED_COUNT
@@ -350,74 +365,81 @@ void add_param_grad(uint splatId, uint paramId, float value) {
 void csRasterBackward(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_GroupIndex) {
     uint px = dispatchThreadID.x;
     uint py = dispatchThreadID.y;
-    if (px >= uint(g_Camera.viewport.x) || py >= uint(g_Camera.viewport.y)) return;
+    bool active = px < uint(g_Camera.viewport.x) && py < uint(g_Camera.viewport.y);
     uint tileId = (py / TILE_SIZE) * g_TileGrid.x + (px / TILE_SIZE);
     uint2 range = uint2(g_TileRanges[int(tileId * 2u)], g_TileRanges[int(tileId * 2u + 1u)]);
-    if (range.x == INVALID_START || range.y <= range.x) return;
     int2 p = int2(int(px), int(py));
-    float4 state4 = g_ForwardState[p];
+    float4 state4 = active ? g_ForwardState[p] : 0.0;
     var dpAccum = diffPair(state4.xyz);
     var dpTrans = diffPair(state4.w);
-    bwd_diff(raster_output)(dpAccum, dpTrans, g_Background, g_OutputGrad[p]);
+    if (active) bwd_diff(raster_output)(dpAccum, dpTrans, g_Background, g_OutputGrad[p]);
     float3 dAccum = dpAccum.getDifferential();
     float dTrans = dpTrans.getDifferential();
-    float3 rayDir = g_Camera.screen_to_world_ray(float2(px, py) + 0.5);
+    float3 rayDir = active ? g_Camera.screen_to_world_ray(float2(px, py) + 0.5) : 0.0;
     float3 accum = state4.xyz;
     float trans = state4.w;
-    uint processedEnd = g_ForwardEnd[p];
-    for (uint batchBase = processedEnd; batchBase > range.x;) {
+    uint processedEnd = active ? g_ForwardEnd[p] : 0u;
+    for (uint batchBase = range.y; batchBase > range.x;) {
         uint batchStart = batchBase > range.x + RASTER_BATCH ? batchBase - RASTER_BATCH : range.x;
         uint batchCount = batchBase - batchStart;
         // Replay the same tile-local batches in reverse order from the saved forward stopping point.
         prefetch_batch(batchStart, batchBase, lane);
         GroupMemoryBarrierWithGroupSync();
-        for (uint rev = 0u; rev < batchCount; rev++) {
-            uint localIdx = batchCount - 1u - rev;
-            uint globalIdx = batchStart + localIdx;
-            uint splatId = gsBatchSplatId[localIdx];
-            Gaussian3D gaussian = gsGaussian[localIdx];
-            uint originalSplatId = g_SplatOrder[int(splatId)];
-            float alpha = raster_eval_alpha(gaussian, g_Camera, g_RadiusScale, g_MaxAnisotropy, rayDir);
-            if (alpha < g_AlphaCutoff) continue;
-            // Invert the forward blend step, then differentiate that exact primitive via bwd_diff(shade_step).
-            float prevTrans = trans / max(1.0 - alpha, SMALL_VALUE);
-            float3 prevAccum = accum - prevTrans * alpha * gaussian.colorAlpha.xyz;
-            var dpPrevAccum = diffPair(prevAccum);
-            var dpPrevTrans = diffPair(prevTrans);
-            var dpGaussian = diffPair(gaussian);
-            var dpAlpha = diffPair(alpha);
-            bwd_diff(shade_step)(dpPrevAccum, dpPrevTrans, dpGaussian, dpAlpha, float4(dAccum, dTrans));
-            Gaussian3D.Differential dGaussian = dpGaussian.getDifferential();
-            float dAlpha = dpAlpha.getDifferential();
-            dAccum = dpPrevAccum.getDifferential();
-            dTrans = dpPrevTrans.getDifferential();
-            var dpAlphaGaussian = diffPair(gaussian);
-            // Propagate dAlpha back into position/scale/rotation through the ray-splat intersection path.
-            bwd_diff(raster_eval_alpha)(dpAlphaGaussian, g_Camera, g_RadiusScale, g_MaxAnisotropy, rayDir, dAlpha);
-            Gaussian3D.Differential dGaussianAlpha = dpAlphaGaussian.getDifferential();
-            dGaussian.position += dGaussianAlpha.position;
-            dGaussian.logScale += dGaussianAlpha.logScale;
-            dGaussian.rotation += dGaussianAlpha.rotation;
-            dGaussian.colorAlpha += dGaussianAlpha.colorAlpha;
-            float fused = max(gaussian.colorAlpha.w, SMALL_VALUE);
-            // Public opacity is stored on the Python side; convert the fused-opacity differential back to raw opacity.
-            float dRawOpacity = dGaussian.colorAlpha.w * fused * (1.0 - fused);
-            add_param_grad(originalSplatId, PARAM_COLOR_R, dGaussian.colorAlpha.x);
-            add_param_grad(originalSplatId, PARAM_COLOR_G, dGaussian.colorAlpha.y);
-            add_param_grad(originalSplatId, PARAM_COLOR_B, dGaussian.colorAlpha.z);
-            add_param_grad(originalSplatId, PARAM_POSITION_X, dGaussian.position.x);
-            add_param_grad(originalSplatId, PARAM_POSITION_Y, dGaussian.position.y);
-            add_param_grad(originalSplatId, PARAM_POSITION_Z, dGaussian.position.z);
-            add_param_grad(originalSplatId, PARAM_SCALE_X, dGaussian.logScale.x);
-            add_param_grad(originalSplatId, PARAM_SCALE_Y, dGaussian.logScale.y);
-            add_param_grad(originalSplatId, PARAM_SCALE_Z, dGaussian.logScale.z);
-            add_param_grad(originalSplatId, PARAM_ROTATION_W, dGaussian.rotation.x);
-            add_param_grad(originalSplatId, PARAM_ROTATION_X, dGaussian.rotation.y);
-            add_param_grad(originalSplatId, PARAM_ROTATION_Y, dGaussian.rotation.z);
-            add_param_grad(originalSplatId, PARAM_ROTATION_Z, dGaussian.rotation.w);
-            add_param_grad(originalSplatId, PARAM_RAW_OPACITY, dRawOpacity);
-            accum = prevAccum;
-            trans = prevTrans;
+        if (active && range.x != INVALID_START && range.y > range.x) {
+            for (uint rev = 0u; rev < batchCount; rev++) {
+                uint localIdx = batchCount - 1u - rev;
+                uint globalIdx = batchStart + localIdx;
+                if (globalIdx >= processedEnd) continue;
+                uint splatId = gsBatchSplatId[localIdx];
+                if (splatId >= g_SplatCount) continue;
+                Gaussian3D gaussian = gsGaussian[localIdx];
+                uint originalSplatId = g_SplatOrder[int(splatId)];
+                if (originalSplatId >= g_SplatCount) continue;
+                float alpha = raster_eval_alpha(gaussian, rayDir);
+                if (alpha < g_AlphaCutoff) continue;
+                // Invert the forward blend step, then differentiate that exact primitive via bwd_diff(shade_step).
+                float prevTrans = trans / max(1.0 - alpha, SMALL_VALUE);
+                float3 prevAccum = accum - prevTrans * alpha * gaussian.colorAlpha.xyz;
+                var dpPrevAccum = diffPair(prevAccum);
+                var dpPrevTrans = diffPair(prevTrans);
+                var dpGaussian = diffPair(gaussian);
+                var dpAlpha = diffPair(alpha);
+                bwd_diff(shade_step)(dpPrevAccum, dpPrevTrans, dpGaussian, dpAlpha, float4(dAccum, dTrans));
+                Gaussian3D.Differential dGaussian = dpGaussian.getDifferential();
+                float dAlpha = dpAlpha.getDifferential();
+                dAccum = dpPrevAccum.getDifferential();
+                dTrans = dpPrevTrans.getDifferential();
+                var dpCachedGaussian = diffPair(gaussian);
+                bwd_diff(raster_eval_alpha)(dpCachedGaussian, rayDir, dAlpha);
+                Gaussian3D.Differential dCachedGaussian = dpCachedGaussian.getDifferential();
+                dGaussian.colorAlpha.xyz += dCachedGaussian.colorAlpha.xyz;
+                float fused = max(gaussian.colorAlpha.w, SMALL_VALUE);
+                float dRawOpacity = dCachedGaussian.colorAlpha.w * fused * (1.0 - fused);
+                dCachedGaussian.colorAlpha = 0.0;
+                Gaussian3D originalGaussian = Gaussian3D.load(g_Splats, g_SplatCount, originalSplatId);
+                var dpOriginalGaussian = diffPair(originalGaussian);
+                bwd_diff(Gaussian3D.camera_gaussian)(dpOriginalGaussian, g_Camera, g_RadiusScale, GAUSSIAN_SUPPORT_SIGMA_RADIUS, g_MaxAnisotropy, dCachedGaussian);
+                Gaussian3D.Differential dOriginalGaussian = dpOriginalGaussian.getDifferential();
+                dGaussian.position += dOriginalGaussian.position;
+                dGaussian.logScale += dOriginalGaussian.logScale;
+                dGaussian.rotation += dOriginalGaussian.rotation;
+                add_param_grad(originalSplatId, PARAM_COLOR_R, dGaussian.colorAlpha.x);
+                add_param_grad(originalSplatId, PARAM_COLOR_G, dGaussian.colorAlpha.y);
+                add_param_grad(originalSplatId, PARAM_COLOR_B, dGaussian.colorAlpha.z);
+                add_param_grad(originalSplatId, PARAM_POSITION_X, dGaussian.position.x);
+                add_param_grad(originalSplatId, PARAM_POSITION_Y, dGaussian.position.y);
+                add_param_grad(originalSplatId, PARAM_POSITION_Z, dGaussian.position.z);
+                add_param_grad(originalSplatId, PARAM_SCALE_X, dGaussian.logScale.x);
+                add_param_grad(originalSplatId, PARAM_SCALE_Y, dGaussian.logScale.y);
+                add_param_grad(originalSplatId, PARAM_SCALE_Z, dGaussian.logScale.z);
+                add_param_grad(originalSplatId, PARAM_ROTATION_W, dGaussian.rotation.x);
+                add_param_grad(originalSplatId, PARAM_ROTATION_X, dGaussian.rotation.y);
+                add_param_grad(originalSplatId, PARAM_ROTATION_Y, dGaussian.rotation.z);
+                add_param_grad(originalSplatId, PARAM_ROTATION_Z, dGaussian.rotation.w);
+                add_param_grad(originalSplatId, PARAM_RAW_OPACITY, dRawOpacity);
+                accum = prevAccum;
+                trans = prevTrans;
+            }
         }
         GroupMemoryBarrierWithGroupSync();
         batchBase = batchStart;

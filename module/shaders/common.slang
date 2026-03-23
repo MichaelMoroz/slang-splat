@@ -559,14 +559,13 @@ bool compute_gaussian_outline_ellipse(
 }
 
 [Differentiable]
-float raster_eval_alpha(Gaussian3D gaussian, no_diff Camera camera, no_diff float radiusScale, no_diff float maxAnisotropy, no_diff float3 rayDir) {
-    Gaussian3D cached = Gaussian3D.camera_gaussian(gaussian, camera, radiusScale, GAUSSIAN_SUPPORT_SIGMA_RADIUS, maxAnisotropy);
-    float3 rayLocal = rotate_by_quat(rayDir, cached.rotation) / max(cached.logScale, float3(SMALL_VALUE));
+float raster_eval_alpha(Gaussian3D gaussian, no_diff float3 rayDir) {
+    float3 rayLocal = rotate_by_quat(rayDir, gaussian.rotation) / max(gaussian.logScale, float3(SMALL_VALUE));
     float denom = dot(rayLocal, rayLocal);
     if (denom <= RAY_DENOMINATOR_FLOOR) return 0.0;
-    float tClosest = -dot(rayLocal, cached.position) / denom;
+    float tClosest = -dot(rayLocal, gaussian.position) / denom;
     if (tClosest <= 0.0) return 0.0;
-    float3 closest = cached.position + rayLocal * tClosest;
+    float3 closest = gaussian.position + rayLocal * tClosest;
     float rho2 = max(dot(closest, closest), 0.0);
     return gaussian.colorAlpha.w * exp(-0.5 * GAUSSIAN_SUPPORT_SIGMA_RADIUS * GAUSSIAN_SUPPORT_SIGMA_RADIUS * rho2);
 }
