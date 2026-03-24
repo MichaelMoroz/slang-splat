@@ -22,6 +22,8 @@ _DEBUG_MODE_PROCESSED_COUNT = 1
 _DEBUG_MODE_DEPTH_MEAN = 2
 _DEBUG_MODE_DEPTH_STD = 3
 _DEBUG_MODE_ELLIPSE_OUTLINES = 4
+_DEBUG_MODE_SPLAT_SPATIAL_DENSITY = 5
+_DEBUG_MODE_SPLAT_SCREEN_DENSITY = 6
 _INITIAL_TILE_CAPACITY_MULTIPLIER = 32
 _MAX_IMAGE_DIM = 8192
 _MAX_IMAGE_PIXELS = 33_554_432
@@ -40,6 +42,7 @@ class SplattingContext:
     debug_mode: int = _DEBUG_MODE_NORMAL
     debug_depth_mean_range: tuple[float, float] = (0.0, 20.0)
     debug_depth_std_range: tuple[float, float] = (0.0, 0.25)
+    debug_density_range: tuple[float, float] = (0.0, 4.0)
 
     def __post_init__(self) -> None:
         self.device = self.device or spy.create_device(type=spy.DeviceType.cuda, include_paths=[_SHADERS], enable_cuda_interop=False, enable_hot_reload=False)
@@ -314,6 +317,7 @@ class SplattingContext:
             g_DebugMaxSplatSteps=int(entries),
             g_DebugDepthMeanRange=spy.float2(*map(float, self.debug_depth_mean_range)),
             g_DebugDepthStdRange=spy.float2(*map(float, self.debug_depth_std_range)),
+            g_DebugDensityRange=spy.float2(*map(float, self.debug_density_range)),
             g_TotalCapacity=int(getattr(self, "_entry_capacity", 1)),
         )
         return vars

@@ -13,7 +13,7 @@ import slangpy as spy
 import slangpy.ui.imgui_bundle as simgui
 from imgui_bundle import imgui, implot
 
-from .state import DEBUG_MODE_DEPTH_MEAN, DEBUG_MODE_DEPTH_STD, DEBUG_MODE_ELLIPSE_OUTLINES, DEBUG_MODE_NORMAL, DEBUG_MODE_PROCESSED_COUNT
+from .state import DEBUG_MODE_DEPTH_MEAN, DEBUG_MODE_DEPTH_STD, DEBUG_MODE_ELLIPSE_OUTLINES, DEBUG_MODE_NORMAL, DEBUG_MODE_PROCESSED_COUNT, DEBUG_MODE_SPLAT_SCREEN_DENSITY, DEBUG_MODE_SPLAT_SPATIAL_DENSITY
 from .training import TrainingController
 
 _WINDOW_TITLE = "Slang Splat Viewer"
@@ -50,6 +50,8 @@ _DEBUG_MODE_OPTIONS = (
     (DEBUG_MODE_PROCESSED_COUNT, "Processed Count"),
     (DEBUG_MODE_DEPTH_MEAN, "Depth Mean"),
     (DEBUG_MODE_DEPTH_STD, "Depth Std / Mean"),
+    (DEBUG_MODE_SPLAT_SPATIAL_DENSITY, "Splat Spatial Density"),
+    (DEBUG_MODE_SPLAT_SCREEN_DENSITY, "Splat Screen Density"),
     (DEBUG_MODE_ELLIPSE_OUTLINES, "Ellipse Outlines"),
 )
 
@@ -133,6 +135,8 @@ class ViewerUI:
             "debug_depth_mean_max": 20.0,
             "debug_depth_std_min": 0.0,
             "debug_depth_std_max": 0.25,
+            "debug_density_min": 0.0,
+            "debug_density_max": 4.0,
             "loss_debug": False,
             "loss_debug_view": 0,
             "loss_debug_frame": 0,
@@ -765,13 +769,19 @@ class ToolkitWindow:
             changed, value = imgui.input_float("Depth Std/Mean Max", float(ui.values["debug_depth_std_max"]), 0.01, 0.1, "%.4g")
             if changed:
                 ui.values["debug_depth_std_max"] = float(value)
-            if int(ui.values["debug_mode"]) in (DEBUG_MODE_PROCESSED_COUNT, DEBUG_MODE_DEPTH_MEAN, DEBUG_MODE_DEPTH_STD):
+            changed, value = imgui.input_float("Density Min", float(ui.values["debug_density_min"]), 0.01, 0.1, "%.4g")
+            if changed:
+                ui.values["debug_density_min"] = float(value)
+            changed, value = imgui.input_float("Density Max", float(ui.values["debug_density_max"]), 0.01, 0.1, "%.4g")
+            if changed:
+                ui.values["debug_density_max"] = float(value)
+            if int(ui.values["debug_mode"]) in (DEBUG_MODE_PROCESSED_COUNT, DEBUG_MODE_DEPTH_MEAN, DEBUG_MODE_DEPTH_STD, DEBUG_MODE_SPLAT_SPATIAL_DENSITY, DEBUG_MODE_SPLAT_SCREEN_DENSITY):
                 self._draw_debug_colorbar(ui)
         imgui.end()
 
     def _draw_debug_colorbar(self, ui: ViewerUI) -> None:
         debug_mode = int(ui.values.get("debug_mode", DEBUG_MODE_NORMAL))
-        if debug_mode not in (DEBUG_MODE_PROCESSED_COUNT, DEBUG_MODE_DEPTH_MEAN, DEBUG_MODE_DEPTH_STD):
+        if debug_mode not in (DEBUG_MODE_PROCESSED_COUNT, DEBUG_MODE_DEPTH_MEAN, DEBUG_MODE_DEPTH_STD, DEBUG_MODE_SPLAT_SPATIAL_DENSITY, DEBUG_MODE_SPLAT_SCREEN_DENSITY):
             return
         imgui.separator()
         title = "Processed Count Scale"
@@ -786,6 +796,14 @@ class ToolkitWindow:
             depth_min = float(ui.values["debug_depth_std_min"])
             depth_max = float(ui.values["debug_depth_std_max"])
             tick_value = lambda t: depth_min + t * (depth_max - depth_min)
+        elif debug_mode in (DEBUG_MODE_SPLAT_SPATIAL_DENSITY, DEBUG_MODE_SPLAT_SCREEN_DENSITY):
+            title = {
+                DEBUG_MODE_SPLAT_SPATIAL_DENSITY: "Splat Spatial Density Scale",
+                DEBUG_MODE_SPLAT_SCREEN_DENSITY: "Splat Screen Density Scale",
+            }[debug_mode]
+            density_min = float(ui.values["debug_density_min"])
+            density_max = float(ui.values["debug_density_max"])
+            tick_value = lambda t: density_min + t * (density_max - density_min)
         imgui.text(title)
         draw_list = imgui.get_window_draw_list()
         width = max(float(imgui.get_content_region_avail().x), 120.0)
@@ -806,7 +824,7 @@ class ToolkitWindow:
             x = x0 + t * (x1 - x0)
             draw_list.add_line(imgui.ImVec2(x, y1 + 2.0), imgui.ImVec2(x, y1 + 8.0), _color_u32(0.85, 0.88, 0.92, 0.9), 1.0)
             value = tick_value(t)
-            label = f"{value:.2f}" if debug_mode in (DEBUG_MODE_DEPTH_MEAN, DEBUG_MODE_DEPTH_STD) else f"{int(round(value)):,}"
+            label = f"{value:.2f}" if debug_mode in (DEBUG_MODE_DEPTH_MEAN, DEBUG_MODE_DEPTH_STD, DEBUG_MODE_SPLAT_SPATIAL_DENSITY, DEBUG_MODE_SPLAT_SCREEN_DENSITY) else f"{int(round(value)):,}"
             draw_list.add_text(imgui.ImVec2(x - 8.0, y1 + 10.0), _color_u32(0.85, 0.88, 0.92, 0.95), label)
 
     def _draw_about(self) -> None:

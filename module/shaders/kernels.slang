@@ -45,6 +45,7 @@ uniform uint g_DebugMode;
 uniform uint g_DebugMaxSplatSteps;
 uniform float2 g_DebugDepthMeanRange;
 uniform float2 g_DebugDepthStdRange;
+uniform float2 g_DebugDensityRange;
 uniform RWTensor<uint, 1> g_ScanlineOverflow;
 uniform RWTensor<uint, 1> g_TileOverflow;
 uniform uint g_TotalCapacity;
@@ -407,9 +408,13 @@ void csRasterForward(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupID
     float3 rayDir = active ? g_Camera.screen_to_world_ray(raySample) : 0.0;
     bool outlineDebug = g_DebugMode == DEBUG_MODE_ELLIPSE_OUTLINES;
     bool depthDebug = g_DebugMode == DEBUG_MODE_DEPTH_MEAN || g_DebugMode == DEBUG_MODE_DEPTH_STD;
+    bool spatialDensityDebug = g_DebugMode == DEBUG_MODE_SPLAT_SPATIAL_DENSITY;
+    bool screenDensityDebug = g_DebugMode == DEBUG_MODE_SPLAT_SCREEN_DENSITY;
+    bool densityDebug = spatialDensityDebug || screenDensityDebug;
     float depthWeightSum = 0.0;
     float depthMean = 0.0;
     float depthM2 = 0.0;
+    float densitySum = 0.0;
     if (range.x != INVALID_START && range.y > range.x) {
         bool done = !active;
         if (lane == 0u) gsDoneCount = 0u;
@@ -421,7 +426,7 @@ void csRasterForward(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupID
             uint batchEnd = min(batchStart + RASTER_BATCH, range.y);
             uint batchCount = batchEnd - batchStart;
             // Batch splats into groupshared storage so every pixel in the tile reuses the same loads.
-            prefetch_batch(batchStart, batchEnd, lane, outlineDebug);
+            prefetch_batch(batchStart, batchEnd, lane, outlineDebug || screenDensityDebug);
             GroupMemoryBarrierWithGroupSync();
             if (!done) {
                 for (uint localIdx = 0u; localIdx < batchCount; localIdx++) {
@@ -432,8 +437,8 @@ void csRasterForward(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupID
                         ? raster_eval_outline_alpha(gaussian, gsProjection[localIdx], raySample)
                         : raster_eval_alpha(gaussian, rayDir);
                     if (alpha < g_AlphaCutoff) continue;
+                    float contributionWeight = trans * alpha;
                     if (depthDebug) {
-                        float contributionWeight = trans * alpha;
                         if (contributionWeight > SMALL_VALUE) {
                             float3 rayLocal = rotate_by_quat(rayDir, gaussian.rotation) / max(gaussian.logScale, float3(SMALL_VALUE));
                             float denom = dot(rayLocal, rayLocal);
@@ -448,6 +453,16 @@ void csRasterForward(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupID
                                 }
                             }
                         }
+                    }
+                    if (densityDebug && contributionWeight > SMALL_VALUE) {
+                        float densityContribution = contributionWeight;
+                        if (spatialDensityDebug) {
+                            Gaussian3D originalGaussian = Gaussian3D.load(g_Splats, g_SplatCount, gsBatchSplatId[localIdx]);
+                            densityContribution /= gaussian_scale_volume(originalGaussian.logScale);
+                        } else if (screenDensityDebug) {
+                            densityContribution /= projected_ellipse_area(gsProjection[localIdx].conicOpacity.xyz);
+                        }
+                        densitySum += densityContribution;
                     }
                     float4 blended = shade_step(accum, trans, gaussian, alpha);
                     accum = blended.xyz;
@@ -467,6 +482,8 @@ void csRasterForward(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupID
     float4 output = raster_output(accum, trans, g_Background);
     if (g_DebugMode == DEBUG_MODE_PROCESSED_COUNT) {
         output = float4(raster_processed_count_color(processedCount, g_DebugMaxSplatSteps), 1.0);
+    } else if (densityDebug) {
+        output = float4(jet_colormap(debug_normalize_range(densitySum, g_DebugDensityRange)), 1.0);
     } else if (g_DebugMode == DEBUG_MODE_DEPTH_MEAN || g_DebugMode == DEBUG_MODE_DEPTH_STD) {
         float debugValue = 0.0;
         if (depthWeightSum > SMALL_VALUE) {

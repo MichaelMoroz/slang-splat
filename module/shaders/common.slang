@@ -48,6 +48,8 @@ static const uint DEBUG_MODE_PROCESSED_COUNT = 1u;
 static const uint DEBUG_MODE_DEPTH_MEAN = 2u;
 static const uint DEBUG_MODE_DEPTH_STD = 3u;
 static const uint DEBUG_MODE_ELLIPSE_OUTLINES = 4u;
+static const uint DEBUG_MODE_SPLAT_SPATIAL_DENSITY = 5u;
+static const uint DEBUG_MODE_SPLAT_SCREEN_DENSITY = 6u;
 
 struct Gaussian3D : IDifferentiable {
     float3 position;
@@ -402,6 +404,16 @@ float debug_luminance(float3 rgb) {
 
 float debug_normalize_range(float value, float2 range) {
     return saturate((value - range.x) / max(range.y - range.x, SMALL_VALUE));
+}
+
+float gaussian_scale_volume(float3 logScale) {
+    float3 scale = exp(logScale);
+    return max(scale.x * scale.y * scale.z, SMALL_VALUE);
+}
+
+float projected_ellipse_area(float3 conic) {
+    float det = conic.x * conic.z - conic.y * conic.y;
+    return max(0.5 * TAU_RADIANS / sqrt(max(det, CONIC_DETERMINANT_FLOOR)), SMALL_VALUE);
 }
 
 bool compute_gaussian_outline_ellipse(

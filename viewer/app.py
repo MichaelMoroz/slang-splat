@@ -403,6 +403,10 @@ class SplatViewer(spy.AppWindow):
             float(self.ui.values["debug_depth_std_min"]),
             float(self.ui.values["debug_depth_std_max"]),
         )
+        self.renderer.debug_density_range = (
+            float(self.ui.values["debug_density_min"]),
+            float(self.ui.values["debug_density_max"]),
+        )
         self.renderer.prepare(active_splat_count, (debug_width, debug_height), self.s.background)
         self._upload_scene_if_needed()
         self.renderer.render(_camera_dict(sample.camera_params, sample.image_size), active_splat_count, command_encoder=encoder)
@@ -505,6 +509,10 @@ class SplatViewer(spy.AppWindow):
                     self.renderer.debug_depth_std_range = (
                         float(self.ui.values["debug_depth_std_min"]),
                         float(self.ui.values["debug_depth_std_max"]),
+                    )
+                    self.renderer.debug_density_range = (
+                        float(self.ui.values["debug_density_min"]),
+                        float(self.ui.values["debug_density_max"]),
                     )
                     self.renderer.prepare(active_splat_count, (width, height), self.s.background)
                     self._upload_scene_if_needed()
