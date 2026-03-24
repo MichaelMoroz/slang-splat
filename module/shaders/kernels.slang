@@ -184,7 +184,7 @@ void csProjectScanlineCount(uint3 dispatchThreadID : SV_DispatchThreadID) {
             && cameraDistance > g_Camera.nearDepth
             && cameraDistance < g_Camera.farDepth;
         Ellipse ellipse;
-        if (hasFit) hasFit = compute_gaussian_outline_ellipse(gaussian, g_Camera, g_RadiusScale, supportSigmaRadius, g_MaxAnisotropy, ellipse);
+        if (hasFit) hasFit = compute_gaussian_outline_ellipse(gaussian, g_Camera, cameraPosition, g_RadiusScale, supportSigmaRadius, g_MaxAnisotropy, ellipse);
         if (hasFit) {
             // Inflate the fitted ellipse before scan conversion so tile coverage stays conservative.
             ellipse.radiusPx = max(ellipse.radiusPx * ELLIPSE_SAFETY_SCALE + ELLIPSE_RADIUS_PAD_PX, MIN_SCREEN_RADIUS_PX);

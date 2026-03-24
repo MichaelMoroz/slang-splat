@@ -287,71 +287,64 @@ struct Ellipse {
 
 };
 
-struct LinearSystem<let N : int> {
-    float aug[N * (N + 1)];
+// 5-point conic fit via renormalization: maps two points to canonical positions,
+// reducing the 5x5 system to 3x3. Returns coefficients for Ax^2+2Bxy+Cy^2+Dx+Ey = 1.
+bool solve_conic_renorm(float2 pts[5], float eps, out float solution[5])
+{
+    [unroll] for (uint i = 0u; i < 5u; i++) solution[i] = 0.0;
 
-    float load(int i0, int i1) {
-        return aug[i0 * (N + 1) + i1];
-    }
+    float sx = pts[0].x - pts[1].x;
+    float sy = pts[1].y - pts[0].y;
+    if (abs(sx) <= eps || abs(sy) <= eps) return false;
 
-    [mutating]
-    void store(int i0, int i1, float value) {
-        aug[i0 * (N + 1) + i1] = value;
-    }
+    float isx = 1.0 / sx;
+    float isy = 1.0 / sy;
+    float ox = pts[1].x;
+    float oy = pts[0].y;
 
-    __subscript(int i0, int i1)->float {
-        get { return this.load(i0, i1); }
-        set { this.store(i0, i1, newValue); }
-    }
+    float u2 = (pts[2].x - ox) * isx, v2 = (pts[2].y - oy) * isy;
+    float u3 = (pts[3].x - ox) * isx, v3 = (pts[3].y - oy) * isy;
+    float u4 = (pts[4].x - ox) * isx, v4 = (pts[4].y - oy) * isy;
 
-    [mutating]
-    bool solve(float eps, out float solution[N]) {
-        [unroll] for (uint row = 0u; row < N; row++) solution[row] = 0.0;
-        for (uint pivot = 0u; pivot < N; pivot++) {
-            uint bestRow = pivot;
-            float bestAbs = abs(this.load(pivot, pivot));
-            for (uint row = pivot + 1u; row < N; row++) {
-                float rowAbs = abs(this.load(row, pivot));
-                if (rowAbs > bestAbs) { bestAbs = rowAbs; bestRow = row; }
-            }
-            if (bestAbs <= eps) return false;
-            if (bestRow != pivot) {
-                for (uint col = pivot; col <= N; col++) {
-                    float tmp = this.load(pivot, col);
-                    this.store(pivot, col, this.load(bestRow, col));
-                    this.store(bestRow, col, tmp);
-                }
-            }
-            float invPivot = 1.0 / this.load(pivot, pivot);
-            for (uint col = pivot; col <= N; col++) this.store(pivot, col, this.load(pivot, col) * invPivot);
-            for (uint row = 0u; row < N; row++) {
-                if (row == pivot) continue;
-                float factor = this.load(row, pivot);
-                for (uint col = pivot; col <= N; col++) this.store(row, col, this.load(row, col) - factor * this.load(pivot, col));
-            }
-        }
-        [unroll] for (uint row = 0u; row < N; row++) solution[row] = this.load(row, N);
-        return true;
-    }
-};
+    float m00 = u2*u2 - u2, m01 = 2.0*u2*v2, m02 = v2*v2 - v2, r0 = u2 + v2 - 1.0;
+    float m10 = u3*u3 - u3, m11 = 2.0*u3*v3, m12 = v3*v3 - v3, r1 = u3 + v3 - 1.0;
+    float m20 = u4*u4 - u4, m21 = 2.0*u4*v4, m22 = v4*v4 - v4, r2 = u4 + v4 - 1.0;
 
-bool inverse3x3(float3x3 m, float eps, out float3x3 mInv) {
-    float3x3 cofactor = 0.0;
-    [unroll] for (uint i = 0u; i < 3u; i++){
-        [unroll] for (uint j = 0u; j < 3u; j++){
-            float sign = ((i + j) & 1u) == 0u ? 1.0 : -1.0;
-            uint2 idx0 = (uint2(i, j) + uint2(1, 1)) % 3;
-            uint2 idx1 = (uint2(i, j) + uint2(2, 2)) % 3;
-            float minorVal = m[idx0.x][idx0.y] * m[idx1.x][idx1.y] - m[idx0.x][idx1.y] * m[idx1.x][idx0.y];
-            cofactor[i][j] = sign * minorVal;
-        }
-    }
-    float det = dot(m[0], cofactor[0]);
-    if (abs(det) <= eps) {
-        mInv = 0.0;
-        return false;
-    }
-    mInv = transpose(cofactor) * (1.0 / det);
+    // Forward elimination (no pivoting)
+    if (abs(m00) <= eps) return false;
+    { float inv = 1.0/m00; m01*=inv; m02*=inv; r0*=inv; }
+    { float f=m10; m11-=f*m01; m12-=f*m02; r1-=f*r0; }
+    { float f=m20; m21-=f*m01; m22-=f*m02; r2-=f*r0; }
+    if (abs(m11) <= eps) return false;
+    { float inv = 1.0/m11; m12*=inv; r1*=inv; }
+    { float f=m21; m22-=f*m12; r2-=f*r1; }
+    if (abs(m22) <= eps) return false;
+    r2 /= m22;
+
+    // Back-substitution in renormalized space
+    float Cp = r2;
+    float Bp = r1 - m12 * Cp;
+    float Ap = r0 - m01 * Bp - m02 * Cp;
+    float Dp = -(Ap + 1.0);
+    float Ep = -(Cp + 1.0);
+
+    // Back-convert to original coordinate space
+    float isx2 = isx*isx, isy2 = isy*isy, isxisy = isx*isy;
+    float A = Ap * isx2;
+    float B = Bp * isxisy;
+    float C = Cp * isy2;
+    float d = -2.0*A*ox - 2.0*B*oy + Dp*isx;
+    float e = -2.0*B*ox - 2.0*C*oy + Ep*isy;
+    float F = A*ox*ox + 2.0*B*ox*oy + C*oy*oy - Dp*isx*ox - Ep*isy*oy + 1.0;
+    if (abs(F) <= eps) return false;
+
+    // Negate F: renorm internally solves RHS=-1, production convention is RHS=+1
+    float invF = -1.0 / F;
+    solution[0] = A * invF;
+    solution[1] = B * invF;
+    solution[2] = C * invF;
+    solution[3] = d * invF;
+    solution[4] = e * invF;
     return true;
 }
 
@@ -411,6 +404,7 @@ float debug_normalize_range(float value, float2 range) {
 bool compute_gaussian_outline_ellipse(
     Gaussian3D gaussian,
     Camera camera,
+    float3 cameraCenter,
     float radiusScale,
     float supportSigmaRadius,
     float maxAnisotropy,
@@ -420,80 +414,40 @@ bool compute_gaussian_outline_ellipse(
     ellipse.radiusPx = 0.0;
     ellipse.conic = 0.0;
     ellipse.bboxExtent = 0.0;
-    Gaussian3D supportGaussian = Gaussian3D.camera_gaussian(gaussian, camera, radiusScale, supportSigmaRadius, maxAnisotropy);
-    float3 worldCenter = gaussian.position;
+    Gaussian3D cameraGaussian = Gaussian3D.camera_gaussian(gaussian, camera, radiusScale, supportSigmaRadius, maxAnisotropy);
     float2 screenCenter = 0.0;
-    if (!camera.project_world_to_screen(worldCenter, screenCenter)) return false;
+    if (!camera.project_camera_to_screen(cameraCenter, screenCenter)) return false;
     float4 invRotation = float4(gaussian.rotation.x, -gaussian.rotation.yzw);
-    float2 fallbackMin = screenCenter;
-    float2 fallbackMax = screenCenter;
-    bool fallbackValid = true;
-    [unroll] for (uint axis = 0u; axis < 3u; axis++) {
-        float3 axisLocal = 0.0;
-        axisLocal[axis] = supportGaussian.logScale[axis];
-        float2 axisScreen = 0.0;
-        if (!camera.project_world_to_screen(worldCenter + rotate_by_quat(axisLocal, invRotation), axisScreen)) fallbackValid = false;
-        else {
-            fallbackMin = min(fallbackMin, axisScreen);
-            fallbackMax = max(fallbackMax, axisScreen);
-        }
-        if (!camera.project_world_to_screen(worldCenter - rotate_by_quat(axisLocal, invRotation), axisScreen)) fallbackValid = false;
-        else {
-            fallbackMin = min(fallbackMin, axisScreen);
-            fallbackMax = max(fallbackMax, axisScreen);
-        }
-    }
 
     // Build the tangent circle on the unit ellipsoid in support-local space.
-    float3 viewOriginLocal = supportGaussian.position;
+    float3 viewOriginLocal = cameraGaussian.position;
     float viewDistance = length(viewOriginLocal);
-    if (viewDistance <= 1.0 + ELLIPSE_EPS) {
-        if (!fallbackValid) return false;
-        float2 fallbackHalfExtent = max(0.5 * (fallbackMax - fallbackMin), float2(ELLIPSE_EPS, ELLIPSE_EPS));
-        ellipse.centerPx = 0.5 * (fallbackMin + fallbackMax);
-        ellipse.radiusPx = max(fallbackHalfExtent.x, fallbackHalfExtent.y);
-        ellipse.conic = float3(1.0 / max(fallbackHalfExtent.x * fallbackHalfExtent.x, ELLIPSE_EPS), 0.0, 1.0 / max(fallbackHalfExtent.y * fallbackHalfExtent.y, ELLIPSE_EPS));
-        ellipse.bboxExtent = fallbackHalfExtent;
-        return all(isfinite(ellipse.centerPx)) && all(isfinite(ellipse.conic)) && isfinite(ellipse.radiusPx) && ellipse.radiusPx > 0.0;
-    }
+    if (viewDistance <= 1.0 + ELLIPSE_EPS) return false;
     float3 viewDirLocal = viewOriginLocal / viewDistance;
     float3 tangentCircleCenter = viewDirLocal / viewDistance;
     float tangentCircleRadius = sqrt(max(1.0 - 1.0 / (viewDistance * viewDistance), 0.0));
-    // Build a stable tangent-frame basis even when the view direction is nearly aligned to +/-Z.
-    // The previous south-pole parameterization was exact on paper but numerically unstable here.
     float3 tangentAxis = abs(viewDirLocal.z) < 0.999 ? float3(0.0, 0.0, 1.0) : float3(0.0, 1.0, 0.0);
     float3 tangentBasisU = normalize_safe(cross(tangentAxis, viewDirLocal));
     float3 tangentBasisV = cross(viewDirLocal, tangentBasisU);
-    if (!all(isfinite(tangentBasisU)) || !all(isfinite(tangentBasisV))) {
-        if (!fallbackValid) return false;
-        float2 fallbackHalfExtent = max(0.5 * (fallbackMax - fallbackMin), float2(ELLIPSE_EPS, ELLIPSE_EPS));
-        ellipse.centerPx = 0.5 * (fallbackMin + fallbackMax);
-        ellipse.radiusPx = max(fallbackHalfExtent.x, fallbackHalfExtent.y);
-        ellipse.conic = float3(1.0 / max(fallbackHalfExtent.x * fallbackHalfExtent.x, ELLIPSE_EPS), 0.0, 1.0 / max(fallbackHalfExtent.y * fallbackHalfExtent.y, ELLIPSE_EPS));
-        ellipse.bboxExtent = fallbackHalfExtent;
-        return all(isfinite(ellipse.centerPx)) && all(isfinite(ellipse.conic)) && isfinite(ellipse.radiusPx) && ellipse.radiusPx > 0.0;
-    }
+    float3 supportAxisX = camera.world_to_camera(rotate_by_quat(float3(cameraGaussian.logScale.x, 0.0, 0.0), invRotation));
+    float3 supportAxisY = camera.world_to_camera(rotate_by_quat(float3(0.0, cameraGaussian.logScale.y, 0.0), invRotation));
+    float3 supportAxisZ = camera.world_to_camera(rotate_by_quat(float3(0.0, 0.0, cameraGaussian.logScale.z), invRotation));
+
     float2 outlinePoints[ELLIPSE_POINT_COUNT];
     float2 outlineMin = float2(1e30, 1e30);
     float2 outlineMax = float2(-1e30, -1e30);
 
-    // Project the outline points first so off-screen splats can be rejected before the fit.
     [unroll] for (uint row = 0u; row < ELLIPSE_POINT_COUNT; row++) {
         float theta = TAU_RADIANS * (float(row) / float(ELLIPSE_POINT_COUNT));
         float s, c;
         sincos(theta, s, c);
         float3 supportPointLocal = tangentCircleCenter + tangentCircleRadius * (c * tangentBasisU + s * tangentBasisV);
-        float3 worldPoint = worldCenter + rotate_by_quat(supportPointLocal * supportGaussian.logScale, invRotation);
+        float3 cameraPoint = cameraCenter
+            + supportPointLocal.x * supportAxisX
+            + supportPointLocal.y * supportAxisY
+            + supportPointLocal.z * supportAxisZ;
         float2 screenPoint = 0.0;
-        if (!camera.project_world_to_screen(worldPoint, screenPoint)) {
-            if (!fallbackValid) return false;
-            float2 fallbackHalfExtent = max(0.5 * (fallbackMax - fallbackMin), float2(ELLIPSE_EPS, ELLIPSE_EPS));
-            ellipse.centerPx = 0.5 * (fallbackMin + fallbackMax);
-            ellipse.radiusPx = max(fallbackHalfExtent.x, fallbackHalfExtent.y);
-            ellipse.conic = float3(1.0 / max(fallbackHalfExtent.x * fallbackHalfExtent.x, ELLIPSE_EPS), 0.0, 1.0 / max(fallbackHalfExtent.y * fallbackHalfExtent.y, ELLIPSE_EPS));
-            ellipse.bboxExtent = fallbackHalfExtent;
-            return all(isfinite(ellipse.centerPx)) && all(isfinite(ellipse.conic)) && isfinite(ellipse.radiusPx) && ellipse.radiusPx > 0.0;
-        }
+        if (!camera.project_camera_to_screen(cameraPoint, screenPoint)) return false;
         outlinePoints[row] = screenPoint;
         outlineMin = min(outlineMin, screenPoint);
         outlineMax = max(outlineMax, screenPoint);
@@ -503,58 +457,19 @@ bool compute_gaussian_outline_ellipse(
     float2 bboxCenter = 0.5 * (outlineMin + outlineMax);
     float2 bboxHalfExtent = max(0.5 * (outlineMax - outlineMin), float2(ELLIPSE_EPS, ELLIPSE_EPS));
 
-    // The projected outline never reaches the viewport.
-    // WARNING: if the points are non-uniform in screen-space then bbox might not represent the actual ellipse extent
     if (outlineMax.x < 0.0 || outlineMin.x >= camera.viewport.x || outlineMax.y < 0.0 || outlineMin.y >= camera.viewport.y) return false;
-    float2 visibleOutlineMin = max(outlineMin, 0.0);
-    float2 visibleOutlineMax = min(outlineMax, camera.viewport - float2(TINY_VALUE, TINY_VALUE));
-    int minTileX = int(floor(visibleOutlineMin.x / TILE_SIZE));
-    int maxTileX = int(floor(visibleOutlineMax.x / TILE_SIZE));
-    int minTileY = int(floor(visibleOutlineMin.y / TILE_SIZE));
-    int maxTileY = int(floor(visibleOutlineMax.y / TILE_SIZE));
-    uint tileSpanX = uint(maxTileX - minTileX + 1);
-    uint tileSpanY = uint(maxTileY - minTileY + 1);
 
-    // If the visible outline fits in one tile, an axis-aligned ellipse is enough, the exact fit will not help cull more tiles.
-    if (minTileX == maxTileX && minTileY == maxTileY) {
-        ellipse.centerPx = bboxCenter;
-        ellipse.radiusPx = max(bboxHalfExtent.x, bboxHalfExtent.y);
-        ellipse.conic = float3(1.0 / max(bboxHalfExtent.x * bboxHalfExtent.x, ELLIPSE_EPS), 0.0, 1.0 / max(bboxHalfExtent.y * bboxHalfExtent.y, ELLIPSE_EPS));
-        ellipse.bboxExtent = bboxHalfExtent;
-        return all(isfinite(ellipse.centerPx)) && all(isfinite(ellipse.conic)) && isfinite(ellipse.radiusPx) && ellipse.radiusPx > 0.0;
-    }
+    // Solve for the ellipse conic coefficients in normalized space, then convert back to pixel space.
+    float2 normPts[ELLIPSE_POINT_COUNT];
+    [unroll] for (uint row = 0u; row < ELLIPSE_POINT_COUNT; row++)
+        normPts[row] = (outlinePoints[row] - bboxCenter) / bboxHalfExtent;
 
-    // Fit the screen-space ellipse directly from bbox-relative coordinates.
-    LinearSystem<ELLIPSE_POINT_COUNT> system;
-    [unroll] for (uint row = 0u; row < ELLIPSE_POINT_COUNT; row++) {
-        float2 norm = (outlinePoints[row] - bboxCenter) / bboxHalfExtent;
-        system[row, 0] = norm.x * norm.x;
-        system[row, 1] = 2.0 * norm.x * norm.y;
-        system[row, 2] = norm.y * norm.y;
-        system[row, 3] = norm.x;
-        system[row, 4] = norm.y;
-        system[row, ELLIPSE_POINT_COUNT] = 1.0;
-    }
-
-    // Convert the normalized implicit conic back into pixel-space ellipse data.
     float solution[ELLIPSE_POINT_COUNT];
-    if (!system.solve(ELLIPSE_EPS, solution)) {
-        ellipse.centerPx = bboxCenter;
-        ellipse.radiusPx = max(bboxHalfExtent.x, bboxHalfExtent.y);
-        ellipse.conic = float3(1.0 / max(bboxHalfExtent.x * bboxHalfExtent.x, ELLIPSE_EPS), 0.0, 1.0 / max(bboxHalfExtent.y * bboxHalfExtent.y, ELLIPSE_EPS));
-        ellipse.bboxExtent = bboxHalfExtent;
-        return all(isfinite(ellipse.centerPx)) && all(isfinite(ellipse.conic)) && isfinite(ellipse.radiusPx) && ellipse.radiusPx > 0.0;
-    }
+    if (!solve_conic_renorm(normPts, ELLIPSE_EPS, solution)) return false;
     float3 conicNorm = float3(solution[0], solution[1], solution[2]);
     float2 linear = float2(solution[3], solution[4]);
     float detA = conicNorm.x * conicNorm.z - conicNorm.y * conicNorm.y;
-    if (detA <= ELLIPSE_EPS) {
-        ellipse.centerPx = bboxCenter;
-        ellipse.radiusPx = max(bboxHalfExtent.x, bboxHalfExtent.y);
-        ellipse.conic = float3(1.0 / max(bboxHalfExtent.x * bboxHalfExtent.x, ELLIPSE_EPS), 0.0, 1.0 / max(bboxHalfExtent.y * bboxHalfExtent.y, ELLIPSE_EPS));
-        ellipse.bboxExtent = bboxHalfExtent;
-        return all(isfinite(ellipse.centerPx)) && all(isfinite(ellipse.conic)) && isfinite(ellipse.radiusPx) && ellipse.radiusPx > 0.0;
-    }
+    if (detA <= ELLIPSE_EPS) return false;
     float2 ellipseCenter = 0.5 * float2(
         (conicNorm.y * linear.y - conicNorm.z * linear.x) / detA,
         (conicNorm.y * linear.x - conicNorm.x * linear.y) / detA
@@ -563,23 +478,11 @@ bool compute_gaussian_outline_ellipse(
         conicNorm.x * ellipseCenter.x + conicNorm.y * ellipseCenter.y,
         conicNorm.y * ellipseCenter.x + conicNorm.z * ellipseCenter.y
     ));
-    if (centerScale <= ELLIPSE_EPS) {
-        ellipse.centerPx = bboxCenter;
-        ellipse.radiusPx = max(bboxHalfExtent.x, bboxHalfExtent.y);
-        ellipse.conic = float3(1.0 / max(bboxHalfExtent.x * bboxHalfExtent.x, ELLIPSE_EPS), 0.0, 1.0 / max(bboxHalfExtent.y * bboxHalfExtent.y, ELLIPSE_EPS));
-        ellipse.bboxExtent = bboxHalfExtent;
-        return all(isfinite(ellipse.centerPx)) && all(isfinite(ellipse.conic)) && isfinite(ellipse.radiusPx) && ellipse.radiusPx > 0.0;
-    }
+    if (centerScale <= ELLIPSE_EPS) return false;
     conicNorm /= centerScale;
     float trace = conicNorm.x + conicNorm.z;
     detA = conicNorm.x * conicNorm.z - conicNorm.y * conicNorm.y;
-    if (detA <= ELLIPSE_EPS || conicNorm.x <= ELLIPSE_EPS || conicNorm.z <= ELLIPSE_EPS) {
-        ellipse.centerPx = bboxCenter;
-        ellipse.radiusPx = max(bboxHalfExtent.x, bboxHalfExtent.y);
-        ellipse.conic = float3(1.0 / max(bboxHalfExtent.x * bboxHalfExtent.x, ELLIPSE_EPS), 0.0, 1.0 / max(bboxHalfExtent.y * bboxHalfExtent.y, ELLIPSE_EPS));
-        ellipse.bboxExtent = bboxHalfExtent;
-        return all(isfinite(ellipse.centerPx)) && all(isfinite(ellipse.conic)) && isfinite(ellipse.radiusPx) && ellipse.radiusPx > 0.0;
-    }
+    if (detA <= ELLIPSE_EPS || conicNorm.x <= ELLIPSE_EPS || conicNorm.z <= ELLIPSE_EPS) return false;
     float disc = sqrt(max(0.25 * trace * trace - detA, 0.0));
     float axis0 = rsqrt(max(0.5 * trace + disc, ELLIPSE_EPS));
     float axis1 = rsqrt(max(0.5 * trace - disc, ELLIPSE_EPS));
@@ -590,7 +493,7 @@ bool compute_gaussian_outline_ellipse(
         conicNorm.y / max(bboxHalfExtent.x * bboxHalfExtent.y, ELLIPSE_EPS),
         conicNorm.z / max(bboxHalfExtent.y * bboxHalfExtent.y, ELLIPSE_EPS));
     ellipse.bboxExtent = bboxHalfExtent;
-    return all(isfinite(ellipse.centerPx)) && all(isfinite(ellipse.conic)) && isfinite(ellipse.radiusPx) && ellipse.radiusPx > 0.0;
+    return true;
 }
 
 [Differentiable]
