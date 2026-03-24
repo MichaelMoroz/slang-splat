@@ -21,6 +21,7 @@ _DEBUG_MODE_NORMAL = 0
 _DEBUG_MODE_PROCESSED_COUNT = 1
 _DEBUG_MODE_DEPTH_MEAN = 2
 _DEBUG_MODE_DEPTH_STD = 3
+_DEBUG_MODE_ELLIPSE_OUTLINES = 4
 _READBACK_RING_SIZE = 2
 _NEAR_CAPACITY_NUM = 9
 _NEAR_CAPACITY_DEN = 10
@@ -35,6 +36,7 @@ _MAX_HOT_PREPASS_CAPACITY = 33_554_432
 class SplattingContext:
     device: spy.Device | None = None
     radius_scale: float = 1.0
+    dither_strength: float = 1.0
     max_anisotropy: float = 12.0
     alpha_cutoff: float = 0.02
     trans_threshold: float = 0.005
@@ -327,6 +329,7 @@ class SplattingContext:
             g_TileGrid=self._tile_grid_uint2(),
             g_Background=spy.float3(*map(float, self.background)),
             g_RadiusScale=float(self.radius_scale),
+            g_DitherStrength=float(self.dither_strength),
             g_MaxAnisotropy=float(self.max_anisotropy),
             g_AlphaCutoff=float(self.alpha_cutoff),
             g_TransmittanceThreshold=float(self.trans_threshold),

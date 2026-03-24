@@ -13,7 +13,7 @@ import slangpy as spy
 import slangpy.ui.imgui_bundle as simgui
 from imgui_bundle import imgui, implot
 
-from .state import DEBUG_MODE_DEPTH_MEAN, DEBUG_MODE_DEPTH_STD, DEBUG_MODE_NORMAL, DEBUG_MODE_PROCESSED_COUNT
+from .state import DEBUG_MODE_DEPTH_MEAN, DEBUG_MODE_DEPTH_STD, DEBUG_MODE_ELLIPSE_OUTLINES, DEBUG_MODE_NORMAL, DEBUG_MODE_PROCESSED_COUNT
 from .training import TrainingController
 
 _WINDOW_TITLE = "Slang Splat Viewer"
@@ -50,6 +50,7 @@ _DEBUG_MODE_OPTIONS = (
     (DEBUG_MODE_PROCESSED_COUNT, "Processed Count"),
     (DEBUG_MODE_DEPTH_MEAN, "Depth Mean"),
     (DEBUG_MODE_DEPTH_STD, "Depth Std"),
+    (DEBUG_MODE_ELLIPSE_OUTLINES, "Ellipse Outlines"),
 )
 
 
@@ -123,6 +124,7 @@ class ViewerUI:
             "near": 0.0,
             "far": 1000.0,
             "radius_scale": 1.0,
+            "dither_strength": 1.0,
             "max_anisotropy": 12.0,
             "alpha_cutoff": 0.01,
             "trans_threshold": 0.005,
@@ -553,6 +555,9 @@ class ToolkitWindow:
         changed, value = imgui.slider_float("Radius Scale", float(ui.values["radius_scale"]), 0.25, 4.0)
         if changed:
             ui.values["radius_scale"] = value
+        changed, value = imgui.slider_float("Pixel Dither", float(ui.values["dither_strength"]), 0.0, 1.0, "%.3f")
+        if changed:
+            ui.values["dither_strength"] = value
         changed, value = imgui.slider_float("Max Anisotropy", float(ui.values["max_anisotropy"]), 1.0, 64.0, "%.1f")
         if changed:
             ui.values["max_anisotropy"] = value

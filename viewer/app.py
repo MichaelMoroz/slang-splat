@@ -388,6 +388,7 @@ class SplatViewer(spy.AppWindow):
             return
         debug_width, debug_height = map(int, sample.image_size)
         self.renderer.radius_scale = self.s.radius_scale
+        self.renderer.dither_strength = float(self.ui.values["dither_strength"])
         self.renderer.max_anisotropy = self.s.max_anisotropy
         self.renderer.alpha_cutoff = self.s.alpha_cutoff
         self.renderer.trans_threshold = self.s.trans_threshold
@@ -486,6 +487,7 @@ class SplatViewer(spy.AppWindow):
                     self._render_debug_view(image, encoder, active_splat_count, render_seed)
                 else:
                     self.renderer.radius_scale = self.s.radius_scale
+                    self.renderer.dither_strength = float(self.ui.values["dither_strength"])
                     self.renderer.max_anisotropy = self.s.max_anisotropy
                     self.renderer.alpha_cutoff = self.s.alpha_cutoff
                     self.renderer.trans_threshold = self.s.trans_threshold

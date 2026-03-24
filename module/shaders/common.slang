@@ -21,6 +21,8 @@ static const float SPLAT_PIXEL_CLAMP_PX = 0.75;
 static const float MIN_SCREEN_RADIUS_PX = 1.0;
 static const float MIN_BBOX_EXTENT_PX = 1e-4;
 static const float BBOX_PAD_PX = 1.0;
+static const float MIN_DEBUG_THICKNESS_PX = 0.25;
+static const float DEBUG_ELLIPSE_THICKNESS_PX = 2.0;
 static const float OUTPUT_GAMMA = 2.2;
 static const uint FLOAT_SIGN_MASK = 0x80000000u;
 static const float TAU_RADIANS = 6.28318530718;
@@ -45,6 +47,7 @@ static const uint DEBUG_MODE_NORMAL = 0u;
 static const uint DEBUG_MODE_PROCESSED_COUNT = 1u;
 static const uint DEBUG_MODE_DEPTH_MEAN = 2u;
 static const uint DEBUG_MODE_DEPTH_STD = 3u;
+static const uint DEBUG_MODE_ELLIPSE_OUTLINES = 4u;
 
 struct Gaussian3D : IDifferentiable {
     float3 position;
@@ -370,9 +373,9 @@ float hash_to_unit_float(uint x) {
     return float(x >> 8u) * (1.0 / 16777216.0);
 }
 
-float2 stochastic_subpixel_offset(uint pixelId, uint renderSeed) {
+float2 stochastic_subpixel_offset(uint pixelId, uint renderSeed, float strength) {
     uint seed = hash_combine_u32(pixelId, renderSeed);
-    return float2(
+    return saturate(strength) * float2(
         hash_to_unit_float(hash_u32(seed ^ 0xa511e9b3u)),
         hash_to_unit_float(hash_u32(seed ^ 0x63d83595u))
     );
