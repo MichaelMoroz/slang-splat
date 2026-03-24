@@ -126,7 +126,7 @@ def test_prefix_sum_from_count_buffer_matches_direct(utility_context: tuple[spy.
 
 @pytest.mark.parametrize(
     ("count", "start_bit", "bit_count"),
-    [(0, 0, 1), (37, 0, 5), (513, 0, 17)],
+    [(0, 0, 1), (37, 0, 5), (513, 0, 17), (131072, 0, 17)],
 )
 def test_radix_sort_matches_torch(utility_context: tuple[spy.Device, GpuUtility], count: int, start_bit: int, bit_count: int) -> None:
     device, util = utility_context

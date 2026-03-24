@@ -194,6 +194,7 @@ class GpuUtility:
                     "g_PrefixBlockOffsets": offsets_view,
                     "g_Count": int(count),
                     "g_UsePrefixParams": 0,
+                    "g_UseRadixPrefixAdd": 0,
                     "g_Level": 0,
                 },
             )
@@ -301,6 +302,7 @@ class GpuUtility:
                             "g_Exclusive": 1 if exclusive else 0,
                             "g_PrefixParamsBuffer": self._bind_resource(args_buffer),
                             "g_UsePrefixParams": 1,
+                            "g_UseRadixPrefixAdd": 0,
                             "g_Level": int(level),
                         },
                     )
@@ -367,9 +369,11 @@ class GpuUtility:
                             "g_UseRadixParams": 0,
                         },
                     )
+                    level_sizes: list[int] = []
                     level_size = total_n
                     level = 0
                     while True:
+                        level_sizes.append(level_size)
                         self.k_radix_prefix_level.dispatch(
                             thread_count=self._kernel_thread_count(_ceil_div(level_size, _PREFIX_THREADS), _PREFIX_THREADS),
                             command_encoder=command_encoder,
@@ -385,6 +389,18 @@ class GpuUtility:
                             break
                         level_size = _ceil_div(level_size, _PREFIX_BLOCK_SIZE // 2)
                         level += 1
+                    for level in range(len(level_sizes) - 2, 0, -1):
+                        self.k_prefix_add.dispatch(
+                            thread_count=self._kernel_thread_count(_ceil_div(level_sizes[level], _PREFIX_THREADS), _PREFIX_THREADS),
+                            command_encoder=command_encoder,
+                            vars={
+                                "g_HistogramOffsets": histogram_prefix,
+                                "g_NumGroups": int(num_groups),
+                                "g_UseRadixParams": 0,
+                                "g_UseRadixPrefixAdd": 1,
+                                "g_Level": int(level),
+                            },
+                        )
                     self.k_scatter.dispatch(
                         thread_count=self._kernel_thread_count(num_groups, _RADIX_GROUP_SIZE),
                         command_encoder=command_encoder,
@@ -474,6 +490,21 @@ class GpuUtility:
                                     "g_Shift": int(level),
                                     "g_RadixParamsBuffer": self._bind_resource(args_buffer),
                                     "g_UseRadixParams": 1,
+                                },
+                            )
+                    for level in range(3, 0, -1):
+                        with command_encoder.begin_compute_pass() as compute_pass:
+                            self._dispatch_indirect(
+                                compute_pass,
+                                self.p_prefix_add,
+                                args_buffer,
+                                _PREFIX_L0_ARGS_OFFSET + level * _INDIRECT_DISPATCH_ARG_STRIDE,
+                                {
+                                    "g_HistogramOffsets": histogram_prefix,
+                                    "g_RadixParamsBuffer": self._bind_resource(args_buffer),
+                                    "g_UseRadixParams": 1,
+                                    "g_UseRadixPrefixAdd": 1,
+                                    "g_Level": int(level),
                                 },
                             )
                     with command_encoder.begin_compute_pass() as compute_pass:

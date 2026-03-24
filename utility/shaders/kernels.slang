@@ -55,6 +55,7 @@ uniform uint g_Shift;
 uniform uint g_DigitMask;
 uniform Tensor<uint, 1> g_RadixParamsBuffer;
 uniform uint g_UseRadixParams;
+uniform uint g_UseRadixPrefixAdd;
 
 uniform Tensor<uint, 1> g_DispatchCountBuffer;
 uniform uint g_DispatchCountOffset;
@@ -114,7 +115,7 @@ uint block_exclusive_scan(uint value, uint localId, out uint blockTotal)
     uint numWaves = (PREFIX_THREADS + waveSize - 1u) / waveSize;
 
     uint wavePrefix = WavePrefixSum(value);
-    uint waveTotal = WaveActiveSum(value);
+    uint waveTotal = WaveReadLaneAt(wavePrefix, waveSize - 1u) + WaveReadLaneAt(value, waveSize - 1u);
 
     if (WaveIsFirstLane())
     {
@@ -122,30 +123,20 @@ uint block_exclusive_scan(uint value, uint localId, out uint blockTotal)
     }
     GroupMemoryBarrierWithGroupSync();
 
-    if (localId < numWaves)
+    if (waveId == 0u)
     {
-        gsPrefixWaveScan[localId] = gsPrefixWaveTotals[localId];
+        uint reshuffledTotal = localId < numWaves ? gsPrefixWaveTotals[localId] : 0u;
+        uint reshuffledPrefix = WavePrefixSum(reshuffledTotal);
+        if (localId < numWaves)
+        {
+            gsPrefixWaveScan[localId] = reshuffledPrefix;
+        }
     }
     GroupMemoryBarrierWithGroupSync();
 
-    for (uint offset = 1u; offset < numWaves; offset <<= 1u)
-    {
-        uint add = 0u;
-        if (localId < numWaves && localId >= offset)
-        {
-            add = gsPrefixWaveScan[localId - offset];
-        }
-        GroupMemoryBarrierWithGroupSync();
-
-        if (localId < numWaves)
-        {
-            gsPrefixWaveScan[localId] += add;
-        }
-        GroupMemoryBarrierWithGroupSync();
-    }
-
-    blockTotal = gsPrefixWaveScan[numWaves - 1u];
-    uint waveBase = waveId != 0u ? gsPrefixWaveScan[waveId - 1u] : 0u;
+    blockTotal = gsPrefixWaveScan[numWaves - 1u] + gsPrefixWaveTotals[numWaves - 1u];
+    uint waveBase = gsPrefixWaveScan[waveId];
+    GroupMemoryBarrierWithGroupSync();
     return waveBase + wavePrefix;
 }
 
@@ -219,6 +210,27 @@ void csPrefixScanBlocks(uint3 groupID : SV_GroupID, uint3 localID : SV_GroupThre
 [shader("compute")]
 [numthreads(PREFIX_THREADS, 1, 1)]
 void csPrefixAddOffsets(uint3 dispatchThreadID : SV_DispatchThreadID) {
+    if (g_UseRadixPrefixAdd != 0u) {
+        uint numGroups = load_radix_param(PARAM_NUM_GROUPS, g_NumGroups);
+        uint totalN = load_radix_param(PARAM_TOTAL_N, radix_total_n(numGroups));
+        uint numLevels = load_radix_param(PARAM_NUM_LEVELS, radix_num_levels(totalN));
+        if (g_Level == 0u || g_Level + 1u >= numLevels) return;
+
+        uint count = radix_level_size(totalN, g_Level);
+        uint index = dispatchThreadID.x;
+        if (index >= count) return;
+
+        uint blockId = index / PREFIX_THREADS;
+        if (blockId == 0u) return;
+
+        uint levelOffset = radix_level_offset(totalN, g_Level);
+        uint nextLevelOffset = radix_level_offset(totalN, g_Level + 1u);
+        uint blockOffset = g_HistogramOffsets[int(nextLevelOffset + blockId - 1u)];
+
+        g_HistogramOffsets.store(int(levelOffset + index), g_HistogramOffsets[int(levelOffset + index)] + blockOffset);
+        return;
+    }
+
     uint count = prefix_level_count(load_prefix_count(), g_Level);
     uint index = dispatchThreadID.x;
     if (index >= count) return;
@@ -237,30 +249,28 @@ void csRadixPrefixLevel(uint3 groupID : SV_GroupID, uint3 localID : SV_GroupThre
     uint levelSize = radix_level_size(totalN, level);
     uint levelOffset = radix_level_offset(totalN, level);
     uint globalIndex = groupID.x * PREFIX_THREADS + lane;
+    uint value = 0u;
     if (globalIndex < levelSize) {
         if (level == 0u) {
             uint digit = globalIndex / numGroups;
             uint group = globalIndex % numGroups;
-            gsRadixPrefix[lane] = unpack_count(g_Histogram[int((digit >> RADIX_PACK_LANE_BITS) * numGroups + group)], digit);
+            value = unpack_count(g_Histogram[int((digit >> RADIX_PACK_LANE_BITS) * numGroups + group)], digit);
         } else {
             uint prevLevel = level - 1u;
             uint prevLevelSize = radix_level_size(totalN, prevLevel);
             uint blockEnd = min((globalIndex + 1u) * PREFIX_THREADS, prevLevelSize) - 1u;
-            gsRadixPrefix[lane] = prevLevel == 0u
+            value = prevLevel == 0u
                 ? unpack_prefix16(g_HistogramOffsets[int(radix_level_offset(totalN, prevLevel) + (blockEnd >> 1u))], blockEnd & 1u)
                 : g_HistogramOffsets[int(radix_level_offset(totalN, prevLevel) + blockEnd)];
         }
     } else {
-        gsRadixPrefix[lane] = 0u;
+        value = 0u;
     }
-    GroupMemoryBarrierWithGroupSync();
 
-    [unroll] for (uint stride = 1u; stride < PREFIX_THREADS; stride <<= 1u) {
-        uint value = lane >= stride ? gsRadixPrefix[lane - stride] : 0u;
-        GroupMemoryBarrierWithGroupSync();
-        gsRadixPrefix[lane] += value;
-        GroupMemoryBarrierWithGroupSync();
-    }
+    uint blockTotal;
+    uint inclusive = block_exclusive_scan(value, lane, blockTotal) + value;
+    gsRadixPrefix[lane] = inclusive;
+    GroupMemoryBarrierWithGroupSync();
 
     if (globalIndex >= levelSize) return;
     if (level == 0u) {
@@ -343,18 +353,14 @@ void csRadixScatter(uint3 groupID : SV_GroupID, uint3 localID : SV_GroupThreadID
 
     uint globalOffset = 0u;
     uint idx = digit * numGroups + groupID.x;
-    uint levelOffset = 0u;
-    uint levelSize = totalN;
-    for (uint level = 0u; level < numLevels; ++level) {
-        if ((idx % PREFIX_THREADS) != 0u) {
-            uint prev = idx - 1u;
-            globalOffset += level == 0u
-                ? unpack_prefix16(g_HistogramOffsets[int(levelOffset + (prev >> 1u))], prev & 1u)
-                : g_HistogramOffsets[int(levelOffset + prev)];
-        }
-        levelOffset += level == 0u ? (levelSize + 1u) / 2u : levelSize;
-        levelSize = ceil_div_block(levelSize);
-        idx /= PREFIX_THREADS;
+    uint blockId = idx / PREFIX_THREADS;
+    if (idx != 0u && (idx % PREFIX_THREADS) != 0u) {
+        uint prev = idx - 1u;
+        globalOffset = unpack_prefix16(g_HistogramOffsets[int(prev >> 1u)], prev & 1u);
+    }
+    if (numLevels > 1u && blockId > 0u) {
+        uint level1Offset = radix_level_offset(totalN, 1u);
+        globalOffset += g_HistogramOffsets[int(level1Offset + blockId - 1u)];
     }
     uint dest = globalOffset + quarterOffset + localOffset;
     g_KeysOut.store(int(dest), g_KeysIn[int(index)]);
