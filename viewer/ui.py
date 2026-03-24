@@ -518,10 +518,6 @@ class ToolkitWindow:
                 f"XYZ LR {latest.xyz_lr:.6g} | camera {latest.camera_name} | "
                 f"bg ({latest.background[0]:.2f}, {latest.background[1]:.2f}, {latest.background[2]:.2f})"
             )
-        if snapshot.phase_log:
-            imgui.separator_text("Phase Log")
-            for line in snapshot.phase_log:
-                imgui.text_wrapped(line)
         imgui.separator()
 
     def _section_dataset(self, training: TrainingController) -> None:

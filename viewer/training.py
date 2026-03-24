@@ -124,7 +124,6 @@ class TrainingSnapshot:
     train_camera_count: int
     test_camera_count: int
     heartbeat: int
-    phase_log: list[str]
     iteration: int
     point_count: int
     preview_count: int
@@ -164,7 +163,6 @@ class TrainingController:
         self._train_camera_count = 0
         self._test_camera_count = 0
         self._heartbeat = 0
-        self._phase_log: deque[str] = deque(maxlen=16)
         self._latest_step: TrainingStepStats | None = None
         self._history: deque[TrainingStepStats] = deque(maxlen=_HISTORY_LIMIT)
         self._latest_preview: torch.Tensor | None = None
@@ -288,7 +286,6 @@ class TrainingController:
         self._train_camera_count = 0
         self._test_camera_count = 0
         self._heartbeat = 0
-        self._phase_log.clear()
         self._latest_preview = None
         self._preview_dirty = False
         self._pending_fit_points = None
@@ -383,7 +380,6 @@ class TrainingController:
             train_camera_count=self._train_camera_count,
             test_camera_count=self._test_camera_count,
             heartbeat=self._heartbeat,
-            phase_log=list(self._phase_log),
             iteration=0 if self._latest_step is None else self._latest_step.iteration,
             point_count=0 if self._latest_step is None else self._latest_step.point_count,
             preview_count=0 if self._latest_preview is None else int(self._latest_preview.shape[1]),
@@ -406,8 +402,6 @@ class TrainingController:
     def _set_status(self, value: str) -> None:
         self._status = value
         self._heartbeat += 1
-        self._phase_log.append(value)
-        print(f"[trainer] {value}", flush=True)
 
     def _capture_preview(self) -> None:
         if self._trainer is None:
@@ -470,5 +464,3 @@ class TrainingController:
             self._status = "Error"
             self._error = str(exc)
             self._heartbeat += 1
-            self._phase_log.append(f"Error: {exc}")
-            print(f"[trainer] Error: {exc}", flush=True)

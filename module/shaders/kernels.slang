@@ -441,7 +441,7 @@ void csRasterForward(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupID
                             if (denom > RAY_DENOMINATOR_FLOOR) {
                                 float tClosest = -dot(rayLocal, gaussian.position) / denom;
                                 if (tClosest > 0.0) {
-                                    contributionWeight /= tClosest + 1e-4;
+                                    contributionWeight *= alpha * alpha;
                                     float totalWeight = depthWeightSum + contributionWeight;
                                     float delta = tClosest - depthMean;
                                     depthMean += (contributionWeight / totalWeight) * delta;
