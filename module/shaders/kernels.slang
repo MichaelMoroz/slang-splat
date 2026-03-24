@@ -18,6 +18,7 @@ uniform RWTensor<ProjectionState, 1> g_ProjectionState;
 uniform RWTensor<Gaussian3D, 1> g_RasterState;
 uniform RWTensor<uint, 1> g_TileRanges;
 uniform RWTensor<uint, 1> g_TotalBuffer;
+uniform RWStructuredBuffer<uint> g_TotalCounterBuffer;
 uniform Tensor<uint, 1> g_OverflowA;
 uniform Tensor<uint, 1> g_OverflowB;
 uniform RWTensor<float4, 2> g_Output;
@@ -67,16 +68,12 @@ void store_tile_entry(uint idx, uint tileId, uint splatId) {
     g_TileEntries.store(int(idx * 2u + 1u), splatId);
 }
 
-// Generate exact float ordering keys for front-to-back splat sorting.
-[shader("compute")]
-[numthreads(PROJECT_GROUP_SIZE, 1, 1)]
-void csGenerateDistanceSortKeys(uint3 dispatchThreadID : SV_DispatchThreadID) {
-    uint splatId = dispatchThreadID.x;
-    if (splatId >= g_SplatCount) return;
-    Gaussian3D gaussian = Gaussian3D.load(g_Splats, g_SplatCount, splatId);
-    float distance = length(gaussian.position - g_Camera.camPos);
-    g_DistanceKeys.store(int(splatId), float_to_ordered_uint(distance));
-    g_DistanceSortOrder.store(int(splatId), splatId);
+void append_visible_splat(uint distanceKey, uint splatId) {
+    uint writeIndex = 0u;
+    InterlockedAdd(g_TotalCounterBuffer[0], 1u, writeIndex);
+    if (writeIndex >= g_TotalCapacity) return;
+    g_DistanceKeys.store(int(writeIndex), distanceKey);
+    g_DistanceSortOrder.store(int(writeIndex), splatId);
 }
 
 // Raster-state write helpers.
@@ -153,14 +150,13 @@ bool scanline_tile_span(ScanlineEntry scanline, out int spanTileMin, out int spa
     return spanTileMin <= spanTileMax;
 }
 
-// Pass 1: project splats, fit screen-space ellipses, and count emitted scanlines.
-//TODO: this can be done via a module call, instead of a dispatch
+// Pass 1: project splats in original order and append only visible splat ids plus distance keys.
 [shader("compute")]
 [numthreads(PROJECT_GROUP_SIZE, 1, 1)]
-void csProjectScanlineCount(uint3 dispatchThreadID : SV_DispatchThreadID) {
-    uint sortedSplatId = dispatchThreadID.x;
-    if (sortedSplatId >= g_SplatCount) return;
-    int[1] at = { int(sortedSplatId) };
+void csProjectVisibleSplats(uint3 dispatchThreadID : SV_DispatchThreadID) {
+    uint splatId = dispatchThreadID.x;
+    if (splatId >= g_SplatCount) return;
+    int[1] at = { int(splatId) };
     ProjectionState projection;
     projection.centerRadiusDepth = 0.0;
     projection.conicOpacity = 0.0;
@@ -169,9 +165,7 @@ void csProjectScanlineCount(uint3 dispatchThreadID : SV_DispatchThreadID) {
     rasterGaussian.logScale = 0.0;
     rasterGaussian.rotation = 0.0;
     rasterGaussian.colorAlpha = 0.0;
-    uint scanlineCount = 0u;
 
-    uint splatId = g_SplatOrder[int(sortedSplatId)];
     Gaussian3D gaussian = Gaussian3D.load(g_Splats, g_SplatCount, splatId);
     float fusedOpacity = gaussian.build_raster_fused_opacity();
     if (fusedOpacity >= g_AlphaCutoff) {
@@ -197,24 +191,36 @@ void csProjectScanlineCount(uint3 dispatchThreadID : SV_DispatchThreadID) {
             rasterGaussian = Gaussian3D.camera_gaussian(gaussian, g_Camera, g_RadiusScale, GAUSSIAN_SUPPORT_SIGMA_RADIUS, g_MaxAnisotropy);
             rasterGaussian.colorAlpha.xyz = gaussian.colorAlpha.xyz;
             rasterGaussian.colorAlpha.w = fusedOpacity;
-            scanlineCount = count_scanlines(ellipse);
+            append_visible_splat(float_to_ordered_uint(cameraDistance), splatId);
         }
     }
 
     g_ProjectionState.store(at, projection);
     g_RasterState.store(at, rasterGaussian);
-    g_ScanlineCounts.store(at, scanlineCount);
 }
 
-// Pass 2a: expand each projected ellipse into per-strip scanline work items.
+// Pass 2: count scanlines for distance-sorted visible splats only.
+[shader("compute")]
+[numthreads(PROJECT_GROUP_SIZE, 1, 1)]
+void csCountVisibleScanlines(uint3 dispatchThreadID : SV_DispatchThreadID) {
+    uint visibleSplatId = dispatchThreadID.x;
+    if (visibleSplatId >= load_sorted_entry_count()) return;
+    uint splatId = g_SplatOrder[int(visibleSplatId)];
+    Ellipse ellipse;
+    uint scanlineCount = load_projected_ellipse(splatId, ellipse) ? count_scanlines(ellipse) : 0u;
+    g_ScanlineCounts.store(int(visibleSplatId), scanlineCount);
+}
+
+// Pass 3a: expand each projected ellipse into per-strip scanline work items.
 [shader("compute")]
 [numthreads(PROJECT_GROUP_SIZE, 1, 1)]
 void csEmitScanlines(uint3 dispatchThreadID : SV_DispatchThreadID) {
-    uint splatId = dispatchThreadID.x;
-    if (splatId >= g_SplatCount) return;
+    uint visibleSplatId = dispatchThreadID.x;
+    if (visibleSplatId >= load_sorted_entry_count()) return;
+    uint splatId = g_SplatOrder[int(visibleSplatId)];
     Ellipse ellipse;
     if (!load_projected_ellipse(splatId, ellipse)) return;
-    uint scanlineCount = g_ScanlineCounts[int(splatId)];
+    uint scanlineCount = g_ScanlineCounts[int(visibleSplatId)];
     if (scanlineCount == 0u) return;
     bool transpose;
     float2 localCenter, localExtent;
@@ -222,7 +228,7 @@ void csEmitScanlines(uint3 dispatchThreadID : SV_DispatchThreadID) {
     ellipse.scanline_frame(transpose, localCenter, localExtent, localConic);
     uint2 localGrid = transpose ? g_TileGrid.yx : g_TileGrid;
     int minStrip = clamp(int(floor((localCenter.y - localExtent.y - TINY_VALUE) / TILE_SIZE)), 0, int(localGrid.y) - 1);
-    uint writeIndex = g_ScanlineOffsets[int(splatId)];
+    uint writeIndex = g_ScanlineOffsets[int(visibleSplatId)];
     for (uint localStrip = 0u; localStrip < scanlineCount; localStrip++) {
         uint dst = writeIndex + localStrip;
         if (dst >= g_ScanlineCapacity) {
@@ -239,7 +245,7 @@ void csEmitScanlines(uint3 dispatchThreadID : SV_DispatchThreadID) {
     }
 }
 
-// Pass 2b: count the number of tiles covered by each emitted scanline.
+// Pass 3b: count the number of tiles covered by each emitted scanline.
 [shader("compute")]
 [numthreads(PROJECT_GROUP_SIZE, 1, 1)]
 void csEmitScanlineTileCounts(uint3 dispatchThreadID : SV_DispatchThreadID) {
@@ -251,7 +257,7 @@ void csEmitScanlineTileCounts(uint3 dispatchThreadID : SV_DispatchThreadID) {
     g_ScanlineTileCounts.store(int[1](int(scanlineId)), tileCount);
 }
 
-// Pass 3: emit final (tileId, splatId) entries for sorting.
+// Pass 4: emit final (tileId, splatId) entries for sorting.
 [shader("compute")]
 [numthreads(PROJECT_GROUP_SIZE, 1, 1)]
 void csEmitTileEntries(uint3 dispatchThreadID : SV_DispatchThreadID) {
@@ -272,7 +278,7 @@ void csEmitTileEntries(uint3 dispatchThreadID : SV_DispatchThreadID) {
     }
 }
 
-// Pass 4: rebuild per-tile sorted-entry ranges after the host-side key sort.
+// Pass 5: rebuild per-tile sorted-entry ranges after the host-side key sort.
 [shader("compute")]
 [numthreads(PROJECT_GROUP_SIZE, 1, 1)]
 void csClearTileRanges(uint3 dispatchThreadID : SV_DispatchThreadID) {
@@ -591,10 +597,8 @@ void csRasterBackward(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupI
                 uint splatId = gsBatchSplatId[localIdx];
                 if (splatId >= g_SplatCount) continue;
                 Gaussian3D gaussian = gsGaussian[localIdx];
-                uint originalSplatId = g_SplatOrder[int(splatId)];
-                if (originalSplatId >= g_SplatCount) continue;
-                GaussianBackwardGrads grads = apply_gaussian_to_pixel_backward_state(gaussian, globalIdx, originalSplatId, state);
-                flush_gaussian_backward_grads(originalSplatId, grads);
+                GaussianBackwardGrads grads = apply_gaussian_to_pixel_backward_state(gaussian, globalIdx, splatId, state);
+                flush_gaussian_backward_grads(splatId, grads);
             }
         }
         GroupMemoryBarrierWithGroupSync();
