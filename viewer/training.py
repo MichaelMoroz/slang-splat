@@ -24,6 +24,8 @@ class TrainingUiConfig:
     near: float = 0.0
     far: float = 1000.0
     radius_scale: float = 1.0
+    dither_strength: float = 1.0
+    dither_decay_until_iter: int = 0
     max_anisotropy: float = 12.0
     alpha_cutoff: float = 0.01
     trans_threshold: float = 0.005
@@ -78,6 +80,8 @@ class TrainingUiConfig:
             init_scale_multiplier=float(self.init_scale_multiplier),
             init_opacity=float(self.init_opacity),
             eval_interval=int(self.eval_interval),
+            dither_strength=float(self.dither_strength),
+            dither_decay_until_iter=int(self.dither_decay_until_iter),
             seed=int(self.seed),
         )
 

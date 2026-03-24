@@ -90,7 +90,7 @@ class SplattingContext(_CoreSplattingContext):
         render_seed: int = 0,
     ) -> torch.Tensor:
         _, _, splat_count, camera_vars = self._prepare_splats(splats, camera, image_size, background, render_seed)
-        image = super().render(camera_vars, splat_count).to_torch().clone()
+        image = super().render(camera_vars, splat_count, refresh_buffers=False).to_torch().clone()
         self._last_splat_count = splat_count
         self._last_alpha = torch.clamp(splats[13].detach().clone(), _ALPHA_EPS, 1 - _ALPHA_EPS)
         self._last_camera = camera.detach().clone()

@@ -8,7 +8,7 @@ import numpy as np
 import slangpy as spy
 
 from utility.debug import debug_group
-from utility.utility import GpuUtility
+from utility.utility import GpuUtility, grow_capacity
 
 _ROOT = Path(__file__).resolve().parent
 _SHADERS = _ROOT / "shaders"
@@ -22,11 +22,7 @@ _DEBUG_MODE_PROCESSED_COUNT = 1
 _DEBUG_MODE_DEPTH_MEAN = 2
 _DEBUG_MODE_DEPTH_STD = 3
 _DEBUG_MODE_ELLIPSE_OUTLINES = 4
-_READBACK_RING_SIZE = 2
-_NEAR_CAPACITY_NUM = 9
-_NEAR_CAPACITY_DEN = 10
-_INITIAL_PREPASS_CAPACITY_MULTIPLIER = 64
-_INITIAL_ENTRY_TILE_MULTIPLIER_CAP = 4
+_INITIAL_TILE_CAPACITY_MULTIPLIER = 32
 _MAX_IMAGE_DIM = 8192
 _MAX_IMAGE_PIXELS = 33_554_432
 _MAX_HOT_PREPASS_CAPACITY = 33_554_432
@@ -41,10 +37,9 @@ class SplattingContext:
     alpha_cutoff: float = 0.02
     trans_threshold: float = 0.005
     render_seed: int = 0
-    tile_count_readback_period: int = 8
     debug_mode: int = _DEBUG_MODE_NORMAL
     debug_depth_mean_range: tuple[float, float] = (0.0, 20.0)
-    debug_depth_std_range: tuple[float, float] = (0.0, 2.0)
+    debug_depth_std_range: tuple[float, float] = (0.0, 0.25)
 
     def __post_init__(self) -> None:
         self.device = self.device or spy.create_device(type=spy.DeviceType.cuda, include_paths=[_SHADERS], enable_cuda_interop=False, enable_hot_reload=False)
@@ -78,19 +73,11 @@ class SplattingContext:
         self._projection_dtype = self.mod.ProjectionState
         self._gaussian_dtype = self.mod.Gaussian3D
         self._scanline_dtype = self.mod.ScanlineEntry
-        count_names = ("g_ScanlineTotal", "g_TileTotal", "g_ScanlineOverflow", "g_TileOverflow")
+        count_names = ("g_ScanlineTotal", "g_TileTotal", "g_ScanlineOverflow", "g_TileOverflow", "g_ScanlineMax", "g_TileMax")
         self.counts = {name: spy.Tensor.empty(self.device, shape=(1,), dtype="uint") for name in count_names}
         self.counts["g_CountParamsDummy"] = spy.Tensor.empty(self.device, shape=(4,), dtype="uint")
-        self._tile_count_readback_ring = [
-            self.device.create_buffer(size=4, usage=spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination)
-            for _ in range(_READBACK_RING_SIZE)
-        ]
-        self._tile_count_readback_capacity = [0] * _READBACK_RING_SIZE
-        self._tile_count_readback_enqueued = 0
-        self._render_frame_id = 0
         self._last_total = 0
-        self._delayed_tile_total = 0
-        self._delayed_tile_total_valid = False
+        self._last_required_total = 0
         self._size = (0, 0)
 
     def _view(self, tensor: spy.Tensor, dtype: Any, shape: tuple[int, ...]) -> spy.Tensor:
@@ -130,13 +117,6 @@ class SplattingContext:
 
     def _clamp_hot_prepass_capacity(self, required: int) -> int:
         return max(1, min(int(required), _MAX_HOT_PREPASS_CAPACITY))
-
-    def reserve_hot_prepass_capacity(self, capacity: int | None = None) -> int:
-        target = self._clamp_hot_prepass_capacity(_MAX_HOT_PREPASS_CAPACITY if capacity is None else capacity)
-        self._alloc_scanlines(target)
-        self._alloc_entries(target)
-        self._alloc_radix(target)
-        return target
 
     def _alloc_frame(self, shape: tuple[int, int]) -> None:
         if self._size == shape:
@@ -236,109 +216,36 @@ class SplattingContext:
         self._alloc_frame((width, height))
         self._alloc_scene(splat_count)
         self._alloc_splat_sort(splat_count)
-        tw, th = (width + 7) // 8, (height + 7) // 8
-        base = max(int(splat_count) * _INITIAL_PREPASS_CAPACITY_MULTIPLIER, 1)
-        scanline_capacity = self._clamp_hot_prepass_capacity(max(base, int(splat_count) * max(tw, th)))
-        entry_capacity = self._clamp_hot_prepass_capacity(max(
-            base,
-            tw * th * min(max(int(splat_count), 1), _INITIAL_ENTRY_TILE_MULTIPLIER_CAP),
-        ))
-        self._alloc_scanlines(scanline_capacity)
-        self._alloc_entries(entry_capacity)
-        self._alloc_radix(entry_capacity)
-
-    def _maybe_apply_delayed_tile_readback(self) -> None:
-        period = int(self.tile_count_readback_period)
-        if period <= 0 or self._tile_count_readback_enqueued == 0 or self._render_frame_id % period != 0: return
-        slot = (self._tile_count_readback_enqueued - 1) % _READBACK_RING_SIZE
-        total = self._read_buffer_uint(self._tile_count_readback_ring[slot])
-        capacity = int(self._tile_count_readback_capacity[slot])
-        self._delayed_tile_total, self._delayed_tile_total_valid = total, True
-        near_capacity = total >= max((capacity * _NEAR_CAPACITY_NUM) // _NEAR_CAPACITY_DEN, 1)
-        if total > capacity or near_capacity:
-            current = max(capacity, getattr(self, "_scanline_capacity", 1), getattr(self, "_entry_capacity", 1), 1)
-            required = max(int(total), capacity, 1)
-            target = self._clamp_hot_prepass_capacity(max(required, current + current // 2))
-            self._alloc_scanlines(target)
-            self._alloc_entries(target)
-            self._alloc_radix(target)
-            self.device.sync_to_cuda()
-
-    def _enqueue_tile_readback(self, command_encoder: spy.CommandEncoder) -> None:
-        period = int(self.tile_count_readback_period)
-        if period <= 0 or self._render_frame_id % period != 0: return
-        slot = self._tile_count_readback_enqueued % _READBACK_RING_SIZE
-        command_encoder.copy_buffer(self.counts["g_TileTotal"].storage, 0, self._tile_count_readback_ring[slot], 0, 4)
-        self._tile_count_readback_capacity[slot] = int(getattr(self, "_entry_capacity", 1))
-        self._tile_count_readback_enqueued += 1
+        initial_capacity = self._clamp_hot_prepass_capacity(max(int(splat_count) * _INITIAL_TILE_CAPACITY_MULTIPLIER, 1))
+        self._alloc_scanlines(initial_capacity)
+        self._alloc_entries(initial_capacity)
+        self._alloc_radix(initial_capacity)
 
     def _grow_hot_prepass_capacity(self, scanline_required: int, entry_required: int) -> tuple[int, int]:
         scanline_current = max(getattr(self, "_scanline_capacity", 1), 1)
         entry_current = max(getattr(self, "_entry_capacity", 1), 1)
-        scanline_target = self._clamp_hot_prepass_capacity(max(int(scanline_required), scanline_current + scanline_current // 2))
-        entry_target = self._clamp_hot_prepass_capacity(max(int(entry_required), entry_current + entry_current // 2))
-        if scanline_target <= scanline_current and entry_target <= entry_current:
-            raise RuntimeError(
-                "Hot prepass capacity exhausted "
-                f"(scanlines={scanline_current:,}, entries={entry_current:,}); increase _MAX_HOT_PREPASS_CAPACITY."
-            )
+        scanline_target = self._clamp_hot_prepass_capacity(grow_capacity(scanline_required, max_capacity=_MAX_HOT_PREPASS_CAPACITY)) if int(scanline_required) > scanline_current else scanline_current
+        entry_target = self._clamp_hot_prepass_capacity(grow_capacity(entry_required, max_capacity=_MAX_HOT_PREPASS_CAPACITY)) if int(entry_required) > entry_current else entry_current
         if scanline_target > scanline_current:
             self._alloc_scanlines(scanline_target)
         if entry_target > entry_current:
             self._alloc_entries(entry_target)
             self._alloc_radix(entry_target)
-        self.device.sync_to_cuda()
+        if scanline_target > scanline_current or entry_target > entry_current:
+            self.device.sync_to_cuda()
         return scanline_target, entry_target
 
-    def _run_hot_prepass_sync(self, camera: dict[str, Any], splat_count: int) -> int:
-        total = 0
-        scanline_total = 0
-        scanline_overflow = False
-        tile_overflow = False
-        for _ in range(8):
-            enc = self.device.create_command_encoder()
-            with debug_group(enc, "renderer.prepass", _DEBUG_COLOR):
-                self._record_hot_prepass_counts(enc, camera, splat_count)
-            self.device.submit_command_buffer(enc.finish())
-            self.device.sync_to_device()
-
-            total = min(self._read_uint(self.counts["g_TileTotal"]), _MAX_HOT_PREPASS_CAPACITY)
-            scanline_total = min(self._read_uint(self.counts["g_ScanlineTotal"]), _MAX_HOT_PREPASS_CAPACITY)
-            scanline_overflow = self._read_uint(self.counts["g_ScanlineOverflow"]) != 0
-            tile_overflow = self._read_uint(self.counts["g_TileOverflow"]) != 0
-            if not scanline_overflow and not tile_overflow:
-                return total
-
-            self._grow_hot_prepass_capacity(
-                scanline_total if scanline_overflow else getattr(self, "_scanline_capacity", 1),
-                total if tile_overflow else getattr(self, "_entry_capacity", 1),
-            )
-
-        raise RuntimeError(
-            "Hot prepass overflow did not converge after repeated capacity growth "
-            f"(scanline_overflow={scanline_overflow}, tile_overflow={tile_overflow}, "
-            f"scanline_total={scanline_total:,}, tile_total={total:,})."
-        )
-
-    def _render_standalone(self, camera: dict[str, Any], splat_count: int) -> spy.Tensor:
-        total = self._run_hot_prepass_sync(camera, splat_count)
-        enc = self.device.create_command_encoder()
-        with debug_group(enc, "renderer.tile_ranges", _DEBUG_COLOR):
-            self._record_hot_prepass_sort_and_ranges(enc, camera, splat_count)
-        with debug_group(enc, "renderer.render", _DEBUG_COLOR):
-            with debug_group(enc, "renderer.raster_forward", _DEBUG_COLOR):
-                self.k_raster_fwd.dispatch(
-                    thread_count=self._raster_thread_count(),
-                    vars=self._vars(camera, splat_count, getattr(self, "_entry_capacity", 1)),
-                    command_encoder=enc,
-                )
-        self.device.submit_command_buffer(enc.finish())
-        self.device.sync_to_device()
-        self._last_total = int(total)
-        self._delayed_tile_total = int(total)
-        self._delayed_tile_total_valid = True
-        self._render_frame_id += 1
-        return self.frame["g_Output"]
+    def readback_and_reallocate_buffers(self, refresh_buffers: bool = False) -> tuple[int, bool]:
+        scanline_total = min(self._read_uint(self.counts["g_ScanlineMax"]), _MAX_HOT_PREPASS_CAPACITY)
+        tile_total = min(self._read_uint(self.counts["g_TileMax"]), _MAX_HOT_PREPASS_CAPACITY)
+        self._last_required_total = int(tile_total)
+        needs_refresh = scanline_total > int(getattr(self, "_scanline_capacity", 1)) or tile_total > int(getattr(self, "_entry_capacity", 1))
+        if refresh_buffers:
+            self._grow_hot_prepass_capacity(scanline_total, tile_total)
+        self.counts["g_ScanlineMax"].clear()
+        self.counts["g_TileMax"].clear()
+        self.device.sync_to_cuda()
+        return self._last_required_total, needs_refresh
 
     def _dispatch_indirect(
         self,
@@ -379,6 +286,7 @@ class SplattingContext:
             "g_SortedEntries": self._sorted_entries_tensor,
             "g_CountParamsBuffer": self.counts["g_CountParamsDummy"].storage,
             "g_TotalBuffer": self.counts["g_TileTotal"],
+            "g_TotalMaxBuffer": self.counts["g_TileMax"],
             "g_TotalCounterBuffer": self.counts["g_TileTotal"].storage,
             "g_OverflowA": self.counts["g_ScanlineOverflow"],
             "g_OverflowB": self.counts["g_TileOverflow"],
@@ -424,10 +332,10 @@ class SplattingContext:
         self._alloc_prefix(self.util.radix_histogram_elements(splat_count))
         if splat_count == 0:
             self._sorted_splat_order_tensor = self.sort["g_DistanceSortOrder"]
-            visible_out.clear(command_encoder=command_encoder)
-            total_out.clear(command_encoder=command_encoder)
+            visible_out.clear(command_encoder)
+            total_out.clear(command_encoder)
             return
-        visible_out.clear(command_encoder=command_encoder)
+        visible_out.clear(command_encoder)
         project_vars = self._vars(camera, splat_count, 0)
         project_vars.update(g_TotalBuffer=visible_out, g_TotalCapacity=int(splat_count))
         with debug_group(command_encoder, "renderer.project_visible", _DEBUG_COLOR):
@@ -490,8 +398,8 @@ class SplattingContext:
     def _record_hot_prepass_counts(self, command_encoder: spy.CommandEncoder, camera: dict[str, Any], splat_count: int) -> None:
         self._record_sort_and_project(command_encoder, camera, splat_count, self.counts["g_TileTotal"], self.counts["g_ScanlineTotal"])
         self._alloc_radix(max(getattr(self, "_entry_capacity", 1), splat_count))
-        self.counts["g_ScanlineOverflow"].clear(command_encoder=command_encoder)
-        self.counts["g_TileOverflow"].clear(command_encoder=command_encoder)
+        self.counts["g_ScanlineOverflow"].clear(command_encoder)
+        self.counts["g_TileOverflow"].clear(command_encoder)
         visible_args = self.util.dispatch_args_from_count_buffer(
             command_encoder,
             self.counts["g_TileTotal"],
@@ -552,6 +460,17 @@ class SplattingContext:
                 getattr(self, "_scanline_capacity", 1),
                 True,
             )
+        self.k_finalize_total.dispatch(
+            thread_count=spy.uint3(1, 1, 1),
+            vars=self._vars(camera, splat_count, getattr(self, "_entry_capacity", 1)) | {
+                "g_TotalBuffer": self.counts["g_ScanlineTotal"],
+                "g_TotalMaxBuffer": self.counts["g_ScanlineMax"],
+                "g_OverflowA": self.counts["g_ScanlineOverflow"],
+                "g_OverflowB": self.counts["g_ScanlineOverflow"],
+                "g_TotalCapacity": int(getattr(self, "_scanline_capacity", 1)),
+            },
+            command_encoder=command_encoder,
+        )
         with debug_group(command_encoder, "renderer.emit_tiles", _DEBUG_COLOR):
             with command_encoder.begin_compute_pass() as compute_pass:
                 self._dispatch_indirect(
@@ -572,6 +491,7 @@ class SplattingContext:
         finalize_vars = self._vars(camera, splat_count, getattr(self, "_entry_capacity", 1))
         finalize_vars.update(
             g_TotalBuffer=self.counts["g_TileTotal"],
+            g_TotalMaxBuffer=self.counts["g_TileMax"],
             g_OverflowA=self.counts["g_ScanlineOverflow"],
             g_OverflowB=self.counts["g_TileOverflow"],
             g_TotalCapacity=int(getattr(self, "_entry_capacity", 1)),
@@ -675,12 +595,30 @@ class SplattingContext:
         self.device.sync_to_device()
         return total
 
-    def render(self, camera: dict[str, Any], splat_count: int, command_encoder: spy.CommandEncoder | None = None) -> spy.Tensor:
+    def render(self, camera: dict[str, Any], splat_count: int, command_encoder: spy.CommandEncoder | None = None, refresh_buffers: bool = True) -> spy.Tensor:
         if command_encoder is None:
-            return self._render_standalone(camera, splat_count)
+            for _ in range(4):
+                enc = self.device.create_command_encoder()
+                with debug_group(enc, "renderer.prepass", _DEBUG_COLOR):
+                    self._record_hot_prepass_counts(enc, camera, splat_count)
+                with debug_group(enc, "renderer.tile_ranges", _DEBUG_COLOR):
+                    self._record_hot_prepass_sort_and_ranges(enc, camera, splat_count)
+                with debug_group(enc, "renderer.render", _DEBUG_COLOR):
+                    with debug_group(enc, "renderer.raster_forward", _DEBUG_COLOR):
+                        self.k_raster_fwd.dispatch(
+                            thread_count=self._raster_thread_count(),
+                            vars=self._vars(camera, splat_count, getattr(self, "_entry_capacity", 1)),
+                            command_encoder=enc,
+                        )
+                self.device.submit_command_buffer(enc.finish())
+                self.device.sync_to_device()
+                required_total, needs_refresh = self.readback_and_reallocate_buffers(refresh_buffers=refresh_buffers)
+                self._last_total = min(required_total, int(getattr(self, "_entry_capacity", 1)))
+                if not (refresh_buffers and needs_refresh):
+                    return self.frame["g_Output"]
+            raise RuntimeError("Standalone render did not converge after buffer refresh.")
 
-        self._maybe_apply_delayed_tile_readback()
-        enc = command_encoder or self.device.create_command_encoder()
+        enc = command_encoder
         with debug_group(enc, "renderer.prepass", _DEBUG_COLOR):
             self._record_hot_prepass_counts(enc, camera, splat_count)
         with debug_group(enc, "renderer.tile_ranges", _DEBUG_COLOR):
@@ -692,17 +630,12 @@ class SplattingContext:
                     vars=self._vars(camera, splat_count, getattr(self, "_entry_capacity", 1)),
                     command_encoder=enc,
                 )
-            self._enqueue_tile_readback(enc)
-        self._last_total = int(self._delayed_tile_total) if self._delayed_tile_total_valid else 0
-        self._render_frame_id += 1
-        if command_encoder is None:
-            self.device.submit_command_buffer(enc.finish()); self.device.sync_to_device()
         return self.frame["g_Output"]
 
     def backward(self, camera: dict[str, Any], splat_count: int, command_encoder: spy.CommandEncoder | None = None) -> spy.Tensor:
         enc = command_encoder or self.device.create_command_encoder()
         with debug_group(enc, "renderer.backward", _DEBUG_COLOR):
-            self.scene["g_ParamGrads"].clear(command_encoder=enc)
+            self.scene["g_ParamGrads"].clear(enc)
             self.k_raster_bwd.dispatch(thread_count=self._raster_thread_count(), vars=self._vars(camera, splat_count, self._last_total), command_encoder=enc)
         if command_encoder is None:
             self.device.submit_command_buffer(enc.finish()); self.device.sync_to_device()

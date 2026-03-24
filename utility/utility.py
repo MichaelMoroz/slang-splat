@@ -35,6 +35,14 @@ def _ceil_div(value: int, divisor: int) -> int:
     return (value + divisor - 1) // divisor
 
 
+def grow_capacity(required: int, grow_num: int = 6, grow_den: int = 5, max_capacity: int | None = None) -> int:
+    target = max(int(required), 1)
+    target = max(target, _ceil_div(target * max(int(grow_num), 1), max(int(grow_den), 1)))
+    if max_capacity is not None:
+        target = min(target, max(int(max_capacity), 1))
+    return target
+
+
 @dataclass
 class GpuUtility:
     device: spy.Device

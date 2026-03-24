@@ -12,6 +12,11 @@ uniform Tensor<float4, 2> g_DebugRendered;
 uniform Tensor<float4, 2> g_DebugTarget;
 uniform float g_DebugDiffScale;
 
+static float3 _loss_color(float loss) {
+    float t = saturate(loss);
+    return lerp(float3(0.0, 0.0, 0.0), float3(1.0, 0.92, 0.28), sqrt(t));
+}
+
 static float2 _letterbox_uv(uint2 pixel, uint sourceWidth, uint sourceHeight, uint outputWidth, uint outputHeight) {
     float sourceAspect = float(sourceWidth) / max(float(sourceHeight), 1.0);
     float outputAspect = float(outputWidth) / max(float(outputHeight), 1.0);
@@ -85,4 +90,24 @@ void csDebugAbsDiffLetterbox(uint3 dispatchThreadID : SV_DispatchThreadID) {
     float3 rendered = g_DebugRendered[coord].xyz;
     float3 target = g_DebugTarget[coord].xyz;
     g_Surface[pixel] = float4(abs(rendered - target) * g_DebugDiffScale, 1.0);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void csDebugLossLetterbox(uint3 dispatchThreadID : SV_DispatchThreadID) {
+    uint idx = dispatchThreadID.x;
+    uint total = g_LetterboxOutputWidth * g_LetterboxOutputHeight;
+    if (idx >= total) return;
+    uint2 pixel = _pixel_from_index(idx, g_LetterboxOutputWidth);
+    if (pixel.x >= g_LetterboxOutputWidth || pixel.y >= g_LetterboxOutputHeight) return;
+    float2 uv = _letterbox_uv(pixel, g_LetterboxSourceWidth, g_LetterboxSourceHeight, g_LetterboxOutputWidth, g_LetterboxOutputHeight);
+    if (!_inside_letterbox(uv)) {
+        g_Surface[pixel] = float4(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
+    int2 coord = _sample_coord(uv, g_LetterboxSourceWidth, g_LetterboxSourceHeight);
+    float3 rendered = g_DebugRendered[coord].xyz;
+    float3 target = g_DebugTarget[coord].xyz;
+    float loss = dot(abs(rendered - target), 1.0.xxx / 3.0) * g_DebugDiffScale;
+    g_Surface[pixel] = float4(_loss_color(loss), 1.0);
 }

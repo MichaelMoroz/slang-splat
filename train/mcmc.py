@@ -114,6 +114,8 @@ class MCMCConfig:
     init_scale_multiplier: float = 1.0
     init_opacity: float = _DEFAULT_INIT_OPACITY
     eval_interval: int = 250
+    dither_strength: float = 1.0
+    dither_decay_until_iter: int = 0
     seed: int = 0
 
 
@@ -370,21 +372,37 @@ class RGBMCMCTrainer:
     def start(self, scene: SceneData, status: Callable[[str], None] | None = None) -> None:
         self.initialize(scene, status=status)
 
+    def _current_dither_strength(self) -> float:
+        base = max(float(self.cfg.dither_strength), 0.0)
+        if base <= 0.0:
+            return 0.0
+        decay_end = int(self.cfg.dither_decay_until_iter)
+        if decay_end <= 0:
+            decay_end = max(int(self.cfg.iterations), 1)
+        if decay_end <= 1:
+            return base if self.iteration <= 0 else 0.0
+        progress = min(max(self.iteration - 1, 0), decay_end - 1) / float(decay_end - 1)
+        return base * max(1.0 - progress, 0.0)
+
     def has_pending_steps(self) -> bool:
         return self.scene is not None
 
     def snapshot_splats(self) -> torch.Tensor:
         return self.model.splats().detach().contiguous()
 
-    def _render(self, camera: CameraSample, background: tuple[float, float, float]) -> torch.Tensor:
-        return render_gaussian_splats(
+    def _render(self, camera: CameraSample, background: tuple[float, float, float], apply_dither: bool = True) -> torch.Tensor:
+        self.context.dither_strength = self._current_dither_strength() if apply_dither else 0.0
+        image = render_gaussian_splats(
             self.model.splats(),
             camera.camera_params,
             camera.image_size,
             background=background,
             render_seed=self.iteration,
             context=self.context,
-        )[..., :3]
+        )
+        if self.iteration % 8 == 0:
+            self.context.readback_and_reallocate_buffers(refresh_buffers=True)
+        return image[..., :3]
 
     def _target_image(self, camera: CameraSample) -> torch.Tensor:
         def to_target(image: torch.Tensor) -> torch.Tensor:
@@ -416,7 +434,7 @@ class RGBMCMCTrainer:
         if not cameras:
             return float("nan"), float("nan")
         with torch.no_grad():
-            pred_target = [(self._render(cam, background), self._target_image(cam)) for cam in cameras]
+            pred_target = [(self._render(cam, background, apply_dither=False), self._target_image(cam)) for cam in cameras]
         return float(np.mean([float(psnr(pred, target)) for pred, target in pred_target])), float(np.mean([float(ssim(rgb_to_nchw(pred), rgb_to_nchw(target))) for pred, target in pred_target]))
 
     def step(self, scene: SceneData | None = None) -> TrainingStepStats:
@@ -433,7 +451,7 @@ class RGBMCMCTrainer:
         frame_index = next((idx for idx, item in enumerate(self.scene.train_cameras) if item is camera), -1)
         background = tuple(np.random.rand(3).tolist()) if self.cfg.random_background else self.scene.background
         pred, target = self._render(camera, background), self._target_image(camera)
-        tile_count = int(getattr(self.context, "_last_total", 0))
+        tile_count = int(getattr(self.context, "_last_required_total", getattr(self.context, "_last_total", 0)))
         pred = torch.nan_to_num(pred, nan=0.0, posinf=1.0, neginf=0.0).clamp_(0.0, 1.0)
         target = torch.nan_to_num(target, nan=0.0, posinf=1.0, neginf=0.0).clamp_(0.0, 1.0)
         l1 = l1_loss(pred, target)

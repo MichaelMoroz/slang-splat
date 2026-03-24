@@ -36,7 +36,7 @@ _BASE_FONT_SIZE_PX = 16.0
 _FONT_ATLAS_SIZE_PX = _BASE_FONT_SIZE_PX * _INTERFACE_SCALE_OPTIONS[-1][1]
 _LOSS_HISTORY_SIZE = 512
 _FPS_HISTORY_SIZE = 128
-_LOSS_DEBUG_OPTIONS = (("rendered", "Rendered"), ("target", "Target"), ("abs_diff", "Abs Diff"))
+_LOSS_DEBUG_OPTIONS = (("rendered", "Rendered"), ("target", "Target"), ("loss", "Loss"), ("abs_diff", "Abs Diff"))
 _LOSS_DEBUG_ABS_SCALE_KEY = "loss_debug_abs_scale"
 _LOSS_DEBUG_ABS_SCALE_DEFAULT = 1.0
 _LOSS_DEBUG_ABS_SCALE_MIN = 0.125
@@ -49,7 +49,7 @@ _DEBUG_MODE_OPTIONS = (
     (DEBUG_MODE_NORMAL, "Normal"),
     (DEBUG_MODE_PROCESSED_COUNT, "Processed Count"),
     (DEBUG_MODE_DEPTH_MEAN, "Depth Mean"),
-    (DEBUG_MODE_DEPTH_STD, "Depth Std"),
+    (DEBUG_MODE_DEPTH_STD, "Depth Std / Mean"),
     (DEBUG_MODE_ELLIPSE_OUTLINES, "Ellipse Outlines"),
 )
 
@@ -132,7 +132,7 @@ class ViewerUI:
             "debug_depth_mean_min": 0.0,
             "debug_depth_mean_max": 20.0,
             "debug_depth_std_min": 0.0,
-            "debug_depth_std_max": 2.0,
+            "debug_depth_std_max": 0.25,
             "loss_debug": False,
             "loss_debug_view": 0,
             "loss_debug_frame": 0,
@@ -578,6 +578,12 @@ class ToolkitWindow:
         changed, value = imgui.slider_float("Train Radius Scale", float(cfg.radius_scale), 0.25, 4.0)
         if changed:
             cfg.radius_scale = float(value)
+        changed, value = imgui.slider_float("Train Pixel Dither", float(cfg.dither_strength), 0.0, 1.0, "%.3f")
+        if changed:
+            cfg.dither_strength = float(value)
+        changed, value = imgui.input_int("Dither Decay Iter", int(cfg.dither_decay_until_iter), 100, 1000)
+        if changed:
+            cfg.dither_decay_until_iter = max(int(value), 0)
         changed, value = imgui.slider_float("Train Max Anisotropy", float(cfg.max_anisotropy), 1.0, 64.0, "%.1f")
         if changed:
             cfg.max_anisotropy = float(value)
@@ -723,9 +729,10 @@ class ToolkitWindow:
             frame_text = ui.texts.get("loss_debug_frame", "")
             if frame_text:
                 imgui.text_disabled(frame_text.split(": ", 1)[-1] if ": " in frame_text else frame_text)
-            if _LOSS_DEBUG_OPTIONS[view_idx][0] == "abs_diff":
+            if _LOSS_DEBUG_OPTIONS[view_idx][0] in ("loss", "abs_diff"):
+                scale_label = "Loss Scale" if _LOSS_DEBUG_OPTIONS[view_idx][0] == "loss" else "Abs Diff Scale"
                 changed, value = imgui.slider_float(
-                    "Abs Diff Scale",
+                    scale_label,
                     float(ui.values[_LOSS_DEBUG_ABS_SCALE_KEY]),
                     _LOSS_DEBUG_ABS_SCALE_MIN,
                     _LOSS_DEBUG_ABS_SCALE_MAX,
@@ -752,10 +759,10 @@ class ToolkitWindow:
             changed, value = imgui.input_float("Depth Mean Max", float(ui.values["debug_depth_mean_max"]), 0.1, 1.0, "%.4g")
             if changed:
                 ui.values["debug_depth_mean_max"] = float(value)
-            changed, value = imgui.input_float("Depth Std Min", float(ui.values["debug_depth_std_min"]), 0.01, 0.1, "%.4g")
+            changed, value = imgui.input_float("Depth Std/Mean Min", float(ui.values["debug_depth_std_min"]), 0.01, 0.1, "%.4g")
             if changed:
                 ui.values["debug_depth_std_min"] = float(value)
-            changed, value = imgui.input_float("Depth Std Max", float(ui.values["debug_depth_std_max"]), 0.01, 0.1, "%.4g")
+            changed, value = imgui.input_float("Depth Std/Mean Max", float(ui.values["debug_depth_std_max"]), 0.01, 0.1, "%.4g")
             if changed:
                 ui.values["debug_depth_std_max"] = float(value)
             if int(ui.values["debug_mode"]) in (DEBUG_MODE_PROCESSED_COUNT, DEBUG_MODE_DEPTH_MEAN, DEBUG_MODE_DEPTH_STD):
@@ -775,7 +782,7 @@ class ToolkitWindow:
             depth_max = float(ui.values["debug_depth_mean_max"])
             tick_value = lambda t: depth_min + t * (depth_max - depth_min)
         elif debug_mode == DEBUG_MODE_DEPTH_STD:
-            title = "Depth Std Scale"
+            title = "Depth Std / Mean Scale"
             depth_min = float(ui.values["debug_depth_std_min"])
             depth_max = float(ui.values["debug_depth_std_max"])
             tick_value = lambda t: depth_min + t * (depth_max - depth_min)

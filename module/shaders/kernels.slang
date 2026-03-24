@@ -18,6 +18,7 @@ uniform RWTensor<ProjectionState, 1> g_ProjectionState;
 uniform RWTensor<Gaussian3D, 1> g_RasterState;
 uniform RWTensor<uint, 1> g_TileRanges;
 uniform RWTensor<uint, 1> g_TotalBuffer;
+uniform RWTensor<uint, 1> g_TotalMaxBuffer;
 uniform RWStructuredBuffer<uint> g_TotalCounterBuffer;
 uniform Tensor<uint, 1> g_OverflowA;
 uniform Tensor<uint, 1> g_OverflowB;
@@ -328,10 +329,8 @@ void csBuildTileRanges(uint3 dispatchThreadID : SV_DispatchThreadID) {
 void csFinalizeTotalWithOverflow(uint3 dispatchThreadID : SV_DispatchThreadID) {
     uint total = g_TotalBuffer[0];
     bool overflow = total > g_TotalCapacity || g_OverflowA[0] != 0u || g_OverflowB[0] != 0u;
-    if (overflow) {
-        g_TotalBuffer.store(0, g_TotalCapacity + 1u);
-        g_TileOverflow.store(0, 1u);
-    }
+    if (overflow) total = max(total, g_TotalCapacity + 1u);
+    g_TotalMaxBuffer.store(0, max(g_TotalMaxBuffer[0], total));
 }
 
 // Raster batching helpers shared by forward and backward passes.
@@ -441,7 +440,6 @@ void csRasterForward(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupID
                             if (denom > RAY_DENOMINATOR_FLOOR) {
                                 float tClosest = -dot(rayLocal, gaussian.position) / denom;
                                 if (tClosest > 0.0) {
-                                    contributionWeight *= alpha * alpha;
                                     float totalWeight = depthWeightSum + contributionWeight;
                                     float delta = tClosest - depthMean;
                                     depthMean += (contributionWeight / totalWeight) * delta;
@@ -473,9 +471,10 @@ void csRasterForward(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupID
         float debugValue = 0.0;
         if (depthWeightSum > SMALL_VALUE) {
             float depthStd = sqrt(max(depthM2 / depthWeightSum, 0.0));
+            float depthStdRatio = depthStd / max(abs(depthMean), SMALL_VALUE);
             debugValue = g_DebugMode == DEBUG_MODE_DEPTH_MEAN
                 ? debug_normalize_range(depthMean, g_DebugDepthMeanRange)
-                : debug_normalize_range(depthStd, g_DebugDepthStdRange);
+                : debug_normalize_range(depthStdRatio, g_DebugDepthStdRange);
         }
         output = float4(jet_colormap(debugValue), 1.0);
     }

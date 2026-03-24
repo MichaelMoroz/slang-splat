@@ -23,7 +23,7 @@ _LOOK_SMOOTH = 12.0
 _MOVE_SMOOTH = 10.0
 _PITCH_LIMIT = math.radians(89.0)
 _ALPHA_EPS = 1e-6
-_LOSS_DEBUG_VIEW_KEYS = ("rendered", "target", "abs_diff")
+_LOSS_DEBUG_VIEW_KEYS = ("rendered", "target", "loss", "abs_diff")
 _MAX_SURFACE_DIM = 8192
 _MAX_SURFACE_PIXELS = 33_554_432
 
@@ -120,10 +120,10 @@ class SplatViewer(spy.AppWindow):
         super().__init__(app, width=width, height=height, title=title, resizable=True, enable_vsync=False)
         self.s = ViewerState()
         self.renderer = SplattingContext(device=self.device)
-        self.renderer.tile_count_readback_period = 0
-        self.renderer.reserve_hot_prepass_capacity()
+        self._render_frames = 0
         self.blit_kernel = self.device.create_compute_kernel(self.device.load_program(str(_SHADERS / "kernels.slang"), ["csBlitOutput"]))
         self.debug_letterbox_kernel = self.device.create_compute_kernel(self.device.load_program(str(_SHADERS / "kernels.slang"), ["csDebugLetterboxTensor"]))
+        self.debug_loss_kernel = self.device.create_compute_kernel(self.device.load_program(str(_SHADERS / "kernels.slang"), ["csDebugLossLetterbox"]))
         self.debug_abs_diff_kernel = self.device.create_compute_kernel(self.device.load_program(str(_SHADERS / "kernels.slang"), ["csDebugAbsDiffLetterbox"]))
         self.ui = build_ui()
         self.toolkit = create_toolkit_window(self.device, width, height)
@@ -347,7 +347,7 @@ class SplatViewer(spy.AppWindow):
         self.ui.texts["fps"] = f"FPS: {self.s.fps_smooth:.1f}"
         self.ui.texts["scene"] = "Scene: <none>" if active_scene is None else f"Scene: {active_scene}"
         self.ui.texts["status"] = f"Status: {'Loss Debug' if bool(self.ui.values.get('loss_debug', False)) else 'Viewer'} | Splats: {self.s.splat_count:,}"
-        self.ui.texts["render_stats"] = f"Generated: {int(getattr(self.renderer, '_last_total', 0)):,} | Debug mode: {int(self.ui.values.get('debug_mode', 0))}"
+        self.ui.texts["render_stats"] = f"Generated: {int(getattr(self.renderer, '_last_required_total', getattr(self.renderer, '_last_total', 0))):,} | Debug mode: {int(self.ui.values.get('debug_mode', 0))}"
         train_mode = "running" if training_snapshot.running and not training_snapshot.paused else "paused" if training_snapshot.paused else "idle"
         self.ui.texts["training"] = f"Training: {train_mode} | step={training_snapshot.iteration:,} | splats={training_snapshot.point_count:,}"
         self.ui.texts["training_time"] = f"Time: {time.strftime('%H:%M:%S', time.gmtime(training_snapshot.elapsed_seconds))}" if training_snapshot.elapsed_seconds > 0 else "Time: 00:00"
@@ -366,7 +366,7 @@ class SplatViewer(spy.AppWindow):
         )
         self.ui.texts["training_downscale"] = "Downscale: 1x"
         self.ui.texts["error"] = f"Error: {self.s.last_error}" if self.s.last_error else ""
-        self.ui.texts["max_splat_steps"] = str(getattr(self.renderer, "_last_total", 0))
+        self.ui.texts["max_splat_steps"] = str(getattr(self.renderer, "_last_required_total", getattr(self.renderer, "_last_total", 0)))
         tk = self.toolkit.tk
         tk.fps_history.append(self.s.fps_smooth)
         if training_snapshot.iteration > 0 and (not tk.step_history or training_snapshot.iteration != tk.step_history[-1]):
@@ -406,15 +406,17 @@ class SplatViewer(spy.AppWindow):
         self.renderer.prepare(active_splat_count, (debug_width, debug_height), self.s.background)
         self._upload_scene_if_needed()
         self.renderer.render(_camera_dict(sample.camera_params, sample.image_size), active_splat_count, command_encoder=encoder)
-        self.ui.texts["max_splat_steps"] = str(getattr(self.renderer, "_last_total", 0))
+        self._render_frames += 1
+        self.ui.texts["max_splat_steps"] = str(getattr(self.renderer, "_last_required_total", getattr(self.renderer, "_last_total", 0)))
         present = self._ensure_present_texture(int(image.width), int(image.height))
         mode = self._debug_view_key()
-        if mode == "abs_diff":
+        if mode in ("loss", "abs_diff"):
             target = self._target_tensor(frame_index)
             if target is None:
                 encoder.clear_texture_float(image, clear_value=[*self.s.background, 1.0])
                 return
-            self.debug_abs_diff_kernel.dispatch(
+            kernel = self.debug_loss_kernel if mode == "loss" else self.debug_abs_diff_kernel
+            kernel.dispatch(
                 thread_count=spy.uint3(int(image.width) * int(image.height), 1, 1),
                 vars={
                     "g_DebugRendered": self.renderer.frame["g_Output"],
@@ -478,6 +480,8 @@ class SplatViewer(spy.AppWindow):
             self.s.pitch = math.asin(float(np.clip(forward[1], -1.0, 1.0)))
         try:
             self.update_camera(dt)
+            if self._render_frames > 0 and self._render_frames % 64 == 0:
+                self.renderer.readback_and_reallocate_buffers(refresh_buffers=True)
             has_training_preview = training_snapshot.preview_count > 0
             if self.s.splats is None and not has_training_preview:
                 encoder.clear_texture_float(image, clear_value=[*self.s.background, 1.0])
@@ -505,7 +509,8 @@ class SplatViewer(spy.AppWindow):
                     self.renderer.prepare(active_splat_count, (width, height), self.s.background)
                     self._upload_scene_if_needed()
                     self.renderer.render(self.camera().gpu_params(width, height), active_splat_count, command_encoder=encoder)
-                    self.ui.texts["max_splat_steps"] = str(getattr(self.renderer, "_last_total", 0))
+                    self._render_frames += 1
+                    self.ui.texts["max_splat_steps"] = str(getattr(self.renderer, "_last_required_total", getattr(self.renderer, "_last_total", 0)))
                     present = self._ensure_present_texture(width, height)
                     self.blit_kernel.dispatch(
                         thread_count=spy.uint3(width * height, 1, 1),
