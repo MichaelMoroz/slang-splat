@@ -24,6 +24,8 @@ _MOVE_SMOOTH = 10.0
 _PITCH_LIMIT = math.radians(89.0)
 _ALPHA_EPS = 1e-6
 _LOSS_DEBUG_VIEW_KEYS = ("rendered", "target", "abs_diff")
+_MAX_SURFACE_DIM = 8192
+_MAX_SURFACE_PIXELS = 33_554_432
 
 
 def _normalize(v: np.ndarray) -> np.ndarray:
@@ -72,6 +74,18 @@ def _camera_dict(camera: torch.Tensor, image_size: tuple[int, int]) -> dict[str,
     }
 
 
+def _is_valid_surface_size(width: int, height: int) -> bool:
+    width = int(width)
+    height = int(height)
+    return (
+        width > 0
+        and height > 0
+        and width <= _MAX_SURFACE_DIM
+        and height <= _MAX_SURFACE_DIM
+        and width * height <= _MAX_SURFACE_PIXELS
+    )
+
+
 def _fit_camera(splats: np.ndarray, fov_y_degrees: float) -> tuple[spy.float3, np.ndarray, float, float, float]:
     positions = splats[0:3].T.astype(np.float32, copy=False)
     if positions.shape[0] == 0:
@@ -106,6 +120,8 @@ class SplatViewer(spy.AppWindow):
         super().__init__(app, width=width, height=height, title=title, resizable=True, enable_vsync=False)
         self.s = ViewerState()
         self.renderer = SplattingContext(device=self.device)
+        self.renderer.tile_count_readback_period = 0
+        self.renderer.reserve_hot_prepass_capacity()
         self.blit_kernel = self.device.create_compute_kernel(self.device.load_program(str(_SHADERS / "kernels.slang"), ["csBlitOutput"]))
         self.debug_letterbox_kernel = self.device.create_compute_kernel(self.device.load_program(str(_SHADERS / "kernels.slang"), ["csDebugLetterboxTensor"]))
         self.debug_abs_diff_kernel = self.device.create_compute_kernel(self.device.load_program(str(_SHADERS / "kernels.slang"), ["csDebugAbsDiffLetterbox"]))
@@ -117,8 +133,21 @@ class SplatViewer(spy.AppWindow):
         self.training = TrainingController()
         self._present_texture: spy.Texture | None = None
         self._debug_target_tensors: dict[int, spy.Tensor] = {}
+        self._surface_size = (int(width), int(height))
+        self._skip_present_frames = 0
+
+    def on_resize(self, width: int, height: int) -> None:
+        try:
+            super().on_resize(width, height)
+        except Exception:
+            pass
+        self._surface_size = (max(int(width), 0), max(int(height), 0))
+        self._present_texture = None
+        self._skip_present_frames = 2
 
     def _ensure_present_texture(self, width: int, height: int) -> spy.Texture:
+        width = max(int(width), 1)
+        height = max(int(height), 1)
         if self._present_texture is not None and int(self._present_texture.width) == int(width) and int(self._present_texture.height) == int(height):
             return self._present_texture
         self._present_texture = self.device.create_texture(
@@ -422,6 +451,20 @@ class SplatViewer(spy.AppWindow):
         now = time.perf_counter()
         dt = max(now - self.s.last_time, 1e-5)
         self.s.last_time = now
+        width = int(image.width)
+        height = int(image.height)
+        if not _is_valid_surface_size(width, height):
+            self._present_texture = None
+            self.s.last_error = f"Skipping invalid surface size {width}x{height}"
+            return
+        if (width, height) != self._surface_size:
+            self._surface_size = (width, height)
+            self._present_texture = None
+            self._skip_present_frames = max(self._skip_present_frames, 2)
+        if self._skip_present_frames > 0:
+            self._skip_present_frames -= 1
+            encoder.clear_texture_float(image, clear_value=[*self.s.background, 1.0])
+            return
         self.training.update()
         training_snapshot = self.training.snapshot()
         fit_points = self.training.consume_fit_points()
@@ -437,7 +480,6 @@ class SplatViewer(spy.AppWindow):
             if self.s.splats is None and not has_training_preview:
                 encoder.clear_texture_float(image, clear_value=[*self.s.background, 1.0])
             else:
-                width, height = int(image.width), int(image.height)
                 active_splat_count = int(training_snapshot.preview_count) if has_training_preview else int(self.s.splat_count)
                 render_seed = int(training_snapshot.iteration) if has_training_preview else 0
                 if bool(self.ui.values.get("loss_debug", False)) and self.training.frame_count() > 0:

@@ -299,6 +299,8 @@ class ToolkitWindow:
             return
         width = int(surface_texture.width)
         height = int(surface_texture.height)
+        if width <= 0 or height <= 0:
+            return
         now = time.perf_counter()
         dt = max(now - self._last_frame_time, 1e-5)
         self._last_frame_time = now

@@ -26,6 +26,9 @@ _NEAR_CAPACITY_NUM = 9
 _NEAR_CAPACITY_DEN = 10
 _INITIAL_PREPASS_CAPACITY_MULTIPLIER = 64
 _INITIAL_ENTRY_TILE_MULTIPLIER_CAP = 4
+_MAX_IMAGE_DIM = 8192
+_MAX_IMAGE_PIXELS = 33_554_432
+_MAX_HOT_PREPASS_CAPACITY = 33_554_432
 
 
 @dataclass
@@ -111,6 +114,25 @@ class SplattingContext:
     def _raster_thread_count(self) -> spy.uint3:
         tile_width, tile_height = self._tile_grid()
         return spy.uint3(tile_width * tile_height * 64, 1, 1)
+
+    def _validate_image_size(self, image_size: tuple[int, int]) -> tuple[int, int]:
+        width = int(image_size[0])
+        height = int(image_size[1])
+        if width <= 0 or height <= 0:
+            raise ValueError(f"Invalid render size {width}x{height}")
+        if width > _MAX_IMAGE_DIM or height > _MAX_IMAGE_DIM or width * height > _MAX_IMAGE_PIXELS:
+            raise ValueError(f"Render size {width}x{height} exceeds safe Vulkan limits")
+        return width, height
+
+    def _clamp_hot_prepass_capacity(self, required: int) -> int:
+        return max(1, min(int(required), _MAX_HOT_PREPASS_CAPACITY))
+
+    def reserve_hot_prepass_capacity(self, capacity: int | None = None) -> int:
+        target = self._clamp_hot_prepass_capacity(_MAX_HOT_PREPASS_CAPACITY if capacity is None else capacity)
+        self._alloc_scanlines(target)
+        self._alloc_entries(target)
+        self._alloc_radix(target)
+        return target
 
     def _alloc_frame(self, shape: tuple[int, int]) -> None:
         if self._size == shape:
@@ -206,16 +228,17 @@ class SplattingContext:
 
     def prepare(self, splat_count: int, image_size: tuple[int, int], background: tuple[float, float, float]) -> None:
         self.background = background
-        self._alloc_frame(image_size)
+        width, height = self._validate_image_size(image_size)
+        self._alloc_frame((width, height))
         self._alloc_scene(splat_count)
         self._alloc_splat_sort(splat_count)
-        tw, th = (image_size[0] + 7) // 8, (image_size[1] + 7) // 8
+        tw, th = (width + 7) // 8, (height + 7) // 8
         base = max(int(splat_count) * _INITIAL_PREPASS_CAPACITY_MULTIPLIER, 1)
-        scanline_capacity = max(base, int(splat_count) * max(tw, th))
-        entry_capacity = max(
+        scanline_capacity = self._clamp_hot_prepass_capacity(max(base, int(splat_count) * max(tw, th)))
+        entry_capacity = self._clamp_hot_prepass_capacity(max(
             base,
             tw * th * min(max(int(splat_count), 1), _INITIAL_ENTRY_TILE_MULTIPLIER_CAP),
-        )
+        ))
         self._alloc_scanlines(scanline_capacity)
         self._alloc_entries(entry_capacity)
         self._alloc_radix(entry_capacity)
@@ -231,7 +254,7 @@ class SplattingContext:
         if total > capacity or near_capacity:
             current = max(capacity, getattr(self, "_scanline_capacity", 1), getattr(self, "_entry_capacity", 1), 1)
             required = max(int(total), capacity, 1)
-            target = max(required, current + current // 2)
+            target = self._clamp_hot_prepass_capacity(max(required, current + current // 2))
             self._alloc_scanlines(target)
             self._alloc_entries(target)
             self._alloc_radix(target)
@@ -485,7 +508,7 @@ class SplattingContext:
             self._record_sort_and_project(enc, camera, splat_count, self.prefix["g_Total"])
         self.device.submit_command_buffer(enc.finish())
         self.device.sync_to_device()
-        total = self._read_uint(self.prefix["g_Total"])
+        total = min(self._read_uint(self.prefix["g_Total"]), _MAX_HOT_PREPASS_CAPACITY)
         self._alloc_scanlines(total)
         self.device.sync_to_cuda()
         if total == 0:
