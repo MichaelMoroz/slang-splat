@@ -54,23 +54,14 @@ def _ssim_blur(image: torch.Tensor, window_size: int = 11) -> torch.Tensor:
     return _torch_blur_fallback(image, window_size, sigma=1.5)
 
 
-def _ssim_impl(pred: torch.Tensor, target: torch.Tensor, window_size: int = 11) -> torch.Tensor:
-    if pred.is_cuda and pred.dtype == torch.float32 and target.dtype == torch.float32:
-        pred = pred.to(dtype=torch.float16)
-        target = target.to(dtype=torch.float16)
-    stacked = torch.cat((pred, target, pred.square(), target.square(), pred * target), dim=0)
-    mu0, mu1, pred_sq_blur, target_sq_blur, pred_target_blur = _ssim_blur(stacked, window_size).unbind(dim=0)
-    mu0 = mu0.unsqueeze(0)
-    mu1 = mu1.unsqueeze(0)
-    mu00, mu11, mu01 = mu0.square(), mu1.square(), mu0 * mu1
-    s00 = pred_sq_blur.unsqueeze(0) - mu00
-    s11 = target_sq_blur.unsqueeze(0) - mu11
-    s01 = pred_target_blur.unsqueeze(0) - mu01
-    return (((2.0 * mu01 + 1e-4) * (2.0 * s01 + 9e-4)) / ((mu00 + mu11 + 1e-4) * (s00 + s11 + 9e-4))).mean().to(dtype=torch.float32)
-
-
 def ssim(pred: torch.Tensor, target: torch.Tensor, window_size: int = 11) -> torch.Tensor:
-    return _ssim_impl(pred, target, window_size)
+    mu0 = _ssim_blur(pred, window_size)
+    mu1 = _ssim_blur(target, window_size)
+    mu00, mu11, mu01 = mu0.square(), mu1.square(), mu0 * mu1
+    s00 = _ssim_blur(pred.square(), window_size) - mu00
+    s11 = _ssim_blur(target.square(), window_size) - mu11
+    s01 = _ssim_blur(pred * target, window_size) - mu01
+    return (((2.0 * mu01 + 1e-4) * (2.0 * s01 + 9e-4)) / ((mu00 + mu11 + 1e-4) * (s00 + s11 + 9e-4))).mean()
 
 
 def _training_loss_impl(
@@ -82,12 +73,11 @@ def _training_loss_impl(
     opacity_reg: float,
     scale_reg: float,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    diff = pred - target
-    mse = diff.square().mean()
-    l1 = diff.abs().mean()
+    l1 = l1_loss(pred, target)
+    mse = (pred - target).square().mean()
     total = (
         (1.0 - lambda_dssim) * l1
-        + lambda_dssim * (1.0 - _ssim_impl(rgb_to_nchw(pred), rgb_to_nchw(target)))
+        + lambda_dssim * (1.0 - ssim(rgb_to_nchw(pred), rgb_to_nchw(target)))
         + opacity_reg * opacity.abs().mean()
         + scale_reg * scaling.abs().mean()
     )

@@ -16,7 +16,7 @@ from tqdm import tqdm
 from module import SplattingContext, render_gaussian_splats
 
 from .dataset import CameraSample, SceneData, _image_to_linear_float, _load_image_tensor
-from .losses import get_expon_lr_func, inverse_sigmoid, psnr, rgb_to_nchw, ssim, training_loss
+from .losses import get_expon_lr_func, inverse_sigmoid, l1_loss, psnr, rgb_to_nchw, ssim
 
 _PARAM_COUNT = 14
 _N_MAX = 51
@@ -43,154 +43,6 @@ def _build_rotation(quat: torch.Tensor) -> torch.Tensor:
 
 def _build_scaling_rotation(scale: torch.Tensor, quat: torch.Tensor) -> torch.Tensor:
     return _build_rotation(quat) @ torch.diag_embed(scale)
-
-
-def _quat_rotate_vec(quat: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
-    xyz = quat[:, 1:4]
-    twice_cross = 2.0 * torch.cross(xyz, vec, dim=1)
-    return vec + quat[:, :1] * twice_cross + torch.cross(xyz, twice_cross, dim=1)
-
-
-def _quat_unrotate_vec(quat: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
-    inv = quat.clone()
-    inv[:, 1:4].neg_()
-    return _quat_rotate_vec(inv, vec)
-
-
-def _fused_densify_impl(
-    xyz: torch.Tensor,
-    color: torch.Tensor,
-    opacity_logits: torch.Tensor,
-    log_scale: torch.Tensor,
-    rotation: torch.Tensor,
-    binoms: torch.Tensor,
-    dead: torch.Tensor,
-    relocate_sampled: torch.Tensor,
-    relocate_ratio: torch.Tensor,
-    add_sampled: torch.Tensor,
-    add_ratio: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    out_xyz = xyz
-    out_color = color
-    out_opacity = opacity_logits
-    out_log_scale = log_scale
-    out_rotation = rotation
-    zero = torch.empty((0,), device=xyz.device, dtype=torch.int64)
-
-    if relocate_sampled.numel() > 0 and dead.numel() > 0:
-        relocate_opacity, relocate_scale = _torch_relocation(
-            torch.sigmoid(out_opacity[relocate_sampled, 0]),
-            torch.exp(out_log_scale[relocate_sampled]),
-            relocate_ratio[:, 0] + 1,
-            binoms,
-        )
-        relocate_opacity_logits = inverse_sigmoid(relocate_opacity).unsqueeze(1)
-        relocate_log_scale = torch.log(relocate_scale.clamp_min(1e-4))
-        out_xyz = out_xyz.clone()
-        out_color = out_color.clone()
-        out_opacity = out_opacity.clone()
-        out_log_scale = out_log_scale.clone()
-        out_rotation = out_rotation.clone()
-        out_xyz[dead] = out_xyz[relocate_sampled]
-        out_color[dead] = out_color[relocate_sampled]
-        out_opacity[dead] = relocate_opacity_logits
-        out_log_scale[dead] = relocate_log_scale
-        out_rotation[dead] = out_rotation[relocate_sampled]
-        out_opacity[relocate_sampled] = relocate_opacity_logits
-        out_log_scale[relocate_sampled] = relocate_log_scale
-        zero = torch.unique(torch.cat((zero, dead.to(dtype=zero.dtype), relocate_sampled.to(dtype=zero.dtype))))
-
-    if add_sampled.numel() > 0:
-        add_opacity, add_scale = _torch_relocation(
-            torch.sigmoid(out_opacity[add_sampled, 0]),
-            torch.exp(out_log_scale[add_sampled]),
-            add_ratio[:, 0] + 1,
-            binoms,
-        )
-        add_opacity_logits = inverse_sigmoid(add_opacity).unsqueeze(1)
-        add_log_scale = torch.log(add_scale.clamp_min(1e-4))
-        current = out_xyz.shape[0]
-        out_xyz = torch.cat((out_xyz, out_xyz[add_sampled]), dim=0)
-        out_color = torch.cat((out_color, out_color[add_sampled]), dim=0)
-        out_opacity = torch.cat((out_opacity, add_opacity_logits), dim=0)
-        out_log_scale = torch.cat((out_log_scale, add_log_scale), dim=0)
-        out_rotation = torch.cat((out_rotation, out_rotation[add_sampled]), dim=0)
-        out_opacity = out_opacity.clone()
-        out_log_scale = out_log_scale.clone()
-        out_opacity[add_sampled] = add_opacity_logits
-        out_log_scale[add_sampled] = add_log_scale
-        new_ids = torch.arange(current, out_xyz.shape[0], device=xyz.device, dtype=zero.dtype)
-        zero = torch.unique(torch.cat((zero, add_sampled.to(dtype=zero.dtype), new_ids)))
-
-    return out_xyz, out_color, out_opacity, out_log_scale, out_rotation, zero
-
-
-def _fused_sanitize_noise_impl(
-    xyz: torch.Tensor,
-    color: torch.Tensor,
-    opacity_logits: torch.Tensor,
-    log_scale: torch.Tensor,
-    rotation: torch.Tensor,
-    prev_xyz: torch.Tensor,
-    prev_color: torch.Tensor,
-    prev_opacity: torch.Tensor,
-    prev_log_scale: torch.Tensor,
-    prev_rotation: torch.Tensor,
-    scene_extent: torch.Tensor,
-    max_anisotropy: torch.Tensor,
-    xyz_lr: torch.Tensor,
-    noise_lr: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    max_position = (scene_extent * _POSITION_LIMIT_MULTIPLIER).clamp_min(1.0)
-    max_scale = (scene_extent * _SCALE_LIMIT_MULTIPLIER).clamp_min(0.05)
-    max_anisotropy = max_anisotropy.clamp_min(1.0)
-    identity = rotation.new_tensor(_IDENTITY_QUAT).expand(rotation.shape[0], -1)
-
-    invalid_xyz = (~torch.isfinite(xyz)).sum()
-    invalid_scale = (~torch.isfinite(log_scale)).sum()
-    invalid_rot = (~torch.isfinite(rotation)).sum()
-    invalid_opacity = (~torch.isfinite(opacity_logits)).sum()
-
-    safe_xyz = torch.where(torch.isfinite(xyz), xyz, prev_xyz)
-    safe_color = torch.where(torch.isfinite(color), color, prev_color).clamp_(0.0, 1.0)
-    safe_opacity_logits = torch.where(torch.isfinite(opacity_logits), opacity_logits, prev_opacity)
-    safe_opacity = torch.sigmoid(safe_opacity_logits).clamp_(_SANITIZE_MIN_OPACITY, 1.0 - torch.finfo(safe_opacity_logits.dtype).eps)
-    safe_log_scale = torch.where(torch.isfinite(log_scale), log_scale, prev_log_scale)
-    safe_scale = torch.exp(safe_log_scale).clamp_min_(_MIN_SCALE)
-    safe_scale = torch.minimum(safe_scale, max_scale)
-    safe_scale = torch.maximum(safe_scale, safe_scale.max(dim=1, keepdim=True).values / max_anisotropy)
-    safe_rotation = torch.where(torch.isfinite(rotation), rotation, prev_rotation)
-    rot_norm = torch.linalg.vector_norm(safe_rotation, dim=1, keepdim=True)
-    prev_rot_norm = torch.linalg.vector_norm(prev_rotation, dim=1, keepdim=True)
-    safe_rotation = torch.where(
-        rot_norm > 1e-8,
-        safe_rotation / rot_norm.clamp_min(1e-8),
-        torch.where(prev_rot_norm > 1e-8, prev_rotation / prev_rot_norm.clamp_min(1e-8), identity),
-    )
-
-    clamped_scale = (safe_scale >= max_scale).sum()
-    clamped_pos = (safe_xyz.abs() >= max_position).sum()
-    safe_xyz = safe_xyz.clamp(-max_position, max_position)
-
-    sigma = torch.sigmoid(100.0 * (0.005 - safe_opacity))
-    base_noise = torch.randn_like(safe_xyz) * sigma * noise_lr * xyz_lr
-    local_noise = _quat_unrotate_vec(safe_rotation, base_noise) * safe_scale.square()
-    noise = _quat_rotate_vec(safe_rotation, local_noise)
-    safe_xyz = safe_xyz + torch.nan_to_num(noise, nan=0.0, posinf=0.0, neginf=0.0)
-
-    return (
-        safe_xyz,
-        safe_color,
-        inverse_sigmoid(safe_opacity),
-        torch.log(safe_scale),
-        safe_rotation,
-        invalid_xyz,
-        invalid_scale,
-        invalid_rot,
-        invalid_opacity,
-        clamped_scale,
-        clamped_pos,
-    )
 
 
 def _estimate_initial_log_scales(points: torch.Tensor, spacing_ratio: float, chunk: int = 1024, reference_limit: int = 4096, progress: Callable[[int, int], None] | None = None) -> torch.Tensor:
@@ -449,58 +301,10 @@ class RGBGaussianModel:
         self._replace_all(xyz, color, opacity, log_scale, rotation, torch.unique(torch.cat((sampled, new_ids))), preserve_grad)
         return num_new
 
-    def densify_gs(self, dead_mask: torch.Tensor, cap_max: int, preserve_grad: bool = False) -> int:
-        dead = dead_mask.nonzero(as_tuple=True)[0]
-        relocate_sampled = torch.empty((0,), device=self.device, dtype=torch.long)
-        relocate_ratio = torch.empty((0, 1), device=self.device, dtype=self._opacity.dtype)
-        densify_probs = self.opacity[:, 0].detach()
-
-        if dead.numel() > 0:
-            alive = (~dead_mask).nonzero(as_tuple=True)[0]
-            if alive.numel() > 0:
-                relocate_sampled, relocate_ratio = self._sample_alive(self.opacity[alive, 0], int(dead.numel()), alive)
-                relocate_opacity, _ = _torch_relocation(
-                    self.opacity[relocate_sampled, 0],
-                    self.scaling[relocate_sampled],
-                    relocate_ratio[relocate_sampled, 0] + 1,
-                    self._binoms,
-                )
-                densify_probs = densify_probs.clone()
-                densify_probs[dead] = relocate_opacity
-                densify_probs[relocate_sampled] = relocate_opacity
-
-        current = self.count
-        num_new = max(0, min(cap_max, int(1.05 * current)) - current)
-        add_sampled = torch.empty((0,), device=self.device, dtype=torch.long)
-        add_ratio = torch.empty((0, 1), device=self.device, dtype=self._opacity.dtype)
-        if num_new > 0:
-            add_sampled, add_ratio = self._sample_alive(densify_probs, num_new)
-        if relocate_sampled.numel() == 0 and add_sampled.numel() == 0:
-            return 0
-
-        xyz, color, opacity, log_scale, rotation, zero = _fused_densify_impl(
-            self._xyz.detach(),
-            self._color.detach(),
-            self._opacity.detach(),
-            self._log_scale.detach(),
-            self._rotation.detach(),
-            self._binoms,
-            dead,
-            relocate_sampled,
-            relocate_ratio[relocate_sampled],
-            add_sampled,
-            add_ratio[add_sampled],
-        )
-        self._replace_all(xyz, color, opacity, log_scale, rotation, zero, preserve_grad)
-        return int(add_sampled.numel())
-
     def add_noise(self, xyz_lr: float, noise_lr: float) -> None:
-        rotation = self.rotation
-        scale_sq = self.scaling.square()
+        cov = _build_scaling_rotation(self.scaling, self.rotation)
         sigma = torch.sigmoid(100.0 * (0.005 - self.opacity))
-        base_noise = torch.randn_like(self._xyz) * sigma * noise_lr * xyz_lr
-        local_noise = _quat_unrotate_vec(rotation, base_noise) * scale_sq
-        noise = _quat_rotate_vec(rotation, local_noise)
+        noise = torch.bmm(cov @ cov.transpose(1, 2), (torch.randn_like(self._xyz) * sigma * noise_lr * xyz_lr).unsqueeze(-1)).squeeze(-1)
         self._xyz.data.add_(torch.nan_to_num(noise, nan=0.0, posinf=0.0, neginf=0.0))
 
     def sanitize_after_step(self, prev: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor], scene_extent: float, max_anisotropy: float) -> str:
@@ -541,68 +345,6 @@ class RGBGaussianModel:
                 f"clamped_scale={clamped_scale} clamped_pos={clamped_pos}"
             )
         return ""
-
-    def sanitize_and_add_noise(
-        self,
-        prev: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
-        scene_extent: float,
-        max_anisotropy: float,
-        xyz_lr: float,
-        noise_lr: float,
-    ) -> str:
-        prev_xyz, prev_color, prev_opacity, prev_log_scale, prev_rotation = prev
-        scene_extent_tensor = torch.as_tensor(scene_extent, device=self.device, dtype=self._xyz.dtype)
-        max_anisotropy_tensor = torch.as_tensor(max_anisotropy, device=self.device, dtype=self._xyz.dtype)
-        xyz_lr_tensor = torch.as_tensor(xyz_lr, device=self.device, dtype=self._xyz.dtype)
-        noise_lr_tensor = torch.as_tensor(noise_lr, device=self.device, dtype=self._xyz.dtype)
-        (
-            xyz,
-            color,
-            opacity,
-            log_scale,
-            rotation,
-            invalid_xyz,
-            invalid_scale,
-            invalid_rot,
-            invalid_opacity,
-            clamped_scale,
-            clamped_pos,
-        ) = _fused_sanitize_noise_impl(
-            self._xyz.detach(),
-            self._color.detach(),
-            self._opacity.detach(),
-            self._log_scale.detach(),
-            self._rotation.detach(),
-            prev_xyz,
-            prev_color,
-            prev_opacity,
-            prev_log_scale,
-            prev_rotation,
-            scene_extent_tensor,
-            max_anisotropy_tensor,
-            xyz_lr_tensor,
-            noise_lr_tensor,
-        )
-
-        self._xyz.data.copy_(xyz)
-        self._color.data.copy_(color)
-        self._opacity.data.copy_(opacity)
-        self._log_scale.data.copy_(log_scale)
-        self._rotation.data.copy_(rotation)
-
-        invalid_xyz_i = int(invalid_xyz.item())
-        invalid_scale_i = int(invalid_scale.item())
-        invalid_rot_i = int(invalid_rot.item())
-        invalid_opacity_i = int(invalid_opacity.item())
-        clamped_scale_i = int(clamped_scale.item())
-        clamped_pos_i = int(clamped_pos.item())
-        if invalid_xyz_i or invalid_scale_i or invalid_rot_i or invalid_opacity_i or clamped_scale_i or clamped_pos_i:
-            return (
-                f"sanitized params: xyz={invalid_xyz_i} scale={invalid_scale_i} rot={invalid_rot_i} opacity={invalid_opacity_i} "
-                f"clamped_scale={clamped_scale_i} clamped_pos={clamped_pos_i}"
-            )
-        return ""
-
 
 class RGBMCMCTrainer:
     def __init__(self, cfg: MCMCConfig, context: SplattingContext | None = None, device: str = "cuda") -> None:
@@ -692,24 +434,22 @@ class RGBMCMCTrainer:
         pred, target = self._render(camera, background), self._target_image(camera)
         pred = torch.nan_to_num(pred, nan=0.0, posinf=1.0, neginf=0.0).clamp_(0.0, 1.0)
         target = torch.nan_to_num(target, nan=0.0, posinf=1.0, neginf=0.0).clamp_(0.0, 1.0)
-        opacity = self.model.opacity
-        scaling = self.model.scaling
-        total, l1, mse, train_psnr_tensor = training_loss(pred, target, opacity, scaling, self.cfg.lambda_dssim, self.cfg.opacity_reg, self.cfg.scale_reg)
-        total = total.clone()
-        l1 = l1.clone()
-        mse = mse.clone()
-        train_psnr_tensor = train_psnr_tensor.clone()
-        mse_value = float(mse.detach())
-        train_psnr = float(train_psnr_tensor.detach())
+        l1 = l1_loss(pred, target)
+        mse_value = float((pred - target).square().mean().detach())
+        train_psnr = float(psnr(pred, target).detach())
+        total = (1.0 - self.cfg.lambda_dssim) * l1 + self.cfg.lambda_dssim * (1.0 - ssim(rgb_to_nchw(pred), rgb_to_nchw(target))) + self.cfg.opacity_reg * self.model.opacity.abs().mean() + self.cfg.scale_reg * self.model.scaling.abs().mean()
+        total = torch.nan_to_num(total, nan=0.0, posinf=1e6, neginf=0.0)
         total.backward()
         grad_stats = self._grad_stats()
         prev_params = tuple(t.detach().clone() for t in (self.model._xyz, self.model._color, self.model._opacity, self.model._log_scale, self.model._rotation))
         if self.cfg.densify_from_iter < self.iteration < self.cfg.densify_until_iter and self.iteration % self.cfg.densification_interval == 0:
-            self.model.densify_gs((self.model.opacity <= 0.005).squeeze(1), self.cfg.cap_max, preserve_grad=True)
+            self.model.relocate_gs((self.model.opacity <= 0.005).squeeze(1), preserve_grad=True)
+            self.model.add_new_gs(self.cfg.cap_max, preserve_grad=True)
             prev_params = tuple(t.detach().clone() for t in (self.model._xyz, self.model._color, self.model._opacity, self.model._log_scale, self.model._rotation))
         self.model.optimizer.step()
         self.model.optimizer.zero_grad(set_to_none=True)
-        self.model.sanitize_and_add_noise(prev_params, self.scene.extent_radius, self.context.max_anisotropy, xyz_lr, self.cfg.noise_lr)
+        self.model.sanitize_after_step(prev_params, self.scene.extent_radius, self.context.max_anisotropy)
+        self.model.add_noise(xyz_lr, self.cfg.noise_lr)
         test_psnr = test_ssim = None
         if self.iteration % self.cfg.eval_interval == 0:
             test_psnr, test_ssim = self.evaluate(self.scene.test_cameras, self.scene.background)
