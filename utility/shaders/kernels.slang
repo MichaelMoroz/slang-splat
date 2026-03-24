@@ -67,7 +67,8 @@ uniform uint g_CountOffset;
 uniform uint g_MaxElementCount;
 uniform RWTensor<uint, 1> g_IndirectArgs;
 
-groupshared uint gsPrefix[PREFIX_BLOCK_SIZE];
+groupshared uint gsPrefixWaveTotals[PREFIX_THREADS];
+groupshared uint gsPrefixWaveScan[PREFIX_THREADS];
 groupshared uint gsHistogram[PACKED_HIST_SIZE];
 groupshared uint gsDigits[RADIX_GROUP_SIZE];
 groupshared uint gsQuarterCounts[RADIX_BIN_COUNT];
@@ -103,6 +104,49 @@ uint prefix_level_count(uint count, uint level) {
 
 uint load_prefix_count() {
     return g_UsePrefixParams != 0u ? g_PrefixParamsBuffer[PREFIX_PARAM_COUNT_OFFSET] : g_Count;
+}
+
+uint block_exclusive_scan(uint value, uint localId, out uint blockTotal)
+{
+    uint waveSize = WaveGetLaneCount();
+    uint laneId = WaveGetLaneIndex();
+    uint waveId = (localId - laneId) / waveSize;
+    uint numWaves = (PREFIX_THREADS + waveSize - 1u) / waveSize;
+
+    uint wavePrefix = WavePrefixSum(value);
+    uint waveTotal = WaveActiveSum(value);
+
+    if (WaveIsFirstLane())
+    {
+        gsPrefixWaveTotals[waveId] = waveTotal;
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    if (localId < numWaves)
+    {
+        gsPrefixWaveScan[localId] = gsPrefixWaveTotals[localId];
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    for (uint offset = 1u; offset < numWaves; offset <<= 1u)
+    {
+        uint add = 0u;
+        if (localId < numWaves && localId >= offset)
+        {
+            add = gsPrefixWaveScan[localId - offset];
+        }
+        GroupMemoryBarrierWithGroupSync();
+
+        if (localId < numWaves)
+        {
+            gsPrefixWaveScan[localId] += add;
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    blockTotal = gsPrefixWaveScan[numWaves - 1u];
+    uint waveBase = waveId != 0u ? gsPrefixWaveScan[waveId - 1u] : 0u;
+    return waveBase + wavePrefix;
 }
 
 uint radix_total_n(uint numGroups) { return numGroups * RADIX_BIN_COUNT; }
@@ -161,32 +205,15 @@ void csPrefixScanBlocks(uint3 groupID : SV_GroupID, uint3 localID : SV_GroupThre
     uint idx1 = idx0 + PREFIX_THREADS;
     uint value0 = idx0 < count ? g_PrefixInput[int(idx0)] : 0u;
     uint value1 = idx1 < count ? g_PrefixInput[int(idx1)] : 0u;
-    gsPrefix[lane] = value0;
-    gsPrefix[lane + PREFIX_THREADS] = value1;
-    GroupMemoryBarrierWithGroupSync();
+    uint firstHalfTotal;
+    uint secondHalfTotal;
+    uint scan0 = block_exclusive_scan(value0, lane, firstHalfTotal);
+    uint scan1 = block_exclusive_scan(value1, lane, secondHalfTotal) + firstHalfTotal;
+    uint blockTotal = firstHalfTotal + secondHalfTotal;
 
-    [unroll] for (uint stride = 1u; stride < PREFIX_BLOCK_SIZE; stride <<= 1u) {
-        uint i = (lane + 1u) * stride * 2u - 1u;
-        if (i < PREFIX_BLOCK_SIZE) gsPrefix[i] += gsPrefix[i - stride];
-        GroupMemoryBarrierWithGroupSync();
-    }
-
-    if (lane == 0u) g_PrefixBlockSums.store(int(groupID.x), gsPrefix[PREFIX_BLOCK_SIZE - 1u]);
-    if (lane == 0u) gsPrefix[PREFIX_BLOCK_SIZE - 1u] = 0u;
-    GroupMemoryBarrierWithGroupSync();
-
-    [unroll] for (uint stride = PREFIX_BLOCK_SIZE >> 1u; stride > 0u; stride >>= 1u) {
-        uint i = (lane + 1u) * stride * 2u - 1u;
-        if (i < PREFIX_BLOCK_SIZE) {
-            uint t = gsPrefix[i - stride];
-            gsPrefix[i - stride] = gsPrefix[i];
-            gsPrefix[i] += t;
-        }
-        GroupMemoryBarrierWithGroupSync();
-    }
-
-    if (idx0 < count) g_PrefixOutput.store(int(idx0), gsPrefix[lane] + (g_Exclusive != 0u ? 0u : value0));
-    if (idx1 < count) g_PrefixOutput.store(int(idx1), gsPrefix[lane + PREFIX_THREADS] + (g_Exclusive != 0u ? 0u : value1));
+    if (idx0 < count) g_PrefixOutput.store(int(idx0), scan0 + (g_Exclusive != 0u ? 0u : value0));
+    if (idx1 < count) g_PrefixOutput.store(int(idx1), scan1 + (g_Exclusive != 0u ? 0u : value1));
+    if (lane == 0u) g_PrefixBlockSums.store(int(groupID.x), blockTotal);
 }
 
 [shader("compute")]
