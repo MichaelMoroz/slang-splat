@@ -206,7 +206,8 @@ class SplatViewer(spy.AppWindow):
         preview = self.training.consume_preview()
         if preview is not None:
             params = self.renderer.scene["g_Params"].to_torch()
-            params.copy_(_pack_params_torch(preview))
+            packed_preview = _pack_params_torch(preview)
+            params[: packed_preview.numel()].copy_(packed_preview)
             self.renderer.device.sync_to_device()
             self.s.scene_dirty = False
             self.s.splat_count = int(preview.shape[1])

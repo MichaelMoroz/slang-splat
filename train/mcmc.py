@@ -155,6 +155,7 @@ class TrainingStepStats(TrainingMetrics):
     frame_index: int
     camera_name: str
     background: tuple[float, float, float]
+    tile_count: int
     mse: float
     train_psnr: float
     grad_stats: dict[str, ScalarStats]
@@ -432,6 +433,7 @@ class RGBMCMCTrainer:
         frame_index = next((idx for idx, item in enumerate(self.scene.train_cameras) if item is camera), -1)
         background = tuple(np.random.rand(3).tolist()) if self.cfg.random_background else self.scene.background
         pred, target = self._render(camera, background), self._target_image(camera)
+        tile_count = int(getattr(self.context, "_last_total", 0))
         pred = torch.nan_to_num(pred, nan=0.0, posinf=1.0, neginf=0.0).clamp_(0.0, 1.0)
         target = torch.nan_to_num(target, nan=0.0, posinf=1.0, neginf=0.0).clamp_(0.0, 1.0)
         l1 = l1_loss(pred, target)
@@ -465,6 +467,7 @@ class RGBMCMCTrainer:
             int(frame_index),
             camera.image_name,
             tuple(map(float, background)),
+            int(tile_count),
             float(mse_value),
             float(train_psnr),
             grad_stats,
@@ -479,8 +482,10 @@ class RGBMCMCTrainer:
             output_dir.mkdir(parents=True, exist_ok=True)
             (output_dir / "config.json").write_text(json.dumps(asdict(self.cfg), indent=2))
         metrics = []
-        for _ in tqdm(range(1, self.cfg.iterations + 1), desc="MCMC training"):
+        progress = tqdm(range(1, self.cfg.iterations + 1), desc="MCMC training")
+        for _ in progress:
             step = self.step()
+            progress.set_postfix(loss=f"{step.loss:.4f}", tiles=f"{step.tile_count:,}")
             metrics.append(TrainingMetrics(step.iteration, step.loss, step.l1, step.test_psnr, step.test_ssim, step.point_count))
         if output_dir is not None:
             (output_dir / "metrics.json").write_text(json.dumps([asdict(item) for item in metrics], indent=2))
