@@ -327,7 +327,10 @@ def _project_scene(context: SplattingContext, splats: np.ndarray, camera: np.nda
 
 def _render_scene(context: SplattingContext, splats: np.ndarray, camera: np.ndarray, image_size: tuple[int, int], background: tuple[float, float, float] = (0.0, 0.0, 0.0)) -> np.ndarray:
     _load_public_splats(context, splats, image_size, background)
-    return np.asarray(context.render(_camera_dict(camera, image_size), splats.shape[1]).to_numpy()).copy()
+    context.render(_camera_dict(camera, image_size), splats.shape[1])
+    color = np.asarray(context.frame["g_Output"].to_numpy()).copy()
+    depth_ratio = np.asarray(context.frame["g_OutputDepth"].to_numpy()).copy()[..., None]
+    return np.concatenate((color, depth_ratio), axis=-1)
 
 
 def _backward_scene(
@@ -340,7 +343,8 @@ def _backward_scene(
 ) -> np.ndarray:
     _load_public_splats(context, splats, image_size, background)
     context.render(_camera_dict(camera, image_size), splats.shape[1])
-    context.frame["g_OutputGrad"].copy_from_numpy(np.ascontiguousarray(grad_output.astype(np.float32, copy=False)))
+    context.frame["g_OutputGrad"].copy_from_numpy(np.ascontiguousarray(grad_output[..., :4].astype(np.float32, copy=False)))
+    context.frame["g_OutputDepthGrad"].copy_from_numpy(np.ascontiguousarray(grad_output[..., 4].astype(np.float32, copy=False)))
     context.device.sync_to_cuda()
     grads = np.asarray(context.backward(_camera_dict(camera, image_size), splats.shape[1]).to_numpy())[: splats.shape[1] * 14].copy()
     return grads.reshape(splats.shape[1], 14).T
@@ -435,6 +439,9 @@ def _ground_truth_render(splats: np.ndarray, camera: np.ndarray, image_size: tup
     rays = _screen_to_world_rays(camera, image_size, render_seed=render_seed).reshape(-1, 3)
     accum = np.zeros((rays.shape[0], 3), dtype=np.float32)
     trans = np.ones((rays.shape[0],), dtype=np.float32)
+    depth_weight = np.zeros((rays.shape[0],), dtype=np.float32)
+    depth_mean = np.zeros((rays.shape[0],), dtype=np.float32)
+    depth_m2 = np.zeros((rays.shape[0],), dtype=np.float32)
     for i in range(splats.shape[1]):
         gaussian = splats[:, i]
         scale = np.clip(np.exp(gaussian[3:6]) * _GAUSSIAN_SUPPORT_SIGMA_RADIUS, _SMALL_VALUE, None)
@@ -450,12 +457,23 @@ def _ground_truth_render(splats: np.ndarray, camera: np.ndarray, image_size: tup
             0.0,
         ).astype(np.float32)
         alpha = np.where(alpha >= _ALPHA_CUTOFF, alpha, 0.0)
-        accum = accum + (trans * alpha)[:, None] * gaussian[10:13]
+        contribution = trans * alpha
+        total_weight = depth_weight + contribution
+        safe = contribution > _SMALL_VALUE
+        delta = t_closest - depth_mean
+        next_depth_mean = np.where(safe, depth_mean + np.where(total_weight > _SMALL_VALUE, (contribution / np.maximum(total_weight, _SMALL_VALUE)) * delta, 0.0), depth_mean)
+        next_depth_m2 = np.where(safe, depth_m2 + np.where(total_weight > _SMALL_VALUE, depth_weight * contribution * delta * delta / np.maximum(total_weight, _SMALL_VALUE), 0.0), depth_m2)
+        depth_weight = np.where(safe, total_weight, depth_weight)
+        depth_mean = next_depth_mean.astype(np.float32, copy=False)
+        depth_m2 = next_depth_m2.astype(np.float32, copy=False)
+        accum = accum + contribution[:, None] * gaussian[10:13]
         trans = trans * (1.0 - alpha)
         if np.all(trans < _TRANS_THRESHOLD):
             break
     color = np.power(np.clip(accum, 0.0, None), _OUTPUT_GAMMA)
-    return np.concatenate((color, (1.0 - trans)[:, None]), axis=-1).reshape(image_size[1], image_size[0], 4)
+    depth_std = np.sqrt(np.maximum(depth_m2 / np.maximum(depth_weight, _SMALL_VALUE), 0.0))
+    depth_ratio = np.where(depth_weight > _SMALL_VALUE, depth_std / np.maximum(np.abs(depth_mean), _SMALL_VALUE), 0.0).astype(np.float32, copy=False)
+    return np.concatenate((color, (1.0 - trans)[:, None], depth_ratio[:, None]), axis=-1).reshape(image_size[1], image_size[0], 5)
 
 
 @pytest.fixture
@@ -468,13 +486,13 @@ def backend_context(backend_name: str) -> SplattingContext:
 
 def test_forward_smoke(backend_context: SplattingContext) -> None:
     image = _render_scene(backend_context, _make_splats(), _make_camera(_SMOKE_IMAGE_SIZE), _SMOKE_IMAGE_SIZE)
-    assert tuple(image.shape) == (_SMOKE_IMAGE_SIZE[1], _SMOKE_IMAGE_SIZE[0], 4)
+    assert tuple(image.shape) == (_SMOKE_IMAGE_SIZE[1], _SMOKE_IMAGE_SIZE[0], 5)
     assert np.isfinite(image).all()
 
 
 def test_zero_splats_smoke(backend_context: SplattingContext) -> None:
     image = _render_scene(backend_context, np.zeros((14, 0), dtype=np.float32), _make_camera(_SMOKE_IMAGE_SIZE), _SMOKE_IMAGE_SIZE)
-    assert tuple(image.shape) == (_SMOKE_IMAGE_SIZE[1], _SMOKE_IMAGE_SIZE[0], 4)
+    assert tuple(image.shape) == (_SMOKE_IMAGE_SIZE[1], _SMOKE_IMAGE_SIZE[0], 5)
     assert np.isfinite(image).all()
     np.testing.assert_allclose(image, 0.0, atol=0.0, rtol=0.0)
     grads = _backward_scene(
@@ -497,6 +515,21 @@ def test_backward_smoke(backend_context: SplattingContext) -> None:
     assert float(np.abs(grads).sum()) > 0.0
 
 
+def test_optional_splat_density_output_smoke(backend_context: SplattingContext) -> None:
+    image_size = _SMOKE_IMAGE_SIZE
+    splats = _make_splats()
+    _load_public_splats(backend_context, splats, image_size, (0.0, 0.0, 0.0))
+    backend_context.compute_splat_densities = True
+    backend_context.render(_camera_dict(_make_camera(image_size), image_size), splats.shape[1])
+    densities = np.asarray(backend_context.frame["g_SplatDensities"].to_numpy()).copy()
+    assert tuple(densities.shape) == (_SMOKE_IMAGE_SIZE[1], _SMOKE_IMAGE_SIZE[0], 3)
+    assert np.isfinite(densities).all()
+    assert float(densities[..., 0].max()) > 0.0
+    assert float(densities[..., 1].max()) > 0.0
+    assert float(densities[..., 2].max()) > 0.0
+    backend_context.compute_splat_densities = False
+
+
 def test_forward_matches_ground_truth_closely(backend_context: SplattingContext) -> None:
     splats = _make_parity_splats()
     camera = _make_camera(_PARITY_IMAGE_SIZE)
@@ -510,6 +543,7 @@ def test_forward_matches_ground_truth_closely(backend_context: SplattingContext)
     alpha_error = np.abs(image[..., 3] - ref[..., 3])
     assert float(alpha_error.mean()) <= 4e-3
     assert float(np.quantile(alpha_error, 0.99)) <= 3e-2
+    np.testing.assert_allclose(image[..., 4], ref[..., 4], rtol=5e-2, atol=5e-2)
 
 
 def test_gradient_matches_finite_difference_reference(backend_context: SplattingContext) -> None:

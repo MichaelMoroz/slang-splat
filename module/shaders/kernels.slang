@@ -24,7 +24,11 @@ uniform Tensor<uint, 1> g_OverflowA;
 uniform Tensor<uint, 1> g_OverflowB;
 uniform RWTensor<float4, 2> g_Output;
 uniform Tensor<float4, 2> g_OutputGrad;
+uniform RWTensor<float, 2> g_OutputDepth;
+uniform Tensor<float, 2> g_OutputDepthGrad;
 uniform RWTensor<float4, 2> g_ForwardState;
+uniform RWTensor<float4, 2> g_ForwardDepthState;
+uniform RWTensor<float3, 2> g_SplatDensities;
 uniform RWTensor<uint, 2> g_ForwardEnd;
 uniform AtomicTensor<float, 1> g_ParamGrads;
 uniform Camera g_Camera;
@@ -46,6 +50,7 @@ uniform uint g_DebugMaxSplatSteps;
 uniform float2 g_DebugDepthMeanRange;
 uniform float2 g_DebugDepthStdRange;
 uniform float2 g_DebugDensityRange;
+uniform uint g_ComputeSplatDensities;
 uniform RWTensor<uint, 1> g_ScanlineOverflow;
 uniform RWTensor<uint, 1> g_TileOverflow;
 uniform uint g_TotalCapacity;
@@ -407,14 +412,21 @@ void csRasterForward(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupID
     float2 raySample = float2(p) + stochastic_subpixel_offset(pixelId, g_RenderSeed, g_DitherStrength);
     float3 rayDir = active ? g_Camera.screen_to_world_ray(raySample) : 0.0;
     bool outlineDebug = g_DebugMode == DEBUG_MODE_ELLIPSE_OUTLINES;
-    bool depthDebug = g_DebugMode == DEBUG_MODE_DEPTH_MEAN || g_DebugMode == DEBUG_MODE_DEPTH_STD;
+    bool depthMeanDebug = g_DebugMode == DEBUG_MODE_DEPTH_MEAN;
+    bool depthStdDebug = g_DebugMode == DEBUG_MODE_DEPTH_STD;
+    bool depthDebug = depthMeanDebug || depthStdDebug;
     bool spatialDensityDebug = g_DebugMode == DEBUG_MODE_SPLAT_SPATIAL_DENSITY;
     bool screenDensityDebug = g_DebugMode == DEBUG_MODE_SPLAT_SCREEN_DENSITY;
     bool densityDebug = spatialDensityDebug || screenDensityDebug;
+    bool computeDensityOutput = g_ComputeSplatDensities != 0u;
+    bool computeSpatialDensity = spatialDensityDebug || computeDensityOutput;
+    bool computeScreenDensity = screenDensityDebug || computeDensityOutput;
+    bool accumulateDensities = densityDebug || computeDensityOutput;
     float depthWeightSum = 0.0;
     float depthMean = 0.0;
     float depthM2 = 0.0;
-    float densitySum = 0.0;
+    float spatialDensitySum = 0.0;
+    float screenDensitySum = 0.0;
     if (range.x != INVALID_START && range.y > range.x) {
         bool done = !active;
         if (lane == 0u) gsDoneCount = 0u;
@@ -426,43 +438,34 @@ void csRasterForward(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupID
             uint batchEnd = min(batchStart + RASTER_BATCH, range.y);
             uint batchCount = batchEnd - batchStart;
             // Batch splats into groupshared storage so every pixel in the tile reuses the same loads.
-            prefetch_batch(batchStart, batchEnd, lane, outlineDebug || screenDensityDebug);
+            prefetch_batch(batchStart, batchEnd, lane, outlineDebug || computeScreenDensity);
             GroupMemoryBarrierWithGroupSync();
             if (!done) {
                 for (uint localIdx = 0u; localIdx < batchCount; localIdx++) {
                     processedEnd = batchStart + localIdx + 1u;
                     Gaussian3D gaussian = gsGaussian[localIdx];
                     // The forward loop only needs alpha and the fused color/opacity carried by Gaussian3D.
-                    float alpha = outlineDebug
-                        ? raster_eval_outline_alpha(gaussian, gsProjection[localIdx], raySample)
+                    float2 eval = outlineDebug
+                        ? float2(raster_eval_outline_alpha(gaussian, gsProjection[localIdx], raySample), 0.0)
                         : raster_eval_alpha(gaussian, rayDir);
+                    float alpha = eval.x;
+                    float rayDepth = eval.y;
                     if (alpha < g_AlphaCutoff) continue;
                     float contributionWeight = trans * alpha;
-                    if (depthDebug) {
-                        if (contributionWeight > SMALL_VALUE) {
-                            float3 rayLocal = rotate_by_quat(rayDir, gaussian.rotation) / max(gaussian.logScale, float3(SMALL_VALUE));
-                            float denom = dot(rayLocal, rayLocal);
-                            if (denom > RAY_DENOMINATOR_FLOOR) {
-                                float tClosest = -dot(rayLocal, gaussian.position) / denom;
-                                if (tClosest > 0.0) {
-                                    float totalWeight = depthWeightSum + contributionWeight;
-                                    float delta = tClosest - depthMean;
-                                    depthMean += (contributionWeight / totalWeight) * delta;
-                                    depthM2 += depthWeightSum * contributionWeight * delta * delta / totalWeight;
-                                    depthWeightSum = totalWeight;
-                                }
-                            }
-                        }
+                    if (contributionWeight > SMALL_VALUE && rayDepth > 0.0) {
+                        float3 depthState = depth_state_step(depthWeightSum, depthMean, depthM2, contributionWeight, rayDepth);
+                        depthWeightSum = depthState.x;
+                        depthMean = depthState.y;
+                        depthM2 = depthState.z;
                     }
-                    if (densityDebug && contributionWeight > SMALL_VALUE) {
-                        float densityContribution = contributionWeight;
-                        if (spatialDensityDebug) {
+                    if (accumulateDensities && contributionWeight > SMALL_VALUE) {
+                        if (computeSpatialDensity) {
                             Gaussian3D originalGaussian = Gaussian3D.load(g_Splats, g_SplatCount, gsBatchSplatId[localIdx]);
-                            densityContribution /= gaussian_scale_volume(originalGaussian.logScale);
-                        } else if (screenDensityDebug) {
-                            densityContribution /= projected_ellipse_area(gsProjection[localIdx].conicOpacity.xyz);
+                            spatialDensitySum += contributionWeight / gaussian_scale_volume(originalGaussian.logScale);
                         }
-                        densitySum += densityContribution;
+                        if (computeScreenDensity) {
+                            screenDensitySum += contributionWeight / projected_ellipse_area(gsProjection[localIdx].conicOpacity.xyz);
+                        }
                     }
                     float4 blended = shade_step(accum, trans, gaussian, alpha);
                     accum = blended.xyz;
@@ -480,23 +483,24 @@ void csRasterForward(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupID
     if (!active) return;
     uint processedCount = range.x != INVALID_START && processedEnd >= range.x ? (processedEnd - range.x) : 0u;
     float4 output = raster_output(accum, trans, g_Background);
+    float depthOutput = raster_depth_output(depthWeightSum, depthMean, depthM2);
     if (g_DebugMode == DEBUG_MODE_PROCESSED_COUNT) {
         output = float4(raster_processed_count_color(processedCount, g_DebugMaxSplatSteps), 1.0);
-    } else if (densityDebug) {
-        output = float4(jet_colormap(debug_normalize_range(densitySum, g_DebugDensityRange)), 1.0);
-    } else if (g_DebugMode == DEBUG_MODE_DEPTH_MEAN || g_DebugMode == DEBUG_MODE_DEPTH_STD) {
-        float debugValue = 0.0;
-        if (depthWeightSum > SMALL_VALUE) {
-            float depthStd = sqrt(max(depthM2 / depthWeightSum, 0.0));
-            float depthStdRatio = depthStd / max(abs(depthMean), SMALL_VALUE);
-            debugValue = g_DebugMode == DEBUG_MODE_DEPTH_MEAN
-                ? debug_normalize_range(depthMean, g_DebugDepthMeanRange)
-                : debug_normalize_range(depthStdRatio, g_DebugDepthStdRange);
-        }
+    } else if (spatialDensityDebug) {
+        output = float4(jet_colormap(debug_normalize_range(spatialDensitySum, g_DebugDensityRange)), 1.0);
+    } else if (screenDensityDebug) {
+        output = float4(jet_colormap(debug_normalize_range(screenDensitySum, g_DebugDensityRange)), 1.0);
+    } else if (depthDebug) {
+        float debugValue = depthMeanDebug
+            ? debug_normalize_range(depthMean, g_DebugDepthMeanRange)
+            : debug_normalize_range(depthOutput, g_DebugDepthStdRange);
         output = float4(jet_colormap(debugValue), 1.0);
     }
     g_Output.store(p, output);
     g_ForwardState.store(p, float4(accum, trans));
+    g_OutputDepth.store(p, depthOutput);
+    g_ForwardDepthState.store(p, float4(depthWeightSum, depthMean, depthM2, 0.0));
+    if (computeDensityOutput) g_SplatDensities.store(p, float3(spatialDensitySum, screenDensitySum, depthMean));
     g_ForwardEnd.store(p, processedEnd);
 }
 
@@ -510,8 +514,14 @@ struct PixelBackwardState {
     bool valid;
     float3 accum;
     float trans;
+    float depthWeightSum;
+    float depthMean;
+    float depthM2;
     float3 dAccum;
     float dTrans;
+    float dDepthWeightSum;
+    float dDepthMean;
+    float dDepthM2;
     float3 rayDir;
     uint processedEnd;
 };
@@ -529,8 +539,14 @@ PixelBackwardState make_invalid_pixel_backward_state() {
     state.valid = false;
     state.accum = 0.0;
     state.trans = 0.0;
+    state.depthWeightSum = 0.0;
+    state.depthMean = 0.0;
+    state.depthM2 = 0.0;
     state.dAccum = 0.0;
     state.dTrans = 0.0;
+    state.dDepthWeightSum = 0.0;
+    state.dDepthMean = 0.0;
+    state.dDepthM2 = 0.0;
     state.rayDir = 0.0;
     state.processedEnd = 0u;
     return state;
@@ -546,18 +562,97 @@ GaussianBackwardGrads make_zero_gaussian_backward_grads() {
     return grads;
 }
 
+void rewind_depth_backward(inout PixelBackwardState state, float contributionWeight, float rayDepth, float alpha, float prevTrans, inout float dAlpha, out float dRayDepth) {
+    dRayDepth = 0.0;
+    if (contributionWeight <= SMALL_VALUE || rayDepth <= 0.0) return;
+    float3 prevDepthState = depth_state_rewind(state.depthWeightSum, state.depthMean, state.depthM2, contributionWeight, rayDepth);
+    var dpPrevDepthWeightSum = diffPair(prevDepthState.x);
+    var dpPrevDepthMean = diffPair(prevDepthState.y);
+    var dpPrevDepthM2 = diffPair(prevDepthState.z);
+    var dpContributionWeight = diffPair(contributionWeight);
+    var dpRayDepth = diffPair(rayDepth);
+    bwd_diff(depth_state_step)(
+        dpPrevDepthWeightSum,
+        dpPrevDepthMean,
+        dpPrevDepthM2,
+        dpContributionWeight,
+        dpRayDepth,
+        float3(state.dDepthWeightSum, state.dDepthMean, state.dDepthM2)
+    );
+    state.depthWeightSum = prevDepthState.x;
+    state.depthMean = prevDepthState.y;
+    state.depthM2 = prevDepthState.z;
+    state.dDepthWeightSum = dpPrevDepthWeightSum.getDifferential();
+    state.dDepthMean = dpPrevDepthMean.getDifferential();
+    state.dDepthM2 = dpPrevDepthM2.getDifferential();
+    float dContributionWeight = dpContributionWeight.getDifferential();
+    state.dTrans += dContributionWeight * alpha;
+    dAlpha += dContributionWeight * prevTrans;
+    dRayDepth = dpRayDepth.getDifferential();
+}
+
+GaussianBackwardGrads raster_gaussian_backward_grads(
+    Gaussian3D originalGaussian,
+    Gaussian3D gaussian,
+    float3 rayDir,
+    Gaussian3D.Differential dGaussian,
+    float dAlpha,
+    float dRayDepth)
+{
+    var dpCachedGaussianAlpha = diffPair(gaussian);
+    bwd_diff(raster_eval_alpha_only)(dpCachedGaussianAlpha, rayDir, dAlpha);
+    Gaussian3D.Differential dCachedGaussian = dpCachedGaussianAlpha.getDifferential();
+    if (dRayDepth != 0.0) {
+        var dpCachedGaussianDepth = diffPair(gaussian);
+        bwd_diff(raster_eval_depth_only)(dpCachedGaussianDepth, rayDir, dRayDepth);
+        Gaussian3D.Differential dCachedGaussianDepth = dpCachedGaussianDepth.getDifferential();
+        dCachedGaussian.position += dCachedGaussianDepth.position;
+        dCachedGaussian.logScale += dCachedGaussianDepth.logScale;
+        dCachedGaussian.rotation += dCachedGaussianDepth.rotation;
+        dCachedGaussian.colorAlpha += dCachedGaussianDepth.colorAlpha;
+    }
+
+    dGaussian.colorAlpha.xyz += dCachedGaussian.colorAlpha.xyz;
+    float fused = max(gaussian.colorAlpha.w, SMALL_VALUE);
+    float dRawOpacity = dCachedGaussian.colorAlpha.w * fused * (1.0 - fused);
+    dCachedGaussian.colorAlpha = 0.0;
+
+    var dpOriginalGaussian = diffPair(originalGaussian);
+    bwd_diff(Gaussian3D.camera_gaussian)(dpOriginalGaussian, g_Camera, g_RadiusScale, GAUSSIAN_SUPPORT_SIGMA_RADIUS, g_MaxAnisotropy, dCachedGaussian);
+    Gaussian3D.Differential dOriginalGaussian = dpOriginalGaussian.getDifferential();
+
+    GaussianBackwardGrads grads;
+    grads.position = dOriginalGaussian.position;
+    grads.logScale = dOriginalGaussian.logScale;
+    grads.rotation = dOriginalGaussian.rotation;
+    grads.color = dGaussian.colorAlpha.xyz + dOriginalGaussian.colorAlpha.xyz;
+    grads.rawOpacity = dRawOpacity;
+    return grads;
+}
+
 PixelBackwardState load_pixel_backward_state(bool active, int2 p, float2 raySample) {
     PixelBackwardState state = make_invalid_pixel_backward_state();
     if (!active) return state;
     float4 state4 = g_ForwardState[p];
+    float4 depthState4 = g_ForwardDepthState[p];
     var dpAccum = diffPair(state4.xyz);
     var dpTrans = diffPair(state4.w);
     bwd_diff(raster_output)(dpAccum, dpTrans, g_Background, g_OutputGrad[p]);
+    var dpDepthWeightSum = diffPair(depthState4.x);
+    var dpDepthMean = diffPair(depthState4.y);
+    var dpDepthM2 = diffPair(depthState4.z);
+    bwd_diff(raster_depth_output)(dpDepthWeightSum, dpDepthMean, dpDepthM2, g_OutputDepthGrad[p]);
     state.valid = true;
     state.accum = state4.xyz;
     state.trans = state4.w;
+    state.depthWeightSum = depthState4.x;
+    state.depthMean = depthState4.y;
+    state.depthM2 = depthState4.z;
     state.dAccum = dpAccum.getDifferential();
     state.dTrans = dpTrans.getDifferential();
+    state.dDepthWeightSum = dpDepthWeightSum.getDifferential();
+    state.dDepthMean = dpDepthMean.getDifferential();
+    state.dDepthM2 = dpDepthM2.getDifferential();
     state.rayDir = g_Camera.screen_to_world_ray(raySample);
     state.processedEnd = g_ForwardEnd[p];
     return state;
@@ -621,7 +716,9 @@ void csRasterBackward(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupI
                 gaussian.colorAlpha.xyz = originalGaussian.colorAlpha.xyz;
                 gaussian.colorAlpha.w = originalGaussian.build_raster_fused_opacity();
 
-                float alpha = raster_eval_alpha(gaussian, state.rayDir);
+                float2 eval = raster_eval_alpha(gaussian, state.rayDir);
+                float alpha = eval.x;
+                float rayDepth = eval.y;
                 if (alpha < g_AlphaCutoff) continue;
 
                 float prevTrans = state.trans / max(1.0 - alpha, SMALL_VALUE);
@@ -636,24 +733,10 @@ void csRasterBackward(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupI
                 state.dAccum = dpPrevAccum.getDifferential();
                 state.dTrans = dpPrevTrans.getDifferential();
 
-                var dpCachedGaussian = diffPair(gaussian);
-                bwd_diff(raster_eval_alpha)(dpCachedGaussian, state.rayDir, dAlpha);
-                Gaussian3D.Differential dCachedGaussian = dpCachedGaussian.getDifferential();
-                dGaussian.colorAlpha.xyz += dCachedGaussian.colorAlpha.xyz;
-                float fused = max(gaussian.colorAlpha.w, SMALL_VALUE);
-                float dRawOpacity = dCachedGaussian.colorAlpha.w * fused * (1.0 - fused);
-                dCachedGaussian.colorAlpha = 0.0;
-
-                var dpOriginalGaussian = diffPair(originalGaussian);
-                bwd_diff(Gaussian3D.camera_gaussian)(dpOriginalGaussian, g_Camera, g_RadiusScale, GAUSSIAN_SUPPORT_SIGMA_RADIUS, g_MaxAnisotropy, dCachedGaussian);
-                Gaussian3D.Differential dOriginalGaussian = dpOriginalGaussian.getDifferential();
-
-                GaussianBackwardGrads grads;
-                grads.position = dOriginalGaussian.position;
-                grads.logScale = dOriginalGaussian.logScale;
-                grads.rotation = dOriginalGaussian.rotation;
-                grads.color = dGaussian.colorAlpha.xyz + dOriginalGaussian.colorAlpha.xyz;
-                grads.rawOpacity = dRawOpacity;
+                float contributionWeight = prevTrans * alpha;
+                float dRayDepth = 0.0;
+                rewind_depth_backward(state, contributionWeight, rayDepth, alpha, prevTrans, dAlpha, dRayDepth);
+                GaussianBackwardGrads grads = raster_gaussian_backward_grads(originalGaussian, gaussian, state.rayDir, dGaussian, dAlpha, dRayDepth);
 
                 state.accum = prevAccum;
                 state.trans = prevTrans;

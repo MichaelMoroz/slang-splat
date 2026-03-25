@@ -35,6 +35,7 @@ class SplattingContext:
     device: spy.Device | None = None
     radius_scale: float = 1.0
     dither_strength: float = 1.0
+    compute_splat_densities: bool = False
     max_anisotropy: float = 12.0
     alpha_cutoff: float = 0.02
     trans_threshold: float = 0.005
@@ -128,7 +129,11 @@ class SplattingContext:
         self.frame = {
             "g_Output": spy.Tensor.empty(self.device, shape=(height, width), dtype=spy.float4),
             "g_OutputGrad": spy.Tensor.empty(self.device, shape=(height, width), dtype=spy.float4),
+            "g_OutputDepth": spy.Tensor.empty(self.device, shape=(height, width), dtype=float),
+            "g_OutputDepthGrad": spy.Tensor.empty(self.device, shape=(height, width), dtype=float),
             "g_ForwardState": spy.Tensor.empty(self.device, shape=(height, width), dtype=spy.float4),
+            "g_ForwardDepthState": spy.Tensor.empty(self.device, shape=(height, width), dtype=spy.float4),
+            "g_SplatDensities": spy.Tensor.empty(self.device, shape=(height, width), dtype=spy.float3),
             "g_ForwardEnd": spy.Tensor.empty(self.device, shape=(height, width), dtype="uint"),
         }
         tw, th = (width + 7) // 8, (height + 7) // 8
@@ -318,6 +323,7 @@ class SplattingContext:
             g_DebugDepthMeanRange=spy.float2(*map(float, self.debug_depth_mean_range)),
             g_DebugDepthStdRange=spy.float2(*map(float, self.debug_depth_std_range)),
             g_DebugDensityRange=spy.float2(*map(float, self.debug_density_range)),
+            g_ComputeSplatDensities=1 if self.compute_splat_densities else 0,
             g_TotalCapacity=int(getattr(self, "_entry_capacity", 1)),
         )
         return vars

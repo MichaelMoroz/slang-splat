@@ -16,7 +16,7 @@ from tqdm import tqdm
 from module import SplattingContext, render_gaussian_splats
 
 from .dataset import CameraSample, SceneData, _image_to_linear_float, _load_image_tensor
-from .losses import get_expon_lr_func, inverse_sigmoid, l1_loss, psnr, rgb_to_nchw, ssim
+from .losses import get_expon_lr_func, inverse_sigmoid, l1_loss, psnr, rgb_to_nchw, ssim, training_loss
 
 _PARAM_COUNT = 14
 _N_MAX = 51
@@ -27,6 +27,15 @@ _SANITIZE_MIN_OPACITY = 1e-6
 _POSITION_LIMIT_MULTIPLIER = 4.0
 _SCALE_LIMIT_MULTIPLIER = 0.5
 _IDENTITY_QUAT = (1.0, 0.0, 0.0, 0.0)
+
+
+def _image_hwc(image: torch.Tensor, image_size: tuple[int, int]) -> torch.Tensor:
+    width, height = map(int, image_size)
+    if tuple(image.shape[:2]) == (height, width):
+        return image
+    if tuple(image.shape[:2]) == (width, height):
+        return image.permute(1, 0, 2).contiguous()
+    raise ValueError(f"Unexpected image shape {tuple(image.shape)} for image_size={image_size}.")
 
 
 def _build_rotation(quat: torch.Tensor) -> torch.Tensor:
@@ -101,6 +110,7 @@ class MCMCConfig:
     scaling_lr: float = 0.005
     rotation_lr: float = 0.001
     lambda_dssim: float = 0.2
+    depth_ratio_weight: float = 0.1
     noise_lr: float = 5e5
     opacity_reg: float = 0.01
     scale_reg: float = 0.01
@@ -391,6 +401,9 @@ class RGBMCMCTrainer:
         return self.model.splats().detach().contiguous()
 
     def _render(self, camera: CameraSample, background: tuple[float, float, float], apply_dither: bool = True) -> torch.Tensor:
+        return self._render_image(camera, background, apply_dither=apply_dither)[..., :3]
+
+    def _render_image(self, camera: CameraSample, background: tuple[float, float, float], apply_dither: bool = True) -> torch.Tensor:
         self.context.dither_strength = self._current_dither_strength() if apply_dither else 0.0
         image = render_gaussian_splats(
             self.model.splats(),
@@ -402,7 +415,7 @@ class RGBMCMCTrainer:
         )
         if self.iteration % 8 == 0:
             self.context.readback_and_reallocate_buffers(refresh_buffers=True)
-        return image[..., :3]
+        return _image_hwc(image, camera.image_size)
 
     def _target_image(self, camera: CameraSample) -> torch.Tensor:
         def to_target(image: torch.Tensor) -> torch.Tensor:
@@ -450,15 +463,25 @@ class RGBMCMCTrainer:
         camera, xyz_lr = self._train_stack.pop(), self.model.update_learning_rate(self.iteration)
         frame_index = next((idx for idx, item in enumerate(self.scene.train_cameras) if item is camera), -1)
         background = tuple(np.random.rand(3).tolist()) if self.cfg.random_background else self.scene.background
-        pred, target = self._render(camera, background), self._target_image(camera)
+        rendered, target = self._render_image(camera, background), self._target_image(camera)
+        pred = rendered[..., :3]
+        depth_ratio = torch.nan_to_num(rendered[..., 4], nan=0.0, posinf=1e6, neginf=0.0)
         tile_count = int(getattr(self.context, "_last_required_total", getattr(self.context, "_last_total", 0)))
         pred = torch.nan_to_num(pred, nan=0.0, posinf=1.0, neginf=0.0).clamp_(0.0, 1.0)
         target = torch.nan_to_num(target, nan=0.0, posinf=1.0, neginf=0.0).clamp_(0.0, 1.0)
-        l1 = l1_loss(pred, target)
-        mse_value = float((pred - target).square().mean().detach())
-        train_psnr = float(psnr(pred, target).detach())
-        total = (1.0 - self.cfg.lambda_dssim) * l1 + self.cfg.lambda_dssim * (1.0 - ssim(rgb_to_nchw(pred), rgb_to_nchw(target))) + self.cfg.opacity_reg * self.model.opacity.abs().mean() + self.cfg.scale_reg * self.model.scaling.abs().mean()
-        total = torch.nan_to_num(total, nan=0.0, posinf=1e6, neginf=0.0)
+        total, l1, mse, train_psnr_tensor = training_loss(
+            pred,
+            target,
+            depth_ratio,
+            self.model.opacity,
+            self.model.scaling,
+            self.cfg.lambda_dssim,
+            self.cfg.depth_ratio_weight,
+            self.cfg.opacity_reg,
+            self.cfg.scale_reg,
+        )
+        mse_value = float(mse.detach())
+        train_psnr = float(train_psnr_tensor.detach())
         total.backward()
         grad_stats = self._grad_stats()
         prev_params = tuple(t.detach().clone() for t in (self.model._xyz, self.model._color, self.model._opacity, self.model._log_scale, self.model._rotation))

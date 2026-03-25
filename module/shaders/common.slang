@@ -416,6 +416,34 @@ float projected_ellipse_area(float3 conic) {
     return max(0.5 * TAU_RADIANS / sqrt(max(det, CONIC_DETERMINANT_FLOOR)), SMALL_VALUE);
 }
 
+[Differentiable]
+float3 depth_state_step(float weightSum, float depthMean, float depthM2, float contributionWeight, float depth) {
+    if (contributionWeight <= SMALL_VALUE || depth <= 0.0) return float3(weightSum, depthMean, depthM2);
+    float totalWeight = weightSum + contributionWeight;
+    float delta = depth - depthMean;
+    float nextDepthMean = depthMean + (contributionWeight / max(totalWeight, SMALL_VALUE)) * delta;
+    float nextDepthM2 = depthM2 + weightSum * contributionWeight * delta * delta / max(totalWeight, SMALL_VALUE);
+    return float3(totalWeight, nextDepthMean, nextDepthM2);
+}
+
+float3 depth_state_rewind(float weightSum, float depthMean, float depthM2, float contributionWeight, float depth) {
+    if (contributionWeight <= SMALL_VALUE || depth <= 0.0) return float3(weightSum, depthMean, depthM2);
+    float prevWeightSum = max(weightSum - contributionWeight, 0.0);
+    if (prevWeightSum <= SMALL_VALUE) return 0.0;
+    float prevDepthMean = (weightSum * depthMean - contributionWeight * depth) / prevWeightSum;
+    float delta = depth - prevDepthMean;
+    float prevDepthM2 = max(depthM2 - prevWeightSum * contributionWeight * delta * delta / max(weightSum, SMALL_VALUE), 0.0);
+    return float3(prevWeightSum, prevDepthMean, prevDepthM2);
+}
+
+[Differentiable]
+float raster_depth_output(float weightSum, float depthMean, float depthM2) {
+    if (weightSum <= SMALL_VALUE) return 0.0;
+    float depthStd = sqrt(max(depthM2 / max(weightSum, SMALL_VALUE), 0.0));
+    float depthStdRatio = depthStd / max(abs(depthMean), SMALL_VALUE);
+    return depthStdRatio;
+}
+
 bool compute_gaussian_outline_ellipse(
     Gaussian3D gaussian,
     Camera camera,
@@ -512,7 +540,7 @@ bool compute_gaussian_outline_ellipse(
 }
 
 [Differentiable]
-float raster_eval_alpha(Gaussian3D gaussian, no_diff float3 rayDir) {
+float2 raster_eval_alpha(Gaussian3D gaussian, no_diff float3 rayDir) {
     float3 rayLocal = rotate_by_quat(rayDir, gaussian.rotation) / max(gaussian.logScale, float3(SMALL_VALUE));
     float denom = dot(rayLocal, rayLocal);
     if (denom <= RAY_DENOMINATOR_FLOOR) return 0.0;
@@ -520,7 +548,18 @@ float raster_eval_alpha(Gaussian3D gaussian, no_diff float3 rayDir) {
     if (tClosest <= 0.0) return 0.0;
     float3 closest = gaussian.position + rayLocal * tClosest;
     float rho2 = max(dot(closest, closest), 0.0);
-    return gaussian.colorAlpha.w * exp(-0.5 * GAUSSIAN_SUPPORT_SIGMA_RADIUS * GAUSSIAN_SUPPORT_SIGMA_RADIUS * rho2);
+    float alpha = gaussian.colorAlpha.w * exp(-0.5 * GAUSSIAN_SUPPORT_SIGMA_RADIUS * GAUSSIAN_SUPPORT_SIGMA_RADIUS * rho2);
+    return float2(alpha, tClosest);
+}
+
+[Differentiable]
+float raster_eval_alpha_only(Gaussian3D gaussian, no_diff float3 rayDir) {
+    return raster_eval_alpha(gaussian, rayDir).x;
+}
+
+[Differentiable]
+float raster_eval_depth_only(Gaussian3D gaussian, no_diff float3 rayDir) {
+    return raster_eval_alpha(gaussian, rayDir).y;
 }
 
 [Differentiable]

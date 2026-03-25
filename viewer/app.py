@@ -11,7 +11,7 @@ import torch
 from module.splatting import SplattingContext
 from utility.ply import load_gaussian_ply
 from .camera import Camera
-from .state import DEBUG_MODE_PROCESSED_COUNT, ViewerState
+from .state import DEBUG_MODE_DEPTH_MEAN, DEBUG_MODE_PROCESSED_COUNT, DEBUG_MODE_SPLAT_SCREEN_DENSITY, DEBUG_MODE_SPLAT_SPATIAL_DENSITY, ViewerState
 from .training import TrainingController
 from .ui import _WINDOW_TITLE, build_ui, create_toolkit_window
 
@@ -26,6 +26,10 @@ _ALPHA_EPS = 1e-6
 _LOSS_DEBUG_VIEW_KEYS = ("rendered", "target", "loss", "abs_diff")
 _MAX_SURFACE_DIM = 8192
 _MAX_SURFACE_PIXELS = 33_554_432
+
+
+def _needs_splat_density_output(debug_mode: int) -> bool:
+    return int(debug_mode) in (DEBUG_MODE_DEPTH_MEAN, DEBUG_MODE_SPLAT_SPATIAL_DENSITY, DEBUG_MODE_SPLAT_SCREEN_DENSITY)
 
 
 def _normalize(v: np.ndarray) -> np.ndarray:
@@ -395,6 +399,7 @@ class SplatViewer(spy.AppWindow):
         self.renderer.trans_threshold = self.s.trans_threshold
         self.renderer.render_seed = int(render_seed)
         self.renderer.debug_mode = self.s.debug_mode
+        self.renderer.compute_splat_densities = _needs_splat_density_output(self.s.debug_mode)
         self.renderer.debug_depth_mean_range = (
             float(self.ui.values["debug_depth_mean_min"]),
             float(self.ui.values["debug_depth_mean_max"]),
@@ -502,6 +507,7 @@ class SplatViewer(spy.AppWindow):
                     self.renderer.trans_threshold = self.s.trans_threshold
                     self.renderer.render_seed = render_seed
                     self.renderer.debug_mode = self.s.debug_mode
+                    self.renderer.compute_splat_densities = _needs_splat_density_output(self.s.debug_mode)
                     self.renderer.debug_depth_mean_range = (
                         float(self.ui.values["debug_depth_mean_min"]),
                         float(self.ui.values["debug_depth_mean_max"]),

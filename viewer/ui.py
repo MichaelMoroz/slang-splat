@@ -674,6 +674,9 @@ class ToolkitWindow:
                 changed, value = imgui.input_float("Lambda DSSIM", float(cfg.lambda_dssim), 0.01, 0.1, "%.4f")
                 if changed:
                     cfg.lambda_dssim = max(float(value), 0.0)
+                changed, value = imgui.input_float("Depth Ratio Weight", float(cfg.depth_ratio_weight), 0.01, 0.1, "%.5f")
+                if changed:
+                    cfg.depth_ratio_weight = max(float(value), 0.0)
                 changed, value = imgui.input_float("Opacity Reg", float(cfg.opacity_reg), 0.001, 0.01, "%.5f")
                 if changed:
                     cfg.opacity_reg = max(float(value), 0.0)

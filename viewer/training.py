@@ -39,6 +39,7 @@ class TrainingUiConfig:
     scaling_lr: float = 0.005
     rotation_lr: float = 0.001
     lambda_dssim: float = 0.2
+    depth_ratio_weight: float = 0.1
     noise_lr: float = 5e5
     opacity_reg: float = 0.01
     scale_reg: float = 0.01
@@ -67,6 +68,7 @@ class TrainingUiConfig:
             scaling_lr=float(self.scaling_lr),
             rotation_lr=float(self.rotation_lr),
             lambda_dssim=float(self.lambda_dssim),
+            depth_ratio_weight=float(self.depth_ratio_weight),
             noise_lr=float(self.noise_lr),
             opacity_reg=float(self.opacity_reg),
             scale_reg=float(self.scale_reg),

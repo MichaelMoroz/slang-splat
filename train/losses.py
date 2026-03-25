@@ -46,9 +46,11 @@ def ssim(pred: torch.Tensor, target: torch.Tensor, window_size: int = 11) -> tor
 def _training_loss_impl(
     pred: torch.Tensor,
     target: torch.Tensor,
+    depth_ratio: torch.Tensor,
     opacity: torch.Tensor,
     scaling: torch.Tensor,
     lambda_dssim: float,
+    depth_ratio_weight: float,
     opacity_reg: float,
     scale_reg: float,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -57,6 +59,7 @@ def _training_loss_impl(
     total = (
         (1.0 - lambda_dssim) * l1
         + lambda_dssim * (1.0 - ssim(rgb_to_nchw(pred), rgb_to_nchw(target)))
+        + depth_ratio_weight * depth_ratio.mean()
         + opacity_reg * opacity.abs().mean()
         + scale_reg * scaling.abs().mean()
     )
@@ -68,13 +71,15 @@ def _training_loss_impl(
 def training_loss(
     pred: torch.Tensor,
     target: torch.Tensor,
+    depth_ratio: torch.Tensor,
     opacity: torch.Tensor,
     scaling: torch.Tensor,
     lambda_dssim: float,
+    depth_ratio_weight: float,
     opacity_reg: float,
     scale_reg: float,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    return _training_loss_impl(pred, target, opacity, scaling, lambda_dssim, opacity_reg, scale_reg)
+    return _training_loss_impl(pred, target, depth_ratio, opacity, scaling, lambda_dssim, depth_ratio_weight, opacity_reg, scale_reg)
 
 
 def psnr(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:

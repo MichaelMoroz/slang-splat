@@ -49,9 +49,9 @@ def _make_camera(image_size: tuple[int, int], focal_pixels: tuple[float, float] 
 
 def _image_hw(image: torch.Tensor, image_size: tuple[int, int]) -> torch.Tensor:
     width, height = image_size
-    if tuple(image.shape) == (height, width, 4):
+    if tuple(image.shape) == (height, width, 5):
         return image
-    if tuple(image.shape) == (width, height, 4):
+    if tuple(image.shape) == (width, height, 5):
         return image.permute(1, 0, 2).contiguous()
     raise AssertionError(f"Unexpected image shape {tuple(image.shape)} for image_size={image_size}.")
 
@@ -107,6 +107,9 @@ def _ground_truth_render_torch(splats: torch.Tensor, camera: torch.Tensor, image
         rays = _screen_to_world_rays(camera, image_size, y0, y1).reshape(-1, 3)
         accum = torch.zeros((rays.shape[0], 3), device=splats.device, dtype=torch.float32)
         trans = torch.ones((rays.shape[0],), device=splats.device, dtype=torch.float32)
+        depth_weight = torch.zeros((rays.shape[0],), device=splats.device, dtype=torch.float32)
+        depth_mean = torch.zeros((rays.shape[0],), device=splats.device, dtype=torch.float32)
+        depth_m2 = torch.zeros((rays.shape[0],), device=splats.device, dtype=torch.float32)
         for i in range(sorted_splats.shape[1]):
             gaussian = sorted_splats[:, i]
             scale = torch.clamp(torch.exp(gaussian[3:6]) * _GAUSSIAN_SUPPORT_SIGMA_RADIUS, min=_SMALL_VALUE)
@@ -127,12 +130,21 @@ def _ground_truth_render_torch(splats: torch.Tensor, camera: torch.Tensor, image
                 torch.zeros_like(rho2),
             )
             alpha = torch.where(alpha >= _ALPHA_CUTOFF, alpha, torch.zeros_like(alpha))
-            accum = accum + (trans * alpha)[:, None] * gaussian[10:13][None, :]
+            contribution = trans * alpha
+            total_weight = depth_weight + contribution
+            safe = contribution > _SMALL_VALUE
+            delta = t_closest - depth_mean
+            depth_mean = torch.where(safe, depth_mean + torch.where(total_weight > _SMALL_VALUE, (contribution / torch.clamp(total_weight, min=_SMALL_VALUE)) * delta, torch.zeros_like(delta)), depth_mean)
+            depth_m2 = torch.where(safe, depth_m2 + torch.where(total_weight > _SMALL_VALUE, depth_weight * contribution * delta.square() / torch.clamp(total_weight, min=_SMALL_VALUE), torch.zeros_like(delta)), depth_m2)
+            depth_weight = torch.where(safe, total_weight, depth_weight)
+            accum = accum + contribution[:, None] * gaussian[10:13][None, :]
             trans = trans * (1.0 - alpha)
             if bool(torch.all(trans < _TRANS_THRESHOLD)):
                 break
         color = torch.pow(torch.clamp(accum, min=0.0), _OUTPUT_GAMMA)
-        rows.append(torch.cat((color, (1.0 - trans)[:, None]), dim=1).reshape(y1 - y0, width, 4))
+        depth_std = torch.sqrt(torch.clamp(depth_m2 / torch.clamp(depth_weight, min=_SMALL_VALUE), min=0.0))
+        depth_ratio = torch.where(depth_weight > _SMALL_VALUE, depth_std / torch.clamp(depth_mean.abs(), min=_SMALL_VALUE), torch.zeros_like(depth_std))
+        rows.append(torch.cat((color, (1.0 - trans)[:, None], depth_ratio[:, None]), dim=1).reshape(y1 - y0, width, 5))
     return torch.cat(rows, dim=0)
 
 
@@ -219,7 +231,7 @@ def test_torch_wrapper_smoke() -> None:
     camera = _make_camera(image_size)
     context = _make_context()
     image = render_gaussian_splats(splats, camera, image_size, context=context)
-    assert tuple(image.shape) == (image_size[0], image_size[1], 4)
+    assert tuple(image.shape) == (image_size[0], image_size[1], 5)
     assert torch.isfinite(image).all()
     loss = image.square().mean()
     loss.backward()
@@ -235,7 +247,7 @@ def test_torch_wrapper_zero_splats_smoke() -> None:
     camera = _make_camera(image_size)
     context = _make_context()
     image = render_gaussian_splats(splats, camera, image_size, context=context)
-    assert tuple(image.shape) == (image_size[0], image_size[1], 4)
+    assert tuple(image.shape) == (image_size[0], image_size[1], 5)
     assert torch.isfinite(image).all()
     assert float(image.abs().max().item()) == 0.0
     loss = image.square().sum()
@@ -263,8 +275,10 @@ def test_large_resolution_ground_truth_image_matches(image_size: tuple[int, int]
 
     rgb_error = (image[..., :3] - ref[..., :3]).abs()
     alpha_error = (image[..., 3] - ref[..., 3]).abs()
+    depth_error = (image[..., 4] - ref[..., 4]).abs()
     assert float(rgb_error.mean().item()) <= 3e-3
     assert float(alpha_error.mean().item()) <= 3e-3
+    assert float(depth_error.mean().item()) <= 3e-3
     assert float(torch.quantile(alpha_error.reshape(-1), 0.999).item()) <= 3e-2
 
 
@@ -281,8 +295,10 @@ def test_large_resolution_stretched_ground_truth_image_matches(image_size: tuple
     assert float((alpha > 1e-4).float().mean().item()) >= 0.15
     rgb_error = (image[..., :3] - ref[..., :3]).abs()
     alpha_error = (image[..., 3] - ref[..., 3]).abs()
+    depth_error = (image[..., 4:] - ref[..., 4:]).abs()
     assert float(rgb_error.mean().item()) <= 5e-3
     assert float(alpha_error.mean().item()) <= 5e-3
+    assert float(depth_error.mean().item()) <= 5e-3
     assert float(torch.quantile(alpha_error.reshape(-1), 0.999).item()) <= 5e-2
 
 
@@ -295,5 +311,7 @@ def test_large_resolution_offcenter_stretched_ground_truth_image_matches() -> No
     image = _image_hw(render_gaussian_splats(splats, camera, image_size, context=context), image_size)
     ref = _ground_truth_render_torch(splats, camera, image_size)
     alpha_error = (image[..., 3] - ref[..., 3]).abs()
+    depth_error = (image[..., 4:] - ref[..., 4:]).abs()
     assert float(alpha_error.mean().item()) <= 5e-4
+    assert float(depth_error.mean().item()) <= 5e-4
     assert float(torch.quantile(alpha_error.reshape(-1), 0.999).item()) <= 1e-2

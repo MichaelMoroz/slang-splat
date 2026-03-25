@@ -12,6 +12,24 @@ _CAMERA_PARAM_COUNT = 15
 _ALPHA_EPS = 1e-6
 
 
+def _image_whc(image: torch.Tensor, image_size: tuple[int, int]) -> torch.Tensor:
+    width, height = map(int, image_size)
+    if tuple(image.shape[:2]) == (width, height):
+        return image
+    if tuple(image.shape[:2]) == (height, width):
+        return image.permute(1, 0, 2).contiguous()
+    raise ValueError(f"Unexpected image shape {tuple(image.shape)} for image_size={image_size}.")
+
+
+def _image_hwc(image: torch.Tensor, image_size: tuple[int, int]) -> torch.Tensor:
+    width, height = map(int, image_size)
+    if tuple(image.shape[:2]) == (height, width):
+        return image
+    if tuple(image.shape[:2]) == (width, height):
+        return image.permute(1, 0, 2).contiguous()
+    raise ValueError(f"Unexpected image shape {tuple(image.shape)} for image_size={image_size}.")
+
+
 def _check_cuda_tensor(name: str, value: torch.Tensor, shape0: int | None = None) -> None:
     if not isinstance(value, torch.Tensor):
         raise TypeError(f"{name} must be a torch.Tensor.")
@@ -90,15 +108,22 @@ class SplattingContext(_CoreSplattingContext):
         render_seed: int = 0,
     ) -> torch.Tensor:
         _, _, splat_count, camera_vars = self._prepare_splats(splats, camera, image_size, background, render_seed)
-        image = super().render(camera_vars, splat_count, refresh_buffers=False).to_torch().clone()
+        super().render(camera_vars, splat_count)
+        color = self.frame["g_Output"].to_torch().clone()
+        depth_ratio = self.frame["g_OutputDepth"].to_torch().clone().unsqueeze(-1)
+        image = torch.cat((color, depth_ratio), dim=-1)
+        image = _image_whc(image, image_size)
         self._last_splat_count = splat_count
         self._last_alpha = torch.clamp(splats[13].detach().clone(), _ALPHA_EPS, 1 - _ALPHA_EPS)
         self._last_camera = camera.detach().clone()
+        self._last_image_size = tuple(map(int, image_size))
         self._last_render_seed = int(render_seed)
         return image
 
     def backward(self, grad_output: torch.Tensor) -> torch.Tensor:
-        self.frame["g_OutputGrad"].copy_from_torch(grad_output.contiguous())
+        grad_output_hwc = _image_hwc(grad_output, getattr(self, "_last_image_size", self._size))
+        self.frame["g_OutputGrad"].copy_from_torch(grad_output_hwc[..., :4].contiguous())
+        self.frame["g_OutputDepthGrad"].copy_from_torch(grad_output_hwc[..., 4].contiguous())
         self.device.sync_to_cuda()
         self.render_seed = int(getattr(self, "_last_render_seed", 0))
         splat_count = int(getattr(self, "_last_splat_count", 0))
