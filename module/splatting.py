@@ -413,7 +413,6 @@ class SplattingContext:
                 g_ScanlineCounts=self.scene["g_ScanlineCounts"],
                 g_ProjectionState=self.scene_views["g_ProjectionState"].tensor,
             ),
-            resource_binder=self.util.bind_resource,
             debug_label="renderer.count_visible_scanlines",
             debug_color=_DEBUG_COLOR,
         )
@@ -447,7 +446,6 @@ class SplattingContext:
                 g_ScanlineCapacity=int(getattr(self, "_scanline_capacity", 1)),
                 g_ScanlineOverflow=self.counts["g_ScanlineOverflow"],
             ),
-            resource_binder=self.util.bind_resource,
             debug_label="renderer.emit_scanlines",
             debug_color=_DEBUG_COLOR,
         )
@@ -469,7 +467,6 @@ class SplattingContext:
                 g_ScanlineTileCounts=self.scanlines["g_ScanlineTileCounts"],
                 g_ProjectionState=self.scene_views["g_ProjectionState"].tensor,
             ),
-            resource_binder=self.util.bind_resource,
             debug_label="renderer.scanline_tile_counts",
             debug_color=_DEBUG_COLOR,
         )
@@ -500,7 +497,6 @@ class SplattingContext:
                 g_TileEntryCapacity=int(getattr(self, "_entry_capacity", 1)),
                 g_TileOverflow=self.counts["g_TileOverflow"],
             ),
-            resource_binder=self.util.bind_resource,
             debug_label="renderer.emit_tiles",
             debug_color=_DEBUG_COLOR,
         )
@@ -561,7 +557,6 @@ class SplattingContext:
                 g_SortedEntries=self._sorted_entries_tensor,
                 g_TileRanges=self.tiles["g_TileRanges"],
             ),
-            resource_binder=self.util.bind_resource,
             debug_label="renderer.build_tile_ranges",
             debug_color=_DEBUG_COLOR,
         )
@@ -583,7 +578,6 @@ class SplattingContext:
                 g_ScanlineCapacity=int(getattr(self, "_scanline_capacity", 1)),
                 g_ScanlineOverflow=self.counts["g_ScanlineOverflow"],
             ),
-            resource_binder=self.util.bind_resource,
         )
         dispatch(
             kernel=self.k_emit_scanline_tile_counts,
