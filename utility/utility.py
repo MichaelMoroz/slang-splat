@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Callable
 
 import slangpy as spy
-from .debug import debug_group
+from .debug import debug_group, with_debug_group
 
 _ROOT = Path(__file__).resolve().parent
 _SHADERS = _ROOT / "shaders"
@@ -41,6 +42,61 @@ def grow_capacity(required: int, grow_num: int = 6, grow_den: int = 5, max_capac
     if max_capacity is not None:
         target = min(target, max(int(max_capacity), 1))
     return target
+
+
+def dispatch_indirect(
+    *,
+    pipeline: spy.ComputePipeline,
+    args_buffer: spy.Buffer,
+    vars: dict[str, Any],
+    command_encoder: spy.CommandEncoder,
+    arg_offset: int = 0,
+    resource_binder: Callable[[Any], Any] | None = None,
+    debug_label: str | None = None,
+    debug_color: spy.float3 | None = None,
+) -> None:
+    if debug_label is not None:
+        if debug_color is None:
+            raise ValueError("debug_color is required when debug_label is provided.")
+        with debug_group(command_encoder, debug_label, debug_color):
+            dispatch_indirect(
+                pipeline=pipeline,
+                args_buffer=args_buffer,
+                vars=vars,
+                command_encoder=command_encoder,
+                arg_offset=arg_offset,
+                resource_binder=resource_binder,
+            )
+        return
+    with command_encoder.begin_compute_pass() as compute_pass:
+        cursor = spy.ShaderCursor(compute_pass.bind_pipeline(pipeline))
+        for name, value in vars.items():
+            bound_value = resource_binder(value) if resource_binder is not None else value
+            setattr(cursor, name, bound_value)
+        compute_pass.dispatch_compute_indirect(spy.BufferOffsetPair(args_buffer, int(arg_offset) * 4))
+
+
+def dispatch(
+    *,
+    kernel: spy.ComputeKernel,
+    thread_count: spy.uint3,
+    vars: dict[str, Any],
+    command_encoder: spy.CommandEncoder,
+    debug_label: str | None = None,
+    debug_color: spy.float3 | None = None,
+) -> None:
+    if debug_label is not None:
+        if debug_color is None:
+            raise ValueError("debug_color is required when debug_label is provided.")
+        with debug_group(command_encoder, debug_label, debug_color):
+            dispatch(
+                kernel=kernel,
+                thread_count=thread_count,
+                vars=vars,
+                command_encoder=command_encoder,
+            )
+        return
+    kernel.dispatch(thread_count=thread_count, vars=vars, command_encoder=command_encoder)
 
 
 @dataclass
@@ -98,10 +154,12 @@ class GpuUtility:
     def _slice(self, tensor: spy.Tensor, count: int, offset: int = 0) -> spy.Tensor:
         return tensor.view((count,), offset=offset)
 
-    def _bind_resource(self, value: spy.Tensor | spy.Buffer) -> spy.Tensor:
+    def bind_resource(self, value: object) -> object:
         if isinstance(value, spy.Tensor):
             return value
-        return spy.Tensor(value, self._uint_dtype, (max(int(value.size) // 4, 1),))
+        if isinstance(value, spy.Buffer):
+            return spy.Tensor(value, self._uint_dtype, (max(int(value.size) // 4, 1),))
+        return value
 
     def _kernel_thread_count(self, groups_x: int, threads_per_group: int) -> spy.uint3:
         return spy.uint3(max(int(groups_x), 1) * max(int(threads_per_group), 1), 1, 1)
@@ -146,21 +204,15 @@ class GpuUtility:
             thread_count=spy.uint3(1, 1, 1),
             command_encoder=command_encoder,
             vars={
-                "g_CountBuffer": self._bind_resource(count_buffer),
+                "g_CountBuffer": self.bind_resource(count_buffer),
                 "g_CountOffset": int(count_offset),
                 "g_MaxElementCount": int(max_count),
                 "g_DispatchThreadsPerGroup": int(max(threads_per_group, 1)),
-                "g_DispatchIndirectArgs": self._bind_resource(args_buffer),
+                "g_DispatchIndirectArgs": self.bind_resource(args_buffer),
             },
         )
         command_encoder.global_barrier()
         return args_buffer
-
-    def _dispatch_indirect(self, compute_pass: spy.ComputePassEncoder, pipeline: spy.ComputePipeline, args_buffer: spy.Buffer, arg_offset: int, vars: dict[str, object]) -> None:
-        cursor = spy.ShaderCursor(compute_pass.bind_pipeline(pipeline))
-        for name, value in vars.items():
-            setattr(cursor, name, self._bind_resource(value) if isinstance(value, (spy.Tensor, spy.Buffer)) else value)
-        compute_pass.dispatch_compute_indirect(spy.BufferOffsetPair(args_buffer, arg_offset * 4))
 
     def _prefix_recursive(
         self,
@@ -207,6 +259,7 @@ class GpuUtility:
                 },
             )
 
+    @with_debug_group(lambda self, command_encoder, input_tensor, output_tensor, block_sums, block_offsets, total_out, count, exclusive=True: f"prefix_sum_uint32[{count}]", _DEBUG_COLOR)
     def prefix_sum_uint32(
         self,
         command_encoder: spy.CommandEncoder,
@@ -221,22 +274,22 @@ class GpuUtility:
         if count <= 0:
             total_out.clear(command_encoder=command_encoder)
             return
-        with debug_group(command_encoder, f"prefix_sum_uint32[{count}]", _DEBUG_COLOR):
-            self._prefix_recursive(command_encoder, input_tensor, output_tensor, block_sums, block_offsets, count, 0, exclusive)
-            self.k_prefix_total.dispatch(
-                thread_count=spy.uint3(1, 1, 1),
-                command_encoder=command_encoder,
-                vars={
-                    "g_PrefixInput": input_tensor,
-                    "g_PrefixOutput": output_tensor,
-                    "g_TotalOut": total_out,
-                    "g_Count": int(count),
-                    "g_Exclusive": 1 if exclusive else 0,
-                    "g_UsePrefixParams": 0,
-                    "g_Level": 0,
-                },
-            )
+        self._prefix_recursive(command_encoder, input_tensor, output_tensor, block_sums, block_offsets, count, 0, exclusive)
+        self.k_prefix_total.dispatch(
+            thread_count=spy.uint3(1, 1, 1),
+            command_encoder=command_encoder,
+            vars={
+                "g_PrefixInput": input_tensor,
+                "g_PrefixOutput": output_tensor,
+                "g_TotalOut": total_out,
+                "g_Count": int(count),
+                "g_Exclusive": 1 if exclusive else 0,
+                "g_UsePrefixParams": 0,
+                "g_Level": 0,
+            },
+        )
 
+    @with_debug_group(lambda self, command_encoder, input_tensor, output_tensor, block_sums, block_offsets, total_out, count_buffer, count_offset, max_count, exclusive=True: f"prefix_sum_uint32_from_count_buffer[{max_count}]", _DEBUG_COLOR)
     def prefix_sum_uint32_from_count_buffer(
         self,
         command_encoder: spy.CommandEncoder,
@@ -254,81 +307,81 @@ class GpuUtility:
         if max_count <= 0:
             total_out.clear(command_encoder=command_encoder)
             return args_buffer
-        with debug_group(command_encoder, f"prefix_sum_uint32_from_count_buffer[{max_count}]", _DEBUG_COLOR):
-            self.k_compute_prefix_args_from_buffer.dispatch(
-                thread_count=spy.uint3(1, 1, 1),
+        self.k_compute_prefix_args_from_buffer.dispatch(
+            thread_count=spy.uint3(1, 1, 1),
+            command_encoder=command_encoder,
+            vars={
+                "g_CountBuffer": self.bind_resource(count_buffer),
+                "g_CountOffset": int(count_offset),
+                "g_MaxElementCount": int(max_count),
+                "g_IndirectArgs": self.bind_resource(args_buffer),
+            },
+        )
+        command_encoder.global_barrier()
+        layout = self._prefix_level_layout(max_count)
+        for level, (_, block_count, offset) in enumerate(layout):
+            if level == 0:
+                level_input = input_tensor
+                level_output = output_tensor
+            else:
+                prev_block_count = layout[level - 1][1]
+                prev_offset = layout[level - 1][2]
+                level_input = self._slice(block_sums, prev_block_count, prev_offset)
+                level_output = self._slice(block_offsets, prev_block_count, prev_offset)
+            level_sums = self._slice(block_sums, block_count, offset)
+            dispatch_indirect(
+                pipeline=self.p_prefix_scan,
+                args_buffer=args_buffer,
                 command_encoder=command_encoder,
+                arg_offset=_PREFIX_SCAN_ARGS_OFFSET + level * _INDIRECT_DISPATCH_ARG_STRIDE,
                 vars={
-                    "g_CountBuffer": self._bind_resource(count_buffer),
-                    "g_CountOffset": int(count_offset),
-                    "g_MaxElementCount": int(max_count),
-                    "g_IndirectArgs": self._bind_resource(args_buffer),
-                },
-            )
-            command_encoder.global_barrier()
-            layout = self._prefix_level_layout(max_count)
-            for level, (_, block_count, offset) in enumerate(layout):
-                if level == 0:
-                    level_input = input_tensor
-                    level_output = output_tensor
-                else:
-                    prev_block_count = layout[level - 1][1]
-                    prev_offset = layout[level - 1][2]
-                    level_input = self._slice(block_sums, prev_block_count, prev_offset)
-                    level_output = self._slice(block_offsets, prev_block_count, prev_offset)
-                level_sums = self._slice(block_sums, block_count, offset)
-                with command_encoder.begin_compute_pass() as compute_pass:
-                    self._dispatch_indirect(
-                        compute_pass,
-                        self.p_prefix_scan,
-                        args_buffer,
-                        _PREFIX_SCAN_ARGS_OFFSET + level * _INDIRECT_DISPATCH_ARG_STRIDE,
-                        {
-                            "g_PrefixInput": level_input,
-                            "g_PrefixOutput": level_output,
-                            "g_PrefixBlockSums": level_sums,
-                            "g_Exclusive": 1 if (exclusive or level > 0) else 0,
-                            "g_PrefixParamsBuffer": self._bind_resource(args_buffer),
-                            "g_UsePrefixParams": 1,
-                            "g_Level": int(level),
-                        },
-                    )
-            for level in range(len(layout) - 2, -1, -1):
-                level_count, block_count, offset = layout[level]
-                _ = level_count
-                level_output = output_tensor if level == 0 else self._slice(block_offsets, layout[level - 1][1], layout[level - 1][2])
-                level_offsets = self._slice(block_offsets, block_count, offset)
-                with command_encoder.begin_compute_pass() as compute_pass:
-                    self._dispatch_indirect(
-                        compute_pass,
-                        self.p_prefix_add,
-                        args_buffer,
-                        _PREFIX_ADD_ARGS_OFFSET + level * _INDIRECT_DISPATCH_ARG_STRIDE,
-                        {
-                            "g_PrefixOutput": level_output,
-                            "g_PrefixBlockOffsets": level_offsets,
-                            "g_Exclusive": 1 if exclusive else 0,
-                            "g_PrefixParamsBuffer": self._bind_resource(args_buffer),
-                            "g_UsePrefixParams": 1,
-                            "g_UseRadixPrefixAdd": 0,
-                            "g_Level": int(level),
-                        },
-                    )
-            self.k_prefix_total.dispatch(
-                thread_count=spy.uint3(1, 1, 1),
-                command_encoder=command_encoder,
-                vars={
-                    "g_PrefixInput": input_tensor,
-                    "g_PrefixOutput": output_tensor,
-                    "g_TotalOut": total_out,
-                    "g_Exclusive": 1 if exclusive else 0,
-                    "g_PrefixParamsBuffer": self._bind_resource(args_buffer),
+                    "g_PrefixInput": level_input,
+                    "g_PrefixOutput": level_output,
+                    "g_PrefixBlockSums": level_sums,
+                    "g_Exclusive": 1 if (exclusive or level > 0) else 0,
+                    "g_PrefixParamsBuffer": args_buffer,
                     "g_UsePrefixParams": 1,
-                    "g_Level": 0,
+                    "g_Level": int(level),
                 },
+                resource_binder=self.bind_resource,
             )
+        for level in range(len(layout) - 2, -1, -1):
+            level_count, block_count, offset = layout[level]
+            _ = level_count
+            level_output = output_tensor if level == 0 else self._slice(block_offsets, layout[level - 1][1], layout[level - 1][2])
+            level_offsets = self._slice(block_offsets, block_count, offset)
+            dispatch_indirect(
+                pipeline=self.p_prefix_add,
+                args_buffer=args_buffer,
+                command_encoder=command_encoder,
+                arg_offset=_PREFIX_ADD_ARGS_OFFSET + level * _INDIRECT_DISPATCH_ARG_STRIDE,
+                vars={
+                    "g_PrefixOutput": level_output,
+                    "g_PrefixBlockOffsets": level_offsets,
+                    "g_Exclusive": 1 if exclusive else 0,
+                    "g_PrefixParamsBuffer": args_buffer,
+                    "g_UsePrefixParams": 1,
+                    "g_UseRadixPrefixAdd": 0,
+                    "g_Level": int(level),
+                },
+                resource_binder=self.bind_resource,
+            )
+        self.k_prefix_total.dispatch(
+            thread_count=spy.uint3(1, 1, 1),
+            command_encoder=command_encoder,
+            vars={
+                "g_PrefixInput": input_tensor,
+                "g_PrefixOutput": output_tensor,
+                "g_TotalOut": total_out,
+                "g_Exclusive": 1 if exclusive else 0,
+                "g_PrefixParamsBuffer": self.bind_resource(args_buffer),
+                "g_UsePrefixParams": 1,
+                "g_Level": 0,
+            },
+        )
         return args_buffer
 
+    @with_debug_group(lambda self, command_encoder, keys_in, values_in, keys_out, values_out, histogram, histogram_prefix, prefix_block_sums, prefix_block_offsets, total_out, count, start_bit=0, bit_count=32: f"radix_sort_uint32[{count}]", _DEBUG_COLOR)
     def radix_sort_uint32(
         self,
         command_encoder: spy.CommandEncoder,
@@ -355,79 +408,79 @@ class GpuUtility:
         total_n = num_groups * _RADIX_BIN_COUNT
         passes = _ceil_div(bit_count, 8)
         src_keys, src_values = keys_in, values_in
-        with debug_group(command_encoder, f"radix_sort_uint32[{count}]", _DEBUG_COLOR):
-            for pass_idx in range(passes):
-                shift = start_bit + pass_idx * 8
-                digit_bits = min(8, bit_count - pass_idx * 8)
-                digit_mask = (1 << digit_bits) - 1
-                use_output = (pass_idx & 1) == 0
-                dst_keys = keys_out if use_output else keys_in
-                dst_values = values_out if use_output else values_in
-                with debug_group(command_encoder, f"radix.pass[{shift}:{digit_bits}]", _DEBUG_COLOR):
-                    self.k_histogram.dispatch(
-                        thread_count=self._kernel_thread_count(num_groups, _RADIX_GROUP_SIZE),
+        for pass_idx in range(passes):
+            shift = start_bit + pass_idx * 8
+            digit_bits = min(8, bit_count - pass_idx * 8)
+            digit_mask = (1 << digit_bits) - 1
+            use_output = (pass_idx & 1) == 0
+            dst_keys = keys_out if use_output else keys_in
+            dst_values = values_out if use_output else values_in
+            with debug_group(command_encoder, f"radix.pass[{shift}:{digit_bits}]", _DEBUG_COLOR):
+                self.k_histogram.dispatch(
+                    thread_count=self._kernel_thread_count(num_groups, _RADIX_GROUP_SIZE),
+                    command_encoder=command_encoder,
+                    vars={
+                        "g_KeysIn": src_keys,
+                        "g_Histogram": histogram,
+                        "g_ElementCount": int(count),
+                        "g_NumGroups": int(num_groups),
+                        "g_Shift": int(shift),
+                        "g_DigitMask": int(digit_mask),
+                        "g_UseRadixParams": 0,
+                    },
+                )
+                level_sizes: list[int] = []
+                level_size = total_n
+                level = 0
+                while True:
+                    level_sizes.append(level_size)
+                    self.k_radix_prefix_level.dispatch(
+                        thread_count=self._kernel_thread_count(_ceil_div(level_size, _PREFIX_THREADS), _PREFIX_THREADS),
                         command_encoder=command_encoder,
                         vars={
-                            "g_KeysIn": src_keys,
                             "g_Histogram": histogram,
-                            "g_ElementCount": int(count),
+                            "g_HistogramOffsets": histogram_prefix,
                             "g_NumGroups": int(num_groups),
-                            "g_Shift": int(shift),
-                            "g_DigitMask": int(digit_mask),
+                            "g_Shift": int(level),
                             "g_UseRadixParams": 0,
                         },
                     )
-                    level_sizes: list[int] = []
-                    level_size = total_n
-                    level = 0
-                    while True:
-                        level_sizes.append(level_size)
-                        self.k_radix_prefix_level.dispatch(
-                            thread_count=self._kernel_thread_count(_ceil_div(level_size, _PREFIX_THREADS), _PREFIX_THREADS),
-                            command_encoder=command_encoder,
-                            vars={
-                                "g_Histogram": histogram,
-                                "g_HistogramOffsets": histogram_prefix,
-                                "g_NumGroups": int(num_groups),
-                                "g_Shift": int(level),
-                                "g_UseRadixParams": 0,
-                            },
-                        )
-                        if level_size <= _PREFIX_BLOCK_SIZE // 2:
-                            break
-                        level_size = _ceil_div(level_size, _PREFIX_BLOCK_SIZE // 2)
-                        level += 1
-                    for level in range(len(level_sizes) - 2, 0, -1):
-                        self.k_prefix_add.dispatch(
-                            thread_count=self._kernel_thread_count(_ceil_div(level_sizes[level], _PREFIX_THREADS), _PREFIX_THREADS),
-                            command_encoder=command_encoder,
-                            vars={
-                                "g_HistogramOffsets": histogram_prefix,
-                                "g_NumGroups": int(num_groups),
-                                "g_UseRadixParams": 0,
-                                "g_UseRadixPrefixAdd": 1,
-                                "g_Level": int(level),
-                            },
-                        )
-                    self.k_scatter.dispatch(
-                        thread_count=self._kernel_thread_count(num_groups, _RADIX_GROUP_SIZE),
+                    if level_size <= _PREFIX_BLOCK_SIZE // 2:
+                        break
+                    level_size = _ceil_div(level_size, _PREFIX_BLOCK_SIZE // 2)
+                    level += 1
+                for level in range(len(level_sizes) - 2, 0, -1):
+                    self.k_prefix_add.dispatch(
+                        thread_count=self._kernel_thread_count(_ceil_div(level_sizes[level], _PREFIX_THREADS), _PREFIX_THREADS),
                         command_encoder=command_encoder,
                         vars={
-                            "g_KeysIn": src_keys,
-                            "g_ValuesIn": src_values,
-                            "g_KeysOut": dst_keys,
-                            "g_ValuesOut": dst_values,
                             "g_HistogramOffsets": histogram_prefix,
-                            "g_ElementCount": int(count),
                             "g_NumGroups": int(num_groups),
-                            "g_Shift": int(shift),
-                            "g_DigitMask": int(digit_mask),
                             "g_UseRadixParams": 0,
+                            "g_UseRadixPrefixAdd": 1,
+                            "g_Level": int(level),
                         },
                     )
-                src_keys, src_values = dst_keys, dst_values
+                self.k_scatter.dispatch(
+                    thread_count=self._kernel_thread_count(num_groups, _RADIX_GROUP_SIZE),
+                    command_encoder=command_encoder,
+                    vars={
+                        "g_KeysIn": src_keys,
+                        "g_ValuesIn": src_values,
+                        "g_KeysOut": dst_keys,
+                        "g_ValuesOut": dst_values,
+                        "g_HistogramOffsets": histogram_prefix,
+                        "g_ElementCount": int(count),
+                        "g_NumGroups": int(num_groups),
+                        "g_Shift": int(shift),
+                        "g_DigitMask": int(digit_mask),
+                        "g_UseRadixParams": 0,
+                    },
+                )
+            src_keys, src_values = dst_keys, dst_values
         return (passes & 1) == 1
 
+    @with_debug_group(lambda self, command_encoder, keys_in, values_in, keys_out, values_out, histogram, histogram_prefix, count_buffer, count_offset, max_count, start_bit=0, bit_count=32: f"radix_sort_uint32_from_count_buffer[{max_count}]", _DEBUG_COLOR)
     def radix_sort_uint32_from_count_buffer(
         self,
         command_encoder: spy.CommandEncoder,
@@ -448,90 +501,89 @@ class GpuUtility:
         args_buffer = self._ensure_radix_args_buffer()
         if max_count <= 0:
             return True, args_buffer
-        with debug_group(command_encoder, f"radix_sort_uint32_from_count_buffer[{max_count}]", _DEBUG_COLOR):
-            self.k_compute_radix_args_from_buffer.dispatch(
-                thread_count=spy.uint3(1, 1, 1),
-                command_encoder=command_encoder,
-                vars={
-                    "g_CountBuffer": self._bind_resource(count_buffer),
-                    "g_CountOffset": int(count_offset),
-                    "g_MaxElementCount": int(max_count),
-                    "g_IndirectArgs": self._bind_resource(args_buffer),
-                },
-            )
-            command_encoder.global_barrier()
-            passes = _ceil_div(bit_count, 8)
-            src_keys, src_values = keys_in, values_in
-            for pass_idx in range(passes):
-                shift = start_bit + pass_idx * 8
-                digit_bits = min(8, bit_count - pass_idx * 8)
-                digit_mask = (1 << digit_bits) - 1
-                use_output = (pass_idx & 1) == 0
-                dst_keys = keys_out if use_output else keys_in
-                dst_values = values_out if use_output else values_in
-                with debug_group(command_encoder, f"radix.indirect[{shift}:{digit_bits}]", _DEBUG_COLOR):
-                    with command_encoder.begin_compute_pass() as compute_pass:
-                        self._dispatch_indirect(
-                            compute_pass,
-                            self.p_histogram,
-                        args_buffer,
-                        _HISTOGRAM_ARGS_OFFSET,
-                        {
-                            "g_KeysIn": src_keys,
-                            "g_Histogram": histogram,
-                            "g_Shift": int(shift),
-                            "g_DigitMask": int(digit_mask),
-                            "g_RadixParamsBuffer": self._bind_resource(args_buffer),
-                            "g_UseRadixParams": 1,
-                        },
-                    )
-                    for level in range(4):
-                        with command_encoder.begin_compute_pass() as compute_pass:
-                            self._dispatch_indirect(
-                                compute_pass,
-                                self.p_radix_prefix_level,
-                                args_buffer,
-                                _PREFIX_L0_ARGS_OFFSET + level * _INDIRECT_DISPATCH_ARG_STRIDE,
-                                {
-                                    "g_HistogramOffsets": histogram_prefix,
-                                    "g_Histogram": histogram,
-                                    "g_Shift": int(level),
-                                    "g_RadixParamsBuffer": self._bind_resource(args_buffer),
-                                    "g_UseRadixParams": 1,
-                                },
-                            )
-                    for level in range(3, 0, -1):
-                        with command_encoder.begin_compute_pass() as compute_pass:
-                            self._dispatch_indirect(
-                                compute_pass,
-                                self.p_prefix_add,
-                                args_buffer,
-                                _PREFIX_L0_ARGS_OFFSET + level * _INDIRECT_DISPATCH_ARG_STRIDE,
-                                {
-                                    "g_HistogramOffsets": histogram_prefix,
-                                    "g_RadixParamsBuffer": self._bind_resource(args_buffer),
-                                    "g_UseRadixParams": 1,
-                                    "g_UseRadixPrefixAdd": 1,
-                                    "g_Level": int(level),
-                                },
-                            )
-                    with command_encoder.begin_compute_pass() as compute_pass:
-                        self._dispatch_indirect(
-                            compute_pass,
-                            self.p_scatter,
-                        args_buffer,
-                        _SCATTER_ARGS_OFFSET,
-                        {
-                            "g_KeysIn": src_keys,
-                            "g_ValuesIn": src_values,
-                            "g_KeysOut": dst_keys,
-                            "g_ValuesOut": dst_values,
+        self.k_compute_radix_args_from_buffer.dispatch(
+            thread_count=spy.uint3(1, 1, 1),
+            command_encoder=command_encoder,
+            vars={
+                "g_CountBuffer": self.bind_resource(count_buffer),
+                "g_CountOffset": int(count_offset),
+                "g_MaxElementCount": int(max_count),
+                "g_IndirectArgs": self.bind_resource(args_buffer),
+            },
+        )
+        command_encoder.global_barrier()
+        passes = _ceil_div(bit_count, 8)
+        src_keys, src_values = keys_in, values_in
+        for pass_idx in range(passes):
+            shift = start_bit + pass_idx * 8
+            digit_bits = min(8, bit_count - pass_idx * 8)
+            digit_mask = (1 << digit_bits) - 1
+            use_output = (pass_idx & 1) == 0
+            dst_keys = keys_out if use_output else keys_in
+            dst_values = values_out if use_output else values_in
+            with debug_group(command_encoder, f"radix.indirect[{shift}:{digit_bits}]", _DEBUG_COLOR):
+                dispatch_indirect(
+                    pipeline=self.p_histogram,
+                    args_buffer=args_buffer,
+                    command_encoder=command_encoder,
+                    arg_offset=_HISTOGRAM_ARGS_OFFSET,
+                    vars={
+                        "g_KeysIn": src_keys,
+                        "g_Histogram": histogram,
+                        "g_Shift": int(shift),
+                        "g_DigitMask": int(digit_mask),
+                        "g_RadixParamsBuffer": args_buffer,
+                        "g_UseRadixParams": 1,
+                    },
+                    resource_binder=self.bind_resource,
+                )
+                for level in range(4):
+                    dispatch_indirect(
+                        pipeline=self.p_radix_prefix_level,
+                        args_buffer=args_buffer,
+                        command_encoder=command_encoder,
+                        arg_offset=_PREFIX_L0_ARGS_OFFSET + level * _INDIRECT_DISPATCH_ARG_STRIDE,
+                        vars={
                             "g_HistogramOffsets": histogram_prefix,
-                            "g_Shift": int(shift),
-                            "g_DigitMask": int(digit_mask),
-                            "g_RadixParamsBuffer": self._bind_resource(args_buffer),
+                            "g_Histogram": histogram,
+                            "g_Shift": int(level),
+                            "g_RadixParamsBuffer": args_buffer,
                             "g_UseRadixParams": 1,
                         },
+                        resource_binder=self.bind_resource,
                     )
-                src_keys, src_values = dst_keys, dst_values
+                for level in range(3, 0, -1):
+                    dispatch_indirect(
+                        pipeline=self.p_prefix_add,
+                        args_buffer=args_buffer,
+                        command_encoder=command_encoder,
+                        arg_offset=_PREFIX_L0_ARGS_OFFSET + level * _INDIRECT_DISPATCH_ARG_STRIDE,
+                        vars={
+                            "g_HistogramOffsets": histogram_prefix,
+                            "g_RadixParamsBuffer": args_buffer,
+                            "g_UseRadixParams": 1,
+                            "g_UseRadixPrefixAdd": 1,
+                            "g_Level": int(level),
+                        },
+                        resource_binder=self.bind_resource,
+                    )
+                dispatch_indirect(
+                    pipeline=self.p_scatter,
+                    args_buffer=args_buffer,
+                    command_encoder=command_encoder,
+                    arg_offset=_SCATTER_ARGS_OFFSET,
+                    vars={
+                        "g_KeysIn": src_keys,
+                        "g_ValuesIn": src_values,
+                        "g_KeysOut": dst_keys,
+                        "g_ValuesOut": dst_values,
+                        "g_HistogramOffsets": histogram_prefix,
+                        "g_Shift": int(shift),
+                        "g_DigitMask": int(digit_mask),
+                        "g_RadixParamsBuffer": args_buffer,
+                        "g_UseRadixParams": 1,
+                    },
+                    resource_binder=self.bind_resource,
+                )
+            src_keys, src_values = dst_keys, dst_values
         return (passes & 1) == 1, args_buffer

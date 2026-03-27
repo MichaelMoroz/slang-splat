@@ -7,8 +7,8 @@ from typing import Any
 import numpy as np
 import slangpy as spy
 
-from utility.debug import debug_group
-from utility.utility import GpuUtility, grow_capacity
+from utility.debug import with_debug_group
+from utility.utility import GpuUtility, dispatch, dispatch_indirect, grow_capacity
 
 _ROOT = Path(__file__).resolve().parent
 _SHADERS = _ROOT / "shaders"
@@ -255,18 +255,6 @@ class SplattingContext:
         self.device.sync_to_cuda()
         return self._last_required_total, needs_refresh
 
-    def _dispatch_indirect(
-        self,
-        compute_pass: spy.ComputePassEncoder,
-        pipeline: spy.ComputePipeline,
-        args_buffer: spy.Buffer,
-        vars: dict[str, Any],
-    ) -> None:
-        cursor = spy.ShaderCursor(compute_pass.bind_pipeline(pipeline))
-        for name, value in vars.items():
-            setattr(cursor, name, value)
-        compute_pass.dispatch_compute_indirect(spy.BufferOffsetPair(args_buffer, 0))
-
     def _indirect_count_vars(self, args_buffer: spy.Buffer, count: int, **extra: Any) -> dict[str, Any]:
         return {
             "g_TileGrid": self._tile_grid_uint2(),
@@ -328,6 +316,55 @@ class SplattingContext:
         )
         return vars
 
+    @with_debug_group("renderer.distance_sort_visible", _DEBUG_COLOR)
+    def _record_distance_sort_visible(self, command_encoder: spy.CommandEncoder, visible_out: spy.Tensor, splat_count: int) -> bool:
+        out_buffer, _ = self.util.radix_sort_uint32_from_count_buffer(
+            command_encoder,
+            self.sort["g_DistanceKeys"],
+            self.sort["g_DistanceSortOrder"],
+            self.sort["g_SortedDistanceKeys"],
+            self.sort["g_SortedDistanceSortOrder"],
+            self.radix["g_Histogram"],
+            self.radix["g_HistogramPrefix"],
+            visible_out,
+            0,
+            splat_count,
+            0,
+            32,
+        )
+        return out_buffer
+
+    @with_debug_group("renderer.scanline_prefix", _DEBUG_COLOR)
+    def _record_scanline_prefix(self, command_encoder: spy.CommandEncoder, visible_out: spy.Tensor, total_out: spy.Tensor, splat_count: int) -> None:
+        self.util.prefix_sum_uint32_from_count_buffer(
+            command_encoder,
+            self.scene["g_ScanlineCounts"],
+            self.scene["g_ScanlineOffsets"],
+            self.prefix["g_BlockSums"],
+            self.prefix["g_BlockOffsets"],
+            total_out,
+            visible_out,
+            0,
+            splat_count,
+            True,
+        )
+
+    @with_debug_group("renderer.tile_prefix", _DEBUG_COLOR)
+    def _record_tile_prefix(self, command_encoder: spy.CommandEncoder) -> None:
+        self.util.prefix_sum_uint32_from_count_buffer(
+            command_encoder,
+            self.scanlines["g_ScanlineTileCounts"],
+            self.scanlines["g_ScanlineTileOffsets"],
+            self.prefix["g_BlockSums"],
+            self.prefix["g_BlockOffsets"],
+            self.counts["g_TileTotal"],
+            self.counts["g_ScanlineTotal"],
+            0,
+            getattr(self, "_scanline_capacity", 1),
+            True,
+        )
+
+    @with_debug_group("renderer.project_scanlines", _DEBUG_COLOR)
     def _record_sort_and_project(
         self,
         command_encoder: spy.CommandEncoder,
@@ -348,27 +385,15 @@ class SplattingContext:
         visible_out.clear(command_encoder)
         project_vars = self._vars(camera, splat_count, 0)
         project_vars.update(g_TotalBuffer=visible_out, g_TotalCapacity=int(splat_count))
-        with debug_group(command_encoder, "renderer.project_visible", _DEBUG_COLOR):
-            self.k_project_visible_splats.dispatch(
-                thread_count=spy.uint3(splat_count, 1, 1),
-                vars=project_vars,
-                command_encoder=command_encoder,
-            )
-        with debug_group(command_encoder, "renderer.distance_sort_visible", _DEBUG_COLOR):
-            out_buffer, _ = self.util.radix_sort_uint32_from_count_buffer(
-                command_encoder,
-                self.sort["g_DistanceKeys"],
-                self.sort["g_DistanceSortOrder"],
-                self.sort["g_SortedDistanceKeys"],
-                self.sort["g_SortedDistanceSortOrder"],
-                self.radix["g_Histogram"],
-                self.radix["g_HistogramPrefix"],
-                visible_out,
-                0,
-                splat_count,
-                0,
-                32,
-            )
+        dispatch(
+            kernel=self.k_project_visible_splats,
+            thread_count=spy.uint3(splat_count, 1, 1),
+            vars=project_vars,
+            command_encoder=command_encoder,
+            debug_label="renderer.project_visible",
+            debug_color=_DEBUG_COLOR,
+        )
+        out_buffer = self._record_distance_sort_visible(command_encoder, visible_out, splat_count)
         self._sorted_splat_order_tensor = self.sort["g_SortedDistanceSortOrder"] if out_buffer else self.sort["g_DistanceSortOrder"]
         visible_dispatch_args = self.util.dispatch_args_from_count_buffer(
             command_encoder,
@@ -377,34 +402,24 @@ class SplattingContext:
             splat_count,
             256,
         )
-        with debug_group(command_encoder, "renderer.count_visible_scanlines", _DEBUG_COLOR):
-            with command_encoder.begin_compute_pass() as compute_pass:
-                self._dispatch_indirect(
-                    compute_pass,
-                    self.p_count_visible_scanlines,
-                    visible_dispatch_args,
-                    self._indirect_count_vars(
-                        visible_dispatch_args,
-                        splat_count,
-                        g_SplatOrder=self._sorted_splat_order_tensor,
-                        g_ScanlineCounts=self.scene["g_ScanlineCounts"],
-                        g_ProjectionState=self.scene_views["g_ProjectionState"].tensor,
-                    ),
-                )
-        with debug_group(command_encoder, "renderer.scanline_prefix", _DEBUG_COLOR):
-            self.util.prefix_sum_uint32_from_count_buffer(
-                command_encoder,
-                self.scene["g_ScanlineCounts"],
-                self.scene["g_ScanlineOffsets"],
-                self.prefix["g_BlockSums"],
-                self.prefix["g_BlockOffsets"],
-                total_out,
-                visible_out,
-                0,
+        dispatch_indirect(
+            pipeline=self.p_count_visible_scanlines,
+            args_buffer=visible_dispatch_args,
+            command_encoder=command_encoder,
+            vars=self._indirect_count_vars(
+                visible_dispatch_args,
                 splat_count,
-                True,
-            )
+                g_SplatOrder=self._sorted_splat_order_tensor,
+                g_ScanlineCounts=self.scene["g_ScanlineCounts"],
+                g_ProjectionState=self.scene_views["g_ProjectionState"].tensor,
+            ),
+            resource_binder=self.util.bind_resource,
+            debug_label="renderer.count_visible_scanlines",
+            debug_color=_DEBUG_COLOR,
+        )
+        self._record_scanline_prefix(command_encoder, visible_out, total_out, splat_count)
 
+    @with_debug_group("renderer.prepass", _DEBUG_COLOR)
     def _record_hot_prepass_counts(self, command_encoder: spy.CommandEncoder, camera: dict[str, Any], splat_count: int) -> None:
         self._record_sort_and_project(command_encoder, camera, splat_count, self.counts["g_TileTotal"], self.counts["g_ScanlineTotal"])
         self._alloc_radix(max(getattr(self, "_entry_capacity", 1), splat_count))
@@ -417,24 +432,25 @@ class SplattingContext:
             splat_count,
             256,
         )
-        with debug_group(command_encoder, "renderer.emit_scanlines", _DEBUG_COLOR):
-            with command_encoder.begin_compute_pass() as compute_pass:
-                self._dispatch_indirect(
-                    compute_pass,
-                    self.p_emit_scanlines,
-                    visible_args,
-                    self._indirect_count_vars(
-                        visible_args,
-                        splat_count,
-                        g_SplatOrder=self._sorted_splat_order_tensor,
-                        g_ScanlineCounts=self.scene["g_ScanlineCounts"],
-                        g_ScanlineOffsets=self.scene["g_ScanlineOffsets"],
-                        g_ScanlineEntries=self.scanline_views["g_ScanlineEntries"].tensor,
-                        g_ProjectionState=self.scene_views["g_ProjectionState"].tensor,
-                        g_ScanlineCapacity=int(getattr(self, "_scanline_capacity", 1)),
-                        g_ScanlineOverflow=self.counts["g_ScanlineOverflow"],
-                    ),
-                )
+        dispatch_indirect(
+            pipeline=self.p_emit_scanlines,
+            args_buffer=visible_args,
+            command_encoder=command_encoder,
+            vars=self._indirect_count_vars(
+                visible_args,
+                splat_count,
+                g_SplatOrder=self._sorted_splat_order_tensor,
+                g_ScanlineCounts=self.scene["g_ScanlineCounts"],
+                g_ScanlineOffsets=self.scene["g_ScanlineOffsets"],
+                g_ScanlineEntries=self.scanline_views["g_ScanlineEntries"].tensor,
+                g_ProjectionState=self.scene_views["g_ProjectionState"].tensor,
+                g_ScanlineCapacity=int(getattr(self, "_scanline_capacity", 1)),
+                g_ScanlineOverflow=self.counts["g_ScanlineOverflow"],
+            ),
+            resource_binder=self.util.bind_resource,
+            debug_label="renderer.emit_scanlines",
+            debug_color=_DEBUG_COLOR,
+        )
         scanline_args = self.util.dispatch_args_from_count_buffer(
             command_encoder,
             self.counts["g_ScanlineTotal"],
@@ -442,34 +458,23 @@ class SplattingContext:
             getattr(self, "_scanline_capacity", 1),
             256,
         )
-        with debug_group(command_encoder, "renderer.scanline_tile_counts", _DEBUG_COLOR):
-            with command_encoder.begin_compute_pass() as compute_pass:
-                self._dispatch_indirect(
-                    compute_pass,
-                    self.p_emit_scanline_tile_counts,
-                    scanline_args,
-                    self._indirect_count_vars(
-                        scanline_args,
-                        getattr(self, "_scanline_capacity", 1),
-                        g_ScanlineEntries=self.scanline_views["g_ScanlineEntries"].tensor,
-                        g_ScanlineTileCounts=self.scanlines["g_ScanlineTileCounts"],
-                        g_ProjectionState=self.scene_views["g_ProjectionState"].tensor,
-                    ),
-                )
-        self._alloc_prefix(getattr(self, "_scanline_capacity", 1))
-        with debug_group(command_encoder, "renderer.tile_prefix", _DEBUG_COLOR):
-            self.util.prefix_sum_uint32_from_count_buffer(
-                command_encoder,
-                self.scanlines["g_ScanlineTileCounts"],
-                self.scanlines["g_ScanlineTileOffsets"],
-                self.prefix["g_BlockSums"],
-                self.prefix["g_BlockOffsets"],
-                self.counts["g_TileTotal"],
-                self.counts["g_ScanlineTotal"],
-                0,
+        dispatch_indirect(
+            pipeline=self.p_emit_scanline_tile_counts,
+            args_buffer=scanline_args,
+            command_encoder=command_encoder,
+            vars=self._indirect_count_vars(
+                scanline_args,
                 getattr(self, "_scanline_capacity", 1),
-                True,
-            )
+                g_ScanlineEntries=self.scanline_views["g_ScanlineEntries"].tensor,
+                g_ScanlineTileCounts=self.scanlines["g_ScanlineTileCounts"],
+                g_ProjectionState=self.scene_views["g_ProjectionState"].tensor,
+            ),
+            resource_binder=self.util.bind_resource,
+            debug_label="renderer.scanline_tile_counts",
+            debug_color=_DEBUG_COLOR,
+        )
+        self._alloc_prefix(getattr(self, "_scanline_capacity", 1))
+        self._record_tile_prefix(command_encoder)
         self.k_finalize_total.dispatch(
             thread_count=spy.uint3(1, 1, 1),
             vars=self._vars(camera, splat_count, getattr(self, "_entry_capacity", 1)) | {
@@ -481,23 +486,24 @@ class SplattingContext:
             },
             command_encoder=command_encoder,
         )
-        with debug_group(command_encoder, "renderer.emit_tiles", _DEBUG_COLOR):
-            with command_encoder.begin_compute_pass() as compute_pass:
-                self._dispatch_indirect(
-                    compute_pass,
-                    self.p_emit_tile_entries,
-                    scanline_args,
-                    self._indirect_count_vars(
-                        scanline_args,
-                        getattr(self, "_scanline_capacity", 1),
-                        g_ScanlineEntries=self.scanline_views["g_ScanlineEntries"].tensor,
-                        g_ScanlineTileOffsets=self.scanlines["g_ScanlineTileOffsets"],
-                        g_TileEntries=self.raw["g_TileEntryData"],
-                        g_ProjectionState=self.scene_views["g_ProjectionState"].tensor,
-                        g_TileEntryCapacity=int(getattr(self, "_entry_capacity", 1)),
-                        g_TileOverflow=self.counts["g_TileOverflow"],
-                    ),
-                )
+        dispatch_indirect(
+            pipeline=self.p_emit_tile_entries,
+            args_buffer=scanline_args,
+            command_encoder=command_encoder,
+            vars=self._indirect_count_vars(
+                scanline_args,
+                getattr(self, "_scanline_capacity", 1),
+                g_ScanlineEntries=self.scanline_views["g_ScanlineEntries"].tensor,
+                g_ScanlineTileOffsets=self.scanlines["g_ScanlineTileOffsets"],
+                g_TileEntries=self.raw["g_TileEntryData"],
+                g_ProjectionState=self.scene_views["g_ProjectionState"].tensor,
+                g_TileEntryCapacity=int(getattr(self, "_entry_capacity", 1)),
+                g_TileOverflow=self.counts["g_TileOverflow"],
+            ),
+            resource_binder=self.util.bind_resource,
+            debug_label="renderer.emit_tiles",
+            debug_color=_DEBUG_COLOR,
+        )
         finalize_vars = self._vars(camera, splat_count, getattr(self, "_entry_capacity", 1))
         finalize_vars.update(
             g_TotalBuffer=self.counts["g_TileTotal"],
@@ -512,6 +518,7 @@ class SplattingContext:
             command_encoder=command_encoder,
         )
 
+    @with_debug_group("renderer.tile_ranges", _DEBUG_COLOR)
     def _record_hot_prepass_sort_and_ranges(self, command_encoder: spy.CommandEncoder, camera: dict[str, Any], splat_count: int) -> None:
         tile_args = self.util.dispatch_args_from_count_buffer(
             command_encoder,
@@ -522,7 +529,8 @@ class SplattingContext:
         )
         tw, th = self._tile_grid()
         tile_count = tw * th
-        self.k_clear_tile_ranges.dispatch(
+        dispatch(
+            kernel=self.k_clear_tile_ranges,
             thread_count=spy.uint3(tile_count, 1, 1),
             vars=self._vars(camera, splat_count, getattr(self, "_entry_capacity", 1)),
             command_encoder=command_encoder,
@@ -543,25 +551,51 @@ class SplattingContext:
             max(1, (tw * th - 1).bit_length()),
         )
         self._sorted_entries_tensor = self.raw["g_SortedEntryData"] if out_buffer else self.raw["g_TileEntryData"]
-        with debug_group(command_encoder, "renderer.build_tile_ranges", _DEBUG_COLOR):
-            with command_encoder.begin_compute_pass() as compute_pass:
-                self._dispatch_indirect(
-                    compute_pass,
-                    self.p_build_tile_ranges,
-                    tile_args,
-                    self._indirect_count_vars(
-                        tile_args,
-                        getattr(self, "_entry_capacity", 1),
-                        g_SortedEntries=self._sorted_entries_tensor,
-                        g_TileRanges=self.tiles["g_TileRanges"],
-                    ),
-                )
+        dispatch_indirect(
+            pipeline=self.p_build_tile_ranges,
+            args_buffer=tile_args,
+            command_encoder=command_encoder,
+            vars=self._indirect_count_vars(
+                tile_args,
+                getattr(self, "_entry_capacity", 1),
+                g_SortedEntries=self._sorted_entries_tensor,
+                g_TileRanges=self.tiles["g_TileRanges"],
+            ),
+            resource_binder=self.util.bind_resource,
+            debug_label="renderer.build_tile_ranges",
+            debug_color=_DEBUG_COLOR,
+        )
+
+    @with_debug_group("renderer.emit_scanlines", _DEBUG_COLOR)
+    def _record_project_emit_scanlines(self, command_encoder: spy.CommandEncoder, camera: dict[str, Any], splat_count: int, total: int, visible_args: spy.Buffer) -> None:
+        dispatch_indirect(
+            pipeline=self.p_emit_scanlines,
+            args_buffer=visible_args,
+            command_encoder=command_encoder,
+            vars=self._indirect_count_vars(
+                visible_args,
+                splat_count,
+                g_SplatOrder=self._sorted_splat_order_tensor,
+                g_ScanlineCounts=self.scene["g_ScanlineCounts"],
+                g_ScanlineOffsets=self.scene["g_ScanlineOffsets"],
+                g_ScanlineEntries=self.scanline_views["g_ScanlineEntries"].tensor,
+                g_ProjectionState=self.scene_views["g_ProjectionState"].tensor,
+                g_ScanlineCapacity=int(getattr(self, "_scanline_capacity", 1)),
+                g_ScanlineOverflow=self.counts["g_ScanlineOverflow"],
+            ),
+            resource_binder=self.util.bind_resource,
+        )
+        dispatch(
+            kernel=self.k_emit_scanline_tile_counts,
+            thread_count=spy.uint3(total, 1, 1),
+            vars=self._vars(camera, splat_count, total),
+            command_encoder=command_encoder,
+        )
 
     def project(self, camera: dict[str, Any], splat_count: int) -> int:
         self._alloc_prefix(splat_count)
         enc = self.device.create_command_encoder()
-        with debug_group(enc, "renderer.project_scanlines", _DEBUG_COLOR):
-            self._record_sort_and_project(enc, camera, splat_count, self.counts["g_TileTotal"], self.prefix["g_Total"])
+        self._record_sort_and_project(enc, camera, splat_count, self.counts["g_TileTotal"], self.prefix["g_Total"])
         self.device.submit_command_buffer(enc.finish())
         self.device.sync_to_device()
         total = min(self._read_uint(self.prefix["g_Total"]), _MAX_HOT_PREPASS_CAPACITY)
@@ -577,49 +611,29 @@ class SplattingContext:
             splat_count,
             256,
         )
-        with debug_group(enc, "renderer.emit_scanlines", _DEBUG_COLOR):
-            vars = self._vars(camera, splat_count, total)
-            with enc.begin_compute_pass() as compute_pass:
-                self._dispatch_indirect(
-                    compute_pass,
-                    self.p_emit_scanlines,
-                    visible_args,
-                    self._indirect_count_vars(
-                        visible_args,
-                        splat_count,
-                        g_SplatOrder=self._sorted_splat_order_tensor,
-                        g_ScanlineCounts=self.scene["g_ScanlineCounts"],
-                        g_ScanlineOffsets=self.scene["g_ScanlineOffsets"],
-                        g_ScanlineEntries=self.scanline_views["g_ScanlineEntries"].tensor,
-                        g_ProjectionState=self.scene_views["g_ProjectionState"].tensor,
-                        g_ScanlineCapacity=int(getattr(self, "_scanline_capacity", 1)),
-                        g_ScanlineOverflow=self.counts["g_ScanlineOverflow"],
-                    ),
-                )
-            self.k_emit_scanline_tile_counts.dispatch(
-                thread_count=spy.uint3(total, 1, 1),
-                vars=vars,
-                command_encoder=enc,
-            )
+        self._record_project_emit_scanlines(enc, camera, splat_count, total, visible_args)
         self.device.submit_command_buffer(enc.finish())
         self.device.sync_to_device()
         return total
+
+    @with_debug_group("renderer.render", _DEBUG_COLOR)
+    def _record_render_pass(self, command_encoder: spy.CommandEncoder, camera: dict[str, Any], splat_count: int) -> None:
+        dispatch(
+            kernel=self.k_raster_fwd,
+            thread_count=self._raster_thread_count(),
+            vars=self._vars(camera, splat_count, getattr(self, "_entry_capacity", 1)),
+            command_encoder=command_encoder,
+            debug_label="renderer.raster_forward",
+            debug_color=_DEBUG_COLOR,
+        )
 
     def render(self, camera: dict[str, Any], splat_count: int, command_encoder: spy.CommandEncoder | None = None, refresh_buffers: bool = True) -> spy.Tensor:
         if command_encoder is None:
             for _ in range(4):
                 enc = self.device.create_command_encoder()
-                with debug_group(enc, "renderer.prepass", _DEBUG_COLOR):
-                    self._record_hot_prepass_counts(enc, camera, splat_count)
-                with debug_group(enc, "renderer.tile_ranges", _DEBUG_COLOR):
-                    self._record_hot_prepass_sort_and_ranges(enc, camera, splat_count)
-                with debug_group(enc, "renderer.render", _DEBUG_COLOR):
-                    with debug_group(enc, "renderer.raster_forward", _DEBUG_COLOR):
-                        self.k_raster_fwd.dispatch(
-                            thread_count=self._raster_thread_count(),
-                            vars=self._vars(camera, splat_count, getattr(self, "_entry_capacity", 1)),
-                            command_encoder=enc,
-                        )
+                self._record_hot_prepass_counts(enc, camera, splat_count)
+                self._record_hot_prepass_sort_and_ranges(enc, camera, splat_count)
+                self._record_render_pass(enc, camera, splat_count)
                 self.device.submit_command_buffer(enc.finish())
                 self.device.sync_to_device()
                 required_total, needs_refresh = self.readback_and_reallocate_buffers(refresh_buffers=refresh_buffers)
@@ -629,24 +643,24 @@ class SplattingContext:
             raise RuntimeError("Standalone render did not converge after buffer refresh.")
 
         enc = command_encoder
-        with debug_group(enc, "renderer.prepass", _DEBUG_COLOR):
-            self._record_hot_prepass_counts(enc, camera, splat_count)
-        with debug_group(enc, "renderer.tile_ranges", _DEBUG_COLOR):
-            self._record_hot_prepass_sort_and_ranges(enc, camera, splat_count)
-        with debug_group(enc, "renderer.render", _DEBUG_COLOR):
-            with debug_group(enc, "renderer.raster_forward", _DEBUG_COLOR):
-                self.k_raster_fwd.dispatch(
-                    thread_count=self._raster_thread_count(),
-                    vars=self._vars(camera, splat_count, getattr(self, "_entry_capacity", 1)),
-                    command_encoder=enc,
-                )
+        self._record_hot_prepass_counts(enc, camera, splat_count)
+        self._record_hot_prepass_sort_and_ranges(enc, camera, splat_count)
+        self._record_render_pass(enc, camera, splat_count)
         return self.frame["g_Output"]
+
+    @with_debug_group("renderer.backward", _DEBUG_COLOR)
+    def _record_backward_pass(self, command_encoder: spy.CommandEncoder, camera: dict[str, Any], splat_count: int) -> None:
+        self.scene["g_ParamGrads"].clear(command_encoder)
+        dispatch(
+            kernel=self.k_raster_bwd,
+            thread_count=self._raster_thread_count(),
+            vars=self._vars(camera, splat_count, self._last_total),
+            command_encoder=command_encoder,
+        )
 
     def backward(self, camera: dict[str, Any], splat_count: int, command_encoder: spy.CommandEncoder | None = None) -> spy.Tensor:
         enc = command_encoder or self.device.create_command_encoder()
-        with debug_group(enc, "renderer.backward", _DEBUG_COLOR):
-            self.scene["g_ParamGrads"].clear(enc)
-            self.k_raster_bwd.dispatch(thread_count=self._raster_thread_count(), vars=self._vars(camera, splat_count, self._last_total), command_encoder=enc)
+        self._record_backward_pass(enc, camera, splat_count)
         if command_encoder is None:
             self.device.submit_command_buffer(enc.finish()); self.device.sync_to_device()
         return self.scene["g_ParamGrads"]
