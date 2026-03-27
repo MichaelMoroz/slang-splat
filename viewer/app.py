@@ -140,6 +140,36 @@ class SplatViewer(spy.AppWindow):
         self._surface_size = (int(width), int(height))
         self._skip_present_frames = 0
 
+    def _apply_renderer_settings(self, render_seed: int, use_training_params: bool = False) -> None:
+        if use_training_params:
+            render_state = self.training.render_state(apply_dither=True)
+            self.renderer.radius_scale = float(render_state.radius_scale)
+            self.renderer.dither_strength = float(render_state.dither_strength)
+            self.renderer.max_anisotropy = float(render_state.max_anisotropy)
+            self.renderer.alpha_cutoff = float(render_state.alpha_cutoff)
+            self.renderer.trans_threshold = float(render_state.trans_threshold)
+        else:
+            self.renderer.radius_scale = self.s.radius_scale
+            self.renderer.dither_strength = float(self.ui.values["dither_strength"])
+            self.renderer.max_anisotropy = self.s.max_anisotropy
+            self.renderer.alpha_cutoff = self.s.alpha_cutoff
+            self.renderer.trans_threshold = self.s.trans_threshold
+        self.renderer.render_seed = int(render_seed)
+        self.renderer.debug_mode = self.s.debug_mode
+        self.renderer.compute_splat_densities = _needs_splat_density_output(self.s.debug_mode)
+        self.renderer.debug_depth_mean_range = (
+            float(self.ui.values["debug_depth_mean_min"]),
+            float(self.ui.values["debug_depth_mean_max"]),
+        )
+        self.renderer.debug_depth_std_range = (
+            float(self.ui.values["debug_depth_std_min"]),
+            float(self.ui.values["debug_depth_std_max"]),
+        )
+        self.renderer.debug_density_range = (
+            float(self.ui.values["debug_density_min"]),
+            float(self.ui.values["debug_density_max"]),
+        )
+
     def on_resize(self, width: int, height: int) -> None:
         try:
             super().on_resize(width, height)
@@ -392,26 +422,7 @@ class SplatViewer(spy.AppWindow):
             encoder.clear_texture_float(image, clear_value=[*self.s.background, 1.0])
             return
         debug_width, debug_height = map(int, sample.image_size)
-        self.renderer.radius_scale = self.s.radius_scale
-        self.renderer.dither_strength = float(self.ui.values["dither_strength"])
-        self.renderer.max_anisotropy = self.s.max_anisotropy
-        self.renderer.alpha_cutoff = self.s.alpha_cutoff
-        self.renderer.trans_threshold = self.s.trans_threshold
-        self.renderer.render_seed = int(render_seed)
-        self.renderer.debug_mode = self.s.debug_mode
-        self.renderer.compute_splat_densities = _needs_splat_density_output(self.s.debug_mode)
-        self.renderer.debug_depth_mean_range = (
-            float(self.ui.values["debug_depth_mean_min"]),
-            float(self.ui.values["debug_depth_mean_max"]),
-        )
-        self.renderer.debug_depth_std_range = (
-            float(self.ui.values["debug_depth_std_min"]),
-            float(self.ui.values["debug_depth_std_max"]),
-        )
-        self.renderer.debug_density_range = (
-            float(self.ui.values["debug_density_min"]),
-            float(self.ui.values["debug_density_max"]),
-        )
+        self._apply_renderer_settings(render_seed, use_training_params=True)
         self.renderer.prepare(active_splat_count, (debug_width, debug_height), self.s.background)
         self._upload_scene_if_needed()
         self.renderer.render(_camera_dict(sample.camera_params, sample.image_size), active_splat_count, command_encoder=encoder)
@@ -500,26 +511,7 @@ class SplatViewer(spy.AppWindow):
                 if bool(self.ui.values.get("loss_debug", False)) and self.training.frame_count() > 0:
                     self._render_debug_view(image, encoder, active_splat_count, render_seed)
                 else:
-                    self.renderer.radius_scale = self.s.radius_scale
-                    self.renderer.dither_strength = float(self.ui.values["dither_strength"])
-                    self.renderer.max_anisotropy = self.s.max_anisotropy
-                    self.renderer.alpha_cutoff = self.s.alpha_cutoff
-                    self.renderer.trans_threshold = self.s.trans_threshold
-                    self.renderer.render_seed = render_seed
-                    self.renderer.debug_mode = self.s.debug_mode
-                    self.renderer.compute_splat_densities = _needs_splat_density_output(self.s.debug_mode)
-                    self.renderer.debug_depth_mean_range = (
-                        float(self.ui.values["debug_depth_mean_min"]),
-                        float(self.ui.values["debug_depth_mean_max"]),
-                    )
-                    self.renderer.debug_depth_std_range = (
-                        float(self.ui.values["debug_depth_std_min"]),
-                        float(self.ui.values["debug_depth_std_max"]),
-                    )
-                    self.renderer.debug_density_range = (
-                        float(self.ui.values["debug_density_min"]),
-                        float(self.ui.values["debug_density_max"]),
-                    )
+                    self._apply_renderer_settings(render_seed, use_training_params=has_training_preview)
                     self.renderer.prepare(active_splat_count, (width, height), self.s.background)
                     self._upload_scene_if_needed()
                     self.renderer.render(self.camera().gpu_params(width, height), active_splat_count, command_encoder=encoder)

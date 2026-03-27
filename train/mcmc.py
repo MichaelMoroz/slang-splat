@@ -382,6 +382,29 @@ class RGBMCMCTrainer:
     def start(self, scene: SceneData, status: Callable[[str], None] | None = None) -> None:
         self.initialize(scene, status=status)
 
+    def apply_runtime_config(self) -> None:
+        if self.model.optimizer is None:
+            return
+        if self.scene is not None:
+            self.model.xyz_scheduler = get_expon_lr_func(
+                self.cfg.position_lr_init * self.scene.extent_radius,
+                self.cfg.position_lr_final * self.scene.extent_radius,
+                lr_delay_mult=self.cfg.position_lr_delay_mult,
+                max_steps=self.cfg.position_lr_max_steps,
+            )
+        for group in self.model.optimizer.param_groups:
+            name = group.get("name")
+            if name == "color":
+                group["lr"] = float(self.cfg.feature_lr)
+            elif name == "opacity":
+                group["lr"] = float(self.cfg.opacity_lr)
+            elif name == "scaling":
+                group["lr"] = float(self.cfg.scaling_lr)
+            elif name == "rotation":
+                group["lr"] = float(self.cfg.rotation_lr)
+        if self.iteration > 0:
+            self.model.update_learning_rate(self.iteration)
+
     def _current_dither_strength(self) -> float:
         base = max(float(self.cfg.dither_strength), 0.0)
         if base <= 0.0:

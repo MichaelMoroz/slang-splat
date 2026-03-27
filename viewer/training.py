@@ -88,6 +88,15 @@ class TrainingUiConfig:
         )
 
 
+@dataclass(frozen=True)
+class TrainingRenderState:
+    radius_scale: float
+    dither_strength: float
+    max_anisotropy: float
+    alpha_cutoff: float
+    trans_threshold: float
+
+
 @dataclass(slots=True)
 class _FrameMetricBookkeeper:
     loss: np.ndarray
@@ -405,6 +414,49 @@ class TrainingController:
         trainer.context.alpha_cutoff = float(self.config.alpha_cutoff)
         trainer.context.trans_threshold = float(self.config.trans_threshold)
 
+    def _apply_runtime_settings(self, trainer: RGBMCMCTrainer) -> None:
+        trainer.cfg.iterations = int(self.config.iterations)
+        trainer.cfg.position_lr_init = float(self.config.position_lr_init)
+        trainer.cfg.position_lr_final = float(self.config.position_lr_final)
+        trainer.cfg.position_lr_delay_mult = float(self.config.position_lr_delay_mult)
+        trainer.cfg.position_lr_max_steps = int(self.config.position_lr_max_steps)
+        trainer.cfg.feature_lr = float(self.config.feature_lr)
+        trainer.cfg.opacity_lr = float(self.config.opacity_lr)
+        trainer.cfg.scaling_lr = float(self.config.scaling_lr)
+        trainer.cfg.rotation_lr = float(self.config.rotation_lr)
+        trainer.cfg.lambda_dssim = float(self.config.lambda_dssim)
+        trainer.cfg.depth_ratio_weight = float(self.config.depth_ratio_weight)
+        trainer.cfg.noise_lr = float(self.config.noise_lr)
+        trainer.cfg.opacity_reg = float(self.config.opacity_reg)
+        trainer.cfg.scale_reg = float(self.config.scale_reg)
+        trainer.cfg.densification_interval = int(self.config.densification_interval)
+        trainer.cfg.densify_from_iter = int(self.config.densify_from_iter)
+        trainer.cfg.densify_until_iter = int(self.config.densify_until_iter)
+        trainer.cfg.cap_max = int(self.config.cap_max)
+        trainer.cfg.random_background = bool(self.config.random_background)
+        trainer.cfg.eval_interval = int(self.config.eval_interval)
+        trainer.cfg.dither_strength = float(self.config.dither_strength)
+        trainer.cfg.dither_decay_until_iter = int(self.config.dither_decay_until_iter)
+        trainer.apply_runtime_config()
+        self._apply_context_settings(trainer)
+
+    def render_state(self, apply_dither: bool = True) -> TrainingRenderState:
+        if self._trainer is not None:
+            return TrainingRenderState(
+                radius_scale=float(self._trainer.context.radius_scale),
+                dither_strength=float(self._trainer._current_dither_strength()) if apply_dither else 0.0,
+                max_anisotropy=float(self._trainer.context.max_anisotropy),
+                alpha_cutoff=float(self._trainer.context.alpha_cutoff),
+                trans_threshold=float(self._trainer.context.trans_threshold),
+            )
+        return TrainingRenderState(
+            radius_scale=float(self.config.radius_scale),
+            dither_strength=max(float(self.config.dither_strength), 0.0) if apply_dither else 0.0,
+            max_anisotropy=float(self.config.max_anisotropy),
+            alpha_cutoff=float(self.config.alpha_cutoff),
+            trans_threshold=float(self.config.trans_threshold),
+        )
+
     def _set_status(self, value: str) -> None:
         self._status = value
         self._heartbeat += 1
@@ -437,7 +489,7 @@ class TrainingController:
                 self._frame_metrics = _FrameMetricBookkeeper.create(max(self._train_camera_count, 1))
                 self._set_status("Initializing trainer")
                 trainer = RGBMCMCTrainer(self.config.to_mcmc_config(), device="cuda")
-                self._apply_context_settings(trainer)
+                self._apply_runtime_settings(trainer)
                 trainer.start(scene, status=self._set_status)
                 self._trainer = trainer
                 self._pending_fit_points = scene.point_xyz.copy()
@@ -451,9 +503,9 @@ class TrainingController:
                 self._status = "Completed"
                 if self._resume_time is not None:
                     self._elapsed_seconds += max(time.perf_counter() - self._resume_time, 0.0)
-                    self._resume_time = None
+                self._resume_time = None
                 return
-            self._apply_context_settings(self._trainer)
+            self._apply_runtime_settings(self._trainer)
             self._set_status(f"Running step {self._trainer.iteration + 1}")
             step = self._trainer.step()
             self._record_step(step)
