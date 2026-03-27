@@ -465,6 +465,7 @@ class RGBMCMCTrainer:
         background = tuple(np.random.rand(3).tolist()) if self.cfg.random_background else self.scene.background
         rendered, target = self._render_image(camera, background), self._target_image(camera)
         pred = rendered[..., :3]
+        alpha = torch.nan_to_num(rendered[..., 3], nan=0.0, posinf=1.0, neginf=0.0).clamp_(0.0, 1.0)
         depth_ratio = torch.nan_to_num(rendered[..., 4], nan=0.0, posinf=1e6, neginf=0.0)
         tile_count = int(getattr(self.context, "_last_required_total", getattr(self.context, "_last_total", 0)))
         pred = torch.nan_to_num(pred, nan=0.0, posinf=1.0, neginf=0.0).clamp_(0.0, 1.0)
@@ -472,6 +473,7 @@ class RGBMCMCTrainer:
         total, l1, mse, train_psnr_tensor = training_loss(
             pred,
             target,
+            alpha,
             depth_ratio,
             self.model.opacity,
             self.model.scaling,

@@ -45,13 +45,14 @@ def test_render_normalizes_rectangular_image_shape(monkeypatch: pytest.MonkeyPat
 def test_training_loss_includes_depth_ratio_weight() -> None:
     pred = torch.zeros((4, 5, 3), dtype=torch.float32, device="cuda")
     target = torch.zeros_like(pred)
+    alpha = torch.full((4, 5), 0.25, dtype=torch.float32, device="cuda")
     depth_ratio = torch.full((4, 5), 2.0, dtype=torch.float32, device="cuda")
     opacity = torch.zeros((3, 1), dtype=torch.float32, device="cuda")
     scaling = torch.zeros((3, 3), dtype=torch.float32, device="cuda")
 
-    total, l1, mse, train_psnr = training_loss(pred, target, depth_ratio, opacity, scaling, 0.0, 0.01, 0.0, 0.0)
+    total, l1, mse, train_psnr = training_loss(pred, target, alpha, depth_ratio, opacity, scaling, 0.0, 0.01, 0.0, 0.0)
 
     assert float(l1.item()) == 0.0
     assert float(mse.item()) == 0.0
-    assert float(total.item()) == pytest.approx(0.02)
+    assert float(total.item()) == pytest.approx(0.02375)
     assert torch.isfinite(train_psnr)

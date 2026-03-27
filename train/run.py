@@ -11,15 +11,15 @@ from .mcmc import MCMCConfig, RGBMCMCTrainer
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Train RGB MCMC Gaussians with the local renderer.")
     for name, default, typ in (
-        ("--images", "images_4", str),
-        ("--iterations", 1000, int),
-        ("--eval-interval", 100, int),
-        ("--cap-max", 250000, int),
+        ("--images", "images_8", str),
+        ("--iterations", 3000, int),
+        ("--eval-interval", 250, int),
+        ("--cap-max", 500000, int),
         ("--init-points", 50000, int),
         ("--init-scale-spacing-ratio", 0.25, float),
         ("--init-scale-multiplier", 1.0, float),
-        ("--init-opacity", 0.22, float),
-        ("--opacity-lr", 0.01, float),
+        ("--init-opacity", 0.5, float),
+        ("--opacity-lr", 0.05, float),
         ("--device", "cuda", str),
         ("--llff-hold", 8, int),
         ("--opacity-reg", 0.01, float),
