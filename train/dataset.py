@@ -7,7 +7,7 @@ import numpy as np
 import torch
 from PIL import Image
 
-from .colmap import CameraInfo, load_colmap_cameras, load_point_cloud
+from .colmap import CameraInfo, estimate_scene_up_rotation, load_colmap_cameras, load_point_cloud, rotate_scene
 
 
 def _srgb_to_linear_rgb(image: torch.Tensor) -> torch.Tensor:
@@ -97,7 +97,9 @@ def _compute_extent_radius(cameras: list[CameraInfo]) -> float:
 def load_colmap_scene(scene_path: str | Path, image_dir: str = "images_4", eval_split: bool = True, llff_hold: int = 8, preload_cuda: bool = True, device: str | torch.device = "cuda", near: float = 0.0, far: float = 1000.0, white_background: bool = False) -> SceneData:
     device, scene_path = torch.device(device), Path(scene_path).resolve()
     cameras = load_colmap_cameras(scene_path, image_dir)
+    xyz, rgb = load_point_cloud(scene_path)
+    world_rotation = estimate_scene_up_rotation(cameras)
+    cameras, xyz = rotate_scene(cameras, xyz, world_rotation)
     train_infos = [cam for i, cam in enumerate(cameras) if not eval_split or i % llff_hold != 0]
     test_infos = [] if not eval_split else [cam for i, cam in enumerate(cameras) if i % llff_hold == 0]
-    xyz, rgb = load_point_cloud(scene_path)
     return SceneData(scene_path, xyz, rgb, _build_samples(train_infos, device, preload_cuda, near, far), _build_samples(test_infos, device, preload_cuda, near, far), (1.0, 1.0, 1.0) if white_background else (0.0, 0.0, 0.0), _compute_extent_radius(train_infos))

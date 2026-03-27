@@ -53,6 +53,74 @@ def qvec2rotmat(qvec: np.ndarray) -> np.ndarray:
     )
 
 
+def _normalize(vector: np.ndarray, eps: float = 1e-8) -> np.ndarray:
+    vector = np.asarray(vector, dtype=np.float32)
+    return vector / max(float(np.linalg.norm(vector)), float(eps))
+
+
+def _rotation_between_vectors(source: np.ndarray, target: np.ndarray) -> np.ndarray:
+    source = _normalize(source)
+    target = _normalize(target)
+    dot = float(np.clip(np.dot(source, target), -1.0, 1.0))
+    if dot > 1.0 - 1e-6:
+        return np.eye(3, dtype=np.float32)
+    if dot < -1.0 + 1e-6:
+        axis = np.cross(source, np.array((1.0, 0.0, 0.0), dtype=np.float32))
+        if np.linalg.norm(axis) < 1e-6:
+            axis = np.cross(source, np.array((0.0, 0.0, 1.0), dtype=np.float32))
+        axis = _normalize(axis)
+        outer = np.outer(axis, axis)
+        return (2.0 * outer - np.eye(3, dtype=np.float32)).astype(np.float32)
+    axis = np.cross(source, target).astype(np.float32)
+    axis_norm = float(np.linalg.norm(axis))
+    if axis_norm < 1e-8:
+        return np.eye(3, dtype=np.float32)
+    axis /= axis_norm
+    skew = np.array(
+        (
+            (0.0, -axis[2], axis[1]),
+            (axis[2], 0.0, -axis[0]),
+            (-axis[1], axis[0], 0.0),
+        ),
+        dtype=np.float32,
+    )
+    angle = float(np.arccos(dot))
+    sin_angle = float(np.sin(angle))
+    cos_angle = float(np.cos(angle))
+    return (np.eye(3, dtype=np.float32) + sin_angle * skew + (1.0 - cos_angle) * (skew @ skew)).astype(np.float32)
+
+
+def estimate_scene_up_rotation(cameras: list[CameraInfo], target_up: np.ndarray | None = None) -> np.ndarray:
+    target = np.asarray((0.0, 1.0, 0.0) if target_up is None else target_up, dtype=np.float32)
+    if not cameras:
+        return np.eye(3, dtype=np.float32)
+    up_vectors = np.stack([camera.rotation_w2c.T @ np.array((0.0, 1.0, 0.0), dtype=np.float32) for camera in cameras], axis=0)
+    mean_up = up_vectors.mean(axis=0, dtype=np.float32)
+    if float(np.linalg.norm(mean_up)) < 1e-6:
+        return np.eye(3, dtype=np.float32)
+    return _rotation_between_vectors(mean_up, target)
+
+
+def rotate_scene(cameras: list[CameraInfo], xyz: np.ndarray, rotation: np.ndarray) -> tuple[list[CameraInfo], np.ndarray]:
+    world_rotation = np.asarray(rotation, dtype=np.float32)
+    rotated_xyz = (np.asarray(xyz, dtype=np.float32) @ world_rotation.T).astype(np.float32, copy=False)
+    rotated_cameras = [
+        CameraInfo(
+            uid=camera.uid,
+            rotation_w2c=(camera.rotation_w2c @ world_rotation.T).astype(np.float32, copy=False),
+            translation_w2c=np.asarray(camera.translation_w2c, dtype=np.float32),
+            fov_x=camera.fov_x,
+            fov_y=camera.fov_y,
+            width=camera.width,
+            height=camera.height,
+            image_path=camera.image_path,
+            image_name=camera.image_name,
+        )
+        for camera in cameras
+    ]
+    return rotated_cameras, rotated_xyz
+
+
 def _read(handle, fmt: str):
     return struct.unpack("<" + fmt, handle.read(struct.calcsize("<" + fmt)))
 
