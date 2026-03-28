@@ -55,28 +55,6 @@ uniform RWTensor<uint, 1> g_ScanlineOverflow;
 uniform RWTensor<uint, 1> g_TileOverflow;
 uniform uint g_TotalCapacity;
 
-groupshared Gaussian3D gsGaussian[RASTER_BATCH];
-groupshared ProjectionState gsProjection[RASTER_BATCH];
-groupshared uint gsBatchSplatId[RASTER_BATCH];
-groupshared uint gsDoneCount;
-
-uint load_sorted_entry_tile(uint idx) {
-    return g_SortedEntries[int(idx * 2u)];
-}
-
-uint load_sorted_entry_splat(uint idx) {
-    return g_SortedEntries[int(idx * 2u + 1u)];
-}
-
-uint load_sorted_entry_count() {
-    return g_UseCountParams != 0u ? g_CountParamsBuffer[3] : g_SortedEntryCount;
-}
-
-void store_tile_entry(uint idx, uint tileId, uint splatId) {
-    g_TileEntries.store(int(idx * 2u), tileId);
-    g_TileEntries.store(int(idx * 2u + 1u), splatId);
-}
-
 void append_visible_splat(uint distanceKey, uint splatId) {
     uint writeIndex = 0u;
     InterlockedAdd(g_TotalCounterBuffer[0], 1u, writeIndex);
@@ -229,7 +207,7 @@ void csProjectVisibleSplats(uint3 dispatchThreadID : SV_DispatchThreadID) {
 [numthreads(PROJECT_GROUP_SIZE, 1, 1)]
 void csCountVisibleScanlines(uint3 dispatchThreadID : SV_DispatchThreadID) {
     uint visibleSplatId = dispatchThreadID.x;
-    if (visibleSplatId >= load_sorted_entry_count()) return;
+    if (visibleSplatId >= (g_UseCountParams != 0u ? g_CountParamsBuffer[3] : g_SortedEntryCount)) return;
     uint splatId = g_SplatOrder[int(visibleSplatId)];
     Ellipse ellipse;
     uint scanlineCount = load_projected_ellipse(splatId, ellipse) ? count_scanlines(ellipse) : 0u;
@@ -241,7 +219,7 @@ void csCountVisibleScanlines(uint3 dispatchThreadID : SV_DispatchThreadID) {
 [numthreads(PROJECT_GROUP_SIZE, 1, 1)]
 void csEmitScanlines(uint3 dispatchThreadID : SV_DispatchThreadID) {
     uint visibleSplatId = dispatchThreadID.x;
-    if (visibleSplatId >= load_sorted_entry_count()) return;
+    if (visibleSplatId >= (g_UseCountParams != 0u ? g_CountParamsBuffer[3] : g_SortedEntryCount)) return;
     uint splatId = g_SplatOrder[int(visibleSplatId)];
     Ellipse ellipse;
     if (!load_projected_ellipse(splatId, ellipse)) return;
@@ -275,7 +253,7 @@ void csEmitScanlines(uint3 dispatchThreadID : SV_DispatchThreadID) {
 [numthreads(PROJECT_GROUP_SIZE, 1, 1)]
 void csEmitScanlineTileCounts(uint3 dispatchThreadID : SV_DispatchThreadID) {
     uint scanlineId = dispatchThreadID.x;
-    if (scanlineId >= load_sorted_entry_count()) return;
+    if (scanlineId >= (g_UseCountParams != 0u ? g_CountParamsBuffer[3] : g_SortedEntryCount)) return;
     ScanlineEntry scanline = g_ScanlineEntries[int(scanlineId)];
     int spanTileMin, spanTileMax;
     uint tileCount = scanline_tile_span(scanline, spanTileMin, spanTileMax) ? uint(spanTileMax - spanTileMin + 1) : 0u;
@@ -287,7 +265,7 @@ void csEmitScanlineTileCounts(uint3 dispatchThreadID : SV_DispatchThreadID) {
 [numthreads(PROJECT_GROUP_SIZE, 1, 1)]
 void csEmitTileEntries(uint3 dispatchThreadID : SV_DispatchThreadID) {
     uint scanlineId = dispatchThreadID.x;
-    if (scanlineId >= load_sorted_entry_count()) return;
+    if (scanlineId >= (g_UseCountParams != 0u ? g_CountParamsBuffer[3] : g_SortedEntryCount)) return;
     ScanlineEntry scanline = g_ScanlineEntries[int(scanlineId)];
     int spanTileMin, spanTileMax;
     if (!scanline_tile_span(scanline, spanTileMin, spanTileMax)) return;
@@ -298,7 +276,8 @@ void csEmitTileEntries(uint3 dispatchThreadID : SV_DispatchThreadID) {
             break;
         }
         uint2 tileXY = scanline.transpose != 0u ? uint2(scanline.stripIndex, uint(span)) : uint2(uint(span), scanline.stripIndex);
-        store_tile_entry(writeIndex, tileXY.y * g_TileGrid.x + tileXY.x, scanline.splatId);
+        g_TileEntries.store(int(writeIndex * 2u), tileXY.y * g_TileGrid.x + tileXY.x);
+        g_TileEntries.store(int(writeIndex * 2u + 1u), scanline.splatId);
         writeIndex++;
     }
 }
@@ -317,14 +296,14 @@ void csClearTileRanges(uint3 dispatchThreadID : SV_DispatchThreadID) {
 [shader("compute")]
 [numthreads(PROJECT_GROUP_SIZE, 1, 1)]
 void csBuildTileRanges(uint3 dispatchThreadID : SV_DispatchThreadID) {
-    uint sortedEntryCount = load_sorted_entry_count();
+    uint sortedEntryCount = g_UseCountParams != 0u ? g_CountParamsBuffer[3] : g_SortedEntryCount;
     uint idx = dispatchThreadID.x;
     if (idx >= sortedEntryCount) return;
     uint tileCount = g_TileGrid.x * g_TileGrid.y;
-    uint tile = load_sorted_entry_tile(idx);
+    uint tile = g_SortedEntries[int(idx * 2u)];
     if (tile >= tileCount) return;
-    uint prevTile = idx > 0u ? load_sorted_entry_tile(idx - 1u) : 0u;
-    uint nextTile = idx + 1u < sortedEntryCount ? load_sorted_entry_tile(idx + 1u) : 0u;
+    uint prevTile = idx > 0u ? g_SortedEntries[int((idx - 1u) * 2u)] : 0u;
+    uint nextTile = idx + 1u < sortedEntryCount ? g_SortedEntries[int((idx + 1u) * 2u)] : 0u;
     // g_TileRanges is flattened as [start0, end0, start1, end1, ...].
     if (idx == 0u || tile != prevTile) g_TileRanges.store(int(tile * 2u), idx);
     if (idx + 1u == sortedEntryCount || tile != nextTile) g_TileRanges.store(int(tile * 2u + 1u), idx + 1u);
@@ -340,42 +319,62 @@ void csFinalizeTotalWithOverflow(uint3 dispatchThreadID : SV_DispatchThreadID) {
 }
 
 // Raster batching helpers shared by forward and backward passes.
-void prefetch_batch(uint batchStart, uint batchEnd, uint lane, bool prefetchProjection) {
+Gaussian3D make_empty_gaussian() {
+    Gaussian3D empty;
+    empty.position = 0.0;
+    empty.logScale = 0.0;
+    empty.rotation = 0.0;
+    empty.colorAlpha = 0.0;
+    return empty;
+}
+
+ProjectionState make_empty_projection() {
+    ProjectionState empty;
+    empty.centerRadiusDepth = 0.0;
+    empty.conicOpacity = 0.0;
+    return empty;
+}
+
+groupshared Gaussian3D gsGaussian[RASTER_BATCH];
+groupshared ProjectionState gsProjection[RASTER_BATCH];
+groupshared uint gsBatchSplatId[RASTER_BATCH];
+groupshared uint gsDoneCount;
+
+void prefetch_batch(uint batchStart, uint batchEnd, uint lane) {
     uint batchCount = batchEnd - batchStart;
     for (uint localIdx = lane; localIdx < batchCount; localIdx += RASTER_GROUP_THREADS) {
-        uint splatId = load_sorted_entry_splat(batchStart + localIdx);
+        uint splatId = g_SortedEntries[int((batchStart + localIdx) * 2u + 1u)];
         gsBatchSplatId[localIdx] = splatId;
         if (splatId >= g_SplatCount) {
-            Gaussian3D empty;
-            empty.position = 0.0;
-            empty.logScale = 0.0;
-            empty.rotation = 0.0;
-            empty.colorAlpha = 0.0;
-            gsGaussian[localIdx] = empty;
-            if (prefetchProjection) {
-                gsProjection[localIdx].centerRadiusDepth = 0.0;
-                gsProjection[localIdx].conicOpacity = 0.0;
-            }
+            gsGaussian[localIdx] = make_empty_gaussian();
             continue;
         }
         gsGaussian[localIdx] = g_RasterState[int(splatId)];
-        if (prefetchProjection)
-            gsProjection[localIdx] = g_ProjectionState[int(splatId)];
+    }
+}
+
+void prefetch_batch_debug(uint batchStart, uint batchEnd, uint lane) {
+    uint batchCount = batchEnd - batchStart;
+    for (uint localIdx = lane; localIdx < batchCount; localIdx += RASTER_GROUP_THREADS) {
+        uint splatId = g_SortedEntries[int((batchStart + localIdx) * 2u + 1u)];
+        gsBatchSplatId[localIdx] = splatId;
+        if (splatId >= g_SplatCount) {
+            gsGaussian[localIdx] = make_empty_gaussian();
+            gsProjection[localIdx] = make_empty_projection();
+            continue;
+        }
+        gsGaussian[localIdx] = g_RasterState[int(splatId)];
+        gsProjection[localIdx] = g_ProjectionState[int(splatId)];
     }
 }
 
 void prefetch_batch_backward(uint batchStart, uint batchEnd, uint lane) {
     uint batchCount = batchEnd - batchStart;
     for (uint localIdx = lane; localIdx < batchCount; localIdx += RASTER_GROUP_THREADS) {
-        uint splatId = load_sorted_entry_splat(batchStart + localIdx);
+        uint splatId = g_SortedEntries[int((batchStart + localIdx) * 2u + 1u)];
         gsBatchSplatId[localIdx] = splatId;
         if (splatId >= g_SplatCount) {
-            Gaussian3D empty;
-            empty.position = 0.0;
-            empty.logScale = 0.0;
-            empty.rotation = 0.0;
-            empty.colorAlpha = 0.0;
-            gsGaussian[localIdx] = empty;
+            gsGaussian[localIdx] = make_empty_gaussian();
             continue;
         }
         gsGaussian[localIdx] = Gaussian3D.load(g_Splats, g_SplatCount, splatId);
@@ -411,17 +410,77 @@ void csRasterForward(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupID
     uint pixelId = uint(p.y) * uint(g_Camera.viewport.x) + uint(p.x);
     float2 raySample = float2(p) + stochastic_subpixel_offset(pixelId, g_RenderSeed, g_DitherStrength);
     float3 rayDir = active ? g_Camera.screen_to_world_ray(raySample) : 0.0;
-    bool outlineDebug = g_DebugMode == DEBUG_MODE_ELLIPSE_OUTLINES;
-    bool depthMeanDebug = g_DebugMode == DEBUG_MODE_DEPTH_MEAN;
-    bool depthStdDebug = g_DebugMode == DEBUG_MODE_DEPTH_STD;
-    bool depthDebug = depthMeanDebug || depthStdDebug;
-    bool spatialDensityDebug = g_DebugMode == DEBUG_MODE_SPLAT_SPATIAL_DENSITY;
-    bool screenDensityDebug = g_DebugMode == DEBUG_MODE_SPLAT_SCREEN_DENSITY;
-    bool densityDebug = spatialDensityDebug || screenDensityDebug;
+    float depthWeightSum = 0.0;
+    float depthMean = 0.0;
+    float depthM2 = 0.0;
+    if (range.x != INVALID_START && range.y > range.x) {
+        bool done = !active;
+        if (lane == 0u) gsDoneCount = 0u;
+        GroupMemoryBarrierWithGroupSync();
+        if (!active) InterlockedAdd(gsDoneCount, 1u);
+        GroupMemoryBarrierWithGroupSync();
+        for (uint batchStart = range.x; batchStart < range.y; batchStart += RASTER_BATCH) {
+            if (gsDoneCount == RASTER_GROUP_THREADS) break;
+            uint batchEnd = min(batchStart + RASTER_BATCH, range.y);
+            uint batchCount = batchEnd - batchStart;
+            prefetch_batch(batchStart, batchEnd, lane);
+            GroupMemoryBarrierWithGroupSync();
+            if (!done) {
+                for (uint localIdx = 0u; localIdx < batchCount; localIdx++) {
+                    processedEnd = batchStart + localIdx + 1u;
+                    Gaussian3D gaussian = gsGaussian[localIdx];
+                    float2 eval = raster_eval_alpha(gaussian, rayDir);
+                    float alpha = eval.x;
+                    float rayDepth = eval.y;
+                    if (alpha < g_AlphaCutoff) continue;
+                    float contributionWeight = trans * alpha;
+                    if (contributionWeight > SMALL_VALUE && rayDepth > 0.0) {
+                        float3 depthState = depth_state_step(depthWeightSum, depthMean, depthM2, contributionWeight, rayDepth);
+                        depthWeightSum = depthState.x;
+                        depthMean = depthState.y;
+                        depthM2 = depthState.z;
+                    }
+                    float4 blended = shade_step(accum, trans, gaussian, alpha);
+                    accum = blended.xyz;
+                    trans = blended.w;
+                    if (trans < g_TransmittanceThreshold) {
+                        done = true;
+                        InterlockedAdd(gsDoneCount, 1u);
+                        break;
+                    }
+                }
+            }
+            GroupMemoryBarrierWithGroupSync();
+        }
+    }
+    if (!active) return;
+    float4 output = raster_output(accum, trans, g_Background);
+    float depthOutput = raster_depth_output(depthWeightSum, depthMean, depthM2);
+    g_Output.store(p, output);
+    g_ForwardState.store(p, float4(accum, trans));
+    g_OutputDepth.store(p, depthOutput);
+    g_ForwardDepthState.store(p, float4(depthWeightSum, depthMean, depthM2, 0.0));
+    g_ForwardEnd.store(p, processedEnd);
+}
+
+[shader("compute")]
+[numthreads(RASTER_GROUP_THREADS, 1, 1)]
+void csRasterForwardDebug(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint lane : SV_GroupIndex) {
+    uint tileId = groupID.x;
+    int2 p = raster_thread_to_pixel(tileId, lane);
+    bool active = p.x < int(g_Camera.viewport.x) && p.y < int(g_Camera.viewport.y);
+    uint debugMode = g_DebugMode;
+    uint2 range = uint2(g_TileRanges[int(tileId * 2u)], g_TileRanges[int(tileId * 2u + 1u)]);
+    float3 accum = 0.0;
+    float trans = 1.0;
+    uint processedEnd = range.x;
+    uint pixelId = uint(p.y) * uint(g_Camera.viewport.x) + uint(p.x);
+    float2 raySample = float2(p) + stochastic_subpixel_offset(pixelId, g_RenderSeed, g_DitherStrength);
+    float3 rayDir = active ? g_Camera.screen_to_world_ray(raySample) : 0.0;
     bool computeDensityOutput = g_ComputeSplatDensities != 0u;
-    bool computeSpatialDensity = spatialDensityDebug || computeDensityOutput;
-    bool computeScreenDensity = screenDensityDebug || computeDensityOutput;
-    bool accumulateDensities = densityDebug || computeDensityOutput;
+    bool needsOutlineDebug = debugMode == DEBUG_MODE_ELLIPSE_OUTLINES;
+    bool needsSpatialDensity = computeDensityOutput || debugMode == DEBUG_MODE_SPLAT_SPATIAL_DENSITY;
+    bool needsScreenDensity = computeDensityOutput || debugMode == DEBUG_MODE_SPLAT_SCREEN_DENSITY;
     float depthWeightSum = 0.0;
     float depthMean = 0.0;
     float depthM2 = 0.0;
@@ -437,16 +496,16 @@ void csRasterForward(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupID
             if (gsDoneCount == RASTER_GROUP_THREADS) break;
             uint batchEnd = min(batchStart + RASTER_BATCH, range.y);
             uint batchCount = batchEnd - batchStart;
-            // Batch splats into groupshared storage so every pixel in the tile reuses the same loads.
-            prefetch_batch(batchStart, batchEnd, lane, outlineDebug || computeScreenDensity);
+            prefetch_batch_debug(batchStart, batchEnd, lane);
             GroupMemoryBarrierWithGroupSync();
             if (!done) {
                 for (uint localIdx = 0u; localIdx < batchCount; localIdx++) {
                     processedEnd = batchStart + localIdx + 1u;
                     Gaussian3D gaussian = gsGaussian[localIdx];
-                    // The forward loop only needs alpha and the fused color/opacity carried by Gaussian3D.
-                    float2 eval = outlineDebug
-                        ? float2(raster_eval_outline_alpha(gaussian, gsProjection[localIdx], raySample), 0.0)
+                    ProjectionState projection = gsProjection[localIdx];
+                    uint splatId = gsBatchSplatId[localIdx];
+                    float2 eval = needsOutlineDebug
+                        ? float2(raster_eval_outline_alpha(gaussian, projection, raySample), 0.0)
                         : raster_eval_alpha(gaussian, rayDir);
                     float alpha = eval.x;
                     float rayDepth = eval.y;
@@ -458,13 +517,13 @@ void csRasterForward(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupID
                         depthMean = depthState.y;
                         depthM2 = depthState.z;
                     }
-                    if (accumulateDensities && contributionWeight > SMALL_VALUE) {
-                        if (computeSpatialDensity) {
-                            Gaussian3D originalGaussian = Gaussian3D.load(g_Splats, g_SplatCount, gsBatchSplatId[localIdx]);
+                    if (contributionWeight > SMALL_VALUE) {
+                        if (needsSpatialDensity) {
+                            Gaussian3D originalGaussian = Gaussian3D.load(g_Splats, g_SplatCount, splatId);
                             spatialDensitySum += contributionWeight / gaussian_scale_volume(originalGaussian.logScale);
                         }
-                        if (computeScreenDensity) {
-                            screenDensitySum += contributionWeight / projected_ellipse_area(gsProjection[localIdx].conicOpacity.xyz);
+                        if (needsScreenDensity) {
+                            screenDensitySum += contributionWeight / projected_ellipse_area(projection.conicOpacity.xyz);
                         }
                     }
                     float4 blended = shade_step(accum, trans, gaussian, alpha);
@@ -484,18 +543,19 @@ void csRasterForward(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupID
     uint processedCount = range.x != INVALID_START && processedEnd >= range.x ? (processedEnd - range.x) : 0u;
     float4 output = raster_output(accum, trans, g_Background);
     float depthOutput = raster_depth_output(depthWeightSum, depthMean, depthM2);
-    if (g_DebugMode == DEBUG_MODE_PROCESSED_COUNT) {
+
+    if (debugMode == DEBUG_MODE_PROCESSED_COUNT) {
         output = float4(raster_processed_count_color(processedCount, g_DebugMaxSplatSteps), 1.0);
-    } else if (spatialDensityDebug) {
+    } else if (debugMode == DEBUG_MODE_SPLAT_SPATIAL_DENSITY) {
         output = float4(jet_colormap(debug_normalize_range(spatialDensitySum, g_DebugDensityRange)), 1.0);
-    } else if (screenDensityDebug) {
+    } else if (debugMode == DEBUG_MODE_SPLAT_SCREEN_DENSITY) {
         output = float4(jet_colormap(debug_normalize_range(screenDensitySum, g_DebugDensityRange)), 1.0);
-    } else if (depthDebug) {
-        float debugValue = depthMeanDebug
-            ? debug_normalize_range(depthMean, g_DebugDepthMeanRange)
-            : debug_normalize_range(depthOutput, g_DebugDepthStdRange);
-        output = float4(jet_colormap(debugValue), 1.0);
+    } else if (debugMode == DEBUG_MODE_DEPTH_MEAN) {
+        output = float4(jet_colormap(debug_normalize_range(depthMean, g_DebugDepthMeanRange)), 1.0);
+    } else if (debugMode == DEBUG_MODE_DEPTH_STD) {
+        output = float4(jet_colormap(debug_normalize_range(depthOutput, g_DebugDepthStdRange)), 1.0);
     }
+
     g_Output.store(p, output);
     g_ForwardState.store(p, float4(accum, trans));
     g_OutputDepth.store(p, depthOutput);

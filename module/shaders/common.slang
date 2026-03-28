@@ -1,5 +1,7 @@
 import "slangpy";
 
+// The raster path is specialized for Vulkan wave32 execution: one 8x8 tile per
+// 64-thread workgroup, split into two 8x4 wave footprints.
 static const uint TILE_SIZE = 8u;
 static const uint PROJECT_GROUP_SIZE = 256u;
 static const uint RASTER_BATCH = 64u;

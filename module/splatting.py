@@ -28,6 +28,8 @@ _INITIAL_TILE_CAPACITY_MULTIPLIER = 32
 _MAX_IMAGE_DIM = 8192
 _MAX_IMAGE_PIXELS = 33_554_432
 _MAX_HOT_PREPASS_CAPACITY = 33_554_432
+_TILE_SIZE = 8
+_RASTER_GROUP_THREADS = _TILE_SIZE * _TILE_SIZE
 
 
 @dataclass
@@ -69,6 +71,7 @@ class SplattingContext:
             ("p_build_tile_ranges", "csBuildTileRanges", True),
             ("k_finalize_total", "csFinalizeTotalWithOverflow", False),
             ("k_raster_fwd", "csRasterForward", False),
+            ("k_raster_fwd_debug", "csRasterForwardDebug", False),
             ("k_raster_bwd", "csRasterBackward", False),
         ):
             setattr(self, attr, load(entry, pipeline))
@@ -102,13 +105,13 @@ class SplattingContext:
         return required
 
     def _tile_grid(self) -> tuple[int, int]:
-        return (self._size[0] + 7) // 8, (self._size[1] + 7) // 8
+        return (self._size[0] + _TILE_SIZE - 1) // _TILE_SIZE, (self._size[1] + _TILE_SIZE - 1) // _TILE_SIZE
 
     def _tile_grid_uint2(self) -> spy.uint2: return spy.uint2(*self._tile_grid())
 
     def _raster_thread_count(self) -> spy.uint3:
         tile_width, tile_height = self._tile_grid()
-        return spy.uint3(tile_width * tile_height * 64, 1, 1)
+        return spy.uint3(tile_width * tile_height * _RASTER_GROUP_THREADS, 1, 1)
 
     def _validate_image_size(self, image_size: tuple[int, int]) -> tuple[int, int]:
         width = int(image_size[0])
@@ -136,7 +139,7 @@ class SplattingContext:
             "g_SplatDensities": spy.Tensor.empty(self.device, shape=(height, width), dtype=spy.float3),
             "g_ForwardEnd": spy.Tensor.empty(self.device, shape=(height, width), dtype="uint"),
         }
-        tw, th = (width + 7) // 8, (height + 7) // 8
+        tw, th = (width + _TILE_SIZE - 1) // _TILE_SIZE, (height + _TILE_SIZE - 1) // _TILE_SIZE
         self.tiles = {"g_TileRanges": spy.Tensor.empty(self.device, shape=(tw * th * 2,), dtype="uint")}
         self._size = shape
 
@@ -613,7 +616,7 @@ class SplattingContext:
     @with_debug_group("renderer.render", _DEBUG_COLOR)
     def _record_render_pass(self, command_encoder: spy.CommandEncoder, camera: dict[str, Any], splat_count: int) -> None:
         dispatch(
-            kernel=self.k_raster_fwd,
+            kernel=self.k_raster_fwd_debug if int(self.debug_mode) != _DEBUG_MODE_NORMAL else self.k_raster_fwd,
             thread_count=self._raster_thread_count(),
             vars=self._vars(camera, splat_count, getattr(self, "_entry_capacity", 1)),
             command_encoder=command_encoder,
