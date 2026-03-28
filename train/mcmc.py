@@ -87,10 +87,10 @@ class MCMCConfig:
     scaling_lr_mult: float = 20.0
     rotation_lr_mult: float = 1.0
     lambda_dssim: float = 0.2
-    depth_ratio_weight: float = 0.025
+    depth_ratio_weight: float = 0.05
     noise_lr: float = 5e5
     densify_enabled: bool = True
-    densify_interval: int = 10
+    densify_interval: int = 50
     densify_until_iter: int = 500
     densify_interval_after: int = 50
     densify_target_ratio: float = 0.05

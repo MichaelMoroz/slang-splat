@@ -53,8 +53,27 @@ def _rotmat_to_quat_wxyz(matrix: np.ndarray) -> np.ndarray:
 def _camera_tensor(info: CameraInfo, image_size: tuple[int, int], near: float, far: float, device: torch.device) -> torch.Tensor:
     width, height = image_size
     quat = _rotmat_to_quat_wxyz(info.rotation_w2c)
-    fx, fy = width / (2.0 * np.tan(info.fov_x * 0.5)), height / (2.0 * np.tan(info.fov_y * 0.5))
-    return torch.tensor((quat[0], quat[1], quat[2], quat[3], *info.translation_w2c, fx, fy, width * 0.5, height * 0.5, near, far, 0.0, 0.0), dtype=torch.float32, device=device)
+    sx = float(width) / max(float(info.width), 1.0)
+    sy = float(height) / max(float(info.height), 1.0)
+    return torch.tensor(
+        (
+            quat[0],
+            quat[1],
+            quat[2],
+            quat[3],
+            *info.translation_w2c,
+            float(info.fx) * sx,
+            float(info.fy) * sy,
+            float(info.cx) * sx,
+            float(info.cy) * sy,
+            near,
+            far,
+            float(info.k1),
+            float(info.k2),
+        ),
+        dtype=torch.float32,
+        device=device,
+    )
 
 
 def _load_image_tensor(path: Path, device: torch.device, preload_cuda: bool) -> torch.Tensor:
@@ -74,18 +93,20 @@ def probe_image_size(path: Path) -> tuple[int, int]:
 def _build_samples(infos: list[CameraInfo], device: torch.device, preload_cuda: bool, near: float, far: float) -> list[CameraSample]:
     if not infos:
         return []
-    ref_width, ref_height = probe_image_size(infos[0].image_path)
-    sx, sy = ref_width / infos[0].width, ref_height / infos[0].height
-    return [
-        CameraSample(
-            image_name=info.image_name,
-            image_path=info.image_path,
-            image_size=(max(int(round(info.width * sx)), 1), max(int(round(info.height * sy)), 1)),
-            camera_params=_camera_tensor(info, (max(int(round(info.width * sx)), 1), max(int(round(info.height * sy)), 1)), near, far, device),
-            image=_load_image_tensor(info.image_path, device, preload_cuda) if preload_cuda else None,
+    samples: list[CameraSample] = []
+    for info in infos:
+        image_width, image_height = probe_image_size(info.image_path)
+        image_size = (max(int(image_width), 1), max(int(image_height), 1))
+        samples.append(
+            CameraSample(
+                image_name=info.image_name,
+                image_path=info.image_path,
+                image_size=image_size,
+                camera_params=_camera_tensor(info, image_size, near, far, device),
+                image=_load_image_tensor(info.image_path, device, preload_cuda) if preload_cuda else None,
+            )
         )
-        for info in infos
-    ]
+    return samples
 
 
 def _compute_extent_radius(cameras: list[CameraInfo]) -> float:

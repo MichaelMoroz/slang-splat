@@ -14,6 +14,12 @@ class CameraInfo:
     uid: int
     rotation_w2c: np.ndarray
     translation_w2c: np.ndarray
+    fx: float
+    fy: float
+    cx: float
+    cy: float
+    k1: float
+    k2: float
     fov_x: float
     fov_y: float
     width: int
@@ -34,6 +40,20 @@ CAMERA_MODELS = {
     8: 4,
     9: 5,
     10: 12,
+}
+
+CAMERA_MODEL_NAMES = {
+    0: "SIMPLE_PINHOLE",
+    1: "PINHOLE",
+    2: "SIMPLE_RADIAL",
+    3: "RADIAL",
+    4: "OPENCV",
+    5: "OPENCV_FISHEYE",
+    6: "FULL_OPENCV",
+    7: "FOV",
+    8: "SIMPLE_RADIAL_FISHEYE",
+    9: "RADIAL_FISHEYE",
+    10: "THIN_PRISM_FISHEYE",
 }
 
 
@@ -109,6 +129,12 @@ def rotate_scene(cameras: list[CameraInfo], xyz: np.ndarray, rotation: np.ndarra
             uid=camera.uid,
             rotation_w2c=(camera.rotation_w2c @ world_rotation.T).astype(np.float32, copy=False),
             translation_w2c=np.asarray(camera.translation_w2c, dtype=np.float32),
+            fx=camera.fx,
+            fy=camera.fy,
+            cx=camera.cx,
+            cy=camera.cy,
+            k1=camera.k1,
+            k2=camera.k2,
             fov_x=camera.fov_x,
             fov_y=camera.fov_y,
             width=camera.width,
@@ -123,6 +149,30 @@ def rotate_scene(cameras: list[CameraInfo], xyz: np.ndarray, rotation: np.ndarra
 
 def _read(handle, fmt: str):
     return struct.unpack("<" + fmt, handle.read(struct.calcsize("<" + fmt)))
+
+
+def _decode_intrinsics(model_id: int, params: np.ndarray) -> tuple[float, float, float, float, float, float]:
+    model_id = int(model_id)
+    values = np.asarray(params, dtype=np.float64)
+    if model_id == 0:  # SIMPLE_PINHOLE
+        f, cx, cy = values[:3]
+        return float(f), float(f), float(cx), float(cy), 0.0, 0.0
+    if model_id == 1:  # PINHOLE
+        fx, fy, cx, cy = values[:4]
+        return float(fx), float(fy), float(cx), float(cy), 0.0, 0.0
+    if model_id == 2:  # SIMPLE_RADIAL
+        f, cx, cy, k1 = values[:4]
+        return float(f), float(f), float(cx), float(cy), float(k1), 0.0
+    if model_id == 3:  # RADIAL
+        f, cx, cy, k1, k2 = values[:5]
+        return float(f), float(f), float(cx), float(cy), float(k1), float(k2)
+    if model_id == 4:  # OPENCV
+        fx, fy, cx, cy, k1, k2, p1, p2 = values[:8]
+        if abs(float(p1)) > 1e-8 or abs(float(p2)) > 1e-8:
+            raise ValueError("COLMAP OPENCV cameras with tangential distortion are not supported.")
+        return float(fx), float(fy), float(cx), float(cy), float(k1), float(k2)
+    name = CAMERA_MODEL_NAMES.get(model_id, f"model_{model_id}")
+    raise ValueError(f"Unsupported COLMAP camera model {name}. Supported models: SIMPLE_PINHOLE, PINHOLE, SIMPLE_RADIAL, RADIAL, OPENCV(with zero tangential distortion).")
 
 
 def read_intrinsics_binary(path: str | Path) -> dict[int, dict[str, object]]:
@@ -178,13 +228,19 @@ def load_colmap_cameras(scene_path: str | Path, image_dir: str | Path) -> list[C
     cameras = []
     for extr in extrinsics.values():
         intr = intrinsics[int(extr["camera_id"])]
-        fx, fy = (float(intr["params"][0]),) * 2 if int(intr["model_id"]) == 0 else map(float, intr["params"][:2])
+        fx, fy, cx, cy, k1, k2 = _decode_intrinsics(int(intr["model_id"]), np.asarray(intr["params"], dtype=np.float64))
         name = Path(str(extr["name"]))
         cameras.append(
             CameraInfo(
                 uid=int(extr["id"]),
                 rotation_w2c=qvec2rotmat(np.asarray(extr["qvec"], dtype=np.float64)),
                 translation_w2c=np.asarray(extr["tvec"], dtype=np.float32),
+                fx=fx,
+                fy=fy,
+                cx=cx,
+                cy=cy,
+                k1=k1,
+                k2=k2,
                 fov_x=float(focal2fov(fx, int(intr["width"]))),
                 fov_y=float(focal2fov(fy, int(intr["height"]))),
                 width=int(intr["width"]),
