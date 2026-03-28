@@ -24,6 +24,7 @@ uniform RWStructuredBuffer<uint> g_TotalCounterBuffer;
 uniform Tensor<uint, 1> g_OverflowA;
 uniform Tensor<uint, 1> g_OverflowB;
 uniform RWTensor<float4, 2> g_Output;
+uniform Tensor<float4, 2> g_TargetImage;
 uniform Tensor<float4, 2> g_OutputGrad;
 uniform RWTensor<float, 2> g_OutputDepth;
 uniform Tensor<float, 2> g_OutputDepthGrad;
@@ -31,9 +32,12 @@ uniform RWTensor<float4, 2> g_ForwardState;
 uniform RWTensor<float4, 2> g_ForwardDepthState;
 uniform RWTensor<float3, 2> g_SplatDensities;
 uniform RWTensor<uint, 2> g_ForwardEnd;
+uniform RWTensor<CloneHit, 1> g_CloneHits;
 uniform RWTensor<float, 1> g_ParamGrads;
 uniform AtomicTensor<float, 1> g_RasterGradBuffer;
 uniform Tensor<float, 1> g_RasterGradBufferRead;
+uniform RWStructuredBuffer<uint> g_CloneHitCounterBuffer;
+uniform RWStructuredBuffer<uint> g_CloneCountsBuffer;
 uniform Camera g_Camera;
 uniform uint g_SplatCount;
 uniform uint g_SortedEntryCount;
@@ -57,6 +61,9 @@ uniform uint g_ComputeSplatDensities;
 uniform RWTensor<uint, 1> g_ScanlineOverflow;
 uniform RWTensor<uint, 1> g_TileOverflow;
 uniform uint g_TotalCapacity;
+uniform uint g_CloneHitCapacity;
+uniform uint g_CloneSeed;
+uniform float g_CloneSelectProbability;
 
 void append_visible_splat(uint distanceKey, uint splatId) {
     uint writeIndex = 0u;
@@ -64,6 +71,21 @@ void append_visible_splat(uint distanceKey, uint splatId) {
     if (writeIndex >= g_TotalCapacity) return;
     g_DistanceKeys.store(int(writeIndex), distanceKey);
     g_DistanceSortOrder.store(int(writeIndex), splatId);
+}
+
+bool append_clone_hit(float3 worldPosition, uint splatId, float3 targetColor) {
+    uint writeIndex = 0u;
+    InterlockedAdd(g_CloneHitCounterBuffer[0], 1u, writeIndex);
+    if (writeIndex >= g_CloneHitCapacity) return false;
+    int[1] at = { int(writeIndex) };
+    CloneHit hit;
+    hit.position = worldPosition;
+    hit.splatId = splatId;
+    hit.targetColor = targetColor;
+    hit.pad = 0.0;
+    g_CloneHits.store(at, hit);
+    InterlockedAdd(g_CloneCountsBuffer[splatId], 1u);
+    return true;
 }
 
 // Raster-state write helpers.
@@ -561,6 +583,52 @@ void csRasterForwardDebug(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 gr
     g_ForwardDepthState.store(p, float4(depthState, 0.0));
     if (computeDensityOutput) g_SplatDensities.store(p, float3(spatialDensitySum, screenDensitySum, depthState.y));
     g_ForwardEnd.store(p, processedEnd);
+}
+
+[shader("compute")]
+[numthreads(RASTER_GROUP_THREADS, 1, 1)]
+void csRasterCloneCandidates(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint lane : SV_GroupIndex) {
+    uint tileId = groupID.x;
+    int2 p = raster_thread_to_pixel(tileId, lane);
+    bool active = p.x < int(g_Camera.viewport.x) && p.y < int(g_Camera.viewport.y);
+    if (!active || g_CloneHitCapacity == 0u || g_CloneSelectProbability <= 0.0) return;
+
+    uint pixelId = uint(p.y) * uint(g_Camera.viewport.x) + uint(p.x);
+    uint cloneSeed = hash_combine_u32(pixelId, g_CloneSeed);
+    if (hash_to_unit_float(hash_u32(cloneSeed ^ 0x8da6b343u)) > saturate(g_CloneSelectProbability)) return;
+
+    float threshold = hash_to_unit_float(hash_u32(cloneSeed ^ 0x5f2ce0b1u));
+    float2 raySample = float2(p) + stochastic_subpixel_offset(pixelId, g_RenderSeed, g_DitherStrength);
+    float3 rayDir = g_Camera.screen_to_world_ray(raySample);
+    uint2 range = uint2(g_TileRanges[int(tileId * 2u)], g_TileRanges[int(tileId * 2u + 1u)]);
+    if (range.x == INVALID_START || range.y <= range.x) return;
+
+    float trans = 1.0;
+    [loop]
+    for (uint batchStart = range.x; batchStart < range.y; batchStart += RASTER_BATCH) {
+        uint batchEnd = min(batchStart + RASTER_BATCH, range.y);
+        uint batchCount = batchEnd - batchStart;
+        prefetch_batch(batchStart, batchEnd, lane);
+        GroupMemoryBarrierWithGroupSync();
+        [loop]
+        for (uint localIdx = 0u; localIdx < batchCount; localIdx++) {
+            uint splatId = gsBatchSplatId[localIdx];
+            if (splatId >= g_SplatCount) continue;
+            Gaussian3D gaussian = gsGaussian[localIdx];
+            float2 eval = raster_eval_alpha(gaussian, rayDir);
+            float alpha = eval.x;
+            float rayDepth = eval.y;
+            if (alpha < g_AlphaCutoff) continue;
+            float nextTrans = trans * (1.0 - alpha);
+            if (nextTrans <= threshold) {
+                append_clone_hit(g_Camera.camPos + rayDir * rayDepth, splatId, g_TargetImage[p].xyz);
+                return;
+            }
+            trans = nextTrans;
+            if (trans < g_TransmittanceThreshold) return;
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
 }
 
 void add_raster_grad(uint splatId, uint paramId, float value) {

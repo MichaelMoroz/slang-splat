@@ -38,7 +38,7 @@ class SplattingContext:
     radius_scale: float = 1.0
     dither_strength: float = 1.0
     compute_splat_densities: bool = False
-    max_anisotropy: float = 12.0
+    max_anisotropy: float = 32.0
     alpha_cutoff: float = 0.02
     trans_threshold: float = 0.005
     render_seed: int = 0
@@ -72,6 +72,7 @@ class SplattingContext:
             ("k_finalize_total", "csFinalizeTotalWithOverflow", False),
             ("k_raster_fwd", "csRasterForward", False),
             ("k_raster_fwd_debug", "csRasterForwardDebug", False),
+            ("k_raster_clone_candidates", "csRasterCloneCandidates", False),
             ("k_raster_bwd", "csRasterBackward", False),
             ("k_backproject_raster_grads", "csBackprojectRasterGrads", False),
         ):
@@ -81,12 +82,14 @@ class SplattingContext:
         self._projection_dtype = self.mod.ProjectionState
         self._gaussian_dtype = self.mod.Gaussian3D
         self._scanline_dtype = self.mod.ScanlineEntry
+        self._clone_hit_dtype = self.mod.CloneHit
         count_names = ("g_ScanlineTotal", "g_TileTotal", "g_ScanlineOverflow", "g_TileOverflow", "g_ScanlineMax", "g_TileMax")
         self.counts = {name: spy.Tensor.empty(self.device, shape=(1,), dtype="uint") for name in count_names}
         self.counts["g_CountParamsDummy"] = spy.Tensor.empty(self.device, shape=(4,), dtype="uint")
         self._last_total = 0
         self._last_required_total = 0
         self._size = (0, 0)
+        self._clone_capacity = 0
 
     def _view(self, tensor: spy.Tensor, dtype: Any, shape: tuple[int, ...]) -> spy.Tensor:
         dtype = self._float4_dtype if dtype is spy.float4 else dtype
@@ -132,6 +135,7 @@ class SplattingContext:
         width, height = shape
         self.frame = {
             "g_Output": spy.Tensor.empty(self.device, shape=(height, width), dtype=spy.float4),
+            "g_TargetImage": spy.Tensor.empty(self.device, shape=(height, width), dtype=spy.float4),
             "g_OutputGrad": spy.Tensor.empty(self.device, shape=(height, width), dtype=spy.float4),
             "g_OutputDepth": spy.Tensor.empty(self.device, shape=(height, width), dtype=float),
             "g_OutputDepthGrad": spy.Tensor.empty(self.device, shape=(height, width), dtype=float),
@@ -159,6 +163,7 @@ class SplattingContext:
                 "g_TileCounts": spy.Tensor.empty(self.device, shape=(count,), dtype="uint"),
                 "g_ParamGrads": spy.Tensor.empty(self.device, shape=(count * _PARAM_COUNT,), dtype=float),
                 "g_RasterGradBuffer": spy.Tensor.empty(self.device, shape=(count * _PARAM_COUNT,), dtype=float),
+                "g_CloneCounts": spy.Tensor.empty(self.device, shape=(count,), dtype="uint"),
                 "g_ProjectionStateData": spy.Tensor.empty(self.device, shape=(count, 2), dtype=spy.float4),
                 "g_RasterStateData": spy.Tensor.empty(self.device, shape=(count, 4), dtype=spy.float4),
             }
@@ -226,6 +231,18 @@ class SplattingContext:
         }
         self._radix_size, self._hist_size, self._hist_prefix_size = count, hist, prefix
 
+    def _alloc_clone_buffers(self, clone_count: int) -> None:
+        clone_count = max(int(clone_count), 1)
+        if getattr(self, "_clone_capacity", 0) >= clone_count:
+            return
+        self.clone = {
+            "g_CloneHitData": spy.Tensor.empty(self.device, shape=(clone_count, 2), dtype=spy.float4),
+            "g_CloneHitCounter": spy.Tensor.empty(self.device, shape=(1,), dtype="uint"),
+        }
+        clone_tensor = self._view(self.clone["g_CloneHitData"], self._clone_hit_dtype, (clone_count,))
+        self.clone_views = {"g_CloneHits": spy.InstanceTensor(self._clone_hit_dtype, (clone_count,), clone_tensor)}
+        self._clone_capacity = clone_count
+
     def prepare(self, splat_count: int, image_size: tuple[int, int], background: tuple[float, float, float]) -> None:
         self.background = background
         width, height = self._validate_image_size(image_size)
@@ -236,6 +253,7 @@ class SplattingContext:
         self._alloc_scanlines(initial_capacity)
         self._alloc_entries(initial_capacity)
         self._alloc_radix(initial_capacity)
+        self._alloc_clone_buffers(1)
 
     def _grow_hot_prepass_capacity(self, scanline_required: int, entry_required: int) -> tuple[int, int]:
         scanline_current = max(getattr(self, "_scanline_capacity", 1), 1)
@@ -300,6 +318,9 @@ class SplattingContext:
             "g_TileOverflow": self.counts["g_TileOverflow"],
             **self.tiles,
             **self.frame,
+            "g_CloneHits": self.clone_views["g_CloneHits"].tensor,
+            "g_CloneHitCounterBuffer": self.clone["g_CloneHitCounter"].storage,
+            "g_CloneCountsBuffer": self.scene["g_CloneCounts"].storage,
             "g_Camera": camera,
             "g_SplatCount": int(splats),
             "g_SortedEntryCount": int(entries),
@@ -323,6 +344,9 @@ class SplattingContext:
             g_DebugDensityRange=spy.float2(*map(float, self.debug_density_range)),
             g_ComputeSplatDensities=1 if self.compute_splat_densities else 0,
             g_TotalCapacity=int(getattr(self, "_entry_capacity", 1)),
+            g_CloneHitCapacity=int(getattr(self, "_clone_capacity", 1)),
+            g_CloneSeed=int(self.render_seed),
+            g_CloneSelectProbability=0.0,
         )
         return vars
 
@@ -675,3 +699,40 @@ class SplattingContext:
         if command_encoder is None:
             self.device.submit_command_buffer(enc.finish()); self.device.sync_to_device()
         return self.scene["g_ParamGrads"]
+
+    def clone_candidates_current(
+        self,
+        camera: dict[str, Any],
+        splat_count: int,
+        select_probability: float,
+        max_clone_candidates: int,
+        clone_seed: int,
+    ) -> dict[str, spy.Tensor | int]:
+        capacity = max(int(max_clone_candidates), 0)
+        if capacity <= 0 or splat_count <= 0 or float(select_probability) <= 0.0:
+            return {"count": 0, "hits": self.clone["g_CloneHitData"].view((0, 2)), "clone_counts": self.scene["g_CloneCounts"].view((splat_count,))}
+        self._alloc_clone_buffers(capacity)
+        enc = self.device.create_command_encoder()
+        self.clone["g_CloneHitCounter"].clear(enc)
+        self.scene["g_CloneCounts"].clear(enc)
+        dispatch(
+            kernel=self.k_raster_clone_candidates,
+            thread_count=self._raster_thread_count(),
+            vars=self._vars(camera, splat_count, self._last_total)
+            | {
+                "g_CloneHitCapacity": int(capacity),
+                "g_CloneSeed": int(clone_seed),
+                "g_CloneSelectProbability": float(select_probability),
+            },
+            command_encoder=enc,
+            debug_label="renderer.raster_clone_candidates",
+            debug_color=_DEBUG_COLOR,
+        )
+        self.device.submit_command_buffer(enc.finish())
+        self.device.sync_to_device()
+        count = min(self._read_uint(self.clone["g_CloneHitCounter"]), capacity)
+        return {
+            "count": int(count),
+            "hits": self.clone["g_CloneHitData"].view((count, 2)),
+            "clone_counts": self.scene["g_CloneCounts"].view((splat_count,)),
+        }

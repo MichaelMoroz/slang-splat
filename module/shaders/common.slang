@@ -110,6 +110,13 @@ struct ScanlineEntry {
     uint transpose;
 };
 
+struct CloneHit {
+    float3 position;
+    uint splatId;
+    float3 targetColor;
+    float pad;
+};
+
 struct Camera {
     float3 camPos;
     float3x3 camBasis;
@@ -419,30 +426,30 @@ float projected_ellipse_area(float3 conic) {
 }
 
 [Differentiable]
-float3 depth_state_step(float weightSum, float depthMean, float depthM2, float contributionWeight, float depth) {
-    if (contributionWeight <= SMALL_VALUE || depth <= 0.0) return float3(weightSum, depthMean, depthM2);
-    float totalWeight = weightSum + contributionWeight;
-    float delta = depth - depthMean;
-    float nextDepthMean = depthMean + (contributionWeight / max(totalWeight, SMALL_VALUE)) * delta;
-    float nextDepthM2 = depthM2 + weightSum * contributionWeight * delta * delta / max(totalWeight, SMALL_VALUE);
+float3 depth_state_step(float3 state, float contributionWeight, float depth) {
+    if (contributionWeight <= SMALL_VALUE || depth <= 0.0) return state;
+    float totalWeight = state.x + contributionWeight;
+    float delta = depth - state.y;
+    float nextDepthMean = state.y + (contributionWeight / max(totalWeight, SMALL_VALUE)) * delta;
+    float nextDepthM2 = state.z + state.x * contributionWeight * delta * delta / max(totalWeight, SMALL_VALUE);
     return float3(totalWeight, nextDepthMean, nextDepthM2);
 }
 
-float3 depth_state_rewind(float weightSum, float depthMean, float depthM2, float contributionWeight, float depth) {
-    if (contributionWeight <= SMALL_VALUE || depth <= 0.0) return float3(weightSum, depthMean, depthM2);
-    float prevWeightSum = max(weightSum - contributionWeight, 0.0);
+float3 depth_state_rewind(float3 state, float contributionWeight, float depth) {
+    if (contributionWeight <= SMALL_VALUE || depth <= 0.0) return state;
+    float prevWeightSum = max(state.x - contributionWeight, 0.0);
     if (prevWeightSum <= SMALL_VALUE) return 0.0;
-    float prevDepthMean = (weightSum * depthMean - contributionWeight * depth) / prevWeightSum;
+    float prevDepthMean = (state.x * state.y - contributionWeight * depth) / prevWeightSum;
     float delta = depth - prevDepthMean;
-    float prevDepthM2 = max(depthM2 - prevWeightSum * contributionWeight * delta * delta / max(weightSum, SMALL_VALUE), 0.0);
+    float prevDepthM2 = max(state.z - prevWeightSum * contributionWeight * delta * delta / max(state.x, SMALL_VALUE), 0.0);
     return float3(prevWeightSum, prevDepthMean, prevDepthM2);
 }
 
 [Differentiable]
-float raster_depth_output(float weightSum, float depthMean, float depthM2) {
-    if (weightSum <= SMALL_VALUE) return 0.0;
-    float depthStd = sqrt(max(depthM2 / max(weightSum, SMALL_VALUE), 0.0));
-    float depthStdRatio = depthStd / max(abs(depthMean), SMALL_VALUE);
+float raster_depth_output(float3 state) {
+    if (state.x <= SMALL_VALUE) return 0.0;
+    float depthStd = sqrt(max(state.z / max(state.x, SMALL_VALUE), 0.0));
+    float depthStdRatio = depthStd / max(abs(state.y), SMALL_VALUE);
     return depthStdRatio;
 }
 

@@ -845,3 +845,37 @@ def test_channel_descent_reference_passes_and_broken_control_fails() -> None:
     assert not broken_passes, (
         f"Broken gradient negative control unexpectedly passed threshold {DESCENT_PASSING_RELATIVE_IMPROVEMENT}: {broken_passes}"
     )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
+def test_clone_candidate_pass_yields_expected_record_count() -> None:
+    context = _make_torch_context(ALPHA_CUTOFF)
+    context.trans_threshold = TRANS_THRESHOLD
+    context.max_anisotropy = MAX_ANISOTROPY
+    splats = torch.tensor(_make_scene_splats(), dtype=torch.float32, device="cuda")
+    camera = _make_forward_camera(TEST_SCENE_IMAGE_SIZE, device="cuda")
+    render_gaussian_splats(splats, camera, TEST_SCENE_IMAGE_SIZE, context=context, render_seed=123)
+    target = torch.zeros((TEST_SCENE_IMAGE_SIZE[1], TEST_SCENE_IMAGE_SIZE[0], 3), dtype=torch.float32, device="cuda")
+
+    clones = context.clone_candidates_current(target, select_probability=0.01, max_clone_candidates=4096, clone_seed=123)
+
+    assert int(clones["count"].item()) == 89
+    assert int(clones["clone_counts"].sum().item()) == 89
+    assert torch.all(torch.isfinite(clones["positions"]))
+    assert torch.all((clones["ids"] >= 0) & (clones["ids"] < splats.shape[1]))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
+def test_clone_candidate_pass_truncates_at_capacity() -> None:
+    context = _make_torch_context(ALPHA_CUTOFF)
+    context.trans_threshold = TRANS_THRESHOLD
+    context.max_anisotropy = MAX_ANISOTROPY
+    splats = torch.tensor(_make_scene_splats(), dtype=torch.float32, device="cuda")
+    camera = _make_forward_camera(TEST_SCENE_IMAGE_SIZE, device="cuda")
+    render_gaussian_splats(splats, camera, TEST_SCENE_IMAGE_SIZE, context=context, render_seed=123)
+    target = torch.zeros((TEST_SCENE_IMAGE_SIZE[1], TEST_SCENE_IMAGE_SIZE[0], 3), dtype=torch.float32, device="cuda")
+
+    clones = context.clone_candidates_current(target, select_probability=1.0, max_clone_candidates=32, clone_seed=123)
+
+    assert int(clones["count"].item()) == 32
+    assert int(clones["clone_counts"].sum().item()) == 32
