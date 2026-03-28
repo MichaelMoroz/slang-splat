@@ -109,35 +109,22 @@ uint load_prefix_count() {
 
 uint block_exclusive_scan(uint value, uint localId, out uint blockTotal)
 {
-    uint waveSize = WaveGetLaneCount();
-    uint laneId = WaveGetLaneIndex();
-    uint waveId = (localId - laneId) / waveSize;
-    uint numWaves = (PREFIX_THREADS + waveSize - 1u) / waveSize;
+    gsPrefixWaveTotals[localId] = value;
+    GroupMemoryBarrierWithGroupSync();
 
-    uint wavePrefix = WavePrefixSum(value);
-    uint waveTotal = WaveReadLaneAt(wavePrefix, waveSize - 1u) + WaveReadLaneAt(value, waveSize - 1u);
-
-    if (WaveIsFirstLane())
+    [unroll]
+    for (uint stride = 1u; stride < PREFIX_THREADS; stride <<= 1u)
     {
-        gsPrefixWaveTotals[waveId] = waveTotal;
+        uint addend = (localId >= stride) ? gsPrefixWaveTotals[localId - stride] : 0u;
+        GroupMemoryBarrierWithGroupSync();
+        gsPrefixWaveTotals[localId] += addend;
+        GroupMemoryBarrierWithGroupSync();
     }
-    GroupMemoryBarrierWithGroupSync();
 
-    if (waveId == 0u)
-    {
-        uint reshuffledTotal = localId < numWaves ? gsPrefixWaveTotals[localId] : 0u;
-        uint reshuffledPrefix = WavePrefixSum(reshuffledTotal);
-        if (localId < numWaves)
-        {
-            gsPrefixWaveScan[localId] = reshuffledPrefix;
-        }
-    }
+    uint inclusive = gsPrefixWaveTotals[localId];
+    blockTotal = gsPrefixWaveTotals[PREFIX_THREADS - 1u];
     GroupMemoryBarrierWithGroupSync();
-
-    blockTotal = gsPrefixWaveScan[numWaves - 1u] + gsPrefixWaveTotals[numWaves - 1u];
-    uint waveBase = gsPrefixWaveScan[waveId];
-    GroupMemoryBarrierWithGroupSync();
-    return waveBase + wavePrefix;
+    return inclusive - value;
 }
 
 uint radix_total_n(uint numGroups) { return numGroups * RADIX_BIN_COUNT; }
