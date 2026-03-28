@@ -73,6 +73,7 @@ class SplattingContext:
             ("k_raster_fwd", "csRasterForward", False),
             ("k_raster_fwd_debug", "csRasterForwardDebug", False),
             ("k_raster_bwd", "csRasterBackward", False),
+            ("k_backproject_raster_grads", "csBackprojectRasterGrads", False),
         ):
             setattr(self, attr, load(entry, pipeline))
         self.util = GpuUtility(self.device)
@@ -140,7 +141,10 @@ class SplattingContext:
             "g_ForwardEnd": spy.Tensor.empty(self.device, shape=(height, width), dtype="uint"),
         }
         tw, th = (width + _TILE_SIZE - 1) // _TILE_SIZE, (height + _TILE_SIZE - 1) // _TILE_SIZE
-        self.tiles = {"g_TileRanges": spy.Tensor.empty(self.device, shape=(tw * th * 2,), dtype="uint")}
+        self.tiles = {
+            "g_TileRanges": spy.Tensor.empty(self.device, shape=(tw * th * 2,), dtype="uint"),
+            "g_BackwardBatchEnd": spy.Tensor.empty(self.device, shape=(tw * th,), dtype="uint"),
+        }
         self._size = shape
 
     def _alloc_scene(self, splat_count: int) -> None:
@@ -154,6 +158,7 @@ class SplattingContext:
                 "g_ScanlineOffsets": spy.Tensor.empty(self.device, shape=(count,), dtype="uint"),
                 "g_TileCounts": spy.Tensor.empty(self.device, shape=(count,), dtype="uint"),
                 "g_ParamGrads": spy.Tensor.empty(self.device, shape=(count * _PARAM_COUNT,), dtype=float),
+                "g_RasterGradBuffer": spy.Tensor.empty(self.device, shape=(count * _PARAM_COUNT,), dtype=float),
                 "g_ProjectionStateData": spy.Tensor.empty(self.device, shape=(count, 2), dtype=spy.float4),
                 "g_RasterStateData": spy.Tensor.empty(self.device, shape=(count, 4), dtype=spy.float4),
             }
@@ -273,6 +278,8 @@ class SplattingContext:
             "g_ScanlineOffsets": self.scene["g_ScanlineOffsets"],
             "g_TileCounts": self.scene["g_TileCounts"],
             "g_ParamGrads": self.scene["g_ParamGrads"],
+            "g_RasterGradBuffer": self.scene["g_RasterGradBuffer"],
+            "g_RasterGradBufferRead": self.scene["g_RasterGradBuffer"],
             "g_SplatOrder": self._sorted_splat_order_tensor,
             **self.sort,
             "g_Splats": self.scene["g_Params"],
@@ -648,9 +655,16 @@ class SplattingContext:
     @with_debug_group("renderer.backward", _DEBUG_COLOR)
     def _record_backward_pass(self, command_encoder: spy.CommandEncoder, camera: dict[str, Any], splat_count: int) -> None:
         self.scene["g_ParamGrads"].clear(command_encoder)
+        self.scene["g_RasterGradBuffer"].clear(command_encoder)
         dispatch(
             kernel=self.k_raster_bwd,
             thread_count=self._raster_thread_count(),
+            vars=self._vars(camera, splat_count, self._last_total),
+            command_encoder=command_encoder,
+        )
+        dispatch(
+            kernel=self.k_backproject_raster_grads,
+            thread_count=spy.uint3(splat_count, 1, 1),
             vars=self._vars(camera, splat_count, self._last_total),
             command_encoder=command_encoder,
         )

@@ -17,6 +17,7 @@ uniform StructuredBuffer<uint> g_CountParamsBuffer;
 uniform RWTensor<ProjectionState, 1> g_ProjectionState;
 uniform RWTensor<Gaussian3D, 1> g_RasterState;
 uniform RWTensor<uint, 1> g_TileRanges;
+uniform RWTensor<uint, 1> g_BackwardBatchEnd;
 uniform RWTensor<uint, 1> g_TotalBuffer;
 uniform RWTensor<uint, 1> g_TotalMaxBuffer;
 uniform RWStructuredBuffer<uint> g_TotalCounterBuffer;
@@ -30,7 +31,9 @@ uniform RWTensor<float4, 2> g_ForwardState;
 uniform RWTensor<float4, 2> g_ForwardDepthState;
 uniform RWTensor<float3, 2> g_SplatDensities;
 uniform RWTensor<uint, 2> g_ForwardEnd;
-uniform AtomicTensor<float, 1> g_ParamGrads;
+uniform RWTensor<float, 1> g_ParamGrads;
+uniform AtomicTensor<float, 1> g_RasterGradBuffer;
+uniform Tensor<float, 1> g_RasterGradBufferRead;
 uniform Camera g_Camera;
 uniform uint g_SplatCount;
 uniform uint g_SortedEntryCount;
@@ -368,19 +371,6 @@ void prefetch_batch_debug(uint batchStart, uint batchEnd, uint lane) {
     }
 }
 
-void prefetch_batch_backward(uint batchStart, uint batchEnd, uint lane) {
-    uint batchCount = batchEnd - batchStart;
-    for (uint localIdx = lane; localIdx < batchCount; localIdx += RASTER_GROUP_THREADS) {
-        uint splatId = g_SortedEntries[int((batchStart + localIdx) * 2u + 1u)];
-        gsBatchSplatId[localIdx] = splatId;
-        if (splatId >= g_SplatCount) {
-            gsGaussian[localIdx] = make_empty_gaussian();
-            continue;
-        }
-        gsGaussian[localIdx] = Gaussian3D.load(g_Splats, g_SplatCount, splatId);
-    }
-}
-
 int2 raster_thread_to_pixel(uint tileId, uint lane) {
     uint tileX = tileId % g_TileGrid.x;
     uint tileY = tileId / g_TileGrid.x;
@@ -413,6 +403,7 @@ void csRasterForward(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupID
     float depthWeightSum = 0.0;
     float depthMean = 0.0;
     float depthM2 = 0.0;
+    uint replayBatchEnd = range.x;
     if (range.x != INVALID_START && range.y > range.x) {
         bool done = !active;
         if (lane == 0u) gsDoneCount = 0u;
@@ -423,6 +414,7 @@ void csRasterForward(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupID
             if (gsDoneCount == RASTER_GROUP_THREADS) break;
             uint batchEnd = min(batchStart + RASTER_BATCH, range.y);
             uint batchCount = batchEnd - batchStart;
+            replayBatchEnd = batchEnd;
             prefetch_batch(batchStart, batchEnd, lane);
             GroupMemoryBarrierWithGroupSync();
             if (!done) {
@@ -453,6 +445,7 @@ void csRasterForward(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupID
             GroupMemoryBarrierWithGroupSync();
         }
     }
+    if (lane == 0u) g_BackwardBatchEnd.store(int(tileId), replayBatchEnd);
     if (!active) return;
     float4 output = raster_output(accum, trans, g_Background);
     float depthOutput = raster_depth_output(depthWeightSum, depthMean, depthM2);
@@ -486,6 +479,7 @@ void csRasterForwardDebug(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 gr
     float depthM2 = 0.0;
     float spatialDensitySum = 0.0;
     float screenDensitySum = 0.0;
+    uint replayBatchEnd = range.x;
     if (range.x != INVALID_START && range.y > range.x) {
         bool done = !active;
         if (lane == 0u) gsDoneCount = 0u;
@@ -496,6 +490,7 @@ void csRasterForwardDebug(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 gr
             if (gsDoneCount == RASTER_GROUP_THREADS) break;
             uint batchEnd = min(batchStart + RASTER_BATCH, range.y);
             uint batchCount = batchEnd - batchStart;
+            replayBatchEnd = batchEnd;
             prefetch_batch_debug(batchStart, batchEnd, lane);
             GroupMemoryBarrierWithGroupSync();
             if (!done) {
@@ -539,6 +534,7 @@ void csRasterForwardDebug(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 gr
             GroupMemoryBarrierWithGroupSync();
         }
     }
+    if (lane == 0u) g_BackwardBatchEnd.store(int(tileId), replayBatchEnd);
     if (!active) return;
     uint processedCount = range.x != INVALID_START && processedEnd >= range.x ? (processedEnd - range.x) : 0u;
     float4 output = raster_output(accum, trans, g_Background);
@@ -564,12 +560,6 @@ void csRasterForwardDebug(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 gr
     g_ForwardEnd.store(p, processedEnd);
 }
 
-// Atomic accumulation into the flat parameter-gradient buffer.
-void add_param_grad(uint splatId, uint paramId, float value) {
-    if (value == 0.0) return;
-    g_ParamGrads.add(int(splatId * PARAM_COUNT + paramId), value);
-}
-
 struct PixelBackwardState {
     bool valid;
     float3 accum;
@@ -586,12 +576,12 @@ struct PixelBackwardState {
     uint processedEnd;
 };
 
-struct GaussianBackwardGrads {
+struct RasterBackwardGrads {
     float3 position;
     float3 logScale;
     float4 rotation;
     float3 color;
-    float rawOpacity;
+    float fusedOpacity;
 };
 
 PixelBackwardState make_invalid_pixel_backward_state() {
@@ -612,13 +602,18 @@ PixelBackwardState make_invalid_pixel_backward_state() {
     return state;
 }
 
-GaussianBackwardGrads make_zero_gaussian_backward_grads() {
-    GaussianBackwardGrads grads;
+void add_raster_grad(uint splatId, uint paramId, float value) {
+    if (value == 0.0) return;
+    g_RasterGradBuffer.add(int(splatId * PARAM_COUNT + paramId), value);
+}
+
+RasterBackwardGrads make_zero_raster_backward_grads() {
+    RasterBackwardGrads grads;
     grads.position = 0.0;
     grads.logScale = 0.0;
     grads.rotation = 0.0;
     grads.color = 0.0;
-    grads.rawOpacity = 0.0;
+    grads.fusedOpacity = 0.0;
     return grads;
 }
 
@@ -651,8 +646,7 @@ void rewind_depth_backward(inout PixelBackwardState state, float contributionWei
     dRayDepth = dpRayDepth.getDifferential();
 }
 
-GaussianBackwardGrads raster_gaussian_backward_grads(
-    Gaussian3D originalGaussian,
+RasterBackwardGrads raster_gaussian_backward_grads(
     Gaussian3D gaussian,
     float3 rayDir,
     Gaussian3D.Differential dGaussian,
@@ -672,21 +666,12 @@ GaussianBackwardGrads raster_gaussian_backward_grads(
         dCachedGaussian.colorAlpha += dCachedGaussianDepth.colorAlpha;
     }
 
-    dGaussian.colorAlpha.xyz += dCachedGaussian.colorAlpha.xyz;
-    float fused = max(gaussian.colorAlpha.w, SMALL_VALUE);
-    float dRawOpacity = dCachedGaussian.colorAlpha.w * fused * (1.0 - fused);
-    dCachedGaussian.colorAlpha = 0.0;
-
-    var dpOriginalGaussian = diffPair(originalGaussian);
-    bwd_diff(Gaussian3D.camera_gaussian)(dpOriginalGaussian, g_Camera, g_RadiusScale, GAUSSIAN_SUPPORT_SIGMA_RADIUS, g_MaxAnisotropy, dCachedGaussian);
-    Gaussian3D.Differential dOriginalGaussian = dpOriginalGaussian.getDifferential();
-
-    GaussianBackwardGrads grads;
-    grads.position = dOriginalGaussian.position;
-    grads.logScale = dOriginalGaussian.logScale;
-    grads.rotation = dOriginalGaussian.rotation;
-    grads.color = dGaussian.colorAlpha.xyz + dOriginalGaussian.colorAlpha.xyz;
-    grads.rawOpacity = dRawOpacity;
+    RasterBackwardGrads grads;
+    grads.position = dGaussian.position + dCachedGaussian.position;
+    grads.logScale = dGaussian.logScale + dCachedGaussian.logScale;
+    grads.rotation = dGaussian.rotation + dCachedGaussian.rotation;
+    grads.color = dGaussian.colorAlpha.xyz + dCachedGaussian.colorAlpha.xyz;
+    grads.fusedOpacity = dGaussian.colorAlpha.w + dCachedGaussian.colorAlpha.w;
     return grads;
 }
 
@@ -718,27 +703,77 @@ PixelBackwardState load_pixel_backward_state(bool active, int2 p, float2 raySamp
     return state;
 }
 
-void flush_gaussian_backward_grads(uint originalSplatId, GaussianBackwardGrads grads) {
-    float4 colorAlpha = WaveActiveSum(float4(grads.color, grads.rawOpacity));
+void flush_raster_backward_grads(uint splatId, RasterBackwardGrads grads) {
+    float4 colorAlpha = WaveActiveSum(float4(grads.color, grads.fusedOpacity));
     float3 position = WaveActiveSum(grads.position);
     float3 logScale = WaveActiveSum(grads.logScale);
     float4 rotation = WaveActiveSum(grads.rotation);
     if (WaveIsFirstLane()) {
-        add_param_grad(originalSplatId, PARAM_COLOR_R, colorAlpha.x);
-        add_param_grad(originalSplatId, PARAM_COLOR_G, colorAlpha.y);
-        add_param_grad(originalSplatId, PARAM_COLOR_B, colorAlpha.z);
-        add_param_grad(originalSplatId, PARAM_POSITION_X, position.x);
-        add_param_grad(originalSplatId, PARAM_POSITION_Y, position.y);
-        add_param_grad(originalSplatId, PARAM_POSITION_Z, position.z);
-        add_param_grad(originalSplatId, PARAM_SCALE_X, logScale.x);
-        add_param_grad(originalSplatId, PARAM_SCALE_Y, logScale.y);
-        add_param_grad(originalSplatId, PARAM_SCALE_Z, logScale.z);
-        add_param_grad(originalSplatId, PARAM_ROTATION_W, rotation.x);
-        add_param_grad(originalSplatId, PARAM_ROTATION_X, rotation.y);
-        add_param_grad(originalSplatId, PARAM_ROTATION_Y, rotation.z);
-        add_param_grad(originalSplatId, PARAM_ROTATION_Z, rotation.w);
-        add_param_grad(originalSplatId, PARAM_RAW_OPACITY, colorAlpha.w);
+        add_raster_grad(splatId, PARAM_COLOR_R, colorAlpha.x);
+        add_raster_grad(splatId, PARAM_COLOR_G, colorAlpha.y);
+        add_raster_grad(splatId, PARAM_COLOR_B, colorAlpha.z);
+        add_raster_grad(splatId, PARAM_POSITION_X, position.x);
+        add_raster_grad(splatId, PARAM_POSITION_Y, position.y);
+        add_raster_grad(splatId, PARAM_POSITION_Z, position.z);
+        add_raster_grad(splatId, PARAM_SCALE_X, logScale.x);
+        add_raster_grad(splatId, PARAM_SCALE_Y, logScale.y);
+        add_raster_grad(splatId, PARAM_SCALE_Z, logScale.z);
+        add_raster_grad(splatId, PARAM_ROTATION_W, rotation.x);
+        add_raster_grad(splatId, PARAM_ROTATION_X, rotation.y);
+        add_raster_grad(splatId, PARAM_ROTATION_Y, rotation.z);
+        add_raster_grad(splatId, PARAM_ROTATION_Z, rotation.w);
+        add_raster_grad(splatId, PARAM_RAW_OPACITY, colorAlpha.w);
     }
+}
+
+[shader("compute")]
+[numthreads(PROJECT_GROUP_SIZE, 1, 1)]
+void csBackprojectRasterGrads(uint3 dispatchThreadID : SV_DispatchThreadID) {
+    uint splatId = dispatchThreadID.x;
+    if (splatId >= g_SplatCount) return;
+
+    Gaussian3D originalGaussian = Gaussian3D.load(g_Splats, g_SplatCount, splatId);
+    float fusedOpacity = originalGaussian.build_raster_fused_opacity();
+
+    Gaussian3D.Differential dCachedGaussian;
+    dCachedGaussian.position = float3(
+        g_RasterGradBufferRead[int(splatId * PARAM_COUNT + PARAM_POSITION_X)],
+        g_RasterGradBufferRead[int(splatId * PARAM_COUNT + PARAM_POSITION_Y)],
+        g_RasterGradBufferRead[int(splatId * PARAM_COUNT + PARAM_POSITION_Z)]);
+    dCachedGaussian.logScale = float3(
+        g_RasterGradBufferRead[int(splatId * PARAM_COUNT + PARAM_SCALE_X)],
+        g_RasterGradBufferRead[int(splatId * PARAM_COUNT + PARAM_SCALE_Y)],
+        g_RasterGradBufferRead[int(splatId * PARAM_COUNT + PARAM_SCALE_Z)]);
+    dCachedGaussian.rotation = float4(
+        g_RasterGradBufferRead[int(splatId * PARAM_COUNT + PARAM_ROTATION_W)],
+        g_RasterGradBufferRead[int(splatId * PARAM_COUNT + PARAM_ROTATION_X)],
+        g_RasterGradBufferRead[int(splatId * PARAM_COUNT + PARAM_ROTATION_Y)],
+        g_RasterGradBufferRead[int(splatId * PARAM_COUNT + PARAM_ROTATION_Z)]);
+    float3 colorGrad = float3(
+        g_RasterGradBufferRead[int(splatId * PARAM_COUNT + PARAM_COLOR_R)],
+        g_RasterGradBufferRead[int(splatId * PARAM_COUNT + PARAM_COLOR_G)],
+        g_RasterGradBufferRead[int(splatId * PARAM_COUNT + PARAM_COLOR_B)]);
+    float fusedOpacityGrad = g_RasterGradBufferRead[int(splatId * PARAM_COUNT + PARAM_RAW_OPACITY)];
+    dCachedGaussian.colorAlpha = 0.0;
+
+    var dpOriginalGaussian = diffPair(originalGaussian);
+    bwd_diff(Gaussian3D.camera_gaussian)(dpOriginalGaussian, g_Camera, g_RadiusScale, GAUSSIAN_SUPPORT_SIGMA_RADIUS, g_MaxAnisotropy, dCachedGaussian);
+    Gaussian3D.Differential dOriginalGaussian = dpOriginalGaussian.getDifferential();
+
+    g_ParamGrads.store(int(splatId * PARAM_COUNT + PARAM_POSITION_X), dOriginalGaussian.position.x);
+    g_ParamGrads.store(int(splatId * PARAM_COUNT + PARAM_POSITION_Y), dOriginalGaussian.position.y);
+    g_ParamGrads.store(int(splatId * PARAM_COUNT + PARAM_POSITION_Z), dOriginalGaussian.position.z);
+    g_ParamGrads.store(int(splatId * PARAM_COUNT + PARAM_SCALE_X), dOriginalGaussian.logScale.x);
+    g_ParamGrads.store(int(splatId * PARAM_COUNT + PARAM_SCALE_Y), dOriginalGaussian.logScale.y);
+    g_ParamGrads.store(int(splatId * PARAM_COUNT + PARAM_SCALE_Z), dOriginalGaussian.logScale.z);
+    g_ParamGrads.store(int(splatId * PARAM_COUNT + PARAM_ROTATION_W), dOriginalGaussian.rotation.x);
+    g_ParamGrads.store(int(splatId * PARAM_COUNT + PARAM_ROTATION_X), dOriginalGaussian.rotation.y);
+    g_ParamGrads.store(int(splatId * PARAM_COUNT + PARAM_ROTATION_Y), dOriginalGaussian.rotation.z);
+    g_ParamGrads.store(int(splatId * PARAM_COUNT + PARAM_ROTATION_Z), dOriginalGaussian.rotation.w);
+    g_ParamGrads.store(int(splatId * PARAM_COUNT + PARAM_COLOR_R), colorGrad.x);
+    g_ParamGrads.store(int(splatId * PARAM_COUNT + PARAM_COLOR_G), colorGrad.y);
+    g_ParamGrads.store(int(splatId * PARAM_COUNT + PARAM_COLOR_B), colorGrad.z);
+    g_ParamGrads.store(int(splatId * PARAM_COUNT + PARAM_RAW_OPACITY), fusedOpacityGrad * fusedOpacity * (1.0 - fusedOpacity));
 }
 
 // Reverse raster replay using the cached forward state and sorted tile ranges.
@@ -752,59 +787,54 @@ void csRasterBackward(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupI
     uint pixelId = uint(p.y) * uint(g_Camera.viewport.x) + uint(p.x);
     float2 raySample = float2(p) + stochastic_subpixel_offset(pixelId, g_RenderSeed, g_DitherStrength);
     PixelBackwardState state = load_pixel_backward_state(active, p, raySample);
-    for (uint batchBase = range.y; batchBase > range.x;) {
+    uint batchBase = g_BackwardBatchEnd[int(tileId)];
+    for (; batchBase > range.x;) {
         uint batchStart = batchBase > range.x + RASTER_BATCH ? batchBase - RASTER_BATCH : range.x;
         uint batchCount = batchBase - batchStart;
-        // Replay the same tile-local batches in reverse order from the saved forward stopping point.
-        prefetch_batch_backward(batchStart, batchBase, lane);
-        GroupMemoryBarrierWithGroupSync();
-        if (active && range.x != INVALID_START && range.y > range.x) {
-            for (uint rev = 0u; rev < batchCount; rev++) {
-                uint localIdx = batchCount - 1u - rev;
-                uint globalIdx = batchStart + localIdx;
-                uint splatId = gsBatchSplatId[localIdx];
-                if (splatId >= g_SplatCount) continue;
-                Gaussian3D originalGaussian = gsGaussian[localIdx];
-                if (!state.valid || globalIdx >= state.processedEnd) continue;
+        if (range.x != INVALID_START && range.y > range.x) {
+            prefetch_batch(batchStart, batchBase, lane);
+            GroupMemoryBarrierWithGroupSync();
+            if (active) {
+                for (uint rev = 0u; rev < batchCount; rev++) {
+                    uint localIdx = batchCount - 1u - rev;
+                    uint globalIdx = batchStart + localIdx;
+                    uint splatId = gsBatchSplatId[localIdx];
+                    if (splatId >= g_SplatCount) continue;
+                    RasterBackwardGrads grads = make_zero_raster_backward_grads();
+                    bool replay = state.valid && globalIdx < state.processedEnd;
+                    if (replay) {
+                        Gaussian3D gaussian = g_RasterState[int(splatId)];
 
-                Gaussian3D gaussian = Gaussian3D.camera_gaussian(
-                    originalGaussian,
-                    g_Camera,
-                    g_RadiusScale,
-                    GAUSSIAN_SUPPORT_SIGMA_RADIUS,
-                    g_MaxAnisotropy);
-                gaussian.colorAlpha.xyz = originalGaussian.colorAlpha.xyz;
-                gaussian.colorAlpha.w = originalGaussian.build_raster_fused_opacity();
+                        float2 eval = raster_eval_alpha(gaussian, state.rayDir);
+                        float alpha = eval.x;
+                        float rayDepth = eval.y;
+                        if (alpha >= g_AlphaCutoff) {
+                            float prevTrans = state.trans / max(1.0 - alpha, SMALL_VALUE);
+                            float3 prevAccum = state.accum - prevTrans * alpha * gaussian.colorAlpha.xyz;
+                            var dpPrevAccum = diffPair(prevAccum);
+                            var dpPrevTrans = diffPair(prevTrans);
+                            var dpGaussian = diffPair(gaussian);
+                            var dpAlpha = diffPair(alpha);
+                            bwd_diff(shade_step)(dpPrevAccum, dpPrevTrans, dpGaussian, dpAlpha, float4(state.dAccum, state.dTrans));
+                            Gaussian3D.Differential dGaussian = dpGaussian.getDifferential();
+                            float dAlpha = dpAlpha.getDifferential();
+                            state.dAccum = dpPrevAccum.getDifferential();
+                            state.dTrans = dpPrevTrans.getDifferential();
 
-                float2 eval = raster_eval_alpha(gaussian, state.rayDir);
-                float alpha = eval.x;
-                float rayDepth = eval.y;
-                if (alpha < g_AlphaCutoff) continue;
+                            float contributionWeight = prevTrans * alpha;
+                            float dRayDepth = 0.0;
+                            rewind_depth_backward(state, contributionWeight, rayDepth, alpha, prevTrans, dAlpha, dRayDepth);
+                            grads = raster_gaussian_backward_grads(gaussian, state.rayDir, dGaussian, dAlpha, dRayDepth);
 
-                float prevTrans = state.trans / max(1.0 - alpha, SMALL_VALUE);
-                float3 prevAccum = state.accum - prevTrans * alpha * gaussian.colorAlpha.xyz;
-                var dpPrevAccum = diffPair(prevAccum);
-                var dpPrevTrans = diffPair(prevTrans);
-                var dpGaussian = diffPair(gaussian);
-                var dpAlpha = diffPair(alpha);
-                bwd_diff(shade_step)(dpPrevAccum, dpPrevTrans, dpGaussian, dpAlpha, float4(state.dAccum, state.dTrans));
-                Gaussian3D.Differential dGaussian = dpGaussian.getDifferential();
-                float dAlpha = dpAlpha.getDifferential();
-                state.dAccum = dpPrevAccum.getDifferential();
-                state.dTrans = dpPrevTrans.getDifferential();
-
-                float contributionWeight = prevTrans * alpha;
-                float dRayDepth = 0.0;
-                rewind_depth_backward(state, contributionWeight, rayDepth, alpha, prevTrans, dAlpha, dRayDepth);
-                GaussianBackwardGrads grads = raster_gaussian_backward_grads(originalGaussian, gaussian, state.rayDir, dGaussian, dAlpha, dRayDepth);
-
-                state.accum = prevAccum;
-                state.trans = prevTrans;
-
-                flush_gaussian_backward_grads(splatId, grads);
+                            state.accum = prevAccum;
+                            state.trans = prevTrans;
+                        }
+                    }
+                    flush_raster_backward_grads(splatId, grads);
+                }
             }
+            GroupMemoryBarrierWithGroupSync();
         }
-        GroupMemoryBarrierWithGroupSync();
         batchBase = batchStart;
     }
 }
