@@ -14,12 +14,11 @@ def build_parser() -> argparse.ArgumentParser:
         ("--images", "images_8", str),
         ("--iterations", 3000, int),
         ("--eval-interval", 250, int),
-        ("--cap-max", 500000, int),
         ("--init-points", 50000, int),
         ("--init-scale-spacing-ratio", 0.25, float),
         ("--init-scale-multiplier", 1.0, float),
         ("--init-opacity", 0.5, float),
-        ("--opacity-lr", 0.05, float),
+        ("--opacity-lr", 0.001, float),
         ("--device", "cuda", str),
         ("--llff-hold", 8, int),
         ("--opacity-reg", 0.01, float),
@@ -29,9 +28,6 @@ def build_parser() -> argparse.ArgumentParser:
         ("--depth-ratio-weight", 0.1, float),
         ("--dither-strength", 1.0, float),
         ("--dither-decay-until-iter", 0, int),
-        ("--densify-from-iter", 500, int),
-        ("--densify-until-iter", 25000, int),
-        ("--densification-interval", 100, int),
         ("--seed", 0, int),
     ):
         p.add_argument(name, default=default, type=typ)
@@ -48,7 +44,6 @@ def main() -> int:
     cfg = MCMCConfig(
         iterations=a.iterations,
         eval_interval=a.eval_interval,
-        cap_max=a.cap_max,
         init_points=a.init_points,
         init_scale_spacing_ratio=a.init_scale_spacing_ratio,
         init_scale_multiplier=a.init_scale_multiplier,
@@ -62,9 +57,6 @@ def main() -> int:
         depth_ratio_weight=a.depth_ratio_weight,
         dither_strength=a.dither_strength,
         dither_decay_until_iter=a.dither_decay_until_iter,
-        densify_from_iter=a.densify_from_iter,
-        densify_until_iter=a.densify_until_iter,
-        densification_interval=a.densification_interval,
         seed=a.seed,
     )
     scene = load_colmap_scene(a.scene, image_dir=a.images, eval_split=not a.no_eval_split, llff_hold=a.llff_hold, preload_cuda=not a.no_preload_cuda, device=a.device)

@@ -402,6 +402,8 @@ class SplatViewer(spy.AppWindow):
         self.ui.texts["error"] = f"Error: {self.s.last_error}" if self.s.last_error else ""
         self.ui.texts["max_splat_steps"] = str(getattr(self.renderer, "_last_required_total", getattr(self.renderer, "_last_total", 0)))
         tk = self.toolkit.tk
+        if training_snapshot.iteration == 0 and tk.step_history:
+            tk.reset()
         tk.fps_history.append(self.s.fps_smooth)
         if training_snapshot.iteration > 0 and (not tk.step_history or training_snapshot.iteration != tk.step_history[-1]):
             tk.step_history.append(float(training_snapshot.iteration))

@@ -176,6 +176,13 @@ class ToolkitState:
     step_history: deque = field(default_factory=lambda: deque(maxlen=_LOSS_HISTORY_SIZE))
     step_time_history: deque = field(default_factory=lambda: deque(maxlen=_LOSS_HISTORY_SIZE))
 
+    def reset(self) -> None:
+        self.loss_history.clear()
+        self.fps_history.clear()
+        self.psnr_history.clear()
+        self.step_history.clear()
+        self.step_time_history.clear()
+
 
 class ToolkitWindow:
     @staticmethod
@@ -608,18 +615,6 @@ class ToolkitWindow:
                 changed, value = imgui.input_int("Eval Interval", int(cfg.eval_interval), 10, 100)
                 if changed:
                     cfg.eval_interval = max(int(value), 1)
-                changed, value = imgui.input_int("Densify From", int(cfg.densify_from_iter), 100, 1000)
-                if changed:
-                    cfg.densify_from_iter = max(int(value), 0)
-                changed, value = imgui.input_int("Densify Until", int(cfg.densify_until_iter), 100, 1000)
-                if changed:
-                    cfg.densify_until_iter = max(int(value), cfg.densify_from_iter)
-                changed, value = imgui.input_int("Densify Interval", int(cfg.densification_interval), 10, 100)
-                if changed:
-                    cfg.densification_interval = max(int(value), 1)
-                changed, value = imgui.input_int("Cap Max", int(cfg.cap_max), 1000, 10000)
-                if changed:
-                    cfg.cap_max = max(int(value), 1)
                 changed, value = imgui.input_int("Seed", int(cfg.seed), 1, 10)
                 if changed:
                     cfg.seed = int(value)
@@ -642,13 +637,13 @@ class ToolkitWindow:
                     cfg.random_background = bool(value)
                 imgui.end_tab_item()
             if imgui.begin_tab_item("Learning Rates")[0]:
-                changed, value = imgui.input_float("Position LR Init", float(cfg.position_lr_init), 1e-5, 1e-4, "%.6g")
+                changed, value = imgui.input_float("Position LR Init", float(cfg.position_lr_init), 1e-4, 1e-3, "%.6g")
                 if changed:
                     cfg.position_lr_init = max(float(value), 0.0)
-                changed, value = imgui.input_float("Position LR Final", float(cfg.position_lr_final), 1e-6, 1e-5, "%.6g")
+                changed, value = imgui.input_float("Position LR Final", float(cfg.position_lr_final), 1e-4, 1e-3, "%.6g")
                 if changed:
                     cfg.position_lr_final = max(float(value), 0.0)
-                changed, value = imgui.input_float("Position LR Delay", float(cfg.position_lr_delay_mult), 0.001, 0.01, "%.6g")
+                changed, value = imgui.input_float("Position LR Delay", float(cfg.position_lr_delay_mult), 0.01, 0.1, "%.6g")
                 if changed:
                     cfg.position_lr_delay_mult = max(float(value), 0.0)
                 changed, value = imgui.input_int("Position LR Steps", int(cfg.position_lr_max_steps), 100, 1000)
@@ -657,10 +652,10 @@ class ToolkitWindow:
                 changed, value = imgui.input_float("Feature LR", float(cfg.feature_lr), 1e-4, 1e-3, "%.6g")
                 if changed:
                     cfg.feature_lr = max(float(value), 0.0)
-                changed, value = imgui.input_float("Opacity LR", float(cfg.opacity_lr), 1e-3, 1e-2, "%.6g")
+                changed, value = imgui.input_float("Opacity LR", float(cfg.opacity_lr), 1e-4, 1e-3, "%.6g")
                 if changed:
                     cfg.opacity_lr = max(float(value), 0.0)
-                changed, value = imgui.input_float("Scaling LR", float(cfg.scaling_lr), 1e-4, 1e-3, "%.6g")
+                changed, value = imgui.input_float("Scaling LR", float(cfg.scaling_lr), 1e-3, 1e-2, "%.6g")
                 if changed:
                     cfg.scaling_lr = max(float(value), 0.0)
                 changed, value = imgui.input_float("Rotation LR", float(cfg.rotation_lr), 1e-4, 1e-3, "%.6g")

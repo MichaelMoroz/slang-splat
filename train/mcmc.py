@@ -19,7 +19,6 @@ from .dataset import CameraSample, SceneData, _image_to_linear_float, _load_imag
 from .losses import get_expon_lr_func, inverse_sigmoid, l1_loss, psnr, rgb_to_nchw, ssim, training_loss
 
 _PARAM_COUNT = 14
-_N_MAX = 51
 _DEFAULT_INIT_SCALE_SPACING_RATIO = 0.25
 _DEFAULT_INIT_OPACITY = 0.5
 _MIN_SCALE = 1e-4
@@ -75,38 +74,15 @@ def _estimate_initial_log_scales(points: torch.Tensor, spacing_ratio: float, chu
     return torch.log(nearest.mul(float(spacing_ratio)).unsqueeze(1).repeat(1, 3))
 
 
-def _torch_relocation(opacity_old: torch.Tensor, scale_old: torch.Tensor, n: torch.Tensor, binoms: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    n = n.clamp_(1, _N_MAX - 1)
-    opacity_new, denom = 1.0 - (1.0 - opacity_old).pow(1.0 / n.to(dtype=opacity_old.dtype)), torch.zeros_like(opacity_old)
-    for i in range(1, _N_MAX):
-        active = n >= i
-        if bool(active.any()):
-            cur, acc = opacity_new[active], torch.zeros_like(opacity_new[active])
-            for k in range(i):
-                acc += float(binoms[i - 1, k]) * (((-1.0) ** k) / math.sqrt(k + 1.0)) * cur.pow(k + 1)
-            denom[active] += acc
-    denom = torch.nan_to_num(denom, nan=1.0, posinf=1.0, neginf=1.0).clamp_min_(torch.finfo(denom.dtype).eps)
-    opacity_new = torch.nan_to_num(opacity_new, nan=0.005, posinf=1.0, neginf=0.005).clamp_(0.005, 1.0 - torch.finfo(opacity_new.dtype).eps)
-    scale_new = torch.nan_to_num((opacity_old / denom).unsqueeze(1) * scale_old, nan=1e-4, posinf=1e4, neginf=1e-4).clamp_min_(1e-4)
-    return opacity_new, scale_new
-
-
-def _expand_like(src: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
-    out = torch.zeros_like(ref)
-    slices = tuple(slice(0, min(a, b)) for a, b in zip(src.shape, ref.shape))
-    out[slices] = src[slices]
-    return out
-
-
 @dataclass
 class MCMCConfig:
     iterations: int = 30000
-    position_lr_init: float = 0.00016
-    position_lr_final: float = 0.0000016
-    position_lr_delay_mult: float = 0.01
+    position_lr_init: float = 0.001
+    position_lr_final: float = 0.001
+    position_lr_delay_mult: float = 1.0
     position_lr_max_steps: int = 30000
-    feature_lr: float = 0.0025
-    opacity_lr: float = 0.05
+    feature_lr: float = 0.001
+    opacity_lr: float = 0.001
     scaling_lr: float = 0.005
     rotation_lr: float = 0.001
     lambda_dssim: float = 0.2
@@ -114,10 +90,6 @@ class MCMCConfig:
     noise_lr: float = 5e5
     opacity_reg: float = 0.01
     scale_reg: float = 0.01
-    densification_interval: int = 100
-    densify_from_iter: int = 500
-    densify_until_iter: int = 25000
-    cap_max: int = 500000
     random_background: bool = False
     init_points: int = 50000
     init_scale_spacing_ratio: float = _DEFAULT_INIT_SCALE_SPACING_RATIO
@@ -175,8 +147,6 @@ class TrainingStepStats(TrainingMetrics):
 
 
 class RGBGaussianModel:
-    _ATTRS = {"xyz": "_xyz", "color": "_color", "opacity": "_opacity", "scaling": "_log_scale", "rotation": "_rotation"}
-
     def __init__(self, device: torch.device) -> None:
         self.device = device
         self._xyz = nn.Parameter(torch.empty((0, 3), device=device))
@@ -186,7 +156,6 @@ class RGBGaussianModel:
         self._opacity = nn.Parameter(torch.empty((0, 1), device=device))
         self.optimizer: torch.optim.Adam | None = None
         self.xyz_scheduler = None
-        self._binoms = torch.tensor([[math.comb(n, k) if k <= n else 0 for k in range(_N_MAX)] for n in range(_N_MAX)], device=device, dtype=torch.float32)
 
     @property
     def scaling(self) -> torch.Tensor:
@@ -252,67 +221,6 @@ class RGBGaussianModel:
         splats = torch.empty((_PARAM_COUNT, self.count), device=self.device, dtype=torch.float32)
         splats[:3], splats[3:6], splats[6:10], splats[10:13], splats[13] = self._xyz.mT, self._log_scale.mT, self.rotation.mT, self._color.mT, self.opacity[:, 0]
         return splats
-
-    def _replace(self, name: str, tensor: torch.Tensor, zero: torch.Tensor, preserve_grad: bool) -> None:
-        old = getattr(self, self._ATTRS[name])
-        group = next(group for group in self.optimizer.param_groups if group["name"] == name)
-        state = self.optimizer.state.pop(old)
-        for key in ("exp_avg", "exp_avg_sq"):
-            state[key] = _expand_like(state[key], tensor)
-            state[key][zero] = 0
-        param = nn.Parameter(tensor)
-        if preserve_grad and old.grad is not None:
-            param.grad = _expand_like(old.grad, tensor)
-            param.grad[zero] = 0
-        group["params"][0] = param
-        self.optimizer.state[param] = state
-        setattr(self, self._ATTRS[name], param)
-
-    def _replace_all(self, xyz: torch.Tensor, color: torch.Tensor, opacity: torch.Tensor, log_scale: torch.Tensor, rotation: torch.Tensor, zero: torch.Tensor, preserve_grad: bool) -> None:
-        for name, tensor in (("xyz", xyz), ("color", color), ("opacity", opacity), ("scaling", log_scale), ("rotation", rotation)):
-            self._replace(name, tensor, zero, preserve_grad)
-
-    def _sample_alive(self, probs: torch.Tensor, num: int, alive: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
-        probs = torch.nan_to_num(probs.detach(), nan=0.0, posinf=0.0, neginf=0.0).clamp_min_(0.0)
-        total = probs.sum()
-        if not torch.isfinite(total) or float(total) <= 0.0:
-            probs = torch.ones_like(probs)
-            total = probs.sum()
-        sampled = torch.multinomial(probs / total, num, replacement=True)
-        if alive is not None:
-            sampled = alive[sampled]
-        return sampled, torch.bincount(sampled, minlength=self.count).unsqueeze(1)
-
-    def _updated_params(self, idxs: torch.Tensor, ratio: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        opacity, scale = _torch_relocation(self.opacity[idxs, 0], self.scaling[idxs], ratio[idxs, 0] + 1, self._binoms)
-        return self._xyz[idxs], self._color[idxs], inverse_sigmoid(opacity).unsqueeze(1), torch.log(scale.clamp_min(1e-4)), self._rotation[idxs]
-
-    def relocate_gs(self, dead_mask: torch.Tensor, preserve_grad: bool = False) -> None:
-        if not bool(dead_mask.any()):
-            return
-        dead, alive = dead_mask.nonzero(as_tuple=True)[0], (~dead_mask).nonzero(as_tuple=True)[0]
-        if alive.numel() == 0:
-            return
-        sampled, ratio = self._sample_alive(self.opacity[alive, 0], int(dead.numel()), alive)
-        xyz, color, opacity, log_scale, rotation = [tensor.detach().clone() for tensor in (self._xyz, self._color, self._opacity, self._log_scale, self._rotation)]
-        new_xyz, new_color, new_opacity, new_log_scale, new_rotation = self._updated_params(sampled, ratio)
-        xyz[dead], color[dead], opacity[dead], log_scale[dead], rotation[dead] = new_xyz, new_color, new_opacity, new_log_scale, new_rotation
-        opacity[sampled], log_scale[sampled] = new_opacity, new_log_scale
-        self._replace_all(xyz, color, opacity, log_scale, rotation, torch.unique(torch.cat((dead, sampled))), preserve_grad)
-
-    def add_new_gs(self, cap_max: int, preserve_grad: bool = False) -> int:
-        current, num_new = self.count, max(0, min(cap_max, int(1.05 * self.count)) - self.count)
-        if num_new <= 0:
-            return 0
-        sampled, ratio = self._sample_alive(self.opacity[:, 0], num_new)
-        new_xyz, new_color, new_opacity, new_log_scale, new_rotation = self._updated_params(sampled, ratio)
-        xyz, color = torch.cat((self._xyz.detach(), new_xyz), dim=0), torch.cat((self._color.detach(), new_color), dim=0)
-        opacity, log_scale = torch.cat((self._opacity.detach(), new_opacity), dim=0), torch.cat((self._log_scale.detach(), new_log_scale), dim=0)
-        rotation = torch.cat((self._rotation.detach(), new_rotation), dim=0)
-        opacity[sampled], log_scale[sampled] = new_opacity, new_log_scale
-        new_ids = torch.arange(current, int(xyz.shape[0]), device=xyz.device, dtype=sampled.dtype)
-        self._replace_all(xyz, color, opacity, log_scale, rotation, torch.unique(torch.cat((sampled, new_ids))), preserve_grad)
-        return num_new
 
     def add_noise(self, xyz_lr: float, noise_lr: float) -> None:
         cov = _build_scaling_rotation(self.scaling, self.rotation)
@@ -510,10 +418,6 @@ class RGBMCMCTrainer:
         total.backward()
         grad_stats = self._grad_stats()
         prev_params = tuple(t.detach().clone() for t in (self.model._xyz, self.model._color, self.model._opacity, self.model._log_scale, self.model._rotation))
-        if self.cfg.densify_from_iter < self.iteration < self.cfg.densify_until_iter and self.iteration % self.cfg.densification_interval == 0:
-            self.model.relocate_gs((self.model.opacity <= 0.005).squeeze(1), preserve_grad=True)
-            self.model.add_new_gs(self.cfg.cap_max, preserve_grad=True)
-            prev_params = tuple(t.detach().clone() for t in (self.model._xyz, self.model._color, self.model._opacity, self.model._log_scale, self.model._rotation))
         self.model.optimizer.step()
         self.model.optimizer.zero_grad(set_to_none=True)
         self.model.sanitize_after_step(prev_params, self.scene.extent_radius, self.context.max_anisotropy)
