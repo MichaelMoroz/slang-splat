@@ -23,7 +23,7 @@ _DEFAULT_INIT_SCALE_SPACING_RATIO = 0.25
 _DEFAULT_INIT_OPACITY = 0.5
 _MIN_SCALE = 1e-4
 _SANITIZE_MIN_OPACITY = 1e-6
-_POSITION_LIMIT_MULTIPLIER = 4.0
+_POSITION_LIMIT_MULTIPLIER = 64.0
 _SCALE_LIMIT_MULTIPLIER = 0.5
 _IDENTITY_QUAT = (1.0, 0.0, 0.0, 0.0)
 
@@ -77,17 +77,27 @@ def _estimate_initial_log_scales(points: torch.Tensor, spacing_ratio: float, chu
 @dataclass
 class MCMCConfig:
     iterations: int = 30000
-    position_lr_init: float = 0.001
-    position_lr_final: float = 0.001
-    position_lr_delay_mult: float = 1.0
-    position_lr_max_steps: int = 30000
-    feature_lr: float = 0.001
-    opacity_lr: float = 0.001
-    scaling_lr: float = 0.005
-    rotation_lr: float = 0.001
+    base_lr_init: float = 0.001
+    base_lr_final: float = 0.001
+    base_lr_delay_mult: float = 1.0
+    base_lr_max_steps: int = 30000
+    position_lr_mult: float = 0.1
+    feature_lr_mult: float = 1.0
+    opacity_lr_mult: float = 1.0
+    scaling_lr_mult: float = 20.0
+    rotation_lr_mult: float = 1.0
     lambda_dssim: float = 0.2
-    depth_ratio_weight: float = 0.1
+    depth_ratio_weight: float = 0.025
     noise_lr: float = 5e5
+    densify_enabled: bool = True
+    densify_interval: int = 10
+    densify_until_iter: int = 500
+    densify_interval_after: int = 50
+    densify_target_ratio: float = 0.05
+    densify_append_multiplier: float = 2.0
+    densify_clone_opacity: float = 0.33
+    remove_opacity_threshold: float = 0.001
+    max_splats: int = 2_000_000
     opacity_reg: float = 0.01
     scale_reg: float = 0.01
     random_background: bool = False
@@ -155,7 +165,13 @@ class RGBGaussianModel:
         self._rotation = nn.Parameter(torch.empty((0, 4), device=device))
         self._opacity = nn.Parameter(torch.empty((0, 1), device=device))
         self.optimizer: torch.optim.Adam | None = None
-        self.xyz_scheduler = None
+        self.base_lr_scheduler = None
+        self.spatial_lr_scale = 1.0
+        self.position_lr_mult = 1.0
+        self.feature_lr_mult = 1.0
+        self.opacity_lr_mult = 1.0
+        self.scaling_lr_mult = 1.0
+        self.rotation_lr_mult = 1.0
 
     @property
     def scaling(self) -> torch.Tensor:
@@ -199,23 +215,38 @@ class RGBGaussianModel:
             self._log_scale.data.add_(math.log(multiplier))
 
     def setup_training(self, cfg: MCMCConfig, spatial_lr_scale: float) -> None:
+        self.spatial_lr_scale = float(spatial_lr_scale)
+        self.position_lr_mult = float(cfg.position_lr_mult)
+        self.feature_lr_mult = float(cfg.feature_lr_mult)
+        self.opacity_lr_mult = float(cfg.opacity_lr_mult)
+        self.scaling_lr_mult = float(cfg.scaling_lr_mult)
+        self.rotation_lr_mult = float(cfg.rotation_lr_mult)
         self.optimizer = torch.optim.Adam(
             [
-                {"params": [self._xyz], "lr": cfg.position_lr_init * spatial_lr_scale, "name": "xyz"},
-                {"params": [self._color], "lr": cfg.feature_lr, "name": "color"},
-                {"params": [self._opacity], "lr": cfg.opacity_lr, "name": "opacity"},
-                {"params": [self._log_scale], "lr": cfg.scaling_lr, "name": "scaling"},
-                {"params": [self._rotation], "lr": cfg.rotation_lr, "name": "rotation"},
+                {"params": [self._xyz], "lr": cfg.base_lr_init * self.position_lr_mult * spatial_lr_scale, "name": "xyz"},
+                {"params": [self._color], "lr": cfg.base_lr_init * self.feature_lr_mult, "name": "color"},
+                {"params": [self._opacity], "lr": cfg.base_lr_init * self.opacity_lr_mult, "name": "opacity"},
+                {"params": [self._log_scale], "lr": cfg.base_lr_init * self.scaling_lr_mult, "name": "scaling"},
+                {"params": [self._rotation], "lr": cfg.base_lr_init * self.rotation_lr_mult, "name": "rotation"},
             ],
             lr=0.0,
             eps=1e-15,
         )
-        self.xyz_scheduler = get_expon_lr_func(cfg.position_lr_init * spatial_lr_scale, cfg.position_lr_final * spatial_lr_scale, lr_delay_mult=cfg.position_lr_delay_mult, max_steps=cfg.position_lr_max_steps)
+        self.base_lr_scheduler = get_expon_lr_func(
+            cfg.base_lr_init,
+            cfg.base_lr_final,
+            lr_delay_mult=cfg.base_lr_delay_mult,
+            max_steps=cfg.base_lr_max_steps,
+        )
 
     def update_learning_rate(self, iteration: int) -> float:
-        lr = float(self.xyz_scheduler(iteration))
-        next(group for group in self.optimizer.param_groups if group["name"] == "xyz")["lr"] = lr
-        return lr
+        base_lr = float(self.base_lr_scheduler(iteration))
+        next(group for group in self.optimizer.param_groups if group["name"] == "xyz")["lr"] = base_lr * self.position_lr_mult * self.spatial_lr_scale
+        next(group for group in self.optimizer.param_groups if group["name"] == "color")["lr"] = base_lr * self.feature_lr_mult
+        next(group for group in self.optimizer.param_groups if group["name"] == "opacity")["lr"] = base_lr * self.opacity_lr_mult
+        next(group for group in self.optimizer.param_groups if group["name"] == "scaling")["lr"] = base_lr * self.scaling_lr_mult
+        next(group for group in self.optimizer.param_groups if group["name"] == "rotation")["lr"] = base_lr * self.rotation_lr_mult
+        return base_lr * self.position_lr_mult * self.spatial_lr_scale
 
     def splats(self) -> torch.Tensor:
         splats = torch.empty((_PARAM_COUNT, self.count), device=self.device, dtype=torch.float32)
@@ -267,6 +298,104 @@ class RGBGaussianModel:
             )
         return ""
 
+    def apply_structural_update(
+        self,
+        xyz: torch.Tensor,
+        color: torch.Tensor,
+        opacity_logits: torch.Tensor,
+        log_scale: torch.Tensor,
+        rotation: torch.Tensor,
+        old_count: int,
+        keep_indices: torch.Tensor,
+    ) -> None:
+        old_params = {
+            "xyz": self._xyz,
+            "color": self._color,
+            "opacity": self._opacity,
+            "scaling": self._log_scale,
+            "rotation": self._rotation,
+        }
+        pre_remove_count = int(xyz.shape[0])
+        keep_indices = keep_indices.to(device=self.device, dtype=torch.long)
+        final_xyz = xyz.index_select(0, keep_indices).contiguous()
+        final_color = color.index_select(0, keep_indices).contiguous()
+        final_opacity = opacity_logits.index_select(0, keep_indices).contiguous()
+        final_log_scale = log_scale.index_select(0, keep_indices).contiguous()
+        final_rotation = rotation.index_select(0, keep_indices).contiguous()
+        self._xyz = nn.Parameter(final_xyz)
+        self._color = nn.Parameter(final_color)
+        self._opacity = nn.Parameter(final_opacity)
+        self._log_scale = nn.Parameter(final_log_scale)
+        self._rotation = nn.Parameter(final_rotation)
+        if self.optimizer is None:
+            return
+        new_params = {
+            "xyz": self._xyz,
+            "color": self._color,
+            "opacity": self._opacity,
+            "scaling": self._log_scale,
+            "rotation": self._rotation,
+        }
+        for group in self.optimizer.param_groups:
+            name = group["name"]
+            old_param = old_params[name]
+            new_param = new_params[name]
+            old_state = self.optimizer.state.pop(old_param, {})
+            new_state: dict[object, object] = {}
+            for key, value in old_state.items():
+                if torch.is_tensor(value) and tuple(value.shape) == tuple(old_param.shape):
+                    expanded = value.new_zeros((pre_remove_count, *value.shape[1:]))
+                    expanded[:old_count].copy_(value)
+                    new_state[key] = expanded.index_select(0, keep_indices.to(device=value.device)).contiguous()
+                elif torch.is_tensor(value):
+                    new_state[key] = value.clone()
+                else:
+                    new_state[key] = value
+            group["params"] = [new_param]
+            self.optimizer.state[new_param] = new_state
+
+    def apply_clone_and_remove(
+        self,
+        clone_positions: torch.Tensor,
+        clone_ids: torch.Tensor,
+        target_colors: torch.Tensor,
+        clone_counts: torch.Tensor,
+        clone_opacity: float,
+        remove_opacity_threshold: float,
+    ) -> None:
+        old_count = self.count
+        if old_count == 0:
+            return
+        clone_counts = clone_counts.to(device=self.device, dtype=torch.long)
+        xyz = self._xyz.detach().clone()
+        color = self._color.detach().clone()
+        opacity_logits = self._opacity.detach().clone()
+        log_scale = self._log_scale.detach().clone()
+        rotation = self.rotation.detach().clone()
+        parent_mask = clone_counts[:old_count] > 0
+        if torch.any(parent_mask):
+            divisors = (clone_counts[:old_count][parent_mask].to(dtype=log_scale.dtype) + 1.0).unsqueeze(1)
+            parent_scale = torch.exp(log_scale[parent_mask]) / divisors
+            log_scale[parent_mask] = torch.log(torch.clamp(parent_scale, min=_MIN_SCALE))
+        clone_total = int(clone_positions.shape[0])
+        if clone_total > 0:
+            clone_ids = clone_ids.to(device=self.device, dtype=torch.long)
+            clone_divisors = (clone_counts.index_select(0, clone_ids).to(dtype=log_scale.dtype) + 1.0).unsqueeze(1)
+            clone_scale = torch.exp(self._log_scale.detach().index_select(0, clone_ids)) / clone_divisors
+            xyz = torch.cat((xyz, clone_positions.to(device=self.device, dtype=xyz.dtype)), dim=0)
+            color = torch.cat((color, 0.5 * (self._color.detach().index_select(0, clone_ids) + target_colors.to(device=self.device, dtype=color.dtype))), dim=0)
+            opacity_logits = torch.cat(
+                (
+                    opacity_logits,
+                    inverse_sigmoid(torch.full((clone_total, 1), float(clone_opacity), device=self.device, dtype=opacity_logits.dtype)),
+                ),
+                dim=0,
+            )
+            log_scale = torch.cat((log_scale, torch.log(torch.clamp(clone_scale, min=_MIN_SCALE))), dim=0)
+            rotation = torch.cat((rotation, rotation.index_select(0, clone_ids)), dim=0)
+        keep_indices = torch.nonzero(torch.sigmoid(opacity_logits[:, 0]) >= float(remove_opacity_threshold), as_tuple=False).flatten()
+        self.apply_structural_update(xyz, color, opacity_logits, log_scale, rotation, old_count, keep_indices)
+
 class RGBMCMCTrainer:
     def __init__(self, cfg: MCMCConfig, context: SplattingContext | None = None, device: str = "cuda") -> None:
         self.cfg, self.device = cfg, torch.device(device)
@@ -293,25 +422,66 @@ class RGBMCMCTrainer:
     def apply_runtime_config(self) -> None:
         if self.model.optimizer is None:
             return
-        if self.scene is not None:
-            self.model.xyz_scheduler = get_expon_lr_func(
-                self.cfg.position_lr_init * self.scene.extent_radius,
-                self.cfg.position_lr_final * self.scene.extent_radius,
-                lr_delay_mult=self.cfg.position_lr_delay_mult,
-                max_steps=self.cfg.position_lr_max_steps,
+        self.model.spatial_lr_scale = 1.0 if self.scene is None else float(self.scene.extent_radius)
+        self.model.position_lr_mult = float(self.cfg.position_lr_mult)
+        self.model.feature_lr_mult = float(self.cfg.feature_lr_mult)
+        self.model.opacity_lr_mult = float(self.cfg.opacity_lr_mult)
+        self.model.scaling_lr_mult = float(self.cfg.scaling_lr_mult)
+        self.model.rotation_lr_mult = float(self.cfg.rotation_lr_mult)
+        self.model.base_lr_scheduler = get_expon_lr_func(
+            self.cfg.base_lr_init,
+            self.cfg.base_lr_final,
+            lr_delay_mult=self.cfg.base_lr_delay_mult,
+            max_steps=self.cfg.base_lr_max_steps,
+        )
+        self.model.update_learning_rate(self.iteration)
+
+    def _densify_current_step(self, target: torch.Tensor) -> None:
+        if not bool(self.cfg.densify_enabled) or self.model.count <= 0:
+            return
+        early_interval = int(self.cfg.densify_interval)
+        late_interval = int(self.cfg.densify_interval_after)
+        switch_iter = int(self.cfg.densify_until_iter)
+        interval = early_interval if switch_iter <= 0 or self.iteration <= switch_iter else late_interval
+        if interval <= 0:
+            return
+        if self.iteration % interval != 0:
+            return
+        available_slots = max(int(self.cfg.max_splats) - self.model.count, 0)
+        if available_slots <= 0:
+            return
+        pixel_count = int(target.shape[0]) * int(target.shape[1])
+        desired_clone_count = min(max(int(math.ceil(float(self.cfg.densify_target_ratio) * self.model.count)), 0), available_slots)
+        if pixel_count <= 0 or desired_clone_count <= 0:
+            return
+        select_probability = min(float(desired_clone_count) / float(pixel_count), 1.0)
+        max_clone_candidates = max(int(math.ceil(desired_clone_count * max(float(self.cfg.densify_append_multiplier), 1.0))), 1)
+        clones = self.context.clone_candidates_current(
+            target,
+            select_probability=select_probability,
+            max_clone_candidates=max_clone_candidates,
+            clone_seed=self.iteration,
+        )
+        clone_count = int(clones["count"].item()) if torch.is_tensor(clones["count"]) else int(clones["count"])
+        clone_count = min(clone_count, available_slots)
+        if clone_count == 0:
+            self.model.apply_clone_and_remove(
+                target.new_empty((0, 3)),
+                torch.empty((0,), device=self.device, dtype=torch.long),
+                target.new_empty((0, 3)),
+                clones["clone_counts"],
+                float(self.cfg.densify_clone_opacity),
+                float(self.cfg.remove_opacity_threshold),
             )
-        for group in self.model.optimizer.param_groups:
-            name = group.get("name")
-            if name == "color":
-                group["lr"] = float(self.cfg.feature_lr)
-            elif name == "opacity":
-                group["lr"] = float(self.cfg.opacity_lr)
-            elif name == "scaling":
-                group["lr"] = float(self.cfg.scaling_lr)
-            elif name == "rotation":
-                group["lr"] = float(self.cfg.rotation_lr)
-        if self.iteration > 0:
-            self.model.update_learning_rate(self.iteration)
+            return
+        self.model.apply_clone_and_remove(
+            clones["positions"][:clone_count],
+            clones["ids"][:clone_count],
+            clones["target_colors"][:clone_count],
+            clones["clone_counts"],
+            float(self.cfg.densify_clone_opacity),
+            float(self.cfg.remove_opacity_threshold),
+        )
 
     def _current_dither_strength(self) -> float:
         base = max(float(self.cfg.dither_strength), 0.0)
@@ -421,6 +591,7 @@ class RGBMCMCTrainer:
         self.model.optimizer.step()
         self.model.optimizer.zero_grad(set_to_none=True)
         self.model.sanitize_after_step(prev_params, self.scene.extent_radius, self.context.max_anisotropy)
+        self._densify_current_step(target)
         self.model.add_noise(xyz_lr, self.cfg.noise_lr)
         test_psnr = test_ssim = None
         if self.iteration % self.cfg.eval_interval == 0:

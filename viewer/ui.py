@@ -127,7 +127,7 @@ class ViewerUI:
             "far": 1000.0,
             "radius_scale": 1.0,
             "dither_strength": 1.0,
-            "max_anisotropy": 12.0,
+            "max_anisotropy": 32.0,
             "alpha_cutoff": 0.01,
             "trans_threshold": 0.005,
             "debug_mode": DEBUG_MODE_NORMAL,
@@ -637,33 +637,63 @@ class ToolkitWindow:
                     cfg.random_background = bool(value)
                 imgui.end_tab_item()
             if imgui.begin_tab_item("Learning Rates")[0]:
-                changed, value = imgui.input_float("Position LR Init", float(cfg.position_lr_init), 1e-4, 1e-3, "%.6g")
+                changed, value = imgui.input_float("Base LR Init", float(cfg.base_lr_init), 1e-5, 1e-4, "%.6g")
                 if changed:
-                    cfg.position_lr_init = max(float(value), 0.0)
-                changed, value = imgui.input_float("Position LR Final", float(cfg.position_lr_final), 1e-4, 1e-3, "%.6g")
+                    cfg.base_lr_init = max(float(value), 0.0)
+                changed, value = imgui.input_float("Base LR Final", float(cfg.base_lr_final), 1e-5, 1e-4, "%.6g")
                 if changed:
-                    cfg.position_lr_final = max(float(value), 0.0)
-                changed, value = imgui.input_float("Position LR Delay", float(cfg.position_lr_delay_mult), 0.01, 0.1, "%.6g")
+                    cfg.base_lr_final = max(float(value), 0.0)
+                changed, value = imgui.input_float("Base LR Delay", float(cfg.base_lr_delay_mult), 0.01, 0.1, "%.6g")
                 if changed:
-                    cfg.position_lr_delay_mult = max(float(value), 0.0)
-                changed, value = imgui.input_int("Position LR Steps", int(cfg.position_lr_max_steps), 100, 1000)
+                    cfg.base_lr_delay_mult = max(float(value), 0.0)
+                changed, value = imgui.input_int("Base LR Steps", int(cfg.base_lr_max_steps), 100, 1000)
                 if changed:
-                    cfg.position_lr_max_steps = max(int(value), 1)
-                changed, value = imgui.input_float("Feature LR", float(cfg.feature_lr), 1e-4, 1e-3, "%.6g")
+                    cfg.base_lr_max_steps = max(int(value), 1)
+                changed, value = imgui.input_float("LR Mul Position", float(cfg.position_lr_mult), 1e-2, 1e-1, "%.6g")
                 if changed:
-                    cfg.feature_lr = max(float(value), 0.0)
-                changed, value = imgui.input_float("Opacity LR", float(cfg.opacity_lr), 1e-4, 1e-3, "%.6g")
+                    cfg.position_lr_mult = max(float(value), 0.0)
+                changed, value = imgui.input_float("LR Mul Scale", float(cfg.scaling_lr_mult), 1e-1, 1.0, "%.6g")
                 if changed:
-                    cfg.opacity_lr = max(float(value), 0.0)
-                changed, value = imgui.input_float("Scaling LR", float(cfg.scaling_lr), 1e-3, 1e-2, "%.6g")
+                    cfg.scaling_lr_mult = max(float(value), 0.0)
+                changed, value = imgui.input_float("LR Mul Rotation", float(cfg.rotation_lr_mult), 1e-2, 1e-1, "%.6g")
                 if changed:
-                    cfg.scaling_lr = max(float(value), 0.0)
-                changed, value = imgui.input_float("Rotation LR", float(cfg.rotation_lr), 1e-4, 1e-3, "%.6g")
+                    cfg.rotation_lr_mult = max(float(value), 0.0)
+                changed, value = imgui.input_float("LR Mul Color", float(cfg.feature_lr_mult), 1e-2, 1e-1, "%.6g")
                 if changed:
-                    cfg.rotation_lr = max(float(value), 0.0)
+                    cfg.feature_lr_mult = max(float(value), 0.0)
+                changed, value = imgui.input_float("LR Mul Opacity", float(cfg.opacity_lr_mult), 1e-2, 1e-1, "%.6g")
+                if changed:
+                    cfg.opacity_lr_mult = max(float(value), 0.0)
                 changed, value = imgui.input_float("Noise LR", float(cfg.noise_lr), 100.0, 1000.0, "%.4g")
                 if changed:
                     cfg.noise_lr = max(float(value), 0.0)
+                changed, value = imgui.checkbox("Densify Enabled", bool(cfg.densify_enabled))
+                if changed:
+                    cfg.densify_enabled = bool(value)
+                changed, value = imgui.input_int("Densify Interval", int(cfg.densify_interval), 10, 100)
+                if changed:
+                    cfg.densify_interval = max(int(value), 1)
+                changed, value = imgui.input_int("Densify Until Iter", int(cfg.densify_until_iter), 50, 500)
+                if changed:
+                    cfg.densify_until_iter = max(int(value), 0)
+                changed, value = imgui.input_int("Densify Interval After", int(cfg.densify_interval_after), 10, 100)
+                if changed:
+                    cfg.densify_interval_after = max(int(value), 0)
+                changed, value = imgui.input_float("Densify Target Ratio", float(cfg.densify_target_ratio), 0.001, 0.01, "%.5f")
+                if changed:
+                    cfg.densify_target_ratio = max(float(value), 0.0)
+                changed, value = imgui.input_float("Clone Opacity", float(cfg.densify_clone_opacity), 0.01, 0.1, "%.4f")
+                if changed:
+                    cfg.densify_clone_opacity = min(max(float(value), 1e-4), 0.9999)
+                changed, value = imgui.input_float("Clone Append Mult", float(cfg.densify_append_multiplier), 0.1, 1.0, "%.4f")
+                if changed:
+                    cfg.densify_append_multiplier = max(float(value), 1.0)
+                changed, value = imgui.input_int("Max Splats", int(cfg.max_splats), 10000, 100000)
+                if changed:
+                    cfg.max_splats = max(int(value), 1)
+                changed, value = imgui.input_float("Remove Opacity Thresh", float(cfg.remove_opacity_threshold), 1e-4, 1e-3, "%.5f")
+                if changed:
+                    cfg.remove_opacity_threshold = max(float(value), 0.0)
                 imgui.end_tab_item()
             if imgui.begin_tab_item("Loss / Reg")[0]:
                 changed, value = imgui.input_float("Lambda DSSIM", float(cfg.lambda_dssim), 0.01, 0.1, "%.4f")
