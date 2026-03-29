@@ -14,9 +14,6 @@ static const uint RADIX_INVALID_VALUE = 0xFFFFFFFFu;
 static const uint PACKED_HIST_SIZE = RADIX_BIN_COUNT >> RADIX_PACK_LANE_BITS;
 static const uint RADIX_QUARTER_SIZE = RADIX_GROUP_SIZE / 4u;
 static const uint RADIX_PACKED_QUARTER_COUNT = 3u;
-static const uint RADIX_PAIR_SIZE = 2u;
-static const uint RADIX_PREFIX_SHIFT = 16u;
-static const uint RADIX_PREFIX_MASK = 0xFFFFu;
 static const uint RADIX_MAX_PREFIX_LEVELS = 4u;
 static const uint PREFIX_MAX_LEVELS = 8u;
 static const uint INDIRECT_DISPATCH_ARG_STRIDE = 3u;
@@ -85,14 +82,6 @@ uint unpack_count(uint packed, uint digit) {
     return (packed >> ((digit & RADIX_PACK_LANE_MASK) * RADIX_PACK_SHIFT)) & RADIX_PACK_MASK;
 }
 
-uint pack_prefix16(uint lo, uint hi) {
-    return (hi << RADIX_PREFIX_SHIFT) | (lo & RADIX_PREFIX_MASK);
-}
-
-uint unpack_prefix16(uint packed, uint odd) {
-    return odd != 0u ? (packed >> RADIX_PREFIX_SHIFT) : (packed & RADIX_PREFIX_MASK);
-}
-
 uint ceil_div_block(uint value) {
     return (value + PREFIX_THREADS - 1u) / PREFIX_THREADS;
 }
@@ -144,7 +133,7 @@ uint block_exclusive_scan(uint value, uint localId, out uint blockTotal)
 
 uint radix_total_n(uint numGroups) { return numGroups * RADIX_BIN_COUNT; }
 uint radix_level_size(uint totalN, uint level) { uint size = totalN; for (uint current = 0u; current < level; ++current) size = ceil_div_block(size); return size; }
-uint radix_level_offset(uint totalN, uint level) { uint offset = 0u; uint size = totalN; for (uint current = 0u; current < level; ++current) { offset += current == 0u ? (size + 1u) / 2u : size; size = ceil_div_block(size); } return offset; }
+uint radix_level_offset(uint totalN, uint level) { uint offset = 0u; uint size = totalN; for (uint current = 0u; current < level; ++current) { offset += size; size = ceil_div_block(size); } return offset; }
 uint radix_num_levels(uint totalN) { uint levels = 0u; uint size = totalN; for (uint current = 0u; current < RADIX_MAX_PREFIX_LEVELS && size > 1u; ++current) { levels += 1u; size = ceil_div_block(size); } return max(levels, 1u); }
 uint load_radix_param(uint index, uint fallback) { return g_UseRadixParams != 0u ? g_RadixParamsBuffer[index] : fallback; }
 
@@ -261,9 +250,7 @@ void csRadixPrefixLevel(uint3 groupID : SV_GroupID, uint3 localID : SV_GroupThre
             uint prevLevel = level - 1u;
             uint prevLevelSize = radix_level_size(totalN, prevLevel);
             uint blockEnd = min((globalIndex + 1u) * PREFIX_THREADS, prevLevelSize) - 1u;
-            value = prevLevel == 0u
-                ? unpack_prefix16(g_HistogramOffsets[int(radix_level_offset(totalN, prevLevel) + (blockEnd >> 1u))], blockEnd & 1u)
-                : g_HistogramOffsets[int(radix_level_offset(totalN, prevLevel) + blockEnd)];
+            value = g_HistogramOffsets[int(radix_level_offset(totalN, prevLevel) + blockEnd)];
         }
     } else {
         value = 0u;
@@ -273,16 +260,8 @@ void csRadixPrefixLevel(uint3 groupID : SV_GroupID, uint3 localID : SV_GroupThre
     uint inclusive = block_exclusive_scan(value, lane, blockTotal) + value;
     gsRadixPrefix[lane] = inclusive;
     GroupMemoryBarrierWithGroupSync();
-    if (level == 0u) {
-        if (globalIndex >= levelSize) return;
-        if ((lane & 1u) == 0u) {
-            uint hi = (lane + 1u < PREFIX_THREADS && globalIndex + 1u < levelSize) ? gsRadixPrefix[lane + 1u] : 0u;
-            g_HistogramOffsets.store(int(levelOffset + (globalIndex >> 1u)), pack_prefix16(gsRadixPrefix[lane], hi));
-        }
-    } else {
-        if (globalIndex >= levelSize) return;
-        g_HistogramOffsets.store(int(levelOffset + globalIndex), gsRadixPrefix[lane]);
-    }
+    if (globalIndex >= levelSize) return;
+    g_HistogramOffsets.store(int(levelOffset + globalIndex), gsRadixPrefix[lane]);
 }
 
 [shader("compute")]
@@ -358,7 +337,7 @@ void csRadixScatter(uint3 groupID : SV_GroupID, uint3 localID : SV_GroupThreadID
     uint blockId = idx / PREFIX_THREADS;
     if (idx != 0u && (idx % PREFIX_THREADS) != 0u) {
         uint prev = idx - 1u;
-        globalOffset = unpack_prefix16(g_HistogramOffsets[int(prev >> 1u)], prev & 1u);
+        globalOffset = g_HistogramOffsets[int(prev)];
     }
     if (numLevels > 1u && blockId > 0u) {
         uint level1Offset = radix_level_offset(totalN, 1u);

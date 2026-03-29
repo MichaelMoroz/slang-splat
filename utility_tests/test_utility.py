@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from utility.utility import GpuUtility
 
 _SHADERS = Path(__file__).resolve().parents[1] / "utility" / "shaders"
+_LARGE_TEST_COUNT = 33_554_432
 
 
 @pytest.fixture(scope="session")
@@ -158,6 +159,35 @@ def test_radix_sort_from_count_buffer_matches_direct(
         keys = keys.copy()
         keys[::7] = int(keys[0])
     values = np.arange(count, dtype=np.int64)
+    direct_keys, direct_values = _run_sort(device, util, keys, values, start_bit, bit_count)
+    indirect_keys, indirect_values = _run_sort_from_count_buffer(device, util, keys, values, start_bit, bit_count)
+    np.testing.assert_array_equal(indirect_keys, direct_keys)
+    np.testing.assert_array_equal(indirect_values, direct_values)
+
+
+@pytest.mark.parametrize("exclusive", [False, True])
+def test_prefix_sum_from_count_buffer_matches_direct_large(utility_context: tuple[spy.Device, GpuUtility], exclusive: bool) -> None:
+    device, util = utility_context
+    count = _LARGE_TEST_COUNT
+    values = np.random.default_rng(987654 + int(exclusive)).integers(0, 17, size=count, dtype=np.uint32)
+    direct_out, direct_total = _run_prefix(device, util, values, exclusive)
+    indirect_out, indirect_total = _run_prefix_from_count_buffer(device, util, values, exclusive)
+    np.testing.assert_array_equal(indirect_out, direct_out)
+    assert indirect_total == direct_total
+
+
+@pytest.mark.parametrize(("start_bit", "bit_count"), [(0, 32), (0, 17)])
+def test_radix_sort_from_count_buffer_matches_direct_large(
+    utility_context: tuple[spy.Device, GpuUtility], start_bit: int, bit_count: int
+) -> None:
+    device, util = utility_context
+    count = _LARGE_TEST_COUNT
+    rng = np.random.default_rng(7654321 + start_bit * 17 + bit_count)
+    keys = rng.integers(0, np.iinfo(np.uint32).max, size=count, dtype=np.uint32)
+    if count:
+        keys = keys.copy()
+        keys[::7] = keys[0]
+    values = np.arange(count, dtype=np.uint32)
     direct_keys, direct_values = _run_sort(device, util, keys, values, start_bit, bit_count)
     indirect_keys, indirect_values = _run_sort_from_count_buffer(device, util, keys, values, start_bit, bit_count)
     np.testing.assert_array_equal(indirect_keys, direct_keys)

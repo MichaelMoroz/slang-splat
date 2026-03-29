@@ -152,14 +152,12 @@ class GpuUtility:
     def radix_prefix_elements(count: int) -> int:
         total = max(_ceil_div(max(int(count), 1), _RADIX_GROUP_SIZE) * _RADIX_BIN_COUNT, _RADIX_BIN_COUNT)
         size = total
-        packed = True
         used = 0
         while True:
-            used += (size + 1) // 2 if packed else size
+            used += size
             if size <= _PREFIX_BLOCK_SIZE // 2:
                 break
             size = _ceil_div(size, _PREFIX_BLOCK_SIZE // 2)
-            packed = False
         return max(used, 1)
 
     def _slice(self, tensor: spy.Tensor, count: int, offset: int = 0) -> spy.Tensor:
