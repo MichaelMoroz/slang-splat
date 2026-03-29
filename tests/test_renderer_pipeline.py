@@ -118,6 +118,42 @@ def test_tile_keys_and_ranges_match_reference(device):
     np.testing.assert_array_equal(debug["tile_ranges"], ref_ranges)
 
 
+def test_renderer_tile_sort_keeps_stable_order_for_equal_keys(device):
+    count = 6
+    positions = np.zeros((count, 3), dtype=np.float32)
+    positions[:, 2] = 0.0
+    scales = _log_sigma(np.full((count, 3), 0.04, dtype=np.float32))
+    rotations = np.zeros((count, 4), dtype=np.float32)
+    rotations[:, 0] = 1.0
+    opacities = np.full((count,), 0.6, dtype=np.float32)
+    colors = np.stack(
+        (
+            np.linspace(0.1, 0.6, count, dtype=np.float32),
+            np.linspace(0.2, 0.7, count, dtype=np.float32),
+            np.linspace(0.3, 0.8, count, dtype=np.float32),
+        ),
+        axis=1,
+    )
+    scene = GaussianScene(
+        positions=positions,
+        scales=scales,
+        rotations=rotations,
+        opacities=opacities,
+        colors=colors,
+        sh_coeffs=np.zeros((count, 1, 3), dtype=np.float32),
+    )
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, list_capacity_multiplier=8)
+
+    debug = renderer.debug_pipeline_data(scene, camera)
+    sorted_values = np.asarray(debug["values"], dtype=np.uint32)
+    sorted_keys = np.asarray(debug["keys"], dtype=np.uint32)
+    matching = sorted_values[sorted_keys == sorted_keys[0]]
+
+    assert matching.size > 1
+    np.testing.assert_array_equal(matching, np.sort(matching, kind="stable"))
+
+
 def test_tiny_render_matches_cpu_reference(device):
     scene = make_scene(18, seed=5)
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
@@ -554,6 +590,36 @@ def test_prepass_capacity_budget_caps_growth(device):
     assert stats1["stats_valid"] is True
     assert int(stats1["prepass_entry_cap"]) == int(entry_cap)
     assert int(stats1["prepass_memory_mb"]) == 1
+
+
+def test_prepass_overflow_refresh_grows_capacity_and_converges(device):
+    scene = make_scene(192, seed=109)
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    renderer = GaussianRenderer(
+        device,
+        width=128,
+        height=128,
+        radius_scale=1.6,
+        list_capacity_multiplier=1,
+        max_prepass_memory_mb=64,
+    )
+    renderer.set_scene(scene)
+    initial_capacity = int(renderer._max_list_entries)
+
+    _, _ = renderer.render_to_texture(camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32))
+    _, stats1 = renderer.render_to_texture(camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32))
+    follow_up = [
+        renderer.render_to_texture(camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32))[1]
+        for _ in range(3)
+    ]
+
+    assert stats1["stats_valid"] is True
+    assert int(renderer._max_list_entries) >= initial_capacity
+    if bool(stats1["overflow"]):
+        assert int(renderer._max_list_entries) > initial_capacity
+        grown_capacities = [int(renderer._max_list_entries)]
+        grown_capacities.extend(int(stats["max_list_entries"]) for stats in follow_up)
+        assert max(grown_capacities) > initial_capacity
 
 
 def test_partial_tile_render_matches_cpu_reference(device):

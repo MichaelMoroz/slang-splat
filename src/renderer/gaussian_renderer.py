@@ -42,6 +42,24 @@ class _RasterGradShaderSet:
     backprop: spy.ComputeKernel
 
 
+@dataclass(slots=True)
+class _RendererResourceGroups:
+    scene: dict[str, spy.Buffer]
+    frame: dict[str, object]
+    prepass: dict[str, spy.Buffer]
+    raster: dict[str, spy.Buffer]
+    grad: dict[str, spy.Buffer]
+    debug: dict[str, spy.Buffer]
+
+    def merged_work_buffers(self) -> dict[str, spy.Buffer]:
+        return {
+            **self.prepass,
+            **self.raster,
+            **self.grad,
+            **self.debug,
+        }
+
+
 class _UIntExprEvaluator(ast.NodeVisitor):
     _BIN_OPS = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Div: operator.floordiv, ast.FloorDiv: operator.floordiv}
     _UNARY_OPS = {ast.UAdd: operator.pos, ast.USub: operator.neg}
@@ -373,6 +391,7 @@ class GaussianRenderer:
         self._current_scene: GaussianScene | None = None
         self._scene_buffers: dict[str, spy.Buffer] = {}
         self._work_buffers: dict[str, spy.Buffer] = {}
+        self._resource_groups = _RendererResourceGroups(scene={}, frame={}, prepass={}, raster={}, grad={}, debug={})
         self._debug_grad_norm_buffer: spy.Buffer | None = None
         self._output_texture: spy.Texture | None = None
         self._output_grad_buffer: spy.Buffer | None = None
@@ -450,7 +469,11 @@ class GaussianRenderer:
             return
         self._scene_capacity, self._scene_count = self._grow(splat_count, self._scene_capacity), splat_count
         param_bytes = max(self._scene_capacity, 1) * self.TRAINABLE_PARAM_COUNT * self._U32_BYTES
-        self._scene_buffers = {name: self.device.create_buffer(size=param_bytes, usage=self._RW_BUFFER_USAGE) for name in self._SCENE_SHADER_VARS}
+        self._resource_groups.scene = {
+            name: self.device.create_buffer(size=param_bytes, usage=self._RW_BUFFER_USAGE)
+            for name in self._SCENE_SHADER_VARS
+        }
+        self._scene_buffers = self._resource_groups.scene
 
     def _ensure_work_buffers(self, splat_count: int, min_list_entries: int = 0) -> None:
         max_entries = self._max_prepass_entries_by_budget()
@@ -482,10 +505,36 @@ class GaussianRenderer:
             "cached_raster_grads_float": max(self._work_splat_capacity, 1) * self._RASTER_CACHE_PARAM_COUNT * self._U32_BYTES,
             "cached_raster_grads_metrics_float": max(self._work_splat_capacity, 1) * self._RASTER_CACHE_PARAM_COUNT * self._U32_BYTES,
         }
-        self._work_buffers = {name: self.device.create_buffer(size=size, usage=self._RW_BUFFER_USAGE) for name, size in sized.items()}
+        allocated = {name: self.device.create_buffer(size=size, usage=self._RW_BUFFER_USAGE) for name, size in sized.items()}
+        self._resource_groups.prepass = {
+            name: allocated[name]
+            for name in ("keys", "values", "counter", "splat_list_bases", "scanline_work_items", "scanline_counter", "tile_ranges")
+        }
+        self._resource_groups.raster = {
+            name: allocated[name]
+            for name in (
+                "screen_center_radius_depth",
+                "screen_color_alpha",
+                "screen_ellipse_conic",
+                "splat_visible",
+                "training_forward_state",
+                "training_processed_end",
+                "raster_cache",
+            )
+        }
+        self._resource_groups.grad = {
+            name: allocated[name]
+            for name in ("param_grads", "cached_raster_grads_fixed", "cached_raster_grads_float", "cached_raster_grads_metrics_float")
+        }
+        self._resource_groups.debug = {"debug_grad_norm": allocated["debug_grad_norm"]}
+        self._work_buffers = self._resource_groups.merged_work_buffers()
         self._work_buffers["debug_grad_norm"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1),), dtype=np.float32))
         self._ensure_output_texture()
         self._ensure_output_grad_buffer()
+        self._resource_groups.frame = {
+            "output_texture": self._output_texture,
+            "output_grad_buffer": self._output_grad_buffer,
+        }
         if self._pending_min_list_entries > 0 and self._max_list_entries >= self._pending_min_list_entries:
             self._pending_min_list_entries = 0
 
@@ -622,6 +671,9 @@ class GaussianRenderer:
     def _project_and_bin(self, encoder: spy.CommandEncoder, scene: GaussianScene, camera: Camera) -> None:
         self._dispatch(self._k_project, encoder, spy.uint3(scene.count, 1, 1), {**self._scene_vars(), **self._screen_vars(), **self._raster_cache_vars(), "g_Keys": self._work_buffers["keys"], "g_Values": self._work_buffers["values"], "g_ListCounter": self._work_buffers["counter"], "g_SplatListBases": self._work_buffers["splat_list_bases"], "g_ScanlineWorkItems": self._work_buffers["scanline_work_items"], "g_ScanlineCounter": self._work_buffers["scanline_counter"], **self._prepass_uniforms(scene.count), **self._camera_uniforms(camera)}, "Project And Bin", 20)
 
+    def _record_project_stage(self, encoder: spy.CommandEncoder, scene: GaussianScene, camera: Camera) -> None:
+        self._project_and_bin(encoder, scene, camera)
+
     def _compute_scanline_dispatch_args(self, encoder: spy.CommandEncoder) -> spy.Buffer:
         args_buffer = self._sorter.ensure_indirect_args()
         self._sorter.compute_indirect_args_from_buffer_dispatch(encoder=encoder, count_buffer=self._work_buffers["scanline_counter"], count_offset=0, max_element_count=self._max_scanline_entries, args_buffer=args_buffer)
@@ -636,6 +688,11 @@ class GaussianRenderer:
                 self._bind_prepass_cursor(cursor, self._scene_count)
                 compute_pass.dispatch_compute_indirect(spy.BufferOffsetPair(args_buffer, GPURadixSort.BUILD_RANGE_ARGS_OFFSET * self._U32_BYTES))
 
+    def _record_scanline_stage(self, encoder: spy.CommandEncoder) -> spy.Buffer:
+        args_buffer = self._compute_scanline_dispatch_args(encoder)
+        self._compose_scanline_key_values_indirect(encoder, args_buffer)
+        return args_buffer
+
     def _clear_tile_ranges(self, encoder: spy.CommandEncoder) -> None:
         self._dispatch(self._k_clear_ranges, encoder, spy.uint3(self.tile_count, 1, 1), {"g_TileRanges": self._work_buffers["tile_ranges"], **self._prepass_uniforms(self._scene_count)}, "Clear Tile Ranges", 22)
 
@@ -646,6 +703,21 @@ class GaussianRenderer:
                 cursor.g_SortedKeys, cursor.g_TileRanges, cursor.g_PrepassParams = self._work_buffers["keys"], self._work_buffers["tile_ranges"], args_buffer
                 self._bind_prepass_cursor(cursor, self._scene_count, sorted_count_offset=GPURadixSort.PARAM_ELEMENT_COUNT)
                 compute_pass.dispatch_compute_indirect(spy.BufferOffsetPair(args_buffer, GPURadixSort.BUILD_RANGE_ARGS_OFFSET * self._U32_BYTES))
+
+    def _record_sort_stage(self, encoder: spy.CommandEncoder) -> spy.Buffer:
+        return self._sorter.sort_key_values_from_count_buffer(
+            encoder=encoder,
+            keys_buffer=self._work_buffers["keys"],
+            values_buffer=self._work_buffers["values"],
+            count_buffer=self._work_buffers["counter"],
+            count_offset=0,
+            max_count=self._max_list_entries,
+            max_bits=self.sort_bits,
+        )
+
+    def _record_tile_range_stage(self, encoder: spy.CommandEncoder, args_buffer: spy.Buffer) -> None:
+        self._clear_tile_ranges(encoder)
+        self._build_tile_ranges_indirect(encoder, args_buffer)
 
     def _debug_render_enabled(self) -> bool:
         return bool(self.debug_show_processed_count or self.debug_show_grad_norm or self.debug_show_ellipses)
@@ -685,21 +757,11 @@ class GaussianRenderer:
 
     def _record_prepass(self, encoder: spy.CommandEncoder, scene: GaussianScene, camera: Camera, enqueue_counter_readback: bool) -> None:
         self._reset_prepass_counters(encoder)
-        self._project_and_bin(encoder, scene, camera)
-        self._compose_scanline_key_values_indirect(encoder, self._compute_scanline_dispatch_args(encoder))
+        self._record_project_stage(encoder, scene, camera)
+        self._record_scanline_stage(encoder)
         if enqueue_counter_readback:
             self._enqueue_counter_readback(encoder)
-        self._clear_tile_ranges(encoder)
-        args_buffer = self._sorter.sort_key_values_from_count_buffer(
-            encoder=encoder,
-            keys_buffer=self._work_buffers["keys"],
-            values_buffer=self._work_buffers["values"],
-            count_buffer=self._work_buffers["counter"],
-            count_offset=0,
-            max_count=self._max_list_entries,
-            max_bits=self.sort_bits,
-        )
-        self._build_tile_ranges_indirect(encoder, args_buffer)
+        self._record_tile_range_stage(encoder, self._record_sort_stage(encoder))
 
     def _require_texture(self, attr: str, label: str) -> spy.Texture:
         texture = getattr(self, attr)
