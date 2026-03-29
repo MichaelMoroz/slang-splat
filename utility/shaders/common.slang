@@ -1,7 +1,60 @@
+import "slangpy";
+
 static const uint PREFIX_THREADS = 256u;
 static const uint PREFIX_BLOCK_SIZE = PREFIX_THREADS * 2u;
-static const uint RADIX_GROUP_SIZE = 256u;
+static const uint RADIX_GROUP_SIZE = 512u;
 static const uint RADIX_BIN_COUNT = 256u;
-static const uint RADIX_BITS_PER_PASS = 8u;
+static const uint RADIX_PACK_LANE_BITS = 1u;
+static const uint RADIX_PACK_LANE_MASK = 1u;
+static const uint RADIX_PACK_SHIFT = 16u;
+static const uint RADIX_PACK_MASK = 0xFFFFu;
+static const uint RADIX_INVALID_VALUE = 0xFFFFFFFFu;
+static const uint PACKED_HIST_SIZE = RADIX_BIN_COUNT >> RADIX_PACK_LANE_BITS;
+static const uint RADIX_QUARTER_SIZE = RADIX_GROUP_SIZE / 4u;
+static const uint RADIX_PACKED_QUARTER_COUNT = 3u;
+static const uint RADIX_MAX_PREFIX_LEVELS = 4u;
+static const uint PREFIX_MAX_LEVELS = 8u;
+static const uint INDIRECT_DISPATCH_ARG_STRIDE = 3u;
+static const uint PREFIX_SCAN_ARGS_OFFSET = 0u;
+static const uint PREFIX_ADD_ARGS_OFFSET = PREFIX_SCAN_ARGS_OFFSET + PREFIX_MAX_LEVELS * INDIRECT_DISPATCH_ARG_STRIDE;
+static const uint PREFIX_PARAM_COUNT_OFFSET = PREFIX_ADD_ARGS_OFFSET + PREFIX_MAX_LEVELS * INDIRECT_DISPATCH_ARG_STRIDE;
+static const uint PREFIX_INDIRECT_ARGS_UINT_COUNT = PREFIX_PARAM_COUNT_OFFSET + 1u;
+static const uint HISTOGRAM_ARGS_OFFSET = 0u;
+static const uint PREFIX_L0_ARGS_OFFSET = HISTOGRAM_ARGS_OFFSET + INDIRECT_DISPATCH_ARG_STRIDE;
+static const uint SCATTER_ARGS_OFFSET = PREFIX_L0_ARGS_OFFSET + RADIX_MAX_PREFIX_LEVELS * INDIRECT_DISPATCH_ARG_STRIDE;
+static const uint BUILD_RANGE_ARGS_OFFSET = SCATTER_ARGS_OFFSET + INDIRECT_DISPATCH_ARG_STRIDE;
+static const uint PARAM_ELEMENT_COUNT = BUILD_RANGE_ARGS_OFFSET + INDIRECT_DISPATCH_ARG_STRIDE;
+static const uint PARAM_NUM_GROUPS = PARAM_ELEMENT_COUNT + 1u;
+static const uint PARAM_TOTAL_N = PARAM_NUM_GROUPS + 1u;
+static const uint PARAM_NUM_LEVELS = PARAM_TOTAL_N + 1u;
+static const uint RADIX_INDIRECT_ARGS_UINT_COUNT = PARAM_NUM_LEVELS + 1u;
+static const uint BLUR_TILE_DIM = 16u;
+static const uint GAUSSIAN_BLUR_RADIUS = 5u;
+static const uint GAUSSIAN_BLUR_TAP_COUNT = GAUSSIAN_BLUR_RADIUS * 2u + 1u;
+static const float GAUSSIAN_BLUR_WEIGHTS[GAUSSIAN_BLUR_TAP_COUNT] = {
+    0.00102838008447911,
+    0.00759875813523919,
+    0.03600077212843083,
+    0.10936068950970002,
+    0.21300553771125369,
+    0.26601172486179436,
+    0.21300553771125369,
+    0.10936068950970002,
+    0.03600077212843083,
+    0.00759875813523919,
+    0.00102838008447911
+};
 
 uint ceil_div_uint(uint a, uint b) { return (a + b - 1u) / b; }
+
+uint pack_count(uint digit, uint count) {
+    return count << ((digit & RADIX_PACK_LANE_MASK) * RADIX_PACK_SHIFT);
+}
+
+uint unpack_count(uint packed, uint digit) {
+    return (packed >> ((digit & RADIX_PACK_LANE_MASK) * RADIX_PACK_SHIFT)) & RADIX_PACK_MASK;
+}
+
+uint ceil_div_block(uint value) {
+    return (value + PREFIX_THREADS - 1u) / PREFIX_THREADS;
+}

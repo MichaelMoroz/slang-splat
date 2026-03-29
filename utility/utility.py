@@ -4,11 +4,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+import numpy as np
 import slangpy as spy
 from .debug import debug_group, with_debug_group
 
 _ROOT = Path(__file__).resolve().parent
 _SHADERS = _ROOT / "shaders"
+_PREFIX_SHADER = _SHADERS / "prefix_sum.slang"
+_RADIX_SHADER = _SHADERS / "radix_sort.slang"
+_BLUR_SHADER = _SHADERS / "blur.slang"
 _PREFIX_BLOCK_SIZE = 512
 _RADIX_GROUP_SIZE = 512
 _RADIX_BIN_COUNT = 256
@@ -29,6 +33,7 @@ _PARAM_NUM_GROUPS = _PARAM_ELEMENT_COUNT + 1
 _PARAM_TOTAL_N = _PARAM_NUM_GROUPS + 1
 _PARAM_NUM_LEVELS = _PARAM_TOTAL_N + 1
 _RADIX_INDIRECT_ARGS_UINT_COUNT = _PARAM_NUM_LEVELS + 1
+_BLUR_TILE_DIM = 16
 _DEBUG_COLOR = spy.float3(0.18, 0.58, 0.92)
 
 
@@ -116,25 +121,32 @@ class GpuUtility:
 
     def __post_init__(self) -> None:
         self._uint_dtype = spy.Tensor.empty(self.device, shape=(1,), dtype="uint").dtype
-        self.k_prefix_scan = self.device.create_compute_kernel(self.device.load_program(str(_SHADERS / "kernels.slang"), ["csPrefixScanBlocks"]))
-        self.k_prefix_add = self.device.create_compute_kernel(self.device.load_program(str(_SHADERS / "kernels.slang"), ["csPrefixAddOffsets"]))
-        self.k_prefix_total = self.device.create_compute_kernel(self.device.load_program(str(_SHADERS / "kernels.slang"), ["csPrefixWriteTotal"]))
-        self.p_prefix_scan = self.device.create_compute_pipeline(self.device.load_program(str(_SHADERS / "kernels.slang"), ["csPrefixScanBlocks"]))
-        self.p_prefix_add = self.device.create_compute_pipeline(self.device.load_program(str(_SHADERS / "kernels.slang"), ["csPrefixAddOffsets"]))
-        self.p_prefix_total = self.device.create_compute_pipeline(self.device.load_program(str(_SHADERS / "kernels.slang"), ["csPrefixWriteTotal"]))
-        self.k_compute_dispatch_args_from_buffer = self.device.create_compute_kernel(self.device.load_program(str(_SHADERS / "kernels.slang"), ["csComputeDispatchArgsFromBuffer"]))
-        self.k_compute_prefix_args_from_buffer = self.device.create_compute_kernel(self.device.load_program(str(_SHADERS / "kernels.slang"), ["csComputePrefixIndirectArgsFromBuffer"]))
-        self.k_histogram = self.device.create_compute_kernel(self.device.load_program(str(_SHADERS / "kernels.slang"), ["csRadixHistogram"]))
-        self.k_radix_prefix_level = self.device.create_compute_kernel(self.device.load_program(str(_SHADERS / "kernels.slang"), ["csRadixPrefixLevel"]))
-        self.k_scatter = self.device.create_compute_kernel(self.device.load_program(str(_SHADERS / "kernels.slang"), ["csRadixScatter"]))
-        self.p_histogram = self.device.create_compute_pipeline(self.device.load_program(str(_SHADERS / "kernels.slang"), ["csRadixHistogram"]))
-        self.p_radix_prefix_level = self.device.create_compute_pipeline(self.device.load_program(str(_SHADERS / "kernels.slang"), ["csRadixPrefixLevel"]))
-        self.p_scatter = self.device.create_compute_pipeline(self.device.load_program(str(_SHADERS / "kernels.slang"), ["csRadixScatter"]))
-        self.k_compute_radix_args_from_buffer = self.device.create_compute_kernel(self.device.load_program(str(_SHADERS / "kernels.slang"), ["csComputeRadixIndirectArgsFromBuffer"]))
+        self._float_dtype = spy.Tensor.empty(self.device, shape=(1,), dtype="float").dtype
+        self.k_prefix_scan = self.device.create_compute_kernel(self.device.load_program(str(_PREFIX_SHADER), ["csPrefixScanBlocks"]))
+        self.k_prefix_add = self.device.create_compute_kernel(self.device.load_program(str(_PREFIX_SHADER), ["csPrefixAddOffsets"]))
+        self.k_prefix_total = self.device.create_compute_kernel(self.device.load_program(str(_PREFIX_SHADER), ["csPrefixWriteTotal"]))
+        self.p_prefix_scan = self.device.create_compute_pipeline(self.device.load_program(str(_PREFIX_SHADER), ["csPrefixScanBlocks"]))
+        self.p_prefix_add = self.device.create_compute_pipeline(self.device.load_program(str(_PREFIX_SHADER), ["csPrefixAddOffsets"]))
+        self.p_prefix_total = self.device.create_compute_pipeline(self.device.load_program(str(_PREFIX_SHADER), ["csPrefixWriteTotal"]))
+        self.k_compute_dispatch_args_from_buffer = self.device.create_compute_kernel(self.device.load_program(str(_PREFIX_SHADER), ["csComputeDispatchArgsFromBuffer"]))
+        self.k_compute_prefix_args_from_buffer = self.device.create_compute_kernel(self.device.load_program(str(_PREFIX_SHADER), ["csComputePrefixIndirectArgsFromBuffer"]))
+        self.k_histogram = self.device.create_compute_kernel(self.device.load_program(str(_RADIX_SHADER), ["csRadixHistogram"]))
+        self.k_radix_prefix_level = self.device.create_compute_kernel(self.device.load_program(str(_RADIX_SHADER), ["csRadixPrefixLevel"]))
+        self.k_scatter = self.device.create_compute_kernel(self.device.load_program(str(_RADIX_SHADER), ["csRadixScatter"]))
+        self.p_histogram = self.device.create_compute_pipeline(self.device.load_program(str(_RADIX_SHADER), ["csRadixHistogram"]))
+        self.p_radix_prefix_level = self.device.create_compute_pipeline(self.device.load_program(str(_RADIX_SHADER), ["csRadixPrefixLevel"]))
+        self.p_scatter = self.device.create_compute_pipeline(self.device.load_program(str(_RADIX_SHADER), ["csRadixScatter"]))
+        self.k_compute_radix_args_from_buffer = self.device.create_compute_kernel(self.device.load_program(str(_RADIX_SHADER), ["csComputeRadixIndirectArgsFromBuffer"]))
+        self.k_blur_horizontal = self.device.create_compute_kernel(self.device.load_program(str(_BLUR_SHADER), ["csGaussianBlurHorizontal"]))
+        self.k_blur_vertical = self.device.create_compute_kernel(self.device.load_program(str(_BLUR_SHADER), ["csGaussianBlurVertical"]))
         self._indirect_usage = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.indirect_argument
+        self._rw_buffer_usage = (
+            spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
+        )
         self._dispatch_args_buffer: spy.Buffer | None = None
         self._prefix_args_buffer: spy.Buffer | None = None
         self._radix_args_buffer: spy.Buffer | None = None
+        self._blur_scratch_buffers: dict[int, spy.Buffer] = {}
 
     @staticmethod
     def prefix_scratch_elements(count: int) -> int:
@@ -187,6 +199,21 @@ class GpuUtility:
         if self._radix_args_buffer is None:
             self._radix_args_buffer = self.device.create_buffer(size=_RADIX_INDIRECT_ARGS_UINT_COUNT * 4, usage=self._indirect_usage)
         return self._radix_args_buffer
+
+    def float_buffer_size(self, width: int, height: int, channel_count: int) -> int:
+        width, height, channel_count = int(width), int(height), int(channel_count)
+        if width <= 0 or height <= 0 or channel_count <= 0:
+            raise ValueError("width, height, and channel_count must be positive.")
+        return width * height * channel_count * np.dtype(np.float32).itemsize
+
+    def create_float_buffer(self, width: int, height: int, channel_count: int) -> spy.Buffer:
+        return self.device.create_buffer(size=self.float_buffer_size(width, height, channel_count), usage=self._rw_buffer_usage)
+
+    def _ensure_blur_scratch_buffer(self, width: int, height: int, channel_count: int) -> spy.Buffer:
+        key = self.float_buffer_size(width, height, channel_count)
+        if key not in self._blur_scratch_buffers:
+            self._blur_scratch_buffers[key] = self.device.create_buffer(size=key, usage=self._rw_buffer_usage)
+        return self._blur_scratch_buffers[key]
 
     def _prefix_level_layout(self, max_count: int) -> list[tuple[int, int, int]]:
         count = max(int(max_count), 1)
@@ -597,3 +624,44 @@ class GpuUtility:
                 )
             src_keys, src_values = dst_keys, dst_values
         return (passes & 1) == 1, args_buffer
+
+    @with_debug_group(lambda self, command_encoder, input_buffer, output_buffer, width, height, channel_count, scratch_buffer=None: f"gaussian_blur[{width}x{height}x{channel_count}]", _DEBUG_COLOR)
+    def blur_separable_gaussian_float32(
+        self,
+        command_encoder: spy.CommandEncoder,
+        input_buffer: spy.Buffer | spy.Tensor,
+        output_buffer: spy.Buffer | spy.Tensor,
+        width: int,
+        height: int,
+        channel_count: int,
+        scratch_buffer: spy.Buffer | spy.Tensor | None = None,
+    ) -> spy.Buffer | spy.Tensor:
+        width, height, channel_count = int(width), int(height), int(channel_count)
+        if width <= 0 or height <= 0 or channel_count <= 0:
+            raise ValueError("width, height, and channel_count must be positive.")
+        scratch = scratch_buffer if scratch_buffer is not None else self._ensure_blur_scratch_buffer(width, height, channel_count)
+        shared = {
+            "g_BlurWidth": width,
+            "g_BlurHeight": height,
+            "g_BlurChannelCount": channel_count,
+        }
+        thread_count = spy.uint3(width, height, channel_count)
+        self.k_blur_horizontal.dispatch(
+            thread_count=thread_count,
+            command_encoder=command_encoder,
+            vars={
+                "g_BlurInput": input_buffer,
+                "g_BlurOutput": scratch,
+                **shared,
+            },
+        )
+        self.k_blur_vertical.dispatch(
+            thread_count=thread_count,
+            command_encoder=command_encoder,
+            vars={
+                "g_BlurInput": scratch,
+                "g_BlurOutput": output_buffer,
+                **shared,
+            },
+        )
+        return output_buffer

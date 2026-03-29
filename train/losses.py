@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
+import slangpy as spy
 import torch
 import torch.nn.functional as F
 
+from utility import GpuUtility
+
 
 _ALPHA_OPAQUE_WEIGHT = 0.005
+_SHADERS = Path(__file__).resolve().parents[1] / "utility" / "shaders"
+_BLUR_USAGE = spy.BufferUsage.shared | spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access
+_BLUR_CACHE: dict[int, tuple[spy.Device, GpuUtility]] = {}
 
 
 def l1_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
@@ -20,7 +27,7 @@ def _gaussian_kernel_1d(window_size: int, sigma: float, device: torch.device, dt
     return kernel / kernel.sum()
 
 
-def _ssim_blur(image: torch.Tensor, window_size: int = 11) -> torch.Tensor:
+def _reference_ssim_blur(image: torch.Tensor, window_size: int = 11) -> torch.Tensor:
     channels = image.shape[1]
     kernel_1d = _gaussian_kernel_1d(window_size, 1.5, image.device, image.dtype)
     kernel_x = kernel_1d.view(1, 1, 1, window_size).expand(channels, 1, 1, window_size)
@@ -28,6 +35,45 @@ def _ssim_blur(image: torch.Tensor, window_size: int = 11) -> torch.Tensor:
     pad = window_size // 2
     blurred = F.conv2d(image, kernel_x, padding=(0, pad), groups=channels)
     return F.conv2d(blurred, kernel_y, padding=(pad, 0), groups=channels)
+
+
+def _torch_blur_utility(device: torch.device) -> tuple[spy.Device, GpuUtility]:
+    if device.type != "cuda":
+        raise ValueError("Blur utility requires a CUDA torch device.")
+    key = 0 if device.index is None else int(device.index)
+    if key not in _BLUR_CACHE:
+        blur_device = spy.create_torch_device(type=spy.DeviceType.cuda, include_paths=[_SHADERS], enable_hot_reload=False)
+        _BLUR_CACHE[key] = (blur_device, GpuUtility(blur_device))
+    return _BLUR_CACHE[key]
+
+
+def _ssim_blur(image: torch.Tensor, window_size: int = 11) -> torch.Tensor:
+    if window_size != 11 or not image.is_cuda or image.dtype != torch.float32:
+        return _reference_ssim_blur(image, window_size)
+    blur_device, util = _torch_blur_utility(image.device)
+    batch, channels, height, width = map(int, image.shape)
+    channel_count = batch * channels
+    pixel_major = image.permute(2, 3, 0, 1).contiguous()
+    flat = pixel_major.reshape(-1)
+    in_tensor = spy.Tensor.empty(blur_device, shape=(max(flat.numel(), 1),), dtype="float", usage=_BLUR_USAGE)
+    out_tensor = spy.Tensor.empty(blur_device, shape=(max(flat.numel(), 1),), dtype="float", usage=_BLUR_USAGE)
+    scratch_tensor = spy.Tensor.empty(blur_device, shape=(max(flat.numel(), 1),), dtype="float", usage=_BLUR_USAGE)
+    in_tensor.copy_from_torch(flat)
+    blur_device.sync_to_cuda()
+    enc = blur_device.create_command_encoder()
+    util.blur_separable_gaussian_float32(
+        enc,
+        in_tensor.storage,
+        out_tensor.storage,
+        width,
+        height,
+        channel_count,
+        scratch_buffer=scratch_tensor.storage,
+    )
+    blur_device.submit_command_buffer(enc.finish())
+    blur_device.sync_to_device()
+    blurred = out_tensor.to_torch().clone()[: flat.numel()]
+    return blurred.reshape(height, width, batch, channels).permute(2, 3, 0, 1).contiguous()
 
 
 def _ssim_impl(pred: torch.Tensor, target: torch.Tensor, window_size: int = 11) -> torch.Tensor:

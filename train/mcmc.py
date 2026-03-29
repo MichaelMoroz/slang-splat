@@ -14,6 +14,7 @@ from torch import nn
 from tqdm import tqdm
 
 from module import SplattingContext, render_gaussian_splats
+from utility import AdamHyperParams, GenericAdamOptimizer, ParamGroupConfig
 
 from .dataset import CameraSample, SceneData, _image_to_linear_float, _load_image_tensor
 from .losses import get_expon_lr_func, inverse_sigmoid, l1_loss, psnr, rgb_to_nchw, ssim, training_loss
@@ -164,7 +165,7 @@ class RGBGaussianModel:
         self._log_scale = nn.Parameter(torch.empty((0, 3), device=device))
         self._rotation = nn.Parameter(torch.empty((0, 4), device=device))
         self._opacity = nn.Parameter(torch.empty((0, 1), device=device))
-        self.optimizer: torch.optim.Adam | None = None
+        self.optimizer: GenericAdamOptimizer | None = None
         self.base_lr_scheduler = None
         self.spatial_lr_scale = 1.0
         self.position_lr_mult = 1.0
@@ -172,6 +173,9 @@ class RGBGaussianModel:
         self.opacity_lr_mult = 1.0
         self.scaling_lr_mult = 1.0
         self.rotation_lr_mult = 1.0
+        self.optimizer_scene_extent = 1.0
+        self.optimizer_max_anisotropy = 32.0
+        self.optimizer_projection_enabled = False
 
     @property
     def scaling(self) -> torch.Tensor:
@@ -214,23 +218,68 @@ class RGBGaussianModel:
         if multiplier != 1.0:
             self._log_scale.data.add_(math.log(multiplier))
 
+    def _project_xyz(self, param: nn.Parameter) -> None:
+        if not self.optimizer_projection_enabled:
+            return
+        max_position = max(float(self.optimizer_scene_extent) * _POSITION_LIMIT_MULTIPLIER, 1.0)
+        param.data.copy_(torch.nan_to_num(param.data, nan=0.0, posinf=max_position, neginf=-max_position).clamp_(-max_position, max_position))
+
+    def _project_color(self, param: nn.Parameter) -> None:
+        if not self.optimizer_projection_enabled:
+            return
+        param.data.copy_(torch.nan_to_num(param.data, nan=0.0, posinf=1.0, neginf=0.0).clamp_(0.0, 1.0))
+
+    def _project_opacity(self, param: nn.Parameter) -> None:
+        if not self.optimizer_projection_enabled:
+            return
+        logits = torch.nan_to_num(param.data, nan=0.0, posinf=0.0, neginf=0.0)
+        opacity = torch.sigmoid(logits).clamp_(_SANITIZE_MIN_OPACITY, 1.0 - torch.finfo(logits.dtype).eps)
+        param.data.copy_(inverse_sigmoid(opacity))
+
+    def _project_log_scale(self, param: nn.Parameter) -> None:
+        if not self.optimizer_projection_enabled:
+            return
+        max_scale = max(float(self.optimizer_scene_extent) * _SCALE_LIMIT_MULTIPLIER, 0.05)
+        max_anisotropy = max(float(self.optimizer_max_anisotropy), 1.0)
+        log_scale = torch.nan_to_num(param.data, nan=math.log(_MIN_SCALE), posinf=math.log(max_scale), neginf=math.log(_MIN_SCALE))
+        scale = torch.exp(log_scale).clamp_(_MIN_SCALE, max_scale)
+        scale = torch.maximum(scale, scale.max(dim=1, keepdim=True).values / max_anisotropy)
+        param.data.copy_(torch.log(scale))
+
+    def _project_rotation(self, param: nn.Parameter) -> None:
+        if not self.optimizer_projection_enabled:
+            return
+        rotation = torch.nan_to_num(param.data, nan=0.0, posinf=0.0, neginf=0.0)
+        norms = torch.linalg.vector_norm(rotation, dim=1, keepdim=True)
+        identity = rotation.new_tensor(_IDENTITY_QUAT).expand(rotation.shape[0], -1)
+        safe = torch.where(norms > 1e-8, rotation / norms.clamp_min(1e-8), identity)
+        param.data.copy_(safe)
+
+    def configure_optimizer_projection(self, scene_extent: float, max_anisotropy: float) -> None:
+        self.optimizer_scene_extent = float(scene_extent)
+        self.optimizer_max_anisotropy = float(max_anisotropy)
+        self.optimizer_projection_enabled = True
+
     def setup_training(self, cfg: MCMCConfig, spatial_lr_scale: float) -> None:
         self.spatial_lr_scale = float(spatial_lr_scale)
+        self.optimizer_scene_extent = float(spatial_lr_scale)
         self.position_lr_mult = float(cfg.position_lr_mult)
         self.feature_lr_mult = float(cfg.feature_lr_mult)
         self.opacity_lr_mult = float(cfg.opacity_lr_mult)
         self.scaling_lr_mult = float(cfg.scaling_lr_mult)
         self.rotation_lr_mult = float(cfg.rotation_lr_mult)
-        self.optimizer = torch.optim.Adam(
+        self.optimizer = GenericAdamOptimizer(
             [
-                {"params": [self._xyz], "lr": cfg.base_lr_init * self.position_lr_mult * spatial_lr_scale, "name": "xyz"},
-                {"params": [self._color], "lr": cfg.base_lr_init * self.feature_lr_mult, "name": "color"},
-                {"params": [self._opacity], "lr": cfg.base_lr_init * self.opacity_lr_mult, "name": "opacity"},
-                {"params": [self._log_scale], "lr": cfg.base_lr_init * self.scaling_lr_mult, "name": "scaling"},
-                {"params": [self._rotation], "lr": cfg.base_lr_init * self.rotation_lr_mult, "name": "rotation"},
+                (
+                    self._xyz,
+                    ParamGroupConfig(name="xyz", lr=cfg.base_lr_init * self.position_lr_mult * spatial_lr_scale, project_param=self._project_xyz),
+                ),
+                (self._color, ParamGroupConfig(name="color", lr=cfg.base_lr_init * self.feature_lr_mult, project_param=self._project_color)),
+                (self._opacity, ParamGroupConfig(name="opacity", lr=cfg.base_lr_init * self.opacity_lr_mult, project_param=self._project_opacity)),
+                (self._log_scale, ParamGroupConfig(name="scaling", lr=cfg.base_lr_init * self.scaling_lr_mult, project_param=self._project_log_scale)),
+                (self._rotation, ParamGroupConfig(name="rotation", lr=cfg.base_lr_init * self.rotation_lr_mult, project_param=self._project_rotation)),
             ],
-            lr=0.0,
-            eps=1e-15,
+            hyperparams=AdamHyperParams(eps=1e-15),
         )
         self.base_lr_scheduler = get_expon_lr_func(
             cfg.base_lr_init,
@@ -241,11 +290,11 @@ class RGBGaussianModel:
 
     def update_learning_rate(self, iteration: int) -> float:
         base_lr = float(self.base_lr_scheduler(iteration))
-        next(group for group in self.optimizer.param_groups if group["name"] == "xyz")["lr"] = base_lr * self.position_lr_mult * self.spatial_lr_scale
-        next(group for group in self.optimizer.param_groups if group["name"] == "color")["lr"] = base_lr * self.feature_lr_mult
-        next(group for group in self.optimizer.param_groups if group["name"] == "opacity")["lr"] = base_lr * self.opacity_lr_mult
-        next(group for group in self.optimizer.param_groups if group["name"] == "scaling")["lr"] = base_lr * self.scaling_lr_mult
-        next(group for group in self.optimizer.param_groups if group["name"] == "rotation")["lr"] = base_lr * self.rotation_lr_mult
+        self.optimizer.set_group_lr("xyz", base_lr * self.position_lr_mult * self.spatial_lr_scale)
+        self.optimizer.set_group_lr("color", base_lr * self.feature_lr_mult)
+        self.optimizer.set_group_lr("opacity", base_lr * self.opacity_lr_mult)
+        self.optimizer.set_group_lr("scaling", base_lr * self.scaling_lr_mult)
+        self.optimizer.set_group_lr("rotation", base_lr * self.rotation_lr_mult)
         return base_lr * self.position_lr_mult * self.spatial_lr_scale
 
     def splats(self) -> torch.Tensor:
@@ -336,23 +385,8 @@ class RGBGaussianModel:
             "scaling": self._log_scale,
             "rotation": self._rotation,
         }
-        for group in self.optimizer.param_groups:
-            name = group["name"]
-            old_param = old_params[name]
-            new_param = new_params[name]
-            old_state = self.optimizer.state.pop(old_param, {})
-            new_state: dict[object, object] = {}
-            for key, value in old_state.items():
-                if torch.is_tensor(value) and tuple(value.shape) == tuple(old_param.shape):
-                    expanded = value.new_zeros((pre_remove_count, *value.shape[1:]))
-                    expanded[:old_count].copy_(value)
-                    new_state[key] = expanded.index_select(0, keep_indices.to(device=value.device)).contiguous()
-                elif torch.is_tensor(value):
-                    new_state[key] = value.clone()
-                else:
-                    new_state[key] = value
-            group["params"] = [new_param]
-            self.optimizer.state[new_param] = new_state
+        for name in ("xyz", "color", "opacity", "scaling", "rotation"):
+            self.optimizer.remap_parameter(name, new_params[name], old_count, pre_remove_count, keep_indices)
 
     def apply_clone_and_remove(
         self,
@@ -588,6 +622,7 @@ class RGBMCMCTrainer:
         total.backward()
         grad_stats = self._grad_stats()
         prev_params = tuple(t.detach().clone() for t in (self.model._xyz, self.model._color, self.model._opacity, self.model._log_scale, self.model._rotation))
+        self.model.configure_optimizer_projection(self.scene.extent_radius, self.context.max_anisotropy)
         self.model.optimizer.step()
         self.model.optimizer.zero_grad(set_to_none=True)
         self.model.sanitize_after_step(prev_params, self.scene.extent_radius, self.context.max_anisotropy)

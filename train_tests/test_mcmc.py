@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from train.dataset import CameraSample
 from train.mcmc import MCMCConfig, RGBMCMCTrainer
-from train.losses import training_loss, inverse_sigmoid
+from train.losses import _reference_ssim_blur, _ssim_blur, training_loss, inverse_sigmoid
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
@@ -156,3 +156,30 @@ def test_densify_respects_max_splats_cap() -> None:
     trainer._densify_current_step(torch.zeros((4, 4, 3), dtype=torch.float32, device="cuda"))
 
     assert trainer.model.count == 3
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
+def test_ssim_blur_matches_torch_reference() -> None:
+    image = torch.rand((5, 3, 19, 23), dtype=torch.float32, device="cuda")
+    expected = _reference_ssim_blur(image)
+    actual = _ssim_blur(image)
+    assert actual.shape == expected.shape
+    assert torch.allclose(actual, expected, atol=1e-5, rtol=1e-5)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
+def test_optimizer_step_keeps_rotation_normalized() -> None:
+    cfg = MCMCConfig(iterations=1)
+    trainer = RGBMCMCTrainer(cfg, device="cuda")
+    trainer.model._xyz = nn.Parameter(torch.zeros((2, 3), dtype=torch.float32, device="cuda"))
+    trainer.model._color = nn.Parameter(torch.full((2, 3), 0.5, dtype=torch.float32, device="cuda"))
+    trainer.model._log_scale = nn.Parameter(torch.zeros((2, 3), dtype=torch.float32, device="cuda"))
+    trainer.model._rotation = nn.Parameter(torch.tensor([[2.0, 0.0, 0.0, 0.0], [0.25, 0.5, 0.5, 0.5]], dtype=torch.float32, device="cuda"))
+    trainer.model._opacity = nn.Parameter(inverse_sigmoid(torch.full((2, 1), 0.5, dtype=torch.float32, device="cuda")))
+    trainer.model.setup_training(cfg, spatial_lr_scale=1.0)
+    trainer.model.configure_optimizer_projection(scene_extent=1.0, max_anisotropy=32.0)
+    trainer.model._rotation.grad = torch.tensor([[0.5, -0.25, 0.125, -0.375], [0.1, -0.2, 0.3, -0.4]], dtype=torch.float32, device="cuda")
+    trainer.model.optimizer.step()
+    norms = torch.linalg.vector_norm(trainer.model._rotation.detach(), dim=1)
+    assert torch.all(torch.isfinite(norms))
+    assert torch.allclose(norms, torch.ones_like(norms), atol=1e-5)

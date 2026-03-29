@@ -6,6 +6,7 @@ import sys
 import numpy as np
 import pytest
 import slangpy as spy
+import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -30,6 +31,28 @@ def _tensor(device: spy.Device, count: int) -> spy.Tensor:
 
 def _to_int64(tensor: spy.Tensor, count: int) -> np.ndarray:
     return np.asarray(tensor.to_numpy()).reshape(-1)[:count].astype(np.int64, copy=False)
+
+
+def _to_float32_buffer(buffer: spy.Buffer, count: int) -> np.ndarray:
+    return np.frombuffer(buffer.to_numpy().tobytes(), dtype=np.float32, count=count).copy()
+
+
+def _torch_gaussian_kernel_1d(window_size: int = 11, sigma: float = 1.5) -> torch.Tensor:
+    radius = (window_size - 1) * 0.5
+    x = torch.arange(window_size, dtype=torch.float32) - radius
+    kernel = torch.exp(-(x * x) / (2.0 * sigma * sigma))
+    return kernel / kernel.sum()
+
+
+def _torch_ssim_blur_reference(image: np.ndarray) -> np.ndarray:
+    tensor = torch.from_numpy(image).permute(2, 0, 1).unsqueeze(0).contiguous()
+    channels = tensor.shape[1]
+    kernel_1d = _torch_gaussian_kernel_1d()
+    kernel_x = kernel_1d.view(1, 1, 1, 11).expand(channels, 1, 1, 11)
+    kernel_y = kernel_1d.view(1, 1, 11, 1).expand(channels, 1, 11, 1)
+    blurred = torch.nn.functional.conv2d(tensor, kernel_x, padding=(0, 5), groups=channels)
+    blurred = torch.nn.functional.conv2d(blurred, kernel_y, padding=(5, 0), groups=channels)
+    return blurred.squeeze(0).permute(1, 2, 0).cpu().numpy()
 
 
 def _run_prefix(device: spy.Device, util: GpuUtility, values: np.ndarray, exclusive: bool) -> tuple[np.ndarray, int]:
@@ -192,3 +215,24 @@ def test_radix_sort_from_count_buffer_matches_direct_large(
     indirect_keys, indirect_values = _run_sort_from_count_buffer(device, util, keys, values, start_bit, bit_count)
     np.testing.assert_array_equal(indirect_keys, direct_keys)
     np.testing.assert_array_equal(indirect_values, direct_values)
+
+
+def test_separable_gaussian_blur_matches_old_torch_reference(utility_context: tuple[spy.Device, GpuUtility]) -> None:
+    device, util = utility_context
+    width = height = 17
+    channel_count = 6
+    input_buffer = util.create_float_buffer(width, height, channel_count)
+    output_buffer = util.create_float_buffer(width, height, channel_count)
+    rng = np.random.default_rng(123)
+    image = rng.normal(0.0, 0.25, size=(height, width, channel_count)).astype(np.float32)
+    image[height // 2, width // 2, 0] = 1.0
+    image[height // 2, width // 2, 5] = 0.5
+    input_buffer.copy_from_numpy(np.ascontiguousarray(image.reshape(-1), dtype=np.float32))
+
+    enc = device.create_command_encoder()
+    util.blur_separable_gaussian_float32(enc, input_buffer, output_buffer, width, height, channel_count)
+    device.submit_command_buffer(enc.finish())
+
+    out = _to_float32_buffer(output_buffer, width * height * channel_count).reshape(height, width, channel_count)
+    expected = _torch_ssim_blur_reference(image)
+    np.testing.assert_allclose(out, expected, rtol=1e-6, atol=1e-6)
