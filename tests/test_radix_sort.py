@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import slangpy as spy
 
-from src.sort import GPURadixSort, sort_numpy
+from src.sort import sort_numpy
 
 
 _USAGE = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
@@ -33,12 +33,11 @@ def _cpu_sort(keys: np.ndarray, values: np.ndarray, start_bit: int, bit_count: i
     return keys[perm], values[perm]
 
 
-def _run_sort(device: spy.Device, keys: np.ndarray, values: np.ndarray, start_bit: int, bit_count: int) -> tuple[np.ndarray, np.ndarray]:
-    sorter = GPURadixSort(device)
+def _run_sort(device: spy.Device, radix_sort, keys: np.ndarray, values: np.ndarray, start_bit: int, bit_count: int) -> tuple[np.ndarray, np.ndarray]:
     keys_buffer = _buffer_u32(device, keys)
     values_buffer = _buffer_u32(device, values)
     enc = device.create_command_encoder()
-    sorter.sort_key_values(enc, keys_buffer, values_buffer, keys.size, max_bits=bit_count + start_bit)
+    radix_sort.sort_key_values(enc, keys_buffer, values_buffer, keys.size, max_bits=bit_count + start_bit)
     device.submit_command_buffer(enc.finish())
     device.wait()
     sorted_keys = _read_u32(keys_buffer, keys.size)
@@ -49,13 +48,12 @@ def _run_sort(device: spy.Device, keys: np.ndarray, values: np.ndarray, start_bi
     return sorted_keys, sorted_values if start_bit == 0 else (sorted_keys, sorted_values)
 
 
-def _run_sort_from_count_buffer(device: spy.Device, keys: np.ndarray, values: np.ndarray, start_bit: int, bit_count: int) -> tuple[np.ndarray, np.ndarray]:
-    sorter = GPURadixSort(device)
+def _run_sort_from_count_buffer(device: spy.Device, radix_sort, keys: np.ndarray, values: np.ndarray, start_bit: int, bit_count: int) -> tuple[np.ndarray, np.ndarray]:
     keys_buffer = _buffer_u32(device, keys)
     values_buffer = _buffer_u32(device, values)
     count_buffer = _buffer_u32(device, np.array([keys.size], dtype=np.uint32))
     enc = device.create_command_encoder()
-    sorter.sort_key_values_from_count_buffer(enc, keys_buffer, values_buffer, count_buffer, 0, keys.size, max_bits=bit_count + start_bit)
+    radix_sort.sort_key_values_from_count_buffer(enc, keys_buffer, values_buffer, count_buffer, 0, keys.size, max_bits=bit_count + start_bit)
     device.submit_command_buffer(enc.finish())
     device.wait()
     return _read_u32(keys_buffer, keys.size), _read_u32(values_buffer, values.size)
@@ -85,7 +83,7 @@ def test_gpu_radix_sort_preserves_duplicate_key_stability(device: spy.Device) ->
 
 
 @pytest.mark.parametrize(("count", "bit_count"), [(0, 1), (128, 13), (1025, 24), (131072, 32)])
-def test_radix_sort_from_count_buffer_matches_direct(device: spy.Device, count: int, bit_count: int) -> None:
+def test_radix_sort_from_count_buffer_matches_direct(device: spy.Device, radix_sort, count: int, bit_count: int) -> None:
     rng = np.random.default_rng(8642 + count + bit_count)
     keys = rng.integers(0, np.iinfo(np.uint32).max, size=count, dtype=np.uint32)
     if count > 0:
@@ -93,14 +91,14 @@ def test_radix_sort_from_count_buffer_matches_direct(device: spy.Device, count: 
         keys[::7] = keys[0]
     values = np.arange(count, dtype=np.uint32)
     direct_keys, direct_values = sort_numpy(device, keys, values, max_bits=bit_count)
-    indirect_keys, indirect_values = _run_sort_from_count_buffer(device, keys, values, 0, bit_count)
+    indirect_keys, indirect_values = _run_sort_from_count_buffer(device, radix_sort, keys, values, 0, bit_count)
     np.testing.assert_array_equal(indirect_keys, direct_keys)
     np.testing.assert_array_equal(indirect_values, direct_values)
 
 
 @pytest.mark.skipif(not _RUN_LARGE, reason="set RUN_SLOW_GPU_UTILITY_TESTS=1 to run large radix-sort regressions")
 @pytest.mark.parametrize("bit_count", [17, 32])
-def test_radix_sort_from_count_buffer_matches_direct_large(device: spy.Device, bit_count: int) -> None:
+def test_radix_sort_from_count_buffer_matches_direct_large(device: spy.Device, radix_sort, bit_count: int) -> None:
     rng = np.random.default_rng(7654321 + bit_count)
     keys = rng.integers(0, np.iinfo(np.uint32).max, size=_LARGE_TEST_COUNT, dtype=np.uint32)
     if _LARGE_TEST_COUNT > 0:
@@ -108,6 +106,6 @@ def test_radix_sort_from_count_buffer_matches_direct_large(device: spy.Device, b
         keys[::7] = keys[0]
     values = np.arange(_LARGE_TEST_COUNT, dtype=np.uint32)
     direct_keys, direct_values = sort_numpy(device, keys, values, max_bits=bit_count)
-    indirect_keys, indirect_values = _run_sort_from_count_buffer(device, keys, values, 0, bit_count)
+    indirect_keys, indirect_values = _run_sort_from_count_buffer(device, radix_sort, keys, values, 0, bit_count)
     np.testing.assert_array_equal(indirect_keys, direct_keys)
     np.testing.assert_array_equal(indirect_values, direct_values)

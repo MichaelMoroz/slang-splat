@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import slangpy as spy
 
-from ..common import ROOT, debug_region
+from ..common import ROOT, debug_region, dispatch_indirect
 
 SHADER_DIR = ROOT / "shaders" / "utility" / "prefix_sum"
 PREFIX_THREADS = 256
@@ -82,13 +82,6 @@ class GPUPrefixSum:
         if self._prefix_args is None:
             self._prefix_args = self.device.create_buffer(size=PREFIX_INDIRECT_ARGS_UINT_COUNT * 4, usage=self._indirect_usage)
         return self._prefix_args
-
-    def _dispatch_indirect(self, encoder: spy.CommandEncoder, pipeline: spy.ComputePipeline, args_buffer: spy.Buffer, arg_offset: int, vars: dict[str, object]) -> None:
-        with encoder.begin_compute_pass() as compute_pass:
-            cursor = spy.ShaderCursor(compute_pass.bind_pipeline(pipeline))
-            for name, value in vars.items():
-                setattr(cursor, name, value)
-            compute_pass.dispatch_compute_indirect(spy.BufferOffsetPair(args_buffer, int(arg_offset) * 4))
 
     def clear_u32(self, encoder: spy.CommandEncoder, buffer: spy.Buffer, element_count: int, clear_value: int = 0) -> None:
         with debug_region(encoder, "Prefix Sum Clear UInt", 100):
@@ -227,47 +220,49 @@ class GPUPrefixSum:
             prev_offset = layout[level - 1][2] if level > 0 else 0
             scan_input = input_buffer if level == 0 else block_sums
             scan_output = output_buffer if level == 0 else block_offsets
-            with debug_region(encoder, f"Prefix Sum Indirect Scan Level {level}", 140 + level):
-                self._dispatch_indirect(
-                    encoder=encoder,
-                    pipeline=self.scan_blocks_pipeline,
-                    args_buffer=args_buffer,
-                    arg_offset=PREFIX_SCAN_ARGS_OFFSET + level * INDIRECT_DISPATCH_ARG_STRIDE,
-                    vars={
-                        "g_PrefixInput": scan_input,
-                        "g_PrefixOutput": scan_output,
-                        "g_PrefixBlockSums": block_sums,
-                        "g_Exclusive": 1 if (exclusive or level > 0) else 0,
-                        "g_PrefixParamsBuffer": args_buffer,
-                        "g_UsePrefixParams": 1,
-                        "g_Level": int(level),
-                        "g_PrefixInputOffset": int(prev_offset),
-                        "g_PrefixOutputOffset": 0 if level == 0 else int(prev_offset),
-                        "g_PrefixBlockSumsOffset": int(offset),
-                    },
-                )
+            dispatch_indirect(
+                pipeline=self.scan_blocks_pipeline,
+                args_buffer=args_buffer,
+                vars={
+                    "g_PrefixInput": scan_input,
+                    "g_PrefixOutput": scan_output,
+                    "g_PrefixBlockSums": block_sums,
+                    "g_Exclusive": 1 if (exclusive or level > 0) else 0,
+                    "g_PrefixParamsBuffer": args_buffer,
+                    "g_UsePrefixParams": 1,
+                    "g_Level": int(level),
+                    "g_PrefixInputOffset": int(prev_offset),
+                    "g_PrefixOutputOffset": 0 if level == 0 else int(prev_offset),
+                    "g_PrefixBlockSumsOffset": int(offset),
+                },
+                command_encoder=encoder,
+                arg_offset=PREFIX_SCAN_ARGS_OFFSET + level * INDIRECT_DISPATCH_ARG_STRIDE,
+                debug_label=f"Prefix Sum Indirect Scan Level {level}",
+                debug_color_index=140 + level,
+            )
         for level in range(len(layout) - 2, -1, -1):
             offset = layout[level][2]
             prev_offset = layout[level - 1][2] if level > 0 else 0
             add_output = output_buffer if level == 0 else block_offsets
-            with debug_region(encoder, f"Prefix Sum Indirect Add Level {level}", 160 + level):
-                self._dispatch_indirect(
-                    encoder=encoder,
-                    pipeline=self.add_offsets_pipeline,
-                    args_buffer=args_buffer,
-                    arg_offset=PREFIX_ADD_ARGS_OFFSET + level * INDIRECT_DISPATCH_ARG_STRIDE,
-                    vars={
-                        "g_PrefixOutput": add_output,
-                        "g_PrefixBlockOffsets": block_offsets,
-                        "g_Exclusive": 1 if exclusive else 0,
-                        "g_PrefixParamsBuffer": args_buffer,
-                        "g_UsePrefixParams": 1,
-                        "g_UseRadixPrefixAdd": 0,
-                        "g_Level": int(level),
-                        "g_PrefixOutputOffset": 0 if level == 0 else int(prev_offset),
-                        "g_PrefixBlockOffsetsOffset": int(offset),
-                    },
-                )
+            dispatch_indirect(
+                pipeline=self.add_offsets_pipeline,
+                args_buffer=args_buffer,
+                vars={
+                    "g_PrefixOutput": add_output,
+                    "g_PrefixBlockOffsets": block_offsets,
+                    "g_Exclusive": 1 if exclusive else 0,
+                    "g_PrefixParamsBuffer": args_buffer,
+                    "g_UsePrefixParams": 1,
+                    "g_UseRadixPrefixAdd": 0,
+                    "g_Level": int(level),
+                    "g_PrefixOutputOffset": 0 if level == 0 else int(prev_offset),
+                    "g_PrefixBlockOffsetsOffset": int(offset),
+                },
+                command_encoder=encoder,
+                arg_offset=PREFIX_ADD_ARGS_OFFSET + level * INDIRECT_DISPATCH_ARG_STRIDE,
+                debug_label=f"Prefix Sum Indirect Add Level {level}",
+                debug_color_index=160 + level,
+            )
         if total_buffer is not None:
             with debug_region(encoder, "Prefix Sum Indirect Total", 180):
                 self.write_total_kernel.dispatch(

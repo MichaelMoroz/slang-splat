@@ -20,3 +20,17 @@ def device():
         return create_default_device(device_type=spy.DeviceType.vulkan, enable_debug_layers=False)
     except Exception as exc:
         pytest.skip(f"GPU device unavailable for Slangpy tests (vulkan): {exc}")
+
+
+@pytest.fixture(scope="module")
+def prefix_sum(device):
+    from src.scan import GPUPrefixSum
+
+    return GPUPrefixSum(device)
+
+
+@pytest.fixture(scope="module")
+def radix_sort(device):
+    from src.sort import GPURadixSort
+
+    return GPURadixSort(device)

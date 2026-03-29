@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import slangpy as spy
 
-from ..common import ROOT, debug_color
+from ..common import ROOT, debug_color, debug_group, dispatch_indirect
 
 SHADER_DIR = ROOT / "shaders" / "utility" / "radix_sort"
 PREFIX_SHADER_PATH = str(ROOT / "shaders" / "utility" / "prefix_sum" / "prefix_sum.slang")
@@ -111,9 +111,6 @@ class GPURadixSort:
             )
         return self.indirect_args
 
-    def _dispatch_indirect(self, compute_pass: spy.ComputePassEncoder, args_buffer: spy.Buffer, arg_offset: int) -> None:
-        compute_pass.dispatch_compute_indirect(spy.BufferOffsetPair(args_buffer, int(arg_offset) * 4))
-
     def compute_indirect_args_from_buffer_dispatch(
         self,
         encoder: spy.CommandEncoder,
@@ -122,44 +119,42 @@ class GPURadixSort:
         max_element_count: int,
         args_buffer: spy.Buffer,
     ) -> None:
-        encoder.push_debug_group("Compute Indirect Args", debug_color(0))
-        self.compute_args_from_buffer.dispatch(
-            thread_count=spy.uint3(1, 1, 1),
-            vars={
-                "g_CountBuffer": count_buffer,
-                "g_CountOffset": int(count_offset),
-                "g_MaxElementCount": int(max_element_count),
-                "g_IndirectArgs": args_buffer,
-            },
-            command_encoder=encoder,
-        )
-        encoder.pop_debug_group()
+        with debug_group(encoder, "Compute Indirect Args", debug_color(0)):
+            self.compute_args_from_buffer.dispatch(
+                thread_count=spy.uint3(1, 1, 1),
+                vars={
+                    "g_CountBuffer": count_buffer,
+                    "g_CountOffset": int(count_offset),
+                    "g_MaxElementCount": int(max_element_count),
+                    "g_IndirectArgs": args_buffer,
+                },
+                command_encoder=encoder,
+            )
 
     def sort_key_values(self, encoder: spy.CommandEncoder, keys_buffer: spy.Buffer, values_buffer: spy.Buffer, n: int, max_bits: int = 32) -> None:
         if n <= 0:
             return
-        encoder.push_debug_group("Radix Sort", debug_color(1))
-        working_buffers = self.ensure_buffers(n)
-        args_buffer = self.ensure_indirect_args()
-        self.compute_args.dispatch(
-            thread_count=spy.uint3(1, 1, 1),
-            vars={
-                "g_ElementCount": int(n),
-                "g_MaxElementCount": int(n),
-                "g_IndirectArgs": args_buffer,
-            },
-            command_encoder=encoder,
-        )
-        self.sort_key_values_indirect(
-            encoder=encoder,
-            keys_buffer=keys_buffer,
-            values_buffer=values_buffer,
-            n=n,
-            args_buffer=args_buffer,
-            working_buffers=working_buffers,
-            max_bits=max_bits,
-        )
-        encoder.pop_debug_group()
+        with debug_group(encoder, "Radix Sort", debug_color(1)):
+            working_buffers = self.ensure_buffers(n)
+            args_buffer = self.ensure_indirect_args()
+            self.compute_args.dispatch(
+                thread_count=spy.uint3(1, 1, 1),
+                vars={
+                    "g_ElementCount": int(n),
+                    "g_MaxElementCount": int(n),
+                    "g_IndirectArgs": args_buffer,
+                },
+                command_encoder=encoder,
+            )
+            self.sort_key_values_indirect(
+                encoder=encoder,
+                keys_buffer=keys_buffer,
+                values_buffer=values_buffer,
+                n=n,
+                args_buffer=args_buffer,
+                working_buffers=working_buffers,
+                max_bits=max_bits,
+            )
 
     def sort_key_values_from_count_buffer(
         self,
@@ -173,28 +168,27 @@ class GPURadixSort:
     ) -> spy.Buffer:
         if max_count <= 0:
             return self.ensure_indirect_args()
-        encoder.push_debug_group("Radix Sort (Count Buffer)", debug_color(11))
-        working_buffers = self.ensure_buffers(max_count)
-        args_buffer = self.ensure_indirect_args()
-        self.compute_indirect_args_from_buffer_dispatch(
-            encoder=encoder,
-            count_buffer=count_buffer,
-            count_offset=count_offset,
-            max_element_count=max_count,
-            args_buffer=args_buffer,
-        )
-        self.sort_key_values_indirect(
-            encoder=encoder,
-            keys_buffer=keys_buffer,
-            values_buffer=values_buffer,
-            n=max_count,
-            args_buffer=args_buffer,
-            working_buffers=working_buffers,
-            max_bits=max_bits,
-            use_params_buffer=True,
-        )
-        encoder.pop_debug_group()
-        return args_buffer
+        with debug_group(encoder, "Radix Sort (Count Buffer)", debug_color(11)):
+            working_buffers = self.ensure_buffers(max_count)
+            args_buffer = self.ensure_indirect_args()
+            self.compute_indirect_args_from_buffer_dispatch(
+                encoder=encoder,
+                count_buffer=count_buffer,
+                count_offset=count_offset,
+                max_element_count=max_count,
+                args_buffer=args_buffer,
+            )
+            self.sort_key_values_indirect(
+                encoder=encoder,
+                keys_buffer=keys_buffer,
+                values_buffer=values_buffer,
+                n=max_count,
+                args_buffer=args_buffer,
+                working_buffers=working_buffers,
+                max_bits=max_bits,
+                use_params_buffer=True,
+            )
+            return args_buffer
 
     def sort_key_values_indirect(
         self,
@@ -223,70 +217,88 @@ class GPURadixSort:
             shift = pass_index * BITS_PER_PASS
             digit_bits = min(BITS_PER_PASS, int(max_bits) - pass_index * BITS_PER_PASS)
             digit_mask = (1 << digit_bits) - 1
-            encoder.push_debug_group(f"Pass {pass_index} (bits {shift}-{shift + digit_bits - 1})", debug_color(10))
-            with encoder.begin_compute_pass() as compute_pass:
-                compute_pass.push_debug_group("Histogram", debug_color(2))
-                cursor = spy.ShaderCursor(compute_pass.bind_pipeline(self.histogram))
-                cursor.g_KeysIn = keys_in
-                cursor.g_Histogram = histogram
-                cursor.g_Shift = int(shift)
-                cursor.g_DigitMask = int(digit_mask)
-                cursor.g_RadixParamsBuffer = args_buffer
-                cursor.g_UseRadixParams = 1 if use_params_buffer else 0
-                cursor.g_ElementCount = 0 if use_params_buffer else int(n)
-                cursor.g_NumGroups = 0 if use_params_buffer else int(num_groups)
-                self._dispatch_indirect(compute_pass, args_buffer, HISTOGRAM_ARGS_OFFSET)
-                compute_pass.pop_debug_group()
-            for level in range(num_levels):
-                with encoder.begin_compute_pass() as compute_pass:
-                    compute_pass.push_debug_group(f"Prefix Level {level}", debug_color(3 + level))
-                    cursor = spy.ShaderCursor(compute_pass.bind_pipeline(self.prefix_level))
-                    cursor.g_Histogram = histogram
-                    cursor.g_HistogramOffsets = prefix
-                    cursor.g_Shift = int(level)
-                    cursor.g_RadixParamsBuffer = args_buffer
-                    cursor.g_UseRadixParams = 1 if use_params_buffer else 0
-                    cursor.g_NumGroups = 0 if use_params_buffer else int(num_groups)
-                    self._dispatch_indirect(compute_pass, args_buffer, PREFIX_L0_ARGS_OFFSET + level * INDIRECT_DISPATCH_ARG_STRIDE)
-                    compute_pass.pop_debug_group()
-            for level in range(num_levels - 1, 0, -1):
-                with encoder.begin_compute_pass() as compute_pass:
-                    compute_pass.push_debug_group(f"Prefix Add Level {level}", debug_color(7 + level))
-                    cursor = spy.ShaderCursor(compute_pass.bind_pipeline(self.prefix_add))
-                    cursor.g_HistogramOffsets = prefix
-                    cursor.g_RadixParamsBuffer = args_buffer
-                    cursor.g_UsePrefixParams = 0
-                    cursor.g_UseRadixPrefixAdd = 1
-                    cursor.g_Level = int(level)
-                    self._dispatch_indirect(compute_pass, args_buffer, PREFIX_L0_ARGS_OFFSET + level * INDIRECT_DISPATCH_ARG_STRIDE)
-                    compute_pass.pop_debug_group()
-            with encoder.begin_compute_pass() as compute_pass:
-                compute_pass.push_debug_group("Scatter", debug_color(8))
-                cursor = spy.ShaderCursor(compute_pass.bind_pipeline(self.scatter))
-                cursor.g_KeysIn = keys_in
-                cursor.g_ValuesIn = values_in
-                cursor.g_KeysOut = keys_out
-                cursor.g_ValuesOut = values_out
-                cursor.g_HistogramOffsets = prefix
-                cursor.g_Shift = int(shift)
-                cursor.g_DigitMask = int(digit_mask)
-                cursor.g_RadixParamsBuffer = args_buffer
-                cursor.g_UseRadixParams = 1 if use_params_buffer else 0
-                cursor.g_ElementCount = 0 if use_params_buffer else int(n)
-                cursor.g_NumGroups = 0 if use_params_buffer else int(num_groups)
-                cursor.g_TotalN = 0 if use_params_buffer else int(total_n)
-                cursor.g_NumLevels = 0 if use_params_buffer else int(num_levels)
-                self._dispatch_indirect(compute_pass, args_buffer, SCATTER_ARGS_OFFSET)
-                compute_pass.pop_debug_group()
-            encoder.pop_debug_group()
+            with debug_group(encoder, f"Pass {pass_index} (bits {shift}-{shift + digit_bits - 1})", debug_color(10)):
+                dispatch_indirect(
+                    pipeline=self.histogram,
+                    args_buffer=args_buffer,
+                    vars={
+                        "g_KeysIn": keys_in,
+                        "g_Histogram": histogram,
+                        "g_Shift": int(shift),
+                        "g_DigitMask": int(digit_mask),
+                        "g_RadixParamsBuffer": args_buffer,
+                        "g_UseRadixParams": 1 if use_params_buffer else 0,
+                        "g_ElementCount": 0 if use_params_buffer else int(n),
+                        "g_NumGroups": 0 if use_params_buffer else int(num_groups),
+                    },
+                    command_encoder=encoder,
+                    arg_offset=HISTOGRAM_ARGS_OFFSET,
+                    debug_label="Histogram",
+                    debug_color_index=2,
+                )
+                for level in range(num_levels):
+                    dispatch_indirect(
+                        pipeline=self.prefix_level,
+                        args_buffer=args_buffer,
+                        vars={
+                            "g_Histogram": histogram,
+                            "g_HistogramOffsets": prefix,
+                            "g_Shift": int(level),
+                            "g_RadixParamsBuffer": args_buffer,
+                            "g_UseRadixParams": 1 if use_params_buffer else 0,
+                            "g_NumGroups": 0 if use_params_buffer else int(num_groups),
+                        },
+                        command_encoder=encoder,
+                        arg_offset=PREFIX_L0_ARGS_OFFSET + level * INDIRECT_DISPATCH_ARG_STRIDE,
+                        debug_label=f"Prefix Level {level}",
+                        debug_color_index=3 + level,
+                    )
+                for level in range(num_levels - 1, 0, -1):
+                    dispatch_indirect(
+                        pipeline=self.prefix_add,
+                        args_buffer=args_buffer,
+                        vars={
+                            "g_HistogramOffsets": prefix,
+                            "g_RadixParamsBuffer": args_buffer,
+                            "g_UsePrefixParams": 0,
+                            "g_UseRadixPrefixAdd": 1,
+                            "g_Level": int(level),
+                        },
+                        command_encoder=encoder,
+                        arg_offset=PREFIX_L0_ARGS_OFFSET + level * INDIRECT_DISPATCH_ARG_STRIDE,
+                        debug_label=f"Prefix Add Level {level}",
+                        debug_color_index=7 + level,
+                    )
+                dispatch_indirect(
+                    pipeline=self.scatter,
+                    args_buffer=args_buffer,
+                    vars={
+                        "g_KeysIn": keys_in,
+                        "g_ValuesIn": values_in,
+                        "g_KeysOut": keys_out,
+                        "g_ValuesOut": values_out,
+                        "g_HistogramOffsets": prefix,
+                        "g_Shift": int(shift),
+                        "g_DigitMask": int(digit_mask),
+                        "g_RadixParamsBuffer": args_buffer,
+                        "g_UseRadixParams": 1 if use_params_buffer else 0,
+                        "g_ElementCount": 0 if use_params_buffer else int(n),
+                        "g_NumGroups": 0 if use_params_buffer else int(num_groups),
+                        "g_TotalN": 0 if use_params_buffer else int(total_n),
+                        "g_NumLevels": 0 if use_params_buffer else int(num_levels),
+                    },
+                    command_encoder=encoder,
+                    arg_offset=SCATTER_ARGS_OFFSET,
+                    debug_label="Scatter",
+                    debug_color_index=8,
+                )
             keys_in, keys_out = keys_out, keys_in
             values_in, values_out = values_out, values_in
 
         if passes % 2 == 1:
-            encoder.push_debug_group("Final Copy", debug_color(9))
-            encoder.copy_buffer(keys_buffer, 0, keys_in, 0, n * 4)
-            encoder.copy_buffer(values_buffer, 0, values_in, 0, n * 4)
-            encoder.pop_debug_group()
+            with debug_group(encoder, "Final Copy", debug_color(9)):
+                encoder.copy_buffer(keys_buffer, 0, keys_in, 0, n * 4)
+                encoder.copy_buffer(values_buffer, 0, values_in, 0, n * 4)
 
 
 def sort_numpy(device: spy.Device, keys: np.ndarray, values: np.ndarray, max_bits: int = 32) -> tuple[np.ndarray, np.ndarray]:

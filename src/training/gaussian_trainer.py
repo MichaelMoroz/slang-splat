@@ -7,7 +7,7 @@ import numpy as np
 from PIL import Image
 import slangpy as spy
 
-from ..common import SHADER_ROOT, buffer_to_numpy, clamp_index, debug_region, thread_count_2d
+from ..common import SHADER_ROOT, buffer_to_numpy, clamp_index, debug_region, dispatch, thread_count_2d
 from ..metrics import Metrics, psnr_from_mse
 from ..renderer import Camera, GaussianRenderer
 from ..scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
@@ -186,8 +186,14 @@ class GaussianTrainer:
         )
 
     def _dispatch(self, kernel: str, encoder: spy.CommandEncoder, thread_count: spy.uint3, vars: dict[str, object]) -> None:
-        with debug_region(encoder, f"Trainer::{kernel}", 40 + len(kernel)):
-            self._kernels[kernel].dispatch(thread_count=thread_count, vars=vars, command_encoder=encoder)
+        dispatch(
+            kernel=self._kernels[kernel],
+            thread_count=thread_count,
+            vars=vars,
+            command_encoder=encoder,
+            debug_label=f"Trainer::{kernel}",
+            debug_color_index=40 + len(kernel),
+        )
 
     def _dispatch_raster_training_forward(self, encoder: spy.CommandEncoder, frame_camera: Camera, background: np.ndarray) -> None:
         self.renderer.rasterize_training_forward_current_scene(

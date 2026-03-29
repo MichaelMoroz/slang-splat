@@ -10,7 +10,7 @@ import re
 import numpy as np
 import slangpy as spy
 
-from ..common import SHADER_ROOT, buffer_to_numpy, debug_region, remap_named_buffers, thread_count_1d
+from ..common import SHADER_ROOT, buffer_to_numpy, debug_region, dispatch, remap_named_buffers, thread_count_1d
 from ..metrics import Metrics, ParamLog10Histograms, ParamTensorRanges
 from ..scene.gaussian_scene import GaussianScene
 from ..sort.radix_sort import GPURadixSort
@@ -134,8 +134,14 @@ class GaussianRenderer:
     _buffer_vars = staticmethod(remap_named_buffers)
 
     def _dispatch(self, kernel: spy.ComputeKernel | spy.ComputePipeline, encoder: spy.CommandEncoder, thread_count: spy.uint3, vars: dict[str, object], label: str, color_index: int) -> None:
-        with debug_region(encoder, label, color_index):
-            kernel.dispatch(thread_count=thread_count, vars=vars, command_encoder=encoder)
+        dispatch(
+            kernel=kernel,
+            thread_count=thread_count,
+            vars=vars,
+            command_encoder=encoder,
+            debug_label=label,
+            debug_color_index=color_index,
+        )
 
     @staticmethod
     def _grow(required: int, current: int) -> int:
