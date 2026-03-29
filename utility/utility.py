@@ -10,7 +10,7 @@ from .debug import debug_group, with_debug_group
 _ROOT = Path(__file__).resolve().parent
 _SHADERS = _ROOT / "shaders"
 _PREFIX_BLOCK_SIZE = 512
-_RADIX_GROUP_SIZE = 256
+_RADIX_GROUP_SIZE = 512
 _RADIX_BIN_COUNT = 256
 _RADIX_PACKED_HIST_SIZE = _RADIX_BIN_COUNT // 2
 _PREFIX_THREADS = _PREFIX_BLOCK_SIZE // 2

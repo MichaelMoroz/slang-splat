@@ -2,14 +2,12 @@ import "slangpy";
 
 static const uint PREFIX_THREADS = 256u;
 static const uint PREFIX_BLOCK_SIZE = PREFIX_THREADS * 2u;
-static const uint RADIX_GROUP_SIZE = 256u;
+static const uint RADIX_GROUP_SIZE = 512u;
 static const uint RADIX_BIN_COUNT = 256u;
 static const uint RADIX_PACK_LANE_BITS = 1u;
 static const uint RADIX_PACK_LANE_MASK = 1u;
 static const uint RADIX_PACK_SHIFT = 16u;
 static const uint RADIX_PACK_MASK = 0xFFFFu;
-static const uint RADIX_BYTE_SHIFT = 8u;
-static const uint RADIX_BYTE_MASK = 0xFFu;
 static const uint RADIX_INVALID_VALUE = 0xFFFFFFFFu;
 static const uint PACKED_HIST_SIZE = RADIX_BIN_COUNT >> RADIX_PACK_LANE_BITS;
 static const uint RADIX_QUARTER_SIZE = RADIX_GROUP_SIZE / 4u;
@@ -71,7 +69,7 @@ groupshared uint gsPrefixWaveTotals[PREFIX_THREADS];
 groupshared uint gsPrefixWaveScan[PREFIX_THREADS];
 groupshared uint gsHistogram[PACKED_HIST_SIZE];
 groupshared uint gsDigits[RADIX_GROUP_SIZE];
-groupshared uint gsQuarterCounts[RADIX_BIN_COUNT];
+groupshared uint gsQuarterCounts[RADIX_BIN_COUNT * RADIX_PACKED_QUARTER_COUNT];
 groupshared uint gsRadixPrefix[PREFIX_THREADS];
 
 uint pack_count(uint digit, uint count) {
@@ -305,7 +303,7 @@ void csRadixScatter(uint3 groupID : SV_GroupID, uint3 localID : SV_GroupThreadID
     uint lane = localID.x;
     uint index = groupID.x * RADIX_GROUP_SIZE + lane;
     bool active = index < elementCount;
-    [unroll] for (uint digitIndex = lane; digitIndex < RADIX_BIN_COUNT; digitIndex += RADIX_GROUP_SIZE) gsQuarterCounts[digitIndex] = 0u;
+    [unroll] for (uint digitIndex = lane; digitIndex < RADIX_BIN_COUNT * RADIX_PACKED_QUARTER_COUNT; digitIndex += RADIX_GROUP_SIZE) gsQuarterCounts[digitIndex] = 0u;
     uint digit = active ? ((g_KeysIn[int(index)] >> g_Shift) & g_DigitMask) : RADIX_INVALID_VALUE;
     gsDigits[lane] = digit;
     GroupMemoryBarrierWithGroupSync();
@@ -313,11 +311,7 @@ void csRadixScatter(uint3 groupID : SV_GroupID, uint3 localID : SV_GroupThreadID
 
     uint quarterIndex = lane / RADIX_QUARTER_SIZE;
     if (quarterIndex < RADIX_PACKED_QUARTER_COUNT) {
-        uint increment = 0u;
-        [unroll] for (uint packedQuarter = quarterIndex; packedQuarter < RADIX_PACKED_QUARTER_COUNT; ++packedQuarter) {
-            increment |= 1u << (packedQuarter * RADIX_BYTE_SHIFT);
-        }
-        InterlockedAdd(gsQuarterCounts[digit], increment);
+        InterlockedAdd(gsQuarterCounts[digit * RADIX_PACKED_QUARTER_COUNT + quarterIndex], 1u);
     }
     GroupMemoryBarrierWithGroupSync();
 
@@ -327,9 +321,10 @@ void csRadixScatter(uint3 groupID : SV_GroupID, uint3 localID : SV_GroupThreadID
 
     uint quarterOffset = 0u;
     if (quarterIndex > 0u) {
-        uint packed = gsQuarterCounts[digit];
-        uint shiftBytes = (min(quarterIndex, RADIX_PACKED_QUARTER_COUNT) - 1u) * RADIX_BYTE_SHIFT;
-        quarterOffset = (packed >> shiftBytes) & RADIX_BYTE_MASK;
+        [unroll] for (uint prevQuarter = 0u; prevQuarter < RADIX_PACKED_QUARTER_COUNT; ++prevQuarter) {
+            if (prevQuarter >= quarterIndex) break;
+            quarterOffset += gsQuarterCounts[digit * RADIX_PACKED_QUARTER_COUNT + prevQuarter];
+        }
     }
 
     uint globalOffset = 0u;
