@@ -22,4 +22,4 @@ def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
     invalid = [name for name in selected if name not in ALL_BACKENDS]
     if invalid:
         raise pytest.UsageError(f"Unsupported backend(s): {', '.join(invalid)}")
-    metafunc.parametrize("backend_name", selected)
+    metafunc.parametrize("backend_name", selected, scope="session")

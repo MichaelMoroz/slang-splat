@@ -2,10 +2,12 @@ import "slangpy";
 
 static const uint PREFIX_THREADS = 256u;
 static const uint PREFIX_BLOCK_SIZE = PREFIX_THREADS * 2u;
-static const uint RADIX_GROUP_SIZE = 128u;
+static const uint RADIX_GROUP_SIZE = 256u;
 static const uint RADIX_BIN_COUNT = 256u;
-static const uint RADIX_PACK_LANE_BITS = 2u;
-static const uint RADIX_PACK_LANE_MASK = 3u;
+static const uint RADIX_PACK_LANE_BITS = 1u;
+static const uint RADIX_PACK_LANE_MASK = 1u;
+static const uint RADIX_PACK_SHIFT = 16u;
+static const uint RADIX_PACK_MASK = 0xFFFFu;
 static const uint RADIX_BYTE_SHIFT = 8u;
 static const uint RADIX_BYTE_MASK = 0xFFu;
 static const uint RADIX_INVALID_VALUE = 0xFFFFFFFFu;
@@ -76,11 +78,11 @@ groupshared uint gsQuarterCounts[RADIX_BIN_COUNT];
 groupshared uint gsRadixPrefix[PREFIX_THREADS];
 
 uint pack_count(uint digit, uint count) {
-    return count << ((digit & RADIX_PACK_LANE_MASK) * RADIX_BYTE_SHIFT);
+    return count << ((digit & RADIX_PACK_LANE_MASK) * RADIX_PACK_SHIFT);
 }
 
 uint unpack_count(uint packed, uint digit) {
-    return (packed >> ((digit & RADIX_PACK_LANE_MASK) * RADIX_BYTE_SHIFT)) & RADIX_BYTE_MASK;
+    return (packed >> ((digit & RADIX_PACK_LANE_MASK) * RADIX_PACK_SHIFT)) & RADIX_PACK_MASK;
 }
 
 uint pack_prefix16(uint lo, uint hi) {
@@ -109,22 +111,35 @@ uint load_prefix_count() {
 
 uint block_exclusive_scan(uint value, uint localId, out uint blockTotal)
 {
-    gsPrefixWaveTotals[localId] = value;
-    GroupMemoryBarrierWithGroupSync();
+    uint waveSize = WaveGetLaneCount();
+    uint laneId = WaveGetLaneIndex();
+    uint waveId = (localId - laneId) / waveSize;
+    uint numWaves = (PREFIX_THREADS + waveSize - 1u) / waveSize;
 
-    [unroll]
-    for (uint stride = 1u; stride < PREFIX_THREADS; stride <<= 1u)
+    uint wavePrefix = WavePrefixSum(value);
+    uint waveTotal = WaveReadLaneAt(wavePrefix, waveSize - 1u) + WaveReadLaneAt(value, waveSize - 1u);
+
+    if (WaveIsFirstLane())
     {
-        uint addend = (localId >= stride) ? gsPrefixWaveTotals[localId - stride] : 0u;
-        GroupMemoryBarrierWithGroupSync();
-        gsPrefixWaveTotals[localId] += addend;
-        GroupMemoryBarrierWithGroupSync();
+        gsPrefixWaveTotals[waveId] = waveTotal;
     }
-
-    uint inclusive = gsPrefixWaveTotals[localId];
-    blockTotal = gsPrefixWaveTotals[PREFIX_THREADS - 1u];
     GroupMemoryBarrierWithGroupSync();
-    return inclusive - value;
+
+    if (waveId == 0u)
+    {
+        uint reshuffledTotal = localId < numWaves ? gsPrefixWaveTotals[localId] : 0u;
+        uint reshuffledPrefix = WavePrefixSum(reshuffledTotal);
+        if (localId < numWaves)
+        {
+            gsPrefixWaveScan[localId] = reshuffledPrefix;
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    blockTotal = gsPrefixWaveScan[numWaves - 1u] + gsPrefixWaveTotals[numWaves - 1u];
+    uint waveBase = gsPrefixWaveScan[waveId];
+    GroupMemoryBarrierWithGroupSync();
+    return waveBase + wavePrefix;
 }
 
 uint radix_total_n(uint numGroups) { return numGroups * RADIX_BIN_COUNT; }
@@ -258,14 +273,14 @@ void csRadixPrefixLevel(uint3 groupID : SV_GroupID, uint3 localID : SV_GroupThre
     uint inclusive = block_exclusive_scan(value, lane, blockTotal) + value;
     gsRadixPrefix[lane] = inclusive;
     GroupMemoryBarrierWithGroupSync();
-
-    if (globalIndex >= levelSize) return;
     if (level == 0u) {
+        if (globalIndex >= levelSize) return;
         if ((lane & 1u) == 0u) {
             uint hi = (lane + 1u < PREFIX_THREADS && globalIndex + 1u < levelSize) ? gsRadixPrefix[lane + 1u] : 0u;
             g_HistogramOffsets.store(int(levelOffset + (globalIndex >> 1u)), pack_prefix16(gsRadixPrefix[lane], hi));
         }
     } else {
+        if (globalIndex >= levelSize) return;
         g_HistogramOffsets.store(int(levelOffset + globalIndex), gsRadixPrefix[lane]);
     }
 }

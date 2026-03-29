@@ -14,7 +14,7 @@ from utility.utility import GpuUtility
 _SHADERS = Path(__file__).resolve().parents[1] / "utility" / "shaders"
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def utility_context(backend_name: str) -> tuple[spy.Device, GpuUtility]:
     try:
         device = spy.create_device(type=getattr(spy.DeviceType, backend_name), include_paths=[_SHADERS], enable_cuda_interop=False, enable_hot_reload=False)

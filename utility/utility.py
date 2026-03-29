@@ -10,9 +10,9 @@ from .debug import debug_group, with_debug_group
 _ROOT = Path(__file__).resolve().parent
 _SHADERS = _ROOT / "shaders"
 _PREFIX_BLOCK_SIZE = 512
-_RADIX_GROUP_SIZE = 128
+_RADIX_GROUP_SIZE = 256
 _RADIX_BIN_COUNT = 256
-_RADIX_PACKED_HIST_SIZE = _RADIX_BIN_COUNT // 4
+_RADIX_PACKED_HIST_SIZE = _RADIX_BIN_COUNT // 2
 _PREFIX_THREADS = _PREFIX_BLOCK_SIZE // 2
 _PREFIX_MAX_LEVELS = 8
 _INDIRECT_DISPATCH_ARG_STRIDE = 3
@@ -34,6 +34,17 @@ _DEBUG_COLOR = spy.float3(0.18, 0.58, 0.92)
 
 def _ceil_div(value: int, divisor: int) -> int:
     return (value + divisor - 1) // divisor
+
+
+def _radix_num_levels_for_count(count: int) -> int:
+    num_groups = max(_ceil_div(max(int(count), 1), _RADIX_GROUP_SIZE), 1)
+    total_n = max(num_groups * _RADIX_BIN_COUNT, _RADIX_BIN_COUNT)
+    levels = 0
+    size = total_n
+    while levels < 4 and size > 1:
+        levels += 1
+        size = _ceil_div(size, _PREFIX_THREADS)
+    return max(levels, 1)
 
 
 def grow_capacity(required: int, grow_num: int = 6, grow_den: int = 5, max_capacity: int | None = None) -> int:
@@ -501,6 +512,7 @@ class GpuUtility:
         args_buffer = self._ensure_radix_args_buffer()
         if max_count <= 0:
             return True, args_buffer
+        max_levels = _radix_num_levels_for_count(max_count)
         self.k_compute_radix_args_from_buffer.dispatch(
             thread_count=spy.uint3(1, 1, 1),
             command_encoder=command_encoder,
@@ -537,7 +549,7 @@ class GpuUtility:
                     },
                     resource_binder=self.bind_resource,
                 )
-                for level in range(4):
+                for level in range(max_levels):
                     dispatch_indirect(
                         pipeline=self.p_radix_prefix_level,
                         args_buffer=args_buffer,
@@ -552,7 +564,7 @@ class GpuUtility:
                         },
                         resource_binder=self.bind_resource,
                     )
-                for level in range(3, 0, -1):
+                for level in range(max_levels - 1, 0, -1):
                     dispatch_indirect(
                         pipeline=self.p_prefix_add,
                         args_buffer=args_buffer,
