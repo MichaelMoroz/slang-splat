@@ -638,7 +638,7 @@ class GaussianRenderer:
             with debug_region(compute_pass, "Build Tile Ranges", 23):
                 cursor = spy.ShaderCursor(compute_pass.bind_pipeline(self._p_build_ranges))
                 cursor.g_SortedKeys, cursor.g_TileRanges, cursor.g_PrepassParams = self._work_buffers["keys"], self._work_buffers["tile_ranges"], args_buffer
-                self._bind_prepass_cursor(cursor, self._scene_count, sorted_count_offset=18)
+                self._bind_prepass_cursor(cursor, self._scene_count, sorted_count_offset=GPURadixSort.PARAM_ELEMENT_COUNT)
                 compute_pass.dispatch_compute_indirect(spy.BufferOffsetPair(args_buffer, GPURadixSort.BUILD_RANGE_ARGS_OFFSET * self._U32_BYTES))
 
     def _debug_render_enabled(self) -> bool:
