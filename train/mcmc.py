@@ -9,12 +9,13 @@ from pathlib import Path
 from typing import Callable
 
 import numpy as np
+import slangpy as spy
 import torch
 from torch import nn
 from tqdm import tqdm
 
 from module import SplattingContext, render_gaussian_splats
-from utility import AdamHyperParams, GenericAdamOptimizer, ParamGroupConfig
+from utility import AdamHyperParams, GenericAdamOptimizer, GpuUtility, ParamGroupConfig
 
 from .dataset import CameraSample, SceneData, _image_to_linear_float, _load_image_tensor
 from .losses import get_expon_lr_func, inverse_sigmoid, l1_loss, psnr, rgb_to_nchw, ssim, training_loss
@@ -27,6 +28,9 @@ _SANITIZE_MIN_OPACITY = 1e-6
 _POSITION_LIMIT_MULTIPLIER = 64.0
 _SCALE_LIMIT_MULTIPLIER = 0.5
 _IDENTITY_QUAT = (1.0, 0.0, 0.0, 0.0)
+_SHADERS = Path(__file__).resolve().parents[1] / "utility" / "shaders"
+_DENSIFY_USAGE = spy.BufferUsage.shared | spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access
+_DENSIFY_CACHE: dict[int, tuple[spy.Device, GpuUtility]] = {}
 
 
 def _image_hwc(image: torch.Tensor, image_size: tuple[int, int]) -> torch.Tensor:
@@ -52,6 +56,40 @@ def _build_rotation(quat: torch.Tensor) -> torch.Tensor:
 
 def _build_scaling_rotation(scale: torch.Tensor, quat: torch.Tensor) -> torch.Tensor:
     return _build_rotation(quat) @ torch.diag_embed(scale)
+
+
+def _torch_densify_utility(device: torch.device) -> tuple[spy.Device, GpuUtility]:
+    if device.type != "cuda":
+        raise ValueError("Densify utility requires a CUDA torch device.")
+    key = 0 if device.index is None else int(device.index)
+    if key not in _DENSIFY_CACHE:
+        densify_device = spy.create_torch_device(type=spy.DeviceType.cuda, include_paths=[_SHADERS], enable_hot_reload=False)
+        _DENSIFY_CACHE[key] = (densify_device, GpuUtility(densify_device))
+    return _DENSIFY_CACHE[key]
+
+
+def _build_split_family_layout(split_counts: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    parent_ids = torch.nonzero(split_counts > 0, as_tuple=False).flatten()
+    if int(parent_ids.numel()) == 0:
+        empty = torch.empty((0,), device=split_counts.device, dtype=torch.long)
+        return empty, empty
+    family_sizes = split_counts.index_select(0, parent_ids) + 1
+    source_ids = torch.repeat_interleave(parent_ids, family_sizes)
+    family_offsets = torch.cumsum(family_sizes, dim=0) - family_sizes
+    repeated_offsets = torch.repeat_interleave(family_offsets, family_sizes)
+    family_slots = torch.arange(source_ids.shape[0], device=split_counts.device, dtype=torch.long) - repeated_offsets
+    return source_ids, family_slots
+
+
+def _cap_split_counts(split_counts: torch.Tensor, max_additional_splats: int) -> torch.Tensor:
+    limit = max(int(max_additional_splats), 0)
+    if limit <= 0 or int(split_counts.numel()) == 0:
+        return torch.zeros_like(split_counts)
+    counts = split_counts.clamp_min(0)
+    prefix = counts.cumsum(dim=0)
+    prefix_before = prefix - counts
+    remaining = torch.clamp(limit - prefix_before, min=0)
+    return torch.minimum(counts, remaining)
 
 
 def _estimate_initial_log_scales(points: torch.Tensor, spacing_ratio: float, chunk: int = 1024, reference_limit: int = 4096, progress: Callable[[int, int], None] | None = None) -> torch.Tensor:
@@ -396,38 +434,71 @@ class RGBGaussianModel:
         clone_counts: torch.Tensor,
         clone_opacity: float,
         remove_opacity_threshold: float,
+        iteration: int,
     ) -> None:
         old_count = self.count
         if old_count == 0:
             return
-        clone_counts = clone_counts.to(device=self.device, dtype=torch.long)
+        _ = clone_positions, clone_ids, target_colors, clone_opacity
+        split_counts = clone_counts.to(device=self.device, dtype=torch.long)
         xyz = self._xyz.detach().clone()
         color = self._color.detach().clone()
         opacity_logits = self._opacity.detach().clone()
         log_scale = self._log_scale.detach().clone()
         rotation = self.rotation.detach().clone()
-        parent_mask = clone_counts[:old_count] > 0
-        if torch.any(parent_mask):
-            divisors = (clone_counts[:old_count][parent_mask].to(dtype=log_scale.dtype) + 1.0).unsqueeze(1)
-            parent_scale = torch.exp(log_scale[parent_mask]) / divisors
-            log_scale[parent_mask] = torch.log(torch.clamp(parent_scale, min=_MIN_SCALE))
-        clone_total = int(clone_positions.shape[0])
-        if clone_total > 0:
-            clone_ids = clone_ids.to(device=self.device, dtype=torch.long)
-            clone_divisors = (clone_counts.index_select(0, clone_ids).to(dtype=log_scale.dtype) + 1.0).unsqueeze(1)
-            clone_scale = torch.exp(self._log_scale.detach().index_select(0, clone_ids)) / clone_divisors
-            xyz = torch.cat((xyz, clone_positions.to(device=self.device, dtype=xyz.dtype)), dim=0)
-            color = torch.cat((color, 0.5 * (self._color.detach().index_select(0, clone_ids) + target_colors.to(device=self.device, dtype=color.dtype))), dim=0)
-            opacity_logits = torch.cat(
-                (
-                    opacity_logits,
-                    inverse_sigmoid(torch.full((clone_total, 1), float(clone_opacity), device=self.device, dtype=opacity_logits.dtype)),
-                ),
-                dim=0,
+        source_ids, family_slots = _build_split_family_layout(split_counts[:old_count])
+        family_count = int(source_ids.shape[0])
+        if family_count > 0:
+            densify_device, util = _torch_densify_utility(self.device)
+            base_xyz_flat = self._xyz.detach().contiguous().reshape(-1)
+            base_scale_flat = self.scaling.detach().contiguous().reshape(-1)
+            base_rotation_flat = self.rotation.detach().contiguous().reshape(-1)
+            split_counts_u32 = split_counts[:old_count].to(dtype=torch.uint32)
+            source_ids_u32 = source_ids.to(dtype=torch.uint32)
+            family_slots_u32 = family_slots.to(dtype=torch.uint32)
+            base_xyz_tensor = spy.Tensor.empty(densify_device, shape=(max(base_xyz_flat.numel(), 1),), dtype="float", usage=_DENSIFY_USAGE)
+            base_scale_tensor = spy.Tensor.empty(densify_device, shape=(max(base_scale_flat.numel(), 1),), dtype="float", usage=_DENSIFY_USAGE)
+            base_rotation_tensor = spy.Tensor.empty(densify_device, shape=(max(base_rotation_flat.numel(), 1),), dtype="float", usage=_DENSIFY_USAGE)
+            split_counts_tensor = spy.Tensor.empty(densify_device, shape=(max(split_counts_u32.numel(), 1),), dtype="uint", usage=_DENSIFY_USAGE)
+            source_ids_tensor = spy.Tensor.empty(densify_device, shape=(max(source_ids_u32.numel(), 1),), dtype="uint", usage=_DENSIFY_USAGE)
+            family_slots_tensor = spy.Tensor.empty(densify_device, shape=(max(family_slots_u32.numel(), 1),), dtype="uint", usage=_DENSIFY_USAGE)
+            xyz_out_tensor = spy.Tensor.empty(densify_device, shape=(max(family_count * 3, 1),), dtype="float", usage=_DENSIFY_USAGE)
+            log_scale_out_tensor = spy.Tensor.empty(densify_device, shape=(max(family_count * 3, 1),), dtype="float", usage=_DENSIFY_USAGE)
+            base_xyz_tensor.copy_from_torch(base_xyz_flat)
+            base_scale_tensor.copy_from_torch(base_scale_flat)
+            base_rotation_tensor.copy_from_torch(base_rotation_flat)
+            split_counts_tensor.copy_from_torch(split_counts_u32)
+            source_ids_tensor.copy_from_torch(source_ids_u32)
+            family_slots_tensor.copy_from_torch(family_slots_u32)
+            densify_device.sync_to_cuda()
+            enc = densify_device.create_command_encoder()
+            util.densify_family_split_float32(
+                enc,
+                base_xyz=base_xyz_tensor,
+                base_scale=base_scale_tensor,
+                base_rotation=base_rotation_tensor,
+                split_counts=split_counts_tensor,
+                source_ids=source_ids_tensor,
+                family_slots=family_slots_tensor,
+                xyz_out=xyz_out_tensor,
+                log_scale_out=log_scale_out_tensor,
+                output_count=family_count,
+                iteration=iteration,
+                min_scale=_MIN_SCALE,
             )
-            log_scale = torch.cat((log_scale, torch.log(torch.clamp(clone_scale, min=_MIN_SCALE))), dim=0)
-            rotation = torch.cat((rotation, rotation.index_select(0, clone_ids)), dim=0)
-        keep_indices = torch.nonzero(torch.sigmoid(opacity_logits[:, 0]) >= float(remove_opacity_threshold), as_tuple=False).flatten()
+            densify_device.submit_command_buffer(enc.finish())
+            densify_device.sync_to_device()
+            family_xyz = xyz_out_tensor.to_torch().clone()[: family_count * 3].reshape(family_count, 3)
+            family_log_scale = log_scale_out_tensor.to_torch().clone()[: family_count * 3].reshape(family_count, 3)
+            xyz = torch.cat((xyz, family_xyz), dim=0)
+            color = torch.cat((color, self._color.detach().index_select(0, source_ids)), dim=0)
+            opacity_logits = torch.cat((opacity_logits, self._opacity.detach().index_select(0, source_ids)), dim=0)
+            log_scale = torch.cat((log_scale, family_log_scale), dim=0)
+            rotation = torch.cat((rotation, rotation.index_select(0, source_ids)), dim=0)
+        keep_mask = torch.sigmoid(opacity_logits[:, 0]) >= float(remove_opacity_threshold)
+        if old_count > 0:
+            keep_mask[:old_count] &= split_counts[:old_count] == 0
+        keep_indices = torch.nonzero(keep_mask, as_tuple=False).flatten()
         self.apply_structural_update(xyz, color, opacity_logits, log_scale, rotation, old_count, keep_indices)
 
 class RGBMCMCTrainer:
@@ -496,25 +567,27 @@ class RGBMCMCTrainer:
             max_clone_candidates=max_clone_candidates,
             clone_seed=self.iteration,
         )
-        clone_count = int(clones["count"].item()) if torch.is_tensor(clones["count"]) else int(clones["count"])
-        clone_count = min(clone_count, available_slots)
-        if clone_count == 0:
+        split_counts = _cap_split_counts(clones["clone_counts"].to(device=self.device, dtype=torch.long), available_slots)
+        split_total = int(split_counts.sum().item())
+        if split_total == 0:
             self.model.apply_clone_and_remove(
                 target.new_empty((0, 3)),
                 torch.empty((0,), device=self.device, dtype=torch.long),
                 target.new_empty((0, 3)),
-                clones["clone_counts"],
+                split_counts,
                 float(self.cfg.densify_clone_opacity),
                 float(self.cfg.remove_opacity_threshold),
+                self.iteration,
             )
             return
         self.model.apply_clone_and_remove(
-            clones["positions"][:clone_count],
-            clones["ids"][:clone_count],
-            clones["target_colors"][:clone_count],
-            clones["clone_counts"],
+            target.new_empty((0, 3)),
+            torch.empty((0,), device=self.device, dtype=torch.long),
+            target.new_empty((0, 3)),
+            split_counts,
             float(self.cfg.densify_clone_opacity),
             float(self.cfg.remove_opacity_threshold),
+            self.iteration,
         )
 
     def _current_dither_strength(self) -> float:

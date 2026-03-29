@@ -13,6 +13,7 @@ _SHADERS = _ROOT / "shaders"
 _PREFIX_SHADER = _SHADERS / "prefix_sum.slang"
 _RADIX_SHADER = _SHADERS / "radix_sort.slang"
 _BLUR_SHADER = _SHADERS / "blur.slang"
+_DENSIFY_SHADER = _SHADERS / "densify.slang"
 _PREFIX_BLOCK_SIZE = 512
 _RADIX_GROUP_SIZE = 512
 _RADIX_BIN_COUNT = 256
@@ -139,6 +140,7 @@ class GpuUtility:
         self.k_compute_radix_args_from_buffer = self.device.create_compute_kernel(self.device.load_program(str(_RADIX_SHADER), ["csComputeRadixIndirectArgsFromBuffer"]))
         self.k_blur_horizontal = self.device.create_compute_kernel(self.device.load_program(str(_BLUR_SHADER), ["csGaussianBlurHorizontal"]))
         self.k_blur_vertical = self.device.create_compute_kernel(self.device.load_program(str(_BLUR_SHADER), ["csGaussianBlurVertical"]))
+        self.k_densify_family = self.device.create_compute_kernel(self.device.load_program(str(_DENSIFY_SHADER), ["csBuildDensifyFamilySplats"]))
         self._indirect_usage = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.indirect_argument
         self._rw_buffer_usage = (
             spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
@@ -214,6 +216,42 @@ class GpuUtility:
         if key not in self._blur_scratch_buffers:
             self._blur_scratch_buffers[key] = self.device.create_buffer(size=key, usage=self._rw_buffer_usage)
         return self._blur_scratch_buffers[key]
+
+    def densify_family_split_float32(
+        self,
+        command_encoder: spy.CommandEncoder,
+        *,
+        base_xyz: spy.Tensor,
+        base_scale: spy.Tensor,
+        base_rotation: spy.Tensor,
+        split_counts: spy.Tensor,
+        source_ids: spy.Tensor,
+        family_slots: spy.Tensor,
+        xyz_out: spy.Tensor,
+        log_scale_out: spy.Tensor,
+        output_count: int,
+        iteration: int,
+        min_scale: float,
+    ) -> None:
+        if int(output_count) <= 0:
+            return
+        self.k_densify_family.dispatch(
+            thread_count=spy.uint3(max(int(output_count), 1), 1, 1),
+            command_encoder=command_encoder,
+            vars={
+                "g_DensifyBaseXYZ": base_xyz,
+                "g_DensifyBaseScale": base_scale,
+                "g_DensifyBaseRotation": base_rotation,
+                "g_DensifySplitCounts": split_counts,
+                "g_DensifySourceIds": source_ids,
+                "g_DensifyFamilySlots": family_slots,
+                "g_DensifyXYZOut": xyz_out,
+                "g_DensifyLogScaleOut": log_scale_out,
+                "g_DensifyOutputCount": int(output_count),
+                "g_DensifyIteration": int(iteration),
+                "g_DensifyMinScale": float(min_scale),
+            },
+        )
 
     def _prefix_level_layout(self, max_count: int) -> list[tuple[int, int, int]]:
         count = max(int(max_count), 1)

@@ -46,6 +46,8 @@ class SplattingContext:
     debug_depth_mean_range: tuple[float, float] = (0.0, 20.0)
     debug_depth_std_range: tuple[float, float] = (0.0, 0.25)
     debug_density_range: tuple[float, float] = (0.0, 4.0)
+    clone_select_probability: float = 0.0
+    clone_seed: int = 0
 
     def __post_init__(self) -> None:
         self.device = self.device or spy.create_device(type=spy.DeviceType.cuda, include_paths=[_SHADERS], enable_cuda_interop=False, enable_hot_reload=False)
@@ -72,7 +74,6 @@ class SplattingContext:
             ("k_finalize_total", "csFinalizeTotalWithOverflow", False),
             ("k_raster_fwd", "csRasterForward", False),
             ("k_raster_fwd_debug", "csRasterForwardDebug", False),
-            ("k_raster_clone_candidates", "csRasterCloneCandidates", False),
             ("k_raster_bwd", "csRasterBackward", False),
             ("k_backproject_raster_grads", "csBackprojectRasterGrads", False),
         ):
@@ -345,8 +346,8 @@ class SplattingContext:
             g_ComputeSplatDensities=1 if self.compute_splat_densities else 0,
             g_TotalCapacity=int(getattr(self, "_entry_capacity", 1)),
             g_CloneHitCapacity=int(getattr(self, "_clone_capacity", 1)),
-            g_CloneSeed=int(self.render_seed),
-            g_CloneSelectProbability=0.0,
+            g_CloneSeed=int(self.clone_seed),
+            g_CloneSelectProbability=float(self.clone_select_probability),
         )
         return vars
 
@@ -646,6 +647,7 @@ class SplattingContext:
 
     @with_debug_group("renderer.render", _DEBUG_COLOR)
     def _record_render_pass(self, command_encoder: spy.CommandEncoder, camera: dict[str, Any], splat_count: int) -> None:
+        self.scene["g_CloneCounts"].clear(command_encoder)
         dispatch(
             kernel=self.k_raster_fwd_debug if int(self.debug_mode) != _DEBUG_MODE_NORMAL else self.k_raster_fwd,
             thread_count=self._raster_thread_count(),
@@ -710,29 +712,18 @@ class SplattingContext:
     ) -> dict[str, spy.Tensor | int]:
         capacity = max(int(max_clone_candidates), 0)
         if capacity <= 0 or splat_count <= 0 or float(select_probability) <= 0.0:
+            self.clone_select_probability = 0.0
             return {"count": 0, "hits": self.clone["g_CloneHitData"].view((0, 2)), "clone_counts": self.scene["g_CloneCounts"].view((splat_count,))}
-        self._alloc_clone_buffers(capacity)
+        self.clone_select_probability = float(select_probability)
+        self.clone_seed = int(clone_seed)
         enc = self.device.create_command_encoder()
-        self.clone["g_CloneHitCounter"].clear(enc)
-        self.scene["g_CloneCounts"].clear(enc)
-        dispatch(
-            kernel=self.k_raster_clone_candidates,
-            thread_count=self._raster_thread_count(),
-            vars=self._vars(camera, splat_count, self._last_total)
-            | {
-                "g_CloneHitCapacity": int(capacity),
-                "g_CloneSeed": int(clone_seed),
-                "g_CloneSelectProbability": float(select_probability),
-            },
-            command_encoder=enc,
-            debug_label="renderer.raster_clone_candidates",
-            debug_color=_DEBUG_COLOR,
-        )
+        self._record_render_pass(enc, camera, splat_count)
         self.device.submit_command_buffer(enc.finish())
         self.device.sync_to_device()
-        count = min(self._read_uint(self.clone["g_CloneHitCounter"]), capacity)
+        clone_counts = self.scene["g_CloneCounts"].view((splat_count,))
+        self.clone_select_probability = 0.0
         return {
-            "count": int(count),
-            "hits": self.clone["g_CloneHitData"].view((count, 2)),
-            "clone_counts": self.scene["g_CloneCounts"].view((splat_count,)),
+            "count": 0,
+            "hits": self.clone["g_CloneHitData"].view((0, 2)),
+            "clone_counts": clone_counts,
         }

@@ -140,9 +140,6 @@ class SplattingContext(_CoreSplattingContext):
     ) -> dict[str, torch.Tensor]:
         image_size = getattr(self, "_last_image_size", self._size)
         target_hwc = _image_hwc(target_image, image_size).to(dtype=torch.float32)
-        target_rgba = torch.cat((target_hwc[..., :3].contiguous(), torch.zeros_like(target_hwc[..., :1])), dim=-1)
-        self.frame["g_TargetImage"].copy_from_torch(target_rgba)
-        self.device.sync_to_cuda()
         splat_count = int(getattr(self, "_last_splat_count", 0))
         result = super().clone_candidates_current(
             _camera_dict(self._last_camera, image_size),
@@ -151,21 +148,19 @@ class SplattingContext(_CoreSplattingContext):
             int(max_clone_candidates),
             int(self._last_render_seed if clone_seed is None else clone_seed),
         )
-        raw_hits = result["hits"].to_torch().clone()
-        if int(result["count"]) > 0:
-            ids = raw_hits[:, 0, 3].view(torch.int32).to(dtype=torch.long)
-            positions = raw_hits[:, 0, :3].contiguous()
-            target_colors = raw_hits[:, 1, :3].contiguous()
-        else:
-            positions = target_hwc.new_empty((0, 3))
-            target_colors = target_hwc.new_empty((0, 3))
-            ids = torch.empty((0,), device=target_hwc.device, dtype=torch.long)
+        clone_counts = result["clone_counts"].to_torch().clone().to(dtype=torch.long)
+        if int(clone_counts.numel()) > 0:
+            prefix = clone_counts.cumsum(dim=0)
+            prefix_before = prefix - clone_counts
+            remaining = torch.clamp(int(max_clone_candidates) - prefix_before, min=0)
+            clone_counts = torch.minimum(clone_counts, remaining)
+        count = int(clone_counts.sum().item())
         return {
-            "count": torch.tensor(int(result["count"]), device=target_hwc.device, dtype=torch.int64),
-            "positions": positions,
-            "target_colors": target_colors,
-            "ids": ids,
-            "clone_counts": result["clone_counts"].to_torch().clone().to(dtype=torch.long),
+            "count": torch.tensor(count, device=target_hwc.device, dtype=torch.int64),
+            "positions": target_hwc.new_empty((0, 3)),
+            "target_colors": target_hwc.new_empty((0, 3)),
+            "ids": torch.empty((0,), device=target_hwc.device, dtype=torch.long),
+            "clone_counts": clone_counts,
         }
 
 class _RenderFn(torch.autograd.Function):

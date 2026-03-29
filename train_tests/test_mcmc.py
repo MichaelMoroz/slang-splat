@@ -103,17 +103,59 @@ def test_densify_step_appends_clones_rescales_parents_and_removes_low_opacity() 
     trainer._densify_current_step(torch.zeros((4, 4, 3), dtype=torch.float32, device="cuda"))
 
     assert trainer.model.count == 3
-    expected_scale = torch.full((3, 3), 1.0, dtype=torch.float32, device="cuda")
+    expected_scale = torch.full((3, 3), 3.0 * (3.0 ** (-1.0 / 3.0)), dtype=torch.float32, device="cuda")
     assert torch.allclose(trainer.model.scaling, expected_scale, atol=1e-5)
-    assert torch.allclose(trainer.model._xyz[1:], torch.tensor([[1.0, 2.0, 3.0], [1.5, 2.5, 3.5]], dtype=torch.float32, device="cuda"))
-    expected_clone_colors = torch.tensor([[0.5, 0.3, 0.5], [0.4, 0.25, 0.75]], dtype=torch.float32, device="cuda")
-    assert torch.allclose(trainer.model._color[1:], expected_clone_colors, atol=1e-5)
+    family_xyz = trainer.model._xyz
+    expected_centroid = torch.tensor([0.0, 0.0, 1.0], dtype=torch.float32, device="cuda")
+    assert torch.allclose(family_xyz.mean(dim=0), expected_centroid, atol=1e-5)
+    assert not torch.allclose(trainer.model._xyz, torch.tensor([[1.0, 2.0, 3.0], [1.5, 2.5, 3.5], [0.0, 0.0, 1.0]], dtype=torch.float32, device="cuda"))
+    expected_colors = torch.tensor([[0.2, 0.4, 0.6], [0.2, 0.4, 0.6], [0.2, 0.4, 0.6]], dtype=torch.float32, device="cuda")
+    assert torch.allclose(trainer.model._color, expected_colors, atol=1e-5)
     assert torch.all(trainer.model.opacity[:, 0] >= 0.001)
     for group in trainer.model.optimizer.param_groups:
         param = group["params"][0]
         state = trainer.model.optimizer.state[param]
         assert state["exp_avg"].shape[0] == trainer.model.count
         assert state["exp_avg_sq"].shape[0] == trainer.model.count
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
+def test_densify_single_clone_moves_parent_and_child_around_original_centroid() -> None:
+    cfg = MCMCConfig(
+        iterations=1,
+        densify_enabled=True,
+        densify_interval=1,
+        densify_clone_opacity=0.33,
+        remove_opacity_threshold=0.001,
+    )
+    trainer = RGBMCMCTrainer(cfg, device="cuda")
+    trainer.iteration = 7
+    trainer.model._xyz = nn.Parameter(torch.tensor([[0.5, -1.0, 2.0]], dtype=torch.float32, device="cuda"))
+    trainer.model._color = nn.Parameter(torch.tensor([[0.2, 0.4, 0.6]], dtype=torch.float32, device="cuda"))
+    trainer.model._log_scale = nn.Parameter(torch.log(torch.tensor([[2.0, 1.0, 0.5]], dtype=torch.float32, device="cuda")))
+    trainer.model._rotation = nn.Parameter(torch.tensor([[1.0, 0.0, 0.0, 0.0]], dtype=torch.float32, device="cuda"))
+    trainer.model._opacity = nn.Parameter(inverse_sigmoid(torch.tensor([[0.5]], dtype=torch.float32, device="cuda")))
+    trainer.model.setup_training(cfg, spatial_lr_scale=1.0)
+    trainer.context = SimpleNamespace(
+        clone_candidates_current=lambda *args, **kwargs: {
+            "count": torch.tensor(1, device="cuda", dtype=torch.int64),
+            "positions": torch.tensor([[50.0, 60.0, 70.0]], dtype=torch.float32, device="cuda"),
+            "target_colors": torch.tensor([[0.8, 0.2, 0.4]], dtype=torch.float32, device="cuda"),
+            "ids": torch.tensor([0], dtype=torch.long, device="cuda"),
+            "clone_counts": torch.tensor([1], device="cuda", dtype=torch.long),
+        }
+    )
+
+    trainer._densify_current_step(torch.zeros((4, 4, 3), dtype=torch.float32, device="cuda"))
+
+    assert trainer.model.count == 2
+    family_xyz = trainer.model._xyz
+    original_xyz = torch.tensor([0.5, -1.0, 2.0], dtype=torch.float32, device="cuda")
+    expected_scale = torch.tensor([[2.0, 1.0, 0.5], [2.0, 1.0, 0.5]], dtype=torch.float32, device="cuda") * (2.0 ** (-1.0 / 3.0))
+    assert torch.allclose(family_xyz.mean(dim=0), original_xyz, atol=1e-5)
+    assert not torch.allclose(family_xyz[0], original_xyz, atol=1e-5)
+    assert not torch.allclose(family_xyz[1], original_xyz, atol=1e-5)
+    assert torch.allclose(trainer.model.scaling[:2], expected_scale, atol=1e-5)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
