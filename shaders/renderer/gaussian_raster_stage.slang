@@ -34,17 +34,13 @@ static const float RASTER_GRAD_FIXED_AVG_INV_SCALE_FLOOR = 0.25;
 
 int raster_grad_fixed_quantize(float value, float range)
 {
-    float safeRange = max(range, SMALL_VALUE);
-    float normalized = clamp(value / safeRange, -1.0, 1.0);
-    float scaled = normalized >= 0.0 ? normalized * RASTER_GRAD_FIXED_INT_MAX_F : normalized * (-RASTER_GRAD_FIXED_INT_MIN_F);
-    return int(scaled >= 0.0 ? floor(scaled + 0.5) : ceil(scaled - 0.5));
+    float normalized = clamp(value / range, -1.0, 1.0) * RASTER_GRAD_FIXED_INT_MAX_F;
+    return int(normalized >= 0.0 ? floor(normalized + 0.5) : ceil(normalized - 0.5));
 }
 
 float raster_grad_fixed_dequantize(int value, float range)
 {
-    float safeRange = max(range, SMALL_VALUE);
-    float scale = value >= 0 ? RASTER_GRAD_FIXED_INT_MAX_F : (-RASTER_GRAD_FIXED_INT_MIN_F);
-    return float(value) * safeRange / max(scale, SMALL_VALUE);
+    return float(value) * range / RASTER_GRAD_FIXED_INT_MAX_F;
 }
 
 float raster_grad_fixed_avg_inv_scale(float3 scale)
@@ -124,17 +120,18 @@ RasterGaussian load_cached_raster_grad_float(uint splatId)
 void flush_cached_raster_grad_fixed(uint splatId, RasterGaussian gaussian, RasterGaussian.Differential dGaussian)
 {
     uint splatCount = g_Prepass.splatCount;
-    float avgInvScale = raster_grad_fixed_avg_inv_scale(gaussian.scale);
-    float3 roLocal = WaveActiveSum(dGaussian.roLocal / avgInvScale);
-    float3 scale = WaveActiveSum(dGaussian.scale / avgInvScale);
-    float4 rotation = WaveActiveSum(dGaussian.rotation / avgInvScale);
-    float4 colorAlpha = WaveActiveSum(dGaussian.colorAlpha);
-    if (!WaveIsFirstLane()) return;
+    float avgInvScale = 1.0 / raster_grad_fixed_avg_inv_scale(gaussian.scale);
+    // float3 roLocal = WaveActiveSum(dGaussian.roLocal * avgInvScale);
+    // float3 scale = WaveActiveSum(dGaussian.scale * avgInvScale);
+    // float4 rotation = WaveActiveSum(dGaussian.rotation * avgInvScale);
+    // float4 colorAlpha = WaveActiveSum(dGaussian.colorAlpha);
+    // if (!WaveIsFirstLane()) return;
 
-    // float3 roLocal = dGaussian.roLocal / avgInvScale;
-    // float3 scale = dGaussian.scale / avgInvScale;
-    // float4 rotation = dGaussian.rotation / avgInvScale;
-    // float4 colorAlpha = dGaussian.colorAlpha;
+    // for fixed point wave ops don't help, at least on nvidia
+    float3 roLocal = dGaussian.roLocal * avgInvScale;
+    float3 scale = dGaussian.scale * avgInvScale;
+    float4 rotation = dGaussian.rotation * avgInvScale;
+    float4 colorAlpha = dGaussian.colorAlpha;
 
     int qRoLocalX = raster_grad_fixed_quantize(roLocal.x, g_CachedRasterGradFixedROLocalRange);
     int qRoLocalY = raster_grad_fixed_quantize(roLocal.y, g_CachedRasterGradFixedROLocalRange);
