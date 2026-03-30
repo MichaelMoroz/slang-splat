@@ -39,10 +39,13 @@ _CLAMP_LIMITS = {
 
 @dataclass(frozen=True, slots=True)
 class RendererParams:
-    radius_scale: float = 1.0; alpha_cutoff: float = 1.0 / 255.0; max_splat_steps: int = 32768
+    radius_scale: float = 1.0; alpha_cutoff: float = 1.0 / 255.0
+    max_anisotropy: float = 10.0
     transmittance_threshold: float = 0.005; list_capacity_multiplier: int = 64
     max_prepass_memory_mb: int = 4096; cached_raster_grad_atomic_mode: str = "fixed"; cached_raster_grad_fixed_ro_local_range: float = 0.01; cached_raster_grad_fixed_scale_range: float = 0.01
     cached_raster_grad_fixed_quat_range: float = 0.01; cached_raster_grad_fixed_color_range: float = 0.2; cached_raster_grad_fixed_opacity_range: float = 0.2
+    debug_mode: str | None = None; debug_grad_norm_threshold: float = 2e-4; debug_ellipse_thickness_px: float = 2.0
+    debug_density_range: tuple[float, float] = (0.0, 20.0); debug_depth_mean_range: tuple[float, float] = (0.0, 10.0); debug_depth_std_range: tuple[float, float] = (0.0, 0.5)
     debug_show_ellipses: bool = False; debug_show_processed_count: bool = False; debug_show_grad_norm: bool = False
 
 
@@ -246,7 +249,10 @@ def apply_training_profile(
 
 
 def renderer_kwargs(params: RendererParams) -> dict[str, object]:
-    return {name: getattr(params, name) for name in RendererParams.__dataclass_fields__}
+    kwargs = {name: getattr(params, name) for name in RendererParams.__dataclass_fields__}
+    if kwargs.get("debug_mode") is None:
+        del kwargs["debug_mode"]
+    return kwargs
 
 
 def save_snapshot(path: Path, rgba: np.ndarray, flip_y: bool = True) -> None:

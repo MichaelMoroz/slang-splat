@@ -58,6 +58,16 @@ _TRAINING_PARAM_KEYS = {
 _TRAIN_SETUP_DEFAULTS = default_control_values("Train Setup")
 _TRAINING_DEFAULTS = default_control_values("Train Optimizer", "Train Stability")
 _CACHED_RASTER_GRAD_ATOMIC_MODE_VALUES = ("float", "fixed")
+_DEBUG_MODE_VALUES = (
+    GaussianRenderer.DEBUG_MODE_NORMAL,
+    GaussianRenderer.DEBUG_MODE_PROCESSED_COUNT,
+    GaussianRenderer.DEBUG_MODE_ELLIPSE_OUTLINES,
+    GaussianRenderer.DEBUG_MODE_SPLAT_SPATIAL_DENSITY,
+    GaussianRenderer.DEBUG_MODE_SPLAT_SCREEN_DENSITY,
+    GaussianRenderer.DEBUG_MODE_DEPTH_MEAN,
+    GaussianRenderer.DEBUG_MODE_DEPTH_STD,
+    GaussianRenderer.DEBUG_MODE_GRAD_NORM,
+)
 
 def _training_kwargs(value_for) -> dict[str, object]:
     return {name: value_for(control) for name, control in _TRAINING_PARAM_KEYS.items()}
@@ -89,10 +99,12 @@ class SplatViewer(spy.AppWindow):
 
     def renderer_params(self, allow_debug_overlays: bool) -> RendererParams:
         atomic_mode_index = min(max(int(self.c("cached_raster_grad_atomic_mode").value), 0), len(_CACHED_RASTER_GRAD_ATOMIC_MODE_VALUES) - 1)
+        debug_mode_index = min(max(int(self.c("debug_mode").value), 0), len(_DEBUG_MODE_VALUES) - 1)
+        debug_mode = _DEBUG_MODE_VALUES[debug_mode_index] if allow_debug_overlays else GaussianRenderer.DEBUG_MODE_NORMAL
         return RendererParams(
             radius_scale=float(self.c("radius_scale").value),
             alpha_cutoff=float(self.c("alpha_cutoff").value),
-            max_splat_steps=int(self.c("max_splat_steps").value),
+            max_anisotropy=float(self.c("max_anisotropy").value),
             transmittance_threshold=float(self.c("trans_threshold").value),
             list_capacity_multiplier=self.s.list_capacity_multiplier,
             max_prepass_memory_mb=self.s.max_prepass_memory_mb,
@@ -102,9 +114,15 @@ class SplatViewer(spy.AppWindow):
             cached_raster_grad_fixed_quat_range=float(self.c("cached_raster_grad_fixed_quat_range").value),
             cached_raster_grad_fixed_color_range=float(self.c("cached_raster_grad_fixed_color_range").value),
             cached_raster_grad_fixed_opacity_range=float(self.c("cached_raster_grad_fixed_opacity_range").value),
-            debug_show_ellipses=bool(self.c("debug_ellipse").value) if allow_debug_overlays else False,
-            debug_show_processed_count=bool(self.c("debug_processed_count").value) if allow_debug_overlays else False,
-            debug_show_grad_norm=bool(self.c("debug_grad_norm").value) if allow_debug_overlays else False,
+            debug_mode=debug_mode,
+            debug_grad_norm_threshold=float(self.c("debug_grad_norm_threshold").value),
+            debug_ellipse_thickness_px=float(self.c("debug_ellipse_thickness_px").value),
+            debug_density_range=(float(self.c("debug_density_min").value), float(self.c("debug_density_max").value)),
+            debug_depth_mean_range=(float(self.c("debug_depth_mean_min").value), float(self.c("debug_depth_mean_max").value)),
+            debug_depth_std_range=(float(self.c("debug_depth_std_min").value), float(self.c("debug_depth_std_max").value)),
+            debug_show_ellipses=debug_mode == GaussianRenderer.DEBUG_MODE_ELLIPSE_OUTLINES,
+            debug_show_processed_count=debug_mode == GaussianRenderer.DEBUG_MODE_PROCESSED_COUNT,
+            debug_show_grad_norm=debug_mode == GaussianRenderer.DEBUG_MODE_GRAD_NORM,
         )
 
     def init_params(self):
@@ -300,7 +318,7 @@ class SplatViewer(spy.AppWindow):
     def update_camera(self, dt: float) -> None:
         self.s.move_speed, self.s.fov_y = float(self.c("move_speed").value), float(self.c("fov").value)
         if abs(self.s.scroll_delta) > 1e-5:
-            self.s.move_speed = min(max(self.s.move_speed * (_SCROLL_SPEED_BASE ** self.s.scroll_delta), 0.1), 20.0)
+            self.s.move_speed = max(self.s.move_speed * (_SCROLL_SPEED_BASE ** self.s.scroll_delta), 0.0)
             self.c("move_speed").value, self.s.scroll_delta = self.s.move_speed, 0.0
         target_rot = self.s.mouse_delta * self.s.look_speed if self.s.mouse_left else spy.float2(0.0, 0.0)
         self.s.rot_vel += (target_rot - self.s.rot_vel) * min(1.0, _LOOK_SMOOTH * dt)

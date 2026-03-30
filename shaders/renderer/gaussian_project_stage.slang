@@ -5,23 +5,22 @@ import "utility/splatting/common.slang";
 import "utility/splatting/projection.slang";
 import "utility/splatting/raster.slang";
 
+uniform float g_MaxAnisotropy;
+
+uint float_to_ordered_uint(float value)
+{
+    uint bits = asuint(value);
+    return (bits & 0x80000000u) != 0u ? ~bits : (bits | 0x80000000u);
+}
+
 void store_raster_cache(uint splatId, CachedEllipsoid cached, float4 colorAlpha)
 {
-    uint splatCount = g_Prepass.splatCount;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_X, splatId)] = cached.roLocal.x;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_Y, splatId)] = cached.roLocal.y;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_Z, splatId)] = cached.roLocal.z;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_SCALE_X, splatId)] = cached.scale.x;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_SCALE_Y, splatId)] = cached.scale.y;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_SCALE_Z, splatId)] = cached.scale.z;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_QUAT_W, splatId)] = cached.rotation.x;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_QUAT_X, splatId)] = cached.rotation.y;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_QUAT_Y, splatId)] = cached.rotation.z;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_QUAT_Z, splatId)] = cached.rotation.w;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_COLOR_R, splatId)] = colorAlpha.x;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_COLOR_G, splatId)] = colorAlpha.y;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_COLOR_B, splatId)] = colorAlpha.z;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_FUSED_OPACITY, splatId)] = colorAlpha.w;
+    RasterGaussian gaussian;
+    gaussian.roLocal = cached.roLocal;
+    gaussian.scale = cached.scale;
+    gaussian.rotation = cached.rotation;
+    gaussian.colorAlpha = colorAlpha;
+    g_RasterCache[splatId] = gaussian;
 }
 
 void append_visible_splat(uint distanceKey, uint splatId)
@@ -35,6 +34,7 @@ void append_visible_splat(uint distanceKey, uint splatId)
 
 bool load_projected_ellipse(uint splatId, out Ellipse ellipse)
 {
+    ellipse.init(0.0, 0.0, 0.0);
     float4 centerRadiusDepth = g_ScreenCenterRadiusDepth[splatId];
     if (centerRadiusDepth.z <= 0.0 || !all(isfinite(centerRadiusDepth))) return false;
     float4 conicOpacity = g_ScreenEllipseConic[splatId];
@@ -45,6 +45,7 @@ bool load_projected_ellipse(uint splatId, out Ellipse ellipse)
 bool prepare_ellipse_for_scanlines(Ellipse ellipseIn, out Ellipse ellipseOut, out ScanlineLoopConfig loopCfg)
 {
     ellipseOut = ellipseIn;
+    loopCfg = make_scanline_loop_config(g_Prepass, false, 0, -1, 0, -1);
     float tileSize = float(g_Prepass.tileSize);
     float halfTile = 0.5 * tileSize;
     if (!try_prepare_conic_for_binning(ellipseOut, halfTile)) return false;
@@ -78,23 +79,26 @@ void csProjectVisibleSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
     // Project only splats whose cutoff isosurface can contribute within the camera frustum.
     PinholeCamera camera = PinholeCamera.from_params(g_Camera);
     float supportSigmaRadius = sqrt(max(-2.0 * log(g_Raster.alphaCutoff / fusedOpacity), 0.0));
-    Ellipsoid projectionEllipsoid = build_ellipsoid_with_support(g_Camera, g_Prepass.radiusScale, supportSigmaRadius, gaussian);
+    Ellipsoid projectionEllipsoid = build_ellipsoid_with_support(g_Camera, g_Prepass.radiusScale, supportSigmaRadius, g_MaxAnisotropy, gaussian);
     float3 cameraOffset = projectionEllipsoid.centerWorld - camera.position_world();
     float3 camPos = camera.world_to_camera(cameraOffset);
     float camDistance = length(cameraOffset);
     float depthValue = camPos.z;
-    if (depthValue <= DEPTH_VISIBILITY_FLOOR) return;
+    float supportRadius = max(projectionEllipsoid.projectedScale.x, max(projectionEllipsoid.projectedScale.y, projectionEllipsoid.projectedScale.z));
+    if (depthValue + supportRadius <= DEPTH_VISIBILITY_FLOOR) return;
 
     Ellipse projectedEllipse;
     if (!compute_ellipsoid_outline_ellipse(projectionEllipsoid, camera, projectedEllipse)) return;
+    projectedEllipse.radiusPx = max(projectedEllipse.radiusPx * ELLIPSE_SAFETY_SCALE + ELLIPSE_RADIUS_PAD_PX, MIN_SCREEN_RADIUS_PX);
     projectedEllipse.bboxExtent = float2(projectedEllipse.radiusPx, projectedEllipse.radiusPx);
+    if (!projectedEllipse.isVisible(camDistance, depthValue, camera.params.viewport, g_Camera.nearDepth, g_Camera.farDepth)) return;
     g_ScreenCenterRadiusDepth[splatId] = float4(projectedEllipse.centerPx, projectedEllipse.radiusPx, camDistance);
     g_ScreenColorAlpha[splatId] = gaussian.colorAlpha;
     g_ScreenEllipseConic[splatId] = float4(projectedEllipse.conic, projectionEllipsoid.opacityScale);
     g_SplatVisible[splatId] = 1u;
-    CachedEllipsoid cached = build_cached_ellipsoid(g_Camera, g_Prepass.radiusScale, gaussian.position, gaussian.logScale, gaussian.rotation);
+    CachedEllipsoid cached = build_cached_ellipsoid(g_Camera, g_Prepass.radiusScale, g_MaxAnisotropy, gaussian.position, gaussian.logScale, gaussian.rotation);
     store_raster_cache(splatId, cached, float4(gaussian.colorAlpha.xyz, fusedOpacity));
-    append_visible_splat(asuint(camDistance), splatId);
+    append_visible_splat(float_to_ordered_uint(camDistance), splatId);
 }
 
 [shader("compute")]

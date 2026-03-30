@@ -26,11 +26,9 @@ static const uint RASTER_CACHE_COLOR_G = 11u;
 static const uint RASTER_CACHE_COLOR_B = 12u;
 static const uint RASTER_CACHE_FUSED_OPACITY = 13u;
 static const uint RASTER_CACHE_PARAM_COUNT = 14u;
-groupshared float3 gsRoLocal[RASTER_BATCH];
-groupshared float3 gsScale[RASTER_BATCH];
-groupshared float4 gsRotation[RASTER_BATCH];
-groupshared half4 gsColorAlpha[RASTER_BATCH];
+groupshared RasterGaussian gsGaussian[RASTER_BATCH];
 groupshared uint gsBatchSplatId[RASTER_BATCH];
+groupshared uint gsDoneCount;
 
 uniform StructuredBuffer<float> g_SplatParams;
 
@@ -38,7 +36,7 @@ uniform RWStructuredBuffer<float4> g_ScreenCenterRadiusDepth;
 uniform RWStructuredBuffer<float4> g_ScreenColorAlpha;
 uniform RWStructuredBuffer<float4> g_ScreenEllipseConic;
 uniform RWStructuredBuffer<uint> g_SplatVisible;
-uniform RWStructuredBuffer<float> g_RasterCache;
+uniform RWStructuredBuffer<RasterGaussian> g_RasterCache;
 
 uniform RWStructuredBuffer<uint> g_VisibleKeys;
 uniform RWStructuredBuffer<uint> g_VisibleValues;
@@ -63,6 +61,7 @@ uniform RWTexture2D<float4> g_Output;
 uniform StructuredBuffer<float4> g_OutputGrad;
 uniform RWStructuredBuffer<float4> g_TrainingForwardState;
 uniform RWStructuredBuffer<uint> g_TrainingProcessedEnd;
+uniform RWStructuredBuffer<uint> g_TrainingBatchEnd;
 
 uniform RWStructuredBuffer<float> g_ParamGrads;
 uniform RWStructuredBuffer<int> g_CachedRasterGradsFixed;
@@ -107,7 +106,7 @@ Gaussian3D load_gaussian3d(uint splatId)
     return gaussian;
 }
 
-uint raster_cache_index(uint splatCount, uint fieldId, uint splatId)
+uint cached_raster_grad_index(uint splatCount, uint paramId, uint splatId)
 {
-    return fieldId * splatCount + splatId;
+    return paramId * splatCount + splatId;
 }

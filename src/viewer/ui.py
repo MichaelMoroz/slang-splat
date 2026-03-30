@@ -64,6 +64,26 @@ _HISTOGRAM_GROUPS = (
     ("opacity", (13,)),
 )
 _CACHED_RASTER_GRAD_ATOMIC_MODE_LABELS = ("Float Atomics", "Fixed Point")
+_DEBUG_MODE_VALUES = (
+    "normal",
+    "processed_count",
+    "ellipse_outlines",
+    "splat_spatial_density",
+    "splat_screen_density",
+    "depth_mean",
+    "depth_std",
+    "grad_norm",
+)
+_DEBUG_MODE_LABELS = (
+    "Normal",
+    "Processed Count",
+    "Ellipse Outlines",
+    "Spatial Density",
+    "Screen Density",
+    "Depth Mean",
+    "Depth Std",
+    "Grad Norm",
+)
 
 
 @lru_cache(maxsize=1)
@@ -141,11 +161,9 @@ def _color_u32(r: float, g: float, b: float, a: float = 1.0) -> int:
 
 
 def _debug_colorbar_mode(ui: "ViewerUI") -> str | None:
-    if bool(ui._values.get("debug_processed_count", False)):
-        return "processed_count"
-    if bool(ui._values.get("debug_grad_norm", False)):
-        return "grad_norm"
-    return None
+    index = min(max(int(ui._values.get("debug_mode", 0)), 0), len(_DEBUG_MODE_VALUES) - 1)
+    mode = _DEBUG_MODE_VALUES[index]
+    return None if mode in ("normal", "ellipse_outlines") else mode
 
 
 def _processed_count_tick_value(t: float, max_splat_steps: int) -> float:
@@ -159,6 +177,12 @@ def _grad_norm_tick_value(t: float, threshold: float) -> float:
     lo = math.log10(max(grad_threshold * constants["DEBUG_GRAD_THRESHOLD_MIN_SCALE"], grad_norm_floor))
     hi = math.log10(max(grad_threshold * constants["DEBUG_GRAD_THRESHOLD_MAX_SCALE"], grad_norm_floor))
     return math.pow(10.0, lo + _saturate(t) * (hi - lo))
+
+
+def _debug_range_tick_value(t: float, value_min: float, value_max: float) -> float:
+    lo = float(min(value_min, value_max))
+    hi = float(max(value_min, value_max))
+    return lo + _saturate(t) * (hi - lo)
 
 
 def _histogram_log_range_from_ranges(payload: object) -> tuple[float, float] | None:
@@ -195,7 +219,7 @@ GROUP_SPECS = {
         ControlSpec(_LOSS_DEBUG_ABS_SCALE_KEY, "slider_float", "Abs Diff Scale", {"value": _LOSS_DEBUG_ABS_SCALE_DEFAULT, "min": _LOSS_DEBUG_ABS_SCALE_MIN, "max": _LOSS_DEBUG_ABS_SCALE_MAX, "format": "%.3gx", "logarithmic": True}),
     ),
     "Camera": (
-        ControlSpec("move_speed", "slider_float", "Move Speed", {"value": 2.0, "min": 0.1, "max": 20.0}),
+        ControlSpec("move_speed", "input_float", "Move Speed", {"value": 2.0, "step": 0.1, "step_fast": 1.0, "format": "%.6g"}),
         ControlSpec("fov", "slider_float", "FOV", {"value": 60.0, "min": 25.0, "max": 100.0}),
     ),
     "Train Setup": (
@@ -246,7 +270,6 @@ def default_control_values(*group_names: str) -> dict[str, object]:
 RENDER_PARAM_SPECS = (
     ControlSpec("radius_scale", "slider_float", "Radius Scale", {"value": 1.0, "min": 0.25, "max": 4.0, "format": "%.3g"}),
     ControlSpec("alpha_cutoff", "slider_float", "Alpha Cutoff", {"value": 0.0039, "min": 0.0001, "max": 0.1, "format": "%.2e"}),
-    ControlSpec("max_splat_steps", "slider_int", "Max Splat Steps", {"value": 32768, "min": 16, "max": 32768}),
     ControlSpec("trans_threshold", "slider_float", "Trans Threshold", {"value": 0.005, "min": 0.001, "max": 0.2, "format": "%.2e"}),
     ControlSpec("cached_raster_grad_atomic_mode", "combo", "Cached Grad Atomics", {"value": 1, "options": _CACHED_RASTER_GRAD_ATOMIC_MODE_LABELS}),
     ControlSpec("cached_raster_grad_fixed_ro_local_range", "slider_float", "Cached Grad Pos Range", {"value": 0.01, "min": 1e-4, "max": 1024.0, "format": "%.4g", "logarithmic": True}),
@@ -254,13 +277,23 @@ RENDER_PARAM_SPECS = (
     ControlSpec("cached_raster_grad_fixed_quat_range", "slider_float", "Cached Grad Rot Range", {"value": 0.01, "min": 1e-4, "max": 1024.0, "format": "%.4g", "logarithmic": True}),
     ControlSpec("cached_raster_grad_fixed_color_range", "slider_float", "Cached Grad Color Range", {"value": 0.2, "min": 1e-4, "max": 2048.0, "format": "%.4g", "logarithmic": True}),
     ControlSpec("cached_raster_grad_fixed_opacity_range", "slider_float", "Cached Grad Opacity Range", {"value": 0.2, "min": 1e-4, "max": 2048.0, "format": "%.4g", "logarithmic": True}),
-    ControlSpec("debug_ellipse", "checkbox", "Debug Ellipse Outlines", {"value": False}),
-    ControlSpec("debug_processed_count", "checkbox", "Debug Processed Count", {"value": False}),
-    ControlSpec("debug_grad_norm", "checkbox", "Debug Grad Norm", {"value": False}),
+)
+
+DEBUG_RENDER_SPECS = (
+    ControlSpec("debug_mode", "combo", "Mode", {"value": 0, "options": _DEBUG_MODE_LABELS}),
+    ControlSpec("debug_grad_norm_threshold", "input_float", "Grad Norm Threshold", {"value": _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT, "step": 1e-5, "step_fast": 1e-4, "format": "%.6g"}),
+    ControlSpec("debug_ellipse_thickness_px", "slider_float", "Ellipse Thickness", {"value": 2.0, "min": 0.25, "max": 8.0, "format": "%.2f px"}),
+    ControlSpec("debug_density_min", "input_float", "Density Min", {"value": 0.0, "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
+    ControlSpec("debug_density_max", "input_float", "Density Max", {"value": 20.0, "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
+    ControlSpec("debug_depth_mean_min", "input_float", "Depth Mean Min", {"value": 0.0, "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
+    ControlSpec("debug_depth_mean_max", "input_float", "Depth Mean Max", {"value": 10.0, "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
+    ControlSpec("debug_depth_std_min", "input_float", "Depth Std Min", {"value": 0.0, "step": 0.01, "step_fast": 0.1, "format": "%.5g"}),
+    ControlSpec("debug_depth_std_max", "input_float", "Depth Std Max", {"value": 0.5, "step": 0.01, "step_fast": 0.1, "format": "%.5g"}),
 )
 
 _ALL_DEFAULTS = {spec.key: spec.kwargs["value"] for group in GROUP_SPECS.values() for spec in group if "value" in spec.kwargs}
 _ALL_DEFAULTS.update({spec.key: spec.kwargs["value"] for spec in RENDER_PARAM_SPECS if "value" in spec.kwargs})
+_ALL_DEFAULTS.update({spec.key: spec.kwargs["value"] for spec in DEBUG_RENDER_SPECS if "value" in spec.kwargs})
 
 
 class _ControlProxy:
@@ -493,6 +526,7 @@ class ToolkitWindow:
         self._menu_bar_height = self._draw_main_menu_bar(ui)
         self._draw_dockspace()
         self._draw_panel(ui, width, height)
+        self._draw_renderer_debug_window(ui)
         self._draw_debug_colorbar(ui, width, height)
         self._draw_histogram_window(ui)
         imgui.render()
@@ -585,15 +619,29 @@ class ToolkitWindow:
             draw_list.add_text(imgui.ImVec2(x1 + 12.0, y - 6.0), _color_u32(0.85, 0.88, 0.92, 0.95), self._debug_colorbar_tick_label(mode, t, ui))
 
     def _debug_colorbar_title(self, mode: str) -> str:
-        return "Processed Count" if mode == "processed_count" else "Grad Norm"
+        return {
+            "processed_count": "Processed Count",
+            "splat_spatial_density": "Spatial Density",
+            "splat_screen_density": "Screen Density",
+            "depth_mean": "Depth Mean",
+            "depth_std": "Depth Std",
+            "grad_norm": "Grad Norm",
+        }.get(mode, "Debug")
 
     def _debug_colorbar_tick_label(self, mode: str, t: float, ui: ViewerUI) -> str:
         if mode == "processed_count":
-            max_splat_steps = int(ui._values.get("max_splat_steps", 32768))
-            value = _processed_count_tick_value(t, max_splat_steps)
+            value = _processed_count_tick_value(t, 32768)
             return f"{int(round(value)):,}"
-        threshold = float(ui._values.get("debug_grad_norm_threshold", _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT))
-        return f"{_grad_norm_tick_value(t, threshold):.1e}"
+        if mode == "grad_norm":
+            threshold = float(ui._values.get("debug_grad_norm_threshold", _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT))
+            return f"{_grad_norm_tick_value(t, threshold):.1e}"
+        if mode in ("splat_spatial_density", "splat_screen_density"):
+            return f"{_debug_range_tick_value(t, float(ui._values.get('debug_density_min', 0.0)), float(ui._values.get('debug_density_max', 20.0))):.3g}"
+        if mode == "depth_mean":
+            return f"{_debug_range_tick_value(t, float(ui._values.get('debug_depth_mean_min', 0.0)), float(ui._values.get('debug_depth_mean_max', 10.0))):.3g}"
+        if mode == "depth_std":
+            return f"{_debug_range_tick_value(t, float(ui._values.get('debug_depth_std_min', 0.0)), float(ui._values.get('debug_depth_std_max', 0.5))):.3g}"
+        return ""
 
     def _draw_main_menu_bar(self, ui: ViewerUI) -> float:
         if not imgui.begin_main_menu_bar():
@@ -621,6 +669,9 @@ class ToolkitWindow:
                 ui._values[_INTERFACE_SCALE_KEY] = _DEFAULT_INTERFACE_SCALE_INDEX
             imgui.end_menu()
         if imgui.begin_menu("Debug"):
+            selected = bool(ui._values.get("show_renderer_debug", False))
+            if _menu_item("Renderer Debug", selected=selected):
+                ui._values["show_renderer_debug"] = not selected
             selected = bool(ui._values.get("show_histograms", False))
             if _menu_item("Histograms", selected=selected):
                 ui._values["show_histograms"] = not selected
@@ -1003,10 +1054,10 @@ class ToolkitWindow:
             return
         changed, val = imgui.drag_float(
             "Move Speed", float(ui._values["move_speed"]),
-            0.05, 0.1, 20.0, "%.2f", imgui.SliderFlags_.logarithmic.value
+            0.05, 0.0, 0.0, "%.4g", imgui.SliderFlags_.logarithmic.value
         )
         if changed:
-            ui._values["move_speed"] = max(0.1, min(val, 20.0))
+            ui._values["move_speed"] = max(val, 0.0)
         if imgui.is_item_hovered():
             imgui.set_item_tooltip("Camera movement speed (scroll wheel also adjusts)")
         changed, val = imgui.slider_float("FOV", float(ui._values["fov"]), 25.0, 100.0, "%.1f\u00b0")
@@ -1183,11 +1234,29 @@ class ToolkitWindow:
         for spec in RENDER_PARAM_SPECS[:5]:
             self._draw_control(ui, spec)
 
-        imgui.separator_text("Debug Overlays")
+        imgui.separator_text("Cached Grad Ranges")
         for spec in RENDER_PARAM_SPECS[5:]:
             self._draw_control(ui, spec)
         self._ctx_reset("render_ctx", ui, [s.key for s in RENDER_PARAM_SPECS])
         imgui.separator()
+
+    def _draw_renderer_debug_window(self, ui: ViewerUI) -> None:
+        if not bool(ui._values.get("show_renderer_debug", False)):
+            return
+        imgui.set_next_window_pos(imgui.ImVec2(self._toolkit_rect[0] + self._toolkit_rect[2] + 24.0, self._menu_bar_height + 28.0), imgui.Cond_.first_use_ever.value)
+        imgui.set_next_window_size(imgui.ImVec2(320.0, 0.0), imgui.Cond_.first_use_ever.value)
+        if self._dockspace_id != 0:
+            imgui.set_next_window_dock_id(self._dockspace_id, imgui.Cond_.first_use_ever.value)
+        opened, show = imgui.begin("Renderer Debug", True)
+        ui._values["show_renderer_debug"] = bool(show)
+        if opened:
+            for spec in DEBUG_RENDER_SPECS[:3]:
+                self._draw_control(ui, spec)
+            imgui.separator_text("Ranges")
+            for spec in DEBUG_RENDER_SPECS[3:]:
+                self._draw_control(ui, spec)
+            self._ctx_reset("renderer_debug_ctx", ui, [s.key for s in DEBUG_RENDER_SPECS])
+        imgui.end()
 
     def _section_performance(self, ui: ViewerUI) -> None:
         if not imgui.collapsing_header("Plots", imgui.TreeNodeFlags_.default_open.value):
@@ -1247,7 +1316,6 @@ class ToolkitWindow:
     _TOOLTIPS = {
         "radius_scale": "Multiplier on top of true 3DGS gaussian size for rendering",
         "alpha_cutoff": "Minimum alpha threshold — splats below this are skipped",
-        "max_splat_steps": "Maximum rasterization steps per pixel ray",
         "trans_threshold": "Transmittance threshold for early ray termination",
         "cached_raster_grad_atomic_mode": "Choose float atomics or fixed-point atomics for cached ellipsoid gradient accumulation during raster backward",
         "cached_raster_grad_fixed_ro_local_range": "Symmetric [-X, X] range for avgInvScale-normalized cached position gradients",
@@ -1255,9 +1323,15 @@ class ToolkitWindow:
         "cached_raster_grad_fixed_quat_range": "Symmetric [-X, X] range for avgInvScale-normalized cached rotation gradients",
         "cached_raster_grad_fixed_color_range": "Symmetric [-X, X] range for cached color gradients",
         "cached_raster_grad_fixed_opacity_range": "Symmetric [-X, X] range for cached opacity gradients",
-        "debug_ellipse": "Show ellipse outlines around each gaussian",
-        "debug_processed_count": "Heatmap of processed splats per pixel",
-        "debug_grad_norm": "Heatmap of gradient norms per pixel",
+        "debug_mode": "Select the renderer debug output mode",
+        "debug_grad_norm_threshold": "Reference threshold for the gradient norm heatmap",
+        "debug_ellipse_thickness_px": "Thickness used by ellipse outline debug rendering",
+        "debug_density_min": "Lower bound for density debug heatmaps",
+        "debug_density_max": "Upper bound for density debug heatmaps",
+        "debug_depth_mean_min": "Lower bound for depth mean debug heatmap",
+        "debug_depth_mean_max": "Upper bound for depth mean debug heatmap",
+        "debug_depth_std_min": "Lower bound for depth standard deviation heatmap",
+        "debug_depth_std_max": "Upper bound for depth standard deviation heatmap",
         "lr_base": "Base learning rate for all parameters",
         "lr_pos_mul": "Learning rate multiplier for position",
         "lr_scale_mul": "Learning rate multiplier for scale",
@@ -1382,9 +1456,10 @@ def build_ui(renderer) -> ViewerUI:
                 values[spec.key] = spec.kwargs["value"]
     for spec in RENDER_PARAM_SPECS:
         values[spec.key] = spec.kwargs.get("value", 0)
+    for spec in DEBUG_RENDER_SPECS:
+        values[spec.key] = spec.kwargs.get("value", 0)
     values["radius_scale"] = float(renderer.radius_scale)
     values["alpha_cutoff"] = float(renderer.alpha_cutoff)
-    values["max_splat_steps"] = int(renderer.max_splat_steps)
     values["trans_threshold"] = float(renderer.transmittance_threshold)
     values["cached_raster_grad_atomic_mode"] = 0 if getattr(renderer, "cached_raster_grad_atomic_mode", "fixed") == "float" else 1
     values["cached_raster_grad_fixed_ro_local_range"] = float(getattr(renderer, "cached_raster_grad_fixed_ro_local_range", 0.01))
@@ -1392,10 +1467,19 @@ def build_ui(renderer) -> ViewerUI:
     values["cached_raster_grad_fixed_quat_range"] = float(getattr(renderer, "cached_raster_grad_fixed_quat_range", 0.01))
     values["cached_raster_grad_fixed_color_range"] = float(getattr(renderer, "cached_raster_grad_fixed_color_range", 0.2))
     values["cached_raster_grad_fixed_opacity_range"] = float(getattr(renderer, "cached_raster_grad_fixed_opacity_range", 0.2))
-    values["debug_ellipse"] = bool(renderer.debug_show_ellipses)
-    values["debug_processed_count"] = bool(renderer.debug_show_processed_count)
-    values["debug_grad_norm"] = bool(renderer.debug_show_grad_norm)
+    debug_mode = getattr(renderer, "debug_mode", "normal")
+    values["debug_mode"] = _DEBUG_MODE_VALUES.index(debug_mode) if debug_mode in _DEBUG_MODE_VALUES else 0
     values["debug_grad_norm_threshold"] = float(getattr(renderer, "debug_grad_norm_threshold", _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT))
+    values["debug_ellipse_thickness_px"] = float(getattr(renderer, "debug_ellipse_thickness_px", 2.0))
+    density_range = tuple(getattr(renderer, "debug_density_range", (0.0, 20.0)))
+    depth_mean_range = tuple(getattr(renderer, "debug_depth_mean_range", (0.0, 10.0)))
+    depth_std_range = tuple(getattr(renderer, "debug_depth_std_range", (0.0, 0.5)))
+    values["debug_density_min"] = float(density_range[0])
+    values["debug_density_max"] = float(density_range[1])
+    values["debug_depth_mean_min"] = float(depth_mean_range[0])
+    values["debug_depth_mean_max"] = float(depth_mean_range[1])
+    values["debug_depth_std_min"] = float(depth_std_range[0])
+    values["debug_depth_std_max"] = float(depth_std_range[1])
     values["colmap_root_path"] = ""
     values["colmap_database_path"] = ""
     values["colmap_images_root"] = ""
@@ -1405,6 +1489,7 @@ def build_ui(renderer) -> ViewerUI:
     values["colmap_diffused_point_count"] = 100000
     values["colmap_diffusion_radius"] = 1.0
     values["show_histograms"] = False
+    values["show_renderer_debug"] = False
     values["hist_auto_refresh"] = True
     values["hist_bin_count"] = _HISTOGRAM_BIN_COUNT_DEFAULT
     values["hist_min_log10"] = _HISTOGRAM_MIN_LOG10_DEFAULT

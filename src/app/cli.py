@@ -46,7 +46,7 @@ def _renderer(args: argparse.Namespace, width: int, height: int) -> GaussianRend
     params = RendererParams(
         radius_scale=float(args.radius_scale),
         alpha_cutoff=float(args.alpha_cutoff),
-        max_splat_steps=int(args.max_splat_steps),
+        max_anisotropy=float(getattr(args, "max_anisotropy", 10.0)),
         transmittance_threshold=float(args.trans_threshold),
         max_prepass_memory_mb=int(args.prepass_memory_mb),
         list_capacity_multiplier=int(getattr(args, "list_capacity_multiplier", 64)),
@@ -191,7 +191,6 @@ COMMON_RENDER_ARGS = (
     A("--prepass-memory-mb", type=int, default=4096),
     A("--radius-scale", type=float, default=1.0),
     A("--alpha-cutoff", type=float, default=1.0 / 255.0),
-    A("--max-splat-steps", type=int, default=32768),
     A("--trans-threshold", type=float, default=0.005),
     A("--debug-layers", action="store_true"),
 )
