@@ -34,10 +34,20 @@ def test_render_settings_forward_debug_overlays_to_renderer(monkeypatch) -> None
     assert captured["device"] == "stub-device"
     assert captured["width"] == 64
     assert captured["height"] == 32
-    assert captured["kwargs"]["debug_show_ellipses"] is True
-    assert captured["kwargs"]["debug_show_processed_count"] is True
-    assert captured["kwargs"]["debug_show_grad_norm"] is True
-    assert "sampled5_mvee_iters" not in captured["kwargs"]
-    assert "sampled5_safety_scale" not in captured["kwargs"]
-    assert "sampled5_radius_pad_px" not in captured["kwargs"]
-    assert "sampled5_eps" not in captured["kwargs"]
+    assert captured["kwargs"] == {
+        "radius_scale": 1.0,
+        "alpha_cutoff": 1.0 / 255.0,
+        "max_splat_steps": 32768,
+        "transmittance_threshold": 0.005,
+        "list_capacity_multiplier": 64,
+        "max_prepass_memory_mb": 4096,
+        "cached_raster_grad_atomic_mode": "fixed",
+        "cached_raster_grad_fixed_ro_local_range": 0.01,
+        "cached_raster_grad_fixed_scale_range": 0.01,
+        "cached_raster_grad_fixed_quat_range": 0.01,
+        "cached_raster_grad_fixed_color_range": 0.2,
+        "cached_raster_grad_fixed_opacity_range": 0.2,
+        "debug_show_ellipses": True,
+        "debug_show_processed_count": True,
+        "debug_show_grad_norm": True,
+    }

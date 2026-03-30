@@ -141,7 +141,7 @@ class GaussianRenderer:
         "cached_raster_grads_fixed": "g_CachedRasterGradsFixed",
         "cached_raster_grads_float": "g_CachedRasterGradsFloat",
     }
-    _PREPASS_CURSOR_FIELDS = ("splatCount", "tileSize", "tileWidth", "tileHeight", "tileCount", "depthBits", "sortedCountOffset", "maxListEntries", "maxScanlineEntries", "radiusScale", "sampled5MVEEIters", "sampled5SafetyScale", "sampled5RadiusPadPx", "sampled5Eps")
+    _PREPASS_CURSOR_FIELDS = ("splatCount", "tileSize", "tileWidth", "tileHeight", "tileCount", "depthBits", "sortedCountOffset", "maxListEntries", "maxScanlineEntries", "radiusScale")
     _SHADERS = (
         ("_k_project", "kernel", "gaussian_project_stage.slang", "csProjectAndBin"),
         ("_p_compose_scanline", "pipeline", "gaussian_project_stage.slang", "csComposeScanlineKeyValues"),
@@ -195,10 +195,6 @@ class GaussianRenderer:
                 "maxListEntries": int(self._max_list_entries),
                 "maxScanlineEntries": int(self._max_scanline_entries),
                 "radiusScale": float(self.radius_scale),
-                "sampled5MVEEIters": int(self._sampled5_mvee_iters),
-                "sampled5SafetyScale": float(self._sampled5_safety_scale),
-                "sampled5RadiusPadPx": float(self._sampled5_radius_pad_px),
-                "sampled5Eps": float(self._sampled5_eps),
             }
         }
 
@@ -367,10 +363,6 @@ class GaussianRenderer:
         self._project_shader_path = Path(SHADER_ROOT / "renderer" / "gaussian_project_stage.slang")
         self._raster_shader_path = Path(SHADER_ROOT / "renderer" / "gaussian_raster_stage.slang")
         self._raster_config = self._load_raster_config(self._types_shader_path)
-        self._sampled5_mvee_iters = self._load_uint_shader_constant(self._types_shader_path, "SAMPLED5_MVEE_ITERS")
-        self._sampled5_safety_scale = self._load_float_shader_constant(self._types_shader_path, "SAMPLED5_SAFETY_SCALE")
-        self._sampled5_radius_pad_px = self._load_float_shader_constant(self._types_shader_path, "SAMPLED5_RADIUS_PAD_PX")
-        self._sampled5_eps = self._load_float_shader_constant(self._types_shader_path, "SAMPLED5_EPS")
         self.tile_size = self._raster_config.tile_size
         self.radius_scale, self.alpha_cutoff = float(radius_scale), float(alpha_cutoff)
         self.max_splat_steps, self.transmittance_threshold = int(max_splat_steps), float(transmittance_threshold)
@@ -669,7 +661,7 @@ class GaussianRenderer:
         return {"generated_entries": generated, "written_entries": written, "overflow": overflow, "capacity_limited": overflow, "depth_bits": int(self.depth_bits), "tile_count": int(self.tile_count), "splat_count": int(splat_count), "max_list_entries": int(self._max_list_entries), "max_scanline_entries": int(self._max_scanline_entries), "prepass_entry_cap": int(self._max_prepass_entries_by_budget()), "prepass_memory_mb": int(self.max_prepass_memory_mb), "stats_valid": bool(valid) if read_stats else False, "stats_latency_frames": 1}
 
     def _project_and_bin(self, encoder: spy.CommandEncoder, scene: GaussianScene, camera: Camera) -> None:
-        self._dispatch(self._k_project, encoder, spy.uint3(scene.count, 1, 1), {**self._scene_vars(), **self._screen_vars(), **self._raster_cache_vars(), "g_Keys": self._work_buffers["keys"], "g_Values": self._work_buffers["values"], "g_ListCounter": self._work_buffers["counter"], "g_SplatListBases": self._work_buffers["splat_list_bases"], "g_ScanlineWorkItems": self._work_buffers["scanline_work_items"], "g_ScanlineCounter": self._work_buffers["scanline_counter"], **self._prepass_uniforms(scene.count), **self._camera_uniforms(camera)}, "Project And Bin", 20)
+        self._dispatch(self._k_project, encoder, spy.uint3(scene.count, 1, 1), {**self._scene_vars(), **self._screen_vars(), **self._raster_cache_vars(), "g_Keys": self._work_buffers["keys"], "g_Values": self._work_buffers["values"], "g_ListCounter": self._work_buffers["counter"], "g_SplatListBases": self._work_buffers["splat_list_bases"], "g_ScanlineWorkItems": self._work_buffers["scanline_work_items"], "g_ScanlineCounter": self._work_buffers["scanline_counter"], **self._prepass_uniforms(scene.count), **self._raster_uniforms(np.zeros((3,), dtype=np.float32)), **self._camera_uniforms(camera)}, "Project And Bin", 20)
 
     def _record_project_stage(self, encoder: spy.CommandEncoder, scene: GaussianScene, camera: Camera) -> None:
         self._project_and_bin(encoder, scene, camera)

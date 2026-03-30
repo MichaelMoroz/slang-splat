@@ -10,11 +10,10 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
   - `PinholeCamera`
 - Shared splat data structures and reusable projection/raster math live under `shaders/utility/splatting`, while renderer bindings remain grouped in `shaders/renderer/gaussian_types.slang`:
   - `g_Camera` (`CameraParams`) for camera basis/position, anisotropic intrinsics (`focalPixels: float2`, `principalPoint: float2`), clip range, and lens distortion.
-  - `g_Prepass` (`PrepassParams`) for splat counts, tile/depth packing, prepass capacities, and sampled-5 MVEE controls.
+  - `g_Prepass` (`PrepassParams`) for splat counts, tile/depth packing, prepass capacities, and projection/binning limits.
   - `g_Raster` (`RasterParams`) for raster resolution, alpha/transmittance thresholds, background, and debug overlays.
 - Shared constants stay in `shaders/utility/math/constants.slang`, organized with commented sections for generic numeric floors, rendering constants, and debug-visualization tuning instead of being split into tiny constants-only files.
 - Python-side raster layout defaults are sourced from `shaders/renderer/gaussian_types.slang` by parsing the `static const uint` raster constants instead of duplicating them manually in `GaussianRenderer`.
-- Sampled-5 MVEE defaults are also shader-owned in `shaders/renderer/gaussian_types.slang`; the host reads those constants privately when populating `g_Prepass`, and they are not exposed through viewer, CLI, or public renderer settings APIs.
 - Python bindings in `GaussianRenderer` mirror this layout by building reusable grouped binding dictionaries for scene buffers, prepass uniforms, raster uniforms, and readback state.
 - Stored gaussian scale follows 3DGS semantics (`log(sigma)` per axis). Rendering decodes `exp(log_scale)` and converts sigma to finite-support ellipsoid radius with `radius_scale * 3.0`.
 
@@ -31,8 +30,8 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - Shader: `csProjectAndBin`
 - For each splat:
   - decode the stored 3DGS log-scale to sigma, convert it to finite-support ellipsoid radius with `radius_scale * 3.0`, and use that same support consistently for projection, binning, and raster evaluation,
-  - project to screen space with sampled-5 MVEE fitting,
-  - if sampled-5 fitting is unstable, use an analytic depth/scale fallback radius instead of hard max-radius fallback,
+  - solve the projected cutoff outline analytically from the ellipsoid tangent circle and fit a renormalized conic in screen space,
+  - inflate the fitted radius conservatively for visibility and scan conversion while keeping the conic on the actual alpha-cutoff boundary,
   - estimate projected radius,
   - solve scanline spans and reserve final key/value slots once per splat,
   - write per-splat list base offset,

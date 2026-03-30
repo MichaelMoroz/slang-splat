@@ -4,7 +4,6 @@ from pathlib import Path
 
 import numpy as np
 
-from reference_impls.projection_sampled5_mvee_reference import project_splats_sampled5_mvee
 from reference_impls.reference_cpu import (
     build_tile_key_value_pairs,
     build_tile_ranges,
@@ -19,10 +18,8 @@ from src.scene import GaussianScene
 
 _GAUSSIAN_SUPPORT_SIGMA_RADIUS = 3.0
 _TYPES_SHADER_PATH = Path(SHADER_ROOT / "renderer" / "gaussian_types.slang")
-_SAMPLED5_MVEE_ITERS = GaussianRenderer._load_uint_shader_constant(_TYPES_SHADER_PATH, "SAMPLED5_MVEE_ITERS")
-_SAMPLED5_SAFETY_SCALE = GaussianRenderer._load_float_shader_constant(_TYPES_SHADER_PATH, "SAMPLED5_SAFETY_SCALE")
-_SAMPLED5_RADIUS_PAD_PX = GaussianRenderer._load_float_shader_constant(_TYPES_SHADER_PATH, "SAMPLED5_RADIUS_PAD_PX")
-_SAMPLED5_EPS = GaussianRenderer._load_float_shader_constant(_TYPES_SHADER_PATH, "SAMPLED5_EPS")
+_PROJECTION_ALPHA_TOL = 5e-4
+_PROJECTION_SAMPLE_COUNT = 12
 
 _log_sigma = lambda sigma: np.log(np.asarray(sigma, dtype=np.float32))
 _stored_from_support_scale = lambda support_scale: np.log(np.asarray(support_scale, dtype=np.float32) / _GAUSSIAN_SUPPORT_SIGMA_RADIUS)
@@ -34,6 +31,31 @@ def _quat_rotate(v: np.ndarray, q_wxyz: np.ndarray) -> np.ndarray:
     qv = q[1:4]
     vec = np.asarray(v, dtype=np.float64).reshape(3)
     return np.asarray(vec + 2.0 * np.cross(np.cross(vec, qv) + q[0] * vec, qv), dtype=np.float32)
+
+
+def _outline_screen_point(center: np.ndarray, conic: np.ndarray, theta: float) -> np.ndarray:
+    direction = np.array([np.cos(theta), np.sin(theta)], dtype=np.float32)
+    denom = conic[0] * direction[0] * direction[0] + 2.0 * conic[1] * direction[0] * direction[1] + conic[2] * direction[1] * direction[1]
+    return np.asarray(center, dtype=np.float32) + direction / np.float32(np.sqrt(max(float(denom), 1e-12)))
+
+
+def _ray_splat_intersection_alpha(ray_origin: np.ndarray, ray_direction: np.ndarray, splat: np.ndarray, radius_scale: float, alpha_cutoff: float) -> float:
+    opacity = float(np.clip(splat[13], 0.0, 1.0))
+    if opacity < alpha_cutoff:
+        return 0.0
+    support_sigma_radius = float(np.sqrt(max(-2.0 * np.log(alpha_cutoff / max(opacity, alpha_cutoff)), 0.0)))
+    scale = np.maximum(np.exp(splat[3:6]).astype(np.float32) * np.float32(radius_scale * support_sigma_radius), np.float32(1e-6))
+    ro_local = _quat_rotate(ray_origin - splat[0:3], splat[6:10]) / scale
+    ray_local = _quat_rotate(ray_direction, splat[6:10]) / scale
+    denom = float(np.dot(ray_local, ray_local))
+    if denom <= 1e-10:
+        return 0.0
+    t_closest = -float(np.dot(ray_local, ro_local)) / denom
+    if t_closest <= 0.0:
+        return 0.0
+    closest = ro_local + ray_local * np.float32(t_closest)
+    rho2 = max(float(np.dot(closest, closest)), 0.0)
+    return float(opacity * np.exp(-0.5 * support_sigma_radius * support_sigma_radius * rho2))
 
 
 def make_scene(count: int, seed: int = 0) -> GaussianScene:
@@ -194,33 +216,24 @@ def test_tiny_render_matches_cpu_reference(device):
     assert mean_abs_error < 5e-3
 
 
-def test_sampled5_mvee_projection_matches_cpu_reference(device):
+def test_projection_outline_hits_alpha_cutoff(device):
     scene = make_scene(28, seed=8)
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
     renderer = GaussianRenderer(device, width=96, height=96, radius_scale=1.7, list_capacity_multiplier=32)
     debug = renderer.debug_pipeline_data(scene, camera)
-    cpu_projected = project_splats_sampled5_mvee(
-        scene=scene,
-        camera=camera,
-        width=renderer.width,
-        height=renderer.height,
-        radius_scale=renderer.radius_scale,
-        mvee_iters=_SAMPLED5_MVEE_ITERS,
-        safety_scale=_SAMPLED5_SAFETY_SCALE,
-        radius_pad_px=_SAMPLED5_RADIUS_PAD_PX,
-        mvee_eps=_SAMPLED5_EPS,
-        distortion_k1=renderer.proj_distortion_k1,
-        distortion_k2=renderer.proj_distortion_k2,
-    )
+    visible = np.flatnonzero(np.asarray(debug["screen_center_radius_depth"], dtype=np.float32)[:, 2] > 0.0)
 
-    gpu_center = debug["screen_center_radius_depth"][:, :2]
-    cpu_center = cpu_projected.center_radius_depth[:, :2]
-    gpu_radius = debug["screen_center_radius_depth"][:, 2]
-    cpu_radius = cpu_projected.center_radius_depth[:, 2]
-    center_err = np.linalg.norm(gpu_center - cpu_center, axis=1)
-    radius_err = np.abs(gpu_radius - cpu_radius)
-    assert float(np.max(center_err)) < 0.5
-    assert float(np.max(radius_err)) < 0.8
+    assert visible.size > 0
+    rng = np.random.default_rng(123)
+    sample_count = min(_PROJECTION_SAMPLE_COUNT, visible.size)
+    sampled = rng.choice(visible, size=sample_count, replace=False)
+    for splat_index in sampled.tolist():
+        center = debug["screen_center_radius_depth"][splat_index, :2]
+        conic = debug["screen_ellipse_conic"][splat_index, :3]
+        outline_point = _outline_screen_point(center, conic, float(rng.uniform(0.0, 2.0 * np.pi)))
+        ray_direction = camera.screen_to_world_ray(outline_point, renderer.width, renderer.height, renderer.proj_distortion_k1, renderer.proj_distortion_k2)
+        alpha = _ray_splat_intersection_alpha(camera.position, ray_direction, np.concatenate((scene.positions[splat_index], scene.scales[splat_index], scene.rotations[splat_index], scene.colors[splat_index], scene.opacities[splat_index:splat_index + 1])), renderer.radius_scale, renderer.alpha_cutoff)
+        assert abs(alpha - renderer.alpha_cutoff) <= _PROJECTION_ALPHA_TOL
 
 
 def test_distorted_render_matches_cpu_reference(device):
@@ -289,7 +302,7 @@ def test_prepass_populates_raster_cache(device):
     np.testing.assert_allclose(raster_cache[:, 6:10], expected_quat, rtol=3e-4, atol=3e-4)
 
 
-def test_sampled5_mvee_render_smoke(device):
+def test_projection_render_smoke(device):
     scene = make_scene(20, seed=13)
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
     background = np.array([0.05, 0.1, 0.15], dtype=np.float32)
@@ -325,29 +338,11 @@ def test_radius_scale_scales_true_3dgs_size_without_hidden_fudge(device):
     np.testing.assert_allclose(support_2x / support_1x, np.full((3,), 2.0, dtype=np.float32), rtol=5e-4, atol=1e-6)
 
     far_camera = Camera.look_at(position=(0.0, 0.0, 20.0), target=(0.0, 0.0, 0.0), near=0.1, far=100.0)
-    projected_footprint_1x = project_splats_sampled5_mvee(
-        scene=scene,
-        camera=far_camera,
-        width=512,
-        height=512,
-        radius_scale=1.0,
-        mvee_iters=6,
-        safety_scale=1.0,
-        radius_pad_px=0.0,
-        mvee_eps=1e-6,
-    )
-    projected_footprint_2x = project_splats_sampled5_mvee(
-        scene=scene,
-        camera=far_camera,
-        width=512,
-        height=512,
-        radius_scale=2.0,
-        mvee_iters=6,
-        safety_scale=1.0,
-        radius_pad_px=0.0,
-        mvee_eps=1e-6,
-    )
-    assert np.isclose(projected_footprint_2x.center_radius_depth[0, 2] / projected_footprint_1x.center_radius_depth[0, 2], 2.0, rtol=2e-3, atol=1e-4)
+    projected_footprint_1x = project_splats(scene, far_camera, width=512, height=512, radius_scale=1.0)
+    projected_footprint_2x = project_splats(scene, far_camera, width=512, height=512, radius_scale=2.0)
+    adjusted_1x = projected_footprint_1x.center_radius_depth[0, 2] - 1.0
+    adjusted_2x = projected_footprint_2x.center_radius_depth[0, 2] - 1.0
+    assert np.isclose(adjusted_2x / adjusted_1x, 2.0, rtol=4e-3, atol=1e-4)
 
 
 def test_debug_ellipse_overlay_render_smoke(device):

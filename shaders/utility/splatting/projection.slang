@@ -1,5 +1,5 @@
+import "utility/math/camera.slang";
 import "utility/math/constants.slang";
-import "utility/math/matrix.slang";
 import "utility/splatting/common.slang";
 
 float screen_radius_cap(float2 viewport)
@@ -7,132 +7,184 @@ float screen_radius_cap(float2 viewport)
     return max(max(viewport.x, viewport.y), MIN_SCREEN_RADIUS_PX);
 }
 
-bool generate_silhouette_points_local5(float3 roLocal, float eps, out float3 points[MVEE_POINT_COUNT])
+// 5-point conic fit via renormalization: maps two points to canonical positions,
+// reducing the 5x5 system to 3x3. Returns coefficients for Ax^2+2Bxy+Cy^2+Dx+Ey = 1.
+bool solve_conic_renorm(float2 points[ELLIPSE_POINT_COUNT], float eps, out float solution[5])
 {
-    [unroll] for (uint i = 0; i < MVEE_POINT_COUNT; i++) points[i] = 0.0;
+    [unroll] for (uint i = 0u; i < 5u; i++) solution[i] = 0.0;
 
-    float d = length(roLocal);
-    if (d <= 1.0 + eps) return false;
+    float sx = points[0].x - points[1].x;
+    float sy = points[1].y - points[0].y;
+    if (abs(sx) <= eps || abs(sy) <= eps) return false;
 
-    float3 n = roLocal / d;
-    float3 circleCenter = n / d;
-    float circleRadius = sqrt(max(1.0 - 1.0 / (d * d), 0.0));
-    float3 u;
-    float3 v;
-    if (n.z < SOUTH_POLE_DOT_FLOOR)
-    {
-        u = float3(0.0, -1.0, 0.0);
-        v = float3(-1.0, 0.0, 0.0);
-    } else {
-        float a = 1.0 / (1.0 + n.z);
-        float b = -n.x * n.y * a;
-        u = float3(1.0 - n.x * n.x * a, b, -n.x);
-        v = float3(b, 1.0 - n.y * n.y * a, -n.y);
-    }
-    if (!all(isfinite(u)) || !all(isfinite(v))) return false;
+    float invSx = 1.0 / sx;
+    float invSy = 1.0 / sy;
+    float offsetX = points[1].x;
+    float offsetY = points[0].y;
 
-    [unroll] for (uint i = 0; i < MVEE_POINT_COUNT; i++)
-    {
-        float theta = TAU_RADIANS * (float(i) / float(MVEE_POINT_COUNT));
-        float s, c;
-        sincos(theta, s, c);
-        points[i] = circleCenter + circleRadius * (c * u + s * v);
-    }
+    float u2 = (points[2].x - offsetX) * invSx;
+    float v2 = (points[2].y - offsetY) * invSy;
+    float u3 = (points[3].x - offsetX) * invSx;
+    float v3 = (points[3].y - offsetY) * invSy;
+    float u4 = (points[4].x - offsetX) * invSx;
+    float v4 = (points[4].y - offsetY) * invSy;
+
+    float m00 = u2 * u2 - u2;
+    float m01 = 2.0 * u2 * v2;
+    float m02 = v2 * v2 - v2;
+    float r0 = u2 + v2 - 1.0;
+    float m10 = u3 * u3 - u3;
+    float m11 = 2.0 * u3 * v3;
+    float m12 = v3 * v3 - v3;
+    float r1 = u3 + v3 - 1.0;
+    float m20 = u4 * u4 - u4;
+    float m21 = 2.0 * u4 * v4;
+    float m22 = v4 * v4 - v4;
+    float r2 = u4 + v4 - 1.0;
+
+    // Forward elimination (no pivoting)
+    if (abs(m00) <= eps) return false;
+    float invM00 = 1.0 / m00;
+    m01 *= invM00;
+    m02 *= invM00;
+    r0 *= invM00;
+    float factor10 = m10;
+    m11 -= factor10 * m01;
+    m12 -= factor10 * m02;
+    r1 -= factor10 * r0;
+    float factor20 = m20;
+    m21 -= factor20 * m01;
+    m22 -= factor20 * m02;
+    r2 -= factor20 * r0;
+    if (abs(m11) <= eps) return false;
+    float invM11 = 1.0 / m11;
+    m12 *= invM11;
+    r1 *= invM11;
+    float factor21 = m21;
+    m22 -= factor21 * m12;
+    r2 -= factor21 * r1;
+    if (abs(m22) <= eps) return false;
+    r2 /= m22;
+
+    // Back-substitution in renormalized space
+    float conicC = r2;
+    float conicB = r1 - m12 * conicC;
+    float conicA = r0 - m01 * conicB - m02 * conicC;
+    float conicD = -(conicA + 1.0);
+    float conicE = -(conicC + 1.0);
+
+    // Back-convert to original coordinate space
+    float invSx2 = invSx * invSx;
+    float invSy2 = invSy * invSy;
+    float invSxSy = invSx * invSy;
+    float coeffA = conicA * invSx2;
+    float coeffB = conicB * invSxSy;
+    float coeffC = conicC * invSy2;
+    float coeffD = -2.0 * coeffA * offsetX - 2.0 * coeffB * offsetY + conicD * invSx;
+    float coeffE = -2.0 * coeffB * offsetX - 2.0 * coeffC * offsetY + conicE * invSy;
+    float coeffF = coeffA * offsetX * offsetX + 2.0 * coeffB * offsetX * offsetY + coeffC * offsetY * offsetY - conicD * invSx * offsetX - conicE * invSy * offsetY + 1.0;
+    if (abs(coeffF) <= eps) return false;
+
+    // Negate F: renorm internally solves RHS=-1, production convention is RHS=+1
+    float invF = -1.0 / coeffF;
+    solution[0] = coeffA * invF;
+    solution[1] = coeffB * invF;
+    solution[2] = coeffC * invF;
+    solution[3] = coeffD * invF;
+    solution[4] = coeffE * invF;
     return true;
 }
 
-bool fit_mvee_5pt_fixed_iters(float2 points[MVEE_POINT_COUNT], uint mveeIters, float eps, out MveeFitResult fitOut)
+bool compute_ellipsoid_outline_ellipse(Ellipsoid ellipsoid, PinholeCamera camera, out Ellipse ellipse)
 {
-    fitOut.clear();
-    float2 pointsNorm[MVEE_POINT_COUNT];
-    float2 normCenter = 0.0;
-    [unroll] for (uint i = 0; i < MVEE_POINT_COUNT; i++) normCenter += points[i];
-    normCenter *= (1.0 / float(MVEE_POINT_COUNT));
+    ellipse.centerPx = 0.0;
+    ellipse.radiusPx = 0.0;
+    ellipse.conic = 0.0;
+    ellipse.bboxExtent = 0.0;
 
-    float normScale = 0.0;
-    [unroll] for (uint i = 0; i < MVEE_POINT_COUNT; i++) normScale = max(normScale, length(points[i] - normCenter));
-    if (normScale <= eps) return false;
-    float invNormScale = 1.0 / normScale;
-    [unroll] for (uint i = 0; i < MVEE_POINT_COUNT; i++) pointsNorm[i] = (points[i] - normCenter) * invNormScale;
+    float2 screenCenter = 0.0;
+    if (!camera.project_world_to_screen(ellipsoid.centerWorld, screenCenter)) return false;
 
-    float weights[MVEE_POINT_COUNT];
-    [unroll] for (uint i = 0; i < MVEE_POINT_COUNT; i++) weights[i] = 1.0 / float(MVEE_POINT_COUNT);
+    // Build the tangent circle on the unit ellipsoid in support-local space.
+    float3 viewOriginLocal = ellipsoid.projectedRoLocal;
+    float viewDistance = length(viewOriginLocal);
+    if (viewDistance <= 1.0 + ELLIPSE_EPS) return false;
 
-    [unroll] for (uint iter = 0; iter < MVEE_MAX_ITERS; iter++)
+    float3 viewDirLocal = viewOriginLocal / viewDistance;
+    float3 tangentCircleCenter = viewDirLocal / viewDistance;
+    float tangentCircleRadius = sqrt(max(1.0 - 1.0 / (viewDistance * viewDistance), 0.0));
+    float3 tangentAxis = abs(viewDirLocal.z) < 0.999 ? float3(0.0, 0.0, 1.0) : float3(0.0, 1.0, 0.0);
+    float3 tangentBasisU = cross(tangentAxis, viewDirLocal);
+    float tangentBasisULength = length(tangentBasisU);
+    if (tangentBasisULength <= ELLIPSE_EPS || !isfinite(tangentBasisULength)) return false;
+    tangentBasisU /= tangentBasisULength;
+    float3 tangentBasisV = cross(viewDirLocal, tangentBasisU);
+    float tangentBasisVLength = length(tangentBasisV);
+    if (tangentBasisVLength <= ELLIPSE_EPS || !isfinite(tangentBasisVLength)) return false;
+    tangentBasisV /= tangentBasisVLength;
+
+    float2 outlinePoints[ELLIPSE_POINT_COUNT];
+    float2 outlineMin = float2(1e30, 1e30);
+    float2 outlineMax = float2(-1e30, -1e30);
+    [unroll] for (uint i = 0u; i < ELLIPSE_POINT_COUNT; i++)
     {
-        if (iter >= mveeIters) break;
-
-        float3x3 xMat = 0.0;
-        [unroll] for (uint i = 0; i < MVEE_POINT_COUNT; i++)
-        {
-            float3 q = float3(pointsNorm[i], 1.0);
-            xMat += weights[i] * float3x3(
-                q.x * q.x, q.x * q.y, q.x,
-                q.y * q.x, q.y * q.y, q.y,
-                q.x, q.y, 1.0
-            );
-        }
-
-        float3x3 xInv = 0.0;
-        if (!inverse3x3(xMat, eps, xInv)) return false;
-
-        uint maxIdx = 0;
-        float maxVal = -1.0;
-        [unroll] for (uint i = 0; i < MVEE_POINT_COUNT; i++)
-        {
-            float3 q = float3(pointsNorm[i], 1.0);
-            float3 xq = mul(xInv, q);
-            float m = dot(q, xq);
-            if (m > maxVal)
-            {
-                maxVal = m;
-                maxIdx = i;
-            }
-        }
-
-        float denom = MVEE_AFFINE_DIMENSION * (maxVal - 1.0);
-        if (denom <= eps) break;
-        float alpha = saturate((maxVal - MVEE_AFFINE_DIMENSION) / denom);
-        [unroll] for (uint i = 0; i < MVEE_POINT_COUNT; i++) weights[i] *= (1.0 - alpha);
-        weights[maxIdx] += alpha;
+        float theta = TAU_RADIANS * (float(i) / float(ELLIPSE_POINT_COUNT));
+        float s, c;
+        sincos(theta, s, c);
+        float3 localPoint = tangentCircleCenter + tangentCircleRadius * (c * tangentBasisU + s * tangentBasisV);
+        float3 worldPoint = local_point_to_world(localPoint, ellipsoid.centerWorld, ellipsoid.projectedInvScale, ellipsoid.rotation);
+        float2 screenPoint = 0.0;
+        if (!camera.project_world_to_screen(worldPoint, screenPoint)) return false;
+        outlinePoints[i] = screenPoint;
+        outlineMin = min(outlineMin, screenPoint);
+        outlineMax = max(outlineMax, screenPoint);
     }
+    outlineMin = min(outlineMin, screenCenter);
+    outlineMax = max(outlineMax, screenCenter);
+    if (outlineMax.x < 0.0 || outlineMin.x >= camera.params.viewport.x || outlineMax.y < 0.0 || outlineMin.y >= camera.params.viewport.y) return false;
 
-    float2 center = 0.0;
-    [unroll] for (uint i = 0; i < MVEE_POINT_COUNT; i++) center += weights[i] * pointsNorm[i];
+    // Solve for the ellipse conic coefficients in normalized space, then convert back to pixel space.
+    float2 bboxCenter = 0.5 * (outlineMin + outlineMax);
+    float2 bboxHalfExtent = max(0.5 * (outlineMax - outlineMin), float2(ELLIPSE_EPS));
+    float2 normPoints[ELLIPSE_POINT_COUNT];
+    [unroll] for (uint i = 0u; i < ELLIPSE_POINT_COUNT; i++) normPoints[i] = (outlinePoints[i] - bboxCenter) / bboxHalfExtent;
 
-    float3 secondMoment = 0.0;
-    [unroll] for (uint i = 0; i < MVEE_POINT_COUNT; i++)
-    {
-        float2 d = pointsNorm[i] - center;
-        secondMoment += weights[i] * float3(d.x * d.x, d.x * d.y, d.y * d.y);
-    }
-    secondMoment += float3(eps, 0.0, eps);
+    float solution[5];
+    if (!solve_conic_renorm(normPoints, ELLIPSE_EPS, solution)) return false;
 
-    float detS = secondMoment.x * secondMoment.z - secondMoment.y * secondMoment.y;
-    if (detS <= eps) return false;
-
-    float3 conicNorm = 0.5 * float3(secondMoment.z, -secondMoment.y, secondMoment.x) / detS;
-    float trace = conicNorm.x + conicNorm.z;
+    float3 conicNorm = float3(solution[0], solution[1], solution[2]);
+    float2 linear = float2(solution[3], solution[4]);
     float detA = conicNorm.x * conicNorm.z - conicNorm.y * conicNorm.y;
-    float disc = sqrt(max(0.25 * trace * trace - detA, 0.0));
-    float l0 = max(0.5 * trace + disc, eps);
-    float l1 = max(0.5 * trace - disc, eps);
-    float axis0 = rsqrt(l0);
-    float axis1 = rsqrt(l1);
+    if (detA <= ELLIPSE_EPS) return false;
 
-    float maxQuad = 0.0;
-    [unroll] for (uint i = 0; i < MVEE_POINT_COUNT; i++)
-    {
-        float2 d = pointsNorm[i] - center;
-        float quad = dot(float3(d.x * d.x, d.x * d.y, d.y * d.y), float3(conicNorm.x, 2.0 * conicNorm.y, conicNorm.z));
-        maxQuad = max(maxQuad, quad);
-    }
-    float inflate = (maxQuad > 1.0) ? sqrt(maxQuad) : 1.0;
-    float invInflate2 = 1.0 / max(inflate * inflate, eps);
-    fitOut.centerPx = normCenter + center * normScale;
-    fitOut.radiusPx = max(axis0, axis1) * inflate * normScale;
-    fitOut.conic = conicNorm * (invInflate2 / max(normScale * normScale, eps));
-    return all(isfinite(fitOut.centerPx)) && isfinite(fitOut.radiusPx) && fitOut.radiusPx > 0.0;
+    float2 ellipseCenter = 0.5 * float2(
+        (conicNorm.y * linear.y - conicNorm.z * linear.x) / detA,
+        (conicNorm.y * linear.x - conicNorm.x * linear.y) / detA
+    );
+    float2 centerTimesA = float2(
+        conicNorm.x * ellipseCenter.x + conicNorm.y * ellipseCenter.y,
+        conicNorm.y * ellipseCenter.x + conicNorm.z * ellipseCenter.y
+    );
+    float centerScale = 1.0 + dot(ellipseCenter, centerTimesA);
+    if (centerScale <= ELLIPSE_EPS) return false;
+    conicNorm /= centerScale;
+
+    float trace = conicNorm.x + conicNorm.z;
+    detA = conicNorm.x * conicNorm.z - conicNorm.y * conicNorm.y;
+    if (detA <= ELLIPSE_EPS || conicNorm.x <= ELLIPSE_EPS || conicNorm.z <= ELLIPSE_EPS) return false;
+    float disc = sqrt(max(0.25 * trace * trace - detA, 0.0));
+    float axis0 = rsqrt(max(0.5 * trace + disc, ELLIPSE_EPS));
+    float axis1 = rsqrt(max(0.5 * trace - disc, ELLIPSE_EPS));
+
+    ellipse.centerPx = bboxCenter + ellipseCenter * bboxHalfExtent;
+    ellipse.radiusPx = max(axis0 * bboxHalfExtent.x, axis1 * bboxHalfExtent.y);
+    ellipse.conic = float3(
+        conicNorm.x / max(bboxHalfExtent.x * bboxHalfExtent.x, ELLIPSE_EPS),
+        conicNorm.y / max(bboxHalfExtent.x * bboxHalfExtent.y, ELLIPSE_EPS),
+        conicNorm.z / max(bboxHalfExtent.y * bboxHalfExtent.y, ELLIPSE_EPS)
+    );
+    ellipse.bboxExtent = bboxHalfExtent;
+    return all(isfinite(ellipse.centerPx)) && isfinite(ellipse.radiusPx) && all(isfinite(ellipse.conic)) && ellipse.radiusPx > 0.0;
 }
 
 bool try_prepare_conic_for_binning(inout Ellipse ellipse, float halfTile)

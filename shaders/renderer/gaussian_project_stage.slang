@@ -117,75 +117,35 @@ void csProjectAndBin(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     PinholeCamera camera = PinholeCamera.from_params(g_Camera);
     Gaussian3D gaussian = load_gaussian3d(splatId);
-    Ellipsoid ellipsoid = build_ellipsoid(g_Camera, g_Prepass.radiusScale, gaussian);
     CachedEllipsoid cached = build_cached_ellipsoid(g_Camera, g_Prepass.radiusScale, gaussian.position, gaussian.logScale, gaussian.rotation);
     float4 rasterColorAlpha = float4(
         gaussian.colorAlpha.xyz,
         build_raster_fused_opacity(g_Camera, g_Prepass.radiusScale, gaussian.position, gaussian.logScale, gaussian.colorAlpha.w)
     );
-    float3 cameraOffset = ellipsoid.centerWorld - camera.position_world();
+    if (rasterColorAlpha.w < g_Raster.alphaCutoff) return;
+
+    // Project only splats whose cutoff isosurface can contribute within the camera frustum.
+    float supportSigmaRadius = sqrt(max(-2.0 * log(g_Raster.alphaCutoff / rasterColorAlpha.w), 0.0));
+    Ellipsoid projectionEllipsoid = build_ellipsoid_with_support(g_Camera, g_Prepass.radiusScale, supportSigmaRadius, gaussian);
+    float3 cameraOffset = projectionEllipsoid.centerWorld - camera.position_world();
     float3 camPos = camera.world_to_camera(cameraOffset);
     float camDistance = length(cameraOffset);
     float depthValue = camPos.z;
 
-    float invDepth = 1.0 / max(depthValue, SMALL_VALUE);
-    float2 fitCenter = 0.0;
-    if (!camera.project_camera_to_screen(camPos, fitCenter)) fitCenter = camera.project_camera_to_screen_linear(camPos);
-    float maxAxisWorld = max(ellipsoid.projectedScale.x, max(ellipsoid.projectedScale.y, ellipsoid.projectedScale.z));
-    float fallbackFocal = max(g_Camera.focalPixels.x, g_Camera.focalPixels.y);
-    float radiusCap = screen_radius_cap(g_Camera.viewport);
-    float fallbackRadius = fallbackFocal * maxAxisWorld * invDepth;
-    float fitRadius = clamp(
-        fallbackRadius * g_Prepass.sampled5SafetyScale + g_Prepass.sampled5RadiusPadPx,
-        MIN_SCREEN_RADIUS_PX,
-        radiusCap
-    );
-    float invFitRadius2 = 1.0 / max(fitRadius * fitRadius, SMALL_VALUE);
-    float3 fitConic = float3(invFitRadius2, 0.0, invFitRadius2);
-
-    float3 localPoints[MVEE_POINT_COUNT];
-    bool silhouetteOk = generate_silhouette_points_local5(ellipsoid.projectedRoLocal, g_Prepass.sampled5Eps, localPoints);
-    if (silhouetteOk)
-    {
-        float2 screenPoints[MVEE_POINT_COUNT];
-        [unroll] for (uint i = 0; i < MVEE_POINT_COUNT; i++)
-        {
-            float3 worldPt = local_point_to_world(localPoints[i], ellipsoid.centerWorld, ellipsoid.projectedInvScale, ellipsoid.rotation);
-            float2 screenPt = 0.0;
-            bool pointOk = camera.project_world_to_screen(worldPt, screenPt);
-            screenPoints[i] = screenPt;
-            silhouetteOk = silhouetteOk && pointOk;
-        }
-
-        if (silhouetteOk)
-        {
-            MveeFitResult mveeFit;
-            bool fitOk = fit_mvee_5pt_fixed_iters(screenPoints, min(g_Prepass.sampled5MVEEIters, MVEE_MAX_ITERS), g_Prepass.sampled5Eps, mveeFit);
-            if (fitOk && all(isfinite(mveeFit.centerPx)) && isfinite(mveeFit.radiusPx) && all(isfinite(mveeFit.conic)))
-            {
-                fitCenter = mveeFit.centerPx;
-                fitRadius = clamp(
-                    mveeFit.radiusPx * g_Prepass.sampled5SafetyScale + g_Prepass.sampled5RadiusPadPx,
-                    MIN_SCREEN_RADIUS_PX,
-                    radiusCap
-                );
-                float conicScale = fitRadius / max(mveeFit.radiusPx, g_Prepass.sampled5Eps);
-                float invScale2 = 1.0 / max(conicScale * conicScale, g_Prepass.sampled5Eps);
-                fitConic = mveeFit.conic * invScale2;
-            }
-        }
-    }
+    Ellipse projectedEllipse;
+    if (!compute_ellipsoid_outline_ellipse(projectionEllipsoid, camera, projectedEllipse)) return;
+    projectedEllipse.bboxExtent = float2(projectedEllipse.radiusPx, projectedEllipse.radiusPx);
 
     SplatBinRequest binRequest;
     binRequest.splatId = splatId;
     binRequest.camDistance = camDistance;
     binRequest.depthValue = depthValue;
     binRequest.depthCode = quantize_depth(g_Camera, g_Prepass, camDistance);
-    binRequest.ellipse.init(fitCenter, fitRadius, fitConic);
+    binRequest.ellipse = projectedEllipse;
     if (!emit_splat_bins(binRequest)) return;
-    g_ScreenCenterRadiusDepth[splatId] = float4(fitCenter, fitRadius, camDistance);
+    g_ScreenCenterRadiusDepth[splatId] = float4(projectedEllipse.centerPx, projectedEllipse.radiusPx, camDistance);
     g_ScreenColorAlpha[splatId] = gaussian.colorAlpha;
-    g_ScreenEllipseConic[splatId] = float4(fitConic, ellipsoid.opacityScale);
+    g_ScreenEllipseConic[splatId] = float4(projectedEllipse.conic, projectionEllipsoid.opacityScale);
     g_SplatVisible[splatId] = 1u;
     store_raster_cache(splatId, cached, rasterColorAlpha);
 }

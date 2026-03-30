@@ -1,10 +1,8 @@
 import "utility/math/camera.slang";
 import "utility/math/constants.slang";
-import "utility/math/matrix.slang";
 import "utility/math/quaternion.slang";
 
-static const uint MVEE_POINT_COUNT = 5u;
-static const uint MVEE_MAX_ITERS = 8u;
+static const uint ELLIPSE_POINT_COUNT = 5u;
 static const float GAUSSIAN_SUPPORT_SIGMA_RADIUS = 3.0;
 
 struct ScanlineWorkItem
@@ -31,10 +29,6 @@ struct PrepassParams
     uint maxListEntries;
     uint maxScanlineEntries;
     float radiusScale;
-    uint sampled5MVEEIters;
-    float sampled5SafetyScale;
-    float sampled5RadiusPadPx;
-    float sampled5Eps;
 };
 
 struct RasterParams
@@ -180,21 +174,6 @@ struct ScanlineSpan
     uint lineCount;
 };
 
-struct MveeFitResult
-{
-    float2 centerPx;
-    float radiusPx;
-    float3 conic;
-
-    [mutating]
-    void clear()
-    {
-        centerPx = 0.0;
-        radiusPx = 0.0;
-        conic = 0.0;
-    }
-};
-
 struct SplatBinRequest
 {
     uint splatId;
@@ -221,11 +200,11 @@ float3 local_point_to_world(float3 pLocal, float3 worldPos, float3 invScale, flo
 }
 
 [Differentiable]
-Ellipsoid build_ellipsoid(no_diff CameraParams cameraParams, no_diff float radiusScale, Gaussian3D gaussian)
+Ellipsoid build_ellipsoid_with_support(no_diff CameraParams cameraParams, no_diff float radiusScale, no_diff float supportSigmaRadius, Gaussian3D gaussian)
 {
     PinholeCamera camera = PinholeCamera.from_params(cameraParams);
     float3 sigma = exp(gaussian.logScale);
-    float3 rawSupportScale = max(sigma * (radiusScale * GAUSSIAN_SUPPORT_SIGMA_RADIUS), float3(SMALL_VALUE));
+    float3 rawSupportScale = max(sigma * (radiusScale * supportSigmaRadius), float3(SMALL_VALUE));
     Ellipsoid ellipsoid;
     ellipsoid.centerWorld = gaussian.position;
     ellipsoid.rasterScale = rawSupportScale;
@@ -238,4 +217,10 @@ Ellipsoid build_ellipsoid(no_diff CameraParams cameraParams, no_diff float radiu
     ellipsoid.projectedRoLocal = ellipsoid.rasterRoLocal;
     ellipsoid.opacityScale = 1.0;
     return ellipsoid;
+}
+
+[Differentiable]
+Ellipsoid build_ellipsoid(no_diff CameraParams cameraParams, no_diff float radiusScale, Gaussian3D gaussian)
+{
+    return build_ellipsoid_with_support(cameraParams, radiusScale, GAUSSIAN_SUPPORT_SIGMA_RADIUS, gaussian);
 }
