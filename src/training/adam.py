@@ -58,6 +58,9 @@ class AdamOptimizer:
         self.adam = adam_hparams
         self.runtime = runtime_hparams
 
+    def ensure_moment_capacity(self, packed_param_count: int) -> None:
+        self._ensure_state_buffers(packed_param_count)
+
     def zero_moments(self, packed_param_count: int) -> None:
         self._ensure_state_buffers(packed_param_count)
         self._buffers["adam_moments"].copy_from_numpy(np.zeros((self._capacity, 2), dtype=np.float32))

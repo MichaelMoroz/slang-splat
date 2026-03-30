@@ -13,6 +13,7 @@ from ..renderer import Camera, GaussianRenderer
 from ..scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 from .adam import AdamOptimizer, AdamRuntimeHyperParams
 from .optimizer import GaussianOptimizer
+from .schedule import resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, should_run_maintenance_step
 
 TRAIN_DOWNSCALE_MODE_AUTO = 0
 TRAIN_DOWNSCALE_MAX_FACTOR = 16
@@ -102,11 +103,20 @@ class StabilityHyperParams:
 class TrainingHyperParams:
     background: tuple[float, float, float] = (0.0, 0.0, 0.0); near: float = 0.1; far: float = 120.0
     scale_l2_weight: float = 0.0; scale_abs_reg_weight: float = 0.01; opacity_reg_weight: float = 0.01
+    lr_schedule_enabled: bool = True; lr_schedule_start_lr: float = 1e-3; lr_schedule_end_lr: float = 1e-4; lr_schedule_steps: int = 30_000
+    maintenance_interval: int = 200; maintenance_growth_ratio: float = 0.05; maintenance_alpha_cull_threshold: float = 1e-3
     max_gaussians: int = 5_900_000; train_downscale_mode: int = 1; train_auto_start_downscale: int = 16
     train_downscale_base_iters: int = 200; train_downscale_iter_step: int = 50; train_downscale_max_iters: int = 30_000
     train_downscale_factor: int = 1
 
     def __post_init__(self) -> None:
+        self.lr_schedule_enabled = bool(self.lr_schedule_enabled)
+        self.lr_schedule_start_lr = max(float(self.lr_schedule_start_lr), 1e-8)
+        self.lr_schedule_end_lr = max(float(self.lr_schedule_end_lr), 1e-8)
+        self.lr_schedule_steps = max(int(self.lr_schedule_steps), 1)
+        self.maintenance_interval = max(int(self.maintenance_interval), 1)
+        self.maintenance_growth_ratio = max(float(self.maintenance_growth_ratio), 0.0)
+        self.maintenance_alpha_cull_threshold = min(max(float(self.maintenance_alpha_cull_threshold), 1e-8), 1.0)
         mode = int(self.train_downscale_mode)
         legacy_factor = min(max(int(self.train_downscale_factor), 1), TRAIN_DOWNSCALE_MAX_FACTOR)
         if mode == 1 and legacy_factor != 1:
@@ -122,19 +132,24 @@ class TrainingHyperParams:
 @dataclass(slots=True)
 class TrainingState:
     step: int = 0; last_loss: float = float("nan"); avg_loss: float = float("nan"); last_mse: float = float("nan"); avg_mse: float = float("nan"); last_psnr: float = float("nan"); avg_psnr: float = float("nan")
-    last_frame_index: int = -1; last_instability: str = ""
+    last_frame_index: int = -1; last_instability: str = ""; last_base_lr: float = float("nan")
 
 
 class GaussianTrainer:
     _LOSS_SLOT_TOTAL = 0
     _LOSS_SLOT_MSE = 1
     _BATCH_STEP_INFO_STRIDE = 4
+    _U32_BYTES = 4
     _KERNEL_ENTRIES = {
         "downscale_target": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csResampleDownscaledTargetNearest"),
         "clear_loss": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csClearLossBuffer"),
         "loss_forward": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csComputeL1LossForward"),
         "loss_backward": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csComputeL1LossBackward"),
         "cache_step_info": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csCacheTrainingStepInfo"),
+        "clear_clone_counts": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csClearCloneCounts"),
+        "clear_maintenance_counters": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csClearMaintenanceCounters"),
+        "prepare_maintenance_counts": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csPrepareMaintenanceCounts"),
+        "rewrite_maintenance_splats": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csRewriteMaintenanceSplats"),
     }
 
     def _pixel_thread_count(self) -> spy.uint3:
@@ -157,6 +172,20 @@ class GaussianTrainer:
     def training_resolution(self, frame_index: int = 0, step: int | None = None) -> tuple[int, int]:
         width, height = self.frame_size(frame_index)
         return resolve_training_resolution(width, height, self.effective_train_downscale_factor(step))
+
+    def current_base_lr(self, step: int | None = None) -> float:
+        resolved_step = self.state.step if step is None else int(step)
+        return resolve_cosine_base_learning_rate(self.training, resolved_step)
+
+    def maintenance_due(self, step: int | None = None) -> bool:
+        resolved_step = self.state.step if step is None else int(step)
+        return should_run_maintenance_step(self.training, resolved_step)
+
+    def clone_probability_threshold(self, splat_count: int | None = None, width: int | None = None, height: int | None = None) -> float:
+        resolved_splats = self._scene_count if splat_count is None else int(splat_count)
+        resolved_width = self.renderer.width if width is None else int(width)
+        resolved_height = self.renderer.height if height is None else int(height)
+        return resolve_clone_probability_threshold(self.training, resolved_splats, resolved_width * resolved_height)
 
     def get_frame_target_texture(
         self,
@@ -200,6 +229,9 @@ class GaussianTrainer:
             encoder=encoder,
             camera=frame_camera,
             background=background,
+            clone_counts_buffer=self._maintenance_buffers["clone_counts"],
+            clone_select_probability=self.clone_probability_threshold(),
+            clone_seed=self._seed + self.state.step,
         )
 
     def _dispatch_raster_backward(self, encoder: spy.CommandEncoder, frame_camera: Camera, background: np.ndarray) -> None:
@@ -225,13 +257,36 @@ class GaussianTrainer:
             return np.zeros((0, self._BATCH_STEP_INFO_STRIDE), dtype=np.float32)
         return np.asarray(values[: count * self._BATCH_STEP_INFO_STRIDE], dtype=np.float32).reshape(count, self._BATCH_STEP_INFO_STRIDE).copy()
 
+    def _read_maintenance_counter(self, name: str) -> int:
+        return int(buffer_to_numpy(self._maintenance_buffers[name], np.uint32)[0])
+
+    def _maintenance_vars(self, *, dst_splat_count: int = 0, append_splat_count: int = 0, survivor_count: int = 0) -> dict[str, object]:
+        return {
+            "g_SrcSplatParams": self.renderer.scene_buffers["splat_params"],
+            "g_SrcAdamMoments": self.adam_optimizer.buffers["adam_moments"],
+            "g_DstSplatParams": self._maintenance_buffers["dst_splat_params"],
+            "g_DstAdamMoments": self._maintenance_buffers["dst_adam_moments"],
+            "g_AppendParams": self._maintenance_buffers["append_params"],
+            "g_CloneCounts": self._maintenance_buffers["clone_counts"],
+            "g_TotalCloneCounter": self._maintenance_buffers["total_clone_counter"],
+            "g_AppendCounter": self._maintenance_buffers["append_counter"],
+            "g_SrcSplatCount": int(self._scene_count),
+            "g_DstSplatCount": int(max(dst_splat_count, 1)),
+            "g_AppendSplatCount": int(max(append_splat_count, 1)),
+            "g_SurvivorCount": int(max(survivor_count, 0)),
+            "g_MaintenanceSeed": np.uint32(self._seed + self.state.step),
+            "g_MaintenanceAlphaCullThreshold": float(self.training.maintenance_alpha_cull_threshold),
+        }
+
     def update_hyperparams(self, adam_hparams: AdamHyperParams, stability_hparams: StabilityHyperParams, training_hparams: TrainingHyperParams) -> None:
         self.adam = adam_hparams
         self.stability = stability_hparams
         self.training = training_hparams
         self.training.train_downscale_factor = self.effective_train_downscale_factor(self.state.step)
+        self.state.last_base_lr = self.current_base_lr(self.state.step)
         self.adam_optimizer.update_hyperparams(self.adam, self._adam_runtime_hparams())
         self.optimizer.update_hyperparams(self.adam, self.stability)
+        self._ensure_maintenance_buffers(self._scene_count)
         self._invalidate_downscaled_target()
 
     def _dispatch_adam_step(self, encoder: spy.CommandEncoder) -> None:
@@ -273,14 +328,19 @@ class GaussianTrainer:
         self.optimizer = GaussianOptimizer(self.device, self.renderer, self.adam, self.stability)
         self.compute_debug_grad_norm = False
         self.state = TrainingState()
+        self.state.last_base_lr = self.current_base_lr(0)
         self._frame_metrics = _FrameMetricBookkeeper.create(len(self.frames))
         self._kernels = {
             name: self.device.create_compute_kernel(self.device.load_program(str(shader_path), [entry]))
             for name, (shader_path, entry) in self._KERNEL_ENTRIES.items()
         }
         self._buffers: dict[str, spy.Buffer] = {}
+        self._maintenance_buffers: dict[str, spy.Buffer] = {}
         self._splat_capacity = 0
         self._batch_step_capacity = 0
+        self._maintenance_splat_capacity = 0
+        self._maintenance_append_capacity = 0
+        self._maintenance_output_capacity = 0
         self._scale_reg_reference = float(max(scale_reg_reference, 1e-8)) if scale_reg_reference is not None else self._estimate_scale_reg_reference(scene)
         self._init_point_positions_buffer: spy.Buffer | None = None
         self._init_point_colors_buffer: spy.Buffer | None = None
@@ -298,6 +358,7 @@ class GaussianTrainer:
         else:
             self.renderer.bind_scene_count(self._scene_count)
         self._ensure_training_buffers(self._scene_count, 1)
+        self._ensure_maintenance_buffers(self._scene_count)
         self._zero_optimizer_moments()
         if frame_targets_native is None:
             self._create_dataset_textures()
@@ -306,6 +367,7 @@ class GaussianTrainer:
                 raise ValueError("frame_targets_native must match the number of training frames.")
             self._frame_targets_native = list(frame_targets_native)
         self._bind_or_upload_init_pointcloud(init_point_positions, init_point_colors, init_point_positions_buffer, init_point_colors_buffer, init_point_count)
+        self._clear_clone_counts()
         self._reset_frame_order()
 
     def _estimate_scale_reg_reference(self, scene: GaussianScene | None) -> float:
@@ -324,6 +386,93 @@ class GaussianTrainer:
         self._batch_step_capacity = max(required_batch_steps, max(self._batch_step_capacity, 1) + max(self._batch_step_capacity, 1) // 2)
         self._buffers.setdefault("loss", self.device.create_buffer(size=8, usage=usage))
         self._buffers["batch_step_info"] = self.device.create_buffer(size=self._batch_step_capacity * self._BATCH_STEP_INFO_STRIDE * 4, usage=usage)
+
+    def _expected_maintenance_append_count(self, splat_count: int) -> int:
+        return max(int(np.ceil(max(int(splat_count), 1) * max(float(self.training.maintenance_growth_ratio), 0.0))), 1)
+
+    def _ensure_maintenance_buffers(self, splat_count: int, append_count: int | None = None) -> None:
+        required_splats = max(int(splat_count), 1)
+        required_append = self._expected_maintenance_append_count(required_splats) if append_count is None else max(int(append_count), 1)
+        required_output = max(required_splats + required_append, 1)
+        grow_splats = required_splats > self._maintenance_splat_capacity
+        grow_append = required_append > self._maintenance_append_capacity
+        grow_output = required_output > self._maintenance_output_capacity
+        if self._maintenance_buffers and not grow_splats and not grow_append and not grow_output:
+            return
+        usage = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
+        packed_param_bytes = self.renderer.TRAINABLE_PARAM_COUNT * self._U32_BYTES
+        if "total_clone_counter" not in self._maintenance_buffers:
+            self._maintenance_buffers["total_clone_counter"] = self.device.create_buffer(size=self._U32_BYTES, usage=usage)
+        if "append_counter" not in self._maintenance_buffers:
+            self._maintenance_buffers["append_counter"] = self.device.create_buffer(size=self._U32_BYTES, usage=usage)
+        if grow_splats or "clone_counts" not in self._maintenance_buffers:
+            self._maintenance_splat_capacity = max(required_splats, max(self._maintenance_splat_capacity, 1) + max(self._maintenance_splat_capacity, 1) // 2)
+            self._maintenance_buffers["clone_counts"] = self.device.create_buffer(size=self._maintenance_splat_capacity * self._U32_BYTES, usage=usage)
+        if grow_append or "append_params" not in self._maintenance_buffers:
+            self._maintenance_append_capacity = max(required_append, max(self._maintenance_append_capacity, 1) + max(self._maintenance_append_capacity, 1) // 2)
+            self._maintenance_buffers["append_params"] = self.device.create_buffer(size=self._maintenance_append_capacity * packed_param_bytes, usage=usage)
+        if grow_output or "dst_splat_params" not in self._maintenance_buffers:
+            self._maintenance_output_capacity = max(required_output, max(self._maintenance_output_capacity, 1) + max(self._maintenance_output_capacity, 1) // 2)
+            self._maintenance_buffers["dst_splat_params"] = self.device.create_buffer(size=self._maintenance_output_capacity * packed_param_bytes, usage=usage)
+            self._maintenance_buffers["dst_adam_moments"] = self.device.create_buffer(size=self._maintenance_output_capacity * self.renderer.TRAINABLE_PARAM_COUNT * self._U32_BYTES * 2, usage=usage)
+        elif "dst_adam_moments" not in self._maintenance_buffers:
+            self._maintenance_buffers["dst_adam_moments"] = self.device.create_buffer(size=max(self._maintenance_output_capacity, 1) * self.renderer.TRAINABLE_PARAM_COUNT * self._U32_BYTES * 2, usage=usage)
+
+    def _clear_clone_counts(self) -> None:
+        enc = self.device.create_command_encoder()
+        self._dispatch("clear_clone_counts", enc, spy.uint3(max(self._scene_count, 1), 1, 1), self._maintenance_vars())
+        self.device.submit_command_buffer(enc.finish())
+        self.device.wait()
+
+    def _run_maintenance(self) -> None:
+        enc = self.device.create_command_encoder()
+        self._dispatch("clear_maintenance_counters", enc, spy.uint3(1, 1, 1), self._maintenance_vars())
+        self._dispatch("prepare_maintenance_counts", enc, spy.uint3(max(self._scene_count, 1), 1, 1), self._maintenance_vars())
+        self.device.submit_command_buffer(enc.finish())
+        self.device.wait()
+
+        survivor_count = self._read_maintenance_counter("append_counter")
+        clone_total = self._read_maintenance_counter("total_clone_counter")
+        max_gaussians = max(int(self.training.max_gaussians), 0)
+        clone_headroom = max(max_gaussians - survivor_count, 0) if max_gaussians > 0 else clone_total
+        capped_clone_total = min(int(clone_total), int(clone_headroom))
+        next_count = int(survivor_count + capped_clone_total)
+        if next_count <= 0:
+            self._clear_clone_counts()
+            return
+
+        self._ensure_maintenance_buffers(self._scene_count, capped_clone_total)
+        vars = self._maintenance_vars(dst_splat_count=next_count, append_splat_count=capped_clone_total, survivor_count=survivor_count)
+        enc = self.device.create_command_encoder()
+        self._dispatch("clear_maintenance_counters", enc, spy.uint3(1, 1, 1), vars)
+        self._dispatch("rewrite_maintenance_splats", enc, spy.uint3(max(self._scene_count, 1), 1, 1), vars)
+        self.device.submit_command_buffer(enc.finish())
+        self.device.wait()
+
+        self.renderer.bind_scene_count(next_count)
+        self._scene_count = next_count
+        self.scene.count = next_count
+        self._ensure_training_buffers(self._scene_count, 1)
+        self.adam_optimizer.ensure_moment_capacity(self._scene_count * self.renderer.TRAINABLE_PARAM_COUNT)
+        copy_enc = self.device.create_command_encoder()
+        copy_enc.copy_buffer(
+            self.renderer.scene_buffers["splat_params"],
+            0,
+            self._maintenance_buffers["dst_splat_params"],
+            0,
+            self._scene_count * self.renderer.TRAINABLE_PARAM_COUNT * self._U32_BYTES,
+        )
+        copy_enc.copy_buffer(
+            self.adam_optimizer.buffers["adam_moments"],
+            0,
+            self._maintenance_buffers["dst_adam_moments"],
+            0,
+            self._scene_count * self.renderer.TRAINABLE_PARAM_COUNT * self._U32_BYTES * 2,
+        )
+        self.device.submit_command_buffer(copy_enc.finish())
+        self.device.wait()
+        self._ensure_maintenance_buffers(self._scene_count)
+        self._clear_clone_counts()
 
     def _zero_optimizer_moments(self) -> None:
         self.adam_optimizer.zero_moments(self._scene_count * self.renderer.TRAINABLE_PARAM_COUNT)
@@ -521,6 +670,7 @@ class GaussianTrainer:
 
     def _dispatch_optimizer_step(self, encoder: spy.CommandEncoder, step_index: int) -> None:
         with debug_region(encoder, "Trainer Optimizer", 52):
+            self.optimizer.update_step(step_index, self.training)
             self.optimizer.dispatch_regularizers(
                 encoder,
                 scene_buffers=self.renderer.scene_buffers,
@@ -573,11 +723,14 @@ class GaussianTrainer:
         self._scene_count, self.scene = count, _SceneCountProxy(count)
         self.renderer.set_scene(scene)
         self._ensure_training_buffers(self._scene_count, 1)
+        self._ensure_maintenance_buffers(self._scene_count)
         self._scale_reg_reference = float(max(np.exp(np.median(scales[:, 0])), 1e-8))
         self._zero_optimizer_moments()
         self.state = TrainingState()
+        self.state.last_base_lr = self.current_base_lr(0)
         self._frame_metrics.reset()
         self._frame_rng = np.random.default_rng(int(seed))
+        self._clear_clone_counts()
         self._reset_frame_order()
         self._invalidate_downscaled_target()
 
@@ -586,6 +739,8 @@ class GaussianTrainer:
         self.optimizer.renderer = renderer
         self.training.train_downscale_factor = self.effective_train_downscale_factor(self.state.step)
         self._ensure_training_buffers(self._scene_count, 1)
+        self._ensure_maintenance_buffers(self._scene_count)
+        self._clear_clone_counts()
         self._ensure_train_target_texture()
         self._invalidate_downscaled_target()
 
@@ -631,6 +786,8 @@ class GaussianTrainer:
         first_factor = self.effective_train_downscale_factor(self.state.step)
         batch_steps = 0
         while batch_steps < requested and self.effective_train_downscale_factor(self.state.step + batch_steps) == first_factor:
+            if batch_steps > 0 and self.maintenance_due(self.state.step + batch_steps):
+                break
             batch_steps += 1
         if batch_steps <= 0:
             return 0
@@ -660,6 +817,7 @@ class GaussianTrainer:
             image_mse = float(step_metrics[batch_index, self._LOSS_SLOT_MSE])
             had_nonfinite = had_nonfinite or not np.isfinite(loss)
             self.state.step += 1
+            self.state.last_base_lr = self.current_base_lr(self.state.step)
             self.state.last_frame_index = frame_index
             self.state.last_loss = loss
             self.state.last_mse = image_mse
@@ -674,8 +832,14 @@ class GaussianTrainer:
         self.state.avg_mse = self._frame_metrics.mean("mse")
         self.state.avg_psnr = self._frame_metrics.mean("psnr")
         self.training.train_downscale_factor = self.effective_train_downscale_factor(self.state.step)
+        if self.maintenance_due(self.state.step):
+            self._run_maintenance()
         return batch_steps
 
     def step(self) -> float:
         self.step_batch(1)
         return float(self.state.last_loss)
+
+    @property
+    def maintenance_buffers(self) -> dict[str, spy.Buffer]:
+        return self._maintenance_buffers

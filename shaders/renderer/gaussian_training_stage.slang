@@ -1,10 +1,14 @@
 import "utility/losses/losses.slang";
 import "utility/math/constants.slang";
 import "utility/math/numeric.slang";
+import "utility/math/quaternion.slang";
+import "utility/splatting/opacity.slang";
+import "utility/splatting/params.slang";
 
 static const uint TRAIN_TILE_DIM = 16u;
 static const uint LOSS_SLOT_TOTAL = 0u;
 static const uint LOSS_SLOT_MSE = 1u;
+static const float GOLDEN_ANGLE_RADIANS = 2.39996322972865332;
 
 uniform uint g_Width;
 uniform uint g_Height;
@@ -40,8 +44,139 @@ uniform uint g_LetterboxSourceHeight;
 uniform uint g_LetterboxOutputWidth;
 uniform uint g_LetterboxOutputHeight;
 
+uniform StructuredBuffer<float> g_SrcSplatParams;
+uniform StructuredBuffer<float2> g_SrcAdamMoments;
+uniform RWStructuredBuffer<float> g_DstSplatParams;
+uniform RWStructuredBuffer<float2> g_DstAdamMoments;
+uniform RWStructuredBuffer<float> g_AppendParams;
+uniform RWStructuredBuffer<uint> g_CloneCounts;
+uniform RWStructuredBuffer<uint> g_TotalCloneCounter;
+uniform RWStructuredBuffer<uint> g_AppendCounter;
+uniform uint g_SrcSplatCount;
+uniform uint g_DstSplatCount;
+uniform uint g_AppendSplatCount;
+uniform uint g_SurvivorCount;
+uniform uint g_MaintenanceSeed;
+uniform float g_MaintenanceAlphaCullThreshold;
+
 groupshared float gsLoss[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
 groupshared float gsMSE[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
+
+struct SplatState
+{
+    float3 position;
+    float3 logScale;
+    float4 rotation;
+    float4 colorAlpha;
+};
+
+SplatState load_splat_state(StructuredBuffer<float> params, uint splatCount, uint splatId)
+{
+    SplatState state;
+    state.position = float3(
+        load_splat_param(params, splatCount, PARAM_POSITION_X, splatId),
+        load_splat_param(params, splatCount, PARAM_POSITION_Y, splatId),
+        load_splat_param(params, splatCount, PARAM_POSITION_Z, splatId));
+    state.logScale = float3(
+        load_splat_param(params, splatCount, PARAM_SCALE_X, splatId),
+        load_splat_param(params, splatCount, PARAM_SCALE_Y, splatId),
+        load_splat_param(params, splatCount, PARAM_SCALE_Z, splatId));
+    state.rotation = normalize_quaternion_safe(float4(
+        load_splat_param(params, splatCount, PARAM_ROTATION_X, splatId),
+        load_splat_param(params, splatCount, PARAM_ROTATION_Y, splatId),
+        load_splat_param(params, splatCount, PARAM_ROTATION_Z, splatId),
+        load_splat_param(params, splatCount, PARAM_ROTATION_W, splatId)));
+    state.colorAlpha = float4(
+        load_splat_param(params, splatCount, PARAM_COLOR_R, splatId),
+        load_splat_param(params, splatCount, PARAM_COLOR_G, splatId),
+        load_splat_param(params, splatCount, PARAM_COLOR_B, splatId),
+        load_splat_param(params, splatCount, PARAM_RAW_OPACITY, splatId));
+    return state;
+}
+
+void store_splat_state(RWStructuredBuffer<float> params, uint splatCount, uint splatId, SplatState state)
+{
+    store_splat_param(params, splatCount, PARAM_POSITION_X, splatId, state.position.x);
+    store_splat_param(params, splatCount, PARAM_POSITION_Y, splatId, state.position.y);
+    store_splat_param(params, splatCount, PARAM_POSITION_Z, splatId, state.position.z);
+    store_splat_param(params, splatCount, PARAM_SCALE_X, splatId, state.logScale.x);
+    store_splat_param(params, splatCount, PARAM_SCALE_Y, splatId, state.logScale.y);
+    store_splat_param(params, splatCount, PARAM_SCALE_Z, splatId, state.logScale.z);
+    store_splat_param(params, splatCount, PARAM_ROTATION_X, splatId, state.rotation.x);
+    store_splat_param(params, splatCount, PARAM_ROTATION_Y, splatId, state.rotation.y);
+    store_splat_param(params, splatCount, PARAM_ROTATION_Z, splatId, state.rotation.z);
+    store_splat_param(params, splatCount, PARAM_ROTATION_W, splatId, state.rotation.w);
+    store_splat_param(params, splatCount, PARAM_COLOR_R, splatId, state.colorAlpha.x);
+    store_splat_param(params, splatCount, PARAM_COLOR_G, splatId, state.colorAlpha.y);
+    store_splat_param(params, splatCount, PARAM_COLOR_B, splatId, state.colorAlpha.z);
+    store_splat_param(params, splatCount, PARAM_RAW_OPACITY, splatId, state.colorAlpha.w);
+}
+
+uint adam_moment_index(uint splatCount, uint paramId, uint splatId)
+{
+    return paramId * splatCount + splatId;
+}
+
+float2 load_adam_moment(StructuredBuffer<float2> moments, uint splatCount, uint paramId, uint splatId)
+{
+    return moments[adam_moment_index(splatCount, paramId, splatId)];
+}
+
+void store_adam_moment(RWStructuredBuffer<float2> moments, uint splatCount, uint paramId, uint splatId, float2 value)
+{
+    moments[adam_moment_index(splatCount, paramId, splatId)] = value;
+}
+
+void copy_adam_state(uint srcSplatId, uint dstSplatId)
+{
+    [unroll] for (uint paramId = 0u; paramId < TRAINABLE_PARAM_COUNT; paramId++)
+    {
+        store_adam_moment(
+            g_DstAdamMoments,
+            g_DstSplatCount,
+            paramId,
+            dstSplatId,
+            load_adam_moment(g_SrcAdamMoments, g_SrcSplatCount, paramId, srcSplatId)
+        );
+    }
+}
+
+float clone_unit_float(uint value)
+{
+    return (float(value) + 0.5) * 2.3283064365386963e-10;
+}
+
+float3 split_direction(uint splatId, uint slot, uint familySize)
+{
+    if (slot == 0u || familySize <= 1u) return 0.0;
+    float index = float(slot - 1u);
+    float count = max(float(familySize - 1u), 1.0);
+    float z = 1.0 - 2.0 * ((index + 0.5) / count);
+    float r = sqrt(max(1.0 - z * z, 0.0));
+    float angle = GOLDEN_ANGLE_RADIANS * (index + clone_unit_float(splatId ^ g_MaintenanceSeed));
+    float s;
+    float c;
+    sincos(angle, s, c);
+    return float3(r * c, r * s, z);
+}
+
+SplatState split_family_member(SplatState source, uint splatId, uint slot, uint familySize)
+{
+    if (familySize <= 1u) return source;
+    float family = float(familySize);
+    float shrink = log(family) / 3.0;
+    float3 parentScale = exp(source.logScale);
+    float3 childScale = exp(source.logScale - shrink);
+    float alpha = opacity_from_raw(source.colorAlpha.w);
+    float childAlpha = 1.0 - pow(max(1.0 - alpha, TINY_VALUE), 1.0 / family);
+    float4 qInv = float4(source.rotation.x, -source.rotation.y, -source.rotation.z, -source.rotation.w);
+    float3 localOffset = split_direction(splatId, slot, familySize) * max(parentScale - childScale, 0.0);
+    SplatState child = source;
+    child.position = source.position + rotate_by_quat(localOffset, qInv);
+    child.logScale = source.logScale - shrink;
+    child.colorAlpha.w = raw_opacity_from_alpha(childAlpha);
+    return child;
+}
 
 [shader("compute")]
 [numthreads(TRAIN_TILE_DIM, TRAIN_TILE_DIM, 1)]
@@ -143,6 +278,83 @@ void csCacheTrainingStepInfo(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     if (dispatchThreadID.x != 0u || dispatchThreadID.y != 0u || dispatchThreadID.z != 0u) return;
     g_BatchStepInfo[g_BatchStepIndex] = float4(g_LossBuffer[LOSS_SLOT_TOTAL], g_LossBuffer[LOSS_SLOT_MSE], 0.0, 0.0);
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void csClearCloneCounts(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint splatId = dispatchThreadID.x;
+    if (splatId == 0u)
+    {
+        g_TotalCloneCounter[0] = 0u;
+        g_AppendCounter[0] = 0u;
+    }
+    if (splatId >= g_SrcSplatCount) return;
+    g_CloneCounts[splatId] = 0u;
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void csClearMaintenanceCounters(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    if (dispatchThreadID.x != 0u) return;
+    g_TotalCloneCounter[0] = 0u;
+    g_AppendCounter[0] = 0u;
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void csPrepareMaintenanceCounts(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint splatId = dispatchThreadID.x;
+    if (splatId >= g_SrcSplatCount) return;
+    float alpha = opacity_from_raw(load_splat_param(g_SrcSplatParams, g_SrcSplatCount, PARAM_RAW_OPACITY, splatId));
+    if (alpha < g_MaintenanceAlphaCullThreshold) return;
+    uint _;
+    InterlockedAdd(g_AppendCounter[0], 1u, _);
+    uint cloneCount = g_CloneCounts[splatId];
+    if (cloneCount > 0u) InterlockedAdd(g_TotalCloneCounter[0], cloneCount, _);
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void csRewriteMaintenanceSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint splatId = dispatchThreadID.x;
+    if (splatId >= g_SrcSplatCount) return;
+
+    SplatState source = load_splat_state(g_SrcSplatParams, g_SrcSplatCount, splatId);
+    float alpha = opacity_from_raw(source.colorAlpha.w);
+    if (alpha < g_MaintenanceAlphaCullThreshold) return;
+
+    uint cloneCount = g_CloneCounts[splatId];
+    uint parentIndex = 0u;
+    InterlockedAdd(g_AppendCounter[0], 1u, parentIndex);
+
+    uint emittedCloneCount = 0u;
+    if (cloneCount > 0u)
+    {
+        uint childBase = 0u;
+        InterlockedAdd(g_TotalCloneCounter[0], cloneCount, childBase);
+        uint availableChildren = childBase < g_AppendSplatCount ? (g_AppendSplatCount - childBase) : 0u;
+        emittedCloneCount = min(cloneCount, availableChildren);
+        uint familySize = emittedCloneCount + 1u;
+        store_splat_state(g_DstSplatParams, g_DstSplatCount, parentIndex, split_family_member(source, splatId, 0u, familySize));
+        copy_adam_state(splatId, parentIndex);
+        [loop] for (uint childSlot = 0u; childSlot < emittedCloneCount; childSlot++)
+        {
+            SplatState child = split_family_member(source, splatId, childSlot + 1u, familySize);
+            uint childIndex = g_SurvivorCount + childBase + childSlot;
+            store_splat_state(g_AppendParams, g_AppendSplatCount, childBase + childSlot, child);
+            store_splat_state(g_DstSplatParams, g_DstSplatCount, childIndex, child);
+            copy_adam_state(splatId, childIndex);
+        }
+        return;
+    }
+
+    store_splat_state(g_DstSplatParams, g_DstSplatCount, parentIndex, source);
+    copy_adam_state(splatId, parentIndex);
 }
 
 [shader("compute")]

@@ -953,9 +953,43 @@ class GaussianRenderer:
         clear_count = int(splat_count) * max(self.TRAINABLE_PARAM_COUNT, self._RASTER_CACHE_PARAM_COUNT)
         self._dispatch(self._raster_grad_shader_set().clear, encoder, spy.uint3(max(clear_count, 1), 1, 1), {**self._raster_grad_vars(), **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_range_vars(), **self._prepass_uniforms(splat_count)}, "Clear Raster Grads", 25)
 
-    def _rasterize_training_forward(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output: spy.Texture | None = None) -> None:
+    def _rasterize_training_forward(
+        self,
+        encoder: spy.CommandEncoder,
+        camera: Camera,
+        background: np.ndarray,
+        output: spy.Texture | None = None,
+        clone_counts_buffer: spy.Buffer | None = None,
+        clone_select_probability: float = 0.0,
+        clone_seed: int = 0,
+    ) -> None:
         target = self.output_texture if output is None else output
-        self._dispatch(self._raster_grad_shader_set().training_forward, encoder, self._raster_thread_count(), {**self._scene_vars(), **self._screen_vars(), **self._raster_cache_vars(), "g_SortedValues": self._sorted_values(), "g_TileRanges": self._work_buffers["tile_ranges"], "g_Output": target, "g_TrainingForwardState": self._work_buffers["training_forward_state"], "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"], "g_TrainingBatchEnd": self._work_buffers["training_batch_end"], **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_range_vars(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._anisotropy_uniforms(), **self._camera_uniforms(camera)}, "Rasterize Training Forward", 26)
+        vars = {
+            **self._scene_vars(),
+            **self._screen_vars(),
+            **self._raster_cache_vars(),
+            "g_SortedValues": self._sorted_values(),
+            "g_TileRanges": self._work_buffers["tile_ranges"],
+            "g_Output": target,
+            "g_TrainingForwardState": self._work_buffers["training_forward_state"],
+            "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"],
+            "g_TrainingBatchEnd": self._work_buffers["training_batch_end"],
+            **self._raster_grad_decode_scale_var(1.0),
+            **self._raster_grad_fixed_range_vars(),
+            **self._prepass_uniforms(self._scene_count),
+            **self._raster_uniforms(background),
+            **self._anisotropy_uniforms(),
+            **self._camera_uniforms(camera),
+        }
+        if clone_counts_buffer is not None:
+            vars.update(
+                {
+                    "g_CloneCounts": clone_counts_buffer,
+                    "g_CloneSelectProbability": float(max(clone_select_probability, 0.0)),
+                    "g_CloneSeed": np.uint32(int(clone_seed)),
+                }
+            )
+        self._dispatch(self._raster_grad_shader_set().training_forward, encoder, self._raster_thread_count(), vars, "Rasterize Training Forward", 26)
 
     def _rasterize_backward(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output_grad: spy.Buffer) -> None:
         self._dispatch(self._raster_grad_shader_set().backward, encoder, self._raster_thread_count(), {**self._scene_vars(), **self._raster_cache_vars(), "g_SortedValues": self._sorted_values(), "g_TileRanges": self._work_buffers["tile_ranges"], "g_OutputGrad": output_grad, "g_TrainingForwardState": self._work_buffers["training_forward_state"], "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"], "g_TrainingBatchEnd": self._work_buffers["training_batch_end"], **self._raster_grad_vars(), **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_range_vars(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._anisotropy_uniforms(), **self._camera_uniforms(camera)}, "Rasterize Backward", 27)
@@ -1310,9 +1344,18 @@ class GaussianRenderer:
     def clear_raster_grads_current_scene(self, encoder: spy.CommandEncoder) -> None:
         self._clear_raster_grads(encoder, self._require_scene().count)
 
-    def rasterize_training_forward_current_scene(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output: spy.Texture | None = None) -> None:
+    def rasterize_training_forward_current_scene(
+        self,
+        encoder: spy.CommandEncoder,
+        camera: Camera,
+        background: np.ndarray,
+        output: spy.Texture | None = None,
+        clone_counts_buffer: spy.Buffer | None = None,
+        clone_select_probability: float = 0.0,
+        clone_seed: int = 0,
+    ) -> None:
         self._require_scene()
-        self._rasterize_training_forward(encoder, camera, background, output)
+        self._rasterize_training_forward(encoder, camera, background, output, clone_counts_buffer, clone_select_probability, clone_seed)
 
     def rasterize_backward_current_scene(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output_grad: spy.Buffer, grad_scale: float = 1.0) -> None:
         self._require_scene()

@@ -1,12 +1,16 @@
 import "gaussian_types.slang";
 import "utility/math/camera.slang";
 import "utility/math/constants.slang";
+import "utility/random/random.slang";
 import "utility/splatting/common.slang";
 import "utility/splatting/opacity.slang";
 import "utility/splatting/params.slang";
 import "utility/splatting/raster.slang";
 
 uniform float g_MaxAnisotropy;
+uniform RWStructuredBuffer<uint> g_CloneCounts;
+uniform float g_CloneSelectProbability;
+uniform uint g_CloneSeed;
 
 struct RasterState : IDifferentiable
 {
@@ -284,6 +288,9 @@ struct RasterForwardState
     uint processedCount;
     uint processedEnd;
     uint replayBatchEnd;
+    bool cloneSelected;
+    bool cloneRecorded;
+    float cloneThreshold;
 };
 
 struct RasterBackwardState
@@ -307,6 +314,11 @@ void init_raster_forward_state(RasterPixelInfo info, out RasterForwardState forw
     forwardState.processedCount = 0u;
     forwardState.processedEnd = info.start;
     forwardState.replayBatchEnd = info.start;
+    uint pixelId = raster_pixel_index(info.pixelCoord);
+    uint cloneSeed = hash_u32(pixelId ^ (g_CloneSeed * 0x9e3779b9u + 0x85ebca6bu));
+    forwardState.cloneSelected = info.pixelActive && g_CloneSelectProbability > 0.0 && ((float(hash_u32(cloneSeed ^ 0x8da6b343u)) + 0.5) * 2.3283064365386963e-10) <= saturate(g_CloneSelectProbability);
+    forwardState.cloneRecorded = false;
+    forwardState.cloneThreshold = forwardState.cloneSelected ? (float(hash_u32(cloneSeed ^ 0x5f2ce0b1u)) + 0.5) * 2.3283064365386963e-10 : -1.0;
 }
 
 void init_raster_backward_state(out RasterBackwardState backwardState)
@@ -388,6 +400,13 @@ void raster_forward_replay(RasterPixelInfo info, uint lane, inout RasterForwardS
                 if (alpha <= 0.0) continue;
 
                 RasterState state = forwardState.pixelState;
+                float nextTrans = state.trans * (1.0 - alpha);
+                if (forwardState.cloneSelected && !forwardState.cloneRecorded && nextTrans <= forwardState.cloneThreshold)
+                {
+                    uint _;
+                    InterlockedAdd(g_CloneCounts[splatId], 1u, _);
+                    forwardState.cloneRecorded = true;
+                }
                 state = state.blend(raster_forward_color(gaussian, splatId, debugMode), alpha);
                 forwardState.pixelState = state;
                 forwardState.processedCount += 1u;

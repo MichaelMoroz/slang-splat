@@ -61,6 +61,13 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["cached_raster_grad_fixed_color_range"] == 0.2
     assert viewer_ui._values["cached_raster_grad_atomic_mode"] == 1
     assert viewer_ui._values["lr_scale_mul"] == 5.0
+    assert viewer_ui._values["lr_schedule_enabled"] is True
+    assert viewer_ui._values["lr_schedule_start_lr"] == 1e-3
+    assert viewer_ui._values["lr_schedule_end_lr"] == 1e-4
+    assert viewer_ui._values["lr_schedule_steps"] == 30000
+    assert viewer_ui._values["maintenance_interval"] == 200
+    assert viewer_ui._values["maintenance_growth_ratio"] == 0.05
+    assert viewer_ui._values["maintenance_alpha_cull_threshold"] == 1e-3
     assert viewer_ui._values["colmap_image_downscale_mode"] == 0
     assert viewer_ui._values["colmap_image_target_width"] == 1600
     assert viewer_ui._values["colmap_image_scale"] == 1.0

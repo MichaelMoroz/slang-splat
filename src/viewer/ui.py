@@ -226,6 +226,9 @@ GROUP_SPECS = {
     "Train Setup": (
         ControlSpec("max_gaussians", "slider_int", "Max Gaussians", {"value": 5900000, "min": 1000, "max": 10000000}),
         ControlSpec("training_steps_per_frame", "slider_int", "Steps / Frame", {"value": 1, "min": 1, "max": 8}),
+        ControlSpec("maintenance_interval", "input_int", "Maintenance Interval", {"value": 200, "step": 10, "step_fast": 50}),
+        ControlSpec("maintenance_growth_ratio", "input_float", "Maintenance Growth", {"value": 0.05, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
+        ControlSpec("maintenance_alpha_cull_threshold", "input_float", "Maintenance Alpha Cull", {"value": 1e-3, "step": 1e-5, "step_fast": 1e-4, "format": "%.6e"}),
         ControlSpec("train_downscale_mode", "combo", "Downscale Mode", {"value": 1, "options": _TRAIN_DOWNSCALE_MODE_LABELS}),
         ControlSpec("train_auto_start_downscale", "slider_int", "Auto Start Downscale", {"value": 16, "min": 1, "max": 16}),
         ControlSpec("train_downscale_base_iters", "input_int", "Downscale Base Iters", {"value": 200, "step": 25, "step_fast": 100}),
@@ -236,6 +239,10 @@ GROUP_SPECS = {
     ),
     "Train Optimizer": (
         ControlSpec("lr_base", "input_float", "Base LR", {"value": 1e-3, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
+        ControlSpec("lr_schedule_enabled", "checkbox", "Use LR Schedule", {"value": True}),
+        ControlSpec("lr_schedule_start_lr", "input_float", "Schedule Start LR", {"value": 1e-3, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
+        ControlSpec("lr_schedule_end_lr", "input_float", "Schedule End LR", {"value": 1e-4, "step": 1e-6, "step_fast": 1e-5, "format": "%.8f"}),
+        ControlSpec("lr_schedule_steps", "input_int", "Schedule Steps", {"value": 30000, "step": 1000, "step_fast": 5000}),
         ControlSpec("lr_pos_mul", "input_float", "LR Mul Position", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
         ControlSpec("lr_scale_mul", "input_float", "LR Mul Scale", {"value": 5.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
         ControlSpec("lr_rot_mul", "input_float", "LR Mul Rotation", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
@@ -1198,7 +1205,7 @@ class ToolkitWindow:
     def _section_training_setup(self, ui: ViewerUI) -> None:
         if not imgui.collapsing_header("Train Setup"):
             return
-        for key in ("max_gaussians", "training_steps_per_frame", "train_downscale_mode"):
+        for key in ("max_gaussians", "training_steps_per_frame", "maintenance_interval", "maintenance_growth_ratio", "maintenance_alpha_cull_threshold", "train_downscale_mode"):
             self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Setup"] if spec.key == key))
         if int(ui._values.get("train_downscale_mode", 0)) == 0:
             for key in ("train_auto_start_downscale", "train_downscale_base_iters", "train_downscale_iter_step", "train_downscale_max_iters"):
@@ -1211,6 +1218,12 @@ class ToolkitWindow:
         downscale_status = ui._texts.get("training_downscale", "")
         if downscale_status:
             imgui.text_disabled(downscale_status.split(": ", 1)[-1] if ": " in downscale_status else downscale_status)
+        schedule_status = ui._texts.get("training_schedule", "")
+        if schedule_status:
+            imgui.text_disabled(schedule_status.split(": ", 1)[-1] if ": " in schedule_status else schedule_status)
+        maintenance_status = ui._texts.get("training_maintenance", "")
+        if maintenance_status:
+            imgui.text_disabled(maintenance_status.split(": ", 1)[-1] if ": " in maintenance_status else maintenance_status)
         imgui.text_disabled("COLMAP import chooses direct pointcloud init, diffused pointcloud init, or a custom PLY scene.")
         self._ctx_reset("train_setup_ctx", ui, [s.key for s in GROUP_SPECS["Train Setup"]])
         imgui.separator()
@@ -1221,18 +1234,18 @@ class ToolkitWindow:
         if imgui.begin_tab_bar("##optim_tabs"):
             if imgui.begin_tab_item("Learning Rates")[0]:
                 imgui.spacing()
-                for spec in GROUP_SPECS["Train Optimizer"][:6]:
-                    self._draw_control(ui, spec)
+                for key in ("lr_base", "lr_schedule_enabled", "lr_schedule_start_lr", "lr_schedule_end_lr", "lr_schedule_steps", "lr_pos_mul", "lr_scale_mul", "lr_rot_mul", "lr_color_mul", "lr_opacity_mul"):
+                    self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Optimizer"] if spec.key == key))
                 imgui.end_tab_item()
             if imgui.begin_tab_item("Adam")[0]:
                 imgui.spacing()
-                for spec in GROUP_SPECS["Train Optimizer"][6:8]:
-                    self._draw_control(ui, spec)
+                for key in ("beta1", "beta2"):
+                    self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Optimizer"] if spec.key == key))
                 imgui.end_tab_item()
             if imgui.begin_tab_item("Regularization")[0]:
                 imgui.spacing()
-                for spec in GROUP_SPECS["Train Optimizer"][8:]:
-                    self._draw_control(ui, spec)
+                for key in ("scale_l2", "scale_abs_reg", "opacity_reg", "max_anisotropy", "grad_clip", "grad_norm_clip", "max_update"):
+                    self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Optimizer"] if spec.key == key))
                 imgui.end_tab_item()
             imgui.end_tab_bar()
         self._ctx_reset("optimizer_ctx", ui, [s.key for s in GROUP_SPECS["Train Optimizer"]])
@@ -1400,6 +1413,13 @@ class ToolkitWindow:
         "train_far": "Far clip plane for training camera",
         "max_gaussians": "Maximum number of gaussians in the scene",
         "training_steps_per_frame": "Number of training optimizer steps to run before each viewer redraw; higher improves training throughput but reduces UI refresh rate",
+        "maintenance_interval": "Run cull/split maintenance every N training steps",
+        "maintenance_growth_ratio": "Target fractional scene growth per maintenance step before culling",
+        "maintenance_alpha_cull_threshold": "Cull splats below this decoded alpha threshold during maintenance",
+        "lr_schedule_enabled": "Enable cosine scheduling of the base learning rate",
+        "lr_schedule_start_lr": "Base learning rate at step 0 of the schedule",
+        "lr_schedule_end_lr": "Base learning rate after the cosine schedule ends",
+        "lr_schedule_steps": "Number of steps over which the cosine LR schedule decays before clamping",
         "train_downscale_mode": "Use Auto for scheduled downscale descent or choose a fixed manual override from 1x to 16x",
         "train_auto_start_downscale": "Initial downscale factor used at step 0 when Downscale Mode is Auto",
         "train_downscale_base_iters": "Number of iterations spent at the auto start factor before descending",
@@ -1558,7 +1578,7 @@ def build_ui(renderer) -> ViewerUI:
             "training_time", "training_iters_avg", "training_loss", "training_mse", "training_psnr", "training_instability", "error",
             "loss_debug_view", "loss_debug_frame",
             "colmap_import_status", "colmap_import_current",
-            "training_resolution", "training_downscale",
+            "training_resolution", "training_downscale", "training_schedule", "training_maintenance",
             "histogram_status",
             "setup_hint", "stability_hint",
         )

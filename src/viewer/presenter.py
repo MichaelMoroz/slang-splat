@@ -19,6 +19,37 @@ _MAX_TRAINING_STEPS_PER_FRAME = 8
 _TRAIN_DOWNSCALE_MODE_AUTO = 0
 
 
+def _training_schedule_text(viewer: object) -> str:
+    if viewer.s.trainer is not None:
+        training = viewer.s.trainer.training
+        if not bool(training.lr_schedule_enabled):
+            return "LR Schedule: disabled"
+        current = float(viewer.s.trainer.current_base_lr()) if hasattr(viewer.s.trainer, "current_base_lr") else float(training.lr_schedule_start_lr)
+        return (
+            f"LR Schedule: cosine {float(training.lr_schedule_start_lr):.2e} -> {float(training.lr_schedule_end_lr):.2e} | "
+            f"steps={int(training.lr_schedule_steps):,} | current={current:.2e}"
+        )
+    if not bool(viewer.c("lr_schedule_enabled").value):
+        return "LR Schedule: disabled"
+    return (
+        f"LR Schedule: cosine {float(viewer.c('lr_schedule_start_lr').value):.2e} -> {float(viewer.c('lr_schedule_end_lr').value):.2e} | "
+        f"steps={max(int(viewer.c('lr_schedule_steps').value), 1):,} | current={float(viewer.c('lr_schedule_start_lr').value):.2e}"
+    )
+
+
+def _training_maintenance_text(viewer: object) -> str:
+    if viewer.s.trainer is not None:
+        training = viewer.s.trainer.training
+        return (
+            f"Maintenance: every {int(training.maintenance_interval):,} | growth={float(training.maintenance_growth_ratio) * 100.0:.2f}% | "
+            f"alpha<{float(training.maintenance_alpha_cull_threshold):.2e} culled | max={int(training.max_gaussians):,}"
+        )
+    return (
+        f"Maintenance: every {max(int(viewer.c('maintenance_interval').value), 1):,} | growth={max(float(viewer.c('maintenance_growth_ratio').value), 0.0) * 100.0:.2f}% | "
+        f"alpha<{max(float(viewer.c('maintenance_alpha_cull_threshold').value), 1e-8):.2e} culled | max={max(int(viewer.c('max_gaussians').value), 0):,}"
+    )
+
+
 def _format_duration(seconds: float) -> str:
     total_seconds = max(int(seconds), 0)
     hours, rem = divmod(total_seconds, 3600)
@@ -179,6 +210,8 @@ def update_ui_text(viewer: object, dt: float) -> None:
     viewer.t("scene_stats").text = f"Splats: {int(current_splat_count):,}"
     viewer.t("training_resolution").text = _training_resolution_text(viewer)
     viewer.t("training_downscale").text = _training_downscale_text(viewer)
+    viewer.t("training_schedule").text = _training_schedule_text(viewer)
+    viewer.t("training_maintenance").text = _training_maintenance_text(viewer)
     viewer.t("histogram_status").text = str(getattr(viewer.s, "cached_raster_grad_histogram_status", ""))
     viewer.ui._values["_histogram_payload"] = getattr(viewer.s, "cached_raster_grad_histograms", None)
     viewer.ui._values["_histogram_range_payload"] = getattr(viewer.s, "cached_raster_grad_ranges", None)

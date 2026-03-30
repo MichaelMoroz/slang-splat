@@ -36,7 +36,19 @@ class _DummyTrainer:
     def __init__(self) -> None:
         self.state = SimpleNamespace(step=0, last_loss=0.0, avg_loss=0.0, last_mse=0.0, avg_mse=0.0, last_psnr=float("inf"), avg_psnr=float("inf"), last_frame_index=0, last_instability="")
         self.scene = SimpleNamespace(count=4)
-        self.training = SimpleNamespace(train_downscale_mode=1, train_auto_start_downscale=1, train_downscale_max_iters=30000)
+        self.training = SimpleNamespace(
+            train_downscale_mode=1,
+            train_auto_start_downscale=1,
+            train_downscale_max_iters=30000,
+            lr_schedule_enabled=True,
+            lr_schedule_start_lr=1e-3,
+            lr_schedule_end_lr=1e-4,
+            lr_schedule_steps=30000,
+            maintenance_interval=200,
+            maintenance_growth_ratio=0.05,
+            maintenance_alpha_cull_threshold=1e-3,
+            max_gaussians=5900000,
+        )
         self.step_calls = 0
         self.step_batch_calls: list[int] = []
 
@@ -53,6 +65,9 @@ class _DummyTrainer:
 
     def effective_train_downscale_factor(self) -> int:
         return 1
+
+    def current_base_lr(self) -> float:
+        return 1e-3
 
     def get_frame_target_texture(self, frame_index: int, native_resolution: bool = True, encoder: object | None = None) -> str:
         return f"target_tex_{frame_index}_{native_resolution}"
@@ -84,8 +99,19 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         "images_subdir": _control(0),
         "training_steps_per_frame": _control(1),
         "train_downscale_factor": _control(1),
+        "lr_schedule_enabled": _control(True),
+        "lr_schedule_start_lr": _control(1e-3),
+        "lr_schedule_end_lr": _control(1e-4),
+        "lr_schedule_steps": _control(30000),
+        "maintenance_interval": _control(200),
+        "maintenance_growth_ratio": _control(0.05),
+        "maintenance_alpha_cull_threshold": _control(1e-3),
+        "max_gaussians": _control(5900000),
+        "train_downscale_mode": _control(1),
+        "train_auto_start_downscale": _control(1),
+        "train_downscale_max_iters": _control(30000),
     }
-    texts = {key: _text() for key in ("fps", "images_subdir", "loss_debug_view", "loss_debug_frame", "path", "scene_stats", "render_stats", "training", "training_time", "training_iters_avg", "training_loss", "training_mse", "training_psnr", "training_instability", "training_resolution", "training_downscale", "colmap_import_status", "colmap_import_current", "histogram_status", "error")}
+    texts = {key: _text() for key in ("fps", "images_subdir", "loss_debug_view", "loss_debug_frame", "path", "scene_stats", "render_stats", "training", "training_time", "training_iters_avg", "training_loss", "training_mse", "training_psnr", "training_instability", "training_resolution", "training_downscale", "training_schedule", "training_maintenance", "colmap_import_status", "colmap_import_current", "histogram_status", "error")}
     viewer = SimpleNamespace()
     viewer.device = SimpleNamespace()
     viewer.loss_debug_view_options = (("rendered", "Rendered"), ("target", "Target"), ("abs_diff", "Abs Diff"))
@@ -256,6 +282,15 @@ def test_render_frame_handles_import_failure_without_raising(monkeypatch):
     assert viewer.s.last_render_exception == "import boom"
     assert render_context.command_encoder.clear_calls == [(render_context.surface_texture, [0.0, 0.0, 0.0, 1.0])]
     assert calls == ["apply", "ui"]
+
+
+def test_update_ui_text_reports_training_schedule_and_maintenance() -> None:
+    viewer = _viewer(loss_debug=False)
+
+    presenter.update_ui_text(viewer, 1.0 / 60.0)
+
+    assert viewer.t("training_schedule").text == "LR Schedule: cosine 1.00e-03 -> 1.00e-04 | steps=30,000 | current=1.00e-03"
+    assert viewer.t("training_maintenance").text == "Maintenance: every 200 | growth=5.00% | alpha<1.00e-03 culled | max=5,900,000"
 
 
 def test_render_frame_recovers_missing_main_renderer_by_recreating_it(monkeypatch):
