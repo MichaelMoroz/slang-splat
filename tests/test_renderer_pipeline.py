@@ -106,6 +106,85 @@ def test_renderer_params_default_to_fixed_cached_grad_atomics():
     assert kwargs["cached_raster_grad_fixed_color_range"] == 0.2
     assert params.cached_raster_grad_fixed_opacity_range == 0.2
     assert kwargs["cached_raster_grad_fixed_opacity_range"] == 0.2
+    assert params.max_anisotropy == 10.0
+    assert kwargs["max_anisotropy"] == 10.0
+
+
+def test_render_ignores_max_splat_steps_cap(device):
+    count = 96
+    positions = np.zeros((count, 3), dtype=np.float32)
+    positions[:, 0] = np.linspace(-0.015, 0.015, count, dtype=np.float32)
+    scales = np.full((count, 3), _log_sigma(0.05), dtype=np.float32)
+    rotations = np.zeros((count, 4), dtype=np.float32)
+    rotations[:, 0] = 1.0
+    opacities = np.full((count,), 0.04, dtype=np.float32)
+    colors = np.stack(
+        (
+            np.linspace(0.2, 0.9, count, dtype=np.float32),
+            np.linspace(0.1, 0.8, count, dtype=np.float32),
+            np.linspace(0.05, 0.6, count, dtype=np.float32),
+        ),
+        axis=1,
+    )
+    scene = GaussianScene(
+        positions=positions,
+        scales=scales,
+        rotations=rotations,
+        opacities=opacities,
+        colors=colors,
+        sh_coeffs=np.zeros((count, 1, 3), dtype=np.float32),
+    )
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    background = np.array([0.02, 0.03, 0.05], dtype=np.float32)
+    limited = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, max_splat_steps=1, list_capacity_multiplier=128)
+    unlimited = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, max_splat_steps=32768, list_capacity_multiplier=128)
+
+    limited_image = limited.render(scene, camera, background=background).image
+    unlimited_image = unlimited.render(scene, camera, background=background).image
+
+    mean_abs_error = float(np.mean(np.abs(limited_image - unlimited_image)))
+    max_abs_error = float(np.max(np.abs(limited_image - unlimited_image)))
+    assert mean_abs_error < 2e-4
+    assert max_abs_error < 3e-3
+
+
+def test_max_anisotropy_clamps_cached_raster_scale(device):
+    scene = GaussianScene(
+        positions=np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
+        scales=np.array([_log_sigma((0.2, 0.02, 0.02))], dtype=np.float32),
+        rotations=np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+        opacities=np.array([0.85], dtype=np.float32),
+        colors=np.array([[0.7, 0.6, 0.4]], dtype=np.float32),
+        sh_coeffs=np.zeros((1, 1, 3), dtype=np.float32),
+    )
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    unconstrained = GaussianRenderer(device, width=64, height=64, radius_scale=1.0, max_anisotropy=100.0)
+    constrained = GaussianRenderer(device, width=64, height=64, radius_scale=1.0, max_anisotropy=2.0)
+
+    unconstrained_cache = np.asarray(unconstrained.debug_pipeline_data(scene, camera)["raster_cache"], dtype=np.float32)
+    constrained_cache = np.asarray(constrained.debug_pipeline_data(scene, camera)["raster_cache"], dtype=np.float32)
+
+    np.testing.assert_allclose(unconstrained_cache[0, 3:6], np.array([0.6, 0.06, 0.06], dtype=np.float32), rtol=2e-4, atol=2e-4)
+    np.testing.assert_allclose(constrained_cache[0, 3:6], np.array([0.6, 0.3, 0.3], dtype=np.float32), rtol=2e-4, atol=2e-4)
+
+
+def test_projection_keeps_partially_visible_splat_when_center_is_behind_camera(device):
+    scene = GaussianScene(
+        positions=np.array([[0.0, 0.0, 5.0]], dtype=np.float32),
+        scales=np.array([_log_sigma((1.2, 1.2, 1.2))], dtype=np.float32),
+        rotations=np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+        opacities=np.array([0.9], dtype=np.float32),
+        colors=np.array([[0.8, 0.6, 0.2]], dtype=np.float32),
+        sh_coeffs=np.zeros((1, 1, 3), dtype=np.float32),
+    )
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.0, list_capacity_multiplier=64)
+
+    debug = renderer.debug_pipeline_data(scene, camera)
+    center_radius_depth = np.asarray(debug["screen_center_radius_depth"], dtype=np.float32)
+
+    assert center_radius_depth[0, 2] >= 64.0
+    assert int(debug["generated_entries"]) > 0
 
 
 def test_tile_keys_and_ranges_match_reference(device):
@@ -128,6 +207,39 @@ def test_tile_keys_and_ranges_match_reference(device):
 
     assert int(debug["generated_entries"]) == generated
     assert int(debug["sorted_count"]) == sorted_count
+    np.testing.assert_array_equal(debug["keys"], ref_keys)
+    np.testing.assert_array_equal(debug["values"], ref_values)
+    np.testing.assert_array_equal(debug["tile_ranges"], ref_ranges)
+
+
+def test_large_rotated_splat_tile_coverage_matches_reference(device):
+    scene = GaussianScene(
+        positions=np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
+        scales=np.array([_log_sigma((0.28, 0.035, 0.035))], dtype=np.float32),
+        rotations=np.array([[0.8660254, 0.0, 0.0, 0.5]], dtype=np.float32),
+        opacities=np.array([0.9], dtype=np.float32),
+        colors=np.array([[0.8, 0.6, 0.3]], dtype=np.float32),
+        sh_coeffs=np.zeros((1, 1, 3), dtype=np.float32),
+    )
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    renderer = GaussianRenderer(device, width=96, height=96, radius_scale=1.8, list_capacity_multiplier=64)
+    debug = renderer.debug_pipeline_data(scene, camera)
+
+    projected = project_splats(scene, camera, renderer.width, renderer.height, renderer.radius_scale)
+    keys, values, generated = build_tile_key_value_pairs(
+        projected=projected,
+        tile_width=renderer.tile_width,
+        tile_height=renderer.tile_height,
+        tile_size=renderer.tile_size,
+        max_list_entries=renderer._max_list_entries,
+    )
+    sorted_count = min(generated, renderer._max_list_entries)
+    ref_keys, ref_values = sort_key_values(keys, values, sorted_count)
+    ref_ranges = build_tile_ranges(ref_keys, sorted_count, renderer.tile_count)
+
+    assert int(projected.valid[0]) == 1
+    assert generated > renderer.tile_width
+    assert int(debug["generated_entries"]) == generated
     np.testing.assert_array_equal(debug["keys"], ref_keys)
     np.testing.assert_array_equal(debug["values"], ref_values)
     np.testing.assert_array_equal(debug["tile_ranges"], ref_ranges)

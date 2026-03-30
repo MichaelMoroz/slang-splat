@@ -7,6 +7,16 @@ float screen_radius_cap(float2 viewport)
     return max(max(viewport.x, viewport.y), MIN_SCREEN_RADIUS_PX);
 }
 
+void init_fullscreen_fallback_ellipse(float2 viewport, out Ellipse ellipse)
+{
+    float radius = screen_radius_cap(viewport);
+    float invRadiusSq = 1.0 / max(radius * radius, ELLIPSE_EPS);
+    ellipse.centerPx = 0.5 * viewport;
+    ellipse.radiusPx = radius;
+    ellipse.conic = float3(invRadiusSq, 0.0, invRadiusSq);
+    ellipse.bboxExtent = float2(radius, radius);
+}
+
 // 5-point conic fit via renormalization: maps two points to canonical positions,
 // reducing the 5x5 system to 3x3. Returns coefficients for Ax^2+2Bxy+Cy^2+Dx+Ey = 1.
 bool solve_conic_renorm(float2 points[ELLIPSE_POINT_COUNT], float eps, out float solution[5])
@@ -102,13 +112,23 @@ bool compute_ellipsoid_outline_ellipse(Ellipsoid ellipsoid, PinholeCamera camera
     ellipse.conic = 0.0;
     ellipse.bboxExtent = 0.0;
 
+    float supportRadius = max(ellipsoid.projectedScale.x, max(ellipsoid.projectedScale.y, ellipsoid.projectedScale.z));
+    float3 cameraCenter = camera.world_point_to_camera(ellipsoid.centerWorld);
+    bool supportIntersectsFront = cameraCenter.z + supportRadius > DEPTH_VISIBILITY_FLOOR;
+
     float2 screenCenter = 0.0;
-    if (!camera.project_world_to_screen(ellipsoid.centerWorld, screenCenter)) return false;
+    bool hasScreenCenter = camera.project_world_to_screen(ellipsoid.centerWorld, screenCenter);
+    if (!hasScreenCenter && !supportIntersectsFront) return false;
 
     // Build the tangent circle on the unit ellipsoid in support-local space.
     float3 viewOriginLocal = ellipsoid.projectedRoLocal;
     float viewDistance = length(viewOriginLocal);
-    if (viewDistance <= 1.0 + ELLIPSE_EPS) return false;
+    if (viewDistance <= 1.0 + ELLIPSE_EPS)
+    {
+        if (!supportIntersectsFront) return false;
+        init_fullscreen_fallback_ellipse(camera.params.viewport, ellipse);
+        return true;
+    }
 
     float3 viewDirLocal = viewOriginLocal / viewDistance;
     float3 tangentCircleCenter = viewDirLocal / viewDistance;
@@ -134,13 +154,21 @@ bool compute_ellipsoid_outline_ellipse(Ellipsoid ellipsoid, PinholeCamera camera
         float3 localPoint = tangentCircleCenter + tangentCircleRadius * (c * tangentBasisU + s * tangentBasisV);
         float3 worldPoint = local_point_to_world(localPoint, ellipsoid.centerWorld, ellipsoid.projectedInvScale, ellipsoid.rotation);
         float2 screenPoint = 0.0;
-        if (!camera.project_world_to_screen(worldPoint, screenPoint)) return false;
+        if (!camera.project_world_to_screen(worldPoint, screenPoint))
+        {
+            if (!supportIntersectsFront) return false;
+            init_fullscreen_fallback_ellipse(camera.params.viewport, ellipse);
+            return true;
+        }
         outlinePoints[i] = screenPoint;
         outlineMin = min(outlineMin, screenPoint);
         outlineMax = max(outlineMax, screenPoint);
     }
-    outlineMin = min(outlineMin, screenCenter);
-    outlineMax = max(outlineMax, screenCenter);
+    if (hasScreenCenter)
+    {
+        outlineMin = min(outlineMin, screenCenter);
+        outlineMax = max(outlineMax, screenCenter);
+    }
     if (outlineMax.x < 0.0 || outlineMin.x >= camera.params.viewport.x || outlineMax.y < 0.0 || outlineMin.y >= camera.params.viewport.y) return false;
 
     // Solve for the ellipse conic coefficients in normalized space, then convert back to pixel space.
@@ -197,27 +225,12 @@ bool try_prepare_conic_for_binning(inout Ellipse ellipse, float halfTile)
         && conic.z > POSITIVE_CONIC_FLOOR
         && detConic > CONIC_DETERMINANT_FLOOR;
     if (!useConic) return false;
-
-    float traceConic = conic.x + conic.z;
-    float discConic = sqrt(max(0.25 * traceConic * traceConic - detConic, 0.0));
-    float eigMin = 0.5 * traceConic - discConic;
-    float eigMax = 0.5 * traceConic + discConic;
-    float maxAxis = rsqrt(max(eigMin, CONIC_AXIS_FLOOR));
-    float minAxis = rsqrt(max(eigMax, CONIC_AXIS_FLOOR));
-    float radiusSafe = max(ellipse.radiusPx, MIN_SCREEN_RADIUS_PX);
-    float axisLimit = radiusSafe * 2.0 + halfTile;
-    useConic = isfinite(maxAxis)
-        && isfinite(minAxis)
-        && eigMin > 0.0
-        && eigMax > 0.0
-        && maxAxis <= axisLimit;
-    if (!useConic) return false;
-
-    float xExtent = sqrt(max(conic.z / detConic, 0.0));
-    float yExtent = sqrt(max(conic.x / detConic, 0.0));
+    float level = 1.0 + CONIC_INTERSECTION_SLACK;
+    float xExtent = sqrt(max(level * conic.z / detConic, 0.0));
+    float yExtent = sqrt(max(level * conic.x / detConic, 0.0));
     if (!all(isfinite(float2(xExtent, yExtent)))) return false;
 
-    ellipse.bboxExtent = clamp(float2(xExtent, yExtent), float2(MIN_BBOX_EXTENT_PX), float2(ellipse.radiusPx));
+    ellipse.bboxExtent = max(float2(xExtent, yExtent) + BBOX_PAD_PX, float2(MIN_BBOX_EXTENT_PX));
     return true;
 }
 
@@ -242,14 +255,19 @@ ScanlineLoopConfig build_scanline_loop_config(PrepassParams prepass, Ellipse ell
     return make_scanline_loop_config(prepass, scanAlongX, minX, maxX, minY, maxY);
 }
 
-void accumulate_conic_cross_section(float conicA, float conicB, float det, float invA, float centerMinor, float dM, inout float minPx, inout float maxPx)
+void tile_box_relative_to_ellipse(float2 centerPx, bool scanAlongX, float tileSize, uint lineCoord, uint minorCoord, out float2 boxMin, out float2 boxMax)
 {
-    float disc = conicA - det * dM * dM;
-    if (disc <= 0) return;
-    float half = sqrt(disc) * invA;
-    float shift = -conicB * dM * invA;
-    minPx = min(minPx, centerMinor + shift - half);
-    maxPx = max(maxPx, centerMinor + shift + half);
+    float2 major = scanAlongX ? float2(minorCoord, lineCoord) : float2(lineCoord, minorCoord);
+    boxMin = major * tileSize - centerPx;
+    boxMax = (major + 1.0) * tileSize - centerPx;
+}
+
+bool tile_intersects_ellipse(Ellipse ellipse, bool scanAlongX, float tileSize, uint lineCoord, uint minorCoord)
+{
+    float2 boxMin;
+    float2 boxMax;
+    tile_box_relative_to_ellipse(ellipse.centerPx, scanAlongX, tileSize, lineCoord, minorCoord, boxMin, boxMax);
+    return ellipse.intersectsTileBox(boxMin, boxMax);
 }
 
 bool compute_scanline_tile_span_universal(Ellipse ellipse, ScanlineLoopConfig cfg, float tileSize, uint lineCoord, out ScanlineSpan span)
@@ -258,36 +276,24 @@ bool compute_scanline_tile_span_universal(Ellipse ellipse, ScanlineLoopConfig cf
     span.lineCount = 0;
     if (!cfg.isLineCoordValid(lineCoord) || cfg.minorMin > cfg.minorMax) return false;
 
-    float centerMinor = cfg.scanAlongX ? ellipse.centerPx.x : ellipse.centerPx.y;
-    float centerMajor = cfg.scanAlongX ? ellipse.centerPx.y : ellipse.centerPx.x;
-    float dM0 = float(lineCoord) * tileSize - centerMajor;
-    float dM1 = dM0 + tileSize;
-    float minPx = 1e30;
-    float maxPx = -1e30;
-
-    float A = cfg.scanAlongX ? ellipse.conic.x : ellipse.conic.z;
-    float B = ellipse.conic.y;
-    float C = cfg.scanAlongX ? ellipse.conic.z : ellipse.conic.x;
-    float det = A * C - B * B;
-    float invA = 1.0 / A;
-
-    accumulate_conic_cross_section(A, B, det, invA, centerMinor, dM0, minPx, maxPx);
-    accumulate_conic_cross_section(A, B, det, invA, centerMinor, dM1, minPx, maxPx);
-
-    float detC = det * C;
-    if (detC > 0)
+    bool found = false;
+    uint firstHit = 0u;
+    uint lastHit = 0u;
+    uint minorStart = uint(max(cfg.minorMin, 0));
+    uint minorEnd = uint(cfg.minorMax);
+    for (uint minorCoord = minorStart; minorCoord <= minorEnd; minorCoord++)
     {
-        float dMCrit = B / sqrt(detC);
-        if (dMCrit > dM0 && dMCrit < dM1) accumulate_conic_cross_section(A, B, det, invA, centerMinor, dMCrit, minPx, maxPx);
-        if (-dMCrit > dM0 && -dMCrit < dM1) accumulate_conic_cross_section(A, B, det, invA, centerMinor, -dMCrit, minPx, maxPx);
+        if (!tile_intersects_ellipse(ellipse, cfg.scanAlongX, tileSize, lineCoord, minorCoord)) continue;
+        if (!found)
+        {
+            found = true;
+            firstHit = minorCoord;
+        }
+        lastHit = minorCoord;
     }
+    if (!found) return false;
 
-    if (minPx > maxPx) return false;
-
-    int first = max(int(floor(minPx / tileSize)), cfg.minorMin);
-    int last = min(int(floor(maxPx / tileSize)), cfg.minorMax);
-    if (first > last) return false;
-    span.lineStartMinor = uint(first);
-    span.lineCount = uint(last - first + 1);
+    span.lineStartMinor = firstHit;
+    span.lineCount = lastHit - firstHit + 1u;
     return true;
 }
