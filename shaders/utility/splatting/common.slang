@@ -8,13 +8,33 @@ static const float GAUSSIAN_SUPPORT_SIGMA_RADIUS = 3.0;
 struct ScanlineWorkItem
 {
     uint splatId;
-    uint depthCode;
     uint lineCoord;
     uint lineStartMinor;
-    uint lineCount;
-    uint splatListOffset;
-    uint scanAlongX;
-    uint reserved0;
+    uint packedLineCountAxis;
+
+    [mutating]
+    void clear(bool scanAlongX)
+    {
+        lineStartMinor = 0u;
+        packedLineCountAxis = scanAlongX ? 0x80000000u : 0u;
+    }
+
+    [mutating]
+    void setSpan(uint lineStartMinorIn, uint lineCountIn, bool scanAlongX)
+    {
+        lineStartMinor = lineStartMinorIn;
+        packedLineCountAxis = (lineCountIn & 0x7fffffffu) | (scanAlongX ? 0x80000000u : 0u);
+    }
+
+    uint lineCount()
+    {
+        return packedLineCountAxis & 0x7fffffffu;
+    }
+
+    bool scanAlongXAxis()
+    {
+        return (packedLineCountAxis & 0x80000000u) != 0u;
+    }
 };
 
 struct PrepassParams
@@ -86,8 +106,6 @@ struct Ellipse
     bool isVisible(float camDistance, float depthValue, float2 viewport, float nearDepth, float farDepth)
     {
         return depthValue > DEPTH_VISIBILITY_FLOOR
-            && camDistance > nearDepth
-            && camDistance < farDepth
             && (centerPx.x + radiusPx) >= 0.0
             && (centerPx.x - radiusPx) < viewport.x
             && (centerPx.y + radiusPx) >= 0.0

@@ -40,10 +40,16 @@ uniform RWStructuredBuffer<float4> g_ScreenEllipseConic;
 uniform RWStructuredBuffer<uint> g_SplatVisible;
 uniform RWStructuredBuffer<float> g_RasterCache;
 
+uniform RWStructuredBuffer<uint> g_VisibleKeys;
+uniform RWStructuredBuffer<uint> g_VisibleValues;
+uniform RWStructuredBuffer<uint> g_VisibleCounter;
+uniform RWStructuredBuffer<uint> g_ScanlineCounts;
+uniform RWStructuredBuffer<uint> g_ScanlineOffsets;
+uniform RWStructuredBuffer<uint> g_ScanlineTileCounts;
+uniform RWStructuredBuffer<uint> g_ScanlineTileOffsets;
 uniform RWStructuredBuffer<uint> g_Keys;
 uniform RWStructuredBuffer<uint> g_Values;
 uniform RWStructuredBuffer<uint> g_ListCounter;
-uniform RWStructuredBuffer<uint> g_SplatListBases;
 uniform RWStructuredBuffer<ScanlineWorkItem> g_ScanlineWorkItems;
 uniform RWStructuredBuffer<uint> g_ScanlineCounter;
 uniform RWStructuredBuffer<uint2> g_TileRanges;

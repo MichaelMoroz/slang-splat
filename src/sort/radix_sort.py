@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 import slangpy as spy
 
@@ -24,6 +26,13 @@ PARAM_NUM_GROUPS = PARAM_ELEMENT_COUNT + 1
 PARAM_TOTAL_N = PARAM_NUM_GROUPS + 1
 PARAM_NUM_LEVELS = PARAM_TOTAL_N + 1
 INDIRECT_ARGS_UINT_COUNT = PARAM_NUM_LEVELS + 1
+
+
+@dataclass(frozen=True, slots=True)
+class RadixSortResult:
+    args_buffer: spy.Buffer
+    keys_buffer: spy.Buffer
+    values_buffer: spy.Buffer
 
 
 class GPURadixSort:
@@ -131,9 +140,18 @@ class GPURadixSort:
                 command_encoder=encoder,
             )
 
-    def sort_key_values(self, encoder: spy.CommandEncoder, keys_buffer: spy.Buffer, values_buffer: spy.Buffer, n: int, max_bits: int = 32) -> None:
+    def sort_key_values(
+        self,
+        encoder: spy.CommandEncoder,
+        keys_buffer: spy.Buffer,
+        values_buffer: spy.Buffer,
+        n: int,
+        max_bits: int = 32,
+        copy_result_back: bool = True,
+    ) -> RadixSortResult:
         if n <= 0:
-            return
+            args_buffer = self.ensure_indirect_args()
+            return RadixSortResult(args_buffer=args_buffer, keys_buffer=keys_buffer, values_buffer=values_buffer)
         with debug_group(encoder, "Radix Sort", debug_color(1)):
             working_buffers = self.ensure_buffers(n)
             args_buffer = self.ensure_indirect_args()
@@ -146,7 +164,7 @@ class GPURadixSort:
                 },
                 command_encoder=encoder,
             )
-            self.sort_key_values_indirect(
+            final_keys, final_values = self.sort_key_values_indirect(
                 encoder=encoder,
                 keys_buffer=keys_buffer,
                 values_buffer=values_buffer,
@@ -154,7 +172,9 @@ class GPURadixSort:
                 args_buffer=args_buffer,
                 working_buffers=working_buffers,
                 max_bits=max_bits,
+                copy_result_back=copy_result_back,
             )
+            return RadixSortResult(args_buffer=args_buffer, keys_buffer=final_keys, values_buffer=final_values)
 
     def sort_key_values_from_count_buffer(
         self,
@@ -165,9 +185,11 @@ class GPURadixSort:
         count_offset: int,
         max_count: int,
         max_bits: int = 32,
-    ) -> spy.Buffer:
+        copy_result_back: bool = True,
+    ) -> RadixSortResult:
         if max_count <= 0:
-            return self.ensure_indirect_args()
+            args_buffer = self.ensure_indirect_args()
+            return RadixSortResult(args_buffer=args_buffer, keys_buffer=keys_buffer, values_buffer=values_buffer)
         with debug_group(encoder, "Radix Sort (Count Buffer)", debug_color(11)):
             working_buffers = self.ensure_buffers(max_count)
             args_buffer = self.ensure_indirect_args()
@@ -178,7 +200,7 @@ class GPURadixSort:
                 max_element_count=max_count,
                 args_buffer=args_buffer,
             )
-            self.sort_key_values_indirect(
+            final_keys, final_values = self.sort_key_values_indirect(
                 encoder=encoder,
                 keys_buffer=keys_buffer,
                 values_buffer=values_buffer,
@@ -187,8 +209,9 @@ class GPURadixSort:
                 working_buffers=working_buffers,
                 max_bits=max_bits,
                 use_params_buffer=True,
+                copy_result_back=copy_result_back,
             )
-            return args_buffer
+            return RadixSortResult(args_buffer=args_buffer, keys_buffer=final_keys, values_buffer=final_values)
 
     def sort_key_values_indirect(
         self,
@@ -200,7 +223,8 @@ class GPURadixSort:
         working_buffers: dict[str, object] | None = None,
         max_bits: int = 32,
         use_params_buffer: bool = False,
-    ) -> None:
+        copy_result_back: bool = True,
+    ) -> tuple[spy.Buffer, spy.Buffer]:
         if working_buffers is None:
             working_buffers = self.ensure_buffers(n)
         layout = self._layout(n)
@@ -295,10 +319,12 @@ class GPURadixSort:
             keys_in, keys_out = keys_out, keys_in
             values_in, values_out = values_out, values_in
 
-        if passes % 2 == 1:
+        if passes % 2 == 1 and copy_result_back:
             with debug_group(encoder, "Final Copy", debug_color(9)):
                 encoder.copy_buffer(keys_buffer, 0, keys_in, 0, n * 4)
                 encoder.copy_buffer(values_buffer, 0, values_in, 0, n * 4)
+            return keys_buffer, values_buffer
+        return keys_in, values_in
 
 
 def sort_numpy(device: spy.Device, keys: np.ndarray, values: np.ndarray, max_bits: int = 32) -> tuple[np.ndarray, np.ndarray]:

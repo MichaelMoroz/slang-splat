@@ -270,8 +270,6 @@ def project_splats(
         ellipse_conic[index] = conic
         visible = (
             depth_value > 1e-4
-            and cam_distance > camera.near
-            and cam_distance < camera.far
             and center_px[0] + radius_px >= 0.0
             and center_px[0] - radius_px < float(width)
             and center_px[1] + radius_px >= 0.0
@@ -347,19 +345,25 @@ def _iter_spans(center: tuple[float, float], conic: np.ndarray, scan_along_x: bo
             yield primary, minor_start, count
 
 
-def _write_span(keys: np.ndarray, values: np.ndarray, write_index: int, count: int, depth_bits: int, tile_width: int, splat_id: int, depth_key: np.uint32, scan_along_x: bool, primary: int, minor_start: int) -> int:
+def _write_span(keys: np.ndarray, values: np.ndarray, write_index: int, count: int, tile_width: int, splat_id: int, scan_along_x: bool, primary: int, minor_start: int) -> int:
     for offset in range(count):
         tile_x, tile_y = (minor_start + offset, primary) if scan_along_x else (primary, minor_start + offset)
         tile_id = tile_y * tile_width + tile_x
-        keys[write_index] = np.uint32((tile_id << depth_bits) | int(depth_key))
+        keys[write_index] = np.uint32(tile_id)
         values[write_index] = np.uint32(splat_id)
         write_index += 1
     return write_index
 
 
-def build_tile_key_value_pairs(projected: ProjectedSplats, tile_width: int, tile_height: int, tile_size: int, depth_bits: int, near_depth: float, far_depth: float, max_list_entries: int) -> tuple[np.ndarray, np.ndarray, int]:
+def build_tile_key_value_pairs(projected: ProjectedSplats, tile_width: int, tile_height: int, tile_size: int, max_list_entries: int) -> tuple[np.ndarray, np.ndarray, int]:
     keys, values, counter = np.zeros((max_list_entries,), dtype=np.uint32), np.zeros((max_list_entries,), dtype=np.uint32), 0
-    for splat_id, (cx, cy, radius, depth) in enumerate(projected.center_radius_depth):
+    visible_ids = np.flatnonzero(projected.valid != 0)
+    if visible_ids.size == 0:
+        return keys, values, counter
+    depths = projected.center_radius_depth[visible_ids, 3]
+    ordered_ids = visible_ids[np.argsort(depths, kind="stable")]
+    for splat_id in ordered_ids.tolist():
+        cx, cy, radius, _ = projected.center_radius_depth[splat_id]
         if projected.valid[splat_id] == 0:
             continue
         use_conic, bbox_extent = _try_prepare_conic_for_binning(projected.ellipse_conic[splat_id], float(radius), 0.5 * float(tile_size))
@@ -383,12 +387,11 @@ def build_tile_key_value_pairs(projected: ProjectedSplats, tile_width: int, tile
         if base_index >= max_list_entries:
             continue
         write_limit, write_index, written = min(total_count, max_list_entries - base_index), base_index, 0
-        depth_key = quantize_depth(float(depth), near_depth, far_depth, depth_bits)
         for primary, minor_start, count in spans:
             if written >= write_limit:
                 break
             count = min(count, write_limit - written)
-            write_index = _write_span(keys, values, write_index, count, depth_bits, tile_width, splat_id, depth_key, scan_along_x, primary, minor_start)
+            write_index = _write_span(keys, values, write_index, count, tile_width, splat_id, scan_along_x, primary, minor_start)
             written += count
     return keys, values, counter
 
@@ -398,12 +401,12 @@ def sort_key_values(keys: np.ndarray, values: np.ndarray, count: int) -> tuple[n
     return keys[:count][order].copy(), values[:count][order].copy()
 
 
-def build_tile_ranges(sorted_keys: np.ndarray, sorted_count: int, tile_count: int, depth_bits: int) -> np.ndarray:
+def build_tile_ranges(sorted_keys: np.ndarray, sorted_count: int, tile_count: int) -> np.ndarray:
     ranges = np.full((tile_count, 2), fill_value=np.uint32(0xFFFFFFFF), dtype=np.uint32)
     ranges[:, 1] = 0
     if sorted_count == 0:
         return ranges
-    tiles = sorted_keys[:sorted_count] >> np.uint32(depth_bits)
+    tiles = sorted_keys[:sorted_count]
     boundaries = np.flatnonzero(np.r_[True, tiles[1:] != tiles[:-1], True])
     for start, end in zip(boundaries[:-1], boundaries[1:]):
         ranges[int(tiles[start])] = (np.uint32(start), np.uint32(end))

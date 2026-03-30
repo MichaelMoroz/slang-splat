@@ -120,24 +120,37 @@ def test_tile_keys_and_ranges_match_reference(device):
         tile_width=renderer.tile_width,
         tile_height=renderer.tile_height,
         tile_size=renderer.tile_size,
-        depth_bits=renderer.depth_bits,
-        near_depth=camera.near,
-        far_depth=camera.far,
         max_list_entries=renderer._max_list_entries,
     )
     sorted_count = min(generated, renderer._max_list_entries)
     ref_keys, ref_values = sort_key_values(keys, values, sorted_count)
-    ref_ranges = build_tile_ranges(ref_keys, sorted_count, renderer.tile_count, renderer.depth_bits)
+    ref_ranges = build_tile_ranges(ref_keys, sorted_count, renderer.tile_count)
 
     assert int(debug["generated_entries"]) == generated
     assert int(debug["sorted_count"]) == sorted_count
-    gpu_tile_ids = debug["keys"] >> np.uint32(renderer.depth_bits)
-    ref_tile_ids = ref_keys >> np.uint32(renderer.depth_bits)
-    np.testing.assert_array_equal(gpu_tile_ids, ref_tile_ids)
-    gpu_depth_codes = debug["keys"] & np.uint32((1 << renderer.depth_bits) - 1)
-    ref_depth_codes = ref_keys & np.uint32((1 << renderer.depth_bits) - 1)
-    assert np.max(np.abs(gpu_depth_codes.astype(np.int64) - ref_depth_codes.astype(np.int64))) <= 8
+    np.testing.assert_array_equal(debug["keys"], ref_keys)
+    np.testing.assert_array_equal(debug["values"], ref_values)
     np.testing.assert_array_equal(debug["tile_ranges"], ref_ranges)
+
+
+def test_projection_ignores_camera_far_clip_for_visible_splats(device):
+    scene = GaussianScene(
+        positions=np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
+        scales=np.full((1, 3), _log_sigma(0.05), dtype=np.float32),
+        rotations=np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+        opacities=np.array([0.8], dtype=np.float32),
+        colors=np.array([[0.9, 0.7, 0.5]], dtype=np.float32),
+        sh_coeffs=np.zeros((1, 1, 3), dtype=np.float32),
+    )
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=1.0)
+    renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, list_capacity_multiplier=8)
+
+    projected = project_splats(scene, camera, renderer.width, renderer.height, renderer.radius_scale)
+    debug = renderer.debug_pipeline_data(scene, camera)
+
+    assert int(projected.valid[0]) == 1
+    assert float(debug["screen_center_radius_depth"][0, 2]) > 0.0
+    assert int(debug["generated_entries"]) > 0
 
 
 def test_renderer_tile_sort_keeps_stable_order_for_equal_keys(device):
@@ -189,14 +202,11 @@ def test_tiny_render_matches_cpu_reference(device):
         tile_width=renderer.tile_width,
         tile_height=renderer.tile_height,
         tile_size=renderer.tile_size,
-        depth_bits=renderer.depth_bits,
-        near_depth=camera.near,
-        far_depth=camera.far,
         max_list_entries=renderer._max_list_entries,
     )
     sorted_count = min(generated, renderer._max_list_entries)
     ref_keys, ref_values = sort_key_values(keys, values, sorted_count)
-    ref_ranges = build_tile_ranges(ref_keys, sorted_count, renderer.tile_count, renderer.depth_bits)
+    ref_ranges = build_tile_ranges(ref_keys, sorted_count, renderer.tile_count)
     cpu_image = rasterize(
         projected=projected,
         sorted_values=ref_values,
@@ -256,14 +266,11 @@ def test_distorted_render_matches_cpu_reference(device):
         tile_width=renderer.tile_width,
         tile_height=renderer.tile_height,
         tile_size=renderer.tile_size,
-        depth_bits=renderer.depth_bits,
-        near_depth=camera.near,
-        far_depth=camera.far,
         max_list_entries=renderer._max_list_entries,
     )
     sorted_count = min(generated, renderer._max_list_entries)
     ref_keys, ref_values = sort_key_values(keys, values, sorted_count)
-    ref_ranges = build_tile_ranges(ref_keys, sorted_count, renderer.tile_count, renderer.depth_bits)
+    ref_ranges = build_tile_ranges(ref_keys, sorted_count, renderer.tile_count)
     cpu_image = rasterize(
         projected=projected,
         sorted_values=ref_values,
@@ -630,14 +637,11 @@ def test_partial_tile_render_matches_cpu_reference(device):
         tile_width=renderer.tile_width,
         tile_height=renderer.tile_height,
         tile_size=renderer.tile_size,
-        depth_bits=renderer.depth_bits,
-        near_depth=camera.near,
-        far_depth=camera.far,
         max_list_entries=renderer._max_list_entries,
     )
     sorted_count = min(generated, renderer._max_list_entries)
     ref_keys, ref_values = sort_key_values(keys, values, sorted_count)
-    ref_ranges = build_tile_ranges(ref_keys, sorted_count, renderer.tile_count, renderer.depth_bits)
+    ref_ranges = build_tile_ranges(ref_keys, sorted_count, renderer.tile_count)
     cpu_image = rasterize(
         projected=projected,
         sorted_values=ref_values,
