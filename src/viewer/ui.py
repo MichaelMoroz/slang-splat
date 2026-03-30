@@ -41,6 +41,7 @@ _DEFAULT_INTERFACE_SCALE_INDEX = 3
 _BASE_FONT_SIZE_PX = 16.0
 _FONT_ATLAS_SIZE_PX = _BASE_FONT_SIZE_PX * _INTERFACE_SCALE_OPTIONS[-1][1]
 _COLMAP_INIT_MODE_LABELS = ("COLMAP Pointcloud", "Diffused Pointcloud", "Custom PLY")
+_COLMAP_IMAGE_DOWNSCALE_LABELS = ("Original", "Target Width", "Scale Factor")
 _TRAIN_DOWNSCALE_MODE_LABELS = ("Auto",) + tuple(f"{i}x" for i in range(1, 17))
 _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT = 2e-4
 _DEBUG_COLORBAR_WIDTH = 18.0
@@ -359,6 +360,13 @@ class ToolkitState:
     step_history: deque = field(default_factory=partial(deque, maxlen=LOSS_HISTORY_SIZE))
     step_time_history: deque = field(default_factory=partial(deque, maxlen=LOSS_HISTORY_SIZE))
 
+    def clear_plot_history(self) -> None:
+        self.loss_history.clear()
+        self.fps_history.clear()
+        self.psnr_history.clear()
+        self.step_history.clear()
+        self.step_time_history.clear()
+
 
 def _noop() -> None:
     return None
@@ -423,6 +431,9 @@ class ToolkitWindow:
 
     def _set_current_context(self) -> None:
         imgui.set_current_context(self.ctx)
+
+    def reset_plot_history(self) -> None:
+        self.tk.clear_plot_history()
 
     def _apply_theme(self):
         self._set_current_context()
@@ -736,7 +747,7 @@ class ToolkitWindow:
         if import_active and not self._show_colmap_import:
             self._show_colmap_import = True
         if opened:
-            imgui.text_wrapped("Select the dataset root, verify the auto-detected image folder, choose the gaussian initialization source, then import the dataset.")
+            imgui.text_wrapped("Select the dataset root, verify the auto-detected image folder, choose image downscale and gaussian initialization, then import the dataset.")
             imgui.separator()
             if import_active:
                 status = ui._texts.get("colmap_import_status", "")
@@ -752,6 +763,39 @@ class ToolkitWindow:
             self._draw_import_path_selector(ui, label="COLMAP Root", key="colmap_root_path", button_label="Browse Root...", callback=self.callbacks.browse_colmap_root)
             imgui.spacing()
             self._draw_import_path_selector(ui, label="Image Folder", key="colmap_images_root", button_label="Browse Image Folder...", callback=self.callbacks.browse_colmap_images)
+            imgui.spacing()
+            downscale_idx = max(0, min(int(ui._values.get("colmap_image_downscale_mode", 0)), len(_COLMAP_IMAGE_DOWNSCALE_LABELS) - 1))
+            if imgui.begin_combo("Image Downscale", _COLMAP_IMAGE_DOWNSCALE_LABELS[downscale_idx]):
+                for idx, label in enumerate(_COLMAP_IMAGE_DOWNSCALE_LABELS):
+                    selected = idx == downscale_idx
+                    if imgui.selectable(label, selected)[0]:
+                        ui._values["colmap_image_downscale_mode"] = idx
+                        downscale_idx = idx
+                    if selected:
+                        imgui.set_item_default_focus()
+                imgui.end_combo()
+            if downscale_idx == 1:
+                changed, value = imgui.input_int("Target Width", int(ui._values.get("colmap_image_target_width", 1600)), 64, 256)
+                if changed:
+                    ui._values["colmap_image_target_width"] = max(int(value), 1)
+                if imgui.is_item_hovered():
+                    imgui.set_item_tooltip("Resize imported training images to this width while preserving aspect ratio. The importer never upscales.")
+            elif downscale_idx == 2:
+                changed, value = imgui.drag_float(
+                    "Scale Factor",
+                    float(ui._values.get("colmap_image_scale", 1.0)),
+                    0.01,
+                    1e-3,
+                    1.0,
+                    "%.4f",
+                    imgui.SliderFlags_.logarithmic.value,
+                )
+                if changed:
+                    ui._values["colmap_image_scale"] = min(max(float(value), 1e-3), 1.0)
+                if imgui.is_item_hovered():
+                    imgui.set_item_tooltip("Uniform scale applied to imported training images. Both axes stay proportional and the importer never upscales.")
+            else:
+                imgui.text_disabled("Imported images keep their source resolution.")
             imgui.spacing()
             mode_idx = max(0, min(int(ui._values.get("colmap_init_mode", 0)), len(_COLMAP_INIT_MODE_LABELS) - 1))
             if imgui.begin_combo("Initialization", _COLMAP_INIT_MODE_LABELS[mode_idx]):
@@ -1485,6 +1529,9 @@ def build_ui(renderer) -> ViewerUI:
     values["colmap_images_root"] = ""
     values["colmap_init_mode"] = 0
     values["colmap_custom_ply_path"] = ""
+    values["colmap_image_downscale_mode"] = 0
+    values["colmap_image_target_width"] = 1600
+    values["colmap_image_scale"] = 1.0
     values["colmap_nn_radius_scale_coef"] = 1.0
     values["colmap_diffused_point_count"] = 100000
     values["colmap_diffusion_radius"] = 1.0

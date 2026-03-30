@@ -22,7 +22,7 @@ from ..scene import (
     resolve_colmap_init_hparams,
     sample_colmap_diffused_points,
 )
-from ..scene._internal.colmap_ops import point_nn_scales
+from ..scene._internal.colmap_ops import point_nn_scales, resolve_training_frame_image_size
 from ..training import GaussianTrainer, resolve_effective_train_downscale_factor, resolve_training_resolution
 from ..scene._internal.colmap_types import ColmapFrame, point_tables
 from .state import ColmapImportProgress, ColmapImportSettings, SceneCountProxy
@@ -30,6 +30,9 @@ from .state import ColmapImportProgress, ColmapImportSettings, SceneCountProxy
 _COLMAP_IMPORT_POINTCLOUD = "pointcloud"
 _COLMAP_IMPORT_DIFFUSED_POINTCLOUD = "diffused_pointcloud"
 _COLMAP_IMPORT_CUSTOM_PLY = "custom_ply"
+_COLMAP_IMAGE_DOWNSCALE_ORIGINAL = "original"
+_COLMAP_IMAGE_DOWNSCALE_WIDTH = "width"
+_COLMAP_IMAGE_DOWNSCALE_SCALE = "scale"
 _COLMAP_DB_SAMPLE_LIMIT = 64
 _COLMAP_DB_SEARCH_PATTERNS = ("database.db", "*.db", "*.sqlite", "*.sqlite3")
 _COLMAP_IMPORT_IMAGES_PER_TICK = 1
@@ -63,6 +66,15 @@ def _ui_import_mode(viewer: object) -> str:
     if mode_idx == 1: return _COLMAP_IMPORT_DIFFUSED_POINTCLOUD
     if mode_idx == 2: return _COLMAP_IMPORT_CUSTOM_PLY
     return _COLMAP_IMPORT_POINTCLOUD
+
+
+def _ui_image_downscale_mode(viewer: object) -> str:
+    mode_idx = int(viewer.ui._values.get("colmap_image_downscale_mode", 0))
+    if mode_idx == 1:
+        return _COLMAP_IMAGE_DOWNSCALE_WIDTH
+    if mode_idx == 2:
+        return _COLMAP_IMAGE_DOWNSCALE_SCALE
+    return _COLMAP_IMAGE_DOWNSCALE_ORIGINAL
 
 
 def _profile_images_subdir(viewer: object) -> str | None:
@@ -176,6 +188,9 @@ def _update_import_settings(
     images_root: Path,
     init_mode: str,
     custom_ply_path: Path | None,
+    image_downscale_mode: str,
+    image_downscale_target_width: int,
+    image_downscale_scale: float,
     nn_radius_scale_coef: float,
     diffused_point_count: int,
     diffusion_radius: float,
@@ -185,6 +200,9 @@ def _update_import_settings(
         images_root=Path(images_root).resolve(),
         init_mode=str(init_mode),
         custom_ply_path=None if custom_ply_path is None else Path(custom_ply_path).resolve(),
+        image_downscale_mode=str(image_downscale_mode),
+        image_downscale_target_width=max(int(image_downscale_target_width), 1),
+        image_downscale_scale=float(np.clip(image_downscale_scale, 1e-6, 1.0)),
         nn_radius_scale_coef=float(max(nn_radius_scale_coef, 1e-4)),
         diffused_point_count=max(int(diffused_point_count), 1),
         diffusion_radius=max(float(diffusion_radius), 0.0),
@@ -194,6 +212,9 @@ def _update_import_settings(
     _set_ui_path(viewer, "colmap_images_root", images_root)
     viewer.ui._values["colmap_init_mode"] = 1 if str(init_mode) == _COLMAP_IMPORT_DIFFUSED_POINTCLOUD else 2 if str(init_mode) == _COLMAP_IMPORT_CUSTOM_PLY else 0
     _set_ui_path(viewer, "colmap_custom_ply_path", custom_ply_path)
+    viewer.ui._values["colmap_image_downscale_mode"] = 1 if str(image_downscale_mode) == _COLMAP_IMAGE_DOWNSCALE_WIDTH else 2 if str(image_downscale_mode) == _COLMAP_IMAGE_DOWNSCALE_SCALE else 0
+    viewer.ui._values["colmap_image_target_width"] = max(int(image_downscale_target_width), 1)
+    viewer.ui._values["colmap_image_scale"] = float(np.clip(image_downscale_scale, 1e-6, 1.0))
     viewer.ui._values["colmap_nn_radius_scale_coef"] = float(max(nn_radius_scale_coef, 1e-4))
     viewer.ui._values["colmap_diffused_point_count"] = max(int(diffused_point_count), 1)
     viewer.ui._values["colmap_diffusion_radius"] = max(float(diffusion_radius), 0.0)
@@ -207,7 +228,14 @@ def _append_training_frame(progress: ColmapImportProgress, image_id: int, image:
     if camera is None or not image_path.exists():
         return
     with Image.open(image_path) as pil_image:
-        width, height = pil_image.size
+        src_width, src_height = pil_image.size
+    width, height = resolve_training_frame_image_size(
+        src_width,
+        src_height,
+        downscale_mode=progress.image_downscale_mode,
+        downscale_target_width=progress.image_downscale_target_width,
+        downscale_scale=progress.image_downscale_scale,
+    )
     sx, sy = float(width) / float(camera.width), float(height) / float(camera.height)
     progress.frames.append(
         ColmapFrame(
@@ -227,9 +255,15 @@ def _append_training_frame(progress: ColmapImportProgress, image_id: int, image:
     )
 
 
-def _create_native_dataset_texture(viewer: object, image_path: Path) -> spy.Texture:
+def _create_native_dataset_texture(viewer: object, image_path: Path, *, target_size: tuple[int, int] | None = None) -> spy.Texture:
     with Image.open(image_path) as pil_image:
-        rgba8 = np.array(pil_image.convert("RGBA"), dtype=np.uint8, order="C", copy=True)
+        rgba_image = pil_image.convert("RGBA")
+        if target_size is not None:
+            target_width = max(int(target_size[0]), 1)
+            target_height = max(int(target_size[1]), 1)
+            if rgba_image.size != (target_width, target_height):
+                rgba_image = rgba_image.resize((target_width, target_height), Image.Resampling.LANCZOS)
+        rgba8 = np.array(rgba_image, dtype=np.uint8, order="C", copy=True)
     texture = viewer.device.create_texture(
         format=spy.Format.rgba8_unorm_srgb,
         width=int(rgba8.shape[1]),
@@ -339,6 +373,9 @@ def _scene_signature(viewer: object):
         str(import_cfg.init_mode),
         None if import_cfg.images_root is None else str(import_cfg.images_root.resolve()),
         None if import_cfg.custom_ply_path is None else str(import_cfg.custom_ply_path.resolve()),
+        str(import_cfg.image_downscale_mode),
+        int(import_cfg.image_downscale_target_width),
+        round(float(import_cfg.image_downscale_scale), 6),
         round(float(import_cfg.nn_radius_scale_coef), 6),
         int(import_cfg.diffused_point_count),
         round(float(import_cfg.diffusion_radius), 6),
@@ -560,6 +597,9 @@ def _finish_import_colmap_dataset(
     images_root: Path,
     init_mode: str,
     custom_ply_path: Path | None,
+    image_downscale_mode: str,
+    image_downscale_target_width: int,
+    image_downscale_scale: float,
     nn_radius_scale_coef: float,
     diffused_point_count: int,
     diffusion_radius: float,
@@ -569,6 +609,10 @@ def _finish_import_colmap_dataset(
 ) -> None:
     xyz, _ = _point_tables(recon)
     _reset_loaded_runtime(viewer)
+    if hasattr(viewer, "toolkit") and getattr(viewer, "toolkit") is not None:
+        reset_plot_history = getattr(viewer.toolkit, "reset_plot_history", None)
+        if callable(reset_plot_history):
+            reset_plot_history()
     _update_import_settings(
         viewer,
         dataset_root=colmap_root,
@@ -576,6 +620,9 @@ def _finish_import_colmap_dataset(
         images_root=images_root,
         init_mode=init_mode,
         custom_ply_path=custom_ply_path,
+        image_downscale_mode=image_downscale_mode,
+        image_downscale_target_width=image_downscale_target_width,
+        image_downscale_scale=image_downscale_scale,
         nn_radius_scale_coef=nn_radius_scale_coef,
         diffused_point_count=diffused_point_count,
         diffusion_radius=diffusion_radius,
@@ -603,13 +650,22 @@ def import_colmap_dataset(
     images_root: Path,
     init_mode: str,
     custom_ply_path: Path | None,
+    image_downscale_mode: str,
+    image_downscale_target_width: int,
+    image_downscale_scale: float,
     nn_radius_scale_coef: float,
     diffused_point_count: int,
     diffusion_radius: float,
 ) -> None:
     root = Path(colmap_root).resolve()
     recon = load_colmap_reconstruction(root)
-    training_frames = build_training_frames_from_root(recon, images_root)
+    training_frames = build_training_frames_from_root(
+        recon,
+        images_root,
+        downscale_mode=image_downscale_mode,
+        downscale_target_width=image_downscale_target_width,
+        downscale_scale=image_downscale_scale,
+    )
     _finish_import_colmap_dataset(
         viewer,
         colmap_root=root,
@@ -617,6 +673,9 @@ def import_colmap_dataset(
         images_root=images_root,
         init_mode=init_mode,
         custom_ply_path=custom_ply_path,
+        image_downscale_mode=image_downscale_mode,
+        image_downscale_target_width=image_downscale_target_width,
+        image_downscale_scale=image_downscale_scale,
         nn_radius_scale_coef=nn_radius_scale_coef,
         diffused_point_count=diffused_point_count,
         diffusion_radius=diffusion_radius,
@@ -633,6 +692,9 @@ def import_colmap_from_ui(viewer: object) -> None:
     init_mode = _ui_import_mode(viewer)
     custom_ply_text = _ui_path_string(viewer, "colmap_custom_ply_path")
     custom_ply_path = None if not custom_ply_text else Path(custom_ply_text).expanduser()
+    image_downscale_mode = _ui_image_downscale_mode(viewer)
+    image_downscale_target_width = max(int(viewer.ui._values.get("colmap_image_target_width", 1600)), 1)
+    image_downscale_scale = float(np.clip(viewer.ui._values.get("colmap_image_scale", 1.0), 1e-6, 1.0))
     nn_radius_scale_coef = float(viewer.ui._values.get("colmap_nn_radius_scale_coef", 0.25))
     diffused_point_count = max(int(viewer.ui._values.get("colmap_diffused_point_count", 100000)), 1)
     diffusion_radius = max(float(viewer.ui._values.get("colmap_diffusion_radius", 1.0)), 0.0)
@@ -653,6 +715,9 @@ def import_colmap_from_ui(viewer: object) -> None:
         images_root=images_root.resolve(),
         init_mode=init_mode,
         custom_ply_path=None if custom_ply_path is None else custom_ply_path.resolve(),
+        image_downscale_mode=image_downscale_mode,
+        image_downscale_target_width=image_downscale_target_width,
+        image_downscale_scale=image_downscale_scale,
         nn_radius_scale_coef=float(max(nn_radius_scale_coef, 1e-4)),
         diffused_point_count=diffused_point_count,
         diffusion_radius=diffusion_radius,
@@ -696,7 +761,7 @@ def advance_colmap_import(viewer: object) -> None:
                     break
                 frame = progress.frames[progress.current]
                 progress.current_name = Path(frame.image_path).name
-                progress.native_textures.append(_create_native_dataset_texture(viewer, frame.image_path))
+                progress.native_textures.append(_create_native_dataset_texture(viewer, frame.image_path, target_size=(frame.width, frame.height)))
                 progress.current += 1
             if progress.current < len(progress.frames):
                 return
@@ -713,6 +778,9 @@ def advance_colmap_import(viewer: object) -> None:
                 images_root=progress.images_root,
                 init_mode=progress.init_mode,
                 custom_ply_path=progress.custom_ply_path,
+                image_downscale_mode=progress.image_downscale_mode,
+                image_downscale_target_width=progress.image_downscale_target_width,
+                image_downscale_scale=progress.image_downscale_scale,
                 nn_radius_scale_coef=progress.nn_radius_scale_coef,
                 diffused_point_count=progress.diffused_point_count,
                 diffusion_radius=progress.diffusion_radius,
