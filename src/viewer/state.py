@@ -24,9 +24,12 @@ class SceneCountProxy:
 class ColmapImportSettings:
     database_path: Path | None = None
     images_root: Path | None = None
-    init_mode: str = "pointcloud"
+    init_mode: str = "diffused_pointcloud"
     custom_ply_path: Path | None = None
-    nn_radius_scale_coef: float = 0.25
+    image_downscale_mode: str = "original"
+    image_downscale_target_width: int = 2048
+    image_downscale_scale: float = 1.0
+    nn_radius_scale_coef: float = 0.5
     diffused_point_count: int = 100000
     diffusion_radius: float = 1.0
 
@@ -39,6 +42,9 @@ class ColmapImportProgress:
     images_root: Path
     init_mode: str
     custom_ply_path: Path | None
+    image_downscale_mode: str
+    image_downscale_target_width: int
+    image_downscale_scale: float
     nn_radius_scale_coef: float
     diffused_point_count: int = 100000
     diffusion_radius: float = 1.0

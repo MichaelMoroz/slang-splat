@@ -1,22 +1,50 @@
 import "utility/math/camera.slang";
 import "utility/math/constants.slang";
-import "utility/math/matrix.slang";
 import "utility/math/quaternion.slang";
 
-static const uint MVEE_POINT_COUNT = 5u;
-static const uint MVEE_MAX_ITERS = 8u;
+static const uint ELLIPSE_POINT_COUNT = 5u;
 static const float GAUSSIAN_SUPPORT_SIGMA_RADIUS = 3.0;
+static const uint DEBUG_MODE_NORMAL = 0u;
+static const uint DEBUG_MODE_PROCESSED_COUNT = 1u;
+static const uint DEBUG_MODE_CLONE_COUNT = 2u;
+static const uint DEBUG_MODE_DEPTH_MEAN = 3u;
+static const uint DEBUG_MODE_DEPTH_STD = 4u;
+static const uint DEBUG_MODE_ELLIPSE_OUTLINES = 5u;
+static const uint DEBUG_MODE_SPLAT_SPATIAL_DENSITY = 6u;
+static const uint DEBUG_MODE_SPLAT_SCREEN_DENSITY = 7u;
+static const uint DEBUG_MODE_GRAD_NORM = 8u;
+static const uint DEBUG_MODE_SPLAT_DENSITY = 9u;
 
 struct ScanlineWorkItem
 {
     uint splatId;
-    uint depthCode;
     uint lineCoord;
     uint lineStartMinor;
-    uint lineCount;
-    uint splatListOffset;
-    uint scanAlongX;
-    uint reserved0;
+    uint packedLineCountAxis;
+
+    [mutating]
+    void clear(bool scanAlongX)
+    {
+        lineStartMinor = 0u;
+        packedLineCountAxis = scanAlongX ? 0x80000000u : 0u;
+    }
+
+    [mutating]
+    void setSpan(uint lineStartMinorIn, uint lineCountIn, bool scanAlongX)
+    {
+        lineStartMinor = lineStartMinorIn;
+        packedLineCountAxis = (lineCountIn & 0x7fffffffu) | (scanAlongX ? 0x80000000u : 0u);
+    }
+
+    uint lineCount()
+    {
+        return packedLineCountAxis & 0x7fffffffu;
+    }
+
+    bool scanAlongXAxis()
+    {
+        return (packedLineCountAxis & 0x80000000u) != 0u;
+    }
 };
 
 struct PrepassParams
@@ -31,10 +59,6 @@ struct PrepassParams
     uint maxListEntries;
     uint maxScanlineEntries;
     float radiusScale;
-    uint sampled5MVEEIters;
-    float sampled5SafetyScale;
-    float sampled5RadiusPadPx;
-    float sampled5Eps;
 };
 
 struct RasterParams
@@ -45,11 +69,29 @@ struct RasterParams
     float alphaCutoff;
     float transmittanceThreshold;
     float3 background;
-    uint debugShowEllipses;
-    uint debugShowProcessedCount;
-    uint debugShowGradNorm;
+    uint debugMode;
     float debugGradNormThreshold;
     float debugEllipseThicknessPx;
+    float2 debugCloneCountRange;
+    float2 debugDensityRange;
+    float2 debugDepthMeanRange;
+    float2 debugDepthStdRange;
+};
+
+struct RasterGaussian : IDifferentiable
+{
+    float3 roLocal;
+    float3 scale;
+    float4 rotation;
+    float4 colorAlpha;
+};
+
+struct FixedRasterGaussianGrad
+{
+    int3 roLocal;
+    int3 scale;
+    int4 rotation;
+    int4 colorAlpha;
 };
 
 struct Gaussian3D : IDifferentiable
@@ -91,10 +133,7 @@ struct Ellipse
 
     bool isVisible(float camDistance, float depthValue, float2 viewport, float nearDepth, float farDepth)
     {
-        return depthValue > DEPTH_VISIBILITY_FLOOR
-            && camDistance > nearDepth
-            && camDistance < farDepth
-            && (centerPx.x + radiusPx) >= 0.0
+        return (centerPx.x + radiusPx) >= 0.0
             && (centerPx.x - radiusPx) < viewport.x
             && (centerPx.y + radiusPx) >= 0.0
             && (centerPx.y - radiusPx) < viewport.y;
@@ -180,21 +219,6 @@ struct ScanlineSpan
     uint lineCount;
 };
 
-struct MveeFitResult
-{
-    float2 centerPx;
-    float radiusPx;
-    float3 conic;
-
-    [mutating]
-    void clear()
-    {
-        centerPx = 0.0;
-        radiusPx = 0.0;
-        conic = 0.0;
-    }
-};
-
 struct SplatBinRequest
 {
     uint splatId;
@@ -220,15 +244,74 @@ float3 local_point_to_world(float3 pLocal, float3 worldPos, float3 invScale, flo
     return worldPos + rotate_by_quat(localUnscaled, qInv);
 }
 
+float debug_normalize_range(float value, float2 range)
+{
+    return saturate((value - range.x) / max(range.y - range.x, SMALL_VALUE));
+}
+
+float gaussian_scale_volume(float3 logScale)
+{
+    float3 scale = exp(logScale);
+    return max(scale.x * scale.y * scale.z, SMALL_VALUE);
+}
+
+float projected_ellipse_area(float3 conic)
+{
+    float det = conic.x * conic.z - conic.y * conic.y;
+    return max(0.5 * TAU_RADIANS / sqrt(max(det, CONIC_DETERMINANT_FLOOR)), SMALL_VALUE);
+}
+
 [Differentiable]
-Ellipsoid build_ellipsoid(no_diff CameraParams cameraParams, no_diff float radiusScale, Gaussian3D gaussian)
+float3 depth_state_step(float3 state, float contributionWeight, float depth)
+{
+    if (contributionWeight <= SMALL_VALUE || depth <= 0.0) return state;
+    float totalWeight = state.x + contributionWeight;
+    float delta = depth - state.y;
+    float nextDepthMean = state.y + (contributionWeight / max(totalWeight, SMALL_VALUE)) * delta;
+    float nextDepthM2 = state.z + state.x * contributionWeight * delta * delta / max(totalWeight, SMALL_VALUE);
+    return float3(totalWeight, nextDepthMean, nextDepthM2);
+}
+
+float3 depth_state_rewind(float3 state, float contributionWeight, float depth)
+{
+    if (contributionWeight <= SMALL_VALUE || depth <= 0.0) return state;
+    float prevWeightSum = max(state.x - contributionWeight, 0.0);
+    if (prevWeightSum <= SMALL_VALUE) return 0.0;
+    float prevDepthMean = (state.x * state.y - contributionWeight * depth) / prevWeightSum;
+    float delta = depth - prevDepthMean;
+    float prevDepthM2 = max(state.z - prevWeightSum * contributionWeight * delta * delta / max(state.x, SMALL_VALUE), 0.0);
+    return float3(prevWeightSum, prevDepthMean, prevDepthM2);
+}
+
+[Differentiable]
+float raster_depth_output(float3 state)
+{
+    if (state.x <= SMALL_VALUE) return 0.0;
+    float depthStd = sqrt(max(state.z / max(state.x, SMALL_VALUE), SMALL_VALUE));
+    return depthStd / max(abs(state.y), SMALL_VALUE);
+}
+
+float3 jet_colormap(float value)
+{
+    float x = saturate(value);
+    float r = saturate(1.5 - abs(4.0 * x - 3.0));
+    float g = saturate(1.5 - abs(4.0 * x - 2.0));
+    float b = saturate(1.5 - abs(4.0 * x - 1.0));
+    return float3(r, g, b);
+}
+
+[Differentiable]
+Ellipsoid build_ellipsoid_with_support(no_diff CameraParams cameraParams, no_diff float radiusScale, no_diff float supportSigmaRadius, no_diff float maxAnisotropy, Gaussian3D gaussian)
 {
     PinholeCamera camera = PinholeCamera.from_params(cameraParams);
     float3 sigma = exp(gaussian.logScale);
-    float3 rawSupportScale = max(sigma * (radiusScale * GAUSSIAN_SUPPORT_SIGMA_RADIUS), float3(SMALL_VALUE));
+    float3 rawSupportScale = max(sigma * (radiusScale * supportSigmaRadius), float3(SMALL_VALUE));
+    float supportMaxScale = max(rawSupportScale.x, max(rawSupportScale.y, rawSupportScale.z));
+    float supportMinScale = supportMaxScale / max(maxAnisotropy, 1.0);
+    float3 supportScale = max(rawSupportScale, float3(supportMinScale));
     Ellipsoid ellipsoid;
     ellipsoid.centerWorld = gaussian.position;
-    ellipsoid.rasterScale = rawSupportScale;
+    ellipsoid.rasterScale = supportScale;
     ellipsoid.rasterInvScale = 1.0 / max(ellipsoid.rasterScale, float3(SMALL_VALUE));
     ellipsoid.projectedScale = ellipsoid.rasterScale;
     ellipsoid.projectedInvScale = ellipsoid.rasterInvScale;
@@ -238,4 +321,10 @@ Ellipsoid build_ellipsoid(no_diff CameraParams cameraParams, no_diff float radiu
     ellipsoid.projectedRoLocal = ellipsoid.rasterRoLocal;
     ellipsoid.opacityScale = 1.0;
     return ellipsoid;
+}
+
+[Differentiable]
+Ellipsoid build_ellipsoid(no_diff CameraParams cameraParams, no_diff float radiusScale, no_diff float maxAnisotropy, Gaussian3D gaussian)
+{
+    return build_ellipsoid_with_support(cameraParams, radiusScale, GAUSSIAN_SUPPORT_SIGMA_RADIUS, maxAnisotropy, gaussian);
 }

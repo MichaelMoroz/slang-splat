@@ -152,3 +152,37 @@ struct PinholeCamera : ICamera
         return params.camPos;
     }
 };
+
+float2 viewport_center(float2 viewport)
+{
+    return viewport * 0.5;
+}
+
+bool is_screen_position_inside_viewport(float2 screenPos, float2 viewport)
+{
+    return screenPos.x >= 0.0 && screenPos.x < viewport.x && screenPos.y >= 0.0 && screenPos.y < viewport.y;
+}
+
+float2 nearest_circle_sample_to_viewport_center(float2 circleCenterPx, float circleRadiusPx, float2 viewport)
+{
+    float2 toViewportCenter = viewport_center(viewport) - circleCenterPx;
+    float distanceToViewportCenter = length(toViewportCenter);
+    if (distanceToViewportCenter <= SMALL_VALUE) return circleCenterPx + float2(circleRadiusPx, 0.0);
+    return circleCenterPx + toViewportCenter * (circleRadiusPx / distanceToViewportCenter);
+}
+
+bool world_support_radius_from_screen_circle(PinholeCamera camera, float3 worldPos, float circleRadiusPx, out float supportRadius)
+{
+    supportRadius = 0.0;
+    if (!(circleRadiusPx > SMALL_VALUE)) return false;
+
+    float2 centerPx;
+    if (!camera.project_world_to_screen(worldPos, centerPx)) return false;
+    if (!is_screen_position_inside_viewport(centerPx, camera.params.viewport)) return false;
+
+    float2 samplePx = nearest_circle_sample_to_viewport_center(centerPx, circleRadiusPx, camera.params.viewport);
+    float3 rayDir = camera.screen_to_world_ray(samplePx);
+    float3 toCenter = worldPos - camera.position_world();
+    supportRadius = length(cross(toCenter, rayDir));
+    return isfinite(supportRadius) && supportRadius > SMALL_VALUE;
+}

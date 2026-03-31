@@ -10,10 +10,6 @@ static const uint RASTER_THREAD_TILE_DIM = 8u;
 static const uint RASTER_GROUP_THREADS = RASTER_THREAD_TILE_DIM * RASTER_THREAD_TILE_DIM;
 static const uint RASTER_TILE_SIZE = RASTER_THREAD_TILE_DIM;
 static const uint RASTER_BATCH = 64u;
-static const uint SAMPLED5_MVEE_ITERS = 6u;
-static const float SAMPLED5_SAFETY_SCALE = 1.0;
-static const float SAMPLED5_RADIUS_PAD_PX = 1.0;
-static const float SAMPLED5_EPS = 1e-6;
 static const uint RASTER_GRAD_FIXED_FRAC_BITS = 12u;
 static const uint RASTER_CACHE_RO_LOCAL_X = 0u;
 static const uint RASTER_CACHE_RO_LOCAL_Y = 1u;
@@ -30,11 +26,9 @@ static const uint RASTER_CACHE_COLOR_G = 11u;
 static const uint RASTER_CACHE_COLOR_B = 12u;
 static const uint RASTER_CACHE_FUSED_OPACITY = 13u;
 static const uint RASTER_CACHE_PARAM_COUNT = 14u;
-groupshared float3 gsRoLocal[RASTER_BATCH];
-groupshared float3 gsScale[RASTER_BATCH];
-groupshared float4 gsRotation[RASTER_BATCH];
-groupshared half4 gsColorAlpha[RASTER_BATCH];
+groupshared RasterGaussian gsGaussian[RASTER_BATCH];
 groupshared uint gsBatchSplatId[RASTER_BATCH];
+groupshared uint gsDoneCount;
 
 uniform StructuredBuffer<float> g_SplatParams;
 
@@ -42,12 +36,18 @@ uniform RWStructuredBuffer<float4> g_ScreenCenterRadiusDepth;
 uniform RWStructuredBuffer<float4> g_ScreenColorAlpha;
 uniform RWStructuredBuffer<float4> g_ScreenEllipseConic;
 uniform RWStructuredBuffer<uint> g_SplatVisible;
-uniform RWStructuredBuffer<float> g_RasterCache;
+uniform RWStructuredBuffer<RasterGaussian> g_RasterCache;
 
+uniform RWStructuredBuffer<uint> g_VisibleKeys;
+uniform RWStructuredBuffer<uint> g_VisibleValues;
+uniform RWStructuredBuffer<uint> g_VisibleCounter;
+uniform RWStructuredBuffer<uint> g_ScanlineCounts;
+uniform RWStructuredBuffer<uint> g_ScanlineOffsets;
+uniform RWStructuredBuffer<uint> g_ScanlineTileCounts;
+uniform RWStructuredBuffer<uint> g_ScanlineTileOffsets;
 uniform RWStructuredBuffer<uint> g_Keys;
 uniform RWStructuredBuffer<uint> g_Values;
 uniform RWStructuredBuffer<uint> g_ListCounter;
-uniform RWStructuredBuffer<uint> g_SplatListBases;
 uniform RWStructuredBuffer<ScanlineWorkItem> g_ScanlineWorkItems;
 uniform RWStructuredBuffer<uint> g_ScanlineCounter;
 uniform RWStructuredBuffer<uint2> g_TileRanges;
@@ -60,7 +60,13 @@ uniform StructuredBuffer<float> g_DebugGradNorm;
 uniform RWTexture2D<float4> g_Output;
 uniform StructuredBuffer<float4> g_OutputGrad;
 uniform RWStructuredBuffer<float4> g_TrainingForwardState;
+uniform RWStructuredBuffer<float4> g_TrainingDepthState;
+uniform RWStructuredBuffer<float> g_TrainingDepthRatio;
+uniform RWStructuredBuffer<float> g_TrainingDensity;
+uniform StructuredBuffer<float> g_TrainingDepthRatioGrad;
+uniform StructuredBuffer<float> g_TrainingDensityGrad;
 uniform RWStructuredBuffer<uint> g_TrainingProcessedEnd;
+uniform RWStructuredBuffer<uint> g_TrainingBatchEnd;
 
 uniform RWStructuredBuffer<float> g_ParamGrads;
 uniform RWStructuredBuffer<int> g_CachedRasterGradsFixed;
@@ -105,7 +111,7 @@ Gaussian3D load_gaussian3d(uint splatId)
     return gaussian;
 }
 
-uint raster_cache_index(uint splatCount, uint fieldId, uint splatId)
+uint cached_raster_grad_index(uint splatCount, uint paramId, uint splatId)
 {
-    return fieldId * splatCount + splatId;
+    return paramId * splatCount + splatId;
 }

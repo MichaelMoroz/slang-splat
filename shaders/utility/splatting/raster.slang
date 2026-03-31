@@ -21,14 +21,14 @@ float3 world_to_local_dir(float3 dir, float3 scale, float4 rotation)
 }
 
 [Differentiable]
-CachedEllipsoid build_cached_ellipsoid(no_diff CameraParams cameraParams, no_diff float radiusScale, float3 position, float3 logScale, float4 rotation)
+CachedEllipsoid build_cached_ellipsoid(no_diff CameraParams cameraParams, no_diff float radiusScale, no_diff float maxAnisotropy, float3 position, float3 logScale, float4 rotation)
 {
     Gaussian3D gaussian;
     gaussian.position = position;
     gaussian.logScale = logScale;
     gaussian.rotation = rotation;
     gaussian.colorAlpha = 0.0;
-    Ellipsoid ellipsoid = build_ellipsoid(cameraParams, radiusScale, gaussian);
+    Ellipsoid ellipsoid = build_ellipsoid(cameraParams, radiusScale, maxAnisotropy, gaussian);
     return {
         ellipsoid.rasterRoLocal,
         ellipsoid.rasterScale,

@@ -7,6 +7,7 @@ import numpy as np
 import slangpy as spy
 
 from ..common import clamp_index, debug_region, require_not_none
+from ..training import resolve_maintenance_growth_ratio
 from . import session
 
 _DEBUG_HUGE_VALUE = 1e8
@@ -17,6 +18,43 @@ _DEBUG_ABS_DIFF_SCALE_MAX = 64.0
 _DEFAULT_TRAINING_STEPS_PER_FRAME = 1
 _MAX_TRAINING_STEPS_PER_FRAME = 8
 _TRAIN_DOWNSCALE_MODE_AUTO = 0
+
+
+def _training_schedule_text(viewer: object) -> str:
+    if viewer.s.trainer is not None:
+        training = viewer.s.trainer.training
+        if not bool(training.lr_schedule_enabled):
+            return "LR Schedule: disabled"
+        current = float(viewer.s.trainer.current_base_lr()) if hasattr(viewer.s.trainer, "current_base_lr") else float(training.lr_schedule_start_lr)
+        return (
+            f"LR Schedule: cosine {float(training.lr_schedule_start_lr):.2e} -> {float(training.lr_schedule_end_lr):.2e} | "
+            f"steps={int(training.lr_schedule_steps):,} | current={current:.2e}"
+        )
+    if not bool(viewer.c("lr_schedule_enabled").value):
+        return "LR Schedule: disabled"
+    return (
+        f"LR Schedule: cosine {float(viewer.c('lr_schedule_start_lr').value):.2e} -> {float(viewer.c('lr_schedule_end_lr').value):.2e} | "
+        f"steps={max(int(viewer.c('lr_schedule_steps').value), 1):,} | current={float(viewer.c('lr_schedule_start_lr').value):.2e}"
+    )
+
+
+def _training_maintenance_text(viewer: object) -> str:
+    if viewer.s.trainer is not None:
+        training = viewer.s.trainer.training
+        current_step = max(int(viewer.s.trainer.state.step), 0)
+        target_growth = max(float(training.maintenance_growth_ratio), 0.0)
+        current_growth = resolve_maintenance_growth_ratio(training, current_step)
+        start_step = max(int(getattr(training, "maintenance_growth_start_step", 0)), 0)
+        return (
+            f"Maintenance: every {int(training.maintenance_interval):,} | growth={current_growth * 100.0:.2f}% now | target={target_growth * 100.0:.2f}% after {start_step:,} | "
+            f"alpha<{float(training.maintenance_alpha_cull_threshold):.2e} culled | max={int(training.max_gaussians):,}"
+        )
+    target_growth = max(float(viewer.c("maintenance_growth_ratio").value), 0.0)
+    start_step = max(int(viewer.c("maintenance_growth_start_step").value), 0)
+    return (
+        f"Maintenance: every {max(int(viewer.c('maintenance_interval').value), 1):,} | growth=0.00% now | target={target_growth * 100.0:.2f}% after {start_step:,} | "
+        f"alpha<{max(float(viewer.c('maintenance_alpha_cull_threshold').value), 1e-8):.2e} culled | max={max(int(viewer.c('max_gaussians').value), 0):,}"
+    )
 
 
 def _format_duration(seconds: float) -> str:
@@ -179,6 +217,8 @@ def update_ui_text(viewer: object, dt: float) -> None:
     viewer.t("scene_stats").text = f"Splats: {int(current_splat_count):,}"
     viewer.t("training_resolution").text = _training_resolution_text(viewer)
     viewer.t("training_downscale").text = _training_downscale_text(viewer)
+    viewer.t("training_schedule").text = _training_schedule_text(viewer)
+    viewer.t("training_maintenance").text = _training_maintenance_text(viewer)
     viewer.t("histogram_status").text = str(getattr(viewer.s, "cached_raster_grad_histogram_status", ""))
     viewer.ui._values["_histogram_payload"] = getattr(viewer.s, "cached_raster_grad_histograms", None)
     viewer.ui._values["_histogram_range_payload"] = getattr(viewer.s, "cached_raster_grad_ranges", None)
@@ -189,6 +229,8 @@ def update_ui_text(viewer: object, dt: float) -> None:
         viewer.t("training_iters_avg").text = "Avg it/s: n/a"
         viewer.t("training_loss").text = "Loss Avg: n/a"
         viewer.t("training_mse").text = "MSE Avg: n/a"
+        viewer.t("training_depth_ratio").text = "Depth Ratio Avg: n/a"
+        viewer.t("training_density").text = "Density Avg: n/a"
         viewer.t("training_psnr").text = "PSNR Avg: n/a"
         viewer.t("training_instability").text = ""
     else:
@@ -202,6 +244,8 @@ def update_ui_text(viewer: object, dt: float) -> None:
         viewer.t("training_iters_avg").text = f"Avg it/s: {avg_iters_s:.2f}" if training_elapsed_s > 1e-6 else "Avg it/s: n/a"
         viewer.t("training_loss").text = f"Loss Avg: {state.avg_loss:.6e}"
         viewer.t("training_mse").text = f"MSE Avg: {state.avg_mse:.6e}" if np.isfinite(state.avg_mse) else "MSE Avg: n/a"
+        viewer.t("training_depth_ratio").text = f"Depth Ratio Avg: {state.avg_depth_ratio_loss:.6e}" if np.isfinite(state.avg_depth_ratio_loss) else "Depth Ratio Avg: n/a"
+        viewer.t("training_density").text = f"Density Avg: {state.avg_density_loss:.6e}" if np.isfinite(state.avg_density_loss) else "Density Avg: n/a"
         viewer.t("training_psnr").text = f"PSNR Avg: {state.avg_psnr:.3f} dB" if np.isfinite(state.avg_psnr) else "PSNR Avg: inf" if state.avg_psnr == float("inf") else "PSNR Avg: n/a"
         viewer.t("training_instability").text = state.last_instability
     viewer.t("error").text = f"Error: {viewer.s.last_error}" if viewer.s.last_error else ""

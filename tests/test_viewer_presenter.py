@@ -34,9 +34,25 @@ class _DummyRenderer:
 
 class _DummyTrainer:
     def __init__(self) -> None:
-        self.state = SimpleNamespace(step=0, last_loss=0.0, avg_loss=0.0, last_mse=0.0, avg_mse=0.0, last_psnr=float("inf"), avg_psnr=float("inf"), last_frame_index=0, last_instability="")
+        self.state = SimpleNamespace(step=0, last_loss=0.0, avg_loss=0.0, last_mse=0.0, avg_mse=0.0, last_psnr=float("inf"), avg_psnr=float("inf"), last_depth_ratio_loss=0.0, avg_depth_ratio_loss=0.0, last_density_loss=0.0, avg_density_loss=0.0, last_frame_index=0, last_instability="")
         self.scene = SimpleNamespace(count=4)
-        self.training = SimpleNamespace(train_downscale_mode=1, train_auto_start_downscale=1, train_downscale_max_iters=30000)
+        self.training = SimpleNamespace(
+            train_downscale_mode=1,
+            train_auto_start_downscale=1,
+            train_downscale_max_iters=30000,
+            lr_schedule_enabled=True,
+            lr_schedule_start_lr=1e-3,
+            lr_schedule_end_lr=1e-4,
+            lr_schedule_steps=30000,
+            maintenance_interval=200,
+            maintenance_growth_ratio=0.02,
+            maintenance_growth_start_step=2000,
+            maintenance_alpha_cull_threshold=1e-2,
+            depth_ratio_weight=0.05,
+            density_regularizer=0.05,
+            max_allowed_density=4.5,
+            max_gaussians=2000000,
+        )
         self.step_calls = 0
         self.step_batch_calls: list[int] = []
 
@@ -53,6 +69,9 @@ class _DummyTrainer:
 
     def effective_train_downscale_factor(self) -> int:
         return 1
+
+    def current_base_lr(self) -> float:
+        return 1e-3
 
     def get_frame_target_texture(self, frame_index: int, native_resolution: bool = True, encoder: object | None = None) -> str:
         return f"target_tex_{frame_index}_{native_resolution}"
@@ -84,8 +103,20 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         "images_subdir": _control(0),
         "training_steps_per_frame": _control(1),
         "train_downscale_factor": _control(1),
+        "lr_schedule_enabled": _control(True),
+        "lr_schedule_start_lr": _control(1e-3),
+        "lr_schedule_end_lr": _control(1e-4),
+        "lr_schedule_steps": _control(30000),
+        "maintenance_interval": _control(200),
+        "maintenance_growth_ratio": _control(0.02),
+        "maintenance_growth_start_step": _control(2000),
+        "maintenance_alpha_cull_threshold": _control(1e-2),
+        "max_gaussians": _control(2000000),
+        "train_downscale_mode": _control(1),
+        "train_auto_start_downscale": _control(1),
+        "train_downscale_max_iters": _control(30000),
     }
-    texts = {key: _text() for key in ("fps", "images_subdir", "loss_debug_view", "loss_debug_frame", "path", "scene_stats", "render_stats", "training", "training_time", "training_iters_avg", "training_loss", "training_mse", "training_psnr", "training_instability", "training_resolution", "training_downscale", "colmap_import_status", "colmap_import_current", "histogram_status", "error")}
+    texts = {key: _text() for key in ("fps", "images_subdir", "loss_debug_view", "loss_debug_frame", "path", "scene_stats", "render_stats", "training", "training_time", "training_iters_avg", "training_loss", "training_mse", "training_depth_ratio", "training_density", "training_psnr", "training_instability", "training_resolution", "training_downscale", "training_schedule", "training_maintenance", "colmap_import_status", "colmap_import_current", "histogram_status", "error")}
     viewer = SimpleNamespace()
     viewer.device = SimpleNamespace()
     viewer.loss_debug_view_options = (("rendered", "Rendered"), ("target", "Target"), ("abs_diff", "Abs Diff"))
@@ -258,6 +289,15 @@ def test_render_frame_handles_import_failure_without_raising(monkeypatch):
     assert calls == ["apply", "ui"]
 
 
+def test_update_ui_text_reports_training_schedule_and_maintenance() -> None:
+    viewer = _viewer(loss_debug=False)
+
+    presenter.update_ui_text(viewer, 1.0 / 60.0)
+
+    assert viewer.t("training_schedule").text == "LR Schedule: cosine 1.00e-03 -> 1.00e-04 | steps=30,000 | current=1.00e-03"
+    assert viewer.t("training_maintenance").text == "Maintenance: every 200 | growth=0.00% now | target=2.00% after 2,000 | alpha<1.00e-02 culled | max=2,000,000"
+
+
 def test_render_frame_recovers_missing_main_renderer_by_recreating_it(monkeypatch):
     viewer = _viewer(loss_debug=False)
     viewer.s.renderer = None
@@ -281,6 +321,8 @@ def test_update_ui_text_uses_permutation_averages() -> None:
     viewer = _viewer(loss_debug=False)
     viewer.s.trainer.state.avg_loss = 1.25
     viewer.s.trainer.state.avg_mse = 2.5e-3
+    viewer.s.trainer.state.avg_depth_ratio_loss = 4.5e-4
+    viewer.s.trainer.state.avg_density_loss = 6.5e-3
     viewer.s.trainer.state.avg_psnr = 26.75
     viewer.s.trainer.state.step = 120
     viewer.s.training_elapsed_s = 30.0
@@ -291,6 +333,8 @@ def test_update_ui_text_uses_permutation_averages() -> None:
     assert viewer.t("training_iters_avg").text == "Avg it/s: 4.00"
     assert viewer.t("training_loss").text == "Loss Avg: 1.250000e+00"
     assert viewer.t("training_mse").text == "MSE Avg: 2.500000e-03"
+    assert viewer.t("training_depth_ratio").text == "Depth Ratio Avg: 4.500000e-04"
+    assert viewer.t("training_density").text == "Density Avg: 6.500000e-03"
     assert viewer.t("training_psnr").text == "PSNR Avg: 26.750 dB"
     assert viewer.t("training_resolution").text == "Train Res: 640x360 (N=1)"
 
@@ -304,6 +348,9 @@ def test_update_ui_text_populates_colmap_import_progress_fields() -> None:
         images_root=Path("dataset/images"),
         init_mode="pointcloud",
         custom_ply_path=None,
+        image_downscale_mode="original",
+        image_downscale_target_width=1600,
+        image_downscale_scale=1.0,
         nn_radius_scale_coef=0.25,
         phase="load_textures",
         current=3,

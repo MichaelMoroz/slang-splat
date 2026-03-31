@@ -147,6 +147,19 @@ def test_render_records_toolkit_failure_without_raising() -> None:
     assert viewer.s.last_render_exception == "toolkit boom"
 
 
+def test_default_training_params_include_depth_ratio_weight() -> None:
+    params = app.default_training_params()
+
+    assert params.training.random_background is True
+    assert params.training.depth_ratio_weight == 0.05
+    assert params.training.density_regularizer == 0.05
+    assert params.training.max_allowed_density == 4.5
+    assert params.training.maintenance_growth_ratio == 0.02
+    assert params.training.maintenance_growth_start_step == 2000
+    assert params.training.maintenance_alpha_cull_threshold == 1e-2
+    assert params.training.max_gaussians == 2_000_000
+
+
 def test_export_ply_callback_saves_active_scene(monkeypatch, tmp_path: Path) -> None:
     scene = GaussianScene(
         positions=np.zeros((1, 3), dtype=np.float32),

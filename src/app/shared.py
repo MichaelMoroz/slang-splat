@@ -39,10 +39,13 @@ _CLAMP_LIMITS = {
 
 @dataclass(frozen=True, slots=True)
 class RendererParams:
-    radius_scale: float = 1.0; alpha_cutoff: float = 1.0 / 255.0; max_splat_steps: int = 32768
+    radius_scale: float = 1.0; alpha_cutoff: float = 1.0 / 255.0
+    max_anisotropy: float = 32.0
     transmittance_threshold: float = 0.005; list_capacity_multiplier: int = 64
     max_prepass_memory_mb: int = 4096; cached_raster_grad_atomic_mode: str = "fixed"; cached_raster_grad_fixed_ro_local_range: float = 0.01; cached_raster_grad_fixed_scale_range: float = 0.01
     cached_raster_grad_fixed_quat_range: float = 0.01; cached_raster_grad_fixed_color_range: float = 0.2; cached_raster_grad_fixed_opacity_range: float = 0.2
+    debug_mode: str | None = None; debug_grad_norm_threshold: float = 2e-4; debug_ellipse_thickness_px: float = 2.0
+    debug_clone_count_range: tuple[float, float] = (0.0, 16.0); debug_density_range: tuple[float, float] = (0.0, 20.0); debug_depth_mean_range: tuple[float, float] = (0.0, 10.0); debug_depth_std_range: tuple[float, float] = (0.0, 0.5)
     debug_show_ellipses: bool = False; debug_show_processed_count: bool = False; debug_show_grad_norm: bool = False
 
 
@@ -162,7 +165,19 @@ def build_training_params(
     scale_l2_weight: float,
     scale_abs_reg_weight: float,
     opacity_reg_weight: float,
+    depth_ratio_weight: float = 0.05,
+    density_regularizer: float = 0.05,
+    max_allowed_density: float = 4.5,
     max_gaussians: int,
+    random_background: bool = True,
+    lr_schedule_enabled: bool = True,
+    lr_schedule_start_lr: float | None = None,
+    lr_schedule_end_lr: float | None = None,
+    lr_schedule_steps: int = 30_000,
+    maintenance_interval: int = 200,
+    maintenance_growth_ratio: float = 0.02,
+    maintenance_growth_start_step: int = 2_000,
+    maintenance_alpha_cull_threshold: float = 1e-2,
     train_downscale_mode: int = 1,
     train_auto_start_downscale: int = 16,
     train_downscale_base_iters: int = 200,
@@ -209,9 +224,21 @@ def build_training_params(
         background=tuple(float(v) for v in np.asarray(background, dtype=np.float32).reshape(3)),
         near=clamp_float(near, 1e-6, 1e4),
         far=clamp_float(far, 1e-5, 1e6),
+        random_background=bool(random_background),
         scale_l2_weight=clamp_float(scale_l2_weight, 0.0, 1e4),
         scale_abs_reg_weight=clamp_float(scale_abs_reg_weight, 0.0, 1e4),
         opacity_reg_weight=clamp_float(opacity_reg_weight, 0.0, 1e4),
+        depth_ratio_weight=clamp_float(depth_ratio_weight, 0.0, 1e4),
+        density_regularizer=clamp_float(density_regularizer, 0.0, 1e4),
+        max_allowed_density=clamp_float(max_allowed_density, 0.0, 1e6),
+        lr_schedule_enabled=bool(lr_schedule_enabled),
+        lr_schedule_start_lr=base_lr if lr_schedule_start_lr is None else clamp_float(lr_schedule_start_lr, 1e-8, 1.0),
+        lr_schedule_end_lr=max(base_lr * 0.1, 1e-8) if lr_schedule_end_lr is None else clamp_float(lr_schedule_end_lr, 1e-8, 1.0),
+        lr_schedule_steps=clamp_int(lr_schedule_steps, 1, 1_000_000_000),
+        maintenance_interval=clamp_int(maintenance_interval, 1, 1_000_000_000),
+        maintenance_growth_ratio=clamp_float(maintenance_growth_ratio, 0.0, 10.0),
+        maintenance_growth_start_step=clamp_int(maintenance_growth_start_step, 0, 1_000_000_000),
+        maintenance_alpha_cull_threshold=clamp_float(maintenance_alpha_cull_threshold, 1e-8, 1.0),
         max_gaussians=clamp_int(max_gaussians, 0, 10_000_000),
         train_downscale_mode=clamp_int(train_downscale_mode, 0, 16),
         train_auto_start_downscale=clamp_int(train_auto_start_downscale, 1, 16),
@@ -246,7 +273,10 @@ def apply_training_profile(
 
 
 def renderer_kwargs(params: RendererParams) -> dict[str, object]:
-    return {name: getattr(params, name) for name in RendererParams.__dataclass_fields__}
+    kwargs = {name: getattr(params, name) for name in RendererParams.__dataclass_fields__}
+    if kwargs.get("debug_mode") is None:
+        del kwargs["debug_mode"]
+    return kwargs
 
 
 def save_snapshot(path: Path, rgba: np.ndarray, flip_y: bool = True) -> None:

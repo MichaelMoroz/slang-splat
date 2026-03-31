@@ -5,107 +5,65 @@ import "utility/splatting/common.slang";
 import "utility/splatting/projection.slang";
 import "utility/splatting/raster.slang";
 
-void store_raster_cache_zero(uint splatId)
+uniform float g_MaxAnisotropy;
+
+uint float_to_ordered_uint(float value)
 {
-    uint splatCount = g_Prepass.splatCount;
-    [unroll] for (uint fieldId = 0u; fieldId < RASTER_CACHE_PARAM_COUNT; fieldId++)
-    {
-        g_RasterCache[raster_cache_index(splatCount, fieldId, splatId)] = 0.0;
-    }
+    uint bits = asuint(value);
+    return (bits & 0x80000000u) != 0u ? ~bits : (bits | 0x80000000u);
 }
 
 void store_raster_cache(uint splatId, CachedEllipsoid cached, float4 colorAlpha)
 {
-    uint splatCount = g_Prepass.splatCount;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_X, splatId)] = cached.roLocal.x;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_Y, splatId)] = cached.roLocal.y;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_RO_LOCAL_Z, splatId)] = cached.roLocal.z;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_SCALE_X, splatId)] = cached.scale.x;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_SCALE_Y, splatId)] = cached.scale.y;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_SCALE_Z, splatId)] = cached.scale.z;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_QUAT_W, splatId)] = cached.rotation.x;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_QUAT_X, splatId)] = cached.rotation.y;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_QUAT_Y, splatId)] = cached.rotation.z;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_QUAT_Z, splatId)] = cached.rotation.w;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_COLOR_R, splatId)] = colorAlpha.x;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_COLOR_G, splatId)] = colorAlpha.y;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_COLOR_B, splatId)] = colorAlpha.z;
-    g_RasterCache[raster_cache_index(splatCount, RASTER_CACHE_FUSED_OPACITY, splatId)] = colorAlpha.w;
+    RasterGaussian gaussian;
+    gaussian.roLocal = cached.roLocal;
+    gaussian.scale = cached.scale;
+    gaussian.rotation = cached.rotation;
+    gaussian.colorAlpha = colorAlpha;
+    g_RasterCache[splatId] = gaussian;
 }
 
-bool emit_splat_bins(SplatBinRequest request)
+void append_visible_splat(uint distanceKey, uint splatId)
 {
-    Ellipse ellipse = request.ellipse;
-    if (!ellipse.isVisible(
-        request.camDistance,
-        request.depthValue,
-        g_Camera.viewport,
-        g_Camera.nearDepth,
-        g_Camera.farDepth
-    )) return false;
+    uint writeIndex = 0u;
+    InterlockedAdd(g_VisibleCounter[0], 1u, writeIndex);
+    if (writeIndex >= g_Prepass.splatCount) return;
+    g_VisibleKeys[writeIndex] = distanceKey;
+    g_VisibleValues[writeIndex] = splatId;
+}
 
+bool load_projected_ellipse(uint splatId, out Ellipse ellipse)
+{
+    ellipse.init(0.0, 0.0, 0.0);
+    float4 centerRadiusDepth = g_ScreenCenterRadiusDepth[splatId];
+    if (centerRadiusDepth.z <= 0.0 || !all(isfinite(centerRadiusDepth))) return false;
+    float4 conicOpacity = g_ScreenEllipseConic[splatId];
+    ellipse.init(centerRadiusDepth.xy, centerRadiusDepth.z, conicOpacity.xyz);
+    return all(isfinite(ellipse.centerPx)) && isfinite(ellipse.radiusPx) && all(isfinite(ellipse.conic));
+}
+
+bool prepare_ellipse_for_scanlines(Ellipse ellipseIn, out Ellipse ellipseOut, out ScanlineLoopConfig loopCfg)
+{
+    ellipseOut = ellipseIn;
+    loopCfg = make_scanline_loop_config(g_Prepass, false, 0, -1, 0, -1);
     float tileSize = float(g_Prepass.tileSize);
     float halfTile = 0.5 * tileSize;
-    if (!try_prepare_conic_for_binning(ellipse, halfTile)) return false;
-    float2 boundsExtent = ellipse.bboxExtent + halfTile;
-    int minX = int(floor((ellipse.centerPx.x - boundsExtent.x) / tileSize));
-    int maxX = int(ceil((ellipse.centerPx.x + boundsExtent.x) / tileSize));
-    int minY = int(floor((ellipse.centerPx.y - boundsExtent.y) / tileSize));
-    int maxY = int(ceil((ellipse.centerPx.y + boundsExtent.y) / tileSize));
-    minX = clamp(minX, 0, int(g_Prepass.tileWidth) - 1);
-    maxX = clamp(maxX, 0, int(g_Prepass.tileWidth) - 1);
-    minY = clamp(minY, 0, int(g_Prepass.tileHeight) - 1);
-    maxY = clamp(maxY, 0, int(g_Prepass.tileHeight) - 1);
+    if (!try_prepare_conic_for_binning(ellipseOut, halfTile)) return false;
+
+    float2 boundsExtent = ellipseOut.bboxExtent + halfTile;
+    int minX = clamp(int(floor((ellipseOut.centerPx.x - boundsExtent.x) / tileSize)), 0, int(g_Prepass.tileWidth) - 1);
+    int maxX = clamp(int(ceil((ellipseOut.centerPx.x + boundsExtent.x) / tileSize)), 0, int(g_Prepass.tileWidth) - 1);
+    int minY = clamp(int(floor((ellipseOut.centerPx.y - boundsExtent.y) / tileSize)), 0, int(g_Prepass.tileHeight) - 1);
+    int maxY = clamp(int(ceil((ellipseOut.centerPx.y + boundsExtent.y) / tileSize)), 0, int(g_Prepass.tileHeight) - 1);
     if (minX > maxX || minY > maxY) return false;
 
-    ScanlineLoopConfig loopCfg = build_scanline_loop_config(g_Prepass, ellipse, minX, maxX, minY, maxY);
-    uint scanlineCount = uint(loopCfg.lineEnd - loopCfg.lineStart + 1);
-    if (scanlineCount == 0u) return false;
-
-    uint scanlineBase = 0;
-    InterlockedAdd(g_ScanlineCounter[0], scanlineCount, scanlineBase);
-    if (scanlineBase >= g_Prepass.maxScanlineEntries) return false;
-
-    uint scanlineWriteCount = min(scanlineCount, g_Prepass.maxScanlineEntries - scanlineBase);
-    if (scanlineWriteCount == 0u) return false;
-
-    uint writtenListCount = 0u;
-    for (uint i = 0; i < scanlineWriteCount; i++)
-    {
-        uint lineCoord = uint(loopCfg.lineStart + int(i));
-        ScanlineSpan span;
-        ScanlineWorkItem item;
-        item.splatId = request.splatId;
-        item.depthCode = request.depthCode;
-        item.lineCoord = lineCoord;
-        item.lineStartMinor = 0u;
-        item.lineCount = 0u;
-        item.splatListOffset = 0u;
-        item.scanAlongX = loopCfg.scanAlongX ? 1u : 0u;
-        item.reserved0 = 0u;
-        bool hasSpan = compute_scanline_tile_span_universal(ellipse, loopCfg, tileSize, lineCoord, span);
-        if (hasSpan && span.lineCount > 0u)
-        {
-            item.lineStartMinor = span.lineStartMinor;
-            item.lineCount = span.lineCount;
-            item.splatListOffset = writtenListCount;
-            writtenListCount += span.lineCount;
-        }
-
-        uint scanlineIndex = scanlineBase + i;
-        g_ScanlineWorkItems[scanlineIndex] = item;
-    }
-    if (writtenListCount == 0u) return false;
-
-    uint listBase = 0u;
-    InterlockedAdd(g_ListCounter[0], writtenListCount, listBase);
-    g_SplatListBases[request.splatId] = listBase;
-    return true;
+    loopCfg = build_scanline_loop_config(g_Prepass, ellipseOut, minX, maxX, minY, maxY);
+    return loopCfg.lineEnd >= loopCfg.lineStart;
 }
 
 [shader("compute")]
 [numthreads(PROJECT_GROUP_SIZE, 1, 1)]
-void csProjectAndBin(uint3 dispatchThreadID : SV_DispatchThreadID)
+void csProjectVisibleSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     uint splatId = dispatchThreadID.x;
     if (splatId >= g_Prepass.splatCount) return;
@@ -113,106 +71,124 @@ void csProjectAndBin(uint3 dispatchThreadID : SV_DispatchThreadID)
     g_ScreenColorAlpha[splatId] = 0.0;
     g_ScreenEllipseConic[splatId] = 0.0;
     g_SplatVisible[splatId] = 0u;
-    store_raster_cache_zero(splatId);
 
-    PinholeCamera camera = PinholeCamera.from_params(g_Camera);
     Gaussian3D gaussian = load_gaussian3d(splatId);
-    Ellipsoid ellipsoid = build_ellipsoid(g_Camera, g_Prepass.radiusScale, gaussian);
-    CachedEllipsoid cached = build_cached_ellipsoid(g_Camera, g_Prepass.radiusScale, gaussian.position, gaussian.logScale, gaussian.rotation);
-    float4 rasterColorAlpha = float4(
-        gaussian.colorAlpha.xyz,
-        build_raster_fused_opacity(g_Camera, g_Prepass.radiusScale, gaussian.position, gaussian.logScale, gaussian.colorAlpha.w)
-    );
-    float3 cameraOffset = ellipsoid.centerWorld - camera.position_world();
+    float fusedOpacity = build_raster_fused_opacity(g_Camera, g_Prepass.radiusScale, gaussian.position, gaussian.logScale, gaussian.colorAlpha.w);
+    if (fusedOpacity < g_Raster.alphaCutoff) return;
+
+    // Project only splats whose cutoff isosurface can contribute within the camera frustum.
+    PinholeCamera camera = PinholeCamera.from_params(g_Camera);
+    float supportSigmaRadius = sqrt(max(-2.0 * log(g_Raster.alphaCutoff / fusedOpacity), 0.0));
+    Ellipsoid projectionEllipsoid = build_ellipsoid_with_support(g_Camera, g_Prepass.radiusScale, supportSigmaRadius, g_MaxAnisotropy, gaussian);
+    float3 cameraOffset = projectionEllipsoid.centerWorld - camera.position_world();
     float3 camPos = camera.world_to_camera(cameraOffset);
     float camDistance = length(cameraOffset);
     float depthValue = camPos.z;
+    float supportRadius = max(projectionEllipsoid.projectedScale.x, max(projectionEllipsoid.projectedScale.y, projectionEllipsoid.projectedScale.z));
+    if (depthValue + supportRadius <= DEPTH_VISIBILITY_FLOOR) return;
 
-    float invDepth = 1.0 / max(depthValue, SMALL_VALUE);
-    float2 fitCenter = 0.0;
-    if (!camera.project_camera_to_screen(camPos, fitCenter)) fitCenter = camera.project_camera_to_screen_linear(camPos);
-    float maxAxisWorld = max(ellipsoid.projectedScale.x, max(ellipsoid.projectedScale.y, ellipsoid.projectedScale.z));
-    float fallbackFocal = max(g_Camera.focalPixels.x, g_Camera.focalPixels.y);
-    float radiusCap = screen_radius_cap(g_Camera.viewport);
-    float fallbackRadius = fallbackFocal * maxAxisWorld * invDepth;
-    float fitRadius = clamp(
-        fallbackRadius * g_Prepass.sampled5SafetyScale + g_Prepass.sampled5RadiusPadPx,
-        MIN_SCREEN_RADIUS_PX,
-        radiusCap
-    );
-    float invFitRadius2 = 1.0 / max(fitRadius * fitRadius, SMALL_VALUE);
-    float3 fitConic = float3(invFitRadius2, 0.0, invFitRadius2);
-
-    float3 localPoints[MVEE_POINT_COUNT];
-    bool silhouetteOk = generate_silhouette_points_local5(ellipsoid.projectedRoLocal, g_Prepass.sampled5Eps, localPoints);
-    if (silhouetteOk)
-    {
-        float2 screenPoints[MVEE_POINT_COUNT];
-        [unroll] for (uint i = 0; i < MVEE_POINT_COUNT; i++)
-        {
-            float3 worldPt = local_point_to_world(localPoints[i], ellipsoid.centerWorld, ellipsoid.projectedInvScale, ellipsoid.rotation);
-            float2 screenPt = 0.0;
-            bool pointOk = camera.project_world_to_screen(worldPt, screenPt);
-            screenPoints[i] = screenPt;
-            silhouetteOk = silhouetteOk && pointOk;
-        }
-
-        if (silhouetteOk)
-        {
-            MveeFitResult mveeFit;
-            bool fitOk = fit_mvee_5pt_fixed_iters(screenPoints, min(g_Prepass.sampled5MVEEIters, MVEE_MAX_ITERS), g_Prepass.sampled5Eps, mveeFit);
-            if (fitOk && all(isfinite(mveeFit.centerPx)) && isfinite(mveeFit.radiusPx) && all(isfinite(mveeFit.conic)))
-            {
-                fitCenter = mveeFit.centerPx;
-                fitRadius = clamp(
-                    mveeFit.radiusPx * g_Prepass.sampled5SafetyScale + g_Prepass.sampled5RadiusPadPx,
-                    MIN_SCREEN_RADIUS_PX,
-                    radiusCap
-                );
-                float conicScale = fitRadius / max(mveeFit.radiusPx, g_Prepass.sampled5Eps);
-                float invScale2 = 1.0 / max(conicScale * conicScale, g_Prepass.sampled5Eps);
-                fitConic = mveeFit.conic * invScale2;
-            }
-        }
-    }
-
-    SplatBinRequest binRequest;
-    binRequest.splatId = splatId;
-    binRequest.camDistance = camDistance;
-    binRequest.depthValue = depthValue;
-    binRequest.depthCode = quantize_depth(g_Camera, g_Prepass, camDistance);
-    binRequest.ellipse.init(fitCenter, fitRadius, fitConic);
-    if (!emit_splat_bins(binRequest)) return;
-    g_ScreenCenterRadiusDepth[splatId] = float4(fitCenter, fitRadius, camDistance);
+    Ellipse projectedEllipse;
+    if (!compute_ellipsoid_outline_ellipse(projectionEllipsoid, camera, projectedEllipse)) return;
+    projectedEllipse.radiusPx = max(projectedEllipse.radiusPx * ELLIPSE_SAFETY_SCALE + ELLIPSE_RADIUS_PAD_PX, MIN_SCREEN_RADIUS_PX);
+    projectedEllipse.bboxExtent = float2(projectedEllipse.radiusPx, projectedEllipse.radiusPx);
+    if (!projectedEllipse.isVisible(camDistance, depthValue, camera.params.viewport, g_Camera.nearDepth, g_Camera.farDepth)) return;
+    g_ScreenCenterRadiusDepth[splatId] = float4(projectedEllipse.centerPx, projectedEllipse.radiusPx, camDistance);
     g_ScreenColorAlpha[splatId] = gaussian.colorAlpha;
-    g_ScreenEllipseConic[splatId] = float4(fitConic, ellipsoid.opacityScale);
+    g_ScreenEllipseConic[splatId] = float4(projectedEllipse.conic, projectionEllipsoid.opacityScale);
     g_SplatVisible[splatId] = 1u;
-    store_raster_cache(splatId, cached, rasterColorAlpha);
+    CachedEllipsoid cached = build_cached_ellipsoid(g_Camera, g_Prepass.radiusScale, g_MaxAnisotropy, gaussian.position, gaussian.logScale, gaussian.rotation);
+    store_raster_cache(splatId, cached, float4(gaussian.colorAlpha.xyz, fusedOpacity));
+    append_visible_splat(float_to_ordered_uint(camDistance), splatId);
 }
 
 [shader("compute")]
 [numthreads(TILE_GROUP_SIZE, 1, 1)]
-void csComposeScanlineKeyValues(uint3 dispatchThreadID : SV_DispatchThreadID)
+void csCountVisibleScanlines(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint visibleSplatId = dispatchThreadID.x;
+    uint visibleCount = g_VisibleCounter[0];
+    if (visibleSplatId >= visibleCount) return;
+
+    uint splatId = g_VisibleValues[visibleSplatId];
+    Ellipse ellipse;
+    Ellipse preparedEllipse;
+    ScanlineLoopConfig loopCfg;
+    uint scanlineCount = 0u;
+    if (load_projected_ellipse(splatId, ellipse) && prepare_ellipse_for_scanlines(ellipse, preparedEllipse, loopCfg))
+    {
+        scanlineCount = uint(loopCfg.lineEnd - loopCfg.lineStart + 1);
+    }
+    g_ScanlineCounts[visibleSplatId] = scanlineCount;
+}
+
+[shader("compute")]
+[numthreads(TILE_GROUP_SIZE, 1, 1)]
+void csEmitScanlines(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint visibleSplatId = dispatchThreadID.x;
+    uint visibleCount = g_VisibleCounter[0];
+    if (visibleSplatId >= visibleCount) return;
+
+    uint splatId = g_VisibleValues[visibleSplatId];
+    Ellipse ellipse;
+    Ellipse preparedEllipse;
+    ScanlineLoopConfig loopCfg;
+    if (!load_projected_ellipse(splatId, ellipse) || !prepare_ellipse_for_scanlines(ellipse, preparedEllipse, loopCfg)) return;
+
+    uint scanlineBase = g_ScanlineOffsets[visibleSplatId];
+    uint scanlineCount = g_ScanlineCounts[visibleSplatId];
+    if (scanlineBase >= g_Prepass.maxScanlineEntries || scanlineCount == 0u) return;
+    uint scanlineWriteCount = min(scanlineCount, g_Prepass.maxScanlineEntries - scanlineBase);
+    float tileSize = float(g_Prepass.tileSize);
+    for (uint i = 0u; i < scanlineWriteCount; i++)
+    {
+        uint lineCoord = uint(loopCfg.lineStart + int(i));
+        ScanlineSpan span;
+        ScanlineWorkItem item;
+        item.splatId = splatId;
+        item.lineCoord = lineCoord;
+        item.clear(loopCfg.scanAlongX);
+        bool hasSpan = compute_scanline_tile_span_universal(preparedEllipse, loopCfg, tileSize, lineCoord, span);
+        if (hasSpan && span.lineCount > 0u) item.setSpan(span.lineStartMinor, span.lineCount, loopCfg.scanAlongX);
+        g_ScanlineWorkItems[scanlineBase + i] = item;
+    }
+}
+
+[shader("compute")]
+[numthreads(TILE_GROUP_SIZE, 1, 1)]
+void csCountScanlineTiles(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     uint scanlineId = dispatchThreadID.x;
-    uint scanlineCount = g_ScanlineCounter[0];
-    if (scanlineId >= scanlineCount || scanlineId >= g_Prepass.maxScanlineEntries) return;
+    uint scanlineCount = min(g_ScanlineCounter[0], g_Prepass.maxScanlineEntries);
+    if (scanlineId >= scanlineCount) return;
+    g_ScanlineTileCounts[scanlineId] = g_ScanlineWorkItems[scanlineId].lineCount();
+}
+
+[shader("compute")]
+[numthreads(TILE_GROUP_SIZE, 1, 1)]
+void csEmitTileEntries(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint scanlineId = dispatchThreadID.x;
+    uint scanlineCount = min(g_ScanlineCounter[0], g_Prepass.maxScanlineEntries);
+    if (scanlineId >= scanlineCount) return;
 
     ScanlineWorkItem item = g_ScanlineWorkItems[scanlineId];
-    uint baseIndex = g_SplatListBases[item.splatId] + item.splatListOffset;
-    if (baseIndex >= g_Prepass.maxListEntries || item.lineCount == 0u) return;
+    uint lineCount = item.lineCount();
+    if (lineCount == 0u) return;
 
-    uint writeCount = min(item.lineCount, g_Prepass.maxListEntries - baseIndex);
+    uint baseIndex = g_ScanlineTileOffsets[scanlineId];
+    if (baseIndex >= g_Prepass.maxListEntries) return;
+    uint writeCount = min(lineCount, g_Prepass.maxListEntries - baseIndex);
     uint lineCoord = item.lineCoord;
-    bool scanAlongX = item.scanAlongX != 0u;
-    for (uint i = 0; i < writeCount; i++)
+    bool scanAlongX = item.scanAlongXAxis();
+    for (uint i = 0u; i < writeCount; i++)
     {
         uint minorCoord = item.lineStartMinor + i;
         uint tileId = scanAlongX
             ? (lineCoord * g_Prepass.tileWidth + minorCoord)
             : (minorCoord * g_Prepass.tileWidth + lineCoord);
         uint writeIndex = baseIndex + i;
-        g_Keys[writeIndex] = (tileId << g_Prepass.depthBits) | item.depthCode;
+        g_Keys[writeIndex] = tileId;
         g_Values[writeIndex] = item.splatId;
     }
 }
@@ -234,18 +210,18 @@ void csBuildTileRanges(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint sortedCount = g_PrepassParams[g_Prepass.sortedCountOffset];
     if (idx >= sortedCount) return;
 
-    uint tile = g_SortedKeys[idx] >> g_Prepass.depthBits;
+    uint tile = g_SortedKeys[idx];
     if (tile >= g_Prepass.tileCount) return;
     uint prevTile = INVALID_START;
     if (idx > 0)
     {
-        prevTile = g_SortedKeys[idx - 1] >> g_Prepass.depthBits;
+        prevTile = g_SortedKeys[idx - 1];
         if (prevTile >= g_Prepass.tileCount) prevTile = INVALID_START;
     }
     uint nextTile = INVALID_START;
     if (idx + 1 < sortedCount)
     {
-        nextTile = g_SortedKeys[idx + 1] >> g_Prepass.depthBits;
+        nextTile = g_SortedKeys[idx + 1];
         if (nextTile >= g_Prepass.tileCount) nextTile = INVALID_START;
     }
 

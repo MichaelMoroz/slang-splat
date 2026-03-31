@@ -73,7 +73,45 @@ def resolve_colmap_init_hparams(recon: ColmapReconstruction, max_gaussians: int,
     return GaussianInitHyperParams(**{name: getattr(suggested, name) if getattr(init_hparams, name) is None else float(getattr(init_hparams, name)) for name in ("position_jitter_std", "base_scale", "scale_jitter_ratio", "initial_opacity", "color_jitter_std")})
 
 
-def build_training_frames_from_root(recon: ColmapReconstruction, images_root: Path) -> list[ColmapFrame]:
+def resolve_training_frame_image_size(
+    width: int,
+    height: int,
+    *,
+    downscale_mode: str = "original",
+    downscale_target_width: int | None = None,
+    downscale_scale: float = 1.0,
+) -> tuple[int, int]:
+    src_width = max(int(width), 1)
+    src_height = max(int(height), 1)
+    mode = str(downscale_mode).strip().lower()
+    if mode == "original":
+        return src_width, src_height
+    if mode == "width":
+        if downscale_target_width is None:
+            raise ValueError("downscale_target_width is required when downscale_mode='width'.")
+        target_width = min(max(int(downscale_target_width), 1), src_width)
+        if target_width >= src_width:
+            return src_width, src_height
+        target_height = max(1, min(src_height, int(round(src_height * (float(target_width) / float(src_width))))))
+        return target_width, target_height
+    if mode == "scale":
+        factor = float(np.clip(downscale_scale, 1e-6, 1.0))
+        if factor >= 1.0:
+            return src_width, src_height
+        target_width = max(1, min(src_width, int(round(src_width * factor))))
+        target_height = max(1, min(src_height, int(round(src_height * factor))))
+        return target_width, target_height
+    raise ValueError(f"Unsupported image downscale mode: {downscale_mode}")
+
+
+def build_training_frames_from_root(
+    recon: ColmapReconstruction,
+    images_root: Path,
+    *,
+    downscale_mode: str = "original",
+    downscale_target_width: int | None = None,
+    downscale_scale: float = 1.0,
+) -> list[ColmapFrame]:
     images_root = Path(images_root).resolve()
     if not images_root.exists():
         raise FileNotFoundError(f"COLMAP image directory does not exist: {images_root}")
@@ -81,7 +119,15 @@ def build_training_frames_from_root(recon: ColmapReconstruction, images_root: Pa
     for image_id, image in sorted(recon.images.items()):
         image_path, camera = (images_root / image.name).resolve(), recon.cameras.get(image.camera_id)
         if camera is None or not image_path.exists(): continue
-        with Image.open(image_path) as pil_image: width, height = pil_image.size
+        with Image.open(image_path) as pil_image:
+            src_width, src_height = pil_image.size
+        width, height = resolve_training_frame_image_size(
+            src_width,
+            src_height,
+            downscale_mode=downscale_mode,
+            downscale_target_width=downscale_target_width,
+            downscale_scale=downscale_scale,
+        )
         sx, sy = float(width) / float(camera.width), float(height) / float(camera.height)
         frames.append(
             ColmapFrame(

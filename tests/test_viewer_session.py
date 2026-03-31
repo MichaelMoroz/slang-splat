@@ -10,7 +10,7 @@ from PIL import Image
 import pytest
 
 from src.viewer import session
-from src.viewer.state import ColmapImportProgress
+from src.viewer.state import ColmapImportProgress, ColmapImportSettings
 
 
 def _viewer() -> SimpleNamespace:
@@ -138,13 +138,18 @@ def test_ensure_training_runtime_resolution_rebinds_renderer_without_reset(monke
     class _MainRenderer:
         def __init__(self) -> None:
             self.bound = None
+            self.clone_bound = None
 
         def set_debug_grad_norm_buffer(self, buffer) -> None:
             self.bound = buffer
 
+        def set_debug_clone_count_buffer(self, buffer) -> None:
+            self.clone_bound = buffer
+
     new_renderer = SimpleNamespace(width=32, height=32, work_buffers={"debug_grad_norm": "grad_norm"})
     trainer = SimpleNamespace(
         compute_debug_grad_norm=True,
+        maintenance_buffers={},
         effective_train_downscale_factor=lambda: 2,
         training_resolution=lambda frame_index=0: (32, 32),
         rebind_renderer=lambda renderer: calls.append(("rebind", renderer)),
@@ -159,6 +164,7 @@ def test_ensure_training_runtime_resolution_rebinds_renderer_without_reset(monke
             training_renderer=_OldRenderer(),
             training_frames=[SimpleNamespace(width=64, height=64)],
             renderer=_MainRenderer(),
+            debug_renderer=None,
             applied_training_runtime_factor=None,
             pending_training_runtime_resize=False,
         ),
@@ -260,7 +266,6 @@ def test_choose_colmap_root_works_without_database(tmp_path: Path) -> None:
     assert viewer.ui._values["colmap_images_root"] == str(root)
     assert viewer.s.last_error == ""
 
-
 def test_advance_colmap_import_processes_images_incrementally(tmp_path: Path, monkeypatch) -> None:
     _, images_root = _build_colmap_tree(
         tmp_path,
@@ -285,13 +290,16 @@ def test_advance_colmap_import_processes_images_incrementally(tmp_path: Path, mo
                 images_root=images_root,
                 init_mode="pointcloud",
                 custom_ply_path=None,
+                image_downscale_mode="original",
+                image_downscale_target_width=1600,
+                image_downscale_scale=1.0,
                 nn_radius_scale_coef=0.25,
             ),
         ),
     )
 
     monkeypatch.setattr(session, "load_colmap_reconstruction", lambda root: recon)
-    monkeypatch.setattr(session, "_create_native_dataset_texture", lambda viewer_obj, image_path: f"tex:{Path(image_path).name}")
+    monkeypatch.setattr(session, "_create_native_dataset_texture", lambda viewer_obj, image_path, *, target_size=None: f"tex:{Path(image_path).name}")
 
     def _finish(viewer_obj, **kwargs) -> None:
         calls.append(("finish", len(kwargs["training_frames"]), list(kwargs["frame_targets_native"])))
@@ -306,6 +314,99 @@ def test_advance_colmap_import_processes_images_incrementally(tmp_path: Path, mo
         ("finish", 2, ["tex:frame_000.png", "tex:frame_001.png"]),
         "close",
     ]
+
+
+def test_advance_colmap_import_applies_selected_image_downscale(tmp_path: Path, monkeypatch) -> None:
+    _, images_root = _build_colmap_tree(
+        tmp_path,
+        image_names=["frame_000.png"],
+        image_root_rel=Path("images"),
+    )
+    Image.fromarray(np.full((6, 12, 3), 127, dtype=np.uint8)).save(images_root / "frame_000.png")
+    recon = SimpleNamespace(
+        images={1: SimpleNamespace(name="frame_000.png", camera_id=7, q_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32), t_xyz=np.array([0.0, 0.0, -2.0], dtype=np.float32))},
+        cameras={7: SimpleNamespace(width=12, height=6, fx=120.0, fy=60.0, cx=6.0, cy=3.0)},
+    )
+    calls: list[object] = []
+    viewer = SimpleNamespace(
+        toolkit=SimpleNamespace(close_colmap_import_window=lambda: calls.append("close")),
+        s=SimpleNamespace(
+            colmap_import_progress=ColmapImportProgress(
+                dataset_root=images_root.parent,
+                colmap_root=images_root.parent,
+                database_path=None,
+                images_root=images_root,
+                init_mode="pointcloud",
+                custom_ply_path=None,
+                image_downscale_mode="width",
+                image_downscale_target_width=4,
+                image_downscale_scale=1.0,
+                nn_radius_scale_coef=0.25,
+            ),
+        ),
+    )
+
+    monkeypatch.setattr(session, "load_colmap_reconstruction", lambda root: recon)
+    monkeypatch.setattr(session, "_create_native_dataset_texture", lambda viewer_obj, image_path, *, target_size=None: calls.append((Path(image_path).name, target_size)) or "tex")
+
+    def _finish(viewer_obj, **kwargs) -> None:
+        frame = kwargs["training_frames"][0]
+        calls.append((frame.width, frame.height, frame.fx, frame.fy, kwargs["frame_targets_native"]))
+        viewer_obj.s.colmap_import_progress = None
+
+    monkeypatch.setattr(session, "_finish_import_colmap_dataset", _finish)
+
+    while viewer.s.colmap_import_progress is not None:
+        session.advance_colmap_import(viewer)
+
+    assert calls == [
+        ("frame_000.png", (4, 2)),
+        (4, 2, 40.0, 20.0, ["tex"]),
+        "close",
+    ]
+
+
+def test_finish_import_colmap_dataset_resets_toolkit_plot_history(monkeypatch) -> None:
+    recon = SimpleNamespace(points3d={1: object()})
+    monkeypatch.setattr(session, "_point_tables", lambda recon_obj: (np.zeros((1, 3), dtype=np.float32), np.zeros((1, 3), dtype=np.float32)))
+    monkeypatch.setattr(session, "_reset_loaded_runtime", lambda viewer_obj: None)
+    monkeypatch.setattr(session, "_update_import_settings", lambda viewer_obj, **kwargs: None)
+    monkeypatch.setattr(session, "apply_live_params", lambda viewer_obj: None)
+    monkeypatch.setattr(session, "estimate_point_bounds", lambda xyz: xyz)
+    monkeypatch.setattr(session, "initialize_training_scene", lambda viewer_obj, frame_targets_native=None: None)
+    calls: list[str] = []
+    viewer = SimpleNamespace(
+        toolkit=SimpleNamespace(reset_plot_history=lambda: calls.append("reset")),
+        s=SimpleNamespace(),
+        apply_camera_fit=lambda bounds: calls.append("fit"),
+    )
+
+    session._finish_import_colmap_dataset(
+        viewer,
+        colmap_root=Path("dataset/garden"),
+        database_path=None,
+        images_root=Path("dataset/garden/images"),
+        init_mode="pointcloud",
+        custom_ply_path=None,
+        image_downscale_mode="original",
+        image_downscale_target_width=1600,
+        image_downscale_scale=1.0,
+        nn_radius_scale_coef=0.25,
+        diffused_point_count=100000,
+        diffusion_radius=1.0,
+        recon=recon,
+        training_frames=[],
+        frame_targets_native=None,
+    )
+
+    assert calls == ["reset", "fit"]
+
+
+def test_colmap_import_settings_defaults_prefer_diffused_pointcloud() -> None:
+    defaults = ColmapImportSettings()
+
+    assert defaults.init_mode == "diffused_pointcloud"
+    assert defaults.nn_radius_scale_coef == 0.5
 
 
 def test_refresh_cached_raster_grad_histograms_caches_by_signature() -> None:

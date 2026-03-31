@@ -1,21 +1,24 @@
 # GPU Prefix Sum
 
-`src/scan/prefix_sum.py` provides a reusable GPU inclusive-scan helper for `float` and `uint` buffers.
+`src/scan/prefix_sum.py` now provides a reusable uint32 GPU prefix-sum helper.
 
 ## Purpose
-- Prefix sum remains a standalone utility for generic GPU compaction and accumulation tasks.
-- The current fixed-count training path does not depend on it, which keeps training dispatch simpler and lets the scan code evolve independently.
+- Prefix sum stays a standalone utility for GPU compaction, indirect-count handling, and accumulation tasks.
+- The implementation is aligned with the improved `modular-refactor` branch utility path instead of the older recursive scan.
 
 ## Implementation
 - Shader kernels live in `shaders/utility/prefix_sum/prefix_sum.slang`.
-- The implementation uses a hierarchical block scan with `256` threads per block.
-- Each level scans block-local prefixes, writes one block-sum buffer, recursively scans that block-sum buffer, then adds the scanned block offsets back into the lower level.
-- `GPUPrefixSum.scan_float(...)` can also write the final total sum into a separate one-element buffer for callers that need both prefixes and the overall reduction.
+- Each block uses `256` threads and scans `512` uints by processing two values per thread with wave-prefix operations.
+- Direct scans use an explicit multi-level layout over cached scratch buffers instead of recursive Python calls.
+- Count-buffer scans use precomputed indirect arguments so the same kernels can scan an unknown runtime count up to a caller-supplied maximum.
+- `GPUPrefixSum.prefix_scratch_elements(count)` reports the scratch element count required for the internal block-sum and block-offset hierarchies.
+- `GPUPrefixSum.scan_uint(...)` supports inclusive and exclusive scans and can optionally write the final total into a one-element output buffer.
+- `GPUPrefixSum.scan_uint_from_count_buffer(...)` mirrors the direct path but derives the element count from a GPU count buffer.
 
 ## Tests
 - `tests/test_prefix_sum.py` covers:
-  - `u32` clear,
-  - single-block float scans,
-  - single-block `u32` scans,
-  - multi-block recursive float scans,
-  - multi-block recursive `u32` scans.
+- direct inclusive and exclusive scans,
+- zero, single-block, and multi-block counts,
+- count-buffer scans matching the direct path,
+- total-out matching the CPU reduction,
+- opt-in 32M regression coverage via `RUN_SLOW_GPU_UTILITY_TESTS=1`.

@@ -2,7 +2,7 @@
 
 `cli.py` (`train-colmap`) is a thin wrapper over `src/app/cli.py`. `src/training/gaussian_trainer.py` remains the public training facade, `src/training/adam.py` owns generic ADAM buffers and generic optimizer-kernel dispatch, and `src/training/optimizer.py` keeps only Gaussian-specific optimizer logic.
 
-The active training path is intentionally minimal: initialize a fixed gaussian set from the COLMAP point cloud, run an explicit forward pass for rendering and scalar loss evaluation, run a separate backward pass for image gradients and raster replay, then apply the packed ADAM update.
+The active training path keeps the fixed packed optimizer flow, but it now also supports periodic maintenance: per-step clone-hit counting during raster training forward, alpha culling, and split-family densification on a configurable cadence.
 
 ## Data Ingestion
 - Loader facade: `src/scene/colmap_loader.py`
@@ -51,8 +51,9 @@ Each trainer `step()` performs:
 4. Run renderer prepass + raster forward.
 5. Run the fixed-count forward stage:
    - `csRasterizeTrainingForward` renders the current image and stores per-pixel raster forward cache data for backward,
-   - `csClearLossBuffer` resets the scalar loss slots,
-   - `csComputeL1LossForward` computes direct RGB L1 reconstruction loss and RGB MSE and reduces those metrics into the loss buffer.
+  - the same pass also stores per-pixel depth ratio and softened splat density scalars for regularization,
+  - `csClearLossBuffer` resets the scalar loss slots,
+  - `csComputeL1LossForward` computes direct RGB L1 reconstruction loss, RGB MSE, depth-ratio regularization, and density hinge regularization and reduces those metrics into the loss buffer.
 6. Run the fixed-count backward stage:
    - `csComputeL1LossBackward` writes the unnormalized per-pixel RGB L1 sign gradient into flat `RWStructuredBuffer<float4>` `g_OutputGrad`, indexed as `pixel = y * width + x`,
    - `csRasterizeBackward` consumes the cached raster forward state and accumulates quantized cached raster-field gradients for the precomputed raster-cache fields,
@@ -62,10 +63,16 @@ Each trainer `step()` performs:
    - `csClipPackedParamGrads` clips gradients from a structured per-parameter settings buffer owned by the optimizer module.
    - `csComputePackedSplatGradNorms` can optionally reduce the packed gradient vector of each splat into one scalar `L2` norm for debug visualization.
    - `csAdamStepPacked` applies one-thread-per-packed-parameter ADAM using that same settings buffer plus a packed `float2` moments buffer.
-   - `csProjectGaussianParams` applies the remaining Gaussian-specific post-step projection (quaternion normalization and anisotropy clamp).
-8. Update host-side rolling loss state and the last-frame MSE metric.
+  - `csProjectGaussianParams` applies the remaining Gaussian-specific post-step projection: quaternion normalization, anisotropy clamp, and a camera-aware upper screen-space size clamp derived from a single back-projected tangent sample on the 10%-of-viewport circle around the projected center.
+8. When the configured maintenance boundary is reached, run the maintenance pass:
+  - `csClampMaintenanceMinScreenSize` loops over all training cameras on GPU, ignores offscreen centers, finds the minimum visible 1-pixel support-radius bound, and raises undersized splats before rewrite,
+  - cull splats with alpha below `maintenance_alpha_cull_threshold`,
+  - split selected splats into `N + 1` family members from the accumulated clone counts,
+  - rewrite the packed scene buffer into a compact destination buffer,
+  - migrate packed ADAM `float2` moments into the rewritten topology so unrelated splats do not lose optimizer history.
+9. Update host-side rolling loss state and the last-frame MSE metric.
 
-There is no densification, pruning, opacity reset schedule, MCMC exploration term, or PSNR/SSIM tracking on the active path.
+There is still no opacity reset schedule, MCMC exploration term, or PSNR/SSIM tracking on the active path.
 
 ## Kernels
 - `csDownscaleTarget`: exact integer-factor box-filter downscale from the native dataset texture into the reusable train target.
@@ -82,6 +89,7 @@ There is no densification, pruning, opacity reset schedule, MCMC exploration ter
   - optional packed per-splat gradient-norm reduction,
   - structured per-parameter settings buffer (`lr`, grad clips, scalar clamp range, group metadata),
   - packed `float2` moments buffer (`m`, `v`).
+- The maintenance rewrite stage now treats that packed ADAM state as topology-coupled data and rewrites/migrates it alongside the packed scene parameters.
 - `gaussian_optimizer_stage.slang` owns Gaussian-specific optimizer logic:
   - scale/opacity regularizers,
   - anisotropy clamp,

@@ -46,7 +46,7 @@ def _renderer(args: argparse.Namespace, width: int, height: int) -> GaussianRend
     params = RendererParams(
         radius_scale=float(args.radius_scale),
         alpha_cutoff=float(args.alpha_cutoff),
-        max_splat_steps=int(args.max_splat_steps),
+        max_anisotropy=float(getattr(args, "max_anisotropy", 32.0)),
         transmittance_threshold=float(args.trans_threshold),
         max_prepass_memory_mb=int(args.prepass_memory_mb),
         list_capacity_multiplier=int(getattr(args, "list_capacity_multiplier", 64)),
@@ -90,6 +90,9 @@ def _training_params(args: argparse.Namespace):
         scale_l2_weight=args.scale_l2,
         scale_abs_reg_weight=args.scale_abs_reg,
         opacity_reg_weight=args.opacity_reg,
+        depth_ratio_weight=args.depth_ratio_weight,
+        density_regularizer=args.density_reg,
+        max_allowed_density=args.max_allowed_density,
         max_gaussians=args.max_gaussians,
     )
 
@@ -191,7 +194,6 @@ COMMON_RENDER_ARGS = (
     A("--prepass-memory-mb", type=int, default=4096),
     A("--radius-scale", type=float, default=1.0),
     A("--alpha-cutoff", type=float, default=1.0 / 255.0),
-    A("--max-splat-steps", type=int, default=32768),
     A("--trans-threshold", type=float, default=0.005),
     A("--debug-layers", action="store_true"),
 )
@@ -202,8 +204,8 @@ TRAIN_RENDER_ARGS = tuple(
         ("--lr-mul-pos", 1.0),
         ("--lr-mul-scale", 5.0),
         ("--lr-mul-rot", 1.0),
-        ("--lr-mul-color", 1.0),
-        ("--lr-mul-opacity", 1.0),
+        ("--lr-mul-color", 5.0),
+        ("--lr-mul-opacity", 5.0),
         ("--beta1", 0.9),
         ("--beta2", 0.999),
         ("--grad-clip", 10.0),
@@ -220,7 +222,10 @@ TRAIN_RENDER_ARGS = tuple(
         ("--scale-l2", 0.0),
         ("--scale-abs-reg", 0.01),
         ("--opacity-reg", 0.01),
-        ("--max-anisotropy", 10.0),
+        ("--depth-ratio-weight", 0.05),
+        ("--density-reg", 0.05),
+        ("--max-allowed-density", 4.5),
+        ("--max-anisotropy", 32.0),
     )
 )
 TRAIN_INIT_ARGS = tuple(
@@ -236,7 +241,7 @@ COMMANDS = (
             A("--sparse-subdir", type=str, default="sparse/0"),
             A("--images-subdir", type=str, default="images_4"),
             A("--iters", type=int, default=1000),
-            A("--max-gaussians", type=int, default=5900000),
+            A("--max-gaussians", type=int, default=2000000),
             A("--training-profile", type=str, default="auto", choices=TRAINING_PROFILE_CHOICES),
             A("--seed", type=int, default=1234),
             A("--width", type=int, default=0),

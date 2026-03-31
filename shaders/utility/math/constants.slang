@@ -12,11 +12,17 @@ static const float SOUTH_POLE_DOT_FLOOR = -0.9999999;
 
 // Rendering constants
 static const float SPLAT_PIXEL_CLAMP_PX = 0.75;
+static const float MAINTENANCE_MIN_SCREEN_RADIUS_PX = 0.33;
+static const float TRAINING_MAX_SCREEN_FRACTION = 0.1;
 static const float MIN_SCREEN_RADIUS_PX = 1.0;
 static const float MIN_BBOX_EXTENT_PX = 1e-4;
-static const float MVEE_AFFINE_DIMENSION = 3.0;
+static const float BBOX_PAD_PX = 1.0;
+static const float ELLIPSE_SAFETY_SCALE = 1.0;
+static const float ELLIPSE_RADIUS_PAD_PX = 1.0;
+static const float ELLIPSE_EPS = 1e-6;
 static const float OUTPUT_GAMMA = 2.2;
 static const float SOFTPLUS_INPUT_LIMIT = 30.0;
+static const float PI = 3.14159265359;
 
 // Debug visualization tuning
 static const float MIN_DEBUG_THICKNESS_PX = 0.25;

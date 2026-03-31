@@ -41,6 +41,7 @@ _DEFAULT_INTERFACE_SCALE_INDEX = 3
 _BASE_FONT_SIZE_PX = 16.0
 _FONT_ATLAS_SIZE_PX = _BASE_FONT_SIZE_PX * _INTERFACE_SCALE_OPTIONS[-1][1]
 _COLMAP_INIT_MODE_LABELS = ("COLMAP Pointcloud", "Diffused Pointcloud", "Custom PLY")
+_COLMAP_IMAGE_DOWNSCALE_LABELS = ("Original", "Target Width", "Scale Factor")
 _TRAIN_DOWNSCALE_MODE_LABELS = ("Auto",) + tuple(f"{i}x" for i in range(1, 17))
 _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT = 2e-4
 _DEBUG_COLORBAR_WIDTH = 18.0
@@ -64,6 +65,30 @@ _HISTOGRAM_GROUPS = (
     ("opacity", (13,)),
 )
 _CACHED_RASTER_GRAD_ATOMIC_MODE_LABELS = ("Float Atomics", "Fixed Point")
+_DEBUG_MODE_VALUES = (
+    "normal",
+    "processed_count",
+    "clone_count",
+    "ellipse_outlines",
+    "splat_density",
+    "splat_spatial_density",
+    "splat_screen_density",
+    "depth_mean",
+    "depth_std",
+    "grad_norm",
+)
+_DEBUG_MODE_LABELS = (
+    "Normal",
+    "Processed Count",
+    "Clone Count",
+    "Ellipse Outlines",
+    "Splat Density",
+    "Spatial Density",
+    "Screen Density",
+    "Depth Mean",
+    "Depth Std",
+    "Grad Norm",
+)
 
 
 @lru_cache(maxsize=1)
@@ -141,11 +166,9 @@ def _color_u32(r: float, g: float, b: float, a: float = 1.0) -> int:
 
 
 def _debug_colorbar_mode(ui: "ViewerUI") -> str | None:
-    if bool(ui._values.get("debug_processed_count", False)):
-        return "processed_count"
-    if bool(ui._values.get("debug_grad_norm", False)):
-        return "grad_norm"
-    return None
+    index = min(max(int(ui._values.get("debug_mode", 0)), 0), len(_DEBUG_MODE_VALUES) - 1)
+    mode = _DEBUG_MODE_VALUES[index]
+    return None if mode in ("normal", "ellipse_outlines") else mode
 
 
 def _processed_count_tick_value(t: float, max_splat_steps: int) -> float:
@@ -159,6 +182,12 @@ def _grad_norm_tick_value(t: float, threshold: float) -> float:
     lo = math.log10(max(grad_threshold * constants["DEBUG_GRAD_THRESHOLD_MIN_SCALE"], grad_norm_floor))
     hi = math.log10(max(grad_threshold * constants["DEBUG_GRAD_THRESHOLD_MAX_SCALE"], grad_norm_floor))
     return math.pow(10.0, lo + _saturate(t) * (hi - lo))
+
+
+def _debug_range_tick_value(t: float, value_min: float, value_max: float) -> float:
+    lo = float(min(value_min, value_max))
+    hi = float(max(value_min, value_max))
+    return lo + _saturate(t) * (hi - lo)
 
 
 def _histogram_log_range_from_ranges(payload: object) -> tuple[float, float] | None:
@@ -195,12 +224,17 @@ GROUP_SPECS = {
         ControlSpec(_LOSS_DEBUG_ABS_SCALE_KEY, "slider_float", "Abs Diff Scale", {"value": _LOSS_DEBUG_ABS_SCALE_DEFAULT, "min": _LOSS_DEBUG_ABS_SCALE_MIN, "max": _LOSS_DEBUG_ABS_SCALE_MAX, "format": "%.3gx", "logarithmic": True}),
     ),
     "Camera": (
-        ControlSpec("move_speed", "slider_float", "Move Speed", {"value": 2.0, "min": 0.1, "max": 20.0}),
+        ControlSpec("move_speed", "input_float", "Move Speed", {"value": 2.0, "step": 0.1, "step_fast": 1.0, "format": "%.6g"}),
         ControlSpec("fov", "slider_float", "FOV", {"value": 60.0, "min": 25.0, "max": 100.0}),
     ),
     "Train Setup": (
-        ControlSpec("max_gaussians", "slider_int", "Max Gaussians", {"value": 5900000, "min": 1000, "max": 10000000}),
+        ControlSpec("max_gaussians", "slider_int", "Max Gaussians", {"value": 2000000, "min": 1000, "max": 10000000}),
         ControlSpec("training_steps_per_frame", "slider_int", "Steps / Frame", {"value": 1, "min": 1, "max": 8}),
+        ControlSpec("random_background", "checkbox", "Random Train Background", {"value": True}),
+        ControlSpec("maintenance_interval", "input_int", "Maintenance Interval", {"value": 200, "step": 10, "step_fast": 50}),
+        ControlSpec("maintenance_growth_ratio", "input_float", "Maintenance Growth", {"value": 0.02, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
+        ControlSpec("maintenance_growth_start_step", "input_int", "Start Densification After", {"value": 2000, "step": 100, "step_fast": 500}),
+        ControlSpec("maintenance_alpha_cull_threshold", "input_float", "Maintenance Alpha Cull", {"value": 1e-2, "step": 1e-5, "step_fast": 1e-4, "format": "%.6e"}),
         ControlSpec("train_downscale_mode", "combo", "Downscale Mode", {"value": 1, "options": _TRAIN_DOWNSCALE_MODE_LABELS}),
         ControlSpec("train_auto_start_downscale", "slider_int", "Auto Start Downscale", {"value": 16, "min": 1, "max": 16}),
         ControlSpec("train_downscale_base_iters", "input_int", "Downscale Base Iters", {"value": 200, "step": 25, "step_fast": 100}),
@@ -211,17 +245,24 @@ GROUP_SPECS = {
     ),
     "Train Optimizer": (
         ControlSpec("lr_base", "input_float", "Base LR", {"value": 1e-3, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
+        ControlSpec("lr_schedule_enabled", "checkbox", "Use LR Schedule", {"value": True}),
+        ControlSpec("lr_schedule_start_lr", "input_float", "Schedule Start LR", {"value": 1e-3, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
+        ControlSpec("lr_schedule_end_lr", "input_float", "Schedule End LR", {"value": 1e-4, "step": 1e-6, "step_fast": 1e-5, "format": "%.8f"}),
+        ControlSpec("lr_schedule_steps", "input_int", "Schedule Steps", {"value": 30000, "step": 1000, "step_fast": 5000}),
         ControlSpec("lr_pos_mul", "input_float", "LR Mul Position", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
         ControlSpec("lr_scale_mul", "input_float", "LR Mul Scale", {"value": 5.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
         ControlSpec("lr_rot_mul", "input_float", "LR Mul Rotation", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
-        ControlSpec("lr_color_mul", "input_float", "LR Mul Color", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
-        ControlSpec("lr_opacity_mul", "input_float", "LR Mul Opacity", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
+            ControlSpec("lr_color_mul", "input_float", "LR Mul Color", {"value": 5.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
+            ControlSpec("lr_opacity_mul", "input_float", "LR Mul Opacity", {"value": 5.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
         ControlSpec("beta1", "input_float", "Beta1", {"value": 0.9, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
         ControlSpec("beta2", "input_float", "Beta2", {"value": 0.999, "step": 1e-4, "step_fast": 1e-3, "format": "%.6f"}),
         ControlSpec("scale_l2", "input_float", "Scale Log Reg", {"value": 0.0, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
         ControlSpec("scale_abs_reg", "input_float", "Scale Abs Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
         ControlSpec("opacity_reg", "input_float", "Opacity Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
-        ControlSpec("max_anisotropy", "input_float", "Max Anisotropy", {"value": 10.0, "step": 0.1, "step_fast": 0.5, "format": "%.6f"}),
+        ControlSpec("depth_ratio_weight", "input_float", "Depth Ratio Reg", {"value": 0.05, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
+        ControlSpec("density_regularizer", "input_float", "Density Reg", {"value": 0.05, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
+        ControlSpec("max_allowed_density", "input_float", "Max Density", {"value": 4.5, "step": 1e-3, "step_fast": 1e-2, "format": "%.8f"}),
+        ControlSpec("max_anisotropy", "input_float", "Max Anisotropy", {"value": 32.0, "step": 0.1, "step_fast": 0.5, "format": "%.6f"}),
         ControlSpec("grad_clip", "input_float", "Grad Clip", {"value": 10.0, "step": 0.1, "step_fast": 1.0, "format": "%.4f"}),
         ControlSpec("grad_norm_clip", "input_float", "Grad Norm Clip", {"value": 10.0, "step": 0.1, "step_fast": 1.0, "format": "%.4f"}),
         ControlSpec("max_update", "input_float", "Max Update", {"value": 0.05, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
@@ -246,7 +287,6 @@ def default_control_values(*group_names: str) -> dict[str, object]:
 RENDER_PARAM_SPECS = (
     ControlSpec("radius_scale", "slider_float", "Radius Scale", {"value": 1.0, "min": 0.25, "max": 4.0, "format": "%.3g"}),
     ControlSpec("alpha_cutoff", "slider_float", "Alpha Cutoff", {"value": 0.0039, "min": 0.0001, "max": 0.1, "format": "%.2e"}),
-    ControlSpec("max_splat_steps", "slider_int", "Max Splat Steps", {"value": 32768, "min": 16, "max": 32768}),
     ControlSpec("trans_threshold", "slider_float", "Trans Threshold", {"value": 0.005, "min": 0.001, "max": 0.2, "format": "%.2e"}),
     ControlSpec("cached_raster_grad_atomic_mode", "combo", "Cached Grad Atomics", {"value": 1, "options": _CACHED_RASTER_GRAD_ATOMIC_MODE_LABELS}),
     ControlSpec("cached_raster_grad_fixed_ro_local_range", "slider_float", "Cached Grad Pos Range", {"value": 0.01, "min": 1e-4, "max": 1024.0, "format": "%.4g", "logarithmic": True}),
@@ -254,13 +294,31 @@ RENDER_PARAM_SPECS = (
     ControlSpec("cached_raster_grad_fixed_quat_range", "slider_float", "Cached Grad Rot Range", {"value": 0.01, "min": 1e-4, "max": 1024.0, "format": "%.4g", "logarithmic": True}),
     ControlSpec("cached_raster_grad_fixed_color_range", "slider_float", "Cached Grad Color Range", {"value": 0.2, "min": 1e-4, "max": 2048.0, "format": "%.4g", "logarithmic": True}),
     ControlSpec("cached_raster_grad_fixed_opacity_range", "slider_float", "Cached Grad Opacity Range", {"value": 0.2, "min": 1e-4, "max": 2048.0, "format": "%.4g", "logarithmic": True}),
-    ControlSpec("debug_ellipse", "checkbox", "Debug Ellipse Outlines", {"value": False}),
-    ControlSpec("debug_processed_count", "checkbox", "Debug Processed Count", {"value": False}),
-    ControlSpec("debug_grad_norm", "checkbox", "Debug Grad Norm", {"value": False}),
+)
+
+DEBUG_RENDER_SPECS = (
+    ControlSpec("debug_mode", "combo", "Mode", {"value": 0, "options": _DEBUG_MODE_LABELS}),
+    ControlSpec("debug_grad_norm_threshold", "input_float", "Grad Norm Threshold", {"value": _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT, "step": 1e-5, "step_fast": 1e-4, "format": "%.6g"}),
+    ControlSpec("debug_ellipse_thickness_px", "slider_float", "Ellipse Thickness", {"value": 2.0, "min": 0.25, "max": 8.0, "format": "%.2f px"}),
+    ControlSpec("debug_clone_count_min", "input_float", "Clone Count Min", {"value": 0.0, "step": 1.0, "step_fast": 4.0, "format": "%.5g"}),
+    ControlSpec("debug_clone_count_max", "input_float", "Clone Count Max", {"value": 16.0, "step": 1.0, "step_fast": 4.0, "format": "%.5g"}),
+    ControlSpec("debug_density_min", "input_float", "Density Min", {"value": 0.0, "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
+    ControlSpec("debug_density_max", "input_float", "Density Max", {"value": 20.0, "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
+    ControlSpec("debug_depth_mean_min", "input_float", "Depth Mean Min", {"value": 0.0, "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
+    ControlSpec("debug_depth_mean_max", "input_float", "Depth Mean Max", {"value": 10.0, "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
+    ControlSpec("debug_depth_std_min", "input_float", "Depth Std Min", {"value": 0.0, "step": 0.01, "step_fast": 0.1, "format": "%.5g"}),
+    ControlSpec("debug_depth_std_max", "input_float", "Depth Std Max", {"value": 0.5, "step": 0.01, "step_fast": 0.1, "format": "%.5g"}),
 )
 
 _ALL_DEFAULTS = {spec.key: spec.kwargs["value"] for group in GROUP_SPECS.values() for spec in group if "value" in spec.kwargs}
 _ALL_DEFAULTS.update({spec.key: spec.kwargs["value"] for spec in RENDER_PARAM_SPECS if "value" in spec.kwargs})
+_ALL_DEFAULTS.update({spec.key: spec.kwargs["value"] for spec in DEBUG_RENDER_SPECS if "value" in spec.kwargs})
+
+_OPTIMIZER_TAB_KEYS = {
+    "Learning Rates": ("lr_base", "lr_schedule_enabled", "lr_schedule_start_lr", "lr_schedule_end_lr", "lr_schedule_steps", "lr_pos_mul", "lr_scale_mul", "lr_rot_mul", "lr_color_mul", "lr_opacity_mul"),
+    "Adam": ("beta1", "beta2"),
+    "Regularization": ("scale_l2", "scale_abs_reg", "opacity_reg", "depth_ratio_weight", "density_regularizer", "max_allowed_density", "max_anisotropy", "grad_clip", "grad_norm_clip", "max_update"),
+}
 
 
 class _ControlProxy:
@@ -326,6 +384,13 @@ class ToolkitState:
     step_history: deque = field(default_factory=partial(deque, maxlen=LOSS_HISTORY_SIZE))
     step_time_history: deque = field(default_factory=partial(deque, maxlen=LOSS_HISTORY_SIZE))
 
+    def clear_plot_history(self) -> None:
+        self.loss_history.clear()
+        self.fps_history.clear()
+        self.psnr_history.clear()
+        self.step_history.clear()
+        self.step_time_history.clear()
+
 
 def _noop() -> None:
     return None
@@ -390,6 +455,9 @@ class ToolkitWindow:
 
     def _set_current_context(self) -> None:
         imgui.set_current_context(self.ctx)
+
+    def reset_plot_history(self) -> None:
+        self.tk.clear_plot_history()
 
     def _apply_theme(self):
         self._set_current_context()
@@ -493,6 +561,7 @@ class ToolkitWindow:
         self._menu_bar_height = self._draw_main_menu_bar(ui)
         self._draw_dockspace()
         self._draw_panel(ui, width, height)
+        self._draw_renderer_debug_window(ui)
         self._draw_debug_colorbar(ui, width, height)
         self._draw_histogram_window(ui)
         imgui.render()
@@ -585,15 +654,33 @@ class ToolkitWindow:
             draw_list.add_text(imgui.ImVec2(x1 + 12.0, y - 6.0), _color_u32(0.85, 0.88, 0.92, 0.95), self._debug_colorbar_tick_label(mode, t, ui))
 
     def _debug_colorbar_title(self, mode: str) -> str:
-        return "Processed Count" if mode == "processed_count" else "Grad Norm"
+        return {
+            "processed_count": "Processed Count",
+            "clone_count": "Clone Count",
+            "splat_density": "Splat Density",
+            "splat_spatial_density": "Spatial Density",
+            "splat_screen_density": "Screen Density",
+            "depth_mean": "Depth Mean",
+            "depth_std": "Depth Std",
+            "grad_norm": "Grad Norm",
+        }.get(mode, "Debug")
 
     def _debug_colorbar_tick_label(self, mode: str, t: float, ui: ViewerUI) -> str:
         if mode == "processed_count":
-            max_splat_steps = int(ui._values.get("max_splat_steps", 32768))
-            value = _processed_count_tick_value(t, max_splat_steps)
+            value = _processed_count_tick_value(t, 32768)
             return f"{int(round(value)):,}"
-        threshold = float(ui._values.get("debug_grad_norm_threshold", _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT))
-        return f"{_grad_norm_tick_value(t, threshold):.1e}"
+        if mode == "grad_norm":
+            threshold = float(ui._values.get("debug_grad_norm_threshold", _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT))
+            return f"{_grad_norm_tick_value(t, threshold):.1e}"
+        if mode == "clone_count":
+            return f"{_debug_range_tick_value(t, float(ui._values.get('debug_clone_count_min', 0.0)), float(ui._values.get('debug_clone_count_max', 16.0))):.3g}"
+        if mode in ("splat_density", "splat_spatial_density", "splat_screen_density"):
+            return f"{_debug_range_tick_value(t, float(ui._values.get('debug_density_min', 0.0)), float(ui._values.get('debug_density_max', 20.0))):.3g}"
+        if mode == "depth_mean":
+            return f"{_debug_range_tick_value(t, float(ui._values.get('debug_depth_mean_min', 0.0)), float(ui._values.get('debug_depth_mean_max', 10.0))):.3g}"
+        if mode == "depth_std":
+            return f"{_debug_range_tick_value(t, float(ui._values.get('debug_depth_std_min', 0.0)), float(ui._values.get('debug_depth_std_max', 0.5))):.3g}"
+        return ""
 
     def _draw_main_menu_bar(self, ui: ViewerUI) -> float:
         if not imgui.begin_main_menu_bar():
@@ -621,6 +708,9 @@ class ToolkitWindow:
                 ui._values[_INTERFACE_SCALE_KEY] = _DEFAULT_INTERFACE_SCALE_INDEX
             imgui.end_menu()
         if imgui.begin_menu("Debug"):
+            selected = bool(ui._values.get("show_renderer_debug", False))
+            if _menu_item("Renderer Debug", selected=selected):
+                ui._values["show_renderer_debug"] = not selected
             selected = bool(ui._values.get("show_histograms", False))
             if _menu_item("Histograms", selected=selected):
                 ui._values["show_histograms"] = not selected
@@ -685,7 +775,7 @@ class ToolkitWindow:
         if import_active and not self._show_colmap_import:
             self._show_colmap_import = True
         if opened:
-            imgui.text_wrapped("Select the dataset root, verify the auto-detected image folder, choose the gaussian initialization source, then import the dataset.")
+            imgui.text_wrapped("Select the dataset root, verify the auto-detected image folder, choose image downscale and gaussian initialization, then import the dataset.")
             imgui.separator()
             if import_active:
                 status = ui._texts.get("colmap_import_status", "")
@@ -702,7 +792,40 @@ class ToolkitWindow:
             imgui.spacing()
             self._draw_import_path_selector(ui, label="Image Folder", key="colmap_images_root", button_label="Browse Image Folder...", callback=self.callbacks.browse_colmap_images)
             imgui.spacing()
-            mode_idx = max(0, min(int(ui._values.get("colmap_init_mode", 0)), len(_COLMAP_INIT_MODE_LABELS) - 1))
+            downscale_idx = max(0, min(int(ui._values.get("colmap_image_downscale_mode", 0)), len(_COLMAP_IMAGE_DOWNSCALE_LABELS) - 1))
+            if imgui.begin_combo("Image Downscale", _COLMAP_IMAGE_DOWNSCALE_LABELS[downscale_idx]):
+                for idx, label in enumerate(_COLMAP_IMAGE_DOWNSCALE_LABELS):
+                    selected = idx == downscale_idx
+                    if imgui.selectable(label, selected)[0]:
+                        ui._values["colmap_image_downscale_mode"] = idx
+                        downscale_idx = idx
+                    if selected:
+                        imgui.set_item_default_focus()
+                imgui.end_combo()
+            if downscale_idx == 1:
+                changed, value = imgui.input_int("Target Width", int(ui._values.get("colmap_image_target_width", 2048)), 64, 256)
+                if changed:
+                    ui._values["colmap_image_target_width"] = max(int(value), 1)
+                if imgui.is_item_hovered():
+                    imgui.set_item_tooltip("Resize imported training images to this width while preserving aspect ratio. The importer never upscales.")
+            elif downscale_idx == 2:
+                changed, value = imgui.drag_float(
+                    "Scale Factor",
+                    float(ui._values.get("colmap_image_scale", 1.0)),
+                    0.01,
+                    1e-3,
+                    1.0,
+                    "%.4f",
+                    imgui.SliderFlags_.logarithmic.value,
+                )
+                if changed:
+                    ui._values["colmap_image_scale"] = min(max(float(value), 1e-3), 1.0)
+                if imgui.is_item_hovered():
+                    imgui.set_item_tooltip("Uniform scale applied to imported training images. Both axes stay proportional and the importer never upscales.")
+            else:
+                imgui.text_disabled("Imported images keep their source resolution.")
+            imgui.spacing()
+            mode_idx = max(0, min(int(ui._values.get("colmap_init_mode", 1)), len(_COLMAP_INIT_MODE_LABELS) - 1))
             if imgui.begin_combo("Initialization", _COLMAP_INIT_MODE_LABELS[mode_idx]):
                 for idx, label in enumerate(_COLMAP_INIT_MODE_LABELS):
                     selected = idx == mode_idx
@@ -740,7 +863,7 @@ class ToolkitWindow:
                         imgui.set_item_tooltip("Local diffusion multiplier applied to each sampled point's original-cloud nearest-neighbor distance.")
                 changed, value = imgui.drag_float(
                     "NN Radius Scale Coef",
-                    float(ui._values.get("colmap_nn_radius_scale_coef", 0.25)),
+                    float(ui._values.get("colmap_nn_radius_scale_coef", 0.5)),
                     0.01,
                     1e-4,
                     16.0,
@@ -1003,10 +1126,10 @@ class ToolkitWindow:
             return
         changed, val = imgui.drag_float(
             "Move Speed", float(ui._values["move_speed"]),
-            0.05, 0.1, 20.0, "%.2f", imgui.SliderFlags_.logarithmic.value
+            0.05, 0.0, 0.0, "%.4g", imgui.SliderFlags_.logarithmic.value
         )
         if changed:
-            ui._values["move_speed"] = max(0.1, min(val, 20.0))
+            ui._values["move_speed"] = max(val, 0.0)
         if imgui.is_item_hovered():
             imgui.set_item_tooltip("Camera movement speed (scroll wheel also adjusts)")
         changed, val = imgui.slider_float("FOV", float(ui._values["fov"]), 25.0, 100.0, "%.1f\u00b0")
@@ -1028,11 +1151,13 @@ class ToolkitWindow:
         avg_iters_text = ui._texts.get("training_iters_avg", "Avg it/s: n/a")
         loss_text = ui._texts.get("training_loss", "Loss Avg: n/a")
         mse_text = ui._texts.get("training_mse", "MSE: n/a")
+        depth_ratio_text = ui._texts.get("training_depth_ratio", "Depth Ratio Avg: n/a")
+        density_text = ui._texts.get("training_density", "Density Avg: n/a")
         psnr_text = ui._texts.get("training_psnr", "PSNR: n/a")
         if imgui.begin_table("##train_info", 2, imgui.TableFlags_.sizing_stretch_same.value):
             imgui.table_setup_column("L", imgui.TableColumnFlags_.width_fixed.value, 50)
             imgui.table_setup_column("V")
-            for label, text in (("Step", training_text), ("Time", time_text), ("Avg", avg_iters_text), ("Loss", loss_text), ("MSE", mse_text), ("PSNR", psnr_text)):
+            for label, text in (("Step", training_text), ("Time", time_text), ("Avg", avg_iters_text), ("Loss", loss_text), ("MSE", mse_text), ("Depth", depth_ratio_text), ("Density", density_text), ("PSNR", psnr_text)):
                 imgui.table_next_row()
                 imgui.table_next_column()
                 imgui.text_disabled(label)
@@ -1103,7 +1228,7 @@ class ToolkitWindow:
     def _section_training_setup(self, ui: ViewerUI) -> None:
         if not imgui.collapsing_header("Train Setup"):
             return
-        for key in ("max_gaussians", "training_steps_per_frame", "train_downscale_mode"):
+        for key in ("max_gaussians", "training_steps_per_frame", "random_background", "maintenance_interval", "maintenance_growth_ratio", "maintenance_growth_start_step", "maintenance_alpha_cull_threshold", "train_downscale_mode"):
             self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Setup"] if spec.key == key))
         if int(ui._values.get("train_downscale_mode", 0)) == 0:
             for key in ("train_auto_start_downscale", "train_downscale_base_iters", "train_downscale_iter_step", "train_downscale_max_iters"):
@@ -1116,6 +1241,12 @@ class ToolkitWindow:
         downscale_status = ui._texts.get("training_downscale", "")
         if downscale_status:
             imgui.text_disabled(downscale_status.split(": ", 1)[-1] if ": " in downscale_status else downscale_status)
+        schedule_status = ui._texts.get("training_schedule", "")
+        if schedule_status:
+            imgui.text_disabled(schedule_status.split(": ", 1)[-1] if ": " in schedule_status else schedule_status)
+        maintenance_status = ui._texts.get("training_maintenance", "")
+        if maintenance_status:
+            imgui.text_disabled(maintenance_status.split(": ", 1)[-1] if ": " in maintenance_status else maintenance_status)
         imgui.text_disabled("COLMAP import chooses direct pointcloud init, diffused pointcloud init, or a custom PLY scene.")
         self._ctx_reset("train_setup_ctx", ui, [s.key for s in GROUP_SPECS["Train Setup"]])
         imgui.separator()
@@ -1126,18 +1257,18 @@ class ToolkitWindow:
         if imgui.begin_tab_bar("##optim_tabs"):
             if imgui.begin_tab_item("Learning Rates")[0]:
                 imgui.spacing()
-                for spec in GROUP_SPECS["Train Optimizer"][:6]:
-                    self._draw_control(ui, spec)
+                for key in _OPTIMIZER_TAB_KEYS["Learning Rates"]:
+                    self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Optimizer"] if spec.key == key))
                 imgui.end_tab_item()
             if imgui.begin_tab_item("Adam")[0]:
                 imgui.spacing()
-                for spec in GROUP_SPECS["Train Optimizer"][6:8]:
-                    self._draw_control(ui, spec)
+                for key in _OPTIMIZER_TAB_KEYS["Adam"]:
+                    self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Optimizer"] if spec.key == key))
                 imgui.end_tab_item()
             if imgui.begin_tab_item("Regularization")[0]:
                 imgui.spacing()
-                for spec in GROUP_SPECS["Train Optimizer"][8:]:
-                    self._draw_control(ui, spec)
+                for key in _OPTIMIZER_TAB_KEYS["Regularization"]:
+                    self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Optimizer"] if spec.key == key))
                 imgui.end_tab_item()
             imgui.end_tab_bar()
         self._ctx_reset("optimizer_ctx", ui, [s.key for s in GROUP_SPECS["Train Optimizer"]])
@@ -1183,11 +1314,29 @@ class ToolkitWindow:
         for spec in RENDER_PARAM_SPECS[:5]:
             self._draw_control(ui, spec)
 
-        imgui.separator_text("Debug Overlays")
+        imgui.separator_text("Cached Grad Ranges")
         for spec in RENDER_PARAM_SPECS[5:]:
             self._draw_control(ui, spec)
         self._ctx_reset("render_ctx", ui, [s.key for s in RENDER_PARAM_SPECS])
         imgui.separator()
+
+    def _draw_renderer_debug_window(self, ui: ViewerUI) -> None:
+        if not bool(ui._values.get("show_renderer_debug", False)):
+            return
+        imgui.set_next_window_pos(imgui.ImVec2(self._toolkit_rect[0] + self._toolkit_rect[2] + 24.0, self._menu_bar_height + 28.0), imgui.Cond_.first_use_ever.value)
+        imgui.set_next_window_size(imgui.ImVec2(320.0, 0.0), imgui.Cond_.first_use_ever.value)
+        if self._dockspace_id != 0:
+            imgui.set_next_window_dock_id(self._dockspace_id, imgui.Cond_.first_use_ever.value)
+        opened, show = imgui.begin("Renderer Debug", True)
+        ui._values["show_renderer_debug"] = bool(show)
+        if opened:
+            for spec in DEBUG_RENDER_SPECS[:3]:
+                self._draw_control(ui, spec)
+            imgui.separator_text("Ranges")
+            for spec in DEBUG_RENDER_SPECS[3:]:
+                self._draw_control(ui, spec)
+            self._ctx_reset("renderer_debug_ctx", ui, [s.key for s in DEBUG_RENDER_SPECS])
+        imgui.end()
 
     def _section_performance(self, ui: ViewerUI) -> None:
         if not imgui.collapsing_header("Plots", imgui.TreeNodeFlags_.default_open.value):
@@ -1247,7 +1396,6 @@ class ToolkitWindow:
     _TOOLTIPS = {
         "radius_scale": "Multiplier on top of true 3DGS gaussian size for rendering",
         "alpha_cutoff": "Minimum alpha threshold — splats below this are skipped",
-        "max_splat_steps": "Maximum rasterization steps per pixel ray",
         "trans_threshold": "Transmittance threshold for early ray termination",
         "cached_raster_grad_atomic_mode": "Choose float atomics or fixed-point atomics for cached ellipsoid gradient accumulation during raster backward",
         "cached_raster_grad_fixed_ro_local_range": "Symmetric [-X, X] range for avgInvScale-normalized cached position gradients",
@@ -1255,9 +1403,17 @@ class ToolkitWindow:
         "cached_raster_grad_fixed_quat_range": "Symmetric [-X, X] range for avgInvScale-normalized cached rotation gradients",
         "cached_raster_grad_fixed_color_range": "Symmetric [-X, X] range for cached color gradients",
         "cached_raster_grad_fixed_opacity_range": "Symmetric [-X, X] range for cached opacity gradients",
-        "debug_ellipse": "Show ellipse outlines around each gaussian",
-        "debug_processed_count": "Heatmap of processed splats per pixel",
-        "debug_grad_norm": "Heatmap of gradient norms per pixel",
+        "debug_mode": "Select the renderer debug output mode",
+        "debug_grad_norm_threshold": "Reference threshold for the gradient norm heatmap",
+        "debug_ellipse_thickness_px": "Thickness used by ellipse outline debug rendering",
+        "debug_clone_count_min": "Lower bound for the per-splat clone counter heatmap",
+        "debug_clone_count_max": "Upper bound for the per-splat clone counter heatmap",
+        "debug_density_min": "Lower bound for density debug heatmaps",
+        "debug_density_max": "Upper bound for density debug heatmaps",
+        "debug_depth_mean_min": "Lower bound for depth mean debug heatmap",
+        "debug_depth_mean_max": "Upper bound for depth mean debug heatmap",
+        "debug_depth_std_min": "Lower bound for depth standard deviation heatmap",
+        "debug_depth_std_max": "Upper bound for depth standard deviation heatmap",
         "lr_base": "Base learning rate for all parameters",
         "lr_pos_mul": "Learning rate multiplier for position",
         "lr_scale_mul": "Learning rate multiplier for scale",
@@ -1282,6 +1438,18 @@ class ToolkitWindow:
         "train_far": "Far clip plane for training camera",
         "max_gaussians": "Maximum number of gaussians in the scene",
         "training_steps_per_frame": "Number of training optimizer steps to run before each viewer redraw; higher improves training throughput but reduces UI refresh rate",
+        "random_background": "Use a new random RGB background for each training optimizer step while leaving the viewer background unchanged",
+        "maintenance_interval": "Run cull/split maintenance every N training steps",
+        "maintenance_growth_ratio": "Target fractional scene growth per maintenance step once densification is enabled",
+        "maintenance_growth_start_step": "Keep densification growth at zero until this training iteration, then use the configured maintenance growth",
+        "maintenance_alpha_cull_threshold": "Cull splats below this decoded alpha threshold during maintenance",
+        "depth_ratio_weight": "Starting weight for rendered per-pixel depth std/mean regularization; it decays to zero over the LR schedule span",
+        "density_regularizer": "Weight applied to the per-pixel hinge penalty max(density - max_allowed_density, 0)",
+        "max_allowed_density": "Per-pixel density threshold above which the density regularizer activates",
+        "lr_schedule_enabled": "Enable cosine scheduling of the base learning rate",
+        "lr_schedule_start_lr": "Base learning rate at step 0 of the schedule",
+        "lr_schedule_end_lr": "Base learning rate after the cosine schedule ends",
+        "lr_schedule_steps": "Number of steps over which the cosine LR schedule decays before clamping",
         "train_downscale_mode": "Use Auto for scheduled downscale descent or choose a fixed manual override from 1x to 16x",
         "train_auto_start_downscale": "Initial downscale factor used at step 0 when Downscale Mode is Auto",
         "train_downscale_base_iters": "Number of iterations spent at the auto start factor before descending",
@@ -1382,9 +1550,10 @@ def build_ui(renderer) -> ViewerUI:
                 values[spec.key] = spec.kwargs["value"]
     for spec in RENDER_PARAM_SPECS:
         values[spec.key] = spec.kwargs.get("value", 0)
+    for spec in DEBUG_RENDER_SPECS:
+        values[spec.key] = spec.kwargs.get("value", 0)
     values["radius_scale"] = float(renderer.radius_scale)
     values["alpha_cutoff"] = float(renderer.alpha_cutoff)
-    values["max_splat_steps"] = int(renderer.max_splat_steps)
     values["trans_threshold"] = float(renderer.transmittance_threshold)
     values["cached_raster_grad_atomic_mode"] = 0 if getattr(renderer, "cached_raster_grad_atomic_mode", "fixed") == "float" else 1
     values["cached_raster_grad_fixed_ro_local_range"] = float(getattr(renderer, "cached_raster_grad_fixed_ro_local_range", 0.01))
@@ -1392,19 +1561,35 @@ def build_ui(renderer) -> ViewerUI:
     values["cached_raster_grad_fixed_quat_range"] = float(getattr(renderer, "cached_raster_grad_fixed_quat_range", 0.01))
     values["cached_raster_grad_fixed_color_range"] = float(getattr(renderer, "cached_raster_grad_fixed_color_range", 0.2))
     values["cached_raster_grad_fixed_opacity_range"] = float(getattr(renderer, "cached_raster_grad_fixed_opacity_range", 0.2))
-    values["debug_ellipse"] = bool(renderer.debug_show_ellipses)
-    values["debug_processed_count"] = bool(renderer.debug_show_processed_count)
-    values["debug_grad_norm"] = bool(renderer.debug_show_grad_norm)
+    debug_mode = getattr(renderer, "debug_mode", "normal")
+    values["debug_mode"] = _DEBUG_MODE_VALUES.index(debug_mode) if debug_mode in _DEBUG_MODE_VALUES else 0
     values["debug_grad_norm_threshold"] = float(getattr(renderer, "debug_grad_norm_threshold", _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT))
+    values["debug_ellipse_thickness_px"] = float(getattr(renderer, "debug_ellipse_thickness_px", 2.0))
+    clone_count_range = tuple(getattr(renderer, "debug_clone_count_range", (0.0, 16.0)))
+    density_range = tuple(getattr(renderer, "debug_density_range", (0.0, 20.0)))
+    depth_mean_range = tuple(getattr(renderer, "debug_depth_mean_range", (0.0, 10.0)))
+    depth_std_range = tuple(getattr(renderer, "debug_depth_std_range", (0.0, 0.5)))
+    values["debug_clone_count_min"] = float(clone_count_range[0])
+    values["debug_clone_count_max"] = float(clone_count_range[1])
+    values["debug_density_min"] = float(density_range[0])
+    values["debug_density_max"] = float(density_range[1])
+    values["debug_depth_mean_min"] = float(depth_mean_range[0])
+    values["debug_depth_mean_max"] = float(depth_mean_range[1])
+    values["debug_depth_std_min"] = float(depth_std_range[0])
+    values["debug_depth_std_max"] = float(depth_std_range[1])
     values["colmap_root_path"] = ""
     values["colmap_database_path"] = ""
     values["colmap_images_root"] = ""
-    values["colmap_init_mode"] = 0
+    values["colmap_init_mode"] = 1
     values["colmap_custom_ply_path"] = ""
-    values["colmap_nn_radius_scale_coef"] = 1.0
+    values["colmap_image_downscale_mode"] = 0
+    values["colmap_image_target_width"] = 2048
+    values["colmap_image_scale"] = 1.0
+    values["colmap_nn_radius_scale_coef"] = 0.5
     values["colmap_diffused_point_count"] = 100000
     values["colmap_diffusion_radius"] = 1.0
     values["show_histograms"] = False
+    values["show_renderer_debug"] = False
     values["hist_auto_refresh"] = True
     values["hist_bin_count"] = _HISTOGRAM_BIN_COUNT_DEFAULT
     values["hist_min_log10"] = _HISTOGRAM_MIN_LOG10_DEFAULT
@@ -1423,10 +1608,10 @@ def build_ui(renderer) -> ViewerUI:
     texts: dict[str, str] = {
         key: "" for key in (
             "fps", "path", "scene_stats", "render_stats", "training",
-            "training_time", "training_iters_avg", "training_loss", "training_mse", "training_psnr", "training_instability", "error",
+            "training_time", "training_iters_avg", "training_loss", "training_mse", "training_depth_ratio", "training_density", "training_psnr", "training_instability", "error",
             "loss_debug_view", "loss_debug_frame",
             "colmap_import_status", "colmap_import_current",
-            "training_resolution", "training_downscale",
+            "training_resolution", "training_downscale", "training_schedule", "training_maintenance",
             "histogram_status",
             "setup_hint", "stability_hint",
         )
