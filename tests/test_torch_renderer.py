@@ -8,7 +8,7 @@ import slangpy as spy
 
 torch = pytest.importorskip("torch")
 
-from src.common import SHADER_INCLUDE_PATHS
+from src.common import SHADER_INCLUDE_PATHS, buffer_to_numpy
 from src.renderer import Camera, GaussianRenderer, TorchGaussianRenderSettings, TorchGaussianRendererContext, render_gaussian_splats_torch
 from src.scene import GaussianScene
 
@@ -31,6 +31,12 @@ _ALPHA_MEAN_ABS_TOL = 1.2e-2
 _ALPHA_P995_TOL = 4e-2
 _GRADIENT_COSINE_MIN = 0.992
 _GRADIENT_REL_L2_MAX = 0.11
+_DEPTH_RATIO_WEIGHT = 0.35
+_DEPTH_RATIO_LOSS_ATOL = 1e-4
+_DEPTH_RATIO_LOSS_RTOL = 1e-3
+_DEPTH_RATIO_MAP_MAE_MAX = 5e-4
+_DEPTH_RATIO_GRADIENT_COSINE_MIN = 0.992
+_DEPTH_RATIO_GRADIENT_REL_L2_MAX = 0.12
 _GRAD_CHANNEL_WEIGHTS = np.array([0.7, -0.25, 0.5, 1.1], dtype=np.float32)
 _CAMERA_SPECS = (
     {"image_size": (96, 96), "fov_y_degrees": 28.0, "focal_scale": (1.0, 1.0)},
@@ -278,6 +284,144 @@ def _reference_render_and_grad(
     )
     torch.autograd.backward(image, grad_tensors=sampled_grad_t)
     return image.detach().cpu().numpy().astype(np.float32, copy=False), splats_t.grad.detach().cpu().numpy().astype(np.float32, copy=False)
+
+
+def _ground_truth_depth_ratio_torch(
+    splats: torch.Tensor,
+    camera: torch.Tensor,
+    image_size: tuple[int, int],
+    *,
+    radius_scale: float,
+    alpha_cutoff: float,
+    transmittance_threshold: float,
+) -> torch.Tensor:
+    width, height = image_size
+    pixel_indices = torch.arange(width * height, device=splats.device, dtype=torch.long)
+    cam_basis = _camera_basis(camera[0:4])
+    cam_pos = -cam_basis.T @ camera[4:7]
+    depths = (splats[:, 0:3] - cam_pos[None, :]) @ cam_basis[2]
+    sorted_splats = splats.index_select(0, torch.argsort(depths.detach(), stable=True))
+    rays = _screen_to_world_rays(camera, image_size, pixel_indices).reshape(-1, 3)
+    trans = torch.ones((rays.shape[0],), device=splats.device, dtype=torch.float32)
+    depth_weight = torch.zeros((rays.shape[0],), device=splats.device, dtype=torch.float32)
+    depth_mean = torch.zeros((rays.shape[0],), device=splats.device, dtype=torch.float32)
+    depth_m2 = torch.zeros((rays.shape[0],), device=splats.device, dtype=torch.float32)
+    exponent_scale = 0.5 * _GAUSSIAN_SUPPORT_SIGMA_RADIUS * _GAUSSIAN_SUPPORT_SIGMA_RADIUS
+    for splat in sorted_splats:
+        scale = torch.clamp(torch.exp(splat[3:6]) * float(radius_scale * _GAUSSIAN_SUPPORT_SIGMA_RADIUS), min=_TORCH_GT_SMALL_VALUE)
+        opacity = torch.clamp(splat[13], GaussianRenderer._OPACITY_EPS, 1.0 - GaussianRenderer._OPACITY_EPS)
+        ro_local = _quat_rotate_torch((cam_pos - splat[0:3]).unsqueeze(0), splat[6:10].unsqueeze(0))[0] / scale
+        ray_local = _quat_rotate_torch(rays, splat[6:10].unsqueeze(0)) / scale
+        denom = torch.sum(ray_local * ray_local, dim=1)
+        numer = torch.sum(ray_local * ro_local[None, :], dim=1)
+        t_closest = -numer / torch.clamp(denom, min=1e-10)
+        closest = ro_local[None, :] + ray_local * t_closest[:, None]
+        rho2 = torch.clamp(torch.sum(closest * closest, dim=1), min=0.0)
+        alpha = torch.where(
+            (denom > 1e-10) & (t_closest > 0.0),
+            opacity * torch.exp(-exponent_scale * rho2),
+            torch.zeros_like(rho2),
+        )
+        alpha = torch.where(alpha >= alpha_cutoff, alpha, torch.zeros_like(alpha))
+        contribution = trans * alpha
+        total_weight = depth_weight + contribution
+        safe = contribution > _TORCH_GT_SMALL_VALUE
+        delta = t_closest - depth_mean
+        depth_mean = torch.where(
+            safe,
+            depth_mean + torch.where(total_weight > _TORCH_GT_SMALL_VALUE, (contribution / torch.clamp(total_weight, min=_TORCH_GT_SMALL_VALUE)) * delta, torch.zeros_like(delta)),
+            depth_mean,
+        )
+        depth_m2 = torch.where(
+            safe,
+            depth_m2 + torch.where(total_weight > _TORCH_GT_SMALL_VALUE, depth_weight * contribution * torch.square(delta) / torch.clamp(total_weight, min=_TORCH_GT_SMALL_VALUE), torch.zeros_like(delta)),
+            depth_m2,
+        )
+        depth_weight = torch.where(safe, total_weight, depth_weight)
+        trans = trans * (1.0 - alpha)
+        if bool(torch.all(trans < transmittance_threshold)):
+            break
+    stable_variance = torch.clamp(depth_m2 / torch.clamp(depth_weight, min=_TORCH_GT_SMALL_VALUE), min=_TORCH_GT_SMALL_VALUE)
+    depth_std = torch.where(depth_weight > _TORCH_GT_SMALL_VALUE, torch.sqrt(stable_variance), torch.zeros_like(depth_weight))
+    depth_ratio = torch.where(depth_weight > _TORCH_GT_SMALL_VALUE, depth_std / torch.clamp(depth_mean.abs(), min=_TORCH_GT_SMALL_VALUE), torch.zeros_like(depth_std))
+    return depth_ratio.reshape(height, width)
+
+
+def _depth_ratio_loss_from_map_torch(depth_ratio: torch.Tensor, weight: float) -> torch.Tensor:
+    positive = torch.where(depth_ratio > 0.0, depth_ratio, torch.zeros_like(depth_ratio))
+    return torch.as_tensor(weight, dtype=torch.float32, device=depth_ratio.device) * torch.mean(torch.square(positive))
+
+
+def _reference_depth_ratio_loss_and_grad(
+    splats: torch.Tensor,
+    camera_params: torch.Tensor,
+    settings: TorchGaussianRenderSettings,
+    weight: float,
+) -> tuple[float, np.ndarray]:
+    splats_t = splats.detach().clone().requires_grad_(True)
+    depth_ratio = _ground_truth_depth_ratio_torch(
+        splats_t,
+        camera_params.detach(),
+        (settings.width, settings.height),
+        radius_scale=settings.radius_scale,
+        alpha_cutoff=settings.alpha_cutoff,
+        transmittance_threshold=settings.transmittance_threshold,
+    )
+    loss = _depth_ratio_loss_from_map_torch(depth_ratio, weight)
+    loss.backward()
+    return float(loss.detach().item()), splats_t.grad.detach().cpu().numpy().astype(np.float32, copy=False)
+
+
+def _depth_ratio_loss_and_grad_from_map(depth_ratio: np.ndarray, weight: float) -> tuple[float, np.ndarray]:
+    values = np.asarray(depth_ratio, dtype=np.float32)
+    flat = values.reshape(-1).astype(np.float64, copy=False)
+    positive = np.where(flat > 0.0, flat, 0.0)
+    if weight <= 0.0:
+        return 0.0, np.zeros_like(values, dtype=np.float32)
+    inv_pixel_count = 1.0 / float(max(values.size, 1))
+    loss = float(weight * np.mean(positive * positive, dtype=np.float64))
+    grad = np.where(flat > 0.0, 2.0 * float(weight) * positive * inv_pixel_count, 0.0).astype(np.float32, copy=False)
+    return loss, grad.reshape(values.shape)
+
+
+def _read_training_depth_ratio(renderer: GaussianRenderer) -> np.ndarray:
+    flat = buffer_to_numpy(renderer.work_buffers["training_depth_ratio"], np.float32)
+    return np.asarray(flat[: max(renderer.width * renderer.height, 1)], dtype=np.float32).reshape(renderer.height, renderer.width).copy()
+
+
+def _renderer_depth_ratio_loss_and_grad(
+    context: TorchGaussianRendererContext,
+    splats: torch.Tensor,
+    camera_params: torch.Tensor,
+    settings: TorchGaussianRenderSettings,
+    weight: float,
+) -> tuple[np.ndarray, float, np.ndarray]:
+    renderer = context.ensure_renderer(settings)
+    scene = _scene_from_splats(splats.detach())
+    camera = _camera_from_tensor(camera_params)
+    renderer.set_scene(scene)
+    renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
+    enc = context.device.create_command_encoder()
+    renderer.rasterize_training_forward_current_scene(enc, camera, settings.background_array())
+    context.device.submit_command_buffer(enc.finish())
+    context.device.wait()
+    depth_ratio = _read_training_depth_ratio(renderer)
+    loss, depth_ratio_grad = _depth_ratio_loss_and_grad_from_map(depth_ratio, weight)
+    renderer.work_buffers["training_depth_ratio_grad"].copy_from_numpy(np.ascontiguousarray(depth_ratio_grad.reshape(-1), dtype=np.float32))
+    renderer.output_grad_buffer.copy_from_numpy(np.zeros((settings.width * settings.height, 4), dtype=np.float32))
+    enc = context.device.create_command_encoder()
+    renderer.clear_raster_grads_current_scene(enc)
+    renderer.rasterize_backward_current_scene(
+        enc,
+        camera,
+        settings.background_array(),
+        renderer.output_grad_buffer,
+        depth_ratio_grad=renderer.work_buffers["training_depth_ratio_grad"],
+    )
+    context.device.submit_command_buffer(enc.finish())
+    context.device.wait()
+    grads = _public_reference_grads(splats.detach(), renderer.read_grad_groups(scene.count))
+    return depth_ratio, loss, grads
 
 
 def _gradient_metrics(renderer_grad: np.ndarray, reference_grad: np.ndarray) -> tuple[float, float]:
@@ -569,3 +713,41 @@ def test_torch_renderer_matches_torch_ground_truth_and_gradients(torch_cuda_devi
         assert float(np.quantile(alpha_error.reshape(-1), 0.995)) <= _ALPHA_P995_TOL, f"{image_size} alpha p99.5 error too high"
         assert cosine >= _GRADIENT_COSINE_MIN, f"{image_size} gradient cosine {cosine}"
         assert relative_l2 <= _GRADIENT_REL_L2_MAX, f"{image_size} gradient relative l2 {relative_l2}"
+
+
+def test_depth_ratio_loss_matches_torch_reference_and_gradients(torch_cuda_device: torch.device):
+    settings = TorchGaussianRenderSettings(
+        width=96,
+        height=96,
+        list_capacity_multiplier=64,
+        cached_raster_grad_atomic_mode=GaussianRenderer.CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT,
+    )
+    context = TorchGaussianRendererContext(torch_device=torch_cuda_device)
+    splats = _make_scene_splats(torch_cuda_device)
+    camera_params = _make_camera_spec_tensor(_CAMERA_SPECS[0], torch_cuda_device)
+
+    renderer_ratio, renderer_loss, renderer_grads = _renderer_depth_ratio_loss_and_grad(context, splats, camera_params, settings, _DEPTH_RATIO_WEIGHT)
+    reference_ratio = _ground_truth_depth_ratio_torch(
+        splats.detach(),
+        camera_params.detach(),
+        (settings.width, settings.height),
+        radius_scale=settings.radius_scale,
+        alpha_cutoff=settings.alpha_cutoff,
+        transmittance_threshold=settings.transmittance_threshold,
+    ).detach().cpu().numpy()
+    reference_loss, reference_grads = _reference_depth_ratio_loss_and_grad(splats, camera_params, settings, _DEPTH_RATIO_WEIGHT)
+
+    assert np.isfinite(renderer_ratio).all()
+    assert np.isfinite(reference_ratio).all()
+    assert np.isfinite(renderer_loss)
+    assert np.isfinite(reference_loss)
+    assert renderer_loss > 0.0
+    assert np.isfinite(renderer_grads).all()
+    assert np.isfinite(reference_grads).all()
+
+    ratio_mae = float(np.abs(renderer_ratio - reference_ratio).mean())
+    assert ratio_mae <= _DEPTH_RATIO_MAP_MAE_MAX, f"depth-ratio map mean abs error {ratio_mae}"
+    np.testing.assert_allclose(renderer_loss, reference_loss, rtol=_DEPTH_RATIO_LOSS_RTOL, atol=_DEPTH_RATIO_LOSS_ATOL)
+    cosine, relative_l2 = _gradient_metrics(renderer_grads, reference_grads)
+    assert cosine >= _DEPTH_RATIO_GRADIENT_COSINE_MIN, f"depth-ratio gradient cosine {cosine}"
+    assert relative_l2 <= _DEPTH_RATIO_GRADIENT_REL_L2_MAX, f"depth-ratio gradient relative l2 {relative_l2}"

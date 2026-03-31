@@ -216,7 +216,8 @@ float raster_eval_alpha_gaussian(RasterGaussian gaussian, no_diff float3 rayDir)
     return raster_eval_alpha(gaussian.roLocal, gaussian.scale, gaussian.rotation, gaussian.colorAlpha.w, rayDir, g_Raster.alphaCutoff);
 }
 
-float2 raster_eval_alpha_depth_gaussian(RasterGaussian gaussian, float3 rayDir)
+[Differentiable]
+float2 raster_eval_alpha_depth_gaussian(RasterGaussian gaussian, no_diff float3 rayDir)
 {
     float3 rayLocal = world_to_local_dir(rayDir, gaussian.scale, gaussian.rotation);
     float denom = dot(rayLocal, rayLocal);
@@ -282,64 +283,71 @@ struct RasterPixelInfo
     float3 rayDir;
 };
 
-struct RasterForwardState
+struct RasterReplayState
 {
     RasterState pixelState;
     uint processedCount;
     uint processedEnd;
     uint replayBatchEnd;
     bool cloneSelected;
-    bool cloneRecorded;
     float cloneThreshold;
-};
-
-struct RasterBackwardState
-{
-    RasterState.Differential pixelState;
-};
-
-struct RasterDebugState
-{
-    RasterState pixelState;
-    uint processedEnd;
-    uint replayBatchEnd;
+    uint debugMode;
     float3 depthState;
     float spatialDensitySum;
     float screenDensitySum;
 };
 
-void init_raster_forward_state(RasterPixelInfo info, out RasterForwardState forwardState)
+struct RasterBackwardState
 {
-    forwardState.pixelState = { 0.0, 1.0 };
-    forwardState.processedCount = 0u;
-    forwardState.processedEnd = info.start;
-    forwardState.replayBatchEnd = info.start;
+    RasterState.Differential pixelState;
+    float3 depthState;
+};
+
+void init_raster_forward_state(RasterPixelInfo info, out RasterReplayState replayState)
+{
+    replayState.pixelState = { 0.0, 1.0 };
+    replayState.processedCount = 0u;
+    replayState.processedEnd = info.start;
+    replayState.replayBatchEnd = info.start;
     uint pixelId = raster_pixel_index(info.pixelCoord);
     uint cloneSeed = hash_u32(pixelId ^ (g_CloneSeed * 0x9e3779b9u + 0x85ebca6bu));
-    forwardState.cloneSelected = info.pixelActive && g_CloneSelectProbability > 0.0 && ((float(hash_u32(cloneSeed ^ 0x8da6b343u)) + 0.5) * 2.3283064365386963e-10) <= saturate(g_CloneSelectProbability);
-    forwardState.cloneRecorded = false;
-    forwardState.cloneThreshold = forwardState.cloneSelected ? (float(hash_u32(cloneSeed ^ 0x5f2ce0b1u)) + 0.5) * 2.3283064365386963e-10 : -1.0;
+    replayState.cloneSelected = info.pixelActive && g_CloneSelectProbability > 0.0 && ((float(hash_u32(cloneSeed ^ 0x8da6b343u)) + 0.5) * 2.3283064365386963e-10) <= saturate(g_CloneSelectProbability);
+    replayState.cloneThreshold = replayState.cloneSelected ? (float(hash_u32(cloneSeed ^ 0x5f2ce0b1u)) + 0.5) * 2.3283064365386963e-10 : -1.0;
+    replayState.debugMode = DEBUG_MODE_NORMAL;
+    replayState.depthState = 0.0;
+    replayState.spatialDensitySum = 0.0;
+    replayState.screenDensitySum = 0.0;
 }
 
 void init_raster_backward_state(out RasterBackwardState backwardState)
 {
     backwardState.pixelState = { 0.0, 0.0 };
+    backwardState.depthState = 0.0;
 }
 
-void init_raster_debug_state(RasterPixelInfo info, out RasterDebugState debugState)
+void init_raster_debug_state(RasterPixelInfo info, out RasterReplayState replayState)
 {
-    debugState.pixelState = { 0.0, 1.0 };
-    debugState.processedEnd = info.start;
-    debugState.replayBatchEnd = info.start;
-    debugState.depthState = 0.0;
-    debugState.spatialDensitySum = 0.0;
-    debugState.screenDensitySum = 0.0;
+    replayState.pixelState = { 0.0, 1.0 };
+    replayState.processedCount = 0u;
+    replayState.processedEnd = info.start;
+    replayState.replayBatchEnd = info.start;
+    replayState.cloneSelected = false;
+    replayState.cloneThreshold = -1.0;
+    replayState.debugMode = g_Raster.debugMode;
+    replayState.depthState = 0.0;
+    replayState.spatialDensitySum = 0.0;
+    replayState.screenDensitySum = 0.0;
 }
 
-RasterPixelInfo resolve_raster_pixel(uint3 dispatchThreadID)
+RasterPixelInfo resolve_raster_pixel(uint3 groupID, uint lane)
 {
     RasterPixelInfo info;
-    info.pixelCoord = dispatchThreadID.xy;
+    uint tileId = groupID.x;
+    uint tileX = tileId % g_Prepass.tileWidth;
+    uint tileY = tileId / g_Prepass.tileWidth;
+    uint localX = lane % RASTER_THREAD_TILE_DIM;
+    uint localY = lane / RASTER_THREAD_TILE_DIM;
+    info.pixelCoord = uint2(tileX * g_Prepass.tileSize + localX, tileY * g_Prepass.tileSize + localY);
     info.pixelActive = info.pixelCoord.x < g_Raster.width && info.pixelCoord.y < g_Raster.height;
     info.hasTileRange = false;
     info.start = 0u;
@@ -351,14 +359,117 @@ RasterPixelInfo resolve_raster_pixel(uint3 dispatchThreadID)
     uint samplePy = min(info.pixelCoord.y, g_Raster.height - 1u);
     info.rayDir = camera.screen_to_world_ray(float2(samplePx, samplePy) + 0.5);
 
-    uint tileX = samplePx / g_Prepass.tileSize;
-    uint tileY = samplePy / g_Prepass.tileSize;
     info.tileId = tileY * g_Prepass.tileWidth + tileX;
     uint2 range = g_TileRanges[info.tileId];
     info.hasTileRange = range.x != INVALID_START && range.y > range.x;
     info.start = info.hasTileRange ? range.x : 0u;
     info.end = info.hasTileRange ? range.y : info.start;
     return info;
+}
+
+interface IRasterReplayVariant
+{
+    static void init_state(RasterPixelInfo info, out RasterReplayState replayState);
+    static bool eval_hit(RasterPixelInfo info, uint splatId, RasterGaussian gaussian, out float alpha, out float rayDepth);
+    static void process_hit(RasterPixelInfo info, uint splatId, RasterGaussian gaussian, float alpha, float rayDepth, inout RasterReplayState replayState);
+}
+
+struct ForwardRasterReplayVariant : IRasterReplayVariant
+{
+    static void init_state(RasterPixelInfo info, out RasterReplayState replayState)
+    {
+        init_raster_forward_state(info, replayState);
+    }
+
+    static bool eval_hit(RasterPixelInfo info, uint splatId, RasterGaussian gaussian, out float alpha, out float rayDepth)
+    {
+        alpha = raster_eval_alpha_gaussian(gaussian, info.rayDir);
+        rayDepth = 0.0;
+        return alpha > 0.0;
+    }
+
+    static void process_hit(RasterPixelInfo info, uint splatId, RasterGaussian gaussian, float alpha, float rayDepth, inout RasterReplayState replayState)
+    {
+        RasterState state = replayState.pixelState;
+        float nextTrans = state.trans * (1.0 - alpha);
+        if (replayState.cloneSelected && nextTrans <= replayState.cloneThreshold && state.trans > replayState.cloneThreshold)
+        {
+            InterlockedAdd(g_CloneCounts[splatId], 1u);
+        }
+        replayState.pixelState = state.blend(raster_forward_color(gaussian, splatId, replayState.debugMode), alpha);
+        replayState.processedCount += 1u;
+    }
+}
+
+struct TrainingRasterReplayVariant : IRasterReplayVariant
+{
+    static void init_state(RasterPixelInfo info, out RasterReplayState replayState)
+    {
+        init_raster_forward_state(info, replayState);
+    }
+
+    static bool eval_hit(RasterPixelInfo info, uint splatId, RasterGaussian gaussian, out float alpha, out float rayDepth)
+    {
+        float2 eval = raster_eval_alpha_depth_gaussian(gaussian, info.rayDir);
+        alpha = eval.x;
+        rayDepth = eval.y;
+        return alpha > 0.0;
+    }
+
+    static void process_hit(RasterPixelInfo info, uint splatId, RasterGaussian gaussian, float alpha, float rayDepth, inout RasterReplayState replayState)
+    {
+        RasterState state = replayState.pixelState;
+        float nextTrans = state.trans * (1.0 - alpha);
+        if (replayState.cloneSelected && nextTrans <= replayState.cloneThreshold && state.trans > replayState.cloneThreshold)
+        {
+            InterlockedAdd(g_CloneCounts[splatId], 1u);
+        }
+        float contributionWeight = state.trans * alpha;
+        if (rayDepth > 0.0) replayState.depthState = depth_state_step(replayState.depthState, contributionWeight, rayDepth);
+        replayState.pixelState = state.blend(raster_forward_color(gaussian, splatId, replayState.debugMode), alpha);
+        replayState.processedCount += 1u;
+    }
+}
+
+struct DebugRasterReplayVariant : IRasterReplayVariant
+{
+    static void init_state(RasterPixelInfo info, out RasterReplayState replayState)
+    {
+        init_raster_debug_state(info, replayState);
+    }
+
+    static bool eval_hit(RasterPixelInfo info, uint splatId, RasterGaussian gaussian, out float alpha, out float rayDepth)
+    {
+        rayDepth = 0.0;
+        if (g_Raster.debugMode == DEBUG_MODE_ELLIPSE_OUTLINES)
+        {
+            alpha = raster_eval_outline_alpha(splatId, gaussian.colorAlpha.w, info.samplePoint);
+            return alpha > 0.0;
+        }
+
+        float2 eval = raster_eval_alpha_depth_gaussian(gaussian, info.rayDir);
+        alpha = eval.x;
+        rayDepth = eval.y;
+        return alpha > 0.0;
+    }
+
+    static void process_hit(RasterPixelInfo info, uint splatId, RasterGaussian gaussian, float alpha, float rayDepth, inout RasterReplayState replayState)
+    {
+        uint debugMode = replayState.debugMode;
+        float contributionWeight = replayState.pixelState.trans * alpha;
+        if ((debugMode == DEBUG_MODE_DEPTH_MEAN || debugMode == DEBUG_MODE_DEPTH_STD) && rayDepth > 0.0) replayState.depthState = depth_state_step(replayState.depthState, contributionWeight, rayDepth);
+        if (debugMode == DEBUG_MODE_SPLAT_SPATIAL_DENSITY && contributionWeight > SMALL_VALUE)
+        {
+            Gaussian3D originalGaussian = load_gaussian3d(splatId);
+            replayState.spatialDensitySum += contributionWeight / gaussian_scale_volume(originalGaussian.logScale);
+        }
+        if (debugMode == DEBUG_MODE_SPLAT_SCREEN_DENSITY && contributionWeight > SMALL_VALUE)
+        {
+            replayState.screenDensitySum += contributionWeight / projected_ellipse_area(g_ScreenEllipseConic[splatId].xyz);
+        }
+
+        replayState.pixelState = replayState.pixelState.blend(raster_forward_color(gaussian, splatId, debugMode), alpha);
+    }
 }
 
 void prefetch_batch_from_global(uint batchStart, uint batchEnd, uint lane)
@@ -372,7 +483,7 @@ void prefetch_batch_from_global(uint batchStart, uint batchEnd, uint lane)
     }
 }
 
-void raster_forward_replay(RasterPixelInfo info, uint lane, inout RasterForwardState forwardState, uint debugMode)
+void raster_replay<T : IRasterReplayVariant>(RasterPixelInfo info, uint lane, inout RasterReplayState replayState)
 {
     bool pixelDone = !info.pixelActive;
     if (lane == 0u) gsDoneCount = 0u;
@@ -385,102 +496,22 @@ void raster_forward_replay(RasterPixelInfo info, uint lane, inout RasterForwardS
         if (gsDoneCount == RASTER_GROUP_THREADS) break;
         uint batchEnd = min(batchStart + RASTER_BATCH, info.end);
         uint batchCount = batchEnd - batchStart;
-        forwardState.replayBatchEnd = batchEnd;
+        replayState.replayBatchEnd = batchEnd;
         prefetch_batch_from_global(batchStart, batchEnd, lane);
         GroupMemoryBarrierWithGroupSync();
 
-        if (!pixelDone)
+        for (uint localIdx = 0u; (localIdx < batchCount) && !pixelDone; localIdx++)
         {
-            for (uint localIdx = 0u; localIdx < batchCount; localIdx++)
+            replayState.processedEnd = batchStart + localIdx + 1u;
+            RasterGaussian gaussian = gsGaussian[localIdx];
+            uint splatId = gsBatchSplatId[localIdx];
+            float alpha = 0.0;
+            float rayDepth = 0.0;
+            if (!T.eval_hit(info, splatId, gaussian, alpha, rayDepth)) continue;
+
+            T.process_hit(info, splatId, gaussian, alpha, rayDepth, replayState);
+            if (replayState.pixelState.trans < g_Raster.transmittanceThreshold)
             {
-                forwardState.processedEnd = batchStart + localIdx + 1u;
-                RasterGaussian gaussian = gsGaussian[localIdx];
-                uint splatId = gsBatchSplatId[localIdx];
-                float alpha = raster_eval_alpha_gaussian(gaussian, info.rayDir);
-                if (alpha <= 0.0) continue;
-
-                RasterState state = forwardState.pixelState;
-                float nextTrans = state.trans * (1.0 - alpha);
-                if (forwardState.cloneSelected && !forwardState.cloneRecorded && nextTrans <= forwardState.cloneThreshold)
-                {
-                    uint _;
-                    InterlockedAdd(g_CloneCounts[splatId], 1u, _);
-                    forwardState.cloneRecorded = true;
-                }
-                state = state.blend(raster_forward_color(gaussian, splatId, debugMode), alpha);
-                forwardState.pixelState = state;
-                forwardState.processedCount += 1u;
-                if (state.trans >= g_Raster.transmittanceThreshold) continue;
-
-                pixelDone = true;
-                InterlockedAdd(gsDoneCount, 1u);
-                break;
-            }
-        }
-
-        GroupMemoryBarrierWithGroupSync();
-    }
-}
-
-void raster_debug_forward_replay(RasterPixelInfo info, uint lane, uint debugMode, out RasterDebugState debugState)
-{
-    init_raster_debug_state(info, debugState);
-    bool pixelDone = !info.pixelActive;
-    bool needsOutlineDebug = debugMode == DEBUG_MODE_ELLIPSE_OUTLINES;
-    bool needsSpatialDensity = debugMode == DEBUG_MODE_SPLAT_SPATIAL_DENSITY;
-    bool needsScreenDensity = debugMode == DEBUG_MODE_SPLAT_SCREEN_DENSITY;
-    bool needsDepthState = debugMode == DEBUG_MODE_DEPTH_MEAN || debugMode == DEBUG_MODE_DEPTH_STD;
-
-    if (lane == 0u) gsDoneCount = 0u;
-    GroupMemoryBarrierWithGroupSync();
-    if (!info.pixelActive) InterlockedAdd(gsDoneCount, 1u);
-    GroupMemoryBarrierWithGroupSync();
-
-    for (uint batchStart = info.start; batchStart < info.end; batchStart += RASTER_BATCH)
-    {
-        if (gsDoneCount == RASTER_GROUP_THREADS) break;
-        uint batchEnd = min(batchStart + RASTER_BATCH, info.end);
-        uint batchCount = batchEnd - batchStart;
-        debugState.replayBatchEnd = batchEnd;
-        prefetch_batch_from_global(batchStart, batchEnd, lane);
-        GroupMemoryBarrierWithGroupSync();
-
-        if (!pixelDone)
-        {
-            for (uint localIdx = 0u; localIdx < batchCount; localIdx++)
-            {
-                debugState.processedEnd = batchStart + localIdx + 1u;
-                RasterGaussian gaussian = gsGaussian[localIdx];
-                uint splatId = gsBatchSplatId[localIdx];
-                float alpha = 0.0;
-                float rayDepth = 0.0;
-                if (needsOutlineDebug)
-                {
-                    alpha = raster_eval_outline_alpha(splatId, gaussian.colorAlpha.w, info.samplePoint);
-                }
-                else
-                {
-                    float2 eval = raster_eval_alpha_depth_gaussian(gaussian, info.rayDir);
-                    alpha = eval.x;
-                    rayDepth = eval.y;
-                }
-                if (alpha <= 0.0) continue;
-
-                float contributionWeight = debugState.pixelState.trans * alpha;
-                if (needsDepthState && rayDepth > 0.0) debugState.depthState = depth_state_step(debugState.depthState, contributionWeight, rayDepth);
-                if (needsSpatialDensity && contributionWeight > SMALL_VALUE)
-                {
-                    Gaussian3D originalGaussian = load_gaussian3d(splatId);
-                    debugState.spatialDensitySum += contributionWeight / gaussian_scale_volume(originalGaussian.logScale);
-                }
-                if (needsScreenDensity && contributionWeight > SMALL_VALUE)
-                {
-                    debugState.screenDensitySum += contributionWeight / projected_ellipse_area(g_ScreenEllipseConic[splatId].xyz);
-                }
-
-                debugState.pixelState = debugState.pixelState.blend(raster_forward_color(gaussian, splatId, debugMode), alpha);
-                if (debugState.pixelState.trans >= g_Raster.transmittanceThreshold) continue;
-
                 pixelDone = true;
                 InterlockedAdd(gsDoneCount, 1u);
                 break;
@@ -499,17 +530,17 @@ float4 raster_forward_output_pixel(RasterPixelInfo info, RasterState state)
         : float4(pow(max(g_Raster.background, 0.0), OUTPUT_GAMMA), 1.0);
 }
 
-float4 raster_debug_output_pixel(RasterPixelInfo info, RasterDebugState debugState)
+float4 raster_debug_output_pixel(RasterPixelInfo info, RasterReplayState replayState)
 {
     if (!info.pixelActive) return float4(0.0, 0.0, 0.0, 1.0);
     uint debugMode = g_Raster.debugMode;
-    uint processedCount = info.hasTileRange && debugState.processedEnd >= info.start ? (debugState.processedEnd - info.start) : 0u;
+    uint processedCount = info.hasTileRange && replayState.processedEnd >= info.start ? (replayState.processedEnd - info.start) : 0u;
     if (debugMode == DEBUG_MODE_PROCESSED_COUNT) return float4(raster_processed_count_color(processedCount), 1.0);
-    if (debugMode == DEBUG_MODE_SPLAT_SPATIAL_DENSITY) return float4(jet_colormap(debug_normalize_range(debugState.spatialDensitySum, g_Raster.debugDensityRange)), 1.0);
-    if (debugMode == DEBUG_MODE_SPLAT_SCREEN_DENSITY) return float4(jet_colormap(debug_normalize_range(debugState.screenDensitySum, g_Raster.debugDensityRange)), 1.0);
-    if (debugMode == DEBUG_MODE_DEPTH_MEAN) return float4(jet_colormap(debug_normalize_range(debugState.depthState.y, g_Raster.debugDepthMeanRange)), 1.0);
-    if (debugMode == DEBUG_MODE_DEPTH_STD) return float4(jet_colormap(debug_normalize_range(raster_depth_output(debugState.depthState), g_Raster.debugDepthStdRange)), 1.0);
-    return raster_forward_output_pixel(info, debugState.pixelState);
+    if (debugMode == DEBUG_MODE_SPLAT_SPATIAL_DENSITY) return float4(jet_colormap(debug_normalize_range(replayState.spatialDensitySum, g_Raster.debugDensityRange)), 1.0);
+    if (debugMode == DEBUG_MODE_SPLAT_SCREEN_DENSITY) return float4(jet_colormap(debug_normalize_range(replayState.screenDensitySum, g_Raster.debugDensityRange)), 1.0);
+    if (debugMode == DEBUG_MODE_DEPTH_MEAN) return float4(jet_colormap(debug_normalize_range(replayState.depthState.y, g_Raster.debugDepthMeanRange)), 1.0);
+    if (debugMode == DEBUG_MODE_DEPTH_STD) return float4(jet_colormap(debug_normalize_range(raster_depth_output(replayState.depthState), g_Raster.debugDepthStdRange)), 1.0);
+    return raster_forward_output_pixel(info, replayState.pixelState);
 }
 
 RasterState.Differential raster_output_gradient_pixel(RasterPixelInfo info, RasterState state)
@@ -526,24 +557,27 @@ uint raster_pixel_index(uint2 pixelCoord)
     return pixelCoord.y * g_Raster.width + pixelCoord.x;
 }
 
-void store_training_forward_cache(RasterPixelInfo info, RasterForwardState forwardState, uint lane)
+void store_training_forward_cache(RasterPixelInfo info, RasterReplayState replayState, uint lane)
 {
-    if (lane == 0u) g_TrainingBatchEnd[info.tileId] = forwardState.replayBatchEnd;
+    if (lane == 0u) g_TrainingBatchEnd[info.tileId] = replayState.replayBatchEnd;
     if (!info.pixelActive) return;
     uint pixelIndex = raster_pixel_index(info.pixelCoord);
-    g_TrainingForwardState[pixelIndex] = float4(forwardState.pixelState.accum, forwardState.pixelState.trans);
-    g_TrainingProcessedEnd[pixelIndex] = forwardState.processedEnd;
+    g_TrainingForwardState[pixelIndex] = float4(replayState.pixelState.accum, replayState.pixelState.trans);
+    g_TrainingDepthState[pixelIndex] = float4(replayState.depthState, 0.0);
+    g_TrainingDepthRatio[pixelIndex] = raster_depth_output(replayState.depthState);
+    g_TrainingProcessedEnd[pixelIndex] = replayState.processedEnd;
 }
 
-void load_training_forward_cache(RasterPixelInfo info, out RasterForwardState forwardState)
+void load_training_forward_cache(RasterPixelInfo info, out RasterReplayState replayState)
 {
-    init_raster_forward_state(info, forwardState);
-    forwardState.replayBatchEnd = g_TrainingBatchEnd[info.tileId];
+    init_raster_forward_state(info, replayState);
+    replayState.replayBatchEnd = g_TrainingBatchEnd[info.tileId];
     if (!info.pixelActive) return;
     uint pixelIndex = raster_pixel_index(info.pixelCoord);
     float4 cachedState = g_TrainingForwardState[pixelIndex];
-    forwardState.pixelState = { cachedState.xyz, cachedState.w };
-    forwardState.processedEnd = g_TrainingProcessedEnd[pixelIndex];
+    replayState.pixelState = { cachedState.xyz, cachedState.w };
+    replayState.depthState = g_TrainingDepthState[pixelIndex].xyz;
+    replayState.processedEnd = g_TrainingProcessedEnd[pixelIndex];
 }
 
 interface IRasterGradVariant
@@ -578,7 +612,7 @@ struct FloatRasterGradVariant : IRasterGradVariant
     }
 }
 
-void raster_backward_replay<T : IRasterGradVariant>(RasterPixelInfo info, inout RasterForwardState forwardState, inout RasterBackwardState backwardState, uint lane)
+void raster_backward_replay<T : IRasterGradVariant>(RasterPixelInfo info, inout RasterReplayState replayState, inout RasterBackwardState backwardState, uint lane)
 {
     if (!info.hasTileRange)
     {
@@ -586,7 +620,7 @@ void raster_backward_replay<T : IRasterGradVariant>(RasterPixelInfo info, inout 
         return;
     }
 
-    for (uint batchBase = forwardState.replayBatchEnd; batchBase > info.start;)
+    for (uint batchBase = replayState.replayBatchEnd; batchBase > info.start;)
     {
         uint batchStart = batchBase > info.start + RASTER_BATCH ? (batchBase - RASTER_BATCH) : info.start;
         uint batchCount = batchBase - batchStart;
@@ -597,24 +631,38 @@ void raster_backward_replay<T : IRasterGradVariant>(RasterPixelInfo info, inout 
         {
             uint localIdx = batchCount - 1u - rev;
             uint globalIdx = batchStart + localIdx;
-            if (!(info.pixelActive && globalIdx < forwardState.processedEnd)) continue;
+            if (!(info.pixelActive && globalIdx < replayState.processedEnd)) continue;
 
             uint splatId = gsBatchSplatId[localIdx];
             RasterGaussian gaussian = gsGaussian[localIdx];
-            float alpha = raster_eval_alpha_gaussian(gaussian, info.rayDir);
+            float2 eval = raster_eval_alpha_depth_gaussian(gaussian, info.rayDir);
+            float alpha = eval.x;
+            float rayDepth = eval.y;
             if (alpha <= 0.0) continue;
 
-            RasterState state = forwardState.pixelState;
+            RasterState state = replayState.pixelState;
             RasterState prevState = state.undo(gaussian.colorAlpha.xyz, alpha);
             var dpPrevState = diffPair(prevState);
             var dpGaussian = diffPair(gaussian);
             var dpColorAlpha = diffPair(gaussian.colorAlpha);
             var dpAlpha = diffPair(alpha);
             bwd_diff(raster_blend_step_color_alpha)(dpPrevState, dpColorAlpha, dpAlpha, backwardState.pixelState);
-            bwd_diff(raster_eval_alpha_gaussian)(dpGaussian, info.rayDir, dpAlpha.getDifferential());
+            RasterState.Differential dPrevState = dpPrevState.getDifferential();
+            float dAlpha = dpAlpha.getDifferential();
+            float contributionWeight = prevState.trans * alpha;
+            float3 prevDepthState = depth_state_rewind(replayState.depthState, contributionWeight, rayDepth);
+            var dpPrevDepthState = diffPair(prevDepthState);
+            var dpContributionWeight = diffPair(contributionWeight);
+            var dpRayDepth = diffPair(rayDepth);
+            bwd_diff(depth_state_step)(dpPrevDepthState, dpContributionWeight, dpRayDepth, backwardState.depthState);
+            replayState.depthState = prevDepthState;
+            backwardState.depthState = dpPrevDepthState.getDifferential();
+            dPrevState.trans += dpContributionWeight.getDifferential() * alpha;
+            dAlpha += dpContributionWeight.getDifferential() * prevState.trans;
+            bwd_diff(raster_eval_alpha_depth_gaussian)(dpGaussian, info.rayDir, float2(dAlpha, dpRayDepth.getDifferential()));
 
-            forwardState.pixelState = prevState;
-            backwardState.pixelState = dpPrevState.getDifferential();
+            replayState.pixelState = prevState;
+            backwardState.pixelState = dPrevState;
             RasterGaussian.Differential dGaussian = dpGaussian.getDifferential();
             dGaussian.colorAlpha += dpColorAlpha.getDifferential();
             T.flush_cached_raster_grad(splatId, gaussian, dGaussian);
@@ -626,27 +674,27 @@ void raster_backward_replay<T : IRasterGradVariant>(RasterPixelInfo info, inout 
 }
 
 [shader("compute")]
-[numthreads(RASTER_THREAD_TILE_DIM, RASTER_THREAD_TILE_DIM, 1)]
-void csRasterize(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_GroupIndex)
+[numthreads(RASTER_GROUP_THREADS, 1, 1)]
+void csRasterize(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint lane : SV_GroupIndex)
 {
-    RasterPixelInfo info = resolve_raster_pixel(dispatchThreadID);
-    RasterForwardState forwardState;
-    init_raster_forward_state(info, forwardState);
-    if (info.hasTileRange) raster_forward_replay(info, lane, forwardState, DEBUG_MODE_NORMAL);
+    RasterPixelInfo info = resolve_raster_pixel(groupID, lane);
+    RasterReplayState replayState;
+    ForwardRasterReplayVariant.init_state(info, replayState);
+    if (info.hasTileRange) raster_replay<ForwardRasterReplayVariant>(info, lane, replayState);
     if (!info.pixelActive) return;
-    g_Output[info.pixelCoord] = raster_forward_output_pixel(info, forwardState.pixelState);
+    g_Output[info.pixelCoord] = raster_forward_output_pixel(info, replayState.pixelState);
 }
 
 [shader("compute")]
-[numthreads(RASTER_THREAD_TILE_DIM, RASTER_THREAD_TILE_DIM, 1)]
-void csRasterizeDebug(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_GroupIndex)
+[numthreads(RASTER_GROUP_THREADS, 1, 1)]
+void csRasterizeDebug(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint lane : SV_GroupIndex)
 {
-    RasterPixelInfo info = resolve_raster_pixel(dispatchThreadID);
-    RasterDebugState debugState;
-    if (info.hasTileRange) raster_debug_forward_replay(info, lane, g_Raster.debugMode, debugState);
-    else init_raster_debug_state(info, debugState);
+    RasterPixelInfo info = resolve_raster_pixel(groupID, lane);
+    RasterReplayState replayState;
+    DebugRasterReplayVariant.init_state(info, replayState);
+    if (info.hasTileRange) raster_replay<DebugRasterReplayVariant>(info, lane, replayState);
     if (!info.pixelActive) return;
-    g_Output[info.pixelCoord] = raster_debug_output_pixel(info, debugState);
+    g_Output[info.pixelCoord] = raster_debug_output_pixel(info, replayState);
 }
 
 void clear_raster_grads(uint3 dispatchThreadID)
@@ -689,28 +737,6 @@ void backprop_cached_raster_grads<T : IRasterGradVariant>(uint3 dispatchThreadID
     store_param_grad<1>(g_Prepass.splatCount, PARAM_RAW_OPACITY, splatId, float1(dpRawOpacity.getDifferential()) * gradScale);
 }
 
-void rasterize_training_forward_variant(uint3 dispatchThreadID, uint lane)
-{
-    RasterPixelInfo info = resolve_raster_pixel(dispatchThreadID);
-    RasterForwardState forwardState;
-    init_raster_forward_state(info, forwardState);
-    if (info.hasTileRange) raster_forward_replay(info, lane, forwardState, DEBUG_MODE_NORMAL);
-    store_training_forward_cache(info, forwardState, lane);
-    if (!info.pixelActive) return;
-    g_Output[info.pixelCoord] = raster_forward_output_pixel(info, forwardState.pixelState);
-}
-
-void rasterize_backward_variant<T : IRasterGradVariant>(uint3 dispatchThreadID, uint lane)
-{
-    RasterPixelInfo info = resolve_raster_pixel(dispatchThreadID);
-    RasterForwardState forwardState;
-    RasterBackwardState backwardState;
-    load_training_forward_cache(info, forwardState);
-    init_raster_backward_state(backwardState);
-    backwardState.pixelState = raster_output_gradient_pixel(info, forwardState.pixelState);
-    raster_backward_replay<T>(info, forwardState, backwardState, lane);
-}
-
 [shader("compute")]
 [numthreads(TILE_GROUP_SIZE, 1, 1)]
 void csClearRasterGradsFixed(uint3 dispatchThreadID : SV_DispatchThreadID)
@@ -740,29 +766,67 @@ void csBackpropCachedRasterGradsFloat(uint3 dispatchThreadID : SV_DispatchThread
 }
 
 [shader("compute")]
-[numthreads(RASTER_THREAD_TILE_DIM, RASTER_THREAD_TILE_DIM, 1)]
-void csRasterizeTrainingForwardFixed(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_GroupIndex)
+[numthreads(RASTER_GROUP_THREADS, 1, 1)]
+void csRasterizeTrainingForwardFixed(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint lane : SV_GroupIndex)
 {
-    rasterize_training_forward_variant(dispatchThreadID, lane);
+    RasterPixelInfo info = resolve_raster_pixel(groupID, lane);
+    RasterReplayState replayState;
+    TrainingRasterReplayVariant.init_state(info, replayState);
+    if (info.hasTileRange) raster_replay<TrainingRasterReplayVariant>(info, lane, replayState);
+    store_training_forward_cache(info, replayState, lane);
+    if (!info.pixelActive) return;
+    g_Output[info.pixelCoord] = raster_forward_output_pixel(info, replayState.pixelState);
 }
 
 [shader("compute")]
-[numthreads(RASTER_THREAD_TILE_DIM, RASTER_THREAD_TILE_DIM, 1)]
-void csRasterizeTrainingForwardFloat(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_GroupIndex)
+[numthreads(RASTER_GROUP_THREADS, 1, 1)]
+void csRasterizeTrainingForwardFloat(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint lane : SV_GroupIndex)
 {
-    rasterize_training_forward_variant(dispatchThreadID, lane);
+    RasterPixelInfo info = resolve_raster_pixel(groupID, lane);
+    RasterReplayState replayState;
+    TrainingRasterReplayVariant.init_state(info, replayState);
+    if (info.hasTileRange) raster_replay<TrainingRasterReplayVariant>(info, lane, replayState);
+    store_training_forward_cache(info, replayState, lane);
+    if (!info.pixelActive) return;
+    g_Output[info.pixelCoord] = raster_forward_output_pixel(info, replayState.pixelState);
 }
 
 [shader("compute")]
-[numthreads(RASTER_THREAD_TILE_DIM, RASTER_THREAD_TILE_DIM, 1)]
-void csRasterizeBackwardFixed(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_GroupIndex)
+[numthreads(RASTER_GROUP_THREADS, 1, 1)]
+void csRasterizeBackwardFixed(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint lane : SV_GroupIndex)
 {
-    rasterize_backward_variant<FixedRasterGradVariant>(dispatchThreadID, lane);
+    RasterPixelInfo info = resolve_raster_pixel(groupID, lane);
+    RasterReplayState replayState;
+    RasterBackwardState backwardState;
+    load_training_forward_cache(info, replayState);
+    init_raster_backward_state(backwardState);
+    backwardState.pixelState = raster_output_gradient_pixel(info, replayState.pixelState);
+    if (info.pixelActive && info.hasTileRange)
+    {
+        uint pixelIndex = raster_pixel_index(info.pixelCoord);
+        var dpDepthState = diffPair(replayState.depthState);
+        bwd_diff(raster_depth_output)(dpDepthState, g_TrainingDepthRatioGrad[pixelIndex]);
+        backwardState.depthState = dpDepthState.getDifferential();
+    }
+    raster_backward_replay<FixedRasterGradVariant>(info, replayState, backwardState, lane);
 }
 
 [shader("compute")]
-[numthreads(RASTER_THREAD_TILE_DIM, RASTER_THREAD_TILE_DIM, 1)]
-void csRasterizeBackwardFloat(uint3 dispatchThreadID : SV_DispatchThreadID, uint lane : SV_GroupIndex)
+[numthreads(RASTER_GROUP_THREADS, 1, 1)]
+void csRasterizeBackwardFloat(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint lane : SV_GroupIndex)
 {
-    rasterize_backward_variant<FloatRasterGradVariant>(dispatchThreadID, lane);
+    RasterPixelInfo info = resolve_raster_pixel(groupID, lane);
+    RasterReplayState replayState;
+    RasterBackwardState backwardState;
+    load_training_forward_cache(info, replayState);
+    init_raster_backward_state(backwardState);
+    backwardState.pixelState = raster_output_gradient_pixel(info, replayState.pixelState);
+    if (info.pixelActive && info.hasTileRange)
+    {
+        uint pixelIndex = raster_pixel_index(info.pixelCoord);
+        var dpDepthState = diffPair(replayState.depthState);
+        bwd_diff(raster_depth_output)(dpDepthState, g_TrainingDepthRatioGrad[pixelIndex]);
+        backwardState.depthState = dpDepthState.getDifferential();
+    }
+    raster_backward_replay<FloatRasterGradVariant>(info, replayState, backwardState, lane);
 }

@@ -224,6 +224,26 @@ def test_training_step_smoke_updates_params_in_fixed_atomic_mode(device, tmp_pat
     assert np.any(np.abs(after - before) > 0.0)
 
 
+def test_random_training_backgrounds_are_seeded_and_vary(device, tmp_path: Path):
+    scene = _make_scene(count=4, seed=17)
+    frame = _make_frame(tmp_path, image_name="random_background_target.png", image_id=11)
+    renderer_a = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    renderer_b = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    trainer_a = GaussianTrainer(device=device, renderer=renderer_a, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(random_background=True), seed=123)
+    trainer_b = GaussianTrainer(device=device, renderer=renderer_b, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(random_background=True), seed=123)
+
+    bg_a0 = trainer_a._training_background()
+    bg_a1 = trainer_a._training_background()
+    bg_b0 = trainer_b._training_background()
+    bg_b1 = trainer_b._training_background()
+
+    assert np.all(bg_a0 >= 0.0) and np.all(bg_a0 <= 1.0)
+    assert np.all(bg_a1 >= 0.0) and np.all(bg_a1 <= 1.0)
+    assert not np.allclose(bg_a0, bg_a1)
+    assert np.allclose(bg_a0, bg_b0)
+    assert np.allclose(bg_a1, bg_b1)
+
+
 def test_training_step_batch_updates_params_without_changing_count(device, tmp_path: Path):
     scene = _make_scene()
     frame = _make_frame(tmp_path, image_name="batch_target.png", image_id=1)
@@ -288,7 +308,7 @@ def test_split_loss_forward_backward_separates_metrics_from_output_grads(device,
     device.submit_command_buffer(enc.finish())
     device.wait()
 
-    loss, mse = trainer._read_loss_metrics()
+    loss, mse, depth_ratio_loss = trainer._read_loss_metrics()
     grads_after_forward = _read_output_grads(renderer).copy()
 
     enc = device.create_command_encoder()
@@ -297,9 +317,10 @@ def test_split_loss_forward_backward_separates_metrics_from_output_grads(device,
     device.wait()
 
     grads_after_backward = _read_output_grads(renderer)
-    np.testing.assert_allclose(trainer._read_loss_metrics(), (loss, mse), rtol=0.0, atol=0.0)
+    np.testing.assert_allclose(trainer._read_loss_metrics(), (loss, mse, depth_ratio_loss), rtol=0.0, atol=0.0)
     assert np.isfinite(loss)
     assert np.isfinite(mse)
+    assert depth_ratio_loss == 0.0
     assert np.allclose(grads_after_forward, 0.0)
     assert np.any(np.abs(grads_after_backward[..., :3]) > 0.0)
     assert np.all(np.isfinite(grads_after_backward))
@@ -478,6 +499,66 @@ def test_training_forward_accumulates_clone_counts(device, tmp_path: Path) -> No
 
     clone_counts = buffer_to_numpy(trainer.maintenance_buffers["clone_counts"], np.uint32)[: scene.count]
     assert np.any(clone_counts > 0)
+
+
+def test_depth_ratio_loss_slot_disabled_by_default(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=8, seed=85)
+    frame = _make_frame(tmp_path, image_name="depth_ratio_disabled_target.png", image_id=14)
+    renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(depth_ratio_weight=0.0), seed=123)
+    camera = frame.make_camera(near=0.1, far=20.0)
+    background = np.asarray(trainer.training.background, dtype=np.float32)
+
+    renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
+    enc = device.create_command_encoder()
+    trainer._dispatch_raster_training_forward(enc, camera, background)
+    target_texture = trainer.get_frame_target_texture(0, native_resolution=False, encoder=enc)
+    trainer._dispatch_loss_forward(enc, target_texture)
+    trainer._dispatch_loss_backward(enc, target_texture)
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+
+    total, mse, depth_ratio_loss = trainer._read_loss_metrics()
+    depth_ratio_grad = buffer_to_numpy(renderer.work_buffers["training_depth_ratio_grad"], np.float32)[: renderer.width * renderer.height]
+    assert np.isfinite(total)
+    assert np.isfinite(mse)
+    assert depth_ratio_loss == 0.0
+    assert np.allclose(depth_ratio_grad, 0.0)
+
+
+def test_depth_ratio_loss_contributes_and_changes_gradients(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=8, seed=87)
+    frame = _make_frame(tmp_path, image_name="depth_ratio_enabled_target.png", image_id=15)
+    renderer_off = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
+    renderer_on = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
+    trainer_off = GaussianTrainer(device=device, renderer=renderer_off, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(depth_ratio_weight=0.0), seed=123)
+    trainer_on = GaussianTrainer(device=device, renderer=renderer_on, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(depth_ratio_weight=0.5), seed=123)
+    camera = frame.make_camera(near=0.1, far=20.0)
+    background = np.asarray(trainer_on.training.background, dtype=np.float32)
+
+    def run_pass(trainer: GaussianTrainer, renderer: GaussianRenderer):
+        renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
+        enc = device.create_command_encoder()
+        trainer._dispatch_raster_training_forward(enc, camera, background)
+        target_texture = trainer.get_frame_target_texture(0, native_resolution=False, encoder=enc)
+        trainer._dispatch_loss_forward(enc, target_texture)
+        trainer._dispatch_loss_backward(enc, target_texture)
+        trainer._dispatch_raster_backward(enc, camera, background)
+        device.submit_command_buffer(enc.finish())
+        device.wait()
+        return trainer._read_loss_metrics(), _read_grad_groups(renderer, scene.count)
+
+    (total_off, mse_off, depth_off), grads_off = run_pass(trainer_off, renderer_off)
+    (total_on, mse_on, depth_on), grads_on = run_pass(trainer_on, renderer_on)
+
+    assert np.isfinite(total_off)
+    assert np.isfinite(total_on)
+    np.testing.assert_allclose(mse_on, mse_off, rtol=1e-5, atol=1e-7)
+    assert depth_off == 0.0
+    assert depth_on > 0.0
+    assert total_on >= total_off
+    grad_delta = sum(float(np.max(np.abs(grads_on[name] - grads_off[name]))) for name in grads_on)
+    assert grad_delta > 0.0
 
 
 def test_maintenance_rewrite_culls_and_splits_families(device, tmp_path: Path) -> None:

@@ -60,6 +60,9 @@ uniform StructuredBuffer<float> g_DebugGradNorm;
 uniform RWTexture2D<float4> g_Output;
 uniform StructuredBuffer<float4> g_OutputGrad;
 uniform RWStructuredBuffer<float4> g_TrainingForwardState;
+uniform RWStructuredBuffer<float4> g_TrainingDepthState;
+uniform RWStructuredBuffer<float> g_TrainingDepthRatio;
+uniform StructuredBuffer<float> g_TrainingDepthRatioGrad;
 uniform RWStructuredBuffer<uint> g_TrainingProcessedEnd;
 uniform RWStructuredBuffer<uint> g_TrainingBatchEnd;
 

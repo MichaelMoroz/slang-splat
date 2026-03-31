@@ -284,7 +284,7 @@ float3 depth_state_rewind(float3 state, float contributionWeight, float depth)
 float raster_depth_output(float3 state)
 {
     if (state.x <= SMALL_VALUE) return 0.0;
-    float depthStd = sqrt(max(state.z / max(state.x, SMALL_VALUE), 0.0));
+    float depthStd = sqrt(max(state.z / max(state.x, SMALL_VALUE), SMALL_VALUE));
     return depthStd / max(abs(state.y), SMALL_VALUE);
 }
 
