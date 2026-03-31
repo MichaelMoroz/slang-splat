@@ -146,6 +146,7 @@ class GaussianTrainer:
     _LOSS_SLOT_DEPTH_RATIO = 2
     _BATCH_STEP_INFO_STRIDE = 4
     _U32_BYTES = 4
+    _PREPASS_CAPACITY_SYNC_INTERVAL = 32
     _KERNEL_ENTRIES = {
         "downscale_target": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csResampleDownscaledTargetNearest"),
         "clear_loss": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csClearLossBuffer"),
@@ -815,6 +816,12 @@ class GaussianTrainer:
             max_log10=max_log10,
         )
 
+    def _maybe_sync_prepass_capacity(self, frame_camera: Camera, training_step: int) -> None:
+        interval = max(int(self._PREPASS_CAPACITY_SYNC_INTERVAL), 1)
+        if int(training_step) % interval != 0:
+            return
+        self.renderer.sync_prepass_capacity_for_current_scene(frame_camera)
+
     def step_batch(self, step_count: int) -> int:
         requested = max(int(step_count), 0)
         if requested <= 0:
@@ -839,6 +846,7 @@ class GaussianTrainer:
             frame_index = self._next_frame_index()
             frame_indices.append(frame_index)
             frame_camera = self.make_frame_camera(frame_index, self.renderer.width, self.renderer.height)
+            self._maybe_sync_prepass_capacity(frame_camera, training_step)
             self.renderer.record_prepass_for_current_scene(enc, frame_camera)
             target_texture = self.get_frame_target_texture(frame_index, native_resolution=False, encoder=enc)
             self._dispatch_training_forward(enc, frame_camera, background, target_texture, training_step)

@@ -1374,6 +1374,17 @@ class GaussianRenderer:
     def execute_prepass_for_current_scene(self, camera: Camera, sync_counts: bool = False) -> tuple[int, int]:
         return self._execute_prepass(self._require_scene(), camera, sync_counts=sync_counts)
 
+    def sync_prepass_capacity_for_current_scene(self, camera: Camera) -> bool:
+        scene = self._require_scene()
+        self._ensure_work_buffers(scene.count, self._pending_min_list_entries)
+        generated_entries, _ = self._execute_prepass(scene, camera, sync_counts=True)
+        required_entries = min(max(int(generated_entries), 1), self._max_prepass_entries_by_budget())
+        if required_entries <= self._max_list_entries:
+            return False
+        self._pending_min_list_entries = max(self._pending_min_list_entries, required_entries)
+        self._ensure_work_buffers(scene.count, self._pending_min_list_entries)
+        return True
+
     def record_prepass_for_current_scene(self, encoder: spy.CommandEncoder, camera: Camera) -> None:
         scene = self._require_scene()
         self._record_prepass(encoder, scene, camera, enqueue_counter_readback=False)

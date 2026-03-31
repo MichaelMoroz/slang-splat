@@ -138,13 +138,18 @@ def test_ensure_training_runtime_resolution_rebinds_renderer_without_reset(monke
     class _MainRenderer:
         def __init__(self) -> None:
             self.bound = None
+            self.clone_bound = None
 
         def set_debug_grad_norm_buffer(self, buffer) -> None:
             self.bound = buffer
 
+        def set_debug_clone_count_buffer(self, buffer) -> None:
+            self.clone_bound = buffer
+
     new_renderer = SimpleNamespace(width=32, height=32, work_buffers={"debug_grad_norm": "grad_norm"})
     trainer = SimpleNamespace(
         compute_debug_grad_norm=True,
+        maintenance_buffers={},
         effective_train_downscale_factor=lambda: 2,
         training_resolution=lambda frame_index=0: (32, 32),
         rebind_renderer=lambda renderer: calls.append(("rebind", renderer)),
@@ -159,6 +164,7 @@ def test_ensure_training_runtime_resolution_rebinds_renderer_without_reset(monke
             training_renderer=_OldRenderer(),
             training_frames=[SimpleNamespace(width=64, height=64)],
             renderer=_MainRenderer(),
+            debug_renderer=None,
             applied_training_runtime_factor=None,
             pending_training_runtime_resize=False,
         ),

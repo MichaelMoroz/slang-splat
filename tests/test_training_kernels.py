@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 from PIL import Image
@@ -973,3 +974,17 @@ def test_training_frame_order_covers_each_view_once_per_epoch(device, tmp_path: 
 
     assert sorted(seen[:4]) == [0, 1, 2, 3]
     assert sorted(seen[4:]) == [0, 1, 2, 3]
+
+
+def test_training_prepass_capacity_sync_runs_every_32_steps(device, tmp_path: Path, monkeypatch) -> None:
+    frame = _make_frame(tmp_path, width=32, height=32, image_name="capacity_sync_target.png")
+    trainer = object.__new__(GaussianTrainer)
+    calls: list[object] = []
+    trainer.renderer = SimpleNamespace(sync_prepass_capacity_for_current_scene=lambda sync_camera: calls.append(sync_camera) or False)
+    trainer._PREPASS_CAPACITY_SYNC_INTERVAL = 32
+    camera = frame.make_camera(near=0.1, far=20.0)
+
+    for step in range(65):
+        trainer._maybe_sync_prepass_capacity(camera, step)
+
+    assert len(calls) == 3
