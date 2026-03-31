@@ -224,11 +224,12 @@ GROUP_SPECS = {
         ControlSpec("fov", "slider_float", "FOV", {"value": 60.0, "min": 25.0, "max": 100.0}),
     ),
     "Train Setup": (
-        ControlSpec("max_gaussians", "slider_int", "Max Gaussians", {"value": 5900000, "min": 1000, "max": 10000000}),
+        ControlSpec("max_gaussians", "slider_int", "Max Gaussians", {"value": 2000000, "min": 1000, "max": 10000000}),
         ControlSpec("training_steps_per_frame", "slider_int", "Steps / Frame", {"value": 1, "min": 1, "max": 8}),
+        ControlSpec("random_background", "checkbox", "Random Train Background", {"value": False}),
         ControlSpec("maintenance_interval", "input_int", "Maintenance Interval", {"value": 200, "step": 10, "step_fast": 50}),
         ControlSpec("maintenance_growth_ratio", "input_float", "Maintenance Growth", {"value": 0.05, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
-        ControlSpec("maintenance_alpha_cull_threshold", "input_float", "Maintenance Alpha Cull", {"value": 1e-3, "step": 1e-5, "step_fast": 1e-4, "format": "%.6e"}),
+        ControlSpec("maintenance_alpha_cull_threshold", "input_float", "Maintenance Alpha Cull", {"value": 1e-2, "step": 1e-5, "step_fast": 1e-4, "format": "%.6e"}),
         ControlSpec("train_downscale_mode", "combo", "Downscale Mode", {"value": 1, "options": _TRAIN_DOWNSCALE_MODE_LABELS}),
         ControlSpec("train_auto_start_downscale", "slider_int", "Auto Start Downscale", {"value": 16, "min": 1, "max": 16}),
         ControlSpec("train_downscale_base_iters", "input_int", "Downscale Base Iters", {"value": 200, "step": 25, "step_fast": 100}),
@@ -246,13 +247,14 @@ GROUP_SPECS = {
         ControlSpec("lr_pos_mul", "input_float", "LR Mul Position", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
         ControlSpec("lr_scale_mul", "input_float", "LR Mul Scale", {"value": 5.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
         ControlSpec("lr_rot_mul", "input_float", "LR Mul Rotation", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
-        ControlSpec("lr_color_mul", "input_float", "LR Mul Color", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
-        ControlSpec("lr_opacity_mul", "input_float", "LR Mul Opacity", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
+            ControlSpec("lr_color_mul", "input_float", "LR Mul Color", {"value": 5.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
+            ControlSpec("lr_opacity_mul", "input_float", "LR Mul Opacity", {"value": 5.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
         ControlSpec("beta1", "input_float", "Beta1", {"value": 0.9, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
         ControlSpec("beta2", "input_float", "Beta2", {"value": 0.999, "step": 1e-4, "step_fast": 1e-3, "format": "%.6f"}),
         ControlSpec("scale_l2", "input_float", "Scale Log Reg", {"value": 0.0, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
         ControlSpec("scale_abs_reg", "input_float", "Scale Abs Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
         ControlSpec("opacity_reg", "input_float", "Opacity Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
+        ControlSpec("depth_ratio_weight", "input_float", "Depth Ratio Reg", {"value": 0.005, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
         ControlSpec("max_anisotropy", "input_float", "Max Anisotropy", {"value": 10.0, "step": 0.1, "step_fast": 0.5, "format": "%.6f"}),
         ControlSpec("grad_clip", "input_float", "Grad Clip", {"value": 10.0, "step": 0.1, "step_fast": 1.0, "format": "%.4f"}),
         ControlSpec("grad_norm_clip", "input_float", "Grad Norm Clip", {"value": 10.0, "step": 0.1, "step_fast": 1.0, "format": "%.4f"}),
@@ -804,7 +806,7 @@ class ToolkitWindow:
             else:
                 imgui.text_disabled("Imported images keep their source resolution.")
             imgui.spacing()
-            mode_idx = max(0, min(int(ui._values.get("colmap_init_mode", 0)), len(_COLMAP_INIT_MODE_LABELS) - 1))
+            mode_idx = max(0, min(int(ui._values.get("colmap_init_mode", 1)), len(_COLMAP_INIT_MODE_LABELS) - 1))
             if imgui.begin_combo("Initialization", _COLMAP_INIT_MODE_LABELS[mode_idx]):
                 for idx, label in enumerate(_COLMAP_INIT_MODE_LABELS):
                     selected = idx == mode_idx
@@ -842,7 +844,7 @@ class ToolkitWindow:
                         imgui.set_item_tooltip("Local diffusion multiplier applied to each sampled point's original-cloud nearest-neighbor distance.")
                 changed, value = imgui.drag_float(
                     "NN Radius Scale Coef",
-                    float(ui._values.get("colmap_nn_radius_scale_coef", 0.25)),
+                    float(ui._values.get("colmap_nn_radius_scale_coef", 0.5)),
                     0.01,
                     1e-4,
                     16.0,
@@ -1130,11 +1132,12 @@ class ToolkitWindow:
         avg_iters_text = ui._texts.get("training_iters_avg", "Avg it/s: n/a")
         loss_text = ui._texts.get("training_loss", "Loss Avg: n/a")
         mse_text = ui._texts.get("training_mse", "MSE: n/a")
+        depth_ratio_text = ui._texts.get("training_depth_ratio", "Depth Ratio Avg: n/a")
         psnr_text = ui._texts.get("training_psnr", "PSNR: n/a")
         if imgui.begin_table("##train_info", 2, imgui.TableFlags_.sizing_stretch_same.value):
             imgui.table_setup_column("L", imgui.TableColumnFlags_.width_fixed.value, 50)
             imgui.table_setup_column("V")
-            for label, text in (("Step", training_text), ("Time", time_text), ("Avg", avg_iters_text), ("Loss", loss_text), ("MSE", mse_text), ("PSNR", psnr_text)):
+            for label, text in (("Step", training_text), ("Time", time_text), ("Avg", avg_iters_text), ("Loss", loss_text), ("MSE", mse_text), ("Depth", depth_ratio_text), ("PSNR", psnr_text)):
                 imgui.table_next_row()
                 imgui.table_next_column()
                 imgui.text_disabled(label)
@@ -1205,7 +1208,7 @@ class ToolkitWindow:
     def _section_training_setup(self, ui: ViewerUI) -> None:
         if not imgui.collapsing_header("Train Setup"):
             return
-        for key in ("max_gaussians", "training_steps_per_frame", "maintenance_interval", "maintenance_growth_ratio", "maintenance_alpha_cull_threshold", "train_downscale_mode"):
+        for key in ("max_gaussians", "training_steps_per_frame", "random_background", "maintenance_interval", "maintenance_growth_ratio", "maintenance_alpha_cull_threshold", "train_downscale_mode"):
             self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Setup"] if spec.key == key))
         if int(ui._values.get("train_downscale_mode", 0)) == 0:
             for key in ("train_auto_start_downscale", "train_downscale_base_iters", "train_downscale_iter_step", "train_downscale_max_iters"):
@@ -1244,7 +1247,7 @@ class ToolkitWindow:
                 imgui.end_tab_item()
             if imgui.begin_tab_item("Regularization")[0]:
                 imgui.spacing()
-                for key in ("scale_l2", "scale_abs_reg", "opacity_reg", "max_anisotropy", "grad_clip", "grad_norm_clip", "max_update"):
+                for key in ("scale_l2", "scale_abs_reg", "opacity_reg", "depth_ratio_weight", "max_anisotropy", "grad_clip", "grad_norm_clip", "max_update"):
                     self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Optimizer"] if spec.key == key))
                 imgui.end_tab_item()
             imgui.end_tab_bar()
@@ -1413,9 +1416,11 @@ class ToolkitWindow:
         "train_far": "Far clip plane for training camera",
         "max_gaussians": "Maximum number of gaussians in the scene",
         "training_steps_per_frame": "Number of training optimizer steps to run before each viewer redraw; higher improves training throughput but reduces UI refresh rate",
+        "random_background": "Use a new random RGB background for each training optimizer step while leaving the viewer background unchanged",
         "maintenance_interval": "Run cull/split maintenance every N training steps",
         "maintenance_growth_ratio": "Target fractional scene growth per maintenance step before culling",
         "maintenance_alpha_cull_threshold": "Cull splats below this decoded alpha threshold during maintenance",
+        "depth_ratio_weight": "Weight for rendered per-pixel depth std/mean regularization aligned with the modular-refactor raster depth output",
         "lr_schedule_enabled": "Enable cosine scheduling of the base learning rate",
         "lr_schedule_start_lr": "Base learning rate at step 0 of the schedule",
         "lr_schedule_end_lr": "Base learning rate after the cosine schedule ends",
@@ -1547,12 +1552,12 @@ def build_ui(renderer) -> ViewerUI:
     values["colmap_root_path"] = ""
     values["colmap_database_path"] = ""
     values["colmap_images_root"] = ""
-    values["colmap_init_mode"] = 0
+    values["colmap_init_mode"] = 1
     values["colmap_custom_ply_path"] = ""
     values["colmap_image_downscale_mode"] = 0
     values["colmap_image_target_width"] = 1600
     values["colmap_image_scale"] = 1.0
-    values["colmap_nn_radius_scale_coef"] = 1.0
+    values["colmap_nn_radius_scale_coef"] = 0.5
     values["colmap_diffused_point_count"] = 100000
     values["colmap_diffusion_radius"] = 1.0
     values["show_histograms"] = False
@@ -1575,7 +1580,7 @@ def build_ui(renderer) -> ViewerUI:
     texts: dict[str, str] = {
         key: "" for key in (
             "fps", "path", "scene_stats", "render_stats", "training",
-            "training_time", "training_iters_avg", "training_loss", "training_mse", "training_psnr", "training_instability", "error",
+            "training_time", "training_iters_avg", "training_loss", "training_mse", "training_depth_ratio", "training_psnr", "training_instability", "error",
             "loss_debug_view", "loss_debug_frame",
             "colmap_import_status", "colmap_import_current",
             "training_resolution", "training_downscale", "training_schedule", "training_maintenance",

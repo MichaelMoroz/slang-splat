@@ -222,6 +222,7 @@ def update_ui_text(viewer: object, dt: float) -> None:
         viewer.t("training_iters_avg").text = "Avg it/s: n/a"
         viewer.t("training_loss").text = "Loss Avg: n/a"
         viewer.t("training_mse").text = "MSE Avg: n/a"
+        viewer.t("training_depth_ratio").text = "Depth Ratio Avg: n/a"
         viewer.t("training_psnr").text = "PSNR Avg: n/a"
         viewer.t("training_instability").text = ""
     else:
@@ -235,6 +236,7 @@ def update_ui_text(viewer: object, dt: float) -> None:
         viewer.t("training_iters_avg").text = f"Avg it/s: {avg_iters_s:.2f}" if training_elapsed_s > 1e-6 else "Avg it/s: n/a"
         viewer.t("training_loss").text = f"Loss Avg: {state.avg_loss:.6e}"
         viewer.t("training_mse").text = f"MSE Avg: {state.avg_mse:.6e}" if np.isfinite(state.avg_mse) else "MSE Avg: n/a"
+        viewer.t("training_depth_ratio").text = f"Depth Ratio Avg: {state.avg_depth_ratio_loss:.6e}" if np.isfinite(state.avg_depth_ratio_loss) else "Depth Ratio Avg: n/a"
         viewer.t("training_psnr").text = f"PSNR Avg: {state.avg_psnr:.3f} dB" if np.isfinite(state.avg_psnr) else "PSNR Avg: inf" if state.avg_psnr == float("inf") else "PSNR Avg: n/a"
         viewer.t("training_instability").text = state.last_instability
     viewer.t("error").text = f"Error: {viewer.s.last_error}" if viewer.s.last_error else ""

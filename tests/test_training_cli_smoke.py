@@ -139,3 +139,12 @@ def test_train_cli_forwards_resolved_init_hparams(monkeypatch, tmp_path: Path):
 
     assert cli.run_train_colmap(args) == 0
     assert captured["init_hparams"] is resolved_init
+
+
+def test_train_cli_parser_defaults_color_and_opacity_lr_mul_to_five() -> None:
+    parser = cli.build_parser()
+
+    args = parser.parse_args(["train-colmap", "--colmap-root", "dummy"])
+
+    assert args.lr_mul_color == 5.0
+    assert args.lr_mul_opacity == 5.0

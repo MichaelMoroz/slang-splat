@@ -51,6 +51,7 @@ def test_build_training_params_clamps_ranges():
         position_abs_max=0.0,
         near=5.0,
         far=1.0,
+        random_background=7,
         scale_l2_weight=-1.0,
         scale_abs_reg_weight=-1.0,
         opacity_reg_weight=-1.0,
@@ -61,6 +62,7 @@ def test_build_training_params_clamps_ranges():
     assert params.stability.max_scale == params.stability.min_scale == 2.0
     assert params.stability.max_opacity == params.stability.min_opacity == 0.8
     assert params.training.far > params.training.near
+    assert params.training.random_background is True
     assert params.training.scale_l2_weight == 0.0
     assert params.training.scale_abs_reg_weight == 0.0
     assert params.training.opacity_reg_weight == 0.0
@@ -69,10 +71,13 @@ def test_build_training_params_clamps_ranges():
 
 def test_default_training_params_match_fixed_count_defaults():
     params = default_training_params()
+    assert params.training.random_background is False
     assert params.training.scale_l2_weight == 0.0
     assert params.training.scale_abs_reg_weight == 0.01
     assert params.training.opacity_reg_weight == 0.01
-    assert params.training.max_gaussians == 5_900_000
+    assert params.training.depth_ratio_weight == 0.005
+    assert params.training.maintenance_alpha_cull_threshold == 1e-2
+    assert params.training.max_gaussians == 2_000_000
 
 
 def test_auto_profile_resolves_to_legacy_defaults():

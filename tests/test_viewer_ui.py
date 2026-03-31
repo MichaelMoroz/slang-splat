@@ -61,16 +61,23 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["cached_raster_grad_fixed_color_range"] == 0.2
     assert viewer_ui._values["cached_raster_grad_atomic_mode"] == 1
     assert viewer_ui._values["lr_scale_mul"] == 5.0
+    assert viewer_ui._values["lr_color_mul"] == 5.0
+    assert viewer_ui._values["lr_opacity_mul"] == 5.0
     assert viewer_ui._values["lr_schedule_enabled"] is True
     assert viewer_ui._values["lr_schedule_start_lr"] == 1e-3
     assert viewer_ui._values["lr_schedule_end_lr"] == 1e-4
     assert viewer_ui._values["lr_schedule_steps"] == 30000
+    assert viewer_ui._values["random_background"] is False
     assert viewer_ui._values["maintenance_interval"] == 200
     assert viewer_ui._values["maintenance_growth_ratio"] == 0.05
-    assert viewer_ui._values["maintenance_alpha_cull_threshold"] == 1e-3
+    assert viewer_ui._values["maintenance_alpha_cull_threshold"] == 1e-2
+    assert viewer_ui._values["depth_ratio_weight"] == 0.005
+    assert viewer_ui._values["max_gaussians"] == 2000000
+    assert viewer_ui._values["colmap_init_mode"] == 1
     assert viewer_ui._values["colmap_image_downscale_mode"] == 0
     assert viewer_ui._values["colmap_image_target_width"] == 1600
     assert viewer_ui._values["colmap_image_scale"] == 1.0
+    assert viewer_ui._values["colmap_nn_radius_scale_coef"] == 0.5
     assert viewer_ui._values["_histogram_update_y_limit"] is True
     assert viewer_ui._values["_histogram_update_log_range"] is False
 

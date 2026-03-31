@@ -695,7 +695,7 @@ def import_colmap_from_ui(viewer: object) -> None:
     image_downscale_mode = _ui_image_downscale_mode(viewer)
     image_downscale_target_width = max(int(viewer.ui._values.get("colmap_image_target_width", 1600)), 1)
     image_downscale_scale = float(np.clip(viewer.ui._values.get("colmap_image_scale", 1.0), 1e-6, 1.0))
-    nn_radius_scale_coef = float(viewer.ui._values.get("colmap_nn_radius_scale_coef", 0.25))
+    nn_radius_scale_coef = float(viewer.ui._values.get("colmap_nn_radius_scale_coef", 0.5))
     diffused_point_count = max(int(viewer.ui._values.get("colmap_diffused_point_count", 100000)), 1)
     diffusion_radius = max(float(viewer.ui._values.get("colmap_diffusion_radius", 1.0)), 0.0)
     if not colmap_root.exists():

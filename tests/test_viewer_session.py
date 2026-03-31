@@ -10,7 +10,7 @@ from PIL import Image
 import pytest
 
 from src.viewer import session
-from src.viewer.state import ColmapImportProgress
+from src.viewer.state import ColmapImportProgress, ColmapImportSettings
 
 
 def _viewer() -> SimpleNamespace:
@@ -394,6 +394,13 @@ def test_finish_import_colmap_dataset_resets_toolkit_plot_history(monkeypatch) -
     )
 
     assert calls == ["reset", "fit"]
+
+
+def test_colmap_import_settings_defaults_prefer_diffused_pointcloud() -> None:
+    defaults = ColmapImportSettings()
+
+    assert defaults.init_mode == "diffused_pointcloud"
+    assert defaults.nn_radius_scale_coef == 0.5
 
 
 def test_refresh_cached_raster_grad_histograms_caches_by_signature() -> None:
