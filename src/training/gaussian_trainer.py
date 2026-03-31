@@ -102,7 +102,7 @@ class StabilityHyperParams:
 @dataclass(slots=True)
 class TrainingHyperParams:
     background: tuple[float, float, float] = (0.0, 0.0, 0.0); near: float = 0.1; far: float = 120.0
-    random_background: bool = False
+    random_background: bool = True
     scale_l2_weight: float = 0.0; scale_abs_reg_weight: float = 0.01; opacity_reg_weight: float = 0.01; depth_ratio_weight: float = 0.005
     lr_schedule_enabled: bool = True; lr_schedule_start_lr: float = 1e-3; lr_schedule_end_lr: float = 1e-4; lr_schedule_steps: int = 30_000
     maintenance_interval: int = 200; maintenance_growth_ratio: float = 0.05; maintenance_alpha_cull_threshold: float = 1e-2

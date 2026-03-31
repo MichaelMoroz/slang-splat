@@ -226,7 +226,7 @@ GROUP_SPECS = {
     "Train Setup": (
         ControlSpec("max_gaussians", "slider_int", "Max Gaussians", {"value": 2000000, "min": 1000, "max": 10000000}),
         ControlSpec("training_steps_per_frame", "slider_int", "Steps / Frame", {"value": 1, "min": 1, "max": 8}),
-        ControlSpec("random_background", "checkbox", "Random Train Background", {"value": False}),
+        ControlSpec("random_background", "checkbox", "Random Train Background", {"value": True}),
         ControlSpec("maintenance_interval", "input_int", "Maintenance Interval", {"value": 200, "step": 10, "step_fast": 50}),
         ControlSpec("maintenance_growth_ratio", "input_float", "Maintenance Growth", {"value": 0.05, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
         ControlSpec("maintenance_alpha_cull_threshold", "input_float", "Maintenance Alpha Cull", {"value": 1e-2, "step": 1e-5, "step_fast": 1e-4, "format": "%.6e"}),

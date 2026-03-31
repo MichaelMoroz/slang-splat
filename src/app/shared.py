@@ -167,7 +167,7 @@ def build_training_params(
     opacity_reg_weight: float,
     depth_ratio_weight: float = 0.005,
     max_gaussians: int,
-    random_background: bool = False,
+    random_background: bool = True,
     lr_schedule_enabled: bool = True,
     lr_schedule_start_lr: float | None = None,
     lr_schedule_end_lr: float | None = None,

@@ -71,7 +71,7 @@ def test_build_training_params_clamps_ranges():
 
 def test_default_training_params_match_fixed_count_defaults():
     params = default_training_params()
-    assert params.training.random_background is False
+    assert params.training.random_background is True
     assert params.training.scale_l2_weight == 0.0
     assert params.training.scale_abs_reg_weight == 0.01
     assert params.training.opacity_reg_weight == 0.01

@@ -67,7 +67,7 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["lr_schedule_start_lr"] == 1e-3
     assert viewer_ui._values["lr_schedule_end_lr"] == 1e-4
     assert viewer_ui._values["lr_schedule_steps"] == 30000
-    assert viewer_ui._values["random_background"] is False
+    assert viewer_ui._values["random_background"] is True
     assert viewer_ui._values["maintenance_interval"] == 200
     assert viewer_ui._values["maintenance_growth_ratio"] == 0.05
     assert viewer_ui._values["maintenance_alpha_cull_threshold"] == 1e-2

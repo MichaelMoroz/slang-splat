@@ -150,7 +150,7 @@ def test_render_records_toolkit_failure_without_raising() -> None:
 def test_default_training_params_include_depth_ratio_weight() -> None:
     params = app.default_training_params()
 
-    assert params.training.random_background is False
+    assert params.training.random_background is True
     assert params.training.depth_ratio_weight == 0.005
     assert params.training.maintenance_alpha_cull_threshold == 1e-2
     assert params.training.max_gaussians == 2_000_000
