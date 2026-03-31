@@ -69,7 +69,7 @@ def rescale_poses_to_unit_cube(poses: np.ndarray, transform: np.ndarray) -> tupl
     return scale_transform @ poses, scale_transform @ transform
 
 
-def transform_poses_pca(poses: np.ndarray, rescale: bool = True) -> tuple[np.ndarray, np.ndarray]:
+def transform_poses_pca(poses: np.ndarray, rescale: bool = False) -> tuple[np.ndarray, np.ndarray]:
     """
     Aligns the scene by assuming that most movement happened parallel to the ground plane during capture.
     Adapted from Zip-NeRF (https://github.com/jonbarron/camp_zipnerf)
@@ -120,7 +120,7 @@ def transform_poses_pca(poses: np.ndarray, rescale: bool = True) -> tuple[np.nda
     return poses_arr.astype(np.float32, copy=False), transform.astype(np.float32, copy=False)
 
 
-def transform_colmap_reconstruction_pca(recon: ColmapReconstruction, rescale: bool = True) -> tuple[ColmapReconstruction, np.ndarray]:
+def transform_colmap_reconstruction_pca(recon: ColmapReconstruction, rescale: bool = False) -> tuple[ColmapReconstruction, np.ndarray]:
     image_items = sorted(recon.images.items())
     if not image_items:
         return recon, np.eye(4, dtype=np.float32)

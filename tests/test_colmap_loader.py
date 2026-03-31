@@ -16,7 +16,10 @@ from src.scene import (
     resolve_colmap_init_hparams,
     sample_colmap_diffused_points,
     suggest_colmap_init_hparams,
+    transform_colmap_reconstruction_pca,
+    transform_poses_pca,
 )
+from src.scene._internal.colmap_types import ColmapCamera, ColmapImage, ColmapPoint3D, ColmapReconstruction
 
 _actual_scale = lambda log_scale: np.exp(np.asarray(log_scale, dtype=np.float32))
 
@@ -142,6 +145,43 @@ def test_colmap_loader_supports_radial_camera_model(tmp_path: Path):
     assert np.isclose(camera.k2, -0.02)
     assert np.isclose(frame.k1, 0.07)
     assert np.isclose(frame.k2, -0.02)
+
+
+def test_transform_poses_pca_defaults_to_no_rescale_and_wrapper_matches() -> None:
+    poses = np.repeat(np.eye(4, dtype=np.float32)[None, :, :], 3, axis=0)
+    poses[:, 0, 3] = np.array([0.0, 10.0, 20.0], dtype=np.float32)
+
+    transformed_default, transform_default = transform_poses_pca(poses)
+    transformed_no_rescale, transform_no_rescale = transform_poses_pca(poses, rescale=False)
+    transformed_rescaled, _ = transform_poses_pca(poses, rescale=True)
+
+    np.testing.assert_allclose(transformed_default, transformed_no_rescale, rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(transform_default, transform_no_rescale, rtol=0.0, atol=1e-6)
+    assert float(np.max(np.abs(transformed_default[:, :3, 3]))) > 1.0
+    assert float(np.max(np.abs(transformed_rescaled[:, :3, 3]))) <= 1.0 + 1e-6
+
+    camera = ColmapCamera(camera_id=1, model_id=1, width=400, height=200, fx=400.0, fy=400.0, cx=200.0, cy=100.0)
+    q_wxyz = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    recon = ColmapReconstruction(
+        root=Path("synthetic"),
+        sparse_dir=Path("synthetic") / "sparse" / "0",
+        cameras={1: camera},
+        images={
+            1: ColmapImage(1, q_wxyz, np.array([0.0, 0.0, 0.0], dtype=np.float32), 1, "a.png", np.zeros((0, 2), dtype=np.float32), np.zeros((0,), dtype=np.int64)),
+            2: ColmapImage(2, q_wxyz, np.array([-10.0, 0.0, 0.0], dtype=np.float32), 1, "b.png", np.zeros((0, 2), dtype=np.float32), np.zeros((0,), dtype=np.int64)),
+            3: ColmapImage(3, q_wxyz, np.array([-20.0, 0.0, 0.0], dtype=np.float32), 1, "c.png", np.zeros((0, 2), dtype=np.float32), np.zeros((0,), dtype=np.int64)),
+        },
+        points3d={1: ColmapPoint3D(1, np.array([20.0, 0.0, 0.0], dtype=np.float32), np.array([255.0, 255.0, 255.0], dtype=np.float32), 0.0)},
+    )
+
+    recon_default, wrapper_transform_default = transform_colmap_reconstruction_pca(recon)
+    recon_no_rescale, wrapper_transform_no_rescale = transform_colmap_reconstruction_pca(recon, rescale=False)
+    recon_rescaled, _ = transform_colmap_reconstruction_pca(recon, rescale=True)
+
+    np.testing.assert_allclose(recon_default.points3d[1].xyz, recon_no_rescale.points3d[1].xyz, rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(wrapper_transform_default, wrapper_transform_no_rescale, rtol=0.0, atol=1e-6)
+    assert float(np.max(np.abs(recon_default.points3d[1].xyz))) > 1.0
+    assert float(np.max(np.abs(recon_rescaled.points3d[1].xyz))) <= 1.0 + 1e-6
 
 
 def test_colmap_init_uses_direct_pointcloud_when_requested_count_exceeds_points(tmp_path: Path):
