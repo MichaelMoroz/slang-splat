@@ -299,6 +299,7 @@ struct RasterReplayState
     float cloneThreshold;
     uint debugMode;
     float3 depthState;
+    float splatDensitySum;
     float spatialDensitySum;
     float screenDensitySum;
 };
@@ -321,6 +322,7 @@ void init_raster_forward_state(RasterPixelInfo info, out RasterReplayState repla
     replayState.cloneThreshold = replayState.cloneSelected ? (float(hash_u32(cloneSeed ^ 0x5f2ce0b1u)) + 0.5) * 2.3283064365386963e-10 : -1.0;
     replayState.debugMode = DEBUG_MODE_NORMAL;
     replayState.depthState = 0.0;
+    replayState.splatDensitySum = 0.0;
     replayState.spatialDensitySum = 0.0;
     replayState.screenDensitySum = 0.0;
 }
@@ -341,6 +343,7 @@ void init_raster_debug_state(RasterPixelInfo info, out RasterReplayState replayS
     replayState.cloneThreshold = -1.0;
     replayState.debugMode = g_Raster.debugMode;
     replayState.depthState = 0.0;
+    replayState.splatDensitySum = 0.0;
     replayState.spatialDensitySum = 0.0;
     replayState.screenDensitySum = 0.0;
 }
@@ -464,6 +467,11 @@ struct DebugRasterReplayVariant : IRasterReplayVariant
         uint debugMode = replayState.debugMode;
         float contributionWeight = replayState.pixelState.trans * alpha;
         if ((debugMode == DEBUG_MODE_DEPTH_MEAN || debugMode == DEBUG_MODE_DEPTH_STD) && rayDepth > 0.0) replayState.depthState = depth_state_step(replayState.depthState, contributionWeight, rayDepth);
+        if (debugMode == DEBUG_MODE_SPLAT_DENSITY && contributionWeight > SMALL_VALUE)
+        {
+            float densityWeight = sqrt(max(replayState.pixelState.trans, 0.0)) * alpha / max(gaussian.colorAlpha.w, SMALL_VALUE);
+            replayState.splatDensitySum += densityWeight;
+        }
         if (debugMode == DEBUG_MODE_SPLAT_SPATIAL_DENSITY && contributionWeight > SMALL_VALUE)
         {
             Gaussian3D originalGaussian = load_gaussian3d(splatId);
@@ -542,6 +550,7 @@ float4 raster_debug_output_pixel(RasterPixelInfo info, RasterReplayState replayS
     uint debugMode = g_Raster.debugMode;
     uint processedCount = info.hasTileRange && replayState.processedEnd >= info.start ? (replayState.processedEnd - info.start) : 0u;
     if (debugMode == DEBUG_MODE_PROCESSED_COUNT) return float4(raster_processed_count_color(processedCount), 1.0);
+    if (debugMode == DEBUG_MODE_SPLAT_DENSITY) return float4(jet_colormap(debug_normalize_range(replayState.splatDensitySum, g_Raster.debugDensityRange)), 1.0);
     if (debugMode == DEBUG_MODE_SPLAT_SPATIAL_DENSITY) return float4(jet_colormap(debug_normalize_range(replayState.spatialDensitySum, g_Raster.debugDensityRange)), 1.0);
     if (debugMode == DEBUG_MODE_SPLAT_SCREEN_DENSITY) return float4(jet_colormap(debug_normalize_range(replayState.screenDensitySum, g_Raster.debugDensityRange)), 1.0);
     if (debugMode == DEBUG_MODE_DEPTH_MEAN) return float4(jet_colormap(debug_normalize_range(replayState.depthState.y, g_Raster.debugDepthMeanRange)), 1.0);

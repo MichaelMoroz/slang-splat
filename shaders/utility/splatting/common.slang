@@ -13,6 +13,7 @@ static const uint DEBUG_MODE_ELLIPSE_OUTLINES = 5u;
 static const uint DEBUG_MODE_SPLAT_SPATIAL_DENSITY = 6u;
 static const uint DEBUG_MODE_SPLAT_SCREEN_DENSITY = 7u;
 static const uint DEBUG_MODE_GRAD_NORM = 8u;
+static const uint DEBUG_MODE_SPLAT_DENSITY = 9u;
 
 struct ScanlineWorkItem
 {

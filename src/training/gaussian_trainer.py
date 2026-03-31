@@ -146,7 +146,9 @@ class GaussianTrainer:
     _LOSS_SLOT_DEPTH_RATIO = 2
     _BATCH_STEP_INFO_STRIDE = 4
     _U32_BYTES = 4
+    _FLOAT4_BYTES = 16
     _PREPASS_CAPACITY_SYNC_INTERVAL = 32
+    _MAINTENANCE_CAMERA_ROW_COUNT = 6
     _KERNEL_ENTRIES = {
         "downscale_target": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csResampleDownscaledTargetNearest"),
         "clear_loss": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csClearLossBuffer"),
@@ -156,6 +158,7 @@ class GaussianTrainer:
         "cache_step_info": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csCacheTrainingStepInfo"),
         "clear_clone_counts": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csClearCloneCounts"),
         "clear_maintenance_counters": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csClearMaintenanceCounters"),
+        "clamp_maintenance_min_screen_size": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csClampMaintenanceMinScreenSize"),
         "prepare_maintenance_counts": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csPrepareMaintenanceCounts"),
         "rewrite_maintenance_splats": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csRewriteMaintenanceSplats"),
     }
@@ -287,12 +290,15 @@ class GaussianTrainer:
             "g_CloneCounts": self._maintenance_buffers["clone_counts"],
             "g_TotalCloneCounter": self._maintenance_buffers["total_clone_counter"],
             "g_AppendCounter": self._maintenance_buffers["append_counter"],
+            "g_MaintenanceCameraRows": self._maintenance_buffers["camera_rows"],
             "g_SrcSplatCount": int(self._scene_count),
             "g_DstSplatCount": int(max(dst_splat_count, 1)),
             "g_AppendSplatCount": int(max(append_splat_count, 1)),
             "g_SurvivorCount": int(max(survivor_count, 0)),
             "g_MaintenanceSeed": np.uint32(self._seed + self.state.step),
+            "g_MaintenanceCameraCount": int(len(self.frames)),
             "g_MaintenanceAlphaCullThreshold": float(self.training.maintenance_alpha_cull_threshold),
+            "g_MaintenanceRadiusScale": float(max(self.renderer.radius_scale, 1e-8)),
         }
 
     def update_hyperparams(self, adam_hparams: AdamHyperParams, stability_hparams: StabilityHyperParams, training_hparams: TrainingHyperParams) -> None:
@@ -304,10 +310,11 @@ class GaussianTrainer:
         self.adam_optimizer.update_hyperparams(self.adam, self._adam_runtime_hparams())
         self.optimizer.update_hyperparams(self.adam, self.stability)
         self._ensure_maintenance_buffers(self._scene_count)
+        self._maintenance_camera_signature = None
         self._invalidate_downscaled_target()
 
-    def _dispatch_adam_step(self, encoder: spy.CommandEncoder) -> None:
-        self._dispatch_optimizer_step(encoder, self.state.step + 1)
+    def _dispatch_adam_step(self, encoder: spy.CommandEncoder, frame_camera: Camera | None = None) -> None:
+        self._dispatch_optimizer_step(encoder, self.state.step + 1, frame_camera)
 
     def __init__(
         self,
@@ -358,6 +365,8 @@ class GaussianTrainer:
         self._maintenance_splat_capacity = 0
         self._maintenance_append_capacity = 0
         self._maintenance_output_capacity = 0
+        self._maintenance_camera_capacity = 0
+        self._maintenance_camera_signature: tuple[int, int, float, float, int] | None = None
         self._scale_reg_reference = float(max(scale_reg_reference, 1e-8)) if scale_reg_reference is not None else self._estimate_scale_reg_reference(scene)
         self._init_point_positions_buffer: spy.Buffer | None = None
         self._init_point_colors_buffer: spy.Buffer | None = None
@@ -413,10 +422,12 @@ class GaussianTrainer:
         required_splats = max(int(splat_count), 1)
         required_append = self._expected_maintenance_append_count(required_splats) if append_count is None else max(int(append_count), 1)
         required_output = max(required_splats + required_append, 1)
+        required_camera_count = max(len(self.frames), 1)
         grow_splats = required_splats > self._maintenance_splat_capacity
         grow_append = required_append > self._maintenance_append_capacity
         grow_output = required_output > self._maintenance_output_capacity
-        if self._maintenance_buffers and not grow_splats and not grow_append and not grow_output:
+        grow_cameras = required_camera_count > self._maintenance_camera_capacity
+        if self._maintenance_buffers and not grow_splats and not grow_append and not grow_output and not grow_cameras:
             return
         usage = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
         packed_param_bytes = self.renderer.TRAINABLE_PARAM_COUNT * self._U32_BYTES
@@ -436,6 +447,43 @@ class GaussianTrainer:
             self._maintenance_buffers["dst_adam_moments"] = self.device.create_buffer(size=self._maintenance_output_capacity * self.renderer.TRAINABLE_PARAM_COUNT * self._U32_BYTES * 2, usage=usage)
         elif "dst_adam_moments" not in self._maintenance_buffers:
             self._maintenance_buffers["dst_adam_moments"] = self.device.create_buffer(size=max(self._maintenance_output_capacity, 1) * self.renderer.TRAINABLE_PARAM_COUNT * self._U32_BYTES * 2, usage=usage)
+        if grow_cameras or "camera_rows" not in self._maintenance_buffers:
+            self._maintenance_camera_capacity = max(required_camera_count, max(self._maintenance_camera_capacity, 1) + max(self._maintenance_camera_capacity, 1) // 2)
+            self._maintenance_buffers["camera_rows"] = self.device.create_buffer(size=self._maintenance_camera_capacity * self._MAINTENANCE_CAMERA_ROW_COUNT * self._FLOAT4_BYTES, usage=usage)
+            self._maintenance_camera_signature = None
+
+    def _maintenance_camera_rows(self) -> np.ndarray:
+        width = int(self.renderer.width)
+        height = int(self.renderer.height)
+        rows = np.zeros((max(len(self.frames), 1) * self._MAINTENANCE_CAMERA_ROW_COUNT, 4), dtype=np.float32)
+        for frame_index in range(len(self.frames)):
+            camera = self.make_frame_camera(frame_index, width, height)
+            right, up, forward = camera.basis()
+            fx, fy = camera.focal_pixels_xy(width, height)
+            cx, cy = camera.principal_point(width, height)
+            k1, k2 = camera.distortion_coeffs()
+            base = frame_index * self._MAINTENANCE_CAMERA_ROW_COUNT
+            rows[base + 0] = np.array([width, height, camera.position[0], camera.position[1]], dtype=np.float32)
+            rows[base + 1] = np.array([camera.position[2], fx, fy, cx], dtype=np.float32)
+            rows[base + 2] = np.array([cy, camera.near, camera.far, k1], dtype=np.float32)
+            rows[base + 3] = np.array([k2, right[0], right[1], right[2]], dtype=np.float32)
+            rows[base + 4] = np.array([up[0], up[1], up[2], forward[0]], dtype=np.float32)
+            rows[base + 5] = np.array([forward[1], forward[2], 0.0, 0.0], dtype=np.float32)
+        return rows
+
+    def _refresh_maintenance_camera_buffer(self) -> None:
+        signature = (
+            int(self.renderer.width),
+            int(self.renderer.height),
+            float(self.training.near),
+            float(self.training.far),
+            int(len(self.frames)),
+        )
+        if self._maintenance_camera_signature == signature:
+            return
+        self._ensure_maintenance_buffers(self._scene_count)
+        self._maintenance_buffers["camera_rows"].copy_from_numpy(self._maintenance_camera_rows())
+        self._maintenance_camera_signature = signature
 
     def _clear_clone_counts(self) -> None:
         enc = self.device.create_command_encoder()
@@ -444,7 +492,9 @@ class GaussianTrainer:
         self.device.wait()
 
     def _run_maintenance(self) -> None:
+        self._refresh_maintenance_camera_buffer()
         enc = self.device.create_command_encoder()
+        self._dispatch("clamp_maintenance_min_screen_size", enc, spy.uint3(max(self._scene_count, 1), 1, 1), self._maintenance_vars())
         self._dispatch("clear_maintenance_counters", enc, spy.uint3(1, 1, 1), self._maintenance_vars())
         self._dispatch("prepare_maintenance_counts", enc, spy.uint3(max(self._scene_count, 1), 1, 1), self._maintenance_vars())
         self.device.submit_command_buffer(enc.finish())
@@ -705,7 +755,7 @@ class GaussianTrainer:
             },
         )
 
-    def _dispatch_optimizer_step(self, encoder: spy.CommandEncoder, step_index: int) -> None:
+    def _dispatch_optimizer_step(self, encoder: spy.CommandEncoder, step_index: int, frame_camera: Camera | None = None) -> None:
         with debug_region(encoder, "Trainer Optimizer", 52):
             self.optimizer.update_step(step_index, self.training)
             self.optimizer.dispatch_regularizers(
@@ -736,6 +786,9 @@ class GaussianTrainer:
                 splat_count=self._scene_count,
                 training_hparams=self.training,
                 scale_reg_reference=self._scale_reg_reference,
+                frame_camera=frame_camera,
+                width=self.renderer.width if frame_camera is not None else None,
+                height=self.renderer.height if frame_camera is not None else None,
             )
 
     def initialize_scene_from_pointcloud(self, splat_count: int, init_hparams: GaussianInitHyperParams, seed: int) -> None:
@@ -761,6 +814,7 @@ class GaussianTrainer:
         self.renderer.set_scene(scene)
         self._ensure_training_buffers(self._scene_count, 1)
         self._ensure_maintenance_buffers(self._scene_count)
+        self._maintenance_camera_signature = None
         self._scale_reg_reference = float(max(np.exp(np.median(scales[:, 0])), 1e-8))
         self._zero_optimizer_moments()
         self.state = TrainingState()
@@ -778,6 +832,7 @@ class GaussianTrainer:
         self.training.train_downscale_factor = self.effective_train_downscale_factor(self.state.step)
         self._ensure_training_buffers(self._scene_count, 1)
         self._ensure_maintenance_buffers(self._scene_count)
+        self._maintenance_camera_signature = None
         self._clear_clone_counts()
         self._ensure_train_target_texture()
         self._invalidate_downscaled_target()
@@ -851,7 +906,7 @@ class GaussianTrainer:
             target_texture = self.get_frame_target_texture(frame_index, native_resolution=False, encoder=enc)
             self._dispatch_training_forward(enc, frame_camera, background, target_texture, training_step)
             self._dispatch_training_backward(enc, frame_camera, background, target_texture, training_step)
-            self._dispatch_optimizer_step(enc, self.state.step + batch_index + 1)
+            self._dispatch_optimizer_step(enc, self.state.step + batch_index + 1, frame_camera)
             self._dispatch_cache_step_info(enc, batch_index)
         self.device.submit_command_buffer(enc.finish())
         self.device.wait()

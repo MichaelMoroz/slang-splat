@@ -70,6 +70,7 @@ _DEBUG_MODE_VALUES = (
     "processed_count",
     "clone_count",
     "ellipse_outlines",
+    "splat_density",
     "splat_spatial_density",
     "splat_screen_density",
     "depth_mean",
@@ -81,6 +82,7 @@ _DEBUG_MODE_LABELS = (
     "Processed Count",
     "Clone Count",
     "Ellipse Outlines",
+    "Splat Density",
     "Spatial Density",
     "Screen Density",
     "Depth Mean",
@@ -647,6 +649,7 @@ class ToolkitWindow:
         return {
             "processed_count": "Processed Count",
             "clone_count": "Clone Count",
+            "splat_density": "Splat Density",
             "splat_spatial_density": "Spatial Density",
             "splat_screen_density": "Screen Density",
             "depth_mean": "Depth Mean",
@@ -663,7 +666,7 @@ class ToolkitWindow:
             return f"{_grad_norm_tick_value(t, threshold):.1e}"
         if mode == "clone_count":
             return f"{_debug_range_tick_value(t, float(ui._values.get('debug_clone_count_min', 0.0)), float(ui._values.get('debug_clone_count_max', 16.0))):.3g}"
-        if mode in ("splat_spatial_density", "splat_screen_density"):
+        if mode in ("splat_density", "splat_spatial_density", "splat_screen_density"):
             return f"{_debug_range_tick_value(t, float(ui._values.get('debug_density_min', 0.0)), float(ui._values.get('debug_density_max', 20.0))):.3g}"
         if mode == "depth_mean":
             return f"{_debug_range_tick_value(t, float(ui._values.get('debug_depth_mean_min', 0.0)), float(ui._values.get('debug_depth_mean_max', 10.0))):.3g}"

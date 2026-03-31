@@ -1,7 +1,9 @@
 import "utility/losses/losses.slang";
+import "utility/math/camera.slang";
 import "utility/math/constants.slang";
 import "utility/math/numeric.slang";
 import "utility/math/quaternion.slang";
+import "utility/splatting/common.slang";
 import "utility/splatting/opacity.slang";
 import "utility/splatting/params.slang";
 
@@ -49,7 +51,7 @@ uniform uint g_LetterboxSourceHeight;
 uniform uint g_LetterboxOutputWidth;
 uniform uint g_LetterboxOutputHeight;
 
-uniform StructuredBuffer<float> g_SrcSplatParams;
+uniform RWStructuredBuffer<float> g_SrcSplatParams;
 uniform StructuredBuffer<float2> g_SrcAdamMoments;
 uniform RWStructuredBuffer<float> g_DstSplatParams;
 uniform RWStructuredBuffer<float2> g_DstAdamMoments;
@@ -57,12 +59,15 @@ uniform RWStructuredBuffer<float> g_AppendParams;
 uniform RWStructuredBuffer<uint> g_CloneCounts;
 uniform RWStructuredBuffer<uint> g_TotalCloneCounter;
 uniform RWStructuredBuffer<uint> g_AppendCounter;
+uniform StructuredBuffer<float4> g_MaintenanceCameraRows;
 uniform uint g_SrcSplatCount;
 uniform uint g_DstSplatCount;
 uniform uint g_AppendSplatCount;
 uniform uint g_SurvivorCount;
 uniform uint g_MaintenanceSeed;
+uniform uint g_MaintenanceCameraCount;
 uniform float g_MaintenanceAlphaCullThreshold;
+uniform float g_MaintenanceRadiusScale;
 
 groupshared float gsLoss[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
 groupshared float gsMSE[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
@@ -76,7 +81,9 @@ struct SplatState
     float4 colorAlpha;
 };
 
-SplatState load_splat_state(StructuredBuffer<float> params, uint splatCount, uint splatId)
+static const uint MAINTENANCE_CAMERA_ROW_COUNT = 6u;
+
+SplatState load_splat_state(RWStructuredBuffer<float> params, uint splatCount, uint splatId)
 {
     SplatState state;
     state.position = float3(
@@ -131,6 +138,43 @@ float2 load_adam_moment(StructuredBuffer<float2> moments, uint splatCount, uint 
 void store_adam_moment(RWStructuredBuffer<float2> moments, uint splatCount, uint paramId, uint splatId, float2 value)
 {
     moments[adam_moment_index(splatCount, paramId, splatId)] = value;
+}
+
+PinholeCamera maintenance_camera(uint cameraIndex)
+{
+    uint baseRow = cameraIndex * MAINTENANCE_CAMERA_ROW_COUNT;
+    float4 row0 = g_MaintenanceCameraRows[baseRow + 0u];
+    float4 row1 = g_MaintenanceCameraRows[baseRow + 1u];
+    float4 row2 = g_MaintenanceCameraRows[baseRow + 2u];
+    float4 row3 = g_MaintenanceCameraRows[baseRow + 3u];
+    float4 row4 = g_MaintenanceCameraRows[baseRow + 4u];
+    float4 row5 = g_MaintenanceCameraRows[baseRow + 5u];
+
+    CameraParams params;
+    params.viewport = row0.xy;
+    params.camPos = float3(row0.z, row0.w, row1.x);
+    params.camBasis = float3x3(
+        float3(row3.y, row3.z, row3.w),
+        float3(row4.x, row4.y, row4.z),
+        float3(row4.w, row5.x, row5.y)
+    );
+    params.focalPixels = row1.yz;
+    params.principalPoint = float2(row1.w, row2.x);
+    params.nearDepth = row2.y;
+    params.farDepth = row2.z;
+    params.projDistortionK1 = row2.w;
+    params.projDistortionK2 = row3.x;
+    return PinholeCamera.from_params(params);
+}
+
+float3 apply_support_radius_lower_bound(float3 logScale, float supportRadius)
+{
+    float currentMaxScale = max(exp(logScale.x), max(exp(logScale.y), exp(logScale.z)));
+    if (!(currentMaxScale > SMALL_VALUE) || !(supportRadius > SMALL_VALUE)) return logScale;
+
+    float currentSupportRadius = currentMaxScale * max(g_MaintenanceRadiusScale, SMALL_VALUE) * GAUSSIAN_SUPPORT_SIGMA_RADIUS;
+    if (currentSupportRadius >= supportRadius) return logScale;
+    return logScale + log(supportRadius / currentSupportRadius);
 }
 
 void copy_adam_state(uint srcSplatId, uint dstSplatId)
@@ -357,6 +401,33 @@ void csPrepareMaintenanceCounts(uint3 dispatchThreadID : SV_DispatchThreadID)
     InterlockedAdd(g_AppendCounter[0], 1u, _);
     uint cloneCount = g_CloneCounts[splatId];
     if (cloneCount > 0u) InterlockedAdd(g_TotalCloneCounter[0], cloneCount, _);
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void csClampMaintenanceMinScreenSize(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint splatId = dispatchThreadID.x;
+    if (splatId >= g_SrcSplatCount) return;
+    if (g_MaintenanceCameraCount == 0u) return;
+
+    SplatState source = load_splat_state(g_SrcSplatParams, g_SrcSplatCount, splatId);
+    float minVisibleSupportRadius = 0.0;
+    bool hasVisibleCamera = false;
+    [loop] for (uint cameraIndex = 0u; cameraIndex < g_MaintenanceCameraCount; cameraIndex++)
+    {
+        float supportRadius;
+        if (!world_support_radius_from_screen_circle(maintenance_camera(cameraIndex), source.position, MAINTENANCE_MIN_SCREEN_RADIUS_PX, supportRadius)) continue;
+        if (!hasVisibleCamera || supportRadius < minVisibleSupportRadius)
+        {
+            minVisibleSupportRadius = supportRadius;
+            hasVisibleCamera = true;
+        }
+    }
+    if (!hasVisibleCamera) return;
+
+    source.logScale = apply_support_radius_lower_bound(source.logScale, minVisibleSupportRadius);
+    store_splat_state(g_SrcSplatParams, g_SrcSplatCount, splatId, source);
 }
 
 [shader("compute")]

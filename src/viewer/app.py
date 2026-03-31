@@ -73,6 +73,7 @@ _DEBUG_MODE_VALUES = (
     GaussianRenderer.DEBUG_MODE_PROCESSED_COUNT,
     GaussianRenderer.DEBUG_MODE_CLONE_COUNT,
     GaussianRenderer.DEBUG_MODE_ELLIPSE_OUTLINES,
+    GaussianRenderer.DEBUG_MODE_SPLAT_DENSITY,
     GaussianRenderer.DEBUG_MODE_SPLAT_SPATIAL_DENSITY,
     GaussianRenderer.DEBUG_MODE_SPLAT_SCREEN_DENSITY,
     GaussianRenderer.DEBUG_MODE_DEPTH_MEAN,

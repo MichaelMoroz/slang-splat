@@ -62,8 +62,9 @@ Each trainer `step()` performs:
    - `csClipPackedParamGrads` clips gradients from a structured per-parameter settings buffer owned by the optimizer module.
    - `csComputePackedSplatGradNorms` can optionally reduce the packed gradient vector of each splat into one scalar `L2` norm for debug visualization.
    - `csAdamStepPacked` applies one-thread-per-packed-parameter ADAM using that same settings buffer plus a packed `float2` moments buffer.
-   - `csProjectGaussianParams` applies the remaining Gaussian-specific post-step projection (quaternion normalization and anisotropy clamp).
+  - `csProjectGaussianParams` applies the remaining Gaussian-specific post-step projection: quaternion normalization, anisotropy clamp, and a camera-aware upper screen-space size clamp derived from a single back-projected tangent sample on the 10%-of-viewport circle around the projected center.
 8. When the configured maintenance boundary is reached, run the maintenance pass:
+  - `csClampMaintenanceMinScreenSize` loops over all training cameras on GPU, ignores offscreen centers, finds the minimum visible 1-pixel support-radius bound, and raises undersized splats before rewrite,
   - cull splats with alpha below `maintenance_alpha_cull_threshold`,
   - split selected splats into `N + 1` family members from the accumulated clone counts,
   - rewrite the packed scene buffer into a compact destination buffer,

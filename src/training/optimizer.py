@@ -7,7 +7,7 @@ import numpy as np
 import slangpy as spy
 
 from ..common import SHADER_ROOT, debug_region, thread_count_1d
-from ..renderer import GaussianRenderer
+from ..renderer import Camera, GaussianRenderer
 from .schedule import resolve_learning_rate_scale
 
 
@@ -110,6 +110,7 @@ class GaussianOptimizer:
     def _vars(self, splat_count: int, training_hparams: Any, scale_reg_reference: float) -> dict[str, object]:
         return {
             "g_SplatCount": int(splat_count),
+            "g_RadiusScale": float(max(self.renderer.radius_scale, 1e-8)),
             "g_ScaleL2Weight": float(max(training_hparams.scale_l2_weight, 0.0)),
             "g_ScaleAbsRegWeight": float(max(training_hparams.scale_abs_reg_weight, 0.0)),
             "g_OpacityRegWeight": float(max(training_hparams.opacity_reg_weight, 0.0)),
@@ -168,13 +169,43 @@ class GaussianOptimizer:
         splat_count: int,
         training_hparams: Any,
         scale_reg_reference: float,
+        frame_camera: Camera | None = None,
+        width: int | None = None,
+        height: int | None = None,
     ) -> None:
         with debug_region(encoder, "Gaussian Param Projection", 71):
+            camera_vars: dict[str, object]
+            if frame_camera is None or width is None or height is None:
+                camera_vars = {
+                    "g_CurrentCamera": {
+                        "viewport": spy.float2(1.0, 1.0),
+                        "camPos": spy.float3(0.0, 0.0, 0.0),
+                        "camBasis": spy.float3x3(np.eye(3, dtype=np.float32)),
+                        "focalPixels": spy.float2(1.0, 1.0),
+                        "principalPoint": spy.float2(0.0, 0.0),
+                        "nearDepth": 0.0,
+                        "farDepth": 0.0,
+                        "projDistortionK1": 0.0,
+                        "projDistortionK2": 0.0,
+                    },
+                    "g_EnableCurrentCameraScreenScaleCap": np.uint32(0),
+                }
+            else:
+                k1, k2 = frame_camera.distortion_coeffs()
+                camera_vars = {
+                    "g_CurrentCamera": {
+                        **frame_camera.gpu_params(int(width), int(height)),
+                        "projDistortionK1": float(k1),
+                        "projDistortionK2": float(k2),
+                    },
+                    "g_EnableCurrentCameraScreenScaleCap": np.uint32(1),
+                }
             self._kernels["project_params"].dispatch(
                 thread_count=self._threads(splat_count),
                 vars={
                     "g_ParamGrads": work_buffers["param_grads"],
                     "g_SplatParamsRW": scene_buffers["splat_params"],
+                    **camera_vars,
                     **self._vars(splat_count, training_hparams, scale_reg_reference),
                 },
                 command_encoder=encoder,

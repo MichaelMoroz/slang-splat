@@ -108,6 +108,7 @@ class GaussianRenderer:
     DEBUG_MODE_DEPTH_MEAN = "depth_mean"
     DEBUG_MODE_DEPTH_STD = "depth_std"
     DEBUG_MODE_ELLIPSE_OUTLINES = "ellipse_outlines"
+    DEBUG_MODE_SPLAT_DENSITY = "splat_density"
     DEBUG_MODE_SPLAT_SPATIAL_DENSITY = "splat_spatial_density"
     DEBUG_MODE_SPLAT_SCREEN_DENSITY = "splat_screen_density"
     DEBUG_MODE_GRAD_NORM = "grad_norm"
@@ -121,6 +122,7 @@ class GaussianRenderer:
         DEBUG_MODE_SPLAT_SPATIAL_DENSITY,
         DEBUG_MODE_SPLAT_SCREEN_DENSITY,
         DEBUG_MODE_GRAD_NORM,
+        DEBUG_MODE_SPLAT_DENSITY,
     )
     CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT = "float"
     CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED = "fixed"

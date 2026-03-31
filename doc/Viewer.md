@@ -66,6 +66,7 @@ The loss-debug controls expose a runtime `Abs Diff Scale` slider when `View = Ab
 - The shader computes `abs(rendered - target) * scale` in linear RGB.
 - `scale = 1.0` shows the raw absolute color difference.
 - Higher values amplify subtle differences without changing the rendered or target views.
+- Density debug views share the same range controls. `Splat Density` accumulates a soft per-pixel splat count using `sqrt(transmittance) * alpha / opacity`, while `Spatial Density` and `Screen Density` continue to normalize by 3D volume and projected ellipse area respectively.
 
 ## Histogram Window
 
