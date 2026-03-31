@@ -260,6 +260,8 @@ GROUP_SPECS = {
         ControlSpec("scale_abs_reg", "input_float", "Scale Abs Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
         ControlSpec("opacity_reg", "input_float", "Opacity Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
         ControlSpec("depth_ratio_weight", "input_float", "Depth Ratio Reg", {"value": 0.05, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
+        ControlSpec("density_regularizer", "input_float", "Density Reg", {"value": 0.05, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
+        ControlSpec("max_allowed_density", "input_float", "Max Density", {"value": 5.0, "step": 1e-3, "step_fast": 1e-2, "format": "%.8f"}),
         ControlSpec("max_anisotropy", "input_float", "Max Anisotropy", {"value": 32.0, "step": 0.1, "step_fast": 0.5, "format": "%.6f"}),
         ControlSpec("grad_clip", "input_float", "Grad Clip", {"value": 10.0, "step": 0.1, "step_fast": 1.0, "format": "%.4f"}),
         ControlSpec("grad_norm_clip", "input_float", "Grad Norm Clip", {"value": 10.0, "step": 0.1, "step_fast": 1.0, "format": "%.4f"}),
@@ -311,6 +313,12 @@ DEBUG_RENDER_SPECS = (
 _ALL_DEFAULTS = {spec.key: spec.kwargs["value"] for group in GROUP_SPECS.values() for spec in group if "value" in spec.kwargs}
 _ALL_DEFAULTS.update({spec.key: spec.kwargs["value"] for spec in RENDER_PARAM_SPECS if "value" in spec.kwargs})
 _ALL_DEFAULTS.update({spec.key: spec.kwargs["value"] for spec in DEBUG_RENDER_SPECS if "value" in spec.kwargs})
+
+_OPTIMIZER_TAB_KEYS = {
+    "Learning Rates": ("lr_base", "lr_schedule_enabled", "lr_schedule_start_lr", "lr_schedule_end_lr", "lr_schedule_steps", "lr_pos_mul", "lr_scale_mul", "lr_rot_mul", "lr_color_mul", "lr_opacity_mul"),
+    "Adam": ("beta1", "beta2"),
+    "Regularization": ("scale_l2", "scale_abs_reg", "opacity_reg", "depth_ratio_weight", "density_regularizer", "max_allowed_density", "max_anisotropy", "grad_clip", "grad_norm_clip", "max_update"),
+}
 
 
 class _ControlProxy:
@@ -1144,11 +1152,12 @@ class ToolkitWindow:
         loss_text = ui._texts.get("training_loss", "Loss Avg: n/a")
         mse_text = ui._texts.get("training_mse", "MSE: n/a")
         depth_ratio_text = ui._texts.get("training_depth_ratio", "Depth Ratio Avg: n/a")
+        density_text = ui._texts.get("training_density", "Density Avg: n/a")
         psnr_text = ui._texts.get("training_psnr", "PSNR: n/a")
         if imgui.begin_table("##train_info", 2, imgui.TableFlags_.sizing_stretch_same.value):
             imgui.table_setup_column("L", imgui.TableColumnFlags_.width_fixed.value, 50)
             imgui.table_setup_column("V")
-            for label, text in (("Step", training_text), ("Time", time_text), ("Avg", avg_iters_text), ("Loss", loss_text), ("MSE", mse_text), ("Depth", depth_ratio_text), ("PSNR", psnr_text)):
+            for label, text in (("Step", training_text), ("Time", time_text), ("Avg", avg_iters_text), ("Loss", loss_text), ("MSE", mse_text), ("Depth", depth_ratio_text), ("Density", density_text), ("PSNR", psnr_text)):
                 imgui.table_next_row()
                 imgui.table_next_column()
                 imgui.text_disabled(label)
@@ -1248,17 +1257,17 @@ class ToolkitWindow:
         if imgui.begin_tab_bar("##optim_tabs"):
             if imgui.begin_tab_item("Learning Rates")[0]:
                 imgui.spacing()
-                for key in ("lr_base", "lr_schedule_enabled", "lr_schedule_start_lr", "lr_schedule_end_lr", "lr_schedule_steps", "lr_pos_mul", "lr_scale_mul", "lr_rot_mul", "lr_color_mul", "lr_opacity_mul"):
+                for key in _OPTIMIZER_TAB_KEYS["Learning Rates"]:
                     self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Optimizer"] if spec.key == key))
                 imgui.end_tab_item()
             if imgui.begin_tab_item("Adam")[0]:
                 imgui.spacing()
-                for key in ("beta1", "beta2"):
+                for key in _OPTIMIZER_TAB_KEYS["Adam"]:
                     self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Optimizer"] if spec.key == key))
                 imgui.end_tab_item()
             if imgui.begin_tab_item("Regularization")[0]:
                 imgui.spacing()
-                for key in ("scale_l2", "scale_abs_reg", "opacity_reg", "depth_ratio_weight", "max_anisotropy", "grad_clip", "grad_norm_clip", "max_update"):
+                for key in _OPTIMIZER_TAB_KEYS["Regularization"]:
                     self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Optimizer"] if spec.key == key))
                 imgui.end_tab_item()
             imgui.end_tab_bar()
@@ -1435,6 +1444,8 @@ class ToolkitWindow:
         "maintenance_growth_start_step": "Keep densification growth at zero until this training iteration, then use the configured maintenance growth",
         "maintenance_alpha_cull_threshold": "Cull splats below this decoded alpha threshold during maintenance",
         "depth_ratio_weight": "Starting weight for rendered per-pixel depth std/mean regularization; it decays to zero over the LR schedule span",
+        "density_regularizer": "Weight applied to the per-pixel hinge penalty max(density - max_allowed_density, 0)",
+        "max_allowed_density": "Per-pixel density threshold above which the density regularizer activates",
         "lr_schedule_enabled": "Enable cosine scheduling of the base learning rate",
         "lr_schedule_start_lr": "Base learning rate at step 0 of the schedule",
         "lr_schedule_end_lr": "Base learning rate after the cosine schedule ends",
@@ -1597,7 +1608,7 @@ def build_ui(renderer) -> ViewerUI:
     texts: dict[str, str] = {
         key: "" for key in (
             "fps", "path", "scene_stats", "render_stats", "training",
-            "training_time", "training_iters_avg", "training_loss", "training_mse", "training_depth_ratio", "training_psnr", "training_instability", "error",
+            "training_time", "training_iters_avg", "training_loss", "training_mse", "training_depth_ratio", "training_density", "training_psnr", "training_instability", "error",
             "loss_debug_view", "loss_debug_frame",
             "colmap_import_status", "colmap_import_current",
             "training_resolution", "training_downscale", "training_schedule", "training_maintenance",

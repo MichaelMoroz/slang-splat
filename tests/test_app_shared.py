@@ -66,6 +66,8 @@ def test_build_training_params_clamps_ranges():
     assert params.training.scale_l2_weight == 0.0
     assert params.training.scale_abs_reg_weight == 0.0
     assert params.training.opacity_reg_weight == 0.0
+    assert params.training.density_regularizer == 0.05
+    assert params.training.max_allowed_density == 5.0
     assert params.training.max_gaussians == 0
 
 
@@ -76,6 +78,8 @@ def test_default_training_params_match_fixed_count_defaults():
     assert params.training.scale_abs_reg_weight == 0.01
     assert params.training.opacity_reg_weight == 0.01
     assert params.training.depth_ratio_weight == 0.05
+    assert params.training.density_regularizer == 0.05
+    assert params.training.max_allowed_density == 5.0
     assert params.training.maintenance_growth_ratio == 0.02
     assert params.training.maintenance_growth_start_step == 2000
     assert params.training.maintenance_alpha_cull_threshold == 1e-2

@@ -62,7 +62,9 @@ uniform StructuredBuffer<float4> g_OutputGrad;
 uniform RWStructuredBuffer<float4> g_TrainingForwardState;
 uniform RWStructuredBuffer<float4> g_TrainingDepthState;
 uniform RWStructuredBuffer<float> g_TrainingDepthRatio;
+uniform RWStructuredBuffer<float> g_TrainingDensity;
 uniform StructuredBuffer<float> g_TrainingDepthRatioGrad;
+uniform StructuredBuffer<float> g_TrainingDensityGrad;
 uniform RWStructuredBuffer<uint> g_TrainingProcessedEnd;
 uniform RWStructuredBuffer<uint> g_TrainingBatchEnd;
 

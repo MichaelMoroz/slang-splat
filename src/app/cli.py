@@ -90,6 +90,9 @@ def _training_params(args: argparse.Namespace):
         scale_l2_weight=args.scale_l2,
         scale_abs_reg_weight=args.scale_abs_reg,
         opacity_reg_weight=args.opacity_reg,
+        depth_ratio_weight=args.depth_ratio_weight,
+        density_regularizer=args.density_reg,
+        max_allowed_density=args.max_allowed_density,
         max_gaussians=args.max_gaussians,
     )
 
@@ -219,6 +222,9 @@ TRAIN_RENDER_ARGS = tuple(
         ("--scale-l2", 0.0),
         ("--scale-abs-reg", 0.01),
         ("--opacity-reg", 0.01),
+        ("--depth-ratio-weight", 0.05),
+        ("--density-reg", 0.05),
+        ("--max-allowed-density", 5.0),
         ("--max-anisotropy", 32.0),
     )
 )

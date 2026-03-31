@@ -329,7 +329,7 @@ def test_split_loss_forward_backward_separates_metrics_from_output_grads(device,
     device.submit_command_buffer(enc.finish())
     device.wait()
 
-    loss, mse, depth_ratio_loss = trainer._read_loss_metrics()
+    loss, mse, depth_ratio_loss, density_loss = trainer._read_loss_metrics()
     grads_after_forward = _read_output_grads(renderer).copy()
 
     enc = device.create_command_encoder()
@@ -338,10 +338,11 @@ def test_split_loss_forward_backward_separates_metrics_from_output_grads(device,
     device.wait()
 
     grads_after_backward = _read_output_grads(renderer)
-    np.testing.assert_allclose(trainer._read_loss_metrics(), (loss, mse, depth_ratio_loss), rtol=0.0, atol=0.0)
+    np.testing.assert_allclose(trainer._read_loss_metrics(), (loss, mse, depth_ratio_loss, density_loss), rtol=0.0, atol=0.0)
     assert np.isfinite(loss)
     assert np.isfinite(mse)
     assert depth_ratio_loss == 0.0
+    assert density_loss == 0.0
     assert np.allclose(grads_after_forward, 0.0)
     assert np.any(np.abs(grads_after_backward[..., :3]) > 0.0)
     assert np.all(np.isfinite(grads_after_backward))
@@ -474,6 +475,8 @@ def test_loss_vars_use_scheduled_depth_ratio_weight(device, tmp_path: Path) -> N
     np.testing.assert_allclose(trainer._loss_vars(0)["g_DepthRatioWeight"], 0.05, rtol=0.0, atol=1e-10)
     np.testing.assert_allclose(trainer._loss_vars(1)["g_DepthRatioWeight"], resolve_depth_ratio_weight(training, 1), rtol=0.0, atol=1e-10)
     np.testing.assert_allclose(trainer._loss_vars(2)["g_DepthRatioWeight"], 0.0, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(trainer._loss_vars(0)["g_DensityRegularizer"], 0.05, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(trainer._loss_vars(0)["g_MaxAllowedDensity"], 5.0, rtol=0.0, atol=1e-10)
 
 
 def test_maintenance_cadence_and_clone_probability_follow_growth_budget() -> None:
@@ -576,12 +579,15 @@ def test_depth_ratio_loss_slot_disabled_by_default(device, tmp_path: Path) -> No
     device.submit_command_buffer(enc.finish())
     device.wait()
 
-    total, mse, depth_ratio_loss = trainer._read_loss_metrics()
+    total, mse, depth_ratio_loss, density_loss = trainer._read_loss_metrics()
     depth_ratio_grad = buffer_to_numpy(renderer.work_buffers["training_depth_ratio_grad"], np.float32)[: renderer.width * renderer.height]
+    density_grad = buffer_to_numpy(renderer.work_buffers["training_density_grad"], np.float32)[: renderer.width * renderer.height]
     assert np.isfinite(total)
     assert np.isfinite(mse)
     assert depth_ratio_loss == 0.0
+    assert density_loss == 0.0
     assert np.allclose(depth_ratio_grad, 0.0)
+    assert np.allclose(density_grad, 0.0)
 
 
 def test_depth_ratio_loss_contributes_and_changes_gradients(device, tmp_path: Path) -> None:
@@ -589,8 +595,8 @@ def test_depth_ratio_loss_contributes_and_changes_gradients(device, tmp_path: Pa
     frame = _make_frame(tmp_path, image_name="depth_ratio_enabled_target.png", image_id=15)
     renderer_off = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
     renderer_on = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
-    trainer_off = GaussianTrainer(device=device, renderer=renderer_off, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(depth_ratio_weight=0.0), seed=123)
-    trainer_on = GaussianTrainer(device=device, renderer=renderer_on, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(depth_ratio_weight=0.5), seed=123)
+    trainer_off = GaussianTrainer(device=device, renderer=renderer_off, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(depth_ratio_weight=0.0, density_regularizer=0.0), seed=123)
+    trainer_on = GaussianTrainer(device=device, renderer=renderer_on, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(depth_ratio_weight=0.5, density_regularizer=0.5, max_allowed_density=0.0), seed=123)
     camera = frame.make_camera(near=0.1, far=20.0)
     background = np.asarray(trainer_on.training.background, dtype=np.float32)
 
@@ -606,14 +612,53 @@ def test_depth_ratio_loss_contributes_and_changes_gradients(device, tmp_path: Pa
         device.wait()
         return trainer._read_loss_metrics(), _read_grad_groups(renderer, scene.count)
 
-    (total_off, mse_off, depth_off), grads_off = run_pass(trainer_off, renderer_off)
-    (total_on, mse_on, depth_on), grads_on = run_pass(trainer_on, renderer_on)
+    (total_off, mse_off, depth_off, density_off), grads_off = run_pass(trainer_off, renderer_off)
+    (total_on, mse_on, depth_on, density_on), grads_on = run_pass(trainer_on, renderer_on)
 
     assert np.isfinite(total_off)
     assert np.isfinite(total_on)
     np.testing.assert_allclose(mse_on, mse_off, rtol=1e-5, atol=1e-7)
     assert depth_off == 0.0
     assert depth_on > 0.0
+    assert density_off == 0.0
+    assert density_on > 0.0
+    assert total_on >= total_off - 1e-7
+    grad_delta = sum(float(np.max(np.abs(grads_on[name] - grads_off[name]))) for name in grads_on)
+    assert grad_delta > 0.0
+
+
+def test_density_loss_respects_threshold_and_changes_gradients(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=8, seed=89)
+    frame = _make_frame(tmp_path, image_name="density_enabled_target.png", image_id=16)
+    renderer_off = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
+    renderer_on = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
+    trainer_off = GaussianTrainer(device=device, renderer=renderer_off, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(density_regularizer=0.0, depth_ratio_weight=0.0), seed=123)
+    trainer_on = GaussianTrainer(device=device, renderer=renderer_on, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(density_regularizer=0.5, max_allowed_density=0.0, depth_ratio_weight=0.0), seed=123)
+    camera = frame.make_camera(near=0.1, far=20.0)
+    background = np.asarray(trainer_on.training.background, dtype=np.float32)
+
+    def run_pass(trainer: GaussianTrainer, renderer: GaussianRenderer):
+        renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
+        enc = device.create_command_encoder()
+        trainer._dispatch_raster_training_forward(enc, camera, background)
+        target_texture = trainer.get_frame_target_texture(0, native_resolution=False, encoder=enc)
+        trainer._dispatch_loss_forward(enc, target_texture)
+        trainer._dispatch_loss_backward(enc, target_texture)
+        trainer._dispatch_raster_backward(enc, camera, background)
+        device.submit_command_buffer(enc.finish())
+        device.wait()
+        return trainer._read_loss_metrics(), _read_grad_groups(renderer, scene.count)
+
+    (total_off, mse_off, depth_off, density_off), grads_off = run_pass(trainer_off, renderer_off)
+    (total_on, mse_on, depth_on, density_on), grads_on = run_pass(trainer_on, renderer_on)
+
+    assert np.isfinite(total_off)
+    assert np.isfinite(total_on)
+    np.testing.assert_allclose(mse_on, mse_off, rtol=1e-5, atol=1e-7)
+    assert depth_off == 0.0
+    assert depth_on == 0.0
+    assert density_off == 0.0
+    assert density_on > 0.0
     assert total_on >= total_off - 1e-7
     grad_delta = sum(float(np.max(np.abs(grads_on[name] - grads_off[name]))) for name in grads_on)
     assert grad_delta > 0.0

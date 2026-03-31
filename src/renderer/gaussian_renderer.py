@@ -585,7 +585,9 @@ class GaussianRenderer:
             "training_forward_state": max(self.width * self.height, 1) * self._F32X4_BYTES,
             "training_depth_state": max(self.width * self.height, 1) * self._F32X4_BYTES,
             "training_depth_ratio": max(self.width * self.height, 1) * self._U32_BYTES,
+            "training_density": max(self.width * self.height, 1) * self._U32_BYTES,
             "training_depth_ratio_grad": max(self.width * self.height, 1) * self._U32_BYTES,
+            "training_density_grad": max(self.width * self.height, 1) * self._U32_BYTES,
             "training_processed_end": max(self.width * self.height, 1) * self._U32_BYTES,
             "training_batch_end": max(self.tile_count, 1) * self._U32_BYTES,
             "raster_cache": max(self._work_splat_capacity, 1) * self._RASTER_CACHE_PARAM_COUNT * self._U32_BYTES,
@@ -623,7 +625,9 @@ class GaussianRenderer:
                 "training_forward_state",
                 "training_depth_state",
                 "training_depth_ratio",
+                "training_density",
                 "training_depth_ratio_grad",
+                "training_density_grad",
                 "training_processed_end",
                 "training_batch_end",
                 "raster_cache",
@@ -1003,6 +1007,7 @@ class GaussianRenderer:
             "g_TrainingForwardState": self._work_buffers["training_forward_state"],
             "g_TrainingDepthState": self._work_buffers["training_depth_state"],
             "g_TrainingDepthRatio": self._work_buffers["training_depth_ratio"],
+            "g_TrainingDensity": self._work_buffers["training_density"],
             "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"],
             "g_TrainingBatchEnd": self._work_buffers["training_batch_end"],
             **self._raster_grad_decode_scale_var(1.0),
@@ -1022,11 +1027,14 @@ class GaussianRenderer:
             )
         self._dispatch(self._raster_grad_shader_set().training_forward, encoder, self._raster_thread_count(), vars, "Rasterize Training Forward", 26)
 
-    def _rasterize_backward(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output_grad: spy.Buffer, depth_ratio_grad: spy.Buffer | None = None) -> None:
+    def _rasterize_backward(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output_grad: spy.Buffer, depth_ratio_grad: spy.Buffer | None = None, density_grad: spy.Buffer | None = None) -> None:
         resolved_depth_ratio_grad = self._work_buffers["training_depth_ratio_grad"] if depth_ratio_grad is None else depth_ratio_grad
+        resolved_density_grad = self._work_buffers["training_density_grad"] if density_grad is None else density_grad
         if depth_ratio_grad is None:
             self._clear_float_buffer(encoder, resolved_depth_ratio_grad, max(self.width * self.height, 1))
-        self._dispatch(self._raster_grad_shader_set().backward, encoder, self._raster_thread_count(), {**self._scene_vars(), **self._raster_cache_vars(), "g_SortedValues": self._sorted_values(), "g_TileRanges": self._work_buffers["tile_ranges"], "g_OutputGrad": output_grad, "g_TrainingForwardState": self._work_buffers["training_forward_state"], "g_TrainingDepthState": self._work_buffers["training_depth_state"], "g_TrainingDepthRatioGrad": resolved_depth_ratio_grad, "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"], "g_TrainingBatchEnd": self._work_buffers["training_batch_end"], **self._raster_grad_vars(), **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_range_vars(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._anisotropy_uniforms(), **self._camera_uniforms(camera)}, "Rasterize Backward", 27)
+        if density_grad is None:
+            self._clear_float_buffer(encoder, resolved_density_grad, max(self.width * self.height, 1))
+        self._dispatch(self._raster_grad_shader_set().backward, encoder, self._raster_thread_count(), {**self._scene_vars(), **self._raster_cache_vars(), "g_SortedValues": self._sorted_values(), "g_TileRanges": self._work_buffers["tile_ranges"], "g_OutputGrad": output_grad, "g_TrainingForwardState": self._work_buffers["training_forward_state"], "g_TrainingDepthState": self._work_buffers["training_depth_state"], "g_TrainingDepthRatioGrad": resolved_depth_ratio_grad, "g_TrainingDensityGrad": resolved_density_grad, "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"], "g_TrainingBatchEnd": self._work_buffers["training_batch_end"], **self._raster_grad_vars(), **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_range_vars(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._anisotropy_uniforms(), **self._camera_uniforms(camera)}, "Rasterize Backward", 27)
 
     def _backprop_cached_raster_grads(self, encoder: spy.CommandEncoder, splat_count: int, camera: Camera, grad_scale: float = 1.0) -> None:
         self._dispatch(self._raster_grad_shader_set().backprop, encoder, spy.uint3(max(int(splat_count), 1), 1, 1), {**self._scene_vars(), **self._raster_cache_vars(), **self._raster_grad_vars(), **self._raster_grad_decode_scale_var(grad_scale), **self._raster_grad_fixed_range_vars(), **self._prepass_uniforms(splat_count), **self._anisotropy_uniforms(), **self._camera_uniforms(camera)}, "Backprop Cached Raster Grads", 28)
@@ -1411,9 +1419,9 @@ class GaussianRenderer:
         self._require_scene()
         self._rasterize_training_forward(encoder, camera, background, output, clone_counts_buffer, clone_select_probability, clone_seed)
 
-    def rasterize_backward_current_scene(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output_grad: spy.Buffer, grad_scale: float = 1.0, depth_ratio_grad: spy.Buffer | None = None) -> None:
+    def rasterize_backward_current_scene(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output_grad: spy.Buffer, grad_scale: float = 1.0, depth_ratio_grad: spy.Buffer | None = None, density_grad: spy.Buffer | None = None) -> None:
         self._require_scene()
-        self._rasterize_backward(encoder, camera, background, output_grad, depth_ratio_grad)
+        self._rasterize_backward(encoder, camera, background, output_grad, depth_ratio_grad, density_grad)
         self._backprop_cached_raster_grads(encoder, self._scene_count, camera, grad_scale)
 
     def rasterize_forward_backward_current_scene(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output_grad: spy.Buffer, grad_scale: float = 1.0) -> None:

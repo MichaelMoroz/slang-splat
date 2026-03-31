@@ -49,6 +49,8 @@ _TRAINING_PARAM_KEYS = {
     "scale_abs_reg_weight": "scale_abs_reg",
     "opacity_reg_weight": "opacity_reg",
     "depth_ratio_weight": "depth_ratio_weight",
+    "density_regularizer": "density_regularizer",
+    "max_allowed_density": "max_allowed_density",
     "max_gaussians": "max_gaussians",
     "lr_schedule_enabled": "lr_schedule_enabled",
     "lr_schedule_start_lr": "lr_schedule_start_lr",
