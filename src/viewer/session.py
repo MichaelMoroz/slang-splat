@@ -17,10 +17,12 @@ from ..scene import (
     build_training_frames_from_root,
     initialize_scene_from_colmap_diffused_points,
     initialize_scene_from_colmap_points,
+    initialize_scene_from_points_colors,
     load_colmap_reconstruction,
     load_gaussian_ply,
     resolve_colmap_init_hparams,
     sample_colmap_diffused_points,
+    transform_colmap_reconstruction_pca,
 )
 from ..scene._internal.colmap_ops import point_nn_scales, resolve_training_frame_image_size
 from ..training import GaussianTrainer, resolve_effective_train_downscale_factor, resolve_training_resolution
@@ -36,6 +38,12 @@ _COLMAP_IMAGE_DOWNSCALE_SCALE = "scale"
 _COLMAP_DB_SAMPLE_LIMIT = 64
 _COLMAP_DB_SEARCH_PATTERNS = ("database.db", "*.db", "*.sqlite", "*.sqlite3")
 _COLMAP_IMPORT_IMAGES_PER_TICK = 1
+
+
+def _load_aligned_colmap_reconstruction(colmap_root: Path):
+    recon = load_colmap_reconstruction(Path(colmap_root).resolve())
+    aligned_recon, _ = transform_colmap_reconstruction_pca(recon)
+    return aligned_recon
 
 
 def _clear(viewer: object, *attrs: str) -> None:
@@ -303,6 +311,14 @@ def _pointcloud_init_hparams(recon: object, max_gaussians: int, init_hparams: ob
     return replace(resolved, base_scale=float(max(float(nn_radius_scale_coef), 1e-4) * max(median_nn_scale, 1e-6)))
 
 
+def _pointcloud_init_hparams_from_positions(recon: object, positions: np.ndarray, max_gaussians: int, init_hparams: object, nn_radius_scale_coef: float):
+    resolved = resolve_colmap_init_hparams(recon, max_gaussians, init_hparams)
+    chosen_count = positions.shape[0] if max_gaussians <= 0 else min(max(int(max_gaussians), 1), positions.shape[0])
+    chosen_positions = np.ascontiguousarray(positions[:chosen_count], dtype=np.float32)
+    median_nn_scale = float(np.median(point_nn_scales(chosen_positions))) if chosen_count > 0 else 1.0
+    return replace(resolved, base_scale=float(max(float(nn_radius_scale_coef), 1e-4) * max(median_nn_scale, 1e-6)))
+
+
 def _diffused_pointcloud_init_hparams(
     recon: object,
     point_count: int,
@@ -315,6 +331,76 @@ def _diffused_pointcloud_init_hparams(
     positions, _ = sample_colmap_diffused_points(recon, point_count, diffusion_radius, seed)
     median_nn_scale = float(np.median(point_nn_scales(np.ascontiguousarray(positions, dtype=np.float32)))) if positions.shape[0] > 0 else 1.0
     return replace(resolved, base_scale=float(max(float(nn_radius_scale_coef), 1e-4) * max(median_nn_scale, 1e-6)))
+
+
+def _diffused_pointcloud_init_hparams_from_positions(recon: object, positions: np.ndarray, init_hparams: object, nn_radius_scale_coef: float):
+    resolved = resolve_colmap_init_hparams(recon, int(positions.shape[0]), init_hparams)
+    chosen_positions = np.ascontiguousarray(positions, dtype=np.float32)
+    median_nn_scale = float(np.median(point_nn_scales(chosen_positions))) if chosen_positions.shape[0] > 0 else 1.0
+    return replace(resolved, base_scale=float(max(float(nn_radius_scale_coef), 1e-4) * max(median_nn_scale, 1e-6)))
+
+
+def _copy_gaussian_scene(scene: GaussianScene) -> GaussianScene:
+    return GaussianScene(
+        positions=np.array(scene.positions, dtype=np.float32, copy=True),
+        scales=np.array(scene.scales, dtype=np.float32, copy=True),
+        rotations=np.array(scene.rotations, dtype=np.float32, copy=True),
+        opacities=np.array(scene.opacities, dtype=np.float32, copy=True),
+        colors=np.array(scene.colors, dtype=np.float32, copy=True),
+        sh_coeffs=np.array(scene.sh_coeffs, dtype=np.float32, copy=True),
+    )
+
+
+def _clear_cached_init_source(viewer: object) -> None:
+    setattr(viewer.s, "cached_init_point_positions", None)
+    setattr(viewer.s, "cached_init_point_colors", None)
+    setattr(viewer.s, "cached_init_scene", None)
+    setattr(viewer.s, "cached_init_signature", None)
+
+
+def _cached_init_signature(viewer: object, init: object) -> tuple[object, ...] | None:
+    import_cfg = getattr(viewer.s, "colmap_import", None)
+    if import_cfg is None:
+        return None
+    return (
+        None if viewer.s.colmap_root is None else str(Path(viewer.s.colmap_root).resolve()),
+        str(import_cfg.init_mode),
+        None if import_cfg.custom_ply_path is None else str(Path(import_cfg.custom_ply_path).resolve()),
+        int(import_cfg.diffused_point_count),
+        round(float(import_cfg.diffusion_radius), 6),
+        int(init.seed),
+    )
+
+
+def _ensure_cached_init_source(viewer: object, init: object) -> None:
+    if viewer.s.colmap_recon is None:
+        return
+    import_cfg = viewer.s.colmap_import
+    signature = _cached_init_signature(viewer, init)
+    cached_signature = getattr(viewer.s, "cached_init_signature", None)
+    cached_scene = getattr(viewer.s, "cached_init_scene", None)
+    cached_positions = getattr(viewer.s, "cached_init_point_positions", None)
+    cached_colors = getattr(viewer.s, "cached_init_point_colors", None)
+    if signature is not None and cached_signature == signature:
+        if str(import_cfg.init_mode) == _COLMAP_IMPORT_CUSTOM_PLY:
+            if cached_scene is not None:
+                return
+        elif cached_positions is not None and cached_colors is not None:
+            return
+    _clear_cached_init_source(viewer)
+    if import_cfg.init_mode == _COLMAP_IMPORT_CUSTOM_PLY:
+        if import_cfg.custom_ply_path is None:
+            raise RuntimeError("Custom PLY initialization requires a selected PLY file.")
+        setattr(viewer.s, "cached_init_scene", _copy_gaussian_scene(load_gaussian_ply(import_cfg.custom_ply_path)))
+    elif import_cfg.init_mode == _COLMAP_IMPORT_DIFFUSED_POINTCLOUD:
+        positions, colors = sample_colmap_diffused_points(viewer.s.colmap_recon, import_cfg.diffused_point_count, import_cfg.diffusion_radius, init.seed)
+        setattr(viewer.s, "cached_init_point_positions", np.array(positions, dtype=np.float32, copy=True))
+        setattr(viewer.s, "cached_init_point_colors", np.array(colors, dtype=np.float32, copy=True))
+    else:
+        positions, colors = _point_tables(viewer.s.colmap_recon)
+        setattr(viewer.s, "cached_init_point_positions", np.array(positions, dtype=np.float32, copy=True))
+        setattr(viewer.s, "cached_init_point_colors", np.array(colors, dtype=np.float32, copy=True))
+    setattr(viewer.s, "cached_init_signature", signature)
 
 
 def _invalidate(viewer: object, *targets: str) -> None:
@@ -343,8 +429,7 @@ def _reset_training_visual_state(viewer: object) -> None:
     viewer.s.cached_raster_grad_histogram_status = ""
 
 
-def _reset_loaded_runtime(viewer: object) -> None:
-    viewer.s.colmap_import_progress = None
+def _reset_training_runtime(viewer: object) -> None:
     viewer.s.scene_init_signature = None
     viewer.s.training_active = False
     viewer.s.training_elapsed_s = 0.0
@@ -352,10 +437,6 @@ def _reset_loaded_runtime(viewer: object) -> None:
     viewer.s.trainer = None
     if viewer.s.renderer is not None:
         viewer.s.renderer.set_debug_grad_norm_buffer(None)
-    viewer.s.colmap_point_positions_buffer = viewer.s.colmap_point_colors_buffer = None
-    viewer.s.colmap_point_count = 0
-    viewer.s.suggested_init_hparams = viewer.s.suggested_init_count = None
-    viewer.s.applied_renderer_params_main = None
     viewer.s.applied_renderer_params_training = None
     viewer.s.applied_renderer_params_debug = None
     viewer.s.applied_training_signature = None
@@ -363,16 +444,22 @@ def _reset_loaded_runtime(viewer: object) -> None:
     viewer.s.cached_training_setup_signature = None
     viewer.s.cached_training_setup = None
     viewer.s.pending_training_runtime_resize = False
-    viewer.s.cached_raster_grad_histograms = None
-    viewer.s.cached_raster_grad_ranges = None
-    viewer.s.cached_raster_grad_histogram_mode = ""
-    viewer.s.cached_raster_grad_histogram_step = -1
-    viewer.s.cached_raster_grad_histogram_scene_count = -1
-    viewer.s.cached_raster_grad_histogram_signature = None
-    viewer.s.cached_raster_grad_histogram_status = ""
-    update_debug_frame_slider_range(viewer)
+    _reset_training_visual_state(viewer)
     _reset_loss_debug(viewer)
     _clear(viewer, "training_renderer")
+
+
+def _reset_loaded_runtime(viewer: object) -> None:
+    viewer.s.colmap_import_progress = None
+    _reset_training_runtime(viewer)
+    viewer.s.colmap_point_positions_buffer = viewer.s.colmap_point_colors_buffer = None
+    viewer.s.colmap_point_count = 0
+    _clear_cached_init_source(viewer)
+    viewer.s.suggested_init_hparams = viewer.s.suggested_init_count = None
+    viewer.s.applied_renderer_params_main = None
+    viewer.s.cached_training_setup_signature = None
+    viewer.s.cached_training_setup = None
+    update_debug_frame_slider_range(viewer)
 
 
 def _scene_signature(viewer: object):
@@ -506,6 +593,47 @@ def _resolve_training_setup_signature(viewer: object, init: object, params: obje
         None if viewer.s.colmap_root is None else str(viewer.s.colmap_root.resolve()),
         images_subdir,
     )
+
+
+def _refresh_training_frames(viewer: object) -> None:
+    if viewer.s.colmap_recon is None:
+        return
+    import_cfg = getattr(viewer.s, "colmap_import", None)
+    images_root = None if import_cfg is None else getattr(import_cfg, "images_root", None)
+    if images_root is None:
+        return
+    viewer.s.training_frames = build_training_frames_from_root(
+        viewer.s.colmap_recon,
+        Path(images_root).resolve(),
+        downscale_mode=str(getattr(import_cfg, "image_downscale_mode", _COLMAP_IMAGE_DOWNSCALE_ORIGINAL)),
+        downscale_target_width=int(getattr(import_cfg, "image_downscale_target_width", 2048)),
+        downscale_scale=float(getattr(import_cfg, "image_downscale_scale", 1.0)),
+    )
+
+
+def _build_initial_training_scene(viewer: object, init: object, params: object, init_hparams: object) -> tuple[GaussianScene, float | None]:
+    if viewer.s.colmap_recon is None:
+        raise RuntimeError("Training scene initialization requires a loaded COLMAP reconstruction.")
+    import_cfg = viewer.s.colmap_import
+    _ensure_cached_init_source(viewer, init)
+    if import_cfg.init_mode == _COLMAP_IMPORT_CUSTOM_PLY:
+        if viewer.s.cached_init_scene is None:
+            raise RuntimeError("Cached custom PLY scene is unavailable.")
+        return _copy_gaussian_scene(viewer.s.cached_init_scene), None
+
+    positions = getattr(viewer.s, "cached_init_point_positions", None)
+    colors = getattr(viewer.s, "cached_init_point_colors", None)
+    if positions is None or colors is None:
+        raise RuntimeError("Cached pointcloud initializer data is unavailable.")
+
+    if import_cfg.init_mode == _COLMAP_IMPORT_DIFFUSED_POINTCLOUD:
+        resolved_init = _diffused_pointcloud_init_hparams_from_positions(viewer.s.colmap_recon, positions, init_hparams, import_cfg.nn_radius_scale_coef)
+        return initialize_scene_from_points_colors(positions, colors, init.seed, resolved_init), float(max(resolved_init.base_scale, 1e-8))
+
+    resolved_init = _pointcloud_init_hparams_from_positions(viewer.s.colmap_recon, positions, params.training.max_gaussians, init_hparams, import_cfg.nn_radius_scale_coef)
+    chosen_count = positions.shape[0] if params.training.max_gaussians <= 0 else min(max(int(params.training.max_gaussians), 1), positions.shape[0])
+    scene = initialize_scene_from_points_colors(positions[:chosen_count], colors[:chosen_count], init.seed, resolved_init)
+    return scene, float(max(resolved_init.base_scale, 1e-8))
 
 
 def resolve_effective_training_setup(viewer: object):
@@ -684,7 +812,7 @@ def import_colmap_dataset(
     diffusion_radius: float,
 ) -> None:
     root = Path(colmap_root).resolve()
-    recon = load_colmap_reconstruction(root)
+    recon = _load_aligned_colmap_reconstruction(root)
     training_frames = build_training_frames_from_root(
         recon,
         images_root,
@@ -757,7 +885,7 @@ def advance_colmap_import(viewer: object) -> None:
         return
     try:
         if progress.phase == "prepare":
-            progress.recon = load_colmap_reconstruction(progress.colmap_root)
+            progress.recon = _load_aligned_colmap_reconstruction(progress.colmap_root)
             progress.image_items = sorted(progress.recon.images.items())
             progress.total = max(len(progress.image_items), 1)
             progress.current = 0
@@ -823,6 +951,11 @@ def advance_colmap_import(viewer: object) -> None:
 
 
 def initialize_training_scene(viewer: object, frame_targets_native: list[spy.Texture] | None = None) -> None:
+    if viewer.s.colmap_recon is None and viewer.s.colmap_root is None:
+        return
+    _reset_training_runtime(viewer)
+    if not viewer.s.training_frames:
+        _refresh_training_frames(viewer)
     if viewer.s.colmap_recon is None or not viewer.s.training_frames:
         return
     init, params, init_hparams, profile = resolve_effective_training_setup(viewer)
@@ -833,39 +966,7 @@ def initialize_training_scene(viewer: object, frame_targets_native: list[spy.Tex
         int(factor),
     )
     renderer = ensure_renderer(viewer, "training_renderer", width, height, allow_debug_overlays=False)
-    import_cfg = viewer.s.colmap_import
-    resolved_init = None
-    if import_cfg.init_mode == _COLMAP_IMPORT_CUSTOM_PLY:
-        if import_cfg.custom_ply_path is None:
-            raise RuntimeError("Custom PLY initialization requires a selected PLY file.")
-        scene = load_gaussian_ply(import_cfg.custom_ply_path)
-        scale_reg_reference = None
-    elif import_cfg.init_mode == _COLMAP_IMPORT_DIFFUSED_POINTCLOUD:
-        resolved_init = _diffused_pointcloud_init_hparams(
-            viewer.s.colmap_recon,
-            import_cfg.diffused_point_count,
-            import_cfg.diffusion_radius,
-            init.seed,
-            init_hparams,
-            import_cfg.nn_radius_scale_coef,
-        )
-        scene = initialize_scene_from_colmap_diffused_points(
-            recon=viewer.s.colmap_recon,
-            point_count=import_cfg.diffused_point_count,
-            diffusion_radius=import_cfg.diffusion_radius,
-            seed=init.seed,
-            init_hparams=resolved_init,
-        )
-        scale_reg_reference = float(max(resolved_init.base_scale, 1e-8))
-    else:
-        resolved_init = _pointcloud_init_hparams(viewer.s.colmap_recon, params.training.max_gaussians, init_hparams, import_cfg.nn_radius_scale_coef)
-        scene = initialize_scene_from_colmap_points(
-            recon=viewer.s.colmap_recon,
-            max_gaussians=params.training.max_gaussians,
-            seed=init.seed,
-            init_hparams=resolved_init,
-        )
-        scale_reg_reference = float(max(resolved_init.base_scale, 1e-8))
+    scene, scale_reg_reference = _build_initial_training_scene(viewer, init, params, init_hparams)
     apply_live_params(viewer)
     trainer_kwargs = dict(
         device=viewer.device,

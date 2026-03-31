@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import time
 
+import numpy as np
 import slangpy as spy
 
 from ..metrics import ParamLog10Histograms, ParamTensorRanges
@@ -95,13 +96,15 @@ class ViewerState:
     colmap_import: ColmapImportSettings = field(default_factory=ColmapImportSettings)
     colmap_import_progress: ColmapImportProgress | None = None
     colmap_point_positions_buffer: spy.Buffer | None = None; colmap_point_colors_buffer: spy.Buffer | None = None; colmap_point_count: int = 0
+    cached_init_point_positions: np.ndarray | None = None; cached_init_point_colors: np.ndarray | None = None
+    cached_init_scene: GaussianScene | None = None; cached_init_signature: tuple[object, ...] | None = None
     trainer: GaussianTrainer | None = None; training_active: bool = False; loss_debug_texture: spy.Texture | None = None
     debug_abs_diff_kernel: spy.ComputeKernel | None = None; debug_letterbox_kernel: spy.ComputeKernel | None = None; debug_present_texture: spy.Texture | None = None
     synced_step_main: int = -1; synced_step_debug: int = -1; scene_init_signature: tuple[object, ...] | None = None
     applied_renderer_params_main: tuple[object, ...] | None = None; applied_renderer_params_training: tuple[object, ...] | None = None; applied_renderer_params_debug: tuple[object, ...] | None = None
     applied_training_signature: tuple[object, ...] | None = None; applied_training_runtime_factor: int | None = None
     cached_training_setup_signature: tuple[object, ...] | None = None; cached_training_setup: tuple[object, object, object, object] | None = None
-    training_runtime_factor_changed: bool = False; pending_training_runtime_resize: bool = False
+    training_runtime_factor_changed: bool = False; pending_training_runtime_resize: bool = False; pending_training_reinitialize: bool = False
     last_training_batch_steps: int = 0
     training_elapsed_s: float = 0.0; training_resume_time: float | None = None
     suggested_init_hparams: GaussianInitHyperParams | None = None; suggested_init_count: int | None = None

@@ -298,7 +298,7 @@ def test_advance_colmap_import_processes_images_incrementally(tmp_path: Path, mo
         ),
     )
 
-    monkeypatch.setattr(session, "load_colmap_reconstruction", lambda root: recon)
+    monkeypatch.setattr(session, "_load_aligned_colmap_reconstruction", lambda root: recon)
     monkeypatch.setattr(session, "_create_native_dataset_texture", lambda viewer_obj, image_path, *, target_size=None: f"tex:{Path(image_path).name}")
 
     def _finish(viewer_obj, **kwargs) -> None:
@@ -346,7 +346,7 @@ def test_advance_colmap_import_applies_selected_image_downscale(tmp_path: Path, 
         ),
     )
 
-    monkeypatch.setattr(session, "load_colmap_reconstruction", lambda root: recon)
+    monkeypatch.setattr(session, "_load_aligned_colmap_reconstruction", lambda root: recon)
     monkeypatch.setattr(session, "_create_native_dataset_texture", lambda viewer_obj, image_path, *, target_size=None: calls.append((Path(image_path).name, target_size)) or "tex")
 
     def _finish(viewer_obj, **kwargs) -> None:
@@ -400,6 +400,45 @@ def test_finish_import_colmap_dataset_resets_toolkit_plot_history(monkeypatch) -
     )
 
     assert calls == ["reset", "fit"]
+
+
+def test_import_colmap_dataset_uses_aligned_reconstruction(monkeypatch) -> None:
+    aligned_recon = object()
+    frames = [SimpleNamespace(width=32, height=32, image_id=1)]
+    calls: list[object] = []
+    viewer = SimpleNamespace()
+
+    monkeypatch.setattr(session, "_load_aligned_colmap_reconstruction", lambda root: aligned_recon)
+    monkeypatch.setattr(
+        session,
+        "build_training_frames_from_root",
+        lambda recon, images_root, downscale_mode, downscale_target_width, downscale_scale: calls.append(("frames", recon, Path(images_root), downscale_mode, downscale_target_width, downscale_scale)) or frames,
+    )
+    monkeypatch.setattr(
+        session,
+        "_finish_import_colmap_dataset",
+        lambda viewer_obj, **kwargs: calls.append(("finish", kwargs["recon"], kwargs["training_frames"])),
+    )
+
+    session.import_colmap_dataset(
+        viewer,
+        colmap_root=Path("dataset/garden"),
+        database_path=None,
+        images_root=Path("dataset/garden/images_8"),
+        init_mode="pointcloud",
+        custom_ply_path=None,
+        image_downscale_mode="original",
+        image_downscale_target_width=2048,
+        image_downscale_scale=1.0,
+        nn_radius_scale_coef=0.5,
+        diffused_point_count=100000,
+        diffusion_radius=1.0,
+    )
+
+    assert calls == [
+        ("frames", aligned_recon, Path("dataset/garden/images_8"), "original", 2048, 1.0),
+        ("finish", aligned_recon, frames),
+    ]
 
 
 def test_colmap_import_settings_defaults_prefer_diffused_pointcloud() -> None:
@@ -501,6 +540,7 @@ def test_initialize_training_scene_rebinds_debug_buffers_for_new_trainer(monkeyp
             dst.copy_targets.append(self)
 
     training_renderer = _TrainingRenderer()
+    old_training_renderer = object()
     main_renderer = _ViewportRenderer()
     debug_renderer = _ViewportRenderer()
     new_trainer = SimpleNamespace(
@@ -531,7 +571,7 @@ def test_initialize_training_scene_rebinds_debug_buffers_for_new_trainer(monkeyp
             trainer=SimpleNamespace(maintenance_buffers={"clone_counts": "old-clone"}),
             renderer=main_renderer,
             debug_renderer=debug_renderer,
-            training_renderer=training_renderer,
+            training_renderer=old_training_renderer,
             training_active=True,
             training_elapsed_s=12.0,
             training_resume_time=3.0,
@@ -556,10 +596,14 @@ def test_initialize_training_scene_rebinds_debug_buffers_for_new_trainer(monkeyp
     monkeypatch.setattr(session, "resolve_effective_training_setup", lambda viewer_obj: (SimpleNamespace(seed=7), SimpleNamespace(training=SimpleNamespace(max_gaussians=8), adam=SimpleNamespace(tag="adam"), stability=SimpleNamespace(tag="stability")), SimpleNamespace(), SimpleNamespace(name="test")))
     monkeypatch.setattr(session, "resolve_effective_train_downscale_factor", lambda training, step: 1)
     monkeypatch.setattr(session, "resolve_training_resolution", lambda width, height, factor: (width, height))
-    monkeypatch.setattr(session, "ensure_renderer", lambda viewer_obj, attr, width, height, allow_debug_overlays: training_renderer)
-    monkeypatch.setattr(session, "_pointcloud_init_hparams", lambda recon, max_gaussians, init_hparams, nn_radius_scale_coef: SimpleNamespace(base_scale=0.25))
-    monkeypatch.setattr(session, "initialize_scene_from_colmap_points", lambda **kwargs: SimpleNamespace(count=8))
-    monkeypatch.setattr(session, "apply_live_params", lambda viewer_obj: None)
+    def _ensure_renderer(viewer_obj, attr, width, height, allow_debug_overlays):
+        del attr, width, height, allow_debug_overlays
+        calls.append(f"ensure_renderer_cleared={viewer_obj.s.training_renderer is None}")
+        viewer_obj.s.training_renderer = training_renderer
+        return training_renderer
+    monkeypatch.setattr(session, "ensure_renderer", _ensure_renderer)
+    monkeypatch.setattr(session, "_build_initial_training_scene", lambda viewer_obj, init, params, init_hparams: (SimpleNamespace(count=8), 0.25))
+    monkeypatch.setattr(session, "apply_live_params", lambda viewer_obj: calls.append(f"apply_live_params_trainer_is_none={viewer_obj.s.trainer is None}"))
     monkeypatch.setattr(session, "GaussianTrainer", lambda **kwargs: new_trainer)
     monkeypatch.setattr(session, "estimate_scene_bounds", lambda scene: scene)
     monkeypatch.setattr(session, "_renderer_params_signature", lambda params: (params.mode,))
@@ -572,7 +616,7 @@ def test_initialize_training_scene_rebinds_debug_buffers_for_new_trainer(monkeyp
     session.initialize_training_scene(viewer)
 
     assert viewer.s.trainer is new_trainer
-    assert calls == ["reset_plot_history"]
+    assert calls == ["reset_plot_history", "ensure_renderer_cleared=True", "apply_live_params_trainer_is_none=True", "reset_plot_history"]
     assert main_renderer.grad_buffer == "new-grad"
     assert main_renderer.clone_buffer == "new-clone"
     assert debug_renderer.grad_buffer == "new-grad"
@@ -584,3 +628,128 @@ def test_initialize_training_scene_rebinds_debug_buffers_for_new_trainer(monkeyp
     assert viewer.s.cached_raster_grad_histogram_scene_count == -1
     assert viewer.s.cached_raster_grad_histogram_signature is None
     assert viewer.s.cached_raster_grad_histogram_status == ""
+
+
+def test_initialize_training_scene_rebuilds_training_frames_from_colmap(monkeypatch) -> None:
+    frame = SimpleNamespace(width=48, height=24, image_id=9)
+    training_renderer = SimpleNamespace(copy_scene_state_to=lambda encoder, dst: None)
+    main_renderer = SimpleNamespace(set_debug_grad_norm_buffer=lambda buffer: None, set_debug_clone_count_buffer=lambda buffer: None)
+    debug_renderer = SimpleNamespace(set_debug_grad_norm_buffer=lambda buffer: None, set_debug_clone_count_buffer=lambda buffer: None)
+    new_trainer = SimpleNamespace(effective_train_downscale_factor=lambda step=0: 1, scene=SimpleNamespace(count=8), maintenance_buffers={})
+    built_scene = SimpleNamespace(count=8)
+    viewer = SimpleNamespace(
+        device=SimpleNamespace(create_command_encoder=lambda: SimpleNamespace(finish=lambda: "finished"), submit_command_buffer=lambda command_buffer: None),
+        renderer_params=lambda allow_debug_overlays: SimpleNamespace(mode="main"),
+        training_params=lambda: object(),
+        init_params=lambda: SimpleNamespace(seed=7),
+        apply_camera_fit=lambda bounds: None,
+        s=SimpleNamespace(
+            colmap_recon=object(),
+            training_frames=[frame],
+            colmap_import=SimpleNamespace(
+                images_root=Path("dataset/garden/images_8"),
+                image_downscale_mode="original",
+                image_downscale_target_width=2048,
+                image_downscale_scale=1.0,
+                init_mode="pointcloud",
+                custom_ply_path=None,
+                nn_radius_scale_coef=0.5,
+                diffused_point_count=100,
+                diffusion_radius=1.0,
+            ),
+            trainer=None,
+            renderer=main_renderer,
+            debug_renderer=debug_renderer,
+            training_renderer=None,
+            training_active=False,
+            training_elapsed_s=0.0,
+            training_resume_time=None,
+            scene=None,
+            scene_init_signature=None,
+            applied_renderer_params_training=None,
+            applied_training_signature=None,
+            applied_training_runtime_factor=None,
+            pending_training_runtime_resize=False,
+            cached_raster_grad_histograms=None,
+            cached_raster_grad_ranges=None,
+            cached_raster_grad_histogram_mode="",
+            cached_raster_grad_histogram_step=-1,
+            cached_raster_grad_histogram_scene_count=-1,
+            cached_raster_grad_histogram_signature=None,
+            cached_raster_grad_histogram_status="",
+            last_error="",
+            colmap_root=Path("dataset/garden"),
+        ),
+    )
+
+    monkeypatch.setattr(session, "_refresh_training_frames", lambda viewer_obj: (_ for _ in ()).throw(AssertionError("reinit should not rebuild frames when cached frames exist")))
+    monkeypatch.setattr(session, "resolve_effective_training_setup", lambda viewer_obj: (SimpleNamespace(seed=7), SimpleNamespace(training=SimpleNamespace(max_gaussians=8), adam=SimpleNamespace(), stability=SimpleNamespace()), SimpleNamespace(), SimpleNamespace(name="test")))
+    monkeypatch.setattr(session, "resolve_effective_train_downscale_factor", lambda training, step: 1)
+    monkeypatch.setattr(session, "resolve_training_resolution", lambda width, height, factor: (width, height))
+    monkeypatch.setattr(session, "ensure_renderer", lambda viewer_obj, attr, width, height, allow_debug_overlays: training_renderer)
+    monkeypatch.setattr(session, "_build_initial_training_scene", lambda viewer_obj, init, params, init_hparams: (built_scene, 0.25))
+    monkeypatch.setattr(session, "apply_live_params", lambda viewer_obj: None)
+    monkeypatch.setattr(session, "GaussianTrainer", lambda **kwargs: new_trainer)
+    monkeypatch.setattr(session, "estimate_scene_bounds", lambda loaded_scene: loaded_scene)
+    monkeypatch.setattr(session, "_renderer_params_signature", lambda params: (params.mode,))
+    monkeypatch.setattr(session, "_training_params_signature", lambda params: ("training",))
+    monkeypatch.setattr(session, "_scene_signature", lambda viewer_obj: ("scene",))
+    monkeypatch.setattr(session, "update_debug_frame_slider_range", lambda viewer_obj: None)
+    monkeypatch.setattr(session, "_reset_loss_debug", lambda viewer_obj: None)
+    monkeypatch.setattr(session, "_invalidate", lambda viewer_obj, *targets: None)
+
+    session.initialize_training_scene(viewer)
+
+    assert viewer.s.colmap_recon is not None
+    assert viewer.s.training_frames == [frame]
+
+
+def test_refresh_training_frames_uses_cached_reconstruction(monkeypatch) -> None:
+    recon = object()
+    frame = SimpleNamespace(width=24, height=12, image_id=3)
+    viewer = SimpleNamespace(
+        s=SimpleNamespace(
+            colmap_recon=recon,
+            colmap_root=Path("dataset/garden"),
+            training_frames=[],
+            colmap_import=SimpleNamespace(
+                images_root=Path("dataset/garden/images_8"),
+                image_downscale_mode="width",
+                image_downscale_target_width=1024,
+                image_downscale_scale=1.0,
+            ),
+        )
+    )
+
+    monkeypatch.setattr(session, "_load_aligned_colmap_reconstruction", lambda root: (_ for _ in ()).throw(AssertionError("should not reload reconstruction")))
+    monkeypatch.setattr(session, "build_training_frames_from_root", lambda recon_obj, images_root, downscale_mode, downscale_target_width, downscale_scale: [frame] if recon_obj is recon else (_ for _ in ()).throw(AssertionError("unexpected reconstruction instance")))
+
+    session._refresh_training_frames(viewer)
+
+    assert viewer.s.training_frames == [frame]
+
+
+def test_build_initial_training_scene_uses_cached_diffused_points(monkeypatch) -> None:
+    cached_positions = np.array([[1.0, 2.0, 3.0], [3.0, 2.0, 1.0]], dtype=np.float32)
+    cached_colors = np.array([[0.2, 0.3, 0.4], [0.4, 0.3, 0.2]], dtype=np.float32)
+    built_scene = SimpleNamespace(count=2)
+    viewer = SimpleNamespace(
+        s=SimpleNamespace(
+            colmap_recon=object(),
+            colmap_root=Path("dataset/garden"),
+            colmap_import=SimpleNamespace(init_mode="diffused_pointcloud", nn_radius_scale_coef=0.5),
+            cached_init_point_positions=cached_positions,
+            cached_init_point_colors=cached_colors,
+            cached_init_scene=None,
+            cached_init_signature=("cached",),
+        )
+    )
+
+    monkeypatch.setattr(session, "_ensure_cached_init_source", lambda viewer_obj, init: None)
+    monkeypatch.setattr(session, "_diffused_pointcloud_init_hparams_from_positions", lambda recon, positions, init_hparams, nn_radius_scale_coef: SimpleNamespace(base_scale=0.25) if np.array_equal(positions, cached_positions) else (_ for _ in ()).throw(AssertionError("cached positions not used")))
+    monkeypatch.setattr(session, "initialize_scene_from_points_colors", lambda positions, colors, seed, init_hparams: built_scene if np.array_equal(positions, cached_positions) and np.array_equal(colors, cached_colors) else (_ for _ in ()).throw(AssertionError("cached init data not forwarded")))
+
+    scene, scale_reg_reference = session._build_initial_training_scene(viewer, SimpleNamespace(seed=7), SimpleNamespace(training=SimpleNamespace(max_gaussians=8)), SimpleNamespace())
+
+    assert scene is built_scene
+    assert scale_reg_reference == 0.25

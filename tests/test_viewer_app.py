@@ -147,13 +147,22 @@ def test_render_records_toolkit_failure_without_raising() -> None:
     assert viewer.s.last_render_exception == "toolkit boom"
 
 
+def test_reinitialize_callback_defers_scene_rebuild_to_next_frame() -> None:
+    viewer = SimpleNamespace(s=SimpleNamespace(training_active=True, pending_training_reinitialize=False))
+
+    SplatViewer._reinitialize_callback(viewer)
+
+    assert viewer.s.training_active is False
+    assert viewer.s.pending_training_reinitialize is True
+
+
 def test_default_training_params_include_depth_ratio_weight() -> None:
     params = app.default_training_params()
 
     assert params.training.random_background is True
     assert params.training.depth_ratio_weight == 0.05
     assert params.training.density_regularizer == 0.05
-    assert params.training.max_allowed_density == 4.5
+    assert params.training.max_allowed_density == 12.0
     assert params.training.maintenance_growth_ratio == 0.02
     assert params.training.maintenance_growth_start_step == 2000
     assert params.training.maintenance_alpha_cull_threshold == 1e-2

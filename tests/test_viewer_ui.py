@@ -77,9 +77,10 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["maintenance_alpha_cull_threshold"] == 1e-2
     assert viewer_ui._values["depth_ratio_weight"] == 0.05
     assert viewer_ui._values["density_regularizer"] == 0.05
-    assert viewer_ui._values["max_allowed_density"] == 4.5
+    assert viewer_ui._values["max_allowed_density"] == 12.0
     assert viewer_ui._values["max_anisotropy"] == 32.0
     assert viewer_ui._values["max_gaussians"] == 2000000
+    assert viewer_ui._values["training_steps_per_frame"] == 3
     assert viewer_ui._values["colmap_init_mode"] == 1
     assert viewer_ui._values["colmap_image_downscale_mode"] == 0
     assert viewer_ui._values["colmap_image_target_width"] == 2048

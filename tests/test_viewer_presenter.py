@@ -50,7 +50,7 @@ class _DummyTrainer:
             maintenance_alpha_cull_threshold=1e-2,
             depth_ratio_weight=0.05,
             density_regularizer=0.05,
-            max_allowed_density=4.5,
+            max_allowed_density=12.0,
             max_gaussians=2000000,
         )
         self.step_calls = 0
@@ -101,7 +101,7 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         "loss_debug_view": _control(2),
         "loss_debug_abs_scale": _control(1.0),
         "images_subdir": _control(0),
-        "training_steps_per_frame": _control(1),
+        "training_steps_per_frame": _control(3),
         "train_downscale_factor": _control(1),
         "lr_schedule_enabled": _control(True),
         "lr_schedule_start_lr": _control(1e-3),
@@ -166,7 +166,7 @@ def test_render_frame_uses_debug_branch_when_visual_loss_debug_enabled(monkeypat
 
     presenter.render_frame(viewer, render_context)
 
-    assert viewer.s.trainer.step_calls == 1
+    assert viewer.s.trainer.step_calls == 3
     assert calls == ["apply", "debug", "ui"]
 
 
@@ -185,7 +185,7 @@ def test_render_frame_uses_main_branch_when_visual_loss_debug_disabled(monkeypat
 
     presenter.render_frame(viewer, render_context)
 
-    assert viewer.s.trainer.step_calls == 1
+    assert viewer.s.trainer.step_calls == 3
     assert calls == ["apply", "main", "ui"]
 
 
@@ -315,6 +315,26 @@ def test_render_frame_recovers_missing_main_renderer_by_recreating_it(monkeypatc
 
     assert viewer.s.renderer is replacement_renderer
     assert calls == ["apply", "import", ("resize", 640, 360), ("main", replacement_renderer), "ui"]
+
+
+def test_render_frame_consumes_pending_reinitialize_before_live_params(monkeypatch):
+    viewer = _viewer(loss_debug=False)
+    viewer.s.training_active = False
+    viewer.s.pending_training_reinitialize = True
+    render_context = SimpleNamespace(surface_texture=SimpleNamespace(width=640, height=360), command_encoder=_DummyEncoder())
+    calls: list[str] = []
+
+    monkeypatch.setattr(presenter.session, "initialize_training_scene", lambda viewer_obj: calls.append("init"))
+    monkeypatch.setattr(presenter.session, "apply_live_params", lambda viewer_obj: calls.append("apply"))
+    monkeypatch.setattr(presenter.session, "advance_colmap_import", lambda viewer_obj: calls.append("import"))
+    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, image, encoder: calls.append("main"))
+    monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
+
+    presenter.render_frame(viewer, render_context)
+
+    assert viewer.s.pending_training_reinitialize is False
+    assert viewer.s.trainer.step_calls == 0
+    assert calls == ["init", "apply", "import", "main", "ui"]
 
 
 def test_update_ui_text_uses_permutation_averages() -> None:

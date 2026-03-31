@@ -15,7 +15,7 @@ _DEBUG_TEXTURE_USAGE = spy.TextureUsage.shader_resource | spy.TextureUsage.unord
 _DEBUG_ABS_DIFF_SCALE_DEFAULT = 1.0
 _DEBUG_ABS_DIFF_SCALE_MIN = 0.125
 _DEBUG_ABS_DIFF_SCALE_MAX = 64.0
-_DEFAULT_TRAINING_STEPS_PER_FRAME = 1
+_DEFAULT_TRAINING_STEPS_PER_FRAME = 3
 _MAX_TRAINING_STEPS_PER_FRAME = 8
 _TRAIN_DOWNSCALE_MODE_AUTO = 0
 
@@ -314,6 +314,9 @@ def render_frame(viewer: object, render_context: spy.AppWindow.RenderContext) ->
     iw, ih = int(image.width), int(image.height)
     try:
         viewer.update_camera(dt)
+        if bool(getattr(viewer.s, "pending_training_reinitialize", False)):
+            viewer.s.pending_training_reinitialize = False
+            session.initialize_training_scene(viewer)
         session.apply_live_params(viewer)
         session.advance_colmap_import(viewer)
         if bool(getattr(viewer.s, "pending_training_runtime_resize", False)):

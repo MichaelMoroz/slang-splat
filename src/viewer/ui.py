@@ -229,7 +229,7 @@ GROUP_SPECS = {
     ),
     "Train Setup": (
         ControlSpec("max_gaussians", "slider_int", "Max Gaussians", {"value": 2000000, "min": 1000, "max": 10000000}),
-        ControlSpec("training_steps_per_frame", "slider_int", "Steps / Frame", {"value": 1, "min": 1, "max": 8}),
+        ControlSpec("training_steps_per_frame", "slider_int", "Steps / Frame", {"value": 3, "min": 1, "max": 8}),
         ControlSpec("random_background", "checkbox", "Random Train Background", {"value": True}),
         ControlSpec("maintenance_interval", "input_int", "Maintenance Interval", {"value": 200, "step": 10, "step_fast": 50}),
         ControlSpec("maintenance_growth_ratio", "input_float", "Maintenance Growth", {"value": 0.02, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
@@ -261,7 +261,7 @@ GROUP_SPECS = {
         ControlSpec("opacity_reg", "input_float", "Opacity Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
         ControlSpec("depth_ratio_weight", "input_float", "Depth Ratio Reg", {"value": 0.05, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
         ControlSpec("density_regularizer", "input_float", "Density Reg", {"value": 0.05, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
-        ControlSpec("max_allowed_density", "input_float", "Max Density", {"value": 4.5, "step": 1e-3, "step_fast": 1e-2, "format": "%.8f"}),
+        ControlSpec("max_allowed_density", "input_float", "Max Density", {"value": 12.0, "step": 1e-3, "step_fast": 1e-2, "format": "%.8f"}),
         ControlSpec("max_anisotropy", "input_float", "Max Anisotropy", {"value": 32.0, "step": 0.1, "step_fast": 0.5, "format": "%.6f"}),
         ControlSpec("grad_clip", "input_float", "Grad Clip", {"value": 10.0, "step": 0.1, "step_fast": 1.0, "format": "%.4f"}),
         ControlSpec("grad_norm_clip", "input_float", "Grad Norm Clip", {"value": 10.0, "step": 0.1, "step_fast": 1.0, "format": "%.4f"}),

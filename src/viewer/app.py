@@ -313,7 +313,8 @@ class SplatViewer(spy.AppWindow):
             )
 
     def _reinitialize_callback(self) -> None:
-        session.initialize_training_scene(self)
+        self.s.training_active = False
+        self.s.pending_training_reinitialize = True
 
     def _start_training_callback(self) -> None:
         session.set_training_active(self, True)
