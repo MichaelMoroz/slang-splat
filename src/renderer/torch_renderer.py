@@ -259,12 +259,12 @@ def _validate_tensor_device(name: str, value: Any, torch_device: Any) -> None:
 
 def _pack_public_splats(splats: Any):
     torch_mod = _require_torch()
-    alpha = torch_mod.clamp(splats[:, 13], GaussianRenderer._OPACITY_EPS, 1.0 - GaussianRenderer._OPACITY_EPS)
+    alpha = torch_mod.clamp(splats[:, GaussianRenderer.PARAM_RAW_OPACITY_ID], GaussianRenderer._OPACITY_EPS, 1.0 - GaussianRenderer._OPACITY_EPS)
     groups = (
         splats[:, 0:3].transpose(0, 1),
         splats[:, 3:6].transpose(0, 1),
         splats[:, 6:10].transpose(0, 1),
-        splats[:, 10:13].transpose(0, 1),
+        splats[:, 10:22].transpose(0, 1),
         torch_mod.logit(alpha).unsqueeze(0),
     )
     return torch_mod.cat(groups, dim=0).reshape(-1).contiguous(), alpha
@@ -274,7 +274,7 @@ def _unpack_public_grads(packed_grads: Any, alpha: Any):
     torch_mod = _require_torch()
     param_major = packed_grads.reshape(_TORCH_RENDER_PARAM_COUNT, -1)
     public = param_major.transpose(0, 1).contiguous()
-    public[:, 13] = public[:, 13] * torch_mod.reciprocal(alpha * (1.0 - alpha))
+    public[:, GaussianRenderer.PARAM_RAW_OPACITY_ID] = public[:, GaussianRenderer.PARAM_RAW_OPACITY_ID] * torch_mod.reciprocal(alpha * (1.0 - alpha))
     return public
 
 

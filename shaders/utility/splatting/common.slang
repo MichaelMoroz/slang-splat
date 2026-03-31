@@ -14,6 +14,48 @@ static const uint DEBUG_MODE_SPLAT_SPATIAL_DENSITY = 6u;
 static const uint DEBUG_MODE_SPLAT_SCREEN_DENSITY = 7u;
 static const uint DEBUG_MODE_GRAD_NORM = 8u;
 static const uint DEBUG_MODE_SPLAT_DENSITY = 9u;
+static const float SH_C0 = 0.28209479177387814;
+static const float SH_C1 = 0.4886025119029199;
+
+[Differentiable]
+float3 normalize_vector_safe(float3 value)
+{
+    return value * rsqrt(max(dot(value, value), SMALL_VALUE));
+}
+
+[Differentiable]
+float4 sh0_sh1_basis(float3 viewDir)
+{
+    float3 dir = normalize_vector_safe(viewDir);
+    return float4(SH_C0, -SH_C1 * dir.y, SH_C1 * dir.z, -SH_C1 * dir.x);
+}
+
+[Differentiable]
+float3 evaluate_sh0_color_raw(float3 sh0)
+{
+    return 0.5 + SH_C0 * sh0;
+}
+
+[Differentiable]
+float3 evaluate_sh0_sh1_raw(float3 sh0, float3 sh1X, float3 sh1Y, float3 sh1Z, float3 viewDir)
+{
+    float4 basis = sh0_sh1_basis(viewDir);
+    return 0.5 + basis.x * sh0 + basis.y * sh1X + basis.z * sh1Y + basis.w * sh1Z;
+}
+
+float3 evaluate_sh0_sh1_color(float3 sh0, float3 sh1X, float3 sh1Y, float3 sh1Z, float3 viewDir)
+{
+    return saturate(evaluate_sh0_sh1_raw(sh0, sh1X, sh1Y, sh1Z, viewDir));
+}
+
+[Differentiable]
+float3 evaluate_gaussian_color(float3 sh0, float3 sh1X, float3 sh1Y, float3 sh1Z, no_diff float3 cameraPosition, float3 position, no_diff uint useSH)
+{
+    float3 rawColor = useSH != 0u
+        ? evaluate_sh0_sh1_raw(sh0, sh1X, sh1Y, sh1Z, cameraPosition - position)
+        : evaluate_sh0_color_raw(sh0);
+    return saturate(rawColor);
+}
 
 struct ScanlineWorkItem
 {
@@ -70,6 +112,7 @@ struct RasterParams
     float transmittanceThreshold;
     float3 background;
     uint debugMode;
+    uint useSH;
     float debugGradNormThreshold;
     float debugEllipseThicknessPx;
     float2 debugCloneCountRange;
@@ -99,7 +142,11 @@ struct Gaussian3D : IDifferentiable
     float3 position;
     float3 logScale;
     float4 rotation;
-    float4 colorAlpha;
+    float3 sh0;
+    float3 sh1X;
+    float3 sh1Y;
+    float3 sh1Z;
+    float rawOpacity;
 };
 
 struct Ellipsoid : IDifferentiable

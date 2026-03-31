@@ -12,7 +12,7 @@ from .schedule import resolve_learning_rate_scale
 
 
 class GaussianOptimizer:
-    _GROUPS = ((0, 3), (3, 3), (6, 4), (10, 4))
+    _GROUPS = ((0, 3), (3, 3), (6, 4), (10, 12), (22, 1))
     _PARAM_SETTINGS_U32_WIDTH = 8
     _RO_BUFFER_USAGE = spy.BufferUsage.shader_resource | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
     _threads = staticmethod(thread_count_1d)
@@ -61,14 +61,12 @@ class GaussianOptimizer:
     def _value_min_for_param(self, param_id: int) -> float:
         if param_id in self.renderer.PARAM_POSITION_IDS: return -float(self.stability.position_abs_max)
         if param_id in self.renderer.PARAM_SCALE_IDS: return float(np.log(max(self.stability.min_scale, 1e-8)))
-        if param_id in self.renderer.PARAM_COLOR_IDS: return 0.0
         if param_id == self.renderer.PARAM_RAW_OPACITY_ID: return self._raw_opacity_from_alpha(float(self.stability.min_opacity))
         return -float(self.stability.huge_value)
 
     def _value_max_for_param(self, param_id: int) -> float:
         if param_id in self.renderer.PARAM_POSITION_IDS: return float(self.stability.position_abs_max)
         if param_id in self.renderer.PARAM_SCALE_IDS: return float(np.log(max(self.stability.max_scale, 1e-8)))
-        if param_id in self.renderer.PARAM_COLOR_IDS: return 1.0
         if param_id == self.renderer.PARAM_RAW_OPACITY_ID: return self._raw_opacity_from_alpha(float(self.stability.max_opacity))
         return float(self.stability.huge_value)
 
@@ -113,6 +111,7 @@ class GaussianOptimizer:
             "g_RadiusScale": float(max(self.renderer.radius_scale, 1e-8)),
             "g_ScaleL2Weight": float(max(training_hparams.scale_l2_weight, 0.0)),
             "g_ScaleAbsRegWeight": float(max(training_hparams.scale_abs_reg_weight, 0.0)),
+            "g_SH1RegWeight": float(max(training_hparams.sh1_reg_weight, 0.0)),
             "g_OpacityRegWeight": float(max(training_hparams.opacity_reg_weight, 0.0)),
             "g_ScaleRegReference": float(max(scale_reg_reference, 1e-8)),
             "g_Stability": {

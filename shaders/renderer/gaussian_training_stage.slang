@@ -84,7 +84,11 @@ struct SplatState
     float3 position;
     float3 logScale;
     float4 rotation;
-    float4 colorAlpha;
+    float3 sh0;
+    float3 sh1X;
+    float3 sh1Y;
+    float3 sh1Z;
+    float rawOpacity;
 };
 
 static const uint MAINTENANCE_CAMERA_ROW_COUNT = 6u;
@@ -110,11 +114,23 @@ SplatState load_splat_state(RWStructuredBuffer<float> params, uint splatCount, u
         load_splat_param(params, splatCount, PARAM_ROTATION_Y, splatId),
         load_splat_param(params, splatCount, PARAM_ROTATION_Z, splatId),
         load_splat_param(params, splatCount, PARAM_ROTATION_W, splatId)));
-    state.colorAlpha = float4(
-        load_splat_param(params, splatCount, PARAM_COLOR_R, splatId),
-        load_splat_param(params, splatCount, PARAM_COLOR_G, splatId),
-        load_splat_param(params, splatCount, PARAM_COLOR_B, splatId),
-        load_splat_param(params, splatCount, PARAM_RAW_OPACITY, splatId));
+    state.sh0 = float3(
+        load_splat_param(params, splatCount, PARAM_SH0_R, splatId),
+        load_splat_param(params, splatCount, PARAM_SH0_G, splatId),
+        load_splat_param(params, splatCount, PARAM_SH0_B, splatId));
+    state.sh1X = float3(
+        load_splat_param(params, splatCount, PARAM_SH1_X_R, splatId),
+        load_splat_param(params, splatCount, PARAM_SH1_X_G, splatId),
+        load_splat_param(params, splatCount, PARAM_SH1_X_B, splatId));
+    state.sh1Y = float3(
+        load_splat_param(params, splatCount, PARAM_SH1_Y_R, splatId),
+        load_splat_param(params, splatCount, PARAM_SH1_Y_G, splatId),
+        load_splat_param(params, splatCount, PARAM_SH1_Y_B, splatId));
+    state.sh1Z = float3(
+        load_splat_param(params, splatCount, PARAM_SH1_Z_R, splatId),
+        load_splat_param(params, splatCount, PARAM_SH1_Z_G, splatId),
+        load_splat_param(params, splatCount, PARAM_SH1_Z_B, splatId));
+    state.rawOpacity = load_splat_param(params, splatCount, PARAM_RAW_OPACITY, splatId);
     return state;
 }
 
@@ -130,10 +146,19 @@ void store_splat_state(RWStructuredBuffer<float> params, uint splatCount, uint s
     store_splat_param(params, splatCount, PARAM_ROTATION_Y, splatId, state.rotation.y);
     store_splat_param(params, splatCount, PARAM_ROTATION_Z, splatId, state.rotation.z);
     store_splat_param(params, splatCount, PARAM_ROTATION_W, splatId, state.rotation.w);
-    store_splat_param(params, splatCount, PARAM_COLOR_R, splatId, state.colorAlpha.x);
-    store_splat_param(params, splatCount, PARAM_COLOR_G, splatId, state.colorAlpha.y);
-    store_splat_param(params, splatCount, PARAM_COLOR_B, splatId, state.colorAlpha.z);
-    store_splat_param(params, splatCount, PARAM_RAW_OPACITY, splatId, state.colorAlpha.w);
+    store_splat_param(params, splatCount, PARAM_SH0_R, splatId, state.sh0.x);
+    store_splat_param(params, splatCount, PARAM_SH0_G, splatId, state.sh0.y);
+    store_splat_param(params, splatCount, PARAM_SH0_B, splatId, state.sh0.z);
+    store_splat_param(params, splatCount, PARAM_SH1_X_R, splatId, state.sh1X.x);
+    store_splat_param(params, splatCount, PARAM_SH1_X_G, splatId, state.sh1X.y);
+    store_splat_param(params, splatCount, PARAM_SH1_X_B, splatId, state.sh1X.z);
+    store_splat_param(params, splatCount, PARAM_SH1_Y_R, splatId, state.sh1Y.x);
+    store_splat_param(params, splatCount, PARAM_SH1_Y_G, splatId, state.sh1Y.y);
+    store_splat_param(params, splatCount, PARAM_SH1_Y_B, splatId, state.sh1Y.z);
+    store_splat_param(params, splatCount, PARAM_SH1_Z_R, splatId, state.sh1Z.x);
+    store_splat_param(params, splatCount, PARAM_SH1_Z_G, splatId, state.sh1Z.y);
+    store_splat_param(params, splatCount, PARAM_SH1_Z_B, splatId, state.sh1Z.z);
+    store_splat_param(params, splatCount, PARAM_RAW_OPACITY, splatId, state.rawOpacity);
 }
 
 uint adam_moment_index(uint splatCount, uint paramId, uint splatId)
@@ -223,7 +248,7 @@ SplatState split_family_member(SplatState source, uint splatId, uint slot, uint 
     float shrink = log(family) / 3.0;
     float3 parentScale = exp(source.logScale);
     float3 childScale = exp(source.logScale - shrink);
-    float alpha = opacity_from_raw(source.colorAlpha.w);
+    float alpha = opacity_from_raw(source.rawOpacity);
     float childAlpha = 1.0 - pow(max(1.0 - alpha, TINY_VALUE), 1.0 / family);
     float4 qInv = float4(source.rotation.x, -source.rotation.y, -source.rotation.z, -source.rotation.w);
     float3 axis = largest_scale_axis(parentScale);
@@ -231,7 +256,7 @@ SplatState split_family_member(SplatState source, uint splatId, uint slot, uint 
     SplatState child = source;
     child.position = source.position + rotate_by_quat(localOffset, qInv);
     child.logScale = source.logScale - shrink;
-    child.colorAlpha.w = raw_opacity_from_alpha(childAlpha);
+    child.rawOpacity = raw_opacity_from_alpha(childAlpha);
     return child;
 }
 
@@ -471,7 +496,7 @@ void csRewriteMaintenanceSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (splatId >= g_SrcSplatCount) return;
 
     SplatState source = load_splat_state(g_SrcSplatParams, g_SrcSplatCount, splatId);
-    float alpha = opacity_from_raw(source.colorAlpha.w);
+    float alpha = opacity_from_raw(source.rawOpacity);
     if (should_cull_maintenance_splat(alpha, g_SplatContribution[splatId])) return;
 
     uint cloneCount = g_CloneCounts[splatId];

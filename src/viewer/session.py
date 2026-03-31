@@ -652,6 +652,7 @@ def resolve_effective_training_setup(viewer: object):
 
 def apply_live_params(viewer: object, force_init_defaults: bool = False) -> None:
     del force_init_defaults
+    use_sh = bool(viewer.training_params().training.use_sh)
     renderer_specs = (
         ("renderer", True, "applied_renderer_params_main"),
         ("training_renderer", False, "applied_renderer_params_training"),
@@ -662,6 +663,7 @@ def apply_live_params(viewer: object, force_init_defaults: bool = False) -> None
         if renderer is None:
             setattr(viewer.s, state_attr, None)
             continue
+        renderer.use_sh = use_sh
         params = viewer.renderer_params(allow_debug)
         signature = _renderer_params_signature(params)
         if getattr(viewer.s, state_attr) == signature:

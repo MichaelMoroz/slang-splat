@@ -25,6 +25,7 @@ from src.scene import (
     build_training_frames,
     initialize_scene_from_colmap_points,
     load_colmap_reconstruction,
+    resolve_supported_sh_coeffs,
     resolve_colmap_init_hparams,
 )
 
@@ -212,11 +213,12 @@ class IterationRateTracker:
 
 def scene_to_torch_params(scene: GaussianScene, device: Any) -> dict[str, Any]:
     torch_mod = _require_torch()
+    sh_coeffs = resolve_supported_sh_coeffs(scene.sh_coeffs, scene.colors)
     return {
         "positions": torch_mod.nn.Parameter(torch_mod.as_tensor(scene.positions, dtype=torch_mod.float32, device=device)),
         "log_scales": torch_mod.nn.Parameter(torch_mod.as_tensor(scene.scales, dtype=torch_mod.float32, device=device)),
         "rotations": torch_mod.nn.Parameter(torch_mod.as_tensor(scene.rotations, dtype=torch_mod.float32, device=device)),
-        "colors": torch_mod.nn.Parameter(torch_mod.as_tensor(scene.colors, dtype=torch_mod.float32, device=device)),
+        "sh_coeffs": torch_mod.nn.Parameter(torch_mod.as_tensor(sh_coeffs, dtype=torch_mod.float32, device=device)),
         "alpha": torch_mod.nn.Parameter(torch_mod.as_tensor(scene.opacities[:, None], dtype=torch_mod.float32, device=device)),
     }
 
@@ -228,7 +230,7 @@ def pack_torch_splats(params_dict: dict[str, Any]) -> Any:
             params_dict["positions"],
             params_dict["log_scales"],
             params_dict["rotations"],
-            params_dict["colors"],
+            params_dict["sh_coeffs"].reshape(params_dict["sh_coeffs"].shape[0], -1),
             params_dict["alpha"],
         ),
         dim=1,
@@ -313,7 +315,6 @@ def project_scene_params_(params_dict: dict[str, Any]) -> None:
         normalized = torch_mod.where(safe_mask, rotations / torch_mod.clamp(norms, min=1e-12), torch_mod.zeros_like(rotations))
         normalized[~safe_mask.squeeze(1), 0] = 1.0
         params_dict["rotations"].copy_(normalized)
-        params_dict["colors"].clamp_(0.0, 1.0)
         params_dict["alpha"].clamp_(_MIN_ALPHA, _MAX_ALPHA)
         params_dict["log_scales"].clamp_(math.log(_MIN_SCALE), math.log(_MAX_SCALE))
 
@@ -400,7 +401,7 @@ def _optimizer_for_params(params_dict: dict[str, Any], config: TorchGardenTrainC
             {"params": [params_dict["positions"]], "lr": config.position_lr},
             {"params": [params_dict["log_scales"]], "lr": config.scale_lr},
             {"params": [params_dict["rotations"]], "lr": config.rotation_lr},
-            {"params": [params_dict["colors"]], "lr": config.color_lr},
+            {"params": [params_dict["sh_coeffs"]], "lr": config.color_lr},
             {"params": [params_dict["alpha"]], "lr": config.alpha_lr},
         ]
     )
@@ -458,7 +459,7 @@ def _save_checkpoint(
             "positions": params_dict["positions"].detach().cpu(),
             "log_scales": params_dict["log_scales"].detach().cpu(),
             "rotations": params_dict["rotations"].detach().cpu(),
-            "colors": params_dict["colors"].detach().cpu(),
+            "sh_coeffs": params_dict["sh_coeffs"].detach().cpu(),
             "alpha": params_dict["alpha"].detach().cpu(),
             "history": history,
         },

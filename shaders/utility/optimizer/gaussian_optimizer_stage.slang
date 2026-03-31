@@ -30,6 +30,7 @@ uniform uint g_EnableCurrentCameraScreenScaleCap;
 uniform float g_RadiusScale;
 uniform float g_ScaleL2Weight;
 uniform float g_ScaleAbsRegWeight;
+uniform float g_SH1RegWeight;
 uniform float g_OpacityRegWeight;
 uniform float g_ScaleRegReference;
 
@@ -42,7 +43,11 @@ struct TrainableGaussianState
     float3 position;
     float3 logScale;
     float4 rotation;
-    float4 colorAlpha;
+    float3 sh0;
+    float3 sh1X;
+    float3 sh1Y;
+    float3 sh1Z;
+    float rawOpacity;
 
     static TrainableGaussianState load(uint splatId)
     {
@@ -63,12 +68,27 @@ struct TrainableGaussianState
             load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_ROTATION_Z, splatId),
             load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_ROTATION_W, splatId)
         );
-        state.colorAlpha = float4(
-            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_COLOR_R, splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_COLOR_G, splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_COLOR_B, splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_RAW_OPACITY, splatId)
+        state.sh0 = float3(
+            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH0_R, splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH0_G, splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH0_B, splatId)
         );
+        state.sh1X = float3(
+            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_X_R, splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_X_G, splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_X_B, splatId)
+        );
+        state.sh1Y = float3(
+            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_Y_R, splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_Y_G, splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_Y_B, splatId)
+        );
+        state.sh1Z = float3(
+            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_Z_R, splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_Z_G, splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_Z_B, splatId)
+        );
+        state.rawOpacity = load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_RAW_OPACITY, splatId);
         return state;
     }
 
@@ -84,10 +104,19 @@ struct TrainableGaussianState
         store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_ROTATION_Y, splatId, rotation.y);
         store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_ROTATION_Z, splatId, rotation.z);
         store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_ROTATION_W, splatId, rotation.w);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_COLOR_R, splatId, colorAlpha.x);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_COLOR_G, splatId, colorAlpha.y);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_COLOR_B, splatId, colorAlpha.z);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_RAW_OPACITY, splatId, colorAlpha.w);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH0_R, splatId, sh0.x);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH0_G, splatId, sh0.y);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH0_B, splatId, sh0.z);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_X_R, splatId, sh1X.x);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_X_G, splatId, sh1X.y);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_X_B, splatId, sh1X.z);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_Y_R, splatId, sh1Y.x);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_Y_G, splatId, sh1Y.y);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_Y_B, splatId, sh1Y.z);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_Z_R, splatId, sh1Z.x);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_Z_G, splatId, sh1Z.y);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_Z_B, splatId, sh1Z.z);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_RAW_OPACITY, splatId, rawOpacity);
     }
 };
 
@@ -170,7 +199,10 @@ void csAccumulateRegularizationGrads(uint3 dispatchThreadID : SV_DispatchThreadI
 
     TrainableGaussianState state = TrainableGaussianState.load(splatId);
     float3 gradScale = load_param_grad3(PARAM_SCALE_X, splatId);
-    float4 gradColorAlpha = load_param_grad4(PARAM_COLOR_R, splatId);
+    float3 gradSh1X = load_param_grad3(PARAM_SH1_X_R, splatId);
+    float3 gradSh1Y = load_param_grad3(PARAM_SH1_Y_R, splatId);
+    float3 gradSh1Z = load_param_grad3(PARAM_SH1_Z_R, splatId);
+    float gradRawOpacity = load_param_grad(PARAM_RAW_OPACITY, splatId);
     float invSplatCount = 1.0 / max(float(g_SplatCount), 1.0);
 
     float scaleL2Weight = max(g_ScaleL2Weight, 0.0);
@@ -199,16 +231,34 @@ void csAccumulateRegularizationGrads(uint3 dispatchThreadID : SV_DispatchThreadI
     float opacityRegWeight = max(g_OpacityRegWeight, 0.0);
     if (opacityRegWeight > 0.0)
     {
-        var dpOpacityReg = diffPair(state.colorAlpha.w);
-        float opacityRegLoss = opacity_l1_loss(state.colorAlpha.w);
+        var dpOpacityReg = diffPair(state.rawOpacity);
+        float opacityRegLoss = opacity_l1_loss(state.rawOpacity);
         bwd_diff(opacity_l1_loss)(dpOpacityReg, opacityRegWeight * invSplatCount);
-        gradColorAlpha.w += dpOpacityReg.getDifferential();
+        gradRawOpacity += dpOpacityReg.getDifferential();
         float lossAdd = opacityRegWeight * opacityRegLoss * invSplatCount;
         if (isfinite(lossAdd) && lossAdd != 0.0) InterlockedAdd(g_LossBuffer[LOSS_SLOT_TOTAL], lossAdd);
     }
 
+    float sh1RegWeight = max(g_SH1RegWeight, 0.0);
+    if (sh1RegWeight > 0.0)
+    {
+        var dpSh1X = diffPair(state.sh1X);
+        var dpSh1Y = diffPair(state.sh1Y);
+        var dpSh1Z = diffPair(state.sh1Z);
+        float sh1RegLoss = sh1_abs_l1_loss(state.sh1X, state.sh1Y, state.sh1Z);
+        bwd_diff(sh1_abs_l1_loss)(dpSh1X, dpSh1Y, dpSh1Z, sh1RegWeight * invSplatCount);
+        gradSh1X += dpSh1X.getDifferential();
+        gradSh1Y += dpSh1Y.getDifferential();
+        gradSh1Z += dpSh1Z.getDifferential();
+        float lossAdd = sh1RegWeight * sh1RegLoss * invSplatCount;
+        if (isfinite(lossAdd) && lossAdd != 0.0) InterlockedAdd(g_LossBuffer[LOSS_SLOT_TOTAL], lossAdd);
+    }
+
     store_param_grad3(PARAM_SCALE_X, splatId, gradScale);
-    store_param_grad4(PARAM_COLOR_R, splatId, gradColorAlpha);
+    store_param_grad3(PARAM_SH1_X_R, splatId, gradSh1X);
+    store_param_grad3(PARAM_SH1_Y_R, splatId, gradSh1Y);
+    store_param_grad3(PARAM_SH1_Z_R, splatId, gradSh1Z);
+    store_param_grad(PARAM_RAW_OPACITY, splatId, gradRawOpacity);
 }
 
 [shader("compute")]

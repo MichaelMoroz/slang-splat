@@ -59,7 +59,7 @@ Each trainer `step()` performs:
    - `csRasterizeBackward` consumes the cached raster forward state and accumulates quantized cached raster-field gradients for the precomputed raster-cache fields,
    - `csBackpropCachedRasterGrads` decodes that cached-field intermediate inline, backprops through `build_cached_ellipsoid`, and writes the final float packed scene-parameter gradient buffer with the final `1 / pixel_count` normalization before the rest of training.
 7. Run the optimizer pipeline:
-   - `csAccumulateRegularizationGrads` adds scale and opacity regularizers on the packed param-major state.
+  - `csAccumulateRegularizationGrads` adds scale, SH1, and opacity regularizers on the packed param-major state.
    - `csClipPackedParamGrads` clips gradients from a structured per-parameter settings buffer owned by the optimizer module.
    - `csComputePackedSplatGradNorms` can optionally reduce the packed gradient vector of each splat into one scalar `L2` norm for debug visualization.
    - `csAdamStepPacked` applies one-thread-per-packed-parameter ADAM using that same settings buffer plus a packed `float2` moments buffer.
@@ -91,7 +91,7 @@ There is still no opacity reset schedule, MCMC exploration term, or PSNR/SSIM tr
   - packed `float2` moments buffer (`m`, `v`).
 - The maintenance rewrite stage now treats that packed ADAM state as topology-coupled data and rewrites/migrates it alongside the packed scene parameters.
 - `gaussian_optimizer_stage.slang` owns Gaussian-specific optimizer logic:
-  - scale/opacity regularizers,
+  - scale/SH1/opacity regularizers,
   - anisotropy clamp,
   - quaternion normalization.
 - ADAM epsilon is a compile-time constant in `shaders/utility/optimizer/optimizer.slang`, not a runtime parameter.

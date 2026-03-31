@@ -52,8 +52,10 @@ def test_build_training_params_clamps_ranges():
         near=5.0,
         far=1.0,
         random_background=7,
+        use_sh=0,
         scale_l2_weight=-1.0,
         scale_abs_reg_weight=-1.0,
+        sh1_reg_weight=-1.0,
         opacity_reg_weight=-1.0,
         max_gaussians=-1,
     )
@@ -63,21 +65,25 @@ def test_build_training_params_clamps_ranges():
     assert params.stability.max_opacity == params.stability.min_opacity == 0.8
     assert params.training.far > params.training.near
     assert params.training.random_background is True
+    assert params.training.use_sh is False
     assert params.training.scale_l2_weight == 0.0
     assert params.training.scale_abs_reg_weight == 0.0
+    assert params.training.sh1_reg_weight == 0.0
     assert params.training.opacity_reg_weight == 0.0
     assert params.training.density_regularizer == 0.05
     assert params.training.max_allowed_density_start == 5.0
     assert params.training.max_allowed_density == 12.0
-    assert params.training.maintenance_contribution_cull_threshold == 1024
+    assert params.training.maintenance_contribution_cull_threshold == 128
     assert params.training.max_gaussians == 0
 
 
 def test_default_training_params_match_fixed_count_defaults():
     params = default_training_params()
     assert params.training.random_background is True
+    assert params.training.use_sh is True
     assert params.training.scale_l2_weight == 0.0
     assert params.training.scale_abs_reg_weight == 0.01
+    assert params.training.sh1_reg_weight == 0.01
     assert params.training.opacity_reg_weight == 0.01
     assert params.training.depth_ratio_weight == 0.05
     assert params.training.density_regularizer == 0.05
@@ -86,7 +92,7 @@ def test_default_training_params_match_fixed_count_defaults():
     assert params.training.maintenance_growth_ratio == 0.02
     assert params.training.maintenance_growth_start_step == 2000
     assert params.training.maintenance_alpha_cull_threshold == 1e-2
-    assert params.training.maintenance_contribution_cull_threshold == 1024
+    assert params.training.maintenance_contribution_cull_threshold == 128
     assert params.training.max_gaussians == 1_000_000
 
 
@@ -94,6 +100,7 @@ def test_auto_profile_resolves_to_legacy_defaults():
     params, profile = apply_training_profile(default_training_params(), "auto", dataset_root=Path("dataset/bicycle"), images_subdir="images_4")
     assert profile.name == "legacy"
     assert params.training.scale_abs_reg_weight == 0.01
+    assert params.training.sh1_reg_weight == 0.01
     assert params.training.opacity_reg_weight == 0.01
 
 
@@ -124,6 +131,7 @@ def test_viewer_effective_training_setup_keeps_requested_init_opacity():
     assert init.seed == 1234
     assert profile.name == "legacy"
     assert params.training.scale_abs_reg_weight == 0.01
+    assert params.training.sh1_reg_weight == 0.01
     assert params.training.opacity_reg_weight == 0.01
     assert init_hparams.initial_opacity == 0.5
 
@@ -132,6 +140,7 @@ def test_viewer_defaults_expose_only_fixed_count_training_controls():
     defaults = default_control_values("Train Optimizer", "Train Stability")
     assert "scale_l2" in defaults
     assert "scale_abs_reg" in defaults
+    assert "sh1_reg" in defaults
     assert "opacity_reg" in defaults
     assert "lambda_dssim" not in defaults
     assert "mcmc_growth_ratio" not in defaults

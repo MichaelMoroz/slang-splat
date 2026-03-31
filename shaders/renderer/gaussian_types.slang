@@ -102,12 +102,27 @@ Gaussian3D load_gaussian3d(uint splatId)
         load_splat_param(g_SplatParams, splatCount, PARAM_ROTATION_Z, splatId),
         load_splat_param(g_SplatParams, splatCount, PARAM_ROTATION_W, splatId)
     );
-    gaussian.colorAlpha = float4(
-        load_splat_param(g_SplatParams, splatCount, PARAM_COLOR_R, splatId),
-        load_splat_param(g_SplatParams, splatCount, PARAM_COLOR_G, splatId),
-        load_splat_param(g_SplatParams, splatCount, PARAM_COLOR_B, splatId),
-        load_splat_param(g_SplatParams, splatCount, PARAM_RAW_OPACITY, splatId)
+    gaussian.sh0 = float3(
+        load_splat_param(g_SplatParams, splatCount, PARAM_SH0_R, splatId),
+        load_splat_param(g_SplatParams, splatCount, PARAM_SH0_G, splatId),
+        load_splat_param(g_SplatParams, splatCount, PARAM_SH0_B, splatId)
     );
+    gaussian.sh1X = float3(
+        load_splat_param(g_SplatParams, splatCount, PARAM_SH1_X_R, splatId),
+        load_splat_param(g_SplatParams, splatCount, PARAM_SH1_X_G, splatId),
+        load_splat_param(g_SplatParams, splatCount, PARAM_SH1_X_B, splatId)
+    );
+    gaussian.sh1Y = float3(
+        load_splat_param(g_SplatParams, splatCount, PARAM_SH1_Y_R, splatId),
+        load_splat_param(g_SplatParams, splatCount, PARAM_SH1_Y_G, splatId),
+        load_splat_param(g_SplatParams, splatCount, PARAM_SH1_Y_B, splatId)
+    );
+    gaussian.sh1Z = float3(
+        load_splat_param(g_SplatParams, splatCount, PARAM_SH1_Z_R, splatId),
+        load_splat_param(g_SplatParams, splatCount, PARAM_SH1_Z_G, splatId),
+        load_splat_param(g_SplatParams, splatCount, PARAM_SH1_Z_B, splatId)
+    );
+    gaussian.rawOpacity = load_splat_param(g_SplatParams, splatCount, PARAM_RAW_OPACITY, splatId);
     return gaussian;
 }
 

@@ -18,6 +18,8 @@ from ._internal.colmap_types import (
     GaussianInitHyperParams,
 )
 from .ply_loader import load_gaussian_ply, save_gaussian_ply
+from .sh_utils import SH_C0, SH_C1, SUPPORTED_SH_COEFF_COUNT, evaluate_sh0_sh1, pad_sh_coeffs, rgb_to_sh0, sh_coeffs_to_display_colors
+from .sh_utils import resolve_supported_sh_coeffs
 
 __all__ = [
     "GaussianScene",
@@ -26,6 +28,14 @@ __all__ = [
     "GaussianInitHyperParams",
     "load_gaussian_ply",
     "save_gaussian_ply",
+    "SH_C0",
+    "SH_C1",
+    "SUPPORTED_SH_COEFF_COUNT",
+    "rgb_to_sh0",
+    "pad_sh_coeffs",
+    "sh_coeffs_to_display_colors",
+    "evaluate_sh0_sh1",
+    "resolve_supported_sh_coeffs",
     "load_colmap_reconstruction",
     "build_training_frames",
     "build_training_frames_from_root",

@@ -148,3 +148,5 @@ def test_train_cli_parser_defaults_color_and_opacity_lr_mul_to_five() -> None:
 
     assert args.lr_mul_color == 5.0
     assert args.lr_mul_opacity == 5.0
+    assert args.sh1_reg == 0.01
+    assert args.maintenance_contribution_cull_threshold == 128

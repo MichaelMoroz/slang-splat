@@ -41,3 +41,10 @@ float scale_abs_l1_loss(float3 logScale)
     float3 scale = exp(logScale);
     return (scale.x + scale.y + scale.z) * (1.0 / 3.0);
 }
+
+[Differentiable]
+float sh1_abs_l1_loss(float3 sh1X, float3 sh1Y, float3 sh1Z)
+{
+    float3 sumAbs = abs(sh1X) + abs(sh1Y) + abs(sh1Z);
+    return dot(sumAbs, float3(1.0, 1.0, 1.0)) * (1.0 / 9.0);
+}

@@ -27,7 +27,11 @@ CachedEllipsoid build_cached_ellipsoid(no_diff CameraParams cameraParams, no_dif
     gaussian.position = position;
     gaussian.logScale = logScale;
     gaussian.rotation = rotation;
-    gaussian.colorAlpha = 0.0;
+    gaussian.sh0 = 0.0;
+    gaussian.sh1X = 0.0;
+    gaussian.sh1Y = 0.0;
+    gaussian.sh1Z = 0.0;
+    gaussian.rawOpacity = 0.0;
     Ellipsoid ellipsoid = build_ellipsoid(cameraParams, radiusScale, maxAnisotropy, gaussian);
     return {
         ellipsoid.rasterRoLocal,

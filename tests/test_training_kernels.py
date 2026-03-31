@@ -74,6 +74,7 @@ def _write_grad_groups(
     grad_positions: np.ndarray | None = None,
     grad_scales: np.ndarray | None = None,
     grad_rotations: np.ndarray | None = None,
+    grad_sh_coeffs: np.ndarray | None = None,
     grad_color_alpha: np.ndarray | None = None,
 ) -> None:
     renderer.write_grad_groups(
@@ -81,6 +82,7 @@ def _write_grad_groups(
         grad_positions=grad_positions,
         grad_scales=grad_scales,
         grad_rotations=grad_rotations,
+        grad_sh_coeffs=grad_sh_coeffs,
         grad_color_alpha=grad_color_alpha,
     )
 
@@ -460,8 +462,8 @@ def test_training_step_updates_optimizer_lrs_from_cosine_schedule(device, tmp_pa
     after = _read_optimizer_lrs(trainer)
     expected_scale = resolve_cosine_base_learning_rate(training, 1) / training.lr_schedule_start_lr
 
-    np.testing.assert_allclose(before[[0, 3, 6, 10, 13]], np.array([1e-2, 2e-2, 3e-2, 4e-2, 5e-2], dtype=np.float32), rtol=0.0, atol=1e-7)
-    np.testing.assert_allclose(after[[0, 3, 6, 10, 13]], expected_scale * np.array([1e-2, 2e-2, 3e-2, 4e-2, 5e-2], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(before[[0, 3, 6, 10, 22]], np.array([1e-2, 2e-2, 3e-2, 4e-2, 5e-2], dtype=np.float32), rtol=0.0, atol=1e-7)
+    np.testing.assert_allclose(after[[0, 3, 6, 10, 22]], expected_scale * np.array([1e-2, 2e-2, 3e-2, 4e-2, 5e-2], dtype=np.float32), rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(trainer.state.last_base_lr, resolve_cosine_base_learning_rate(training, 1), rtol=0.0, atol=1e-7)
 
 
@@ -727,7 +729,7 @@ def test_maintenance_rewrite_culls_and_splits_families(device, tmp_path: Path) -
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(maintenance_alpha_cull_threshold=1e-3),
+        training_hparams=TrainingHyperParams(maintenance_alpha_cull_threshold=1e-3, maintenance_contribution_cull_threshold=50),
         seed=123,
     )
 
@@ -766,7 +768,7 @@ def test_maintenance_rewrite_culls_low_contribution_splats(device, tmp_path: Pat
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(maintenance_alpha_cull_threshold=1e-6),
+        training_hparams=TrainingHyperParams(maintenance_alpha_cull_threshold=1e-6, maintenance_contribution_cull_threshold=50),
         seed=123,
     )
 
@@ -789,7 +791,7 @@ def test_maintenance_rewrite_migrates_adam_moments(device, tmp_path: Path) -> No
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(maintenance_alpha_cull_threshold=1e-3),
+        training_hparams=TrainingHyperParams(maintenance_alpha_cull_threshold=1e-3, maintenance_contribution_cull_threshold=50),
         seed=123,
     )
 
@@ -819,7 +821,7 @@ def test_maintenance_respects_max_gaussians_cap(device, tmp_path: Path) -> None:
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(max_gaussians=3, maintenance_alpha_cull_threshold=1e-3),
+        training_hparams=TrainingHyperParams(max_gaussians=3, maintenance_alpha_cull_threshold=1e-3, maintenance_contribution_cull_threshold=50),
         seed=123,
     )
 
@@ -1209,6 +1211,37 @@ def test_opacity_regularizer_pushes_true_opacity_down(device, tmp_path: Path):
     device.submit_command_buffer(enc.finish())
     device.wait()
     after = _actual_opacity(_read_scene_groups(renderer, 2)["color_alpha"][:, 3])
+
+    assert np.all(after < before)
+
+
+def test_sh1_regularizer_pushes_sh1_coeffs_toward_zero(device, tmp_path: Path):
+    scene = _make_scene(count=2, seed=37)
+    scene.sh_coeffs = np.zeros((scene.count, 4, 3), dtype=np.float32)
+    scene.sh_coeffs[:, 1:, :] = np.array(
+        [
+            [[0.6, -0.3, 0.2], [0.1, -0.5, 0.4], [-0.2, 0.25, -0.35]],
+            [[-0.4, 0.2, -0.1], [0.3, -0.2, 0.5], [0.15, -0.45, 0.25]],
+        ],
+        dtype=np.float32,
+    )
+    frame = _make_frame(tmp_path)
+    renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
+    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(scale_l2_weight=0.0, scale_abs_reg_weight=0.0, opacity_reg_weight=0.0, sh1_reg_weight=1.0), seed=43)
+    camera = frame.make_camera(near=0.1, far=20.0)
+    renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
+    device.wait()
+
+    zeros = np.zeros((scene.count, 4), dtype=np.float32)
+    zero_sh = np.zeros((scene.count, 4, 3), dtype=np.float32)
+    _write_grad_groups(renderer, scene.count, grad_positions=zeros, grad_scales=zeros, grad_rotations=zeros, grad_sh_coeffs=zero_sh, grad_color_alpha=zeros)
+
+    before = np.linalg.norm(_read_scene_groups(renderer, scene.count)["sh_coeffs"][:, 1:, :].reshape(scene.count, -1), axis=1)
+    enc = device.create_command_encoder()
+    trainer._dispatch_adam_step(enc)
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+    after = np.linalg.norm(_read_scene_groups(renderer, scene.count)["sh_coeffs"][:, 1:, :].reshape(scene.count, -1), axis=1)
 
     assert np.all(after < before)
 

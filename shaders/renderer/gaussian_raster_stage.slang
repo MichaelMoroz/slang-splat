@@ -779,15 +779,23 @@ void backprop_cached_raster_grads<T : IRasterGradVariant>(uint3 dispatchThreadID
     var dpRotation = diffPair(gaussian.rotation);
     var dpOpacityPosition = diffPair(gaussian.position);
     var dpOpacityScale = diffPair(gaussian.logScale);
-    var dpRawOpacity = diffPair(gaussian.colorAlpha.w);
+    var dpRawOpacity = diffPair(gaussian.rawOpacity);
+    var dpColorPosition = diffPair(gaussian.position);
+    var dpSh0 = diffPair(gaussian.sh0);
+    var dpSh1X = diffPair(gaussian.sh1X);
+    var dpSh1Y = diffPair(gaussian.sh1Y);
+    var dpSh1Z = diffPair(gaussian.sh1Z);
     bwd_diff(build_cached_ellipsoid)(g_Camera, g_Prepass.radiusScale, g_MaxAnisotropy, dpCachedPosition, dpCachedScale, dpRotation, dCached);
     bwd_diff(build_raster_fused_opacity)(g_Camera, g_Prepass.radiusScale, dpOpacityPosition, dpOpacityScale, dpRawOpacity, dRaster.colorAlpha.w);
-
+    bwd_diff(evaluate_gaussian_color)(dpSh0, dpSh1X, dpSh1Y, dpSh1Z, g_Camera.camPos, dpColorPosition, g_Raster.useSH, dRaster.colorAlpha.xyz);
     float gradScale = g_RasterGradDecodeScale;
-    store_param_grad<3>(g_Prepass.splatCount, PARAM_POSITION_X, splatId, (dpCachedPosition.getDifferential() + dpOpacityPosition.getDifferential()) * gradScale);
+    store_param_grad<3>(g_Prepass.splatCount, PARAM_POSITION_X, splatId, (dpCachedPosition.getDifferential() + dpOpacityPosition.getDifferential() + dpColorPosition.getDifferential()) * gradScale);
     store_param_grad<3>(g_Prepass.splatCount, PARAM_SCALE_X, splatId, (dpCachedScale.getDifferential() + dpOpacityScale.getDifferential()) * gradScale);
     store_param_grad<4>(g_Prepass.splatCount, PARAM_ROTATION_X, splatId, dpRotation.getDifferential() * gradScale);
-    store_param_grad<3>(g_Prepass.splatCount, PARAM_COLOR_R, splatId, dRaster.colorAlpha.xyz * gradScale);
+    store_param_grad<3>(g_Prepass.splatCount, PARAM_SH0_R, splatId, dpSh0.getDifferential() * gradScale);
+    store_param_grad<3>(g_Prepass.splatCount, PARAM_SH1_X_R, splatId, dpSh1X.getDifferential() * gradScale);
+    store_param_grad<3>(g_Prepass.splatCount, PARAM_SH1_Y_R, splatId, dpSh1Y.getDifferential() * gradScale);
+    store_param_grad<3>(g_Prepass.splatCount, PARAM_SH1_Z_R, splatId, dpSh1Z.getDifferential() * gradScale);
     store_param_grad<1>(g_Prepass.splatCount, PARAM_RAW_OPACITY, splatId, float1(dpRawOpacity.getDifferential()) * gradScale);
 }
 

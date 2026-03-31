@@ -9,6 +9,7 @@ from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation
 
 from ..gaussian_scene import GaussianScene
+from ..sh_utils import SUPPORTED_SH_COEFF_COUNT, rgb_to_sh0
 from .colmap_types import ColmapFrame, ColmapReconstruction, GaussianInitHyperParams, point_tables
 
 INIT_BASE_SCALE_SPACING_RATIO = 0.25
@@ -335,7 +336,7 @@ def _build_scene_from_positions_colors(
         rotations=_identity_quaternions(count),
         opacities=np.full((count,), opacity, dtype=np.float32),
         colors=colors,
-        sh_coeffs=np.zeros((count, 1, 3), dtype=np.float32),
+        sh_coeffs=np.pad(rgb_to_sh0(colors)[:, None, :], ((0, 0), (0, SUPPORTED_SH_COEFF_COUNT - 1), (0, 0))).astype(np.float32, copy=False),
     )
 
 

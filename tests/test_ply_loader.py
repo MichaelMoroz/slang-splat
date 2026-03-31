@@ -59,7 +59,7 @@ def test_load_gaussian_ply_applies_basic_transforms(tmp_path):
     np.testing.assert_allclose(scene.scales[0], [0.0, 1.0, -1.0], atol=1e-6)
     np.testing.assert_allclose(np.linalg.norm(scene.rotations[0]), 1.0, atol=1e-6)
     np.testing.assert_allclose(scene.opacities[0], 0.5, atol=1e-6)
-    assert scene.sh_coeffs.shape == (1, 2, 3)
+    assert scene.sh_coeffs.shape == (1, 4, 3)
 
 
 def test_save_gaussian_ply_round_trips_scene_data(tmp_path) -> None:
@@ -86,7 +86,8 @@ def test_save_gaussian_ply_round_trips_scene_data(tmp_path) -> None:
     np.testing.assert_allclose(loaded.positions, scene.positions, atol=1e-6)
     np.testing.assert_allclose(loaded.scales, scene.scales, atol=1e-6)
     np.testing.assert_allclose(loaded.opacities, scene.opacities, atol=2e-6)
-    np.testing.assert_allclose(loaded.sh_coeffs, scene.sh_coeffs, atol=1e-6)
+    np.testing.assert_allclose(loaded.sh_coeffs[:, : scene.sh_coeffs.shape[1], :], scene.sh_coeffs, atol=1e-6)
+    np.testing.assert_allclose(loaded.sh_coeffs[:, scene.sh_coeffs.shape[1] :, :], 0.0, atol=1e-6)
     np.testing.assert_allclose(np.linalg.norm(loaded.rotations, axis=1), np.ones((scene.count,), dtype=np.float32), atol=1e-6)
     np.testing.assert_allclose(
         loaded.rotations,

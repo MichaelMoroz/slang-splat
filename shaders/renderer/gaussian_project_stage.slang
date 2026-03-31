@@ -73,7 +73,7 @@ void csProjectVisibleSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
     g_SplatVisible[splatId] = 0u;
 
     Gaussian3D gaussian = load_gaussian3d(splatId);
-    float fusedOpacity = build_raster_fused_opacity(g_Camera, g_Prepass.radiusScale, gaussian.position, gaussian.logScale, gaussian.colorAlpha.w);
+    float fusedOpacity = build_raster_fused_opacity(g_Camera, g_Prepass.radiusScale, gaussian.position, gaussian.logScale, gaussian.rawOpacity);
     if (fusedOpacity < g_Raster.alphaCutoff) return;
 
     // Project only splats whose cutoff isosurface can contribute within the camera frustum.
@@ -92,12 +92,13 @@ void csProjectVisibleSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
     projectedEllipse.radiusPx = max(projectedEllipse.radiusPx * ELLIPSE_SAFETY_SCALE + ELLIPSE_RADIUS_PAD_PX, MIN_SCREEN_RADIUS_PX);
     projectedEllipse.bboxExtent = float2(projectedEllipse.radiusPx, projectedEllipse.radiusPx);
     if (!projectedEllipse.isVisible(camDistance, depthValue, camera.params.viewport, g_Camera.nearDepth, g_Camera.farDepth)) return;
+    float3 evaluatedColor = evaluate_gaussian_color(gaussian.sh0, gaussian.sh1X, gaussian.sh1Y, gaussian.sh1Z, camera.position_world(), projectionEllipsoid.centerWorld, g_Raster.useSH);
     g_ScreenCenterRadiusDepth[splatId] = float4(projectedEllipse.centerPx, projectedEllipse.radiusPx, camDistance);
-    g_ScreenColorAlpha[splatId] = gaussian.colorAlpha;
+    g_ScreenColorAlpha[splatId] = float4(evaluatedColor, gaussian.rawOpacity);
     g_ScreenEllipseConic[splatId] = float4(projectedEllipse.conic, projectionEllipsoid.opacityScale);
     g_SplatVisible[splatId] = 1u;
     CachedEllipsoid cached = build_cached_ellipsoid(g_Camera, g_Prepass.radiusScale, g_MaxAnisotropy, gaussian.position, gaussian.logScale, gaussian.rotation);
-    store_raster_cache(splatId, cached, float4(gaussian.colorAlpha.xyz, fusedOpacity));
+    store_raster_cache(splatId, cached, float4(evaluatedColor, fusedOpacity));
     append_visible_splat(float_to_ordered_uint(camDistance), splatId);
 }
 

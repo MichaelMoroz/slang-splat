@@ -6,6 +6,7 @@ import math
 import numpy as np
 
 from src.scene.gaussian_scene import GaussianScene
+from src.scene.sh_utils import evaluate_sh0_sh1, resolve_supported_sh_coeffs
 from src.renderer.camera import Camera
 
 ALPHA_CUTOFF_DEFAULT = np.float32(1.0 / 255.0)
@@ -234,7 +235,9 @@ def project_splats(
     count = scene.count
     center_radius_depth = np.zeros((count, 4), dtype=np.float32)
     ellipse_conic = np.zeros((count, 3), dtype=np.float32)
-    color_alpha = np.concatenate([scene.colors, scene.opacities[:, None]], axis=1).astype(np.float32, copy=False)
+    view_dirs = np.asarray(camera.position, dtype=np.float32).reshape(1, 3) - np.asarray(scene.positions, dtype=np.float32)
+    colors = evaluate_sh0_sh1(resolve_supported_sh_coeffs(scene.sh_coeffs, scene.colors), view_dirs)
+    color_alpha = np.concatenate([colors, scene.opacities[:, None]], axis=1).astype(np.float32, copy=False)
     opacity_scale = np.ones((count,), dtype=np.float32)
     valid = np.zeros((count,), dtype=np.uint32)
     pos_local = np.zeros((count, 3), dtype=np.float32)

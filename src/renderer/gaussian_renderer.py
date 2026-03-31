@@ -14,6 +14,7 @@ from ..common import SHADER_ROOT, buffer_to_numpy, debug_region, dispatch, dispa
 from ..metrics import Metrics, ParamLog10Histograms, ParamTensorRanges
 from ..scan.prefix_sum import GPUPrefixSum
 from ..scene.gaussian_scene import GaussianScene
+from ..scene.sh_utils import SH_C0, SUPPORTED_SH_COEFF_COUNT, pad_sh_coeffs, resolve_supported_sh_coeffs, rgb_to_sh0, sh_coeffs_to_display_colors
 from ..sort.radix_sort import GPURadixSort
 from .camera import Camera
 
@@ -149,9 +150,14 @@ class GaussianRenderer:
     PARAM_POSITION_IDS = (0, 1, 2)
     PARAM_SCALE_IDS = (3, 4, 5)
     PARAM_ROTATION_IDS = (6, 7, 8, 9)
-    PARAM_COLOR_IDS = (10, 11, 12)
-    PARAM_RAW_OPACITY_ID = 13
-    TRAINABLE_PARAM_COUNT = 14
+    PARAM_SH0_IDS = (10, 11, 12)
+    PARAM_SH1_X_IDS = (13, 14, 15)
+    PARAM_SH1_Y_IDS = (16, 17, 18)
+    PARAM_SH1_Z_IDS = (19, 20, 21)
+    PARAM_SH_IDS = PARAM_SH0_IDS + PARAM_SH1_X_IDS + PARAM_SH1_Y_IDS + PARAM_SH1_Z_IDS
+    PARAM_COLOR_IDS = PARAM_SH_IDS
+    PARAM_RAW_OPACITY_ID = 22
+    TRAINABLE_PARAM_COUNT = 23
     CACHED_RASTER_GRAD_COMPONENT_LABELS = (
         "roLocal.x", "roLocal.y", "roLocal.z",
         "scale.x", "scale.y", "scale.z",
@@ -239,6 +245,7 @@ class GaussianRenderer:
                 "transmittanceThreshold": float(self.transmittance_threshold),
                 "background": spy.float3(*background.tolist()),
                 "debugMode": np.uint32(self._debug_mode_u32(self.debug_mode)),
+                "useSH": np.uint32(1 if self.use_sh else 0),
                 "debugGradNormThreshold": float(max(self.debug_grad_norm_threshold, 0.0)),
                 "debugEllipseThicknessPx": float(self.debug_ellipse_thickness_px),
                 "debugCloneCountRange": spy.float2(*self.debug_clone_count_range),
@@ -430,6 +437,7 @@ class GaussianRenderer:
         cached_raster_grad_fixed_quat_range: float = 0.01,
         cached_raster_grad_fixed_color_range: float = 0.2,
         cached_raster_grad_fixed_opacity_range: float = 0.2,
+        use_sh: bool = True,
     ) -> None:
         self.device, self.width, self.height = device, int(width), int(height)
         self._types_shader_path = Path(SHADER_ROOT / "renderer" / "gaussian_types.slang")
@@ -445,6 +453,7 @@ class GaussianRenderer:
         self.max_prepass_memory_mb = max(int(max_prepass_memory_mb), 1)
         self._max_prepass_memory_bytes = self.max_prepass_memory_mb * self._MEBIBYTE_BYTES
         self.proj_distortion_k1, self.proj_distortion_k2 = float(proj_distortion_k1), float(proj_distortion_k2)
+        self.use_sh = bool(use_sh)
         self.debug_mode = self._resolve_debug_mode(debug_mode, debug_show_ellipses, debug_show_processed_count, debug_show_grad_norm)
         self.debug_show_ellipses = self.debug_mode == self.DEBUG_MODE_ELLIPSE_OUTLINES
         self.debug_show_processed_count = self.debug_mode == self.DEBUG_MODE_PROCESSED_COUNT
@@ -684,14 +693,16 @@ class GaussianRenderer:
         packed = np.zeros((cls.TRAINABLE_PARAM_COUNT * max(count, 1),), dtype=np.float32)
         if count <= 0:
             return packed
+        sh_coeffs = resolve_supported_sh_coeffs(scene.sh_coeffs, scene.colors)
         for axis, param_id in enumerate(cls.PARAM_POSITION_IDS):
             packed[cls._param_slice(count, param_id)] = np.asarray(scene.positions[:, axis], dtype=np.float32)
         for axis, param_id in enumerate(cls.PARAM_SCALE_IDS):
             packed[cls._param_slice(count, param_id)] = np.asarray(scene.scales[:, axis], dtype=np.float32)
         for axis, param_id in enumerate(cls.PARAM_ROTATION_IDS):
             packed[cls._param_slice(count, param_id)] = np.asarray(scene.rotations[:, axis], dtype=np.float32)
-        for axis, param_id in enumerate(cls.PARAM_COLOR_IDS):
-            packed[cls._param_slice(count, param_id)] = np.asarray(scene.colors[:, axis], dtype=np.float32)
+        for coeff_index, param_ids in enumerate((cls.PARAM_SH0_IDS, cls.PARAM_SH1_X_IDS, cls.PARAM_SH1_Y_IDS, cls.PARAM_SH1_Z_IDS)):
+            for axis, param_id in enumerate(param_ids):
+                packed[cls._param_slice(count, param_id)] = np.asarray(sh_coeffs[:, coeff_index, axis], dtype=np.float32)
         packed[cls._param_slice(count, cls.PARAM_RAW_OPACITY_ID)] = cls._raw_opacity_from_alpha(scene.opacities)
         return packed
 
@@ -703,6 +714,7 @@ class GaussianRenderer:
             "positions": np.zeros((count, 4), dtype=np.float32),
             "scales": np.zeros((count, 4), dtype=np.float32),
             "rotations": np.zeros((count, 4), dtype=np.float32),
+            "sh_coeffs": np.zeros((count, SUPPORTED_SH_COEFF_COUNT, 3), dtype=np.float32),
             "color_alpha": np.zeros((count, 4), dtype=np.float32),
         }
         if count <= 0:
@@ -713,8 +725,10 @@ class GaussianRenderer:
             groups["scales"][:, axis] = flat[cls._param_slice(count, param_id)]
         for axis, param_id in enumerate(cls.PARAM_ROTATION_IDS):
             groups["rotations"][:, axis] = flat[cls._param_slice(count, param_id)]
-        for axis, param_id in enumerate(cls.PARAM_COLOR_IDS):
-            groups["color_alpha"][:, axis] = flat[cls._param_slice(count, param_id)]
+        for coeff_index, param_ids in enumerate((cls.PARAM_SH0_IDS, cls.PARAM_SH1_X_IDS, cls.PARAM_SH1_Y_IDS, cls.PARAM_SH1_Z_IDS)):
+            for axis, param_id in enumerate(param_ids):
+                groups["sh_coeffs"][:, coeff_index, axis] = flat[cls._param_slice(count, param_id)]
+        groups["color_alpha"][:, :3] = sh_coeffs_to_display_colors(groups["sh_coeffs"])
         groups["color_alpha"][:, 3] = flat[cls._param_slice(count, cls.PARAM_RAW_OPACITY_ID)]
         return groups
 
@@ -726,16 +740,25 @@ class GaussianRenderer:
         positions: np.ndarray | None = None,
         scales: np.ndarray | None = None,
         rotations: np.ndarray | None = None,
+        sh_coeffs: np.ndarray | None = None,
         color_alpha: np.ndarray | None = None,
+        color_is_grad: bool = False,
     ) -> np.ndarray:
         count = max(int(splat_count), 0)
         packed = np.zeros((cls.TRAINABLE_PARAM_COUNT * max(count, 1),), dtype=np.float32)
         if count <= 0:
             return packed
+        sh_groups = np.zeros((count, SUPPORTED_SH_COEFF_COUNT, 3), dtype=np.float32)
+        if sh_coeffs is not None:
+            sh_groups = pad_sh_coeffs(np.asarray(sh_coeffs, dtype=np.float32).reshape(count, -1, 3), SUPPORTED_SH_COEFF_COUNT)
+        elif color_alpha is not None:
+            color_values = np.asarray(color_alpha, dtype=np.float32).reshape(count, 4)
+            sh_groups[:, 0, :] = color_values[:, :3] * SH_C0 if color_is_grad else rgb_to_sh0(color_values[:, :3])
         groups = {
             "positions": np.zeros((count, 4), dtype=np.float32) if positions is None else np.asarray(positions, dtype=np.float32).reshape(count, 4),
             "scales": np.zeros((count, 4), dtype=np.float32) if scales is None else np.asarray(scales, dtype=np.float32).reshape(count, 4),
             "rotations": np.zeros((count, 4), dtype=np.float32) if rotations is None else np.asarray(rotations, dtype=np.float32).reshape(count, 4),
+            "sh_coeffs": sh_groups,
             "color_alpha": np.zeros((count, 4), dtype=np.float32) if color_alpha is None else np.asarray(color_alpha, dtype=np.float32).reshape(count, 4),
         }
         for axis, param_id in enumerate(cls.PARAM_POSITION_IDS):
@@ -744,8 +767,9 @@ class GaussianRenderer:
             packed[cls._param_slice(count, param_id)] = groups["scales"][:, axis]
         for axis, param_id in enumerate(cls.PARAM_ROTATION_IDS):
             packed[cls._param_slice(count, param_id)] = groups["rotations"][:, axis]
-        for axis, param_id in enumerate(cls.PARAM_COLOR_IDS):
-            packed[cls._param_slice(count, param_id)] = groups["color_alpha"][:, axis]
+        for coeff_index, param_ids in enumerate((cls.PARAM_SH0_IDS, cls.PARAM_SH1_X_IDS, cls.PARAM_SH1_Y_IDS, cls.PARAM_SH1_Z_IDS)):
+            for axis, param_id in enumerate(param_ids):
+                packed[cls._param_slice(count, param_id)] = groups["sh_coeffs"][:, coeff_index, axis]
         packed[cls._param_slice(count, cls.PARAM_RAW_OPACITY_ID)] = groups["color_alpha"][:, 3]
         return packed
 
@@ -1113,13 +1137,15 @@ class GaussianRenderer:
         positions: np.ndarray,
         scales: np.ndarray,
         rotations: np.ndarray,
-        color_alpha: np.ndarray,
+        sh_coeffs: np.ndarray | None = None,
+        color_alpha: np.ndarray | None = None,
     ) -> None:
         packed = self._pack_param_groups(
             splat_count,
             positions=positions,
             scales=scales,
             rotations=rotations,
+            sh_coeffs=sh_coeffs,
             color_alpha=color_alpha,
         )
         self._scene_buffers["splat_params"].copy_from_numpy(packed)
@@ -1128,11 +1154,15 @@ class GaussianRenderer:
         count = self._scene_count if splat_count is None else int(splat_count)
         flat = self._read_array(self._work_buffers["param_grads"], np.float32, max(count, 1) * self.TRAINABLE_PARAM_COUNT)
         groups = self._unpack_param_groups(flat, count)
+        grad_color_alpha = np.zeros((count, 4), dtype=np.float32)
+        grad_color_alpha[:, :3] = groups["sh_coeffs"][:, 0, :] / SH_C0
+        grad_color_alpha[:, 3] = groups["color_alpha"][:, 3]
         return {
             "grad_positions": groups["positions"],
             "grad_scales": groups["scales"],
             "grad_rotations": groups["rotations"],
-            "grad_color_alpha": groups["color_alpha"],
+            "grad_sh_coeffs": groups["sh_coeffs"],
+            "grad_color_alpha": grad_color_alpha,
         }
 
     def read_raster_cache(self, splat_count: int | None = None) -> np.ndarray:
@@ -1215,6 +1245,7 @@ class GaussianRenderer:
         grad_positions: np.ndarray | None = None,
         grad_scales: np.ndarray | None = None,
         grad_rotations: np.ndarray | None = None,
+        grad_sh_coeffs: np.ndarray | None = None,
         grad_color_alpha: np.ndarray | None = None,
     ) -> None:
         packed = self._pack_param_groups(
@@ -1222,7 +1253,9 @@ class GaussianRenderer:
             positions=grad_positions,
             scales=grad_scales,
             rotations=grad_rotations,
+            sh_coeffs=grad_sh_coeffs,
             color_alpha=grad_color_alpha,
+            color_is_grad=True,
         )
         self._work_buffers["param_grads"].copy_from_numpy(packed)
 
@@ -1232,6 +1265,7 @@ class GaussianRenderer:
             grad_positions=np.zeros((splat_count, 4), dtype=np.float32),
             grad_scales=np.zeros((splat_count, 4), dtype=np.float32),
             grad_rotations=np.zeros((splat_count, 4), dtype=np.float32),
+            grad_sh_coeffs=np.zeros((splat_count, SUPPORTED_SH_COEFF_COUNT, 3), dtype=np.float32),
             grad_color_alpha=np.zeros((splat_count, 4), dtype=np.float32),
         )
 

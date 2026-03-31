@@ -7,8 +7,7 @@ import numpy as np
 from plyfile import PlyData, PlyElement
 
 from .gaussian_scene import GaussianScene
-
-SH_C0 = 0.28209479177387814
+from .sh_utils import SH_C0, SUPPORTED_SH_COEFF_COUNT, pad_sh_coeffs, sh_coeffs_to_display_colors
 _LOGIT_EPS = 1e-6
 
 
@@ -92,7 +91,8 @@ def load_gaussian_ply(path: str | Path) -> GaussianScene:
     else:
         sh_coeffs = f_dc[:, None, :]
 
-    colors = np.clip(0.5 + SH_C0 * sh_coeffs[:, 0, :], 0.0, 1.0)
+    sh_coeffs = pad_sh_coeffs(sh_coeffs, SUPPORTED_SH_COEFF_COUNT)
+    colors = sh_coeffs_to_display_colors(sh_coeffs)
     return GaussianScene(
         positions=positions,
         scales=scales.astype(np.float32),
@@ -110,6 +110,7 @@ def save_gaussian_ply(path: str | Path, scene: GaussianScene) -> Path:
     sh_coeffs = np.asarray(scene.sh_coeffs, dtype=np.float32)
     if sh_coeffs.ndim != 3 or sh_coeffs.shape[0] != count or sh_coeffs.shape[2] != 3 or sh_coeffs.shape[1] <= 0:
         raise ValueError("GaussianScene.sh_coeffs must have shape [count, coeff_count, 3] with coeff_count >= 1.")
+    sh_coeffs = pad_sh_coeffs(sh_coeffs, SUPPORTED_SH_COEFF_COUNT)
     rest_coeff_count = int(sh_coeffs.shape[1] - 1)
     dtype = [
         ("x", "f4"), ("y", "f4"), ("z", "f4"),

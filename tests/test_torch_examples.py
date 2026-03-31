@@ -9,7 +9,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from src.scene import ColmapFrame, GaussianScene
+from src.scene import ColmapFrame, GaussianScene, SH_C0
 from torch_examples.train_colmap_garden_torch import (
     FrameMetricTracker,
     FrameOrderState,
@@ -60,12 +60,12 @@ def test_scene_to_torch_params_and_pack_roundtrip(torch_cuda_or_cpu_device):
     params = scene_to_torch_params(scene, torch_cuda_or_cpu_device)
     packed = pack_torch_splats(params).detach().cpu().numpy()
 
-    assert packed.shape == (2, 14)
+    assert packed.shape == (2, 23)
     np.testing.assert_allclose(packed[:, 0:3], scene.positions)
     np.testing.assert_allclose(packed[:, 3:6], scene.scales)
     np.testing.assert_allclose(packed[:, 6:10], scene.rotations)
-    np.testing.assert_allclose(packed[:, 10:13], scene.colors)
-    np.testing.assert_allclose(packed[:, 13], scene.opacities)
+    np.testing.assert_allclose(packed[:, 10:13], (scene.colors - 0.5) / SH_C0)
+    np.testing.assert_allclose(packed[:, 22], scene.opacities)
 
 
 def test_frame_to_camera_tensor_uses_colmap_layout(torch_cuda_or_cpu_device):
@@ -106,19 +106,17 @@ def test_project_scene_params_normalizes_and_clamps(torch_cuda_or_cpu_device):
         "positions": torch.nn.Parameter(torch.zeros((2, 3), device=torch_cuda_or_cpu_device)),
         "log_scales": torch.nn.Parameter(torch.tensor([[100.0, -100.0, 0.0], [0.0, 0.0, 0.0]], device=torch_cuda_or_cpu_device)),
         "rotations": torch.nn.Parameter(torch.tensor([[0.0, 0.0, 0.0, 0.0], [2.0, 0.0, 0.0, 0.0]], device=torch_cuda_or_cpu_device)),
-        "colors": torch.nn.Parameter(torch.tensor([[-1.0, 2.0, 0.5], [0.5, 0.5, 0.5]], device=torch_cuda_or_cpu_device)),
+        "sh_coeffs": torch.nn.Parameter(torch.tensor([[[-1.0, 2.0, 0.5], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]], [[0.5, 0.5, 0.5], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]], device=torch_cuda_or_cpu_device)),
         "alpha": torch.nn.Parameter(torch.tensor([[-1.0], [2.0]], device=torch_cuda_or_cpu_device)),
     }
 
     project_scene_params_(params)
     rotations = params["rotations"].detach().cpu().numpy()
-    colors = params["colors"].detach().cpu().numpy()
     alpha = params["alpha"].detach().cpu().numpy()
     log_scales = params["log_scales"].detach().cpu().numpy()
 
     np.testing.assert_allclose(rotations[0], np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32))
     np.testing.assert_allclose(rotations[1], np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32))
-    assert np.all((colors >= 0.0) & (colors <= 1.0))
     assert np.all((alpha >= 1e-4) & (alpha <= 0.9999))
     assert np.all(log_scales >= np.float32(np.log(1e-4)))
     assert np.all(log_scales <= np.float32(np.log(10.0)))

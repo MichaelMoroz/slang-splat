@@ -10,14 +10,13 @@ import slangpy as spy
 from ..common import SHADER_ROOT, buffer_to_numpy, clamp_index, debug_region, dispatch, thread_count_2d
 from ..metrics import Metrics, psnr_from_mse
 from ..renderer import Camera, GaussianRenderer
-from ..scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
+from ..scene import ColmapFrame, GaussianInitHyperParams, GaussianScene, SUPPORTED_SH_COEFF_COUNT, pad_sh_coeffs, rgb_to_sh0, sh_coeffs_to_display_colors
 from .adam import AdamOptimizer, AdamRuntimeHyperParams
 from .optimizer import GaussianOptimizer
 from .schedule import resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_depth_ratio_weight, resolve_effective_maintenance_interval, resolve_maintenance_growth_ratio, resolve_max_allowed_density, should_run_maintenance_step
 
 TRAIN_DOWNSCALE_MODE_AUTO = 0
 TRAIN_DOWNSCALE_MAX_FACTOR = 16
-_SH_C0 = 0.28209479177387814
 
 
 def resolve_training_resolution(width: int, height: int, downscale_factor: int) -> tuple[int, int]:
@@ -102,10 +101,10 @@ class StabilityHyperParams:
 @dataclass(slots=True)
 class TrainingHyperParams:
     background: tuple[float, float, float] = (0.0, 0.0, 0.0); near: float = 0.1; far: float = 120.0
-    random_background: bool = True
-    scale_l2_weight: float = 0.0; scale_abs_reg_weight: float = 0.01; opacity_reg_weight: float = 0.01; depth_ratio_weight: float = 0.05; density_regularizer: float = 0.05; max_allowed_density_start: float = 5.0; max_allowed_density: float = 12.0
+    random_background: bool = True; use_sh: bool = True
+    scale_l2_weight: float = 0.0; scale_abs_reg_weight: float = 0.01; sh1_reg_weight: float = 0.01; opacity_reg_weight: float = 0.01; depth_ratio_weight: float = 0.05; density_regularizer: float = 0.05; max_allowed_density_start: float = 5.0; max_allowed_density: float = 12.0
     lr_schedule_enabled: bool = True; lr_schedule_start_lr: float = 1e-3; lr_schedule_end_lr: float = 1e-4; lr_schedule_steps: int = 30_000
-    maintenance_interval: int = 200; maintenance_growth_ratio: float = 0.02; maintenance_growth_start_step: int = 2_000; maintenance_alpha_cull_threshold: float = 1e-2; maintenance_contribution_cull_threshold: int = 1024
+    maintenance_interval: int = 200; maintenance_growth_ratio: float = 0.02; maintenance_growth_start_step: int = 2_000; maintenance_alpha_cull_threshold: float = 1e-2; maintenance_contribution_cull_threshold: int = 128
     max_gaussians: int = 1_000_000; train_downscale_mode: int = 1; train_auto_start_downscale: int = 16
     train_downscale_base_iters: int = 200; train_downscale_iter_step: int = 50; train_downscale_max_iters: int = 30_000
     train_downscale_factor: int = 1
@@ -115,12 +114,14 @@ class TrainingHyperParams:
         self.lr_schedule_start_lr = max(float(self.lr_schedule_start_lr), 1e-8)
         self.lr_schedule_end_lr = max(float(self.lr_schedule_end_lr), 1e-8)
         self.random_background = bool(self.random_background)
+        self.use_sh = bool(self.use_sh)
         self.lr_schedule_steps = max(int(self.lr_schedule_steps), 1)
         self.maintenance_interval = max(int(self.maintenance_interval), 1)
         self.maintenance_growth_ratio = max(float(self.maintenance_growth_ratio), 0.0)
         self.maintenance_growth_start_step = max(int(self.maintenance_growth_start_step), 0)
         self.maintenance_alpha_cull_threshold = min(max(float(self.maintenance_alpha_cull_threshold), 1e-8), 1.0)
         self.maintenance_contribution_cull_threshold = max(int(self.maintenance_contribution_cull_threshold), 0)
+        self.sh1_reg_weight = max(float(self.sh1_reg_weight), 0.0)
         self.depth_ratio_weight = max(float(self.depth_ratio_weight), 0.0)
         self.density_regularizer = max(float(self.density_regularizer), 0.0)
         self.max_allowed_density_start = max(float(self.max_allowed_density_start), 0.0)
@@ -241,6 +242,9 @@ class GaussianTrainer:
             huge_value=float(self.stability.huge_value),
         )
 
+    def _apply_renderer_training_hparams(self) -> None:
+        self.renderer.use_sh = bool(self.training.use_sh)
+
     def _dispatch(self, kernel: str, encoder: spy.CommandEncoder, thread_count: spy.uint3, vars: dict[str, object]) -> None:
         dispatch(
             kernel=self._kernels[kernel],
@@ -320,6 +324,7 @@ class GaussianTrainer:
         self.adam = adam_hparams
         self.stability = stability_hparams
         self.training = training_hparams
+        self._apply_renderer_training_hparams()
         self.training.train_downscale_factor = self.effective_train_downscale_factor(self.state.step)
         self.state.last_base_lr = self.current_base_lr(self.state.step)
         self.adam_optimizer.update_hyperparams(self.adam, self._adam_runtime_hparams())
@@ -362,6 +367,7 @@ class GaussianTrainer:
         self.adam = AdamHyperParams() if adam_hparams is None else adam_hparams
         self.stability = StabilityHyperParams() if stability_hparams is None else stability_hparams
         self.training = TrainingHyperParams() if training_hparams is None else training_hparams
+        self._apply_renderer_training_hparams()
         self.metrics = Metrics(self.device)
         self.adam_optimizer = AdamOptimizer(self.device, self.adam, self._adam_runtime_hparams())
         self.optimizer = GaussianOptimizer(self.device, self.renderer, self.adam, self.stability)
@@ -858,7 +864,7 @@ class GaussianTrainer:
             rotations=rotations,
             opacities=np.full((count,), float(np.clip(init_hparams.initial_opacity, 1e-4, 0.9999)), dtype=np.float32),
             colors=colors,
-            sh_coeffs=np.zeros((count, 1, 3), dtype=np.float32),
+            sh_coeffs=np.pad(rgb_to_sh0(colors)[:, None, :], ((0, 0), (0, SUPPORTED_SH_COEFF_COUNT - 1), (0, 0))).astype(np.float32, copy=False),
         )
         self._scene_count, self.scene = count, _SceneCountProxy(count)
         self.renderer.set_scene(scene)
@@ -899,10 +905,9 @@ class GaussianTrainer:
     def read_live_scene(self) -> GaussianScene:
         groups = self.renderer.read_scene_groups(self._scene_count)
         color_alpha = np.asarray(groups["color_alpha"], dtype=np.float32)
-        colors = np.clip(color_alpha[:, :3], 0.0, 1.0)
+        sh_coeffs = pad_sh_coeffs(groups["sh_coeffs"], SUPPORTED_SH_COEFF_COUNT)
+        colors = sh_coeffs_to_display_colors(sh_coeffs)
         opacities = np.reciprocal(1.0 + np.exp(-color_alpha[:, 3])).astype(np.float32, copy=False)
-        sh_coeffs = np.zeros((self._scene_count, 1, 3), dtype=np.float32)
-        sh_coeffs[:, 0, :] = ((colors - 0.5) / _SH_C0).astype(np.float32, copy=False)
         return GaussianScene(
             positions=np.asarray(groups["positions"][:, :3], dtype=np.float32),
             scales=np.asarray(groups["scales"][:, :3], dtype=np.float32),
