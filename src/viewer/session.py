@@ -398,6 +398,25 @@ def update_debug_frame_slider_range(viewer: object) -> None:
     slider.value = clamp_index(int(slider.value), max_index + 1)
 
 
+def _training_debug_clone_count_buffer(viewer: object):
+    return (
+        viewer.s.trainer.maintenance_buffers["clone_counts"]
+        if viewer.s.trainer is not None and "clone_counts" in viewer.s.trainer.maintenance_buffers
+        else None
+    )
+
+
+def _apply_debug_buffers(viewer: object, renderer: GaussianRenderer | None) -> None:
+    if renderer is None:
+        return
+    renderer.set_debug_grad_norm_buffer(
+        viewer.s.training_renderer.work_buffers["debug_grad_norm"]
+        if viewer.s.training_renderer is not None and viewer.s.trainer is not None
+        else None
+    )
+    renderer.set_debug_clone_count_buffer(_training_debug_clone_count_buffer(viewer))
+
+
 def ensure_renderer(viewer: object, attr: str, width: int, height: int, allow_debug_overlays: bool) -> GaussianRenderer:
     size, renderer = (int(width), int(height)), getattr(viewer.s, attr)
     if renderer is not None and (renderer.width, renderer.height) == size:
@@ -407,6 +426,8 @@ def ensure_renderer(viewer: object, attr: str, width: int, height: int, allow_de
     if isinstance(viewer.s.scene, GaussianScene):
         renderer.set_scene(viewer.s.scene)
     setattr(viewer.s, attr, renderer)
+    if attr != "training_renderer":
+        _apply_debug_buffers(viewer, renderer)
     if previous_renderer is not None:
         del previous_renderer
     _invalidate(viewer, "debug" if attr == "debug_renderer" else "main", "debug")
@@ -455,10 +476,8 @@ def ensure_training_runtime_resolution(viewer: object) -> None:
     viewer.device.submit_command_buffer(enc.finish())
     viewer.s.training_renderer = renderer
     viewer.s.trainer.rebind_renderer(renderer)
-    if viewer.s.renderer is not None:
-        viewer.s.renderer.set_debug_grad_norm_buffer(
-            renderer.work_buffers["debug_grad_norm"] if viewer.s.trainer.compute_debug_grad_norm else None
-        )
+    _apply_debug_buffers(viewer, viewer.s.renderer)
+    _apply_debug_buffers(viewer, viewer.s.debug_renderer)
     viewer.s.applied_training_runtime_factor = current_factor
     viewer.s.pending_training_runtime_resize = False
     _invalidate(viewer)
@@ -508,12 +527,8 @@ def apply_live_params(viewer: object, force_init_defaults: bool = False) -> None
         for key, value in renderer_kwargs(params).items():
             setattr(renderer, key, value)
         setattr(viewer.s, state_attr, signature)
-    if viewer.s.renderer is not None:
-        viewer.s.renderer.set_debug_grad_norm_buffer(
-            viewer.s.training_renderer.work_buffers["debug_grad_norm"]
-            if viewer.s.training_renderer is not None and viewer.s.trainer is not None
-            else None
-        )
+    _apply_debug_buffers(viewer, viewer.s.renderer)
+    _apply_debug_buffers(viewer, viewer.s.debug_renderer)
     if viewer.s.trainer is not None:
         viewer.s.trainer.compute_debug_grad_norm = bool(viewer.s.renderer is not None and viewer.s.renderer.debug_show_grad_norm)
         _, params, _, _ = resolve_effective_training_setup(viewer)
@@ -693,7 +708,7 @@ def import_colmap_from_ui(viewer: object) -> None:
     custom_ply_text = _ui_path_string(viewer, "colmap_custom_ply_path")
     custom_ply_path = None if not custom_ply_text else Path(custom_ply_text).expanduser()
     image_downscale_mode = _ui_image_downscale_mode(viewer)
-    image_downscale_target_width = max(int(viewer.ui._values.get("colmap_image_target_width", 1600)), 1)
+    image_downscale_target_width = max(int(viewer.ui._values.get("colmap_image_target_width", 2048)), 1)
     image_downscale_scale = float(np.clip(viewer.ui._values.get("colmap_image_scale", 1.0), 1e-6, 1.0))
     nn_radius_scale_coef = float(viewer.ui._values.get("colmap_nn_radius_scale_coef", 0.5))
     diffused_point_count = max(int(viewer.ui._values.get("colmap_diffused_point_count", 100000)), 1)

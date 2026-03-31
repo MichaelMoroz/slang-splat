@@ -256,8 +256,14 @@ float3 raster_processed_count_color(uint processedCount)
     return jet_colormap(saturate(normalized));
 }
 
+float3 raster_clone_count_color(uint cloneCount)
+{
+    return jet_colormap(debug_normalize_range(float(cloneCount), g_Raster.debugCloneCountRange));
+}
+
 float3 raster_forward_color(RasterGaussian gaussian, uint splatId, uint debugMode)
 {
+    if (debugMode == DEBUG_MODE_CLONE_COUNT) return raster_clone_count_color(g_CloneCounts[splatId]);
     if (debugMode != DEBUG_MODE_GRAD_NORM) return gaussian.colorAlpha.xyz;
     float gradNorm = g_DebugGradNorm[splatId];
     if (!isfinite(gradNorm)) gradNorm = 0.0;

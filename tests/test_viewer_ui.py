@@ -49,6 +49,7 @@ def test_build_ui_initializes_histogram_controls() -> None:
         debug_show_processed_count=False,
         debug_show_grad_norm=False,
         debug_grad_norm_threshold=2e-4,
+        debug_clone_count_range=(0.0, 16.0),
     )
 
     viewer_ui = ui.build_ui(renderer)
@@ -60,6 +61,8 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["cached_raster_grad_fixed_ro_local_range"] == 0.01
     assert viewer_ui._values["cached_raster_grad_fixed_color_range"] == 0.2
     assert viewer_ui._values["cached_raster_grad_atomic_mode"] == 1
+    assert viewer_ui._values["debug_clone_count_min"] == 0.0
+    assert viewer_ui._values["debug_clone_count_max"] == 16.0
     assert viewer_ui._values["lr_scale_mul"] == 5.0
     assert viewer_ui._values["lr_color_mul"] == 5.0
     assert viewer_ui._values["lr_opacity_mul"] == 5.0
@@ -77,7 +80,7 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["max_gaussians"] == 2000000
     assert viewer_ui._values["colmap_init_mode"] == 1
     assert viewer_ui._values["colmap_image_downscale_mode"] == 0
-    assert viewer_ui._values["colmap_image_target_width"] == 1600
+    assert viewer_ui._values["colmap_image_target_width"] == 2048
     assert viewer_ui._values["colmap_image_scale"] == 1.0
     assert viewer_ui._values["colmap_nn_radius_scale_coef"] == 0.5
     assert viewer_ui._values["_histogram_update_y_limit"] is True

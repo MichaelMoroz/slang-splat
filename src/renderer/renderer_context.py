@@ -28,6 +28,7 @@ class GaussianRenderSettings:
     debug_mode: str | None = None
     debug_grad_norm_threshold: float = 2e-4
     debug_ellipse_thickness_px: float = 2.0
+    debug_clone_count_range: tuple[float, float] = (0.0, 16.0)
     debug_density_range: tuple[float, float] = (0.0, 20.0)
     debug_depth_mean_range: tuple[float, float] = (0.0, 10.0)
     debug_depth_std_range: tuple[float, float] = (0.0, 0.5)
@@ -68,6 +69,7 @@ class GaussianRenderSettings:
             "debug_mode": None if self.debug_mode is None else str(self.debug_mode),
             "debug_grad_norm_threshold": float(self.debug_grad_norm_threshold),
             "debug_ellipse_thickness_px": float(self.debug_ellipse_thickness_px),
+            "debug_clone_count_range": tuple(float(x) for x in self.debug_clone_count_range),
             "debug_density_range": tuple(float(x) for x in self.debug_density_range),
             "debug_depth_mean_range": tuple(float(x) for x in self.debug_depth_mean_range),
             "debug_depth_std_range": tuple(float(x) for x in self.debug_depth_std_range),

@@ -68,6 +68,7 @@ _CACHED_RASTER_GRAD_ATOMIC_MODE_LABELS = ("Float Atomics", "Fixed Point")
 _DEBUG_MODE_VALUES = (
     "normal",
     "processed_count",
+    "clone_count",
     "ellipse_outlines",
     "splat_spatial_density",
     "splat_screen_density",
@@ -78,6 +79,7 @@ _DEBUG_MODE_VALUES = (
 _DEBUG_MODE_LABELS = (
     "Normal",
     "Processed Count",
+    "Clone Count",
     "Ellipse Outlines",
     "Spatial Density",
     "Screen Density",
@@ -294,6 +296,8 @@ DEBUG_RENDER_SPECS = (
     ControlSpec("debug_mode", "combo", "Mode", {"value": 0, "options": _DEBUG_MODE_LABELS}),
     ControlSpec("debug_grad_norm_threshold", "input_float", "Grad Norm Threshold", {"value": _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT, "step": 1e-5, "step_fast": 1e-4, "format": "%.6g"}),
     ControlSpec("debug_ellipse_thickness_px", "slider_float", "Ellipse Thickness", {"value": 2.0, "min": 0.25, "max": 8.0, "format": "%.2f px"}),
+    ControlSpec("debug_clone_count_min", "input_float", "Clone Count Min", {"value": 0.0, "step": 1.0, "step_fast": 4.0, "format": "%.5g"}),
+    ControlSpec("debug_clone_count_max", "input_float", "Clone Count Max", {"value": 16.0, "step": 1.0, "step_fast": 4.0, "format": "%.5g"}),
     ControlSpec("debug_density_min", "input_float", "Density Min", {"value": 0.0, "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
     ControlSpec("debug_density_max", "input_float", "Density Max", {"value": 20.0, "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
     ControlSpec("debug_depth_mean_min", "input_float", "Depth Mean Min", {"value": 0.0, "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
@@ -642,6 +646,7 @@ class ToolkitWindow:
     def _debug_colorbar_title(self, mode: str) -> str:
         return {
             "processed_count": "Processed Count",
+            "clone_count": "Clone Count",
             "splat_spatial_density": "Spatial Density",
             "splat_screen_density": "Screen Density",
             "depth_mean": "Depth Mean",
@@ -656,6 +661,8 @@ class ToolkitWindow:
         if mode == "grad_norm":
             threshold = float(ui._values.get("debug_grad_norm_threshold", _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT))
             return f"{_grad_norm_tick_value(t, threshold):.1e}"
+        if mode == "clone_count":
+            return f"{_debug_range_tick_value(t, float(ui._values.get('debug_clone_count_min', 0.0)), float(ui._values.get('debug_clone_count_max', 16.0))):.3g}"
         if mode in ("splat_spatial_density", "splat_screen_density"):
             return f"{_debug_range_tick_value(t, float(ui._values.get('debug_density_min', 0.0)), float(ui._values.get('debug_density_max', 20.0))):.3g}"
         if mode == "depth_mean":
@@ -785,7 +792,7 @@ class ToolkitWindow:
                         imgui.set_item_default_focus()
                 imgui.end_combo()
             if downscale_idx == 1:
-                changed, value = imgui.input_int("Target Width", int(ui._values.get("colmap_image_target_width", 1600)), 64, 256)
+                changed, value = imgui.input_int("Target Width", int(ui._values.get("colmap_image_target_width", 2048)), 64, 256)
                 if changed:
                     ui._values["colmap_image_target_width"] = max(int(value), 1)
                 if imgui.is_item_hovered():
@@ -1387,6 +1394,8 @@ class ToolkitWindow:
         "debug_mode": "Select the renderer debug output mode",
         "debug_grad_norm_threshold": "Reference threshold for the gradient norm heatmap",
         "debug_ellipse_thickness_px": "Thickness used by ellipse outline debug rendering",
+        "debug_clone_count_min": "Lower bound for the per-splat clone counter heatmap",
+        "debug_clone_count_max": "Upper bound for the per-splat clone counter heatmap",
         "debug_density_min": "Lower bound for density debug heatmaps",
         "debug_density_max": "Upper bound for density debug heatmaps",
         "debug_depth_mean_min": "Lower bound for depth mean debug heatmap",
@@ -1542,9 +1551,12 @@ def build_ui(renderer) -> ViewerUI:
     values["debug_mode"] = _DEBUG_MODE_VALUES.index(debug_mode) if debug_mode in _DEBUG_MODE_VALUES else 0
     values["debug_grad_norm_threshold"] = float(getattr(renderer, "debug_grad_norm_threshold", _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT))
     values["debug_ellipse_thickness_px"] = float(getattr(renderer, "debug_ellipse_thickness_px", 2.0))
+    clone_count_range = tuple(getattr(renderer, "debug_clone_count_range", (0.0, 16.0)))
     density_range = tuple(getattr(renderer, "debug_density_range", (0.0, 20.0)))
     depth_mean_range = tuple(getattr(renderer, "debug_depth_mean_range", (0.0, 10.0)))
     depth_std_range = tuple(getattr(renderer, "debug_depth_std_range", (0.0, 0.5)))
+    values["debug_clone_count_min"] = float(clone_count_range[0])
+    values["debug_clone_count_max"] = float(clone_count_range[1])
     values["debug_density_min"] = float(density_range[0])
     values["debug_density_max"] = float(density_range[1])
     values["debug_depth_mean_min"] = float(depth_mean_range[0])
@@ -1557,7 +1569,7 @@ def build_ui(renderer) -> ViewerUI:
     values["colmap_init_mode"] = 1
     values["colmap_custom_ply_path"] = ""
     values["colmap_image_downscale_mode"] = 0
-    values["colmap_image_target_width"] = 1600
+    values["colmap_image_target_width"] = 2048
     values["colmap_image_scale"] = 1.0
     values["colmap_nn_radius_scale_coef"] = 0.5
     values["colmap_diffused_point_count"] = 100000

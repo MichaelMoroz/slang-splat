@@ -6,12 +6,13 @@ static const uint ELLIPSE_POINT_COUNT = 5u;
 static const float GAUSSIAN_SUPPORT_SIGMA_RADIUS = 3.0;
 static const uint DEBUG_MODE_NORMAL = 0u;
 static const uint DEBUG_MODE_PROCESSED_COUNT = 1u;
-static const uint DEBUG_MODE_DEPTH_MEAN = 2u;
-static const uint DEBUG_MODE_DEPTH_STD = 3u;
-static const uint DEBUG_MODE_ELLIPSE_OUTLINES = 4u;
-static const uint DEBUG_MODE_SPLAT_SPATIAL_DENSITY = 5u;
-static const uint DEBUG_MODE_SPLAT_SCREEN_DENSITY = 6u;
-static const uint DEBUG_MODE_GRAD_NORM = 7u;
+static const uint DEBUG_MODE_CLONE_COUNT = 2u;
+static const uint DEBUG_MODE_DEPTH_MEAN = 3u;
+static const uint DEBUG_MODE_DEPTH_STD = 4u;
+static const uint DEBUG_MODE_ELLIPSE_OUTLINES = 5u;
+static const uint DEBUG_MODE_SPLAT_SPATIAL_DENSITY = 6u;
+static const uint DEBUG_MODE_SPLAT_SCREEN_DENSITY = 7u;
+static const uint DEBUG_MODE_GRAD_NORM = 8u;
 
 struct ScanlineWorkItem
 {
@@ -70,6 +71,7 @@ struct RasterParams
     uint debugMode;
     float debugGradNormThreshold;
     float debugEllipseThicknessPx;
+    float2 debugCloneCountRange;
     float2 debugDensityRange;
     float2 debugDepthMeanRange;
     float2 debugDepthStdRange;

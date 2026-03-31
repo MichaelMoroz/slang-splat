@@ -27,7 +27,7 @@ class ColmapImportSettings:
     init_mode: str = "diffused_pointcloud"
     custom_ply_path: Path | None = None
     image_downscale_mode: str = "original"
-    image_downscale_target_width: int = 1600
+    image_downscale_target_width: int = 2048
     image_downscale_scale: float = 1.0
     nn_radius_scale_coef: float = 0.5
     diffused_point_count: int = 100000

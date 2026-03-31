@@ -49,6 +49,7 @@ def test_render_settings_forward_debug_overlays_to_renderer(monkeypatch) -> None
         "cached_raster_grad_fixed_opacity_range": 0.2,
         "debug_grad_norm_threshold": 2e-4,
         "debug_ellipse_thickness_px": 2.0,
+        "debug_clone_count_range": (0.0, 16.0),
         "debug_density_range": (0.0, 20.0),
         "debug_depth_mean_range": (0.0, 10.0),
         "debug_depth_std_range": (0.0, 0.5),
