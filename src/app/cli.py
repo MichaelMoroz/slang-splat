@@ -92,8 +92,10 @@ def _training_params(args: argparse.Namespace):
         opacity_reg_weight=args.opacity_reg,
         depth_ratio_weight=args.depth_ratio_weight,
         density_regularizer=args.density_reg,
+        max_allowed_density_start=args.max_allowed_density_start,
         max_allowed_density=args.max_allowed_density,
         max_gaussians=args.max_gaussians,
+        maintenance_contribution_cull_threshold=args.maintenance_contribution_cull_threshold,
     )
 
 
@@ -224,6 +226,7 @@ TRAIN_RENDER_ARGS = tuple(
         ("--opacity-reg", 0.01),
         ("--depth-ratio-weight", 0.05),
         ("--density-reg", 0.05),
+        ("--max-allowed-density-start", 5.0),
         ("--max-allowed-density", 12.0),
         ("--max-anisotropy", 32.0),
     )
@@ -241,7 +244,8 @@ COMMANDS = (
             A("--sparse-subdir", type=str, default="sparse/0"),
             A("--images-subdir", type=str, default="images_4"),
             A("--iters", type=int, default=1000),
-            A("--max-gaussians", type=int, default=2000000),
+            A("--max-gaussians", type=int, default=1000000),
+            A("--maintenance-contribution-cull-threshold", type=int, default=1024),
             A("--training-profile", type=str, default="auto", choices=TRAINING_PROFILE_CHOICES),
             A("--seed", type=int, default=1234),
             A("--width", type=int, default=0),

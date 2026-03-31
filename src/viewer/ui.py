@@ -228,13 +228,14 @@ GROUP_SPECS = {
         ControlSpec("fov", "slider_float", "FOV", {"value": 60.0, "min": 25.0, "max": 100.0}),
     ),
     "Train Setup": (
-        ControlSpec("max_gaussians", "slider_int", "Max Gaussians", {"value": 2000000, "min": 1000, "max": 10000000}),
+        ControlSpec("max_gaussians", "slider_int", "Max Gaussians", {"value": 1000000, "min": 1000, "max": 10000000}),
         ControlSpec("training_steps_per_frame", "slider_int", "Steps / Frame", {"value": 3, "min": 1, "max": 8}),
         ControlSpec("random_background", "checkbox", "Random Train Background", {"value": True}),
         ControlSpec("maintenance_interval", "input_int", "Maintenance Interval", {"value": 200, "step": 10, "step_fast": 50}),
         ControlSpec("maintenance_growth_ratio", "input_float", "Maintenance Growth", {"value": 0.02, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
         ControlSpec("maintenance_growth_start_step", "input_int", "Start Densification After", {"value": 2000, "step": 100, "step_fast": 500}),
         ControlSpec("maintenance_alpha_cull_threshold", "input_float", "Maintenance Alpha Cull", {"value": 1e-2, "step": 1e-5, "step_fast": 1e-4, "format": "%.6e"}),
+        ControlSpec("maintenance_contribution_cull_threshold", "input_int", "Maintenance Contribution Cull", {"value": 1024, "step": 1, "step_fast": 10}),
         ControlSpec("train_downscale_mode", "combo", "Downscale Mode", {"value": 1, "options": _TRAIN_DOWNSCALE_MODE_LABELS}),
         ControlSpec("train_auto_start_downscale", "slider_int", "Auto Start Downscale", {"value": 16, "min": 1, "max": 16}),
         ControlSpec("train_downscale_base_iters", "input_int", "Downscale Base Iters", {"value": 200, "step": 25, "step_fast": 100}),
@@ -1228,7 +1229,7 @@ class ToolkitWindow:
     def _section_training_setup(self, ui: ViewerUI) -> None:
         if not imgui.collapsing_header("Train Setup"):
             return
-        for key in ("max_gaussians", "training_steps_per_frame", "random_background", "maintenance_interval", "maintenance_growth_ratio", "maintenance_growth_start_step", "maintenance_alpha_cull_threshold", "train_downscale_mode"):
+        for key in ("max_gaussians", "training_steps_per_frame", "random_background", "maintenance_interval", "maintenance_growth_ratio", "maintenance_growth_start_step", "maintenance_alpha_cull_threshold", "maintenance_contribution_cull_threshold", "train_downscale_mode"):
             self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Setup"] if spec.key == key))
         if int(ui._values.get("train_downscale_mode", 0)) == 0:
             for key in ("train_auto_start_downscale", "train_downscale_base_iters", "train_downscale_iter_step", "train_downscale_max_iters"):
@@ -1443,9 +1444,10 @@ class ToolkitWindow:
         "maintenance_growth_ratio": "Target fractional scene growth per maintenance step once densification is enabled",
         "maintenance_growth_start_step": "Keep densification growth at zero until this training iteration, then use the configured maintenance growth",
         "maintenance_alpha_cull_threshold": "Cull splats below this decoded alpha threshold during maintenance",
+        "maintenance_contribution_cull_threshold": "Cull splats whose accumulated alpha contribution stays below this 24.8 fixed-point threshold during maintenance",
         "depth_ratio_weight": "Starting weight for rendered per-pixel depth std/mean regularization; it decays to zero over the LR schedule span",
         "density_regularizer": "Weight applied to the per-pixel hinge penalty max(density - max_allowed_density, 0)",
-        "max_allowed_density": "Per-pixel density threshold above which the density regularizer activates",
+        "max_allowed_density": "End-of-training per-pixel density threshold above which the density regularizer activates; runtime ramps from 5.0 to this value over the LR schedule",
         "lr_schedule_enabled": "Enable cosine scheduling of the base learning rate",
         "lr_schedule_start_lr": "Base learning rate at step 0 of the schedule",
         "lr_schedule_end_lr": "Base learning rate after the cosine schedule ends",

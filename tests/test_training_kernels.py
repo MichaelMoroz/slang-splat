@@ -11,7 +11,7 @@ from src.common import buffer_to_numpy
 from src.filter import SeparableGaussianBlur
 from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
-from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TrainingHyperParams, resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_depth_ratio_weight, resolve_maintenance_growth_ratio, resolve_training_resolution, should_run_maintenance_step
+from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TrainingHyperParams, resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_depth_ratio_weight, resolve_effective_maintenance_interval, resolve_maintenance_growth_ratio, resolve_max_allowed_density, resolve_training_resolution, should_run_maintenance_step
 
 _ADAM_BUFFER_NAMES = ("adam_moments",)
 _OPACITY_EPS = 1e-6
@@ -476,7 +476,18 @@ def test_loss_vars_use_scheduled_depth_ratio_weight(device, tmp_path: Path) -> N
     np.testing.assert_allclose(trainer._loss_vars(1)["g_DepthRatioWeight"], resolve_depth_ratio_weight(training, 1), rtol=0.0, atol=1e-10)
     np.testing.assert_allclose(trainer._loss_vars(2)["g_DepthRatioWeight"], 0.0, rtol=0.0, atol=1e-10)
     np.testing.assert_allclose(trainer._loss_vars(0)["g_DensityRegularizer"], 0.05, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(trainer._loss_vars(0)["g_MaxAllowedDensity"], 12.0, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(trainer._loss_vars(0)["g_MaxAllowedDensity"], 5.0, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(trainer._loss_vars(1)["g_MaxAllowedDensity"], 8.5, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(trainer._loss_vars(2)["g_MaxAllowedDensity"], 12.0, rtol=0.0, atol=1e-10)
+
+
+def test_max_allowed_density_schedule_clamps_to_end_value() -> None:
+    hparams = TrainingHyperParams(max_allowed_density_start=5.0, max_allowed_density=12.0, lr_schedule_steps=4)
+
+    np.testing.assert_allclose(resolve_max_allowed_density(hparams, 0), 5.0, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(resolve_max_allowed_density(hparams, 2), 8.5, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(resolve_max_allowed_density(hparams, 4), 12.0, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(resolve_max_allowed_density(hparams, 40), 12.0, rtol=0.0, atol=1e-10)
 
 
 def test_maintenance_cadence_and_clone_probability_follow_growth_budget() -> None:
@@ -487,6 +498,20 @@ def test_maintenance_cadence_and_clone_probability_follow_growth_budget() -> Non
     np.testing.assert_allclose(
         resolve_clone_probability_threshold(hparams, splat_count=1000, pixel_count=64 * 32, step=200),
         1000.0 * 0.05 / 200.0 / float(64 * 32),
+        rtol=0.0,
+        atol=1e-12,
+    )
+
+
+def test_maintenance_interval_is_floored_by_frame_count() -> None:
+    hparams = TrainingHyperParams(maintenance_interval=2, maintenance_growth_ratio=0.05, maintenance_growth_start_step=0)
+
+    assert resolve_effective_maintenance_interval(hparams, frame_count=5) == 5
+    assert not should_run_maintenance_step(hparams, 4, frame_count=5)
+    assert should_run_maintenance_step(hparams, 5, frame_count=5)
+    np.testing.assert_allclose(
+        resolve_clone_probability_threshold(hparams, splat_count=1000, pixel_count=64 * 32, step=5, frame_count=5),
+        1000.0 * 0.05 / 5.0 / float(64 * 32),
         rtol=0.0,
         atol=1e-12,
     )
@@ -526,8 +551,31 @@ def test_trainer_allocates_minimal_maintenance_buffers(device, tmp_path: Path) -
         seed=123,
     )
 
-    assert set(trainer.maintenance_buffers) == {"total_clone_counter", "clone_counts", "append_counter", "append_params", "dst_splat_params", "dst_adam_moments", "camera_rows"}
+    assert set(trainer.maintenance_buffers) == {"total_clone_counter", "clone_counts", "splat_contribution", "append_counter", "append_params", "dst_splat_params", "dst_adam_moments", "camera_rows"}
     assert trainer.clone_probability_threshold() > 0.0
+
+
+def test_trainer_maintenance_due_uses_dataset_frame_floor(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=8, seed=82)
+    frames = [
+        _make_frame(tmp_path, image_name="maintenance_floor_a.png", image_id=90),
+        _make_frame(tmp_path, image_name="maintenance_floor_b.png", image_id=91),
+        _make_frame(tmp_path, image_name="maintenance_floor_c.png", image_id=92),
+    ]
+    renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=frames,
+        training_hparams=TrainingHyperParams(maintenance_interval=1, maintenance_growth_ratio=0.05, maintenance_growth_start_step=0),
+        seed=123,
+    )
+
+    assert trainer.effective_maintenance_interval() == 3
+    assert not trainer.maintenance_due(1)
+    assert not trainer.maintenance_due(2)
+    assert trainer.maintenance_due(3)
 
 
 def test_training_forward_accumulates_clone_counts(device, tmp_path: Path) -> None:
@@ -552,6 +600,7 @@ def test_training_forward_accumulates_clone_counts(device, tmp_path: Path) -> No
         camera,
         background,
         clone_counts_buffer=trainer.maintenance_buffers["clone_counts"],
+        splat_contribution_buffer=trainer.maintenance_buffers["splat_contribution"],
         clone_select_probability=1.0,
         clone_seed=123,
     )
@@ -559,7 +608,9 @@ def test_training_forward_accumulates_clone_counts(device, tmp_path: Path) -> No
     device.wait()
 
     clone_counts = buffer_to_numpy(trainer.maintenance_buffers["clone_counts"], np.uint32)[: scene.count]
+    contributions = buffer_to_numpy(trainer.maintenance_buffers["splat_contribution"], np.uint32)[: scene.count]
     assert np.any(clone_counts > 0)
+    assert np.any(contributions > 0)
 
 
 def test_depth_ratio_loss_slot_disabled_by_default(device, tmp_path: Path) -> None:
@@ -596,7 +647,7 @@ def test_depth_ratio_loss_contributes_and_changes_gradients(device, tmp_path: Pa
     renderer_off = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
     renderer_on = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
     trainer_off = GaussianTrainer(device=device, renderer=renderer_off, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(depth_ratio_weight=0.0, density_regularizer=0.0), seed=123)
-    trainer_on = GaussianTrainer(device=device, renderer=renderer_on, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(depth_ratio_weight=0.5, density_regularizer=0.5, max_allowed_density=0.0), seed=123)
+    trainer_on = GaussianTrainer(device=device, renderer=renderer_on, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(depth_ratio_weight=0.5, density_regularizer=0.5, max_allowed_density_start=0.0, max_allowed_density=0.0), seed=123)
     camera = frame.make_camera(near=0.1, far=20.0)
     background = np.asarray(trainer_on.training.background, dtype=np.float32)
 
@@ -633,7 +684,7 @@ def test_density_loss_respects_threshold_and_changes_gradients(device, tmp_path:
     renderer_off = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
     renderer_on = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
     trainer_off = GaussianTrainer(device=device, renderer=renderer_off, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(density_regularizer=0.0, depth_ratio_weight=0.0), seed=123)
-    trainer_on = GaussianTrainer(device=device, renderer=renderer_on, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(density_regularizer=0.5, max_allowed_density=0.0, depth_ratio_weight=0.0), seed=123)
+    trainer_on = GaussianTrainer(device=device, renderer=renderer_on, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(density_regularizer=0.5, max_allowed_density_start=0.0, max_allowed_density=0.0, depth_ratio_weight=0.0), seed=123)
     camera = frame.make_camera(near=0.1, far=20.0)
     background = np.asarray(trainer_on.training.background, dtype=np.float32)
 
@@ -681,6 +732,7 @@ def test_maintenance_rewrite_culls_and_splits_families(device, tmp_path: Path) -
     )
 
     trainer.maintenance_buffers["clone_counts"].copy_from_numpy(np.array([2, 5], dtype=np.uint32))
+    trainer.maintenance_buffers["splat_contribution"].copy_from_numpy(np.array([200, 0], dtype=np.uint32))
     trainer._run_maintenance()
 
     groups = _read_scene_groups(renderer, trainer.scene.count)
@@ -699,7 +751,32 @@ def test_maintenance_rewrite_culls_and_splits_families(device, tmp_path: Path) -
         atol=1e-6,
     )
     clone_counts_after = buffer_to_numpy(trainer.maintenance_buffers["clone_counts"], np.uint32)[: trainer.scene.count]
+    contribution_after = buffer_to_numpy(trainer.maintenance_buffers["splat_contribution"], np.uint32)[: trainer.scene.count]
     assert np.all(clone_counts_after == 0)
+    assert np.all(contribution_after == 0)
+
+
+def test_maintenance_rewrite_culls_low_contribution_splats(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=2, seed=95)
+    scene.opacities[:] = np.array([0.6, 0.7], dtype=np.float32)
+    frame = _make_frame(tmp_path, image_name="maintenance_contribution_cull_target.png", image_id=111)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(maintenance_alpha_cull_threshold=1e-6),
+        seed=123,
+    )
+
+    trainer.maintenance_buffers["clone_counts"].copy_from_numpy(np.array([0, 0], dtype=np.uint32))
+    trainer.maintenance_buffers["splat_contribution"].copy_from_numpy(np.array([200, 49], dtype=np.uint32))
+    trainer._run_maintenance()
+
+    assert trainer.scene.count == 1
+    groups = _read_scene_groups(renderer, trainer.scene.count)
+    np.testing.assert_allclose(groups["positions"][0, :3], scene.positions[0], rtol=0.0, atol=1e-6)
 
 
 def test_maintenance_rewrite_migrates_adam_moments(device, tmp_path: Path) -> None:
@@ -724,6 +801,7 @@ def test_maintenance_rewrite_migrates_adam_moments(device, tmp_path: Path) -> No
     trainer.adam_optimizer.buffers["adam_moments"].copy_from_numpy(src_moments.reshape(-1, 2))
 
     trainer.maintenance_buffers["clone_counts"].copy_from_numpy(np.array([2, 5], dtype=np.uint32))
+    trainer.maintenance_buffers["splat_contribution"].copy_from_numpy(np.array([200, 0], dtype=np.uint32))
     trainer._run_maintenance()
 
     expected = np.repeat(src_moments[:, 0:1, :], 3, axis=1)
@@ -746,6 +824,7 @@ def test_maintenance_respects_max_gaussians_cap(device, tmp_path: Path) -> None:
     )
 
     trainer.maintenance_buffers["clone_counts"].copy_from_numpy(np.array([4, 4], dtype=np.uint32))
+    trainer.maintenance_buffers["splat_contribution"].copy_from_numpy(np.array([200, 200], dtype=np.uint32))
     trainer._run_maintenance()
 
     assert trainer.scene.count == 3
@@ -809,10 +888,14 @@ def test_maintenance_min_screen_size_raises_small_splats(device, tmp_path: Path)
         if value is not None
     )
 
+    trainer.maintenance_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
     trainer._run_maintenance()
 
     scales = _actual_scale(_read_scene_groups(renderer, trainer.scene.count)["scales"][0, :3])
-    np.testing.assert_allclose(scales, np.full((3,), expected_support / _GAUSSIAN_SUPPORT_SIGMA_RADIUS, dtype=np.float32), rtol=0.0, atol=1e-6)
+    initial_scale = _actual_scale(scene.scales[0, :3])
+    assert np.all(scales > initial_scale)
+    np.testing.assert_allclose(scales, np.full((3,), scales[0], dtype=np.float32), rtol=0.0, atol=1e-6)
+    assert float(scales[0]) <= float(expected_support / _GAUSSIAN_SUPPORT_SIGMA_RADIUS) + 1e-6
 
 
 def test_training_max_screen_size_clamps_large_splats(device, tmp_path: Path) -> None:

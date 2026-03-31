@@ -60,6 +60,7 @@ _TRAINING_PARAM_KEYS = {
     "maintenance_growth_ratio": "maintenance_growth_ratio",
     "maintenance_growth_start_step": "maintenance_growth_start_step",
     "maintenance_alpha_cull_threshold": "maintenance_alpha_cull_threshold",
+    "maintenance_contribution_cull_threshold": "maintenance_contribution_cull_threshold",
     "random_background": "random_background",
     "train_downscale_mode": "train_downscale_mode",
     "train_auto_start_downscale": "train_auto_start_downscale",

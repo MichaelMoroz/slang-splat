@@ -13,7 +13,7 @@ from ..renderer import Camera, GaussianRenderer
 from ..scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 from .adam import AdamOptimizer, AdamRuntimeHyperParams
 from .optimizer import GaussianOptimizer
-from .schedule import resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_depth_ratio_weight, resolve_maintenance_growth_ratio, should_run_maintenance_step
+from .schedule import resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_depth_ratio_weight, resolve_effective_maintenance_interval, resolve_maintenance_growth_ratio, resolve_max_allowed_density, should_run_maintenance_step
 
 TRAIN_DOWNSCALE_MODE_AUTO = 0
 TRAIN_DOWNSCALE_MAX_FACTOR = 16
@@ -103,10 +103,10 @@ class StabilityHyperParams:
 class TrainingHyperParams:
     background: tuple[float, float, float] = (0.0, 0.0, 0.0); near: float = 0.1; far: float = 120.0
     random_background: bool = True
-    scale_l2_weight: float = 0.0; scale_abs_reg_weight: float = 0.01; opacity_reg_weight: float = 0.01; depth_ratio_weight: float = 0.05; density_regularizer: float = 0.05; max_allowed_density: float = 12.0
+    scale_l2_weight: float = 0.0; scale_abs_reg_weight: float = 0.01; opacity_reg_weight: float = 0.01; depth_ratio_weight: float = 0.05; density_regularizer: float = 0.05; max_allowed_density_start: float = 5.0; max_allowed_density: float = 12.0
     lr_schedule_enabled: bool = True; lr_schedule_start_lr: float = 1e-3; lr_schedule_end_lr: float = 1e-4; lr_schedule_steps: int = 30_000
-    maintenance_interval: int = 200; maintenance_growth_ratio: float = 0.02; maintenance_growth_start_step: int = 2_000; maintenance_alpha_cull_threshold: float = 1e-2
-    max_gaussians: int = 2_000_000; train_downscale_mode: int = 1; train_auto_start_downscale: int = 16
+    maintenance_interval: int = 200; maintenance_growth_ratio: float = 0.02; maintenance_growth_start_step: int = 2_000; maintenance_alpha_cull_threshold: float = 1e-2; maintenance_contribution_cull_threshold: int = 1024
+    max_gaussians: int = 1_000_000; train_downscale_mode: int = 1; train_auto_start_downscale: int = 16
     train_downscale_base_iters: int = 200; train_downscale_iter_step: int = 50; train_downscale_max_iters: int = 30_000
     train_downscale_factor: int = 1
 
@@ -120,9 +120,12 @@ class TrainingHyperParams:
         self.maintenance_growth_ratio = max(float(self.maintenance_growth_ratio), 0.0)
         self.maintenance_growth_start_step = max(int(self.maintenance_growth_start_step), 0)
         self.maintenance_alpha_cull_threshold = min(max(float(self.maintenance_alpha_cull_threshold), 1e-8), 1.0)
+        self.maintenance_contribution_cull_threshold = max(int(self.maintenance_contribution_cull_threshold), 0)
         self.depth_ratio_weight = max(float(self.depth_ratio_weight), 0.0)
         self.density_regularizer = max(float(self.density_regularizer), 0.0)
+        self.max_allowed_density_start = max(float(self.max_allowed_density_start), 0.0)
         self.max_allowed_density = max(float(self.max_allowed_density), 0.0)
+        self.max_allowed_density = max(self.max_allowed_density, self.max_allowed_density_start)
         mode = int(self.train_downscale_mode)
         legacy_factor = min(max(int(self.train_downscale_factor), 1), TRAIN_DOWNSCALE_MAX_FACTOR)
         if mode == 1 and legacy_factor != 1:
@@ -197,16 +200,19 @@ class GaussianTrainer:
         resolved_step = self.state.step if step is None else int(step)
         return resolve_cosine_base_learning_rate(self.training, resolved_step)
 
+    def effective_maintenance_interval(self) -> int:
+        return resolve_effective_maintenance_interval(self.training, len(self.frames))
+
     def maintenance_due(self, step: int | None = None) -> bool:
         resolved_step = self.state.step if step is None else int(step)
-        return should_run_maintenance_step(self.training, resolved_step)
+        return should_run_maintenance_step(self.training, resolved_step, len(self.frames))
 
     def clone_probability_threshold(self, splat_count: int | None = None, width: int | None = None, height: int | None = None, step: int | None = None) -> float:
         resolved_splats = self._scene_count if splat_count is None else int(splat_count)
         resolved_width = self.renderer.width if width is None else int(width)
         resolved_height = self.renderer.height if height is None else int(height)
         resolved_step = self.state.step if step is None else int(step)
-        return resolve_clone_probability_threshold(self.training, resolved_splats, resolved_width * resolved_height, resolved_step)
+        return resolve_clone_probability_threshold(self.training, resolved_splats, resolved_width * resolved_height, resolved_step, len(self.frames))
 
     def get_frame_target_texture(
         self,
@@ -252,6 +258,7 @@ class GaussianTrainer:
             camera=frame_camera,
             background=background,
             clone_counts_buffer=self._maintenance_buffers["clone_counts"],
+            splat_contribution_buffer=self._maintenance_buffers["splat_contribution"],
             clone_select_probability=self.clone_probability_threshold(step=resolved_step),
             clone_seed=self._seed + resolved_step,
         )
@@ -294,6 +301,7 @@ class GaussianTrainer:
             "g_DstAdamMoments": self._maintenance_buffers["dst_adam_moments"],
             "g_AppendParams": self._maintenance_buffers["append_params"],
             "g_CloneCounts": self._maintenance_buffers["clone_counts"],
+            "g_SplatContribution": self._maintenance_buffers["splat_contribution"],
             "g_TotalCloneCounter": self._maintenance_buffers["total_clone_counter"],
             "g_AppendCounter": self._maintenance_buffers["append_counter"],
             "g_MaintenanceCameraRows": self._maintenance_buffers["camera_rows"],
@@ -304,6 +312,7 @@ class GaussianTrainer:
             "g_MaintenanceSeed": np.uint32(self._seed + self.state.step),
             "g_MaintenanceCameraCount": int(len(self.frames)),
             "g_MaintenanceAlphaCullThreshold": float(self.training.maintenance_alpha_cull_threshold),
+            "g_MaintenanceContributionCullThreshold": np.uint32(self.training.maintenance_contribution_cull_threshold),
             "g_MaintenanceRadiusScale": float(max(self.renderer.radius_scale, 1e-8)),
         }
 
@@ -444,6 +453,9 @@ class GaussianTrainer:
         if grow_splats or "clone_counts" not in self._maintenance_buffers:
             self._maintenance_splat_capacity = max(required_splats, max(self._maintenance_splat_capacity, 1) + max(self._maintenance_splat_capacity, 1) // 2)
             self._maintenance_buffers["clone_counts"] = self.device.create_buffer(size=self._maintenance_splat_capacity * self._U32_BYTES, usage=usage)
+            self._maintenance_buffers["splat_contribution"] = self.device.create_buffer(size=self._maintenance_splat_capacity * self._U32_BYTES, usage=usage)
+        elif "splat_contribution" not in self._maintenance_buffers:
+            self._maintenance_buffers["splat_contribution"] = self.device.create_buffer(size=self._maintenance_splat_capacity * self._U32_BYTES, usage=usage)
         if grow_append or "append_params" not in self._maintenance_buffers:
             self._maintenance_append_capacity = max(required_append, max(self._maintenance_append_capacity, 1) + max(self._maintenance_append_capacity, 1) // 2)
             self._maintenance_buffers["append_params"] = self.device.create_buffer(size=self._maintenance_append_capacity * packed_param_bytes, usage=usage)
@@ -718,7 +730,7 @@ class GaussianTrainer:
             "g_HugeValue": float(self.stability.huge_value),
             "g_DepthRatioWeight": float(resolve_depth_ratio_weight(self.training, resolved_step)),
             "g_DensityRegularizer": float(self.training.density_regularizer),
-            "g_MaxAllowedDensity": float(self.training.max_allowed_density),
+            "g_MaxAllowedDensity": float(resolve_max_allowed_density(self.training, resolved_step)),
         }
 
     def _dispatch_loss_forward(self, encoder: spy.CommandEncoder, target_texture: spy.Texture, step: int | None = None) -> None:

@@ -9,6 +9,7 @@ import "utility/splatting/raster.slang";
 
 uniform float g_MaxAnisotropy;
 uniform RWStructuredBuffer<uint> g_CloneCounts;
+uniform RWStructuredBuffer<uint> g_SplatContribution;
 uniform float g_CloneSelectProbability;
 uniform uint g_CloneSeed;
 
@@ -35,6 +36,8 @@ struct RasterState : IDifferentiable
 static const float RASTER_GRAD_FIXED_INT_MIN_F = -2147483648.0;
 static const float RASTER_GRAD_FIXED_INT_MAX_F = 2147483647.0;
 static const float RASTER_GRAD_FIXED_AVG_INV_SCALE_FLOOR = 0.25;
+static const float SPLAT_CONTRIBUTION_FIXED_SCALE = 256.0;
+static const float SPLAT_CONTRIBUTION_FIXED_MAX_F = 16777215.99609375;
 
 int raster_grad_fixed_quantize(float value, float range)
 {
@@ -51,6 +54,12 @@ float raster_grad_fixed_avg_inv_scale(float3 scale)
 {
     float avgScale = pow(max(scale.x * scale.y * scale.z, SMALL_VALUE), 1.0 / 3.0);
     return max(1.0 / max(avgScale, SMALL_VALUE), RASTER_GRAD_FIXED_AVG_INV_SCALE_FLOOR);
+}
+
+uint splat_contribution_fixed_quantize(float value)
+{
+    float clamped = clamp(value, 0.0, SPLAT_CONTRIBUTION_FIXED_MAX_F);
+    return uint(floor(clamped * SPLAT_CONTRIBUTION_FIXED_SCALE + 0.5));
 }
 
 void store_param_grad<let N : int>(uint splatCount, uint firstParamId, uint splatId, vector<float, N> grad)
@@ -449,9 +458,12 @@ struct TrainingRasterReplayVariant : IRasterReplayVariant
             InterlockedAdd(g_CloneCounts[splatId], 1u);
         }
         float contributionWeight = state.trans * alpha;
+        float3 color = raster_forward_color(gaussian, splatId, replayState.debugMode);
+        uint contribution = splat_contribution_fixed_quantize(contributionWeight);
+        if (contribution > 0u) InterlockedAdd(g_SplatContribution[splatId], contribution);
         if (rayDepth > 0.0) replayState.depthState = depth_state_step(replayState.depthState, contributionWeight, rayDepth);
         replayState.splatDensitySum = raster_splat_density_step(replayState.splatDensitySum, state.trans, alpha, gaussian.colorAlpha.w);
-        replayState.pixelState = state.blend(raster_forward_color(gaussian, splatId, replayState.debugMode), alpha);
+        replayState.pixelState = state.blend(color, alpha);
         replayState.processedCount += 1u;
     }
 }

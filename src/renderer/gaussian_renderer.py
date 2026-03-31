@@ -590,6 +590,7 @@ class GaussianRenderer:
             "training_density_grad": max(self.width * self.height, 1) * self._U32_BYTES,
             "training_processed_end": max(self.width * self.height, 1) * self._U32_BYTES,
             "training_batch_end": max(self.tile_count, 1) * self._U32_BYTES,
+            "training_splat_contribution": max(self._work_splat_capacity, 1) * self._U32_BYTES,
             "raster_cache": max(self._work_splat_capacity, 1) * self._RASTER_CACHE_PARAM_COUNT * self._U32_BYTES,
             **{name: max(self._work_splat_capacity, 1) * self.TRAINABLE_PARAM_COUNT * self._U32_BYTES for name in self._GRAD_SHADER_VARS},
             "cached_raster_grads_fixed": max(self._work_splat_capacity, 1) * self._RASTER_CACHE_PARAM_COUNT * self._U32_BYTES,
@@ -630,6 +631,7 @@ class GaussianRenderer:
                 "training_density_grad",
                 "training_processed_end",
                 "training_batch_end",
+                "training_splat_contribution",
                 "raster_cache",
             )
         }
@@ -993,6 +995,7 @@ class GaussianRenderer:
         background: np.ndarray,
         output: spy.Texture | None = None,
         clone_counts_buffer: spy.Buffer | None = None,
+        splat_contribution_buffer: spy.Buffer | None = None,
         clone_select_probability: float = 0.0,
         clone_seed: int = 0,
     ) -> None:
@@ -1010,6 +1013,7 @@ class GaussianRenderer:
             "g_TrainingDensity": self._work_buffers["training_density"],
             "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"],
             "g_TrainingBatchEnd": self._work_buffers["training_batch_end"],
+            "g_SplatContribution": self._work_buffers["training_splat_contribution"] if splat_contribution_buffer is None else splat_contribution_buffer,
             **self._raster_grad_decode_scale_var(1.0),
             **self._raster_grad_fixed_range_vars(),
             **self._prepass_uniforms(self._scene_count),
@@ -1413,11 +1417,12 @@ class GaussianRenderer:
         background: np.ndarray,
         output: spy.Texture | None = None,
         clone_counts_buffer: spy.Buffer | None = None,
+        splat_contribution_buffer: spy.Buffer | None = None,
         clone_select_probability: float = 0.0,
         clone_seed: int = 0,
     ) -> None:
         self._require_scene()
-        self._rasterize_training_forward(encoder, camera, background, output, clone_counts_buffer, clone_select_probability, clone_seed)
+        self._rasterize_training_forward(encoder, camera, background, output, clone_counts_buffer, splat_contribution_buffer, clone_select_probability, clone_seed)
 
     def rasterize_backward_current_scene(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output_grad: spy.Buffer, grad_scale: float = 1.0, depth_ratio_grad: spy.Buffer | None = None, density_grad: spy.Buffer | None = None) -> None:
         self._require_scene()

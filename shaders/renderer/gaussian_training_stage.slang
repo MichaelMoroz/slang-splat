@@ -12,7 +12,6 @@ static const uint LOSS_SLOT_TOTAL = 0u;
 static const uint LOSS_SLOT_MSE = 1u;
 static const uint LOSS_SLOT_DEPTH_RATIO = 2u;
 static const uint LOSS_SLOT_DENSITY = 3u;
-
 uniform uint g_Width;
 uniform uint g_Height;
 uniform float g_InvPixelCount;
@@ -61,6 +60,7 @@ uniform RWStructuredBuffer<float> g_DstSplatParams;
 uniform RWStructuredBuffer<float2> g_DstAdamMoments;
 uniform RWStructuredBuffer<float> g_AppendParams;
 uniform RWStructuredBuffer<uint> g_CloneCounts;
+uniform RWStructuredBuffer<uint> g_SplatContribution;
 uniform RWStructuredBuffer<uint> g_TotalCloneCounter;
 uniform RWStructuredBuffer<uint> g_AppendCounter;
 uniform StructuredBuffer<float4> g_MaintenanceCameraRows;
@@ -71,6 +71,7 @@ uniform uint g_SurvivorCount;
 uniform uint g_MaintenanceSeed;
 uniform uint g_MaintenanceCameraCount;
 uniform float g_MaintenanceAlphaCullThreshold;
+uniform uint g_MaintenanceContributionCullThreshold;
 uniform float g_MaintenanceRadiusScale;
 
 groupshared float gsLoss[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
@@ -87,6 +88,11 @@ struct SplatState
 };
 
 static const uint MAINTENANCE_CAMERA_ROW_COUNT = 6u;
+
+bool should_cull_maintenance_splat(float alpha, uint contribution)
+{
+    return alpha < g_MaintenanceAlphaCullThreshold || contribution < g_MaintenanceContributionCullThreshold;
+}
 
 SplatState load_splat_state(RWStructuredBuffer<float> params, uint splatCount, uint splatId)
 {
@@ -404,6 +410,7 @@ void csClearCloneCounts(uint3 dispatchThreadID : SV_DispatchThreadID)
     }
     if (splatId >= g_SrcSplatCount) return;
     g_CloneCounts[splatId] = 0u;
+    g_SplatContribution[splatId] = 0u;
 }
 
 [shader("compute")]
@@ -422,7 +429,7 @@ void csPrepareMaintenanceCounts(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint splatId = dispatchThreadID.x;
     if (splatId >= g_SrcSplatCount) return;
     float alpha = opacity_from_raw(load_splat_param(g_SrcSplatParams, g_SrcSplatCount, PARAM_RAW_OPACITY, splatId));
-    if (alpha < g_MaintenanceAlphaCullThreshold) return;
+    if (should_cull_maintenance_splat(alpha, g_SplatContribution[splatId])) return;
     uint _;
     InterlockedAdd(g_AppendCounter[0], 1u, _);
     uint cloneCount = g_CloneCounts[splatId];
@@ -465,7 +472,7 @@ void csRewriteMaintenanceSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     SplatState source = load_splat_state(g_SrcSplatParams, g_SrcSplatCount, splatId);
     float alpha = opacity_from_raw(source.colorAlpha.w);
-    if (alpha < g_MaintenanceAlphaCullThreshold) return;
+    if (should_cull_maintenance_splat(alpha, g_SplatContribution[splatId])) return;
 
     uint cloneCount = g_CloneCounts[splatId];
     uint parentIndex = 0u;
