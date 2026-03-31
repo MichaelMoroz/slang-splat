@@ -12,7 +12,6 @@ static const uint LOSS_SLOT_TOTAL = 0u;
 static const uint LOSS_SLOT_MSE = 1u;
 static const uint LOSS_SLOT_DEPTH_RATIO = 2u;
 static const uint LOSS_SLOT_DENSITY = 3u;
-static const float GOLDEN_ANGLE_RADIANS = 2.39996322972865332;
 
 uniform uint g_Width;
 uniform uint g_Height;
@@ -197,23 +196,18 @@ void copy_adam_state(uint srcSplatId, uint dstSplatId)
     }
 }
 
-float clone_unit_float(uint value)
+float3 largest_scale_axis(float3 scale)
 {
-    return (float(value) + 0.5) * 2.3283064365386963e-10;
+    if (scale.x >= scale.y && scale.x >= scale.z) return float3(1.0, 0.0, 0.0);
+    if (scale.y >= scale.z) return float3(0.0, 1.0, 0.0);
+    return float3(0.0, 0.0, 1.0);
 }
 
-float3 split_direction(uint splatId, uint slot, uint familySize)
+float centered_family_coordinate(uint slot, uint familySize)
 {
-    if (slot == 0u || familySize <= 1u) return 0.0;
-    float index = float(slot - 1u);
-    float count = max(float(familySize - 1u), 1.0);
-    float z = 1.0 - 2.0 * ((index + 0.5) / count);
-    float r = sqrt(max(1.0 - z * z, 0.0));
-    float angle = GOLDEN_ANGLE_RADIANS * (index + clone_unit_float(splatId ^ g_MaintenanceSeed));
-    float s;
-    float c;
-    sincos(angle, s, c);
-    return float3(r * c, r * s, z);
+    if (familySize <= 1u) return 0.0;
+    float halfSpan = max(0.5 * float(familySize - 1u), 1.0);
+    return (float(slot) - 0.5 * float(familySize - 1u)) / halfSpan;
 }
 
 SplatState split_family_member(SplatState source, uint splatId, uint slot, uint familySize)
@@ -226,7 +220,8 @@ SplatState split_family_member(SplatState source, uint splatId, uint slot, uint 
     float alpha = opacity_from_raw(source.colorAlpha.w);
     float childAlpha = 1.0 - pow(max(1.0 - alpha, TINY_VALUE), 1.0 / family);
     float4 qInv = float4(source.rotation.x, -source.rotation.y, -source.rotation.z, -source.rotation.w);
-    float3 localOffset = split_direction(splatId, slot, familySize) * max(parentScale - childScale, 0.0);
+    float3 axis = largest_scale_axis(parentScale);
+    float3 localOffset = axis * centered_family_coordinate(slot, familySize) * dot(max(parentScale - childScale, 0.0), axis);
     SplatState child = source;
     child.position = source.position + rotate_by_quat(localOffset, qInv);
     child.logScale = source.logScale - shrink;

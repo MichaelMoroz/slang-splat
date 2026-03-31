@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import replace
 
 import numpy as np
 from PIL import Image
 from scipy.spatial import cKDTree
+from scipy.spatial.transform import Rotation
 
 from ..gaussian_scene import GaussianScene
 from .colmap_types import ColmapFrame, ColmapReconstruction, GaussianInitHyperParams, point_tables
@@ -21,6 +23,134 @@ INIT_OPACITY_MIN = 0.10
 INIT_OPACITY_MAX = 0.35
 _MIN_SCALE = 1e-4
 _MAX_SCALE = 1e4
+
+
+def _camera_to_world_pose(q_wxyz: np.ndarray, t_xyz: np.ndarray) -> np.ndarray:
+    q = np.asarray(q_wxyz, dtype=np.float32).reshape(4)
+    t = np.asarray(t_xyz, dtype=np.float32).reshape(3)
+    rot_wc = Rotation.from_quat(np.array([q[1], q[2], q[3], q[0]], dtype=np.float64)).as_matrix().astype(np.float32)
+    pose = np.eye(4, dtype=np.float32)
+    pose[:3, :3] = rot_wc.T
+    pose[:3, 3] = -(rot_wc.T @ t)
+    return pose
+
+
+def _orthonormalize_rotation(rotation: np.ndarray) -> np.ndarray:
+    u, _, vh = np.linalg.svd(np.asarray(rotation, dtype=np.float64).reshape(3, 3), full_matrices=False)
+    ortho = u @ vh
+    if np.linalg.det(ortho) < 0.0:
+        u[:, -1] *= -1.0
+        ortho = u @ vh
+    return ortho.astype(np.float32)
+
+
+def _world_to_camera_from_pose(pose: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    pose_arr = np.asarray(pose, dtype=np.float32).reshape(4, 4)
+    rot_cw = _orthonormalize_rotation(pose_arr[:3, :3])
+    center = pose_arr[:3, 3].astype(np.float32, copy=False)
+    rot_wc = rot_cw.T
+    t_xyz = -(rot_wc @ center)
+    return rot_wc.astype(np.float32, copy=False), t_xyz.astype(np.float32, copy=False)
+
+
+def _rotation_to_quaternion_wxyz(rotation: np.ndarray) -> np.ndarray:
+    quat_xyzw = Rotation.from_matrix(np.asarray(rotation, dtype=np.float64).reshape(3, 3)).as_quat().astype(np.float32)
+    return np.array([quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]], dtype=np.float32)
+
+
+def rescale_poses_to_unit_cube(poses: np.ndarray, transform: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    positions = np.asarray(poses, dtype=np.float32)[:, :3, 3]
+    max_extent = float(np.max(np.abs(positions))) if positions.size > 0 else 0.0
+    if not np.isfinite(max_extent) or max_extent <= 1e-8:
+        return poses.astype(np.float32, copy=False), transform.astype(np.float32, copy=False)
+    scale = np.float32(1.0 / max_extent)
+    scale_transform = np.eye(4, dtype=np.float32)
+    scale_transform[:3, :3] *= scale
+    return scale_transform @ poses, scale_transform @ transform
+
+
+def transform_poses_pca(poses: np.ndarray, rescale: bool = True) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Aligns the scene by assuming that most movement happened parallel to the ground plane during capture.
+    Adapted from Zip-NeRF (https://github.com/jonbarron/camp_zipnerf)
+    """
+    poses_arr = np.asarray(poses, dtype=np.float32).reshape(-1, 4, 4).copy()
+    if poses_arr.shape[0] == 0:
+        return poses_arr, np.eye(4, dtype=np.float32)
+
+    colmap2opengl = np.diag([1.0, -1.0, -1.0, 1.0]).astype(np.float32)
+    poses_arr = poses_arr @ colmap2opengl
+
+    positions = poses_arr[:, :3, 3]
+    mean_position = np.mean(positions, axis=0, dtype=np.float32)
+    displacements = positions - mean_position
+    cov = displacements.T @ displacements
+    eigvals, eigvecs = np.linalg.eigh(cov.astype(np.float64))
+    eigvecs = eigvecs[:, np.argsort(eigvals)[::-1]].astype(np.float32)
+
+    rotation = eigvecs.T.astype(np.float32)
+    if np.linalg.det(rotation) < 0.0:
+        rotation = np.diag([1.0, 1.0, -1.0]).astype(np.float32) @ rotation
+
+    transform = np.eye(4, dtype=np.float32)
+    transform[:3, :3] = rotation
+    transform[:3, 3] = rotation @ (-mean_position)
+    poses_arr = transform @ poses_arr
+
+    if float(np.mean(poses_arr[:, 2, 1], dtype=np.float32)) < 0.0:
+        flip = np.diag([1.0, -1.0, -1.0, 1.0]).astype(np.float32)
+        poses_arr = flip @ poses_arr
+        transform = flip @ transform
+
+    if rescale:
+        poses_arr, transform = rescale_poses_to_unit_cube(poses_arr, transform)
+
+    aligned2colmap = np.array(
+        [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, -1.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+    poses_arr = aligned2colmap @ poses_arr
+    transform = aligned2colmap @ transform
+    poses_arr = poses_arr @ np.linalg.inv(colmap2opengl).astype(np.float32)
+    return poses_arr.astype(np.float32, copy=False), transform.astype(np.float32, copy=False)
+
+
+def transform_colmap_reconstruction_pca(recon: ColmapReconstruction, rescale: bool = True) -> tuple[ColmapReconstruction, np.ndarray]:
+    image_items = sorted(recon.images.items())
+    if not image_items:
+        return recon, np.eye(4, dtype=np.float32)
+
+    poses = np.stack([_camera_to_world_pose(image.q_wxyz, image.t_xyz) for _, image in image_items], axis=0)
+    transformed_poses, transform = transform_poses_pca(poses, rescale=rescale)
+
+    transformed_images = {
+        image_id: replace(
+            image,
+            q_wxyz=_rotation_to_quaternion_wxyz(_world_to_camera_from_pose(transformed_pose)[0]),
+            t_xyz=_world_to_camera_from_pose(transformed_pose)[1],
+        )
+        for (image_id, image), transformed_pose in zip(image_items, transformed_poses, strict=False)
+    }
+
+    transformed_points = {}
+    for point_id, point in recon.points3d.items():
+        xyz_h = np.concatenate((np.asarray(point.xyz, dtype=np.float32), np.array([1.0], dtype=np.float32)))
+        transformed_xyz = (transform @ xyz_h)[:3].astype(np.float32, copy=False)
+        transformed_points[point_id] = replace(point, xyz=transformed_xyz)
+
+    transformed_recon = ColmapReconstruction(
+        root=recon.root,
+        sparse_dir=recon.sparse_dir,
+        cameras=recon.cameras,
+        images=transformed_images,
+        points3d=transformed_points,
+    )
+    return transformed_recon, transform
 
 
 def _colmap_point_positions(recon: ColmapReconstruction) -> np.ndarray:
@@ -238,6 +368,20 @@ def initialize_scene_from_colmap_points(recon: ColmapReconstruction, max_gaussia
         raise RuntimeError("COLMAP reconstruction has no 3D points.")
     chosen_count = xyz.shape[0] if max_gaussians <= 0 else min(max(int(max_gaussians), 1), xyz.shape[0])
     return _build_scene_from_positions_colors(xyz[:chosen_count].copy(), rgb[:chosen_count].copy(), seed, init_hparams)
+
+
+def initialize_scene_from_points_colors(
+    positions: np.ndarray,
+    colors: np.ndarray,
+    seed: int,
+    init_hparams: GaussianInitHyperParams | None = None,
+) -> GaussianScene:
+    return _build_scene_from_positions_colors(
+        np.ascontiguousarray(positions, dtype=np.float32).copy(),
+        np.ascontiguousarray(colors, dtype=np.float32).copy(),
+        seed,
+        init_hparams,
+    )
 
 
 def initialize_scene_from_colmap_diffused_points(

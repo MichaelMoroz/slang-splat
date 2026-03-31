@@ -5,9 +5,12 @@ from ._internal.colmap_ops import (
     build_training_frames_from_root,
     initialize_scene_from_colmap_diffused_points,
     initialize_scene_from_colmap_points,
+    initialize_scene_from_points_colors,
     resolve_colmap_init_hparams,
     sample_colmap_diffused_points,
     suggest_colmap_init_hparams,
+    transform_colmap_reconstruction_pca,
+    transform_poses_pca,
 )
 from ._internal.colmap_types import (
     ColmapFrame,
@@ -29,6 +32,9 @@ __all__ = [
     "sample_colmap_diffused_points",
     "initialize_scene_from_colmap_points",
     "initialize_scene_from_colmap_diffused_points",
+    "initialize_scene_from_points_colors",
     "suggest_colmap_init_hparams",
     "resolve_colmap_init_hparams",
+    "transform_poses_pca",
+    "transform_colmap_reconstruction_pca",
 ]

@@ -224,7 +224,7 @@ TRAIN_RENDER_ARGS = tuple(
         ("--opacity-reg", 0.01),
         ("--depth-ratio-weight", 0.05),
         ("--density-reg", 0.05),
-        ("--max-allowed-density", 4.5),
+        ("--max-allowed-density", 12.0),
         ("--max-anisotropy", 32.0),
     )
 )

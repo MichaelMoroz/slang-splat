@@ -476,7 +476,7 @@ def test_loss_vars_use_scheduled_depth_ratio_weight(device, tmp_path: Path) -> N
     np.testing.assert_allclose(trainer._loss_vars(1)["g_DepthRatioWeight"], resolve_depth_ratio_weight(training, 1), rtol=0.0, atol=1e-10)
     np.testing.assert_allclose(trainer._loss_vars(2)["g_DepthRatioWeight"], 0.0, rtol=0.0, atol=1e-10)
     np.testing.assert_allclose(trainer._loss_vars(0)["g_DensityRegularizer"], 0.05, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(trainer._loss_vars(0)["g_MaxAllowedDensity"], 4.5, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(trainer._loss_vars(0)["g_MaxAllowedDensity"], 12.0, rtol=0.0, atol=1e-10)
 
 
 def test_maintenance_cadence_and_clone_probability_follow_growth_budget() -> None:
@@ -668,6 +668,7 @@ def test_maintenance_rewrite_culls_and_splits_families(device, tmp_path: Path) -
     scene = _make_scene(count=2, seed=89)
     scene.opacities[:] = np.array([0.6, 1e-5], dtype=np.float32)
     scene.scales[:] = _log_sigma(np.array([[0.09, 0.06, 0.03], [0.05, 0.05, 0.05]], dtype=np.float32))
+    source_position = scene.positions[0].copy()
     frame = _make_frame(tmp_path, image_name="maintenance_rewrite_target.png", image_id=11)
     renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
     trainer = GaussianTrainer(
@@ -689,6 +690,14 @@ def test_maintenance_rewrite_culls_and_splits_families(device, tmp_path: Path) -
     assert trainer.scene.count == 3
     np.testing.assert_allclose(actual_scales[0], np.array([0.09, 0.06, 0.03], dtype=np.float32) / np.cbrt(3.0), rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(actual_opacity, np.full((3,), 1.0 - (1.0 - 0.6) ** (1.0 / 3.0), dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(groups["positions"][:, 1:3], np.repeat(source_position[None, 1:3], 3, axis=0), rtol=0.0, atol=1e-6)
+    expected_offset = 0.09 - (0.09 / np.cbrt(3.0))
+    np.testing.assert_allclose(
+        np.sort(groups["positions"][:, 0] - source_position[0]),
+        np.array([-expected_offset, 0.0, expected_offset], dtype=np.float32),
+        rtol=0.0,
+        atol=1e-6,
+    )
     clone_counts_after = buffer_to_numpy(trainer.maintenance_buffers["clone_counts"], np.uint32)[: trainer.scene.count]
     assert np.all(clone_counts_after == 0)
 
@@ -737,16 +746,13 @@ def test_maintenance_respects_max_gaussians_cap(device, tmp_path: Path) -> None:
     )
 
     trainer.maintenance_buffers["clone_counts"].copy_from_numpy(np.array([4, 4], dtype=np.uint32))
-    frame_camera = trainer.make_frame_camera(0, renderer.width, renderer.height)
-    min_second_support = _circle_bound_support_radius(frame_camera, scene.positions[1], renderer.width, renderer.height, _MAINTENANCE_MIN_SCREEN_RADIUS_PX)
     trainer._run_maintenance()
 
     assert trainer.scene.count == 3
     groups = _read_scene_groups(renderer, trainer.scene.count)
     actual_scales = _actual_scale(groups["scales"][:, :3])
     split_like_first = np.allclose(actual_scales[0], np.array([0.09, 0.06, 0.03], dtype=np.float32) / np.cbrt(2.0), rtol=0.0, atol=1e-6)
-    second_scale = 0.04 if min_second_support is None else max(0.04, min_second_support / _GAUSSIAN_SUPPORT_SIGMA_RADIUS)
-    unsplit_like_second = np.any(np.all(np.isclose(actual_scales, np.full((3,), second_scale, dtype=np.float32), rtol=0.0, atol=1e-6), axis=1))
+    unsplit_like_second = np.any(np.all(np.isclose(actual_scales, np.full((3,), 0.04, dtype=np.float32), rtol=0.0, atol=1e-6), axis=1))
     assert split_like_first
     assert unsplit_like_second
 
@@ -1181,3 +1187,41 @@ def test_training_prepass_capacity_sync_runs_every_32_steps(device, tmp_path: Pa
         trainer._maybe_sync_prepass_capacity(camera, step)
 
     assert len(calls) == 3
+
+
+def test_maintenance_camera_buffer_refreshes_when_frame_pose_changes(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=4, seed=131)
+    frame = _make_frame(tmp_path, image_name="maintenance_pose_refresh.png", image_id=31)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], seed=123)
+
+    trainer._refresh_maintenance_camera_buffer()
+    before = buffer_to_numpy(trainer.maintenance_buffers["camera_rows"], np.float32).copy()
+    frame.t_xyz = np.array([0.25, -0.5, 3.0], dtype=np.float32)
+
+    trainer._refresh_maintenance_camera_buffer()
+    after = buffer_to_numpy(trainer.maintenance_buffers["camera_rows"], np.float32).copy()
+
+    assert not np.array_equal(before, after)
+
+
+def test_frame_target_rgba8_resizes_to_frame_dimensions(tmp_path: Path) -> None:
+    image_path = tmp_path / "frame_target_resize.png"
+    Image.fromarray(np.full((6, 12, 3), 127, dtype=np.uint8), mode="RGB").save(image_path)
+    frame = ColmapFrame(
+        image_id=1,
+        image_path=image_path,
+        q_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        t_xyz=np.array([0.0, 0.0, 0.0], dtype=np.float32),
+        fx=40.0,
+        fy=20.0,
+        cx=2.0,
+        cy=1.0,
+        width=4,
+        height=2,
+    )
+    trainer = object.__new__(GaussianTrainer)
+
+    rgba8 = trainer._frame_target_rgba8(frame)
+
+    assert rgba8.shape == (2, 4, 4)

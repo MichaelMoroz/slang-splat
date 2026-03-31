@@ -103,7 +103,7 @@ class StabilityHyperParams:
 class TrainingHyperParams:
     background: tuple[float, float, float] = (0.0, 0.0, 0.0); near: float = 0.1; far: float = 120.0
     random_background: bool = True
-    scale_l2_weight: float = 0.0; scale_abs_reg_weight: float = 0.01; opacity_reg_weight: float = 0.01; depth_ratio_weight: float = 0.05; density_regularizer: float = 0.05; max_allowed_density: float = 4.5
+    scale_l2_weight: float = 0.0; scale_abs_reg_weight: float = 0.01; opacity_reg_weight: float = 0.01; depth_ratio_weight: float = 0.05; density_regularizer: float = 0.05; max_allowed_density: float = 12.0
     lr_schedule_enabled: bool = True; lr_schedule_start_lr: float = 1e-3; lr_schedule_end_lr: float = 1e-4; lr_schedule_steps: int = 30_000
     maintenance_interval: int = 200; maintenance_growth_ratio: float = 0.02; maintenance_growth_start_step: int = 2_000; maintenance_alpha_cull_threshold: float = 1e-2
     max_gaussians: int = 2_000_000; train_downscale_mode: int = 1; train_auto_start_downscale: int = 16
@@ -477,14 +477,34 @@ class GaussianTrainer:
             rows[base + 5] = np.array([forward[1], forward[2], 0.0, 0.0], dtype=np.float32)
         return rows
 
-    def _refresh_maintenance_camera_buffer(self) -> None:
-        signature = (
+    def _maintenance_camera_signature_value(self) -> tuple[object, ...]:
+        signature: list[object] = [
             int(self.renderer.width),
             int(self.renderer.height),
-            float(self.training.near),
-            float(self.training.far),
+            round(float(self.training.near), 8),
+            round(float(self.training.far), 8),
             int(len(self.frames)),
-        )
+        ]
+        for frame in self.frames:
+            signature.extend(
+                (
+                    int(frame.image_id),
+                    int(frame.width),
+                    int(frame.height),
+                    round(float(frame.fx), 6),
+                    round(float(frame.fy), 6),
+                    round(float(frame.cx), 6),
+                    round(float(frame.cy), 6),
+                    round(float(frame.k1), 8),
+                    round(float(frame.k2), 8),
+                    *(round(float(v), 8) for v in np.asarray(frame.q_wxyz, dtype=np.float32).reshape(4)),
+                    *(round(float(v), 8) for v in np.asarray(frame.t_xyz, dtype=np.float32).reshape(3)),
+                )
+            )
+        return tuple(signature)
+
+    def _refresh_maintenance_camera_buffer(self) -> None:
+        signature = self._maintenance_camera_signature_value()
         if self._maintenance_camera_signature == signature:
             return
         self._ensure_maintenance_buffers(self._scene_count)
@@ -611,8 +631,15 @@ class GaussianTrainer:
                 setattr(camera, name, float(value) * mul)
         return camera
 
-    def _create_gpu_texture(self, image: Image.Image) -> spy.Texture:
-        rgba8 = np.array(image.convert("RGBA"), dtype=np.uint8, order="C", copy=True)
+    def _frame_target_rgba8(self, frame: ColmapFrame) -> np.ndarray:
+        with Image.open(frame.image_path) as pil_image:
+            rgba_image = pil_image.convert("RGBA")
+            target_size = (max(int(frame.width), 1), max(int(frame.height), 1))
+            if rgba_image.size != target_size:
+                rgba_image = rgba_image.resize(target_size, Image.Resampling.LANCZOS)
+            return np.array(rgba_image, dtype=np.uint8, order="C", copy=True)
+
+    def _create_gpu_texture(self, rgba8: np.ndarray) -> spy.Texture:
         tex = self.device.create_texture(format=spy.Format.rgba8_unorm_srgb, width=int(rgba8.shape[1]), height=int(rgba8.shape[0]), usage=spy.TextureUsage.shader_resource | spy.TextureUsage.copy_destination)
         tex.copy_from_numpy(np.ascontiguousarray(rgba8, dtype=np.uint8))
         return tex
@@ -620,8 +647,7 @@ class GaussianTrainer:
     def _create_dataset_textures(self) -> None:
         self._frame_targets_native = []
         for frame in self.frames:
-            with Image.open(frame.image_path) as pil_image:
-                self._frame_targets_native.append(self._create_gpu_texture(pil_image))
+            self._frame_targets_native.append(self._create_gpu_texture(self._frame_target_rgba8(frame)))
 
     def _require_train_target_texture(self) -> spy.Texture:
         if self._train_target_texture is None:
