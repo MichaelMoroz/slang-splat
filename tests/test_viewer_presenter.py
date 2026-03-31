@@ -50,7 +50,7 @@ class _DummyTrainer:
             maintenance_alpha_cull_threshold=1e-2,
             depth_ratio_weight=0.05,
             density_regularizer=0.05,
-            max_allowed_density=5.0,
+            max_allowed_density=4.5,
             max_gaussians=2000000,
         )
         self.step_calls = 0

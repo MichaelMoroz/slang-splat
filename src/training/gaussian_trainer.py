@@ -103,7 +103,7 @@ class StabilityHyperParams:
 class TrainingHyperParams:
     background: tuple[float, float, float] = (0.0, 0.0, 0.0); near: float = 0.1; far: float = 120.0
     random_background: bool = True
-    scale_l2_weight: float = 0.0; scale_abs_reg_weight: float = 0.01; opacity_reg_weight: float = 0.01; depth_ratio_weight: float = 0.05; density_regularizer: float = 0.05; max_allowed_density: float = 5.0
+    scale_l2_weight: float = 0.0; scale_abs_reg_weight: float = 0.01; opacity_reg_weight: float = 0.01; depth_ratio_weight: float = 0.05; density_regularizer: float = 0.05; max_allowed_density: float = 4.5
     lr_schedule_enabled: bool = True; lr_schedule_start_lr: float = 1e-3; lr_schedule_end_lr: float = 1e-4; lr_schedule_steps: int = 30_000
     maintenance_interval: int = 200; maintenance_growth_ratio: float = 0.02; maintenance_growth_start_step: int = 2_000; maintenance_alpha_cull_threshold: float = 1e-2
     max_gaussians: int = 2_000_000; train_downscale_mode: int = 1; train_auto_start_downscale: int = 16

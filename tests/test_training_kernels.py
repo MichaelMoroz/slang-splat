@@ -476,7 +476,7 @@ def test_loss_vars_use_scheduled_depth_ratio_weight(device, tmp_path: Path) -> N
     np.testing.assert_allclose(trainer._loss_vars(1)["g_DepthRatioWeight"], resolve_depth_ratio_weight(training, 1), rtol=0.0, atol=1e-10)
     np.testing.assert_allclose(trainer._loss_vars(2)["g_DepthRatioWeight"], 0.0, rtol=0.0, atol=1e-10)
     np.testing.assert_allclose(trainer._loss_vars(0)["g_DensityRegularizer"], 0.05, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(trainer._loss_vars(0)["g_MaxAllowedDensity"], 5.0, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(trainer._loss_vars(0)["g_MaxAllowedDensity"], 4.5, rtol=0.0, atol=1e-10)
 
 
 def test_maintenance_cadence_and_clone_probability_follow_growth_budget() -> None:
