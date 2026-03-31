@@ -106,8 +106,8 @@ def test_renderer_params_default_to_fixed_cached_grad_atomics():
     assert kwargs["cached_raster_grad_fixed_color_range"] == 0.2
     assert params.cached_raster_grad_fixed_opacity_range == 0.2
     assert kwargs["cached_raster_grad_fixed_opacity_range"] == 0.2
-    assert params.max_anisotropy == 10.0
-    assert kwargs["max_anisotropy"] == 10.0
+    assert params.max_anisotropy == 32.0
+    assert kwargs["max_anisotropy"] == 32.0
 
 
 def test_render_ignores_max_splat_steps_cap(device):

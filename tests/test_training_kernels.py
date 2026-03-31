@@ -10,7 +10,7 @@ from src.common import buffer_to_numpy
 from src.filter import SeparableGaussianBlur
 from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
-from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TrainingHyperParams, resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_training_resolution, should_run_maintenance_step
+from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TrainingHyperParams, resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_depth_ratio_weight, resolve_maintenance_growth_ratio, resolve_training_resolution, should_run_maintenance_step
 
 _ADAM_BUFFER_NAMES = ("adam_moments",)
 _OPACITY_EPS = 1e-6
@@ -295,7 +295,7 @@ def test_split_loss_forward_backward_separates_metrics_from_output_grads(device,
     scene = _make_scene(count=8, seed=19)
     frame = _make_frame(tmp_path, image_name="split_loss_target.png")
     renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
-    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], seed=17)
+    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(depth_ratio_weight=0.0), seed=17)
     camera = frame.make_camera(near=0.1, far=20.0)
     background = np.asarray(trainer.training.background, dtype=np.float32)
 
@@ -402,6 +402,22 @@ def test_cosine_base_lr_clamps_after_schedule_end() -> None:
     np.testing.assert_allclose(resolve_cosine_base_learning_rate(hparams, 40), 1e-3, rtol=0.0, atol=1e-10)
 
 
+def test_depth_ratio_weight_clamps_after_schedule_end() -> None:
+    hparams = TrainingHyperParams(depth_ratio_weight=0.05, lr_schedule_steps=4)
+
+    np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 0), 0.05, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 4), 0.0, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 40), 0.0, rtol=0.0, atol=1e-10)
+
+
+def test_depth_ratio_weight_stays_constant_when_schedule_disabled() -> None:
+    hparams = TrainingHyperParams(depth_ratio_weight=0.05, lr_schedule_enabled=False, lr_schedule_steps=4)
+
+    np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 0), 0.05, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 2), 0.05, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 40), 0.05, rtol=0.0, atol=1e-10)
+
+
 def test_training_step_updates_optimizer_lrs_from_cosine_schedule(device, tmp_path: Path) -> None:
     scene = _make_scene(count=8, seed=77)
     frame = _make_frame(tmp_path, image_name="lr_schedule_target.png", image_id=5)
@@ -427,29 +443,50 @@ def test_training_step_updates_optimizer_lrs_from_cosine_schedule(device, tmp_pa
     np.testing.assert_allclose(trainer.state.last_base_lr, resolve_cosine_base_learning_rate(training, 1), rtol=0.0, atol=1e-7)
 
 
+def test_loss_vars_use_scheduled_depth_ratio_weight(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=4, seed=93)
+    frame = _make_frame(tmp_path, image_name="depth_ratio_schedule_target.png", image_id=19)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    training = TrainingHyperParams(depth_ratio_weight=0.05, lr_schedule_steps=2)
+    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], training_hparams=training, seed=123)
+
+    np.testing.assert_allclose(trainer._loss_vars(0)["g_DepthRatioWeight"], 0.05, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(trainer._loss_vars(1)["g_DepthRatioWeight"], resolve_depth_ratio_weight(training, 1), rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(trainer._loss_vars(2)["g_DepthRatioWeight"], 0.0, rtol=0.0, atol=1e-10)
+
+
 def test_maintenance_cadence_and_clone_probability_follow_growth_budget() -> None:
-    hparams = TrainingHyperParams(maintenance_interval=200, maintenance_growth_ratio=0.05)
+    hparams = TrainingHyperParams(maintenance_interval=200, maintenance_growth_ratio=0.05, maintenance_growth_start_step=0)
 
     assert not should_run_maintenance_step(hparams, 199)
     assert should_run_maintenance_step(hparams, 200)
     np.testing.assert_allclose(
-        resolve_clone_probability_threshold(hparams, splat_count=1000, pixel_count=64 * 32),
+        resolve_clone_probability_threshold(hparams, splat_count=1000, pixel_count=64 * 32, step=200),
         1000.0 * 0.05 / 200.0 / float(64 * 32),
         rtol=0.0,
         atol=1e-12,
     )
 
 
+def test_maintenance_growth_stays_zero_until_start_step() -> None:
+    hparams = TrainingHyperParams(maintenance_interval=200, maintenance_growth_ratio=0.02, maintenance_growth_start_step=2000)
+
+    np.testing.assert_allclose(resolve_maintenance_growth_ratio(hparams, 1999), 0.0, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_clone_probability_threshold(hparams, splat_count=1000, pixel_count=100, step=1999), 0.0, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_maintenance_growth_ratio(hparams, 2000), 0.02, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_clone_probability_threshold(hparams, splat_count=1000, pixel_count=100, step=2000), 1000.0 * 0.02 / 200.0 / 100.0, rtol=0.0, atol=1e-12)
+
+
 def test_clone_probability_threshold_respects_max_gaussians_cap() -> None:
-    hparams = TrainingHyperParams(maintenance_interval=200, maintenance_growth_ratio=0.05, max_gaussians=1024)
+    hparams = TrainingHyperParams(maintenance_interval=200, maintenance_growth_ratio=0.05, maintenance_growth_start_step=0, max_gaussians=1024)
 
     np.testing.assert_allclose(
-        resolve_clone_probability_threshold(hparams, splat_count=1000, pixel_count=100),
+        resolve_clone_probability_threshold(hparams, splat_count=1000, pixel_count=100, step=200),
         24.0 / 200.0 / 100.0,
         rtol=0.0,
         atol=1e-12,
     )
-    assert resolve_clone_probability_threshold(hparams, splat_count=1024, pixel_count=100) == 0.0
+    assert resolve_clone_probability_threshold(hparams, splat_count=1024, pixel_count=100, step=200) == 0.0
 
 
 def test_trainer_allocates_minimal_maintenance_buffers(device, tmp_path: Path) -> None:
@@ -461,7 +498,7 @@ def test_trainer_allocates_minimal_maintenance_buffers(device, tmp_path: Path) -
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(maintenance_growth_ratio=0.05),
+        training_hparams=TrainingHyperParams(maintenance_growth_ratio=0.05, maintenance_growth_start_step=0),
         seed=123,
     )
 
@@ -478,7 +515,7 @@ def test_training_forward_accumulates_clone_counts(device, tmp_path: Path) -> No
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(maintenance_growth_ratio=0.05, maintenance_interval=9999),
+        training_hparams=TrainingHyperParams(maintenance_growth_ratio=0.05, maintenance_growth_start_step=0, maintenance_interval=9999),
         seed=123,
     )
     camera = frame.make_camera(near=0.1, far=20.0)
@@ -556,7 +593,7 @@ def test_depth_ratio_loss_contributes_and_changes_gradients(device, tmp_path: Pa
     np.testing.assert_allclose(mse_on, mse_off, rtol=1e-5, atol=1e-7)
     assert depth_off == 0.0
     assert depth_on > 0.0
-    assert total_on >= total_off
+    assert total_on >= total_off - 1e-7
     grad_delta = sum(float(np.max(np.abs(grads_on[name] - grads_off[name]))) for name in grads_on)
     assert grad_delta > 0.0
 

@@ -56,6 +56,7 @@ _TRAINING_PARAM_KEYS = {
     "lr_schedule_steps": "lr_schedule_steps",
     "maintenance_interval": "maintenance_interval",
     "maintenance_growth_ratio": "maintenance_growth_ratio",
+    "maintenance_growth_start_step": "maintenance_growth_start_step",
     "maintenance_alpha_cull_threshold": "maintenance_alpha_cull_threshold",
     "random_background": "random_background",
     "train_downscale_mode": "train_downscale_mode",

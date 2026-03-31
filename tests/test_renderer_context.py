@@ -37,7 +37,7 @@ def test_render_settings_forward_debug_overlays_to_renderer(monkeypatch) -> None
     assert captured["kwargs"] == {
         "radius_scale": 1.0,
         "alpha_cutoff": 1.0 / 255.0,
-        "max_anisotropy": 10.0,
+        "max_anisotropy": 32.0,
         "transmittance_threshold": 0.005,
         "list_capacity_multiplier": 64,
         "max_prepass_memory_mb": 4096,

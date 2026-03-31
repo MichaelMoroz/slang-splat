@@ -40,7 +40,7 @@ _CLAMP_LIMITS = {
 @dataclass(frozen=True, slots=True)
 class RendererParams:
     radius_scale: float = 1.0; alpha_cutoff: float = 1.0 / 255.0
-    max_anisotropy: float = 10.0
+    max_anisotropy: float = 32.0
     transmittance_threshold: float = 0.005; list_capacity_multiplier: int = 64
     max_prepass_memory_mb: int = 4096; cached_raster_grad_atomic_mode: str = "fixed"; cached_raster_grad_fixed_ro_local_range: float = 0.01; cached_raster_grad_fixed_scale_range: float = 0.01
     cached_raster_grad_fixed_quat_range: float = 0.01; cached_raster_grad_fixed_color_range: float = 0.2; cached_raster_grad_fixed_opacity_range: float = 0.2
@@ -165,7 +165,7 @@ def build_training_params(
     scale_l2_weight: float,
     scale_abs_reg_weight: float,
     opacity_reg_weight: float,
-    depth_ratio_weight: float = 0.005,
+    depth_ratio_weight: float = 0.05,
     max_gaussians: int,
     random_background: bool = True,
     lr_schedule_enabled: bool = True,
@@ -173,7 +173,8 @@ def build_training_params(
     lr_schedule_end_lr: float | None = None,
     lr_schedule_steps: int = 30_000,
     maintenance_interval: int = 200,
-    maintenance_growth_ratio: float = 0.05,
+    maintenance_growth_ratio: float = 0.02,
+    maintenance_growth_start_step: int = 2_000,
     maintenance_alpha_cull_threshold: float = 1e-2,
     train_downscale_mode: int = 1,
     train_auto_start_downscale: int = 16,
@@ -232,6 +233,7 @@ def build_training_params(
         lr_schedule_steps=clamp_int(lr_schedule_steps, 1, 1_000_000_000),
         maintenance_interval=clamp_int(maintenance_interval, 1, 1_000_000_000),
         maintenance_growth_ratio=clamp_float(maintenance_growth_ratio, 0.0, 10.0),
+        maintenance_growth_start_step=clamp_int(maintenance_growth_start_step, 0, 1_000_000_000),
         maintenance_alpha_cull_threshold=clamp_float(maintenance_alpha_cull_threshold, 1e-8, 1.0),
         max_gaussians=clamp_int(max_gaussians, 0, 10_000_000),
         train_downscale_mode=clamp_int(train_downscale_mode, 0, 16),

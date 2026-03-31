@@ -46,7 +46,7 @@ def _renderer(args: argparse.Namespace, width: int, height: int) -> GaussianRend
     params = RendererParams(
         radius_scale=float(args.radius_scale),
         alpha_cutoff=float(args.alpha_cutoff),
-        max_anisotropy=float(getattr(args, "max_anisotropy", 10.0)),
+        max_anisotropy=float(getattr(args, "max_anisotropy", 32.0)),
         transmittance_threshold=float(args.trans_threshold),
         max_prepass_memory_mb=int(args.prepass_memory_mb),
         list_capacity_multiplier=int(getattr(args, "list_capacity_multiplier", 64)),
@@ -219,7 +219,7 @@ TRAIN_RENDER_ARGS = tuple(
         ("--scale-l2", 0.0),
         ("--scale-abs-reg", 0.01),
         ("--opacity-reg", 0.01),
-        ("--max-anisotropy", 10.0),
+        ("--max-anisotropy", 32.0),
     )
 )
 TRAIN_INIT_ARGS = tuple(

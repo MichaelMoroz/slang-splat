@@ -228,7 +228,8 @@ GROUP_SPECS = {
         ControlSpec("training_steps_per_frame", "slider_int", "Steps / Frame", {"value": 1, "min": 1, "max": 8}),
         ControlSpec("random_background", "checkbox", "Random Train Background", {"value": True}),
         ControlSpec("maintenance_interval", "input_int", "Maintenance Interval", {"value": 200, "step": 10, "step_fast": 50}),
-        ControlSpec("maintenance_growth_ratio", "input_float", "Maintenance Growth", {"value": 0.05, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
+        ControlSpec("maintenance_growth_ratio", "input_float", "Maintenance Growth", {"value": 0.02, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
+        ControlSpec("maintenance_growth_start_step", "input_int", "Start Densification After", {"value": 2000, "step": 100, "step_fast": 500}),
         ControlSpec("maintenance_alpha_cull_threshold", "input_float", "Maintenance Alpha Cull", {"value": 1e-2, "step": 1e-5, "step_fast": 1e-4, "format": "%.6e"}),
         ControlSpec("train_downscale_mode", "combo", "Downscale Mode", {"value": 1, "options": _TRAIN_DOWNSCALE_MODE_LABELS}),
         ControlSpec("train_auto_start_downscale", "slider_int", "Auto Start Downscale", {"value": 16, "min": 1, "max": 16}),
@@ -254,8 +255,8 @@ GROUP_SPECS = {
         ControlSpec("scale_l2", "input_float", "Scale Log Reg", {"value": 0.0, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
         ControlSpec("scale_abs_reg", "input_float", "Scale Abs Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
         ControlSpec("opacity_reg", "input_float", "Opacity Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
-        ControlSpec("depth_ratio_weight", "input_float", "Depth Ratio Reg", {"value": 0.005, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
-        ControlSpec("max_anisotropy", "input_float", "Max Anisotropy", {"value": 10.0, "step": 0.1, "step_fast": 0.5, "format": "%.6f"}),
+        ControlSpec("depth_ratio_weight", "input_float", "Depth Ratio Reg", {"value": 0.05, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
+        ControlSpec("max_anisotropy", "input_float", "Max Anisotropy", {"value": 32.0, "step": 0.1, "step_fast": 0.5, "format": "%.6f"}),
         ControlSpec("grad_clip", "input_float", "Grad Clip", {"value": 10.0, "step": 0.1, "step_fast": 1.0, "format": "%.4f"}),
         ControlSpec("grad_norm_clip", "input_float", "Grad Norm Clip", {"value": 10.0, "step": 0.1, "step_fast": 1.0, "format": "%.4f"}),
         ControlSpec("max_update", "input_float", "Max Update", {"value": 0.05, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
@@ -1208,7 +1209,7 @@ class ToolkitWindow:
     def _section_training_setup(self, ui: ViewerUI) -> None:
         if not imgui.collapsing_header("Train Setup"):
             return
-        for key in ("max_gaussians", "training_steps_per_frame", "random_background", "maintenance_interval", "maintenance_growth_ratio", "maintenance_alpha_cull_threshold", "train_downscale_mode"):
+        for key in ("max_gaussians", "training_steps_per_frame", "random_background", "maintenance_interval", "maintenance_growth_ratio", "maintenance_growth_start_step", "maintenance_alpha_cull_threshold", "train_downscale_mode"):
             self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Setup"] if spec.key == key))
         if int(ui._values.get("train_downscale_mode", 0)) == 0:
             for key in ("train_auto_start_downscale", "train_downscale_base_iters", "train_downscale_iter_step", "train_downscale_max_iters"):
@@ -1418,9 +1419,10 @@ class ToolkitWindow:
         "training_steps_per_frame": "Number of training optimizer steps to run before each viewer redraw; higher improves training throughput but reduces UI refresh rate",
         "random_background": "Use a new random RGB background for each training optimizer step while leaving the viewer background unchanged",
         "maintenance_interval": "Run cull/split maintenance every N training steps",
-        "maintenance_growth_ratio": "Target fractional scene growth per maintenance step before culling",
+        "maintenance_growth_ratio": "Target fractional scene growth per maintenance step once densification is enabled",
+        "maintenance_growth_start_step": "Keep densification growth at zero until this training iteration, then use the configured maintenance growth",
         "maintenance_alpha_cull_threshold": "Cull splats below this decoded alpha threshold during maintenance",
-        "depth_ratio_weight": "Weight for rendered per-pixel depth std/mean regularization aligned with the modular-refactor raster depth output",
+        "depth_ratio_weight": "Starting weight for rendered per-pixel depth std/mean regularization; it decays to zero over the LR schedule span",
         "lr_schedule_enabled": "Enable cosine scheduling of the base learning rate",
         "lr_schedule_start_lr": "Base learning rate at step 0 of the schedule",
         "lr_schedule_end_lr": "Base learning rate after the cosine schedule ends",

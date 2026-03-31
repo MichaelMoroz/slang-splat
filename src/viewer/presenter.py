@@ -7,6 +7,7 @@ import numpy as np
 import slangpy as spy
 
 from ..common import clamp_index, debug_region, require_not_none
+from ..training import resolve_maintenance_growth_ratio
 from . import session
 
 _DEBUG_HUGE_VALUE = 1e8
@@ -40,12 +41,18 @@ def _training_schedule_text(viewer: object) -> str:
 def _training_maintenance_text(viewer: object) -> str:
     if viewer.s.trainer is not None:
         training = viewer.s.trainer.training
+        current_step = max(int(viewer.s.trainer.state.step), 0)
+        target_growth = max(float(training.maintenance_growth_ratio), 0.0)
+        current_growth = resolve_maintenance_growth_ratio(training, current_step)
+        start_step = max(int(getattr(training, "maintenance_growth_start_step", 0)), 0)
         return (
-            f"Maintenance: every {int(training.maintenance_interval):,} | growth={float(training.maintenance_growth_ratio) * 100.0:.2f}% | "
+            f"Maintenance: every {int(training.maintenance_interval):,} | growth={current_growth * 100.0:.2f}% now | target={target_growth * 100.0:.2f}% after {start_step:,} | "
             f"alpha<{float(training.maintenance_alpha_cull_threshold):.2e} culled | max={int(training.max_gaussians):,}"
         )
+    target_growth = max(float(viewer.c("maintenance_growth_ratio").value), 0.0)
+    start_step = max(int(viewer.c("maintenance_growth_start_step").value), 0)
     return (
-        f"Maintenance: every {max(int(viewer.c('maintenance_interval').value), 1):,} | growth={max(float(viewer.c('maintenance_growth_ratio').value), 0.0) * 100.0:.2f}% | "
+        f"Maintenance: every {max(int(viewer.c('maintenance_interval').value), 1):,} | growth=0.00% now | target={target_growth * 100.0:.2f}% after {start_step:,} | "
         f"alpha<{max(float(viewer.c('maintenance_alpha_cull_threshold').value), 1e-8):.2e} culled | max={max(int(viewer.c('max_gaussians').value), 0):,}"
     )
 

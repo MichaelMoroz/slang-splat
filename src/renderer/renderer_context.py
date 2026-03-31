@@ -15,7 +15,7 @@ class GaussianRenderSettings:
     background: tuple[float, float, float] = (0.0, 0.0, 0.0)
     radius_scale: float = 1.0
     alpha_cutoff: float = 1.0 / 255.0
-    max_anisotropy: float = 10.0
+    max_anisotropy: float = 32.0
     transmittance_threshold: float = 0.005
     list_capacity_multiplier: int = 64
     max_prepass_memory_mb: int = 4096

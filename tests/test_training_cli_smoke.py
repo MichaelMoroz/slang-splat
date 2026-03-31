@@ -124,7 +124,7 @@ def test_train_cli_forwards_resolved_init_hparams(monkeypatch, tmp_path: Path):
         max_update=0.05,
         min_scale=1e-3,
         max_scale=3.0,
-        max_anisotropy=10.0,
+        max_anisotropy=32.0,
         min_opacity=1e-4,
         max_opacity=0.9999,
         position_abs_max=1e4,

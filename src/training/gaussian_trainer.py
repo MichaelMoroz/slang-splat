@@ -13,7 +13,7 @@ from ..renderer import Camera, GaussianRenderer
 from ..scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 from .adam import AdamOptimizer, AdamRuntimeHyperParams
 from .optimizer import GaussianOptimizer
-from .schedule import resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, should_run_maintenance_step
+from .schedule import resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_depth_ratio_weight, resolve_maintenance_growth_ratio, should_run_maintenance_step
 
 TRAIN_DOWNSCALE_MODE_AUTO = 0
 TRAIN_DOWNSCALE_MAX_FACTOR = 16
@@ -95,7 +95,7 @@ class AdamHyperParams:
 @dataclass(slots=True)
 class StabilityHyperParams:
     grad_component_clip: float = 10.0; grad_norm_clip: float = 10.0; max_update: float = 0.05; min_scale: float = 1e-3
-    max_scale: float = 3.0; max_anisotropy: float = 10.0; min_opacity: float = 1e-4; max_opacity: float = 0.9999
+    max_scale: float = 3.0; max_anisotropy: float = 32.0; min_opacity: float = 1e-4; max_opacity: float = 0.9999
     position_abs_max: float = 1e4; huge_value: float = 1e8; min_inv_scale: float = 1e-6; loss_grad_clip: float = 10.0
 
 
@@ -103,9 +103,9 @@ class StabilityHyperParams:
 class TrainingHyperParams:
     background: tuple[float, float, float] = (0.0, 0.0, 0.0); near: float = 0.1; far: float = 120.0
     random_background: bool = True
-    scale_l2_weight: float = 0.0; scale_abs_reg_weight: float = 0.01; opacity_reg_weight: float = 0.01; depth_ratio_weight: float = 0.005
+    scale_l2_weight: float = 0.0; scale_abs_reg_weight: float = 0.01; opacity_reg_weight: float = 0.01; depth_ratio_weight: float = 0.05
     lr_schedule_enabled: bool = True; lr_schedule_start_lr: float = 1e-3; lr_schedule_end_lr: float = 1e-4; lr_schedule_steps: int = 30_000
-    maintenance_interval: int = 200; maintenance_growth_ratio: float = 0.05; maintenance_alpha_cull_threshold: float = 1e-2
+    maintenance_interval: int = 200; maintenance_growth_ratio: float = 0.02; maintenance_growth_start_step: int = 2_000; maintenance_alpha_cull_threshold: float = 1e-2
     max_gaussians: int = 2_000_000; train_downscale_mode: int = 1; train_auto_start_downscale: int = 16
     train_downscale_base_iters: int = 200; train_downscale_iter_step: int = 50; train_downscale_max_iters: int = 30_000
     train_downscale_factor: int = 1
@@ -118,6 +118,7 @@ class TrainingHyperParams:
         self.lr_schedule_steps = max(int(self.lr_schedule_steps), 1)
         self.maintenance_interval = max(int(self.maintenance_interval), 1)
         self.maintenance_growth_ratio = max(float(self.maintenance_growth_ratio), 0.0)
+        self.maintenance_growth_start_step = max(int(self.maintenance_growth_start_step), 0)
         self.maintenance_alpha_cull_threshold = min(max(float(self.maintenance_alpha_cull_threshold), 1e-8), 1.0)
         self.depth_ratio_weight = max(float(self.depth_ratio_weight), 0.0)
         mode = int(self.train_downscale_mode)
@@ -192,11 +193,12 @@ class GaussianTrainer:
         resolved_step = self.state.step if step is None else int(step)
         return should_run_maintenance_step(self.training, resolved_step)
 
-    def clone_probability_threshold(self, splat_count: int | None = None, width: int | None = None, height: int | None = None) -> float:
+    def clone_probability_threshold(self, splat_count: int | None = None, width: int | None = None, height: int | None = None, step: int | None = None) -> float:
         resolved_splats = self._scene_count if splat_count is None else int(splat_count)
         resolved_width = self.renderer.width if width is None else int(width)
         resolved_height = self.renderer.height if height is None else int(height)
-        return resolve_clone_probability_threshold(self.training, resolved_splats, resolved_width * resolved_height)
+        resolved_step = self.state.step if step is None else int(step)
+        return resolve_clone_probability_threshold(self.training, resolved_splats, resolved_width * resolved_height, resolved_step)
 
     def get_frame_target_texture(
         self,
@@ -235,14 +237,15 @@ class GaussianTrainer:
             debug_color_index=40 + len(kernel),
         )
 
-    def _dispatch_raster_training_forward(self, encoder: spy.CommandEncoder, frame_camera: Camera, background: np.ndarray) -> None:
+    def _dispatch_raster_training_forward(self, encoder: spy.CommandEncoder, frame_camera: Camera, background: np.ndarray, step: int | None = None) -> None:
+        resolved_step = self.state.step if step is None else int(step)
         self.renderer.rasterize_training_forward_current_scene(
             encoder=encoder,
             camera=frame_camera,
             background=background,
             clone_counts_buffer=self._maintenance_buffers["clone_counts"],
-            clone_select_probability=self.clone_probability_threshold(),
-            clone_seed=self._seed + self.state.step,
+            clone_select_probability=self.clone_probability_threshold(step=resolved_step),
+            clone_seed=self._seed + resolved_step,
         )
 
     def _dispatch_raster_backward(self, encoder: spy.CommandEncoder, frame_camera: Camera, background: np.ndarray) -> None:
@@ -622,18 +625,19 @@ class GaussianTrainer:
         self._dispatch_downscale_target(encoder, frame_index)
         self._downscaled_target_key = key
 
-    def _loss_vars(self) -> dict[str, object]:
+    def _loss_vars(self, step: int | None = None) -> dict[str, object]:
+        resolved_step = self.state.step if step is None else int(step)
         return {
             "g_Width": int(self.renderer.width),
             "g_Height": int(self.renderer.height),
             "g_InvPixelCount": 1.0 / float(max(self.renderer.width * self.renderer.height, 1)),
             "g_LossGradClip": float(self.stability.loss_grad_clip),
             "g_HugeValue": float(self.stability.huge_value),
-            "g_DepthRatioWeight": float(self.training.depth_ratio_weight),
+            "g_DepthRatioWeight": float(resolve_depth_ratio_weight(self.training, resolved_step)),
         }
 
-    def _dispatch_loss_forward(self, encoder: spy.CommandEncoder, target_texture: spy.Texture) -> None:
-        shared = {"g_OutputGrad": self.renderer.output_grad_buffer, "g_DepthRatioGrad": self.renderer.work_buffers["training_depth_ratio_grad"], "g_LossBuffer": self._buffers["loss"], "g_DepthRatioStats": self._buffers["depth_ratio_stats"], **self._loss_vars()}
+    def _dispatch_loss_forward(self, encoder: spy.CommandEncoder, target_texture: spy.Texture, step: int | None = None) -> None:
+        shared = {"g_OutputGrad": self.renderer.output_grad_buffer, "g_DepthRatioGrad": self.renderer.work_buffers["training_depth_ratio_grad"], "g_LossBuffer": self._buffers["loss"], "g_DepthRatioStats": self._buffers["depth_ratio_stats"], **self._loss_vars(step)}
         self._dispatch("clear_loss", encoder, self._pixel_thread_count(), shared)
         self._dispatch(
             "loss_forward",
@@ -647,7 +651,7 @@ class GaussianTrainer:
                 "g_DepthRatioGrad": self.renderer.work_buffers["training_depth_ratio_grad"],
                 "g_LossBuffer": self._buffers["loss"],
                 "g_DepthRatioStats": self._buffers["depth_ratio_stats"],
-                **self._loss_vars(),
+                **self._loss_vars(step),
             },
         )
         self._dispatch(
@@ -657,11 +661,11 @@ class GaussianTrainer:
             {
                 "g_LossBuffer": self._buffers["loss"],
                 "g_DepthRatioStats": self._buffers["depth_ratio_stats"],
-                **self._loss_vars(),
+                **self._loss_vars(step),
             },
         )
 
-    def _dispatch_loss_backward(self, encoder: spy.CommandEncoder, target_texture: spy.Texture) -> None:
+    def _dispatch_loss_backward(self, encoder: spy.CommandEncoder, target_texture: spy.Texture, step: int | None = None) -> None:
         self._dispatch(
             "loss_backward",
             encoder,
@@ -674,18 +678,18 @@ class GaussianTrainer:
                 "g_DepthRatioGrad": self.renderer.work_buffers["training_depth_ratio_grad"],
                 "g_LossBuffer": self._buffers["loss"],
                 "g_DepthRatioStats": self._buffers["depth_ratio_stats"],
-                **self._loss_vars(),
+                **self._loss_vars(step),
             },
         )
 
-    def _dispatch_training_forward(self, encoder: spy.CommandEncoder, frame_camera: Camera, background: np.ndarray, target_texture: spy.Texture) -> None:
+    def _dispatch_training_forward(self, encoder: spy.CommandEncoder, frame_camera: Camera, background: np.ndarray, target_texture: spy.Texture, step: int | None = None) -> None:
         with debug_region(encoder, "Trainer Forward", 50):
-            self._dispatch_raster_training_forward(encoder, frame_camera, background)
-            self._dispatch_loss_forward(encoder, target_texture)
+            self._dispatch_raster_training_forward(encoder, frame_camera, background, step)
+            self._dispatch_loss_forward(encoder, target_texture, step)
 
-    def _dispatch_training_backward(self, encoder: spy.CommandEncoder, frame_camera: Camera, background: np.ndarray, target_texture: spy.Texture) -> None:
+    def _dispatch_training_backward(self, encoder: spy.CommandEncoder, frame_camera: Camera, background: np.ndarray, target_texture: spy.Texture, step: int | None = None) -> None:
         with debug_region(encoder, "Trainer Backward", 51):
-            self._dispatch_loss_backward(encoder, target_texture)
+            self._dispatch_loss_backward(encoder, target_texture, step)
             self._dispatch_raster_backward(encoder, frame_camera, background)
 
     def _dispatch_cache_step_info(self, encoder: spy.CommandEncoder, batch_step_index: int) -> None:
@@ -831,13 +835,14 @@ class GaussianTrainer:
         enc = self.device.create_command_encoder()
         for batch_index in range(batch_steps):
             background = self._training_background()
+            training_step = self.state.step + batch_index
             frame_index = self._next_frame_index()
             frame_indices.append(frame_index)
             frame_camera = self.make_frame_camera(frame_index, self.renderer.width, self.renderer.height)
             self.renderer.record_prepass_for_current_scene(enc, frame_camera)
             target_texture = self.get_frame_target_texture(frame_index, native_resolution=False, encoder=enc)
-            self._dispatch_training_forward(enc, frame_camera, background, target_texture)
-            self._dispatch_training_backward(enc, frame_camera, background, target_texture)
+            self._dispatch_training_forward(enc, frame_camera, background, target_texture, training_step)
+            self._dispatch_training_backward(enc, frame_camera, background, target_texture, training_step)
             self._dispatch_optimizer_step(enc, self.state.step + batch_index + 1)
             self._dispatch_cache_step_info(enc, batch_index)
         self.device.submit_command_buffer(enc.finish())

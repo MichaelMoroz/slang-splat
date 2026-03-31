@@ -151,7 +151,9 @@ def test_default_training_params_include_depth_ratio_weight() -> None:
     params = app.default_training_params()
 
     assert params.training.random_background is True
-    assert params.training.depth_ratio_weight == 0.005
+    assert params.training.depth_ratio_weight == 0.05
+    assert params.training.maintenance_growth_ratio == 0.02
+    assert params.training.maintenance_growth_start_step == 2000
     assert params.training.maintenance_alpha_cull_threshold == 1e-2
     assert params.training.max_gaussians == 2_000_000
 

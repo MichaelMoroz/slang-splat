@@ -20,14 +20,30 @@ def resolve_learning_rate_scale(training_hparams: Any, step: int) -> float:
     return resolve_cosine_base_learning_rate(training_hparams, step) / start
 
 
+def resolve_depth_ratio_weight(training_hparams: Any, step: int) -> float:
+    enabled = bool(getattr(training_hparams, "lr_schedule_enabled", True))
+    start = max(float(getattr(training_hparams, "depth_ratio_weight", 0.05)), 0.0)
+    duration = max(int(getattr(training_hparams, "lr_schedule_steps", 30_000)), 1)
+    if not enabled or start <= 0.0:
+        return start
+    progress = min(max(int(step), 0), duration) / float(duration)
+    return 0.5 * start * (1.0 + math.cos(math.pi * progress))
+
+
+def resolve_maintenance_growth_ratio(training_hparams: Any, step: int) -> float:
+    growth_ratio = max(float(getattr(training_hparams, "maintenance_growth_ratio", 0.02)), 0.0)
+    start_step = max(int(getattr(training_hparams, "maintenance_growth_start_step", 2_000)), 0)
+    return growth_ratio if int(step) >= start_step else 0.0
+
+
 def should_run_maintenance_step(training_hparams: Any, step: int) -> bool:
     interval = max(int(getattr(training_hparams, "maintenance_interval", 200)), 1)
     return int(step) > 0 and int(step) % interval == 0
 
 
-def resolve_clone_probability_threshold(training_hparams: Any, splat_count: int, pixel_count: int) -> float:
+def resolve_clone_probability_threshold(training_hparams: Any, splat_count: int, pixel_count: int, step: int = 0) -> float:
     interval = max(int(getattr(training_hparams, "maintenance_interval", 200)), 1)
-    growth_ratio = max(float(getattr(training_hparams, "maintenance_growth_ratio", 0.05)), 0.0)
+    growth_ratio = resolve_maintenance_growth_ratio(training_hparams, step)
     pixels = max(int(pixel_count), 1)
     max_gaussians = max(int(getattr(training_hparams, "max_gaussians", 0)), 0)
     if max_gaussians > 0 and int(splat_count) >= max_gaussians:
