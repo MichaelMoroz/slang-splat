@@ -329,6 +329,20 @@ def _reset_loss_debug(viewer: object) -> None:
     _invalidate(viewer, "debug")
 
 
+def _reset_training_visual_state(viewer: object) -> None:
+    if hasattr(viewer, "toolkit") and getattr(viewer, "toolkit") is not None:
+        reset_plot_history = getattr(viewer.toolkit, "reset_plot_history", None)
+        if callable(reset_plot_history):
+            reset_plot_history()
+    viewer.s.cached_raster_grad_histograms = None
+    viewer.s.cached_raster_grad_ranges = None
+    viewer.s.cached_raster_grad_histogram_mode = ""
+    viewer.s.cached_raster_grad_histogram_step = -1
+    viewer.s.cached_raster_grad_histogram_scene_count = -1
+    viewer.s.cached_raster_grad_histogram_signature = None
+    viewer.s.cached_raster_grad_histogram_status = ""
+
+
 def _reset_loaded_runtime(viewer: object) -> None:
     viewer.s.colmap_import_progress = None
     viewer.s.scene_init_signature = None
@@ -624,10 +638,7 @@ def _finish_import_colmap_dataset(
 ) -> None:
     xyz, _ = _point_tables(recon)
     _reset_loaded_runtime(viewer)
-    if hasattr(viewer, "toolkit") and getattr(viewer, "toolkit") is not None:
-        reset_plot_history = getattr(viewer.toolkit, "reset_plot_history", None)
-        if callable(reset_plot_history):
-            reset_plot_history()
+    _reset_training_visual_state(viewer)
     _update_import_settings(
         viewer,
         dataset_root=colmap_root,
@@ -876,6 +887,8 @@ def initialize_training_scene(viewer: object, frame_targets_native: list[spy.Tex
     enc = viewer.device.create_command_encoder()
     renderer.copy_scene_state_to(enc, viewer.s.renderer)
     viewer.device.submit_command_buffer(enc.finish())
+    _apply_debug_buffers(viewer, viewer.s.renderer)
+    _apply_debug_buffers(viewer, viewer.s.debug_renderer)
     viewer.s.training_active = False
     viewer.s.training_elapsed_s = 0.0
     viewer.s.training_resume_time = None
@@ -885,6 +898,7 @@ def initialize_training_scene(viewer: object, frame_targets_native: list[spy.Tex
     viewer.s.pending_training_runtime_resize = False
     _invalidate(viewer)
     viewer.s.scene_init_signature = _scene_signature(viewer)
+    _reset_training_visual_state(viewer)
     update_debug_frame_slider_range(viewer)
     _reset_loss_debug(viewer)
     viewer.s.last_error = ""

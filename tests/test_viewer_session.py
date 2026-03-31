@@ -468,3 +468,119 @@ def test_refresh_cached_raster_grad_histograms_honors_manual_refresh() -> None:
 
     assert calls == [12]
     assert viewer.ui._values["_histograms_refresh_requested"] is False
+
+
+def test_initialize_training_scene_rebinds_debug_buffers_for_new_trainer(monkeypatch) -> None:
+    class _Encoder:
+        def finish(self) -> str:
+            return "finished"
+
+    class _ViewportRenderer:
+        def __init__(self) -> None:
+            self.grad_buffer = "stale-grad"
+            self.clone_buffer = "stale-clone"
+            self.copy_targets: list[object] = []
+
+        def set_debug_grad_norm_buffer(self, buffer) -> None:
+            self.grad_buffer = buffer
+
+        def set_debug_clone_count_buffer(self, buffer) -> None:
+            self.clone_buffer = buffer
+
+        def copy_scene_state_to(self, encoder, dst) -> None:
+            del encoder
+            self.copy_targets.append(dst)
+
+    class _TrainingRenderer:
+        width = 32
+        height = 32
+        work_buffers = {"debug_grad_norm": "new-grad"}
+
+        def copy_scene_state_to(self, encoder, dst) -> None:
+            del encoder
+            dst.copy_targets.append(self)
+
+    training_renderer = _TrainingRenderer()
+    main_renderer = _ViewportRenderer()
+    debug_renderer = _ViewportRenderer()
+    new_trainer = SimpleNamespace(
+        maintenance_buffers={"clone_counts": "new-clone"},
+        effective_train_downscale_factor=lambda step=0: 1,
+    )
+    calls: list[str] = []
+    viewer = SimpleNamespace(
+        device=SimpleNamespace(
+            create_command_encoder=lambda: _Encoder(),
+            submit_command_buffer=lambda command_buffer: None,
+        ),
+        toolkit=SimpleNamespace(reset_plot_history=lambda: calls.append("reset_plot_history")),
+        init_params=lambda: SimpleNamespace(seed=7),
+        renderer_params=lambda allow_debug_overlays: SimpleNamespace(mode="debug" if allow_debug_overlays else "train"),
+        training_params=lambda: object(),
+        apply_camera_fit=lambda bounds: None,
+        s=SimpleNamespace(
+            colmap_recon=object(),
+            training_frames=[SimpleNamespace(width=32, height=32)],
+            colmap_import=SimpleNamespace(
+                init_mode="pointcloud",
+                custom_ply_path=None,
+                nn_radius_scale_coef=0.5,
+                diffused_point_count=100,
+                diffusion_radius=1.0,
+            ),
+            trainer=SimpleNamespace(maintenance_buffers={"clone_counts": "old-clone"}),
+            renderer=main_renderer,
+            debug_renderer=debug_renderer,
+            training_renderer=training_renderer,
+            training_active=True,
+            training_elapsed_s=12.0,
+            training_resume_time=3.0,
+            scene=None,
+            scene_init_signature=None,
+            applied_renderer_params_training=None,
+            applied_training_signature=None,
+            applied_training_runtime_factor=None,
+            pending_training_runtime_resize=True,
+            cached_raster_grad_histograms=object(),
+            cached_raster_grad_ranges=object(),
+            cached_raster_grad_histogram_mode="fixed",
+            cached_raster_grad_histogram_step=9,
+            cached_raster_grad_histogram_scene_count=99,
+            cached_raster_grad_histogram_signature=("old",),
+            cached_raster_grad_histogram_status="stale",
+            last_error="stale",
+            colmap_root=None,
+        ),
+    )
+
+    monkeypatch.setattr(session, "resolve_effective_training_setup", lambda viewer_obj: (SimpleNamespace(seed=7), SimpleNamespace(training=SimpleNamespace(max_gaussians=8), adam=SimpleNamespace(tag="adam"), stability=SimpleNamespace(tag="stability")), SimpleNamespace(), SimpleNamespace(name="test")))
+    monkeypatch.setattr(session, "resolve_effective_train_downscale_factor", lambda training, step: 1)
+    monkeypatch.setattr(session, "resolve_training_resolution", lambda width, height, factor: (width, height))
+    monkeypatch.setattr(session, "ensure_renderer", lambda viewer_obj, attr, width, height, allow_debug_overlays: training_renderer)
+    monkeypatch.setattr(session, "_pointcloud_init_hparams", lambda recon, max_gaussians, init_hparams, nn_radius_scale_coef: SimpleNamespace(base_scale=0.25))
+    monkeypatch.setattr(session, "initialize_scene_from_colmap_points", lambda **kwargs: SimpleNamespace(count=8))
+    monkeypatch.setattr(session, "apply_live_params", lambda viewer_obj: None)
+    monkeypatch.setattr(session, "GaussianTrainer", lambda **kwargs: new_trainer)
+    monkeypatch.setattr(session, "estimate_scene_bounds", lambda scene: scene)
+    monkeypatch.setattr(session, "_renderer_params_signature", lambda params: (params.mode,))
+    monkeypatch.setattr(session, "_training_params_signature", lambda params: ("training",))
+    monkeypatch.setattr(session, "_scene_signature", lambda viewer_obj: ("scene",))
+    monkeypatch.setattr(session, "update_debug_frame_slider_range", lambda viewer_obj: None)
+    monkeypatch.setattr(session, "_reset_loss_debug", lambda viewer_obj: None)
+    monkeypatch.setattr(session, "_invalidate", lambda viewer_obj, *targets: None)
+
+    session.initialize_training_scene(viewer)
+
+    assert viewer.s.trainer is new_trainer
+    assert calls == ["reset_plot_history"]
+    assert main_renderer.grad_buffer == "new-grad"
+    assert main_renderer.clone_buffer == "new-clone"
+    assert debug_renderer.grad_buffer == "new-grad"
+    assert debug_renderer.clone_buffer == "new-clone"
+    assert viewer.s.cached_raster_grad_histograms is None
+    assert viewer.s.cached_raster_grad_ranges is None
+    assert viewer.s.cached_raster_grad_histogram_mode == ""
+    assert viewer.s.cached_raster_grad_histogram_step == -1
+    assert viewer.s.cached_raster_grad_histogram_scene_count == -1
+    assert viewer.s.cached_raster_grad_histogram_signature is None
+    assert viewer.s.cached_raster_grad_histogram_status == ""
