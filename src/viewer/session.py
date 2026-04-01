@@ -437,6 +437,7 @@ def _reset_training_runtime(viewer: object) -> None:
     viewer.s.trainer = None
     if viewer.s.renderer is not None:
         viewer.s.renderer.set_debug_grad_norm_buffer(None)
+        viewer.s.renderer.set_debug_clone_count_buffer(None)
     viewer.s.applied_renderer_params_training = None
     viewer.s.applied_renderer_params_debug = None
     viewer.s.applied_training_signature = None
@@ -460,6 +461,17 @@ def _reset_loaded_runtime(viewer: object) -> None:
     viewer.s.cached_training_setup_signature = None
     viewer.s.cached_training_setup = None
     update_debug_frame_slider_range(viewer)
+
+
+def _clear_loaded_scene(viewer: object) -> None:
+    _reset_loaded_runtime(viewer)
+    viewer.s.scene = None
+    viewer.s.scene_path = None
+    viewer.s.colmap_root = None
+    viewer.s.colmap_recon = None
+    viewer.s.training_frames = []
+    if viewer.s.renderer is not None:
+        viewer.s.renderer.clear_scene_resources()
 
 
 def _scene_signature(viewer: object):
@@ -813,6 +825,7 @@ def import_colmap_dataset(
     diffused_point_count: int,
     diffusion_radius: float,
 ) -> None:
+    _clear_loaded_scene(viewer)
     root = Path(colmap_root).resolve()
     recon = _load_aligned_colmap_reconstruction(root)
     training_frames = build_training_frames_from_root(
@@ -864,6 +877,7 @@ def import_colmap_from_ui(viewer: object) -> None:
         raise FileNotFoundError(f"COLMAP image folder does not exist: {images_root}")
     if init_mode == _COLMAP_IMPORT_CUSTOM_PLY and (custom_ply_path is None or not custom_ply_path.exists()):
         raise FileNotFoundError(f"Custom PLY does not exist: {custom_ply_path}")
+    _clear_loaded_scene(viewer)
     viewer.s.colmap_import_progress = ColmapImportProgress(
         dataset_root=Path(_ui_path_string(viewer, "colmap_root_path")).expanduser().resolve(),
         colmap_root=colmap_root.resolve(),

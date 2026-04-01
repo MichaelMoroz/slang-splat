@@ -390,6 +390,23 @@ class GaussianRenderer:
         self._upload_scene(scene)
         self._current_scene = scene
 
+    def clear_scene_resources(self) -> None:
+        self._current_scene = None
+        self._scene_count = self._scene_capacity = self._max_list_entries = self._work_splat_capacity = self._max_scanline_entries = 0
+        self._scene_buffers = {}
+        self._work_buffers = {}
+        self._resource_groups = _RendererResourceGroups(scene={}, frame={}, prepass={}, raster={}, grad={}, debug={})
+        self._output_texture = None
+        self._output_grad_buffer = None
+        self._sorted_keys_buffer = None
+        self._sorted_values_buffer = None
+        self._last_stats = {}
+        self._counter_readback_ring = []
+        self._counter_readback_capacity = []
+        self._counter_readback_frame_id = 0
+        self._pending_min_list_entries = self._delayed_generated_entries = self._delayed_written_entries = 0
+        self._delayed_overflow = self._delayed_stats_valid = False
+
     def bind_scene_count(self, splat_count: int) -> None:
         count = max(int(splat_count), 0)
         self._ensure_scene_buffers(count)

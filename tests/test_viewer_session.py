@@ -266,6 +266,167 @@ def test_choose_colmap_root_works_without_database(tmp_path: Path) -> None:
     assert viewer.ui._values["colmap_images_root"] == str(root)
     assert viewer.s.last_error == ""
 
+
+def test_import_colmap_dataset_clears_loaded_scene_before_loading(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+    viewer = SimpleNamespace(
+        s=SimpleNamespace(
+            renderer=SimpleNamespace(
+                clear_scene_resources=lambda: calls.append(("clear_renderer", None)),
+                set_debug_grad_norm_buffer=lambda buffer: calls.append(("clear_grad_debug", buffer)),
+                set_debug_clone_count_buffer=lambda buffer: calls.append(("clear_clone_debug", buffer)),
+            ),
+            trainer=SimpleNamespace(state=SimpleNamespace(step=0)),
+            training_active=False,
+            training_elapsed_s=0.0,
+            training_resume_time=None,
+            training_renderer=None,
+            training_frames=[SimpleNamespace(width=8, height=8)],
+            scene=SimpleNamespace(count=123),
+            scene_path=Path("scene.ply"),
+            colmap_root=Path("dataset/old"),
+            colmap_recon=object(),
+            colmap_import_progress=None,
+            colmap_point_positions_buffer="positions",
+            colmap_point_colors_buffer="colors",
+            colmap_point_count=123,
+            scene_init_signature=None,
+            applied_renderer_params_training=None,
+            applied_renderer_params_debug=None,
+            applied_training_signature=None,
+            applied_training_runtime_factor=None,
+            pending_training_runtime_resize=False,
+            suggested_init_hparams=None,
+            suggested_init_count=None,
+            applied_renderer_params_main=None,
+            cached_training_setup_signature=None,
+            cached_training_setup=None,
+        ),
+        c=lambda key: SimpleNamespace(value=0),
+    )
+
+    monkeypatch.setattr(session, "update_debug_frame_slider_range", lambda viewer_obj: calls.append(("update_slider", None)))
+    monkeypatch.setattr(session, "_clear_cached_init_source", lambda viewer_obj: calls.append(("clear_cached_init", None)))
+    monkeypatch.setattr(session, "_reset_training_visual_state", lambda viewer_obj: calls.append(("reset_training_visual", None)))
+    monkeypatch.setattr(session, "_reset_loss_debug", lambda viewer_obj: calls.append(("reset_loss_debug", None)))
+    monkeypatch.setattr(session, "_load_aligned_colmap_reconstruction", lambda root: calls.append(("load_recon", root)) or "recon")
+    monkeypatch.setattr(session, "build_training_frames_from_root", lambda recon, images_root, downscale_mode, downscale_target_width, downscale_scale: calls.append(("build_frames", recon)) or ["frame"])
+    monkeypatch.setattr(session, "_finish_import_colmap_dataset", lambda viewer_obj, **kwargs: calls.append(("finish", kwargs["recon"])))
+
+    session.import_colmap_dataset(
+        viewer,
+        colmap_root=Path("dataset/new"),
+        database_path=None,
+        images_root=Path("dataset/new/images"),
+        init_mode="pointcloud",
+        custom_ply_path=None,
+        image_downscale_mode="original",
+        image_downscale_target_width=2048,
+        image_downscale_scale=1.0,
+        nn_radius_scale_coef=0.5,
+        diffused_point_count=100000,
+        diffusion_radius=1.0,
+    )
+
+    assert calls[:8] == [
+        ("clear_grad_debug", None),
+        ("clear_clone_debug", None),
+        ("reset_training_visual", None),
+        ("reset_loss_debug", None),
+        ("clear_cached_init", None),
+        ("update_slider", None),
+        ("clear_renderer", None),
+        ("load_recon", Path("dataset/new").resolve()),
+    ]
+    assert viewer.s.scene is None
+    assert viewer.s.scene_path is None
+    assert viewer.s.colmap_root is None
+    assert viewer.s.colmap_recon is None
+    assert viewer.s.training_frames == []
+
+
+def test_import_colmap_from_ui_clears_loaded_scene_before_queueing(tmp_path: Path, monkeypatch) -> None:
+    database_path, images_root = _build_colmap_tree(
+        tmp_path,
+        image_names=["frame_000.png"],
+        image_root_rel=Path("images"),
+    )
+    calls: list[tuple[str, object]] = []
+    viewer = SimpleNamespace(
+        ui=SimpleNamespace(
+            _values={
+                "colmap_root_path": str(database_path.parents[1]),
+                "colmap_database_path": str(database_path),
+                "colmap_images_root": str(images_root),
+                "colmap_init_mode": 0,
+                "colmap_custom_ply_path": "",
+                "colmap_image_downscale_mode": 0,
+                "colmap_image_target_width": 2048,
+                "colmap_image_scale": 1.0,
+                "colmap_nn_radius_scale_coef": 0.5,
+                "colmap_diffused_point_count": 100000,
+                "colmap_diffusion_radius": 1.0,
+            }
+        ),
+        s=SimpleNamespace(
+            renderer=SimpleNamespace(
+                clear_scene_resources=lambda: calls.append(("clear_renderer", None)),
+                set_debug_grad_norm_buffer=lambda buffer: calls.append(("clear_grad_debug", buffer)),
+                set_debug_clone_count_buffer=lambda buffer: calls.append(("clear_clone_debug", buffer)),
+            ),
+            trainer=None,
+            training_active=False,
+            training_elapsed_s=0.0,
+            training_resume_time=None,
+            training_renderer=None,
+            training_frames=[SimpleNamespace(width=8, height=8)],
+            scene=SimpleNamespace(count=123),
+            scene_path=Path("scene.ply"),
+            colmap_root=Path("dataset/old"),
+            colmap_recon=object(),
+            colmap_import_progress=None,
+            colmap_point_positions_buffer="positions",
+            colmap_point_colors_buffer="colors",
+            colmap_point_count=123,
+            scene_init_signature=None,
+            applied_renderer_params_training=None,
+            applied_renderer_params_debug=None,
+            applied_training_signature=None,
+            applied_training_runtime_factor=None,
+            pending_training_runtime_resize=False,
+            suggested_init_hparams=None,
+            suggested_init_count=None,
+            applied_renderer_params_main=None,
+            cached_training_setup_signature=None,
+            cached_training_setup=None,
+            last_error="stale",
+        ),
+        c=lambda key: SimpleNamespace(value=0),
+    )
+
+    monkeypatch.setattr(session, "update_debug_frame_slider_range", lambda viewer_obj: calls.append(("update_slider", None)))
+    monkeypatch.setattr(session, "_clear_cached_init_source", lambda viewer_obj: calls.append(("clear_cached_init", None)))
+    monkeypatch.setattr(session, "_reset_training_visual_state", lambda viewer_obj: calls.append(("reset_training_visual", None)))
+    monkeypatch.setattr(session, "_reset_loss_debug", lambda viewer_obj: calls.append(("reset_loss_debug", None)))
+
+    session.import_colmap_from_ui(viewer)
+
+    assert calls == [
+        ("clear_grad_debug", None),
+        ("clear_clone_debug", None),
+        ("reset_training_visual", None),
+        ("reset_loss_debug", None),
+        ("clear_cached_init", None),
+        ("update_slider", None),
+        ("clear_renderer", None),
+    ]
+    assert viewer.s.scene is None
+    assert viewer.s.scene_path is None
+    assert viewer.s.colmap_root is None
+    assert viewer.s.colmap_recon is None
+    assert viewer.s.training_frames == []
+    assert viewer.s.colmap_import_progress is not None
+
 def test_advance_colmap_import_processes_images_incrementally(tmp_path: Path, monkeypatch) -> None:
     _, images_root = _build_colmap_tree(
         tmp_path,
@@ -406,7 +567,46 @@ def test_import_colmap_dataset_uses_aligned_reconstruction(monkeypatch) -> None:
     aligned_recon = object()
     frames = [SimpleNamespace(width=32, height=32, image_id=1)]
     calls: list[object] = []
-    viewer = SimpleNamespace()
+    viewer = SimpleNamespace(
+        s=SimpleNamespace(
+            renderer=SimpleNamespace(
+                clear_scene_resources=lambda: calls.append(("clear_renderer", None)),
+                set_debug_grad_norm_buffer=lambda buffer: calls.append(("clear_grad_debug", buffer)),
+                set_debug_clone_count_buffer=lambda buffer: calls.append(("clear_clone_debug", buffer)),
+            ),
+            trainer=None,
+            training_active=False,
+            training_elapsed_s=0.0,
+            training_resume_time=None,
+            training_renderer=None,
+            training_frames=[],
+            scene=None,
+            scene_path=None,
+            colmap_root=None,
+            colmap_recon=None,
+            colmap_import_progress=None,
+            colmap_point_positions_buffer=None,
+            colmap_point_colors_buffer=None,
+            colmap_point_count=0,
+            scene_init_signature=None,
+            applied_renderer_params_training=None,
+            applied_renderer_params_debug=None,
+            applied_training_signature=None,
+            applied_training_runtime_factor=None,
+            pending_training_runtime_resize=False,
+            suggested_init_hparams=None,
+            suggested_init_count=None,
+            applied_renderer_params_main=None,
+            cached_training_setup_signature=None,
+            cached_training_setup=None,
+        ),
+        c=lambda key: SimpleNamespace(value=0),
+    )
+
+    monkeypatch.setattr(session, "update_debug_frame_slider_range", lambda viewer_obj: None)
+    monkeypatch.setattr(session, "_clear_cached_init_source", lambda viewer_obj: None)
+    monkeypatch.setattr(session, "_reset_training_visual_state", lambda viewer_obj: None)
+    monkeypatch.setattr(session, "_reset_loss_debug", lambda viewer_obj: None)
 
     monkeypatch.setattr(session, "_load_aligned_colmap_reconstruction", lambda root: aligned_recon)
     monkeypatch.setattr(
@@ -435,7 +635,12 @@ def test_import_colmap_dataset_uses_aligned_reconstruction(monkeypatch) -> None:
         diffusion_radius=1.0,
     )
 
-    assert calls == [
+    assert calls[:3] == [
+        ("clear_grad_debug", None),
+        ("clear_clone_debug", None),
+        ("clear_renderer", None),
+    ]
+    assert calls[-2:] == [
         ("frames", aligned_recon, Path("dataset/garden/images_8"), "original", 2048, 1.0),
         ("finish", aligned_recon, frames),
     ]
