@@ -191,3 +191,5 @@ cython_debug/
 !/dataset/garden/sparse/0/
 !/dataset/garden/sparse/0/**
 imgui.ini
+/.temp
+/temp
