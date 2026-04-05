@@ -128,7 +128,7 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["training_steps_per_frame"] == 3
     assert viewer_ui._values["colmap_init_mode"] == 1
     assert viewer_ui._values["colmap_image_downscale_mode"] == 0
-    assert viewer_ui._values["colmap_image_target_width"] == 2048
+    assert viewer_ui._values["colmap_image_max_size"] == 2048
     assert viewer_ui._values["colmap_image_scale"] == 1.0
     assert viewer_ui._values["colmap_nn_radius_scale_coef"] == 0.5
     assert viewer_ui._values["_histogram_update_y_limit"] is True

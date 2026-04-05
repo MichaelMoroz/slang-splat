@@ -51,14 +51,14 @@ The import window collects:
 
 - the top-level dataset root
 - the image folder used for training frames
-- image downscale settings: original resolution, fixed target width, or uniform scale factor
+- image downscale settings: original resolution, fixed max size, or uniform scale factor
 - the initialization mode: `COLMAP Pointcloud`, `Diffused Pointcloud`, or `Custom PLY`
 - the nearest-neighbor radius scale coefficient used by COLMAP-based initialization
 - for `Diffused Pointcloud`: synthesized point count and a dimensionless diffusion-radius multiplier
 
 After the dataset root is selected, the viewer resolves the COLMAP reconstruction from `sparse/0`. If a COLMAP database is present it samples image names from the `images` table; otherwise it falls back to the image names stored in `images.bin`. It then walks the selected root and its subfolders until it finds the first directory that contains one of those image entries. The image folder can still be overridden manually before pressing `Import`.
 
-Import-time downscale is applied before training textures are uploaded and before frame intrinsics are finalized. `Target Width` preserves aspect ratio by solving only for the x dimension and deriving y from the source aspect. `Scale Factor` multiplies both dimensions uniformly. Both modes clamp to the source resolution, so the importer never upscales images.
+Import-time downscale is applied before training textures are uploaded and before frame intrinsics are finalized. `Max Size` preserves aspect ratio by clamping the longer image side and scaling the shorter side to match. `Scale Factor` multiplies both dimensions uniformly. Both modes clamp to the source resolution, so the importer never upscales images.
 
 Training-frame metadata discovery opens source images in a fixed 8-thread loader pool, which keeps large datasets from stalling on serial image-size probes while preserving the original sorted frame order.
 

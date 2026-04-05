@@ -400,7 +400,7 @@ def test_update_ui_text_populates_colmap_import_progress_fields() -> None:
         init_mode="pointcloud",
         custom_ply_path=None,
         image_downscale_mode="original",
-        image_downscale_target_width=1600,
+        image_downscale_max_size=1600,
         image_downscale_scale=1.0,
         nn_radius_scale_coef=0.25,
         phase="load_textures",

@@ -321,7 +321,7 @@ def test_import_colmap_dataset_clears_loaded_scene_before_loading(monkeypatch) -
     monkeypatch.setattr(session, "_reset_training_visual_state", lambda viewer_obj: calls.append(("reset_training_visual", None)))
     monkeypatch.setattr(session, "_reset_loss_debug", lambda viewer_obj: calls.append(("reset_loss_debug", None)))
     monkeypatch.setattr(session, "_load_aligned_colmap_reconstruction", lambda root: calls.append(("load_recon", root)) or "recon")
-    monkeypatch.setattr(session, "build_training_frames_from_root", lambda recon, images_root, downscale_mode, downscale_target_width, downscale_scale: calls.append(("build_frames", recon)) or ["frame"])
+    monkeypatch.setattr(session, "build_training_frames_from_root", lambda recon, images_root, downscale_mode, downscale_max_size, downscale_scale: calls.append(("build_frames", recon)) or ["frame"])
     monkeypatch.setattr(session, "_create_native_dataset_textures", lambda viewer_obj, frames: calls.append(("create_textures", list(frames))) or ["tex"])
     monkeypatch.setattr(session, "_finish_import_colmap_dataset", lambda viewer_obj, **kwargs: calls.append(("finish", kwargs["recon"])))
 
@@ -333,7 +333,7 @@ def test_import_colmap_dataset_clears_loaded_scene_before_loading(monkeypatch) -
         init_mode="pointcloud",
         custom_ply_path=None,
         image_downscale_mode="original",
-        image_downscale_target_width=2048,
+        image_downscale_max_size=2048,
         image_downscale_scale=1.0,
         nn_radius_scale_coef=0.5,
         diffused_point_count=100000,
@@ -373,7 +373,7 @@ def test_import_colmap_from_ui_clears_loaded_scene_before_queueing(tmp_path: Pat
                 "colmap_init_mode": 0,
                 "colmap_custom_ply_path": "",
                 "colmap_image_downscale_mode": 0,
-                "colmap_image_target_width": 2048,
+                "colmap_image_max_size": 2048,
                 "colmap_image_scale": 1.0,
                 "colmap_nn_radius_scale_coef": 0.5,
                 "colmap_diffused_point_count": 100000,
@@ -464,7 +464,7 @@ def test_advance_colmap_import_processes_images_incrementally(tmp_path: Path, mo
                 init_mode="pointcloud",
                 custom_ply_path=None,
                 image_downscale_mode="original",
-                image_downscale_target_width=1600,
+                image_downscale_max_size=1600,
                 image_downscale_scale=1.0,
                 nn_radius_scale_coef=0.25,
             ),
@@ -509,8 +509,8 @@ def test_advance_colmap_import_applies_selected_image_downscale(tmp_path: Path, 
                 images_root=images_root,
                 init_mode="pointcloud",
                 custom_ply_path=None,
-                image_downscale_mode="width",
-                image_downscale_target_width=4,
+                image_downscale_mode="max_size",
+                image_downscale_max_size=4,
                 image_downscale_scale=1.0,
                 nn_radius_scale_coef=0.25,
             ),
@@ -557,7 +557,7 @@ def test_finish_import_colmap_dataset_resets_toolkit_plot_history(monkeypatch) -
         init_mode="pointcloud",
         custom_ply_path=None,
         image_downscale_mode="original",
-        image_downscale_target_width=1600,
+        image_downscale_max_size=1600,
         image_downscale_scale=1.0,
         nn_radius_scale_coef=0.25,
         diffused_point_count=100000,
@@ -619,7 +619,7 @@ def test_import_colmap_dataset_uses_aligned_reconstruction(monkeypatch) -> None:
     monkeypatch.setattr(
         session,
         "build_training_frames_from_root",
-        lambda recon, images_root, downscale_mode, downscale_target_width, downscale_scale: calls.append(("frames", recon, Path(images_root), downscale_mode, downscale_target_width, downscale_scale)) or frames,
+        lambda recon, images_root, downscale_mode, downscale_max_size, downscale_scale: calls.append(("frames", recon, Path(images_root), downscale_mode, downscale_max_size, downscale_scale)) or frames,
     )
     monkeypatch.setattr(
         session,
@@ -636,7 +636,7 @@ def test_import_colmap_dataset_uses_aligned_reconstruction(monkeypatch) -> None:
         init_mode="pointcloud",
         custom_ply_path=None,
         image_downscale_mode="original",
-        image_downscale_target_width=2048,
+        image_downscale_max_size=2048,
         image_downscale_scale=1.0,
         nn_radius_scale_coef=0.5,
         diffused_point_count=100000,
@@ -862,7 +862,7 @@ def test_initialize_training_scene_rebuilds_training_frames_from_colmap(monkeypa
             colmap_import=SimpleNamespace(
                 images_root=Path("dataset/garden/images_8"),
                 image_downscale_mode="original",
-                image_downscale_target_width=2048,
+                image_downscale_max_size=2048,
                 image_downscale_scale=1.0,
                 init_mode="pointcloud",
                 custom_ply_path=None,
@@ -927,15 +927,15 @@ def test_refresh_training_frames_uses_cached_reconstruction(monkeypatch) -> None
             training_frames=[],
             colmap_import=SimpleNamespace(
                 images_root=Path("dataset/garden/images_8"),
-                image_downscale_mode="width",
-                image_downscale_target_width=1024,
+                image_downscale_mode="max_size",
+                image_downscale_max_size=1024,
                 image_downscale_scale=1.0,
             ),
         )
     )
 
     monkeypatch.setattr(session, "_load_aligned_colmap_reconstruction", lambda root: (_ for _ in ()).throw(AssertionError("should not reload reconstruction")))
-    monkeypatch.setattr(session, "build_training_frames_from_root", lambda recon_obj, images_root, downscale_mode, downscale_target_width, downscale_scale: [frame] if recon_obj is recon else (_ for _ in ()).throw(AssertionError("unexpected reconstruction instance")))
+    monkeypatch.setattr(session, "build_training_frames_from_root", lambda recon_obj, images_root, downscale_mode, downscale_max_size, downscale_scale: [frame] if recon_obj is recon else (_ for _ in ()).throw(AssertionError("unexpected reconstruction instance")))
 
     session._refresh_training_frames(viewer)
 

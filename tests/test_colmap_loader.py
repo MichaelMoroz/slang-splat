@@ -152,6 +152,12 @@ def test_build_training_frames_uses_eight_loader_threads(tmp_path: Path, monkeyp
     assert [frame.height for frame in frames] == [100, 60]
 
 
+def test_resolve_training_frame_image_size_max_size_clamps_longer_side() -> None:
+    assert colmap_ops.resolve_training_frame_image_size(200, 100, downscale_mode="max_size", downscale_max_size=120) == (120, 60)
+    assert colmap_ops.resolve_training_frame_image_size(100, 200, downscale_mode="max_size", downscale_max_size=120) == (60, 120)
+    assert colmap_ops.resolve_training_frame_image_size(100, 80, downscale_mode="max_size", downscale_max_size=120) == (100, 80)
+
+
 def test_colmap_loader_rejects_unsupported_camera_model(tmp_path: Path):
     root = _build_tiny_colmap_tree(tmp_path, model_id=4)
     with pytest.raises(ValueError):

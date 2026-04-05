@@ -333,7 +333,7 @@ class SplatViewer(spy.AppWindow):
                     init_mode=import_cfg.init_mode,
                     custom_ply_path=import_cfg.custom_ply_path,
                     image_downscale_mode=import_cfg.image_downscale_mode,
-                    image_downscale_target_width=import_cfg.image_downscale_target_width,
+                    image_downscale_max_size=import_cfg.image_downscale_max_size,
                     image_downscale_scale=import_cfg.image_downscale_scale,
                     nn_radius_scale_coef=import_cfg.nn_radius_scale_coef,
                     diffused_point_count=import_cfg.diffused_point_count,

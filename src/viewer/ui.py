@@ -41,7 +41,7 @@ _DEFAULT_INTERFACE_SCALE_INDEX = 3
 _BASE_FONT_SIZE_PX = 16.0
 _FONT_ATLAS_SIZE_PX = _BASE_FONT_SIZE_PX * _INTERFACE_SCALE_OPTIONS[-1][1]
 _COLMAP_INIT_MODE_LABELS = ("COLMAP Pointcloud", "Diffused Pointcloud", "Custom PLY")
-_COLMAP_IMAGE_DOWNSCALE_LABELS = ("Original", "Target Width", "Scale Factor")
+_COLMAP_IMAGE_DOWNSCALE_LABELS = ("Original", "Max Size", "Scale Factor")
 _TRAIN_BACKGROUND_MODE_LABELS = ("Custom", "Random")
 _VIEWER_BACKGROUND_MODE_LABELS = ("Train Background", "Custom")
 _TRAIN_DOWNSCALE_MODE_LABELS = ("Auto",) + tuple(f"{i}x" for i in range(1, 17))
@@ -995,11 +995,11 @@ class ToolkitWindow:
                         imgui.set_item_default_focus()
                 imgui.end_combo()
             if downscale_idx == 1:
-                changed, value = imgui.input_int("Target Width", int(ui._values.get("colmap_image_target_width", 2048)), 64, 256)
+                changed, value = imgui.input_int("Max Size", int(ui._values.get("colmap_image_max_size", 2048)), 64, 256)
                 if changed:
-                    ui._values["colmap_image_target_width"] = max(int(value), 1)
+                    ui._values["colmap_image_max_size"] = max(int(value), 1)
                 if imgui.is_item_hovered():
-                    imgui.set_item_tooltip("Resize imported training images to this width while preserving aspect ratio. The importer never upscales.")
+                    imgui.set_item_tooltip("Clamp imported training images so their longer side is at most this size while preserving aspect ratio. The importer never upscales.")
             elif downscale_idx == 2:
                 changed, value = imgui.drag_float(
                     "Scale Factor",
@@ -1798,7 +1798,7 @@ def build_ui(renderer) -> ViewerUI:
     values["colmap_init_mode"] = 1
     values["colmap_custom_ply_path"] = ""
     values["colmap_image_downscale_mode"] = 0
-    values["colmap_image_target_width"] = 2048
+    values["colmap_image_max_size"] = 2048
     values["colmap_image_scale"] = 1.0
     values["colmap_nn_radius_scale_coef"] = 0.5
     values["colmap_diffused_point_count"] = 100000

@@ -211,7 +211,7 @@ def resolve_training_frame_image_size(
     height: int,
     *,
     downscale_mode: str = "original",
-    downscale_target_width: int | None = None,
+    downscale_max_size: int | None = None,
     downscale_scale: float = 1.0,
 ) -> tuple[int, int]:
     src_width = max(int(width), 1)
@@ -219,13 +219,16 @@ def resolve_training_frame_image_size(
     mode = str(downscale_mode).strip().lower()
     if mode == "original":
         return src_width, src_height
-    if mode == "width":
-        if downscale_target_width is None:
-            raise ValueError("downscale_target_width is required when downscale_mode='width'.")
-        target_width = min(max(int(downscale_target_width), 1), src_width)
-        if target_width >= src_width:
+    if mode == "max_size":
+        if downscale_max_size is None:
+            raise ValueError("downscale_max_size is required when downscale_mode='max_size'.")
+        src_max_size = max(src_width, src_height)
+        target_max_size = min(max(int(downscale_max_size), 1), src_max_size)
+        if target_max_size >= src_max_size:
             return src_width, src_height
-        target_height = max(1, min(src_height, int(round(src_height * (float(target_width) / float(src_width))))))
+        scale = float(target_max_size) / float(src_max_size)
+        target_width = max(1, min(src_width, int(round(src_width * scale))))
+        target_height = max(1, min(src_height, int(round(src_height * scale))))
         return target_width, target_height
     if mode == "scale":
         factor = float(np.clip(downscale_scale, 1e-6, 1.0))
@@ -238,14 +241,14 @@ def resolve_training_frame_image_size(
 
 
 def _build_training_frame(task: tuple[int, object, object, Path, str, int | None, float]) -> ColmapFrame:
-    image_id, image, camera, image_path, downscale_mode, downscale_target_width, downscale_scale = task
+    image_id, image, camera, image_path, downscale_mode, downscale_max_size, downscale_scale = task
     with Image.open(image_path) as pil_image:
         src_width, src_height = pil_image.size
     width, height = resolve_training_frame_image_size(
         src_width,
         src_height,
         downscale_mode=downscale_mode,
-        downscale_target_width=downscale_target_width,
+        downscale_max_size=downscale_max_size,
         downscale_scale=downscale_scale,
     )
     sx, sy = float(width) / float(camera.width), float(height) / float(camera.height)
@@ -270,7 +273,7 @@ def build_training_frames_from_root(
     images_root: Path,
     *,
     downscale_mode: str = "original",
-    downscale_target_width: int | None = None,
+    downscale_max_size: int | None = None,
     downscale_scale: float = 1.0,
 ) -> list[ColmapFrame]:
     images_root = Path(images_root).resolve()
@@ -280,7 +283,7 @@ def build_training_frames_from_root(
     for image_id, image in sorted(recon.images.items()):
         image_path, camera = (images_root / image.name).resolve(), recon.cameras.get(image.camera_id)
         if camera is None or not image_path.exists(): continue
-        tasks.append((image_id, image, camera, image_path, downscale_mode, downscale_target_width, downscale_scale))
+        tasks.append((image_id, image, camera, image_path, downscale_mode, downscale_max_size, downscale_scale))
     frames: list[ColmapFrame] = []
     if tasks:
         with ThreadPoolExecutor(max_workers=TRAINING_FRAME_LOAD_THREADS, thread_name_prefix="colmap-frame") as executor:
