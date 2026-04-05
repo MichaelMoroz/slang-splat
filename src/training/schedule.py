@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-DEFAULT_MAINTENANCE_CONTRIBUTION_CULL_DECAY = 0.95
+DEFAULT_REFINEMENT_CONTRIBUTION_CULL_DECAY = 0.95
 
 
 def resolve_cosine_base_learning_rate(training_hparams: Any, step: int) -> float:
@@ -33,33 +33,33 @@ def resolve_max_allowed_density(training_hparams: Any, step: int) -> float:
     return start + (end - start) * progress
 
 
-def resolve_maintenance_growth_ratio(training_hparams: Any, step: int) -> float:
-    growth_ratio = max(float(getattr(training_hparams, "maintenance_growth_ratio", 0.02)), 0.0)
-    start_step = max(int(getattr(training_hparams, "maintenance_growth_start_step", 500)), 0)
+def resolve_refinement_growth_ratio(training_hparams: Any, step: int) -> float:
+    growth_ratio = max(float(getattr(training_hparams, "refinement_growth_ratio", 0.02)), 0.0)
+    start_step = max(int(getattr(training_hparams, "refinement_growth_start_step", 500)), 0)
     return growth_ratio if int(step) >= start_step else 0.0
 
 
-def resolve_maintenance_contribution_cull_threshold(training_hparams: Any, step: int, frame_count: int = 1) -> float:
-    base_threshold = max(float(getattr(training_hparams, "maintenance_contribution_cull_threshold", 0.001)), 0.0)
-    decay = min(max(float(getattr(training_hparams, "maintenance_contribution_cull_decay", DEFAULT_MAINTENANCE_CONTRIBUTION_CULL_DECAY)), 0.0), 1.0)
-    interval = resolve_effective_maintenance_interval(training_hparams, frame_count)
-    completed_maintenance_steps = max(int(step), 0) // interval
-    return base_threshold * math.pow(decay, completed_maintenance_steps)
+def resolve_refinement_contribution_cull_threshold(training_hparams: Any, step: int, frame_count: int = 1) -> float:
+    base_threshold = max(float(getattr(training_hparams, "refinement_contribution_cull_threshold", 0.001)), 0.0)
+    decay = min(max(float(getattr(training_hparams, "refinement_contribution_cull_decay", DEFAULT_REFINEMENT_CONTRIBUTION_CULL_DECAY)), 0.0), 1.0)
+    interval = resolve_effective_refinement_interval(training_hparams, frame_count)
+    completed_refinement_steps = max(int(step), 0) // interval
+    return base_threshold * math.pow(decay, completed_refinement_steps)
 
 
-def resolve_effective_maintenance_interval(training_hparams: Any, frame_count: int = 1) -> int:
-    interval = max(int(getattr(training_hparams, "maintenance_interval", 200)), 1)
+def resolve_effective_refinement_interval(training_hparams: Any, frame_count: int = 1) -> int:
+    interval = max(int(getattr(training_hparams, "refinement_interval", 200)), 1)
     return max(interval, max(int(frame_count), 1))
 
 
-def should_run_maintenance_step(training_hparams: Any, step: int, frame_count: int = 1) -> bool:
-    interval = resolve_effective_maintenance_interval(training_hparams, frame_count)
+def should_run_refinement_step(training_hparams: Any, step: int, frame_count: int = 1) -> bool:
+    interval = resolve_effective_refinement_interval(training_hparams, frame_count)
     return int(step) > 0 and int(step) % interval == 0
 
 
 def resolve_clone_probability_threshold(training_hparams: Any, splat_count: int, pixel_count: int, step: int = 0, frame_count: int = 1) -> float:
-    interval = resolve_effective_maintenance_interval(training_hparams, frame_count)
-    growth_ratio = resolve_maintenance_growth_ratio(training_hparams, step)
+    interval = resolve_effective_refinement_interval(training_hparams, frame_count)
+    growth_ratio = resolve_refinement_growth_ratio(training_hparams, step)
     pixels = max(int(pixel_count), 1)
     max_gaussians = max(int(getattr(training_hparams, "max_gaussians", 0)), 0)
     if max_gaussians > 0 and int(splat_count) >= max_gaussians:

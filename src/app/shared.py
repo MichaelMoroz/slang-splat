@@ -9,7 +9,7 @@ import slangpy as spy
 
 from ..common import clamp_float, clamp_int
 from ..scene import GaussianInitHyperParams, GaussianScene
-from ..training import AdamHyperParams, DEFAULT_DEBUG_CONTRIBUTION_RANGE_PERCENT, DEFAULT_MAINTENANCE_CONTRIBUTION_CULL_DECAY, DEFAULT_MAINTENANCE_CONTRIBUTION_CULL_PERCENT, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, resolve_training_profile
+from ..training import AdamHyperParams, DEFAULT_DEBUG_CONTRIBUTION_RANGE_PERCENT, DEFAULT_REFINEMENT_CONTRIBUTION_CULL_DECAY, DEFAULT_REFINEMENT_CONTRIBUTION_CULL_PERCENT, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, resolve_training_profile
 
 EPS = 1e-8
 MIN_SCENE_RADIUS = 1.0
@@ -179,12 +179,12 @@ def build_training_params(
     lr_schedule_start_lr: float | None = None,
     lr_schedule_end_lr: float | None = None,
     lr_schedule_steps: int = 30_000,
-    maintenance_interval: int = 200,
-    maintenance_growth_ratio: float = 0.02,
-    maintenance_growth_start_step: int = 500,
-    maintenance_alpha_cull_threshold: float = 1e-2,
-    maintenance_contribution_cull_threshold: float = DEFAULT_MAINTENANCE_CONTRIBUTION_CULL_PERCENT,
-    maintenance_contribution_cull_decay: float = DEFAULT_MAINTENANCE_CONTRIBUTION_CULL_DECAY,
+    refinement_interval: int = 200,
+    refinement_growth_ratio: float = 0.02,
+    refinement_growth_start_step: int = 500,
+    refinement_alpha_cull_threshold: float = 1e-2,
+    refinement_contribution_cull_threshold: float = DEFAULT_REFINEMENT_CONTRIBUTION_CULL_PERCENT,
+    refinement_contribution_cull_decay: float = DEFAULT_REFINEMENT_CONTRIBUTION_CULL_DECAY,
     train_downscale_mode: int = 1,
     train_auto_start_downscale: int = 16,
     train_downscale_base_iters: int = 200,
@@ -247,12 +247,12 @@ def build_training_params(
         lr_schedule_start_lr=base_lr if lr_schedule_start_lr is None else clamp_float(lr_schedule_start_lr, 1e-8, 1.0),
         lr_schedule_end_lr=max(base_lr * 0.1, 1e-8) if lr_schedule_end_lr is None else clamp_float(lr_schedule_end_lr, 1e-8, 1.0),
         lr_schedule_steps=clamp_int(lr_schedule_steps, 1, 1_000_000_000),
-        maintenance_interval=clamp_int(maintenance_interval, 1, 1_000_000_000),
-        maintenance_growth_ratio=clamp_float(maintenance_growth_ratio, 0.0, 10.0),
-        maintenance_growth_start_step=clamp_int(maintenance_growth_start_step, 0, 1_000_000_000),
-        maintenance_alpha_cull_threshold=clamp_float(maintenance_alpha_cull_threshold, 1e-8, 1.0),
-        maintenance_contribution_cull_threshold=clamp_float(maintenance_contribution_cull_threshold, 0.0, 100.0),
-        maintenance_contribution_cull_decay=clamp_float(maintenance_contribution_cull_decay, 0.0, 1.0),
+        refinement_interval=clamp_int(refinement_interval, 1, 1_000_000_000),
+        refinement_growth_ratio=clamp_float(refinement_growth_ratio, 0.0, 10.0),
+        refinement_growth_start_step=clamp_int(refinement_growth_start_step, 0, 1_000_000_000),
+        refinement_alpha_cull_threshold=clamp_float(refinement_alpha_cull_threshold, 1e-8, 1.0),
+        refinement_contribution_cull_threshold=clamp_float(refinement_contribution_cull_threshold, 0.0, 100.0),
+        refinement_contribution_cull_decay=clamp_float(refinement_contribution_cull_decay, 0.0, 1.0),
         max_gaussians=clamp_int(max_gaussians, 0, 10_000_000),
         train_downscale_mode=clamp_int(train_downscale_mode, 0, 16),
         train_auto_start_downscale=clamp_int(train_auto_start_downscale, 1, 16),

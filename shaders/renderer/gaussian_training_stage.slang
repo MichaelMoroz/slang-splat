@@ -15,13 +15,14 @@ static const uint LOSS_SLOT_DENSITY = 2u;
 static const float POSITION_RANDOM_STEP_MAX_ANISOTROPY = 4.0;
 static const float DENSIFY_SCALE_SHRINK_EXPONENT = -1.0 / 3.0;
 static const float DENSIFY_MAX_STANDARDIZED_SIGMA = 3.0;
+static const float REFINEMENT_CHILD_ANISOTROPY_RATIO_SCALE = 0.5;
 static const float SRGB_LINEAR_THRESHOLD = 0.0031308;
 static const float SRGB_LINEAR_SCALE = 12.92;
 static const float SRGB_GAMMA_SCALE = 1.055;
 static const float SRGB_GAMMA_OFFSET = 0.055;
 static const float SRGB_INV_GAMMA = 1.0 / 2.4;
-static const uint MAINTENANCE_HASH_INIT = 0x9e3779b9u;
-static const uint MAINTENANCE_HASH_MIX = 0x85ebca6bu;
+static const uint REFINEMENT_HASH_INIT = 0x9e3779b9u;
+static const uint REFINEMENT_HASH_MIX = 0x85ebca6bu;
 uniform uint g_Width;
 uniform uint g_Height;
 uniform float g_InvPixelCount;
@@ -76,16 +77,16 @@ uniform RWStructuredBuffer<uint> g_CloneCounts;
 uniform RWStructuredBuffer<uint> g_SplatContribution;
 uniform RWStructuredBuffer<uint> g_TotalCloneCounter;
 uniform RWStructuredBuffer<uint> g_AppendCounter;
-uniform StructuredBuffer<float4> g_MaintenanceCameraRows;
+uniform StructuredBuffer<float4> g_RefinementCameraRows;
 uniform uint g_SrcSplatCount;
 uniform uint g_DstSplatCount;
 uniform uint g_AppendSplatCount;
 uniform uint g_SurvivorCount;
-uniform uint g_MaintenanceSeed;
-uniform uint g_MaintenanceCameraCount;
-uniform float g_MaintenanceAlphaCullThreshold;
-uniform uint g_MaintenanceContributionCullThreshold;
-uniform float g_MaintenanceRadiusScale;
+uniform uint g_RefinementSeed;
+uniform uint g_RefinementCameraCount;
+uniform float g_RefinementAlphaCullThreshold;
+uniform uint g_RefinementContributionCullThreshold;
+uniform float g_RefinementRadiusScale;
 
 groupshared float gsLoss[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
 groupshared float gsMSE[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
@@ -103,7 +104,7 @@ struct SplatState
     float rawOpacity;
 };
 
-static const uint MAINTENANCE_CAMERA_ROW_COUNT = 6u;
+static const uint REFINEMENT_CAMERA_ROW_COUNT = 6u;
 
 float linear_to_srgb_safe(float value)
 {
@@ -117,9 +118,9 @@ float3 linear_to_srgb_safe(float3 value)
     return float3(linear_to_srgb_safe(value.x), linear_to_srgb_safe(value.y), linear_to_srgb_safe(value.z));
 }
 
-bool should_cull_maintenance_splat(float alpha, uint contribution)
+bool should_cull_refinement_splat(float alpha, uint contribution)
 {
-    return alpha < g_MaintenanceAlphaCullThreshold || contribution < g_MaintenanceContributionCullThreshold;
+    return alpha < g_RefinementAlphaCullThreshold || contribution < g_RefinementContributionCullThreshold;
 }
 
 SplatState load_splat_state(RWStructuredBuffer<float> params, uint splatCount, uint splatId)
@@ -200,15 +201,15 @@ void store_adam_moment(RWStructuredBuffer<float2> moments, uint splatCount, uint
     moments[adam_moment_index(splatCount, paramId, splatId)] = value;
 }
 
-PinholeCamera maintenance_camera(uint cameraIndex)
+PinholeCamera refinement_camera(uint cameraIndex)
 {
-    uint baseRow = cameraIndex * MAINTENANCE_CAMERA_ROW_COUNT;
-    float4 row0 = g_MaintenanceCameraRows[baseRow + 0u];
-    float4 row1 = g_MaintenanceCameraRows[baseRow + 1u];
-    float4 row2 = g_MaintenanceCameraRows[baseRow + 2u];
-    float4 row3 = g_MaintenanceCameraRows[baseRow + 3u];
-    float4 row4 = g_MaintenanceCameraRows[baseRow + 4u];
-    float4 row5 = g_MaintenanceCameraRows[baseRow + 5u];
+    uint baseRow = cameraIndex * REFINEMENT_CAMERA_ROW_COUNT;
+    float4 row0 = g_RefinementCameraRows[baseRow + 0u];
+    float4 row1 = g_RefinementCameraRows[baseRow + 1u];
+    float4 row2 = g_RefinementCameraRows[baseRow + 2u];
+    float4 row3 = g_RefinementCameraRows[baseRow + 3u];
+    float4 row4 = g_RefinementCameraRows[baseRow + 4u];
+    float4 row5 = g_RefinementCameraRows[baseRow + 5u];
 
     CameraParams params;
     params.viewport = row0.xy;
@@ -232,7 +233,7 @@ float3 apply_support_radius_lower_bound(float3 logScale, float supportRadius)
     float currentMaxScale = max(exp(logScale.x), max(exp(logScale.y), exp(logScale.z)));
     if (!(currentMaxScale > SMALL_VALUE) || !(supportRadius > SMALL_VALUE)) return logScale;
 
-    float currentSupportRadius = currentMaxScale * max(g_MaintenanceRadiusScale, SMALL_VALUE) * GAUSSIAN_SUPPORT_SIGMA_RADIUS;
+    float currentSupportRadius = currentMaxScale * max(g_RefinementRadiusScale, SMALL_VALUE) * GAUSSIAN_SUPPORT_SIGMA_RADIUS;
     if (currentSupportRadius >= supportRadius) return logScale;
     return logScale + log(supportRadius / currentSupportRadius);
 }
@@ -251,46 +252,113 @@ void copy_adam_state(uint srcSplatId, uint dstSplatId)
     }
 }
 
-uint maintenance_hash_combine(uint seed, uint value)
+uint refinement_hash_combine(uint seed, uint value)
 {
-    return hash_u32(seed ^ (value * MAINTENANCE_HASH_MIX + MAINTENANCE_HASH_INIT));
+    return hash_u32(seed ^ (value * REFINEMENT_HASH_MIX + REFINEMENT_HASH_INIT));
 }
 
-uint maintenance_family_frame_hash(uint splatId)
+uint refinement_family_frame_hash(uint splatId)
 {
-    uint seed = maintenance_hash_combine(g_MaintenanceSeed, splatId + 1u);
-    if (g_MaintenanceCameraCount == 0u) return seed;
-    uint cameraIndex = seed % g_MaintenanceCameraCount;
-    uint baseRow = cameraIndex * MAINTENANCE_CAMERA_ROW_COUNT;
-    return maintenance_hash_combine(asuint(g_MaintenanceCameraRows[baseRow + 5u].z), cameraIndex + 1u);
+    uint seed = refinement_hash_combine(g_RefinementSeed, splatId + 1u);
+    if (g_RefinementCameraCount == 0u) return seed;
+    uint cameraIndex = seed % g_RefinementCameraCount;
+    uint baseRow = cameraIndex * REFINEMENT_CAMERA_ROW_COUNT;
+    return refinement_hash_combine(asuint(g_RefinementCameraRows[baseRow + 5u].z), cameraIndex + 1u);
 }
 
-uint maintenance_sample_seed(uint frameHash, uint splatId, uint subsampleId)
+uint refinement_sample_seed(uint frameHash, uint splatId, uint subsampleId)
 {
-    return maintenance_hash_combine(maintenance_hash_combine(frameHash, splatId + 1u), subsampleId + 1u);
+    return refinement_hash_combine(refinement_hash_combine(frameHash, splatId + 1u), subsampleId + 1u);
 }
 
-float3 maintenance_gaussian_sample_raw(uint frameHash, uint splatId, uint subsampleId)
+float3 refinement_gaussian_sample_raw(uint frameHash, uint splatId, uint subsampleId)
 {
-    uint rngState = maintenance_sample_seed(frameHash, splatId, subsampleId);
+    uint rngState = refinement_sample_seed(frameHash, splatId, subsampleId);
     return rng_normal3_box_muller(rngState);
 }
 
-float3 maintenance_gaussian_family_mean(uint frameHash, uint splatId, uint familySize)
+float3 refinement_gaussian_family_mean(uint frameHash, uint splatId, uint familySize)
 {
     if (familySize <= 1u) return 0.0;
     float3 mean = 0.0;
-    [loop] for (uint slot = 0u; slot < familySize; slot++) mean += maintenance_gaussian_sample_raw(frameHash, splatId, slot);
+    [loop] for (uint slot = 0u; slot < familySize; slot++) mean += refinement_gaussian_sample_raw(frameHash, splatId, slot);
     return mean / max(float(familySize), 1.0);
 }
 
-float3 maintenance_centered_gaussian_sample(uint frameHash, uint splatId, uint slot, uint familySize, float3 familyMean)
+float3 refinement_centered_gaussian_sample(uint frameHash, uint splatId, uint slot, uint familySize, float3 familyMean)
 {
     if (familySize <= 1u) return 0.0;
     float varianceRestore = sqrt(float(familySize) / float(familySize - 1u));
-    float3 sample = (maintenance_gaussian_sample_raw(frameHash, splatId, slot) - familyMean) * varianceRestore;
+    float3 sample = (refinement_gaussian_sample_raw(frameHash, splatId, slot) - familyMean) * varianceRestore;
     float sampleLength = length(sample);
     return sampleLength > DENSIFY_MAX_STANDARDIZED_SIGMA ? sample * (DENSIFY_MAX_STANDARDIZED_SIGMA / sampleLength) : sample;
+}
+
+float refinement_axis_value(uint axisIndex, uint minIndex, uint midIndex, float minValue, float midValue, float maxValue)
+{
+    if (axisIndex == minIndex) return minValue;
+    if (axisIndex == midIndex) return midValue;
+    return maxValue;
+}
+
+float3 refinement_child_log_scale(float3 parentLogScale, float shrink)
+{
+    float3 childLogScale = parentLogScale + log(shrink);
+    float sortedMin = parentLogScale.x;
+    float sortedMid = parentLogScale.y;
+    float sortedMax = parentLogScale.z;
+    uint minIndex = 0u;
+    uint midIndex = 1u;
+    uint maxIndex = 2u;
+    if (sortedMin > sortedMid)
+    {
+        float tempValue = sortedMin;
+        sortedMin = sortedMid;
+        sortedMid = tempValue;
+        uint tempIndex = minIndex;
+        minIndex = midIndex;
+        midIndex = tempIndex;
+    }
+    if (sortedMid > sortedMax)
+    {
+        float tempValue = sortedMid;
+        sortedMid = sortedMax;
+        sortedMax = tempValue;
+        uint tempIndex = midIndex;
+        midIndex = maxIndex;
+        maxIndex = tempIndex;
+    }
+    if (sortedMin > sortedMid)
+    {
+        float tempValue = sortedMin;
+        sortedMin = sortedMid;
+        sortedMid = tempValue;
+        uint tempIndex = minIndex;
+        minIndex = midIndex;
+        midIndex = tempIndex;
+    }
+
+    float parentSpan = sortedMax - sortedMin;
+    if (!(parentSpan > SMALL_VALUE)) return childLogScale;
+
+    float targetRatio = max(exp(parentSpan) * REFINEMENT_CHILD_ANISOTROPY_RATIO_SCALE, 1.0);
+    float targetSpan = log(targetRatio);
+    if (!(targetSpan > SMALL_VALUE))
+    {
+        float meanLog = (childLogScale.x + childLogScale.y + childLogScale.z) / 3.0;
+        return float3(meanLog);
+    }
+
+    float midT = min(max((sortedMid - sortedMin) / parentSpan, 0.0), 1.0);
+    float meanLog = (childLogScale.x + childLogScale.y + childLogScale.z) / 3.0;
+    sortedMin = meanLog - ((1.0 + midT) * targetSpan) / 3.0;
+    sortedMid = sortedMin + midT * targetSpan;
+    sortedMax = sortedMin + targetSpan;
+    return float3(
+        refinement_axis_value(0u, minIndex, midIndex, sortedMin, sortedMid, sortedMax),
+        refinement_axis_value(1u, minIndex, midIndex, sortedMin, sortedMid, sortedMax),
+        refinement_axis_value(2u, minIndex, midIndex, sortedMin, sortedMid, sortedMax)
+    );
 }
 
 float position_random_step_gate(float opacity)
@@ -322,10 +390,10 @@ SplatState split_family_member(SplatState source, uint splatId, uint slot, uint 
     float3 parentScale = exp(source.logScale);
     float shrinkOffset = sqrt(max(1.0 - shrink * shrink, 0.0));
     float4 qInv = float4(source.rotation.x, -source.rotation.y, -source.rotation.z, -source.rotation.w);
-    float3 localOffset = maintenance_centered_gaussian_sample(frameHash, splatId, slot, familySize, familyMean) * parentScale * shrinkOffset;
+    float3 localOffset = refinement_centered_gaussian_sample(frameHash, splatId, slot, familySize, familyMean) * parentScale * shrinkOffset;
     SplatState child = source;
     child.position = source.position + rotate_by_quat(localOffset, qInv);
-    child.logScale = source.logScale + log(shrink);
+    child.logScale = refinement_child_log_scale(source.logScale, shrink);
     return child;
 }
 
@@ -487,7 +555,7 @@ void csClearCloneCounts(uint3 dispatchThreadID : SV_DispatchThreadID)
 
 [shader("compute")]
 [numthreads(256, 1, 1)]
-void csClearMaintenanceCounters(uint3 dispatchThreadID : SV_DispatchThreadID)
+void csClearRefinementCounters(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     if (dispatchThreadID.x != 0u) return;
     g_TotalCloneCounter[0] = 0u;
@@ -496,12 +564,12 @@ void csClearMaintenanceCounters(uint3 dispatchThreadID : SV_DispatchThreadID)
 
 [shader("compute")]
 [numthreads(256, 1, 1)]
-void csPrepareMaintenanceCounts(uint3 dispatchThreadID : SV_DispatchThreadID)
+void csPrepareRefinementCounts(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     uint splatId = dispatchThreadID.x;
     if (splatId >= g_SrcSplatCount) return;
     float alpha = opacity_from_raw(load_splat_param(g_SrcSplatParams, g_SrcSplatCount, PARAM_RAW_OPACITY, splatId));
-    if (should_cull_maintenance_splat(alpha, g_SplatContribution[splatId])) return;
+    if (should_cull_refinement_splat(alpha, g_SplatContribution[splatId])) return;
     uint _;
     InterlockedAdd(g_AppendCounter[0], 1u, _);
     uint cloneCount = g_CloneCounts[splatId];
@@ -510,19 +578,19 @@ void csPrepareMaintenanceCounts(uint3 dispatchThreadID : SV_DispatchThreadID)
 
 [shader("compute")]
 [numthreads(256, 1, 1)]
-void csClampMaintenanceMinScreenSize(uint3 dispatchThreadID : SV_DispatchThreadID)
+void csClampRefinementMinScreenSize(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     uint splatId = dispatchThreadID.x;
     if (splatId >= g_SrcSplatCount) return;
-    if (g_MaintenanceCameraCount == 0u) return;
+    if (g_RefinementCameraCount == 0u) return;
 
     SplatState source = load_splat_state(g_SrcSplatParams, g_SrcSplatCount, splatId);
     float minVisibleSupportRadius = 0.0;
     bool hasVisibleCamera = false;
-    [loop] for (uint cameraIndex = 0u; cameraIndex < g_MaintenanceCameraCount; cameraIndex++)
+    [loop] for (uint cameraIndex = 0u; cameraIndex < g_RefinementCameraCount; cameraIndex++)
     {
         float supportRadius;
-        if (!world_support_radius_from_screen_circle(maintenance_camera(cameraIndex), source.position, MAINTENANCE_MIN_SCREEN_RADIUS_PX, supportRadius)) continue;
+        if (!world_support_radius_from_screen_circle(refinement_camera(cameraIndex), source.position, REFINEMENT_MIN_SCREEN_RADIUS_PX, supportRadius)) continue;
         if (!hasVisibleCamera || supportRadius < minVisibleSupportRadius)
         {
             minVisibleSupportRadius = supportRadius;
@@ -537,14 +605,14 @@ void csClampMaintenanceMinScreenSize(uint3 dispatchThreadID : SV_DispatchThreadI
 
 [shader("compute")]
 [numthreads(256, 1, 1)]
-void csRewriteMaintenanceSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
+void csRewriteRefinementSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     uint splatId = dispatchThreadID.x;
     if (splatId >= g_SrcSplatCount) return;
 
     SplatState source = load_splat_state(g_SrcSplatParams, g_SrcSplatCount, splatId);
     float alpha = opacity_from_raw(source.rawOpacity);
-    if (should_cull_maintenance_splat(alpha, g_SplatContribution[splatId])) return;
+    if (should_cull_refinement_splat(alpha, g_SplatContribution[splatId])) return;
 
     uint cloneCount = g_CloneCounts[splatId];
     uint parentIndex = 0u;
@@ -558,8 +626,8 @@ void csRewriteMaintenanceSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
         uint availableChildren = childBase < g_AppendSplatCount ? (g_AppendSplatCount - childBase) : 0u;
         emittedCloneCount = min(cloneCount, availableChildren);
         uint familySize = emittedCloneCount + 1u;
-        uint frameHash = maintenance_family_frame_hash(splatId);
-        float3 familyMean = maintenance_gaussian_family_mean(frameHash, splatId, familySize);
+        uint frameHash = refinement_family_frame_hash(splatId);
+        float3 familyMean = refinement_gaussian_family_mean(frameHash, splatId, familySize);
         store_splat_state(g_DstSplatParams, g_DstSplatCount, parentIndex, split_family_member(source, splatId, 0u, familySize, frameHash, familyMean));
         copy_adam_state(splatId, parentIndex);
         [loop] for (uint childSlot = 0u; childSlot < emittedCloneCount; childSlot++)

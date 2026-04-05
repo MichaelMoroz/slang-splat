@@ -13,7 +13,7 @@ from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 from src.scene.sh_utils import SH_C0
 from src.training import gaussian_trainer as gaussian_trainer_module
-from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, contribution_fixed_count_from_percent, contribution_percent_from_fixed_count, resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_effective_maintenance_interval, resolve_maintenance_contribution_cull_threshold, resolve_maintenance_growth_ratio, resolve_max_allowed_density, resolve_training_resolution, should_run_maintenance_step
+from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, contribution_fixed_count_from_percent, contribution_percent_from_fixed_count, resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_effective_refinement_interval, resolve_refinement_contribution_cull_threshold, resolve_refinement_growth_ratio, resolve_max_allowed_density, resolve_training_resolution, should_run_refinement_step
 
 _ADAM_BUFFER_NAMES = ("adam_moments",)
 _OPACITY_EPS = 1e-6
@@ -21,12 +21,35 @@ _raw_opacity = lambda alpha: (np.log(np.clip(np.asarray(alpha, dtype=np.float32)
 _actual_opacity = lambda raw: (1.0 / (1.0 + np.exp(-np.asarray(raw, dtype=np.float32)))).astype(np.float32, copy=False)
 _actual_scale = lambda log_scale: np.exp(np.asarray(log_scale, dtype=np.float32))
 _GAUSSIAN_SUPPORT_SIGMA_RADIUS = 3.0
-_MAINTENANCE_MIN_SCREEN_RADIUS_PX = 1.0
+_REFINEMENT_MIN_SCREEN_RADIUS_PX = 1.0
 _TRAINING_MAX_SCREEN_FRACTION = 0.1
 _log_sigma = lambda sigma: np.log(np.asarray(sigma, dtype=np.float32))
 _stored_from_support_scale = lambda support_scale: np.log(np.asarray(support_scale, dtype=np.float32) / _GAUSSIAN_SUPPORT_SIGMA_RADIUS)
 _SCALE_GRAD_MULS = (0.015625, 0.03125, 0.0625, 0.125, 0.25, 0.5, 0.75, 0.875, 0.9375, 0.96875, 1.0, 1.05)
 _TARGET_MULS = (2.0, 3.0, 4.0, 6.0, 7.5)
+
+
+def _expected_refinement_child_scale(parent_scale: np.ndarray, family_size: int) -> np.ndarray:
+    scale = np.asarray(parent_scale, dtype=np.float32).reshape(3)
+    shrink = float(max(int(family_size), 1)) ** (-1.0 / 3.0)
+    child_log = np.log(scale) + np.log(shrink)
+    order = np.argsort(np.log(scale))
+    sorted_parent_log = np.log(scale[order])
+    parent_span = float(sorted_parent_log[2] - sorted_parent_log[0])
+    if not parent_span > 1e-6:
+        return np.exp(child_log).astype(np.float32)
+    target_ratio = max(float(scale[order[2]] / scale[order[0]]) * 0.5, 1.0)
+    target_span = float(np.log(target_ratio))
+    if not target_span > 1e-6:
+        return np.full((3,), np.exp(np.mean(child_log, dtype=np.float64)), dtype=np.float32)
+    mid_t = float((sorted_parent_log[1] - sorted_parent_log[0]) / parent_span)
+    mean_log = float(np.mean(child_log, dtype=np.float64))
+    sorted_min = mean_log - ((1.0 + mid_t) * target_span) / 3.0
+    sorted_mid = sorted_min + mid_t * target_span
+    sorted_max = sorted_min + target_span
+    child_scale = np.zeros((3,), dtype=np.float32)
+    child_scale[order] = np.exp(np.array([sorted_min, sorted_mid, sorted_max], dtype=np.float64)).astype(np.float32)
+    return child_scale
 
 
 def _make_scene(count: int = 24, seed: int = 7) -> GaussianScene:
@@ -604,11 +627,11 @@ def test_max_allowed_density_schedule_clamps_to_end_value() -> None:
     np.testing.assert_allclose(resolve_max_allowed_density(hparams, 40), 12.0, rtol=0.0, atol=1e-10)
 
 
-def test_maintenance_cadence_and_clone_probability_follow_growth_budget() -> None:
-    hparams = TrainingHyperParams(maintenance_interval=200, maintenance_growth_ratio=0.05, maintenance_growth_start_step=0)
+def test_refinement_cadence_and_clone_probability_follow_growth_budget() -> None:
+    hparams = TrainingHyperParams(refinement_interval=200, refinement_growth_ratio=0.05, refinement_growth_start_step=0)
 
-    assert not should_run_maintenance_step(hparams, 199)
-    assert should_run_maintenance_step(hparams, 200)
+    assert not should_run_refinement_step(hparams, 199)
+    assert should_run_refinement_step(hparams, 200)
     np.testing.assert_allclose(
         resolve_clone_probability_threshold(hparams, splat_count=1000, pixel_count=64 * 32, step=200),
         1000.0 * 0.05 / 200.0 / float(64 * 32),
@@ -617,12 +640,12 @@ def test_maintenance_cadence_and_clone_probability_follow_growth_budget() -> Non
     )
 
 
-def test_maintenance_interval_is_floored_by_frame_count() -> None:
-    hparams = TrainingHyperParams(maintenance_interval=2, maintenance_growth_ratio=0.05, maintenance_growth_start_step=0)
+def test_refinement_interval_is_floored_by_frame_count() -> None:
+    hparams = TrainingHyperParams(refinement_interval=2, refinement_growth_ratio=0.05, refinement_growth_start_step=0)
 
-    assert resolve_effective_maintenance_interval(hparams, frame_count=5) == 5
-    assert not should_run_maintenance_step(hparams, 4, frame_count=5)
-    assert should_run_maintenance_step(hparams, 5, frame_count=5)
+    assert resolve_effective_refinement_interval(hparams, frame_count=5) == 5
+    assert not should_run_refinement_step(hparams, 4, frame_count=5)
+    assert should_run_refinement_step(hparams, 5, frame_count=5)
     np.testing.assert_allclose(
         resolve_clone_probability_threshold(hparams, splat_count=1000, pixel_count=64 * 32, step=5, frame_count=5),
         1000.0 * 0.05 / 5.0 / float(64 * 32),
@@ -631,26 +654,26 @@ def test_maintenance_interval_is_floored_by_frame_count() -> None:
     )
 
 
-def test_maintenance_growth_stays_zero_until_start_step() -> None:
-    hparams = TrainingHyperParams(maintenance_interval=200, maintenance_growth_ratio=0.02, maintenance_growth_start_step=2000)
+def test_refinement_growth_stays_zero_until_start_step() -> None:
+    hparams = TrainingHyperParams(refinement_interval=200, refinement_growth_ratio=0.02, refinement_growth_start_step=2000)
 
-    np.testing.assert_allclose(resolve_maintenance_growth_ratio(hparams, 1999), 0.0, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_refinement_growth_ratio(hparams, 1999), 0.0, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_clone_probability_threshold(hparams, splat_count=1000, pixel_count=100, step=1999), 0.0, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_maintenance_growth_ratio(hparams, 2000), 0.02, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_refinement_growth_ratio(hparams, 2000), 0.02, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_clone_probability_threshold(hparams, splat_count=1000, pixel_count=100, step=2000), 1000.0 * 0.02 / 200.0 / 100.0, rtol=0.0, atol=1e-12)
 
 
-def test_maintenance_contribution_cull_threshold_uses_configured_decay() -> None:
-    hparams = TrainingHyperParams(maintenance_interval=200, maintenance_contribution_cull_threshold=0.001, maintenance_contribution_cull_decay=0.95)
+def test_refinement_contribution_cull_threshold_uses_configured_decay() -> None:
+    hparams = TrainingHyperParams(refinement_interval=200, refinement_contribution_cull_threshold=0.001, refinement_contribution_cull_decay=0.95)
 
-    np.testing.assert_allclose(resolve_maintenance_contribution_cull_threshold(hparams, 0), 0.001, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_maintenance_contribution_cull_threshold(hparams, 199), 0.001, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_maintenance_contribution_cull_threshold(hparams, 200), 0.00095, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_maintenance_contribution_cull_threshold(hparams, 400), 0.0009025, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_refinement_contribution_cull_threshold(hparams, 0), 0.001, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_refinement_contribution_cull_threshold(hparams, 199), 0.001, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_refinement_contribution_cull_threshold(hparams, 200), 0.00095, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_refinement_contribution_cull_threshold(hparams, 400), 0.0009025, rtol=0.0, atol=1e-12)
 
 
 def test_clone_probability_threshold_respects_max_gaussians_cap() -> None:
-    hparams = TrainingHyperParams(maintenance_interval=200, maintenance_growth_ratio=0.05, maintenance_growth_start_step=0, max_gaussians=1024)
+    hparams = TrainingHyperParams(refinement_interval=200, refinement_growth_ratio=0.05, refinement_growth_start_step=0, max_gaussians=1024)
 
     np.testing.assert_allclose(
         resolve_clone_probability_threshold(hparams, splat_count=1000, pixel_count=100, step=200),
@@ -661,29 +684,29 @@ def test_clone_probability_threshold_respects_max_gaussians_cap() -> None:
     assert resolve_clone_probability_threshold(hparams, splat_count=1024, pixel_count=100, step=200) == 0.0
 
 
-def test_trainer_allocates_minimal_maintenance_buffers(device, tmp_path: Path) -> None:
+def test_trainer_allocates_minimal_refinement_buffers(device, tmp_path: Path) -> None:
     scene = _make_scene(count=32, seed=81)
-    frame = _make_frame(tmp_path, image_name="maintenance_buffers_target.png", image_id=9)
+    frame = _make_frame(tmp_path, image_name="refinement_buffers_target.png", image_id=9)
     renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
     trainer = GaussianTrainer(
         device=device,
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(maintenance_growth_ratio=0.05, maintenance_growth_start_step=0),
+        training_hparams=TrainingHyperParams(refinement_growth_ratio=0.05, refinement_growth_start_step=0),
         seed=123,
     )
 
-    assert set(trainer.maintenance_buffers) == {"total_clone_counter", "clone_counts", "splat_contribution", "append_counter", "append_params", "dst_splat_params", "dst_adam_moments", "camera_rows"}
+    assert set(trainer.refinement_buffers) == {"total_clone_counter", "clone_counts", "splat_contribution", "append_counter", "append_params", "dst_splat_params", "dst_adam_moments", "camera_rows"}
     assert trainer.clone_probability_threshold() > 0.0
 
 
-def test_trainer_maintenance_due_uses_dataset_frame_floor(device, tmp_path: Path) -> None:
+def test_trainer_refinement_due_uses_dataset_frame_floor(device, tmp_path: Path) -> None:
     scene = _make_scene(count=8, seed=82)
     frames = [
-        _make_frame(tmp_path, image_name="maintenance_floor_a.png", image_id=90),
-        _make_frame(tmp_path, image_name="maintenance_floor_b.png", image_id=91),
-        _make_frame(tmp_path, image_name="maintenance_floor_c.png", image_id=92),
+        _make_frame(tmp_path, image_name="refinement_floor_a.png", image_id=90),
+        _make_frame(tmp_path, image_name="refinement_floor_b.png", image_id=91),
+        _make_frame(tmp_path, image_name="refinement_floor_c.png", image_id=92),
     ]
     renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
     trainer = GaussianTrainer(
@@ -691,14 +714,14 @@ def test_trainer_maintenance_due_uses_dataset_frame_floor(device, tmp_path: Path
         renderer=renderer,
         scene=scene,
         frames=frames,
-        training_hparams=TrainingHyperParams(maintenance_interval=1, maintenance_growth_ratio=0.05, maintenance_growth_start_step=0),
+        training_hparams=TrainingHyperParams(refinement_interval=1, refinement_growth_ratio=0.05, refinement_growth_start_step=0),
         seed=123,
     )
 
-    assert trainer.effective_maintenance_interval() == 3
-    assert not trainer.maintenance_due(1)
-    assert not trainer.maintenance_due(2)
-    assert trainer.maintenance_due(3)
+    assert trainer.effective_refinement_interval() == 3
+    assert not trainer.refinement_due(1)
+    assert not trainer.refinement_due(2)
+    assert trainer.refinement_due(3)
 
 
 def test_training_forward_accumulates_clone_counts(device, tmp_path: Path) -> None:
@@ -710,7 +733,7 @@ def test_training_forward_accumulates_clone_counts(device, tmp_path: Path) -> No
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(maintenance_growth_ratio=0.05, maintenance_growth_start_step=0, maintenance_interval=9999),
+        training_hparams=TrainingHyperParams(refinement_growth_ratio=0.05, refinement_growth_start_step=0, refinement_interval=9999),
         seed=123,
     )
     camera = frame.make_camera(near=0.1, far=20.0)
@@ -722,16 +745,16 @@ def test_training_forward_accumulates_clone_counts(device, tmp_path: Path) -> No
         enc,
         camera,
         background,
-        clone_counts_buffer=trainer.maintenance_buffers["clone_counts"],
-        splat_contribution_buffer=trainer.maintenance_buffers["splat_contribution"],
+        clone_counts_buffer=trainer.refinement_buffers["clone_counts"],
+        splat_contribution_buffer=trainer.refinement_buffers["splat_contribution"],
         clone_select_probability=1.0,
         clone_seed=123,
     )
     device.submit_command_buffer(enc.finish())
     device.wait()
 
-    clone_counts = buffer_to_numpy(trainer.maintenance_buffers["clone_counts"], np.uint32)[: scene.count]
-    contributions = buffer_to_numpy(trainer.maintenance_buffers["splat_contribution"], np.uint32)[: scene.count]
+    clone_counts = buffer_to_numpy(trainer.refinement_buffers["clone_counts"], np.uint32)[: scene.count]
+    contributions = buffer_to_numpy(trainer.refinement_buffers["splat_contribution"], np.uint32)[: scene.count]
     assert np.any(clone_counts > 0)
     assert np.any(contributions > 0)
 
@@ -771,12 +794,12 @@ def test_density_loss_respects_threshold_and_changes_gradients(device, tmp_path:
     assert grad_delta > 0.0
 
 
-def test_maintenance_rewrite_culls_and_splits_families(device, tmp_path: Path) -> None:
+def test_refinement_rewrite_culls_and_splits_families(device, tmp_path: Path) -> None:
     scene = _make_scene(count=2, seed=89)
     scene.opacities[:] = np.array([0.6, 1e-5], dtype=np.float32)
     scene.scales[:] = _log_sigma(np.array([[0.09, 0.06, 0.03], [0.05, 0.05, 0.05]], dtype=np.float32))
     source_position = scene.positions[0].copy()
-    frame = _make_frame(tmp_path, image_name="maintenance_rewrite_target.png", image_id=11)
+    frame = _make_frame(tmp_path, image_name="refinement_rewrite_target.png", image_id=11)
     renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
     observed_pixels = renderer.width * renderer.height
     trainer = GaussianTrainer(
@@ -784,65 +807,67 @@ def test_maintenance_rewrite_culls_and_splits_families(device, tmp_path: Path) -
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(maintenance_alpha_cull_threshold=1e-3, maintenance_contribution_cull_threshold=contribution_percent_from_fixed_count(50, observed_pixels)),
+        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-3, refinement_contribution_cull_threshold=contribution_percent_from_fixed_count(50, observed_pixels)),
         seed=123,
     )
 
     trainer._observed_contribution_pixel_count = observed_pixels
-    trainer.maintenance_buffers["clone_counts"].copy_from_numpy(np.array([2, 5], dtype=np.uint32))
-    trainer.maintenance_buffers["splat_contribution"].copy_from_numpy(np.array([200, 0], dtype=np.uint32))
-    trainer._run_maintenance()
+    trainer.refinement_buffers["clone_counts"].copy_from_numpy(np.array([2, 5], dtype=np.uint32))
+    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200, 0], dtype=np.uint32))
+    trainer._run_refinement()
 
     groups = _read_scene_groups(renderer, trainer.scene.count)
     actual_scales = _actual_scale(groups["scales"][:, :3])
     actual_opacity = _actual_opacity(groups["color_alpha"][:, 3])
+    expected_scale = _expected_refinement_child_scale(np.array([0.09, 0.06, 0.03], dtype=np.float32), trainer.scene.count)
 
     assert trainer.scene.count == 3
     np.testing.assert_allclose(
         actual_scales,
-        np.repeat((np.array([[0.09, 0.06, 0.03]], dtype=np.float32) * (3.0 ** (-1.0 / 3.0))), 3, axis=0),
+        np.repeat(expected_scale[None, :], 3, axis=0),
         rtol=0.0,
         atol=1e-6,
     )
+    np.testing.assert_allclose(np.max(actual_scales, axis=1) / np.min(actual_scales, axis=1), np.full((3,), 1.5, dtype=np.float32), rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(actual_opacity, np.full((3,), 0.6, dtype=np.float32), rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(np.mean(groups["positions"][:, :3], axis=0), source_position, rtol=0.0, atol=1e-6)
     offsets = groups["positions"][:, :3] - source_position[None, :]
     np.testing.assert_allclose(np.sum(offsets, axis=0), np.zeros((3,), dtype=np.float32), rtol=0.0, atol=1e-6)
     assert float(np.max(np.linalg.norm(offsets, axis=1))) > 1e-3
-    clone_counts_after = buffer_to_numpy(trainer.maintenance_buffers["clone_counts"], np.uint32)[: trainer.scene.count]
-    contribution_after = buffer_to_numpy(trainer.maintenance_buffers["splat_contribution"], np.uint32)[: trainer.scene.count]
+    clone_counts_after = buffer_to_numpy(trainer.refinement_buffers["clone_counts"], np.uint32)[: trainer.scene.count]
+    contribution_after = buffer_to_numpy(trainer.refinement_buffers["splat_contribution"], np.uint32)[: trainer.scene.count]
     assert np.all(clone_counts_after == 0)
     assert np.all(contribution_after == 0)
 
 
-def test_maintenance_runtime_uses_base_threshold_for_first_maintenance_then_decays(device, tmp_path: Path) -> None:
+def test_refinement_runtime_uses_base_threshold_for_first_refinement_then_decays(device, tmp_path: Path) -> None:
     scene = _make_scene(count=1, seed=93)
-    frame = _make_frame(tmp_path, image_name="maintenance_threshold_decay_target.png", image_id=212)
+    frame = _make_frame(tmp_path, image_name="refinement_threshold_decay_target.png", image_id=212)
     renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
     trainer = GaussianTrainer(
         device=device,
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(maintenance_interval=200, maintenance_contribution_cull_threshold=0.001, maintenance_contribution_cull_decay=0.95),
+        training_hparams=TrainingHyperParams(refinement_interval=200, refinement_contribution_cull_threshold=0.001, refinement_contribution_cull_decay=0.95),
         seed=123,
     )
     observed_pixels = renderer.width * renderer.height
     trainer._observed_contribution_pixel_count = observed_pixels
 
     trainer.state.step = 200
-    first_threshold = int(trainer._maintenance_vars()["g_MaintenanceContributionCullThreshold"])
+    first_threshold = int(trainer._refinement_vars()["g_RefinementContributionCullThreshold"])
     trainer.state.step = 400
-    second_threshold = int(trainer._maintenance_vars()["g_MaintenanceContributionCullThreshold"])
+    second_threshold = int(trainer._refinement_vars()["g_RefinementContributionCullThreshold"])
 
     assert first_threshold == contribution_fixed_count_from_percent(0.001, observed_pixels)
     assert second_threshold == contribution_fixed_count_from_percent(0.00095, observed_pixels)
 
 
-def test_maintenance_rewrite_culls_low_contribution_splats(device, tmp_path: Path) -> None:
+def test_refinement_rewrite_culls_low_contribution_splats(device, tmp_path: Path) -> None:
     scene = _make_scene(count=2, seed=95)
     scene.opacities[:] = np.array([0.6, 0.7], dtype=np.float32)
-    frame = _make_frame(tmp_path, image_name="maintenance_contribution_cull_target.png", image_id=111)
+    frame = _make_frame(tmp_path, image_name="refinement_contribution_cull_target.png", image_id=111)
     renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
     observed_pixels = renderer.width * renderer.height
     trainer = GaussianTrainer(
@@ -850,24 +875,24 @@ def test_maintenance_rewrite_culls_low_contribution_splats(device, tmp_path: Pat
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(maintenance_alpha_cull_threshold=1e-6, maintenance_contribution_cull_threshold=contribution_percent_from_fixed_count(50, observed_pixels)),
+        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-6, refinement_contribution_cull_threshold=contribution_percent_from_fixed_count(50, observed_pixels)),
         seed=123,
     )
 
     trainer._observed_contribution_pixel_count = observed_pixels
-    trainer.maintenance_buffers["clone_counts"].copy_from_numpy(np.array([0, 0], dtype=np.uint32))
-    trainer.maintenance_buffers["splat_contribution"].copy_from_numpy(np.array([200, 49], dtype=np.uint32))
-    trainer._run_maintenance()
+    trainer.refinement_buffers["clone_counts"].copy_from_numpy(np.array([0, 0], dtype=np.uint32))
+    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200, 49], dtype=np.uint32))
+    trainer._run_refinement()
 
     assert trainer.scene.count == 1
     groups = _read_scene_groups(renderer, trainer.scene.count)
     np.testing.assert_allclose(groups["positions"][0, :3], scene.positions[0], rtol=0.0, atol=1e-6)
 
 
-def test_maintenance_rewrite_migrates_adam_moments(device, tmp_path: Path) -> None:
+def test_refinement_rewrite_migrates_adam_moments(device, tmp_path: Path) -> None:
     scene = _make_scene(count=2, seed=97)
     scene.opacities[:] = np.array([0.6, 1e-5], dtype=np.float32)
-    frame = _make_frame(tmp_path, image_name="maintenance_adam_target.png", image_id=12)
+    frame = _make_frame(tmp_path, image_name="refinement_adam_target.png", image_id=12)
     renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
     observed_pixels = renderer.width * renderer.height
     trainer = GaussianTrainer(
@@ -875,7 +900,7 @@ def test_maintenance_rewrite_migrates_adam_moments(device, tmp_path: Path) -> No
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(maintenance_alpha_cull_threshold=1e-3, maintenance_contribution_cull_threshold=contribution_percent_from_fixed_count(50, observed_pixels)),
+        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-3, refinement_contribution_cull_threshold=contribution_percent_from_fixed_count(50, observed_pixels)),
         seed=123,
     )
 
@@ -887,19 +912,19 @@ def test_maintenance_rewrite_migrates_adam_moments(device, tmp_path: Path) -> No
     trainer.adam_optimizer.buffers["adam_moments"].copy_from_numpy(src_moments.reshape(-1, 2))
 
     trainer._observed_contribution_pixel_count = observed_pixels
-    trainer.maintenance_buffers["clone_counts"].copy_from_numpy(np.array([2, 5], dtype=np.uint32))
-    trainer.maintenance_buffers["splat_contribution"].copy_from_numpy(np.array([200, 0], dtype=np.uint32))
-    trainer._run_maintenance()
+    trainer.refinement_buffers["clone_counts"].copy_from_numpy(np.array([2, 5], dtype=np.uint32))
+    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200, 0], dtype=np.uint32))
+    trainer._run_refinement()
 
     expected = np.repeat(src_moments[:, 0:1, :], 3, axis=1)
     np.testing.assert_allclose(_read_adam_moments(trainer, trainer.scene.count), expected, rtol=0.0, atol=1e-7)
 
 
-def test_maintenance_respects_max_gaussians_cap(device, tmp_path: Path) -> None:
+def test_refinement_respects_max_gaussians_cap(device, tmp_path: Path) -> None:
     scene = _make_scene(count=2, seed=101)
     scene.opacities[:] = np.array([0.6, 0.7], dtype=np.float32)
     scene.scales[:] = _log_sigma(np.array([[0.09, 0.06, 0.03], [0.04, 0.04, 0.04]], dtype=np.float32))
-    frame = _make_frame(tmp_path, image_name="maintenance_max_count_target.png", image_id=13)
+    frame = _make_frame(tmp_path, image_name="refinement_max_count_target.png", image_id=13)
     renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
     observed_pixels = renderer.width * renderer.height
     trainer = GaussianTrainer(
@@ -907,19 +932,19 @@ def test_maintenance_respects_max_gaussians_cap(device, tmp_path: Path) -> None:
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(max_gaussians=3, maintenance_alpha_cull_threshold=1e-3, maintenance_contribution_cull_threshold=contribution_percent_from_fixed_count(50, observed_pixels)),
+        training_hparams=TrainingHyperParams(max_gaussians=3, refinement_alpha_cull_threshold=1e-3, refinement_contribution_cull_threshold=contribution_percent_from_fixed_count(50, observed_pixels)),
         seed=123,
     )
 
     trainer._observed_contribution_pixel_count = observed_pixels
-    trainer.maintenance_buffers["clone_counts"].copy_from_numpy(np.array([4, 4], dtype=np.uint32))
-    trainer.maintenance_buffers["splat_contribution"].copy_from_numpy(np.array([200, 200], dtype=np.uint32))
-    trainer._run_maintenance()
+    trainer.refinement_buffers["clone_counts"].copy_from_numpy(np.array([4, 4], dtype=np.uint32))
+    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200, 200], dtype=np.uint32))
+    trainer._run_refinement()
 
     assert trainer.scene.count == 3
     groups = _read_scene_groups(renderer, trainer.scene.count)
     actual_scales = _actual_scale(groups["scales"][:, :3])
-    split_scale = np.array([0.09, 0.06, 0.03], dtype=np.float32) * (2.0 ** (-1.0 / 3.0))
+    split_scale = _expected_refinement_child_scale(np.array([0.09, 0.06, 0.03], dtype=np.float32), 2)
     split_mask = np.all(np.isclose(actual_scales, split_scale[None, :], rtol=0.0, atol=1e-6), axis=1)
     unsplit_mask = np.all(np.isclose(actual_scales, np.full((1, 3), 0.04, dtype=np.float32), rtol=0.0, atol=1e-6), axis=1)
     assert int(np.count_nonzero(split_mask)) == 2
@@ -928,15 +953,15 @@ def test_maintenance_respects_max_gaussians_cap(device, tmp_path: Path) -> None:
     np.testing.assert_allclose(np.mean(split_positions, axis=0), scene.positions[0], rtol=0.0, atol=1e-6)
 
 
-def test_maintenance_rewrite_sampling_depends_on_frame_hash(device, tmp_path: Path) -> None:
+def test_refinement_rewrite_sampling_depends_on_frame_hash(device, tmp_path: Path) -> None:
     scene_a = _make_scene(count=1, seed=151)
     scene_b = _make_scene(count=1, seed=151)
     scene_a.opacities[:] = np.array([0.6], dtype=np.float32)
     scene_b.opacities[:] = np.array([0.6], dtype=np.float32)
     scene_a.scales[:] = _log_sigma(np.array([[0.08, 0.05, 0.03]], dtype=np.float32))
     scene_b.scales[:] = scene_a.scales.copy()
-    frame_a = _make_frame(tmp_path, image_name="maintenance_frame_hash_a.png", image_id=41)
-    frame_b = _make_frame(tmp_path, image_name="maintenance_frame_hash_b.png", image_id=42)
+    frame_a = _make_frame(tmp_path, image_name="refinement_frame_hash_a.png", image_id=41)
+    frame_b = _make_frame(tmp_path, image_name="refinement_frame_hash_b.png", image_id=42)
     renderer_a = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
     renderer_b = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
     observed_pixels = renderer_a.width * renderer_a.height
@@ -945,7 +970,7 @@ def test_maintenance_rewrite_sampling_depends_on_frame_hash(device, tmp_path: Pa
         renderer=renderer_a,
         scene=scene_a,
         frames=[frame_a],
-        training_hparams=TrainingHyperParams(maintenance_alpha_cull_threshold=1e-6, maintenance_contribution_cull_threshold=contribution_percent_from_fixed_count(50, observed_pixels)),
+        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-6, refinement_contribution_cull_threshold=contribution_percent_from_fixed_count(50, observed_pixels)),
         seed=123,
     )
     trainer_b = GaussianTrainer(
@@ -953,18 +978,18 @@ def test_maintenance_rewrite_sampling_depends_on_frame_hash(device, tmp_path: Pa
         renderer=renderer_b,
         scene=scene_b,
         frames=[frame_b],
-        training_hparams=TrainingHyperParams(maintenance_alpha_cull_threshold=1e-6, maintenance_contribution_cull_threshold=contribution_percent_from_fixed_count(50, observed_pixels)),
+        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-6, refinement_contribution_cull_threshold=contribution_percent_from_fixed_count(50, observed_pixels)),
         seed=123,
     )
 
     trainer_a._observed_contribution_pixel_count = observed_pixels
     trainer_b._observed_contribution_pixel_count = observed_pixels
-    trainer_a.maintenance_buffers["clone_counts"].copy_from_numpy(np.array([1], dtype=np.uint32))
-    trainer_b.maintenance_buffers["clone_counts"].copy_from_numpy(np.array([1], dtype=np.uint32))
-    trainer_a.maintenance_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
-    trainer_b.maintenance_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
-    trainer_a._run_maintenance()
-    trainer_b._run_maintenance()
+    trainer_a.refinement_buffers["clone_counts"].copy_from_numpy(np.array([1], dtype=np.uint32))
+    trainer_b.refinement_buffers["clone_counts"].copy_from_numpy(np.array([1], dtype=np.uint32))
+    trainer_a.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
+    trainer_b.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
+    trainer_a._run_refinement()
+    trainer_b._run_refinement()
 
     positions_a = _read_scene_groups(renderer_a, trainer_a.scene.count)["positions"][:, :3]
     positions_b = _read_scene_groups(renderer_b, trainer_b.scene.count)["positions"][:, :3]
@@ -973,13 +998,13 @@ def test_maintenance_rewrite_sampling_depends_on_frame_hash(device, tmp_path: Pa
     assert not np.allclose(positions_a, positions_b, rtol=0.0, atol=1e-6)
 
 
-def test_maintenance_rewrite_clamps_sampled_family_offsets_to_three_sigma(device, tmp_path: Path) -> None:
+def test_refinement_rewrite_clamps_sampled_family_offsets_to_three_sigma(device, tmp_path: Path) -> None:
     scene = _make_scene(count=1, seed=173)
     scene.positions[0] = np.array([0.0, 0.0, 0.0], dtype=np.float32)
     scene.scales[0] = _log_sigma(np.array([0.7, 0.5, 0.3], dtype=np.float32))
     scene.rotations[0] = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
     scene.opacities[0] = np.float32(0.6)
-    frame = _make_frame(tmp_path, image_name="maintenance_sigma_clamp_target.png", image_id=61)
+    frame = _make_frame(tmp_path, image_name="refinement_sigma_clamp_target.png", image_id=61)
     renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
     observed_pixels = renderer.width * renderer.height
     trainer = GaussianTrainer(
@@ -987,14 +1012,14 @@ def test_maintenance_rewrite_clamps_sampled_family_offsets_to_three_sigma(device
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(maintenance_alpha_cull_threshold=1e-6, maintenance_contribution_cull_threshold=contribution_percent_from_fixed_count(50, observed_pixels)),
+        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-6, refinement_contribution_cull_threshold=contribution_percent_from_fixed_count(50, observed_pixels)),
         seed=123,
     )
 
     trainer._observed_contribution_pixel_count = observed_pixels
-    trainer.maintenance_buffers["clone_counts"].copy_from_numpy(np.array([31], dtype=np.uint32))
-    trainer.maintenance_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
-    trainer._run_maintenance()
+    trainer.refinement_buffers["clone_counts"].copy_from_numpy(np.array([31], dtype=np.uint32))
+    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
+    trainer._run_refinement()
 
     groups = _read_scene_groups(renderer, trainer.scene.count)
     family_positions = groups["positions"][:, :3]
@@ -1008,13 +1033,13 @@ def test_maintenance_rewrite_clamps_sampled_family_offsets_to_three_sigma(device
     assert float(np.max(normalized_lengths)) <= 3.0 + 1e-5
 
 
-def test_maintenance_min_screen_size_raises_small_splats(device, tmp_path: Path) -> None:
+def test_refinement_min_screen_size_raises_small_splats(device, tmp_path: Path) -> None:
     scene = _make_scene(count=1, seed=103)
     scene.positions[0] = np.array([0.0, 0.0, 0.0], dtype=np.float32)
     scene.scales[0] = _log_sigma(np.array([1e-3, 1e-3, 1e-3], dtype=np.float32))
-    near_frame = _make_frame(tmp_path, image_name="maintenance_min_near.png", image_id=21)
-    tight_image_path = tmp_path / "maintenance_min_tight.png"
-    offscreen_image_path = tmp_path / "maintenance_min_offscreen.png"
+    near_frame = _make_frame(tmp_path, image_name="refinement_min_near.png", image_id=21)
+    tight_image_path = tmp_path / "refinement_min_tight.png"
+    offscreen_image_path = tmp_path / "refinement_min_offscreen.png"
     Image.fromarray(np.zeros((64, 64, 3), dtype=np.uint8), mode="RGB").save(tight_image_path)
     Image.fromarray(np.zeros((64, 64, 3), dtype=np.uint8), mode="RGB").save(offscreen_image_path)
     tight_frame = ColmapFrame(
@@ -1047,21 +1072,21 @@ def test_maintenance_min_screen_size_raises_small_splats(device, tmp_path: Path)
         renderer=renderer,
         scene=scene,
         frames=[near_frame, tight_frame, offscreen_frame],
-        training_hparams=TrainingHyperParams(maintenance_alpha_cull_threshold=1e-3),
+        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-3),
         seed=123,
     )
 
     expected_support = min(
         value
         for value in (
-            _circle_bound_support_radius(trainer.make_frame_camera(frame_index, renderer.width, renderer.height), scene.positions[0], renderer.width, renderer.height, _MAINTENANCE_MIN_SCREEN_RADIUS_PX)
+            _circle_bound_support_radius(trainer.make_frame_camera(frame_index, renderer.width, renderer.height), scene.positions[0], renderer.width, renderer.height, _REFINEMENT_MIN_SCREEN_RADIUS_PX)
             for frame_index in range(3)
         )
         if value is not None
     )
 
-    trainer.maintenance_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
-    trainer._run_maintenance()
+    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
+    trainer._run_refinement()
 
     scales = _actual_scale(_read_scene_groups(renderer, trainer.scene.count)["scales"][0, :3])
     initial_scale = _actual_scale(scene.scales[0, :3])
@@ -1520,18 +1545,18 @@ def test_training_prepass_capacity_sync_runs_every_32_steps(device, tmp_path: Pa
     assert len(calls) == 3
 
 
-def test_maintenance_camera_buffer_refreshes_when_frame_pose_changes(device, tmp_path: Path) -> None:
+def test_refinement_camera_buffer_refreshes_when_frame_pose_changes(device, tmp_path: Path) -> None:
     scene = _make_scene(count=4, seed=131)
-    frame = _make_frame(tmp_path, image_name="maintenance_pose_refresh.png", image_id=31)
+    frame = _make_frame(tmp_path, image_name="refinement_pose_refresh.png", image_id=31)
     renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
     trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], seed=123)
 
-    trainer._refresh_maintenance_camera_buffer()
-    before = buffer_to_numpy(trainer.maintenance_buffers["camera_rows"], np.float32).copy()
+    trainer._refresh_refinement_camera_buffer()
+    before = buffer_to_numpy(trainer.refinement_buffers["camera_rows"], np.float32).copy()
     frame.t_xyz = np.array([0.25, -0.5, 3.0], dtype=np.float32)
 
-    trainer._refresh_maintenance_camera_buffer()
-    after = buffer_to_numpy(trainer.maintenance_buffers["camera_rows"], np.float32).copy()
+    trainer._refresh_refinement_camera_buffer()
+    after = buffer_to_numpy(trainer.refinement_buffers["camera_rows"], np.float32).copy()
 
     assert not np.array_equal(before, after)
 

@@ -535,16 +535,16 @@ def update_debug_frame_slider_range(viewer: object) -> None:
 
 def _training_debug_clone_count_buffer(viewer: object):
     return (
-        viewer.s.trainer.maintenance_buffers["clone_counts"]
-        if viewer.s.trainer is not None and "clone_counts" in viewer.s.trainer.maintenance_buffers
+        viewer.s.trainer.refinement_buffers["clone_counts"]
+        if viewer.s.trainer is not None and "clone_counts" in viewer.s.trainer.refinement_buffers
         else None
     )
 
 
 def _training_debug_splat_contribution_buffer(viewer: object):
     return (
-        viewer.s.trainer.maintenance_buffers["splat_contribution"]
-        if viewer.s.trainer is not None and "splat_contribution" in viewer.s.trainer.maintenance_buffers
+        viewer.s.trainer.refinement_buffers["splat_contribution"]
+        if viewer.s.trainer is not None and "splat_contribution" in viewer.s.trainer.refinement_buffers
         else None
     )
 

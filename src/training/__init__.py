@@ -2,7 +2,7 @@ from .adam import AdamOptimizer, AdamRuntimeHyperParams
 from .gaussian_trainer import (
     AdamHyperParams,
     DEFAULT_DEBUG_CONTRIBUTION_RANGE_PERCENT,
-    DEFAULT_MAINTENANCE_CONTRIBUTION_CULL_PERCENT,
+    DEFAULT_REFINEMENT_CONTRIBUTION_CULL_PERCENT,
     GaussianTrainer,
     StabilityHyperParams,
     contribution_fixed_count_from_percent,
@@ -18,8 +18,8 @@ from .gaussian_trainer import (
 )
 from .optimizer import GaussianOptimizer
 from .profiles import TRAINING_PROFILE_CHOICES, TrainingProfile, resolve_training_profile
-from .schedule import resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_effective_maintenance_interval, resolve_learning_rate_scale, resolve_maintenance_growth_ratio, resolve_max_allowed_density, should_run_maintenance_step
-from .schedule import DEFAULT_MAINTENANCE_CONTRIBUTION_CULL_DECAY, resolve_maintenance_contribution_cull_threshold
+from .schedule import resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_effective_refinement_interval, resolve_learning_rate_scale, resolve_refinement_growth_ratio, resolve_max_allowed_density, should_run_refinement_step
+from .schedule import DEFAULT_REFINEMENT_CONTRIBUTION_CULL_DECAY, resolve_refinement_contribution_cull_threshold
 
 __all__ = [
     "AdamOptimizer",
@@ -29,7 +29,7 @@ __all__ = [
     "SPLAT_CONTRIBUTION_FIXED_SCALE",
     "contribution_percent_from_fixed_count",
     "contribution_fixed_count_from_percent",
-    "DEFAULT_MAINTENANCE_CONTRIBUTION_CULL_PERCENT",
+    "DEFAULT_REFINEMENT_CONTRIBUTION_CULL_PERCENT",
     "DEFAULT_DEBUG_CONTRIBUTION_RANGE_PERCENT",
     "TRAIN_BACKGROUND_MODE_CUSTOM",
     "TRAIN_BACKGROUND_MODE_RANDOM",
@@ -40,14 +40,14 @@ __all__ = [
     "resolve_effective_train_downscale_factor",
     "resolve_training_resolution",
     "GaussianOptimizer",
-    "should_run_maintenance_step",
+    "should_run_refinement_step",
     "resolve_clone_probability_threshold",
     "resolve_cosine_base_learning_rate",
-    "resolve_effective_maintenance_interval",
+    "resolve_effective_refinement_interval",
     "resolve_learning_rate_scale",
-    "DEFAULT_MAINTENANCE_CONTRIBUTION_CULL_DECAY",
-    "resolve_maintenance_contribution_cull_threshold",
-    "resolve_maintenance_growth_ratio",
+    "DEFAULT_REFINEMENT_CONTRIBUTION_CULL_DECAY",
+    "resolve_refinement_contribution_cull_threshold",
+    "resolve_refinement_growth_ratio",
     "resolve_max_allowed_density",
     "TrainingProfile",
     "TRAINING_PROFILE_CHOICES",

@@ -7,7 +7,7 @@ import numpy as np
 import slangpy as spy
 
 from ..common import clamp_index, debug_region, require_not_none
-from ..training import resolve_maintenance_contribution_cull_threshold, resolve_maintenance_growth_ratio
+from ..training import resolve_refinement_contribution_cull_threshold, resolve_refinement_growth_ratio
 from . import session
 
 _DEBUG_HUGE_VALUE = 1e8
@@ -39,28 +39,28 @@ def _training_schedule_text(viewer: object) -> str:
     )
 
 
-def _training_maintenance_text(viewer: object) -> str:
+def _training_refinement_text(viewer: object) -> str:
     if viewer.s.trainer is not None:
         training = viewer.s.trainer.training
         current_step = max(int(viewer.s.trainer.state.step), 0)
-        target_growth = max(float(training.maintenance_growth_ratio), 0.0)
-        current_growth = resolve_maintenance_growth_ratio(training, current_step)
-        start_step = max(int(getattr(training, "maintenance_growth_start_step", 0)), 0)
-        interval = int(viewer.s.trainer.effective_maintenance_interval()) if hasattr(viewer.s.trainer, "effective_maintenance_interval") else int(training.maintenance_interval)
+        target_growth = max(float(training.refinement_growth_ratio), 0.0)
+        current_growth = resolve_refinement_growth_ratio(training, current_step)
+        start_step = max(int(getattr(training, "refinement_growth_start_step", 0)), 0)
+        interval = int(viewer.s.trainer.effective_refinement_interval()) if hasattr(viewer.s.trainer, "effective_refinement_interval") else int(training.refinement_interval)
         frame_count = len(getattr(viewer.s.trainer, "frames", getattr(viewer.s, "training_frames", ())))
-        contribution_cull = resolve_maintenance_contribution_cull_threshold(training, current_step, frame_count)
-        decay = min(max(float(getattr(training, "maintenance_contribution_cull_decay", 0.95)), 0.0), 1.0)
+        contribution_cull = resolve_refinement_contribution_cull_threshold(training, current_step, frame_count)
+        decay = min(max(float(getattr(training, "refinement_contribution_cull_decay", 0.95)), 0.0), 1.0)
         return (
-            f"Maintenance: every {interval:,} | growth={current_growth * 100.0:.2f}% now | target={target_growth * 100.0:.2f}% after {start_step:,} | "
-            f"alpha<{float(training.maintenance_alpha_cull_threshold):.2e} or contrib<{contribution_cull:.6g}% culled | decay={decay * 100.0:.2f}%/pass | max={int(training.max_gaussians):,}"
+            f"Refinement: every {interval:,} | growth={current_growth * 100.0:.2f}% now | target={target_growth * 100.0:.2f}% after {start_step:,} | "
+            f"alpha<{float(training.refinement_alpha_cull_threshold):.2e} or contrib<{contribution_cull:.6g}% culled | decay={decay * 100.0:.2f}%/pass | max={int(training.max_gaussians):,}"
         )
-    target_growth = max(float(viewer.c("maintenance_growth_ratio").value), 0.0)
-    start_step = max(int(viewer.c("maintenance_growth_start_step").value), 0)
-    contribution_cull = max(float(viewer.c("maintenance_contribution_cull_threshold").value), 0.0)
-    decay = min(max(float(viewer.c("maintenance_contribution_cull_decay").value), 0.0), 1.0)
+    target_growth = max(float(viewer.c("refinement_growth_ratio").value), 0.0)
+    start_step = max(int(viewer.c("refinement_growth_start_step").value), 0)
+    contribution_cull = max(float(viewer.c("refinement_contribution_cull_threshold").value), 0.0)
+    decay = min(max(float(viewer.c("refinement_contribution_cull_decay").value), 0.0), 1.0)
     return (
-        f"Maintenance: every {max(int(viewer.c('maintenance_interval').value), 1):,} | growth=0.00% now | target={target_growth * 100.0:.2f}% after {start_step:,} | "
-        f"alpha<{max(float(viewer.c('maintenance_alpha_cull_threshold').value), 1e-8):.2e} or contrib<{contribution_cull:.6g}% culled | decay={decay * 100.0:.2f}%/pass | max={max(int(viewer.c('max_gaussians').value), 0):,}"
+        f"Refinement: every {max(int(viewer.c('refinement_interval').value), 1):,} | growth=0.00% now | target={target_growth * 100.0:.2f}% after {start_step:,} | "
+        f"alpha<{max(float(viewer.c('refinement_alpha_cull_threshold').value), 1e-8):.2e} or contrib<{contribution_cull:.6g}% culled | decay={decay * 100.0:.2f}%/pass | max={max(int(viewer.c('max_gaussians').value), 0):,}"
     )
 
 
@@ -235,7 +235,7 @@ def update_ui_text(viewer: object, dt: float) -> None:
     viewer.t("training_resolution").text = _training_resolution_text(viewer)
     viewer.t("training_downscale").text = _training_downscale_text(viewer)
     viewer.t("training_schedule").text = _training_schedule_text(viewer)
-    viewer.t("training_maintenance").text = _training_maintenance_text(viewer)
+    viewer.t("training_refinement").text = _training_refinement_text(viewer)
     viewer.t("histogram_status").text = str(getattr(viewer.s, "cached_raster_grad_histogram_status", ""))
     viewer.ui._values["_histogram_payload"] = getattr(viewer.s, "cached_raster_grad_histograms", None)
     viewer.ui._values["_histogram_range_payload"] = getattr(viewer.s, "cached_raster_grad_ranges", None)

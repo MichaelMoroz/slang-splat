@@ -296,12 +296,12 @@ GROUP_SPECS = {
         ControlSpec("background_mode", "combo", "Train Background", {"value": 1, "options": _TRAIN_BACKGROUND_MODE_LABELS}),
         ControlSpec("train_background_color", "color_edit3", "Train BG Color", {"value": (1.0, 1.0, 1.0)}),
         ControlSpec("use_sh", "checkbox", "Use Spherical Harmonics", {"value": True}),
-        ControlSpec("maintenance_interval", "input_int", "Maintenance Interval", {"value": 200, "step": 10, "step_fast": 50}),
-        ControlSpec("maintenance_growth_ratio", "input_float", "Maintenance Growth", {"value": 0.02, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
-        ControlSpec("maintenance_growth_start_step", "input_int", "Start Densification After", {"value": 500, "step": 100, "step_fast": 500}),
-        ControlSpec("maintenance_alpha_cull_threshold", "input_float", "Maintenance Alpha Cull", {"value": 1e-2, "step": 1e-5, "step_fast": 1e-4, "format": "%.6e"}),
-        ControlSpec("maintenance_contribution_cull_threshold", "input_float", "Maintenance Contribution Cull", {"value": 0.001, "step": 1e-4, "step_fast": 1e-3, "format": "%.6g%%"}),
-        ControlSpec("maintenance_contribution_cull_decay", "input_float", "Maintenance Cull Decay", {"value": 0.95, "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
+        ControlSpec("refinement_interval", "input_int", "Refinement Interval", {"value": 200, "step": 10, "step_fast": 50}),
+        ControlSpec("refinement_growth_ratio", "input_float", "Refinement Growth", {"value": 0.02, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
+        ControlSpec("refinement_growth_start_step", "input_int", "Start Refinement After", {"value": 500, "step": 100, "step_fast": 500}),
+        ControlSpec("refinement_alpha_cull_threshold", "input_float", "Refinement Alpha Cull", {"value": 1e-2, "step": 1e-5, "step_fast": 1e-4, "format": "%.6e"}),
+        ControlSpec("refinement_contribution_cull_threshold", "input_float", "Refinement Contribution Cull", {"value": 0.001, "step": 1e-4, "step_fast": 1e-3, "format": "%.6g%%"}),
+        ControlSpec("refinement_contribution_cull_decay", "input_float", "Refinement Cull Decay", {"value": 0.95, "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
         ControlSpec("train_downscale_mode", "combo", "Downscale Mode", {"value": 1, "options": _TRAIN_DOWNSCALE_MODE_LABELS}),
         ControlSpec("train_auto_start_downscale", "slider_int", "Auto Start Downscale", {"value": 16, "min": 1, "max": 16}),
         ControlSpec("train_downscale_base_iters", "input_int", "Downscale Base Iters", {"value": 200, "step": 25, "step_fast": 100}),
@@ -1421,7 +1421,7 @@ class ToolkitWindow:
     def _section_training_setup(self, ui: ViewerUI) -> None:
         if not imgui.collapsing_header("Train Setup"):
             return
-        for key in ("max_gaussians", "training_steps_per_frame", "background_mode", "use_sh", "maintenance_interval", "maintenance_growth_ratio", "maintenance_growth_start_step", "maintenance_alpha_cull_threshold", "maintenance_contribution_cull_threshold", "maintenance_contribution_cull_decay", "train_downscale_mode"):
+        for key in ("max_gaussians", "training_steps_per_frame", "background_mode", "use_sh", "refinement_interval", "refinement_growth_ratio", "refinement_growth_start_step", "refinement_alpha_cull_threshold", "refinement_contribution_cull_threshold", "refinement_contribution_cull_decay", "train_downscale_mode"):
             self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Setup"] if spec.key == key))
         if int(ui._values.get("background_mode", 1)) == 0:
             self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Setup"] if spec.key == "train_background_color"))
@@ -1439,9 +1439,9 @@ class ToolkitWindow:
         schedule_status = ui._texts.get("training_schedule", "")
         if schedule_status:
             _draw_disabled_wrapped_text(schedule_status)
-        maintenance_status = ui._texts.get("training_maintenance", "")
-        if maintenance_status:
-            _draw_disabled_wrapped_text(maintenance_status)
+        refinement_status = ui._texts.get("training_refinement", "")
+        if refinement_status:
+            _draw_disabled_wrapped_text(refinement_status)
         _draw_disabled_wrapped_text("COLMAP import chooses direct pointcloud init, diffused pointcloud init, or a custom PLY scene.")
         self._ctx_reset("train_setup_ctx", ui, [s.key for s in GROUP_SPECS["Train Setup"]])
         imgui.separator()
@@ -1643,12 +1643,12 @@ class ToolkitWindow:
         "background_mode": "Choose whether training uses a fixed custom RGB background or a new random RGB background each optimizer step",
         "train_background_color": "Custom RGB background used for training when Train Background is set to Custom",
         "use_sh": "Enable SH0+SH1 view-dependent color evaluation during projection and training; disable it to train only the SH0 base color",
-        "maintenance_interval": "Run cull/split maintenance every N training steps",
-        "maintenance_growth_ratio": "Target fractional scene growth per maintenance step once densification is enabled",
-        "maintenance_growth_start_step": "Keep densification growth at zero until this training iteration, then use the configured maintenance growth",
-        "maintenance_alpha_cull_threshold": "Cull splats below this decoded alpha threshold during maintenance",
-        "maintenance_contribution_cull_threshold": "Cull splats whose accumulated alpha contribution stays below this percent of observed dataset pixels during maintenance",
-        "maintenance_contribution_cull_decay": "Multiply the contribution cull threshold by this factor after each completed maintenance pass",
+        "refinement_interval": "Run cull/split refinement every N training steps",
+        "refinement_growth_ratio": "Target fractional scene growth per refinement step once densification is enabled",
+        "refinement_growth_start_step": "Keep densification growth at zero until this training iteration, then use the configured refinement growth",
+        "refinement_alpha_cull_threshold": "Cull splats below this decoded alpha threshold during refinement",
+        "refinement_contribution_cull_threshold": "Cull splats whose accumulated alpha contribution stays below this percent of observed dataset pixels during refinement",
+        "refinement_contribution_cull_decay": "Multiply the contribution cull threshold by this factor after each completed refinement pass",
         "density_regularizer": "Weight applied to the per-pixel hinge penalty max(density - max_allowed_density, 0)",
         "max_allowed_density": "End-of-training per-pixel density threshold above which the density regularizer activates; runtime ramps from 5.0 to this value over the LR schedule",
         "lr_schedule_enabled": "Enable cosine scheduling of the base learning rate",
@@ -1824,7 +1824,7 @@ def build_ui(renderer) -> ViewerUI:
             "training_time", "training_iters_avg", "training_loss", "training_mse", "training_density", "training_psnr", "training_instability", "error",
             "loss_debug_view", "loss_debug_frame",
             "colmap_import_status", "colmap_import_current",
-            "training_resolution", "training_downscale", "training_schedule", "training_maintenance",
+            "training_resolution", "training_downscale", "training_schedule", "training_refinement",
             "histogram_status",
             "setup_hint", "stability_hint",
         )

@@ -157,7 +157,7 @@ def test_ensure_training_runtime_resolution_rebinds_renderer_without_reset(monke
     new_renderer = SimpleNamespace(width=32, height=32, work_buffers={"debug_grad_norm": "grad_norm"})
     trainer = SimpleNamespace(
         compute_debug_grad_norm=True,
-        maintenance_buffers={"splat_contribution": "contrib"},
+        refinement_buffers={"splat_contribution": "contrib"},
         observed_contribution_pixel_count=2048,
         effective_train_downscale_factor=lambda: 2,
         training_resolution=lambda frame_index=0: (32, 32),
@@ -757,7 +757,7 @@ def test_initialize_training_scene_rebinds_debug_buffers_for_new_trainer(monkeyp
     main_renderer = _ViewportRenderer()
     debug_renderer = _ViewportRenderer()
     new_trainer = SimpleNamespace(
-        maintenance_buffers={"clone_counts": "new-clone"},
+        refinement_buffers={"clone_counts": "new-clone"},
         effective_train_downscale_factor=lambda step=0: 1,
     )
     calls: list[str] = []
@@ -781,7 +781,7 @@ def test_initialize_training_scene_rebinds_debug_buffers_for_new_trainer(monkeyp
                 diffused_point_count=100,
                 diffusion_radius=1.0,
             ),
-            trainer=SimpleNamespace(maintenance_buffers={"clone_counts": "old-clone"}),
+            trainer=SimpleNamespace(refinement_buffers={"clone_counts": "old-clone"}),
             renderer=main_renderer,
             debug_renderer=debug_renderer,
             training_renderer=old_training_renderer,
@@ -848,7 +848,7 @@ def test_initialize_training_scene_rebuilds_training_frames_from_colmap(monkeypa
     training_renderer = SimpleNamespace(copy_scene_state_to=lambda encoder, dst: None)
     main_renderer = SimpleNamespace(set_debug_grad_norm_buffer=lambda buffer: None, set_debug_clone_count_buffer=lambda buffer: None)
     debug_renderer = SimpleNamespace(set_debug_grad_norm_buffer=lambda buffer: None, set_debug_clone_count_buffer=lambda buffer: None)
-    new_trainer = SimpleNamespace(effective_train_downscale_factor=lambda step=0: 1, scene=SimpleNamespace(count=8), maintenance_buffers={})
+    new_trainer = SimpleNamespace(effective_train_downscale_factor=lambda step=0: 1, scene=SimpleNamespace(count=8), refinement_buffers={})
     built_scene = SimpleNamespace(count=8)
     viewer = SimpleNamespace(
         device=SimpleNamespace(create_command_encoder=lambda: SimpleNamespace(finish=lambda: "finished"), submit_command_buffer=lambda command_buffer: None),
