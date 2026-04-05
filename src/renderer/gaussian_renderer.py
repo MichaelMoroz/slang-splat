@@ -467,7 +467,7 @@ class GaussianRenderer:
         debug_depth_std_range: tuple[float, float] = _DEFAULT_DEBUG_DEPTH_STD_RANGE,
         debug_depth_local_mismatch_range: tuple[float, float] = _DEFAULT_DEBUG_DEPTH_LOCAL_MISMATCH_RANGE,
         debug_depth_local_mismatch_smooth_radius: float = 2.0,
-        debug_depth_local_mismatch_reject_radius: float = 5.0,
+        debug_depth_local_mismatch_reject_radius: float = 4.0,
         cached_raster_grad_atomic_mode: str = CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED,
         cached_raster_grad_fixed_ro_local_range: float = 0.01,
         cached_raster_grad_fixed_scale_range: float = 0.01,

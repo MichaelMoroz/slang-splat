@@ -671,7 +671,7 @@ def test_debug_depth_local_mismatch_highlights_close_layered_splats_more_than_fa
         debug_mode=GaussianRenderer.DEBUG_MODE_DEPTH_LOCAL_MISMATCH,
         debug_depth_local_mismatch_range=(0.0, 0.1),
         debug_depth_local_mismatch_smooth_radius=2.0,
-        debug_depth_local_mismatch_reject_radius=5.0,
+        debug_depth_local_mismatch_reject_radius=4.0,
     )
 
     near_out = renderer.render(near_scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32)).image

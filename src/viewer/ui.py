@@ -387,7 +387,7 @@ DEBUG_RENDER_SPECS = (
     ControlSpec("debug_depth_local_mismatch_min", "input_float", "Depth Local Mismatch Min", {"value": 0.0, "step": 0.01, "step_fast": 0.1, "format": "%.5g"}),
     ControlSpec("debug_depth_local_mismatch_max", "input_float", "Depth Local Mismatch Max", {"value": 0.5, "step": 0.01, "step_fast": 0.1, "format": "%.5g"}),
     ControlSpec("debug_depth_local_mismatch_smooth_radius", "input_float", "Depth Smooth Radius", {"value": 2.0, "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
-    ControlSpec("debug_depth_local_mismatch_reject_radius", "input_float", "Depth Reject Radius", {"value": 5.0, "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
+    ControlSpec("debug_depth_local_mismatch_reject_radius", "input_float", "Depth Reject Radius", {"value": 4.0, "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
 )
 
 _ALL_DEFAULTS = {spec.key: spec.kwargs["value"] for group in GROUP_SPECS.values() for spec in group if "value" in spec.kwargs}
@@ -1626,7 +1626,7 @@ class ToolkitWindow:
         "debug_depth_local_mismatch_min": "Lower bound for the local depth mismatch heatmap",
         "debug_depth_local_mismatch_max": "Upper bound for the local depth mismatch heatmap",
         "debug_depth_local_mismatch_smooth_radius": "Sigma multiple for full local smoothing before the mismatch gate starts to fall off",
-        "debug_depth_local_mismatch_reject_radius": "Sigma multiple, based on mean splat sigma, beyond which depth mismatch stops contributing and the estimate resets",
+        "debug_depth_local_mismatch_reject_radius": "Base sigma multiple, based on mean splat sigma, beyond which depth mismatch stops contributing; the effective reject radius scales smoothly up to 2x with current splat alpha",
         "lr_base": "Base learning rate for all parameters",
         "lr_pos_mul": "Learning rate multiplier for position",
         "lr_scale_mul": "Learning rate multiplier for scale",
@@ -1810,7 +1810,7 @@ def build_ui(renderer) -> ViewerUI:
     values["debug_depth_local_mismatch_min"] = float(depth_local_mismatch_range[0])
     values["debug_depth_local_mismatch_max"] = float(depth_local_mismatch_range[1])
     values["debug_depth_local_mismatch_smooth_radius"] = float(getattr(renderer, "debug_depth_local_mismatch_smooth_radius", 2.0))
-    values["debug_depth_local_mismatch_reject_radius"] = float(getattr(renderer, "debug_depth_local_mismatch_reject_radius", 5.0))
+    values["debug_depth_local_mismatch_reject_radius"] = float(getattr(renderer, "debug_depth_local_mismatch_reject_radius", 4.0))
     values["colmap_root_path"] = ""
     values["colmap_database_path"] = ""
     values["colmap_images_root"] = ""

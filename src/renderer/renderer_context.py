@@ -35,7 +35,7 @@ class GaussianRenderSettings:
     debug_depth_std_range: tuple[float, float] = (0.0, 0.5)
     debug_depth_local_mismatch_range: tuple[float, float] = (0.0, 0.5)
     debug_depth_local_mismatch_smooth_radius: float = 2.0
-    debug_depth_local_mismatch_reject_radius: float = 5.0
+    debug_depth_local_mismatch_reject_radius: float = 4.0
     debug_show_ellipses: bool = False
     debug_show_processed_count: bool = False
     debug_show_grad_norm: bool = False

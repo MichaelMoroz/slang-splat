@@ -102,7 +102,7 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["debug_depth_local_mismatch_min"] == 0.0
     assert viewer_ui._values["debug_depth_local_mismatch_max"] == 0.5
     assert viewer_ui._values["debug_depth_local_mismatch_smooth_radius"] == 2.0
-    assert viewer_ui._values["debug_depth_local_mismatch_reject_radius"] == 5.0
+    assert viewer_ui._values["debug_depth_local_mismatch_reject_radius"] == 4.0
     assert viewer_ui._values["loss_debug_view"] == 0
     assert viewer_ui._values["lr_scale_mul"] == 5.0
     assert viewer_ui._values["lr_color_mul"] == 5.0

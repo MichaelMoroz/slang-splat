@@ -38,6 +38,8 @@ static const float RASTER_GRAD_FIXED_INT_MAX_F = 2147483647.0;
 static const float RASTER_GRAD_FIXED_AVG_INV_SCALE_FLOOR = 0.25;
 static const float SPLAT_CONTRIBUTION_FIXED_SCALE = 256.0;
 static const float SPLAT_CONTRIBUTION_FIXED_MAX_F = 16777215.99609375;
+static const float CLONE_COUNT_ALPHA_THRESHOLD = 0.2;
+static const float DEPTH_LOCAL_MISMATCH_REJECT_ALPHA_SCALE_MAX = 2.0;
 
 int raster_grad_fixed_quantize(float value, float range)
 {
@@ -403,7 +405,7 @@ float raster_mean_sigma(RasterGaussian gaussian)
     return max((gaussian.scale.x + gaussian.scale.y + gaussian.scale.z) / 3.0, SMALL_VALUE) / raster_depth_debug_sigma_scale();
 }
 
-void depth_local_mismatch_step(inout float4 state, float contributionWeight, float depth, float sigmaRay, float meanSigma)
+void depth_local_mismatch_step(inout float4 state, float contributionWeight, float depth, float sigmaRay, float meanSigma, float alpha)
 {
     if (!(contributionWeight > SMALL_VALUE) || !(depth > 0.0)) return;
 
@@ -418,7 +420,10 @@ void depth_local_mismatch_step(inout float4 state, float contributionWeight, flo
     float estimateDepth = state.y;
     float delta = abs(depth - estimateDepth);
     float smoothDist = max(g_Raster.debugDepthLocalMismatchSmoothRadius, 0.0) * max(sigmaRay, SMALL_VALUE);
-    float rejectDist = max(g_Raster.debugDepthLocalMismatchRejectRadius, 0.0) * max(meanSigma, SMALL_VALUE);
+    float alphaT = saturate(alpha);
+    float alphaSmooth = alphaT * alphaT * (3.0 - 2.0 * alphaT);
+    float rejectAlphaScale = 1.0 + (DEPTH_LOCAL_MISMATCH_REJECT_ALPHA_SCALE_MAX - 1.0) * alphaSmooth;
+    float rejectDist = max(g_Raster.debugDepthLocalMismatchRejectRadius, 0.0) * max(meanSigma, SMALL_VALUE) * rejectAlphaScale;
     rejectDist = max(rejectDist, smoothDist + SMALL_VALUE);
     float u = saturate((delta - smoothDist) / max(rejectDist - smoothDist, SMALL_VALUE));
     float gate = 1.0 - u * u * (3.0 - 2.0 * u);
@@ -490,7 +495,7 @@ struct ForwardRasterReplayVariant : IRasterReplayVariant
     {
         RasterState state = replayState.pixelState;
         float nextTrans = state.trans * (1.0 - alpha);
-        if (replayState.cloneSelected && nextTrans <= replayState.cloneThreshold && state.trans > replayState.cloneThreshold)
+        if (replayState.cloneSelected && alpha > CLONE_COUNT_ALPHA_THRESHOLD && nextTrans <= replayState.cloneThreshold && state.trans > replayState.cloneThreshold)
         {
             InterlockedAdd(g_CloneCounts[splatId], 1u);
         }
@@ -517,7 +522,7 @@ struct TrainingRasterReplayVariant : IRasterReplayVariant
     {
         RasterState state = replayState.pixelState;
         float nextTrans = state.trans * (1.0 - alpha);
-        if (replayState.cloneSelected && nextTrans <= replayState.cloneThreshold && state.trans > replayState.cloneThreshold)
+        if (replayState.cloneSelected && alpha > CLONE_COUNT_ALPHA_THRESHOLD && nextTrans <= replayState.cloneThreshold && state.trans > replayState.cloneThreshold)
         {
             InterlockedAdd(g_CloneCounts[splatId], 1u);
         }
@@ -562,7 +567,7 @@ struct DebugRasterReplayVariant : IRasterReplayVariant
         if ((debugMode == DEBUG_MODE_DEPTH_MEAN || debugMode == DEBUG_MODE_DEPTH_STD) && rayDepth > 0.0) replayState.depthState = depth_state_step(replayState.depthState, contributionWeight, rayDepth);
         if (debugMode == DEBUG_MODE_DEPTH_LOCAL_MISMATCH && rayDepth > 0.0)
         {
-            depth_local_mismatch_step(replayState.depthLocalMismatchState, contributionWeight, rayDepth, raster_sigma_ray(gaussian, info.rayDir), raster_mean_sigma(gaussian));
+            depth_local_mismatch_step(replayState.depthLocalMismatchState, contributionWeight, rayDepth, raster_sigma_ray(gaussian, info.rayDir), raster_mean_sigma(gaussian), alpha);
         }
         if (debugMode == DEBUG_MODE_SPLAT_DENSITY) replayState.splatDensitySum = raster_splat_density_step(replayState.splatDensitySum, trans, alpha, gaussian.colorAlpha.w);
         if (debugMode == DEBUG_MODE_SPLAT_SPATIAL_DENSITY && contributionWeight > SMALL_VALUE)
