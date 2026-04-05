@@ -652,7 +652,7 @@ class ToolkitWindow:
         self._menu_bar_height = self._draw_main_menu_bar(ui)
         self._draw_dockspace()
         self._draw_panel(ui, width, height)
-        self._draw_viewport_window(viewport_texture, width, height)
+        self._draw_viewport_window(ui, viewport_texture, width, height)
         self._draw_renderer_debug_window(ui)
         self._draw_debug_colorbar(ui)
         self._draw_histogram_window(ui)
@@ -714,7 +714,7 @@ class ToolkitWindow:
         self._draw_documentation_window()
         self._draw_colmap_import_window(ui)
 
-    def _draw_viewport_window(self, viewport_texture: spy.Texture | None, width: int, height: int) -> None:
+    def _draw_viewport_window(self, ui: ViewerUI, viewport_texture: spy.Texture | None, width: int, height: int) -> None:
         viewport_x = self._toolkit_rect[2]
         viewport_y = self._menu_bar_height
         viewport_width = max(float(width) - viewport_x, 1.0)

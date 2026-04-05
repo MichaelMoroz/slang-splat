@@ -3,9 +3,31 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import numpy as np
+import slangpy as spy
 
 from src.viewer import ui
 from src.viewer.constants import _WINDOW_TITLE
+
+
+def _dummy_renderer() -> SimpleNamespace:
+    return SimpleNamespace(
+        radius_scale=1.0,
+        alpha_cutoff=1.0 / 255.0,
+        max_splat_steps=32768,
+        transmittance_threshold=0.005,
+        cached_raster_grad_atomic_mode="fixed",
+        cached_raster_grad_fixed_ro_local_range=0.01,
+        cached_raster_grad_fixed_scale_range=0.01,
+        cached_raster_grad_fixed_quat_range=0.01,
+        cached_raster_grad_fixed_color_range=0.2,
+        cached_raster_grad_fixed_opacity_range=0.2,
+        debug_show_ellipses=False,
+        debug_show_processed_count=False,
+        debug_show_grad_norm=False,
+        debug_grad_norm_threshold=2e-4,
+        debug_clone_count_range=(0.0, 16.0),
+        debug_contribution_range=(0.001, 1.0),
+    )
 
 
 def test_about_text_mentions_single_window_viewer() -> None:
@@ -62,26 +84,7 @@ def test_status_suffix_strips_presenter_prefix() -> None:
 
 
 def test_build_ui_initializes_histogram_controls() -> None:
-    renderer = SimpleNamespace(
-        radius_scale=1.0,
-        alpha_cutoff=1.0 / 255.0,
-        max_splat_steps=32768,
-        transmittance_threshold=0.005,
-        cached_raster_grad_atomic_mode="fixed",
-        cached_raster_grad_fixed_ro_local_range=0.01,
-        cached_raster_grad_fixed_scale_range=0.01,
-        cached_raster_grad_fixed_quat_range=0.01,
-        cached_raster_grad_fixed_color_range=0.2,
-        cached_raster_grad_fixed_opacity_range=0.2,
-        debug_show_ellipses=False,
-        debug_show_processed_count=False,
-        debug_show_grad_norm=False,
-        debug_grad_norm_threshold=2e-4,
-        debug_clone_count_range=(0.0, 16.0),
-        debug_contribution_range=(0.001, 1.0),
-    )
-
-    viewer_ui = ui.build_ui(renderer)
+    viewer_ui = ui.build_ui(_dummy_renderer())
 
     assert viewer_ui._values["show_histograms"] is False
     assert viewer_ui._values["hist_auto_refresh"] is True
@@ -129,6 +132,35 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["colmap_nn_radius_scale_coef"] == 0.5
     assert viewer_ui._values["_histogram_update_y_limit"] is True
     assert viewer_ui._values["_histogram_update_log_range"] is False
+
+
+def test_toolkit_window_render_draws_non_background_pixels(device) -> None:
+    viewer_ui = ui.build_ui(_dummy_renderer())
+    toolkit = ui.create_toolkit_window(device, 640, 360)
+    surface = device.create_texture(
+        format=spy.Format.rgba32_float,
+        width=640,
+        height=360,
+        usage=spy.TextureUsage.render_target | spy.TextureUsage.copy_source,
+    )
+    viewport = device.create_texture(
+        format=spy.Format.rgba32_float,
+        width=320,
+        height=180,
+        usage=spy.TextureUsage.shader_resource | spy.TextureUsage.copy_destination,
+    )
+    viewport.copy_from_numpy(np.full((180, 320, 4), [0.0, 1.0, 0.0, 1.0], dtype=np.float32))
+    try:
+        encoder = device.create_command_encoder()
+        encoder.clear_texture_float(surface, clear_value=spy.float4(0.0, 0.0, 0.0, 1.0))
+        toolkit.render(viewer_ui, surface, encoder, viewport_texture=viewport)
+        device.submit_command_buffer(encoder.finish())
+        device.wait()
+        image = np.asarray(surface.to_numpy(), dtype=np.float32)
+    finally:
+        toolkit.shutdown()
+
+    assert np.any(np.abs(image[..., :3]) > 1e-4)
 
 
 def test_optimizer_regularization_tab_includes_density_controls() -> None:
