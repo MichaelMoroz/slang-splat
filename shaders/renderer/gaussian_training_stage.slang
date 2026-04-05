@@ -627,5 +627,5 @@ void csComposeLetterboxDebug(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint srcX = min(uint(u * srcW), g_LetterboxSourceWidth - 1u);
     uint srcY = min(uint(v * srcH), g_LetterboxSourceHeight - 1u);
     float4 sampled = g_LetterboxSource[uint2(srcX, srcY)];
-    g_LetterboxOutput[uint2(px, py)] = float4(linear_to_srgb_safe(sampled.xyz), sampled.w);
+    g_LetterboxOutput[uint2(px, py)] = float4(linear_to_srgb_safe(sampled.xyz), 1.0);
 }
