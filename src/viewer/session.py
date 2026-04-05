@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 import sqlite3
@@ -25,6 +26,7 @@ from ..scene import (
     transform_colmap_reconstruction_pca,
 )
 from ..scene._internal.colmap_ops import point_nn_scales, resolve_training_frame_image_size
+from ..scene._internal.colmap_ops import TRAINING_FRAME_LOAD_THREADS, load_rgba8_image, load_training_frame_rgba8
 from ..training import GaussianTrainer, resolve_effective_train_downscale_factor, resolve_training_resolution
 from ..scene._internal.colmap_types import ColmapFrame, point_tables
 from .state import ColmapImportProgress, ColmapImportSettings, SceneCountProxy
@@ -264,14 +266,10 @@ def _append_training_frame(progress: ColmapImportProgress, image_id: int, image:
 
 
 def _create_native_dataset_texture(viewer: object, image_path: Path, *, target_size: tuple[int, int] | None = None) -> spy.Texture:
-    with Image.open(image_path) as pil_image:
-        rgba_image = pil_image.convert("RGBA")
-        if target_size is not None:
-            target_width = max(int(target_size[0]), 1)
-            target_height = max(int(target_size[1]), 1)
-            if rgba_image.size != (target_width, target_height):
-                rgba_image = rgba_image.resize((target_width, target_height), Image.Resampling.LANCZOS)
-        rgba8 = np.array(rgba_image, dtype=np.uint8, order="C", copy=True)
+    return _create_native_dataset_texture_from_rgba8(viewer, load_rgba8_image(image_path, target_size=target_size))
+
+
+def _create_native_dataset_texture_from_rgba8(viewer: object, rgba8: np.ndarray) -> spy.Texture:
     texture = viewer.device.create_texture(
         format=spy.Format.rgba8_unorm_srgb,
         width=int(rgba8.shape[1]),
@@ -280,6 +278,29 @@ def _create_native_dataset_texture(viewer: object, image_path: Path, *, target_s
     )
     texture.copy_from_numpy(np.ascontiguousarray(rgba8, dtype=np.uint8))
     return texture
+
+
+def _close_colmap_texture_loader(progress: ColmapImportProgress) -> None:
+    loader = progress.native_rgba8_loader
+    progress.native_rgba8_loader = None
+    progress.native_rgba8_iter = None
+    if loader is not None:
+        loader.shutdown(wait=False, cancel_futures=False)
+
+
+def _start_colmap_texture_loader(progress: ColmapImportProgress) -> None:
+    _close_colmap_texture_loader(progress)
+    loader = ThreadPoolExecutor(max_workers=TRAINING_FRAME_LOAD_THREADS, thread_name_prefix="viewer-target")
+    progress.native_rgba8_loader = loader
+    progress.native_rgba8_iter = loader.map(load_training_frame_rgba8, progress.frames)
+
+
+def _create_native_dataset_textures(viewer: object, frames: list[ColmapFrame]) -> list[spy.Texture]:
+    textures: list[spy.Texture] = []
+    with ThreadPoolExecutor(max_workers=TRAINING_FRAME_LOAD_THREADS, thread_name_prefix="viewer-target") as executor:
+        for rgba8 in executor.map(load_training_frame_rgba8, frames):
+            textures.append(_create_native_dataset_texture_from_rgba8(viewer, rgba8))
+    return textures
 
 
 def choose_colmap_root(viewer: object, dataset_root: Path) -> None:
@@ -836,6 +857,7 @@ def import_colmap_dataset(
         downscale_target_width=image_downscale_target_width,
         downscale_scale=image_downscale_scale,
     )
+    frame_targets_native = _create_native_dataset_textures(viewer, training_frames)
     _finish_import_colmap_dataset(
         viewer,
         colmap_root=root,
@@ -851,6 +873,7 @@ def import_colmap_dataset(
         diffusion_radius=diffusion_radius,
         recon=recon,
         training_frames=training_frames,
+        frame_targets_native=frame_targets_native,
     )
 
 
@@ -921,6 +944,7 @@ def advance_colmap_import(viewer: object) -> None:
                 return
             if not progress.frames:
                 raise RuntimeError(f"No training frames were found in {progress.images_root}.")
+            _start_colmap_texture_loader(progress)
             progress.phase = "load_textures"
             progress.total = len(progress.frames)
             progress.current = 0
@@ -932,10 +956,14 @@ def advance_colmap_import(viewer: object) -> None:
                     break
                 frame = progress.frames[progress.current]
                 progress.current_name = Path(frame.image_path).name
-                progress.native_textures.append(_create_native_dataset_texture(viewer, frame.image_path, target_size=(frame.width, frame.height)))
+                if progress.native_rgba8_iter is None:
+                    _start_colmap_texture_loader(progress)
+                rgba8 = next(progress.native_rgba8_iter)
+                progress.native_textures.append(_create_native_dataset_texture_from_rgba8(viewer, rgba8))
                 progress.current += 1
             if progress.current < len(progress.frames):
                 return
+            _close_colmap_texture_loader(progress)
             progress.phase = "finalize"
             progress.current_name = ""
             return
@@ -963,6 +991,8 @@ def advance_colmap_import(viewer: object) -> None:
             return
         raise RuntimeError(f"Unknown COLMAP import phase: {progress.phase}")
     except Exception:
+        if progress is not None:
+            _close_colmap_texture_loader(progress)
         viewer.s.colmap_import_progress = None
         raise
 

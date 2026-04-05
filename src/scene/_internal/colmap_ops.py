@@ -25,7 +25,7 @@ INIT_OPACITY_MIN = 0.10
 INIT_OPACITY_MAX = 0.35
 _MIN_SCALE = 1e-4
 _MAX_SCALE = 1e4
-_TRAINING_FRAME_LOAD_THREADS = 8
+TRAINING_FRAME_LOAD_THREADS = 8
 
 
 def _camera_to_world_pose(q_wxyz: np.ndarray, t_xyz: np.ndarray) -> np.ndarray:
@@ -283,7 +283,7 @@ def build_training_frames_from_root(
         tasks.append((image_id, image, camera, image_path, downscale_mode, downscale_target_width, downscale_scale))
     frames: list[ColmapFrame] = []
     if tasks:
-        with ThreadPoolExecutor(max_workers=_TRAINING_FRAME_LOAD_THREADS, thread_name_prefix="colmap-frame") as executor:
+        with ThreadPoolExecutor(max_workers=TRAINING_FRAME_LOAD_THREADS, thread_name_prefix="colmap-frame") as executor:
             frames = list(executor.map(_build_training_frame, tasks))
     if not frames:
         raise RuntimeError(f"No training frames were found in {images_root}.")
@@ -292,6 +292,20 @@ def build_training_frames_from_root(
 
 def build_training_frames(recon: ColmapReconstruction, images_subdir: str = "images_4") -> list[ColmapFrame]:
     return build_training_frames_from_root(recon, recon.root / images_subdir)
+
+
+def load_rgba8_image(image_path: Path, target_size: tuple[int, int] | None = None) -> np.ndarray:
+    with Image.open(Path(image_path).resolve()) as pil_image:
+        rgba_image = pil_image.convert("RGBA")
+        if target_size is not None:
+            resolved_size = (max(int(target_size[0]), 1), max(int(target_size[1]), 1))
+            if rgba_image.size != resolved_size:
+                rgba_image = rgba_image.resize(resolved_size, Image.Resampling.LANCZOS)
+        return np.array(rgba_image, dtype=np.uint8, order="C", copy=True)
+
+
+def load_training_frame_rgba8(frame: ColmapFrame) -> np.ndarray:
+    return load_rgba8_image(frame.image_path, target_size=(max(int(frame.width), 1), max(int(frame.height), 1)))
 
 
 def _random_unit_quaternions(rng: np.random.Generator, count: int) -> np.ndarray:

@@ -57,6 +57,8 @@ class ColmapImportProgress:
     image_items: list[tuple[int, object]] = field(default_factory=list)
     frames: list[ColmapFrame] = field(default_factory=list)
     native_textures: list[spy.Texture] = field(default_factory=list)
+    native_rgba8_loader: object | None = None
+    native_rgba8_iter: object | None = None
 
     @property
     def fraction(self) -> float:

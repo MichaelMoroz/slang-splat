@@ -28,6 +28,7 @@ The active training path keeps the fixed packed optimizer flow, but it now also 
   - native dataset textures cached as `rgba8_unorm_srgb`,
   - one reusable train target texture in `rgba32_float`,
   - a GPU box-filter downscale dispatch that writes the current frame into the train target.
+- Native dataset texture preparation uses a fixed 8-thread CPU loader for image decode and resize work, while GPU texture creation/upload remains serialized on the owning thread and is pipelined against those background CPU tasks.
 - Dataset texture creation and point-cloud upload/binding are isolated inside trainer helpers instead of being interleaved with the optimization step.
 
 ## Initialization

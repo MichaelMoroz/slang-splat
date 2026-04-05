@@ -11,6 +11,7 @@ from src.common import buffer_to_numpy
 from src.filter import SeparableGaussianBlur
 from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
+from src.training import gaussian_trainer as gaussian_trainer_module
 from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_effective_maintenance_interval, resolve_maintenance_growth_ratio, resolve_max_allowed_density, resolve_training_resolution, should_run_maintenance_step
 
 _ADAM_BUFFER_NAMES = ("adam_moments",)
@@ -1384,3 +1385,31 @@ def test_frame_target_rgba8_resizes_to_frame_dimensions(tmp_path: Path) -> None:
     rgba8 = trainer._frame_target_rgba8(frame)
 
     assert rgba8.shape == (2, 4, 4)
+
+
+def test_create_dataset_textures_threads_cpu_image_loading(monkeypatch) -> None:
+    trainer = object.__new__(GaussianTrainer)
+    trainer.frames = [SimpleNamespace(image_path=Path("a.png")), SimpleNamespace(image_path=Path("b.png"))]
+    calls: list[object] = []
+
+    class _Executor:
+        def __init__(self, *, max_workers: int, thread_name_prefix: str) -> None:
+            calls.append(("workers", max_workers, thread_name_prefix))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+        def map(self, fn, items):
+            return map(fn, items)
+
+    monkeypatch.setattr(gaussian_trainer_module, "ThreadPoolExecutor", _Executor)
+    monkeypatch.setattr(gaussian_trainer_module, "load_training_frame_rgba8", lambda frame: f"rgba:{frame.image_path.name}")
+    trainer._create_gpu_texture = lambda rgba8: f"tex:{rgba8}"
+
+    trainer._create_dataset_textures()
+
+    assert calls == [("workers", 8, "trainer-target")]
+    assert trainer._frame_targets_native == ["tex:rgba:a.png", "tex:rgba:b.png"]

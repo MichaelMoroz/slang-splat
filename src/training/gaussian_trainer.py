@@ -2,15 +2,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
-from PIL import Image
 import slangpy as spy
 
 from ..common import SHADER_ROOT, buffer_to_numpy, clamp_index, debug_region, dispatch, thread_count_1d, thread_count_2d
 from ..metrics import Metrics, psnr_from_mse
 from ..renderer import Camera, GaussianRenderer
 from ..scene import ColmapFrame, GaussianInitHyperParams, GaussianScene, SUPPORTED_SH_COEFF_COUNT, pad_sh_coeffs, rgb_to_sh0, sh_coeffs_to_display_colors
+from ..scene._internal.colmap_ops import TRAINING_FRAME_LOAD_THREADS, load_training_frame_rgba8
 from .adam import AdamOptimizer, AdamRuntimeHyperParams
 from .optimizer import GaussianOptimizer
 from .schedule import resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_effective_maintenance_interval, resolve_learning_rate_scale, resolve_maintenance_growth_ratio, resolve_max_allowed_density, should_run_maintenance_step
@@ -673,12 +674,7 @@ class GaussianTrainer:
         return camera
 
     def _frame_target_rgba8(self, frame: ColmapFrame) -> np.ndarray:
-        with Image.open(frame.image_path) as pil_image:
-            rgba_image = pil_image.convert("RGBA")
-            target_size = (max(int(frame.width), 1), max(int(frame.height), 1))
-            if rgba_image.size != target_size:
-                rgba_image = rgba_image.resize(target_size, Image.Resampling.LANCZOS)
-            return np.array(rgba_image, dtype=np.uint8, order="C", copy=True)
+        return load_training_frame_rgba8(frame)
 
     def _create_gpu_texture(self, rgba8: np.ndarray) -> spy.Texture:
         tex = self.device.create_texture(format=spy.Format.rgba8_unorm_srgb, width=int(rgba8.shape[1]), height=int(rgba8.shape[0]), usage=spy.TextureUsage.shader_resource | spy.TextureUsage.copy_destination)
@@ -687,8 +683,9 @@ class GaussianTrainer:
 
     def _create_dataset_textures(self) -> None:
         self._frame_targets_native = []
-        for frame in self.frames:
-            self._frame_targets_native.append(self._create_gpu_texture(self._frame_target_rgba8(frame)))
+        with ThreadPoolExecutor(max_workers=TRAINING_FRAME_LOAD_THREADS, thread_name_prefix="trainer-target") as executor:
+            for rgba8 in executor.map(load_training_frame_rgba8, self.frames):
+                self._frame_targets_native.append(self._create_gpu_texture(rgba8))
 
     def _require_train_target_texture(self) -> spy.Texture:
         if self._train_target_texture is None:

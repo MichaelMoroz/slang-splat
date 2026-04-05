@@ -311,6 +311,7 @@ def test_import_colmap_dataset_clears_loaded_scene_before_loading(monkeypatch) -
     monkeypatch.setattr(session, "_reset_loss_debug", lambda viewer_obj: calls.append(("reset_loss_debug", None)))
     monkeypatch.setattr(session, "_load_aligned_colmap_reconstruction", lambda root: calls.append(("load_recon", root)) or "recon")
     monkeypatch.setattr(session, "build_training_frames_from_root", lambda recon, images_root, downscale_mode, downscale_target_width, downscale_scale: calls.append(("build_frames", recon)) or ["frame"])
+    monkeypatch.setattr(session, "_create_native_dataset_textures", lambda viewer_obj, frames: calls.append(("create_textures", list(frames))) or ["tex"])
     monkeypatch.setattr(session, "_finish_import_colmap_dataset", lambda viewer_obj, **kwargs: calls.append(("finish", kwargs["recon"])))
 
     session.import_colmap_dataset(
@@ -460,7 +461,8 @@ def test_advance_colmap_import_processes_images_incrementally(tmp_path: Path, mo
     )
 
     monkeypatch.setattr(session, "_load_aligned_colmap_reconstruction", lambda root: recon)
-    monkeypatch.setattr(session, "_create_native_dataset_texture", lambda viewer_obj, image_path, *, target_size=None: f"tex:{Path(image_path).name}")
+    monkeypatch.setattr(session, "load_training_frame_rgba8", lambda frame: f"rgba:{Path(frame.image_path).name}")
+    monkeypatch.setattr(session, "_create_native_dataset_texture_from_rgba8", lambda viewer_obj, rgba8: f"tex:{rgba8}")
 
     def _finish(viewer_obj, **kwargs) -> None:
         calls.append(("finish", len(kwargs["training_frames"]), list(kwargs["frame_targets_native"])))
@@ -471,10 +473,7 @@ def test_advance_colmap_import_processes_images_incrementally(tmp_path: Path, mo
     while viewer.s.colmap_import_progress is not None:
         session.advance_colmap_import(viewer)
 
-    assert calls == [
-        ("finish", 2, ["tex:frame_000.png", "tex:frame_001.png"]),
-        "close",
-    ]
+    assert calls == [("finish", 2, ["tex:rgba:frame_000.png", "tex:rgba:frame_001.png"]), "close"]
 
 
 def test_advance_colmap_import_applies_selected_image_downscale(tmp_path: Path, monkeypatch) -> None:
@@ -508,7 +507,8 @@ def test_advance_colmap_import_applies_selected_image_downscale(tmp_path: Path, 
     )
 
     monkeypatch.setattr(session, "_load_aligned_colmap_reconstruction", lambda root: recon)
-    monkeypatch.setattr(session, "_create_native_dataset_texture", lambda viewer_obj, image_path, *, target_size=None: calls.append((Path(image_path).name, target_size)) or "tex")
+    monkeypatch.setattr(session, "load_training_frame_rgba8", lambda frame: calls.append((frame.width, frame.height, frame.fx, frame.fy)) or "rgba")
+    monkeypatch.setattr(session, "_create_native_dataset_texture_from_rgba8", lambda viewer_obj, rgba8: calls.append(("upload", rgba8)) or "tex")
 
     def _finish(viewer_obj, **kwargs) -> None:
         frame = kwargs["training_frames"][0]
@@ -520,11 +520,7 @@ def test_advance_colmap_import_applies_selected_image_downscale(tmp_path: Path, 
     while viewer.s.colmap_import_progress is not None:
         session.advance_colmap_import(viewer)
 
-    assert calls == [
-        ("frame_000.png", (4, 2)),
-        (4, 2, 40.0, 20.0, ["tex"]),
-        "close",
-    ]
+    assert calls == [(4, 2, 40.0, 20.0), ("upload", "rgba"), (4, 2, 40.0, 20.0, ["tex"]), "close"]
 
 
 def test_finish_import_colmap_dataset_resets_toolkit_plot_history(monkeypatch) -> None:
@@ -617,8 +613,9 @@ def test_import_colmap_dataset_uses_aligned_reconstruction(monkeypatch) -> None:
     monkeypatch.setattr(
         session,
         "_finish_import_colmap_dataset",
-        lambda viewer_obj, **kwargs: calls.append(("finish", kwargs["recon"], kwargs["training_frames"])),
+        lambda viewer_obj, **kwargs: calls.append(("finish", kwargs["recon"], kwargs["training_frames"], kwargs["frame_targets_native"])),
     )
+    monkeypatch.setattr(session, "_create_native_dataset_textures", lambda viewer_obj, resolved_frames: ["tex0"] if resolved_frames is frames else (_ for _ in ()).throw(AssertionError("unexpected frames")))
 
     session.import_colmap_dataset(
         viewer,
@@ -642,7 +639,7 @@ def test_import_colmap_dataset_uses_aligned_reconstruction(monkeypatch) -> None:
     ]
     assert calls[-2:] == [
         ("frames", aligned_recon, Path("dataset/garden/images_8"), "original", 2048, 1.0),
-        ("finish", aligned_recon, frames),
+        ("finish", aligned_recon, frames, ["tex0"]),
     ]
 
 
