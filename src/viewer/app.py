@@ -109,6 +109,12 @@ def _training_background_value(value_for) -> tuple[float, float, float]:
     return tuple(float(v) for v in np.asarray(value_for("train_background_color"), dtype=np.float32).reshape(3))
 
 
+def _viewer_background_value(value_for) -> tuple[float, float, float]:
+    if int(value_for("render_background_mode")) == 0:
+        return _training_background_value(value_for)
+    return tuple(float(v) for v in np.asarray(value_for("render_background_color"), dtype=np.float32).reshape(3))
+
+
 def default_training_params(background=(1.0, 1.0, 1.0)):
     return build_training_params(background=background, **_training_kwargs(_default_training_control_value))
 
@@ -184,6 +190,9 @@ class SplatViewer(spy.AppWindow):
 
     def training_params(self):
         return build_training_params(background=_training_background_value(self._training_control_value), **_training_kwargs(self._training_control_value))
+
+    def render_background(self) -> spy.float3:
+        return spy.float3(*_viewer_background_value(self._training_control_value))
 
     def _training_control_value(self, control: str) -> object:
         return self.c(control).value

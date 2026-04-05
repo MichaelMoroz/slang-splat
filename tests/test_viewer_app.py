@@ -177,6 +177,32 @@ def test_default_training_params_include_background_mode_and_density() -> None:
     assert params.training.max_gaussians == 1_000_000
 
 
+def test_viewer_background_defaults_to_custom_black() -> None:
+    values = {
+        "render_background_mode": 1,
+        "render_background_color": (0.0, 0.0, 0.0),
+        "background_mode": 1,
+        "train_background_color": (1.0, 1.0, 1.0),
+    }
+
+    resolved = app._viewer_background_value(values.__getitem__)
+
+    assert resolved == (0.0, 0.0, 0.0)
+
+
+def test_viewer_background_can_follow_train_background_color() -> None:
+    values = {
+        "render_background_mode": 0,
+        "render_background_color": (0.0, 0.0, 0.0),
+        "background_mode": 0,
+        "train_background_color": (0.25, 0.5, 0.75),
+    }
+
+    resolved = app._viewer_background_value(values.__getitem__)
+
+    assert resolved == (0.25, 0.5, 0.75)
+
+
 def test_export_ply_callback_saves_active_scene(monkeypatch, tmp_path: Path) -> None:
     scene = GaussianScene(
         positions=np.zeros((1, 3), dtype=np.float32),

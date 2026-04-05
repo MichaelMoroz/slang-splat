@@ -43,6 +43,7 @@ _FONT_ATLAS_SIZE_PX = _BASE_FONT_SIZE_PX * _INTERFACE_SCALE_OPTIONS[-1][1]
 _COLMAP_INIT_MODE_LABELS = ("COLMAP Pointcloud", "Diffused Pointcloud", "Custom PLY")
 _COLMAP_IMAGE_DOWNSCALE_LABELS = ("Original", "Target Width", "Scale Factor")
 _TRAIN_BACKGROUND_MODE_LABELS = ("Custom", "Random")
+_VIEWER_BACKGROUND_MODE_LABELS = ("Train Background", "Custom")
 _TRAIN_DOWNSCALE_MODE_LABELS = ("Auto",) + tuple(f"{i}x" for i in range(1, 17))
 _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT = 2e-4
 _DEBUG_COLORBAR_WIDTH = 18.0
@@ -292,6 +293,8 @@ def default_control_values(*group_names: str) -> dict[str, object]:
 
 
 RENDER_PARAM_SPECS = (
+    ControlSpec("render_background_mode", "combo", "Render Background", {"value": 1, "options": _VIEWER_BACKGROUND_MODE_LABELS}),
+    ControlSpec("render_background_color", "color_edit3", "Render BG Color", {"value": (0.0, 0.0, 0.0)}),
     ControlSpec("radius_scale", "slider_float", "Radius Scale", {"value": 1.0, "min": 0.25, "max": 4.0, "format": "%.3g"}),
     ControlSpec("alpha_cutoff", "slider_float", "Alpha Cutoff", {"value": 0.0039, "min": 0.0001, "max": 0.1, "format": "%.2e"}),
     ControlSpec("trans_threshold", "slider_float", "Trans Threshold", {"value": 0.005, "min": 0.001, "max": 0.2, "format": "%.2e"}),
@@ -1319,12 +1322,14 @@ class ToolkitWindow:
     def _section_render_params(self, ui: ViewerUI) -> None:
         if not imgui.collapsing_header("Render Params"):
             return
-        for spec in RENDER_PARAM_SPECS[:5]:
-            self._draw_control(ui, spec)
+        for key in ("render_background_mode", "radius_scale", "alpha_cutoff", "trans_threshold", "cached_raster_grad_atomic_mode"):
+            self._draw_control(ui, next(spec for spec in RENDER_PARAM_SPECS if spec.key == key))
+        if int(ui._values.get("render_background_mode", 1)) == 1:
+            self._draw_control(ui, next(spec for spec in RENDER_PARAM_SPECS if spec.key == "render_background_color"))
 
         imgui.separator_text("Cached Grad Ranges")
-        for spec in RENDER_PARAM_SPECS[5:]:
-            self._draw_control(ui, spec)
+        for key in ("cached_raster_grad_fixed_ro_local_range", "cached_raster_grad_fixed_scale_range", "cached_raster_grad_fixed_quat_range", "cached_raster_grad_fixed_color_range", "cached_raster_grad_fixed_opacity_range"):
+            self._draw_control(ui, next(spec for spec in RENDER_PARAM_SPECS if spec.key == key))
         self._ctx_reset("render_ctx", ui, [s.key for s in RENDER_PARAM_SPECS])
         imgui.separator()
 
@@ -1402,6 +1407,8 @@ class ToolkitWindow:
     # -- Helpers --
 
     _TOOLTIPS = {
+        "render_background_mode": "Choose whether the main renderer uses the training background color or a separate custom RGB background",
+        "render_background_color": "Custom RGB background for the main renderer",
         "radius_scale": "Multiplier on top of true 3DGS gaussian size for rendering",
         "alpha_cutoff": "Minimum alpha threshold — splats below this are skipped",
         "trans_threshold": "Transmittance threshold for early ray termination",
