@@ -14,7 +14,7 @@ from ..scene import ColmapFrame, GaussianInitHyperParams, GaussianScene, SUPPORT
 from ..scene._internal.colmap_ops import TRAINING_FRAME_LOAD_THREADS, load_training_frame_rgba8
 from .adam import AdamOptimizer, AdamRuntimeHyperParams
 from .optimizer import GaussianOptimizer
-from .schedule import resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_effective_maintenance_interval, resolve_learning_rate_scale, resolve_maintenance_contribution_cull_threshold, resolve_maintenance_growth_ratio, resolve_max_allowed_density, should_run_maintenance_step
+from .schedule import DEFAULT_MAINTENANCE_CONTRIBUTION_CULL_DECAY, resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_effective_maintenance_interval, resolve_learning_rate_scale, resolve_maintenance_contribution_cull_threshold, resolve_maintenance_growth_ratio, resolve_max_allowed_density, should_run_maintenance_step
 
 TRAIN_DOWNSCALE_MODE_AUTO = 0
 TRAIN_DOWNSCALE_MAX_FACTOR = 16
@@ -152,7 +152,7 @@ class TrainingHyperParams:
     scale_l2_weight: float = 0.0; scale_abs_reg_weight: float = 0.01; sh1_reg_weight: float = 0.01; opacity_reg_weight: float = 0.01; density_regularizer: float = 0.05; max_allowed_density_start: float = 5.0; max_allowed_density: float = 12.0
     position_random_step_noise_lr: float = 5e5; position_random_step_opacity_gate_center: float = 0.005; position_random_step_opacity_gate_sharpness: float = 100.0
     lr_schedule_enabled: bool = True; lr_schedule_start_lr: float = 1e-3; lr_schedule_end_lr: float = 1e-4; lr_schedule_steps: int = 30_000
-    maintenance_interval: int = 200; maintenance_growth_ratio: float = 0.02; maintenance_growth_start_step: int = 500; maintenance_alpha_cull_threshold: float = 1e-2; maintenance_contribution_cull_threshold: float = DEFAULT_MAINTENANCE_CONTRIBUTION_CULL_PERCENT
+    maintenance_interval: int = 200; maintenance_growth_ratio: float = 0.02; maintenance_growth_start_step: int = 500; maintenance_alpha_cull_threshold: float = 1e-2; maintenance_contribution_cull_threshold: float = DEFAULT_MAINTENANCE_CONTRIBUTION_CULL_PERCENT; maintenance_contribution_cull_decay: float = DEFAULT_MAINTENANCE_CONTRIBUTION_CULL_DECAY
     max_gaussians: int = 1_000_000; train_downscale_mode: int = 1; train_auto_start_downscale: int = 16
     train_downscale_base_iters: int = 200; train_downscale_iter_step: int = 50; train_downscale_max_iters: int = 30_000
     train_downscale_factor: int = 1
@@ -171,6 +171,7 @@ class TrainingHyperParams:
         self.maintenance_growth_start_step = max(int(self.maintenance_growth_start_step), 0)
         self.maintenance_alpha_cull_threshold = min(max(float(self.maintenance_alpha_cull_threshold), 1e-8), 1.0)
         self.maintenance_contribution_cull_threshold = min(max(float(self.maintenance_contribution_cull_threshold), 0.0), 100.0)
+        self.maintenance_contribution_cull_decay = min(max(float(self.maintenance_contribution_cull_decay), 0.0), 1.0)
         self.sh1_reg_weight = max(float(self.sh1_reg_weight), 0.0)
         self.density_regularizer = max(float(self.density_regularizer), 0.0)
         self.max_allowed_density_start = max(float(self.max_allowed_density_start), 0.0)

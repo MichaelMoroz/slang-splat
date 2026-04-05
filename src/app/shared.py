@@ -9,7 +9,7 @@ import slangpy as spy
 
 from ..common import clamp_float, clamp_int
 from ..scene import GaussianInitHyperParams, GaussianScene
-from ..training import AdamHyperParams, DEFAULT_DEBUG_CONTRIBUTION_RANGE_PERCENT, DEFAULT_MAINTENANCE_CONTRIBUTION_CULL_PERCENT, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, resolve_training_profile
+from ..training import AdamHyperParams, DEFAULT_DEBUG_CONTRIBUTION_RANGE_PERCENT, DEFAULT_MAINTENANCE_CONTRIBUTION_CULL_DECAY, DEFAULT_MAINTENANCE_CONTRIBUTION_CULL_PERCENT, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, resolve_training_profile
 
 EPS = 1e-8
 MIN_SCENE_RADIUS = 1.0
@@ -184,6 +184,7 @@ def build_training_params(
     maintenance_growth_start_step: int = 500,
     maintenance_alpha_cull_threshold: float = 1e-2,
     maintenance_contribution_cull_threshold: float = DEFAULT_MAINTENANCE_CONTRIBUTION_CULL_PERCENT,
+    maintenance_contribution_cull_decay: float = DEFAULT_MAINTENANCE_CONTRIBUTION_CULL_DECAY,
     train_downscale_mode: int = 1,
     train_auto_start_downscale: int = 16,
     train_downscale_base_iters: int = 200,
@@ -251,6 +252,7 @@ def build_training_params(
         maintenance_growth_start_step=clamp_int(maintenance_growth_start_step, 0, 1_000_000_000),
         maintenance_alpha_cull_threshold=clamp_float(maintenance_alpha_cull_threshold, 1e-8, 1.0),
         maintenance_contribution_cull_threshold=clamp_float(maintenance_contribution_cull_threshold, 0.0, 100.0),
+        maintenance_contribution_cull_decay=clamp_float(maintenance_contribution_cull_decay, 0.0, 1.0),
         max_gaussians=clamp_int(max_gaussians, 0, 10_000_000),
         train_downscale_mode=clamp_int(train_downscale_mode, 0, 16),
         train_auto_start_downscale=clamp_int(train_auto_start_downscale, 1, 16),

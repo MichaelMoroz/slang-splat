@@ -278,6 +278,7 @@ GROUP_SPECS = {
         ControlSpec("maintenance_growth_start_step", "input_int", "Start Densification After", {"value": 500, "step": 100, "step_fast": 500}),
         ControlSpec("maintenance_alpha_cull_threshold", "input_float", "Maintenance Alpha Cull", {"value": 1e-2, "step": 1e-5, "step_fast": 1e-4, "format": "%.6e"}),
         ControlSpec("maintenance_contribution_cull_threshold", "input_float", "Maintenance Contribution Cull", {"value": 0.001, "step": 1e-4, "step_fast": 1e-3, "format": "%.6g%%"}),
+        ControlSpec("maintenance_contribution_cull_decay", "input_float", "Maintenance Cull Decay", {"value": 0.95, "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
         ControlSpec("train_downscale_mode", "combo", "Downscale Mode", {"value": 1, "options": _TRAIN_DOWNSCALE_MODE_LABELS}),
         ControlSpec("train_auto_start_downscale", "slider_int", "Auto Start Downscale", {"value": 16, "min": 1, "max": 16}),
         ControlSpec("train_downscale_base_iters", "input_int", "Downscale Base Iters", {"value": 200, "step": 25, "step_fast": 100}),
@@ -1282,7 +1283,7 @@ class ToolkitWindow:
     def _section_training_setup(self, ui: ViewerUI) -> None:
         if not imgui.collapsing_header("Train Setup"):
             return
-        for key in ("max_gaussians", "training_steps_per_frame", "background_mode", "use_sh", "maintenance_interval", "maintenance_growth_ratio", "maintenance_growth_start_step", "maintenance_alpha_cull_threshold", "maintenance_contribution_cull_threshold", "train_downscale_mode"):
+        for key in ("max_gaussians", "training_steps_per_frame", "background_mode", "use_sh", "maintenance_interval", "maintenance_growth_ratio", "maintenance_growth_start_step", "maintenance_alpha_cull_threshold", "maintenance_contribution_cull_threshold", "maintenance_contribution_cull_decay", "train_downscale_mode"):
             self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Setup"] if spec.key == key))
         if int(ui._values.get("background_mode", 1)) == 0:
             self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Setup"] if spec.key == "train_background_color"))
@@ -1509,6 +1510,7 @@ class ToolkitWindow:
         "maintenance_growth_start_step": "Keep densification growth at zero until this training iteration, then use the configured maintenance growth",
         "maintenance_alpha_cull_threshold": "Cull splats below this decoded alpha threshold during maintenance",
         "maintenance_contribution_cull_threshold": "Cull splats whose accumulated alpha contribution stays below this percent of observed dataset pixels during maintenance",
+        "maintenance_contribution_cull_decay": "Multiply the contribution cull threshold by this factor after each completed maintenance pass",
         "density_regularizer": "Weight applied to the per-pixel hinge penalty max(density - max_allowed_density, 0)",
         "max_allowed_density": "End-of-training per-pixel density threshold above which the density regularizer activates; runtime ramps from 5.0 to this value over the LR schedule",
         "lr_schedule_enabled": "Enable cosine scheduling of the base learning rate",

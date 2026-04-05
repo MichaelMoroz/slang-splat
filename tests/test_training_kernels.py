@@ -639,13 +639,13 @@ def test_maintenance_growth_stays_zero_until_start_step() -> None:
     np.testing.assert_allclose(resolve_clone_probability_threshold(hparams, splat_count=1000, pixel_count=100, step=2000), 1000.0 * 0.02 / 200.0 / 100.0, rtol=0.0, atol=1e-12)
 
 
-def test_maintenance_contribution_cull_threshold_decays_by_15_percent_per_maintenance_step() -> None:
-    hparams = TrainingHyperParams(maintenance_interval=200, maintenance_contribution_cull_threshold=0.001)
+def test_maintenance_contribution_cull_threshold_uses_configured_decay() -> None:
+    hparams = TrainingHyperParams(maintenance_interval=200, maintenance_contribution_cull_threshold=0.001, maintenance_contribution_cull_decay=0.95)
 
     np.testing.assert_allclose(resolve_maintenance_contribution_cull_threshold(hparams, 0), 0.001, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_maintenance_contribution_cull_threshold(hparams, 199), 0.001, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_maintenance_contribution_cull_threshold(hparams, 200), 0.00085, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_maintenance_contribution_cull_threshold(hparams, 400), 0.0007225, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_maintenance_contribution_cull_threshold(hparams, 200), 0.00095, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_maintenance_contribution_cull_threshold(hparams, 400), 0.0009025, rtol=0.0, atol=1e-12)
 
 
 def test_clone_probability_threshold_respects_max_gaussians_cap() -> None:
@@ -823,7 +823,7 @@ def test_maintenance_runtime_uses_base_threshold_for_first_maintenance_then_deca
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(maintenance_interval=200, maintenance_contribution_cull_threshold=0.001),
+        training_hparams=TrainingHyperParams(maintenance_interval=200, maintenance_contribution_cull_threshold=0.001, maintenance_contribution_cull_decay=0.95),
         seed=123,
     )
     observed_pixels = renderer.width * renderer.height
@@ -835,7 +835,7 @@ def test_maintenance_runtime_uses_base_threshold_for_first_maintenance_then_deca
     second_threshold = int(trainer._maintenance_vars()["g_MaintenanceContributionCullThreshold"])
 
     assert first_threshold == contribution_fixed_count_from_percent(0.001, observed_pixels)
-    assert second_threshold == contribution_fixed_count_from_percent(0.00085, observed_pixels)
+    assert second_threshold == contribution_fixed_count_from_percent(0.00095, observed_pixels)
 
 
 def test_maintenance_rewrite_culls_low_contribution_splats(device, tmp_path: Path) -> None:

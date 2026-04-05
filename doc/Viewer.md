@@ -105,7 +105,8 @@ Training background is configured separately from the viewer clear color:
 - `Custom` exposes a fixed training RGB color picker and defaults to white
 - `Random` re-samples the training background color per step
 - `Start Densification After` now defaults to `500`.
-- Maintenance contribution culling is expressed in percent of observed dataset pixels, with a base default threshold of `0.001%` that decays by `15%` after each completed maintenance pass.
+- Maintenance contribution culling is expressed in percent of observed dataset pixels, with a base default threshold of `0.001%`.
+- `Maintenance Cull Decay` multiplies that threshold after each completed maintenance pass and defaults to `0.95` (`5%` drop per pass).
 
 - `Auto`
 - manual `1x` through `16x`

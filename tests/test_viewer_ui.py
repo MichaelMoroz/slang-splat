@@ -93,6 +93,7 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["maintenance_growth_start_step"] == 500
     assert viewer_ui._values["maintenance_alpha_cull_threshold"] == 1e-2
     assert viewer_ui._values["maintenance_contribution_cull_threshold"] == 0.001
+    assert viewer_ui._values["maintenance_contribution_cull_decay"] == 0.95
     assert viewer_ui._values["density_regularizer"] == 0.05
     assert viewer_ui._values["max_allowed_density"] == 12.0
     assert viewer_ui._values["max_anisotropy"] == 32.0
