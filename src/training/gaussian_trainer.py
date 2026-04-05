@@ -7,13 +7,13 @@ import numpy as np
 from PIL import Image
 import slangpy as spy
 
-from ..common import SHADER_ROOT, buffer_to_numpy, clamp_index, debug_region, dispatch, thread_count_2d
+from ..common import SHADER_ROOT, buffer_to_numpy, clamp_index, debug_region, dispatch, thread_count_1d, thread_count_2d
 from ..metrics import Metrics, psnr_from_mse
 from ..renderer import Camera, GaussianRenderer
 from ..scene import ColmapFrame, GaussianInitHyperParams, GaussianScene, SUPPORTED_SH_COEFF_COUNT, pad_sh_coeffs, rgb_to_sh0, sh_coeffs_to_display_colors
 from .adam import AdamOptimizer, AdamRuntimeHyperParams
 from .optimizer import GaussianOptimizer
-from .schedule import resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_effective_maintenance_interval, resolve_maintenance_growth_ratio, resolve_max_allowed_density, should_run_maintenance_step
+from .schedule import resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_effective_maintenance_interval, resolve_learning_rate_scale, resolve_maintenance_growth_ratio, resolve_max_allowed_density, should_run_maintenance_step
 
 TRAIN_DOWNSCALE_MODE_AUTO = 0
 TRAIN_DOWNSCALE_MAX_FACTOR = 16
@@ -105,6 +105,7 @@ class TrainingHyperParams:
     background: tuple[float, float, float] = (1.0, 1.0, 1.0); near: float = 0.1; far: float = 120.0
     background_mode: int = TRAIN_BACKGROUND_MODE_RANDOM; use_sh: bool = True
     scale_l2_weight: float = 0.0; scale_abs_reg_weight: float = 0.01; sh1_reg_weight: float = 0.01; opacity_reg_weight: float = 0.01; density_regularizer: float = 0.05; max_allowed_density_start: float = 5.0; max_allowed_density: float = 12.0
+    position_random_step_noise_lr: float = 0.0; position_random_step_opacity_gate_center: float = 0.005; position_random_step_opacity_gate_sharpness: float = 100.0
     lr_schedule_enabled: bool = True; lr_schedule_start_lr: float = 1e-3; lr_schedule_end_lr: float = 1e-4; lr_schedule_steps: int = 30_000
     maintenance_interval: int = 200; maintenance_growth_ratio: float = 0.02; maintenance_growth_start_step: int = 2_000; maintenance_alpha_cull_threshold: float = 1e-2; maintenance_contribution_cull_threshold: int = 128
     max_gaussians: int = 1_000_000; train_downscale_mode: int = 1; train_auto_start_downscale: int = 16
@@ -130,6 +131,9 @@ class TrainingHyperParams:
         self.max_allowed_density_start = max(float(self.max_allowed_density_start), 0.0)
         self.max_allowed_density = max(float(self.max_allowed_density), 0.0)
         self.max_allowed_density = max(self.max_allowed_density, self.max_allowed_density_start)
+        self.position_random_step_noise_lr = max(float(self.position_random_step_noise_lr), 0.0)
+        self.position_random_step_opacity_gate_center = min(max(float(self.position_random_step_opacity_gate_center), 0.0), 1.0)
+        self.position_random_step_opacity_gate_sharpness = max(float(self.position_random_step_opacity_gate_sharpness), 0.0)
         mode = int(self.train_downscale_mode)
         legacy_factor = min(max(int(self.train_downscale_factor), 1), TRAIN_DOWNSCALE_MAX_FACTOR)
         if mode == 1 and legacy_factor != 1:
@@ -164,6 +168,7 @@ class GaussianTrainer:
         "loss_forward": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csComputeL1LossForward"),
         "loss_backward": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csComputeL1LossBackward"),
         "cache_step_info": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csCacheTrainingStepInfo"),
+        "position_random_step": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csApplyPositionRandomSteps"),
         "clear_clone_counts": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csClearCloneCounts"),
         "clear_maintenance_counters": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csClearMaintenanceCounters"),
         "clamp_maintenance_min_screen_size": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csClampMaintenanceMinScreenSize"),
@@ -333,6 +338,27 @@ class GaussianTrainer:
 
     def _dispatch_adam_step(self, encoder: spy.CommandEncoder, frame_camera: Camera | None = None) -> None:
         self._dispatch_optimizer_step(encoder, self.state.step + 1, frame_camera)
+
+    def _position_random_step_vars(self, step_index: int) -> dict[str, object]:
+        return {
+            "g_PositionRandomStepParams": self.renderer.scene_buffers["splat_params"],
+            "g_PositionRandomStepSplatCount": int(self._scene_count),
+            "g_PositionRandomStepSeed": np.uint32(self._seed + int(step_index)),
+            "g_PositionRandomStepNoiseLr": float(self.training.position_random_step_noise_lr),
+            "g_PositionRandomStepPositionLr": float(self.adam.position_lr * resolve_learning_rate_scale(self.training, int(step_index))),
+            "g_PositionRandomStepOpacityGateCenter": float(self.training.position_random_step_opacity_gate_center),
+            "g_PositionRandomStepOpacityGateSharpness": float(self.training.position_random_step_opacity_gate_sharpness),
+        }
+
+    def _dispatch_position_random_steps(self, encoder: spy.CommandEncoder, step_index: int) -> None:
+        if self._scene_count <= 0 or self.training.position_random_step_noise_lr <= 0.0:
+            return
+        self._dispatch(
+            "position_random_step",
+            encoder,
+            thread_count_1d(self._scene_count),
+            self._position_random_step_vars(step_index),
+        )
 
     def __init__(
         self,
@@ -942,6 +968,7 @@ class GaussianTrainer:
             self._dispatch_training_forward(enc, frame_camera, background, target_texture, training_step)
             self._dispatch_training_backward(enc, frame_camera, background, target_texture, training_step)
             self._dispatch_optimizer_step(enc, self.state.step + batch_index + 1, frame_camera)
+            self._dispatch_position_random_steps(enc, self.state.step + batch_index + 1)
             self._dispatch_cache_step_info(enc, batch_index)
         self.device.submit_command_buffer(enc.finish())
         self.device.wait()

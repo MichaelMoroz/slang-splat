@@ -74,6 +74,9 @@ def test_build_training_params_clamps_ranges():
     assert params.training.density_regularizer == 0.05
     assert params.training.max_allowed_density_start == 5.0
     assert params.training.max_allowed_density == 12.0
+    assert params.training.position_random_step_noise_lr == 0.0
+    assert params.training.position_random_step_opacity_gate_center == 0.005
+    assert params.training.position_random_step_opacity_gate_sharpness == 100.0
     assert params.training.maintenance_contribution_cull_threshold == 128
     assert params.training.max_gaussians == 0
 

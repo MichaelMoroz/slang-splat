@@ -3,6 +3,7 @@ import "utility/math/camera.slang";
 import "utility/math/constants.slang";
 import "utility/math/numeric.slang";
 import "utility/math/quaternion.slang";
+import "utility/random/random.slang";
 import "utility/splatting/common.slang";
 import "utility/splatting/opacity.slang";
 import "utility/splatting/params.slang";
@@ -27,6 +28,13 @@ uniform RWStructuredBuffer<float> g_LossBuffer;
 uniform RWStructuredBuffer<float4> g_BatchStepInfo;
 uniform float g_DensityRegularizer;
 uniform float g_MaxAllowedDensity;
+uniform RWStructuredBuffer<float> g_PositionRandomStepParams;
+uniform uint g_PositionRandomStepSplatCount;
+uniform uint g_PositionRandomStepSeed;
+uniform float g_PositionRandomStepNoiseLr;
+uniform float g_PositionRandomStepPositionLr;
+uniform float g_PositionRandomStepOpacityGateCenter;
+uniform float g_PositionRandomStepOpacityGateSharpness;
 
 uniform Texture2D<float4> g_SourceTarget;
 uniform RWTexture2D<float4> g_DownscaledTarget;
@@ -235,6 +243,24 @@ float centered_family_coordinate(uint slot, uint familySize)
     return (float(slot) - 0.5 * float(familySize - 1u)) / halfSpan;
 }
 
+float position_random_step_gate(float opacity)
+{
+    float x = g_PositionRandomStepOpacityGateSharpness * (g_PositionRandomStepOpacityGateCenter - opacity);
+    return rcp(1.0 + exp(-x));
+}
+
+float3 position_random_step_world_delta(SplatState state, inout uint rngState)
+{
+    float opacity = opacity_from_raw(state.rawOpacity);
+    float gate = position_random_step_gate(opacity);
+    float stepScale = gate * max(g_PositionRandomStepNoiseLr, 0.0) * max(g_PositionRandomStepPositionLr, 0.0);
+    if (!(stepScale > 0.0)) return 0.0;
+
+    float3 localDelta = rng_normal3_box_muller(rngState) * exp(2.0 * state.logScale) * stepScale;
+    float4 qInv = float4(state.rotation.x, -state.rotation.y, -state.rotation.z, -state.rotation.w);
+    return rotate_by_quat(localDelta, qInv);
+}
+
 SplatState split_family_member(SplatState source, uint splatId, uint slot, uint familySize)
 {
     if (familySize <= 1u) return source;
@@ -379,6 +405,20 @@ void csCacheTrainingStepInfo(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     if (dispatchThreadID.x != 0u || dispatchThreadID.y != 0u || dispatchThreadID.z != 0u) return;
     g_BatchStepInfo[g_BatchStepIndex] = float4(g_LossBuffer[LOSS_SLOT_TOTAL], g_LossBuffer[LOSS_SLOT_MSE], g_LossBuffer[LOSS_SLOT_DENSITY], 0.0);
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void csApplyPositionRandomSteps(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint splatId = dispatchThreadID.x;
+    if (splatId >= g_PositionRandomStepSplatCount) return;
+    if (!(g_PositionRandomStepNoiseLr > 0.0) || !(g_PositionRandomStepPositionLr > 0.0)) return;
+
+    SplatState state = load_splat_state(g_PositionRandomStepParams, g_PositionRandomStepSplatCount, splatId);
+    uint rngState = hash_u32(g_PositionRandomStepSeed ^ (0x9e3779b9u * (splatId + 1u)));
+    state.position += position_random_step_world_delta(state, rngState);
+    store_splat_state(g_PositionRandomStepParams, g_PositionRandomStepSplatCount, splatId, state);
 }
 
 [shader("compute")]
