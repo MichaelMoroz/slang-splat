@@ -613,7 +613,7 @@ def test_loss_vars_use_density_schedule(device, tmp_path: Path) -> None:
     trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], training_hparams=training, seed=123)
 
     np.testing.assert_allclose(trainer._loss_vars(0)["g_DensityRegularizer"], 0.05, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(trainer._loss_vars(0)["g_DepthRatioWeight"], 0.005, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(trainer._loss_vars(0)["g_DepthRatioWeight"], 0.05, rtol=0.0, atol=1e-10)
     np.testing.assert_allclose(trainer._loss_vars(0)["g_MaxAllowedDensity"], 5.0, rtol=0.0, atol=1e-10)
     np.testing.assert_allclose(trainer._loss_vars(1)["g_MaxAllowedDensity"], 8.5, rtol=0.0, atol=1e-10)
     np.testing.assert_allclose(trainer._loss_vars(2)["g_MaxAllowedDensity"], 12.0, rtol=0.0, atol=1e-10)
@@ -803,7 +803,7 @@ def test_depth_ratio_loss_changes_total_loss_and_gradients(device, tmp_path: Pat
     trainer_off = GaussianTrainer(device=device, renderer=renderer_off, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(density_regularizer=0.0, depth_ratio_weight=0.0), seed=123)
     trainer_on = GaussianTrainer(device=device, renderer=renderer_on, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(density_regularizer=0.0, depth_ratio_weight=0.5), seed=123)
     packed_depth_stats = np.zeros((renderer_off.height, renderer_off.width, 4), dtype=np.float32)
-    packed_depth_stats[:, :, :] = np.array([1.0, 2.0, 1.0, 0.5], dtype=np.float32)
+    packed_depth_stats[:, :, :] = np.array([1.0, 2.0, 1.0, 0.25], dtype=np.float32)
 
     def run_pass(trainer: GaussianTrainer, renderer: GaussianRenderer):
         renderer.training_depth_stats_texture.copy_from_numpy(packed_depth_stats)
@@ -824,9 +824,9 @@ def test_depth_ratio_loss_changes_total_loss_and_gradients(device, tmp_path: Pat
     np.testing.assert_allclose(mse_on, mse_off, rtol=1e-5, atol=1e-7)
     assert density_off == 0.0
     assert density_on == 0.0
-    assert total_on > total_off
+    np.testing.assert_allclose(total_on - total_off, 0.125, rtol=1e-5, atol=1e-7)
     assert np.allclose(regularizer_grad_off[:, 1], 0.0)
-    assert float(np.max(np.abs(regularizer_grad_on[:, 1]))) > 0.0
+    np.testing.assert_allclose(regularizer_grad_on[:, 1], np.full_like(regularizer_grad_on[:, 1], 0.5 / 4096.0), rtol=1e-5, atol=1e-7)
 
 
 def test_depth_ratio_regularizer_affects_training_raster_replay(device, tmp_path: Path) -> None:

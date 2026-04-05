@@ -466,7 +466,7 @@ void csComputeL1LossForward(
         localMSE = isfinite(mse) ? mse : 0.0;
         if (g_DepthRatioWeight > 0.0)
         {
-            float depthRatioLoss = g_DepthRatioWeight * depthRatio * depthRatio * g_InvPixelCount;
+            float depthRatioLoss = g_DepthRatioWeight * abs(depthRatio) * g_InvPixelCount;
             if (isfinite(depthRatioLoss)) localLoss += depthRatioLoss;
         }
         if (g_DensityRegularizer > 0.0)
@@ -524,7 +524,9 @@ void csComputeL1LossBackward(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (g_DepthRatioWeight > 0.0)
     {
         float depthRatio = sanitize_scalar(g_RenderedDepthStats[pixel].w, g_HugeValue);
-        depthRatioGrad = 2.0 * g_DepthRatioWeight * depthRatio * g_InvPixelCount;
+        depthRatioGrad = depthRatio > 0.0
+            ? g_DepthRatioWeight * g_InvPixelCount
+            : (depthRatio < 0.0 ? -g_DepthRatioWeight * g_InvPixelCount : 0.0);
     }
     g_RegularizerGrad[py * g_Width + px] = float2(
         clamp(sanitize_scalar(densityGrad, g_LossGradClip), -g_LossGradClip, g_LossGradClip),

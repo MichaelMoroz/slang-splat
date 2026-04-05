@@ -124,7 +124,7 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["refinement_min_contribution_percent"] == 1e-05
     assert viewer_ui._values["refinement_min_contribution_decay"] == 0.95
     assert viewer_ui._values["density_regularizer"] == 0.05
-    assert viewer_ui._values["depth_ratio_weight"] == 0.005
+    assert viewer_ui._values["depth_ratio_weight"] == 0.05
     assert viewer_ui._values["max_allowed_density"] == 12.0
     assert viewer_ui._values["max_anisotropy"] == 32.0
     assert viewer_ui._values["max_gaussians"] == 1000000

@@ -135,7 +135,7 @@ def test_train_cli_forwards_resolved_init_hparams(monkeypatch, tmp_path: Path):
         opacity_reg=0.01,
         sh1_reg=0.01,
         density_reg=0.05,
-        depth_ratio_weight=0.005,
+        depth_ratio_weight=0.05,
         max_allowed_density_start=5.0,
         max_allowed_density=12.0,
         max_gaussians=17,
@@ -156,5 +156,5 @@ def test_train_cli_parser_defaults_color_and_opacity_lr_mul_to_five() -> None:
     assert args.lr_mul_color == 5.0
     assert args.lr_mul_opacity == 5.0
     assert args.sh1_reg == 0.01
-    assert args.depth_ratio_weight == 0.005
+    assert args.depth_ratio_weight == 0.05
     assert args.refinement_min_contribution_percent == 1e-05

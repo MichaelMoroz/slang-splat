@@ -180,7 +180,7 @@ def test_default_training_params_include_background_mode_and_density() -> None:
     assert params.training.background == (1.0, 1.0, 1.0)
     assert params.training.use_sh is True
     assert params.training.density_regularizer == 0.05
-    assert params.training.depth_ratio_weight == 0.005
+    assert params.training.depth_ratio_weight == 0.05
     assert params.training.sh1_reg_weight == 0.01
     assert params.training.max_allowed_density_start == 5.0
     assert params.training.max_allowed_density == 12.0

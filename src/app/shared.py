@@ -168,7 +168,7 @@ def build_training_params(
     opacity_reg_weight: float,
     sh1_reg_weight: float = 0.01,
     density_regularizer: float = 0.05,
-    depth_ratio_weight: float = 0.005,
+    depth_ratio_weight: float = 0.05,
     max_allowed_density_start: float = 5.0,
     max_allowed_density: float = 12.0,
     position_random_step_noise_lr: float = 5e5,

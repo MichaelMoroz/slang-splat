@@ -72,7 +72,7 @@ def test_build_training_params_clamps_ranges():
     assert params.training.sh1_reg_weight == 0.0
     assert params.training.opacity_reg_weight == 0.0
     assert params.training.density_regularizer == 0.05
-    assert params.training.depth_ratio_weight == 0.005
+    assert params.training.depth_ratio_weight == 0.05
     assert params.training.max_allowed_density_start == 5.0
     assert params.training.max_allowed_density == 12.0
     assert params.training.position_random_step_noise_lr == 5e5
@@ -93,7 +93,7 @@ def test_default_training_params_match_fixed_count_defaults():
     assert params.training.sh1_reg_weight == 0.01
     assert params.training.opacity_reg_weight == 0.01
     assert params.training.density_regularizer == 0.05
-    assert params.training.depth_ratio_weight == 0.005
+    assert params.training.depth_ratio_weight == 0.05
     assert params.training.max_allowed_density_start == 5.0
     assert params.training.max_allowed_density == 12.0
     assert params.training.position_random_step_noise_lr == 5e5
@@ -112,7 +112,7 @@ def test_auto_profile_resolves_to_legacy_defaults():
     assert profile.name == "legacy"
     assert params.training.scale_abs_reg_weight == 0.01
     assert params.training.sh1_reg_weight == 0.01
-    assert params.training.depth_ratio_weight == 0.005
+    assert params.training.depth_ratio_weight == 0.05
     assert params.training.opacity_reg_weight == 0.01
 
 
@@ -144,7 +144,7 @@ def test_viewer_effective_training_setup_keeps_requested_init_opacity():
     assert profile.name == "legacy"
     assert params.training.scale_abs_reg_weight == 0.01
     assert params.training.sh1_reg_weight == 0.01
-    assert params.training.depth_ratio_weight == 0.005
+    assert params.training.depth_ratio_weight == 0.05
     assert params.training.opacity_reg_weight == 0.01
     assert init_hparams.initial_opacity == 0.5
 
