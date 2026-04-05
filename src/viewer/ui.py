@@ -261,7 +261,7 @@ GROUP_SPECS = {
         ControlSpec("maintenance_growth_ratio", "input_float", "Maintenance Growth", {"value": 0.02, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
         ControlSpec("maintenance_growth_start_step", "input_int", "Start Densification After", {"value": 2000, "step": 100, "step_fast": 500}),
         ControlSpec("maintenance_alpha_cull_threshold", "input_float", "Maintenance Alpha Cull", {"value": 1e-2, "step": 1e-5, "step_fast": 1e-4, "format": "%.6e"}),
-        ControlSpec("maintenance_contribution_cull_threshold", "input_int", "Maintenance Contribution Cull", {"value": 128, "step": 1, "step_fast": 10}),
+        ControlSpec("maintenance_contribution_cull_threshold", "input_float", "Maintenance Contribution Cull", {"value": 0.001, "step": 1e-4, "step_fast": 1e-3, "format": "%.6g%%"}),
         ControlSpec("train_downscale_mode", "combo", "Downscale Mode", {"value": 1, "options": _TRAIN_DOWNSCALE_MODE_LABELS}),
         ControlSpec("train_auto_start_downscale", "slider_int", "Auto Start Downscale", {"value": 16, "min": 1, "max": 16}),
         ControlSpec("train_downscale_base_iters", "input_int", "Downscale Base Iters", {"value": 200, "step": 25, "step_fast": 100}),
@@ -334,8 +334,8 @@ DEBUG_RENDER_SPECS = (
     ControlSpec("debug_clone_count_max", "input_float", "Clone Count Max", {"value": 16.0, "step": 1.0, "step_fast": 4.0, "format": "%.5g"}),
     ControlSpec("debug_density_min", "input_float", "Density Min", {"value": 0.0, "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
     ControlSpec("debug_density_max", "input_float", "Density Max", {"value": 20.0, "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
-    ControlSpec("debug_contribution_min", "input_float", "Contribution Min", {"value": 1.0, "step": 1.0, "step_fast": 8.0, "format": "%.5g"}),
-    ControlSpec("debug_contribution_max", "input_float", "Contribution Max", {"value": 1024.0, "step": 8.0, "step_fast": 64.0, "format": "%.5g"}),
+    ControlSpec("debug_contribution_min", "input_float", "Contribution Min", {"value": 0.001, "step": 1e-4, "step_fast": 1e-3, "format": "%.6g%%"}),
+    ControlSpec("debug_contribution_max", "input_float", "Contribution Max", {"value": 1.0, "step": 0.1, "step_fast": 1.0, "format": "%.6g%%"}),
     ControlSpec("debug_depth_mean_min", "input_float", "Depth Mean Min", {"value": 0.0, "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
     ControlSpec("debug_depth_mean_max", "input_float", "Depth Mean Max", {"value": 10.0, "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
     ControlSpec("debug_depth_std_min", "input_float", "Depth Std Min", {"value": 0.0, "step": 0.01, "step_fast": 0.1, "format": "%.5g"}),
@@ -711,7 +711,7 @@ class ToolkitWindow:
         if mode in ("splat_density", "splat_spatial_density", "splat_screen_density"):
             return f"{_debug_range_tick_value(t, float(ui._values.get('debug_density_min', 0.0)), float(ui._values.get('debug_density_max', 20.0))):.3g}"
         if mode == "contribution_amount":
-            return f"{_contribution_amount_tick_value(t, float(ui._values.get('debug_contribution_min', 1.0)), float(ui._values.get('debug_contribution_max', 1024.0))):.1e}"
+            return f"{_contribution_amount_tick_value(t, float(ui._values.get('debug_contribution_min', 0.001)), float(ui._values.get('debug_contribution_max', 1.0))):.1e}"
         if mode == "depth_mean":
             return f"{_debug_range_tick_value(t, float(ui._values.get('debug_depth_mean_min', 0.0)), float(ui._values.get('debug_depth_mean_max', 10.0))):.3g}"
         if mode == "depth_std":
@@ -1451,8 +1451,8 @@ class ToolkitWindow:
         "debug_clone_count_max": "Upper bound for the per-splat clone counter heatmap",
         "debug_density_min": "Lower bound for density debug heatmaps",
         "debug_density_max": "Upper bound for density debug heatmaps",
-        "debug_contribution_min": "Lower bound for the log-scaled contribution heatmap",
-        "debug_contribution_max": "Upper bound for the log-scaled contribution heatmap",
+        "debug_contribution_min": "Lower bound for the log-scaled contribution heatmap in percent of observed dataset pixels",
+        "debug_contribution_max": "Upper bound for the log-scaled contribution heatmap in percent of observed dataset pixels",
         "debug_depth_mean_min": "Lower bound for depth mean debug heatmap",
         "debug_depth_mean_max": "Upper bound for depth mean debug heatmap",
         "debug_depth_std_min": "Lower bound for depth standard deviation heatmap",
@@ -1492,7 +1492,7 @@ class ToolkitWindow:
         "maintenance_growth_ratio": "Target fractional scene growth per maintenance step once densification is enabled",
         "maintenance_growth_start_step": "Keep densification growth at zero until this training iteration, then use the configured maintenance growth",
         "maintenance_alpha_cull_threshold": "Cull splats below this decoded alpha threshold during maintenance",
-        "maintenance_contribution_cull_threshold": "Cull splats whose accumulated alpha contribution stays below this 24.8 fixed-point threshold during maintenance",
+        "maintenance_contribution_cull_threshold": "Cull splats whose accumulated alpha contribution stays below this percent of observed dataset pixels during maintenance",
         "density_regularizer": "Weight applied to the per-pixel hinge penalty max(density - max_allowed_density, 0)",
         "max_allowed_density": "End-of-training per-pixel density threshold above which the density regularizer activates; runtime ramps from 5.0 to this value over the LR schedule",
         "lr_schedule_enabled": "Enable cosine scheduling of the base learning rate",
@@ -1621,7 +1621,7 @@ def build_ui(renderer) -> ViewerUI:
     values["debug_ellipse_thickness_px"] = float(getattr(renderer, "debug_ellipse_thickness_px", 2.0))
     clone_count_range = tuple(getattr(renderer, "debug_clone_count_range", (0.0, 16.0)))
     density_range = tuple(getattr(renderer, "debug_density_range", (0.0, 20.0)))
-    contribution_range = tuple(getattr(renderer, "debug_contribution_range", (1.0, 1024.0)))
+    contribution_range = tuple(getattr(renderer, "debug_contribution_range", (0.001, 1.0)))
     depth_mean_range = tuple(getattr(renderer, "debug_depth_mean_range", (0.0, 10.0)))
     depth_std_range = tuple(getattr(renderer, "debug_depth_std_range", (0.0, 0.5)))
     values["debug_clone_count_min"] = float(clone_count_range[0])

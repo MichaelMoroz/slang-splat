@@ -246,7 +246,7 @@ COMMANDS = (
             A("--images-subdir", type=str, default="images_4"),
             A("--iters", type=int, default=1000),
             A("--max-gaussians", type=int, default=1000000),
-            A("--maintenance-contribution-cull-threshold", type=int, default=128),
+            A("--maintenance-contribution-cull-threshold", type=float, default=0.001),
             A("--no-use-sh", action="store_false", dest="use_sh", default=True),
             A("--training-profile", type=str, default="auto", choices=TRAINING_PROFILE_CHOICES),
             A("--seed", type=int, default=1234),

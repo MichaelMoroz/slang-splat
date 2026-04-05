@@ -20,6 +20,25 @@ TRAIN_DOWNSCALE_MODE_AUTO = 0
 TRAIN_DOWNSCALE_MAX_FACTOR = 16
 TRAIN_BACKGROUND_MODE_CUSTOM = 0
 TRAIN_BACKGROUND_MODE_RANDOM = 1
+SPLAT_CONTRIBUTION_FIXED_SCALE = 256.0
+DEFAULT_MAINTENANCE_CONTRIBUTION_CULL_PERCENT = 0.001
+DEFAULT_DEBUG_CONTRIBUTION_RANGE_PERCENT = (0.001, 1.0)
+
+
+def contribution_percent_from_fixed_count(contribution_fixed: float | np.ndarray, observed_pixel_count: float) -> float | np.ndarray:
+    pixels = max(float(observed_pixel_count), 1.0)
+    contribution = np.asarray(contribution_fixed, dtype=np.float64) * (100.0 / (SPLAT_CONTRIBUTION_FIXED_SCALE * pixels))
+    if contribution.ndim == 0:
+        return float(contribution)
+    return contribution
+
+
+def contribution_fixed_count_from_percent(contribution_percent: float, observed_pixel_count: float) -> int:
+    percent = max(float(contribution_percent), 0.0)
+    pixels = max(float(observed_pixel_count), 0.0)
+    if percent <= 0.0 or pixels <= 0.0:
+        return 0
+    return max(int(round((percent * 0.01) * pixels * SPLAT_CONTRIBUTION_FIXED_SCALE)), 0)
 
 
 def resolve_training_resolution(width: int, height: int, downscale_factor: int) -> tuple[int, int]:
@@ -108,7 +127,7 @@ class TrainingHyperParams:
     scale_l2_weight: float = 0.0; scale_abs_reg_weight: float = 0.01; sh1_reg_weight: float = 0.01; opacity_reg_weight: float = 0.01; density_regularizer: float = 0.05; max_allowed_density_start: float = 5.0; max_allowed_density: float = 12.0
     position_random_step_noise_lr: float = 5e5; position_random_step_opacity_gate_center: float = 0.005; position_random_step_opacity_gate_sharpness: float = 100.0
     lr_schedule_enabled: bool = True; lr_schedule_start_lr: float = 1e-3; lr_schedule_end_lr: float = 1e-4; lr_schedule_steps: int = 30_000
-    maintenance_interval: int = 200; maintenance_growth_ratio: float = 0.02; maintenance_growth_start_step: int = 2_000; maintenance_alpha_cull_threshold: float = 1e-2; maintenance_contribution_cull_threshold: int = 128
+    maintenance_interval: int = 200; maintenance_growth_ratio: float = 0.02; maintenance_growth_start_step: int = 2_000; maintenance_alpha_cull_threshold: float = 1e-2; maintenance_contribution_cull_threshold: float = DEFAULT_MAINTENANCE_CONTRIBUTION_CULL_PERCENT
     max_gaussians: int = 1_000_000; train_downscale_mode: int = 1; train_auto_start_downscale: int = 16
     train_downscale_base_iters: int = 200; train_downscale_iter_step: int = 50; train_downscale_max_iters: int = 30_000
     train_downscale_factor: int = 1
@@ -126,7 +145,7 @@ class TrainingHyperParams:
         self.maintenance_growth_ratio = max(float(self.maintenance_growth_ratio), 0.0)
         self.maintenance_growth_start_step = max(int(self.maintenance_growth_start_step), 0)
         self.maintenance_alpha_cull_threshold = min(max(float(self.maintenance_alpha_cull_threshold), 1e-8), 1.0)
-        self.maintenance_contribution_cull_threshold = max(int(self.maintenance_contribution_cull_threshold), 0)
+        self.maintenance_contribution_cull_threshold = min(max(float(self.maintenance_contribution_cull_threshold), 0.0), 100.0)
         self.sh1_reg_weight = max(float(self.sh1_reg_weight), 0.0)
         self.density_regularizer = max(float(self.density_regularizer), 0.0)
         self.max_allowed_density_start = max(float(self.max_allowed_density_start), 0.0)
@@ -320,7 +339,7 @@ class GaussianTrainer:
             "g_MaintenanceSeed": np.uint32(self._seed + self.state.step),
             "g_MaintenanceCameraCount": int(len(self.frames)),
             "g_MaintenanceAlphaCullThreshold": float(self.training.maintenance_alpha_cull_threshold),
-            "g_MaintenanceContributionCullThreshold": np.uint32(self.training.maintenance_contribution_cull_threshold),
+            "g_MaintenanceContributionCullThreshold": np.uint32(contribution_fixed_count_from_percent(self.training.maintenance_contribution_cull_threshold, self._observed_contribution_pixel_count)),
             "g_MaintenanceRadiusScale": float(max(self.renderer.radius_scale, 1e-8)),
         }
 
@@ -422,6 +441,7 @@ class GaussianTrainer:
         self._frame_targets_native: list[spy.Texture] = []
         self._train_target_texture: spy.Texture | None = None
         self._downscaled_target_key: tuple[int, int, int, int] | None = None
+        self._observed_contribution_pixel_count = 0
         self._frame_rng = np.random.default_rng(self._seed)
         self._background_rng = np.random.default_rng(self._seed + 0x9E3779B9)
         self._frame_order = np.zeros((len(self.frames),), dtype=np.int32)
@@ -558,6 +578,7 @@ class GaussianTrainer:
         self._dispatch("clear_clone_counts", enc, spy.uint3(max(self._scene_count, 1), 1, 1), self._maintenance_vars())
         self.device.submit_command_buffer(enc.finish())
         self.device.wait()
+        self._observed_contribution_pixel_count = 0
 
     def _run_maintenance(self) -> None:
         self._refresh_maintenance_camera_buffer()
@@ -686,6 +707,10 @@ class GaussianTrainer:
         with ThreadPoolExecutor(max_workers=TRAINING_FRAME_LOAD_THREADS, thread_name_prefix="trainer-target") as executor:
             for rgba8 in executor.map(load_training_frame_rgba8, self.frames):
                 self._frame_targets_native.append(self._create_gpu_texture(rgba8))
+
+    @property
+    def observed_contribution_pixel_count(self) -> int:
+        return int(max(self._observed_contribution_pixel_count, 0))
 
     def _require_train_target_texture(self) -> spy.Texture:
         if self._train_target_texture is None:
@@ -969,6 +994,7 @@ class GaussianTrainer:
             self._dispatch_cache_step_info(enc, batch_index)
         self.device.submit_command_buffer(enc.finish())
         self.device.wait()
+        self._observed_contribution_pixel_count += batch_steps * max(int(self.renderer.width) * int(self.renderer.height), 0)
 
         step_metrics = self._read_batch_step_metrics(batch_steps)
         had_nonfinite = False

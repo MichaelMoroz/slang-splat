@@ -50,7 +50,7 @@ def test_build_ui_initializes_histogram_controls() -> None:
         debug_show_grad_norm=False,
         debug_grad_norm_threshold=2e-4,
         debug_clone_count_range=(0.0, 16.0),
-        debug_contribution_range=(1.0, 1024.0),
+        debug_contribution_range=(0.001, 1.0),
     )
 
     viewer_ui = ui.build_ui(renderer)
@@ -66,8 +66,8 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["render_background_color"] == (0.0, 0.0, 0.0)
     assert viewer_ui._values["debug_clone_count_min"] == 0.0
     assert viewer_ui._values["debug_clone_count_max"] == 16.0
-    assert viewer_ui._values["debug_contribution_min"] == 1.0
-    assert viewer_ui._values["debug_contribution_max"] == 1024.0
+    assert viewer_ui._values["debug_contribution_min"] == 0.001
+    assert viewer_ui._values["debug_contribution_max"] == 1.0
     assert viewer_ui._values["lr_scale_mul"] == 5.0
     assert viewer_ui._values["lr_color_mul"] == 5.0
     assert viewer_ui._values["lr_opacity_mul"] == 5.0
@@ -86,7 +86,7 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["maintenance_growth_ratio"] == 0.02
     assert viewer_ui._values["maintenance_growth_start_step"] == 2000
     assert viewer_ui._values["maintenance_alpha_cull_threshold"] == 1e-2
-    assert viewer_ui._values["maintenance_contribution_cull_threshold"] == 128
+    assert viewer_ui._values["maintenance_contribution_cull_threshold"] == 0.001
     assert viewer_ui._values["density_regularizer"] == 0.05
     assert viewer_ui._values["max_allowed_density"] == 12.0
     assert viewer_ui._values["max_anisotropy"] == 32.0
@@ -122,13 +122,13 @@ def test_contribution_amount_debug_mode_exposes_no_extra_range_controls() -> Non
 
 
 def test_contribution_amount_colorbar_ticks_use_log_scale() -> None:
-    viewer_ui = SimpleNamespace(_values={"debug_contribution_min": 1.0, "debug_contribution_max": 1024.0})
+    viewer_ui = SimpleNamespace(_values={"debug_contribution_min": 0.001, "debug_contribution_max": 1.0})
 
     lo = float(ui.ToolkitWindow._debug_colorbar_tick_label(SimpleNamespace(), "contribution_amount", 0.0, viewer_ui))
     hi = float(ui.ToolkitWindow._debug_colorbar_tick_label(SimpleNamespace(), "contribution_amount", 1.0, viewer_ui))
 
-    assert np.isclose(lo, 1.0, rtol=0.0, atol=1e-6)
-    assert np.isclose(hi, 1024.0, rtol=0.0, atol=32.0)
+    assert np.isclose(lo, 0.001, rtol=0.0, atol=1e-9)
+    assert np.isclose(hi, 1.0, rtol=0.0, atol=1e-6)
 
 
 def test_histogram_log_range_from_ranges_uses_nonzero_finite_extrema() -> None:

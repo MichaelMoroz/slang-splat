@@ -173,7 +173,7 @@ def test_default_training_params_include_background_mode_and_density() -> None:
     assert params.training.maintenance_growth_ratio == 0.02
     assert params.training.maintenance_growth_start_step == 2000
     assert params.training.maintenance_alpha_cull_threshold == 1e-2
-    assert params.training.maintenance_contribution_cull_threshold == 128
+    assert params.training.maintenance_contribution_cull_threshold == 0.001
     assert params.training.max_gaussians == 1_000_000
 
 

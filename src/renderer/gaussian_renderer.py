@@ -138,9 +138,10 @@ class GaussianRenderer:
     _DEFAULT_RASTER_GRAD_FIXED_OPACITY_RANGE = np.float32(0.2)
     _DEFAULT_DEBUG_CLONE_COUNT_RANGE = (0.0, 16.0)
     _DEFAULT_DEBUG_DENSITY_RANGE = (0.0, 20.0)
-    _DEFAULT_DEBUG_CONTRIBUTION_RANGE = (1.0, 1024.0)
+    _DEFAULT_DEBUG_CONTRIBUTION_RANGE = (0.001, 1.0)
     _DEFAULT_DEBUG_DEPTH_MEAN_RANGE = (0.0, 10.0)
     _DEFAULT_DEBUG_DEPTH_STD_RANGE = (0.0, 0.5)
+    _SPLAT_CONTRIBUTION_FIXED_SCALE = 256.0
     _COUNTER_READBACK_RING_SIZE = 2
     _SCANLINE_WORK_ITEM_UINTS = 4
     _U32_BYTES = 4
@@ -254,6 +255,7 @@ class GaussianRenderer:
                 "debugCloneCountRange": spy.float2(*self.debug_clone_count_range),
                 "debugDensityRange": spy.float2(*self.debug_density_range),
                 "debugContributionRange": spy.float2(*self.debug_contribution_range),
+                "debugContributionPercentScale": float(self._debug_contribution_percent_scale),
                 "debugDepthMeanRange": spy.float2(*self.debug_depth_mean_range),
                 "debugDepthStdRange": spy.float2(*self.debug_depth_std_range),
             }
@@ -505,6 +507,7 @@ class GaussianRenderer:
         self._debug_grad_norm_buffer: spy.Buffer | None = None
         self._debug_clone_count_buffer: spy.Buffer | None = None
         self._debug_splat_contribution_buffer: spy.Buffer | None = None
+        self._debug_contribution_percent_scale = 100.0 / self._SPLAT_CONTRIBUTION_FIXED_SCALE
         self._output_texture: spy.Texture | None = None
         self._output_grad_buffer: spy.Buffer | None = None
         self._last_stats: dict[str, int | bool | float] = {}
@@ -1412,6 +1415,10 @@ class GaussianRenderer:
 
     def set_debug_splat_contribution_buffer(self, buffer: spy.Buffer | None) -> None:
         self._debug_splat_contribution_buffer = buffer
+
+    def set_debug_contribution_observed_pixel_count(self, observed_pixel_count: float) -> None:
+        pixels = max(float(observed_pixel_count), 1.0)
+        self._debug_contribution_percent_scale = 100.0 / (self._SPLAT_CONTRIBUTION_FIXED_SCALE * pixels)
 
     def upload_debug_clone_counts(self, values: np.ndarray) -> None:
         clone_counts = np.ascontiguousarray(values, dtype=np.uint32).reshape(-1)

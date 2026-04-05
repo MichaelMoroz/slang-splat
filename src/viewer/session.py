@@ -560,6 +560,9 @@ def _apply_debug_buffers(viewer: object, renderer: GaussianRenderer | None) -> N
     bind_contribution = getattr(renderer, "set_debug_splat_contribution_buffer", None)
     if callable(bind_contribution):
         bind_contribution(_training_debug_splat_contribution_buffer(viewer))
+    set_contribution_pixels = getattr(renderer, "set_debug_contribution_observed_pixel_count", None)
+    if callable(set_contribution_pixels):
+        set_contribution_pixels(0 if viewer.s.trainer is None else viewer.s.trainer.observed_contribution_pixel_count)
 
 
 def ensure_renderer(viewer: object, attr: str, width: int, height: int, allow_debug_overlays: bool) -> GaussianRenderer:

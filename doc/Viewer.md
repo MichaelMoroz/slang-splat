@@ -71,7 +71,8 @@ The loss-debug controls expose a runtime `Abs Diff Scale` slider when `View = Ab
 - `scale = 1.0` shows the raw absolute color difference.
 - Higher values amplify subtle differences without changing the rendered or target views.
 - Density debug views share the same range controls. `Splat Density` accumulates a soft per-pixel splat count using `sqrt(transmittance) * alpha / opacity`, while `Spatial Density` and `Screen Density` continue to normalize by 3D volume and projected ellipse area respectively.
-- `Contribution Amount` visualizes the per-splat `g_SplatContribution` atomic buffer accumulated during training forward. The heatmap is logarithmic and uses dedicated `Contribution Min` and `Contribution Max` controls instead of sharing density ranges.
+- `Contribution Amount` visualizes the per-splat `g_SplatContribution` atomic buffer accumulated during training forward, normalized to percent of observed dataset pixels as `count / 256 / observed_pixels * 100`.
+- The heatmap is logarithmic and uses dedicated `Contribution Min` and `Contribution Max` controls in percent units instead of sharing density ranges.
 - The renderer debug colorbar is drawn as a horizontal legend near the bottom of the main view so it stays out of the left toolkit column.
 
 ## Histogram Window
@@ -103,6 +104,7 @@ Training background is configured separately from the viewer clear color:
 - `Background Mode`: `Custom` or `Random`
 - `Custom` exposes a fixed training RGB color picker and defaults to white
 - `Random` re-samples the training background color per step
+- Maintenance contribution culling is also expressed in percent of observed dataset pixels, with a default threshold of `0.001%`.
 
 - `Auto`
 - manual `1x` through `16x`

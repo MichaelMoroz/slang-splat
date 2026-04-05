@@ -285,7 +285,8 @@ float3 raster_clone_count_color(uint cloneCount)
 
 float3 raster_contribution_amount_color(uint contribution)
 {
-    return jet_colormap(debug_normalize_log_range(float(contribution), max(g_Raster.debugContributionRange.x, DEBUG_CONTRIBUTION_AMOUNT_FLOOR), max(g_Raster.debugContributionRange.y, DEBUG_CONTRIBUTION_AMOUNT_FLOOR)));
+    float contributionPercent = float(contribution) * max(g_Raster.debugContributionPercentScale, 0.0);
+    return jet_colormap(debug_normalize_log_range(contributionPercent, max(g_Raster.debugContributionRange.x, DEBUG_CONTRIBUTION_AMOUNT_FLOOR), max(g_Raster.debugContributionRange.y, DEBUG_CONTRIBUTION_AMOUNT_FLOOR)));
 }
 
 float3 raster_forward_color(RasterGaussian gaussian, uint splatId, uint debugMode)

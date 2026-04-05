@@ -12,7 +12,7 @@ from src.filter import SeparableGaussianBlur
 from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 from src.training import gaussian_trainer as gaussian_trainer_module
-from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_effective_maintenance_interval, resolve_maintenance_growth_ratio, resolve_max_allowed_density, resolve_training_resolution, should_run_maintenance_step
+from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, contribution_percent_from_fixed_count, resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_effective_maintenance_interval, resolve_maintenance_growth_ratio, resolve_max_allowed_density, resolve_training_resolution, should_run_maintenance_step
 
 _ADAM_BUFFER_NAMES = ("adam_moments",)
 _OPACITY_EPS = 1e-6
@@ -768,15 +768,17 @@ def test_maintenance_rewrite_culls_and_splits_families(device, tmp_path: Path) -
     source_position = scene.positions[0].copy()
     frame = _make_frame(tmp_path, image_name="maintenance_rewrite_target.png", image_id=11)
     renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    observed_pixels = renderer.width * renderer.height
     trainer = GaussianTrainer(
         device=device,
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(maintenance_alpha_cull_threshold=1e-3, maintenance_contribution_cull_threshold=50),
+        training_hparams=TrainingHyperParams(maintenance_alpha_cull_threshold=1e-3, maintenance_contribution_cull_threshold=contribution_percent_from_fixed_count(50, observed_pixels)),
         seed=123,
     )
 
+    trainer._observed_contribution_pixel_count = observed_pixels
     trainer.maintenance_buffers["clone_counts"].copy_from_numpy(np.array([2, 5], dtype=np.uint32))
     trainer.maintenance_buffers["splat_contribution"].copy_from_numpy(np.array([200, 0], dtype=np.uint32))
     trainer._run_maintenance()
@@ -807,15 +809,17 @@ def test_maintenance_rewrite_culls_low_contribution_splats(device, tmp_path: Pat
     scene.opacities[:] = np.array([0.6, 0.7], dtype=np.float32)
     frame = _make_frame(tmp_path, image_name="maintenance_contribution_cull_target.png", image_id=111)
     renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    observed_pixels = renderer.width * renderer.height
     trainer = GaussianTrainer(
         device=device,
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(maintenance_alpha_cull_threshold=1e-6, maintenance_contribution_cull_threshold=50),
+        training_hparams=TrainingHyperParams(maintenance_alpha_cull_threshold=1e-6, maintenance_contribution_cull_threshold=contribution_percent_from_fixed_count(50, observed_pixels)),
         seed=123,
     )
 
+    trainer._observed_contribution_pixel_count = observed_pixels
     trainer.maintenance_buffers["clone_counts"].copy_from_numpy(np.array([0, 0], dtype=np.uint32))
     trainer.maintenance_buffers["splat_contribution"].copy_from_numpy(np.array([200, 49], dtype=np.uint32))
     trainer._run_maintenance()
@@ -830,12 +834,13 @@ def test_maintenance_rewrite_migrates_adam_moments(device, tmp_path: Path) -> No
     scene.opacities[:] = np.array([0.6, 1e-5], dtype=np.float32)
     frame = _make_frame(tmp_path, image_name="maintenance_adam_target.png", image_id=12)
     renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    observed_pixels = renderer.width * renderer.height
     trainer = GaussianTrainer(
         device=device,
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(maintenance_alpha_cull_threshold=1e-3, maintenance_contribution_cull_threshold=50),
+        training_hparams=TrainingHyperParams(maintenance_alpha_cull_threshold=1e-3, maintenance_contribution_cull_threshold=contribution_percent_from_fixed_count(50, observed_pixels)),
         seed=123,
     )
 
@@ -846,6 +851,7 @@ def test_maintenance_rewrite_migrates_adam_moments(device, tmp_path: Path) -> No
     src_moments[:, 1, 1] = np.arange(renderer.TRAINABLE_PARAM_COUNT, dtype=np.float32) + 1101.0
     trainer.adam_optimizer.buffers["adam_moments"].copy_from_numpy(src_moments.reshape(-1, 2))
 
+    trainer._observed_contribution_pixel_count = observed_pixels
     trainer.maintenance_buffers["clone_counts"].copy_from_numpy(np.array([2, 5], dtype=np.uint32))
     trainer.maintenance_buffers["splat_contribution"].copy_from_numpy(np.array([200, 0], dtype=np.uint32))
     trainer._run_maintenance()
@@ -860,15 +866,17 @@ def test_maintenance_respects_max_gaussians_cap(device, tmp_path: Path) -> None:
     scene.scales[:] = _log_sigma(np.array([[0.09, 0.06, 0.03], [0.04, 0.04, 0.04]], dtype=np.float32))
     frame = _make_frame(tmp_path, image_name="maintenance_max_count_target.png", image_id=13)
     renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    observed_pixels = renderer.width * renderer.height
     trainer = GaussianTrainer(
         device=device,
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(max_gaussians=3, maintenance_alpha_cull_threshold=1e-3, maintenance_contribution_cull_threshold=50),
+        training_hparams=TrainingHyperParams(max_gaussians=3, maintenance_alpha_cull_threshold=1e-3, maintenance_contribution_cull_threshold=contribution_percent_from_fixed_count(50, observed_pixels)),
         seed=123,
     )
 
+    trainer._observed_contribution_pixel_count = observed_pixels
     trainer.maintenance_buffers["clone_counts"].copy_from_numpy(np.array([4, 4], dtype=np.uint32))
     trainer.maintenance_buffers["splat_contribution"].copy_from_numpy(np.array([200, 200], dtype=np.uint32))
     trainer._run_maintenance()

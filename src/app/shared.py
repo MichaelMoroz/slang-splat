@@ -9,7 +9,7 @@ import slangpy as spy
 
 from ..common import clamp_float, clamp_int
 from ..scene import GaussianInitHyperParams, GaussianScene
-from ..training import AdamHyperParams, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, resolve_training_profile
+from ..training import AdamHyperParams, DEFAULT_DEBUG_CONTRIBUTION_RANGE_PERCENT, DEFAULT_MAINTENANCE_CONTRIBUTION_CULL_PERCENT, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, resolve_training_profile
 
 EPS = 1e-8
 MIN_SCENE_RADIUS = 1.0
@@ -45,7 +45,7 @@ class RendererParams:
     max_prepass_memory_mb: int = 4096; cached_raster_grad_atomic_mode: str = "fixed"; cached_raster_grad_fixed_ro_local_range: float = 0.01; cached_raster_grad_fixed_scale_range: float = 0.01
     cached_raster_grad_fixed_quat_range: float = 0.01; cached_raster_grad_fixed_color_range: float = 0.2; cached_raster_grad_fixed_opacity_range: float = 0.2
     debug_mode: str | None = None; debug_grad_norm_threshold: float = 2e-4; debug_ellipse_thickness_px: float = 2.0
-    debug_clone_count_range: tuple[float, float] = (0.0, 16.0); debug_density_range: tuple[float, float] = (0.0, 20.0); debug_contribution_range: tuple[float, float] = (1.0, 1024.0); debug_depth_mean_range: tuple[float, float] = (0.0, 10.0); debug_depth_std_range: tuple[float, float] = (0.0, 0.5)
+    debug_clone_count_range: tuple[float, float] = (0.0, 16.0); debug_density_range: tuple[float, float] = (0.0, 20.0); debug_contribution_range: tuple[float, float] = DEFAULT_DEBUG_CONTRIBUTION_RANGE_PERCENT; debug_depth_mean_range: tuple[float, float] = (0.0, 10.0); debug_depth_std_range: tuple[float, float] = (0.0, 0.5)
     debug_show_ellipses: bool = False; debug_show_processed_count: bool = False; debug_show_grad_norm: bool = False
 
 
@@ -183,7 +183,7 @@ def build_training_params(
     maintenance_growth_ratio: float = 0.02,
     maintenance_growth_start_step: int = 2_000,
     maintenance_alpha_cull_threshold: float = 1e-2,
-    maintenance_contribution_cull_threshold: int = 128,
+    maintenance_contribution_cull_threshold: float = DEFAULT_MAINTENANCE_CONTRIBUTION_CULL_PERCENT,
     train_downscale_mode: int = 1,
     train_auto_start_downscale: int = 16,
     train_downscale_base_iters: int = 200,
@@ -250,7 +250,7 @@ def build_training_params(
         maintenance_growth_ratio=clamp_float(maintenance_growth_ratio, 0.0, 10.0),
         maintenance_growth_start_step=clamp_int(maintenance_growth_start_step, 0, 1_000_000_000),
         maintenance_alpha_cull_threshold=clamp_float(maintenance_alpha_cull_threshold, 1e-8, 1.0),
-        maintenance_contribution_cull_threshold=clamp_int(maintenance_contribution_cull_threshold, 0, 16_777_215),
+        maintenance_contribution_cull_threshold=clamp_float(maintenance_contribution_cull_threshold, 0.0, 100.0),
         max_gaussians=clamp_int(max_gaussians, 0, 10_000_000),
         train_downscale_mode=clamp_int(train_downscale_mode, 0, 16),
         train_auto_start_downscale=clamp_int(train_auto_start_downscale, 1, 16),
