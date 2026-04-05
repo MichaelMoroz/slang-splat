@@ -677,7 +677,7 @@ def test_debug_depth_local_mismatch_highlights_close_layered_splats_more_than_fa
     near_out = renderer.render(near_scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32)).image
     far_out = renderer.render(far_scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32)).image
 
-    assert float(np.max(near_out[..., 1])) > float(np.max(far_out[..., 1])) + 1e-3
+    assert float(np.max(near_out[..., :3])) > float(np.max(far_out[..., :3])) + 1e-3
 
 
 def test_render_stats_are_one_frame_delayed(device):

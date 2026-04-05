@@ -438,7 +438,8 @@ void depth_local_mismatch_step(inout float4 state, float contributionWeight, flo
 
 float raster_depth_local_mismatch_output(float4 state)
 {
-    return state.w / max(state.z, SMALL_VALUE);
+    float meanMismatch = state.w / max(state.z, SMALL_VALUE);
+    return meanMismatch / max(abs(state.y), SMALL_VALUE);
 }
 
 RasterPixelInfo resolve_raster_pixel(uint3 groupID, uint lane)
