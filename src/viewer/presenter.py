@@ -18,6 +18,7 @@ _DEBUG_ABS_DIFF_SCALE_MAX = 64.0
 _DEFAULT_TRAINING_STEPS_PER_FRAME = 3
 _MAX_TRAINING_STEPS_PER_FRAME = 8
 _TRAIN_DOWNSCALE_MODE_AUTO = 0
+_VIEWER_CLEAR_COLOR = [0.08, 0.09, 0.11, 1.0]
 
 
 def _training_schedule_text(viewer: object) -> str:
@@ -101,6 +102,16 @@ def _debug_abs_diff_scale(viewer: object) -> float:
     except Exception:
         return _DEBUG_ABS_DIFF_SCALE_DEFAULT
     return max(_DEBUG_ABS_DIFF_SCALE_MIN, min(value, _DEBUG_ABS_DIFF_SCALE_MAX))
+
+
+def _viewport_target_size(viewer: object, fallback_width: int, fallback_height: int) -> tuple[int, int]:
+    toolkit = getattr(viewer, "toolkit", None)
+    viewport_size = None if toolkit is None else getattr(toolkit, "viewport_size", None)
+    if callable(viewport_size):
+        width, height = viewport_size()
+        if int(width) > 0 and int(height) > 0:
+            return int(width), int(height)
+    return max(int(fallback_width), 1), max(int(fallback_height), 1)
 
 
 def _run_training_batch(viewer: object) -> int:
@@ -258,7 +269,7 @@ def update_ui_text(viewer: object, dt: float) -> None:
 
 def _update_toolkit_history(viewer: object, dt: float) -> None:
     tk = getattr(viewer, "toolkit", None)
-    if tk is None:
+    if tk is None or not hasattr(tk, "tk"):
         return
     tk.tk.fps_history.append(viewer.s.fps_smooth)
     viewer.ui._values["_loss_debug_frame_max"] = max(len(viewer.s.training_frames) - 1, 0)
@@ -292,22 +303,22 @@ def _render_debug_source(viewer: object, encoder: spy.CommandEncoder, frame_idx:
     return source_tex, stats, debug_width, debug_height
 
 
-def _render_debug_view(viewer: object, image: spy.Texture, encoder: spy.CommandEncoder, output_width: int, output_height: int) -> None:
+def _render_debug_view(viewer: object, encoder: spy.CommandEncoder, output_width: int, output_height: int) -> spy.Texture:
     frame_idx = _debug_frame_idx(viewer)
     debug_render_tex, viewer.s.stats, debug_width, debug_height = _render_debug_source(viewer, encoder, frame_idx)
     target_tex = viewer.s.trainer.get_frame_target_texture(frame_idx, native_resolution=False, encoder=encoder)
     source_tex = debug_render_tex if _debug_view_key(viewer) == "rendered" else target_tex if _debug_view_key(viewer) == "target" else _dispatch_debug_abs_diff(viewer, encoder, debug_render_tex, target_tex, debug_width, debug_height)
-    encoder.blit(image, _dispatch_debug_letterbox(viewer, encoder, source_tex, debug_width, debug_height, output_width, output_height))
+    return _dispatch_debug_letterbox(viewer, encoder, source_tex, debug_width, debug_height, output_width, output_height)
 
 
 
 
-def _render_main_view(viewer: object, image: spy.Texture, encoder: spy.CommandEncoder) -> None:
+def _render_main_view(viewer: object, encoder: spy.CommandEncoder) -> spy.Texture:
     if viewer.s.trainer is not None and viewer.s.training_renderer is not None:
         session.sync_scene_from_training_renderer(viewer, viewer.s.renderer, target="main")
     out_tex, stats = viewer.s.renderer.render_to_texture(viewer.camera(), background=viewer.s.background, read_stats=True, command_encoder=encoder)
     viewer.s.stats = stats
-    encoder.blit(image, out_tex)
+    return out_tex
 
 
 def render_frame(viewer: object, render_context: spy.AppWindow.RenderContext) -> None:
@@ -316,6 +327,7 @@ def render_frame(viewer: object, render_context: spy.AppWindow.RenderContext) ->
     dt = max(now - viewer.s.last_time, 1e-5)
     viewer.s.last_time = now
     iw, ih = int(image.width), int(image.height)
+    render_width, render_height = _viewport_target_size(viewer, iw, ih)
     try:
         viewer.update_camera(dt)
         if bool(getattr(viewer.s, "pending_training_reinitialize", False)):
@@ -326,11 +338,12 @@ def render_frame(viewer: object, render_context: spy.AppWindow.RenderContext) ->
         if bool(getattr(viewer.s, "pending_training_runtime_resize", False)):
             session.ensure_training_runtime_resolution(viewer)
         if viewer.s.renderer is None:
-            session.recreate_renderer(viewer, iw, ih)
-        elif (viewer.s.renderer.width, viewer.s.renderer.height) != (iw, ih):
-            session.recreate_renderer(viewer, iw, ih)
+            session.recreate_renderer(viewer, render_width, render_height)
+        elif (viewer.s.renderer.width, viewer.s.renderer.height) != (render_width, render_height):
+            session.recreate_renderer(viewer, render_width, render_height)
+        encoder.clear_texture_float(image, clear_value=_VIEWER_CLEAR_COLOR)
         if viewer.s.scene is None:
-            encoder.clear_texture_float(image, clear_value=[0.1, 0.1, 0.12, 1.0])
+            viewer.s.viewport_texture = None
             viewer.s.last_render_exception = ""
             update_ui_text(viewer, dt)
             return
@@ -339,15 +352,16 @@ def render_frame(viewer: object, render_context: spy.AppWindow.RenderContext) ->
             session.ensure_training_runtime_resolution(viewer)
         viewer.s.training_runtime_factor_changed = False
         if bool(viewer.c("loss_debug").value) and viewer.s.trainer is not None and viewer.s.training_frames:
-            _render_debug_view(viewer, image, encoder, iw, ih)
+            viewer.s.viewport_texture = _render_debug_view(viewer, encoder, render_width, render_height)
         else:
-            _render_main_view(viewer, image, encoder)
+            viewer.s.viewport_texture = _render_main_view(viewer, encoder)
         if bool(viewer.ui._values.get("show_histograms", False)):
             session.refresh_cached_raster_grad_histograms(viewer)
         viewer.s.last_render_exception = ""
     except Exception as exc:
         viewer.s.training_active = False
         viewer.s.last_training_batch_steps = 0
+        viewer.s.viewport_texture = None
         viewer.s.last_error = str(exc)
         if viewer.s.last_render_exception != viewer.s.last_error:
             print(f"Render/training error: {viewer.s.last_error}")

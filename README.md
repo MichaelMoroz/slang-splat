@@ -53,7 +53,7 @@ python viewer.py
 ```
 Load scenes from the in-window overlay (`Load PLY...` / `Load COLMAP...`).
 
-The viewer now runs as a single Slangpy window. The renderer draws the scene first, then composites the `imgui_bundle` overlay into the same swapchain image through Slangpy's UI draw-data bridge.
+The viewer now runs as a single Slangpy window. The renderer draws the scene into an offscreen texture sized from the docked viewport panel, then `imgui_bundle` composites that texture and the rest of the UI into the swapchain through Slangpy's draw-data bridge.
 
 Viewer controls:
 - `LMB + drag`: look around

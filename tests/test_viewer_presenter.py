@@ -122,6 +122,7 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
     texts = {key: _text() for key in ("fps", "images_subdir", "loss_debug_view", "loss_debug_frame", "path", "scene_stats", "render_stats", "training", "training_time", "training_iters_avg", "training_loss", "training_mse", "training_density", "training_psnr", "training_instability", "training_resolution", "training_downscale", "training_schedule", "training_maintenance", "colmap_import_status", "colmap_import_current", "histogram_status", "error")}
     viewer = SimpleNamespace()
     viewer.device = SimpleNamespace()
+    viewer.toolkit = SimpleNamespace(viewport_size=lambda: (640, 360))
     viewer.loss_debug_view_options = (("rendered", "Rendered"), ("target", "Target"), ("abs_diff", "Abs Diff"))
     viewer.image_subdir_options = ("images_8",)
     viewer.ui = SimpleNamespace(controls=controls, texts=texts, _values={"show_histograms": False, "_histogram_payload": None, "_histogram_range_payload": None}, _texts={key: value.text for key, value in texts.items()})
@@ -148,6 +149,7 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         last_render_exception="",
         last_error="",
         last_training_batch_steps=0,
+        viewport_texture=None,
         colmap_import_progress=None,
         cached_raster_grad_ranges=None,
     )
@@ -163,13 +165,14 @@ def test_render_frame_uses_debug_branch_when_visual_loss_debug_enabled(monkeypat
     monkeypatch.setattr(presenter.session, "ensure_training_runtime_resolution", lambda viewer_obj: calls.append("train_resize"))
     monkeypatch.setattr(presenter.session, "recreate_renderer", lambda viewer_obj, width, height: calls.append("resize"))
     monkeypatch.setattr(presenter.session, "update_debug_frame_slider_range", lambda viewer_obj: None)
-    monkeypatch.setattr(presenter, "_render_debug_view", lambda viewer_obj, image, encoder, width, height: calls.append("debug"))
-    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, image, encoder: calls.append("main"))
+    monkeypatch.setattr(presenter, "_render_debug_view", lambda viewer_obj, encoder, width, height: calls.append("debug") or "debug_tex")
+    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, encoder: calls.append("main") or "main_tex")
     monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
 
     presenter.render_frame(viewer, render_context)
 
     assert viewer.s.trainer.step_calls == 3
+    assert viewer.s.viewport_texture == "debug_tex"
     assert calls == ["apply", "debug", "ui"]
 
 
@@ -182,13 +185,14 @@ def test_render_frame_uses_main_branch_when_visual_loss_debug_disabled(monkeypat
     monkeypatch.setattr(presenter.session, "ensure_training_runtime_resolution", lambda viewer_obj: calls.append("train_resize"))
     monkeypatch.setattr(presenter.session, "recreate_renderer", lambda viewer_obj, width, height: calls.append("resize"))
     monkeypatch.setattr(presenter.session, "update_debug_frame_slider_range", lambda viewer_obj: None)
-    monkeypatch.setattr(presenter, "_render_debug_view", lambda viewer_obj, image, encoder, width, height: calls.append("debug"))
-    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, image, encoder: calls.append("main"))
+    monkeypatch.setattr(presenter, "_render_debug_view", lambda viewer_obj, encoder, width, height: calls.append("debug") or "debug_tex")
+    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, encoder: calls.append("main") or "main_tex")
     monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
 
     presenter.render_frame(viewer, render_context)
 
     assert viewer.s.trainer.step_calls == 3
+    assert viewer.s.viewport_texture == "main_tex"
     assert calls == ["apply", "main", "ui"]
 
 
@@ -202,8 +206,8 @@ def test_render_frame_runs_configured_training_batch(monkeypatch):
     monkeypatch.setattr(presenter.session, "ensure_training_runtime_resolution", lambda viewer_obj: calls.append("train_resize"))
     monkeypatch.setattr(presenter.session, "recreate_renderer", lambda viewer_obj, width, height: calls.append("resize"))
     monkeypatch.setattr(presenter.session, "update_debug_frame_slider_range", lambda viewer_obj: None)
-    monkeypatch.setattr(presenter, "_render_debug_view", lambda viewer_obj, image, encoder, width, height: calls.append("debug"))
-    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, image, encoder: calls.append("main"))
+    monkeypatch.setattr(presenter, "_render_debug_view", lambda viewer_obj, encoder, width, height: calls.append("debug") or "debug_tex")
+    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, encoder: calls.append("main") or "main_tex")
     monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
 
     presenter.render_frame(viewer, render_context)
@@ -224,7 +228,7 @@ def test_render_frame_refreshes_histograms_when_window_open(monkeypatch):
     monkeypatch.setattr(presenter.session, "ensure_training_runtime_resolution", lambda viewer_obj: calls.append("train_resize"))
     monkeypatch.setattr(presenter.session, "recreate_renderer", lambda viewer_obj, width, height: calls.append("resize"))
     monkeypatch.setattr(presenter.session, "refresh_cached_raster_grad_histograms", lambda viewer_obj: calls.append("hist"))
-    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, image, encoder: calls.append("main"))
+    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, encoder: calls.append("main") or "main_tex")
     monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
 
     presenter.render_frame(viewer, render_context)
@@ -242,7 +246,7 @@ def test_render_frame_handles_resize_failure_without_raising(monkeypatch):
     monkeypatch.setattr(presenter.session, "apply_live_params", lambda viewer_obj: calls.append("apply"))
     monkeypatch.setattr(presenter.session, "ensure_training_runtime_resolution", lambda viewer_obj: calls.append("train_resize"))
     monkeypatch.setattr(presenter.session, "recreate_renderer", lambda viewer_obj, width, height: (_ for _ in ()).throw(RuntimeError("resize boom")))
-    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, image, encoder: calls.append("main"))
+    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, encoder: calls.append("main") or "main_tex")
     monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
 
     presenter.render_frame(viewer, render_context)
@@ -250,7 +254,7 @@ def test_render_frame_handles_resize_failure_without_raising(monkeypatch):
     assert viewer.s.training_active is False
     assert viewer.s.last_error == "resize boom"
     assert viewer.s.last_render_exception == "resize boom"
-    assert render_context.command_encoder.clear_calls == [(render_context.surface_texture, [0.0, 0.0, 0.0, 1.0])]
+    assert render_context.command_encoder.clear_calls[-1] == (render_context.surface_texture, [0.0, 0.0, 0.0, 1.0])
     assert calls == ["apply", "ui"]
 
 
@@ -261,7 +265,7 @@ def test_render_frame_handles_live_param_failure_without_raising(monkeypatch):
 
     monkeypatch.setattr(presenter.session, "apply_live_params", lambda viewer_obj: (_ for _ in ()).throw(RuntimeError("live params boom")))
     monkeypatch.setattr(presenter.session, "advance_colmap_import", lambda viewer_obj: calls.append("import"))
-    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, image, encoder: calls.append("main"))
+    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, encoder: calls.append("main") or "main_tex")
     monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
 
     presenter.render_frame(viewer, render_context)
@@ -280,7 +284,7 @@ def test_render_frame_handles_import_failure_without_raising(monkeypatch):
 
     monkeypatch.setattr(presenter.session, "apply_live_params", lambda viewer_obj: calls.append("apply"))
     monkeypatch.setattr(presenter.session, "advance_colmap_import", lambda viewer_obj: (_ for _ in ()).throw(RuntimeError("import boom")))
-    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, image, encoder: calls.append("main"))
+    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, encoder: calls.append("main") or "main_tex")
     monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
 
     presenter.render_frame(viewer, render_context)
@@ -311,13 +315,14 @@ def test_render_frame_recovers_missing_main_renderer_by_recreating_it(monkeypatc
     monkeypatch.setattr(presenter.session, "apply_live_params", lambda viewer_obj: calls.append("apply"))
     monkeypatch.setattr(presenter.session, "advance_colmap_import", lambda viewer_obj: calls.append("import"))
     monkeypatch.setattr(presenter.session, "recreate_renderer", lambda viewer_obj, width, height: calls.append(("resize", width, height)) or setattr(viewer_obj.s, "renderer", replacement_renderer))
-    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, image, encoder: calls.append(("main", viewer_obj.s.renderer)))
+    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, encoder: calls.append("main") or "main_tex")
     monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
 
     presenter.render_frame(viewer, render_context)
 
     assert viewer.s.renderer is replacement_renderer
-    assert calls == ["apply", "import", ("resize", 640, 360), ("main", replacement_renderer), "ui"]
+    assert viewer.s.viewport_texture == "main_tex"
+    assert calls == ["apply", "import", ("resize", 640, 360), "main", "ui"]
 
 
 def test_render_frame_consumes_pending_reinitialize_before_live_params(monkeypatch):
@@ -330,7 +335,7 @@ def test_render_frame_consumes_pending_reinitialize_before_live_params(monkeypat
     monkeypatch.setattr(presenter.session, "initialize_training_scene", lambda viewer_obj: calls.append("init"))
     monkeypatch.setattr(presenter.session, "apply_live_params", lambda viewer_obj: calls.append("apply"))
     monkeypatch.setattr(presenter.session, "advance_colmap_import", lambda viewer_obj: calls.append("import"))
-    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, image, encoder: calls.append("main"))
+    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, encoder: calls.append("main") or "main_tex")
     monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
 
     presenter.render_frame(viewer, render_context)
@@ -338,6 +343,26 @@ def test_render_frame_consumes_pending_reinitialize_before_live_params(monkeypat
     assert viewer.s.pending_training_reinitialize is False
     assert viewer.s.trainer.step_calls == 0
     assert calls == ["init", "apply", "import", "main", "ui"]
+
+
+def test_render_frame_resizes_main_renderer_from_viewport_size(monkeypatch):
+    viewer = _viewer(loss_debug=False)
+    viewer.toolkit.viewport_size = lambda: (480, 270)
+    viewer.s.renderer.width = 640
+    viewer.s.renderer.height = 360
+    render_context = SimpleNamespace(surface_texture=SimpleNamespace(width=1280, height=720), command_encoder=_DummyEncoder())
+    calls: list[object] = []
+
+    monkeypatch.setattr(presenter.session, "apply_live_params", lambda viewer_obj: calls.append("apply"))
+    monkeypatch.setattr(presenter.session, "advance_colmap_import", lambda viewer_obj: calls.append("import"))
+    monkeypatch.setattr(presenter.session, "recreate_renderer", lambda viewer_obj, width, height: calls.append(("resize", width, height)) or setattr(viewer_obj.s.renderer, "width", width) or setattr(viewer_obj.s.renderer, "height", height))
+    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, encoder: calls.append("main") or "main_tex")
+    monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
+
+    presenter.render_frame(viewer, render_context)
+
+    assert viewer.s.viewport_texture == "main_tex"
+    assert ("resize", 480, 270) in calls
 
 
 def test_update_ui_text_uses_permutation_averages() -> None:

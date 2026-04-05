@@ -56,6 +56,9 @@ _DEBUG_COLORBAR_STEPS = 96
 _DEBUG_COLORBAR_SIDE_PAD = 18.0
 _DEBUG_COLORBAR_TOP_PAD = 24.0
 _DEBUG_COLORBAR_BOTTOM_PAD = 24.0
+_DOCKSPACE_FLAGS = int(imgui.DockNodeFlags_.none)
+_TOOLKIT_WINDOW_NAME = "Toolkit"
+_VIEWPORT_WINDOW_NAME = "Viewport###Viewport"
 _HISTOGRAM_BIN_COUNT_DEFAULT = 64
 _HISTOGRAM_MIN_LOG10_DEFAULT = -8.0
 _HISTOGRAM_MAX_LOG10_DEFAULT = 2.0
@@ -135,7 +138,7 @@ def _build_about_text() -> str:
             _WINDOW_TITLE,
             "",
             "Single-window Gaussian splat viewer and trainer built on Slangpy.",
-            "The scene and imgui_bundle UI are rendered into the same swapchain image.",
+            "The scene is presented inside a docked viewport window with the imgui_bundle UI around it.",
             "",
             _SHORTCUTS_TEXT,
         )
@@ -156,6 +159,18 @@ def _build_documentation_text() -> str:
 def _panel_rect(width: int, height: int, menu_bar_height: float) -> tuple[float, float, float, float]:
     panel_width = float(max(int(width * TOOLKIT_WIDTH_FRACTION), 280))
     return 0.0, float(menu_bar_height), panel_width, max(float(height) - float(menu_bar_height), 1.0)
+
+
+def _clamp_viewport_size(width: float, height: float) -> tuple[int, int]:
+    return max(int(round(float(width))), 1), max(int(round(float(height))), 1)
+
+
+def _rect_contains(rect: tuple[float, float, float, float], point: tuple[float, float] | None) -> bool:
+    if point is None:
+        return False
+    x, y, width, height = rect
+    px, py = point
+    return px >= x and py >= y and px < x + width and py < y + height
 
 
 @lru_cache(maxsize=1)
@@ -493,6 +508,8 @@ class ToolkitWindow:
         self._menu_bar_height = 0.0
         self._applied_interface_scale = -1.0
         self._dockspace_id = 0
+        self._dock_layout_initialized = False
+        self._viewport_dock_id = 0
         self._toolkit_window_open = True
         self._toolkit_rect = (
             0.0,
@@ -500,6 +517,8 @@ class ToolkitWindow:
             float(max(int(width * TOOLKIT_WIDTH_FRACTION), 280)),
             max(float(height), 1.0),
         )
+        self._viewport_rect = (self._toolkit_rect[2], 0.0, max(float(width) - self._toolkit_rect[2], 1.0), max(float(height), 1.0))
+        self._viewport_content_rect = self._viewport_rect
         self._set_interface_scale(_INTERFACE_SCALE_OPTIONS[_DEFAULT_INTERFACE_SCALE_INDEX][1])
 
     def _set_current_context(self) -> None:
@@ -594,9 +613,15 @@ class ToolkitWindow:
         if not self._alive:
             return False
         self._set_current_context()
-        return bool(simgui.handle_mouse_event(event))
+        handled = bool(simgui.handle_mouse_event(event))
+        pos = getattr(event, "pos", None)
+        point = None if pos is None else (float(pos.x), float(pos.y))
+        return False if _rect_contains(self._viewport_content_rect, point) else handled
 
-    def render(self, ui: ViewerUI, surface_texture: spy.Texture, command_encoder: spy.CommandEncoder) -> None:
+    def viewport_size(self) -> tuple[int, int]:
+        return _clamp_viewport_size(self._viewport_content_rect[2], self._viewport_content_rect[3])
+
+    def render(self, ui: ViewerUI, surface_texture: spy.Texture, command_encoder: spy.CommandEncoder, viewport_texture: spy.Texture | None = None) -> None:
         if not self._alive:
             return
         width = int(surface_texture.width)
@@ -610,8 +635,9 @@ class ToolkitWindow:
         self._menu_bar_height = self._draw_main_menu_bar(ui)
         self._draw_dockspace()
         self._draw_panel(ui, width, height)
+        self._draw_viewport_window(viewport_texture, width, height)
         self._draw_renderer_debug_window(ui)
-        self._draw_debug_colorbar(ui, width, height)
+        self._draw_debug_colorbar(ui)
         self._draw_histogram_window(ui)
         imgui.render()
         draw_data = imgui.get_draw_data()
@@ -620,12 +646,30 @@ class ToolkitWindow:
 
     def _draw_dockspace(self) -> None:
         viewport = imgui.get_main_viewport()
-        self._dockspace_id = int(
-            imgui.dock_space_over_viewport(
-                viewport=viewport,
-                flags=imgui.DockNodeFlags_.passthru_central_node.value,
-            )
-        )
+        dockspace_id = int(imgui.dock_space_over_viewport(viewport=viewport, flags=_DOCKSPACE_FLAGS))
+        if dockspace_id != self._dockspace_id:
+            self._dockspace_id = dockspace_id
+            self._dock_layout_initialized = False
+        self._ensure_default_dock_layout(viewport)
+
+    def _ensure_default_dock_layout(self, viewport: object) -> None:
+        if self._dock_layout_initialized or self._dockspace_id == 0:
+            return
+        imgui.internal.dock_builder_remove_node(self._dockspace_id)
+        root_id = int(imgui.internal.dock_builder_add_node(self._dockspace_id, _DOCKSPACE_FLAGS))
+        imgui.internal.dock_builder_set_node_size(root_id, viewport.work_size)
+        split_ids = tuple(int(node_id) for node_id in imgui.internal.dock_builder_split_node_py(root_id, imgui.Dir_.left, TOOLKIT_WIDTH_FRACTION))
+        leaf_ids = tuple(dict.fromkeys(node_id for node_id in split_ids if node_id != root_id))
+        central_node = imgui.internal.dock_builder_get_central_node(root_id)
+        viewport_dock_id = 0 if central_node is None else int(central_node.id_)
+        toolkit_dock_id = next((node_id for node_id in leaf_ids if node_id != viewport_dock_id), self._dockspace_id)
+        if viewport_dock_id == 0:
+            viewport_dock_id = next((node_id for node_id in leaf_ids if node_id != toolkit_dock_id), self._dockspace_id)
+        imgui.internal.dock_builder_dock_window(_TOOLKIT_WINDOW_NAME, toolkit_dock_id)
+        imgui.internal.dock_builder_dock_window(_VIEWPORT_WINDOW_NAME, viewport_dock_id)
+        imgui.internal.dock_builder_finish(root_id)
+        self._viewport_dock_id = viewport_dock_id
+        self._dock_layout_initialized = True
 
     def _draw_panel(self, ui: ViewerUI, width: int, height: int) -> None:
         panel_x, panel_y, panel_width, panel_height = _panel_rect(width, height, self._menu_bar_height)
@@ -634,7 +678,7 @@ class ToolkitWindow:
         if self._dockspace_id != 0:
             imgui.set_next_window_dock_id(self._dockspace_id, imgui.Cond_.first_use_ever.value)
         flags = imgui.WindowFlags_.no_collapse.value
-        opened, self._toolkit_window_open = imgui.begin("Toolkit", self._toolkit_window_open, flags=flags)
+        opened, self._toolkit_window_open = imgui.begin(_TOOLKIT_WINDOW_NAME, self._toolkit_window_open, flags=flags)
         if opened:
             pos = imgui.get_window_pos()
             size = imgui.get_window_size()
@@ -653,20 +697,64 @@ class ToolkitWindow:
         self._draw_documentation_window()
         self._draw_colmap_import_window(ui)
 
-    def _draw_debug_colorbar(self, ui: ViewerUI, width: int, height: int) -> None:
+    def _draw_viewport_window(self, viewport_texture: spy.Texture | None, width: int, height: int) -> None:
+        viewport_x = self._toolkit_rect[2]
+        viewport_y = self._menu_bar_height
+        viewport_width = max(float(width) - viewport_x, 1.0)
+        viewport_height = max(float(height) - viewport_y, 1.0)
+        imgui.set_next_window_pos(imgui.ImVec2(viewport_x, viewport_y), imgui.Cond_.first_use_ever.value)
+        imgui.set_next_window_size(imgui.ImVec2(viewport_width, viewport_height), imgui.Cond_.first_use_ever.value)
+        if self._viewport_dock_id != 0:
+            imgui.set_next_window_dock_id(self._viewport_dock_id, imgui.Cond_.always.value)
+        elif self._dockspace_id != 0:
+            imgui.set_next_window_dock_id(self._dockspace_id, imgui.Cond_.always.value)
+        flags = imgui.WindowFlags_.no_title_bar.value | imgui.WindowFlags_.no_collapse.value | imgui.WindowFlags_.no_scrollbar.value | imgui.WindowFlags_.no_scroll_with_mouse.value
+        imgui.push_style_var(imgui.StyleVar_.window_padding, imgui.ImVec2(0.0, 0.0))
+        opened = imgui.begin(_VIEWPORT_WINDOW_NAME, flags=flags)[0]
+        imgui.pop_style_var()
+        if opened:
+            pos = imgui.get_window_pos()
+            size = imgui.get_window_size()
+            content_min = imgui.get_window_content_region_min()
+            content_max = imgui.get_window_content_region_max()
+            content_x = float(pos.x + content_min.x)
+            content_y = float(pos.y + content_min.y)
+            content_width = max(float(content_max.x - content_min.x), 1.0)
+            content_height = max(float(content_max.y - content_min.y), 1.0)
+            self._viewport_rect = (float(pos.x), float(pos.y), float(size.x), float(size.y))
+            self._viewport_content_rect = (content_x, content_y, content_width, content_height)
+            image_size = imgui.ImVec2(content_width, content_height)
+            if viewport_texture is not None:
+                imgui.image(simgui.texture_ref(viewport_texture), image_size)
+            else:
+                cursor = imgui.get_cursor_screen_pos()
+                imgui.dummy(image_size)
+                draw_list = imgui.get_window_draw_list()
+                draw_list.add_rect_filled(cursor, imgui.ImVec2(cursor.x + content_width, cursor.y + content_height), _color_u32(0.04, 0.045, 0.055, 1.0))
+                label = "Load a scene to populate the viewport"
+                text_size = imgui.calc_text_size(label)
+                draw_list.add_text(
+                    imgui.ImVec2(cursor.x + 0.5 * (content_width - float(text_size.x)), cursor.y + 0.5 * (content_height - float(text_size.y))),
+                    _color_u32(0.72, 0.76, 0.82, 0.95),
+                    label,
+                )
+        imgui.end()
+
+    def _draw_debug_colorbar(self, ui: ViewerUI) -> None:
         mode = _debug_colorbar_mode(ui)
         if mode is None:
             return
+        view_x0, view_y0, view_width, view_height = self._viewport_content_rect
+        if view_width <= 1.0 or view_height <= 1.0:
+            return
         draw_list = imgui.get_foreground_draw_list()
-        panel_x, _, panel_width, _ = self._toolkit_rect
-        view_x0 = panel_x + panel_width + 12.0
-        available_width = max(float(width) - view_x0 - _DEBUG_COLORBAR_MARGIN, 120.0)
-        bar_width = min(_DEBUG_COLORBAR_MAX_WIDTH, max(_DEBUG_COLORBAR_MIN_WIDTH, available_width * 0.7))
+        available_width = max(view_width - 2.0 * _DEBUG_COLORBAR_MARGIN, 120.0)
+        bar_width = min(_DEBUG_COLORBAR_MAX_WIDTH, max(_DEBUG_COLORBAR_MIN_WIDTH, available_width * 0.85))
         bar_width = max(min(bar_width, available_width - 2.0 * _DEBUG_COLORBAR_SIDE_PAD), 80.0)
         box_width = bar_width + 2.0 * _DEBUG_COLORBAR_SIDE_PAD
         box_height = _DEBUG_COLORBAR_TOP_PAD + _DEBUG_COLORBAR_HEIGHT + _DEBUG_COLORBAR_BOTTOM_PAD
-        box_x = max(view_x0 + 0.5 * (available_width - box_width), view_x0)
-        box_y = max(float(height) - _DEBUG_COLORBAR_MARGIN - box_height, self._menu_bar_height + 4.0)
+        box_x = max(view_x0 + 0.5 * (view_width - box_width), view_x0 + _DEBUG_COLORBAR_MARGIN)
+        box_y = max(view_y0 + view_height - _DEBUG_COLORBAR_MARGIN - box_height, view_y0 + 4.0)
         x0 = box_x + _DEBUG_COLORBAR_SIDE_PAD
         y0 = box_y + _DEBUG_COLORBAR_TOP_PAD
         x1 = x0 + bar_width

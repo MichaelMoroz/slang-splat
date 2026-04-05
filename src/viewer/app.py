@@ -202,6 +202,12 @@ class SplatViewer(spy.AppWindow):
 
     def _apply_resize(self, width: int, height: int) -> None:
         target_width, target_height = int(width), int(height)
+        toolkit = getattr(self, "toolkit", None)
+        viewport_size = None if toolkit is None else getattr(toolkit, "viewport_size", None)
+        if callable(viewport_size):
+            viewport_width, viewport_height = viewport_size()
+            if int(viewport_width) > 0 and int(viewport_height) > 0:
+                target_width, target_height = int(viewport_width), int(viewport_height)
         self.device.wait()
         if target_width > 0 and target_height > 0 and (self.s.renderer.width, self.s.renderer.height) != (target_width, target_height):
             session.recreate_renderer(self, target_width, target_height)
@@ -346,7 +352,7 @@ class SplatViewer(spy.AppWindow):
 
     def _render_frame(self, render_context) -> None:
         presenter.render_frame(self, render_context)
-        self.toolkit.render(self.ui, render_context.surface_texture, render_context.command_encoder)
+        self.toolkit.render(self.ui, render_context.surface_texture, render_context.command_encoder, viewport_texture=self.s.viewport_texture)
 
     def render(self, render_context) -> None:
         try:

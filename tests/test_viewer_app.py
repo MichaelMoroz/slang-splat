@@ -16,6 +16,7 @@ def _viewer(keyboard_capture: bool = False, mouse_capture: bool = False) -> Simp
     viewer.toolkit = SimpleNamespace(
         handle_keyboard_event=lambda event: keyboard_capture,
         handle_mouse_event=lambda event: mouse_capture,
+        viewport_size=lambda: (0, 0),
     )
     viewer.s = SimpleNamespace(
         keys={},
@@ -129,6 +130,21 @@ def test_apply_resize_recreates_renderer_only_for_size_changes(monkeypatch) -> N
     assert calls == ["wait", "wait", (800, 600)]
     assert viewer.s.last_resize_exception == ""
     assert viewer.s.last_error == ""
+
+
+def test_apply_resize_prefers_viewport_size_when_available(monkeypatch) -> None:
+    calls: list[tuple[int, int] | str] = []
+    viewer = SimpleNamespace(
+        toolkit=SimpleNamespace(viewport_size=lambda: (512, 288)),
+        device=SimpleNamespace(wait=lambda: calls.append("wait")),
+        s=SimpleNamespace(renderer=SimpleNamespace(width=640, height=360), last_resize_exception="", last_error=""),
+    )
+
+    monkeypatch.setattr("src.viewer.app.session.recreate_renderer", lambda viewer_obj, width, height: calls.append((width, height)))
+
+    SplatViewer._apply_resize(viewer, 1280, 720)
+
+    assert calls == ["wait", (512, 288)]
 
 
 def test_render_records_toolkit_failure_without_raising() -> None:

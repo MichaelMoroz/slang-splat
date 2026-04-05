@@ -2,7 +2,7 @@
 
 ## Overview
 
-The realtime viewer is a single `spy.AppWindow` that renders both the Gaussian scene and the control UI into the same swapchain image.
+The realtime viewer is a single `spy.AppWindow` that renders the control UI into the swapchain and presents the Gaussian scene inside a docked central viewport window.
 
 The overlay uses a left-side control panel with a menu bar:
 
@@ -22,20 +22,22 @@ The overlay uses a left-side control panel with a menu bar:
 
 Each frame follows this order:
 
-1. `SplatViewer.render(...)` calls `presenter.render_frame(...)` to render the scene or debug view into the current surface texture.
-2. The overlay begins an `imgui_bundle` frame with the current surface size and frame delta.
-3. The existing control panels and plots emit Dear ImGui draw lists.
-4. Slangpy marshals any external font or image textures referenced by the draw data.
-5. Slangpy renders the draw data directly into the same surface texture with the current command encoder.
+1. `SplatViewer.render(...)` calls `presenter.render_frame(...)` to render the scene or debug view into an offscreen texture sized from the current viewport content rect.
+2. The swapchain is cleared for UI composition.
+3. The overlay begins an `imgui_bundle` frame with the current surface size and frame delta.
+4. The docked `Viewport` window emits an `imgui.image(...)` draw call referencing that offscreen texture, while the rest of the control panels and plots emit normal Dear ImGui draw lists.
+5. Slangpy marshals any external font or image textures referenced by the draw data.
+6. Slangpy renders the full draw data into the swapchain with the current command encoder.
 
-This keeps scene rendering and UI composition in one GPU submission and avoids a second window or graphics context.
+This keeps scene rendering and UI composition in one window and one graphics context while letting the renderer resolution follow the docked viewport size instead of the outer window size.
 
 ## Input Routing
 
 Keyboard and mouse events are forwarded to the overlay first.
 
 - If ImGui reports keyboard capture, the viewer skips its own key handling.
-- If ImGui reports mouse capture, the viewer skips camera drag and scroll handling and only refreshes its cursor reference state.
+- If ImGui reports mouse capture outside the viewport, the viewer skips camera drag and scroll handling and only refreshes its cursor reference state.
+- Mouse events inside the viewport content area are passed back through to the camera so the docked viewport keeps the same fly/look controls as the old full-background renderer.
 - If ImGui does not capture the event, the existing camera controls run unchanged.
 
 This avoids camera movement while using sliders, combo boxes, text inputs, plot interactions, or scrollable UI regions.
@@ -73,7 +75,7 @@ The loss-debug controls expose a runtime `Abs Diff Scale` slider when `View = Ab
 - Density debug views share the same range controls. `Splat Density` accumulates a soft per-pixel splat count using `sqrt(transmittance) * alpha / opacity`, while `Spatial Density` and `Screen Density` continue to normalize by 3D volume and projected ellipse area respectively.
 - `Contribution Amount` visualizes the per-splat `g_SplatContribution` atomic buffer accumulated during training forward, normalized to percent of observed dataset pixels as `count / 256 / observed_pixels * 100`.
 - The heatmap is logarithmic and uses dedicated `Contribution Min` and `Contribution Max` controls in percent units instead of sharing density ranges.
-- The renderer debug colorbar is drawn as a horizontal legend near the bottom of the main view so it stays out of the left toolkit column.
+- The renderer debug colorbar is drawn as a horizontal legend near the bottom of the docked viewport window.
 
 ## Histogram Window
 

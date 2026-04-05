@@ -430,6 +430,7 @@ def _invalidate(viewer: object, *targets: str) -> None:
 
 
 def _reset_loss_debug(viewer: object) -> None:
+    viewer.s.viewport_texture = None
     viewer.s.loss_debug_texture = None
     viewer.s.debug_present_texture = None
     _clear(viewer, "debug_renderer")

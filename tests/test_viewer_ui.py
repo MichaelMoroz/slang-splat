@@ -13,6 +13,7 @@ def test_about_text_mentions_single_window_viewer() -> None:
 
     assert _WINDOW_TITLE in text
     assert "Single-window" in text
+    assert "docked viewport" in text
     assert "WASDQE" in text
 
 
@@ -31,6 +32,20 @@ def test_panel_rect_starts_below_menu_bar() -> None:
     assert y == 24.0
     assert w == 280.0
     assert h == 876.0
+
+
+def test_clamp_viewport_size_rounds_and_clamps() -> None:
+    assert ui._clamp_viewport_size(511.6, 287.4) == (512, 287)
+    assert ui._clamp_viewport_size(0.1, 0.1) == (1, 1)
+
+
+def test_rect_contains_matches_viewport_bounds() -> None:
+    rect = (10.0, 20.0, 100.0, 50.0)
+
+    assert ui._rect_contains(rect, (10.0, 20.0))
+    assert ui._rect_contains(rect, (109.9, 69.9))
+    assert not ui._rect_contains(rect, (110.0, 70.0))
+    assert not ui._rect_contains(rect, None)
 
 
 def test_status_suffix_strips_presenter_prefix() -> None:
