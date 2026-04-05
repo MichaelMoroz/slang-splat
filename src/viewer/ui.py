@@ -158,7 +158,7 @@ def _build_documentation_text() -> str:
 
 def _panel_rect(width: int, height: int, menu_bar_height: float) -> tuple[float, float, float, float]:
     panel_width = float(max(int(width * TOOLKIT_WIDTH_FRACTION), 280))
-    return 0.0, float(menu_bar_height), panel_width, max(float(height) - float(menu_bar_height), 1.0)
+    return max(float(width) - panel_width, 0.0), float(menu_bar_height), panel_width, max(float(height) - float(menu_bar_height), 1.0)
 
 
 def _clamp_viewport_size(width: float, height: float) -> tuple[int, int]:
@@ -518,14 +518,15 @@ class ToolkitWindow:
         self._dockspace_id = 0
         self._dock_layout_initialized = False
         self._viewport_dock_id = 0
+        self._toolkit_dock_id = 0
         self._toolkit_window_open = True
         self._toolkit_rect = (
-            0.0,
+            max(float(width) - float(max(int(width * TOOLKIT_WIDTH_FRACTION), 280)), 0.0),
             0.0,
             float(max(int(width * TOOLKIT_WIDTH_FRACTION), 280)),
             max(float(height), 1.0),
         )
-        self._viewport_rect = (self._toolkit_rect[2], 0.0, max(float(width) - self._toolkit_rect[2], 1.0), max(float(height), 1.0))
+        self._viewport_rect = (0.0, 0.0, max(float(width) - self._toolkit_rect[2], 1.0), max(float(height), 1.0))
         self._viewport_content_rect = self._viewport_rect
         self._viewport_window_focused = False
         self._viewport_input_active = False
@@ -675,7 +676,7 @@ class ToolkitWindow:
         imgui.internal.dock_builder_remove_node(self._dockspace_id)
         root_id = int(imgui.internal.dock_builder_add_node(self._dockspace_id, _DOCKSPACE_FLAGS))
         imgui.internal.dock_builder_set_node_size(root_id, viewport.work_size)
-        split_ids = tuple(int(node_id) for node_id in imgui.internal.dock_builder_split_node_py(root_id, imgui.Dir_.left, TOOLKIT_WIDTH_FRACTION))
+        split_ids = tuple(int(node_id) for node_id in imgui.internal.dock_builder_split_node_py(root_id, imgui.Dir_.right, TOOLKIT_WIDTH_FRACTION))
         leaf_ids = tuple(dict.fromkeys(node_id for node_id in split_ids if node_id != root_id))
         central_node = imgui.internal.dock_builder_get_central_node(root_id)
         viewport_dock_id = 0 if central_node is None else int(central_node.id_)
@@ -686,13 +687,16 @@ class ToolkitWindow:
         imgui.internal.dock_builder_dock_window(_VIEWPORT_WINDOW_NAME, viewport_dock_id)
         imgui.internal.dock_builder_finish(root_id)
         self._viewport_dock_id = viewport_dock_id
+        self._toolkit_dock_id = toolkit_dock_id
         self._dock_layout_initialized = True
 
     def _draw_panel(self, ui: ViewerUI, width: int, height: int) -> None:
         panel_x, panel_y, panel_width, panel_height = _panel_rect(width, height, self._menu_bar_height)
         imgui.set_next_window_pos(imgui.ImVec2(panel_x, panel_y), imgui.Cond_.first_use_ever.value)
         imgui.set_next_window_size(imgui.ImVec2(panel_width, panel_height), imgui.Cond_.first_use_ever.value)
-        if self._dockspace_id != 0:
+        if self._toolkit_dock_id != 0:
+            imgui.set_next_window_dock_id(self._toolkit_dock_id, imgui.Cond_.always.value)
+        elif self._dockspace_id != 0:
             imgui.set_next_window_dock_id(self._dockspace_id, imgui.Cond_.first_use_ever.value)
         flags = imgui.WindowFlags_.no_collapse.value
         opened, self._toolkit_window_open = imgui.begin(_TOOLKIT_WINDOW_NAME, self._toolkit_window_open, flags=flags)
@@ -715,9 +719,9 @@ class ToolkitWindow:
         self._draw_colmap_import_window(ui)
 
     def _draw_viewport_window(self, ui: ViewerUI, viewport_texture: spy.Texture | None, width: int, height: int) -> None:
-        viewport_x = self._toolkit_rect[2]
+        viewport_x = 0.0
         viewport_y = self._menu_bar_height
-        viewport_width = max(float(width) - viewport_x, 1.0)
+        viewport_width = max(float(width) - self._toolkit_rect[2], 1.0)
         viewport_height = max(float(height) - viewport_y, 1.0)
         imgui.set_next_window_pos(imgui.ImVec2(viewport_x, viewport_y), imgui.Cond_.first_use_ever.value)
         imgui.set_next_window_size(imgui.ImVec2(viewport_width, viewport_height), imgui.Cond_.first_use_ever.value)
@@ -953,6 +957,8 @@ class ToolkitWindow:
     def _draw_colmap_import_window(self, ui: ViewerUI) -> None:
         if not self._show_colmap_import:
             return
+        if self._toolkit_dock_id != 0:
+            imgui.set_next_window_dock_id(self._toolkit_dock_id, imgui.Cond_.appearing.value)
         imgui.set_next_window_pos(imgui.ImVec2(56.0, self._menu_bar_height + 40.0), imgui.Cond_.first_use_ever.value)
         imgui.set_next_window_size(imgui.ImVec2(540.0, 0.0), imgui.Cond_.first_use_ever.value)
         opened, self._show_colmap_import = imgui.begin("COLMAP Import", True)

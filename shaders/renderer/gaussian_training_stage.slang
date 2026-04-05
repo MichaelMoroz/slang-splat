@@ -15,6 +15,11 @@ static const uint LOSS_SLOT_DENSITY = 2u;
 static const float POSITION_RANDOM_STEP_MAX_ANISOTROPY = 4.0;
 static const float DENSIFY_SCALE_SHRINK_EXPONENT = -1.0 / 3.0;
 static const float DENSIFY_MAX_STANDARDIZED_SIGMA = 3.0;
+static const float SRGB_LINEAR_THRESHOLD = 0.0031308;
+static const float SRGB_LINEAR_SCALE = 12.92;
+static const float SRGB_GAMMA_SCALE = 1.055;
+static const float SRGB_GAMMA_OFFSET = 0.055;
+static const float SRGB_INV_GAMMA = 1.0 / 2.4;
 static const uint MAINTENANCE_HASH_INIT = 0x9e3779b9u;
 static const uint MAINTENANCE_HASH_MIX = 0x85ebca6bu;
 uniform uint g_Width;
@@ -99,6 +104,18 @@ struct SplatState
 };
 
 static const uint MAINTENANCE_CAMERA_ROW_COUNT = 6u;
+
+float linear_to_srgb_safe(float value)
+{
+    if (!(value > 0.0)) return 0.0;
+    if (value <= SRGB_LINEAR_THRESHOLD) return SRGB_LINEAR_SCALE * value;
+    return SRGB_GAMMA_SCALE * pow(value, SRGB_INV_GAMMA) - SRGB_GAMMA_OFFSET;
+}
+
+float3 linear_to_srgb_safe(float3 value)
+{
+    return float3(linear_to_srgb_safe(value.x), linear_to_srgb_safe(value.y), linear_to_srgb_safe(value.z));
+}
 
 bool should_cull_maintenance_splat(float alpha, uint contribution)
 {
@@ -610,11 +627,5 @@ void csComposeLetterboxDebug(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint srcX = min(uint(u * srcW), g_LetterboxSourceWidth - 1u);
     uint srcY = min(uint(v * srcH), g_LetterboxSourceHeight - 1u);
     float4 sampled = g_LetterboxSource[uint2(srcX, srcY)];
-    float3 linear = max(sampled.xyz, 0.0);
-    float3 srgb = float3(
-        linear.x <= 0.0031308 ? 12.92 * linear.x : 1.055 * pow(linear.x, 1.0 / 2.4) - 0.055,
-        linear.y <= 0.0031308 ? 12.92 * linear.y : 1.055 * pow(linear.y, 1.0 / 2.4) - 0.055,
-        linear.z <= 0.0031308 ? 12.92 * linear.z : 1.055 * pow(linear.z, 1.0 / 2.4) - 0.055
-    );
-    g_LetterboxOutput[uint2(px, py)] = float4(srgb, sampled.w);
+    g_LetterboxOutput[uint2(px, py)] = float4(linear_to_srgb_safe(sampled.xyz), sampled.w);
 }

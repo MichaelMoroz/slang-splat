@@ -4,7 +4,11 @@ from pathlib import Path
 from types import SimpleNamespace
 import time
 
+import numpy as np
+import slangpy as spy
+
 from src.viewer import presenter
+from src.viewer import session as viewer_session
 from src.viewer.state import ColmapImportProgress
 
 
@@ -479,3 +483,36 @@ def test_dispatch_viewport_present_uses_present_kernel(monkeypatch) -> None:
     assert vars["g_LetterboxSourceHeight"] == 180
     assert vars["g_LetterboxOutputWidth"] == 640
     assert vars["g_LetterboxOutputHeight"] == 360
+
+
+def test_dispatch_viewport_present_zero_stays_zero_and_output_is_finite(device) -> None:
+    viewer = SimpleNamespace(
+        device=device,
+        s=SimpleNamespace(debug_present_texture=None, debug_letterbox_kernel=None),
+    )
+    viewer_session.create_debug_shaders(viewer)
+    source = device.create_texture(
+        format=spy.Format.rgba32_float,
+        width=2,
+        height=2,
+        usage=spy.TextureUsage.shader_resource | spy.TextureUsage.copy_destination,
+    )
+    source.copy_from_numpy(
+        np.array(
+            [
+                [[0.0, 0.0, 0.0, 1.0], [np.nan, 0.0, -0.5, 1.0]],
+                [[0.25, 0.5, 1.0, 1.0], [4.0, 2.0, 0.125, 1.0]],
+            ],
+            dtype=np.float32,
+        )
+    )
+
+    encoder = device.create_command_encoder()
+    output = presenter._dispatch_viewport_present(viewer, encoder, source, 2, 2, 2, 2)
+    device.submit_command_buffer(encoder.finish())
+    device.wait()
+
+    image = np.asarray(output.to_numpy(), dtype=np.float32)
+    assert np.all(np.isfinite(image[..., :3]))
+    np.testing.assert_allclose(image[0, 0, :3], np.zeros((3,), dtype=np.float32), rtol=0.0, atol=1e-7)
+    np.testing.assert_allclose(image[0, 1, :3], np.zeros((3,), dtype=np.float32), rtol=0.0, atol=1e-7)

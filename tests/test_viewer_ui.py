@@ -50,7 +50,7 @@ def test_documentation_text_loads_local_viewer_doc() -> None:
 def test_panel_rect_starts_below_menu_bar() -> None:
     x, y, w, h = ui._panel_rect(1600, 900, 24.0)
 
-    assert x == 0.0
+    assert x == 1320.0
     assert y == 24.0
     assert w == 280.0
     assert h == 876.0
@@ -161,6 +161,20 @@ def test_toolkit_window_render_draws_non_background_pixels(device) -> None:
         toolkit.shutdown()
 
     assert np.any(np.abs(image[..., :3]) > 1e-4)
+
+
+def test_colmap_import_window_docks_into_toolkit_tab(monkeypatch) -> None:
+    dock_calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(ui.imgui, "set_next_window_dock_id", lambda dock_id, cond: dock_calls.append((int(dock_id), int(cond))))
+    monkeypatch.setattr(ui.imgui, "set_next_window_pos", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ui.imgui, "set_next_window_size", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ui.imgui, "begin", lambda *args, **kwargs: (False, True))
+    monkeypatch.setattr(ui.imgui, "end", lambda: None)
+    toolkit = SimpleNamespace(_show_colmap_import=True, _menu_bar_height=24.0, _toolkit_dock_id=17, _dockspace_id=9)
+
+    ui.ToolkitWindow._draw_colmap_import_window(toolkit, SimpleNamespace(_values={}, _texts={}))
+
+    assert dock_calls[0] == (17, int(ui.imgui.Cond_.appearing.value))
 
 
 def test_optimizer_regularization_tab_includes_density_controls() -> None:
