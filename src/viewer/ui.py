@@ -763,11 +763,14 @@ class ToolkitWindow:
         imgui.end()
 
     def _draw_viewport_view_menu(self, ui: ViewerUI, image_origin: imgui.ImVec2) -> None:
-        button_pos = imgui.ImVec2(image_origin.x + 8.0, image_origin.y + 8.0)
+        style = imgui.get_style()
+        label_size = imgui.calc_text_size("view")
+        button_width = float(label_size.x) + 2.0 * float(style.frame_padding.x)
+        right_edge = float(self._viewport_content_rect[0] + self._viewport_content_rect[2])
+        button_pos = imgui.ImVec2(max(float(image_origin.x) + 8.0, right_edge - button_width - 8.0), float(image_origin.y) + 8.0)
         imgui.push_id("viewport_view")
         imgui.set_cursor_screen_pos(button_pos)
         if _imgui_opened(imgui.small_button("view")):
-            label_size = imgui.calc_text_size("view")
             imgui.set_next_window_pos(imgui.ImVec2(button_pos.x, button_pos.y + float(label_size.y) + 10.0), imgui.Cond_.appearing.value)
             imgui.open_popup("viewport_view_popup")
         if _imgui_opened(imgui.begin_popup("viewport_view_popup")):
