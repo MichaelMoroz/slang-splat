@@ -176,6 +176,16 @@ def _debug_colorbar_mode(ui: "ViewerUI") -> str | None:
     return None if mode in ("normal", "ellipse_outlines") else mode
 
 
+def _renderer_debug_control_keys(mode: str) -> tuple[str, ...]:
+    if mode == "ellipse_outlines": return ("debug_mode", "debug_ellipse_thickness_px")
+    if mode == "grad_norm": return ("debug_mode", "debug_grad_norm_threshold")
+    if mode == "clone_count": return ("debug_mode", "debug_clone_count_min", "debug_clone_count_max")
+    if mode in ("splat_density", "splat_spatial_density", "splat_screen_density"): return ("debug_mode", "debug_density_min", "debug_density_max")
+    if mode == "depth_mean": return ("debug_mode", "debug_depth_mean_min", "debug_depth_mean_max")
+    if mode == "depth_std": return ("debug_mode", "debug_depth_std_min", "debug_depth_std_max")
+    return ("debug_mode",)
+
+
 def _processed_count_tick_value(t: float, max_splat_steps: int) -> float:
     return math.pow(2.0, _saturate(t) * math.log2(max(max_splat_steps, 0) + 1.0)) - 1.0
 
@@ -1356,11 +1366,10 @@ class ToolkitWindow:
         opened, show = imgui.begin("Renderer Debug", True)
         ui._values["show_renderer_debug"] = bool(show)
         if opened:
-            for spec in DEBUG_RENDER_SPECS[:3]:
-                self._draw_control(ui, spec)
-            imgui.separator_text("Ranges")
-            for spec in DEBUG_RENDER_SPECS[3:]:
-                self._draw_control(ui, spec)
+            debug_mode = _DEBUG_MODE_VALUES[min(max(int(ui._values.get("debug_mode", 0)), 0), len(_DEBUG_MODE_VALUES) - 1)]
+            control_keys = _renderer_debug_control_keys(debug_mode)
+            for key in control_keys:
+                self._draw_control(ui, next(spec for spec in DEBUG_RENDER_SPECS if spec.key == key))
             self._ctx_reset("renderer_debug_ctx", ui, [s.key for s in DEBUG_RENDER_SPECS])
         imgui.end()
 

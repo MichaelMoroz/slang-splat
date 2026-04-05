@@ -112,6 +112,12 @@ def test_debug_mode_labels_include_contribution_amount() -> None:
     assert "Contribution Amount" in ui._DEBUG_MODE_LABELS
 
 
+def test_contribution_amount_debug_mode_exposes_no_extra_range_controls() -> None:
+    assert ui._renderer_debug_control_keys("contribution_amount") == ("debug_mode",)
+    assert ui._renderer_debug_control_keys("processed_count") == ("debug_mode",)
+    assert ui._renderer_debug_control_keys("splat_density") == ("debug_mode", "debug_density_min", "debug_density_max")
+
+
 def test_contribution_amount_colorbar_ticks_use_log_scale() -> None:
     viewer_ui = SimpleNamespace(_values={"alpha_cutoff": 1.0 / 255.0})
 
