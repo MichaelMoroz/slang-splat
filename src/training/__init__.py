@@ -19,6 +19,7 @@ from .gaussian_trainer import (
 from .optimizer import GaussianOptimizer
 from .profiles import TRAINING_PROFILE_CHOICES, TrainingProfile, resolve_training_profile
 from .schedule import resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_effective_maintenance_interval, resolve_learning_rate_scale, resolve_maintenance_growth_ratio, resolve_max_allowed_density, should_run_maintenance_step
+from .schedule import MAINTENANCE_CONTRIBUTION_CULL_DECAY, resolve_maintenance_contribution_cull_threshold
 
 __all__ = [
     "AdamOptimizer",
@@ -44,6 +45,8 @@ __all__ = [
     "resolve_cosine_base_learning_rate",
     "resolve_effective_maintenance_interval",
     "resolve_learning_rate_scale",
+    "MAINTENANCE_CONTRIBUTION_CULL_DECAY",
+    "resolve_maintenance_contribution_cull_threshold",
     "resolve_maintenance_growth_ratio",
     "resolve_max_allowed_density",
     "TrainingProfile",

@@ -14,7 +14,7 @@ from ..scene import ColmapFrame, GaussianInitHyperParams, GaussianScene, SUPPORT
 from ..scene._internal.colmap_ops import TRAINING_FRAME_LOAD_THREADS, load_training_frame_rgba8
 from .adam import AdamOptimizer, AdamRuntimeHyperParams
 from .optimizer import GaussianOptimizer
-from .schedule import resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_effective_maintenance_interval, resolve_learning_rate_scale, resolve_maintenance_growth_ratio, resolve_max_allowed_density, should_run_maintenance_step
+from .schedule import resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_effective_maintenance_interval, resolve_learning_rate_scale, resolve_maintenance_contribution_cull_threshold, resolve_maintenance_growth_ratio, resolve_max_allowed_density, should_run_maintenance_step
 
 TRAIN_DOWNSCALE_MODE_AUTO = 0
 TRAIN_DOWNSCALE_MAX_FACTOR = 16
@@ -127,7 +127,7 @@ class TrainingHyperParams:
     scale_l2_weight: float = 0.0; scale_abs_reg_weight: float = 0.01; sh1_reg_weight: float = 0.01; opacity_reg_weight: float = 0.01; density_regularizer: float = 0.05; max_allowed_density_start: float = 5.0; max_allowed_density: float = 12.0
     position_random_step_noise_lr: float = 5e5; position_random_step_opacity_gate_center: float = 0.005; position_random_step_opacity_gate_sharpness: float = 100.0
     lr_schedule_enabled: bool = True; lr_schedule_start_lr: float = 1e-3; lr_schedule_end_lr: float = 1e-4; lr_schedule_steps: int = 30_000
-    maintenance_interval: int = 200; maintenance_growth_ratio: float = 0.02; maintenance_growth_start_step: int = 2_000; maintenance_alpha_cull_threshold: float = 1e-2; maintenance_contribution_cull_threshold: float = DEFAULT_MAINTENANCE_CONTRIBUTION_CULL_PERCENT
+    maintenance_interval: int = 200; maintenance_growth_ratio: float = 0.02; maintenance_growth_start_step: int = 500; maintenance_alpha_cull_threshold: float = 1e-2; maintenance_contribution_cull_threshold: float = DEFAULT_MAINTENANCE_CONTRIBUTION_CULL_PERCENT
     max_gaussians: int = 1_000_000; train_downscale_mode: int = 1; train_auto_start_downscale: int = 16
     train_downscale_base_iters: int = 200; train_downscale_iter_step: int = 50; train_downscale_max_iters: int = 30_000
     train_downscale_factor: int = 1
@@ -321,6 +321,7 @@ class GaussianTrainer:
         return int(buffer_to_numpy(self._maintenance_buffers[name], np.uint32)[0])
 
     def _maintenance_vars(self, *, dst_splat_count: int = 0, append_splat_count: int = 0, survivor_count: int = 0) -> dict[str, object]:
+        maintenance_threshold = resolve_maintenance_contribution_cull_threshold(self.training, max(self.state.step - 1, 0), len(self.frames))
         return {
             "g_SrcSplatParams": self.renderer.scene_buffers["splat_params"],
             "g_SrcAdamMoments": self.adam_optimizer.buffers["adam_moments"],
@@ -339,7 +340,7 @@ class GaussianTrainer:
             "g_MaintenanceSeed": np.uint32(self._seed + self.state.step),
             "g_MaintenanceCameraCount": int(len(self.frames)),
             "g_MaintenanceAlphaCullThreshold": float(self.training.maintenance_alpha_cull_threshold),
-            "g_MaintenanceContributionCullThreshold": np.uint32(contribution_fixed_count_from_percent(self.training.maintenance_contribution_cull_threshold, self._observed_contribution_pixel_count)),
+            "g_MaintenanceContributionCullThreshold": np.uint32(contribution_fixed_count_from_percent(maintenance_threshold, self._observed_contribution_pixel_count)),
             "g_MaintenanceRadiusScale": float(max(self.renderer.radius_scale, 1e-8)),
         }
 

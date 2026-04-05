@@ -3,6 +3,8 @@ from __future__ import annotations
 import math
 from typing import Any
 
+MAINTENANCE_CONTRIBUTION_CULL_DECAY = 0.85
+
 
 def resolve_cosine_base_learning_rate(training_hparams: Any, step: int) -> float:
     enabled = bool(getattr(training_hparams, "lr_schedule_enabled", True))
@@ -33,8 +35,15 @@ def resolve_max_allowed_density(training_hparams: Any, step: int) -> float:
 
 def resolve_maintenance_growth_ratio(training_hparams: Any, step: int) -> float:
     growth_ratio = max(float(getattr(training_hparams, "maintenance_growth_ratio", 0.02)), 0.0)
-    start_step = max(int(getattr(training_hparams, "maintenance_growth_start_step", 2_000)), 0)
+    start_step = max(int(getattr(training_hparams, "maintenance_growth_start_step", 500)), 0)
     return growth_ratio if int(step) >= start_step else 0.0
+
+
+def resolve_maintenance_contribution_cull_threshold(training_hparams: Any, step: int, frame_count: int = 1) -> float:
+    base_threshold = max(float(getattr(training_hparams, "maintenance_contribution_cull_threshold", 0.001)), 0.0)
+    interval = resolve_effective_maintenance_interval(training_hparams, frame_count)
+    completed_maintenance_steps = max(int(step), 0) // interval
+    return base_threshold * math.pow(MAINTENANCE_CONTRIBUTION_CULL_DECAY, completed_maintenance_steps)
 
 
 def resolve_effective_maintenance_interval(training_hparams: Any, frame_count: int = 1) -> int:

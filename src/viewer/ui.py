@@ -259,7 +259,7 @@ GROUP_SPECS = {
         ControlSpec("use_sh", "checkbox", "Use Spherical Harmonics", {"value": True}),
         ControlSpec("maintenance_interval", "input_int", "Maintenance Interval", {"value": 200, "step": 10, "step_fast": 50}),
         ControlSpec("maintenance_growth_ratio", "input_float", "Maintenance Growth", {"value": 0.02, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
-        ControlSpec("maintenance_growth_start_step", "input_int", "Start Densification After", {"value": 2000, "step": 100, "step_fast": 500}),
+        ControlSpec("maintenance_growth_start_step", "input_int", "Start Densification After", {"value": 500, "step": 100, "step_fast": 500}),
         ControlSpec("maintenance_alpha_cull_threshold", "input_float", "Maintenance Alpha Cull", {"value": 1e-2, "step": 1e-5, "step_fast": 1e-4, "format": "%.6e"}),
         ControlSpec("maintenance_contribution_cull_threshold", "input_float", "Maintenance Contribution Cull", {"value": 0.001, "step": 1e-4, "step_fast": 1e-3, "format": "%.6g%%"}),
         ControlSpec("train_downscale_mode", "combo", "Downscale Mode", {"value": 1, "options": _TRAIN_DOWNSCALE_MODE_LABELS}),

@@ -97,7 +97,7 @@ def test_default_training_params_match_fixed_count_defaults():
     assert params.training.position_random_step_opacity_gate_center == 0.005
     assert params.training.position_random_step_opacity_gate_sharpness == 100.0
     assert params.training.maintenance_growth_ratio == 0.02
-    assert params.training.maintenance_growth_start_step == 2000
+    assert params.training.maintenance_growth_start_step == 500
     assert params.training.maintenance_alpha_cull_threshold == 1e-2
     assert params.training.maintenance_contribution_cull_threshold == 0.001
     assert params.training.max_gaussians == 1_000_000

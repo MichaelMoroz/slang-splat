@@ -2,7 +2,7 @@
 
 `cli.py` (`train-colmap`) is a thin wrapper over `src/app/cli.py`. `src/training/gaussian_trainer.py` remains the public training facade, `src/training/adam.py` owns generic ADAM buffers and generic optimizer-kernel dispatch, and `src/training/optimizer.py` keeps only Gaussian-specific optimizer logic.
 
-The active training path keeps the fixed packed optimizer flow, but it now also supports periodic maintenance: per-step clone-hit counting during raster training forward, alpha culling, contribution culling normalized to observed dataset pixels, and split-family densification on a configurable cadence.
+The active training path keeps the fixed packed optimizer flow, but it now also supports periodic maintenance: per-step clone-hit counting during raster training forward, alpha culling, contribution culling normalized to observed dataset pixels, and split-family densification on a configurable cadence. Densification growth is enabled by default after step `500`.
 
 ## Data Ingestion
 - Loader facade: `src/scene/colmap_loader.py`
@@ -68,7 +68,8 @@ Each trainer `step()` performs:
 8. When the configured maintenance boundary is reached, run the maintenance pass:
   - `csClampMaintenanceMinScreenSize` loops over all training cameras on GPU, ignores offscreen centers, finds the minimum visible 1-pixel support-radius bound, and raises undersized splats before rewrite,
   - cull splats with alpha below `maintenance_alpha_cull_threshold`,
-  - convert the user-facing contribution threshold from percent-of-observed-dataset-pixels into the shader's raw 24.8 fixed-point units with `percent * observed_pixels * 256 / 100`,
+  - decay the user-facing contribution threshold by `15%` after each completed maintenance pass,
+  - convert that decayed percent-of-observed-dataset-pixels threshold into the shader's raw 24.8 fixed-point units with `percent * observed_pixels * 256 / 100`,
   - split selected splats into `N + 1` family members from the accumulated clone counts,
   - rewrite the packed scene buffer into a compact destination buffer,
   - migrate packed ADAM `float2` moments into the rewritten topology so unrelated splats do not lose optimizer history.

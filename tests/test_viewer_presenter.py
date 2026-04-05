@@ -46,7 +46,7 @@ class _DummyTrainer:
             lr_schedule_steps=30000,
             maintenance_interval=200,
             maintenance_growth_ratio=0.02,
-            maintenance_growth_start_step=2000,
+            maintenance_growth_start_step=500,
             maintenance_alpha_cull_threshold=1e-2,
             maintenance_contribution_cull_threshold=0.001,
             density_regularizer=0.05,
@@ -109,7 +109,7 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         "lr_schedule_steps": _control(30000),
         "maintenance_interval": _control(200),
         "maintenance_growth_ratio": _control(0.02),
-        "maintenance_growth_start_step": _control(2000),
+        "maintenance_growth_start_step": _control(500),
         "maintenance_alpha_cull_threshold": _control(1e-2),
         "maintenance_contribution_cull_threshold": _control(0.001),
         "max_gaussians": _control(1000000),
@@ -296,7 +296,7 @@ def test_update_ui_text_reports_training_schedule_and_maintenance() -> None:
     presenter.update_ui_text(viewer, 1.0 / 60.0)
 
     assert viewer.t("training_schedule").text == "LR Schedule: cosine 1.00e-03 -> 1.00e-04 | steps=30,000 | current=1.00e-03"
-    assert viewer.t("training_maintenance").text == "Maintenance: every 200 | growth=0.00% now | target=2.00% after 2,000 | alpha<1.00e-02 or contrib<0.001% culled | max=1,000,000"
+    assert viewer.t("training_maintenance").text == "Maintenance: every 200 | growth=0.00% now | target=2.00% after 500 | alpha<1.00e-02 or contrib<0.001% culled | max=1,000,000"
 
 
 def test_render_frame_recovers_missing_main_renderer_by_recreating_it(monkeypatch):

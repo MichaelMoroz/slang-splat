@@ -7,7 +7,7 @@ import numpy as np
 import slangpy as spy
 
 from ..common import clamp_index, debug_region, require_not_none
-from ..training import resolve_maintenance_growth_ratio
+from ..training import resolve_maintenance_contribution_cull_threshold, resolve_maintenance_growth_ratio
 from . import session
 
 _DEBUG_HUGE_VALUE = 1e8
@@ -46,15 +46,18 @@ def _training_maintenance_text(viewer: object) -> str:
         current_growth = resolve_maintenance_growth_ratio(training, current_step)
         start_step = max(int(getattr(training, "maintenance_growth_start_step", 0)), 0)
         interval = int(viewer.s.trainer.effective_maintenance_interval()) if hasattr(viewer.s.trainer, "effective_maintenance_interval") else int(training.maintenance_interval)
+        frame_count = len(getattr(viewer.s.trainer, "frames", getattr(viewer.s, "training_frames", ())))
+        contribution_cull = resolve_maintenance_contribution_cull_threshold(training, current_step, frame_count)
         return (
             f"Maintenance: every {interval:,} | growth={current_growth * 100.0:.2f}% now | target={target_growth * 100.0:.2f}% after {start_step:,} | "
-            f"alpha<{float(training.maintenance_alpha_cull_threshold):.2e} or contrib<{float(training.maintenance_contribution_cull_threshold):.6g}% culled | max={int(training.max_gaussians):,}"
+            f"alpha<{float(training.maintenance_alpha_cull_threshold):.2e} or contrib<{contribution_cull:.6g}% culled | max={int(training.max_gaussians):,}"
         )
     target_growth = max(float(viewer.c("maintenance_growth_ratio").value), 0.0)
     start_step = max(int(viewer.c("maintenance_growth_start_step").value), 0)
+    contribution_cull = max(float(viewer.c("maintenance_contribution_cull_threshold").value), 0.0)
     return (
         f"Maintenance: every {max(int(viewer.c('maintenance_interval').value), 1):,} | growth=0.00% now | target={target_growth * 100.0:.2f}% after {start_step:,} | "
-        f"alpha<{max(float(viewer.c('maintenance_alpha_cull_threshold').value), 1e-8):.2e} or contrib<{max(float(viewer.c('maintenance_contribution_cull_threshold').value), 0.0):.6g}% culled | max={max(int(viewer.c('max_gaussians').value), 0):,}"
+        f"alpha<{max(float(viewer.c('maintenance_alpha_cull_threshold').value), 1e-8):.2e} or contrib<{contribution_cull:.6g}% culled | max={max(int(viewer.c('max_gaussians').value), 0):,}"
     )
 
 

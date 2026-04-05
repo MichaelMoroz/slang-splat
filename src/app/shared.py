@@ -181,7 +181,7 @@ def build_training_params(
     lr_schedule_steps: int = 30_000,
     maintenance_interval: int = 200,
     maintenance_growth_ratio: float = 0.02,
-    maintenance_growth_start_step: int = 2_000,
+    maintenance_growth_start_step: int = 500,
     maintenance_alpha_cull_threshold: float = 1e-2,
     maintenance_contribution_cull_threshold: float = DEFAULT_MAINTENANCE_CONTRIBUTION_CULL_PERCENT,
     train_downscale_mode: int = 1,

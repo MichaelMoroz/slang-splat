@@ -84,7 +84,7 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["sh1_reg"] == 0.01
     assert viewer_ui._values["maintenance_interval"] == 200
     assert viewer_ui._values["maintenance_growth_ratio"] == 0.02
-    assert viewer_ui._values["maintenance_growth_start_step"] == 2000
+    assert viewer_ui._values["maintenance_growth_start_step"] == 500
     assert viewer_ui._values["maintenance_alpha_cull_threshold"] == 1e-2
     assert viewer_ui._values["maintenance_contribution_cull_threshold"] == 0.001
     assert viewer_ui._values["density_regularizer"] == 0.05

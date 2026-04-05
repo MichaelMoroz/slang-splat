@@ -12,7 +12,7 @@ from src.filter import SeparableGaussianBlur
 from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 from src.training import gaussian_trainer as gaussian_trainer_module
-from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, contribution_percent_from_fixed_count, resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_effective_maintenance_interval, resolve_maintenance_growth_ratio, resolve_max_allowed_density, resolve_training_resolution, should_run_maintenance_step
+from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, contribution_fixed_count_from_percent, contribution_percent_from_fixed_count, resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_effective_maintenance_interval, resolve_maintenance_contribution_cull_threshold, resolve_maintenance_growth_ratio, resolve_max_allowed_density, resolve_training_resolution, should_run_maintenance_step
 
 _ADAM_BUFFER_NAMES = ("adam_moments",)
 _OPACITY_EPS = 1e-6
@@ -639,6 +639,15 @@ def test_maintenance_growth_stays_zero_until_start_step() -> None:
     np.testing.assert_allclose(resolve_clone_probability_threshold(hparams, splat_count=1000, pixel_count=100, step=2000), 1000.0 * 0.02 / 200.0 / 100.0, rtol=0.0, atol=1e-12)
 
 
+def test_maintenance_contribution_cull_threshold_decays_by_15_percent_per_maintenance_step() -> None:
+    hparams = TrainingHyperParams(maintenance_interval=200, maintenance_contribution_cull_threshold=0.001)
+
+    np.testing.assert_allclose(resolve_maintenance_contribution_cull_threshold(hparams, 0), 0.001, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_maintenance_contribution_cull_threshold(hparams, 199), 0.001, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_maintenance_contribution_cull_threshold(hparams, 200), 0.00085, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_maintenance_contribution_cull_threshold(hparams, 400), 0.0007225, rtol=0.0, atol=1e-12)
+
+
 def test_clone_probability_threshold_respects_max_gaussians_cap() -> None:
     hparams = TrainingHyperParams(maintenance_interval=200, maintenance_growth_ratio=0.05, maintenance_growth_start_step=0, max_gaussians=1024)
 
@@ -802,6 +811,30 @@ def test_maintenance_rewrite_culls_and_splits_families(device, tmp_path: Path) -
     contribution_after = buffer_to_numpy(trainer.maintenance_buffers["splat_contribution"], np.uint32)[: trainer.scene.count]
     assert np.all(clone_counts_after == 0)
     assert np.all(contribution_after == 0)
+
+
+def test_maintenance_runtime_uses_base_threshold_for_first_maintenance_then_decays(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=1, seed=93)
+    frame = _make_frame(tmp_path, image_name="maintenance_threshold_decay_target.png", image_id=212)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(maintenance_interval=200, maintenance_contribution_cull_threshold=0.001),
+        seed=123,
+    )
+    observed_pixels = renderer.width * renderer.height
+    trainer._observed_contribution_pixel_count = observed_pixels
+
+    trainer.state.step = 200
+    first_threshold = int(trainer._maintenance_vars()["g_MaintenanceContributionCullThreshold"])
+    trainer.state.step = 400
+    second_threshold = int(trainer._maintenance_vars()["g_MaintenanceContributionCullThreshold"])
+
+    assert first_threshold == contribution_fixed_count_from_percent(0.001, observed_pixels)
+    assert second_threshold == contribution_fixed_count_from_percent(0.00085, observed_pixels)
 
 
 def test_maintenance_rewrite_culls_low_contribution_splats(device, tmp_path: Path) -> None:
