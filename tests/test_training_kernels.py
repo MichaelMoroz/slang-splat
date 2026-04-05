@@ -406,6 +406,44 @@ def test_position_random_steps_are_gated_for_high_opacity_splats(device, tmp_pat
     np.testing.assert_allclose(after, before, rtol=0.0, atol=1e-9)
 
 
+def test_position_random_steps_clamp_anisotropy_for_thin_splats(device, tmp_path: Path):
+    scene = _make_scene(count=8, seed=45)
+    scene.opacities[:] = np.full((scene.count,), 1e-4, dtype=np.float32)
+    scene.scales[:] = _log_sigma(np.array([[1.0, 1e-3, 1e-3]], dtype=np.float32))
+    frame = _make_frame(tmp_path, image_name="position_random_step_anisotropy_clamp.png", image_id=15)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(
+            scale_l2_weight=0.0,
+            scale_abs_reg_weight=0.0,
+            opacity_reg_weight=0.0,
+            sh1_reg_weight=0.0,
+            density_regularizer=0.0,
+            position_random_step_noise_lr=5e4,
+        ),
+        seed=123,
+    )
+
+    zeros = np.zeros((scene.count, 4), dtype=np.float32)
+    zero_sh = np.zeros((scene.count, 4, 3), dtype=np.float32)
+    _write_grad_groups(renderer, scene.count, grad_positions=zeros, grad_scales=zeros, grad_rotations=zeros, grad_sh_coeffs=zero_sh, grad_color_alpha=zeros)
+    before = _read_scene_groups(renderer, scene.count)["positions"].copy()
+
+    enc = device.create_command_encoder()
+    trainer._dispatch_adam_step(enc)
+    trainer._dispatch_position_random_steps(enc, 1)
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+
+    after = _read_scene_groups(renderer, scene.count)["positions"]
+    displacement = np.abs(after - before)
+    assert float(np.mean(displacement[:, 1:3])) > 0.1
+
+
 def test_split_loss_forward_backward_separates_metrics_from_output_grads(device, tmp_path: Path):
     scene = _make_scene(count=8, seed=19)
     frame = _make_frame(tmp_path, image_name="split_loss_target.png")

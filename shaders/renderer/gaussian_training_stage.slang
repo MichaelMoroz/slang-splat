@@ -12,6 +12,7 @@ static const uint TRAIN_TILE_DIM = 16u;
 static const uint LOSS_SLOT_TOTAL = 0u;
 static const uint LOSS_SLOT_MSE = 1u;
 static const uint LOSS_SLOT_DENSITY = 2u;
+static const float POSITION_RANDOM_STEP_MAX_ANISOTROPY = 4.0;
 uniform uint g_Width;
 uniform uint g_Height;
 uniform float g_InvPixelCount;
@@ -256,7 +257,10 @@ float3 position_random_step_world_delta(SplatState state, inout uint rngState)
     float stepScale = gate * max(g_PositionRandomStepNoiseLr, 0.0) * max(g_PositionRandomStepPositionLr, 0.0);
     if (!(stepScale > 0.0)) return 0.0;
 
-    float3 localDelta = rng_normal3_box_muller(rngState) * exp(2.0 * state.logScale) * stepScale;
+    float3 scale = exp(state.logScale);
+    float maxScale = max(scale.x, max(scale.y, scale.z));
+    float3 clampedScale = max(scale, float3(maxScale / POSITION_RANDOM_STEP_MAX_ANISOTROPY));
+    float3 localDelta = rng_normal3_box_muller(rngState) * clampedScale * clampedScale * stepScale;
     float4 qInv = float4(state.rotation.x, -state.rotation.y, -state.rotation.z, -state.rotation.w);
     return rotate_by_quat(localDelta, qInv);
 }
