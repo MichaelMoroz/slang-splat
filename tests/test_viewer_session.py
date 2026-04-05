@@ -661,7 +661,7 @@ def test_colmap_import_settings_defaults_prefer_diffused_pointcloud() -> None:
     assert defaults.nn_radius_scale_coef == 0.5
 
 
-def test_refresh_cached_raster_grad_histograms_caches_by_signature() -> None:
+def test_refresh_cached_raster_grad_histograms_requires_explicit_request() -> None:
     calls: list[tuple[int, int, float, float]] = []
     hist = SimpleNamespace(counts=np.ones((14, 8), dtype=np.int64), param_labels=("p",) * 14)
     ranges = SimpleNamespace(min_values=np.full((14,), -1.0, dtype=np.float32), max_values=np.full((14,), 2.0, dtype=np.float32), param_labels=("p",) * 14)
@@ -671,7 +671,7 @@ def test_refresh_cached_raster_grad_histograms_caches_by_signature() -> None:
         compute_cached_raster_grad_component_ranges=lambda metrics, scene_count: ranges,
     )
     viewer = SimpleNamespace(
-        ui=SimpleNamespace(_values={"hist_bin_count": 8, "hist_min_log10": -7.0, "hist_max_log10": 1.0, "hist_auto_refresh": True, "_histograms_refresh_requested": False}),
+        ui=SimpleNamespace(_values={"hist_bin_count": 8, "hist_min_log10": -7.0, "hist_max_log10": 1.0, "_histograms_refresh_requested": True}),
         s=SimpleNamespace(
             trainer=SimpleNamespace(state=SimpleNamespace(step=3), scene=SimpleNamespace(count=32), metrics=object()),
             training_renderer=renderer,
@@ -694,6 +694,35 @@ def test_refresh_cached_raster_grad_histograms_caches_by_signature() -> None:
     assert viewer.s.cached_raster_grad_histogram_signature == (3, "float", 32, 8, -7.0, 1.0)
 
 
+def test_refresh_cached_raster_grad_histograms_skips_without_request() -> None:
+    calls: list[int] = []
+    renderer = SimpleNamespace(
+        cached_raster_grad_atomic_mode="float",
+        compute_cached_raster_grad_component_histograms=lambda metrics, scene_count, *, bin_count, min_log10, max_log10: calls.append(scene_count),
+        compute_cached_raster_grad_component_ranges=lambda metrics, scene_count: None,
+    )
+    viewer = SimpleNamespace(
+        ui=SimpleNamespace(_values={"hist_bin_count": 8, "hist_min_log10": -7.0, "hist_max_log10": 1.0, "_histograms_refresh_requested": False}),
+        s=SimpleNamespace(
+            trainer=SimpleNamespace(state=SimpleNamespace(step=3), scene=SimpleNamespace(count=32), metrics=object()),
+            training_renderer=renderer,
+            cached_raster_grad_histograms=None,
+            cached_raster_grad_ranges=None,
+            cached_raster_grad_histogram_mode="",
+            cached_raster_grad_histogram_step=-1,
+            cached_raster_grad_histogram_scene_count=-1,
+            cached_raster_grad_histogram_signature=None,
+            cached_raster_grad_histogram_status="",
+        ),
+    )
+
+    session.refresh_cached_raster_grad_histograms(viewer)
+
+    assert calls == []
+    assert viewer.s.cached_raster_grad_histograms is None
+    assert viewer.s.cached_raster_grad_histogram_signature is None
+
+
 def test_refresh_cached_raster_grad_histograms_honors_manual_refresh() -> None:
     calls: list[int] = []
     renderer = SimpleNamespace(
@@ -702,7 +731,7 @@ def test_refresh_cached_raster_grad_histograms_honors_manual_refresh() -> None:
         compute_cached_raster_grad_component_ranges=lambda metrics, scene_count: SimpleNamespace(min_values=np.zeros((14,), dtype=np.float32), max_values=np.zeros((14,), dtype=np.float32), param_labels=()),
     )
     viewer = SimpleNamespace(
-        ui=SimpleNamespace(_values={"hist_bin_count": 4, "hist_min_log10": -8.0, "hist_max_log10": 2.0, "hist_auto_refresh": False, "_histograms_refresh_requested": True}),
+        ui=SimpleNamespace(_values={"hist_bin_count": 4, "hist_min_log10": -8.0, "hist_max_log10": 2.0, "_histograms_refresh_requested": True}),
         s=SimpleNamespace(
             trainer=SimpleNamespace(state=SimpleNamespace(step=0), scene=SimpleNamespace(count=12), metrics=object()),
             training_renderer=renderer,

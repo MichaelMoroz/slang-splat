@@ -87,7 +87,6 @@ def test_build_ui_initializes_histogram_controls() -> None:
     viewer_ui = ui.build_ui(_dummy_renderer())
 
     assert viewer_ui._values["show_histograms"] is False
-    assert viewer_ui._values["hist_auto_refresh"] is True
     assert viewer_ui._values["hist_bin_count"] == 64
     assert viewer_ui._values["hist_y_limit"] == 1.0
     assert viewer_ui._values["cached_raster_grad_fixed_ro_local_range"] == 0.01
@@ -137,6 +136,7 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["colmap_nn_radius_scale_coef"] == 0.5
     assert viewer_ui._values["_histogram_update_y_limit"] is True
     assert viewer_ui._values["_histogram_update_log_range"] is False
+    assert viewer_ui._values["_show_histograms_prev"] is False
 
 
 def test_toolkit_window_render_draws_non_background_pixels(device) -> None:
@@ -175,11 +175,66 @@ def test_colmap_import_window_docks_into_toolkit_tab(monkeypatch) -> None:
     monkeypatch.setattr(ui.imgui, "set_next_window_size", lambda *args, **kwargs: None)
     monkeypatch.setattr(ui.imgui, "begin", lambda *args, **kwargs: (False, True))
     monkeypatch.setattr(ui.imgui, "end", lambda: None)
-    toolkit = SimpleNamespace(_show_colmap_import=True, _menu_bar_height=24.0, _toolkit_dock_id=17, _dockspace_id=9)
+    toolkit = SimpleNamespace(_show_colmap_import=True, _menu_bar_height=24.0, _toolkit_dock_id=17, _dockspace_id=9, _dock_tool_window=lambda cond: ui.imgui.set_next_window_dock_id(17, cond))
 
     ui.ToolkitWindow._draw_colmap_import_window(toolkit, SimpleNamespace(_values={}, _texts={}))
 
     assert dock_calls[0] == (17, int(ui.imgui.Cond_.appearing.value))
+
+
+def test_help_windows_dock_into_toolkit_tabs(monkeypatch) -> None:
+    dock_calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(ui.imgui, "set_next_window_dock_id", lambda dock_id, cond: dock_calls.append((int(dock_id), int(cond))))
+    monkeypatch.setattr(ui.imgui, "set_next_window_pos", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ui.imgui, "set_next_window_size", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ui.imgui, "begin", lambda *args, **kwargs: (False, True))
+    monkeypatch.setattr(ui.imgui, "end", lambda: None)
+    toolkit = SimpleNamespace(
+        _show_about=True,
+        _show_docs=True,
+        _menu_bar_height=24.0,
+        _toolkit_dock_id=17,
+        _about_text="about",
+        _documentation_text="docs",
+        _dock_tool_window=lambda cond: ui.imgui.set_next_window_dock_id(17, cond),
+    )
+
+    ui.ToolkitWindow._draw_about_window(toolkit)
+    ui.ToolkitWindow._draw_documentation_window(toolkit)
+
+    assert dock_calls == [(17, int(ui.imgui.Cond_.appearing.value)), (17, int(ui.imgui.Cond_.appearing.value))]
+
+
+def test_histogram_window_docks_and_requests_refresh_on_open(monkeypatch) -> None:
+    dock_calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(ui.imgui, "set_next_window_dock_id", lambda dock_id, cond: dock_calls.append((int(dock_id), int(cond))))
+    monkeypatch.setattr(ui.imgui, "set_next_window_pos", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ui.imgui, "set_next_window_size", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ui.imgui, "begin", lambda *args, **kwargs: (False, True))
+    monkeypatch.setattr(ui.imgui, "end", lambda: None)
+    toolkit = SimpleNamespace(_menu_bar_height=24.0, _toolkit_dock_id=17, _draw_histogram_controls=lambda ui_obj: None, _dock_tool_window=lambda cond: ui.imgui.set_next_window_dock_id(17, cond))
+    viewer_ui = SimpleNamespace(_values={"show_histograms": True, "_show_histograms_prev": False}, _texts={})
+
+    ui.ToolkitWindow._draw_histogram_window(toolkit, viewer_ui)
+
+    assert dock_calls == [(17, int(ui.imgui.Cond_.appearing.value))]
+    assert viewer_ui._values["_histograms_refresh_requested"] is True
+    assert viewer_ui._values["_show_histograms_prev"] is True
+
+
+def test_renderer_debug_window_docks_into_toolkit_tabs(monkeypatch) -> None:
+    dock_calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(ui.imgui, "set_next_window_dock_id", lambda dock_id, cond: dock_calls.append((int(dock_id), int(cond))))
+    monkeypatch.setattr(ui.imgui, "set_next_window_pos", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ui.imgui, "set_next_window_size", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ui.imgui, "begin", lambda *args, **kwargs: (False, True))
+    monkeypatch.setattr(ui.imgui, "end", lambda: None)
+    toolkit = SimpleNamespace(_menu_bar_height=24.0, _toolkit_rect=(0.0, 24.0, 280.0, 876.0), _toolkit_dock_id=17, _dock_tool_window=lambda cond: ui.imgui.set_next_window_dock_id(17, cond))
+    viewer_ui = SimpleNamespace(_values={"show_renderer_debug": True}, _texts={})
+
+    ui.ToolkitWindow._draw_renderer_debug_window(toolkit, viewer_ui)
+
+    assert dock_calls == [(17, int(ui.imgui.Cond_.appearing.value))]
 
 
 def test_optimizer_regularization_tab_includes_density_controls() -> None:

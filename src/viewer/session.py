@@ -759,8 +759,7 @@ def refresh_cached_raster_grad_histograms(viewer: object, force: bool = False) -
     scene_count = int(viewer.s.trainer.scene.count)
     mode = str(viewer.s.training_renderer.cached_raster_grad_atomic_mode)
     signature = (step, mode, scene_count, bin_count, min_log10, max_log10)
-    auto_refresh = bool(viewer.ui._values.get("hist_auto_refresh", True))
-    if not refresh_requested and (not auto_refresh or viewer.s.cached_raster_grad_histogram_signature == signature):
+    if not refresh_requested:
         return
     viewer.s.cached_raster_grad_histograms = viewer.s.training_renderer.compute_cached_raster_grad_component_histograms(
         viewer.s.trainer.metrics,

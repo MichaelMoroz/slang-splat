@@ -4,11 +4,12 @@
 
 The realtime viewer is a single `spy.AppWindow` that renders the control UI into the swapchain and presents the Gaussian scene inside a docked central viewport window.
 
-The overlay uses a left-side control panel with a menu bar:
+The overlay uses a right-side control panel with a menu bar:
 
 - `File`: scene load, scene export, COLMAP import, reload, and gaussian reinitialization actions
 - `View`: interface scale presets from `75%` to `200%`, with a reset action
 - `Help`: `Documentation` and `About` windows
+- Auxiliary windows such as `Documentation`, `About`, `Renderer Debug`, `Histograms`, and `COLMAP Import` open as tabs in that right-side panel by default.
 - The menu bar spans the full viewport width and the left control panel starts below it to avoid overlap.
 
 `src/viewer` is split into:
@@ -86,7 +87,8 @@ The loss-debug controls expose a runtime `Abs Diff Scale` slider when `View = Ab
 - The window inspects the active cached ellipse gradient accumulation mode only.
 - Histogram values are computed over `log10(abs(component_gradient))`.
 - Components are grouped as `roLocal`, `scale`, `quat`, `color`, and `opacity`.
-- `Auto Refresh` recomputes only when the relevant training/debug signature changes; manual refresh is available for paused inspection.
+- The first open requests one histogram refresh automatically.
+- After that, histogram data is recomputed only when `Refresh` is pressed or another histogram action explicitly requests it.
 
 ## Cached Gradient Atomics
 

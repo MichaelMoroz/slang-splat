@@ -928,6 +928,7 @@ class ToolkitWindow:
     def _draw_about_window(self) -> None:
         if not self._show_about:
             return
+        self._dock_tool_window(imgui.Cond_.appearing.value)
         imgui.set_next_window_pos(imgui.ImVec2(24.0, self._menu_bar_height + 24.0), imgui.Cond_.first_use_ever.value)
         imgui.set_next_window_size(imgui.ImVec2(420.0, 220.0), imgui.Cond_.first_use_ever.value)
         opened, self._show_about = imgui.begin("About", True)
@@ -938,6 +939,7 @@ class ToolkitWindow:
     def _draw_documentation_window(self) -> None:
         if not self._show_docs:
             return
+        self._dock_tool_window(imgui.Cond_.appearing.value)
         imgui.set_next_window_pos(imgui.ImVec2(40.0, self._menu_bar_height + 32.0), imgui.Cond_.first_use_ever.value)
         imgui.set_next_window_size(imgui.ImVec2(760.0, 620.0), imgui.Cond_.first_use_ever.value)
         opened, self._show_docs = imgui.begin("Documentation", True)
@@ -954,6 +956,9 @@ class ToolkitWindow:
     def close_colmap_import_window(self) -> None:
         self._show_colmap_import = False
 
+    def _dock_tool_window(self, cond: int) -> None:
+        if self._toolkit_dock_id != 0: imgui.set_next_window_dock_id(self._toolkit_dock_id, cond)
+
     @staticmethod
     def _path_text(ui: ViewerUI, key: str, empty_text: str = "<not selected>") -> str:
         value = str(ui._values.get(key, "")).strip()
@@ -968,8 +973,7 @@ class ToolkitWindow:
     def _draw_colmap_import_window(self, ui: ViewerUI) -> None:
         if not self._show_colmap_import:
             return
-        if self._toolkit_dock_id != 0:
-            imgui.set_next_window_dock_id(self._toolkit_dock_id, imgui.Cond_.appearing.value)
+        self._dock_tool_window(imgui.Cond_.appearing.value)
         imgui.set_next_window_pos(imgui.ImVec2(56.0, self._menu_bar_height + 40.0), imgui.Cond_.first_use_ever.value)
         imgui.set_next_window_size(imgui.ImVec2(540.0, 0.0), imgui.Cond_.first_use_ever.value)
         opened, self._show_colmap_import = imgui.begin("COLMAP Import", True)
@@ -1087,11 +1091,16 @@ class ToolkitWindow:
 
     def _draw_histogram_window(self, ui: ViewerUI) -> None:
         if not bool(ui._values.get("show_histograms", False)):
+            ui._values["_show_histograms_prev"] = False
             return
+        if not bool(ui._values.get("_show_histograms_prev", False)):
+            ui._values["_histograms_refresh_requested"] = True
+        self._dock_tool_window(imgui.Cond_.appearing.value)
         imgui.set_next_window_pos(imgui.ImVec2(72.0, self._menu_bar_height + 56.0), imgui.Cond_.first_use_ever.value)
         imgui.set_next_window_size(imgui.ImVec2(980.0, 720.0), imgui.Cond_.first_use_ever.value)
         opened, show = imgui.begin("Histograms", True)
         ui._values["show_histograms"] = bool(show)
+        ui._values["_show_histograms_prev"] = bool(show)
         if opened:
             self._draw_histogram_controls(ui)
             status = str(ui._texts.get("histogram_status", "")).strip()
@@ -1111,10 +1120,6 @@ class ToolkitWindow:
         imgui.end()
 
     def _draw_histogram_controls(self, ui: ViewerUI) -> None:
-        changed, value = imgui.checkbox("Auto Refresh", bool(ui._values.get("hist_auto_refresh", True)))
-        if changed:
-            ui._values["hist_auto_refresh"] = bool(value)
-        imgui.same_line()
         if imgui.button("Refresh"):
             ui._values["_histograms_refresh_requested"] = True
         imgui.same_line()
@@ -1529,10 +1534,9 @@ class ToolkitWindow:
     def _draw_renderer_debug_window(self, ui: ViewerUI) -> None:
         if not bool(ui._values.get("show_renderer_debug", False)):
             return
+        self._dock_tool_window(imgui.Cond_.appearing.value)
         imgui.set_next_window_pos(imgui.ImVec2(self._toolkit_rect[0] + self._toolkit_rect[2] + 24.0, self._menu_bar_height + 28.0), imgui.Cond_.first_use_ever.value)
         imgui.set_next_window_size(imgui.ImVec2(320.0, 0.0), imgui.Cond_.first_use_ever.value)
-        if self._dockspace_id != 0:
-            imgui.set_next_window_dock_id(self._dockspace_id, imgui.Cond_.first_use_ever.value)
         opened, show = imgui.begin("Renderer Debug", True)
         ui._values["show_renderer_debug"] = bool(show)
         if opened:
@@ -1824,12 +1828,12 @@ def build_ui(renderer) -> ViewerUI:
     values["colmap_diffusion_radius"] = 1.0
     values["show_histograms"] = False
     values["show_renderer_debug"] = False
-    values["hist_auto_refresh"] = True
     values["hist_bin_count"] = _HISTOGRAM_BIN_COUNT_DEFAULT
     values["hist_min_log10"] = _HISTOGRAM_MIN_LOG10_DEFAULT
     values["hist_max_log10"] = _HISTOGRAM_MAX_LOG10_DEFAULT
     values["hist_y_limit"] = _HISTOGRAM_Y_LIMIT_DEFAULT
     values["_histograms_refresh_requested"] = False
+    values["_show_histograms_prev"] = False
     values["_histogram_update_y_limit"] = True
     values["_histogram_update_log_range"] = False
     values["_histogram_payload"] = None

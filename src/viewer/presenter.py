@@ -355,7 +355,7 @@ def render_frame(viewer: object, render_context: spy.AppWindow.RenderContext) ->
             viewer.s.viewport_texture = _render_debug_view(viewer, encoder, render_width, render_height)
         else:
             viewer.s.viewport_texture = _render_main_view(viewer, encoder)
-        if bool(viewer.ui._values.get("show_histograms", False)):
+        if bool(viewer.ui._values.get("_histograms_refresh_requested", False)):
             session.refresh_cached_raster_grad_histograms(viewer)
         viewer.s.last_render_exception = ""
     except Exception as exc:
