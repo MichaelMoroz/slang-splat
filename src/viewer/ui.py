@@ -228,6 +228,8 @@ GROUP_SPECS = {
     "Camera": (
         ControlSpec("move_speed", "input_float", "Move Speed", {"value": 2.0, "step": 0.1, "step_fast": 1.0, "format": "%.6g"}),
         ControlSpec("fov", "slider_float", "FOV", {"value": 60.0, "min": 25.0, "max": 100.0}),
+        ControlSpec("render_background_mode", "combo", "Render Background", {"value": 1, "options": _VIEWER_BACKGROUND_MODE_LABELS}),
+        ControlSpec("render_background_color", "color_edit3", "Render BG Color", {"value": (0.0, 0.0, 0.0)}),
     ),
     "Train Setup": (
         ControlSpec("max_gaussians", "slider_int", "Max Gaussians", {"value": 1000000, "min": 1000, "max": 10000000}),
@@ -293,8 +295,6 @@ def default_control_values(*group_names: str) -> dict[str, object]:
 
 
 RENDER_PARAM_SPECS = (
-    ControlSpec("render_background_mode", "combo", "Render Background", {"value": 1, "options": _VIEWER_BACKGROUND_MODE_LABELS}),
-    ControlSpec("render_background_color", "color_edit3", "Render BG Color", {"value": (0.0, 0.0, 0.0)}),
     ControlSpec("radius_scale", "slider_float", "Radius Scale", {"value": 1.0, "min": 0.25, "max": 4.0, "format": "%.3g"}),
     ControlSpec("alpha_cutoff", "slider_float", "Alpha Cutoff", {"value": 0.0039, "min": 0.0001, "max": 0.1, "format": "%.2e"}),
     ControlSpec("trans_threshold", "slider_float", "Trans Threshold", {"value": 0.005, "min": 0.001, "max": 0.2, "format": "%.2e"}),
@@ -1147,9 +1147,12 @@ class ToolkitWindow:
             ui._values["fov"] = val
         if imgui.is_item_hovered():
             imgui.set_item_tooltip("Vertical field of view in degrees")
+        self._draw_control(ui, next(spec for spec in GROUP_SPECS["Camera"] if spec.key == "render_background_mode"))
+        if int(ui._values.get("render_background_mode", 1)) == 1:
+            self._draw_control(ui, next(spec for spec in GROUP_SPECS["Camera"] if spec.key == "render_background_color"))
         imgui.spacing()
         imgui.text_disabled("LMB drag=look | WASDQE=move | Wheel=speed")
-        self._ctx_reset("camera_ctx", ui, ("move_speed", "fov"))
+        self._ctx_reset("camera_ctx", ui, ("move_speed", "fov", "render_background_mode", "render_background_color"))
         imgui.separator()
 
     def _section_training_control(self, ui: ViewerUI) -> None:
@@ -1322,10 +1325,8 @@ class ToolkitWindow:
     def _section_render_params(self, ui: ViewerUI) -> None:
         if not imgui.collapsing_header("Render Params"):
             return
-        for key in ("render_background_mode", "radius_scale", "alpha_cutoff", "trans_threshold", "cached_raster_grad_atomic_mode"):
+        for key in ("radius_scale", "alpha_cutoff", "trans_threshold", "cached_raster_grad_atomic_mode"):
             self._draw_control(ui, next(spec for spec in RENDER_PARAM_SPECS if spec.key == key))
-        if int(ui._values.get("render_background_mode", 1)) == 1:
-            self._draw_control(ui, next(spec for spec in RENDER_PARAM_SPECS if spec.key == "render_background_color"))
 
         imgui.separator_text("Cached Grad Ranges")
         for key in ("cached_raster_grad_fixed_ro_local_range", "cached_raster_grad_fixed_scale_range", "cached_raster_grad_fixed_quat_range", "cached_raster_grad_fixed_color_range", "cached_raster_grad_fixed_opacity_range"):
