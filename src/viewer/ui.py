@@ -173,8 +173,8 @@ def _rect_contains(rect: tuple[float, float, float, float], point: tuple[float, 
     return px >= x and py >= y and px < x + width and py < y + height
 
 
-def _should_capture_keyboard_for_ui(handled: bool, viewport_input_active: bool, any_item_active: bool, any_item_focused: bool) -> bool:
-    return bool(handled) and not (bool(viewport_input_active) and not bool(any_item_active) and not bool(any_item_focused))
+def _should_capture_keyboard_for_ui(handled: bool, viewport_input_active: bool, want_text_input: bool) -> bool:
+    return bool(handled) and not (bool(viewport_input_active) and not bool(want_text_input))
 
 
 @lru_cache(maxsize=1)
@@ -614,7 +614,7 @@ class ToolkitWindow:
             return False
         self._set_current_context()
         handled = bool(simgui.handle_keyboard_event(event))
-        return _should_capture_keyboard_for_ui(handled, self._viewport_input_active, bool(imgui.is_any_item_active()), bool(imgui.is_any_item_focused()))
+        return _should_capture_keyboard_for_ui(handled, self._viewport_input_active, bool(imgui.get_io().want_text_input))
 
     def handle_mouse_event(self, event) -> bool:
         if not self._alive:
