@@ -23,6 +23,9 @@ TRAIN_BACKGROUND_MODE_RANDOM = 1
 SPLAT_CONTRIBUTION_FIXED_SCALE = 256.0
 DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT = 1e-05
 DEFAULT_DEBUG_CONTRIBUTION_RANGE_PERCENT = (0.001, 1.0)
+DEPTH_RATIO_GRAD_MIN_BAND_WIDTH = 1e-4
+DEFAULT_DEPTH_RATIO_GRAD_MIN = 0.01
+DEFAULT_DEPTH_RATIO_GRAD_MAX = 0.05
 _REFINEMENT_HASH_INIT = 0x9E3779B9
 _REFINEMENT_HASH_MIX = 0x85EBCA6B
 
@@ -91,6 +94,12 @@ def resolve_effective_train_downscale_factor(training_hparams: "TrainingHyperPar
     return 1
 
 
+def resolve_depth_ratio_grad_band(grad_min: float, grad_max: float) -> tuple[float, float]:
+    resolved_min = max(float(grad_min), 0.0)
+    resolved_max = max(float(grad_max), resolved_min + DEPTH_RATIO_GRAD_MIN_BAND_WIDTH)
+    return resolved_min, resolved_max
+
+
 @dataclass(slots=True)
 class _SceneCountProxy:
     count: int
@@ -150,6 +159,7 @@ class TrainingHyperParams:
     background: tuple[float, float, float] = (1.0, 1.0, 1.0); near: float = 0.1; far: float = 120.0
     background_mode: int = TRAIN_BACKGROUND_MODE_RANDOM; use_sh: bool = True
     scale_l2_weight: float = 0.0; scale_abs_reg_weight: float = 0.01; sh1_reg_weight: float = 0.01; opacity_reg_weight: float = 0.01; density_regularizer: float = 0.05; depth_ratio_weight: float = 0.05; max_allowed_density_start: float = 5.0; max_allowed_density: float = 12.0
+    depth_ratio_grad_min: float = DEFAULT_DEPTH_RATIO_GRAD_MIN; depth_ratio_grad_max: float = DEFAULT_DEPTH_RATIO_GRAD_MAX
     position_random_step_noise_lr: float = 5e5; position_random_step_opacity_gate_center: float = 0.005; position_random_step_opacity_gate_sharpness: float = 100.0
     lr_schedule_enabled: bool = True; lr_schedule_start_lr: float = 1e-3; lr_schedule_end_lr: float = 1e-4; lr_schedule_steps: int = 30_000
     refinement_interval: int = 200; refinement_growth_ratio: float = 0.02; refinement_growth_start_step: int = 500; refinement_alpha_cull_threshold: float = 1e-2; refinement_min_contribution_percent: float = DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT; refinement_min_contribution_decay: float = DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY
@@ -175,6 +185,7 @@ class TrainingHyperParams:
         self.sh1_reg_weight = max(float(self.sh1_reg_weight), 0.0)
         self.density_regularizer = max(float(self.density_regularizer), 0.0)
         self.depth_ratio_weight = max(float(self.depth_ratio_weight), 0.0)
+        self.depth_ratio_grad_min, self.depth_ratio_grad_max = resolve_depth_ratio_grad_band(self.depth_ratio_grad_min, self.depth_ratio_grad_max)
         self.max_allowed_density_start = max(float(self.max_allowed_density_start), 0.0)
         self.max_allowed_density = max(float(self.max_allowed_density), 0.0)
         self.max_allowed_density = max(self.max_allowed_density, self.max_allowed_density_start)
@@ -811,6 +822,8 @@ class GaussianTrainer:
             "g_HugeValue": float(self.stability.huge_value),
             "g_DensityRegularizer": float(self.training.density_regularizer),
             "g_DepthRatioWeight": float(self.training.depth_ratio_weight),
+            "g_DepthRatioGradMin": float(self.training.depth_ratio_grad_min),
+            "g_DepthRatioGradMax": float(self.training.depth_ratio_grad_max),
             "g_MaxAllowedDensity": float(resolve_max_allowed_density(self.training, resolved_step)),
         }
 

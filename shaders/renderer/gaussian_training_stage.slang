@@ -21,6 +21,9 @@ static const float SRGB_LINEAR_SCALE = 12.92;
 static const float SRGB_GAMMA_SCALE = 1.055;
 static const float SRGB_GAMMA_OFFSET = 0.055;
 static const float SRGB_INV_GAMMA = 1.0 / 2.4;
+static const float DEPTH_RATIO_GRAD_MIN_BAND_WIDTH = 1e-4;
+static const float DEPTH_RATIO_GRAD_SOFTNESS_RATIO = 0.1;
+static const float DEPTH_RATIO_GRAD_SOFTNESS_FLOOR = 1e-4;
 static const uint REFINEMENT_HASH_INIT = 0x9e3779b9u;
 static const uint REFINEMENT_HASH_MIX = 0x85ebca6bu;
 uniform uint g_Width;
@@ -40,6 +43,8 @@ uniform RWStructuredBuffer<float> g_LossBuffer;
 uniform RWStructuredBuffer<float4> g_BatchStepInfo;
 uniform float g_DensityRegularizer;
 uniform float g_DepthRatioWeight;
+uniform float g_DepthRatioGradMin;
+uniform float g_DepthRatioGradMax;
 uniform float g_MaxAllowedDensity;
 uniform RWStructuredBuffer<float> g_PositionRandomStepParams;
 uniform uint g_PositionRandomStepSplatCount;
@@ -369,6 +374,49 @@ float position_random_step_gate(float opacity)
     return rcp(1.0 + exp(-x));
 }
 
+float depth_ratio_sigmoid(float x)
+{
+    if (x >= 0.0)
+    {
+        float z = exp(-x);
+        return rcp(1.0 + z);
+    }
+    float z = exp(x);
+    return z / (1.0 + z);
+}
+
+float depth_ratio_softplus(float x)
+{
+    if (x >= SOFTPLUS_INPUT_LIMIT) return x;
+    if (x <= -SOFTPLUS_INPUT_LIMIT) return exp(x);
+    return log(1.0 + exp(x));
+}
+
+float4 depth_ratio_window_params(float depthRatio)
+{
+    float x = max(depthRatio, 0.0);
+    float bandMin = max(g_DepthRatioGradMin, 0.0);
+    float bandMax = max(g_DepthRatioGradMax, bandMin + DEPTH_RATIO_GRAD_MIN_BAND_WIDTH);
+    float softness = max((bandMax - bandMin) * DEPTH_RATIO_GRAD_SOFTNESS_RATIO, DEPTH_RATIO_GRAD_SOFTNESS_FLOOR);
+    return float4(x, bandMin, bandMax, softness);
+}
+
+float depth_ratio_window_loss(float depthRatio)
+{
+    float4 params = depth_ratio_window_params(depthRatio);
+    float scaledLo = (params.x - params.y) / params.w;
+    float scaledHi = (params.x - params.z) / params.w;
+    return g_DepthRatioWeight * params.w * (depth_ratio_softplus(scaledLo) - depth_ratio_softplus(scaledHi)) * g_InvPixelCount;
+}
+
+float depth_ratio_window_grad(float depthRatio)
+{
+    float4 params = depth_ratio_window_params(depthRatio);
+    float scaledLo = (params.x - params.y) / params.w;
+    float scaledHi = (params.x - params.z) / params.w;
+    return g_DepthRatioWeight * (depth_ratio_sigmoid(scaledLo) - depth_ratio_sigmoid(scaledHi)) * g_InvPixelCount;
+}
+
 float3 position_random_step_world_delta(SplatState state, inout uint rngState)
 {
     float opacity = opacity_from_raw(state.rawOpacity);
@@ -466,7 +514,7 @@ void csComputeL1LossForward(
         localMSE = isfinite(mse) ? mse : 0.0;
         if (g_DepthRatioWeight > 0.0)
         {
-            float depthRatioLoss = g_DepthRatioWeight * abs(depthRatio) * g_InvPixelCount;
+            float depthRatioLoss = depth_ratio_window_loss(depthRatio);
             if (isfinite(depthRatioLoss)) localLoss += depthRatioLoss;
         }
         if (g_DensityRegularizer > 0.0)
@@ -524,9 +572,7 @@ void csComputeL1LossBackward(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (g_DepthRatioWeight > 0.0)
     {
         float depthRatio = sanitize_scalar(g_RenderedDepthStats[pixel].w, g_HugeValue);
-        depthRatioGrad = depthRatio > 0.0
-            ? g_DepthRatioWeight * g_InvPixelCount
-            : (depthRatio < 0.0 ? -g_DepthRatioWeight * g_InvPixelCount : 0.0);
+        depthRatioGrad = depth_ratio_window_grad(depthRatio);
     }
     g_RegularizerGrad[py * g_Width + px] = float2(
         clamp(sanitize_scalar(densityGrad, g_LossGradClip), -g_LossGradClip, g_LossGradClip),

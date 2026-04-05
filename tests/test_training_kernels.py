@@ -13,7 +13,7 @@ from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 from src.scene.sh_utils import SH_C0
 from src.training import gaussian_trainer as gaussian_trainer_module
-from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, contribution_fixed_count_from_percent, contribution_percent_from_fixed_count, resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_effective_refinement_interval, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_max_allowed_density, resolve_training_resolution, should_run_refinement_step
+from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, contribution_fixed_count_from_percent, contribution_percent_from_fixed_count, resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_depth_ratio_grad_band, resolve_effective_refinement_interval, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_max_allowed_density, resolve_training_resolution, should_run_refinement_step
 
 _ADAM_BUFFER_NAMES = ("adam_moments",)
 _OPACITY_EPS = 1e-6
@@ -27,6 +27,8 @@ _log_sigma = lambda sigma: np.log(np.asarray(sigma, dtype=np.float32))
 _stored_from_support_scale = lambda support_scale: np.log(np.asarray(support_scale, dtype=np.float32) / _GAUSSIAN_SUPPORT_SIGMA_RADIUS)
 _SCALE_GRAD_MULS = (0.015625, 0.03125, 0.0625, 0.125, 0.25, 0.5, 0.75, 0.875, 0.9375, 0.96875, 1.0, 1.05)
 _TARGET_MULS = (2.0, 3.0, 4.0, 6.0, 7.5)
+_DEPTH_RATIO_GRAD_SOFTNESS_RATIO = 0.1
+_DEPTH_RATIO_GRAD_SOFTNESS_FLOOR = 1e-4
 
 
 def _expected_refinement_child_scale(parent_scale: np.ndarray, family_size: int) -> np.ndarray:
@@ -115,6 +117,46 @@ def _write_grad_groups(
 def _read_output_grads(renderer: GaussianRenderer) -> np.ndarray:
     flat = buffer_to_numpy(renderer.output_grad_buffer, np.float32)
     return flat[: max(renderer.width * renderer.height, 1) * 4].reshape(renderer.height, renderer.width, 4)
+
+
+def _read_training_depth_ratios(renderer: GaussianRenderer) -> np.ndarray:
+    return np.asarray(renderer.training_depth_stats_texture.to_numpy(), dtype=np.float32)[..., 3].reshape(-1).copy()
+
+
+def _depth_ratio_window_softplus(x: float) -> float:
+    if x >= 30.0: return float(x)
+    if x <= -30.0: return float(np.exp(x))
+    return float(np.log1p(np.exp(x)))
+
+
+def _depth_ratio_window_sigmoid(x: float) -> float:
+    if x >= 0.0:
+        z = float(np.exp(-x))
+        return 1.0 / (1.0 + z)
+    z = float(np.exp(x))
+    return z / (1.0 + z)
+
+
+def _depth_ratio_window_params(grad_min: float, grad_max: float) -> tuple[float, float, float]:
+    band_min, band_max = resolve_depth_ratio_grad_band(grad_min, grad_max)
+    softness = max((band_max - band_min) * _DEPTH_RATIO_GRAD_SOFTNESS_RATIO, _DEPTH_RATIO_GRAD_SOFTNESS_FLOOR)
+    return band_min, band_max, softness
+
+
+def _depth_ratio_window_loss(depth_ratio: float, weight: float, grad_min: float, grad_max: float) -> float:
+    band_min, band_max, softness = _depth_ratio_window_params(grad_min, grad_max)
+    x = max(float(depth_ratio), 0.0)
+    return float(weight) * softness * (
+        _depth_ratio_window_softplus((x - band_min) / softness) - _depth_ratio_window_softplus((x - band_max) / softness)
+    )
+
+
+def _depth_ratio_window_grad(depth_ratio: float, weight: float, grad_min: float, grad_max: float, inv_pixel_count: float) -> float:
+    band_min, band_max, softness = _depth_ratio_window_params(grad_min, grad_max)
+    x = max(float(depth_ratio), 0.0)
+    return float(weight) * (
+        _depth_ratio_window_sigmoid((x - band_min) / softness) - _depth_ratio_window_sigmoid((x - band_max) / softness)
+    ) * float(inv_pixel_count)
 
 
 def _read_optimizer_lrs(trainer: GaussianTrainer) -> np.ndarray:
@@ -614,6 +656,8 @@ def test_loss_vars_use_density_schedule(device, tmp_path: Path) -> None:
 
     np.testing.assert_allclose(trainer._loss_vars(0)["g_DensityRegularizer"], 0.05, rtol=0.0, atol=1e-10)
     np.testing.assert_allclose(trainer._loss_vars(0)["g_DepthRatioWeight"], 0.05, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(trainer._loss_vars(0)["g_DepthRatioGradMin"], 0.01, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(trainer._loss_vars(0)["g_DepthRatioGradMax"], 0.05, rtol=0.0, atol=1e-10)
     np.testing.assert_allclose(trainer._loss_vars(0)["g_MaxAllowedDensity"], 5.0, rtol=0.0, atol=1e-10)
     np.testing.assert_allclose(trainer._loss_vars(1)["g_MaxAllowedDensity"], 8.5, rtol=0.0, atol=1e-10)
     np.testing.assert_allclose(trainer._loss_vars(2)["g_MaxAllowedDensity"], 12.0, rtol=0.0, atol=1e-10)
@@ -798,14 +842,17 @@ def test_density_loss_respects_threshold_and_changes_gradients(device, tmp_path:
 def test_depth_ratio_loss_changes_total_loss_and_gradients(device, tmp_path: Path) -> None:
     scene = _make_scene(count=8, seed=90)
     frame = _make_frame(tmp_path, image_name="depth_ratio_target.png", image_id=17)
+    grad_min = 0.01
+    grad_max = 0.05
+    weight = 0.5
     renderer_off = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
     renderer_on = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
-    trainer_off = GaussianTrainer(device=device, renderer=renderer_off, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(density_regularizer=0.0, depth_ratio_weight=0.0), seed=123)
-    trainer_on = GaussianTrainer(device=device, renderer=renderer_on, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(density_regularizer=0.0, depth_ratio_weight=0.5), seed=123)
-    packed_depth_stats = np.zeros((renderer_off.height, renderer_off.width, 4), dtype=np.float32)
-    packed_depth_stats[:, :, :] = np.array([1.0, 2.0, 1.0, 0.25], dtype=np.float32)
+    trainer_off = GaussianTrainer(device=device, renderer=renderer_off, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(density_regularizer=0.0, depth_ratio_weight=0.0, depth_ratio_grad_min=grad_min, depth_ratio_grad_max=grad_max), seed=123)
+    trainer_on = GaussianTrainer(device=device, renderer=renderer_on, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(density_regularizer=0.0, depth_ratio_weight=weight, depth_ratio_grad_min=grad_min, depth_ratio_grad_max=grad_max), seed=123)
 
-    def run_pass(trainer: GaussianTrainer, renderer: GaussianRenderer):
+    def run_pass(trainer: GaussianTrainer, renderer: GaussianRenderer, depth_ratio: float):
+        packed_depth_stats = np.zeros((renderer.height, renderer.width, 4), dtype=np.float32)
+        packed_depth_stats[:, :, :] = np.array([1.0, 2.0, 1.0, depth_ratio], dtype=np.float32)
         renderer.training_depth_stats_texture.copy_from_numpy(packed_depth_stats)
         target_texture = trainer.get_frame_target_texture(0, native_resolution=False)
         enc = device.create_command_encoder()
@@ -816,17 +863,30 @@ def test_depth_ratio_loss_changes_total_loss_and_gradients(device, tmp_path: Pat
         regularizer_grad = buffer_to_numpy(renderer.work_buffers["training_regularizer_grad"], np.float32).reshape(-1, 2)
         return trainer._read_loss_metrics(), regularizer_grad
 
-    (total_off, mse_off, density_off), regularizer_grad_off = run_pass(trainer_off, renderer_off)
-    (total_on, mse_on, density_on), regularizer_grad_on = run_pass(trainer_on, renderer_on)
+    inv_pixel_count = 1.0 / float(renderer_on.width * renderer_on.height)
+    samples = (0.005, 0.03, 0.2)
+    losses_on: list[float] = []
+    grads_on: list[float] = []
+    for depth_ratio in samples:
+        (total_off, mse_off, density_off), regularizer_grad_off = run_pass(trainer_off, renderer_off, depth_ratio)
+        (total_on, mse_on, density_on), regularizer_grad_on = run_pass(trainer_on, renderer_on, depth_ratio)
 
-    assert np.isfinite(total_off)
-    assert np.isfinite(total_on)
-    np.testing.assert_allclose(mse_on, mse_off, rtol=1e-5, atol=1e-7)
-    assert density_off == 0.0
-    assert density_on == 0.0
-    np.testing.assert_allclose(total_on - total_off, 0.125, rtol=1e-5, atol=1e-7)
-    assert np.allclose(regularizer_grad_off[:, 1], 0.0)
-    np.testing.assert_allclose(regularizer_grad_on[:, 1], np.full_like(regularizer_grad_on[:, 1], 0.5 / 4096.0), rtol=1e-5, atol=1e-7)
+        expected_loss = _depth_ratio_window_loss(depth_ratio, weight, grad_min, grad_max)
+        expected_grad = _depth_ratio_window_grad(depth_ratio, weight, grad_min, grad_max, inv_pixel_count)
+
+        assert np.isfinite(total_off)
+        assert np.isfinite(total_on)
+        np.testing.assert_allclose(mse_on, mse_off, rtol=1e-5, atol=1e-7)
+        assert density_off == 0.0
+        assert density_on == 0.0
+        np.testing.assert_allclose(total_on - total_off, expected_loss, rtol=1e-5, atol=1e-7)
+        assert np.allclose(regularizer_grad_off[:, 1], 0.0)
+        np.testing.assert_allclose(regularizer_grad_on[:, 1], np.full_like(regularizer_grad_on[:, 1], expected_grad), rtol=1e-5, atol=1e-7)
+        losses_on.append(float(total_on - total_off))
+        grads_on.append(float(regularizer_grad_on[0, 1]))
+
+    assert losses_on[0] < losses_on[1] < losses_on[2]
+    assert grads_on[1] > grads_on[0] > grads_on[2]
 
 
 def test_depth_ratio_regularizer_affects_training_raster_replay(device, tmp_path: Path) -> None:
@@ -846,6 +906,22 @@ def test_depth_ratio_regularizer_affects_training_raster_replay(device, tmp_path
     camera = frame.make_camera(near=0.1, far=20.0)
     background = np.asarray(trainer_on.training.background, dtype=np.float32)
 
+    def configure_band(trainer: GaussianTrainer, renderer: GaussianRenderer) -> tuple[float, float]:
+        renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
+        enc = device.create_command_encoder()
+        trainer._dispatch_raster_training_forward(enc, camera, background)
+        device.submit_command_buffer(enc.finish())
+        device.wait()
+        ratios = _read_training_depth_ratios(renderer)
+        positive = ratios[np.isfinite(ratios) & (ratios > 0.0)]
+        assert positive.size >= 4
+        grad_min = float(np.quantile(positive, 0.25))
+        grad_max = float(np.quantile(positive, 0.75))
+        grad_min, grad_max = resolve_depth_ratio_grad_band(grad_min, grad_max)
+        trainer.training.depth_ratio_grad_min = grad_min
+        trainer.training.depth_ratio_grad_max = grad_max
+        return grad_min, grad_max
+
     def run_pass(trainer: GaussianTrainer, renderer: GaussianRenderer):
         renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
         enc = device.create_command_encoder()
@@ -857,10 +933,13 @@ def test_depth_ratio_regularizer_affects_training_raster_replay(device, tmp_path
         device.submit_command_buffer(enc.finish())
         device.wait()
         regularizer_grad = buffer_to_numpy(renderer.work_buffers["training_regularizer_grad"], np.float32).reshape(-1, 2)
-        return trainer._read_loss_metrics(), _read_grad_groups(renderer, scene.count), regularizer_grad
+        return trainer._read_loss_metrics(), _read_grad_groups(renderer, scene.count), regularizer_grad, _read_training_depth_ratios(renderer)
 
-    (total_off, mse_off, density_off), grads_off, regularizer_grad_off = run_pass(trainer_off, renderer_off)
-    (total_on, mse_on, density_on), grads_on, regularizer_grad_on = run_pass(trainer_on, renderer_on)
+    grad_min, grad_max = configure_band(trainer_on, renderer_on)
+    trainer_off.training.depth_ratio_grad_min = grad_min
+    trainer_off.training.depth_ratio_grad_max = grad_max
+    (total_off, mse_off, density_off), grads_off, regularizer_grad_off, depth_ratio_off = run_pass(trainer_off, renderer_off)
+    (total_on, mse_on, density_on), grads_on, regularizer_grad_on, depth_ratio_on = run_pass(trainer_on, renderer_on)
 
     assert np.isfinite(total_off)
     assert np.isfinite(total_on)
@@ -870,6 +949,12 @@ def test_depth_ratio_regularizer_affects_training_raster_replay(device, tmp_path
     assert total_on > total_off
     assert np.allclose(regularizer_grad_off[:, 1], 0.0)
     assert float(np.max(np.abs(regularizer_grad_on[:, 1]))) > 0.0
+    inside_mask = np.isfinite(depth_ratio_on) & (depth_ratio_on >= grad_min) & (depth_ratio_on <= grad_max)
+    outside_mask = np.isfinite(depth_ratio_on) & (depth_ratio_on > 0.0) & ~inside_mask
+    assert np.any(inside_mask)
+    assert np.any(outside_mask)
+    assert float(np.max(np.abs(regularizer_grad_on[inside_mask, 1]))) > float(np.max(np.abs(regularizer_grad_on[outside_mask, 1])))
+    np.testing.assert_allclose(depth_ratio_off, depth_ratio_on, rtol=1e-5, atol=1e-7)
     grad_delta = sum(float(np.max(np.abs(grads_on[name] - grads_off[name]))) for name in grads_on)
     assert grad_delta > 0.0
 

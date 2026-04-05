@@ -9,7 +9,7 @@ import slangpy as spy
 
 from ..common import clamp_float, clamp_int
 from ..scene import GaussianInitHyperParams, GaussianScene
-from ..training import AdamHyperParams, DEFAULT_DEBUG_CONTRIBUTION_RANGE_PERCENT, DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY, DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, resolve_training_profile
+from ..training import AdamHyperParams, DEFAULT_DEBUG_CONTRIBUTION_RANGE_PERCENT, DEFAULT_DEPTH_RATIO_GRAD_MAX, DEFAULT_DEPTH_RATIO_GRAD_MIN, DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY, DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, resolve_depth_ratio_grad_band, resolve_training_profile
 
 EPS = 1e-8
 MIN_SCENE_RADIUS = 1.0
@@ -169,6 +169,8 @@ def build_training_params(
     sh1_reg_weight: float = 0.01,
     density_regularizer: float = 0.05,
     depth_ratio_weight: float = 0.05,
+    depth_ratio_grad_min: float = DEFAULT_DEPTH_RATIO_GRAD_MIN,
+    depth_ratio_grad_max: float = DEFAULT_DEPTH_RATIO_GRAD_MAX,
     max_allowed_density_start: float = 5.0,
     max_allowed_density: float = 12.0,
     position_random_step_noise_lr: float = 5e5,
@@ -229,6 +231,10 @@ def build_training_params(
             )
         }
     )
+    resolved_depth_ratio_grad_min, resolved_depth_ratio_grad_max = resolve_depth_ratio_grad_band(
+        clamp_float(depth_ratio_grad_min, 0.0, 1e6),
+        clamp_float(depth_ratio_grad_max, 0.0, 1e6),
+    )
     training = TrainingHyperParams(
         background=tuple(float(v) for v in np.asarray(background, dtype=np.float32).reshape(3)),
         near=clamp_float(near, 1e-6, 1e4),
@@ -241,6 +247,8 @@ def build_training_params(
         opacity_reg_weight=clamp_float(opacity_reg_weight, 0.0, 1e4),
         density_regularizer=clamp_float(density_regularizer, 0.0, 1e4),
         depth_ratio_weight=clamp_float(depth_ratio_weight, 0.0, 1e4),
+        depth_ratio_grad_min=resolved_depth_ratio_grad_min,
+        depth_ratio_grad_max=resolved_depth_ratio_grad_max,
         max_allowed_density_start=clamp_float(max_allowed_density_start, 0.0, 1e6),
         max_allowed_density=clamp_float(max_allowed_density, 0.0, 1e6),
         position_random_step_noise_lr=clamp_float(position_random_step_noise_lr, 0.0, 1e12),

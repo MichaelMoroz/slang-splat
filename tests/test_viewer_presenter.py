@@ -56,6 +56,8 @@ class _DummyTrainer:
             refinement_min_contribution_decay=0.95,
             density_regularizer=0.05,
             depth_ratio_weight=0.05,
+            depth_ratio_grad_min=0.01,
+            depth_ratio_grad_max=0.05,
             max_allowed_density=12.0,
             max_gaussians=1000000,
         )

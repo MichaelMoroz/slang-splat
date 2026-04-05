@@ -6,7 +6,7 @@ import numpy as np
 
 from src.app.shared import apply_training_profile, build_training_params, estimate_scene_bounds
 from src.scene import GaussianInitHyperParams, GaussianScene
-from src.training import TRAIN_BACKGROUND_MODE_RANDOM
+from src.training import DEPTH_RATIO_GRAD_MIN_BAND_WIDTH, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams
 from src.viewer.app import default_training_params
 from src.viewer.session import resolve_effective_training_setup
 from src.viewer.ui import default_control_values
@@ -58,6 +58,8 @@ def test_build_training_params_clamps_ranges():
         scale_abs_reg_weight=-1.0,
         sh1_reg_weight=-1.0,
         opacity_reg_weight=-1.0,
+        depth_ratio_grad_min=0.2,
+        depth_ratio_grad_max=0.1,
         max_gaussians=-1,
     )
     assert params.adam.position_lr == 10.0
@@ -73,6 +75,8 @@ def test_build_training_params_clamps_ranges():
     assert params.training.opacity_reg_weight == 0.0
     assert params.training.density_regularizer == 0.05
     assert params.training.depth_ratio_weight == 0.05
+    assert params.training.depth_ratio_grad_min == 0.2
+    assert params.training.depth_ratio_grad_max == 0.2 + DEPTH_RATIO_GRAD_MIN_BAND_WIDTH
     assert params.training.max_allowed_density_start == 5.0
     assert params.training.max_allowed_density == 12.0
     assert params.training.position_random_step_noise_lr == 5e5
@@ -94,6 +98,8 @@ def test_default_training_params_match_fixed_count_defaults():
     assert params.training.opacity_reg_weight == 0.01
     assert params.training.density_regularizer == 0.05
     assert params.training.depth_ratio_weight == 0.05
+    assert params.training.depth_ratio_grad_min == 0.01
+    assert params.training.depth_ratio_grad_max == 0.05
     assert params.training.max_allowed_density_start == 5.0
     assert params.training.max_allowed_density == 12.0
     assert params.training.position_random_step_noise_lr == 5e5
@@ -113,6 +119,8 @@ def test_auto_profile_resolves_to_legacy_defaults():
     assert params.training.scale_abs_reg_weight == 0.01
     assert params.training.sh1_reg_weight == 0.01
     assert params.training.depth_ratio_weight == 0.05
+    assert params.training.depth_ratio_grad_min == 0.01
+    assert params.training.depth_ratio_grad_max == 0.05
     assert params.training.opacity_reg_weight == 0.01
 
 
@@ -145,8 +153,17 @@ def test_viewer_effective_training_setup_keeps_requested_init_opacity():
     assert params.training.scale_abs_reg_weight == 0.01
     assert params.training.sh1_reg_weight == 0.01
     assert params.training.depth_ratio_weight == 0.05
+    assert params.training.depth_ratio_grad_min == 0.01
+    assert params.training.depth_ratio_grad_max == 0.05
     assert params.training.opacity_reg_weight == 0.01
     assert init_hparams.initial_opacity == 0.5
+
+
+def test_training_hparams_clamp_depth_ratio_grad_band() -> None:
+    params = TrainingHyperParams(depth_ratio_grad_min=0.05, depth_ratio_grad_max=0.01)
+
+    assert params.depth_ratio_grad_min == 0.05
+    assert params.depth_ratio_grad_max == 0.05 + DEPTH_RATIO_GRAD_MIN_BAND_WIDTH
 
 
 def test_viewer_defaults_expose_only_fixed_count_training_controls():

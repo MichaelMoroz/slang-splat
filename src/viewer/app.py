@@ -52,6 +52,8 @@ _TRAINING_PARAM_KEYS = {
     "opacity_reg_weight": "opacity_reg",
     "density_regularizer": "density_regularizer",
     "depth_ratio_weight": "depth_ratio_weight",
+    "depth_ratio_grad_min": "depth_ratio_grad_min",
+    "depth_ratio_grad_max": "depth_ratio_grad_max",
     "max_allowed_density": "max_allowed_density",
     "position_random_step_noise_lr": "position_random_step_noise_lr",
     "position_random_step_opacity_gate_center": "position_random_step_opacity_gate_center",

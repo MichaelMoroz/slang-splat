@@ -54,7 +54,7 @@ Each trainer `step()` performs:
    - `csRasterizeTrainingForward` renders the current image and stores per-pixel raster forward cache data for backward,
   - the same pass also stores softened splat density scalars plus the weighted per-pixel depth accumulation state used by the depth-std-over-mean-depth regularizer,
    - `csClearLossBuffer` resets the scalar loss slots,
-  - `csComputeL1LossForward` computes direct RGB L1 reconstruction loss, RGB MSE, the density hinge regularizer, and the differentiable `L1` depth-std-over-mean-depth ratio regularizer, then reduces total and tracked metrics into the loss buffer.
+  - `csComputeL1LossForward` computes direct RGB L1 reconstruction loss, RGB MSE, the density hinge regularizer, and a differentiable windowed-sigmoid depth-std-over-mean-depth ratio regularizer whose strongest gradients lie inside a user-controlled interval, then reduces total and tracked metrics into the loss buffer.
 6. Run the fixed-count backward stage:
    - `csComputeL1LossBackward` writes the unnormalized per-pixel RGB L1 sign gradient into flat `RWStructuredBuffer<float4>` `g_OutputGrad`, plus one packed `float2` regularizer gradient buffer for density and depth-ratio replay, indexed as `pixel = y * width + x`,
    - `csRasterizeBackward` consumes the cached raster forward state and accumulates quantized cached raster-field gradients for the precomputed raster-cache fields; the depth-ratio replay uses the same alpha-depth hit evaluation as training forward so the cached depth state and replay stay consistent,
@@ -83,8 +83,8 @@ There is still no opacity reset schedule, MCMC exploration term, or PSNR/SSIM tr
 ## Kernels
 - `csDownscaleTarget`: exact integer-factor box-filter downscale from the native dataset texture into the reusable train target.
 - `csClearLossBuffer`: zero scalar loss slots for the current training step.
-- `csComputeL1LossForward`: computes direct RGB L1 loss, RGB MSE, density hinge regularization, and `L1` depth-ratio regularization.
-- `csComputeL1LossBackward`: computes the image-space L1 gradient into `g_OutputGrad` plus the per-pixel density/depth-ratio replay gradients.
+- `csComputeL1LossForward`: computes direct RGB L1 loss, RGB MSE, density hinge regularization, and windowed-sigmoid depth-ratio regularization.
+- `csComputeL1LossBackward`: computes the image-space L1 gradient into `g_OutputGrad` plus the per-pixel density/depth-ratio replay gradients; the depth-ratio window is controlled by `depth_ratio_grad_min` and `depth_ratio_grad_max`, with transition softness derived from band width in shader code.
 - UI-driven multi-step training batches keep per-substep loss/MSE records on the GPU and defer the single CPU readback until the batch finishes, rather than synchronizing after every substep.
 - Packed trainable storage remains param-major scalar packing: `param_id * splat_count + splat_id`.
 - Raster backward uses a separate param-major int accumulation buffer for cached raster-field gradients, then backprops that intermediate into final float scene-parameter gradients before optimizer consumption.
