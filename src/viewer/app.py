@@ -150,6 +150,7 @@ class SplatViewer(spy.AppWindow):
             debug_ellipse_thickness_px=float(self.c("debug_ellipse_thickness_px").value),
             debug_clone_count_range=(float(self.c("debug_clone_count_min").value), float(self.c("debug_clone_count_max").value)),
             debug_density_range=(float(self.c("debug_density_min").value), float(self.c("debug_density_max").value)),
+            debug_contribution_range=(float(self.c("debug_contribution_min").value), float(self.c("debug_contribution_max").value)),
             debug_depth_mean_range=(float(self.c("debug_depth_mean_min").value), float(self.c("debug_depth_mean_max").value)),
             debug_depth_std_range=(float(self.c("debug_depth_std_min").value), float(self.c("debug_depth_std_max").value)),
             debug_show_ellipses=debug_mode == GaussianRenderer.DEBUG_MODE_ELLIPSE_OUTLINES,

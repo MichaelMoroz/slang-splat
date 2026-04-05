@@ -570,12 +570,11 @@ float4 raster_debug_output_pixel(RasterPixelInfo info, RasterReplayState replayS
     if (!info.pixelActive) return float4(0.0, 0.0, 0.0, 1.0);
     uint debugMode = g_Raster.debugMode;
     uint processedCount = info.hasTileRange && replayState.processedEnd >= info.start ? (replayState.processedEnd - info.start) : 0u;
-    float contributionFloor = max(g_Raster.alphaCutoff, DEBUG_CONTRIBUTION_AMOUNT_FLOOR);
     if (debugMode == DEBUG_MODE_PROCESSED_COUNT) return float4(raster_processed_count_color(processedCount), 1.0);
     if (debugMode == DEBUG_MODE_SPLAT_DENSITY) return float4(jet_colormap(debug_normalize_range(replayState.splatDensitySum, g_Raster.debugDensityRange)), 1.0);
     if (debugMode == DEBUG_MODE_SPLAT_SPATIAL_DENSITY) return float4(jet_colormap(debug_normalize_range(replayState.spatialDensitySum, g_Raster.debugDensityRange)), 1.0);
     if (debugMode == DEBUG_MODE_SPLAT_SCREEN_DENSITY) return float4(jet_colormap(debug_normalize_range(replayState.screenDensitySum, g_Raster.debugDensityRange)), 1.0);
-    if (debugMode == DEBUG_MODE_CONTRIBUTION_AMOUNT) return float4(jet_colormap(debug_normalize_log_range(1.0 - replayState.pixelState.trans, contributionFloor, 1.0)), 1.0);
+    if (debugMode == DEBUG_MODE_CONTRIBUTION_AMOUNT) return float4(jet_colormap(debug_normalize_log_range(1.0 - replayState.pixelState.trans, max(g_Raster.debugContributionRange.x, DEBUG_CONTRIBUTION_AMOUNT_FLOOR), max(g_Raster.debugContributionRange.y, DEBUG_CONTRIBUTION_AMOUNT_FLOOR))), 1.0);
     if (debugMode == DEBUG_MODE_DEPTH_MEAN) return float4(jet_colormap(debug_normalize_range(replayState.depthState.y, g_Raster.debugDepthMeanRange)), 1.0);
     if (debugMode == DEBUG_MODE_DEPTH_STD) return float4(jet_colormap(debug_normalize_range(raster_depth_output(replayState.depthState), g_Raster.debugDepthStdRange)), 1.0);
     return raster_forward_output_pixel(info, replayState.pixelState);

@@ -119,6 +119,7 @@ struct RasterParams
     float debugEllipseThicknessPx;
     float2 debugCloneCountRange;
     float2 debugDensityRange;
+    float2 debugContributionRange;
     float2 debugDepthMeanRange;
     float2 debugDepthStdRange;
 };

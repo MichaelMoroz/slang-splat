@@ -138,6 +138,7 @@ class GaussianRenderer:
     _DEFAULT_RASTER_GRAD_FIXED_OPACITY_RANGE = np.float32(0.2)
     _DEFAULT_DEBUG_CLONE_COUNT_RANGE = (0.0, 16.0)
     _DEFAULT_DEBUG_DENSITY_RANGE = (0.0, 20.0)
+    _DEFAULT_DEBUG_CONTRIBUTION_RANGE = (1.0 / 255.0, 1.0)
     _DEFAULT_DEBUG_DEPTH_MEAN_RANGE = (0.0, 10.0)
     _DEFAULT_DEBUG_DEPTH_STD_RANGE = (0.0, 0.5)
     _COUNTER_READBACK_RING_SIZE = 2
@@ -252,6 +253,7 @@ class GaussianRenderer:
                 "debugEllipseThicknessPx": float(self.debug_ellipse_thickness_px),
                 "debugCloneCountRange": spy.float2(*self.debug_clone_count_range),
                 "debugDensityRange": spy.float2(*self.debug_density_range),
+                "debugContributionRange": spy.float2(*self.debug_contribution_range),
                 "debugDepthMeanRange": spy.float2(*self.debug_depth_mean_range),
                 "debugDepthStdRange": spy.float2(*self.debug_depth_std_range),
             }
@@ -448,6 +450,7 @@ class GaussianRenderer:
         debug_ellipse_thickness_px: float = 2.0,
         debug_clone_count_range: tuple[float, float] = _DEFAULT_DEBUG_CLONE_COUNT_RANGE,
         debug_density_range: tuple[float, float] = _DEFAULT_DEBUG_DENSITY_RANGE,
+        debug_contribution_range: tuple[float, float] = _DEFAULT_DEBUG_CONTRIBUTION_RANGE,
         debug_depth_mean_range: tuple[float, float] = _DEFAULT_DEBUG_DEPTH_MEAN_RANGE,
         debug_depth_std_range: tuple[float, float] = _DEFAULT_DEBUG_DEPTH_STD_RANGE,
         cached_raster_grad_atomic_mode: str = CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED,
@@ -481,6 +484,7 @@ class GaussianRenderer:
         self.debug_ellipse_thickness_px = float(debug_ellipse_thickness_px)
         self.debug_clone_count_range = tuple(float(x) for x in debug_clone_count_range)
         self.debug_density_range = tuple(float(x) for x in debug_density_range)
+        self.debug_contribution_range = tuple(float(x) for x in debug_contribution_range)
         self.debug_depth_mean_range = tuple(float(x) for x in debug_depth_mean_range)
         self.debug_depth_std_range = tuple(float(x) for x in debug_depth_std_range)
         self.tile_width, self.tile_height = (self.width + self.tile_size - 1) // self.tile_size, (self.height + self.tile_size - 1) // self.tile_size

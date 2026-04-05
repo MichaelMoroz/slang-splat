@@ -51,6 +51,7 @@ def test_render_settings_forward_debug_overlays_to_renderer(monkeypatch) -> None
         "debug_ellipse_thickness_px": 2.0,
         "debug_clone_count_range": (0.0, 16.0),
         "debug_density_range": (0.0, 20.0),
+        "debug_contribution_range": (1.0 / 255.0, 1.0),
         "debug_depth_mean_range": (0.0, 10.0),
         "debug_depth_std_range": (0.0, 0.5),
         "debug_show_ellipses": True,

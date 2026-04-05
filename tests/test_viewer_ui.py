@@ -50,6 +50,7 @@ def test_build_ui_initializes_histogram_controls() -> None:
         debug_show_grad_norm=False,
         debug_grad_norm_threshold=2e-4,
         debug_clone_count_range=(0.0, 16.0),
+        debug_contribution_range=(1.0 / 255.0, 1.0),
     )
 
     viewer_ui = ui.build_ui(renderer)
@@ -65,6 +66,8 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["render_background_color"] == (0.0, 0.0, 0.0)
     assert viewer_ui._values["debug_clone_count_min"] == 0.0
     assert viewer_ui._values["debug_clone_count_max"] == 16.0
+    assert viewer_ui._values["debug_contribution_min"] == 1.0 / 255.0
+    assert viewer_ui._values["debug_contribution_max"] == 1.0
     assert viewer_ui._values["lr_scale_mul"] == 5.0
     assert viewer_ui._values["lr_color_mul"] == 5.0
     assert viewer_ui._values["lr_opacity_mul"] == 5.0
@@ -113,13 +116,13 @@ def test_debug_mode_labels_include_contribution_amount() -> None:
 
 
 def test_contribution_amount_debug_mode_exposes_no_extra_range_controls() -> None:
-    assert ui._renderer_debug_control_keys("contribution_amount") == ("debug_mode",)
+    assert ui._renderer_debug_control_keys("contribution_amount") == ("debug_mode", "debug_contribution_min", "debug_contribution_max")
     assert ui._renderer_debug_control_keys("processed_count") == ("debug_mode",)
     assert ui._renderer_debug_control_keys("splat_density") == ("debug_mode", "debug_density_min", "debug_density_max")
 
 
 def test_contribution_amount_colorbar_ticks_use_log_scale() -> None:
-    viewer_ui = SimpleNamespace(_values={"alpha_cutoff": 1.0 / 255.0})
+    viewer_ui = SimpleNamespace(_values={"debug_contribution_min": 1.0 / 255.0, "debug_contribution_max": 1.0})
 
     lo = float(ui.ToolkitWindow._debug_colorbar_tick_label(SimpleNamespace(), "contribution_amount", 0.0, viewer_ui))
     hi = float(ui.ToolkitWindow._debug_colorbar_tick_label(SimpleNamespace(), "contribution_amount", 1.0, viewer_ui))

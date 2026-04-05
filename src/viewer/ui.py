@@ -181,6 +181,7 @@ def _renderer_debug_control_keys(mode: str) -> tuple[str, ...]:
     if mode == "grad_norm": return ("debug_mode", "debug_grad_norm_threshold")
     if mode == "clone_count": return ("debug_mode", "debug_clone_count_min", "debug_clone_count_max")
     if mode in ("splat_density", "splat_spatial_density", "splat_screen_density"): return ("debug_mode", "debug_density_min", "debug_density_max")
+    if mode == "contribution_amount": return ("debug_mode", "debug_contribution_min", "debug_contribution_max")
     if mode == "depth_mean": return ("debug_mode", "debug_depth_mean_min", "debug_depth_mean_max")
     if mode == "depth_std": return ("debug_mode", "debug_depth_std_min", "debug_depth_std_max")
     return ("debug_mode",)
@@ -199,9 +200,10 @@ def _grad_norm_tick_value(t: float, threshold: float) -> float:
     return math.pow(10.0, lo + _saturate(t) * (hi - lo))
 
 
-def _contribution_amount_tick_value(t: float, alpha_cutoff: float) -> float:
-    lo = math.log10(max(float(alpha_cutoff), _DEBUG_CONTRIBUTION_AMOUNT_FLOOR))
-    return math.pow(10.0, lo + _saturate(t) * -lo)
+def _contribution_amount_tick_value(t: float, value_min: float, value_max: float) -> float:
+    lo = math.log10(max(float(min(value_min, value_max)), _DEBUG_CONTRIBUTION_AMOUNT_FLOOR))
+    hi = math.log10(max(float(max(value_min, value_max)), max(float(min(value_min, value_max)), _DEBUG_CONTRIBUTION_AMOUNT_FLOOR) * (1.0 + _DEBUG_CONTRIBUTION_AMOUNT_FLOOR)))
+    return math.pow(10.0, lo + _saturate(t) * (hi - lo))
 
 
 def _debug_range_tick_value(t: float, value_min: float, value_max: float) -> float:
@@ -332,6 +334,8 @@ DEBUG_RENDER_SPECS = (
     ControlSpec("debug_clone_count_max", "input_float", "Clone Count Max", {"value": 16.0, "step": 1.0, "step_fast": 4.0, "format": "%.5g"}),
     ControlSpec("debug_density_min", "input_float", "Density Min", {"value": 0.0, "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
     ControlSpec("debug_density_max", "input_float", "Density Max", {"value": 20.0, "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
+    ControlSpec("debug_contribution_min", "input_float", "Contribution Min", {"value": 1.0 / 255.0, "step": 1e-4, "step_fast": 1e-3, "format": "%.5g"}),
+    ControlSpec("debug_contribution_max", "input_float", "Contribution Max", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.5g"}),
     ControlSpec("debug_depth_mean_min", "input_float", "Depth Mean Min", {"value": 0.0, "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
     ControlSpec("debug_depth_mean_max", "input_float", "Depth Mean Max", {"value": 10.0, "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
     ControlSpec("debug_depth_std_min", "input_float", "Depth Std Min", {"value": 0.0, "step": 0.01, "step_fast": 0.1, "format": "%.5g"}),
@@ -707,7 +711,7 @@ class ToolkitWindow:
         if mode in ("splat_density", "splat_spatial_density", "splat_screen_density"):
             return f"{_debug_range_tick_value(t, float(ui._values.get('debug_density_min', 0.0)), float(ui._values.get('debug_density_max', 20.0))):.3g}"
         if mode == "contribution_amount":
-            return f"{_contribution_amount_tick_value(t, float(ui._values.get('alpha_cutoff', 1.0 / 255.0))):.1e}"
+            return f"{_contribution_amount_tick_value(t, float(ui._values.get('debug_contribution_min', 1.0 / 255.0)), float(ui._values.get('debug_contribution_max', 1.0))):.1e}"
         if mode == "depth_mean":
             return f"{_debug_range_tick_value(t, float(ui._values.get('debug_depth_mean_min', 0.0)), float(ui._values.get('debug_depth_mean_max', 10.0))):.3g}"
         if mode == "depth_std":
@@ -1447,6 +1451,8 @@ class ToolkitWindow:
         "debug_clone_count_max": "Upper bound for the per-splat clone counter heatmap",
         "debug_density_min": "Lower bound for density debug heatmaps",
         "debug_density_max": "Upper bound for density debug heatmaps",
+        "debug_contribution_min": "Lower bound for the log-scaled contribution heatmap",
+        "debug_contribution_max": "Upper bound for the log-scaled contribution heatmap",
         "debug_depth_mean_min": "Lower bound for depth mean debug heatmap",
         "debug_depth_mean_max": "Upper bound for depth mean debug heatmap",
         "debug_depth_std_min": "Lower bound for depth standard deviation heatmap",
@@ -1615,12 +1621,15 @@ def build_ui(renderer) -> ViewerUI:
     values["debug_ellipse_thickness_px"] = float(getattr(renderer, "debug_ellipse_thickness_px", 2.0))
     clone_count_range = tuple(getattr(renderer, "debug_clone_count_range", (0.0, 16.0)))
     density_range = tuple(getattr(renderer, "debug_density_range", (0.0, 20.0)))
+    contribution_range = tuple(getattr(renderer, "debug_contribution_range", (1.0 / 255.0, 1.0)))
     depth_mean_range = tuple(getattr(renderer, "debug_depth_mean_range", (0.0, 10.0)))
     depth_std_range = tuple(getattr(renderer, "debug_depth_std_range", (0.0, 0.5)))
     values["debug_clone_count_min"] = float(clone_count_range[0])
     values["debug_clone_count_max"] = float(clone_count_range[1])
     values["debug_density_min"] = float(density_range[0])
     values["debug_density_max"] = float(density_range[1])
+    values["debug_contribution_min"] = float(contribution_range[0])
+    values["debug_contribution_max"] = float(contribution_range[1])
     values["debug_depth_mean_min"] = float(depth_mean_range[0])
     values["debug_depth_mean_max"] = float(depth_mean_range[1])
     values["debug_depth_std_min"] = float(depth_std_range[0])

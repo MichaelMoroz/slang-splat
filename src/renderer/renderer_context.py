@@ -30,6 +30,7 @@ class GaussianRenderSettings:
     debug_ellipse_thickness_px: float = 2.0
     debug_clone_count_range: tuple[float, float] = (0.0, 16.0)
     debug_density_range: tuple[float, float] = (0.0, 20.0)
+    debug_contribution_range: tuple[float, float] = (1.0 / 255.0, 1.0)
     debug_depth_mean_range: tuple[float, float] = (0.0, 10.0)
     debug_depth_std_range: tuple[float, float] = (0.0, 0.5)
     debug_show_ellipses: bool = False
@@ -71,6 +72,7 @@ class GaussianRenderSettings:
             "debug_ellipse_thickness_px": float(self.debug_ellipse_thickness_px),
             "debug_clone_count_range": tuple(float(x) for x in self.debug_clone_count_range),
             "debug_density_range": tuple(float(x) for x in self.debug_density_range),
+            "debug_contribution_range": tuple(float(x) for x in self.debug_contribution_range),
             "debug_depth_mean_range": tuple(float(x) for x in self.debug_depth_mean_range),
             "debug_depth_std_range": tuple(float(x) for x in self.debug_depth_std_range),
             "debug_show_ellipses": bool(self.debug_show_ellipses),
