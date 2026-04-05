@@ -172,6 +172,16 @@ float3 clamp_scale_anisotropy(float3 logScale)
     return max(logScale, float3(minAllowedLogScale));
 }
 
+float3 clamp_sh0_base_color(float3 sh0)
+{
+    return (clamp(0.5 + SH_C0 * sh0, 0.0, 1.0) - 0.5) / SH_C0;
+}
+
+float3 clamp_sh1_coeffs(float3 sh1)
+{
+    return clamp(sh1, -1.0, 1.0);
+}
+
 float3 clamp_screen_area_upper_bound(float3 position, float3 logScale)
 {
     if (g_EnableCurrentCameraScreenScaleCap == 0u) return logScale;
@@ -272,5 +282,9 @@ void csProjectGaussianParams(uint3 dispatchThreadID : SV_DispatchThreadID)
     state.logScale = clamp_screen_area_upper_bound(state.position, sanitize_float3(state.logScale, g_Stability.hugeValue));
     state.logScale = clamp_scale_anisotropy(state.logScale);
     state.rotation = normalize_quaternion_safe(sanitize_float4(state.rotation, g_Stability.hugeValue));
+    state.sh0 = clamp_sh0_base_color(sanitize_float3(state.sh0, g_Stability.hugeValue));
+    state.sh1X = clamp_sh1_coeffs(sanitize_float3(state.sh1X, g_Stability.hugeValue));
+    state.sh1Y = clamp_sh1_coeffs(sanitize_float3(state.sh1Y, g_Stability.hugeValue));
+    state.sh1Z = clamp_sh1_coeffs(sanitize_float3(state.sh1Z, g_Stability.hugeValue));
     state.store(splatId);
 }

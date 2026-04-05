@@ -11,6 +11,7 @@ from src.common import buffer_to_numpy
 from src.filter import SeparableGaussianBlur
 from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
+from src.scene.sh_utils import SH_C0
 from src.training import gaussian_trainer as gaussian_trainer_module
 from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, contribution_fixed_count_from_percent, contribution_percent_from_fixed_count, resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_effective_maintenance_interval, resolve_maintenance_contribution_cull_threshold, resolve_maintenance_growth_ratio, resolve_max_allowed_density, resolve_training_resolution, should_run_maintenance_step
 
@@ -1126,6 +1127,51 @@ def test_training_max_screen_size_ignores_offscreen_centers(device, tmp_path: Pa
 
     scales = _actual_scale(_read_scene_groups(renderer, 1)["scales"][0, :3])
     np.testing.assert_allclose(scales, np.array([2.0, 1.5, 1.0], dtype=np.float32), rtol=0.0, atol=1e-6)
+
+
+def test_optimizer_projection_clamps_sh_coefficients(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=1, seed=111)
+    frame = _make_frame(tmp_path, image_name="sh_projection_clamp_target.png", image_id=26)
+    renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.0, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(scale_l2_weight=0.0, scale_abs_reg_weight=0.0, opacity_reg_weight=0.0, sh1_reg_weight=0.0),
+        seed=123,
+    )
+    camera = trainer.make_frame_camera(0, renderer.width, renderer.height)
+    initial_groups = _read_scene_groups(renderer, 1)
+    renderer.write_scene_groups(
+        1,
+        positions=initial_groups["positions"],
+        scales=initial_groups["scales"],
+        rotations=initial_groups["rotations"],
+        sh_coeffs=np.array(
+            [[[3.0, -3.0, 0.25], [1.5, -1.25, 0.5], [-1.6, 0.25, 1.2], [0.0, 2.0, -3.0]]],
+            dtype=np.float32,
+        ),
+    )
+
+    zeros = np.zeros((scene.count, 4), dtype=np.float32)
+    zero_sh = np.zeros((scene.count, 4, 3), dtype=np.float32)
+    _write_grad_groups(renderer, scene.count, grad_positions=zeros, grad_scales=zeros, grad_rotations=zeros, grad_sh_coeffs=zero_sh, grad_color_alpha=zeros)
+
+    enc = device.create_command_encoder()
+    trainer._dispatch_optimizer_step(enc, 1, camera)
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+
+    sh_coeffs = _read_scene_groups(renderer, 1)["sh_coeffs"][0]
+    sh0_limit = np.float32(0.5 / SH_C0)
+    np.testing.assert_allclose(sh_coeffs[0], np.array([sh0_limit, -sh0_limit, 0.25], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(
+        sh_coeffs[1:],
+        np.array([[1.0, -1.0, 0.5], [-1.0, 0.25, 1.0], [0.0, 1.0, -1.0]], dtype=np.float32),
+        rtol=0.0,
+        atol=1e-6,
+    )
 
 
 def test_box_downscale_matches_expected_mean(device, tmp_path: Path) -> None:

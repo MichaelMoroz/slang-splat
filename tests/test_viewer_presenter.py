@@ -99,7 +99,7 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
     controls = {
         "loss_debug": _control(loss_debug),
         "loss_debug_frame": _control(0),
-        "loss_debug_view": _control(2),
+        "loss_debug_view": _control(0),
         "loss_debug_abs_scale": _control(1.0),
         "images_subdir": _control(0),
         "training_steps_per_frame": _control(3),

@@ -96,6 +96,7 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["debug_clone_count_max"] == 16.0
     assert viewer_ui._values["debug_contribution_min"] == 0.001
     assert viewer_ui._values["debug_contribution_max"] == 1.0
+    assert viewer_ui._values["loss_debug_view"] == 0
     assert viewer_ui._values["lr_scale_mul"] == 5.0
     assert viewer_ui._values["lr_color_mul"] == 5.0
     assert viewer_ui._values["lr_opacity_mul"] == 5.0

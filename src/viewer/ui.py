@@ -276,7 +276,7 @@ GROUP_SPECS = {
     ),
     "Main": (
         ControlSpec("loss_debug", "checkbox", "Visual Loss Debug", {"value": False}),
-        ControlSpec("loss_debug_view", "slider_int", "Debug View", {"value": 2, "min": 0, "max": len(LOSS_DEBUG_OPTIONS) - 1}),
+        ControlSpec("loss_debug_view", "slider_int", "Debug View", {"value": 0, "min": 0, "max": len(LOSS_DEBUG_OPTIONS) - 1}),
         ControlSpec("loss_debug_frame", "slider_int", "Debug Frame", {"value": 0, "min": 0, "max": 10000}),
         ControlSpec(_LOSS_DEBUG_ABS_SCALE_KEY, "slider_float", "Abs Diff Scale", {"value": _LOSS_DEBUG_ABS_SCALE_DEFAULT, "min": _LOSS_DEBUG_ABS_SCALE_MIN, "max": _LOSS_DEBUG_ABS_SCALE_MAX, "format": "%.3gx", "logarithmic": True}),
     ),
@@ -752,10 +752,25 @@ class ToolkitWindow:
                     _color_u32(0.72, 0.76, 0.82, 0.95),
                     label,
                 )
+            self._draw_viewport_view_menu(ui, cursor)
         else:
             self._viewport_window_focused = False
             self._viewport_input_active = False
         imgui.end()
+
+    def _draw_viewport_view_menu(self, ui: ViewerUI, image_origin: imgui.ImVec2) -> None:
+        imgui.set_cursor_screen_pos(imgui.ImVec2(image_origin.x + 8.0, image_origin.y + 8.0))
+        if imgui.small_button("view"):
+            imgui.open_popup("viewport_view_popup")
+        if imgui.begin_popup("viewport_view_popup"):
+            current = min(max(int(ui._values.get("debug_mode", 0)), 0), len(_DEBUG_MODE_LABELS) - 1)
+            for idx, label in enumerate(_DEBUG_MODE_LABELS):
+                selected = idx == current
+                if imgui.selectable(label, selected)[0]:
+                    ui._values["debug_mode"] = idx
+                if selected:
+                    imgui.set_item_default_focus()
+            imgui.end_popup()
 
     def _draw_debug_colorbar(self, ui: ViewerUI) -> None:
         mode = _debug_colorbar_mode(ui)
