@@ -188,6 +188,10 @@ def _menu_item(label: str, shortcut: str = "", selected: bool = False, enabled: 
     return bool(imgui.menu_item(label, shortcut, selected, enabled)[0])
 
 
+def _imgui_opened(value: object) -> bool:
+    return bool(value[0] if isinstance(value, tuple) else value)
+
+
 def _saturate(value: float) -> float:
     return max(0.0, min(float(value), 1.0))
 
@@ -759,18 +763,23 @@ class ToolkitWindow:
         imgui.end()
 
     def _draw_viewport_view_menu(self, ui: ViewerUI, image_origin: imgui.ImVec2) -> None:
-        imgui.set_cursor_screen_pos(imgui.ImVec2(image_origin.x + 8.0, image_origin.y + 8.0))
-        if imgui.small_button("view"):
+        button_pos = imgui.ImVec2(image_origin.x + 8.0, image_origin.y + 8.0)
+        imgui.push_id("viewport_view")
+        imgui.set_cursor_screen_pos(button_pos)
+        if _imgui_opened(imgui.small_button("view")):
+            label_size = imgui.calc_text_size("view")
+            imgui.set_next_window_pos(imgui.ImVec2(button_pos.x, button_pos.y + float(label_size.y) + 10.0), imgui.Cond_.appearing.value)
             imgui.open_popup("viewport_view_popup")
-        if imgui.begin_popup("viewport_view_popup"):
+        if _imgui_opened(imgui.begin_popup("viewport_view_popup")):
             current = min(max(int(ui._values.get("debug_mode", 0)), 0), len(_DEBUG_MODE_LABELS) - 1)
             for idx, label in enumerate(_DEBUG_MODE_LABELS):
                 selected = idx == current
-                if imgui.selectable(label, selected)[0]:
+                if _imgui_opened(imgui.selectable(label, selected)):
                     ui._values["debug_mode"] = idx
                 if selected:
                     imgui.set_item_default_focus()
             imgui.end_popup()
+        imgui.pop_id()
 
     def _draw_debug_colorbar(self, ui: ViewerUI) -> None:
         mode = _debug_colorbar_mode(ui)
