@@ -9,12 +9,13 @@ static const uint DEBUG_MODE_PROCESSED_COUNT = 1u;
 static const uint DEBUG_MODE_CLONE_COUNT = 2u;
 static const uint DEBUG_MODE_DEPTH_MEAN = 3u;
 static const uint DEBUG_MODE_DEPTH_STD = 4u;
-static const uint DEBUG_MODE_ELLIPSE_OUTLINES = 5u;
-static const uint DEBUG_MODE_SPLAT_SPATIAL_DENSITY = 6u;
-static const uint DEBUG_MODE_SPLAT_SCREEN_DENSITY = 7u;
-static const uint DEBUG_MODE_GRAD_NORM = 8u;
-static const uint DEBUG_MODE_SPLAT_DENSITY = 9u;
-static const uint DEBUG_MODE_CONTRIBUTION_AMOUNT = 10u;
+static const uint DEBUG_MODE_DEPTH_LOCAL_MISMATCH = 5u;
+static const uint DEBUG_MODE_ELLIPSE_OUTLINES = 6u;
+static const uint DEBUG_MODE_SPLAT_SPATIAL_DENSITY = 7u;
+static const uint DEBUG_MODE_SPLAT_SCREEN_DENSITY = 8u;
+static const uint DEBUG_MODE_GRAD_NORM = 9u;
+static const uint DEBUG_MODE_SPLAT_DENSITY = 10u;
+static const uint DEBUG_MODE_CONTRIBUTION_AMOUNT = 11u;
 static const float DEBUG_CONTRIBUTION_AMOUNT_FLOOR = 1e-6;
 static const float SH_C0 = 0.28209479177387814;
 static const float SH_C1 = 0.4886025119029199;
@@ -123,6 +124,9 @@ struct RasterParams
     float debugContributionPercentScale;
     float2 debugDepthMeanRange;
     float2 debugDepthStdRange;
+    float2 debugDepthLocalMismatchRange;
+    float debugDepthLocalMismatchSmoothRadius;
+    float debugDepthLocalMismatchRejectRadius;
 };
 
 struct RasterGaussian : IDifferentiable

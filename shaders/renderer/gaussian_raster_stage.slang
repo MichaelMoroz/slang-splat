@@ -331,6 +331,7 @@ struct RasterReplayState
     float splatDensitySum;
     float spatialDensitySum;
     float screenDensitySum;
+    float4 depthLocalMismatchState;
 };
 
 struct RasterBackwardState
@@ -355,6 +356,7 @@ void init_raster_forward_state(RasterPixelInfo info, out RasterReplayState repla
     replayState.splatDensitySum = 0.0;
     replayState.spatialDensitySum = 0.0;
     replayState.screenDensitySum = 0.0;
+    replayState.depthLocalMismatchState = 0.0;
 }
 
 void init_raster_backward_state(out RasterBackwardState backwardState)
@@ -377,6 +379,61 @@ void init_raster_debug_state(RasterPixelInfo info, out RasterReplayState replayS
     replayState.splatDensitySum = 0.0;
     replayState.spatialDensitySum = 0.0;
     replayState.screenDensitySum = 0.0;
+    replayState.depthLocalMismatchState = 0.0;
+}
+
+float raster_depth_debug_sigma_scale()
+{
+    return max(g_Prepass.radiusScale * GAUSSIAN_SUPPORT_SIGMA_RADIUS, SMALL_VALUE);
+}
+
+float raster_support_ray_scale(RasterGaussian gaussian, float3 rayDir)
+{
+    float3 rayLocal = world_to_local_dir(rayDir, gaussian.scale, gaussian.rotation);
+    return rsqrt(max(dot(rayLocal, rayLocal), SMALL_VALUE));
+}
+
+float raster_sigma_ray(RasterGaussian gaussian, float3 rayDir)
+{
+    return raster_support_ray_scale(gaussian, rayDir) / raster_depth_debug_sigma_scale();
+}
+
+float raster_mean_sigma(RasterGaussian gaussian)
+{
+    return max((gaussian.scale.x + gaussian.scale.y + gaussian.scale.z) / 3.0, SMALL_VALUE) / raster_depth_debug_sigma_scale();
+}
+
+void depth_local_mismatch_step(inout float4 state, float contributionWeight, float depth, float sigmaRay, float meanSigma)
+{
+    if (!(contributionWeight > SMALL_VALUE) || !(depth > 0.0)) return;
+
+    float estimateWeight = state.x;
+    if (!(estimateWeight > SMALL_VALUE))
+    {
+        state.x = contributionWeight;
+        state.y = depth;
+        return;
+    }
+
+    float estimateDepth = state.y;
+    float delta = abs(depth - estimateDepth);
+    float smoothDist = max(g_Raster.debugDepthLocalMismatchSmoothRadius, 0.0) * max(sigmaRay, SMALL_VALUE);
+    float rejectDist = max(g_Raster.debugDepthLocalMismatchRejectRadius, 0.0) * max(meanSigma, SMALL_VALUE);
+    rejectDist = max(rejectDist, smoothDist + SMALL_VALUE);
+    float u = saturate((delta - smoothDist) / max(rejectDist - smoothDist, SMALL_VALUE));
+    float gate = 1.0 - u * u * (3.0 - 2.0 * u);
+    float prevEstimateWeight = estimateWeight * gate;
+    float nextEstimateWeight = prevEstimateWeight + contributionWeight;
+    state.y = (prevEstimateWeight * estimateDepth + contributionWeight * depth) / max(nextEstimateWeight, SMALL_VALUE);
+    state.x = nextEstimateWeight;
+    float mismatchWeight = contributionWeight * gate;
+    state.z += mismatchWeight;
+    state.w += mismatchWeight * delta;
+}
+
+float raster_depth_local_mismatch_output(float4 state)
+{
+    return state.w / max(state.z, SMALL_VALUE);
 }
 
 RasterPixelInfo resolve_raster_pixel(uint3 groupID, uint lane)
@@ -503,6 +560,10 @@ struct DebugRasterReplayVariant : IRasterReplayVariant
         float trans = replayState.pixelState.trans;
         float contributionWeight = trans * alpha;
         if ((debugMode == DEBUG_MODE_DEPTH_MEAN || debugMode == DEBUG_MODE_DEPTH_STD) && rayDepth > 0.0) replayState.depthState = depth_state_step(replayState.depthState, contributionWeight, rayDepth);
+        if (debugMode == DEBUG_MODE_DEPTH_LOCAL_MISMATCH && rayDepth > 0.0)
+        {
+            depth_local_mismatch_step(replayState.depthLocalMismatchState, contributionWeight, rayDepth, raster_sigma_ray(gaussian, info.rayDir), raster_mean_sigma(gaussian));
+        }
         if (debugMode == DEBUG_MODE_SPLAT_DENSITY) replayState.splatDensitySum = raster_splat_density_step(replayState.splatDensitySum, trans, alpha, gaussian.colorAlpha.w);
         if (debugMode == DEBUG_MODE_SPLAT_SPATIAL_DENSITY && contributionWeight > SMALL_VALUE)
         {
@@ -587,6 +648,7 @@ float4 raster_debug_output_pixel(RasterPixelInfo info, RasterReplayState replayS
     if (debugMode == DEBUG_MODE_SPLAT_SCREEN_DENSITY) return float4(jet_colormap(debug_normalize_range(replayState.screenDensitySum, g_Raster.debugDensityRange)), 1.0);
     if (debugMode == DEBUG_MODE_DEPTH_MEAN) return float4(jet_colormap(debug_normalize_range(replayState.depthState.y, g_Raster.debugDepthMeanRange)), 1.0);
     if (debugMode == DEBUG_MODE_DEPTH_STD) return float4(jet_colormap(debug_normalize_range(raster_depth_output(replayState.depthState), g_Raster.debugDepthStdRange)), 1.0);
+    if (debugMode == DEBUG_MODE_DEPTH_LOCAL_MISMATCH) return float4(jet_colormap(debug_normalize_range(raster_depth_local_mismatch_output(replayState.depthLocalMismatchState), g_Raster.debugDepthLocalMismatchRange)), 1.0);
     return raster_forward_output_pixel(info, replayState.pixelState);
 }
 

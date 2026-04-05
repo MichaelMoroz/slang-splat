@@ -99,6 +99,10 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["debug_clone_count_max"] == 16.0
     assert viewer_ui._values["debug_contribution_min"] == 0.001
     assert viewer_ui._values["debug_contribution_max"] == 1.0
+    assert viewer_ui._values["debug_depth_local_mismatch_min"] == 0.0
+    assert viewer_ui._values["debug_depth_local_mismatch_max"] == 0.5
+    assert viewer_ui._values["debug_depth_local_mismatch_smooth_radius"] == 2.0
+    assert viewer_ui._values["debug_depth_local_mismatch_reject_radius"] == 5.0
     assert viewer_ui._values["loss_debug_view"] == 0
     assert viewer_ui._values["lr_scale_mul"] == 5.0
     assert viewer_ui._values["lr_color_mul"] == 5.0
@@ -191,12 +195,15 @@ def test_optimizer_regularization_tab_includes_density_controls() -> None:
 def test_debug_mode_labels_include_contribution_amount() -> None:
     assert "contribution_amount" in ui._DEBUG_MODE_VALUES
     assert "Contribution Amount" in ui._DEBUG_MODE_LABELS
+    assert "depth_local_mismatch" in ui._DEBUG_MODE_VALUES
+    assert "Depth Local Mismatch" in ui._DEBUG_MODE_LABELS
 
 
 def test_contribution_amount_debug_mode_exposes_no_extra_range_controls() -> None:
     assert ui._renderer_debug_control_keys("contribution_amount") == ("debug_mode", "debug_contribution_min", "debug_contribution_max")
     assert ui._renderer_debug_control_keys("processed_count") == ("debug_mode",)
     assert ui._renderer_debug_control_keys("splat_density") == ("debug_mode", "debug_density_min", "debug_density_max")
+    assert ui._renderer_debug_control_keys("depth_local_mismatch") == ("debug_mode", "debug_depth_local_mismatch_min", "debug_depth_local_mismatch_max", "debug_depth_local_mismatch_smooth_radius", "debug_depth_local_mismatch_reject_radius")
 
 
 def test_contribution_amount_colorbar_ticks_use_log_scale() -> None:
@@ -207,6 +214,16 @@ def test_contribution_amount_colorbar_ticks_use_log_scale() -> None:
 
     assert np.isclose(lo, 0.001, rtol=0.0, atol=1e-9)
     assert np.isclose(hi, 1.0, rtol=0.0, atol=1e-6)
+
+
+def test_depth_local_mismatch_colorbar_ticks_use_local_range() -> None:
+    viewer_ui = SimpleNamespace(_values={"debug_depth_local_mismatch_min": 0.05, "debug_depth_local_mismatch_max": 0.35})
+
+    lo = float(ui.ToolkitWindow._debug_colorbar_tick_label(SimpleNamespace(), "depth_local_mismatch", 0.0, viewer_ui))
+    hi = float(ui.ToolkitWindow._debug_colorbar_tick_label(SimpleNamespace(), "depth_local_mismatch", 1.0, viewer_ui))
+
+    assert np.isclose(lo, 0.05, rtol=0.0, atol=1e-9)
+    assert np.isclose(hi, 0.35, rtol=0.0, atol=1e-9)
 
 
 def test_histogram_log_range_from_ranges_uses_nonzero_finite_extrema() -> None:

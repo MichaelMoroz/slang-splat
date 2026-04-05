@@ -33,6 +33,9 @@ class GaussianRenderSettings:
     debug_contribution_range: tuple[float, float] = (0.001, 1.0)
     debug_depth_mean_range: tuple[float, float] = (0.0, 10.0)
     debug_depth_std_range: tuple[float, float] = (0.0, 0.5)
+    debug_depth_local_mismatch_range: tuple[float, float] = (0.0, 0.5)
+    debug_depth_local_mismatch_smooth_radius: float = 2.0
+    debug_depth_local_mismatch_reject_radius: float = 5.0
     debug_show_ellipses: bool = False
     debug_show_processed_count: bool = False
     debug_show_grad_norm: bool = False
@@ -75,6 +78,9 @@ class GaussianRenderSettings:
             "debug_contribution_range": tuple(float(x) for x in self.debug_contribution_range),
             "debug_depth_mean_range": tuple(float(x) for x in self.debug_depth_mean_range),
             "debug_depth_std_range": tuple(float(x) for x in self.debug_depth_std_range),
+            "debug_depth_local_mismatch_range": tuple(float(x) for x in self.debug_depth_local_mismatch_range),
+            "debug_depth_local_mismatch_smooth_radius": float(self.debug_depth_local_mismatch_smooth_radius),
+            "debug_depth_local_mismatch_reject_radius": float(self.debug_depth_local_mismatch_reject_radius),
             "debug_show_ellipses": bool(self.debug_show_ellipses),
             "debug_show_processed_count": bool(self.debug_show_processed_count),
             "debug_show_grad_norm": bool(self.debug_show_grad_norm),

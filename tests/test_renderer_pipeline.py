@@ -81,6 +81,26 @@ def make_scene(count: int, seed: int = 0) -> GaussianScene:
     )
 
 
+def _make_layered_depth_scene(depths: tuple[float, ...], sigma: float = 0.04, opacity: float = 0.75) -> GaussianScene:
+    count = len(depths)
+    positions = np.zeros((count, 3), dtype=np.float32)
+    positions[:, 2] = np.asarray(depths, dtype=np.float32)
+    scales = _log_sigma(np.full((count, 3), sigma, dtype=np.float32))
+    rotations = np.zeros((count, 4), dtype=np.float32)
+    rotations[:, 0] = 1.0
+    opacities = np.full((count,), opacity, dtype=np.float32)
+    colors = np.full((count, 3), 0.5, dtype=np.float32)
+    sh_coeffs = np.zeros((count, 1, 3), dtype=np.float32)
+    return GaussianScene(
+        positions=positions,
+        scales=scales,
+        rotations=rotations,
+        opacities=opacities,
+        colors=colors,
+        sh_coeffs=sh_coeffs,
+    )
+
+
 def test_renderer_loads_raster_constants_from_shader(device):
     renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, list_capacity_multiplier=32)
     config = GaussianRenderer._load_raster_config(Path(SHADER_ROOT / "renderer" / "gaussian_types.slang"))
@@ -618,6 +638,46 @@ def test_debug_contribution_amount_render_smoke(device):
     assert np.all(np.isfinite(out.image))
     channel_spread = np.max(out.image[..., :3], axis=-1) - np.min(out.image[..., :3], axis=-1)
     assert float(np.max(channel_spread)) > 1e-4
+
+
+def test_debug_depth_local_mismatch_render_smoke(device):
+    scene = make_scene(24, seed=61)
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    renderer = GaussianRenderer(
+        device,
+        width=64,
+        height=64,
+        radius_scale=1.6,
+        list_capacity_multiplier=32,
+        debug_mode=GaussianRenderer.DEBUG_MODE_DEPTH_LOCAL_MISMATCH,
+    )
+    out = renderer.render(scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32))
+    assert out.image.shape == (64, 64, 4)
+    assert np.all(np.isfinite(out.image))
+    channel_spread = np.max(out.image[..., :3], axis=-1) - np.min(out.image[..., :3], axis=-1)
+    assert float(np.max(channel_spread)) > 1e-4
+
+
+def test_debug_depth_local_mismatch_highlights_close_layered_splats_more_than_far_layers(device):
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    near_scene = _make_layered_depth_scene((0.0, 0.03))
+    far_scene = _make_layered_depth_scene((0.0, 0.5))
+    renderer = GaussianRenderer(
+        device,
+        width=64,
+        height=64,
+        radius_scale=1.6,
+        list_capacity_multiplier=32,
+        debug_mode=GaussianRenderer.DEBUG_MODE_DEPTH_LOCAL_MISMATCH,
+        debug_depth_local_mismatch_range=(0.0, 0.1),
+        debug_depth_local_mismatch_smooth_radius=2.0,
+        debug_depth_local_mismatch_reject_radius=5.0,
+    )
+
+    near_out = renderer.render(near_scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32)).image
+    far_out = renderer.render(far_scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32)).image
+
+    assert float(np.max(near_out[..., 1])) > float(np.max(far_out[..., 1])) + 1e-3
 
 
 def test_render_stats_are_one_frame_delayed(device):

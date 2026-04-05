@@ -76,6 +76,7 @@ The loss-debug controls expose a runtime `Abs Diff Scale` slider when `View = Ab
 - Density debug views share the same range controls. `Splat Density` accumulates a soft per-pixel splat count using `sqrt(transmittance) * alpha / opacity`, while `Spatial Density` and `Screen Density` continue to normalize by 3D volume and projected ellipse area respectively.
 - `Contribution Amount` visualizes the per-splat `g_SplatContribution` atomic buffer accumulated during training forward, normalized to percent of observed dataset pixels as `count / 256 / observed_pixels * 100`.
 - The heatmap is logarithmic and uses dedicated `Contribution Min` and `Contribution Max` controls in percent units instead of sharing density ranges.
+- `Depth Local Mismatch` tracks a front-to-back online depth estimate per pixel and visualizes the contribution-weighted local absolute depth deviation from that estimate, with separate smooth and reject sigma-multiple controls to avoid coupling distant transparent layers.
 - The renderer debug colorbar is drawn as a horizontal legend near the bottom of the docked viewport window.
 
 ## Histogram Window

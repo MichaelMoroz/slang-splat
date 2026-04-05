@@ -108,6 +108,7 @@ class GaussianRenderer:
     DEBUG_MODE_CLONE_COUNT = "clone_count"
     DEBUG_MODE_DEPTH_MEAN = "depth_mean"
     DEBUG_MODE_DEPTH_STD = "depth_std"
+    DEBUG_MODE_DEPTH_LOCAL_MISMATCH = "depth_local_mismatch"
     DEBUG_MODE_ELLIPSE_OUTLINES = "ellipse_outlines"
     DEBUG_MODE_SPLAT_DENSITY = "splat_density"
     DEBUG_MODE_SPLAT_SPATIAL_DENSITY = "splat_spatial_density"
@@ -120,6 +121,7 @@ class GaussianRenderer:
         DEBUG_MODE_CLONE_COUNT,
         DEBUG_MODE_DEPTH_MEAN,
         DEBUG_MODE_DEPTH_STD,
+        DEBUG_MODE_DEPTH_LOCAL_MISMATCH,
         DEBUG_MODE_ELLIPSE_OUTLINES,
         DEBUG_MODE_SPLAT_SPATIAL_DENSITY,
         DEBUG_MODE_SPLAT_SCREEN_DENSITY,
@@ -141,6 +143,7 @@ class GaussianRenderer:
     _DEFAULT_DEBUG_CONTRIBUTION_RANGE = (0.001, 1.0)
     _DEFAULT_DEBUG_DEPTH_MEAN_RANGE = (0.0, 10.0)
     _DEFAULT_DEBUG_DEPTH_STD_RANGE = (0.0, 0.5)
+    _DEFAULT_DEBUG_DEPTH_LOCAL_MISMATCH_RANGE = (0.0, 0.5)
     _SPLAT_CONTRIBUTION_FIXED_SCALE = 256.0
     _COUNTER_READBACK_RING_SIZE = 2
     _SCANLINE_WORK_ITEM_UINTS = 4
@@ -258,6 +261,9 @@ class GaussianRenderer:
                 "debugContributionPercentScale": float(self._debug_contribution_percent_scale),
                 "debugDepthMeanRange": spy.float2(*self.debug_depth_mean_range),
                 "debugDepthStdRange": spy.float2(*self.debug_depth_std_range),
+                "debugDepthLocalMismatchRange": spy.float2(*self.debug_depth_local_mismatch_range),
+                "debugDepthLocalMismatchSmoothRadius": float(self.debug_depth_local_mismatch_smooth_radius),
+                "debugDepthLocalMismatchRejectRadius": float(self.debug_depth_local_mismatch_reject_radius),
             }
         }
 
@@ -459,6 +465,9 @@ class GaussianRenderer:
         debug_contribution_range: tuple[float, float] = _DEFAULT_DEBUG_CONTRIBUTION_RANGE,
         debug_depth_mean_range: tuple[float, float] = _DEFAULT_DEBUG_DEPTH_MEAN_RANGE,
         debug_depth_std_range: tuple[float, float] = _DEFAULT_DEBUG_DEPTH_STD_RANGE,
+        debug_depth_local_mismatch_range: tuple[float, float] = _DEFAULT_DEBUG_DEPTH_LOCAL_MISMATCH_RANGE,
+        debug_depth_local_mismatch_smooth_radius: float = 2.0,
+        debug_depth_local_mismatch_reject_radius: float = 5.0,
         cached_raster_grad_atomic_mode: str = CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED,
         cached_raster_grad_fixed_ro_local_range: float = 0.01,
         cached_raster_grad_fixed_scale_range: float = 0.01,
@@ -493,6 +502,9 @@ class GaussianRenderer:
         self.debug_contribution_range = tuple(float(x) for x in debug_contribution_range)
         self.debug_depth_mean_range = tuple(float(x) for x in debug_depth_mean_range)
         self.debug_depth_std_range = tuple(float(x) for x in debug_depth_std_range)
+        self.debug_depth_local_mismatch_range = tuple(float(x) for x in debug_depth_local_mismatch_range)
+        self.debug_depth_local_mismatch_smooth_radius = float(debug_depth_local_mismatch_smooth_radius)
+        self.debug_depth_local_mismatch_reject_radius = float(debug_depth_local_mismatch_reject_radius)
         self.tile_width, self.tile_height = (self.width + self.tile_size - 1) // self.tile_size, (self.height + self.tile_size - 1) // self.tile_size
         self.tile_count = self.tile_width * self.tile_height
         self.tile_bits = int(np.ceil(np.log2(max(self.tile_count, 2))))

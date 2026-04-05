@@ -82,6 +82,7 @@ _DEBUG_MODE_VALUES = (
     "contribution_amount",
     "depth_mean",
     "depth_std",
+    "depth_local_mismatch",
     "grad_norm",
 )
 _DEBUG_MODE_LABELS = (
@@ -95,6 +96,7 @@ _DEBUG_MODE_LABELS = (
     "Contribution Amount",
     "Depth Mean",
     "Depth Std",
+    "Depth Local Mismatch",
     "Grad Norm",
 )
 
@@ -223,6 +225,7 @@ def _renderer_debug_control_keys(mode: str) -> tuple[str, ...]:
     if mode == "contribution_amount": return ("debug_mode", "debug_contribution_min", "debug_contribution_max")
     if mode == "depth_mean": return ("debug_mode", "debug_depth_mean_min", "debug_depth_mean_max")
     if mode == "depth_std": return ("debug_mode", "debug_depth_std_min", "debug_depth_std_max")
+    if mode == "depth_local_mismatch": return ("debug_mode", "debug_depth_local_mismatch_min", "debug_depth_local_mismatch_max", "debug_depth_local_mismatch_smooth_radius", "debug_depth_local_mismatch_reject_radius")
     return ("debug_mode",)
 
 
@@ -381,6 +384,10 @@ DEBUG_RENDER_SPECS = (
     ControlSpec("debug_depth_mean_max", "input_float", "Depth Mean Max", {"value": 10.0, "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
     ControlSpec("debug_depth_std_min", "input_float", "Depth Std Min", {"value": 0.0, "step": 0.01, "step_fast": 0.1, "format": "%.5g"}),
     ControlSpec("debug_depth_std_max", "input_float", "Depth Std Max", {"value": 0.5, "step": 0.01, "step_fast": 0.1, "format": "%.5g"}),
+    ControlSpec("debug_depth_local_mismatch_min", "input_float", "Depth Local Mismatch Min", {"value": 0.0, "step": 0.01, "step_fast": 0.1, "format": "%.5g"}),
+    ControlSpec("debug_depth_local_mismatch_max", "input_float", "Depth Local Mismatch Max", {"value": 0.5, "step": 0.01, "step_fast": 0.1, "format": "%.5g"}),
+    ControlSpec("debug_depth_local_mismatch_smooth_radius", "input_float", "Depth Smooth Radius", {"value": 2.0, "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
+    ControlSpec("debug_depth_local_mismatch_reject_radius", "input_float", "Depth Reject Radius", {"value": 5.0, "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
 )
 
 _ALL_DEFAULTS = {spec.key: spec.kwargs["value"] for group in GROUP_SPECS.values() for spec in group if "value" in spec.kwargs}
@@ -850,6 +857,7 @@ class ToolkitWindow:
             "contribution_amount": "Contribution Amount",
             "depth_mean": "Depth Mean",
             "depth_std": "Depth Std",
+            "depth_local_mismatch": "Depth Local Mismatch",
             "grad_norm": "Grad Norm",
         }.get(mode, "Debug")
 
@@ -870,6 +878,8 @@ class ToolkitWindow:
             return f"{_debug_range_tick_value(t, float(ui._values.get('debug_depth_mean_min', 0.0)), float(ui._values.get('debug_depth_mean_max', 10.0))):.3g}"
         if mode == "depth_std":
             return f"{_debug_range_tick_value(t, float(ui._values.get('debug_depth_std_min', 0.0)), float(ui._values.get('debug_depth_std_max', 0.5))):.3g}"
+        if mode == "depth_local_mismatch":
+            return f"{_debug_range_tick_value(t, float(ui._values.get('debug_depth_local_mismatch_min', 0.0)), float(ui._values.get('debug_depth_local_mismatch_max', 0.5))):.3g}"
         return ""
 
     def _draw_main_menu_bar(self, ui: ViewerUI) -> float:
@@ -1613,6 +1623,10 @@ class ToolkitWindow:
         "debug_depth_mean_max": "Upper bound for depth mean debug heatmap",
         "debug_depth_std_min": "Lower bound for depth standard deviation heatmap",
         "debug_depth_std_max": "Upper bound for depth standard deviation heatmap",
+        "debug_depth_local_mismatch_min": "Lower bound for the local depth mismatch heatmap",
+        "debug_depth_local_mismatch_max": "Upper bound for the local depth mismatch heatmap",
+        "debug_depth_local_mismatch_smooth_radius": "Sigma multiple for full local smoothing before the mismatch gate starts to fall off",
+        "debug_depth_local_mismatch_reject_radius": "Sigma multiple, based on mean splat sigma, beyond which depth mismatch stops contributing and the estimate resets",
         "lr_base": "Base learning rate for all parameters",
         "lr_pos_mul": "Learning rate multiplier for position",
         "lr_scale_mul": "Learning rate multiplier for scale",
@@ -1782,6 +1796,7 @@ def build_ui(renderer) -> ViewerUI:
     contribution_range = tuple(getattr(renderer, "debug_contribution_range", (0.001, 1.0)))
     depth_mean_range = tuple(getattr(renderer, "debug_depth_mean_range", (0.0, 10.0)))
     depth_std_range = tuple(getattr(renderer, "debug_depth_std_range", (0.0, 0.5)))
+    depth_local_mismatch_range = tuple(getattr(renderer, "debug_depth_local_mismatch_range", (0.0, 0.5)))
     values["debug_clone_count_min"] = float(clone_count_range[0])
     values["debug_clone_count_max"] = float(clone_count_range[1])
     values["debug_density_min"] = float(density_range[0])
@@ -1792,6 +1807,10 @@ def build_ui(renderer) -> ViewerUI:
     values["debug_depth_mean_max"] = float(depth_mean_range[1])
     values["debug_depth_std_min"] = float(depth_std_range[0])
     values["debug_depth_std_max"] = float(depth_std_range[1])
+    values["debug_depth_local_mismatch_min"] = float(depth_local_mismatch_range[0])
+    values["debug_depth_local_mismatch_max"] = float(depth_local_mismatch_range[1])
+    values["debug_depth_local_mismatch_smooth_radius"] = float(getattr(renderer, "debug_depth_local_mismatch_smooth_radius", 2.0))
+    values["debug_depth_local_mismatch_reject_radius"] = float(getattr(renderer, "debug_depth_local_mismatch_reject_radius", 5.0))
     values["colmap_root_path"] = ""
     values["colmap_database_path"] = ""
     values["colmap_images_root"] = ""
