@@ -23,6 +23,31 @@ TRAIN_BACKGROUND_MODE_RANDOM = 1
 SPLAT_CONTRIBUTION_FIXED_SCALE = 256.0
 DEFAULT_MAINTENANCE_CONTRIBUTION_CULL_PERCENT = 0.001
 DEFAULT_DEBUG_CONTRIBUTION_RANGE_PERCENT = (0.001, 1.0)
+_MAINTENANCE_HASH_INIT = 0x9E3779B9
+_MAINTENANCE_HASH_MIX = 0x85EBCA6B
+
+
+def _hash_u32_scalar(value: int) -> np.uint32:
+    x = int(value) & 0xFFFFFFFF
+    x ^= x >> 16
+    x = (x * 0x7FEB352D) & 0xFFFFFFFF
+    x ^= x >> 15
+    x = (x * 0x846CA68B) & 0xFFFFFFFF
+    x ^= x >> 16
+    return np.uint32(x)
+
+
+def _maintenance_hash_combine(seed: int, value: int) -> np.uint32:
+    mixed = (int(value) * _MAINTENANCE_HASH_MIX + _MAINTENANCE_HASH_INIT) & 0xFFFFFFFF
+    return _hash_u32_scalar((int(seed) ^ mixed) & 0xFFFFFFFF)
+
+
+def _maintenance_camera_hash(camera_id: int) -> np.uint32:
+    return _maintenance_hash_combine(_MAINTENANCE_HASH_INIT, int(camera_id))
+
+
+def _u32_bits_to_f32(value: int) -> np.float32:
+    return np.asarray([np.uint32(value)], dtype=np.uint32).view(np.float32)[0]
 
 
 def contribution_percent_from_fixed_count(contribution_fixed: float | np.ndarray, observed_pixel_count: float) -> float | np.ndarray:
@@ -526,18 +551,20 @@ class GaussianTrainer:
         height = int(self.renderer.height)
         rows = np.zeros((max(len(self.frames), 1) * self._MAINTENANCE_CAMERA_ROW_COUNT, 4), dtype=np.float32)
         for frame_index in range(len(self.frames)):
+            frame = self.frames[frame_index]
             camera = self.make_frame_camera(frame_index, width, height)
             right, up, forward = camera.basis()
             fx, fy = camera.focal_pixels_xy(width, height)
             cx, cy = camera.principal_point(width, height)
             k1, k2 = camera.distortion_coeffs()
+            camera_hash = _u32_bits_to_f32(int(_maintenance_camera_hash(frame.image_id)))
             base = frame_index * self._MAINTENANCE_CAMERA_ROW_COUNT
             rows[base + 0] = np.array([width, height, camera.position[0], camera.position[1]], dtype=np.float32)
             rows[base + 1] = np.array([camera.position[2], fx, fy, cx], dtype=np.float32)
             rows[base + 2] = np.array([cy, camera.near, camera.far, k1], dtype=np.float32)
             rows[base + 3] = np.array([k2, right[0], right[1], right[2]], dtype=np.float32)
             rows[base + 4] = np.array([up[0], up[1], up[2], forward[0]], dtype=np.float32)
-            rows[base + 5] = np.array([forward[1], forward[2], 0.0, 0.0], dtype=np.float32)
+            rows[base + 5] = np.array([forward[1], forward[2], camera_hash, 0.0], dtype=np.float32)
         return rows
 
     def _maintenance_camera_signature_value(self) -> tuple[object, ...]:

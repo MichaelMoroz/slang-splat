@@ -797,16 +797,17 @@ def test_maintenance_rewrite_culls_and_splits_families(device, tmp_path: Path) -
     actual_opacity = _actual_opacity(groups["color_alpha"][:, 3])
 
     assert trainer.scene.count == 3
-    np.testing.assert_allclose(actual_scales[0], np.array([0.09, 0.06, 0.03], dtype=np.float32) / np.cbrt(3.0), rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(actual_opacity, np.full((3,), 1.0 - (1.0 - 0.6) ** (1.0 / 3.0), dtype=np.float32), rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(groups["positions"][:, 1:3], np.repeat(source_position[None, 1:3], 3, axis=0), rtol=0.0, atol=1e-6)
-    expected_offset = 0.09 - (0.09 / np.cbrt(3.0))
     np.testing.assert_allclose(
-        np.sort(groups["positions"][:, 0] - source_position[0]),
-        np.array([-expected_offset, 0.0, expected_offset], dtype=np.float32),
+        actual_scales,
+        np.repeat((np.array([[0.09, 0.06, 0.03]], dtype=np.float32) * (3.0 ** (-1.0 / 3.0))), 3, axis=0),
         rtol=0.0,
         atol=1e-6,
     )
+    np.testing.assert_allclose(actual_opacity, np.full((3,), 0.6, dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(np.mean(groups["positions"][:, :3], axis=0), source_position, rtol=0.0, atol=1e-6)
+    offsets = groups["positions"][:, :3] - source_position[None, :]
+    np.testing.assert_allclose(np.sum(offsets, axis=0), np.zeros((3,), dtype=np.float32), rtol=0.0, atol=1e-6)
+    assert float(np.max(np.linalg.norm(offsets, axis=1))) > 1e-3
     clone_counts_after = buffer_to_numpy(trainer.maintenance_buffers["clone_counts"], np.uint32)[: trainer.scene.count]
     contribution_after = buffer_to_numpy(trainer.maintenance_buffers["splat_contribution"], np.uint32)[: trainer.scene.count]
     assert np.all(clone_counts_after == 0)
@@ -917,10 +918,58 @@ def test_maintenance_respects_max_gaussians_cap(device, tmp_path: Path) -> None:
     assert trainer.scene.count == 3
     groups = _read_scene_groups(renderer, trainer.scene.count)
     actual_scales = _actual_scale(groups["scales"][:, :3])
-    split_like_first = np.allclose(actual_scales[0], np.array([0.09, 0.06, 0.03], dtype=np.float32) / np.cbrt(2.0), rtol=0.0, atol=1e-6)
-    unsplit_like_second = np.any(np.all(np.isclose(actual_scales, np.full((3,), 0.04, dtype=np.float32), rtol=0.0, atol=1e-6), axis=1))
-    assert split_like_first
-    assert unsplit_like_second
+    split_scale = np.array([0.09, 0.06, 0.03], dtype=np.float32) * (2.0 ** (-1.0 / 3.0))
+    split_mask = np.all(np.isclose(actual_scales, split_scale[None, :], rtol=0.0, atol=1e-6), axis=1)
+    unsplit_mask = np.all(np.isclose(actual_scales, np.full((1, 3), 0.04, dtype=np.float32), rtol=0.0, atol=1e-6), axis=1)
+    assert int(np.count_nonzero(split_mask)) == 2
+    assert int(np.count_nonzero(unsplit_mask)) == 1
+    split_positions = groups["positions"][split_mask, :3]
+    np.testing.assert_allclose(np.mean(split_positions, axis=0), scene.positions[0], rtol=0.0, atol=1e-6)
+
+
+def test_maintenance_rewrite_sampling_depends_on_frame_hash(device, tmp_path: Path) -> None:
+    scene_a = _make_scene(count=1, seed=151)
+    scene_b = _make_scene(count=1, seed=151)
+    scene_a.opacities[:] = np.array([0.6], dtype=np.float32)
+    scene_b.opacities[:] = np.array([0.6], dtype=np.float32)
+    scene_a.scales[:] = _log_sigma(np.array([[0.08, 0.05, 0.03]], dtype=np.float32))
+    scene_b.scales[:] = scene_a.scales.copy()
+    frame_a = _make_frame(tmp_path, image_name="maintenance_frame_hash_a.png", image_id=41)
+    frame_b = _make_frame(tmp_path, image_name="maintenance_frame_hash_b.png", image_id=42)
+    renderer_a = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    renderer_b = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    observed_pixels = renderer_a.width * renderer_a.height
+    trainer_a = GaussianTrainer(
+        device=device,
+        renderer=renderer_a,
+        scene=scene_a,
+        frames=[frame_a],
+        training_hparams=TrainingHyperParams(maintenance_alpha_cull_threshold=1e-6, maintenance_contribution_cull_threshold=contribution_percent_from_fixed_count(50, observed_pixels)),
+        seed=123,
+    )
+    trainer_b = GaussianTrainer(
+        device=device,
+        renderer=renderer_b,
+        scene=scene_b,
+        frames=[frame_b],
+        training_hparams=TrainingHyperParams(maintenance_alpha_cull_threshold=1e-6, maintenance_contribution_cull_threshold=contribution_percent_from_fixed_count(50, observed_pixels)),
+        seed=123,
+    )
+
+    trainer_a._observed_contribution_pixel_count = observed_pixels
+    trainer_b._observed_contribution_pixel_count = observed_pixels
+    trainer_a.maintenance_buffers["clone_counts"].copy_from_numpy(np.array([1], dtype=np.uint32))
+    trainer_b.maintenance_buffers["clone_counts"].copy_from_numpy(np.array([1], dtype=np.uint32))
+    trainer_a.maintenance_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
+    trainer_b.maintenance_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
+    trainer_a._run_maintenance()
+    trainer_b._run_maintenance()
+
+    positions_a = _read_scene_groups(renderer_a, trainer_a.scene.count)["positions"][:, :3]
+    positions_b = _read_scene_groups(renderer_b, trainer_b.scene.count)["positions"][:, :3]
+    np.testing.assert_allclose(np.mean(positions_a, axis=0), scene_a.positions[0], rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(np.mean(positions_b, axis=0), scene_b.positions[0], rtol=0.0, atol=1e-6)
+    assert not np.allclose(positions_a, positions_b, rtol=0.0, atol=1e-6)
 
 
 def test_maintenance_min_screen_size_raises_small_splats(device, tmp_path: Path) -> None:

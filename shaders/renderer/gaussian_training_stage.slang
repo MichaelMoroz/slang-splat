@@ -13,6 +13,9 @@ static const uint LOSS_SLOT_TOTAL = 0u;
 static const uint LOSS_SLOT_MSE = 1u;
 static const uint LOSS_SLOT_DENSITY = 2u;
 static const float POSITION_RANDOM_STEP_MAX_ANISOTROPY = 4.0;
+static const float DENSIFY_SCALE_SHRINK_EXPONENT = -1.0 / 3.0;
+static const uint MAINTENANCE_HASH_INIT = 0x9e3779b9u;
+static const uint MAINTENANCE_HASH_MIX = 0x85ebca6bu;
 uniform uint g_Width;
 uniform uint g_Height;
 uniform float g_InvPixelCount;
@@ -230,18 +233,44 @@ void copy_adam_state(uint srcSplatId, uint dstSplatId)
     }
 }
 
-float3 largest_scale_axis(float3 scale)
+uint maintenance_hash_combine(uint seed, uint value)
 {
-    if (scale.x >= scale.y && scale.x >= scale.z) return float3(1.0, 0.0, 0.0);
-    if (scale.y >= scale.z) return float3(0.0, 1.0, 0.0);
-    return float3(0.0, 0.0, 1.0);
+    return hash_u32(seed ^ (value * MAINTENANCE_HASH_MIX + MAINTENANCE_HASH_INIT));
 }
 
-float centered_family_coordinate(uint slot, uint familySize)
+uint maintenance_family_frame_hash(uint splatId)
+{
+    uint seed = maintenance_hash_combine(g_MaintenanceSeed, splatId + 1u);
+    if (g_MaintenanceCameraCount == 0u) return seed;
+    uint cameraIndex = seed % g_MaintenanceCameraCount;
+    uint baseRow = cameraIndex * MAINTENANCE_CAMERA_ROW_COUNT;
+    return maintenance_hash_combine(asuint(g_MaintenanceCameraRows[baseRow + 5u].z), cameraIndex + 1u);
+}
+
+uint maintenance_sample_seed(uint frameHash, uint splatId, uint subsampleId)
+{
+    return maintenance_hash_combine(maintenance_hash_combine(frameHash, splatId + 1u), subsampleId + 1u);
+}
+
+float3 maintenance_gaussian_sample_raw(uint frameHash, uint splatId, uint subsampleId)
+{
+    uint rngState = maintenance_sample_seed(frameHash, splatId, subsampleId);
+    return rng_normal3_box_muller(rngState);
+}
+
+float3 maintenance_gaussian_family_mean(uint frameHash, uint splatId, uint familySize)
 {
     if (familySize <= 1u) return 0.0;
-    float halfSpan = max(0.5 * float(familySize - 1u), 1.0);
-    return (float(slot) - 0.5 * float(familySize - 1u)) / halfSpan;
+    float3 mean = 0.0;
+    [loop] for (uint slot = 0u; slot < familySize; slot++) mean += maintenance_gaussian_sample_raw(frameHash, splatId, slot);
+    return mean / max(float(familySize), 1.0);
+}
+
+float3 maintenance_centered_gaussian_sample(uint frameHash, uint splatId, uint slot, uint familySize, float3 familyMean)
+{
+    if (familySize <= 1u) return 0.0;
+    float varianceRestore = sqrt(float(familySize) / float(familySize - 1u));
+    return (maintenance_gaussian_sample_raw(frameHash, splatId, slot) - familyMean) * varianceRestore;
 }
 
 float position_random_step_gate(float opacity)
@@ -265,22 +294,18 @@ float3 position_random_step_world_delta(SplatState state, inout uint rngState)
     return rotate_by_quat(localDelta, qInv);
 }
 
-SplatState split_family_member(SplatState source, uint splatId, uint slot, uint familySize)
+SplatState split_family_member(SplatState source, uint splatId, uint slot, uint familySize, uint frameHash, float3 familyMean)
 {
     if (familySize <= 1u) return source;
     float family = float(familySize);
-    float shrink = log(family) / 3.0;
+    float shrink = pow(family, DENSIFY_SCALE_SHRINK_EXPONENT);
     float3 parentScale = exp(source.logScale);
-    float3 childScale = exp(source.logScale - shrink);
-    float alpha = opacity_from_raw(source.rawOpacity);
-    float childAlpha = 1.0 - pow(max(1.0 - alpha, TINY_VALUE), 1.0 / family);
+    float shrinkOffset = sqrt(max(1.0 - shrink * shrink, 0.0));
     float4 qInv = float4(source.rotation.x, -source.rotation.y, -source.rotation.z, -source.rotation.w);
-    float3 axis = largest_scale_axis(parentScale);
-    float3 localOffset = axis * centered_family_coordinate(slot, familySize) * dot(max(parentScale - childScale, 0.0), axis);
+    float3 localOffset = maintenance_centered_gaussian_sample(frameHash, splatId, slot, familySize, familyMean) * parentScale * shrinkOffset;
     SplatState child = source;
     child.position = source.position + rotate_by_quat(localOffset, qInv);
-    child.logScale = source.logScale - shrink;
-    child.rawOpacity = raw_opacity_from_alpha(childAlpha);
+    child.logScale = source.logScale + log(shrink);
     return child;
 }
 
@@ -513,11 +538,13 @@ void csRewriteMaintenanceSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
         uint availableChildren = childBase < g_AppendSplatCount ? (g_AppendSplatCount - childBase) : 0u;
         emittedCloneCount = min(cloneCount, availableChildren);
         uint familySize = emittedCloneCount + 1u;
-        store_splat_state(g_DstSplatParams, g_DstSplatCount, parentIndex, split_family_member(source, splatId, 0u, familySize));
+        uint frameHash = maintenance_family_frame_hash(splatId);
+        float3 familyMean = maintenance_gaussian_family_mean(frameHash, splatId, familySize);
+        store_splat_state(g_DstSplatParams, g_DstSplatCount, parentIndex, split_family_member(source, splatId, 0u, familySize, frameHash, familyMean));
         copy_adam_state(splatId, parentIndex);
         [loop] for (uint childSlot = 0u; childSlot < emittedCloneCount; childSlot++)
         {
-            SplatState child = split_family_member(source, splatId, childSlot + 1u, familySize);
+            SplatState child = split_family_member(source, splatId, childSlot + 1u, familySize, frameHash, familyMean);
             uint childIndex = g_SurvivorCount + childBase + childSlot;
             store_splat_state(g_AppendParams, g_AppendSplatCount, childBase + childSlot, child);
             store_splat_state(g_DstSplatParams, g_DstSplatCount, childIndex, child);
