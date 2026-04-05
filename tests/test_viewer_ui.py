@@ -33,6 +33,12 @@ def test_panel_rect_starts_below_menu_bar() -> None:
     assert h == 876.0
 
 
+def test_status_suffix_strips_presenter_prefix() -> None:
+    assert ui._status_suffix("Train Res: 2473x1643 (N=1)") == "2473x1643 (N=1)"
+    assert ui._status_suffix("Maintenance: every 200 | growth=2.00%") == "every 200 | growth=2.00%"
+    assert ui._status_suffix("Manual 1x") == "Manual 1x"
+
+
 def test_build_ui_initializes_histogram_controls() -> None:
     renderer = SimpleNamespace(
         radius_scale=1.0,

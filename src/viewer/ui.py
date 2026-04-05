@@ -113,6 +113,22 @@ def _read_text_if_exists(path: Path) -> str:
     return path.read_text(encoding="utf-8") if path.exists() else ""
 
 
+def _status_suffix(text: str) -> str:
+    value = str(text).strip()
+    return value.split(": ", 1)[-1] if ": " in value else value
+
+
+def _draw_disabled_wrapped_text(text: str) -> None:
+    value = _status_suffix(text)
+    if not value:
+        return
+    imgui.push_text_wrap_pos(imgui.get_cursor_pos_x() + imgui.get_content_region_avail().x)
+    imgui.begin_disabled()
+    imgui.text_unformatted(value)
+    imgui.end_disabled()
+    imgui.pop_text_wrap_pos()
+
+
 def _build_about_text() -> str:
     return "\n".join(
         (
@@ -1259,7 +1275,7 @@ class ToolkitWindow:
                 ui._values["loss_debug_frame"] = val
             frame_text = ui._texts.get("loss_debug_frame", "")
             if frame_text:
-                imgui.text_disabled(frame_text.split(": ", 1)[-1] if ": " in frame_text else frame_text)
+                _draw_disabled_wrapped_text(frame_text)
             imgui.unindent()
         imgui.separator()
 
@@ -1277,17 +1293,17 @@ class ToolkitWindow:
             self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Setup"] if spec.key == key))
         train_resolution = ui._texts.get("training_resolution", "")
         if train_resolution:
-            imgui.text_disabled(train_resolution.split(": ", 1)[-1] if ": " in train_resolution else train_resolution)
+            _draw_disabled_wrapped_text(train_resolution)
         downscale_status = ui._texts.get("training_downscale", "")
         if downscale_status:
-            imgui.text_disabled(downscale_status.split(": ", 1)[-1] if ": " in downscale_status else downscale_status)
+            _draw_disabled_wrapped_text(downscale_status)
         schedule_status = ui._texts.get("training_schedule", "")
         if schedule_status:
-            imgui.text_disabled(schedule_status.split(": ", 1)[-1] if ": " in schedule_status else schedule_status)
+            _draw_disabled_wrapped_text(schedule_status)
         maintenance_status = ui._texts.get("training_maintenance", "")
         if maintenance_status:
-            imgui.text_disabled(maintenance_status.split(": ", 1)[-1] if ": " in maintenance_status else maintenance_status)
-        imgui.text_disabled("COLMAP import chooses direct pointcloud init, diffused pointcloud init, or a custom PLY scene.")
+            _draw_disabled_wrapped_text(maintenance_status)
+        _draw_disabled_wrapped_text("COLMAP import chooses direct pointcloud init, diffused pointcloud init, or a custom PLY scene.")
         self._ctx_reset("train_setup_ctx", ui, [s.key for s in GROUP_SPECS["Train Setup"]])
         imgui.separator()
 
