@@ -52,12 +52,12 @@ Each trainer `step()` performs:
 4. Run renderer prepass + raster forward.
 5. Run the fixed-count forward stage:
    - `csRasterizeTrainingForward` renders the current image and stores per-pixel raster forward cache data for backward,
-  - the same pass also stores softened splat density scalars for regularization,
+  - the same pass also stores softened splat density scalars plus the weighted per-pixel depth accumulation state used by the depth-std-over-mean-depth regularizer,
    - `csClearLossBuffer` resets the scalar loss slots,
   - `csComputeL1LossForward` computes direct RGB L1 reconstruction loss, RGB MSE, the density hinge regularizer, and the differentiable depth-std-over-mean-depth ratio regularizer, then reduces total and tracked metrics into the loss buffer.
 6. Run the fixed-count backward stage:
    - `csComputeL1LossBackward` writes the unnormalized per-pixel RGB L1 sign gradient into flat `RWStructuredBuffer<float4>` `g_OutputGrad`, plus one packed `float2` regularizer gradient buffer for density and depth-ratio replay, indexed as `pixel = y * width + x`,
-   - `csRasterizeBackward` consumes the cached raster forward state and accumulates quantized cached raster-field gradients for the precomputed raster-cache fields,
+   - `csRasterizeBackward` consumes the cached raster forward state and accumulates quantized cached raster-field gradients for the precomputed raster-cache fields; the depth-ratio replay uses the same alpha-depth hit evaluation as training forward so the cached depth state and replay stay consistent,
    - `csBackpropCachedRasterGrads` decodes that cached-field intermediate inline, backprops through `build_cached_ellipsoid`, and writes the final float packed scene-parameter gradient buffer with the final `1 / pixel_count` normalization before the rest of training.
 7. Run the optimizer pipeline:
   - `csAccumulateRegularizationGrads` adds scale, SH1, and opacity regularizers on the packed param-major state.

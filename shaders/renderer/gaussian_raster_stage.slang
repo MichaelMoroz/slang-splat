@@ -514,8 +514,9 @@ struct TrainingRasterReplayVariant : IRasterReplayVariant
 
     static bool eval_hit(RasterPixelInfo info, uint splatId, RasterGaussian gaussian, out float alpha, out float rayDepth)
     {
-        alpha = raster_eval_alpha_gaussian(gaussian, info.rayDir);
-        rayDepth = 0.0;
+        float2 eval = raster_eval_alpha_depth_gaussian(gaussian, info.rayDir);
+        alpha = eval.x;
+        rayDepth = eval.y;
         return alpha > 0.0;
     }
 

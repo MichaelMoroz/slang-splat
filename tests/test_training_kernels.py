@@ -829,6 +829,51 @@ def test_depth_ratio_loss_changes_total_loss_and_gradients(device, tmp_path: Pat
     assert float(np.max(np.abs(regularizer_grad_on[:, 1]))) > 0.0
 
 
+def test_depth_ratio_regularizer_affects_training_raster_replay(device, tmp_path: Path) -> None:
+    scene = GaussianScene(
+        positions=np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.2], [0.03, -0.02, 0.1]], dtype=np.float32),
+        scales=_log_sigma(np.full((3, 3), 0.12, dtype=np.float32)),
+        rotations=np.array([[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+        opacities=np.full((3,), 0.8, dtype=np.float32),
+        colors=np.array([[0.7, 0.2, 0.1], [0.1, 0.7, 0.2], [0.2, 0.1, 0.7]], dtype=np.float32),
+        sh_coeffs=np.zeros((3, 1, 3), dtype=np.float32),
+    )
+    frame = _make_frame(tmp_path, image_name="depth_ratio_raster_target.png", image_id=18)
+    renderer_off = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
+    renderer_on = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
+    trainer_off = GaussianTrainer(device=device, renderer=renderer_off, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(density_regularizer=0.0, depth_ratio_weight=0.0), seed=123)
+    trainer_on = GaussianTrainer(device=device, renderer=renderer_on, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(density_regularizer=0.0, depth_ratio_weight=0.5), seed=123)
+    camera = frame.make_camera(near=0.1, far=20.0)
+    background = np.asarray(trainer_on.training.background, dtype=np.float32)
+
+    def run_pass(trainer: GaussianTrainer, renderer: GaussianRenderer):
+        renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
+        enc = device.create_command_encoder()
+        trainer._dispatch_raster_training_forward(enc, camera, background)
+        target_texture = trainer.get_frame_target_texture(0, native_resolution=False, encoder=enc)
+        trainer._dispatch_loss_forward(enc, target_texture)
+        trainer._dispatch_loss_backward(enc, target_texture)
+        trainer._dispatch_raster_backward(enc, camera, background)
+        device.submit_command_buffer(enc.finish())
+        device.wait()
+        regularizer_grad = buffer_to_numpy(renderer.work_buffers["training_regularizer_grad"], np.float32).reshape(-1, 2)
+        return trainer._read_loss_metrics(), _read_grad_groups(renderer, scene.count), regularizer_grad
+
+    (total_off, mse_off, density_off), grads_off, regularizer_grad_off = run_pass(trainer_off, renderer_off)
+    (total_on, mse_on, density_on), grads_on, regularizer_grad_on = run_pass(trainer_on, renderer_on)
+
+    assert np.isfinite(total_off)
+    assert np.isfinite(total_on)
+    np.testing.assert_allclose(mse_on, mse_off, rtol=1e-5, atol=1e-7)
+    assert density_off == 0.0
+    assert density_on == 0.0
+    assert total_on > total_off
+    assert np.allclose(regularizer_grad_off[:, 1], 0.0)
+    assert float(np.max(np.abs(regularizer_grad_on[:, 1]))) > 0.0
+    grad_delta = sum(float(np.max(np.abs(grads_on[name] - grads_off[name]))) for name in grads_on)
+    assert grad_delta > 0.0
+
+
 def test_refinement_rewrite_culls_and_splits_families(device, tmp_path: Path) -> None:
     scene = _make_scene(count=2, seed=89)
     scene.opacities[:] = np.array([0.6, 1e-5], dtype=np.float32)
