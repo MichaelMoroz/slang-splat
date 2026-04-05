@@ -107,6 +107,21 @@ def test_optimizer_regularization_tab_includes_density_controls() -> None:
     assert "position_random_step_opacity_gate_sharpness" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
 
 
+def test_debug_mode_labels_include_contribution_amount() -> None:
+    assert "contribution_amount" in ui._DEBUG_MODE_VALUES
+    assert "Contribution Amount" in ui._DEBUG_MODE_LABELS
+
+
+def test_contribution_amount_colorbar_ticks_use_log_scale() -> None:
+    viewer_ui = SimpleNamespace(_values={"alpha_cutoff": 1.0 / 255.0})
+
+    lo = float(ui.ToolkitWindow._debug_colorbar_tick_label(SimpleNamespace(), "contribution_amount", 0.0, viewer_ui))
+    hi = float(ui.ToolkitWindow._debug_colorbar_tick_label(SimpleNamespace(), "contribution_amount", 1.0, viewer_ui))
+
+    assert np.isclose(lo, 1.0 / 255.0, rtol=0.0, atol=3e-5)
+    assert np.isclose(hi, 1.0, rtol=0.0, atol=1e-6)
+
+
 def test_histogram_log_range_from_ranges_uses_nonzero_finite_extrema() -> None:
     payload = SimpleNamespace(
         min_values=np.array([0.0, -1e-4, -1.0, np.nan], dtype=np.float32),

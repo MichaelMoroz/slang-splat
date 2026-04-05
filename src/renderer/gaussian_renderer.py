@@ -113,6 +113,7 @@ class GaussianRenderer:
     DEBUG_MODE_SPLAT_SPATIAL_DENSITY = "splat_spatial_density"
     DEBUG_MODE_SPLAT_SCREEN_DENSITY = "splat_screen_density"
     DEBUG_MODE_GRAD_NORM = "grad_norm"
+    DEBUG_MODE_CONTRIBUTION_AMOUNT = "contribution_amount"
     DEBUG_MODES = (
         DEBUG_MODE_NORMAL,
         DEBUG_MODE_PROCESSED_COUNT,
@@ -124,6 +125,7 @@ class GaussianRenderer:
         DEBUG_MODE_SPLAT_SCREEN_DENSITY,
         DEBUG_MODE_GRAD_NORM,
         DEBUG_MODE_SPLAT_DENSITY,
+        DEBUG_MODE_CONTRIBUTION_AMOUNT,
     )
     CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT = "float"
     CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED = "fixed"

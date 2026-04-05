@@ -84,6 +84,7 @@ _DEBUG_MODE_VALUES = (
     GaussianRenderer.DEBUG_MODE_SPLAT_DENSITY,
     GaussianRenderer.DEBUG_MODE_SPLAT_SPATIAL_DENSITY,
     GaussianRenderer.DEBUG_MODE_SPLAT_SCREEN_DENSITY,
+    GaussianRenderer.DEBUG_MODE_CONTRIBUTION_AMOUNT,
     GaussianRenderer.DEBUG_MODE_DEPTH_MEAN,
     GaussianRenderer.DEBUG_MODE_DEPTH_STD,
     GaussianRenderer.DEBUG_MODE_GRAD_NORM,

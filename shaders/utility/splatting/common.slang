@@ -14,6 +14,8 @@ static const uint DEBUG_MODE_SPLAT_SPATIAL_DENSITY = 6u;
 static const uint DEBUG_MODE_SPLAT_SCREEN_DENSITY = 7u;
 static const uint DEBUG_MODE_GRAD_NORM = 8u;
 static const uint DEBUG_MODE_SPLAT_DENSITY = 9u;
+static const uint DEBUG_MODE_CONTRIBUTION_AMOUNT = 10u;
+static const float DEBUG_CONTRIBUTION_AMOUNT_FLOOR = 1e-6;
 static const float SH_C0 = 0.28209479177387814;
 static const float SH_C1 = 0.4886025119029199;
 
@@ -294,6 +296,16 @@ float3 local_point_to_world(float3 pLocal, float3 worldPos, float3 invScale, flo
 float debug_normalize_range(float value, float2 range)
 {
     return saturate((value - range.x) / max(range.y - range.x, SMALL_VALUE));
+}
+
+float debug_normalize_log_range(float value, float valueFloor, float valueCeil)
+{
+    float lo = max(valueFloor, SMALL_VALUE);
+    float hi = max(valueCeil, lo * (1.0 + SMALL_VALUE));
+    float logLo = log2(lo);
+    float logHi = log2(hi);
+    float logValue = log2(max(value, lo));
+    return saturate((logValue - logLo) / max(logHi - logLo, SMALL_VALUE));
 }
 
 float gaussian_scale_volume(float3 logScale)

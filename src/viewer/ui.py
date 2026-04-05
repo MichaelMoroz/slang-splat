@@ -46,15 +46,16 @@ _TRAIN_BACKGROUND_MODE_LABELS = ("Custom", "Random")
 _VIEWER_BACKGROUND_MODE_LABELS = ("Train Background", "Custom")
 _TRAIN_DOWNSCALE_MODE_LABELS = ("Auto",) + tuple(f"{i}x" for i in range(1, 17))
 _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT = 2e-4
-_DEBUG_COLORBAR_WIDTH = 18.0
-_DEBUG_COLORBAR_HEIGHT = 240.0
-_DEBUG_COLORBAR_MARGIN = 22.0
+_DEBUG_CONTRIBUTION_AMOUNT_FLOOR = 1e-6
+_DEBUG_COLORBAR_HEIGHT = 18.0
+_DEBUG_COLORBAR_MIN_WIDTH = 320.0
+_DEBUG_COLORBAR_MAX_WIDTH = 640.0
+_DEBUG_COLORBAR_MARGIN = 18.0
 _DEBUG_COLORBAR_TICKS = 5
 _DEBUG_COLORBAR_STEPS = 96
-_DEBUG_COLORBAR_LEFT_PAD = 56.0
-_DEBUG_COLORBAR_RIGHT_PAD = 64.0
-_DEBUG_COLORBAR_TOP_PAD = 28.0
-_DEBUG_COLORBAR_BOTTOM_PAD = 12.0
+_DEBUG_COLORBAR_SIDE_PAD = 18.0
+_DEBUG_COLORBAR_TOP_PAD = 24.0
+_DEBUG_COLORBAR_BOTTOM_PAD = 24.0
 _HISTOGRAM_BIN_COUNT_DEFAULT = 64
 _HISTOGRAM_MIN_LOG10_DEFAULT = -8.0
 _HISTOGRAM_MAX_LOG10_DEFAULT = 2.0
@@ -75,6 +76,7 @@ _DEBUG_MODE_VALUES = (
     "splat_density",
     "splat_spatial_density",
     "splat_screen_density",
+    "contribution_amount",
     "depth_mean",
     "depth_std",
     "grad_norm",
@@ -87,6 +89,7 @@ _DEBUG_MODE_LABELS = (
     "Splat Density",
     "Spatial Density",
     "Screen Density",
+    "Contribution Amount",
     "Depth Mean",
     "Depth Std",
     "Grad Norm",
@@ -184,6 +187,11 @@ def _grad_norm_tick_value(t: float, threshold: float) -> float:
     lo = math.log10(max(grad_threshold * constants["DEBUG_GRAD_THRESHOLD_MIN_SCALE"], grad_norm_floor))
     hi = math.log10(max(grad_threshold * constants["DEBUG_GRAD_THRESHOLD_MAX_SCALE"], grad_norm_floor))
     return math.pow(10.0, lo + _saturate(t) * (hi - lo))
+
+
+def _contribution_amount_tick_value(t: float, alpha_cutoff: float) -> float:
+    lo = math.log10(max(float(alpha_cutoff), _DEBUG_CONTRIBUTION_AMOUNT_FLOOR))
+    return math.pow(10.0, lo + _saturate(t) * -lo)
 
 
 def _debug_range_tick_value(t: float, value_min: float, value_max: float) -> float:
@@ -619,20 +627,19 @@ class ToolkitWindow:
         if mode is None:
             return
         draw_list = imgui.get_foreground_draw_list()
-        bar_height = min(_DEBUG_COLORBAR_HEIGHT, max(float(height) - self._menu_bar_height - 2.0 * _DEBUG_COLORBAR_MARGIN, 80.0))
         panel_x, _, panel_width, _ = self._toolkit_rect
-        box_width = _DEBUG_COLORBAR_LEFT_PAD + _DEBUG_COLORBAR_WIDTH + _DEBUG_COLORBAR_RIGHT_PAD
-        box_height = _DEBUG_COLORBAR_TOP_PAD + bar_height + _DEBUG_COLORBAR_BOTTOM_PAD
-        box_min_x = panel_x + panel_width + 8.0
-        box_max_x = float(width) - _DEBUG_COLORBAR_MARGIN - box_width
-        box_x = max(min(float(width) - _DEBUG_COLORBAR_MARGIN - box_width, box_max_x), box_min_x)
-        if box_x + box_width > float(width) - 4.0:
-            box_x = max(float(width) - 4.0 - box_width, 0.0)
-        box_y = min(max(self._menu_bar_height + _DEBUG_COLORBAR_MARGIN, 0.0), max(float(height) - box_height - 4.0, self._menu_bar_height))
-        x0 = box_x + _DEBUG_COLORBAR_LEFT_PAD
+        view_x0 = panel_x + panel_width + 12.0
+        available_width = max(float(width) - view_x0 - _DEBUG_COLORBAR_MARGIN, 120.0)
+        bar_width = min(_DEBUG_COLORBAR_MAX_WIDTH, max(_DEBUG_COLORBAR_MIN_WIDTH, available_width * 0.7))
+        bar_width = max(min(bar_width, available_width - 2.0 * _DEBUG_COLORBAR_SIDE_PAD), 80.0)
+        box_width = bar_width + 2.0 * _DEBUG_COLORBAR_SIDE_PAD
+        box_height = _DEBUG_COLORBAR_TOP_PAD + _DEBUG_COLORBAR_HEIGHT + _DEBUG_COLORBAR_BOTTOM_PAD
+        box_x = max(view_x0 + 0.5 * (available_width - box_width), view_x0)
+        box_y = max(float(height) - _DEBUG_COLORBAR_MARGIN - box_height, self._menu_bar_height + 4.0)
+        x0 = box_x + _DEBUG_COLORBAR_SIDE_PAD
         y0 = box_y + _DEBUG_COLORBAR_TOP_PAD
-        x1 = x0 + _DEBUG_COLORBAR_WIDTH
-        y1 = y0 + bar_height
+        x1 = x0 + bar_width
+        y1 = y0 + _DEBUG_COLORBAR_HEIGHT
         draw_list.add_rect_filled(
             imgui.ImVec2(box_x, box_y),
             imgui.ImVec2(box_x + box_width, box_y + box_height),
@@ -645,23 +652,25 @@ class ToolkitWindow:
         self._draw_debug_colorbar_ticks(draw_list, mode, x0, y0, x1, y1, ui)
 
     def _draw_debug_colorbar_gradient(self, draw_list: object, x0: float, y0: float, x1: float, y1: float) -> None:
-        height = max(y1 - y0, 1.0)
+        width = max(x1 - x0, 1.0)
         for idx in range(_DEBUG_COLORBAR_STEPS):
             t0 = idx / _DEBUG_COLORBAR_STEPS
             t1 = (idx + 1) / _DEBUG_COLORBAR_STEPS
-            rgb = _jet_colormap(1.0 - 0.5 * (t0 + t1))
+            rgb = _jet_colormap(0.5 * (t0 + t1))
             draw_list.add_rect_filled(
-                imgui.ImVec2(x0, y0 + t0 * height),
-                imgui.ImVec2(x1, y0 + t1 * height),
+                imgui.ImVec2(x0 + t0 * width, y0),
+                imgui.ImVec2(x0 + t1 * width, y1),
                 _color_u32(*rgb),
             )
 
     def _draw_debug_colorbar_ticks(self, draw_list: object, mode: str, x0: float, y0: float, x1: float, y1: float, ui: ViewerUI) -> None:
         for idx in range(_DEBUG_COLORBAR_TICKS):
-            t = 1.0 - idx / max(_DEBUG_COLORBAR_TICKS - 1, 1)
-            y = y0 + (1.0 - t) * (y1 - y0)
-            draw_list.add_line(imgui.ImVec2(x1 + 2.0, y), imgui.ImVec2(x1 + 8.0, y), _color_u32(0.85, 0.88, 0.92, 0.9), 1.0)
-            draw_list.add_text(imgui.ImVec2(x1 + 12.0, y - 6.0), _color_u32(0.85, 0.88, 0.92, 0.95), self._debug_colorbar_tick_label(mode, t, ui))
+            t = idx / max(_DEBUG_COLORBAR_TICKS - 1, 1)
+            x = x0 + t * (x1 - x0)
+            label = self._debug_colorbar_tick_label(mode, t, ui)
+            label_size = imgui.calc_text_size(label)
+            draw_list.add_line(imgui.ImVec2(x, y1 + 2.0), imgui.ImVec2(x, y1 + 8.0), _color_u32(0.85, 0.88, 0.92, 0.9), 1.0)
+            draw_list.add_text(imgui.ImVec2(x - 0.5 * float(label_size.x), y1 + 10.0), _color_u32(0.85, 0.88, 0.92, 0.95), label)
 
     def _debug_colorbar_title(self, mode: str) -> str:
         return {
@@ -670,6 +679,7 @@ class ToolkitWindow:
             "splat_density": "Splat Density",
             "splat_spatial_density": "Spatial Density",
             "splat_screen_density": "Screen Density",
+            "contribution_amount": "Contribution Amount",
             "depth_mean": "Depth Mean",
             "depth_std": "Depth Std",
             "grad_norm": "Grad Norm",
@@ -686,6 +696,8 @@ class ToolkitWindow:
             return f"{_debug_range_tick_value(t, float(ui._values.get('debug_clone_count_min', 0.0)), float(ui._values.get('debug_clone_count_max', 16.0))):.3g}"
         if mode in ("splat_density", "splat_spatial_density", "splat_screen_density"):
             return f"{_debug_range_tick_value(t, float(ui._values.get('debug_density_min', 0.0)), float(ui._values.get('debug_density_max', 20.0))):.3g}"
+        if mode == "contribution_amount":
+            return f"{_contribution_amount_tick_value(t, float(ui._values.get('alpha_cutoff', 1.0 / 255.0))):.1e}"
         if mode == "depth_mean":
             return f"{_debug_range_tick_value(t, float(ui._values.get('debug_depth_mean_min', 0.0)), float(ui._values.get('debug_depth_mean_max', 10.0))):.3g}"
         if mode == "depth_std":
