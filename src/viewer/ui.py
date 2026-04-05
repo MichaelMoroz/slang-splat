@@ -173,6 +173,10 @@ def _rect_contains(rect: tuple[float, float, float, float], point: tuple[float, 
     return px >= x and py >= y and px < x + width and py < y + height
 
 
+def _should_capture_keyboard_for_ui(handled: bool, viewport_focused: bool, any_item_active: bool) -> bool:
+    return bool(handled) and not (bool(viewport_focused) and not bool(any_item_active))
+
+
 @lru_cache(maxsize=1)
 def _default_font_path() -> Path | None:
     package = importlib.import_module("imgui_bundle")
@@ -519,6 +523,7 @@ class ToolkitWindow:
         )
         self._viewport_rect = (self._toolkit_rect[2], 0.0, max(float(width) - self._toolkit_rect[2], 1.0), max(float(height), 1.0))
         self._viewport_content_rect = self._viewport_rect
+        self._viewport_window_focused = False
         self._set_interface_scale(_INTERFACE_SCALE_OPTIONS[_DEFAULT_INTERFACE_SCALE_INDEX][1])
 
     def _set_current_context(self) -> None:
@@ -607,7 +612,8 @@ class ToolkitWindow:
         if not self._alive:
             return False
         self._set_current_context()
-        return bool(simgui.handle_keyboard_event(event))
+        handled = bool(simgui.handle_keyboard_event(event))
+        return _should_capture_keyboard_for_ui(handled, self._viewport_window_focused, bool(imgui.is_any_item_active()))
 
     def handle_mouse_event(self, event) -> bool:
         if not self._alive:
@@ -713,6 +719,7 @@ class ToolkitWindow:
         opened = imgui.begin(_VIEWPORT_WINDOW_NAME, flags=flags)[0]
         imgui.pop_style_var()
         if opened:
+            self._viewport_window_focused = bool(imgui.is_window_focused())
             pos = imgui.get_window_pos()
             size = imgui.get_window_size()
             cursor = imgui.get_cursor_screen_pos()
@@ -737,6 +744,8 @@ class ToolkitWindow:
                     _color_u32(0.72, 0.76, 0.82, 0.95),
                     label,
                 )
+        else:
+            self._viewport_window_focused = False
         imgui.end()
 
     def _draw_debug_colorbar(self, ui: ViewerUI) -> None:
