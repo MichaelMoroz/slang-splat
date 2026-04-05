@@ -70,6 +70,9 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["lr_schedule_start_lr"] == 1e-3
     assert viewer_ui._values["lr_schedule_end_lr"] == 1e-4
     assert viewer_ui._values["lr_schedule_steps"] == 30000
+    assert viewer_ui._values["position_random_step_noise_lr"] == 5e5
+    assert viewer_ui._values["position_random_step_opacity_gate_center"] == 0.005
+    assert viewer_ui._values["position_random_step_opacity_gate_sharpness"] == 100.0
     assert viewer_ui._values["background_mode"] == 1
     assert viewer_ui._values["train_background_color"] == (1.0, 1.0, 1.0)
     assert viewer_ui._values["use_sh"] is True
@@ -97,6 +100,9 @@ def test_optimizer_regularization_tab_includes_density_controls() -> None:
     assert "sh1_reg" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "density_regularizer" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "max_allowed_density" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
+    assert "position_random_step_noise_lr" in ui._OPTIMIZER_TAB_KEYS["Learning Rates"]
+    assert "position_random_step_opacity_gate_center" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
+    assert "position_random_step_opacity_gate_sharpness" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
 
 
 def test_histogram_log_range_from_ranges_uses_nonzero_finite_extrema() -> None:

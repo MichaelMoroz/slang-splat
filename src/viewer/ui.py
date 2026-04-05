@@ -258,6 +258,7 @@ GROUP_SPECS = {
         ControlSpec("lr_rot_mul", "input_float", "LR Mul Rotation", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
             ControlSpec("lr_color_mul", "input_float", "LR Mul Color", {"value": 5.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
             ControlSpec("lr_opacity_mul", "input_float", "LR Mul Opacity", {"value": 5.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
+        ControlSpec("position_random_step_noise_lr", "input_float", "Noise LR", {"value": 5e5, "step": 100.0, "step_fast": 1000.0, "format": "%.4g"}),
         ControlSpec("beta1", "input_float", "Beta1", {"value": 0.9, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
         ControlSpec("beta2", "input_float", "Beta2", {"value": 0.999, "step": 1e-4, "step_fast": 1e-3, "format": "%.6f"}),
         ControlSpec("scale_l2", "input_float", "Scale Log Reg", {"value": 0.0, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
@@ -266,6 +267,8 @@ GROUP_SPECS = {
         ControlSpec("opacity_reg", "input_float", "Opacity Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
         ControlSpec("density_regularizer", "input_float", "Density Reg", {"value": 0.05, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
         ControlSpec("max_allowed_density", "input_float", "Max Density", {"value": 12.0, "step": 1e-3, "step_fast": 1e-2, "format": "%.8f"}),
+        ControlSpec("position_random_step_opacity_gate_center", "input_float", "Noise Gate Center", {"value": 0.005, "step": 1e-4, "step_fast": 1e-3, "format": "%.6f"}),
+        ControlSpec("position_random_step_opacity_gate_sharpness", "input_float", "Noise Gate Sharpness", {"value": 100.0, "step": 1.0, "step_fast": 10.0, "format": "%.4g"}),
         ControlSpec("max_anisotropy", "input_float", "Max Anisotropy", {"value": 32.0, "step": 0.1, "step_fast": 0.5, "format": "%.6f"}),
         ControlSpec("grad_clip", "input_float", "Grad Clip", {"value": 10.0, "step": 0.1, "step_fast": 1.0, "format": "%.4f"}),
         ControlSpec("grad_norm_clip", "input_float", "Grad Norm Clip", {"value": 10.0, "step": 0.1, "step_fast": 1.0, "format": "%.4f"}),
@@ -319,9 +322,9 @@ _ALL_DEFAULTS.update({spec.key: spec.kwargs["value"] for spec in RENDER_PARAM_SP
 _ALL_DEFAULTS.update({spec.key: spec.kwargs["value"] for spec in DEBUG_RENDER_SPECS if "value" in spec.kwargs})
 
 _OPTIMIZER_TAB_KEYS = {
-    "Learning Rates": ("lr_base", "lr_schedule_enabled", "lr_schedule_start_lr", "lr_schedule_end_lr", "lr_schedule_steps", "lr_pos_mul", "lr_scale_mul", "lr_rot_mul", "lr_color_mul", "lr_opacity_mul"),
+    "Learning Rates": ("lr_base", "lr_schedule_enabled", "lr_schedule_start_lr", "lr_schedule_end_lr", "lr_schedule_steps", "lr_pos_mul", "lr_scale_mul", "lr_rot_mul", "lr_color_mul", "lr_opacity_mul", "position_random_step_noise_lr"),
     "Adam": ("beta1", "beta2"),
-    "Regularization": ("scale_l2", "scale_abs_reg", "sh1_reg", "opacity_reg", "density_regularizer", "max_allowed_density", "max_anisotropy", "grad_clip", "grad_norm_clip", "max_update"),
+    "Regularization": ("scale_l2", "scale_abs_reg", "sh1_reg", "opacity_reg", "density_regularizer", "max_allowed_density", "position_random_step_opacity_gate_center", "position_random_step_opacity_gate_sharpness", "max_anisotropy", "grad_clip", "grad_norm_clip", "max_update"),
 }
 
 
@@ -1434,6 +1437,9 @@ class ToolkitWindow:
         "scale_abs_reg": "Absolute scale regularization weight",
         "sh1_reg": "L1 regularization weight applied to SH1 coefficients only",
         "opacity_reg": "Opacity regularization weight (pushes toward 0 or 1)",
+        "position_random_step_noise_lr": "Post-step MCMC-style position noise multiplier; matches the old modular-refactor Noise LR behavior",
+        "position_random_step_opacity_gate_center": "Opacity center for the random-step sigmoid gate; lower-opacity splats get stronger position noise",
+        "position_random_step_opacity_gate_sharpness": "Steepness of the random-step opacity gate",
         "max_anisotropy": "Maximum ratio between largest and smallest scale axes",
         "min_scale": "Floor for decoded gaussian sigma",
         "max_scale": "Ceiling for decoded gaussian sigma",

@@ -105,7 +105,7 @@ class TrainingHyperParams:
     background: tuple[float, float, float] = (1.0, 1.0, 1.0); near: float = 0.1; far: float = 120.0
     background_mode: int = TRAIN_BACKGROUND_MODE_RANDOM; use_sh: bool = True
     scale_l2_weight: float = 0.0; scale_abs_reg_weight: float = 0.01; sh1_reg_weight: float = 0.01; opacity_reg_weight: float = 0.01; density_regularizer: float = 0.05; max_allowed_density_start: float = 5.0; max_allowed_density: float = 12.0
-    position_random_step_noise_lr: float = 0.0; position_random_step_opacity_gate_center: float = 0.005; position_random_step_opacity_gate_sharpness: float = 100.0
+    position_random_step_noise_lr: float = 5e5; position_random_step_opacity_gate_center: float = 0.005; position_random_step_opacity_gate_sharpness: float = 100.0
     lr_schedule_enabled: bool = True; lr_schedule_start_lr: float = 1e-3; lr_schedule_end_lr: float = 1e-4; lr_schedule_steps: int = 30_000
     maintenance_interval: int = 200; maintenance_growth_ratio: float = 0.02; maintenance_growth_start_step: int = 2_000; maintenance_alpha_cull_threshold: float = 1e-2; maintenance_contribution_cull_threshold: int = 128
     max_gaussians: int = 1_000_000; train_downscale_mode: int = 1; train_auto_start_downscale: int = 16

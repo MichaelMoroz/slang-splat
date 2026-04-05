@@ -169,7 +169,7 @@ def build_training_params(
     density_regularizer: float = 0.05,
     max_allowed_density_start: float = 5.0,
     max_allowed_density: float = 12.0,
-    position_random_step_noise_lr: float = 0.0,
+    position_random_step_noise_lr: float = 5e5,
     position_random_step_opacity_gate_center: float = 0.005,
     position_random_step_opacity_gate_sharpness: float = 100.0,
     max_gaussians: int,
