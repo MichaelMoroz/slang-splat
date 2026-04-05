@@ -57,6 +57,8 @@ After the dataset root is selected, the viewer resolves the COLMAP reconstructio
 
 Import-time downscale is applied before training textures are uploaded and before frame intrinsics are finalized. `Target Width` preserves aspect ratio by solving only for the x dimension and deriving y from the source aspect. `Scale Factor` multiplies both dimensions uniformly. Both modes clamp to the source resolution, so the importer never upscales images.
 
+Training-frame metadata discovery opens source images in a fixed 8-thread loader pool, which keeps large datasets from stalling on serial image-size probes while preserving the original sorted frame order.
+
 Pointcloud initialization builds gaussians directly from the COLMAP sparse points and scales them from the median nearest-neighbor spacing multiplied by the selected coefficient. Diffused pointcloud initialization resamples sparse points with replacement and offsets each sample by `nrand3() * diffusion_radius * original_nn_distance`, where `original_nn_distance` comes from the source COLMAP point cloud, then applies the same nearest-neighbor scale initialization to the synthesized positions. Custom PLY initialization keeps the COLMAP cameras and training frames, but seeds the scene from the chosen `.ply` file instead.
 
 ## Debug Views

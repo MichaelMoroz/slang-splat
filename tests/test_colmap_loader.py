@@ -19,6 +19,7 @@ from src.scene import (
     transform_colmap_reconstruction_pca,
     transform_poses_pca,
 )
+from src.scene._internal import colmap_ops
 from src.scene._internal.colmap_types import ColmapCamera, ColmapImage, ColmapPoint3D, ColmapReconstruction
 
 _actual_scale = lambda log_scale: np.exp(np.asarray(log_scale, dtype=np.float32))
@@ -109,6 +110,46 @@ def test_colmap_loader_and_frame_scaling(tmp_path: Path):
     assert scene.rotations.shape == (1, 4)
     assert scene.colors.shape == (1, 3)
     assert np.all(np.isfinite(scene.positions))
+
+
+def test_build_training_frames_uses_eight_loader_threads(tmp_path: Path, monkeypatch) -> None:
+    root = _build_tiny_colmap_tree(tmp_path, model_id=1)
+    Image.fromarray(np.full((60, 120, 3), 80, dtype=np.uint8), mode="RGB").save(root / "images_4" / "frame_b.png")
+    sparse = root / "sparse" / "0"
+    with (sparse / "images.bin").open("wb") as handle:
+        handle.write(struct.pack("<Q", 2))
+        for image_id, image_name, tx in ((3, "frame.png", -2.0), (5, "frame_b.png", -4.0)):
+            handle.write(struct.pack("<i", image_id))
+            handle.write(struct.pack("<dddd", 1.0, 0.0, 0.0, 0.0))
+            handle.write(struct.pack("<ddd", 0.0, 0.0, tx))
+            handle.write(struct.pack("<i", 7))
+            handle.write(image_name.encode("utf-8"))
+            handle.write(b"\x00")
+            handle.write(struct.pack("<Q", 0))
+    recon = load_colmap_reconstruction(root)
+    calls: list[int] = []
+
+    class _Executor:
+        def __init__(self, *, max_workers: int, thread_name_prefix: str) -> None:
+            calls.append(int(max_workers))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+        def map(self, fn, items):
+            return map(fn, items)
+
+    monkeypatch.setattr(colmap_ops, "ThreadPoolExecutor", _Executor)
+
+    frames = colmap_ops.build_training_frames_from_root(recon, root / "images_4")
+
+    assert calls == [8]
+    assert [frame.image_id for frame in frames] == [3, 5]
+    assert [frame.width for frame in frames] == [200, 120]
+    assert [frame.height for frame in frames] == [100, 60]
 
 
 def test_colmap_loader_rejects_unsupported_camera_model(tmp_path: Path):

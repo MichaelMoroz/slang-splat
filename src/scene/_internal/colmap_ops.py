@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 from PIL import Image
@@ -24,6 +25,7 @@ INIT_OPACITY_MIN = 0.10
 INIT_OPACITY_MAX = 0.35
 _MIN_SCALE = 1e-4
 _MAX_SCALE = 1e4
+_TRAINING_FRAME_LOAD_THREADS = 8
 
 
 def _camera_to_world_pose(q_wxyz: np.ndarray, t_xyz: np.ndarray) -> np.ndarray:
@@ -235,6 +237,34 @@ def resolve_training_frame_image_size(
     raise ValueError(f"Unsupported image downscale mode: {downscale_mode}")
 
 
+def _build_training_frame(task: tuple[int, object, object, Path, str, int | None, float]) -> ColmapFrame:
+    image_id, image, camera, image_path, downscale_mode, downscale_target_width, downscale_scale = task
+    with Image.open(image_path) as pil_image:
+        src_width, src_height = pil_image.size
+    width, height = resolve_training_frame_image_size(
+        src_width,
+        src_height,
+        downscale_mode=downscale_mode,
+        downscale_target_width=downscale_target_width,
+        downscale_scale=downscale_scale,
+    )
+    sx, sy = float(width) / float(camera.width), float(height) / float(camera.height)
+    return ColmapFrame(
+        image_id,
+        image_path,
+        image.q_wxyz.astype(np.float32),
+        image.t_xyz.astype(np.float32),
+        float(camera.fx) * sx,
+        float(camera.fy) * sy,
+        float(camera.cx) * sx,
+        float(camera.cy) * sy,
+        int(width),
+        int(height),
+        float(getattr(camera, "k1", 0.0)),
+        float(getattr(camera, "k2", 0.0)),
+    )
+
+
 def build_training_frames_from_root(
     recon: ColmapReconstruction,
     images_root: Path,
@@ -246,36 +276,15 @@ def build_training_frames_from_root(
     images_root = Path(images_root).resolve()
     if not images_root.exists():
         raise FileNotFoundError(f"COLMAP image directory does not exist: {images_root}")
-    frames = []
+    tasks = []
     for image_id, image in sorted(recon.images.items()):
         image_path, camera = (images_root / image.name).resolve(), recon.cameras.get(image.camera_id)
         if camera is None or not image_path.exists(): continue
-        with Image.open(image_path) as pil_image:
-            src_width, src_height = pil_image.size
-        width, height = resolve_training_frame_image_size(
-            src_width,
-            src_height,
-            downscale_mode=downscale_mode,
-            downscale_target_width=downscale_target_width,
-            downscale_scale=downscale_scale,
-        )
-        sx, sy = float(width) / float(camera.width), float(height) / float(camera.height)
-        frames.append(
-            ColmapFrame(
-                image_id,
-                image_path,
-                image.q_wxyz.astype(np.float32),
-                image.t_xyz.astype(np.float32),
-                float(camera.fx) * sx,
-                float(camera.fy) * sy,
-                float(camera.cx) * sx,
-                float(camera.cy) * sy,
-                int(width),
-                int(height),
-                float(getattr(camera, "k1", 0.0)),
-                float(getattr(camera, "k2", 0.0)),
-            )
-        )
+        tasks.append((image_id, image, camera, image_path, downscale_mode, downscale_target_width, downscale_scale))
+    frames: list[ColmapFrame] = []
+    if tasks:
+        with ThreadPoolExecutor(max_workers=_TRAINING_FRAME_LOAD_THREADS, thread_name_prefix="colmap-frame") as executor:
+            frames = list(executor.map(_build_training_frame, tasks))
     if not frames:
         raise RuntimeError(f"No training frames were found in {images_root}.")
     return frames
