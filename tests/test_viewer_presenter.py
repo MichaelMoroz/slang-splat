@@ -52,9 +52,10 @@ class _DummyTrainer:
             refinement_growth_ratio=0.02,
             refinement_growth_start_step=500,
             refinement_alpha_cull_threshold=1e-2,
-            refinement_contribution_cull_threshold=0.001,
-            refinement_contribution_cull_decay=0.95,
+            refinement_min_contribution_percent=1e-05,
+            refinement_min_contribution_decay=0.95,
             density_regularizer=0.05,
+            depth_ratio_weight=0.005,
             max_allowed_density=12.0,
             max_gaussians=1000000,
         )
@@ -116,8 +117,8 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         "refinement_growth_ratio": _control(0.02),
         "refinement_growth_start_step": _control(500),
         "refinement_alpha_cull_threshold": _control(1e-2),
-        "refinement_contribution_cull_threshold": _control(0.001),
-        "refinement_contribution_cull_decay": _control(0.95),
+        "refinement_min_contribution_percent": _control(1e-05),
+        "refinement_min_contribution_decay": _control(0.95),
         "max_gaussians": _control(1000000),
         "train_downscale_mode": _control(1),
         "train_auto_start_downscale": _control(1),
@@ -306,7 +307,7 @@ def test_update_ui_text_reports_training_schedule_and_refinement() -> None:
     presenter.update_ui_text(viewer, 1.0 / 60.0)
 
     assert viewer.t("training_schedule").text == "LR Schedule: cosine 1.00e-03 -> 1.00e-04 | steps=30,000 | current=1.00e-03"
-    assert viewer.t("training_refinement").text == "Refinement: every 200 | growth=0.00% now | target=2.00% after 500 | alpha<1.00e-02 or contrib<0.001% culled | decay=95.00%/pass | max=1,000,000"
+    assert viewer.t("training_refinement").text == "Refinement: every 200 | growth=0.00% now | target=2.00% after 500 | alpha<1.00e-02 or min contrib<1e-05% | decay=95.00%/pass | max=1,000,000"
 
 
 def test_render_frame_recovers_missing_main_renderer_by_recreating_it(monkeypatch):

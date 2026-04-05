@@ -92,11 +92,12 @@ def _training_params(args: argparse.Namespace):
         sh1_reg_weight=args.sh1_reg,
         opacity_reg_weight=args.opacity_reg,
         density_regularizer=args.density_reg,
+        depth_ratio_weight=args.depth_ratio_weight,
         max_allowed_density_start=args.max_allowed_density_start,
         max_allowed_density=args.max_allowed_density,
         max_gaussians=args.max_gaussians,
         use_sh=args.use_sh,
-        refinement_contribution_cull_threshold=args.refinement_contribution_cull_threshold,
+        refinement_min_contribution_percent=args.refinement_min_contribution_percent,
     )
 
 
@@ -227,6 +228,7 @@ TRAIN_RENDER_ARGS = tuple(
         ("--sh1-reg", 0.01),
         ("--opacity-reg", 0.01),
         ("--density-reg", 0.05),
+        ("--depth-ratio-weight", 0.005),
         ("--max-allowed-density-start", 5.0),
         ("--max-allowed-density", 12.0),
         ("--max-anisotropy", 32.0),
@@ -246,7 +248,7 @@ COMMANDS = (
             A("--images-subdir", type=str, default="images_4"),
             A("--iters", type=int, default=1000),
             A("--max-gaussians", type=int, default=1000000),
-            A("--refinement-contribution-cull-threshold", type=float, default=0.001),
+            A("--refinement-min-contribution-percent", type=float, default=1e-05),
             A("--no-use-sh", action="store_false", dest="use_sh", default=True),
             A("--training-profile", type=str, default="auto", choices=TRAINING_PROFILE_CHOICES),
             A("--seed", type=int, default=1234),

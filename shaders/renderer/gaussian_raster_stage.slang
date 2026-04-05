@@ -336,6 +336,7 @@ struct RasterReplayState
 struct RasterBackwardState
 {
     RasterState.Differential pixelState;
+    float3 depthState;
     float splatDensityState;
 };
 
@@ -359,6 +360,7 @@ void init_raster_forward_state(RasterPixelInfo info, out RasterReplayState repla
 void init_raster_backward_state(out RasterBackwardState backwardState)
 {
     backwardState.pixelState = { 0.0, 0.0 };
+    backwardState.depthState = 0.0;
     backwardState.splatDensityState = 0.0;
 }
 
@@ -421,8 +423,9 @@ struct ForwardRasterReplayVariant : IRasterReplayVariant
 
     static bool eval_hit(RasterPixelInfo info, uint splatId, RasterGaussian gaussian, out float alpha, out float rayDepth)
     {
-        alpha = raster_eval_alpha_gaussian(gaussian, info.rayDir);
-        rayDepth = 0.0;
+        float2 eval = raster_eval_alpha_depth_gaussian(gaussian, info.rayDir);
+        alpha = eval.x;
+        rayDepth = eval.y;
         return alpha > 0.0;
     }
 
@@ -465,6 +468,7 @@ struct TrainingRasterReplayVariant : IRasterReplayVariant
         float3 color = raster_forward_color(gaussian, splatId, replayState.debugMode);
         uint contribution = splat_contribution_fixed_quantize(contributionWeight);
         if (contribution > 0u) InterlockedAdd(g_SplatContribution[splatId], contribution);
+        if (rayDepth > 0.0) replayState.depthState = depth_state_step(replayState.depthState, contributionWeight, rayDepth);
         replayState.splatDensitySum = raster_splat_density_step(replayState.splatDensitySum, state.trans, alpha, gaussian.colorAlpha.w);
         replayState.pixelState = state.blend(color, alpha);
         replayState.processedCount += 1u;
@@ -606,6 +610,7 @@ void store_training_forward_cache(RasterPixelInfo info, RasterReplayState replay
     if (!info.pixelActive) return;
     uint pixelIndex = raster_pixel_index(info.pixelCoord);
     g_TrainingForwardState[pixelIndex] = float4(replayState.pixelState.accum, replayState.pixelState.trans);
+    g_TrainingDepthStats[info.pixelCoord] = float4(replayState.depthState, raster_depth_output(replayState.depthState));
     g_TrainingDensity[pixelIndex] = replayState.splatDensitySum;
     g_TrainingProcessedEnd[pixelIndex] = replayState.processedEnd;
 }
@@ -617,7 +622,9 @@ void load_training_forward_cache(RasterPixelInfo info, out RasterReplayState rep
     if (!info.pixelActive) return;
     uint pixelIndex = raster_pixel_index(info.pixelCoord);
     float4 cachedState = g_TrainingForwardState[pixelIndex];
+    float4 cachedDepthStats = g_TrainingDepthStats[info.pixelCoord];
     replayState.pixelState = { cachedState.xyz, cachedState.w };
+    replayState.depthState = cachedDepthStats.xyz;
     replayState.splatDensitySum = g_TrainingDensity[pixelIndex];
     replayState.processedEnd = g_TrainingProcessedEnd[pixelIndex];
 }
@@ -677,7 +684,9 @@ void raster_backward_replay<T : IRasterGradVariant>(RasterPixelInfo info, inout 
 
             uint splatId = gsBatchSplatId[localIdx];
             RasterGaussian gaussian = gsGaussian[localIdx];
-            float alpha = raster_eval_alpha_gaussian(gaussian, info.rayDir);
+            float2 eval = raster_eval_alpha_depth_gaussian(gaussian, info.rayDir);
+            float alpha = eval.x;
+            float rayDepth = eval.y;
             if (alpha <= 0.0) continue;
 
             RasterState state = replayState.pixelState;
@@ -697,11 +706,21 @@ void raster_backward_replay<T : IRasterGradVariant>(RasterPixelInfo info, inout 
             var dpDensityOpacity = diffPair(gaussian.colorAlpha.w);
             bwd_diff(raster_splat_density_step)(dpPrevDensityState, dpDensityTrans, dpDensityAlpha, dpDensityOpacity, backwardState.splatDensityState);
             float contributionWeight = prevState.trans * alpha;
+            float3 prevDepthState = depth_state_rewind(replayState.depthState, contributionWeight, rayDepth);
+            var dpPrevDepthState = diffPair(prevDepthState);
+            var dpContributionWeight = diffPair(contributionWeight);
+            var dpRayDepth = diffPair(rayDepth);
+            bwd_diff(depth_state_step)(dpPrevDepthState, dpContributionWeight, dpRayDepth, backwardState.depthState);
             replayState.splatDensitySum = prevDensityState;
+            replayState.depthState = prevDepthState;
             backwardState.splatDensityState = dpPrevDensityState.getDifferential();
+            backwardState.depthState = dpPrevDepthState.getDifferential();
             dPrevState.trans += dpDensityTrans.getDifferential();
             dAlpha += dpDensityAlpha.getDifferential();
-            bwd_diff(raster_eval_alpha_gaussian)(dpGaussian, info.rayDir, dAlpha);
+            float dContributionWeight = dpContributionWeight.getDifferential();
+            dPrevState.trans += dContributionWeight * alpha;
+            dAlpha += dContributionWeight * prevState.trans;
+            bwd_diff(raster_eval_alpha_depth_gaussian)(dpGaussian, info.rayDir, float2(dAlpha, dpRayDepth.getDifferential()));
 
             replayState.pixelState = prevState;
             backwardState.pixelState = dPrevState;
@@ -852,7 +871,14 @@ void csRasterizeBackwardFixed(uint3 dispatchThreadID : SV_DispatchThreadID, uint
     load_training_forward_cache(info, replayState);
     init_raster_backward_state(backwardState);
     backwardState.pixelState = raster_output_gradient_pixel(info, replayState.pixelState);
-    if (info.pixelActive && info.hasTileRange) backwardState.splatDensityState = g_TrainingDensityGrad[raster_pixel_index(info.pixelCoord)];
+    if (info.pixelActive && info.hasTileRange)
+    {
+        float2 regularizerGrad = g_TrainingRegularizerGrad[raster_pixel_index(info.pixelCoord)];
+        backwardState.splatDensityState = regularizerGrad.x;
+        var dpDepthState = diffPair(replayState.depthState);
+        bwd_diff(raster_depth_output)(dpDepthState, regularizerGrad.y);
+        backwardState.depthState = dpDepthState.getDifferential();
+    }
     raster_backward_replay<FixedRasterGradVariant>(info, replayState, backwardState, lane);
 }
 
@@ -866,6 +892,13 @@ void csRasterizeBackwardFloat(uint3 dispatchThreadID : SV_DispatchThreadID, uint
     load_training_forward_cache(info, replayState);
     init_raster_backward_state(backwardState);
     backwardState.pixelState = raster_output_gradient_pixel(info, replayState.pixelState);
-    if (info.pixelActive && info.hasTileRange) backwardState.splatDensityState = g_TrainingDensityGrad[raster_pixel_index(info.pixelCoord)];
+    if (info.pixelActive && info.hasTileRange)
+    {
+        float2 regularizerGrad = g_TrainingRegularizerGrad[raster_pixel_index(info.pixelCoord)];
+        backwardState.splatDensityState = regularizerGrad.x;
+        var dpDepthState = diffPair(replayState.depthState);
+        bwd_diff(raster_depth_output)(dpDepthState, regularizerGrad.y);
+        backwardState.depthState = dpDepthState.getDifferential();
+    }
     raster_backward_replay<FloatRasterGradVariant>(info, replayState, backwardState, lane);
 }

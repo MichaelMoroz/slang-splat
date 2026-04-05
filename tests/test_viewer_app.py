@@ -180,6 +180,7 @@ def test_default_training_params_include_background_mode_and_density() -> None:
     assert params.training.background == (1.0, 1.0, 1.0)
     assert params.training.use_sh is True
     assert params.training.density_regularizer == 0.05
+    assert params.training.depth_ratio_weight == 0.005
     assert params.training.sh1_reg_weight == 0.01
     assert params.training.max_allowed_density_start == 5.0
     assert params.training.max_allowed_density == 12.0
@@ -189,8 +190,8 @@ def test_default_training_params_include_background_mode_and_density() -> None:
     assert params.training.refinement_growth_ratio == 0.02
     assert params.training.refinement_growth_start_step == 500
     assert params.training.refinement_alpha_cull_threshold == 1e-2
-    assert params.training.refinement_contribution_cull_threshold == 0.001
-    assert params.training.refinement_contribution_cull_decay == 0.95
+    assert params.training.refinement_min_contribution_percent == 1e-05
+    assert params.training.refinement_min_contribution_decay == 0.95
     assert params.training.max_gaussians == 1_000_000
 
 

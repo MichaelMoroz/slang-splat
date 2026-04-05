@@ -32,12 +32,14 @@ uniform uint g_BatchStepIndex;
 
 uniform Texture2D<float4> g_Rendered;
 uniform Texture2D<float4> g_Target;
+uniform Texture2D<float4> g_RenderedDepthStats;
 uniform StructuredBuffer<float> g_RenderedDensity;
 uniform RWStructuredBuffer<float4> g_OutputGrad;
-uniform RWStructuredBuffer<float> g_DensityGrad;
+uniform RWStructuredBuffer<float2> g_RegularizerGrad;
 uniform RWStructuredBuffer<float> g_LossBuffer;
 uniform RWStructuredBuffer<float4> g_BatchStepInfo;
 uniform float g_DensityRegularizer;
+uniform float g_DepthRatioWeight;
 uniform float g_MaxAllowedDensity;
 uniform RWStructuredBuffer<float> g_PositionRandomStepParams;
 uniform uint g_PositionRandomStepSplatCount;
@@ -85,7 +87,7 @@ uniform uint g_SurvivorCount;
 uniform uint g_RefinementSeed;
 uniform uint g_RefinementCameraCount;
 uniform float g_RefinementAlphaCullThreshold;
-uniform uint g_RefinementContributionCullThreshold;
+uniform uint g_RefinementMinContributionThreshold;
 uniform float g_RefinementRadiusScale;
 
 groupshared float gsLoss[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
@@ -120,7 +122,7 @@ float3 linear_to_srgb_safe(float3 value)
 
 bool should_cull_refinement_splat(float alpha, uint contribution)
 {
-    return alpha < g_RefinementAlphaCullThreshold || contribution < g_RefinementContributionCullThreshold;
+    return alpha < g_RefinementAlphaCullThreshold || contribution < g_RefinementMinContributionThreshold;
 }
 
 SplatState load_splat_state(RWStructuredBuffer<float> params, uint splatCount, uint splatId)
@@ -458,9 +460,15 @@ void csComputeL1LossForward(
         float3 target = sanitize_float3(g_Target[pixel].xyz, g_HugeValue);
         float loss = rgb_l1_loss(rendered, target, g_InvPixelCount);
         float mse = rgb_mse_loss(rendered, target, g_InvPixelCount);
+        float depthRatio = sanitize_scalar(g_RenderedDepthStats[pixel].w, g_HugeValue);
         float density = sanitize_scalar(g_RenderedDensity[py * g_Width + px], g_HugeValue);
         localLoss = isfinite(loss) ? loss : 0.0;
         localMSE = isfinite(mse) ? mse : 0.0;
+        if (g_DepthRatioWeight > 0.0)
+        {
+            float depthRatioLoss = g_DepthRatioWeight * depthRatio * depthRatio * g_InvPixelCount;
+            if (isfinite(depthRatioLoss)) localLoss += depthRatioLoss;
+        }
         if (g_DensityRegularizer > 0.0)
         {
             float densityExcess = max(density - g_MaxAllowedDensity, 0.0);
@@ -505,15 +513,23 @@ void csComputeL1LossBackward(uint3 dispatchThreadID : SV_DispatchThreadID)
     float3 target = sanitize_float3(g_Target[pixel].xyz, g_HugeValue);
     float3 dOut = clamp(sanitize_float3(rgb_l1_grad(rendered, target) * g_InvPixelCount, g_LossGradClip), -g_LossGradClip, g_LossGradClip);
     g_OutputGrad[py * g_Width + px] = float4(dOut, 0.0);
+    float densityGrad = 0.0;
     float density = sanitize_scalar(g_RenderedDensity[py * g_Width + px], g_HugeValue);
-    if (g_DensityRegularizer <= 0.0 || density <= g_MaxAllowedDensity)
+    if (g_DensityRegularizer > 0.0 && density > g_MaxAllowedDensity)
     {
-        g_DensityGrad[py * g_Width + px] = 0.0;
-        return;
+        densityGrad = g_DensityRegularizer * g_InvPixelCount;
     }
 
-    float densityGrad = g_DensityRegularizer * g_InvPixelCount;
-    g_DensityGrad[py * g_Width + px] = clamp(sanitize_scalar(densityGrad, g_LossGradClip), -g_LossGradClip, g_LossGradClip);
+    float depthRatioGrad = 0.0;
+    if (g_DepthRatioWeight > 0.0)
+    {
+        float depthRatio = sanitize_scalar(g_RenderedDepthStats[pixel].w, g_HugeValue);
+        depthRatioGrad = 2.0 * g_DepthRatioWeight * depthRatio * g_InvPixelCount;
+    }
+    g_RegularizerGrad[py * g_Width + px] = float2(
+        clamp(sanitize_scalar(densityGrad, g_LossGradClip), -g_LossGradClip, g_LossGradClip),
+        clamp(sanitize_scalar(depthRatioGrad, g_LossGradClip), -g_LossGradClip, g_LossGradClip)
+    );
 }
 
 [shader("compute")]

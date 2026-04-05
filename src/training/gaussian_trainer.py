@@ -14,14 +14,14 @@ from ..scene import ColmapFrame, GaussianInitHyperParams, GaussianScene, SUPPORT
 from ..scene._internal.colmap_ops import TRAINING_FRAME_LOAD_THREADS, load_training_frame_rgba8
 from .adam import AdamOptimizer, AdamRuntimeHyperParams
 from .optimizer import GaussianOptimizer
-from .schedule import DEFAULT_REFINEMENT_CONTRIBUTION_CULL_DECAY, resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_effective_refinement_interval, resolve_learning_rate_scale, resolve_refinement_contribution_cull_threshold, resolve_refinement_growth_ratio, resolve_max_allowed_density, should_run_refinement_step
+from .schedule import DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY, resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_effective_refinement_interval, resolve_learning_rate_scale, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_max_allowed_density, should_run_refinement_step
 
 TRAIN_DOWNSCALE_MODE_AUTO = 0
 TRAIN_DOWNSCALE_MAX_FACTOR = 16
 TRAIN_BACKGROUND_MODE_CUSTOM = 0
 TRAIN_BACKGROUND_MODE_RANDOM = 1
 SPLAT_CONTRIBUTION_FIXED_SCALE = 256.0
-DEFAULT_REFINEMENT_CONTRIBUTION_CULL_PERCENT = 0.001
+DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT = 1e-05
 DEFAULT_DEBUG_CONTRIBUTION_RANGE_PERCENT = (0.001, 1.0)
 _REFINEMENT_HASH_INIT = 0x9E3779B9
 _REFINEMENT_HASH_MIX = 0x85EBCA6B
@@ -149,10 +149,10 @@ class StabilityHyperParams:
 class TrainingHyperParams:
     background: tuple[float, float, float] = (1.0, 1.0, 1.0); near: float = 0.1; far: float = 120.0
     background_mode: int = TRAIN_BACKGROUND_MODE_RANDOM; use_sh: bool = True
-    scale_l2_weight: float = 0.0; scale_abs_reg_weight: float = 0.01; sh1_reg_weight: float = 0.01; opacity_reg_weight: float = 0.01; density_regularizer: float = 0.05; max_allowed_density_start: float = 5.0; max_allowed_density: float = 12.0
+    scale_l2_weight: float = 0.0; scale_abs_reg_weight: float = 0.01; sh1_reg_weight: float = 0.01; opacity_reg_weight: float = 0.01; density_regularizer: float = 0.05; depth_ratio_weight: float = 0.005; max_allowed_density_start: float = 5.0; max_allowed_density: float = 12.0
     position_random_step_noise_lr: float = 5e5; position_random_step_opacity_gate_center: float = 0.005; position_random_step_opacity_gate_sharpness: float = 100.0
     lr_schedule_enabled: bool = True; lr_schedule_start_lr: float = 1e-3; lr_schedule_end_lr: float = 1e-4; lr_schedule_steps: int = 30_000
-    refinement_interval: int = 200; refinement_growth_ratio: float = 0.02; refinement_growth_start_step: int = 500; refinement_alpha_cull_threshold: float = 1e-2; refinement_contribution_cull_threshold: float = DEFAULT_REFINEMENT_CONTRIBUTION_CULL_PERCENT; refinement_contribution_cull_decay: float = DEFAULT_REFINEMENT_CONTRIBUTION_CULL_DECAY
+    refinement_interval: int = 200; refinement_growth_ratio: float = 0.02; refinement_growth_start_step: int = 500; refinement_alpha_cull_threshold: float = 1e-2; refinement_min_contribution_percent: float = DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT; refinement_min_contribution_decay: float = DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY
     max_gaussians: int = 1_000_000; train_downscale_mode: int = 1; train_auto_start_downscale: int = 16
     train_downscale_base_iters: int = 200; train_downscale_iter_step: int = 50; train_downscale_max_iters: int = 30_000
     train_downscale_factor: int = 1
@@ -170,10 +170,11 @@ class TrainingHyperParams:
         self.refinement_growth_ratio = max(float(self.refinement_growth_ratio), 0.0)
         self.refinement_growth_start_step = max(int(self.refinement_growth_start_step), 0)
         self.refinement_alpha_cull_threshold = min(max(float(self.refinement_alpha_cull_threshold), 1e-8), 1.0)
-        self.refinement_contribution_cull_threshold = min(max(float(self.refinement_contribution_cull_threshold), 0.0), 100.0)
-        self.refinement_contribution_cull_decay = min(max(float(self.refinement_contribution_cull_decay), 0.0), 1.0)
+        self.refinement_min_contribution_percent = min(max(float(self.refinement_min_contribution_percent), 0.0), 100.0)
+        self.refinement_min_contribution_decay = min(max(float(self.refinement_min_contribution_decay), 0.0), 1.0)
         self.sh1_reg_weight = max(float(self.sh1_reg_weight), 0.0)
         self.density_regularizer = max(float(self.density_regularizer), 0.0)
+        self.depth_ratio_weight = max(float(self.depth_ratio_weight), 0.0)
         self.max_allowed_density_start = max(float(self.max_allowed_density_start), 0.0)
         self.max_allowed_density = max(float(self.max_allowed_density), 0.0)
         self.max_allowed_density = max(self.max_allowed_density, self.max_allowed_density_start)
@@ -326,7 +327,7 @@ class GaussianTrainer:
             background=background,
             output_grad=self.renderer.output_grad_buffer,
             grad_scale=1.0,
-            density_grad=self.renderer.work_buffers["training_density_grad"],
+            regularizer_grad=self.renderer.work_buffers["training_regularizer_grad"],
         )
 
     def _read_loss_metrics(self) -> tuple[float, float, float]:
@@ -347,7 +348,7 @@ class GaussianTrainer:
         return int(buffer_to_numpy(self._refinement_buffers[name], np.uint32)[0])
 
     def _refinement_vars(self, *, dst_splat_count: int = 0, append_splat_count: int = 0, survivor_count: int = 0) -> dict[str, object]:
-        refinement_threshold = resolve_refinement_contribution_cull_threshold(self.training, max(self.state.step - 1, 0), len(self.frames))
+        refinement_threshold = resolve_refinement_min_contribution_percent(self.training, max(self.state.step - 1, 0), len(self.frames))
         return {
             "g_SrcSplatParams": self.renderer.scene_buffers["splat_params"],
             "g_SrcAdamMoments": self.adam_optimizer.buffers["adam_moments"],
@@ -366,7 +367,7 @@ class GaussianTrainer:
             "g_RefinementSeed": np.uint32(self._seed + self.state.step),
             "g_RefinementCameraCount": int(len(self.frames)),
             "g_RefinementAlphaCullThreshold": float(self.training.refinement_alpha_cull_threshold),
-            "g_RefinementContributionCullThreshold": np.uint32(contribution_fixed_count_from_percent(refinement_threshold, self._observed_contribution_pixel_count)),
+            "g_RefinementMinContributionThreshold": np.uint32(contribution_fixed_count_from_percent(refinement_threshold, self._observed_contribution_pixel_count)),
             "g_RefinementRadiusScale": float(max(self.renderer.radius_scale, 1e-8)),
         }
 
@@ -809,11 +810,12 @@ class GaussianTrainer:
             "g_LossGradClip": float(self.stability.loss_grad_clip),
             "g_HugeValue": float(self.stability.huge_value),
             "g_DensityRegularizer": float(self.training.density_regularizer),
+            "g_DepthRatioWeight": float(self.training.depth_ratio_weight),
             "g_MaxAllowedDensity": float(resolve_max_allowed_density(self.training, resolved_step)),
         }
 
     def _dispatch_loss_forward(self, encoder: spy.CommandEncoder, target_texture: spy.Texture, step: int | None = None) -> None:
-        shared = {"g_OutputGrad": self.renderer.output_grad_buffer, "g_DensityGrad": self.renderer.work_buffers["training_density_grad"], "g_LossBuffer": self._buffers["loss"], **self._loss_vars(step)}
+        shared = {"g_OutputGrad": self.renderer.output_grad_buffer, "g_RegularizerGrad": self.renderer.work_buffers["training_regularizer_grad"], "g_LossBuffer": self._buffers["loss"], **self._loss_vars(step)}
         self._dispatch("clear_loss", encoder, self._pixel_thread_count(), shared)
         self._dispatch(
             "loss_forward",
@@ -821,10 +823,11 @@ class GaussianTrainer:
             self._pixel_thread_count(),
             {
                 "g_Rendered": self.renderer.output_texture,
+                "g_RenderedDepthStats": self.renderer.training_depth_stats_texture,
                 "g_RenderedDensity": self.renderer.work_buffers["training_density"],
                 "g_Target": target_texture,
                 "g_OutputGrad": self.renderer.output_grad_buffer,
-                "g_DensityGrad": self.renderer.work_buffers["training_density_grad"],
+                "g_RegularizerGrad": self.renderer.work_buffers["training_regularizer_grad"],
                 "g_LossBuffer": self._buffers["loss"],
                 **self._loss_vars(step),
             },
@@ -837,10 +840,11 @@ class GaussianTrainer:
             self._pixel_thread_count(),
             {
                 "g_Rendered": self.renderer.output_texture,
+                "g_RenderedDepthStats": self.renderer.training_depth_stats_texture,
                 "g_RenderedDensity": self.renderer.work_buffers["training_density"],
                 "g_Target": target_texture,
                 "g_OutputGrad": self.renderer.output_grad_buffer,
-                "g_DensityGrad": self.renderer.work_buffers["training_density_grad"],
+                "g_RegularizerGrad": self.renderer.work_buffers["training_regularizer_grad"],
                 "g_LossBuffer": self._buffers["loss"],
                 **self._loss_vars(step),
             },

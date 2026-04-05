@@ -2,7 +2,7 @@ from .adam import AdamOptimizer, AdamRuntimeHyperParams
 from .gaussian_trainer import (
     AdamHyperParams,
     DEFAULT_DEBUG_CONTRIBUTION_RANGE_PERCENT,
-    DEFAULT_REFINEMENT_CONTRIBUTION_CULL_PERCENT,
+    DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT,
     GaussianTrainer,
     StabilityHyperParams,
     contribution_fixed_count_from_percent,
@@ -19,7 +19,7 @@ from .gaussian_trainer import (
 from .optimizer import GaussianOptimizer
 from .profiles import TRAINING_PROFILE_CHOICES, TrainingProfile, resolve_training_profile
 from .schedule import resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_effective_refinement_interval, resolve_learning_rate_scale, resolve_refinement_growth_ratio, resolve_max_allowed_density, should_run_refinement_step
-from .schedule import DEFAULT_REFINEMENT_CONTRIBUTION_CULL_DECAY, resolve_refinement_contribution_cull_threshold
+from .schedule import DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY, resolve_refinement_min_contribution_percent
 
 __all__ = [
     "AdamOptimizer",
@@ -29,7 +29,7 @@ __all__ = [
     "SPLAT_CONTRIBUTION_FIXED_SCALE",
     "contribution_percent_from_fixed_count",
     "contribution_fixed_count_from_percent",
-    "DEFAULT_REFINEMENT_CONTRIBUTION_CULL_PERCENT",
+    "DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT",
     "DEFAULT_DEBUG_CONTRIBUTION_RANGE_PERCENT",
     "TRAIN_BACKGROUND_MODE_CUSTOM",
     "TRAIN_BACKGROUND_MODE_RANDOM",
@@ -45,8 +45,8 @@ __all__ = [
     "resolve_cosine_base_learning_rate",
     "resolve_effective_refinement_interval",
     "resolve_learning_rate_scale",
-    "DEFAULT_REFINEMENT_CONTRIBUTION_CULL_DECAY",
-    "resolve_refinement_contribution_cull_threshold",
+    "DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY",
+    "resolve_refinement_min_contribution_percent",
     "resolve_refinement_growth_ratio",
     "resolve_max_allowed_density",
     "TrainingProfile",

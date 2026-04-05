@@ -300,8 +300,8 @@ GROUP_SPECS = {
         ControlSpec("refinement_growth_ratio", "input_float", "Refinement Growth", {"value": 0.02, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
         ControlSpec("refinement_growth_start_step", "input_int", "Start Refinement After", {"value": 500, "step": 100, "step_fast": 500}),
         ControlSpec("refinement_alpha_cull_threshold", "input_float", "Refinement Alpha Cull", {"value": 1e-2, "step": 1e-5, "step_fast": 1e-4, "format": "%.6e"}),
-        ControlSpec("refinement_contribution_cull_threshold", "input_float", "Refinement Contribution Cull", {"value": 0.001, "step": 1e-4, "step_fast": 1e-3, "format": "%.6g%%"}),
-        ControlSpec("refinement_contribution_cull_decay", "input_float", "Refinement Cull Decay", {"value": 0.95, "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
+        ControlSpec("refinement_min_contribution_percent", "input_float", "Refinement Min Contribution", {"value": 1e-05, "step": 1e-6, "step_fast": 1e-5, "format": "%.6g%%"}),
+        ControlSpec("refinement_min_contribution_decay", "input_float", "Refinement Min Contribution Decay", {"value": 0.95, "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
         ControlSpec("train_downscale_mode", "combo", "Downscale Mode", {"value": 1, "options": _TRAIN_DOWNSCALE_MODE_LABELS}),
         ControlSpec("train_auto_start_downscale", "slider_int", "Auto Start Downscale", {"value": 16, "min": 1, "max": 16}),
         ControlSpec("train_downscale_base_iters", "input_int", "Downscale Base Iters", {"value": 200, "step": 25, "step_fast": 100}),
@@ -329,6 +329,7 @@ GROUP_SPECS = {
         ControlSpec("sh1_reg", "input_float", "SH1 Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
         ControlSpec("opacity_reg", "input_float", "Opacity Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
         ControlSpec("density_regularizer", "input_float", "Density Reg", {"value": 0.05, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
+        ControlSpec("depth_ratio_weight", "input_float", "Depth Ratio Reg", {"value": 0.005, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
         ControlSpec("max_allowed_density", "input_float", "Max Density", {"value": 12.0, "step": 1e-3, "step_fast": 1e-2, "format": "%.8f"}),
         ControlSpec("position_random_step_opacity_gate_center", "input_float", "Noise Gate Center", {"value": 0.005, "step": 1e-4, "step_fast": 1e-3, "format": "%.6f"}),
         ControlSpec("position_random_step_opacity_gate_sharpness", "input_float", "Noise Gate Sharpness", {"value": 100.0, "step": 1.0, "step_fast": 10.0, "format": "%.4g"}),
@@ -389,7 +390,7 @@ _ALL_DEFAULTS.update({spec.key: spec.kwargs["value"] for spec in DEBUG_RENDER_SP
 _OPTIMIZER_TAB_KEYS = {
     "Learning Rates": ("lr_base", "lr_schedule_enabled", "lr_schedule_start_lr", "lr_schedule_end_lr", "lr_schedule_steps", "lr_pos_mul", "lr_scale_mul", "lr_rot_mul", "lr_color_mul", "lr_opacity_mul", "position_random_step_noise_lr"),
     "Adam": ("beta1", "beta2"),
-    "Regularization": ("scale_l2", "scale_abs_reg", "sh1_reg", "opacity_reg", "density_regularizer", "max_allowed_density", "position_random_step_opacity_gate_center", "position_random_step_opacity_gate_sharpness", "max_anisotropy", "grad_clip", "grad_norm_clip", "max_update"),
+    "Regularization": ("scale_l2", "scale_abs_reg", "sh1_reg", "opacity_reg", "density_regularizer", "depth_ratio_weight", "max_allowed_density", "position_random_step_opacity_gate_center", "position_random_step_opacity_gate_sharpness", "max_anisotropy", "grad_clip", "grad_norm_clip", "max_update"),
 }
 
 
@@ -1421,7 +1422,7 @@ class ToolkitWindow:
     def _section_training_setup(self, ui: ViewerUI) -> None:
         if not imgui.collapsing_header("Train Setup"):
             return
-        for key in ("max_gaussians", "training_steps_per_frame", "background_mode", "use_sh", "refinement_interval", "refinement_growth_ratio", "refinement_growth_start_step", "refinement_alpha_cull_threshold", "refinement_contribution_cull_threshold", "refinement_contribution_cull_decay", "train_downscale_mode"):
+        for key in ("max_gaussians", "training_steps_per_frame", "background_mode", "use_sh", "refinement_interval", "refinement_growth_ratio", "refinement_growth_start_step", "refinement_alpha_cull_threshold", "refinement_min_contribution_percent", "refinement_min_contribution_decay", "train_downscale_mode"):
             self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Setup"] if spec.key == key))
         if int(ui._values.get("background_mode", 1)) == 0:
             self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Setup"] if spec.key == "train_background_color"))
@@ -1647,9 +1648,10 @@ class ToolkitWindow:
         "refinement_growth_ratio": "Target fractional scene growth per refinement step once densification is enabled",
         "refinement_growth_start_step": "Keep densification growth at zero until this training iteration, then use the configured refinement growth",
         "refinement_alpha_cull_threshold": "Cull splats below this decoded alpha threshold during refinement",
-        "refinement_contribution_cull_threshold": "Cull splats whose accumulated alpha contribution stays below this percent of observed dataset pixels during refinement",
-        "refinement_contribution_cull_decay": "Multiply the contribution cull threshold by this factor after each completed refinement pass",
+        "refinement_min_contribution_percent": "Minimum accumulated alpha contribution, as a percent of observed dataset pixels, required for a splat to survive refinement",
+        "refinement_min_contribution_decay": "Multiply the minimum contribution percent by this factor after each completed refinement pass",
         "density_regularizer": "Weight applied to the per-pixel hinge penalty max(density - max_allowed_density, 0)",
+        "depth_ratio_weight": "Weight applied to the differentiable per-pixel depth std over mean-depth ratio penalty",
         "max_allowed_density": "End-of-training per-pixel density threshold above which the density regularizer activates; runtime ramps from 5.0 to this value over the LR schedule",
         "lr_schedule_enabled": "Enable cosine scheduling of the base learning rate",
         "lr_schedule_start_lr": "Base learning rate at step 0 of the schedule",

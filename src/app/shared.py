@@ -9,7 +9,7 @@ import slangpy as spy
 
 from ..common import clamp_float, clamp_int
 from ..scene import GaussianInitHyperParams, GaussianScene
-from ..training import AdamHyperParams, DEFAULT_DEBUG_CONTRIBUTION_RANGE_PERCENT, DEFAULT_REFINEMENT_CONTRIBUTION_CULL_DECAY, DEFAULT_REFINEMENT_CONTRIBUTION_CULL_PERCENT, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, resolve_training_profile
+from ..training import AdamHyperParams, DEFAULT_DEBUG_CONTRIBUTION_RANGE_PERCENT, DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY, DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, resolve_training_profile
 
 EPS = 1e-8
 MIN_SCENE_RADIUS = 1.0
@@ -167,6 +167,7 @@ def build_training_params(
     opacity_reg_weight: float,
     sh1_reg_weight: float = 0.01,
     density_regularizer: float = 0.05,
+    depth_ratio_weight: float = 0.005,
     max_allowed_density_start: float = 5.0,
     max_allowed_density: float = 12.0,
     position_random_step_noise_lr: float = 5e5,
@@ -183,8 +184,8 @@ def build_training_params(
     refinement_growth_ratio: float = 0.02,
     refinement_growth_start_step: int = 500,
     refinement_alpha_cull_threshold: float = 1e-2,
-    refinement_contribution_cull_threshold: float = DEFAULT_REFINEMENT_CONTRIBUTION_CULL_PERCENT,
-    refinement_contribution_cull_decay: float = DEFAULT_REFINEMENT_CONTRIBUTION_CULL_DECAY,
+    refinement_min_contribution_percent: float = DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT,
+    refinement_min_contribution_decay: float = DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY,
     train_downscale_mode: int = 1,
     train_auto_start_downscale: int = 16,
     train_downscale_base_iters: int = 200,
@@ -238,6 +239,7 @@ def build_training_params(
         sh1_reg_weight=clamp_float(sh1_reg_weight, 0.0, 1e4),
         opacity_reg_weight=clamp_float(opacity_reg_weight, 0.0, 1e4),
         density_regularizer=clamp_float(density_regularizer, 0.0, 1e4),
+        depth_ratio_weight=clamp_float(depth_ratio_weight, 0.0, 1e4),
         max_allowed_density_start=clamp_float(max_allowed_density_start, 0.0, 1e6),
         max_allowed_density=clamp_float(max_allowed_density, 0.0, 1e6),
         position_random_step_noise_lr=clamp_float(position_random_step_noise_lr, 0.0, 1e12),
@@ -251,8 +253,8 @@ def build_training_params(
         refinement_growth_ratio=clamp_float(refinement_growth_ratio, 0.0, 10.0),
         refinement_growth_start_step=clamp_int(refinement_growth_start_step, 0, 1_000_000_000),
         refinement_alpha_cull_threshold=clamp_float(refinement_alpha_cull_threshold, 1e-8, 1.0),
-        refinement_contribution_cull_threshold=clamp_float(refinement_contribution_cull_threshold, 0.0, 100.0),
-        refinement_contribution_cull_decay=clamp_float(refinement_contribution_cull_decay, 0.0, 1.0),
+        refinement_min_contribution_percent=clamp_float(refinement_min_contribution_percent, 0.0, 100.0),
+        refinement_min_contribution_decay=clamp_float(refinement_min_contribution_decay, 0.0, 1.0),
         max_gaussians=clamp_int(max_gaussians, 0, 10_000_000),
         train_downscale_mode=clamp_int(train_downscale_mode, 0, 16),
         train_auto_start_downscale=clamp_int(train_auto_start_downscale, 1, 16),

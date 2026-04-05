@@ -54,9 +54,9 @@ Each trainer `step()` performs:
    - `csRasterizeTrainingForward` renders the current image and stores per-pixel raster forward cache data for backward,
   - the same pass also stores softened splat density scalars for regularization,
    - `csClearLossBuffer` resets the scalar loss slots,
-  - `csComputeL1LossForward` computes direct RGB L1 reconstruction loss, RGB MSE, and density hinge regularization and reduces those metrics into the loss buffer.
+  - `csComputeL1LossForward` computes direct RGB L1 reconstruction loss, RGB MSE, the density hinge regularizer, and the differentiable depth-std-over-mean-depth ratio regularizer, then reduces total and tracked metrics into the loss buffer.
 6. Run the fixed-count backward stage:
-   - `csComputeL1LossBackward` writes the unnormalized per-pixel RGB L1 sign gradient into flat `RWStructuredBuffer<float4>` `g_OutputGrad`, indexed as `pixel = y * width + x`,
+   - `csComputeL1LossBackward` writes the unnormalized per-pixel RGB L1 sign gradient into flat `RWStructuredBuffer<float4>` `g_OutputGrad`, plus one packed `float2` regularizer gradient buffer for density and depth-ratio replay, indexed as `pixel = y * width + x`,
    - `csRasterizeBackward` consumes the cached raster forward state and accumulates quantized cached raster-field gradients for the precomputed raster-cache fields,
    - `csBackpropCachedRasterGrads` decodes that cached-field intermediate inline, backprops through `build_cached_ellipsoid`, and writes the final float packed scene-parameter gradient buffer with the final `1 / pixel_count` normalization before the rest of training.
 7. Run the optimizer pipeline:
@@ -68,7 +68,7 @@ Each trainer `step()` performs:
 8. When the configured refinement boundary is reached, run the refinement pass:
   - `csClampRefinementMinScreenSize` loops over all training cameras on GPU, ignores offscreen centers, finds the minimum visible 1-pixel support-radius bound, and raises undersized splats before rewrite,
   - cull splats with alpha below `refinement_alpha_cull_threshold`,
-  - multiply the user-facing contribution threshold by `refinement_contribution_cull_decay` after each completed refinement pass (`0.95` by default, i.e. a `5%` drop per pass),
+  - multiply the user-facing minimum contribution percent by `refinement_min_contribution_decay` after each completed refinement pass (`0.95` by default, i.e. a `5%` drop per pass),
   - convert that decayed percent-of-observed-dataset-pixels threshold into the shader's raw 24.8 fixed-point units with `percent * observed_pixels * 256 / 100`,
   - split selected splats into `N + 1` family members from the accumulated clone counts using centered Gaussian samples in local splat space, seeded from a Python-provided hash of the selected training-frame `image_id`,
   - shrink each child sigma by `family_size^(-1/3)` and offset child means with the analytically matched residual covariance so the expected family covariance stays aligned with the parent,
@@ -83,8 +83,8 @@ There is still no opacity reset schedule, MCMC exploration term, or PSNR/SSIM tr
 ## Kernels
 - `csDownscaleTarget`: exact integer-factor box-filter downscale from the native dataset texture into the reusable train target.
 - `csClearLossBuffer`: zero scalar loss slots for the current training step.
-- `csComputeL1LossForward`: computes direct RGB L1 loss and RGB MSE only.
-- `csComputeL1LossBackward`: computes only the image-space L1 gradient into `g_OutputGrad`.
+- `csComputeL1LossForward`: computes direct RGB L1 loss, RGB MSE, density hinge regularization, and depth-ratio regularization.
+- `csComputeL1LossBackward`: computes the image-space L1 gradient into `g_OutputGrad` plus the per-pixel density/depth-ratio replay gradients.
 - UI-driven multi-step training batches keep per-substep loss/MSE records on the GPU and defer the single CPU readback until the batch finishes, rather than synchronizing after every substep.
 - Packed trainable storage remains param-major scalar packing: `param_id * splat_count + splat_id`.
 - Raster backward uses a separate param-major int accumulation buffer for cached raster-field gradients, then backprops that intermediate into final float scene-parameter gradients before optimizer consumption.

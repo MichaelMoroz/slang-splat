@@ -406,6 +406,7 @@ class GaussianRenderer:
         self._work_buffers = {}
         self._resource_groups = _RendererResourceGroups(scene={}, frame={}, prepass={}, raster={}, grad={}, debug={})
         self._output_texture = None
+        self._training_depth_stats_texture = None
         self._output_grad_buffer = None
         self._sorted_keys_buffer = None
         self._sorted_values_buffer = None
@@ -509,6 +510,7 @@ class GaussianRenderer:
         self._debug_splat_contribution_buffer: spy.Buffer | None = None
         self._debug_contribution_percent_scale = 100.0 / self._SPLAT_CONTRIBUTION_FIXED_SCALE
         self._output_texture: spy.Texture | None = None
+        self._training_depth_stats_texture: spy.Texture | None = None
         self._output_grad_buffer: spy.Buffer | None = None
         self._last_stats: dict[str, int | bool | float] = {}
         self._counter_readback_ring: list[spy.Buffer] = []
@@ -596,7 +598,7 @@ class GaussianRenderer:
         max_entries = self._max_prepass_entries_by_budget()
         required_splats = max(splat_count, 1)
         required_entries = min(max(splat_count * self.list_capacity_multiplier, min_list_entries, 1), max_entries)
-        if self._work_buffers and required_splats <= self._work_splat_capacity and required_entries <= self._max_list_entries and required_entries <= self._max_scanline_entries and self._output_texture is not None and self._output_grad_buffer is not None:
+        if self._work_buffers and required_splats <= self._work_splat_capacity and required_entries <= self._max_list_entries and required_entries <= self._max_scanline_entries and self._output_texture is not None and self._training_depth_stats_texture is not None and self._output_grad_buffer is not None:
             return
         self._work_splat_capacity = self._grow(required_splats, self._work_splat_capacity)
         self._max_list_entries = min(self._grow(required_entries, self._max_list_entries), max_entries)
@@ -623,7 +625,7 @@ class GaussianRenderer:
             "tile_ranges": max(self.tile_count, 1) * 8,
             "training_forward_state": max(self.width * self.height, 1) * self._F32X4_BYTES,
             "training_density": max(self.width * self.height, 1) * self._U32_BYTES,
-            "training_density_grad": max(self.width * self.height, 1) * self._U32_BYTES,
+            "training_regularizer_grad": max(self.width * self.height, 1) * 2 * self._U32_BYTES,
             "training_processed_end": max(self.width * self.height, 1) * self._U32_BYTES,
             "training_batch_end": max(self.tile_count, 1) * self._U32_BYTES,
             "training_splat_contribution": max(self._work_splat_capacity, 1) * self._U32_BYTES,
@@ -661,7 +663,7 @@ class GaussianRenderer:
                 "splat_visible",
                 "training_forward_state",
                 "training_density",
-                "training_density_grad",
+                "training_regularizer_grad",
                 "training_processed_end",
                 "training_batch_end",
                 "training_splat_contribution",
@@ -683,9 +685,11 @@ class GaussianRenderer:
         self._work_buffers["debug_grad_norm"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1),), dtype=np.float32))
         self._work_buffers["training_splat_contribution"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1),), dtype=np.uint32))
         self._ensure_output_texture()
+        self._ensure_training_depth_stats_texture()
         self._ensure_output_grad_buffer()
         self._resource_groups.frame = {
             "output_texture": self._output_texture,
+            "training_depth_stats_texture": self._training_depth_stats_texture,
             "output_grad_buffer": self._output_grad_buffer,
         }
         if self._pending_min_list_entries > 0 and self._max_list_entries >= self._pending_min_list_entries:
@@ -694,6 +698,15 @@ class GaussianRenderer:
     def _ensure_output_texture(self) -> None:
         if self._output_texture is None:
             self._output_texture = self.device.create_texture(
+                format=spy.Format.rgba32_float,
+                width=self.width,
+                height=self.height,
+                usage=spy.TextureUsage.shader_resource | spy.TextureUsage.unordered_access,
+            )
+
+    def _ensure_training_depth_stats_texture(self) -> None:
+        if self._training_depth_stats_texture is None:
+            self._training_depth_stats_texture = self.device.create_texture(
                 format=spy.Format.rgba32_float,
                 width=self.width,
                 height=self.height,
@@ -1059,6 +1072,7 @@ class GaussianRenderer:
             "g_TileRanges": self._work_buffers["tile_ranges"],
             "g_Output": target,
             "g_TrainingForwardState": self._work_buffers["training_forward_state"],
+            "g_TrainingDepthStats": self._training_depth_stats_texture,
             "g_TrainingDensity": self._work_buffers["training_density"],
             "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"],
             "g_TrainingBatchEnd": self._work_buffers["training_batch_end"],
@@ -1080,11 +1094,11 @@ class GaussianRenderer:
             )
         self._dispatch(self._raster_grad_shader_set().training_forward, encoder, self._raster_thread_count(), vars, "Rasterize Training Forward", 26)
 
-    def _rasterize_backward(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output_grad: spy.Buffer, density_grad: spy.Buffer | None = None) -> None:
-        resolved_density_grad = self._work_buffers["training_density_grad"] if density_grad is None else density_grad
-        if density_grad is None:
-            self._clear_float_buffer(encoder, resolved_density_grad, max(self.width * self.height, 1))
-        self._dispatch(self._raster_grad_shader_set().backward, encoder, self._raster_thread_count(), {**self._scene_vars(), **self._raster_cache_vars(), "g_SortedValues": self._sorted_values(), "g_TileRanges": self._work_buffers["tile_ranges"], "g_OutputGrad": output_grad, "g_TrainingForwardState": self._work_buffers["training_forward_state"], "g_TrainingDensityGrad": resolved_density_grad, "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"], "g_TrainingBatchEnd": self._work_buffers["training_batch_end"], **self._raster_grad_vars(), **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_range_vars(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._anisotropy_uniforms(), **self._camera_uniforms(camera)}, "Rasterize Backward", 27)
+    def _rasterize_backward(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output_grad: spy.Buffer, regularizer_grad: spy.Buffer | None = None) -> None:
+        resolved_regularizer_grad = self._work_buffers["training_regularizer_grad"] if regularizer_grad is None else regularizer_grad
+        if regularizer_grad is None:
+            self._clear_float_buffer(encoder, resolved_regularizer_grad, max(self.width * self.height, 1) * 2)
+        self._dispatch(self._raster_grad_shader_set().backward, encoder, self._raster_thread_count(), {**self._scene_vars(), **self._raster_cache_vars(), "g_SortedValues": self._sorted_values(), "g_TileRanges": self._work_buffers["tile_ranges"], "g_OutputGrad": output_grad, "g_TrainingForwardState": self._work_buffers["training_forward_state"], "g_TrainingDepthStats": self._training_depth_stats_texture, "g_TrainingRegularizerGrad": resolved_regularizer_grad, "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"], "g_TrainingBatchEnd": self._work_buffers["training_batch_end"], **self._raster_grad_vars(), **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_range_vars(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._anisotropy_uniforms(), **self._camera_uniforms(camera)}, "Rasterize Backward", 27)
 
     def _backprop_cached_raster_grads(self, encoder: spy.CommandEncoder, splat_count: int, camera: Camera, grad_scale: float = 1.0) -> None:
         self._dispatch(self._raster_grad_shader_set().backprop, encoder, spy.uint3(max(int(splat_count), 1), 1, 1), {**self._scene_vars(), **self._raster_cache_vars(), **self._raster_grad_vars(), **self._raster_grad_decode_scale_var(grad_scale), **self._raster_grad_fixed_range_vars(), **self._prepass_uniforms(splat_count), **self._anisotropy_uniforms(), **self._camera_uniforms(camera)}, "Backprop Cached Raster Grads", 28)
@@ -1451,6 +1465,10 @@ class GaussianRenderer:
         return self._require_texture("_output_texture", "Output")
 
     @property
+    def training_depth_stats_texture(self) -> spy.Texture:
+        return self._require_texture("_training_depth_stats_texture", "Training depth stats")
+
+    @property
     def output_grad_buffer(self) -> spy.Buffer:
         return self._require_buffer("_output_grad_buffer", "Output grad")
 
@@ -1493,9 +1511,9 @@ class GaussianRenderer:
         self._require_scene()
         self._rasterize_training_forward(encoder, camera, background, output, clone_counts_buffer, splat_contribution_buffer, clone_select_probability, clone_seed)
 
-    def rasterize_backward_current_scene(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output_grad: spy.Buffer, grad_scale: float = 1.0, density_grad: spy.Buffer | None = None) -> None:
+    def rasterize_backward_current_scene(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output_grad: spy.Buffer, grad_scale: float = 1.0, regularizer_grad: spy.Buffer | None = None) -> None:
         self._require_scene()
-        self._rasterize_backward(encoder, camera, background, output_grad, density_grad)
+        self._rasterize_backward(encoder, camera, background, output_grad, regularizer_grad)
         self._backprop_cached_raster_grads(encoder, self._scene_count, camera, grad_scale)
 
     def rasterize_forward_backward_current_scene(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output_grad: spy.Buffer, grad_scale: float = 1.0) -> None:

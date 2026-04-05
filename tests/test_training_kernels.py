@@ -13,7 +13,7 @@ from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 from src.scene.sh_utils import SH_C0
 from src.training import gaussian_trainer as gaussian_trainer_module
-from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, contribution_fixed_count_from_percent, contribution_percent_from_fixed_count, resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_effective_refinement_interval, resolve_refinement_contribution_cull_threshold, resolve_refinement_growth_ratio, resolve_max_allowed_density, resolve_training_resolution, should_run_refinement_step
+from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, contribution_fixed_count_from_percent, contribution_percent_from_fixed_count, resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_effective_refinement_interval, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_max_allowed_density, resolve_training_resolution, should_run_refinement_step
 
 _ADAM_BUFFER_NAMES = ("adam_moments",)
 _OPACITY_EPS = 1e-6
@@ -613,6 +613,7 @@ def test_loss_vars_use_density_schedule(device, tmp_path: Path) -> None:
     trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], training_hparams=training, seed=123)
 
     np.testing.assert_allclose(trainer._loss_vars(0)["g_DensityRegularizer"], 0.05, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(trainer._loss_vars(0)["g_DepthRatioWeight"], 0.005, rtol=0.0, atol=1e-10)
     np.testing.assert_allclose(trainer._loss_vars(0)["g_MaxAllowedDensity"], 5.0, rtol=0.0, atol=1e-10)
     np.testing.assert_allclose(trainer._loss_vars(1)["g_MaxAllowedDensity"], 8.5, rtol=0.0, atol=1e-10)
     np.testing.assert_allclose(trainer._loss_vars(2)["g_MaxAllowedDensity"], 12.0, rtol=0.0, atol=1e-10)
@@ -663,13 +664,13 @@ def test_refinement_growth_stays_zero_until_start_step() -> None:
     np.testing.assert_allclose(resolve_clone_probability_threshold(hparams, splat_count=1000, pixel_count=100, step=2000), 1000.0 * 0.02 / 200.0 / 100.0, rtol=0.0, atol=1e-12)
 
 
-def test_refinement_contribution_cull_threshold_uses_configured_decay() -> None:
-    hparams = TrainingHyperParams(refinement_interval=200, refinement_contribution_cull_threshold=0.001, refinement_contribution_cull_decay=0.95)
+def test_refinement_min_contribution_percent_uses_configured_decay() -> None:
+    hparams = TrainingHyperParams(refinement_interval=200, refinement_min_contribution_percent=1e-05, refinement_min_contribution_decay=0.95)
 
-    np.testing.assert_allclose(resolve_refinement_contribution_cull_threshold(hparams, 0), 0.001, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_refinement_contribution_cull_threshold(hparams, 199), 0.001, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_refinement_contribution_cull_threshold(hparams, 200), 0.00095, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_refinement_contribution_cull_threshold(hparams, 400), 0.0009025, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_refinement_min_contribution_percent(hparams, 0), 1e-05, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_refinement_min_contribution_percent(hparams, 199), 1e-05, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_refinement_min_contribution_percent(hparams, 200), 9.5e-06, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_refinement_min_contribution_percent(hparams, 400), 9.025e-06, rtol=0.0, atol=1e-12)
 
 
 def test_clone_probability_threshold_respects_max_gaussians_cap() -> None:
@@ -794,6 +795,40 @@ def test_density_loss_respects_threshold_and_changes_gradients(device, tmp_path:
     assert grad_delta > 0.0
 
 
+def test_depth_ratio_loss_changes_total_loss_and_gradients(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=8, seed=90)
+    frame = _make_frame(tmp_path, image_name="depth_ratio_target.png", image_id=17)
+    renderer_off = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
+    renderer_on = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
+    trainer_off = GaussianTrainer(device=device, renderer=renderer_off, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(density_regularizer=0.0, depth_ratio_weight=0.0), seed=123)
+    trainer_on = GaussianTrainer(device=device, renderer=renderer_on, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(density_regularizer=0.0, depth_ratio_weight=0.5), seed=123)
+    packed_depth_stats = np.zeros((renderer_off.height, renderer_off.width, 4), dtype=np.float32)
+    packed_depth_stats[:, :, :] = np.array([1.0, 2.0, 1.0, 0.5], dtype=np.float32)
+
+    def run_pass(trainer: GaussianTrainer, renderer: GaussianRenderer):
+        renderer.training_depth_stats_texture.copy_from_numpy(packed_depth_stats)
+        target_texture = trainer.get_frame_target_texture(0, native_resolution=False)
+        enc = device.create_command_encoder()
+        trainer._dispatch_loss_forward(enc, target_texture)
+        trainer._dispatch_loss_backward(enc, target_texture)
+        device.submit_command_buffer(enc.finish())
+        device.wait()
+        regularizer_grad = buffer_to_numpy(renderer.work_buffers["training_regularizer_grad"], np.float32).reshape(-1, 2)
+        return trainer._read_loss_metrics(), regularizer_grad
+
+    (total_off, mse_off, density_off), regularizer_grad_off = run_pass(trainer_off, renderer_off)
+    (total_on, mse_on, density_on), regularizer_grad_on = run_pass(trainer_on, renderer_on)
+
+    assert np.isfinite(total_off)
+    assert np.isfinite(total_on)
+    np.testing.assert_allclose(mse_on, mse_off, rtol=1e-5, atol=1e-7)
+    assert density_off == 0.0
+    assert density_on == 0.0
+    assert total_on > total_off
+    assert np.allclose(regularizer_grad_off[:, 1], 0.0)
+    assert float(np.max(np.abs(regularizer_grad_on[:, 1]))) > 0.0
+
+
 def test_refinement_rewrite_culls_and_splits_families(device, tmp_path: Path) -> None:
     scene = _make_scene(count=2, seed=89)
     scene.opacities[:] = np.array([0.6, 1e-5], dtype=np.float32)
@@ -807,7 +842,7 @@ def test_refinement_rewrite_culls_and_splits_families(device, tmp_path: Path) ->
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-3, refinement_contribution_cull_threshold=contribution_percent_from_fixed_count(50, observed_pixels)),
+        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-3, refinement_min_contribution_percent=contribution_percent_from_fixed_count(50, observed_pixels)),
         seed=123,
     )
 
@@ -840,7 +875,7 @@ def test_refinement_rewrite_culls_and_splits_families(device, tmp_path: Path) ->
     assert np.all(contribution_after == 0)
 
 
-def test_refinement_runtime_uses_base_threshold_for_first_refinement_then_decays(device, tmp_path: Path) -> None:
+def test_refinement_runtime_uses_base_min_contribution_for_first_refinement_then_decays(device, tmp_path: Path) -> None:
     scene = _make_scene(count=1, seed=93)
     frame = _make_frame(tmp_path, image_name="refinement_threshold_decay_target.png", image_id=212)
     renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
@@ -849,19 +884,19 @@ def test_refinement_runtime_uses_base_threshold_for_first_refinement_then_decays
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(refinement_interval=200, refinement_contribution_cull_threshold=0.001, refinement_contribution_cull_decay=0.95),
+        training_hparams=TrainingHyperParams(refinement_interval=200, refinement_min_contribution_percent=1e-05, refinement_min_contribution_decay=0.95),
         seed=123,
     )
     observed_pixels = renderer.width * renderer.height
     trainer._observed_contribution_pixel_count = observed_pixels
 
     trainer.state.step = 200
-    first_threshold = int(trainer._refinement_vars()["g_RefinementContributionCullThreshold"])
+    first_threshold = int(trainer._refinement_vars()["g_RefinementMinContributionThreshold"])
     trainer.state.step = 400
-    second_threshold = int(trainer._refinement_vars()["g_RefinementContributionCullThreshold"])
+    second_threshold = int(trainer._refinement_vars()["g_RefinementMinContributionThreshold"])
 
-    assert first_threshold == contribution_fixed_count_from_percent(0.001, observed_pixels)
-    assert second_threshold == contribution_fixed_count_from_percent(0.00095, observed_pixels)
+    assert first_threshold == contribution_fixed_count_from_percent(1e-05, observed_pixels)
+    assert second_threshold == contribution_fixed_count_from_percent(9.5e-06, observed_pixels)
 
 
 def test_refinement_rewrite_culls_low_contribution_splats(device, tmp_path: Path) -> None:
@@ -875,7 +910,7 @@ def test_refinement_rewrite_culls_low_contribution_splats(device, tmp_path: Path
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-6, refinement_contribution_cull_threshold=contribution_percent_from_fixed_count(50, observed_pixels)),
+        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-6, refinement_min_contribution_percent=contribution_percent_from_fixed_count(50, observed_pixels)),
         seed=123,
     )
 
@@ -900,7 +935,7 @@ def test_refinement_rewrite_migrates_adam_moments(device, tmp_path: Path) -> Non
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-3, refinement_contribution_cull_threshold=contribution_percent_from_fixed_count(50, observed_pixels)),
+        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-3, refinement_min_contribution_percent=contribution_percent_from_fixed_count(50, observed_pixels)),
         seed=123,
     )
 
@@ -932,7 +967,7 @@ def test_refinement_respects_max_gaussians_cap(device, tmp_path: Path) -> None:
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(max_gaussians=3, refinement_alpha_cull_threshold=1e-3, refinement_contribution_cull_threshold=contribution_percent_from_fixed_count(50, observed_pixels)),
+        training_hparams=TrainingHyperParams(max_gaussians=3, refinement_alpha_cull_threshold=1e-3, refinement_min_contribution_percent=contribution_percent_from_fixed_count(50, observed_pixels)),
         seed=123,
     )
 
@@ -970,7 +1005,7 @@ def test_refinement_rewrite_sampling_depends_on_frame_hash(device, tmp_path: Pat
         renderer=renderer_a,
         scene=scene_a,
         frames=[frame_a],
-        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-6, refinement_contribution_cull_threshold=contribution_percent_from_fixed_count(50, observed_pixels)),
+        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-6, refinement_min_contribution_percent=contribution_percent_from_fixed_count(50, observed_pixels)),
         seed=123,
     )
     trainer_b = GaussianTrainer(
@@ -978,7 +1013,7 @@ def test_refinement_rewrite_sampling_depends_on_frame_hash(device, tmp_path: Pat
         renderer=renderer_b,
         scene=scene_b,
         frames=[frame_b],
-        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-6, refinement_contribution_cull_threshold=contribution_percent_from_fixed_count(50, observed_pixels)),
+        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-6, refinement_min_contribution_percent=contribution_percent_from_fixed_count(50, observed_pixels)),
         seed=123,
     )
 
@@ -1012,7 +1047,7 @@ def test_refinement_rewrite_clamps_sampled_family_offsets_to_three_sigma(device,
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-6, refinement_contribution_cull_threshold=contribution_percent_from_fixed_count(50, observed_pixels)),
+        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-6, refinement_min_contribution_percent=contribution_percent_from_fixed_count(50, observed_pixels)),
         seed=123,
     )
 
