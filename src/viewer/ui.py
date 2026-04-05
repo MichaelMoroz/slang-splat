@@ -334,8 +334,8 @@ DEBUG_RENDER_SPECS = (
     ControlSpec("debug_clone_count_max", "input_float", "Clone Count Max", {"value": 16.0, "step": 1.0, "step_fast": 4.0, "format": "%.5g"}),
     ControlSpec("debug_density_min", "input_float", "Density Min", {"value": 0.0, "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
     ControlSpec("debug_density_max", "input_float", "Density Max", {"value": 20.0, "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
-    ControlSpec("debug_contribution_min", "input_float", "Contribution Min", {"value": 1.0 / 255.0, "step": 1e-4, "step_fast": 1e-3, "format": "%.5g"}),
-    ControlSpec("debug_contribution_max", "input_float", "Contribution Max", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.5g"}),
+    ControlSpec("debug_contribution_min", "input_float", "Contribution Min", {"value": 1.0, "step": 1.0, "step_fast": 8.0, "format": "%.5g"}),
+    ControlSpec("debug_contribution_max", "input_float", "Contribution Max", {"value": 1024.0, "step": 8.0, "step_fast": 64.0, "format": "%.5g"}),
     ControlSpec("debug_depth_mean_min", "input_float", "Depth Mean Min", {"value": 0.0, "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
     ControlSpec("debug_depth_mean_max", "input_float", "Depth Mean Max", {"value": 10.0, "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
     ControlSpec("debug_depth_std_min", "input_float", "Depth Std Min", {"value": 0.0, "step": 0.01, "step_fast": 0.1, "format": "%.5g"}),
@@ -711,7 +711,7 @@ class ToolkitWindow:
         if mode in ("splat_density", "splat_spatial_density", "splat_screen_density"):
             return f"{_debug_range_tick_value(t, float(ui._values.get('debug_density_min', 0.0)), float(ui._values.get('debug_density_max', 20.0))):.3g}"
         if mode == "contribution_amount":
-            return f"{_contribution_amount_tick_value(t, float(ui._values.get('debug_contribution_min', 1.0 / 255.0)), float(ui._values.get('debug_contribution_max', 1.0))):.1e}"
+            return f"{_contribution_amount_tick_value(t, float(ui._values.get('debug_contribution_min', 1.0)), float(ui._values.get('debug_contribution_max', 1024.0))):.1e}"
         if mode == "depth_mean":
             return f"{_debug_range_tick_value(t, float(ui._values.get('debug_depth_mean_min', 0.0)), float(ui._values.get('debug_depth_mean_max', 10.0))):.3g}"
         if mode == "depth_std":
@@ -1621,7 +1621,7 @@ def build_ui(renderer) -> ViewerUI:
     values["debug_ellipse_thickness_px"] = float(getattr(renderer, "debug_ellipse_thickness_px", 2.0))
     clone_count_range = tuple(getattr(renderer, "debug_clone_count_range", (0.0, 16.0)))
     density_range = tuple(getattr(renderer, "debug_density_range", (0.0, 20.0)))
-    contribution_range = tuple(getattr(renderer, "debug_contribution_range", (1.0 / 255.0, 1.0)))
+    contribution_range = tuple(getattr(renderer, "debug_contribution_range", (1.0, 1024.0)))
     depth_mean_range = tuple(getattr(renderer, "debug_depth_mean_range", (0.0, 10.0)))
     depth_std_range = tuple(getattr(renderer, "debug_depth_std_range", (0.0, 0.5)))
     values["debug_clone_count_min"] = float(clone_count_range[0])

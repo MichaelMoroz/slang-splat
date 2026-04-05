@@ -604,6 +604,7 @@ def test_debug_contribution_amount_render_smoke(device):
         list_capacity_multiplier=32,
         debug_mode=GaussianRenderer.DEBUG_MODE_CONTRIBUTION_AMOUNT,
     )
+    renderer.upload_debug_splat_contribution(np.geomspace(1.0, 1024.0, scene.count, dtype=np.float32).astype(np.uint32))
     out = renderer.render(scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32))
     assert out.image.shape == (64, 64, 4)
     assert np.all(np.isfinite(out.image))

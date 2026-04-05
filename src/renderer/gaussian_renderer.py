@@ -138,7 +138,7 @@ class GaussianRenderer:
     _DEFAULT_RASTER_GRAD_FIXED_OPACITY_RANGE = np.float32(0.2)
     _DEFAULT_DEBUG_CLONE_COUNT_RANGE = (0.0, 16.0)
     _DEFAULT_DEBUG_DENSITY_RANGE = (0.0, 20.0)
-    _DEFAULT_DEBUG_CONTRIBUTION_RANGE = (1.0 / 255.0, 1.0)
+    _DEFAULT_DEBUG_CONTRIBUTION_RANGE = (1.0, 1024.0)
     _DEFAULT_DEBUG_DEPTH_MEAN_RANGE = (0.0, 10.0)
     _DEFAULT_DEBUG_DEPTH_STD_RANGE = (0.0, 0.5)
     _COUNTER_READBACK_RING_SIZE = 2
@@ -295,6 +295,9 @@ class GaussianRenderer:
 
     def _debug_clone_count_var(self) -> dict[str, object]:
         return {"g_CloneCounts": self._debug_clone_count_buffer if self._debug_clone_count_buffer is not None else self._work_buffers["debug_clone_count"]}
+
+    def _debug_splat_contribution_var(self) -> dict[str, object]:
+        return {"g_SplatContribution": self._debug_splat_contribution_buffer if self._debug_splat_contribution_buffer is not None else self._work_buffers["training_splat_contribution"]}
 
     @classmethod
     def _validate_debug_mode(cls, mode: str) -> str:
@@ -501,6 +504,7 @@ class GaussianRenderer:
         self._resource_groups = _RendererResourceGroups(scene={}, frame={}, prepass={}, raster={}, grad={}, debug={})
         self._debug_grad_norm_buffer: spy.Buffer | None = None
         self._debug_clone_count_buffer: spy.Buffer | None = None
+        self._debug_splat_contribution_buffer: spy.Buffer | None = None
         self._output_texture: spy.Texture | None = None
         self._output_grad_buffer: spy.Buffer | None = None
         self._last_stats: dict[str, int | bool | float] = {}
@@ -674,6 +678,7 @@ class GaussianRenderer:
         self._sorted_values_buffer = self._work_buffers["values"]
         self._work_buffers["debug_clone_count"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1),), dtype=np.uint32))
         self._work_buffers["debug_grad_norm"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1),), dtype=np.float32))
+        self._work_buffers["training_splat_contribution"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1),), dtype=np.uint32))
         self._ensure_output_texture()
         self._ensure_output_grad_buffer()
         self._resource_groups.frame = {
@@ -1021,6 +1026,8 @@ class GaussianRenderer:
         vars = {**self._scene_vars(), **self._screen_vars(), **self._raster_cache_vars(), "g_SortedValues": self._sorted_values(), "g_TileRanges": self._work_buffers["tile_ranges"], "g_Output": target, **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_range_vars(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._anisotropy_uniforms(), **self._camera_uniforms(camera)}
         if self.debug_mode == self.DEBUG_MODE_CLONE_COUNT:
             vars.update(self._debug_clone_count_var())
+        if self.debug_mode == self.DEBUG_MODE_CONTRIBUTION_AMOUNT:
+            vars.update(self._debug_splat_contribution_var())
         if self.debug_mode == self.DEBUG_MODE_GRAD_NORM:
             vars.update(self._debug_grad_norm_var())
         self._dispatch(shader, encoder, self._raster_thread_count(), vars, "Rasterize", 24)
@@ -1403,11 +1410,20 @@ class GaussianRenderer:
     def set_debug_clone_count_buffer(self, buffer: spy.Buffer | None) -> None:
         self._debug_clone_count_buffer = buffer
 
+    def set_debug_splat_contribution_buffer(self, buffer: spy.Buffer | None) -> None:
+        self._debug_splat_contribution_buffer = buffer
+
     def upload_debug_clone_counts(self, values: np.ndarray) -> None:
         clone_counts = np.ascontiguousarray(values, dtype=np.uint32).reshape(-1)
         self._ensure_work_buffers(max(int(clone_counts.shape[0]), self._scene_count, 1))
         self._work_buffers["debug_clone_count"].copy_from_numpy(np.pad(clone_counts, (0, max(self._work_splat_capacity - clone_counts.shape[0], 0))))
         self._debug_clone_count_buffer = None
+
+    def upload_debug_splat_contribution(self, values: np.ndarray) -> None:
+        contribution = np.ascontiguousarray(values, dtype=np.uint32).reshape(-1)
+        self._ensure_work_buffers(max(int(contribution.shape[0]), self._scene_count, 1))
+        self._work_buffers["training_splat_contribution"].copy_from_numpy(np.pad(contribution, (0, max(self._work_splat_capacity - contribution.shape[0], 0))))
+        self._debug_splat_contribution_buffer = None
 
     def upload_debug_grad_norm(self, values: np.ndarray) -> None:
         grad = np.ascontiguousarray(values, dtype=np.float32).reshape(-1)

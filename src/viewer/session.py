@@ -540,6 +540,14 @@ def _training_debug_clone_count_buffer(viewer: object):
     )
 
 
+def _training_debug_splat_contribution_buffer(viewer: object):
+    return (
+        viewer.s.trainer.maintenance_buffers["splat_contribution"]
+        if viewer.s.trainer is not None and "splat_contribution" in viewer.s.trainer.maintenance_buffers
+        else None
+    )
+
+
 def _apply_debug_buffers(viewer: object, renderer: GaussianRenderer | None) -> None:
     if renderer is None:
         return
@@ -549,6 +557,9 @@ def _apply_debug_buffers(viewer: object, renderer: GaussianRenderer | None) -> N
         else None
     )
     renderer.set_debug_clone_count_buffer(_training_debug_clone_count_buffer(viewer))
+    bind_contribution = getattr(renderer, "set_debug_splat_contribution_buffer", None)
+    if callable(bind_contribution):
+        bind_contribution(_training_debug_splat_contribution_buffer(viewer))
 
 
 def ensure_renderer(viewer: object, attr: str, width: int, height: int, allow_debug_overlays: bool) -> GaussianRenderer:

@@ -283,9 +283,15 @@ float3 raster_clone_count_color(uint cloneCount)
     return jet_colormap(debug_normalize_range(float(cloneCount), g_Raster.debugCloneCountRange));
 }
 
+float3 raster_contribution_amount_color(uint contribution)
+{
+    return jet_colormap(debug_normalize_log_range(float(contribution), max(g_Raster.debugContributionRange.x, DEBUG_CONTRIBUTION_AMOUNT_FLOOR), max(g_Raster.debugContributionRange.y, DEBUG_CONTRIBUTION_AMOUNT_FLOOR)));
+}
+
 float3 raster_forward_color(RasterGaussian gaussian, uint splatId, uint debugMode)
 {
     if (debugMode == DEBUG_MODE_CLONE_COUNT) return raster_clone_count_color(g_CloneCounts[splatId]);
+    if (debugMode == DEBUG_MODE_CONTRIBUTION_AMOUNT) return raster_contribution_amount_color(g_SplatContribution[splatId]);
     if (debugMode != DEBUG_MODE_GRAD_NORM) return gaussian.colorAlpha.xyz;
     float gradNorm = g_DebugGradNorm[splatId];
     if (!isfinite(gradNorm)) gradNorm = 0.0;
@@ -574,7 +580,6 @@ float4 raster_debug_output_pixel(RasterPixelInfo info, RasterReplayState replayS
     if (debugMode == DEBUG_MODE_SPLAT_DENSITY) return float4(jet_colormap(debug_normalize_range(replayState.splatDensitySum, g_Raster.debugDensityRange)), 1.0);
     if (debugMode == DEBUG_MODE_SPLAT_SPATIAL_DENSITY) return float4(jet_colormap(debug_normalize_range(replayState.spatialDensitySum, g_Raster.debugDensityRange)), 1.0);
     if (debugMode == DEBUG_MODE_SPLAT_SCREEN_DENSITY) return float4(jet_colormap(debug_normalize_range(replayState.screenDensitySum, g_Raster.debugDensityRange)), 1.0);
-    if (debugMode == DEBUG_MODE_CONTRIBUTION_AMOUNT) return float4(jet_colormap(debug_normalize_log_range(1.0 - replayState.pixelState.trans, max(g_Raster.debugContributionRange.x, DEBUG_CONTRIBUTION_AMOUNT_FLOOR), max(g_Raster.debugContributionRange.y, DEBUG_CONTRIBUTION_AMOUNT_FLOOR))), 1.0);
     if (debugMode == DEBUG_MODE_DEPTH_MEAN) return float4(jet_colormap(debug_normalize_range(replayState.depthState.y, g_Raster.debugDepthMeanRange)), 1.0);
     if (debugMode == DEBUG_MODE_DEPTH_STD) return float4(jet_colormap(debug_normalize_range(raster_depth_output(replayState.depthState), g_Raster.debugDepthStdRange)), 1.0);
     return raster_forward_output_pixel(info, replayState.pixelState);
