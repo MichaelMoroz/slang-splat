@@ -72,6 +72,7 @@ Each trainer `step()` performs:
   - convert that decayed percent-of-observed-dataset-pixels threshold into the shader's raw 24.8 fixed-point units with `percent * observed_pixels * 256 / 100`,
   - split selected splats into `N + 1` family members from the accumulated clone counts using centered Gaussian samples in local splat space, seeded from a Python-provided hash of the selected training-frame `image_id`,
   - shrink each child sigma by `family_size^(-1/3)` and offset child means with the analytically matched residual covariance so the expected family covariance stays aligned with the parent,
+  - clamp each normalized residual offset sample to a maximum radius of `3 sigma` in splat space before applying it,
   - keep family opacity unchanged because that analytically preserves the expected unnormalized Gaussian kernel amplitude under that covariance split,
   - rewrite the packed scene buffer into a compact destination buffer,
   - migrate packed ADAM `float2` moments into the rewritten topology so unrelated splats do not lose optimizer history.

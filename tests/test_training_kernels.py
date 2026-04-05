@@ -972,6 +972,41 @@ def test_maintenance_rewrite_sampling_depends_on_frame_hash(device, tmp_path: Pa
     assert not np.allclose(positions_a, positions_b, rtol=0.0, atol=1e-6)
 
 
+def test_maintenance_rewrite_clamps_sampled_family_offsets_to_three_sigma(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=1, seed=173)
+    scene.positions[0] = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+    scene.scales[0] = _log_sigma(np.array([0.7, 0.5, 0.3], dtype=np.float32))
+    scene.rotations[0] = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    scene.opacities[0] = np.float32(0.6)
+    frame = _make_frame(tmp_path, image_name="maintenance_sigma_clamp_target.png", image_id=61)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    observed_pixels = renderer.width * renderer.height
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(maintenance_alpha_cull_threshold=1e-6, maintenance_contribution_cull_threshold=contribution_percent_from_fixed_count(50, observed_pixels)),
+        seed=123,
+    )
+
+    trainer._observed_contribution_pixel_count = observed_pixels
+    trainer.maintenance_buffers["clone_counts"].copy_from_numpy(np.array([31], dtype=np.uint32))
+    trainer.maintenance_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
+    trainer._run_maintenance()
+
+    groups = _read_scene_groups(renderer, trainer.scene.count)
+    family_positions = groups["positions"][:, :3]
+    parent_scale = np.array([0.7, 0.5, 0.3], dtype=np.float32)
+    family_size = trainer.scene.count
+    shrink = family_size ** (-1.0 / 3.0)
+    residual_sigma = parent_scale * np.sqrt(max(1.0 - shrink * shrink, 0.0))
+    normalized_lengths = np.linalg.norm((family_positions - scene.positions[0][None, :]) / residual_sigma[None, :], axis=1)
+
+    assert trainer.scene.count == 32
+    assert float(np.max(normalized_lengths)) <= 3.0 + 1e-5
+
+
 def test_maintenance_min_screen_size_raises_small_splats(device, tmp_path: Path) -> None:
     scene = _make_scene(count=1, seed=103)
     scene.positions[0] = np.array([0.0, 0.0, 0.0], dtype=np.float32)

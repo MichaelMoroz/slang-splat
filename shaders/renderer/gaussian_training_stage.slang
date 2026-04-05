@@ -14,6 +14,7 @@ static const uint LOSS_SLOT_MSE = 1u;
 static const uint LOSS_SLOT_DENSITY = 2u;
 static const float POSITION_RANDOM_STEP_MAX_ANISOTROPY = 4.0;
 static const float DENSIFY_SCALE_SHRINK_EXPONENT = -1.0 / 3.0;
+static const float DENSIFY_MAX_STANDARDIZED_SIGMA = 3.0;
 static const uint MAINTENANCE_HASH_INIT = 0x9e3779b9u;
 static const uint MAINTENANCE_HASH_MIX = 0x85ebca6bu;
 uniform uint g_Width;
@@ -270,7 +271,9 @@ float3 maintenance_centered_gaussian_sample(uint frameHash, uint splatId, uint s
 {
     if (familySize <= 1u) return 0.0;
     float varianceRestore = sqrt(float(familySize) / float(familySize - 1u));
-    return (maintenance_gaussian_sample_raw(frameHash, splatId, slot) - familyMean) * varianceRestore;
+    float3 sample = (maintenance_gaussian_sample_raw(frameHash, splatId, slot) - familyMean) * varianceRestore;
+    float sampleLength = length(sample);
+    return sampleLength > DENSIFY_MAX_STANDARDIZED_SIGMA ? sample * (DENSIFY_MAX_STANDARDIZED_SIGMA / sampleLength) : sample;
 }
 
 float position_random_step_gate(float opacity)
