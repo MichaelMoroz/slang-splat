@@ -459,3 +459,23 @@ def test_dispatch_debug_abs_diff_uses_runtime_ui_scale(monkeypatch) -> None:
     assert result is output
     assert len(viewer.s.debug_abs_diff_kernel.calls) == 1
     assert viewer.s.debug_abs_diff_kernel.calls[0]["vars"]["g_DebugDiffScale"] == 3.5
+
+
+def test_dispatch_viewport_present_uses_present_kernel(monkeypatch) -> None:
+    viewer = _viewer(loss_debug=False)
+    viewer.s.debug_letterbox_kernel = _CaptureKernel()
+    encoder = _DummyEncoder()
+    output = SimpleNamespace(width=640, height=360)
+
+    monkeypatch.setattr(presenter, "_ensure_texture", lambda viewer_obj, attr, width, height: output)
+
+    result = presenter._dispatch_viewport_present(viewer, encoder, "source_tex", 320, 180, 640, 360)
+
+    assert result is output
+    assert len(viewer.s.debug_letterbox_kernel.calls) == 1
+    vars = viewer.s.debug_letterbox_kernel.calls[0]["vars"]
+    assert vars["g_LetterboxSource"] == "source_tex"
+    assert vars["g_LetterboxSourceWidth"] == 320
+    assert vars["g_LetterboxSourceHeight"] == 180
+    assert vars["g_LetterboxOutputWidth"] == 640
+    assert vars["g_LetterboxOutputHeight"] == 360

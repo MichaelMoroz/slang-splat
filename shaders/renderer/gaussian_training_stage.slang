@@ -609,5 +609,12 @@ void csComposeLetterboxDebug(uint3 dispatchThreadID : SV_DispatchThreadID)
     float v = (sampleY - offsetY) / max(fitH, TINY_VALUE);
     uint srcX = min(uint(u * srcW), g_LetterboxSourceWidth - 1u);
     uint srcY = min(uint(v * srcH), g_LetterboxSourceHeight - 1u);
-    g_LetterboxOutput[uint2(px, py)] = g_LetterboxSource[uint2(srcX, srcY)];
+    float4 sampled = g_LetterboxSource[uint2(srcX, srcY)];
+    float3 linear = max(sampled.xyz, 0.0);
+    float3 srgb = float3(
+        linear.x <= 0.0031308 ? 12.92 * linear.x : 1.055 * pow(linear.x, 1.0 / 2.4) - 0.055,
+        linear.y <= 0.0031308 ? 12.92 * linear.y : 1.055 * pow(linear.y, 1.0 / 2.4) - 0.055,
+        linear.z <= 0.0031308 ? 12.92 * linear.z : 1.055 * pow(linear.z, 1.0 / 2.4) - 0.055
+    );
+    g_LetterboxOutput[uint2(px, py)] = float4(srgb, sampled.w);
 }

@@ -25,9 +25,10 @@ Each frame follows this order:
 1. `SplatViewer.render(...)` calls `presenter.render_frame(...)` to render the scene or debug view into an offscreen texture sized from the current viewport content rect.
 2. The swapchain is cleared for UI composition.
 3. The overlay begins an `imgui_bundle` frame with the current surface size and frame delta.
-4. The docked `Viewport` window emits an `imgui.image(...)` draw call referencing that offscreen texture, while the rest of the control panels and plots emit normal Dear ImGui draw lists.
-5. Slangpy marshals any external font or image textures referenced by the draw data.
-6. Slangpy renders the full draw data into the swapchain with the current command encoder.
+4. The viewer presentation pass composes the currently displayed texture into a viewport-sized present texture, applying the viewport letterbox fit when needed and converting linear RGB to sRGB for UI display.
+5. The docked `Viewport` window emits an `imgui.image(...)` draw call referencing that present texture, while the rest of the control panels and plots emit normal Dear ImGui draw lists.
+6. Slangpy marshals any external font or image textures referenced by the draw data.
+7. Slangpy renders the full draw data into the swapchain with the current command encoder.
 
 This keeps scene rendering and UI composition in one window and one graphics context while letting the renderer resolution follow the docked viewport size instead of the outer window size.
 

@@ -173,8 +173,8 @@ def _rect_contains(rect: tuple[float, float, float, float], point: tuple[float, 
     return px >= x and py >= y and px < x + width and py < y + height
 
 
-def _should_capture_keyboard_for_ui(handled: bool, viewport_focused: bool, any_item_active: bool) -> bool:
-    return bool(handled) and not (bool(viewport_focused) and not bool(any_item_active))
+def _should_capture_keyboard_for_ui(handled: bool, viewport_input_active: bool, any_item_active: bool, any_item_focused: bool) -> bool:
+    return bool(handled) and not (bool(viewport_input_active) and not bool(any_item_active) and not bool(any_item_focused))
 
 
 @lru_cache(maxsize=1)
@@ -524,6 +524,7 @@ class ToolkitWindow:
         self._viewport_rect = (self._toolkit_rect[2], 0.0, max(float(width) - self._toolkit_rect[2], 1.0), max(float(height), 1.0))
         self._viewport_content_rect = self._viewport_rect
         self._viewport_window_focused = False
+        self._viewport_input_active = False
         self._set_interface_scale(_INTERFACE_SCALE_OPTIONS[_DEFAULT_INTERFACE_SCALE_INDEX][1])
 
     def _set_current_context(self) -> None:
@@ -613,7 +614,7 @@ class ToolkitWindow:
             return False
         self._set_current_context()
         handled = bool(simgui.handle_keyboard_event(event))
-        return _should_capture_keyboard_for_ui(handled, self._viewport_window_focused, bool(imgui.is_any_item_active()))
+        return _should_capture_keyboard_for_ui(handled, self._viewport_input_active, bool(imgui.is_any_item_active()), bool(imgui.is_any_item_focused()))
 
     def handle_mouse_event(self, event) -> bool:
         if not self._alive:
@@ -622,7 +623,13 @@ class ToolkitWindow:
         handled = bool(simgui.handle_mouse_event(event))
         pos = getattr(event, "pos", None)
         point = None if pos is None else (float(pos.x), float(pos.y))
-        return False if _rect_contains(self._viewport_content_rect, point) else handled
+        inside_viewport = _rect_contains(self._viewport_content_rect, point)
+        event_type = getattr(event, "type", None)
+        if inside_viewport and event_type in (spy.MouseEventType.button_down, spy.MouseEventType.move, spy.MouseEventType.scroll):
+            self._viewport_input_active = True
+        elif event_type == spy.MouseEventType.button_down and not inside_viewport:
+            self._viewport_input_active = False
+        return False if inside_viewport else handled
 
     def viewport_size(self) -> tuple[int, int]:
         return _clamp_viewport_size(self._viewport_content_rect[2], self._viewport_content_rect[3])
@@ -719,7 +726,8 @@ class ToolkitWindow:
         opened = imgui.begin(_VIEWPORT_WINDOW_NAME, flags=flags)[0]
         imgui.pop_style_var()
         if opened:
-            self._viewport_window_focused = bool(imgui.is_window_focused())
+            self._viewport_window_focused = bool(imgui.is_window_focused(int(imgui.FocusedFlags_.root_and_child_windows)))
+            self._viewport_input_active = self._viewport_input_active or self._viewport_window_focused
             pos = imgui.get_window_pos()
             size = imgui.get_window_size()
             cursor = imgui.get_cursor_screen_pos()
@@ -746,6 +754,7 @@ class ToolkitWindow:
                 )
         else:
             self._viewport_window_focused = False
+            self._viewport_input_active = False
         imgui.end()
 
     def _draw_debug_colorbar(self, ui: ViewerUI) -> None:

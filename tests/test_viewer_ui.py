@@ -49,10 +49,11 @@ def test_rect_contains_matches_viewport_bounds() -> None:
 
 
 def test_keyboard_capture_passes_through_for_focused_viewport_without_active_ui_item() -> None:
-    assert ui._should_capture_keyboard_for_ui(True, viewport_focused=True, any_item_active=False) is False
-    assert ui._should_capture_keyboard_for_ui(True, viewport_focused=True, any_item_active=True) is True
-    assert ui._should_capture_keyboard_for_ui(True, viewport_focused=False, any_item_active=False) is True
-    assert ui._should_capture_keyboard_for_ui(False, viewport_focused=True, any_item_active=False) is False
+    assert ui._should_capture_keyboard_for_ui(True, viewport_input_active=True, any_item_active=False, any_item_focused=False) is False
+    assert ui._should_capture_keyboard_for_ui(True, viewport_input_active=True, any_item_active=True, any_item_focused=False) is True
+    assert ui._should_capture_keyboard_for_ui(True, viewport_input_active=True, any_item_active=False, any_item_focused=True) is True
+    assert ui._should_capture_keyboard_for_ui(True, viewport_input_active=False, any_item_active=False, any_item_focused=False) is True
+    assert ui._should_capture_keyboard_for_ui(False, viewport_input_active=True, any_item_active=False, any_item_focused=False) is False
 
 
 def test_status_suffix_strips_presenter_prefix() -> None:

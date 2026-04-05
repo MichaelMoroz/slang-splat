@@ -188,9 +188,9 @@ def _dispatch_debug_abs_diff(viewer: object, encoder: spy.CommandEncoder, render
     return output
 
 
-def _dispatch_debug_letterbox(viewer: object, encoder: spy.CommandEncoder, source_tex: spy.Texture, source_width: int, source_height: int, output_width: int, output_height: int) -> spy.Texture:
+def _dispatch_viewport_present(viewer: object, encoder: spy.CommandEncoder, source_tex: spy.Texture, source_width: int, source_height: int, output_width: int, output_height: int) -> spy.Texture:
     output = _ensure_texture(viewer, "debug_present_texture", output_width, output_height)
-    with debug_region(encoder, "Viewer Debug Letterbox", 151):
+    with debug_region(encoder, "Viewer Present", 151):
         require_not_none(viewer.s.debug_letterbox_kernel, "Debug letterbox kernel is not initialized.").dispatch(
             thread_count=spy.uint3(int(output_width), int(output_height), 1),
             vars={
@@ -308,7 +308,7 @@ def _render_debug_view(viewer: object, encoder: spy.CommandEncoder, output_width
     debug_render_tex, viewer.s.stats, debug_width, debug_height = _render_debug_source(viewer, encoder, frame_idx)
     target_tex = viewer.s.trainer.get_frame_target_texture(frame_idx, native_resolution=False, encoder=encoder)
     source_tex = debug_render_tex if _debug_view_key(viewer) == "rendered" else target_tex if _debug_view_key(viewer) == "target" else _dispatch_debug_abs_diff(viewer, encoder, debug_render_tex, target_tex, debug_width, debug_height)
-    return _dispatch_debug_letterbox(viewer, encoder, source_tex, debug_width, debug_height, output_width, output_height)
+    return _dispatch_viewport_present(viewer, encoder, source_tex, debug_width, debug_height, output_width, output_height)
 
 
 
@@ -318,7 +318,7 @@ def _render_main_view(viewer: object, encoder: spy.CommandEncoder) -> spy.Textur
         session.sync_scene_from_training_renderer(viewer, viewer.s.renderer, target="main")
     out_tex, stats = viewer.s.renderer.render_to_texture(viewer.camera(), background=viewer.s.background, read_stats=True, command_encoder=encoder)
     viewer.s.stats = stats
-    return out_tex
+    return _dispatch_viewport_present(viewer, encoder, out_tex, int(viewer.s.renderer.width), int(viewer.s.renderer.height), int(viewer.s.renderer.width), int(viewer.s.renderer.height))
 
 
 def render_frame(viewer: object, render_context: spy.AppWindow.RenderContext) -> None:
