@@ -34,7 +34,7 @@ class _DummyRenderer:
 
 class _DummyTrainer:
     def __init__(self) -> None:
-        self.state = SimpleNamespace(step=0, last_loss=0.0, avg_loss=0.0, last_mse=0.0, avg_mse=0.0, last_psnr=float("inf"), avg_psnr=float("inf"), last_depth_ratio_loss=0.0, avg_depth_ratio_loss=0.0, last_density_loss=0.0, avg_density_loss=0.0, last_frame_index=0, last_instability="")
+        self.state = SimpleNamespace(step=0, last_loss=0.0, avg_loss=0.0, last_mse=0.0, avg_mse=0.0, last_psnr=float("inf"), avg_psnr=float("inf"), last_density_loss=0.0, avg_density_loss=0.0, last_frame_index=0, last_instability="")
         self.scene = SimpleNamespace(count=4)
         self.training = SimpleNamespace(
             train_downscale_mode=1,
@@ -49,7 +49,6 @@ class _DummyTrainer:
             maintenance_growth_start_step=2000,
             maintenance_alpha_cull_threshold=1e-2,
             maintenance_contribution_cull_threshold=128,
-            depth_ratio_weight=0.05,
             density_regularizer=0.05,
             max_allowed_density=12.0,
             max_gaussians=1000000,
@@ -118,7 +117,7 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         "train_auto_start_downscale": _control(1),
         "train_downscale_max_iters": _control(30000),
     }
-    texts = {key: _text() for key in ("fps", "images_subdir", "loss_debug_view", "loss_debug_frame", "path", "scene_stats", "render_stats", "training", "training_time", "training_iters_avg", "training_loss", "training_mse", "training_depth_ratio", "training_density", "training_psnr", "training_instability", "training_resolution", "training_downscale", "training_schedule", "training_maintenance", "colmap_import_status", "colmap_import_current", "histogram_status", "error")}
+    texts = {key: _text() for key in ("fps", "images_subdir", "loss_debug_view", "loss_debug_frame", "path", "scene_stats", "render_stats", "training", "training_time", "training_iters_avg", "training_loss", "training_mse", "training_density", "training_psnr", "training_instability", "training_resolution", "training_downscale", "training_schedule", "training_maintenance", "colmap_import_status", "colmap_import_current", "histogram_status", "error")}
     viewer = SimpleNamespace()
     viewer.device = SimpleNamespace()
     viewer.loss_debug_view_options = (("rendered", "Rendered"), ("target", "Target"), ("abs_diff", "Abs Diff"))
@@ -343,7 +342,6 @@ def test_update_ui_text_uses_permutation_averages() -> None:
     viewer = _viewer(loss_debug=False)
     viewer.s.trainer.state.avg_loss = 1.25
     viewer.s.trainer.state.avg_mse = 2.5e-3
-    viewer.s.trainer.state.avg_depth_ratio_loss = 4.5e-4
     viewer.s.trainer.state.avg_density_loss = 6.5e-3
     viewer.s.trainer.state.avg_psnr = 26.75
     viewer.s.trainer.state.step = 120
@@ -355,7 +353,6 @@ def test_update_ui_text_uses_permutation_averages() -> None:
     assert viewer.t("training_iters_avg").text == "Avg it/s: 4.00"
     assert viewer.t("training_loss").text == "Loss Avg: 1.250000e+00"
     assert viewer.t("training_mse").text == "MSE Avg: 2.500000e-03"
-    assert viewer.t("training_depth_ratio").text == "Depth Ratio Avg: 4.500000e-04"
     assert viewer.t("training_density").text == "Density Avg: 6.500000e-03"
     assert viewer.t("training_psnr").text == "PSNR Avg: 26.750 dB"
     assert viewer.t("training_resolution").text == "Train Res: 640x360 (N=1)"

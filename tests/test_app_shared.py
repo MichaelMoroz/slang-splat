@@ -6,6 +6,7 @@ import numpy as np
 
 from src.app.shared import apply_training_profile, build_training_params, estimate_scene_bounds
 from src.scene import GaussianInitHyperParams, GaussianScene
+from src.training import TRAIN_BACKGROUND_MODE_RANDOM
 from src.viewer.app import default_training_params
 from src.viewer.session import resolve_effective_training_setup
 from src.viewer.ui import default_control_values
@@ -51,7 +52,7 @@ def test_build_training_params_clamps_ranges():
         position_abs_max=0.0,
         near=5.0,
         far=1.0,
-        random_background=7,
+        background_mode=7,
         use_sh=0,
         scale_l2_weight=-1.0,
         scale_abs_reg_weight=-1.0,
@@ -64,7 +65,7 @@ def test_build_training_params_clamps_ranges():
     assert params.stability.max_scale == params.stability.min_scale == 2.0
     assert params.stability.max_opacity == params.stability.min_opacity == 0.8
     assert params.training.far > params.training.near
-    assert params.training.random_background is True
+    assert params.training.background_mode == TRAIN_BACKGROUND_MODE_RANDOM
     assert params.training.use_sh is False
     assert params.training.scale_l2_weight == 0.0
     assert params.training.scale_abs_reg_weight == 0.0
@@ -79,13 +80,13 @@ def test_build_training_params_clamps_ranges():
 
 def test_default_training_params_match_fixed_count_defaults():
     params = default_training_params()
-    assert params.training.random_background is True
+    assert params.training.background_mode == TRAIN_BACKGROUND_MODE_RANDOM
+    assert params.training.background == (1.0, 1.0, 1.0)
     assert params.training.use_sh is True
     assert params.training.scale_l2_weight == 0.0
     assert params.training.scale_abs_reg_weight == 0.01
     assert params.training.sh1_reg_weight == 0.01
     assert params.training.opacity_reg_weight == 0.01
-    assert params.training.depth_ratio_weight == 0.05
     assert params.training.density_regularizer == 0.05
     assert params.training.max_allowed_density_start == 5.0
     assert params.training.max_allowed_density == 12.0

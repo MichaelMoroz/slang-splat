@@ -20,16 +20,6 @@ def resolve_learning_rate_scale(training_hparams: Any, step: int) -> float:
     return resolve_cosine_base_learning_rate(training_hparams, step) / start
 
 
-def resolve_depth_ratio_weight(training_hparams: Any, step: int) -> float:
-    enabled = bool(getattr(training_hparams, "lr_schedule_enabled", True))
-    start = max(float(getattr(training_hparams, "depth_ratio_weight", 0.05)), 0.0)
-    duration = max(int(getattr(training_hparams, "lr_schedule_steps", 30_000)), 1)
-    if not enabled or start <= 0.0:
-        return start
-    progress = min(max(int(step), 0), duration) / float(duration)
-    return 0.5 * start * (1.0 + math.cos(math.pi * progress))
-
-
 def resolve_max_allowed_density(training_hparams: Any, step: int) -> float:
     end = max(float(getattr(training_hparams, "max_allowed_density", 12.0)), 0.0)
     start = max(float(getattr(training_hparams, "max_allowed_density_start", 5.0)), 0.0)

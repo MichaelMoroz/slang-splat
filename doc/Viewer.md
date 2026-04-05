@@ -92,6 +92,12 @@ The `Train Setup` section exposes train downscale as a mode selector:
 
 It also exposes a `Use Spherical Harmonics` toggle. When enabled, projection and training use SH0+SH1 view-dependent color. When disabled, rendering and optimization fall back to SH0-only base color while leaving the raster hot loop unchanged.
 
+Training background is configured separately from the viewer clear color:
+
+- `Background Mode`: `Custom` or `Random`
+- `Custom` exposes a fixed training RGB color picker and defaults to white
+- `Random` re-samples the training background color per step
+
 - `Auto`
 - manual `1x` through `16x`
 

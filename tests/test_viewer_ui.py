@@ -70,7 +70,8 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["lr_schedule_start_lr"] == 1e-3
     assert viewer_ui._values["lr_schedule_end_lr"] == 1e-4
     assert viewer_ui._values["lr_schedule_steps"] == 30000
-    assert viewer_ui._values["random_background"] is True
+    assert viewer_ui._values["background_mode"] == 1
+    assert viewer_ui._values["train_background_color"] == (1.0, 1.0, 1.0)
     assert viewer_ui._values["use_sh"] is True
     assert viewer_ui._values["sh1_reg"] == 0.01
     assert viewer_ui._values["maintenance_interval"] == 200
@@ -78,7 +79,6 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["maintenance_growth_start_step"] == 2000
     assert viewer_ui._values["maintenance_alpha_cull_threshold"] == 1e-2
     assert viewer_ui._values["maintenance_contribution_cull_threshold"] == 128
-    assert viewer_ui._values["depth_ratio_weight"] == 0.05
     assert viewer_ui._values["density_regularizer"] == 0.05
     assert viewer_ui._values["max_allowed_density"] == 12.0
     assert viewer_ui._values["max_anisotropy"] == 32.0

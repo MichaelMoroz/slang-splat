@@ -9,7 +9,7 @@ import slangpy as spy
 
 from ..common import clamp_float, clamp_int
 from ..scene import GaussianInitHyperParams, GaussianScene
-from ..training import AdamHyperParams, StabilityHyperParams, TrainingHyperParams, resolve_training_profile
+from ..training import AdamHyperParams, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, resolve_training_profile
 
 EPS = 1e-8
 MIN_SCENE_RADIUS = 1.0
@@ -166,12 +166,11 @@ def build_training_params(
     scale_abs_reg_weight: float,
     opacity_reg_weight: float,
     sh1_reg_weight: float = 0.01,
-    depth_ratio_weight: float = 0.05,
     density_regularizer: float = 0.05,
     max_allowed_density_start: float = 5.0,
     max_allowed_density: float = 12.0,
     max_gaussians: int,
-    random_background: bool = True,
+    background_mode: int = TRAIN_BACKGROUND_MODE_RANDOM,
     use_sh: bool = True,
     lr_schedule_enabled: bool = True,
     lr_schedule_start_lr: float | None = None,
@@ -228,13 +227,12 @@ def build_training_params(
         background=tuple(float(v) for v in np.asarray(background, dtype=np.float32).reshape(3)),
         near=clamp_float(near, 1e-6, 1e4),
         far=clamp_float(far, 1e-5, 1e6),
-        random_background=bool(random_background),
+        background_mode=TRAIN_BACKGROUND_MODE_RANDOM if clamp_int(background_mode, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM) == TRAIN_BACKGROUND_MODE_RANDOM else TRAIN_BACKGROUND_MODE_CUSTOM,
         use_sh=bool(use_sh),
         scale_l2_weight=clamp_float(scale_l2_weight, 0.0, 1e4),
         scale_abs_reg_weight=clamp_float(scale_abs_reg_weight, 0.0, 1e4),
         sh1_reg_weight=clamp_float(sh1_reg_weight, 0.0, 1e4),
         opacity_reg_weight=clamp_float(opacity_reg_weight, 0.0, 1e4),
-        depth_ratio_weight=clamp_float(depth_ratio_weight, 0.0, 1e4),
         density_regularizer=clamp_float(density_regularizer, 0.0, 1e4),
         max_allowed_density_start=clamp_float(max_allowed_density_start, 0.0, 1e6),
         max_allowed_density=clamp_float(max_allowed_density, 0.0, 1e6),

@@ -51,9 +51,9 @@ Each trainer `step()` performs:
 4. Run renderer prepass + raster forward.
 5. Run the fixed-count forward stage:
    - `csRasterizeTrainingForward` renders the current image and stores per-pixel raster forward cache data for backward,
-  - the same pass also stores per-pixel depth ratio and softened splat density scalars for regularization,
-  - `csClearLossBuffer` resets the scalar loss slots,
-  - `csComputeL1LossForward` computes direct RGB L1 reconstruction loss, RGB MSE, depth-ratio regularization, and density hinge regularization and reduces those metrics into the loss buffer.
+  - the same pass also stores softened splat density scalars for regularization,
+   - `csClearLossBuffer` resets the scalar loss slots,
+  - `csComputeL1LossForward` computes direct RGB L1 reconstruction loss, RGB MSE, and density hinge regularization and reduces those metrics into the loss buffer.
 6. Run the fixed-count backward stage:
    - `csComputeL1LossBackward` writes the unnormalized per-pixel RGB L1 sign gradient into flat `RWStructuredBuffer<float4>` `g_OutputGrad`, indexed as `pixel = y * width + x`,
    - `csRasterizeBackward` consumes the cached raster forward state and accumulates quantized cached raster-field gradients for the precomputed raster-cache fields,

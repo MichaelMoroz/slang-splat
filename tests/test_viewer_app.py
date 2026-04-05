@@ -8,6 +8,7 @@ import numpy as np
 from src.viewer import app
 from src.viewer.app import SplatViewer
 from src.scene import GaussianScene
+from src.training import TRAIN_BACKGROUND_MODE_RANDOM
 
 
 def _viewer(keyboard_capture: bool = False, mouse_capture: bool = False) -> SimpleNamespace:
@@ -156,12 +157,12 @@ def test_reinitialize_callback_defers_scene_rebuild_to_next_frame() -> None:
     assert viewer.s.pending_training_reinitialize is True
 
 
-def test_default_training_params_include_depth_ratio_weight() -> None:
+def test_default_training_params_include_background_mode_and_density() -> None:
     params = app.default_training_params()
 
-    assert params.training.random_background is True
+    assert params.training.background_mode == TRAIN_BACKGROUND_MODE_RANDOM
+    assert params.training.background == (1.0, 1.0, 1.0)
     assert params.training.use_sh is True
-    assert params.training.depth_ratio_weight == 0.05
     assert params.training.density_regularizer == 0.05
     assert params.training.sh1_reg_weight == 0.01
     assert params.training.max_allowed_density_start == 5.0

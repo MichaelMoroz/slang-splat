@@ -15,7 +15,7 @@ from . import presenter, session
 from .constants import _WINDOW_TITLE
 from .state import (
     DEFAULT_LIST_CAPACITY_MULTIPLIER,
-    DEFAULT_MAX_PREPASS_MEMORY_MB, DEFAULT_VIEWER_BACKGROUND,
+    DEFAULT_MAX_PREPASS_MEMORY_MB,
     LOSS_DEBUG_OPTIONS, ViewerState,
 )
 from .ui import build_ui, create_toolkit_window, default_control_values
@@ -49,7 +49,6 @@ _TRAINING_PARAM_KEYS = {
     "scale_abs_reg_weight": "scale_abs_reg",
     "sh1_reg_weight": "sh1_reg",
     "opacity_reg_weight": "opacity_reg",
-    "depth_ratio_weight": "depth_ratio_weight",
     "density_regularizer": "density_regularizer",
     "max_allowed_density": "max_allowed_density",
     "max_gaussians": "max_gaussians",
@@ -62,7 +61,7 @@ _TRAINING_PARAM_KEYS = {
     "maintenance_growth_start_step": "maintenance_growth_start_step",
     "maintenance_alpha_cull_threshold": "maintenance_alpha_cull_threshold",
     "maintenance_contribution_cull_threshold": "maintenance_contribution_cull_threshold",
-    "random_background": "random_background",
+    "background_mode": "background_mode",
     "use_sh": "use_sh",
     "train_downscale_mode": "train_downscale_mode",
     "train_auto_start_downscale": "train_auto_start_downscale",
@@ -102,7 +101,11 @@ def default_init_params():
     return build_init_params(None, None, None, _TRAIN_SETUP_DEFAULTS["init_opacity"], _TRAIN_SETUP_DEFAULTS["seed"])
 
 
-def default_training_params(background=DEFAULT_VIEWER_BACKGROUND):
+def _training_background_value(value_for) -> tuple[float, float, float]:
+    return tuple(float(v) for v in np.asarray(value_for("train_background_color"), dtype=np.float32).reshape(3))
+
+
+def default_training_params(background=(1.0, 1.0, 1.0)):
     return build_training_params(background=background, **_training_kwargs(_default_training_control_value))
 
 
@@ -176,7 +179,7 @@ class SplatViewer(spy.AppWindow):
             self.s.keys[event.key] = event.type == spy.KeyboardEventType.key_press
 
     def training_params(self):
-        return build_training_params(background=self.s.background, **_training_kwargs(self._training_control_value))
+        return build_training_params(background=_training_background_value(self._training_control_value), **_training_kwargs(self._training_control_value))
 
     def _training_control_value(self, control: str) -> object:
         return self.c(control).value

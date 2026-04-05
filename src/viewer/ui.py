@@ -42,6 +42,7 @@ _BASE_FONT_SIZE_PX = 16.0
 _FONT_ATLAS_SIZE_PX = _BASE_FONT_SIZE_PX * _INTERFACE_SCALE_OPTIONS[-1][1]
 _COLMAP_INIT_MODE_LABELS = ("COLMAP Pointcloud", "Diffused Pointcloud", "Custom PLY")
 _COLMAP_IMAGE_DOWNSCALE_LABELS = ("Original", "Target Width", "Scale Factor")
+_TRAIN_BACKGROUND_MODE_LABELS = ("Custom", "Random")
 _TRAIN_DOWNSCALE_MODE_LABELS = ("Auto",) + tuple(f"{i}x" for i in range(1, 17))
 _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT = 2e-4
 _DEBUG_COLORBAR_WIDTH = 18.0
@@ -230,7 +231,8 @@ GROUP_SPECS = {
     "Train Setup": (
         ControlSpec("max_gaussians", "slider_int", "Max Gaussians", {"value": 1000000, "min": 1000, "max": 10000000}),
         ControlSpec("training_steps_per_frame", "slider_int", "Steps / Frame", {"value": 3, "min": 1, "max": 8}),
-        ControlSpec("random_background", "checkbox", "Random Train Background", {"value": True}),
+        ControlSpec("background_mode", "combo", "Train Background", {"value": 1, "options": _TRAIN_BACKGROUND_MODE_LABELS}),
+        ControlSpec("train_background_color", "color_edit3", "Train BG Color", {"value": (1.0, 1.0, 1.0)}),
         ControlSpec("use_sh", "checkbox", "Use Spherical Harmonics", {"value": True}),
         ControlSpec("maintenance_interval", "input_int", "Maintenance Interval", {"value": 200, "step": 10, "step_fast": 50}),
         ControlSpec("maintenance_growth_ratio", "input_float", "Maintenance Growth", {"value": 0.02, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
@@ -262,7 +264,6 @@ GROUP_SPECS = {
         ControlSpec("scale_abs_reg", "input_float", "Scale Abs Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
         ControlSpec("sh1_reg", "input_float", "SH1 Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
         ControlSpec("opacity_reg", "input_float", "Opacity Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
-        ControlSpec("depth_ratio_weight", "input_float", "Depth Ratio Reg", {"value": 0.05, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
         ControlSpec("density_regularizer", "input_float", "Density Reg", {"value": 0.05, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
         ControlSpec("max_allowed_density", "input_float", "Max Density", {"value": 12.0, "step": 1e-3, "step_fast": 1e-2, "format": "%.8f"}),
         ControlSpec("max_anisotropy", "input_float", "Max Anisotropy", {"value": 32.0, "step": 0.1, "step_fast": 0.5, "format": "%.6f"}),
@@ -320,7 +321,7 @@ _ALL_DEFAULTS.update({spec.key: spec.kwargs["value"] for spec in DEBUG_RENDER_SP
 _OPTIMIZER_TAB_KEYS = {
     "Learning Rates": ("lr_base", "lr_schedule_enabled", "lr_schedule_start_lr", "lr_schedule_end_lr", "lr_schedule_steps", "lr_pos_mul", "lr_scale_mul", "lr_rot_mul", "lr_color_mul", "lr_opacity_mul"),
     "Adam": ("beta1", "beta2"),
-    "Regularization": ("scale_l2", "scale_abs_reg", "sh1_reg", "opacity_reg", "depth_ratio_weight", "density_regularizer", "max_allowed_density", "max_anisotropy", "grad_clip", "grad_norm_clip", "max_update"),
+    "Regularization": ("scale_l2", "scale_abs_reg", "sh1_reg", "opacity_reg", "density_regularizer", "max_allowed_density", "max_anisotropy", "grad_clip", "grad_norm_clip", "max_update"),
 }
 
 
@@ -1154,13 +1155,12 @@ class ToolkitWindow:
         avg_iters_text = ui._texts.get("training_iters_avg", "Avg it/s: n/a")
         loss_text = ui._texts.get("training_loss", "Loss Avg: n/a")
         mse_text = ui._texts.get("training_mse", "MSE: n/a")
-        depth_ratio_text = ui._texts.get("training_depth_ratio", "Depth Ratio Avg: n/a")
         density_text = ui._texts.get("training_density", "Density Avg: n/a")
         psnr_text = ui._texts.get("training_psnr", "PSNR: n/a")
         if imgui.begin_table("##train_info", 2, imgui.TableFlags_.sizing_stretch_same.value):
             imgui.table_setup_column("L", imgui.TableColumnFlags_.width_fixed.value, 50)
             imgui.table_setup_column("V")
-            for label, text in (("Step", training_text), ("Time", time_text), ("Avg", avg_iters_text), ("Loss", loss_text), ("MSE", mse_text), ("Depth", depth_ratio_text), ("Density", density_text), ("PSNR", psnr_text)):
+            for label, text in (("Step", training_text), ("Time", time_text), ("Avg", avg_iters_text), ("Loss", loss_text), ("MSE", mse_text), ("Density", density_text), ("PSNR", psnr_text)):
                 imgui.table_next_row()
                 imgui.table_next_column()
                 imgui.text_disabled(label)
@@ -1231,8 +1231,10 @@ class ToolkitWindow:
     def _section_training_setup(self, ui: ViewerUI) -> None:
         if not imgui.collapsing_header("Train Setup"):
             return
-        for key in ("max_gaussians", "training_steps_per_frame", "random_background", "use_sh", "maintenance_interval", "maintenance_growth_ratio", "maintenance_growth_start_step", "maintenance_alpha_cull_threshold", "maintenance_contribution_cull_threshold", "train_downscale_mode"):
+        for key in ("max_gaussians", "training_steps_per_frame", "background_mode", "use_sh", "maintenance_interval", "maintenance_growth_ratio", "maintenance_growth_start_step", "maintenance_alpha_cull_threshold", "maintenance_contribution_cull_threshold", "train_downscale_mode"):
             self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Setup"] if spec.key == key))
+        if int(ui._values.get("background_mode", 1)) == 0:
+            self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Setup"] if spec.key == "train_background_color"))
         if int(ui._values.get("train_downscale_mode", 0)) == 0:
             for key in ("train_auto_start_downscale", "train_downscale_base_iters", "train_downscale_iter_step", "train_downscale_max_iters"):
                 self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Setup"] if spec.key == key))
@@ -1442,14 +1444,14 @@ class ToolkitWindow:
         "train_far": "Far clip plane for training camera",
         "max_gaussians": "Maximum number of gaussians in the scene",
         "training_steps_per_frame": "Number of training optimizer steps to run before each viewer redraw; higher improves training throughput but reduces UI refresh rate",
-        "random_background": "Use a new random RGB background for each training optimizer step while leaving the viewer background unchanged",
+        "background_mode": "Choose whether training uses a fixed custom RGB background or a new random RGB background each optimizer step",
+        "train_background_color": "Custom RGB background used for training when Train Background is set to Custom",
         "use_sh": "Enable SH0+SH1 view-dependent color evaluation during projection and training; disable it to train only the SH0 base color",
         "maintenance_interval": "Run cull/split maintenance every N training steps",
         "maintenance_growth_ratio": "Target fractional scene growth per maintenance step once densification is enabled",
         "maintenance_growth_start_step": "Keep densification growth at zero until this training iteration, then use the configured maintenance growth",
         "maintenance_alpha_cull_threshold": "Cull splats below this decoded alpha threshold during maintenance",
         "maintenance_contribution_cull_threshold": "Cull splats whose accumulated alpha contribution stays below this 24.8 fixed-point threshold during maintenance",
-        "depth_ratio_weight": "Starting weight for rendered per-pixel depth std/mean regularization; it decays to zero over the LR schedule span",
         "density_regularizer": "Weight applied to the per-pixel hinge penalty max(density - max_allowed_density, 0)",
         "max_allowed_density": "End-of-training per-pixel density threshold above which the density regularizer activates; runtime ramps from 5.0 to this value over the LR schedule",
         "lr_schedule_enabled": "Enable cosine scheduling of the base learning rate",
@@ -1521,6 +1523,11 @@ class ToolkitWindow:
             changed, val = imgui.checkbox(spec.label, bool(ui._values[key]))
             if changed:
                 ui._values[key] = val
+        elif spec.kind == "color_edit3":
+            value = np.asarray(ui._values[key], dtype=np.float32).reshape(3)
+            changed, color = imgui.color_edit3(spec.label, imgui.ImVec4(float(value[0]), float(value[1]), float(value[2]), 1.0))
+            if changed:
+                ui._values[key] = (float(color.x), float(color.y), float(color.z))
         tip = self._TOOLTIPS.get(key)
         if tip and imgui.is_item_hovered():
             imgui.set_item_tooltip(tip)
@@ -1614,7 +1621,7 @@ def build_ui(renderer) -> ViewerUI:
     texts: dict[str, str] = {
         key: "" for key in (
             "fps", "path", "scene_stats", "render_stats", "training",
-            "training_time", "training_iters_avg", "training_loss", "training_mse", "training_depth_ratio", "training_density", "training_psnr", "training_instability", "error",
+            "training_time", "training_iters_avg", "training_loss", "training_mse", "training_density", "training_psnr", "training_instability", "error",
             "loss_debug_view", "loss_debug_frame",
             "colmap_import_status", "colmap_import_current",
             "training_resolution", "training_downscale", "training_schedule", "training_maintenance",
