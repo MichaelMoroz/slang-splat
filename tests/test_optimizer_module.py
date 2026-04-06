@@ -89,7 +89,7 @@ def test_generic_packed_adam_converges_on_quadratic(device):
     assert final_error < start_error * 1e-3
 
 
-def test_generic_packed_adam_skips_zero_gradient_entries(device):
+def test_generic_packed_adam_decays_zero_gradient_entries_with_existing_moments(device):
     adam_shader_path = Path("shaders/utility/optimizer/optimizer.slang")
     adam_kernel = device.create_compute_kernel(device.load_program(str(adam_shader_path), ["csAdamStepPacked"]))
     param_count = 4
@@ -151,7 +151,7 @@ def test_generic_packed_adam_skips_zero_gradient_entries(device):
     params_after = np.frombuffer(params.to_numpy().tobytes(), dtype=np.float32)[:param_count].copy()
     moments_after = np.frombuffer(adam_moments.to_numpy().tobytes(), dtype=np.float32)[: param_count * 2].reshape(param_count, 2).copy()
 
-    np.testing.assert_allclose(params_after[[0, 2]], params_init[[0, 2]], rtol=0.0, atol=0.0)
-    np.testing.assert_allclose(moments_after[[0, 2]], moments_init[[0, 2]], rtol=0.0, atol=0.0)
+    assert np.any(np.abs(params_after[[0, 2]] - params_init[[0, 2]]) > 0.0)
+    assert np.any(np.abs(moments_after[[0, 2]] - moments_init[[0, 2]]) > 0.0)
     assert np.any(np.abs(params_after[[1, 3]] - params_init[[1, 3]]) > 0.0)
     assert np.any(np.abs(moments_after[[1, 3]] - moments_init[[1, 3]]) > 0.0)

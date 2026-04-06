@@ -1417,7 +1417,7 @@ def test_refinement_rewrite_sampling_depends_on_frame_hash(device, tmp_path: Pat
     assert not np.allclose(positions_a, positions_b, rtol=0.0, atol=1e-6)
 
 
-def test_refinement_rewrite_clamps_sampled_family_offsets_to_three_sigma(device, tmp_path: Path) -> None:
+def test_refinement_rewrite_keeps_sampled_family_offsets_within_fibonacci_volume(device, tmp_path: Path) -> None:
     scene = _make_scene(count=1, seed=173)
     scene.positions[0] = np.array([0.0, 0.0, 0.0], dtype=np.float32)
     scene.scales[0] = _log_sigma(np.array([0.7, 0.5, 0.3], dtype=np.float32))
@@ -1449,7 +1449,7 @@ def test_refinement_rewrite_clamps_sampled_family_offsets_to_three_sigma(device,
     normalized_lengths = np.linalg.norm((family_positions - scene.positions[0][None, :]) / residual_sigma[None, :], axis=1)
 
     assert trainer.scene.count == 32
-    assert float(np.max(normalized_lengths)) <= 3.0 + 1e-5
+    assert float(np.max(normalized_lengths)) <= 2.5 + 1e-5
 
 
 def test_refinement_min_screen_size_raises_small_splats(device, tmp_path: Path) -> None:

@@ -17,6 +17,9 @@ static const float POSITION_RANDOM_STEP_MAX_ANISOTROPY = 4.0;
 static const float DENSIFY_SCALE_SHRINK_EXPONENT = -1.0 / 3.0;
 static const float DENSIFY_MAX_STANDARDIZED_SIGMA = 3.0;
 static const float REFINEMENT_CHILD_ANISOTROPY_RATIO_SCALE = 0.5;
+static const float REFINEMENT_FIBONACCI_RADIUS = 2.0;
+static const float REFINEMENT_FIBONACCI_JITTER_RATIO = 0.2;
+static const float REFINEMENT_FIBONACCI_GOLDEN_ANGLE = 2.39996322972865332;
 static const float SRGB_LINEAR_THRESHOLD = 0.0031308;
 static const float SRGB_LINEAR_SCALE = 12.92;
 static const float SRGB_GAMMA_SCALE = 1.055;
@@ -282,25 +285,43 @@ uint refinement_sample_seed(uint frameHash, uint splatId, uint subsampleId)
     return refinement_hash_combine(refinement_hash_combine(frameHash, splatId + 1u), subsampleId + 1u);
 }
 
-float3 refinement_gaussian_sample_raw(uint frameHash, uint splatId, uint subsampleId)
+float refinement_family_root(uint familySize)
 {
-    uint rngState = refinement_sample_seed(frameHash, splatId, subsampleId);
-    return rng_normal3_box_muller(rngState);
+    return pow(max(float(familySize), 1.0), 1.0 / 3.0);
 }
 
-float3 refinement_gaussian_family_mean(uint frameHash, uint splatId, uint familySize)
+float3 refinement_fibonacci_direction(uint subsampleId, uint familySize)
+{
+    float count = max(float(familySize), 1.0);
+    float index = float(subsampleId) + 0.5;
+    float y = 1.0 - 2.0 * index / count;
+    float radial = sqrt(max(1.0 - y * y, 0.0));
+    float angle = REFINEMENT_FIBONACCI_GOLDEN_ANGLE * index;
+    return float3(cos(angle) * radial, y, sin(angle) * radial);
+}
+
+float3 refinement_volume_sample_raw(uint frameHash, uint splatId, uint subsampleId, uint familySize)
+{
+    uint sampleSeed = refinement_sample_seed(frameHash, splatId, subsampleId);
+    float radius = REFINEMENT_FIBONACCI_RADIUS * refinement_family_root(subsampleId + 1u) / refinement_family_root(familySize);
+    float3 sample = refinement_fibonacci_direction(subsampleId, familySize) * radius;
+    uint jitterState = refinement_hash_combine(sampleSeed, 0x7f4a7c15u);
+    float jitterScale = REFINEMENT_FIBONACCI_RADIUS * REFINEMENT_FIBONACCI_JITTER_RATIO / refinement_family_root(familySize);
+    return sample + rng_normal3_box_muller(jitterState) * jitterScale;
+}
+
+float3 refinement_volume_family_mean(uint frameHash, uint splatId, uint familySize)
 {
     if (familySize <= 1u) return 0.0;
     float3 mean = 0.0;
-    [loop] for (uint slot = 0u; slot < familySize; slot++) mean += refinement_gaussian_sample_raw(frameHash, splatId, slot);
+    [loop] for (uint slot = 0u; slot < familySize; slot++) mean += refinement_volume_sample_raw(frameHash, splatId, slot, familySize);
     return mean / max(float(familySize), 1.0);
 }
 
-float3 refinement_centered_gaussian_sample(uint frameHash, uint splatId, uint slot, uint familySize, float3 familyMean)
+float3 refinement_centered_volume_sample(uint frameHash, uint splatId, uint slot, uint familySize, float3 familyMean)
 {
     if (familySize <= 1u) return 0.0;
-    float varianceRestore = sqrt(float(familySize) / float(familySize - 1u));
-    float3 sample = (refinement_gaussian_sample_raw(frameHash, splatId, slot) - familyMean) * varianceRestore;
+    float3 sample = refinement_volume_sample_raw(frameHash, splatId, slot, familySize) - familyMean;
     float sampleLength = length(sample);
     return sampleLength > DENSIFY_MAX_STANDARDIZED_SIGMA ? sample * (DENSIFY_MAX_STANDARDIZED_SIGMA / sampleLength) : sample;
 }
@@ -444,7 +465,7 @@ SplatState split_family_member(SplatState source, uint splatId, uint slot, uint 
     float3 parentScale = exp(source.logScale);
     float shrinkOffset = sqrt(max(1.0 - shrink * shrink, 0.0));
     float4 qInv = float4(source.rotation.x, -source.rotation.y, -source.rotation.z, -source.rotation.w);
-    float3 localOffset = refinement_centered_gaussian_sample(frameHash, splatId, slot, familySize, familyMean) * parentScale * shrinkOffset;
+    float3 localOffset = refinement_centered_volume_sample(frameHash, splatId, slot, familySize, familyMean) * parentScale * shrinkOffset;
     SplatState child = source;
     child.position = source.position + rotate_by_quat(localOffset, qInv);
     child.logScale = refinement_child_log_scale(source.logScale, shrink);
@@ -708,7 +729,7 @@ void csRewriteRefinementSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
         emittedCloneCount = min(cloneCount, availableChildren);
         uint familySize = emittedCloneCount + 1u;
         uint frameHash = refinement_family_frame_hash(splatId);
-        float3 familyMean = refinement_gaussian_family_mean(frameHash, splatId, familySize);
+        float3 familyMean = refinement_volume_family_mean(frameHash, splatId, familySize);
         store_splat_state(g_DstSplatParams, g_DstSplatCount, parentIndex, split_family_member(source, splatId, 0u, familySize, frameHash, familyMean));
         copy_adam_state(splatId, parentIndex);
         [loop] for (uint childSlot = 0u; childSlot < emittedCloneCount; childSlot++)
