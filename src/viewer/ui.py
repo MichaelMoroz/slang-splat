@@ -1664,7 +1664,7 @@ class ToolkitWindow:
     def _section_training_setup(self, ui: ViewerUI) -> None:
         if not imgui.collapsing_header("Train Setup"):
             return
-        for key in ("max_gaussians", "training_steps_per_frame", "background_mode", "refinement_interval", "refinement_growth_ratio", "refinement_growth_start_step", "refinement_alpha_cull_threshold", "refinement_min_contribution_percent", "refinement_min_contribution_decay", "train_downscale_mode"):
+        for key in ("max_gaussians", "training_steps_per_frame", "background_mode", "refinement_interval", "refinement_growth_ratio", "refinement_growth_start_step", "refinement_alpha_cull_threshold", "refinement_min_contribution_percent", "refinement_min_contribution_decay", "train_downscale_mode", "train_subsample_factor"):
             self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Setup"] if spec.key == key))
         if int(ui._values.get("background_mode", 1)) == 0:
             self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Setup"] if spec.key == "train_background_color"))

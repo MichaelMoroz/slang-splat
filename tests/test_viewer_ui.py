@@ -322,6 +322,28 @@ def test_viewport_debug_overlay_draws_mode_specific_controls(monkeypatch) -> Non
     ]
 
 
+def test_training_setup_section_draws_subsampling_control(monkeypatch) -> None:
+    drawn: list[str] = []
+    reset_calls: list[tuple[str, tuple[str, ...]]] = []
+    monkeypatch.setattr(ui.imgui, "collapsing_header", lambda _label: True)
+    monkeypatch.setattr(ui, "_draw_disabled_wrapped_text", lambda _text: None)
+    monkeypatch.setattr(ui.imgui, "separator", lambda: None)
+    toolkit = SimpleNamespace(
+        _draw_control=lambda _ui_obj, spec, compact=False: drawn.append(spec.key),
+        _ctx_reset=lambda name, _ui_obj, keys: reset_calls.append((name, tuple(keys))),
+    )
+    viewer_ui = SimpleNamespace(
+        _values={"background_mode": 1, "train_downscale_mode": 1},
+        _texts={"training_resolution": "", "training_downscale": "", "training_schedule": "", "training_refinement": ""},
+    )
+
+    ui.ToolkitWindow._section_training_setup(toolkit, viewer_ui)
+
+    assert "train_subsample_factor" in drawn
+    assert drawn.index("train_subsample_factor") == drawn.index("train_downscale_mode") + 1
+    assert reset_calls == [("train_setup_ctx", tuple(spec.key for spec in ui.GROUP_SPECS["Train Setup"]))]
+
+
 def test_draw_control_compact_uses_stacked_hidden_labels(monkeypatch) -> None:
     labels: list[str] = []
     widget_labels: list[str] = []
