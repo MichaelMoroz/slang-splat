@@ -14,7 +14,7 @@ from reference_impls.reference_cpu import (
 from src.app.shared import RendererParams, renderer_kwargs
 from src.common import SHADER_ROOT
 from src.renderer import Camera, GaussianRenderer
-from src.scene import GaussianScene
+from src.scene import GaussianScene, SUPPORTED_SH_COEFF_COUNT
 from src.training import contribution_fixed_count_from_percent
 
 _GAUSSIAN_SUPPORT_SIGMA_RADIUS = 3.0
@@ -77,6 +77,22 @@ def make_scene(count: int, seed: int = 0) -> GaussianScene:
         rotations=rotations,
         opacities=opacities,
         colors=colors,
+        sh_coeffs=sh_coeffs,
+    )
+
+
+def _with_sh_debug_coeffs(scene: GaussianScene, coeff_index: int, scale: float = 0.75) -> GaussianScene:
+    sh_coeffs = np.zeros((scene.count, SUPPORTED_SH_COEFF_COUNT, 3), dtype=np.float32)
+    values = np.linspace(-scale, scale, scene.count, dtype=np.float32)
+    sh_coeffs[:, coeff_index, 0] = values
+    sh_coeffs[:, coeff_index, 1] = values[::-1]
+    sh_coeffs[:, coeff_index, 2] = np.sin(np.linspace(0.0, np.pi, scene.count, dtype=np.float32)) * np.float32(scale)
+    return GaussianScene(
+        positions=scene.positions,
+        scales=scene.scales,
+        rotations=scene.rotations,
+        opacities=scene.opacities,
+        colors=scene.colors,
         sh_coeffs=sh_coeffs,
     )
 
@@ -656,6 +672,43 @@ def test_debug_adam_momentum_render_smoke(device):
     adam_buffer = device.create_buffer(size=moments.size * 4, usage=renderer._RW_BUFFER_USAGE)
     adam_buffer.copy_from_numpy(moments.reshape(-1, 2))
     renderer.set_debug_adam_moments_buffer(adam_buffer)
+    out = renderer.render(scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32))
+    assert out.image.shape == (64, 64, 4)
+    assert np.all(np.isfinite(out.image))
+    channel_spread = np.max(out.image[..., :3], axis=-1) - np.min(out.image[..., :3], axis=-1)
+    assert float(np.max(channel_spread)) > 1e-4
+
+
+def test_debug_sh_view_dependent_render_smoke(device):
+    scene = _with_sh_debug_coeffs(make_scene(24, seed=71), 1, scale=0.5)
+    camera = Camera.look_at(position=(0.6, 0.2, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    renderer = GaussianRenderer(
+        device,
+        width=64,
+        height=64,
+        radius_scale=1.6,
+        list_capacity_multiplier=32,
+        debug_mode=GaussianRenderer.DEBUG_MODE_SH_VIEW_DEPENDENT,
+    )
+    out = renderer.render(scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32))
+    assert out.image.shape == (64, 64, 4)
+    assert np.all(np.isfinite(out.image))
+    channel_spread = np.max(out.image[..., :3], axis=-1) - np.min(out.image[..., :3], axis=-1)
+    assert float(np.max(channel_spread)) > 1e-4
+
+
+def test_debug_sh_coefficient_render_smoke(device):
+    scene = _with_sh_debug_coeffs(make_scene(24, seed=73), 9, scale=0.75)
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    renderer = GaussianRenderer(
+        device,
+        width=64,
+        height=64,
+        radius_scale=1.6,
+        list_capacity_multiplier=32,
+        debug_mode=GaussianRenderer.DEBUG_MODE_SH_COEFFICIENT,
+        debug_sh_coeff_index=9,
+    )
     out = renderer.render(scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32))
     assert out.image.shape == (64, 64, 4)
     assert np.all(np.isfinite(out.image))

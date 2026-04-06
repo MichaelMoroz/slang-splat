@@ -94,6 +94,8 @@ _DEBUG_MODE_VALUES = (
     "depth_std",
     "depth_local_mismatch",
     "grad_norm",
+    "sh_view_dependent",
+    "sh_coefficient",
 )
 _DEBUG_MODE_LABELS = (
     "Training Cameras",
@@ -110,7 +112,10 @@ _DEBUG_MODE_LABELS = (
     "Depth Std",
     "Depth Local Mismatch",
     "Grad Norm",
+    "SH View-Dependent",
+    "SH Coefficient",
 )
+_DEBUG_SH_COEFF_LABELS = ("SH0 DC", "SH1 X", "SH1 Y", "SH1 Z", "SH2 0", "SH2 1", "SH2 2", "SH2 3", "SH2 4", "SH3 0", "SH3 1", "SH3 2", "SH3 3", "SH3 4", "SH3 5", "SH3 6")
 
 
 @lru_cache(maxsize=1)
@@ -226,12 +231,13 @@ def _color_u32(r: float, g: float, b: float, a: float = 1.0) -> int:
 def _debug_colorbar_mode(ui: "ViewerUI") -> str | None:
     index = min(max(int(ui._values.get("debug_mode", 0)), 0), len(_DEBUG_MODE_VALUES) - 1)
     mode = _DEBUG_MODE_VALUES[index]
-    return None if mode in ("training_cameras", "normal", "ellipse_outlines") else mode
+    return None if mode in ("training_cameras", "normal", "ellipse_outlines", "sh_view_dependent", "sh_coefficient") else mode
 
 
 def _renderer_debug_control_keys(mode: str) -> tuple[str, ...]:
     if mode == "ellipse_outlines": return ("debug_mode", "debug_ellipse_thickness_px")
     if mode == "grad_norm": return ("debug_mode", "debug_grad_norm_threshold")
+    if mode == "sh_coefficient": return ("debug_mode", "debug_sh_coeff_index")
     if mode == "clone_count": return ("debug_mode", "debug_clone_count_min", "debug_clone_count_max")
     if mode in ("splat_density", "splat_spatial_density", "splat_screen_density"): return ("debug_mode", "debug_density_min", "debug_density_max")
     if mode == "contribution_amount": return ("debug_mode", "debug_contribution_min", "debug_contribution_max")
@@ -543,6 +549,7 @@ RENDER_PARAM_SPECS = (
 
 DEBUG_RENDER_SPECS = (
     ControlSpec("debug_mode", "combo", "Mode", {"value": _DEBUG_MODE_VALUES.index("normal"), "options": _DEBUG_MODE_LABELS}),
+    ControlSpec("debug_sh_coeff_index", "combo", "SH Coefficient", {"value": 0, "options": _DEBUG_SH_COEFF_LABELS}),
     ControlSpec("debug_grad_norm_threshold", "input_float", "Grad Norm Threshold", {"value": _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT, "step": 1e-5, "step_fast": 1e-4, "format": "%.6g"}),
     ControlSpec("debug_ellipse_thickness_px", "slider_float", "Ellipse Thickness", {"value": 2.0, "min": 0.25, "max": 8.0, "format": "%.2f px"}),
     ControlSpec("debug_clone_count_min", "input_float", "Clone Count Min", {"value": 0.0, "step": 1.0, "step_fast": 4.0, "format": "%.5g"}),
@@ -1889,6 +1896,7 @@ class ToolkitWindow:
         "cached_raster_grad_fixed_color_range": "Symmetric [-X, X] range for cached color gradients",
         "cached_raster_grad_fixed_opacity_range": "Symmetric [-X, X] range for cached opacity gradients",
         "debug_mode": "Select the renderer debug output mode",
+        "debug_sh_coeff_index": "Select which raw SH coefficient float3 to display; zero is mapped to 0.5 gray in this debug view",
         "debug_grad_norm_threshold": "Reference threshold for the gradient norm heatmap",
         "debug_ellipse_thickness_px": "Thickness used by ellipse outline debug rendering",
         "debug_clone_count_min": "Lower bound for the per-splat clone counter heatmap",
@@ -2123,6 +2131,7 @@ def build_ui(renderer) -> ViewerUI:
     values["debug_depth_local_mismatch_max"] = float(depth_local_mismatch_range[1])
     values["debug_depth_local_mismatch_smooth_radius"] = float(getattr(renderer, "debug_depth_local_mismatch_smooth_radius", 2.0))
     values["debug_depth_local_mismatch_reject_radius"] = float(getattr(renderer, "debug_depth_local_mismatch_reject_radius", 4.0))
+    values["debug_sh_coeff_index"] = int(getattr(renderer, "debug_sh_coeff_index", 0))
     values["colmap_root_path"] = ""
     values["colmap_database_path"] = ""
     values["colmap_images_root"] = ""

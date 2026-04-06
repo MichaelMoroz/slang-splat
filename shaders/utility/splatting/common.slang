@@ -18,7 +18,10 @@ static const uint DEBUG_MODE_GRAD_NORM = 9u;
 static const uint DEBUG_MODE_SPLAT_DENSITY = 10u;
 static const uint DEBUG_MODE_CONTRIBUTION_AMOUNT = 11u;
 static const uint DEBUG_MODE_ADAM_MOMENTUM = 12u;
+static const uint DEBUG_MODE_SH_VIEW_DEPENDENT = 13u;
+static const uint DEBUG_MODE_SH_COEFFICIENT = 14u;
 static const float DEBUG_CONTRIBUTION_AMOUNT_FLOOR = 1e-6;
+static const uint DEBUG_SH_COEFF_COUNT = 16u;
 static const float SH_C0 = 0.28209479177387814;
 static const float SH_C1 = 0.4886025119029199;
 static const float SH_C2_0 = 1.0925484305920792;
@@ -254,7 +257,54 @@ struct RasterParams
     float2 debugDepthLocalMismatchRange;
     float debugDepthLocalMismatchSmoothRadius;
     float debugDepthLocalMismatchRejectRadius;
+    uint debugSHCoeffIndex;
 };
+
+float3 gaussian_sh_coeff(Gaussian3D gaussian, uint coeffIndex)
+{
+    switch (coeffIndex)
+    {
+    case 0u: return gaussian.sh0;
+    case 1u: return gaussian.sh1X;
+    case 2u: return gaussian.sh1Y;
+    case 3u: return gaussian.sh1Z;
+    case 4u: return gaussian.sh2_0;
+    case 5u: return gaussian.sh2_1;
+    case 6u: return gaussian.sh2_2;
+    case 7u: return gaussian.sh2_3;
+    case 8u: return gaussian.sh2_4;
+    case 9u: return gaussian.sh3_0;
+    case 10u: return gaussian.sh3_1;
+    case 11u: return gaussian.sh3_2;
+    case 12u: return gaussian.sh3_3;
+    case 13u: return gaussian.sh3_4;
+    case 14u: return gaussian.sh3_5;
+    default: return gaussian.sh3_6;
+    }
+}
+
+float3 gaussian_sh_view_dependent_component(Gaussian3D gaussian, float3 cameraPosition)
+{
+    return evaluate_sh3_raw(
+        gaussian.sh0,
+        gaussian.sh1X,
+        gaussian.sh1Y,
+        gaussian.sh1Z,
+        gaussian.sh2_0,
+        gaussian.sh2_1,
+        gaussian.sh2_2,
+        gaussian.sh2_3,
+        gaussian.sh2_4,
+        gaussian.sh3_0,
+        gaussian.sh3_1,
+        gaussian.sh3_2,
+        gaussian.sh3_3,
+        gaussian.sh3_4,
+        gaussian.sh3_5,
+        gaussian.sh3_6,
+        cameraPosition - gaussian.position
+    ) - evaluate_sh0_color_raw(gaussian.sh0);
+}
 
 struct RasterGaussian : IDifferentiable
 {

@@ -58,6 +58,7 @@ def test_render_settings_forward_debug_overlays_to_renderer(monkeypatch) -> None
         "debug_depth_local_mismatch_range": (0.0, 0.5),
         "debug_depth_local_mismatch_smooth_radius": 2.0,
         "debug_depth_local_mismatch_reject_radius": 4.0,
+        "debug_sh_coeff_index": 0,
         "debug_show_ellipses": True,
         "debug_show_processed_count": True,
         "debug_show_grad_norm": True,

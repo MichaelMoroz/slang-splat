@@ -56,6 +56,11 @@ float raster_grad_fixed_dequantize(int value, float range)
     return float(value) * range / RASTER_GRAD_FIXED_INT_MAX_F;
 }
 
+float3 raster_debug_signed_color(float3 value)
+{
+    return saturate(0.5 + value);
+}
+
 float raster_grad_fixed_avg_inv_scale(float3 scale)
 {
     float avgScale = pow(max(scale.x * scale.y * scale.z, SMALL_VALUE), 1.0 / 3.0);
@@ -278,6 +283,25 @@ float raster_normalize_grad_norm(float gradNorm)
     return saturate((gradLog10 - gradLog10Min) / max(gradLog10Max - gradLog10Min, TINY_VALUE));
 }
 
+float raster_normalize_threshold_band(float value, float threshold)
+{
+    float normalizedValue = max(value, DEBUG_GRAD_NORM_FLOOR);
+    float valueLog10 = log2(normalizedValue) * LOG2_TO_LOG10;
+    float normalizedThreshold = max(threshold, DEBUG_GRAD_NORM_FLOOR);
+    float bandLog10Min = log2(max(normalizedThreshold * DEBUG_GRAD_THRESHOLD_MIN_SCALE, DEBUG_GRAD_NORM_FLOOR)) * LOG2_TO_LOG10;
+    float bandLog10Max = log2(max(normalizedThreshold * DEBUG_GRAD_THRESHOLD_MAX_SCALE, DEBUG_GRAD_NORM_FLOOR)) * LOG2_TO_LOG10;
+    return saturate((valueLog10 - bandLog10Min) / max(bandLog10Max - bandLog10Min, TINY_VALUE));
+}
+
+float raster_threshold_from_range(float2 valueRange)
+{
+    float minValue = max(min(valueRange.x, valueRange.y), DEBUG_GRAD_NORM_FLOOR);
+    float maxValue = max(max(valueRange.x, valueRange.y), DEBUG_GRAD_NORM_FLOOR);
+    float thresholdMin = minValue / DEBUG_GRAD_THRESHOLD_MIN_SCALE;
+    float thresholdMax = maxValue / DEBUG_GRAD_THRESHOLD_MAX_SCALE;
+    return sqrt(max(thresholdMin * thresholdMax, DEBUG_GRAD_NORM_FLOOR));
+}
+
 float3 raster_processed_count_color(uint processedCount)
 {
     float normalized = log2(float(processedCount) + 1.0) / max(log2(float(g_Raster.maxSplatSteps) + 1.0), 1.0);
@@ -314,9 +338,11 @@ float raster_adam_momentum_length(uint splatId)
 
 float3 raster_forward_color(RasterGaussian gaussian, uint splatId, uint debugMode)
 {
+    if (debugMode == DEBUG_MODE_SH_VIEW_DEPENDENT) return raster_debug_signed_color(gaussian_sh_view_dependent_component(load_gaussian3d(splatId), g_Camera.camPos));
+    if (debugMode == DEBUG_MODE_SH_COEFFICIENT) return raster_debug_signed_color(gaussian_sh_coeff(load_gaussian3d(splatId), min(g_Raster.debugSHCoeffIndex, DEBUG_SH_COEFF_COUNT - 1u)));
     if (debugMode == DEBUG_MODE_CLONE_COUNT) return raster_clone_count_color(g_CloneCounts[splatId]);
     if (debugMode == DEBUG_MODE_CONTRIBUTION_AMOUNT) return raster_contribution_amount_color(g_SplatContribution[splatId]);
-    if (debugMode == DEBUG_MODE_ADAM_MOMENTUM) return jet_colormap(debug_normalize_range(raster_adam_momentum_length(splatId), g_Raster.debugAdamMomentumRange));
+    if (debugMode == DEBUG_MODE_ADAM_MOMENTUM) return jet_colormap(raster_normalize_threshold_band(raster_adam_momentum_length(splatId), raster_threshold_from_range(g_Raster.debugAdamMomentumRange)));
     if (debugMode != DEBUG_MODE_GRAD_NORM) return gaussian.colorAlpha.xyz;
     float gradNorm = g_DebugGradNorm[splatId];
     if (!isfinite(gradNorm)) gradNorm = 0.0;

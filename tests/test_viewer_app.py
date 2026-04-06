@@ -260,6 +260,7 @@ def test_renderer_params_maps_adam_momentum_threshold_to_log_range() -> None:
         "debug_contribution_min": SimpleNamespace(value=0.001),
         "debug_contribution_max": SimpleNamespace(value=1.0),
         "debug_adam_momentum_threshold": SimpleNamespace(value=1e-2),
+        "debug_sh_coeff_index": SimpleNamespace(value=0),
         "debug_depth_mean_min": SimpleNamespace(value=0.0),
         "debug_depth_mean_max": SimpleNamespace(value=10.0),
         "debug_depth_std_min": SimpleNamespace(value=0.0),

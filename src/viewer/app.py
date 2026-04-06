@@ -113,6 +113,8 @@ _DEBUG_MODE_VALUES = (
     GaussianRenderer.DEBUG_MODE_DEPTH_STD,
     GaussianRenderer.DEBUG_MODE_DEPTH_LOCAL_MISMATCH,
     GaussianRenderer.DEBUG_MODE_GRAD_NORM,
+    GaussianRenderer.DEBUG_MODE_SH_VIEW_DEPENDENT,
+    GaussianRenderer.DEBUG_MODE_SH_COEFFICIENT,
 )
 
 def _training_param_value(name: str, value_for) -> object:
@@ -189,6 +191,7 @@ class SplatViewer(spy.AppWindow):
             debug_depth_local_mismatch_range=(float(self.c("debug_depth_local_mismatch_min").value), float(self.c("debug_depth_local_mismatch_max").value)),
             debug_depth_local_mismatch_smooth_radius=float(self.c("debug_depth_local_mismatch_smooth_radius").value),
             debug_depth_local_mismatch_reject_radius=float(self.c("debug_depth_local_mismatch_reject_radius").value),
+            debug_sh_coeff_index=int(self.c("debug_sh_coeff_index").value),
             debug_show_ellipses=debug_mode == GaussianRenderer.DEBUG_MODE_ELLIPSE_OUTLINES,
             debug_show_processed_count=debug_mode == GaussianRenderer.DEBUG_MODE_PROCESSED_COUNT,
             debug_show_grad_norm=debug_mode == GaussianRenderer.DEBUG_MODE_GRAD_NORM,
