@@ -95,6 +95,7 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["cached_raster_grad_atomic_mode"] == 1
     assert viewer_ui._values["render_background_mode"] == 1
     assert viewer_ui._values["render_background_color"] == (0.0, 0.0, 0.0)
+    assert viewer_ui._values["debug_mode"] == ui._DEBUG_MODE_VALUES.index("normal")
     assert viewer_ui._values["debug_clone_count_min"] == 0.0
     assert viewer_ui._values["debug_clone_count_max"] == 16.0
     assert viewer_ui._values["debug_contribution_min"] == 0.001
@@ -323,6 +324,44 @@ def test_viewport_debug_overlay_draws_mode_specific_controls(monkeypatch) -> Non
     ]
 
 
+def test_viewport_debug_overlay_draws_training_camera_controls(monkeypatch) -> None:
+    child_sizes: list[tuple[float, float]] = []
+    combo_labels: list[tuple[str, str]] = []
+    slider_calls: list[tuple[str, int, int, int]] = []
+    disabled_text: list[str] = []
+    monkeypatch.setattr(ui.imgui, "get_text_line_height_with_spacing", lambda: 18.0)
+    monkeypatch.setattr(ui.imgui, "get_frame_height", lambda: 20.0)
+    monkeypatch.setattr(ui.imgui, "get_style", lambda: SimpleNamespace(item_spacing=ui.imgui.ImVec2(8.0, 6.0)))
+    monkeypatch.setattr(ui.imgui, "push_style_color", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "pop_style_color", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "push_style_var", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "pop_style_var", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "set_cursor_screen_pos", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "begin_child", lambda _name, size, *_args: child_sizes.append((float(size.x), float(size.y))) or True)
+    monkeypatch.setattr(ui.imgui, "end_child", lambda: None)
+    monkeypatch.setattr(ui.imgui, "push_item_width", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "pop_item_width", lambda: None)
+    monkeypatch.setattr(ui.imgui, "begin_combo", lambda label, preview: combo_labels.append((label, preview)) or False)
+    monkeypatch.setattr(ui.imgui, "slider_int", lambda label, value, lo, hi: slider_calls.append((label, int(value), int(lo), int(hi))) or (False, value))
+    monkeypatch.setattr(ui.imgui, "text_disabled", lambda text: disabled_text.append(text))
+    toolkit = SimpleNamespace(
+        _viewport_content_rect=(0.0, 0.0, 640.0, 360.0),
+        _interface_scale_factor=lambda _ui_obj: 1.0,
+        _draw_control=lambda *_args, **_kwargs: None,
+    )
+    viewer_ui = SimpleNamespace(
+        _values={"debug_mode": ui._DEBUG_MODE_VALUES.index("training_cameras"), "loss_debug_view": 0, "loss_debug_frame": 3, "_loss_debug_frame_max": 12},
+        _texts={"loss_debug_view": "View: Rendered", "loss_debug_frame": "Frame[3]: frame.png"},
+    )
+
+    ui.ToolkitWindow._draw_viewport_debug_overlay(toolkit, viewer_ui, ui.imgui.ImVec2(12.0, 34.0))
+
+    assert child_sizes and child_sizes[0][0] >= 220.0
+    assert combo_labels == [("##training_camera_view", "Rendered")]
+    assert slider_calls == [("##training_camera_frame", 3, 0, 12)]
+    assert disabled_text == ["View: Rendered", "frame.png"]
+
+
 def test_training_setup_section_draws_subsampling_control(monkeypatch) -> None:
     drawn: list[str] = []
     reset_calls: list[tuple[str, tuple[str, ...]]] = []
@@ -424,6 +463,8 @@ def test_schedule_step_slider_max_tracks_schedule_steps() -> None:
 
 
 def test_debug_mode_labels_include_contribution_amount() -> None:
+    assert ui._DEBUG_MODE_VALUES[0] == "training_cameras"
+    assert ui._DEBUG_MODE_LABELS[0] == "Training Cameras"
     assert "contribution_amount" in ui._DEBUG_MODE_VALUES
     assert "Contribution Amount" in ui._DEBUG_MODE_LABELS
     assert "adam_momentum" in ui._DEBUG_MODE_VALUES
@@ -433,6 +474,9 @@ def test_debug_mode_labels_include_contribution_amount() -> None:
 
 
 def test_contribution_amount_debug_mode_exposes_no_extra_range_controls() -> None:
+    viewer_ui = SimpleNamespace(_values={"debug_mode": ui._DEBUG_MODE_VALUES.index("training_cameras")})
+
+    assert ui._debug_colorbar_mode(viewer_ui) is None
     assert ui._renderer_debug_control_keys("contribution_amount") == ("debug_mode", "debug_contribution_min", "debug_contribution_max")
     assert ui._renderer_debug_control_keys("adam_momentum") == ("debug_mode", "debug_adam_momentum_min", "debug_adam_momentum_max")
     assert ui._renderer_debug_control_keys("processed_count") == ("debug_mode",)

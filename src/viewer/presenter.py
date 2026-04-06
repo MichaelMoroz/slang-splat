@@ -176,6 +176,13 @@ def _debug_abs_diff_scale(viewer: object) -> float:
     return max(_DEBUG_ABS_DIFF_SCALE_MIN, min(value, _DEBUG_ABS_DIFF_SCALE_MAX))
 
 
+def _training_camera_debug_active(viewer: object) -> bool:
+    try:
+        return int(viewer.c("debug_mode").value) == 0
+    except Exception:
+        return False
+
+
 def _viewport_target_size(viewer: object, fallback_width: int, fallback_height: int) -> tuple[int, int]:
     toolkit = getattr(viewer, "toolkit", None)
     viewport_size = None if toolkit is None else getattr(toolkit, "viewport_size", None)
@@ -443,7 +450,7 @@ def render_frame(viewer: object, render_context: spy.AppWindow.RenderContext) ->
         if bool(getattr(viewer.s, "training_runtime_factor_changed", False)):
             session.ensure_training_runtime_resolution(viewer)
         viewer.s.training_runtime_factor_changed = False
-        if bool(viewer.c("loss_debug").value) and viewer.s.trainer is not None and viewer.s.training_frames:
+        if _training_camera_debug_active(viewer) and viewer.s.trainer is not None and viewer.s.training_frames:
             viewer.s.viewport_texture = _render_debug_view(viewer, encoder, render_width, render_height)
         else:
             viewer.s.viewport_texture = _render_main_view(viewer, encoder)

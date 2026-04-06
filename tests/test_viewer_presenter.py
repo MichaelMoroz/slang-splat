@@ -129,7 +129,7 @@ def _text() -> SimpleNamespace:
 def _viewer(loss_debug: bool) -> SimpleNamespace:
     trainer = _DummyTrainer()
     controls = {
-        "loss_debug": _control(loss_debug),
+        "debug_mode": _control(0 if loss_debug else 1),
         "loss_debug_frame": _control(0),
         "loss_debug_view": _control(0),
         "loss_debug_abs_scale": _control(1.0),

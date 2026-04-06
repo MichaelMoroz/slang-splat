@@ -79,6 +79,7 @@ _HISTOGRAM_GROUPS = (
 )
 _CACHED_RASTER_GRAD_ATOMIC_MODE_LABELS = ("Float Atomics", "Fixed Point")
 _DEBUG_MODE_VALUES = (
+    "training_cameras",
     "normal",
     "processed_count",
     "clone_count",
@@ -94,6 +95,7 @@ _DEBUG_MODE_VALUES = (
     "grad_norm",
 )
 _DEBUG_MODE_LABELS = (
+    "Training Cameras",
     "Normal",
     "Processed Count",
     "Clone Count",
@@ -223,7 +225,7 @@ def _color_u32(r: float, g: float, b: float, a: float = 1.0) -> int:
 def _debug_colorbar_mode(ui: "ViewerUI") -> str | None:
     index = min(max(int(ui._values.get("debug_mode", 0)), 0), len(_DEBUG_MODE_VALUES) - 1)
     mode = _DEBUG_MODE_VALUES[index]
-    return None if mode in ("normal", "ellipse_outlines") else mode
+    return None if mode in ("training_cameras", "normal", "ellipse_outlines") else mode
 
 
 def _renderer_debug_control_keys(mode: str) -> tuple[str, ...]:
@@ -474,7 +476,6 @@ GROUP_SPECS = {
         ControlSpec(_INTERFACE_SCALE_KEY, "combo", "Interface Scale", {"value": _DEFAULT_INTERFACE_SCALE_INDEX, "options": tuple(label for label, _ in _INTERFACE_SCALE_OPTIONS)}),
     ),
     "Main": (
-        ControlSpec("loss_debug", "checkbox", "Visual Loss Debug", {"value": False}),
         ControlSpec("loss_debug_view", "slider_int", "Debug View", {"value": 0, "min": 0, "max": len(LOSS_DEBUG_OPTIONS) - 1}),
         ControlSpec("loss_debug_frame", "slider_int", "Debug Frame", {"value": 0, "min": 0, "max": 10000}),
         ControlSpec(_LOSS_DEBUG_ABS_SCALE_KEY, "slider_float", "Abs Diff Scale", {"value": _LOSS_DEBUG_ABS_SCALE_DEFAULT, "min": _LOSS_DEBUG_ABS_SCALE_MIN, "max": _LOSS_DEBUG_ABS_SCALE_MAX, "format": "%.3gx", "logarithmic": True}),
@@ -517,7 +518,7 @@ RENDER_PARAM_SPECS = (
 )
 
 DEBUG_RENDER_SPECS = (
-    ControlSpec("debug_mode", "combo", "Mode", {"value": 0, "options": _DEBUG_MODE_LABELS}),
+    ControlSpec("debug_mode", "combo", "Mode", {"value": _DEBUG_MODE_VALUES.index("normal"), "options": _DEBUG_MODE_LABELS}),
     ControlSpec("debug_grad_norm_threshold", "input_float", "Grad Norm Threshold", {"value": _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT, "step": 1e-5, "step_fast": 1e-4, "format": "%.6g"}),
     ControlSpec("debug_ellipse_thickness_px", "slider_float", "Ellipse Thickness", {"value": 2.0, "min": 0.25, "max": 8.0, "format": "%.2f px"}),
     ControlSpec("debug_clone_count_min", "input_float", "Clone Count Min", {"value": 0.0, "step": 1.0, "step_fast": 4.0, "format": "%.5g"}),
@@ -986,6 +987,9 @@ class ToolkitWindow:
 
     def _draw_viewport_debug_overlay(self, ui: ViewerUI, overlay_origin: imgui.ImVec2) -> None:
         debug_mode = _DEBUG_MODE_VALUES[min(max(int(ui._values.get("debug_mode", 0)), 0), len(_DEBUG_MODE_VALUES) - 1)]
+        if debug_mode == "training_cameras":
+            ToolkitWindow._draw_training_camera_debug_overlay(self, ui, overlay_origin)
+            return
         control_keys = tuple(key for key in _renderer_debug_control_keys(debug_mode) if key != "debug_mode")
         if len(control_keys) == 0:
             return
@@ -1014,6 +1018,53 @@ class ToolkitWindow:
             imgui.push_item_width(-1.0)
             for key in control_keys:
                 self._draw_control(ui, next(spec for spec in DEBUG_RENDER_SPECS if spec.key == key), compact=True)
+            imgui.pop_item_width()
+        imgui.end_child()
+        imgui.pop_style_var()
+        imgui.pop_style_color(2)
+
+    def _draw_training_camera_debug_overlay(self, ui: ViewerUI, overlay_origin: imgui.ImVec2) -> None:
+        view_x0, view_y0, view_width, view_height = self._viewport_content_rect
+        if view_width <= 1.0 or view_height <= 1.0:
+            return
+        scale = self._interface_scale_factor(ui)
+        padding = _VIEWPORT_OVERLAY_PADDING * scale
+        width = min(_VIEWPORT_OVERLAY_WIDTH * scale, max(view_width - 2.0 * _VIEWPORT_OVERLAY_MARGIN * scale, _VIEWPORT_OVERLAY_MIN_WIDTH * scale))
+        line_height = float(imgui.get_text_line_height_with_spacing())
+        frame_height = float(imgui.get_frame_height())
+        spacing_y = float(imgui.get_style().item_spacing.y)
+        frame_text = ui._texts.get("loss_debug_frame", "")
+        height = 2.0 * padding + 3.0 * frame_height + 2.0 * spacing_y + line_height
+        if LOSS_DEBUG_OPTIONS[min(max(int(ui._values.get("loss_debug_view", 0)), 0), len(LOSS_DEBUG_OPTIONS) - 1)][0] == "abs_diff":
+            height += frame_height + spacing_y
+        if frame_text:
+            height += line_height + spacing_y
+        max_height = view_y0 + view_height - overlay_origin.y - _VIEWPORT_OVERLAY_MARGIN * scale
+        if max_height <= 0.0:
+            return
+        imgui.push_style_color(imgui.Col_.child_bg.value, imgui.ImVec4(0.982, 0.987, 0.994, 0.94))
+        imgui.push_style_color(imgui.Col_.border.value, imgui.ImVec4(0.65, 0.72, 0.80, 0.92))
+        imgui.push_style_var(imgui.StyleVar_.window_padding, imgui.ImVec2(padding, padding))
+        imgui.set_cursor_screen_pos(overlay_origin)
+        if _imgui_opened(imgui.begin_child("##viewport_training_camera_overlay", imgui.ImVec2(width, min(height, max_height)), imgui.ChildFlags_.borders.value)):
+            imgui.push_item_width(-1.0)
+            view_idx = min(max(int(ui._values.get("loss_debug_view", 0)), 0), len(LOSS_DEBUG_OPTIONS) - 1)
+            if imgui.begin_combo("##training_camera_view", LOSS_DEBUG_OPTIONS[view_idx][1]):
+                for idx, (_key, label) in enumerate(LOSS_DEBUG_OPTIONS):
+                    if imgui.selectable(label, idx == view_idx)[0]:
+                        ui._values["loss_debug_view"] = idx
+                    if idx == view_idx:
+                        imgui.set_item_default_focus()
+                imgui.end_combo()
+            if LOSS_DEBUG_OPTIONS[view_idx][0] == "abs_diff":
+                self._draw_control(ui, next(spec for spec in GROUP_SPECS["Main"] if spec.key == _LOSS_DEBUG_ABS_SCALE_KEY), compact=True)
+            frame_max = max(int(ui._values.get("_loss_debug_frame_max", 0)), 0)
+            changed, val = imgui.slider_int("##training_camera_frame", int(ui._values.get("loss_debug_frame", 0)), 0, frame_max)
+            if changed:
+                ui._values["loss_debug_frame"] = val
+            imgui.text_disabled(ui._texts.get("loss_debug_view", ""))
+            if frame_text:
+                imgui.text_disabled(_status_suffix(frame_text))
             imgui.pop_item_width()
         imgui.end_child()
         imgui.pop_style_var()
@@ -1629,38 +1680,6 @@ class ToolkitWindow:
             self.callbacks.reinitialize()
         if imgui.is_item_hovered():
             imgui.set_item_tooltip("Re-initialize all gaussians from the point cloud")
-
-        # Debug section with indent
-        imgui.spacing()
-        changed, val = imgui.checkbox("Visual Loss Debug", bool(ui._values["loss_debug"]))
-        if changed:
-            ui._values["loss_debug"] = val
-
-        if bool(ui._values["loss_debug"]):
-            imgui.indent()
-            # Combo for debug view selection
-            view_idx = min(max(int(ui._values["loss_debug_view"]), 0), len(LOSS_DEBUG_OPTIONS) - 1)
-            if imgui.begin_combo("##debugview", LOSS_DEBUG_OPTIONS[view_idx][1]):
-                for i, (key, name) in enumerate(LOSS_DEBUG_OPTIONS):
-                    if imgui.selectable(name, i == view_idx)[0]:
-                        ui._values["loss_debug_view"] = i
-                    if i == view_idx:
-                        imgui.set_item_default_focus()
-                imgui.end_combo()
-            if LOSS_DEBUG_OPTIONS[view_idx][0] == "abs_diff":
-                self._draw_control(ui, next(spec for spec in GROUP_SPECS["Main"] if spec.key == _LOSS_DEBUG_ABS_SCALE_KEY))
-
-            frame_max = max(int(ui._values.get("_loss_debug_frame_max", 0)), 0)
-            changed, val = imgui.slider_int(
-                "Frame", int(ui._values["loss_debug_frame"]), 0, frame_max
-            )
-            if changed:
-                ui._values["loss_debug_frame"] = val
-            frame_text = ui._texts.get("loss_debug_frame", "")
-            if frame_text:
-                _draw_disabled_wrapped_text(frame_text)
-            imgui.unindent()
-        imgui.separator()
 
     def _section_training_setup(self, ui: ViewerUI) -> None:
         if not imgui.collapsing_header("Train Setup"):
