@@ -798,6 +798,30 @@ def test_training_step_updates_non_dc_sh_lr_without_affecting_dc(device, tmp_pat
     np.testing.assert_allclose(lrs_after_step_1[sh_non_dc_id], 4e-2 * expected_scale * 0.25, rtol=0.0, atol=1e-6)
 
 
+def test_sh_lr_multiplier_scales_non_dc_coeffs_absolutely(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=4, seed=80)
+    frame = _make_frame(tmp_path, image_name="lr_sh_absolute_target.png", image_id=17)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    adam = AdamHyperParams(position_lr=1e-2, scale_lr=2e-2, rotation_lr=3e-2, color_lr=4e-2, opacity_lr=5e-2)
+    training = TrainingHyperParams(
+        lr_schedule_enabled=False,
+        lr_schedule_start_lr=0.005,
+        lr_sh_mul=0.2,
+        scale_l2_weight=0.0,
+        scale_abs_reg_weight=0.0,
+        opacity_reg_weight=0.0,
+    )
+    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], adam_hparams=adam, training_hparams=training, seed=123)
+
+    trainer.optimizer.update_step(0, training)
+    lrs = _read_optimizer_lrs(trainer)
+    sh_dc_id = trainer.renderer.PARAM_SH0_IDS[0]
+    sh_non_dc_id = trainer.renderer.PARAM_SH_COEFF_IDS[1][0]
+
+    np.testing.assert_allclose(lrs[sh_dc_id], 4e-2, rtol=0.0, atol=1e-7)
+    np.testing.assert_allclose(lrs[sh_non_dc_id], 4e-2 * 0.2, rtol=0.0, atol=1e-7)
+
+
 def test_loss_vars_use_density_schedule(device, tmp_path: Path) -> None:
     scene = _make_scene(count=4, seed=93)
     frame = _make_frame(tmp_path, image_name="density_schedule_target.png", image_id=19)

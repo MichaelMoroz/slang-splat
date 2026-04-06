@@ -114,7 +114,7 @@ class GaussianOptimizer:
     def update_step(self, step_index: int, training_hparams: Any) -> None:
         lr_scale = resolve_learning_rate_scale(training_hparams, int(step_index))
         position_lr_mul_scale = resolve_position_lr_mul(training_hparams, int(step_index)) / max(float(getattr(training_hparams, "lr_pos_mul", 1.0)), 1e-8)
-        sh_lr_mul_scale = resolve_sh_lr_mul(training_hparams, int(step_index)) / max(float(getattr(training_hparams, "lr_sh_mul", 1.0)), 1e-8)
+        sh_lr_mul_scale = resolve_sh_lr_mul(training_hparams, int(step_index))
         if (
             np.isfinite(self._uploaded_lr_scale)
             and np.isfinite(self._uploaded_position_lr_mul_scale)
