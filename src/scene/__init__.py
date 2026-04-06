@@ -1,6 +1,7 @@
 from .gaussian_scene import GaussianScene
 from ._internal.colmap_binary import load_colmap_reconstruction
 from ._internal.colmap_ops import (
+    build_frame_sampling_graph,
     build_training_frames,
     build_training_frames_from_root,
     initialize_scene_from_colmap_diffused_points,
@@ -15,6 +16,7 @@ from ._internal.colmap_ops import (
 from ._internal.colmap_types import (
     ColmapFrame,
     ColmapReconstruction,
+    FrameSamplingGraph,
     GaussianInitHyperParams,
 )
 from .ply_loader import load_gaussian_ply, save_gaussian_ply
@@ -25,6 +27,7 @@ __all__ = [
     "GaussianScene",
     "ColmapFrame",
     "ColmapReconstruction",
+    "FrameSamplingGraph",
     "GaussianInitHyperParams",
     "load_gaussian_ply",
     "save_gaussian_ply",
@@ -39,6 +42,7 @@ __all__ = [
     "load_colmap_reconstruction",
     "build_training_frames",
     "build_training_frames_from_root",
+    "build_frame_sampling_graph",
     "sample_colmap_diffused_points",
     "initialize_scene_from_colmap_points",
     "initialize_scene_from_colmap_diffused_points",

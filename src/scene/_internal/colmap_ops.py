@@ -11,7 +11,7 @@ from scipy.spatial.transform import Rotation
 
 from ..gaussian_scene import GaussianScene
 from ..sh_utils import SUPPORTED_SH_COEFF_COUNT, rgb_to_sh0
-from .colmap_types import ColmapFrame, ColmapReconstruction, GaussianInitHyperParams, point_tables
+from .colmap_types import ColmapFrame, ColmapReconstruction, FrameSamplingGraph, GaussianInitHyperParams, point_tables
 
 INIT_BASE_SCALE_SPACING_RATIO = 0.25
 INIT_JITTER_SPACING_RATIO = 1.0 / np.sqrt(12.0)
@@ -26,6 +26,47 @@ INIT_OPACITY_MAX = 0.35
 _MIN_SCALE = 1e-4
 _MAX_SCALE = 1e4
 TRAINING_FRAME_LOAD_THREADS = 8
+
+
+def _valid_image_point_ids(point_ids: np.ndarray) -> np.ndarray:
+    ids = np.asarray(point_ids, dtype=np.int64).reshape(-1)
+    return np.unique(ids[ids > 0]).astype(np.int64, copy=False)
+
+
+def build_frame_sampling_graph(recon: ColmapReconstruction | None, frames: list[ColmapFrame]) -> FrameSamplingGraph:
+    frame_count = len(frames)
+    if recon is None or frame_count <= 0:
+        return FrameSamplingGraph.empty(frame_count)
+
+    point_to_frames: dict[int, list[int]] = {}
+    for frame_index, frame in enumerate(frames):
+        image = recon.images.get(int(frame.image_id))
+        if image is None:
+            continue
+        for point_id in _valid_image_point_ids(image.points2d_point3d_ids):
+            point_to_frames.setdefault(int(point_id), []).append(int(frame_index))
+
+    adjacency = [{} for _ in range(frame_count)]
+    for frame_indices in point_to_frames.values():
+        shared = sorted(set(int(idx) for idx in frame_indices))
+        for src_offset, src_index in enumerate(shared[:-1]):
+            src_edges = adjacency[src_index]
+            for dst_index in shared[src_offset + 1 :]:
+                src_edges[dst_index] = src_edges.get(dst_index, 0) + 1
+                dst_edges = adjacency[dst_index]
+                dst_edges[src_index] = dst_edges.get(src_index, 0) + 1
+
+    neighbor_indices = []
+    neighbor_weights = []
+    for edges in adjacency:
+        if not edges:
+            neighbor_indices.append(np.zeros((0,), dtype=np.int32))
+            neighbor_weights.append(np.zeros((0,), dtype=np.float32))
+            continue
+        items = sorted(edges.items())
+        neighbor_indices.append(np.asarray([idx for idx, _ in items], dtype=np.int32))
+        neighbor_weights.append(np.asarray([weight for _, weight in items], dtype=np.float32))
+    return FrameSamplingGraph(frame_count, tuple(neighbor_indices), tuple(neighbor_weights))
 
 
 def _camera_to_world_pose(q_wxyz: np.ndarray, t_xyz: np.ndarray) -> np.ndarray:

@@ -10,7 +10,8 @@ import slangpy as spy
 from src.common import buffer_to_numpy
 from src.filter import SeparableGaussianBlur
 from src.renderer import GaussianRenderer
-from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
+from src.scene import ColmapFrame, FrameSamplingGraph, GaussianInitHyperParams, GaussianScene, build_frame_sampling_graph
+from src.scene._internal.colmap_types import ColmapCamera, ColmapImage, ColmapPoint3D, ColmapReconstruction
 from src.scene.sh_utils import SH_C0
 from src.training import gaussian_trainer as gaussian_trainer_module
 from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, contribution_fixed_count_from_percent, contribution_percent_from_fixed_count, resolve_base_learning_rate, resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_depth_ratio_grad_band, resolve_depth_ratio_weight, resolve_effective_refinement_interval, resolve_lr_schedule_breakpoints, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_max_allowed_density, resolve_stage_schedule_steps, resolve_training_resolution, resolve_use_sh, should_run_refinement_step
@@ -84,6 +85,46 @@ def _make_frame(tmp_path: Path, width: int = 64, height: int = 64, *, image_name
         width=width,
         height=height,
     )
+
+
+def _make_colmap_reconstruction(*, image_point_ids: dict[int, tuple[int, ...]], image_names: dict[int, str] | None = None) -> ColmapReconstruction:
+    names = {} if image_names is None else {int(key): str(value) for key, value in image_names.items()}
+    point_ids = sorted({int(point_id) for ids in image_point_ids.values() for point_id in ids if int(point_id) > 0})
+    return ColmapReconstruction(
+        root=Path("."),
+        sparse_dir=Path("./sparse/0"),
+        cameras={1: ColmapCamera(camera_id=1, model_id=1, width=64, height=64, fx=72.0, fy=72.0, cx=32.0, cy=32.0)},
+        images={
+            int(image_id): ColmapImage(
+                image_id=int(image_id),
+                q_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+                t_xyz=np.array([0.0, 0.0, 3.0], dtype=np.float32),
+                camera_id=1,
+                name=names.get(int(image_id), f"image_{image_id}.png"),
+                points2d_xy=np.zeros((len(point_set), 2), dtype=np.float32),
+                points2d_point3d_ids=np.asarray(point_set, dtype=np.int64),
+            )
+            for image_id, point_set in image_point_ids.items()
+        },
+        points3d={
+            point_id: ColmapPoint3D(
+                point_id=point_id,
+                xyz=np.zeros((3,), dtype=np.float32),
+                rgb=np.zeros((3,), dtype=np.float32),
+                error=0.0,
+            )
+            for point_id in point_ids
+        },
+    )
+
+
+def _make_sampler_stub(frame_count: int, graph: FrameSamplingGraph | None = None, seed: int = 0):
+    trainer = object.__new__(GaussianTrainer)
+    trainer.frames = [SimpleNamespace(image_id=idx) for idx in range(frame_count)]
+    trainer._frame_rng = np.random.default_rng(int(seed))
+    trainer._frame_sampling_graph = FrameSamplingGraph.empty(frame_count) if graph is None else graph
+    trainer._frame_sampler = gaussian_trainer_module._FrameSamplerState.create(frame_count)
+    return trainer
 
 
 def _read_scene_groups(renderer: GaussianRenderer, count: int) -> dict[str, np.ndarray]:
@@ -1774,11 +1815,141 @@ def test_cpu_pointcloud_initializer_rebuilds_scene_with_nn_scales(device, tmp_pa
         )
 
 
-def test_training_frame_order_covers_each_view_once_per_epoch(device, tmp_path: Path):
+def test_build_frame_sampling_graph_counts_colmap_point_overlaps() -> None:
+    recon = _make_colmap_reconstruction(
+        image_point_ids={
+            10: (1, 2, 3, -1),
+            11: (2, 3, 4),
+            12: (3, 4, 5),
+        }
+    )
+    frames = [
+        ColmapFrame(10, Path("a.png"), np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32), np.zeros((3,), dtype=np.float32), 1.0, 1.0, 0.0, 0.0, 1, 1),
+        ColmapFrame(11, Path("b.png"), np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32), np.zeros((3,), dtype=np.float32), 1.0, 1.0, 0.0, 0.0, 1, 1),
+        ColmapFrame(12, Path("c.png"), np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32), np.zeros((3,), dtype=np.float32), 1.0, 1.0, 0.0, 0.0, 1, 1),
+    ]
+
+    graph = build_frame_sampling_graph(recon, frames)
+
+    assert graph.frame_count == 3
+    np.testing.assert_array_equal(graph.neighbor_indices[0], np.array([1, 2], dtype=np.int32))
+    np.testing.assert_array_equal(graph.neighbor_weights[0], np.array([2.0, 1.0], dtype=np.float32))
+    np.testing.assert_array_equal(graph.neighbor_indices[1], np.array([0, 2], dtype=np.int32))
+    np.testing.assert_array_equal(graph.neighbor_weights[1], np.array([2.0, 2.0], dtype=np.float32))
+    np.testing.assert_array_equal(graph.neighbor_indices[2], np.array([0, 1], dtype=np.int32))
+    np.testing.assert_array_equal(graph.neighbor_weights[2], np.array([1.0, 2.0], dtype=np.float32))
+
+
+def test_build_frame_sampling_graph_filters_to_imported_frames() -> None:
+    recon = _make_colmap_reconstruction(
+        image_point_ids={
+            1: (10, 20),
+            2: (20, 30),
+            3: (20, 30, 40),
+        }
+    )
+    frames = [
+        ColmapFrame(1, Path("a.png"), np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32), np.zeros((3,), dtype=np.float32), 1.0, 1.0, 0.0, 0.0, 1, 1),
+        ColmapFrame(3, Path("c.png"), np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32), np.zeros((3,), dtype=np.float32), 1.0, 1.0, 0.0, 0.0, 1, 1),
+    ]
+
+    graph = build_frame_sampling_graph(recon, frames)
+
+    assert graph.frame_count == 2
+    np.testing.assert_array_equal(graph.neighbor_indices[0], np.array([1], dtype=np.int32))
+    np.testing.assert_array_equal(graph.neighbor_weights[0], np.array([1.0], dtype=np.float32))
+    np.testing.assert_array_equal(graph.neighbor_indices[1], np.array([0], dtype=np.int32))
+    np.testing.assert_array_equal(graph.neighbor_weights[1], np.array([1.0], dtype=np.float32))
+
+
+def test_build_frame_sampling_graph_returns_empty_graph_without_reconstruction() -> None:
+    graph = build_frame_sampling_graph(None, [SimpleNamespace(image_id=0), SimpleNamespace(image_id=1)])
+
+    assert graph.frame_count == 2
+    assert all(indices.size == 0 for indices in graph.neighbor_indices)
+    assert all(weights.size == 0 for weights in graph.neighbor_weights)
+
+
+def test_frame_sampler_visits_each_view_once_per_traversal() -> None:
+    trainer = _make_sampler_stub(frame_count=4, seed=17)
+
+    first = [trainer._next_frame_index() for _ in range(4)]
+    second = [trainer._next_frame_index() for _ in range(4)]
+
+    assert sorted(first) == [0, 1, 2, 3]
+    assert sorted(second) == [0, 1, 2, 3]
+
+
+def test_frame_sampler_resets_after_full_traversal_and_continues_from_last_node() -> None:
+    graph = FrameSamplingGraph(
+        frame_count=3,
+        neighbor_indices=(
+            np.array([1], dtype=np.int32),
+            np.array([2], dtype=np.int32),
+            np.array([0], dtype=np.int32),
+        ),
+        neighbor_weights=(
+            np.array([1.0], dtype=np.float32),
+            np.array([1.0], dtype=np.float32),
+            np.array([1.0], dtype=np.float32),
+        ),
+    )
+    trainer = _make_sampler_stub(frame_count=3, graph=graph, seed=5)
+    trainer._frame_sampler.current_view_index = 0
+    trainer._frame_sampler.visited_mask[:] = np.array([True, True, True], dtype=bool)
+    trainer._frame_sampler.visited_count = 3
+
+    frame_index = trainer._next_frame_index()
+
+    assert frame_index == 1
+    assert trainer._frame_sampler.current_view_index == 1
+    np.testing.assert_array_equal(trainer._frame_sampler.visited_mask, np.array([False, True, False], dtype=bool))
+    assert trainer._frame_sampler.visited_count == 1
+
+
+def test_frame_sampler_falls_back_when_shared_neighbors_are_visited() -> None:
+    graph = FrameSamplingGraph(
+        frame_count=4,
+        neighbor_indices=(
+            np.array([1], dtype=np.int32),
+            np.array([0], dtype=np.int32),
+            np.array([], dtype=np.int32),
+            np.array([], dtype=np.int32),
+        ),
+        neighbor_weights=(
+            np.array([4.0], dtype=np.float32),
+            np.array([4.0], dtype=np.float32),
+            np.array([], dtype=np.float32),
+            np.array([], dtype=np.float32),
+        ),
+    )
+    trainer = _make_sampler_stub(frame_count=4, graph=graph, seed=11)
+    trainer._frame_sampler.current_view_index = 0
+    trainer._frame_sampler.visited_mask[:] = np.array([True, True, False, False], dtype=bool)
+    trainer._frame_sampler.visited_count = 2
+
+    frame_index = trainer._next_frame_index()
+
+    assert frame_index in (2, 3)
+    assert trainer._frame_sampler.current_view_index == frame_index
+    assert trainer._frame_sampler.visited_count == 3
+
+
+def test_training_step_uses_graph_sampler_without_repeats_within_traversal(device, tmp_path: Path):
     scene = _make_scene(count=12, seed=71)
     frames = [_make_frame(tmp_path, image_name=f"target_{idx}.png", image_id=idx, green_value=64 + idx) for idx in range(4)]
+    graph = FrameSamplingGraph(
+        frame_count=4,
+        neighbor_indices=(
+            np.array([1], dtype=np.int32),
+            np.array([2], dtype=np.int32),
+            np.array([3], dtype=np.int32),
+            np.array([0], dtype=np.int32),
+        ),
+        neighbor_weights=tuple(np.array([1.0], dtype=np.float32) for _ in range(4)),
+    )
     renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
-    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=frames, seed=91)
+    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=frames, frame_sampling_graph=graph, seed=91)
 
     seen = []
     for _ in range(8):
@@ -1787,6 +1958,37 @@ def test_training_frame_order_covers_each_view_once_per_epoch(device, tmp_path: 
 
     assert sorted(seen[:4]) == [0, 1, 2, 3]
     assert sorted(seen[4:]) == [0, 1, 2, 3]
+
+
+def test_step_batch_uses_graph_sampler_and_updates_last_frame_index(device, tmp_path: Path):
+    scene = _make_scene(count=8, seed=81)
+    frames = [_make_frame(tmp_path, image_name=f"batch_graph_target_{idx}.png", image_id=idx, green_value=96 + idx) for idx in range(3)]
+    graph = FrameSamplingGraph(
+        frame_count=3,
+        neighbor_indices=(
+            np.array([1], dtype=np.int32),
+            np.array([2], dtype=np.int32),
+            np.array([0], dtype=np.int32),
+        ),
+        neighbor_weights=tuple(np.array([1.0], dtype=np.float32) for _ in range(3)),
+    )
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=frames, frame_sampling_graph=graph, seed=93)
+    sampled: list[int] = []
+    original_next_frame_index = trainer._next_frame_index
+
+    def _record_frame_index() -> int:
+        frame_index = int(original_next_frame_index())
+        sampled.append(frame_index)
+        return frame_index
+
+    trainer._next_frame_index = _record_frame_index
+
+    executed = trainer.step_batch(3)
+
+    assert executed == 3
+    assert sorted(sampled) == [0, 1, 2]
+    assert trainer.state.last_frame_index == sampled[-1]
 
 
 def test_training_prepass_capacity_sync_runs_every_32_steps(device, tmp_path: Path, monkeypatch) -> None:

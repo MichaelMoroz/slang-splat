@@ -81,6 +81,30 @@ class ColmapFrame:
 
 
 @dataclass(slots=True)
+class FrameSamplingGraph:
+    frame_count: int
+    neighbor_indices: tuple[np.ndarray, ...]
+    neighbor_weights: tuple[np.ndarray, ...]
+
+    def __post_init__(self) -> None:
+        self.frame_count = max(int(self.frame_count), 0)
+        if len(self.neighbor_indices) != self.frame_count or len(self.neighbor_weights) != self.frame_count:
+            raise ValueError("FrameSamplingGraph adjacency must match frame_count.")
+        self.neighbor_indices = tuple(np.ascontiguousarray(np.asarray(indices, dtype=np.int32).reshape(-1)) for indices in self.neighbor_indices)
+        self.neighbor_weights = tuple(np.ascontiguousarray(np.asarray(weights, dtype=np.float32).reshape(-1)) for weights in self.neighbor_weights)
+        for indices, weights in zip(self.neighbor_indices, self.neighbor_weights, strict=True):
+            if indices.shape != weights.shape:
+                raise ValueError("FrameSamplingGraph neighbor index and weight arrays must match.")
+
+    @classmethod
+    def empty(cls, frame_count: int) -> "FrameSamplingGraph":
+        count = max(int(frame_count), 0)
+        empty_i = np.zeros((0,), dtype=np.int32)
+        empty_w = np.zeros((0,), dtype=np.float32)
+        return cls(count, tuple(empty_i.copy() for _ in range(count)), tuple(empty_w.copy() for _ in range(count)))
+
+
+@dataclass(slots=True)
 class GaussianInitHyperParams:
     position_jitter_std: float | None = None
     base_scale: float | None = None
