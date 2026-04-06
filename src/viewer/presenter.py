@@ -25,6 +25,20 @@ _CAMERA_OVERLAY_MIN_LENGTH = 0.05
 _CAMERA_OVERLAY_NEAR_FRACTION = 0.35
 _CAMERA_OVERLAY_COLOR = (0.18, 0.70, 0.98, 0.72)
 _CAMERA_OVERLAY_ACTIVE_COLOR = (1.00, 0.78, 0.18, 0.96)
+_CAMERA_OVERLAY_EDGE_INDICES = (
+    (0, 1),
+    (1, 2),
+    (2, 3),
+    (3, 0),
+    (4, 5),
+    (5, 6),
+    (6, 7),
+    (7, 4),
+    (0, 4),
+    (1, 5),
+    (2, 6),
+    (3, 7),
+)
 
 
 def _schedule_state_from_controls(viewer: object) -> object:
@@ -298,21 +312,21 @@ def _camera_overlay_scale(viewer: object) -> float:
     return max(radius * _CAMERA_OVERLAY_LENGTH_FRACTION, _CAMERA_OVERLAY_MIN_LENGTH)
 
 
-def _camera_overlay_segments(viewer: object) -> tuple[tuple[float, float, float, float, tuple[float, float, float, float], float], ...]:
+def _camera_overlay_signature(viewer: object) -> tuple[object, ...]:
     frames = tuple(getattr(viewer.s, "training_frames", ()))
     trainer = getattr(viewer.s, "trainer", None)
-    if trainer is None or len(frames) == 0 or _training_camera_debug_active(viewer):
-        return ()
-    viewport_camera = viewer.camera()
-    if not hasattr(viewport_camera, "project_world_to_screen"):
-        return ()
-    fallback_width = int(getattr(getattr(viewer.s, "renderer", None), "width", 1))
-    fallback_height = int(getattr(getattr(viewer.s, "renderer", None), "height", 1))
-    viewport_width, viewport_height = _viewport_target_size(viewer, fallback_width, fallback_height)
+    return (id(trainer), tuple(id(frame) for frame in frames))
+
+
+def _build_camera_overlay_geometry(viewer: object) -> tuple[np.ndarray, np.ndarray]:
+    frames = tuple(getattr(viewer.s, "training_frames", ()))
+    trainer = getattr(viewer.s, "trainer", None)
+    if trainer is None or len(frames) == 0:
+        return np.zeros((0, 2, 3), dtype=np.float32), np.zeros((0,), dtype=np.int32)
     overlay_far = _camera_overlay_scale(viewer)
     overlay_near = overlay_far * _CAMERA_OVERLAY_NEAR_FRACTION
-    last_frame_index = int(getattr(getattr(trainer, "state", None), "last_frame_index", -1))
-    segments: list[tuple[float, float, float, float, tuple[float, float, float, float], float]] = []
+    segments: list[np.ndarray] = []
+    frame_indices: list[int] = []
     for frame_index, frame in enumerate(frames):
         try:
             camera = trainer.make_frame_camera(frame_index, int(getattr(frame, "width", 1)), int(getattr(frame, "height", 1)))
@@ -330,60 +344,113 @@ def _camera_overlay_segments(viewer: object) -> tuple[tuple[float, float, float,
             continue
         if not (np.isfinite(fx) and np.isfinite(fy) and fx > 1e-8 and fy > 1e-8):
             continue
-        near_half = np.array(
-            [
-                0.5 * float(max(int(getattr(frame, "width", 1)), 1)) * overlay_near / float(fx),
-                0.5 * float(max(int(getattr(frame, "height", 1)), 1)) * overlay_near / float(fy),
-            ],
-            dtype=np.float32,
-        )
-        far_half = np.array(
-            [
-                0.5 * float(max(int(getattr(frame, "width", 1)), 1)) * overlay_far / float(fx),
-                0.5 * float(max(int(getattr(frame, "height", 1)), 1)) * overlay_far / float(fy),
-            ],
-            dtype=np.float32,
-        )
+        frame_width = float(max(int(getattr(frame, "width", 1)), 1))
+        frame_height = float(max(int(getattr(frame, "height", 1)), 1))
+        near_half = np.array([0.5 * frame_width * overlay_near / float(fx), 0.5 * frame_height * overlay_near / float(fy)], dtype=np.float32)
+        far_half = np.array([0.5 * frame_width * overlay_far / float(fx), 0.5 * frame_height * overlay_far / float(fy)], dtype=np.float32)
         near_center = position + forward * np.float32(overlay_near)
         far_center = position + forward * np.float32(overlay_far)
-        near_corners = (
-            near_center - right * near_half[0] - up * near_half[1],
-            near_center + right * near_half[0] - up * near_half[1],
-            near_center + right * near_half[0] + up * near_half[1],
-            near_center - right * near_half[0] + up * near_half[1],
+        corners = np.stack(
+            (
+                near_center - right * near_half[0] - up * near_half[1],
+                near_center + right * near_half[0] - up * near_half[1],
+                near_center + right * near_half[0] + up * near_half[1],
+                near_center - right * near_half[0] + up * near_half[1],
+                far_center - right * far_half[0] - up * far_half[1],
+                far_center + right * far_half[0] - up * far_half[1],
+                far_center + right * far_half[0] + up * far_half[1],
+                far_center - right * far_half[0] + up * far_half[1],
+            ),
+            axis=0,
+        ).astype(np.float32, copy=False)
+        camera_segments = np.stack(tuple(np.stack((corners[i0], corners[i1]), axis=0) for i0, i1 in _CAMERA_OVERLAY_EDGE_INDICES), axis=0)
+        segments.append(camera_segments)
+        frame_indices.extend([int(frame_index)] * int(camera_segments.shape[0]))
+    if len(segments) == 0:
+        return np.zeros((0, 2, 3), dtype=np.float32), np.zeros((0,), dtype=np.int32)
+    return np.concatenate(segments, axis=0), np.asarray(frame_indices, dtype=np.int32)
+
+
+def _camera_overlay_geometry(viewer: object) -> tuple[np.ndarray, np.ndarray]:
+    signature = _camera_overlay_signature(viewer)
+    cached_signature = getattr(viewer.s, "camera_overlay_signature", None)
+    cached_segments = getattr(viewer.s, "camera_overlay_world_segments", None)
+    cached_indices = getattr(viewer.s, "camera_overlay_frame_indices", None)
+    if cached_signature == signature and cached_segments is not None and cached_indices is not None:
+        return cached_segments, cached_indices
+    world_segments, frame_indices = _build_camera_overlay_geometry(viewer)
+    viewer.s.camera_overlay_signature = signature
+    viewer.s.camera_overlay_world_segments = world_segments
+    viewer.s.camera_overlay_frame_indices = frame_indices
+    return world_segments, frame_indices
+
+
+def _project_overlay_points(viewer_camera: object, points_world: np.ndarray, viewport_width: int, viewport_height: int) -> tuple[np.ndarray, np.ndarray]:
+    if not hasattr(viewer_camera, "basis") or not hasattr(viewer_camera, "focal_pixels_xy") or not hasattr(viewer_camera, "principal_point"):
+        return np.zeros((0, 2), dtype=np.float32), np.zeros((0,), dtype=bool)
+    try:
+        basis = np.stack(tuple(np.asarray(axis, dtype=np.float32).reshape(3) for axis in viewer_camera.basis()), axis=0)
+        position = np.asarray(getattr(viewer_camera, "position"), dtype=np.float32).reshape(3)
+        fx, fy = viewer_camera.focal_pixels_xy(int(viewport_width), int(viewport_height))
+        cx, cy = viewer_camera.principal_point(int(viewport_width), int(viewport_height))
+        k1, k2 = viewer_camera.distortion_coeffs() if hasattr(viewer_camera, "distortion_coeffs") else (0.0, 0.0)
+    except Exception:
+        return np.zeros((0, 2), dtype=np.float32), np.zeros((0,), dtype=bool)
+    if points_world.size == 0:
+        return np.zeros((0, 2), dtype=np.float32), np.zeros((0,), dtype=bool)
+    rel = points_world.astype(np.float32, copy=False) - position[None, :]
+    camera_points = rel @ basis.T
+    depth = camera_points[:, 2]
+    valid = np.isfinite(camera_points).all(axis=1) & np.isfinite(depth) & (depth > 1e-12)
+    screen = np.zeros((points_world.shape[0], 2), dtype=np.float32)
+    if not np.any(valid):
+        return screen, valid
+    uv = camera_points[valid, :2] / depth[valid, None]
+    if abs(float(k1)) > 1e-12 or abs(float(k2)) > 1e-12:
+        r2 = np.sum(uv * uv, axis=1)
+        uv *= (1.0 + float(k1) * r2 + float(k2) * r2 * r2)[:, None]
+    screen_valid = uv * np.asarray((float(fx), float(fy)), dtype=np.float32)[None, :] + np.asarray((float(cx), float(cy)), dtype=np.float32)[None, :]
+    valid_indices = np.flatnonzero(valid)
+    screen[valid_indices] = screen_valid
+    valid[valid_indices] &= np.isfinite(screen_valid).all(axis=1)
+    return screen, valid
+
+
+def _camera_overlay_segments(viewer: object) -> tuple[tuple[float, float, float, float, tuple[float, float, float, float], float], ...]:
+    trainer = getattr(viewer.s, "trainer", None)
+    if trainer is None or _training_camera_debug_active(viewer):
+        return ()
+    viewport_camera = viewer.camera()
+    if not hasattr(viewport_camera, "basis"):
+        return ()
+    fallback_width = int(getattr(getattr(viewer.s, "renderer", None), "width", 1))
+    fallback_height = int(getattr(getattr(viewer.s, "renderer", None), "height", 1))
+    viewport_width, viewport_height = _viewport_target_size(viewer, fallback_width, fallback_height)
+    world_segments, frame_indices = _camera_overlay_geometry(viewer)
+    if world_segments.size == 0:
+        return ()
+    last_frame_index = int(getattr(getattr(trainer, "state", None), "last_frame_index", -1))
+    points_world = world_segments.reshape(-1, 3)
+    screen_points, valid_points = _project_overlay_points(viewport_camera, points_world, viewport_width, viewport_height)
+    if screen_points.size == 0:
+        return ()
+    screen_segments = screen_points.reshape(-1, 2, 2)
+    valid_segments = valid_points.reshape(-1, 2).all(axis=1)
+    if not np.any(valid_segments):
+        return ()
+    active_segments = frame_indices == last_frame_index
+    return tuple(
+        (
+            float(segment[0, 0]),
+            float(segment[0, 1]),
+            float(segment[1, 0]),
+            float(segment[1, 1]),
+            _CAMERA_OVERLAY_ACTIVE_COLOR if bool(is_active) else _CAMERA_OVERLAY_COLOR,
+            2.0 if bool(is_active) else 1.25,
         )
-        far_corners = (
-            far_center - right * far_half[0] - up * far_half[1],
-            far_center + right * far_half[0] - up * far_half[1],
-            far_center + right * far_half[0] + up * far_half[1],
-            far_center - right * far_half[0] + up * far_half[1],
-        )
-        color = _CAMERA_OVERLAY_ACTIVE_COLOR if int(frame_index) == last_frame_index else _CAMERA_OVERLAY_COLOR
-        thickness = 2.0 if int(frame_index) == last_frame_index else 1.25
-        for start, end in (
-            (near_corners[0], near_corners[1]),
-            (near_corners[1], near_corners[2]),
-            (near_corners[2], near_corners[3]),
-            (near_corners[3], near_corners[0]),
-            (far_corners[0], far_corners[1]),
-            (far_corners[1], far_corners[2]),
-            (far_corners[2], far_corners[3]),
-            (far_corners[3], far_corners[0]),
-            (near_corners[0], far_corners[0]),
-            (near_corners[1], far_corners[1]),
-            (near_corners[2], far_corners[2]),
-            (near_corners[3], far_corners[3]),
-        ):
-            screen_start, valid_start = viewport_camera.project_world_to_screen(start, viewport_width, viewport_height)
-            screen_end, valid_end = viewport_camera.project_world_to_screen(end, viewport_width, viewport_height)
-            if not (valid_start and valid_end):
-                continue
-            p0 = np.asarray(screen_start, dtype=np.float32).reshape(2)
-            p1 = np.asarray(screen_end, dtype=np.float32).reshape(2)
-            if not (np.all(np.isfinite(p0)) and np.all(np.isfinite(p1))):
-                continue
-            segments.append((float(p0[0]), float(p0[1]), float(p1[0]), float(p1[1]), color, thickness))
-    return tuple(segments)
+        for segment, is_valid, is_active in zip(screen_segments, valid_segments, active_segments, strict=False)
+        if bool(is_valid)
+    )
 
 
 def _run_training_batch(viewer: object) -> int:
