@@ -137,6 +137,7 @@ void csAdamStepPacked(uint3 dispatchThreadID : SV_DispatchThreadID)
         sanitize_scalar(g_OptimizerAdamMoments[paramIndex].x, g_OptimizerRuntime.hugeValue),
         sanitize_scalar(g_OptimizerAdamMoments[paramIndex].y, g_OptimizerRuntime.hugeValue)
     );
+    if (grad == 0.0) return;
     float beta1Pow = pow(g_OptimizerAdam.beta1, float(g_OptimizerAdam.stepIndex));
     float beta2Pow = pow(g_OptimizerAdam.beta2, float(g_OptimizerAdam.stepIndex));
     float biasCorr1 = 1.0 - beta1Pow;

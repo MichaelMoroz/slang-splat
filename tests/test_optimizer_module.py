@@ -87,3 +87,71 @@ def test_generic_packed_adam_converges_on_quadratic(device):
     assert np.all(np.isfinite(final_params))
     assert final_error < 1e-3
     assert final_error < start_error * 1e-3
+
+
+def test_generic_packed_adam_skips_zero_gradient_entries(device):
+    adam_shader_path = Path("shaders/utility/optimizer/optimizer.slang")
+    adam_kernel = device.create_compute_kernel(device.load_program(str(adam_shader_path), ["csAdamStepPacked"]))
+    param_count = 4
+    usage = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
+    params_init = np.array([1.0, -2.0, 3.0, -4.0], dtype=np.float32)
+    grads_init = np.array([0.0, 0.5, 0.0, -0.25], dtype=np.float32)
+    moments_init = np.array(
+        [
+            [0.125, 0.25],
+            [0.25, 0.5],
+            [-0.75, 1.5],
+            [0.5, 0.75],
+        ],
+        dtype=np.float32,
+    )
+    settings = np.zeros((param_count, _SETTINGS_U32_WIDTH), dtype=np.uint32)
+    settings[:, 0] = np.full((param_count,), 0.1, dtype=np.float32).view(np.uint32)
+    settings[:, 1] = np.full((param_count,), 1e6, dtype=np.float32).view(np.uint32)
+    settings[:, 2] = np.full((param_count,), 1e6, dtype=np.float32).view(np.uint32)
+    settings[:, 3] = np.full((param_count,), -1e6, dtype=np.float32).view(np.uint32)
+    settings[:, 4] = np.full((param_count,), 1e6, dtype=np.float32).view(np.uint32)
+    settings[:, 5] = np.arange(param_count, dtype=np.uint32)
+    settings[:, 6] = 1
+
+    params = device.create_buffer(size=param_count * 4, usage=usage)
+    grads = device.create_buffer(size=param_count * 4, usage=usage)
+    adam_moments = device.create_buffer(size=param_count * 8, usage=usage)
+    settings_buf = device.create_buffer(size=param_count * _SETTINGS_U32_WIDTH * 4, usage=usage)
+    params.copy_from_numpy(params_init)
+    grads.copy_from_numpy(grads_init)
+    adam_moments.copy_from_numpy(moments_init)
+    settings_buf.copy_from_numpy(settings)
+
+    enc = device.create_command_encoder()
+    adam_kernel.dispatch(
+        thread_count=spy.uint3(param_count, 1, 1),
+        vars={
+            "g_OptimizerAdam": {"beta1": 0.9, "beta2": 0.999, "stepIndex": 7},
+            "g_OptimizerRuntime": {
+                "gradComponentClip": 1e6,
+                "gradNormClip": 1e6,
+                "maxUpdate": 1.0,
+                "hugeValue": 1e6,
+            },
+            "g_OptimizerElementCount": int(param_count),
+            "g_OptimizerParamCount": int(param_count),
+            "g_OptimizerParamGroupSize": 1,
+            "g_OptimizerParamSettingsCount": int(param_count),
+            "g_OptimizerParamSettings": settings_buf,
+            "g_OptimizerParams": params,
+            "g_OptimizerGrads": grads,
+            "g_OptimizerAdamMoments": adam_moments,
+        },
+        command_encoder=enc,
+    )
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+
+    params_after = np.frombuffer(params.to_numpy().tobytes(), dtype=np.float32)[:param_count].copy()
+    moments_after = np.frombuffer(adam_moments.to_numpy().tobytes(), dtype=np.float32)[: param_count * 2].reshape(param_count, 2).copy()
+
+    np.testing.assert_allclose(params_after[[0, 2]], params_init[[0, 2]], rtol=0.0, atol=0.0)
+    np.testing.assert_allclose(moments_after[[0, 2]], moments_init[[0, 2]], rtol=0.0, atol=0.0)
+    assert np.any(np.abs(params_after[[1, 3]] - params_init[[1, 3]]) > 0.0)
+    assert np.any(np.abs(moments_after[[1, 3]] - moments_init[[1, 3]]) > 0.0)
