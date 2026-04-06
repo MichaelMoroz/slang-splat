@@ -681,7 +681,7 @@ def test_piecewise_schedule_uses_configured_viewer_breakpoints() -> None:
         position_random_step_noise_stage2_lr=100000.0,
         position_random_step_noise_stage3_lr=0.0,
         use_sh_stage1=False,
-        use_sh_stage2=False,
+        use_sh_stage2=True,
         use_sh_stage3=True,
     )
 
@@ -699,6 +699,9 @@ def test_piecewise_schedule_uses_configured_viewer_breakpoints() -> None:
     np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 1000), 250000.0, rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 4000), 100000.0, rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 20_000), 0.0, rtol=0.0, atol=1e-6)
+    assert resolve_use_sh(hparams, 0) is False
+    assert resolve_use_sh(hparams, 999) is False
+    assert resolve_use_sh(hparams, 1000) is False
     assert resolve_use_sh(hparams, 3999) is False
     assert resolve_use_sh(hparams, 4000) is True
 
@@ -723,8 +726,9 @@ def test_training_step_updates_optimizer_lrs_from_piecewise_schedule(device, tmp
     after = _read_optimizer_lrs(trainer)
     expected_scale = resolve_base_learning_rate(training, 1) / training.lr_schedule_start_lr
 
-    np.testing.assert_allclose(before[[0, 3, 6, 10, 22]], np.array([1e-2, 2e-2, 3e-2, 4e-2, 5e-2], dtype=np.float32), rtol=0.0, atol=1e-7)
-    np.testing.assert_allclose(after[[0, 3, 6, 10, 22]], expected_scale * np.array([1e-2, 2e-2, 3e-2, 4e-2, 5e-2], dtype=np.float32), rtol=0.0, atol=1e-6)
+    param_ids = np.array([0, 3, 6, 10, trainer.renderer.PARAM_RAW_OPACITY_ID], dtype=np.int32)
+    np.testing.assert_allclose(before[param_ids], np.array([1e-2, 2e-2, 3e-2, 4e-2, 5e-2], dtype=np.float32), rtol=0.0, atol=1e-7)
+    np.testing.assert_allclose(after[param_ids], expected_scale * np.array([1e-2, 2e-2, 3e-2, 4e-2, 5e-2], dtype=np.float32), rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(trainer.state.last_base_lr, resolve_base_learning_rate(training, 1), rtol=0.0, atol=1e-7)
 
 
@@ -763,13 +767,13 @@ def test_loss_vars_use_density_schedule(device, tmp_path: Path) -> None:
     training = TrainingHyperParams(lr_schedule_steps=30_000)
     trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], training_hparams=training, seed=123)
 
-    np.testing.assert_allclose(trainer._loss_vars(0)["g_DensityRegularizer"], 0.02, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(trainer._loss_vars(0)["g_DepthRatioWeight"], 1.0, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(trainer._loss_vars(0)["g_DepthRatioGradMin"], 0.0, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(trainer._loss_vars(0)["g_DepthRatioGradMax"], 0.1, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(trainer._loss_vars(0)["g_MaxAllowedDensity"], 5.0, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(trainer._loss_vars(15_000)["g_MaxAllowedDensity"], 8.5, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(trainer._loss_vars(30_000)["g_MaxAllowedDensity"], 12.0, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(trainer._loss_vars(0, 0)["g_DensityRegularizer"], 0.02, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(trainer._loss_vars(0, 0)["g_DepthRatioWeight"], 1.0, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(trainer._loss_vars(0, 0)["g_DepthRatioGradMin"], 0.0, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(trainer._loss_vars(0, 0)["g_DepthRatioGradMax"], 0.1, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(trainer._loss_vars(0, 0)["g_MaxAllowedDensity"], 5.0, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(trainer._loss_vars(0, 15_000)["g_MaxAllowedDensity"], 8.5, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(trainer._loss_vars(0, 30_000)["g_MaxAllowedDensity"], 12.0, rtol=0.0, atol=1e-10)
 
 
 def test_depth_ratio_noise_and_sh_schedules_follow_requested_defaults() -> None:
@@ -818,7 +822,7 @@ def test_schedule_disabled_uses_stage0_only_for_scheduled_values() -> None:
         position_random_step_noise_stage3_lr=0.0,
         use_sh=True,
         use_sh_stage1=False,
-        use_sh_stage2=False,
+        use_sh_stage2=True,
         use_sh_stage3=False,
     )
 

@@ -153,13 +153,16 @@ def _resolve_stage_bool(training_hparams: Any, step: int, keys: tuple[str, str, 
 
 def resolve_use_sh(training_hparams: Any, step: int) -> bool:
     if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
-        return bool(getattr(training_hparams, "use_sh", True))
-    return bool(getattr(training_hparams, "use_sh", True)) and _resolve_stage_bool(
-        training_hparams,
-        step,
-        ("use_sh_stage1", "use_sh_stage2", "use_sh_stage3"),
-        (False, False, True),
-    )
+        return bool(getattr(training_hparams, "use_sh", False))
+    stage1, stage2, stage3 = resolve_stage_schedule_steps(training_hparams)
+    current_step = max(int(step), 0)
+    if current_step < stage1:
+        return bool(getattr(training_hparams, "use_sh", False))
+    if current_step < stage2:
+        return bool(getattr(training_hparams, "use_sh_stage1", False))
+    if current_step < stage3:
+        return bool(getattr(training_hparams, "use_sh_stage2", True))
+    return bool(getattr(training_hparams, "use_sh_stage3", True))
 
 
 def resolve_max_allowed_density(training_hparams: Any, step: int) -> float:

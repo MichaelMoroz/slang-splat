@@ -97,7 +97,7 @@ def test_build_training_params_clamps_ranges():
     assert params.training.depth_ratio_stage2_weight == 0.01
     assert params.training.depth_ratio_stage3_weight == 0.001
     assert params.training.use_sh_stage1 is False
-    assert params.training.use_sh_stage2 is False
+    assert params.training.use_sh_stage2 is True
     assert params.training.use_sh_stage3 is True
     assert params.training.refinement_min_contribution_percent == 1e-05
     assert params.training.refinement_min_contribution_decay == 0.995
@@ -110,7 +110,7 @@ def test_default_training_params_match_fixed_count_defaults():
     params = default_training_params()
     assert params.training.background_mode == TRAIN_BACKGROUND_MODE_RANDOM
     assert params.training.background == (1.0, 1.0, 1.0)
-    assert params.training.use_sh is True
+    assert params.training.use_sh is False
     assert params.training.scale_l2_weight == 0.0
     assert params.training.scale_abs_reg_weight == 0.01
     assert params.training.sh1_reg_weight == 0.01
@@ -139,7 +139,7 @@ def test_default_training_params_match_fixed_count_defaults():
     assert params.training.depth_ratio_stage2_weight == 0.01
     assert params.training.depth_ratio_stage3_weight == 0.001
     assert params.training.use_sh_stage1 is False
-    assert params.training.use_sh_stage2 is False
+    assert params.training.use_sh_stage2 is True
     assert params.training.use_sh_stage3 is True
     assert params.training.refinement_growth_ratio == 0.075
     assert params.training.refinement_growth_start_step == 500

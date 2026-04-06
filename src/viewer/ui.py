@@ -436,7 +436,7 @@ _SCHEDULE_STAGE_OVERRIDES = {
         "lr_pos_mul": {"kwargs": {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}},
         "depth_ratio_weight": {"kwargs": {"value": 1.0, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}},
         "noise_lr": {"kwargs": {"value": 5e5, "step": 100.0, "step_fast": 1000.0, "format": "%.4g"}},
-        "use_sh": {"kwargs": {"value": True}},
+        "use_sh": {"kwargs": {"value": False}},
     },
     "Stage 1": {
         "end_step": {"kwargs": {"value": 3000, "min": 0, "max": 30000, "max_from": "lr_schedule_steps"}},
@@ -452,7 +452,7 @@ _SCHEDULE_STAGE_OVERRIDES = {
         "lr_pos_mul": {"kwargs": {"value": 0.4, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}},
         "depth_ratio_weight": {"kwargs": {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}},
         "noise_lr": {"kwargs": {"value": 416666.6666666667, "step": 100.0, "step_fast": 1000.0, "format": "%.4g"}},
-        "use_sh": {"kwargs": {"value": False}},
+        "use_sh": {"kwargs": {"value": True}},
     },
     "Stage 3": {
         "end_step": {

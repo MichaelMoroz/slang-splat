@@ -178,7 +178,7 @@ def test_default_training_params_include_background_mode_and_density() -> None:
 
     assert params.training.background_mode == TRAIN_BACKGROUND_MODE_RANDOM
     assert params.training.background == (1.0, 1.0, 1.0)
-    assert params.training.use_sh is True
+    assert params.training.use_sh is False
     assert params.training.density_regularizer == 0.02
     assert params.training.depth_ratio_weight == 1.0
     assert params.training.depth_ratio_grad_min == 0.0
@@ -200,7 +200,7 @@ def test_default_training_params_include_background_mode_and_density() -> None:
     assert params.training.depth_ratio_stage2_weight == 0.01
     assert params.training.depth_ratio_stage3_weight == 0.001
     assert params.training.use_sh_stage1 is False
-    assert params.training.use_sh_stage2 is False
+    assert params.training.use_sh_stage2 is True
     assert params.training.use_sh_stage3 is True
     assert params.training.refinement_growth_ratio == 0.075
     assert params.training.refinement_growth_start_step == 500
