@@ -618,14 +618,14 @@ def test_base_lr_uses_requested_piecewise_schedule() -> None:
     hparams = TrainingHyperParams(lr_schedule_start_lr=0.005, lr_schedule_end_lr=7.5e-5, lr_schedule_steps=30_000)
 
     np.testing.assert_allclose(resolve_base_learning_rate(hparams, 0), 0.005, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(resolve_base_learning_rate(hparams, 1250), 0.0035, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(resolve_base_learning_rate(hparams, 2500), 0.002, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(resolve_base_learning_rate(hparams, 8250), 0.0015, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(resolve_base_learning_rate(hparams, 1500), 0.0035, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(resolve_base_learning_rate(hparams, 3000), 0.002, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(resolve_base_learning_rate(hparams, 8500), 0.0015, rtol=0.0, atol=1e-10)
     np.testing.assert_allclose(resolve_base_learning_rate(hparams, 14000), 0.001, rtol=0.0, atol=1e-10)
     np.testing.assert_allclose(resolve_base_learning_rate(hparams, 30_000), 7.5e-5, rtol=0.0, atol=1e-10)
     np.testing.assert_allclose(resolve_base_learning_rate(hparams, 40_000), 7.5e-5, rtol=0.0, atol=1e-10)
     np.testing.assert_allclose(resolve_cosine_base_learning_rate(hparams, 8250), resolve_base_learning_rate(hparams, 8250), rtol=0.0, atol=1e-12)
-    assert resolve_lr_schedule_breakpoints(hparams) == (2500, 14000, 30_000)
+    assert resolve_lr_schedule_breakpoints(hparams) == (3000, 14000, 30_000)
 
 
 def test_piecewise_schedule_uses_configured_viewer_breakpoints() -> None:
@@ -751,15 +751,15 @@ def test_depth_ratio_noise_and_sh_schedules_follow_requested_defaults() -> None:
     )
 
     np.testing.assert_allclose(resolve_position_lr_mul(hparams, 0), 1.0, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_position_lr_mul(hparams, 2500), 1.0, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_position_lr_mul(hparams, 14000), 1.0, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_position_lr_mul(hparams, 30_000), 1.0, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_position_lr_mul(hparams, 3000), 0.75, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_position_lr_mul(hparams, 14000), 0.4, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_position_lr_mul(hparams, 30_000), 0.3, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 0), 1.0, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 2500), 0.05, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 3000), 0.05, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 14000), 0.01, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 30_000), 0.001, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 0), 5e5, rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 2500), 466666.6666666667, rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 3000), 466666.6666666667, rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 14000), 416666.6666666667, rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 30_000), 0.0, rtol=0.0, atol=1e-6)
     assert resolve_use_sh(hparams, 13999) is False

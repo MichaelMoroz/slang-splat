@@ -112,11 +112,11 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["lr_schedule_stage2_lr"] == 0.001
     assert viewer_ui._values["lr_schedule_end_lr"] == 7.5e-5
     assert viewer_ui._values["lr_pos_mul"] == 1.0
-    assert viewer_ui._values["lr_pos_stage1_mul"] == 1.0
-    assert viewer_ui._values["lr_pos_stage2_mul"] == 1.0
-    assert viewer_ui._values["lr_pos_stage3_mul"] == 1.0
+    assert viewer_ui._values["lr_pos_stage1_mul"] == 0.75
+    assert viewer_ui._values["lr_pos_stage2_mul"] == 0.4
+    assert viewer_ui._values["lr_pos_stage3_mul"] == 0.3
     assert viewer_ui._values["lr_schedule_steps"] == 30000
-    assert viewer_ui._values["lr_schedule_stage1_step"] == 2500
+    assert viewer_ui._values["lr_schedule_stage1_step"] == 3000
     assert viewer_ui._values["lr_schedule_stage2_step"] == 14000
     assert viewer_ui._values["position_random_step_noise_lr"] == 5e5
     assert np.isclose(viewer_ui._values["position_random_step_noise_stage1_lr"], 466666.6666666667)
@@ -148,7 +148,7 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["max_anisotropy"] == 32.0
     assert viewer_ui._values["max_gaussians"] == 1000000
     assert viewer_ui._values["training_steps_per_frame"] == 3
-    assert viewer_ui._values["colmap_init_mode"] == 1
+    assert viewer_ui._values["colmap_init_mode"] == 0
     assert viewer_ui._values["colmap_image_downscale_mode"] == 1
     assert viewer_ui._values["colmap_image_max_size"] == 2048
     assert viewer_ui._values["colmap_image_scale"] == 1.0
