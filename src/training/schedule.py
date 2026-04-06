@@ -110,6 +110,22 @@ def resolve_position_lr_mul(training_hparams: Any, step: int) -> float:
     )
 
 
+def resolve_sh_lr_mul(training_hparams: Any, step: int) -> float:
+    start = max(float(getattr(training_hparams, "lr_sh_mul", 1.0)), 1e-8)
+    if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
+        return start
+    return _resolve_staged_linear_value(
+        training_hparams,
+        step,
+        start,
+        (
+            max(float(getattr(training_hparams, "lr_sh_stage1_mul", 1.0)), 1e-8),
+            max(float(getattr(training_hparams, "lr_sh_stage2_mul", 1.0)), 1e-8),
+            max(float(getattr(training_hparams, "lr_sh_stage3_mul", 1.0)), 1e-8),
+        ),
+    )
+
+
 def resolve_depth_ratio_weight(training_hparams: Any, step: int) -> float:
     if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
         return max(float(getattr(training_hparams, "depth_ratio_weight", 0.05)), 0.0)
