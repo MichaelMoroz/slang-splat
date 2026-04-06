@@ -21,6 +21,18 @@ static const uint DEBUG_MODE_ADAM_MOMENTUM = 12u;
 static const float DEBUG_CONTRIBUTION_AMOUNT_FLOOR = 1e-6;
 static const float SH_C0 = 0.28209479177387814;
 static const float SH_C1 = 0.4886025119029199;
+static const float SH_C2_0 = 1.0925484305920792;
+static const float SH_C2_1 = -1.0925484305920792;
+static const float SH_C2_2 = 0.31539156525252005;
+static const float SH_C2_3 = -1.0925484305920792;
+static const float SH_C2_4 = 0.5462742152960396;
+static const float SH_C3_0 = -0.5900435899266435;
+static const float SH_C3_1 = 2.890611442640554;
+static const float SH_C3_2 = -0.4570457994644658;
+static const float SH_C3_3 = 0.3731763325901154;
+static const float SH_C3_4 = -0.4570457994644658;
+static const float SH_C3_5 = 1.445305721320277;
+static const float SH_C3_6 = -0.5900435899266435;
 static const uint TRAIN_SUBSAMPLE_HASH_STEP = 0x9e3779b9u;
 static const uint TRAIN_SUBSAMPLE_HASH_FRAME = 0x85ebca6bu;
 static const uint TRAIN_SUBSAMPLE_HASH_X = 0xc2b2ae35u;
@@ -67,35 +79,109 @@ float3 normalize_vector_safe(float3 value)
 }
 
 [Differentiable]
-float4 sh0_sh1_basis(float3 viewDir)
-{
-    float3 dir = normalize_vector_safe(viewDir);
-    return float4(SH_C0, -SH_C1 * dir.y, SH_C1 * dir.z, -SH_C1 * dir.x);
-}
-
-[Differentiable]
 float3 evaluate_sh0_color_raw(float3 sh0)
 {
     return 0.5 + SH_C0 * sh0;
 }
 
 [Differentiable]
-float3 evaluate_sh0_sh1_raw(float3 sh0, float3 sh1X, float3 sh1Y, float3 sh1Z, float3 viewDir)
+float3 evaluate_sh3_raw(
+    float3 sh0,
+    float3 sh1X,
+    float3 sh1Y,
+    float3 sh1Z,
+    float3 sh2_0,
+    float3 sh2_1,
+    float3 sh2_2,
+    float3 sh2_3,
+    float3 sh2_4,
+    float3 sh3_0,
+    float3 sh3_1,
+    float3 sh3_2,
+    float3 sh3_3,
+    float3 sh3_4,
+    float3 sh3_5,
+    float3 sh3_6,
+    float3 viewDir
+)
 {
-    float4 basis = sh0_sh1_basis(viewDir);
-    return 0.5 + basis.x * sh0 + basis.y * sh1X + basis.z * sh1Y + basis.w * sh1Z;
+    float3 dir = normalize_vector_safe(viewDir);
+    float x = dir.x;
+    float y = dir.y;
+    float z = dir.z;
+    float xx = x * x;
+    float yy = y * y;
+    float zz = z * z;
+    float xy = x * y;
+    float yz = y * z;
+    float xz = x * z;
+    return 0.5
+        + SH_C0 * sh0
+        - SH_C1 * y * sh1X
+        + SH_C1 * z * sh1Y
+        - SH_C1 * x * sh1Z
+        + SH_C2_0 * xy * sh2_0
+        + SH_C2_1 * yz * sh2_1
+        + SH_C2_2 * (2.0 * zz - xx - yy) * sh2_2
+        + SH_C2_3 * xz * sh2_3
+        + SH_C2_4 * (xx - yy) * sh2_4
+        + SH_C3_0 * y * (3.0 * xx - yy) * sh3_0
+        + SH_C3_1 * xy * z * sh3_1
+        + SH_C3_2 * y * (4.0 * zz - xx - yy) * sh3_2
+        + SH_C3_3 * z * (2.0 * zz - 3.0 * xx - 3.0 * yy) * sh3_3
+        + SH_C3_4 * x * (4.0 * zz - xx - yy) * sh3_4
+        + SH_C3_5 * z * (xx - yy) * sh3_5
+        + SH_C3_6 * x * (xx - 3.0 * yy) * sh3_6;
 }
 
-float3 evaluate_sh0_sh1_color(float3 sh0, float3 sh1X, float3 sh1Y, float3 sh1Z, float3 viewDir)
+float3 evaluate_sh3_color(
+    float3 sh0,
+    float3 sh1X,
+    float3 sh1Y,
+    float3 sh1Z,
+    float3 sh2_0,
+    float3 sh2_1,
+    float3 sh2_2,
+    float3 sh2_3,
+    float3 sh2_4,
+    float3 sh3_0,
+    float3 sh3_1,
+    float3 sh3_2,
+    float3 sh3_3,
+    float3 sh3_4,
+    float3 sh3_5,
+    float3 sh3_6,
+    float3 viewDir
+)
 {
-    return saturate(evaluate_sh0_sh1_raw(sh0, sh1X, sh1Y, sh1Z, viewDir));
+    return saturate(evaluate_sh3_raw(sh0, sh1X, sh1Y, sh1Z, sh2_0, sh2_1, sh2_2, sh2_3, sh2_4, sh3_0, sh3_1, sh3_2, sh3_3, sh3_4, sh3_5, sh3_6, viewDir));
 }
 
 [Differentiable]
-float3 evaluate_gaussian_color(float3 sh0, float3 sh1X, float3 sh1Y, float3 sh1Z, no_diff float3 cameraPosition, float3 position, no_diff uint useSH)
+float3 evaluate_gaussian_color(
+    float3 sh0,
+    float3 sh1X,
+    float3 sh1Y,
+    float3 sh1Z,
+    float3 sh2_0,
+    float3 sh2_1,
+    float3 sh2_2,
+    float3 sh2_3,
+    float3 sh2_4,
+    float3 sh3_0,
+    float3 sh3_1,
+    float3 sh3_2,
+    float3 sh3_3,
+    float3 sh3_4,
+    float3 sh3_5,
+    float3 sh3_6,
+    no_diff float3 cameraPosition,
+    float3 position,
+    no_diff uint useSH
+)
 {
     float3 rawColor = useSH != 0u
-        ? evaluate_sh0_sh1_raw(sh0, sh1X, sh1Y, sh1Z, cameraPosition - position)
+        ? evaluate_sh3_raw(sh0, sh1X, sh1Y, sh1Z, sh2_0, sh2_1, sh2_2, sh2_3, sh2_4, sh3_0, sh3_1, sh3_2, sh3_3, sh3_4, sh3_5, sh3_6, cameraPosition - position)
         : evaluate_sh0_color_raw(sh0);
     return saturate(rawColor);
 }
@@ -195,6 +281,18 @@ struct Gaussian3D : IDifferentiable
     float3 sh1X;
     float3 sh1Y;
     float3 sh1Z;
+    float3 sh2_0;
+    float3 sh2_1;
+    float3 sh2_2;
+    float3 sh2_3;
+    float3 sh2_4;
+    float3 sh3_0;
+    float3 sh3_1;
+    float3 sh3_2;
+    float3 sh3_3;
+    float3 sh3_4;
+    float3 sh3_5;
+    float3 sh3_6;
     float rawOpacity;
 };
 

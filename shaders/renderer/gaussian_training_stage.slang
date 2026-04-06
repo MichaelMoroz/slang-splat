@@ -117,6 +117,18 @@ struct SplatState
     float3 sh1X;
     float3 sh1Y;
     float3 sh1Z;
+    float3 sh2_0;
+    float3 sh2_1;
+    float3 sh2_2;
+    float3 sh2_3;
+    float3 sh2_4;
+    float3 sh3_0;
+    float3 sh3_1;
+    float3 sh3_2;
+    float3 sh3_3;
+    float3 sh3_4;
+    float3 sh3_5;
+    float3 sh3_6;
     float rawOpacity;
 };
 
@@ -171,6 +183,54 @@ SplatState load_splat_state(RWStructuredBuffer<float> params, uint splatCount, u
         load_splat_param(params, splatCount, PARAM_SH1_Z_R, splatId),
         load_splat_param(params, splatCount, PARAM_SH1_Z_G, splatId),
         load_splat_param(params, splatCount, PARAM_SH1_Z_B, splatId));
+    state.sh2_0 = float3(
+        load_splat_param(params, splatCount, sh_param_id(4u, 0u), splatId),
+        load_splat_param(params, splatCount, sh_param_id(4u, 1u), splatId),
+        load_splat_param(params, splatCount, sh_param_id(4u, 2u), splatId));
+    state.sh2_1 = float3(
+        load_splat_param(params, splatCount, sh_param_id(5u, 0u), splatId),
+        load_splat_param(params, splatCount, sh_param_id(5u, 1u), splatId),
+        load_splat_param(params, splatCount, sh_param_id(5u, 2u), splatId));
+    state.sh2_2 = float3(
+        load_splat_param(params, splatCount, sh_param_id(6u, 0u), splatId),
+        load_splat_param(params, splatCount, sh_param_id(6u, 1u), splatId),
+        load_splat_param(params, splatCount, sh_param_id(6u, 2u), splatId));
+    state.sh2_3 = float3(
+        load_splat_param(params, splatCount, sh_param_id(7u, 0u), splatId),
+        load_splat_param(params, splatCount, sh_param_id(7u, 1u), splatId),
+        load_splat_param(params, splatCount, sh_param_id(7u, 2u), splatId));
+    state.sh2_4 = float3(
+        load_splat_param(params, splatCount, sh_param_id(8u, 0u), splatId),
+        load_splat_param(params, splatCount, sh_param_id(8u, 1u), splatId),
+        load_splat_param(params, splatCount, sh_param_id(8u, 2u), splatId));
+    state.sh3_0 = float3(
+        load_splat_param(params, splatCount, sh_param_id(9u, 0u), splatId),
+        load_splat_param(params, splatCount, sh_param_id(9u, 1u), splatId),
+        load_splat_param(params, splatCount, sh_param_id(9u, 2u), splatId));
+    state.sh3_1 = float3(
+        load_splat_param(params, splatCount, sh_param_id(10u, 0u), splatId),
+        load_splat_param(params, splatCount, sh_param_id(10u, 1u), splatId),
+        load_splat_param(params, splatCount, sh_param_id(10u, 2u), splatId));
+    state.sh3_2 = float3(
+        load_splat_param(params, splatCount, sh_param_id(11u, 0u), splatId),
+        load_splat_param(params, splatCount, sh_param_id(11u, 1u), splatId),
+        load_splat_param(params, splatCount, sh_param_id(11u, 2u), splatId));
+    state.sh3_3 = float3(
+        load_splat_param(params, splatCount, sh_param_id(12u, 0u), splatId),
+        load_splat_param(params, splatCount, sh_param_id(12u, 1u), splatId),
+        load_splat_param(params, splatCount, sh_param_id(12u, 2u), splatId));
+    state.sh3_4 = float3(
+        load_splat_param(params, splatCount, sh_param_id(13u, 0u), splatId),
+        load_splat_param(params, splatCount, sh_param_id(13u, 1u), splatId),
+        load_splat_param(params, splatCount, sh_param_id(13u, 2u), splatId));
+    state.sh3_5 = float3(
+        load_splat_param(params, splatCount, sh_param_id(14u, 0u), splatId),
+        load_splat_param(params, splatCount, sh_param_id(14u, 1u), splatId),
+        load_splat_param(params, splatCount, sh_param_id(14u, 2u), splatId));
+    state.sh3_6 = float3(
+        load_splat_param(params, splatCount, sh_param_id(15u, 0u), splatId),
+        load_splat_param(params, splatCount, sh_param_id(15u, 1u), splatId),
+        load_splat_param(params, splatCount, sh_param_id(15u, 2u), splatId));
     state.rawOpacity = load_splat_param(params, splatCount, PARAM_RAW_OPACITY, splatId);
     return state;
 }
@@ -199,6 +259,42 @@ void store_splat_state(RWStructuredBuffer<float> params, uint splatCount, uint s
     store_splat_param(params, splatCount, PARAM_SH1_Z_R, splatId, state.sh1Z.x);
     store_splat_param(params, splatCount, PARAM_SH1_Z_G, splatId, state.sh1Z.y);
     store_splat_param(params, splatCount, PARAM_SH1_Z_B, splatId, state.sh1Z.z);
+    store_splat_param(params, splatCount, sh_param_id(4u, 0u), splatId, state.sh2_0.x);
+    store_splat_param(params, splatCount, sh_param_id(4u, 1u), splatId, state.sh2_0.y);
+    store_splat_param(params, splatCount, sh_param_id(4u, 2u), splatId, state.sh2_0.z);
+    store_splat_param(params, splatCount, sh_param_id(5u, 0u), splatId, state.sh2_1.x);
+    store_splat_param(params, splatCount, sh_param_id(5u, 1u), splatId, state.sh2_1.y);
+    store_splat_param(params, splatCount, sh_param_id(5u, 2u), splatId, state.sh2_1.z);
+    store_splat_param(params, splatCount, sh_param_id(6u, 0u), splatId, state.sh2_2.x);
+    store_splat_param(params, splatCount, sh_param_id(6u, 1u), splatId, state.sh2_2.y);
+    store_splat_param(params, splatCount, sh_param_id(6u, 2u), splatId, state.sh2_2.z);
+    store_splat_param(params, splatCount, sh_param_id(7u, 0u), splatId, state.sh2_3.x);
+    store_splat_param(params, splatCount, sh_param_id(7u, 1u), splatId, state.sh2_3.y);
+    store_splat_param(params, splatCount, sh_param_id(7u, 2u), splatId, state.sh2_3.z);
+    store_splat_param(params, splatCount, sh_param_id(8u, 0u), splatId, state.sh2_4.x);
+    store_splat_param(params, splatCount, sh_param_id(8u, 1u), splatId, state.sh2_4.y);
+    store_splat_param(params, splatCount, sh_param_id(8u, 2u), splatId, state.sh2_4.z);
+    store_splat_param(params, splatCount, sh_param_id(9u, 0u), splatId, state.sh3_0.x);
+    store_splat_param(params, splatCount, sh_param_id(9u, 1u), splatId, state.sh3_0.y);
+    store_splat_param(params, splatCount, sh_param_id(9u, 2u), splatId, state.sh3_0.z);
+    store_splat_param(params, splatCount, sh_param_id(10u, 0u), splatId, state.sh3_1.x);
+    store_splat_param(params, splatCount, sh_param_id(10u, 1u), splatId, state.sh3_1.y);
+    store_splat_param(params, splatCount, sh_param_id(10u, 2u), splatId, state.sh3_1.z);
+    store_splat_param(params, splatCount, sh_param_id(11u, 0u), splatId, state.sh3_2.x);
+    store_splat_param(params, splatCount, sh_param_id(11u, 1u), splatId, state.sh3_2.y);
+    store_splat_param(params, splatCount, sh_param_id(11u, 2u), splatId, state.sh3_2.z);
+    store_splat_param(params, splatCount, sh_param_id(12u, 0u), splatId, state.sh3_3.x);
+    store_splat_param(params, splatCount, sh_param_id(12u, 1u), splatId, state.sh3_3.y);
+    store_splat_param(params, splatCount, sh_param_id(12u, 2u), splatId, state.sh3_3.z);
+    store_splat_param(params, splatCount, sh_param_id(13u, 0u), splatId, state.sh3_4.x);
+    store_splat_param(params, splatCount, sh_param_id(13u, 1u), splatId, state.sh3_4.y);
+    store_splat_param(params, splatCount, sh_param_id(13u, 2u), splatId, state.sh3_4.z);
+    store_splat_param(params, splatCount, sh_param_id(14u, 0u), splatId, state.sh3_5.x);
+    store_splat_param(params, splatCount, sh_param_id(14u, 1u), splatId, state.sh3_5.y);
+    store_splat_param(params, splatCount, sh_param_id(14u, 2u), splatId, state.sh3_5.z);
+    store_splat_param(params, splatCount, sh_param_id(15u, 0u), splatId, state.sh3_6.x);
+    store_splat_param(params, splatCount, sh_param_id(15u, 1u), splatId, state.sh3_6.y);
+    store_splat_param(params, splatCount, sh_param_id(15u, 2u), splatId, state.sh3_6.z);
     store_splat_param(params, splatCount, PARAM_RAW_OPACITY, splatId, state.rawOpacity);
 }
 

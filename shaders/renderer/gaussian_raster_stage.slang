@@ -943,9 +943,42 @@ void backprop_cached_raster_grads<T : IRasterGradVariant>(uint3 dispatchThreadID
     var dpSh1X = diffPair(gaussian.sh1X);
     var dpSh1Y = diffPair(gaussian.sh1Y);
     var dpSh1Z = diffPair(gaussian.sh1Z);
+    var dpSh2_0 = diffPair(gaussian.sh2_0);
+    var dpSh2_1 = diffPair(gaussian.sh2_1);
+    var dpSh2_2 = diffPair(gaussian.sh2_2);
+    var dpSh2_3 = diffPair(gaussian.sh2_3);
+    var dpSh2_4 = diffPair(gaussian.sh2_4);
+    var dpSh3_0 = diffPair(gaussian.sh3_0);
+    var dpSh3_1 = diffPair(gaussian.sh3_1);
+    var dpSh3_2 = diffPair(gaussian.sh3_2);
+    var dpSh3_3 = diffPair(gaussian.sh3_3);
+    var dpSh3_4 = diffPair(gaussian.sh3_4);
+    var dpSh3_5 = diffPair(gaussian.sh3_5);
+    var dpSh3_6 = diffPair(gaussian.sh3_6);
     bwd_diff(build_cached_ellipsoid)(g_Camera, g_Prepass.radiusScale, g_MaxAnisotropy, dpCachedPosition, dpCachedScale, dpRotation, dCached);
     bwd_diff(build_raster_fused_opacity)(g_Camera, g_Prepass.radiusScale, dpOpacityPosition, dpOpacityScale, dpRawOpacity, dRaster.colorAlpha.w);
-    bwd_diff(evaluate_gaussian_color)(dpSh0, dpSh1X, dpSh1Y, dpSh1Z, g_Camera.camPos, dpColorPosition, g_Raster.useSH, dRaster.colorAlpha.xyz);
+    bwd_diff(evaluate_gaussian_color)(
+        dpSh0,
+        dpSh1X,
+        dpSh1Y,
+        dpSh1Z,
+        dpSh2_0,
+        dpSh2_1,
+        dpSh2_2,
+        dpSh2_3,
+        dpSh2_4,
+        dpSh3_0,
+        dpSh3_1,
+        dpSh3_2,
+        dpSh3_3,
+        dpSh3_4,
+        dpSh3_5,
+        dpSh3_6,
+        g_Camera.camPos,
+        dpColorPosition,
+        g_Raster.useSH,
+        dRaster.colorAlpha.xyz
+    );
     float gradScale = g_RasterGradDecodeScale;
     store_param_grad<3>(g_Prepass.splatCount, PARAM_POSITION_X, splatId, (dpCachedPosition.getDifferential() + dpOpacityPosition.getDifferential() + dpColorPosition.getDifferential()) * gradScale);
     store_param_grad<3>(g_Prepass.splatCount, PARAM_SCALE_X, splatId, (dpCachedScale.getDifferential() + dpOpacityScale.getDifferential()) * gradScale);
@@ -954,6 +987,18 @@ void backprop_cached_raster_grads<T : IRasterGradVariant>(uint3 dispatchThreadID
     store_param_grad<3>(g_Prepass.splatCount, PARAM_SH1_X_R, splatId, dpSh1X.getDifferential() * gradScale);
     store_param_grad<3>(g_Prepass.splatCount, PARAM_SH1_Y_R, splatId, dpSh1Y.getDifferential() * gradScale);
     store_param_grad<3>(g_Prepass.splatCount, PARAM_SH1_Z_R, splatId, dpSh1Z.getDifferential() * gradScale);
+    store_param_grad<3>(g_Prepass.splatCount, sh_param_id(4u, 0u), splatId, dpSh2_0.getDifferential() * gradScale);
+    store_param_grad<3>(g_Prepass.splatCount, sh_param_id(5u, 0u), splatId, dpSh2_1.getDifferential() * gradScale);
+    store_param_grad<3>(g_Prepass.splatCount, sh_param_id(6u, 0u), splatId, dpSh2_2.getDifferential() * gradScale);
+    store_param_grad<3>(g_Prepass.splatCount, sh_param_id(7u, 0u), splatId, dpSh2_3.getDifferential() * gradScale);
+    store_param_grad<3>(g_Prepass.splatCount, sh_param_id(8u, 0u), splatId, dpSh2_4.getDifferential() * gradScale);
+    store_param_grad<3>(g_Prepass.splatCount, sh_param_id(9u, 0u), splatId, dpSh3_0.getDifferential() * gradScale);
+    store_param_grad<3>(g_Prepass.splatCount, sh_param_id(10u, 0u), splatId, dpSh3_1.getDifferential() * gradScale);
+    store_param_grad<3>(g_Prepass.splatCount, sh_param_id(11u, 0u), splatId, dpSh3_2.getDifferential() * gradScale);
+    store_param_grad<3>(g_Prepass.splatCount, sh_param_id(12u, 0u), splatId, dpSh3_3.getDifferential() * gradScale);
+    store_param_grad<3>(g_Prepass.splatCount, sh_param_id(13u, 0u), splatId, dpSh3_4.getDifferential() * gradScale);
+    store_param_grad<3>(g_Prepass.splatCount, sh_param_id(14u, 0u), splatId, dpSh3_5.getDifferential() * gradScale);
+    store_param_grad<3>(g_Prepass.splatCount, sh_param_id(15u, 0u), splatId, dpSh3_6.getDifferential() * gradScale);
     store_param_grad<1>(g_Prepass.splatCount, PARAM_RAW_OPACITY, splatId, float1(dpRawOpacity.getDifferential()) * gradScale);
 }
 

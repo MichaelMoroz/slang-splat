@@ -11,7 +11,7 @@
 - Position: `x`, `y`, `z`
 - Opacity logit: `opacity`
 - SH DC: `f_dc_0`, `f_dc_1`, `f_dc_2`
-- SH extra coefficients: `f_rest_*` (optional)
+- SH extra coefficients: `f_rest_*` (optional, loaded up to SH3 / 16 total coefficients)
 - Log scales: `scale_*` (optional, defaults to `0`)
 - Rotation quaternion: `rot_*` (optional, defaults to identity)
 
@@ -19,6 +19,7 @@
 - Scales: preserved as 3DGS log-scale values
 - Opacity: `sigmoid(raw_opacity)`
 - Rotation: normalized quaternion
+- SH coefficients: padded or truncated to the runtime-supported SH3 layout with `16` coefficients total
 - Display color: `0.5 + SH_C0 * SH_DC`, clamped to `[0, 1]`
 
 Output is `GaussianScene` with contiguous `float32` arrays.

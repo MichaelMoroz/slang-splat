@@ -31,6 +31,18 @@ CachedEllipsoid build_cached_ellipsoid(no_diff CameraParams cameraParams, no_dif
     gaussian.sh1X = 0.0;
     gaussian.sh1Y = 0.0;
     gaussian.sh1Z = 0.0;
+    gaussian.sh2_0 = 0.0;
+    gaussian.sh2_1 = 0.0;
+    gaussian.sh2_2 = 0.0;
+    gaussian.sh2_3 = 0.0;
+    gaussian.sh2_4 = 0.0;
+    gaussian.sh3_0 = 0.0;
+    gaussian.sh3_1 = 0.0;
+    gaussian.sh3_2 = 0.0;
+    gaussian.sh3_3 = 0.0;
+    gaussian.sh3_4 = 0.0;
+    gaussian.sh3_5 = 0.0;
+    gaussian.sh3_6 = 0.0;
     gaussian.rawOpacity = 0.0;
     Ellipsoid ellipsoid = build_ellipsoid(cameraParams, radiusScale, maxAnisotropy, gaussian);
     return {

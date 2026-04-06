@@ -47,6 +47,18 @@ struct TrainableGaussianState
     float3 sh1X;
     float3 sh1Y;
     float3 sh1Z;
+    float3 sh2_0;
+    float3 sh2_1;
+    float3 sh2_2;
+    float3 sh2_3;
+    float3 sh2_4;
+    float3 sh3_0;
+    float3 sh3_1;
+    float3 sh3_2;
+    float3 sh3_3;
+    float3 sh3_4;
+    float3 sh3_5;
+    float3 sh3_6;
     float rawOpacity;
 
     static TrainableGaussianState load(uint splatId)
@@ -88,6 +100,66 @@ struct TrainableGaussianState
             load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_Z_G, splatId),
             load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_Z_B, splatId)
         );
+        state.sh2_0 = float3(
+            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(4u, 0u), splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(4u, 1u), splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(4u, 2u), splatId)
+        );
+        state.sh2_1 = float3(
+            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(5u, 0u), splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(5u, 1u), splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(5u, 2u), splatId)
+        );
+        state.sh2_2 = float3(
+            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(6u, 0u), splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(6u, 1u), splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(6u, 2u), splatId)
+        );
+        state.sh2_3 = float3(
+            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(7u, 0u), splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(7u, 1u), splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(7u, 2u), splatId)
+        );
+        state.sh2_4 = float3(
+            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(8u, 0u), splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(8u, 1u), splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(8u, 2u), splatId)
+        );
+        state.sh3_0 = float3(
+            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(9u, 0u), splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(9u, 1u), splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(9u, 2u), splatId)
+        );
+        state.sh3_1 = float3(
+            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(10u, 0u), splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(10u, 1u), splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(10u, 2u), splatId)
+        );
+        state.sh3_2 = float3(
+            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(11u, 0u), splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(11u, 1u), splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(11u, 2u), splatId)
+        );
+        state.sh3_3 = float3(
+            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(12u, 0u), splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(12u, 1u), splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(12u, 2u), splatId)
+        );
+        state.sh3_4 = float3(
+            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(13u, 0u), splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(13u, 1u), splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(13u, 2u), splatId)
+        );
+        state.sh3_5 = float3(
+            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(14u, 0u), splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(14u, 1u), splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(14u, 2u), splatId)
+        );
+        state.sh3_6 = float3(
+            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(15u, 0u), splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(15u, 1u), splatId),
+            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(15u, 2u), splatId)
+        );
         state.rawOpacity = load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_RAW_OPACITY, splatId);
         return state;
     }
@@ -116,6 +188,42 @@ struct TrainableGaussianState
         store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_Z_R, splatId, sh1Z.x);
         store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_Z_G, splatId, sh1Z.y);
         store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_Z_B, splatId, sh1Z.z);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(4u, 0u), splatId, sh2_0.x);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(4u, 1u), splatId, sh2_0.y);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(4u, 2u), splatId, sh2_0.z);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(5u, 0u), splatId, sh2_1.x);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(5u, 1u), splatId, sh2_1.y);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(5u, 2u), splatId, sh2_1.z);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(6u, 0u), splatId, sh2_2.x);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(6u, 1u), splatId, sh2_2.y);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(6u, 2u), splatId, sh2_2.z);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(7u, 0u), splatId, sh2_3.x);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(7u, 1u), splatId, sh2_3.y);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(7u, 2u), splatId, sh2_3.z);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(8u, 0u), splatId, sh2_4.x);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(8u, 1u), splatId, sh2_4.y);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(8u, 2u), splatId, sh2_4.z);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(9u, 0u), splatId, sh3_0.x);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(9u, 1u), splatId, sh3_0.y);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(9u, 2u), splatId, sh3_0.z);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(10u, 0u), splatId, sh3_1.x);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(10u, 1u), splatId, sh3_1.y);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(10u, 2u), splatId, sh3_1.z);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(11u, 0u), splatId, sh3_2.x);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(11u, 1u), splatId, sh3_2.y);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(11u, 2u), splatId, sh3_2.z);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(12u, 0u), splatId, sh3_3.x);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(12u, 1u), splatId, sh3_3.y);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(12u, 2u), splatId, sh3_3.z);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(13u, 0u), splatId, sh3_4.x);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(13u, 1u), splatId, sh3_4.y);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(13u, 2u), splatId, sh3_4.z);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(14u, 0u), splatId, sh3_5.x);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(14u, 1u), splatId, sh3_5.y);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(14u, 2u), splatId, sh3_5.z);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(15u, 0u), splatId, sh3_6.x);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(15u, 1u), splatId, sh3_6.y);
+        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(15u, 2u), splatId, sh3_6.z);
         store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_RAW_OPACITY, splatId, rawOpacity);
     }
 };
@@ -180,6 +288,11 @@ float3 clamp_sh0_base_color(float3 sh0)
 float3 clamp_sh1_coeffs(float3 sh1)
 {
     return clamp(sh1, -1.0, 1.0);
+}
+
+float3 clamp_sh_rest_coeffs(float3 sh)
+{
+    return clamp(sh, -1.0, 1.0);
 }
 
 float3 clamp_screen_area_upper_bound(float3 position, float3 logScale)
@@ -286,5 +399,17 @@ void csProjectGaussianParams(uint3 dispatchThreadID : SV_DispatchThreadID)
     state.sh1X = clamp_sh1_coeffs(sanitize_float3(state.sh1X, g_Stability.hugeValue));
     state.sh1Y = clamp_sh1_coeffs(sanitize_float3(state.sh1Y, g_Stability.hugeValue));
     state.sh1Z = clamp_sh1_coeffs(sanitize_float3(state.sh1Z, g_Stability.hugeValue));
+    state.sh2_0 = clamp_sh_rest_coeffs(sanitize_float3(state.sh2_0, g_Stability.hugeValue));
+    state.sh2_1 = clamp_sh_rest_coeffs(sanitize_float3(state.sh2_1, g_Stability.hugeValue));
+    state.sh2_2 = clamp_sh_rest_coeffs(sanitize_float3(state.sh2_2, g_Stability.hugeValue));
+    state.sh2_3 = clamp_sh_rest_coeffs(sanitize_float3(state.sh2_3, g_Stability.hugeValue));
+    state.sh2_4 = clamp_sh_rest_coeffs(sanitize_float3(state.sh2_4, g_Stability.hugeValue));
+    state.sh3_0 = clamp_sh_rest_coeffs(sanitize_float3(state.sh3_0, g_Stability.hugeValue));
+    state.sh3_1 = clamp_sh_rest_coeffs(sanitize_float3(state.sh3_1, g_Stability.hugeValue));
+    state.sh3_2 = clamp_sh_rest_coeffs(sanitize_float3(state.sh3_2, g_Stability.hugeValue));
+    state.sh3_3 = clamp_sh_rest_coeffs(sanitize_float3(state.sh3_3, g_Stability.hugeValue));
+    state.sh3_4 = clamp_sh_rest_coeffs(sanitize_float3(state.sh3_4, g_Stability.hugeValue));
+    state.sh3_5 = clamp_sh_rest_coeffs(sanitize_float3(state.sh3_5, g_Stability.hugeValue));
+    state.sh3_6 = clamp_sh_rest_coeffs(sanitize_float3(state.sh3_6, g_Stability.hugeValue));
     state.store(splatId);
 }

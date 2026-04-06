@@ -18,7 +18,7 @@ from ._internal.colmap_types import (
     GaussianInitHyperParams,
 )
 from .ply_loader import load_gaussian_ply, save_gaussian_ply
-from .sh_utils import SH_C0, SH_C1, SUPPORTED_SH_COEFF_COUNT, evaluate_sh0_sh1, pad_sh_coeffs, rgb_to_sh0, sh_coeffs_to_display_colors
+from .sh_utils import SH_C0, SH_C1, SH_C2, SH_C3, SUPPORTED_SH_COEFF_COUNT, evaluate_sh0_sh1, evaluate_sh0_sh3, evaluate_sh_color, pad_sh_coeffs, rgb_to_sh0, sh_coeffs_to_display_colors
 from .sh_utils import resolve_supported_sh_coeffs
 
 __all__ = [
@@ -30,10 +30,14 @@ __all__ = [
     "save_gaussian_ply",
     "SH_C0",
     "SH_C1",
+    "SH_C2",
+    "SH_C3",
     "SUPPORTED_SH_COEFF_COUNT",
     "rgb_to_sh0",
     "pad_sh_coeffs",
     "sh_coeffs_to_display_colors",
+    "evaluate_sh_color",
+    "evaluate_sh0_sh3",
     "evaluate_sh0_sh1",
     "resolve_supported_sh_coeffs",
     "load_colmap_reconstruction",

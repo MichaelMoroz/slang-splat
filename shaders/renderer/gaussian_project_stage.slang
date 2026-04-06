@@ -92,7 +92,27 @@ void csProjectVisibleSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
     projectedEllipse.radiusPx = max(projectedEllipse.radiusPx * ELLIPSE_SAFETY_SCALE + ELLIPSE_RADIUS_PAD_PX, MIN_SCREEN_RADIUS_PX);
     projectedEllipse.bboxExtent = float2(projectedEllipse.radiusPx, projectedEllipse.radiusPx);
     if (!projectedEllipse.isVisible(camDistance, depthValue, camera.params.viewport, g_Camera.nearDepth, g_Camera.farDepth)) return;
-    float3 evaluatedColor = evaluate_gaussian_color(gaussian.sh0, gaussian.sh1X, gaussian.sh1Y, gaussian.sh1Z, camera.position_world(), projectionEllipsoid.centerWorld, g_Raster.useSH);
+    float3 evaluatedColor = evaluate_gaussian_color(
+        gaussian.sh0,
+        gaussian.sh1X,
+        gaussian.sh1Y,
+        gaussian.sh1Z,
+        gaussian.sh2_0,
+        gaussian.sh2_1,
+        gaussian.sh2_2,
+        gaussian.sh2_3,
+        gaussian.sh2_4,
+        gaussian.sh3_0,
+        gaussian.sh3_1,
+        gaussian.sh3_2,
+        gaussian.sh3_3,
+        gaussian.sh3_4,
+        gaussian.sh3_5,
+        gaussian.sh3_6,
+        camera.position_world(),
+        projectionEllipsoid.centerWorld,
+        g_Raster.useSH
+    );
     g_ScreenCenterRadiusDepth[splatId] = float4(projectedEllipse.centerPx, projectedEllipse.radiusPx, camDistance);
     g_ScreenColorAlpha[splatId] = float4(evaluatedColor, gaussian.rawOpacity);
     g_ScreenEllipseConic[splatId] = float4(projectedEllipse.conic, projectionEllipsoid.opacityScale);

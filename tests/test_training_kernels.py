@@ -1717,11 +1717,12 @@ def test_optimizer_projection_clamps_sh_coefficients(device, tmp_path: Path) -> 
     sh0_limit = np.float32(0.5 / SH_C0)
     np.testing.assert_allclose(sh_coeffs[0], np.array([sh0_limit, -sh0_limit, 0.25], dtype=np.float32), rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(
-        sh_coeffs[1:],
+        sh_coeffs[1:4],
         np.array([[1.0, -1.0, 0.5], [-1.0, 0.25, 1.0], [0.0, 1.0, -1.0]], dtype=np.float32),
         rtol=0.0,
         atol=1e-6,
     )
+    np.testing.assert_allclose(sh_coeffs[4:], 0.0, rtol=0.0, atol=1e-6)
 
 
 def test_box_downscale_matches_expected_mean(device, tmp_path: Path) -> None:

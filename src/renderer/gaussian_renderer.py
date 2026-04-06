@@ -160,14 +160,16 @@ class GaussianRenderer:
     PARAM_POSITION_IDS = (0, 1, 2)
     PARAM_SCALE_IDS = (3, 4, 5)
     PARAM_ROTATION_IDS = (6, 7, 8, 9)
-    PARAM_SH0_IDS = (10, 11, 12)
-    PARAM_SH1_X_IDS = (13, 14, 15)
-    PARAM_SH1_Y_IDS = (16, 17, 18)
-    PARAM_SH1_Z_IDS = (19, 20, 21)
-    PARAM_SH_IDS = PARAM_SH0_IDS + PARAM_SH1_X_IDS + PARAM_SH1_Y_IDS + PARAM_SH1_Z_IDS
+    PARAM_SH_FIRST_ID = 10
+    PARAM_SH_COEFF_IDS = tuple(tuple(range(10 + coeff_index * 3, 10 + coeff_index * 3 + 3)) for coeff_index in range(SUPPORTED_SH_COEFF_COUNT))
+    PARAM_SH0_IDS = PARAM_SH_COEFF_IDS[0]
+    PARAM_SH1_X_IDS = PARAM_SH_COEFF_IDS[1]
+    PARAM_SH1_Y_IDS = PARAM_SH_COEFF_IDS[2]
+    PARAM_SH1_Z_IDS = PARAM_SH_COEFF_IDS[3]
+    PARAM_SH_IDS = tuple(param_id for group in PARAM_SH_COEFF_IDS for param_id in group)
     PARAM_COLOR_IDS = PARAM_SH_IDS
-    PARAM_RAW_OPACITY_ID = 22
-    TRAINABLE_PARAM_COUNT = 23
+    PARAM_RAW_OPACITY_ID = PARAM_SH_FIRST_ID + SUPPORTED_SH_COEFF_COUNT * 3
+    TRAINABLE_PARAM_COUNT = PARAM_RAW_OPACITY_ID + 1
     CACHED_RASTER_GRAD_COMPONENT_LABELS = (
         "roLocal.x", "roLocal.y", "roLocal.z",
         "scale.x", "scale.y", "scale.z",
@@ -779,7 +781,7 @@ class GaussianRenderer:
             packed[cls._param_slice(count, param_id)] = np.asarray(scene.scales[:, axis], dtype=np.float32)
         for axis, param_id in enumerate(cls.PARAM_ROTATION_IDS):
             packed[cls._param_slice(count, param_id)] = np.asarray(scene.rotations[:, axis], dtype=np.float32)
-        for coeff_index, param_ids in enumerate((cls.PARAM_SH0_IDS, cls.PARAM_SH1_X_IDS, cls.PARAM_SH1_Y_IDS, cls.PARAM_SH1_Z_IDS)):
+        for coeff_index, param_ids in enumerate(cls.PARAM_SH_COEFF_IDS):
             for axis, param_id in enumerate(param_ids):
                 packed[cls._param_slice(count, param_id)] = np.asarray(sh_coeffs[:, coeff_index, axis], dtype=np.float32)
         packed[cls._param_slice(count, cls.PARAM_RAW_OPACITY_ID)] = cls._raw_opacity_from_alpha(scene.opacities)
@@ -804,7 +806,7 @@ class GaussianRenderer:
             groups["scales"][:, axis] = flat[cls._param_slice(count, param_id)]
         for axis, param_id in enumerate(cls.PARAM_ROTATION_IDS):
             groups["rotations"][:, axis] = flat[cls._param_slice(count, param_id)]
-        for coeff_index, param_ids in enumerate((cls.PARAM_SH0_IDS, cls.PARAM_SH1_X_IDS, cls.PARAM_SH1_Y_IDS, cls.PARAM_SH1_Z_IDS)):
+        for coeff_index, param_ids in enumerate(cls.PARAM_SH_COEFF_IDS):
             for axis, param_id in enumerate(param_ids):
                 groups["sh_coeffs"][:, coeff_index, axis] = flat[cls._param_slice(count, param_id)]
         groups["color_alpha"][:, :3] = sh_coeffs_to_display_colors(groups["sh_coeffs"])
@@ -846,7 +848,7 @@ class GaussianRenderer:
             packed[cls._param_slice(count, param_id)] = groups["scales"][:, axis]
         for axis, param_id in enumerate(cls.PARAM_ROTATION_IDS):
             packed[cls._param_slice(count, param_id)] = groups["rotations"][:, axis]
-        for coeff_index, param_ids in enumerate((cls.PARAM_SH0_IDS, cls.PARAM_SH1_X_IDS, cls.PARAM_SH1_Y_IDS, cls.PARAM_SH1_Z_IDS)):
+        for coeff_index, param_ids in enumerate(cls.PARAM_SH_COEFF_IDS):
             for axis, param_id in enumerate(param_ids):
                 packed[cls._param_slice(count, param_id)] = groups["sh_coeffs"][:, coeff_index, axis]
         packed[cls._param_slice(count, cls.PARAM_RAW_OPACITY_ID)] = groups["color_alpha"][:, 3]

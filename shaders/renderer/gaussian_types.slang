@@ -121,6 +121,66 @@ Gaussian3D load_gaussian3d(uint splatId)
         load_splat_param(g_SplatParams, splatCount, PARAM_SH1_Z_G, splatId),
         load_splat_param(g_SplatParams, splatCount, PARAM_SH1_Z_B, splatId)
     );
+    gaussian.sh2_0 = float3(
+        load_splat_param(g_SplatParams, splatCount, sh_param_id(4u, 0u), splatId),
+        load_splat_param(g_SplatParams, splatCount, sh_param_id(4u, 1u), splatId),
+        load_splat_param(g_SplatParams, splatCount, sh_param_id(4u, 2u), splatId)
+    );
+    gaussian.sh2_1 = float3(
+        load_splat_param(g_SplatParams, splatCount, sh_param_id(5u, 0u), splatId),
+        load_splat_param(g_SplatParams, splatCount, sh_param_id(5u, 1u), splatId),
+        load_splat_param(g_SplatParams, splatCount, sh_param_id(5u, 2u), splatId)
+    );
+    gaussian.sh2_2 = float3(
+        load_splat_param(g_SplatParams, splatCount, sh_param_id(6u, 0u), splatId),
+        load_splat_param(g_SplatParams, splatCount, sh_param_id(6u, 1u), splatId),
+        load_splat_param(g_SplatParams, splatCount, sh_param_id(6u, 2u), splatId)
+    );
+    gaussian.sh2_3 = float3(
+        load_splat_param(g_SplatParams, splatCount, sh_param_id(7u, 0u), splatId),
+        load_splat_param(g_SplatParams, splatCount, sh_param_id(7u, 1u), splatId),
+        load_splat_param(g_SplatParams, splatCount, sh_param_id(7u, 2u), splatId)
+    );
+    gaussian.sh2_4 = float3(
+        load_splat_param(g_SplatParams, splatCount, sh_param_id(8u, 0u), splatId),
+        load_splat_param(g_SplatParams, splatCount, sh_param_id(8u, 1u), splatId),
+        load_splat_param(g_SplatParams, splatCount, sh_param_id(8u, 2u), splatId)
+    );
+    gaussian.sh3_0 = float3(
+        load_splat_param(g_SplatParams, splatCount, sh_param_id(9u, 0u), splatId),
+        load_splat_param(g_SplatParams, splatCount, sh_param_id(9u, 1u), splatId),
+        load_splat_param(g_SplatParams, splatCount, sh_param_id(9u, 2u), splatId)
+    );
+    gaussian.sh3_1 = float3(
+        load_splat_param(g_SplatParams, splatCount, sh_param_id(10u, 0u), splatId),
+        load_splat_param(g_SplatParams, splatCount, sh_param_id(10u, 1u), splatId),
+        load_splat_param(g_SplatParams, splatCount, sh_param_id(10u, 2u), splatId)
+    );
+    gaussian.sh3_2 = float3(
+        load_splat_param(g_SplatParams, splatCount, sh_param_id(11u, 0u), splatId),
+        load_splat_param(g_SplatParams, splatCount, sh_param_id(11u, 1u), splatId),
+        load_splat_param(g_SplatParams, splatCount, sh_param_id(11u, 2u), splatId)
+    );
+    gaussian.sh3_3 = float3(
+        load_splat_param(g_SplatParams, splatCount, sh_param_id(12u, 0u), splatId),
+        load_splat_param(g_SplatParams, splatCount, sh_param_id(12u, 1u), splatId),
+        load_splat_param(g_SplatParams, splatCount, sh_param_id(12u, 2u), splatId)
+    );
+    gaussian.sh3_4 = float3(
+        load_splat_param(g_SplatParams, splatCount, sh_param_id(13u, 0u), splatId),
+        load_splat_param(g_SplatParams, splatCount, sh_param_id(13u, 1u), splatId),
+        load_splat_param(g_SplatParams, splatCount, sh_param_id(13u, 2u), splatId)
+    );
+    gaussian.sh3_5 = float3(
+        load_splat_param(g_SplatParams, splatCount, sh_param_id(14u, 0u), splatId),
+        load_splat_param(g_SplatParams, splatCount, sh_param_id(14u, 1u), splatId),
+        load_splat_param(g_SplatParams, splatCount, sh_param_id(14u, 2u), splatId)
+    );
+    gaussian.sh3_6 = float3(
+        load_splat_param(g_SplatParams, splatCount, sh_param_id(15u, 0u), splatId),
+        load_splat_param(g_SplatParams, splatCount, sh_param_id(15u, 1u), splatId),
+        load_splat_param(g_SplatParams, splatCount, sh_param_id(15u, 2u), splatId)
+    );
     gaussian.rawOpacity = load_splat_param(g_SplatParams, splatCount, PARAM_RAW_OPACITY, splatId);
     return gaussian;
 }

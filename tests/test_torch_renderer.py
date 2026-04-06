@@ -41,13 +41,13 @@ _CAMERA_SPECS = (
 
 def _make_splats(device: torch.device, count: int = 8, seed: int = 7) -> torch.Tensor:
     rng = np.random.default_rng(seed)
-    splats = np.zeros((count, 23), dtype=np.float32)
+    splats = np.zeros((count, GaussianRenderer.TRAINABLE_PARAM_COUNT), dtype=np.float32)
     splats[:, 0:3] = rng.uniform(-0.35, 0.35, size=(count, 3)).astype(np.float32)
     splats[:, 2] += 0.2
     splats[:, 3:6] = np.log(np.full((count, 3), 0.05, dtype=np.float32))
     splats[:, 6] = 1.0
     splats[:, 10:13] = rgb_to_sh0(rng.uniform(0.15, 0.95, size=(count, 3)).astype(np.float32))
-    splats[:, 22] = rng.uniform(0.2, 0.8, size=(count,)).astype(np.float32)
+    splats[:, GaussianRenderer.PARAM_RAW_OPACITY_ID] = rng.uniform(0.2, 0.8, size=(count,)).astype(np.float32)
     return torch.tensor(splats, device=device, dtype=torch.float32)
 
 
@@ -125,7 +125,7 @@ def _make_scene_splats(device: torch.device) -> torch.Tensor:
     axis_shifts = attribute_rng.permutation(_SCENE_SPLAT_COUNT) % 3
     quats = _random_quaternions(_SCENE_SPLAT_COUNT, torch.Generator(device="cpu").manual_seed(_SCENE_SEED)).numpy().astype(np.float32, copy=False)
 
-    splats = np.zeros((_SCENE_SPLAT_COUNT, 23), dtype=np.float32)
+    splats = np.zeros((_SCENE_SPLAT_COUNT, GaussianRenderer.TRAINABLE_PARAM_COUNT), dtype=np.float32)
     splats[:, 0] = (screen_x - 0.5 * width) * depth_from_camera / focal
     splats[:, 1] = (screen_y - 0.5 * height) * depth_from_camera / focal
     splats[:, 2] = depths
@@ -137,7 +137,7 @@ def _make_scene_splats(device: torch.device) -> torch.Tensor:
         scales = np.array((world_major[splat_index], world_minor[splat_index], world_minor[splat_index]), dtype=np.float32)[axis_order]
         splats[splat_index, 3:6] = np.log(scales)
     splats[:, 10:13] = rgb_to_sh0(colors)
-    splats[:, 22] = alpha
+    splats[:, GaussianRenderer.PARAM_RAW_OPACITY_ID] = alpha
     return torch.tensor(splats, device=device, dtype=torch.float32)
 
 
@@ -229,7 +229,7 @@ def _ground_truth_render_torch(
     exponent_scale = 0.5 * _GAUSSIAN_SUPPORT_SIGMA_RADIUS * _GAUSSIAN_SUPPORT_SIGMA_RADIUS
     for splat in sorted_splats:
         scale = torch.clamp(torch.exp(splat[3:6]) * float(radius_scale * _GAUSSIAN_SUPPORT_SIGMA_RADIUS), min=_TORCH_GT_SMALL_VALUE)
-        opacity = torch.clamp(splat[22], GaussianRenderer._OPACITY_EPS, 1.0 - GaussianRenderer._OPACITY_EPS)
+        opacity = torch.clamp(splat[GaussianRenderer.PARAM_RAW_OPACITY_ID], GaussianRenderer._OPACITY_EPS, 1.0 - GaussianRenderer._OPACITY_EPS)
         color = torch.clamp(0.5 + SH_C0 * splat[10:13], min=0.0, max=1.0)
         ro_local = _quat_rotate_torch((cam_pos - splat[0:3]).unsqueeze(0), splat[6:10].unsqueeze(0))[0] / scale
         ray_local = _quat_rotate_torch(rays, splat[6:10].unsqueeze(0)) / scale
@@ -328,12 +328,12 @@ def _camera_from_tensor(camera_params: torch.Tensor) -> Camera:
 
 def _scene_from_splats(splats: torch.Tensor) -> GaussianScene:
     values = splats.detach().cpu().numpy()
-    sh_coeffs = np.asarray(values[:, 10:22], dtype=np.float32).reshape(values.shape[0], 4, 3)
+    sh_coeffs = np.asarray(values[:, GaussianRenderer.PARAM_SH_FIRST_ID:GaussianRenderer.PARAM_RAW_OPACITY_ID], dtype=np.float32).reshape(values.shape[0], len(GaussianRenderer.PARAM_SH_COEFF_IDS), 3)
     return GaussianScene(
         positions=np.asarray(values[:, 0:3], dtype=np.float32),
         scales=np.asarray(values[:, 3:6], dtype=np.float32),
         rotations=np.asarray(values[:, 6:10], dtype=np.float32),
-        opacities=np.asarray(values[:, 22], dtype=np.float32),
+        opacities=np.asarray(values[:, GaussianRenderer.PARAM_RAW_OPACITY_ID], dtype=np.float32),
         colors=sh_coeffs_to_display_colors(sh_coeffs),
         sh_coeffs=sh_coeffs,
     )
@@ -342,13 +342,13 @@ def _scene_from_splats(splats: torch.Tensor) -> GaussianScene:
 def _public_reference_grads(splats: torch.Tensor, grad_groups: dict[str, np.ndarray]) -> np.ndarray:
     values = np.asarray(splats.detach().cpu().numpy(), dtype=np.float32)
     count = values.shape[0]
-    packed = np.zeros((count, 23), dtype=np.float32)
+    packed = np.zeros((count, GaussianRenderer.TRAINABLE_PARAM_COUNT), dtype=np.float32)
     packed[:, 0:3] = np.asarray(grad_groups["grad_positions"][:, 0:3], dtype=np.float32)
     packed[:, 3:6] = np.asarray(grad_groups["grad_scales"][:, 0:3], dtype=np.float32)
     packed[:, 6:10] = np.asarray(grad_groups["grad_rotations"][:, 0:4], dtype=np.float32)
-    packed[:, 10:22] = np.asarray(grad_groups["grad_sh_coeffs"], dtype=np.float32).reshape(count, 12)
-    alpha = np.clip(values[:, 22], GaussianRenderer._OPACITY_EPS, 1.0 - GaussianRenderer._OPACITY_EPS)
-    packed[:, 22] = np.asarray(grad_groups["grad_color_alpha"][:, 3], dtype=np.float32) / (alpha * (1.0 - alpha))
+    packed[:, GaussianRenderer.PARAM_SH_FIRST_ID:GaussianRenderer.PARAM_RAW_OPACITY_ID] = np.asarray(grad_groups["grad_sh_coeffs"], dtype=np.float32).reshape(count, GaussianRenderer.PARAM_RAW_OPACITY_ID - GaussianRenderer.PARAM_SH_FIRST_ID)
+    alpha = np.clip(values[:, GaussianRenderer.PARAM_RAW_OPACITY_ID], GaussianRenderer._OPACITY_EPS, 1.0 - GaussianRenderer._OPACITY_EPS)
+    packed[:, GaussianRenderer.PARAM_RAW_OPACITY_ID] = np.asarray(grad_groups["grad_color_alpha"][:, 3], dtype=np.float32) / (alpha * (1.0 - alpha))
     return packed
 
 
@@ -436,10 +436,10 @@ def test_torch_renderer_alpha_gradient_is_public_alpha_space(torch_cuda_device: 
     camera = _camera_from_tensor(camera_params)
     reference = context.renderer.debug_raster_backward_grads(scene, camera, background=settings.background)
     raw_opacity_grad = np.asarray(reference["grad_color_alpha"][:, 3], dtype=np.float32)
-    alpha_grad = splats.grad.detach().cpu().numpy()[:, 22]
+    alpha_grad = splats.grad.detach().cpu().numpy()[:, GaussianRenderer.PARAM_RAW_OPACITY_ID]
 
     assert not np.allclose(alpha_grad, raw_opacity_grad, rtol=1e-5, atol=1e-6)
-    np.testing.assert_allclose(alpha_grad, _public_reference_grads(splats.detach(), reference)[:, 22], rtol=2e-5, atol=3e-5)
+    np.testing.assert_allclose(alpha_grad, _public_reference_grads(splats.detach(), reference)[:, GaussianRenderer.PARAM_RAW_OPACITY_ID], rtol=2e-5, atol=3e-5)
 
 
 def test_torch_renderer_float_cached_grad_mode_preserves_small_high_res_l1_gradients(torch_cuda_device: torch.device):
@@ -459,8 +459,8 @@ def test_torch_renderer_float_cached_grad_mode_preserves_small_high_res_l1_gradi
 
     assert float(torch.max(torch.abs(grad[:, 0:3])).item()) > 0.0
     assert float(torch.max(torch.abs(grad[:, 3:6])).item()) > 0.0
-    assert float(torch.max(torch.abs(grad[:, 10:22])).item()) > 0.0
-    assert float(torch.max(torch.abs(grad[:, 22])).item()) > 0.0
+    assert float(torch.max(torch.abs(grad[:, GaussianRenderer.PARAM_SH_FIRST_ID:GaussianRenderer.PARAM_RAW_OPACITY_ID])).item()) > 0.0
+    assert float(torch.max(torch.abs(grad[:, GaussianRenderer.PARAM_RAW_OPACITY_ID])).item()) > 0.0
 
 
 def test_torch_renderer_rejects_invalid_inputs(torch_cuda_device: torch.device):
@@ -469,10 +469,10 @@ def test_torch_renderer_rejects_invalid_inputs(torch_cuda_device: torch.device):
     camera_params = _make_camera_params(torch_cuda_device)
 
     with pytest.raises(ValueError, match="CUDA"):
-        render_gaussian_splats_torch(torch.zeros((1, 23), dtype=torch.float32), camera_params, settings, context)
+        render_gaussian_splats_torch(torch.zeros((1, GaussianRenderer.TRAINABLE_PARAM_COUNT), dtype=torch.float32), camera_params, settings, context)
 
     with pytest.raises(TypeError, match="float32"):
-        render_gaussian_splats_torch(torch.zeros((1, 23), device=torch_cuda_device, dtype=torch.float64), camera_params, settings, context)
+        render_gaussian_splats_torch(torch.zeros((1, GaussianRenderer.TRAINABLE_PARAM_COUNT), device=torch_cuda_device, dtype=torch.float64), camera_params, settings, context)
 
     with pytest.raises(ValueError, match="shape"):
         render_gaussian_splats_torch(torch.zeros((1, 13), device=torch_cuda_device, dtype=torch.float32), camera_params, settings, context)
