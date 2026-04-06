@@ -1177,7 +1177,24 @@ class GaussianRenderer:
         self._dispatch(self._raster_grad_shader_set().backward, encoder, self._raster_thread_count(), vars, "Rasterize Backward", 27)
 
     def _backprop_cached_raster_grads(self, encoder: spy.CommandEncoder, splat_count: int, camera: Camera, grad_scale: float = 1.0) -> None:
-        self._dispatch(self._raster_grad_shader_set().backprop, encoder, spy.uint3(max(int(splat_count), 1), 1, 1), {**self._scene_vars(), **self._raster_cache_vars(), **self._raster_grad_vars(), **self._raster_grad_decode_scale_var(grad_scale), **self._raster_grad_fixed_range_vars(), **self._prepass_uniforms(splat_count), **self._anisotropy_uniforms(), **self._camera_uniforms(camera)}, "Backprop Cached Raster Grads", 28)
+        self._dispatch(
+            self._raster_grad_shader_set().backprop,
+            encoder,
+            spy.uint3(max(int(splat_count), 1), 1, 1),
+            {
+                **self._scene_vars(),
+                **self._raster_cache_vars(),
+                **self._raster_grad_vars(),
+                **self._raster_grad_decode_scale_var(grad_scale),
+                **self._raster_grad_fixed_range_vars(),
+                **self._prepass_uniforms(splat_count),
+                **self._raster_uniforms(np.zeros((3,), dtype=np.float32)),
+                **self._anisotropy_uniforms(),
+                **self._camera_uniforms(camera),
+            },
+            "Backprop Cached Raster Grads",
+            28,
+        )
 
     def _execute_prepass(self, scene: GaussianScene, camera: Camera, sync_counts: bool = False) -> tuple[int, int]:
         enc = self.device.create_command_encoder()

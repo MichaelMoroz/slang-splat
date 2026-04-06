@@ -2099,6 +2099,54 @@ def test_sh1_regularizer_pushes_all_non_dc_sh_coeffs_toward_zero(device, tmp_pat
     assert np.all(after < before)
 
 
+def test_training_with_sh_enabled_updates_non_dc_sh_coeffs(device, tmp_path: Path):
+    scene = _make_scene(count=4, seed=123)
+    frame = _make_frame(tmp_path, image_name="sh_enabled_target.png", image_id=22)
+    renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(
+            use_sh=True,
+            lr_schedule_enabled=False,
+            scale_l2_weight=0.0,
+            scale_abs_reg_weight=0.0,
+            opacity_reg_weight=0.0,
+            sh1_reg_weight=0.0,
+            density_regularizer=0.0,
+            depth_ratio_weight=0.0,
+            refinement_interval=9999,
+        ),
+        seed=123,
+    )
+
+    before = _read_scene_groups(renderer, scene.count)["sh_coeffs"][:, 1:, :].copy()
+    frame_index = 0
+    trainer._refresh_train_target(None, frame_index)
+    camera = trainer.make_frame_camera(frame_index, renderer.width, renderer.height)
+    target = trainer.get_frame_target_texture(frame_index, native_resolution=False)
+    background = trainer._training_background()
+    renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
+    encoder = device.create_command_encoder()
+    trainer._dispatch_training_forward(encoder, camera, background, target, step=0, frame_index=frame_index)
+    trainer._dispatch_training_backward(encoder, camera, background, target, step=0, frame_index=frame_index)
+    device.submit_command_buffer(encoder.finish())
+    device.wait()
+    grad_groups = _read_grad_groups(renderer, scene.count)["grad_sh_coeffs"]
+    grad_sh0 = grad_groups[:, 0, :]
+    grad_sh = grad_groups[:, 1:, :]
+    trainer.step()
+    after = _read_scene_groups(renderer, scene.count)["sh_coeffs"][:, 1:, :]
+
+    assert trainer.renderer.use_sh is True
+    assert float(np.max(np.abs(before))) == 0.0
+    assert float(np.max(np.abs(grad_sh0))) > 0.0
+    assert float(np.max(np.abs(grad_sh))) > 0.0
+    assert float(np.max(np.abs(after))) > 0.0
+
+
 def test_cpu_pointcloud_initializer_rebuilds_scene_with_nn_scales(device, tmp_path: Path):
     frame = _make_frame(tmp_path)
     renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
