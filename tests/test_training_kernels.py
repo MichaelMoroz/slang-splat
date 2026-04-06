@@ -842,7 +842,6 @@ def test_depth_ratio_noise_and_sh_schedules_follow_requested_defaults() -> None:
     hparams = TrainingHyperParams(
         depth_ratio_weight=1.0,
         lr_pos_mul=1.0,
-        lr_sh_mul=1.0,
         position_random_step_noise_lr=5e5,
         use_sh=True,
         lr_schedule_steps=30_000,
@@ -852,10 +851,10 @@ def test_depth_ratio_noise_and_sh_schedules_follow_requested_defaults() -> None:
     np.testing.assert_allclose(resolve_position_lr_mul(hparams, 3000), 0.75, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_position_lr_mul(hparams, 14000), 0.4, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_position_lr_mul(hparams, 30_000), 0.3, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_sh_lr_mul(hparams, 0), 1.0, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_sh_lr_mul(hparams, 3000), 1.0, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_sh_lr_mul(hparams, 14000), 1.0, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_sh_lr_mul(hparams, 30_000), 1.0, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_sh_lr_mul(hparams, 0), 0.05, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_sh_lr_mul(hparams, 3000), 0.05, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_sh_lr_mul(hparams, 14000), 0.05, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_sh_lr_mul(hparams, 30_000), 0.05, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 0), 1.0, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 3000), 0.05, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 14000), 0.01, rtol=0.0, atol=1e-12)

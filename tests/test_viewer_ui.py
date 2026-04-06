@@ -119,10 +119,10 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["lr_pos_stage1_mul"] == 0.75
     assert viewer_ui._values["lr_pos_stage2_mul"] == 0.4
     assert viewer_ui._values["lr_pos_stage3_mul"] == 0.3
-    assert viewer_ui._values["lr_sh_mul"] == 1.0
-    assert viewer_ui._values["lr_sh_stage1_mul"] == 1.0
-    assert viewer_ui._values["lr_sh_stage2_mul"] == 1.0
-    assert viewer_ui._values["lr_sh_stage3_mul"] == 1.0
+    assert viewer_ui._values["lr_sh_mul"] == 0.05
+    assert viewer_ui._values["lr_sh_stage1_mul"] == 0.05
+    assert viewer_ui._values["lr_sh_stage2_mul"] == 0.05
+    assert viewer_ui._values["lr_sh_stage3_mul"] == 0.05
     assert viewer_ui._values["lr_schedule_steps"] == 30000
     assert viewer_ui._values["lr_schedule_stage1_step"] == 3000
     assert viewer_ui._values["lr_schedule_stage2_step"] == 14000

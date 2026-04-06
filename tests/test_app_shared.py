@@ -83,10 +83,10 @@ def test_build_training_params_clamps_ranges():
     assert params.training.lr_pos_stage1_mul == 0.75
     assert params.training.lr_pos_stage2_mul == 0.4
     assert params.training.lr_pos_stage3_mul == 0.3
-    assert params.training.lr_sh_mul == 1.0
-    assert params.training.lr_sh_stage1_mul == 1.0
-    assert params.training.lr_sh_stage2_mul == 1.0
-    assert params.training.lr_sh_stage3_mul == 1.0
+    assert params.training.lr_sh_mul == 0.05
+    assert params.training.lr_sh_stage1_mul == 0.05
+    assert params.training.lr_sh_stage2_mul == 0.05
+    assert params.training.lr_sh_stage3_mul == 0.05
     assert params.training.position_random_step_noise_lr == 5e5
     assert np.isclose(params.training.position_random_step_noise_stage1_lr, 466666.6666666667)
     assert np.isclose(params.training.position_random_step_noise_stage2_lr, 416666.6666666667)
@@ -129,10 +129,10 @@ def test_default_training_params_match_fixed_count_defaults():
     assert params.training.lr_pos_stage1_mul == 0.75
     assert params.training.lr_pos_stage2_mul == 0.4
     assert params.training.lr_pos_stage3_mul == 0.3
-    assert params.training.lr_sh_mul == 1.0
-    assert params.training.lr_sh_stage1_mul == 1.0
-    assert params.training.lr_sh_stage2_mul == 1.0
-    assert params.training.lr_sh_stage3_mul == 1.0
+    assert params.training.lr_sh_mul == 0.05
+    assert params.training.lr_sh_stage1_mul == 0.05
+    assert params.training.lr_sh_stage2_mul == 0.05
+    assert params.training.lr_sh_stage3_mul == 0.05
     assert params.training.position_random_step_noise_lr == 5e5
     assert np.isclose(params.training.position_random_step_noise_stage1_lr, 466666.6666666667)
     assert np.isclose(params.training.position_random_step_noise_stage2_lr, 416666.6666666667)

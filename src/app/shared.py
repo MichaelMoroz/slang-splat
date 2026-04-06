@@ -23,6 +23,7 @@ MOVE_SPEED_RADIUS_SCALE = 0.15
 MOVE_SPEED_MIN = 0.25
 GAUSSIAN_SIGMA_SUPPORT = 3.0
 _LR_LIMITS = (0.1, 10.0)
+_SH_LR_LIMITS = (1e-4, 10.0)
 _CLAMP_LIMITS = {
     "grad_component_clip": (1e-5, 1e6),
     "grad_norm_clip": (1e-5, 1e6),
@@ -176,10 +177,10 @@ def build_training_params(
     lr_pos_stage1_mul: float = 0.75,
     lr_pos_stage2_mul: float = 0.4,
     lr_pos_stage3_mul: float = 0.3,
-    lr_sh_mul: float = 1.0,
-    lr_sh_stage1_mul: float = 1.0,
-    lr_sh_stage2_mul: float = 1.0,
-    lr_sh_stage3_mul: float = 1.0,
+    lr_sh_mul: float = 0.05,
+    lr_sh_stage1_mul: float = 0.05,
+    lr_sh_stage2_mul: float = 0.05,
+    lr_sh_stage3_mul: float = 0.05,
     position_random_step_noise_lr: float = 5e5,
     position_random_step_opacity_gate_center: float = 0.005,
     position_random_step_opacity_gate_sharpness: float = 100.0,
@@ -277,10 +278,10 @@ def build_training_params(
         lr_pos_stage1_mul=clamp_float(lr_pos_stage1_mul, *_LR_LIMITS),
         lr_pos_stage2_mul=clamp_float(lr_pos_stage2_mul, *_LR_LIMITS),
         lr_pos_stage3_mul=clamp_float(lr_pos_stage3_mul, *_LR_LIMITS),
-        lr_sh_mul=clamp_float(lr_sh_mul, *_LR_LIMITS),
-        lr_sh_stage1_mul=clamp_float(lr_sh_stage1_mul, *_LR_LIMITS),
-        lr_sh_stage2_mul=clamp_float(lr_sh_stage2_mul, *_LR_LIMITS),
-        lr_sh_stage3_mul=clamp_float(lr_sh_stage3_mul, *_LR_LIMITS),
+        lr_sh_mul=clamp_float(lr_sh_mul, *_SH_LR_LIMITS),
+        lr_sh_stage1_mul=clamp_float(lr_sh_stage1_mul, *_SH_LR_LIMITS),
+        lr_sh_stage2_mul=clamp_float(lr_sh_stage2_mul, *_SH_LR_LIMITS),
+        lr_sh_stage3_mul=clamp_float(lr_sh_stage3_mul, *_SH_LR_LIMITS),
         position_random_step_noise_lr=clamp_float(position_random_step_noise_lr, 0.0, 1e12),
         position_random_step_opacity_gate_center=clamp_float(position_random_step_opacity_gate_center, 0.0, 1.0),
         position_random_step_opacity_gate_sharpness=clamp_float(position_random_step_opacity_gate_sharpness, 0.0, 1e6),

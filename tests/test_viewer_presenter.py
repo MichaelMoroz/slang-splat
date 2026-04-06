@@ -57,10 +57,10 @@ class _DummyTrainer:
             lr_pos_stage1_mul=0.75,
             lr_pos_stage2_mul=0.4,
             lr_pos_stage3_mul=0.3,
-            lr_sh_mul=1.0,
-            lr_sh_stage1_mul=1.0,
-            lr_sh_stage2_mul=1.0,
-            lr_sh_stage3_mul=1.0,
+            lr_sh_mul=0.05,
+            lr_sh_stage1_mul=0.05,
+            lr_sh_stage2_mul=0.05,
+            lr_sh_stage3_mul=0.05,
             refinement_interval=200,
             refinement_growth_ratio=0.075,
             refinement_growth_start_step=500,
@@ -146,10 +146,10 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         "lr_pos_stage1_mul": _control(0.75),
         "lr_pos_stage2_mul": _control(0.4),
         "lr_pos_stage3_mul": _control(0.3),
-        "lr_sh_mul": _control(1.0),
-        "lr_sh_stage1_mul": _control(1.0),
-        "lr_sh_stage2_mul": _control(1.0),
-        "lr_sh_stage3_mul": _control(1.0),
+        "lr_sh_mul": _control(0.05),
+        "lr_sh_stage1_mul": _control(0.05),
+        "lr_sh_stage2_mul": _control(0.05),
+        "lr_sh_stage3_mul": _control(0.05),
         "depth_ratio_weight": _control(1.0),
         "position_random_step_noise_lr": _control(5e5),
         "use_sh": _control(False),
@@ -382,7 +382,7 @@ def test_update_ui_text_reports_training_schedule_and_refinement() -> None:
     presenter.update_ui_text(viewer, 1.0 / 60.0)
 
     assert viewer.t("training_schedule").text == "LR Schedule: 5.00e-03@0 -> 2.00e-03@3,000 -> 1.00e-03@14,000 -> 7.50e-05@30,000 | current=5.00e-03"
-    assert viewer.t("training_schedule_values").text == "Current Values: step=0 | Stage 0 | lr=5.00e-03 | pos=1.00x | shlr=1.00x | depth=1.00e+00 | noise=5.00e+05 | sh=off"
+    assert viewer.t("training_schedule_values").text == "Current Values: step=0 | Stage 0 | lr=5.00e-03 | pos=1.00x | shlr=0.05x | depth=1.00e+00 | noise=5.00e+05 | sh=off"
     assert viewer.t("training_refinement").text == "Refinement: every 200 | growth=0.00% now | target=7.50% after 500 | alpha<1.00e-02 or min contrib<1e-05% | decay=99.50%/pass | alpha mul=1.00x | max=1,000,000"
 
 
@@ -393,7 +393,7 @@ def test_update_ui_text_previews_current_schedule_values_without_trainer() -> No
 
     presenter.update_ui_text(viewer, 1.0 / 60.0)
 
-    assert viewer.t("training_schedule_values").text == "Current Values: step=0 | Stage 0 | lr=5.00e-03 | pos=1.00x | shlr=1.00x | depth=1.00e+00 | noise=5.00e+05 | sh=off"
+    assert viewer.t("training_schedule_values").text == "Current Values: step=0 | Stage 0 | lr=5.00e-03 | pos=1.00x | shlr=0.05x | depth=1.00e+00 | noise=5.00e+05 | sh=off"
 
 
 def test_render_frame_recovers_missing_main_renderer_by_recreating_it(monkeypatch):
