@@ -14,8 +14,6 @@ from ..app.shared import apply_training_profile, estimate_point_bounds, estimate
 from ..common import SHADER_ROOT, clamp_index
 from ..renderer import GaussianRenderSettings, GaussianRenderer
 from ..scene import (
-    FrameSamplingGraph,
-    build_frame_sampling_graph,
     GaussianScene,
     build_training_frames_from_root,
     initialize_scene_from_colmap_diffused_points,
@@ -1036,7 +1034,6 @@ def initialize_training_scene(viewer: object, frame_targets_native: list[spy.Tex
         renderer=renderer,
         scene=scene,
         frames=viewer.s.training_frames,
-        frame_sampling_graph=build_frame_sampling_graph(viewer.s.colmap_recon, viewer.s.training_frames) if viewer.s.colmap_recon is not None else FrameSamplingGraph.empty(len(viewer.s.training_frames)),
         adam_hparams=params.adam,
         stability_hparams=params.stability,
         training_hparams=params.training,

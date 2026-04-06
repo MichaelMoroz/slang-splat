@@ -10,7 +10,7 @@ import slangpy as spy
 from ..common import SHADER_ROOT, buffer_to_numpy, clamp_index, debug_region, dispatch, thread_count_1d, thread_count_2d
 from ..metrics import Metrics, psnr_from_mse
 from ..renderer import Camera, GaussianRenderer
-from ..scene import ColmapFrame, FrameSamplingGraph, GaussianInitHyperParams, GaussianScene, SUPPORTED_SH_COEFF_COUNT, pad_sh_coeffs, rgb_to_sh0, sh_coeffs_to_display_colors
+from ..scene import ColmapFrame, GaussianInitHyperParams, GaussianScene, SUPPORTED_SH_COEFF_COUNT, pad_sh_coeffs, rgb_to_sh0, sh_coeffs_to_display_colors
 from ..scene._internal.colmap_ops import TRAINING_FRAME_LOAD_THREADS, load_training_frame_rgba8
 from .adam import AdamOptimizer, AdamRuntimeHyperParams
 from .optimizer import GaussianOptimizer
@@ -139,17 +139,6 @@ class _FrameMetricBookkeeper:
         values = getattr(self, name)
         valid = self.visited & np.isfinite(values)
         return float(np.mean(values[valid], dtype=np.float64)) if np.any(valid) else float("nan")
-
-
-@dataclass(slots=True)
-class _FrameSamplerState:
-    current_view_index: int
-    visited_mask: np.ndarray
-    visited_count: int = 0
-
-    @classmethod
-    def create(cls, frame_count: int) -> "_FrameSamplerState":
-        return cls(current_view_index=-1, visited_mask=np.zeros((max(int(frame_count), 0),), dtype=bool))
 
 
 @dataclass(slots=True)
@@ -466,7 +455,6 @@ class GaussianTrainer:
         init_point_count: int = 0,
         scale_reg_reference: float | None = None,
         frame_targets_native: list[spy.Texture] | None = None,
-        frame_sampling_graph: FrameSamplingGraph | None = None,
     ) -> None:
         if not frames:
             raise ValueError("Training requires at least one COLMAP frame.")
@@ -512,10 +500,8 @@ class GaussianTrainer:
         self._observed_contribution_pixel_count = 0
         self._frame_rng = np.random.default_rng(self._seed)
         self._background_rng = np.random.default_rng(self._seed + 0x9E3779B9)
-        self._frame_sampling_graph = FrameSamplingGraph.empty(len(self.frames)) if frame_sampling_graph is None else frame_sampling_graph
-        if self._frame_sampling_graph.frame_count != len(self.frames):
-            raise ValueError("frame_sampling_graph must match the number of training frames.")
-        self._frame_sampler = _FrameSamplerState.create(len(self.frames))
+        self._frame_order = np.zeros((len(self.frames),), dtype=np.int32)
+        self._frame_cursor = len(self.frames)
         if upload_initial_scene and scene is not None:
             self.renderer.set_scene(scene)
         else:
@@ -531,7 +517,7 @@ class GaussianTrainer:
             self._frame_targets_native = list(frame_targets_native)
         self._bind_or_upload_init_pointcloud(init_point_positions, init_point_colors, init_point_positions_buffer, init_point_colors_buffer, init_point_count)
         self._clear_clone_counts()
-        self._reset_frame_sampler()
+        self._reset_frame_order()
 
     def _estimate_scale_reg_reference(self, scene: GaussianScene | None) -> float:
         if scene is None or scene.count <= 0:
@@ -707,62 +693,16 @@ class GaussianTrainer:
     def _zero_optimizer_moments(self) -> None:
         self.adam_optimizer.zero_moments(self._scene_count * self.renderer.TRAINABLE_PARAM_COUNT)
 
-    def _reset_frame_sampler(self, keep_current: bool = False) -> None:
-        self._frame_sampler.visited_mask.fill(False)
-        self._frame_sampler.visited_count = 0
-        if not keep_current:
-            self._frame_sampler.current_view_index = -1
-
-    def _sample_weighted_frame_index(self, candidates: np.ndarray, weights: np.ndarray | None = None) -> int:
-        indices = np.asarray(candidates, dtype=np.int32).reshape(-1)
-        if indices.size <= 0:
-            raise RuntimeError("Frame sampler requires at least one candidate.")
-        if weights is None:
-            return int(indices[int(self._frame_rng.integers(0, indices.size))])
-        probs = np.asarray(weights, dtype=np.float64).reshape(-1)
-        total = float(np.sum(probs, dtype=np.float64))
-        if probs.shape != indices.shape or not np.isfinite(total) or total <= 0.0:
-            return int(indices[int(self._frame_rng.integers(0, indices.size))])
-        return int(self._frame_rng.choice(indices, p=probs / total))
+    def _reset_frame_order(self) -> None:
+        self._frame_order = self._frame_rng.permutation(len(self.frames)).astype(np.int32)
+        self._frame_cursor = 0
 
     def _next_frame_index(self) -> int:
-        frame_count = len(self.frames)
-        if frame_count <= 1:
-            frame_index = 0
-            if not self._frame_sampler.visited_mask[frame_index]:
-                self._frame_sampler.visited_mask[frame_index] = True
-                self._frame_sampler.visited_count = 1
-            self._frame_sampler.current_view_index = frame_index
-            return frame_index
-
-        sampler = self._frame_sampler
-        if sampler.current_view_index < 0:
-            frame_index = self._sample_weighted_frame_index(np.arange(frame_count, dtype=np.int32))
-        else:
-            if sampler.visited_count >= frame_count:
-                self._reset_frame_sampler(keep_current=True)
-            current_index = int(sampler.current_view_index)
-            neighbor_indices = self._frame_sampling_graph.neighbor_indices[current_index]
-            if neighbor_indices.size > 0:
-                neighbor_mask = ~sampler.visited_mask[neighbor_indices]
-                if np.any(neighbor_mask):
-                    frame_index = self._sample_weighted_frame_index(
-                        neighbor_indices[neighbor_mask],
-                        self._frame_sampling_graph.neighbor_weights[current_index][neighbor_mask],
-                    )
-                else:
-                    remaining = np.flatnonzero(~sampler.visited_mask)
-                    remaining = remaining[remaining != current_index]
-                    frame_index = current_index if remaining.size <= 0 else self._sample_weighted_frame_index(remaining)
-            else:
-                remaining = np.flatnonzero(~sampler.visited_mask)
-                remaining = remaining[remaining != current_index]
-                frame_index = current_index if remaining.size <= 0 else self._sample_weighted_frame_index(remaining)
-        if not sampler.visited_mask[frame_index]:
-            sampler.visited_mask[frame_index] = True
-            sampler.visited_count += 1
-        sampler.current_view_index = int(frame_index)
-        return int(frame_index)
+        if self._frame_cursor >= len(self.frames):
+            self._reset_frame_order()
+        frame_index = int(self._frame_order[self._frame_cursor])
+        self._frame_cursor += 1
+        return frame_index
 
     def _create_init_point_buffer(self, points: np.ndarray) -> spy.Buffer:
         packed = np.ascontiguousarray(points, dtype=np.float32)
@@ -1030,7 +970,7 @@ class GaussianTrainer:
         self._frame_rng = np.random.default_rng(int(seed))
         self._background_rng = np.random.default_rng(int(seed) + 0x9E3779B9)
         self._clear_clone_counts()
-        self._reset_frame_sampler()
+        self._reset_frame_order()
         self._invalidate_downscaled_target()
 
     def rebind_renderer(self, renderer: GaussianRenderer) -> None:
