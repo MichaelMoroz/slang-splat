@@ -47,6 +47,7 @@ _VIEWER_BACKGROUND_MODE_LABELS = ("Train Background", "Custom")
 _TRAIN_DOWNSCALE_MODE_LABELS = ("Auto",) + tuple(f"{i}x" for i in range(1, 17))
 _TRAIN_SUBSAMPLE_LABELS = ("Off", "1/2", "1/3", "1/4")
 _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT = 2e-4
+_DEBUG_ADAM_MOMENTUM_THRESHOLD_DEFAULT = 1e-2
 _DEBUG_CONTRIBUTION_AMOUNT_FLOOR = 1e-6
 _DEBUG_COLORBAR_HEIGHT = 28.0
 _DEBUG_COLORBAR_MIN_WIDTH = 320.0
@@ -234,7 +235,7 @@ def _renderer_debug_control_keys(mode: str) -> tuple[str, ...]:
     if mode == "clone_count": return ("debug_mode", "debug_clone_count_min", "debug_clone_count_max")
     if mode in ("splat_density", "splat_spatial_density", "splat_screen_density"): return ("debug_mode", "debug_density_min", "debug_density_max")
     if mode == "contribution_amount": return ("debug_mode", "debug_contribution_min", "debug_contribution_max")
-    if mode == "adam_momentum": return ("debug_mode", "debug_adam_momentum_min", "debug_adam_momentum_max")
+    if mode == "adam_momentum": return ("debug_mode", "debug_adam_momentum_threshold")
     if mode == "depth_mean": return ("debug_mode", "debug_depth_mean_min", "debug_depth_mean_max")
     if mode == "depth_std": return ("debug_mode", "debug_depth_std_min", "debug_depth_std_max")
     if mode == "depth_local_mismatch": return ("debug_mode", "debug_depth_local_mismatch_min", "debug_depth_local_mismatch_max", "debug_depth_local_mismatch_smooth_radius", "debug_depth_local_mismatch_reject_radius")
@@ -245,13 +246,36 @@ def _processed_count_tick_value(t: float, max_splat_steps: int) -> float:
     return math.pow(2.0, _saturate(t) * math.log2(max(max_splat_steps, 0) + 1.0)) - 1.0
 
 
-def _grad_norm_tick_value(t: float, threshold: float) -> float:
+def _threshold_band_range(threshold: float) -> tuple[float, float]:
     constants = _shader_debug_constants()
-    grad_norm_floor = constants["DEBUG_GRAD_NORM_FLOOR"]
-    grad_threshold = max(float(threshold), grad_norm_floor)
-    lo = math.log10(max(grad_threshold * constants["DEBUG_GRAD_THRESHOLD_MIN_SCALE"], grad_norm_floor))
-    hi = math.log10(max(grad_threshold * constants["DEBUG_GRAD_THRESHOLD_MAX_SCALE"], grad_norm_floor))
+    floor = constants["DEBUG_GRAD_NORM_FLOOR"]
+    value = max(float(threshold), floor)
+    return (
+        max(value * constants["DEBUG_GRAD_THRESHOLD_MIN_SCALE"], floor),
+        max(value * constants["DEBUG_GRAD_THRESHOLD_MAX_SCALE"], floor),
+    )
+
+
+def _threshold_band_tick_value(t: float, threshold: float) -> float:
+    lo_value, hi_value = _threshold_band_range(threshold)
+    lo = math.log10(lo_value)
+    hi = math.log10(hi_value)
     return math.pow(10.0, lo + _saturate(t) * (hi - lo))
+
+
+def _threshold_from_band_range(value_min: float, value_max: float, default: float) -> float:
+    constants = _shader_debug_constants()
+    floor = constants["DEBUG_GRAD_NORM_FLOOR"]
+    lo = max(float(min(value_min, value_max)), 0.0)
+    hi = max(float(max(value_min, value_max)), 0.0)
+    candidates: list[float] = []
+    if lo > 0.0: candidates.append(lo / constants["DEBUG_GRAD_THRESHOLD_MIN_SCALE"])
+    if hi > 0.0: candidates.append(hi / constants["DEBUG_GRAD_THRESHOLD_MAX_SCALE"])
+    if len(candidates) == 0:
+        return max(float(default), floor)
+    if len(candidates) == 1:
+        return max(candidates[0], floor)
+    return max(math.sqrt(candidates[0] * candidates[1]), floor)
 
 
 def _contribution_amount_tick_value(t: float, value_min: float, value_max: float) -> float:
@@ -527,8 +551,7 @@ DEBUG_RENDER_SPECS = (
     ControlSpec("debug_density_max", "input_float", "Density Max", {"value": 20.0, "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
     ControlSpec("debug_contribution_min", "input_float", "Contribution Min", {"value": 0.001, "step": 1e-4, "step_fast": 1e-3, "format": "%.6g%%"}),
     ControlSpec("debug_contribution_max", "input_float", "Contribution Max", {"value": 1.0, "step": 0.1, "step_fast": 1.0, "format": "%.6g%%"}),
-    ControlSpec("debug_adam_momentum_min", "input_float", "Adam Momentum Min", {"value": 0.0, "step": 1e-4, "step_fast": 1e-3, "format": "%.6g"}),
-    ControlSpec("debug_adam_momentum_max", "input_float", "Adam Momentum Max", {"value": 0.1, "step": 1e-4, "step_fast": 1e-3, "format": "%.6g"}),
+    ControlSpec("debug_adam_momentum_threshold", "input_float", "Adam Momentum Threshold", {"value": _DEBUG_ADAM_MOMENTUM_THRESHOLD_DEFAULT, "step": 1e-5, "step_fast": 1e-4, "format": "%.6g"}),
     ControlSpec("debug_depth_mean_min", "input_float", "Depth Mean Min", {"value": 0.0, "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
     ControlSpec("debug_depth_mean_max", "input_float", "Depth Mean Max", {"value": 10.0, "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
     ControlSpec("debug_depth_std_min", "input_float", "Depth Std Min", {"value": 0.0, "step": 0.01, "step_fast": 0.1, "format": "%.5g"}),
@@ -1148,7 +1171,7 @@ class ToolkitWindow:
             return f"{int(round(value)):,}"
         if mode == "grad_norm":
             threshold = float(ui._values.get("debug_grad_norm_threshold", _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT))
-            return f"{_grad_norm_tick_value(t, threshold):.1e}"
+            return f"{_threshold_band_tick_value(t, threshold):.1e}"
         if mode == "clone_count":
             return f"{_debug_range_tick_value(t, float(ui._values.get('debug_clone_count_min', 0.0)), float(ui._values.get('debug_clone_count_max', 16.0))):.3g}"
         if mode in ("splat_density", "splat_spatial_density", "splat_screen_density"):
@@ -1156,7 +1179,8 @@ class ToolkitWindow:
         if mode == "contribution_amount":
             return f"{_contribution_amount_tick_value(t, float(ui._values.get('debug_contribution_min', 0.001)), float(ui._values.get('debug_contribution_max', 1.0))):.1e}"
         if mode == "adam_momentum":
-            return f"{_debug_range_tick_value(t, float(ui._values.get('debug_adam_momentum_min', 0.0)), float(ui._values.get('debug_adam_momentum_max', 0.1))):.3g}"
+            threshold = float(ui._values.get("debug_adam_momentum_threshold", _DEBUG_ADAM_MOMENTUM_THRESHOLD_DEFAULT))
+            return f"{_threshold_band_tick_value(t, threshold):.1e}"
         if mode == "depth_mean":
             return f"{_debug_range_tick_value(t, float(ui._values.get('debug_depth_mean_min', 0.0)), float(ui._values.get('debug_depth_mean_max', 10.0))):.3g}"
         if mode == "depth_std":
@@ -1873,8 +1897,7 @@ class ToolkitWindow:
         "debug_density_max": "Upper bound for density debug heatmaps",
         "debug_contribution_min": "Lower bound for the log-scaled contribution heatmap in percent of observed dataset pixels",
         "debug_contribution_max": "Upper bound for the log-scaled contribution heatmap in percent of observed dataset pixels",
-        "debug_adam_momentum_min": "Lower bound for the per-splat Adam first-moment length heatmap",
-        "debug_adam_momentum_max": "Upper bound for the per-splat Adam first-moment length heatmap",
+        "debug_adam_momentum_threshold": "Reference threshold for the per-splat Adam first-moment length heatmap; the displayed range is derived around it on a log scale",
         "debug_depth_mean_min": "Lower bound for depth mean debug heatmap",
         "debug_depth_mean_max": "Upper bound for depth mean debug heatmap",
         "debug_depth_std_min": "Lower bound for depth standard deviation heatmap",
@@ -2081,7 +2104,7 @@ def build_ui(renderer) -> ViewerUI:
     clone_count_range = tuple(getattr(renderer, "debug_clone_count_range", (0.0, 16.0)))
     density_range = tuple(getattr(renderer, "debug_density_range", (0.0, 20.0)))
     contribution_range = tuple(getattr(renderer, "debug_contribution_range", (0.001, 1.0)))
-    adam_momentum_range = tuple(getattr(renderer, "debug_adam_momentum_range", (0.0, 0.1)))
+    adam_momentum_range = tuple(getattr(renderer, "debug_adam_momentum_range", _threshold_band_range(_DEBUG_ADAM_MOMENTUM_THRESHOLD_DEFAULT)))
     depth_mean_range = tuple(getattr(renderer, "debug_depth_mean_range", (0.0, 10.0)))
     depth_std_range = tuple(getattr(renderer, "debug_depth_std_range", (0.0, 0.5)))
     depth_local_mismatch_range = tuple(getattr(renderer, "debug_depth_local_mismatch_range", (0.0, 0.5)))
@@ -2091,8 +2114,7 @@ def build_ui(renderer) -> ViewerUI:
     values["debug_density_max"] = float(density_range[1])
     values["debug_contribution_min"] = float(contribution_range[0])
     values["debug_contribution_max"] = float(contribution_range[1])
-    values["debug_adam_momentum_min"] = float(adam_momentum_range[0])
-    values["debug_adam_momentum_max"] = float(adam_momentum_range[1])
+    values["debug_adam_momentum_threshold"] = _threshold_from_band_range(float(adam_momentum_range[0]), float(adam_momentum_range[1]), _DEBUG_ADAM_MOMENTUM_THRESHOLD_DEFAULT)
     values["debug_depth_mean_min"] = float(depth_mean_range[0])
     values["debug_depth_mean_max"] = float(depth_mean_range[1])
     values["debug_depth_std_min"] = float(depth_std_range[0])

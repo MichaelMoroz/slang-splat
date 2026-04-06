@@ -238,6 +238,49 @@ def test_viewer_background_can_follow_train_background_color() -> None:
     assert resolved == (0.25, 0.5, 0.75)
 
 
+def test_renderer_params_maps_adam_momentum_threshold_to_log_range() -> None:
+    controls = {
+        "cached_raster_grad_atomic_mode": SimpleNamespace(value=1),
+        "debug_mode": SimpleNamespace(value=app._DEBUG_MODE_VALUES.index("adam_momentum")),
+        "radius_scale": SimpleNamespace(value=1.0),
+        "alpha_cutoff": SimpleNamespace(value=1.0 / 255.0),
+        "max_anisotropy": SimpleNamespace(value=32.0),
+        "trans_threshold": SimpleNamespace(value=0.005),
+        "cached_raster_grad_fixed_ro_local_range": SimpleNamespace(value=0.01),
+        "cached_raster_grad_fixed_scale_range": SimpleNamespace(value=0.01),
+        "cached_raster_grad_fixed_quat_range": SimpleNamespace(value=0.01),
+        "cached_raster_grad_fixed_color_range": SimpleNamespace(value=0.2),
+        "cached_raster_grad_fixed_opacity_range": SimpleNamespace(value=0.2),
+        "debug_grad_norm_threshold": SimpleNamespace(value=2e-4),
+        "debug_ellipse_thickness_px": SimpleNamespace(value=2.0),
+        "debug_clone_count_min": SimpleNamespace(value=0.0),
+        "debug_clone_count_max": SimpleNamespace(value=16.0),
+        "debug_density_min": SimpleNamespace(value=0.0),
+        "debug_density_max": SimpleNamespace(value=20.0),
+        "debug_contribution_min": SimpleNamespace(value=0.001),
+        "debug_contribution_max": SimpleNamespace(value=1.0),
+        "debug_adam_momentum_threshold": SimpleNamespace(value=1e-2),
+        "debug_depth_mean_min": SimpleNamespace(value=0.0),
+        "debug_depth_mean_max": SimpleNamespace(value=10.0),
+        "debug_depth_std_min": SimpleNamespace(value=0.0),
+        "debug_depth_std_max": SimpleNamespace(value=0.5),
+        "debug_depth_local_mismatch_min": SimpleNamespace(value=0.0),
+        "debug_depth_local_mismatch_max": SimpleNamespace(value=0.5),
+        "debug_depth_local_mismatch_smooth_radius": SimpleNamespace(value=2.0),
+        "debug_depth_local_mismatch_reject_radius": SimpleNamespace(value=4.0),
+    }
+    viewer = SimpleNamespace(
+        ui=SimpleNamespace(controls=controls),
+        s=SimpleNamespace(list_capacity_multiplier=64, max_prepass_memory_mb=4096),
+        c=lambda key: controls[key],
+    )
+
+    params = app.SplatViewer.renderer_params(viewer, allow_debug_overlays=True)
+
+    assert params.debug_mode == "adam_momentum"
+    assert params.debug_adam_momentum_range == (1e-5, 1e-1)
+
+
 def test_export_ply_callback_saves_active_scene(monkeypatch, tmp_path: Path) -> None:
     scene = GaussianScene(
         positions=np.zeros((1, 3), dtype=np.float32),

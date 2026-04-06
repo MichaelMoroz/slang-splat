@@ -19,7 +19,7 @@ from .state import (
     DEFAULT_MAX_PREPASS_MEMORY_MB,
     LOSS_DEBUG_OPTIONS, ViewerState,
 )
-from .ui import build_ui, create_toolkit_window, default_control_values
+from .ui import _DEBUG_ADAM_MOMENTUM_THRESHOLD_DEFAULT, _threshold_band_range, build_ui, create_toolkit_window, default_control_values
 
 _VIEW_VEC_EPS = 1e-6
 _SCROLL_SPEED_BASE = 1.1
@@ -183,7 +183,7 @@ class SplatViewer(spy.AppWindow):
             debug_clone_count_range=(float(self.c("debug_clone_count_min").value), float(self.c("debug_clone_count_max").value)),
             debug_density_range=(float(self.c("debug_density_min").value), float(self.c("debug_density_max").value)),
             debug_contribution_range=(float(self.c("debug_contribution_min").value), float(self.c("debug_contribution_max").value)),
-            debug_adam_momentum_range=(float(self.c("debug_adam_momentum_min").value), float(self.c("debug_adam_momentum_max").value)),
+            debug_adam_momentum_range=_threshold_band_range(float(self.c("debug_adam_momentum_threshold").value if "debug_adam_momentum_threshold" in self.ui.controls else _DEBUG_ADAM_MOMENTUM_THRESHOLD_DEFAULT)),
             debug_depth_mean_range=(float(self.c("debug_depth_mean_min").value), float(self.c("debug_depth_mean_max").value)),
             debug_depth_std_range=(float(self.c("debug_depth_std_min").value), float(self.c("debug_depth_std_max").value)),
             debug_depth_local_mismatch_range=(float(self.c("debug_depth_local_mismatch_min").value), float(self.c("debug_depth_local_mismatch_max").value)),
