@@ -552,10 +552,49 @@ def test_debug_ellipse_overlay_antialiases_across_boundary(device):
         + 2.0 * conic[1] * delta[..., 0] * delta[..., 1]
         + conic[2] * delta[..., 1] * delta[..., 1]
     )
-    outside_ring = (quad >= 1.0) & (quad <= 1.25)
+    boundary_ring = (quad >= 0.85) & (quad <= 1.25)
 
-    assert np.any(outside_ring)
-    assert float(np.max(out.image[..., 3][outside_ring])) > 1e-4
+    assert np.any(boundary_ring)
+    assert float(np.max(out.image[..., 3][boundary_ring])) > 1e-4
+
+
+def test_debug_ellipse_overlay_keeps_half_opacity_fill(device):
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    scene = GaussianScene(
+        positions=np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
+        scales=np.full((1, 3), _log_sigma(0.08), dtype=np.float32),
+        rotations=np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+        opacities=np.array([0.85], dtype=np.float32),
+        colors=np.array([[1.0, 0.8, 0.4]], dtype=np.float32),
+        sh_coeffs=np.zeros((1, 1, 3), dtype=np.float32),
+    )
+    normal_renderer = GaussianRenderer(
+        device,
+        width=65,
+        height=65,
+        radius_scale=1.6,
+        list_capacity_multiplier=16,
+        debug_show_ellipses=False,
+    )
+    outline_renderer = GaussianRenderer(
+        device,
+        width=65,
+        height=65,
+        radius_scale=1.6,
+        list_capacity_multiplier=16,
+        debug_show_ellipses=True,
+    )
+
+    normal_out = normal_renderer.render(scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32))
+    outline_out = outline_renderer.render(scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32))
+    debug = outline_renderer.debug_pipeline_data(scene, camera)
+    center = debug["screen_center_radius_depth"][0, :2]
+    center_px = tuple(int(v) for v in np.floor(center).astype(np.int32))
+
+    assert 0 <= center_px[0] < outline_renderer.width
+    assert 0 <= center_px[1] < outline_renderer.height
+    assert float(outline_out.image[center_px[1], center_px[0], 3]) > 1e-4
+    assert float(outline_out.image[center_px[1], center_px[0], 3]) < float(normal_out.image[center_px[1], center_px[0], 3])
 
 
 def test_debug_processed_count_render_smoke(device):

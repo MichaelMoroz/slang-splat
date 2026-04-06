@@ -652,12 +652,6 @@ struct DebugRasterReplayVariant : IRasterReplayVariant
     static bool eval_hit(RasterPixelInfo info, uint splatId, RasterGaussian gaussian, out float alpha, out float rayDepth)
     {
         rayDepth = 0.0;
-        if (g_Raster.debugMode == DEBUG_MODE_ELLIPSE_OUTLINES)
-        {
-            alpha = raster_eval_outline_alpha(splatId, gaussian.colorAlpha.w, info.samplePoint);
-            return alpha > 0.0;
-        }
-
         float2 eval = raster_eval_alpha_depth_gaussian(gaussian, info.rayDir);
         alpha = eval.x;
         rayDepth = eval.y;
@@ -685,7 +679,15 @@ struct DebugRasterReplayVariant : IRasterReplayVariant
             replayState.screenDensitySum += contributionWeight / projected_ellipse_area(g_ScreenEllipseConic[splatId].xyz);
         }
 
-        replayState.pixelState = replayState.pixelState.blend(raster_forward_color(gaussian, splatId, debugMode), alpha);
+        float3 color = raster_forward_color(gaussian, splatId, debugMode);
+        if (debugMode == DEBUG_MODE_ELLIPSE_OUTLINES)
+        {
+            replayState.pixelState = replayState.pixelState.blend(color, 0.5 * alpha);
+            float outlineAlpha = raster_eval_outline_alpha(splatId, gaussian.colorAlpha.w, info.samplePoint);
+            if (outlineAlpha > 0.0) replayState.pixelState = replayState.pixelState.blend(color, outlineAlpha);
+            return;
+        }
+        replayState.pixelState = replayState.pixelState.blend(color, alpha);
     }
 }
 
