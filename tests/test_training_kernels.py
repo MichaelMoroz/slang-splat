@@ -1386,6 +1386,34 @@ def test_refinement_rewrite_culls_low_contribution_splats(device, tmp_path: Path
     np.testing.assert_allclose(groups["positions"][0, :3], scene.positions[0], rtol=0.0, atol=1e-6)
 
 
+def test_refinement_opacity_mul_respects_half_opacity_floor(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=1, seed=191)
+    scene.opacities[:] = np.array([0.6], dtype=np.float32)
+    frame = _make_frame(tmp_path, image_name="refinement_opacity_floor_target.png", image_id=191)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    observed_pixels = renderer.width * renderer.height
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(
+            refinement_alpha_cull_threshold=1e-6,
+            refinement_min_contribution_percent=contribution_percent_from_fixed_count(50, observed_pixels),
+            refinement_opacity_mul=0.25,
+        ),
+        seed=123,
+    )
+
+    trainer._observed_contribution_pixel_count = observed_pixels
+    trainer.refinement_buffers["clone_counts"].copy_from_numpy(np.array([0], dtype=np.uint32))
+    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
+    trainer._run_refinement()
+
+    groups = _read_scene_groups(renderer, trainer.scene.count)
+    np.testing.assert_allclose(_actual_opacity(groups["color_alpha"][:, 3]), np.array([0.5], dtype=np.float32), rtol=0.0, atol=1e-6)
+
+
 def test_refinement_rewrite_migrates_adam_moments(device, tmp_path: Path) -> None:
     scene = _make_scene(count=2, seed=97)
     scene.opacities[:] = np.array([0.6, 1e-5], dtype=np.float32)

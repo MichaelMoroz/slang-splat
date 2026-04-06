@@ -482,8 +482,9 @@ SplatState split_family_member(SplatState source, uint splatId, uint slot, uint 
 
 void apply_refinement_opacity_mul(inout SplatState state)
 {
-    float alpha = opacity_from_raw(state.rawOpacity) * saturate(g_RefinementOpacityMul);
-    state.rawOpacity = raw_opacity_from_alpha(alpha);
+    float alpha = opacity_from_raw(state.rawOpacity);
+    float scaledAlpha = alpha * saturate(g_RefinementOpacityMul);
+    state.rawOpacity = raw_opacity_from_alpha(max(scaledAlpha, min(0.5, alpha)));
 }
 
 [shader("compute")]
