@@ -151,6 +151,7 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["max_anisotropy"] == 32.0
     assert viewer_ui._values["max_gaussians"] == 1000000
     assert viewer_ui._values["training_steps_per_frame"] == 3
+    assert viewer_ui._values["train_subsample_factor"] == 0
     assert viewer_ui._values["colmap_init_mode"] == 0
     assert viewer_ui._values["colmap_image_downscale_mode"] == 1
     assert viewer_ui._values["colmap_image_max_size"] == 2048

@@ -45,6 +45,7 @@ _COLMAP_IMAGE_DOWNSCALE_LABELS = ("Original", "Max Size", "Scale Factor")
 _TRAIN_BACKGROUND_MODE_LABELS = ("Custom", "Random")
 _VIEWER_BACKGROUND_MODE_LABELS = ("Train Background", "Custom")
 _TRAIN_DOWNSCALE_MODE_LABELS = ("Auto",) + tuple(f"{i}x" for i in range(1, 17))
+_TRAIN_SUBSAMPLE_LABELS = ("Off", "1/2", "1/3", "1/4")
 _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT = 2e-4
 _DEBUG_CONTRIBUTION_AMOUNT_FLOOR = 1e-6
 _DEBUG_COLORBAR_HEIGHT = 28.0
@@ -326,6 +327,7 @@ _TRAIN_SETUP_SPECS = (
     ControlSpec("refinement_min_contribution_percent", "input_float", "Refinement Min Contribution", {"value": 1e-05, "step": 1e-6, "step_fast": 1e-5, "format": "%.6g%%"}),
     ControlSpec("refinement_min_contribution_decay", "input_float", "Refinement Min Contribution Decay", {"value": 0.995, "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
     ControlSpec("train_downscale_mode", "combo", "Downscale Mode", {"value": 1, "options": _TRAIN_DOWNSCALE_MODE_LABELS}),
+    ControlSpec("train_subsample_factor", "combo", "Subsampling", {"value": 0, "options": _TRAIN_SUBSAMPLE_LABELS}),
     ControlSpec("train_auto_start_downscale", "slider_int", "Auto Start Downscale", {"value": 16, "min": 1, "max": 16}),
     ControlSpec("train_downscale_base_iters", "input_int", "Downscale Base Iters", {"value": 200, "step": 25, "step_fast": 100}),
     ControlSpec("train_downscale_iter_step", "input_int", "Downscale Iter Step", {"value": 50, "step": 10, "step_fast": 50}),

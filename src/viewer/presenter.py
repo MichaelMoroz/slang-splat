@@ -189,14 +189,15 @@ def _run_training_batch(viewer: object) -> int:
         viewer.s.training_runtime_factor_changed = False
         viewer.s.last_training_batch_steps = 0
         return 0
-    factor_before = int(viewer.s.trainer.effective_train_downscale_factor())
+    factor_before = int(viewer.s.trainer.effective_train_render_factor()) if hasattr(viewer.s.trainer, "effective_train_render_factor") else int(viewer.s.trainer.effective_train_downscale_factor())
     steps = _training_steps_per_frame(viewer)
     if hasattr(viewer.s.trainer, "step_batch"):
         steps = int(viewer.s.trainer.step_batch(steps))
     else:
         for _ in range(steps):
             viewer.s.trainer.step()
-    viewer.s.training_runtime_factor_changed = int(viewer.s.trainer.effective_train_downscale_factor()) != factor_before
+    factor_after = int(viewer.s.trainer.effective_train_render_factor()) if hasattr(viewer.s.trainer, "effective_train_render_factor") else int(viewer.s.trainer.effective_train_downscale_factor())
+    viewer.s.training_runtime_factor_changed = factor_after != factor_before
     viewer.s.last_training_batch_steps = steps
     return steps
 
@@ -206,12 +207,23 @@ def _preview_train_downscale_factor(viewer: object) -> int:
     return max(int(viewer.c("train_auto_start_downscale").value), 1) if mode == _TRAIN_DOWNSCALE_MODE_AUTO else max(mode, 1)
 
 
+def _preview_train_subsample_factor(viewer: object) -> int:
+    try:
+        return max(int(viewer.c("train_subsample_factor").value) + 1, 1)
+    except Exception:
+        return 1
+
+
+def _preview_train_render_factor(viewer: object) -> int:
+    return _preview_train_downscale_factor(viewer) * _preview_train_subsample_factor(viewer)
+
+
 def _training_resolution_text(viewer: object) -> str:
     if viewer.s.training_renderer is not None and viewer.s.trainer is not None:
-        factor = max(int(viewer.s.trainer.effective_train_downscale_factor()), 1)
+        factor = max(int(viewer.s.trainer.effective_train_render_factor()) if hasattr(viewer.s.trainer, "effective_train_render_factor") else int(viewer.s.trainer.effective_train_downscale_factor()), 1)
         return f"Train Res: {int(viewer.s.training_renderer.width)}x{int(viewer.s.training_renderer.height)} (N={factor})"
     if viewer.s.training_frames:
-        factor = _preview_train_downscale_factor(viewer)
+        factor = _preview_train_render_factor(viewer)
         native_width = max(int(viewer.s.training_frames[0].width), 1)
         native_height = max(int(viewer.s.training_frames[0].height), 1)
         width = (native_width + factor - 1) // factor
@@ -224,19 +236,25 @@ def _training_downscale_text(viewer: object) -> str:
     if viewer.s.trainer is not None:
         training = viewer.s.trainer.training
         current = int(viewer.s.trainer.effective_train_downscale_factor())
+        subsample = int(viewer.s.trainer.effective_train_subsample_factor()) if hasattr(viewer.s.trainer, "effective_train_subsample_factor") else max(int(getattr(training, "train_subsample_factor", 1)), 1)
+        combined = int(viewer.s.trainer.effective_train_render_factor()) if hasattr(viewer.s.trainer, "effective_train_render_factor") else current
+        subsample_text = "Off" if subsample <= 1 else f"1/{subsample}"
         if int(training.train_downscale_mode) == _TRAIN_DOWNSCALE_MODE_AUTO:
             return (
                 f"Downscale: Auto | start={int(training.train_auto_start_downscale)}x | "
-                f"current={current}x | step {int(viewer.s.trainer.state.step)}/{int(training.train_downscale_max_iters)}"
+                f"current={current}x | subsampling={subsample_text} | effective={combined}x | step {int(viewer.s.trainer.state.step)}/{int(training.train_downscale_max_iters)}"
             )
-        return f"Downscale: Manual {current}x"
+        return f"Downscale: Manual {current}x | subsampling={subsample_text} | effective={combined}x"
     mode = int(viewer.c("train_downscale_mode").value)
+    subsample = _preview_train_subsample_factor(viewer)
+    combined = _preview_train_render_factor(viewer)
+    subsample_text = "Off" if subsample <= 1 else f"1/{subsample}"
     if mode == _TRAIN_DOWNSCALE_MODE_AUTO:
         return (
             f"Downscale: Auto | start={max(int(viewer.c('train_auto_start_downscale').value), 1)}x | "
-            f"current={_preview_train_downscale_factor(viewer)}x | step 0/{max(int(viewer.c('train_downscale_max_iters').value), 1)}"
+            f"current={_preview_train_downscale_factor(viewer)}x | subsampling={subsample_text} | effective={combined}x | step 0/{max(int(viewer.c('train_downscale_max_iters').value), 1)}"
         )
-    return f"Downscale: Manual {max(mode, 1)}x"
+    return f"Downscale: Manual {max(mode, 1)}x | subsampling={subsample_text} | effective={combined}x"
 
 
 def _dispatch_debug_abs_diff(viewer: object, encoder: spy.CommandEncoder, rendered_tex: spy.Texture, target_tex: spy.Texture, width: int, height: int) -> spy.Texture:

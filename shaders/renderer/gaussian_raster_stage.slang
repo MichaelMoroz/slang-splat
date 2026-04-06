@@ -8,6 +8,8 @@ import "utility/splatting/params.slang";
 import "utility/splatting/raster.slang";
 
 uniform float g_MaxAnisotropy;
+uniform CameraParams g_TrainingNativeCamera;
+uniform TrainingSubsampleParams g_TrainingSubsample;
 uniform RWStructuredBuffer<uint> g_CloneCounts;
 uniform RWStructuredBuffer<uint> g_SplatContribution;
 uniform float g_CloneSelectProbability;
@@ -529,10 +531,18 @@ RasterPixelInfo resolve_raster_pixel(uint3 groupID, uint lane)
     info.end = 0u;
     info.samplePoint = float2(info.pixelCoord) + 0.5;
 
-    PinholeCamera camera = PinholeCamera.from_params(g_Camera);
-    uint samplePx = min(info.pixelCoord.x, g_Raster.width - 1u);
-    uint samplePy = min(info.pixelCoord.y, g_Raster.height - 1u);
-    info.rayDir = camera.screen_to_world_ray(float2(samplePx, samplePy) + 0.5);
+    if (g_TrainingSubsample.enabled != 0u)
+    {
+        PinholeCamera camera = PinholeCamera.from_params(g_TrainingNativeCamera);
+        uint2 samplePixel = training_sample_native_pixel(info.pixelCoord, g_TrainingSubsample);
+        info.rayDir = camera.screen_to_world_ray(float2(samplePixel) + 0.5);
+    } else
+    {
+        PinholeCamera camera = PinholeCamera.from_params(g_Camera);
+        uint samplePx = min(info.pixelCoord.x, g_Raster.width - 1u);
+        uint samplePy = min(info.pixelCoord.y, g_Raster.height - 1u);
+        info.rayDir = camera.screen_to_world_ray(float2(samplePx, samplePy) + 0.5);
+    }
 
     info.tileId = tileY * g_Prepass.tileWidth + tileX;
     uint2 range = g_TileRanges[info.tileId];

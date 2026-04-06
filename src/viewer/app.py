@@ -92,6 +92,7 @@ _TRAINING_PARAM_KEYS = {
     "train_downscale_base_iters": "train_downscale_base_iters",
     "train_downscale_iter_step": "train_downscale_iter_step",
     "train_downscale_max_iters": "train_downscale_max_iters",
+    "train_subsample_factor": "train_subsample_factor",
 }
 _TRAIN_SETUP_DEFAULTS = default_control_values("Train Setup")
 _TRAINING_DEFAULTS = default_control_values("Train Optimizer", "Train Stability")
@@ -112,8 +113,13 @@ _DEBUG_MODE_VALUES = (
     GaussianRenderer.DEBUG_MODE_GRAD_NORM,
 )
 
+def _training_param_value(name: str, value_for) -> object:
+    value = value_for(_TRAINING_PARAM_KEYS[name])
+    return int(value) + 1 if name == "train_subsample_factor" else value
+
+
 def _training_kwargs(value_for) -> dict[str, object]:
-    return {name: value_for(control) for name, control in _TRAINING_PARAM_KEYS.items()}
+    return {name: _training_param_value(name, value_for) for name in _TRAINING_PARAM_KEYS}
 
 
 def _default_training_control_value(control: str) -> object:

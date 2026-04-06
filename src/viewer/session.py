@@ -27,7 +27,7 @@ from ..scene import (
 )
 from ..scene._internal.colmap_ops import point_nn_scales, resolve_training_frame_image_size
 from ..scene._internal.colmap_ops import TRAINING_FRAME_LOAD_THREADS, load_rgba8_image, load_training_frame_rgba8
-from ..training import GaussianTrainer, resolve_effective_train_downscale_factor, resolve_training_resolution
+from ..training import GaussianTrainer, resolve_effective_train_render_factor, resolve_training_resolution
 from ..scene._internal.colmap_types import ColmapFrame, point_tables
 from .state import ColmapImportProgress, ColmapImportSettings, SceneCountProxy
 
@@ -613,7 +613,7 @@ def recreate_renderer(viewer: object, width: int, height: int) -> None:
 def ensure_training_runtime_resolution(viewer: object) -> None:
     if viewer.s.trainer is None or viewer.s.training_renderer is None or not viewer.s.training_frames:
         return
-    current_factor = int(viewer.s.trainer.effective_train_downscale_factor())
+    current_factor = int(viewer.s.trainer.effective_train_render_factor()) if hasattr(viewer.s.trainer, "effective_train_render_factor") else int(viewer.s.trainer.effective_train_downscale_factor())
     current_size = (int(viewer.s.training_renderer.width), int(viewer.s.training_renderer.height))
     if viewer.s.applied_training_runtime_factor == current_factor:
         desired_width, desired_height = viewer.s.trainer.training_resolution(0)
@@ -1027,7 +1027,7 @@ def initialize_training_scene(viewer: object, frame_targets_native: list[spy.Tex
     if viewer.s.colmap_recon is None or not viewer.s.training_frames:
         return
     init, params, init_hparams, profile = resolve_effective_training_setup(viewer)
-    factor = resolve_effective_train_downscale_factor(params.training, 0)
+    factor = resolve_effective_train_render_factor(params.training, 0)
     width, height = resolve_training_resolution(
         int(viewer.s.training_frames[0].width),
         int(viewer.s.training_frames[0].height),
@@ -1063,7 +1063,7 @@ def initialize_training_scene(viewer: object, frame_targets_native: list[spy.Tex
     viewer.s.training_resume_time = None
     viewer.s.applied_renderer_params_training = _renderer_params_signature(viewer.renderer_params(False))
     viewer.s.applied_training_signature = _training_params_signature(params)
-    viewer.s.applied_training_runtime_factor = int(viewer.s.trainer.effective_train_downscale_factor(0))
+    viewer.s.applied_training_runtime_factor = int(viewer.s.trainer.effective_train_render_factor(0)) if hasattr(viewer.s.trainer, "effective_train_render_factor") else int(viewer.s.trainer.effective_train_downscale_factor(0))
     viewer.s.pending_training_runtime_resize = False
     _invalidate(viewer)
     viewer.s.scene_init_signature = _scene_signature(viewer)

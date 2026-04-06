@@ -219,10 +219,10 @@ class GaussianRenderer:
     def _background_array(background: np.ndarray | tuple[float, float, float]) -> np.ndarray:
         return np.asarray(background, dtype=np.float32).reshape(3)
 
-    def _camera_uniforms(self, camera: Camera) -> dict[str, object]:
+    def _camera_uniforms(self, camera: Camera, uniform_name: str = "g_Camera") -> dict[str, object]:
         k1, k2 = camera.distortion_coeffs(self.proj_distortion_k1, self.proj_distortion_k2)
         return {
-            "g_Camera": {
+            str(uniform_name): {
                 **camera.gpu_params(self.width, self.height),
                 "projDistortionK1": float(k1),
                 "projDistortionK2": float(k2),
@@ -273,6 +273,18 @@ class GaussianRenderer:
 
     def _anisotropy_uniforms(self) -> dict[str, object]:
         return {"g_MaxAnisotropy": float(max(self.max_anisotropy, 1.0))}
+
+    def _disabled_training_sample_vars(self) -> dict[str, object]:
+        return {
+            "g_TrainingSubsample": {
+                "enabled": np.uint32(0),
+                "factor": np.uint32(1),
+                "nativeWidth": np.uint32(max(int(self.width), 1)),
+                "nativeHeight": np.uint32(max(int(self.height), 1)),
+                "frameIndex": np.uint32(0),
+                "stepIndex": np.uint32(0),
+            }
+        }
 
     def _scene_vars(self) -> dict[str, object]:
         return self._buffer_vars(self._SCENE_SHADER_VARS, self._scene_buffers)
@@ -1068,7 +1080,7 @@ class GaussianRenderer:
     def _rasterize(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output: spy.Texture | None = None) -> None:
         target = self.output_texture if output is None else output
         shader = self._k_raster_debug if self._debug_render_enabled() else self._k_raster
-        vars = {**self._scene_vars(), **self._screen_vars(), **self._raster_cache_vars(), "g_SortedValues": self._sorted_values(), "g_TileRanges": self._work_buffers["tile_ranges"], "g_Output": target, **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_range_vars(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._anisotropy_uniforms(), **self._camera_uniforms(camera)}
+        vars = {**self._scene_vars(), **self._screen_vars(), **self._raster_cache_vars(), "g_SortedValues": self._sorted_values(), "g_TileRanges": self._work_buffers["tile_ranges"], "g_Output": target, **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_range_vars(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._anisotropy_uniforms(), **self._camera_uniforms(camera), **self._camera_uniforms(camera, "g_TrainingNativeCamera"), **self._disabled_training_sample_vars()}
         if self.debug_mode == self.DEBUG_MODE_CLONE_COUNT:
             vars.update(self._debug_clone_count_var())
         if self.debug_mode == self.DEBUG_MODE_CONTRIBUTION_AMOUNT:
@@ -1093,8 +1105,12 @@ class GaussianRenderer:
         splat_contribution_buffer: spy.Buffer | None = None,
         clone_select_probability: float = 0.0,
         clone_seed: int = 0,
+        training_native_camera: Camera | None = None,
+        training_sample_vars: dict[str, object] | None = None,
     ) -> None:
         target = self.output_texture if output is None else output
+        resolved_native_camera = camera if training_native_camera is None else training_native_camera
+        resolved_sample_vars = self._disabled_training_sample_vars() if training_sample_vars is None else training_sample_vars
         vars = {
             **self._scene_vars(),
             **self._screen_vars(),
@@ -1114,6 +1130,8 @@ class GaussianRenderer:
             **self._raster_uniforms(background),
             **self._anisotropy_uniforms(),
             **self._camera_uniforms(camera),
+            **self._camera_uniforms(resolved_native_camera, "g_TrainingNativeCamera"),
+            **resolved_sample_vars,
         }
         if clone_counts_buffer is not None:
             vars.update(
@@ -1135,11 +1153,16 @@ class GaussianRenderer:
         clone_counts_buffer: spy.Buffer | None = None,
         clone_select_probability: float = 0.0,
         clone_seed: int = 0,
+        training_native_camera: Camera | None = None,
+        training_sample_vars: dict[str, object] | None = None,
     ) -> None:
         resolved_regularizer_grad = self._work_buffers["training_regularizer_grad"] if regularizer_grad is None else regularizer_grad
+        resolved_native_camera = camera if training_native_camera is None else training_native_camera
+        resolved_sample_vars = self._disabled_training_sample_vars() if training_sample_vars is None else training_sample_vars
         if regularizer_grad is None:
             self._clear_float_buffer(encoder, resolved_regularizer_grad, max(self.width * self.height, 1) * 2)
-        self._dispatch(self._raster_grad_shader_set().backward, encoder, self._raster_thread_count(), {**self._scene_vars(), **self._raster_cache_vars(), "g_SortedValues": self._sorted_values(), "g_TileRanges": self._work_buffers["tile_ranges"], "g_OutputGrad": output_grad, "g_TrainingForwardState": self._work_buffers["training_forward_state"], "g_TrainingDepthStats": self._training_depth_stats_texture, "g_TrainingRgbLoss": self._work_buffers["training_rgb_loss"], "g_TrainingRgbLossTotal": self._work_buffers["training_rgb_loss_total"], "g_TrainingRegularizerGrad": resolved_regularizer_grad, "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"], "g_TrainingBatchEnd": self._work_buffers["training_batch_end"], "g_CloneCounts": self._work_buffers["debug_clone_count"] if clone_counts_buffer is None else clone_counts_buffer, "g_CloneSelectProbability": float(max(clone_select_probability, 0.0)), "g_CloneSeed": np.uint32(int(clone_seed)), **self._raster_grad_vars(), **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_range_vars(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._anisotropy_uniforms(), **self._camera_uniforms(camera)}, "Rasterize Backward", 27)
+        vars = {**self._scene_vars(), **self._raster_cache_vars(), "g_SortedValues": self._sorted_values(), "g_TileRanges": self._work_buffers["tile_ranges"], "g_OutputGrad": output_grad, "g_TrainingForwardState": self._work_buffers["training_forward_state"], "g_TrainingDepthStats": self._training_depth_stats_texture, "g_TrainingRgbLoss": self._work_buffers["training_rgb_loss"], "g_TrainingRgbLossTotal": self._work_buffers["training_rgb_loss_total"], "g_TrainingRegularizerGrad": resolved_regularizer_grad, "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"], "g_TrainingBatchEnd": self._work_buffers["training_batch_end"], "g_CloneCounts": self._work_buffers["debug_clone_count"] if clone_counts_buffer is None else clone_counts_buffer, "g_CloneSelectProbability": float(max(clone_select_probability, 0.0)), "g_CloneSeed": np.uint32(int(clone_seed)), **self._raster_grad_vars(), **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_range_vars(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._anisotropy_uniforms(), **self._camera_uniforms(camera), **self._camera_uniforms(resolved_native_camera, "g_TrainingNativeCamera"), **resolved_sample_vars}
+        self._dispatch(self._raster_grad_shader_set().backward, encoder, self._raster_thread_count(), vars, "Rasterize Backward", 27)
 
     def _backprop_cached_raster_grads(self, encoder: spy.CommandEncoder, splat_count: int, camera: Camera, grad_scale: float = 1.0) -> None:
         self._dispatch(self._raster_grad_shader_set().backprop, encoder, spy.uint3(max(int(splat_count), 1), 1, 1), {**self._scene_vars(), **self._raster_cache_vars(), **self._raster_grad_vars(), **self._raster_grad_decode_scale_var(grad_scale), **self._raster_grad_fixed_range_vars(), **self._prepass_uniforms(splat_count), **self._anisotropy_uniforms(), **self._camera_uniforms(camera)}, "Backprop Cached Raster Grads", 28)
@@ -1551,9 +1574,11 @@ class GaussianRenderer:
         splat_contribution_buffer: spy.Buffer | None = None,
         clone_select_probability: float = 0.0,
         clone_seed: int = 0,
+        training_native_camera: Camera | None = None,
+        training_sample_vars: dict[str, object] | None = None,
     ) -> None:
         self._require_scene()
-        self._rasterize_training_forward(encoder, camera, background, output, clone_counts_buffer, splat_contribution_buffer, clone_select_probability, clone_seed)
+        self._rasterize_training_forward(encoder, camera, background, output, clone_counts_buffer, splat_contribution_buffer, clone_select_probability, clone_seed, training_native_camera, training_sample_vars)
 
     def rasterize_backward_current_scene(
         self,
@@ -1566,9 +1591,11 @@ class GaussianRenderer:
         clone_counts_buffer: spy.Buffer | None = None,
         clone_select_probability: float = 0.0,
         clone_seed: int = 0,
+        training_native_camera: Camera | None = None,
+        training_sample_vars: dict[str, object] | None = None,
     ) -> None:
         self._require_scene()
-        self._rasterize_backward(encoder, camera, background, output_grad, regularizer_grad, clone_counts_buffer, clone_select_probability, clone_seed)
+        self._rasterize_backward(encoder, camera, background, output_grad, regularizer_grad, clone_counts_buffer, clone_select_probability, clone_seed, training_native_camera, training_sample_vars)
         self._backprop_cached_raster_grads(encoder, self._scene_count, camera, grad_scale)
 
     def rasterize_forward_backward_current_scene(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output_grad: spy.Buffer, grad_scale: float = 1.0) -> None:

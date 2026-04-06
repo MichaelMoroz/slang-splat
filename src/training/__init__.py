@@ -18,6 +18,8 @@ from .gaussian_trainer import (
     TrainingHyperParams,
     TrainingState,
     resolve_effective_train_downscale_factor,
+    resolve_effective_train_render_factor,
+    resolve_train_subsample_factor,
     resolve_training_resolution,
 )
 from .optimizer import GaussianOptimizer
@@ -45,6 +47,8 @@ __all__ = [
     "TrainingState",
     "GaussianTrainer",
     "resolve_effective_train_downscale_factor",
+    "resolve_effective_train_render_factor",
+    "resolve_train_subsample_factor",
     "resolve_training_resolution",
     "resolve_depth_ratio_grad_band",
     "GaussianOptimizer",

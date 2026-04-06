@@ -43,6 +43,7 @@ class _DummyTrainer:
         self.training = SimpleNamespace(
             train_downscale_mode=1,
             train_auto_start_downscale=1,
+            train_subsample_factor=1,
             train_downscale_max_iters=30000,
             lr_schedule_enabled=True,
             lr_schedule_start_lr=0.005,
@@ -93,6 +94,12 @@ class _DummyTrainer:
         return (frame_index, width, height)
 
     def effective_train_downscale_factor(self) -> int:
+        return 1
+
+    def effective_train_subsample_factor(self) -> int:
+        return 1
+
+    def effective_train_render_factor(self) -> int:
         return 1
 
     def current_base_lr(self) -> float:
@@ -160,6 +167,7 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         "use_sh_stage3": _control(True),
         "max_gaussians": _control(1000000),
         "train_downscale_mode": _control(1),
+        "train_subsample_factor": _control(0),
         "train_auto_start_downscale": _control(1),
         "train_downscale_max_iters": _control(30000),
     }

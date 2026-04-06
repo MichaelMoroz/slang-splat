@@ -36,6 +36,7 @@ uniform float g_InvPixelCount;
 uniform float g_LossGradClip;
 uniform float g_HugeValue;
 uniform uint g_BatchStepIndex;
+uniform TrainingSubsampleParams g_TrainingSubsample;
 
 uniform Texture2D<float4> g_Rendered;
 uniform Texture2D<float4> g_Target;
@@ -442,6 +443,12 @@ float depth_ratio_window_grad(float depthRatio)
     return g_DepthRatioWeight * (depth_ratio_sigmoid(scaledLo) - depth_ratio_sigmoid(scaledHi)) * g_InvPixelCount;
 }
 
+float3 training_target_rgb(uint2 pixel)
+{
+    if (g_TrainingSubsample.enabled == 0u) return sanitize_float3(g_Target[pixel].xyz, g_HugeValue);
+    return sanitize_float3(g_Target[training_sample_native_pixel(pixel, g_TrainingSubsample)].xyz, g_HugeValue);
+}
+
 float3 position_random_step_world_delta(SplatState state, inout uint rngState)
 {
     float opacity = opacity_from_raw(state.rawOpacity);
@@ -534,7 +541,7 @@ void csComputeL1LossForward(
         uint2 pixel = uint2(px, py);
         uint pixelIndex = py * g_Width + px;
         float3 rendered = sanitize_float3(g_Rendered[pixel].xyz, g_HugeValue);
-        float3 target = sanitize_float3(g_Target[pixel].xyz, g_HugeValue);
+        float3 target = training_target_rgb(pixel);
         float loss = rgb_l1_loss(rendered, target, g_InvPixelCount);
         float mse = rgb_mse_loss(rendered, target, g_InvPixelCount);
         float depthRatio = sanitize_scalar(g_RenderedDepthStats[pixel].w, g_HugeValue);
@@ -596,7 +603,7 @@ void csComputeL1LossBackward(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     uint2 pixel = uint2(px, py);
     float3 rendered = sanitize_float3(g_Rendered[pixel].xyz, g_HugeValue);
-    float3 target = sanitize_float3(g_Target[pixel].xyz, g_HugeValue);
+    float3 target = training_target_rgb(pixel);
     float3 dOut = clamp(sanitize_float3(rgb_l1_grad(rendered, target) * g_InvPixelCount, g_LossGradClip), -g_LossGradClip, g_LossGradClip);
     g_OutputGrad[py * g_Width + px] = float4(dOut, 0.0);
     float densityGrad = 0.0;

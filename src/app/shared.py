@@ -211,6 +211,7 @@ def build_training_params(
     train_downscale_iter_step: int = 200,
     train_downscale_max_iters: int = 30_000,
     train_downscale_factor: int = 1,
+    train_subsample_factor: int = 1,
 ) -> AppTrainingParams:
     base_lr = clamp_float(base_lr, 1e-8, 1.0)
     adam = AdamHyperParams(
@@ -304,6 +305,7 @@ def build_training_params(
         train_downscale_iter_step=clamp_int(train_downscale_iter_step, 0, 1_000_000_000),
         train_downscale_max_iters=clamp_int(train_downscale_max_iters, 1, 1_000_000_000),
         train_downscale_factor=clamp_int(train_downscale_factor, 1, 16),
+        train_subsample_factor=clamp_int(train_subsample_factor, 1, 4),
     )
     stability.max_scale = max(stability.max_scale, stability.min_scale)
     stability.max_opacity = max(stability.max_opacity, stability.min_opacity)

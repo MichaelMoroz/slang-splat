@@ -1,6 +1,7 @@
 import "utility/math/camera.slang";
 import "utility/math/constants.slang";
 import "utility/math/quaternion.slang";
+import "utility/random/random.slang";
 
 static const uint ELLIPSE_POINT_COUNT = 5u;
 static const float GAUSSIAN_SUPPORT_SIGMA_RADIUS = 3.0;
@@ -20,6 +21,44 @@ static const uint DEBUG_MODE_ADAM_MOMENTUM = 12u;
 static const float DEBUG_CONTRIBUTION_AMOUNT_FLOOR = 1e-6;
 static const float SH_C0 = 0.28209479177387814;
 static const float SH_C1 = 0.4886025119029199;
+static const uint TRAIN_SUBSAMPLE_HASH_STEP = 0x9e3779b9u;
+static const uint TRAIN_SUBSAMPLE_HASH_FRAME = 0x85ebca6bu;
+static const uint TRAIN_SUBSAMPLE_HASH_X = 0xc2b2ae35u;
+static const uint TRAIN_SUBSAMPLE_HASH_Y = 0x27d4eb2fu;
+static const uint TRAIN_SUBSAMPLE_HASH_FACTOR = 0x165667b1u;
+
+struct TrainingSubsampleParams
+{
+    uint enabled;
+    uint factor;
+    uint nativeWidth;
+    uint nativeHeight;
+    uint frameIndex;
+    uint stepIndex;
+};
+
+uint training_subsample_hash(uint2 lowResPixel, TrainingSubsampleParams params)
+{
+    uint seed = hash_u32(params.stepIndex + TRAIN_SUBSAMPLE_HASH_STEP);
+    seed = hash_u32(seed ^ ((params.frameIndex + 1u) * TRAIN_SUBSAMPLE_HASH_FRAME));
+    seed = hash_u32(seed ^ ((lowResPixel.x + 1u) * TRAIN_SUBSAMPLE_HASH_X));
+    seed = hash_u32(seed ^ ((lowResPixel.y + 1u) * TRAIN_SUBSAMPLE_HASH_Y));
+    return hash_u32(seed ^ (max(params.factor, 1u) * TRAIN_SUBSAMPLE_HASH_FACTOR));
+}
+
+uint2 training_sample_native_pixel(uint2 lowResPixel, TrainingSubsampleParams params)
+{
+    uint stride = max(params.factor, 1u);
+    uint2 basePixel = lowResPixel * stride;
+    if (params.enabled == 0u) return basePixel;
+
+    uint blockWidth = max(min(stride, params.nativeWidth - min(basePixel.x, params.nativeWidth - 1u)), 1u);
+    uint blockHeight = max(min(stride, params.nativeHeight - min(basePixel.y, params.nativeHeight - 1u)), 1u);
+    uint seed = training_subsample_hash(lowResPixel, params);
+    uint offsetX = seed % blockWidth;
+    uint offsetY = hash_u32(seed ^ TRAIN_SUBSAMPLE_HASH_FACTOR) % blockHeight;
+    return uint2(min(basePixel.x + offsetX, params.nativeWidth - 1u), min(basePixel.y + offsetY, params.nativeHeight - 1u));
+}
 
 [Differentiable]
 float3 normalize_vector_safe(float3 value)

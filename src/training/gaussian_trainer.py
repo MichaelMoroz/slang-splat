@@ -18,6 +18,7 @@ from .schedule import DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY, resolve_base_le
 
 TRAIN_DOWNSCALE_MODE_AUTO = 0
 TRAIN_DOWNSCALE_MAX_FACTOR = 16
+TRAIN_SUBSAMPLE_MAX_FACTOR = 4
 TRAIN_BACKGROUND_MODE_CUSTOM = 0
 TRAIN_BACKGROUND_MODE_RANDOM = 1
 SPLAT_CONTRIBUTION_FIXED_SCALE = 256.0
@@ -92,6 +93,14 @@ def resolve_effective_train_downscale_factor(training_hparams: "TrainingHyperPar
             return factor
         elapsed = next_elapsed
     return 1
+
+
+def resolve_train_subsample_factor(training_hparams: "TrainingHyperParams") -> int:
+    return min(max(int(training_hparams.train_subsample_factor), 1), TRAIN_SUBSAMPLE_MAX_FACTOR)
+
+
+def resolve_effective_train_render_factor(training_hparams: "TrainingHyperParams", step: int) -> int:
+    return max(resolve_effective_train_downscale_factor(training_hparams, step) * resolve_train_subsample_factor(training_hparams), 1)
 
 
 def resolve_depth_ratio_grad_band(grad_min: float, grad_max: float) -> tuple[float, float]:
@@ -169,7 +178,7 @@ class TrainingHyperParams:
     use_sh_stage1: bool = False; use_sh_stage2: bool = False; use_sh_stage3: bool = True
     max_gaussians: int = 1_000_000; train_downscale_mode: int = 1; train_auto_start_downscale: int = 16
     train_downscale_base_iters: int = 200; train_downscale_iter_step: int = 50; train_downscale_max_iters: int = 30_000
-    train_downscale_factor: int = 1
+    train_downscale_factor: int = 1; train_subsample_factor: int = 1
 
     def __post_init__(self) -> None:
         self.lr_schedule_enabled = bool(self.lr_schedule_enabled)
@@ -222,6 +231,7 @@ class TrainingHyperParams:
         self.train_downscale_base_iters = max(int(self.train_downscale_base_iters), 1)
         self.train_downscale_iter_step = max(int(self.train_downscale_iter_step), 0)
         self.train_downscale_max_iters = max(int(self.train_downscale_max_iters), 1)
+        self.train_subsample_factor = min(max(int(self.train_subsample_factor), 1), TRAIN_SUBSAMPLE_MAX_FACTOR)
         self.train_downscale_factor = resolve_effective_train_downscale_factor(self, 0)
 
 
@@ -277,9 +287,16 @@ class GaussianTrainer:
         resolved_step = self.state.step if step is None else int(step)
         return resolve_effective_train_downscale_factor(self.training, resolved_step)
 
+    def effective_train_subsample_factor(self) -> int:
+        return resolve_train_subsample_factor(self.training)
+
+    def effective_train_render_factor(self, step: int | None = None) -> int:
+        resolved_step = self.state.step if step is None else int(step)
+        return resolve_effective_train_render_factor(self.training, resolved_step)
+
     def training_resolution(self, frame_index: int = 0, step: int | None = None) -> tuple[int, int]:
         width, height = self.frame_size(frame_index)
-        return resolve_training_resolution(width, height, self.effective_train_downscale_factor(step))
+        return resolve_training_resolution(width, height, self.effective_train_render_factor(step))
 
     def current_base_lr(self, step: int | None = None) -> float:
         resolved_step = self.state.step if step is None else int(step)
@@ -340,7 +357,34 @@ class GaussianTrainer:
             debug_color_index=40 + len(kernel),
         )
 
-    def _dispatch_raster_training_forward(self, encoder: spy.CommandEncoder, frame_camera: Camera, background: np.ndarray, step: int | None = None) -> None:
+    def _native_frame_camera(self, frame_index: int) -> Camera:
+        width, height = self.frame_size(frame_index)
+        return self.make_frame_camera(frame_index, width, height)
+
+    def _training_sample_vars(self, frame_index: int, step: int | None = None) -> dict[str, object]:
+        resolved_step = self.state.step if step is None else int(step)
+        frame = self._frame(frame_index)
+        subsample_factor = self.effective_train_subsample_factor()
+        return {
+            "g_TrainingSubsample": {
+                "enabled": np.uint32(1 if subsample_factor > 1 else 0),
+                "factor": np.uint32(self.effective_train_render_factor(resolved_step)),
+                "nativeWidth": np.uint32(max(int(frame.width), 1)),
+                "nativeHeight": np.uint32(max(int(frame.height), 1)),
+                "frameIndex": np.uint32(max(int(frame_index), 0)),
+                "stepIndex": np.uint32(max(resolved_step, 0)),
+            }
+        }
+
+    def _dispatch_raster_training_forward(
+        self,
+        encoder: spy.CommandEncoder,
+        frame_camera: Camera,
+        background: np.ndarray,
+        step: int | None = None,
+        frame_index: int = 0,
+        native_camera: Camera | None = None,
+    ) -> None:
         resolved_step = self.state.step if step is None else int(step)
         self.renderer.rasterize_training_forward_current_scene(
             encoder=encoder,
@@ -350,9 +394,19 @@ class GaussianTrainer:
             splat_contribution_buffer=self._refinement_buffers["splat_contribution"],
             clone_select_probability=self.clone_probability_threshold(step=resolved_step),
             clone_seed=self._seed + resolved_step,
+            training_native_camera=self._native_frame_camera(frame_index) if native_camera is None else native_camera,
+            training_sample_vars=self._training_sample_vars(frame_index, resolved_step),
         )
 
-    def _dispatch_raster_backward(self, encoder: spy.CommandEncoder, frame_camera: Camera, background: np.ndarray, step: int | None = None) -> None:
+    def _dispatch_raster_backward(
+        self,
+        encoder: spy.CommandEncoder,
+        frame_camera: Camera,
+        background: np.ndarray,
+        step: int | None = None,
+        frame_index: int = 0,
+        native_camera: Camera | None = None,
+    ) -> None:
         resolved_step = self.state.step if step is None else int(step)
         self.renderer.clear_raster_grads_current_scene(encoder)
         self.renderer.rasterize_backward_current_scene(
@@ -365,6 +419,8 @@ class GaussianTrainer:
             clone_counts_buffer=self._refinement_buffers["clone_counts"],
             clone_select_probability=self.clone_probability_threshold(step=resolved_step),
             clone_seed=self._seed + resolved_step,
+            training_native_camera=self._native_frame_camera(frame_index) if native_camera is None else native_camera,
+            training_sample_vars=self._training_sample_vars(frame_index, resolved_step),
         )
 
     def _read_loss_metrics(self) -> tuple[float, float, float]:
@@ -804,7 +860,7 @@ class GaussianTrainer:
 
     def _downscale_vars(self, frame_index: int) -> dict[str, object]:
         frame = self._frame(frame_index)
-        factor = self.effective_train_downscale_factor()
+        factor = self.effective_train_render_factor()
         return {
             "g_DownscaleFactor": int(factor),
             "g_SourceWidth": int(frame.width),
@@ -827,7 +883,7 @@ class GaussianTrainer:
         )
 
     def _refresh_train_target(self, encoder: spy.CommandEncoder, frame_index: int) -> None:
-        factor = self.effective_train_downscale_factor()
+        factor = self.effective_train_render_factor()
         key = (
             int(frame_index),
             int(factor),
@@ -839,7 +895,7 @@ class GaussianTrainer:
         self._dispatch_downscale_target(encoder, frame_index)
         self._downscaled_target_key = key
 
-    def _loss_vars(self, step: int | None = None) -> dict[str, object]:
+    def _loss_vars(self, frame_index: int, step: int | None = None) -> dict[str, object]:
         resolved_step = self.state.step if step is None else int(step)
         return {
             "g_Width": int(self.renderer.width),
@@ -852,10 +908,11 @@ class GaussianTrainer:
             "g_DepthRatioGradMin": float(self.training.depth_ratio_grad_min),
             "g_DepthRatioGradMax": float(self.training.depth_ratio_grad_max),
             "g_MaxAllowedDensity": float(resolve_max_allowed_density(self.training, resolved_step)),
+            **self._training_sample_vars(frame_index, resolved_step),
         }
 
-    def _dispatch_loss_forward(self, encoder: spy.CommandEncoder, target_texture: spy.Texture, step: int | None = None) -> None:
-        shared = {"g_OutputGrad": self.renderer.output_grad_buffer, "g_RegularizerGrad": self.renderer.work_buffers["training_regularizer_grad"], "g_LossBuffer": self._buffers["loss"], "g_TrainingRgbLoss": self.renderer.work_buffers["training_rgb_loss"], "g_TrainingRgbLossTotal": self.renderer.work_buffers["training_rgb_loss_total"], **self._loss_vars(step)}
+    def _dispatch_loss_forward(self, encoder: spy.CommandEncoder, target_texture: spy.Texture, step: int | None = None, frame_index: int = 0) -> None:
+        shared = {"g_OutputGrad": self.renderer.output_grad_buffer, "g_RegularizerGrad": self.renderer.work_buffers["training_regularizer_grad"], "g_LossBuffer": self._buffers["loss"], "g_TrainingRgbLoss": self.renderer.work_buffers["training_rgb_loss"], "g_TrainingRgbLossTotal": self.renderer.work_buffers["training_rgb_loss_total"], **self._loss_vars(frame_index, step)}
         self._dispatch("clear_loss", encoder, self._pixel_thread_count(), shared)
         self._dispatch(
             "loss_forward",
@@ -871,11 +928,11 @@ class GaussianTrainer:
                 "g_LossBuffer": self._buffers["loss"],
                 "g_TrainingRgbLoss": self.renderer.work_buffers["training_rgb_loss"],
                 "g_TrainingRgbLossTotal": self.renderer.work_buffers["training_rgb_loss_total"],
-                **self._loss_vars(step),
+                **self._loss_vars(frame_index, step),
             },
         )
 
-    def _dispatch_loss_backward(self, encoder: spy.CommandEncoder, target_texture: spy.Texture, step: int | None = None) -> None:
+    def _dispatch_loss_backward(self, encoder: spy.CommandEncoder, target_texture: spy.Texture, step: int | None = None, frame_index: int = 0) -> None:
         self._dispatch(
             "loss_backward",
             encoder,
@@ -888,19 +945,37 @@ class GaussianTrainer:
                 "g_OutputGrad": self.renderer.output_grad_buffer,
                 "g_RegularizerGrad": self.renderer.work_buffers["training_regularizer_grad"],
                 "g_LossBuffer": self._buffers["loss"],
-                **self._loss_vars(step),
+                **self._loss_vars(frame_index, step),
             },
         )
 
-    def _dispatch_training_forward(self, encoder: spy.CommandEncoder, frame_camera: Camera, background: np.ndarray, target_texture: spy.Texture, step: int | None = None) -> None:
+    def _dispatch_training_forward(
+        self,
+        encoder: spy.CommandEncoder,
+        frame_camera: Camera,
+        background: np.ndarray,
+        target_texture: spy.Texture,
+        step: int | None = None,
+        frame_index: int = 0,
+        native_camera: Camera | None = None,
+    ) -> None:
         with debug_region(encoder, "Trainer Forward", 50):
-            self._dispatch_raster_training_forward(encoder, frame_camera, background, step)
-            self._dispatch_loss_forward(encoder, target_texture, step)
+            self._dispatch_raster_training_forward(encoder, frame_camera, background, step, frame_index, native_camera)
+            self._dispatch_loss_forward(encoder, target_texture, step, frame_index)
 
-    def _dispatch_training_backward(self, encoder: spy.CommandEncoder, frame_camera: Camera, background: np.ndarray, target_texture: spy.Texture, step: int | None = None) -> None:
+    def _dispatch_training_backward(
+        self,
+        encoder: spy.CommandEncoder,
+        frame_camera: Camera,
+        background: np.ndarray,
+        target_texture: spy.Texture,
+        step: int | None = None,
+        frame_index: int = 0,
+        native_camera: Camera | None = None,
+    ) -> None:
         with debug_region(encoder, "Trainer Backward", 51):
-            self._dispatch_loss_backward(encoder, target_texture, step)
-            self._dispatch_raster_backward(encoder, frame_camera, background, step)
+            self._dispatch_loss_backward(encoder, target_texture, step, frame_index)
+            self._dispatch_raster_backward(encoder, frame_camera, background, step, frame_index, native_camera)
 
     def _dispatch_cache_step_info(self, encoder: spy.CommandEncoder, batch_step_index: int) -> None:
         self._dispatch(
@@ -1059,12 +1134,13 @@ class GaussianTrainer:
             frame_index = self._next_frame_index()
             frame_indices.append(frame_index)
             frame_camera = self.make_frame_camera(frame_index, self.renderer.width, self.renderer.height)
+            native_camera = self._native_frame_camera(frame_index)
             self._apply_renderer_training_hparams(training_step)
             self._maybe_sync_prepass_capacity(frame_camera, training_step)
             self.renderer.record_prepass_for_current_scene(enc, frame_camera)
-            target_texture = self.get_frame_target_texture(frame_index, native_resolution=False, encoder=enc)
-            self._dispatch_training_forward(enc, frame_camera, background, target_texture, training_step)
-            self._dispatch_training_backward(enc, frame_camera, background, target_texture, training_step)
+            target_texture = self.get_frame_target_texture(frame_index, native_resolution=self.effective_train_subsample_factor() > 1, encoder=enc)
+            self._dispatch_training_forward(enc, frame_camera, background, target_texture, training_step, frame_index, native_camera)
+            self._dispatch_training_backward(enc, frame_camera, background, target_texture, training_step, frame_index, native_camera)
             self._dispatch_optimizer_step(enc, self.state.step + batch_index + 1, frame_camera)
             self._dispatch_position_random_steps(enc, self.state.step + batch_index + 1)
             self._dispatch_cache_step_info(enc, batch_index)

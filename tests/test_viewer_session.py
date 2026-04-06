@@ -654,10 +654,10 @@ def test_import_colmap_dataset_uses_aligned_reconstruction(monkeypatch) -> None:
     ]
 
 
-def test_colmap_import_settings_defaults_prefer_diffused_pointcloud() -> None:
+def test_colmap_import_settings_defaults_prefer_pointcloud() -> None:
     defaults = ColmapImportSettings()
 
-    assert defaults.init_mode == "diffused_pointcloud"
+    assert defaults.init_mode == "pointcloud"
     assert defaults.nn_radius_scale_coef == 0.5
 
 
@@ -788,6 +788,7 @@ def test_initialize_training_scene_rebinds_debug_buffers_for_new_trainer(monkeyp
     new_trainer = SimpleNamespace(
         refinement_buffers={"clone_counts": "new-clone"},
         effective_train_downscale_factor=lambda step=0: 1,
+        effective_train_render_factor=lambda step=0: 1,
     )
     calls: list[str] = []
     viewer = SimpleNamespace(
@@ -836,7 +837,7 @@ def test_initialize_training_scene_rebinds_debug_buffers_for_new_trainer(monkeyp
     )
 
     monkeypatch.setattr(session, "resolve_effective_training_setup", lambda viewer_obj: (SimpleNamespace(seed=7), SimpleNamespace(training=SimpleNamespace(max_gaussians=8), adam=SimpleNamespace(tag="adam"), stability=SimpleNamespace(tag="stability")), SimpleNamespace(), SimpleNamespace(name="test")))
-    monkeypatch.setattr(session, "resolve_effective_train_downscale_factor", lambda training, step: 1)
+    monkeypatch.setattr(session, "resolve_effective_train_render_factor", lambda training, step: 1)
     monkeypatch.setattr(session, "resolve_training_resolution", lambda width, height, factor: (width, height))
     def _ensure_renderer(viewer_obj, attr, width, height, allow_debug_overlays):
         del attr, width, height, allow_debug_overlays
@@ -877,7 +878,7 @@ def test_initialize_training_scene_rebuilds_training_frames_from_colmap(monkeypa
     training_renderer = SimpleNamespace(copy_scene_state_to=lambda encoder, dst: None)
     main_renderer = SimpleNamespace(set_debug_grad_norm_buffer=lambda buffer: None, set_debug_clone_count_buffer=lambda buffer: None)
     debug_renderer = SimpleNamespace(set_debug_grad_norm_buffer=lambda buffer: None, set_debug_clone_count_buffer=lambda buffer: None)
-    new_trainer = SimpleNamespace(effective_train_downscale_factor=lambda step=0: 1, scene=SimpleNamespace(count=8), refinement_buffers={})
+    new_trainer = SimpleNamespace(effective_train_downscale_factor=lambda step=0: 1, effective_train_render_factor=lambda step=0: 1, scene=SimpleNamespace(count=8), refinement_buffers={})
     built_scene = SimpleNamespace(count=8)
     viewer = SimpleNamespace(
         device=SimpleNamespace(create_command_encoder=lambda: SimpleNamespace(finish=lambda: "finished"), submit_command_buffer=lambda command_buffer: None),
@@ -926,7 +927,7 @@ def test_initialize_training_scene_rebuilds_training_frames_from_colmap(monkeypa
 
     monkeypatch.setattr(session, "_refresh_training_frames", lambda viewer_obj: (_ for _ in ()).throw(AssertionError("reinit should not rebuild frames when cached frames exist")))
     monkeypatch.setattr(session, "resolve_effective_training_setup", lambda viewer_obj: (SimpleNamespace(seed=7), SimpleNamespace(training=SimpleNamespace(max_gaussians=8), adam=SimpleNamespace(), stability=SimpleNamespace()), SimpleNamespace(), SimpleNamespace(name="test")))
-    monkeypatch.setattr(session, "resolve_effective_train_downscale_factor", lambda training, step: 1)
+    monkeypatch.setattr(session, "resolve_effective_train_render_factor", lambda training, step: 1)
     monkeypatch.setattr(session, "resolve_training_resolution", lambda width, height, factor: (width, height))
     monkeypatch.setattr(session, "ensure_renderer", lambda viewer_obj, attr, width, height, allow_debug_overlays: training_renderer)
     monkeypatch.setattr(session, "_build_initial_training_scene", lambda viewer_obj, init, params, init_hparams: (built_scene, 0.25))

@@ -13,7 +13,7 @@ from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 from src.scene.sh_utils import SH_C0
 from src.training import gaussian_trainer as gaussian_trainer_module
-from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, contribution_fixed_count_from_percent, contribution_percent_from_fixed_count, resolve_base_learning_rate, resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_depth_ratio_grad_band, resolve_depth_ratio_weight, resolve_effective_refinement_interval, resolve_lr_schedule_breakpoints, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_max_allowed_density, resolve_stage_schedule_steps, resolve_training_resolution, resolve_use_sh, should_run_refinement_step
+from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, contribution_fixed_count_from_percent, contribution_percent_from_fixed_count, resolve_base_learning_rate, resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_depth_ratio_grad_band, resolve_depth_ratio_weight, resolve_effective_refinement_interval, resolve_effective_train_render_factor, resolve_lr_schedule_breakpoints, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_max_allowed_density, resolve_stage_schedule_steps, resolve_training_resolution, resolve_train_subsample_factor, resolve_use_sh, should_run_refinement_step
 
 _ADAM_BUFFER_NAMES = ("adam_moments",)
 _OPACITY_EPS = 1e-6
@@ -310,6 +310,30 @@ def test_training_step_smoke_updates_params_in_fixed_atomic_mode(device, tmp_pat
 
     assert renderer.cached_raster_grad_atomic_mode == "fixed"
     assert np.isfinite(loss)
+    assert np.all(np.isfinite(after))
+    assert np.any(np.abs(after - before) > 0.0)
+
+
+def test_training_step_smoke_with_subsampling_produces_finite_updates(device, tmp_path: Path):
+    scene = _make_scene()
+    frame = _make_frame(tmp_path, image_name="subsample_target.png", image_id=17)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=32)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(train_subsample_factor=2),
+        seed=123,
+    )
+
+    before = _read_scene_groups(renderer, scene.count)["positions"].copy()
+    loss = trainer.step()
+    after = _read_scene_groups(renderer, scene.count)["positions"]
+
+    assert np.isfinite(loss)
+    assert trainer.state.step == 1
+    assert np.isfinite(trainer.state.last_mse)
     assert np.all(np.isfinite(after))
     assert np.any(np.abs(after - before) > 0.0)
 
@@ -612,6 +636,13 @@ def test_resolve_training_resolution_uses_ceil_division() -> None:
     assert resolve_training_resolution(64, 32, 1) == (64, 32)
     assert resolve_training_resolution(63, 65, 2) == (32, 33)
     assert resolve_training_resolution(1, 1, 16) == (1, 1)
+
+
+def test_effective_train_render_factor_multiplies_downscale_and_subsample() -> None:
+    hparams = TrainingHyperParams(train_downscale_factor=2, train_subsample_factor=3)
+
+    assert resolve_train_subsample_factor(hparams) == 3
+    assert resolve_effective_train_render_factor(hparams, 0) == 6
 
 
 def test_base_lr_uses_requested_piecewise_schedule() -> None:
@@ -1696,6 +1727,56 @@ def test_box_downscale_matches_expected_mean(device, tmp_path: Path) -> None:
         scene=scene,
         frames=[frame],
         training_hparams=TrainingHyperParams(train_downscale_factor=2),
+        seed=5,
+    )
+
+    target = trainer.get_frame_target_texture(0, native_resolution=False)
+    target_np = np.asarray(target.to_numpy(), dtype=np.float32)
+    srgb = image.astype(np.float32) / 255.0
+    linear = np.where(srgb <= 0.04045, srgb / 12.92, np.power((srgb + 0.055) / 1.055, 2.4))
+    expected = np.array(
+        [
+            [np.mean(linear[0:2, 0:2], axis=(0, 1)), np.mean(linear[0:2, 2:3], axis=(0, 1))],
+            [np.mean(linear[2:3, 0:2], axis=(0, 1)), np.mean(linear[2:3, 2:3], axis=(0, 1))],
+        ],
+        dtype=np.float32,
+    )
+
+    np.testing.assert_allclose(target_np[:, :, :3], expected, rtol=0.0, atol=5e-5)
+    np.testing.assert_allclose(target_np[:, :, 3], np.ones((2, 2), dtype=np.float32), rtol=0.0, atol=1e-6)
+
+
+def test_subsample_factor_contributes_to_downscaled_target_resolution(device, tmp_path: Path) -> None:
+    image_path = tmp_path / "subsample_downscale_target.png"
+    image = np.array(
+        [
+            [[0, 0, 0], [255, 0, 0], [0, 255, 0]],
+            [[0, 0, 255], [255, 255, 255], [255, 255, 0]],
+            [[255, 0, 255], [0, 255, 255], [128, 128, 128]],
+        ],
+        dtype=np.uint8,
+    )
+    Image.fromarray(image, mode="RGB").save(image_path)
+    frame = ColmapFrame(
+        image_id=0,
+        image_path=image_path,
+        q_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        t_xyz=np.array([0.0, 0.0, 3.0], dtype=np.float32),
+        fx=72.0,
+        fy=72.0,
+        cx=1.5,
+        cy=1.5,
+        width=3,
+        height=3,
+    )
+    scene = _make_scene(count=4, seed=123)
+    renderer = GaussianRenderer(device, width=2, height=2, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(train_subsample_factor=2),
         seed=5,
     )
 
