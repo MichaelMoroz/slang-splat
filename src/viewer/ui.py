@@ -380,7 +380,7 @@ _SCHEDULE_STAGE_OVERRIDES = {
         "use_sh": {"kwargs": {"value": False}},
     },
     "Stage 2": {
-        "end_step": {"kwargs": {"value": 13000, "min": 0, "max": 30000, "max_from": "lr_schedule_steps"}},
+        "end_step": {"kwargs": {"value": 14000, "min": 0, "max": 30000, "max_from": "lr_schedule_steps"}},
         "lr": {"kwargs": {"value": 0.001, "step": 1e-6, "step_fast": 1e-5, "format": "%.8f"}},
         "depth_ratio_weight": {"kwargs": {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}},
         "noise_lr": {"kwargs": {"value": 416666.6666666667, "step": 100.0, "step_fast": 1000.0, "format": "%.4g"}},

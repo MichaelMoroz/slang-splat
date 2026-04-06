@@ -195,7 +195,7 @@ def test_default_training_params_include_background_mode_and_density() -> None:
     assert params.training.lr_schedule_stage1_lr == 0.002
     assert params.training.lr_schedule_stage2_lr == 0.001
     assert params.training.lr_schedule_stage1_step == 2500
-    assert params.training.lr_schedule_stage2_step == 13000
+    assert params.training.lr_schedule_stage2_step == 14000
     assert params.training.depth_ratio_stage1_weight == 0.05
     assert params.training.depth_ratio_stage2_weight == 0.01
     assert params.training.depth_ratio_stage3_weight == 0.001

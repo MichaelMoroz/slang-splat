@@ -186,7 +186,7 @@ def build_training_params(
     lr_schedule_end_lr: float | None = None,
     lr_schedule_steps: int = 30_000,
     lr_schedule_stage1_step: int = 2500,
-    lr_schedule_stage2_step: int = 13_000,
+    lr_schedule_stage2_step: int = 14_000,
     refinement_interval: int = 200,
     refinement_growth_ratio: float = 0.075,
     refinement_growth_start_step: int = 500,
