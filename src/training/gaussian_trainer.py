@@ -161,9 +161,11 @@ class TrainingHyperParams:
     scale_l2_weight: float = 0.0; scale_abs_reg_weight: float = 0.01; sh1_reg_weight: float = 0.01; opacity_reg_weight: float = 0.01; density_regularizer: float = 0.02; depth_ratio_weight: float = 1.0; max_allowed_density_start: float = 5.0; max_allowed_density: float = 12.0
     depth_ratio_grad_min: float = 0.0; depth_ratio_grad_max: float = 0.1
     position_random_step_noise_lr: float = 5e5; position_random_step_opacity_gate_center: float = 0.005; position_random_step_opacity_gate_sharpness: float = 100.0
-    lr_schedule_enabled: bool = True; lr_schedule_start_lr: float = 0.005; lr_schedule_end_lr: float = 1e-4; lr_schedule_steps: int = 30_000; lr_schedule_stage1_step: int = 2000; lr_schedule_stage2_step: int = 5000
+    lr_schedule_enabled: bool = True; lr_schedule_start_lr: float = 0.005; lr_schedule_stage1_lr: float = 0.002; lr_schedule_stage2_lr: float = 0.001; lr_schedule_end_lr: float = 1e-4; lr_schedule_steps: int = 30_000; lr_schedule_stage1_step: int = 2000; lr_schedule_stage2_step: int = 5000
     refinement_interval: int = 200; refinement_growth_ratio: float = 0.075; refinement_growth_start_step: int = 500; refinement_alpha_cull_threshold: float = 1e-2; refinement_min_contribution_percent: float = DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT; refinement_min_contribution_decay: float = DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY
-    depth_ratio_schedule_step1: int = 1000; depth_ratio_schedule_step2: int = 2000; depth_ratio_schedule_step3: int = 5000; position_random_step_noise_end_step: int = 30_000; sh_start_step: int = 5000
+    depth_ratio_stage1_weight: float = 0.05; depth_ratio_stage2_weight: float = 0.01; depth_ratio_stage3_weight: float = 0.001
+    position_random_step_noise_stage1_lr: float = 466666.6666666667; position_random_step_noise_stage2_lr: float = 416666.6666666667; position_random_step_noise_stage3_lr: float = 0.0
+    use_sh_stage1: bool = False; use_sh_stage2: bool = False; use_sh_stage3: bool = True
     max_gaussians: int = 1_000_000; train_downscale_mode: int = 1; train_auto_start_downscale: int = 16
     train_downscale_base_iters: int = 200; train_downscale_iter_step: int = 50; train_downscale_max_iters: int = 30_000
     train_downscale_factor: int = 1
@@ -179,6 +181,8 @@ class TrainingHyperParams:
         self.lr_schedule_steps = max(int(self.lr_schedule_steps), 1)
         self.lr_schedule_stage1_step = min(max(int(self.lr_schedule_stage1_step), 0), self.lr_schedule_steps)
         self.lr_schedule_stage2_step = min(max(int(self.lr_schedule_stage2_step), self.lr_schedule_stage1_step), self.lr_schedule_steps)
+        self.lr_schedule_stage1_lr = max(float(self.lr_schedule_stage1_lr), 1e-8)
+        self.lr_schedule_stage2_lr = max(float(self.lr_schedule_stage2_lr), 1e-8)
         self.refinement_interval = max(int(self.refinement_interval), 1)
         self.refinement_growth_ratio = max(float(self.refinement_growth_ratio), 0.0)
         self.refinement_growth_start_step = max(int(self.refinement_growth_start_step), 0)
@@ -189,17 +193,21 @@ class TrainingHyperParams:
         self.density_regularizer = max(float(self.density_regularizer), 0.0)
         self.depth_ratio_weight = max(float(self.depth_ratio_weight), 0.0)
         self.depth_ratio_grad_min, self.depth_ratio_grad_max = resolve_depth_ratio_grad_band(self.depth_ratio_grad_min, self.depth_ratio_grad_max)
-        self.depth_ratio_schedule_step1 = min(max(int(self.depth_ratio_schedule_step1), 0), self.lr_schedule_steps)
-        self.depth_ratio_schedule_step2 = min(max(int(self.depth_ratio_schedule_step2), self.depth_ratio_schedule_step1), self.lr_schedule_steps)
-        self.depth_ratio_schedule_step3 = min(max(int(self.depth_ratio_schedule_step3), self.depth_ratio_schedule_step2), self.lr_schedule_steps)
+        self.depth_ratio_stage1_weight = max(float(self.depth_ratio_stage1_weight), 0.0)
+        self.depth_ratio_stage2_weight = max(float(self.depth_ratio_stage2_weight), 0.0)
+        self.depth_ratio_stage3_weight = max(float(self.depth_ratio_stage3_weight), 0.0)
         self.max_allowed_density_start = max(float(self.max_allowed_density_start), 0.0)
         self.max_allowed_density = max(float(self.max_allowed_density), 0.0)
         self.max_allowed_density = max(self.max_allowed_density, self.max_allowed_density_start)
         self.position_random_step_noise_lr = max(float(self.position_random_step_noise_lr), 0.0)
-        self.position_random_step_noise_end_step = min(max(int(self.position_random_step_noise_end_step), 0), self.lr_schedule_steps)
+        self.position_random_step_noise_stage1_lr = max(float(self.position_random_step_noise_stage1_lr), 0.0)
+        self.position_random_step_noise_stage2_lr = max(float(self.position_random_step_noise_stage2_lr), 0.0)
+        self.position_random_step_noise_stage3_lr = max(float(self.position_random_step_noise_stage3_lr), 0.0)
         self.position_random_step_opacity_gate_center = min(max(float(self.position_random_step_opacity_gate_center), 0.0), 1.0)
         self.position_random_step_opacity_gate_sharpness = max(float(self.position_random_step_opacity_gate_sharpness), 0.0)
-        self.sh_start_step = min(max(int(self.sh_start_step), 0), self.lr_schedule_steps)
+        self.use_sh_stage1 = bool(self.use_sh_stage1)
+        self.use_sh_stage2 = bool(self.use_sh_stage2)
+        self.use_sh_stage3 = bool(self.use_sh_stage3)
         mode = int(self.train_downscale_mode)
         legacy_factor = min(max(int(self.train_downscale_factor), 1), TRAIN_DOWNSCALE_MAX_FACTOR)
         if mode == 1 and legacy_factor != 1:

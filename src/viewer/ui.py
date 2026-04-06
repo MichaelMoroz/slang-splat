@@ -277,6 +277,139 @@ class ControlSpec:
     kwargs: dict[str, object]
 
 
+_TRAIN_SETUP_SPECS = (
+    ControlSpec("max_gaussians", "slider_int", "Max Gaussians", {"value": 1000000, "min": 1000, "max": 10000000}),
+    ControlSpec("training_steps_per_frame", "slider_int", "Steps / Frame", {"value": 3, "min": 1, "max": 8}),
+    ControlSpec("background_mode", "combo", "Train Background", {"value": 1, "options": _TRAIN_BACKGROUND_MODE_LABELS}),
+    ControlSpec("train_background_color", "color_edit3", "Train BG Color", {"value": (1.0, 1.0, 1.0)}),
+    ControlSpec("use_sh", "checkbox", "Use Spherical Harmonics", {"value": True}),
+    ControlSpec("refinement_interval", "input_int", "Refinement Interval", {"value": 200, "step": 10, "step_fast": 50}),
+    ControlSpec("refinement_growth_ratio", "input_float", "Refinement Growth", {"value": 0.075, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
+    ControlSpec("refinement_growth_start_step", "slider_int", "Start Refinement After", {"value": 500, "min": 0, "max": 30000, "max_from": "lr_schedule_steps"}),
+    ControlSpec("refinement_alpha_cull_threshold", "input_float", "Refinement Alpha Cull", {"value": 1e-2, "step": 1e-5, "step_fast": 1e-4, "format": "%.6e"}),
+    ControlSpec("refinement_min_contribution_percent", "input_float", "Refinement Min Contribution", {"value": 1e-05, "step": 1e-6, "step_fast": 1e-5, "format": "%.6g%%"}),
+    ControlSpec("refinement_min_contribution_decay", "input_float", "Refinement Min Contribution Decay", {"value": 0.995, "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
+    ControlSpec("train_downscale_mode", "combo", "Downscale Mode", {"value": 1, "options": _TRAIN_DOWNSCALE_MODE_LABELS}),
+    ControlSpec("train_auto_start_downscale", "slider_int", "Auto Start Downscale", {"value": 16, "min": 1, "max": 16}),
+    ControlSpec("train_downscale_base_iters", "input_int", "Downscale Base Iters", {"value": 200, "step": 25, "step_fast": 100}),
+    ControlSpec("train_downscale_iter_step", "input_int", "Downscale Iter Step", {"value": 50, "step": 10, "step_fast": 50}),
+    ControlSpec("train_downscale_max_iters", "input_int", "Downscale Max Iters", {"value": 30000, "step": 1000, "step_fast": 5000}),
+    ControlSpec("seed", "slider_int", "Shuffle Seed", {"value": 1234, "min": 0, "max": 1000000}),
+    ControlSpec("init_opacity", "input_float", "Init Opacity", {"value": 0.5, "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
+)
+
+_TRAIN_OPTIMIZER_SPECS = (
+    ControlSpec("lr_base", "input_float", "Base LR", {"value": 0.005, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
+    ControlSpec("lr_schedule_enabled", "checkbox", "Use LR Schedule", {"value": True}),
+    ControlSpec("lr_schedule_start_lr", "input_float", "Schedule Start LR", {"value": 0.005, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
+    ControlSpec("depth_ratio_weight", "input_float", "Depth Ratio Reg", {"value": 1.0, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
+    ControlSpec("position_random_step_noise_lr", "input_float", "Noise LR", {"value": 5e5, "step": 100.0, "step_fast": 1000.0, "format": "%.4g"}),
+    ControlSpec("lr_pos_mul", "input_float", "LR Mul Position", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
+    ControlSpec("lr_scale_mul", "input_float", "LR Mul Scale", {"value": 5.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
+    ControlSpec("lr_rot_mul", "input_float", "LR Mul Rotation", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
+    ControlSpec("lr_color_mul", "input_float", "LR Mul Color", {"value": 5.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
+    ControlSpec("lr_opacity_mul", "input_float", "LR Mul Opacity", {"value": 5.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
+    ControlSpec("beta1", "input_float", "Beta1", {"value": 0.9, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
+    ControlSpec("beta2", "input_float", "Beta2", {"value": 0.999, "step": 1e-4, "step_fast": 1e-3, "format": "%.6f"}),
+    ControlSpec("scale_l2", "input_float", "Scale Log Reg", {"value": 0.0, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
+    ControlSpec("scale_abs_reg", "input_float", "Scale Abs Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
+    ControlSpec("sh1_reg", "input_float", "SH1 Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
+    ControlSpec("opacity_reg", "input_float", "Opacity Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
+    ControlSpec("density_regularizer", "input_float", "Density Reg", {"value": 0.02, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
+    ControlSpec("depth_ratio_grad_min", "input_float", "Depth Ratio Grad Min", {"value": 0.0, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
+    ControlSpec("depth_ratio_grad_max", "input_float", "Depth Ratio Grad Max", {"value": 0.1, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
+    ControlSpec("max_allowed_density", "input_float", "Max Density", {"value": 12.0, "step": 1e-3, "step_fast": 1e-2, "format": "%.8f"}),
+    ControlSpec("position_random_step_opacity_gate_center", "input_float", "Noise Gate Center", {"value": 0.005, "step": 1e-4, "step_fast": 1e-3, "format": "%.6f"}),
+    ControlSpec("position_random_step_opacity_gate_sharpness", "input_float", "Noise Gate Sharpness", {"value": 100.0, "step": 1.0, "step_fast": 10.0, "format": "%.4g"}),
+    ControlSpec("max_anisotropy", "input_float", "Max Anisotropy", {"value": 32.0, "step": 0.1, "step_fast": 0.5, "format": "%.6f"}),
+    ControlSpec("grad_clip", "input_float", "Grad Clip", {"value": 10.0, "step": 0.1, "step_fast": 1.0, "format": "%.4f"}),
+    ControlSpec("grad_norm_clip", "input_float", "Grad Norm Clip", {"value": 10.0, "step": 0.1, "step_fast": 1.0, "format": "%.4f"}),
+    ControlSpec("max_update", "input_float", "Max Update", {"value": 0.05, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
+)
+
+_SCHEDULE_STAGE_SPEC_TEMPLATE = {
+    "end_step": ControlSpec("schedule_stage_end_step", "slider_int", "End Step", {"value": 0, "min": 0, "max": 30000, "max_from": "lr_schedule_steps"}),
+    "lr": ControlSpec("schedule_stage_lr", "input_float", "LR Target", {"value": 1e-4, "step": 1e-6, "step_fast": 1e-5, "format": "%.8f"}),
+    "depth_ratio_weight": ControlSpec("schedule_stage_depth_ratio_weight", "input_float", "Depth Ratio Reg", {"value": 0.001, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
+    "noise_lr": ControlSpec("schedule_stage_noise_lr", "input_float", "Noise LR", {"value": 0.0, "step": 100.0, "step_fast": 1000.0, "format": "%.4g"}),
+    "use_sh": ControlSpec("schedule_stage_use_sh", "checkbox", "Use SH", {"value": False}),
+}
+
+_SCHEDULE_STAGE_GROUPS = {
+    "Stage 1": {
+        "end_step": "lr_schedule_stage1_step",
+        "lr": "lr_schedule_stage1_lr",
+        "depth_ratio_weight": "depth_ratio_stage1_weight",
+        "noise_lr": "position_random_step_noise_stage1_lr",
+        "use_sh": "use_sh_stage1",
+    },
+    "Stage 2": {
+        "end_step": "lr_schedule_stage2_step",
+        "lr": "lr_schedule_stage2_lr",
+        "depth_ratio_weight": "depth_ratio_stage2_weight",
+        "noise_lr": "position_random_step_noise_stage2_lr",
+        "use_sh": "use_sh_stage2",
+    },
+    "Stage 3": {
+        "end_step": "lr_schedule_steps",
+        "lr": "lr_schedule_end_lr",
+        "depth_ratio_weight": "depth_ratio_stage3_weight",
+        "noise_lr": "position_random_step_noise_stage3_lr",
+        "use_sh": "use_sh_stage3",
+    },
+}
+
+_SCHEDULE_STAGE_OVERRIDES = {
+    "Stage 1": {
+        "end_step": {"kwargs": {"value": 2000, "min": 0, "max": 30000, "max_from": "lr_schedule_steps"}},
+        "lr": {"kwargs": {"value": 0.002, "step": 1e-6, "step_fast": 1e-5, "format": "%.8f"}},
+        "depth_ratio_weight": {"kwargs": {"value": 0.05, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}},
+        "noise_lr": {"kwargs": {"value": 466666.6666666667, "step": 100.0, "step_fast": 1000.0, "format": "%.4g"}},
+        "use_sh": {"kwargs": {"value": False}},
+    },
+    "Stage 2": {
+        "end_step": {"kwargs": {"value": 5000, "min": 0, "max": 30000, "max_from": "lr_schedule_steps"}},
+        "lr": {"kwargs": {"value": 0.001, "step": 1e-6, "step_fast": 1e-5, "format": "%.8f"}},
+        "depth_ratio_weight": {"kwargs": {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}},
+        "noise_lr": {"kwargs": {"value": 416666.6666666667, "step": 100.0, "step_fast": 1000.0, "format": "%.4g"}},
+        "use_sh": {"kwargs": {"value": False}},
+    },
+    "Stage 3": {
+        "end_step": {
+            "kind": "input_int",
+            "label": "End Step",
+            "kwargs": {"value": 30000, "step": 1000, "step_fast": 5000},
+        },
+        "lr": {"kwargs": {"value": 1e-4, "step": 1e-6, "step_fast": 1e-5, "format": "%.8f"}},
+        "depth_ratio_weight": {"kwargs": {"value": 0.001, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}},
+        "noise_lr": {"kwargs": {"value": 0.0, "step": 100.0, "step_fast": 1000.0, "format": "%.4g"}},
+        "use_sh": {"kwargs": {"value": True}},
+    },
+}
+
+
+def _build_schedule_stage_specs() -> dict[str, tuple[ControlSpec, ...]]:
+    groups: dict[str, tuple[ControlSpec, ...]] = {}
+    for stage_label, key_map in _SCHEDULE_STAGE_GROUPS.items():
+        overrides = _SCHEDULE_STAGE_OVERRIDES.get(stage_label, {})
+        specs: list[ControlSpec] = []
+        for template_key, mapped_key in key_map.items():
+            template = _SCHEDULE_STAGE_SPEC_TEMPLATE[template_key]
+            override = overrides.get(template_key, {})
+            specs.append(
+                ControlSpec(
+                    key=mapped_key,
+                    kind=str(override.get("kind", template.kind)),
+                    label=str(override.get("label", template.label)),
+                    kwargs=dict(template.kwargs if "kwargs" not in override else override["kwargs"]),
+                )
+            )
+        groups[stage_label] = tuple(specs)
+    return groups
+
+
+SCHEDULE_STAGE_SPECS = _build_schedule_stage_specs()
+
 GROUP_SPECS = {
     "View": (
         ControlSpec(_INTERFACE_SCALE_KEY, "combo", "Interface Scale", {"value": _DEFAULT_INTERFACE_SCALE_INDEX, "options": tuple(label for label, _ in _INTERFACE_SCALE_OPTIONS)}),
@@ -293,63 +426,8 @@ GROUP_SPECS = {
         ControlSpec("render_background_mode", "combo", "Render Background", {"value": 1, "options": _VIEWER_BACKGROUND_MODE_LABELS}),
         ControlSpec("render_background_color", "color_edit3", "Render BG Color", {"value": (0.0, 0.0, 0.0)}),
     ),
-    "Train Setup": (
-        ControlSpec("max_gaussians", "slider_int", "Max Gaussians", {"value": 1000000, "min": 1000, "max": 10000000}),
-        ControlSpec("training_steps_per_frame", "slider_int", "Steps / Frame", {"value": 3, "min": 1, "max": 8}),
-        ControlSpec("background_mode", "combo", "Train Background", {"value": 1, "options": _TRAIN_BACKGROUND_MODE_LABELS}),
-        ControlSpec("train_background_color", "color_edit3", "Train BG Color", {"value": (1.0, 1.0, 1.0)}),
-        ControlSpec("use_sh", "checkbox", "Use Spherical Harmonics", {"value": True}),
-        ControlSpec("sh_start_step", "slider_int", "SH Start Step", {"value": 5000, "min": 0, "max": 30000, "max_from": "lr_schedule_steps"}),
-        ControlSpec("refinement_interval", "input_int", "Refinement Interval", {"value": 200, "step": 10, "step_fast": 50}),
-        ControlSpec("refinement_growth_ratio", "input_float", "Refinement Growth", {"value": 0.075, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
-        ControlSpec("refinement_growth_start_step", "slider_int", "Start Refinement After", {"value": 500, "min": 0, "max": 30000, "max_from": "lr_schedule_steps"}),
-        ControlSpec("refinement_alpha_cull_threshold", "input_float", "Refinement Alpha Cull", {"value": 1e-2, "step": 1e-5, "step_fast": 1e-4, "format": "%.6e"}),
-        ControlSpec("refinement_min_contribution_percent", "input_float", "Refinement Min Contribution", {"value": 1e-05, "step": 1e-6, "step_fast": 1e-5, "format": "%.6g%%"}),
-        ControlSpec("refinement_min_contribution_decay", "input_float", "Refinement Min Contribution Decay", {"value": 0.995, "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
-        ControlSpec("train_downscale_mode", "combo", "Downscale Mode", {"value": 1, "options": _TRAIN_DOWNSCALE_MODE_LABELS}),
-        ControlSpec("train_auto_start_downscale", "slider_int", "Auto Start Downscale", {"value": 16, "min": 1, "max": 16}),
-        ControlSpec("train_downscale_base_iters", "input_int", "Downscale Base Iters", {"value": 200, "step": 25, "step_fast": 100}),
-        ControlSpec("train_downscale_iter_step", "input_int", "Downscale Iter Step", {"value": 50, "step": 10, "step_fast": 50}),
-        ControlSpec("train_downscale_max_iters", "input_int", "Downscale Max Iters", {"value": 30000, "step": 1000, "step_fast": 5000}),
-        ControlSpec("seed", "slider_int", "Shuffle Seed", {"value": 1234, "min": 0, "max": 1000000}),
-        ControlSpec("init_opacity", "input_float", "Init Opacity", {"value": 0.5, "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
-    ),
-    "Train Optimizer": (
-        ControlSpec("lr_base", "input_float", "Base LR", {"value": 0.005, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
-        ControlSpec("lr_schedule_enabled", "checkbox", "Use LR Schedule", {"value": True}),
-        ControlSpec("lr_schedule_start_lr", "input_float", "Schedule Start LR", {"value": 0.005, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
-        ControlSpec("lr_schedule_end_lr", "input_float", "Schedule End LR", {"value": 1e-4, "step": 1e-6, "step_fast": 1e-5, "format": "%.8f"}),
-        ControlSpec("lr_schedule_steps", "input_int", "Schedule Steps", {"value": 30000, "step": 1000, "step_fast": 5000}),
-        ControlSpec("lr_schedule_stage1_step", "slider_int", "LR Stage 1 Step", {"value": 2000, "min": 0, "max": 30000, "max_from": "lr_schedule_steps"}),
-        ControlSpec("lr_schedule_stage2_step", "slider_int", "LR Stage 2 Step", {"value": 5000, "min": 0, "max": 30000, "max_from": "lr_schedule_steps"}),
-        ControlSpec("lr_pos_mul", "input_float", "LR Mul Position", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
-        ControlSpec("lr_scale_mul", "input_float", "LR Mul Scale", {"value": 5.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
-        ControlSpec("lr_rot_mul", "input_float", "LR Mul Rotation", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
-        ControlSpec("lr_color_mul", "input_float", "LR Mul Color", {"value": 5.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
-        ControlSpec("lr_opacity_mul", "input_float", "LR Mul Opacity", {"value": 5.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
-        ControlSpec("position_random_step_noise_lr", "input_float", "Noise LR", {"value": 5e5, "step": 100.0, "step_fast": 1000.0, "format": "%.4g"}),
-        ControlSpec("position_random_step_noise_end_step", "slider_int", "Noise End Step", {"value": 30000, "min": 0, "max": 30000, "max_from": "lr_schedule_steps"}),
-        ControlSpec("beta1", "input_float", "Beta1", {"value": 0.9, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
-        ControlSpec("beta2", "input_float", "Beta2", {"value": 0.999, "step": 1e-4, "step_fast": 1e-3, "format": "%.6f"}),
-        ControlSpec("scale_l2", "input_float", "Scale Log Reg", {"value": 0.0, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
-        ControlSpec("scale_abs_reg", "input_float", "Scale Abs Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
-        ControlSpec("sh1_reg", "input_float", "SH1 Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
-        ControlSpec("opacity_reg", "input_float", "Opacity Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
-        ControlSpec("density_regularizer", "input_float", "Density Reg", {"value": 0.02, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
-        ControlSpec("depth_ratio_weight", "input_float", "Depth Ratio Reg", {"value": 1.0, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
-        ControlSpec("depth_ratio_schedule_step1", "slider_int", "Depth Reg Stage 1", {"value": 1000, "min": 0, "max": 30000, "max_from": "lr_schedule_steps"}),
-        ControlSpec("depth_ratio_schedule_step2", "slider_int", "Depth Reg Stage 2", {"value": 2000, "min": 0, "max": 30000, "max_from": "lr_schedule_steps"}),
-        ControlSpec("depth_ratio_schedule_step3", "slider_int", "Depth Reg Stage 3", {"value": 5000, "min": 0, "max": 30000, "max_from": "lr_schedule_steps"}),
-        ControlSpec("depth_ratio_grad_min", "input_float", "Depth Ratio Grad Min", {"value": 0.0, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
-        ControlSpec("depth_ratio_grad_max", "input_float", "Depth Ratio Grad Max", {"value": 0.1, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
-        ControlSpec("max_allowed_density", "input_float", "Max Density", {"value": 12.0, "step": 1e-3, "step_fast": 1e-2, "format": "%.8f"}),
-        ControlSpec("position_random_step_opacity_gate_center", "input_float", "Noise Gate Center", {"value": 0.005, "step": 1e-4, "step_fast": 1e-3, "format": "%.6f"}),
-        ControlSpec("position_random_step_opacity_gate_sharpness", "input_float", "Noise Gate Sharpness", {"value": 100.0, "step": 1.0, "step_fast": 10.0, "format": "%.4g"}),
-        ControlSpec("max_anisotropy", "input_float", "Max Anisotropy", {"value": 32.0, "step": 0.1, "step_fast": 0.5, "format": "%.6f"}),
-        ControlSpec("grad_clip", "input_float", "Grad Clip", {"value": 10.0, "step": 0.1, "step_fast": 1.0, "format": "%.4f"}),
-        ControlSpec("grad_norm_clip", "input_float", "Grad Norm Clip", {"value": 10.0, "step": 0.1, "step_fast": 1.0, "format": "%.4f"}),
-        ControlSpec("max_update", "input_float", "Max Update", {"value": 0.05, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
-    ),
+    "Train Setup": _TRAIN_SETUP_SPECS,
+    "Train Optimizer": _TRAIN_OPTIMIZER_SPECS + tuple(spec for specs in SCHEDULE_STAGE_SPECS.values() for spec in specs),
     "Train Stability": (
         ControlSpec("min_scale", "input_float", "Min Scale", {"value": 1e-3, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
         ControlSpec("max_scale", "input_float", "Max Scale", {"value": 3.0, "step": 1e-2, "step_fast": 0.1, "format": "%.5f"}),
@@ -404,10 +482,12 @@ _ALL_DEFAULTS.update({spec.key: spec.kwargs["value"] for spec in RENDER_PARAM_SP
 _ALL_DEFAULTS.update({spec.key: spec.kwargs["value"] for spec in DEBUG_RENDER_SPECS if "value" in spec.kwargs})
 
 _OPTIMIZER_TAB_KEYS = {
-    "Learning Rates": ("lr_base", "lr_schedule_enabled", "lr_schedule_start_lr", "lr_schedule_end_lr", "lr_schedule_steps", "lr_schedule_stage1_step", "lr_schedule_stage2_step", "lr_pos_mul", "lr_scale_mul", "lr_rot_mul", "lr_color_mul", "lr_opacity_mul", "position_random_step_noise_lr", "position_random_step_noise_end_step"),
+    "Schedule": ("lr_base", "lr_schedule_enabled", "lr_schedule_start_lr", "depth_ratio_weight", "position_random_step_noise_lr", "lr_pos_mul", "lr_scale_mul", "lr_rot_mul", "lr_color_mul", "lr_opacity_mul"),
     "Adam": ("beta1", "beta2"),
-    "Regularization": ("scale_l2", "scale_abs_reg", "sh1_reg", "opacity_reg", "density_regularizer", "depth_ratio_weight", "depth_ratio_schedule_step1", "depth_ratio_schedule_step2", "depth_ratio_schedule_step3", "depth_ratio_grad_min", "depth_ratio_grad_max", "max_allowed_density", "position_random_step_opacity_gate_center", "position_random_step_opacity_gate_sharpness", "max_anisotropy", "grad_clip", "grad_norm_clip", "max_update"),
+    "Regularization": ("scale_l2", "scale_abs_reg", "sh1_reg", "opacity_reg", "density_regularizer", "depth_ratio_grad_min", "depth_ratio_grad_max", "max_allowed_density", "position_random_step_opacity_gate_center", "position_random_step_opacity_gate_sharpness", "max_anisotropy", "grad_clip", "grad_norm_clip", "max_update"),
 }
+
+_TRAIN_OPTIMIZER_SPEC_BY_KEY = {spec.key: spec for spec in GROUP_SPECS["Train Optimizer"]}
 
 
 class _ControlProxy:
@@ -1478,24 +1558,38 @@ class ToolkitWindow:
         self._ctx_reset("train_setup_ctx", ui, [s.key for s in GROUP_SPECS["Train Setup"]])
         imgui.separator()
 
+    def _draw_schedule_stage_tabs(self, ui: ViewerUI) -> None:
+        if not imgui.begin_tab_bar("##schedule_stage_tabs"):
+            return
+        for stage_label, specs in SCHEDULE_STAGE_SPECS.items():
+            if not imgui.begin_tab_item(stage_label)[0]:
+                continue
+            imgui.spacing()
+            for spec in specs:
+                self._draw_control(ui, spec)
+            imgui.end_tab_item()
+        imgui.end_tab_bar()
+
     def _section_optimizer(self, ui: ViewerUI) -> None:
         if not imgui.collapsing_header("Optimizer"):
             return
         if imgui.begin_tab_bar("##optim_tabs"):
-            if imgui.begin_tab_item("Learning Rates")[0]:
+            if imgui.begin_tab_item("Schedule")[0]:
                 imgui.spacing()
-                for key in _OPTIMIZER_TAB_KEYS["Learning Rates"]:
-                    self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Optimizer"] if spec.key == key))
+                for key in _OPTIMIZER_TAB_KEYS["Schedule"]:
+                    self._draw_control(ui, _TRAIN_OPTIMIZER_SPEC_BY_KEY[key])
+                imgui.separator()
+                self._draw_schedule_stage_tabs(ui)
                 imgui.end_tab_item()
             if imgui.begin_tab_item("Adam")[0]:
                 imgui.spacing()
                 for key in _OPTIMIZER_TAB_KEYS["Adam"]:
-                    self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Optimizer"] if spec.key == key))
+                    self._draw_control(ui, _TRAIN_OPTIMIZER_SPEC_BY_KEY[key])
                 imgui.end_tab_item()
             if imgui.begin_tab_item("Regularization")[0]:
                 imgui.spacing()
                 for key in _OPTIMIZER_TAB_KEYS["Regularization"]:
-                    self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Optimizer"] if spec.key == key))
+                    self._draw_control(ui, _TRAIN_OPTIMIZER_SPEC_BY_KEY[key])
                 imgui.end_tab_item()
             imgui.end_tab_bar()
         self._ctx_reset("optimizer_ctx", ui, [s.key for s in GROUP_SPECS["Train Optimizer"]])
@@ -1677,8 +1771,7 @@ class ToolkitWindow:
         "training_steps_per_frame": "Number of training optimizer steps to run before each viewer redraw; higher improves training throughput but reduces UI refresh rate",
         "background_mode": "Choose whether training uses a fixed custom RGB background or a new random RGB background each optimizer step",
         "train_background_color": "Custom RGB background used for training when Train Background is set to Custom",
-        "use_sh": "Enable SH0+SH1 view-dependent color evaluation during projection and training; runtime keeps SH disabled until the configured SH start step",
-        "sh_start_step": "Training step at which SH evaluation becomes active; slider range follows Schedule Steps",
+        "use_sh": "Master switch for SH0+SH1 view-dependent color evaluation; per-stage schedule tabs decide whether SH is active within each training interval",
         "refinement_interval": "Run cull/split refinement every N training steps",
         "refinement_growth_ratio": "Target fractional scene growth per refinement step once densification is enabled",
         "refinement_growth_start_step": "Keep densification growth at zero until this training iteration, then use the configured refinement growth; slider range follows Schedule Steps",
@@ -1686,20 +1779,28 @@ class ToolkitWindow:
         "refinement_min_contribution_percent": "Minimum accumulated alpha contribution, as a percent of observed dataset pixels, required for a splat to survive refinement",
         "refinement_min_contribution_decay": "Multiply the minimum contribution percent by this factor after each completed refinement pass",
         "density_regularizer": "Weight applied to the per-pixel hinge penalty max(density - max_allowed_density, 0)",
-        "depth_ratio_weight": "Initial weight applied to the differentiable per-pixel windowed-sigmoid depth std over mean-depth ratio penalty; runtime decays it over the training schedule",
-        "depth_ratio_schedule_step1": "Training step for the first depth-ratio regularizer drop; slider range follows Schedule Steps",
-        "depth_ratio_schedule_step2": "Training step for the second depth-ratio regularizer drop; slider range follows Schedule Steps",
-        "depth_ratio_schedule_step3": "Training step for the third depth-ratio regularizer drop; slider range follows Schedule Steps",
+        "depth_ratio_weight": "Initial depth-ratio regularizer weight before Stage 1; each stage tab sets the target weight reached at that stage end step",
         "depth_ratio_grad_min": "Start of the high-gradient depth-ratio interval; gradients taper below this value",
         "depth_ratio_grad_max": "End of the high-gradient depth-ratio interval; gradients taper above this value",
         "max_allowed_density": "End-of-training per-pixel density threshold above which the density regularizer activates; runtime ramps from 5.0 to this value over the LR schedule",
         "lr_schedule_enabled": "Enable the piecewise-linear base learning-rate schedule",
-        "lr_schedule_start_lr": "Base learning rate at step 0 of the schedule",
-        "lr_schedule_end_lr": "Base learning rate at the end of the final piecewise schedule segment",
-        "lr_schedule_steps": "Total step budget used to scale the piecewise LR, depth-ratio, SH warmup, and noise schedules before clamping",
-        "lr_schedule_stage1_step": "Training step of the first LR breakpoint; slider range follows Schedule Steps",
-        "lr_schedule_stage2_step": "Training step of the second LR breakpoint; slider range follows Schedule Steps",
-        "position_random_step_noise_end_step": "Training step where position noise reaches zero; slider range follows Schedule Steps",
+        "lr_schedule_start_lr": "Base learning rate at step 0 before the stage schedule begins interpolating toward Stage 1",
+        "lr_schedule_stage1_step": "Training step where Stage 1 ends and the Stage 1 targets are reached; slider range follows the Stage 3 end step",
+        "lr_schedule_stage2_step": "Training step where Stage 2 ends and the Stage 2 targets are reached; slider range follows the Stage 3 end step",
+        "lr_schedule_stage1_lr": "Base learning-rate target reached at the end of Stage 1",
+        "lr_schedule_stage2_lr": "Base learning-rate target reached at the end of Stage 2",
+        "lr_schedule_end_lr": "Base learning-rate target reached at the end of Stage 3",
+        "lr_schedule_steps": "Stage 3 end step and total step budget shared by the LR, depth-ratio, noise, and SH schedules",
+        "depth_ratio_stage1_weight": "Depth-ratio regularizer target reached at the end of Stage 1",
+        "depth_ratio_stage2_weight": "Depth-ratio regularizer target reached at the end of Stage 2",
+        "depth_ratio_stage3_weight": "Depth-ratio regularizer target reached at the end of Stage 3",
+        "position_random_step_noise_lr": "Initial post-step MCMC-style position noise multiplier before Stage 1; each stage tab sets the target noise LR reached at that stage end step",
+        "position_random_step_noise_stage1_lr": "Position-noise LR target reached at the end of Stage 1",
+        "position_random_step_noise_stage2_lr": "Position-noise LR target reached at the end of Stage 2",
+        "position_random_step_noise_stage3_lr": "Position-noise LR target reached at the end of Stage 3",
+        "use_sh_stage1": "Enable SH during Stage 1",
+        "use_sh_stage2": "Enable SH during Stage 2",
+        "use_sh_stage3": "Enable SH during Stage 3",
         "train_downscale_mode": "Use Auto for scheduled downscale descent or choose a fixed manual override from 1x to 16x",
         "train_auto_start_downscale": "Initial downscale factor used at step 0 when Downscale Mode is Auto",
         "train_downscale_base_iters": "Number of iterations spent at the auto start factor before descending",

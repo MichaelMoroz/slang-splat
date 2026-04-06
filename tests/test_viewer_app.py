@@ -187,15 +187,21 @@ def test_default_training_params_include_background_mode_and_density() -> None:
     assert params.training.max_allowed_density_start == 5.0
     assert params.training.max_allowed_density == 12.0
     assert params.training.position_random_step_noise_lr == 5e5
-    assert params.training.position_random_step_noise_end_step == 30000
+    assert np.isclose(params.training.position_random_step_noise_stage1_lr, 466666.6666666667)
+    assert np.isclose(params.training.position_random_step_noise_stage2_lr, 416666.6666666667)
+    assert params.training.position_random_step_noise_stage3_lr == 0.0
     assert params.training.position_random_step_opacity_gate_center == 0.005
     assert params.training.position_random_step_opacity_gate_sharpness == 100.0
+    assert params.training.lr_schedule_stage1_lr == 0.002
+    assert params.training.lr_schedule_stage2_lr == 0.001
     assert params.training.lr_schedule_stage1_step == 2000
     assert params.training.lr_schedule_stage2_step == 5000
-    assert params.training.depth_ratio_schedule_step1 == 1000
-    assert params.training.depth_ratio_schedule_step2 == 2000
-    assert params.training.depth_ratio_schedule_step3 == 5000
-    assert params.training.sh_start_step == 5000
+    assert params.training.depth_ratio_stage1_weight == 0.05
+    assert params.training.depth_ratio_stage2_weight == 0.01
+    assert params.training.depth_ratio_stage3_weight == 0.001
+    assert params.training.use_sh_stage1 is False
+    assert params.training.use_sh_stage2 is False
+    assert params.training.use_sh_stage3 is True
     assert params.training.refinement_growth_ratio == 0.075
     assert params.training.refinement_growth_start_step == 500
     assert params.training.refinement_alpha_cull_threshold == 1e-2
