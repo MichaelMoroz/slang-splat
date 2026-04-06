@@ -44,6 +44,8 @@ static const float SPLAT_CONTRIBUTION_FIXED_SCALE = 256.0;
 static const float SPLAT_CONTRIBUTION_FIXED_MAX_F = 16777215.99609375;
 static const float CLONE_COUNT_ALPHA_THRESHOLD = 0.01;
 static const float DEPTH_LOCAL_MISMATCH_REJECT_ALPHA_SCALE_MAX = 2.0;
+static const float DEBUG_ELLIPSE_FILL_ALPHA_SCALE = 0.5;
+static const float DEBUG_ELLIPSE_OUTLINE_ALPHA_SCALE = 1.5;
 
 int raster_grad_fixed_quantize(float value, float range)
 {
@@ -682,8 +684,8 @@ struct DebugRasterReplayVariant : IRasterReplayVariant
         float3 color = raster_forward_color(gaussian, splatId, debugMode);
         if (debugMode == DEBUG_MODE_ELLIPSE_OUTLINES)
         {
-            replayState.pixelState = replayState.pixelState.blend(color, 0.5 * alpha);
-            float outlineAlpha = raster_eval_outline_alpha(splatId, gaussian.colorAlpha.w, info.samplePoint);
+            replayState.pixelState = replayState.pixelState.blend(color, DEBUG_ELLIPSE_FILL_ALPHA_SCALE * alpha);
+            float outlineAlpha = saturate(DEBUG_ELLIPSE_OUTLINE_ALPHA_SCALE * raster_eval_outline_alpha(splatId, gaussian.colorAlpha.w, info.samplePoint));
             if (outlineAlpha > 0.0) replayState.pixelState = replayState.pixelState.blend(color, outlineAlpha);
             return;
         }
