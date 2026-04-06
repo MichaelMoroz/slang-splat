@@ -76,6 +76,7 @@ _TRAINING_PARAM_KEYS = {
     "refinement_alpha_cull_threshold": "refinement_alpha_cull_threshold",
     "refinement_min_contribution_percent": "refinement_min_contribution_percent",
     "refinement_min_contribution_decay": "refinement_min_contribution_decay",
+    "refinement_opacity_maintenance_mul": "refinement_opacity_maintenance_mul",
     "depth_ratio_stage1_weight": "depth_ratio_stage1_weight",
     "depth_ratio_stage2_weight": "depth_ratio_stage2_weight",
     "depth_ratio_stage3_weight": "depth_ratio_stage3_weight",

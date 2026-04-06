@@ -120,17 +120,19 @@ def _training_refinement_text(viewer: object) -> str:
         frame_count = len(getattr(viewer.s.trainer, "frames", getattr(viewer.s, "training_frames", ())))
         contribution_cull = resolve_refinement_min_contribution_percent(training, current_step, frame_count)
         decay = min(max(float(getattr(training, "refinement_min_contribution_decay", 0.995)), 0.0), 1.0)
+        alpha_mul = min(max(float(getattr(training, "refinement_opacity_maintenance_mul", 0.75)), 0.0), 1.0)
         return (
             f"Refinement: every {interval:,} | growth={current_growth * 100.0:.2f}% now | target={target_growth * 100.0:.2f}% after {start_step:,} | "
-            f"alpha<{float(training.refinement_alpha_cull_threshold):.2e} or min contrib<{contribution_cull:.6g}% | decay={decay * 100.0:.2f}%/pass | max={int(training.max_gaussians):,}"
+            f"alpha<{float(training.refinement_alpha_cull_threshold):.2e} or min contrib<{contribution_cull:.6g}% | decay={decay * 100.0:.2f}%/pass | alpha mul={alpha_mul:.2f}x | max={int(training.max_gaussians):,}"
         )
     target_growth = max(float(viewer.c("refinement_growth_ratio").value), 0.0)
     start_step = max(int(viewer.c("refinement_growth_start_step").value), 0)
     contribution_cull = max(float(viewer.c("refinement_min_contribution_percent").value), 0.0)
     decay = min(max(float(viewer.c("refinement_min_contribution_decay").value), 0.0), 1.0)
+    alpha_mul = min(max(float(viewer.c("refinement_opacity_maintenance_mul").value), 0.0), 1.0)
     return (
         f"Refinement: every {max(int(viewer.c('refinement_interval').value), 1):,} | growth=0.00% now | target={target_growth * 100.0:.2f}% after {start_step:,} | "
-        f"alpha<{max(float(viewer.c('refinement_alpha_cull_threshold').value), 1e-8):.2e} or min contrib<{contribution_cull:.6g}% | decay={decay * 100.0:.2f}%/pass | max={max(int(viewer.c('max_gaussians').value), 0):,}"
+        f"alpha<{max(float(viewer.c('refinement_alpha_cull_threshold').value), 1e-8):.2e} or min contrib<{contribution_cull:.6g}% | decay={decay * 100.0:.2f}%/pass | alpha mul={alpha_mul:.2f}x | max={max(int(viewer.c('max_gaussians').value), 0):,}"
     )
 
 

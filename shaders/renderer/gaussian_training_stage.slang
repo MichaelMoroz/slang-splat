@@ -100,6 +100,7 @@ uniform uint g_RefinementSeed;
 uniform uint g_RefinementCameraCount;
 uniform float g_RefinementAlphaCullThreshold;
 uniform uint g_RefinementMinContributionThreshold;
+uniform float g_RefinementOpacityMaintenanceMul;
 uniform float g_RefinementRadiusScale;
 
 groupshared float gsLoss[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
@@ -479,6 +480,12 @@ SplatState split_family_member(SplatState source, uint splatId, uint slot, uint 
     return child;
 }
 
+void apply_refinement_opacity_maintenance(inout SplatState state)
+{
+    float alpha = opacity_from_raw(state.rawOpacity) * saturate(g_RefinementOpacityMaintenanceMul);
+    state.rawOpacity = raw_opacity_from_alpha(alpha);
+}
+
 [shader("compute")]
 [numthreads(TRAIN_TILE_DIM, TRAIN_TILE_DIM, 1)]
 void csResampleDownscaledTargetNearest(uint3 dispatchThreadID : SV_DispatchThreadID)
@@ -722,6 +729,7 @@ void csRewriteRefinementSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
     SplatState source = load_splat_state(g_SrcSplatParams, g_SrcSplatCount, splatId);
     float alpha = opacity_from_raw(source.rawOpacity);
     if (should_cull_refinement_splat(alpha, g_SplatContribution[splatId])) return;
+    apply_refinement_opacity_maintenance(source);
 
     uint cloneCount = g_CloneCounts[splatId];
     uint parentIndex = 0u;

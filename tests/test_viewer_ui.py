@@ -140,6 +140,7 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["refinement_alpha_cull_threshold"] == 1e-2
     assert viewer_ui._values["refinement_min_contribution_percent"] == 1e-05
     assert viewer_ui._values["refinement_min_contribution_decay"] == 0.995
+    assert viewer_ui._values["refinement_opacity_maintenance_mul"] == 0.75
     assert viewer_ui._values["density_regularizer"] == 0.02
     assert viewer_ui._values["depth_ratio_weight"] == 1.0
     assert viewer_ui._values["depth_ratio_stage1_weight"] == 0.05

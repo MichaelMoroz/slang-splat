@@ -172,7 +172,7 @@ class TrainingHyperParams:
     lr_pos_mul: float = 1.0; lr_pos_stage1_mul: float = 0.75; lr_pos_stage2_mul: float = 0.4; lr_pos_stage3_mul: float = 0.3
     position_random_step_noise_lr: float = 5e5; position_random_step_opacity_gate_center: float = 0.005; position_random_step_opacity_gate_sharpness: float = 100.0
     lr_schedule_enabled: bool = True; lr_schedule_start_lr: float = 0.005; lr_schedule_stage1_lr: float = 0.002; lr_schedule_stage2_lr: float = 0.001; lr_schedule_end_lr: float = 7.5e-5; lr_schedule_steps: int = 30_000; lr_schedule_stage1_step: int = 3000; lr_schedule_stage2_step: int = 14_000
-    refinement_interval: int = 200; refinement_growth_ratio: float = 0.075; refinement_growth_start_step: int = 500; refinement_alpha_cull_threshold: float = 1e-2; refinement_min_contribution_percent: float = DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT; refinement_min_contribution_decay: float = DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY
+    refinement_interval: int = 200; refinement_growth_ratio: float = 0.075; refinement_growth_start_step: int = 500; refinement_alpha_cull_threshold: float = 1e-2; refinement_min_contribution_percent: float = DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT; refinement_min_contribution_decay: float = DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY; refinement_opacity_maintenance_mul: float = 0.75
     depth_ratio_stage1_weight: float = 0.05; depth_ratio_stage2_weight: float = 0.01; depth_ratio_stage3_weight: float = 0.001
     position_random_step_noise_stage1_lr: float = 466666.6666666667; position_random_step_noise_stage2_lr: float = 416666.6666666667; position_random_step_noise_stage3_lr: float = 0.0
     use_sh_stage1: bool = False; use_sh_stage2: bool = False; use_sh_stage3: bool = True
@@ -203,6 +203,7 @@ class TrainingHyperParams:
         self.refinement_alpha_cull_threshold = min(max(float(self.refinement_alpha_cull_threshold), 1e-8), 1.0)
         self.refinement_min_contribution_percent = min(max(float(self.refinement_min_contribution_percent), 0.0), 100.0)
         self.refinement_min_contribution_decay = min(max(float(self.refinement_min_contribution_decay), 0.0), 1.0)
+        self.refinement_opacity_maintenance_mul = min(max(float(self.refinement_opacity_maintenance_mul), 0.0), 1.0)
         self.sh1_reg_weight = max(float(self.sh1_reg_weight), 0.0)
         self.density_regularizer = max(float(self.density_regularizer), 0.0)
         self.depth_ratio_weight = max(float(self.depth_ratio_weight), 0.0)
@@ -461,6 +462,7 @@ class GaussianTrainer:
             "g_RefinementCameraCount": int(len(self.frames)),
             "g_RefinementAlphaCullThreshold": float(self.training.refinement_alpha_cull_threshold),
             "g_RefinementMinContributionThreshold": np.uint32(contribution_fixed_count_from_percent(refinement_threshold, self._observed_contribution_pixel_count)),
+            "g_RefinementOpacityMaintenanceMul": float(self.training.refinement_opacity_maintenance_mul),
             "g_RefinementRadiusScale": float(max(self.renderer.radius_scale, 1e-8)),
         }
 

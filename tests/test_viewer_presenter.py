@@ -63,6 +63,7 @@ class _DummyTrainer:
             refinement_alpha_cull_threshold=1e-2,
             refinement_min_contribution_percent=1e-05,
             refinement_min_contribution_decay=0.995,
+            refinement_opacity_maintenance_mul=0.75,
             density_regularizer=0.02,
             depth_ratio_weight=1.0,
             depth_ratio_stage1_weight=0.05,
@@ -156,6 +157,7 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         "refinement_alpha_cull_threshold": _control(1e-2),
         "refinement_min_contribution_percent": _control(1e-05),
         "refinement_min_contribution_decay": _control(0.995),
+        "refinement_opacity_maintenance_mul": _control(0.75),
         "depth_ratio_stage1_weight": _control(0.05),
         "depth_ratio_stage2_weight": _control(0.01),
         "depth_ratio_stage3_weight": _control(0.001),
@@ -373,7 +375,7 @@ def test_update_ui_text_reports_training_schedule_and_refinement() -> None:
 
     assert viewer.t("training_schedule").text == "LR Schedule: 5.00e-03@0 -> 2.00e-03@3,000 -> 1.00e-03@14,000 -> 7.50e-05@30,000 | current=5.00e-03"
     assert viewer.t("training_schedule_values").text == "Current Values: step=0 | Stage 0 | lr=5.00e-03 | pos=1.00x | depth=1.00e+00 | noise=5.00e+05 | sh=off"
-    assert viewer.t("training_refinement").text == "Refinement: every 200 | growth=0.00% now | target=7.50% after 500 | alpha<1.00e-02 or min contrib<1e-05% | decay=99.50%/pass | max=1,000,000"
+    assert viewer.t("training_refinement").text == "Refinement: every 200 | growth=0.00% now | target=7.50% after 500 | alpha<1.00e-02 or min contrib<1e-05% | decay=99.50%/pass | alpha mul=0.75x | max=1,000,000"
 
 
 def test_update_ui_text_previews_current_schedule_values_without_trainer() -> None:
