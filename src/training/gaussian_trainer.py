@@ -643,11 +643,11 @@ class GaussianTrainer:
             self._refinement_camera_signature = None
 
     def _refinement_camera_rows(self) -> np.ndarray:
-        width = int(self.renderer.width)
-        height = int(self.renderer.height)
         rows = np.zeros((max(len(self.frames), 1) * self._REFINEMENT_CAMERA_ROW_COUNT, 4), dtype=np.float32)
         for frame_index in range(len(self.frames)):
             frame = self.frames[frame_index]
+            width = int(frame.width)
+            height = int(frame.height)
             camera = self.make_frame_camera(frame_index, width, height)
             right, up, forward = camera.basis()
             fx, fy = camera.focal_pixels_xy(width, height)
