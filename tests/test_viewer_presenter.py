@@ -126,6 +126,9 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         "train_downscale_factor": _control(1),
         "lr_schedule_enabled": _control(True),
         "lr_schedule_start_lr": _control(0.005),
+        "depth_ratio_weight": _control(1.0),
+        "position_random_step_noise_lr": _control(5e5),
+        "use_sh": _control(True),
         "lr_schedule_stage1_lr": _control(0.002),
         "lr_schedule_stage2_lr": _control(0.001),
         "lr_schedule_end_lr": _control(1e-4),
@@ -152,7 +155,7 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         "train_auto_start_downscale": _control(1),
         "train_downscale_max_iters": _control(30000),
     }
-    texts = {key: _text() for key in ("fps", "images_subdir", "loss_debug_view", "loss_debug_frame", "path", "scene_stats", "render_stats", "training", "training_time", "training_iters_avg", "training_loss", "training_mse", "training_density", "training_psnr", "training_instability", "training_resolution", "training_downscale", "training_schedule", "training_refinement", "colmap_import_status", "colmap_import_current", "histogram_status", "error")}
+    texts = {key: _text() for key in ("fps", "images_subdir", "loss_debug_view", "loss_debug_frame", "path", "scene_stats", "render_stats", "training", "training_time", "training_iters_avg", "training_loss", "training_mse", "training_density", "training_psnr", "training_instability", "training_resolution", "training_downscale", "training_schedule", "training_schedule_values", "training_refinement", "colmap_import_status", "colmap_import_current", "histogram_status", "error")}
     viewer = SimpleNamespace()
     viewer.device = SimpleNamespace()
     viewer.toolkit = SimpleNamespace(viewport_size=lambda: (640, 360))
@@ -353,7 +356,18 @@ def test_update_ui_text_reports_training_schedule_and_refinement() -> None:
     presenter.update_ui_text(viewer, 1.0 / 60.0)
 
     assert viewer.t("training_schedule").text == "LR Schedule: 5.00e-03@0 -> 2.00e-03@2,000 -> 1.00e-03@5,000 -> 1.00e-04@30,000 | current=5.00e-03"
+    assert viewer.t("training_schedule_values").text == "Current Values: step=0 | Stage 0 | lr=5.00e-03 | depth=1.00e+00 | noise=5.00e+05 | sh=off"
     assert viewer.t("training_refinement").text == "Refinement: every 200 | growth=0.00% now | target=7.50% after 500 | alpha<1.00e-02 or min contrib<1e-05% | decay=99.50%/pass | max=1,000,000"
+
+
+def test_update_ui_text_previews_current_schedule_values_without_trainer() -> None:
+    viewer = _viewer(loss_debug=False)
+    viewer.s.trainer = None
+    viewer.s.training_active = False
+
+    presenter.update_ui_text(viewer, 1.0 / 60.0)
+
+    assert viewer.t("training_schedule_values").text == "Current Values: step=0 | Stage 0 | lr=5.00e-03 | depth=1.00e+00 | noise=5.00e+05 | sh=off"
 
 
 def test_render_frame_recovers_missing_main_renderer_by_recreating_it(monkeypatch):

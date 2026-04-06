@@ -1591,6 +1591,11 @@ class ToolkitWindow:
                     self._draw_control(ui, _TRAIN_OPTIMIZER_SPEC_BY_KEY[key])
                 imgui.separator()
                 self._draw_schedule_stage_tabs(ui)
+                current_values = ui._texts.get("training_schedule_values", "")
+                if current_values:
+                    imgui.separator()
+                    imgui.text_unformatted("Current Values")
+                    _draw_disabled_wrapped_text(current_values)
                 imgui.end_tab_item()
             if imgui.begin_tab_item("Adam")[0]:
                 imgui.spacing()
@@ -1994,7 +1999,7 @@ def build_ui(renderer) -> ViewerUI:
             "training_time", "training_iters_avg", "training_loss", "training_mse", "training_density", "training_psnr", "training_instability", "error",
             "loss_debug_view", "loss_debug_frame",
             "colmap_import_status", "colmap_import_current",
-            "training_resolution", "training_downscale", "training_schedule", "training_refinement",
+            "training_resolution", "training_downscale", "training_schedule", "training_schedule_values", "training_refinement",
             "histogram_status",
             "setup_hint", "stability_hint",
         )

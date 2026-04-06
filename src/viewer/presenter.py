@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 import time
+from types import SimpleNamespace
 
 import numpy as np
 import slangpy as spy
 
 from ..common import clamp_index, debug_region, require_not_none
-from ..training import resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent
+from ..training import resolve_base_learning_rate, resolve_depth_ratio_weight, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_use_sh
 from . import session
 
 _DEBUG_HUGE_VALUE = 1e8
@@ -19,6 +20,58 @@ _DEFAULT_TRAINING_STEPS_PER_FRAME = 3
 _MAX_TRAINING_STEPS_PER_FRAME = 8
 _TRAIN_DOWNSCALE_MODE_AUTO = 0
 _VIEWER_CLEAR_COLOR = [0.08, 0.09, 0.11, 1.0]
+
+
+def _schedule_state_from_controls(viewer: object) -> object:
+    return SimpleNamespace(
+        lr_schedule_enabled=bool(viewer.c("lr_schedule_enabled").value),
+        lr_schedule_start_lr=float(viewer.c("lr_schedule_start_lr").value),
+        lr_schedule_stage1_lr=float(viewer.c("lr_schedule_stage1_lr").value),
+        lr_schedule_stage2_lr=float(viewer.c("lr_schedule_stage2_lr").value),
+        lr_schedule_end_lr=float(viewer.c("lr_schedule_end_lr").value),
+        lr_schedule_steps=int(viewer.c("lr_schedule_steps").value),
+        lr_schedule_stage1_step=int(viewer.c("lr_schedule_stage1_step").value),
+        lr_schedule_stage2_step=int(viewer.c("lr_schedule_stage2_step").value),
+        depth_ratio_weight=float(viewer.c("depth_ratio_weight").value),
+        depth_ratio_stage1_weight=float(viewer.c("depth_ratio_stage1_weight").value),
+        depth_ratio_stage2_weight=float(viewer.c("depth_ratio_stage2_weight").value),
+        depth_ratio_stage3_weight=float(viewer.c("depth_ratio_stage3_weight").value),
+        position_random_step_noise_lr=float(viewer.c("position_random_step_noise_lr").value),
+        position_random_step_noise_stage1_lr=float(viewer.c("position_random_step_noise_stage1_lr").value),
+        position_random_step_noise_stage2_lr=float(viewer.c("position_random_step_noise_stage2_lr").value),
+        position_random_step_noise_stage3_lr=float(viewer.c("position_random_step_noise_stage3_lr").value),
+        use_sh=bool(viewer.c("use_sh").value),
+        use_sh_stage1=bool(viewer.c("use_sh_stage1").value),
+        use_sh_stage2=bool(viewer.c("use_sh_stage2").value),
+        use_sh_stage3=bool(viewer.c("use_sh_stage3").value),
+    )
+
+
+def _schedule_stage_label(training: object, step: int) -> str:
+    if not bool(getattr(training, "lr_schedule_enabled", True)): return "Stage 0"
+    stage1 = max(int(getattr(training, "lr_schedule_stage1_step", 0)), 0)
+    stage2 = max(int(getattr(training, "lr_schedule_stage2_step", stage1)), stage1)
+    current_step = max(int(step), 0)
+    if current_step < stage1: return "Stage 0"
+    if current_step < stage2: return "Stage 1"
+    if current_step < max(int(getattr(training, "lr_schedule_steps", stage2)), stage2): return "Stage 2"
+    return "Stage 3"
+
+
+def _current_schedule_values_text(viewer: object) -> str:
+    if viewer.s.trainer is not None:
+        training = viewer.s.trainer.training
+        step = max(int(viewer.s.trainer.state.step), 0)
+    else:
+        training = _schedule_state_from_controls(viewer)
+        step = 0
+    return (
+        f"Current Values: step={step:,} | { _schedule_stage_label(training, step) } | "
+        f"lr={resolve_base_learning_rate(training, step):.2e} | "
+        f"depth={resolve_depth_ratio_weight(training, step):.2e} | "
+        f"noise={resolve_position_random_step_noise_lr(training, step):.2e} | "
+        f"sh={'on' if resolve_use_sh(training, step) else 'off'}"
+    )
 
 
 def _training_schedule_text(viewer: object) -> str:
@@ -247,6 +300,7 @@ def update_ui_text(viewer: object, dt: float) -> None:
     viewer.t("training_resolution").text = _training_resolution_text(viewer)
     viewer.t("training_downscale").text = _training_downscale_text(viewer)
     viewer.t("training_schedule").text = _training_schedule_text(viewer)
+    viewer.t("training_schedule_values").text = _current_schedule_values_text(viewer)
     viewer.t("training_refinement").text = _training_refinement_text(viewer)
     viewer.t("histogram_status").text = str(getattr(viewer.s, "cached_raster_grad_histogram_status", ""))
     viewer.ui._values["_histogram_payload"] = getattr(viewer.s, "cached_raster_grad_histograms", None)
