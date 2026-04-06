@@ -911,6 +911,17 @@ class ToolkitWindow:
         imgui.set_cursor_screen_pos(button_pos)
         opened = _imgui_opened(imgui.small_button(label))
         imgui.same_line(0.0, 10.0 * scale)
+        label_pos = imgui.get_cursor_screen_pos()
+        current_label_size = imgui.calc_text_size(current_label)
+        badge_pad_x = 6.0 * scale
+        badge_pad_y = 2.0 * scale
+        draw_list = imgui.get_window_draw_list()
+        draw_list.add_rect_filled(
+            imgui.ImVec2(label_pos.x - badge_pad_x, label_pos.y - badge_pad_y),
+            imgui.ImVec2(label_pos.x + float(current_label_size.x) + badge_pad_x, label_pos.y + float(current_label_size.y) + badge_pad_y),
+            _color_u32(0.06, 0.08, 0.12, 0.68),
+            4.0 * scale,
+        )
         imgui.push_style_color(imgui.Col_.text.value, imgui.ImVec4(0.985, 0.992, 1.000, 1.00))
         imgui.text_unformatted(current_label)
         imgui.pop_style_color()
