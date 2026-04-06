@@ -891,15 +891,17 @@ class ToolkitWindow:
         scale = self._interface_scale_factor(ui)
         label = "View Mode"
         label_size = imgui.calc_text_size(label)
+        button_width = float(label_size.x) + 2.0 * float(style.frame_padding.x)
         button_pos = imgui.ImVec2(float(image_origin.x) + _VIEWPORT_OVERLAY_MARGIN * scale, float(image_origin.y) + _VIEWPORT_OVERLAY_MARGIN * scale)
         button_height = float(label_size.y) + 2.0 * float(style.frame_padding.y)
+        current = min(max(int(ui._values.get("debug_mode", 0)), 0), len(_DEBUG_MODE_LABELS) - 1)
+        current_label = _DEBUG_MODE_LABELS[current]
         imgui.push_id("viewport_view")
         imgui.set_cursor_screen_pos(button_pos)
         if _imgui_opened(imgui.small_button(label)):
             imgui.set_next_window_pos(imgui.ImVec2(button_pos.x, button_pos.y + button_height + _VIEWPORT_OVERLAY_MARGIN * scale), imgui.Cond_.appearing.value)
             imgui.open_popup("viewport_view_popup")
         if _imgui_opened(imgui.begin_popup("viewport_view_popup")):
-            current = min(max(int(ui._values.get("debug_mode", 0)), 0), len(_DEBUG_MODE_LABELS) - 1)
             for idx, label in enumerate(_DEBUG_MODE_LABELS):
                 selected = idx == current
                 if _imgui_opened(imgui.selectable(label, selected)):
@@ -908,6 +910,14 @@ class ToolkitWindow:
                     imgui.set_item_default_focus()
             imgui.end_popup()
         imgui.pop_id()
+        current_label_size = imgui.calc_text_size(current_label)
+        text_x = button_pos.x + button_width + 10.0 * scale
+        text_y = button_pos.y + 0.5 * (button_height - float(current_label_size.y))
+        draw_list = imgui.get_window_draw_list()
+        draw_list.add_text(imgui.ImVec2(text_x, text_y), _color_u32(0.92, 0.96, 1.0, 0.95), current_label)
+        line_y = button_pos.y + button_height - 2.0 * scale
+        line_end = text_x + max(float(current_label_size.x), 96.0 * scale)
+        draw_list.add_line(imgui.ImVec2(text_x, line_y), imgui.ImVec2(line_end, line_y), _color_u32(0.10, 0.72, 1.0, 0.95), max(scale, 1.0))
         return imgui.ImVec2(button_pos.x, button_pos.y + button_height + _VIEWPORT_OVERLAY_MARGIN * scale)
 
     def _draw_viewport_debug_overlay(self, ui: ViewerUI, overlay_origin: imgui.ImVec2) -> None:
