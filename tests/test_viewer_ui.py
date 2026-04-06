@@ -112,8 +112,8 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["lr_schedule_stage2_lr"] == 0.001
     assert viewer_ui._values["lr_schedule_end_lr"] == 1e-4
     assert viewer_ui._values["lr_schedule_steps"] == 30000
-    assert viewer_ui._values["lr_schedule_stage1_step"] == 2000
-    assert viewer_ui._values["lr_schedule_stage2_step"] == 5000
+    assert viewer_ui._values["lr_schedule_stage1_step"] == 2500
+    assert viewer_ui._values["lr_schedule_stage2_step"] == 15000
     assert viewer_ui._values["position_random_step_noise_lr"] == 5e5
     assert np.isclose(viewer_ui._values["position_random_step_noise_stage1_lr"], 466666.6666666667)
     assert np.isclose(viewer_ui._values["position_random_step_noise_stage2_lr"], 416666.6666666667)
