@@ -379,7 +379,7 @@ _TRAIN_OPTIMIZER_SPECS = (
     ControlSpec("beta2", "input_float", "Beta2", {"value": 0.999, "step": 1e-4, "step_fast": 1e-3, "format": "%.6f"}),
     ControlSpec("scale_l2", "input_float", "Scale Log Reg", {"value": 0.0, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
     ControlSpec("scale_abs_reg", "input_float", "Scale Abs Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
-    ControlSpec("sh1_reg", "input_float", "SH1 Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
+    ControlSpec("sh1_reg", "input_float", "SH Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
     ControlSpec("opacity_reg", "input_float", "Opacity Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
     ControlSpec("density_regularizer", "input_float", "Density Reg", {"value": 0.02, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
     ControlSpec("depth_ratio_grad_min", "input_float", "Depth Ratio Grad Min", {"value": 0.0, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
