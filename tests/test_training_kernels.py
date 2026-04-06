@@ -615,17 +615,17 @@ def test_resolve_training_resolution_uses_ceil_division() -> None:
 
 
 def test_base_lr_uses_requested_piecewise_schedule() -> None:
-    hparams = TrainingHyperParams(lr_schedule_start_lr=0.005, lr_schedule_end_lr=1e-4, lr_schedule_steps=30_000)
+    hparams = TrainingHyperParams(lr_schedule_start_lr=0.005, lr_schedule_end_lr=7.5e-5, lr_schedule_steps=30_000)
 
     np.testing.assert_allclose(resolve_base_learning_rate(hparams, 0), 0.005, rtol=0.0, atol=1e-10)
     np.testing.assert_allclose(resolve_base_learning_rate(hparams, 1250), 0.0035, rtol=0.0, atol=1e-10)
     np.testing.assert_allclose(resolve_base_learning_rate(hparams, 2500), 0.002, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(resolve_base_learning_rate(hparams, 8750), 0.0015, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(resolve_base_learning_rate(hparams, 15000), 0.001, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(resolve_base_learning_rate(hparams, 30_000), 1e-4, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(resolve_base_learning_rate(hparams, 40_000), 1e-4, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(resolve_cosine_base_learning_rate(hparams, 8750), resolve_base_learning_rate(hparams, 8750), rtol=0.0, atol=1e-12)
-    assert resolve_lr_schedule_breakpoints(hparams) == (2500, 15000, 30_000)
+    np.testing.assert_allclose(resolve_base_learning_rate(hparams, 7750), 0.0015, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(resolve_base_learning_rate(hparams, 13000), 0.001, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(resolve_base_learning_rate(hparams, 30_000), 7.5e-5, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(resolve_base_learning_rate(hparams, 40_000), 7.5e-5, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(resolve_cosine_base_learning_rate(hparams, 7750), resolve_base_learning_rate(hparams, 7750), rtol=0.0, atol=1e-12)
+    assert resolve_lr_schedule_breakpoints(hparams) == (2500, 13000, 30_000)
 
 
 def test_piecewise_schedule_uses_configured_viewer_breakpoints() -> None:
@@ -715,14 +715,14 @@ def test_depth_ratio_noise_and_sh_schedules_follow_requested_defaults() -> None:
 
     np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 0), 1.0, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 2500), 0.05, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 15000), 0.01, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 13000), 0.01, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 30_000), 0.001, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 0), 5e5, rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 2500), 466666.6666666667, rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 15000), 416666.6666666667, rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 13000), 416666.6666666667, rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 30_000), 0.0, rtol=0.0, atol=1e-6)
-    assert resolve_use_sh(hparams, 14999) is False
-    assert resolve_use_sh(hparams, 15000) is True
+    assert resolve_use_sh(hparams, 12999) is False
+    assert resolve_use_sh(hparams, 13000) is True
 
 
 def test_schedule_disabled_uses_stage0_only_for_scheduled_values() -> None:
@@ -731,7 +731,7 @@ def test_schedule_disabled_uses_stage0_only_for_scheduled_values() -> None:
         lr_schedule_start_lr=0.006,
         lr_schedule_stage1_lr=0.002,
         lr_schedule_stage2_lr=0.001,
-        lr_schedule_end_lr=1e-4,
+        lr_schedule_end_lr=7.5e-5,
         depth_ratio_weight=0.8,
         depth_ratio_stage1_weight=0.05,
         depth_ratio_stage2_weight=0.01,

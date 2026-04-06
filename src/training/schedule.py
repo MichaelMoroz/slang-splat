@@ -6,7 +6,7 @@ from typing import Any
 DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY = 0.995
 _SCHEDULE_REFERENCE_STEPS = 30_000
 _DEFAULT_LR_STAGE1_STEP = 2500
-_DEFAULT_LR_STAGE2_STEP = 15_000
+_DEFAULT_LR_STAGE2_STEP = 13_000
 
 
 def _schedule_duration(training_hparams: Any) -> int:
@@ -80,7 +80,7 @@ def resolve_base_learning_rate(training_hparams: Any, step: int) -> float:
         (
             max(float(getattr(training_hparams, "lr_schedule_stage1_lr", 0.002)), 1e-8),
             max(float(getattr(training_hparams, "lr_schedule_stage2_lr", 0.001)), 1e-8),
-            max(float(getattr(training_hparams, "lr_schedule_end_lr", 1e-4)), 1e-8),
+            max(float(getattr(training_hparams, "lr_schedule_end_lr", 7.5e-5)), 1e-8),
         ),
     )
 
