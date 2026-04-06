@@ -1038,19 +1038,27 @@ class ToolkitWindow:
     def _draw_viewport_camera_overlays(self, ui: ViewerUI, image_origin: imgui.ImVec2) -> None:
         if not bool(ui._values.get("show_camera_overlays", True)):
             return
-        segments = tuple(ui._values.get("_training_view_overlay_segments", ()))
-        if len(segments) == 0:
+        overlays = tuple(ui._values.get("_training_view_overlay_segments", ()))
+        if len(overlays) == 0:
             return
         draw_list = imgui.get_window_draw_list()
         base_x = float(image_origin.x)
         base_y = float(image_origin.y)
-        for x0, y0, x1, y1, color, thickness in segments:
-            draw_list.add_line(
-                imgui.ImVec2(base_x + float(x0), base_y + float(y0)),
-                imgui.ImVec2(base_x + float(x1), base_y + float(y1)),
-                _color_u32(*color),
-                float(thickness),
-            )
+        for near_points, far_points, connectors, color, thickness in overlays:
+            color_u32 = _color_u32(*color)
+            near_polyline = [imgui.ImVec2(base_x + float(x), base_y + float(y)) for x, y in near_points]
+            far_polyline = [imgui.ImVec2(base_x + float(x), base_y + float(y)) for x, y in far_points]
+            if len(near_polyline) >= 2:
+                draw_list.add_polyline(near_polyline, color_u32, imgui.ImDrawFlags_.closed.value, float(thickness))
+            if len(far_polyline) >= 2:
+                draw_list.add_polyline(far_polyline, color_u32, imgui.ImDrawFlags_.closed.value, float(thickness))
+            for x0, y0, x1, y1 in connectors:
+                draw_list.add_line(
+                    imgui.ImVec2(base_x + float(x0), base_y + float(y0)),
+                    imgui.ImVec2(base_x + float(x1), base_y + float(y1)),
+                    color_u32,
+                    float(thickness),
+                )
 
     def _draw_viewport_debug_overlay(self, ui: ViewerUI, overlay_origin: imgui.ImVec2) -> None:
         debug_mode = _DEBUG_MODE_VALUES[min(max(int(ui._values.get("debug_mode", 0)), 0), len(_DEBUG_MODE_VALUES) - 1)]

@@ -300,8 +300,12 @@ def test_viewport_view_menu_left_aligns_view_mode_button(monkeypatch) -> None:
 
 def test_viewport_camera_overlays_draw_lines_when_enabled(monkeypatch) -> None:
     lines: list[tuple[float, float, float, float, float]] = []
+    polylines: list[tuple[list[tuple[float, float]], int, float]] = []
 
     class _DrawList:
+        def add_polyline(self, points, _color, _flags, thickness):
+            polylines.append(([(float(p.x), float(p.y)) for p in points], int(_flags), float(thickness)))
+
         def add_line(self, p0, p1, _color, thickness):
             lines.append((float(p0.x), float(p0.y), float(p1.x), float(p1.y), float(thickness)))
 
@@ -310,19 +314,40 @@ def test_viewport_camera_overlays_draw_lines_when_enabled(monkeypatch) -> None:
     viewer_ui = SimpleNamespace(
         _values={
             "show_camera_overlays": True,
-            "_training_view_overlay_segments": ((1.0, 2.0, 3.0, 4.0, (0.1, 0.2, 0.3, 0.4), 1.5),),
+            "_training_view_overlay_segments": (
+                (
+                    ((1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0)),
+                    ((9.0, 10.0), (11.0, 12.0), (13.0, 14.0), (15.0, 16.0)),
+                    ((1.0, 2.0, 9.0, 10.0), (3.0, 4.0, 11.0, 12.0), (5.0, 6.0, 13.0, 14.0), (7.0, 8.0, 15.0, 16.0)),
+                    (0.1, 0.2, 0.3, 0.4),
+                    1.5,
+                ),
+            ),
         }
     )
 
     ui.ToolkitWindow._draw_viewport_camera_overlays(toolkit, viewer_ui, ui.imgui.ImVec2(10.0, 20.0))
 
-    assert lines == [(11.0, 22.0, 13.0, 24.0, 1.5)]
+    assert polylines == [
+        ([(11.0, 22.0), (13.0, 24.0), (15.0, 26.0), (17.0, 28.0)], int(ui.imgui.ImDrawFlags_.closed.value), 1.5),
+        ([(19.0, 30.0), (21.0, 32.0), (23.0, 34.0), (25.0, 36.0)], int(ui.imgui.ImDrawFlags_.closed.value), 1.5),
+    ]
+    assert lines == [
+        (11.0, 22.0, 19.0, 30.0, 1.5),
+        (13.0, 24.0, 21.0, 32.0, 1.5),
+        (15.0, 26.0, 23.0, 34.0, 1.5),
+        (17.0, 28.0, 25.0, 36.0, 1.5),
+    ]
 
 
 def test_viewport_camera_overlays_skip_lines_when_disabled(monkeypatch) -> None:
     lines: list[tuple[float, float, float, float, float]] = []
+    polylines: list[tuple[list[tuple[float, float]], int, float]] = []
 
     class _DrawList:
+        def add_polyline(self, points, _color, _flags, thickness):
+            polylines.append(([(float(p.x), float(p.y)) for p in points], int(_flags), float(thickness)))
+
         def add_line(self, p0, p1, _color, thickness):
             lines.append((float(p0.x), float(p0.y), float(p1.x), float(p1.y), float(thickness)))
 
@@ -331,12 +356,21 @@ def test_viewport_camera_overlays_skip_lines_when_disabled(monkeypatch) -> None:
     viewer_ui = SimpleNamespace(
         _values={
             "show_camera_overlays": False,
-            "_training_view_overlay_segments": ((1.0, 2.0, 3.0, 4.0, (0.1, 0.2, 0.3, 0.4), 1.5),),
+            "_training_view_overlay_segments": (
+                (
+                    ((1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0)),
+                    ((9.0, 10.0), (11.0, 12.0), (13.0, 14.0), (15.0, 16.0)),
+                    ((1.0, 2.0, 9.0, 10.0), (3.0, 4.0, 11.0, 12.0), (5.0, 6.0, 13.0, 14.0), (7.0, 8.0, 15.0, 16.0)),
+                    (0.1, 0.2, 0.3, 0.4),
+                    1.5,
+                ),
+            ),
         }
     )
 
     ui.ToolkitWindow._draw_viewport_camera_overlays(toolkit, viewer_ui, ui.imgui.ImVec2(10.0, 20.0))
 
+    assert polylines == []
     assert lines == []
 
 

@@ -322,10 +322,10 @@ def _build_camera_overlay_geometry(viewer: object) -> tuple[np.ndarray, np.ndarr
     frames = tuple(getattr(viewer.s, "training_frames", ()))
     trainer = getattr(viewer.s, "trainer", None)
     if trainer is None or len(frames) == 0:
-        return np.zeros((0, 2, 3), dtype=np.float32), np.zeros((0,), dtype=np.int32)
+        return np.zeros((0, 8, 3), dtype=np.float32), np.zeros((0,), dtype=np.int32)
     overlay_far = _camera_overlay_scale(viewer)
     overlay_near = overlay_far * _CAMERA_OVERLAY_NEAR_FRACTION
-    segments: list[np.ndarray] = []
+    cameras: list[np.ndarray] = []
     frame_indices: list[int] = []
     for frame_index, frame in enumerate(frames):
         try:
@@ -363,12 +363,11 @@ def _build_camera_overlay_geometry(viewer: object) -> tuple[np.ndarray, np.ndarr
             ),
             axis=0,
         ).astype(np.float32, copy=False)
-        camera_segments = np.stack(tuple(np.stack((corners[i0], corners[i1]), axis=0) for i0, i1 in _CAMERA_OVERLAY_EDGE_INDICES), axis=0)
-        segments.append(camera_segments)
-        frame_indices.extend([int(frame_index)] * int(camera_segments.shape[0]))
-    if len(segments) == 0:
-        return np.zeros((0, 2, 3), dtype=np.float32), np.zeros((0,), dtype=np.int32)
-    return np.concatenate(segments, axis=0), np.asarray(frame_indices, dtype=np.int32)
+        cameras.append(corners)
+        frame_indices.append(int(frame_index))
+    if len(cameras) == 0:
+        return np.zeros((0, 8, 3), dtype=np.float32), np.zeros((0,), dtype=np.int32)
+    return np.stack(cameras, axis=0), np.asarray(frame_indices, dtype=np.int32)
 
 
 def _camera_overlay_geometry(viewer: object) -> tuple[np.ndarray, np.ndarray]:
@@ -416,7 +415,18 @@ def _project_overlay_points(viewer_camera: object, points_world: np.ndarray, vie
     return screen, valid
 
 
-def _camera_overlay_segments(viewer: object) -> tuple[tuple[float, float, float, float, tuple[float, float, float, float], float], ...]:
+def _camera_overlay_segments(
+    viewer: object,
+) -> tuple[
+    tuple[
+        tuple[tuple[float, float], ...],
+        tuple[tuple[float, float], ...],
+        tuple[tuple[float, float, float, float], ...],
+        tuple[float, float, float, float],
+        float,
+    ],
+    ...,
+]:
     trainer = getattr(viewer.s, "trainer", None)
     if trainer is None or _training_camera_debug_active(viewer):
         return ()
@@ -426,29 +436,36 @@ def _camera_overlay_segments(viewer: object) -> tuple[tuple[float, float, float,
     fallback_width = int(getattr(getattr(viewer.s, "renderer", None), "width", 1))
     fallback_height = int(getattr(getattr(viewer.s, "renderer", None), "height", 1))
     viewport_width, viewport_height = _viewport_target_size(viewer, fallback_width, fallback_height)
-    world_segments, frame_indices = _camera_overlay_geometry(viewer)
-    if world_segments.size == 0:
+    world_corners, frame_indices = _camera_overlay_geometry(viewer)
+    if world_corners.size == 0:
         return ()
     last_frame_index = int(getattr(getattr(trainer, "state", None), "last_frame_index", -1))
-    points_world = world_segments.reshape(-1, 3)
+    points_world = world_corners.reshape(-1, 3)
     screen_points, valid_points = _project_overlay_points(viewport_camera, points_world, viewport_width, viewport_height)
     if screen_points.size == 0:
         return ()
-    screen_segments = screen_points.reshape(-1, 2, 2)
-    valid_segments = valid_points.reshape(-1, 2).all(axis=1)
-    if not np.any(valid_segments):
+    screen_corners = screen_points.reshape(-1, 8, 2)
+    valid_corners = valid_points.reshape(-1, 8).all(axis=1)
+    if not np.any(valid_corners):
         return ()
-    active_segments = frame_indices == last_frame_index
+    active_cameras = frame_indices == last_frame_index
     return tuple(
         (
-            float(segment[0, 0]),
-            float(segment[0, 1]),
-            float(segment[1, 0]),
-            float(segment[1, 1]),
+            tuple((float(point[0]), float(point[1])) for point in corners[:4]),
+            tuple((float(point[0]), float(point[1])) for point in corners[4:]),
+            tuple(
+                (
+                    float(corners[i0, 0]),
+                    float(corners[i0, 1]),
+                    float(corners[i1, 0]),
+                    float(corners[i1, 1]),
+                )
+                for i0, i1 in ((0, 4), (1, 5), (2, 6), (3, 7))
+            ),
             _CAMERA_OVERLAY_ACTIVE_COLOR if bool(is_active) else _CAMERA_OVERLAY_COLOR,
             2.0 if bool(is_active) else 1.25,
         )
-        for segment, is_valid, is_active in zip(screen_segments, valid_segments, active_segments, strict=False)
+        for corners, is_valid, is_active in zip(screen_corners, valid_corners, active_cameras, strict=False)
         if bool(is_valid)
     )
 
