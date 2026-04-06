@@ -61,6 +61,7 @@ _VIEWPORT_OVERLAY_WIDTH = 320.0
 _VIEWPORT_OVERLAY_MIN_WIDTH = 220.0
 _VIEWPORT_OVERLAY_PADDING = 10.0
 _VIEWPORT_OVERLAY_MIN_HEIGHT = 44.0
+_HISTOGRAM_AUTO_RANGE_KEEP_FRACTION = 0.99
 _DOCKSPACE_FLAGS = int(imgui.DockNodeFlags_.none)
 _TOOLKIT_WINDOW_NAME = "Toolkit"
 _VIEWPORT_WINDOW_NAME = "Viewport###Viewport"
@@ -257,6 +258,34 @@ def _debug_range_tick_value(t: float, value_min: float, value_max: float) -> flo
     lo = float(min(value_min, value_max))
     hi = float(max(value_min, value_max))
     return lo + _saturate(t) * (hi - lo)
+
+
+def _histogram_log_range_from_histogram(payload: object) -> tuple[float, float] | None:
+    if payload is None:
+        return None
+    centers = np.asarray(getattr(payload, "bin_centers_log10", np.zeros((0,), dtype=np.float64)), dtype=np.float64)
+    counts = np.asarray(getattr(payload, "counts", np.zeros((0, 0), dtype=np.int64)), dtype=np.float64)
+    if counts.ndim != 2 or centers.ndim != 1 or counts.shape[1] != centers.size or centers.size == 0:
+        return None
+    summed = np.sum(counts, axis=0)
+    finite = np.isfinite(centers) & np.isfinite(summed) & (summed > 0.0)
+    if not np.any(finite):
+        return None
+    filtered_centers = centers[finite]
+    filtered_counts = summed[finite]
+    total = float(np.sum(filtered_counts))
+    if total <= 0.0:
+        return None
+    if filtered_centers.size == 1:
+        value = float(filtered_centers[0])
+        return value, value
+    trim_fraction = max(0.0, 0.5 * (1.0 - _HISTOGRAM_AUTO_RANGE_KEEP_FRACTION))
+    cumulative = np.cumsum(filtered_counts) / total
+    lo_index = int(np.searchsorted(cumulative, trim_fraction, side="left"))
+    hi_index = int(np.searchsorted(cumulative, 1.0 - trim_fraction, side="left"))
+    lo_index = min(max(lo_index, 0), filtered_centers.size - 1)
+    hi_index = min(max(hi_index, lo_index), filtered_centers.size - 1)
+    return float(filtered_centers[lo_index]), float(filtered_centers[hi_index])
 
 
 def _histogram_log_range_from_ranges(payload: object) -> tuple[float, float] | None:
@@ -1287,7 +1316,7 @@ class ToolkitWindow:
             status = str(ui._texts.get("histogram_status", "")).strip()
             payload = ui._values.get("_histogram_payload")
             range_payload = ui._values.get("_histogram_range_payload")
-            self._update_histogram_log_range(ui, range_payload)
+            self._update_histogram_log_range(ui, payload, range_payload)
             if status:
                 imgui.text_disabled(status)
                 imgui.separator()
@@ -1314,19 +1343,16 @@ class ToolkitWindow:
         if changed:
             ui._values["hist_bin_count"] = max(int(value), 1)
         imgui.pop_item_width()
-        imgui.same_line()
         imgui.push_item_width(160.0)
         changed, value = imgui.input_float("Min Log10", float(ui._values.get("hist_min_log10", _HISTOGRAM_MIN_LOG10_DEFAULT)), 0.25, 1.0, "%.3f")
         if changed:
             ui._values["hist_min_log10"] = float(value)
         imgui.pop_item_width()
-        imgui.same_line()
         imgui.push_item_width(160.0)
         changed, value = imgui.input_float("Max Log10", float(ui._values.get("hist_max_log10", _HISTOGRAM_MAX_LOG10_DEFAULT)), 0.25, 1.0, "%.3f")
         if changed:
             ui._values["hist_max_log10"] = float(value)
         imgui.pop_item_width()
-        imgui.same_line()
         imgui.push_item_width(160.0)
         changed, value = imgui.input_float("Y Limit", float(ui._values.get("hist_y_limit", _HISTOGRAM_Y_LIMIT_DEFAULT)), 1.0, 10.0, "%.1f")
         if changed:
@@ -1341,10 +1367,12 @@ class ToolkitWindow:
         ui._values["hist_y_limit"] = max(1.3 * float(np.max(counts) if counts.size > 0 else 0.0), 1.0)
         ui._values["_histogram_update_y_limit"] = False
 
-    def _update_histogram_log_range(self, ui: ViewerUI, range_payload: object) -> None:
+    def _update_histogram_log_range(self, ui: ViewerUI, histogram_payload: object, range_payload: object) -> None:
         if not bool(ui._values.get("_histogram_update_log_range", False)):
             return
-        log_range = _histogram_log_range_from_ranges(range_payload)
+        log_range = _histogram_log_range_from_histogram(histogram_payload)
+        if log_range is None:
+            log_range = _histogram_log_range_from_ranges(range_payload)
         if log_range is not None:
             ui._values["hist_min_log10"] = float(log_range[0])
             ui._values["hist_max_log10"] = float(log_range[1])

@@ -423,7 +423,19 @@ def test_depth_local_mismatch_colorbar_ticks_use_local_range() -> None:
     assert np.isclose(hi, 0.35, rtol=0.0, atol=1e-9)
 
 
-def test_histogram_log_range_from_ranges_uses_nonzero_finite_extrema() -> None:
+def test_histogram_log_range_from_histogram_keeps_central_99_percent_of_counts() -> None:
+    payload = SimpleNamespace(
+        bin_centers_log10=np.array([-6.0, -5.0, -4.0, -3.0, -2.0, -1.0], dtype=np.float64),
+        counts=np.array([[1.0, 1.0, 120.0, 200.0, 120.0, 1.0]], dtype=np.float64),
+    )
+
+    lo, hi = ui._histogram_log_range_from_histogram(payload)
+
+    assert np.isclose(lo, -4.0)
+    assert np.isclose(hi, -2.0)
+
+
+def test_histogram_log_range_from_ranges_uses_nonzero_finite_extrema_as_fallback() -> None:
     payload = SimpleNamespace(
         min_values=np.array([0.0, -1e-4, -1.0, np.nan], dtype=np.float32),
         max_values=np.array([0.0, 1e-2, 10.0, np.inf], dtype=np.float32),
