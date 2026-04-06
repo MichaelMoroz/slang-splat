@@ -751,16 +751,16 @@ def apply_live_params(viewer: object, force_init_defaults: bool = False) -> None
     use_sh = bool(viewer.training_params().training.use_sh)
     viewer.s.background = viewer.render_background()
     renderer_specs = (
-        ("renderer", True, "applied_renderer_params_main"),
-        ("training_renderer", False, "applied_renderer_params_training"),
-        ("debug_renderer", True, "applied_renderer_params_debug"),
+        ("renderer", True, "applied_renderer_params_main", True),
+        ("training_renderer", False, "applied_renderer_params_training", False),
+        ("debug_renderer", True, "applied_renderer_params_debug", True),
     )
-    for attr, allow_debug, state_attr in renderer_specs:
+    for attr, allow_debug, state_attr, force_sh in renderer_specs:
         renderer = getattr(viewer.s, attr)
         if renderer is None:
             setattr(viewer.s, state_attr, None)
             continue
-        renderer.use_sh = use_sh
+        renderer.use_sh = True if force_sh else use_sh
         params = viewer.renderer_params(allow_debug)
         signature = _renderer_params_signature(params)
         if getattr(viewer.s, state_attr) == signature:

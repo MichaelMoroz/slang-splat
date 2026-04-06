@@ -1096,3 +1096,54 @@ def test_apply_live_params_defers_subsample_runtime_change_until_resize(monkeypa
     assert viewer.s.applied_training_signature == session._training_live_params_signature(params_before)
     assert viewer.s.applied_training_runtime_signature == session._training_runtime_signature(params_before)
     assert viewer.s.pending_training_runtime_resize is True
+
+
+def test_apply_live_params_forces_view_renderers_to_use_sh(monkeypatch) -> None:
+    update_calls: list[object] = []
+    renderer = SimpleNamespace(use_sh=False, debug_show_grad_norm=False)
+    training_renderer = SimpleNamespace(use_sh=True, debug_show_grad_norm=False)
+    debug_renderer = SimpleNamespace(use_sh=False, debug_show_grad_norm=False)
+    params = SimpleNamespace(
+        adam=SimpleNamespace(),
+        stability=SimpleNamespace(),
+        training=SimpleNamespace(
+            use_sh=False,
+            train_downscale_mode="auto",
+            train_auto_start_downscale=4,
+            train_downscale_base_iters=200,
+            train_downscale_iter_step=50,
+            train_downscale_max_iters=30_000,
+            train_downscale_factor=1,
+            train_subsample_factor=1,
+            depth_ratio_weight=0.1,
+        ),
+    )
+    viewer = SimpleNamespace(
+        render_background=lambda: (0.0, 0.0, 0.0),
+        renderer_params=lambda allow_debug_overlays: SimpleNamespace(__dataclass_fields__={"debug": None}, debug=bool(allow_debug_overlays)),
+        training_params=lambda: SimpleNamespace(training=SimpleNamespace(use_sh=False)),
+        s=SimpleNamespace(
+            background=None,
+            renderer=renderer,
+            training_renderer=training_renderer,
+            debug_renderer=debug_renderer,
+            trainer=SimpleNamespace(compute_debug_grad_norm=False, update_hyperparams=lambda adam, stability, training: update_calls.append((adam, stability, training))),
+            applied_renderer_params_main=None,
+            applied_renderer_params_training=None,
+            applied_renderer_params_debug=None,
+            applied_training_signature=None,
+            applied_training_runtime_signature=None,
+            pending_training_runtime_resize=False,
+        ),
+    )
+
+    monkeypatch.setattr(session, "resolve_effective_training_setup", lambda viewer_obj: (None, params, None, None))
+    monkeypatch.setattr(session, "renderer_kwargs", lambda params_obj: {})
+    monkeypatch.setattr(session, "_apply_debug_buffers", lambda viewer_obj, renderer_obj: None)
+
+    session.apply_live_params(viewer)
+
+    assert viewer.s.renderer.use_sh is True
+    assert viewer.s.debug_renderer.use_sh is True
+    assert viewer.s.training_renderer.use_sh is False
+    assert len(update_calls) == 1
