@@ -42,7 +42,7 @@ static const float SPLAT_CONTRIBUTION_FIXED_SCALE = 256.0;
 static const float SPLAT_CONTRIBUTION_FIXED_MAX_F = 16777215.99609375;
 static const float CLONE_COUNT_ALPHA_THRESHOLD = 0.01;
 static const float DEPTH_LOCAL_MISMATCH_REJECT_ALPHA_SCALE_MAX = 2.0;
-static const float DEPTH_STATS_SIGMA_CUTOFF = 1.5 / ENVELOPE_SIGMA_RADIUS;
+static const float DEPTH_STATS_SIGMA_CUTOFF = 0.75 / ENVELOPE_SIGMA_RADIUS;
 static const float DEPTH_STATS_SIGMA_CUTOFF_SQR = DEPTH_STATS_SIGMA_CUTOFF * DEPTH_STATS_SIGMA_CUTOFF;
 
 int raster_grad_fixed_quantize(float value, float range)
