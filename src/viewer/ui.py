@@ -1052,6 +1052,8 @@ class ToolkitWindow:
         show_labels = bool(ui._values.get("show_camera_labels", False))
         label_pad_x = 5.0 * scale
         label_pad_y = 3.0 * scale
+        label_font = imgui.get_font()
+        label_font_size = float(imgui.get_font_size()) * 0.9
         for near_points, far_points, connectors, label_anchor, label_text, color, thickness in overlays:
             color_u32 = _color_u32(*color)
             near_polyline = [imgui.ImVec2(base_x + float(x), base_y + float(y)) for x, y in near_points]
@@ -1069,14 +1071,15 @@ class ToolkitWindow:
                 )
             if show_labels and str(label_text):
                 label_pos = imgui.ImVec2(base_x + float(label_anchor[0]) + 6.0 * scale, base_y + float(label_anchor[1]) - 18.0 * scale)
-                label_size = imgui.calc_text_size(str(label_text))
+                label_size_raw = imgui.calc_text_size(str(label_text))
+                label_size = imgui.ImVec2(float(label_size_raw.x) * 0.9, float(label_size_raw.y) * 0.9)
                 draw_list.add_rect_filled(
                     imgui.ImVec2(label_pos.x - label_pad_x, label_pos.y - label_pad_y),
                     imgui.ImVec2(label_pos.x + float(label_size.x) + label_pad_x, label_pos.y + float(label_size.y) + label_pad_y),
                     _color_u32(0.04, 0.05, 0.07, 0.74),
                     4.0 * scale,
                 )
-                draw_list.add_text(label_pos, _color_u32(0.98, 0.99, 1.0, 1.0), str(label_text))
+                draw_list.add_text(label_font, label_font_size, label_pos, _color_u32(0.98, 0.99, 1.0, 1.0), str(label_text))
 
     def _draw_viewport_debug_overlay(self, ui: ViewerUI, overlay_origin: imgui.ImVec2) -> None:
         debug_mode = _DEBUG_MODE_VALUES[min(max(int(ui._values.get("debug_mode", 0)), 0), len(_DEBUG_MODE_VALUES) - 1)]

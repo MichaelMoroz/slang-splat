@@ -302,7 +302,7 @@ def test_viewport_view_menu_left_aligns_view_mode_button(monkeypatch) -> None:
 def test_viewport_camera_overlays_draw_lines_when_enabled(monkeypatch) -> None:
     lines: list[tuple[float, float, float, float, float]] = []
     polylines: list[tuple[list[tuple[float, float]], int, float]] = []
-    texts: list[tuple[float, float, str]] = []
+    texts: list[tuple[float, float, float, str]] = []
     rects: list[tuple[float, float, float, float]] = []
 
     class _DrawList:
@@ -315,11 +315,18 @@ def test_viewport_camera_overlays_draw_lines_when_enabled(monkeypatch) -> None:
         def add_rect_filled(self, p0, p1, _color, _rounding):
             rects.append((float(p0.x), float(p0.y), float(p1.x), float(p1.y)))
 
-        def add_text(self, pos, _color, text):
-            texts.append((float(pos.x), float(pos.y), str(text)))
+        def add_text(self, *args):
+            if len(args) == 3:
+                pos, _color, text = args
+                texts.append((0.0, float(pos.x), float(pos.y), str(text)))
+            else:
+                _font, font_size, pos, _color, text = args[:5]
+                texts.append((float(font_size), float(pos.x), float(pos.y), str(text)))
 
     monkeypatch.setattr(ui.imgui, "get_window_draw_list", lambda: _DrawList())
     monkeypatch.setattr(ui.imgui, "calc_text_size", lambda text: ui.imgui.ImVec2(9.0 * len(str(text)), 14.0))
+    monkeypatch.setattr(ui.imgui, "get_font", lambda: object())
+    monkeypatch.setattr(ui.imgui, "get_font_size", lambda: 20.0)
     toolkit = SimpleNamespace(_interface_scale_factor=lambda _ui_obj: 1.0)
     viewer_ui = SimpleNamespace(
         _values={
@@ -331,7 +338,7 @@ def test_viewport_camera_overlays_draw_lines_when_enabled(monkeypatch) -> None:
                     ((9.0, 10.0), (11.0, 12.0), (13.0, 14.0), (15.0, 16.0)),
                     ((1.0, 2.0, 9.0, 10.0), (3.0, 4.0, 11.0, 12.0), (5.0, 6.0, 13.0, 14.0), (7.0, 8.0, 15.0, 16.0)),
                     (13.0, 14.0),
-                    "frame.png",
+                    "frame.png | 32.50 dB",
                     (0.1, 0.2, 0.3, 0.4),
                     1.5,
                 ),
@@ -352,13 +359,13 @@ def test_viewport_camera_overlays_draw_lines_when_enabled(monkeypatch) -> None:
         (17.0, 28.0, 25.0, 36.0, 1.5),
     ]
     assert len(rects) == 1
-    assert texts == [(29.0, 16.0, "frame.png")]
+    assert texts == [(18.0, 29.0, 16.0, "frame.png | 32.50 dB")]
 
 
 def test_viewport_camera_overlays_skip_lines_when_disabled(monkeypatch) -> None:
     lines: list[tuple[float, float, float, float, float]] = []
     polylines: list[tuple[list[tuple[float, float]], int, float]] = []
-    texts: list[tuple[float, float, str]] = []
+    texts: list[tuple[float, float, float, str]] = []
 
     class _DrawList:
         def add_polyline(self, points, _color, _flags, thickness):
@@ -367,10 +374,17 @@ def test_viewport_camera_overlays_skip_lines_when_disabled(monkeypatch) -> None:
         def add_line(self, p0, p1, _color, thickness):
             lines.append((float(p0.x), float(p0.y), float(p1.x), float(p1.y), float(thickness)))
 
-        def add_text(self, pos, _color, text):
-            texts.append((float(pos.x), float(pos.y), str(text)))
+        def add_text(self, *args):
+            if len(args) == 3:
+                pos, _color, text = args
+                texts.append((0.0, float(pos.x), float(pos.y), str(text)))
+            else:
+                _font, font_size, pos, _color, text = args[:5]
+                texts.append((float(font_size), float(pos.x), float(pos.y), str(text)))
 
     monkeypatch.setattr(ui.imgui, "get_window_draw_list", lambda: _DrawList())
+    monkeypatch.setattr(ui.imgui, "get_font", lambda: object())
+    monkeypatch.setattr(ui.imgui, "get_font_size", lambda: 20.0)
     toolkit = SimpleNamespace(_interface_scale_factor=lambda _ui_obj: 1.0)
     viewer_ui = SimpleNamespace(
         _values={
@@ -381,7 +395,7 @@ def test_viewport_camera_overlays_skip_lines_when_disabled(monkeypatch) -> None:
                     ((9.0, 10.0), (11.0, 12.0), (13.0, 14.0), (15.0, 16.0)),
                     ((1.0, 2.0, 9.0, 10.0), (3.0, 4.0, 11.0, 12.0), (5.0, 6.0, 13.0, 14.0), (7.0, 8.0, 15.0, 16.0)),
                     (13.0, 14.0),
-                    "frame.png",
+                    "frame.png | 32.50 dB",
                     (0.1, 0.2, 0.3, 0.4),
                     1.5,
                 ),

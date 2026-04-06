@@ -442,6 +442,7 @@ def _camera_overlay_segments(
     if world_corners.size == 0:
         return ()
     last_frame_index = int(getattr(getattr(trainer, "state", None), "last_frame_index", -1))
+    metrics = _frame_metrics_snapshot(viewer, len(getattr(viewer.s, "training_frames", ())))
     points_world = world_corners.reshape(-1, 3)
     screen_points, valid_points = _project_overlay_points(viewport_camera, points_world, viewport_width, viewport_height)
     if screen_points.size == 0:
@@ -465,7 +466,12 @@ def _camera_overlay_segments(
                 for i0, i1 in ((0, 4), (1, 5), (2, 6), (3, 7))
             ),
             (float(corners[6, 0]), float(corners[6, 1])),
-            Path(getattr(viewer.s.training_frames[int(frame_index)], "image_path", f"frame_{int(frame_index)}")).name,
+            (
+                f"{Path(getattr(viewer.s.training_frames[int(frame_index)], 'image_path', f'frame_{int(frame_index)}')).name}"
+                f" | {float(metrics['psnr'][int(frame_index)]):.2f} dB"
+                if int(frame_index) < metrics["psnr"].size and np.isfinite(float(metrics["psnr"][int(frame_index)]))
+                else Path(getattr(viewer.s.training_frames[int(frame_index)], "image_path", f"frame_{int(frame_index)}")).name
+            ),
             _CAMERA_OVERLAY_ACTIVE_COLOR if bool(is_active) else _CAMERA_OVERLAY_COLOR,
             2.0 if bool(is_active) else 1.25,
         )
