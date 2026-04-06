@@ -326,7 +326,7 @@ _TRAIN_SETUP_SPECS = (
     ControlSpec("refinement_alpha_cull_threshold", "input_float", "Refinement Alpha Cull", {"value": 1e-2, "step": 1e-5, "step_fast": 1e-4, "format": "%.6e"}),
     ControlSpec("refinement_min_contribution_percent", "input_float", "Refinement Min Contribution", {"value": 1e-05, "step": 1e-6, "step_fast": 1e-5, "format": "%.6g%%"}),
     ControlSpec("refinement_min_contribution_decay", "input_float", "Refinement Min Contribution Decay", {"value": 0.995, "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
-    ControlSpec("refinement_opacity_maintenance_mul", "input_float", "Maintenance Alpha Mul", {"value": 0.75, "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
+    ControlSpec("refinement_opacity_mul", "input_float", "Refinement Alpha Mul", {"value": 1.0, "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
     ControlSpec("train_downscale_mode", "combo", "Downscale Mode", {"value": 1, "options": _TRAIN_DOWNSCALE_MODE_LABELS}),
     ControlSpec("train_subsample_factor", "combo", "Subsampling", {"value": 0, "options": _TRAIN_SUBSAMPLE_LABELS}),
     ControlSpec("train_auto_start_downscale", "slider_int", "Auto Start Downscale", {"value": 16, "min": 1, "max": 16}),
@@ -1665,7 +1665,7 @@ class ToolkitWindow:
     def _section_training_setup(self, ui: ViewerUI) -> None:
         if not imgui.collapsing_header("Train Setup"):
             return
-        for key in ("max_gaussians", "training_steps_per_frame", "background_mode", "refinement_interval", "refinement_growth_ratio", "refinement_growth_start_step", "refinement_alpha_cull_threshold", "refinement_min_contribution_percent", "refinement_min_contribution_decay", "refinement_opacity_maintenance_mul", "train_downscale_mode", "train_subsample_factor"):
+        for key in ("max_gaussians", "training_steps_per_frame", "background_mode", "refinement_interval", "refinement_growth_ratio", "refinement_growth_start_step", "refinement_alpha_cull_threshold", "refinement_min_contribution_percent", "refinement_min_contribution_decay", "refinement_opacity_mul", "train_downscale_mode", "train_subsample_factor"):
             self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Setup"] if spec.key == key))
         if int(ui._values.get("background_mode", 1)) == 0:
             self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Setup"] if spec.key == "train_background_color"))
@@ -1903,7 +1903,7 @@ class ToolkitWindow:
         "refinement_alpha_cull_threshold": "Cull splats below this decoded alpha threshold during refinement",
         "refinement_min_contribution_percent": "Minimum accumulated alpha contribution, as a percent of observed dataset pixels, required for a splat to survive refinement",
         "refinement_min_contribution_decay": "Multiply the minimum contribution percent by this factor after each completed refinement pass",
-        "refinement_opacity_maintenance_mul": "Multiply every surviving splat alpha by this factor during each maintenance rewrite pass",
+        "refinement_opacity_mul": "Multiply every surviving splat alpha by this factor during each refinement rewrite pass",
         "density_regularizer": "Weight applied to the per-pixel hinge penalty max(density - max_allowed_density, 0)",
         "depth_ratio_weight": "Stage 0 depth-ratio regularizer weight; when scheduling is disabled this value is used for the whole run",
         "depth_ratio_grad_min": "Start of the high-gradient depth-ratio interval; gradients taper below this value",

@@ -101,7 +101,7 @@ def test_build_training_params_clamps_ranges():
     assert params.training.use_sh_stage3 is True
     assert params.training.refinement_min_contribution_percent == 1e-05
     assert params.training.refinement_min_contribution_decay == 0.995
-    assert params.training.refinement_opacity_maintenance_mul == 0.75
+    assert params.training.refinement_opacity_mul == 1.0
     assert params.training.max_gaussians == 0
     assert params.training.train_subsample_factor == 1
 
@@ -146,7 +146,7 @@ def test_default_training_params_match_fixed_count_defaults():
     assert params.training.refinement_alpha_cull_threshold == 1e-2
     assert params.training.refinement_min_contribution_percent == 1e-05
     assert params.training.refinement_min_contribution_decay == 0.995
-    assert params.training.refinement_opacity_maintenance_mul == 0.75
+    assert params.training.refinement_opacity_mul == 1.0
     assert params.training.max_gaussians == 1_000_000
     assert params.training.train_subsample_factor == 1
 
