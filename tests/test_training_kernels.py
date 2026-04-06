@@ -862,7 +862,7 @@ def test_trainer_refinement_due_uses_dataset_frame_floor(device, tmp_path: Path)
     assert trainer.refinement_due(3)
 
 
-def test_training_forward_accumulates_clone_counts(device, tmp_path: Path) -> None:
+def test_training_forward_keeps_clone_counts_zero_until_backward(device, tmp_path: Path) -> None:
     scene = _make_scene(count=8, seed=83)
     frame = _make_frame(tmp_path, image_name="clone_counts_target.png", image_id=10)
     renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
@@ -893,8 +893,169 @@ def test_training_forward_accumulates_clone_counts(device, tmp_path: Path) -> No
 
     clone_counts = buffer_to_numpy(trainer.refinement_buffers["clone_counts"], np.uint32)[: scene.count]
     contributions = buffer_to_numpy(trainer.refinement_buffers["splat_contribution"], np.uint32)[: scene.count]
-    assert np.any(clone_counts > 0)
+    assert np.all(clone_counts == 0)
     assert np.any(contributions > 0)
+
+    enc = device.create_command_encoder()
+    target_texture = trainer.get_frame_target_texture(0, native_resolution=False, encoder=enc)
+    trainer._dispatch_loss_forward(enc, target_texture)
+    trainer._dispatch_loss_backward(enc, target_texture)
+    renderer.clear_raster_grads_current_scene(enc)
+    renderer.rasterize_backward_current_scene(
+        enc,
+        camera,
+        background,
+        renderer.output_grad_buffer,
+        regularizer_grad=renderer.work_buffers["training_regularizer_grad"],
+        clone_counts_buffer=trainer.refinement_buffers["clone_counts"],
+        clone_select_probability=1.0,
+        clone_seed=123,
+    )
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+
+    clone_counts = buffer_to_numpy(trainer.refinement_buffers["clone_counts"], np.uint32)[: scene.count]
+    assert np.any(clone_counts > 0)
+
+
+def test_loss_weighted_backward_clone_counts_follow_high_loss_region(device, tmp_path: Path) -> None:
+    frame = _make_frame(tmp_path, image_name="weighted_clone_counts_target.png", image_id=17)
+    rotations = np.zeros((2, 4), dtype=np.float32)
+    rotations[:, 0] = 1.0
+    scene = GaussianScene(
+        positions=np.array([[-0.9, 0.0, 0.0], [0.9, 0.0, 0.0]], dtype=np.float32),
+        scales=np.log(np.full((2, 3), 0.12, dtype=np.float32)),
+        rotations=rotations,
+        opacities=np.full((2,), 0.95, dtype=np.float32),
+        colors=np.full((2, 3), 1.0, dtype=np.float32),
+        sh_coeffs=np.zeros((2, 1, 3), dtype=np.float32),
+    )
+    renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(background_mode=TRAIN_BACKGROUND_MODE_CUSTOM, background=(0.0, 0.0, 0.0), density_regularizer=0.0, depth_ratio_weight=0.0, refinement_interval=9999),
+        seed=123,
+    )
+    camera = frame.make_camera(near=0.1, far=20.0)
+    background = np.zeros((3,), dtype=np.float32)
+    usage = spy.TextureUsage.shader_resource | spy.TextureUsage.copy_destination
+
+    def make_target_texture(image: np.ndarray) -> spy.Texture:
+        texture = device.create_texture(format=spy.Format.rgba32_float, width=int(image.shape[1]), height=int(image.shape[0]), usage=usage)
+        texture.copy_from_numpy(np.ascontiguousarray(image, dtype=np.float32))
+        return texture
+
+    def run_target(target_image: np.ndarray) -> np.ndarray:
+        trainer.refinement_buffers["clone_counts"].copy_from_numpy(np.zeros((scene.count,), dtype=np.uint32))
+        trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.zeros((scene.count,), dtype=np.uint32))
+        renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
+        enc = device.create_command_encoder()
+        trainer._dispatch_raster_training_forward(enc, camera, background)
+        target_texture = make_target_texture(target_image)
+        trainer._dispatch_loss_forward(enc, target_texture)
+        trainer._dispatch_loss_backward(enc, target_texture)
+        renderer.clear_raster_grads_current_scene(enc)
+        renderer.rasterize_backward_current_scene(
+            enc,
+            camera,
+            background,
+            renderer.output_grad_buffer,
+            regularizer_grad=renderer.work_buffers["training_regularizer_grad"],
+            clone_counts_buffer=trainer.refinement_buffers["clone_counts"],
+            clone_select_probability=1.0,
+            clone_seed=123,
+        )
+        device.submit_command_buffer(enc.finish())
+        device.wait()
+        return buffer_to_numpy(trainer.refinement_buffers["clone_counts"], np.uint32)[: scene.count].copy()
+
+    def side_dominant_splat() -> tuple[int, int]:
+        side_energy: list[tuple[float, float]] = []
+        for splat_index in range(scene.count):
+            single_scene = GaussianScene(
+                positions=scene.positions[[splat_index]].copy(),
+                scales=scene.scales[[splat_index]].copy(),
+                rotations=scene.rotations[[splat_index]].copy(),
+                opacities=scene.opacities[[splat_index]].copy(),
+                colors=scene.colors[[splat_index]].copy(),
+                sh_coeffs=scene.sh_coeffs[[splat_index]].copy(),
+            )
+            single_renderer = GaussianRenderer(device, width=renderer.width, height=renderer.height, list_capacity_multiplier=16)
+            image = np.asarray(single_renderer.render(single_scene, camera, background=background).image, dtype=np.float32)[..., :3]
+            side_energy.append((float(np.sum(image[:, : renderer.width // 2], dtype=np.float64)), float(np.sum(image[:, renderer.width // 2 :], dtype=np.float64))))
+        left_index = int(np.argmax([energy[0] for energy in side_energy]))
+        right_index = int(np.argmax([energy[1] for energy in side_energy]))
+        assert left_index != right_index
+        return left_index, right_index
+
+    renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
+    enc = device.create_command_encoder()
+    trainer._dispatch_raster_training_forward(enc, camera, background)
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+    rendered = np.asarray(renderer.output_texture.to_numpy(), dtype=np.float32).copy()
+    left_splat, right_splat = side_dominant_splat()
+    left_target = rendered.copy()
+    right_target = rendered.copy()
+    left_target[:, : renderer.width // 2, :3] = 0.0
+    right_target[:, renderer.width // 2 :, :3] = 0.0
+
+    left_counts = run_target(left_target)
+    right_counts = run_target(right_target)
+
+    assert left_counts[left_splat] > left_counts[right_splat]
+    assert right_counts[right_splat] > right_counts[left_splat]
+
+
+def test_loss_weighted_backward_clone_counts_disable_when_rgb_loss_is_zero(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=8, seed=91)
+    frame = _make_frame(tmp_path, image_name="zero_rgb_loss_clone_counts_target.png", image_id=18)
+    renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(density_regularizer=0.0, depth_ratio_weight=0.0, refinement_interval=9999),
+        seed=123,
+    )
+    camera = frame.make_camera(near=0.1, far=20.0)
+    background = np.asarray(trainer.training.background, dtype=np.float32)
+    usage = spy.TextureUsage.shader_resource | spy.TextureUsage.copy_destination
+
+    renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
+    enc = device.create_command_encoder()
+    trainer._dispatch_raster_training_forward(enc, camera, background)
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+
+    target_texture = device.create_texture(format=spy.Format.rgba32_float, width=renderer.width, height=renderer.height, usage=usage)
+    target_texture.copy_from_numpy(np.ascontiguousarray(np.asarray(renderer.output_texture.to_numpy(), dtype=np.float32), dtype=np.float32))
+    trainer.refinement_buffers["clone_counts"].copy_from_numpy(np.zeros((scene.count,), dtype=np.uint32))
+    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.zeros((scene.count,), dtype=np.uint32))
+
+    enc = device.create_command_encoder()
+    trainer._dispatch_loss_forward(enc, target_texture)
+    trainer._dispatch_loss_backward(enc, target_texture)
+    renderer.clear_raster_grads_current_scene(enc)
+    renderer.rasterize_backward_current_scene(
+        enc,
+        camera,
+        background,
+        renderer.output_grad_buffer,
+        regularizer_grad=renderer.work_buffers["training_regularizer_grad"],
+        clone_counts_buffer=trainer.refinement_buffers["clone_counts"],
+        clone_select_probability=1.0,
+        clone_seed=123,
+    )
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+
+    clone_counts = buffer_to_numpy(trainer.refinement_buffers["clone_counts"], np.uint32)[: scene.count]
+    assert np.all(clone_counts == 0)
 
 
 def test_density_loss_respects_threshold_and_changes_gradients(device, tmp_path: Path) -> None:

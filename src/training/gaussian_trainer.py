@@ -347,7 +347,8 @@ class GaussianTrainer:
             clone_seed=self._seed + resolved_step,
         )
 
-    def _dispatch_raster_backward(self, encoder: spy.CommandEncoder, frame_camera: Camera, background: np.ndarray) -> None:
+    def _dispatch_raster_backward(self, encoder: spy.CommandEncoder, frame_camera: Camera, background: np.ndarray, step: int | None = None) -> None:
+        resolved_step = self.state.step if step is None else int(step)
         self.renderer.clear_raster_grads_current_scene(encoder)
         self.renderer.rasterize_backward_current_scene(
             encoder=encoder,
@@ -356,6 +357,9 @@ class GaussianTrainer:
             output_grad=self.renderer.output_grad_buffer,
             grad_scale=1.0,
             regularizer_grad=self.renderer.work_buffers["training_regularizer_grad"],
+            clone_counts_buffer=self._refinement_buffers["clone_counts"],
+            clone_select_probability=self.clone_probability_threshold(step=resolved_step),
+            clone_seed=self._seed + resolved_step,
         )
 
     def _read_loss_metrics(self) -> tuple[float, float, float]:
@@ -845,7 +849,7 @@ class GaussianTrainer:
         }
 
     def _dispatch_loss_forward(self, encoder: spy.CommandEncoder, target_texture: spy.Texture, step: int | None = None) -> None:
-        shared = {"g_OutputGrad": self.renderer.output_grad_buffer, "g_RegularizerGrad": self.renderer.work_buffers["training_regularizer_grad"], "g_LossBuffer": self._buffers["loss"], **self._loss_vars(step)}
+        shared = {"g_OutputGrad": self.renderer.output_grad_buffer, "g_RegularizerGrad": self.renderer.work_buffers["training_regularizer_grad"], "g_LossBuffer": self._buffers["loss"], "g_TrainingRgbLoss": self.renderer.work_buffers["training_rgb_loss"], "g_TrainingRgbLossTotal": self.renderer.work_buffers["training_rgb_loss_total"], **self._loss_vars(step)}
         self._dispatch("clear_loss", encoder, self._pixel_thread_count(), shared)
         self._dispatch(
             "loss_forward",
@@ -859,6 +863,8 @@ class GaussianTrainer:
                 "g_OutputGrad": self.renderer.output_grad_buffer,
                 "g_RegularizerGrad": self.renderer.work_buffers["training_regularizer_grad"],
                 "g_LossBuffer": self._buffers["loss"],
+                "g_TrainingRgbLoss": self.renderer.work_buffers["training_rgb_loss"],
+                "g_TrainingRgbLossTotal": self.renderer.work_buffers["training_rgb_loss_total"],
                 **self._loss_vars(step),
             },
         )
@@ -888,7 +894,7 @@ class GaussianTrainer:
     def _dispatch_training_backward(self, encoder: spy.CommandEncoder, frame_camera: Camera, background: np.ndarray, target_texture: spy.Texture, step: int | None = None) -> None:
         with debug_region(encoder, "Trainer Backward", 51):
             self._dispatch_loss_backward(encoder, target_texture, step)
-            self._dispatch_raster_backward(encoder, frame_camera, background)
+            self._dispatch_raster_backward(encoder, frame_camera, background, step)
 
     def _dispatch_cache_step_info(self, encoder: spy.CommandEncoder, batch_step_index: int) -> None:
         self._dispatch(

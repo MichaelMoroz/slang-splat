@@ -12,6 +12,8 @@ uniform RWStructuredBuffer<uint> g_CloneCounts;
 uniform RWStructuredBuffer<uint> g_SplatContribution;
 uniform float g_CloneSelectProbability;
 uniform uint g_CloneSeed;
+uniform StructuredBuffer<float> g_TrainingRgbLoss;
+uniform StructuredBuffer<float> g_TrainingRgbLossTotal;
 
 struct RasterState : IDifferentiable
 {
@@ -38,7 +40,7 @@ static const float RASTER_GRAD_FIXED_INT_MAX_F = 2147483647.0;
 static const float RASTER_GRAD_FIXED_AVG_INV_SCALE_FLOOR = 0.25;
 static const float SPLAT_CONTRIBUTION_FIXED_SCALE = 256.0;
 static const float SPLAT_CONTRIBUTION_FIXED_MAX_F = 16777215.99609375;
-static const float CLONE_COUNT_ALPHA_THRESHOLD = 0.2;
+static const float CLONE_COUNT_ALPHA_THRESHOLD = 0.01;
 static const float DEPTH_LOCAL_MISMATCH_REJECT_ALPHA_SCALE_MAX = 2.0;
 
 int raster_grad_fixed_quantize(float value, float range)
@@ -361,6 +363,27 @@ void init_raster_forward_state(RasterPixelInfo info, out RasterReplayState repla
     replayState.depthLocalMismatchState = 0.0;
 }
 
+uint training_clone_seed(uint pixelId)
+{
+    return hash_u32(pixelId ^ (g_CloneSeed * 0x9e3779b9u + 0x85ebca6bu));
+}
+
+float training_clone_random_uniform(uint seed)
+{
+    return (float(hash_u32(seed)) + 0.5) * 2.3283064365386963e-10;
+}
+
+float training_clone_probability(uint pixelIndex)
+{
+    if (!(g_CloneSelectProbability > 0.0)) return 0.0;
+    float totalRgbLoss = g_TrainingRgbLossTotal[0];
+    if (!isfinite(totalRgbLoss) || !(totalRgbLoss > SMALL_VALUE)) return 0.0;
+    float rgbLoss = g_TrainingRgbLoss[pixelIndex];
+    if (!isfinite(rgbLoss) || !(rgbLoss > 0.0)) return 0.0;
+    float targetSelectedPixels = saturate(g_CloneSelectProbability) * float(max(g_Raster.width * g_Raster.height, 1u));
+    return saturate(targetSelectedPixels * (rgbLoss / totalRgbLoss));
+}
+
 void init_raster_backward_state(out RasterBackwardState backwardState)
 {
     backwardState.pixelState = { 0.0, 0.0 };
@@ -382,6 +405,37 @@ void init_raster_debug_state(RasterPixelInfo info, out RasterReplayState replayS
     replayState.spatialDensitySum = 0.0;
     replayState.screenDensitySum = 0.0;
     replayState.depthLocalMismatchState = 0.0;
+}
+
+void init_training_raster_state(RasterPixelInfo info, out RasterReplayState replayState)
+{
+    replayState.pixelState = { 0.0, 1.0 };
+    replayState.processedCount = 0u;
+    replayState.processedEnd = info.start;
+    replayState.replayBatchEnd = info.start;
+    replayState.cloneSelected = false;
+    replayState.cloneThreshold = -1.0;
+    replayState.debugMode = DEBUG_MODE_NORMAL;
+    replayState.depthState = 0.0;
+    replayState.splatDensitySum = 0.0;
+    replayState.spatialDensitySum = 0.0;
+    replayState.screenDensitySum = 0.0;
+    replayState.depthLocalMismatchState = 0.0;
+}
+
+void init_training_backward_clone_state(RasterPixelInfo info, inout RasterReplayState replayState)
+{
+    if (!info.pixelActive || !info.hasTileRange)
+    {
+        replayState.cloneSelected = false;
+        replayState.cloneThreshold = -1.0;
+        return;
+    }
+    uint pixelId = raster_pixel_index(info.pixelCoord);
+    uint cloneSeed = training_clone_seed(pixelId);
+    float probability = training_clone_probability(pixelId);
+    replayState.cloneSelected = training_clone_random_uniform(cloneSeed ^ 0x8da6b343u) <= probability;
+    replayState.cloneThreshold = replayState.cloneSelected ? training_clone_random_uniform(cloneSeed ^ 0x5f2ce0b1u) : -1.0;
 }
 
 float raster_depth_debug_sigma_scale()
@@ -509,7 +563,7 @@ struct TrainingRasterReplayVariant : IRasterReplayVariant
 {
     static void init_state(RasterPixelInfo info, out RasterReplayState replayState)
     {
-        init_raster_forward_state(info, replayState);
+        init_training_raster_state(info, replayState);
     }
 
     static bool eval_hit(RasterPixelInfo info, uint splatId, RasterGaussian gaussian, out float alpha, out float rayDepth)
@@ -523,11 +577,6 @@ struct TrainingRasterReplayVariant : IRasterReplayVariant
     static void process_hit(RasterPixelInfo info, uint splatId, RasterGaussian gaussian, float alpha, float rayDepth, inout RasterReplayState replayState)
     {
         RasterState state = replayState.pixelState;
-        float nextTrans = state.trans * (1.0 - alpha);
-        if (replayState.cloneSelected && alpha > CLONE_COUNT_ALPHA_THRESHOLD && nextTrans <= replayState.cloneThreshold && state.trans > replayState.cloneThreshold)
-        {
-            InterlockedAdd(g_CloneCounts[splatId], 1u);
-        }
         float contributionWeight = state.trans * alpha;
         float3 color = raster_forward_color(gaussian, splatId, replayState.debugMode);
         uint contribution = splat_contribution_fixed_quantize(contributionWeight);
@@ -686,7 +735,7 @@ void store_training_forward_cache(RasterPixelInfo info, RasterReplayState replay
 
 void load_training_forward_cache(RasterPixelInfo info, out RasterReplayState replayState)
 {
-    init_raster_forward_state(info, replayState);
+    init_training_raster_state(info, replayState);
     replayState.replayBatchEnd = g_TrainingBatchEnd[info.tileId];
     if (!info.pixelActive) return;
     uint pixelIndex = raster_pixel_index(info.pixelCoord);
@@ -760,6 +809,10 @@ void raster_backward_replay<T : IRasterGradVariant>(RasterPixelInfo info, inout 
 
             RasterState state = replayState.pixelState;
             RasterState prevState = state.undo(gaussian.colorAlpha.xyz, alpha);
+            if (replayState.cloneSelected && alpha > CLONE_COUNT_ALPHA_THRESHOLD && state.trans <= replayState.cloneThreshold && prevState.trans > replayState.cloneThreshold)
+            {
+                InterlockedAdd(g_CloneCounts[splatId], 1u);
+            }
             var dpPrevState = diffPair(prevState);
             var dpGaussian = diffPair(gaussian);
             var dpColorAlpha = diffPair(gaussian.colorAlpha);
@@ -938,6 +991,7 @@ void csRasterizeBackwardFixed(uint3 dispatchThreadID : SV_DispatchThreadID, uint
     RasterReplayState replayState;
     RasterBackwardState backwardState;
     load_training_forward_cache(info, replayState);
+    init_training_backward_clone_state(info, replayState);
     init_raster_backward_state(backwardState);
     backwardState.pixelState = raster_output_gradient_pixel(info, replayState.pixelState);
     if (info.pixelActive && info.hasTileRange)
@@ -959,6 +1013,7 @@ void csRasterizeBackwardFloat(uint3 dispatchThreadID : SV_DispatchThreadID, uint
     RasterReplayState replayState;
     RasterBackwardState backwardState;
     load_training_forward_cache(info, replayState);
+    init_training_backward_clone_state(info, replayState);
     init_raster_backward_state(backwardState);
     backwardState.pixelState = raster_output_gradient_pixel(info, replayState.pixelState);
     if (info.pixelActive && info.hasTileRange)

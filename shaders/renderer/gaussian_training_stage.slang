@@ -12,6 +12,7 @@ static const uint TRAIN_TILE_DIM = 16u;
 static const uint LOSS_SLOT_TOTAL = 0u;
 static const uint LOSS_SLOT_MSE = 1u;
 static const uint LOSS_SLOT_DENSITY = 2u;
+static const uint LOSS_SLOT_RGB = 3u;
 static const float POSITION_RANDOM_STEP_MAX_ANISOTROPY = 4.0;
 static const float DENSIFY_SCALE_SHRINK_EXPONENT = -1.0 / 3.0;
 static const float DENSIFY_MAX_STANDARDIZED_SIGMA = 3.0;
@@ -41,6 +42,8 @@ uniform RWStructuredBuffer<float4> g_OutputGrad;
 uniform RWStructuredBuffer<float2> g_RegularizerGrad;
 uniform RWStructuredBuffer<float> g_LossBuffer;
 uniform RWStructuredBuffer<float4> g_BatchStepInfo;
+uniform RWStructuredBuffer<float> g_TrainingRgbLoss;
+uniform RWStructuredBuffer<float> g_TrainingRgbLossTotal;
 uniform float g_DensityRegularizer;
 uniform float g_DepthRatioWeight;
 uniform float g_DepthRatioGradMin;
@@ -98,6 +101,7 @@ uniform float g_RefinementRadiusScale;
 groupshared float gsLoss[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
 groupshared float gsMSE[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
 groupshared float gsDensityLoss[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
+groupshared float gsRgbLoss[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
 
 struct SplatState
 {
@@ -484,6 +488,8 @@ void csClearLossBuffer(uint3 dispatchThreadID : SV_DispatchThreadID)
         g_LossBuffer[LOSS_SLOT_TOTAL] = 0.0;
         g_LossBuffer[LOSS_SLOT_MSE] = 0.0;
         g_LossBuffer[LOSS_SLOT_DENSITY] = 0.0;
+        g_LossBuffer[LOSS_SLOT_RGB] = 0.0;
+        g_TrainingRgbLossTotal[0] = 0.0;
     }
 }
 
@@ -501,16 +507,19 @@ void csComputeL1LossForward(
     float localLoss = 0.0;
     float localMSE = 0.0;
     float localDensityLoss = 0.0;
+    float localRgbLoss = 0.0;
     if (px < g_Width && py < g_Height)
     {
         uint2 pixel = uint2(px, py);
+        uint pixelIndex = py * g_Width + px;
         float3 rendered = sanitize_float3(g_Rendered[pixel].xyz, g_HugeValue);
         float3 target = sanitize_float3(g_Target[pixel].xyz, g_HugeValue);
         float loss = rgb_l1_loss(rendered, target, g_InvPixelCount);
         float mse = rgb_mse_loss(rendered, target, g_InvPixelCount);
         float depthRatio = sanitize_scalar(g_RenderedDepthStats[pixel].w, g_HugeValue);
         float density = sanitize_scalar(g_RenderedDensity[py * g_Width + px], g_HugeValue);
-        localLoss = isfinite(loss) ? loss : 0.0;
+        localRgbLoss = isfinite(loss) ? loss : 0.0;
+        localLoss = localRgbLoss;
         localMSE = isfinite(mse) ? mse : 0.0;
         if (g_DepthRatioWeight > 0.0)
         {
@@ -523,23 +532,31 @@ void csComputeL1LossForward(
             float densityLoss = g_DensityRegularizer * densityExcess * g_InvPixelCount;
             localDensityLoss = isfinite(densityLoss) ? densityLoss : 0.0;
         }
+        g_TrainingRgbLoss[pixelIndex] = localRgbLoss;
     }
 
     gsLoss[localIndex] = localLoss;
     gsMSE[localIndex] = localMSE;
     gsDensityLoss[localIndex] = localDensityLoss;
+    gsRgbLoss[localIndex] = localRgbLoss;
     GroupMemoryBarrierWithGroupSync();
     [unroll] for (uint stride = (TRAIN_TILE_DIM * TRAIN_TILE_DIM) >> 1; stride > 0; stride >>= 1)
     {
         if (localIndex < stride) gsLoss[localIndex] += gsLoss[localIndex + stride];
         if (localIndex < stride) gsMSE[localIndex] += gsMSE[localIndex + stride];
         if (localIndex < stride) gsDensityLoss[localIndex] += gsDensityLoss[localIndex + stride];
+        if (localIndex < stride) gsRgbLoss[localIndex] += gsRgbLoss[localIndex + stride];
         GroupMemoryBarrierWithGroupSync();
     }
     if (localIndex == 0u)
     {
         if (isfinite(gsLoss[0])) InterlockedAdd(g_LossBuffer[LOSS_SLOT_TOTAL], gsLoss[0]);
         if (isfinite(gsMSE[0])) InterlockedAdd(g_LossBuffer[LOSS_SLOT_MSE], gsMSE[0]);
+        if (isfinite(gsRgbLoss[0]))
+        {
+            InterlockedAdd(g_LossBuffer[LOSS_SLOT_RGB], gsRgbLoss[0]);
+            InterlockedAdd(g_TrainingRgbLossTotal[0], gsRgbLoss[0]);
+        }
         if (isfinite(gsDensityLoss[0]))
         {
             InterlockedAdd(g_LossBuffer[LOSS_SLOT_TOTAL], gsDensityLoss[0]);
