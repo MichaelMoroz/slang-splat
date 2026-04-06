@@ -185,7 +185,7 @@ class SplatViewer(spy.AppWindow):
             debug_clone_count_range=(float(self.c("debug_clone_count_min").value), float(self.c("debug_clone_count_max").value)),
             debug_density_range=(float(self.c("debug_density_min").value), float(self.c("debug_density_max").value)),
             debug_contribution_range=(float(self.c("debug_contribution_min").value), float(self.c("debug_contribution_max").value)),
-            debug_adam_momentum_range=_threshold_band_range(float(self.c("debug_adam_momentum_threshold").value if "debug_adam_momentum_threshold" in self.ui.controls else _DEBUG_ADAM_MOMENTUM_THRESHOLD_DEFAULT)),
+            debug_adam_momentum_range=_threshold_band_range(float(self.c("debug_grad_norm_threshold").value)),
             debug_depth_mean_range=(float(self.c("debug_depth_mean_min").value), float(self.c("debug_depth_mean_max").value)),
             debug_depth_std_range=(float(self.c("debug_depth_std_min").value), float(self.c("debug_depth_std_max").value)),
             debug_depth_local_mismatch_range=(float(self.c("debug_depth_local_mismatch_min").value), float(self.c("debug_depth_local_mismatch_max").value)),

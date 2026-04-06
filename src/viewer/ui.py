@@ -241,7 +241,7 @@ def _renderer_debug_control_keys(mode: str) -> tuple[str, ...]:
     if mode == "clone_count": return ("debug_mode", "debug_clone_count_min", "debug_clone_count_max")
     if mode in ("splat_density", "splat_spatial_density", "splat_screen_density"): return ("debug_mode", "debug_density_min", "debug_density_max")
     if mode == "contribution_amount": return ("debug_mode", "debug_contribution_min", "debug_contribution_max")
-    if mode == "adam_momentum": return ("debug_mode", "debug_adam_momentum_threshold")
+    if mode == "adam_momentum": return ("debug_mode", "debug_grad_norm_threshold")
     if mode == "depth_mean": return ("debug_mode", "debug_depth_mean_min", "debug_depth_mean_max")
     if mode == "depth_std": return ("debug_mode", "debug_depth_std_min", "debug_depth_std_max")
     if mode == "depth_local_mismatch": return ("debug_mode", "debug_depth_local_mismatch_min", "debug_depth_local_mismatch_max", "debug_depth_local_mismatch_smooth_radius", "debug_depth_local_mismatch_reject_radius")
@@ -1186,7 +1186,7 @@ class ToolkitWindow:
         if mode == "contribution_amount":
             return f"{_contribution_amount_tick_value(t, float(ui._values.get('debug_contribution_min', 0.001)), float(ui._values.get('debug_contribution_max', 1.0))):.1e}"
         if mode == "adam_momentum":
-            threshold = float(ui._values.get("debug_adam_momentum_threshold", _DEBUG_ADAM_MOMENTUM_THRESHOLD_DEFAULT))
+            threshold = float(ui._values.get("debug_grad_norm_threshold", _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT))
             return f"{_threshold_band_tick_value(t, threshold):.1e}"
         if mode == "depth_mean":
             return f"{_debug_range_tick_value(t, float(ui._values.get('debug_depth_mean_min', 0.0)), float(ui._values.get('debug_depth_mean_max', 10.0))):.3g}"

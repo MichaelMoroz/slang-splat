@@ -238,7 +238,7 @@ def test_viewer_background_can_follow_train_background_color() -> None:
     assert resolved == (0.25, 0.5, 0.75)
 
 
-def test_renderer_params_maps_adam_momentum_threshold_to_log_range() -> None:
+def test_renderer_params_maps_adam_momentum_to_grad_norm_log_range() -> None:
     controls = {
         "cached_raster_grad_atomic_mode": SimpleNamespace(value=1),
         "debug_mode": SimpleNamespace(value=app._DEBUG_MODE_VALUES.index("adam_momentum")),
@@ -259,7 +259,6 @@ def test_renderer_params_maps_adam_momentum_threshold_to_log_range() -> None:
         "debug_density_max": SimpleNamespace(value=20.0),
         "debug_contribution_min": SimpleNamespace(value=0.001),
         "debug_contribution_max": SimpleNamespace(value=1.0),
-        "debug_adam_momentum_threshold": SimpleNamespace(value=1e-2),
         "debug_sh_coeff_index": SimpleNamespace(value=0),
         "debug_depth_mean_min": SimpleNamespace(value=0.0),
         "debug_depth_mean_max": SimpleNamespace(value=10.0),
@@ -279,7 +278,8 @@ def test_renderer_params_maps_adam_momentum_threshold_to_log_range() -> None:
     params = app.SplatViewer.renderer_params(viewer, allow_debug_overlays=True)
 
     assert params.debug_mode == "adam_momentum"
-    assert params.debug_adam_momentum_range == (1e-5, 1e-1)
+    assert np.isclose(params.debug_adam_momentum_range[0], 2e-7, rtol=0.0, atol=1e-15)
+    assert np.isclose(params.debug_adam_momentum_range[1], 2e-3, rtol=0.0, atol=1e-15)
 
 
 def test_export_ply_callback_saves_active_scene(monkeypatch, tmp_path: Path) -> None:
