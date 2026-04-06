@@ -242,10 +242,12 @@ def test_viewport_view_menu_left_aligns_view_mode_button(monkeypatch) -> None:
     button_labels: list[str] = []
     cursor_positions: list[tuple[float, float]] = []
     drawn_text: list[str] = []
+    text_positions: list[tuple[float, float]] = []
     line_segments: list[tuple[float, float, float, float]] = []
 
     class _DrawList:
-        def add_text(self, _pos, _color, text):
+        def add_text(self, pos, _color, text):
+            text_positions.append((float(pos.x), float(pos.y)))
             drawn_text.append(text)
 
         def add_line(self, p0, p1, _color, _thickness):
@@ -267,8 +269,8 @@ def test_viewport_view_menu_left_aligns_view_mode_button(monkeypatch) -> None:
     assert button_labels == ["View Mode"]
     assert cursor_positions == [(62.0, 72.0)]
     assert drawn_text == ["Depth Std"]
-    assert len(line_segments) == 1
-    assert line_segments[0][2] > line_segments[0][0]
+    assert text_positions == [(157.0, 75.75)]
+    assert line_segments == []
     assert np.isclose(origin.x, 62.0)
     assert origin.y > 72.0
 

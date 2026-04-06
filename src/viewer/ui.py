@@ -912,12 +912,9 @@ class ToolkitWindow:
         imgui.pop_id()
         current_label_size = imgui.calc_text_size(current_label)
         text_x = button_pos.x + button_width + 10.0 * scale
-        text_y = button_pos.y + 0.5 * (button_height - float(current_label_size.y))
+        text_y = button_pos.y + float(style.frame_padding.y) + 0.5 * scale
         draw_list = imgui.get_window_draw_list()
         draw_list.add_text(imgui.ImVec2(text_x, text_y), _color_u32(0.92, 0.96, 1.0, 0.95), current_label)
-        line_y = button_pos.y + button_height - 2.0 * scale
-        line_end = text_x + max(float(current_label_size.x), 96.0 * scale)
-        draw_list.add_line(imgui.ImVec2(text_x, line_y), imgui.ImVec2(line_end, line_y), _color_u32(0.10, 0.72, 1.0, 0.95), max(scale, 1.0))
         return imgui.ImVec2(button_pos.x, button_pos.y + button_height + _VIEWPORT_OVERLAY_MARGIN * scale)
 
     def _draw_viewport_debug_overlay(self, ui: ViewerUI, overlay_origin: imgui.ImVec2) -> None:
