@@ -22,7 +22,7 @@ from .gaussian_trainer import (
 )
 from .optimizer import GaussianOptimizer
 from .profiles import TRAINING_PROFILE_CHOICES, TrainingProfile, resolve_training_profile
-from .schedule import resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_effective_refinement_interval, resolve_learning_rate_scale, resolve_refinement_growth_ratio, resolve_max_allowed_density, should_run_refinement_step
+from .schedule import resolve_base_learning_rate, resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_depth_ratio_weight, resolve_effective_refinement_interval, resolve_learning_rate_scale, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_max_allowed_density, resolve_use_sh, should_run_refinement_step
 from .schedule import DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY, resolve_refinement_min_contribution_percent
 
 __all__ = [
@@ -53,10 +53,14 @@ __all__ = [
     "resolve_cosine_base_learning_rate",
     "resolve_effective_refinement_interval",
     "resolve_learning_rate_scale",
+    "resolve_base_learning_rate",
     "DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY",
     "resolve_refinement_min_contribution_percent",
     "resolve_refinement_growth_ratio",
     "resolve_max_allowed_density",
+    "resolve_depth_ratio_weight",
+    "resolve_position_random_step_noise_lr",
+    "resolve_use_sh",
     "TrainingProfile",
     "TRAINING_PROFILE_CHOICES",
     "resolve_training_profile",

@@ -300,11 +300,11 @@ GROUP_SPECS = {
         ControlSpec("train_background_color", "color_edit3", "Train BG Color", {"value": (1.0, 1.0, 1.0)}),
         ControlSpec("use_sh", "checkbox", "Use Spherical Harmonics", {"value": True}),
         ControlSpec("refinement_interval", "input_int", "Refinement Interval", {"value": 200, "step": 10, "step_fast": 50}),
-        ControlSpec("refinement_growth_ratio", "input_float", "Refinement Growth", {"value": 0.02, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
+        ControlSpec("refinement_growth_ratio", "input_float", "Refinement Growth", {"value": 0.075, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
         ControlSpec("refinement_growth_start_step", "input_int", "Start Refinement After", {"value": 500, "step": 100, "step_fast": 500}),
         ControlSpec("refinement_alpha_cull_threshold", "input_float", "Refinement Alpha Cull", {"value": 1e-2, "step": 1e-5, "step_fast": 1e-4, "format": "%.6e"}),
         ControlSpec("refinement_min_contribution_percent", "input_float", "Refinement Min Contribution", {"value": 1e-05, "step": 1e-6, "step_fast": 1e-5, "format": "%.6g%%"}),
-        ControlSpec("refinement_min_contribution_decay", "input_float", "Refinement Min Contribution Decay", {"value": 0.95, "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
+        ControlSpec("refinement_min_contribution_decay", "input_float", "Refinement Min Contribution Decay", {"value": 0.995, "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
         ControlSpec("train_downscale_mode", "combo", "Downscale Mode", {"value": 1, "options": _TRAIN_DOWNSCALE_MODE_LABELS}),
         ControlSpec("train_auto_start_downscale", "slider_int", "Auto Start Downscale", {"value": 16, "min": 1, "max": 16}),
         ControlSpec("train_downscale_base_iters", "input_int", "Downscale Base Iters", {"value": 200, "step": 25, "step_fast": 100}),
@@ -314,9 +314,9 @@ GROUP_SPECS = {
         ControlSpec("init_opacity", "input_float", "Init Opacity", {"value": 0.5, "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
     ),
     "Train Optimizer": (
-        ControlSpec("lr_base", "input_float", "Base LR", {"value": 1e-3, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
+        ControlSpec("lr_base", "input_float", "Base LR", {"value": 0.005, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
         ControlSpec("lr_schedule_enabled", "checkbox", "Use LR Schedule", {"value": True}),
-        ControlSpec("lr_schedule_start_lr", "input_float", "Schedule Start LR", {"value": 1e-3, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
+        ControlSpec("lr_schedule_start_lr", "input_float", "Schedule Start LR", {"value": 0.005, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
         ControlSpec("lr_schedule_end_lr", "input_float", "Schedule End LR", {"value": 1e-4, "step": 1e-6, "step_fast": 1e-5, "format": "%.8f"}),
         ControlSpec("lr_schedule_steps", "input_int", "Schedule Steps", {"value": 30000, "step": 1000, "step_fast": 5000}),
         ControlSpec("lr_pos_mul", "input_float", "LR Mul Position", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
@@ -331,10 +331,10 @@ GROUP_SPECS = {
         ControlSpec("scale_abs_reg", "input_float", "Scale Abs Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
         ControlSpec("sh1_reg", "input_float", "SH1 Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
         ControlSpec("opacity_reg", "input_float", "Opacity Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
-        ControlSpec("density_regularizer", "input_float", "Density Reg", {"value": 0.05, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
-        ControlSpec("depth_ratio_weight", "input_float", "Depth Ratio Reg", {"value": 0.05, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
-        ControlSpec("depth_ratio_grad_min", "input_float", "Depth Ratio Grad Min", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
-        ControlSpec("depth_ratio_grad_max", "input_float", "Depth Ratio Grad Max", {"value": 0.05, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
+        ControlSpec("density_regularizer", "input_float", "Density Reg", {"value": 0.02, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
+        ControlSpec("depth_ratio_weight", "input_float", "Depth Ratio Reg", {"value": 1.0, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
+        ControlSpec("depth_ratio_grad_min", "input_float", "Depth Ratio Grad Min", {"value": 0.0, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
+        ControlSpec("depth_ratio_grad_max", "input_float", "Depth Ratio Grad Max", {"value": 0.1, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
         ControlSpec("max_allowed_density", "input_float", "Max Density", {"value": 12.0, "step": 1e-3, "step_fast": 1e-2, "format": "%.8f"}),
         ControlSpec("position_random_step_opacity_gate_center", "input_float", "Noise Gate Center", {"value": 0.005, "step": 1e-4, "step_fast": 1e-3, "format": "%.6f"}),
         ControlSpec("position_random_step_opacity_gate_sharpness", "input_float", "Noise Gate Sharpness", {"value": 100.0, "step": 1.0, "step_fast": 10.0, "format": "%.4g"}),
@@ -1000,7 +1000,7 @@ class ToolkitWindow:
             imgui.spacing()
             self._draw_import_path_selector(ui, label="Image Folder", key="colmap_images_root", button_label="Browse Image Folder...", callback=self.callbacks.browse_colmap_images)
             imgui.spacing()
-            downscale_idx = max(0, min(int(ui._values.get("colmap_image_downscale_mode", 0)), len(_COLMAP_IMAGE_DOWNSCALE_LABELS) - 1))
+            downscale_idx = max(0, min(int(ui._values.get("colmap_image_downscale_mode", 1)), len(_COLMAP_IMAGE_DOWNSCALE_LABELS) - 1))
             if imgui.begin_combo("Image Downscale", _COLMAP_IMAGE_DOWNSCALE_LABELS[downscale_idx]):
                 for idx, label in enumerate(_COLMAP_IMAGE_DOWNSCALE_LABELS):
                     selected = idx == downscale_idx
@@ -1648,7 +1648,7 @@ class ToolkitWindow:
         "scale_abs_reg": "Absolute scale regularization weight",
         "sh1_reg": "L1 regularization weight applied to SH1 coefficients only",
         "opacity_reg": "Opacity regularization weight (pushes toward 0 or 1)",
-        "position_random_step_noise_lr": "Post-step MCMC-style position noise multiplier; matches the old modular-refactor Noise LR behavior",
+        "position_random_step_noise_lr": "Post-step MCMC-style position noise multiplier; runtime linearly decays it from the configured value to zero by the end of the LR schedule",
         "position_random_step_opacity_gate_center": "Opacity center for the random-step sigmoid gate; lower-opacity splats get stronger position noise",
         "position_random_step_opacity_gate_sharpness": "Steepness of the random-step opacity gate",
         "max_anisotropy": "Maximum ratio between largest and smallest scale axes",
@@ -1663,7 +1663,7 @@ class ToolkitWindow:
         "training_steps_per_frame": "Number of training optimizer steps to run before each viewer redraw; higher improves training throughput but reduces UI refresh rate",
         "background_mode": "Choose whether training uses a fixed custom RGB background or a new random RGB background each optimizer step",
         "train_background_color": "Custom RGB background used for training when Train Background is set to Custom",
-        "use_sh": "Enable SH0+SH1 view-dependent color evaluation during projection and training; disable it to train only the SH0 base color",
+        "use_sh": "Enable SH0+SH1 view-dependent color evaluation during projection and training; runtime keeps SH disabled until the schedule reaches the 5k/30k warmup point",
         "refinement_interval": "Run cull/split refinement every N training steps",
         "refinement_growth_ratio": "Target fractional scene growth per refinement step once densification is enabled",
         "refinement_growth_start_step": "Keep densification growth at zero until this training iteration, then use the configured refinement growth",
@@ -1671,14 +1671,14 @@ class ToolkitWindow:
         "refinement_min_contribution_percent": "Minimum accumulated alpha contribution, as a percent of observed dataset pixels, required for a splat to survive refinement",
         "refinement_min_contribution_decay": "Multiply the minimum contribution percent by this factor after each completed refinement pass",
         "density_regularizer": "Weight applied to the per-pixel hinge penalty max(density - max_allowed_density, 0)",
-        "depth_ratio_weight": "Weight applied to the differentiable per-pixel windowed-sigmoid depth std over mean-depth ratio penalty",
+        "depth_ratio_weight": "Initial weight applied to the differentiable per-pixel windowed-sigmoid depth std over mean-depth ratio penalty; runtime decays it over the training schedule",
         "depth_ratio_grad_min": "Start of the high-gradient depth-ratio interval; gradients taper below this value",
         "depth_ratio_grad_max": "End of the high-gradient depth-ratio interval; gradients taper above this value",
         "max_allowed_density": "End-of-training per-pixel density threshold above which the density regularizer activates; runtime ramps from 5.0 to this value over the LR schedule",
-        "lr_schedule_enabled": "Enable cosine scheduling of the base learning rate",
+        "lr_schedule_enabled": "Enable the piecewise-linear base learning-rate schedule",
         "lr_schedule_start_lr": "Base learning rate at step 0 of the schedule",
-        "lr_schedule_end_lr": "Base learning rate after the cosine schedule ends",
-        "lr_schedule_steps": "Number of steps over which the cosine LR schedule decays before clamping",
+        "lr_schedule_end_lr": "Base learning rate at the end of the final piecewise schedule segment",
+        "lr_schedule_steps": "Total step budget used to scale the piecewise LR, depth-ratio, SH warmup, and noise schedules before clamping",
         "train_downscale_mode": "Use Auto for scheduled downscale descent or choose a fixed manual override from 1x to 16x",
         "train_auto_start_downscale": "Initial downscale factor used at step 0 when Downscale Mode is Auto",
         "train_downscale_base_iters": "Number of iterations spent at the auto start factor before descending",
@@ -1824,7 +1824,7 @@ def build_ui(renderer) -> ViewerUI:
     values["colmap_images_root"] = ""
     values["colmap_init_mode"] = 1
     values["colmap_custom_ply_path"] = ""
-    values["colmap_image_downscale_mode"] = 0
+    values["colmap_image_downscale_mode"] = 1
     values["colmap_image_max_size"] = 2048
     values["colmap_image_scale"] = 1.0
     values["colmap_nn_radius_scale_coef"] = 0.5

@@ -79,7 +79,7 @@ def _ui_import_mode(viewer: object) -> str:
 
 
 def _ui_image_downscale_mode(viewer: object) -> str:
-    mode_idx = int(viewer.ui._values.get("colmap_image_downscale_mode", 0))
+    mode_idx = int(viewer.ui._values.get("colmap_image_downscale_mode", 1))
     if mode_idx == 1:
         return _COLMAP_IMAGE_DOWNSCALE_MAX_SIZE
     if mode_idx == 2:

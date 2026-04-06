@@ -21,21 +21,28 @@ _TRAIN_DOWNSCALE_MODE_AUTO = 0
 _VIEWER_CLEAR_COLOR = [0.08, 0.09, 0.11, 1.0]
 
 
+def _schedule_waypoints(start_lr: float, end_lr: float) -> tuple[float, float, float, float]:
+    start = max(float(start_lr), 1e-8)
+    return start, start * 0.4, start * 0.2, max(float(end_lr), 1e-8)
+
+
 def _training_schedule_text(viewer: object) -> str:
     if viewer.s.trainer is not None:
         training = viewer.s.trainer.training
         if not bool(training.lr_schedule_enabled):
             return "LR Schedule: disabled"
         current = float(viewer.s.trainer.current_base_lr()) if hasattr(viewer.s.trainer, "current_base_lr") else float(training.lr_schedule_start_lr)
+        lr0, lr1, lr2, lr3 = _schedule_waypoints(training.lr_schedule_start_lr, training.lr_schedule_end_lr)
         return (
-            f"LR Schedule: cosine {float(training.lr_schedule_start_lr):.2e} -> {float(training.lr_schedule_end_lr):.2e} | "
+            f"LR Schedule: piecewise {lr0:.2e} -> {lr1:.2e} -> {lr2:.2e} -> {lr3:.2e} | "
             f"steps={int(training.lr_schedule_steps):,} | current={current:.2e}"
         )
     if not bool(viewer.c("lr_schedule_enabled").value):
         return "LR Schedule: disabled"
+    lr0, lr1, lr2, lr3 = _schedule_waypoints(viewer.c("lr_schedule_start_lr").value, viewer.c("lr_schedule_end_lr").value)
     return (
-        f"LR Schedule: cosine {float(viewer.c('lr_schedule_start_lr').value):.2e} -> {float(viewer.c('lr_schedule_end_lr').value):.2e} | "
-        f"steps={max(int(viewer.c('lr_schedule_steps').value), 1):,} | current={float(viewer.c('lr_schedule_start_lr').value):.2e}"
+        f"LR Schedule: piecewise {lr0:.2e} -> {lr1:.2e} -> {lr2:.2e} -> {lr3:.2e} | "
+        f"steps={max(int(viewer.c('lr_schedule_steps').value), 1):,} | current={lr0:.2e}"
     )
 
 
@@ -49,7 +56,7 @@ def _training_refinement_text(viewer: object) -> str:
         interval = int(viewer.s.trainer.effective_refinement_interval()) if hasattr(viewer.s.trainer, "effective_refinement_interval") else int(training.refinement_interval)
         frame_count = len(getattr(viewer.s.trainer, "frames", getattr(viewer.s, "training_frames", ())))
         contribution_cull = resolve_refinement_min_contribution_percent(training, current_step, frame_count)
-        decay = min(max(float(getattr(training, "refinement_min_contribution_decay", 0.95)), 0.0), 1.0)
+        decay = min(max(float(getattr(training, "refinement_min_contribution_decay", 0.995)), 0.0), 1.0)
         return (
             f"Refinement: every {interval:,} | growth={current_growth * 100.0:.2f}% now | target={target_growth * 100.0:.2f}% after {start_step:,} | "
             f"alpha<{float(training.refinement_alpha_cull_threshold):.2e} or min contrib<{contribution_cull:.6g}% | decay={decay * 100.0:.2f}%/pass | max={int(training.max_gaussians):,}"

@@ -206,7 +206,7 @@ COMMON_RENDER_ARGS = (
 TRAIN_RENDER_ARGS = tuple(
     A(flag, type=float, default=default)
     for flag, default in (
-        ("--lr-base", 1e-3),
+        ("--lr-base", 0.005),
         ("--lr-mul-pos", 1.0),
         ("--lr-mul-scale", 5.0),
         ("--lr-mul-rot", 1.0),
@@ -229,10 +229,10 @@ TRAIN_RENDER_ARGS = tuple(
         ("--scale-abs-reg", 0.01),
         ("--sh1-reg", 0.01),
         ("--opacity-reg", 0.01),
-        ("--density-reg", 0.05),
-        ("--depth-ratio-weight", 0.05),
-        ("--depth-ratio-grad-min", 0.01),
-        ("--depth-ratio-grad-max", 0.05),
+        ("--density-reg", 0.02),
+        ("--depth-ratio-weight", 1.0),
+        ("--depth-ratio-grad-min", 0.0),
+        ("--depth-ratio-grad-max", 0.1),
         ("--max-allowed-density-start", 5.0),
         ("--max-allowed-density", 12.0),
         ("--max-anisotropy", 32.0),

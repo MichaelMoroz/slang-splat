@@ -9,7 +9,7 @@ import slangpy as spy
 
 from ..common import clamp_float, clamp_int
 from ..scene import GaussianInitHyperParams, GaussianScene
-from ..training import AdamHyperParams, DEFAULT_DEBUG_CONTRIBUTION_RANGE_PERCENT, DEFAULT_DEPTH_RATIO_GRAD_MAX, DEFAULT_DEPTH_RATIO_GRAD_MIN, DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY, DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, resolve_depth_ratio_grad_band, resolve_training_profile
+from ..training import AdamHyperParams, DEFAULT_DEBUG_CONTRIBUTION_RANGE_PERCENT, DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY, DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, resolve_depth_ratio_grad_band, resolve_training_profile
 
 EPS = 1e-8
 MIN_SCENE_RADIUS = 1.0
@@ -167,10 +167,10 @@ def build_training_params(
     scale_abs_reg_weight: float,
     opacity_reg_weight: float,
     sh1_reg_weight: float = 0.01,
-    density_regularizer: float = 0.05,
-    depth_ratio_weight: float = 0.05,
-    depth_ratio_grad_min: float = DEFAULT_DEPTH_RATIO_GRAD_MIN,
-    depth_ratio_grad_max: float = DEFAULT_DEPTH_RATIO_GRAD_MAX,
+    density_regularizer: float = 0.02,
+    depth_ratio_weight: float = 1.0,
+    depth_ratio_grad_min: float = 0.0,
+    depth_ratio_grad_max: float = 0.1,
     max_allowed_density_start: float = 5.0,
     max_allowed_density: float = 12.0,
     position_random_step_noise_lr: float = 5e5,
@@ -184,7 +184,7 @@ def build_training_params(
     lr_schedule_end_lr: float | None = None,
     lr_schedule_steps: int = 30_000,
     refinement_interval: int = 200,
-    refinement_growth_ratio: float = 0.02,
+    refinement_growth_ratio: float = 0.075,
     refinement_growth_start_step: int = 500,
     refinement_alpha_cull_threshold: float = 1e-2,
     refinement_min_contribution_percent: float = DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT,

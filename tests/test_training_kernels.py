@@ -13,7 +13,7 @@ from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 from src.scene.sh_utils import SH_C0
 from src.training import gaussian_trainer as gaussian_trainer_module
-from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, contribution_fixed_count_from_percent, contribution_percent_from_fixed_count, resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_depth_ratio_grad_band, resolve_effective_refinement_interval, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_max_allowed_density, resolve_training_resolution, should_run_refinement_step
+from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, contribution_fixed_count_from_percent, contribution_percent_from_fixed_count, resolve_base_learning_rate, resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_depth_ratio_grad_band, resolve_depth_ratio_weight, resolve_effective_refinement_interval, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_max_allowed_density, resolve_training_resolution, resolve_use_sh, should_run_refinement_step
 
 _ADAM_BUFFER_NAMES = ("adam_moments",)
 _OPACITY_EPS = 1e-6
@@ -614,23 +614,28 @@ def test_resolve_training_resolution_uses_ceil_division() -> None:
     assert resolve_training_resolution(1, 1, 16) == (1, 1)
 
 
-def test_cosine_base_lr_clamps_after_schedule_end() -> None:
-    hparams = TrainingHyperParams(lr_schedule_start_lr=1e-2, lr_schedule_end_lr=1e-3, lr_schedule_steps=4)
+def test_base_lr_uses_requested_piecewise_schedule() -> None:
+    hparams = TrainingHyperParams(lr_schedule_start_lr=0.005, lr_schedule_end_lr=1e-4, lr_schedule_steps=30_000)
 
-    np.testing.assert_allclose(resolve_cosine_base_learning_rate(hparams, 0), 1e-2, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(resolve_cosine_base_learning_rate(hparams, 4), 1e-3, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(resolve_cosine_base_learning_rate(hparams, 40), 1e-3, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(resolve_base_learning_rate(hparams, 0), 0.005, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(resolve_base_learning_rate(hparams, 1000), 0.0035, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(resolve_base_learning_rate(hparams, 2000), 0.002, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(resolve_base_learning_rate(hparams, 3500), 0.0015, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(resolve_base_learning_rate(hparams, 5000), 0.001, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(resolve_base_learning_rate(hparams, 30_000), 1e-4, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(resolve_base_learning_rate(hparams, 40_000), 1e-4, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(resolve_cosine_base_learning_rate(hparams, 3500), resolve_base_learning_rate(hparams, 3500), rtol=0.0, atol=1e-12)
 
 
-def test_training_step_updates_optimizer_lrs_from_cosine_schedule(device, tmp_path: Path) -> None:
+def test_training_step_updates_optimizer_lrs_from_piecewise_schedule(device, tmp_path: Path) -> None:
     scene = _make_scene(count=8, seed=77)
     frame = _make_frame(tmp_path, image_name="lr_schedule_target.png", image_id=5)
     renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
     adam = AdamHyperParams(position_lr=1e-2, scale_lr=2e-2, rotation_lr=3e-2, color_lr=4e-2, opacity_lr=5e-2)
     training = TrainingHyperParams(
-        lr_schedule_start_lr=1e-2,
+        lr_schedule_start_lr=0.005,
         lr_schedule_end_lr=1e-3,
-        lr_schedule_steps=2,
+        lr_schedule_steps=30_000,
         scale_l2_weight=0.0,
         scale_abs_reg_weight=0.0,
         opacity_reg_weight=0.0,
@@ -640,27 +645,47 @@ def test_training_step_updates_optimizer_lrs_from_cosine_schedule(device, tmp_pa
     before = _read_optimizer_lrs(trainer)
     trainer.step()
     after = _read_optimizer_lrs(trainer)
-    expected_scale = resolve_cosine_base_learning_rate(training, 1) / training.lr_schedule_start_lr
+    expected_scale = resolve_base_learning_rate(training, 1) / training.lr_schedule_start_lr
 
     np.testing.assert_allclose(before[[0, 3, 6, 10, 22]], np.array([1e-2, 2e-2, 3e-2, 4e-2, 5e-2], dtype=np.float32), rtol=0.0, atol=1e-7)
     np.testing.assert_allclose(after[[0, 3, 6, 10, 22]], expected_scale * np.array([1e-2, 2e-2, 3e-2, 4e-2, 5e-2], dtype=np.float32), rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(trainer.state.last_base_lr, resolve_cosine_base_learning_rate(training, 1), rtol=0.0, atol=1e-7)
+    np.testing.assert_allclose(trainer.state.last_base_lr, resolve_base_learning_rate(training, 1), rtol=0.0, atol=1e-7)
 
 
 def test_loss_vars_use_density_schedule(device, tmp_path: Path) -> None:
     scene = _make_scene(count=4, seed=93)
     frame = _make_frame(tmp_path, image_name="density_schedule_target.png", image_id=19)
     renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
-    training = TrainingHyperParams(lr_schedule_steps=2)
+    training = TrainingHyperParams(lr_schedule_steps=30_000)
     trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], training_hparams=training, seed=123)
 
-    np.testing.assert_allclose(trainer._loss_vars(0)["g_DensityRegularizer"], 0.05, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(trainer._loss_vars(0)["g_DepthRatioWeight"], 0.05, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(trainer._loss_vars(0)["g_DepthRatioGradMin"], 0.01, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(trainer._loss_vars(0)["g_DepthRatioGradMax"], 0.05, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(trainer._loss_vars(0)["g_DensityRegularizer"], 0.02, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(trainer._loss_vars(0)["g_DepthRatioWeight"], 1.0, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(trainer._loss_vars(0)["g_DepthRatioGradMin"], 0.0, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(trainer._loss_vars(0)["g_DepthRatioGradMax"], 0.1, rtol=0.0, atol=1e-10)
     np.testing.assert_allclose(trainer._loss_vars(0)["g_MaxAllowedDensity"], 5.0, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(trainer._loss_vars(1)["g_MaxAllowedDensity"], 8.5, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(trainer._loss_vars(2)["g_MaxAllowedDensity"], 12.0, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(trainer._loss_vars(15_000)["g_MaxAllowedDensity"], 8.5, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(trainer._loss_vars(30_000)["g_MaxAllowedDensity"], 12.0, rtol=0.0, atol=1e-10)
+
+
+def test_depth_ratio_noise_and_sh_schedules_follow_requested_defaults() -> None:
+    hparams = TrainingHyperParams(
+        depth_ratio_weight=1.0,
+        position_random_step_noise_lr=5e5,
+        use_sh=True,
+        lr_schedule_steps=30_000,
+    )
+
+    np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 0), 1.0, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 1000), 0.25, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 2000), 0.05, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 5000), 0.01, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 30_000), 0.001, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 0), 5e5, rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 15_000), 2.5e5, rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 30_000), 0.0, rtol=0.0, atol=1e-6)
+    assert resolve_use_sh(hparams, 4999) is False
+    assert resolve_use_sh(hparams, 5000) is True
 
 
 def test_max_allowed_density_schedule_clamps_to_end_value() -> None:

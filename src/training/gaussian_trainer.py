@@ -14,7 +14,7 @@ from ..scene import ColmapFrame, GaussianInitHyperParams, GaussianScene, SUPPORT
 from ..scene._internal.colmap_ops import TRAINING_FRAME_LOAD_THREADS, load_training_frame_rgba8
 from .adam import AdamOptimizer, AdamRuntimeHyperParams
 from .optimizer import GaussianOptimizer
-from .schedule import DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY, resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_effective_refinement_interval, resolve_learning_rate_scale, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_max_allowed_density, should_run_refinement_step
+from .schedule import DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY, resolve_base_learning_rate, resolve_clone_probability_threshold, resolve_depth_ratio_weight, resolve_effective_refinement_interval, resolve_learning_rate_scale, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_max_allowed_density, resolve_use_sh, should_run_refinement_step
 
 TRAIN_DOWNSCALE_MODE_AUTO = 0
 TRAIN_DOWNSCALE_MAX_FACTOR = 16
@@ -24,8 +24,8 @@ SPLAT_CONTRIBUTION_FIXED_SCALE = 256.0
 DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT = 1e-05
 DEFAULT_DEBUG_CONTRIBUTION_RANGE_PERCENT = (0.001, 1.0)
 DEPTH_RATIO_GRAD_MIN_BAND_WIDTH = 1e-4
-DEFAULT_DEPTH_RATIO_GRAD_MIN = 0.01
-DEFAULT_DEPTH_RATIO_GRAD_MAX = 0.05
+DEFAULT_DEPTH_RATIO_GRAD_MIN = 0.0
+DEFAULT_DEPTH_RATIO_GRAD_MAX = 0.1
 _REFINEMENT_HASH_INIT = 0x9E3779B9
 _REFINEMENT_HASH_MIX = 0x85EBCA6B
 
@@ -158,11 +158,11 @@ class StabilityHyperParams:
 class TrainingHyperParams:
     background: tuple[float, float, float] = (1.0, 1.0, 1.0); near: float = 0.1; far: float = 120.0
     background_mode: int = TRAIN_BACKGROUND_MODE_RANDOM; use_sh: bool = True
-    scale_l2_weight: float = 0.0; scale_abs_reg_weight: float = 0.01; sh1_reg_weight: float = 0.01; opacity_reg_weight: float = 0.01; density_regularizer: float = 0.05; depth_ratio_weight: float = 0.05; max_allowed_density_start: float = 5.0; max_allowed_density: float = 12.0
-    depth_ratio_grad_min: float = DEFAULT_DEPTH_RATIO_GRAD_MIN; depth_ratio_grad_max: float = DEFAULT_DEPTH_RATIO_GRAD_MAX
+    scale_l2_weight: float = 0.0; scale_abs_reg_weight: float = 0.01; sh1_reg_weight: float = 0.01; opacity_reg_weight: float = 0.01; density_regularizer: float = 0.02; depth_ratio_weight: float = 1.0; max_allowed_density_start: float = 5.0; max_allowed_density: float = 12.0
+    depth_ratio_grad_min: float = 0.0; depth_ratio_grad_max: float = 0.1
     position_random_step_noise_lr: float = 5e5; position_random_step_opacity_gate_center: float = 0.005; position_random_step_opacity_gate_sharpness: float = 100.0
-    lr_schedule_enabled: bool = True; lr_schedule_start_lr: float = 1e-3; lr_schedule_end_lr: float = 1e-4; lr_schedule_steps: int = 30_000
-    refinement_interval: int = 200; refinement_growth_ratio: float = 0.02; refinement_growth_start_step: int = 500; refinement_alpha_cull_threshold: float = 1e-2; refinement_min_contribution_percent: float = DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT; refinement_min_contribution_decay: float = DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY
+    lr_schedule_enabled: bool = True; lr_schedule_start_lr: float = 0.005; lr_schedule_end_lr: float = 1e-4; lr_schedule_steps: int = 30_000
+    refinement_interval: int = 200; refinement_growth_ratio: float = 0.075; refinement_growth_start_step: int = 500; refinement_alpha_cull_threshold: float = 1e-2; refinement_min_contribution_percent: float = DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT; refinement_min_contribution_decay: float = DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY
     max_gaussians: int = 1_000_000; train_downscale_mode: int = 1; train_auto_start_downscale: int = 16
     train_downscale_base_iters: int = 200; train_downscale_iter_step: int = 50; train_downscale_max_iters: int = 30_000
     train_downscale_factor: int = 1
@@ -262,7 +262,7 @@ class GaussianTrainer:
 
     def current_base_lr(self, step: int | None = None) -> float:
         resolved_step = self.state.step if step is None else int(step)
-        return resolve_cosine_base_learning_rate(self.training, resolved_step)
+        return resolve_base_learning_rate(self.training, resolved_step)
 
     def effective_refinement_interval(self) -> int:
         return resolve_effective_refinement_interval(self.training, len(self.frames))
@@ -305,8 +305,9 @@ class GaussianTrainer:
             huge_value=float(self.stability.huge_value),
         )
 
-    def _apply_renderer_training_hparams(self) -> None:
-        self.renderer.use_sh = bool(self.training.use_sh)
+    def _apply_renderer_training_hparams(self, step: int | None = None) -> None:
+        resolved_step = 0 if step is None and not hasattr(self, "state") else self.state.step if step is None else int(step)
+        self.renderer.use_sh = resolve_use_sh(self.training, resolved_step)
 
     def _dispatch(self, kernel: str, encoder: spy.CommandEncoder, thread_count: spy.uint3, vars: dict[str, object]) -> None:
         dispatch(
@@ -403,14 +404,14 @@ class GaussianTrainer:
             "g_PositionRandomStepParams": self.renderer.scene_buffers["splat_params"],
             "g_PositionRandomStepSplatCount": int(self._scene_count),
             "g_PositionRandomStepSeed": np.uint32(self._seed + int(step_index)),
-            "g_PositionRandomStepNoiseLr": float(self.training.position_random_step_noise_lr),
+            "g_PositionRandomStepNoiseLr": float(resolve_position_random_step_noise_lr(self.training, int(step_index))),
             "g_PositionRandomStepPositionLr": float(self.adam.position_lr * resolve_learning_rate_scale(self.training, int(step_index))),
             "g_PositionRandomStepOpacityGateCenter": float(self.training.position_random_step_opacity_gate_center),
             "g_PositionRandomStepOpacityGateSharpness": float(self.training.position_random_step_opacity_gate_sharpness),
         }
 
     def _dispatch_position_random_steps(self, encoder: spy.CommandEncoder, step_index: int) -> None:
-        if self._scene_count <= 0 or self.training.position_random_step_noise_lr <= 0.0:
+        if self._scene_count <= 0 or resolve_position_random_step_noise_lr(self.training, int(step_index)) <= 0.0:
             return
         self._dispatch(
             "position_random_step",
@@ -821,7 +822,7 @@ class GaussianTrainer:
             "g_LossGradClip": float(self.stability.loss_grad_clip),
             "g_HugeValue": float(self.stability.huge_value),
             "g_DensityRegularizer": float(self.training.density_regularizer),
-            "g_DepthRatioWeight": float(self.training.depth_ratio_weight),
+            "g_DepthRatioWeight": float(resolve_depth_ratio_weight(self.training, resolved_step)),
             "g_DepthRatioGradMin": float(self.training.depth_ratio_grad_min),
             "g_DepthRatioGradMax": float(self.training.depth_ratio_grad_max),
             "g_MaxAllowedDensity": float(resolve_max_allowed_density(self.training, resolved_step)),
@@ -1030,6 +1031,7 @@ class GaussianTrainer:
             frame_index = self._next_frame_index()
             frame_indices.append(frame_index)
             frame_camera = self.make_frame_camera(frame_index, self.renderer.width, self.renderer.height)
+            self._apply_renderer_training_hparams(training_step)
             self._maybe_sync_prepass_capacity(frame_camera, training_step)
             self.renderer.record_prepass_for_current_scene(enc, frame_camera)
             target_texture = self.get_frame_target_texture(frame_index, native_resolution=False, encoder=enc)

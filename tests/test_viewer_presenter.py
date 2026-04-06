@@ -45,19 +45,19 @@ class _DummyTrainer:
             train_auto_start_downscale=1,
             train_downscale_max_iters=30000,
             lr_schedule_enabled=True,
-            lr_schedule_start_lr=1e-3,
+            lr_schedule_start_lr=0.005,
             lr_schedule_end_lr=1e-4,
             lr_schedule_steps=30000,
             refinement_interval=200,
-            refinement_growth_ratio=0.02,
+            refinement_growth_ratio=0.075,
             refinement_growth_start_step=500,
             refinement_alpha_cull_threshold=1e-2,
             refinement_min_contribution_percent=1e-05,
-            refinement_min_contribution_decay=0.95,
-            density_regularizer=0.05,
-            depth_ratio_weight=0.05,
-            depth_ratio_grad_min=0.01,
-            depth_ratio_grad_max=0.05,
+            refinement_min_contribution_decay=0.995,
+            density_regularizer=0.02,
+            depth_ratio_weight=1.0,
+            depth_ratio_grad_min=0.0,
+            depth_ratio_grad_max=0.1,
             max_allowed_density=12.0,
             max_gaussians=1000000,
         )
@@ -79,7 +79,7 @@ class _DummyTrainer:
         return 1
 
     def current_base_lr(self) -> float:
-        return 1e-3
+        return 0.005
 
     def get_frame_target_texture(self, frame_index: int, native_resolution: bool = True, encoder: object | None = None) -> str:
         return f"target_tex_{frame_index}_{native_resolution}"
@@ -112,15 +112,15 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         "training_steps_per_frame": _control(3),
         "train_downscale_factor": _control(1),
         "lr_schedule_enabled": _control(True),
-        "lr_schedule_start_lr": _control(1e-3),
+        "lr_schedule_start_lr": _control(0.005),
         "lr_schedule_end_lr": _control(1e-4),
         "lr_schedule_steps": _control(30000),
         "refinement_interval": _control(200),
-        "refinement_growth_ratio": _control(0.02),
+        "refinement_growth_ratio": _control(0.075),
         "refinement_growth_start_step": _control(500),
         "refinement_alpha_cull_threshold": _control(1e-2),
         "refinement_min_contribution_percent": _control(1e-05),
-        "refinement_min_contribution_decay": _control(0.95),
+        "refinement_min_contribution_decay": _control(0.995),
         "max_gaussians": _control(1000000),
         "train_downscale_mode": _control(1),
         "train_auto_start_downscale": _control(1),
@@ -326,8 +326,8 @@ def test_update_ui_text_reports_training_schedule_and_refinement() -> None:
 
     presenter.update_ui_text(viewer, 1.0 / 60.0)
 
-    assert viewer.t("training_schedule").text == "LR Schedule: cosine 1.00e-03 -> 1.00e-04 | steps=30,000 | current=1.00e-03"
-    assert viewer.t("training_refinement").text == "Refinement: every 200 | growth=0.00% now | target=2.00% after 500 | alpha<1.00e-02 or min contrib<1e-05% | decay=95.00%/pass | max=1,000,000"
+    assert viewer.t("training_schedule").text == "LR Schedule: piecewise 5.00e-03 -> 2.00e-03 -> 1.00e-03 -> 1.00e-04 | steps=30,000 | current=5.00e-03"
+    assert viewer.t("training_refinement").text == "Refinement: every 200 | growth=0.00% now | target=7.50% after 500 | alpha<1.00e-02 or min contrib<1e-05% | decay=99.50%/pass | max=1,000,000"
 
 
 def test_render_frame_recovers_missing_main_renderer_by_recreating_it(monkeypatch):

@@ -68,7 +68,7 @@ Each trainer `step()` performs:
 8. When the configured refinement boundary is reached, run the refinement pass:
   - `csClampRefinementMinScreenSize` loops over all training cameras on GPU, ignores offscreen centers, finds the minimum visible 1-pixel support-radius bound, and raises undersized splats before rewrite,
   - cull splats with alpha below `refinement_alpha_cull_threshold`,
-  - multiply the user-facing minimum contribution percent by `refinement_min_contribution_decay` after each completed refinement pass (`0.95` by default, i.e. a `5%` drop per pass),
+  - multiply the user-facing minimum contribution percent by `refinement_min_contribution_decay` after each completed refinement pass (`0.995` by default, i.e. a `0.5%` drop per pass),
   - convert that decayed percent-of-observed-dataset-pixels threshold into the shader's raw 24.8 fixed-point units with `percent * observed_pixels * 256 / 100`,
   - split selected splats into `N + 1` family members from the accumulated clone counts using centered Gaussian samples in local splat space, seeded from a Python-provided hash of the selected training-frame `image_id`,
   - shrink each child sigma by `family_size^(-1/3)` and offset child means with the analytically matched residual covariance so the expected family covariance stays aligned with the parent,
