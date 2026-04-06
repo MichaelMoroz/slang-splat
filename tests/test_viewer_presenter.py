@@ -535,20 +535,21 @@ def test_render_debug_source_uses_overlay_renderer_for_rendered_view(monkeypatch
     assert calls == [("ensure", True), ("sync", "debug")]
 
 
-def test_render_debug_source_uses_training_renderer_for_abs_diff(monkeypatch) -> None:
+def test_render_debug_source_uses_overlay_renderer_for_abs_diff(monkeypatch) -> None:
     viewer = _viewer(loss_debug=True)
     viewer.c("loss_debug_view").value = 2
-    calls: list[str] = []
+    overlay_renderer = _DummyRenderer()
+    calls: list[tuple[str, object]] = []
 
-    monkeypatch.setattr(presenter.session, "ensure_renderer", lambda *args, **kwargs: calls.append("ensure"))
-    monkeypatch.setattr(presenter.session, "sync_scene_from_training_renderer", lambda *args, **kwargs: calls.append("sync"))
+    monkeypatch.setattr(presenter.session, "ensure_renderer", lambda viewer_obj, attr, width, height, allow_debug_overlays: calls.append(("ensure", allow_debug_overlays)) or overlay_renderer)
+    monkeypatch.setattr(presenter.session, "sync_scene_from_training_renderer", lambda viewer_obj, dst_renderer, target: calls.append(("sync", target)))
 
     source_tex, stats, width, height = presenter._render_debug_source(viewer, _DummyEncoder(), 0)
 
     assert width == 640
     assert height == 360
     assert stats["written_entries"] == 2
-    assert calls == []
+    assert calls == [("ensure", True), ("sync", "debug")]
 
 
 def test_dispatch_debug_abs_diff_uses_runtime_ui_scale(monkeypatch) -> None:

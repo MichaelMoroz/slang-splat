@@ -381,13 +381,9 @@ def _update_toolkit_history(viewer: object, dt: float) -> None:
 
 
 def _render_debug_source(viewer: object, encoder: spy.CommandEncoder, frame_idx: int) -> tuple[spy.Texture, dict[str, int | bool | float], int, int]:
-    training_renderer = require_not_none(viewer.s.training_renderer, "Training renderer is not initialized.")
-    debug_width, debug_height = int(training_renderer.width), int(training_renderer.height)
+    frame = viewer.s.training_frames[frame_idx]
+    debug_width, debug_height = max(int(frame.width), 1), max(int(frame.height), 1)
     frame_camera = viewer.s.trainer.make_frame_camera(frame_idx, debug_width, debug_height)
-    if _debug_view_key(viewer) != "rendered":
-        source_tex, stats = training_renderer.render_to_texture(frame_camera, background=viewer.s.background, read_stats=True, command_encoder=encoder)
-        return source_tex, stats, debug_width, debug_height
-
     debug_renderer = session.ensure_renderer(viewer, "debug_renderer", debug_width, debug_height, allow_debug_overlays=True)
     session.sync_scene_from_training_renderer(viewer, debug_renderer, target="debug")
     source_tex, stats = debug_renderer.render_to_texture(frame_camera, background=viewer.s.background, read_stats=True, command_encoder=encoder)
@@ -397,7 +393,7 @@ def _render_debug_source(viewer: object, encoder: spy.CommandEncoder, frame_idx:
 def _render_debug_view(viewer: object, encoder: spy.CommandEncoder, output_width: int, output_height: int) -> spy.Texture:
     frame_idx = _debug_frame_idx(viewer)
     debug_render_tex, viewer.s.stats, debug_width, debug_height = _render_debug_source(viewer, encoder, frame_idx)
-    target_tex = viewer.s.trainer.get_frame_target_texture(frame_idx, native_resolution=False, encoder=encoder)
+    target_tex = viewer.s.trainer.get_frame_target_texture(frame_idx, native_resolution=True, encoder=encoder)
     source_tex = debug_render_tex if _debug_view_key(viewer) == "rendered" else target_tex if _debug_view_key(viewer) == "target" else _dispatch_debug_abs_diff(viewer, encoder, debug_render_tex, target_tex, debug_width, debug_height)
     return _dispatch_viewport_present(viewer, encoder, source_tex, debug_width, debug_height, output_width, output_height)
 
