@@ -8,7 +8,7 @@ import slangpy as spy
 
 from ..common import SHADER_ROOT, debug_region, thread_count_1d
 from ..renderer import Camera, GaussianRenderer
-from .schedule import resolve_learning_rate_scale
+from .schedule import resolve_learning_rate_scale, resolve_position_lr_mul
 
 
 class GaussianOptimizer:
@@ -23,6 +23,7 @@ class GaussianOptimizer:
         self.adam = adam_hparams
         self.stability = stability_hparams
         self._uploaded_lr_scale = float("nan")
+        self._uploaded_position_lr_mul_scale = float("nan")
         self._buffers: dict[str, spy.Buffer] = {}
         self._kernels = self._create_kernels()
         self._ensure_static_buffers()
@@ -75,12 +76,14 @@ class GaussianOptimizer:
             if group_start <= int(param_id) < group_start + group_size: return int(group_start), int(group_size)
         return int(param_id), 1
 
-    def _param_settings(self, lr_scale: float = 1.0) -> np.ndarray:
+    def _param_settings(self, lr_scale: float = 1.0, position_lr_mul_scale: float = 1.0) -> np.ndarray:
         settings = np.zeros((self.renderer.TRAINABLE_PARAM_COUNT, self._PARAM_SETTINGS_U32_WIDTH), dtype=np.uint32)
         scale = max(float(lr_scale), 0.0)
+        position_scale = max(float(position_lr_mul_scale), 0.0)
         for param_id in range(self.renderer.TRAINABLE_PARAM_COUNT):
             group_start, group_size = self._group_for_param(param_id)
-            settings[param_id, 0] = np.asarray([self._lr_for_param(param_id) * scale], dtype=np.float32).view(np.uint32)[0]
+            param_scale = position_scale if param_id in self.renderer.PARAM_POSITION_IDS else 1.0
+            settings[param_id, 0] = np.asarray([self._lr_for_param(param_id) * scale * param_scale], dtype=np.float32).view(np.uint32)[0]
             settings[param_id, 1] = np.asarray([float(self.stability.grad_component_clip)], dtype=np.float32).view(np.uint32)[0]
             settings[param_id, 2] = np.asarray([float(self.stability.grad_norm_clip)], dtype=np.float32).view(np.uint32)[0]
             settings[param_id, 3] = np.asarray([self._value_min_for_param(param_id)], dtype=np.float32).view(np.uint32)[0]
@@ -89,10 +92,11 @@ class GaussianOptimizer:
             settings[param_id, 6] = np.uint32(group_size)
         return settings
 
-    def _upload_param_settings(self, lr_scale: float = 1.0) -> None:
+    def _upload_param_settings(self, lr_scale: float = 1.0, position_lr_mul_scale: float = 1.0) -> None:
         self._ensure_static_buffers()
-        self._buffers["param_settings"].copy_from_numpy(self._param_settings(lr_scale))
+        self._buffers["param_settings"].copy_from_numpy(self._param_settings(lr_scale, position_lr_mul_scale))
         self._uploaded_lr_scale = float(lr_scale)
+        self._uploaded_position_lr_mul_scale = float(position_lr_mul_scale)
 
     def update_hyperparams(self, adam_hparams: Any, stability_hparams: Any) -> None:
         self.adam = adam_hparams
@@ -101,9 +105,15 @@ class GaussianOptimizer:
 
     def update_step(self, step_index: int, training_hparams: Any) -> None:
         lr_scale = resolve_learning_rate_scale(training_hparams, int(step_index))
-        if np.isfinite(self._uploaded_lr_scale) and abs(self._uploaded_lr_scale - lr_scale) <= 1e-12:
+        position_lr_mul_scale = resolve_position_lr_mul(training_hparams, int(step_index)) / max(float(getattr(training_hparams, "lr_pos_mul", 1.0)), 1e-8)
+        if (
+            np.isfinite(self._uploaded_lr_scale)
+            and np.isfinite(self._uploaded_position_lr_mul_scale)
+            and abs(self._uploaded_lr_scale - lr_scale) <= 1e-12
+            and abs(self._uploaded_position_lr_mul_scale - position_lr_mul_scale) <= 1e-12
+        ):
             return
-        self._upload_param_settings(lr_scale)
+        self._upload_param_settings(lr_scale, position_lr_mul_scale)
 
     def _vars(self, splat_count: int, training_hparams: Any, scale_reg_reference: float) -> dict[str, object]:
         return {

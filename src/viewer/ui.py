@@ -333,7 +333,6 @@ _TRAIN_SETUP_SPECS = (
 
 _TRAIN_OPTIMIZER_SPECS = (
     ControlSpec("lr_schedule_enabled", "checkbox", "Use LR Schedule", {"value": True}),
-    ControlSpec("lr_pos_mul", "input_float", "LR Mul Position", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
     ControlSpec("lr_scale_mul", "input_float", "LR Mul Scale", {"value": 5.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
     ControlSpec("lr_rot_mul", "input_float", "LR Mul Rotation", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
     ControlSpec("lr_color_mul", "input_float", "LR Mul Color", {"value": 5.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
@@ -359,6 +358,7 @@ _TRAIN_OPTIMIZER_SPECS = (
 _SCHEDULE_STAGE_SPEC_TEMPLATE = {
     "end_step": ControlSpec("schedule_stage_end_step", "slider_int", "End Step", {"value": 0, "min": 0, "max": 30000, "max_from": "lr_schedule_steps"}),
     "lr": ControlSpec("schedule_stage_lr", "input_float", "LR Target", {"value": 1e-4, "step": 1e-6, "step_fast": 1e-5, "format": "%.8f"}),
+    "lr_pos_mul": ControlSpec("schedule_stage_lr_pos_mul", "input_float", "LR Mul Position", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
     "depth_ratio_weight": ControlSpec("schedule_stage_depth_ratio_weight", "input_float", "Depth Ratio Reg", {"value": 0.001, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
     "noise_lr": ControlSpec("schedule_stage_noise_lr", "input_float", "Noise LR", {"value": 0.0, "step": 100.0, "step_fast": 1000.0, "format": "%.4g"}),
     "use_sh": ControlSpec("schedule_stage_use_sh", "checkbox", "Use SH", {"value": False}),
@@ -367,6 +367,7 @@ _SCHEDULE_STAGE_SPEC_TEMPLATE = {
 _SCHEDULE_STAGE_GROUPS = {
     "Stage 0": {
         "lr": "lr_schedule_start_lr",
+        "lr_pos_mul": "lr_pos_mul",
         "depth_ratio_weight": "depth_ratio_weight",
         "noise_lr": "position_random_step_noise_lr",
         "use_sh": "use_sh",
@@ -374,6 +375,7 @@ _SCHEDULE_STAGE_GROUPS = {
     "Stage 1": {
         "end_step": "lr_schedule_stage1_step",
         "lr": "lr_schedule_stage1_lr",
+        "lr_pos_mul": "lr_pos_stage1_mul",
         "depth_ratio_weight": "depth_ratio_stage1_weight",
         "noise_lr": "position_random_step_noise_stage1_lr",
         "use_sh": "use_sh_stage1",
@@ -381,6 +383,7 @@ _SCHEDULE_STAGE_GROUPS = {
     "Stage 2": {
         "end_step": "lr_schedule_stage2_step",
         "lr": "lr_schedule_stage2_lr",
+        "lr_pos_mul": "lr_pos_stage2_mul",
         "depth_ratio_weight": "depth_ratio_stage2_weight",
         "noise_lr": "position_random_step_noise_stage2_lr",
         "use_sh": "use_sh_stage2",
@@ -388,6 +391,7 @@ _SCHEDULE_STAGE_GROUPS = {
     "Stage 3": {
         "end_step": "lr_schedule_steps",
         "lr": "lr_schedule_end_lr",
+        "lr_pos_mul": "lr_pos_stage3_mul",
         "depth_ratio_weight": "depth_ratio_stage3_weight",
         "noise_lr": "position_random_step_noise_stage3_lr",
         "use_sh": "use_sh_stage3",
@@ -397,6 +401,7 @@ _SCHEDULE_STAGE_GROUPS = {
 _SCHEDULE_STAGE_OVERRIDES = {
     "Stage 0": {
         "lr": {"kwargs": {"value": 0.005, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}},
+        "lr_pos_mul": {"kwargs": {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}},
         "depth_ratio_weight": {"kwargs": {"value": 1.0, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}},
         "noise_lr": {"kwargs": {"value": 5e5, "step": 100.0, "step_fast": 1000.0, "format": "%.4g"}},
         "use_sh": {"kwargs": {"value": True}},
@@ -404,6 +409,7 @@ _SCHEDULE_STAGE_OVERRIDES = {
     "Stage 1": {
         "end_step": {"kwargs": {"value": 2500, "min": 0, "max": 30000, "max_from": "lr_schedule_steps"}},
         "lr": {"kwargs": {"value": 0.002, "step": 1e-6, "step_fast": 1e-5, "format": "%.8f"}},
+        "lr_pos_mul": {"kwargs": {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}},
         "depth_ratio_weight": {"kwargs": {"value": 0.05, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}},
         "noise_lr": {"kwargs": {"value": 466666.6666666667, "step": 100.0, "step_fast": 1000.0, "format": "%.4g"}},
         "use_sh": {"kwargs": {"value": False}},
@@ -411,6 +417,7 @@ _SCHEDULE_STAGE_OVERRIDES = {
     "Stage 2": {
         "end_step": {"kwargs": {"value": 14000, "min": 0, "max": 30000, "max_from": "lr_schedule_steps"}},
         "lr": {"kwargs": {"value": 0.001, "step": 1e-6, "step_fast": 1e-5, "format": "%.8f"}},
+        "lr_pos_mul": {"kwargs": {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}},
         "depth_ratio_weight": {"kwargs": {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}},
         "noise_lr": {"kwargs": {"value": 416666.6666666667, "step": 100.0, "step_fast": 1000.0, "format": "%.4g"}},
         "use_sh": {"kwargs": {"value": False}},
@@ -422,6 +429,7 @@ _SCHEDULE_STAGE_OVERRIDES = {
             "kwargs": {"value": 30000, "step": 1000, "step_fast": 5000},
         },
         "lr": {"kwargs": {"value": 7.5e-5, "step": 1e-6, "step_fast": 1e-5, "format": "%.8f"}},
+        "lr_pos_mul": {"kwargs": {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}},
         "depth_ratio_weight": {"kwargs": {"value": 0.001, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}},
         "noise_lr": {"kwargs": {"value": 0.0, "step": 100.0, "step_fast": 1000.0, "format": "%.4g"}},
         "use_sh": {"kwargs": {"value": True}},
@@ -434,7 +442,7 @@ def _build_schedule_stage_specs() -> dict[str, tuple[ControlSpec, ...]]:
     for stage_label, key_map in _SCHEDULE_STAGE_GROUPS.items():
         overrides = _SCHEDULE_STAGE_OVERRIDES.get(stage_label, {})
         specs: list[ControlSpec] = []
-        ordered_keys = ("lr", "depth_ratio_weight", "noise_lr", "use_sh") if stage_label == "Stage 0" else ("end_step", "lr", "depth_ratio_weight", "noise_lr", "use_sh")
+        ordered_keys = ("lr", "lr_pos_mul", "depth_ratio_weight", "noise_lr", "use_sh") if stage_label == "Stage 0" else ("end_step", "lr", "lr_pos_mul", "depth_ratio_weight", "noise_lr", "use_sh")
         for template_key in ordered_keys:
             if template_key not in key_map:
                 continue
@@ -527,7 +535,7 @@ _ALL_DEFAULTS.update({spec.key: spec.kwargs["value"] for spec in RENDER_PARAM_SP
 _ALL_DEFAULTS.update({spec.key: spec.kwargs["value"] for spec in DEBUG_RENDER_SPECS if "value" in spec.kwargs})
 
 _OPTIMIZER_TAB_KEYS = {
-    "Schedule": ("lr_schedule_enabled", "lr_pos_mul", "lr_scale_mul", "lr_rot_mul", "lr_color_mul", "lr_opacity_mul"),
+    "Schedule": ("lr_schedule_enabled", "lr_scale_mul", "lr_rot_mul", "lr_color_mul", "lr_opacity_mul"),
     "Adam": ("beta1", "beta2"),
     "Regularization": ("scale_l2", "scale_abs_reg", "sh1_reg", "opacity_reg", "density_regularizer", "depth_ratio_grad_min", "depth_ratio_grad_max", "max_allowed_density", "position_random_step_opacity_gate_center", "position_random_step_opacity_gate_sharpness", "max_anisotropy", "grad_clip", "grad_norm_clip", "max_update"),
 }
@@ -1844,6 +1852,9 @@ class ToolkitWindow:
         "debug_depth_local_mismatch_smooth_radius": "Sigma multiple for full local smoothing before the mismatch gate starts to fall off",
         "debug_depth_local_mismatch_reject_radius": "Base sigma multiple, based on mean splat sigma, beyond which depth mismatch stops contributing; the effective reject radius scales smoothly up to 2x with current splat alpha",
         "lr_pos_mul": "Learning rate multiplier for position",
+        "lr_pos_stage1_mul": "Position learning-rate multiplier target reached at the end of Stage 1",
+        "lr_pos_stage2_mul": "Position learning-rate multiplier target reached at the end of Stage 2",
+        "lr_pos_stage3_mul": "Position learning-rate multiplier target reached at the end of Stage 3",
         "lr_scale_mul": "Learning rate multiplier for scale",
         "lr_rot_mul": "Learning rate multiplier for rotation",
         "lr_color_mul": "Learning rate multiplier for color/SH",

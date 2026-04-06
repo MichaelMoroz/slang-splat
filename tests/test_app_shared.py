@@ -79,6 +79,10 @@ def test_build_training_params_clamps_ranges():
     assert params.training.depth_ratio_grad_max == 0.2 + DEPTH_RATIO_GRAD_MIN_BAND_WIDTH
     assert params.training.max_allowed_density_start == 5.0
     assert params.training.max_allowed_density == 12.0
+    assert params.training.lr_pos_mul == 10.0
+    assert params.training.lr_pos_stage1_mul == 1.0
+    assert params.training.lr_pos_stage2_mul == 1.0
+    assert params.training.lr_pos_stage3_mul == 1.0
     assert params.training.position_random_step_noise_lr == 5e5
     assert np.isclose(params.training.position_random_step_noise_stage1_lr, 466666.6666666667)
     assert np.isclose(params.training.position_random_step_noise_stage2_lr, 416666.6666666667)
@@ -115,6 +119,10 @@ def test_default_training_params_match_fixed_count_defaults():
     assert params.training.depth_ratio_grad_max == 0.1
     assert params.training.max_allowed_density_start == 5.0
     assert params.training.max_allowed_density == 12.0
+    assert params.training.lr_pos_mul == 1.0
+    assert params.training.lr_pos_stage1_mul == 1.0
+    assert params.training.lr_pos_stage2_mul == 1.0
+    assert params.training.lr_pos_stage3_mul == 1.0
     assert params.training.position_random_step_noise_lr == 5e5
     assert np.isclose(params.training.position_random_step_noise_stage1_lr, 466666.6666666667)
     assert np.isclose(params.training.position_random_step_noise_stage2_lr, 416666.6666666667)

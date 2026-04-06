@@ -29,6 +29,9 @@ _PITCH_LIMIT = math.radians(89.0)
 _TRAINING_PARAM_KEYS = {
     "base_lr": "lr_schedule_start_lr",
     "lr_pos_mul": "lr_pos_mul",
+    "lr_pos_stage1_mul": "lr_pos_stage1_mul",
+    "lr_pos_stage2_mul": "lr_pos_stage2_mul",
+    "lr_pos_stage3_mul": "lr_pos_stage3_mul",
     "lr_scale_mul": "lr_scale_mul",
     "lr_rot_mul": "lr_rot_mul",
     "lr_color_mul": "lr_color_mul",

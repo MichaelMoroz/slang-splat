@@ -14,7 +14,7 @@ from ..scene import ColmapFrame, GaussianInitHyperParams, GaussianScene, SUPPORT
 from ..scene._internal.colmap_ops import TRAINING_FRAME_LOAD_THREADS, load_training_frame_rgba8
 from .adam import AdamOptimizer, AdamRuntimeHyperParams
 from .optimizer import GaussianOptimizer
-from .schedule import DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY, resolve_base_learning_rate, resolve_clone_probability_threshold, resolve_depth_ratio_weight, resolve_effective_refinement_interval, resolve_learning_rate_scale, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_max_allowed_density, resolve_use_sh, should_run_refinement_step
+from .schedule import DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY, resolve_base_learning_rate, resolve_clone_probability_threshold, resolve_depth_ratio_weight, resolve_effective_refinement_interval, resolve_learning_rate_scale, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_max_allowed_density, resolve_use_sh, should_run_refinement_step
 
 TRAIN_DOWNSCALE_MODE_AUTO = 0
 TRAIN_DOWNSCALE_MAX_FACTOR = 16
@@ -160,6 +160,7 @@ class TrainingHyperParams:
     background_mode: int = TRAIN_BACKGROUND_MODE_RANDOM; use_sh: bool = True
     scale_l2_weight: float = 0.0; scale_abs_reg_weight: float = 0.01; sh1_reg_weight: float = 0.01; opacity_reg_weight: float = 0.01; density_regularizer: float = 0.02; depth_ratio_weight: float = 1.0; max_allowed_density_start: float = 5.0; max_allowed_density: float = 12.0
     depth_ratio_grad_min: float = 0.0; depth_ratio_grad_max: float = 0.1
+    lr_pos_mul: float = 1.0; lr_pos_stage1_mul: float = 1.0; lr_pos_stage2_mul: float = 1.0; lr_pos_stage3_mul: float = 1.0
     position_random_step_noise_lr: float = 5e5; position_random_step_opacity_gate_center: float = 0.005; position_random_step_opacity_gate_sharpness: float = 100.0
     lr_schedule_enabled: bool = True; lr_schedule_start_lr: float = 0.005; lr_schedule_stage1_lr: float = 0.002; lr_schedule_stage2_lr: float = 0.001; lr_schedule_end_lr: float = 7.5e-5; lr_schedule_steps: int = 30_000; lr_schedule_stage1_step: int = 2500; lr_schedule_stage2_step: int = 14_000
     refinement_interval: int = 200; refinement_growth_ratio: float = 0.075; refinement_growth_start_step: int = 500; refinement_alpha_cull_threshold: float = 1e-2; refinement_min_contribution_percent: float = DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT; refinement_min_contribution_decay: float = DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY
@@ -183,6 +184,10 @@ class TrainingHyperParams:
         self.lr_schedule_stage2_step = min(max(int(self.lr_schedule_stage2_step), self.lr_schedule_stage1_step), self.lr_schedule_steps)
         self.lr_schedule_stage1_lr = max(float(self.lr_schedule_stage1_lr), 1e-8)
         self.lr_schedule_stage2_lr = max(float(self.lr_schedule_stage2_lr), 1e-8)
+        self.lr_pos_mul = max(float(self.lr_pos_mul), 1e-8)
+        self.lr_pos_stage1_mul = max(float(self.lr_pos_stage1_mul), 1e-8)
+        self.lr_pos_stage2_mul = max(float(self.lr_pos_stage2_mul), 1e-8)
+        self.lr_pos_stage3_mul = max(float(self.lr_pos_stage3_mul), 1e-8)
         self.refinement_interval = max(int(self.refinement_interval), 1)
         self.refinement_growth_ratio = max(float(self.refinement_growth_ratio), 0.0)
         self.refinement_growth_start_step = max(int(self.refinement_growth_start_step), 0)
@@ -420,12 +425,13 @@ class GaussianTrainer:
         self._dispatch_optimizer_step(encoder, self.state.step + 1, frame_camera)
 
     def _position_random_step_vars(self, step_index: int) -> dict[str, object]:
+        position_lr_mul_scale = resolve_position_lr_mul(self.training, int(step_index)) / max(float(self.training.lr_pos_mul), 1e-8)
         return {
             "g_PositionRandomStepParams": self.renderer.scene_buffers["splat_params"],
             "g_PositionRandomStepSplatCount": int(self._scene_count),
             "g_PositionRandomStepSeed": np.uint32(self._seed + int(step_index)),
             "g_PositionRandomStepNoiseLr": float(resolve_position_random_step_noise_lr(self.training, int(step_index))),
-            "g_PositionRandomStepPositionLr": float(self.adam.position_lr * resolve_learning_rate_scale(self.training, int(step_index))),
+            "g_PositionRandomStepPositionLr": float(self.adam.position_lr * resolve_learning_rate_scale(self.training, int(step_index)) * position_lr_mul_scale),
             "g_PositionRandomStepOpacityGateCenter": float(self.training.position_random_step_opacity_gate_center),
             "g_PositionRandomStepOpacityGateSharpness": float(self.training.position_random_step_opacity_gate_sharpness),
         }

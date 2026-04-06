@@ -13,7 +13,7 @@ from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 from src.scene.sh_utils import SH_C0
 from src.training import gaussian_trainer as gaussian_trainer_module
-from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, contribution_fixed_count_from_percent, contribution_percent_from_fixed_count, resolve_base_learning_rate, resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_depth_ratio_grad_band, resolve_depth_ratio_weight, resolve_effective_refinement_interval, resolve_lr_schedule_breakpoints, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_max_allowed_density, resolve_stage_schedule_steps, resolve_training_resolution, resolve_use_sh, should_run_refinement_step
+from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, contribution_fixed_count_from_percent, contribution_percent_from_fixed_count, resolve_base_learning_rate, resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_depth_ratio_grad_band, resolve_depth_ratio_weight, resolve_effective_refinement_interval, resolve_lr_schedule_breakpoints, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_max_allowed_density, resolve_stage_schedule_steps, resolve_training_resolution, resolve_use_sh, should_run_refinement_step
 
 _ADAM_BUFFER_NAMES = ("adam_moments",)
 _OPACITY_EPS = 1e-6
@@ -637,6 +637,10 @@ def test_piecewise_schedule_uses_configured_viewer_breakpoints() -> None:
         lr_schedule_steps=20_000,
         lr_schedule_stage1_step=1000,
         lr_schedule_stage2_step=4000,
+        lr_pos_mul=1.5,
+        lr_pos_stage1_mul=1.25,
+        lr_pos_stage2_mul=0.75,
+        lr_pos_stage3_mul=0.5,
         depth_ratio_weight=1.0,
         depth_ratio_stage1_weight=0.25,
         depth_ratio_stage2_weight=0.05,
@@ -654,6 +658,10 @@ def test_piecewise_schedule_uses_configured_viewer_breakpoints() -> None:
     assert resolve_stage_schedule_steps(hparams) == (1000, 4000, 20_000)
     np.testing.assert_allclose(resolve_base_learning_rate(hparams, 1000), 0.002, rtol=0.0, atol=1e-10)
     np.testing.assert_allclose(resolve_base_learning_rate(hparams, 4000), 0.001, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(resolve_position_lr_mul(hparams, 0), 1.5, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_position_lr_mul(hparams, 1000), 1.25, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_position_lr_mul(hparams, 4000), 0.75, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_position_lr_mul(hparams, 20_000), 0.5, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 1000), 0.25, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 4000), 0.05, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 20_000), 0.01, rtol=0.0, atol=1e-12)
@@ -689,6 +697,34 @@ def test_training_step_updates_optimizer_lrs_from_piecewise_schedule(device, tmp
     np.testing.assert_allclose(trainer.state.last_base_lr, resolve_base_learning_rate(training, 1), rtol=0.0, atol=1e-7)
 
 
+def test_training_step_updates_position_lr_from_staged_position_multiplier(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=8, seed=78)
+    frame = _make_frame(tmp_path, image_name="lr_pos_schedule_target.png", image_id=6)
+    renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
+    adam = AdamHyperParams(position_lr=1e-2, scale_lr=2e-2, rotation_lr=3e-2, color_lr=4e-2, opacity_lr=5e-2)
+    training = TrainingHyperParams(
+        lr_schedule_start_lr=0.005,
+        lr_schedule_stage1_step=1,
+        lr_schedule_stage2_step=2,
+        lr_schedule_steps=3,
+        lr_pos_mul=1.0,
+        lr_pos_stage1_mul=0.5,
+        lr_pos_stage2_mul=0.25,
+        lr_pos_stage3_mul=0.125,
+        scale_l2_weight=0.0,
+        scale_abs_reg_weight=0.0,
+        opacity_reg_weight=0.0,
+    )
+    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], adam_hparams=adam, training_hparams=training, seed=123)
+
+    trainer.step()
+    lrs_after_step_1 = _read_optimizer_lrs(trainer)
+    expected_scale = resolve_base_learning_rate(training, 1) / training.lr_schedule_start_lr
+
+    np.testing.assert_allclose(lrs_after_step_1[0], 1e-2 * expected_scale * 0.5, rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(lrs_after_step_1[3], 2e-2 * expected_scale, rtol=0.0, atol=1e-6)
+
+
 def test_loss_vars_use_density_schedule(device, tmp_path: Path) -> None:
     scene = _make_scene(count=4, seed=93)
     frame = _make_frame(tmp_path, image_name="density_schedule_target.png", image_id=19)
@@ -708,11 +744,16 @@ def test_loss_vars_use_density_schedule(device, tmp_path: Path) -> None:
 def test_depth_ratio_noise_and_sh_schedules_follow_requested_defaults() -> None:
     hparams = TrainingHyperParams(
         depth_ratio_weight=1.0,
+        lr_pos_mul=1.0,
         position_random_step_noise_lr=5e5,
         use_sh=True,
         lr_schedule_steps=30_000,
     )
 
+    np.testing.assert_allclose(resolve_position_lr_mul(hparams, 0), 1.0, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_position_lr_mul(hparams, 2500), 1.0, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_position_lr_mul(hparams, 14000), 1.0, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_position_lr_mul(hparams, 30_000), 1.0, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 0), 1.0, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 2500), 0.05, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 14000), 0.01, rtol=0.0, atol=1e-12)
@@ -732,6 +773,10 @@ def test_schedule_disabled_uses_stage0_only_for_scheduled_values() -> None:
         lr_schedule_stage1_lr=0.002,
         lr_schedule_stage2_lr=0.001,
         lr_schedule_end_lr=7.5e-5,
+        lr_pos_mul=1.5,
+        lr_pos_stage1_mul=1.25,
+        lr_pos_stage2_mul=0.75,
+        lr_pos_stage3_mul=0.5,
         depth_ratio_weight=0.8,
         depth_ratio_stage1_weight=0.05,
         depth_ratio_stage2_weight=0.01,
@@ -748,6 +793,8 @@ def test_schedule_disabled_uses_stage0_only_for_scheduled_values() -> None:
 
     np.testing.assert_allclose(resolve_base_learning_rate(hparams, 0), 0.006, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_base_learning_rate(hparams, 30_000), 0.006, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_position_lr_mul(hparams, 0), 1.5, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_position_lr_mul(hparams, 30_000), 1.5, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 0), 0.8, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 30_000), 0.8, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 0), 1234.0, rtol=0.0, atol=1e-12)

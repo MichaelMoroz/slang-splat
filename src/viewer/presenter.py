@@ -8,7 +8,7 @@ import numpy as np
 import slangpy as spy
 
 from ..common import clamp_index, debug_region, require_not_none
-from ..training import resolve_base_learning_rate, resolve_depth_ratio_weight, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_use_sh
+from ..training import resolve_base_learning_rate, resolve_depth_ratio_weight, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_use_sh
 from . import session
 
 _DEBUG_HUGE_VALUE = 1e8
@@ -32,6 +32,10 @@ def _schedule_state_from_controls(viewer: object) -> object:
         lr_schedule_steps=int(viewer.c("lr_schedule_steps").value),
         lr_schedule_stage1_step=int(viewer.c("lr_schedule_stage1_step").value),
         lr_schedule_stage2_step=int(viewer.c("lr_schedule_stage2_step").value),
+        lr_pos_mul=float(viewer.c("lr_pos_mul").value),
+        lr_pos_stage1_mul=float(viewer.c("lr_pos_stage1_mul").value),
+        lr_pos_stage2_mul=float(viewer.c("lr_pos_stage2_mul").value),
+        lr_pos_stage3_mul=float(viewer.c("lr_pos_stage3_mul").value),
         depth_ratio_weight=float(viewer.c("depth_ratio_weight").value),
         depth_ratio_stage1_weight=float(viewer.c("depth_ratio_stage1_weight").value),
         depth_ratio_stage2_weight=float(viewer.c("depth_ratio_stage2_weight").value),
@@ -68,6 +72,7 @@ def _current_schedule_values_text(viewer: object) -> str:
     return (
         f"Current Values: step={step:,} | { _schedule_stage_label(training, step) } | "
         f"lr={resolve_base_learning_rate(training, step):.2e} | "
+        f"pos={resolve_position_lr_mul(training, step):.2f}x | "
         f"depth={resolve_depth_ratio_weight(training, step):.2e} | "
         f"noise={resolve_position_random_step_noise_lr(training, step):.2e} | "
         f"sh={'on' if resolve_use_sh(training, step) else 'off'}"
