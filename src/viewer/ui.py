@@ -877,6 +877,7 @@ class ToolkitWindow:
         self._draw_viewport_window(ui, viewport_texture, width, height)
         self._draw_debug_colorbar(ui)
         self._draw_histogram_window(ui)
+        self._draw_training_views_window(ui)
         imgui.render()
         draw_data = imgui.get_draw_data()
         self._frame_textures = simgui.sync_draw_data_textures(self.device, self.renderer, draw_data)
@@ -980,6 +981,7 @@ class ToolkitWindow:
                     _color_u32(0.72, 0.76, 0.82, 0.95),
                     label,
                 )
+            self._draw_viewport_camera_overlays(ui, cursor)
             overlay_origin = self._draw_viewport_view_menu(ui, cursor)
             self._draw_viewport_debug_overlay(ui, overlay_origin)
         else:
@@ -991,6 +993,7 @@ class ToolkitWindow:
         style = imgui.get_style()
         scale = self._interface_scale_factor(ui)
         label = "View Mode"
+        camera_label = "Cameras On" if bool(ui._values.get("show_camera_overlays", True)) else "Cameras Off"
         label_size = imgui.calc_text_size(label)
         button_width = float(label_size.x) + 2.0 * float(style.frame_padding.x)
         button_pos = imgui.ImVec2(float(image_origin.x) + _VIEWPORT_OVERLAY_MARGIN * scale, float(image_origin.y) + _VIEWPORT_OVERLAY_MARGIN * scale)
@@ -1000,6 +1003,9 @@ class ToolkitWindow:
         imgui.push_id("viewport_view")
         imgui.set_cursor_screen_pos(button_pos)
         opened = _imgui_opened(imgui.small_button(label))
+        imgui.same_line(0.0, 10.0 * scale)
+        if _imgui_opened(imgui.small_button(camera_label)):
+            ui._values["show_camera_overlays"] = not bool(ui._values.get("show_camera_overlays", True))
         imgui.same_line(0.0, 10.0 * scale)
         label_pos = imgui.get_cursor_screen_pos()
         current_label_size = imgui.calc_text_size(current_label)
@@ -1028,6 +1034,23 @@ class ToolkitWindow:
             imgui.end_popup()
         imgui.pop_id()
         return imgui.ImVec2(button_pos.x, button_pos.y + button_height + _VIEWPORT_OVERLAY_MARGIN * scale)
+
+    def _draw_viewport_camera_overlays(self, ui: ViewerUI, image_origin: imgui.ImVec2) -> None:
+        if not bool(ui._values.get("show_camera_overlays", True)):
+            return
+        segments = tuple(ui._values.get("_training_view_overlay_segments", ()))
+        if len(segments) == 0:
+            return
+        draw_list = imgui.get_window_draw_list()
+        base_x = float(image_origin.x)
+        base_y = float(image_origin.y)
+        for x0, y0, x1, y1, color, thickness in segments:
+            draw_list.add_line(
+                imgui.ImVec2(base_x + float(x0), base_y + float(y0)),
+                imgui.ImVec2(base_x + float(x1), base_y + float(y1)),
+                _color_u32(*color),
+                float(thickness),
+            )
 
     def _draw_viewport_debug_overlay(self, ui: ViewerUI, overlay_origin: imgui.ImVec2) -> None:
         debug_mode = _DEBUG_MODE_VALUES[min(max(int(ui._values.get("debug_mode", 0)), 0), len(_DEBUG_MODE_VALUES) - 1)]
@@ -1239,6 +1262,9 @@ class ToolkitWindow:
             selected = bool(ui._values.get("show_histograms", False))
             if _menu_item("Histograms", selected=selected):
                 ui._values["show_histograms"] = not selected
+            selected = bool(ui._values.get("show_training_views", False))
+            if _menu_item("Training Views", selected=selected):
+                ui._values["show_training_views"] = not selected
             imgui.end_menu()
         if imgui.begin_menu("Help"):
             if _menu_item("Documentation"):
@@ -1445,6 +1471,67 @@ class ToolkitWindow:
                 self._draw_histogram_groups(ui, payload)
                 imgui.separator()
                 self._draw_histogram_range_debug(range_payload)
+        imgui.end()
+
+    @staticmethod
+    def _training_views_value_text(value: object, *, precision: int = 3, nan_text: str = "n/a") -> str:
+        try:
+            scalar = float(value)
+        except (TypeError, ValueError):
+            return nan_text
+        return nan_text if not np.isfinite(scalar) else f"{scalar:.{precision}f}"
+
+    def _draw_training_views_window(self, ui: ViewerUI) -> None:
+        if not bool(ui._values.get("show_training_views", False)):
+            return
+        self._dock_tool_window(imgui.Cond_.appearing.value)
+        imgui.set_next_window_pos(imgui.ImVec2(88.0, self._menu_bar_height + 64.0), imgui.Cond_.first_use_ever.value)
+        imgui.set_next_window_size(imgui.ImVec2(980.0, 420.0), imgui.Cond_.first_use_ever.value)
+        opened, show = imgui.begin("Training Views", True)
+        ui._values["show_training_views"] = bool(show)
+        if opened:
+            rows = tuple(ui._values.get("_training_views_rows", ()))
+            if len(rows) == 0:
+                imgui.text_wrapped("No training views are available.")
+            else:
+                flags = (
+                    imgui.TableFlags_.row_bg.value
+                    | imgui.TableFlags_.borders.value
+                    | imgui.TableFlags_.resizable.value
+                    | imgui.TableFlags_.scroll_x.value
+                    | imgui.TableFlags_.scroll_y.value
+                    | imgui.TableFlags_.hideable.value
+                )
+                if imgui.begin_table("##training_views", 10, flags):
+                    imgui.table_setup_column("Image", imgui.TableColumnFlags_.width_stretch.value)
+                    imgui.table_setup_column("Res", imgui.TableColumnFlags_.width_fixed.value, 92.0)
+                    imgui.table_setup_column("Fx", imgui.TableColumnFlags_.width_fixed.value, 76.0)
+                    imgui.table_setup_column("Fy", imgui.TableColumnFlags_.width_fixed.value, 76.0)
+                    imgui.table_setup_column("Cx", imgui.TableColumnFlags_.width_fixed.value, 76.0)
+                    imgui.table_setup_column("Cy", imgui.TableColumnFlags_.width_fixed.value, 76.0)
+                    imgui.table_setup_column("Near", imgui.TableColumnFlags_.width_fixed.value, 68.0)
+                    imgui.table_setup_column("Far", imgui.TableColumnFlags_.width_fixed.value, 68.0)
+                    imgui.table_setup_column("Loss", imgui.TableColumnFlags_.width_fixed.value, 88.0)
+                    imgui.table_setup_column("PSNR", imgui.TableColumnFlags_.width_fixed.value, 80.0)
+                    imgui.table_headers_row()
+                    for row in rows:
+                        imgui.table_next_row()
+                        values = (
+                            str(row.get("image_name", "")),
+                            str(row.get("resolution", "")),
+                            self._training_views_value_text(row.get("fx")),
+                            self._training_views_value_text(row.get("fy")),
+                            self._training_views_value_text(row.get("cx")),
+                            self._training_views_value_text(row.get("cy")),
+                            self._training_views_value_text(row.get("near"), precision=2),
+                            self._training_views_value_text(row.get("far"), precision=2),
+                            self._training_views_value_text(row.get("loss"), precision=4),
+                            self._training_views_value_text(row.get("psnr"), precision=2),
+                        )
+                        for value in values:
+                            imgui.table_next_column()
+                            imgui.text_unformatted(value)
+                    imgui.end_table()
         imgui.end()
 
     def _draw_histogram_controls(self, ui: ViewerUI) -> None:
@@ -2187,6 +2274,8 @@ def build_ui(renderer) -> ViewerUI:
     values["colmap_diffused_point_count"] = 100000
     values["colmap_diffusion_radius"] = 1.0
     values["show_histograms"] = False
+    values["show_training_views"] = False
+    values["show_camera_overlays"] = True
     values["hist_bin_count"] = _HISTOGRAM_BIN_COUNT_DEFAULT
     values["hist_min_log10"] = _HISTOGRAM_MIN_LOG10_DEFAULT
     values["hist_max_log10"] = _HISTOGRAM_MAX_LOG10_DEFAULT
@@ -2197,6 +2286,8 @@ def build_ui(renderer) -> ViewerUI:
     values["_histogram_update_log_range"] = False
     values["_histogram_payload"] = None
     values["_histogram_range_payload"] = None
+    values["_training_views_rows"] = ()
+    values["_training_view_overlay_segments"] = ()
     values["_loss_debug_frame_max"] = 0
     values["_colmap_import_active"] = False
     values["_colmap_import_fraction"] = 0.0

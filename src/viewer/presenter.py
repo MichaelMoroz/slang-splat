@@ -20,6 +20,11 @@ _DEFAULT_TRAINING_STEPS_PER_FRAME = 3
 _MAX_TRAINING_STEPS_PER_FRAME = 8
 _TRAIN_DOWNSCALE_MODE_AUTO = 0
 _VIEWER_CLEAR_COLOR = [0.08, 0.09, 0.11, 1.0]
+_CAMERA_OVERLAY_LENGTH_FRACTION = 0.08
+_CAMERA_OVERLAY_MIN_LENGTH = 0.05
+_CAMERA_OVERLAY_NEAR_FRACTION = 0.35
+_CAMERA_OVERLAY_COLOR = (0.18, 0.70, 0.98, 0.72)
+_CAMERA_OVERLAY_ACTIVE_COLOR = (1.00, 0.78, 0.18, 0.96)
 
 
 def _schedule_state_from_controls(viewer: object) -> object:
@@ -198,6 +203,189 @@ def _viewport_target_size(viewer: object, fallback_width: int, fallback_height: 
     return max(int(fallback_width), 1), max(int(fallback_height), 1)
 
 
+def _coerce_metric_array(values: object, count: int, fill: float = float("nan")) -> np.ndarray:
+    array = np.full((max(int(count), 0),), fill, dtype=np.float64)
+    source = np.asarray(values, dtype=np.float64).reshape(-1) if values is not None else np.zeros((0,), dtype=np.float64)
+    limit = min(array.size, source.size)
+    if limit > 0:
+        array[:limit] = source[:limit]
+    return array
+
+
+def _frame_metrics_snapshot(viewer: object, frame_count: int) -> dict[str, np.ndarray]:
+    trainer = getattr(viewer.s, "trainer", None)
+    if trainer is None or not hasattr(trainer, "frame_metrics_snapshot"):
+        return {
+            "loss": np.full((frame_count,), np.nan, dtype=np.float64),
+            "mse": np.full((frame_count,), np.nan, dtype=np.float64),
+            "psnr": np.full((frame_count,), np.nan, dtype=np.float64),
+            "visited": np.zeros((frame_count,), dtype=bool),
+        }
+    try:
+        snapshot = trainer.frame_metrics_snapshot()
+    except Exception:
+        return {
+            "loss": np.full((frame_count,), np.nan, dtype=np.float64),
+            "mse": np.full((frame_count,), np.nan, dtype=np.float64),
+            "psnr": np.full((frame_count,), np.nan, dtype=np.float64),
+            "visited": np.zeros((frame_count,), dtype=bool),
+        }
+    visited = np.zeros((frame_count,), dtype=bool)
+    source_visited = np.asarray(snapshot.get("visited", visited), dtype=bool).reshape(-1)
+    visited[: min(frame_count, source_visited.size)] = source_visited[: min(frame_count, source_visited.size)]
+    return {
+        "loss": _coerce_metric_array(snapshot.get("loss"), frame_count),
+        "mse": _coerce_metric_array(snapshot.get("mse"), frame_count),
+        "psnr": _coerce_metric_array(snapshot.get("psnr"), frame_count),
+        "visited": visited,
+    }
+
+
+def _training_view_rows(viewer: object) -> tuple[dict[str, object], ...]:
+    frames = tuple(getattr(viewer.s, "training_frames", ()))
+    if len(frames) == 0:
+        return ()
+    metrics = _frame_metrics_snapshot(viewer, len(frames))
+    trainer = getattr(viewer.s, "trainer", None)
+    training = getattr(trainer, "training", None)
+    near_value = float(getattr(training, "near", float("nan")))
+    far_value = float(getattr(training, "far", float("nan")))
+    last_frame_index = int(getattr(getattr(trainer, "state", None), "last_frame_index", -1))
+    rows: list[dict[str, object]] = []
+    for frame_index, frame in enumerate(frames):
+        rows.append(
+            {
+                "frame_index": int(frame_index),
+                "image_name": Path(getattr(frame, "image_path", f"frame_{frame_index}")).name,
+                "resolution": f"{max(int(getattr(frame, 'width', 0)), 0)}x{max(int(getattr(frame, 'height', 0)), 0)}",
+                "fx": float(getattr(frame, "fx", float("nan"))),
+                "fy": float(getattr(frame, "fy", float("nan"))),
+                "cx": float(getattr(frame, "cx", float("nan"))),
+                "cy": float(getattr(frame, "cy", float("nan"))),
+                "near": near_value,
+                "far": far_value,
+                "loss": float(metrics["loss"][frame_index]) if frame_index < metrics["loss"].size else float("nan"),
+                "psnr": float(metrics["psnr"][frame_index]) if frame_index < metrics["psnr"].size else float("nan"),
+                "visited": bool(metrics["visited"][frame_index]) if frame_index < metrics["visited"].size else False,
+                "is_last": int(frame_index) == last_frame_index,
+            }
+        )
+    return tuple(rows)
+
+
+def _camera_overlay_scale(viewer: object) -> float:
+    trainer = getattr(viewer.s, "trainer", None)
+    frames = tuple(getattr(viewer.s, "training_frames", ()))
+    if trainer is None or len(frames) == 0 or not hasattr(trainer, "make_frame_camera"):
+        return _CAMERA_OVERLAY_MIN_LENGTH
+    positions: list[np.ndarray] = []
+    for frame_index, frame in enumerate(frames):
+        try:
+            camera = trainer.make_frame_camera(frame_index, int(getattr(frame, "width", 1)), int(getattr(frame, "height", 1)))
+        except Exception:
+            continue
+        position = getattr(camera, "position", None)
+        if position is None:
+            continue
+        pos = np.asarray(position, dtype=np.float32).reshape(3)
+        if np.all(np.isfinite(pos)):
+            positions.append(pos)
+    if len(positions) == 0:
+        return _CAMERA_OVERLAY_MIN_LENGTH
+    centers = np.stack(positions, axis=0)
+    centroid = np.mean(centers, axis=0, dtype=np.float32)
+    radius = float(np.median(np.linalg.norm(centers - centroid[None, :], axis=1)))
+    return max(radius * _CAMERA_OVERLAY_LENGTH_FRACTION, _CAMERA_OVERLAY_MIN_LENGTH)
+
+
+def _camera_overlay_segments(viewer: object) -> tuple[tuple[float, float, float, float, tuple[float, float, float, float], float], ...]:
+    frames = tuple(getattr(viewer.s, "training_frames", ()))
+    trainer = getattr(viewer.s, "trainer", None)
+    if trainer is None or len(frames) == 0 or _training_camera_debug_active(viewer):
+        return ()
+    viewport_camera = viewer.camera()
+    if not hasattr(viewport_camera, "project_world_to_screen"):
+        return ()
+    fallback_width = int(getattr(getattr(viewer.s, "renderer", None), "width", 1))
+    fallback_height = int(getattr(getattr(viewer.s, "renderer", None), "height", 1))
+    viewport_width, viewport_height = _viewport_target_size(viewer, fallback_width, fallback_height)
+    overlay_far = _camera_overlay_scale(viewer)
+    overlay_near = overlay_far * _CAMERA_OVERLAY_NEAR_FRACTION
+    last_frame_index = int(getattr(getattr(trainer, "state", None), "last_frame_index", -1))
+    segments: list[tuple[float, float, float, float, tuple[float, float, float, float], float]] = []
+    for frame_index, frame in enumerate(frames):
+        try:
+            camera = trainer.make_frame_camera(frame_index, int(getattr(frame, "width", 1)), int(getattr(frame, "height", 1)))
+        except Exception:
+            continue
+        if not hasattr(camera, "basis") or not hasattr(camera, "focal_pixels_xy"):
+            continue
+        try:
+            right, up, forward = (np.asarray(axis, dtype=np.float32).reshape(3) for axis in camera.basis())
+            position = np.asarray(getattr(camera, "position"), dtype=np.float32).reshape(3)
+            fx, fy = camera.focal_pixels_xy(int(getattr(frame, "width", 1)), int(getattr(frame, "height", 1)))
+        except Exception:
+            continue
+        if not (np.all(np.isfinite(position)) and np.all(np.isfinite(right)) and np.all(np.isfinite(up)) and np.all(np.isfinite(forward))):
+            continue
+        if not (np.isfinite(fx) and np.isfinite(fy) and fx > 1e-8 and fy > 1e-8):
+            continue
+        near_half = np.array(
+            [
+                0.5 * float(max(int(getattr(frame, "width", 1)), 1)) * overlay_near / float(fx),
+                0.5 * float(max(int(getattr(frame, "height", 1)), 1)) * overlay_near / float(fy),
+            ],
+            dtype=np.float32,
+        )
+        far_half = np.array(
+            [
+                0.5 * float(max(int(getattr(frame, "width", 1)), 1)) * overlay_far / float(fx),
+                0.5 * float(max(int(getattr(frame, "height", 1)), 1)) * overlay_far / float(fy),
+            ],
+            dtype=np.float32,
+        )
+        near_center = position + forward * np.float32(overlay_near)
+        far_center = position + forward * np.float32(overlay_far)
+        near_corners = (
+            near_center - right * near_half[0] - up * near_half[1],
+            near_center + right * near_half[0] - up * near_half[1],
+            near_center + right * near_half[0] + up * near_half[1],
+            near_center - right * near_half[0] + up * near_half[1],
+        )
+        far_corners = (
+            far_center - right * far_half[0] - up * far_half[1],
+            far_center + right * far_half[0] - up * far_half[1],
+            far_center + right * far_half[0] + up * far_half[1],
+            far_center - right * far_half[0] + up * far_half[1],
+        )
+        color = _CAMERA_OVERLAY_ACTIVE_COLOR if int(frame_index) == last_frame_index else _CAMERA_OVERLAY_COLOR
+        thickness = 2.0 if int(frame_index) == last_frame_index else 1.25
+        for start, end in (
+            (near_corners[0], near_corners[1]),
+            (near_corners[1], near_corners[2]),
+            (near_corners[2], near_corners[3]),
+            (near_corners[3], near_corners[0]),
+            (far_corners[0], far_corners[1]),
+            (far_corners[1], far_corners[2]),
+            (far_corners[2], far_corners[3]),
+            (far_corners[3], far_corners[0]),
+            (near_corners[0], far_corners[0]),
+            (near_corners[1], far_corners[1]),
+            (near_corners[2], far_corners[2]),
+            (near_corners[3], far_corners[3]),
+        ):
+            screen_start, valid_start = viewport_camera.project_world_to_screen(start, viewport_width, viewport_height)
+            screen_end, valid_end = viewport_camera.project_world_to_screen(end, viewport_width, viewport_height)
+            if not (valid_start and valid_end):
+                continue
+            p0 = np.asarray(screen_start, dtype=np.float32).reshape(2)
+            p1 = np.asarray(screen_end, dtype=np.float32).reshape(2)
+            if not (np.all(np.isfinite(p0)) and np.all(np.isfinite(p1))):
+                continue
+            segments.append((float(p0[0]), float(p0[1]), float(p1[0]), float(p1[1]), color, thickness))
+    return tuple(segments)
+
+
 def _run_training_batch(viewer: object) -> int:
     if not viewer.s.training_active or viewer.s.trainer is None:
         viewer.s.training_runtime_factor_changed = False
@@ -342,6 +530,8 @@ def update_ui_text(viewer: object, dt: float) -> None:
     viewer.t("histogram_status").text = str(getattr(viewer.s, "cached_raster_grad_histogram_status", ""))
     viewer.ui._values["_histogram_payload"] = getattr(viewer.s, "cached_raster_grad_histograms", None)
     viewer.ui._values["_histogram_range_payload"] = getattr(viewer.s, "cached_raster_grad_ranges", None)
+    viewer.ui._values["_training_views_rows"] = _training_view_rows(viewer)
+    viewer.ui._values["_training_view_overlay_segments"] = _camera_overlay_segments(viewer)
     viewer.t("render_stats").text = "Generated: 0 | Written: 0" if not stats else f"Generated: {int(stats['generated_entries']):,} | Written: {int(stats['written_entries']):,} | Overflow: {bool(stats['overflow'])}{' [cap]' if bool(stats.get('capacity_limited', False)) else ''}{' (delayed)' if bool(stats.get('stats_latency_frames', 0)) else ''}{'' if bool(stats.get('stats_valid', True)) else ' [warming]'}"
     if viewer.s.trainer is None:
         viewer.t("training").text = "Training: not initialized"

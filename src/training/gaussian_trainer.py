@@ -308,6 +308,14 @@ class GaussianTrainer:
         resolved_step = self.state.step if step is None else int(step)
         return resolve_base_learning_rate(self.training, resolved_step)
 
+    def frame_metrics_snapshot(self) -> dict[str, np.ndarray]:
+        return {
+            "loss": np.asarray(self._frame_metrics.loss, dtype=np.float64).copy(),
+            "mse": np.asarray(self._frame_metrics.mse, dtype=np.float64).copy(),
+            "psnr": np.asarray(self._frame_metrics.psnr, dtype=np.float64).copy(),
+            "visited": np.asarray(self._frame_metrics.visited, dtype=bool).copy(),
+        }
+
     def effective_refinement_interval(self) -> int:
         return resolve_effective_refinement_interval(self.training, len(self.frames))
 

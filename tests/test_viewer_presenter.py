@@ -41,6 +41,8 @@ class _DummyTrainer:
         self.state = SimpleNamespace(step=0, last_loss=0.0, avg_loss=0.0, last_mse=0.0, avg_mse=0.0, last_psnr=float("inf"), avg_psnr=float("inf"), last_density_loss=0.0, avg_density_loss=0.0, last_frame_index=0, last_instability="")
         self.scene = SimpleNamespace(count=4)
         self.training = SimpleNamespace(
+            near=0.1,
+            far=100.0,
             train_downscale_mode=1,
             train_auto_start_downscale=1,
             train_subsample_factor=1,
@@ -112,6 +114,14 @@ class _DummyTrainer:
 
     def get_frame_target_texture(self, frame_index: int, native_resolution: bool = True, encoder: object | None = None) -> str:
         return f"target_tex_{frame_index}_{native_resolution}"
+
+    def frame_metrics_snapshot(self) -> dict[str, np.ndarray]:
+        return {
+            "loss": np.asarray([0.25], dtype=np.float64),
+            "mse": np.asarray([0.125], dtype=np.float64),
+            "psnr": np.asarray([32.5], dtype=np.float64),
+            "visited": np.asarray([True], dtype=bool),
+        }
 
 
 class _CaptureKernel:
@@ -201,7 +211,7 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         stats={},
         scene_path=None,
         colmap_root=Path("dataset"),
-        training_frames=[SimpleNamespace(image_path=Path("frame.png"), width=640, height=360)],
+        training_frames=[SimpleNamespace(image_path=Path("frame.png"), width=640, height=360, fx=525.0, fy=520.0, cx=320.0, cy=180.0)],
         trainer=trainer,
         training_active=True,
         training_renderer=_DummyRenderer(),
@@ -384,6 +394,24 @@ def test_update_ui_text_reports_training_schedule_and_refinement() -> None:
     assert viewer.t("training_schedule").text == "LR Schedule: 5.00e-03@0 -> 2.00e-03@3,000 -> 1.00e-03@14,000 -> 7.50e-05@30,000 | current=5.00e-03"
     assert viewer.t("training_schedule_values").text == "Current Values: step=0 | Stage 0 | lr=5.00e-03 | pos=1.00x | shlr=0.05x | depth=1.00e+00 | noise=5.00e+05 | sh=off"
     assert viewer.t("training_refinement").text == "Refinement: every 200 | growth=0.00% now | target=7.50% after 500 | alpha<1.00e-02 or min contrib<1e-05% | decay=99.50%/pass | alpha mul=1.00x | max=1,000,000"
+    assert viewer.ui._values["_training_view_overlay_segments"] == ()
+    assert viewer.ui._values["_training_views_rows"] == (
+        {
+            "frame_index": 0,
+            "image_name": "frame.png",
+            "resolution": "640x360",
+            "fx": 525.0,
+            "fy": 520.0,
+            "cx": 320.0,
+            "cy": 180.0,
+            "near": 0.1,
+            "far": 100.0,
+            "loss": 0.25,
+            "psnr": 32.5,
+            "visited": True,
+            "is_last": True,
+        },
+    )
 
 
 def test_update_ui_text_previews_current_schedule_values_without_trainer() -> None:

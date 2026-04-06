@@ -88,6 +88,8 @@ def test_build_ui_initializes_histogram_controls() -> None:
     viewer_ui = ui.build_ui(_dummy_renderer())
 
     assert viewer_ui._values["show_histograms"] is False
+    assert viewer_ui._values["show_training_views"] is False
+    assert viewer_ui._values["show_camera_overlays"] is True
     assert viewer_ui._values["hist_bin_count"] == 64
     assert viewer_ui._values["hist_y_limit"] == 1.0
     assert viewer_ui._values["cached_raster_grad_fixed_ro_local_range"] == 0.01
@@ -166,6 +168,8 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["_histogram_update_y_limit"] is True
     assert viewer_ui._values["_histogram_update_log_range"] is False
     assert viewer_ui._values["_show_histograms_prev"] is False
+    assert viewer_ui._values["_training_views_rows"] == ()
+    assert viewer_ui._values["_training_view_overlay_segments"] == ()
     assert "show_renderer_debug" not in viewer_ui._values
 
 
@@ -278,13 +282,13 @@ def test_viewport_view_menu_left_aligns_view_mode_button(monkeypatch) -> None:
     monkeypatch.setattr(ui.imgui, "text_unformatted", lambda text: mode_text.append(text))
     monkeypatch.setattr(ui.imgui, "begin_popup", lambda *_args: False)
     toolkit = SimpleNamespace(_viewport_content_rect=(50.0, 60.0, 400.0, 240.0), _interface_scale_factor=lambda _ui_obj: 1.5)
-    viewer_ui = SimpleNamespace(_values={"debug_mode": ui._DEBUG_MODE_VALUES.index("depth_std")})
+    viewer_ui = SimpleNamespace(_values={"debug_mode": ui._DEBUG_MODE_VALUES.index("depth_std"), "show_camera_overlays": True})
 
     origin = ui.ToolkitWindow._draw_viewport_view_menu(toolkit, viewer_ui, ui.imgui.ImVec2(50.0, 60.0))
 
-    assert button_labels == ["View Mode"]
+    assert button_labels == ["View Mode", "Cameras On"]
     assert cursor_positions == [(62.0, 72.0)]
-    assert same_line_calls == [(0.0, 15.0)]
+    assert same_line_calls == [(0.0, 15.0), (0.0, 15.0)]
     assert filled_rects == [(148.0, 69.0, 250.0, 89.0, 6.0)]
     assert len(pushed_colors) == 1
     assert pushed_colors[0][0] == int(ui.imgui.Col_.text.value)
@@ -292,6 +296,95 @@ def test_viewport_view_menu_left_aligns_view_mode_button(monkeypatch) -> None:
     assert mode_text == ["Depth Std"]
     assert np.isclose(origin.x, 62.0)
     assert origin.y > 72.0
+
+
+def test_viewport_camera_overlays_draw_lines_when_enabled(monkeypatch) -> None:
+    lines: list[tuple[float, float, float, float, float]] = []
+
+    class _DrawList:
+        def add_line(self, p0, p1, _color, thickness):
+            lines.append((float(p0.x), float(p0.y), float(p1.x), float(p1.y), float(thickness)))
+
+    monkeypatch.setattr(ui.imgui, "get_window_draw_list", lambda: _DrawList())
+    toolkit = SimpleNamespace()
+    viewer_ui = SimpleNamespace(
+        _values={
+            "show_camera_overlays": True,
+            "_training_view_overlay_segments": ((1.0, 2.0, 3.0, 4.0, (0.1, 0.2, 0.3, 0.4), 1.5),),
+        }
+    )
+
+    ui.ToolkitWindow._draw_viewport_camera_overlays(toolkit, viewer_ui, ui.imgui.ImVec2(10.0, 20.0))
+
+    assert lines == [(11.0, 22.0, 13.0, 24.0, 1.5)]
+
+
+def test_viewport_camera_overlays_skip_lines_when_disabled(monkeypatch) -> None:
+    lines: list[tuple[float, float, float, float, float]] = []
+
+    class _DrawList:
+        def add_line(self, p0, p1, _color, thickness):
+            lines.append((float(p0.x), float(p0.y), float(p1.x), float(p1.y), float(thickness)))
+
+    monkeypatch.setattr(ui.imgui, "get_window_draw_list", lambda: _DrawList())
+    toolkit = SimpleNamespace()
+    viewer_ui = SimpleNamespace(
+        _values={
+            "show_camera_overlays": False,
+            "_training_view_overlay_segments": ((1.0, 2.0, 3.0, 4.0, (0.1, 0.2, 0.3, 0.4), 1.5),),
+        }
+    )
+
+    ui.ToolkitWindow._draw_viewport_camera_overlays(toolkit, viewer_ui, ui.imgui.ImVec2(10.0, 20.0))
+
+    assert lines == []
+
+
+def test_training_views_window_docks_and_uses_imgui_table(monkeypatch) -> None:
+    dock_calls: list[tuple[int, int]] = []
+    table_columns: list[str] = []
+    cells: list[str] = []
+    table_calls: list[tuple[str, int, int]] = []
+    monkeypatch.setattr(ui.imgui, "set_next_window_dock_id", lambda dock_id, cond: dock_calls.append((int(dock_id), int(cond))))
+    monkeypatch.setattr(ui.imgui, "set_next_window_pos", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ui.imgui, "set_next_window_size", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ui.imgui, "begin", lambda *args, **kwargs: (True, True))
+    monkeypatch.setattr(ui.imgui, "end", lambda: None)
+    monkeypatch.setattr(ui.imgui, "begin_table", lambda name, columns, flags: table_calls.append((name, int(columns), int(flags))) or True)
+    monkeypatch.setattr(ui.imgui, "table_setup_column", lambda name, *_args: table_columns.append(name))
+    monkeypatch.setattr(ui.imgui, "table_headers_row", lambda: None)
+    monkeypatch.setattr(ui.imgui, "table_next_row", lambda: None)
+    monkeypatch.setattr(ui.imgui, "table_next_column", lambda: None)
+    monkeypatch.setattr(ui.imgui, "text_unformatted", lambda text: cells.append(text))
+    monkeypatch.setattr(ui.imgui, "end_table", lambda: None)
+    toolkit = SimpleNamespace(_menu_bar_height=24.0, _toolkit_dock_id=17, _dock_tool_window=lambda cond: ui.imgui.set_next_window_dock_id(17, cond), _training_views_value_text=ui.ToolkitWindow._training_views_value_text)
+    viewer_ui = SimpleNamespace(
+        _values={
+            "show_training_views": True,
+            "_training_views_rows": (
+                {
+                    "image_name": "frame.png",
+                    "resolution": "640x360",
+                    "fx": 525.0,
+                    "fy": 520.0,
+                    "cx": 320.0,
+                    "cy": 180.0,
+                    "near": 0.1,
+                    "far": 100.0,
+                    "loss": 0.25,
+                    "psnr": 32.5,
+                },
+            ),
+        },
+        _texts={},
+    )
+
+    ui.ToolkitWindow._draw_training_views_window(toolkit, viewer_ui)
+
+    assert dock_calls == [(17, int(ui.imgui.Cond_.appearing.value))]
+    assert table_calls and table_calls[0][0] == "##training_views" and table_calls[0][1] == 10
+    assert table_columns == ["Image", "Res", "Fx", "Fy", "Cx", "Cy", "Near", "Far", "Loss", "PSNR"]
+    assert cells == ["frame.png", "640x360", "525.000", "520.000", "320.000", "180.000", "0.10", "100.00", "0.2500", "32.50"]
 
 
 def test_viewport_debug_overlay_draws_mode_specific_controls(monkeypatch) -> None:
