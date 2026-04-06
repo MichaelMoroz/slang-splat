@@ -27,7 +27,7 @@ class GaussianRenderSettings:
     cached_raster_grad_fixed_opacity_range: float = 0.2
     debug_mode: str | None = None
     debug_grad_norm_threshold: float = 2e-4
-    debug_ellipse_thickness_px: float = 2.0
+    debug_ellipse_thickness_px: float = 4.0
     debug_clone_count_range: tuple[float, float] = (0.0, 16.0)
     debug_density_range: tuple[float, float] = (0.0, 20.0)
     debug_contribution_range: tuple[float, float] = (0.001, 1.0)

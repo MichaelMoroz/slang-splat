@@ -565,7 +565,7 @@ DEBUG_RENDER_SPECS = (
     ControlSpec("debug_mode", "combo", "Mode", {"value": _DEBUG_MODE_VALUES.index("normal"), "options": _DEBUG_MODE_LABELS}),
     ControlSpec("debug_sh_coeff_index", "combo", "SH Coefficient", {"value": 0, "options": _DEBUG_SH_COEFF_LABELS}),
     ControlSpec("debug_grad_norm_threshold", "input_float", "Grad Norm Threshold", {"value": _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT, "step": 1e-5, "step_fast": 1e-4, "format": "%.6g"}),
-    ControlSpec("debug_ellipse_thickness_px", "slider_float", "Ellipse Thickness", {"value": 2.0, "min": 0.25, "max": 8.0, "format": "%.2f px"}),
+    ControlSpec("debug_ellipse_thickness_px", "slider_float", "Ellipse Thickness", {"value": 4.0, "min": 0.25, "max": 8.0, "format": "%.2f px"}),
     ControlSpec("debug_clone_count_min", "input_float", "Clone Count Min", {"value": 0.0, "step": 1.0, "step_fast": 4.0, "format": "%.5g"}),
     ControlSpec("debug_clone_count_max", "input_float", "Clone Count Max", {"value": 16.0, "step": 1.0, "step_fast": 4.0, "format": "%.5g"}),
     ControlSpec("debug_density_min", "input_float", "Density Min", {"value": 0.0, "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
@@ -2267,7 +2267,7 @@ def build_ui(renderer) -> ViewerUI:
     debug_mode = getattr(renderer, "debug_mode", "normal")
     values["debug_mode"] = _DEBUG_MODE_VALUES.index(debug_mode) if debug_mode in _DEBUG_MODE_VALUES else 0
     values["debug_grad_norm_threshold"] = float(getattr(renderer, "debug_grad_norm_threshold", _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT))
-    values["debug_ellipse_thickness_px"] = float(getattr(renderer, "debug_ellipse_thickness_px", 2.0))
+    values["debug_ellipse_thickness_px"] = float(getattr(renderer, "debug_ellipse_thickness_px", 4.0))
     clone_count_range = tuple(getattr(renderer, "debug_clone_count_range", (0.0, 16.0)))
     density_range = tuple(getattr(renderer, "debug_density_range", (0.0, 20.0)))
     contribution_range = tuple(getattr(renderer, "debug_contribution_range", (0.001, 1.0)))

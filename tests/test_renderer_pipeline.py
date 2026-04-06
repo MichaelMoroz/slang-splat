@@ -517,9 +517,9 @@ def test_debug_ellipse_overlay_render_smoke(device):
     assert np.all(np.isfinite(out.image))
 
 
-def test_debug_ellipse_overlay_defaults_to_2px_thickness(device):
+def test_debug_ellipse_overlay_defaults_to_4px_thickness(device):
     renderer = GaussianRenderer(device, width=64, height=64)
-    assert renderer.debug_ellipse_thickness_px == 2.0
+    assert renderer.debug_ellipse_thickness_px == 4.0
 
 
 def test_debug_ellipse_overlay_antialiases_across_boundary(device):

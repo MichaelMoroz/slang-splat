@@ -489,7 +489,7 @@ class GaussianRenderer:
         debug_show_processed_count: bool = False,
         debug_show_grad_norm: bool = False,
         debug_grad_norm_threshold: float = 2e-4,
-        debug_ellipse_thickness_px: float = 2.0,
+        debug_ellipse_thickness_px: float = 4.0,
         debug_clone_count_range: tuple[float, float] = _DEFAULT_DEBUG_CLONE_COUNT_RANGE,
         debug_density_range: tuple[float, float] = _DEFAULT_DEBUG_DENSITY_RANGE,
         debug_contribution_range: tuple[float, float] = _DEFAULT_DEBUG_CONTRIBUTION_RANGE,

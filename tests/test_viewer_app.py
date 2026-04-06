@@ -256,7 +256,7 @@ def test_renderer_params_maps_adam_momentum_to_grad_norm_log_range() -> None:
         "cached_raster_grad_fixed_color_range": SimpleNamespace(value=0.2),
         "cached_raster_grad_fixed_opacity_range": SimpleNamespace(value=0.2),
         "debug_grad_norm_threshold": SimpleNamespace(value=2e-4),
-        "debug_ellipse_thickness_px": SimpleNamespace(value=2.0),
+        "debug_ellipse_thickness_px": SimpleNamespace(value=4.0),
         "debug_clone_count_min": SimpleNamespace(value=0.0),
         "debug_clone_count_max": SimpleNamespace(value=16.0),
         "debug_density_min": SimpleNamespace(value=0.0),

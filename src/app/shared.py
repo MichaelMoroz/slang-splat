@@ -45,7 +45,7 @@ class RendererParams:
     transmittance_threshold: float = 0.005; list_capacity_multiplier: int = 64
     max_prepass_memory_mb: int = 4096; cached_raster_grad_atomic_mode: str = "fixed"; cached_raster_grad_fixed_ro_local_range: float = 0.01; cached_raster_grad_fixed_scale_range: float = 0.01
     cached_raster_grad_fixed_quat_range: float = 0.01; cached_raster_grad_fixed_color_range: float = 0.2; cached_raster_grad_fixed_opacity_range: float = 0.2
-    debug_mode: str | None = None; debug_grad_norm_threshold: float = 2e-4; debug_ellipse_thickness_px: float = 2.0
+    debug_mode: str | None = None; debug_grad_norm_threshold: float = 2e-4; debug_ellipse_thickness_px: float = 4.0
     debug_clone_count_range: tuple[float, float] = (0.0, 16.0); debug_density_range: tuple[float, float] = (0.0, 20.0); debug_contribution_range: tuple[float, float] = DEFAULT_DEBUG_CONTRIBUTION_RANGE_PERCENT; debug_adam_momentum_range: tuple[float, float] = (0.0, 0.1); debug_depth_mean_range: tuple[float, float] = (0.0, 10.0); debug_depth_std_range: tuple[float, float] = (0.0, 0.5)
     debug_depth_local_mismatch_range: tuple[float, float] = (0.0, 0.5); debug_depth_local_mismatch_smooth_radius: float = 2.0; debug_depth_local_mismatch_reject_radius: float = 4.0; debug_sh_coeff_index: int = 0
     debug_show_ellipses: bool = False; debug_show_processed_count: bool = False; debug_show_grad_norm: bool = False
