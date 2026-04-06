@@ -203,7 +203,7 @@ def build_training_params(
     position_random_step_noise_stage1_lr: float = 466666.6666666667,
     position_random_step_noise_stage2_lr: float = 416666.6666666667,
     position_random_step_noise_stage3_lr: float = 0.0,
-    use_sh_stage1: bool = False,
+    use_sh_stage1: bool = True,
     use_sh_stage2: bool = True,
     use_sh_stage3: bool = True,
     train_downscale_mode: int = 1,

@@ -130,7 +130,7 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["background_mode"] == 1
     assert viewer_ui._values["train_background_color"] == (1.0, 1.0, 1.0)
     assert viewer_ui._values["use_sh"] is False
-    assert viewer_ui._values["use_sh_stage1"] is False
+    assert viewer_ui._values["use_sh_stage1"] is True
     assert viewer_ui._values["use_sh_stage2"] is True
     assert viewer_ui._values["use_sh_stage3"] is True
     assert viewer_ui._values["sh1_reg"] == 0.01

@@ -797,7 +797,7 @@ def test_depth_ratio_noise_and_sh_schedules_follow_requested_defaults() -> None:
     np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 3000), 466666.6666666667, rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 14000), 416666.6666666667, rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 30_000), 0.0, rtol=0.0, atol=1e-6)
-    assert resolve_use_sh(hparams, 13999) is False
+    assert resolve_use_sh(hparams, 13999) is True
     assert resolve_use_sh(hparams, 14000) is True
 
 
