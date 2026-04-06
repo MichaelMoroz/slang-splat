@@ -42,8 +42,6 @@ static const float SPLAT_CONTRIBUTION_FIXED_SCALE = 256.0;
 static const float SPLAT_CONTRIBUTION_FIXED_MAX_F = 16777215.99609375;
 static const float CLONE_COUNT_ALPHA_THRESHOLD = 0.01;
 static const float DEPTH_LOCAL_MISMATCH_REJECT_ALPHA_SCALE_MAX = 2.0;
-static const float DEPTH_STATS_SIGMA_CUTOFF = 0.75 / ENVELOPE_SIGMA_RADIUS;
-static const float DEPTH_STATS_SIGMA_CUTOFF_SQR = DEPTH_STATS_SIGMA_CUTOFF * DEPTH_STATS_SIGMA_CUTOFF;
 
 int raster_grad_fixed_quantize(float value, float range)
 {
@@ -247,23 +245,6 @@ float2 raster_eval_alpha_depth_gaussian(RasterGaussian gaussian, no_diff float3 
     float alpha = gaussian.colorAlpha.w * exp(-0.5 * ENVELOPE_SIGMA_RADIUS * ENVELOPE_SIGMA_RADIUS * rho2);
     if (alpha < g_Raster.alphaCutoff) return 0.0;
     return float2(alpha, tClosest);
-}
-
-[Differentiable]
-float raster_eval_depth_stats_alpha_gaussian(RasterGaussian gaussian, no_diff float3 rayDir)
-{
-    float3 rayLocal = world_to_local_dir(rayDir, gaussian.scale, gaussian.rotation);
-    float denom = dot(rayLocal, rayLocal);
-    if (denom <= RAY_DENOMINATOR_FLOOR) return 0.0;
-
-    float numer = dot(rayLocal, gaussian.roLocal);
-    float tClosest = -numer / denom;
-    if (tClosest <= 0.0) return 0.0;
-
-    float3 closest = gaussian.roLocal + rayLocal * tClosest;
-    float rho2 = max(dot(closest, closest), 0.0);
-    if (rho2 > DEPTH_STATS_SIGMA_CUTOFF_SQR) return 0.0;
-    return gaussian.colorAlpha.w >= g_Raster.alphaCutoff ? gaussian.colorAlpha.w : 0.0;
 }
 
 [Differentiable]
@@ -600,8 +581,7 @@ struct TrainingRasterReplayVariant : IRasterReplayVariant
         float3 color = raster_forward_color(gaussian, splatId, replayState.debugMode);
         uint contribution = splat_contribution_fixed_quantize(contributionWeight);
         if (contribution > 0u) InterlockedAdd(g_SplatContribution[splatId], contribution);
-        float depthAlpha = rayDepth > 0.0 ? raster_eval_depth_stats_alpha_gaussian(gaussian, info.rayDir) : 0.0;
-        if (depthAlpha > 0.0) replayState.depthState = depth_state_step(replayState.depthState, state.trans * depthAlpha, rayDepth);
+        if (rayDepth > 0.0) replayState.depthState = depth_state_step(replayState.depthState, contributionWeight, rayDepth);
         replayState.splatDensitySum = raster_splat_density_step(replayState.splatDensitySum, state.trans, alpha, gaussian.colorAlpha.w);
         replayState.pixelState = state.blend(color, alpha);
         replayState.processedCount += 1u;
@@ -635,11 +615,7 @@ struct DebugRasterReplayVariant : IRasterReplayVariant
         uint debugMode = replayState.debugMode;
         float trans = replayState.pixelState.trans;
         float contributionWeight = trans * alpha;
-        if ((debugMode == DEBUG_MODE_DEPTH_MEAN || debugMode == DEBUG_MODE_DEPTH_STD) && rayDepth > 0.0)
-        {
-            float depthAlpha = raster_eval_depth_stats_alpha_gaussian(gaussian, info.rayDir);
-            if (depthAlpha > 0.0) replayState.depthState = depth_state_step(replayState.depthState, trans * depthAlpha, rayDepth);
-        }
+        if ((debugMode == DEBUG_MODE_DEPTH_MEAN || debugMode == DEBUG_MODE_DEPTH_STD) && rayDepth > 0.0) replayState.depthState = depth_state_step(replayState.depthState, contributionWeight, rayDepth);
         if (debugMode == DEBUG_MODE_DEPTH_LOCAL_MISMATCH && rayDepth > 0.0)
         {
             depth_local_mismatch_step(replayState.depthLocalMismatchState, contributionWeight, rayDepth, raster_sigma_ray(gaussian, info.rayDir), raster_mean_sigma(gaussian), alpha);
@@ -851,33 +827,26 @@ void raster_backward_replay<T : IRasterGradVariant>(RasterPixelInfo info, inout 
             var dpDensityAlpha = diffPair(alpha);
             var dpDensityOpacity = diffPair(gaussian.colorAlpha.w);
             bwd_diff(raster_splat_density_step)(dpPrevDensityState, dpDensityTrans, dpDensityAlpha, dpDensityOpacity, backwardState.splatDensityState);
-            float depthAlpha = raster_eval_depth_stats_alpha_gaussian(gaussian, info.rayDir);
-            float depthContributionWeight = prevState.trans * depthAlpha;
-            float3 prevDepthState = depth_state_rewind(replayState.depthState, depthContributionWeight, rayDepth);
+            float contributionWeight = prevState.trans * alpha;
+            float3 prevDepthState = depth_state_rewind(replayState.depthState, contributionWeight, rayDepth);
             var dpPrevDepthState = diffPair(prevDepthState);
-            var dpDepthContributionWeight = diffPair(depthContributionWeight);
-            var dpDepthGaussian = diffPair(gaussian);
+            var dpContributionWeight = diffPair(contributionWeight);
             var dpRayDepth = diffPair(rayDepth);
-            bwd_diff(depth_state_step)(dpPrevDepthState, dpDepthContributionWeight, dpRayDepth, backwardState.depthState);
+            bwd_diff(depth_state_step)(dpPrevDepthState, dpContributionWeight, dpRayDepth, backwardState.depthState);
             replayState.splatDensitySum = prevDensityState;
             replayState.depthState = prevDepthState;
             backwardState.splatDensityState = dpPrevDensityState.getDifferential();
             backwardState.depthState = dpPrevDepthState.getDifferential();
             dPrevState.trans += dpDensityTrans.getDifferential();
             dAlpha += dpDensityAlpha.getDifferential();
-            float dDepthContributionWeight = dpDepthContributionWeight.getDifferential();
-            dPrevState.trans += dDepthContributionWeight * depthAlpha;
-            bwd_diff(raster_eval_depth_stats_alpha_gaussian)(dpDepthGaussian, info.rayDir, dDepthContributionWeight * prevState.trans);
+            float dContributionWeight = dpContributionWeight.getDifferential();
+            dPrevState.trans += dContributionWeight * alpha;
+            dAlpha += dContributionWeight * prevState.trans;
             bwd_diff(raster_eval_alpha_depth_gaussian)(dpGaussian, info.rayDir, float2(dAlpha, dpRayDepth.getDifferential()));
 
             replayState.pixelState = prevState;
             backwardState.pixelState = dPrevState;
             RasterGaussian.Differential dGaussian = dpGaussian.getDifferential();
-            RasterGaussian.Differential dDepthGaussian = dpDepthGaussian.getDifferential();
-            dGaussian.roLocal += dDepthGaussian.roLocal;
-            dGaussian.scale += dDepthGaussian.scale;
-            dGaussian.rotation += dDepthGaussian.rotation;
-            dGaussian.colorAlpha += dDepthGaussian.colorAlpha;
             dGaussian.colorAlpha += dpColorAlpha.getDifferential();
             dGaussian.colorAlpha.w += dpDensityOpacity.getDifferential();
             T.flush_cached_raster_grad(splatId, gaussian, dGaussian);
