@@ -282,7 +282,6 @@ _TRAIN_SETUP_SPECS = (
     ControlSpec("training_steps_per_frame", "slider_int", "Steps / Frame", {"value": 3, "min": 1, "max": 8}),
     ControlSpec("background_mode", "combo", "Train Background", {"value": 1, "options": _TRAIN_BACKGROUND_MODE_LABELS}),
     ControlSpec("train_background_color", "color_edit3", "Train BG Color", {"value": (1.0, 1.0, 1.0)}),
-    ControlSpec("use_sh", "checkbox", "Use Spherical Harmonics", {"value": True}),
     ControlSpec("refinement_interval", "input_int", "Refinement Interval", {"value": 200, "step": 10, "step_fast": 50}),
     ControlSpec("refinement_growth_ratio", "input_float", "Refinement Growth", {"value": 0.075, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
     ControlSpec("refinement_growth_start_step", "slider_int", "Start Refinement After", {"value": 500, "min": 0, "max": 30000, "max_from": "lr_schedule_steps"}),
@@ -299,11 +298,7 @@ _TRAIN_SETUP_SPECS = (
 )
 
 _TRAIN_OPTIMIZER_SPECS = (
-    ControlSpec("lr_base", "input_float", "Base LR", {"value": 0.005, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
     ControlSpec("lr_schedule_enabled", "checkbox", "Use LR Schedule", {"value": True}),
-    ControlSpec("lr_schedule_start_lr", "input_float", "Schedule Start LR", {"value": 0.005, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
-    ControlSpec("depth_ratio_weight", "input_float", "Depth Ratio Reg", {"value": 1.0, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
-    ControlSpec("position_random_step_noise_lr", "input_float", "Noise LR", {"value": 5e5, "step": 100.0, "step_fast": 1000.0, "format": "%.4g"}),
     ControlSpec("lr_pos_mul", "input_float", "LR Mul Position", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
     ControlSpec("lr_scale_mul", "input_float", "LR Mul Scale", {"value": 5.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
     ControlSpec("lr_rot_mul", "input_float", "LR Mul Rotation", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
@@ -336,6 +331,12 @@ _SCHEDULE_STAGE_SPEC_TEMPLATE = {
 }
 
 _SCHEDULE_STAGE_GROUPS = {
+    "Stage 0": {
+        "lr": "lr_schedule_start_lr",
+        "depth_ratio_weight": "depth_ratio_weight",
+        "noise_lr": "position_random_step_noise_lr",
+        "use_sh": "use_sh",
+    },
     "Stage 1": {
         "end_step": "lr_schedule_stage1_step",
         "lr": "lr_schedule_stage1_lr",
@@ -360,6 +361,12 @@ _SCHEDULE_STAGE_GROUPS = {
 }
 
 _SCHEDULE_STAGE_OVERRIDES = {
+    "Stage 0": {
+        "lr": {"kwargs": {"value": 0.005, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}},
+        "depth_ratio_weight": {"kwargs": {"value": 1.0, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}},
+        "noise_lr": {"kwargs": {"value": 5e5, "step": 100.0, "step_fast": 1000.0, "format": "%.4g"}},
+        "use_sh": {"kwargs": {"value": True}},
+    },
     "Stage 1": {
         "end_step": {"kwargs": {"value": 2000, "min": 0, "max": 30000, "max_from": "lr_schedule_steps"}},
         "lr": {"kwargs": {"value": 0.002, "step": 1e-6, "step_fast": 1e-5, "format": "%.8f"}},
@@ -393,7 +400,11 @@ def _build_schedule_stage_specs() -> dict[str, tuple[ControlSpec, ...]]:
     for stage_label, key_map in _SCHEDULE_STAGE_GROUPS.items():
         overrides = _SCHEDULE_STAGE_OVERRIDES.get(stage_label, {})
         specs: list[ControlSpec] = []
-        for template_key, mapped_key in key_map.items():
+        ordered_keys = ("lr", "depth_ratio_weight", "noise_lr", "use_sh") if stage_label == "Stage 0" else ("end_step", "lr", "depth_ratio_weight", "noise_lr", "use_sh")
+        for template_key in ordered_keys:
+            if template_key not in key_map:
+                continue
+            mapped_key = key_map[template_key]
             template = _SCHEDULE_STAGE_SPEC_TEMPLATE[template_key]
             override = overrides.get(template_key, {})
             specs.append(
@@ -482,7 +493,7 @@ _ALL_DEFAULTS.update({spec.key: spec.kwargs["value"] for spec in RENDER_PARAM_SP
 _ALL_DEFAULTS.update({spec.key: spec.kwargs["value"] for spec in DEBUG_RENDER_SPECS if "value" in spec.kwargs})
 
 _OPTIMIZER_TAB_KEYS = {
-    "Schedule": ("lr_base", "lr_schedule_enabled", "lr_schedule_start_lr", "depth_ratio_weight", "position_random_step_noise_lr", "lr_pos_mul", "lr_scale_mul", "lr_rot_mul", "lr_color_mul", "lr_opacity_mul"),
+    "Schedule": ("lr_schedule_enabled", "lr_pos_mul", "lr_scale_mul", "lr_rot_mul", "lr_color_mul", "lr_opacity_mul"),
     "Adam": ("beta1", "beta2"),
     "Regularization": ("scale_l2", "scale_abs_reg", "sh1_reg", "opacity_reg", "density_regularizer", "depth_ratio_grad_min", "depth_ratio_grad_max", "max_allowed_density", "position_random_step_opacity_gate_center", "position_random_step_opacity_gate_sharpness", "max_anisotropy", "grad_clip", "grad_norm_clip", "max_update"),
 }
@@ -1533,7 +1544,7 @@ class ToolkitWindow:
     def _section_training_setup(self, ui: ViewerUI) -> None:
         if not imgui.collapsing_header("Train Setup"):
             return
-        for key in ("max_gaussians", "training_steps_per_frame", "background_mode", "use_sh", "refinement_interval", "refinement_growth_ratio", "refinement_growth_start_step", "refinement_alpha_cull_threshold", "refinement_min_contribution_percent", "refinement_min_contribution_decay", "train_downscale_mode"):
+        for key in ("max_gaussians", "training_steps_per_frame", "background_mode", "refinement_interval", "refinement_growth_ratio", "refinement_growth_start_step", "refinement_alpha_cull_threshold", "refinement_min_contribution_percent", "refinement_min_contribution_decay", "train_downscale_mode"):
             self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Setup"] if spec.key == key))
         if int(ui._values.get("background_mode", 1)) == 0:
             self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Setup"] if spec.key == "train_background_color"))
@@ -1741,7 +1752,6 @@ class ToolkitWindow:
         "debug_depth_local_mismatch_max": "Upper bound for the local depth mismatch ratio heatmap, normalized by mean depth",
         "debug_depth_local_mismatch_smooth_radius": "Sigma multiple for full local smoothing before the mismatch gate starts to fall off",
         "debug_depth_local_mismatch_reject_radius": "Base sigma multiple, based on mean splat sigma, beyond which depth mismatch stops contributing; the effective reject radius scales smoothly up to 2x with current splat alpha",
-        "lr_base": "Base learning rate for all parameters",
         "lr_pos_mul": "Learning rate multiplier for position",
         "lr_scale_mul": "Learning rate multiplier for scale",
         "lr_rot_mul": "Learning rate multiplier for rotation",
@@ -1756,7 +1766,7 @@ class ToolkitWindow:
         "scale_abs_reg": "Absolute scale regularization weight",
         "sh1_reg": "L1 regularization weight applied to SH1 coefficients only",
         "opacity_reg": "Opacity regularization weight (pushes toward 0 or 1)",
-        "position_random_step_noise_lr": "Post-step MCMC-style position noise multiplier; runtime linearly decays it from the configured value to zero by the end of the LR schedule",
+        "position_random_step_noise_lr": "Stage 0 post-step MCMC-style position noise multiplier; when scheduling is disabled this value is used for the whole run",
         "position_random_step_opacity_gate_center": "Opacity center for the random-step sigmoid gate; lower-opacity splats get stronger position noise",
         "position_random_step_opacity_gate_sharpness": "Steepness of the random-step opacity gate",
         "max_anisotropy": "Maximum ratio between largest and smallest scale axes",
@@ -1771,7 +1781,7 @@ class ToolkitWindow:
         "training_steps_per_frame": "Number of training optimizer steps to run before each viewer redraw; higher improves training throughput but reduces UI refresh rate",
         "background_mode": "Choose whether training uses a fixed custom RGB background or a new random RGB background each optimizer step",
         "train_background_color": "Custom RGB background used for training when Train Background is set to Custom",
-        "use_sh": "Master switch for SH0+SH1 view-dependent color evaluation; per-stage schedule tabs decide whether SH is active within each training interval",
+        "use_sh": "Stage 0 SH toggle; when scheduling is disabled this value is used for the whole run",
         "refinement_interval": "Run cull/split refinement every N training steps",
         "refinement_growth_ratio": "Target fractional scene growth per refinement step once densification is enabled",
         "refinement_growth_start_step": "Keep densification growth at zero until this training iteration, then use the configured refinement growth; slider range follows Schedule Steps",
@@ -1779,12 +1789,12 @@ class ToolkitWindow:
         "refinement_min_contribution_percent": "Minimum accumulated alpha contribution, as a percent of observed dataset pixels, required for a splat to survive refinement",
         "refinement_min_contribution_decay": "Multiply the minimum contribution percent by this factor after each completed refinement pass",
         "density_regularizer": "Weight applied to the per-pixel hinge penalty max(density - max_allowed_density, 0)",
-        "depth_ratio_weight": "Initial depth-ratio regularizer weight before Stage 1; each stage tab sets the target weight reached at that stage end step",
+        "depth_ratio_weight": "Stage 0 depth-ratio regularizer weight; when scheduling is disabled this value is used for the whole run",
         "depth_ratio_grad_min": "Start of the high-gradient depth-ratio interval; gradients taper below this value",
         "depth_ratio_grad_max": "End of the high-gradient depth-ratio interval; gradients taper above this value",
         "max_allowed_density": "End-of-training per-pixel density threshold above which the density regularizer activates; runtime ramps from 5.0 to this value over the LR schedule",
         "lr_schedule_enabled": "Enable the piecewise-linear base learning-rate schedule",
-        "lr_schedule_start_lr": "Base learning rate at step 0 before the stage schedule begins interpolating toward Stage 1",
+        "lr_schedule_start_lr": "Stage 0 base learning rate; when scheduling is disabled this value is used for the whole run",
         "lr_schedule_stage1_step": "Training step where Stage 1 ends and the Stage 1 targets are reached; slider range follows the Stage 3 end step",
         "lr_schedule_stage2_step": "Training step where Stage 2 ends and the Stage 2 targets are reached; slider range follows the Stage 3 end step",
         "lr_schedule_stage1_lr": "Base learning-rate target reached at the end of Stage 1",

@@ -27,7 +27,7 @@ _LOOK_SMOOTH = 12.0
 _MOVE_SMOOTH = 10.0
 _PITCH_LIMIT = math.radians(89.0)
 _TRAINING_PARAM_KEYS = {
-    "base_lr": "lr_base",
+    "base_lr": "lr_schedule_start_lr",
     "lr_pos_mul": "lr_pos_mul",
     "lr_scale_mul": "lr_scale_mul",
     "lr_rot_mul": "lr_rot_mul",
@@ -79,11 +79,11 @@ _TRAINING_PARAM_KEYS = {
     "position_random_step_noise_stage1_lr": "position_random_step_noise_stage1_lr",
     "position_random_step_noise_stage2_lr": "position_random_step_noise_stage2_lr",
     "position_random_step_noise_stage3_lr": "position_random_step_noise_stage3_lr",
+    "background_mode": "background_mode",
+    "use_sh": "use_sh",
     "use_sh_stage1": "use_sh_stage1",
     "use_sh_stage2": "use_sh_stage2",
     "use_sh_stage3": "use_sh_stage3",
-    "background_mode": "background_mode",
-    "use_sh": "use_sh",
     "train_downscale_mode": "train_downscale_mode",
     "train_auto_start_downscale": "train_auto_start_downscale",
     "train_downscale_base_iters": "train_downscale_base_iters",

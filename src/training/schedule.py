@@ -95,6 +95,8 @@ def resolve_learning_rate_scale(training_hparams: Any, step: int) -> float:
 
 
 def resolve_depth_ratio_weight(training_hparams: Any, step: int) -> float:
+    if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
+        return max(float(getattr(training_hparams, "depth_ratio_weight", 0.05)), 0.0)
     return _resolve_staged_linear_value(
         training_hparams,
         step,
@@ -108,6 +110,8 @@ def resolve_depth_ratio_weight(training_hparams: Any, step: int) -> float:
 
 
 def resolve_position_random_step_noise_lr(training_hparams: Any, step: int) -> float:
+    if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
+        return max(float(getattr(training_hparams, "position_random_step_noise_lr", 5e5)), 0.0)
     return _resolve_staged_linear_value(
         training_hparams,
         step,
@@ -132,6 +136,8 @@ def _resolve_stage_bool(training_hparams: Any, step: int, keys: tuple[str, str, 
 
 
 def resolve_use_sh(training_hparams: Any, step: int) -> bool:
+    if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
+        return bool(getattr(training_hparams, "use_sh", True))
     return bool(getattr(training_hparams, "use_sh", True)) and _resolve_stage_bool(
         training_hparams,
         step,

@@ -725,6 +725,37 @@ def test_depth_ratio_noise_and_sh_schedules_follow_requested_defaults() -> None:
     assert resolve_use_sh(hparams, 5000) is True
 
 
+def test_schedule_disabled_uses_stage0_only_for_scheduled_values() -> None:
+    hparams = TrainingHyperParams(
+        lr_schedule_enabled=False,
+        lr_schedule_start_lr=0.006,
+        lr_schedule_stage1_lr=0.002,
+        lr_schedule_stage2_lr=0.001,
+        lr_schedule_end_lr=1e-4,
+        depth_ratio_weight=0.8,
+        depth_ratio_stage1_weight=0.05,
+        depth_ratio_stage2_weight=0.01,
+        depth_ratio_stage3_weight=0.001,
+        position_random_step_noise_lr=1234.0,
+        position_random_step_noise_stage1_lr=250.0,
+        position_random_step_noise_stage2_lr=100.0,
+        position_random_step_noise_stage3_lr=0.0,
+        use_sh=True,
+        use_sh_stage1=False,
+        use_sh_stage2=False,
+        use_sh_stage3=False,
+    )
+
+    np.testing.assert_allclose(resolve_base_learning_rate(hparams, 0), 0.006, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_base_learning_rate(hparams, 30_000), 0.006, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 0), 0.8, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 30_000), 0.8, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 0), 1234.0, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 30_000), 1234.0, rtol=0.0, atol=1e-12)
+    assert resolve_use_sh(hparams, 0) is True
+    assert resolve_use_sh(hparams, 30_000) is True
+
+
 def test_max_allowed_density_schedule_clamps_to_end_value() -> None:
     hparams = TrainingHyperParams(max_allowed_density_start=5.0, max_allowed_density=12.0, lr_schedule_steps=4)
 
