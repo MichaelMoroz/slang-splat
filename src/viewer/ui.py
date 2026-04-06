@@ -898,7 +898,10 @@ class ToolkitWindow:
         current_label = _DEBUG_MODE_LABELS[current]
         imgui.push_id("viewport_view")
         imgui.set_cursor_screen_pos(button_pos)
-        if _imgui_opened(imgui.small_button(label)):
+        opened = _imgui_opened(imgui.small_button(label))
+        imgui.same_line(0.0, 10.0 * scale)
+        imgui.text_disabled(current_label)
+        if opened:
             imgui.set_next_window_pos(imgui.ImVec2(button_pos.x, button_pos.y + button_height + _VIEWPORT_OVERLAY_MARGIN * scale), imgui.Cond_.appearing.value)
             imgui.open_popup("viewport_view_popup")
         if _imgui_opened(imgui.begin_popup("viewport_view_popup")):
@@ -910,11 +913,6 @@ class ToolkitWindow:
                     imgui.set_item_default_focus()
             imgui.end_popup()
         imgui.pop_id()
-        current_label_size = imgui.calc_text_size(current_label)
-        text_x = button_pos.x + button_width + 10.0 * scale
-        text_y = button_pos.y + float(style.frame_padding.y) + 0.5 * scale
-        draw_list = imgui.get_window_draw_list()
-        draw_list.add_text(imgui.ImVec2(text_x, text_y), _color_u32(0.92, 0.96, 1.0, 0.95), current_label)
         return imgui.ImVec2(button_pos.x, button_pos.y + button_height + _VIEWPORT_OVERLAY_MARGIN * scale)
 
     def _draw_viewport_debug_overlay(self, ui: ViewerUI, overlay_origin: imgui.ImVec2) -> None:
