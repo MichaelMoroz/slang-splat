@@ -243,7 +243,7 @@ def test_viewport_view_menu_left_aligns_view_mode_button(monkeypatch) -> None:
     cursor_positions: list[tuple[float, float]] = []
     mode_text: list[str] = []
     same_line_calls: list[tuple[float, float]] = []
-    popup_sizes: list[tuple[float, float, int]] = []
+    pushed_colors: list[tuple[int, tuple[float, float, float, float]]] = []
 
     monkeypatch.setattr(ui.imgui, "get_style", lambda: SimpleNamespace(frame_padding=ui.imgui.ImVec2(4.0, 3.0)))
     monkeypatch.setattr(ui.imgui, "calc_text_size", lambda text: ui.imgui.ImVec2(72.0 if text == "View Mode" else 84.0, 14.0))
@@ -252,8 +252,9 @@ def test_viewport_view_menu_left_aligns_view_mode_button(monkeypatch) -> None:
     monkeypatch.setattr(ui.imgui, "set_cursor_screen_pos", lambda pos: cursor_positions.append((float(pos.x), float(pos.y))))
     monkeypatch.setattr(ui.imgui, "small_button", lambda label: button_labels.append(label) or False)
     monkeypatch.setattr(ui.imgui, "same_line", lambda offset=0.0, spacing=-1.0: same_line_calls.append((float(offset), float(spacing))))
+    monkeypatch.setattr(ui.imgui, "push_style_color", lambda idx, color: pushed_colors.append((int(idx), (float(color.x), float(color.y), float(color.z), float(color.w)))))
+    monkeypatch.setattr(ui.imgui, "pop_style_color", lambda count=1: None)
     monkeypatch.setattr(ui.imgui, "text_unformatted", lambda text: mode_text.append(text))
-    monkeypatch.setattr(ui.imgui, "set_next_window_size", lambda size, cond: popup_sizes.append((float(size.x), float(size.y), int(cond))))
     monkeypatch.setattr(ui.imgui, "begin_popup", lambda *_args: False)
     toolkit = SimpleNamespace(_viewport_content_rect=(50.0, 60.0, 400.0, 240.0), _interface_scale_factor=lambda _ui_obj: 1.5)
     viewer_ui = SimpleNamespace(_values={"debug_mode": ui._DEBUG_MODE_VALUES.index("depth_std")})
@@ -263,8 +264,10 @@ def test_viewport_view_menu_left_aligns_view_mode_button(monkeypatch) -> None:
     assert button_labels == ["View Mode"]
     assert cursor_positions == [(62.0, 72.0)]
     assert same_line_calls == [(0.0, 15.0)]
+    assert len(pushed_colors) == 1
+    assert pushed_colors[0][0] == int(ui.imgui.Col_.text.value)
+    np.testing.assert_allclose(np.array(pushed_colors[0][1]), np.array((0.985, 0.992, 1.0, 1.0)), rtol=0.0, atol=1e-6)
     assert mode_text == ["Depth Std"]
-    assert popup_sizes == []
     assert np.isclose(origin.x, 62.0)
     assert origin.y > 72.0
 
@@ -274,6 +277,7 @@ def test_viewport_debug_overlay_draws_mode_specific_controls(monkeypatch) -> Non
     child_sizes: list[tuple[float, float]] = []
     monkeypatch.setattr(ui.imgui, "get_frame_height", lambda: 20.0)
     monkeypatch.setattr(ui.imgui, "get_style", lambda: SimpleNamespace(item_spacing=ui.imgui.ImVec2(8.0, 6.0)))
+    monkeypatch.setattr(ui.imgui, "calc_text_size", lambda _text: ui.imgui.ImVec2(16.0, 14.0))
     monkeypatch.setattr(ui.imgui, "push_style_color", lambda *_args: None)
     monkeypatch.setattr(ui.imgui, "pop_style_color", lambda *_args: None)
     monkeypatch.setattr(ui.imgui, "push_style_var", lambda *_args: None)
@@ -293,6 +297,7 @@ def test_viewport_debug_overlay_draws_mode_specific_controls(monkeypatch) -> Non
     ui.ToolkitWindow._draw_viewport_debug_overlay(toolkit, viewer_ui, ui.imgui.ImVec2(12.0, 34.0))
 
     assert child_sizes and child_sizes[0][0] >= 220.0
+    assert child_sizes[0][1] >= 200.0
     assert drawn == [
         ("debug_depth_local_mismatch_min", True),
         ("debug_depth_local_mismatch_max", True),

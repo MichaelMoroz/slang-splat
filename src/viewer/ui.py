@@ -911,21 +911,19 @@ class ToolkitWindow:
         imgui.set_cursor_screen_pos(button_pos)
         opened = _imgui_opened(imgui.small_button(label))
         imgui.same_line(0.0, 10.0 * scale)
+        imgui.push_style_color(imgui.Col_.text.value, imgui.ImVec4(0.985, 0.992, 1.000, 1.00))
         imgui.text_unformatted(current_label)
+        imgui.pop_style_color()
         if opened:
             imgui.set_next_window_pos(imgui.ImVec2(button_pos.x, button_pos.y + button_height + _VIEWPORT_OVERLAY_MARGIN * scale), imgui.Cond_.appearing.value)
-            imgui.set_next_window_size(imgui.ImVec2(360.0 * scale, 0.0), imgui.Cond_.appearing.value)
             imgui.open_popup("viewport_view_popup")
         if _imgui_opened(imgui.begin_popup("viewport_view_popup")):
-            if imgui.begin_table("##viewport_view_modes", 2, imgui.TableFlags_.sizing_stretch_same.value):
-                for idx, label in enumerate(_DEBUG_MODE_LABELS):
-                    selected = idx == current
-                    imgui.table_next_column()
-                    if _imgui_opened(imgui.selectable(label, selected)):
-                        ui._values["debug_mode"] = idx
-                    if selected:
-                        imgui.set_item_default_focus()
-                imgui.end_table()
+            for idx, label in enumerate(_DEBUG_MODE_LABELS):
+                selected = idx == current
+                if _imgui_opened(imgui.selectable(label, selected)):
+                    ui._values["debug_mode"] = idx
+                if selected:
+                    imgui.set_item_default_focus()
             imgui.end_popup()
         imgui.pop_id()
         return imgui.ImVec2(button_pos.x, button_pos.y + button_height + _VIEWPORT_OVERLAY_MARGIN * scale)
@@ -941,10 +939,11 @@ class ToolkitWindow:
         scale = self._interface_scale_factor(ui)
         frame_height = float(imgui.get_frame_height())
         spacing_y = float(imgui.get_style().item_spacing.y)
+        label_height = float(imgui.calc_text_size("Ag").y)
         padding = _VIEWPORT_OVERLAY_PADDING * scale
         width = min(_VIEWPORT_OVERLAY_WIDTH * scale, max(view_width - 2.0 * _VIEWPORT_OVERLAY_MARGIN * scale, _VIEWPORT_OVERLAY_MIN_WIDTH * scale))
         height = max(
-            2.0 * padding + len(control_keys) * frame_height + max(len(control_keys) - 1, 0) * spacing_y,
+            2.0 * padding + len(control_keys) * (label_height + frame_height + 2.0 * spacing_y),
             _VIEWPORT_OVERLAY_MIN_HEIGHT * scale,
         )
         max_height = view_y0 + view_height - overlay_origin.y - _VIEWPORT_OVERLAY_MARGIN * scale
