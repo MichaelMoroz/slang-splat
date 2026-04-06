@@ -27,6 +27,7 @@ def _dummy_renderer() -> SimpleNamespace:
         debug_grad_norm_threshold=2e-4,
         debug_clone_count_range=(0.0, 16.0),
         debug_contribution_range=(0.001, 1.0),
+        debug_adam_momentum_range=(0.0, 0.1),
     )
 
 
@@ -98,6 +99,8 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["debug_clone_count_max"] == 16.0
     assert viewer_ui._values["debug_contribution_min"] == 0.001
     assert viewer_ui._values["debug_contribution_max"] == 1.0
+    assert viewer_ui._values["debug_adam_momentum_min"] == 0.0
+    assert viewer_ui._values["debug_adam_momentum_max"] == 0.1
     assert viewer_ui._values["debug_depth_local_mismatch_min"] == 0.0
     assert viewer_ui._values["debug_depth_local_mismatch_max"] == 0.5
     assert viewer_ui._values["debug_depth_local_mismatch_smooth_radius"] == 2.0
@@ -399,12 +402,15 @@ def test_schedule_step_slider_max_tracks_schedule_steps() -> None:
 def test_debug_mode_labels_include_contribution_amount() -> None:
     assert "contribution_amount" in ui._DEBUG_MODE_VALUES
     assert "Contribution Amount" in ui._DEBUG_MODE_LABELS
+    assert "adam_momentum" in ui._DEBUG_MODE_VALUES
+    assert "Adam Momentum" in ui._DEBUG_MODE_LABELS
     assert "depth_local_mismatch" in ui._DEBUG_MODE_VALUES
     assert "Depth Local Mismatch" in ui._DEBUG_MODE_LABELS
 
 
 def test_contribution_amount_debug_mode_exposes_no_extra_range_controls() -> None:
     assert ui._renderer_debug_control_keys("contribution_amount") == ("debug_mode", "debug_contribution_min", "debug_contribution_max")
+    assert ui._renderer_debug_control_keys("adam_momentum") == ("debug_mode", "debug_adam_momentum_min", "debug_adam_momentum_max")
     assert ui._renderer_debug_control_keys("processed_count") == ("debug_mode",)
     assert ui._renderer_debug_control_keys("splat_density") == ("debug_mode", "debug_density_min", "debug_density_max")
     assert ui._renderer_debug_control_keys("depth_local_mismatch") == ("debug_mode", "debug_depth_local_mismatch_min", "debug_depth_local_mismatch_max", "debug_depth_local_mismatch_smooth_radius", "debug_depth_local_mismatch_reject_radius")

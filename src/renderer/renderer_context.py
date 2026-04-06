@@ -31,6 +31,7 @@ class GaussianRenderSettings:
     debug_clone_count_range: tuple[float, float] = (0.0, 16.0)
     debug_density_range: tuple[float, float] = (0.0, 20.0)
     debug_contribution_range: tuple[float, float] = (0.001, 1.0)
+    debug_adam_momentum_range: tuple[float, float] = (0.0, 0.1)
     debug_depth_mean_range: tuple[float, float] = (0.0, 10.0)
     debug_depth_std_range: tuple[float, float] = (0.0, 0.5)
     debug_depth_local_mismatch_range: tuple[float, float] = (0.0, 0.5)
@@ -76,6 +77,7 @@ class GaussianRenderSettings:
             "debug_clone_count_range": tuple(float(x) for x in self.debug_clone_count_range),
             "debug_density_range": tuple(float(x) for x in self.debug_density_range),
             "debug_contribution_range": tuple(float(x) for x in self.debug_contribution_range),
+            "debug_adam_momentum_range": tuple(float(x) for x in self.debug_adam_momentum_range),
             "debug_depth_mean_range": tuple(float(x) for x in self.debug_depth_mean_range),
             "debug_depth_std_range": tuple(float(x) for x in self.debug_depth_std_range),
             "debug_depth_local_mismatch_range": tuple(float(x) for x in self.debug_depth_local_mismatch_range),

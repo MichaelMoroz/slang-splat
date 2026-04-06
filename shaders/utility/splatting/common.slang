@@ -16,6 +16,7 @@ static const uint DEBUG_MODE_SPLAT_SCREEN_DENSITY = 8u;
 static const uint DEBUG_MODE_GRAD_NORM = 9u;
 static const uint DEBUG_MODE_SPLAT_DENSITY = 10u;
 static const uint DEBUG_MODE_CONTRIBUTION_AMOUNT = 11u;
+static const uint DEBUG_MODE_ADAM_MOMENTUM = 12u;
 static const float DEBUG_CONTRIBUTION_AMOUNT_FLOOR = 1e-6;
 static const float SH_C0 = 0.28209479177387814;
 static const float SH_C1 = 0.4886025119029199;
@@ -122,6 +123,7 @@ struct RasterParams
     float2 debugDensityRange;
     float2 debugContributionRange;
     float debugContributionPercentScale;
+    float2 debugAdamMomentumRange;
     float2 debugDepthMeanRange;
     float2 debugDepthStdRange;
     float2 debugDepthLocalMismatchRange;

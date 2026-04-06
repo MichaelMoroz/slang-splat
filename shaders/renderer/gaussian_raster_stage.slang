@@ -293,10 +293,28 @@ float3 raster_contribution_amount_color(uint contribution)
     return jet_colormap(debug_normalize_log_range(contributionPercent, max(g_Raster.debugContributionRange.x, DEBUG_CONTRIBUTION_AMOUNT_FLOOR), max(g_Raster.debugContributionRange.y, DEBUG_CONTRIBUTION_AMOUNT_FLOOR)));
 }
 
+uint raster_adam_moment_index(uint splatCount, uint paramId, uint splatId)
+{
+    return paramId * splatCount + splatId;
+}
+
+float raster_adam_momentum_length(uint splatId)
+{
+    uint splatCount = g_Prepass.splatCount;
+    float momentumSq = 0.0;
+    [unroll] for (uint paramId = 0u; paramId < TRAINABLE_PARAM_COUNT; paramId++)
+    {
+        float moment = g_DebugAdamMoments[raster_adam_moment_index(splatCount, paramId, splatId)].x;
+        if (isfinite(moment)) momentumSq += moment * moment;
+    }
+    return sqrt(max(momentumSq, 0.0));
+}
+
 float3 raster_forward_color(RasterGaussian gaussian, uint splatId, uint debugMode)
 {
     if (debugMode == DEBUG_MODE_CLONE_COUNT) return raster_clone_count_color(g_CloneCounts[splatId]);
     if (debugMode == DEBUG_MODE_CONTRIBUTION_AMOUNT) return raster_contribution_amount_color(g_SplatContribution[splatId]);
+    if (debugMode == DEBUG_MODE_ADAM_MOMENTUM) return jet_colormap(debug_normalize_range(raster_adam_momentum_length(splatId), g_Raster.debugAdamMomentumRange));
     if (debugMode != DEBUG_MODE_GRAD_NORM) return gaussian.colorAlpha.xyz;
     float gradNorm = g_DebugGradNorm[splatId];
     if (!isfinite(gradNorm)) gradNorm = 0.0;

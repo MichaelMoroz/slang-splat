@@ -115,6 +115,7 @@ class GaussianRenderer:
     DEBUG_MODE_SPLAT_SCREEN_DENSITY = "splat_screen_density"
     DEBUG_MODE_GRAD_NORM = "grad_norm"
     DEBUG_MODE_CONTRIBUTION_AMOUNT = "contribution_amount"
+    DEBUG_MODE_ADAM_MOMENTUM = "adam_momentum"
     DEBUG_MODES = (
         DEBUG_MODE_NORMAL,
         DEBUG_MODE_PROCESSED_COUNT,
@@ -128,6 +129,7 @@ class GaussianRenderer:
         DEBUG_MODE_GRAD_NORM,
         DEBUG_MODE_SPLAT_DENSITY,
         DEBUG_MODE_CONTRIBUTION_AMOUNT,
+        DEBUG_MODE_ADAM_MOMENTUM,
     )
     CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT = "float"
     CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED = "fixed"
@@ -141,6 +143,7 @@ class GaussianRenderer:
     _DEFAULT_DEBUG_CLONE_COUNT_RANGE = (0.0, 16.0)
     _DEFAULT_DEBUG_DENSITY_RANGE = (0.0, 20.0)
     _DEFAULT_DEBUG_CONTRIBUTION_RANGE = (0.001, 1.0)
+    _DEFAULT_DEBUG_ADAM_MOMENTUM_RANGE = (0.0, 0.1)
     _DEFAULT_DEBUG_DEPTH_MEAN_RANGE = (0.0, 10.0)
     _DEFAULT_DEBUG_DEPTH_STD_RANGE = (0.0, 0.5)
     _DEFAULT_DEBUG_DEPTH_LOCAL_MISMATCH_RANGE = (0.0, 0.5)
@@ -259,6 +262,7 @@ class GaussianRenderer:
                 "debugDensityRange": spy.float2(*self.debug_density_range),
                 "debugContributionRange": spy.float2(*self.debug_contribution_range),
                 "debugContributionPercentScale": float(self._debug_contribution_percent_scale),
+                "debugAdamMomentumRange": spy.float2(*self.debug_adam_momentum_range),
                 "debugDepthMeanRange": spy.float2(*self.debug_depth_mean_range),
                 "debugDepthStdRange": spy.float2(*self.debug_depth_std_range),
                 "debugDepthLocalMismatchRange": spy.float2(*self.debug_depth_local_mismatch_range),
@@ -306,6 +310,10 @@ class GaussianRenderer:
 
     def _debug_splat_contribution_var(self) -> dict[str, object]:
         return {"g_SplatContribution": self._debug_splat_contribution_buffer if self._debug_splat_contribution_buffer is not None else self._work_buffers["training_splat_contribution"]}
+
+    def _debug_adam_moments_var(self) -> dict[str, object]:
+        if self._debug_adam_moments_buffer is None: raise RuntimeError("Adam momentum debug mode requires an Adam moments buffer.")
+        return {"g_DebugAdamMoments": self._debug_adam_moments_buffer}
 
     @classmethod
     def _validate_debug_mode(cls, mode: str) -> str:
@@ -463,6 +471,7 @@ class GaussianRenderer:
         debug_clone_count_range: tuple[float, float] = _DEFAULT_DEBUG_CLONE_COUNT_RANGE,
         debug_density_range: tuple[float, float] = _DEFAULT_DEBUG_DENSITY_RANGE,
         debug_contribution_range: tuple[float, float] = _DEFAULT_DEBUG_CONTRIBUTION_RANGE,
+        debug_adam_momentum_range: tuple[float, float] = _DEFAULT_DEBUG_ADAM_MOMENTUM_RANGE,
         debug_depth_mean_range: tuple[float, float] = _DEFAULT_DEBUG_DEPTH_MEAN_RANGE,
         debug_depth_std_range: tuple[float, float] = _DEFAULT_DEBUG_DEPTH_STD_RANGE,
         debug_depth_local_mismatch_range: tuple[float, float] = _DEFAULT_DEBUG_DEPTH_LOCAL_MISMATCH_RANGE,
@@ -500,6 +509,7 @@ class GaussianRenderer:
         self.debug_clone_count_range = tuple(float(x) for x in debug_clone_count_range)
         self.debug_density_range = tuple(float(x) for x in debug_density_range)
         self.debug_contribution_range = tuple(float(x) for x in debug_contribution_range)
+        self.debug_adam_momentum_range = tuple(float(x) for x in debug_adam_momentum_range)
         self.debug_depth_mean_range = tuple(float(x) for x in debug_depth_mean_range)
         self.debug_depth_std_range = tuple(float(x) for x in debug_depth_std_range)
         self.debug_depth_local_mismatch_range = tuple(float(x) for x in debug_depth_local_mismatch_range)
@@ -520,6 +530,7 @@ class GaussianRenderer:
         self._debug_grad_norm_buffer: spy.Buffer | None = None
         self._debug_clone_count_buffer: spy.Buffer | None = None
         self._debug_splat_contribution_buffer: spy.Buffer | None = None
+        self._debug_adam_moments_buffer: spy.Buffer | None = None
         self._debug_contribution_percent_scale = 100.0 / self._SPLAT_CONTRIBUTION_FIXED_SCALE
         self._output_texture: spy.Texture | None = None
         self._training_depth_stats_texture: spy.Texture | None = None
@@ -1062,6 +1073,8 @@ class GaussianRenderer:
             vars.update(self._debug_clone_count_var())
         if self.debug_mode == self.DEBUG_MODE_CONTRIBUTION_AMOUNT:
             vars.update(self._debug_splat_contribution_var())
+        if self.debug_mode == self.DEBUG_MODE_ADAM_MOMENTUM:
+            vars.update(self._debug_adam_moments_var())
         if self.debug_mode == self.DEBUG_MODE_GRAD_NORM:
             vars.update(self._debug_grad_norm_var())
         self._dispatch(shader, encoder, self._raster_thread_count(), vars, "Rasterize", 24)
@@ -1457,6 +1470,9 @@ class GaussianRenderer:
 
     def set_debug_splat_contribution_buffer(self, buffer: spy.Buffer | None) -> None:
         self._debug_splat_contribution_buffer = buffer
+
+    def set_debug_adam_moments_buffer(self, buffer: spy.Buffer | None) -> None:
+        self._debug_adam_moments_buffer = buffer
 
     def set_debug_contribution_observed_pixel_count(self, observed_pixel_count: float) -> None:
         pixels = max(float(observed_pixel_count), 1.0)

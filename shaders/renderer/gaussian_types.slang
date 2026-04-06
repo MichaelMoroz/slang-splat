@@ -56,6 +56,7 @@ uniform StructuredBuffer<uint> g_SortedKeys;
 uniform StructuredBuffer<uint> g_SortedValues;
 uniform StructuredBuffer<uint> g_PrepassParams;
 uniform StructuredBuffer<float> g_DebugGradNorm;
+uniform StructuredBuffer<float2> g_DebugAdamMoments;
 
 uniform RWTexture2D<float4> g_Output;
 uniform StructuredBuffer<float4> g_OutputGrad;
