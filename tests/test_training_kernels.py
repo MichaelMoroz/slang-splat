@@ -2026,5 +2026,5 @@ def test_create_dataset_textures_threads_cpu_image_loading(monkeypatch) -> None:
 
     trainer._create_dataset_textures()
 
-    assert calls == [("workers", 8, "trainer-target")]
+    assert calls == [("workers", 16, "trainer-target")]
     assert trainer._frame_targets_native == ["tex:rgba:a.png", "tex:rgba:b.png"]

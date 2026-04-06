@@ -112,7 +112,7 @@ def test_colmap_loader_and_frame_scaling(tmp_path: Path):
     assert np.all(np.isfinite(scene.positions))
 
 
-def test_build_training_frames_uses_eight_loader_threads(tmp_path: Path, monkeypatch) -> None:
+def test_build_training_frames_uses_sixteen_loader_threads(tmp_path: Path, monkeypatch) -> None:
     root = _build_tiny_colmap_tree(tmp_path, model_id=1)
     Image.fromarray(np.full((60, 120, 3), 80, dtype=np.uint8), mode="RGB").save(root / "images_4" / "frame_b.png")
     sparse = root / "sparse" / "0"
@@ -146,7 +146,7 @@ def test_build_training_frames_uses_eight_loader_threads(tmp_path: Path, monkeyp
 
     frames = colmap_ops.build_training_frames_from_root(recon, root / "images_4")
 
-    assert calls == [8]
+    assert calls == [16]
     assert [frame.image_id for frame in frames] == [3, 5]
     assert [frame.width for frame in frames] == [200, 120]
     assert [frame.height for frame in frames] == [100, 60]

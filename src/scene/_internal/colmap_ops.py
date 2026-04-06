@@ -25,7 +25,7 @@ INIT_OPACITY_MIN = 0.10
 INIT_OPACITY_MAX = 0.35
 _MIN_SCALE = 1e-4
 _MAX_SCALE = 1e4
-TRAINING_FRAME_LOAD_THREADS = 8
+TRAINING_FRAME_LOAD_THREADS = 16
 
 
 def _camera_to_world_pose(q_wxyz: np.ndarray, t_xyz: np.ndarray) -> np.ndarray:
