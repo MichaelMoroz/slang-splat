@@ -996,3 +996,63 @@ def test_build_initial_training_scene_uses_cached_diffused_points(monkeypatch) -
 
     assert scene is built_scene
     assert scale_reg_reference == 0.25
+
+
+def test_apply_live_params_defers_subsample_runtime_change_until_resize(monkeypatch) -> None:
+    update_calls: list[tuple[object, object, object]] = []
+
+    def _params(train_subsample_factor: int) -> SimpleNamespace:
+        return SimpleNamespace(
+            adam=SimpleNamespace(__dataclass_fields__={"lr": None}, lr=1e-3),
+            stability=SimpleNamespace(__dataclass_fields__={"eps": None}, eps=1e-8),
+            training=SimpleNamespace(
+                __dataclass_fields__={
+                    "train_downscale_mode": None,
+                    "train_auto_start_downscale": None,
+                    "train_downscale_base_iters": None,
+                    "train_downscale_iter_step": None,
+                    "train_downscale_max_iters": None,
+                    "train_downscale_factor": None,
+                    "train_subsample_factor": None,
+                    "depth_ratio_weight": None,
+                },
+                train_downscale_mode=1,
+                train_auto_start_downscale=1,
+                train_downscale_base_iters=200,
+                train_downscale_iter_step=50,
+                train_downscale_max_iters=30_000,
+                train_downscale_factor=1,
+                train_subsample_factor=train_subsample_factor,
+                depth_ratio_weight=0.1,
+            ),
+        )
+
+    params_before = _params(1)
+    params_after = _params(2)
+    viewer = SimpleNamespace(
+        render_background=lambda: (0.0, 0.0, 0.0),
+        renderer_params=lambda allow_debug_overlays: SimpleNamespace(__dataclass_fields__={"debug": None}, debug=bool(allow_debug_overlays)),
+        training_params=lambda: SimpleNamespace(training=SimpleNamespace(use_sh=False)),
+        s=SimpleNamespace(
+            background=None,
+            renderer=None,
+            training_renderer=None,
+            debug_renderer=None,
+            trainer=SimpleNamespace(compute_debug_grad_norm=False, update_hyperparams=lambda adam, stability, training: update_calls.append((adam, stability, training))),
+            applied_renderer_params_main=None,
+            applied_renderer_params_training=None,
+            applied_renderer_params_debug=None,
+            applied_training_signature=session._training_live_params_signature(params_before),
+            applied_training_runtime_signature=session._training_runtime_signature(params_before),
+            pending_training_runtime_resize=False,
+        ),
+    )
+
+    monkeypatch.setattr(session, "resolve_effective_training_setup", lambda viewer_obj: (None, params_after, None, None))
+
+    session.apply_live_params(viewer)
+
+    assert update_calls == []
+    assert viewer.s.applied_training_signature == session._training_live_params_signature(params_before)
+    assert viewer.s.applied_training_runtime_signature == session._training_runtime_signature(params_before)
+    assert viewer.s.pending_training_runtime_resize is True

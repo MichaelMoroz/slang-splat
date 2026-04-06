@@ -419,13 +419,14 @@ def render_frame(viewer: object, render_context: spy.AppWindow.RenderContext) ->
     render_width, render_height = _viewport_target_size(viewer, iw, ih)
     try:
         viewer.update_camera(dt)
+        runtime_reconfigured = False
         if bool(getattr(viewer.s, "pending_training_reinitialize", False)):
             viewer.s.pending_training_reinitialize = False
             session.initialize_training_scene(viewer)
         session.apply_live_params(viewer)
         session.advance_colmap_import(viewer)
         if bool(getattr(viewer.s, "pending_training_runtime_resize", False)):
-            session.ensure_training_runtime_resolution(viewer)
+            runtime_reconfigured = bool(session.ensure_training_runtime_resolution(viewer))
         if viewer.s.renderer is None:
             session.recreate_renderer(viewer, render_width, render_height)
         elif (viewer.s.renderer.width, viewer.s.renderer.height) != (render_width, render_height):
@@ -436,7 +437,11 @@ def render_frame(viewer: object, render_context: spy.AppWindow.RenderContext) ->
             viewer.s.last_render_exception = ""
             update_ui_text(viewer, dt)
             return
-        _run_training_batch(viewer)
+        if runtime_reconfigured:
+            viewer.s.training_runtime_factor_changed = False
+            viewer.s.last_training_batch_steps = 0
+        else:
+            _run_training_batch(viewer)
         if bool(getattr(viewer.s, "training_runtime_factor_changed", False)):
             session.ensure_training_runtime_resolution(viewer)
         viewer.s.training_runtime_factor_changed = False

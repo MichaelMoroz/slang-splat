@@ -426,6 +426,29 @@ def test_render_frame_consumes_pending_reinitialize_before_live_params(monkeypat
     assert calls == ["init", "apply", "import", "main", "ui"]
 
 
+def test_render_frame_skips_training_batch_when_runtime_resize_is_applied(monkeypatch):
+    viewer = _viewer(loss_debug=False)
+    render_context = SimpleNamespace(surface_texture=SimpleNamespace(width=640, height=360), command_encoder=_DummyEncoder())
+    calls: list[str] = []
+
+    def _apply_live_params(viewer_obj) -> None:
+        viewer_obj.s.pending_training_runtime_resize = True
+        calls.append("apply")
+
+    monkeypatch.setattr(presenter.session, "apply_live_params", _apply_live_params)
+    monkeypatch.setattr(presenter.session, "advance_colmap_import", lambda viewer_obj: calls.append("import"))
+    monkeypatch.setattr(presenter.session, "ensure_training_runtime_resolution", lambda viewer_obj: calls.append("train_resize") or True)
+    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, encoder: calls.append("main") or "main_tex")
+    monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
+
+    presenter.render_frame(viewer, render_context)
+
+    assert viewer.s.trainer.step_calls == 0
+    assert viewer.s.trainer.step_batch_calls == []
+    assert viewer.s.last_training_batch_steps == 0
+    assert calls == ["apply", "import", "train_resize", "main", "ui"]
+
+
 def test_render_frame_resizes_main_renderer_from_viewport_size(monkeypatch):
     viewer = _viewer(loss_debug=False)
     viewer.toolkit.viewport_size = lambda: (480, 270)

@@ -40,6 +40,15 @@ _COLMAP_IMAGE_DOWNSCALE_SCALE = "scale"
 _COLMAP_DB_SAMPLE_LIMIT = 64
 _COLMAP_DB_SEARCH_PATTERNS = ("database.db", "*.db", "*.sqlite", "*.sqlite3")
 _COLMAP_IMPORT_IMAGES_PER_TICK = 1
+_TRAINING_RUNTIME_PARAM_NAMES = (
+    "train_downscale_mode",
+    "train_auto_start_downscale",
+    "train_downscale_base_iters",
+    "train_downscale_iter_step",
+    "train_downscale_max_iters",
+    "train_downscale_factor",
+    "train_subsample_factor",
+)
 
 
 def _load_aligned_colmap_reconstruction(colmap_root: Path):
@@ -463,6 +472,7 @@ def _reset_training_runtime(viewer: object) -> None:
     viewer.s.applied_renderer_params_training = None
     viewer.s.applied_renderer_params_debug = None
     viewer.s.applied_training_signature = None
+    viewer.s.applied_training_runtime_signature = None
     viewer.s.applied_training_runtime_factor = None
     viewer.s.cached_training_setup_signature = None
     viewer.s.cached_training_setup = None
@@ -595,14 +605,36 @@ def _create_renderer(viewer: object, width: int, height: int, allow_debug_overla
 
 
 def _renderer_params_signature(params: object) -> tuple[object, ...]:
-    return tuple(getattr(params, name) for name in params.__dataclass_fields__)
+    return tuple(getattr(params, name) for name in _field_names(params))
+
+
+def _field_names(value: object) -> tuple[str, ...]:
+    fields = getattr(value, "__dataclass_fields__", None)
+    if fields is not None:
+        return tuple(fields)
+    return tuple(vars(value))
 
 
 def _training_params_signature(params: object) -> tuple[object, ...]:
-    adam = tuple(getattr(params.adam, name) for name in params.adam.__dataclass_fields__)
-    stability = tuple(getattr(params.stability, name) for name in params.stability.__dataclass_fields__)
-    training = tuple(getattr(params.training, name) for name in params.training.__dataclass_fields__)
+    adam = tuple(getattr(params.adam, name) for name in _field_names(params.adam))
+    stability = tuple(getattr(params.stability, name) for name in _field_names(params.stability))
+    training = tuple(getattr(params.training, name) for name in _field_names(params.training))
     return adam + stability + training
+
+
+def _training_live_params_signature(params: object) -> tuple[object, ...]:
+    adam = tuple(getattr(params.adam, name) for name in _field_names(params.adam))
+    stability = tuple(getattr(params.stability, name) for name in _field_names(params.stability))
+    training = tuple(
+        getattr(params.training, name)
+        for name in _field_names(params.training)
+        if name not in _TRAINING_RUNTIME_PARAM_NAMES
+    )
+    return adam + stability + training
+
+
+def _training_runtime_signature(params: object) -> tuple[object, ...]:
+    return tuple(getattr(params.training, name, None) for name in _TRAINING_RUNTIME_PARAM_NAMES)
 
 
 def recreate_renderer(viewer: object, width: int, height: int) -> None:
@@ -610,21 +642,28 @@ def recreate_renderer(viewer: object, width: int, height: int) -> None:
     _reset_loss_debug(viewer)
 
 
-def ensure_training_runtime_resolution(viewer: object) -> None:
+def ensure_training_runtime_resolution(viewer: object) -> bool:
     if viewer.s.trainer is None or viewer.s.training_renderer is None or not viewer.s.training_frames:
-        return
+        return False
+    if bool(getattr(viewer.s, "pending_training_runtime_resize", False)):
+        _, params, _, _ = resolve_effective_training_setup(viewer)
+        runtime_signature = _training_runtime_signature(params)
+        if getattr(viewer.s, "applied_training_runtime_signature", None) != runtime_signature:
+            viewer.s.trainer.update_hyperparams(params.adam, params.stability, params.training)
+            viewer.s.applied_training_signature = _training_live_params_signature(params)
+            viewer.s.applied_training_runtime_signature = runtime_signature
     current_factor = int(viewer.s.trainer.effective_train_render_factor()) if hasattr(viewer.s.trainer, "effective_train_render_factor") else int(viewer.s.trainer.effective_train_downscale_factor())
     current_size = (int(viewer.s.training_renderer.width), int(viewer.s.training_renderer.height))
     if viewer.s.applied_training_runtime_factor == current_factor:
         desired_width, desired_height = viewer.s.trainer.training_resolution(0)
         if current_size == (int(desired_width), int(desired_height)):
-            return
+            return False
     desired_width, desired_height = viewer.s.trainer.training_resolution(0)
     desired_size = (int(desired_width), int(desired_height))
     if current_size == desired_size:
         viewer.s.applied_training_runtime_factor = current_factor
         viewer.s.pending_training_runtime_resize = False
-        return
+        return True
     previous_renderer = viewer.s.training_renderer
     renderer = _create_renderer(viewer, desired_size[0], desired_size[1], allow_debug_overlays=False)
     enc = viewer.device.create_command_encoder()
@@ -638,6 +677,7 @@ def ensure_training_runtime_resolution(viewer: object) -> None:
     viewer.s.pending_training_runtime_resize = False
     _invalidate(viewer)
     _reset_loss_debug(viewer)
+    return True
 
 
 def _resolve_training_setup_signature(viewer: object, init: object, params: object, images_subdir: str | None) -> tuple[object, ...]:
@@ -732,10 +772,14 @@ def apply_live_params(viewer: object, force_init_defaults: bool = False) -> None
     if viewer.s.trainer is not None:
         viewer.s.trainer.compute_debug_grad_norm = bool(viewer.s.renderer is not None and viewer.s.renderer.debug_show_grad_norm)
         _, params, _, _ = resolve_effective_training_setup(viewer)
-        signature = _training_params_signature(params)
+        signature = _training_live_params_signature(params)
+        runtime_signature = _training_runtime_signature(params)
         if viewer.s.applied_training_signature != signature:
             viewer.s.trainer.update_hyperparams(params.adam, params.stability, params.training)
             viewer.s.applied_training_signature = signature
+            viewer.s.applied_training_runtime_signature = runtime_signature
+            viewer.s.pending_training_runtime_resize = True
+        elif getattr(viewer.s, "applied_training_runtime_signature", None) != runtime_signature:
             viewer.s.pending_training_runtime_resize = True
 
 
@@ -1062,7 +1106,8 @@ def initialize_training_scene(viewer: object, frame_targets_native: list[spy.Tex
     viewer.s.training_elapsed_s = 0.0
     viewer.s.training_resume_time = None
     viewer.s.applied_renderer_params_training = _renderer_params_signature(viewer.renderer_params(False))
-    viewer.s.applied_training_signature = _training_params_signature(params)
+    viewer.s.applied_training_signature = _training_live_params_signature(params)
+    viewer.s.applied_training_runtime_signature = _training_runtime_signature(params)
     viewer.s.applied_training_runtime_factor = int(viewer.s.trainer.effective_train_render_factor(0)) if hasattr(viewer.s.trainer, "effective_train_render_factor") else int(viewer.s.trainer.effective_train_downscale_factor(0))
     viewer.s.pending_training_runtime_resize = False
     _invalidate(viewer)
