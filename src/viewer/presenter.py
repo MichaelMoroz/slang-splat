@@ -8,7 +8,7 @@ import numpy as np
 import slangpy as spy
 
 from ..common import clamp_index, debug_region, require_not_none
-from ..training import resolve_base_learning_rate, resolve_depth_ratio_weight, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_sh_lr_mul, resolve_use_sh
+from ..training import resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_depth_ratio_weight, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_sh_lr_mul, resolve_use_sh
 from . import session
 
 _DEBUG_HUGE_VALUE = 1e8
@@ -495,9 +495,16 @@ def _preview_train_downscale_factor(viewer: object) -> int:
 
 def _preview_train_subsample_factor(viewer: object) -> int:
     try:
-        return max(int(viewer.c("train_subsample_factor").value) + 1, 1)
+        mode = int(viewer.c("train_subsample_factor").value)
     except Exception:
         return 1
+    if mode != 0:
+        return max(min(mode, 4), 1)
+    if not getattr(viewer.s, "training_frames", None):
+        return 1
+    native_width = max(int(viewer.s.training_frames[0].width), 1)
+    native_height = max(int(viewer.s.training_frames[0].height), 1)
+    return resolve_auto_train_subsample_factor(native_width, native_height, _preview_train_downscale_factor(viewer))
 
 
 def _preview_train_render_factor(viewer: object) -> int:
@@ -524,7 +531,8 @@ def _training_downscale_text(viewer: object) -> str:
         current = int(viewer.s.trainer.effective_train_downscale_factor())
         subsample = int(viewer.s.trainer.effective_train_subsample_factor()) if hasattr(viewer.s.trainer, "effective_train_subsample_factor") else max(int(getattr(training, "train_subsample_factor", 1)), 1)
         combined = int(viewer.s.trainer.effective_train_render_factor()) if hasattr(viewer.s.trainer, "effective_train_render_factor") else current
-        subsample_text = "Off" if subsample <= 1 else f"1/{subsample}"
+        auto = int(getattr(training, "train_subsample_factor", 1)) == 0
+        subsample_text = f"Auto (1/{subsample})" if auto and subsample > 1 else "Auto (Off)" if auto else "Off" if subsample <= 1 else f"1/{subsample}"
         if int(training.train_downscale_mode) == _TRAIN_DOWNSCALE_MODE_AUTO:
             return (
                 f"Downscale: Auto | start={int(training.train_auto_start_downscale)}x | "
@@ -534,7 +542,8 @@ def _training_downscale_text(viewer: object) -> str:
     mode = int(viewer.c("train_downscale_mode").value)
     subsample = _preview_train_subsample_factor(viewer)
     combined = _preview_train_render_factor(viewer)
-    subsample_text = "Off" if subsample <= 1 else f"1/{subsample}"
+    auto = int(viewer.c("train_subsample_factor").value) == 0
+    subsample_text = f"Auto (1/{subsample})" if auto and subsample > 1 else "Auto (Off)" if auto else "Off" if subsample <= 1 else f"1/{subsample}"
     if mode == _TRAIN_DOWNSCALE_MODE_AUTO:
         return (
             f"Downscale: Auto | start={max(int(viewer.c('train_auto_start_downscale').value), 1)}x | "

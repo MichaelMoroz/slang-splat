@@ -45,7 +45,7 @@ _COLMAP_IMAGE_DOWNSCALE_LABELS = ("Original", "Max Size", "Scale Factor")
 _TRAIN_BACKGROUND_MODE_LABELS = ("Custom", "Random")
 _VIEWER_BACKGROUND_MODE_LABELS = ("Train Background", "Custom")
 _TRAIN_DOWNSCALE_MODE_LABELS = ("Auto",) + tuple(f"{i}x" for i in range(1, 17))
-_TRAIN_SUBSAMPLE_LABELS = ("Off", "1/2", "1/3", "1/4")
+_TRAIN_SUBSAMPLE_LABELS = ("Auto", "Off", "1/2", "1/3", "1/4")
 _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT = 2e-4
 _DEBUG_ADAM_MOMENTUM_THRESHOLD_DEFAULT = 1e-2
 _DEBUG_CONTRIBUTION_AMOUNT_FLOOR = 1e-6
@@ -2275,7 +2275,7 @@ def build_ui(renderer) -> ViewerUI:
     values["colmap_images_root"] = ""
     values["colmap_init_mode"] = 0
     values["colmap_custom_ply_path"] = ""
-    values["colmap_image_downscale_mode"] = 1
+    values["colmap_image_downscale_mode"] = 0
     values["colmap_image_max_size"] = 2048
     values["colmap_image_scale"] = 1.0
     values["colmap_nn_radius_scale_coef"] = 0.5

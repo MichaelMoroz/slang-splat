@@ -18,7 +18,9 @@ from .schedule import DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY, resolve_base_le
 
 TRAIN_DOWNSCALE_MODE_AUTO = 0
 TRAIN_DOWNSCALE_MAX_FACTOR = 16
+TRAIN_SUBSAMPLE_MODE_AUTO = 0
 TRAIN_SUBSAMPLE_MAX_FACTOR = 4
+TRAIN_SUBSAMPLE_TARGET_MAX_SIDE = 1000
 TRAIN_BACKGROUND_MODE_CUSTOM = 0
 TRAIN_BACKGROUND_MODE_RANDOM = 1
 SPLAT_CONTRIBUTION_FIXED_SCALE = 256.0
@@ -95,12 +97,22 @@ def resolve_effective_train_downscale_factor(training_hparams: "TrainingHyperPar
     return 1
 
 
-def resolve_train_subsample_factor(training_hparams: "TrainingHyperParams") -> int:
-    return min(max(int(training_hparams.train_subsample_factor), 1), TRAIN_SUBSAMPLE_MAX_FACTOR)
+def resolve_auto_train_subsample_factor(width: int, height: int, downscale_factor: int = 1) -> int:
+    native_max_side = max(int(width), int(height), 1)
+    base_factor = max(int(downscale_factor), 1)
+    return min(max((native_max_side + base_factor * TRAIN_SUBSAMPLE_TARGET_MAX_SIDE - 1) // (base_factor * TRAIN_SUBSAMPLE_TARGET_MAX_SIDE), 1), TRAIN_SUBSAMPLE_MAX_FACTOR)
 
 
-def resolve_effective_train_render_factor(training_hparams: "TrainingHyperParams", step: int) -> int:
-    return max(resolve_effective_train_downscale_factor(training_hparams, step) * resolve_train_subsample_factor(training_hparams), 1)
+def resolve_train_subsample_factor(training_hparams: "TrainingHyperParams", width: int | None = None, height: int | None = None, step: int = 0) -> int:
+    mode = int(training_hparams.train_subsample_factor)
+    if mode != TRAIN_SUBSAMPLE_MODE_AUTO:
+        return min(max(mode, 1), TRAIN_SUBSAMPLE_MAX_FACTOR)
+    downscale_factor = resolve_effective_train_downscale_factor(training_hparams, step)
+    return 1 if width is None or height is None else resolve_auto_train_subsample_factor(width, height, downscale_factor)
+
+
+def resolve_effective_train_render_factor(training_hparams: "TrainingHyperParams", step: int, width: int | None = None, height: int | None = None) -> int:
+    return max(resolve_effective_train_downscale_factor(training_hparams, step) * resolve_train_subsample_factor(training_hparams, width, height, step), 1)
 
 
 def resolve_depth_ratio_grad_band(grad_min: float, grad_max: float) -> tuple[float, float]:
@@ -179,7 +191,7 @@ class TrainingHyperParams:
     use_sh_stage1: bool = True; use_sh_stage2: bool = True; use_sh_stage3: bool = True
     max_gaussians: int = 1_000_000; train_downscale_mode: int = 1; train_auto_start_downscale: int = 16
     train_downscale_base_iters: int = 200; train_downscale_iter_step: int = 50; train_downscale_max_iters: int = 30_000
-    train_downscale_factor: int = 1; train_subsample_factor: int = 1
+    train_downscale_factor: int = 1; train_subsample_factor: int = 0
 
     def __post_init__(self) -> None:
         self.lr_schedule_enabled = bool(self.lr_schedule_enabled)
@@ -237,7 +249,7 @@ class TrainingHyperParams:
         self.train_downscale_base_iters = max(int(self.train_downscale_base_iters), 1)
         self.train_downscale_iter_step = max(int(self.train_downscale_iter_step), 0)
         self.train_downscale_max_iters = max(int(self.train_downscale_max_iters), 1)
-        self.train_subsample_factor = min(max(int(self.train_subsample_factor), 1), TRAIN_SUBSAMPLE_MAX_FACTOR)
+        self.train_subsample_factor = TRAIN_SUBSAMPLE_MODE_AUTO if int(self.train_subsample_factor) == TRAIN_SUBSAMPLE_MODE_AUTO else min(max(int(self.train_subsample_factor), 1), TRAIN_SUBSAMPLE_MAX_FACTOR)
         self.train_downscale_factor = resolve_effective_train_downscale_factor(self, 0)
 
 
@@ -293,16 +305,19 @@ class GaussianTrainer:
         resolved_step = self.state.step if step is None else int(step)
         return resolve_effective_train_downscale_factor(self.training, resolved_step)
 
-    def effective_train_subsample_factor(self) -> int:
-        return resolve_train_subsample_factor(self.training)
-
-    def effective_train_render_factor(self, step: int | None = None) -> int:
+    def effective_train_subsample_factor(self, frame_index: int = 0, step: int | None = None) -> int:
         resolved_step = self.state.step if step is None else int(step)
-        return resolve_effective_train_render_factor(self.training, resolved_step)
+        width, height = self.frame_size(frame_index)
+        return resolve_train_subsample_factor(self.training, width, height, resolved_step)
+
+    def effective_train_render_factor(self, step: int | None = None, frame_index: int = 0) -> int:
+        resolved_step = self.state.step if step is None else int(step)
+        width, height = self.frame_size(frame_index)
+        return resolve_effective_train_render_factor(self.training, resolved_step, width, height)
 
     def training_resolution(self, frame_index: int = 0, step: int | None = None) -> tuple[int, int]:
         width, height = self.frame_size(frame_index)
-        return resolve_training_resolution(width, height, self.effective_train_render_factor(step))
+        return resolve_training_resolution(width, height, self.effective_train_render_factor(step, frame_index))
 
     def current_base_lr(self, step: int | None = None) -> float:
         resolved_step = self.state.step if step is None else int(step)
@@ -378,11 +393,11 @@ class GaussianTrainer:
     def _training_sample_vars(self, frame_index: int, step: int | None = None) -> dict[str, object]:
         resolved_step = self.state.step if step is None else int(step)
         frame = self._frame(frame_index)
-        subsample_factor = self.effective_train_subsample_factor()
+        subsample_factor = self.effective_train_subsample_factor(frame_index, resolved_step)
         return {
             "g_TrainingSubsample": {
                 "enabled": np.uint32(1 if subsample_factor > 1 else 0),
-                "factor": np.uint32(self.effective_train_render_factor(resolved_step)),
+                "factor": np.uint32(self.effective_train_render_factor(resolved_step, frame_index)),
                 "nativeWidth": np.uint32(max(int(frame.width), 1)),
                 "nativeHeight": np.uint32(max(int(frame.height), 1)),
                 "frameIndex": np.uint32(max(int(frame_index), 0)),
@@ -1153,7 +1168,7 @@ class GaussianTrainer:
             self._apply_renderer_training_hparams(training_step)
             self._maybe_sync_prepass_capacity(frame_camera, training_step)
             self.renderer.record_prepass_for_current_scene(enc, frame_camera)
-            target_texture = self.get_frame_target_texture(frame_index, native_resolution=self.effective_train_subsample_factor() > 1, encoder=enc)
+            target_texture = self.get_frame_target_texture(frame_index, native_resolution=self.effective_train_subsample_factor(frame_index) > 1, encoder=enc)
             self._dispatch_training_forward(enc, frame_camera, background, target_texture, training_step, frame_index, native_camera)
             self._dispatch_training_backward(enc, frame_camera, background, target_texture, training_step, frame_index, native_camera)
             self._dispatch_optimizer_step(enc, self.state.step + batch_index + 1, frame_camera)

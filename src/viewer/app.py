@@ -123,7 +123,7 @@ _DEBUG_MODE_VALUES = (
 
 def _training_param_value(name: str, value_for) -> object:
     value = value_for(_TRAINING_PARAM_KEYS[name])
-    return int(value) + 1 if name == "train_subsample_factor" else value
+    return int(value) if name == "train_subsample_factor" else value
 
 
 def _training_kwargs(value_for) -> dict[str, object]:

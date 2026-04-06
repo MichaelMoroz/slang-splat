@@ -89,7 +89,7 @@ def _ui_import_mode(viewer: object) -> str:
 
 
 def _ui_image_downscale_mode(viewer: object) -> str:
-    mode_idx = int(viewer.ui._values.get("colmap_image_downscale_mode", 1))
+    mode_idx = int(viewer.ui._values.get("colmap_image_downscale_mode", 0))
     if mode_idx == 1:
         return _COLMAP_IMAGE_DOWNSCALE_MAX_SIZE
     if mode_idx == 2:
@@ -1101,7 +1101,10 @@ def initialize_training_scene(viewer: object, frame_targets_native: list[spy.Tex
     if viewer.s.colmap_recon is None or not viewer.s.training_frames:
         return
     init, params, init_hparams, profile = resolve_effective_training_setup(viewer)
-    factor = resolve_effective_train_render_factor(params.training, 0)
+    try:
+        factor = resolve_effective_train_render_factor(params.training, 0, int(viewer.s.training_frames[0].width), int(viewer.s.training_frames[0].height))
+    except TypeError:
+        factor = resolve_effective_train_render_factor(params.training, 0)
     width, height = resolve_training_resolution(
         int(viewer.s.training_frames[0].width),
         int(viewer.s.training_frames[0].height),

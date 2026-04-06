@@ -107,7 +107,7 @@ def test_build_training_params_clamps_ranges():
     assert params.training.refinement_min_contribution_decay == 0.995
     assert params.training.refinement_opacity_mul == 1.0
     assert params.training.max_gaussians == 0
-    assert params.training.train_subsample_factor == 1
+    assert params.training.train_subsample_factor == 0
 
 
 def test_default_training_params_match_fixed_count_defaults():
@@ -156,7 +156,7 @@ def test_default_training_params_match_fixed_count_defaults():
     assert params.training.refinement_min_contribution_decay == 0.995
     assert params.training.refinement_opacity_mul == 1.0
     assert params.training.max_gaussians == 1_000_000
-    assert params.training.train_subsample_factor == 1
+    assert params.training.train_subsample_factor == 0
 
 
 def test_auto_profile_resolves_to_legacy_defaults():
