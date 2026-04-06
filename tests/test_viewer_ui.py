@@ -241,8 +241,9 @@ def test_histogram_window_docks_and_requests_refresh_on_open(monkeypatch) -> Non
 def test_viewport_view_menu_left_aligns_view_mode_button(monkeypatch) -> None:
     button_labels: list[str] = []
     cursor_positions: list[tuple[float, float]] = []
-    disabled_text: list[str] = []
+    mode_text: list[str] = []
     same_line_calls: list[tuple[float, float]] = []
+    popup_sizes: list[tuple[float, float, int]] = []
 
     monkeypatch.setattr(ui.imgui, "get_style", lambda: SimpleNamespace(frame_padding=ui.imgui.ImVec2(4.0, 3.0)))
     monkeypatch.setattr(ui.imgui, "calc_text_size", lambda text: ui.imgui.ImVec2(72.0 if text == "View Mode" else 84.0, 14.0))
@@ -251,7 +252,8 @@ def test_viewport_view_menu_left_aligns_view_mode_button(monkeypatch) -> None:
     monkeypatch.setattr(ui.imgui, "set_cursor_screen_pos", lambda pos: cursor_positions.append((float(pos.x), float(pos.y))))
     monkeypatch.setattr(ui.imgui, "small_button", lambda label: button_labels.append(label) or False)
     monkeypatch.setattr(ui.imgui, "same_line", lambda offset=0.0, spacing=-1.0: same_line_calls.append((float(offset), float(spacing))))
-    monkeypatch.setattr(ui.imgui, "text_disabled", lambda text: disabled_text.append(text))
+    monkeypatch.setattr(ui.imgui, "text_unformatted", lambda text: mode_text.append(text))
+    monkeypatch.setattr(ui.imgui, "set_next_window_size", lambda size, cond: popup_sizes.append((float(size.x), float(size.y), int(cond))))
     monkeypatch.setattr(ui.imgui, "begin_popup", lambda *_args: False)
     toolkit = SimpleNamespace(_viewport_content_rect=(50.0, 60.0, 400.0, 240.0), _interface_scale_factor=lambda _ui_obj: 1.5)
     viewer_ui = SimpleNamespace(_values={"debug_mode": ui._DEBUG_MODE_VALUES.index("depth_std")})
@@ -261,7 +263,8 @@ def test_viewport_view_menu_left_aligns_view_mode_button(monkeypatch) -> None:
     assert button_labels == ["View Mode"]
     assert cursor_positions == [(62.0, 72.0)]
     assert same_line_calls == [(0.0, 15.0)]
-    assert disabled_text == ["Depth Std"]
+    assert mode_text == ["Depth Std"]
+    assert popup_sizes == []
     assert np.isclose(origin.x, 62.0)
     assert origin.y > 72.0
 

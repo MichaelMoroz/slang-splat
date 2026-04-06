@@ -677,29 +677,31 @@ class ToolkitWindow:
         style.indent_spacing = 18.0
         style.scrollbar_size = 12.0
         _c = style.set_color_
+        _c(imgui.Col_.text, imgui.ImVec4(0.12, 0.16, 0.22, 1.00))
+        _c(imgui.Col_.text_disabled, imgui.ImVec4(0.28, 0.33, 0.41, 1.00))
         _c(imgui.Col_.window_bg, imgui.ImVec4(0.965, 0.970, 0.978, 1.00))
-        _c(imgui.Col_.child_bg, imgui.ImVec4(0.980, 0.984, 0.990, 0.96))
-        _c(imgui.Col_.popup_bg, imgui.ImVec4(1.000, 1.000, 1.000, 0.98))
-        _c(imgui.Col_.border, imgui.ImVec4(0.74, 0.78, 0.84, 0.70))
+        _c(imgui.Col_.child_bg, imgui.ImVec4(0.975, 0.980, 0.988, 0.98))
+        _c(imgui.Col_.popup_bg, imgui.ImVec4(0.995, 0.997, 1.000, 0.99))
+        _c(imgui.Col_.border, imgui.ImVec4(0.66, 0.71, 0.79, 0.82))
         _c(imgui.Col_.border_shadow, imgui.ImVec4(0.0, 0.0, 0.0, 0.0))
         _c(imgui.Col_.title_bg, imgui.ImVec4(0.84, 0.90, 0.96, 1.0))
         _c(imgui.Col_.title_bg_active, imgui.ImVec4(0.76, 0.85, 0.95, 1.0))
         _c(imgui.Col_.menu_bar_bg, imgui.ImVec4(0.93, 0.95, 0.98, 1.0))
-        _c(imgui.Col_.header, imgui.ImVec4(0.69, 0.82, 0.96, 0.55))
-        _c(imgui.Col_.header_hovered, imgui.ImVec4(0.55, 0.75, 0.95, 0.80))
+        _c(imgui.Col_.header, imgui.ImVec4(0.65, 0.79, 0.95, 0.62))
+        _c(imgui.Col_.header_hovered, imgui.ImVec4(0.50, 0.72, 0.94, 0.86))
         _c(imgui.Col_.header_active, imgui.ImVec4(0.43, 0.67, 0.92, 1.00))
-        _c(imgui.Col_.button, imgui.ImVec4(0.34, 0.54, 0.78, 0.88))
-        _c(imgui.Col_.button_hovered, imgui.ImVec4(0.28, 0.49, 0.74, 0.94))
+        _c(imgui.Col_.button, imgui.ImVec4(0.32, 0.53, 0.79, 0.92))
+        _c(imgui.Col_.button_hovered, imgui.ImVec4(0.25, 0.47, 0.74, 0.96))
         _c(imgui.Col_.button_active, imgui.ImVec4(0.22, 0.42, 0.68, 1.00))
         _c(imgui.Col_.tab, imgui.ImVec4(0.84, 0.90, 0.96, 1.00))
         _c(imgui.Col_.tab_hovered, imgui.ImVec4(0.67, 0.81, 0.95, 0.92))
         _c(imgui.Col_.tab_selected, imgui.ImVec4(0.52, 0.73, 0.93, 1.00))
-        _c(imgui.Col_.separator, imgui.ImVec4(0.70, 0.74, 0.80, 0.75))
+        _c(imgui.Col_.separator, imgui.ImVec4(0.66, 0.71, 0.79, 0.82))
         _c(imgui.Col_.separator_hovered, imgui.ImVec4(0.38, 0.60, 0.85, 0.85))
         _c(imgui.Col_.plot_lines, imgui.ImVec4(0.18, 0.48, 0.82, 1.00))
-        _c(imgui.Col_.frame_bg, imgui.ImVec4(1.00, 1.00, 1.00, 0.96))
-        _c(imgui.Col_.frame_bg_hovered, imgui.ImVec4(0.92, 0.95, 0.99, 1.00))
-        _c(imgui.Col_.frame_bg_active, imgui.ImVec4(0.85, 0.91, 0.98, 1.00))
+        _c(imgui.Col_.frame_bg, imgui.ImVec4(0.985, 0.989, 0.995, 1.00))
+        _c(imgui.Col_.frame_bg_hovered, imgui.ImVec4(0.93, 0.96, 0.99, 1.00))
+        _c(imgui.Col_.frame_bg_active, imgui.ImVec4(0.86, 0.92, 0.98, 1.00))
         _c(imgui.Col_.slider_grab, imgui.ImVec4(0.34, 0.58, 0.88, 0.82))
         _c(imgui.Col_.slider_grab_active, imgui.ImVec4(0.22, 0.48, 0.82, 1.00))
         _c(imgui.Col_.check_mark, imgui.ImVec4(0.18, 0.48, 0.82, 1.00))
@@ -710,6 +712,7 @@ class ToolkitWindow:
         _c(imgui.Col_.resize_grip, imgui.ImVec4(0.52, 0.70, 0.92, 0.28))
         _c(imgui.Col_.resize_grip_hovered, imgui.ImVec4(0.40, 0.61, 0.88, 0.72))
         _c(imgui.Col_.resize_grip_active, imgui.ImVec4(0.28, 0.51, 0.82, 0.95))
+        _c(imgui.Col_.text_selected_bg, imgui.ImVec4(0.56, 0.77, 0.96, 0.42))
 
     def _configure_default_font(self) -> None:
         io = imgui.get_io()
@@ -908,17 +911,21 @@ class ToolkitWindow:
         imgui.set_cursor_screen_pos(button_pos)
         opened = _imgui_opened(imgui.small_button(label))
         imgui.same_line(0.0, 10.0 * scale)
-        imgui.text_disabled(current_label)
+        imgui.text_unformatted(current_label)
         if opened:
             imgui.set_next_window_pos(imgui.ImVec2(button_pos.x, button_pos.y + button_height + _VIEWPORT_OVERLAY_MARGIN * scale), imgui.Cond_.appearing.value)
+            imgui.set_next_window_size(imgui.ImVec2(360.0 * scale, 0.0), imgui.Cond_.appearing.value)
             imgui.open_popup("viewport_view_popup")
         if _imgui_opened(imgui.begin_popup("viewport_view_popup")):
-            for idx, label in enumerate(_DEBUG_MODE_LABELS):
-                selected = idx == current
-                if _imgui_opened(imgui.selectable(label, selected)):
-                    ui._values["debug_mode"] = idx
-                if selected:
-                    imgui.set_item_default_focus()
+            if imgui.begin_table("##viewport_view_modes", 2, imgui.TableFlags_.sizing_stretch_same.value):
+                for idx, label in enumerate(_DEBUG_MODE_LABELS):
+                    selected = idx == current
+                    imgui.table_next_column()
+                    if _imgui_opened(imgui.selectable(label, selected)):
+                        ui._values["debug_mode"] = idx
+                    if selected:
+                        imgui.set_item_default_focus()
+                imgui.end_table()
             imgui.end_popup()
         imgui.pop_id()
         return imgui.ImVec2(button_pos.x, button_pos.y + button_height + _VIEWPORT_OVERLAY_MARGIN * scale)
@@ -944,8 +951,8 @@ class ToolkitWindow:
         if max_height <= 0.0:
             return
         height = min(height, max_height)
-        imgui.push_style_color(imgui.Col_.child_bg.value, imgui.ImVec4(0.98, 0.985, 0.992, 0.82))
-        imgui.push_style_color(imgui.Col_.border.value, imgui.ImVec4(0.67, 0.74, 0.82, 0.75))
+        imgui.push_style_color(imgui.Col_.child_bg.value, imgui.ImVec4(0.982, 0.987, 0.994, 0.94))
+        imgui.push_style_color(imgui.Col_.border.value, imgui.ImVec4(0.65, 0.72, 0.80, 0.92))
         imgui.push_style_var(imgui.StyleVar_.window_padding, imgui.ImVec2(padding, padding))
         imgui.set_cursor_screen_pos(overlay_origin)
         if _imgui_opened(imgui.begin_child("##viewport_debug_overlay", imgui.ImVec2(width, height), imgui.ChildFlags_.borders.value)):
@@ -985,7 +992,7 @@ class ToolkitWindow:
         draw_list.add_rect_filled(
             imgui.ImVec2(box_x, box_y),
             imgui.ImVec2(box_x + box_width, box_y + box_height),
-            _color_u32(0.985, 0.988, 0.994, 0.86),
+            _color_u32(0.985, 0.989, 0.995, 0.94),
             8.0 * scale,
         )
         draw_list.add_text(imgui.ImVec2(box_x + 0.5 * side_pad, box_y + 0.25 * top_pad), _color_u32(0.20, 0.26, 0.34, 0.95), self._debug_colorbar_title(mode))
