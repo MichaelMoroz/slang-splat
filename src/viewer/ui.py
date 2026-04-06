@@ -71,6 +71,11 @@ _HISTOGRAM_BIN_COUNT_DEFAULT = 64
 _HISTOGRAM_MIN_LOG10_DEFAULT = -8.0
 _HISTOGRAM_MAX_LOG10_DEFAULT = 2.0
 _HISTOGRAM_Y_LIMIT_DEFAULT = 1.0
+_HISTOGRAM_WINDOW_WIDTH = 1200.0
+_HISTOGRAM_WINDOW_HEIGHT = 860.0
+_HISTOGRAM_CONTROL_LABEL_WIDTH = 150.0
+_HISTOGRAM_PLOT_HEIGHT = 230.0
+_HISTOGRAM_PLOT_MIN_COLUMN_WIDTH = 460.0
 _HISTOGRAM_GROUPS = (
     ("roLocal", (0, 1, 2)),
     ("scale", (3, 4, 5)),
@@ -1408,7 +1413,7 @@ class ToolkitWindow:
             ui._values["_histograms_refresh_requested"] = True
         self._dock_tool_window(imgui.Cond_.appearing.value)
         imgui.set_next_window_pos(imgui.ImVec2(72.0, self._menu_bar_height + 56.0), imgui.Cond_.first_use_ever.value)
-        imgui.set_next_window_size(imgui.ImVec2(980.0, 720.0), imgui.Cond_.first_use_ever.value)
+        imgui.set_next_window_size(imgui.ImVec2(_HISTOGRAM_WINDOW_WIDTH, _HISTOGRAM_WINDOW_HEIGHT), imgui.Cond_.first_use_ever.value)
         opened, show = imgui.begin("Histograms", True)
         ui._values["show_histograms"] = bool(show)
         ui._values["_show_histograms_prev"] = bool(show)
@@ -1442,27 +1447,47 @@ class ToolkitWindow:
         imgui.same_line()
         if imgui.button("Update Log Range"):
             ui._values["_histogram_update_log_range"] = True
-        imgui.push_item_width(160.0)
-        changed, value = imgui.input_int("Bin Count", int(ui._values.get("hist_bin_count", _HISTOGRAM_BIN_COUNT_DEFAULT)), 8, 32)
-        if changed:
-            ui._values["hist_bin_count"] = max(int(value), 1)
-        imgui.pop_item_width()
-        imgui.push_item_width(160.0)
-        changed, value = imgui.input_float("Min Log10", float(ui._values.get("hist_min_log10", _HISTOGRAM_MIN_LOG10_DEFAULT)), 0.25, 1.0, "%.3f")
-        if changed:
-            ui._values["hist_min_log10"] = float(value)
-        imgui.pop_item_width()
-        imgui.push_item_width(160.0)
-        changed, value = imgui.input_float("Max Log10", float(ui._values.get("hist_max_log10", _HISTOGRAM_MAX_LOG10_DEFAULT)), 0.25, 1.0, "%.3f")
-        if changed:
-            ui._values["hist_max_log10"] = float(value)
-        imgui.pop_item_width()
-        imgui.push_item_width(160.0)
-        changed, value = imgui.input_float("Y Limit", float(ui._values.get("hist_y_limit", _HISTOGRAM_Y_LIMIT_DEFAULT)), 1.0, 10.0, "%.1f")
-        if changed:
-            ui._values["hist_y_limit"] = max(float(value), 1.0)
-        imgui.pop_item_width()
+        flags = imgui.TableFlags_.sizing_stretch_prop.value | imgui.TableFlags_.pad_outer_x.value
+        if imgui.begin_table("##hist_controls", 2, flags):
+            imgui.table_setup_column("Label", imgui.TableColumnFlags_.width_fixed.value, _HISTOGRAM_CONTROL_LABEL_WIDTH)
+            imgui.table_setup_column("Value", imgui.TableColumnFlags_.width_stretch.value)
+            self._draw_histogram_control_row_int(ui, "Bin Count", "##hist_bin_count", "hist_bin_count", _HISTOGRAM_BIN_COUNT_DEFAULT, 1)
+            self._draw_histogram_control_row_float(ui, "Min Log10", "##hist_min_log10", "hist_min_log10", _HISTOGRAM_MIN_LOG10_DEFAULT, "%.3f")
+            self._draw_histogram_control_row_float(ui, "Max Log10", "##hist_max_log10", "hist_max_log10", _HISTOGRAM_MAX_LOG10_DEFAULT, "%.3f")
+            self._draw_histogram_control_row_float(ui, "Y Limit", "##hist_y_limit", "hist_y_limit", _HISTOGRAM_Y_LIMIT_DEFAULT, "%.1f", min_value=1.0)
+            imgui.end_table()
         imgui.separator()
+
+    def _draw_histogram_control_row_int(self, ui: ViewerUI, label: str, input_id: str, value_key: str, default: int, min_value: int) -> None:
+        imgui.table_next_row()
+        imgui.table_next_column()
+        imgui.align_text_to_frame_padding()
+        imgui.text_unformatted(label)
+        imgui.table_next_column()
+        imgui.set_next_item_width(-1.0)
+        changed, value = imgui.input_int(input_id, int(ui._values.get(value_key, default)), 8, 32)
+        if changed:
+            ui._values[value_key] = max(int(value), int(min_value))
+
+    def _draw_histogram_control_row_float(
+        self,
+        ui: ViewerUI,
+        label: str,
+        input_id: str,
+        value_key: str,
+        default: float,
+        display_format: str,
+        min_value: float | None = None,
+    ) -> None:
+        imgui.table_next_row()
+        imgui.table_next_column()
+        imgui.align_text_to_frame_padding()
+        imgui.text_unformatted(label)
+        imgui.table_next_column()
+        imgui.set_next_item_width(-1.0)
+        changed, value = imgui.input_float(input_id, float(ui._values.get(value_key, default)), 0.25, 1.0, display_format)
+        if changed:
+            ui._values[value_key] = float(value) if min_value is None else max(float(value), float(min_value))
 
     def _update_histogram_y_limit(self, ui: ViewerUI, payload: object) -> None:
         if not bool(ui._values.get("_histogram_update_y_limit", False)):
@@ -1491,21 +1516,23 @@ class ToolkitWindow:
             imgui.text_wrapped("Histogram payload is malformed.")
             return
         y_limit = float(ui._values.get("hist_y_limit", _HISTOGRAM_Y_LIMIT_DEFAULT))
+        column_count = 1 if imgui.get_content_region_avail().x < (_HISTOGRAM_PLOT_MIN_COLUMN_WIDTH * 2.0) else 2
         for group_name, indices in _HISTOGRAM_GROUPS:
             valid = tuple(index for index in indices if 0 <= int(index) < counts.shape[0])
             if not valid:
                 continue
             imgui.separator_text(group_name)
-            if imgui.begin_table(f"##hist_{group_name}", 2, imgui.TableFlags_.sizing_stretch_same.value):
+            if imgui.begin_table(f"##hist_{group_name}", column_count, imgui.TableFlags_.sizing_stretch_same.value):
                 for index in valid:
                     imgui.table_next_column()
                     self._draw_histogram_plot(labels[index] if index < len(labels) else f"param {index}", centers, counts[index], y_limit)
                 imgui.end_table()
+            imgui.spacing()
 
     def _draw_histogram_plot(self, label: str, centers: np.ndarray, counts: np.ndarray, y_limit: float) -> None:
         imgui.text_disabled(label)
         plot_id = f"##plot_{label}"
-        if implot.begin_plot(plot_id, imgui.ImVec2(-1, 180)):
+        if implot.begin_plot(plot_id, imgui.ImVec2(-1, _HISTOGRAM_PLOT_HEIGHT)):
             implot.setup_axes("log10(abs(grad))", "count", 0, 0)
             if centers.size > 0:
                 implot.setup_axis_limits(implot.ImAxis_.x1.value, float(centers[0]), float(centers[-1]), implot.Cond_.always.value)

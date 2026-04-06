@@ -54,6 +54,7 @@ def sh_coeffs_to_display_colors(sh_coeffs: np.ndarray) -> np.ndarray:
 
 
 def evaluate_sh_color(sh_coeffs: np.ndarray, view_dirs: np.ndarray) -> np.ndarray:
+    # `view_dirs` follows the renderer convention: camera -> splat.
     coeffs = pad_sh_coeffs(sh_coeffs)
     dirs = np.asarray(view_dirs, dtype=np.float32).reshape(coeffs.shape[0], 3)
     lengths = np.linalg.norm(dirs, axis=1, keepdims=True)
