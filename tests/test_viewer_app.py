@@ -187,8 +187,15 @@ def test_default_training_params_include_background_mode_and_density() -> None:
     assert params.training.max_allowed_density_start == 5.0
     assert params.training.max_allowed_density == 12.0
     assert params.training.position_random_step_noise_lr == 5e5
+    assert params.training.position_random_step_noise_end_step == 30000
     assert params.training.position_random_step_opacity_gate_center == 0.005
     assert params.training.position_random_step_opacity_gate_sharpness == 100.0
+    assert params.training.lr_schedule_stage1_step == 2000
+    assert params.training.lr_schedule_stage2_step == 5000
+    assert params.training.depth_ratio_schedule_step1 == 1000
+    assert params.training.depth_ratio_schedule_step2 == 2000
+    assert params.training.depth_ratio_schedule_step3 == 5000
+    assert params.training.sh_start_step == 5000
     assert params.training.refinement_growth_ratio == 0.075
     assert params.training.refinement_growth_start_step == 500
     assert params.training.refinement_alpha_cull_threshold == 1e-2

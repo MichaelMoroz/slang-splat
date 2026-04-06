@@ -7,7 +7,7 @@ import numpy as np
 import slangpy as spy
 
 from ..common import clamp_index, debug_region, require_not_none
-from ..training import resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent
+from ..training import resolve_lr_schedule_breakpoints, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent
 from . import session
 
 _DEBUG_HUGE_VALUE = 1e8
@@ -33,16 +33,18 @@ def _training_schedule_text(viewer: object) -> str:
             return "LR Schedule: disabled"
         current = float(viewer.s.trainer.current_base_lr()) if hasattr(viewer.s.trainer, "current_base_lr") else float(training.lr_schedule_start_lr)
         lr0, lr1, lr2, lr3 = _schedule_waypoints(training.lr_schedule_start_lr, training.lr_schedule_end_lr)
+        stage1, stage2, max_step = resolve_lr_schedule_breakpoints(training)
         return (
-            f"LR Schedule: piecewise {lr0:.2e} -> {lr1:.2e} -> {lr2:.2e} -> {lr3:.2e} | "
-            f"steps={int(training.lr_schedule_steps):,} | current={current:.2e}"
+            f"LR Schedule: {lr0:.2e}@0 -> {lr1:.2e}@{stage1:,} -> {lr2:.2e}@{stage2:,} -> {lr3:.2e}@{max_step:,} | current={current:.2e}"
         )
     if not bool(viewer.c("lr_schedule_enabled").value):
         return "LR Schedule: disabled"
     lr0, lr1, lr2, lr3 = _schedule_waypoints(viewer.c("lr_schedule_start_lr").value, viewer.c("lr_schedule_end_lr").value)
+    stage1 = min(max(int(viewer.c("lr_schedule_stage1_step").value), 0), max(int(viewer.c("lr_schedule_steps").value), 1))
+    stage2 = min(max(int(viewer.c("lr_schedule_stage2_step").value), stage1), max(int(viewer.c("lr_schedule_steps").value), 1))
+    max_step = max(int(viewer.c("lr_schedule_steps").value), 1)
     return (
-        f"LR Schedule: piecewise {lr0:.2e} -> {lr1:.2e} -> {lr2:.2e} -> {lr3:.2e} | "
-        f"steps={max(int(viewer.c('lr_schedule_steps').value), 1):,} | current={lr0:.2e}"
+        f"LR Schedule: {lr0:.2e}@0 -> {lr1:.2e}@{stage1:,} -> {lr2:.2e}@{stage2:,} -> {lr3:.2e}@{max_step:,} | current={lr0:.2e}"
     )
 
 

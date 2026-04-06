@@ -299,9 +299,10 @@ GROUP_SPECS = {
         ControlSpec("background_mode", "combo", "Train Background", {"value": 1, "options": _TRAIN_BACKGROUND_MODE_LABELS}),
         ControlSpec("train_background_color", "color_edit3", "Train BG Color", {"value": (1.0, 1.0, 1.0)}),
         ControlSpec("use_sh", "checkbox", "Use Spherical Harmonics", {"value": True}),
+        ControlSpec("sh_start_step", "slider_int", "SH Start Step", {"value": 5000, "min": 0, "max": 30000, "max_from": "lr_schedule_steps"}),
         ControlSpec("refinement_interval", "input_int", "Refinement Interval", {"value": 200, "step": 10, "step_fast": 50}),
         ControlSpec("refinement_growth_ratio", "input_float", "Refinement Growth", {"value": 0.075, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
-        ControlSpec("refinement_growth_start_step", "input_int", "Start Refinement After", {"value": 500, "step": 100, "step_fast": 500}),
+        ControlSpec("refinement_growth_start_step", "slider_int", "Start Refinement After", {"value": 500, "min": 0, "max": 30000, "max_from": "lr_schedule_steps"}),
         ControlSpec("refinement_alpha_cull_threshold", "input_float", "Refinement Alpha Cull", {"value": 1e-2, "step": 1e-5, "step_fast": 1e-4, "format": "%.6e"}),
         ControlSpec("refinement_min_contribution_percent", "input_float", "Refinement Min Contribution", {"value": 1e-05, "step": 1e-6, "step_fast": 1e-5, "format": "%.6g%%"}),
         ControlSpec("refinement_min_contribution_decay", "input_float", "Refinement Min Contribution Decay", {"value": 0.995, "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
@@ -319,12 +320,15 @@ GROUP_SPECS = {
         ControlSpec("lr_schedule_start_lr", "input_float", "Schedule Start LR", {"value": 0.005, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
         ControlSpec("lr_schedule_end_lr", "input_float", "Schedule End LR", {"value": 1e-4, "step": 1e-6, "step_fast": 1e-5, "format": "%.8f"}),
         ControlSpec("lr_schedule_steps", "input_int", "Schedule Steps", {"value": 30000, "step": 1000, "step_fast": 5000}),
+        ControlSpec("lr_schedule_stage1_step", "slider_int", "LR Stage 1 Step", {"value": 2000, "min": 0, "max": 30000, "max_from": "lr_schedule_steps"}),
+        ControlSpec("lr_schedule_stage2_step", "slider_int", "LR Stage 2 Step", {"value": 5000, "min": 0, "max": 30000, "max_from": "lr_schedule_steps"}),
         ControlSpec("lr_pos_mul", "input_float", "LR Mul Position", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
         ControlSpec("lr_scale_mul", "input_float", "LR Mul Scale", {"value": 5.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
         ControlSpec("lr_rot_mul", "input_float", "LR Mul Rotation", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
-            ControlSpec("lr_color_mul", "input_float", "LR Mul Color", {"value": 5.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
-            ControlSpec("lr_opacity_mul", "input_float", "LR Mul Opacity", {"value": 5.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
+        ControlSpec("lr_color_mul", "input_float", "LR Mul Color", {"value": 5.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
+        ControlSpec("lr_opacity_mul", "input_float", "LR Mul Opacity", {"value": 5.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
         ControlSpec("position_random_step_noise_lr", "input_float", "Noise LR", {"value": 5e5, "step": 100.0, "step_fast": 1000.0, "format": "%.4g"}),
+        ControlSpec("position_random_step_noise_end_step", "slider_int", "Noise End Step", {"value": 30000, "min": 0, "max": 30000, "max_from": "lr_schedule_steps"}),
         ControlSpec("beta1", "input_float", "Beta1", {"value": 0.9, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
         ControlSpec("beta2", "input_float", "Beta2", {"value": 0.999, "step": 1e-4, "step_fast": 1e-3, "format": "%.6f"}),
         ControlSpec("scale_l2", "input_float", "Scale Log Reg", {"value": 0.0, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
@@ -333,6 +337,9 @@ GROUP_SPECS = {
         ControlSpec("opacity_reg", "input_float", "Opacity Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
         ControlSpec("density_regularizer", "input_float", "Density Reg", {"value": 0.02, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
         ControlSpec("depth_ratio_weight", "input_float", "Depth Ratio Reg", {"value": 1.0, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
+        ControlSpec("depth_ratio_schedule_step1", "slider_int", "Depth Reg Stage 1", {"value": 1000, "min": 0, "max": 30000, "max_from": "lr_schedule_steps"}),
+        ControlSpec("depth_ratio_schedule_step2", "slider_int", "Depth Reg Stage 2", {"value": 2000, "min": 0, "max": 30000, "max_from": "lr_schedule_steps"}),
+        ControlSpec("depth_ratio_schedule_step3", "slider_int", "Depth Reg Stage 3", {"value": 5000, "min": 0, "max": 30000, "max_from": "lr_schedule_steps"}),
         ControlSpec("depth_ratio_grad_min", "input_float", "Depth Ratio Grad Min", {"value": 0.0, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
         ControlSpec("depth_ratio_grad_max", "input_float", "Depth Ratio Grad Max", {"value": 0.1, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
         ControlSpec("max_allowed_density", "input_float", "Max Density", {"value": 12.0, "step": 1e-3, "step_fast": 1e-2, "format": "%.8f"}),
@@ -397,9 +404,9 @@ _ALL_DEFAULTS.update({spec.key: spec.kwargs["value"] for spec in RENDER_PARAM_SP
 _ALL_DEFAULTS.update({spec.key: spec.kwargs["value"] for spec in DEBUG_RENDER_SPECS if "value" in spec.kwargs})
 
 _OPTIMIZER_TAB_KEYS = {
-    "Learning Rates": ("lr_base", "lr_schedule_enabled", "lr_schedule_start_lr", "lr_schedule_end_lr", "lr_schedule_steps", "lr_pos_mul", "lr_scale_mul", "lr_rot_mul", "lr_color_mul", "lr_opacity_mul", "position_random_step_noise_lr"),
+    "Learning Rates": ("lr_base", "lr_schedule_enabled", "lr_schedule_start_lr", "lr_schedule_end_lr", "lr_schedule_steps", "lr_schedule_stage1_step", "lr_schedule_stage2_step", "lr_pos_mul", "lr_scale_mul", "lr_rot_mul", "lr_color_mul", "lr_opacity_mul", "position_random_step_noise_lr", "position_random_step_noise_end_step"),
     "Adam": ("beta1", "beta2"),
-    "Regularization": ("scale_l2", "scale_abs_reg", "sh1_reg", "opacity_reg", "density_regularizer", "depth_ratio_weight", "depth_ratio_grad_min", "depth_ratio_grad_max", "max_allowed_density", "position_random_step_opacity_gate_center", "position_random_step_opacity_gate_sharpness", "max_anisotropy", "grad_clip", "grad_norm_clip", "max_update"),
+    "Regularization": ("scale_l2", "scale_abs_reg", "sh1_reg", "opacity_reg", "density_regularizer", "depth_ratio_weight", "depth_ratio_schedule_step1", "depth_ratio_schedule_step2", "depth_ratio_schedule_step3", "depth_ratio_grad_min", "depth_ratio_grad_max", "max_allowed_density", "position_random_step_opacity_gate_center", "position_random_step_opacity_gate_sharpness", "max_anisotropy", "grad_clip", "grad_norm_clip", "max_update"),
 }
 
 
@@ -456,6 +463,13 @@ class ViewerUI:
 
     def text(self, key: str) -> _TextProxy:
         return _TextProxy(self._texts, key)
+
+
+def _control_bound(ui: ViewerUI, spec: ControlSpec, key: str, fallback: int) -> int:
+    bound_key = spec.kwargs.get(key)
+    if bound_key is None:
+        return fallback
+    return int(ui._values.get(str(bound_key), _ALL_DEFAULTS.get(str(bound_key), fallback)))
 
 
 @dataclass(slots=True)
@@ -1663,15 +1677,19 @@ class ToolkitWindow:
         "training_steps_per_frame": "Number of training optimizer steps to run before each viewer redraw; higher improves training throughput but reduces UI refresh rate",
         "background_mode": "Choose whether training uses a fixed custom RGB background or a new random RGB background each optimizer step",
         "train_background_color": "Custom RGB background used for training when Train Background is set to Custom",
-        "use_sh": "Enable SH0+SH1 view-dependent color evaluation during projection and training; runtime keeps SH disabled until the schedule reaches the 5k/30k warmup point",
+        "use_sh": "Enable SH0+SH1 view-dependent color evaluation during projection and training; runtime keeps SH disabled until the configured SH start step",
+        "sh_start_step": "Training step at which SH evaluation becomes active; slider range follows Schedule Steps",
         "refinement_interval": "Run cull/split refinement every N training steps",
         "refinement_growth_ratio": "Target fractional scene growth per refinement step once densification is enabled",
-        "refinement_growth_start_step": "Keep densification growth at zero until this training iteration, then use the configured refinement growth",
+        "refinement_growth_start_step": "Keep densification growth at zero until this training iteration, then use the configured refinement growth; slider range follows Schedule Steps",
         "refinement_alpha_cull_threshold": "Cull splats below this decoded alpha threshold during refinement",
         "refinement_min_contribution_percent": "Minimum accumulated alpha contribution, as a percent of observed dataset pixels, required for a splat to survive refinement",
         "refinement_min_contribution_decay": "Multiply the minimum contribution percent by this factor after each completed refinement pass",
         "density_regularizer": "Weight applied to the per-pixel hinge penalty max(density - max_allowed_density, 0)",
         "depth_ratio_weight": "Initial weight applied to the differentiable per-pixel windowed-sigmoid depth std over mean-depth ratio penalty; runtime decays it over the training schedule",
+        "depth_ratio_schedule_step1": "Training step for the first depth-ratio regularizer drop; slider range follows Schedule Steps",
+        "depth_ratio_schedule_step2": "Training step for the second depth-ratio regularizer drop; slider range follows Schedule Steps",
+        "depth_ratio_schedule_step3": "Training step for the third depth-ratio regularizer drop; slider range follows Schedule Steps",
         "depth_ratio_grad_min": "Start of the high-gradient depth-ratio interval; gradients taper below this value",
         "depth_ratio_grad_max": "End of the high-gradient depth-ratio interval; gradients taper above this value",
         "max_allowed_density": "End-of-training per-pixel density threshold above which the density regularizer activates; runtime ramps from 5.0 to this value over the LR schedule",
@@ -1679,6 +1697,9 @@ class ToolkitWindow:
         "lr_schedule_start_lr": "Base learning rate at step 0 of the schedule",
         "lr_schedule_end_lr": "Base learning rate at the end of the final piecewise schedule segment",
         "lr_schedule_steps": "Total step budget used to scale the piecewise LR, depth-ratio, SH warmup, and noise schedules before clamping",
+        "lr_schedule_stage1_step": "Training step of the first LR breakpoint; slider range follows Schedule Steps",
+        "lr_schedule_stage2_step": "Training step of the second LR breakpoint; slider range follows Schedule Steps",
+        "position_random_step_noise_end_step": "Training step where position noise reaches zero; slider range follows Schedule Steps",
         "train_downscale_mode": "Use Auto for scheduled downscale descent or choose a fixed manual override from 1x to 16x",
         "train_auto_start_downscale": "Initial downscale factor used at step 0 when Downscale Mode is Auto",
         "train_downscale_base_iters": "Number of iterations spent at the auto start factor before descending",
@@ -1703,12 +1724,21 @@ class ToolkitWindow:
             if changed:
                 ui._values[key] = val
         elif spec.kind == "slider_int":
+            min_value = int(spec.kwargs.get("min", 0))
+            max_value = int(spec.kwargs.get("max", 100))
+            if "min_from" in spec.kwargs:
+                min_value = _control_bound(ui, spec, "min_from", min_value)
+            if "max_from" in spec.kwargs:
+                max_value = _control_bound(ui, spec, "max_from", max_value)
+            max_value = max(max_value, min_value)
+            current_value = min(max(int(ui._values[key]), min_value), max_value)
+            if current_value != int(ui._values[key]):
+                ui._values[key] = current_value
             changed, val = imgui.slider_int(
-                spec.label, int(ui._values[key]),
-                int(spec.kwargs.get("min", 0)), int(spec.kwargs.get("max", 100))
+                spec.label, current_value, min_value, max_value
             )
             if changed:
-                ui._values[key] = val
+                ui._values[key] = min(max(int(val), min_value), max_value)
         elif spec.kind == "input_int":
             changed, val = imgui.input_int(
                 spec.label,

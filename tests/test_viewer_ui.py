@@ -110,12 +110,16 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["lr_schedule_start_lr"] == 0.005
     assert viewer_ui._values["lr_schedule_end_lr"] == 1e-4
     assert viewer_ui._values["lr_schedule_steps"] == 30000
+    assert viewer_ui._values["lr_schedule_stage1_step"] == 2000
+    assert viewer_ui._values["lr_schedule_stage2_step"] == 5000
     assert viewer_ui._values["position_random_step_noise_lr"] == 5e5
+    assert viewer_ui._values["position_random_step_noise_end_step"] == 30000
     assert viewer_ui._values["position_random_step_opacity_gate_center"] == 0.005
     assert viewer_ui._values["position_random_step_opacity_gate_sharpness"] == 100.0
     assert viewer_ui._values["background_mode"] == 1
     assert viewer_ui._values["train_background_color"] == (1.0, 1.0, 1.0)
     assert viewer_ui._values["use_sh"] is True
+    assert viewer_ui._values["sh_start_step"] == 5000
     assert viewer_ui._values["sh1_reg"] == 0.01
     assert viewer_ui._values["refinement_interval"] == 200
     assert viewer_ui._values["refinement_growth_ratio"] == 0.075
@@ -125,6 +129,9 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["refinement_min_contribution_decay"] == 0.995
     assert viewer_ui._values["density_regularizer"] == 0.02
     assert viewer_ui._values["depth_ratio_weight"] == 1.0
+    assert viewer_ui._values["depth_ratio_schedule_step1"] == 1000
+    assert viewer_ui._values["depth_ratio_schedule_step2"] == 2000
+    assert viewer_ui._values["depth_ratio_schedule_step3"] == 5000
     assert viewer_ui._values["depth_ratio_grad_min"] == 0.0
     assert viewer_ui._values["depth_ratio_grad_max"] == 0.1
     assert viewer_ui._values["max_allowed_density"] == 12.0
@@ -243,12 +250,22 @@ def test_optimizer_regularization_tab_includes_density_controls() -> None:
     assert "sh1_reg" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "density_regularizer" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "depth_ratio_weight" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
+    assert "depth_ratio_schedule_step1" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
+    assert "depth_ratio_schedule_step2" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
+    assert "depth_ratio_schedule_step3" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "depth_ratio_grad_min" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "depth_ratio_grad_max" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "max_allowed_density" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "position_random_step_noise_lr" in ui._OPTIMIZER_TAB_KEYS["Learning Rates"]
+    assert "lr_schedule_stage1_step" in ui._OPTIMIZER_TAB_KEYS["Learning Rates"]
+    assert "lr_schedule_stage2_step" in ui._OPTIMIZER_TAB_KEYS["Learning Rates"]
+    assert "position_random_step_noise_end_step" in ui._OPTIMIZER_TAB_KEYS["Learning Rates"]
     assert "position_random_step_opacity_gate_center" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "position_random_step_opacity_gate_sharpness" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
+
+
+def test_schedule_step_slider_max_tracks_schedule_steps() -> None:
+    assert ui._control_bound(SimpleNamespace(_values={"lr_schedule_steps": 1234}), SimpleNamespace(kwargs={"max_from": "lr_schedule_steps"}), "max_from", 0) == 1234
 
 
 def test_debug_mode_labels_include_contribution_amount() -> None:

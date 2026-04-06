@@ -80,8 +80,15 @@ def test_build_training_params_clamps_ranges():
     assert params.training.max_allowed_density_start == 5.0
     assert params.training.max_allowed_density == 12.0
     assert params.training.position_random_step_noise_lr == 5e5
+    assert params.training.position_random_step_noise_end_step == 30000
     assert params.training.position_random_step_opacity_gate_center == 0.005
     assert params.training.position_random_step_opacity_gate_sharpness == 100.0
+    assert params.training.lr_schedule_stage1_step == 2000
+    assert params.training.lr_schedule_stage2_step == 5000
+    assert params.training.depth_ratio_schedule_step1 == 1000
+    assert params.training.depth_ratio_schedule_step2 == 2000
+    assert params.training.depth_ratio_schedule_step3 == 5000
+    assert params.training.sh_start_step == 5000
     assert params.training.refinement_min_contribution_percent == 1e-05
     assert params.training.refinement_min_contribution_decay == 0.995
     assert params.training.max_gaussians == 0
@@ -103,8 +110,15 @@ def test_default_training_params_match_fixed_count_defaults():
     assert params.training.max_allowed_density_start == 5.0
     assert params.training.max_allowed_density == 12.0
     assert params.training.position_random_step_noise_lr == 5e5
+    assert params.training.position_random_step_noise_end_step == 30000
     assert params.training.position_random_step_opacity_gate_center == 0.005
     assert params.training.position_random_step_opacity_gate_sharpness == 100.0
+    assert params.training.lr_schedule_stage1_step == 2000
+    assert params.training.lr_schedule_stage2_step == 5000
+    assert params.training.depth_ratio_schedule_step1 == 1000
+    assert params.training.depth_ratio_schedule_step2 == 2000
+    assert params.training.depth_ratio_schedule_step3 == 5000
+    assert params.training.sh_start_step == 5000
     assert params.training.refinement_growth_ratio == 0.075
     assert params.training.refinement_growth_start_step == 500
     assert params.training.refinement_alpha_cull_threshold == 1e-2
@@ -164,6 +178,27 @@ def test_training_hparams_clamp_depth_ratio_grad_band() -> None:
 
     assert params.depth_ratio_grad_min == 0.05
     assert params.depth_ratio_grad_max == 0.05 + DEPTH_RATIO_GRAD_MIN_BAND_WIDTH
+
+
+def test_training_hparams_clamp_schedule_breakpoints() -> None:
+    params = TrainingHyperParams(
+        lr_schedule_steps=3000,
+        lr_schedule_stage1_step=4000,
+        lr_schedule_stage2_step=1000,
+        depth_ratio_schedule_step1=5000,
+        depth_ratio_schedule_step2=50,
+        depth_ratio_schedule_step3=100,
+        position_random_step_noise_end_step=4000,
+        sh_start_step=4000,
+    )
+
+    assert params.lr_schedule_stage1_step == 3000
+    assert params.lr_schedule_stage2_step == 3000
+    assert params.depth_ratio_schedule_step1 == 3000
+    assert params.depth_ratio_schedule_step2 == 3000
+    assert params.depth_ratio_schedule_step3 == 3000
+    assert params.position_random_step_noise_end_step == 3000
+    assert params.sh_start_step == 3000
 
 
 def test_viewer_defaults_expose_only_fixed_count_training_controls():

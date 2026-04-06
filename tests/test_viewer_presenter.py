@@ -48,6 +48,8 @@ class _DummyTrainer:
             lr_schedule_start_lr=0.005,
             lr_schedule_end_lr=1e-4,
             lr_schedule_steps=30000,
+            lr_schedule_stage1_step=2000,
+            lr_schedule_stage2_step=5000,
             refinement_interval=200,
             refinement_growth_ratio=0.075,
             refinement_growth_start_step=500,
@@ -56,8 +58,13 @@ class _DummyTrainer:
             refinement_min_contribution_decay=0.995,
             density_regularizer=0.02,
             depth_ratio_weight=1.0,
+            depth_ratio_schedule_step1=1000,
+            depth_ratio_schedule_step2=2000,
+            depth_ratio_schedule_step3=5000,
             depth_ratio_grad_min=0.0,
             depth_ratio_grad_max=0.1,
+            position_random_step_noise_end_step=30000,
+            sh_start_step=5000,
             max_allowed_density=12.0,
             max_gaussians=1000000,
         )
@@ -115,12 +122,19 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         "lr_schedule_start_lr": _control(0.005),
         "lr_schedule_end_lr": _control(1e-4),
         "lr_schedule_steps": _control(30000),
+        "lr_schedule_stage1_step": _control(2000),
+        "lr_schedule_stage2_step": _control(5000),
         "refinement_interval": _control(200),
         "refinement_growth_ratio": _control(0.075),
         "refinement_growth_start_step": _control(500),
         "refinement_alpha_cull_threshold": _control(1e-2),
         "refinement_min_contribution_percent": _control(1e-05),
         "refinement_min_contribution_decay": _control(0.995),
+        "sh_start_step": _control(5000),
+        "position_random_step_noise_end_step": _control(30000),
+        "depth_ratio_schedule_step1": _control(1000),
+        "depth_ratio_schedule_step2": _control(2000),
+        "depth_ratio_schedule_step3": _control(5000),
         "max_gaussians": _control(1000000),
         "train_downscale_mode": _control(1),
         "train_auto_start_downscale": _control(1),
@@ -326,7 +340,7 @@ def test_update_ui_text_reports_training_schedule_and_refinement() -> None:
 
     presenter.update_ui_text(viewer, 1.0 / 60.0)
 
-    assert viewer.t("training_schedule").text == "LR Schedule: piecewise 5.00e-03 -> 2.00e-03 -> 1.00e-03 -> 1.00e-04 | steps=30,000 | current=5.00e-03"
+    assert viewer.t("training_schedule").text == "LR Schedule: 5.00e-03@0 -> 2.00e-03@2,000 -> 1.00e-03@5,000 -> 1.00e-04@30,000 | current=5.00e-03"
     assert viewer.t("training_refinement").text == "Refinement: every 200 | growth=0.00% now | target=7.50% after 500 | alpha<1.00e-02 or min contrib<1e-05% | decay=99.50%/pass | max=1,000,000"
 
 

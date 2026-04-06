@@ -103,7 +103,7 @@ The loss-debug controls expose a runtime `Abs Diff Scale` slider when `View = Ab
 
 The `Train Setup` section exposes train downscale as a mode selector:
 
-It also exposes a `Use Spherical Harmonics` toggle. When enabled, projection and training use SH0+SH1 view-dependent color. When disabled, rendering and optimization fall back to SH0-only base color while leaving the raster hot loop unchanged.
+It also exposes a `Use Spherical Harmonics` toggle plus an `SH Start Step` slider. When enabled, projection and training use SH0+SH1 view-dependent color after that configured start step. When disabled, rendering and optimization fall back to SH0-only base color while leaving the raster hot loop unchanged.
 
 Training background is configured separately from the viewer clear color:
 
@@ -111,8 +111,9 @@ Training background is configured separately from the viewer clear color:
 - `Custom` exposes a fixed training RGB color picker and defaults to white
 - `Random` re-samples the training background color per step
 - `Start Densification After` now defaults to `500`.
-- Refinement contribution culling is expressed in percent of observed dataset pixels, with a base default threshold of `0.001%`.
-- `Refinement Cull Decay` multiplies that threshold after each completed refinement pass and defaults to `0.95` (`5%` drop per pass).
+- Refinement contribution culling is expressed in percent of observed dataset pixels, with a base default threshold of `1e-05%`.
+- `Refinement Cull Decay` multiplies that threshold after each completed refinement pass and defaults to `0.995` (`0.5%` drop per pass).
+- Schedule step sliders in `Train Setup`, `Learning Rates`, and `Regularization` all clamp to the current `Schedule Steps` value so breakpoint timing can be edited directly in the viewer without touching code.
 
 - `Auto`
 - manual `1x` through `16x`
@@ -133,6 +134,17 @@ Behavior:
 - Changing mode or crossing an auto schedule boundary recreates only the train-resolution renderer and target resources; scene state, ADAM moments, shuffle order, step counter, and pause/run state are preserved.
 
 The panel shows both the resolved active train resolution and the current downscale status so the training renderer, loss target, and debug target view are easy to verify.
+
+## Training Schedule
+
+The `Optimizer` panel exposes the active training schedule directly:
+
+- `Schedule Steps` defines the shared max-iteration budget for the LR, depth-ratio, SH warmup, and noise schedules.
+- `LR Stage 1 Step` and `LR Stage 2 Step` move the two intermediate LR breakpoints.
+- `Noise End Step` moves the point where random-step position noise reaches zero.
+- `Depth Reg Stage 1/2/3` move the three intermediate depth-ratio regularizer breakpoints.
+
+These breakpoint controls are regular integer sliders with a live `0..Schedule Steps` range rather than a compound multi-value slider.
 
 ## Training Metrics
 

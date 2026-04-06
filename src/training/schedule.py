@@ -5,24 +5,54 @@ from typing import Any
 
 DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY = 0.995
 _SCHEDULE_REFERENCE_STEPS = 30_000
-_LR_MILESTONES = ((0.0, 1.0), (2000.0 / _SCHEDULE_REFERENCE_STEPS, 0.4), (5000.0 / _SCHEDULE_REFERENCE_STEPS, 0.2))
-_DEPTH_RATIO_WEIGHT_MILESTONES = (
-    (0.0, 1.0),
-    (1000.0 / _SCHEDULE_REFERENCE_STEPS, 0.25),
-    (2000.0 / _SCHEDULE_REFERENCE_STEPS, 0.05),
-    (5000.0 / _SCHEDULE_REFERENCE_STEPS, 0.01),
-    (1.0, 0.001),
-)
-_POSITION_RANDOM_STEP_NOISE_MILESTONES = ((0.0, 1.0), (1.0, 0.0))
-_USE_SH_START_PROGRESS = 5000.0 / _SCHEDULE_REFERENCE_STEPS
+_DEFAULT_LR_STAGE1_STEP = 2000
+_DEFAULT_LR_STAGE2_STEP = 5000
+_DEFAULT_DEPTH_RATIO_STAGE1_STEP = 1000
+_DEFAULT_DEPTH_RATIO_STAGE2_STEP = 2000
+_DEFAULT_DEPTH_RATIO_STAGE3_STEP = 5000
+_DEFAULT_POSITION_RANDOM_STEP_NOISE_END_STEP = _SCHEDULE_REFERENCE_STEPS
+_DEFAULT_SH_START_STEP = 5000
+_LR_MILESTONE_VALUES = (1.0, 0.4, 0.2)
+_DEPTH_RATIO_WEIGHT_VALUES = (1.0, 0.25, 0.05, 0.01, 0.001)
 
 
 def _schedule_duration(training_hparams: Any) -> int:
     return max(int(getattr(training_hparams, "lr_schedule_steps", _SCHEDULE_REFERENCE_STEPS)), 1)
 
 
+def _clamp_schedule_step(step: int, max_step: int) -> int:
+    return min(max(int(step), 0), max(int(max_step), 0))
+
+
+def _step_progress(step: int, max_step: int) -> float:
+    return _clamp_schedule_step(step, max_step) / float(max(max_step, 1))
+
+
 def _schedule_progress(training_hparams: Any, step: int) -> float:
     return min(max(int(step), 0), _schedule_duration(training_hparams)) / float(_schedule_duration(training_hparams))
+
+
+def resolve_lr_schedule_breakpoints(training_hparams: Any) -> tuple[int, int, int]:
+    max_step = _schedule_duration(training_hparams)
+    stage1 = _clamp_schedule_step(getattr(training_hparams, "lr_schedule_stage1_step", _DEFAULT_LR_STAGE1_STEP), max_step)
+    stage2 = max(stage1, _clamp_schedule_step(getattr(training_hparams, "lr_schedule_stage2_step", _DEFAULT_LR_STAGE2_STEP), max_step))
+    return stage1, stage2, max_step
+
+
+def resolve_depth_ratio_schedule_breakpoints(training_hparams: Any) -> tuple[int, int, int, int]:
+    max_step = _schedule_duration(training_hparams)
+    stage1 = _clamp_schedule_step(getattr(training_hparams, "depth_ratio_schedule_step1", _DEFAULT_DEPTH_RATIO_STAGE1_STEP), max_step)
+    stage2 = max(stage1, _clamp_schedule_step(getattr(training_hparams, "depth_ratio_schedule_step2", _DEFAULT_DEPTH_RATIO_STAGE2_STEP), max_step))
+    stage3 = max(stage2, _clamp_schedule_step(getattr(training_hparams, "depth_ratio_schedule_step3", _DEFAULT_DEPTH_RATIO_STAGE3_STEP), max_step))
+    return stage1, stage2, stage3, max_step
+
+
+def resolve_position_random_step_noise_end_step(training_hparams: Any) -> int:
+    return _clamp_schedule_step(getattr(training_hparams, "position_random_step_noise_end_step", _DEFAULT_POSITION_RANDOM_STEP_NOISE_END_STEP), _schedule_duration(training_hparams))
+
+
+def resolve_sh_start_step(training_hparams: Any) -> int:
+    return _clamp_schedule_step(getattr(training_hparams, "sh_start_step", _DEFAULT_SH_START_STEP), _schedule_duration(training_hparams))
 
 
 def _piecewise_linear_schedule(progress: float, milestones: tuple[tuple[float, float], ...]) -> float:
@@ -48,7 +78,14 @@ def resolve_base_learning_rate(training_hparams: Any, step: int) -> float:
     if not enabled:
         return start
     end_ratio = end / start
-    return start * _piecewise_linear_schedule(_schedule_progress(training_hparams, step), _LR_MILESTONES + ((1.0, end_ratio),))
+    stage1, stage2, max_step = resolve_lr_schedule_breakpoints(training_hparams)
+    milestones = (
+        (0.0, _LR_MILESTONE_VALUES[0]),
+        (_step_progress(stage1, max_step), _LR_MILESTONE_VALUES[1]),
+        (_step_progress(stage2, max_step), _LR_MILESTONE_VALUES[2]),
+        (1.0, end_ratio),
+    )
+    return start * _piecewise_linear_schedule(_schedule_progress(training_hparams, step), milestones)
 
 
 def resolve_cosine_base_learning_rate(training_hparams: Any, step: int) -> float:
@@ -62,16 +99,28 @@ def resolve_learning_rate_scale(training_hparams: Any, step: int) -> float:
 
 def resolve_depth_ratio_weight(training_hparams: Any, step: int) -> float:
     base_weight = max(float(getattr(training_hparams, "depth_ratio_weight", 0.05)), 0.0)
-    return base_weight * _piecewise_linear_schedule(_schedule_progress(training_hparams, step), _DEPTH_RATIO_WEIGHT_MILESTONES)
+    stage1, stage2, stage3, max_step = resolve_depth_ratio_schedule_breakpoints(training_hparams)
+    milestones = (
+        (0.0, _DEPTH_RATIO_WEIGHT_VALUES[0]),
+        (_step_progress(stage1, max_step), _DEPTH_RATIO_WEIGHT_VALUES[1]),
+        (_step_progress(stage2, max_step), _DEPTH_RATIO_WEIGHT_VALUES[2]),
+        (_step_progress(stage3, max_step), _DEPTH_RATIO_WEIGHT_VALUES[3]),
+        (1.0, _DEPTH_RATIO_WEIGHT_VALUES[4]),
+    )
+    return base_weight * _piecewise_linear_schedule(_schedule_progress(training_hparams, step), milestones)
 
 
 def resolve_position_random_step_noise_lr(training_hparams: Any, step: int) -> float:
     base_noise_lr = max(float(getattr(training_hparams, "position_random_step_noise_lr", 5e5)), 0.0)
-    return base_noise_lr * _piecewise_linear_schedule(_schedule_progress(training_hparams, step), _POSITION_RANDOM_STEP_NOISE_MILESTONES)
+    end_step = resolve_position_random_step_noise_end_step(training_hparams)
+    if end_step <= 0:
+        return 0.0
+    milestones = ((0.0, 1.0), (_step_progress(end_step, _schedule_duration(training_hparams)), 0.0))
+    return base_noise_lr * _piecewise_linear_schedule(_schedule_progress(training_hparams, step), milestones)
 
 
 def resolve_use_sh(training_hparams: Any, step: int) -> bool:
-    return bool(getattr(training_hparams, "use_sh", True)) and _schedule_progress(training_hparams, step) >= _USE_SH_START_PROGRESS
+    return bool(getattr(training_hparams, "use_sh", True)) and int(step) >= resolve_sh_start_step(training_hparams)
 
 
 def resolve_max_allowed_density(training_hparams: Any, step: int) -> float:
