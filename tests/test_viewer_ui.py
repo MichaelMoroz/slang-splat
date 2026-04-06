@@ -152,6 +152,7 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["_histogram_update_y_limit"] is True
     assert viewer_ui._values["_histogram_update_log_range"] is False
     assert viewer_ui._values["_show_histograms_prev"] is False
+    assert "show_renderer_debug" not in viewer_ui._values
 
 
 def test_toolkit_window_render_draws_non_background_pixels(device) -> None:
@@ -237,19 +238,86 @@ def test_histogram_window_docks_and_requests_refresh_on_open(monkeypatch) -> Non
     assert viewer_ui._values["_show_histograms_prev"] is True
 
 
-def test_renderer_debug_window_docks_into_toolkit_tabs(monkeypatch) -> None:
-    dock_calls: list[tuple[int, int]] = []
-    monkeypatch.setattr(ui.imgui, "set_next_window_dock_id", lambda dock_id, cond: dock_calls.append((int(dock_id), int(cond))))
-    monkeypatch.setattr(ui.imgui, "set_next_window_pos", lambda *args, **kwargs: None)
-    monkeypatch.setattr(ui.imgui, "set_next_window_size", lambda *args, **kwargs: None)
-    monkeypatch.setattr(ui.imgui, "begin", lambda *args, **kwargs: (False, True))
-    monkeypatch.setattr(ui.imgui, "end", lambda: None)
-    toolkit = SimpleNamespace(_menu_bar_height=24.0, _toolkit_rect=(0.0, 24.0, 280.0, 876.0), _toolkit_dock_id=17, _dock_tool_window=lambda cond: ui.imgui.set_next_window_dock_id(17, cond))
-    viewer_ui = SimpleNamespace(_values={"show_renderer_debug": True}, _texts={})
+def test_viewport_view_menu_left_aligns_view_mode_button(monkeypatch) -> None:
+    button_labels: list[str] = []
+    cursor_positions: list[tuple[float, float]] = []
+    monkeypatch.setattr(ui.imgui, "get_style", lambda: SimpleNamespace(frame_padding=ui.imgui.ImVec2(4.0, 3.0)))
+    monkeypatch.setattr(ui.imgui, "calc_text_size", lambda text: ui.imgui.ImVec2(72.0, 14.0))
+    monkeypatch.setattr(ui.imgui, "push_id", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "pop_id", lambda: None)
+    monkeypatch.setattr(ui.imgui, "set_cursor_screen_pos", lambda pos: cursor_positions.append((float(pos.x), float(pos.y))))
+    monkeypatch.setattr(ui.imgui, "small_button", lambda label: button_labels.append(label) or False)
+    monkeypatch.setattr(ui.imgui, "begin_popup", lambda *_args: False)
+    toolkit = SimpleNamespace(_viewport_content_rect=(50.0, 60.0, 400.0, 240.0), _interface_scale_factor=lambda _ui_obj: 1.5)
 
-    ui.ToolkitWindow._draw_renderer_debug_window(toolkit, viewer_ui)
+    origin = ui.ToolkitWindow._draw_viewport_view_menu(toolkit, SimpleNamespace(_values={}), ui.imgui.ImVec2(50.0, 60.0))
 
-    assert dock_calls == [(17, int(ui.imgui.Cond_.appearing.value))]
+    assert button_labels == ["View Mode"]
+    assert cursor_positions == [(62.0, 72.0)]
+    assert np.isclose(origin.x, 62.0)
+    assert origin.y > 72.0
+
+
+def test_viewport_debug_overlay_draws_mode_specific_controls(monkeypatch) -> None:
+    drawn_keys: list[str] = []
+    child_sizes: list[tuple[float, float]] = []
+    monkeypatch.setattr(ui.imgui, "get_frame_height", lambda: 20.0)
+    monkeypatch.setattr(ui.imgui, "get_style", lambda: SimpleNamespace(item_spacing=ui.imgui.ImVec2(8.0, 6.0)))
+    monkeypatch.setattr(ui.imgui, "push_style_color", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "pop_style_color", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "push_style_var", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "pop_style_var", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "set_cursor_screen_pos", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "begin_child", lambda _name, size, *_args: child_sizes.append((float(size.x), float(size.y))) or True)
+    monkeypatch.setattr(ui.imgui, "end_child", lambda: None)
+    monkeypatch.setattr(ui.imgui, "push_item_width", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "pop_item_width", lambda: None)
+    toolkit = SimpleNamespace(
+        _viewport_content_rect=(0.0, 0.0, 640.0, 360.0),
+        _interface_scale_factor=lambda _ui_obj: 1.0,
+        _draw_control=lambda _ui_obj, spec: drawn_keys.append(spec.key),
+    )
+    viewer_ui = SimpleNamespace(_values={"debug_mode": ui._DEBUG_MODE_VALUES.index("depth_local_mismatch")}, _texts={})
+
+    ui.ToolkitWindow._draw_viewport_debug_overlay(toolkit, viewer_ui, ui.imgui.ImVec2(12.0, 34.0))
+
+    assert child_sizes and child_sizes[0][0] >= 220.0
+    assert drawn_keys == [
+        "debug_depth_local_mismatch_min",
+        "debug_depth_local_mismatch_max",
+        "debug_depth_local_mismatch_smooth_radius",
+        "debug_depth_local_mismatch_reject_radius",
+    ]
+
+
+def test_debug_colorbar_height_scales_with_interface_scale(monkeypatch) -> None:
+    boxes: list[tuple[float, float]] = []
+
+    class _DrawList:
+        def add_rect_filled(self, p0, p1, *_args):
+            boxes.append((float(p1.y - p0.y), float(p1.x - p0.x)))
+
+        def add_text(self, *_args):
+            return None
+
+        def add_rect(self, *_args):
+            return None
+
+    monkeypatch.setattr(ui, "_debug_colorbar_mode", lambda _viewer_ui: "depth_std")
+    monkeypatch.setattr(ui.imgui, "get_foreground_draw_list", lambda: _DrawList())
+    toolkit = SimpleNamespace(
+        _viewport_content_rect=(0.0, 0.0, 800.0, 600.0),
+        _interface_scale_factor=lambda viewer_ui: float(viewer_ui._values["scale"]),
+        _debug_colorbar_title=lambda _mode: "Depth Std",
+        _draw_debug_colorbar_gradient=lambda *_args: None,
+        _draw_debug_colorbar_ticks=lambda *_args: None,
+    )
+
+    ui.ToolkitWindow._draw_debug_colorbar(toolkit, SimpleNamespace(_values={"scale": 1.0}, _texts={}))
+    ui.ToolkitWindow._draw_debug_colorbar(toolkit, SimpleNamespace(_values={"scale": 2.0}, _texts={}))
+
+    assert len(boxes) == 2
+    assert boxes[1][0] > boxes[0][0] * 1.5
 
 
 def test_optimizer_regularization_tab_includes_density_controls() -> None:

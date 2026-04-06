@@ -47,15 +47,20 @@ _VIEWER_BACKGROUND_MODE_LABELS = ("Train Background", "Custom")
 _TRAIN_DOWNSCALE_MODE_LABELS = ("Auto",) + tuple(f"{i}x" for i in range(1, 17))
 _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT = 2e-4
 _DEBUG_CONTRIBUTION_AMOUNT_FLOOR = 1e-6
-_DEBUG_COLORBAR_HEIGHT = 18.0
+_DEBUG_COLORBAR_HEIGHT = 28.0
 _DEBUG_COLORBAR_MIN_WIDTH = 320.0
 _DEBUG_COLORBAR_MAX_WIDTH = 640.0
 _DEBUG_COLORBAR_MARGIN = 18.0
 _DEBUG_COLORBAR_TICKS = 5
 _DEBUG_COLORBAR_STEPS = 96
 _DEBUG_COLORBAR_SIDE_PAD = 18.0
-_DEBUG_COLORBAR_TOP_PAD = 24.0
-_DEBUG_COLORBAR_BOTTOM_PAD = 24.0
+_DEBUG_COLORBAR_TOP_PAD = 30.0
+_DEBUG_COLORBAR_BOTTOM_PAD = 30.0
+_VIEWPORT_OVERLAY_MARGIN = 8.0
+_VIEWPORT_OVERLAY_WIDTH = 320.0
+_VIEWPORT_OVERLAY_MIN_WIDTH = 220.0
+_VIEWPORT_OVERLAY_PADDING = 10.0
+_VIEWPORT_OVERLAY_MIN_HEIGHT = 44.0
 _DOCKSPACE_FLAGS = int(imgui.DockNodeFlags_.none)
 _TOOLKIT_WINDOW_NAME = "Toolkit"
 _VIEWPORT_WINDOW_NAME = "Viewport###Viewport"
@@ -769,7 +774,6 @@ class ToolkitWindow:
         self._draw_dockspace()
         self._draw_panel(ui, width, height)
         self._draw_viewport_window(ui, viewport_texture, width, height)
-        self._draw_renderer_debug_window(ui)
         self._draw_debug_colorbar(ui)
         self._draw_histogram_window(ui)
         imgui.render()
@@ -875,22 +879,24 @@ class ToolkitWindow:
                     _color_u32(0.72, 0.76, 0.82, 0.95),
                     label,
                 )
-            self._draw_viewport_view_menu(ui, cursor)
+            overlay_origin = self._draw_viewport_view_menu(ui, cursor)
+            self._draw_viewport_debug_overlay(ui, overlay_origin)
         else:
             self._viewport_window_focused = False
             self._viewport_input_active = False
         imgui.end()
 
-    def _draw_viewport_view_menu(self, ui: ViewerUI, image_origin: imgui.ImVec2) -> None:
+    def _draw_viewport_view_menu(self, ui: ViewerUI, image_origin: imgui.ImVec2) -> imgui.ImVec2:
         style = imgui.get_style()
-        label_size = imgui.calc_text_size("view")
-        button_width = float(label_size.x) + 2.0 * float(style.frame_padding.x)
-        right_edge = float(self._viewport_content_rect[0] + self._viewport_content_rect[2])
-        button_pos = imgui.ImVec2(max(float(image_origin.x) + 8.0, right_edge - button_width - 8.0), float(image_origin.y) + 8.0)
+        scale = self._interface_scale_factor(ui)
+        label = "View Mode"
+        label_size = imgui.calc_text_size(label)
+        button_pos = imgui.ImVec2(float(image_origin.x) + _VIEWPORT_OVERLAY_MARGIN * scale, float(image_origin.y) + _VIEWPORT_OVERLAY_MARGIN * scale)
+        button_height = float(label_size.y) + 2.0 * float(style.frame_padding.y)
         imgui.push_id("viewport_view")
         imgui.set_cursor_screen_pos(button_pos)
-        if _imgui_opened(imgui.small_button("view")):
-            imgui.set_next_window_pos(imgui.ImVec2(button_pos.x, button_pos.y + float(label_size.y) + 10.0), imgui.Cond_.appearing.value)
+        if _imgui_opened(imgui.small_button(label)):
+            imgui.set_next_window_pos(imgui.ImVec2(button_pos.x, button_pos.y + button_height + _VIEWPORT_OVERLAY_MARGIN * scale), imgui.Cond_.appearing.value)
             imgui.open_popup("viewport_view_popup")
         if _imgui_opened(imgui.begin_popup("viewport_view_popup")):
             current = min(max(int(ui._values.get("debug_mode", 0)), 0), len(_DEBUG_MODE_LABELS) - 1)
@@ -902,6 +908,41 @@ class ToolkitWindow:
                     imgui.set_item_default_focus()
             imgui.end_popup()
         imgui.pop_id()
+        return imgui.ImVec2(button_pos.x, button_pos.y + button_height + _VIEWPORT_OVERLAY_MARGIN * scale)
+
+    def _draw_viewport_debug_overlay(self, ui: ViewerUI, overlay_origin: imgui.ImVec2) -> None:
+        debug_mode = _DEBUG_MODE_VALUES[min(max(int(ui._values.get("debug_mode", 0)), 0), len(_DEBUG_MODE_VALUES) - 1)]
+        control_keys = tuple(key for key in _renderer_debug_control_keys(debug_mode) if key != "debug_mode")
+        if len(control_keys) == 0:
+            return
+        view_x0, view_y0, view_width, view_height = self._viewport_content_rect
+        if view_width <= 1.0 or view_height <= 1.0:
+            return
+        scale = self._interface_scale_factor(ui)
+        frame_height = float(imgui.get_frame_height())
+        spacing_y = float(imgui.get_style().item_spacing.y)
+        padding = _VIEWPORT_OVERLAY_PADDING * scale
+        width = min(_VIEWPORT_OVERLAY_WIDTH * scale, max(view_width - 2.0 * _VIEWPORT_OVERLAY_MARGIN * scale, _VIEWPORT_OVERLAY_MIN_WIDTH * scale))
+        height = max(
+            2.0 * padding + len(control_keys) * frame_height + max(len(control_keys) - 1, 0) * spacing_y,
+            _VIEWPORT_OVERLAY_MIN_HEIGHT * scale,
+        )
+        max_height = view_y0 + view_height - overlay_origin.y - _VIEWPORT_OVERLAY_MARGIN * scale
+        if max_height <= 0.0:
+            return
+        height = min(height, max_height)
+        imgui.push_style_color(imgui.Col_.child_bg.value, imgui.ImVec4(0.05, 0.06, 0.08, 0.58))
+        imgui.push_style_color(imgui.Col_.border.value, imgui.ImVec4(0.95, 0.97, 1.0, 0.14))
+        imgui.push_style_var(imgui.StyleVar_.window_padding, imgui.ImVec2(padding, padding))
+        imgui.set_cursor_screen_pos(overlay_origin)
+        if _imgui_opened(imgui.begin_child("##viewport_debug_overlay", imgui.ImVec2(width, height), imgui.ChildFlags_.borders.value)):
+            imgui.push_item_width(-1.0)
+            for key in control_keys:
+                self._draw_control(ui, next(spec for spec in DEBUG_RENDER_SPECS if spec.key == key))
+            imgui.pop_item_width()
+        imgui.end_child()
+        imgui.pop_style_var()
+        imgui.pop_style_color(2)
 
     def _draw_debug_colorbar(self, ui: ViewerUI) -> None:
         mode = _debug_colorbar_mode(ui)
@@ -911,27 +952,33 @@ class ToolkitWindow:
         if view_width <= 1.0 or view_height <= 1.0:
             return
         draw_list = imgui.get_foreground_draw_list()
-        available_width = max(view_width - 2.0 * _DEBUG_COLORBAR_MARGIN, 120.0)
-        bar_width = min(_DEBUG_COLORBAR_MAX_WIDTH, max(_DEBUG_COLORBAR_MIN_WIDTH, available_width * 0.85))
-        bar_width = max(min(bar_width, available_width - 2.0 * _DEBUG_COLORBAR_SIDE_PAD), 80.0)
-        box_width = bar_width + 2.0 * _DEBUG_COLORBAR_SIDE_PAD
-        box_height = _DEBUG_COLORBAR_TOP_PAD + _DEBUG_COLORBAR_HEIGHT + _DEBUG_COLORBAR_BOTTOM_PAD
-        box_x = max(view_x0 + 0.5 * (view_width - box_width), view_x0 + _DEBUG_COLORBAR_MARGIN)
-        box_y = max(view_y0 + view_height - _DEBUG_COLORBAR_MARGIN - box_height, view_y0 + 4.0)
-        x0 = box_x + _DEBUG_COLORBAR_SIDE_PAD
-        y0 = box_y + _DEBUG_COLORBAR_TOP_PAD
+        scale = self._interface_scale_factor(ui)
+        margin = _DEBUG_COLORBAR_MARGIN * scale
+        side_pad = _DEBUG_COLORBAR_SIDE_PAD * scale
+        top_pad = _DEBUG_COLORBAR_TOP_PAD * scale
+        bottom_pad = _DEBUG_COLORBAR_BOTTOM_PAD * scale
+        bar_height = _DEBUG_COLORBAR_HEIGHT * scale
+        available_width = max(view_width - 2.0 * margin, 120.0)
+        bar_width = min(_DEBUG_COLORBAR_MAX_WIDTH * scale, max(_DEBUG_COLORBAR_MIN_WIDTH * scale, available_width * 0.85))
+        bar_width = max(min(bar_width, available_width - 2.0 * side_pad), 80.0)
+        box_width = bar_width + 2.0 * side_pad
+        box_height = top_pad + bar_height + bottom_pad
+        box_x = max(view_x0 + 0.5 * (view_width - box_width), view_x0 + margin)
+        box_y = max(view_y0 + view_height - margin - box_height, view_y0 + 4.0 * scale)
+        x0 = box_x + side_pad
+        y0 = box_y + top_pad
         x1 = x0 + bar_width
-        y1 = y0 + _DEBUG_COLORBAR_HEIGHT
+        y1 = y0 + bar_height
         draw_list.add_rect_filled(
             imgui.ImVec2(box_x, box_y),
             imgui.ImVec2(box_x + box_width, box_y + box_height),
             _color_u32(0.05, 0.06, 0.08, 0.58),
-            8.0,
+            8.0 * scale,
         )
-        draw_list.add_text(imgui.ImVec2(box_x, box_y + 6.0), _color_u32(0.85, 0.88, 0.92), self._debug_colorbar_title(mode))
+        draw_list.add_text(imgui.ImVec2(box_x + 0.5 * side_pad, box_y + 0.25 * top_pad), _color_u32(0.85, 0.88, 0.92), self._debug_colorbar_title(mode))
         self._draw_debug_colorbar_gradient(draw_list, x0, y0, x1, y1)
-        draw_list.add_rect(imgui.ImVec2(x0, y0), imgui.ImVec2(x1, y1), _color_u32(0.95, 0.97, 1.0, 0.95), 2.0, 0, 1.0)
-        self._draw_debug_colorbar_ticks(draw_list, mode, x0, y0, x1, y1, ui)
+        draw_list.add_rect(imgui.ImVec2(x0, y0), imgui.ImVec2(x1, y1), _color_u32(0.95, 0.97, 1.0, 0.95), 2.0 * scale, 0, max(scale, 1.0))
+        self._draw_debug_colorbar_ticks(draw_list, mode, x0, y0, x1, y1, ui, scale)
 
     def _draw_debug_colorbar_gradient(self, draw_list: object, x0: float, y0: float, x1: float, y1: float) -> None:
         width = max(x1 - x0, 1.0)
@@ -945,14 +992,14 @@ class ToolkitWindow:
                 _color_u32(*rgb),
             )
 
-    def _draw_debug_colorbar_ticks(self, draw_list: object, mode: str, x0: float, y0: float, x1: float, y1: float, ui: ViewerUI) -> None:
+    def _draw_debug_colorbar_ticks(self, draw_list: object, mode: str, x0: float, y0: float, x1: float, y1: float, ui: ViewerUI, scale: float) -> None:
         for idx in range(_DEBUG_COLORBAR_TICKS):
             t = idx / max(_DEBUG_COLORBAR_TICKS - 1, 1)
             x = x0 + t * (x1 - x0)
             label = self._debug_colorbar_tick_label(mode, t, ui)
             label_size = imgui.calc_text_size(label)
-            draw_list.add_line(imgui.ImVec2(x, y1 + 2.0), imgui.ImVec2(x, y1 + 8.0), _color_u32(0.85, 0.88, 0.92, 0.9), 1.0)
-            draw_list.add_text(imgui.ImVec2(x - 0.5 * float(label_size.x), y1 + 10.0), _color_u32(0.85, 0.88, 0.92, 0.95), label)
+            draw_list.add_line(imgui.ImVec2(x, y1 + 2.0 * scale), imgui.ImVec2(x, y1 + 10.0 * scale), _color_u32(0.85, 0.88, 0.92, 0.9), max(scale, 1.0))
+            draw_list.add_text(imgui.ImVec2(x - 0.5 * float(label_size.x), y1 + 12.0 * scale), _color_u32(0.85, 0.88, 0.92, 0.95), label)
 
     def _debug_colorbar_title(self, mode: str) -> str:
         return {
@@ -1015,9 +1062,6 @@ class ToolkitWindow:
                 ui._values[_INTERFACE_SCALE_KEY] = _DEFAULT_INTERFACE_SCALE_INDEX
             imgui.end_menu()
         if imgui.begin_menu("Debug"):
-            selected = bool(ui._values.get("show_renderer_debug", False))
-            if _menu_item("Renderer Debug", selected=selected):
-                ui._values["show_renderer_debug"] = not selected
             selected = bool(ui._values.get("show_histograms", False))
             if _menu_item("Histograms", selected=selected):
                 ui._values["show_histograms"] = not selected
@@ -1657,22 +1701,6 @@ class ToolkitWindow:
         self._ctx_reset("render_ctx", ui, [s.key for s in RENDER_PARAM_SPECS])
         imgui.separator()
 
-    def _draw_renderer_debug_window(self, ui: ViewerUI) -> None:
-        if not bool(ui._values.get("show_renderer_debug", False)):
-            return
-        self._dock_tool_window(imgui.Cond_.appearing.value)
-        imgui.set_next_window_pos(imgui.ImVec2(self._toolkit_rect[0] + self._toolkit_rect[2] + 24.0, self._menu_bar_height + 28.0), imgui.Cond_.first_use_ever.value)
-        imgui.set_next_window_size(imgui.ImVec2(320.0, 0.0), imgui.Cond_.first_use_ever.value)
-        opened, show = imgui.begin("Renderer Debug", True)
-        ui._values["show_renderer_debug"] = bool(show)
-        if opened:
-            debug_mode = _DEBUG_MODE_VALUES[min(max(int(ui._values.get("debug_mode", 0)), 0), len(_DEBUG_MODE_VALUES) - 1)]
-            control_keys = _renderer_debug_control_keys(debug_mode)
-            for key in control_keys:
-                self._draw_control(ui, next(spec for spec in DEBUG_RENDER_SPECS if spec.key == key))
-            self._ctx_reset("renderer_debug_ctx", ui, [s.key for s in DEBUG_RENDER_SPECS])
-        imgui.end()
-
     def _section_performance(self, ui: ViewerUI) -> None:
         if not imgui.collapsing_header("Plots", imgui.TreeNodeFlags_.default_open.value):
             return
@@ -1977,7 +2005,6 @@ def build_ui(renderer) -> ViewerUI:
     values["colmap_diffused_point_count"] = 100000
     values["colmap_diffusion_radius"] = 1.0
     values["show_histograms"] = False
-    values["show_renderer_debug"] = False
     values["hist_bin_count"] = _HISTOGRAM_BIN_COUNT_DEFAULT
     values["hist_min_log10"] = _HISTOGRAM_MIN_LOG10_DEFAULT
     values["hist_max_log10"] = _HISTOGRAM_MAX_LOG10_DEFAULT
