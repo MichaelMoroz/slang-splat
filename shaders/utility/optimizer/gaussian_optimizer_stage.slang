@@ -325,6 +325,18 @@ void csAccumulateRegularizationGrads(uint3 dispatchThreadID : SV_DispatchThreadI
     float3 gradSh1X = load_param_grad3(PARAM_SH1_X_R, splatId);
     float3 gradSh1Y = load_param_grad3(PARAM_SH1_Y_R, splatId);
     float3 gradSh1Z = load_param_grad3(PARAM_SH1_Z_R, splatId);
+    float3 gradSh2_0 = load_param_grad3(sh_param_id(4u, 0u), splatId);
+    float3 gradSh2_1 = load_param_grad3(sh_param_id(5u, 0u), splatId);
+    float3 gradSh2_2 = load_param_grad3(sh_param_id(6u, 0u), splatId);
+    float3 gradSh2_3 = load_param_grad3(sh_param_id(7u, 0u), splatId);
+    float3 gradSh2_4 = load_param_grad3(sh_param_id(8u, 0u), splatId);
+    float3 gradSh3_0 = load_param_grad3(sh_param_id(9u, 0u), splatId);
+    float3 gradSh3_1 = load_param_grad3(sh_param_id(10u, 0u), splatId);
+    float3 gradSh3_2 = load_param_grad3(sh_param_id(11u, 0u), splatId);
+    float3 gradSh3_3 = load_param_grad3(sh_param_id(12u, 0u), splatId);
+    float3 gradSh3_4 = load_param_grad3(sh_param_id(13u, 0u), splatId);
+    float3 gradSh3_5 = load_param_grad3(sh_param_id(14u, 0u), splatId);
+    float3 gradSh3_6 = load_param_grad3(sh_param_id(15u, 0u), splatId);
     float gradRawOpacity = load_param_grad(PARAM_RAW_OPACITY, splatId);
     float invSplatCount = 1.0 / max(float(g_SplatCount), 1.0);
 
@@ -368,11 +380,68 @@ void csAccumulateRegularizationGrads(uint3 dispatchThreadID : SV_DispatchThreadI
         var dpSh1X = diffPair(state.sh1X);
         var dpSh1Y = diffPair(state.sh1Y);
         var dpSh1Z = diffPair(state.sh1Z);
-        float sh1RegLoss = sh1_abs_l1_loss(state.sh1X, state.sh1Y, state.sh1Z);
-        bwd_diff(sh1_abs_l1_loss)(dpSh1X, dpSh1Y, dpSh1Z, sh1RegWeight * invSplatCount);
+        var dpSh2_0 = diffPair(state.sh2_0);
+        var dpSh2_1 = diffPair(state.sh2_1);
+        var dpSh2_2 = diffPair(state.sh2_2);
+        var dpSh2_3 = diffPair(state.sh2_3);
+        var dpSh2_4 = diffPair(state.sh2_4);
+        var dpSh3_0 = diffPair(state.sh3_0);
+        var dpSh3_1 = diffPair(state.sh3_1);
+        var dpSh3_2 = diffPair(state.sh3_2);
+        var dpSh3_3 = diffPair(state.sh3_3);
+        var dpSh3_4 = diffPair(state.sh3_4);
+        var dpSh3_5 = diffPair(state.sh3_5);
+        var dpSh3_6 = diffPair(state.sh3_6);
+        float sh1RegLoss = sh_rest_abs_l1_loss(
+            state.sh1X,
+            state.sh1Y,
+            state.sh1Z,
+            state.sh2_0,
+            state.sh2_1,
+            state.sh2_2,
+            state.sh2_3,
+            state.sh2_4,
+            state.sh3_0,
+            state.sh3_1,
+            state.sh3_2,
+            state.sh3_3,
+            state.sh3_4,
+            state.sh3_5,
+            state.sh3_6
+        );
+        bwd_diff(sh_rest_abs_l1_loss)(
+            dpSh1X,
+            dpSh1Y,
+            dpSh1Z,
+            dpSh2_0,
+            dpSh2_1,
+            dpSh2_2,
+            dpSh2_3,
+            dpSh2_4,
+            dpSh3_0,
+            dpSh3_1,
+            dpSh3_2,
+            dpSh3_3,
+            dpSh3_4,
+            dpSh3_5,
+            dpSh3_6,
+            sh1RegWeight * invSplatCount
+        );
         gradSh1X += dpSh1X.getDifferential();
         gradSh1Y += dpSh1Y.getDifferential();
         gradSh1Z += dpSh1Z.getDifferential();
+        gradSh2_0 += dpSh2_0.getDifferential();
+        gradSh2_1 += dpSh2_1.getDifferential();
+        gradSh2_2 += dpSh2_2.getDifferential();
+        gradSh2_3 += dpSh2_3.getDifferential();
+        gradSh2_4 += dpSh2_4.getDifferential();
+        gradSh3_0 += dpSh3_0.getDifferential();
+        gradSh3_1 += dpSh3_1.getDifferential();
+        gradSh3_2 += dpSh3_2.getDifferential();
+        gradSh3_3 += dpSh3_3.getDifferential();
+        gradSh3_4 += dpSh3_4.getDifferential();
+        gradSh3_5 += dpSh3_5.getDifferential();
+        gradSh3_6 += dpSh3_6.getDifferential();
         float lossAdd = sh1RegWeight * sh1RegLoss * invSplatCount;
         if (isfinite(lossAdd) && lossAdd != 0.0) InterlockedAdd(g_LossBuffer[LOSS_SLOT_TOTAL], lossAdd);
     }
@@ -381,6 +450,18 @@ void csAccumulateRegularizationGrads(uint3 dispatchThreadID : SV_DispatchThreadI
     store_param_grad3(PARAM_SH1_X_R, splatId, gradSh1X);
     store_param_grad3(PARAM_SH1_Y_R, splatId, gradSh1Y);
     store_param_grad3(PARAM_SH1_Z_R, splatId, gradSh1Z);
+    store_param_grad3(sh_param_id(4u, 0u), splatId, gradSh2_0);
+    store_param_grad3(sh_param_id(5u, 0u), splatId, gradSh2_1);
+    store_param_grad3(sh_param_id(6u, 0u), splatId, gradSh2_2);
+    store_param_grad3(sh_param_id(7u, 0u), splatId, gradSh2_3);
+    store_param_grad3(sh_param_id(8u, 0u), splatId, gradSh2_4);
+    store_param_grad3(sh_param_id(9u, 0u), splatId, gradSh3_0);
+    store_param_grad3(sh_param_id(10u, 0u), splatId, gradSh3_1);
+    store_param_grad3(sh_param_id(11u, 0u), splatId, gradSh3_2);
+    store_param_grad3(sh_param_id(12u, 0u), splatId, gradSh3_3);
+    store_param_grad3(sh_param_id(13u, 0u), splatId, gradSh3_4);
+    store_param_grad3(sh_param_id(14u, 0u), splatId, gradSh3_5);
+    store_param_grad3(sh_param_id(15u, 0u), splatId, gradSh3_6);
     store_param_grad(PARAM_RAW_OPACITY, splatId, gradRawOpacity);
 }
 

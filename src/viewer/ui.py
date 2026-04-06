@@ -1929,7 +1929,7 @@ class ToolkitWindow:
         "max_update": "Maximum per-step parameter update magnitude",
         "scale_l2": "L2 regularization on log-scale",
         "scale_abs_reg": "Absolute scale regularization weight",
-        "sh1_reg": "L1 regularization weight applied to SH1 coefficients only",
+        "sh1_reg": "L1 regularization weight applied to all non-DC SH coefficients",
         "opacity_reg": "Opacity regularization weight (pushes toward 0 or 1)",
         "position_random_step_noise_lr": "Stage 0 post-step MCMC-style position noise multiplier; when scheduling is disabled this value is used for the whole run",
         "position_random_step_opacity_gate_center": "Opacity center for the random-step sigmoid gate; lower-opacity splats get stronger position noise",

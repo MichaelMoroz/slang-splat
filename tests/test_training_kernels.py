@@ -2035,13 +2035,46 @@ def test_opacity_regularizer_pushes_true_opacity_down(device, tmp_path: Path):
     assert np.all(after < before)
 
 
-def test_sh1_regularizer_pushes_sh1_coeffs_toward_zero(device, tmp_path: Path):
+def test_sh1_regularizer_pushes_all_non_dc_sh_coeffs_toward_zero(device, tmp_path: Path):
     scene = _make_scene(count=2, seed=37)
-    scene.sh_coeffs = np.zeros((scene.count, 4, 3), dtype=np.float32)
-    scene.sh_coeffs[:, 1:, :] = np.array(
+    scene.sh_coeffs = np.zeros((scene.count, 16, 3), dtype=np.float32)
+    scene.sh_coeffs[0, 1:, :] = np.array(
         [
-            [[0.6, -0.3, 0.2], [0.1, -0.5, 0.4], [-0.2, 0.25, -0.35]],
-            [[-0.4, 0.2, -0.1], [0.3, -0.2, 0.5], [0.15, -0.45, 0.25]],
+            [0.60, -0.30, 0.20],
+            [0.10, -0.50, 0.40],
+            [-0.20, 0.25, -0.35],
+            [0.30, -0.10, 0.15],
+            [-0.45, 0.35, -0.20],
+            [0.25, -0.40, 0.30],
+            [-0.15, 0.20, -0.10],
+            [0.40, -0.25, 0.05],
+            [-0.35, 0.15, -0.45],
+            [0.22, -0.18, 0.12],
+            [-0.28, 0.32, -0.08],
+            [0.18, -0.12, 0.27],
+            [-0.24, 0.14, -0.16],
+            [0.08, -0.22, 0.34],
+            [-0.11, 0.09, -0.19],
+        ],
+        dtype=np.float32,
+    )
+    scene.sh_coeffs[1, 1:, :] = np.array(
+        [
+            [-0.40, 0.20, -0.10],
+            [0.30, -0.20, 0.50],
+            [0.15, -0.45, 0.25],
+            [-0.18, 0.12, -0.28],
+            [0.42, -0.16, 0.18],
+            [-0.26, 0.31, -0.22],
+            [0.12, -0.08, 0.14],
+            [-0.33, 0.27, -0.05],
+            [0.29, -0.11, 0.38],
+            [-0.21, 0.17, -0.13],
+            [0.24, -0.34, 0.07],
+            [-0.16, 0.10, -0.26],
+            [0.19, -0.15, 0.21],
+            [-0.09, 0.23, -0.31],
+            [0.13, -0.07, 0.17],
         ],
         dtype=np.float32,
     )
@@ -2053,7 +2086,7 @@ def test_sh1_regularizer_pushes_sh1_coeffs_toward_zero(device, tmp_path: Path):
     device.wait()
 
     zeros = np.zeros((scene.count, 4), dtype=np.float32)
-    zero_sh = np.zeros((scene.count, 4, 3), dtype=np.float32)
+    zero_sh = np.zeros((scene.count, 16, 3), dtype=np.float32)
     _write_grad_groups(renderer, scene.count, grad_positions=zeros, grad_scales=zeros, grad_rotations=zeros, grad_sh_coeffs=zero_sh, grad_color_alpha=zeros)
 
     before = np.linalg.norm(_read_scene_groups(renderer, scene.count)["sh_coeffs"][:, 1:, :].reshape(scene.count, -1), axis=1)

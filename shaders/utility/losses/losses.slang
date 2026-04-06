@@ -48,3 +48,28 @@ float sh1_abs_l1_loss(float3 sh1X, float3 sh1Y, float3 sh1Z)
     float3 sumAbs = abs(sh1X) + abs(sh1Y) + abs(sh1Z);
     return dot(sumAbs, float3(1.0, 1.0, 1.0)) * (1.0 / 9.0);
 }
+
+[Differentiable]
+float sh_rest_abs_l1_loss(
+    float3 sh1X,
+    float3 sh1Y,
+    float3 sh1Z,
+    float3 sh2_0,
+    float3 sh2_1,
+    float3 sh2_2,
+    float3 sh2_3,
+    float3 sh2_4,
+    float3 sh3_0,
+    float3 sh3_1,
+    float3 sh3_2,
+    float3 sh3_3,
+    float3 sh3_4,
+    float3 sh3_5,
+    float3 sh3_6
+)
+{
+    float3 sumAbs = abs(sh1X) + abs(sh1Y) + abs(sh1Z)
+        + abs(sh2_0) + abs(sh2_1) + abs(sh2_2) + abs(sh2_3) + abs(sh2_4)
+        + abs(sh3_0) + abs(sh3_1) + abs(sh3_2) + abs(sh3_3) + abs(sh3_4) + abs(sh3_5) + abs(sh3_6);
+    return dot(sumAbs, float3(1.0, 1.0, 1.0)) * (1.0 / 45.0);
+}
