@@ -751,6 +751,46 @@ def test_refresh_cached_raster_grad_histograms_honors_manual_refresh() -> None:
     assert viewer.ui._values["_histograms_refresh_requested"] is False
 
 
+def test_refresh_cached_raster_grad_histograms_appends_sh_ranges_when_available() -> None:
+    hist = SimpleNamespace(counts=np.ones((14, 4), dtype=np.int64), param_labels=("g",) * 14)
+    grad_ranges = SimpleNamespace(
+        min_values=np.array([-1.0, -2.0], dtype=np.float32),
+        max_values=np.array([3.0, 4.0], dtype=np.float32),
+        param_labels=("grad0", "grad1"),
+    )
+    sh_ranges = SimpleNamespace(
+        min_values=np.array([-0.1, -0.2, -0.3], dtype=np.float32),
+        max_values=np.array([0.4, 0.5, 0.6], dtype=np.float32),
+        param_labels=("sh0.r", "sh0.g", "sh0.b"),
+    )
+    renderer = SimpleNamespace(
+        cached_raster_grad_atomic_mode="float",
+        compute_cached_raster_grad_component_histograms=lambda metrics, scene_count, *, bin_count, min_log10, max_log10: hist,
+        compute_cached_raster_grad_component_ranges=lambda metrics, scene_count: grad_ranges,
+        compute_sh_component_ranges=lambda scene_count: sh_ranges,
+    )
+    viewer = SimpleNamespace(
+        ui=SimpleNamespace(_values={"hist_bin_count": 4, "hist_min_log10": -8.0, "hist_max_log10": 2.0, "_histograms_refresh_requested": True}),
+        s=SimpleNamespace(
+            trainer=SimpleNamespace(state=SimpleNamespace(step=5), scene=SimpleNamespace(count=7), metrics=object()),
+            training_renderer=renderer,
+            cached_raster_grad_histograms=None,
+            cached_raster_grad_ranges=None,
+            cached_raster_grad_histogram_mode="",
+            cached_raster_grad_histogram_step=-1,
+            cached_raster_grad_histogram_scene_count=-1,
+            cached_raster_grad_histogram_signature=None,
+            cached_raster_grad_histogram_status="",
+        ),
+    )
+
+    session.refresh_cached_raster_grad_histograms(viewer)
+
+    np.testing.assert_allclose(viewer.s.cached_raster_grad_ranges.min_values, np.array([-1.0, -2.0, -0.1, -0.2, -0.3], dtype=np.float32))
+    np.testing.assert_allclose(viewer.s.cached_raster_grad_ranges.max_values, np.array([3.0, 4.0, 0.4, 0.5, 0.6], dtype=np.float32))
+    assert viewer.s.cached_raster_grad_ranges.param_labels == ("grad0", "grad1", "sh0.r", "sh0.g", "sh0.b")
+
+
 def test_initialize_training_scene_rebinds_debug_buffers_for_new_trainer(monkeypatch) -> None:
     class _Encoder:
         def finish(self) -> str:

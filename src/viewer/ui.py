@@ -1423,6 +1423,9 @@ class ToolkitWindow:
                 imgui.separator()
             if payload is None or getattr(payload, "counts", np.zeros((0, 0), dtype=np.int64)).size == 0 or int(np.sum(payload.counts)) == 0:
                 imgui.text_wrapped("No cached ellipse gradient histogram data is available yet.")
+                if range_payload is not None:
+                    imgui.separator()
+                    self._draw_histogram_range_debug(range_payload)
             else:
                 self._update_histogram_y_limit(ui, payload)
                 self._draw_histogram_groups(ui, payload)

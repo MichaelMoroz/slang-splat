@@ -175,6 +175,8 @@ class GaussianRenderer:
     PARAM_COLOR_IDS = PARAM_SH_IDS
     PARAM_RAW_OPACITY_ID = PARAM_SH_FIRST_ID + SUPPORTED_SH_COEFF_COUNT * 3
     TRAINABLE_PARAM_COUNT = PARAM_RAW_OPACITY_ID + 1
+    SH_COEFF_LABELS = ("SH0 DC", "SH1 X", "SH1 Y", "SH1 Z", "SH2 0", "SH2 1", "SH2 2", "SH2 3", "SH2 4", "SH3 0", "SH3 1", "SH3 2", "SH3 3", "SH3 4", "SH3 5", "SH3 6")
+    SH_COMPONENT_RANGE_LABELS = tuple(f"{coeff}.{channel}" for coeff in SH_COEFF_LABELS for channel in ("r", "g", "b"))
     CACHED_RASTER_GRAD_COMPONENT_LABELS = (
         "roLocal.x", "roLocal.y", "roLocal.z",
         "scale.x", "scale.y", "scale.z",
@@ -1347,6 +1349,19 @@ class GaussianRenderer:
         count = self._scene_count if splat_count is None else int(splat_count)
         tensor = self.prepare_active_cached_raster_grads_float_tensor(count)
         return metrics.compute_param_tensor_ranges(tensor, self._RASTER_CACHE_PARAM_COUNT, count, param_labels=self.CACHED_RASTER_GRAD_COMPONENT_LABELS)
+
+    def compute_sh_component_ranges(self, splat_count: int | None = None) -> ParamTensorRanges:
+        count = self._scene_count if splat_count is None else int(splat_count)
+        if count <= 0:
+            return ParamTensorRanges(
+                min_values=np.zeros((0,), dtype=np.float32),
+                max_values=np.zeros((0,), dtype=np.float32),
+                param_labels=(),
+            )
+        sh_coeffs = np.asarray(self.read_scene_groups(count)["sh_coeffs"], dtype=np.float32)
+        mins = np.min(sh_coeffs, axis=0).reshape(-1).astype(np.float32, copy=False)
+        maxs = np.max(sh_coeffs, axis=0).reshape(-1).astype(np.float32, copy=False)
+        return ParamTensorRanges(min_values=mins.copy(), max_values=maxs.copy(), param_labels=self.SH_COMPONENT_RANGE_LABELS)
 
     def write_grad_groups(
         self,

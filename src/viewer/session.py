@@ -12,6 +12,7 @@ import slangpy as spy
 
 from ..app.shared import apply_training_profile, estimate_point_bounds, estimate_scene_bounds, renderer_kwargs
 from ..common import SHADER_ROOT, clamp_index
+from ..metrics import ParamTensorRanges
 from ..renderer import GaussianRenderSettings, GaussianRenderer
 from ..scene import (
     GaussianScene,
@@ -819,18 +820,47 @@ def refresh_cached_raster_grad_histograms(viewer: object, force: bool = False) -
         min_log10=min_log10,
         max_log10=max_log10,
     )
-    viewer.s.cached_raster_grad_ranges = viewer.s.training_renderer.compute_cached_raster_grad_component_ranges(viewer.s.trainer.metrics, scene_count)
+    grad_ranges = viewer.s.training_renderer.compute_cached_raster_grad_component_ranges(viewer.s.trainer.metrics, scene_count)
+    sh_ranges_fn = getattr(viewer.s.training_renderer, "compute_sh_component_ranges", None)
+    sh_ranges = sh_ranges_fn(scene_count) if callable(sh_ranges_fn) else None
+    viewer.s.cached_raster_grad_ranges = _concat_param_tensor_ranges(grad_ranges, sh_ranges)
     viewer.s.cached_raster_grad_histogram_mode = mode
     viewer.s.cached_raster_grad_histogram_step = step
     viewer.s.cached_raster_grad_histogram_scene_count = scene_count
     viewer.s.cached_raster_grad_histogram_signature = signature
     total = int(np.sum(viewer.s.cached_raster_grad_histograms.counts))
     viewer.s.cached_raster_grad_histogram_status = (
-        f"Cached ellipse grads | mode={mode} | step={step:,} | samples={scene_count:,} | populated={total:,}"
+        f"Cached ellipse grads + SH ranges | mode={mode} | step={step:,} | samples={scene_count:,} | populated={total:,}"
         if total > 0 or step > 0
         else "No cached ellipse backward gradients have been produced yet."
     )
     viewer.ui._values["_histograms_refresh_requested"] = False
+
+
+def _concat_param_tensor_ranges(*payloads: object) -> object:
+    valid = [payload for payload in payloads if payload is not None]
+    if len(valid) == 0:
+        return None
+    if len(valid) == 1:
+        return valid[0]
+    min_values = []
+    max_values = []
+    labels: list[str] = []
+    for payload in valid:
+        payload_min = np.asarray(getattr(payload, "min_values", np.zeros((0,), dtype=np.float32)), dtype=np.float32).reshape(-1)
+        payload_max = np.asarray(getattr(payload, "max_values", np.zeros((0,), dtype=np.float32)), dtype=np.float32).reshape(-1)
+        if payload_min.size != payload_max.size:
+            continue
+        min_values.append(payload_min)
+        max_values.append(payload_max)
+        labels.extend(str(label) for label in getattr(payload, "param_labels", ()))
+    if len(min_values) == 0:
+        return None
+    return ParamTensorRanges(
+        min_values=np.concatenate(min_values, axis=0),
+        max_values=np.concatenate(max_values, axis=0),
+        param_labels=tuple(labels),
+    )
 
 
 def load_scene(viewer: object, path: Path) -> None:
