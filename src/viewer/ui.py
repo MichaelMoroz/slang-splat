@@ -938,7 +938,7 @@ class ToolkitWindow:
         if _imgui_opened(imgui.begin_child("##viewport_debug_overlay", imgui.ImVec2(width, height), imgui.ChildFlags_.borders.value)):
             imgui.push_item_width(-1.0)
             for key in control_keys:
-                self._draw_control(ui, next(spec for spec in DEBUG_RENDER_SPECS if spec.key == key))
+                self._draw_control(ui, next(spec for spec in DEBUG_RENDER_SPECS if spec.key == key), compact=True)
             imgui.pop_item_width()
         imgui.end_child()
         imgui.pop_style_var()
@@ -1854,13 +1854,16 @@ class ToolkitWindow:
         "init_opacity": "Initial opacity for new gaussians",
     }
 
-    def _draw_control(self, ui: ViewerUI, spec: ControlSpec) -> None:
+    def _draw_control(self, ui: ViewerUI, spec: ControlSpec, compact: bool = False) -> None:
         key = spec.key
         if key not in ui._values:
             ui._values[key] = spec.kwargs.get("value", 0)
+        label = f"##{key}" if compact else spec.label
+        if compact:
+            imgui.text_unformatted(spec.label)
         if spec.kind == "slider_float":
             changed, val = imgui.slider_float(
-                spec.label, float(ui._values[key]),
+                label, float(ui._values[key]),
                 float(spec.kwargs.get("min", 0.0)), float(spec.kwargs.get("max", 1.0)),
                 spec.kwargs.get("format", "%.3f"),
                 imgui.SliderFlags_.logarithmic.value if spec.kwargs.get("logarithmic") else 0
@@ -1879,13 +1882,13 @@ class ToolkitWindow:
             if current_value != int(ui._values[key]):
                 ui._values[key] = current_value
             changed, val = imgui.slider_int(
-                spec.label, current_value, min_value, max_value
+                label, current_value, min_value, max_value
             )
             if changed:
                 ui._values[key] = min(max(int(val), min_value), max_value)
         elif spec.kind == "input_int":
             changed, val = imgui.input_int(
-                spec.label,
+                label,
                 int(ui._values[key]),
                 int(spec.kwargs.get("step", 1)),
                 int(spec.kwargs.get("step_fast", 10)),
@@ -1897,7 +1900,7 @@ class ToolkitWindow:
             option_count = max(len(options), 1)
             current = min(max(int(ui._values[key]), 0), option_count - 1)
             preview = str(options[current]) if options else str(current)
-            if imgui.begin_combo(spec.label, preview):
+            if imgui.begin_combo(label, preview):
                 for idx, option in enumerate(options):
                     selected = idx == current
                     if imgui.selectable(str(option), selected)[0]:
@@ -1907,7 +1910,7 @@ class ToolkitWindow:
                 imgui.end_combo()
         elif spec.kind == "input_float":
             changed, val = imgui.input_float(
-                spec.label, float(ui._values[key]),
+                label, float(ui._values[key]),
                 float(spec.kwargs.get("step", 0.0)),
                 float(spec.kwargs.get("step_fast", 0.0)),
                 spec.kwargs.get("format", "%.3f")
@@ -1915,12 +1918,12 @@ class ToolkitWindow:
             if changed:
                 ui._values[key] = val
         elif spec.kind == "checkbox":
-            changed, val = imgui.checkbox(spec.label, bool(ui._values[key]))
+            changed, val = imgui.checkbox(label, bool(ui._values[key]))
             if changed:
                 ui._values[key] = val
         elif spec.kind == "color_edit3":
             value = np.asarray(ui._values[key], dtype=np.float32).reshape(3)
-            changed, color = imgui.color_edit3(spec.label, imgui.ImVec4(float(value[0]), float(value[1]), float(value[2]), 1.0))
+            changed, color = imgui.color_edit3(label, imgui.ImVec4(float(value[0]), float(value[1]), float(value[2]), 1.0))
             if changed:
                 ui._values[key] = (float(color.x), float(color.y), float(color.z))
         tip = self._TOOLTIPS.get(key)

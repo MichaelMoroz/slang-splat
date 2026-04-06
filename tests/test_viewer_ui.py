@@ -259,7 +259,7 @@ def test_viewport_view_menu_left_aligns_view_mode_button(monkeypatch) -> None:
 
 
 def test_viewport_debug_overlay_draws_mode_specific_controls(monkeypatch) -> None:
-    drawn_keys: list[str] = []
+    drawn: list[tuple[str, bool]] = []
     child_sizes: list[tuple[float, float]] = []
     monkeypatch.setattr(ui.imgui, "get_frame_height", lambda: 20.0)
     monkeypatch.setattr(ui.imgui, "get_style", lambda: SimpleNamespace(item_spacing=ui.imgui.ImVec2(8.0, 6.0)))
@@ -275,19 +275,34 @@ def test_viewport_debug_overlay_draws_mode_specific_controls(monkeypatch) -> Non
     toolkit = SimpleNamespace(
         _viewport_content_rect=(0.0, 0.0, 640.0, 360.0),
         _interface_scale_factor=lambda _ui_obj: 1.0,
-        _draw_control=lambda _ui_obj, spec: drawn_keys.append(spec.key),
+        _draw_control=lambda _ui_obj, spec, compact=False: drawn.append((spec.key, compact)),
     )
     viewer_ui = SimpleNamespace(_values={"debug_mode": ui._DEBUG_MODE_VALUES.index("depth_local_mismatch")}, _texts={})
 
     ui.ToolkitWindow._draw_viewport_debug_overlay(toolkit, viewer_ui, ui.imgui.ImVec2(12.0, 34.0))
 
     assert child_sizes and child_sizes[0][0] >= 220.0
-    assert drawn_keys == [
-        "debug_depth_local_mismatch_min",
-        "debug_depth_local_mismatch_max",
-        "debug_depth_local_mismatch_smooth_radius",
-        "debug_depth_local_mismatch_reject_radius",
+    assert drawn == [
+        ("debug_depth_local_mismatch_min", True),
+        ("debug_depth_local_mismatch_max", True),
+        ("debug_depth_local_mismatch_smooth_radius", True),
+        ("debug_depth_local_mismatch_reject_radius", True),
     ]
+
+
+def test_draw_control_compact_uses_stacked_hidden_labels(monkeypatch) -> None:
+    labels: list[str] = []
+    widget_labels: list[str] = []
+    monkeypatch.setattr(ui.imgui, "text_unformatted", lambda label: labels.append(label))
+    monkeypatch.setattr(ui.imgui, "input_float", lambda label, value, *_args: widget_labels.append(label) or (False, value))
+    monkeypatch.setattr(ui.imgui, "is_item_hovered", lambda: False)
+    viewer_ui = SimpleNamespace(_values={"debug_depth_std_min": 0.0}, _texts={})
+    spec = next(spec for spec in ui.DEBUG_RENDER_SPECS if spec.key == "debug_depth_std_min")
+
+    ui.ToolkitWindow._draw_control(SimpleNamespace(_TOOLTIPS={}), viewer_ui, spec, compact=True)
+
+    assert labels == ["Depth Std Min"]
+    assert widget_labels == ["##debug_depth_std_min"]
 
 
 def test_debug_colorbar_height_scales_with_interface_scale(monkeypatch) -> None:
