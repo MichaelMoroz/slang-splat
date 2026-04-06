@@ -994,6 +994,7 @@ class ToolkitWindow:
         scale = self._interface_scale_factor(ui)
         label = "View Mode"
         camera_label = "Cameras On" if bool(ui._values.get("show_camera_overlays", True)) else "Cameras Off"
+        text_label = "Labels On" if bool(ui._values.get("show_camera_labels", False)) else "Labels Off"
         label_size = imgui.calc_text_size(label)
         button_width = float(label_size.x) + 2.0 * float(style.frame_padding.x)
         button_pos = imgui.ImVec2(float(image_origin.x) + _VIEWPORT_OVERLAY_MARGIN * scale, float(image_origin.y) + _VIEWPORT_OVERLAY_MARGIN * scale)
@@ -1006,6 +1007,9 @@ class ToolkitWindow:
         imgui.same_line(0.0, 10.0 * scale)
         if _imgui_opened(imgui.small_button(camera_label)):
             ui._values["show_camera_overlays"] = not bool(ui._values.get("show_camera_overlays", True))
+        imgui.same_line(0.0, 10.0 * scale)
+        if _imgui_opened(imgui.small_button(text_label)):
+            ui._values["show_camera_labels"] = not bool(ui._values.get("show_camera_labels", False))
         imgui.same_line(0.0, 10.0 * scale)
         label_pos = imgui.get_cursor_screen_pos()
         current_label_size = imgui.calc_text_size(current_label)
@@ -1044,7 +1048,11 @@ class ToolkitWindow:
         draw_list = imgui.get_window_draw_list()
         base_x = float(image_origin.x)
         base_y = float(image_origin.y)
-        for near_points, far_points, connectors, color, thickness in overlays:
+        scale = self._interface_scale_factor(ui)
+        show_labels = bool(ui._values.get("show_camera_labels", False))
+        label_pad_x = 5.0 * scale
+        label_pad_y = 3.0 * scale
+        for near_points, far_points, connectors, label_anchor, label_text, color, thickness in overlays:
             color_u32 = _color_u32(*color)
             near_polyline = [imgui.ImVec2(base_x + float(x), base_y + float(y)) for x, y in near_points]
             far_polyline = [imgui.ImVec2(base_x + float(x), base_y + float(y)) for x, y in far_points]
@@ -1059,6 +1067,16 @@ class ToolkitWindow:
                     color_u32,
                     float(thickness),
                 )
+            if show_labels and str(label_text):
+                label_pos = imgui.ImVec2(base_x + float(label_anchor[0]) + 6.0 * scale, base_y + float(label_anchor[1]) - 18.0 * scale)
+                label_size = imgui.calc_text_size(str(label_text))
+                draw_list.add_rect_filled(
+                    imgui.ImVec2(label_pos.x - label_pad_x, label_pos.y - label_pad_y),
+                    imgui.ImVec2(label_pos.x + float(label_size.x) + label_pad_x, label_pos.y + float(label_size.y) + label_pad_y),
+                    _color_u32(0.04, 0.05, 0.07, 0.74),
+                    4.0 * scale,
+                )
+                draw_list.add_text(label_pos, _color_u32(0.98, 0.99, 1.0, 1.0), str(label_text))
 
     def _draw_viewport_debug_overlay(self, ui: ViewerUI, overlay_origin: imgui.ImVec2) -> None:
         debug_mode = _DEBUG_MODE_VALUES[min(max(int(ui._values.get("debug_mode", 0)), 0), len(_DEBUG_MODE_VALUES) - 1)]
@@ -2284,6 +2302,7 @@ def build_ui(renderer) -> ViewerUI:
     values["show_histograms"] = False
     values["show_training_views"] = False
     values["show_camera_overlays"] = True
+    values["show_camera_labels"] = False
     values["hist_bin_count"] = _HISTOGRAM_BIN_COUNT_DEFAULT
     values["hist_min_log10"] = _HISTOGRAM_MIN_LOG10_DEFAULT
     values["hist_max_log10"] = _HISTOGRAM_MAX_LOG10_DEFAULT

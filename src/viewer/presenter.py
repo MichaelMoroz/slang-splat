@@ -422,6 +422,8 @@ def _camera_overlay_segments(
         tuple[tuple[float, float], ...],
         tuple[tuple[float, float], ...],
         tuple[tuple[float, float, float, float], ...],
+        tuple[float, float],
+        str,
         tuple[float, float, float, float],
         float,
     ],
@@ -462,10 +464,12 @@ def _camera_overlay_segments(
                 )
                 for i0, i1 in ((0, 4), (1, 5), (2, 6), (3, 7))
             ),
+            (float(corners[6, 0]), float(corners[6, 1])),
+            Path(getattr(viewer.s.training_frames[int(frame_index)], "image_path", f"frame_{int(frame_index)}")).name,
             _CAMERA_OVERLAY_ACTIVE_COLOR if bool(is_active) else _CAMERA_OVERLAY_COLOR,
             2.0 if bool(is_active) else 1.25,
         )
-        for corners, is_valid, is_active in zip(screen_corners, valid_corners, active_cameras, strict=False)
+        for corners, frame_index, is_valid, is_active in zip(screen_corners, frame_indices, valid_corners, active_cameras, strict=False)
         if bool(is_valid)
     )
 
