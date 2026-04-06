@@ -1241,7 +1241,7 @@ class ToolkitWindow:
             else:
                 imgui.text_disabled("Imported images keep their source resolution.")
             imgui.spacing()
-            mode_idx = max(0, min(int(ui._values.get("colmap_init_mode", 1)), len(_COLMAP_INIT_MODE_LABELS) - 1))
+            mode_idx = max(0, min(int(ui._values.get("colmap_init_mode", 0)), len(_COLMAP_INIT_MODE_LABELS) - 1))
             if imgui.begin_combo("Initialization", _COLMAP_INIT_MODE_LABELS[mode_idx]):
                 for idx, label in enumerate(_COLMAP_INIT_MODE_LABELS):
                     selected = idx == mode_idx
@@ -2057,7 +2057,7 @@ def build_ui(renderer) -> ViewerUI:
     values["colmap_root_path"] = ""
     values["colmap_database_path"] = ""
     values["colmap_images_root"] = ""
-    values["colmap_init_mode"] = 1
+    values["colmap_init_mode"] = 0
     values["colmap_custom_ply_path"] = ""
     values["colmap_image_downscale_mode"] = 1
     values["colmap_image_max_size"] = 2048

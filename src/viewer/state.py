@@ -25,7 +25,7 @@ class SceneCountProxy:
 class ColmapImportSettings:
     database_path: Path | None = None
     images_root: Path | None = None
-    init_mode: str = "diffused_pointcloud"
+    init_mode: str = "pointcloud"
     custom_ply_path: Path | None = None
     image_downscale_mode: str = "original"
     image_downscale_max_size: int = 2048
