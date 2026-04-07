@@ -27,6 +27,7 @@ _MIN_SCALE = 1e-4
 _MAX_SCALE = 1e4
 TRAINING_FRAME_LOAD_THREADS = 16
 DEPTH_INIT_MAX_CORRESPONDENCES = 128
+DEPTH_INIT_CLOSEST_CORRESPONDENCES = 32
 DEPTH_INIT_MIN_CORRESPONDENCES = 16
 DEPTH_INIT_MIN_INLIERS = 12
 DEPTH_INIT_RIDGE_LAMBDA = 1e-4
@@ -428,11 +429,14 @@ def collect_depth_distance_remap_samples(
         return np.zeros((0, 2), dtype=np.float32), np.zeros((0,), dtype=np.float32)
     camera_obj = frame.make_camera()
     depth_mode = str(depth_value_mode).strip().lower()
-    features: list[np.ndarray] = []
-    targets: list[float] = []
-    for point_idx in valid_ids[:DEPTH_INIT_MAX_CORRESPONDENCES]:
+    candidates: list[tuple[float, np.ndarray, float]] = []
+    for point_idx in valid_ids:
         point = recon.points3d.get(int(point_ids[point_idx]))
         if point is None:
+            continue
+        point_camera = np.asarray(camera_obj.world_point_to_camera(point.xyz), dtype=np.float32).reshape(3)
+        point_distance = float(np.linalg.norm(point_camera))
+        if not np.isfinite(point_distance) or point_distance <= 0.0:
             continue
         xy, valid = camera_obj.project_world_to_screen(np.asarray(point.xyz, dtype=np.float32), int(frame.width), int(frame.height))
         if not valid:
@@ -442,15 +446,19 @@ def collect_depth_distance_remap_samples(
         raw_depth = _depth_sample_linear(depth_map, xy)
         if not np.isfinite(raw_depth) or raw_depth <= 0.0:
             continue
-        point_camera = np.asarray(camera_obj.world_point_to_camera(point.xyz), dtype=np.float32).reshape(3)
-        target = float(point_camera[2]) if depth_mode == DEPTH_INIT_VALUE_Z_DEPTH else float(np.linalg.norm(point_camera))
+        target = float(point_camera[2]) if depth_mode == DEPTH_INIT_VALUE_Z_DEPTH else point_distance
         if not np.isfinite(target) or target <= 0.0:
             continue
-        features.append(_depth_affine_features(raw_depth))
-        targets.append(target)
-    if len(features) == 0:
+        candidates.append((point_distance, _depth_affine_features(raw_depth), target))
+        if len(candidates) >= DEPTH_INIT_MAX_CORRESPONDENCES:
+            break
+    if len(candidates) == 0:
         return np.zeros((0, 2), dtype=np.float32), np.zeros((0,), dtype=np.float32)
-    return np.ascontiguousarray(np.stack(features, axis=0), dtype=np.float32), np.ascontiguousarray(np.asarray(targets, dtype=np.float32), dtype=np.float32)
+    selected = sorted(candidates, key=lambda item: item[0])[:DEPTH_INIT_CLOSEST_CORRESPONDENCES]
+    return (
+        np.ascontiguousarray(np.stack([item[1] for item in selected], axis=0), dtype=np.float32),
+        np.ascontiguousarray(np.asarray([item[2] for item in selected], dtype=np.float32), dtype=np.float32),
+    )
 
 
 def fit_depth_distance_remap(
