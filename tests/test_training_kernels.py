@@ -338,7 +338,7 @@ def test_training_step_smoke_with_subsampling_produces_finite_updates(device, tm
     assert np.any(np.abs(after - before) > 0.0)
 
 
-def test_random_training_backgrounds_are_seeded_and_vary(device, tmp_path: Path):
+def test_random_training_background_seeds_are_deterministic(device, tmp_path: Path):
     scene = _make_scene(count=4, seed=17)
     frame = _make_frame(tmp_path, image_name="random_background_target.png", image_id=11)
     renderer_a = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
@@ -346,16 +346,36 @@ def test_random_training_backgrounds_are_seeded_and_vary(device, tmp_path: Path)
     trainer_a = GaussianTrainer(device=device, renderer=renderer_a, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(background_mode=TRAIN_BACKGROUND_MODE_RANDOM), seed=123)
     trainer_b = GaussianTrainer(device=device, renderer=renderer_b, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(background_mode=TRAIN_BACKGROUND_MODE_RANDOM), seed=123)
 
-    bg_a0 = trainer_a._training_background()
-    bg_a1 = trainer_a._training_background()
-    bg_b0 = trainer_b._training_background()
-    bg_b1 = trainer_b._training_background()
+    assert trainer_a._training_background_seed(0) == trainer_b._training_background_seed(0)
+    assert trainer_a._training_background_seed(1) == trainer_b._training_background_seed(1)
+    assert trainer_a._training_background_seed(0) != trainer_a._training_background_seed(1)
 
-    assert np.all(bg_a0 >= 0.0) and np.all(bg_a0 <= 1.0)
-    assert np.all(bg_a1 >= 0.0) and np.all(bg_a1 <= 1.0)
-    assert not np.allclose(bg_a0, bg_a1)
-    assert np.allclose(bg_a0, bg_b0)
-    assert np.allclose(bg_a1, bg_b1)
+
+def test_random_training_background_rasterizes_seeded_white_noise(device, tmp_path: Path):
+    scene = _make_scene(count=1, seed=17)
+    scene.opacities[:] = 0.0
+    frame = _make_frame(tmp_path, width=24, height=16, image_name="random_background_noise_target.png", image_id=13)
+    renderer = GaussianRenderer(device, width=24, height=16, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(background_mode=TRAIN_BACKGROUND_MODE_RANDOM), seed=123)
+    camera = frame.make_camera(near=0.1, far=20.0)
+    background = trainer._training_background()
+
+    def _render(step: int) -> np.ndarray:
+        renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
+        enc = device.create_command_encoder()
+        trainer._dispatch_raster_training_forward(enc, camera, background, step=step, frame_index=0, native_camera=camera)
+        device.submit_command_buffer(enc.finish())
+        device.wait()
+        return np.asarray(renderer.output_texture.to_numpy(), dtype=np.float32).copy()
+
+    image0 = _render(0)
+    image0_repeat = _render(0)
+    image1 = _render(1)
+
+    assert np.all(np.isfinite(image0))
+    assert np.var(image0[..., :3]) > 0.0
+    assert np.allclose(image0, image0_repeat)
+    assert not np.allclose(image0, image1)
 
 
 def test_custom_training_background_returns_configured_color(device, tmp_path: Path):

@@ -292,9 +292,11 @@ class GaussianTrainer:
         return thread_count_2d(self.renderer.width, self.renderer.height)
 
     def _training_background(self) -> np.ndarray:
-        if int(self.training.background_mode) == TRAIN_BACKGROUND_MODE_CUSTOM:
-            return np.asarray(self.training.background, dtype=np.float32).reshape(3)
-        return np.asarray(self._background_rng.random(3), dtype=np.float32)
+        return np.asarray(self.training.background, dtype=np.float32).reshape(3)
+
+    def _training_background_seed(self, step: int | None = None) -> int:
+        resolved_step = self.state.step if step is None else int(step)
+        return int(_refinement_hash_combine(self._seed + 0x9E3779B9, max(resolved_step, 0)))
 
     def _frame(self, frame_index: int) -> ColmapFrame:
         return self.frames[clamp_index(frame_index, len(self.frames))]
@@ -428,6 +430,8 @@ class GaussianTrainer:
             splat_contribution_buffer=self._refinement_buffers["splat_contribution"],
             clone_select_probability=self.clone_probability_threshold(step=resolved_step),
             clone_seed=self._seed + resolved_step,
+            training_background_mode=int(self.training.background_mode),
+            training_background_seed=self._training_background_seed(resolved_step),
             training_native_camera=self._native_frame_camera(frame_index) if native_camera is None else native_camera,
             training_sample_vars=self._training_sample_vars(frame_index, resolved_step),
         )
@@ -453,6 +457,8 @@ class GaussianTrainer:
             clone_counts_buffer=self._refinement_buffers["clone_counts"],
             clone_select_probability=self.clone_probability_threshold(step=resolved_step),
             clone_seed=self._seed + resolved_step,
+            training_background_mode=int(self.training.background_mode),
+            training_background_seed=self._training_background_seed(resolved_step),
             training_native_camera=self._native_frame_camera(frame_index) if native_camera is None else native_camera,
             training_sample_vars=self._training_sample_vars(frame_index, resolved_step),
         )
@@ -600,7 +606,6 @@ class GaussianTrainer:
         self._downscaled_target_key: tuple[int, int, int, int] | None = None
         self._observed_contribution_pixel_count = 0
         self._frame_rng = np.random.default_rng(self._seed)
-        self._background_rng = np.random.default_rng(self._seed + 0x9E3779B9)
         self._frame_order = np.zeros((len(self.frames),), dtype=np.int32)
         self._frame_cursor = len(self.frames)
         if upload_initial_scene and scene is not None:
@@ -1090,7 +1095,6 @@ class GaussianTrainer:
         self.state.last_base_lr = self.current_base_lr(0)
         self._frame_metrics.reset()
         self._frame_rng = np.random.default_rng(int(seed))
-        self._background_rng = np.random.default_rng(int(seed) + 0x9E3779B9)
         self._clear_clone_counts()
         self._reset_frame_order()
         self._invalidate_downscaled_target()
@@ -1209,7 +1213,6 @@ class GaussianTrainer:
         self.state.avg_density_loss = float(np.mean(step_metrics[:, self._LOSS_SLOT_DENSITY], dtype=np.float64)) if batch_steps > 0 else float("nan")
         self.training.train_downscale_factor = self.effective_train_downscale_factor(self.state.step)
         if self.refinement_due(self.state.step):
-            self._background_rng = np.random.default_rng(self._seed + 0x9E3779B9)
             self._run_refinement()
         return batch_steps
 

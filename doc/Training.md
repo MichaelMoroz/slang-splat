@@ -78,6 +78,8 @@ Each trainer `step()` performs:
   - migrate packed ADAM `float2` moments into the rewritten topology so unrelated splats do not lose optimizer history.
 9. Update host-side rolling loss state and the last-frame MSE metric.
 
+Random training backgrounds now use seeded per-pixel white noise in the training raster path instead of a single random RGB color, while custom mode still uses the configured uniform color.
+
 There is still no opacity reset schedule, MCMC exploration term, or PSNR/SSIM tracking on the active path.
 
 ## Kernels

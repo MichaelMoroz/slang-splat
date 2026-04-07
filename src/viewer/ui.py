@@ -2103,7 +2103,7 @@ class ToolkitWindow:
         "train_far": "Far clip plane for training camera",
         "max_gaussians": "Maximum number of gaussians in the scene",
         "training_steps_per_frame": "Number of training optimizer steps to run before each viewer redraw; higher improves training throughput but reduces UI refresh rate",
-        "background_mode": "Choose whether training uses a fixed custom RGB background or a new random RGB background each optimizer step",
+        "background_mode": "Choose whether training uses a fixed custom RGB background or a new seeded white-noise background each optimizer step",
         "train_background_color": "Custom RGB background used for training when Train Background is set to Custom",
         "use_sh": "Stage 0 SH toggle; when scheduling is disabled this value is used for the whole run",
         "refinement_interval": "Run cull/split refinement every N training steps",

@@ -243,6 +243,8 @@ struct RasterParams
     float alphaCutoff;
     float transmittanceThreshold;
     float3 background;
+    uint trainingBackgroundMode;
+    uint trainingBackgroundSeed;
     uint debugMode;
     uint useSH;
     float debugGradNormThreshold;

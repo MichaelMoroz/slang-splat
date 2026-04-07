@@ -47,6 +47,7 @@ static const float DEPTH_LOCAL_MISMATCH_REJECT_ALPHA_SCALE_MAX = 2.0;
 static const float DEBUG_ELLIPSE_FILL_ALPHA_SCALE = 0.25;
 static const float DEBUG_ELLIPSE_OUTLINE_ALPHA_SCALE = 1.0;
 static const float DEBUG_ELLIPSE_OUTLINE_ALPHA_MIN = 0.5;
+static const float UINT_TO_UNIT_FLOAT = 2.3283064365386963e-10;
 
 int raster_grad_fixed_quantize(float value, float range)
 {
@@ -357,6 +358,26 @@ float4 raster_output_from_state(RasterState state, no_diff float3 background)
 {
     float3 finalColor = state.accum + state.trans * background;
     return float4(pow(max(finalColor, 0.0), OUTPUT_GAMMA), 1.0 - state.trans);
+}
+
+float raster_random_unit_float(uint seed)
+{
+    return (float(hash_u32(seed)) + 0.5) * UINT_TO_UNIT_FLOAT;
+}
+
+float3 raster_training_background(uint2 pixelCoord)
+{
+    uint baseSeed = hash_u32(g_Raster.trainingBackgroundSeed ^ (pixelCoord.x * 0x9e3779b9u) ^ (pixelCoord.y * 0x85ebca6bu));
+    return float3(
+        raster_random_unit_float(baseSeed ^ 0x243f6a88u),
+        raster_random_unit_float(baseSeed ^ 0xb7e15162u),
+        raster_random_unit_float(baseSeed ^ 0x13198a2eu)
+    );
+}
+
+float3 raster_resolved_background(uint2 pixelCoord)
+{
+    return g_Raster.trainingBackgroundMode == 0u ? g_Raster.background : raster_training_background(pixelCoord);
 }
 
 struct RasterPixelInfo
@@ -748,9 +769,10 @@ void raster_replay<T : IRasterReplayVariant>(RasterPixelInfo info, uint lane, in
 float4 raster_forward_output_pixel(RasterPixelInfo info, RasterState state)
 {
     if (!info.pixelActive) return float4(0.0, 0.0, 0.0, 1.0);
+    float3 background = raster_resolved_background(info.pixelCoord);
     return info.hasTileRange
-        ? raster_output_from_state(state, g_Raster.background)
-        : float4(pow(max(g_Raster.background, 0.0), OUTPUT_GAMMA), 1.0);
+        ? raster_output_from_state(state, background)
+        : float4(pow(max(background, 0.0), OUTPUT_GAMMA), 1.0);
 }
 
 float4 raster_debug_output_pixel(RasterPixelInfo info, RasterReplayState replayState)
@@ -773,7 +795,7 @@ RasterState.Differential raster_output_gradient_pixel(RasterPixelInfo info, Rast
     if (!info.pixelActive || !info.hasTileRange) return { 0.0, 0.0 };
 
     var dpState = diffPair(state);
-    bwd_diff(raster_output_from_state)(dpState, g_Raster.background, g_OutputGrad[info.pixelCoord.y * g_Raster.width + info.pixelCoord.x]);
+    bwd_diff(raster_output_from_state)(dpState, raster_resolved_background(info.pixelCoord), g_OutputGrad[info.pixelCoord.y * g_Raster.width + info.pixelCoord.x]);
     return dpState.getDifferential();
 }
 
