@@ -1179,8 +1179,8 @@ class GaussianRenderer:
         training_background_seed: int = 0,
         training_native_camera: Camera | None = None,
         training_sample_vars: dict[str, object] | None = None,
-        refinement_loss_weight: float = 0.5,
-        refinement_target_edge_weight: float = 0.5,
+        refinement_loss_weight: float = 0.25,
+        refinement_target_edge_weight: float = 0.75,
     ) -> None:
         resolved_regularizer_grad = self._work_buffers["training_regularizer_grad"] if regularizer_grad is None else regularizer_grad
         resolved_native_camera = camera if training_native_camera is None else training_native_camera
@@ -1653,8 +1653,8 @@ class GaussianRenderer:
         training_background_seed: int = 0,
         training_native_camera: Camera | None = None,
         training_sample_vars: dict[str, object] | None = None,
-        refinement_loss_weight: float = 0.5,
-        refinement_target_edge_weight: float = 0.5,
+        refinement_loss_weight: float = 0.25,
+        refinement_target_edge_weight: float = 0.75,
     ) -> None:
         self._require_scene()
         self._rasterize_backward(encoder, camera, background, output_grad, regularizer_grad, clone_counts_buffer, clone_select_probability, clone_seed, training_background_mode, training_background_seed, training_native_camera, training_sample_vars, refinement_loss_weight, refinement_target_edge_weight)

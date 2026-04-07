@@ -124,8 +124,8 @@ def test_default_training_params_match_fixed_count_defaults():
     assert params.training.scale_abs_reg_weight == 0.01
     assert params.training.sh1_reg_weight == 0.01
     assert params.training.opacity_reg_weight == 0.01
-    assert params.training.refinement_loss_weight == 0.01
-    assert params.training.refinement_target_edge_weight == 0.99
+    assert params.training.refinement_loss_weight == 0.25
+    assert params.training.refinement_target_edge_weight == 0.75
     assert params.training.density_regularizer == 0.02
     assert params.training.depth_ratio_weight == 1.0
     assert params.training.depth_ratio_grad_min == 0.0
@@ -173,8 +173,8 @@ def test_auto_profile_resolves_to_legacy_defaults():
     assert params.training.scale_abs_reg_weight == 0.01
     assert params.training.sh1_reg_weight == 0.01
     assert params.training.depth_ratio_weight == 1.0
-    assert params.training.refinement_loss_weight == 0.01
-    assert params.training.refinement_target_edge_weight == 0.99
+    assert params.training.refinement_loss_weight == 0.25
+    assert params.training.refinement_target_edge_weight == 0.75
     assert params.training.depth_ratio_grad_min == 0.0
     assert params.training.depth_ratio_grad_max == 0.1
     assert params.training.opacity_reg_weight == 0.01
@@ -209,8 +209,8 @@ def test_viewer_effective_training_setup_keeps_requested_init_opacity():
     assert params.training.scale_abs_reg_weight == 0.01
     assert params.training.sh1_reg_weight == 0.01
     assert params.training.depth_ratio_weight == 1.0
-    assert params.training.refinement_loss_weight == 0.01
-    assert params.training.refinement_target_edge_weight == 0.99
+    assert params.training.refinement_loss_weight == 0.25
+    assert params.training.refinement_target_edge_weight == 0.75
     assert params.training.depth_ratio_grad_min == 0.0
     assert params.training.depth_ratio_grad_max == 0.1
     assert params.training.opacity_reg_weight == 0.01

@@ -185,7 +185,7 @@ class TrainingHyperParams:
     background: tuple[float, float, float] = (1.0, 1.0, 1.0); near: float = 0.1; far: float = 120.0
     background_mode: int = TRAIN_BACKGROUND_MODE_RANDOM; use_sh: bool = False
     scale_l2_weight: float = 0.0; scale_abs_reg_weight: float = 0.01; sh1_reg_weight: float = 0.01; opacity_reg_weight: float = 0.01; density_regularizer: float = 0.02; depth_ratio_weight: float = 1.0; max_allowed_density_start: float = 5.0; max_allowed_density: float = 12.0
-    refinement_loss_weight: float = 0.01; refinement_target_edge_weight: float = 0.99
+    refinement_loss_weight: float = 0.25; refinement_target_edge_weight: float = 0.75
     depth_ratio_grad_min: float = 0.0; depth_ratio_grad_max: float = 0.1
     lr_pos_mul: float = 1.0; lr_pos_stage1_mul: float = 0.75; lr_pos_stage2_mul: float = 0.2; lr_pos_stage3_mul: float = 0.2
     lr_sh_mul: float = 0.05; lr_sh_stage1_mul: float = 0.05; lr_sh_stage2_mul: float = 0.05; lr_sh_stage3_mul: float = 0.05
