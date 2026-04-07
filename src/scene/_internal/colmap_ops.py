@@ -413,13 +413,6 @@ def _robust_ridge_fit(features: np.ndarray, targets: np.ndarray) -> np.ndarray |
         if np.all(np.isfinite(refined)):
             return refined
     return coeffs if np.all(np.isfinite(coeffs)) else None
-
-
-def _camera_normalized_to_frame_pixel(uv: np.ndarray, frame: ColmapFrame) -> np.ndarray:
-    uv_arr = np.asarray(uv, dtype=np.float32).reshape(2)
-    return np.asarray((float(frame.cx) + float(frame.fx) * float(uv_arr[0]), float(frame.cy) + float(frame.fy) * float(uv_arr[1])), dtype=np.float32)
-
-
 def collect_depth_distance_remap_samples(
     recon: ColmapReconstruction,
     image: ColmapImage,
@@ -428,8 +421,8 @@ def collect_depth_distance_remap_samples(
     depth_map: np.ndarray,
     depth_value_mode: str = DEPTH_INIT_VALUE_Z_DEPTH,
 ) -> tuple[np.ndarray, np.ndarray]:
+    del camera
     point_ids = np.asarray(image.points2d_point3d_ids, dtype=np.int64).reshape(-1)
-    points2d_xy = np.asarray(image.points2d_xy, dtype=np.float32).reshape(-1, 2)
     valid_ids = np.flatnonzero(point_ids > 0)
     if valid_ids.size == 0:
         return np.zeros((0, 2), dtype=np.float32), np.zeros((0,), dtype=np.float32)
@@ -441,15 +434,11 @@ def collect_depth_distance_remap_samples(
         point = recon.points3d.get(int(point_ids[point_idx]))
         if point is None:
             continue
-        colmap_xy = points2d_xy[point_idx]
-        normalized_xy = np.asarray(
-            (
-                (float(colmap_xy[0]) - float(camera.cx)) / max(float(camera.fx), 1e-12),
-                (float(colmap_xy[1]) - float(camera.cy)) / max(float(camera.fy), 1e-12),
-            ),
-            dtype=np.float32,
-        )
-        xy = _camera_normalized_to_frame_pixel(normalized_xy, frame)
+        xy, valid = camera_obj.project_world_to_screen(np.asarray(point.xyz, dtype=np.float32), int(frame.width), int(frame.height))
+        if not valid:
+            continue
+        if float(xy[0]) < 0.0 or float(xy[1]) < 0.0 or float(xy[0]) > float(frame.width - 1) or float(xy[1]) > float(frame.height - 1):
+            continue
         raw_depth = _depth_sample_linear(depth_map, xy)
         if not np.isfinite(raw_depth) or raw_depth <= 0.0:
             continue

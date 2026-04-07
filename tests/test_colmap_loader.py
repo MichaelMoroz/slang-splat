@@ -427,6 +427,48 @@ def test_fit_depth_distance_remap_for_payload_uses_only_pose_local_correspondenc
     np.testing.assert_allclose(predicted_b, offsets[1] + scales[1] * raw_depths_b, rtol=0.0, atol=1e-2)
 
 
+def test_collect_depth_distance_remap_samples_uses_reprojected_pose_points_not_stored_keypoints() -> None:
+    camera = ColmapCamera(camera_id=1, model_id=3, width=16, height=16, fx=16.0, fy=16.0, cx=8.0, cy=8.0, k1=0.1, k2=-0.02)
+    q_wxyz = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    frame = ColmapFrame(1, Path("frame.png"), q_wxyz, np.zeros((3,), dtype=np.float32), 16.0, 16.0, 8.0, 8.0, 16, 16, 0.1, -0.02)
+    image = ColmapImage(
+        1,
+        q_wxyz,
+        np.zeros((3,), dtype=np.float32),
+        1,
+        "frame.png",
+        np.zeros((16, 2), dtype=np.float32),
+        np.arange(1, 17, dtype=np.int64),
+    )
+    depth_map = np.zeros((16, 16), dtype=np.float32)
+    camera_obj = frame.make_camera()
+    points3d: dict[int, ColmapPoint3D] = {}
+    for point_id, screen_xy in enumerate(
+        (
+            (2.0, 2.0), (5.0, 2.0), (8.0, 2.0), (11.0, 2.0),
+            (2.0, 5.0), (5.0, 5.0), (8.0, 5.0), (11.0, 5.0),
+            (2.0, 8.0), (5.0, 8.0), (8.0, 8.0), (11.0, 8.0),
+            (2.0, 11.0), (5.0, 11.0), (8.0, 11.0), (11.0, 11.0),
+        ),
+        start=1,
+    ):
+        world_pos = np.asarray(camera_obj.screen_to_world(np.asarray(screen_xy, dtype=np.float32), 8.0, frame.width, frame.height), dtype=np.float32)
+        projected_xy, valid = camera_obj.project_world_to_screen(world_pos, frame.width, frame.height)
+        assert valid
+        depth_map[int(screen_xy[1]), int(screen_xy[0])] = 0.25 + 0.5 * float(np.linalg.norm(world_pos))
+        np.testing.assert_allclose(projected_xy, np.asarray(screen_xy, dtype=np.float32), rtol=0.0, atol=1e-4)
+        points3d[point_id] = ColmapPoint3D(point_id, world_pos, np.array([255.0, 255.0, 255.0], dtype=np.float32), 0.0)
+    recon = ColmapReconstruction(root=Path("synthetic"), sparse_dir=Path("synthetic") / "sparse" / "0", cameras={1: camera}, images={1: image}, points3d=points3d)
+
+    features, targets = colmap_ops.collect_depth_distance_remap_samples(recon, image, frame, camera, depth_map, colmap_ops.DEPTH_INIT_VALUE_DISTANCE)
+
+    assert features.shape == (16, 2)
+    coeffs = colmap_ops._robust_ridge_fit(features, targets)
+    assert coeffs is not None
+    predicted = features @ coeffs
+    np.testing.assert_allclose(predicted, targets, rtol=0.0, atol=5e-2)
+
+
 def test_generate_depth_init_points_respects_budget_and_uniqueness() -> None:
     frame = ColmapFrame(
         image_id=1,
