@@ -99,6 +99,7 @@ def test_build_training_params_clamps_ranges():
     assert params.training.position_random_step_opacity_gate_sharpness == 100.0
     assert params.training.lr_schedule_stage1_lr == 0.002
     assert params.training.lr_schedule_stage2_lr == 0.001
+    assert params.training.lr_schedule_end_lr == 1.5e-4
     assert params.training.lr_schedule_stage1_step == 3000
     assert params.training.lr_schedule_stage2_step == 14000
     assert params.training.depth_ratio_stage1_weight == 0.05
@@ -147,6 +148,7 @@ def test_default_training_params_match_fixed_count_defaults():
     assert params.training.position_random_step_opacity_gate_sharpness == 100.0
     assert params.training.lr_schedule_stage1_lr == 0.002
     assert params.training.lr_schedule_stage2_lr == 0.001
+    assert params.training.lr_schedule_end_lr == 1.5e-4
     assert params.training.lr_schedule_stage1_step == 3000
     assert params.training.lr_schedule_stage2_step == 14000
     assert params.training.depth_ratio_stage1_weight == 0.05

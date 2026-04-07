@@ -376,7 +376,7 @@ _TRAIN_SETUP_SPECS = (
 
 _TRAIN_OPTIMIZER_SPECS = (
     ControlSpec("lr_schedule_enabled", "checkbox", "Use LR Schedule", {"value": True}),
-    ControlSpec("lr_scale_mul", "input_float", "LR Mul Scale", {"value": 15.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
+    ControlSpec("lr_scale_mul", "input_float", "LR Mul Scale", {"value": 20.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
     ControlSpec("lr_rot_mul", "input_float", "LR Mul Rotation", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
     ControlSpec("lr_color_mul", "input_float", "LR Mul Color", {"value": 5.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
     ControlSpec("lr_opacity_mul", "input_float", "LR Mul Opacity", {"value": 5.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
@@ -479,7 +479,7 @@ _SCHEDULE_STAGE_OVERRIDES = {
             "label": "End Step",
             "kwargs": {"value": 30000, "step": 1000, "step_fast": 5000},
         },
-        "lr": {"kwargs": {"value": 7.5e-5, "step": 1e-6, "step_fast": 1e-5, "format": "%.8f"}},
+        "lr": {"kwargs": {"value": 1.5e-4, "step": 1e-6, "step_fast": 1e-5, "format": "%.8f"}},
         "lr_pos_mul": {"kwargs": {"value": 0.2, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}},
         "lr_sh_mul": {"kwargs": {"value": 0.05, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}},
         "depth_ratio_weight": {"kwargs": {"value": 0.001, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}},

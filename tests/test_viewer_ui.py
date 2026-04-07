@@ -111,14 +111,14 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["debug_depth_local_mismatch_smooth_radius"] == 2.0
     assert viewer_ui._values["debug_depth_local_mismatch_reject_radius"] == 4.0
     assert viewer_ui._values["loss_debug_view"] == 0
-    assert viewer_ui._values["lr_scale_mul"] == 15.0
+    assert viewer_ui._values["lr_scale_mul"] == 20.0
     assert viewer_ui._values["lr_color_mul"] == 5.0
     assert viewer_ui._values["lr_opacity_mul"] == 5.0
     assert viewer_ui._values["lr_schedule_enabled"] is True
     assert viewer_ui._values["lr_schedule_start_lr"] == 0.005
     assert viewer_ui._values["lr_schedule_stage1_lr"] == 0.002
     assert viewer_ui._values["lr_schedule_stage2_lr"] == 0.001
-    assert viewer_ui._values["lr_schedule_end_lr"] == 7.5e-5
+    assert viewer_ui._values["lr_schedule_end_lr"] == 1.5e-4
     assert viewer_ui._values["lr_pos_mul"] == 1.0
     assert viewer_ui._values["lr_pos_stage1_mul"] == 0.75
     assert viewer_ui._values["lr_pos_stage2_mul"] == 0.2

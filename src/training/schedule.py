@@ -80,7 +80,7 @@ def resolve_base_learning_rate(training_hparams: Any, step: int) -> float:
         (
             max(float(getattr(training_hparams, "lr_schedule_stage1_lr", 0.002)), 1e-8),
             max(float(getattr(training_hparams, "lr_schedule_stage2_lr", 0.001)), 1e-8),
-            max(float(getattr(training_hparams, "lr_schedule_end_lr", 7.5e-5)), 1e-8),
+            max(float(getattr(training_hparams, "lr_schedule_end_lr", 1.5e-4)), 1e-8),
         ),
     )
 

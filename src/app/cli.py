@@ -210,7 +210,7 @@ TRAIN_RENDER_ARGS = tuple(
     for flag, default in (
         ("--lr-base", 0.005),
         ("--lr-mul-pos", 1.0),
-        ("--lr-mul-scale", 15.0),
+        ("--lr-mul-scale", 20.0),
         ("--lr-mul-rot", 1.0),
         ("--lr-mul-color", 5.0),
         ("--lr-mul-opacity", 5.0),

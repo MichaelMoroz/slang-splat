@@ -293,7 +293,7 @@ def build_training_params(
         lr_schedule_start_lr=base_lr if lr_schedule_start_lr is None else clamp_float(lr_schedule_start_lr, 1e-8, 1.0),
         lr_schedule_stage1_lr=clamp_float(lr_schedule_stage1_lr, 1e-8, 1.0),
         lr_schedule_stage2_lr=clamp_float(lr_schedule_stage2_lr, 1e-8, 1.0),
-        lr_schedule_end_lr=7.5e-5 if lr_schedule_end_lr is None else clamp_float(lr_schedule_end_lr, 1e-8, 1.0),
+        lr_schedule_end_lr=1.5e-4 if lr_schedule_end_lr is None else clamp_float(lr_schedule_end_lr, 1e-8, 1.0),
         lr_schedule_steps=clamp_int(lr_schedule_steps, 1, 1_000_000_000),
         lr_schedule_stage1_step=clamp_int(lr_schedule_stage1_step, 0, 1_000_000_000),
         lr_schedule_stage2_step=clamp_int(lr_schedule_stage2_step, 0, 1_000_000_000),

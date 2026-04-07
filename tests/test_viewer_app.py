@@ -196,6 +196,7 @@ def test_default_training_params_include_background_mode_and_density() -> None:
     assert params.training.position_random_step_opacity_gate_sharpness == 100.0
     assert params.training.lr_schedule_stage1_lr == 0.002
     assert params.training.lr_schedule_stage2_lr == 0.001
+    assert params.training.lr_schedule_end_lr == 1.5e-4
     assert params.training.lr_schedule_stage1_step == 3000
     assert params.training.lr_schedule_stage2_step == 14000
     assert params.training.lr_sh_mul == 0.05
