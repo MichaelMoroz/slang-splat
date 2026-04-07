@@ -39,9 +39,9 @@ class DepthInitFramePayload:
     frame: ColmapFrame
     rgba8: np.ndarray
     depth_map: np.ndarray
-    coeffs: np.ndarray
-    valid_mask: np.ndarray
-    valid_count: int
+    camera_id: int
+    fit_features: np.ndarray
+    fit_targets: np.ndarray
 
 
 def _camera_to_world_pose(q_wxyz: np.ndarray, t_xyz: np.ndarray) -> np.ndarray:
@@ -423,18 +423,18 @@ def _robust_ridge_fit(features: np.ndarray, targets: np.ndarray) -> np.ndarray |
     return coeffs if np.all(np.isfinite(coeffs)) else None
 
 
-def fit_depth_distance_remap(
+def collect_depth_distance_remap_samples(
     recon: ColmapReconstruction,
     image: ColmapImage,
     frame: ColmapFrame,
     camera: ColmapCamera,
     depth_map: np.ndarray,
-) -> np.ndarray | None:
+) -> tuple[np.ndarray, np.ndarray]:
     point_ids = np.asarray(image.points2d_point3d_ids, dtype=np.int64).reshape(-1)
     points2d_xy = np.asarray(image.points2d_xy, dtype=np.float32).reshape(-1, 2)
     valid_ids = np.flatnonzero(point_ids > 0)
     if valid_ids.size == 0:
-        return None
+        return np.zeros((0, 10), dtype=np.float32), np.zeros((0,), dtype=np.float32)
     camera_obj = frame.make_camera()
     sx = float(frame.width) / float(max(int(camera.width), 1))
     sy = float(frame.height) / float(max(int(camera.height), 1))
@@ -453,9 +453,45 @@ def fit_depth_distance_remap(
             continue
         features.append(_depth_feature_vector(frame, float(xy[0]), float(xy[1]), raw_depth))
         targets.append(target_distance)
-    if len(features) < DEPTH_INIT_MIN_CORRESPONDENCES:
-        return None
-    return _robust_ridge_fit(np.stack(features, axis=0), np.asarray(targets, dtype=np.float32))
+    if len(features) == 0:
+        return np.zeros((0, 10), dtype=np.float32), np.zeros((0,), dtype=np.float32)
+    return np.ascontiguousarray(np.stack(features, axis=0), dtype=np.float32), np.ascontiguousarray(np.asarray(targets, dtype=np.float32), dtype=np.float32)
+
+
+def fit_depth_distance_remap(
+    recon: ColmapReconstruction,
+    image: ColmapImage,
+    frame: ColmapFrame,
+    camera: ColmapCamera,
+    depth_map: np.ndarray,
+) -> np.ndarray | None:
+    features, targets = collect_depth_distance_remap_samples(recon, image, frame, camera, depth_map)
+    return _robust_ridge_fit(features, targets)
+
+
+def fit_depth_distance_remaps_by_camera(payloads: list[DepthInitFramePayload]) -> dict[int, np.ndarray]:
+    grouped_features: dict[int, list[np.ndarray]] = {}
+    grouped_targets: dict[int, list[np.ndarray]] = {}
+    for payload in payloads:
+        if payload is None:
+            continue
+        camera_id = int(payload.camera_id)
+        if payload.fit_features.size == 0 or payload.fit_targets.size == 0:
+            grouped_features.setdefault(camera_id, [])
+            grouped_targets.setdefault(camera_id, [])
+            continue
+        grouped_features.setdefault(camera_id, []).append(np.asarray(payload.fit_features, dtype=np.float32))
+        grouped_targets.setdefault(camera_id, []).append(np.asarray(payload.fit_targets, dtype=np.float32))
+    coeffs_by_camera: dict[int, np.ndarray] = {}
+    for camera_id, feature_parts in grouped_features.items():
+        if len(feature_parts) == 0:
+            continue
+        features = np.ascontiguousarray(np.concatenate(feature_parts, axis=0), dtype=np.float32)
+        targets = np.ascontiguousarray(np.concatenate(grouped_targets[camera_id], axis=0), dtype=np.float32)
+        coeffs = _robust_ridge_fit(features, targets)
+        if coeffs is not None:
+            coeffs_by_camera[int(camera_id)] = np.asarray(coeffs, dtype=np.float32)
+    return coeffs_by_camera
 
 
 def _predict_depth_distance_map(frame: ColmapFrame, depth_map: np.ndarray, coeffs: np.ndarray) -> np.ndarray:
@@ -490,15 +526,17 @@ def build_depth_init_frame_payload(
 ) -> DepthInitFramePayload | None:
     rgba8 = load_training_frame_rgba8(frame)
     depth_map = load_depth_u16_image(depth_path, target_size=(int(frame.width), int(frame.height)))
-    coeffs = fit_depth_distance_remap(recon, image, frame, camera, depth_map)
-    if coeffs is None:
+    if not np.any(np.isfinite(depth_map) & (depth_map > 0.0)):
         return None
-    predicted = _predict_depth_distance_map(frame, depth_map, coeffs)
-    valid_mask = np.isfinite(depth_map) & (depth_map > 0.0) & np.isfinite(predicted) & (predicted > DEPTH_INIT_DISTANCE_FLOOR)
-    valid_count = int(np.count_nonzero(valid_mask))
-    if valid_count <= 0:
-        return None
-    return DepthInitFramePayload(frame=frame, rgba8=rgba8, depth_map=depth_map, coeffs=np.asarray(coeffs, dtype=np.float32), valid_mask=np.asarray(valid_mask, dtype=bool), valid_count=valid_count)
+    fit_features, fit_targets = collect_depth_distance_remap_samples(recon, image, frame, camera, depth_map)
+    return DepthInitFramePayload(
+        frame=frame,
+        rgba8=rgba8,
+        depth_map=depth_map,
+        camera_id=int(image.camera_id),
+        fit_features=np.asarray(fit_features, dtype=np.float32),
+        fit_targets=np.asarray(fit_targets, dtype=np.float32),
+    )
 
 
 def load_training_frame_rgba8_with_depth_payload(task: tuple[ColmapReconstruction, ColmapImage, ColmapCamera, ColmapFrame, Path | None]) -> tuple[np.ndarray, DepthInitFramePayload | None]:
@@ -507,23 +545,39 @@ def load_training_frame_rgba8_with_depth_payload(task: tuple[ColmapReconstructio
     if depth_path is None:
         return rgba8, None
     depth_map = load_depth_u16_image(depth_path, target_size=(int(frame.width), int(frame.height)))
-    coeffs = fit_depth_distance_remap(recon, image, frame, camera, depth_map)
-    if coeffs is None:
+    if not np.any(np.isfinite(depth_map) & (depth_map > 0.0)):
         return rgba8, None
-    predicted = _predict_depth_distance_map(frame, depth_map, coeffs)
-    valid_mask = np.isfinite(depth_map) & (depth_map > 0.0) & np.isfinite(predicted) & (predicted > DEPTH_INIT_DISTANCE_FLOOR)
-    valid_count = int(np.count_nonzero(valid_mask))
-    if valid_count <= 0:
-        return rgba8, None
-    return rgba8, DepthInitFramePayload(frame=frame, rgba8=rgba8, depth_map=depth_map, coeffs=np.asarray(coeffs, dtype=np.float32), valid_mask=np.asarray(valid_mask, dtype=bool), valid_count=valid_count)
+    fit_features, fit_targets = collect_depth_distance_remap_samples(recon, image, frame, camera, depth_map)
+    return rgba8, DepthInitFramePayload(
+        frame=frame,
+        rgba8=rgba8,
+        depth_map=depth_map,
+        camera_id=int(image.camera_id),
+        fit_features=np.asarray(fit_features, dtype=np.float32),
+        fit_targets=np.asarray(fit_targets, dtype=np.float32),
+    )
 
 
 def generate_depth_init_points(payloads: list[DepthInitFramePayload], total_point_count: int, seed: int) -> tuple[np.ndarray, np.ndarray]:
-    usable = [payload for payload in payloads if payload is not None and int(payload.valid_count) > 0]
+    usable = [payload for payload in payloads if payload is not None]
     if len(usable) == 0:
-        raise RuntimeError("Depth initialization found no calibrated RGB/depth pairs.")
+        raise RuntimeError("Depth initialization found no usable RGB/depth pairs.")
+    coeffs_by_camera = fit_depth_distance_remaps_by_camera(usable)
+    calibrated_payloads: list[tuple[DepthInitFramePayload, np.ndarray, np.ndarray, int]] = []
+    for payload in usable:
+        coeffs = coeffs_by_camera.get(int(payload.camera_id))
+        if coeffs is None:
+            continue
+        predicted = _predict_depth_distance_map(payload.frame, payload.depth_map, coeffs)
+        valid_mask = np.isfinite(payload.depth_map) & (payload.depth_map > 0.0) & np.isfinite(predicted) & (predicted > DEPTH_INIT_DISTANCE_FLOOR)
+        valid_count = int(np.count_nonzero(valid_mask))
+        if valid_count <= 0:
+            continue
+        calibrated_payloads.append((payload, predicted, np.asarray(valid_mask, dtype=bool), valid_count))
+    if len(calibrated_payloads) == 0:
+        raise RuntimeError("Depth initialization found no calibrated RGB/depth pairs after camera-level fitting.")
     total_budget = max(int(total_point_count), 1)
-    valid_counts = np.asarray([payload.valid_count for payload in usable], dtype=np.int64)
+    valid_counts = np.asarray([valid_count for _, _, _, valid_count in calibrated_payloads], dtype=np.int64)
     total_valid = int(np.sum(valid_counts))
     if total_valid <= 0:
         raise RuntimeError("Depth initialization found no valid calibrated depth pixels.")
@@ -544,17 +598,16 @@ def generate_depth_init_points(payloads: list[DepthInitFramePayload], total_poin
     rng = np.random.default_rng(int(seed))
     positions: list[np.ndarray] = []
     colors: list[np.ndarray] = []
-    for payload, sample_count in zip(usable, counts, strict=False):
+    for (payload, predicted, valid_mask, _), sample_count in zip(calibrated_payloads, counts, strict=False):
         count = int(sample_count)
         if count <= 0:
             continue
-        valid_indices = np.flatnonzero(payload.valid_mask.reshape(-1))
+        valid_indices = np.flatnonzero(valid_mask.reshape(-1))
         if valid_indices.size == 0:
             continue
         chosen = rng.choice(valid_indices, size=min(count, valid_indices.size), replace=False)
-        ys, xs = np.unravel_index(chosen, payload.valid_mask.shape)
+        ys, xs = np.unravel_index(chosen, valid_mask.shape)
         camera = payload.frame.make_camera()
-        predicted = _predict_depth_distance_map(payload.frame, payload.depth_map, payload.coeffs)
         for x, y in zip(xs.astype(np.int32), ys.astype(np.int32), strict=False):
             distance = max(float(predicted[int(y), int(x)]), DEPTH_INIT_DISTANCE_FLOOR)
             ray = camera.screen_to_world_ray(np.array([float(x) + 0.5, float(y) + 0.5], dtype=np.float32), int(payload.frame.width), int(payload.frame.height))
