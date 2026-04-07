@@ -476,29 +476,14 @@ def fit_depth_distance_remap(
     return _robust_ridge_fit(features, targets)
 
 
-def fit_depth_distance_remaps_by_camera(payloads: list[DepthInitFramePayload]) -> dict[int, np.ndarray]:
-    grouped_features: dict[int, list[np.ndarray]] = {}
-    grouped_targets: dict[int, list[np.ndarray]] = {}
-    for payload in payloads:
-        if payload is None:
-            continue
-        camera_id = int(payload.camera_id)
-        if payload.fit_features.size == 0 or payload.fit_targets.size == 0:
-            grouped_features.setdefault(camera_id, [])
-            grouped_targets.setdefault(camera_id, [])
-            continue
-        grouped_features.setdefault(camera_id, []).append(np.asarray(payload.fit_features, dtype=np.float32).reshape(-1, 2))
-        grouped_targets.setdefault(camera_id, []).append(np.asarray(payload.fit_targets, dtype=np.float32))
-    coeffs_by_camera: dict[int, np.ndarray] = {}
-    for camera_id, feature_parts in grouped_features.items():
-        if len(feature_parts) == 0:
-            continue
-        features = np.ascontiguousarray(np.concatenate(feature_parts, axis=0), dtype=np.float32).reshape(-1, 2)
-        targets = np.ascontiguousarray(np.concatenate(grouped_targets[camera_id], axis=0), dtype=np.float32)
-        coeffs = _robust_ridge_fit(features, targets)
-        if coeffs is not None:
-            coeffs_by_camera[int(camera_id)] = np.asarray(coeffs, dtype=np.float32)
-    return coeffs_by_camera
+def fit_depth_distance_remap_for_payload(payload: DepthInitFramePayload) -> np.ndarray | None:
+    if payload.fit_features.size == 0 or payload.fit_targets.size == 0:
+        return None
+    coeffs = _robust_ridge_fit(
+        np.asarray(payload.fit_features, dtype=np.float32).reshape(-1, 2),
+        np.asarray(payload.fit_targets, dtype=np.float32).reshape(-1),
+    )
+    return None if coeffs is None else np.asarray(coeffs, dtype=np.float32)
 
 
 def _predict_depth_distance_map(frame: ColmapFrame, depth_map: np.ndarray, coeffs: np.ndarray) -> np.ndarray:
@@ -558,11 +543,10 @@ def generate_depth_init_points(
     usable = [payload for payload in payloads if payload is not None]
     if len(usable) == 0:
         raise RuntimeError("Depth initialization found no usable RGB/depth pairs.")
-    coeffs_by_camera = fit_depth_distance_remaps_by_camera(usable)
     depth_mode = str(depth_value_mode).strip().lower()
     calibrated_payloads: list[tuple[DepthInitFramePayload, np.ndarray, np.ndarray, int]] = []
     for payload in usable:
-        coeffs = coeffs_by_camera.get(int(payload.camera_id))
+        coeffs = fit_depth_distance_remap_for_payload(payload)
         if coeffs is None:
             continue
         predicted = _predict_depth_distance_map(payload.frame, payload.depth_map, coeffs)
@@ -572,7 +556,7 @@ def generate_depth_init_points(
             continue
         calibrated_payloads.append((payload, predicted, np.asarray(valid_mask, dtype=bool), valid_count))
     if len(calibrated_payloads) == 0:
-        raise RuntimeError("Depth initialization found no calibrated RGB/depth pairs after camera-level fitting.")
+        raise RuntimeError("Depth initialization found no calibrated RGB/depth pairs after per-pose fitting.")
     total_budget = max(int(total_point_count), 1)
     valid_counts = np.asarray([valid_count for _, _, _, valid_count in calibrated_payloads], dtype=np.int64)
     total_valid = int(np.sum(valid_counts))
