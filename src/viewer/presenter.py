@@ -202,7 +202,7 @@ def _debug_abs_diff_scale(viewer: object) -> float:
 
 def _training_camera_debug_active(viewer: object) -> bool:
     try:
-        return int(viewer.c("debug_mode").value) == 0
+        return bool(viewer.ui._values.get("show_training_cameras", False))
     except Exception:
         return False
 
@@ -581,6 +581,23 @@ def _dispatch_debug_abs_diff(viewer: object, encoder: spy.CommandEncoder, render
     return output
 
 
+def _dispatch_debug_edge_filter(viewer: object, encoder: spy.CommandEncoder, source_tex: spy.Texture, width: int, height: int) -> spy.Texture:
+    output = _ensure_texture(viewer, "loss_debug_texture", width, height)
+    with debug_region(encoder, "Viewer Debug Edge", 152):
+        require_not_none(viewer.s.debug_edge_kernel, "Debug edge kernel is not initialized.").dispatch(
+            thread_count=spy.uint3(int(width), int(height), 1),
+            vars={
+                "g_DebugRendered": source_tex,
+                "g_DebugOutput": output,
+                "g_DebugWidth": int(width),
+                "g_DebugHeight": int(height),
+                "g_HugeValue": _DEBUG_HUGE_VALUE,
+            },
+            command_encoder=encoder,
+        )
+    return output
+
+
 def _dispatch_viewport_present(viewer: object, encoder: spy.CommandEncoder, source_tex: spy.Texture, source_width: int, source_height: int, output_width: int, output_height: int) -> spy.Texture:
     output = _ensure_texture(viewer, "debug_present_texture", output_width, output_height)
     with debug_region(encoder, "Viewer Present", 151):
@@ -699,7 +716,14 @@ def _render_debug_view(viewer: object, encoder: spy.CommandEncoder, output_width
     frame_idx = _debug_frame_idx(viewer)
     debug_render_tex, viewer.s.stats, debug_width, debug_height = _render_debug_source(viewer, encoder, frame_idx)
     target_tex = viewer.s.trainer.get_frame_target_texture(frame_idx, native_resolution=True, encoder=encoder)
-    source_tex = debug_render_tex if _debug_view_key(viewer) == "rendered" else target_tex if _debug_view_key(viewer) == "target" else _dispatch_debug_abs_diff(viewer, encoder, debug_render_tex, target_tex, debug_width, debug_height)
+    debug_view = _debug_view_key(viewer)
+    source_tex = (
+        debug_render_tex if debug_view == "rendered"
+        else target_tex if debug_view == "target"
+        else _dispatch_debug_abs_diff(viewer, encoder, debug_render_tex, target_tex, debug_width, debug_height) if debug_view == "abs_diff"
+        else _dispatch_debug_edge_filter(viewer, encoder, debug_render_tex, debug_width, debug_height) if debug_view == "rendered_edges"
+        else _dispatch_debug_edge_filter(viewer, encoder, target_tex, debug_width, debug_height)
+    )
     return _dispatch_viewport_present(viewer, encoder, source_tex, debug_width, debug_height, output_width, output_height)
 
 

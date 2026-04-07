@@ -101,7 +101,7 @@ class ViewerState:
     cached_init_point_positions: np.ndarray | None = None; cached_init_point_colors: np.ndarray | None = None
     cached_init_scene: GaussianScene | None = None; cached_init_signature: tuple[object, ...] | None = None
     trainer: GaussianTrainer | None = None; training_active: bool = False; viewport_texture: spy.Texture | None = None; loss_debug_texture: spy.Texture | None = None
-    debug_abs_diff_kernel: spy.ComputeKernel | None = None; debug_letterbox_kernel: spy.ComputeKernel | None = None; debug_present_texture: spy.Texture | None = None
+    debug_abs_diff_kernel: spy.ComputeKernel | None = None; debug_edge_kernel: spy.ComputeKernel | None = None; debug_letterbox_kernel: spy.ComputeKernel | None = None; debug_present_texture: spy.Texture | None = None
     synced_step_main: int = -1; synced_step_debug: int = -1; scene_init_signature: tuple[object, ...] | None = None
     applied_renderer_params_main: tuple[object, ...] | None = None; applied_renderer_params_training: tuple[object, ...] | None = None; applied_renderer_params_debug: tuple[object, ...] | None = None
     applied_training_signature: tuple[object, ...] | None = None; applied_training_runtime_signature: tuple[object, ...] | None = None; applied_training_runtime_factor: int | None = None
@@ -127,4 +127,10 @@ class ViewerState:
     scroll_delta: float = 0.0; move_vel: spy.float3 = field(default_factory=_default_move_vel); rot_vel: spy.float2 = field(default_factory=_default_rot_vel)
     mx: float | None = None; my: float | None = None; last_time: float = field(default_factory=time.perf_counter); fps_smooth: float = 60.0
     last_error: str = ""; last_resize_exception: str = ""; last_render_exception: str = ""
-LOSS_DEBUG_OPTIONS = (("rendered", "Rendered"), ("target", "Target"), ("abs_diff", "Abs Diff"))
+LOSS_DEBUG_OPTIONS = (
+    ("rendered", "Rendered"),
+    ("target", "Target"),
+    ("abs_diff", "Abs Diff"),
+    ("rendered_edges", "Rendered Edges"),
+    ("target_edges", "Target Edges"),
+)

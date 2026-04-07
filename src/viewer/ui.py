@@ -85,7 +85,6 @@ _HISTOGRAM_GROUPS = (
 )
 _CACHED_RASTER_GRAD_ATOMIC_MODE_LABELS = ("Float Atomics", "Fixed Point")
 _DEBUG_MODE_VALUES = (
-    "training_cameras",
     "normal",
     "processed_count",
     "clone_count",
@@ -103,7 +102,6 @@ _DEBUG_MODE_VALUES = (
     "sh_coefficient",
 )
 _DEBUG_MODE_LABELS = (
-    "Training Cameras",
     "Normal",
     "Processed Count",
     "Clone Count",
@@ -236,7 +234,7 @@ def _color_u32(r: float, g: float, b: float, a: float = 1.0) -> int:
 def _debug_colorbar_mode(ui: "ViewerUI") -> str | None:
     index = min(max(int(ui._values.get("debug_mode", 0)), 0), len(_DEBUG_MODE_VALUES) - 1)
     mode = _DEBUG_MODE_VALUES[index]
-    return None if mode in ("training_cameras", "normal", "ellipse_outlines", "sh_view_dependent", "sh_coefficient") else mode
+    return None if mode in ("normal", "ellipse_outlines", "sh_view_dependent", "sh_coefficient") else mode
 
 
 def _renderer_debug_control_keys(mode: str) -> tuple[str, ...]:
@@ -995,6 +993,7 @@ class ToolkitWindow:
         label = "View Mode"
         camera_label = "Cameras On" if bool(ui._values.get("show_camera_overlays", True)) else "Cameras Off"
         text_label = "Labels On" if bool(ui._values.get("show_camera_labels", False)) else "Labels Off"
+        training_label = "Training Cameras On" if bool(ui._values.get("show_training_cameras", False)) else "Training Cameras Off"
         label_size = imgui.calc_text_size(label)
         button_width = float(label_size.x) + 2.0 * float(style.frame_padding.x)
         button_pos = imgui.ImVec2(float(image_origin.x) + _VIEWPORT_OVERLAY_MARGIN * scale, float(image_origin.y) + _VIEWPORT_OVERLAY_MARGIN * scale)
@@ -1010,6 +1009,9 @@ class ToolkitWindow:
         imgui.same_line(0.0, 10.0 * scale)
         if _imgui_opened(imgui.small_button(text_label)):
             ui._values["show_camera_labels"] = not bool(ui._values.get("show_camera_labels", False))
+        imgui.same_line(0.0, 10.0 * scale)
+        if _imgui_opened(imgui.small_button(training_label)):
+            ui._values["show_training_cameras"] = not bool(ui._values.get("show_training_cameras", False))
         imgui.same_line(0.0, 10.0 * scale)
         label_pos = imgui.get_cursor_screen_pos()
         current_label_size = imgui.calc_text_size(current_label)
@@ -1038,6 +1040,37 @@ class ToolkitWindow:
             imgui.end_popup()
         imgui.pop_id()
         return imgui.ImVec2(button_pos.x, button_pos.y + button_height + _VIEWPORT_OVERLAY_MARGIN * scale)
+
+    def _training_camera_debug_section_height(self, ui: ViewerUI) -> float:
+        line_height = float(imgui.get_text_line_height_with_spacing())
+        frame_height = float(imgui.get_frame_height())
+        spacing_y = float(imgui.get_style().item_spacing.y)
+        height = frame_height + spacing_y + frame_height + spacing_y + line_height
+        if LOSS_DEBUG_OPTIONS[min(max(int(ui._values.get("loss_debug_view", 0)), 0), len(LOSS_DEBUG_OPTIONS) - 1)][0] == "abs_diff":
+            height += frame_height + spacing_y
+        if ui._texts.get("loss_debug_frame", ""):
+            height += line_height + spacing_y
+        return height
+
+    def _draw_training_camera_debug_controls(self, ui: ViewerUI) -> None:
+        view_idx = min(max(int(ui._values.get("loss_debug_view", 0)), 0), len(LOSS_DEBUG_OPTIONS) - 1)
+        if imgui.begin_combo("##training_camera_view", LOSS_DEBUG_OPTIONS[view_idx][1]):
+            for idx, (_key, label) in enumerate(LOSS_DEBUG_OPTIONS):
+                if imgui.selectable(label, idx == view_idx)[0]:
+                    ui._values["loss_debug_view"] = idx
+                if idx == view_idx:
+                    imgui.set_item_default_focus()
+            imgui.end_combo()
+        if LOSS_DEBUG_OPTIONS[view_idx][0] == "abs_diff":
+            self._draw_control(ui, next(spec for spec in GROUP_SPECS["Main"] if spec.key == _LOSS_DEBUG_ABS_SCALE_KEY), compact=True)
+        frame_max = max(int(ui._values.get("_loss_debug_frame_max", 0)), 0)
+        changed, val = imgui.slider_int("##training_camera_frame", int(ui._values.get("loss_debug_frame", 0)), 0, frame_max)
+        if changed:
+            ui._values["loss_debug_frame"] = val
+        imgui.text_disabled(ui._texts.get("loss_debug_view", ""))
+        frame_text = ui._texts.get("loss_debug_frame", "")
+        if frame_text:
+            imgui.text_disabled(_status_suffix(frame_text))
 
     def _draw_viewport_camera_overlays(self, ui: ViewerUI, image_origin: imgui.ImVec2) -> None:
         if not bool(ui._values.get("show_camera_overlays", True)):
@@ -1083,11 +1116,9 @@ class ToolkitWindow:
 
     def _draw_viewport_debug_overlay(self, ui: ViewerUI, overlay_origin: imgui.ImVec2) -> None:
         debug_mode = _DEBUG_MODE_VALUES[min(max(int(ui._values.get("debug_mode", 0)), 0), len(_DEBUG_MODE_VALUES) - 1)]
-        if debug_mode == "training_cameras":
-            ToolkitWindow._draw_training_camera_debug_overlay(self, ui, overlay_origin)
-            return
+        show_training_cameras = bool(ui._values.get("show_training_cameras", False))
         control_keys = tuple(key for key in _renderer_debug_control_keys(debug_mode) if key != "debug_mode")
-        if len(control_keys) == 0:
+        if len(control_keys) == 0 and not show_training_cameras:
             return
         view_x0, view_y0, view_width, view_height = self._viewport_content_rect
         if view_width <= 1.0 or view_height <= 1.0:
@@ -1098,10 +1129,14 @@ class ToolkitWindow:
         label_height = float(imgui.calc_text_size("Ag").y)
         padding = _VIEWPORT_OVERLAY_PADDING * scale
         width = min(_VIEWPORT_OVERLAY_WIDTH * scale, max(view_width - 2.0 * _VIEWPORT_OVERLAY_MARGIN * scale, _VIEWPORT_OVERLAY_MIN_WIDTH * scale))
-        height = max(
-            2.0 * padding + len(control_keys) * (label_height + frame_height + 2.0 * spacing_y),
-            _VIEWPORT_OVERLAY_MIN_HEIGHT * scale,
-        )
+        height = 2.0 * padding
+        if show_training_cameras:
+            height += self._training_camera_debug_section_height(ui)
+            if len(control_keys) > 0:
+                height += spacing_y + 2.0 * scale
+        if len(control_keys) > 0:
+            height += len(control_keys) * (label_height + frame_height + 2.0 * spacing_y)
+        height = max(height, _VIEWPORT_OVERLAY_MIN_HEIGHT * scale)
         max_height = view_y0 + view_height - overlay_origin.y - _VIEWPORT_OVERLAY_MARGIN * scale
         if max_height <= 0.0:
             return
@@ -1112,55 +1147,12 @@ class ToolkitWindow:
         imgui.set_cursor_screen_pos(overlay_origin)
         if _imgui_opened(imgui.begin_child("##viewport_debug_overlay", imgui.ImVec2(width, height), imgui.ChildFlags_.borders.value)):
             imgui.push_item_width(-1.0)
+            if show_training_cameras:
+                self._draw_training_camera_debug_controls(ui)
+                if len(control_keys) > 0:
+                    imgui.separator()
             for key in control_keys:
                 self._draw_control(ui, next(spec for spec in DEBUG_RENDER_SPECS if spec.key == key), compact=True)
-            imgui.pop_item_width()
-        imgui.end_child()
-        imgui.pop_style_var()
-        imgui.pop_style_color(2)
-
-    def _draw_training_camera_debug_overlay(self, ui: ViewerUI, overlay_origin: imgui.ImVec2) -> None:
-        view_x0, view_y0, view_width, view_height = self._viewport_content_rect
-        if view_width <= 1.0 or view_height <= 1.0:
-            return
-        scale = self._interface_scale_factor(ui)
-        padding = _VIEWPORT_OVERLAY_PADDING * scale
-        width = min(_VIEWPORT_OVERLAY_WIDTH * scale, max(view_width - 2.0 * _VIEWPORT_OVERLAY_MARGIN * scale, _VIEWPORT_OVERLAY_MIN_WIDTH * scale))
-        line_height = float(imgui.get_text_line_height_with_spacing())
-        frame_height = float(imgui.get_frame_height())
-        spacing_y = float(imgui.get_style().item_spacing.y)
-        frame_text = ui._texts.get("loss_debug_frame", "")
-        height = 2.0 * padding + 3.0 * frame_height + 2.0 * spacing_y + line_height
-        if LOSS_DEBUG_OPTIONS[min(max(int(ui._values.get("loss_debug_view", 0)), 0), len(LOSS_DEBUG_OPTIONS) - 1)][0] == "abs_diff":
-            height += frame_height + spacing_y
-        if frame_text:
-            height += line_height + spacing_y
-        max_height = view_y0 + view_height - overlay_origin.y - _VIEWPORT_OVERLAY_MARGIN * scale
-        if max_height <= 0.0:
-            return
-        imgui.push_style_color(imgui.Col_.child_bg.value, imgui.ImVec4(0.982, 0.987, 0.994, 0.94))
-        imgui.push_style_color(imgui.Col_.border.value, imgui.ImVec4(0.65, 0.72, 0.80, 0.92))
-        imgui.push_style_var(imgui.StyleVar_.window_padding, imgui.ImVec2(padding, padding))
-        imgui.set_cursor_screen_pos(overlay_origin)
-        if _imgui_opened(imgui.begin_child("##viewport_training_camera_overlay", imgui.ImVec2(width, min(height, max_height)), imgui.ChildFlags_.borders.value)):
-            imgui.push_item_width(-1.0)
-            view_idx = min(max(int(ui._values.get("loss_debug_view", 0)), 0), len(LOSS_DEBUG_OPTIONS) - 1)
-            if imgui.begin_combo("##training_camera_view", LOSS_DEBUG_OPTIONS[view_idx][1]):
-                for idx, (_key, label) in enumerate(LOSS_DEBUG_OPTIONS):
-                    if imgui.selectable(label, idx == view_idx)[0]:
-                        ui._values["loss_debug_view"] = idx
-                    if idx == view_idx:
-                        imgui.set_item_default_focus()
-                imgui.end_combo()
-            if LOSS_DEBUG_OPTIONS[view_idx][0] == "abs_diff":
-                self._draw_control(ui, next(spec for spec in GROUP_SPECS["Main"] if spec.key == _LOSS_DEBUG_ABS_SCALE_KEY), compact=True)
-            frame_max = max(int(ui._values.get("_loss_debug_frame_max", 0)), 0)
-            changed, val = imgui.slider_int("##training_camera_frame", int(ui._values.get("loss_debug_frame", 0)), 0, frame_max)
-            if changed:
-                ui._values["loss_debug_frame"] = val
-            imgui.text_disabled(ui._texts.get("loss_debug_view", ""))
-            if frame_text:
-                imgui.text_disabled(_status_suffix(frame_text))
             imgui.pop_item_width()
         imgui.end_child()
         imgui.pop_style_var()
@@ -2306,6 +2298,7 @@ def build_ui(renderer) -> ViewerUI:
     values["show_training_views"] = False
     values["show_camera_overlays"] = True
     values["show_camera_labels"] = False
+    values["show_training_cameras"] = False
     values["hist_bin_count"] = _HISTOGRAM_BIN_COUNT_DEFAULT
     values["hist_min_log10"] = _HISTOGRAM_MIN_LOG10_DEFAULT
     values["hist_max_log10"] = _HISTOGRAM_MAX_LOG10_DEFAULT

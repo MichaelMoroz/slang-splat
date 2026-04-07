@@ -103,7 +103,6 @@ _TRAIN_SETUP_DEFAULTS = default_control_values("Train Setup")
 _TRAINING_DEFAULTS = default_control_values("Train Optimizer", "Train Stability")
 _CACHED_RASTER_GRAD_ATOMIC_MODE_VALUES = ("float", "fixed")
 _DEBUG_MODE_VALUES = (
-    "training_cameras",
     GaussianRenderer.DEBUG_MODE_NORMAL,
     GaussianRenderer.DEBUG_MODE_PROCESSED_COUNT,
     GaussianRenderer.DEBUG_MODE_CLONE_COUNT,
@@ -168,8 +167,6 @@ class SplatViewer(spy.AppWindow):
         atomic_mode_index = min(max(int(self.c("cached_raster_grad_atomic_mode").value), 0), len(_CACHED_RASTER_GRAD_ATOMIC_MODE_VALUES) - 1)
         debug_mode_index = min(max(int(self.c("debug_mode").value), 0), len(_DEBUG_MODE_VALUES) - 1)
         debug_mode = _DEBUG_MODE_VALUES[debug_mode_index] if allow_debug_overlays else GaussianRenderer.DEBUG_MODE_NORMAL
-        if debug_mode == "training_cameras":
-            debug_mode = GaussianRenderer.DEBUG_MODE_NORMAL
         return RendererParams(
             radius_scale=float(self.c("radius_scale").value),
             alpha_cutoff=float(self.c("alpha_cutoff").value),

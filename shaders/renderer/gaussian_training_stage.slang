@@ -28,6 +28,7 @@ static const float SRGB_INV_GAMMA = 1.0 / 2.4;
 static const float DEPTH_RATIO_GRAD_MIN_BAND_WIDTH = 1e-4;
 static const float DEPTH_RATIO_GRAD_SOFTNESS_RATIO = 0.1;
 static const float DEPTH_RATIO_GRAD_SOFTNESS_FLOOR = 1e-4;
+static const float DEBUG_EDGE_GRADIENT_DISPLAY_MAX = 4.0;
 static const uint REFINEMENT_HASH_INIT = 0x9e3779b9u;
 static const uint REFINEMENT_HASH_MIX = 0x85ebca6bu;
 uniform uint g_Width;
@@ -871,6 +872,35 @@ void csComposeAbsDiffDebug(uint3 dispatchThreadID : SV_DispatchThreadID)
     float3 target = g_DebugTarget[pixel].xyz;
     float3 diff = abs(sanitize_float3(rendered - target, g_HugeValue)) * max(g_DebugDiffScale, 0.0);
     g_DebugOutput[pixel] = float4(diff, 1.0);
+}
+
+[shader("compute")]
+[numthreads(TRAIN_TILE_DIM, TRAIN_TILE_DIM, 1)]
+void csComposeEdgeDebug(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint px = dispatchThreadID.x;
+    uint py = dispatchThreadID.y;
+    if (px >= g_DebugWidth || py >= g_DebugHeight) return;
+
+    uint px0 = px > 0u ? px - 1u : 0u;
+    uint py0 = py > 0u ? py - 1u : 0u;
+    uint px2 = min(px + 1u, g_DebugWidth - 1u);
+    uint py2 = min(py + 1u, g_DebugHeight - 1u);
+
+    float tl = dot(max(sanitize_float3(g_DebugRendered[uint2(px0, py0)].xyz, g_HugeValue), 0.0), float3(0.2126, 0.7152, 0.0722));
+    float tc = dot(max(sanitize_float3(g_DebugRendered[uint2(px, py0)].xyz, g_HugeValue), 0.0), float3(0.2126, 0.7152, 0.0722));
+    float tr = dot(max(sanitize_float3(g_DebugRendered[uint2(px2, py0)].xyz, g_HugeValue), 0.0), float3(0.2126, 0.7152, 0.0722));
+    float ml = dot(max(sanitize_float3(g_DebugRendered[uint2(px0, py)].xyz, g_HugeValue), 0.0), float3(0.2126, 0.7152, 0.0722));
+    float mr = dot(max(sanitize_float3(g_DebugRendered[uint2(px2, py)].xyz, g_HugeValue), 0.0), float3(0.2126, 0.7152, 0.0722));
+    float bl = dot(max(sanitize_float3(g_DebugRendered[uint2(px0, py2)].xyz, g_HugeValue), 0.0), float3(0.2126, 0.7152, 0.0722));
+    float bc = dot(max(sanitize_float3(g_DebugRendered[uint2(px, py2)].xyz, g_HugeValue), 0.0), float3(0.2126, 0.7152, 0.0722));
+    float br = dot(max(sanitize_float3(g_DebugRendered[uint2(px2, py2)].xyz, g_HugeValue), 0.0), float3(0.2126, 0.7152, 0.0722));
+
+    float gx = -tl + tr - 2.0 * ml + 2.0 * mr - bl + br;
+    float gy = -tl - 2.0 * tc - tr + bl + 2.0 * bc + br;
+    float gradient = length(float2(gx, gy));
+    float normalized = saturate(gradient / DEBUG_EDGE_GRADIENT_DISPLAY_MAX);
+    g_DebugOutput[uint2(px, py)] = float4(jet_colormap(normalized), 1.0);
 }
 
 [shader("compute")]

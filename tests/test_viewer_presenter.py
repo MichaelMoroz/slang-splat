@@ -195,9 +195,9 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
     viewer = SimpleNamespace()
     viewer.device = SimpleNamespace()
     viewer.toolkit = SimpleNamespace(viewport_size=lambda: (640, 360))
-    viewer.loss_debug_view_options = (("rendered", "Rendered"), ("target", "Target"), ("abs_diff", "Abs Diff"))
+    viewer.loss_debug_view_options = (("rendered", "Rendered"), ("target", "Target"), ("abs_diff", "Abs Diff"), ("rendered_edges", "Rendered Edges"), ("target_edges", "Target Edges"))
     viewer.image_subdir_options = ("images_8",)
-    viewer.ui = SimpleNamespace(controls=controls, texts=texts, _values={"show_histograms": False, "_histogram_payload": None, "_histogram_range_payload": None}, _texts={key: value.text for key, value in texts.items()})
+    viewer.ui = SimpleNamespace(controls=controls, texts=texts, _values={"show_histograms": False, "_histogram_payload": None, "_histogram_range_payload": None, "show_training_cameras": bool(loss_debug)}, _texts={key: value.text for key, value in texts.items()})
     viewer.c = lambda key: viewer.ui.controls[key]
     viewer.t = lambda key: viewer.ui.texts[key]
     viewer.camera = lambda: "camera"
@@ -602,6 +602,48 @@ def test_dispatch_debug_abs_diff_uses_runtime_ui_scale(monkeypatch) -> None:
     assert result is output
     assert len(viewer.s.debug_abs_diff_kernel.calls) == 1
     assert viewer.s.debug_abs_diff_kernel.calls[0]["vars"]["g_DebugDiffScale"] == 3.5
+
+
+def test_dispatch_debug_edge_filter_uses_source_texture(monkeypatch) -> None:
+    viewer = _viewer(loss_debug=True)
+    viewer.s.debug_edge_kernel = _CaptureKernel()
+    encoder = _DummyEncoder()
+    output = SimpleNamespace(width=640, height=360)
+
+    monkeypatch.setattr(presenter, "_ensure_texture", lambda viewer_obj, attr, width, height: output)
+
+    result = presenter._dispatch_debug_edge_filter(viewer, encoder, "source_tex", 640, 360)
+
+    assert result is output
+    assert len(viewer.s.debug_edge_kernel.calls) == 1
+    vars = viewer.s.debug_edge_kernel.calls[0]["vars"]
+    assert vars["g_DebugRendered"] == "source_tex"
+    assert vars["g_DebugWidth"] == 640
+    assert vars["g_DebugHeight"] == 360
+
+
+def test_render_debug_view_routes_edge_modes(monkeypatch) -> None:
+    viewer = _viewer(loss_debug=True)
+    encoder = _DummyEncoder()
+    calls: list[tuple[str, object]] = []
+
+    monkeypatch.setattr(presenter, "_render_debug_source", lambda viewer_obj, enc, frame_idx: ("rendered_tex", {"generated_entries": 1}, 640, 360))
+    monkeypatch.setattr(viewer.s.trainer, "get_frame_target_texture", lambda frame_idx, native_resolution=True, encoder=None: "target_tex")
+    monkeypatch.setattr(presenter, "_dispatch_debug_abs_diff", lambda viewer_obj, enc, rendered_tex, target_tex, width, height: calls.append(("abs_diff", rendered_tex, target_tex, width, height)) or "abs_diff_tex")
+    monkeypatch.setattr(presenter, "_dispatch_debug_edge_filter", lambda viewer_obj, enc, source_tex, width, height: calls.append(("edge", source_tex, width, height)) or f"edge_{source_tex}")
+    monkeypatch.setattr(presenter, "_dispatch_viewport_present", lambda viewer_obj, enc, source_tex, source_width, source_height, output_width, output_height: calls.append(("present", source_tex, source_width, source_height, output_width, output_height)) or "present_tex")
+
+    viewer.c("loss_debug_view").value = 3
+    assert presenter._render_debug_view(viewer, encoder, 800, 600) == "present_tex"
+    viewer.c("loss_debug_view").value = 4
+    assert presenter._render_debug_view(viewer, encoder, 800, 600) == "present_tex"
+
+    assert calls == [
+        ("edge", "rendered_tex", 640, 360),
+        ("present", "edge_rendered_tex", 640, 360, 800, 600),
+        ("edge", "target_tex", 640, 360),
+        ("present", "edge_target_tex", 640, 360, 800, 600),
+    ]
 
 
 def test_dispatch_viewport_present_uses_present_kernel(monkeypatch) -> None:

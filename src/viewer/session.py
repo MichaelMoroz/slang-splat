@@ -532,6 +532,7 @@ def _scene_signature(viewer: object):
 def create_debug_shaders(viewer: object) -> None:
     shader_path = str(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang")
     viewer.s.debug_abs_diff_kernel = viewer.device.create_compute_kernel(viewer.device.load_program(shader_path, ["csComposeAbsDiffDebug"]))
+    viewer.s.debug_edge_kernel = viewer.device.create_compute_kernel(viewer.device.load_program(shader_path, ["csComposeEdgeDebug"]))
     viewer.s.debug_letterbox_kernel = viewer.device.create_compute_kernel(viewer.device.load_program(shader_path, ["csComposeLetterboxDebug"]))
 
 
