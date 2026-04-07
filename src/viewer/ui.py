@@ -1442,11 +1442,11 @@ class ToolkitWindow:
                         imgui.set_item_default_focus()
                 imgui.end_combo()
             if imgui.is_item_hovered():
-                imgui.set_item_tooltip("COLMAP Pointcloud uses sparse points directly, Diffused Pointcloud resamples them, Custom PLY loads a chosen gaussian seed scene, and From Depth calibrates matched 16-bit PNG depth maps into a point cloud using a robust per-pose affine depth fit from all valid observed points.")
+                imgui.set_item_tooltip("COLMAP Pointcloud uses sparse points directly, Diffused Pointcloud resamples them, Custom PLY loads a chosen gaussian seed scene, and From Depth calibrates matched 16-bit PNG depth maps into a point cloud using an iteratively reweighted robust per-pose affine depth fit from all valid observed points.")
             if mode_idx in (0, 1, 3):
                 if mode_idx == 3:
                     imgui.push_text_wrap_pos(imgui.get_cursor_pos_x() + imgui.get_content_region_avail().x)
-                    imgui.text_disabled("From Depth matches RGB and depth by relative stem under Depth Folder, uses each pose's own positive COLMAP point observations, reprojects those 3D points through the frame camera model to sample depth, then solves one robust affine map `a + b*d` per pose from all valid observed points before sampling a dataset-wide calibrated point budget. Frames without usable depth stay in training but are skipped for depth-based initialization.")
+                    imgui.text_disabled("From Depth matches RGB and depth by relative stem under Depth Folder, uses each pose's own positive COLMAP point observations, reprojects those 3D points through the frame camera model to sample depth, then solves one iteratively reweighted robust affine map `a + b*d` per pose from all valid observed points before sampling a dataset-wide calibrated point budget. Frames without usable depth stay in training but are skipped for depth-based initialization.")
                     imgui.pop_text_wrap_pos()
                     depth_value_mode = max(0, min(int(ui._values.get("colmap_depth_value_mode", 1)), len(_COLMAP_DEPTH_VALUE_MODE_LABELS) - 1))
                     if imgui.begin_combo("Depth Interpretation", _COLMAP_DEPTH_VALUE_MODE_LABELS[depth_value_mode]):

@@ -467,6 +467,8 @@ def test_collect_depth_distance_remap_samples_uses_reprojected_pose_points_not_s
     assert coeffs is not None
     predicted = features @ coeffs
     np.testing.assert_allclose(predicted, targets, rtol=0.0, atol=5e-2)
+
+
 def test_collect_depth_distance_remap_samples_uses_all_visible_pose_points() -> None:
     camera = ColmapCamera(camera_id=1, model_id=1, width=64, height=64, fx=64.0, fy=64.0, cx=32.0, cy=32.0)
     q_wxyz = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
@@ -490,6 +492,18 @@ def test_collect_depth_distance_remap_samples_uses_all_visible_pose_points() -> 
     assert features.shape == (40, 2)
     np.testing.assert_allclose(features[:, 1], depths, rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(targets, depths, rtol=0.0, atol=1e-6)
+
+
+def test_robust_ridge_fit_downweights_strong_outliers() -> None:
+    raw_depth = np.linspace(50.0, 200.0, num=48, dtype=np.float32)
+    features = np.stack((np.ones_like(raw_depth), raw_depth), axis=1)
+    targets = 2.0 + 3.0 * raw_depth
+    targets[-12:] += np.linspace(500.0, 1500.0, num=12, dtype=np.float32)
+
+    coeffs = colmap_ops._robust_ridge_fit(features, targets)
+
+    assert coeffs is not None
+    np.testing.assert_allclose(coeffs, np.array([2.0, 3.0], dtype=np.float32), rtol=0.0, atol=5e-2)
 
 
 def test_generate_depth_init_points_respects_budget_and_uniqueness() -> None:

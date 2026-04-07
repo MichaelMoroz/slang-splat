@@ -30,6 +30,10 @@ DEPTH_INIT_MIN_CORRESPONDENCES = 16
 DEPTH_INIT_MIN_INLIERS = 12
 DEPTH_INIT_RIDGE_LAMBDA = 1e-4
 DEPTH_INIT_MAD_SCALE = 3.5
+DEPTH_INIT_IRLS_ITERATIONS = 6
+DEPTH_INIT_TUKEY_C = 4.685
+DEPTH_INIT_WEIGHT_EPS = 1e-4
+DEPTH_INIT_THEILSEN_SAMPLE_COUNT = 64
 DEPTH_INIT_DISTANCE_FLOOR = 1e-4
 DEPTH_INIT_VALUE_DISTANCE = "distance"
 DEPTH_INIT_VALUE_Z_DEPTH = "z_depth"
@@ -396,22 +400,100 @@ def _ridge_affine_fit(features: np.ndarray, targets: np.ndarray, ridge_lambda: f
     return np.asarray(np.linalg.solve(xtx, xty), dtype=np.float32)
 
 
+def _weighted_ridge_affine_fit(
+    features: np.ndarray,
+    targets: np.ndarray,
+    weights: np.ndarray,
+    ridge_lambda: float = DEPTH_INIT_RIDGE_LAMBDA,
+) -> np.ndarray | None:
+    x = np.asarray(features, dtype=np.float64).reshape(-1, 2)
+    y = np.asarray(targets, dtype=np.float64).reshape(-1)
+    w = np.clip(np.asarray(weights, dtype=np.float64).reshape(-1), 0.0, None)
+    if x.shape[0] == 0 or x.shape[0] != y.size or x.shape[0] != w.size or not np.any(w > 0.0):
+        return None
+    xtwx = x.T @ (x * w[:, None])
+    xtwx[0, 0] += float(max(ridge_lambda, 0.0))
+    xtwx[1, 1] += float(max(ridge_lambda, 0.0))
+    xtwy = x.T @ (y * w)
+    try:
+        return np.asarray(np.linalg.solve(xtwx, xtwy), dtype=np.float32)
+    except np.linalg.LinAlgError:
+        return None
+
+
+def _robust_scale_from_residuals(residuals: np.ndarray) -> float:
+    residual_arr = np.asarray(residuals, dtype=np.float64).reshape(-1)
+    if residual_arr.size == 0:
+        return 0.0
+    center = float(np.median(residual_arr))
+    mad = float(np.median(np.abs(residual_arr - center)))
+    return max(1.4826 * mad, 1e-6)
+
+
+def _tukey_biweight(residuals: np.ndarray, scale: float) -> np.ndarray:
+    normalized = np.asarray(residuals, dtype=np.float64).reshape(-1) / max(float(scale) * float(DEPTH_INIT_TUKEY_C), 1e-6)
+    weights = np.zeros_like(normalized, dtype=np.float64)
+    inside = np.abs(normalized) < 1.0
+    weights[inside] = (1.0 - normalized[inside] ** 2) ** 2
+    return np.asarray(weights, dtype=np.float32)
+
+
+def _robust_affine_seed(features: np.ndarray, targets: np.ndarray) -> np.ndarray | None:
+    x = np.asarray(features, dtype=np.float64).reshape(-1, 2)
+    y = np.asarray(targets, dtype=np.float64).reshape(-1)
+    if x.shape[0] == 0 or x.shape[0] != y.size:
+        return None
+    raw_depth = x[:, 1]
+    order = np.argsort(raw_depth)
+    raw_sorted = raw_depth[order]
+    targets_sorted = y[order]
+    if raw_sorted.size < 2:
+        return _ridge_affine_fit(x, y)
+    sample_count = min(int(raw_sorted.size), DEPTH_INIT_THEILSEN_SAMPLE_COUNT)
+    sample_indices = np.linspace(0, raw_sorted.size - 1, num=sample_count, dtype=np.int32)
+    sample_x = raw_sorted[sample_indices]
+    sample_y = targets_sorted[sample_indices]
+    dx = sample_x[None, :] - sample_x[:, None]
+    dy = sample_y[None, :] - sample_y[:, None]
+    pair_mask = np.triu(np.abs(dx) > 1e-6, k=1)
+    if not np.any(pair_mask):
+        return _ridge_affine_fit(x, y)
+    slope = float(np.median((dy[pair_mask] / dx[pair_mask]).reshape(-1)))
+    intercept = float(np.median(y - slope * raw_depth))
+    coeffs = np.asarray((intercept, slope), dtype=np.float32)
+    return coeffs if np.all(np.isfinite(coeffs)) else None
+
+
 def _robust_ridge_fit(features: np.ndarray, targets: np.ndarray) -> np.ndarray | None:
     x = np.asarray(features, dtype=np.float32).reshape(-1, 2)
     y = np.asarray(targets, dtype=np.float32).reshape(-1)
     if x.shape[0] < DEPTH_INIT_MIN_CORRESPONDENCES or x.shape[0] != y.size:
         return None
-    coeffs = _ridge_affine_fit(x, y)
-    residuals = y - x @ coeffs
-    center = float(np.median(residuals))
-    mad = float(np.median(np.abs(residuals - center)))
-    robust_sigma = max(1.4826 * mad, 1e-6)
-    inliers = np.abs(residuals - center) <= DEPTH_INIT_MAD_SCALE * robust_sigma
-    if int(np.count_nonzero(inliers)) >= DEPTH_INIT_MIN_INLIERS:
-        refined = _ridge_affine_fit(x[inliers], y[inliers])
-        if np.all(np.isfinite(refined)):
-            return refined
-    return coeffs if np.all(np.isfinite(coeffs)) else None
+    coeffs = _robust_affine_seed(x, y)
+    if coeffs is None or not np.all(np.isfinite(coeffs)):
+        return None
+    best_coeffs = coeffs
+    best_weighted_error = np.inf
+    for _ in range(DEPTH_INIT_IRLS_ITERATIONS):
+        residuals = y - x @ coeffs
+        centered = residuals - np.median(residuals)
+        weights = _tukey_biweight(centered, _robust_scale_from_residuals(centered))
+        if int(np.count_nonzero(weights > DEPTH_INIT_WEIGHT_EPS)) < DEPTH_INIT_MIN_INLIERS:
+            break
+        refined = _weighted_ridge_affine_fit(x, y, weights)
+        if refined is None or not np.all(np.isfinite(refined)):
+            break
+        weighted_error = float(np.sum(np.abs(y - x @ refined) * weights, dtype=np.float64))
+        if weighted_error <= best_weighted_error:
+            best_weighted_error = weighted_error
+            best_coeffs = refined
+        if np.max(np.abs(refined - coeffs)) <= 1e-5:
+            coeffs = refined
+            break
+        coeffs = refined
+    return best_coeffs if np.all(np.isfinite(best_coeffs)) else None
+
+
 def collect_depth_distance_remap_samples(
     recon: ColmapReconstruction,
     image: ColmapImage,
