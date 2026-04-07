@@ -494,6 +494,30 @@ def test_collect_depth_distance_remap_samples_uses_all_visible_pose_points() -> 
     np.testing.assert_allclose(targets, depths, rtol=0.0, atol=1e-6)
 
 
+def test_collect_depth_distance_remap_samples_skips_depth_discontinuities() -> None:
+    camera = ColmapCamera(camera_id=1, model_id=1, width=8, height=8, fx=8.0, fy=8.0, cx=4.0, cy=4.0)
+    q_wxyz = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    frame = ColmapFrame(1, Path("frame.png"), q_wxyz, np.zeros((3,), dtype=np.float32), 8.0, 8.0, 4.0, 4.0, 8, 8)
+    image = ColmapImage(1, q_wxyz, np.zeros((3,), dtype=np.float32), 1, "frame.png", np.zeros((16, 2), dtype=np.float32), np.arange(1, 17, dtype=np.int64))
+    camera_obj = frame.make_camera()
+    depth_map = np.full((8, 8), 10.0, dtype=np.float32)
+    points3d: dict[int, ColmapPoint3D] = {}
+    for point_id, screen_xy in enumerate(((1.0, 1.0), (3.0, 1.0), (5.0, 1.0), (6.0, 1.0), (1.0, 3.0), (3.0, 3.0), (5.0, 3.0), (6.0, 3.0), (1.0, 5.0), (3.0, 5.0), (5.0, 5.0), (6.0, 5.0), (1.0, 6.0), (3.0, 6.0), (5.0, 6.0), (6.0, 6.0)), start=1):
+        world_pos = np.asarray(camera_obj.screen_to_world(np.asarray(screen_xy, dtype=np.float32), 10.0, frame.width, frame.height), dtype=np.float32)
+        points3d[point_id] = ColmapPoint3D(point_id, world_pos, np.array([255.0, 255.0, 255.0], dtype=np.float32), 0.0)
+    depth_map[3, 3] = 2.0
+    depth_map[3, 4] = 12.0
+    depth_map[4, 3] = 14.0
+    depth_map[4, 4] = 16.0
+    points3d[1] = ColmapPoint3D(1, np.asarray(camera_obj.screen_to_world(np.asarray((3.5, 3.5), dtype=np.float32), 10.0, frame.width, frame.height), dtype=np.float32), np.array([255.0, 255.0, 255.0], dtype=np.float32), 0.0)
+    recon = ColmapReconstruction(root=Path("synthetic"), sparse_dir=Path("synthetic") / "sparse" / "0", cameras={1: camera}, images={1: image}, points3d=points3d)
+
+    features, targets = colmap_ops.collect_depth_distance_remap_samples(recon, image, frame, camera, depth_map, colmap_ops.DEPTH_INIT_VALUE_Z_DEPTH)
+
+    assert features.shape == (14, 2)
+    assert targets.shape == (14,)
+
+
 def test_robust_ridge_fit_downweights_strong_outliers() -> None:
     raw_depth = np.linspace(50.0, 200.0, num=48, dtype=np.float32)
     features = np.stack((np.ones_like(raw_depth), raw_depth), axis=1)

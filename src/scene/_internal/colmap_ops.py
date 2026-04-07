@@ -34,6 +34,7 @@ DEPTH_INIT_IRLS_ITERATIONS = 6
 DEPTH_INIT_TUKEY_C = 4.685
 DEPTH_INIT_WEIGHT_EPS = 1e-4
 DEPTH_INIT_THEILSEN_SAMPLE_COUNT = 64
+DEPTH_INIT_DISCONTINUITY_RATIO = 4.0
 DEPTH_INIT_DISTANCE_FLOOR = 1e-4
 DEPTH_INIT_VALUE_DISTANCE = "distance"
 DEPTH_INIT_VALUE_Z_DEPTH = "z_depth"
@@ -386,6 +387,48 @@ def _depth_sample_linear(depth_map: np.ndarray, xy: np.ndarray) -> float:
     return float(np.float32(1.0 - ty) * top + ty * bottom)
 
 
+def _depth_sample_linear_if_smooth(depth_map: np.ndarray, xy: np.ndarray, discontinuity_ratio: float = DEPTH_INIT_DISCONTINUITY_RATIO) -> float:
+    depth = np.asarray(depth_map, dtype=np.float32)
+    x, y = np.asarray(xy, dtype=np.float32).reshape(2)
+    width = depth.shape[1]
+    height = depth.shape[0]
+    if width <= 0 or height <= 0:
+        return float("nan")
+    x = float(np.clip(x, 0.0, max(width - 1, 0)))
+    y = float(np.clip(y, 0.0, max(height - 1, 0)))
+    x0 = int(np.floor(x))
+    y0 = int(np.floor(y))
+    x1 = min(x0 + 1, width - 1)
+    y1 = min(y0 + 1, height - 1)
+    nearest_x = int(np.clip(np.rint(x), 0, width - 1))
+    nearest_y = int(np.clip(np.rint(y), 0, height - 1))
+    if abs(x - float(nearest_x)) <= 1e-4 and abs(y - float(nearest_y)) <= 1e-4:
+        y_min = max(nearest_y - 1, 0)
+        y_max = min(nearest_y + 2, height)
+        x_min = max(nearest_x - 1, 0)
+        x_max = min(nearest_x + 2, width)
+        patch = depth[y_min:y_max, x_min:x_max].reshape(-1)
+        valid_patch = patch[np.isfinite(patch) & (patch > 0.0)]
+        center_depth = float(depth[nearest_y, nearest_x])
+        if not np.isfinite(center_depth) or center_depth <= 0.0:
+            return float("nan")
+        if valid_patch.size >= 2:
+            depth_min = float(np.min(valid_patch))
+            depth_max = float(np.max(valid_patch))
+            if depth_max > max(depth_min, 1e-6) * float(max(discontinuity_ratio, 1.0)):
+                return float("nan")
+        return center_depth
+    footprint = np.asarray((depth[y0, x0], depth[y0, x1], depth[y1, x0], depth[y1, x1]), dtype=np.float32)
+    valid = footprint[np.isfinite(footprint) & (footprint > 0.0)]
+    if valid.size != footprint.size:
+        return float("nan")
+    depth_min = float(np.min(valid))
+    depth_max = float(np.max(valid))
+    if depth_max > max(depth_min, 1e-6) * float(max(discontinuity_ratio, 1.0)):
+        return float("nan")
+    return _depth_sample_linear(depth, np.asarray((x, y), dtype=np.float32))
+
+
 def _depth_affine_features(raw_depth: float) -> np.ndarray:
     return np.asarray((1.0, float(raw_depth)), dtype=np.float32)
 
@@ -524,7 +567,7 @@ def collect_depth_distance_remap_samples(
             continue
         if float(xy[0]) < 0.0 or float(xy[1]) < 0.0 or float(xy[0]) > float(frame.width - 1) or float(xy[1]) > float(frame.height - 1):
             continue
-        raw_depth = _depth_sample_linear(depth_map, xy)
+        raw_depth = _depth_sample_linear_if_smooth(depth_map, xy)
         if not np.isfinite(raw_depth) or raw_depth <= 0.0:
             continue
         target = float(point_camera[2]) if depth_mode == DEPTH_INIT_VALUE_Z_DEPTH else point_distance
