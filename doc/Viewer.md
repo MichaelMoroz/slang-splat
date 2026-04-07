@@ -9,7 +9,7 @@ The overlay uses a right-side control panel with a menu bar:
 - `File`: scene load, scene export, COLMAP import, reload, and gaussian reinitialization actions
 - `View`: interface scale presets from `75%` to `200%`, with a reset action
 - `Help`: `Documentation` and `About` windows
-- Auxiliary windows such as `Documentation`, `About`, `Renderer Debug`, `Histograms`, and `COLMAP Import` open as tabs in that right-side panel by default.
+- Auxiliary windows such as `Documentation`, `About`, `Histograms`, `Training Views`, and `COLMAP Import` open as tabs in that right-side panel by default.
 - The menu bar spans the full viewport width and the left control panel starts below it to avoid overlap.
 
 `src/viewer` is split into:
@@ -52,20 +52,48 @@ The import window collects:
 
 - the top-level dataset root
 - the image folder used for training frames
+- an optional `Depth Folder` used only by depth-based initialization
 - image downscale settings: original resolution, fixed max size, or uniform scale factor
-- the initialization mode: `COLMAP Pointcloud`, `Diffused Pointcloud`, or `Custom PLY`
+- the initialization mode: `COLMAP Pointcloud`, `Diffused Pointcloud`, `Custom PLY`, or `From Depth`
 - the nearest-neighbor radius scale coefficient used by COLMAP-based initialization
+- for `From Depth`: a dataset-wide `Depth Point Count` budget
 - for `Diffused Pointcloud`: synthesized point count and a dimensionless diffusion-radius multiplier
 
 After the dataset root is selected, the viewer resolves the COLMAP reconstruction from `sparse/0`. If a COLMAP database is present it samples image names from the `images` table; otherwise it falls back to the image names stored in `images.bin`. It then walks the selected root and its subfolders until it finds the first directory that contains one of those image entries. The image folder can still be overridden manually before pressing `Import`.
 
+Automatic RGB folder discovery skips directories whose name or full path contains `depth` so a colocated depth tree is not mistaken for the main image set.
+
 Import-time downscale is applied before training textures are uploaded and before frame intrinsics are finalized. `Max Size` preserves aspect ratio by clamping the longer image side and scaling the shorter side to match. `Scale Factor` multiplies both dimensions uniformly. Both modes clamp to the source resolution, so the importer never upscales images.
 
-Training-frame metadata discovery opens source images in a fixed 8-thread loader pool, which keeps large datasets from stalling on serial image-size probes while preserving the original sorted frame order.
+Training-frame metadata discovery opens source images in a fixed 16-thread loader pool, which keeps large datasets from stalling on serial image-size probes while preserving the original sorted frame order.
 
-Native training-target import uses the same 8-thread CPU loader for RGBA decode and resize work. Texture creation and `copy_from_numpy(...)` stay on the main thread, but the import path pipelines those uploads against ongoing background decode/resize work instead of waiting for the entire dataset to be processed serially.
+Native training-target import uses the same 16-thread CPU loader for RGBA decode and resize work. Texture creation and `copy_from_numpy(...)` stay on the main thread, but the import path pipelines those uploads against ongoing background decode/resize work instead of waiting for the entire dataset to be processed serially.
 
 Pointcloud initialization builds gaussians directly from the COLMAP sparse points and scales them from the median nearest-neighbor spacing multiplied by the selected coefficient. Diffused pointcloud initialization resamples sparse points with replacement and offsets each sample by `nrand3() * diffusion_radius * original_nn_distance`, where `original_nn_distance` comes from the source COLMAP point cloud, then applies the same nearest-neighbor scale initialization to the synthesized positions. Custom PLY initialization keeps the COLMAP cameras and training frames, but seeds the scene from the chosen `.ply` file instead.
+
+`From Depth` adds a CPU-only calibration stage before the initial point cloud is built:
+
+- RGB images are matched to depth files by relative path stem under `Depth Folder`, extension-agnostically.
+- Depth maps are expected to be scalar `16-bit PNG` images.
+- For each matched frame, the importer gathers up to `128` positive COLMAP `points2d_point3d_ids`, samples the raw depth map at those keypoints, and fits a per-image depth-to-distance remap.
+- The fitted target is Euclidean camera-to-point distance, not camera-space `z`.
+- The remap uses the feature basis:
+  - `1`
+  - `d`
+  - `r2`
+  - `r4`
+  - `d*r2`
+  - `d*r4`
+  - `x`
+  - `y`
+  - `d*x`
+  - `d*y`
+- with `d = raw depth`, `x = (u - cx) / fx`, `y = (v - cy) / fy`, and `r2 = x^2 + y^2`.
+- Fitting uses a ridge least-squares solve followed by one MAD-based outlier rejection/refit pass.
+- Frames with missing or unusable depth are still imported as training views; they are only skipped when generating the depth-derived initialization cloud.
+- After calibration, the importer samples a unique dataset-wide point budget across usable frames approximately proportional to each frame's valid calibrated pixel count, reverse-projects those pixels through the COLMAP camera model, and colors them from the aligned RGB image.
+- The resulting positions/colors are then passed through the same nearest-neighbor scale initialization used by the point-based import modes.
+- Depth maps and calibration intermediates stay on CPU and are discarded once the calibrated point cloud has been built; they are not uploaded into the runtime training textures.
 
 ## Debug Views
 
