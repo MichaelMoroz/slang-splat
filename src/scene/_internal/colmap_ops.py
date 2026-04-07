@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -11,7 +11,7 @@ from scipy.spatial.transform import Rotation
 
 from ..gaussian_scene import GaussianScene
 from ..sh_utils import SUPPORTED_SH_COEFF_COUNT, rgb_to_sh0
-from .colmap_types import ColmapFrame, ColmapReconstruction, GaussianInitHyperParams, point_tables
+from .colmap_types import ColmapCamera, ColmapFrame, ColmapImage, ColmapReconstruction, GaussianInitHyperParams, point_tables
 
 INIT_BASE_SCALE_SPACING_RATIO = 0.25
 INIT_JITTER_SPACING_RATIO = 1.0 / np.sqrt(12.0)
@@ -26,6 +26,22 @@ INIT_OPACITY_MAX = 0.35
 _MIN_SCALE = 1e-4
 _MAX_SCALE = 1e4
 TRAINING_FRAME_LOAD_THREADS = 16
+DEPTH_INIT_MAX_CORRESPONDENCES = 128
+DEPTH_INIT_MIN_CORRESPONDENCES = 16
+DEPTH_INIT_MIN_INLIERS = 12
+DEPTH_INIT_RIDGE_LAMBDA = 1e-4
+DEPTH_INIT_MAD_SCALE = 3.5
+DEPTH_INIT_DISTANCE_FLOOR = 1e-4
+
+
+@dataclass(slots=True)
+class DepthInitFramePayload:
+    frame: ColmapFrame
+    rgba8: np.ndarray
+    depth_map: np.ndarray
+    coeffs: np.ndarray
+    valid_mask: np.ndarray
+    valid_count: int
 
 
 def _camera_to_world_pose(q_wxyz: np.ndarray, t_xyz: np.ndarray) -> np.ndarray:
@@ -309,6 +325,245 @@ def load_rgba8_image(image_path: Path, target_size: tuple[int, int] | None = Non
 
 def load_training_frame_rgba8(frame: ColmapFrame) -> np.ndarray:
     return load_rgba8_image(frame.image_path, target_size=(max(int(frame.width), 1), max(int(frame.height), 1)))
+
+
+def build_depth_path_index(depth_root: Path) -> dict[str, Path]:
+    root = Path(depth_root).resolve()
+    if not root.exists() or not root.is_dir():
+        raise FileNotFoundError(f"Depth directory does not exist: {root}")
+    index: dict[str, Path] = {}
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(root)
+        key = str(relative.with_suffix("")).replace("\\", "/").lower()
+        index[key] = path.resolve()
+    return index
+
+
+def match_depth_path(images_root: Path, image_path: Path, depth_index: dict[str, Path]) -> Path | None:
+    relative = Path(image_path).resolve().relative_to(Path(images_root).resolve())
+    return depth_index.get(str(relative.with_suffix("")).replace("\\", "/").lower())
+
+
+def load_depth_u16_image(image_path: Path, target_size: tuple[int, int] | None = None) -> np.ndarray:
+    with Image.open(Path(image_path).resolve()) as pil_image:
+        depth_image = pil_image
+        if target_size is not None:
+            resolved_size = (max(int(target_size[0]), 1), max(int(target_size[1]), 1))
+            if depth_image.size != resolved_size:
+                depth_image = depth_image.resize(resolved_size, Image.Resampling.NEAREST)
+        depth = np.array(depth_image, dtype=np.float32, order="C", copy=True)
+    if depth.ndim == 3:
+        depth = depth[..., 0]
+    if depth.ndim != 2:
+        raise RuntimeError(f"Depth image must be scalar: {image_path}")
+    return np.ascontiguousarray(depth, dtype=np.float32)
+
+
+def _depth_sample_linear(depth_map: np.ndarray, xy: np.ndarray) -> float:
+    depth = np.asarray(depth_map, dtype=np.float32)
+    x, y = np.asarray(xy, dtype=np.float32).reshape(2)
+    width = depth.shape[1]
+    height = depth.shape[0]
+    if width <= 0 or height <= 0:
+        return float("nan")
+    x = float(np.clip(x, 0.0, max(width - 1, 0)))
+    y = float(np.clip(y, 0.0, max(height - 1, 0)))
+    x0 = int(np.floor(x))
+    y0 = int(np.floor(y))
+    x1 = min(x0 + 1, width - 1)
+    y1 = min(y0 + 1, height - 1)
+    tx = np.float32(x - x0)
+    ty = np.float32(y - y0)
+    top = np.float32(1.0 - tx) * depth[y0, x0] + tx * depth[y0, x1]
+    bottom = np.float32(1.0 - tx) * depth[y1, x0] + tx * depth[y1, x1]
+    return float(np.float32(1.0 - ty) * top + ty * bottom)
+
+
+def _depth_feature_vector(frame: ColmapFrame, x: float, y: float, raw_depth: float) -> np.ndarray:
+    fx = max(float(frame.fx), 1e-8)
+    fy = max(float(frame.fy), 1e-8)
+    xn = (float(x) - float(frame.cx)) / fx
+    yn = (float(y) - float(frame.cy)) / fy
+    r2 = xn * xn + yn * yn
+    r4 = r2 * r2
+    d = float(raw_depth)
+    return np.array([1.0, d, r2, r4, d * r2, d * r4, xn, yn, d * xn, d * yn], dtype=np.float32)
+
+
+def _ridge_least_squares(features: np.ndarray, targets: np.ndarray, ridge_lambda: float = DEPTH_INIT_RIDGE_LAMBDA) -> np.ndarray:
+    x = np.asarray(features, dtype=np.float64)
+    y = np.asarray(targets, dtype=np.float64).reshape(-1)
+    gram = x.T @ x
+    gram += np.eye(gram.shape[0], dtype=np.float64) * float(max(ridge_lambda, 0.0))
+    rhs = x.T @ y
+    try:
+        coeffs = np.linalg.solve(gram, rhs)
+    except np.linalg.LinAlgError:
+        coeffs = np.linalg.lstsq(gram, rhs, rcond=None)[0]
+    return np.asarray(coeffs, dtype=np.float32)
+
+
+def _robust_ridge_fit(features: np.ndarray, targets: np.ndarray) -> np.ndarray | None:
+    x = np.asarray(features, dtype=np.float32)
+    y = np.asarray(targets, dtype=np.float32).reshape(-1)
+    if x.ndim != 2 or x.shape[0] < DEPTH_INIT_MIN_CORRESPONDENCES or x.shape[0] != y.size:
+        return None
+    coeffs = _ridge_least_squares(x, y)
+    residuals = y - x @ coeffs
+    center = float(np.median(residuals))
+    mad = float(np.median(np.abs(residuals - center)))
+    robust_sigma = max(1.4826 * mad, 1e-6)
+    inliers = np.abs(residuals - center) <= DEPTH_INIT_MAD_SCALE * robust_sigma
+    if int(np.count_nonzero(inliers)) >= max(DEPTH_INIT_MIN_INLIERS, x.shape[1]):
+        refined = _ridge_least_squares(x[inliers], y[inliers])
+        if np.all(np.isfinite(refined)):
+            return refined
+    return coeffs if np.all(np.isfinite(coeffs)) else None
+
+
+def fit_depth_distance_remap(
+    recon: ColmapReconstruction,
+    image: ColmapImage,
+    frame: ColmapFrame,
+    camera: ColmapCamera,
+    depth_map: np.ndarray,
+) -> np.ndarray | None:
+    point_ids = np.asarray(image.points2d_point3d_ids, dtype=np.int64).reshape(-1)
+    points2d_xy = np.asarray(image.points2d_xy, dtype=np.float32).reshape(-1, 2)
+    valid_ids = np.flatnonzero(point_ids > 0)
+    if valid_ids.size == 0:
+        return None
+    camera_obj = frame.make_camera()
+    sx = float(frame.width) / float(max(int(camera.width), 1))
+    sy = float(frame.height) / float(max(int(camera.height), 1))
+    features: list[np.ndarray] = []
+    targets: list[float] = []
+    for point_idx in valid_ids[:DEPTH_INIT_MAX_CORRESPONDENCES]:
+        point = recon.points3d.get(int(point_ids[point_idx]))
+        if point is None:
+            continue
+        xy = points2d_xy[point_idx] * np.array([sx, sy], dtype=np.float32)
+        raw_depth = _depth_sample_linear(depth_map, xy)
+        if not np.isfinite(raw_depth) or raw_depth <= 0.0:
+            continue
+        target_distance = float(np.linalg.norm(np.asarray(point.xyz, dtype=np.float32).reshape(3) - camera_obj.position))
+        if not np.isfinite(target_distance) or target_distance <= 0.0:
+            continue
+        features.append(_depth_feature_vector(frame, float(xy[0]), float(xy[1]), raw_depth))
+        targets.append(target_distance)
+    if len(features) < DEPTH_INIT_MIN_CORRESPONDENCES:
+        return None
+    return _robust_ridge_fit(np.stack(features, axis=0), np.asarray(targets, dtype=np.float32))
+
+
+def _predict_depth_distance_map(frame: ColmapFrame, depth_map: np.ndarray, coeffs: np.ndarray) -> np.ndarray:
+    raw_depth = np.asarray(depth_map, dtype=np.float32)
+    height, width = raw_depth.shape
+    xs = (np.arange(width, dtype=np.float32) - np.float32(frame.cx)) / np.float32(max(float(frame.fx), 1e-8))
+    ys = (np.arange(height, dtype=np.float32) - np.float32(frame.cy)) / np.float32(max(float(frame.fy), 1e-8))
+    x_grid, y_grid = np.meshgrid(xs, ys, indexing="xy")
+    r2 = x_grid * x_grid + y_grid * y_grid
+    r4 = r2 * r2
+    predicted = (
+        np.float32(coeffs[0])
+        + np.float32(coeffs[1]) * raw_depth
+        + np.float32(coeffs[2]) * r2
+        + np.float32(coeffs[3]) * r4
+        + np.float32(coeffs[4]) * raw_depth * r2
+        + np.float32(coeffs[5]) * raw_depth * r4
+        + np.float32(coeffs[6]) * x_grid
+        + np.float32(coeffs[7]) * y_grid
+        + np.float32(coeffs[8]) * raw_depth * x_grid
+        + np.float32(coeffs[9]) * raw_depth * y_grid
+    )
+    return np.ascontiguousarray(predicted, dtype=np.float32)
+
+
+def build_depth_init_frame_payload(
+    recon: ColmapReconstruction,
+    image: ColmapImage,
+    camera: ColmapCamera,
+    frame: ColmapFrame,
+    depth_path: Path,
+) -> DepthInitFramePayload | None:
+    rgba8 = load_training_frame_rgba8(frame)
+    depth_map = load_depth_u16_image(depth_path, target_size=(int(frame.width), int(frame.height)))
+    coeffs = fit_depth_distance_remap(recon, image, frame, camera, depth_map)
+    if coeffs is None:
+        return None
+    predicted = _predict_depth_distance_map(frame, depth_map, coeffs)
+    valid_mask = np.isfinite(depth_map) & (depth_map > 0.0) & np.isfinite(predicted) & (predicted > DEPTH_INIT_DISTANCE_FLOOR)
+    valid_count = int(np.count_nonzero(valid_mask))
+    if valid_count <= 0:
+        return None
+    return DepthInitFramePayload(frame=frame, rgba8=rgba8, depth_map=depth_map, coeffs=np.asarray(coeffs, dtype=np.float32), valid_mask=np.asarray(valid_mask, dtype=bool), valid_count=valid_count)
+
+
+def load_training_frame_rgba8_with_depth_payload(task: tuple[ColmapReconstruction, ColmapImage, ColmapCamera, ColmapFrame, Path | None]) -> tuple[np.ndarray, DepthInitFramePayload | None]:
+    recon, image, camera, frame, depth_path = task
+    rgba8 = load_training_frame_rgba8(frame)
+    if depth_path is None:
+        return rgba8, None
+    depth_map = load_depth_u16_image(depth_path, target_size=(int(frame.width), int(frame.height)))
+    coeffs = fit_depth_distance_remap(recon, image, frame, camera, depth_map)
+    if coeffs is None:
+        return rgba8, None
+    predicted = _predict_depth_distance_map(frame, depth_map, coeffs)
+    valid_mask = np.isfinite(depth_map) & (depth_map > 0.0) & np.isfinite(predicted) & (predicted > DEPTH_INIT_DISTANCE_FLOOR)
+    valid_count = int(np.count_nonzero(valid_mask))
+    if valid_count <= 0:
+        return rgba8, None
+    return rgba8, DepthInitFramePayload(frame=frame, rgba8=rgba8, depth_map=depth_map, coeffs=np.asarray(coeffs, dtype=np.float32), valid_mask=np.asarray(valid_mask, dtype=bool), valid_count=valid_count)
+
+
+def generate_depth_init_points(payloads: list[DepthInitFramePayload], total_point_count: int, seed: int) -> tuple[np.ndarray, np.ndarray]:
+    usable = [payload for payload in payloads if payload is not None and int(payload.valid_count) > 0]
+    if len(usable) == 0:
+        raise RuntimeError("Depth initialization found no calibrated RGB/depth pairs.")
+    total_budget = max(int(total_point_count), 1)
+    valid_counts = np.asarray([payload.valid_count for payload in usable], dtype=np.int64)
+    total_valid = int(np.sum(valid_counts))
+    if total_valid <= 0:
+        raise RuntimeError("Depth initialization found no valid calibrated depth pixels.")
+    raw_alloc = np.asarray(valid_counts, dtype=np.float64) * (float(total_budget) / float(total_valid))
+    counts = np.minimum(np.floor(raw_alloc).astype(np.int64), valid_counts)
+    remainder = min(total_budget - int(np.sum(counts)), int(np.sum(valid_counts - counts)))
+    if remainder > 0:
+        order = np.argsort(-(raw_alloc - counts))
+        for index in order:
+            if remainder <= 0:
+                break
+            if counts[index] >= valid_counts[index]:
+                continue
+            counts[index] += 1
+            remainder -= 1
+    if int(np.sum(counts)) <= 0:
+        counts[np.argmax(valid_counts)] = 1
+    rng = np.random.default_rng(int(seed))
+    positions: list[np.ndarray] = []
+    colors: list[np.ndarray] = []
+    for payload, sample_count in zip(usable, counts, strict=False):
+        count = int(sample_count)
+        if count <= 0:
+            continue
+        valid_indices = np.flatnonzero(payload.valid_mask.reshape(-1))
+        if valid_indices.size == 0:
+            continue
+        chosen = rng.choice(valid_indices, size=min(count, valid_indices.size), replace=False)
+        ys, xs = np.unravel_index(chosen, payload.valid_mask.shape)
+        camera = payload.frame.make_camera()
+        predicted = _predict_depth_distance_map(payload.frame, payload.depth_map, payload.coeffs)
+        for x, y in zip(xs.astype(np.int32), ys.astype(np.int32), strict=False):
+            distance = max(float(predicted[int(y), int(x)]), DEPTH_INIT_DISTANCE_FLOOR)
+            ray = camera.screen_to_world_ray(np.array([float(x) + 0.5, float(y) + 0.5], dtype=np.float32), int(payload.frame.width), int(payload.frame.height))
+            world = np.asarray(camera.position, dtype=np.float32) + np.asarray(ray, dtype=np.float32) * np.float32(distance)
+            positions.append(np.asarray(world, dtype=np.float32).reshape(3))
+            colors.append(np.asarray(payload.rgba8[int(y), int(x), :3], dtype=np.float32) / np.float32(255.0))
+    if len(positions) == 0:
+        raise RuntimeError("Depth initialization could not sample any calibrated points.")
+    return np.ascontiguousarray(np.stack(positions, axis=0), dtype=np.float32), np.ascontiguousarray(np.stack(colors, axis=0), dtype=np.float32)
 
 
 def _random_unit_quaternions(rng: np.random.Generator, count: int) -> np.ndarray:

@@ -20,7 +20,7 @@ from src.scene import (
     transform_poses_pca,
 )
 from src.scene._internal import colmap_ops
-from src.scene._internal.colmap_types import ColmapCamera, ColmapImage, ColmapPoint3D, ColmapReconstruction
+from src.scene._internal.colmap_types import ColmapCamera, ColmapFrame, ColmapImage, ColmapPoint3D, ColmapReconstruction
 
 _actual_scale = lambda log_scale: np.exp(np.asarray(log_scale, dtype=np.float32))
 
@@ -349,3 +349,83 @@ def test_colmap_diffused_init_uses_requested_count_and_nn_scales(tmp_path: Path)
     assert scene.colors.shape == (5, 3)
     assert np.all(np.isfinite(scene.positions))
     assert np.all(np.isfinite(scene.scales))
+
+
+def test_depth_path_matching_is_relative_stem_and_extension_agnostic(tmp_path: Path) -> None:
+    images_root = (tmp_path / "images").resolve()
+    depth_root = (tmp_path / "depth").resolve()
+    (images_root / "nested").mkdir(parents=True)
+    (depth_root / "nested").mkdir(parents=True)
+    (images_root / "nested" / "frame_0001.jpg").write_bytes(b"rgb")
+    (depth_root / "nested" / "frame_0001.png").write_bytes(b"depth")
+
+    depth_index = colmap_ops.build_depth_path_index(depth_root)
+    matched = colmap_ops.match_depth_path(images_root, images_root / "nested" / "frame_0001.jpg", depth_index)
+
+    assert matched == (depth_root / "nested" / "frame_0001.png").resolve()
+
+
+def test_fit_depth_distance_remap_recovers_linear_depth_scale() -> None:
+    camera = ColmapCamera(camera_id=1, model_id=1, width=8, height=8, fx=8.0, fy=8.0, cx=4.0, cy=4.0)
+    q_wxyz = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    frame = ColmapFrame(
+        image_id=1,
+        image_path=Path("frame.png"),
+        q_wxyz=q_wxyz,
+        t_xyz=np.zeros((3,), dtype=np.float32),
+        fx=8.0,
+        fy=8.0,
+        cx=4.0,
+        cy=4.0,
+        width=8,
+        height=8,
+    )
+    xy = np.array([[2.0, 2.0], [5.0, 2.0], [2.0, 5.0], [5.0, 5.0], [4.0, 2.0], [2.0, 4.0], [4.0, 5.0], [5.0, 4.0], [3.0, 3.0], [4.0, 3.0], [3.0, 4.0], [5.0, 3.0], [3.0, 5.0], [4.0, 4.0], [1.0, 4.0], [4.0, 1.0]], dtype=np.float32)
+    raw_depths = np.linspace(100.0, 400.0, num=xy.shape[0], dtype=np.float32)
+    image_point_ids = np.arange(1, xy.shape[0] + 1, dtype=np.int64)
+    image = ColmapImage(1, q_wxyz, np.zeros((3,), dtype=np.float32), 1, "frame.png", xy, image_point_ids)
+    depth_map = np.zeros((8, 8), dtype=np.float32)
+    points3d: dict[int, ColmapPoint3D] = {}
+    camera_obj = frame.make_camera()
+    for point_id, screen_xy, raw_depth in zip(image_point_ids, xy, raw_depths, strict=False):
+        depth_map[int(screen_xy[1]), int(screen_xy[0])] = raw_depth
+        ray = camera_obj.screen_to_world_ray(screen_xy, frame.width, frame.height)
+        distance = 2.5 * float(raw_depth)
+        world = np.asarray(camera_obj.position, dtype=np.float32) + np.asarray(ray, dtype=np.float32) * np.float32(distance)
+        points3d[int(point_id)] = ColmapPoint3D(int(point_id), world.astype(np.float32), np.array([255.0, 255.0, 255.0], dtype=np.float32), 0.0)
+    recon = ColmapReconstruction(root=Path("synthetic"), sparse_dir=Path("synthetic") / "sparse" / "0", cameras={1: camera}, images={1: image}, points3d=points3d)
+
+    coeffs = colmap_ops.fit_depth_distance_remap(recon, image, frame, camera, depth_map)
+
+    assert coeffs is not None
+    predicted = np.array([float(colmap_ops._depth_feature_vector(frame, float(px[0]), float(px[1]), float(depth)) @ coeffs) for px, depth in zip(xy, raw_depths, strict=False)], dtype=np.float32)
+    np.testing.assert_allclose(predicted, 2.5 * raw_depths, rtol=0.0, atol=1e-2)
+
+
+def test_generate_depth_init_points_respects_budget_and_uniqueness() -> None:
+    frame = ColmapFrame(
+        image_id=1,
+        image_path=Path("frame.png"),
+        q_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        t_xyz=np.zeros((3,), dtype=np.float32),
+        fx=8.0,
+        fy=8.0,
+        cx=4.0,
+        cy=4.0,
+        width=4,
+        height=4,
+    )
+    rgba8 = np.zeros((4, 4, 4), dtype=np.uint8)
+    rgba8[..., 0] = np.arange(16, dtype=np.uint8).reshape(4, 4)
+    depth_map = np.full((4, 4), 10.0, dtype=np.float32)
+    coeffs = np.array([2.0, 3.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    valid_mask = np.zeros((4, 4), dtype=bool)
+    valid_mask[:2, :3] = True
+    payload = colmap_ops.DepthInitFramePayload(frame=frame, rgba8=rgba8, depth_map=depth_map, coeffs=coeffs, valid_mask=valid_mask, valid_count=int(np.count_nonzero(valid_mask)))
+
+    positions, colors = colmap_ops.generate_depth_init_points([payload], total_point_count=4, seed=7)
+
+    assert positions.shape == (4, 3)
+    assert colors.shape == (4, 3)
+    assert np.unique(positions, axis=0).shape[0] == 4
+    assert np.all(colors[:, 0] >= 0.0)

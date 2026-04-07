@@ -27,7 +27,15 @@ from ..scene import (
     transform_colmap_reconstruction_pca,
 )
 from ..scene._internal.colmap_ops import point_nn_scales, resolve_training_frame_image_size
-from ..scene._internal.colmap_ops import TRAINING_FRAME_LOAD_THREADS, load_rgba8_image, load_training_frame_rgba8
+from ..scene._internal.colmap_ops import (
+    TRAINING_FRAME_LOAD_THREADS,
+    build_depth_path_index,
+    generate_depth_init_points,
+    load_rgba8_image,
+    load_training_frame_rgba8,
+    load_training_frame_rgba8_with_depth_payload,
+    match_depth_path,
+)
 from ..training import GaussianTrainer, resolve_effective_train_render_factor, resolve_training_resolution
 from ..scene._internal.colmap_types import ColmapFrame, point_tables
 from .state import ColmapImportProgress, ColmapImportSettings, SceneCountProxy
@@ -35,6 +43,7 @@ from .state import ColmapImportProgress, ColmapImportSettings, SceneCountProxy
 _COLMAP_IMPORT_POINTCLOUD = "pointcloud"
 _COLMAP_IMPORT_DIFFUSED_POINTCLOUD = "diffused_pointcloud"
 _COLMAP_IMPORT_CUSTOM_PLY = "custom_ply"
+_COLMAP_IMPORT_DEPTH = "depth"
 _COLMAP_IMAGE_DOWNSCALE_ORIGINAL = "original"
 _COLMAP_IMAGE_DOWNSCALE_MAX_SIZE = "max_size"
 _COLMAP_IMAGE_DOWNSCALE_SCALE = "scale"
@@ -94,6 +103,7 @@ def _ui_import_mode(viewer: object) -> str:
     mode_idx = int(viewer.ui._values.get("colmap_init_mode", 0))
     if mode_idx == 1: return _COLMAP_IMPORT_DIFFUSED_POINTCLOUD
     if mode_idx == 2: return _COLMAP_IMPORT_CUSTOM_PLY
+    if mode_idx == 3: return _COLMAP_IMPORT_DEPTH
     return _COLMAP_IMPORT_POINTCLOUD
 
 
@@ -200,10 +210,17 @@ def _dataset_directories(dataset_root: Path) -> list[Path]:
     return _unique_paths(candidates)
 
 
+def _looks_like_depth_directory(path: Path) -> bool:
+    value = str(Path(path).resolve()).lower()
+    return "depth" in value or "depth" in Path(path).name.lower()
+
+
 def _suggest_images_root_from_dataset_root(dataset_root: Path, image_names: list[str]) -> Path:
     root = Path(dataset_root).resolve()
     sample_names = image_names[: min(len(image_names), _COLMAP_DB_SAMPLE_LIMIT)]
     for candidate in _dataset_directories(root):
+        if _looks_like_depth_directory(candidate):
+            continue
         if any((candidate / image_name).exists() for image_name in sample_names):
             return candidate
     raise FileNotFoundError(f"Could not find an image folder under {root} for COLMAP images: {sample_names[:4]}")
@@ -215,36 +232,47 @@ def _update_import_settings(
     dataset_root: Path,
     database_path: Path | None,
     images_root: Path,
+    depth_root: Path | None,
     init_mode: str,
     custom_ply_path: Path | None,
     image_downscale_mode: str,
     image_downscale_max_size: int,
     image_downscale_scale: float,
     nn_radius_scale_coef: float,
+    depth_point_count: int,
     diffused_point_count: int,
     diffusion_radius: float,
 ) -> None:
     viewer.s.colmap_import = ColmapImportSettings(
         database_path=None if database_path is None else Path(database_path).resolve(),
         images_root=Path(images_root).resolve(),
+        depth_root=None if depth_root is None else Path(depth_root).resolve(),
         init_mode=str(init_mode),
         custom_ply_path=None if custom_ply_path is None else Path(custom_ply_path).resolve(),
         image_downscale_mode=str(image_downscale_mode),
         image_downscale_max_size=max(int(image_downscale_max_size), 1),
         image_downscale_scale=float(np.clip(image_downscale_scale, 1e-6, 1.0)),
         nn_radius_scale_coef=float(max(nn_radius_scale_coef, 1e-4)),
+        depth_point_count=max(int(depth_point_count), 1),
         diffused_point_count=max(int(diffused_point_count), 1),
         diffusion_radius=max(float(diffusion_radius), 0.0),
     )
     _set_ui_path(viewer, "colmap_root_path", dataset_root)
     _set_ui_path(viewer, "colmap_database_path", database_path)
     _set_ui_path(viewer, "colmap_images_root", images_root)
-    viewer.ui._values["colmap_init_mode"] = 1 if str(init_mode) == _COLMAP_IMPORT_DIFFUSED_POINTCLOUD else 2 if str(init_mode) == _COLMAP_IMPORT_CUSTOM_PLY else 0
+    _set_ui_path(viewer, "colmap_depth_root", depth_root)
+    viewer.ui._values["colmap_init_mode"] = (
+        1 if str(init_mode) == _COLMAP_IMPORT_DIFFUSED_POINTCLOUD else
+        2 if str(init_mode) == _COLMAP_IMPORT_CUSTOM_PLY else
+        3 if str(init_mode) == _COLMAP_IMPORT_DEPTH else
+        0
+    )
     _set_ui_path(viewer, "colmap_custom_ply_path", custom_ply_path)
     viewer.ui._values["colmap_image_downscale_mode"] = 1 if str(image_downscale_mode) == _COLMAP_IMAGE_DOWNSCALE_MAX_SIZE else 2 if str(image_downscale_mode) == _COLMAP_IMAGE_DOWNSCALE_SCALE else 0
     viewer.ui._values["colmap_image_max_size"] = max(int(image_downscale_max_size), 1)
     viewer.ui._values["colmap_image_scale"] = float(np.clip(image_downscale_scale, 1e-6, 1.0))
     viewer.ui._values["colmap_nn_radius_scale_coef"] = float(max(nn_radius_scale_coef, 1e-4))
+    viewer.ui._values["colmap_depth_point_count"] = max(int(depth_point_count), 1)
     viewer.ui._values["colmap_diffused_point_count"] = max(int(diffused_point_count), 1)
     viewer.ui._values["colmap_diffusion_radius"] = max(float(diffusion_radius), 0.0)
 
@@ -266,22 +294,24 @@ def _append_training_frame(progress: ColmapImportProgress, image_id: int, image:
         downscale_scale=progress.image_downscale_scale,
     )
     sx, sy = float(width) / float(camera.width), float(height) / float(camera.height)
-    progress.frames.append(
-        ColmapFrame(
-            image_id,
-            image_path,
-            image.q_wxyz.astype(np.float32),
-            image.t_xyz.astype(np.float32),
-            float(camera.fx) * sx,
-            float(camera.fy) * sy,
-            float(camera.cx) * sx,
-            float(camera.cy) * sy,
-            int(width),
-            int(height),
-            float(getattr(camera, "k1", 0.0)),
-            float(getattr(camera, "k2", 0.0)),
-        )
+    frame = ColmapFrame(
+        image_id,
+        image_path,
+        image.q_wxyz.astype(np.float32),
+        image.t_xyz.astype(np.float32),
+        float(camera.fx) * sx,
+        float(camera.fy) * sy,
+        float(camera.cx) * sx,
+        float(camera.cy) * sy,
+        int(width),
+        int(height),
+        float(getattr(camera, "k1", 0.0)),
+        float(getattr(camera, "k2", 0.0)),
     )
+    if progress.init_mode == _COLMAP_IMPORT_DEPTH:
+        progress.frame_images.append(image)
+        progress.depth_paths.append(None if progress.depth_index is None else match_depth_path(progress.images_root, image_path, progress.depth_index))
+    progress.frames.append(frame)
 
 
 def _create_native_dataset_texture(viewer: object, image_path: Path, *, target_size: tuple[int, int] | None = None) -> spy.Texture:
@@ -311,6 +341,17 @@ def _start_colmap_texture_loader(progress: ColmapImportProgress) -> None:
     _close_colmap_texture_loader(progress)
     loader = ThreadPoolExecutor(max_workers=TRAINING_FRAME_LOAD_THREADS, thread_name_prefix="viewer-target")
     progress.native_rgba8_loader = loader
+    if progress.init_mode == _COLMAP_IMPORT_DEPTH:
+        if progress.recon is None:
+            raise RuntimeError("Depth import mode requires reconstruction state before texture loading.")
+        tasks = []
+        for frame, image, depth_path in zip(progress.frames, progress.frame_images, progress.depth_paths, strict=False):
+            camera = progress.recon.cameras.get(image.camera_id)
+            if camera is None:
+                raise RuntimeError(f"Missing COLMAP camera {image.camera_id} for {image.name}.")
+            tasks.append((progress.recon, image, camera, frame, depth_path))
+        progress.native_rgba8_iter = loader.map(load_training_frame_rgba8_with_depth_payload, tasks)
+        return
     progress.native_rgba8_iter = loader.map(load_training_frame_rgba8, progress.frames)
 
 
@@ -320,6 +361,38 @@ def _create_native_dataset_textures(viewer: object, frames: list[ColmapFrame]) -
         for rgba8 in executor.map(load_training_frame_rgba8, frames):
             textures.append(_create_native_dataset_texture_from_rgba8(viewer, rgba8))
     return textures
+
+
+def _build_depth_init_source(
+    recon: object,
+    images_root: Path,
+    frames: list[ColmapFrame],
+    *,
+    depth_root: Path,
+    depth_point_count: int,
+    seed: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    depth_index = build_depth_path_index(depth_root)
+    tasks = []
+    for frame in frames:
+        image = recon.images.get(int(frame.image_id))
+        if image is None:
+            continue
+        camera = recon.cameras.get(int(image.camera_id))
+        if camera is None:
+            continue
+        depth_path = match_depth_path(images_root, frame.image_path, depth_index)
+        if depth_path is None:
+            continue
+        tasks.append((recon, image, camera, frame, depth_path))
+    if len(tasks) == 0:
+        raise RuntimeError("Depth initialization found no matched RGB/depth frame pairs.")
+    payloads = []
+    with ThreadPoolExecutor(max_workers=TRAINING_FRAME_LOAD_THREADS, thread_name_prefix="viewer-depth") as executor:
+        for _, payload in executor.map(load_training_frame_rgba8_with_depth_payload, tasks):
+            if payload is not None:
+                payloads.append(payload)
+    return generate_depth_init_points(payloads, depth_point_count, seed)
 
 
 def choose_colmap_root(viewer: object, dataset_root: Path) -> None:
@@ -335,6 +408,11 @@ def choose_colmap_root(viewer: object, dataset_root: Path) -> None:
 
 def choose_colmap_images_root(viewer: object, images_root: Path) -> None:
     _set_ui_path(viewer, "colmap_images_root", Path(images_root).resolve())
+    viewer.s.last_error = ""
+
+
+def choose_colmap_depth_root(viewer: object, depth_root: Path) -> None:
+    _set_ui_path(viewer, "colmap_depth_root", Path(depth_root).resolve())
     viewer.s.last_error = ""
 
 
@@ -402,6 +480,17 @@ def _cached_init_signature(viewer: object, init: object) -> tuple[object, ...] |
     import_cfg = getattr(viewer.s, "colmap_import", None)
     if import_cfg is None:
         return None
+    if str(import_cfg.init_mode) == _COLMAP_IMPORT_DEPTH:
+        return (
+            None if viewer.s.colmap_root is None else str(Path(viewer.s.colmap_root).resolve()),
+            str(import_cfg.init_mode),
+            None if import_cfg.images_root is None else str(Path(import_cfg.images_root).resolve()),
+            None if import_cfg.depth_root is None else str(Path(import_cfg.depth_root).resolve()),
+            str(import_cfg.image_downscale_mode),
+            int(import_cfg.image_downscale_max_size),
+            round(float(import_cfg.image_downscale_scale), 6),
+            int(import_cfg.depth_point_count),
+        )
     return (
         None if viewer.s.colmap_root is None else str(Path(viewer.s.colmap_root).resolve()),
         str(import_cfg.init_mode),
@@ -427,6 +516,8 @@ def _ensure_cached_init_source(viewer: object, init: object) -> None:
                 return
         elif cached_positions is not None and cached_colors is not None:
             return
+    if import_cfg.init_mode == _COLMAP_IMPORT_DEPTH:
+        raise RuntimeError("Depth initialization cache is unavailable. Re-import the dataset to rebuild the calibrated point cloud.")
     _clear_cached_init_source(viewer)
     if import_cfg.init_mode == _COLMAP_IMPORT_CUSTOM_PLY:
         if import_cfg.custom_ply_path is None:
@@ -527,11 +618,13 @@ def _scene_signature(viewer: object):
         init.seed,
         str(import_cfg.init_mode),
         None if import_cfg.images_root is None else str(import_cfg.images_root.resolve()),
+        None if import_cfg.depth_root is None else str(import_cfg.depth_root.resolve()),
         None if import_cfg.custom_ply_path is None else str(import_cfg.custom_ply_path.resolve()),
         str(import_cfg.image_downscale_mode),
         int(import_cfg.image_downscale_max_size),
         round(float(import_cfg.image_downscale_scale), 6),
         round(float(import_cfg.nn_radius_scale_coef), 6),
+        int(import_cfg.depth_point_count),
         int(import_cfg.diffused_point_count),
         round(float(import_cfg.diffusion_radius), 6),
         None if init.hparams.initial_opacity is None else round(float(init.hparams.initial_opacity), 8),
@@ -893,18 +986,24 @@ def _finish_import_colmap_dataset(
     colmap_root: Path,
     database_path: Path | None,
     images_root: Path,
+    depth_root: Path | None = None,
     init_mode: str,
     custom_ply_path: Path | None,
     image_downscale_mode: str,
     image_downscale_max_size: int,
     image_downscale_scale: float,
     nn_radius_scale_coef: float,
-    diffused_point_count: int,
-    diffusion_radius: float,
-    recon: object,
-    training_frames: list[ColmapFrame],
+    depth_point_count: int = 100000,
+    diffused_point_count: int = 100000,
+    diffusion_radius: float = 1.0,
+    recon: object = None,
+    training_frames: list[ColmapFrame] | None = None,
     frame_targets_native: list[spy.Texture] | None = None,
+    cached_init_point_positions: np.ndarray | None = None,
+    cached_init_point_colors: np.ndarray | None = None,
 ) -> None:
+    if recon is None or training_frames is None:
+        raise RuntimeError("COLMAP import finalize requires reconstruction and training frames.")
     xyz, _ = _point_tables(recon)
     _reset_loaded_runtime(viewer)
     _reset_training_visual_state(viewer)
@@ -913,12 +1012,14 @@ def _finish_import_colmap_dataset(
         dataset_root=colmap_root,
         database_path=database_path,
         images_root=images_root,
+        depth_root=depth_root,
         init_mode=init_mode,
         custom_ply_path=custom_ply_path,
         image_downscale_mode=image_downscale_mode,
         image_downscale_max_size=image_downscale_max_size,
         image_downscale_scale=image_downscale_scale,
         nn_radius_scale_coef=nn_radius_scale_coef,
+        depth_point_count=depth_point_count,
         diffused_point_count=diffused_point_count,
         diffusion_radius=diffusion_radius,
     )
@@ -927,6 +1028,12 @@ def _finish_import_colmap_dataset(
     viewer.s.training_frames = list(training_frames)
     viewer.s.colmap_point_count = int(xyz.shape[0])
     viewer.s.scene_path = None
+    if cached_init_point_positions is not None and cached_init_point_colors is not None:
+        viewer.s.cached_init_point_positions = np.array(cached_init_point_positions, dtype=np.float32, copy=True)
+        viewer.s.cached_init_point_colors = np.array(cached_init_point_colors, dtype=np.float32, copy=True)
+        init_params_fn = getattr(viewer, "init_params", None)
+        if callable(init_params_fn):
+            viewer.s.cached_init_signature = _cached_init_signature(viewer, init_params_fn())
     apply_live_params(viewer)
     _apply_initial_camera_fit(viewer, fallback_factory=lambda: estimate_point_bounds(xyz))
     initialize_training_scene(viewer, frame_targets_native=frame_targets_native)
@@ -943,14 +1050,16 @@ def import_colmap_dataset(
     colmap_root: Path,
     database_path: Path | None,
     images_root: Path,
+    depth_root: Path | None = None,
     init_mode: str,
     custom_ply_path: Path | None,
     image_downscale_mode: str,
     image_downscale_max_size: int,
     image_downscale_scale: float,
     nn_radius_scale_coef: float,
-    diffused_point_count: int,
-    diffusion_radius: float,
+    depth_point_count: int = 100000,
+    diffused_point_count: int = 100000,
+    diffusion_radius: float = 1.0,
 ) -> None:
     _clear_loaded_scene(viewer)
     root = Path(colmap_root).resolve()
@@ -963,22 +1072,39 @@ def import_colmap_dataset(
         downscale_scale=image_downscale_scale,
     )
     frame_targets_native = _create_native_dataset_textures(viewer, training_frames)
+    cached_init_point_positions = None
+    cached_init_point_colors = None
+    if init_mode == _COLMAP_IMPORT_DEPTH:
+        if depth_root is None:
+            raise RuntimeError("Depth initialization requires a selected depth folder.")
+        cached_init_point_positions, cached_init_point_colors = _build_depth_init_source(
+            recon,
+            Path(images_root).resolve(),
+            training_frames,
+            depth_root=Path(depth_root).resolve(),
+            depth_point_count=depth_point_count,
+            seed=int(viewer.init_params().seed),
+        )
     _finish_import_colmap_dataset(
         viewer,
         colmap_root=root,
         database_path=database_path,
         images_root=images_root,
+        depth_root=depth_root,
         init_mode=init_mode,
         custom_ply_path=custom_ply_path,
         image_downscale_mode=image_downscale_mode,
         image_downscale_max_size=image_downscale_max_size,
         image_downscale_scale=image_downscale_scale,
         nn_radius_scale_coef=nn_radius_scale_coef,
+        depth_point_count=depth_point_count,
         diffused_point_count=diffused_point_count,
         diffusion_radius=diffusion_radius,
         recon=recon,
         training_frames=training_frames,
         frame_targets_native=frame_targets_native,
+        cached_init_point_positions=cached_init_point_positions,
+        cached_init_point_colors=cached_init_point_colors,
     )
 
 
@@ -987,6 +1113,8 @@ def import_colmap_from_ui(viewer: object) -> None:
     database_path_text = _ui_path_string(viewer, "colmap_database_path")
     database_path = None if not database_path_text else Path(database_path_text).expanduser()
     images_root = Path(_ui_path_string(viewer, "colmap_images_root")).expanduser()
+    depth_root_text = _ui_path_string(viewer, "colmap_depth_root")
+    depth_root = None if not depth_root_text else Path(depth_root_text).expanduser()
     init_mode = _ui_import_mode(viewer)
     custom_ply_text = _ui_path_string(viewer, "colmap_custom_ply_path")
     custom_ply_path = None if not custom_ply_text else Path(custom_ply_text).expanduser()
@@ -994,6 +1122,7 @@ def import_colmap_from_ui(viewer: object) -> None:
     image_downscale_max_size = max(int(viewer.ui._values.get("colmap_image_max_size", 2048)), 1)
     image_downscale_scale = float(np.clip(viewer.ui._values.get("colmap_image_scale", 1.0), 1e-6, 1.0))
     nn_radius_scale_coef = float(viewer.ui._values.get("colmap_nn_radius_scale_coef", 0.5))
+    depth_point_count = max(int(viewer.ui._values.get("colmap_depth_point_count", 100000)), 1)
     diffused_point_count = max(int(viewer.ui._values.get("colmap_diffused_point_count", 100000)), 1)
     diffusion_radius = max(float(viewer.ui._values.get("colmap_diffusion_radius", 1.0)), 0.0)
     if not colmap_root.exists():
@@ -1004,6 +1133,8 @@ def import_colmap_from_ui(viewer: object) -> None:
         database_path = _find_optional_colmap_database(colmap_root)
     if not images_root.exists():
         raise FileNotFoundError(f"COLMAP image folder does not exist: {images_root}")
+    if init_mode == _COLMAP_IMPORT_DEPTH and (depth_root is None or not depth_root.exists()):
+        raise FileNotFoundError(f"Depth folder does not exist: {depth_root}")
     if init_mode == _COLMAP_IMPORT_CUSTOM_PLY and (custom_ply_path is None or not custom_ply_path.exists()):
         raise FileNotFoundError(f"Custom PLY does not exist: {custom_ply_path}")
     _clear_loaded_scene(viewer)
@@ -1012,12 +1143,14 @@ def import_colmap_from_ui(viewer: object) -> None:
         colmap_root=colmap_root.resolve(),
         database_path=None if database_path is None else database_path.resolve(),
         images_root=images_root.resolve(),
+        depth_root=None if depth_root is None else depth_root.resolve(),
         init_mode=init_mode,
         custom_ply_path=None if custom_ply_path is None else custom_ply_path.resolve(),
         image_downscale_mode=image_downscale_mode,
         image_downscale_max_size=image_downscale_max_size,
         image_downscale_scale=image_downscale_scale,
         nn_radius_scale_coef=float(max(nn_radius_scale_coef, 1e-4)),
+        depth_point_count=depth_point_count,
         diffused_point_count=diffused_point_count,
         diffusion_radius=diffusion_radius,
     )
@@ -1032,6 +1165,7 @@ def advance_colmap_import(viewer: object) -> None:
         if progress.phase == "prepare":
             progress.recon = _load_aligned_colmap_reconstruction(progress.colmap_root)
             progress.image_items = sorted(progress.recon.images.items())
+            progress.depth_index = build_depth_path_index(progress.depth_root) if progress.init_mode == _COLMAP_IMPORT_DEPTH and progress.depth_root is not None else None
             progress.total = max(len(progress.image_items), 1)
             progress.current = 0
             progress.current_name = ""
@@ -1063,8 +1197,11 @@ def advance_colmap_import(viewer: object) -> None:
                 progress.current_name = Path(frame.image_path).name
                 if progress.native_rgba8_iter is None:
                     _start_colmap_texture_loader(progress)
-                rgba8 = next(progress.native_rgba8_iter)
+                load_result = next(progress.native_rgba8_iter)
+                rgba8, payload = load_result if progress.init_mode == _COLMAP_IMPORT_DEPTH else (load_result, None)
                 progress.native_textures.append(_create_native_dataset_texture_from_rgba8(viewer, rgba8))
+                if payload is not None:
+                    progress.depth_init_payloads.append(payload)
                 progress.current += 1
             if progress.current < len(progress.frames):
                 return
@@ -1075,22 +1212,34 @@ def advance_colmap_import(viewer: object) -> None:
         if progress.phase == "finalize":
             if progress.recon is None:
                 raise RuntimeError("COLMAP import lost reconstruction state before finalize.")
+            cached_init_point_positions = None
+            cached_init_point_colors = None
+            if progress.init_mode == _COLMAP_IMPORT_DEPTH:
+                cached_init_point_positions, cached_init_point_colors = generate_depth_init_points(
+                    progress.depth_init_payloads,
+                    progress.depth_point_count,
+                    int(viewer.init_params().seed),
+                )
             _finish_import_colmap_dataset(
                 viewer,
                 colmap_root=progress.colmap_root,
                 database_path=progress.database_path,
                 images_root=progress.images_root,
+                depth_root=progress.depth_root,
                 init_mode=progress.init_mode,
                 custom_ply_path=progress.custom_ply_path,
                 image_downscale_mode=progress.image_downscale_mode,
                 image_downscale_max_size=progress.image_downscale_max_size,
                 image_downscale_scale=progress.image_downscale_scale,
                 nn_radius_scale_coef=progress.nn_radius_scale_coef,
+                depth_point_count=progress.depth_point_count,
                 diffused_point_count=progress.diffused_point_count,
                 diffusion_radius=progress.diffusion_radius,
                 recon=progress.recon,
                 training_frames=progress.frames,
                 frame_targets_native=progress.native_textures,
+                cached_init_point_positions=cached_init_point_positions,
+                cached_init_point_colors=cached_init_point_colors,
             )
             viewer.toolkit.close_colmap_import_window()
             return

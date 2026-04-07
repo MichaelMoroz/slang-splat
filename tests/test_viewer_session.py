@@ -243,6 +243,23 @@ def test_choose_colmap_root_auto_selects_first_matching_image_folder(tmp_path: P
     assert viewer.s.last_error == ""
 
 
+def test_choose_colmap_root_skips_depth_named_image_directories(tmp_path: Path) -> None:
+    database_path, _ = _build_colmap_tree(
+        tmp_path,
+        image_names=["frame_000.png", "frame_001.png"],
+        image_root_rel=Path("rgb"),
+    )
+    depth_like = database_path.parents[1] / "depth_images"
+    depth_like.mkdir(parents=True, exist_ok=True)
+    for image_name in ("frame_000.png", "frame_001.png"):
+        Image.fromarray(np.full((8, 8, 3), 127, dtype=np.uint8)).save(depth_like / image_name)
+    viewer = SimpleNamespace(ui=SimpleNamespace(_values={}), s=SimpleNamespace(last_error="stale"))
+
+    session.choose_colmap_root(viewer, database_path.parents[1])
+
+    assert viewer.ui._values["colmap_images_root"].endswith("rgb")
+
+
 def test_choose_colmap_root_keeps_dataset_root_for_relative_image_subdirs(tmp_path: Path) -> None:
     database_path, _ = _build_colmap_tree(
         tmp_path,
@@ -697,6 +714,8 @@ def test_colmap_import_settings_defaults_prefer_pointcloud() -> None:
 
     assert defaults.init_mode == "pointcloud"
     assert defaults.nn_radius_scale_coef == 0.5
+    assert defaults.depth_root is None
+    assert defaults.depth_point_count == 100000
 
 
 def test_refresh_cached_raster_grad_histograms_requires_explicit_request() -> None:

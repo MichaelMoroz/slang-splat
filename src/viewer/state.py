@@ -25,12 +25,14 @@ class SceneCountProxy:
 class ColmapImportSettings:
     database_path: Path | None = None
     images_root: Path | None = None
+    depth_root: Path | None = None
     init_mode: str = "pointcloud"
     custom_ply_path: Path | None = None
     image_downscale_mode: str = "original"
     image_downscale_max_size: int = 2048
     image_downscale_scale: float = 1.0
     nn_radius_scale_coef: float = 0.5
+    depth_point_count: int = 100000
     diffused_point_count: int = 100000
     diffusion_radius: float = 1.0
 
@@ -47,8 +49,10 @@ class ColmapImportProgress:
     image_downscale_max_size: int
     image_downscale_scale: float
     nn_radius_scale_coef: float
+    depth_point_count: int = 100000
     diffused_point_count: int = 100000
     diffusion_radius: float = 1.0
+    depth_root: Path | None = None
     phase: str = "prepare"
     current: int = 0
     total: int = 1
@@ -56,6 +60,10 @@ class ColmapImportProgress:
     recon: ColmapReconstruction | None = None
     image_items: list[tuple[int, object]] = field(default_factory=list)
     frames: list[ColmapFrame] = field(default_factory=list)
+    frame_images: list[object] = field(default_factory=list)
+    depth_paths: list[Path] = field(default_factory=list)
+    depth_index: dict[str, Path] | None = None
+    depth_init_payloads: list[object] = field(default_factory=list)
     native_textures: list[spy.Texture] = field(default_factory=list)
     native_rgba8_loader: object | None = None
     native_rgba8_iter: object | None = None

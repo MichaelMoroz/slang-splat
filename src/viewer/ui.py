@@ -40,7 +40,9 @@ _INTERFACE_SCALE_OPTIONS = (
 _DEFAULT_INTERFACE_SCALE_INDEX = 3
 _BASE_FONT_SIZE_PX = 16.0
 _FONT_ATLAS_SIZE_PX = _BASE_FONT_SIZE_PX * _INTERFACE_SCALE_OPTIONS[-1][1]
-_COLMAP_INIT_MODE_LABELS = ("COLMAP Pointcloud", "Diffused Pointcloud", "Custom PLY")
+_COLMAP_INIT_MODE_BASE_LABELS = ("COLMAP Pointcloud", "Diffused Pointcloud", "Custom PLY")
+_COLMAP_INIT_MODE_DEPTH_LABEL = "From Depth"
+_COLMAP_INIT_MODE_LABELS = _COLMAP_INIT_MODE_BASE_LABELS
 _COLMAP_IMAGE_DOWNSCALE_LABELS = ("Original", "Max Size", "Scale Factor")
 _TRAIN_BACKGROUND_MODE_LABELS = ("Custom", "Random")
 _VIEWER_BACKGROUND_MODE_LABELS = ("Train Background", "Custom")
@@ -119,6 +121,21 @@ _DEBUG_MODE_LABELS = (
     "SH Coefficient",
 )
 _DEBUG_SH_COEFF_LABELS = ("SH0 DC", "SH1 X", "SH1 Y", "SH1 Z", "SH2 0", "SH2 1", "SH2 2", "SH2 3", "SH2 4", "SH3 0", "SH3 1", "SH3 2", "SH3 3", "SH3 4", "SH3 5", "SH3 6")
+
+
+def _valid_depth_root_text(value: object) -> bool:
+    text = str(value or "").strip()
+    return bool(text) and Path(text).expanduser().is_dir()
+
+
+def _colmap_init_mode_labels(depth_available: bool) -> tuple[str, ...]:
+    return _COLMAP_INIT_MODE_BASE_LABELS + ((_COLMAP_INIT_MODE_DEPTH_LABEL,) if depth_available else ())
+
+
+def _colmap_init_mode_label(ui: "ViewerUI", index: int | None = None) -> str:
+    labels = _colmap_init_mode_labels(_valid_depth_root_text(ui._values.get("colmap_depth_root", "")))
+    mode_idx = max(0, min(int(ui._values.get("colmap_init_mode", 0) if index is None else index), len(labels) - 1))
+    return labels[mode_idx]
 
 
 @lru_cache(maxsize=1)
@@ -707,6 +724,7 @@ class ToolkitWindow:
             export_ply=_noop,
             browse_colmap_root=_noop,
             browse_colmap_images=_noop,
+            browse_colmap_depth=_noop,
             browse_colmap_ply=_noop,
             import_colmap=_noop,
             reload=_noop,
@@ -1372,6 +1390,10 @@ class ToolkitWindow:
             imgui.spacing()
             self._draw_import_path_selector(ui, label="Image Folder", key="colmap_images_root", button_label="Browse Image Folder...", callback=self.callbacks.browse_colmap_images)
             imgui.spacing()
+            self._draw_import_path_selector(ui, label="Depth Folder", key="colmap_depth_root", button_label="Browse Depth Folder...", callback=self.callbacks.browse_colmap_depth)
+            if imgui.is_item_hovered():
+                imgui.set_item_tooltip("Optional root containing 16-bit depth PNGs matched to RGB images by relative path stem.")
+            imgui.spacing()
             downscale_idx = max(0, min(int(ui._values.get("colmap_image_downscale_mode", 1)), len(_COLMAP_IMAGE_DOWNSCALE_LABELS) - 1))
             if imgui.begin_combo("Image Downscale", _COLMAP_IMAGE_DOWNSCALE_LABELS[downscale_idx]):
                 for idx, label in enumerate(_COLMAP_IMAGE_DOWNSCALE_LABELS):
@@ -1405,9 +1427,12 @@ class ToolkitWindow:
             else:
                 imgui.text_disabled("Imported images keep their source resolution.")
             imgui.spacing()
-            mode_idx = max(0, min(int(ui._values.get("colmap_init_mode", 0)), len(_COLMAP_INIT_MODE_LABELS) - 1))
-            if imgui.begin_combo("Initialization", _COLMAP_INIT_MODE_LABELS[mode_idx]):
-                for idx, label in enumerate(_COLMAP_INIT_MODE_LABELS):
+            init_labels = _colmap_init_mode_labels(_valid_depth_root_text(ui._values.get("colmap_depth_root", "")))
+            mode_idx = max(0, min(int(ui._values.get("colmap_init_mode", 0)), len(init_labels) - 1))
+            if int(ui._values.get("colmap_init_mode", 0)) != mode_idx:
+                ui._values["colmap_init_mode"] = mode_idx
+            if imgui.begin_combo("Initialization", init_labels[mode_idx]):
+                for idx, label in enumerate(init_labels):
                     selected = idx == mode_idx
                     if imgui.selectable(label, selected)[0]:
                         ui._values["colmap_init_mode"] = idx
@@ -1415,7 +1440,19 @@ class ToolkitWindow:
                     if selected:
                         imgui.set_item_default_focus()
                 imgui.end_combo()
-            if mode_idx in (0, 1):
+            if mode_idx in (0, 1, 3):
+                if mode_idx == 3:
+                    changed, value = imgui.drag_int(
+                        "Depth Point Count",
+                        int(ui._values.get("colmap_depth_point_count", 100000)),
+                        1000.0,
+                        1,
+                        10000000,
+                    )
+                    if changed:
+                        ui._values["colmap_depth_point_count"] = max(int(value), 1)
+                    if imgui.is_item_hovered():
+                        imgui.set_item_tooltip("Total calibrated points sampled across all matched RGB/depth pairs for depth-based initialization.")
                 if mode_idx == 1:
                     changed, value = imgui.drag_int(
                         "Point Count",
@@ -1780,11 +1817,13 @@ class ToolkitWindow:
             self._show_colmap_import = True
         root_text = self._path_text(ui, "colmap_root_path", "<none>")
         images_text = self._path_text(ui, "colmap_images_root", "<none>")
-        mode_idx = max(0, min(int(ui._values.get("colmap_init_mode", 0)), len(_COLMAP_INIT_MODE_LABELS) - 1))
+        depth_text = self._path_text(ui, "colmap_depth_root", "<none>")
         imgui.spacing()
         imgui.text_disabled(f"Root: {Path(root_text).name if root_text != '<none>' else root_text}")
         imgui.text_disabled(f"Images: {Path(images_text).name if images_text != '<none>' else images_text}")
-        imgui.text_disabled(f"Init: {_COLMAP_INIT_MODE_LABELS[mode_idx]}")
+        if depth_text != "<none>":
+            imgui.text_disabled(f"Depth: {Path(depth_text).name}")
+        imgui.text_disabled(f"Init: {_colmap_init_mode_label(ui)}")
         imgui.separator()
 
     def _section_camera(self, ui: ViewerUI) -> None:
@@ -2290,12 +2329,14 @@ def build_ui(renderer) -> ViewerUI:
     values["colmap_root_path"] = ""
     values["colmap_database_path"] = ""
     values["colmap_images_root"] = ""
+    values["colmap_depth_root"] = ""
     values["colmap_init_mode"] = 0
     values["colmap_custom_ply_path"] = ""
     values["colmap_image_downscale_mode"] = 0
     values["colmap_image_max_size"] = 2048
     values["colmap_image_scale"] = 1.0
     values["colmap_nn_radius_scale_coef"] = 0.5
+    values["colmap_depth_point_count"] = 100000
     values["colmap_diffused_point_count"] = 100000
     values["colmap_diffusion_radius"] = 1.0
     values["show_histograms"] = False

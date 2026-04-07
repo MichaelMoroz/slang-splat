@@ -165,16 +165,31 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["training_steps_per_frame"] == 3
     assert viewer_ui._values["train_subsample_factor"] == 0
     assert viewer_ui._values["colmap_init_mode"] == 0
+    assert viewer_ui._values["colmap_depth_root"] == ""
     assert viewer_ui._values["colmap_image_downscale_mode"] == 0
     assert viewer_ui._values["colmap_image_max_size"] == 2048
     assert viewer_ui._values["colmap_image_scale"] == 1.0
     assert viewer_ui._values["colmap_nn_radius_scale_coef"] == 0.5
+    assert viewer_ui._values["colmap_depth_point_count"] == 100000
     assert viewer_ui._values["_histogram_update_y_limit"] is True
     assert viewer_ui._values["_histogram_update_log_range"] is False
     assert viewer_ui._values["_show_histograms_prev"] is False
     assert viewer_ui._values["_training_views_rows"] == ()
     assert viewer_ui._values["_training_view_overlay_segments"] == ()
     assert "show_renderer_debug" not in viewer_ui._values
+
+
+def test_colmap_init_mode_labels_append_depth_only_for_valid_depth_root(tmp_path) -> None:
+    viewer_ui = ui.build_ui(_dummy_renderer())
+    viewer_ui._values["colmap_depth_root"] = ""
+    assert ui._colmap_init_mode_labels(False) == ui._COLMAP_INIT_MODE_LABELS
+    assert ui._colmap_init_mode_label(viewer_ui) == "COLMAP Pointcloud"
+
+    viewer_ui._values["colmap_depth_root"] = str(tmp_path)
+    viewer_ui._values["colmap_init_mode"] = 3
+
+    assert ui._colmap_init_mode_labels(True) == ui._COLMAP_INIT_MODE_LABELS + ("From Depth",)
+    assert ui._colmap_init_mode_label(viewer_ui) == "From Depth"
 
 
 def test_toolkit_window_render_draws_non_background_pixels(device) -> None:

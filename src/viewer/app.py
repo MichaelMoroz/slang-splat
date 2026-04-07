@@ -368,6 +368,7 @@ class SplatViewer(spy.AppWindow):
         cb.export_ply = self._export_ply_callback
         cb.browse_colmap_root = self._browse_colmap_root_callback
         cb.browse_colmap_images = self._browse_colmap_images_callback
+        cb.browse_colmap_depth = self._browse_colmap_depth_callback
         cb.browse_colmap_ply = self._browse_colmap_ply_callback
         cb.import_colmap = self._import_colmap_callback
         cb.reload = self._reload_callback
@@ -419,6 +420,11 @@ class SplatViewer(spy.AppWindow):
         if path:
             self._run_action(lambda: session.choose_colmap_images_root(self, Path(path)))
 
+    def _browse_colmap_depth_callback(self) -> None:
+        path = spy.platform.choose_folder_dialog()
+        if path:
+            self._run_action(lambda: session.choose_colmap_depth_root(self, Path(path)))
+
     def _browse_colmap_ply_callback(self) -> None:
         path = spy.platform.open_file_dialog([spy.platform.FileDialogFilter("PLY Files", "*.ply")])
         if path:
@@ -441,12 +447,14 @@ class SplatViewer(spy.AppWindow):
                     colmap_root=self.s.colmap_root,
                     database_path=import_cfg.database_path,
                     images_root=import_cfg.images_root,
+                    depth_root=import_cfg.depth_root,
                     init_mode=import_cfg.init_mode,
                     custom_ply_path=import_cfg.custom_ply_path,
                     image_downscale_mode=import_cfg.image_downscale_mode,
                     image_downscale_max_size=import_cfg.image_downscale_max_size,
                     image_downscale_scale=import_cfg.image_downscale_scale,
                     nn_radius_scale_coef=import_cfg.nn_radius_scale_coef,
+                    depth_point_count=import_cfg.depth_point_count,
                     diffused_point_count=import_cfg.diffused_point_count,
                     diffusion_radius=import_cfg.diffusion_radius,
                 )
