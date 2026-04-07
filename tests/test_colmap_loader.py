@@ -514,8 +514,8 @@ def test_collect_depth_distance_remap_samples_skips_depth_discontinuities() -> N
 
     features, targets = colmap_ops.collect_depth_distance_remap_samples(recon, image, frame, camera, depth_map, colmap_ops.DEPTH_INIT_VALUE_Z_DEPTH)
 
-    assert features.shape == (14, 2)
-    assert targets.shape == (14,)
+    assert features.shape == (12, 2)
+    assert targets.shape == (12,)
 
 
 def test_robust_ridge_fit_downweights_strong_outliers() -> None:

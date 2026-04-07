@@ -77,7 +77,7 @@ Pointcloud initialization builds gaussians directly from the COLMAP sparse point
 - Depth maps are expected to be scalar `16-bit PNG` images.
 - For each matched frame, the importer gathers positive COLMAP `points2d_point3d_ids`, reprojects those observed 3D points through the resized frame camera model, and samples the raw depth map at that projected location.
 - Calibration is solved per pose from that pose's own observed COLMAP correspondences, so occluded or otherwise unobserved points from other poses never enter the fit.
-- Reprojected correspondences that land on strong local depth discontinuities are discarded before fitting; the importer keeps only samples whose bilinear depth footprint stays within a `4x` local depth ratio.
+- Reprojected correspondences that land on strong local depth discontinuities are discarded before fitting; the importer compares the sampled pixel-footprint depth gradients against nearby gradients and culls only local `4x` gradient spikes.
 - The remap is deliberately reduced to a robust affine model:
   - `target ~= a + b * raw_depth`
 - `Depth Interpretation` selects the fitted target and reverse-projection mode:
