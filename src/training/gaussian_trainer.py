@@ -100,7 +100,12 @@ def resolve_effective_train_downscale_factor(training_hparams: "TrainingHyperPar
 def resolve_auto_train_subsample_factor(width: int, height: int, downscale_factor: int = 1) -> int:
     native_max_side = max(int(width), int(height), 1)
     base_factor = max(int(downscale_factor), 1)
-    return min(max((native_max_side + base_factor * TRAIN_SUBSAMPLE_TARGET_MAX_SIDE - 1) // (base_factor * TRAIN_SUBSAMPLE_TARGET_MAX_SIDE), 1), TRAIN_SUBSAMPLE_MAX_FACTOR)
+    resolved_factor = 1
+    for factor in range(1, TRAIN_SUBSAMPLE_MAX_FACTOR + 1):
+        max_side = (native_max_side + base_factor * factor - 1) // (base_factor * factor)
+        if max_side <= TRAIN_SUBSAMPLE_TARGET_MAX_SIDE: break
+        resolved_factor = factor
+    return resolved_factor
 
 
 def resolve_train_subsample_factor(training_hparams: "TrainingHyperParams", width: int | None = None, height: int | None = None, step: int = 0) -> int:
