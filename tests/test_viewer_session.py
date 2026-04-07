@@ -570,6 +570,44 @@ def test_finish_import_colmap_dataset_resets_toolkit_plot_history(monkeypatch) -
     assert calls == ["reset", "fit"]
 
 
+def test_finish_import_colmap_dataset_prefers_training_view_camera_fit(monkeypatch) -> None:
+    recon = SimpleNamespace(points3d={1: object()})
+    training_frames = [SimpleNamespace()]
+    monkeypatch.setattr(session, "_point_tables", lambda recon_obj: (np.zeros((1, 3), dtype=np.float32), np.zeros((1, 3), dtype=np.float32)))
+    monkeypatch.setattr(session, "_reset_loaded_runtime", lambda viewer_obj: None)
+    monkeypatch.setattr(session, "_update_import_settings", lambda viewer_obj, **kwargs: None)
+    monkeypatch.setattr(session, "apply_live_params", lambda viewer_obj: None)
+    monkeypatch.setattr(session, "estimate_point_bounds", lambda xyz: (_ for _ in ()).throw(AssertionError("bounds fit should not be used when training-view fit succeeds")))
+    monkeypatch.setattr(session, "initialize_training_scene", lambda viewer_obj, frame_targets_native=None: None)
+    calls: list[object] = []
+    viewer = SimpleNamespace(
+        toolkit=SimpleNamespace(reset_plot_history=lambda: calls.append("reset")),
+        s=SimpleNamespace(),
+        apply_camera_fit=lambda bounds: calls.append(("fit", bounds)),
+        apply_camera_fit_to_training_views=lambda frames: calls.append(("view_fit", tuple(frames))) or True,
+    )
+
+    session._finish_import_colmap_dataset(
+        viewer,
+        colmap_root=Path("dataset/garden"),
+        database_path=None,
+        images_root=Path("dataset/garden/images"),
+        init_mode="pointcloud",
+        custom_ply_path=None,
+        image_downscale_mode="original",
+        image_downscale_max_size=1600,
+        image_downscale_scale=1.0,
+        nn_radius_scale_coef=0.25,
+        diffused_point_count=100000,
+        diffusion_radius=1.0,
+        recon=recon,
+        training_frames=training_frames,
+        frame_targets_native=None,
+    )
+
+    assert calls == ["reset", ("view_fit", tuple(training_frames))]
+
+
 def test_import_colmap_dataset_uses_aligned_reconstruction(monkeypatch) -> None:
     aligned_recon = object()
     frames = [SimpleNamespace(width=32, height=32, image_id=1)]

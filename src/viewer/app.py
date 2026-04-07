@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import math
 from pathlib import Path
 
@@ -26,6 +27,9 @@ _SCROLL_SPEED_BASE = 1.1
 _LOOK_SMOOTH = 12.0
 _MOVE_SMOOTH = 10.0
 _PITCH_LIMIT = math.radians(89.0)
+_TRAINING_CAMERA_FIT_RADIUS_SCALE = 2.0
+_TRAINING_CAMERA_FIT_MIN_RADIUS = 1.0
+_TRAINING_CAMERA_FIT_ORBIT_DIR = np.array([0.0, 0.0, -1.0], dtype=np.float32)
 _TRAINING_PARAM_KEYS = {
     "base_lr": "lr_schedule_start_lr",
     "lr_pos_mul": "lr_pos_mul",
@@ -119,6 +123,58 @@ _DEBUG_MODE_VALUES = (
     GaussianRenderer.DEBUG_MODE_SH_VIEW_DEPENDENT,
     GaussianRenderer.DEBUG_MODE_SH_COEFFICIENT,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class TrainingViewCameraFit:
+    center: np.ndarray
+    position: np.ndarray
+    yaw: float
+    pitch: float
+    near: float
+    far: float
+    move_speed: float
+
+
+def _training_view_positions(frames: object, near: float, far: float) -> np.ndarray:
+    positions: list[np.ndarray] = []
+    for frame in tuple(frames):
+        make_camera = getattr(frame, "make_camera", None)
+        if not callable(make_camera):
+            continue
+        try:
+            camera = make_camera(near=float(near), far=float(far))
+        except TypeError:
+            camera = make_camera()
+        except Exception:
+            continue
+        position = np.asarray(getattr(camera, "position", ()), dtype=np.float32).reshape(-1)
+        if position.size >= 3 and np.all(np.isfinite(position[:3])):
+            positions.append(position[:3].astype(np.float32, copy=False))
+    return np.stack(positions, axis=0) if positions else np.zeros((0, 3), dtype=np.float32)
+
+
+def _fit_camera_to_training_views(camera_positions: np.ndarray) -> TrainingViewCameraFit | None:
+    positions = np.asarray(camera_positions, dtype=np.float32).reshape(-1, 3)
+    valid = positions[np.isfinite(positions).all(axis=1)]
+    if valid.shape[0] == 0:
+        return None
+    center = np.mean(valid, axis=0, dtype=np.float32)
+    max_distance = float(np.max(np.linalg.norm(valid - center[None, :], axis=1)))
+    radius = max(_TRAINING_CAMERA_FIT_RADIUS_SCALE * max_distance, _TRAINING_CAMERA_FIT_MIN_RADIUS)
+    position = center + _TRAINING_CAMERA_FIT_ORBIT_DIR * np.float32(radius)
+    forward = np.asarray(normalize3(center - position, eps=_VIEW_VEC_EPS), dtype=np.float32)
+    yaw = math.atan2(float(forward[0]), float(forward[2]))
+    pitch = math.asin(max(min(float(forward[1]), 1.0), -1.0))
+    return TrainingViewCameraFit(
+        center=center.astype(np.float32, copy=False),
+        position=position.astype(np.float32, copy=False),
+        yaw=float(yaw),
+        pitch=float(pitch),
+        near=max(0.01, radius * 0.0015),
+        far=max(radius * 5.0, 80.0),
+        move_speed=max(0.25, radius * 0.15),
+    )
 
 def _training_param_value(name: str, value_for) -> object:
     value = value_for(_TRAINING_PARAM_KEYS[name])
@@ -221,6 +277,21 @@ class SplatViewer(spy.AppWindow):
         self.s.pitch = 0.0
         self.s.move_vel = spy.float3(0.0, 0.0, 0.0)
         self.s.rot_vel = spy.float2(0.0, 0.0)
+
+    def apply_camera_fit_to_training_views(self, frames: object) -> bool:
+        fit = _fit_camera_to_training_views(_training_view_positions(frames, self.s.near, self.s.far))
+        if fit is None:
+            return False
+        self.s.camera_pos = spy.float3(*fit.position.tolist())
+        self.s.near = fit.near
+        self.s.far = fit.far
+        self.s.move_speed = fit.move_speed
+        self.c("move_speed").value = float(fit.move_speed)
+        self.s.yaw = fit.yaw
+        self.s.pitch = fit.pitch
+        self.s.move_vel = spy.float3(0.0, 0.0, 0.0)
+        self.s.rot_vel = spy.float2(0.0, 0.0)
+        return True
 
     def on_keyboard_event(self, event) -> None:
         if self.toolkit.handle_keyboard_event(event):

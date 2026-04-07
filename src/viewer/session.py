@@ -66,6 +66,15 @@ def _clear(viewer: object, *attrs: str) -> None:
             del value
 
 
+def _apply_initial_camera_fit(viewer: object, fallback_bounds: object | None = None, fallback_factory=None) -> None:
+    fit_training_views = getattr(viewer, "apply_camera_fit_to_training_views", None)
+    if callable(fit_training_views) and fit_training_views(getattr(viewer.s, "training_frames", ())):
+        return
+    if fallback_factory is not None:
+        fallback_bounds = fallback_factory()
+    viewer.apply_camera_fit(fallback_bounds)
+
+
 def _point_tables(recon: object) -> tuple[np.ndarray, np.ndarray]:
     xyz, rgb = point_tables(recon)
     if xyz.shape[0] != rgb.shape[0] or xyz.shape[0] <= 0:
@@ -919,7 +928,7 @@ def _finish_import_colmap_dataset(
     viewer.s.colmap_point_count = int(xyz.shape[0])
     viewer.s.scene_path = None
     apply_live_params(viewer)
-    viewer.apply_camera_fit(estimate_point_bounds(xyz))
+    _apply_initial_camera_fit(viewer, fallback_factory=lambda: estimate_point_bounds(xyz))
     initialize_training_scene(viewer, frame_targets_native=frame_targets_native)
     viewer.s.last_error = ""
     print(
@@ -1130,7 +1139,7 @@ def initialize_training_scene(viewer: object, frame_targets_native: list[spy.Tex
         trainer_kwargs["frame_targets_native"] = frame_targets_native
     viewer.s.trainer = GaussianTrainer(**trainer_kwargs)
     viewer.s.scene = SceneCountProxy(scene.count)
-    viewer.apply_camera_fit(estimate_scene_bounds(scene))
+    _apply_initial_camera_fit(viewer, fallback_factory=lambda: estimate_scene_bounds(scene))
     enc = viewer.device.create_command_encoder()
     renderer.copy_scene_state_to(enc, viewer.s.renderer)
     viewer.device.submit_command_buffer(enc.finish())

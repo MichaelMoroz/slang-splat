@@ -242,6 +242,55 @@ def test_viewer_background_can_follow_train_background_color() -> None:
     assert resolved == (0.25, 0.5, 0.75)
 
 
+def test_fit_camera_to_training_views_orbits_camera_centroid() -> None:
+    positions = np.array(
+        [
+            [1.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, 2.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+
+    fit = app._fit_camera_to_training_views(positions)
+
+    assert fit is not None
+    np.testing.assert_allclose(fit.center, np.array([0.0, 2.0 / 3.0, 0.0], dtype=np.float32), rtol=0.0, atol=1e-6)
+    radius = 2.0 * float(np.max(np.linalg.norm(positions - fit.center[None, :], axis=1)))
+    np.testing.assert_allclose(fit.position, fit.center + np.array([0.0, 0.0, -radius], dtype=np.float32), rtol=0.0, atol=1e-6)
+    assert np.isclose(fit.yaw, 0.0, rtol=0.0, atol=1e-6)
+    assert np.isclose(fit.pitch, 0.0, rtol=0.0, atol=1e-6)
+
+
+def test_apply_camera_fit_to_training_views_updates_free_fly_state() -> None:
+    viewer = SimpleNamespace(
+        s=SimpleNamespace(
+            near=0.1,
+            far=120.0,
+            camera_pos=app.spy.float3(0.0, 0.0, -3.0),
+            yaw=1.0,
+            pitch=1.0,
+            move_speed=1.0,
+            move_vel=app.spy.float3(1.0, 0.0, 0.0),
+            rot_vel=app.spy.float2(1.0, 0.0),
+        ),
+        c=lambda _key: SimpleNamespace(value=0.0),
+    )
+    frames = [
+        SimpleNamespace(make_camera=lambda near=0.1, far=120.0: SimpleNamespace(position=np.array([1.0, 0.0, 0.0], dtype=np.float32))),
+        SimpleNamespace(make_camera=lambda near=0.1, far=120.0: SimpleNamespace(position=np.array([-1.0, 0.0, 0.0], dtype=np.float32))),
+    ]
+
+    changed = SplatViewer.apply_camera_fit_to_training_views(viewer, frames)
+
+    assert changed is True
+    np.testing.assert_allclose(np.asarray(viewer.s.camera_pos, dtype=np.float32), np.array([0.0, 0.0, -2.0], dtype=np.float32), rtol=0.0, atol=1e-6)
+    assert np.isclose(viewer.s.yaw, 0.0, rtol=0.0, atol=1e-6)
+    assert np.isclose(viewer.s.pitch, 0.0, rtol=0.0, atol=1e-6)
+    assert np.allclose(np.asarray(viewer.s.move_vel, dtype=np.float32), np.zeros((3,), dtype=np.float32))
+    assert np.allclose(np.asarray(viewer.s.rot_vel, dtype=np.float32), np.zeros((2,), dtype=np.float32))
+
+
 def test_renderer_params_maps_adam_momentum_to_grad_norm_log_range() -> None:
     controls = {
         "cached_raster_grad_atomic_mode": SimpleNamespace(value=1),
