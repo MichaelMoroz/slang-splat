@@ -111,7 +111,7 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["debug_depth_local_mismatch_smooth_radius"] == 2.0
     assert viewer_ui._values["debug_depth_local_mismatch_reject_radius"] == 4.0
     assert viewer_ui._values["loss_debug_view"] == 0
-    assert viewer_ui._values["lr_scale_mul"] == 5.0
+    assert viewer_ui._values["lr_scale_mul"] == 15.0
     assert viewer_ui._values["lr_color_mul"] == 5.0
     assert viewer_ui._values["lr_opacity_mul"] == 5.0
     assert viewer_ui._values["lr_schedule_enabled"] is True
@@ -121,8 +121,8 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["lr_schedule_end_lr"] == 7.5e-5
     assert viewer_ui._values["lr_pos_mul"] == 1.0
     assert viewer_ui._values["lr_pos_stage1_mul"] == 0.75
-    assert viewer_ui._values["lr_pos_stage2_mul"] == 0.4
-    assert viewer_ui._values["lr_pos_stage3_mul"] == 0.3
+    assert viewer_ui._values["lr_pos_stage2_mul"] == 0.2
+    assert viewer_ui._values["lr_pos_stage3_mul"] == 0.2
     assert viewer_ui._values["lr_sh_mul"] == 0.05
     assert viewer_ui._values["lr_sh_stage1_mul"] == 0.05
     assert viewer_ui._values["lr_sh_stage2_mul"] == 0.05
@@ -144,14 +144,14 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["use_sh_stage3"] is True
     assert viewer_ui._values["sh1_reg"] == 0.01
     assert viewer_ui._values["refinement_interval"] == 200
-    assert viewer_ui._values["refinement_growth_ratio"] == 0.075
+    assert viewer_ui._values["refinement_growth_ratio"] == 0.05
     assert viewer_ui._values["refinement_growth_start_step"] == 500
     assert viewer_ui._values["refinement_alpha_cull_threshold"] == 1e-2
     assert viewer_ui._values["refinement_min_contribution_percent"] == 1e-05
     assert viewer_ui._values["refinement_min_contribution_decay"] == 0.995
     assert viewer_ui._values["refinement_opacity_mul"] == 1.0
-    assert viewer_ui._values["refinement_loss_weight"] == 0.5
-    assert viewer_ui._values["refinement_target_edge_weight"] == 0.5
+    assert viewer_ui._values["refinement_loss_weight"] == 0.01
+    assert viewer_ui._values["refinement_target_edge_weight"] == 0.99
     assert viewer_ui._values["density_regularizer"] == 0.02
     assert viewer_ui._values["depth_ratio_weight"] == 1.0
     assert viewer_ui._values["depth_ratio_stage1_weight"] == 0.05

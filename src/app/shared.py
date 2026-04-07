@@ -22,7 +22,7 @@ CAMERA_MIN_FAR = 80.0
 MOVE_SPEED_RADIUS_SCALE = 0.15
 MOVE_SPEED_MIN = 0.25
 GAUSSIAN_SIGMA_SUPPORT = 3.0
-_LR_LIMITS = (0.1, 10.0)
+_LR_LIMITS = (0.1, 20.0)
 _SH_LR_LIMITS = (1e-4, 10.0)
 _CLAMP_LIMITS = {
     "grad_component_clip": (1e-5, 1e6),
@@ -170,15 +170,15 @@ def build_training_params(
     sh1_reg_weight: float = 0.01,
     density_regularizer: float = 0.02,
     depth_ratio_weight: float = 1.0,
-    refinement_loss_weight: float = 0.5,
-    refinement_target_edge_weight: float = 0.5,
+    refinement_loss_weight: float = 0.01,
+    refinement_target_edge_weight: float = 0.99,
     depth_ratio_grad_min: float = 0.0,
     depth_ratio_grad_max: float = 0.1,
     max_allowed_density_start: float = 5.0,
     max_allowed_density: float = 12.0,
     lr_pos_stage1_mul: float = 0.75,
-    lr_pos_stage2_mul: float = 0.4,
-    lr_pos_stage3_mul: float = 0.3,
+    lr_pos_stage2_mul: float = 0.2,
+    lr_pos_stage3_mul: float = 0.2,
     lr_sh_mul: float = 0.05,
     lr_sh_stage1_mul: float = 0.05,
     lr_sh_stage2_mul: float = 0.05,
@@ -198,7 +198,7 @@ def build_training_params(
     lr_schedule_stage1_step: int = 3000,
     lr_schedule_stage2_step: int = 14_000,
     refinement_interval: int = 200,
-    refinement_growth_ratio: float = 0.075,
+    refinement_growth_ratio: float = 0.05,
     refinement_growth_start_step: int = 500,
     refinement_alpha_cull_threshold: float = 1e-2,
     refinement_min_contribution_percent: float = DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT,

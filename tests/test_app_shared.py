@@ -64,7 +64,7 @@ def test_build_training_params_clamps_ranges():
         depth_ratio_grad_max=0.1,
         max_gaussians=-1,
     )
-    assert params.adam.position_lr == 10.0
+    assert params.adam.position_lr == 20.0
     assert params.adam.scale_lr == 0.1
     assert params.stability.max_scale == params.stability.min_scale == 2.0
     assert params.stability.max_opacity == params.stability.min_opacity == 0.8
@@ -83,10 +83,10 @@ def test_build_training_params_clamps_ranges():
     assert params.training.depth_ratio_grad_max == 0.2 + DEPTH_RATIO_GRAD_MIN_BAND_WIDTH
     assert params.training.max_allowed_density_start == 5.0
     assert params.training.max_allowed_density == 12.0
-    assert params.training.lr_pos_mul == 10.0
+    assert params.training.lr_pos_mul == 20.0
     assert params.training.lr_pos_stage1_mul == 0.75
-    assert params.training.lr_pos_stage2_mul == 0.4
-    assert params.training.lr_pos_stage3_mul == 0.3
+    assert params.training.lr_pos_stage2_mul == 0.2
+    assert params.training.lr_pos_stage3_mul == 0.2
     assert params.training.lr_sh_mul == 0.05
     assert params.training.lr_sh_stage1_mul == 0.05
     assert params.training.lr_sh_stage2_mul == 0.05
@@ -123,8 +123,8 @@ def test_default_training_params_match_fixed_count_defaults():
     assert params.training.scale_abs_reg_weight == 0.01
     assert params.training.sh1_reg_weight == 0.01
     assert params.training.opacity_reg_weight == 0.01
-    assert params.training.refinement_loss_weight == 0.5
-    assert params.training.refinement_target_edge_weight == 0.5
+    assert params.training.refinement_loss_weight == 0.01
+    assert params.training.refinement_target_edge_weight == 0.99
     assert params.training.density_regularizer == 0.02
     assert params.training.depth_ratio_weight == 1.0
     assert params.training.depth_ratio_grad_min == 0.0
@@ -133,8 +133,8 @@ def test_default_training_params_match_fixed_count_defaults():
     assert params.training.max_allowed_density == 12.0
     assert params.training.lr_pos_mul == 1.0
     assert params.training.lr_pos_stage1_mul == 0.75
-    assert params.training.lr_pos_stage2_mul == 0.4
-    assert params.training.lr_pos_stage3_mul == 0.3
+    assert params.training.lr_pos_stage2_mul == 0.2
+    assert params.training.lr_pos_stage3_mul == 0.2
     assert params.training.lr_sh_mul == 0.05
     assert params.training.lr_sh_stage1_mul == 0.05
     assert params.training.lr_sh_stage2_mul == 0.05
@@ -155,7 +155,7 @@ def test_default_training_params_match_fixed_count_defaults():
     assert params.training.use_sh_stage1 is True
     assert params.training.use_sh_stage2 is True
     assert params.training.use_sh_stage3 is True
-    assert params.training.refinement_growth_ratio == 0.075
+    assert params.training.refinement_growth_ratio == 0.05
     assert params.training.refinement_growth_start_step == 500
     assert params.training.refinement_alpha_cull_threshold == 1e-2
     assert params.training.refinement_min_contribution_percent == 1e-05
@@ -171,8 +171,8 @@ def test_auto_profile_resolves_to_legacy_defaults():
     assert params.training.scale_abs_reg_weight == 0.01
     assert params.training.sh1_reg_weight == 0.01
     assert params.training.depth_ratio_weight == 1.0
-    assert params.training.refinement_loss_weight == 0.5
-    assert params.training.refinement_target_edge_weight == 0.5
+    assert params.training.refinement_loss_weight == 0.01
+    assert params.training.refinement_target_edge_weight == 0.99
     assert params.training.depth_ratio_grad_min == 0.0
     assert params.training.depth_ratio_grad_max == 0.1
     assert params.training.opacity_reg_weight == 0.01
@@ -207,8 +207,8 @@ def test_viewer_effective_training_setup_keeps_requested_init_opacity():
     assert params.training.scale_abs_reg_weight == 0.01
     assert params.training.sh1_reg_weight == 0.01
     assert params.training.depth_ratio_weight == 1.0
-    assert params.training.refinement_loss_weight == 0.5
-    assert params.training.refinement_target_edge_weight == 0.5
+    assert params.training.refinement_loss_weight == 0.01
+    assert params.training.refinement_target_edge_weight == 0.99
     assert params.training.depth_ratio_grad_min == 0.0
     assert params.training.depth_ratio_grad_max == 0.1
     assert params.training.opacity_reg_weight == 0.01

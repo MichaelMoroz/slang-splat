@@ -185,13 +185,13 @@ class TrainingHyperParams:
     background: tuple[float, float, float] = (1.0, 1.0, 1.0); near: float = 0.1; far: float = 120.0
     background_mode: int = TRAIN_BACKGROUND_MODE_RANDOM; use_sh: bool = False
     scale_l2_weight: float = 0.0; scale_abs_reg_weight: float = 0.01; sh1_reg_weight: float = 0.01; opacity_reg_weight: float = 0.01; density_regularizer: float = 0.02; depth_ratio_weight: float = 1.0; max_allowed_density_start: float = 5.0; max_allowed_density: float = 12.0
-    refinement_loss_weight: float = 0.5; refinement_target_edge_weight: float = 0.5
+    refinement_loss_weight: float = 0.01; refinement_target_edge_weight: float = 0.99
     depth_ratio_grad_min: float = 0.0; depth_ratio_grad_max: float = 0.1
-    lr_pos_mul: float = 1.0; lr_pos_stage1_mul: float = 0.75; lr_pos_stage2_mul: float = 0.4; lr_pos_stage3_mul: float = 0.3
+    lr_pos_mul: float = 1.0; lr_pos_stage1_mul: float = 0.75; lr_pos_stage2_mul: float = 0.2; lr_pos_stage3_mul: float = 0.2
     lr_sh_mul: float = 0.05; lr_sh_stage1_mul: float = 0.05; lr_sh_stage2_mul: float = 0.05; lr_sh_stage3_mul: float = 0.05
     position_random_step_noise_lr: float = 5e5; position_random_step_opacity_gate_center: float = 0.005; position_random_step_opacity_gate_sharpness: float = 100.0
     lr_schedule_enabled: bool = True; lr_schedule_start_lr: float = 0.005; lr_schedule_stage1_lr: float = 0.002; lr_schedule_stage2_lr: float = 0.001; lr_schedule_end_lr: float = 7.5e-5; lr_schedule_steps: int = 30_000; lr_schedule_stage1_step: int = 3000; lr_schedule_stage2_step: int = 14_000
-    refinement_interval: int = 200; refinement_growth_ratio: float = 0.075; refinement_growth_start_step: int = 500; refinement_alpha_cull_threshold: float = 1e-2; refinement_min_contribution_percent: float = DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT; refinement_min_contribution_decay: float = DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY; refinement_opacity_mul: float = 1.0
+    refinement_interval: int = 200; refinement_growth_ratio: float = 0.05; refinement_growth_start_step: int = 500; refinement_alpha_cull_threshold: float = 1e-2; refinement_min_contribution_percent: float = DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT; refinement_min_contribution_decay: float = DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY; refinement_opacity_mul: float = 1.0
     depth_ratio_stage1_weight: float = 0.05; depth_ratio_stage2_weight: float = 0.01; depth_ratio_stage3_weight: float = 0.001
     position_random_step_noise_stage1_lr: float = 466666.6666666667; position_random_step_noise_stage2_lr: float = 416666.6666666667; position_random_step_noise_stage3_lr: float = 0.0
     use_sh_stage1: bool = True; use_sh_stage2: bool = True; use_sh_stage3: bool = True

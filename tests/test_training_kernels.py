@@ -881,8 +881,8 @@ def test_depth_ratio_noise_and_sh_schedules_follow_requested_defaults() -> None:
 
     np.testing.assert_allclose(resolve_position_lr_mul(hparams, 0), 1.0, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_position_lr_mul(hparams, 3000), 0.75, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_position_lr_mul(hparams, 14000), 0.4, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_position_lr_mul(hparams, 30_000), 0.3, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_position_lr_mul(hparams, 14000), 0.2, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_position_lr_mul(hparams, 30_000), 0.2, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_sh_lr_mul(hparams, 0), 0.05, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_sh_lr_mul(hparams, 3000), 0.05, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_sh_lr_mul(hparams, 14000), 0.05, rtol=0.0, atol=1e-12)
