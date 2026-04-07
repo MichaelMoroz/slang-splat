@@ -185,6 +185,7 @@ class TrainingHyperParams:
     background: tuple[float, float, float] = (1.0, 1.0, 1.0); near: float = 0.1; far: float = 120.0
     background_mode: int = TRAIN_BACKGROUND_MODE_RANDOM; use_sh: bool = False
     scale_l2_weight: float = 0.0; scale_abs_reg_weight: float = 0.01; sh1_reg_weight: float = 0.01; opacity_reg_weight: float = 0.01; density_regularizer: float = 0.02; depth_ratio_weight: float = 1.0; max_allowed_density_start: float = 5.0; max_allowed_density: float = 12.0
+    refinement_loss_weight: float = 0.5; refinement_target_edge_weight: float = 0.5
     depth_ratio_grad_min: float = 0.0; depth_ratio_grad_max: float = 0.1
     lr_pos_mul: float = 1.0; lr_pos_stage1_mul: float = 0.75; lr_pos_stage2_mul: float = 0.4; lr_pos_stage3_mul: float = 0.3
     lr_sh_mul: float = 0.05; lr_sh_stage1_mul: float = 0.05; lr_sh_stage2_mul: float = 0.05; lr_sh_stage3_mul: float = 0.05
@@ -226,6 +227,8 @@ class TrainingHyperParams:
         self.refinement_min_contribution_percent = min(max(float(self.refinement_min_contribution_percent), 0.0), 100.0)
         self.refinement_min_contribution_decay = min(max(float(self.refinement_min_contribution_decay), 0.0), 1.0)
         self.refinement_opacity_mul = min(max(float(self.refinement_opacity_mul), 0.0), 1.0)
+        self.refinement_loss_weight = max(float(self.refinement_loss_weight), 0.0)
+        self.refinement_target_edge_weight = max(float(self.refinement_target_edge_weight), 0.0)
         self.sh1_reg_weight = max(float(self.sh1_reg_weight), 0.0)
         self.density_regularizer = max(float(self.density_regularizer), 0.0)
         self.depth_ratio_weight = max(float(self.depth_ratio_weight), 0.0)
@@ -461,6 +464,8 @@ class GaussianTrainer:
             training_background_seed=self._training_background_seed(resolved_step),
             training_native_camera=self._native_frame_camera(frame_index) if native_camera is None else native_camera,
             training_sample_vars=self._training_sample_vars(frame_index, resolved_step),
+            refinement_loss_weight=float(self.training.refinement_loss_weight),
+            refinement_target_edge_weight=float(self.training.refinement_target_edge_weight),
         )
 
     def _read_loss_metrics(self) -> tuple[float, float, float]:
@@ -945,6 +950,8 @@ class GaussianTrainer:
             "g_HugeValue": float(self.stability.huge_value),
             "g_DensityRegularizer": float(self.training.density_regularizer),
             "g_DepthRatioWeight": float(resolve_depth_ratio_weight(self.training, resolved_step)),
+            "g_RefinementLossWeight": float(self.training.refinement_loss_weight),
+            "g_RefinementTargetEdgeWeight": float(self.training.refinement_target_edge_weight),
             "g_DepthRatioGradMin": float(self.training.depth_ratio_grad_min),
             "g_DepthRatioGradMax": float(self.training.depth_ratio_grad_max),
             "g_MaxAllowedDensity": float(resolve_max_allowed_density(self.training, resolved_step)),
@@ -952,7 +959,7 @@ class GaussianTrainer:
         }
 
     def _dispatch_loss_forward(self, encoder: spy.CommandEncoder, target_texture: spy.Texture, step: int | None = None, frame_index: int = 0) -> None:
-        shared = {"g_OutputGrad": self.renderer.output_grad_buffer, "g_RegularizerGrad": self.renderer.work_buffers["training_regularizer_grad"], "g_LossBuffer": self._buffers["loss"], "g_TrainingRgbLoss": self.renderer.work_buffers["training_rgb_loss"], "g_TrainingRgbLossTotal": self.renderer.work_buffers["training_rgb_loss_total"], **self._loss_vars(frame_index, step)}
+        shared = {"g_OutputGrad": self.renderer.output_grad_buffer, "g_RegularizerGrad": self.renderer.work_buffers["training_regularizer_grad"], "g_LossBuffer": self._buffers["loss"], "g_TrainingRgbLoss": self.renderer.work_buffers["training_rgb_loss"], "g_TrainingRgbLossTotal": self.renderer.work_buffers["training_rgb_loss_total"], "g_TrainingTargetEdge": self.renderer.work_buffers["training_target_edge"], "g_TrainingTargetEdgeTotal": self.renderer.work_buffers["training_target_edge_total"], **self._loss_vars(frame_index, step)}
         self._dispatch("clear_loss", encoder, self._pixel_thread_count(), shared)
         self._dispatch(
             "loss_forward",
@@ -968,6 +975,8 @@ class GaussianTrainer:
                 "g_LossBuffer": self._buffers["loss"],
                 "g_TrainingRgbLoss": self.renderer.work_buffers["training_rgb_loss"],
                 "g_TrainingRgbLossTotal": self.renderer.work_buffers["training_rgb_loss_total"],
+                "g_TrainingTargetEdge": self.renderer.work_buffers["training_target_edge"],
+                "g_TrainingTargetEdgeTotal": self.renderer.work_buffers["training_target_edge_total"],
                 **self._loss_vars(frame_index, step),
             },
         )

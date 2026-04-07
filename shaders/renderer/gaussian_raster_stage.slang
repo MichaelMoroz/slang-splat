@@ -16,6 +16,10 @@ uniform float g_CloneSelectProbability;
 uniform uint g_CloneSeed;
 uniform StructuredBuffer<float> g_TrainingRgbLoss;
 uniform StructuredBuffer<float> g_TrainingRgbLossTotal;
+uniform StructuredBuffer<float> g_TrainingTargetEdge;
+uniform StructuredBuffer<float> g_TrainingTargetEdgeTotal;
+uniform float g_RefinementLossWeight;
+uniform float g_RefinementTargetEdgeWeight;
 
 struct RasterState : IDifferentiable
 {
@@ -446,12 +450,25 @@ float training_clone_random_uniform(uint seed)
 float training_clone_probability(uint pixelIndex)
 {
     if (!(g_CloneSelectProbability > 0.0)) return 0.0;
-    float totalRgbLoss = g_TrainingRgbLossTotal[0];
-    if (!isfinite(totalRgbLoss) || !(totalRgbLoss > SMALL_VALUE)) return 0.0;
-    float rgbLoss = g_TrainingRgbLoss[pixelIndex];
-    if (!isfinite(rgbLoss) || !(rgbLoss > 0.0)) return 0.0;
+    float lossWeight = max(g_RefinementLossWeight, 0.0);
+    float edgeWeight = max(g_RefinementTargetEdgeWeight, 0.0);
+    if (!(lossWeight > 0.0) && !(edgeWeight > 0.0)) return 0.0;
+    float score = 0.0;
+    if (lossWeight > 0.0)
+    {
+        float totalRgbLoss = g_TrainingRgbLossTotal[0];
+        float rgbLoss = g_TrainingRgbLoss[pixelIndex];
+        if (isfinite(totalRgbLoss) && totalRgbLoss > SMALL_VALUE && isfinite(rgbLoss) && rgbLoss > 0.0) score += lossWeight * (rgbLoss / totalRgbLoss);
+    }
+    if (edgeWeight > 0.0)
+    {
+        float totalTargetEdge = g_TrainingTargetEdgeTotal[0];
+        float targetEdge = g_TrainingTargetEdge[pixelIndex];
+        if (isfinite(totalTargetEdge) && totalTargetEdge > SMALL_VALUE && isfinite(targetEdge) && targetEdge > 0.0) score += edgeWeight * (targetEdge / totalTargetEdge);
+    }
+    if (!(score > 0.0) || !isfinite(score)) return 0.0;
     float targetSelectedPixels = saturate(g_CloneSelectProbability) * float(max(g_Raster.width * g_Raster.height, 1u));
-    return saturate(targetSelectedPixels * (rgbLoss / totalRgbLoss));
+    return saturate(targetSelectedPixels * score);
 }
 
 void init_raster_backward_state(out RasterBackwardState backwardState)
