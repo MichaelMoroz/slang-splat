@@ -166,6 +166,7 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["train_subsample_factor"] == 0
     assert viewer_ui._values["colmap_init_mode"] == 0
     assert viewer_ui._values["colmap_depth_root"] == ""
+    assert viewer_ui._values["colmap_depth_value_mode"] == 1
     assert viewer_ui._values["colmap_image_downscale_mode"] == 0
     assert viewer_ui._values["colmap_image_max_size"] == 2048
     assert viewer_ui._values["colmap_image_scale"] == 1.0
@@ -190,6 +191,10 @@ def test_colmap_init_mode_labels_append_depth_only_for_valid_depth_root(tmp_path
 
     assert ui._colmap_init_mode_labels(True) == ui._COLMAP_INIT_MODE_LABELS + ("From Depth",)
     assert ui._colmap_init_mode_label(viewer_ui) == "From Depth"
+
+
+def test_colmap_depth_value_mode_labels_cover_distance_and_z_depth() -> None:
+    assert ui._COLMAP_DEPTH_VALUE_MODE_LABELS == ("Depth Is Distance", "Depth Is Z-Depth")
 
 
 def test_toolkit_window_render_draws_non_background_pixels(device) -> None:

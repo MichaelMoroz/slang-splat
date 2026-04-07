@@ -32,6 +32,8 @@ DEPTH_INIT_MIN_INLIERS = 12
 DEPTH_INIT_RIDGE_LAMBDA = 1e-4
 DEPTH_INIT_MAD_SCALE = 3.5
 DEPTH_INIT_DISTANCE_FLOOR = 1e-4
+DEPTH_INIT_VALUE_DISTANCE = "distance"
+DEPTH_INIT_VALUE_Z_DEPTH = "z_depth"
 
 
 @dataclass(slots=True)
@@ -40,7 +42,7 @@ class DepthInitFramePayload:
     rgba8: np.ndarray
     depth_map: np.ndarray
     camera_id: int
-    fit_depths: np.ndarray
+    fit_features: np.ndarray
     fit_targets: np.ndarray
 
 
@@ -381,34 +383,41 @@ def _depth_sample_linear(depth_map: np.ndarray, xy: np.ndarray) -> float:
     return float(np.float32(1.0 - ty) * top + ty * bottom)
 
 
-def _depth_scale_feature(raw_depth: float) -> float:
-    return float(raw_depth)
+def _depth_affine_features(raw_depth: float) -> np.ndarray:
+    return np.asarray((1.0, float(raw_depth)), dtype=np.float32)
 
 
-def _ridge_scale_fit(features: np.ndarray, targets: np.ndarray, ridge_lambda: float = DEPTH_INIT_RIDGE_LAMBDA) -> np.ndarray:
-    x = np.asarray(features, dtype=np.float64).reshape(-1)
+def _ridge_affine_fit(features: np.ndarray, targets: np.ndarray, ridge_lambda: float = DEPTH_INIT_RIDGE_LAMBDA) -> np.ndarray:
+    x = np.asarray(features, dtype=np.float64).reshape(-1, 2)
     y = np.asarray(targets, dtype=np.float64).reshape(-1)
-    xx = float(np.dot(x, x)) + float(max(ridge_lambda, 0.0))
-    xy = float(np.dot(x, y))
-    return np.asarray([xy / max(xx, 1e-12)], dtype=np.float32)
+    xtx = x.T @ x
+    xtx[0, 0] += float(max(ridge_lambda, 0.0))
+    xtx[1, 1] += float(max(ridge_lambda, 0.0))
+    xty = x.T @ y
+    return np.asarray(np.linalg.solve(xtx, xty), dtype=np.float32)
 
 
 def _robust_ridge_fit(features: np.ndarray, targets: np.ndarray) -> np.ndarray | None:
-    x = np.asarray(features, dtype=np.float32).reshape(-1)
+    x = np.asarray(features, dtype=np.float32).reshape(-1, 2)
     y = np.asarray(targets, dtype=np.float32).reshape(-1)
-    if x.size < DEPTH_INIT_MIN_CORRESPONDENCES or x.size != y.size:
+    if x.shape[0] < DEPTH_INIT_MIN_CORRESPONDENCES or x.shape[0] != y.size:
         return None
-    coeffs = _ridge_scale_fit(x, y)
-    residuals = y - x * coeffs[0]
+    coeffs = _ridge_affine_fit(x, y)
+    residuals = y - x @ coeffs
     center = float(np.median(residuals))
     mad = float(np.median(np.abs(residuals - center)))
     robust_sigma = max(1.4826 * mad, 1e-6)
     inliers = np.abs(residuals - center) <= DEPTH_INIT_MAD_SCALE * robust_sigma
     if int(np.count_nonzero(inliers)) >= DEPTH_INIT_MIN_INLIERS:
-        refined = _ridge_scale_fit(x[inliers], y[inliers])
+        refined = _ridge_affine_fit(x[inliers], y[inliers])
         if np.all(np.isfinite(refined)):
             return refined
     return coeffs if np.all(np.isfinite(coeffs)) else None
+
+
+def _camera_normalized_to_frame_pixel(uv: np.ndarray, frame: ColmapFrame) -> np.ndarray:
+    uv_arr = np.asarray(uv, dtype=np.float32).reshape(2)
+    return np.asarray((float(frame.cx) + float(frame.fx) * float(uv_arr[0]), float(frame.cy) + float(frame.fy) * float(uv_arr[1])), dtype=np.float32)
 
 
 def collect_depth_distance_remap_samples(
@@ -417,33 +426,42 @@ def collect_depth_distance_remap_samples(
     frame: ColmapFrame,
     camera: ColmapCamera,
     depth_map: np.ndarray,
+    depth_value_mode: str = DEPTH_INIT_VALUE_Z_DEPTH,
 ) -> tuple[np.ndarray, np.ndarray]:
     point_ids = np.asarray(image.points2d_point3d_ids, dtype=np.int64).reshape(-1)
     points2d_xy = np.asarray(image.points2d_xy, dtype=np.float32).reshape(-1, 2)
     valid_ids = np.flatnonzero(point_ids > 0)
     if valid_ids.size == 0:
-        return np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=np.float32)
+        return np.zeros((0, 2), dtype=np.float32), np.zeros((0,), dtype=np.float32)
     camera_obj = frame.make_camera()
-    sx = float(frame.width) / float(max(int(camera.width), 1))
-    sy = float(frame.height) / float(max(int(camera.height), 1))
-    features: list[float] = []
+    depth_mode = str(depth_value_mode).strip().lower()
+    features: list[np.ndarray] = []
     targets: list[float] = []
     for point_idx in valid_ids[:DEPTH_INIT_MAX_CORRESPONDENCES]:
         point = recon.points3d.get(int(point_ids[point_idx]))
         if point is None:
             continue
-        xy = points2d_xy[point_idx] * np.array([sx, sy], dtype=np.float32)
+        colmap_xy = points2d_xy[point_idx]
+        normalized_xy = np.asarray(
+            (
+                (float(colmap_xy[0]) - float(camera.cx)) / max(float(camera.fx), 1e-12),
+                (float(colmap_xy[1]) - float(camera.cy)) / max(float(camera.fy), 1e-12),
+            ),
+            dtype=np.float32,
+        )
+        xy = _camera_normalized_to_frame_pixel(normalized_xy, frame)
         raw_depth = _depth_sample_linear(depth_map, xy)
         if not np.isfinite(raw_depth) or raw_depth <= 0.0:
             continue
-        target_distance = float(np.linalg.norm(np.asarray(point.xyz, dtype=np.float32).reshape(3) - camera_obj.position))
-        if not np.isfinite(target_distance) or target_distance <= 0.0:
+        point_camera = np.asarray(camera_obj.world_point_to_camera(point.xyz), dtype=np.float32).reshape(3)
+        target = float(point_camera[2]) if depth_mode == DEPTH_INIT_VALUE_Z_DEPTH else float(np.linalg.norm(point_camera))
+        if not np.isfinite(target) or target <= 0.0:
             continue
-        features.append(_depth_scale_feature(raw_depth))
-        targets.append(target_distance)
+        features.append(_depth_affine_features(raw_depth))
+        targets.append(target)
     if len(features) == 0:
-        return np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=np.float32)
-    return np.ascontiguousarray(np.asarray(features, dtype=np.float32), dtype=np.float32), np.ascontiguousarray(np.asarray(targets, dtype=np.float32), dtype=np.float32)
+        return np.zeros((0, 2), dtype=np.float32), np.zeros((0,), dtype=np.float32)
+    return np.ascontiguousarray(np.stack(features, axis=0), dtype=np.float32), np.ascontiguousarray(np.asarray(targets, dtype=np.float32), dtype=np.float32)
 
 
 def fit_depth_distance_remap(
@@ -452,8 +470,9 @@ def fit_depth_distance_remap(
     frame: ColmapFrame,
     camera: ColmapCamera,
     depth_map: np.ndarray,
+    depth_value_mode: str = DEPTH_INIT_VALUE_Z_DEPTH,
 ) -> np.ndarray | None:
-    features, targets = collect_depth_distance_remap_samples(recon, image, frame, camera, depth_map)
+    features, targets = collect_depth_distance_remap_samples(recon, image, frame, camera, depth_map, depth_value_mode)
     return _robust_ridge_fit(features, targets)
 
 
@@ -464,17 +483,17 @@ def fit_depth_distance_remaps_by_camera(payloads: list[DepthInitFramePayload]) -
         if payload is None:
             continue
         camera_id = int(payload.camera_id)
-        if payload.fit_depths.size == 0 or payload.fit_targets.size == 0:
+        if payload.fit_features.size == 0 or payload.fit_targets.size == 0:
             grouped_features.setdefault(camera_id, [])
             grouped_targets.setdefault(camera_id, [])
             continue
-        grouped_features.setdefault(camera_id, []).append(np.asarray(payload.fit_depths, dtype=np.float32))
+        grouped_features.setdefault(camera_id, []).append(np.asarray(payload.fit_features, dtype=np.float32).reshape(-1, 2))
         grouped_targets.setdefault(camera_id, []).append(np.asarray(payload.fit_targets, dtype=np.float32))
     coeffs_by_camera: dict[int, np.ndarray] = {}
     for camera_id, feature_parts in grouped_features.items():
         if len(feature_parts) == 0:
             continue
-        features = np.ascontiguousarray(np.concatenate(feature_parts, axis=0), dtype=np.float32).reshape(-1)
+        features = np.ascontiguousarray(np.concatenate(feature_parts, axis=0), dtype=np.float32).reshape(-1, 2)
         targets = np.ascontiguousarray(np.concatenate(grouped_targets[camera_id], axis=0), dtype=np.float32)
         coeffs = _robust_ridge_fit(features, targets)
         if coeffs is not None:
@@ -485,7 +504,7 @@ def fit_depth_distance_remaps_by_camera(payloads: list[DepthInitFramePayload]) -
 def _predict_depth_distance_map(frame: ColmapFrame, depth_map: np.ndarray, coeffs: np.ndarray) -> np.ndarray:
     raw_depth = np.asarray(depth_map, dtype=np.float32)
     del frame
-    return np.ascontiguousarray(np.float32(coeffs[0]) * raw_depth, dtype=np.float32)
+    return np.ascontiguousarray(np.float32(coeffs[0]) + np.float32(coeffs[1]) * raw_depth, dtype=np.float32)
 
 
 def build_depth_init_frame_payload(
@@ -494,46 +513,53 @@ def build_depth_init_frame_payload(
     camera: ColmapCamera,
     frame: ColmapFrame,
     depth_path: Path,
+    depth_value_mode: str = DEPTH_INIT_VALUE_Z_DEPTH,
 ) -> DepthInitFramePayload | None:
     rgba8 = load_training_frame_rgba8(frame)
     depth_map = load_depth_u16_image(depth_path, target_size=(int(frame.width), int(frame.height)))
     if not np.any(np.isfinite(depth_map) & (depth_map > 0.0)):
         return None
-    fit_features, fit_targets = collect_depth_distance_remap_samples(recon, image, frame, camera, depth_map)
+    fit_features, fit_targets = collect_depth_distance_remap_samples(recon, image, frame, camera, depth_map, depth_value_mode)
     return DepthInitFramePayload(
         frame=frame,
         rgba8=rgba8,
         depth_map=depth_map,
         camera_id=int(image.camera_id),
-        fit_depths=np.asarray(fit_features, dtype=np.float32),
+        fit_features=np.asarray(fit_features, dtype=np.float32),
         fit_targets=np.asarray(fit_targets, dtype=np.float32),
     )
 
 
-def load_training_frame_rgba8_with_depth_payload(task: tuple[ColmapReconstruction, ColmapImage, ColmapCamera, ColmapFrame, Path | None]) -> tuple[np.ndarray, DepthInitFramePayload | None]:
-    recon, image, camera, frame, depth_path = task
+def load_training_frame_rgba8_with_depth_payload(task: tuple[ColmapReconstruction, ColmapImage, ColmapCamera, ColmapFrame, Path | None, str]) -> tuple[np.ndarray, DepthInitFramePayload | None]:
+    recon, image, camera, frame, depth_path, depth_value_mode = task
     rgba8 = load_training_frame_rgba8(frame)
     if depth_path is None:
         return rgba8, None
     depth_map = load_depth_u16_image(depth_path, target_size=(int(frame.width), int(frame.height)))
     if not np.any(np.isfinite(depth_map) & (depth_map > 0.0)):
         return rgba8, None
-    fit_features, fit_targets = collect_depth_distance_remap_samples(recon, image, frame, camera, depth_map)
+    fit_features, fit_targets = collect_depth_distance_remap_samples(recon, image, frame, camera, depth_map, depth_value_mode)
     return rgba8, DepthInitFramePayload(
         frame=frame,
         rgba8=rgba8,
         depth_map=depth_map,
         camera_id=int(image.camera_id),
-        fit_depths=np.asarray(fit_features, dtype=np.float32),
+        fit_features=np.asarray(fit_features, dtype=np.float32),
         fit_targets=np.asarray(fit_targets, dtype=np.float32),
     )
 
 
-def generate_depth_init_points(payloads: list[DepthInitFramePayload], total_point_count: int, seed: int) -> tuple[np.ndarray, np.ndarray]:
+def generate_depth_init_points(
+    payloads: list[DepthInitFramePayload],
+    total_point_count: int,
+    seed: int,
+    depth_value_mode: str = DEPTH_INIT_VALUE_Z_DEPTH,
+) -> tuple[np.ndarray, np.ndarray]:
     usable = [payload for payload in payloads if payload is not None]
     if len(usable) == 0:
         raise RuntimeError("Depth initialization found no usable RGB/depth pairs.")
     coeffs_by_camera = fit_depth_distance_remaps_by_camera(usable)
+    depth_mode = str(depth_value_mode).strip().lower()
     calibrated_payloads: list[tuple[DepthInitFramePayload, np.ndarray, np.ndarray, int]] = []
     for payload in usable:
         coeffs = coeffs_by_camera.get(int(payload.camera_id))
@@ -580,9 +606,13 @@ def generate_depth_init_points(payloads: list[DepthInitFramePayload], total_poin
         ys, xs = np.unravel_index(chosen, valid_mask.shape)
         camera = payload.frame.make_camera()
         for x, y in zip(xs.astype(np.int32), ys.astype(np.int32), strict=False):
-            distance = max(float(predicted[int(y), int(x)]), DEPTH_INIT_DISTANCE_FLOOR)
-            ray = camera.screen_to_world_ray(np.array([float(x) + 0.5, float(y) + 0.5], dtype=np.float32), int(payload.frame.width), int(payload.frame.height))
-            world = np.asarray(camera.position, dtype=np.float32) + np.asarray(ray, dtype=np.float32) * np.float32(distance)
+            depth = max(float(predicted[int(y), int(x)]), DEPTH_INIT_DISTANCE_FLOOR)
+            screen_pos = np.array([float(x) + 0.5, float(y) + 0.5], dtype=np.float32)
+            if depth_mode == DEPTH_INIT_VALUE_Z_DEPTH:
+                world = camera.screen_to_world(screen_pos, depth, int(payload.frame.width), int(payload.frame.height))
+            else:
+                ray = camera.screen_to_world_ray(screen_pos, int(payload.frame.width), int(payload.frame.height))
+                world = np.asarray(camera.position, dtype=np.float32) + np.asarray(ray, dtype=np.float32) * np.float32(depth)
             positions.append(np.asarray(world, dtype=np.float32).reshape(3))
             colors.append(np.asarray(payload.rgba8[int(y), int(x), :3], dtype=np.float32) / np.float32(255.0))
     if len(positions) == 0:

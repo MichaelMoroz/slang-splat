@@ -75,12 +75,14 @@ Pointcloud initialization builds gaussians directly from the COLMAP sparse point
 
 - RGB images are matched to depth files by relative path stem under `Depth Folder`, extension-agnostically.
 - Depth maps are expected to be scalar `16-bit PNG` images.
-- For each matched frame, the importer gathers up to `128` positive COLMAP `points2d_point3d_ids` and samples the raw depth map at those keypoints.
-- The fitted target is Euclidean camera-to-point distance, not camera-space `z`.
+- For each matched frame, the importer gathers up to `128` positive COLMAP `points2d_point3d_ids`, converts the COLMAP keypoints to camera-normalized coordinates, and samples the raw depth map at the matching resized-frame location.
 - Correspondences are aggregated per unique COLMAP `camera_id`, not per pose, so all images sharing the same camera contribute to one calibration.
-- The remap is deliberately reduced to a single multiplicative scale:
-  - `distance ~= scale * raw_depth`
-- Fitting uses a ridge-regularized 1D least-squares solve followed by one MAD-based outlier rejection/refit pass.
+- The remap is deliberately reduced to a robust affine model:
+  - `target ~= a + b * raw_depth`
+- `Depth Interpretation` selects the fitted target and reverse-projection mode:
+  - `Depth Is Distance`: `target` is Euclidean camera-to-point distance and reconstruction uses the camera ray.
+  - `Depth Is Z-Depth`: `target` is camera-space `z` depth and reconstruction uses `screen_to_world(...)`.
+- Fitting uses a ridge-regularized 2-parameter least-squares solve followed by one MAD-based outlier rejection/refit pass.
 - Frames with missing or unusable depth are still imported as training views; they are only skipped when generating the depth-derived initialization cloud.
 - After calibration, the importer samples a unique dataset-wide point budget across usable frames approximately proportional to each frame's valid calibrated pixel count, reverse-projects those pixels through the COLMAP camera model, and colors them from the aligned RGB image.
 - The resulting positions/colors are then passed through the same nearest-neighbor scale initialization used by the point-based import modes.

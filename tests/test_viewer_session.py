@@ -387,6 +387,7 @@ def test_import_colmap_from_ui_clears_loaded_scene_before_queueing(tmp_path: Pat
                 "colmap_root_path": str(database_path.parents[1]),
                 "colmap_database_path": str(database_path),
                 "colmap_images_root": str(images_root),
+                "colmap_depth_value_mode": 1,
                 "colmap_init_mode": 0,
                 "colmap_custom_ply_path": "",
                 "colmap_image_downscale_mode": 0,
@@ -455,6 +456,7 @@ def test_import_colmap_from_ui_clears_loaded_scene_before_queueing(tmp_path: Pat
     assert viewer.s.colmap_recon is None
     assert viewer.s.training_frames == []
     assert viewer.s.colmap_import_progress is not None
+    assert viewer.s.colmap_import_progress.depth_value_mode == "z_depth"
 
 def test_advance_colmap_import_processes_images_incrementally(tmp_path: Path, monkeypatch) -> None:
     _, images_root = _build_colmap_tree(
@@ -715,6 +717,7 @@ def test_colmap_import_settings_defaults_prefer_pointcloud() -> None:
     assert defaults.init_mode == "pointcloud"
     assert defaults.nn_radius_scale_coef == 0.5
     assert defaults.depth_root is None
+    assert defaults.depth_value_mode == "z_depth"
     assert defaults.depth_point_count == 100000
 
 

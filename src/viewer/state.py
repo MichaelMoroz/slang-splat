@@ -26,6 +26,7 @@ class ColmapImportSettings:
     database_path: Path | None = None
     images_root: Path | None = None
     depth_root: Path | None = None
+    depth_value_mode: str = "z_depth"
     init_mode: str = "pointcloud"
     custom_ply_path: Path | None = None
     image_downscale_mode: str = "original"
@@ -52,6 +53,7 @@ class ColmapImportProgress:
     depth_point_count: int = 100000
     diffused_point_count: int = 100000
     diffusion_radius: float = 1.0
+    depth_value_mode: str = "z_depth"
     depth_root: Path | None = None
     phase: str = "prepare"
     current: int = 0

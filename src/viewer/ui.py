@@ -43,6 +43,7 @@ _FONT_ATLAS_SIZE_PX = _BASE_FONT_SIZE_PX * _INTERFACE_SCALE_OPTIONS[-1][1]
 _COLMAP_INIT_MODE_BASE_LABELS = ("COLMAP Pointcloud", "Diffused Pointcloud", "Custom PLY")
 _COLMAP_INIT_MODE_DEPTH_LABEL = "From Depth"
 _COLMAP_INIT_MODE_LABELS = _COLMAP_INIT_MODE_BASE_LABELS
+_COLMAP_DEPTH_VALUE_MODE_LABELS = ("Depth Is Distance", "Depth Is Z-Depth")
 _COLMAP_IMAGE_DOWNSCALE_LABELS = ("Original", "Max Size", "Scale Factor")
 _TRAIN_BACKGROUND_MODE_LABELS = ("Custom", "Random")
 _VIEWER_BACKGROUND_MODE_LABELS = ("Train Background", "Custom")
@@ -1441,12 +1442,24 @@ class ToolkitWindow:
                         imgui.set_item_default_focus()
                 imgui.end_combo()
             if imgui.is_item_hovered():
-                imgui.set_item_tooltip("COLMAP Pointcloud uses sparse points directly, Diffused Pointcloud resamples them, Custom PLY loads a chosen gaussian seed scene, and From Depth calibrates matched 16-bit PNG depth maps into a point cloud using a robust per-camera depth scale fit.")
+                imgui.set_item_tooltip("COLMAP Pointcloud uses sparse points directly, Diffused Pointcloud resamples them, Custom PLY loads a chosen gaussian seed scene, and From Depth calibrates matched 16-bit PNG depth maps into a point cloud using a robust per-camera affine depth fit.")
             if mode_idx in (0, 1, 3):
                 if mode_idx == 3:
                     imgui.push_text_wrap_pos(imgui.get_cursor_pos_x() + imgui.get_content_region_avail().x)
-                    imgui.text_disabled("From Depth matches RGB and depth by relative stem under Depth Folder, aggregates COLMAP correspondences per unique camera, fits one robust depth scale for each camera, then samples a dataset-wide calibrated point budget. Frames without usable depth stay in training but are skipped for depth-based initialization.")
+                    imgui.text_disabled("From Depth matches RGB and depth by relative stem under Depth Folder, aggregates COLMAP correspondences per unique camera, samples them in camera-normalized coordinates, fits one robust affine map `a + b*d` for each camera, then samples a dataset-wide calibrated point budget. Frames without usable depth stay in training but are skipped for depth-based initialization.")
                     imgui.pop_text_wrap_pos()
+                    depth_value_mode = max(0, min(int(ui._values.get("colmap_depth_value_mode", 1)), len(_COLMAP_DEPTH_VALUE_MODE_LABELS) - 1))
+                    if imgui.begin_combo("Depth Interpretation", _COLMAP_DEPTH_VALUE_MODE_LABELS[depth_value_mode]):
+                        for idx, label in enumerate(_COLMAP_DEPTH_VALUE_MODE_LABELS):
+                            selected = idx == depth_value_mode
+                            if imgui.selectable(label, selected)[0]:
+                                ui._values["colmap_depth_value_mode"] = idx
+                                depth_value_mode = idx
+                            if selected:
+                                imgui.set_item_default_focus()
+                        imgui.end_combo()
+                    if imgui.is_item_hovered():
+                        imgui.set_item_tooltip("Choose whether calibrated depth values represent Euclidean camera distance or camera-space z-depth before reverse projection.")
                     changed, value = imgui.drag_int(
                         "Depth Point Count",
                         int(ui._values.get("colmap_depth_point_count", 100000)),
@@ -1828,6 +1841,7 @@ class ToolkitWindow:
         imgui.text_disabled(f"Images: {Path(images_text).name if images_text != '<none>' else images_text}")
         if depth_text != "<none>":
             imgui.text_disabled(f"Depth: {Path(depth_text).name}")
+            imgui.text_disabled(f"Depth Mode: {_COLMAP_DEPTH_VALUE_MODE_LABELS[max(0, min(int(ui._values.get('colmap_depth_value_mode', 1)), len(_COLMAP_DEPTH_VALUE_MODE_LABELS) - 1))]}")
         imgui.text_disabled(f"Init: {_colmap_init_mode_label(ui)}")
         imgui.separator()
 
@@ -2335,6 +2349,7 @@ def build_ui(renderer) -> ViewerUI:
     values["colmap_database_path"] = ""
     values["colmap_images_root"] = ""
     values["colmap_depth_root"] = ""
+    values["colmap_depth_value_mode"] = 1
     values["colmap_init_mode"] = 0
     values["colmap_custom_ply_path"] = ""
     values["colmap_image_downscale_mode"] = 0
