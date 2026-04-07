@@ -398,52 +398,47 @@ def _local_depth_gradient_spike(
 ) -> bool:
     depth = np.asarray(depth_map, dtype=np.float32)
     height, width = depth.shape
-    window_x0 = max(min(x0, x1) - 1, 0)
-    window_y0 = max(min(y0, y1) - 1, 0)
-    window_x1 = min(max(x0, x1) + 2, width - 1)
-    window_y1 = min(max(y0, y1) + 2, height - 1)
-    footprint = {
-        (x, y)
-        for y in range(min(y0, y1), max(y0, y1) + 1)
-        for x in range(min(x0, x1), max(x0, x1) + 1)
-    }
-    footprint_is_single_pixel = len(footprint) == 1
-    valid_window = depth[window_y0 : window_y1 + 1, window_x0 : window_x1 + 1]
-    valid_window_count = int(np.count_nonzero(np.isfinite(valid_window) & (valid_window > 0.0)))
+    footprint_x0 = min(x0, x1)
+    footprint_y0 = min(y0, y1)
+    footprint_x1 = max(x0, x1)
+    footprint_y1 = max(y0, y1)
+    window_x0 = max(footprint_x0 - 1, 0)
+    window_y0 = max(footprint_y0 - 1, 0)
+    window_x1 = min(footprint_x1 + 2, width - 1)
+    window_y1 = min(footprint_y1 + 2, height - 1)
+    footprint_is_single_pixel = footprint_x0 == footprint_x1 and footprint_y0 == footprint_y1
+    window = depth[window_y0 : window_y1 + 1, window_x0 : window_x1 + 1]
+    valid_window = np.isfinite(window) & (window > 0.0)
+    valid_window_count = int(np.count_nonzero(valid_window))
     if footprint_is_single_pixel and valid_window_count < 6:
         return False
-    sample_gradients: list[float] = []
-    neighbor_gradients: list[float] = []
-    for y in range(window_y0, window_y1 + 1):
-        for x in range(window_x0, window_x1 + 1):
-            here = float(depth[y, x])
-            if not np.isfinite(here) or here <= 0.0:
-                continue
-            for dx, dy in ((1, 0), (0, 1)):
-                nx = x + dx
-                ny = y + dy
-                if nx > window_x1 or ny > window_y1:
-                    continue
-                there = float(depth[ny, nx])
-                if not np.isfinite(there) or there <= 0.0:
-                    continue
-                gradient = abs(there - here)
-                inside_a = (x, y) in footprint
-                inside_b = (nx, ny) in footprint
-                if footprint_is_single_pixel:
-                    if inside_a != inside_b:
-                        sample_gradients.append(gradient)
-                    elif not inside_a and not inside_b:
-                        neighbor_gradients.append(gradient)
-                else:
-                    if inside_a and inside_b:
-                        sample_gradients.append(gradient)
-                    elif not inside_a and not inside_b:
-                        neighbor_gradients.append(gradient)
-    if len(sample_gradients) == 0 or len(neighbor_gradients) == 0:
+    inside = np.zeros_like(window, dtype=bool)
+    inside[
+        footprint_y0 - window_y0 : footprint_y1 - window_y0 + 1,
+        footprint_x0 - window_x0 : footprint_x1 - window_x0 + 1,
+    ] = True
+    horiz_grad = np.abs(window[:, 1:] - window[:, :-1])
+    horiz_valid = valid_window[:, 1:] & valid_window[:, :-1]
+    horiz_inside_a = inside[:, :-1]
+    horiz_inside_b = inside[:, 1:]
+    vert_grad = np.abs(window[1:, :] - window[:-1, :])
+    vert_valid = valid_window[1:, :] & valid_window[:-1, :]
+    vert_inside_a = inside[:-1, :]
+    vert_inside_b = inside[1:, :]
+    if footprint_is_single_pixel:
+        sample_horiz = horiz_grad[horiz_valid & np.logical_xor(horiz_inside_a, horiz_inside_b)]
+        sample_vert = vert_grad[vert_valid & np.logical_xor(vert_inside_a, vert_inside_b)]
+    else:
+        sample_horiz = horiz_grad[horiz_valid & horiz_inside_a & horiz_inside_b]
+        sample_vert = vert_grad[vert_valid & vert_inside_a & vert_inside_b]
+    neighbor_horiz = horiz_grad[horiz_valid & (~horiz_inside_a) & (~horiz_inside_b)]
+    neighbor_vert = vert_grad[vert_valid & (~vert_inside_a) & (~vert_inside_b)]
+    sample_gradients = np.concatenate((sample_horiz, sample_vert))
+    neighbor_gradients = np.concatenate((neighbor_horiz, neighbor_vert))
+    if sample_gradients.size == 0 or neighbor_gradients.size == 0:
         return False
-    sample_gradient = max(sample_gradients)
-    neighbor_gradient = min(neighbor_gradients)
+    sample_gradient = float(np.max(sample_gradients))
+    neighbor_gradient = float(np.min(neighbor_gradients))
     return sample_gradient > float(max(discontinuity_ratio, 1.0)) * max(neighbor_gradient, DEPTH_INIT_GRADIENT_EPS)
 
 
