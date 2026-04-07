@@ -401,7 +401,7 @@ def test_fit_depth_distance_remaps_by_camera_aggregates_multiple_poses() -> None
                 rgba8=np.zeros((8, 8, 4), dtype=np.uint8),
                 depth_map=depth_map,
                 camera_id=1,
-                fit_features=features,
+                fit_depths=features,
                 fit_targets=targets,
             )
         )
@@ -410,8 +410,8 @@ def test_fit_depth_distance_remaps_by_camera_aggregates_multiple_poses() -> None
 
     assert 1 in coeffs_by_camera
     coeffs = coeffs_by_camera[1]
-    predicted_a = np.array([float(colmap_ops._depth_feature_vector(frames[0], float(px[0]), float(px[1]), float(depth)) @ coeffs) for px, depth in zip(xy, raw_depths_a, strict=False)], dtype=np.float32)
-    predicted_b = np.array([float(colmap_ops._depth_feature_vector(frames[1], float(px[0]), float(px[1]), float(depth)) @ coeffs) for px, depth in zip(xy, raw_depths_b, strict=False)], dtype=np.float32)
+    predicted_a = coeffs[0] * raw_depths_a
+    predicted_b = coeffs[0] * raw_depths_b
     np.testing.assert_allclose(predicted_a, 2.5 * raw_depths_a, rtol=0.0, atol=1e-2)
     np.testing.assert_allclose(predicted_b, 2.5 * raw_depths_b, rtol=0.0, atol=1e-2)
 
@@ -437,7 +437,7 @@ def test_generate_depth_init_points_respects_budget_and_uniqueness() -> None:
         rgba8=rgba8,
         depth_map=depth_map,
         camera_id=7,
-        fit_features=np.array([[1.0, 10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]] * 16, dtype=np.float32),
+        fit_depths=np.array([10.0] * 16, dtype=np.float32),
         fit_targets=np.array([32.0] * 16, dtype=np.float32),
     )
 
@@ -459,7 +459,7 @@ def test_generate_depth_init_points_reuses_camera_fit_across_frames() -> None:
         rgba8=rgba8,
         depth_map=np.full((4, 4), 10.0, dtype=np.float32),
         camera_id=3,
-        fit_features=np.array([[1.0, 10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]] * 16, dtype=np.float32),
+        fit_depths=np.array([10.0] * 16, dtype=np.float32),
         fit_targets=np.array([20.0] * 16, dtype=np.float32),
     )
     payload_b = colmap_ops.DepthInitFramePayload(
@@ -467,7 +467,7 @@ def test_generate_depth_init_points_reuses_camera_fit_across_frames() -> None:
         rgba8=rgba8,
         depth_map=np.full((4, 4), 10.0, dtype=np.float32),
         camera_id=3,
-        fit_features=np.zeros((0, 10), dtype=np.float32),
+        fit_depths=np.zeros((0,), dtype=np.float32),
         fit_targets=np.zeros((0,), dtype=np.float32),
     )
 

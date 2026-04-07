@@ -40,7 +40,7 @@ class DepthInitFramePayload:
     rgba8: np.ndarray
     depth_map: np.ndarray
     camera_id: int
-    fit_features: np.ndarray
+    fit_depths: np.ndarray
     fit_targets: np.ndarray
 
 
@@ -381,43 +381,31 @@ def _depth_sample_linear(depth_map: np.ndarray, xy: np.ndarray) -> float:
     return float(np.float32(1.0 - ty) * top + ty * bottom)
 
 
-def _depth_feature_vector(frame: ColmapFrame, x: float, y: float, raw_depth: float) -> np.ndarray:
-    fx = max(float(frame.fx), 1e-8)
-    fy = max(float(frame.fy), 1e-8)
-    xn = (float(x) - float(frame.cx)) / fx
-    yn = (float(y) - float(frame.cy)) / fy
-    r2 = xn * xn + yn * yn
-    r4 = r2 * r2
-    d = float(raw_depth)
-    return np.array([1.0, d, r2, r4, d * r2, d * r4, xn, yn, d * xn, d * yn], dtype=np.float32)
+def _depth_scale_feature(raw_depth: float) -> float:
+    return float(raw_depth)
 
 
-def _ridge_least_squares(features: np.ndarray, targets: np.ndarray, ridge_lambda: float = DEPTH_INIT_RIDGE_LAMBDA) -> np.ndarray:
-    x = np.asarray(features, dtype=np.float64)
+def _ridge_scale_fit(features: np.ndarray, targets: np.ndarray, ridge_lambda: float = DEPTH_INIT_RIDGE_LAMBDA) -> np.ndarray:
+    x = np.asarray(features, dtype=np.float64).reshape(-1)
     y = np.asarray(targets, dtype=np.float64).reshape(-1)
-    gram = x.T @ x
-    gram += np.eye(gram.shape[0], dtype=np.float64) * float(max(ridge_lambda, 0.0))
-    rhs = x.T @ y
-    try:
-        coeffs = np.linalg.solve(gram, rhs)
-    except np.linalg.LinAlgError:
-        coeffs = np.linalg.lstsq(gram, rhs, rcond=None)[0]
-    return np.asarray(coeffs, dtype=np.float32)
+    xx = float(np.dot(x, x)) + float(max(ridge_lambda, 0.0))
+    xy = float(np.dot(x, y))
+    return np.asarray([xy / max(xx, 1e-12)], dtype=np.float32)
 
 
 def _robust_ridge_fit(features: np.ndarray, targets: np.ndarray) -> np.ndarray | None:
-    x = np.asarray(features, dtype=np.float32)
+    x = np.asarray(features, dtype=np.float32).reshape(-1)
     y = np.asarray(targets, dtype=np.float32).reshape(-1)
-    if x.ndim != 2 or x.shape[0] < DEPTH_INIT_MIN_CORRESPONDENCES or x.shape[0] != y.size:
+    if x.size < DEPTH_INIT_MIN_CORRESPONDENCES or x.size != y.size:
         return None
-    coeffs = _ridge_least_squares(x, y)
-    residuals = y - x @ coeffs
+    coeffs = _ridge_scale_fit(x, y)
+    residuals = y - x * coeffs[0]
     center = float(np.median(residuals))
     mad = float(np.median(np.abs(residuals - center)))
     robust_sigma = max(1.4826 * mad, 1e-6)
     inliers = np.abs(residuals - center) <= DEPTH_INIT_MAD_SCALE * robust_sigma
-    if int(np.count_nonzero(inliers)) >= max(DEPTH_INIT_MIN_INLIERS, x.shape[1]):
-        refined = _ridge_least_squares(x[inliers], y[inliers])
+    if int(np.count_nonzero(inliers)) >= DEPTH_INIT_MIN_INLIERS:
+        refined = _ridge_scale_fit(x[inliers], y[inliers])
         if np.all(np.isfinite(refined)):
             return refined
     return coeffs if np.all(np.isfinite(coeffs)) else None
@@ -434,11 +422,11 @@ def collect_depth_distance_remap_samples(
     points2d_xy = np.asarray(image.points2d_xy, dtype=np.float32).reshape(-1, 2)
     valid_ids = np.flatnonzero(point_ids > 0)
     if valid_ids.size == 0:
-        return np.zeros((0, 10), dtype=np.float32), np.zeros((0,), dtype=np.float32)
+        return np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=np.float32)
     camera_obj = frame.make_camera()
     sx = float(frame.width) / float(max(int(camera.width), 1))
     sy = float(frame.height) / float(max(int(camera.height), 1))
-    features: list[np.ndarray] = []
+    features: list[float] = []
     targets: list[float] = []
     for point_idx in valid_ids[:DEPTH_INIT_MAX_CORRESPONDENCES]:
         point = recon.points3d.get(int(point_ids[point_idx]))
@@ -451,11 +439,11 @@ def collect_depth_distance_remap_samples(
         target_distance = float(np.linalg.norm(np.asarray(point.xyz, dtype=np.float32).reshape(3) - camera_obj.position))
         if not np.isfinite(target_distance) or target_distance <= 0.0:
             continue
-        features.append(_depth_feature_vector(frame, float(xy[0]), float(xy[1]), raw_depth))
+        features.append(_depth_scale_feature(raw_depth))
         targets.append(target_distance)
     if len(features) == 0:
-        return np.zeros((0, 10), dtype=np.float32), np.zeros((0,), dtype=np.float32)
-    return np.ascontiguousarray(np.stack(features, axis=0), dtype=np.float32), np.ascontiguousarray(np.asarray(targets, dtype=np.float32), dtype=np.float32)
+        return np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=np.float32)
+    return np.ascontiguousarray(np.asarray(features, dtype=np.float32), dtype=np.float32), np.ascontiguousarray(np.asarray(targets, dtype=np.float32), dtype=np.float32)
 
 
 def fit_depth_distance_remap(
@@ -476,17 +464,17 @@ def fit_depth_distance_remaps_by_camera(payloads: list[DepthInitFramePayload]) -
         if payload is None:
             continue
         camera_id = int(payload.camera_id)
-        if payload.fit_features.size == 0 or payload.fit_targets.size == 0:
+        if payload.fit_depths.size == 0 or payload.fit_targets.size == 0:
             grouped_features.setdefault(camera_id, [])
             grouped_targets.setdefault(camera_id, [])
             continue
-        grouped_features.setdefault(camera_id, []).append(np.asarray(payload.fit_features, dtype=np.float32))
+        grouped_features.setdefault(camera_id, []).append(np.asarray(payload.fit_depths, dtype=np.float32))
         grouped_targets.setdefault(camera_id, []).append(np.asarray(payload.fit_targets, dtype=np.float32))
     coeffs_by_camera: dict[int, np.ndarray] = {}
     for camera_id, feature_parts in grouped_features.items():
         if len(feature_parts) == 0:
             continue
-        features = np.ascontiguousarray(np.concatenate(feature_parts, axis=0), dtype=np.float32)
+        features = np.ascontiguousarray(np.concatenate(feature_parts, axis=0), dtype=np.float32).reshape(-1)
         targets = np.ascontiguousarray(np.concatenate(grouped_targets[camera_id], axis=0), dtype=np.float32)
         coeffs = _robust_ridge_fit(features, targets)
         if coeffs is not None:
@@ -496,25 +484,8 @@ def fit_depth_distance_remaps_by_camera(payloads: list[DepthInitFramePayload]) -
 
 def _predict_depth_distance_map(frame: ColmapFrame, depth_map: np.ndarray, coeffs: np.ndarray) -> np.ndarray:
     raw_depth = np.asarray(depth_map, dtype=np.float32)
-    height, width = raw_depth.shape
-    xs = (np.arange(width, dtype=np.float32) - np.float32(frame.cx)) / np.float32(max(float(frame.fx), 1e-8))
-    ys = (np.arange(height, dtype=np.float32) - np.float32(frame.cy)) / np.float32(max(float(frame.fy), 1e-8))
-    x_grid, y_grid = np.meshgrid(xs, ys, indexing="xy")
-    r2 = x_grid * x_grid + y_grid * y_grid
-    r4 = r2 * r2
-    predicted = (
-        np.float32(coeffs[0])
-        + np.float32(coeffs[1]) * raw_depth
-        + np.float32(coeffs[2]) * r2
-        + np.float32(coeffs[3]) * r4
-        + np.float32(coeffs[4]) * raw_depth * r2
-        + np.float32(coeffs[5]) * raw_depth * r4
-        + np.float32(coeffs[6]) * x_grid
-        + np.float32(coeffs[7]) * y_grid
-        + np.float32(coeffs[8]) * raw_depth * x_grid
-        + np.float32(coeffs[9]) * raw_depth * y_grid
-    )
-    return np.ascontiguousarray(predicted, dtype=np.float32)
+    del frame
+    return np.ascontiguousarray(np.float32(coeffs[0]) * raw_depth, dtype=np.float32)
 
 
 def build_depth_init_frame_payload(
@@ -534,7 +505,7 @@ def build_depth_init_frame_payload(
         rgba8=rgba8,
         depth_map=depth_map,
         camera_id=int(image.camera_id),
-        fit_features=np.asarray(fit_features, dtype=np.float32),
+        fit_depths=np.asarray(fit_features, dtype=np.float32),
         fit_targets=np.asarray(fit_targets, dtype=np.float32),
     )
 
@@ -553,7 +524,7 @@ def load_training_frame_rgba8_with_depth_payload(task: tuple[ColmapReconstructio
         rgba8=rgba8,
         depth_map=depth_map,
         camera_id=int(image.camera_id),
-        fit_features=np.asarray(fit_features, dtype=np.float32),
+        fit_depths=np.asarray(fit_features, dtype=np.float32),
         fit_targets=np.asarray(fit_targets, dtype=np.float32),
     )
 

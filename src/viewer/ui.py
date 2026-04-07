@@ -1441,11 +1441,11 @@ class ToolkitWindow:
                         imgui.set_item_default_focus()
                 imgui.end_combo()
             if imgui.is_item_hovered():
-                imgui.set_item_tooltip("COLMAP Pointcloud uses sparse points directly, Diffused Pointcloud resamples them, Custom PLY loads a chosen gaussian seed scene, and From Depth calibrates matched 16-bit PNG depth maps into a point cloud.")
+                imgui.set_item_tooltip("COLMAP Pointcloud uses sparse points directly, Diffused Pointcloud resamples them, Custom PLY loads a chosen gaussian seed scene, and From Depth calibrates matched 16-bit PNG depth maps into a point cloud using a robust per-camera depth scale fit.")
             if mode_idx in (0, 1, 3):
                 if mode_idx == 3:
                     imgui.push_text_wrap_pos(imgui.get_cursor_pos_x() + imgui.get_content_region_avail().x)
-                    imgui.text_disabled("From Depth matches RGB and depth by relative stem under Depth Folder, fits a per-image depth-to-distance remap from COLMAP correspondences, then samples a dataset-wide calibrated point budget. Frames without usable depth stay in training but are skipped for depth-based initialization.")
+                    imgui.text_disabled("From Depth matches RGB and depth by relative stem under Depth Folder, aggregates COLMAP correspondences per unique camera, fits one robust depth scale for each camera, then samples a dataset-wide calibrated point budget. Frames without usable depth stay in training but are skipped for depth-based initialization.")
                     imgui.pop_text_wrap_pos()
                     changed, value = imgui.drag_int(
                         "Depth Point Count",
