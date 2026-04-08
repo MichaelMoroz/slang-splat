@@ -1071,6 +1071,11 @@ class ToolkitWindow:
         if _imgui_opened(imgui.small_button(training_label)):
             ui._values["show_training_cameras"] = not bool(ui._values.get("show_training_cameras", False))
         imgui.same_line(0.0, 10.0 * scale)
+        sh_label_width = max(float(imgui.calc_text_size(option).x) for option in _SH_BAND_LABELS)
+        sh_combo_width = sh_label_width + 28.0 * scale
+        sh_frame_padding = imgui.ImVec2(max(4.0 * scale, 1.0), max(1.0 * scale, 1.0))
+        imgui.set_next_item_width(sh_combo_width)
+        imgui.push_style_var(imgui.StyleVar_.frame_padding.value, sh_frame_padding)
         if imgui.begin_combo("##viewport_sh_band", sh_label):
             for idx, option in enumerate(_SH_BAND_LABELS):
                 selected = idx == sh_band
@@ -1080,6 +1085,7 @@ class ToolkitWindow:
                 if selected:
                     imgui.set_item_default_focus()
             imgui.end_combo()
+        imgui.pop_style_var()
         imgui.same_line(0.0, 10.0 * scale)
         label_pos = imgui.get_cursor_screen_pos()
         current_label_size = imgui.calc_text_size(current_label)
