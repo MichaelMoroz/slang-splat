@@ -11,6 +11,7 @@ The overlay uses a right-side control panel with a menu bar:
 - `Help`: `Documentation` and `About` windows
 - Auxiliary windows such as `Documentation`, `About`, `Histograms`, `Training Views`, and `COLMAP Import` open as tabs in that right-side panel by default.
 - The menu bar spans the full viewport width and the left control panel starts below it to avoid overlap.
+- The viewport header row includes quick buttons for debug mode, camera overlays, training-camera debug view, and the active SH state (`SH On` / `SH Off`).
 
 `src/viewer` is split into:
 - `app.py`: window lifecycle, camera input, and UI event routing
@@ -165,6 +166,7 @@ The `Optimizer` panel exposes the active training schedule directly:
 - `LR Stage 1 Step` and `LR Stage 2 Step` move the two intermediate LR breakpoints.
 - `Noise End Step` moves the point where random-step position noise reaches zero.
 - `Depth Reg Stage 1/2/3` move the three intermediate depth-ratio regularizer breakpoints.
+- The viewport `SH On` / `SH Off` button writes back to the currently active schedule-stage checkbox, so the visible toggle always targets the SH control for the phase currently being trained.
 
 These breakpoint controls are regular integer sliders with a live `0..Schedule Steps` range rather than a compound multi-value slider.
 

@@ -85,6 +85,28 @@ def _schedule_stage_label(training: object, step: int) -> str:
     return "Stage 3"
 
 
+def _active_use_sh_control_key(training: object, step: int) -> str:
+    if not bool(getattr(training, "lr_schedule_enabled", True)): return "use_sh"
+    stage1 = max(int(getattr(training, "lr_schedule_stage1_step", 0)), 0)
+    stage2 = max(int(getattr(training, "lr_schedule_stage2_step", stage1)), stage1)
+    stage3 = max(int(getattr(training, "lr_schedule_steps", stage2)), stage2)
+    current_step = max(int(step), 0)
+    if current_step < stage1: return "use_sh"
+    if current_step < stage2: return "use_sh_stage1"
+    if current_step < stage3: return "use_sh_stage2"
+    return "use_sh_stage3"
+
+
+def _viewport_sh_state(viewer: object) -> tuple[bool, str, str]:
+    trainer = getattr(viewer.s, "trainer", None)
+    if trainer is not None:
+        training = trainer.training
+        step = max(int(trainer.state.step), 0)
+        return bool(resolve_use_sh(training, step)), _active_use_sh_control_key(training, step), _schedule_stage_label(training, step)
+    training = _schedule_state_from_controls(viewer)
+    return bool(resolve_use_sh(training, 0)), "use_sh", "Stage 0"
+
+
 def _current_schedule_values_text(viewer: object) -> str:
     if viewer.s.trainer is not None:
         training = viewer.s.trainer.training
@@ -647,6 +669,10 @@ def update_ui_text(viewer: object, dt: float) -> None:
     viewer.t("training_schedule").text = _training_schedule_text(viewer)
     viewer.t("training_schedule_values").text = _current_schedule_values_text(viewer)
     viewer.t("training_refinement").text = _training_refinement_text(viewer)
+    viewport_sh_enabled, viewport_sh_control_key, viewport_sh_stage_label = _viewport_sh_state(viewer)
+    viewer.ui._values["_viewport_sh_enabled"] = bool(viewport_sh_enabled)
+    viewer.ui._values["_viewport_sh_control_key"] = str(viewport_sh_control_key)
+    viewer.ui._values["_viewport_sh_stage_label"] = str(viewport_sh_stage_label)
     viewer.t("histogram_status").text = str(getattr(viewer.s, "cached_raster_grad_histogram_status", ""))
     viewer.ui._values["_histogram_payload"] = getattr(viewer.s, "cached_raster_grad_histograms", None)
     viewer.ui._values["_histogram_range_payload"] = getattr(viewer.s, "cached_raster_grad_ranges", None)

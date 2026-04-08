@@ -177,6 +177,9 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["_show_histograms_prev"] is False
     assert viewer_ui._values["_training_views_rows"] == ()
     assert viewer_ui._values["_training_view_overlay_segments"] == ()
+    assert viewer_ui._values["_viewport_sh_enabled"] is False
+    assert viewer_ui._values["_viewport_sh_control_key"] == "use_sh"
+    assert viewer_ui._values["_viewport_sh_stage_label"] == "Stage 0"
     assert "show_renderer_debug" not in viewer_ui._values
 
 
@@ -306,13 +309,13 @@ def test_viewport_view_menu_left_aligns_view_mode_button(monkeypatch) -> None:
     monkeypatch.setattr(ui.imgui, "text_unformatted", lambda text: mode_text.append(text))
     monkeypatch.setattr(ui.imgui, "begin_popup", lambda *_args: False)
     toolkit = SimpleNamespace(_viewport_content_rect=(50.0, 60.0, 400.0, 240.0), _interface_scale_factor=lambda _ui_obj: 1.5)
-    viewer_ui = SimpleNamespace(_values={"debug_mode": ui._DEBUG_MODE_VALUES.index("depth_std"), "show_camera_overlays": True, "show_camera_labels": False, "show_training_cameras": False})
+    viewer_ui = SimpleNamespace(_values={"debug_mode": ui._DEBUG_MODE_VALUES.index("depth_std"), "show_camera_overlays": True, "show_camera_labels": False, "show_training_cameras": False, "_viewport_sh_enabled": False, "_viewport_sh_control_key": "use_sh", "use_sh": False})
 
     origin = ui.ToolkitWindow._draw_viewport_view_menu(toolkit, viewer_ui, ui.imgui.ImVec2(50.0, 60.0))
 
-    assert button_labels == ["View Mode", "Cameras On", "Labels Off", "Training Cameras Off"]
+    assert button_labels == ["View Mode", "Cameras On", "Labels Off", "Training Cameras Off", "SH Off"]
     assert cursor_positions == [(62.0, 72.0)]
-    assert same_line_calls == [(0.0, 15.0), (0.0, 15.0), (0.0, 15.0), (0.0, 15.0)]
+    assert same_line_calls == [(0.0, 15.0), (0.0, 15.0), (0.0, 15.0), (0.0, 15.0), (0.0, 15.0)]
     assert filled_rects == [(148.0, 69.0, 250.0, 89.0, 6.0)]
     assert len(pushed_colors) == 1
     assert pushed_colors[0][0] == int(ui.imgui.Col_.text.value)
@@ -320,6 +323,49 @@ def test_viewport_view_menu_left_aligns_view_mode_button(monkeypatch) -> None:
     assert mode_text == ["Depth Std"]
     assert np.isclose(origin.x, 62.0)
     assert origin.y > 72.0
+
+
+def test_viewport_view_menu_toggles_active_sh_control(monkeypatch) -> None:
+    button_labels: list[str] = []
+    button_results = iter((False, False, False, False, True))
+    monkeypatch.setattr(ui.imgui, "get_style", lambda: SimpleNamespace(frame_padding=ui.imgui.ImVec2(4.0, 3.0)))
+    monkeypatch.setattr(ui.imgui, "calc_text_size", lambda text: ui.imgui.ImVec2(72.0 if text == "View Mode" else 84.0, 14.0))
+    monkeypatch.setattr(ui.imgui, "push_id", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "pop_id", lambda: None)
+    monkeypatch.setattr(ui.imgui, "set_cursor_screen_pos", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "small_button", lambda label: button_labels.append(label) or next(button_results))
+    monkeypatch.setattr(ui.imgui, "same_line", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "get_cursor_screen_pos", lambda: ui.imgui.ImVec2(157.0, 72.0))
+    monkeypatch.setattr(ui.imgui, "push_style_color", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "pop_style_color", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "text_unformatted", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "begin_popup", lambda *_args: False)
+
+    class _DrawList:
+        def add_rect_filled(self, *_args):
+            return None
+
+    monkeypatch.setattr(ui.imgui, "get_window_draw_list", lambda: _DrawList())
+    toolkit = SimpleNamespace(_viewport_content_rect=(50.0, 60.0, 400.0, 240.0), _interface_scale_factor=lambda _ui_obj: 1.0)
+    viewer_ui = SimpleNamespace(
+        _values={
+            "debug_mode": ui._DEBUG_MODE_VALUES.index("normal"),
+            "show_camera_overlays": True,
+            "show_camera_labels": False,
+            "show_training_cameras": False,
+            "_viewport_sh_enabled": False,
+            "_viewport_sh_control_key": "use_sh_stage2",
+            "use_sh": False,
+            "use_sh_stage2": False,
+        }
+    )
+
+    ui.ToolkitWindow._draw_viewport_view_menu(toolkit, viewer_ui, ui.imgui.ImVec2(50.0, 60.0))
+
+    assert button_labels == ["View Mode", "Cameras On", "Labels Off", "Training Cameras Off", "SH Off"]
+    assert viewer_ui._values["use_sh"] is False
+    assert viewer_ui._values["use_sh_stage2"] is True
+    assert viewer_ui._values["_viewport_sh_enabled"] is True
 
 
 def test_viewport_camera_overlays_draw_lines_when_enabled(monkeypatch) -> None:

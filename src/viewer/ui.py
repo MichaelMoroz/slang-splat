@@ -1015,6 +1015,9 @@ class ToolkitWindow:
         camera_label = "Cameras On" if bool(ui._values.get("show_camera_overlays", True)) else "Cameras Off"
         text_label = "Labels On" if bool(ui._values.get("show_camera_labels", False)) else "Labels Off"
         training_label = "Training Cameras On" if bool(ui._values.get("show_training_cameras", False)) else "Training Cameras Off"
+        sh_enabled = bool(ui._values.get("_viewport_sh_enabled", ui._values.get("use_sh", False)))
+        sh_label = "SH On" if sh_enabled else "SH Off"
+        sh_control_key = str(ui._values.get("_viewport_sh_control_key", "use_sh"))
         label_size = imgui.calc_text_size(label)
         button_width = float(label_size.x) + 2.0 * float(style.frame_padding.x)
         button_pos = imgui.ImVec2(float(image_origin.x) + _VIEWPORT_OVERLAY_MARGIN * scale, float(image_origin.y) + _VIEWPORT_OVERLAY_MARGIN * scale)
@@ -1033,6 +1036,11 @@ class ToolkitWindow:
         imgui.same_line(0.0, 10.0 * scale)
         if _imgui_opened(imgui.small_button(training_label)):
             ui._values["show_training_cameras"] = not bool(ui._values.get("show_training_cameras", False))
+        imgui.same_line(0.0, 10.0 * scale)
+        if _imgui_opened(imgui.small_button(sh_label)):
+            new_value = not sh_enabled
+            ui._values[sh_control_key] = new_value
+            ui._values["_viewport_sh_enabled"] = new_value
         imgui.same_line(0.0, 10.0 * scale)
         label_pos = imgui.get_cursor_screen_pos()
         current_label_size = imgui.calc_text_size(current_label)
@@ -2374,6 +2382,9 @@ def build_ui(renderer) -> ViewerUI:
     values["_histogram_update_log_range"] = False
     values["_histogram_payload"] = None
     values["_histogram_range_payload"] = None
+    values["_viewport_sh_enabled"] = bool(values.get("use_sh", False))
+    values["_viewport_sh_control_key"] = "use_sh"
+    values["_viewport_sh_stage_label"] = "Stage 0"
     values["_training_views_rows"] = ()
     values["_training_view_overlay_segments"] = ()
     values["_loss_debug_frame_max"] = 0
