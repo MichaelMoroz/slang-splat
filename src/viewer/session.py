@@ -421,6 +421,7 @@ def _build_depth_init_source(
 def choose_colmap_root(viewer: object, dataset_root: Path) -> None:
     root = Path(dataset_root).resolve()
     colmap_root = _resolve_colmap_root_from_selection(root)
+    load_colmap_reconstruction(colmap_root)
     db_path = _find_optional_colmap_database(root)
     image_names = _reconstruction_image_names(colmap_root) if db_path is None else _database_image_names(db_path)
     _set_ui_path(viewer, "colmap_root_path", root)

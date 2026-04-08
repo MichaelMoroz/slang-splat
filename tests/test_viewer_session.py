@@ -24,14 +24,23 @@ def _viewer() -> SimpleNamespace:
     )
 
 
-def _write_cameras_bin(path: Path) -> None:
+def _write_cameras_bin(path: Path, model_id: int = 1) -> None:
     with path.open("wb") as handle:
         handle.write(struct.pack("<Q", 1))
         handle.write(struct.pack("<i", 7))
-        handle.write(struct.pack("<i", 1))
+        handle.write(struct.pack("<i", model_id))
         handle.write(struct.pack("<Q", 64))
         handle.write(struct.pack("<Q", 64))
-        handle.write(struct.pack("<dddd", 64.0, 64.0, 32.0, 32.0))
+        if model_id == 0:
+            handle.write(struct.pack("<ddd", 64.0, 32.0, 32.0))
+        elif model_id == 1:
+            handle.write(struct.pack("<dddd", 64.0, 64.0, 32.0, 32.0))
+        elif model_id == 2:
+            handle.write(struct.pack("<dddd", 64.0, 32.0, 32.0, 0.01))
+        elif model_id == 3:
+            handle.write(struct.pack("<ddddd", 64.0, 32.0, 32.0, 0.01, -0.01))
+        else:
+            handle.write(struct.pack("<dddddddd", 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0))
 
 
 def _write_images_bin(path: Path, image_names: list[str]) -> None:
@@ -65,7 +74,7 @@ def _write_database(path: Path, image_names: list[str]) -> None:
         conn.commit()
 
 
-def _build_colmap_tree(tmp_path: Path, *, image_names: list[str], image_root_rel: Path) -> tuple[Path, Path]:
+def _build_colmap_tree(tmp_path: Path, *, image_names: list[str], image_root_rel: Path, model_id: int = 1) -> tuple[Path, Path]:
     root = tmp_path / "scene"
     sparse = root / "sparse" / "0"
     database_path = root / "distorted" / "database.db"
@@ -73,7 +82,7 @@ def _build_colmap_tree(tmp_path: Path, *, image_names: list[str], image_root_rel
     sparse.mkdir(parents=True)
     database_path.parent.mkdir(parents=True)
     images_root.mkdir(parents=True, exist_ok=True)
-    _write_cameras_bin(sparse / "cameras.bin")
+    _write_cameras_bin(sparse / "cameras.bin", model_id=model_id)
     _write_images_bin(sparse / "images.bin", image_names)
     _write_points3d_bin(sparse / "points3D.bin")
     _write_database(database_path, image_names)
@@ -84,13 +93,13 @@ def _build_colmap_tree(tmp_path: Path, *, image_names: list[str], image_root_rel
     return database_path, images_root.resolve()
 
 
-def _build_colmap_tree_without_database(tmp_path: Path, *, image_names: list[str], image_root_rel: Path) -> tuple[Path, Path]:
+def _build_colmap_tree_without_database(tmp_path: Path, *, image_names: list[str], image_root_rel: Path, model_id: int = 1) -> tuple[Path, Path]:
     root = tmp_path / "scene_no_db"
     sparse = root / "sparse" / "0"
     images_root = root / image_root_rel
     sparse.mkdir(parents=True)
     images_root.mkdir(parents=True, exist_ok=True)
-    _write_cameras_bin(sparse / "cameras.bin")
+    _write_cameras_bin(sparse / "cameras.bin", model_id=model_id)
     _write_images_bin(sparse / "images.bin", image_names)
     _write_points3d_bin(sparse / "points3D.bin")
     for image_name in image_names:
@@ -294,6 +303,22 @@ def test_choose_colmap_root_works_without_database(tmp_path: Path) -> None:
     assert viewer.ui._values["colmap_database_path"] == ""
     assert viewer.ui._values["colmap_images_root"] == str(root)
     assert viewer.s.last_error == ""
+
+
+def test_choose_colmap_root_rejects_unknown_camera_model(tmp_path: Path) -> None:
+    database_path, _ = _build_colmap_tree(
+        tmp_path,
+        image_names=["frame_000.png"],
+        image_root_rel=Path("images"),
+        model_id=4,
+    )
+    viewer = SimpleNamespace(
+        ui=SimpleNamespace(_values={}),
+        s=SimpleNamespace(last_error="stale"),
+    )
+
+    with pytest.raises(ValueError, match="Unsupported COLMAP camera model id 4"):
+        session.choose_colmap_root(viewer, database_path.parents[1])
 
 
 def test_import_colmap_dataset_clears_loaded_scene_before_loading(monkeypatch) -> None:
