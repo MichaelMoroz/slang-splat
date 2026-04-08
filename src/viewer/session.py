@@ -53,6 +53,12 @@ _COLMAP_DEPTH_VALUE_Z_DEPTH = DEPTH_INIT_VALUE_Z_DEPTH
 _COLMAP_IMAGE_DOWNSCALE_ORIGINAL = "original"
 _COLMAP_IMAGE_DOWNSCALE_MAX_SIZE = "max_size"
 _COLMAP_IMAGE_DOWNSCALE_SCALE = "scale"
+_COLMAP_CAMERA_MODEL_NAMES = {
+    0: "SIMPLE_PINHOLE",
+    1: "PINHOLE",
+    2: "SIMPLE_RADIAL",
+    3: "RADIAL",
+}
 _COLMAP_DB_SAMPLE_LIMIT = 64
 _COLMAP_DB_SEARCH_PATTERNS = ("database.db", "*.db", "*.sqlite", "*.sqlite3")
 _COLMAP_IMPORT_IMAGES_PER_TICK = 1
@@ -239,6 +245,43 @@ def _suggest_images_root_from_dataset_root(dataset_root: Path, image_names: list
     raise FileNotFoundError(f"Could not find an image folder under {root} for COLMAP images: {sample_names[:4]}")
 
 
+def _camera_rows(recon: object) -> tuple[dict[str, object], ...]:
+    frame_counts: dict[int, int] = {}
+    for image in getattr(recon, "images", {}).values():
+        camera_id = int(getattr(image, "camera_id", -1))
+        frame_counts[camera_id] = frame_counts.get(camera_id, 0) + 1
+    rows: list[dict[str, object]] = []
+    for camera_id, camera in sorted(getattr(recon, "cameras", {}).items()):
+        rows.append(
+            {
+                "camera_id": int(camera_id),
+                "model_name": _COLMAP_CAMERA_MODEL_NAMES.get(int(getattr(camera, "model_id", -1)), f"MODEL_{int(getattr(camera, 'model_id', -1))}"),
+                "frame_count": int(frame_counts.get(int(camera_id), 0)),
+                "resolution_text": f"{int(camera.width)}x{int(camera.height)}",
+                "focal_text": f"{float(camera.fx):.2f}, {float(camera.fy):.2f}",
+                "principal_text": f"{float(camera.cx):.2f}, {float(camera.cy):.2f}",
+                "distortion_text": f"{float(getattr(camera, 'k1', 0.0)):.4g}, {float(getattr(camera, 'k2', 0.0)):.4g}",
+            }
+        )
+    return tuple(rows)
+
+
+def _normalized_selected_camera_ids(camera_rows: tuple[dict[str, object], ...], selected_camera_ids: tuple[int, ...] | None = None) -> tuple[int, ...]:
+    camera_ids = tuple(int(row["camera_id"]) for row in camera_rows)
+    if selected_camera_ids is None:
+        return camera_ids
+    selected = {int(camera_id) for camera_id in selected_camera_ids}
+    return tuple(camera_id for camera_id in camera_ids if camera_id in selected)
+
+
+def _set_colmap_camera_preview(viewer: object, recon: object, selected_camera_ids: tuple[int, ...] | None = None) -> tuple[int, ...]:
+    rows = _camera_rows(recon)
+    selected_ids = _normalized_selected_camera_ids(rows, selected_camera_ids)
+    viewer.ui._values["_colmap_camera_rows"] = rows
+    viewer.ui._values["colmap_selected_camera_ids"] = selected_ids
+    return selected_ids
+
+
 def _update_import_settings(
     viewer: object,
     *,
@@ -246,6 +289,7 @@ def _update_import_settings(
     database_path: Path | None,
     images_root: Path,
     depth_root: Path | None,
+    selected_camera_ids: tuple[int, ...],
     depth_value_mode: str,
     init_mode: str,
     custom_ply_path: Path | None,
@@ -263,6 +307,7 @@ def _update_import_settings(
         database_path=None if database_path is None else Path(database_path).resolve(),
         images_root=Path(images_root).resolve(),
         depth_root=None if depth_root is None else Path(depth_root).resolve(),
+        selected_camera_ids=tuple(int(camera_id) for camera_id in selected_camera_ids),
         depth_value_mode=str(depth_value_mode),
         init_mode=str(init_mode),
         custom_ply_path=None if custom_ply_path is None else Path(custom_ply_path).resolve(),
@@ -280,6 +325,7 @@ def _update_import_settings(
     _set_ui_path(viewer, "colmap_database_path", database_path)
     _set_ui_path(viewer, "colmap_images_root", images_root)
     _set_ui_path(viewer, "colmap_depth_root", depth_root)
+    viewer.ui._values["colmap_selected_camera_ids"] = tuple(int(camera_id) for camera_id in selected_camera_ids)
     viewer.ui._values["colmap_depth_value_mode"] = 0 if str(depth_value_mode) == _COLMAP_DEPTH_VALUE_DISTANCE else 1
     viewer.ui._values["colmap_init_mode"] = (
         1 if str(init_mode) == _COLMAP_IMPORT_DIFFUSED_POINTCLOUD else
@@ -302,6 +348,9 @@ def _update_import_settings(
 def _append_training_frame(progress: ColmapImportProgress, image_id: int, image: object) -> None:
     if progress.recon is None:
         raise RuntimeError("COLMAP import progress is missing reconstruction state.")
+    selected = {int(camera_id) for camera_id in getattr(progress, "selected_camera_ids", ())}
+    if selected and int(image.camera_id) not in selected:
+        return
     image_path = (progress.images_root / image.name).resolve()
     camera = progress.recon.cameras.get(image.camera_id)
     if camera is None or not image_path.exists():
@@ -421,12 +470,13 @@ def _build_depth_init_source(
 def choose_colmap_root(viewer: object, dataset_root: Path) -> None:
     root = Path(dataset_root).resolve()
     colmap_root = _resolve_colmap_root_from_selection(root)
-    load_colmap_reconstruction(colmap_root)
+    recon = load_colmap_reconstruction(colmap_root)
     db_path = _find_optional_colmap_database(root)
-    image_names = _reconstruction_image_names(colmap_root) if db_path is None else _database_image_names(db_path)
+    image_names = [str(image.name).strip() for _, image in sorted(recon.images.items()) if str(image.name).strip()] if db_path is None else _database_image_names(db_path)
     _set_ui_path(viewer, "colmap_root_path", root)
     _set_ui_path(viewer, "colmap_database_path", db_path)
     _set_ui_path(viewer, "colmap_images_root", _suggest_images_root_from_dataset_root(root, image_names))
+    _set_colmap_camera_preview(viewer, recon)
     viewer.s.last_error = ""
 
 
@@ -841,6 +891,7 @@ def _refresh_training_frames(viewer: object) -> None:
     viewer.s.training_frames = build_training_frames_from_root(
         viewer.s.colmap_recon,
         Path(images_root).resolve(),
+        selected_camera_ids=tuple(int(camera_id) for camera_id in getattr(import_cfg, "selected_camera_ids", ())),
         downscale_mode=str(getattr(import_cfg, "image_downscale_mode", _COLMAP_IMAGE_DOWNSCALE_ORIGINAL)),
         downscale_max_size=int(getattr(import_cfg, "image_downscale_max_size", 2048)),
         downscale_scale=float(getattr(import_cfg, "image_downscale_scale", 1.0)),
@@ -1028,6 +1079,7 @@ def _finish_import_colmap_dataset(
     database_path: Path | None,
     images_root: Path,
     depth_root: Path | None = None,
+    selected_camera_ids: tuple[int, ...] = (),
     depth_value_mode: str = _COLMAP_DEPTH_VALUE_Z_DEPTH,
     init_mode: str,
     custom_ply_path: Path | None,
@@ -1048,6 +1100,7 @@ def _finish_import_colmap_dataset(
 ) -> None:
     if recon is None or training_frames is None:
         raise RuntimeError("COLMAP import finalize requires reconstruction and training frames.")
+    resolved_selected_camera_ids = _normalized_selected_camera_ids(_camera_rows(recon), None if len(selected_camera_ids) == 0 else selected_camera_ids)
     xyz, _ = _point_tables(recon, min_track_length)
     _reset_loaded_runtime(viewer)
     _reset_training_visual_state(viewer)
@@ -1057,6 +1110,7 @@ def _finish_import_colmap_dataset(
         database_path=database_path,
         images_root=images_root,
         depth_root=depth_root,
+        selected_camera_ids=resolved_selected_camera_ids,
         depth_value_mode=depth_value_mode,
         init_mode=init_mode,
         custom_ply_path=custom_ply_path,
@@ -1072,6 +1126,7 @@ def _finish_import_colmap_dataset(
     )
     viewer.s.colmap_root = Path(colmap_root)
     viewer.s.colmap_recon = recon
+    _set_colmap_camera_preview(viewer, recon, resolved_selected_camera_ids)
     viewer.s.training_frames = list(training_frames)
     viewer.s.colmap_point_count = int(xyz.shape[0])
     viewer.s.scene_path = None
@@ -1098,6 +1153,7 @@ def import_colmap_dataset(
     database_path: Path | None,
     images_root: Path,
     depth_root: Path | None = None,
+    selected_camera_ids: tuple[int, ...] = (),
     depth_value_mode: str = _COLMAP_DEPTH_VALUE_Z_DEPTH,
     init_mode: str,
     custom_ply_path: Path | None,
@@ -1114,9 +1170,11 @@ def import_colmap_dataset(
     _clear_loaded_scene(viewer)
     root = Path(colmap_root).resolve()
     recon = _load_aligned_colmap_reconstruction(root)
+    resolved_selected_camera_ids = _normalized_selected_camera_ids(_camera_rows(recon), None if len(selected_camera_ids) == 0 else selected_camera_ids)
     training_frames = build_training_frames_from_root(
         recon,
         images_root,
+        selected_camera_ids=resolved_selected_camera_ids,
         downscale_mode=image_downscale_mode,
         downscale_max_size=image_downscale_max_size,
         downscale_scale=image_downscale_scale,
@@ -1142,6 +1200,7 @@ def import_colmap_dataset(
         database_path=database_path,
         images_root=images_root,
         depth_root=depth_root,
+        selected_camera_ids=resolved_selected_camera_ids,
         depth_value_mode=depth_value_mode,
         init_mode=init_mode,
         custom_ply_path=custom_ply_path,
@@ -1174,6 +1233,8 @@ def import_colmap_from_ui(viewer: object) -> None:
     custom_ply_text = _ui_path_string(viewer, "colmap_custom_ply_path")
     custom_ply_path = None if not custom_ply_text else Path(custom_ply_text).expanduser()
     image_downscale_mode = _ui_image_downscale_mode(viewer)
+    selected_camera_ids = tuple(int(camera_id) for camera_id in viewer.ui._values.get("colmap_selected_camera_ids", ()))
+    camera_rows = tuple(viewer.ui._values.get("_colmap_camera_rows", ()))
     image_downscale_max_size = max(int(viewer.ui._values.get("colmap_image_max_size", 2048)), 1)
     image_downscale_scale = float(np.clip(viewer.ui._values.get("colmap_image_scale", 1.0), 1e-6, 1.0))
     nn_radius_scale_coef = float(viewer.ui._values.get("colmap_nn_radius_scale_coef", 0.5))
@@ -1190,6 +1251,8 @@ def import_colmap_from_ui(viewer: object) -> None:
         database_path = _find_optional_colmap_database(colmap_root)
     if not images_root.exists():
         raise FileNotFoundError(f"COLMAP image folder does not exist: {images_root}")
+    if len(camera_rows) > 0 and len(selected_camera_ids) == 0:
+        raise ValueError("Select at least one COLMAP camera before importing.")
     if init_mode == _COLMAP_IMPORT_DEPTH and (depth_root is None or not depth_root.exists()):
         raise FileNotFoundError(f"Depth folder does not exist: {depth_root}")
     if init_mode == _COLMAP_IMPORT_CUSTOM_PLY and (custom_ply_path is None or not custom_ply_path.exists()):
@@ -1200,6 +1263,7 @@ def import_colmap_from_ui(viewer: object) -> None:
         colmap_root=colmap_root.resolve(),
         database_path=None if database_path is None else database_path.resolve(),
         images_root=images_root.resolve(),
+        selected_camera_ids=selected_camera_ids,
         depth_root=None if depth_root is None else depth_root.resolve(),
         depth_value_mode=depth_value_mode,
         init_mode=init_mode,
@@ -1287,6 +1351,7 @@ def advance_colmap_import(viewer: object) -> None:
                 database_path=progress.database_path,
                 images_root=progress.images_root,
                 depth_root=progress.depth_root,
+                selected_camera_ids=tuple(int(camera_id) for camera_id in getattr(progress, "selected_camera_ids", ())),
                 depth_value_mode=progress.depth_value_mode,
                 init_mode=progress.init_mode,
                 custom_ply_path=progress.custom_ply_path,

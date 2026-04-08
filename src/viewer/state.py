@@ -27,6 +27,7 @@ class ColmapImportSettings:
     database_path: Path | None = None
     images_root: Path | None = None
     depth_root: Path | None = None
+    selected_camera_ids: tuple[int, ...] = ()
     depth_value_mode: str = "z_depth"
     init_mode: str = "pointcloud"
     custom_ply_path: Path | None = None
@@ -53,6 +54,7 @@ class ColmapImportProgress:
     image_downscale_max_size: int
     image_downscale_scale: float
     nn_radius_scale_coef: float
+    selected_camera_ids: tuple[int, ...] = ()
     min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH
     depth_point_count: int = 100000
     diffused_point_count: int = 100000

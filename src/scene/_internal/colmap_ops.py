@@ -310,6 +310,7 @@ def build_training_frames_from_root(
     recon: ColmapReconstruction,
     images_root: Path,
     *,
+    selected_camera_ids: tuple[int, ...] = (),
     downscale_mode: str = "original",
     downscale_max_size: int | None = None,
     downscale_scale: float = 1.0,
@@ -317,8 +318,11 @@ def build_training_frames_from_root(
     images_root = Path(images_root).resolve()
     if not images_root.exists():
         raise FileNotFoundError(f"COLMAP image directory does not exist: {images_root}")
+    selected = {int(camera_id) for camera_id in selected_camera_ids}
     tasks = []
     for image_id, image in sorted(recon.images.items()):
+        if selected and int(image.camera_id) not in selected:
+            continue
         image_path, camera = (images_root / image.name).resolve(), recon.cameras.get(image.camera_id)
         if camera is None or not image_path.exists(): continue
         tasks.append((image_id, image, camera, image_path, downscale_mode, downscale_max_size, downscale_scale))

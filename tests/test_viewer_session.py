@@ -250,6 +250,18 @@ def test_choose_colmap_root_auto_selects_first_matching_image_folder(tmp_path: P
     assert viewer.ui._values["colmap_root_path"] == str(database_path.resolve().parents[1])
     assert viewer.ui._values["colmap_database_path"] == str(database_path.resolve())
     assert viewer.ui._values["colmap_images_root"] == str(images_root)
+    assert viewer.ui._values["colmap_selected_camera_ids"] == (7,)
+    assert viewer.ui._values["_colmap_camera_rows"] == (
+        {
+            "camera_id": 7,
+            "model_name": "PINHOLE",
+            "frame_count": 2,
+            "resolution_text": "64x64",
+            "focal_text": "64.00, 64.00",
+            "principal_text": "32.00, 32.00",
+            "distortion_text": "0, 0",
+        },
+    )
     assert viewer.s.last_error == ""
 
 
@@ -364,7 +376,11 @@ def test_import_colmap_dataset_clears_loaded_scene_before_loading(monkeypatch) -
     monkeypatch.setattr(session, "_reset_training_visual_state", lambda viewer_obj: calls.append(("reset_training_visual", None)))
     monkeypatch.setattr(session, "_reset_loss_debug", lambda viewer_obj: calls.append(("reset_loss_debug", None)))
     monkeypatch.setattr(session, "_load_aligned_colmap_reconstruction", lambda root: calls.append(("load_recon", root)) or "recon")
-    monkeypatch.setattr(session, "build_training_frames_from_root", lambda recon, images_root, downscale_mode, downscale_max_size, downscale_scale: calls.append(("build_frames", recon)) or ["frame"])
+    monkeypatch.setattr(
+        session,
+        "build_training_frames_from_root",
+        lambda recon, images_root, selected_camera_ids=(), downscale_mode="original", downscale_max_size=None, downscale_scale=1.0: calls.append(("build_frames", recon, tuple(selected_camera_ids))) or ["frame"],
+    )
     monkeypatch.setattr(session, "_create_native_dataset_textures", lambda viewer_obj, frames: calls.append(("create_textures", list(frames))) or ["tex"])
     monkeypatch.setattr(session, "_finish_import_colmap_dataset", lambda viewer_obj, **kwargs: calls.append(("finish", kwargs["recon"])))
 
@@ -424,6 +440,8 @@ def test_import_colmap_from_ui_clears_loaded_scene_before_queueing(tmp_path: Pat
                 "colmap_min_track_length": 5,
                 "colmap_diffused_point_count": 100000,
                 "colmap_diffusion_radius": 1.0,
+                "colmap_selected_camera_ids": (7,),
+                "_colmap_camera_rows": ({"camera_id": 7, "frame_count": 1},),
                 "use_target_alpha_mask": True,
             }
         ),
@@ -487,7 +505,42 @@ def test_import_colmap_from_ui_clears_loaded_scene_before_queueing(tmp_path: Pat
     assert viewer.s.colmap_import_progress is not None
     assert viewer.s.colmap_import_progress.depth_value_mode == "z_depth"
     assert viewer.s.colmap_import_progress.min_track_length == 5
+    assert viewer.s.colmap_import_progress.selected_camera_ids == (7,)
     assert viewer.s.colmap_import_progress.use_target_alpha_mask is True
+
+
+def test_import_colmap_from_ui_rejects_empty_camera_selection(tmp_path: Path) -> None:
+    database_path, images_root = _build_colmap_tree(
+        tmp_path,
+        image_names=["frame_000.png"],
+        image_root_rel=Path("images"),
+    )
+    viewer = SimpleNamespace(
+        ui=SimpleNamespace(
+            _values={
+                "colmap_root_path": str(database_path.parents[1]),
+                "colmap_database_path": str(database_path),
+                "colmap_images_root": str(images_root),
+                "colmap_depth_value_mode": 1,
+                "colmap_init_mode": 0,
+                "colmap_custom_ply_path": "",
+                "colmap_image_downscale_mode": 0,
+                "colmap_image_max_size": 2048,
+                "colmap_image_scale": 1.0,
+                "colmap_nn_radius_scale_coef": 0.5,
+                "colmap_min_track_length": 5,
+                "colmap_diffused_point_count": 100000,
+                "colmap_diffusion_radius": 1.0,
+                "colmap_selected_camera_ids": (),
+                "_colmap_camera_rows": ({"camera_id": 7, "frame_count": 1},),
+                "use_target_alpha_mask": False,
+            }
+        ),
+        s=SimpleNamespace(),
+    )
+
+    with pytest.raises(ValueError, match="Select at least one COLMAP camera before importing."):
+        session.import_colmap_from_ui(viewer)
 
 def test_advance_colmap_import_processes_images_incrementally(tmp_path: Path, monkeypatch) -> None:
     _, images_root = _build_colmap_tree(
@@ -498,9 +551,12 @@ def test_advance_colmap_import_processes_images_incrementally(tmp_path: Path, mo
     recon = SimpleNamespace(
         images={
             1: SimpleNamespace(name="frame_000.png", camera_id=7, q_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32), t_xyz=np.array([0.0, 0.0, -2.0], dtype=np.float32)),
-            2: SimpleNamespace(name="frame_001.png", camera_id=7, q_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32), t_xyz=np.array([0.0, 0.0, -2.0], dtype=np.float32)),
+            2: SimpleNamespace(name="frame_001.png", camera_id=8, q_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32), t_xyz=np.array([0.0, 0.0, -2.0], dtype=np.float32)),
         },
-        cameras={7: SimpleNamespace(width=8, height=8, fx=64.0, fy=64.0, cx=4.0, cy=4.0)},
+        cameras={
+            7: SimpleNamespace(width=8, height=8, fx=64.0, fy=64.0, cx=4.0, cy=4.0),
+            8: SimpleNamespace(width=8, height=8, fx=64.0, fy=64.0, cx=4.0, cy=4.0),
+        },
     )
     calls: list[object] = []
     viewer = SimpleNamespace(
@@ -517,6 +573,7 @@ def test_advance_colmap_import_processes_images_incrementally(tmp_path: Path, mo
                 image_downscale_max_size=1600,
                 image_downscale_scale=1.0,
                 nn_radius_scale_coef=0.25,
+                selected_camera_ids=(7,),
             ),
         ),
     )
@@ -534,7 +591,7 @@ def test_advance_colmap_import_processes_images_incrementally(tmp_path: Path, mo
     while viewer.s.colmap_import_progress is not None:
         session.advance_colmap_import(viewer)
 
-    assert calls == [("finish", 2, ["tex:rgba:frame_000.png", "tex:rgba:frame_001.png"]), "close"]
+    assert calls == [("finish", 1, ["tex:rgba:frame_000.png"]), "close"]
 
 
 def test_advance_colmap_import_applies_selected_image_downscale(tmp_path: Path, monkeypatch) -> None:
@@ -563,6 +620,7 @@ def test_advance_colmap_import_applies_selected_image_downscale(tmp_path: Path, 
                 image_downscale_max_size=4,
                 image_downscale_scale=1.0,
                 nn_radius_scale_coef=0.25,
+                selected_camera_ids=(),
             ),
         ),
     )
@@ -595,6 +653,7 @@ def test_finish_import_colmap_dataset_resets_toolkit_plot_history(monkeypatch) -
     calls: list[str] = []
     viewer = SimpleNamespace(
         toolkit=SimpleNamespace(reset_plot_history=lambda: calls.append("reset")),
+        ui=SimpleNamespace(_values={}),
         s=SimpleNamespace(),
         apply_camera_fit=lambda bounds: calls.append("fit"),
     )
@@ -632,6 +691,7 @@ def test_finish_import_colmap_dataset_prefers_training_view_camera_fit(monkeypat
     calls: list[object] = []
     viewer = SimpleNamespace(
         toolkit=SimpleNamespace(reset_plot_history=lambda: calls.append("reset")),
+        ui=SimpleNamespace(_values={}),
         s=SimpleNamespace(),
         apply_camera_fit=lambda bounds: calls.append(("fit", bounds)),
         apply_camera_fit_to_training_views=lambda frames: calls.append(("view_fit", tuple(frames))) or True,
@@ -707,7 +767,7 @@ def test_import_colmap_dataset_uses_aligned_reconstruction(monkeypatch) -> None:
     monkeypatch.setattr(
         session,
         "build_training_frames_from_root",
-        lambda recon, images_root, downscale_mode, downscale_max_size, downscale_scale: calls.append(("frames", recon, Path(images_root), downscale_mode, downscale_max_size, downscale_scale)) or frames,
+        lambda recon, images_root, selected_camera_ids=(), downscale_mode="original", downscale_max_size=None, downscale_scale=1.0: calls.append(("frames", recon, Path(images_root), tuple(selected_camera_ids), downscale_mode, downscale_max_size, downscale_scale)) or frames,
     )
     monkeypatch.setattr(
         session,
@@ -737,7 +797,7 @@ def test_import_colmap_dataset_uses_aligned_reconstruction(monkeypatch) -> None:
         ("clear_renderer", None),
     ]
     assert calls[-2:] == [
-        ("frames", aligned_recon, Path("dataset/garden/images_8"), "original", 2048, 1.0),
+        ("frames", aligned_recon, Path("dataset/garden/images_8"), (), "original", 2048, 1.0),
         ("finish", aligned_recon, frames, ["tex0"]),
     ]
 
@@ -749,6 +809,7 @@ def test_colmap_import_settings_defaults_prefer_pointcloud() -> None:
     assert defaults.nn_radius_scale_coef == 0.5
     assert defaults.min_track_length == 3
     assert defaults.depth_root is None
+    assert defaults.selected_camera_ids == ()
     assert defaults.depth_value_mode == "z_depth"
     assert defaults.depth_point_count == 100000
     assert defaults.use_target_alpha_mask is False
@@ -1098,7 +1159,11 @@ def test_refresh_training_frames_uses_cached_reconstruction(monkeypatch) -> None
     )
 
     monkeypatch.setattr(session, "_load_aligned_colmap_reconstruction", lambda root: (_ for _ in ()).throw(AssertionError("should not reload reconstruction")))
-    monkeypatch.setattr(session, "build_training_frames_from_root", lambda recon_obj, images_root, downscale_mode, downscale_max_size, downscale_scale: [frame] if recon_obj is recon else (_ for _ in ()).throw(AssertionError("unexpected reconstruction instance")))
+    monkeypatch.setattr(
+        session,
+        "build_training_frames_from_root",
+        lambda recon_obj, images_root, selected_camera_ids=(), downscale_mode="original", downscale_max_size=None, downscale_scale=1.0: [frame] if recon_obj is recon and tuple(selected_camera_ids) == () else (_ for _ in ()).throw(AssertionError("unexpected reconstruction instance")),
+    )
 
     session._refresh_training_frames(viewer)
 
@@ -1113,7 +1178,7 @@ def test_build_initial_training_scene_uses_cached_diffused_points(monkeypatch) -
         s=SimpleNamespace(
             colmap_recon=object(),
             colmap_root=Path("dataset/garden"),
-            colmap_import=SimpleNamespace(init_mode="diffused_pointcloud", nn_radius_scale_coef=0.5),
+            colmap_import=SimpleNamespace(init_mode="diffused_pointcloud", nn_radius_scale_coef=0.5, min_track_length=3),
             cached_init_point_positions=cached_positions,
             cached_init_point_colors=cached_colors,
             cached_init_scene=None,
@@ -1122,7 +1187,11 @@ def test_build_initial_training_scene_uses_cached_diffused_points(monkeypatch) -
     )
 
     monkeypatch.setattr(session, "_ensure_cached_init_source", lambda viewer_obj, init: None)
-    monkeypatch.setattr(session, "_diffused_pointcloud_init_hparams_from_positions", lambda recon, positions, init_hparams, nn_radius_scale_coef: SimpleNamespace(base_scale=0.25) if np.array_equal(positions, cached_positions) else (_ for _ in ()).throw(AssertionError("cached positions not used")))
+    monkeypatch.setattr(
+        session,
+        "_diffused_pointcloud_init_hparams_from_positions",
+        lambda recon, positions, init_hparams, nn_radius_scale_coef, min_track_length: SimpleNamespace(base_scale=0.25) if np.array_equal(positions, cached_positions) and int(min_track_length) == 3 else (_ for _ in ()).throw(AssertionError("cached positions not used")),
+    )
     monkeypatch.setattr(session, "initialize_scene_from_points_colors", lambda positions, colors, seed, init_hparams: built_scene if np.array_equal(positions, cached_positions) and np.array_equal(colors, cached_colors) else (_ for _ in ()).throw(AssertionError("cached init data not forwarded")))
 
     scene, scale_reg_reference = session._build_initial_training_scene(viewer, SimpleNamespace(seed=7), SimpleNamespace(training=SimpleNamespace(max_gaussians=8)), SimpleNamespace())

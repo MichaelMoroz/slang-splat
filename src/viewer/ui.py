@@ -1444,6 +1444,63 @@ class ToolkitWindow:
             self._draw_import_path_selector(ui, label="Depth Folder", key="colmap_depth_root", button_label="Browse Depth Folder...", callback=self.callbacks.browse_colmap_depth)
             if imgui.is_item_hovered():
                 imgui.set_item_tooltip("Optional root containing 16-bit depth PNGs matched to RGB images by relative path stem.")
+            camera_rows = tuple(ui._values.get("_colmap_camera_rows", ()))
+            if len(camera_rows) > 0:
+                imgui.spacing()
+                selected_camera_ids = tuple(int(camera_id) for camera_id in ui._values.get("colmap_selected_camera_ids", ()))
+                camera_ids = tuple(int(row["camera_id"]) for row in camera_rows)
+                selected = {camera_id for camera_id in selected_camera_ids if camera_id in camera_ids}
+                selected_frame_count = sum(int(row["frame_count"]) for row in camera_rows if int(row["camera_id"]) in selected)
+                total_frame_count = sum(int(row["frame_count"]) for row in camera_rows)
+                imgui.text_disabled(f"Cameras: {len(selected)}/{len(camera_rows)} selected | Frames: {selected_frame_count}/{total_frame_count}")
+                if imgui.button("All Cameras"):
+                    selected = set(camera_ids)
+                imgui.same_line()
+                if imgui.button("No Cameras"):
+                    selected.clear()
+                table_height = min(max(88.0, 28.0 * float(len(camera_rows)) + 8.0), 180.0)
+                if imgui.begin_child("##colmap_cameras", imgui.ImVec2(0.0, table_height), True):
+                    flags = (
+                        imgui.TableFlags_.row_bg.value
+                        | imgui.TableFlags_.borders.value
+                        | imgui.TableFlags_.resizable.value
+                        | imgui.TableFlags_.scroll_x.value
+                        | imgui.TableFlags_.scroll_y.value
+                    )
+                    if imgui.begin_table("##colmap_camera_table", 7, flags):
+                        imgui.table_setup_column("Use", imgui.TableColumnFlags_.width_fixed.value, 36.0)
+                        imgui.table_setup_column("Id", imgui.TableColumnFlags_.width_fixed.value, 42.0)
+                        imgui.table_setup_column("Model", imgui.TableColumnFlags_.width_fixed.value, 132.0)
+                        imgui.table_setup_column("Frames", imgui.TableColumnFlags_.width_fixed.value, 54.0)
+                        imgui.table_setup_column("Res", imgui.TableColumnFlags_.width_fixed.value, 86.0)
+                        imgui.table_setup_column("Focal", imgui.TableColumnFlags_.width_fixed.value, 120.0)
+                        imgui.table_setup_column("Principal / Dist", imgui.TableColumnFlags_.width_stretch.value)
+                        imgui.table_headers_row()
+                        for row in camera_rows:
+                            camera_id = int(row["camera_id"])
+                            imgui.table_next_row()
+                            imgui.table_next_column()
+                            changed, value = imgui.checkbox(f"##colmap_camera_{camera_id}", camera_id in selected)
+                            if changed:
+                                if value:
+                                    selected.add(camera_id)
+                                else:
+                                    selected.discard(camera_id)
+                            imgui.table_next_column()
+                            imgui.text_unformatted(str(camera_id))
+                            imgui.table_next_column()
+                            imgui.text_unformatted(str(row["model_name"]))
+                            imgui.table_next_column()
+                            imgui.text_unformatted(str(row["frame_count"]))
+                            imgui.table_next_column()
+                            imgui.text_unformatted(str(row["resolution_text"]))
+                            imgui.table_next_column()
+                            imgui.text_unformatted(str(row["focal_text"]))
+                            imgui.table_next_column()
+                            imgui.text_unformatted(f"{row['principal_text']} | {row['distortion_text']}")
+                        imgui.end_table()
+                    imgui.end_child()
+                ui._values["colmap_selected_camera_ids"] = tuple(camera_id for camera_id in camera_ids if camera_id in selected)
             imgui.spacing()
             downscale_idx = max(0, min(int(ui._values.get("colmap_image_downscale_mode", 1)), len(_COLMAP_IMAGE_DOWNSCALE_LABELS) - 1))
             if imgui.begin_combo("Image Downscale", _COLMAP_IMAGE_DOWNSCALE_LABELS[downscale_idx]):
@@ -2420,6 +2477,7 @@ def build_ui(renderer) -> ViewerUI:
     values["colmap_depth_value_mode"] = 1
     values["colmap_init_mode"] = 0
     values["colmap_custom_ply_path"] = ""
+    values["colmap_selected_camera_ids"] = ()
     values["colmap_image_downscale_mode"] = 0
     values["colmap_image_max_size"] = 2048
     values["colmap_image_scale"] = 1.0
@@ -2449,6 +2507,7 @@ def build_ui(renderer) -> ViewerUI:
     values["_viewport_sh_band"] = 3
     values["_viewport_sh_control_key"] = "sh_band"
     values["_viewport_sh_stage_label"] = "Stage 0"
+    values["_colmap_camera_rows"] = ()
     values["_colmap_import_active"] = False
     values["_colmap_import_fraction"] = 0.0
     values["_can_export_ply"] = False
