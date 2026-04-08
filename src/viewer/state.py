@@ -15,6 +15,7 @@ from ..renderer import GaussianRenderer
 DEFAULT_LIST_CAPACITY_MULTIPLIER = 16
 DEFAULT_MAX_PREPASS_MEMORY_MB = 4096
 DEFAULT_VIEWER_BACKGROUND = (0.0, 0.0, 0.0)
+DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH = 3
 
 @dataclass(slots=True)
 class SceneCountProxy:
@@ -33,6 +34,7 @@ class ColmapImportSettings:
     image_downscale_max_size: int = 2048
     image_downscale_scale: float = 1.0
     nn_radius_scale_coef: float = 0.5
+    min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH
     depth_point_count: int = 100000
     diffused_point_count: int = 100000
     diffusion_radius: float = 1.0
@@ -51,6 +53,7 @@ class ColmapImportProgress:
     image_downscale_max_size: int
     image_downscale_scale: float
     nn_radius_scale_coef: float
+    min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH
     depth_point_count: int = 100000
     diffused_point_count: int = 100000
     diffusion_radius: float = 1.0

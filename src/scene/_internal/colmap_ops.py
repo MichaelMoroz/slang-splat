@@ -39,7 +39,7 @@ DEPTH_INIT_GRADIENT_EPS = 1e-4
 DEPTH_INIT_DISTANCE_FLOOR = 1e-4
 DEPTH_INIT_VALUE_DISTANCE = "distance"
 DEPTH_INIT_VALUE_Z_DEPTH = "z_depth"
-COLMAP_IMPORT_MIN_TRACK_LENGTH = 3
+DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH = 3
 
 
 @dataclass(slots=True)
@@ -180,8 +180,13 @@ def transform_colmap_reconstruction_pca(recon: ColmapReconstruction, rescale: bo
     return transformed_recon, transform
 
 
-def _colmap_point_positions(recon: ColmapReconstruction) -> np.ndarray:
-    points = point_tables(recon, min_track_length=COLMAP_IMPORT_MIN_TRACK_LENGTH)[0]
+def _min_track_length_error(min_track_length: int) -> str:
+    threshold = max(int(min_track_length), 0)
+    return "COLMAP reconstruction has no 3D points." if threshold <= 0 else f"COLMAP reconstruction has no 3D points observed by at least {threshold} cameras."
+
+
+def _colmap_point_positions(recon: ColmapReconstruction, min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH) -> np.ndarray:
+    points = point_tables(recon, min_track_length=min_track_length)[0]
     return points[np.isfinite(points).all(axis=1)]
 
 
@@ -204,10 +209,14 @@ def _estimate_point_spacing(points: np.ndarray) -> tuple[float, float]:
     return max(spacing, 1e-4), float(np.clip(variability, 0.0, 1.0))
 
 
-def suggest_colmap_init_hparams(recon: ColmapReconstruction, max_gaussians: int) -> GaussianInitHyperParams:
-    points = _colmap_point_positions(recon)
+def suggest_colmap_init_hparams(
+    recon: ColmapReconstruction,
+    max_gaussians: int,
+    min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH,
+) -> GaussianInitHyperParams:
+    points = _colmap_point_positions(recon, min_track_length=min_track_length)
     if points.shape[0] == 0:
-        raise RuntimeError("COLMAP reconstruction has no finite 3D points.")
+        raise RuntimeError(_min_track_length_error(min_track_length))
     point_count = int(points.shape[0])
     chosen_count = point_count if max_gaussians <= 0 else max(int(max_gaussians), 1)
     spacing, variability = _estimate_point_spacing(points)
@@ -223,8 +232,13 @@ def suggest_colmap_init_hparams(recon: ColmapReconstruction, max_gaussians: int)
     )
 
 
-def resolve_colmap_init_hparams(recon: ColmapReconstruction, max_gaussians: int, init_hparams: GaussianInitHyperParams | None = None) -> GaussianInitHyperParams:
-    suggested = suggest_colmap_init_hparams(recon, max_gaussians)
+def resolve_colmap_init_hparams(
+    recon: ColmapReconstruction,
+    max_gaussians: int,
+    init_hparams: GaussianInitHyperParams | None = None,
+    min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH,
+) -> GaussianInitHyperParams:
+    suggested = suggest_colmap_init_hparams(recon, max_gaussians, min_track_length=min_track_length)
     if init_hparams is None:
         return suggested
     return GaussianInitHyperParams(**{name: getattr(suggested, name) if getattr(init_hparams, name) is None else float(getattr(init_hparams, name)) for name in ("position_jitter_std", "base_scale", "scale_jitter_ratio", "initial_opacity", "color_jitter_std")})
@@ -824,10 +838,11 @@ def sample_colmap_diffused_points(
     point_count: int,
     diffusion_radius: float,
     seed: int,
+    min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH,
 ) -> tuple[np.ndarray, np.ndarray]:
-    xyz, rgb = point_tables(recon, min_track_length=COLMAP_IMPORT_MIN_TRACK_LENGTH)
+    xyz, rgb = point_tables(recon, min_track_length=min_track_length)
     if xyz.shape[0] == 0:
-        raise RuntimeError(f"COLMAP reconstruction has no 3D points observed by at least {COLMAP_IMPORT_MIN_TRACK_LENGTH} cameras.")
+        raise RuntimeError(_min_track_length_error(min_track_length))
     count = max(int(point_count), 1)
     radius = max(float(diffusion_radius), 0.0)
     rng = np.random.default_rng(int(seed))
@@ -842,10 +857,16 @@ def sample_colmap_diffused_points(
     return positions, colors
 
 
-def initialize_scene_from_colmap_points(recon: ColmapReconstruction, max_gaussians: int, seed: int, init_hparams: GaussianInitHyperParams | None = None) -> GaussianScene:
-    xyz, rgb = point_tables(recon, min_track_length=COLMAP_IMPORT_MIN_TRACK_LENGTH)
+def initialize_scene_from_colmap_points(
+    recon: ColmapReconstruction,
+    max_gaussians: int,
+    seed: int,
+    init_hparams: GaussianInitHyperParams | None = None,
+    min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH,
+) -> GaussianScene:
+    xyz, rgb = point_tables(recon, min_track_length=min_track_length)
     if xyz.shape[0] == 0:
-        raise RuntimeError(f"COLMAP reconstruction has no 3D points observed by at least {COLMAP_IMPORT_MIN_TRACK_LENGTH} cameras.")
+        raise RuntimeError(_min_track_length_error(min_track_length))
     chosen_count = xyz.shape[0] if max_gaussians <= 0 else min(max(int(max_gaussians), 1), xyz.shape[0])
     return _build_scene_from_positions_colors(xyz[:chosen_count].copy(), rgb[:chosen_count].copy(), seed, init_hparams)
 
@@ -870,6 +891,7 @@ def initialize_scene_from_colmap_diffused_points(
     diffusion_radius: float,
     seed: int,
     init_hparams: GaussianInitHyperParams | None = None,
+    min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH,
 ) -> GaussianScene:
-    positions, colors = sample_colmap_diffused_points(recon, point_count, diffusion_radius, seed)
+    positions, colors = sample_colmap_diffused_points(recon, point_count, diffusion_radius, seed, min_track_length=min_track_length)
     return _build_scene_from_positions_colors(positions, colors, seed, init_hparams)

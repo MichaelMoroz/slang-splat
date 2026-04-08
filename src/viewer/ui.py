@@ -16,7 +16,7 @@ import slangpy.ui.imgui_bundle as simgui
 from imgui_bundle import hello_imgui, imgui, imgui_md, implot
 
 from .constants import _WINDOW_TITLE
-from .state import LOSS_DEBUG_OPTIONS
+from .state import DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH, LOSS_DEBUG_OPTIONS
 
 TOOLKIT_WIDTH_FRACTION = 0.1875
 VIEW_WIDTH_FRACTION = 0.8125
@@ -1500,8 +1500,20 @@ class ToolkitWindow:
                         imgui.set_item_default_focus()
                 imgui.end_combo()
             if imgui.is_item_hovered():
-                imgui.set_item_tooltip("COLMAP Pointcloud uses only sparse points seen by at least 3 cameras, Diffused Pointcloud resamples that filtered set, Custom PLY loads a chosen gaussian seed scene, and From Depth calibrates matched 16-bit PNG depth maps into a point cloud using an iteratively reweighted robust per-pose affine depth fit from all valid observed points, while rejecting projected samples that land on strong local depth-gradient spikes.")
+                imgui.set_item_tooltip("COLMAP Pointcloud uses sparse points filtered by Min Camera Observations, Diffused Pointcloud resamples that filtered set, Custom PLY loads a chosen gaussian seed scene, and From Depth calibrates matched 16-bit PNG depth maps into a point cloud using an iteratively reweighted robust per-pose affine depth fit from all valid observed points, while rejecting projected samples that land on strong local depth-gradient spikes.")
             if mode_idx in (0, 1, 3):
+                if mode_idx in (0, 1):
+                    changed, value = imgui.drag_int(
+                        "Min Camera Observations",
+                        int(ui._values.get("colmap_min_track_length", DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH)),
+                        0.25,
+                        0,
+                        32,
+                    )
+                    if changed:
+                        ui._values["colmap_min_track_length"] = max(int(value), 0)
+                    if imgui.is_item_hovered():
+                        imgui.set_item_tooltip("Ignore sparse COLMAP points whose track is shorter than this many observing cameras. Set 0 to keep all sparse points.")
                 if mode_idx == 3:
                     imgui.push_text_wrap_pos(imgui.get_cursor_pos_x() + imgui.get_content_region_avail().x)
                     imgui.text_disabled("From Depth matches RGB and depth by relative stem under Depth Folder, uses each pose's own positive COLMAP point observations, reprojects those 3D points through the frame camera model to sample depth, rejects projected samples whose local pixel-footprint gradients are a strong outlier relative to nearby gradients, then solves one iteratively reweighted robust affine map `a + b*d` per pose from the remaining observed points before sampling a dataset-wide calibrated point budget. Frames without usable depth stay in training but are skipped for depth-based initialization.")
@@ -2414,6 +2426,7 @@ def build_ui(renderer) -> ViewerUI:
     values["colmap_image_max_size"] = 2048
     values["colmap_image_scale"] = 1.0
     values["colmap_nn_radius_scale_coef"] = 0.5
+    values["colmap_min_track_length"] = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH
     values["colmap_depth_point_count"] = 100000
     values["colmap_diffused_point_count"] = 100000
     values["colmap_diffusion_radius"] = 1.0

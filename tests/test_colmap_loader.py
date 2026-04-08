@@ -252,7 +252,7 @@ def test_colmap_init_uses_direct_pointcloud_when_requested_count_exceeds_points(
     np.testing.assert_allclose(scene.rotations, np.array([[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]], dtype=np.float32), rtol=0.0, atol=1e-6)
 
 
-def test_colmap_pointcloud_init_filters_points_below_three_camera_observations() -> None:
+def test_colmap_pointcloud_init_filters_points_below_selected_camera_observations() -> None:
     recon = ColmapReconstruction(
         root=Path("synthetic"),
         sparse_dir=Path("synthetic") / "sparse" / "0",
@@ -270,13 +270,14 @@ def test_colmap_pointcloud_init_filters_points_below_three_camera_observations()
         max_gaussians=8,
         seed=123,
         init_hparams=GaussianInitHyperParams(position_jitter_std=0.0, scale_jitter_ratio=0.0),
+        min_track_length=3,
     )
 
     assert scene.count == 2
     np.testing.assert_allclose(scene.positions, np.array([[1.0, 0.0, 0.0], [2.0, 0.0, 0.0]], dtype=np.float32), rtol=0.0, atol=1e-6)
 
 
-def test_colmap_diffused_sampling_filters_points_below_three_camera_observations() -> None:
+def test_colmap_diffused_sampling_filters_points_below_selected_camera_observations() -> None:
     recon = ColmapReconstruction(
         root=Path("synthetic"),
         sparse_dir=Path("synthetic") / "sparse" / "0",
@@ -289,11 +290,35 @@ def test_colmap_diffused_sampling_filters_points_below_three_camera_observations
         },
     )
 
-    positions, colors = sample_colmap_diffused_points(recon, point_count=6, diffusion_radius=0.0, seed=7)
+    positions, colors = sample_colmap_diffused_points(recon, point_count=6, diffusion_radius=0.0, seed=7, min_track_length=3)
 
     assert positions.shape == (6, 3)
     assert colors.shape == (6, 3)
     assert not np.any(np.all(np.isclose(positions, np.array([0.0, 0.0, 0.0], dtype=np.float32)), axis=1))
+
+
+def test_colmap_pointcloud_init_allows_disabling_track_length_filter() -> None:
+    recon = ColmapReconstruction(
+        root=Path("synthetic"),
+        sparse_dir=Path("synthetic") / "sparse" / "0",
+        cameras={},
+        images={},
+        points3d={
+            1: ColmapPoint3D(1, np.array([0.0, 0.0, 0.0], dtype=np.float32), np.array([1.0, 0.0, 0.0], dtype=np.float32), 0.0, track_length=1),
+            2: ColmapPoint3D(2, np.array([1.0, 0.0, 0.0], dtype=np.float32), np.array([0.0, 1.0, 0.0], dtype=np.float32), 0.0, track_length=2),
+        },
+    )
+
+    scene = initialize_scene_from_colmap_points(
+        recon,
+        max_gaussians=8,
+        seed=3,
+        init_hparams=GaussianInitHyperParams(position_jitter_std=0.0, scale_jitter_ratio=0.0),
+        min_track_length=0,
+    )
+
+    assert scene.count == 2
+    np.testing.assert_allclose(scene.positions, np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float32), rtol=0.0, atol=1e-6)
 
 
 def test_colmap_init_suggestions_scale_with_requested_density(tmp_path: Path):

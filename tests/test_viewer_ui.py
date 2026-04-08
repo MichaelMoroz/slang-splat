@@ -172,6 +172,7 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["colmap_image_max_size"] == 2048
     assert viewer_ui._values["colmap_image_scale"] == 1.0
     assert viewer_ui._values["colmap_nn_radius_scale_coef"] == 0.5
+    assert viewer_ui._values["colmap_min_track_length"] == 3
     assert viewer_ui._values["colmap_depth_point_count"] == 100000
     assert viewer_ui._values["_histogram_update_y_limit"] is True
     assert viewer_ui._values["_histogram_update_log_range"] is False

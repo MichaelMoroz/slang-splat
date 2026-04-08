@@ -354,6 +354,7 @@ def test_import_colmap_dataset_clears_loaded_scene_before_loading(monkeypatch) -
         image_downscale_max_size=2048,
         image_downscale_scale=1.0,
         nn_radius_scale_coef=0.5,
+        min_track_length=3,
         diffused_point_count=100000,
         diffusion_radius=1.0,
     )
@@ -395,6 +396,7 @@ def test_import_colmap_from_ui_clears_loaded_scene_before_queueing(tmp_path: Pat
                 "colmap_image_max_size": 2048,
                 "colmap_image_scale": 1.0,
                 "colmap_nn_radius_scale_coef": 0.5,
+                "colmap_min_track_length": 5,
                 "colmap_diffused_point_count": 100000,
                 "colmap_diffusion_radius": 1.0,
                 "use_target_alpha_mask": True,
@@ -459,6 +461,7 @@ def test_import_colmap_from_ui_clears_loaded_scene_before_queueing(tmp_path: Pat
     assert viewer.s.training_frames == []
     assert viewer.s.colmap_import_progress is not None
     assert viewer.s.colmap_import_progress.depth_value_mode == "z_depth"
+    assert viewer.s.colmap_import_progress.min_track_length == 5
     assert viewer.s.colmap_import_progress.use_target_alpha_mask is True
 
 def test_advance_colmap_import_processes_images_incrementally(tmp_path: Path, monkeypatch) -> None:
@@ -558,7 +561,7 @@ def test_advance_colmap_import_applies_selected_image_downscale(tmp_path: Path, 
 
 def test_finish_import_colmap_dataset_resets_toolkit_plot_history(monkeypatch) -> None:
     recon = SimpleNamespace(points3d={1: object()})
-    monkeypatch.setattr(session, "_point_tables", lambda recon_obj: (np.zeros((1, 3), dtype=np.float32), np.zeros((1, 3), dtype=np.float32)))
+    monkeypatch.setattr(session, "_point_tables", lambda recon_obj, min_track_length=3: (np.zeros((1, 3), dtype=np.float32), np.zeros((1, 3), dtype=np.float32)))
     monkeypatch.setattr(session, "_reset_loaded_runtime", lambda viewer_obj: None)
     monkeypatch.setattr(session, "_update_import_settings", lambda viewer_obj, **kwargs: None)
     monkeypatch.setattr(session, "apply_live_params", lambda viewer_obj: None)
@@ -595,7 +598,7 @@ def test_finish_import_colmap_dataset_resets_toolkit_plot_history(monkeypatch) -
 def test_finish_import_colmap_dataset_prefers_training_view_camera_fit(monkeypatch) -> None:
     recon = SimpleNamespace(points3d={1: object()})
     training_frames = [SimpleNamespace()]
-    monkeypatch.setattr(session, "_point_tables", lambda recon_obj: (np.zeros((1, 3), dtype=np.float32), np.zeros((1, 3), dtype=np.float32)))
+    monkeypatch.setattr(session, "_point_tables", lambda recon_obj, min_track_length=3: (np.zeros((1, 3), dtype=np.float32), np.zeros((1, 3), dtype=np.float32)))
     monkeypatch.setattr(session, "_reset_loaded_runtime", lambda viewer_obj: None)
     monkeypatch.setattr(session, "_update_import_settings", lambda viewer_obj, **kwargs: None)
     monkeypatch.setattr(session, "apply_live_params", lambda viewer_obj: None)
@@ -719,6 +722,7 @@ def test_colmap_import_settings_defaults_prefer_pointcloud() -> None:
 
     assert defaults.init_mode == "pointcloud"
     assert defaults.nn_radius_scale_coef == 0.5
+    assert defaults.min_track_length == 3
     assert defaults.depth_root is None
     assert defaults.depth_value_mode == "z_depth"
     assert defaults.depth_point_count == 100000

@@ -17,6 +17,7 @@ from ..training import resolve_sh_band
 from . import presenter, session
 from .constants import _WINDOW_TITLE
 from .state import (
+    DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH,
     DEFAULT_LIST_CAPACITY_MULTIPLIER,
     DEFAULT_MAX_PREPASS_MEMORY_MB,
     LOSS_DEBUG_OPTIONS, ViewerState,
@@ -463,6 +464,7 @@ class SplatViewer(spy.AppWindow):
                     image_downscale_max_size=import_cfg.image_downscale_max_size,
                     image_downscale_scale=import_cfg.image_downscale_scale,
                     nn_radius_scale_coef=import_cfg.nn_radius_scale_coef,
+                    min_track_length=int(getattr(import_cfg, "min_track_length", DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH)),
                     depth_point_count=import_cfg.depth_point_count,
                     diffused_point_count=import_cfg.diffused_point_count,
                     diffusion_radius=import_cfg.diffusion_radius,

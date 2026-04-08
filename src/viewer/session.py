@@ -29,7 +29,7 @@ from ..scene import (
 from ..scene._internal.colmap_ops import point_nn_scales, resolve_training_frame_image_size
 from ..training import resolve_sh_band
 from ..scene._internal.colmap_ops import (
-    COLMAP_IMPORT_MIN_TRACK_LENGTH,
+    DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH,
     DEPTH_INIT_VALUE_DISTANCE,
     DEPTH_INIT_VALUE_Z_DEPTH,
     TRAINING_FRAME_LOAD_THREADS,
@@ -90,10 +90,13 @@ def _apply_initial_camera_fit(viewer: object, fallback_bounds: object | None = N
     viewer.apply_camera_fit(fallback_bounds)
 
 
-def _point_tables(recon: object) -> tuple[np.ndarray, np.ndarray]:
-    xyz, rgb = point_tables(recon, min_track_length=COLMAP_IMPORT_MIN_TRACK_LENGTH)
+def _point_tables(recon: object, min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH) -> tuple[np.ndarray, np.ndarray]:
+    threshold = max(int(min_track_length), 0)
+    xyz, rgb = point_tables(recon, min_track_length=threshold)
     if xyz.shape[0] != rgb.shape[0] or xyz.shape[0] <= 0:
-        raise RuntimeError(f"COLMAP point tables are empty or mismatched after filtering to points seen by at least {COLMAP_IMPORT_MIN_TRACK_LENGTH} cameras.")
+        if threshold <= 0:
+            raise RuntimeError("COLMAP point tables are empty or mismatched.")
+        raise RuntimeError(f"COLMAP point tables are empty or mismatched after filtering to points seen by at least {threshold} cameras.")
     return xyz, rgb
 
 
@@ -250,6 +253,7 @@ def _update_import_settings(
     image_downscale_max_size: int,
     image_downscale_scale: float,
     nn_radius_scale_coef: float,
+    min_track_length: int,
     depth_point_count: int,
     diffused_point_count: int,
     diffusion_radius: float,
@@ -266,6 +270,7 @@ def _update_import_settings(
         image_downscale_max_size=max(int(image_downscale_max_size), 1),
         image_downscale_scale=float(np.clip(image_downscale_scale, 1e-6, 1.0)),
         nn_radius_scale_coef=float(max(nn_radius_scale_coef, 1e-4)),
+        min_track_length=max(int(min_track_length), 0),
         depth_point_count=max(int(depth_point_count), 1),
         diffused_point_count=max(int(diffused_point_count), 1),
         diffusion_radius=max(float(diffusion_radius), 0.0),
@@ -287,6 +292,7 @@ def _update_import_settings(
     viewer.ui._values["colmap_image_max_size"] = max(int(image_downscale_max_size), 1)
     viewer.ui._values["colmap_image_scale"] = float(np.clip(image_downscale_scale, 1e-6, 1.0))
     viewer.ui._values["colmap_nn_radius_scale_coef"] = float(max(nn_radius_scale_coef, 1e-4))
+    viewer.ui._values["colmap_min_track_length"] = max(int(min_track_length), 0)
     viewer.ui._values["colmap_depth_point_count"] = max(int(depth_point_count), 1)
     viewer.ui._values["colmap_diffused_point_count"] = max(int(diffused_point_count), 1)
     viewer.ui._values["colmap_diffusion_radius"] = max(float(diffusion_radius), 0.0)
@@ -438,16 +444,16 @@ def choose_colmap_custom_ply(viewer: object, ply_path: Path) -> None:
     viewer.s.last_error = ""
 
 
-def _pointcloud_init_hparams(recon: object, max_gaussians: int, init_hparams: object, nn_radius_scale_coef: float):
-    resolved = resolve_colmap_init_hparams(recon, max_gaussians, init_hparams)
-    xyz, _ = _point_tables(recon)
+def _pointcloud_init_hparams(recon: object, max_gaussians: int, init_hparams: object, nn_radius_scale_coef: float, min_track_length: int):
+    resolved = resolve_colmap_init_hparams(recon, max_gaussians, init_hparams, min_track_length=min_track_length)
+    xyz, _ = _point_tables(recon, min_track_length)
     chosen_count = xyz.shape[0] if max_gaussians <= 0 else min(max(int(max_gaussians), 1), xyz.shape[0])
     median_nn_scale = float(np.median(point_nn_scales(np.ascontiguousarray(xyz[:chosen_count], dtype=np.float32)))) if chosen_count > 0 else 1.0
     return replace(resolved, base_scale=float(max(float(nn_radius_scale_coef), 1e-4) * max(median_nn_scale, 1e-6)))
 
 
-def _pointcloud_init_hparams_from_positions(recon: object, positions: np.ndarray, max_gaussians: int, init_hparams: object, nn_radius_scale_coef: float):
-    resolved = resolve_colmap_init_hparams(recon, max_gaussians, init_hparams)
+def _pointcloud_init_hparams_from_positions(recon: object, positions: np.ndarray, max_gaussians: int, init_hparams: object, nn_radius_scale_coef: float, min_track_length: int):
+    resolved = resolve_colmap_init_hparams(recon, max_gaussians, init_hparams, min_track_length=min_track_length)
     chosen_count = positions.shape[0] if max_gaussians <= 0 else min(max(int(max_gaussians), 1), positions.shape[0])
     chosen_positions = np.ascontiguousarray(positions[:chosen_count], dtype=np.float32)
     median_nn_scale = float(np.median(point_nn_scales(chosen_positions))) if chosen_count > 0 else 1.0
@@ -461,15 +467,16 @@ def _diffused_pointcloud_init_hparams(
     seed: int,
     init_hparams: object,
     nn_radius_scale_coef: float,
+    min_track_length: int,
 ):
-    resolved = resolve_colmap_init_hparams(recon, point_count, init_hparams)
-    positions, _ = sample_colmap_diffused_points(recon, point_count, diffusion_radius, seed)
+    resolved = resolve_colmap_init_hparams(recon, point_count, init_hparams, min_track_length=min_track_length)
+    positions, _ = sample_colmap_diffused_points(recon, point_count, diffusion_radius, seed, min_track_length=min_track_length)
     median_nn_scale = float(np.median(point_nn_scales(np.ascontiguousarray(positions, dtype=np.float32)))) if positions.shape[0] > 0 else 1.0
     return replace(resolved, base_scale=float(max(float(nn_radius_scale_coef), 1e-4) * max(median_nn_scale, 1e-6)))
 
 
-def _diffused_pointcloud_init_hparams_from_positions(recon: object, positions: np.ndarray, init_hparams: object, nn_radius_scale_coef: float):
-    resolved = resolve_colmap_init_hparams(recon, int(positions.shape[0]), init_hparams)
+def _diffused_pointcloud_init_hparams_from_positions(recon: object, positions: np.ndarray, init_hparams: object, nn_radius_scale_coef: float, min_track_length: int):
+    resolved = resolve_colmap_init_hparams(recon, int(positions.shape[0]), init_hparams, min_track_length=min_track_length)
     chosen_positions = np.ascontiguousarray(positions, dtype=np.float32)
     median_nn_scale = float(np.median(point_nn_scales(chosen_positions))) if chosen_positions.shape[0] > 0 else 1.0
     return replace(resolved, base_scale=float(max(float(nn_radius_scale_coef), 1e-4) * max(median_nn_scale, 1e-6)))
@@ -495,6 +502,7 @@ def _clear_cached_init_source(viewer: object) -> None:
 
 def _cached_init_signature(viewer: object, init: object) -> tuple[object, ...] | None:
     import_cfg = getattr(viewer.s, "colmap_import", None)
+    min_track_length = int(getattr(import_cfg, "min_track_length", DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH))
     if import_cfg is None:
         return None
     if str(import_cfg.init_mode) == _COLMAP_IMPORT_DEPTH:
@@ -507,12 +515,14 @@ def _cached_init_signature(viewer: object, init: object) -> tuple[object, ...] |
             str(import_cfg.image_downscale_mode),
             int(import_cfg.image_downscale_max_size),
             round(float(import_cfg.image_downscale_scale), 6),
+            min_track_length,
             int(import_cfg.depth_point_count),
         )
     return (
         None if viewer.s.colmap_root is None else str(Path(viewer.s.colmap_root).resolve()),
         str(import_cfg.init_mode),
         None if import_cfg.custom_ply_path is None else str(Path(import_cfg.custom_ply_path).resolve()),
+        min_track_length,
         int(import_cfg.diffused_point_count),
         round(float(import_cfg.diffusion_radius), 6),
         int(init.seed),
@@ -523,6 +533,7 @@ def _ensure_cached_init_source(viewer: object, init: object) -> None:
     if viewer.s.colmap_recon is None:
         return
     import_cfg = viewer.s.colmap_import
+    min_track_length = int(getattr(import_cfg, "min_track_length", DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH))
     signature = _cached_init_signature(viewer, init)
     cached_signature = getattr(viewer.s, "cached_init_signature", None)
     cached_scene = getattr(viewer.s, "cached_init_scene", None)
@@ -542,11 +553,17 @@ def _ensure_cached_init_source(viewer: object, init: object) -> None:
             raise RuntimeError("Custom PLY initialization requires a selected PLY file.")
         setattr(viewer.s, "cached_init_scene", _copy_gaussian_scene(load_gaussian_ply(import_cfg.custom_ply_path)))
     elif import_cfg.init_mode == _COLMAP_IMPORT_DIFFUSED_POINTCLOUD:
-        positions, colors = sample_colmap_diffused_points(viewer.s.colmap_recon, import_cfg.diffused_point_count, import_cfg.diffusion_radius, init.seed)
+        positions, colors = sample_colmap_diffused_points(
+            viewer.s.colmap_recon,
+            import_cfg.diffused_point_count,
+            import_cfg.diffusion_radius,
+            init.seed,
+            min_track_length=min_track_length,
+        )
         setattr(viewer.s, "cached_init_point_positions", np.array(positions, dtype=np.float32, copy=True))
         setattr(viewer.s, "cached_init_point_colors", np.array(colors, dtype=np.float32, copy=True))
     else:
-        positions, colors = _point_tables(viewer.s.colmap_recon)
+        positions, colors = _point_tables(viewer.s.colmap_recon, min_track_length)
         setattr(viewer.s, "cached_init_point_positions", np.array(positions, dtype=np.float32, copy=True))
         setattr(viewer.s, "cached_init_point_colors", np.array(colors, dtype=np.float32, copy=True))
     setattr(viewer.s, "cached_init_signature", signature)
@@ -833,6 +850,7 @@ def _build_initial_training_scene(viewer: object, init: object, params: object, 
     if viewer.s.colmap_recon is None:
         raise RuntimeError("Training scene initialization requires a loaded COLMAP reconstruction.")
     import_cfg = viewer.s.colmap_import
+    min_track_length = int(getattr(import_cfg, "min_track_length", DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH))
     _ensure_cached_init_source(viewer, init)
     if import_cfg.init_mode == _COLMAP_IMPORT_CUSTOM_PLY:
         if viewer.s.cached_init_scene is None:
@@ -845,10 +863,10 @@ def _build_initial_training_scene(viewer: object, init: object, params: object, 
         raise RuntimeError("Cached pointcloud initializer data is unavailable.")
 
     if import_cfg.init_mode == _COLMAP_IMPORT_DIFFUSED_POINTCLOUD:
-        resolved_init = _diffused_pointcloud_init_hparams_from_positions(viewer.s.colmap_recon, positions, init_hparams, import_cfg.nn_radius_scale_coef)
+        resolved_init = _diffused_pointcloud_init_hparams_from_positions(viewer.s.colmap_recon, positions, init_hparams, import_cfg.nn_radius_scale_coef, min_track_length)
         return initialize_scene_from_points_colors(positions, colors, init.seed, resolved_init), float(max(resolved_init.base_scale, 1e-8))
 
-    resolved_init = _pointcloud_init_hparams_from_positions(viewer.s.colmap_recon, positions, params.training.max_gaussians, init_hparams, import_cfg.nn_radius_scale_coef)
+    resolved_init = _pointcloud_init_hparams_from_positions(viewer.s.colmap_recon, positions, params.training.max_gaussians, init_hparams, import_cfg.nn_radius_scale_coef, min_track_length)
     chosen_count = positions.shape[0] if params.training.max_gaussians <= 0 else min(max(int(params.training.max_gaussians), 1), positions.shape[0])
     scene = initialize_scene_from_points_colors(positions[:chosen_count], colors[:chosen_count], init.seed, resolved_init)
     return scene, float(max(resolved_init.base_scale, 1e-8))
@@ -1016,6 +1034,7 @@ def _finish_import_colmap_dataset(
     image_downscale_max_size: int,
     image_downscale_scale: float,
     nn_radius_scale_coef: float,
+    min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH,
     depth_point_count: int = 100000,
     diffused_point_count: int = 100000,
     diffusion_radius: float = 1.0,
@@ -1028,7 +1047,7 @@ def _finish_import_colmap_dataset(
 ) -> None:
     if recon is None or training_frames is None:
         raise RuntimeError("COLMAP import finalize requires reconstruction and training frames.")
-    xyz, _ = _point_tables(recon)
+    xyz, _ = _point_tables(recon, min_track_length)
     _reset_loaded_runtime(viewer)
     _reset_training_visual_state(viewer)
     _update_import_settings(
@@ -1044,6 +1063,7 @@ def _finish_import_colmap_dataset(
         image_downscale_max_size=image_downscale_max_size,
         image_downscale_scale=image_downscale_scale,
         nn_radius_scale_coef=nn_radius_scale_coef,
+        min_track_length=min_track_length,
         depth_point_count=depth_point_count,
         diffused_point_count=diffused_point_count,
         diffusion_radius=diffusion_radius,
@@ -1084,6 +1104,7 @@ def import_colmap_dataset(
     image_downscale_max_size: int,
     image_downscale_scale: float,
     nn_radius_scale_coef: float,
+    min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH,
     depth_point_count: int = 100000,
     diffused_point_count: int = 100000,
     diffusion_radius: float = 1.0,
@@ -1127,6 +1148,7 @@ def import_colmap_dataset(
         image_downscale_max_size=image_downscale_max_size,
         image_downscale_scale=image_downscale_scale,
         nn_radius_scale_coef=nn_radius_scale_coef,
+        min_track_length=min_track_length,
         depth_point_count=depth_point_count,
         diffused_point_count=diffused_point_count,
         diffusion_radius=diffusion_radius,
@@ -1154,6 +1176,7 @@ def import_colmap_from_ui(viewer: object) -> None:
     image_downscale_max_size = max(int(viewer.ui._values.get("colmap_image_max_size", 2048)), 1)
     image_downscale_scale = float(np.clip(viewer.ui._values.get("colmap_image_scale", 1.0), 1e-6, 1.0))
     nn_radius_scale_coef = float(viewer.ui._values.get("colmap_nn_radius_scale_coef", 0.5))
+    min_track_length = max(int(viewer.ui._values.get("colmap_min_track_length", DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH)), 0)
     depth_point_count = max(int(viewer.ui._values.get("colmap_depth_point_count", 100000)), 1)
     diffused_point_count = max(int(viewer.ui._values.get("colmap_diffused_point_count", 100000)), 1)
     diffusion_radius = max(float(viewer.ui._values.get("colmap_diffusion_radius", 1.0)), 0.0)
@@ -1184,6 +1207,7 @@ def import_colmap_from_ui(viewer: object) -> None:
         image_downscale_max_size=image_downscale_max_size,
         image_downscale_scale=image_downscale_scale,
         nn_radius_scale_coef=float(max(nn_radius_scale_coef, 1e-4)),
+        min_track_length=min_track_length,
         depth_point_count=depth_point_count,
         diffused_point_count=diffused_point_count,
         diffusion_radius=diffusion_radius,
@@ -1269,6 +1293,7 @@ def advance_colmap_import(viewer: object) -> None:
                 image_downscale_max_size=progress.image_downscale_max_size,
                 image_downscale_scale=progress.image_downscale_scale,
                 nn_radius_scale_coef=progress.nn_radius_scale_coef,
+                min_track_length=progress.min_track_length,
                 depth_point_count=progress.depth_point_count,
                 diffused_point_count=progress.diffused_point_count,
                 diffusion_radius=progress.diffusion_radius,
