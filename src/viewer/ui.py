@@ -1452,11 +1452,11 @@ class ToolkitWindow:
                 selected = {camera_id for camera_id in selected_camera_ids if camera_id in camera_ids}
                 selected_frame_count = sum(int(row["frame_count"]) for row in camera_rows if int(row["camera_id"]) in selected)
                 total_frame_count = sum(int(row["frame_count"]) for row in camera_rows)
-                imgui.text_disabled(f"Cameras: {len(selected)}/{len(camera_rows)} selected | Frames: {selected_frame_count}/{total_frame_count}")
-                if imgui.button("All Cameras"):
+                imgui.text_disabled(f"Camera Models: {len(selected)}/{len(camera_rows)} selected | Frames/Poses: {selected_frame_count}/{total_frame_count}")
+                if imgui.button("All Models"):
                     selected = set(camera_ids)
                 imgui.same_line()
-                if imgui.button("No Cameras"):
+                if imgui.button("No Models"):
                     selected.clear()
                 table_height = min(max(88.0, 28.0 * float(len(camera_rows)) + 8.0), 180.0)
                 if imgui.begin_child("##colmap_cameras", imgui.ImVec2(0.0, table_height), True):
@@ -1469,9 +1469,9 @@ class ToolkitWindow:
                     )
                     if imgui.begin_table("##colmap_camera_table", 7, flags):
                         imgui.table_setup_column("Use", imgui.TableColumnFlags_.width_fixed.value, 36.0)
-                        imgui.table_setup_column("Id", imgui.TableColumnFlags_.width_fixed.value, 42.0)
+                        imgui.table_setup_column("Camera Id", imgui.TableColumnFlags_.width_fixed.value, 72.0)
                         imgui.table_setup_column("Model", imgui.TableColumnFlags_.width_fixed.value, 132.0)
-                        imgui.table_setup_column("Frames", imgui.TableColumnFlags_.width_fixed.value, 54.0)
+                        imgui.table_setup_column("Frames / Poses", imgui.TableColumnFlags_.width_fixed.value, 96.0)
                         imgui.table_setup_column("Res", imgui.TableColumnFlags_.width_fixed.value, 86.0)
                         imgui.table_setup_column("Focal", imgui.TableColumnFlags_.width_fixed.value, 120.0)
                         imgui.table_setup_column("Principal / Dist", imgui.TableColumnFlags_.width_stretch.value)

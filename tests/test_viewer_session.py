@@ -539,7 +539,7 @@ def test_import_colmap_from_ui_rejects_empty_camera_selection(tmp_path: Path) ->
         s=SimpleNamespace(),
     )
 
-    with pytest.raises(ValueError, match="Select at least one COLMAP camera before importing."):
+    with pytest.raises(ValueError, match="Select at least one COLMAP camera model before importing."):
         session.import_colmap_from_ui(viewer)
 
 def test_advance_colmap_import_processes_images_incrementally(tmp_path: Path, monkeypatch) -> None:

@@ -1252,7 +1252,7 @@ def import_colmap_from_ui(viewer: object) -> None:
     if not images_root.exists():
         raise FileNotFoundError(f"COLMAP image folder does not exist: {images_root}")
     if len(camera_rows) > 0 and len(selected_camera_ids) == 0:
-        raise ValueError("Select at least one COLMAP camera before importing.")
+        raise ValueError("Select at least one COLMAP camera model before importing.")
     if init_mode == _COLMAP_IMPORT_DEPTH and (depth_root is None or not depth_root.exists()):
         raise FileNotFoundError(f"Depth folder does not exist: {depth_root}")
     if init_mode == _COLMAP_IMPORT_CUSTOM_PLY and (custom_ply_path is None or not custom_ply_path.exists()):
