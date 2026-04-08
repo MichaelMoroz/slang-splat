@@ -2435,7 +2435,7 @@ def build_ui(renderer) -> ViewerUI:
     values["_training_views_rows"] = ()
     values["_training_view_overlay_segments"] = ()
     values["_loss_debug_frame_max"] = 0
-    values["_viewport_sh_band"] = int(values.get("sh_band", 0))
+    values["_viewport_sh_band"] = 3
     values["_viewport_sh_control_key"] = "sh_band"
     values["_viewport_sh_stage_label"] = "Stage 0"
     values["_colmap_import_active"] = False

@@ -872,6 +872,7 @@ def apply_live_params(viewer: object, force_init_defaults: bool = False) -> None
     training_params = viewer.training_params().training
     trainer = viewer.s.trainer
     active_sh_band = resolve_sh_band(trainer.training, trainer.state.step) if trainer is not None and hasattr(trainer, "training") and hasattr(trainer, "state") else int(getattr(training_params, "sh_band", 3 if bool(getattr(training_params, "use_sh", False)) else 0))
+    viewport_sh_band = min(max(int(viewer.ui._values.get("_viewport_sh_band", active_sh_band)), 0), 3) if hasattr(viewer, "ui") else active_sh_band
     viewer.s.background = viewer.render_background()
     renderer_specs = (
         ("renderer", True, "applied_renderer_params_main"),
@@ -883,7 +884,7 @@ def apply_live_params(viewer: object, force_init_defaults: bool = False) -> None
         if renderer is None:
             setattr(viewer.s, state_attr, None)
             continue
-        renderer.sh_band = active_sh_band
+        renderer.sh_band = active_sh_band if trainer is not None or attr == "training_renderer" else viewport_sh_band
         params = viewer.renderer_params(allow_debug)
         signature = _renderer_params_signature(params)
         if getattr(viewer.s, state_attr) == signature:

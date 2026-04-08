@@ -178,7 +178,7 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["_show_histograms_prev"] is False
     assert viewer_ui._values["_training_views_rows"] == ()
     assert viewer_ui._values["_training_view_overlay_segments"] == ()
-    assert viewer_ui._values["_viewport_sh_band"] == 0
+    assert viewer_ui._values["_viewport_sh_band"] == 3
     assert viewer_ui._values["_viewport_sh_control_key"] == "sh_band"
     assert viewer_ui._values["_viewport_sh_stage_label"] == "Stage 0"
     assert "show_renderer_debug" not in viewer_ui._values
