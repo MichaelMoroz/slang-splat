@@ -36,6 +36,7 @@ class ColmapImportSettings:
     depth_point_count: int = 100000
     diffused_point_count: int = 100000
     diffusion_radius: float = 1.0
+    use_target_alpha_mask: bool = False
 
 
 @dataclass(slots=True)
@@ -53,6 +54,7 @@ class ColmapImportProgress:
     depth_point_count: int = 100000
     diffused_point_count: int = 100000
     diffusion_radius: float = 1.0
+    use_target_alpha_mask: bool = False
     depth_value_mode: str = "z_depth"
     depth_root: Path | None = None
     phase: str = "prepare"

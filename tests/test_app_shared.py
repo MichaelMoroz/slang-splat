@@ -70,6 +70,7 @@ def test_build_training_params_clamps_ranges():
     assert params.stability.max_opacity == params.stability.min_opacity == 0.8
     assert params.training.far > params.training.near
     assert params.training.background_mode == TRAIN_BACKGROUND_MODE_RANDOM
+    assert params.training.use_target_alpha_mask is False
     assert params.training.use_sh is False
     assert params.training.sh_band == 0
     assert params.training.scale_l2_weight == 0.0
@@ -123,6 +124,7 @@ def test_default_training_params_match_fixed_count_defaults():
     params = default_training_params()
     assert params.training.background_mode == TRAIN_BACKGROUND_MODE_RANDOM
     assert params.training.background == (1.0, 1.0, 1.0)
+    assert params.training.use_target_alpha_mask is False
     assert params.training.use_sh is False
     assert params.training.sh_band == 0
     assert params.training.scale_l2_weight == 0.0

@@ -394,6 +394,7 @@ _TRAIN_SETUP_SPECS = (
     ControlSpec("max_gaussians", "slider_int", "Max Gaussians", {"value": 1000000, "min": 1000, "max": 10000000}),
     ControlSpec("training_steps_per_frame", "slider_int", "Steps / Frame", {"value": 3, "min": 1, "max": 8}),
     ControlSpec("background_mode", "combo", "Train Background", {"value": 1, "options": _TRAIN_BACKGROUND_MODE_LABELS}),
+    ControlSpec("use_target_alpha_mask", "checkbox", "Use Target Alpha Mask", {"value": False}),
     ControlSpec("train_background_color", "color_edit3", "Train BG Color", {"value": (1.0, 1.0, 1.0)}),
     ControlSpec("refinement_interval", "input_int", "Refinement Interval", {"value": 200, "step": 10, "step_fast": 50}),
     ControlSpec("refinement_growth_ratio", "input_float", "Refinement Growth", {"value": 0.05, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
@@ -1478,6 +1479,12 @@ class ToolkitWindow:
                     imgui.set_item_tooltip("Uniform scale applied to imported training images. Both axes stay proportional and the importer never upscales.")
             else:
                 imgui.text_disabled("Imported images keep their source resolution.")
+            imgui.spacing()
+            changed, value = imgui.checkbox("Use Alpha Mask", bool(ui._values.get("use_target_alpha_mask", False)))
+            if changed:
+                ui._values["use_target_alpha_mask"] = bool(value)
+            if imgui.is_item_hovered():
+                imgui.set_item_tooltip("If imported images have alpha, transparent pixels are masked out of per-pixel training loss and gradients.")
             imgui.spacing()
             init_labels = _colmap_init_mode_labels(_valid_depth_root_text(ui._values.get("colmap_depth_root", "")))
             mode_idx = max(0, min(int(ui._values.get("colmap_init_mode", 0)), len(init_labels) - 1))

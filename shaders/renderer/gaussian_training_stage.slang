@@ -36,6 +36,7 @@ uniform uint g_Height;
 uniform float g_InvPixelCount;
 uniform float g_LossGradClip;
 uniform float g_HugeValue;
+uniform uint g_UseTargetAlphaMask;
 uniform uint g_BatchStepIndex;
 uniform TrainingSubsampleParams g_TrainingSubsample;
 
@@ -546,10 +547,24 @@ float depth_ratio_window_grad(float depthRatio)
     return g_DepthRatioWeight * (depth_ratio_sigmoid(scaledLo) - depth_ratio_sigmoid(scaledHi)) * g_InvPixelCount;
 }
 
+uint2 training_target_pixel(uint2 pixel)
+{
+    return g_TrainingSubsample.enabled == 0u ? pixel : training_sample_native_pixel(pixel, g_TrainingSubsample);
+}
+
+float4 training_target_rgba(uint2 pixel)
+{
+    return sanitize_float4(g_Target[training_target_pixel(pixel)], g_HugeValue);
+}
+
+float training_target_mask(float alpha)
+{
+    return g_UseTargetAlphaMask == 0u ? 1.0 : saturate(alpha);
+}
+
 float3 training_target_rgb(uint2 pixel)
 {
-    if (g_TrainingSubsample.enabled == 0u) return sanitize_float3(g_Target[pixel].xyz, g_HugeValue);
-    return sanitize_float3(g_Target[training_sample_native_pixel(pixel, g_TrainingSubsample)].xyz, g_HugeValue);
+    return training_target_rgba(pixel).xyz;
 }
 
 uint2 training_clamped_pixel(int2 pixel)
@@ -691,24 +706,26 @@ void csComputeL1LossForward(
         uint2 pixel = uint2(px, py);
         uint pixelIndex = py * g_Width + px;
         float3 rendered = sanitize_float3(g_Rendered[pixel].xyz, g_HugeValue);
-        float3 target = training_target_rgb(pixel);
-        float loss = rgb_l1_loss(rendered, target, g_InvPixelCount);
-        float mse = rgb_mse_loss(rendered, target, g_InvPixelCount);
+        float4 targetRgba = training_target_rgba(pixel);
+        float3 target = targetRgba.xyz;
+        float targetMask = training_target_mask(targetRgba.w);
+        float loss = rgb_l1_loss(rendered, target, g_InvPixelCount) * targetMask;
+        float mse = rgb_mse_loss(rendered, target, g_InvPixelCount) * targetMask;
         float depthRatio = sanitize_scalar(g_RenderedDepthStats[pixel].w, g_HugeValue);
         float density = sanitize_scalar(g_RenderedDensity[py * g_Width + px], g_HugeValue);
         localRgbLoss = isfinite(loss) ? loss : 0.0;
-        localTargetEdge = isfinite(g_RefinementTargetEdgeWeight) && g_RefinementTargetEdgeWeight > 0.0 ? max(training_target_edge_intensity(pixel), 0.0) : 0.0;
+        localTargetEdge = isfinite(g_RefinementTargetEdgeWeight) && g_RefinementTargetEdgeWeight > 0.0 ? max(training_target_edge_intensity(pixel), 0.0) * targetMask : 0.0;
         localLoss = localRgbLoss;
         localMSE = isfinite(mse) ? mse : 0.0;
         if (g_DepthRatioWeight > 0.0)
         {
-            float depthRatioLoss = depth_ratio_window_loss(depthRatio);
+            float depthRatioLoss = depth_ratio_window_loss(depthRatio) * targetMask;
             if (isfinite(depthRatioLoss)) localLoss += depthRatioLoss;
         }
         if (g_DensityRegularizer > 0.0)
         {
             float densityExcess = max(density - g_MaxAllowedDensity, 0.0);
-            float densityLoss = g_DensityRegularizer * densityExcess * g_InvPixelCount;
+            float densityLoss = g_DensityRegularizer * densityExcess * g_InvPixelCount * targetMask;
             localDensityLoss = isfinite(densityLoss) ? densityLoss : 0.0;
         }
         g_TrainingRgbLoss[pixelIndex] = localRgbLoss;
@@ -758,21 +775,23 @@ void csComputeL1LossBackward(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     uint2 pixel = uint2(px, py);
     float3 rendered = sanitize_float3(g_Rendered[pixel].xyz, g_HugeValue);
-    float3 target = training_target_rgb(pixel);
-    float3 dOut = clamp(sanitize_float3(rgb_l1_grad(rendered, target) * g_InvPixelCount, g_LossGradClip), -g_LossGradClip, g_LossGradClip);
+    float4 targetRgba = training_target_rgba(pixel);
+    float3 target = targetRgba.xyz;
+    float targetMask = training_target_mask(targetRgba.w);
+    float3 dOut = clamp(sanitize_float3(rgb_l1_grad(rendered, target) * (g_InvPixelCount * targetMask), g_LossGradClip), -g_LossGradClip, g_LossGradClip);
     g_OutputGrad[py * g_Width + px] = float4(dOut, 0.0);
     float densityGrad = 0.0;
     float density = sanitize_scalar(g_RenderedDensity[py * g_Width + px], g_HugeValue);
     if (g_DensityRegularizer > 0.0 && density > g_MaxAllowedDensity)
     {
-        densityGrad = g_DensityRegularizer * g_InvPixelCount;
+        densityGrad = g_DensityRegularizer * g_InvPixelCount * targetMask;
     }
 
     float depthRatioGrad = 0.0;
     if (g_DepthRatioWeight > 0.0)
     {
         float depthRatio = sanitize_scalar(g_RenderedDepthStats[pixel].w, g_HugeValue);
-        depthRatioGrad = depth_ratio_window_grad(depthRatio);
+        depthRatioGrad = depth_ratio_window_grad(depthRatio) * targetMask;
     }
     g_RegularizerGrad[py * g_Width + px] = float2(
         clamp(sanitize_scalar(densityGrad, g_LossGradClip), -g_LossGradClip, g_LossGradClip),

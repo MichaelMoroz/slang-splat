@@ -95,6 +95,7 @@ _TRAINING_PARAM_KEYS = {
     "position_random_step_noise_stage2_lr": "position_random_step_noise_stage2_lr",
     "position_random_step_noise_stage3_lr": "position_random_step_noise_stage3_lr",
     "background_mode": "background_mode",
+    "use_target_alpha_mask": "use_target_alpha_mask",
     "sh_band": "sh_band",
     "sh_band_stage1": "sh_band_stage1",
     "sh_band_stage2": "sh_band_stage2",
@@ -465,6 +466,7 @@ class SplatViewer(spy.AppWindow):
                     depth_point_count=import_cfg.depth_point_count,
                     diffused_point_count=import_cfg.diffused_point_count,
                     diffusion_radius=import_cfg.diffusion_radius,
+                    use_target_alpha_mask=import_cfg.use_target_alpha_mask,
                 )
             )
 

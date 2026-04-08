@@ -86,6 +86,24 @@ def _make_frame(tmp_path: Path, width: int = 64, height: int = 64, *, image_name
     )
 
 
+def _make_rgba_frame(tmp_path: Path, rgba: np.ndarray, *, image_name: str = "target_rgba.png", image_id: int = 0) -> ColmapFrame:
+    image = np.asarray(rgba, dtype=np.uint8)
+    height, width = image.shape[:2]
+    Image.fromarray(image).save(tmp_path / image_name)
+    return ColmapFrame(
+        image_id=image_id,
+        image_path=tmp_path / image_name,
+        q_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        t_xyz=np.array([0.0, 0.0, 3.0], dtype=np.float32),
+        fx=72.0,
+        fy=72.0,
+        cx=width * 0.5,
+        cy=height * 0.5,
+        width=width,
+        height=height,
+    )
+
+
 def _read_scene_groups(renderer: GaussianRenderer, count: int) -> dict[str, np.ndarray]:
     return renderer.read_scene_groups(count)
 
@@ -588,6 +606,68 @@ def test_split_loss_forward_backward_separates_metrics_from_output_grads(device,
     assert np.allclose(grads_after_forward, 0.0)
     assert np.any(np.abs(grads_after_backward[..., :3]) > 0.0)
     assert np.all(np.isfinite(grads_after_backward))
+
+
+def test_target_alpha_mask_skips_masked_pixel_loss_and_output_grads(device, tmp_path: Path):
+    image = np.zeros((32, 32, 4), dtype=np.uint8)
+    image[..., 1] = 255
+    frame = _make_rgba_frame(tmp_path, image, image_name="alpha_mask_target.png", image_id=21)
+    scene = _make_scene(count=1, seed=111)
+    scene.opacities[:] = 0.0
+    scene.colors[:] = 0.0
+    renderer_off = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    renderer_on = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    trainer_off = GaussianTrainer(
+        device=device,
+        renderer=renderer_off,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(
+            background_mode=TRAIN_BACKGROUND_MODE_CUSTOM,
+            background=(0.0, 0.0, 0.0),
+            density_regularizer=0.0,
+            depth_ratio_weight=0.0,
+            use_target_alpha_mask=False,
+        ),
+        seed=123,
+    )
+    trainer_on = GaussianTrainer(
+        device=device,
+        renderer=renderer_on,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(
+            background_mode=TRAIN_BACKGROUND_MODE_CUSTOM,
+            background=(0.0, 0.0, 0.0),
+            density_regularizer=0.0,
+            depth_ratio_weight=0.0,
+            use_target_alpha_mask=True,
+        ),
+        seed=123,
+    )
+    camera = frame.make_camera(near=0.1, far=20.0)
+    background = np.zeros((3,), dtype=np.float32)
+
+    def run_pass(trainer: GaussianTrainer, renderer: GaussianRenderer) -> tuple[tuple[float, float, float], np.ndarray]:
+        renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
+        enc = device.create_command_encoder()
+        trainer._dispatch_raster_training_forward(enc, camera, background)
+        target_texture = trainer.get_frame_target_texture(0, native_resolution=False, encoder=enc)
+        trainer._dispatch_loss_forward(enc, target_texture)
+        trainer._dispatch_loss_backward(enc, target_texture)
+        device.submit_command_buffer(enc.finish())
+        device.wait()
+        return trainer._read_loss_metrics(), _read_output_grads(renderer).copy()
+
+    (loss_off, mse_off, density_off), grads_off = run_pass(trainer_off, renderer_off)
+    (loss_on, mse_on, density_on), grads_on = run_pass(trainer_on, renderer_on)
+
+    assert loss_off > 0.0
+    assert mse_off > 0.0
+    assert density_off == 0.0
+    assert np.any(np.abs(grads_off[..., :3]) > 0.0)
+    np.testing.assert_allclose((loss_on, mse_on, density_on), (0.0, 0.0, 0.0), rtol=0.0, atol=1e-7)
+    np.testing.assert_allclose(grads_on[..., :3], 0.0, rtol=0.0, atol=1e-7)
 
 
 def test_split_raster_backward_consumes_forward_cache_only(device, tmp_path: Path):

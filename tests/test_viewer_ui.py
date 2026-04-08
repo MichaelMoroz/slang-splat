@@ -137,6 +137,7 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["position_random_step_opacity_gate_center"] == 0.005
     assert viewer_ui._values["position_random_step_opacity_gate_sharpness"] == 100.0
     assert viewer_ui._values["background_mode"] == 1
+    assert viewer_ui._values["use_target_alpha_mask"] is False
     assert viewer_ui._values["train_background_color"] == (1.0, 1.0, 1.0)
     assert viewer_ui._values["sh_band"] == 0
     assert viewer_ui._values["sh_band_stage1"] == 1

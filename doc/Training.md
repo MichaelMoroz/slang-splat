@@ -37,6 +37,7 @@ The training schedule resolves that band cap per stage, and the renderer uses th
   - native dataset textures cached as `rgba8_unorm_srgb`,
   - one reusable train target texture in `rgba32_float`,
   - a GPU box-filter downscale dispatch that writes the current frame into the train target.
+- COLMAP imports can optionally treat target alpha as a per-pixel training mask; when enabled, transparent pixels contribute no RGB, density, depth-ratio, or refinement-edge loss/gradient.
 - Native dataset texture preparation uses a fixed 8-thread CPU loader for image decode and resize work, while GPU texture creation/upload remains serialized on the owning thread and is pipelined against those background CPU tasks.
 - Dataset texture creation and point-cloud upload/binding are isolated inside trainer helpers instead of being interleaved with the optimization step.
 

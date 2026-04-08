@@ -252,6 +252,7 @@ def _update_import_settings(
     depth_point_count: int,
     diffused_point_count: int,
     diffusion_radius: float,
+    use_target_alpha_mask: bool,
 ) -> None:
     viewer.s.colmap_import = ColmapImportSettings(
         database_path=None if database_path is None else Path(database_path).resolve(),
@@ -267,6 +268,7 @@ def _update_import_settings(
         depth_point_count=max(int(depth_point_count), 1),
         diffused_point_count=max(int(diffused_point_count), 1),
         diffusion_radius=max(float(diffusion_radius), 0.0),
+        use_target_alpha_mask=bool(use_target_alpha_mask),
     )
     _set_ui_path(viewer, "colmap_root_path", dataset_root)
     _set_ui_path(viewer, "colmap_database_path", database_path)
@@ -287,6 +289,7 @@ def _update_import_settings(
     viewer.ui._values["colmap_depth_point_count"] = max(int(depth_point_count), 1)
     viewer.ui._values["colmap_diffused_point_count"] = max(int(diffused_point_count), 1)
     viewer.ui._values["colmap_diffusion_radius"] = max(float(diffusion_radius), 0.0)
+    viewer.ui._values["use_target_alpha_mask"] = bool(use_target_alpha_mask)
 
 
 def _append_training_frame(progress: ColmapImportProgress, image_id: int, image: object) -> None:
@@ -1014,6 +1017,7 @@ def _finish_import_colmap_dataset(
     depth_point_count: int = 100000,
     diffused_point_count: int = 100000,
     diffusion_radius: float = 1.0,
+    use_target_alpha_mask: bool = False,
     recon: object = None,
     training_frames: list[ColmapFrame] | None = None,
     frame_targets_native: list[spy.Texture] | None = None,
@@ -1041,6 +1045,7 @@ def _finish_import_colmap_dataset(
         depth_point_count=depth_point_count,
         diffused_point_count=diffused_point_count,
         diffusion_radius=diffusion_radius,
+        use_target_alpha_mask=use_target_alpha_mask,
     )
     viewer.s.colmap_root = Path(colmap_root)
     viewer.s.colmap_recon = recon
@@ -1080,6 +1085,7 @@ def import_colmap_dataset(
     depth_point_count: int = 100000,
     diffused_point_count: int = 100000,
     diffusion_radius: float = 1.0,
+    use_target_alpha_mask: bool = False,
 ) -> None:
     _clear_loaded_scene(viewer)
     root = Path(colmap_root).resolve()
@@ -1122,6 +1128,7 @@ def import_colmap_dataset(
         depth_point_count=depth_point_count,
         diffused_point_count=diffused_point_count,
         diffusion_radius=diffusion_radius,
+        use_target_alpha_mask=use_target_alpha_mask,
         recon=recon,
         training_frames=training_frames,
         frame_targets_native=frame_targets_native,
@@ -1148,6 +1155,7 @@ def import_colmap_from_ui(viewer: object) -> None:
     depth_point_count = max(int(viewer.ui._values.get("colmap_depth_point_count", 100000)), 1)
     diffused_point_count = max(int(viewer.ui._values.get("colmap_diffused_point_count", 100000)), 1)
     diffusion_radius = max(float(viewer.ui._values.get("colmap_diffusion_radius", 1.0)), 0.0)
+    use_target_alpha_mask = bool(viewer.ui._values.get("use_target_alpha_mask", False))
     if not colmap_root.exists():
         raise FileNotFoundError(f"COLMAP root does not exist: {colmap_root}")
     if not _has_colmap_sparse(colmap_root):
@@ -1177,6 +1185,7 @@ def import_colmap_from_ui(viewer: object) -> None:
         depth_point_count=depth_point_count,
         diffused_point_count=diffused_point_count,
         diffusion_radius=diffusion_radius,
+        use_target_alpha_mask=use_target_alpha_mask,
     )
     viewer.s.last_error = ""
 
@@ -1261,6 +1270,7 @@ def advance_colmap_import(viewer: object) -> None:
                 depth_point_count=progress.depth_point_count,
                 diffused_point_count=progress.diffused_point_count,
                 diffusion_radius=progress.diffusion_radius,
+                use_target_alpha_mask=progress.use_target_alpha_mask,
                 recon=progress.recon,
                 training_frames=progress.frames,
                 frame_targets_native=progress.native_textures,

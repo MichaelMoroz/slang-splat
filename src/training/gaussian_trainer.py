@@ -183,7 +183,7 @@ class StabilityHyperParams:
 @dataclass(slots=True)
 class TrainingHyperParams:
     background: tuple[float, float, float] = (1.0, 1.0, 1.0); near: float = 0.1; far: float = 120.0
-    background_mode: int = TRAIN_BACKGROUND_MODE_RANDOM; use_sh: bool = False; sh_band: int = 0
+    background_mode: int = TRAIN_BACKGROUND_MODE_RANDOM; use_target_alpha_mask: bool = False; use_sh: bool = False; sh_band: int = 0
     scale_l2_weight: float = 0.0; scale_abs_reg_weight: float = 0.01; sh1_reg_weight: float = 0.01; opacity_reg_weight: float = 0.01; density_regularizer: float = 0.02; depth_ratio_weight: float = 1.0; max_allowed_density_start: float = 5.0; max_allowed_density: float = 12.0
     refinement_loss_weight: float = 0.25; refinement_target_edge_weight: float = 0.75
     depth_ratio_grad_min: float = 0.0; depth_ratio_grad_max: float = 0.1
@@ -207,6 +207,7 @@ class TrainingHyperParams:
         background = np.asarray(self.background, dtype=np.float32).reshape(3)
         self.background = tuple(float(v) for v in np.clip(background, 0.0, 1.0))
         self.background_mode = TRAIN_BACKGROUND_MODE_RANDOM if int(self.background_mode) == TRAIN_BACKGROUND_MODE_RANDOM else TRAIN_BACKGROUND_MODE_CUSTOM
+        self.use_target_alpha_mask = bool(self.use_target_alpha_mask)
         self.sh_band = min(max(int(self.sh_band), 0), 3) if int(self.sh_band) != 0 else (3 if bool(self.use_sh) else 0)
         self.use_sh = self.sh_band > 0
         self.lr_schedule_steps = max(int(self.lr_schedule_steps), 1)
@@ -953,6 +954,7 @@ class GaussianTrainer:
             "g_InvPixelCount": 1.0 / float(max(self.renderer.width * self.renderer.height, 1)),
             "g_LossGradClip": float(self.stability.loss_grad_clip),
             "g_HugeValue": float(self.stability.huge_value),
+            "g_UseTargetAlphaMask": int(bool(self.training.use_target_alpha_mask)),
             "g_DensityRegularizer": float(self.training.density_regularizer),
             "g_DepthRatioWeight": float(resolve_depth_ratio_weight(self.training, resolved_step)),
             "g_RefinementLossWeight": float(self.training.refinement_loss_weight),
