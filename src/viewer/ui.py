@@ -1052,7 +1052,6 @@ class ToolkitWindow:
         training_label = "Training Cameras On" if bool(ui._values.get("show_training_cameras", False)) else "Training Cameras Off"
         sh_band = min(max(int(ui._values.get("_viewport_sh_band", ui._values.get("sh_band", 0))), 0), len(_SH_BAND_LABELS) - 1)
         sh_label = _SH_BAND_LABELS[sh_band]
-        sh_control_key = str(ui._values.get("_viewport_sh_control_key", "sh_band"))
         label_size = imgui.calc_text_size(label)
         button_width = float(label_size.x) + 2.0 * float(style.frame_padding.x)
         button_pos = imgui.ImVec2(float(image_origin.x) + _VIEWPORT_OVERLAY_MARGIN * scale, float(image_origin.y) + _VIEWPORT_OVERLAY_MARGIN * scale)
@@ -1081,7 +1080,6 @@ class ToolkitWindow:
             for idx, option in enumerate(_SH_BAND_LABELS):
                 selected = idx == sh_band
                 if imgui.selectable(option, selected)[0]:
-                    ui._values[sh_control_key] = idx
                     ui._values["_viewport_sh_band"] = idx
                 if selected:
                     imgui.set_item_default_focus()

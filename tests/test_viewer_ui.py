@@ -331,7 +331,7 @@ def test_viewport_view_menu_left_aligns_view_mode_button(monkeypatch) -> None:
     assert origin.y > 72.0
 
 
-def test_viewport_view_menu_toggles_active_sh_control(monkeypatch) -> None:
+def test_viewport_view_menu_keeps_training_sh_controls_unchanged(monkeypatch) -> None:
     button_labels: list[str] = []
     select_calls: list[tuple[str, bool]] = []
     monkeypatch.setattr(ui.imgui, "get_style", lambda: SimpleNamespace(frame_padding=ui.imgui.ImVec2(4.0, 3.0)))
@@ -377,9 +377,9 @@ def test_viewport_view_menu_toggles_active_sh_control(monkeypatch) -> None:
 
     assert button_labels == ["View Mode", "Cameras On", "Labels Off", "Training Cameras Off"]
     assert select_calls == [("SH0", True), ("SH1", False), ("SH2", False), ("SH3", False)]
-    assert viewer_ui._values["sh_band"] == 0
-    assert viewer_ui._values["sh_band_stage2"] == 2
     assert viewer_ui._values["_viewport_sh_band"] == 2
+    assert viewer_ui._values["sh_band"] == 0
+    assert viewer_ui._values["sh_band_stage2"] == 0
 
 
 def test_viewport_camera_overlays_draw_lines_when_enabled(monkeypatch) -> None:
