@@ -351,15 +351,17 @@ def test_export_ply_callback_saves_active_scene(monkeypatch, tmp_path: Path) -> 
     viewer = SimpleNamespace(
         s=SimpleNamespace(trainer=None, scene=scene, last_error="stale"),
         _run_action=lambda action: action(),
+        training_params=lambda: SimpleNamespace(training=SimpleNamespace(use_sh=False)),
     )
 
     monkeypatch.setattr(app.spy.platform, "save_file_dialog", lambda filters: tmp_path / "exported_scene")
-    monkeypatch.setattr(app, "save_gaussian_ply", lambda path, src_scene: saved.update(path=Path(path), scene=src_scene) or Path(path).resolve())
+    monkeypatch.setattr(app, "save_gaussian_ply", lambda path, src_scene, include_sh=True: saved.update(path=Path(path), scene=src_scene, include_sh=include_sh) or Path(path).resolve())
 
     SplatViewer._export_ply_callback(viewer)
 
     assert saved["scene"] is scene
     assert saved["path"] == tmp_path / "exported_scene.ply"
+    assert saved["include_sh"] is False
 
 
 def test_export_ply_callback_prefers_training_scene(monkeypatch, tmp_path: Path) -> None:
@@ -381,13 +383,22 @@ def test_export_ply_callback_prefers_training_scene(monkeypatch, tmp_path: Path)
     )
     saved: dict[str, object] = {}
     viewer = SimpleNamespace(
-        s=SimpleNamespace(trainer=SimpleNamespace(read_live_scene=lambda: trained_scene), scene=base_scene, last_error=""),
+        s=SimpleNamespace(
+            trainer=SimpleNamespace(
+                read_live_scene=lambda: trained_scene,
+                training=SimpleNamespace(lr_schedule_enabled=False, use_sh=True),
+                state=SimpleNamespace(step=123),
+            ),
+            scene=base_scene,
+            last_error="",
+        ),
         _run_action=lambda action: action(),
     )
 
     monkeypatch.setattr(app.spy.platform, "save_file_dialog", lambda filters: tmp_path / "trained_export.ply")
-    monkeypatch.setattr(app, "save_gaussian_ply", lambda path, src_scene: saved.update(path=Path(path), scene=src_scene) or Path(path).resolve())
+    monkeypatch.setattr(app, "save_gaussian_ply", lambda path, src_scene, include_sh=True: saved.update(path=Path(path), scene=src_scene, include_sh=include_sh) or Path(path).resolve())
 
     SplatViewer._export_ply_callback(viewer)
 
     assert saved["scene"] is trained_scene
+    assert saved["include_sh"] is True

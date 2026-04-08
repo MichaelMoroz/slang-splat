@@ -94,3 +94,40 @@ def test_save_gaussian_ply_round_trips_scene_data(tmp_path) -> None:
         scene.rotations / np.maximum(np.linalg.norm(scene.rotations, axis=1, keepdims=True), 1e-8),
         atol=1e-6,
     )
+
+
+def test_save_gaussian_ply_without_sh_omits_rest_properties(tmp_path) -> None:
+    scene = GaussianScene(
+        positions=np.array([[1.0, 2.0, 3.0]], dtype=np.float32),
+        scales=np.array([[0.0, 1.0, -1.0]], dtype=np.float32),
+        rotations=np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+        opacities=np.array([0.2], dtype=np.float32),
+        colors=np.array([[0.1, 0.2, 0.3]], dtype=np.float32),
+        sh_coeffs=np.array([[[0.5, 0.0, -0.5], [1.0, 2.0, 3.0]]], dtype=np.float32),
+    )
+
+    path = tmp_path / "exported_scene_dc_only.ply"
+    saved_path = save_gaussian_ply(path, scene, include_sh=False)
+    ply = PlyData.read(saved_path)
+    property_names = tuple(prop.name for prop in ply.elements[0].properties)
+    loaded = load_gaussian_ply(saved_path)
+
+    assert saved_path == path.resolve()
+    assert property_names == (
+        "x",
+        "y",
+        "z",
+        "opacity",
+        "f_dc_0",
+        "f_dc_1",
+        "f_dc_2",
+        "scale_0",
+        "scale_1",
+        "scale_2",
+        "rot_0",
+        "rot_1",
+        "rot_2",
+        "rot_3",
+    )
+    np.testing.assert_allclose(loaded.sh_coeffs[:, 0, :], scene.sh_coeffs[:, 0, :], atol=1e-6)
+    np.testing.assert_allclose(loaded.sh_coeffs[:, 1:, :], 0.0, atol=1e-6)

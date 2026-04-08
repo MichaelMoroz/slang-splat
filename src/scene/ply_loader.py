@@ -103,15 +103,16 @@ def load_gaussian_ply(path: str | Path) -> GaussianScene:
     )
 
 
-def save_gaussian_ply(path: str | Path, scene: GaussianScene) -> Path:
+def save_gaussian_ply(path: str | Path, scene: GaussianScene, *, include_sh: bool = True) -> Path:
     output_path = Path(path).resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     count = int(scene.count)
     sh_coeffs = np.asarray(scene.sh_coeffs, dtype=np.float32)
     if sh_coeffs.ndim != 3 or sh_coeffs.shape[0] != count or sh_coeffs.shape[2] != 3 or sh_coeffs.shape[1] <= 0:
         raise ValueError("GaussianScene.sh_coeffs must have shape [count, coeff_count, 3] with coeff_count >= 1.")
-    sh_coeffs = pad_sh_coeffs(sh_coeffs, SUPPORTED_SH_COEFF_COUNT)
-    rest_coeff_count = int(sh_coeffs.shape[1] - 1)
+    export_coeff_count = SUPPORTED_SH_COEFF_COUNT if include_sh else 1
+    sh_coeffs = pad_sh_coeffs(sh_coeffs, export_coeff_count)
+    rest_coeff_count = int(max(export_coeff_count - 1, 0))
     dtype = [
         ("x", "f4"), ("y", "f4"), ("z", "f4"),
         ("opacity", "f4"),

@@ -13,6 +13,7 @@ from ..app.shared import RendererParams, build_init_params, build_training_param
 from ..common import normalize3
 from ..renderer import Camera, GaussianRenderer
 from ..scene import GaussianScene, save_gaussian_ply
+from ..training import resolve_use_sh
 from . import presenter, session
 from .constants import _WINDOW_TITLE
 from .state import (
@@ -398,15 +399,21 @@ class SplatViewer(spy.AppWindow):
             return self.s.scene
         raise RuntimeError("No gaussian scene is available to export.")
 
+    def _export_should_include_sh(self) -> bool:
+        if self.s.trainer is not None:
+            return bool(resolve_use_sh(self.s.trainer.training, self.s.trainer.state.step))
+        return bool(self.training_params().training.use_sh)
+
     def _export_ply_callback(self) -> None:
         path = spy.platform.save_file_dialog([spy.platform.FileDialogFilter("PLY Files", "*.ply")])
         if path is None:
             return
         def _export() -> None:
             scene = SplatViewer._export_source_scene(self)
+            include_sh = SplatViewer._export_should_include_sh(self)
             export_path = Path(path)
             export_path = export_path.with_suffix(".ply") if export_path.suffix.lower() != ".ply" else export_path
-            saved_path = save_gaussian_ply(export_path, scene)
+            saved_path = save_gaussian_ply(export_path, scene, include_sh=include_sh)
             print(f"Exported scene: {saved_path} ({scene.count:,} splats)")
         self._run_action(_export)
 

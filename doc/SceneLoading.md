@@ -22,6 +22,10 @@
 - SH coefficients: padded or truncated to the runtime-supported SH3 layout with `16` coefficients total
 - Display color: `0.5 + SH_C0 * SH_DC`, clamped to `[0, 1]`
 
+## Export Notes
+- `save_gaussian_ply(...)` always writes the required SH DC triplet so exported files stay loadable as gaussian splat scenes.
+- Higher-order SH payload is optional on save: when SH export is disabled, the writer omits every `f_rest_*` property and exports DC-only color.
+
 Output is `GaussianScene` with contiguous `float32` arrays.
 
 ## COLMAP Loader Notes
