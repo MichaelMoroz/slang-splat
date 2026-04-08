@@ -13,7 +13,7 @@ import time
 import numpy as np
 import slangpy as spy
 import slangpy.ui.imgui_bundle as simgui
-from imgui_bundle import imgui, implot
+from imgui_bundle import hello_imgui, imgui, imgui_md, implot
 
 from .constants import _WINDOW_TITLE
 from .state import LOSS_DEBUG_OPTIONS
@@ -49,6 +49,7 @@ _TRAIN_BACKGROUND_MODE_LABELS = ("Custom", "Random")
 _VIEWER_BACKGROUND_MODE_LABELS = ("Train Background", "Custom")
 _TRAIN_DOWNSCALE_MODE_LABELS = ("Auto",) + tuple(f"{i}x" for i in range(1, 17))
 _TRAIN_SUBSAMPLE_LABELS = ("Auto", "Off", "1/2", "1/3", "1/4")
+_SH_BAND_LABELS = ("SH0", "SH1", "SH2", "SH3")
 _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT = 2e-4
 _DEBUG_ADAM_MOMENTUM_THRESHOLD_DEFAULT = 1e-2
 _DEBUG_CONTRIBUTION_AMOUNT_FLOOR = 1e-6
@@ -122,8 +123,6 @@ _DEBUG_MODE_LABELS = (
     "SH Coefficient",
 )
 _DEBUG_SH_COEFF_LABELS = ("SH0 DC", "SH1 X", "SH1 Y", "SH1 Z", "SH2 0", "SH2 1", "SH2 2", "SH2 3", "SH2 4", "SH3 0", "SH3 1", "SH3 2", "SH3 3", "SH3 4", "SH3 5", "SH3 6")
-
-
 def _valid_depth_root_text(value: object) -> bool:
     text = str(value or "").strip()
     return bool(text) and Path(text).expanduser().is_dir()
@@ -156,6 +155,16 @@ def _read_text_if_exists(path: Path) -> str:
     return path.read_text(encoding="utf-8") if path.exists() else ""
 
 
+def _imgui_bundle_assets_path() -> Path:
+    package = importlib.import_module("imgui_bundle")
+    return Path(package.__file__).resolve().parent / "assets"
+
+
+def _markdown_font_base_path() -> Path | None:
+    path = _imgui_bundle_assets_path() / "fonts" / "Roboto" / "Roboto"
+    return path if path.with_name(path.name + "-Regular.ttf").exists() else None
+
+
 def _status_suffix(text: str) -> str:
     value = str(text).strip()
     return value.split(": ", 1)[-1] if ": " in value else value
@@ -172,15 +181,28 @@ def _draw_disabled_wrapped_text(text: str) -> None:
     imgui.pop_text_wrap_pos()
 
 
+def _draw_markdown_text(text: str) -> None:
+    value = str(text).strip()
+    if not value:
+        return
+    try:
+        imgui_md.render_unindented(value)
+    except Exception:
+        imgui.push_text_wrap_pos(_DOC_MAX_WIDTH * imgui.get_font_size() * 0.5)
+        imgui.text_unformatted(value)
+        imgui.pop_text_wrap_pos()
+
+
 def _build_about_text() -> str:
     return "\n".join(
         (
-            _WINDOW_TITLE,
+            f"# {_WINDOW_TITLE}",
             "",
-            "Single-window Gaussian splat viewer and trainer built on Slangpy.",
-            "The scene is presented inside a docked viewport window with the imgui_bundle UI around it.",
+            "Single-window Gaussian splat viewer and trainer built on **Slangpy**.",
             "",
-            _SHORTCUTS_TEXT,
+            "The scene is presented inside a docked viewport window with the **imgui-bundle** UI around it.",
+            "",
+            f"**Controls:** {_SHORTCUTS_TEXT.split(': ', 1)[-1]}",
         )
     )
 
@@ -423,7 +445,7 @@ _SCHEDULE_STAGE_SPEC_TEMPLATE = {
     "lr_sh_mul": ControlSpec("schedule_stage_lr_sh_mul", "input_float", "LR Mul SH", {"value": 0.05, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
     "depth_ratio_weight": ControlSpec("schedule_stage_depth_ratio_weight", "input_float", "Depth Ratio Reg", {"value": 0.001, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
     "noise_lr": ControlSpec("schedule_stage_noise_lr", "input_float", "Noise LR", {"value": 0.0, "step": 100.0, "step_fast": 1000.0, "format": "%.4g"}),
-    "use_sh": ControlSpec("schedule_stage_use_sh", "checkbox", "Use SH", {"value": False}),
+    "sh_band": ControlSpec("schedule_stage_sh_band", "combo", "SH Band", {"value": 0, "options": _SH_BAND_LABELS}),
 }
 
 _SCHEDULE_STAGE_GROUPS = {
@@ -433,7 +455,7 @@ _SCHEDULE_STAGE_GROUPS = {
         "lr_sh_mul": "lr_sh_mul",
         "depth_ratio_weight": "depth_ratio_weight",
         "noise_lr": "position_random_step_noise_lr",
-        "use_sh": "use_sh",
+        "sh_band": "sh_band",
     },
     "Stage 1": {
         "end_step": "lr_schedule_stage1_step",
@@ -442,7 +464,7 @@ _SCHEDULE_STAGE_GROUPS = {
         "lr_sh_mul": "lr_sh_stage1_mul",
         "depth_ratio_weight": "depth_ratio_stage1_weight",
         "noise_lr": "position_random_step_noise_stage1_lr",
-        "use_sh": "use_sh_stage1",
+        "sh_band": "sh_band_stage1",
     },
     "Stage 2": {
         "end_step": "lr_schedule_stage2_step",
@@ -451,7 +473,7 @@ _SCHEDULE_STAGE_GROUPS = {
         "lr_sh_mul": "lr_sh_stage2_mul",
         "depth_ratio_weight": "depth_ratio_stage2_weight",
         "noise_lr": "position_random_step_noise_stage2_lr",
-        "use_sh": "use_sh_stage2",
+        "sh_band": "sh_band_stage2",
     },
     "Stage 3": {
         "end_step": "lr_schedule_steps",
@@ -460,7 +482,7 @@ _SCHEDULE_STAGE_GROUPS = {
         "lr_sh_mul": "lr_sh_stage3_mul",
         "depth_ratio_weight": "depth_ratio_stage3_weight",
         "noise_lr": "position_random_step_noise_stage3_lr",
-        "use_sh": "use_sh_stage3",
+        "sh_band": "sh_band_stage3",
     },
 }
 
@@ -471,7 +493,7 @@ _SCHEDULE_STAGE_OVERRIDES = {
         "lr_sh_mul": {"kwargs": {"value": 0.05, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}},
         "depth_ratio_weight": {"kwargs": {"value": 1.0, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}},
         "noise_lr": {"kwargs": {"value": 5e5, "step": 100.0, "step_fast": 1000.0, "format": "%.4g"}},
-        "use_sh": {"kwargs": {"value": False}},
+        "sh_band": {"kwargs": {"value": 0, "options": _SH_BAND_LABELS}},
     },
     "Stage 1": {
         "end_step": {"kwargs": {"value": 3000, "min": 0, "max": 30000, "max_from": "lr_schedule_steps"}},
@@ -480,7 +502,7 @@ _SCHEDULE_STAGE_OVERRIDES = {
         "lr_sh_mul": {"kwargs": {"value": 0.05, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}},
         "depth_ratio_weight": {"kwargs": {"value": 0.05, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}},
         "noise_lr": {"kwargs": {"value": 466666.6666666667, "step": 100.0, "step_fast": 1000.0, "format": "%.4g"}},
-        "use_sh": {"kwargs": {"value": True}},
+        "sh_band": {"kwargs": {"value": 3, "options": _SH_BAND_LABELS}},
     },
     "Stage 2": {
         "end_step": {"kwargs": {"value": 14000, "min": 0, "max": 30000, "max_from": "lr_schedule_steps"}},
@@ -489,7 +511,7 @@ _SCHEDULE_STAGE_OVERRIDES = {
         "lr_sh_mul": {"kwargs": {"value": 0.05, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}},
         "depth_ratio_weight": {"kwargs": {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}},
         "noise_lr": {"kwargs": {"value": 416666.6666666667, "step": 100.0, "step_fast": 1000.0, "format": "%.4g"}},
-        "use_sh": {"kwargs": {"value": True}},
+        "sh_band": {"kwargs": {"value": 3, "options": _SH_BAND_LABELS}},
     },
     "Stage 3": {
         "end_step": {
@@ -502,7 +524,7 @@ _SCHEDULE_STAGE_OVERRIDES = {
         "lr_sh_mul": {"kwargs": {"value": 0.05, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}},
         "depth_ratio_weight": {"kwargs": {"value": 0.001, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}},
         "noise_lr": {"kwargs": {"value": 0.0, "step": 100.0, "step_fast": 1000.0, "format": "%.4g"}},
-        "use_sh": {"kwargs": {"value": True}},
+        "sh_band": {"kwargs": {"value": 3, "options": _SH_BAND_LABELS}},
     },
 }
 
@@ -512,7 +534,7 @@ def _build_schedule_stage_specs() -> dict[str, tuple[ControlSpec, ...]]:
     for stage_label, key_map in _SCHEDULE_STAGE_GROUPS.items():
         overrides = _SCHEDULE_STAGE_OVERRIDES.get(stage_label, {})
         specs: list[ControlSpec] = []
-        ordered_keys = ("lr", "lr_pos_mul", "lr_sh_mul", "depth_ratio_weight", "noise_lr", "use_sh") if stage_label == "Stage 0" else ("end_step", "lr", "lr_pos_mul", "lr_sh_mul", "depth_ratio_weight", "noise_lr", "use_sh")
+        ordered_keys = ("lr", "lr_pos_mul", "lr_sh_mul", "depth_ratio_weight", "noise_lr", "sh_band") if stage_label == "Stage 0" else ("end_step", "lr", "lr_pos_mul", "lr_sh_mul", "depth_ratio_weight", "noise_lr", "sh_band")
         for template_key in ordered_keys:
             if template_key not in key_map:
                 continue
@@ -829,6 +851,18 @@ class ToolkitWindow:
         atlas.clear()
         font_path = _default_font_path()
         io.font_default = atlas.add_font_from_file_ttf(str(font_path), _FONT_ATLAS_SIZE_PX) if font_path is not None else atlas.add_font_default()
+        markdown_font_base_path = _markdown_font_base_path()
+        if markdown_font_base_path is not None:
+            try:
+                hello_imgui.set_assets_folder(str(_imgui_bundle_assets_path()))
+                markdown_options = imgui_md.MarkdownOptions()
+                markdown_options.font_options.font_base_path = str(markdown_font_base_path)
+                markdown_options.font_options.regular_size = _FONT_ATLAS_SIZE_PX
+                imgui_md.de_initialize_markdown()
+                imgui_md.initialize_markdown(markdown_options)
+                imgui_md.get_font_loader_function()()
+            except Exception:
+                pass
         if atlas.tex_data is not None:
             atlas.tex_data.get_pixels_array()
 
@@ -1015,9 +1049,9 @@ class ToolkitWindow:
         camera_label = "Cameras On" if bool(ui._values.get("show_camera_overlays", True)) else "Cameras Off"
         text_label = "Labels On" if bool(ui._values.get("show_camera_labels", False)) else "Labels Off"
         training_label = "Training Cameras On" if bool(ui._values.get("show_training_cameras", False)) else "Training Cameras Off"
-        sh_enabled = bool(ui._values.get("_viewport_sh_enabled", ui._values.get("use_sh", False)))
-        sh_label = "SH On" if sh_enabled else "SH Off"
-        sh_control_key = str(ui._values.get("_viewport_sh_control_key", "use_sh"))
+        sh_band = min(max(int(ui._values.get("_viewport_sh_band", ui._values.get("sh_band", 0))), 0), len(_SH_BAND_LABELS) - 1)
+        sh_label = _SH_BAND_LABELS[sh_band]
+        sh_control_key = str(ui._values.get("_viewport_sh_control_key", "sh_band"))
         label_size = imgui.calc_text_size(label)
         button_width = float(label_size.x) + 2.0 * float(style.frame_padding.x)
         button_pos = imgui.ImVec2(float(image_origin.x) + _VIEWPORT_OVERLAY_MARGIN * scale, float(image_origin.y) + _VIEWPORT_OVERLAY_MARGIN * scale)
@@ -1037,10 +1071,15 @@ class ToolkitWindow:
         if _imgui_opened(imgui.small_button(training_label)):
             ui._values["show_training_cameras"] = not bool(ui._values.get("show_training_cameras", False))
         imgui.same_line(0.0, 10.0 * scale)
-        if _imgui_opened(imgui.small_button(sh_label)):
-            new_value = not sh_enabled
-            ui._values[sh_control_key] = new_value
-            ui._values["_viewport_sh_enabled"] = new_value
+        if imgui.begin_combo("##viewport_sh_band", sh_label):
+            for idx, option in enumerate(_SH_BAND_LABELS):
+                selected = idx == sh_band
+                if imgui.selectable(option, selected)[0]:
+                    ui._values[sh_control_key] = idx
+                    ui._values["_viewport_sh_band"] = idx
+                if selected:
+                    imgui.set_item_default_focus()
+            imgui.end_combo()
         imgui.same_line(0.0, 10.0 * scale)
         label_pos = imgui.get_cursor_screen_pos()
         current_label_size = imgui.calc_text_size(current_label)
@@ -1334,7 +1373,7 @@ class ToolkitWindow:
         imgui.set_next_window_size(imgui.ImVec2(420.0, 220.0), imgui.Cond_.first_use_ever.value)
         opened, self._show_about = imgui.begin("About", True)
         if opened:
-            imgui.text_wrapped(self._about_text)
+            _draw_markdown_text(self._about_text)
         imgui.end()
 
     def _draw_documentation_window(self) -> None:
@@ -1348,9 +1387,7 @@ class ToolkitWindow:
             imgui.text_disabled("Local viewer documentation")
             imgui.separator()
             if imgui.begin_child("##docs_scroll", imgui.ImVec2(0.0, 0.0), imgui.ChildFlags_.borders.value):
-                imgui.push_text_wrap_pos(_DOC_MAX_WIDTH * imgui.get_font_size() * 0.5)
-                imgui.text_unformatted(self._documentation_text)
-                imgui.pop_text_wrap_pos()
+                _draw_markdown_text(self._documentation_text)
                 imgui.end_child()
         imgui.end()
 
@@ -2165,7 +2202,7 @@ class ToolkitWindow:
         "training_steps_per_frame": "Number of training optimizer steps to run before each viewer redraw; higher improves training throughput but reduces UI refresh rate",
         "background_mode": "Choose whether training uses a fixed custom RGB background or a new seeded white-noise background each optimizer step",
         "train_background_color": "Custom RGB background used for training when Train Background is set to Custom",
-        "use_sh": "Stage 0 SH toggle; when scheduling is disabled this value is used for the whole run",
+        "sh_band": "Stage 0 SH band limit; SH0 uses only the DC term and SH3 enables the full coefficient set",
         "refinement_interval": "Run cull/split refinement every N training steps",
         "refinement_growth_ratio": "Target fractional scene growth per refinement step once densification is enabled",
         "refinement_growth_start_step": "Keep densification growth at zero until this training iteration, then use the configured refinement growth; slider range follows Schedule Steps",
@@ -2195,9 +2232,9 @@ class ToolkitWindow:
         "position_random_step_noise_stage1_lr": "Position-noise LR target reached at the end of Stage 1",
         "position_random_step_noise_stage2_lr": "Position-noise LR target reached at the end of Stage 2",
         "position_random_step_noise_stage3_lr": "Position-noise LR target reached at the end of Stage 3",
-        "use_sh_stage1": "Enable SH during Stage 1",
-        "use_sh_stage2": "Enable SH during Stage 2",
-        "use_sh_stage3": "Enable SH during Stage 3",
+        "sh_band_stage1": "SH band limit reached by the end of Stage 1",
+        "sh_band_stage2": "SH band limit reached by the end of Stage 2",
+        "sh_band_stage3": "SH band limit reached by the end of Stage 3",
         "train_downscale_mode": "Use Auto for scheduled downscale descent or choose a fixed manual override from 1x to 16x",
         "train_auto_start_downscale": "Initial downscale factor used at step 0 when Downscale Mode is Auto",
         "train_downscale_base_iters": "Number of iterations spent at the auto start factor before descending",
@@ -2382,12 +2419,12 @@ def build_ui(renderer) -> ViewerUI:
     values["_histogram_update_log_range"] = False
     values["_histogram_payload"] = None
     values["_histogram_range_payload"] = None
-    values["_viewport_sh_enabled"] = bool(values.get("use_sh", False))
-    values["_viewport_sh_control_key"] = "use_sh"
-    values["_viewport_sh_stage_label"] = "Stage 0"
     values["_training_views_rows"] = ()
     values["_training_view_overlay_segments"] = ()
     values["_loss_debug_frame_max"] = 0
+    values["_viewport_sh_band"] = int(values.get("sh_band", 0))
+    values["_viewport_sh_control_key"] = "sh_band"
+    values["_viewport_sh_stage_label"] = "Stage 0"
     values["_colmap_import_active"] = False
     values["_colmap_import_fraction"] = 0.0
     values["_can_export_ply"] = False

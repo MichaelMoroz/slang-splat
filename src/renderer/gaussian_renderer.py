@@ -266,7 +266,7 @@ class GaussianRenderer:
                 "trainingBackgroundMode": np.uint32(max(int(training_background_mode), 0)),
                 "trainingBackgroundSeed": np.uint32(int(training_background_seed)),
                 "debugMode": np.uint32(self._debug_mode_u32(self.debug_mode)),
-                "useSH": np.uint32(1 if self.use_sh else 0),
+                "shBand": np.uint32(self.sh_band),
                 "debugGradNormThreshold": float(max(self.debug_grad_norm_threshold, 0.0)),
                 "debugEllipseThicknessPx": float(self.debug_ellipse_thickness_px),
                 "debugCloneCountRange": spy.float2(*self.debug_clone_count_range),
@@ -509,6 +509,7 @@ class GaussianRenderer:
         cached_raster_grad_fixed_color_range: float = 0.2,
         cached_raster_grad_fixed_opacity_range: float = 0.2,
         use_sh: bool = True,
+        sh_band: int | None = None,
     ) -> None:
         self.device, self.width, self.height = device, int(width), int(height)
         self._types_shader_path = Path(SHADER_ROOT / "renderer" / "gaussian_types.slang")
@@ -524,7 +525,7 @@ class GaussianRenderer:
         self.max_prepass_memory_mb = max(int(max_prepass_memory_mb), 1)
         self._max_prepass_memory_bytes = self.max_prepass_memory_mb * self._MEBIBYTE_BYTES
         self.proj_distortion_k1, self.proj_distortion_k2 = float(proj_distortion_k1), float(proj_distortion_k2)
-        self.use_sh = bool(use_sh)
+        self.sh_band = (3 if bool(use_sh) else 0) if sh_band is None else int(sh_band)
         self.debug_mode = self._resolve_debug_mode(debug_mode, debug_show_ellipses, debug_show_processed_count, debug_show_grad_norm)
         self.debug_show_ellipses = self.debug_mode == self.DEBUG_MODE_ELLIPSE_OUTLINES
         self.debug_show_processed_count = self.debug_mode == self.DEBUG_MODE_PROCESSED_COUNT
@@ -1439,6 +1440,22 @@ class GaussianRenderer:
         if self._current_scene is None:
             raise RuntimeError("Scene is not set.")
         return self._current_scene
+
+    @property
+    def sh_band(self) -> int:
+        return self._sh_band
+
+    @sh_band.setter
+    def sh_band(self, value: int) -> None:
+        self._sh_band = min(max(int(value), 0), 3)
+
+    @property
+    def use_sh(self) -> bool:
+        return self.sh_band > 0
+
+    @use_sh.setter
+    def use_sh(self, value: bool) -> None:
+        self.sh_band = 3 if bool(value) else 0
 
     @property
     def cached_raster_grad_atomic_mode(self) -> str:

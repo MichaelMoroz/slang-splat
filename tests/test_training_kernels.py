@@ -13,7 +13,7 @@ from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 from src.scene.sh_utils import SH_C0
 from src.training import gaussian_trainer as gaussian_trainer_module
-from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, contribution_fixed_count_from_percent, contribution_percent_from_fixed_count, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_depth_ratio_grad_band, resolve_depth_ratio_weight, resolve_effective_refinement_interval, resolve_effective_train_render_factor, resolve_lr_schedule_breakpoints, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_max_allowed_density, resolve_sh_lr_mul, resolve_stage_schedule_steps, resolve_training_resolution, resolve_train_subsample_factor, resolve_use_sh, should_run_refinement_step
+from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, contribution_fixed_count_from_percent, contribution_percent_from_fixed_count, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_depth_ratio_grad_band, resolve_depth_ratio_weight, resolve_effective_refinement_interval, resolve_effective_train_render_factor, resolve_lr_schedule_breakpoints, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_max_allowed_density, resolve_sh_band, resolve_sh_lr_mul, resolve_stage_schedule_steps, resolve_training_resolution, resolve_train_subsample_factor, resolve_use_sh, should_run_refinement_step
 
 _ADAM_BUFFER_NAMES = ("adam_moments",)
 _OPACITY_EPS = 1e-6
@@ -716,9 +716,9 @@ def test_piecewise_schedule_uses_configured_viewer_breakpoints() -> None:
         position_random_step_noise_stage1_lr=250000.0,
         position_random_step_noise_stage2_lr=100000.0,
         position_random_step_noise_stage3_lr=0.0,
-        use_sh_stage1=False,
-        use_sh_stage2=True,
-        use_sh_stage3=True,
+        sh_band_stage1=0,
+        sh_band_stage2=2,
+        sh_band_stage3=3,
     )
 
     assert resolve_lr_schedule_breakpoints(hparams) == (1000, 4000, 20_000)
@@ -739,6 +739,11 @@ def test_piecewise_schedule_uses_configured_viewer_breakpoints() -> None:
     np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 1000), 250000.0, rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 4000), 100000.0, rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 20_000), 0.0, rtol=0.0, atol=1e-6)
+    assert resolve_sh_band(hparams, 0) == 0
+    assert resolve_sh_band(hparams, 999) == 0
+    assert resolve_sh_band(hparams, 1000) == 0
+    assert resolve_sh_band(hparams, 3999) == 0
+    assert resolve_sh_band(hparams, 4000) == 2
     assert resolve_use_sh(hparams, 0) is False
     assert resolve_use_sh(hparams, 999) is False
     assert resolve_use_sh(hparams, 1000) is False
@@ -875,7 +880,7 @@ def test_depth_ratio_noise_and_sh_schedules_follow_requested_defaults() -> None:
         depth_ratio_weight=1.0,
         lr_pos_mul=1.0,
         position_random_step_noise_lr=5e5,
-        use_sh=True,
+        sh_band=1,
         lr_schedule_steps=30_000,
     )
 
@@ -895,6 +900,9 @@ def test_depth_ratio_noise_and_sh_schedules_follow_requested_defaults() -> None:
     np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 3000), 466666.6666666667, rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 14000), 416666.6666666667, rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 30_000), 0.0, rtol=0.0, atol=1e-6)
+    assert resolve_sh_band(hparams, 0) == 1
+    assert resolve_sh_band(hparams, 13999) == 3
+    assert resolve_sh_band(hparams, 14000) == 3
     assert resolve_use_sh(hparams, 13999) is True
     assert resolve_use_sh(hparams, 14000) is True
 
@@ -922,10 +930,10 @@ def test_schedule_disabled_uses_stage0_only_for_scheduled_values() -> None:
         position_random_step_noise_stage1_lr=250.0,
         position_random_step_noise_stage2_lr=100.0,
         position_random_step_noise_stage3_lr=0.0,
-        use_sh=True,
-        use_sh_stage1=False,
-        use_sh_stage2=True,
-        use_sh_stage3=False,
+        sh_band=2,
+        sh_band_stage1=0,
+        sh_band_stage2=1,
+        sh_band_stage3=0,
     )
 
     np.testing.assert_allclose(resolve_base_learning_rate(hparams, 0), 0.006, rtol=0.0, atol=1e-12)
@@ -938,6 +946,8 @@ def test_schedule_disabled_uses_stage0_only_for_scheduled_values() -> None:
     np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 30_000), 0.8, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 0), 1234.0, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 30_000), 1234.0, rtol=0.0, atol=1e-12)
+    assert resolve_sh_band(hparams, 0) == 2
+    assert resolve_sh_band(hparams, 30_000) == 2
     assert resolve_use_sh(hparams, 0) is True
     assert resolve_use_sh(hparams, 30_000) is True
 
@@ -2343,7 +2353,7 @@ def test_training_with_sh_enabled_updates_non_dc_sh_coeffs(device, tmp_path: Pat
         scene=scene,
         frames=[frame],
         training_hparams=TrainingHyperParams(
-            use_sh=True,
+            sh_band=3,
             lr_schedule_enabled=False,
             scale_l2_weight=0.0,
             scale_abs_reg_weight=0.0,
@@ -2374,7 +2384,7 @@ def test_training_with_sh_enabled_updates_non_dc_sh_coeffs(device, tmp_path: Pat
     trainer.step()
     after = _read_scene_groups(renderer, scene.count)["sh_coeffs"][:, 1:, :]
 
-    assert trainer.renderer.use_sh is True
+    assert trainer.renderer.sh_band == 3
     assert float(np.max(np.abs(before))) == 0.0
     assert float(np.max(np.abs(grad_sh0))) > 0.0
     assert float(np.max(np.abs(grad_sh))) > 0.0

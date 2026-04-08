@@ -14,7 +14,7 @@ from ..scene import ColmapFrame, GaussianInitHyperParams, GaussianScene, SUPPORT
 from ..scene._internal.colmap_ops import TRAINING_FRAME_LOAD_THREADS, load_training_frame_rgba8
 from .adam import AdamOptimizer, AdamRuntimeHyperParams
 from .optimizer import GaussianOptimizer
-from .schedule import DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY, resolve_base_learning_rate, resolve_clone_probability_threshold, resolve_depth_ratio_weight, resolve_effective_refinement_interval, resolve_learning_rate_scale, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_max_allowed_density, resolve_use_sh, should_run_refinement_step
+from .schedule import DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY, resolve_base_learning_rate, resolve_clone_probability_threshold, resolve_depth_ratio_weight, resolve_effective_refinement_interval, resolve_learning_rate_scale, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_max_allowed_density, resolve_sh_band, should_run_refinement_step
 
 TRAIN_DOWNSCALE_MODE_AUTO = 0
 TRAIN_DOWNSCALE_MAX_FACTOR = 16
@@ -183,7 +183,7 @@ class StabilityHyperParams:
 @dataclass(slots=True)
 class TrainingHyperParams:
     background: tuple[float, float, float] = (1.0, 1.0, 1.0); near: float = 0.1; far: float = 120.0
-    background_mode: int = TRAIN_BACKGROUND_MODE_RANDOM; use_sh: bool = False
+    background_mode: int = TRAIN_BACKGROUND_MODE_RANDOM; use_sh: bool = False; sh_band: int = 0
     scale_l2_weight: float = 0.0; scale_abs_reg_weight: float = 0.01; sh1_reg_weight: float = 0.01; opacity_reg_weight: float = 0.01; density_regularizer: float = 0.02; depth_ratio_weight: float = 1.0; max_allowed_density_start: float = 5.0; max_allowed_density: float = 12.0
     refinement_loss_weight: float = 0.25; refinement_target_edge_weight: float = 0.75
     depth_ratio_grad_min: float = 0.0; depth_ratio_grad_max: float = 0.1
@@ -195,6 +195,7 @@ class TrainingHyperParams:
     depth_ratio_stage1_weight: float = 0.05; depth_ratio_stage2_weight: float = 0.01; depth_ratio_stage3_weight: float = 0.001
     position_random_step_noise_stage1_lr: float = 466666.6666666667; position_random_step_noise_stage2_lr: float = 416666.6666666667; position_random_step_noise_stage3_lr: float = 0.0
     use_sh_stage1: bool = True; use_sh_stage2: bool = True; use_sh_stage3: bool = True
+    sh_band_stage1: int = 3; sh_band_stage2: int = 3; sh_band_stage3: int = 3
     max_gaussians: int = 1_000_000; train_downscale_mode: int = 1; train_auto_start_downscale: int = 16
     train_downscale_base_iters: int = 200; train_downscale_iter_step: int = 50; train_downscale_max_iters: int = 30_000
     train_downscale_factor: int = 1; train_subsample_factor: int = 0
@@ -206,7 +207,8 @@ class TrainingHyperParams:
         background = np.asarray(self.background, dtype=np.float32).reshape(3)
         self.background = tuple(float(v) for v in np.clip(background, 0.0, 1.0))
         self.background_mode = TRAIN_BACKGROUND_MODE_RANDOM if int(self.background_mode) == TRAIN_BACKGROUND_MODE_RANDOM else TRAIN_BACKGROUND_MODE_CUSTOM
-        self.use_sh = bool(self.use_sh)
+        self.sh_band = min(max(int(self.sh_band), 0), 3) if int(self.sh_band) != 0 else (3 if bool(self.use_sh) else 0)
+        self.use_sh = self.sh_band > 0
         self.lr_schedule_steps = max(int(self.lr_schedule_steps), 1)
         self.lr_schedule_stage1_step = min(max(int(self.lr_schedule_stage1_step), 0), self.lr_schedule_steps)
         self.lr_schedule_stage2_step = min(max(int(self.lr_schedule_stage2_step), self.lr_schedule_stage1_step), self.lr_schedule_steps)
@@ -245,9 +247,12 @@ class TrainingHyperParams:
         self.position_random_step_noise_stage3_lr = max(float(self.position_random_step_noise_stage3_lr), 0.0)
         self.position_random_step_opacity_gate_center = min(max(float(self.position_random_step_opacity_gate_center), 0.0), 1.0)
         self.position_random_step_opacity_gate_sharpness = max(float(self.position_random_step_opacity_gate_sharpness), 0.0)
-        self.use_sh_stage1 = bool(self.use_sh_stage1)
-        self.use_sh_stage2 = bool(self.use_sh_stage2)
-        self.use_sh_stage3 = bool(self.use_sh_stage3)
+        self.sh_band_stage1 = min(max(int(self.sh_band_stage1), 0), 3) if int(self.sh_band_stage1) != 3 else (0 if not bool(self.use_sh_stage1) else 3)
+        self.sh_band_stage2 = min(max(int(self.sh_band_stage2), 0), 3) if int(self.sh_band_stage2) != 3 else (0 if not bool(self.use_sh_stage2) else 3)
+        self.sh_band_stage3 = min(max(int(self.sh_band_stage3), 0), 3) if int(self.sh_band_stage3) != 3 else (0 if not bool(self.use_sh_stage3) else 3)
+        self.use_sh_stage1 = self.sh_band_stage1 > 0
+        self.use_sh_stage2 = self.sh_band_stage2 > 0
+        self.use_sh_stage3 = self.sh_band_stage3 > 0
         mode = int(self.train_downscale_mode)
         legacy_factor = min(max(int(self.train_downscale_factor), 1), TRAIN_DOWNSCALE_MAX_FACTOR)
         if mode == 1 and legacy_factor != 1:
@@ -384,7 +389,7 @@ class GaussianTrainer:
 
     def _apply_renderer_training_hparams(self, step: int | None = None) -> None:
         resolved_step = 0 if step is None and not hasattr(self, "state") else self.state.step if step is None else int(step)
-        self.renderer.use_sh = resolve_use_sh(self.training, resolved_step)
+        self.renderer.sh_band = resolve_sh_band(self.training, resolved_step)
 
     def _dispatch(self, kernel: str, encoder: spy.CommandEncoder, thread_count: spy.uint3, vars: dict[str, object]) -> None:
         dispatch(

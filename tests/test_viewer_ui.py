@@ -138,10 +138,10 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["position_random_step_opacity_gate_sharpness"] == 100.0
     assert viewer_ui._values["background_mode"] == 1
     assert viewer_ui._values["train_background_color"] == (1.0, 1.0, 1.0)
-    assert viewer_ui._values["use_sh"] is False
-    assert viewer_ui._values["use_sh_stage1"] is True
-    assert viewer_ui._values["use_sh_stage2"] is True
-    assert viewer_ui._values["use_sh_stage3"] is True
+    assert viewer_ui._values["sh_band"] == 0
+    assert viewer_ui._values["sh_band_stage1"] == 3
+    assert viewer_ui._values["sh_band_stage2"] == 3
+    assert viewer_ui._values["sh_band_stage3"] == 3
     assert viewer_ui._values["sh1_reg"] == 0.01
     assert viewer_ui._values["refinement_interval"] == 200
     assert viewer_ui._values["refinement_growth_ratio"] == 0.05
@@ -177,8 +177,8 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["_show_histograms_prev"] is False
     assert viewer_ui._values["_training_views_rows"] == ()
     assert viewer_ui._values["_training_view_overlay_segments"] == ()
-    assert viewer_ui._values["_viewport_sh_enabled"] is False
-    assert viewer_ui._values["_viewport_sh_control_key"] == "use_sh"
+    assert viewer_ui._values["_viewport_sh_band"] == 0
+    assert viewer_ui._values["_viewport_sh_control_key"] == "sh_band"
     assert viewer_ui._values["_viewport_sh_stage_label"] == "Stage 0"
     assert "show_renderer_debug" not in viewer_ui._values
 
@@ -308,12 +308,13 @@ def test_viewport_view_menu_left_aligns_view_mode_button(monkeypatch) -> None:
     monkeypatch.setattr(ui.imgui, "pop_style_color", lambda count=1: None)
     monkeypatch.setattr(ui.imgui, "text_unformatted", lambda text: mode_text.append(text))
     monkeypatch.setattr(ui.imgui, "begin_popup", lambda *_args: False)
+    monkeypatch.setattr(ui.imgui, "begin_combo", lambda *_args: False)
     toolkit = SimpleNamespace(_viewport_content_rect=(50.0, 60.0, 400.0, 240.0), _interface_scale_factor=lambda _ui_obj: 1.5)
-    viewer_ui = SimpleNamespace(_values={"debug_mode": ui._DEBUG_MODE_VALUES.index("depth_std"), "show_camera_overlays": True, "show_camera_labels": False, "show_training_cameras": False, "_viewport_sh_enabled": False, "_viewport_sh_control_key": "use_sh", "use_sh": False})
+    viewer_ui = SimpleNamespace(_values={"debug_mode": ui._DEBUG_MODE_VALUES.index("depth_std"), "show_camera_overlays": True, "show_camera_labels": False, "show_training_cameras": False, "_viewport_sh_band": 0, "_viewport_sh_control_key": "sh_band", "sh_band": 0})
 
     origin = ui.ToolkitWindow._draw_viewport_view_menu(toolkit, viewer_ui, ui.imgui.ImVec2(50.0, 60.0))
 
-    assert button_labels == ["View Mode", "Cameras On", "Labels Off", "Training Cameras Off", "SH Off"]
+    assert button_labels == ["View Mode", "Cameras On", "Labels Off", "Training Cameras Off"]
     assert cursor_positions == [(62.0, 72.0)]
     assert same_line_calls == [(0.0, 15.0), (0.0, 15.0), (0.0, 15.0), (0.0, 15.0), (0.0, 15.0)]
     assert filled_rects == [(148.0, 69.0, 250.0, 89.0, 6.0)]
@@ -327,19 +328,23 @@ def test_viewport_view_menu_left_aligns_view_mode_button(monkeypatch) -> None:
 
 def test_viewport_view_menu_toggles_active_sh_control(monkeypatch) -> None:
     button_labels: list[str] = []
-    button_results = iter((False, False, False, False, True))
+    select_calls: list[tuple[str, bool]] = []
     monkeypatch.setattr(ui.imgui, "get_style", lambda: SimpleNamespace(frame_padding=ui.imgui.ImVec2(4.0, 3.0)))
     monkeypatch.setattr(ui.imgui, "calc_text_size", lambda text: ui.imgui.ImVec2(72.0 if text == "View Mode" else 84.0, 14.0))
     monkeypatch.setattr(ui.imgui, "push_id", lambda *_args: None)
     monkeypatch.setattr(ui.imgui, "pop_id", lambda: None)
     monkeypatch.setattr(ui.imgui, "set_cursor_screen_pos", lambda *_args: None)
-    monkeypatch.setattr(ui.imgui, "small_button", lambda label: button_labels.append(label) or next(button_results))
+    monkeypatch.setattr(ui.imgui, "small_button", lambda label: button_labels.append(label) or False)
     monkeypatch.setattr(ui.imgui, "same_line", lambda *_args: None)
     monkeypatch.setattr(ui.imgui, "get_cursor_screen_pos", lambda: ui.imgui.ImVec2(157.0, 72.0))
     monkeypatch.setattr(ui.imgui, "push_style_color", lambda *_args: None)
     monkeypatch.setattr(ui.imgui, "pop_style_color", lambda *_args: None)
     monkeypatch.setattr(ui.imgui, "text_unformatted", lambda *_args: None)
     monkeypatch.setattr(ui.imgui, "begin_popup", lambda *_args: False)
+    monkeypatch.setattr(ui.imgui, "begin_combo", lambda *_args: True)
+    monkeypatch.setattr(ui.imgui, "selectable", lambda label, selected=False: select_calls.append((str(label), bool(selected))) or (str(label) == "SH2",))
+    monkeypatch.setattr(ui.imgui, "set_item_default_focus", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "end_combo", lambda: None)
 
     class _DrawList:
         def add_rect_filled(self, *_args):
@@ -353,19 +358,20 @@ def test_viewport_view_menu_toggles_active_sh_control(monkeypatch) -> None:
             "show_camera_overlays": True,
             "show_camera_labels": False,
             "show_training_cameras": False,
-            "_viewport_sh_enabled": False,
-            "_viewport_sh_control_key": "use_sh_stage2",
-            "use_sh": False,
-            "use_sh_stage2": False,
+            "_viewport_sh_band": 0,
+            "_viewport_sh_control_key": "sh_band_stage2",
+            "sh_band": 0,
+            "sh_band_stage2": 0,
         }
     )
 
     ui.ToolkitWindow._draw_viewport_view_menu(toolkit, viewer_ui, ui.imgui.ImVec2(50.0, 60.0))
 
-    assert button_labels == ["View Mode", "Cameras On", "Labels Off", "Training Cameras Off", "SH Off"]
-    assert viewer_ui._values["use_sh"] is False
-    assert viewer_ui._values["use_sh_stage2"] is True
-    assert viewer_ui._values["_viewport_sh_enabled"] is True
+    assert button_labels == ["View Mode", "Cameras On", "Labels Off", "Training Cameras Off"]
+    assert select_calls == [("SH0", True), ("SH1", False), ("SH2", False), ("SH3", False)]
+    assert viewer_ui._values["sh_band"] == 0
+    assert viewer_ui._values["sh_band_stage2"] == 2
+    assert viewer_ui._values["_viewport_sh_band"] == 2
 
 
 def test_viewport_camera_overlays_draw_lines_when_enabled(monkeypatch) -> None:
@@ -688,16 +694,16 @@ def test_schedule_stage_specs_clone_same_group_shape() -> None:
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 0"]["lr"] == "lr_schedule_start_lr"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 0"]["lr_pos_mul"] == "lr_pos_mul"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 0"]["lr_sh_mul"] == "lr_sh_mul"
-    assert ui._SCHEDULE_STAGE_GROUPS["Stage 0"]["use_sh"] == "use_sh"
+    assert ui._SCHEDULE_STAGE_GROUPS["Stage 0"]["sh_band"] == "sh_band"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 1"]["lr"] == "lr_schedule_stage1_lr"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 1"]["lr_pos_mul"] == "lr_pos_stage1_mul"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 1"]["lr_sh_mul"] == "lr_sh_stage1_mul"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 2"]["depth_ratio_weight"] == "depth_ratio_stage2_weight"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 3"]["noise_lr"] == "position_random_step_noise_stage3_lr"
-    assert tuple(spec.label for spec in ui.SCHEDULE_STAGE_SPECS["Stage 0"]) == ("LR Target", "LR Mul Position", "LR Mul SH", "Depth Ratio Reg", "Noise LR", "Use SH")
-    assert tuple(spec.label for spec in ui.SCHEDULE_STAGE_SPECS["Stage 1"]) == ("End Step", "LR Target", "LR Mul Position", "LR Mul SH", "Depth Ratio Reg", "Noise LR", "Use SH")
-    assert tuple(spec.label for spec in ui.SCHEDULE_STAGE_SPECS["Stage 2"]) == ("End Step", "LR Target", "LR Mul Position", "LR Mul SH", "Depth Ratio Reg", "Noise LR", "Use SH")
-    assert tuple(spec.label for spec in ui.SCHEDULE_STAGE_SPECS["Stage 3"]) == ("End Step", "LR Target", "LR Mul Position", "LR Mul SH", "Depth Ratio Reg", "Noise LR", "Use SH")
+    assert tuple(spec.label for spec in ui.SCHEDULE_STAGE_SPECS["Stage 0"]) == ("LR Target", "LR Mul Position", "LR Mul SH", "Depth Ratio Reg", "Noise LR", "SH Band")
+    assert tuple(spec.label for spec in ui.SCHEDULE_STAGE_SPECS["Stage 1"]) == ("End Step", "LR Target", "LR Mul Position", "LR Mul SH", "Depth Ratio Reg", "Noise LR", "SH Band")
+    assert tuple(spec.label for spec in ui.SCHEDULE_STAGE_SPECS["Stage 2"]) == ("End Step", "LR Target", "LR Mul Position", "LR Mul SH", "Depth Ratio Reg", "Noise LR", "SH Band")
+    assert tuple(spec.label for spec in ui.SCHEDULE_STAGE_SPECS["Stage 3"]) == ("End Step", "LR Target", "LR Mul Position", "LR Mul SH", "Depth Ratio Reg", "Noise LR", "SH Band")
 
 
 def test_schedule_step_slider_max_tracks_schedule_steps() -> None:

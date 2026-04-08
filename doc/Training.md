@@ -4,6 +4,15 @@
 
 The active training path keeps the fixed packed optimizer flow, but it now also supports periodic refinement: per-step clone-hit counting during raster training forward, alpha culling, contribution culling normalized to observed dataset pixels, and split-family densification on a configurable cadence. Densification growth is enabled by default after step `500`.
 
+Training SH exposure is stage-controlled by a band cap rather than a boolean toggle:
+
+- `SH0`: DC color only
+- `SH1`: SH0 + first-order view dependence
+- `SH2`: SH0 + SH1 + second-order terms
+- `SH3`: full supported SH set
+
+The training schedule resolves that band cap per stage, and the renderer uses the same resolved band for both viewport rendering and raster-backward differentiation.
+
 ## Data Ingestion
 - Loader facade: `src/scene/colmap_loader.py`
 - Internal split:

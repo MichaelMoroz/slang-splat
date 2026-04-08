@@ -189,6 +189,7 @@ def build_training_params(
     max_gaussians: int,
     background_mode: int = TRAIN_BACKGROUND_MODE_RANDOM,
     use_sh: bool = False,
+    sh_band: int | None = None,
     lr_schedule_enabled: bool = True,
     lr_schedule_start_lr: float | None = None,
     lr_schedule_stage1_lr: float = 0.002,
@@ -213,6 +214,9 @@ def build_training_params(
     use_sh_stage1: bool = True,
     use_sh_stage2: bool = True,
     use_sh_stage3: bool = True,
+    sh_band_stage1: int | None = None,
+    sh_band_stage2: int | None = None,
+    sh_band_stage3: int | None = None,
     train_downscale_mode: int = 1,
     train_auto_start_downscale: int = 16,
     train_downscale_base_iters: int = 200,
@@ -221,6 +225,10 @@ def build_training_params(
     train_downscale_factor: int = 1,
     train_subsample_factor: int = 0,
 ) -> AppTrainingParams:
+    resolved_sh_band = clamp_int(3 if sh_band is None and bool(use_sh) else (0 if sh_band is None else sh_band), 0, 3)
+    resolved_sh_band_stage1 = clamp_int(3 if sh_band_stage1 is None and bool(use_sh_stage1) else (0 if sh_band_stage1 is None else sh_band_stage1), 0, 3)
+    resolved_sh_band_stage2 = clamp_int(3 if sh_band_stage2 is None and bool(use_sh_stage2) else (0 if sh_band_stage2 is None else sh_band_stage2), 0, 3)
+    resolved_sh_band_stage3 = clamp_int(3 if sh_band_stage3 is None and bool(use_sh_stage3) else (0 if sh_band_stage3 is None else sh_band_stage3), 0, 3)
     base_lr = clamp_float(base_lr, 1e-8, 1.0)
     adam = AdamHyperParams(
         **{
@@ -265,7 +273,8 @@ def build_training_params(
         near=clamp_float(near, 1e-6, 1e4),
         far=clamp_float(far, 1e-5, 1e6),
         background_mode=TRAIN_BACKGROUND_MODE_RANDOM if clamp_int(background_mode, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM) == TRAIN_BACKGROUND_MODE_RANDOM else TRAIN_BACKGROUND_MODE_CUSTOM,
-        use_sh=bool(use_sh),
+        use_sh=resolved_sh_band > 0,
+        sh_band=resolved_sh_band,
         scale_l2_weight=clamp_float(scale_l2_weight, 0.0, 1e4),
         scale_abs_reg_weight=clamp_float(scale_abs_reg_weight, 0.0, 1e4),
         sh1_reg_weight=clamp_float(sh1_reg_weight, 0.0, 1e4),
@@ -310,9 +319,12 @@ def build_training_params(
         position_random_step_noise_stage1_lr=clamp_float(position_random_step_noise_stage1_lr, 0.0, 1e12),
         position_random_step_noise_stage2_lr=clamp_float(position_random_step_noise_stage2_lr, 0.0, 1e12),
         position_random_step_noise_stage3_lr=clamp_float(position_random_step_noise_stage3_lr, 0.0, 1e12),
-        use_sh_stage1=bool(use_sh_stage1),
-        use_sh_stage2=bool(use_sh_stage2),
-        use_sh_stage3=bool(use_sh_stage3),
+        use_sh_stage1=resolved_sh_band_stage1 > 0,
+        use_sh_stage2=resolved_sh_band_stage2 > 0,
+        use_sh_stage3=resolved_sh_band_stage3 > 0,
+        sh_band_stage1=resolved_sh_band_stage1,
+        sh_band_stage2=resolved_sh_band_stage2,
+        sh_band_stage3=resolved_sh_band_stage3,
         max_gaussians=clamp_int(max_gaussians, 0, 10_000_000),
         train_downscale_mode=clamp_int(train_downscale_mode, 0, 16),
         train_auto_start_downscale=clamp_int(train_auto_start_downscale, 1, 16),

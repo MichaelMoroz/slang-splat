@@ -71,6 +71,7 @@ def test_build_training_params_clamps_ranges():
     assert params.training.far > params.training.near
     assert params.training.background_mode == TRAIN_BACKGROUND_MODE_RANDOM
     assert params.training.use_sh is False
+    assert params.training.sh_band == 0
     assert params.training.scale_l2_weight == 0.0
     assert params.training.scale_abs_reg_weight == 0.0
     assert params.training.sh1_reg_weight == 0.0
@@ -108,6 +109,9 @@ def test_build_training_params_clamps_ranges():
     assert params.training.use_sh_stage1 is True
     assert params.training.use_sh_stage2 is True
     assert params.training.use_sh_stage3 is True
+    assert params.training.sh_band_stage1 == 3
+    assert params.training.sh_band_stage2 == 3
+    assert params.training.sh_band_stage3 == 3
     assert params.training.refinement_min_contribution_percent == 1e-05
     assert params.training.refinement_min_contribution_decay == 0.995
     assert params.training.refinement_opacity_mul == 1.0
@@ -120,6 +124,7 @@ def test_default_training_params_match_fixed_count_defaults():
     assert params.training.background_mode == TRAIN_BACKGROUND_MODE_RANDOM
     assert params.training.background == (1.0, 1.0, 1.0)
     assert params.training.use_sh is False
+    assert params.training.sh_band == 0
     assert params.training.scale_l2_weight == 0.0
     assert params.training.scale_abs_reg_weight == 0.01
     assert params.training.sh1_reg_weight == 0.01
@@ -157,6 +162,9 @@ def test_default_training_params_match_fixed_count_defaults():
     assert params.training.use_sh_stage1 is True
     assert params.training.use_sh_stage2 is True
     assert params.training.use_sh_stage3 is True
+    assert params.training.sh_band_stage1 == 3
+    assert params.training.sh_band_stage2 == 3
+    assert params.training.sh_band_stage3 == 3
     assert params.training.refinement_growth_ratio == 0.05
     assert params.training.refinement_growth_start_step == 500
     assert params.training.refinement_alpha_cull_threshold == 1e-2

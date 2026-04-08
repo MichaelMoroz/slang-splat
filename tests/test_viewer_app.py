@@ -179,6 +179,7 @@ def test_default_training_params_include_background_mode_and_density() -> None:
     assert params.training.background_mode == TRAIN_BACKGROUND_MODE_RANDOM
     assert params.training.background == (1.0, 1.0, 1.0)
     assert params.training.use_sh is False
+    assert params.training.sh_band == 0
     assert params.training.density_regularizer == 0.02
     assert params.training.depth_ratio_weight == 1.0
     assert params.training.refinement_loss_weight == 0.25
@@ -209,6 +210,9 @@ def test_default_training_params_include_background_mode_and_density() -> None:
     assert params.training.use_sh_stage1 is True
     assert params.training.use_sh_stage2 is True
     assert params.training.use_sh_stage3 is True
+    assert params.training.sh_band_stage1 == 3
+    assert params.training.sh_band_stage2 == 3
+    assert params.training.sh_band_stage3 == 3
     assert params.training.refinement_growth_ratio == 0.05
     assert params.training.refinement_growth_start_step == 500
     assert params.training.refinement_alpha_cull_threshold == 1e-2
@@ -351,7 +355,7 @@ def test_export_ply_callback_saves_active_scene(monkeypatch, tmp_path: Path) -> 
     viewer = SimpleNamespace(
         s=SimpleNamespace(trainer=None, scene=scene, last_error="stale"),
         _run_action=lambda action: action(),
-        training_params=lambda: SimpleNamespace(training=SimpleNamespace(use_sh=False)),
+        training_params=lambda: SimpleNamespace(training=SimpleNamespace(sh_band=0, use_sh=False)),
     )
 
     monkeypatch.setattr(app.spy.platform, "save_file_dialog", lambda filters: tmp_path / "exported_scene")
@@ -386,7 +390,7 @@ def test_export_ply_callback_prefers_training_scene(monkeypatch, tmp_path: Path)
         s=SimpleNamespace(
             trainer=SimpleNamespace(
                 read_live_scene=lambda: trained_scene,
-                training=SimpleNamespace(lr_schedule_enabled=False, use_sh=True),
+                training=SimpleNamespace(lr_schedule_enabled=False, sh_band=3, use_sh=True),
                 state=SimpleNamespace(step=123),
             ),
             scene=base_scene,

@@ -1047,7 +1047,7 @@ void backprop_cached_raster_grads<T : IRasterGradVariant>(uint3 dispatchThreadID
         dpSh3_6,
         g_Camera.camPos,
         dpColorPosition,
-        g_Raster.useSH,
+        g_Raster.shBand,
         dRaster.colorAlpha.xyz
     );
     float gradScale = g_RasterGradDecodeScale;

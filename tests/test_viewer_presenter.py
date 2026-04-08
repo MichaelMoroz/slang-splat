@@ -82,9 +82,10 @@ class _DummyTrainer:
             position_random_step_noise_stage1_lr=466666.6666666667,
             position_random_step_noise_stage2_lr=416666.6666666667,
             position_random_step_noise_stage3_lr=0.0,
-            use_sh_stage1=True,
-            use_sh_stage2=True,
-            use_sh_stage3=True,
+            sh_band=0,
+            sh_band_stage1=3,
+            sh_band_stage2=3,
+            sh_band_stage3=3,
             max_allowed_density=12.0,
             max_gaussians=1000000,
         )
@@ -164,7 +165,7 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         "lr_sh_stage3_mul": _control(0.05),
         "depth_ratio_weight": _control(1.0),
         "position_random_step_noise_lr": _control(5e5),
-        "use_sh": _control(False),
+        "sh_band": _control(0),
         "lr_schedule_stage1_lr": _control(0.002),
         "lr_schedule_stage2_lr": _control(0.001),
         "lr_schedule_end_lr": _control(1.5e-4),
@@ -186,9 +187,9 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         "position_random_step_noise_stage1_lr": _control(466666.6666666667),
         "position_random_step_noise_stage2_lr": _control(416666.6666666667),
         "position_random_step_noise_stage3_lr": _control(0.0),
-        "use_sh_stage1": _control(True),
-        "use_sh_stage2": _control(True),
-        "use_sh_stage3": _control(True),
+        "sh_band_stage1": _control(3),
+        "sh_band_stage2": _control(3),
+        "sh_band_stage3": _control(3),
         "max_gaussians": _control(1000000),
         "train_downscale_mode": _control(1),
         "train_subsample_factor": _control(0),
@@ -396,7 +397,7 @@ def test_update_ui_text_reports_training_schedule_and_refinement() -> None:
     presenter.update_ui_text(viewer, 1.0 / 60.0)
 
     assert viewer.t("training_schedule").text == "LR Schedule: 5.00e-03@0 -> 2.00e-03@3,000 -> 1.00e-03@14,000 -> 1.50e-04@30,000 | current=5.00e-03"
-    assert viewer.t("training_schedule_values").text == "Current Values: step=0 | Stage 0 | lr=5.00e-03 | pos=1.00x | shlr=0.05x | depth=1.00e+00 | noise=5.00e+05 | sh=off"
+    assert viewer.t("training_schedule_values").text == "Current Values: step=0 | Stage 0 | lr=5.00e-03 | pos=1.00x | shlr=0.05x | depth=1.00e+00 | noise=5.00e+05 | sh=SH0"
     assert viewer.t("training_refinement").text == "Refinement: every 200 | growth=0.00% now | target=5.00% after 500 | alpha<1.00e-02 or min contrib<1e-05% | decay=99.50%/pass | alpha mul=1.00x | max=1,000,000"
     assert viewer.ui._values["_training_view_overlay_segments"] == ()
     assert viewer.ui._values["_training_views_rows"] == (
@@ -425,7 +426,7 @@ def test_update_ui_text_previews_current_schedule_values_without_trainer() -> No
 
     presenter.update_ui_text(viewer, 1.0 / 60.0)
 
-    assert viewer.t("training_schedule_values").text == "Current Values: step=0 | Stage 0 | lr=5.00e-03 | pos=1.00x | shlr=0.05x | depth=1.00e+00 | noise=5.00e+05 | sh=off"
+    assert viewer.t("training_schedule_values").text == "Current Values: step=0 | Stage 0 | lr=5.00e-03 | pos=1.00x | shlr=0.05x | depth=1.00e+00 | noise=5.00e+05 | sh=SH0"
 
 
 def test_render_frame_recovers_missing_main_renderer_by_recreating_it(monkeypatch):

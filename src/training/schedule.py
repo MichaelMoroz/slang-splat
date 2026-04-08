@@ -7,6 +7,7 @@ DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY = 0.995
 _SCHEDULE_REFERENCE_STEPS = 30_000
 _DEFAULT_LR_STAGE1_STEP = 3000
 _DEFAULT_LR_STAGE2_STEP = 14_000
+_DEFAULT_MAX_SH_BAND = 3
 
 
 def _schedule_duration(training_hparams: Any) -> int:
@@ -167,18 +168,36 @@ def _resolve_stage_bool(training_hparams: Any, step: int, keys: tuple[str, str, 
     return values[2]
 
 
-def resolve_use_sh(training_hparams: Any, step: int) -> bool:
+def _clamp_sh_band(value: Any, default: int) -> int:
+    try:
+        resolved = int(value)
+    except (TypeError, ValueError):
+        resolved = int(default)
+    return min(max(resolved, 0), _DEFAULT_MAX_SH_BAND)
+
+
+def _resolve_legacy_sh_band(training_hparams: Any, key: str, default: bool) -> int:
+    return _DEFAULT_MAX_SH_BAND if bool(getattr(training_hparams, key, default)) else 0
+
+
+def resolve_sh_band(training_hparams: Any, step: int) -> int:
     if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
-        return bool(getattr(training_hparams, "use_sh", False))
+        if hasattr(training_hparams, "sh_band"):
+            return _clamp_sh_band(getattr(training_hparams, "sh_band", 0), 0)
+        return _resolve_legacy_sh_band(training_hparams, "use_sh", False)
     stage1, stage2, stage3 = resolve_stage_schedule_steps(training_hparams)
     current_step = max(int(step), 0)
     if current_step < stage1:
-        return bool(getattr(training_hparams, "use_sh", False))
+        return _clamp_sh_band(getattr(training_hparams, "sh_band", _resolve_legacy_sh_band(training_hparams, "use_sh", False)), 0)
     if current_step < stage2:
-        return bool(getattr(training_hparams, "use_sh_stage1", False))
+        return _clamp_sh_band(getattr(training_hparams, "sh_band_stage1", _resolve_legacy_sh_band(training_hparams, "use_sh_stage1", False)), _DEFAULT_MAX_SH_BAND)
     if current_step < stage3:
-        return bool(getattr(training_hparams, "use_sh_stage2", True))
-    return bool(getattr(training_hparams, "use_sh_stage3", True))
+        return _clamp_sh_band(getattr(training_hparams, "sh_band_stage2", _resolve_legacy_sh_band(training_hparams, "use_sh_stage2", True)), _DEFAULT_MAX_SH_BAND)
+    return _clamp_sh_band(getattr(training_hparams, "sh_band_stage3", _resolve_legacy_sh_band(training_hparams, "use_sh_stage3", True)), _DEFAULT_MAX_SH_BAND)
+
+
+def resolve_use_sh(training_hparams: Any, step: int) -> bool:
+    return resolve_sh_band(training_hparams, step) > 0
 
 
 def resolve_max_allowed_density(training_hparams: Any, step: int) -> float:

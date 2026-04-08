@@ -1132,7 +1132,7 @@ def test_apply_live_params_defers_subsample_runtime_change_until_resize(monkeypa
     viewer = SimpleNamespace(
         render_background=lambda: (0.0, 0.0, 0.0),
         renderer_params=lambda allow_debug_overlays: SimpleNamespace(__dataclass_fields__={"debug": None}, debug=bool(allow_debug_overlays)),
-        training_params=lambda: SimpleNamespace(training=SimpleNamespace(use_sh=False)),
+        training_params=lambda: SimpleNamespace(training=SimpleNamespace(sh_band=0, use_sh=False)),
         s=SimpleNamespace(
             background=None,
             renderer=None,
@@ -1158,15 +1158,16 @@ def test_apply_live_params_defers_subsample_runtime_change_until_resize(monkeypa
     assert viewer.s.pending_training_runtime_resize is True
 
 
-def test_apply_live_params_forces_view_renderers_to_use_sh(monkeypatch) -> None:
+def test_apply_live_params_syncs_renderer_sh_band(monkeypatch) -> None:
     update_calls: list[object] = []
-    renderer = SimpleNamespace(use_sh=False, debug_show_grad_norm=False)
-    training_renderer = SimpleNamespace(use_sh=True, debug_show_grad_norm=False)
-    debug_renderer = SimpleNamespace(use_sh=False, debug_show_grad_norm=False)
+    renderer = SimpleNamespace(sh_band=0, use_sh=False, debug_show_grad_norm=False)
+    training_renderer = SimpleNamespace(sh_band=3, use_sh=True, debug_show_grad_norm=False)
+    debug_renderer = SimpleNamespace(sh_band=0, use_sh=False, debug_show_grad_norm=False)
     params = SimpleNamespace(
         adam=SimpleNamespace(),
         stability=SimpleNamespace(),
         training=SimpleNamespace(
+            sh_band=0,
             use_sh=False,
             train_downscale_mode="auto",
             train_auto_start_downscale=4,
@@ -1181,7 +1182,7 @@ def test_apply_live_params_forces_view_renderers_to_use_sh(monkeypatch) -> None:
     viewer = SimpleNamespace(
         render_background=lambda: (0.0, 0.0, 0.0),
         renderer_params=lambda allow_debug_overlays: SimpleNamespace(__dataclass_fields__={"debug": None}, debug=bool(allow_debug_overlays)),
-        training_params=lambda: SimpleNamespace(training=SimpleNamespace(use_sh=False)),
+        training_params=lambda: SimpleNamespace(training=SimpleNamespace(sh_band=0, use_sh=False)),
         s=SimpleNamespace(
             background=None,
             renderer=renderer,
@@ -1203,7 +1204,7 @@ def test_apply_live_params_forces_view_renderers_to_use_sh(monkeypatch) -> None:
 
     session.apply_live_params(viewer)
 
-    assert viewer.s.renderer.use_sh is True
-    assert viewer.s.debug_renderer.use_sh is True
-    assert viewer.s.training_renderer.use_sh is False
+    assert viewer.s.renderer.sh_band == 0
+    assert viewer.s.debug_renderer.sh_band == 0
+    assert viewer.s.training_renderer.sh_band == 0
     assert len(update_calls) == 1

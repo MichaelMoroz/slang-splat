@@ -8,7 +8,7 @@ import numpy as np
 import slangpy as spy
 
 from ..common import clamp_index, debug_region, require_not_none
-from ..training import resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_depth_ratio_weight, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_sh_lr_mul, resolve_use_sh
+from ..training import resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_depth_ratio_weight, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_sh_band, resolve_sh_lr_mul
 from . import session
 
 _DEBUG_HUGE_VALUE = 1e8
@@ -67,10 +67,10 @@ def _schedule_state_from_controls(viewer: object) -> object:
         position_random_step_noise_stage1_lr=float(viewer.c("position_random_step_noise_stage1_lr").value),
         position_random_step_noise_stage2_lr=float(viewer.c("position_random_step_noise_stage2_lr").value),
         position_random_step_noise_stage3_lr=float(viewer.c("position_random_step_noise_stage3_lr").value),
-        use_sh=bool(viewer.c("use_sh").value),
-        use_sh_stage1=bool(viewer.c("use_sh_stage1").value),
-        use_sh_stage2=bool(viewer.c("use_sh_stage2").value),
-        use_sh_stage3=bool(viewer.c("use_sh_stage3").value),
+        sh_band=int(viewer.c("sh_band").value),
+        sh_band_stage1=int(viewer.c("sh_band_stage1").value),
+        sh_band_stage2=int(viewer.c("sh_band_stage2").value),
+        sh_band_stage3=int(viewer.c("sh_band_stage3").value),
     )
 
 
@@ -85,26 +85,26 @@ def _schedule_stage_label(training: object, step: int) -> str:
     return "Stage 3"
 
 
-def _active_use_sh_control_key(training: object, step: int) -> str:
-    if not bool(getattr(training, "lr_schedule_enabled", True)): return "use_sh"
+def _active_sh_band_control_key(training: object, step: int) -> str:
+    if not bool(getattr(training, "lr_schedule_enabled", True)): return "sh_band"
     stage1 = max(int(getattr(training, "lr_schedule_stage1_step", 0)), 0)
     stage2 = max(int(getattr(training, "lr_schedule_stage2_step", stage1)), stage1)
     stage3 = max(int(getattr(training, "lr_schedule_steps", stage2)), stage2)
     current_step = max(int(step), 0)
-    if current_step < stage1: return "use_sh"
-    if current_step < stage2: return "use_sh_stage1"
-    if current_step < stage3: return "use_sh_stage2"
-    return "use_sh_stage3"
+    if current_step < stage1: return "sh_band"
+    if current_step < stage2: return "sh_band_stage1"
+    if current_step < stage3: return "sh_band_stage2"
+    return "sh_band_stage3"
 
 
-def _viewport_sh_state(viewer: object) -> tuple[bool, str, str]:
+def _viewport_sh_state(viewer: object) -> tuple[int, str, str]:
     trainer = getattr(viewer.s, "trainer", None)
     if trainer is not None:
         training = trainer.training
         step = max(int(trainer.state.step), 0)
-        return bool(resolve_use_sh(training, step)), _active_use_sh_control_key(training, step), _schedule_stage_label(training, step)
+        return int(resolve_sh_band(training, step)), _active_sh_band_control_key(training, step), _schedule_stage_label(training, step)
     training = _schedule_state_from_controls(viewer)
-    return bool(resolve_use_sh(training, 0)), "use_sh", "Stage 0"
+    return int(resolve_sh_band(training, 0)), "sh_band", "Stage 0"
 
 
 def _current_schedule_values_text(viewer: object) -> str:
@@ -121,7 +121,7 @@ def _current_schedule_values_text(viewer: object) -> str:
         f"shlr={resolve_sh_lr_mul(training, step):.2f}x | "
         f"depth={resolve_depth_ratio_weight(training, step):.2e} | "
         f"noise={resolve_position_random_step_noise_lr(training, step):.2e} | "
-        f"sh={'on' if resolve_use_sh(training, step) else 'off'}"
+        f"sh=SH{resolve_sh_band(training, step)}"
     )
 
 
@@ -669,8 +669,8 @@ def update_ui_text(viewer: object, dt: float) -> None:
     viewer.t("training_schedule").text = _training_schedule_text(viewer)
     viewer.t("training_schedule_values").text = _current_schedule_values_text(viewer)
     viewer.t("training_refinement").text = _training_refinement_text(viewer)
-    viewport_sh_enabled, viewport_sh_control_key, viewport_sh_stage_label = _viewport_sh_state(viewer)
-    viewer.ui._values["_viewport_sh_enabled"] = bool(viewport_sh_enabled)
+    viewport_sh_band, viewport_sh_control_key, viewport_sh_stage_label = _viewport_sh_state(viewer)
+    viewer.ui._values["_viewport_sh_band"] = int(viewport_sh_band)
     viewer.ui._values["_viewport_sh_control_key"] = str(viewport_sh_control_key)
     viewer.ui._values["_viewport_sh_stage_label"] = str(viewport_sh_stage_label)
     viewer.t("histogram_status").text = str(getattr(viewer.s, "cached_raster_grad_histogram_status", ""))

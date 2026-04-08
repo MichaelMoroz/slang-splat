@@ -111,7 +111,7 @@ void csProjectVisibleSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
         gaussian.sh3_6,
         camera.position_world(),
         projectionEllipsoid.centerWorld,
-        g_Raster.useSH
+        g_Raster.shBand
     );
     g_ScreenCenterRadiusDepth[splatId] = float4(projectedEllipse.centerPx, projectedEllipse.radiusPx, camDistance);
     g_ScreenColorAlpha[splatId] = float4(evaluatedColor, gaussian.rawOpacity);

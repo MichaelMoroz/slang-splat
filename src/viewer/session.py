@@ -27,6 +27,7 @@ from ..scene import (
     transform_colmap_reconstruction_pca,
 )
 from ..scene._internal.colmap_ops import point_nn_scales, resolve_training_frame_image_size
+from ..training import resolve_sh_band
 from ..scene._internal.colmap_ops import (
     DEPTH_INIT_VALUE_DISTANCE,
     DEPTH_INIT_VALUE_Z_DEPTH,
@@ -865,19 +866,21 @@ def resolve_effective_training_setup(viewer: object):
 
 def apply_live_params(viewer: object, force_init_defaults: bool = False) -> None:
     del force_init_defaults
-    use_sh = bool(viewer.training_params().training.use_sh)
+    training_params = viewer.training_params().training
+    trainer = viewer.s.trainer
+    active_sh_band = resolve_sh_band(trainer.training, trainer.state.step) if trainer is not None and hasattr(trainer, "training") and hasattr(trainer, "state") else int(getattr(training_params, "sh_band", 3 if bool(getattr(training_params, "use_sh", False)) else 0))
     viewer.s.background = viewer.render_background()
     renderer_specs = (
-        ("renderer", True, "applied_renderer_params_main", True),
-        ("training_renderer", False, "applied_renderer_params_training", False),
-        ("debug_renderer", True, "applied_renderer_params_debug", True),
+        ("renderer", True, "applied_renderer_params_main"),
+        ("training_renderer", False, "applied_renderer_params_training"),
+        ("debug_renderer", True, "applied_renderer_params_debug"),
     )
-    for attr, allow_debug, state_attr, force_sh in renderer_specs:
+    for attr, allow_debug, state_attr in renderer_specs:
         renderer = getattr(viewer.s, attr)
         if renderer is None:
             setattr(viewer.s, state_attr, None)
             continue
-        renderer.use_sh = True if force_sh else use_sh
+        renderer.sh_band = active_sh_band
         params = viewer.renderer_params(allow_debug)
         signature = _renderer_params_signature(params)
         if getattr(viewer.s, state_attr) == signature:

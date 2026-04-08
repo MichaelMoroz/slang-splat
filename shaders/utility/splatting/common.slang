@@ -88,7 +88,7 @@ float3 evaluate_sh0_color_raw(float3 sh0)
 }
 
 [Differentiable]
-float3 evaluate_sh3_raw(
+float3 evaluate_sh_band_raw(
     float3 sh0,
     float3 sh1X,
     float3 sh1Y,
@@ -105,9 +105,11 @@ float3 evaluate_sh3_raw(
     float3 sh3_4,
     float3 sh3_5,
     float3 sh3_6,
+    no_diff uint shBand,
     float3 viewDir
 )
 {
+    if (shBand == 0u) return evaluate_sh0_color_raw(sh0);
     float3 dir = normalize_vector_safe(viewDir);
     float x = dir.x;
     float y = dir.y;
@@ -118,23 +120,32 @@ float3 evaluate_sh3_raw(
     float xy = x * y;
     float yz = y * z;
     float xz = x * z;
-    return 0.5
-        + SH_C0 * sh0
-        - SH_C1 * y * sh1X
-        + SH_C1 * z * sh1Y
-        - SH_C1 * x * sh1Z
-        + SH_C2_0 * xy * sh2_0
-        + SH_C2_1 * yz * sh2_1
-        + SH_C2_2 * (2.0 * zz - xx - yy) * sh2_2
-        + SH_C2_3 * xz * sh2_3
-        + SH_C2_4 * (xx - yy) * sh2_4
-        + SH_C3_0 * y * (3.0 * xx - yy) * sh3_0
-        + SH_C3_1 * xy * z * sh3_1
-        + SH_C3_2 * y * (4.0 * zz - xx - yy) * sh3_2
-        + SH_C3_3 * z * (2.0 * zz - 3.0 * xx - 3.0 * yy) * sh3_3
-        + SH_C3_4 * x * (4.0 * zz - xx - yy) * sh3_4
-        + SH_C3_5 * z * (xx - yy) * sh3_5
-        + SH_C3_6 * x * (xx - 3.0 * yy) * sh3_6;
+    float3 color = 0.5 + SH_C0 * sh0;
+    if (shBand >= 1u)
+    {
+        color += -SH_C1 * y * sh1X
+            + SH_C1 * z * sh1Y
+            - SH_C1 * x * sh1Z;
+    }
+    if (shBand >= 2u)
+    {
+        color += SH_C2_0 * xy * sh2_0
+            + SH_C2_1 * yz * sh2_1
+            + SH_C2_2 * (2.0 * zz - xx - yy) * sh2_2
+            + SH_C2_3 * xz * sh2_3
+            + SH_C2_4 * (xx - yy) * sh2_4;
+    }
+    if (shBand >= 3u)
+    {
+        color += SH_C3_0 * y * (3.0 * xx - yy) * sh3_0
+            + SH_C3_1 * xy * z * sh3_1
+            + SH_C3_2 * y * (4.0 * zz - xx - yy) * sh3_2
+            + SH_C3_3 * z * (2.0 * zz - 3.0 * xx - 3.0 * yy) * sh3_3
+            + SH_C3_4 * x * (4.0 * zz - xx - yy) * sh3_4
+            + SH_C3_5 * z * (xx - yy) * sh3_5
+            + SH_C3_6 * x * (xx - 3.0 * yy) * sh3_6;
+    }
+    return color;
 }
 
 float3 evaluate_sh3_color(
@@ -157,7 +168,7 @@ float3 evaluate_sh3_color(
     float3 viewDir
 )
 {
-    return saturate(evaluate_sh3_raw(sh0, sh1X, sh1Y, sh1Z, sh2_0, sh2_1, sh2_2, sh2_3, sh2_4, sh3_0, sh3_1, sh3_2, sh3_3, sh3_4, sh3_5, sh3_6, viewDir));
+    return saturate(evaluate_sh_band_raw(sh0, sh1X, sh1Y, sh1Z, sh2_0, sh2_1, sh2_2, sh2_3, sh2_4, sh3_0, sh3_1, sh3_2, sh3_3, sh3_4, sh3_5, sh3_6, 3u, viewDir));
 }
 
 [Differentiable]
@@ -180,13 +191,10 @@ float3 evaluate_gaussian_color(
     float3 sh3_6,
     no_diff float3 cameraPosition,
     float3 position,
-    no_diff uint useSH
+    no_diff uint shBand
 )
 {
-    float3 rawColor = useSH != 0u
-        ? evaluate_sh3_raw(sh0, sh1X, sh1Y, sh1Z, sh2_0, sh2_1, sh2_2, sh2_3, sh2_4, sh3_0, sh3_1, sh3_2, sh3_3, sh3_4, sh3_5, sh3_6, position - cameraPosition)
-        : evaluate_sh0_color_raw(sh0);
-    return saturate(rawColor);
+    return saturate(evaluate_sh_band_raw(sh0, sh1X, sh1Y, sh1Z, sh2_0, sh2_1, sh2_2, sh2_3, sh2_4, sh3_0, sh3_1, sh3_2, sh3_3, sh3_4, sh3_5, sh3_6, shBand, position - cameraPosition));
 }
 
 struct ScanlineWorkItem
@@ -246,7 +254,7 @@ struct RasterParams
     uint trainingBackgroundMode;
     uint trainingBackgroundSeed;
     uint debugMode;
-    uint useSH;
+    uint shBand;
     float debugGradNormThreshold;
     float debugEllipseThicknessPx;
     float2 debugCloneCountRange;
@@ -287,7 +295,7 @@ float3 gaussian_sh_coeff(Gaussian3D gaussian, uint coeffIndex)
 
 float3 gaussian_sh_view_dependent_component(Gaussian3D gaussian, float3 cameraPosition)
 {
-    return evaluate_sh3_raw(
+    return evaluate_sh_band_raw(
         gaussian.sh0,
         gaussian.sh1X,
         gaussian.sh1Y,
@@ -304,6 +312,7 @@ float3 gaussian_sh_view_dependent_component(Gaussian3D gaussian, float3 cameraPo
         gaussian.sh3_4,
         gaussian.sh3_5,
         gaussian.sh3_6,
+        3u,
         gaussian.position - cameraPosition
     ) - evaluate_sh0_color_raw(gaussian.sh0);
 }

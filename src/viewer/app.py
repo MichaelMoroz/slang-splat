@@ -13,7 +13,7 @@ from ..app.shared import RendererParams, build_init_params, build_training_param
 from ..common import normalize3
 from ..renderer import Camera, GaussianRenderer
 from ..scene import GaussianScene, save_gaussian_ply
-from ..training import resolve_use_sh
+from ..training import resolve_sh_band
 from . import presenter, session
 from .constants import _WINDOW_TITLE
 from .state import (
@@ -95,10 +95,10 @@ _TRAINING_PARAM_KEYS = {
     "position_random_step_noise_stage2_lr": "position_random_step_noise_stage2_lr",
     "position_random_step_noise_stage3_lr": "position_random_step_noise_stage3_lr",
     "background_mode": "background_mode",
-    "use_sh": "use_sh",
-    "use_sh_stage1": "use_sh_stage1",
-    "use_sh_stage2": "use_sh_stage2",
-    "use_sh_stage3": "use_sh_stage3",
+    "sh_band": "sh_band",
+    "sh_band_stage1": "sh_band_stage1",
+    "sh_band_stage2": "sh_band_stage2",
+    "sh_band_stage3": "sh_band_stage3",
     "train_downscale_mode": "train_downscale_mode",
     "train_auto_start_downscale": "train_auto_start_downscale",
     "train_downscale_base_iters": "train_downscale_base_iters",
@@ -401,8 +401,9 @@ class SplatViewer(spy.AppWindow):
 
     def _export_should_include_sh(self) -> bool:
         if self.s.trainer is not None:
-            return bool(resolve_use_sh(self.s.trainer.training, self.s.trainer.state.step))
-        return bool(self.training_params().training.use_sh)
+            return resolve_sh_band(self.s.trainer.training, self.s.trainer.state.step) > 0
+        training = self.training_params().training
+        return int(getattr(training, "sh_band", 3 if bool(getattr(training, "use_sh", False)) else 0)) > 0
 
     def _export_ply_callback(self) -> None:
         path = spy.platform.save_file_dialog([spy.platform.FileDialogFilter("PLY Files", "*.ply")])

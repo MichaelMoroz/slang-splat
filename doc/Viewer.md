@@ -11,7 +11,7 @@ The overlay uses a right-side control panel with a menu bar:
 - `Help`: `Documentation` and `About` windows
 - Auxiliary windows such as `Documentation`, `About`, `Histograms`, `Training Views`, and `COLMAP Import` open as tabs in that right-side panel by default.
 - The menu bar spans the full viewport width and the left control panel starts below it to avoid overlap.
-- The viewport header row includes quick buttons for debug mode, camera overlays, training-camera debug view, and the active SH state (`SH On` / `SH Off`).
+- The viewport header row includes quick controls for debug mode, camera overlays, training-camera debug view, and the active SH band cap (`SH0` / `SH1` / `SH2` / `SH3`).
 
 `src/viewer` is split into:
 - `app.py`: window lifecycle, camera input, and UI event routing
@@ -126,7 +126,7 @@ The loss-debug controls expose a runtime `Abs Diff Scale` slider when `View = Ab
 
 The `Train Setup` section exposes train downscale as a mode selector:
 
-It also exposes a `Use Spherical Harmonics` toggle plus an `SH Start Step` slider. When enabled, projection and training use SH0+SH1 view-dependent color after that configured start step. When disabled, rendering and optimization fall back to SH0-only base color while leaving the raster hot loop unchanged.
+It also exposes per-stage `SH Band` dropdowns. `SH0` uses only the DC term, while `SH1`, `SH2`, and `SH3` progressively enable the higher bands in both the viewport and the training schedule.
 
 Training background is configured separately from the viewer clear color:
 
@@ -162,11 +162,11 @@ The panel shows both the resolved active train resolution and the current downsc
 
 The `Optimizer` panel exposes the active training schedule directly:
 
-- `Schedule Steps` defines the shared max-iteration budget for the LR, depth-ratio, SH warmup, and noise schedules.
+- `Schedule Steps` defines the shared max-iteration budget for the LR, depth-ratio, SH band, and noise schedules.
 - `LR Stage 1 Step` and `LR Stage 2 Step` move the two intermediate LR breakpoints.
 - `Noise End Step` moves the point where random-step position noise reaches zero.
 - `Depth Reg Stage 1/2/3` move the three intermediate depth-ratio regularizer breakpoints.
-- The viewport `SH On` / `SH Off` button writes back to the currently active schedule-stage checkbox, so the visible toggle always targets the SH control for the phase currently being trained.
+- The viewport SH dropdown writes back to the currently active schedule-stage `SH Band` control, so the visible band cap always targets the phase currently being trained.
 
 These breakpoint controls are regular integer sliders with a live `0..Schedule Steps` range rather than a compound multi-value slider.
 
