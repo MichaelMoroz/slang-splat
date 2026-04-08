@@ -226,9 +226,9 @@ def build_training_params(
     train_subsample_factor: int = 0,
 ) -> AppTrainingParams:
     resolved_sh_band = clamp_int(3 if sh_band is None and bool(use_sh) else (0 if sh_band is None else sh_band), 0, 3)
-    resolved_sh_band_stage1 = clamp_int(3 if sh_band_stage1 is None and bool(use_sh_stage1) else (0 if sh_band_stage1 is None else sh_band_stage1), 0, 3)
-    resolved_sh_band_stage2 = clamp_int(3 if sh_band_stage2 is None and bool(use_sh_stage2) else (0 if sh_band_stage2 is None else sh_band_stage2), 0, 3)
-    resolved_sh_band_stage3 = clamp_int(3 if sh_band_stage3 is None and bool(use_sh_stage3) else (0 if sh_band_stage3 is None else sh_band_stage3), 0, 3)
+    resolved_sh_band_stage1 = clamp_int(1 if sh_band_stage1 is None and bool(use_sh_stage1) else (0 if sh_band_stage1 is None else sh_band_stage1), 0, 3)
+    resolved_sh_band_stage2 = clamp_int(1 if sh_band_stage2 is None and bool(use_sh_stage2) else (0 if sh_band_stage2 is None else sh_band_stage2), 0, 3)
+    resolved_sh_band_stage3 = clamp_int(1 if sh_band_stage3 is None and bool(use_sh_stage3) else (0 if sh_band_stage3 is None else sh_band_stage3), 0, 3)
     base_lr = clamp_float(base_lr, 1e-8, 1.0)
     adam = AdamHyperParams(
         **{

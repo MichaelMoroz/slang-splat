@@ -109,9 +109,9 @@ def test_build_training_params_clamps_ranges():
     assert params.training.use_sh_stage1 is True
     assert params.training.use_sh_stage2 is True
     assert params.training.use_sh_stage3 is True
-    assert params.training.sh_band_stage1 == 3
-    assert params.training.sh_band_stage2 == 3
-    assert params.training.sh_band_stage3 == 3
+    assert params.training.sh_band_stage1 == 1
+    assert params.training.sh_band_stage2 == 1
+    assert params.training.sh_band_stage3 == 1
     assert params.training.refinement_min_contribution_percent == 1e-05
     assert params.training.refinement_min_contribution_decay == 0.995
     assert params.training.refinement_opacity_mul == 1.0
@@ -162,9 +162,9 @@ def test_default_training_params_match_fixed_count_defaults():
     assert params.training.use_sh_stage1 is True
     assert params.training.use_sh_stage2 is True
     assert params.training.use_sh_stage3 is True
-    assert params.training.sh_band_stage1 == 3
-    assert params.training.sh_band_stage2 == 3
-    assert params.training.sh_band_stage3 == 3
+    assert params.training.sh_band_stage1 == 1
+    assert params.training.sh_band_stage2 == 1
+    assert params.training.sh_band_stage3 == 1
     assert params.training.refinement_growth_ratio == 0.05
     assert params.training.refinement_growth_start_step == 500
     assert params.training.refinement_alpha_cull_threshold == 1e-2

@@ -139,9 +139,9 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["background_mode"] == 1
     assert viewer_ui._values["train_background_color"] == (1.0, 1.0, 1.0)
     assert viewer_ui._values["sh_band"] == 0
-    assert viewer_ui._values["sh_band_stage1"] == 3
-    assert viewer_ui._values["sh_band_stage2"] == 3
-    assert viewer_ui._values["sh_band_stage3"] == 3
+    assert viewer_ui._values["sh_band_stage1"] == 1
+    assert viewer_ui._values["sh_band_stage2"] == 1
+    assert viewer_ui._values["sh_band_stage3"] == 1
     assert viewer_ui._values["sh1_reg"] == 0.01
     assert viewer_ui._values["refinement_interval"] == 200
     assert viewer_ui._values["refinement_growth_ratio"] == 0.05

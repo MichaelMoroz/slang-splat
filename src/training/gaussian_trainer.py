@@ -195,7 +195,7 @@ class TrainingHyperParams:
     depth_ratio_stage1_weight: float = 0.05; depth_ratio_stage2_weight: float = 0.01; depth_ratio_stage3_weight: float = 0.001
     position_random_step_noise_stage1_lr: float = 466666.6666666667; position_random_step_noise_stage2_lr: float = 416666.6666666667; position_random_step_noise_stage3_lr: float = 0.0
     use_sh_stage1: bool = True; use_sh_stage2: bool = True; use_sh_stage3: bool = True
-    sh_band_stage1: int = 3; sh_band_stage2: int = 3; sh_band_stage3: int = 3
+    sh_band_stage1: int = 1; sh_band_stage2: int = 1; sh_band_stage3: int = 1
     max_gaussians: int = 1_000_000; train_downscale_mode: int = 1; train_auto_start_downscale: int = 16
     train_downscale_base_iters: int = 200; train_downscale_iter_step: int = 50; train_downscale_max_iters: int = 30_000
     train_downscale_factor: int = 1; train_subsample_factor: int = 0

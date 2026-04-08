@@ -210,9 +210,9 @@ def test_default_training_params_include_background_mode_and_density() -> None:
     assert params.training.use_sh_stage1 is True
     assert params.training.use_sh_stage2 is True
     assert params.training.use_sh_stage3 is True
-    assert params.training.sh_band_stage1 == 3
-    assert params.training.sh_band_stage2 == 3
-    assert params.training.sh_band_stage3 == 3
+    assert params.training.sh_band_stage1 == 1
+    assert params.training.sh_band_stage2 == 1
+    assert params.training.sh_band_stage3 == 1
     assert params.training.refinement_growth_ratio == 0.05
     assert params.training.refinement_growth_start_step == 500
     assert params.training.refinement_alpha_cull_threshold == 1e-2
