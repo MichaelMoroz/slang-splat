@@ -54,7 +54,8 @@ def _write_points3d_bin(path: Path) -> None:
         handle.write(struct.pack("<ddd", 0.0, 0.0, 0.0))
         handle.write(struct.pack("<BBB", 255, 255, 255))
         handle.write(struct.pack("<d", 0.0))
-        handle.write(struct.pack("<Q", 0))
+        handle.write(struct.pack("<Q", 3))
+        handle.write(struct.pack("<ii", 1, 0) * 3)
 
 
 def _write_database(path: Path, image_names: list[str]) -> None:

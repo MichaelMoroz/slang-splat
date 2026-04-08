@@ -94,8 +94,9 @@ def _load_points3d_bin(path: Path) -> dict[int, ColmapPoint3D]:
             xyz = np.asarray(_read_f64_array(handle, 3), dtype=np.float32)
             rgb = np.frombuffer(handle.read(3), dtype=np.uint8).astype(np.float32) / 255.0
             error = float(struct.unpack("<d", handle.read(8))[0])
-            handle.seek(_read(handle, U64) * 8, 1)
-            points[point_id] = ColmapPoint3D(point_id=point_id, xyz=xyz, rgb=rgb, error=error)
+            track_length = _read(handle, U64)
+            handle.seek(track_length * 8, 1)
+            points[point_id] = ColmapPoint3D(point_id=point_id, xyz=xyz, rgb=rgb, error=error, track_length=track_length)
     return points
 
 

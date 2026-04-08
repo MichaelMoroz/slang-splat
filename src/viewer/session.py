@@ -29,6 +29,7 @@ from ..scene import (
 from ..scene._internal.colmap_ops import point_nn_scales, resolve_training_frame_image_size
 from ..training import resolve_sh_band
 from ..scene._internal.colmap_ops import (
+    COLMAP_IMPORT_MIN_TRACK_LENGTH,
     DEPTH_INIT_VALUE_DISTANCE,
     DEPTH_INIT_VALUE_Z_DEPTH,
     TRAINING_FRAME_LOAD_THREADS,
@@ -90,9 +91,9 @@ def _apply_initial_camera_fit(viewer: object, fallback_bounds: object | None = N
 
 
 def _point_tables(recon: object) -> tuple[np.ndarray, np.ndarray]:
-    xyz, rgb = point_tables(recon)
+    xyz, rgb = point_tables(recon, min_track_length=COLMAP_IMPORT_MIN_TRACK_LENGTH)
     if xyz.shape[0] != rgb.shape[0] or xyz.shape[0] <= 0:
-        raise RuntimeError("COLMAP point tables are empty or mismatched.")
+        raise RuntimeError(f"COLMAP point tables are empty or mismatched after filtering to points seen by at least {COLMAP_IMPORT_MIN_TRACK_LENGTH} cameras.")
     return xyz, rgb
 
 

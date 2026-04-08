@@ -39,6 +39,7 @@ class ColmapPoint3D:
     xyz: np.ndarray
     rgb: np.ndarray
     error: float
+    track_length: int = 0
 
 
 @dataclass(slots=True)
@@ -89,14 +90,24 @@ class GaussianInitHyperParams:
     color_jitter_std: float | None = None
 
 
-def point_tables(recon: ColmapReconstruction) -> tuple[np.ndarray, np.ndarray]:
+def point_tables(recon: ColmapReconstruction, min_track_length: int = 0) -> tuple[np.ndarray, np.ndarray]:
     xyz = getattr(recon, "point_xyz_table", None)
     rgb = getattr(recon, "point_rgb_table", None)
+    track_lengths = getattr(recon, "point_track_length_table", None)
+    min_track = max(int(min_track_length), 0)
     if xyz is not None and rgb is not None:
-        return np.ascontiguousarray(xyz, dtype=np.float32), np.ascontiguousarray(rgb, dtype=np.float32)
+        xyz_arr = np.ascontiguousarray(xyz, dtype=np.float32)
+        rgb_arr = np.ascontiguousarray(rgb, dtype=np.float32)
+        if track_lengths is None or min_track <= 0:
+            return xyz_arr, rgb_arr
+        track_arr = np.asarray(track_lengths, dtype=np.int32).reshape(-1)
+        mask = track_arr >= min_track
+        return np.ascontiguousarray(xyz_arr[mask], dtype=np.float32), np.ascontiguousarray(rgb_arr[mask], dtype=np.float32)
     if not recon.points3d:
         return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.float32)
-    points = tuple(recon.points3d.values())
+    points = tuple(point for point in recon.points3d.values() if int(getattr(point, "track_length", 0)) >= min_track)
+    if len(points) == 0:
+        return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.float32)
     return (
         np.ascontiguousarray(np.stack([point.xyz for point in points], axis=0), dtype=np.float32),
         np.ascontiguousarray(np.stack([point.rgb for point in points], axis=0), dtype=np.float32),

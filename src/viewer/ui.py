@@ -1500,7 +1500,7 @@ class ToolkitWindow:
                         imgui.set_item_default_focus()
                 imgui.end_combo()
             if imgui.is_item_hovered():
-                imgui.set_item_tooltip("COLMAP Pointcloud uses sparse points directly, Diffused Pointcloud resamples them, Custom PLY loads a chosen gaussian seed scene, and From Depth calibrates matched 16-bit PNG depth maps into a point cloud using an iteratively reweighted robust per-pose affine depth fit from all valid observed points, while rejecting projected samples that land on strong local depth-gradient spikes.")
+                imgui.set_item_tooltip("COLMAP Pointcloud uses only sparse points seen by at least 3 cameras, Diffused Pointcloud resamples that filtered set, Custom PLY loads a chosen gaussian seed scene, and From Depth calibrates matched 16-bit PNG depth maps into a point cloud using an iteratively reweighted robust per-pose affine depth fit from all valid observed points, while rejecting projected samples that land on strong local depth-gradient spikes.")
             if mode_idx in (0, 1, 3):
                 if mode_idx == 3:
                     imgui.push_text_wrap_pos(imgui.get_cursor_pos_x() + imgui.get_content_region_avail().x)
