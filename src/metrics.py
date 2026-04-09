@@ -23,10 +23,6 @@ class Log10Histogram:
     def bin_centers_log10(self) -> np.ndarray:
         return 0.5 * (self.bin_edges_log10[:-1] + self.bin_edges_log10[1:])
 
-    @property
-    def bin_centers(self) -> np.ndarray:
-        return np.power(10.0, self.bin_centers_log10)
-
 
 @dataclass(frozen=True, slots=True)
 class ParamLog10Histograms:
@@ -37,10 +33,6 @@ class ParamLog10Histograms:
     @property
     def bin_centers_log10(self) -> np.ndarray:
         return 0.5 * (self.bin_edges_log10[:-1] + self.bin_edges_log10[1:])
-
-    @property
-    def bin_centers(self) -> np.ndarray:
-        return np.power(10.0, self.bin_centers_log10)
 
 
 @dataclass(frozen=True, slots=True)

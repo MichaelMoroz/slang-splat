@@ -2580,7 +2580,7 @@ def test_create_dataset_textures_threads_cpu_image_loading(monkeypatch) -> None:
         def __enter__(self):
             return self
 
-        def __exit__(self, exc_type, exc, tb) -> bool:
+        def __exit__(self, *_args) -> bool:
             return False
 
         def map(self, fn, items):

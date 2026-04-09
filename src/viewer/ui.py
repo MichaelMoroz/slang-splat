@@ -19,7 +19,6 @@ from .constants import _WINDOW_TITLE
 from .state import DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH, LOSS_DEBUG_OPTIONS
 
 TOOLKIT_WIDTH_FRACTION = 0.1875
-VIEW_WIDTH_FRACTION = 0.8125
 LOSS_HISTORY_SIZE = 512
 FPS_HISTORY_SIZE = 128
 _DOC_MAX_WIDTH = 104
@@ -885,10 +884,6 @@ class ToolkitWindow:
     def _sync_interface_scale(self, ui: ViewerUI) -> None:
         self._set_interface_scale(self._interface_scale_factor(ui))
 
-    @property
-    def alive(self) -> bool:
-        return self._alive
-
     def handle_keyboard_event(self, event) -> bool:
         if not self._alive:
             return False
@@ -1053,7 +1048,6 @@ class ToolkitWindow:
         sh_band = min(max(int(ui._values.get("_viewport_sh_band", ui._values.get("sh_band", 0))), 0), len(_SH_BAND_LABELS) - 1)
         sh_label = _SH_BAND_LABELS[sh_band]
         label_size = imgui.calc_text_size(label)
-        button_width = float(label_size.x) + 2.0 * float(style.frame_padding.x)
         button_pos = imgui.ImVec2(float(image_origin.x) + _VIEWPORT_OVERLAY_MARGIN * scale, float(image_origin.y) + _VIEWPORT_OVERLAY_MARGIN * scale)
         button_height = float(label_size.y) + 2.0 * float(style.frame_padding.y)
         current = min(max(int(ui._values.get("debug_mode", 0)), 0), len(_DEBUG_MODE_LABELS) - 1)
@@ -2308,7 +2302,6 @@ class ToolkitWindow:
         "depth_ratio_stage1_weight": "Depth-ratio regularizer target reached at the end of Stage 1",
         "depth_ratio_stage2_weight": "Depth-ratio regularizer target reached at the end of Stage 2",
         "depth_ratio_stage3_weight": "Depth-ratio regularizer target reached at the end of Stage 3",
-        "position_random_step_noise_lr": "Initial post-step MCMC-style position noise multiplier before Stage 1; each stage tab sets the target noise LR reached at that stage end step",
         "position_random_step_noise_stage1_lr": "Position-noise LR target reached at the end of Stage 1",
         "position_random_step_noise_stage2_lr": "Position-noise LR target reached at the end of Stage 2",
         "position_random_step_noise_stage3_lr": "Position-noise LR target reached at the end of Stage 3",

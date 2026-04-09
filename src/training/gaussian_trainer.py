@@ -14,7 +14,7 @@ from ..scene import ColmapFrame, GaussianInitHyperParams, GaussianScene, SUPPORT
 from ..scene._internal.colmap_ops import TRAINING_FRAME_LOAD_THREADS, load_training_frame_rgba8
 from .adam import AdamOptimizer, AdamRuntimeHyperParams
 from .optimizer import GaussianOptimizer
-from .schedule import DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY, resolve_base_learning_rate, resolve_clone_probability_threshold, resolve_depth_ratio_weight, resolve_effective_refinement_interval, resolve_learning_rate_scale, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_max_allowed_density, resolve_sh_band, should_run_refinement_step
+from .schedule import DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY, resolve_base_learning_rate, resolve_clone_probability_threshold, resolve_depth_ratio_weight, resolve_effective_refinement_interval, resolve_learning_rate_scale, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_min_contribution_percent, resolve_max_allowed_density, resolve_sh_band, should_run_refinement_step
 
 TRAIN_DOWNSCALE_MODE_AUTO = 0
 TRAIN_DOWNSCALE_MAX_FACTOR = 16
@@ -177,7 +177,7 @@ class AdamHyperParams:
 class StabilityHyperParams:
     grad_component_clip: float = 10.0; grad_norm_clip: float = 10.0; max_update: float = 0.05; min_scale: float = 1e-3
     max_scale: float = 3.0; max_anisotropy: float = 32.0; min_opacity: float = 1e-4; max_opacity: float = 0.9999
-    position_abs_max: float = 1e4; huge_value: float = 1e8; min_inv_scale: float = 1e-6; loss_grad_clip: float = 10.0
+    position_abs_max: float = 1e4; huge_value: float = 1e8; loss_grad_clip: float = 10.0
 
 
 @dataclass(slots=True)
@@ -270,7 +270,7 @@ class TrainingHyperParams:
 @dataclass(slots=True)
 class TrainingState:
     step: int = 0; last_loss: float = float("nan"); avg_loss: float = float("nan"); last_mse: float = float("nan"); avg_mse: float = float("nan"); last_psnr: float = float("nan"); avg_psnr: float = float("nan")
-    last_density_loss: float = float("nan"); avg_density_loss: float = float("nan")
+    avg_density_loss: float = float("nan")
     last_frame_index: int = -1; last_instability: str = ""; last_base_lr: float = float("nan")
 
 
@@ -607,8 +607,6 @@ class GaussianTrainer:
         self._refinement_camera_capacity = 0
         self._refinement_camera_signature: tuple[int, int, float, float, int] | None = None
         self._scale_reg_reference = float(max(scale_reg_reference, 1e-8)) if scale_reg_reference is not None else self._estimate_scale_reg_reference(scene)
-        self._init_point_positions_buffer: spy.Buffer | None = None
-        self._init_point_colors_buffer: spy.Buffer | None = None
         self._init_point_count = 0
         self._init_point_positions_cpu: np.ndarray | None = None
         self._init_point_colors_cpu: np.ndarray | None = None
@@ -821,17 +819,6 @@ class GaussianTrainer:
         self._frame_cursor += 1
         return frame_index
 
-    def _create_init_point_buffer(self, points: np.ndarray) -> spy.Buffer:
-        packed = np.ascontiguousarray(points, dtype=np.float32)
-        if packed.ndim != 2 or packed.shape[1] < 3:
-            raise ValueError("Point table must be [N, >=3] float array.")
-        packed4 = np.pad(packed[:, :3], ((0, 0), (0, 1)))
-        usage = spy.BufferUsage.shader_resource | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
-        buffer = self.device.create_buffer(size=max(packed4.shape[0], 1) * 16, usage=usage)
-        if packed4.shape[0] > 0:
-            buffer.copy_from_numpy(packed4)
-        return buffer
-
     def _bind_or_upload_init_pointcloud(
         self,
         positions: np.ndarray | None,
@@ -841,7 +828,7 @@ class GaussianTrainer:
         point_count: int,
     ) -> None:
         if positions_buffer is not None and colors_buffer is not None and int(point_count) > 0:
-            self._init_point_positions_buffer, self._init_point_colors_buffer, self._init_point_count = positions_buffer, colors_buffer, int(point_count)
+            self._init_point_count = int(point_count)
             self._init_point_positions_cpu = np.asarray(positions_buffer.to_numpy(), dtype=np.float32)[: self._init_point_count, :3].copy()
             self._init_point_colors_cpu = np.asarray(colors_buffer.to_numpy(), dtype=np.float32)[: self._init_point_count, :3].copy()
             return
@@ -851,8 +838,6 @@ class GaussianTrainer:
         col = np.ascontiguousarray(colors, dtype=np.float32)
         if pos.shape[0] != col.shape[0]:
             raise ValueError("init_point_positions and init_point_colors must have matching row count.")
-        self._init_point_positions_buffer = self._create_init_point_buffer(pos)
-        self._init_point_colors_buffer = self._create_init_point_buffer(col)
         self._init_point_count = int(pos.shape[0])
         self._init_point_positions_cpu = pos[:, :3].copy()
         self._init_point_colors_cpu = col[:, :3].copy()
@@ -1126,15 +1111,6 @@ class GaussianTrainer:
         self._ensure_train_target_texture()
         self._invalidate_downscaled_target()
 
-    def scale_histogram(self, *, bin_count: int = 64, min_log10: float = -6.0, max_log10: float = 1.0):
-        return self.metrics.compute_scale_histogram(
-            self.renderer.scene_buffers["splat_params"],
-            self._scene_count,
-            bin_count=bin_count,
-            min_log10=min_log10,
-            max_log10=max_log10,
-        )
-
     def read_live_scene(self) -> GaussianScene:
         groups = self.renderer.read_scene_groups(self._scene_count)
         color_alpha = np.asarray(groups["color_alpha"], dtype=np.float32)
@@ -1148,15 +1124,6 @@ class GaussianTrainer:
             opacities=np.asarray(opacities, dtype=np.float32),
             colors=np.asarray(colors, dtype=np.float32),
             sh_coeffs=sh_coeffs,
-        )
-
-    def anisotropy_histogram(self, *, bin_count: int = 64, min_log10: float = 0.0, max_log10: float = 2.0):
-        return self.metrics.compute_anisotropy_histogram(
-            self.renderer.scene_buffers["splat_params"],
-            self._scene_count,
-            bin_count=bin_count,
-            min_log10=min_log10,
-            max_log10=max_log10,
         )
 
     def _maybe_sync_prepass_capacity(self, frame_camera: Camera, training_step: int) -> None:
@@ -1208,14 +1175,12 @@ class GaussianTrainer:
         for batch_index, frame_index in enumerate(frame_indices):
             loss = float(step_metrics[batch_index, self._LOSS_SLOT_TOTAL])
             image_mse = float(step_metrics[batch_index, self._LOSS_SLOT_MSE])
-            density_loss = float(step_metrics[batch_index, self._LOSS_SLOT_DENSITY])
             had_nonfinite = had_nonfinite or not np.isfinite(loss)
             self.state.step += 1
             self.state.last_base_lr = self.current_base_lr(self.state.step)
             self.state.last_frame_index = frame_index
             self.state.last_loss = loss
             self.state.last_mse = image_mse
-            self.state.last_density_loss = density_loss
             self.state.last_psnr = float(psnr_from_mse(image_mse))
             self._frame_metrics.update(frame_index, self.state.last_loss, self.state.last_mse, self.state.last_psnr)
         if had_nonfinite:

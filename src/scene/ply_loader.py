@@ -7,7 +7,7 @@ import numpy as np
 from plyfile import PlyData, PlyElement
 
 from .gaussian_scene import GaussianScene
-from .sh_utils import SH_C0, SUPPORTED_SH_COEFF_COUNT, pad_sh_coeffs, sh_coeffs_to_display_colors
+from .sh_utils import SUPPORTED_SH_COEFF_COUNT, pad_sh_coeffs, sh_coeffs_to_display_colors
 _LOGIT_EPS = 1e-6
 
 

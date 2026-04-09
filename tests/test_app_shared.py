@@ -204,9 +204,6 @@ def test_viewer_effective_training_setup_keeps_requested_init_opacity():
                 },
             )()
 
-        def _selected_images_subdir(self) -> str:
-            return "images_4"
-
         def training_params(self):
             return default_training_params()
 

@@ -897,7 +897,7 @@ def test_active_cached_raster_grad_metrics_tensor_decodes_fixed_mode(device):
     scene = make_scene(10, seed=97)
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
     renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, list_capacity_multiplier=16, cached_raster_grad_atomic_mode="fixed")
-    grads = renderer.debug_raster_backward_grads(scene, camera, background=np.array([0.01, 0.03, 0.05], dtype=np.float32))
+    renderer.debug_raster_backward_grads(scene, camera, background=np.array([0.01, 0.03, 0.05], dtype=np.float32))
 
     prepared = renderer.read_active_cached_raster_grads_float_tensor(scene.count)
     decoded = np.asarray(renderer.read_cached_raster_grads_fixed_decoded(scene.count), dtype=np.float32)

@@ -138,7 +138,7 @@ def test_build_training_frames_uses_sixteen_loader_threads(tmp_path: Path, monke
         def __enter__(self):
             return self
 
-        def __exit__(self, exc_type, exc, tb) -> bool:
+        def __exit__(self, *_args) -> bool:
             return False
 
         def map(self, fn, items):

@@ -18,11 +18,9 @@ from . import presenter, session
 from .constants import _WINDOW_TITLE
 from .state import (
     DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH,
-    DEFAULT_LIST_CAPACITY_MULTIPLIER,
-    DEFAULT_MAX_PREPASS_MEMORY_MB,
     LOSS_DEBUG_OPTIONS, ViewerState,
 )
-from .ui import _DEBUG_ADAM_MOMENTUM_THRESHOLD_DEFAULT, _threshold_band_range, build_ui, create_toolkit_window, default_control_values
+from .ui import _threshold_band_range, build_ui, create_toolkit_window, default_control_values
 
 _VIEW_VEC_EPS = 1e-6
 _SCROLL_SPEED_BASE = 1.1
@@ -192,14 +190,6 @@ def _training_kwargs(value_for) -> dict[str, object]:
 
 def _default_training_control_value(control: str) -> object:
     return _TRAIN_SETUP_DEFAULTS[control] if control in _TRAIN_SETUP_DEFAULTS else _TRAINING_DEFAULTS[control]
-
-
-def default_renderer_params(max_prepass_memory_mb: int = DEFAULT_MAX_PREPASS_MEMORY_MB) -> RendererParams:
-    return RendererParams(list_capacity_multiplier=DEFAULT_LIST_CAPACITY_MULTIPLIER, max_prepass_memory_mb=max(int(max_prepass_memory_mb), 1))
-
-
-def default_init_params():
-    return build_init_params(None, None, None, _TRAIN_SETUP_DEFAULTS["init_opacity"], _TRAIN_SETUP_DEFAULTS["seed"])
 
 
 def _training_background_value(value_for) -> tuple[float, float, float]:

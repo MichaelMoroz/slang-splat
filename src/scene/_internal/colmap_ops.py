@@ -29,7 +29,6 @@ TRAINING_FRAME_LOAD_THREADS = 16
 DEPTH_INIT_MIN_CORRESPONDENCES = 16
 DEPTH_INIT_MIN_INLIERS = 12
 DEPTH_INIT_RIDGE_LAMBDA = 1e-4
-DEPTH_INIT_MAD_SCALE = 3.5
 DEPTH_INIT_IRLS_ITERATIONS = 6
 DEPTH_INIT_TUKEY_C = 4.685
 DEPTH_INIT_WEIGHT_EPS = 1e-4
@@ -642,18 +641,6 @@ def collect_depth_distance_remap_samples(
     return np.ascontiguousarray(np.stack(features, axis=0), dtype=np.float32), np.ascontiguousarray(np.asarray(targets, dtype=np.float32), dtype=np.float32)
 
 
-def fit_depth_distance_remap(
-    recon: ColmapReconstruction,
-    image: ColmapImage,
-    frame: ColmapFrame,
-    camera: ColmapCamera,
-    depth_map: np.ndarray,
-    depth_value_mode: str = DEPTH_INIT_VALUE_Z_DEPTH,
-) -> np.ndarray | None:
-    features, targets = collect_depth_distance_remap_samples(recon, image, frame, camera, depth_map, depth_value_mode)
-    return _robust_ridge_fit(features, targets)
-
-
 def fit_depth_distance_remap_for_payload(payload: DepthInitFramePayload) -> np.ndarray | None:
     if payload.fit_features.size == 0 or payload.fit_targets.size == 0:
         return None
@@ -668,29 +655,6 @@ def _predict_depth_distance_map(frame: ColmapFrame, depth_map: np.ndarray, coeff
     raw_depth = np.asarray(depth_map, dtype=np.float32)
     del frame
     return np.ascontiguousarray(np.float32(coeffs[0]) + np.float32(coeffs[1]) * raw_depth, dtype=np.float32)
-
-
-def build_depth_init_frame_payload(
-    recon: ColmapReconstruction,
-    image: ColmapImage,
-    camera: ColmapCamera,
-    frame: ColmapFrame,
-    depth_path: Path,
-    depth_value_mode: str = DEPTH_INIT_VALUE_Z_DEPTH,
-) -> DepthInitFramePayload | None:
-    rgba8 = load_training_frame_rgba8(frame)
-    depth_map = load_depth_u16_image(depth_path, target_size=(int(frame.width), int(frame.height)))
-    if not np.any(np.isfinite(depth_map) & (depth_map > 0.0)):
-        return None
-    fit_features, fit_targets = collect_depth_distance_remap_samples(recon, image, frame, camera, depth_map, depth_value_mode)
-    return DepthInitFramePayload(
-        frame=frame,
-        rgba8=rgba8,
-        depth_map=depth_map,
-        camera_id=int(image.camera_id),
-        fit_features=np.asarray(fit_features, dtype=np.float32),
-        fit_targets=np.asarray(fit_targets, dtype=np.float32),
-    )
 
 
 def load_training_frame_rgba8_with_depth_payload(task: tuple[ColmapReconstruction, ColmapImage, ColmapCamera, ColmapFrame, Path | None, str]) -> tuple[np.ndarray, DepthInitFramePayload | None]:
@@ -780,11 +744,6 @@ def generate_depth_init_points(
     if len(positions) == 0:
         raise RuntimeError("Depth initialization could not sample any calibrated points.")
     return np.ascontiguousarray(np.stack(positions, axis=0), dtype=np.float32), np.ascontiguousarray(np.stack(colors, axis=0), dtype=np.float32)
-
-
-def _random_unit_quaternions(rng: np.random.Generator, count: int) -> np.ndarray:
-    q = rng.normal(size=(count, 4)).astype(np.float32)
-    return q / np.maximum(np.linalg.norm(q, axis=1, keepdims=True), 1e-8)
 
 
 def _identity_quaternions(count: int) -> np.ndarray:

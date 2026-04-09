@@ -33,21 +33,6 @@ def _cpu_sort(keys: np.ndarray, values: np.ndarray, start_bit: int, bit_count: i
     return keys[perm], values[perm]
 
 
-def _run_sort(device: spy.Device, radix_sort, keys: np.ndarray, values: np.ndarray, start_bit: int, bit_count: int) -> tuple[np.ndarray, np.ndarray]:
-    keys_buffer = _buffer_u32(device, keys)
-    values_buffer = _buffer_u32(device, values)
-    enc = device.create_command_encoder()
-    radix_sort.sort_key_values(enc, keys_buffer, values_buffer, keys.size, max_bits=bit_count + start_bit)
-    device.submit_command_buffer(enc.finish())
-    device.wait()
-    sorted_keys = _read_u32(keys_buffer, keys.size)
-    sorted_values = _read_u32(values_buffer, values.size)
-    if start_bit == 0 and bit_count + start_bit == 32:
-        return sorted_keys, sorted_values
-    ref_keys, ref_values = _cpu_sort(keys, values, start_bit, bit_count)
-    return sorted_keys, sorted_values if start_bit == 0 else (sorted_keys, sorted_values)
-
-
 def _run_sort_from_count_buffer(device: spy.Device, radix_sort, keys: np.ndarray, values: np.ndarray, start_bit: int, bit_count: int) -> tuple[np.ndarray, np.ndarray]:
     keys_buffer = _buffer_u32(device, keys)
     values_buffer = _buffer_u32(device, values)

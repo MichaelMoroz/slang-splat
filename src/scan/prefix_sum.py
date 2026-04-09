@@ -20,7 +20,6 @@ class GPUPrefixSum:
         self.device = device
         shader_path = str(SHADER_DIR / "prefix_sum.slang")
         load = device.load_program
-        self.clear_uint = device.create_compute_kernel(load(shader_path, ["csClearUIntBuffer"]))
         self.scan_blocks = device.create_compute_kernel(load(shader_path, ["csPrefixScanBlocks"]))
         self.add_offsets = device.create_compute_kernel(load(shader_path, ["csPrefixAddOffsets"]))
         self.write_total_kernel = device.create_compute_kernel(load(shader_path, ["csPrefixWriteTotal"]))
@@ -82,18 +81,6 @@ class GPUPrefixSum:
         if self._prefix_args is None:
             self._prefix_args = self.device.create_buffer(size=PREFIX_INDIRECT_ARGS_UINT_COUNT * 4, usage=self._indirect_usage)
         return self._prefix_args
-
-    def clear_u32(self, encoder: spy.CommandEncoder, buffer: spy.Buffer, element_count: int, clear_value: int = 0) -> None:
-        with debug_region(encoder, "Prefix Sum Clear UInt", 100):
-            self.clear_uint.dispatch(
-                thread_count=spy.uint3(max(int(element_count), 1), 1, 1),
-                vars={
-                    "g_ClearUIntBuffer": buffer,
-                    "g_ClearUIntCount": int(element_count),
-                    "g_ClearUIntValue": int(clear_value),
-                },
-                command_encoder=encoder,
-            )
 
     def dispatch_args_from_count_buffer(
         self,

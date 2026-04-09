@@ -157,17 +157,6 @@ def resolve_position_random_step_noise_lr(training_hparams: Any, step: int) -> f
     )
 
 
-def _resolve_stage_bool(training_hparams: Any, step: int, keys: tuple[str, str, str], defaults: tuple[bool, bool, bool]) -> bool:
-    stage1, stage2, _ = resolve_stage_schedule_steps(training_hparams)
-    values = tuple(bool(getattr(training_hparams, key, default)) for key, default in zip(keys, defaults))
-    current_step = max(int(step), 0)
-    if current_step < stage1:
-        return values[0]
-    if current_step < stage2:
-        return values[1]
-    return values[2]
-
-
 def _clamp_sh_band(value: Any, default: int) -> int:
     try:
         resolved = int(value)

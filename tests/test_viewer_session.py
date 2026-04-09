@@ -148,7 +148,6 @@ def test_ensure_training_runtime_resolution_rebinds_renderer_without_reset(monke
     class _MainRenderer:
         def __init__(self) -> None:
             self.bound = None
-            self.clone_bound = None
             self.contribution_bound = None
             self.contribution_pixels = None
 
@@ -156,7 +155,7 @@ def test_ensure_training_runtime_resolution_rebinds_renderer_without_reset(monke
             self.bound = buffer
 
         def set_debug_clone_count_buffer(self, buffer) -> None:
-            self.clone_bound = buffer
+            del buffer
 
         def set_debug_splat_contribution_buffer(self, buffer) -> None:
             self.contribution_bound = buffer
@@ -1302,8 +1301,8 @@ def test_apply_live_params_syncs_renderer_sh_band(monkeypatch) -> None:
     )
 
     monkeypatch.setattr(session, "resolve_effective_training_setup", lambda viewer_obj: (None, params, None, None))
-    monkeypatch.setattr(session, "renderer_kwargs", lambda params_obj: {})
-    monkeypatch.setattr(session, "_apply_debug_buffers", lambda viewer_obj, renderer_obj: None)
+    monkeypatch.setattr(session, "renderer_kwargs", lambda *_args: {})
+    monkeypatch.setattr(session, "_apply_debug_buffers", lambda *_args: None)
 
     session.apply_live_params(viewer)
 
@@ -1333,8 +1332,8 @@ def test_apply_live_params_uses_viewport_sh_default_without_trainer(monkeypatch)
         ),
     )
 
-    monkeypatch.setattr(session, "renderer_kwargs", lambda params_obj: {})
-    monkeypatch.setattr(session, "_apply_debug_buffers", lambda viewer_obj, renderer_obj: None)
+    monkeypatch.setattr(session, "renderer_kwargs", lambda *_args: {})
+    monkeypatch.setattr(session, "_apply_debug_buffers", lambda *_args: None)
 
     session.apply_live_params(viewer)
 

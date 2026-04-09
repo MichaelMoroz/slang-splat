@@ -14,11 +14,7 @@ from src.viewer.state import ColmapImportProgress
 
 class _DummyEncoder:
     def __init__(self) -> None:
-        self.blit_calls: list[tuple[object, object]] = []
         self.clear_calls: list[tuple[object, list[float]]] = []
-
-    def blit(self, dst: object, src: object) -> None:
-        self.blit_calls.append((dst, src))
 
     def clear_texture_float(self, texture: object, clear_value: list[float]) -> None:
         self.clear_calls.append((texture, clear_value))
@@ -38,7 +34,7 @@ class _DummyRenderer:
 
 class _DummyTrainer:
     def __init__(self) -> None:
-        self.state = SimpleNamespace(step=0, last_loss=0.0, avg_loss=0.0, last_mse=0.0, avg_mse=0.0, last_psnr=float("inf"), avg_psnr=float("inf"), last_density_loss=0.0, avg_density_loss=0.0, last_frame_index=0, last_instability="")
+        self.state = SimpleNamespace(step=0, last_loss=0.0, avg_loss=0.0, last_mse=0.0, avg_mse=0.0, last_psnr=float("inf"), avg_psnr=float("inf"), avg_density_loss=0.0, last_frame_index=0, last_instability="")
         self.scene = SimpleNamespace(count=4)
         self.training = SimpleNamespace(
             near=0.1,
@@ -201,7 +197,6 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
     viewer.device = SimpleNamespace()
     viewer.toolkit = SimpleNamespace(viewport_size=lambda: (640, 360))
     viewer.loss_debug_view_options = (("rendered", "Rendered"), ("target", "Target"), ("abs_diff", "Abs Diff"), ("rendered_edges", "Rendered Edges"), ("target_edges", "Target Edges"))
-    viewer.image_subdir_options = ("images_8",)
     viewer.ui = SimpleNamespace(controls=controls, texts=texts, _values={"show_histograms": False, "_histogram_payload": None, "_histogram_range_payload": None, "show_training_cameras": bool(loss_debug)}, _texts={key: value.text for key, value in texts.items()})
     viewer.c = lambda key: viewer.ui.controls[key]
     viewer.t = lambda key: viewer.ui.texts[key]

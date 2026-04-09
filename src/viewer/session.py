@@ -17,8 +17,6 @@ from ..renderer import GaussianRenderSettings, GaussianRenderer
 from ..scene import (
     GaussianScene,
     build_training_frames_from_root,
-    initialize_scene_from_colmap_diffused_points,
-    initialize_scene_from_colmap_points,
     initialize_scene_from_points_colors,
     load_colmap_reconstruction,
     load_gaussian_ply,
@@ -35,7 +33,6 @@ from ..scene._internal.colmap_ops import (
     TRAINING_FRAME_LOAD_THREADS,
     build_depth_path_index,
     generate_depth_init_points,
-    load_rgba8_image,
     load_training_frame_rgba8,
     load_training_frame_rgba8_with_depth_payload,
     match_depth_path,
@@ -214,14 +211,6 @@ def _database_image_names(database_path: Path, limit: int = _COLMAP_DB_SAMPLE_LI
     return names
 
 
-def _reconstruction_image_names(colmap_root: Path, limit: int = _COLMAP_DB_SAMPLE_LIMIT) -> list[str]:
-    recon = load_colmap_reconstruction(Path(colmap_root).resolve())
-    names = [str(image.name).strip() for _, image in sorted(recon.images.items()) if str(image.name).strip()]
-    if not names:
-        raise RuntimeError(f"COLMAP reconstruction has no image names: {Path(colmap_root).resolve()}")
-    return names[: int(max(limit, 1))]
-
-
 def _dataset_directories(dataset_root: Path) -> list[Path]:
     root = Path(dataset_root).resolve()
     candidates = [root]
@@ -385,10 +374,6 @@ def _append_training_frame(progress: ColmapImportProgress, image_id: int, image:
     progress.frames.append(frame)
 
 
-def _create_native_dataset_texture(viewer: object, image_path: Path, *, target_size: tuple[int, int] | None = None) -> spy.Texture:
-    return _create_native_dataset_texture_from_rgba8(viewer, load_rgba8_image(image_path, target_size=target_size))
-
-
 def _create_native_dataset_texture_from_rgba8(viewer: object, rgba8: np.ndarray) -> spy.Texture:
     texture = viewer.device.create_texture(
         format=spy.Format.rgba8_unorm_srgb,
@@ -495,34 +480,11 @@ def choose_colmap_custom_ply(viewer: object, ply_path: Path) -> None:
     viewer.s.last_error = ""
 
 
-def _pointcloud_init_hparams(recon: object, max_gaussians: int, init_hparams: object, nn_radius_scale_coef: float, min_track_length: int):
-    resolved = resolve_colmap_init_hparams(recon, max_gaussians, init_hparams, min_track_length=min_track_length)
-    xyz, _ = _point_tables(recon, min_track_length)
-    chosen_count = xyz.shape[0] if max_gaussians <= 0 else min(max(int(max_gaussians), 1), xyz.shape[0])
-    median_nn_scale = float(np.median(point_nn_scales(np.ascontiguousarray(xyz[:chosen_count], dtype=np.float32)))) if chosen_count > 0 else 1.0
-    return replace(resolved, base_scale=float(max(float(nn_radius_scale_coef), 1e-4) * max(median_nn_scale, 1e-6)))
-
-
 def _pointcloud_init_hparams_from_positions(recon: object, positions: np.ndarray, max_gaussians: int, init_hparams: object, nn_radius_scale_coef: float, min_track_length: int):
     resolved = resolve_colmap_init_hparams(recon, max_gaussians, init_hparams, min_track_length=min_track_length)
     chosen_count = positions.shape[0] if max_gaussians <= 0 else min(max(int(max_gaussians), 1), positions.shape[0])
     chosen_positions = np.ascontiguousarray(positions[:chosen_count], dtype=np.float32)
     median_nn_scale = float(np.median(point_nn_scales(chosen_positions))) if chosen_count > 0 else 1.0
-    return replace(resolved, base_scale=float(max(float(nn_radius_scale_coef), 1e-4) * max(median_nn_scale, 1e-6)))
-
-
-def _diffused_pointcloud_init_hparams(
-    recon: object,
-    point_count: int,
-    diffusion_radius: float,
-    seed: int,
-    init_hparams: object,
-    nn_radius_scale_coef: float,
-    min_track_length: int,
-):
-    resolved = resolve_colmap_init_hparams(recon, point_count, init_hparams, min_track_length=min_track_length)
-    positions, _ = sample_colmap_diffused_points(recon, point_count, diffusion_radius, seed, min_track_length=min_track_length)
-    median_nn_scale = float(np.median(point_nn_scales(np.ascontiguousarray(positions, dtype=np.float32)))) if positions.shape[0] > 0 else 1.0
     return replace(resolved, base_scale=float(max(float(nn_radius_scale_coef), 1e-4) * max(median_nn_scale, 1e-6)))
 
 

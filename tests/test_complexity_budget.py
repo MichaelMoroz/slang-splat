@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from tools.complexity_budget import ROOT, iter_python_files
 
 

@@ -358,7 +358,7 @@ def test_export_ply_callback_saves_active_scene(monkeypatch, tmp_path: Path) -> 
         training_params=lambda: SimpleNamespace(training=SimpleNamespace(sh_band=0, use_sh=False)),
     )
 
-    monkeypatch.setattr(app.spy.platform, "save_file_dialog", lambda filters: tmp_path / "exported_scene")
+    monkeypatch.setattr(app.spy.platform, "save_file_dialog", lambda *_args: tmp_path / "exported_scene")
     monkeypatch.setattr(app, "save_gaussian_ply", lambda path, src_scene, include_sh=True: saved.update(path=Path(path), scene=src_scene, include_sh=include_sh) or Path(path).resolve())
 
     SplatViewer._export_ply_callback(viewer)
@@ -399,7 +399,7 @@ def test_export_ply_callback_prefers_training_scene(monkeypatch, tmp_path: Path)
         _run_action=lambda action: action(),
     )
 
-    monkeypatch.setattr(app.spy.platform, "save_file_dialog", lambda filters: tmp_path / "trained_export.ply")
+    monkeypatch.setattr(app.spy.platform, "save_file_dialog", lambda *_args: tmp_path / "trained_export.ply")
     monkeypatch.setattr(app, "save_gaussian_ply", lambda path, src_scene, include_sh=True: saved.update(path=Path(path), scene=src_scene, include_sh=include_sh) or Path(path).resolve())
 
     SplatViewer._export_ply_callback(viewer)

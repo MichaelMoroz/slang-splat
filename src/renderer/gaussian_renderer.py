@@ -168,9 +168,6 @@ class GaussianRenderer:
     PARAM_SH_FIRST_ID = 10
     PARAM_SH_COEFF_IDS = tuple(tuple(range(10 + coeff_index * 3, 10 + coeff_index * 3 + 3)) for coeff_index in range(SUPPORTED_SH_COEFF_COUNT))
     PARAM_SH0_IDS = PARAM_SH_COEFF_IDS[0]
-    PARAM_SH1_X_IDS = PARAM_SH_COEFF_IDS[1]
-    PARAM_SH1_Y_IDS = PARAM_SH_COEFF_IDS[2]
-    PARAM_SH1_Z_IDS = PARAM_SH_COEFF_IDS[3]
     PARAM_SH_IDS = tuple(param_id for group in PARAM_SH_COEFF_IDS for param_id in group)
     PARAM_COLOR_IDS = PARAM_SH_IDS
     PARAM_RAW_OPACITY_ID = PARAM_SH_FIRST_ID + SUPPORTED_SH_COEFF_COUNT * 3
@@ -183,17 +180,14 @@ class GaussianRenderer:
         "quat.w", "quat.x", "quat.y", "quat.z",
         "color.r", "color.g", "color.b", "opacity",
     )
-    CACHED_RASTER_GRAD_COMPONENT_SLICES = tuple((label, slice(index, index + 1)) for index, label in enumerate(CACHED_RASTER_GRAD_COMPONENT_LABELS))
     _SCENE_SHADER_VARS = {"splat_params": "g_SplatParams"}
     _SCREEN_SHADER_VARS = {"screen_center_radius_depth": "g_ScreenCenterRadiusDepth", "screen_color_alpha": "g_ScreenColorAlpha", "screen_ellipse_conic": "g_ScreenEllipseConic", "splat_visible": "g_SplatVisible"}
-    _GRAD_SHADER_VARS = {"param_grads": "g_ParamGrads"}
     _RASTER_CACHE_SHADER_VARS = {"raster_cache": "g_RasterCache"}
     _RASTER_GRAD_SHADER_VARS = {
         "param_grads": "g_ParamGrads",
         "cached_raster_grads_fixed": "g_CachedRasterGradsFixed",
         "cached_raster_grads_float": "g_CachedRasterGradsFloat",
     }
-    _PREPASS_CURSOR_FIELDS = ("splatCount", "tileSize", "tileWidth", "tileHeight", "tileCount", "depthBits", "sortedCountOffset", "maxListEntries", "maxScanlineEntries", "radiusScale")
     _SHADERS = (
         ("_k_project_visible", "kernel", "gaussian_project_stage.slang", "csProjectVisibleSplats"),
         ("_p_count_visible_scanlines", "pipeline", "gaussian_project_stage.slang", "csCountVisibleScanlines"),
@@ -304,9 +298,6 @@ class GaussianRenderer:
     def _screen_vars(self) -> dict[str, object]:
         return self._buffer_vars(self._SCREEN_SHADER_VARS, self._work_buffers)
 
-    def _grad_vars(self) -> dict[str, object]:
-        return self._buffer_vars(self._GRAD_SHADER_VARS, self._work_buffers)
-
     def _raster_cache_vars(self) -> dict[str, object]:
         return self._buffer_vars(self._RASTER_CACHE_SHADER_VARS, self._work_buffers)
 
@@ -377,7 +368,6 @@ class GaussianRenderer:
         self._fixed_raster_grad_shaders = self._load_raster_grad_shaders("Fixed")
         metrics_shader = str(Path(SHADER_ROOT / "utility" / "metrics" / "metrics.slang"))
         self._k_clear_float_buffer = self.device.create_compute_kernel(self.device.load_program(metrics_shader, ["csClearFloatBuffer"]))
-        self._k_decode_fixed_buffer_to_float = self.device.create_compute_kernel(self.device.load_program(metrics_shader, ["csDecodeFixedIntBufferToFloat"]))
 
     def _load_raster_grad_shaders(self, entry_suffix: str) -> _RasterGradShaderSet:
         shader_path = str(Path(SHADER_ROOT / "renderer" / "gaussian_raster_stage.slang"))
@@ -461,11 +451,6 @@ class GaussianRenderer:
         self._ensure_work_buffers(count)
         self._current_scene = SceneBinding(count=count)
 
-    def _bind_prepass_cursor(self, cursor: spy.ShaderCursor, splat_count: int, sorted_count_offset: int = 0) -> None:
-        prepass = self._prepass_uniforms(splat_count, sorted_count_offset)["g_Prepass"]
-        for name in self._PREPASS_CURSOR_FIELDS:
-            setattr(cursor.g_Prepass, name, prepass[name])
-
     def _enqueue_counter_readback(self, encoder: spy.CommandEncoder) -> None:
         self._ensure_counter_readback_ring()
         slot = self._counter_readback_frame_id % self._COUNTER_READBACK_RING_SIZE
@@ -513,8 +498,6 @@ class GaussianRenderer:
     ) -> None:
         self.device, self.width, self.height = device, int(width), int(height)
         self._types_shader_path = Path(SHADER_ROOT / "renderer" / "gaussian_types.slang")
-        self._project_shader_path = Path(SHADER_ROOT / "renderer" / "gaussian_project_stage.slang")
-        self._raster_shader_path = Path(SHADER_ROOT / "renderer" / "gaussian_raster_stage.slang")
         self._raster_config = self._load_raster_config(self._types_shader_path)
         self._project_group_size = self._load_uint_shader_constant(self._types_shader_path, "PROJECT_GROUP_SIZE")
         self.tile_size = self._raster_config.tile_size
@@ -545,7 +528,7 @@ class GaussianRenderer:
         self.tile_width, self.tile_height = (self.width + self.tile_size - 1) // self.tile_size, (self.height + self.tile_size - 1) // self.tile_size
         self.tile_count = self.tile_width * self.tile_height
         self.tile_bits = int(np.ceil(np.log2(max(self.tile_count, 2))))
-        self.depth_bits, self.sort_bits = 32 - self.tile_bits, 32
+        self.depth_bits = 32 - self.tile_bits
         self._create_shaders()
         self._sorter = GPURadixSort(self.device)
         self._prefix_sum = GPUPrefixSum(self.device)
@@ -623,15 +606,6 @@ class GaussianRenderer:
             raise RuntimeError(f"Missing shader uint constant '{name}' in {shader_path}.")
         return constants[name]
 
-    @staticmethod
-    @lru_cache(maxsize=None)
-    def _load_float_shader_constant(shader_path: Path, name: str) -> float:
-        source = shader_path.read_text(encoding="utf-8")
-        match = re.search(rf"static\s+const\s+float\s+{name}\s*=\s*([^;]+);", source)
-        if match is None:
-            raise RuntimeError(f"Missing shader float constant '{name}' in {shader_path}.")
-        return float(match.group(1).strip().removesuffix("f").removesuffix("F"))
-
     def _ensure_scene_buffers(self, splat_count: int) -> None:
         if self._scene_buffers and splat_count <= self._scene_capacity:
             self._scene_count = splat_count
@@ -684,7 +658,7 @@ class GaussianRenderer:
             "training_batch_end": max(self.tile_count, 1) * self._U32_BYTES,
             "training_splat_contribution": max(self._work_splat_capacity, 1) * self._U32_BYTES,
             "raster_cache": max(self._work_splat_capacity, 1) * self._RASTER_CACHE_PARAM_COUNT * self._U32_BYTES,
-            **{name: max(self._work_splat_capacity, 1) * self.TRAINABLE_PARAM_COUNT * self._U32_BYTES for name in self._GRAD_SHADER_VARS},
+            "param_grads": max(self._work_splat_capacity, 1) * self.TRAINABLE_PARAM_COUNT * self._U32_BYTES,
             "cached_raster_grads_fixed": max(self._work_splat_capacity, 1) * self._RASTER_CACHE_PARAM_COUNT * self._U32_BYTES,
             "cached_raster_grads_float": max(self._work_splat_capacity, 1) * self._RASTER_CACHE_PARAM_COUNT * self._U32_BYTES,
             "cached_raster_grads_metrics_float": max(self._work_splat_capacity, 1) * self._RASTER_CACHE_PARAM_COUNT * self._U32_BYTES,
@@ -1416,26 +1390,6 @@ class GaussianRenderer:
         )
         self._work_buffers["param_grads"].copy_from_numpy(packed)
 
-    def _zero_param_grads(self, splat_count: int) -> None:
-        self.write_grad_groups(
-            splat_count,
-            grad_positions=np.zeros((splat_count, 4), dtype=np.float32),
-            grad_scales=np.zeros((splat_count, 4), dtype=np.float32),
-            grad_rotations=np.zeros((splat_count, 4), dtype=np.float32),
-            grad_sh_coeffs=np.zeros((splat_count, SUPPORTED_SH_COEFF_COUNT, 3), dtype=np.float32),
-            grad_color_alpha=np.zeros((splat_count, 4), dtype=np.float32),
-        )
-
-    def write_cached_raster_grads_fixed(self, splat_count: int, values: np.ndarray) -> None:
-        count = int(splat_count)
-        data = np.asarray(values, dtype=np.int32).reshape(count, self._RASTER_CACHE_PARAM_COUNT)
-        self._work_buffers["cached_raster_grads_fixed"].copy_from_numpy(np.ascontiguousarray(data.T.reshape(-1), dtype=np.int32))
-
-    def write_cached_raster_grads_float(self, splat_count: int, values: np.ndarray) -> None:
-        count = int(splat_count)
-        data = np.asarray(values, dtype=np.float32).reshape(count, self._RASTER_CACHE_PARAM_COUNT)
-        self._work_buffers["cached_raster_grads_float"].copy_from_numpy(np.ascontiguousarray(data.T.reshape(-1), dtype=np.float32))
-
     def _require_scene(self) -> GaussianScene | SceneBinding:
         if self._current_scene is None:
             raise RuntimeError("Scene is not set.")
@@ -1473,13 +1427,6 @@ class GaussianRenderer:
         resolved = float(value)
         if not np.isfinite(resolved) or resolved <= 0.0:
             raise ValueError(f"{name} must be finite and > 0, got {value}.")
-        return resolved
-
-    @staticmethod
-    def _validate_finite(name: str, value: float) -> float:
-        resolved = float(value)
-        if not np.isfinite(resolved):
-            raise ValueError(f"{name} must be finite, got {value}.")
         return resolved
 
     @property
@@ -1677,12 +1624,6 @@ class GaussianRenderer:
         self._rasterize_backward(encoder, camera, background, output_grad, regularizer_grad, clone_counts_buffer, clone_select_probability, clone_seed, training_background_mode, training_background_seed, training_native_camera, training_sample_vars, refinement_loss_weight, refinement_target_edge_weight)
         self._backprop_cached_raster_grads(encoder, self._scene_count, camera, grad_scale)
 
-    def rasterize_forward_backward_current_scene(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output_grad: spy.Buffer, grad_scale: float = 1.0) -> None:
-        self._require_scene()
-        self._rasterize_training_forward(encoder, camera, background)
-        self._rasterize_backward(encoder, camera, background, output_grad)
-        self._backprop_cached_raster_grads(encoder, self._scene_count, camera, grad_scale)
-
     def render_to_texture(
         self,
         camera: Camera,
@@ -1712,10 +1653,6 @@ class GaussianRenderer:
             self._update_delayed_counter_stats()
         self._last_stats = self._stats_payload(scene.count, read_stats)
         return self.output_texture, self._last_stats
-
-    @property
-    def last_stats(self) -> dict[str, int | bool | float]:
-        return self._last_stats.copy()
 
     def render(self, scene: GaussianScene, camera: Camera, background: np.ndarray | tuple[float, float, float] = (0.0, 0.0, 0.0)) -> RenderOutput:
         if scene.count <= 0:

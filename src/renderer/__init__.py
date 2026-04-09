@@ -5,7 +5,11 @@ from .renderer_context import GaussianRenderSettings, GaussianRendererContext
 __all__ = ["Camera", "GaussianRenderer", "GaussianRenderSettings", "GaussianRendererContext", "RenderOutput"]
 
 try:
-    from .torch_renderer import TorchGaussianRenderSettings, TorchGaussianRendererContext, render_gaussian_splats_torch
+    from .torch_renderer import (
+        TorchGaussianRenderSettings as TorchGaussianRenderSettings,
+        TorchGaussianRendererContext as TorchGaussianRendererContext,
+        render_gaussian_splats_torch as render_gaussian_splats_torch,
+    )
 except ImportError:
     pass
 else:

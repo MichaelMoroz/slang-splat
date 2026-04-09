@@ -133,22 +133,6 @@ class Camera:
     def camera_point_to_world(self, camera_pos: np.ndarray) -> np.ndarray:
         return self.position + self.camera_to_world(camera_pos)
 
-    def project_camera_to_screen_linear(self, camera_pos: np.ndarray, width: int, height: int) -> tuple[np.ndarray, bool]:
-        cam = np.asarray(camera_pos, dtype=np.float32).reshape(3)
-        depth = float(cam[2])
-        if not np.isfinite(depth) or depth <= 1e-12:
-            return np.zeros((2,), dtype=np.float32), False
-        fx, fy = self.focal_pixels_xy(width, height)
-        cx, cy = self.principal_point(width, height)
-        screen = np.array(
-            [
-                float(cam[0]) * float(fx) / depth + float(cx),
-                float(cam[1]) * float(fy) / depth + float(cy),
-            ],
-            dtype=np.float32,
-        )
-        return screen, bool(np.isfinite(screen).all())
-
     def project_camera_to_screen(self, camera_pos: np.ndarray, width: int, height: int, default_k1: float = 0.0, default_k2: float = 0.0) -> tuple[np.ndarray, bool]:
         cam = np.asarray(camera_pos, dtype=np.float32).reshape(3)
         depth = float(cam[2])
