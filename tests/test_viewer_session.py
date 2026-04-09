@@ -352,17 +352,11 @@ def test_import_colmap_dataset_clears_loaded_scene_before_loading(monkeypatch) -
             colmap_root=Path("dataset/old"),
             colmap_recon=object(),
             colmap_import_progress=None,
-            colmap_point_positions_buffer="positions",
-            colmap_point_colors_buffer="colors",
-            colmap_point_count=123,
-            scene_init_signature=None,
             applied_renderer_params_training=None,
             applied_renderer_params_debug=None,
             applied_training_signature=None,
             applied_training_runtime_factor=None,
             pending_training_runtime_resize=False,
-            suggested_init_hparams=None,
-            suggested_init_count=None,
             applied_renderer_params_main=None,
             cached_training_setup_signature=None,
             cached_training_setup=None,
@@ -461,17 +455,11 @@ def test_import_colmap_from_ui_clears_loaded_scene_before_queueing(tmp_path: Pat
             colmap_root=Path("dataset/old"),
             colmap_recon=object(),
             colmap_import_progress=None,
-            colmap_point_positions_buffer="positions",
-            colmap_point_colors_buffer="colors",
-            colmap_point_count=123,
-            scene_init_signature=None,
             applied_renderer_params_training=None,
             applied_renderer_params_debug=None,
             applied_training_signature=None,
             applied_training_runtime_factor=None,
             pending_training_runtime_resize=False,
-            suggested_init_hparams=None,
-            suggested_init_count=None,
             applied_renderer_params_main=None,
             cached_training_setup_signature=None,
             cached_training_setup=None,
@@ -739,17 +727,11 @@ def test_import_colmap_dataset_uses_aligned_reconstruction(monkeypatch) -> None:
             colmap_root=None,
             colmap_recon=None,
             colmap_import_progress=None,
-            colmap_point_positions_buffer=None,
-            colmap_point_colors_buffer=None,
-            colmap_point_count=0,
-            scene_init_signature=None,
             applied_renderer_params_training=None,
             applied_renderer_params_debug=None,
             applied_training_signature=None,
             applied_training_runtime_factor=None,
             pending_training_runtime_resize=False,
-            suggested_init_hparams=None,
-            suggested_init_count=None,
             applied_renderer_params_main=None,
             cached_training_setup_signature=None,
             cached_training_setup=None,
@@ -1012,7 +994,6 @@ def test_initialize_training_scene_rebinds_debug_buffers_for_new_trainer(monkeyp
             training_elapsed_s=12.0,
             training_resume_time=3.0,
             scene=None,
-            scene_init_signature=None,
             applied_renderer_params_training=None,
             applied_training_signature=None,
             applied_training_runtime_factor=None,
@@ -1044,7 +1025,6 @@ def test_initialize_training_scene_rebinds_debug_buffers_for_new_trainer(monkeyp
     monkeypatch.setattr(session, "estimate_scene_bounds", lambda scene: scene)
     monkeypatch.setattr(session, "_renderer_params_signature", lambda params: (params.mode,))
     monkeypatch.setattr(session, "_training_params_signature", lambda params: ("training",))
-    monkeypatch.setattr(session, "_scene_signature", lambda viewer_obj: ("scene",))
     monkeypatch.setattr(session, "update_debug_frame_slider_range", lambda viewer_obj: None)
     monkeypatch.setattr(session, "_reset_loss_debug", lambda viewer_obj: None)
     monkeypatch.setattr(session, "_invalidate", lambda viewer_obj, *targets: None)
@@ -1101,7 +1081,6 @@ def test_initialize_training_scene_rebuilds_training_frames_from_colmap(monkeypa
             training_elapsed_s=0.0,
             training_resume_time=None,
             scene=None,
-            scene_init_signature=None,
             applied_renderer_params_training=None,
             applied_training_signature=None,
             applied_training_runtime_factor=None,
@@ -1129,7 +1108,6 @@ def test_initialize_training_scene_rebuilds_training_frames_from_colmap(monkeypa
     monkeypatch.setattr(session, "estimate_scene_bounds", lambda loaded_scene: loaded_scene)
     monkeypatch.setattr(session, "_renderer_params_signature", lambda params: (params.mode,))
     monkeypatch.setattr(session, "_training_params_signature", lambda params: ("training",))
-    monkeypatch.setattr(session, "_scene_signature", lambda viewer_obj: ("scene",))
     monkeypatch.setattr(session, "update_debug_frame_slider_range", lambda viewer_obj: None)
     monkeypatch.setattr(session, "_reset_loss_debug", lambda viewer_obj: None)
     monkeypatch.setattr(session, "_invalidate", lambda viewer_obj, *targets: None)

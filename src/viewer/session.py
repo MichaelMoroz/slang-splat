@@ -610,7 +610,6 @@ def _reset_training_visual_state(viewer: object) -> None:
 
 
 def _reset_training_runtime(viewer: object) -> None:
-    viewer.s.scene_init_signature = None
     viewer.s.training_active = False
     viewer.s.training_elapsed_s = 0.0
     viewer.s.training_resume_time = None
@@ -634,10 +633,7 @@ def _reset_training_runtime(viewer: object) -> None:
 def _reset_loaded_runtime(viewer: object) -> None:
     viewer.s.colmap_import_progress = None
     _reset_training_runtime(viewer)
-    viewer.s.colmap_point_positions_buffer = viewer.s.colmap_point_colors_buffer = None
-    viewer.s.colmap_point_count = 0
     _clear_cached_init_source(viewer)
-    viewer.s.suggested_init_hparams = viewer.s.suggested_init_count = None
     viewer.s.applied_renderer_params_main = None
     viewer.s.cached_training_setup_signature = None
     viewer.s.cached_training_setup = None
@@ -653,31 +649,6 @@ def _clear_loaded_scene(viewer: object) -> None:
     viewer.s.training_frames = []
     if viewer.s.renderer is not None:
         viewer.s.renderer.clear_scene_resources()
-
-
-def _scene_signature(viewer: object):
-    if viewer.s.colmap_root is None or viewer.s.colmap_recon is None or not viewer.s.training_frames:
-        return None
-    init = viewer.init_params()
-    import_cfg = viewer.s.colmap_import
-    return (
-        str(viewer.s.colmap_root.resolve()),
-        len(viewer.s.training_frames),
-        init.seed,
-        str(import_cfg.init_mode),
-        None if import_cfg.images_root is None else str(import_cfg.images_root.resolve()),
-        None if import_cfg.depth_root is None else str(import_cfg.depth_root.resolve()),
-        str(import_cfg.depth_value_mode),
-        None if import_cfg.custom_ply_path is None else str(import_cfg.custom_ply_path.resolve()),
-        str(import_cfg.image_downscale_mode),
-        int(import_cfg.image_downscale_max_size),
-        round(float(import_cfg.image_downscale_scale), 6),
-        round(float(import_cfg.nn_radius_scale_coef), 6),
-        int(import_cfg.depth_point_count),
-        int(import_cfg.diffused_point_count),
-        round(float(import_cfg.diffusion_radius), 6),
-        None if init.hparams.initial_opacity is None else round(float(init.hparams.initial_opacity), 8),
-    )
 
 
 def create_debug_shaders(viewer: object) -> None:
@@ -1090,7 +1061,6 @@ def _finish_import_colmap_dataset(
     viewer.s.colmap_recon = recon
     _set_colmap_camera_preview(viewer, recon, resolved_selected_camera_ids)
     viewer.s.training_frames = list(training_frames)
-    viewer.s.colmap_point_count = int(xyz.shape[0])
     viewer.s.scene_path = None
     if cached_init_point_positions is not None and cached_init_point_colors is not None:
         viewer.s.cached_init_point_positions = np.array(cached_init_point_positions, dtype=np.float32, copy=True)
@@ -1394,7 +1364,6 @@ def initialize_training_scene(viewer: object, frame_targets_native: list[spy.Tex
     viewer.s.applied_training_runtime_factor = int(viewer.s.trainer.effective_train_render_factor(0)) if hasattr(viewer.s.trainer, "effective_train_render_factor") else int(viewer.s.trainer.effective_train_downscale_factor(0))
     viewer.s.pending_training_runtime_resize = False
     _invalidate(viewer)
-    viewer.s.scene_init_signature = _scene_signature(viewer)
     _reset_training_visual_state(viewer)
     update_debug_frame_slider_range(viewer)
     _reset_loss_debug(viewer)
