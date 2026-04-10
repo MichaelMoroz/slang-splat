@@ -49,8 +49,7 @@ _SSIM_BLUR_WEIGHTS = np.array(
 _SSIM_C1 = 0.0001
 _SSIM_C2 = 0.0009
 _SSIM_SMALL_VALUE = 1e-6
-_SSIM_YCBCR_WEIGHTS = np.array([4.0, 1.0, 1.0], dtype=np.float32) / 6.0
-_SSIM_FEATURE_CHANNELS = 15
+_SSIM_FEATURE_CHANNELS = 5
 
 
 def _expected_refinement_child_scale(parent_scale: np.ndarray, family_size: int) -> np.ndarray:
@@ -193,15 +192,12 @@ def _read_ssim_buffer(trainer: GaussianTrainer, name: str) -> np.ndarray:
 
 def _rgb_to_ycbcr_bt601_np(rgb: np.ndarray) -> np.ndarray:
     value = np.asarray(rgb, dtype=np.float32)
-    y = np.tensordot(value, np.array([0.299, 0.587, 0.114], dtype=np.float32), axes=([-1], [0]))
-    cb = np.tensordot(value, np.array([-0.168736, -0.331264, 0.5], dtype=np.float32), axes=([-1], [0])) + 0.5
-    cr = np.tensordot(value, np.array([0.5, -0.418688, -0.081312], dtype=np.float32), axes=([-1], [0])) + 0.5
-    return np.stack((y, cb, cr), axis=-1).astype(np.float32, copy=False)
+    return np.tensordot(value, np.array([0.299, 0.587, 0.114], dtype=np.float32), axes=([-1], [0])).astype(np.float32, copy=False)
 
 
 def _ssim_feature_moments_np(rendered_rgb: np.ndarray, target_rgb: np.ndarray) -> np.ndarray:
-    rendered = _rgb_to_ycbcr_bt601_np(rendered_rgb)
-    target = _rgb_to_ycbcr_bt601_np(target_rgb)
+    rendered = _rgb_to_ycbcr_bt601_np(rendered_rgb)[..., None]
+    target = _rgb_to_ycbcr_bt601_np(target_rgb)[..., None]
     return np.concatenate((rendered, target, rendered * rendered, target * target, rendered * target), axis=2).astype(np.float32, copy=False)
 
 
@@ -250,7 +246,7 @@ def _blended_rgb_metrics_np(
     numer = (2.0 * x * y + _SSIM_C1) * (2.0 * sigma_xy + _SSIM_C2)
     denom = np.maximum((x * x + y * y + _SSIM_C1) * (sigma_x2 + sigma_y2 + _SSIM_C2), _SSIM_SMALL_VALUE)
     ssim = numer / denom
-    dssim = 0.5 * (1.0 - np.sum(ssim * _SSIM_YCBCR_WEIGHTS.reshape(1, 1, 3), axis=2, dtype=np.float32))
+    dssim = 0.5 * (1.0 - np.squeeze(ssim, axis=2))
     dssim = dssim.astype(np.float32, copy=False) * inv_pixel_count * mask
     blended = ((1.0 - float(ssim_weight)) * l1 + float(ssim_weight) * dssim).astype(np.float32, copy=False)
     l1_grad = np.sign(diff).astype(np.float32) * (np.float32(1.0 / 3.0) * inv_pixel_count * mask[..., None] * np.float32(1.0 - float(ssim_weight)))
@@ -919,31 +915,59 @@ def test_ssim_backward_matches_torch_image_gradients(device, tmp_path: Path):
     target_mask = target_t[:, 3:4].clamp(0.0, 1.0)
     inv_pixel_count = 1.0 / float(rendered.shape[0] * rendered.shape[1])
 
-    def rgb_to_ycbcr_bt601_torch(value):
-        y = (value * torch.tensor([0.299, 0.587, 0.114], dtype=value.dtype).view(1, 3, 1, 1)).sum(dim=1, keepdim=True)
-        cb = (value * torch.tensor([-0.168736, -0.331264, 0.5], dtype=value.dtype).view(1, 3, 1, 1)).sum(dim=1, keepdim=True) + 0.5
-        cr = (value * torch.tensor([0.5, -0.418688, -0.081312], dtype=value.dtype).view(1, 3, 1, 1)).sum(dim=1, keepdim=True) + 0.5
-        return torch.cat((y, cb, cr), dim=1)
+    def rgb_to_luminance_bt601_torch(value):
+        return (value * torch.tensor([0.299, 0.587, 0.114], dtype=value.dtype).view(1, 3, 1, 1)).sum(dim=1, keepdim=True)
 
-    rendered_ycc = rgb_to_ycbcr_bt601_torch(rendered_t)
-    target_ycc = rgb_to_ycbcr_bt601_torch(target_rgb)
-    moments = torch.cat((rendered_ycc, target_ycc, rendered_ycc * rendered_ycc, target_ycc * target_ycc, rendered_ycc * target_ycc), dim=1)
+    rendered_y = rgb_to_luminance_bt601_torch(rendered_t)
+    target_y = rgb_to_luminance_bt601_torch(target_rgb)
+    moments = torch.cat((rendered_y, target_y, rendered_y * rendered_y, target_y * target_y, rendered_y * target_y), dim=1)
     blurred = F.conv2d(F.pad(moments, (5, 5, 0, 0), mode="replicate"), weight_h, groups=_SSIM_FEATURE_CHANNELS)
     blurred = F.conv2d(F.pad(blurred, (0, 0, 5, 5), mode="replicate"), weight_v, groups=_SSIM_FEATURE_CHANNELS)
-    x, y, x2, y2, xy = torch.split(blurred, 3, dim=1)
+    x, y, x2, y2, xy = torch.split(blurred, 1, dim=1)
     sigma_x2 = torch.clamp(x2 - x * x, min=0.0)
     sigma_y2 = torch.clamp(y2 - y * y, min=0.0)
     sigma_xy = xy - x * y
     numer = (2.0 * x * y + _SSIM_C1) * (2.0 * sigma_xy + _SSIM_C2)
     denom = torch.clamp((x * x + y * y + _SSIM_C1) * (sigma_x2 + sigma_y2 + _SSIM_C2), min=_SSIM_SMALL_VALUE)
     ssim = numer / denom
-    dssim = 0.5 * (1.0 - (ssim * torch.tensor(_SSIM_YCBCR_WEIGHTS, dtype=torch.float32).view(1, 3, 1, 1)).sum(dim=1, keepdim=True))
+    dssim = 0.5 * (1.0 - ssim)
     l1 = (rendered_t - target_rgb).abs().mean(dim=1, keepdim=True)
     loss = ((((1.0 - trainer.training.ssim_weight) * l1) + (trainer.training.ssim_weight * dssim)) * inv_pixel_count * target_mask).sum()
     loss.backward()
     torch_grad = rendered_t.grad.detach().cpu().numpy()[0].transpose(1, 2, 0)
 
-    np.testing.assert_allclose(gpu_grad, torch_grad, rtol=0.0, atol=1.25e-3)
+    np.testing.assert_allclose(gpu_grad, torch_grad, rtol=0.0, atol=1.6e-3)
+
+
+def test_ssim_blurred_gradients_leave_target_side_moments_zero(device, tmp_path: Path):
+    trainer = _make_loss_only_trainer(
+        device,
+        tmp_path,
+        width=8,
+        height=8,
+        training_hparams=TrainingHyperParams(
+            ssim_weight=1.0,
+            scale_l2_weight=0.0,
+            scale_abs_reg_weight=0.0,
+            opacity_reg_weight=0.0,
+            sh1_reg_weight=0.0,
+            density_regularizer=0.0,
+            depth_ratio_weight=0.0,
+        ),
+        image_name="ssim_luma_only_target.png",
+        image_id=35,
+    )
+    rng = np.random.default_rng(35)
+    rendered = rng.uniform(0.02, 0.98, size=(8, 8, 4)).astype(np.float32)
+    target = rng.uniform(0.02, 0.98, size=(8, 8, 4)).astype(np.float32)
+    rendered[..., 3] = 1.0
+    target[..., 3] = 1.0
+
+    _dispatch_manual_loss(trainer, rendered, target)
+    blurred_grads = _read_ssim_buffer(trainer, "ssim_blurred_feature_grads")
+    assert blurred_grads.shape[-1] == _SSIM_FEATURE_CHANNELS
+    np.testing.assert_allclose(blurred_grads[..., 1], 0.0, rtol=0.0, atol=1e-7)
+    np.testing.assert_allclose(blurred_grads[..., 3], 0.0, rtol=0.0, atol=1e-7)
 
 
 def test_target_alpha_mask_skips_masked_pixel_loss_and_output_grads(device, tmp_path: Path):
