@@ -36,8 +36,6 @@ static const uint SSIM_FEATURE_Y_OFFSET = SSIM_FEATURE_X_OFFSET + SSIM_FEATURE_S
 static const uint SSIM_FEATURE_X2_OFFSET = SSIM_FEATURE_Y_OFFSET + SSIM_FEATURE_STRIDE;
 static const uint SSIM_FEATURE_Y2_OFFSET = SSIM_FEATURE_X2_OFFSET + SSIM_FEATURE_STRIDE;
 static const uint SSIM_FEATURE_XY_OFFSET = SSIM_FEATURE_Y2_OFFSET + SSIM_FEATURE_STRIDE;
-static const float SSIM_C1 = 0.0001;
-static const float SSIM_C2 = 0.0009;
 static const float3 SSIM_YCBCR_WEIGHTS = float3(4.0, 1.0, 1.0) * (1.0 / 6.0);
 static const uint REFINEMENT_HASH_INIT = 0x9e3779b9u;
 static const uint REFINEMENT_HASH_MIX = 0x85ebca6bu;
@@ -50,6 +48,8 @@ uniform uint g_UseTargetAlphaMask;
 uniform uint g_BatchStepIndex;
 uniform TrainingSubsampleParams g_TrainingSubsample;
 uniform float g_SSIMWeight;
+uniform float g_SSIMC1;
+uniform float g_SSIMC2;
 
 uniform Texture2D<float4> g_Rendered;
 uniform Texture2D<float4> g_Target;
@@ -685,8 +685,8 @@ float ssim_dssim_from_blurred_moments(float3 x, no_diff float3 y, float3 x2, no_
     float3 sigmaX2 = max(x2 - x * x, 0.0);
     float3 sigmaY2 = max(y2 - y * y, 0.0);
     float3 sigmaXY = xy - x * y;
-    float3 numer = (2.0 * x * y + SSIM_C1) * (2.0 * sigmaXY + SSIM_C2);
-    float3 denom = max((x * x + y * y + SSIM_C1) * (sigmaX2 + sigmaY2 + SSIM_C2), float3(SMALL_VALUE));
+    float3 numer = (2.0 * x * y + g_SSIMC1) * (2.0 * sigmaXY + g_SSIMC2);
+    float3 denom = max((x * x + y * y + g_SSIMC1) * (sigmaX2 + sigmaY2 + g_SSIMC2), float3(SMALL_VALUE));
     float3 ssim = numer / denom;
     return 0.5 * (1.0 - dot(ssim, SSIM_YCBCR_WEIGHTS));
 }

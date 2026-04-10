@@ -24,7 +24,7 @@ SUPPORTED_SH_COEFF_COUNT = 16
 
 
 def rgb_to_sh0(colors: np.ndarray) -> np.ndarray:
-    values = np.asarray(colors, dtype=np.float32)
+    values = np.clip(np.asarray(colors, dtype=np.float32), 0.0, 1.0)
     return ((values - 0.5) / SH_C0).astype(np.float32, copy=False)
 
 

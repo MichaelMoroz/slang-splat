@@ -66,7 +66,7 @@ Each trainer `step()` performs:
    - `csClearLossBuffer` resets the scalar loss slots,
    - `csComputeSSIMFeatures` converts rendered and target RGB into BT.601 YCbCr and writes 15 channels of per-pixel first and second moments (`x`, `y`, `x²`, `y²`, `xy`) into a flat buffer,
    - the reusable separable Gaussian buffer blur utility blurs those 15 channels in two dispatches,
-  - `csComputeBlendedLossForward` computes RGB MSE, the blended `(1 - ssim_weight) * L1 + ssim_weight * DSSIM` image loss, the density hinge regularizer, and the differentiable windowed-sigmoid depth-std-over-mean-depth ratio regularizer whose strongest gradients lie inside a user-controlled interval, then reduces total and tracked metrics into the loss buffer.
+  - `csComputeBlendedLossForward` computes RGB MSE, the blended `(1 - ssim_weight) * L1 + ssim_weight * DSSIM` image loss using runtime `ssim_c1` / `ssim_c2` stabilizers, the density hinge regularizer, and the differentiable windowed-sigmoid depth-std-over-mean-depth ratio regularizer whose strongest gradients lie inside a user-controlled interval, then reduces total and tracked metrics into the loss buffer.
 6. Run the fixed-count backward stage:
    - `csComputeSSIMBlurredGradients` differentiates DSSIM with respect to the blurred rendered-side moment channels using Slang autodiff,
    - the same separable Gaussian blur utility is reused as the blur adjoint to propagate those gradients back into the unblurred rendered-side moments,
@@ -100,7 +100,7 @@ There is still no opacity reset schedule, MCMC exploration term, or standalone P
 - `csDownscaleTarget`: exact integer-factor box-filter downscale from the native dataset texture into the reusable train target.
 - `csClearLossBuffer`: zero scalar loss slots for the current training step.
 - `csComputeSSIMFeatures`: computes per-pixel BT.601 YCbCr moment features for rendered and target images into a 15-channel flat buffer.
-- `csComputeBlendedLossForward`: computes RGB MSE, blended L1+DSSIM image loss, density hinge regularization, and windowed-sigmoid depth-ratio regularization.
+- `csComputeBlendedLossForward`: computes RGB MSE, blended L1+DSSIM image loss with runtime `ssim_c1` / `ssim_c2`, density hinge regularization, and windowed-sigmoid depth-ratio regularization.
 - `csComputeSSIMBlurredGradients`: computes the blurred-moment DSSIM adjoint with Slang autodiff.
 - `csComputeBlendedLossBackward`: computes the final image-space blended RGB gradient into `g_OutputGrad` plus the per-pixel density/depth-ratio replay gradients; the depth-ratio window is controlled by `depth_ratio_grad_min` and `depth_ratio_grad_max`, with transition softness derived from band width in shader code.
 - UI-driven multi-step training batches keep per-substep loss/MSE records on the GPU and defer the single CPU readback until the batch finishes, rather than synchronizing after every substep.
@@ -117,7 +117,8 @@ There is still no opacity reset schedule, MCMC exploration term, or standalone P
 - `gaussian_optimizer_stage.slang` owns Gaussian-specific optimizer logic:
   - scale/SH1/opacity regularizers,
   - anisotropy clamp,
-  - quaternion normalization.
+  - quaternion normalization,
+  - SH0/DC projection back into valid display color space.
 - ADAM epsilon is a compile-time constant in `shaders/utility/optimizer/optimizer.slang`, not a runtime parameter.
 
 ## Numerical Reinforcement
@@ -129,7 +130,7 @@ There is still no opacity reset schedule, MCMC exploration term, or standalone P
 - Parameter bounds:
   - position absolute clamp,
   - scale max clamp,
-  - color clamp to `[0, 1]`.
+  - SH0/DC base color clamp to `[0, 1]`.
 - Scale-related runtime controls (`base_scale`, `scale_reg_reference`, `max_scale`) remain user-facing linear sigma values and are converted to stored log-scale at the optimizer boundary.
 - Quaternion normalization each step with identity fallback.
 - Host guard:
@@ -150,6 +151,7 @@ Useful options:
 - `--lr-*`, `--beta1`, `--beta2`,
 - `--scale-l2` for autodiff log-scale regularization around the init/reference scale,
 - `--ssim-weight` for the DSSIM blend factor in the RGB image loss,
+- the viewer toolkit also exposes `SSIM C1` and `SSIM C2` for the same DSSIM path,
 - `--max-anisotropy` for the hard per-gaussian scale-ratio cap,
 - `--grad-clip`, `--grad-norm-clip`, `--max-update`,
 - `--max-scale`, `--min-opacity`, `--max-opacity`.

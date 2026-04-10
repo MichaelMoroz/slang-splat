@@ -105,11 +105,11 @@ The loss-debug controls expose a runtime `Abs Diff Scale` slider when `View = Ab
 
 ## Histogram Window
 
-`Debug -> Histograms` opens a dedicated histogram window for cached ellipse gradient components.
+`Debug -> Histograms` opens a dedicated histogram window for live semantic splat parameters.
 
-- The window inspects the active cached ellipse gradient accumulation mode only.
-- Histogram values are computed over `log10(abs(component_gradient))`.
-- Components are grouped as `roLocal`, `scale`, `quat`, `color`, and `opacity`.
+- Histogram values are computed over `log10(abs(value))`.
+- The window groups the current training scene into `position`, `scale`, `quat`, `baseColor (SH0/DC)`, `SH1`, `SH2`, `SH3`, and `opacity`.
+- `baseColor` is derived directly from the clamped SH0/DC term, so it is not presented as a separate parameter from DC anymore.
 - The first open requests one histogram refresh automatically.
 - After that, histogram data is recomputed only when `Refresh` is pressed or another histogram action explicitly requests it.
 
@@ -127,6 +127,15 @@ The loss-debug controls expose a runtime `Abs Diff Scale` slider when `View = Ab
 The `Train Setup` section exposes train downscale as a mode selector:
 
 It also exposes per-stage `SH Band` dropdowns. `SH0` uses only the DC term, while `SH1`, `SH2`, and `SH3` progressively enable the higher bands in both the viewport and the training schedule.
+
+The `Optimizer -> Regularization` tab exposes the DSSIM controls used by training:
+
+- `Color >= 0 Reg`
+- `DSSIM Weight`
+- `SSIM C1`
+- `SSIM C2`
+
+The blur window remains the fixed 11-tap separable Gaussian used by the shader path.
 
 Training background is configured separately from the viewer clear color:
 

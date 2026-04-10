@@ -154,8 +154,11 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["refinement_loss_weight"] == 0.25
     assert viewer_ui._values["refinement_target_edge_weight"] == 0.75
     assert viewer_ui._values["density_regularizer"] == 0.02
+    assert viewer_ui._values["color_non_negative_reg"] == 0.01
     assert viewer_ui._values["depth_ratio_weight"] == 1.0
     assert viewer_ui._values["ssim_weight"] == 0.2
+    assert viewer_ui._values["ssim_c1"] == 1e-4
+    assert viewer_ui._values["ssim_c2"] == 9e-4
     assert viewer_ui._values["depth_ratio_stage1_weight"] == 0.05
     assert viewer_ui._values["depth_ratio_stage2_weight"] == 0.01
     assert viewer_ui._values["depth_ratio_stage3_weight"] == 0.001
@@ -689,7 +692,10 @@ def test_debug_colorbar_height_scales_with_interface_scale(monkeypatch) -> None:
 def test_optimizer_regularization_tab_includes_density_controls() -> None:
     assert "sh1_reg" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "density_regularizer" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
+    assert "color_non_negative_reg" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "ssim_weight" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
+    assert "ssim_c1" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
+    assert "ssim_c2" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "depth_ratio_grad_min" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "depth_ratio_grad_max" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "max_allowed_density" in ui._OPTIMIZER_TAB_KEYS["Regularization"]

@@ -79,7 +79,7 @@ _HISTOGRAM_WINDOW_HEIGHT = 860.0
 _HISTOGRAM_CONTROL_LABEL_WIDTH = 150.0
 _HISTOGRAM_PLOT_HEIGHT = 230.0
 _HISTOGRAM_PLOT_MIN_COLUMN_WIDTH = 460.0
-_HISTOGRAM_GROUPS = (
+_DEFAULT_HISTOGRAM_GROUPS = (
     ("roLocal", (0, 1, 2)),
     ("scale", (3, 4, 5)),
     ("quat", (6, 7, 8, 9)),
@@ -418,18 +418,21 @@ _TRAIN_OPTIMIZER_SPECS = (
     ControlSpec("lr_schedule_enabled", "checkbox", "Use LR Schedule", {"value": True}),
     ControlSpec("lr_scale_mul", "input_float", "LR Mul Scale", {"value": 20.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
     ControlSpec("lr_rot_mul", "input_float", "LR Mul Rotation", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
-    ControlSpec("lr_color_mul", "input_float", "LR Mul Color", {"value": 5.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
+    ControlSpec("lr_color_mul", "input_float", "LR Mul SH0/DC", {"value": 5.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
     ControlSpec("lr_opacity_mul", "input_float", "LR Mul Opacity", {"value": 5.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
     ControlSpec("beta1", "input_float", "Beta1", {"value": 0.9, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
     ControlSpec("beta2", "input_float", "Beta2", {"value": 0.999, "step": 1e-4, "step_fast": 1e-3, "format": "%.6f"}),
     ControlSpec("scale_l2", "input_float", "Scale Log Reg", {"value": 0.0, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
     ControlSpec("scale_abs_reg", "input_float", "Scale Abs Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
-    ControlSpec("sh1_reg", "input_float", "SH Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
+    ControlSpec("sh1_reg", "input_float", "SH Rest Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
     ControlSpec("opacity_reg", "input_float", "Opacity Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
     ControlSpec("density_regularizer", "input_float", "Density Reg", {"value": 0.02, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
+    ControlSpec("color_non_negative_reg", "input_float", "Color >= 0 Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
     ControlSpec("depth_ratio_grad_min", "input_float", "Depth Ratio Grad Min", {"value": 0.0, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
     ControlSpec("depth_ratio_grad_max", "input_float", "Depth Ratio Grad Max", {"value": 0.1, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
-    ControlSpec("ssim_weight", "input_float", "SSIM Weight", {"value": 0.2, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
+    ControlSpec("ssim_weight", "input_float", "DSSIM Weight", {"value": 0.2, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
+    ControlSpec("ssim_c1", "input_float", "SSIM C1", {"value": 1e-4, "step": 1e-5, "step_fast": 1e-4, "format": "%.6e"}),
+    ControlSpec("ssim_c2", "input_float", "SSIM C2", {"value": 9e-4, "step": 1e-5, "step_fast": 1e-4, "format": "%.6e"}),
     ControlSpec("max_allowed_density", "input_float", "Max Density", {"value": 12.0, "step": 1e-3, "step_fast": 1e-2, "format": "%.8f"}),
     ControlSpec("position_random_step_opacity_gate_center", "input_float", "Noise Gate Center", {"value": 0.005, "step": 1e-4, "step_fast": 1e-3, "format": "%.6f"}),
     ControlSpec("position_random_step_opacity_gate_sharpness", "input_float", "Noise Gate Sharpness", {"value": 100.0, "step": 1.0, "step_fast": 10.0, "format": "%.4g"}),
@@ -630,7 +633,7 @@ _ALL_DEFAULTS.update({spec.key: spec.kwargs["value"] for spec in DEBUG_RENDER_SP
 _OPTIMIZER_TAB_KEYS = {
     "Schedule": ("lr_schedule_enabled", "lr_scale_mul", "lr_rot_mul", "lr_color_mul", "lr_opacity_mul"),
     "Adam": ("beta1", "beta2"),
-    "Regularization": ("scale_l2", "scale_abs_reg", "sh1_reg", "opacity_reg", "density_regularizer", "ssim_weight", "depth_ratio_grad_min", "depth_ratio_grad_max", "max_allowed_density", "position_random_step_opacity_gate_center", "position_random_step_opacity_gate_sharpness", "max_anisotropy", "grad_clip", "grad_norm_clip", "max_update"),
+    "Regularization": ("scale_l2", "scale_abs_reg", "sh1_reg", "opacity_reg", "density_regularizer", "color_non_negative_reg", "ssim_weight", "ssim_c1", "ssim_c2", "depth_ratio_grad_min", "depth_ratio_grad_max", "max_allowed_density", "position_random_step_opacity_gate_center", "position_random_step_opacity_gate_sharpness", "max_anisotropy", "grad_clip", "grad_norm_clip", "max_update"),
 }
 
 _TRAIN_OPTIMIZER_SPEC_BY_KEY = {spec.key: spec for spec in GROUP_SPECS["Train Optimizer"]}
@@ -1659,7 +1662,7 @@ class ToolkitWindow:
                 imgui.text_disabled(status)
                 imgui.separator()
             if payload is None or getattr(payload, "counts", np.zeros((0, 0), dtype=np.int64)).size == 0 or int(np.sum(payload.counts)) == 0:
-                imgui.text_wrapped("No cached ellipse gradient histogram data is available yet.")
+                imgui.text_wrapped("No live splat parameter histogram data is available yet.")
                 if range_payload is not None:
                     imgui.separator()
                     self._draw_histogram_range_debug(range_payload)
@@ -1803,6 +1806,7 @@ class ToolkitWindow:
 
     def _draw_histogram_groups(self, ui: ViewerUI, payload: object) -> None:
         labels = tuple(str(label) for label in getattr(payload, "param_labels", ()))
+        groups = tuple(getattr(payload, "param_groups", _DEFAULT_HISTOGRAM_GROUPS))
         centers = np.asarray(getattr(payload, "bin_centers_log10", np.zeros((0,), dtype=np.float64)), dtype=np.float64)
         counts = np.asarray(getattr(payload, "counts", np.zeros((0, 0), dtype=np.int64)), dtype=np.float64)
         if counts.ndim != 2 or centers.size == 0:
@@ -1810,7 +1814,7 @@ class ToolkitWindow:
             return
         y_limit = float(ui._values.get("hist_y_limit", _HISTOGRAM_Y_LIMIT_DEFAULT))
         column_count = 1 if imgui.get_content_region_avail().x < (_HISTOGRAM_PLOT_MIN_COLUMN_WIDTH * 2.0) else 2
-        for group_name, indices in _HISTOGRAM_GROUPS:
+        for group_name, indices in groups:
             valid = tuple(index for index in indices if 0 <= int(index) < counts.shape[0])
             if not valid:
                 continue
@@ -2246,7 +2250,7 @@ class ToolkitWindow:
         "lr_sh_stage3_mul": "Non-DC SH learning-rate multiplier target reached at the end of Stage 3",
         "lr_scale_mul": "Learning rate multiplier for scale",
         "lr_rot_mul": "Learning rate multiplier for rotation",
-        "lr_color_mul": "Learning rate multiplier for color/SH",
+        "lr_color_mul": "Base learning rate multiplier for the SH0/DC color term before non-DC SH multipliers are applied",
         "lr_opacity_mul": "Learning rate multiplier for opacity",
         "beta1": "Adam first moment decay (momentum)",
         "beta2": "Adam second moment decay (RMSprop)",
@@ -2257,7 +2261,10 @@ class ToolkitWindow:
         "scale_abs_reg": "Absolute scale regularization weight",
         "sh1_reg": "L1 regularization weight applied to all non-DC SH coefficients",
         "opacity_reg": "Opacity regularization weight (pushes toward 0 or 1)",
+        "color_non_negative_reg": "Penalty weight for negative evaluated SH color sampled over one deterministic random view direction per splat and step",
         "ssim_weight": "Blend weight for DSSIM in the RGB image loss; 0 keeps pure L1 and 1 uses pure DSSIM",
+        "ssim_c1": "SSIM luminance stabilizer constant used by the DSSIM path",
+        "ssim_c2": "SSIM contrast/structure stabilizer constant used by the DSSIM path",
         "position_random_step_noise_lr": "Stage 0 post-step MCMC-style position noise multiplier; when scheduling is disabled this value is used for the whole run",
         "position_random_step_opacity_gate_center": "Opacity center for the random-step sigmoid gate; lower-opacity splats get stronger position noise",
         "position_random_step_opacity_gate_sharpness": "Steepness of the random-step opacity gate",

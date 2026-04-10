@@ -3,11 +3,15 @@ import "utility/math/camera.slang";
 import "utility/math/constants.slang";
 import "utility/math/numeric.slang";
 import "utility/math/quaternion.slang";
+import "utility/random/random.slang";
 import "utility/splatting/common.slang";
 import "utility/splatting/params.slang";
 
 static const uint LOSS_SLOT_TOTAL = 0u;
 static const uint OPTIMIZER_GROUP_SIZE = 256u;
+static const uint COLOR_NON_NEGATIVE_HASH_SPLAT = 0x9e3779b9u;
+static const uint COLOR_NON_NEGATIVE_HASH_PHI = 0x85ebca6bu;
+static const uint COLOR_NON_NEGATIVE_HASH_Z = 0xc2b2ae35u;
 
 struct GaussianStabilityParams
 {
@@ -31,7 +35,10 @@ uniform float g_ScaleL2Weight;
 uniform float g_ScaleAbsRegWeight;
 uniform float g_SH1RegWeight;
 uniform float g_OpacityRegWeight;
+uniform float g_ColorNonNegativeRegWeight;
 uniform float g_ScaleRegReference;
+uniform uint g_SHBand;
+uniform uint g_ColorNonNegativeRegSeed;
 
 uniform RWStructuredBuffer<float> g_LossBuffer;
 uniform RWStructuredBuffer<float> g_ParamGrads;
@@ -312,6 +319,49 @@ float3 clamp_screen_area_upper_bound(float3 position, float3 logScale)
     return logScale + log(maxSupportScale / currentSupportScale);
 }
 
+[Differentiable]
+float color_non_negative_loss(
+    float3 sh0,
+    float3 sh1X,
+    float3 sh1Y,
+    float3 sh1Z,
+    float3 sh2_0,
+    float3 sh2_1,
+    float3 sh2_2,
+    float3 sh2_3,
+    float3 sh2_4,
+    float3 sh3_0,
+    float3 sh3_1,
+    float3 sh3_2,
+    float3 sh3_3,
+    float3 sh3_4,
+    float3 sh3_5,
+    float3 sh3_6,
+    no_diff uint shBand,
+    no_diff float3 viewDir
+)
+{
+    float3 color = evaluate_sh_band_raw(sh0, sh1X, sh1Y, sh1Z, sh2_0, sh2_1, sh2_2, sh2_3, sh2_4, sh3_0, sh3_1, sh3_2, sh3_3, sh3_4, sh3_5, sh3_6, shBand, viewDir);
+    float3 negative = max(-color, 0.0);
+    return dot(negative, negative);
+}
+
+float color_non_negative_random01(uint seed)
+{
+    return (float(hash_u32(seed)) + 1.0) * RNG_OPEN01_SCALE;
+}
+
+float3 color_non_negative_sample_dir(uint seed, uint splatId)
+{
+    uint splatSeed = hash_u32(seed ^ ((splatId + 1u) * COLOR_NON_NEGATIVE_HASH_SPLAT));
+    float z = 1.0 - 2.0 * color_non_negative_random01(splatSeed ^ COLOR_NON_NEGATIVE_HASH_Z);
+    float phi = TAU_RADIANS * color_non_negative_random01(splatSeed ^ COLOR_NON_NEGATIVE_HASH_PHI);
+    float sinPhi, cosPhi;
+    sincos(phi, sinPhi, cosPhi);
+    float radial = sqrt(max(1.0 - z * z, 0.0));
+    return float3(radial * cosPhi, radial * sinPhi, z);
+}
+
 [shader("compute")]
 [numthreads(OPTIMIZER_GROUP_SIZE, 1, 1)]
 void csAccumulateRegularizationGrads(uint3 dispatchThreadID : SV_DispatchThreadID)
@@ -320,6 +370,7 @@ void csAccumulateRegularizationGrads(uint3 dispatchThreadID : SV_DispatchThreadI
     if (splatId >= g_SplatCount) return;
 
     TrainableGaussianState state = TrainableGaussianState.load(splatId);
+    float3 gradSh0 = load_param_grad3(PARAM_SH0_R, splatId);
     float3 gradScale = load_param_grad3(PARAM_SCALE_X, splatId);
     float3 gradSh1X = load_param_grad3(PARAM_SH1_X_R, splatId);
     float3 gradSh1Y = load_param_grad3(PARAM_SH1_Y_R, splatId);
@@ -445,6 +496,89 @@ void csAccumulateRegularizationGrads(uint3 dispatchThreadID : SV_DispatchThreadI
         if (isfinite(lossAdd) && lossAdd != 0.0) InterlockedAdd(g_LossBuffer[LOSS_SLOT_TOTAL], lossAdd);
     }
 
+    float colorNonNegativeRegWeight = max(g_ColorNonNegativeRegWeight, 0.0);
+    if (colorNonNegativeRegWeight > 0.0)
+    {
+        var dpSh0 = diffPair(state.sh0);
+        var dpSh1X = diffPair(state.sh1X);
+        var dpSh1Y = diffPair(state.sh1Y);
+        var dpSh1Z = diffPair(state.sh1Z);
+        var dpSh2_0 = diffPair(state.sh2_0);
+        var dpSh2_1 = diffPair(state.sh2_1);
+        var dpSh2_2 = diffPair(state.sh2_2);
+        var dpSh2_3 = diffPair(state.sh2_3);
+        var dpSh2_4 = diffPair(state.sh2_4);
+        var dpSh3_0 = diffPair(state.sh3_0);
+        var dpSh3_1 = diffPair(state.sh3_1);
+        var dpSh3_2 = diffPair(state.sh3_2);
+        var dpSh3_3 = diffPair(state.sh3_3);
+        var dpSh3_4 = diffPair(state.sh3_4);
+        var dpSh3_5 = diffPair(state.sh3_5);
+        var dpSh3_6 = diffPair(state.sh3_6);
+        float sampleWeight = colorNonNegativeRegWeight * invSplatCount;
+        float3 viewDir = color_non_negative_sample_dir(g_ColorNonNegativeRegSeed, splatId);
+        float sampleLoss = color_non_negative_loss(
+            state.sh0,
+            state.sh1X,
+            state.sh1Y,
+            state.sh1Z,
+            state.sh2_0,
+            state.sh2_1,
+            state.sh2_2,
+            state.sh2_3,
+            state.sh2_4,
+            state.sh3_0,
+            state.sh3_1,
+            state.sh3_2,
+            state.sh3_3,
+            state.sh3_4,
+            state.sh3_5,
+            state.sh3_6,
+            g_SHBand,
+            viewDir
+        );
+        bwd_diff(color_non_negative_loss)(
+            dpSh0,
+            dpSh1X,
+            dpSh1Y,
+            dpSh1Z,
+            dpSh2_0,
+            dpSh2_1,
+            dpSh2_2,
+            dpSh2_3,
+            dpSh2_4,
+            dpSh3_0,
+            dpSh3_1,
+            dpSh3_2,
+            dpSh3_3,
+            dpSh3_4,
+            dpSh3_5,
+            dpSh3_6,
+            g_SHBand,
+            viewDir,
+            sampleWeight
+        );
+        float lossAdd = sampleWeight * sampleLoss;
+        gradSh0 += dpSh0.getDifferential();
+        gradSh1X += dpSh1X.getDifferential();
+        gradSh1Y += dpSh1Y.getDifferential();
+        gradSh1Z += dpSh1Z.getDifferential();
+        gradSh2_0 += dpSh2_0.getDifferential();
+        gradSh2_1 += dpSh2_1.getDifferential();
+        gradSh2_2 += dpSh2_2.getDifferential();
+        gradSh2_3 += dpSh2_3.getDifferential();
+        gradSh2_4 += dpSh2_4.getDifferential();
+        gradSh3_0 += dpSh3_0.getDifferential();
+        gradSh3_1 += dpSh3_1.getDifferential();
+        gradSh3_2 += dpSh3_2.getDifferential();
+        gradSh3_3 += dpSh3_3.getDifferential();
+        gradSh3_4 += dpSh3_4.getDifferential();
+        gradSh3_5 += dpSh3_5.getDifferential();
+        gradSh3_6 += dpSh3_6.getDifferential();
+        if (isfinite(lossAdd) && lossAdd != 0.0) InterlockedAdd(g_LossBuffer[LOSS_SLOT_TOTAL], lossAdd);
+    }
+
+    store_param_grad3(PARAM_SH0_R, splatId, gradSh0);
     store_param_grad3(PARAM_SCALE_X, splatId, gradScale);
     store_param_grad3(PARAM_SH1_X_R, splatId, gradSh1X);
     store_param_grad3(PARAM_SH1_Y_R, splatId, gradSh1Y);

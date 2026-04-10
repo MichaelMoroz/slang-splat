@@ -29,6 +29,7 @@ class ParamLog10Histograms:
     counts: np.ndarray
     bin_edges_log10: np.ndarray
     param_labels: tuple[str, ...] = ()
+    param_groups: tuple[tuple[str, tuple[int, ...]], ...] = ()
 
     @property
     def bin_centers_log10(self) -> np.ndarray:
@@ -40,6 +41,7 @@ class ParamTensorRanges:
     min_values: np.ndarray
     max_values: np.ndarray
     param_labels: tuple[str, ...] = ()
+    param_groups: tuple[tuple[str, tuple[int, ...]], ...] = ()
 
     @property
     def max_abs_values(self) -> np.ndarray:

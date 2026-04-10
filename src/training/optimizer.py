@@ -123,7 +123,7 @@ class GaussianOptimizer:
             return
         self._upload_param_settings(lr_scale, position_lr_mul_scale, sh_lr_mul_scale)
 
-    def _vars(self, splat_count: int, training_hparams: Any, scale_reg_reference: float) -> dict[str, object]:
+    def _vars(self, splat_count: int, training_hparams: Any, scale_reg_reference: float, color_non_negative_seed: int) -> dict[str, object]:
         return {
             "g_SplatCount": int(splat_count),
             "g_RadiusScale": float(max(self.renderer.radius_scale, 1e-8)),
@@ -131,6 +131,9 @@ class GaussianOptimizer:
             "g_ScaleAbsRegWeight": float(max(training_hparams.scale_abs_reg_weight, 0.0)),
             "g_SH1RegWeight": float(max(training_hparams.sh1_reg_weight, 0.0)),
             "g_OpacityRegWeight": float(max(training_hparams.opacity_reg_weight, 0.0)),
+            "g_ColorNonNegativeRegWeight": float(max(getattr(training_hparams, "color_non_negative_reg", 0.0), 0.0)),
+            "g_SHBand": np.uint32(int(self.renderer.sh_band)),
+            "g_ColorNonNegativeRegSeed": np.uint32(int(color_non_negative_seed)),
             "g_ScaleRegReference": float(max(scale_reg_reference, 1e-8)),
             "g_Stability": {
                 "gradComponentClip": float(self.stability.grad_component_clip),
@@ -155,6 +158,7 @@ class GaussianOptimizer:
         splat_count: int,
         training_hparams: Any,
         scale_reg_reference: float,
+        color_non_negative_seed: int,
     ) -> None:
         dispatch(
             kernel=self._kernels["accumulate_regularizers"],
@@ -163,7 +167,7 @@ class GaussianOptimizer:
                 "g_LossBuffer": loss_buffer,
                 "g_ParamGrads": work_buffers["param_grads"],
                 "g_SplatParamsRW": scene_buffers["splat_params"],
-                **self._vars(splat_count, training_hparams, scale_reg_reference),
+                **self._vars(splat_count, training_hparams, scale_reg_reference, color_non_negative_seed),
             },
             command_encoder=encoder,
             debug_label="Gaussian Regularizers",
@@ -224,7 +228,7 @@ class GaussianOptimizer:
                 "g_ParamGrads": work_buffers["param_grads"],
                 "g_SplatParamsRW": scene_buffers["splat_params"],
                 **camera_vars,
-                **self._vars(splat_count, training_hparams, scale_reg_reference),
+                **self._vars(splat_count, training_hparams, scale_reg_reference, 0),
             },
             command_encoder=encoder,
             debug_label="Gaussian Param Projection",

@@ -101,8 +101,8 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 ## 9. Debug Histograms
 - `src/metrics.py` now exposes both single log10 histograms and grouped per-parameter log10 histograms for generic float tensors laid out as `tensor[param_id * item_count + item_id]`.
 - The grouped tensor histogram kernel buckets `log10(abs(value))`, ignoring zeros and non-finite values.
-- Cached ellipse gradient histogramming uses that generic float-tensor path directly in float atomic mode.
-- In fixed atomic mode, the renderer decodes the quantized cached gradient buffer into a float scratch buffer first, then dispatches the same grouped histogram utility.
+- The viewer histogram window now reports live semantic splat parameters rather than cached raster-gradient buffers.
+- Base color in that window is derived from the clamped SH0/DC term, so the debug UI no longer presents color and DC as separate concepts.
 
 ## Stats Notes
 - `generated_entries` / `written_entries` are reported with one-frame latency (`stats_latency_frames = 1`).

@@ -946,30 +946,25 @@ def refresh_cached_raster_grad_histograms(viewer: object, force: bool = False) -
     max_log10 = float(viewer.ui._values.get("hist_max_log10", 2.0))
     step = int(viewer.s.trainer.state.step)
     scene_count = int(viewer.s.trainer.scene.count)
-    mode = str(viewer.s.training_renderer.cached_raster_grad_atomic_mode)
-    signature = (step, mode, scene_count, bin_count, min_log10, max_log10)
+    signature = (step, scene_count, bin_count, min_log10, max_log10)
     if not refresh_requested:
         return
-    viewer.s.cached_raster_grad_histograms = viewer.s.training_renderer.compute_cached_raster_grad_component_histograms(
-        viewer.s.trainer.metrics,
+    viewer.s.cached_raster_grad_histograms = viewer.s.training_renderer.compute_scene_param_histograms(
         scene_count,
         bin_count=bin_count,
         min_log10=min_log10,
         max_log10=max_log10,
     )
-    grad_ranges = viewer.s.training_renderer.compute_cached_raster_grad_component_ranges(viewer.s.trainer.metrics, scene_count)
-    sh_ranges_fn = getattr(viewer.s.training_renderer, "compute_sh_component_ranges", None)
-    sh_ranges = sh_ranges_fn(scene_count) if callable(sh_ranges_fn) else None
-    viewer.s.cached_raster_grad_ranges = _concat_param_tensor_ranges(grad_ranges, sh_ranges)
-    viewer.s.cached_raster_grad_histogram_mode = mode
+    viewer.s.cached_raster_grad_ranges = viewer.s.training_renderer.compute_scene_param_ranges(scene_count)
+    viewer.s.cached_raster_grad_histogram_mode = ""
     viewer.s.cached_raster_grad_histogram_step = step
     viewer.s.cached_raster_grad_histogram_scene_count = scene_count
     viewer.s.cached_raster_grad_histogram_signature = signature
     total = int(np.sum(viewer.s.cached_raster_grad_histograms.counts))
     viewer.s.cached_raster_grad_histogram_status = (
-        f"Cached ellipse grads + SH ranges | mode={mode} | step={step:,} | samples={scene_count:,} | populated={total:,}"
+        f"Splat parameters | step={step:,} | samples={scene_count:,} | populated={total:,}"
         if total > 0 or step > 0
-        else "No cached ellipse backward gradients have been produced yet."
+        else "No live splat parameter histogram data is available yet."
     )
     viewer.ui._values["_histograms_refresh_requested"] = False
 

@@ -31,6 +31,8 @@ DEPTH_RATIO_GRAD_MIN_BAND_WIDTH = 1e-4
 DEFAULT_DEPTH_RATIO_GRAD_MIN = 0.0
 DEFAULT_DEPTH_RATIO_GRAD_MAX = 0.1
 DEFAULT_SSIM_WEIGHT = 0.2
+DEFAULT_SSIM_C1 = 1e-4
+DEFAULT_SSIM_C2 = 9e-4
 _REFINEMENT_HASH_INIT = 0x9E3779B9
 _REFINEMENT_HASH_MIX = 0x85EBCA6B
 
@@ -186,7 +188,7 @@ class StabilityHyperParams:
 class TrainingHyperParams:
     background: tuple[float, float, float] = (1.0, 1.0, 1.0); near: float = 0.1; far: float = 120.0
     background_mode: int = TRAIN_BACKGROUND_MODE_RANDOM; use_target_alpha_mask: bool = False; use_sh: bool = False; sh_band: int = 0
-    scale_l2_weight: float = 0.0; scale_abs_reg_weight: float = 0.01; sh1_reg_weight: float = 0.01; opacity_reg_weight: float = 0.01; density_regularizer: float = 0.02; depth_ratio_weight: float = 1.0; ssim_weight: float = DEFAULT_SSIM_WEIGHT; max_allowed_density_start: float = 5.0; max_allowed_density: float = 12.0
+    scale_l2_weight: float = 0.0; scale_abs_reg_weight: float = 0.01; sh1_reg_weight: float = 0.01; opacity_reg_weight: float = 0.01; density_regularizer: float = 0.02; color_non_negative_reg: float = 0.01; depth_ratio_weight: float = 1.0; ssim_weight: float = DEFAULT_SSIM_WEIGHT; ssim_c1: float = DEFAULT_SSIM_C1; ssim_c2: float = DEFAULT_SSIM_C2; max_allowed_density_start: float = 5.0; max_allowed_density: float = 12.0
     refinement_loss_weight: float = 0.25; refinement_target_edge_weight: float = 0.75
     depth_ratio_grad_min: float = 0.0; depth_ratio_grad_max: float = 0.1
     lr_pos_mul: float = 1.0; lr_pos_stage1_mul: float = 0.75; lr_pos_stage2_mul: float = 0.2; lr_pos_stage3_mul: float = 0.2
@@ -236,8 +238,11 @@ class TrainingHyperParams:
         self.refinement_target_edge_weight = max(float(self.refinement_target_edge_weight), 0.0)
         self.sh1_reg_weight = max(float(self.sh1_reg_weight), 0.0)
         self.density_regularizer = max(float(self.density_regularizer), 0.0)
+        self.color_non_negative_reg = max(float(self.color_non_negative_reg), 0.0)
         self.depth_ratio_weight = max(float(self.depth_ratio_weight), 0.0)
         self.ssim_weight = min(max(float(self.ssim_weight), 0.0), 1.0)
+        self.ssim_c1 = max(float(self.ssim_c1), 1e-8)
+        self.ssim_c2 = max(float(self.ssim_c2), 1e-8)
         self.depth_ratio_grad_min, self.depth_ratio_grad_max = resolve_depth_ratio_grad_band(self.depth_ratio_grad_min, self.depth_ratio_grad_max)
         self.depth_ratio_stage1_weight = max(float(self.depth_ratio_stage1_weight), 0.0)
         self.depth_ratio_stage2_weight = max(float(self.depth_ratio_stage2_weight), 0.0)
@@ -988,6 +993,8 @@ class GaussianTrainer:
             "g_DensityRegularizer": float(self.training.density_regularizer),
             "g_DepthRatioWeight": float(resolve_depth_ratio_weight(self.training, resolved_step)),
             "g_SSIMWeight": float(self.training.ssim_weight),
+            "g_SSIMC1": float(self.training.ssim_c1),
+            "g_SSIMC2": float(self.training.ssim_c2),
             "g_RefinementLossWeight": float(self.training.refinement_loss_weight),
             "g_RefinementTargetEdgeWeight": float(self.training.refinement_target_edge_weight),
             "g_DepthRatioGradMin": float(self.training.depth_ratio_grad_min),
@@ -1133,6 +1140,7 @@ class GaussianTrainer:
                 splat_count=self._scene_count,
                 training_hparams=self.training,
                 scale_reg_reference=self._scale_reg_reference,
+                color_non_negative_seed=self._seed + int(step_index),
             )
             self.adam_optimizer.dispatch_step(
                 encoder,

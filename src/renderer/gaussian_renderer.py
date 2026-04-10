@@ -174,6 +174,26 @@ class GaussianRenderer:
     TRAINABLE_PARAM_COUNT = PARAM_RAW_OPACITY_ID + 1
     SH_COEFF_LABELS = ("SH0 DC", "SH1 X", "SH1 Y", "SH1 Z", "SH2 0", "SH2 1", "SH2 2", "SH2 3", "SH2 4", "SH3 0", "SH3 1", "SH3 2", "SH3 3", "SH3 4", "SH3 5", "SH3 6")
     SH_COMPONENT_RANGE_LABELS = tuple(f"{coeff}.{channel}" for coeff in SH_COEFF_LABELS for channel in ("r", "g", "b"))
+    SCENE_PARAM_HISTOGRAM_LABELS = (
+        "position.x", "position.y", "position.z",
+        "scale.x", "scale.y", "scale.z",
+        "quat.w", "quat.x", "quat.y", "quat.z",
+        "baseColor.r", "baseColor.g", "baseColor.b",
+        *(f"{coeff}.{channel}" for coeff in SH_COEFF_LABELS[1:4] for channel in ("r", "g", "b")),
+        *(f"{coeff}.{channel}" for coeff in SH_COEFF_LABELS[4:9] for channel in ("r", "g", "b")),
+        *(f"{coeff}.{channel}" for coeff in SH_COEFF_LABELS[9:] for channel in ("r", "g", "b")),
+        "opacity",
+    )
+    SCENE_PARAM_HISTOGRAM_GROUPS = (
+        ("position", (0, 1, 2)),
+        ("scale", (3, 4, 5)),
+        ("quat", (6, 7, 8, 9)),
+        ("baseColor (SH0/DC)", (10, 11, 12)),
+        ("SH1", tuple(range(13, 22))),
+        ("SH2", tuple(range(22, 37))),
+        ("SH3", tuple(range(37, 58))),
+        ("opacity", (58,)),
+    )
     CACHED_RASTER_GRAD_COMPONENT_LABELS = (
         "roLocal.x", "roLocal.y", "roLocal.z",
         "scale.x", "scale.y", "scale.z",
@@ -1377,6 +1397,117 @@ class GaussianRenderer:
         mins = np.min(sh_coeffs, axis=0).reshape(-1).astype(np.float32, copy=False)
         maxs = np.max(sh_coeffs, axis=0).reshape(-1).astype(np.float32, copy=False)
         return ParamTensorRanges(min_values=mins.copy(), max_values=maxs.copy(), param_labels=self.SH_COMPONENT_RANGE_LABELS)
+
+    def _scene_histogram_tensor(self, splat_count: int) -> np.ndarray:
+        groups = self.read_scene_groups(splat_count)
+        sh_coeffs = np.asarray(groups["sh_coeffs"], dtype=np.float32)
+        base_color = sh_coeffs_to_display_colors(sh_coeffs)
+        opacity = np.reciprocal(1.0 + np.exp(-np.asarray(groups["color_alpha"][:, 3], dtype=np.float32)))
+        tensor = np.concatenate(
+            (
+                np.asarray(groups["positions"][:, :3], dtype=np.float32),
+                np.exp(np.asarray(groups["scales"][:, :3], dtype=np.float32)),
+                np.asarray(groups["rotations"][:, [3, 0, 1, 2]], dtype=np.float32),
+                np.asarray(base_color, dtype=np.float32),
+                np.asarray(sh_coeffs[:, 1:, :], dtype=np.float32).reshape(splat_count, -1),
+                np.asarray(opacity[:, None], dtype=np.float32),
+            ),
+            axis=1,
+        )
+        return np.ascontiguousarray(tensor.T, dtype=np.float32)
+
+    @staticmethod
+    def _param_tensor_log10_histograms(
+        tensor: np.ndarray,
+        *,
+        bin_count: int,
+        min_log10: float,
+        max_log10: float,
+        param_labels: tuple[str, ...],
+        param_groups: tuple[tuple[str, tuple[int, ...]], ...],
+    ) -> ParamLog10Histograms:
+        bins = max(int(bin_count), 1)
+        lo = float(min_log10)
+        hi = float(max_log10) if float(max_log10) > lo else lo + 1e-6
+        counts = np.zeros((tensor.shape[0], bins), dtype=np.int64)
+        inv_bin_size = float(bins) / (hi - lo)
+        for param_index in range(tensor.shape[0]):
+            values = np.asarray(tensor[param_index], dtype=np.float64)
+            valid = np.isfinite(values) & (values != 0.0)
+            if not np.any(valid):
+                continue
+            log_values = np.log10(np.abs(values[valid]))
+            bin_indices = np.clip(np.floor((log_values - lo) * inv_bin_size).astype(np.int64), 0, bins - 1)
+            np.add.at(counts[param_index], bin_indices, 1)
+        return ParamLog10Histograms(
+            counts=counts,
+            bin_edges_log10=np.linspace(lo, hi, bins + 1, dtype=np.float64),
+            param_labels=param_labels,
+            param_groups=param_groups,
+        )
+
+    @staticmethod
+    def _param_tensor_ranges(
+        tensor: np.ndarray,
+        *,
+        param_labels: tuple[str, ...],
+        param_groups: tuple[tuple[str, tuple[int, ...]], ...],
+    ) -> ParamTensorRanges:
+        min_values = np.full((tensor.shape[0],), np.nan, dtype=np.float32)
+        max_values = np.full((tensor.shape[0],), np.nan, dtype=np.float32)
+        for param_index in range(tensor.shape[0]):
+            values = np.asarray(tensor[param_index], dtype=np.float32)
+            valid = values[np.isfinite(values)]
+            if valid.size == 0:
+                continue
+            min_values[param_index] = np.min(valid)
+            max_values[param_index] = np.max(valid)
+        return ParamTensorRanges(
+            min_values=min_values,
+            max_values=max_values,
+            param_labels=param_labels,
+            param_groups=param_groups,
+        )
+
+    def compute_scene_param_histograms(
+        self,
+        splat_count: int | None = None,
+        *,
+        bin_count: int = 64,
+        min_log10: float = -8.0,
+        max_log10: float = 2.0,
+    ) -> ParamLog10Histograms:
+        count = self._scene_count if splat_count is None else int(splat_count)
+        if count <= 0:
+            return ParamLog10Histograms(
+                counts=np.zeros((0, max(int(bin_count), 1)), dtype=np.int64),
+                bin_edges_log10=np.linspace(float(min_log10), float(max(max_log10, min_log10 + 1e-6)), max(int(bin_count), 1) + 1, dtype=np.float64),
+                param_labels=(),
+                param_groups=(),
+            )
+        return self._param_tensor_log10_histograms(
+            self._scene_histogram_tensor(count),
+            bin_count=bin_count,
+            min_log10=min_log10,
+            max_log10=max_log10,
+            param_labels=self.SCENE_PARAM_HISTOGRAM_LABELS,
+            param_groups=self.SCENE_PARAM_HISTOGRAM_GROUPS,
+        )
+
+    def compute_scene_param_ranges(self, splat_count: int | None = None) -> ParamTensorRanges:
+        count = self._scene_count if splat_count is None else int(splat_count)
+        if count <= 0:
+            return ParamTensorRanges(
+                min_values=np.zeros((0,), dtype=np.float32),
+                max_values=np.zeros((0,), dtype=np.float32),
+                param_labels=(),
+                param_groups=(),
+            )
+        return self._param_tensor_ranges(
+            self._scene_histogram_tensor(count),
+            param_labels=self.SCENE_PARAM_HISTOGRAM_LABELS,
+            param_groups=self.SCENE_PARAM_HISTOGRAM_GROUPS,
+        )
 
     def write_grad_groups(
         self,
