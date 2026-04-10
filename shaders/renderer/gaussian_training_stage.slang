@@ -29,6 +29,16 @@ static const float DEPTH_RATIO_GRAD_MIN_BAND_WIDTH = 1e-4;
 static const float DEPTH_RATIO_GRAD_SOFTNESS_RATIO = 0.1;
 static const float DEPTH_RATIO_GRAD_SOFTNESS_FLOOR = 1e-4;
 static const float DEBUG_EDGE_GRADIENT_DISPLAY_MAX = 4.0;
+static const uint SSIM_FEATURE_CHANNELS = 15u;
+static const uint SSIM_FEATURE_STRIDE = 3u;
+static const uint SSIM_FEATURE_X_OFFSET = 0u;
+static const uint SSIM_FEATURE_Y_OFFSET = SSIM_FEATURE_X_OFFSET + SSIM_FEATURE_STRIDE;
+static const uint SSIM_FEATURE_X2_OFFSET = SSIM_FEATURE_Y_OFFSET + SSIM_FEATURE_STRIDE;
+static const uint SSIM_FEATURE_Y2_OFFSET = SSIM_FEATURE_X2_OFFSET + SSIM_FEATURE_STRIDE;
+static const uint SSIM_FEATURE_XY_OFFSET = SSIM_FEATURE_Y2_OFFSET + SSIM_FEATURE_STRIDE;
+static const float SSIM_C1 = 0.0001;
+static const float SSIM_C2 = 0.0009;
+static const float3 SSIM_YCBCR_WEIGHTS = float3(4.0, 1.0, 1.0) * (1.0 / 6.0);
 static const uint REFINEMENT_HASH_INIT = 0x9e3779b9u;
 static const uint REFINEMENT_HASH_MIX = 0x85ebca6bu;
 uniform uint g_Width;
@@ -39,6 +49,7 @@ uniform float g_HugeValue;
 uniform uint g_UseTargetAlphaMask;
 uniform uint g_BatchStepIndex;
 uniform TrainingSubsampleParams g_TrainingSubsample;
+uniform float g_SSIMWeight;
 
 uniform Texture2D<float4> g_Rendered;
 uniform Texture2D<float4> g_Target;
@@ -52,6 +63,10 @@ uniform RWStructuredBuffer<float> g_TrainingRgbLoss;
 uniform RWStructuredBuffer<float> g_TrainingRgbLossTotal;
 uniform RWStructuredBuffer<float> g_TrainingTargetEdge;
 uniform RWStructuredBuffer<float> g_TrainingTargetEdgeTotal;
+uniform RWStructuredBuffer<float> g_SSIMMoments;
+uniform StructuredBuffer<float> g_SSIMBlurredMoments;
+uniform RWStructuredBuffer<float> g_SSIMBlurredFeatureGrads;
+uniform StructuredBuffer<float> g_SSIMFeatureGrads;
 uniform float g_DensityRegularizer;
 uniform float g_DepthRatioWeight;
 uniform float g_RefinementLossWeight;
@@ -114,6 +129,15 @@ groupshared float gsMSE[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
 groupshared float gsDensityLoss[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
 groupshared float gsRgbLoss[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
 groupshared float gsTargetEdge[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
+
+struct SSIMMoments : IDifferentiable
+{
+    float3 x;
+    float3 y;
+    float3 x2;
+    float3 y2;
+    float3 xy;
+};
 
 struct SplatState
 {
@@ -605,6 +629,68 @@ float training_target_edge_intensity(uint2 pixel)
     return length(float2(gx, gy));
 }
 
+uint ssim_feature_index(uint2 pixel, uint channel)
+{
+    return (pixel.y * g_Width + pixel.x) * SSIM_FEATURE_CHANNELS + channel;
+}
+
+void store_ssim_feature3(RWStructuredBuffer<float> buffer, uint2 pixel, uint channelOffset, float3 value)
+{
+    buffer[ssim_feature_index(pixel, channelOffset + 0u)] = value.x;
+    buffer[ssim_feature_index(pixel, channelOffset + 1u)] = value.y;
+    buffer[ssim_feature_index(pixel, channelOffset + 2u)] = value.z;
+}
+
+float3 load_ssim_feature3(StructuredBuffer<float> buffer, uint2 pixel, uint channelOffset)
+{
+    return float3(
+        buffer[ssim_feature_index(pixel, channelOffset + 0u)],
+        buffer[ssim_feature_index(pixel, channelOffset + 1u)],
+        buffer[ssim_feature_index(pixel, channelOffset + 2u)]
+    );
+}
+
+void clear_ssim_feature_grads(RWStructuredBuffer<float> buffer, uint2 pixel)
+{
+    [unroll] for (uint channel = 0u; channel < SSIM_FEATURE_CHANNELS; channel++) buffer[ssim_feature_index(pixel, channel)] = 0.0;
+}
+
+[Differentiable]
+float3 rgb_to_ycbcr_bt601(float3 rgb)
+{
+    return float3(
+        dot(rgb, float3(0.299, 0.587, 0.114)),
+        dot(rgb, float3(-0.168736, -0.331264, 0.5)) + 0.5,
+        dot(rgb, float3(0.5, -0.418688, -0.081312)) + 0.5
+    );
+}
+
+[Differentiable]
+SSIMMoments ssim_feature_moments(float3 renderedRgb, no_diff float3 targetRgb)
+{
+    float3 rendered = rgb_to_ycbcr_bt601(renderedRgb);
+    float3 target = rgb_to_ycbcr_bt601(targetRgb);
+    SSIMMoments moments;
+    moments.x = rendered;
+    moments.y = target;
+    moments.x2 = rendered * rendered;
+    moments.y2 = target * target;
+    moments.xy = rendered * target;
+    return moments;
+}
+
+[Differentiable]
+float ssim_dssim_from_blurred_moments(float3 x, no_diff float3 y, float3 x2, no_diff float3 y2, float3 xy)
+{
+    float3 sigmaX2 = max(x2 - x * x, 0.0);
+    float3 sigmaY2 = max(y2 - y * y, 0.0);
+    float3 sigmaXY = xy - x * y;
+    float3 numer = (2.0 * x * y + SSIM_C1) * (2.0 * sigmaXY + SSIM_C2);
+    float3 denom = max((x * x + y * y + SSIM_C1) * (sigmaX2 + sigmaY2 + SSIM_C2), float3(SMALL_VALUE));
+    float3 ssim = numer / denom;
+    return 0.5 * (1.0 - dot(ssim, SSIM_YCBCR_WEIGHTS));
+}
+
 float3 position_random_step_world_delta(SplatState state, inout uint rngState)
 {
     float opacity = opacity_from_raw(state.rawOpacity);
@@ -687,7 +773,26 @@ void csClearLossBuffer(uint3 dispatchThreadID : SV_DispatchThreadID)
 
 [shader("compute")]
 [numthreads(TRAIN_TILE_DIM, TRAIN_TILE_DIM, 1)]
-void csComputeL1LossForward(
+void csComputeSSIMFeatures(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint px = dispatchThreadID.x;
+    uint py = dispatchThreadID.y;
+    if (px >= g_Width || py >= g_Height) return;
+
+    uint2 pixel = uint2(px, py);
+    float3 rendered = sanitize_float3(g_Rendered[pixel].xyz, g_HugeValue);
+    float3 target = training_target_rgb(pixel);
+    SSIMMoments moments = ssim_feature_moments(rendered, target);
+    store_ssim_feature3(g_SSIMMoments, pixel, SSIM_FEATURE_X_OFFSET, moments.x);
+    store_ssim_feature3(g_SSIMMoments, pixel, SSIM_FEATURE_Y_OFFSET, moments.y);
+    store_ssim_feature3(g_SSIMMoments, pixel, SSIM_FEATURE_X2_OFFSET, moments.x2);
+    store_ssim_feature3(g_SSIMMoments, pixel, SSIM_FEATURE_Y2_OFFSET, moments.y2);
+    store_ssim_feature3(g_SSIMMoments, pixel, SSIM_FEATURE_XY_OFFSET, moments.xy);
+}
+
+[shader("compute")]
+[numthreads(TRAIN_TILE_DIM, TRAIN_TILE_DIM, 1)]
+void csComputeBlendedLossForward(
     uint3 dispatchThreadID : SV_DispatchThreadID,
     uint3 groupThreadID : SV_GroupThreadID
 )
@@ -709,11 +814,19 @@ void csComputeL1LossForward(
         float4 targetRgba = training_target_rgba(pixel);
         float3 target = targetRgba.xyz;
         float targetMask = training_target_mask(targetRgba.w);
-        float loss = rgb_l1_loss(rendered, target, g_InvPixelCount) * targetMask;
+        float l1Loss = rgb_l1_loss(rendered, target, g_InvPixelCount) * targetMask;
+        float dssimLoss = ssim_dssim_from_blurred_moments(
+            load_ssim_feature3(g_SSIMBlurredMoments, pixel, SSIM_FEATURE_X_OFFSET),
+            load_ssim_feature3(g_SSIMBlurredMoments, pixel, SSIM_FEATURE_Y_OFFSET),
+            load_ssim_feature3(g_SSIMBlurredMoments, pixel, SSIM_FEATURE_X2_OFFSET),
+            load_ssim_feature3(g_SSIMBlurredMoments, pixel, SSIM_FEATURE_Y2_OFFSET),
+            load_ssim_feature3(g_SSIMBlurredMoments, pixel, SSIM_FEATURE_XY_OFFSET)
+        ) * (g_InvPixelCount * targetMask);
+        float blendedRgbLoss = lerp(l1Loss, dssimLoss, g_SSIMWeight);
         float mse = rgb_mse_loss(rendered, target, g_InvPixelCount) * targetMask;
         float depthRatio = sanitize_scalar(g_RenderedDepthStats[pixel].w, g_HugeValue);
         float density = sanitize_scalar(g_RenderedDensity[py * g_Width + px], g_HugeValue);
-        localRgbLoss = isfinite(loss) ? loss : 0.0;
+        localRgbLoss = isfinite(blendedRgbLoss) ? blendedRgbLoss : 0.0;
         localTargetEdge = isfinite(g_RefinementTargetEdgeWeight) && g_RefinementTargetEdgeWeight > 0.0 ? max(training_target_edge_intensity(pixel), 0.0) * targetMask : 0.0;
         localLoss = localRgbLoss;
         localMSE = isfinite(mse) ? mse : 0.0;
@@ -767,7 +880,39 @@ void csComputeL1LossForward(
 
 [shader("compute")]
 [numthreads(TRAIN_TILE_DIM, TRAIN_TILE_DIM, 1)]
-void csComputeL1LossBackward(uint3 dispatchThreadID : SV_DispatchThreadID)
+void csComputeSSIMBlurredGradients(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint px = dispatchThreadID.x;
+    uint py = dispatchThreadID.y;
+    if (px >= g_Width || py >= g_Height) return;
+
+    uint2 pixel = uint2(px, py);
+    clear_ssim_feature_grads(g_SSIMBlurredFeatureGrads, pixel);
+    if (!(g_SSIMWeight > 0.0)) return;
+
+    float targetMask = training_target_mask(training_target_rgba(pixel).w);
+    if (!(targetMask > 0.0)) return;
+
+    float3 x = load_ssim_feature3(g_SSIMBlurredMoments, pixel, SSIM_FEATURE_X_OFFSET);
+    float3 y = load_ssim_feature3(g_SSIMBlurredMoments, pixel, SSIM_FEATURE_Y_OFFSET);
+    float3 x2 = load_ssim_feature3(g_SSIMBlurredMoments, pixel, SSIM_FEATURE_X2_OFFSET);
+    float3 y2 = load_ssim_feature3(g_SSIMBlurredMoments, pixel, SSIM_FEATURE_Y2_OFFSET);
+    float3 xy = load_ssim_feature3(g_SSIMBlurredMoments, pixel, SSIM_FEATURE_XY_OFFSET);
+    float lossScale = g_SSIMWeight * g_InvPixelCount * targetMask;
+    if (!(lossScale > 0.0)) return;
+
+    var dpX = diffPair(x);
+    var dpX2 = diffPair(x2);
+    var dpXY = diffPair(xy);
+    bwd_diff(ssim_dssim_from_blurred_moments)(dpX, y, dpX2, y2, dpXY, lossScale);
+    store_ssim_feature3(g_SSIMBlurredFeatureGrads, pixel, SSIM_FEATURE_X_OFFSET, dpX.getDifferential());
+    store_ssim_feature3(g_SSIMBlurredFeatureGrads, pixel, SSIM_FEATURE_X2_OFFSET, dpX2.getDifferential());
+    store_ssim_feature3(g_SSIMBlurredFeatureGrads, pixel, SSIM_FEATURE_XY_OFFSET, dpXY.getDifferential());
+}
+
+[shader("compute")]
+[numthreads(TRAIN_TILE_DIM, TRAIN_TILE_DIM, 1)]
+void csComputeBlendedLossBackward(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     uint px = dispatchThreadID.x;
     uint py = dispatchThreadID.y;
@@ -778,7 +923,16 @@ void csComputeL1LossBackward(uint3 dispatchThreadID : SV_DispatchThreadID)
     float4 targetRgba = training_target_rgba(pixel);
     float3 target = targetRgba.xyz;
     float targetMask = training_target_mask(targetRgba.w);
-    float3 dOut = clamp(sanitize_float3(rgb_l1_grad(rendered, target) * (g_InvPixelCount * targetMask), g_LossGradClip), -g_LossGradClip, g_LossGradClip);
+    float3 dL1 = rgb_l1_grad(rendered, target) * ((1.0 - g_SSIMWeight) * g_InvPixelCount * targetMask);
+    SSIMMoments dMoments;
+    dMoments.x = load_ssim_feature3(g_SSIMFeatureGrads, pixel, SSIM_FEATURE_X_OFFSET);
+    dMoments.y = load_ssim_feature3(g_SSIMFeatureGrads, pixel, SSIM_FEATURE_Y_OFFSET);
+    dMoments.x2 = load_ssim_feature3(g_SSIMFeatureGrads, pixel, SSIM_FEATURE_X2_OFFSET);
+    dMoments.y2 = load_ssim_feature3(g_SSIMFeatureGrads, pixel, SSIM_FEATURE_Y2_OFFSET);
+    dMoments.xy = load_ssim_feature3(g_SSIMFeatureGrads, pixel, SSIM_FEATURE_XY_OFFSET);
+    var dpRendered = diffPair(rendered);
+    bwd_diff(ssim_feature_moments)(dpRendered, target, dMoments);
+    float3 dOut = clamp(sanitize_float3(dL1 + dpRendered.getDifferential(), g_LossGradClip), -g_LossGradClip, g_LossGradClip);
     g_OutputGrad[py * g_Width + px] = float4(dOut, 0.0);
     float densityGrad = 0.0;
     float density = sanitize_scalar(g_RenderedDensity[py * g_Width + px], g_HugeValue);

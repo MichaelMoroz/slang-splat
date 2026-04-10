@@ -8,6 +8,7 @@ import numpy as np
 import slangpy as spy
 
 from ..common import SHADER_ROOT, buffer_to_numpy, clamp_index, debug_region, dispatch, thread_count_1d, thread_count_2d
+from ..filter import SeparableGaussianBlur
 from ..metrics import Metrics, psnr_from_mse
 from ..renderer import Camera, GaussianRenderer
 from ..scene import ColmapFrame, GaussianInitHyperParams, GaussianScene, SUPPORTED_SH_COEFF_COUNT, pad_sh_coeffs, rgb_to_sh0, sh_coeffs_to_display_colors
@@ -29,6 +30,7 @@ DEFAULT_DEBUG_CONTRIBUTION_RANGE_PERCENT = (0.001, 1.0)
 DEPTH_RATIO_GRAD_MIN_BAND_WIDTH = 1e-4
 DEFAULT_DEPTH_RATIO_GRAD_MIN = 0.0
 DEFAULT_DEPTH_RATIO_GRAD_MAX = 0.1
+DEFAULT_SSIM_WEIGHT = 0.2
 _REFINEMENT_HASH_INIT = 0x9E3779B9
 _REFINEMENT_HASH_MIX = 0x85EBCA6B
 
@@ -184,7 +186,7 @@ class StabilityHyperParams:
 class TrainingHyperParams:
     background: tuple[float, float, float] = (1.0, 1.0, 1.0); near: float = 0.1; far: float = 120.0
     background_mode: int = TRAIN_BACKGROUND_MODE_RANDOM; use_target_alpha_mask: bool = False; use_sh: bool = False; sh_band: int = 0
-    scale_l2_weight: float = 0.0; scale_abs_reg_weight: float = 0.01; sh1_reg_weight: float = 0.01; opacity_reg_weight: float = 0.01; density_regularizer: float = 0.02; depth_ratio_weight: float = 1.0; max_allowed_density_start: float = 5.0; max_allowed_density: float = 12.0
+    scale_l2_weight: float = 0.0; scale_abs_reg_weight: float = 0.01; sh1_reg_weight: float = 0.01; opacity_reg_weight: float = 0.01; density_regularizer: float = 0.02; depth_ratio_weight: float = 1.0; ssim_weight: float = DEFAULT_SSIM_WEIGHT; max_allowed_density_start: float = 5.0; max_allowed_density: float = 12.0
     refinement_loss_weight: float = 0.25; refinement_target_edge_weight: float = 0.75
     depth_ratio_grad_min: float = 0.0; depth_ratio_grad_max: float = 0.1
     lr_pos_mul: float = 1.0; lr_pos_stage1_mul: float = 0.75; lr_pos_stage2_mul: float = 0.2; lr_pos_stage3_mul: float = 0.2
@@ -235,6 +237,7 @@ class TrainingHyperParams:
         self.sh1_reg_weight = max(float(self.sh1_reg_weight), 0.0)
         self.density_regularizer = max(float(self.density_regularizer), 0.0)
         self.depth_ratio_weight = max(float(self.depth_ratio_weight), 0.0)
+        self.ssim_weight = min(max(float(self.ssim_weight), 0.0), 1.0)
         self.depth_ratio_grad_min, self.depth_ratio_grad_max = resolve_depth_ratio_grad_band(self.depth_ratio_grad_min, self.depth_ratio_grad_max)
         self.depth_ratio_stage1_weight = max(float(self.depth_ratio_stage1_weight), 0.0)
         self.depth_ratio_stage2_weight = max(float(self.depth_ratio_stage2_weight), 0.0)
@@ -281,13 +284,16 @@ class GaussianTrainer:
     _BATCH_STEP_INFO_STRIDE = 4
     _U32_BYTES = 4
     _FLOAT4_BYTES = 16
+    _SSIM_FEATURE_CHANNELS = 15
     _PREPASS_CAPACITY_SYNC_INTERVAL = 32
     _REFINEMENT_CAMERA_ROW_COUNT = 6
     _KERNEL_ENTRIES = {
         "downscale_target": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csResampleDownscaledTargetNearest"),
         "clear_loss": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csClearLossBuffer"),
-        "loss_forward": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csComputeL1LossForward"),
-        "loss_backward": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csComputeL1LossBackward"),
+        "ssim_features": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csComputeSSIMFeatures"),
+        "loss_forward": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csComputeBlendedLossForward"),
+        "ssim_blurred_grads": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csComputeSSIMBlurredGradients"),
+        "loss_backward": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csComputeBlendedLossBackward"),
         "cache_step_info": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csCacheTrainingStepInfo"),
         "position_random_step": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csApplyPositionRandomSteps"),
         "clear_clone_counts": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csClearCloneCounts"),
@@ -613,6 +619,8 @@ class GaussianTrainer:
         self._frame_targets_native: list[spy.Texture] = []
         self._train_target_texture: spy.Texture | None = None
         self._downscaled_target_key: tuple[int, int, int, int] | None = None
+        self._ssim_blur: SeparableGaussianBlur | None = None
+        self._ssim_resolution: tuple[int, int] | None = None
         self._observed_contribution_pixel_count = 0
         self._frame_rng = np.random.default_rng(self._seed)
         self._frame_order = np.zeros((len(self.frames),), dtype=np.int32)
@@ -650,6 +658,19 @@ class GaussianTrainer:
         self._batch_step_capacity = max(required_batch_steps, max(self._batch_step_capacity, 1) + max(self._batch_step_capacity, 1) // 2)
         self._buffers.setdefault("loss", self.device.create_buffer(size=16, usage=usage))
         self._buffers["batch_step_info"] = self.device.create_buffer(size=self._batch_step_capacity * self._BATCH_STEP_INFO_STRIDE * 4, usage=usage)
+
+    def _ensure_ssim_buffers(self) -> None:
+        width = max(int(self.renderer.width), 1)
+        height = max(int(self.renderer.height), 1)
+        resolution = (width, height)
+        if self._ssim_resolution == resolution and self._ssim_blur is not None and all(name in self._buffers for name in ("ssim_moments", "ssim_blurred_moments", "ssim_blurred_feature_grads", "ssim_feature_grads")):
+            return
+        self._ssim_blur = SeparableGaussianBlur(self.device, width=width, height=height)
+        self._buffers["ssim_moments"] = self._ssim_blur.make_buffer(self._SSIM_FEATURE_CHANNELS)
+        self._buffers["ssim_blurred_moments"] = self._ssim_blur.make_buffer(self._SSIM_FEATURE_CHANNELS)
+        self._buffers["ssim_blurred_feature_grads"] = self._ssim_blur.make_buffer(self._SSIM_FEATURE_CHANNELS)
+        self._buffers["ssim_feature_grads"] = self._ssim_blur.make_buffer(self._SSIM_FEATURE_CHANNELS)
+        self._ssim_resolution = resolution
 
     def _expected_refinement_append_count(self, splat_count: int) -> int:
         return max(int(np.ceil(max(int(splat_count), 1) * max(float(self.training.refinement_growth_ratio), 0.0))), 1)
@@ -942,6 +963,7 @@ class GaussianTrainer:
             "g_UseTargetAlphaMask": int(bool(self.training.use_target_alpha_mask)),
             "g_DensityRegularizer": float(self.training.density_regularizer),
             "g_DepthRatioWeight": float(resolve_depth_ratio_weight(self.training, resolved_step)),
+            "g_SSIMWeight": float(self.training.ssim_weight),
             "g_RefinementLossWeight": float(self.training.refinement_loss_weight),
             "g_RefinementTargetEdgeWeight": float(self.training.refinement_target_edge_weight),
             "g_DepthRatioGradMin": float(self.training.depth_ratio_grad_min),
@@ -950,9 +972,51 @@ class GaussianTrainer:
             **self._training_sample_vars(frame_index, resolved_step),
         }
 
+    def _ssim_vars(self) -> dict[str, object]:
+        self._ensure_ssim_buffers()
+        return {
+            "g_SSIMMoments": self._buffers["ssim_moments"],
+            "g_SSIMBlurredMoments": self._buffers["ssim_blurred_moments"],
+            "g_SSIMBlurredFeatureGrads": self._buffers["ssim_blurred_feature_grads"],
+            "g_SSIMFeatureGrads": self._buffers["ssim_feature_grads"],
+        }
+
+    def _dispatch_ssim_feature_extraction(self, encoder: spy.CommandEncoder, target_texture: spy.Texture, step: int | None = None, frame_index: int = 0) -> None:
+        self._dispatch(
+            "ssim_features",
+            encoder,
+            self._pixel_thread_count(),
+            {
+                "g_Rendered": self.renderer.output_texture,
+                "g_Target": target_texture,
+                **self._ssim_vars(),
+                **self._loss_vars(frame_index, step),
+            },
+        )
+
+    def _dispatch_ssim_blur(self, encoder: spy.CommandEncoder, input_name: str, output_name: str) -> None:
+        self._ensure_ssim_buffers()
+        if self._ssim_blur is None:
+            raise RuntimeError("SSIM blur utility is not initialized.")
+        self._ssim_blur.blur(encoder, self._buffers[input_name], self._buffers[output_name], self._SSIM_FEATURE_CHANNELS)
+
+    def _dispatch_ssim_blurred_gradients(self, encoder: spy.CommandEncoder, target_texture: spy.Texture, step: int | None = None, frame_index: int = 0) -> None:
+        self._dispatch(
+            "ssim_blurred_grads",
+            encoder,
+            self._pixel_thread_count(),
+            {
+                "g_Target": target_texture,
+                **self._ssim_vars(),
+                **self._loss_vars(frame_index, step),
+            },
+        )
+
     def _dispatch_loss_forward(self, encoder: spy.CommandEncoder, target_texture: spy.Texture, step: int | None = None, frame_index: int = 0) -> None:
         shared = {"g_OutputGrad": self.renderer.output_grad_buffer, "g_RegularizerGrad": self.renderer.work_buffers["training_regularizer_grad"], "g_LossBuffer": self._buffers["loss"], "g_TrainingRgbLoss": self.renderer.work_buffers["training_rgb_loss"], "g_TrainingRgbLossTotal": self.renderer.work_buffers["training_rgb_loss_total"], "g_TrainingTargetEdge": self.renderer.work_buffers["training_target_edge"], "g_TrainingTargetEdgeTotal": self.renderer.work_buffers["training_target_edge_total"], **self._loss_vars(frame_index, step)}
         self._dispatch("clear_loss", encoder, self._pixel_thread_count(), shared)
+        self._dispatch_ssim_feature_extraction(encoder, target_texture, step, frame_index)
+        self._dispatch_ssim_blur(encoder, "ssim_moments", "ssim_blurred_moments")
         self._dispatch(
             "loss_forward",
             encoder,
@@ -969,11 +1033,14 @@ class GaussianTrainer:
                 "g_TrainingRgbLossTotal": self.renderer.work_buffers["training_rgb_loss_total"],
                 "g_TrainingTargetEdge": self.renderer.work_buffers["training_target_edge"],
                 "g_TrainingTargetEdgeTotal": self.renderer.work_buffers["training_target_edge_total"],
+                **self._ssim_vars(),
                 **self._loss_vars(frame_index, step),
             },
         )
 
     def _dispatch_loss_backward(self, encoder: spy.CommandEncoder, target_texture: spy.Texture, step: int | None = None, frame_index: int = 0) -> None:
+        self._dispatch_ssim_blurred_gradients(encoder, target_texture, step, frame_index)
+        self._dispatch_ssim_blur(encoder, "ssim_blurred_feature_grads", "ssim_feature_grads")
         self._dispatch(
             "loss_backward",
             encoder,
@@ -986,6 +1053,7 @@ class GaussianTrainer:
                 "g_OutputGrad": self.renderer.output_grad_buffer,
                 "g_RegularizerGrad": self.renderer.work_buffers["training_regularizer_grad"],
                 "g_LossBuffer": self._buffers["loss"],
+                **self._ssim_vars(),
                 **self._loss_vars(frame_index, step),
             },
         )

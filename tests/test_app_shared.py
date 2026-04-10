@@ -44,7 +44,6 @@ def test_build_training_params_clamps_ranges():
         grad_clip=0.0,
         grad_norm_clip=1e9,
         max_update=0.0,
-        min_scale=2.0,
         max_scale=1.0,
         max_anisotropy=0.5,
         min_opacity=0.8,
@@ -66,7 +65,7 @@ def test_build_training_params_clamps_ranges():
     )
     assert params.adam.position_lr == 20.0
     assert params.adam.scale_lr == 0.1
-    assert params.stability.max_scale == params.stability.min_scale == 2.0
+    assert params.stability.max_scale == 1.0
     assert params.stability.max_opacity == params.stability.min_opacity == 0.8
     assert params.training.far > params.training.near
     assert params.training.background_mode == TRAIN_BACKGROUND_MODE_RANDOM

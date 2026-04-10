@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 from PIL import Image
 import slangpy as spy
 
@@ -29,6 +30,27 @@ _SCALE_GRAD_MULS = (0.015625, 0.03125, 0.0625, 0.125, 0.25, 0.5, 0.75, 0.875, 0.
 _TARGET_MULS = (2.0, 3.0, 4.0, 6.0, 7.5)
 _DEPTH_RATIO_GRAD_SOFTNESS_RATIO = 0.1
 _DEPTH_RATIO_GRAD_SOFTNESS_FLOOR = 1e-4
+_SSIM_BLUR_WEIGHTS = np.array(
+    [
+        0.00102838008447911,
+        0.00759875813523919,
+        0.03600077212843083,
+        0.10936068950970002,
+        0.21300553771125369,
+        0.26601172486179436,
+        0.21300553771125369,
+        0.10936068950970002,
+        0.03600077212843083,
+        0.00759875813523919,
+        0.00102838008447911,
+    ],
+    dtype=np.float32,
+)
+_SSIM_C1 = 0.0001
+_SSIM_C2 = 0.0009
+_SSIM_SMALL_VALUE = 1e-6
+_SSIM_YCBCR_WEIGHTS = np.array([4.0, 1.0, 1.0], dtype=np.float32) / 6.0
+_SSIM_FEATURE_CHANNELS = 15
 
 
 def _expected_refinement_child_scale(parent_scale: np.ndarray, family_size: int) -> np.ndarray:
@@ -104,6 +126,18 @@ def _make_rgba_frame(tmp_path: Path, rgba: np.ndarray, *, image_name: str = "tar
     )
 
 
+def _make_float_texture(device: spy.Device, image: np.ndarray) -> spy.Texture:
+    rgba = np.asarray(image, dtype=np.float32)
+    texture = device.create_texture(
+        format=spy.Format.rgba32_float,
+        width=int(rgba.shape[1]),
+        height=int(rgba.shape[0]),
+        usage=spy.TextureUsage.shader_resource | spy.TextureUsage.copy_destination,
+    )
+    texture.copy_from_numpy(np.ascontiguousarray(rgba, dtype=np.float32))
+    return texture
+
+
 def _read_scene_groups(renderer: GaussianRenderer, count: int) -> dict[str, np.ndarray]:
     return renderer.read_scene_groups(count)
 
@@ -137,8 +171,134 @@ def _read_output_grads(renderer: GaussianRenderer) -> np.ndarray:
     return flat[: max(renderer.width * renderer.height, 1) * 4].reshape(renderer.height, renderer.width, 4)
 
 
+def _read_training_rgb_loss(renderer: GaussianRenderer) -> np.ndarray:
+    flat = buffer_to_numpy(renderer.work_buffers["training_rgb_loss"], np.float32)
+    return flat[: max(renderer.width * renderer.height, 1)].reshape(renderer.height, renderer.width).copy()
+
+
+def _read_training_rgb_loss_total(renderer: GaussianRenderer) -> float:
+    return float(buffer_to_numpy(renderer.work_buffers["training_rgb_loss_total"], np.float32)[0])
+
+
 def _read_training_depth_ratios(renderer: GaussianRenderer) -> np.ndarray:
     return np.asarray(renderer.training_depth_stats_texture.to_numpy(), dtype=np.float32)[..., 3].reshape(-1).copy()
+
+
+def _read_ssim_buffer(trainer: GaussianTrainer, name: str) -> np.ndarray:
+    width = int(trainer.renderer.width)
+    height = int(trainer.renderer.height)
+    flat = buffer_to_numpy(trainer._buffers[name], np.float32)
+    return np.asarray(flat[: max(width * height, 1) * _SSIM_FEATURE_CHANNELS], dtype=np.float32).reshape(height, width, _SSIM_FEATURE_CHANNELS).copy()
+
+
+def _rgb_to_ycbcr_bt601_np(rgb: np.ndarray) -> np.ndarray:
+    value = np.asarray(rgb, dtype=np.float32)
+    y = np.tensordot(value, np.array([0.299, 0.587, 0.114], dtype=np.float32), axes=([-1], [0]))
+    cb = np.tensordot(value, np.array([-0.168736, -0.331264, 0.5], dtype=np.float32), axes=([-1], [0])) + 0.5
+    cr = np.tensordot(value, np.array([0.5, -0.418688, -0.081312], dtype=np.float32), axes=([-1], [0])) + 0.5
+    return np.stack((y, cb, cr), axis=-1).astype(np.float32, copy=False)
+
+
+def _ssim_feature_moments_np(rendered_rgb: np.ndarray, target_rgb: np.ndarray) -> np.ndarray:
+    rendered = _rgb_to_ycbcr_bt601_np(rendered_rgb)
+    target = _rgb_to_ycbcr_bt601_np(target_rgb)
+    return np.concatenate((rendered, target, rendered * rendered, target * target, rendered * target), axis=2).astype(np.float32, copy=False)
+
+
+def _blur_axis_clamped_np(values: np.ndarray, axis: int) -> np.ndarray:
+    radius = len(_SSIM_BLUR_WEIGHTS) // 2
+    pad = [(0, 0)] * values.ndim
+    pad[axis] = (radius, radius)
+    padded = np.pad(values, pad, mode="edge")
+    out = np.zeros_like(values, dtype=np.float32)
+    for tap, weight in enumerate(_SSIM_BLUR_WEIGHTS):
+        offset = tap
+        slices = [slice(None)] * values.ndim
+        slices[axis] = slice(offset, offset + values.shape[axis])
+        out += np.asarray(weight, dtype=np.float32) * padded[tuple(slices)]
+    return out
+
+
+def _separable_gaussian_blur_np(values: np.ndarray) -> np.ndarray:
+    return _blur_axis_clamped_np(_blur_axis_clamped_np(np.asarray(values, dtype=np.float32), 1), 0)
+
+
+def _training_target_mask_np(alpha: np.ndarray, use_target_alpha_mask: bool) -> np.ndarray:
+    return np.clip(np.asarray(alpha, dtype=np.float32), 0.0, 1.0) if bool(use_target_alpha_mask) else np.ones_like(alpha, dtype=np.float32)
+
+
+def _blended_rgb_metrics_np(
+    rendered_rgba: np.ndarray,
+    target_rgba: np.ndarray,
+    *,
+    ssim_weight: float,
+    use_target_alpha_mask: bool,
+) -> tuple[np.ndarray, float, float, np.ndarray]:
+    rendered = np.asarray(rendered_rgba, dtype=np.float32)[..., :3]
+    target = np.asarray(target_rgba, dtype=np.float32)[..., :3]
+    alpha = np.asarray(target_rgba, dtype=np.float32)[..., 3]
+    inv_pixel_count = np.float32(1.0 / max(rendered.shape[0] * rendered.shape[1], 1))
+    mask = _training_target_mask_np(alpha, use_target_alpha_mask)
+    diff = rendered - target
+    l1 = np.mean(np.abs(diff), axis=2).astype(np.float32) * inv_pixel_count * mask
+    mse = float(np.sum(np.mean(diff * diff, axis=2).astype(np.float32) * inv_pixel_count * mask, dtype=np.float64))
+    blurred = _separable_gaussian_blur_np(_ssim_feature_moments_np(rendered, target))
+    x, y, x2, y2, xy = np.split(blurred, 5, axis=2)
+    sigma_x2 = np.maximum(x2 - x * x, 0.0)
+    sigma_y2 = np.maximum(y2 - y * y, 0.0)
+    sigma_xy = xy - x * y
+    numer = (2.0 * x * y + _SSIM_C1) * (2.0 * sigma_xy + _SSIM_C2)
+    denom = np.maximum((x * x + y * y + _SSIM_C1) * (sigma_x2 + sigma_y2 + _SSIM_C2), _SSIM_SMALL_VALUE)
+    ssim = numer / denom
+    dssim = 0.5 * (1.0 - np.sum(ssim * _SSIM_YCBCR_WEIGHTS.reshape(1, 1, 3), axis=2, dtype=np.float32))
+    dssim = dssim.astype(np.float32, copy=False) * inv_pixel_count * mask
+    blended = ((1.0 - float(ssim_weight)) * l1 + float(ssim_weight) * dssim).astype(np.float32, copy=False)
+    l1_grad = np.sign(diff).astype(np.float32) * (np.float32(1.0 / 3.0) * inv_pixel_count * mask[..., None] * np.float32(1.0 - float(ssim_weight)))
+    return blended, float(np.sum(blended, dtype=np.float64)), mse, l1_grad
+
+
+def _make_loss_only_trainer(
+    device: spy.Device,
+    tmp_path: Path,
+    *,
+    width: int,
+    height: int,
+    training_hparams: TrainingHyperParams,
+    image_name: str,
+    image_id: int,
+) -> GaussianTrainer:
+    renderer = GaussianRenderer(device, width=width, height=height, list_capacity_multiplier=4)
+    return GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=_make_scene(count=1, seed=97),
+        frames=[_make_frame(tmp_path, width=width, height=height, image_name=image_name, image_id=image_id)],
+        training_hparams=training_hparams,
+        seed=123,
+    )
+
+
+def _dispatch_manual_loss(
+    trainer: GaussianTrainer,
+    rendered_rgba: np.ndarray,
+    target_rgba: np.ndarray,
+    *,
+    run_backward: bool = True,
+) -> spy.Texture:
+    renderer = trainer.renderer
+    rendered = np.asarray(rendered_rgba, dtype=np.float32)
+    target = np.asarray(target_rgba, dtype=np.float32)
+    renderer.output_texture.copy_from_numpy(np.ascontiguousarray(rendered, dtype=np.float32))
+    renderer.training_depth_stats_texture.copy_from_numpy(np.zeros((renderer.height, renderer.width, 4), dtype=np.float32))
+    renderer.work_buffers["training_density"].copy_from_numpy(np.zeros((renderer.width * renderer.height,), dtype=np.float32))
+    target_texture = _make_float_texture(trainer.device, target)
+    enc = trainer.device.create_command_encoder()
+    trainer._dispatch_loss_forward(enc, target_texture)
+    if run_backward:
+        trainer._dispatch_loss_backward(enc, target_texture)
+    trainer.device.submit_command_buffer(enc.finish())
+    trainer.device.wait()
+    return target_texture
 
 
 def _depth_ratio_window_softplus(x: float) -> float:
@@ -236,7 +396,7 @@ class _ScaleGradProbe:
             ),
             frames=[self.frame],
             adam_hparams=AdamHyperParams(position_lr=0.0, scale_lr=0.1, rotation_lr=0.0, color_lr=0.0, opacity_lr=0.0),
-            stability_hparams=StabilityHyperParams(max_update=0.5, min_scale=1e-5, max_scale=16.0 * self.pixel_floor_scale),
+            stability_hparams=StabilityHyperParams(max_update=0.5, max_scale=16.0 * self.pixel_floor_scale),
             training_hparams=TrainingHyperParams(scale_l2_weight=0.0, scale_abs_reg_weight=0.0, opacity_reg_weight=0.0),
             seed=123,
         )
@@ -606,6 +766,184 @@ def test_split_loss_forward_backward_separates_metrics_from_output_grads(device,
     assert np.allclose(grads_after_forward, 0.0)
     assert np.any(np.abs(grads_after_backward[..., :3]) > 0.0)
     assert np.all(np.isfinite(grads_after_backward))
+
+
+def test_ssim_weight_zero_matches_l1_metrics_and_gradients(device, tmp_path: Path):
+    trainer = _make_loss_only_trainer(
+        device,
+        tmp_path,
+        width=4,
+        height=3,
+        training_hparams=TrainingHyperParams(
+            background_mode=TRAIN_BACKGROUND_MODE_CUSTOM,
+            background=(0.0, 0.0, 0.0),
+            density_regularizer=0.0,
+            depth_ratio_weight=0.0,
+            ssim_weight=0.0,
+        ),
+        image_name="ssim_weight_zero_target.png",
+        image_id=31,
+    )
+    rendered = np.array(
+        [
+            [[0.1, 0.2, 0.3, 1.0], [0.7, 0.2, 0.4, 1.0], [0.9, 0.6, 0.2, 1.0], [0.0, 0.1, 0.2, 1.0]],
+            [[0.3, 0.8, 0.4, 1.0], [0.4, 0.3, 0.9, 1.0], [0.5, 0.5, 0.5, 1.0], [0.2, 0.9, 0.1, 1.0]],
+            [[0.8, 0.1, 0.7, 1.0], [0.6, 0.4, 0.2, 1.0], [0.1, 0.7, 0.8, 1.0], [0.2, 0.2, 0.9, 1.0]],
+        ],
+        dtype=np.float32,
+    )
+    target = np.array(
+        [
+            [[0.2, 0.1, 0.4, 1.0], [0.6, 0.4, 0.3, 1.0], [0.7, 0.6, 0.1, 1.0], [0.1, 0.2, 0.0, 1.0]],
+            [[0.4, 0.7, 0.2, 1.0], [0.2, 0.5, 0.8, 1.0], [0.3, 0.6, 0.4, 1.0], [0.5, 0.7, 0.2, 1.0]],
+            [[0.6, 0.2, 0.9, 1.0], [0.5, 0.2, 0.3, 1.0], [0.3, 0.6, 0.7, 1.0], [0.1, 0.4, 0.8, 1.0]],
+        ],
+        dtype=np.float32,
+    )
+
+    _dispatch_manual_loss(trainer, rendered, target)
+
+    expected_rgb_loss, expected_total, expected_mse, expected_grad = _blended_rgb_metrics_np(
+        rendered,
+        target,
+        ssim_weight=0.0,
+        use_target_alpha_mask=False,
+    )
+    total, mse, density = trainer._read_loss_metrics()
+    np.testing.assert_allclose(_read_training_rgb_loss(trainer.renderer), expected_rgb_loss, rtol=0.0, atol=1e-7)
+    np.testing.assert_allclose(_read_training_rgb_loss_total(trainer.renderer), expected_total, rtol=0.0, atol=1e-7)
+    np.testing.assert_allclose(total, expected_total, rtol=0.0, atol=1e-7)
+    np.testing.assert_allclose(mse, expected_mse, rtol=0.0, atol=1e-7)
+    assert density == 0.0
+    np.testing.assert_allclose(_read_output_grads(trainer.renderer)[..., :3], expected_grad, rtol=0.0, atol=1e-7)
+
+
+def test_ssim_feature_blur_matches_cpu_reference(device, tmp_path: Path):
+    trainer = _make_loss_only_trainer(
+        device,
+        tmp_path,
+        width=5,
+        height=4,
+        training_hparams=TrainingHyperParams(
+            background_mode=TRAIN_BACKGROUND_MODE_CUSTOM,
+            background=(0.0, 0.0, 0.0),
+            density_regularizer=0.0,
+            depth_ratio_weight=0.0,
+            ssim_weight=1.0,
+        ),
+        image_name="ssim_feature_blur_target.png",
+        image_id=32,
+    )
+    rendered = np.linspace(0.05, 0.95, num=5 * 4 * 4, dtype=np.float32).reshape(4, 5, 4)
+    target = np.linspace(0.95, 0.05, num=5 * 4 * 4, dtype=np.float32).reshape(4, 5, 4)
+    rendered[..., 3] = 1.0
+    target[..., 3] = 1.0
+
+    trainer.renderer.output_texture.copy_from_numpy(np.ascontiguousarray(rendered, dtype=np.float32))
+    target_texture = _make_float_texture(device, target)
+    enc = device.create_command_encoder()
+    trainer._dispatch_ssim_feature_extraction(enc, target_texture)
+    trainer._dispatch_ssim_blur(enc, "ssim_moments", "ssim_blurred_moments")
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+
+    expected_moments = _ssim_feature_moments_np(rendered[..., :3], target[..., :3])
+    expected_blurred = _separable_gaussian_blur_np(expected_moments)
+    np.testing.assert_allclose(_read_ssim_buffer(trainer, "ssim_moments"), expected_moments, rtol=0.0, atol=2e-6)
+    np.testing.assert_allclose(_read_ssim_buffer(trainer, "ssim_blurred_moments"), expected_blurred, rtol=0.0, atol=2e-6)
+
+
+def test_identical_images_zero_blended_ssim_loss(device, tmp_path: Path):
+    trainer = _make_loss_only_trainer(
+        device,
+        tmp_path,
+        width=5,
+        height=5,
+        training_hparams=TrainingHyperParams(
+            background_mode=TRAIN_BACKGROUND_MODE_CUSTOM,
+            background=(0.0, 0.0, 0.0),
+            density_regularizer=0.0,
+            depth_ratio_weight=0.0,
+            ssim_weight=1.0,
+        ),
+        image_name="ssim_identical_target.png",
+        image_id=33,
+    )
+    image = np.linspace(0.0, 1.0, num=5 * 5 * 4, dtype=np.float32).reshape(5, 5, 4)
+    image[..., 3] = 1.0
+
+    _dispatch_manual_loss(trainer, image, image)
+
+    total, mse, density = trainer._read_loss_metrics()
+    np.testing.assert_allclose(total, 0.0, rtol=0.0, atol=5e-6)
+    np.testing.assert_allclose(mse, 0.0, rtol=0.0, atol=5e-6)
+    assert density == 0.0
+    np.testing.assert_allclose(_read_training_rgb_loss_total(trainer.renderer), 0.0, rtol=0.0, atol=5e-6)
+    np.testing.assert_allclose(_read_output_grads(trainer.renderer)[..., :3], 0.0, rtol=0.0, atol=2e-5)
+
+
+def test_ssim_backward_matches_torch_image_gradients(device, tmp_path: Path):
+    torch = pytest.importorskip("torch")
+    import torch.nn.functional as F
+
+    rng = np.random.default_rng(1234)
+    trainer = _make_loss_only_trainer(
+        device,
+        tmp_path,
+        width=12,
+        height=12,
+        training_hparams=TrainingHyperParams(
+            background_mode=TRAIN_BACKGROUND_MODE_CUSTOM,
+            background=(0.0, 0.0, 0.0),
+            density_regularizer=0.0,
+            depth_ratio_weight=0.0,
+            ssim_weight=0.2,
+        ),
+        image_name="ssim_torch_grad_target.png",
+        image_id=34,
+    )
+    rendered = rng.uniform(0.05, 0.95, size=(12, 12, 4)).astype(np.float32)
+    target = rng.uniform(0.05, 0.95, size=(12, 12, 4)).astype(np.float32)
+    rendered[..., 3] = 1.0
+    target[..., 3] = 1.0
+
+    _dispatch_manual_loss(trainer, rendered, target)
+    gpu_grad = _read_output_grads(trainer.renderer)[..., :3]
+
+    kernel = torch.tensor(_SSIM_BLUR_WEIGHTS, dtype=torch.float32)
+    weight_h = kernel.view(1, 1, 1, -1).repeat(_SSIM_FEATURE_CHANNELS, 1, 1, 1)
+    weight_v = kernel.view(1, 1, -1, 1).repeat(_SSIM_FEATURE_CHANNELS, 1, 1, 1)
+    rendered_t = torch.tensor(rendered[..., :3].transpose(2, 0, 1)[None], dtype=torch.float32, requires_grad=True)
+    target_t = torch.tensor(target[..., :4].transpose(2, 0, 1)[None], dtype=torch.float32)
+    target_rgb = target_t[:, :3]
+    target_mask = target_t[:, 3:4].clamp(0.0, 1.0)
+    inv_pixel_count = 1.0 / float(rendered.shape[0] * rendered.shape[1])
+
+    def rgb_to_ycbcr_bt601_torch(value):
+        y = (value * torch.tensor([0.299, 0.587, 0.114], dtype=value.dtype).view(1, 3, 1, 1)).sum(dim=1, keepdim=True)
+        cb = (value * torch.tensor([-0.168736, -0.331264, 0.5], dtype=value.dtype).view(1, 3, 1, 1)).sum(dim=1, keepdim=True) + 0.5
+        cr = (value * torch.tensor([0.5, -0.418688, -0.081312], dtype=value.dtype).view(1, 3, 1, 1)).sum(dim=1, keepdim=True) + 0.5
+        return torch.cat((y, cb, cr), dim=1)
+
+    rendered_ycc = rgb_to_ycbcr_bt601_torch(rendered_t)
+    target_ycc = rgb_to_ycbcr_bt601_torch(target_rgb)
+    moments = torch.cat((rendered_ycc, target_ycc, rendered_ycc * rendered_ycc, target_ycc * target_ycc, rendered_ycc * target_ycc), dim=1)
+    blurred = F.conv2d(F.pad(moments, (5, 5, 0, 0), mode="replicate"), weight_h, groups=_SSIM_FEATURE_CHANNELS)
+    blurred = F.conv2d(F.pad(blurred, (0, 0, 5, 5), mode="replicate"), weight_v, groups=_SSIM_FEATURE_CHANNELS)
+    x, y, x2, y2, xy = torch.split(blurred, 3, dim=1)
+    sigma_x2 = torch.clamp(x2 - x * x, min=0.0)
+    sigma_y2 = torch.clamp(y2 - y * y, min=0.0)
+    sigma_xy = xy - x * y
+    numer = (2.0 * x * y + _SSIM_C1) * (2.0 * sigma_xy + _SSIM_C2)
+    denom = torch.clamp((x * x + y * y + _SSIM_C1) * (sigma_x2 + sigma_y2 + _SSIM_C2), min=_SSIM_SMALL_VALUE)
+    ssim = numer / denom
+    dssim = 0.5 * (1.0 - (ssim * torch.tensor(_SSIM_YCBCR_WEIGHTS, dtype=torch.float32).view(1, 3, 1, 1)).sum(dim=1, keepdim=True))
+    l1 = (rendered_t - target_rgb).abs().mean(dim=1, keepdim=True)
+    loss = ((((1.0 - trainer.training.ssim_weight) * l1) + (trainer.training.ssim_weight * dssim)) * inv_pixel_count * target_mask).sum()
+    loss.backward()
+    torch_grad = rendered_t.grad.detach().cpu().numpy()[0].transpose(1, 2, 0)
+
+    np.testing.assert_allclose(gpu_grad, torch_grad, rtol=0.0, atol=1.25e-3)
 
 
 def test_target_alpha_mask_skips_masked_pixel_loss_and_output_grads(device, tmp_path: Path):
@@ -981,8 +1319,8 @@ def test_depth_ratio_noise_and_sh_schedules_follow_requested_defaults() -> None:
     np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 14000), 416666.6666666667, rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 30_000), 0.0, rtol=0.0, atol=1e-6)
     assert resolve_sh_band(hparams, 0) == 1
-    assert resolve_sh_band(hparams, 13999) == 3
-    assert resolve_sh_band(hparams, 14000) == 3
+    assert resolve_sh_band(hparams, 13999) == 1
+    assert resolve_sh_band(hparams, 14000) == 1
     assert resolve_use_sh(hparams, 13999) is True
     assert resolve_use_sh(hparams, 14000) is True
 
@@ -1889,7 +2227,7 @@ def test_refinement_rewrite_keeps_sampled_family_offsets_within_fibonacci_volume
 def test_refinement_min_screen_size_raises_small_splats(device, tmp_path: Path) -> None:
     scene = _make_scene(count=1, seed=103)
     scene.positions[0] = np.array([0.0, 0.0, 0.0], dtype=np.float32)
-    scene.scales[0] = _log_sigma(np.array([1e-3, 1e-3, 1e-3], dtype=np.float32))
+    scene.scales[0] = _log_sigma(np.array([1e-5, 1e-5, 1e-5], dtype=np.float32))
     near_frame = _make_frame(tmp_path, image_name="refinement_min_near.png", image_id=21)
     tight_image_path = tmp_path / "refinement_min_tight.png"
     offscreen_image_path = tmp_path / "refinement_min_offscreen.png"
@@ -2275,7 +2613,6 @@ def test_synthetic_base_grads_update_and_respect_constraints(device, tmp_path: P
     assert np.all(np.isfinite(color_alpha))
     assert np.all(np.abs(positions[:, :3]) <= trainer.stability.position_abs_max + 1e-5)
     actual_scales = _actual_scale(scales[:, :3])
-    assert np.all(actual_scales >= trainer.stability.min_scale - 1e-6)
     assert np.all(actual_scales <= trainer.stability.max_scale + 1e-6)
     assert np.all(color_alpha[:, :3] >= -1e-6)
     assert np.all(color_alpha[:, :3] <= 1.0 + 1e-6)

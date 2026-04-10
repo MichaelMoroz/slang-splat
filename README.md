@@ -96,8 +96,8 @@ Training notes:
 - COLMAP training initialization now uses the COLMAP point cloud directly on CPU: positions come from `points3D`, per-point scale is the nearest-neighbor spacing after requested-count density adjustment, rotation is identity, and opacity starts from the configured constant.
 - The resolved COLMAP init bundle is shared by the CLI and viewer, so `base_scale`, jitter, and opacity overrides flow through the same path in both entrypoints.
 - CLI and viewer scene initialization now honor the configured gaussian cap instead of always forcing the full COLMAP point cloud into the initial scene.
-- The active trainer keeps a fixed gaussian count after initialization; there is no densification, pruning, opacity reset schedule, MCMC exploration term, or SSIM loss path.
-- The training loss is direct RGB L1 with optional scale and opacity regularization accumulated in a separate optimizer pipeline.
+- The active trainer keeps a fixed gaussian count after initialization with periodic refinement; there is still no pruning, opacity reset schedule, or MCMC exploration term.
+- The RGB image term is a blended `(1 - ssim_weight) * L1 + ssim_weight * DSSIM` loss. DSSIM is computed in BT.601 YCbCr from blurred per-pixel first and second moments using the reusable separable Gaussian buffer blur utility.
 - GPU trainable state is packed into one param-major float buffer shared by renderer and trainer: `param[param_id * splat_count + splat_id]`.
 - Raster backward supports selectable cached ellipsoid gradient atomics: `fixed` atomics by default, with `float` atomics still available when the backend supports them.
 - Optimizer settings live in one structured per-parameter buffer, and ADAM moments are packed into one `float2` buffer (`m`, `v`) per parameter element.
@@ -112,7 +112,7 @@ Training notes:
 - The viewer `Train Setup` panel includes `Auto` and manual train-downscale modes. Auto starts from a separate initial factor and walks toward `1x` over training, while manual modes force a fixed factor immediately.
 - Numerical reinforcement includes clipping, finite checks, and safe quaternion normalization.
 - Scale regularization uses an autodiff log-space penalty around the initialization/reference scale, so equal multiplicative scale deviations are treated more uniformly.
-- Min/max scale and the scale regularization reference stay user-facing linear sigma values; conversion to stored log-scale happens inside the optimizer path.
+- Max scale and the scale regularization reference stay user-facing linear sigma values; conversion to stored log-scale happens inside the optimizer path.
 - Scale anisotropy is clamped in the ADAM step with `max(scale) / min(scale) <= max_anisotropy`.
 - Shared shader utilities are centralized in `shaders/utility`; see `doc/ShaderUtilities.md`.
 

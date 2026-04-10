@@ -62,6 +62,7 @@ _TRAINING_PARAM_KEYS = {
     "opacity_reg_weight": "opacity_reg",
     "density_regularizer": "density_regularizer",
     "depth_ratio_weight": "depth_ratio_weight",
+    "ssim_weight": "ssim_weight",
     "refinement_loss_weight": "refinement_loss_weight",
     "refinement_target_edge_weight": "refinement_target_edge_weight",
     "depth_ratio_grad_min": "depth_ratio_grad_min",

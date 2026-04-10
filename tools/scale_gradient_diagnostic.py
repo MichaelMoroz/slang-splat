@@ -134,7 +134,7 @@ class ScaleGradientDiagnostic:
             scene=scene,
             frames=[self.frame],
             adam_hparams=AdamHyperParams(position_lr=0.0, scale_lr=0.1, rotation_lr=0.0, color_lr=0.0, opacity_lr=0.0),
-            stability_hparams=StabilityHyperParams(max_update=0.5, min_scale=1e-5, max_scale=target_scale * 2.0),
+            stability_hparams=StabilityHyperParams(max_update=0.5, max_scale=target_scale * 2.0),
             training_hparams=TrainingHyperParams(scale_l2_weight=0.0, scale_abs_reg_weight=0.0, opacity_reg_weight=0.0),
             seed=123,
         )
