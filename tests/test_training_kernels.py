@@ -269,6 +269,57 @@ def _blended_rgb_metrics_np(
     return blended, float(np.sum(blended, dtype=np.float64)), mse, l1_grad
 
 
+def _torch_blended_rgb_grad_np(rendered_rgba: np.ndarray, target_rgba: np.ndarray, *, ssim_weight: float) -> np.ndarray:
+    torch = pytest.importorskip("torch")
+    import torch.nn.functional as F
+
+    rendered = np.asarray(rendered_rgba, dtype=np.float32)
+    target = np.asarray(target_rgba, dtype=np.float32)
+    kernel = torch.tensor(_SSIM_BLUR_WEIGHTS, dtype=torch.float32)
+    weight_h = kernel.view(1, 1, 1, -1).repeat(_SSIM_FEATURE_CHANNELS, 1, 1, 1)
+    weight_v = kernel.view(1, 1, -1, 1).repeat(_SSIM_FEATURE_CHANNELS, 1, 1, 1)
+    rendered_t = torch.tensor(rendered[..., :3].transpose(2, 0, 1)[None], dtype=torch.float32, requires_grad=True)
+    target_t = torch.tensor(target[..., :4].transpose(2, 0, 1)[None], dtype=torch.float32)
+    target_rgb = target_t[:, :3]
+    target_mask = target_t[:, 3:4].clamp(0.0, 1.0)
+    inv_pixel_count = 1.0 / float(rendered.shape[0] * rendered.shape[1])
+    moments = torch.cat(
+        tuple(
+            component
+            for channel in range(3)
+            for component in (
+                rendered_t[:, channel : channel + 1],
+                target_rgb[:, channel : channel + 1],
+                rendered_t[:, channel : channel + 1] * rendered_t[:, channel : channel + 1],
+                target_rgb[:, channel : channel + 1] * target_rgb[:, channel : channel + 1],
+                rendered_t[:, channel : channel + 1] * target_rgb[:, channel : channel + 1],
+            )
+        ),
+        dim=1,
+    )
+    blurred = F.conv2d(F.pad(moments, (5, 5, 0, 0), mode="replicate"), weight_h, groups=_SSIM_FEATURE_CHANNELS)
+    blurred = F.conv2d(F.pad(blurred, (0, 0, 5, 5), mode="replicate"), weight_v, groups=_SSIM_FEATURE_CHANNELS)
+    channel_dssim = []
+    for channel in range(3):
+        offset = channel * _SSIM_FEATURES_PER_COLOR
+        x = blurred[:, offset + 0 : offset + 1]
+        y = blurred[:, offset + 1 : offset + 2]
+        x2 = blurred[:, offset + 2 : offset + 3]
+        y2 = blurred[:, offset + 3 : offset + 4]
+        xy = blurred[:, offset + 4 : offset + 5]
+        sigma_x2 = torch.clamp(x2 - x * x, min=0.0)
+        sigma_y2 = torch.clamp(y2 - y * y, min=0.0)
+        sigma_xy = xy - x * y
+        numer = (2.0 * x * y + _SSIM_C1) * (2.0 * sigma_xy + _SSIM_C2)
+        denom = torch.clamp((x * x + y * y + _SSIM_C1) * (sigma_x2 + sigma_y2 + _SSIM_C2), min=_SSIM_SMALL_VALUE)
+        channel_dssim.append(1.0 - numer / denom)
+    dssim = torch.stack(channel_dssim, dim=1).mean(dim=1, keepdim=False)
+    l1 = (rendered_t - target_rgb).abs().mean(dim=1, keepdim=True)
+    loss = ((((1.0 - float(ssim_weight)) * l1) + (float(ssim_weight) * dssim)) * inv_pixel_count * target_mask).sum()
+    loss.backward()
+    return rendered_t.grad.detach().cpu().numpy()[0].transpose(1, 2, 0)
+
+
 def _make_loss_only_trainer(
     device: spy.Device,
     tmp_path: Path,
@@ -895,9 +946,6 @@ def test_identical_images_zero_blended_ssim_loss(device, tmp_path: Path):
 
 
 def test_ssim_backward_matches_torch_image_gradients(device, tmp_path: Path):
-    torch = pytest.importorskip("torch")
-    import torch.nn.functional as F
-
     rng = np.random.default_rng(1234)
     trainer = _make_loss_only_trainer(
         device,
@@ -921,53 +969,45 @@ def test_ssim_backward_matches_torch_image_gradients(device, tmp_path: Path):
 
     _dispatch_manual_loss(trainer, rendered, target)
     gpu_grad = _read_output_grads(trainer.renderer)[..., :3]
-
-    kernel = torch.tensor(_SSIM_BLUR_WEIGHTS, dtype=torch.float32)
-    weight_h = kernel.view(1, 1, 1, -1).repeat(_SSIM_FEATURE_CHANNELS, 1, 1, 1)
-    weight_v = kernel.view(1, 1, -1, 1).repeat(_SSIM_FEATURE_CHANNELS, 1, 1, 1)
-    rendered_t = torch.tensor(rendered[..., :3].transpose(2, 0, 1)[None], dtype=torch.float32, requires_grad=True)
-    target_t = torch.tensor(target[..., :4].transpose(2, 0, 1)[None], dtype=torch.float32)
-    target_rgb = target_t[:, :3]
-    target_mask = target_t[:, 3:4].clamp(0.0, 1.0)
-    inv_pixel_count = 1.0 / float(rendered.shape[0] * rendered.shape[1])
-
-    moments = torch.cat(
-        tuple(
-            component
-            for channel in range(3)
-            for component in (
-                rendered_t[:, channel : channel + 1],
-                target_rgb[:, channel : channel + 1],
-                rendered_t[:, channel : channel + 1] * rendered_t[:, channel : channel + 1],
-                target_rgb[:, channel : channel + 1] * target_rgb[:, channel : channel + 1],
-                rendered_t[:, channel : channel + 1] * target_rgb[:, channel : channel + 1],
-            )
-        ),
-        dim=1,
-    )
-    blurred = F.conv2d(F.pad(moments, (5, 5, 0, 0), mode="replicate"), weight_h, groups=_SSIM_FEATURE_CHANNELS)
-    blurred = F.conv2d(F.pad(blurred, (0, 0, 5, 5), mode="replicate"), weight_v, groups=_SSIM_FEATURE_CHANNELS)
-    channel_dssim = []
-    for channel in range(3):
-        offset = channel * _SSIM_FEATURES_PER_COLOR
-        x = blurred[:, offset + 0 : offset + 1]
-        y = blurred[:, offset + 1 : offset + 2]
-        x2 = blurred[:, offset + 2 : offset + 3]
-        y2 = blurred[:, offset + 3 : offset + 4]
-        xy = blurred[:, offset + 4 : offset + 5]
-        sigma_x2 = torch.clamp(x2 - x * x, min=0.0)
-        sigma_y2 = torch.clamp(y2 - y * y, min=0.0)
-        sigma_xy = xy - x * y
-        numer = (2.0 * x * y + _SSIM_C1) * (2.0 * sigma_xy + _SSIM_C2)
-        denom = torch.clamp((x * x + y * y + _SSIM_C1) * (sigma_x2 + sigma_y2 + _SSIM_C2), min=_SSIM_SMALL_VALUE)
-        channel_dssim.append(1.0 - numer / denom)
-    dssim = torch.stack(channel_dssim, dim=1).mean(dim=1, keepdim=False)
-    l1 = (rendered_t - target_rgb).abs().mean(dim=1, keepdim=True)
-    loss = ((((1.0 - trainer.training.ssim_weight) * l1) + (trainer.training.ssim_weight * dssim)) * inv_pixel_count * target_mask).sum()
-    loss.backward()
-    torch_grad = rendered_t.grad.detach().cpu().numpy()[0].transpose(1, 2, 0)
+    torch_grad = _torch_blended_rgb_grad_np(rendered, target, ssim_weight=trainer.training.ssim_weight)
 
     np.testing.assert_allclose(gpu_grad, torch_grad, rtol=0.0, atol=1.6e-3)
+
+
+def test_ssim_backward_matches_torch_garden_blur_distortion(device, tmp_path: Path):
+    image_path = Path(__file__).resolve().parent.parent / "dataset" / "garden" / "images" / "DSC07956.JPG"
+    if not image_path.exists():
+        pytest.skip("garden dataset image unavailable")
+
+    rgb = np.asarray(Image.open(image_path).convert("RGB"), dtype=np.float32) / 255.0
+    height, width = rgb.shape[:2]
+    crop = rgb[height // 2 - 32 : height // 2 + 32, width // 2 - 32 : width // 2 + 32].copy()
+    target = np.ones((crop.shape[0], crop.shape[1], 4), dtype=np.float32)
+    target[..., :3] = crop
+    rendered = target.copy()
+    rendered[..., :3] = _separable_gaussian_blur_np(crop)
+
+    trainer = _make_loss_only_trainer(
+        device,
+        tmp_path,
+        width=target.shape[1],
+        height=target.shape[0],
+        training_hparams=TrainingHyperParams(
+            background_mode=TRAIN_BACKGROUND_MODE_CUSTOM,
+            background=(0.0, 0.0, 0.0),
+            density_regularizer=0.0,
+            depth_ratio_weight=0.0,
+            ssim_weight=1.0,
+        ),
+        image_name="ssim_garden_blur_target.png",
+        image_id=38,
+    )
+
+    _dispatch_manual_loss(trainer, rendered, target)
+    gpu_grad = _read_output_grads(trainer.renderer)[..., :3]
+    torch_grad = _torch_blended_rgb_grad_np(rendered, target, ssim_weight=1.0)
+
+    np.testing.assert_allclose(gpu_grad, torch_grad, rtol=0.0, atol=2e-5)
 
 
 def test_ssim_blurred_gradients_leave_target_side_moments_zero(device, tmp_path: Path):

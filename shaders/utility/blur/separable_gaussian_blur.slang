@@ -71,6 +71,42 @@ void csGaussianBlurVertical(uint3 dispatchThreadID : SV_DispatchThreadID)
 
 [shader("compute")]
 [numthreads(BLUR_TILE_DIM, BLUR_TILE_DIM, 1)]
+void csGaussianBlurHorizontalAdjoint(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint px = dispatchThreadID.x;
+    uint py = dispatchThreadID.y;
+    uint channel = dispatchThreadID.z;
+    if (px >= g_BlurWidth || py >= g_BlurHeight || channel >= g_BlurChannelCount) return;
+
+    float grad = g_BlurInput[((py * g_BlurWidth) + px) * g_BlurChannelCount + channel];
+    [unroll] for (uint tap = 0u; tap < GAUSSIAN_BLUR_TAP_COUNT; ++tap)
+    {
+        int offset = int(tap) - int(GAUSSIAN_BLUR_RADIUS);
+        uint sampleX = uint(clamp(int(px) + offset, 0, int(g_BlurWidth) - 1));
+        InterlockedAdd(g_BlurOutput[((py * g_BlurWidth) + sampleX) * g_BlurChannelCount + channel], grad * GAUSSIAN_BLUR_WEIGHTS[tap]);
+    }
+}
+
+[shader("compute")]
+[numthreads(BLUR_TILE_DIM, BLUR_TILE_DIM, 1)]
+void csGaussianBlurVerticalAdjoint(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint px = dispatchThreadID.x;
+    uint py = dispatchThreadID.y;
+    uint channel = dispatchThreadID.z;
+    if (px >= g_BlurWidth || py >= g_BlurHeight || channel >= g_BlurChannelCount) return;
+
+    float grad = g_BlurInput[((py * g_BlurWidth) + px) * g_BlurChannelCount + channel];
+    [unroll] for (uint tap = 0u; tap < GAUSSIAN_BLUR_TAP_COUNT; ++tap)
+    {
+        int offset = int(tap) - int(GAUSSIAN_BLUR_RADIUS);
+        uint sampleY = uint(clamp(int(py) + offset, 0, int(g_BlurHeight) - 1));
+        InterlockedAdd(g_BlurOutput[((sampleY * g_BlurWidth) + px) * g_BlurChannelCount + channel], grad * GAUSSIAN_BLUR_WEIGHTS[tap]);
+    }
+}
+
+[shader("compute")]
+[numthreads(BLUR_TILE_DIM, BLUR_TILE_DIM, 1)]
 void csGaussianBlurTextureHorizontal(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     uint px = dispatchThreadID.x;

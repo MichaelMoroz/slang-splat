@@ -1036,6 +1036,12 @@ class GaussianTrainer:
             raise RuntimeError("SSIM blur utility is not initialized.")
         self._ssim_blur.blur(encoder, self._buffers[input_name], self._buffers[output_name], self._SSIM_FEATURE_CHANNELS)
 
+    def _dispatch_ssim_blur_adjoint(self, encoder: spy.CommandEncoder, input_name: str, output_name: str) -> None:
+        self._ensure_ssim_buffers()
+        if self._ssim_blur is None:
+            raise RuntimeError("SSIM blur utility is not initialized.")
+        self._ssim_blur.blur_adjoint(encoder, self._buffers[input_name], self._buffers[output_name], self._SSIM_FEATURE_CHANNELS)
+
     def _dispatch_ssim_blurred_gradients(self, encoder: spy.CommandEncoder, target_texture: spy.Texture, step: int | None = None, frame_index: int = 0) -> None:
         self._dispatch(
             "ssim_blurred_grads",
@@ -1076,7 +1082,7 @@ class GaussianTrainer:
 
     def _dispatch_loss_backward(self, encoder: spy.CommandEncoder, target_texture: spy.Texture, step: int | None = None, frame_index: int = 0) -> None:
         self._dispatch_ssim_blurred_gradients(encoder, target_texture, step, frame_index)
-        self._dispatch_ssim_blur(encoder, "ssim_blurred_feature_grads", "ssim_feature_grads")
+        self._dispatch_ssim_blur_adjoint(encoder, "ssim_blurred_feature_grads", "ssim_feature_grads")
         self._dispatch(
             "loss_backward",
             encoder,
