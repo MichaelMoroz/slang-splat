@@ -12,7 +12,7 @@ static const uint TRAIN_TILE_DIM = 16u;
 static const uint LOSS_SLOT_TOTAL = 0u;
 static const uint LOSS_SLOT_MSE = 1u;
 static const uint LOSS_SLOT_DENSITY = 2u;
-static const uint LOSS_SLOT_RGB = 3u;
+static const uint LOSS_SLOT_DISPLAY_MSE = 3u;
 static const float POSITION_RANDOM_STEP_MAX_ANISOTROPY = 4.0;
 static const float DENSIFY_SCALE_SHRINK_EXPONENT = -1.0 / 3.0;
 static const float DENSIFY_MAX_STANDARDIZED_SIGMA = 3.0;
@@ -127,6 +127,7 @@ groupshared float gsLoss[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
 groupshared float gsMSE[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
 groupshared float gsDensityLoss[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
 groupshared float gsRgbLoss[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
+groupshared float gsDisplayMSE[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
 groupshared float gsTargetEdge[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
 
 struct SSIMMoments : IDifferentiable
@@ -575,11 +576,26 @@ uint2 training_target_pixel(uint2 pixel)
     return g_TrainingSubsample.enabled == 0u ? pixel : training_sample_native_pixel(pixel, g_TrainingSubsample);
 }
 
+float4 training_raw_target_rgba(uint2 pixel)
+{
+    return sanitize_float4(g_Target[training_target_pixel(pixel)], g_HugeValue);
+}
+
+float3 training_target_to_linear_rgb(float3 target)
+{
+    return pow(max(target, 0.0), 1.0 / OUTPUT_GAMMA);
+}
+
 float4 training_target_rgba(uint2 pixel)
 {
-    float4 target = sanitize_float4(g_Target[training_target_pixel(pixel)], g_HugeValue);
-    target.xyz = pow(max(target.xyz, 0.0), 1.0 / OUTPUT_GAMMA);
+    float4 target = training_raw_target_rgba(pixel);
+    target.xyz = training_target_to_linear_rgb(target.xyz);
     return target;
+}
+
+float3 training_rendered_to_display_rgb(float3 rendered)
+{
+    return pow(max(rendered, 0.0), OUTPUT_GAMMA);
 }
 
 float training_target_mask(float alpha)
@@ -802,7 +818,7 @@ void csClearLossBuffer(uint3 dispatchThreadID : SV_DispatchThreadID)
         g_LossBuffer[LOSS_SLOT_TOTAL] = 0.0;
         g_LossBuffer[LOSS_SLOT_MSE] = 0.0;
         g_LossBuffer[LOSS_SLOT_DENSITY] = 0.0;
-        g_LossBuffer[LOSS_SLOT_RGB] = 0.0;
+        g_LossBuffer[LOSS_SLOT_DISPLAY_MSE] = 0.0;
         g_TrainingRgbLossTotal[0] = 0.0;
         g_TrainingTargetEdgeTotal[0] = 0.0;
     }
@@ -838,15 +854,18 @@ void csComputeBlendedLossForward(
     float localMSE = 0.0;
     float localDensityLoss = 0.0;
     float localRgbLoss = 0.0;
+    float localDisplayMSE = 0.0;
     float localTargetEdge = 0.0;
     if (px < g_Width && py < g_Height)
     {
         uint2 pixel = uint2(px, py);
         uint pixelIndex = py * g_Width + px;
         float3 rendered = sanitize_float3(g_Rendered[pixel].xyz, g_HugeValue);
-        float4 targetRgba = training_target_rgba(pixel);
+        float4 rawTargetRgba = training_raw_target_rgba(pixel);
+        float4 targetRgba = rawTargetRgba;
+        targetRgba.xyz = training_target_to_linear_rgb(rawTargetRgba.xyz);
         float3 target = targetRgba.xyz;
-        float targetMask = training_target_mask(targetRgba.w);
+        float targetMask = training_target_mask(rawTargetRgba.w);
         float l1Loss = rgb_l1_loss(rendered, target, g_InvPixelCount) * targetMask;
         SSIMMoments blurredMoments = load_ssim_moments(g_SSIMBlurredMoments, pixel);
         float dssimLoss = ssim_dssim_from_blurred_moments(
@@ -858,9 +877,11 @@ void csComputeBlendedLossForward(
         ) * (g_InvPixelCount * targetMask);
         float blendedRgbLoss = lerp(l1Loss, dssimLoss, g_SSIMWeight);
         float mse = rgb_mse_loss(rendered, target, g_InvPixelCount) * targetMask;
+        float displayMSE = rgb_mse_loss(training_rendered_to_display_rgb(rendered), rawTargetRgba.xyz, g_InvPixelCount) * targetMask;
         float depthRatio = sanitize_scalar(g_RenderedDepthStats[pixel].w, g_HugeValue);
         float density = sanitize_scalar(g_RenderedDensity[py * g_Width + px], g_HugeValue);
         localRgbLoss = isfinite(blendedRgbLoss) ? blendedRgbLoss : 0.0;
+        localDisplayMSE = isfinite(displayMSE) ? displayMSE : 0.0;
         localTargetEdge = isfinite(g_RefinementTargetEdgeWeight) && g_RefinementTargetEdgeWeight > 0.0 ? max(training_target_edge_intensity(pixel), 0.0) * targetMask : 0.0;
         localLoss = localRgbLoss;
         localMSE = isfinite(mse) ? mse : 0.0;
@@ -883,6 +904,7 @@ void csComputeBlendedLossForward(
     gsMSE[localIndex] = localMSE;
     gsDensityLoss[localIndex] = localDensityLoss;
     gsRgbLoss[localIndex] = localRgbLoss;
+    gsDisplayMSE[localIndex] = localDisplayMSE;
     gsTargetEdge[localIndex] = localTargetEdge;
     GroupMemoryBarrierWithGroupSync();
     [unroll] for (uint stride = (TRAIN_TILE_DIM * TRAIN_TILE_DIM) >> 1; stride > 0; stride >>= 1)
@@ -891,6 +913,7 @@ void csComputeBlendedLossForward(
         if (localIndex < stride) gsMSE[localIndex] += gsMSE[localIndex + stride];
         if (localIndex < stride) gsDensityLoss[localIndex] += gsDensityLoss[localIndex + stride];
         if (localIndex < stride) gsRgbLoss[localIndex] += gsRgbLoss[localIndex + stride];
+        if (localIndex < stride) gsDisplayMSE[localIndex] += gsDisplayMSE[localIndex + stride];
         if (localIndex < stride) gsTargetEdge[localIndex] += gsTargetEdge[localIndex + stride];
         GroupMemoryBarrierWithGroupSync();
     }
@@ -900,9 +923,9 @@ void csComputeBlendedLossForward(
         if (isfinite(gsMSE[0])) InterlockedAdd(g_LossBuffer[LOSS_SLOT_MSE], gsMSE[0]);
         if (isfinite(gsRgbLoss[0]))
         {
-            InterlockedAdd(g_LossBuffer[LOSS_SLOT_RGB], gsRgbLoss[0]);
             InterlockedAdd(g_TrainingRgbLossTotal[0], gsRgbLoss[0]);
         }
+        if (isfinite(gsDisplayMSE[0])) InterlockedAdd(g_LossBuffer[LOSS_SLOT_DISPLAY_MSE], gsDisplayMSE[0]);
         if (isfinite(gsTargetEdge[0])) InterlockedAdd(g_TrainingTargetEdgeTotal[0], gsTargetEdge[0]);
         if (isfinite(gsDensityLoss[0]))
         {
@@ -987,7 +1010,7 @@ void csComputeBlendedLossBackward(uint3 dispatchThreadID : SV_DispatchThreadID)
 void csCacheTrainingStepInfo(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     if (dispatchThreadID.x != 0u || dispatchThreadID.y != 0u || dispatchThreadID.z != 0u) return;
-    g_BatchStepInfo[g_BatchStepIndex] = float4(g_LossBuffer[LOSS_SLOT_TOTAL], g_LossBuffer[LOSS_SLOT_MSE], g_LossBuffer[LOSS_SLOT_DENSITY], 0.0);
+    g_BatchStepInfo[g_BatchStepIndex] = float4(g_LossBuffer[LOSS_SLOT_TOTAL], g_LossBuffer[LOSS_SLOT_MSE], g_LossBuffer[LOSS_SLOT_DENSITY], g_LossBuffer[LOSS_SLOT_DISPLAY_MSE]);
 }
 
 [shader("compute")]

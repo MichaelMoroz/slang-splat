@@ -292,6 +292,7 @@ class GaussianTrainer:
     _LOSS_SLOT_TOTAL = 0
     _LOSS_SLOT_MSE = 1
     _LOSS_SLOT_DENSITY = 2
+    _BATCH_STEP_INFO_DISPLAY_MSE = 3
     _BATCH_STEP_INFO_STRIDE = 4
     _U32_BYTES = 4
     _FLOAT4_BYTES = 16
@@ -1287,13 +1288,14 @@ class GaussianTrainer:
         for batch_index, frame_index in enumerate(frame_indices):
             loss = float(step_metrics[batch_index, self._LOSS_SLOT_TOTAL])
             image_mse = float(step_metrics[batch_index, self._LOSS_SLOT_MSE])
+            image_display_mse = float(step_metrics[batch_index, self._BATCH_STEP_INFO_DISPLAY_MSE])
             had_nonfinite = had_nonfinite or not np.isfinite(loss)
             self.state.step += 1
             self.state.last_base_lr = self.current_base_lr(self.state.step)
             self.state.last_frame_index = frame_index
             self.state.last_loss = loss
             self.state.last_mse = image_mse
-            self.state.last_psnr = float(psnr_from_mse(image_mse))
+            self.state.last_psnr = float(psnr_from_mse(image_display_mse))
             self._frame_metrics.update(frame_index, self.state.last_loss, self.state.last_mse, self.state.last_psnr)
         if had_nonfinite:
             self.state.last_instability = "Non-finite loss after batched ADAM; moments reset."
