@@ -596,19 +596,19 @@ RasterPixelInfo resolve_raster_pixel(uint3 groupID, uint lane)
     info.hasTileRange = false;
     info.start = 0u;
     info.end = 0u;
-    info.samplePoint = float2(info.pixelCoord) + 0.5;
+    info.samplePoint = float2(info.pixelCoord);
 
     if (g_TrainingSubsample.enabled != 0u)
     {
         PinholeCamera camera = PinholeCamera.from_params(g_TrainingNativeCamera);
         uint2 samplePixel = training_sample_native_pixel(info.pixelCoord, g_TrainingSubsample);
-        info.rayDir = camera.screen_to_world_ray(float2(samplePixel) + 0.5);
+        info.rayDir = camera.screen_to_world_ray(float2(samplePixel));
     } else
     {
         PinholeCamera camera = PinholeCamera.from_params(g_Camera);
         uint samplePx = min(info.pixelCoord.x, g_Raster.width - 1u);
         uint samplePy = min(info.pixelCoord.y, g_Raster.height - 1u);
-        info.rayDir = camera.screen_to_world_ray(float2(samplePx, samplePy) + 0.5);
+        info.rayDir = camera.screen_to_world_ray(float2(samplePx, samplePy));
     }
 
     info.tileId = tileY * g_Prepass.tileWidth + tileX;
