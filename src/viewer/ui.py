@@ -396,7 +396,7 @@ _TRAIN_SETUP_SPECS = (
     ControlSpec("use_target_alpha_mask", "checkbox", "Use Target Alpha Mask", {"value": False}),
     ControlSpec("train_background_color", "color_edit3", "Train BG Color", {"value": (1.0, 1.0, 1.0)}),
     ControlSpec("refinement_interval", "input_int", "Refinement Interval", {"value": 200, "step": 10, "step_fast": 50}),
-    ControlSpec("refinement_growth_ratio", "input_float", "Refinement Growth", {"value": 0.05, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
+    ControlSpec("refinement_growth_ratio", "input_float", "Refinement Growth", {"value": 0.035, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
     ControlSpec("refinement_growth_start_step", "slider_int", "Start Refinement After", {"value": 500, "min": 0, "max": 30000, "max_from": "lr_schedule_steps"}),
     ControlSpec("refinement_alpha_cull_threshold", "input_float", "Refinement Alpha Cull", {"value": 1e-2, "step": 1e-5, "step_fast": 1e-4, "format": "%.6e"}),
     ControlSpec("refinement_min_contribution_percent", "input_float", "Refinement Min Contribution", {"value": 1e-05, "step": 1e-6, "step_fast": 1e-5, "format": "%.6g%%"}),
@@ -416,7 +416,7 @@ _TRAIN_SETUP_SPECS = (
 
 _TRAIN_OPTIMIZER_SPECS = (
     ControlSpec("lr_schedule_enabled", "checkbox", "Use LR Schedule", {"value": True}),
-    ControlSpec("lr_scale_mul", "input_float", "LR Mul Scale", {"value": 20.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
+    ControlSpec("lr_scale_mul", "input_float", "LR Mul Scale", {"value": 10.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
     ControlSpec("lr_rot_mul", "input_float", "LR Mul Rotation", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
     ControlSpec("lr_color_mul", "input_float", "LR Mul SH0/DC", {"value": 5.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
     ControlSpec("lr_opacity_mul", "input_float", "LR Mul Opacity", {"value": 5.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
@@ -430,7 +430,7 @@ _TRAIN_OPTIMIZER_SPECS = (
     ControlSpec("color_non_negative_reg", "input_float", "Color >= 0 Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
     ControlSpec("depth_ratio_grad_min", "input_float", "Depth Ratio Grad Min", {"value": 0.0, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
     ControlSpec("depth_ratio_grad_max", "input_float", "Depth Ratio Grad Max", {"value": 0.1, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
-    ControlSpec("ssim_weight", "input_float", "DSSIM Weight", {"value": 0.2, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
+    ControlSpec("ssim_weight", "input_float", "DSSIM Weight", {"value": 0.4, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
     ControlSpec("ssim_c1", "input_float", "SSIM C1", {"value": 1e-4, "step": 1e-5, "step_fast": 1e-4, "format": "%.6e"}),
     ControlSpec("ssim_c2", "input_float", "SSIM C2", {"value": 9e-4, "step": 1e-5, "step_fast": 1e-4, "format": "%.6e"}),
     ControlSpec("max_allowed_density", "input_float", "Max Density", {"value": 12.0, "step": 1e-3, "step_fast": 1e-2, "format": "%.8f"}),
@@ -492,19 +492,19 @@ _SCHEDULE_STAGE_GROUPS = {
 
 _SCHEDULE_STAGE_OVERRIDES = {
     "Stage 0": {
-        "lr": {"kwargs": {"value": 0.005, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}},
-        "lr_pos_mul": {"kwargs": {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}},
+        "lr": {"kwargs": {"value": 0.002, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}},
+        "lr_pos_mul": {"kwargs": {"value": 0.5, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}},
         "lr_sh_mul": {"kwargs": {"value": 0.05, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}},
-        "depth_ratio_weight": {"kwargs": {"value": 1.0, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}},
+        "depth_ratio_weight": {"kwargs": {"value": 0.1, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}},
         "noise_lr": {"kwargs": {"value": 5e5, "step": 100.0, "step_fast": 1000.0, "format": "%.4g"}},
         "sh_band": {"kwargs": {"value": 0, "options": _SH_BAND_LABELS}},
     },
     "Stage 1": {
         "end_step": {"kwargs": {"value": 3000, "min": 0, "max": 30000, "max_from": "lr_schedule_steps"}},
         "lr": {"kwargs": {"value": 0.002, "step": 1e-6, "step_fast": 1e-5, "format": "%.8f"}},
-        "lr_pos_mul": {"kwargs": {"value": 0.75, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}},
+        "lr_pos_mul": {"kwargs": {"value": 0.3, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}},
         "lr_sh_mul": {"kwargs": {"value": 0.05, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}},
-        "depth_ratio_weight": {"kwargs": {"value": 0.05, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}},
+        "depth_ratio_weight": {"kwargs": {"value": 0.03, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}},
         "noise_lr": {"kwargs": {"value": 466666.6666666667, "step": 100.0, "step_fast": 1000.0, "format": "%.4g"}},
         "sh_band": {"kwargs": {"value": 1, "options": _SH_BAND_LABELS}},
     },
@@ -515,7 +515,7 @@ _SCHEDULE_STAGE_OVERRIDES = {
         "lr_sh_mul": {"kwargs": {"value": 0.05, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}},
         "depth_ratio_weight": {"kwargs": {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}},
         "noise_lr": {"kwargs": {"value": 416666.6666666667, "step": 100.0, "step_fast": 1000.0, "format": "%.4g"}},
-        "sh_band": {"kwargs": {"value": 1, "options": _SH_BAND_LABELS}},
+        "sh_band": {"kwargs": {"value": 2, "options": _SH_BAND_LABELS}},
     },
     "Stage 3": {
         "end_step": {
@@ -528,7 +528,7 @@ _SCHEDULE_STAGE_OVERRIDES = {
         "lr_sh_mul": {"kwargs": {"value": 0.05, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}},
         "depth_ratio_weight": {"kwargs": {"value": 0.001, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}},
         "noise_lr": {"kwargs": {"value": 0.0, "step": 100.0, "step_fast": 1000.0, "format": "%.4g"}},
-        "sh_band": {"kwargs": {"value": 1, "options": _SH_BAND_LABELS}},
+        "sh_band": {"kwargs": {"value": 3, "options": _SH_BAND_LABELS}},
     },
 }
 

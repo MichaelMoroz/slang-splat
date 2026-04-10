@@ -168,8 +168,8 @@ def build_training_params(
     sh1_reg_weight: float = 0.01,
     density_regularizer: float = 0.02,
     color_non_negative_reg: float = 0.01,
-    depth_ratio_weight: float = 1.0,
-    ssim_weight: float = 0.2,
+    depth_ratio_weight: float = 0.1,
+    ssim_weight: float = 0.4,
     ssim_c1: float = 1e-4,
     ssim_c2: float = 9e-4,
     refinement_loss_weight: float = 0.25,
@@ -178,7 +178,7 @@ def build_training_params(
     depth_ratio_grad_max: float = 0.1,
     max_allowed_density_start: float = 5.0,
     max_allowed_density: float = 12.0,
-    lr_pos_stage1_mul: float = 0.75,
+    lr_pos_stage1_mul: float = 0.3,
     lr_pos_stage2_mul: float = 0.2,
     lr_pos_stage3_mul: float = 0.2,
     lr_sh_mul: float = 0.05,
@@ -202,13 +202,13 @@ def build_training_params(
     lr_schedule_stage1_step: int = 3000,
     lr_schedule_stage2_step: int = 14_000,
     refinement_interval: int = 200,
-    refinement_growth_ratio: float = 0.05,
+    refinement_growth_ratio: float = 0.035,
     refinement_growth_start_step: int = 500,
     refinement_alpha_cull_threshold: float = 1e-2,
     refinement_min_contribution_percent: float = DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT,
     refinement_min_contribution_decay: float = DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY,
     refinement_opacity_mul: float = 1.0,
-    depth_ratio_stage1_weight: float = 0.05,
+    depth_ratio_stage1_weight: float = 0.03,
     depth_ratio_stage2_weight: float = 0.01,
     depth_ratio_stage3_weight: float = 0.001,
     position_random_step_noise_stage1_lr: float = 466666.6666666667,
@@ -230,8 +230,8 @@ def build_training_params(
 ) -> AppTrainingParams:
     resolved_sh_band = clamp_int(3 if sh_band is None and bool(use_sh) else (0 if sh_band is None else sh_band), 0, 3)
     resolved_sh_band_stage1 = clamp_int(1 if sh_band_stage1 is None and bool(use_sh_stage1) else (0 if sh_band_stage1 is None else sh_band_stage1), 0, 3)
-    resolved_sh_band_stage2 = clamp_int(1 if sh_band_stage2 is None and bool(use_sh_stage2) else (0 if sh_band_stage2 is None else sh_band_stage2), 0, 3)
-    resolved_sh_band_stage3 = clamp_int(1 if sh_band_stage3 is None and bool(use_sh_stage3) else (0 if sh_band_stage3 is None else sh_band_stage3), 0, 3)
+    resolved_sh_band_stage2 = clamp_int(2 if sh_band_stage2 is None and bool(use_sh_stage2) else (0 if sh_band_stage2 is None else sh_band_stage2), 0, 3)
+    resolved_sh_band_stage3 = clamp_int(3 if sh_band_stage3 is None and bool(use_sh_stage3) else (0 if sh_band_stage3 is None else sh_band_stage3), 0, 3)
     base_lr = clamp_float(base_lr, 1e-8, 1.0)
     adam = AdamHyperParams(
         **{
@@ -306,7 +306,7 @@ def build_training_params(
         position_random_step_opacity_gate_center=clamp_float(position_random_step_opacity_gate_center, 0.0, 1.0),
         position_random_step_opacity_gate_sharpness=clamp_float(position_random_step_opacity_gate_sharpness, 0.0, 1e6),
         lr_schedule_enabled=bool(lr_schedule_enabled),
-        lr_schedule_start_lr=base_lr if lr_schedule_start_lr is None else clamp_float(lr_schedule_start_lr, 1e-8, 1.0),
+        lr_schedule_start_lr=0.002 if lr_schedule_start_lr is None else clamp_float(lr_schedule_start_lr, 1e-8, 1.0),
         lr_schedule_stage1_lr=clamp_float(lr_schedule_stage1_lr, 1e-8, 1.0),
         lr_schedule_stage2_lr=clamp_float(lr_schedule_stage2_lr, 1e-8, 1.0),
         lr_schedule_end_lr=1.5e-4 if lr_schedule_end_lr is None else clamp_float(lr_schedule_end_lr, 1e-8, 1.0),

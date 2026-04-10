@@ -181,8 +181,8 @@ def test_default_training_params_include_background_mode_and_density() -> None:
     assert params.training.use_sh is False
     assert params.training.sh_band == 0
     assert params.training.density_regularizer == 0.02
-    assert params.training.depth_ratio_weight == 1.0
-    assert params.training.ssim_weight == 0.2
+    assert params.training.depth_ratio_weight == 0.1
+    assert params.training.ssim_weight == 0.4
     assert params.training.ssim_c1 == 1e-4
     assert params.training.ssim_c2 == 9e-4
     assert params.training.refinement_loss_weight == 0.25
@@ -208,16 +208,16 @@ def test_default_training_params_include_background_mode_and_density() -> None:
     assert params.training.lr_sh_stage1_mul == 0.05
     assert params.training.lr_sh_stage2_mul == 0.05
     assert params.training.lr_sh_stage3_mul == 0.05
-    assert params.training.depth_ratio_stage1_weight == 0.05
+    assert params.training.depth_ratio_stage1_weight == 0.03
     assert params.training.depth_ratio_stage2_weight == 0.01
     assert params.training.depth_ratio_stage3_weight == 0.001
     assert params.training.use_sh_stage1 is True
     assert params.training.use_sh_stage2 is True
     assert params.training.use_sh_stage3 is True
     assert params.training.sh_band_stage1 == 1
-    assert params.training.sh_band_stage2 == 1
-    assert params.training.sh_band_stage3 == 1
-    assert params.training.refinement_growth_ratio == 0.05
+    assert params.training.sh_band_stage2 == 2
+    assert params.training.sh_band_stage3 == 3
+    assert params.training.refinement_growth_ratio == 0.035
     assert params.training.refinement_growth_start_step == 500
     assert params.training.refinement_alpha_cull_threshold == 1e-2
     assert params.training.refinement_min_contribution_percent == 1e-05

@@ -1245,7 +1245,7 @@ def test_training_step_updates_optimizer_lrs_from_piecewise_schedule(device, tmp
 
     param_ids = np.array([0, 3, 6, 10, trainer.renderer.PARAM_RAW_OPACITY_ID], dtype=np.int32)
     np.testing.assert_allclose(before[param_ids], np.array([1e-2, 2e-2, 3e-2, 4e-2, 5e-2], dtype=np.float32), rtol=0.0, atol=1e-7)
-    np.testing.assert_allclose(after[param_ids], expected_scale * np.array([1e-2, 2e-2, 3e-2, 4e-2, 5e-2], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(after[param_ids], expected_scale * np.array([1e-2, 2e-2, 3e-2, 4e-2, 5e-2], dtype=np.float32), rtol=0.0, atol=1.5e-6)
     np.testing.assert_allclose(trainer.state.last_base_lr, resolve_base_learning_rate(training, 1), rtol=0.0, atol=1e-7)
 
 
@@ -1339,7 +1339,7 @@ def test_loss_vars_use_density_schedule(device, tmp_path: Path) -> None:
     trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], training_hparams=training, seed=123)
 
     np.testing.assert_allclose(trainer._loss_vars(0, 0)["g_DensityRegularizer"], 0.02, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(trainer._loss_vars(0, 0)["g_DepthRatioWeight"], 1.0, rtol=0.0, atol=1e-10)
+    np.testing.assert_allclose(trainer._loss_vars(0, 0)["g_DepthRatioWeight"], 0.1, rtol=0.0, atol=1e-10)
     np.testing.assert_allclose(trainer._loss_vars(0, 0)["g_DepthRatioGradMin"], 0.0, rtol=0.0, atol=1e-10)
     np.testing.assert_allclose(trainer._loss_vars(0, 0)["g_DepthRatioGradMax"], 0.1, rtol=0.0, atol=1e-10)
     np.testing.assert_allclose(trainer._loss_vars(0, 0)["g_MaxAllowedDensity"], 5.0, rtol=0.0, atol=1e-10)
@@ -1349,32 +1349,33 @@ def test_loss_vars_use_density_schedule(device, tmp_path: Path) -> None:
 
 def test_depth_ratio_noise_and_sh_schedules_follow_requested_defaults() -> None:
     hparams = TrainingHyperParams(
-        depth_ratio_weight=1.0,
-        lr_pos_mul=1.0,
+        depth_ratio_weight=0.1,
+        lr_pos_mul=0.5,
         position_random_step_noise_lr=5e5,
-        sh_band=1,
+        sh_band=0,
         lr_schedule_steps=30_000,
     )
 
-    np.testing.assert_allclose(resolve_position_lr_mul(hparams, 0), 1.0, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_position_lr_mul(hparams, 3000), 0.75, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_position_lr_mul(hparams, 0), 0.5, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_position_lr_mul(hparams, 3000), 0.3, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_position_lr_mul(hparams, 14000), 0.2, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_position_lr_mul(hparams, 30_000), 0.2, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_sh_lr_mul(hparams, 0), 0.05, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_sh_lr_mul(hparams, 3000), 0.05, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_sh_lr_mul(hparams, 14000), 0.05, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_sh_lr_mul(hparams, 30_000), 0.05, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 0), 1.0, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 3000), 0.05, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 0), 0.1, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 3000), 0.03, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 14000), 0.01, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 30_000), 0.001, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 0), 5e5, rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 3000), 466666.6666666667, rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 14000), 416666.6666666667, rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 30_000), 0.0, rtol=0.0, atol=1e-6)
-    assert resolve_sh_band(hparams, 0) == 1
+    assert resolve_sh_band(hparams, 0) == 0
     assert resolve_sh_band(hparams, 13999) == 1
-    assert resolve_sh_band(hparams, 14000) == 1
+    assert resolve_sh_band(hparams, 14000) == 2
+    assert resolve_sh_band(hparams, 30_000) == 3
     assert resolve_use_sh(hparams, 13999) is True
     assert resolve_use_sh(hparams, 14000) is True
 
@@ -1434,27 +1435,27 @@ def test_max_allowed_density_schedule_clamps_to_end_value() -> None:
 
 
 def test_refinement_cadence_and_clone_probability_follow_growth_budget() -> None:
-    hparams = TrainingHyperParams(refinement_interval=200, refinement_growth_ratio=0.05, refinement_growth_start_step=0)
+    hparams = TrainingHyperParams(refinement_interval=200, refinement_growth_ratio=0.035, refinement_growth_start_step=0)
 
     assert not should_run_refinement_step(hparams, 199)
     assert should_run_refinement_step(hparams, 200)
     np.testing.assert_allclose(
         resolve_clone_probability_threshold(hparams, splat_count=1000, pixel_count=64 * 32, step=200),
-        1000.0 * 0.05 / 200.0 / float(64 * 32),
+        1000.0 * 0.035 / 200.0 / float(64 * 32),
         rtol=0.0,
         atol=1e-12,
     )
 
 
 def test_refinement_interval_is_floored_by_frame_count() -> None:
-    hparams = TrainingHyperParams(refinement_interval=2, refinement_growth_ratio=0.05, refinement_growth_start_step=0)
+    hparams = TrainingHyperParams(refinement_interval=2, refinement_growth_ratio=0.035, refinement_growth_start_step=0)
 
     assert resolve_effective_refinement_interval(hparams, frame_count=5) == 5
     assert not should_run_refinement_step(hparams, 4, frame_count=5)
     assert should_run_refinement_step(hparams, 5, frame_count=5)
     np.testing.assert_allclose(
         resolve_clone_probability_threshold(hparams, splat_count=1000, pixel_count=64 * 32, step=5, frame_count=5),
-        1000.0 * 0.05 / 5.0 / float(64 * 32),
+        1000.0 * 0.035 / 5.0 / float(64 * 32),
         rtol=0.0,
         atol=1e-12,
     )

@@ -80,7 +80,7 @@ def test_build_training_params_clamps_ranges():
     assert params.training.refinement_target_edge_weight == 0.0
     assert params.training.density_regularizer == 0.02
     assert params.training.color_non_negative_reg == 0.01
-    assert params.training.depth_ratio_weight == 1.0
+    assert params.training.depth_ratio_weight == 0.1
     assert params.training.ssim_c1 == 1e-4
     assert params.training.ssim_c2 == 9e-4
     assert params.training.depth_ratio_grad_min == 0.2
@@ -88,7 +88,7 @@ def test_build_training_params_clamps_ranges():
     assert params.training.max_allowed_density_start == 5.0
     assert params.training.max_allowed_density == 12.0
     assert params.training.lr_pos_mul == 20.0
-    assert params.training.lr_pos_stage1_mul == 0.75
+    assert params.training.lr_pos_stage1_mul == 0.3
     assert params.training.lr_pos_stage2_mul == 0.2
     assert params.training.lr_pos_stage3_mul == 0.2
     assert params.training.lr_sh_mul == 0.05
@@ -106,15 +106,15 @@ def test_build_training_params_clamps_ranges():
     assert params.training.lr_schedule_end_lr == 1.5e-4
     assert params.training.lr_schedule_stage1_step == 3000
     assert params.training.lr_schedule_stage2_step == 14000
-    assert params.training.depth_ratio_stage1_weight == 0.05
+    assert params.training.depth_ratio_stage1_weight == 0.03
     assert params.training.depth_ratio_stage2_weight == 0.01
     assert params.training.depth_ratio_stage3_weight == 0.001
     assert params.training.use_sh_stage1 is True
     assert params.training.use_sh_stage2 is True
     assert params.training.use_sh_stage3 is True
     assert params.training.sh_band_stage1 == 1
-    assert params.training.sh_band_stage2 == 1
-    assert params.training.sh_band_stage3 == 1
+    assert params.training.sh_band_stage2 == 2
+    assert params.training.sh_band_stage3 == 3
     assert params.training.refinement_min_contribution_percent == 1e-05
     assert params.training.refinement_min_contribution_decay == 0.995
     assert params.training.refinement_opacity_mul == 1.0
@@ -137,16 +137,16 @@ def test_default_training_params_match_fixed_count_defaults():
     assert params.training.refinement_target_edge_weight == 0.75
     assert params.training.density_regularizer == 0.02
     assert params.training.color_non_negative_reg == 0.01
-    assert params.training.depth_ratio_weight == 1.0
-    assert params.training.ssim_weight == 0.2
+    assert params.training.depth_ratio_weight == 0.1
+    assert params.training.ssim_weight == 0.4
     assert params.training.ssim_c1 == 1e-4
     assert params.training.ssim_c2 == 9e-4
     assert params.training.depth_ratio_grad_min == 0.0
     assert params.training.depth_ratio_grad_max == 0.1
     assert params.training.max_allowed_density_start == 5.0
     assert params.training.max_allowed_density == 12.0
-    assert params.training.lr_pos_mul == 1.0
-    assert params.training.lr_pos_stage1_mul == 0.75
+    assert params.training.lr_pos_mul == 0.5
+    assert params.training.lr_pos_stage1_mul == 0.3
     assert params.training.lr_pos_stage2_mul == 0.2
     assert params.training.lr_pos_stage3_mul == 0.2
     assert params.training.lr_sh_mul == 0.05
@@ -164,16 +164,16 @@ def test_default_training_params_match_fixed_count_defaults():
     assert params.training.lr_schedule_end_lr == 1.5e-4
     assert params.training.lr_schedule_stage1_step == 3000
     assert params.training.lr_schedule_stage2_step == 14000
-    assert params.training.depth_ratio_stage1_weight == 0.05
+    assert params.training.depth_ratio_stage1_weight == 0.03
     assert params.training.depth_ratio_stage2_weight == 0.01
     assert params.training.depth_ratio_stage3_weight == 0.001
     assert params.training.use_sh_stage1 is True
     assert params.training.use_sh_stage2 is True
     assert params.training.use_sh_stage3 is True
     assert params.training.sh_band_stage1 == 1
-    assert params.training.sh_band_stage2 == 1
-    assert params.training.sh_band_stage3 == 1
-    assert params.training.refinement_growth_ratio == 0.05
+    assert params.training.sh_band_stage2 == 2
+    assert params.training.sh_band_stage3 == 3
+    assert params.training.refinement_growth_ratio == 0.035
     assert params.training.refinement_growth_start_step == 500
     assert params.training.refinement_alpha_cull_threshold == 1e-2
     assert params.training.refinement_min_contribution_percent == 1e-05
@@ -188,7 +188,7 @@ def test_auto_profile_resolves_to_legacy_defaults():
     assert profile.name == "legacy"
     assert params.training.scale_abs_reg_weight == 0.01
     assert params.training.sh1_reg_weight == 0.01
-    assert params.training.depth_ratio_weight == 1.0
+    assert params.training.depth_ratio_weight == 0.1
     assert params.training.refinement_loss_weight == 0.25
     assert params.training.refinement_target_edge_weight == 0.75
     assert params.training.depth_ratio_grad_min == 0.0
@@ -221,7 +221,7 @@ def test_viewer_effective_training_setup_keeps_requested_init_opacity():
     assert profile.name == "legacy"
     assert params.training.scale_abs_reg_weight == 0.01
     assert params.training.sh1_reg_weight == 0.01
-    assert params.training.depth_ratio_weight == 1.0
+    assert params.training.depth_ratio_weight == 0.1
     assert params.training.refinement_loss_weight == 0.25
     assert params.training.refinement_target_edge_weight == 0.75
     assert params.training.depth_ratio_grad_min == 0.0
@@ -255,7 +255,7 @@ def test_viewer_defaults_expose_only_fixed_count_training_controls():
     assert "sh1_reg" in defaults
     assert "opacity_reg" in defaults
     assert defaults["color_non_negative_reg"] == 0.01
-    assert defaults["ssim_weight"] == 0.2
+    assert defaults["ssim_weight"] == 0.4
     assert defaults["ssim_c1"] == 1e-4
     assert defaults["ssim_c2"] == 9e-4
     assert "lambda_dssim" not in defaults
