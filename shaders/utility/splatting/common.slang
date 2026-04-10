@@ -168,7 +168,7 @@ float3 evaluate_sh3_color(
     float3 viewDir
 )
 {
-    return saturate(evaluate_sh_band_raw(sh0, sh1X, sh1Y, sh1Z, sh2_0, sh2_1, sh2_2, sh2_3, sh2_4, sh3_0, sh3_1, sh3_2, sh3_3, sh3_4, sh3_5, sh3_6, 3u, viewDir));
+    return evaluate_sh_band_raw(sh0, sh1X, sh1Y, sh1Z, sh2_0, sh2_1, sh2_2, sh2_3, sh2_4, sh3_0, sh3_1, sh3_2, sh3_3, sh3_4, sh3_5, sh3_6, 3u, viewDir);
 }
 
 [Differentiable]
@@ -194,7 +194,7 @@ float3 evaluate_gaussian_color(
     no_diff uint shBand
 )
 {
-    return saturate(evaluate_sh_band_raw(sh0, sh1X, sh1Y, sh1Z, sh2_0, sh2_1, sh2_2, sh2_3, sh2_4, sh3_0, sh3_1, sh3_2, sh3_3, sh3_4, sh3_5, sh3_6, shBand, position - cameraPosition));
+    return evaluate_sh_band_raw(sh0, sh1X, sh1Y, sh1Z, sh2_0, sh2_1, sh2_2, sh2_3, sh2_4, sh3_0, sh3_1, sh3_2, sh3_3, sh3_4, sh3_5, sh3_6, shBand, position - cameraPosition);
 }
 
 struct ScanlineWorkItem

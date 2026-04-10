@@ -14,7 +14,7 @@ from reference_impls.reference_cpu import (
 from src.app.shared import RendererParams, renderer_kwargs
 from src.utility import SHADER_ROOT
 from src.renderer import Camera, GaussianRenderer
-from src.scene import GaussianScene, SUPPORTED_SH_COEFF_COUNT
+from src.scene import GaussianScene, SH_C0, SUPPORTED_SH_COEFF_COUNT
 from src.training import contribution_fixed_count_from_percent
 
 _GAUSSIAN_SUPPORT_SIGMA_RADIUS = 3.0
@@ -456,6 +456,29 @@ def test_prepass_populates_raster_cache(device):
     np.testing.assert_allclose(raster_cache[:, :3], expected_ro, rtol=2e-4, atol=2e-4)
     np.testing.assert_allclose(raster_cache[:, 3:6], expected_scale, rtol=3e-4, atol=3e-4)
     np.testing.assert_allclose(raster_cache[:, 6:10], expected_quat, rtol=3e-4, atol=3e-4)
+
+
+def test_projected_color_prepass_keeps_out_of_range_values(device):
+    sh_coeffs = np.zeros((1, 1, 3), dtype=np.float32)
+    sh_coeffs[0, 0, :] = (np.array([1.35, -0.2, 0.6], dtype=np.float32) - 0.5) / np.float32(SH_C0)
+    scene = GaussianScene(
+        positions=np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
+        scales=_log_sigma(np.full((1, 3), 0.04, dtype=np.float32)),
+        rotations=np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+        opacities=np.array([0.75], dtype=np.float32),
+        colors=np.array([[0.5, 0.5, 0.5]], dtype=np.float32),
+        sh_coeffs=sh_coeffs,
+    )
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, list_capacity_multiplier=32)
+
+    render_debug = renderer.debug_pipeline_data(scene, camera)
+    render_cache = np.asarray(render_debug["raster_cache"], dtype=np.float32)
+
+    renderer.set_scene(scene)
+    np.testing.assert_allclose(render_cache[0, 10:13], np.array([1.35, -0.2, 0.6], dtype=np.float32), rtol=0.0, atol=1e-5)
+    renderer.execute_prepass_for_current_scene(camera, sync_counts=True)
+    np.testing.assert_allclose(renderer.read_raster_cache(scene.count)[0, 10:13], np.array([1.35, -0.2, 0.6], dtype=np.float32), rtol=0.0, atol=1e-5)
 
 
 def test_projection_render_smoke(device):
