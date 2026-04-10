@@ -1243,6 +1243,42 @@ def test_training_targets_use_srgb_textures(device, tmp_path: Path):
     assert native_target is not train_target
 
 
+def test_training_raster_output_stays_linear_while_display_render_uses_gamma(device, tmp_path: Path):
+    scene = _make_scene(count=1, seed=124)
+    scene.opacities[:] = 0.0
+    frame = _make_frame(tmp_path, image_name="linear_training_output_target.png", image_id=39)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(
+            background_mode=TRAIN_BACKGROUND_MODE_CUSTOM,
+            background=(0.25, 0.5, 0.75),
+            density_regularizer=0.0,
+            depth_ratio_weight=0.0,
+        ),
+        seed=123,
+    )
+    camera = frame.make_camera(near=0.1, far=20.0)
+    background = np.array([0.25, 0.5, 0.75], dtype=np.float32)
+
+    renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
+    enc = device.create_command_encoder()
+    trainer._dispatch_raster_training_forward(enc, camera, background)
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+
+    training_output = np.asarray(renderer.output_texture.to_numpy(), dtype=np.float32)
+    expected_training = np.broadcast_to(np.array([0.25, 0.5, 0.75, 1.0], dtype=np.float32), training_output.shape)
+    np.testing.assert_allclose(training_output, expected_training, rtol=0.0, atol=1e-6)
+
+    display_output = np.asarray(renderer.render(scene, camera, background=background).image, dtype=np.float32)
+    expected_display = np.broadcast_to(np.array([0.25**2.2, 0.5**2.2, 0.75**2.2, 1.0], dtype=np.float32), display_output.shape)
+    np.testing.assert_allclose(display_output, expected_display, rtol=0.0, atol=1e-6)
+
+
 def test_resolve_training_resolution_uses_ceil_division() -> None:
     assert resolve_training_resolution(64, 32, 1) == (64, 32)
     assert resolve_training_resolution(63, 65, 2) == (32, 33)

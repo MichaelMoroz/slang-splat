@@ -577,7 +577,9 @@ uint2 training_target_pixel(uint2 pixel)
 
 float4 training_target_rgba(uint2 pixel)
 {
-    return sanitize_float4(g_Target[training_target_pixel(pixel)], g_HugeValue);
+    float4 target = sanitize_float4(g_Target[training_target_pixel(pixel)], g_HugeValue);
+    target.xyz = pow(max(target.xyz, 0.0), 1.0 / OUTPUT_GAMMA);
+    return target;
 }
 
 float training_target_mask(float alpha)
