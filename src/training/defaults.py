@@ -7,7 +7,6 @@ DEPTH_RATIO_GRAD_MIN_BAND_WIDTH = 1e-4
 DEFAULT_DEPTH_RATIO_GRAD_MIN = 0.0
 DEFAULT_DEPTH_RATIO_GRAD_MAX = 0.1
 DEFAULT_SSIM_WEIGHT = 0.4
-DEFAULT_SSIM_C1 = 1e-4
 DEFAULT_SSIM_C2 = 9e-4
 DEFAULT_LR_SCHEDULE_STEPS = 30_000
 DEFAULT_LR_STAGE1_STEP = 3000
@@ -40,7 +39,6 @@ TRAINING_BUILD_ARG_DEFAULTS: dict[str, object] = {
     "color_non_negative_reg": 0.01,
     "depth_ratio_weight": 0.1,
     "ssim_weight": DEFAULT_SSIM_WEIGHT,
-    "ssim_c1": DEFAULT_SSIM_C1,
     "ssim_c2": DEFAULT_SSIM_C2,
     "refinement_loss_weight": 0.25,
     "refinement_target_edge_weight": 0.75,

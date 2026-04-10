@@ -81,7 +81,6 @@ def test_build_training_params_clamps_ranges():
     assert params.training.density_regularizer == 0.02
     assert params.training.color_non_negative_reg == 0.01
     assert params.training.depth_ratio_weight == 0.1
-    assert params.training.ssim_c1 == 1e-4
     assert params.training.ssim_c2 == 9e-4
     assert params.training.depth_ratio_grad_min == 0.2
     assert params.training.depth_ratio_grad_max == 0.2 + DEPTH_RATIO_GRAD_MIN_BAND_WIDTH
@@ -139,7 +138,6 @@ def test_default_training_params_match_fixed_count_defaults():
     assert params.training.color_non_negative_reg == 0.01
     assert params.training.depth_ratio_weight == 0.1
     assert params.training.ssim_weight == 0.4
-    assert params.training.ssim_c1 == 1e-4
     assert params.training.ssim_c2 == 9e-4
     assert params.training.depth_ratio_grad_min == 0.0
     assert params.training.depth_ratio_grad_max == 0.1
@@ -256,7 +254,6 @@ def test_viewer_defaults_expose_only_fixed_count_training_controls():
     assert "opacity_reg" in defaults
     assert defaults["color_non_negative_reg"] == 0.01
     assert defaults["ssim_weight"] == 0.4
-    assert defaults["ssim_c1"] == 1e-4
     assert defaults["ssim_c2"] == 9e-4
     assert "lambda_dssim" not in defaults
     assert "mcmc_growth_ratio" not in defaults

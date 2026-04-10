@@ -46,7 +46,6 @@ _SSIM_BLUR_WEIGHTS = np.array(
     ],
     dtype=np.float32,
 )
-_SSIM_C1 = 0.0001
 _SSIM_C2 = 0.0009
 _SSIM_SMALL_VALUE = 1e-6
 _SSIM_FEATURES_PER_COLOR = 5
@@ -259,8 +258,8 @@ def _blended_rgb_metrics_np(
         sigma_x2 = np.maximum(x2 - x * x, 0.0)
         sigma_y2 = np.maximum(y2 - y * y, 0.0)
         sigma_xy = xy - x * y
-        numer = (2.0 * x * y + _SSIM_C1) * (2.0 * sigma_xy + _SSIM_C2)
-        denom = np.maximum((x * x + y * y + _SSIM_C1) * (sigma_x2 + sigma_y2 + _SSIM_C2), _SSIM_SMALL_VALUE)
+        numer = 2.0 * sigma_xy + _SSIM_C2
+        denom = np.maximum(sigma_x2 + sigma_y2 + _SSIM_C2, _SSIM_SMALL_VALUE)
         channel_dssim.append(1.0 - numer / denom)
     dssim = np.mean(np.stack(channel_dssim, axis=2), axis=2, dtype=np.float32)
     dssim = dssim.astype(np.float32, copy=False) * inv_pixel_count * mask
@@ -958,8 +957,8 @@ def test_ssim_backward_matches_torch_image_gradients(device, tmp_path: Path):
         sigma_x2 = torch.clamp(x2 - x * x, min=0.0)
         sigma_y2 = torch.clamp(y2 - y * y, min=0.0)
         sigma_xy = xy - x * y
-        numer = (2.0 * x * y + _SSIM_C1) * (2.0 * sigma_xy + _SSIM_C2)
-        denom = torch.clamp((x * x + y * y + _SSIM_C1) * (sigma_x2 + sigma_y2 + _SSIM_C2), min=_SSIM_SMALL_VALUE)
+        numer = 2.0 * sigma_xy + _SSIM_C2
+        denom = torch.clamp(sigma_x2 + sigma_y2 + _SSIM_C2, min=_SSIM_SMALL_VALUE)
         channel_dssim.append(1.0 - numer / denom)
     dssim = torch.stack(channel_dssim, dim=1).mean(dim=1, keepdim=False)
     l1 = (rendered_t - target_rgb).abs().mean(dim=1, keepdim=True)
@@ -1010,7 +1009,7 @@ def test_ssim_keeps_neutral_black_gradients_neutral(device, tmp_path: Path):
         width=8,
         height=8,
         training_hparams=TrainingHyperParams(
-            ssim_weight=1.0,
+            ssim_weight=0.4,
             scale_l2_weight=0.0,
             scale_abs_reg_weight=0.0,
             opacity_reg_weight=0.0,
@@ -1034,7 +1033,7 @@ def test_ssim_keeps_neutral_black_gradients_neutral(device, tmp_path: Path):
     np.testing.assert_allclose(gpu_grad[..., 1], gpu_grad[..., 2], rtol=0.0, atol=1e-7)
 
 
-def test_ssim_detects_equal_mean_chroma_shift(device, tmp_path: Path):
+def test_ssim_ignores_flat_mean_only_chroma_shift(device, tmp_path: Path):
     trainer = _make_loss_only_trainer(
         device,
         tmp_path,
@@ -1064,11 +1063,10 @@ def test_ssim_detects_equal_mean_chroma_shift(device, tmp_path: Path):
     total, mse, density = trainer._read_loss_metrics()
     grads = _read_output_grads(trainer.renderer)[..., :3]
 
-    assert total > 0.0
+    assert abs(total) <= 1e-5
     assert mse > 0.0
     assert density == 0.0
-    assert np.any(np.abs(grads[..., 0] - grads[..., 1]) > 1e-7)
-    assert np.any(np.abs(grads[..., 1] - grads[..., 2]) > 1e-7)
+    np.testing.assert_allclose(grads, 0.0, rtol=0.0, atol=5e-7)
 
 
 def test_target_alpha_mask_skips_masked_pixel_loss_and_output_grads(device, tmp_path: Path):

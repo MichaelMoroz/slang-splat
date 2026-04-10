@@ -157,7 +157,6 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["color_non_negative_reg"] == 0.01
     assert viewer_ui._values["depth_ratio_weight"] == 0.1
     assert viewer_ui._values["ssim_weight"] == 0.4
-    assert viewer_ui._values["ssim_c1"] == 1e-4
     assert viewer_ui._values["ssim_c2"] == 9e-4
     assert viewer_ui._values["depth_ratio_stage1_weight"] == 0.03
     assert viewer_ui._values["depth_ratio_stage2_weight"] == 0.01
@@ -694,7 +693,6 @@ def test_optimizer_regularization_tab_includes_density_controls() -> None:
     assert "density_regularizer" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "color_non_negative_reg" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "ssim_weight" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
-    assert "ssim_c1" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "ssim_c2" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "depth_ratio_grad_min" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "depth_ratio_grad_max" in ui._OPTIMIZER_TAB_KEYS["Regularization"]

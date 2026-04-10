@@ -48,7 +48,6 @@ uniform uint g_UseTargetAlphaMask;
 uniform uint g_BatchStepIndex;
 uniform TrainingSubsampleParams g_TrainingSubsample;
 uniform float g_SSIMWeight;
-uniform float g_SSIMC1;
 uniform float g_SSIMC2;
 
 uniform Texture2D<float4> g_Rendered;
@@ -655,8 +654,8 @@ float ssim_dssim_channel(float x, float y, float x2, float y2, float xy)
     float sigmaX2 = max(x2 - x * x, 0.0);
     float sigmaY2 = max(y2 - y * y, 0.0);
     float sigmaXY = xy - x * y;
-    float numer = (2.0 * x * y + g_SSIMC1) * (2.0 * sigmaXY + g_SSIMC2);
-    float denom = max((x * x + y * y + g_SSIMC1) * (sigmaX2 + sigmaY2 + g_SSIMC2), SMALL_VALUE);
+    float numer = 2.0 * sigmaXY + g_SSIMC2;
+    float denom = max(sigmaX2 + sigmaY2 + g_SSIMC2, SMALL_VALUE);
     return 1.0 - numer / denom;
 }
 

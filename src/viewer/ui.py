@@ -2100,7 +2100,6 @@ class ToolkitWindow:
         "opacity_reg": "Opacity regularization weight (pushes toward 0 or 1)",
         "color_non_negative_reg": "Penalty weight for negative evaluated SH color sampled over one deterministic random view direction per splat and step",
         "ssim_weight": "Blend weight for DSSIM in the RGB image loss; 0 keeps pure L1 and 1 uses pure DSSIM",
-        "ssim_c1": "SSIM luminance stabilizer constant used by the DSSIM path",
         "ssim_c2": "SSIM contrast/structure stabilizer constant used by the DSSIM path",
         "position_random_step_noise_lr": "Stage 0 post-step MCMC-style position noise multiplier; when scheduling is disabled this value is used for the whole run",
         "position_random_step_opacity_gate_center": "Opacity center for the random-step sigmoid gate; lower-opacity splats get stronger position noise",
