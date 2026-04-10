@@ -49,7 +49,6 @@ _TRAINING_PARAM_KEYS = {
     "grad_clip": "grad_clip",
     "grad_norm_clip": "grad_norm_clip",
     "max_update": "max_update",
-    "min_scale": "min_scale",
     "max_scale": "max_scale",
     "max_anisotropy": "max_anisotropy",
     "min_opacity": "min_opacity",

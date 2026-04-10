@@ -14,7 +14,6 @@ struct GaussianStabilityParams
     float gradComponentClip;
     float gradNormClip;
     float maxUpdate;
-    float minScale;
     float maxScale;
     float maxAnisotropy;
     float minOpacity;

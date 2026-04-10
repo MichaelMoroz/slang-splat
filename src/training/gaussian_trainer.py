@@ -175,7 +175,7 @@ class AdamHyperParams:
 
 @dataclass(slots=True)
 class StabilityHyperParams:
-    grad_component_clip: float = 10.0; grad_norm_clip: float = 10.0; max_update: float = 0.05; min_scale: float = 1e-3
+    grad_component_clip: float = 10.0; grad_norm_clip: float = 10.0; max_update: float = 0.05
     max_scale: float = 3.0; max_anisotropy: float = 32.0; min_opacity: float = 1e-4; max_opacity: float = 0.9999
     position_abs_max: float = 1e4; huge_value: float = 1e8; loss_grad_clip: float = 10.0
 

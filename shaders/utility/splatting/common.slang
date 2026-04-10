@@ -570,7 +570,7 @@ Ellipsoid build_ellipsoid_with_support(no_diff CameraParams cameraParams, no_dif
 {
     PinholeCamera camera = PinholeCamera.from_params(cameraParams);
     float3 sigma = exp(gaussian.logScale);
-    float3 rawSupportScale = max(sigma * (radiusScale * supportSigmaRadius), float3(SMALL_VALUE));
+    float3 rawSupportScale = sigma * (radiusScale * supportSigmaRadius);
     float supportMaxScale = max(rawSupportScale.x, max(rawSupportScale.y, rawSupportScale.z));
     float supportMinScale = supportMaxScale / max(maxAnisotropy, 1.0);
     float3 supportScale = max(rawSupportScale, float3(supportMinScale));

@@ -62,7 +62,6 @@ class GaussianOptimizer:
 
     def _value_min_for_param(self, param_id: int) -> float:
         if param_id in self.renderer.PARAM_POSITION_IDS: return -float(self.stability.position_abs_max)
-        if param_id in self.renderer.PARAM_SCALE_IDS: return float(np.log(max(self.stability.min_scale, 1e-8)))
         if param_id == self.renderer.PARAM_RAW_OPACITY_ID: return self._raw_opacity_from_alpha(float(self.stability.min_opacity))
         return -float(self.stability.huge_value)
 
@@ -139,7 +138,6 @@ class GaussianOptimizer:
                 "gradComponentClip": float(self.stability.grad_component_clip),
                 "gradNormClip": float(self.stability.grad_norm_clip),
                 "maxUpdate": float(self.stability.max_update),
-                "minScale": float(self.stability.min_scale),
                 "maxScale": float(self.stability.max_scale),
                 "maxAnisotropy": float(max(self.stability.max_anisotropy, 1.0)),
                 "minOpacity": float(self.stability.min_opacity),

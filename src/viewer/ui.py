@@ -573,7 +573,6 @@ GROUP_SPECS = {
     "Train Setup": _TRAIN_SETUP_SPECS,
     "Train Optimizer": _TRAIN_OPTIMIZER_SPECS + tuple(spec for specs in SCHEDULE_STAGE_SPECS.values() for spec in specs),
     "Train Stability": (
-        ControlSpec("min_scale", "input_float", "Min Scale", {"value": 1e-3, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
         ControlSpec("max_scale", "input_float", "Max Scale", {"value": 3.0, "step": 1e-2, "step_fast": 0.1, "format": "%.5f"}),
         ControlSpec("min_opacity", "input_float", "Min Opacity", {"value": 1e-4, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
         ControlSpec("max_opacity", "input_float", "Max Opacity", {"value": 0.9999, "step": 1e-4, "step_fast": 1e-3, "format": "%.6f"}),
@@ -2111,15 +2110,11 @@ class ToolkitWindow:
     def _section_stability(self, ui: ViewerUI) -> None:
         if not imgui.collapsing_header("Stability"):
             return
-        # Paired min/max controls in a two-column table
-        pairs = (
-            ("min_scale", "max_scale", "Scale"),
-            ("min_opacity", "max_opacity", "Opacity"),
-        )
+        pairs = (("min_opacity", "max_opacity"),)
         if imgui.begin_table("##stab_pairs", 2, imgui.TableFlags_.sizing_stretch_same.value | imgui.TableFlags_.no_borders_in_body.value):
             imgui.table_setup_column("Min")
             imgui.table_setup_column("Max")
-            for min_key, max_key, label in pairs:
+            for min_key, max_key in pairs:
                 min_spec = next(s for s in GROUP_SPECS["Train Stability"] if s.key == min_key)
                 max_spec = next(s for s in GROUP_SPECS["Train Stability"] if s.key == max_key)
                 imgui.table_next_row()
@@ -2134,11 +2129,11 @@ class ToolkitWindow:
             imgui.end_table()
 
         # Remaining non-paired controls
-        paired_keys = {k for min_k, max_k, _ in pairs for k in (min_k, max_k)}
+        paired_keys = {k for min_k, max_k in pairs for k in (min_k, max_k)}
         for spec in GROUP_SPECS["Train Stability"]:
             if spec.key not in paired_keys:
                 self._draw_control(ui, spec)
-        imgui.text_disabled("Bounds and anisotropy are clamped after each ADAM step")
+        imgui.text_disabled("Opacity bounds, max scale, and anisotropy are clamped after each ADAM step")
         self._ctx_reset("stability_ctx", ui, [s.key for s in GROUP_SPECS["Train Stability"]])
         imgui.separator()
 
@@ -2265,7 +2260,6 @@ class ToolkitWindow:
         "position_random_step_opacity_gate_center": "Opacity center for the random-step sigmoid gate; lower-opacity splats get stronger position noise",
         "position_random_step_opacity_gate_sharpness": "Steepness of the random-step opacity gate",
         "max_anisotropy": "Maximum ratio between largest and smallest scale axes",
-        "min_scale": "Floor for decoded gaussian sigma",
         "max_scale": "Ceiling for decoded gaussian sigma",
         "min_opacity": "Floor for opacity",
         "max_opacity": "Ceiling for opacity",

@@ -28,7 +28,6 @@ _CLAMP_LIMITS = {
     "grad_component_clip": (1e-5, 1e6),
     "grad_norm_clip": (1e-5, 1e6),
     "max_update": (1e-8, 10.0),
-    "min_scale": (1e-8, 1e3),
     "max_scale": (1e-8, 1e4),
     "max_anisotropy": (1.0, 1e4),
     "min_opacity": (0.0, 1.0),
@@ -156,7 +155,6 @@ def build_training_params(
     grad_clip: float,
     grad_norm_clip: float,
     max_update: float,
-    min_scale: float,
     max_scale: float,
     max_anisotropy: float,
     min_opacity: float,
@@ -254,7 +252,6 @@ def build_training_params(
                     grad_clip,
                     grad_norm_clip,
                     max_update,
-                    min_scale,
                     max_scale,
                     max_anisotropy,
                     min_opacity,
@@ -336,7 +333,6 @@ def build_training_params(
         train_downscale_factor=clamp_int(train_downscale_factor, 1, 16),
         train_subsample_factor=clamp_int(train_subsample_factor, 0, 4),
     )
-    stability.max_scale = max(stability.max_scale, stability.min_scale)
     stability.max_opacity = max(stability.max_opacity, stability.min_opacity)
     if training.far <= training.near:
         training.far = training.near + 1e-3
