@@ -651,11 +651,12 @@ void clear_ssim_feature_grads(RWStructuredBuffer<float> buffer, uint2 pixel)
 [Differentiable]
 float ssim_dssim_channel(float x, float y, float x2, float y2, float xy)
 {
+    float c1 = g_SSIMC2 / 9.0;
     float sigmaX2 = max(x2 - x * x, 0.0);
     float sigmaY2 = max(y2 - y * y, 0.0);
     float sigmaXY = xy - x * y;
-    float numer = 2.0 * sigmaXY + g_SSIMC2;
-    float denom = max(sigmaX2 + sigmaY2 + g_SSIMC2, SMALL_VALUE);
+    float numer = (2.0 * x * y + c1) * (2.0 * sigmaXY + g_SSIMC2);
+    float denom = max((x * x + y * y + c1) * (sigmaX2 + sigmaY2 + g_SSIMC2), SMALL_VALUE);
     return 1.0 - numer / denom;
 }
 

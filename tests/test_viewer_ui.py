@@ -140,7 +140,7 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["use_target_alpha_mask"] is False
     assert viewer_ui._values["train_background_color"] == (1.0, 1.0, 1.0)
     assert viewer_ui._values["sh_band"] == 0
-    assert viewer_ui._values["sh_band_stage1"] == 1
+    assert viewer_ui._values["sh_band_stage1"] == 0
     assert viewer_ui._values["sh_band_stage2"] == 2
     assert viewer_ui._values["sh_band_stage3"] == 3
     assert viewer_ui._values["sh1_reg"] == 0.01
@@ -156,15 +156,15 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["density_regularizer"] == 0.02
     assert viewer_ui._values["color_non_negative_reg"] == 0.01
     assert viewer_ui._values["depth_ratio_weight"] == 0.1
-    assert viewer_ui._values["max_screen_fraction"] == 0.1
-    assert viewer_ui._values["ssim_weight"] == 0.4
+    assert viewer_ui._values["max_screen_fraction"] == 0.25
+    assert viewer_ui._values["ssim_weight"] == 0.2
     assert viewer_ui._values["ssim_c2"] == 9e-4
     assert viewer_ui._values["depth_ratio_stage1_weight"] == 0.03
     assert viewer_ui._values["depth_ratio_stage2_weight"] == 0.01
     assert viewer_ui._values["depth_ratio_stage3_weight"] == 0.001
-    assert viewer_ui._values["max_screen_fraction_stage1"] == 0.1
-    assert viewer_ui._values["max_screen_fraction_stage2"] == 0.1
-    assert viewer_ui._values["max_screen_fraction_stage3"] == 0.1
+    assert viewer_ui._values["max_screen_fraction_stage1"] == 0.05
+    assert viewer_ui._values["max_screen_fraction_stage2"] == 0.04
+    assert viewer_ui._values["max_screen_fraction_stage3"] == 0.03
     assert viewer_ui._values["depth_ratio_grad_min"] == 0.0
     assert viewer_ui._values["depth_ratio_grad_max"] == 0.1
     assert viewer_ui._values["max_allowed_density"] == 12.0

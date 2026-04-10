@@ -6,9 +6,9 @@ DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY = 0.995
 DEPTH_RATIO_GRAD_MIN_BAND_WIDTH = 1e-4
 DEFAULT_DEPTH_RATIO_GRAD_MIN = 0.0
 DEFAULT_DEPTH_RATIO_GRAD_MAX = 0.1
-DEFAULT_SSIM_WEIGHT = 0.4
+DEFAULT_SSIM_WEIGHT = 0.2
 DEFAULT_SSIM_C2 = 9e-4
-DEFAULT_MAX_SCREEN_FRACTION = 0.1
+DEFAULT_MAX_SCREEN_FRACTION = 0.25
 DEFAULT_LR_SCHEDULE_STEPS = 30_000
 DEFAULT_LR_STAGE1_STEP = 3000
 DEFAULT_LR_STAGE2_STEP = 14_000
@@ -81,16 +81,16 @@ TRAINING_BUILD_ARG_DEFAULTS: dict[str, object] = {
     "depth_ratio_stage1_weight": 0.03,
     "depth_ratio_stage2_weight": 0.01,
     "depth_ratio_stage3_weight": 0.001,
-    "max_screen_fraction_stage1": DEFAULT_MAX_SCREEN_FRACTION,
-    "max_screen_fraction_stage2": DEFAULT_MAX_SCREEN_FRACTION,
-    "max_screen_fraction_stage3": DEFAULT_MAX_SCREEN_FRACTION,
+    "max_screen_fraction_stage1": 0.05,
+    "max_screen_fraction_stage2": 0.04,
+    "max_screen_fraction_stage3": 0.03,
     "position_random_step_noise_stage1_lr": 466666.6666666667,
     "position_random_step_noise_stage2_lr": 416666.6666666667,
     "position_random_step_noise_stage3_lr": 0.0,
-    "use_sh_stage1": True,
+    "use_sh_stage1": False,
     "use_sh_stage2": True,
     "use_sh_stage3": True,
-    "sh_band_stage1": 1,
+    "sh_band_stage1": 0,
     "sh_band_stage2": 2,
     "sh_band_stage3": 3,
     "train_downscale_mode": 1,
