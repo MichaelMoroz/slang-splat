@@ -8,9 +8,11 @@ from pathlib import Path
 import numpy as np
 
 from .. import create_default_device
+from .training_controls import TRAINING_CLI_ARG_DEFS, training_cli_build_kwargs
 from ..renderer import Camera, GaussianRenderSettings, GaussianRenderer
 from ..scene import GaussianInitHyperParams, build_training_frames, initialize_scene_from_colmap_points, load_colmap_reconstruction, load_gaussian_ply, resolve_colmap_init_hparams
 from ..training import GaussianTrainer
+from ..training.defaults import DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT, TRAINING_BUILD_ARG_DEFAULTS
 from .shared import RendererParams, apply_training_profile, build_training_params, estimate_scene_bounds, renderer_kwargs, save_snapshot
 from ..training import TRAINING_PROFILE_CHOICES
 
@@ -68,40 +70,10 @@ def _init_hparams(args: argparse.Namespace) -> GaussianInitHyperParams:
 def _training_params(args: argparse.Namespace):
     return build_training_params(
         background=args.bg,
-        base_lr=args.lr_base,
-        lr_pos_mul=args.lr_mul_pos,
-        lr_scale_mul=args.lr_mul_scale,
-        lr_rot_mul=args.lr_mul_rot,
-        lr_color_mul=args.lr_mul_color,
-        lr_opacity_mul=args.lr_mul_opacity,
-        beta1=args.beta1,
-        beta2=args.beta2,
-        grad_clip=args.grad_clip,
-        grad_norm_clip=args.grad_norm_clip,
-        max_update=args.max_update,
-        max_scale=args.max_scale,
-        max_anisotropy=args.max_anisotropy,
-        min_opacity=args.min_opacity,
-        max_opacity=args.max_opacity,
-        position_abs_max=args.position_abs_max,
-        near=args.near,
-        far=args.far,
-        scale_l2_weight=args.scale_l2,
-        scale_abs_reg_weight=args.scale_abs_reg,
-        sh1_reg_weight=args.sh1_reg,
-        opacity_reg_weight=args.opacity_reg,
-        density_regularizer=args.density_reg,
-        depth_ratio_weight=args.depth_ratio_weight,
-        ssim_weight=args.ssim_weight,
-        refinement_loss_weight=args.refinement_loss_weight,
-        refinement_target_edge_weight=args.refinement_target_edge_weight,
-        depth_ratio_grad_min=args.depth_ratio_grad_min,
-        depth_ratio_grad_max=args.depth_ratio_grad_max,
-        max_allowed_density_start=args.max_allowed_density_start,
-        max_allowed_density=args.max_allowed_density,
         max_gaussians=args.max_gaussians,
         use_sh=args.use_sh,
         refinement_min_contribution_percent=args.refinement_min_contribution_percent,
+        **training_cli_build_kwargs(args),
     )
 
 
@@ -205,43 +177,7 @@ COMMON_RENDER_ARGS = (
     A("--trans-threshold", type=float, default=0.005),
     A("--debug-layers", action="store_true"),
 )
-TRAIN_RENDER_ARGS = tuple(
-    A(flag, type=float, default=default)
-    for flag, default in (
-        ("--lr-base", 0.002),
-        ("--lr-mul-pos", 0.5),
-        ("--lr-mul-scale", 10.0),
-        ("--lr-mul-rot", 1.0),
-        ("--lr-mul-color", 5.0),
-        ("--lr-mul-opacity", 5.0),
-        ("--beta1", 0.9),
-        ("--beta2", 0.999),
-        ("--grad-clip", 10.0),
-        ("--grad-norm-clip", 10.0),
-        ("--max-update", 0.05),
-        ("--max-scale", 3.0),
-        ("--min-opacity", 1e-4),
-        ("--max-opacity", 0.9999),
-        ("--position-abs-max", 1e4),
-        ("--loss-grad-clip", 10.0),
-        ("--near", 0.1),
-        ("--far", 120.0),
-        ("--scale-l2", 0.0),
-        ("--scale-abs-reg", 0.01),
-        ("--sh1-reg", 0.01),
-        ("--opacity-reg", 0.01),
-        ("--density-reg", 0.02),
-        ("--depth-ratio-weight", 0.1),
-        ("--ssim-weight", 0.4),
-        ("--refinement-loss-weight", 0.25),
-        ("--refinement-target-edge-weight", 0.75),
-        ("--depth-ratio-grad-min", 0.0),
-        ("--depth-ratio-grad-max", 0.1),
-        ("--max-allowed-density-start", 5.0),
-        ("--max-allowed-density", 12.0),
-        ("--max-anisotropy", 32.0),
-    )
-)
+TRAIN_RENDER_ARGS = tuple(A(*spec.flags, **spec.kwargs) for spec in TRAINING_CLI_ARG_DEFS)
 TRAIN_INIT_ARGS = tuple(
     A(flag, type=float, default=None)
     for flag in ("--init-opacity",)
@@ -255,8 +191,8 @@ COMMANDS = (
             A("--sparse-subdir", type=str, default="sparse/0"),
             A("--images-subdir", type=str, default="images_4"),
             A("--iters", type=int, default=1000),
-            A("--max-gaussians", type=int, default=1000000),
-            A("--refinement-min-contribution-percent", type=float, default=1e-05),
+            A("--max-gaussians", type=int, default=TRAINING_BUILD_ARG_DEFAULTS["max_gaussians"]),
+            A("--refinement-min-contribution-percent", type=float, default=DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT),
             A("--no-use-sh", action="store_false", dest="use_sh", default=True),
             A("--training-profile", type=str, default="auto", choices=TRAINING_PROFILE_CHOICES),
             A("--seed", type=int, default=1234),

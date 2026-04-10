@@ -15,6 +15,20 @@ import slangpy as spy
 import slangpy.ui.imgui_bundle as simgui
 from imgui_bundle import hello_imgui, imgui, imgui_md, implot
 
+from ..app.training_controls import (
+    SH_BAND_LABELS as _SH_BAND_LABELS,
+    SCHEDULE_STAGE_CONTROL_DEFS,
+    SCHEDULE_STAGE_GROUPS as _SCHEDULE_STAGE_GROUPS,
+    TRAINING_OPTIMIZER_GROUP,
+    TRAINING_OPTIMIZER_TAB_KEYS,
+    TRAINING_SETUP_GROUP,
+    TRAINING_STABILITY_GROUP,
+    TRAINING_UI_GROUP_DEFS,
+    TRAIN_SETUP_AUTO_DOWNSCALE_KEYS,
+    TRAIN_SETUP_PRIMARY_KEYS,
+    TRAIN_SETUP_TRAILING_KEYS,
+    TRAIN_STABILITY_PAIRED_KEYS,
+)
 from .constants import _WINDOW_TITLE
 from .state import DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH, LOSS_DEBUG_OPTIONS
 
@@ -44,11 +58,7 @@ _COLMAP_INIT_MODE_DEPTH_LABEL = "From Depth"
 _COLMAP_INIT_MODE_LABELS = _COLMAP_INIT_MODE_BASE_LABELS
 _COLMAP_DEPTH_VALUE_MODE_LABELS = ("Depth Is Distance", "Depth Is Z-Depth")
 _COLMAP_IMAGE_DOWNSCALE_LABELS = ("Original", "Max Size", "Scale Factor")
-_TRAIN_BACKGROUND_MODE_LABELS = ("Custom", "Random")
 _VIEWER_BACKGROUND_MODE_LABELS = ("Train Background", "Custom")
-_TRAIN_DOWNSCALE_MODE_LABELS = ("Auto",) + tuple(f"{i}x" for i in range(1, 17))
-_TRAIN_SUBSAMPLE_LABELS = ("Auto", "Off", "1/2", "1/3", "1/4")
-_SH_BAND_LABELS = ("SH0", "SH1", "SH2", "SH3")
 _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT = 2e-4
 _DEBUG_ADAM_MOMENTUM_THRESHOLD_DEFAULT = 1e-2
 _DEBUG_CONTRIBUTION_AMOUNT_FLOOR = 1e-6
@@ -388,176 +398,14 @@ class ControlSpec:
     label: str
     kwargs: dict[str, object]
 
-
-_TRAIN_SETUP_SPECS = (
-    ControlSpec("max_gaussians", "slider_int", "Max Gaussians", {"value": 1000000, "min": 1000, "max": 10000000}),
-    ControlSpec("training_steps_per_frame", "slider_int", "Steps / Frame", {"value": 3, "min": 1, "max": 8}),
-    ControlSpec("background_mode", "combo", "Train Background", {"value": 1, "options": _TRAIN_BACKGROUND_MODE_LABELS}),
-    ControlSpec("use_target_alpha_mask", "checkbox", "Use Target Alpha Mask", {"value": False}),
-    ControlSpec("train_background_color", "color_edit3", "Train BG Color", {"value": (1.0, 1.0, 1.0)}),
-    ControlSpec("refinement_interval", "input_int", "Refinement Interval", {"value": 200, "step": 10, "step_fast": 50}),
-    ControlSpec("refinement_growth_ratio", "input_float", "Refinement Growth", {"value": 0.035, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
-    ControlSpec("refinement_growth_start_step", "slider_int", "Start Refinement After", {"value": 500, "min": 0, "max": 30000, "max_from": "lr_schedule_steps"}),
-    ControlSpec("refinement_alpha_cull_threshold", "input_float", "Refinement Alpha Cull", {"value": 1e-2, "step": 1e-5, "step_fast": 1e-4, "format": "%.6e"}),
-    ControlSpec("refinement_min_contribution_percent", "input_float", "Refinement Min Contribution", {"value": 1e-05, "step": 1e-6, "step_fast": 1e-5, "format": "%.6g%%"}),
-    ControlSpec("refinement_min_contribution_decay", "input_float", "Refinement Min Contribution Decay", {"value": 0.995, "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
-    ControlSpec("refinement_opacity_mul", "input_float", "Refinement Alpha Mul", {"value": 1.0, "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
-    ControlSpec("refinement_loss_weight", "input_float", "Refinement Loss Weight", {"value": 0.25, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
-    ControlSpec("refinement_target_edge_weight", "input_float", "Refinement Edge Weight", {"value": 0.75, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
-    ControlSpec("train_downscale_mode", "combo", "Downscale Mode", {"value": 1, "options": _TRAIN_DOWNSCALE_MODE_LABELS}),
-    ControlSpec("train_subsample_factor", "combo", "Subsampling", {"value": 0, "options": _TRAIN_SUBSAMPLE_LABELS}),
-    ControlSpec("train_auto_start_downscale", "slider_int", "Auto Start Downscale", {"value": 16, "min": 1, "max": 16}),
-    ControlSpec("train_downscale_base_iters", "input_int", "Downscale Base Iters", {"value": 200, "step": 25, "step_fast": 100}),
-    ControlSpec("train_downscale_iter_step", "input_int", "Downscale Iter Step", {"value": 50, "step": 10, "step_fast": 50}),
-    ControlSpec("train_downscale_max_iters", "input_int", "Downscale Max Iters", {"value": 30000, "step": 1000, "step_fast": 5000}),
-    ControlSpec("seed", "slider_int", "Shuffle Seed", {"value": 1234, "min": 0, "max": 1000000}),
-    ControlSpec("init_opacity", "input_float", "Init Opacity", {"value": 0.5, "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
-)
-
-_TRAIN_OPTIMIZER_SPECS = (
-    ControlSpec("lr_schedule_enabled", "checkbox", "Use LR Schedule", {"value": True}),
-    ControlSpec("lr_scale_mul", "input_float", "LR Mul Scale", {"value": 10.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
-    ControlSpec("lr_rot_mul", "input_float", "LR Mul Rotation", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
-    ControlSpec("lr_color_mul", "input_float", "LR Mul SH0/DC", {"value": 5.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
-    ControlSpec("lr_opacity_mul", "input_float", "LR Mul Opacity", {"value": 5.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
-    ControlSpec("beta1", "input_float", "Beta1", {"value": 0.9, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
-    ControlSpec("beta2", "input_float", "Beta2", {"value": 0.999, "step": 1e-4, "step_fast": 1e-3, "format": "%.6f"}),
-    ControlSpec("scale_l2", "input_float", "Scale Log Reg", {"value": 0.0, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
-    ControlSpec("scale_abs_reg", "input_float", "Scale Abs Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
-    ControlSpec("sh1_reg", "input_float", "SH Rest Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
-    ControlSpec("opacity_reg", "input_float", "Opacity Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
-    ControlSpec("density_regularizer", "input_float", "Density Reg", {"value": 0.02, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
-    ControlSpec("color_non_negative_reg", "input_float", "Color >= 0 Reg", {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
-    ControlSpec("depth_ratio_grad_min", "input_float", "Depth Ratio Grad Min", {"value": 0.0, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
-    ControlSpec("depth_ratio_grad_max", "input_float", "Depth Ratio Grad Max", {"value": 0.1, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
-    ControlSpec("ssim_weight", "input_float", "DSSIM Weight", {"value": 0.4, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
-    ControlSpec("ssim_c1", "input_float", "SSIM C1", {"value": 1e-4, "step": 1e-5, "step_fast": 1e-4, "format": "%.6e"}),
-    ControlSpec("ssim_c2", "input_float", "SSIM C2", {"value": 9e-4, "step": 1e-5, "step_fast": 1e-4, "format": "%.6e"}),
-    ControlSpec("max_allowed_density", "input_float", "Max Density", {"value": 12.0, "step": 1e-3, "step_fast": 1e-2, "format": "%.8f"}),
-    ControlSpec("position_random_step_opacity_gate_center", "input_float", "Noise Gate Center", {"value": 0.005, "step": 1e-4, "step_fast": 1e-3, "format": "%.6f"}),
-    ControlSpec("position_random_step_opacity_gate_sharpness", "input_float", "Noise Gate Sharpness", {"value": 100.0, "step": 1.0, "step_fast": 10.0, "format": "%.4g"}),
-    ControlSpec("max_anisotropy", "input_float", "Max Anisotropy", {"value": 32.0, "step": 0.1, "step_fast": 0.5, "format": "%.6f"}),
-    ControlSpec("grad_clip", "input_float", "Grad Clip", {"value": 10.0, "step": 0.1, "step_fast": 1.0, "format": "%.4f"}),
-    ControlSpec("grad_norm_clip", "input_float", "Grad Norm Clip", {"value": 10.0, "step": 0.1, "step_fast": 1.0, "format": "%.4f"}),
-    ControlSpec("max_update", "input_float", "Max Update", {"value": 0.05, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
-)
-
-_SCHEDULE_STAGE_SPEC_TEMPLATE = {
-    "end_step": ControlSpec("schedule_stage_end_step", "slider_int", "End Step", {"value": 0, "min": 0, "max": 30000, "max_from": "lr_schedule_steps"}),
-    "lr": ControlSpec("schedule_stage_lr", "input_float", "LR Target", {"value": 1e-4, "step": 1e-6, "step_fast": 1e-5, "format": "%.8f"}),
-    "lr_pos_mul": ControlSpec("schedule_stage_lr_pos_mul", "input_float", "LR Mul Position", {"value": 1.0, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
-    "lr_sh_mul": ControlSpec("schedule_stage_lr_sh_mul", "input_float", "LR Mul SH", {"value": 0.05, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
-    "depth_ratio_weight": ControlSpec("schedule_stage_depth_ratio_weight", "input_float", "Depth Ratio Reg", {"value": 0.001, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}),
-    "noise_lr": ControlSpec("schedule_stage_noise_lr", "input_float", "Noise LR", {"value": 0.0, "step": 100.0, "step_fast": 1000.0, "format": "%.4g"}),
-    "sh_band": ControlSpec("schedule_stage_sh_band", "combo", "SH Band", {"value": 0, "options": _SH_BAND_LABELS}),
-}
-
-_SCHEDULE_STAGE_GROUPS = {
-    "Stage 0": {
-        "lr": "lr_schedule_start_lr",
-        "lr_pos_mul": "lr_pos_mul",
-        "lr_sh_mul": "lr_sh_mul",
-        "depth_ratio_weight": "depth_ratio_weight",
-        "noise_lr": "position_random_step_noise_lr",
-        "sh_band": "sh_band",
-    },
-    "Stage 1": {
-        "end_step": "lr_schedule_stage1_step",
-        "lr": "lr_schedule_stage1_lr",
-        "lr_pos_mul": "lr_pos_stage1_mul",
-        "lr_sh_mul": "lr_sh_stage1_mul",
-        "depth_ratio_weight": "depth_ratio_stage1_weight",
-        "noise_lr": "position_random_step_noise_stage1_lr",
-        "sh_band": "sh_band_stage1",
-    },
-    "Stage 2": {
-        "end_step": "lr_schedule_stage2_step",
-        "lr": "lr_schedule_stage2_lr",
-        "lr_pos_mul": "lr_pos_stage2_mul",
-        "lr_sh_mul": "lr_sh_stage2_mul",
-        "depth_ratio_weight": "depth_ratio_stage2_weight",
-        "noise_lr": "position_random_step_noise_stage2_lr",
-        "sh_band": "sh_band_stage2",
-    },
-    "Stage 3": {
-        "end_step": "lr_schedule_steps",
-        "lr": "lr_schedule_end_lr",
-        "lr_pos_mul": "lr_pos_stage3_mul",
-        "lr_sh_mul": "lr_sh_stage3_mul",
-        "depth_ratio_weight": "depth_ratio_stage3_weight",
-        "noise_lr": "position_random_step_noise_stage3_lr",
-        "sh_band": "sh_band_stage3",
-    },
-}
-
-_SCHEDULE_STAGE_OVERRIDES = {
-    "Stage 0": {
-        "lr": {"kwargs": {"value": 0.002, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}},
-        "lr_pos_mul": {"kwargs": {"value": 0.5, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}},
-        "lr_sh_mul": {"kwargs": {"value": 0.05, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}},
-        "depth_ratio_weight": {"kwargs": {"value": 0.1, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}},
-        "noise_lr": {"kwargs": {"value": 5e5, "step": 100.0, "step_fast": 1000.0, "format": "%.4g"}},
-        "sh_band": {"kwargs": {"value": 0, "options": _SH_BAND_LABELS}},
-    },
-    "Stage 1": {
-        "end_step": {"kwargs": {"value": 3000, "min": 0, "max": 30000, "max_from": "lr_schedule_steps"}},
-        "lr": {"kwargs": {"value": 0.002, "step": 1e-6, "step_fast": 1e-5, "format": "%.8f"}},
-        "lr_pos_mul": {"kwargs": {"value": 0.3, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}},
-        "lr_sh_mul": {"kwargs": {"value": 0.05, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}},
-        "depth_ratio_weight": {"kwargs": {"value": 0.03, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}},
-        "noise_lr": {"kwargs": {"value": 466666.6666666667, "step": 100.0, "step_fast": 1000.0, "format": "%.4g"}},
-        "sh_band": {"kwargs": {"value": 1, "options": _SH_BAND_LABELS}},
-    },
-    "Stage 2": {
-        "end_step": {"kwargs": {"value": 14000, "min": 0, "max": 30000, "max_from": "lr_schedule_steps"}},
-        "lr": {"kwargs": {"value": 0.001, "step": 1e-6, "step_fast": 1e-5, "format": "%.8f"}},
-        "lr_pos_mul": {"kwargs": {"value": 0.2, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}},
-        "lr_sh_mul": {"kwargs": {"value": 0.05, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}},
-        "depth_ratio_weight": {"kwargs": {"value": 0.01, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}},
-        "noise_lr": {"kwargs": {"value": 416666.6666666667, "step": 100.0, "step_fast": 1000.0, "format": "%.4g"}},
-        "sh_band": {"kwargs": {"value": 2, "options": _SH_BAND_LABELS}},
-    },
-    "Stage 3": {
-        "end_step": {
-            "kind": "input_int",
-            "label": "End Step",
-            "kwargs": {"value": 30000, "step": 1000, "step_fast": 5000},
-        },
-        "lr": {"kwargs": {"value": 1.5e-4, "step": 1e-6, "step_fast": 1e-5, "format": "%.8f"}},
-        "lr_pos_mul": {"kwargs": {"value": 0.2, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}},
-        "lr_sh_mul": {"kwargs": {"value": 0.05, "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}},
-        "depth_ratio_weight": {"kwargs": {"value": 0.001, "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}},
-        "noise_lr": {"kwargs": {"value": 0.0, "step": 100.0, "step_fast": 1000.0, "format": "%.4g"}},
-        "sh_band": {"kwargs": {"value": 3, "options": _SH_BAND_LABELS}},
-    },
-}
+def _control_spec(defn) -> ControlSpec:
+    return ControlSpec(defn.key, defn.kind, defn.label, dict(defn.kwargs))
 
 
-def _build_schedule_stage_specs() -> dict[str, tuple[ControlSpec, ...]]:
-    groups: dict[str, tuple[ControlSpec, ...]] = {}
-    for stage_label, key_map in _SCHEDULE_STAGE_GROUPS.items():
-        overrides = _SCHEDULE_STAGE_OVERRIDES.get(stage_label, {})
-        specs: list[ControlSpec] = []
-        ordered_keys = ("lr", "lr_pos_mul", "lr_sh_mul", "depth_ratio_weight", "noise_lr", "sh_band") if stage_label == "Stage 0" else ("end_step", "lr", "lr_pos_mul", "lr_sh_mul", "depth_ratio_weight", "noise_lr", "sh_band")
-        for template_key in ordered_keys:
-            if template_key not in key_map:
-                continue
-            mapped_key = key_map[template_key]
-            template = _SCHEDULE_STAGE_SPEC_TEMPLATE[template_key]
-            override = overrides.get(template_key, {})
-            specs.append(
-                ControlSpec(
-                    key=mapped_key,
-                    kind=str(override.get("kind", template.kind)),
-                    label=str(override.get("label", template.label)),
-                    kwargs=dict(template.kwargs if "kwargs" not in override else override["kwargs"]),
-                )
-            )
-        groups[stage_label] = tuple(specs)
-    return groups
-
-
-SCHEDULE_STAGE_SPECS = _build_schedule_stage_specs()
+_TRAIN_SETUP_SPECS = tuple(_control_spec(defn) for defn in TRAINING_UI_GROUP_DEFS[TRAINING_SETUP_GROUP])
+_TRAIN_OPTIMIZER_SPECS = tuple(_control_spec(defn) for defn in TRAINING_UI_GROUP_DEFS[TRAINING_OPTIMIZER_GROUP])
+SCHEDULE_STAGE_SPECS = {stage: tuple(_control_spec(defn) for defn in defs) for stage, defs in SCHEDULE_STAGE_CONTROL_DEFS.items()}
+_TRAIN_STABILITY_SPECS = tuple(_control_spec(defn) for defn in TRAINING_UI_GROUP_DEFS[TRAINING_STABILITY_GROUP])
 
 GROUP_SPECS = {
     "View": (
@@ -575,15 +423,8 @@ GROUP_SPECS = {
         ControlSpec("render_background_color", "color_edit3", "Render BG Color", {"value": (0.0, 0.0, 0.0)}),
     ),
     "Train Setup": _TRAIN_SETUP_SPECS,
-    "Train Optimizer": _TRAIN_OPTIMIZER_SPECS + tuple(spec for specs in SCHEDULE_STAGE_SPECS.values() for spec in specs),
-    "Train Stability": (
-        ControlSpec("max_scale", "input_float", "Max Scale", {"value": 3.0, "step": 1e-2, "step_fast": 0.1, "format": "%.5f"}),
-        ControlSpec("min_opacity", "input_float", "Min Opacity", {"value": 1e-4, "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}),
-        ControlSpec("max_opacity", "input_float", "Max Opacity", {"value": 0.9999, "step": 1e-4, "step_fast": 1e-3, "format": "%.6f"}),
-        ControlSpec("position_abs_max", "input_float", "Pos Abs Max", {"value": 1e4, "step": 10.0, "step_fast": 100.0, "format": "%.3f"}),
-        ControlSpec("train_near", "input_float", "Train Near", {"value": 0.1, "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
-        ControlSpec("train_far", "input_float", "Train Far", {"value": 120.0, "step": 1.0, "step_fast": 10.0, "format": "%.3f"}),
-    ),
+    "Train Optimizer": _TRAIN_OPTIMIZER_SPECS,
+    "Train Stability": _TRAIN_STABILITY_SPECS,
 }
 
 
@@ -630,13 +471,9 @@ _ALL_DEFAULTS = {spec.key: spec.kwargs["value"] for group in GROUP_SPECS.values(
 _ALL_DEFAULTS.update({spec.key: spec.kwargs["value"] for spec in RENDER_PARAM_SPECS if "value" in spec.kwargs})
 _ALL_DEFAULTS.update({spec.key: spec.kwargs["value"] for spec in DEBUG_RENDER_SPECS if "value" in spec.kwargs})
 
-_OPTIMIZER_TAB_KEYS = {
-    "Schedule": ("lr_schedule_enabled", "lr_scale_mul", "lr_rot_mul", "lr_color_mul", "lr_opacity_mul"),
-    "Adam": ("beta1", "beta2"),
-    "Regularization": ("scale_l2", "scale_abs_reg", "sh1_reg", "opacity_reg", "density_regularizer", "color_non_negative_reg", "ssim_weight", "ssim_c1", "ssim_c2", "depth_ratio_grad_min", "depth_ratio_grad_max", "max_allowed_density", "position_random_step_opacity_gate_center", "position_random_step_opacity_gate_sharpness", "max_anisotropy", "grad_clip", "grad_norm_clip", "max_update"),
-}
+_OPTIMIZER_TAB_KEYS = TRAINING_OPTIMIZER_TAB_KEYS
 
-_TRAIN_OPTIMIZER_SPEC_BY_KEY = {spec.key: spec for spec in GROUP_SPECS["Train Optimizer"]}
+_TRAIN_OPTIMIZER_SPEC_BY_KEY = {spec.key: spec for spec in GROUP_SPECS[TRAINING_OPTIMIZER_GROUP]}
 
 
 class _ControlProxy:
@@ -2045,15 +1882,15 @@ class ToolkitWindow:
     def _section_training_setup(self, ui: ViewerUI) -> None:
         if not imgui.collapsing_header("Train Setup"):
             return
-        for key in ("max_gaussians", "training_steps_per_frame", "background_mode", "refinement_interval", "refinement_growth_ratio", "refinement_growth_start_step", "refinement_alpha_cull_threshold", "refinement_min_contribution_percent", "refinement_min_contribution_decay", "refinement_opacity_mul", "refinement_loss_weight", "refinement_target_edge_weight", "train_downscale_mode", "train_subsample_factor"):
-            self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Setup"] if spec.key == key))
+        for key in TRAIN_SETUP_PRIMARY_KEYS:
+            self._draw_control(ui, next(spec for spec in GROUP_SPECS[TRAINING_SETUP_GROUP] if spec.key == key))
         if int(ui._values.get("background_mode", 1)) == 0:
-            self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Setup"] if spec.key == "train_background_color"))
+            self._draw_control(ui, next(spec for spec in GROUP_SPECS[TRAINING_SETUP_GROUP] if spec.key == "train_background_color"))
         if int(ui._values.get("train_downscale_mode", 0)) == 0:
-            for key in ("train_auto_start_downscale", "train_downscale_base_iters", "train_downscale_iter_step", "train_downscale_max_iters"):
-                self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Setup"] if spec.key == key))
-        for key in ("seed", "init_opacity"):
-            self._draw_control(ui, next(spec for spec in GROUP_SPECS["Train Setup"] if spec.key == key))
+            for key in TRAIN_SETUP_AUTO_DOWNSCALE_KEYS:
+                self._draw_control(ui, next(spec for spec in GROUP_SPECS[TRAINING_SETUP_GROUP] if spec.key == key))
+        for key in TRAIN_SETUP_TRAILING_KEYS:
+            self._draw_control(ui, next(spec for spec in GROUP_SPECS[TRAINING_SETUP_GROUP] if spec.key == key))
         train_resolution = ui._texts.get("training_resolution", "")
         if train_resolution:
             _draw_disabled_wrapped_text(train_resolution)
@@ -2067,7 +1904,7 @@ class ToolkitWindow:
         if refinement_status:
             _draw_disabled_wrapped_text(refinement_status)
         _draw_disabled_wrapped_text("COLMAP import chooses direct pointcloud init, diffused pointcloud init, or a custom PLY scene.")
-        self._ctx_reset("train_setup_ctx", ui, [s.key for s in GROUP_SPECS["Train Setup"]])
+        self._ctx_reset("train_setup_ctx", ui, [s.key for s in GROUP_SPECS[TRAINING_SETUP_GROUP]])
         imgui.separator()
 
     def _draw_schedule_stage_tabs(self, ui: ViewerUI) -> None:
@@ -2109,19 +1946,19 @@ class ToolkitWindow:
                     self._draw_control(ui, _TRAIN_OPTIMIZER_SPEC_BY_KEY[key])
                 imgui.end_tab_item()
             imgui.end_tab_bar()
-        self._ctx_reset("optimizer_ctx", ui, [s.key for s in GROUP_SPECS["Train Optimizer"]])
+        self._ctx_reset("optimizer_ctx", ui, [s.key for s in GROUP_SPECS[TRAINING_OPTIMIZER_GROUP]])
         imgui.separator()
 
     def _section_stability(self, ui: ViewerUI) -> None:
         if not imgui.collapsing_header("Stability"):
             return
-        pairs = (("min_opacity", "max_opacity"),)
+        pairs = TRAIN_STABILITY_PAIRED_KEYS
         if imgui.begin_table("##stab_pairs", 2, imgui.TableFlags_.sizing_stretch_same.value | imgui.TableFlags_.no_borders_in_body.value):
             imgui.table_setup_column("Min")
             imgui.table_setup_column("Max")
             for min_key, max_key in pairs:
-                min_spec = next(s for s in GROUP_SPECS["Train Stability"] if s.key == min_key)
-                max_spec = next(s for s in GROUP_SPECS["Train Stability"] if s.key == max_key)
+                min_spec = next(s for s in GROUP_SPECS[TRAINING_STABILITY_GROUP] if s.key == min_key)
+                max_spec = next(s for s in GROUP_SPECS[TRAINING_STABILITY_GROUP] if s.key == max_key)
                 imgui.table_next_row()
                 imgui.table_next_column()
                 imgui.push_item_width(-1)
@@ -2135,11 +1972,11 @@ class ToolkitWindow:
 
         # Remaining non-paired controls
         paired_keys = {k for min_k, max_k in pairs for k in (min_k, max_k)}
-        for spec in GROUP_SPECS["Train Stability"]:
+        for spec in GROUP_SPECS[TRAINING_STABILITY_GROUP]:
             if spec.key not in paired_keys:
                 self._draw_control(ui, spec)
         imgui.text_disabled("Opacity bounds, max scale, and anisotropy are clamped after each ADAM step")
-        self._ctx_reset("stability_ctx", ui, [s.key for s in GROUP_SPECS["Train Stability"]])
+        self._ctx_reset("stability_ctx", ui, [s.key for s in GROUP_SPECS[TRAINING_STABILITY_GROUP]])
         imgui.separator()
 
     def _section_render_params(self, ui: ViewerUI) -> None:

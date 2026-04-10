@@ -3,10 +3,9 @@ from __future__ import annotations
 import math
 from typing import Any
 
-DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY = 0.995
-_SCHEDULE_REFERENCE_STEPS = 30_000
-_DEFAULT_LR_STAGE1_STEP = 3000
-_DEFAULT_LR_STAGE2_STEP = 14_000
+from .defaults import DEFAULT_LR_SCHEDULE_STEPS, DEFAULT_LR_STAGE1_STEP, DEFAULT_LR_STAGE2_STEP, DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY
+
+_SCHEDULE_REFERENCE_STEPS = DEFAULT_LR_SCHEDULE_STEPS
 _DEFAULT_MAX_SH_BAND = 3
 
 
@@ -28,8 +27,8 @@ def _schedule_progress(training_hparams: Any, step: int) -> float:
 
 def resolve_lr_schedule_breakpoints(training_hparams: Any) -> tuple[int, int, int]:
     max_step = _schedule_duration(training_hparams)
-    stage1 = _clamp_schedule_step(getattr(training_hparams, "lr_schedule_stage1_step", _DEFAULT_LR_STAGE1_STEP), max_step)
-    stage2 = max(stage1, _clamp_schedule_step(getattr(training_hparams, "lr_schedule_stage2_step", _DEFAULT_LR_STAGE2_STEP), max_step))
+    stage1 = _clamp_schedule_step(getattr(training_hparams, "lr_schedule_stage1_step", DEFAULT_LR_STAGE1_STEP), max_step)
+    stage2 = max(stage1, _clamp_schedule_step(getattr(training_hparams, "lr_schedule_stage2_step", DEFAULT_LR_STAGE2_STEP), max_step))
     return stage1, stage2, max_step
 
 
