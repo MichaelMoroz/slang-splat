@@ -156,11 +156,15 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["density_regularizer"] == 0.02
     assert viewer_ui._values["color_non_negative_reg"] == 0.01
     assert viewer_ui._values["depth_ratio_weight"] == 0.1
+    assert viewer_ui._values["max_screen_fraction"] == 0.1
     assert viewer_ui._values["ssim_weight"] == 0.4
     assert viewer_ui._values["ssim_c2"] == 9e-4
     assert viewer_ui._values["depth_ratio_stage1_weight"] == 0.03
     assert viewer_ui._values["depth_ratio_stage2_weight"] == 0.01
     assert viewer_ui._values["depth_ratio_stage3_weight"] == 0.001
+    assert viewer_ui._values["max_screen_fraction_stage1"] == 0.1
+    assert viewer_ui._values["max_screen_fraction_stage2"] == 0.1
+    assert viewer_ui._values["max_screen_fraction_stage3"] == 0.1
     assert viewer_ui._values["depth_ratio_grad_min"] == 0.0
     assert viewer_ui._values["depth_ratio_grad_max"] == 0.1
     assert viewer_ui._values["max_allowed_density"] == 12.0
@@ -710,16 +714,18 @@ def test_schedule_stage_specs_clone_same_group_shape() -> None:
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 0"]["lr"] == "lr_schedule_start_lr"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 0"]["lr_pos_mul"] == "lr_pos_mul"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 0"]["lr_sh_mul"] == "lr_sh_mul"
+    assert ui._SCHEDULE_STAGE_GROUPS["Stage 0"]["max_screen_fraction"] == "max_screen_fraction"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 0"]["sh_band"] == "sh_band"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 1"]["lr"] == "lr_schedule_stage1_lr"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 1"]["lr_pos_mul"] == "lr_pos_stage1_mul"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 1"]["lr_sh_mul"] == "lr_sh_stage1_mul"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 2"]["depth_ratio_weight"] == "depth_ratio_stage2_weight"
+    assert ui._SCHEDULE_STAGE_GROUPS["Stage 2"]["max_screen_fraction"] == "max_screen_fraction_stage2"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 3"]["noise_lr"] == "position_random_step_noise_stage3_lr"
-    assert tuple(spec.label for spec in ui.SCHEDULE_STAGE_SPECS["Stage 0"]) == ("LR Target", "LR Mul Position", "LR Mul SH", "Depth Ratio Reg", "Noise LR", "SH Band")
-    assert tuple(spec.label for spec in ui.SCHEDULE_STAGE_SPECS["Stage 1"]) == ("End Step", "LR Target", "LR Mul Position", "LR Mul SH", "Depth Ratio Reg", "Noise LR", "SH Band")
-    assert tuple(spec.label for spec in ui.SCHEDULE_STAGE_SPECS["Stage 2"]) == ("End Step", "LR Target", "LR Mul Position", "LR Mul SH", "Depth Ratio Reg", "Noise LR", "SH Band")
-    assert tuple(spec.label for spec in ui.SCHEDULE_STAGE_SPECS["Stage 3"]) == ("End Step", "LR Target", "LR Mul Position", "LR Mul SH", "Depth Ratio Reg", "Noise LR", "SH Band")
+    assert tuple(spec.label for spec in ui.SCHEDULE_STAGE_SPECS["Stage 0"]) == ("LR Target", "LR Mul Position", "LR Mul SH", "Depth Ratio Reg", "Max Splat Screen Size", "Noise LR", "SH Band")
+    assert tuple(spec.label for spec in ui.SCHEDULE_STAGE_SPECS["Stage 1"]) == ("End Step", "LR Target", "LR Mul Position", "LR Mul SH", "Depth Ratio Reg", "Max Splat Screen Size", "Noise LR", "SH Band")
+    assert tuple(spec.label for spec in ui.SCHEDULE_STAGE_SPECS["Stage 2"]) == ("End Step", "LR Target", "LR Mul Position", "LR Mul SH", "Depth Ratio Reg", "Max Splat Screen Size", "Noise LR", "SH Band")
+    assert tuple(spec.label for spec in ui.SCHEDULE_STAGE_SPECS["Stage 3"]) == ("End Step", "LR Target", "LR Mul Position", "LR Mul SH", "Depth Ratio Reg", "Max Splat Screen Size", "Noise LR", "SH Band")
 
 
 def test_schedule_step_slider_max_tracks_schedule_steps() -> None:

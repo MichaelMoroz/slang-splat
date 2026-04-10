@@ -7,7 +7,7 @@ import slangpy as spy
 
 from ..utility import RO_BUFFER_USAGE, SHADER_ROOT, alloc_buffer, dispatch, load_compute_kernels, thread_count_1d
 from ..renderer import Camera, GaussianRenderer
-from .schedule import resolve_learning_rate_scale, resolve_position_lr_mul, resolve_sh_lr_mul
+from .schedule import resolve_learning_rate_scale, resolve_max_screen_fraction, resolve_position_lr_mul, resolve_sh_lr_mul
 
 
 class GaussianOptimizer:
@@ -123,10 +123,11 @@ class GaussianOptimizer:
             return
         self._upload_param_settings(lr_scale, position_lr_mul_scale, sh_lr_mul_scale)
 
-    def _vars(self, splat_count: int, training_hparams: Any, scale_reg_reference: float, color_non_negative_seed: int) -> dict[str, object]:
+    def _vars(self, splat_count: int, training_hparams: Any, scale_reg_reference: float, color_non_negative_seed: int, max_screen_fraction: float | None = None) -> dict[str, object]:
         return {
             "g_SplatCount": int(splat_count),
             "g_RadiusScale": float(max(self.renderer.radius_scale, 1e-8)),
+            "g_MaxScreenFraction": float(max(resolve_max_screen_fraction(training_hparams, 0) if max_screen_fraction is None else max_screen_fraction, 1e-8)),
             "g_ScaleL2Weight": float(max(training_hparams.scale_l2_weight, 0.0)),
             "g_ScaleAbsRegWeight": float(max(training_hparams.scale_abs_reg_weight, 0.0)),
             "g_SH1RegWeight": float(max(training_hparams.sh1_reg_weight, 0.0)),
@@ -194,6 +195,7 @@ class GaussianOptimizer:
         frame_camera: Camera | None = None,
         width: int | None = None,
         height: int | None = None,
+        step_index: int = 0,
     ) -> None:
         camera_vars: dict[str, object]
         if frame_camera is None or width is None or height is None:
@@ -228,7 +230,13 @@ class GaussianOptimizer:
                 "g_ParamGrads": work_buffers["param_grads"],
                 "g_SplatParamsRW": scene_buffers["splat_params"],
                 **camera_vars,
-                **self._vars(splat_count, training_hparams, scale_reg_reference, 0),
+                **self._vars(
+                    splat_count,
+                    training_hparams,
+                    scale_reg_reference,
+                    0,
+                    max_screen_fraction=resolve_max_screen_fraction(training_hparams, int(step_index)),
+                ),
             },
             command_encoder=encoder,
             debug_label="Gaussian Param Projection",

@@ -81,6 +81,7 @@ def test_build_training_params_clamps_ranges():
     assert params.training.density_regularizer == 0.02
     assert params.training.color_non_negative_reg == 0.01
     assert params.training.depth_ratio_weight == 0.1
+    assert params.training.max_screen_fraction == 0.1
     assert params.training.ssim_c2 == 9e-4
     assert params.training.depth_ratio_grad_min == 0.2
     assert params.training.depth_ratio_grad_max == 0.2 + DEPTH_RATIO_GRAD_MIN_BAND_WIDTH
@@ -94,6 +95,9 @@ def test_build_training_params_clamps_ranges():
     assert params.training.lr_sh_stage1_mul == 0.05
     assert params.training.lr_sh_stage2_mul == 0.05
     assert params.training.lr_sh_stage3_mul == 0.05
+    assert params.training.max_screen_fraction_stage1 == 0.1
+    assert params.training.max_screen_fraction_stage2 == 0.1
+    assert params.training.max_screen_fraction_stage3 == 0.1
     assert params.training.position_random_step_noise_lr == 5e5
     assert np.isclose(params.training.position_random_step_noise_stage1_lr, 466666.6666666667)
     assert np.isclose(params.training.position_random_step_noise_stage2_lr, 416666.6666666667)
@@ -137,6 +141,7 @@ def test_default_training_params_match_fixed_count_defaults():
     assert params.training.density_regularizer == 0.02
     assert params.training.color_non_negative_reg == 0.01
     assert params.training.depth_ratio_weight == 0.1
+    assert params.training.max_screen_fraction == 0.1
     assert params.training.ssim_weight == 0.4
     assert params.training.ssim_c2 == 9e-4
     assert params.training.depth_ratio_grad_min == 0.0
@@ -151,6 +156,9 @@ def test_default_training_params_match_fixed_count_defaults():
     assert params.training.lr_sh_stage1_mul == 0.05
     assert params.training.lr_sh_stage2_mul == 0.05
     assert params.training.lr_sh_stage3_mul == 0.05
+    assert params.training.max_screen_fraction_stage1 == 0.1
+    assert params.training.max_screen_fraction_stage2 == 0.1
+    assert params.training.max_screen_fraction_stage3 == 0.1
     assert params.training.position_random_step_noise_lr == 5e5
     assert np.isclose(params.training.position_random_step_noise_stage1_lr, 466666.6666666667)
     assert np.isclose(params.training.position_random_step_noise_stage2_lr, 416666.6666666667)
@@ -253,6 +261,10 @@ def test_viewer_defaults_expose_only_fixed_count_training_controls():
     assert "sh1_reg" in defaults
     assert "opacity_reg" in defaults
     assert defaults["color_non_negative_reg"] == 0.01
+    assert defaults["max_screen_fraction"] == 0.1
+    assert defaults["max_screen_fraction_stage1"] == 0.1
+    assert defaults["max_screen_fraction_stage2"] == 0.1
+    assert defaults["max_screen_fraction_stage3"] == 0.1
     assert defaults["ssim_weight"] == 0.4
     assert defaults["ssim_c2"] == 9e-4
     assert "lambda_dssim" not in defaults

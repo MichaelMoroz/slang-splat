@@ -31,6 +31,7 @@ uniform uint g_SplatCount;
 uniform CameraParams g_CurrentCamera;
 uniform uint g_EnableCurrentCameraScreenScaleCap;
 uniform float g_RadiusScale;
+uniform float g_MaxScreenFraction;
 uniform float g_ScaleL2Weight;
 uniform float g_ScaleAbsRegWeight;
 uniform float g_SH1RegWeight;
@@ -309,7 +310,7 @@ float3 clamp_screen_area_upper_bound(float3 position, float3 logScale)
     float currentMaxScale = max(exp(logScale.x), max(exp(logScale.y), exp(logScale.z)));
     if (!(currentMaxScale > SMALL_VALUE)) return logScale;
 
-    float maxScreenRadiusPx = sqrt(max(TRAINING_MAX_SCREEN_FRACTION * g_CurrentCamera.viewport.x * g_CurrentCamera.viewport.y / PI, SMALL_VALUE));
+    float maxScreenRadiusPx = sqrt(max(g_MaxScreenFraction * g_CurrentCamera.viewport.x * g_CurrentCamera.viewport.y / PI, SMALL_VALUE));
     float maxSupportScale;
     if (!world_support_radius_from_screen_circle(camera, position, maxScreenRadiusPx, maxSupportScale)) return logScale;
 

@@ -14,7 +14,7 @@ from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 from src.scene.sh_utils import SH_C0, evaluate_sh_color
 from src.training import gaussian_trainer as gaussian_trainer_module
-from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, contribution_fixed_count_from_percent, contribution_percent_from_fixed_count, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_depth_ratio_grad_band, resolve_depth_ratio_weight, resolve_effective_refinement_interval, resolve_effective_train_render_factor, resolve_lr_schedule_breakpoints, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_max_allowed_density, resolve_sh_band, resolve_sh_lr_mul, resolve_stage_schedule_steps, resolve_training_resolution, resolve_train_subsample_factor, resolve_use_sh, should_run_refinement_step
+from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, contribution_fixed_count_from_percent, contribution_percent_from_fixed_count, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_depth_ratio_grad_band, resolve_depth_ratio_weight, resolve_effective_refinement_interval, resolve_effective_train_render_factor, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_screen_fraction, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_sh_band, resolve_sh_lr_mul, resolve_stage_schedule_steps, resolve_training_resolution, resolve_train_subsample_factor, resolve_use_sh, should_run_refinement_step
 
 _ADAM_BUFFER_NAMES = ("adam_moments",)
 _OPACITY_EPS = 1e-6
@@ -1253,6 +1253,10 @@ def test_piecewise_schedule_uses_configured_viewer_breakpoints() -> None:
         depth_ratio_stage1_weight=0.25,
         depth_ratio_stage2_weight=0.05,
         depth_ratio_stage3_weight=0.01,
+        max_screen_fraction=0.2,
+        max_screen_fraction_stage1=0.1,
+        max_screen_fraction_stage2=0.05,
+        max_screen_fraction_stage3=0.025,
         position_random_step_noise_lr=5e5,
         position_random_step_noise_stage1_lr=250000.0,
         position_random_step_noise_stage2_lr=100000.0,
@@ -1277,6 +1281,10 @@ def test_piecewise_schedule_uses_configured_viewer_breakpoints() -> None:
     np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 1000), 0.25, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 4000), 0.05, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 20_000), 0.01, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_max_screen_fraction(hparams, 0), 0.2, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_max_screen_fraction(hparams, 1000), 0.1, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_max_screen_fraction(hparams, 4000), 0.05, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_max_screen_fraction(hparams, 20_000), 0.025, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 1000), 250000.0, rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 4000), 100000.0, rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 20_000), 0.0, rtol=0.0, atol=1e-6)
@@ -1437,6 +1445,10 @@ def test_depth_ratio_noise_and_sh_schedules_follow_requested_defaults() -> None:
     np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 3000), 0.03, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 14000), 0.01, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 30_000), 0.001, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_max_screen_fraction(hparams, 0), 0.1, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_max_screen_fraction(hparams, 3000), 0.1, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_max_screen_fraction(hparams, 14000), 0.1, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_max_screen_fraction(hparams, 30_000), 0.1, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 0), 5e5, rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 3000), 466666.6666666667, rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 14000), 416666.6666666667, rtol=0.0, atol=1e-6)
@@ -1468,6 +1480,10 @@ def test_schedule_disabled_uses_stage0_only_for_scheduled_values() -> None:
         depth_ratio_stage1_weight=0.05,
         depth_ratio_stage2_weight=0.01,
         depth_ratio_stage3_weight=0.001,
+        max_screen_fraction=0.3,
+        max_screen_fraction_stage1=0.1,
+        max_screen_fraction_stage2=0.05,
+        max_screen_fraction_stage3=0.025,
         position_random_step_noise_lr=1234.0,
         position_random_step_noise_stage1_lr=250.0,
         position_random_step_noise_stage2_lr=100.0,
@@ -1486,6 +1502,8 @@ def test_schedule_disabled_uses_stage0_only_for_scheduled_values() -> None:
     np.testing.assert_allclose(resolve_sh_lr_mul(hparams, 30_000), 1.3, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 0), 0.8, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 30_000), 0.8, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_max_screen_fraction(hparams, 0), 0.3, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_max_screen_fraction(hparams, 30_000), 0.3, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 0), 1234.0, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 30_000), 1234.0, rtol=0.0, atol=1e-12)
     assert resolve_sh_band(hparams, 0) == 2
@@ -2467,6 +2485,43 @@ def test_training_max_screen_size_ignores_offscreen_centers(device, tmp_path: Pa
 
     scales = _actual_scale(_read_scene_groups(renderer, 1)["scales"][0, :3])
     np.testing.assert_allclose(scales, np.array([2.0, 1.5, 1.0], dtype=np.float32), rtol=0.0, atol=1e-6)
+
+
+def test_training_max_screen_size_uses_scheduled_value(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=1, seed=110)
+    scene.positions[0] = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+    scene.scales[0] = _log_sigma(np.array([2.0, 2.0, 2.0], dtype=np.float32))
+    frame = _make_frame(tmp_path, image_name="max_screen_schedule_target.png", image_id=26)
+    renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.0, list_capacity_multiplier=16)
+    training = TrainingHyperParams(
+        lr_schedule_stage1_step=1,
+        lr_schedule_stage2_step=2,
+        lr_schedule_steps=3,
+        max_screen_fraction=0.2,
+        max_screen_fraction_stage1=0.05,
+        max_screen_fraction_stage2=0.025,
+        max_screen_fraction_stage3=0.0125,
+        scale_l2_weight=0.0,
+        scale_abs_reg_weight=0.0,
+        opacity_reg_weight=0.0,
+    )
+    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], training_hparams=training, seed=123)
+    camera = trainer.make_frame_camera(0, renderer.width, renderer.height)
+    scheduled_fraction = resolve_max_screen_fraction(training, 2)
+    max_radius_px = float(np.sqrt(scheduled_fraction * renderer.width * renderer.height / np.pi))
+    expected_support = _circle_bound_support_radius(camera, scene.positions[0], renderer.width, renderer.height, max_radius_px)
+    assert expected_support is not None
+
+    zeros = np.zeros((scene.count, 4), dtype=np.float32)
+    _write_grad_groups(renderer, scene.count, grad_positions=zeros, grad_scales=zeros, grad_rotations=zeros, grad_color_alpha=zeros)
+
+    enc = device.create_command_encoder()
+    trainer._dispatch_optimizer_step(enc, 2, camera)
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+
+    scales = _actual_scale(_read_scene_groups(renderer, 1)["scales"][0, :3])
+    np.testing.assert_allclose(scales, np.full((3,), expected_support / _GAUSSIAN_SUPPORT_SIGMA_RADIUS, dtype=np.float32), rtol=0.0, atol=1e-6)
 
 
 def test_optimizer_projection_clamps_sh_coefficients(device, tmp_path: Path) -> None:
