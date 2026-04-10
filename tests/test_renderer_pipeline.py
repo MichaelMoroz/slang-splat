@@ -12,7 +12,7 @@ from reference_impls.reference_cpu import (
     sort_key_values,
 )
 from src.app.shared import RendererParams, renderer_kwargs
-from src.common import SHADER_ROOT
+from src.utility import SHADER_ROOT
 from src.renderer import Camera, GaussianRenderer
 from src.scene import GaussianScene, SUPPORTED_SH_COEFF_COUNT
 from src.training import contribution_fixed_count_from_percent

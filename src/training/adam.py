@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 import slangpy as spy
 
-from ..common import SHADER_ROOT, debug_region, thread_count_1d
+from ..utility import RW_BUFFER_USAGE, SHADER_ROOT, alloc_buffer, dispatch, grow_capacity, load_compute_kernels, thread_count_1d
 
 
 @dataclass(slots=True)
@@ -19,8 +18,6 @@ class AdamRuntimeHyperParams:
 
 
 class AdamOptimizer:
-    _RW_BUFFER_USAGE = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
-
     _clip_threads = staticmethod(thread_count_1d)
     _grad_norm_threads = staticmethod(thread_count_1d)
     _param_threads = staticmethod(thread_count_1d)
@@ -34,25 +31,21 @@ class AdamOptimizer:
         self._kernels = self._create_kernels()
 
     def _create_kernels(self) -> dict[str, spy.ComputeKernel]:
-        shader_path = Path(SHADER_ROOT / "utility" / "optimizer" / "optimizer.slang")
-        entries = {
-            "compute_grad_norms": "csComputePackedElementGradNorms",
-            "clip_grads": "csClipPackedParamGrads",
-            "adam_step": "csAdamStepPacked",
-        }
-        return {
-            name: self.device.create_compute_kernel(self.device.load_program(str(shader_path), [entry]))
-            for name, entry in entries.items()
-        }
-
-    def _create_buffer(self, size: int) -> spy.Buffer:
-        return self.device.create_buffer(size=max(int(size), 4), usage=self._RW_BUFFER_USAGE)
+        return load_compute_kernels(
+            self.device,
+            SHADER_ROOT / "utility" / "optimizer" / "optimizer.slang",
+            {
+                "compute_grad_norms": "csComputePackedElementGradNorms",
+                "clip_grads": "csClipPackedParamGrads",
+                "adam_step": "csAdamStepPacked",
+            },
+        )
 
     def _ensure_state_buffers(self, packed_param_count: int) -> None:
         count = max(int(packed_param_count), 1)
         if self._capacity >= count and "adam_moments" in self._buffers: return
-        self._capacity = max(count, max(self._capacity, 1) + max(self._capacity, 1) // 2)
-        self._buffers["adam_moments"] = self._create_buffer(self._capacity * 8)
+        self._capacity = grow_capacity(count, self._capacity)
+        self._buffers["adam_moments"] = alloc_buffer(self.device, size=self._capacity * 8, usage=RW_BUFFER_USAGE)
 
     def update_hyperparams(self, adam_hparams: Any, runtime_hparams: AdamRuntimeHyperParams) -> None:
         self.adam = adam_hparams
@@ -116,17 +109,31 @@ class AdamOptimizer:
             **self._buffer_shader_vars(),
             **self._optimizer_vars(element_count, count, param_group_size, param_settings_count, step_index),
         }
-        with debug_region(encoder, "Adam Clip Grads", 60):
-            self._kernels["clip_grads"].dispatch(thread_count=self._clip_threads(element_count), vars=vars, command_encoder=encoder)
+        dispatch(
+            kernel=self._kernels["clip_grads"],
+            thread_count=self._clip_threads(element_count),
+            vars=vars,
+            command_encoder=encoder,
+            debug_label="Adam Clip Grads",
+            debug_color_index=60,
+        )
         if debug_element_grad_norm_buffer is not None:
-            with debug_region(encoder, "Adam Compute Grad Norms", 61):
-                self._kernels["compute_grad_norms"].dispatch(
-                    thread_count=self._grad_norm_threads(element_count),
-                    vars={**vars, "g_OptimizerElementGradNorms": debug_element_grad_norm_buffer},
-                    command_encoder=encoder,
-                )
-        with debug_region(encoder, "Adam Step", 62):
-            self._kernels["adam_step"].dispatch(thread_count=self._param_threads(count), vars=vars, command_encoder=encoder)
+            dispatch(
+                kernel=self._kernels["compute_grad_norms"],
+                thread_count=self._grad_norm_threads(element_count),
+                vars={**vars, "g_OptimizerElementGradNorms": debug_element_grad_norm_buffer},
+                command_encoder=encoder,
+                debug_label="Adam Compute Grad Norms",
+                debug_color_index=61,
+            )
+        dispatch(
+            kernel=self._kernels["adam_step"],
+            thread_count=self._param_threads(count),
+            vars=vars,
+            command_encoder=encoder,
+            debug_label="Adam Step",
+            debug_color_index=62,
+        )
 
     @property
     def buffers(self) -> dict[str, spy.Buffer]:

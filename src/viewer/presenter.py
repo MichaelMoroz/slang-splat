@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import numpy as np
 import slangpy as spy
 
-from ..common import clamp_index, debug_region, require_not_none
+from ..utility import alloc_texture_2d, clamp_index, debug_region, require_not_none
 from ..training import resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_depth_ratio_weight, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_sh_band, resolve_sh_lr_mul
 from . import session
 
@@ -201,7 +201,13 @@ def _ensure_texture(viewer: object, attr: str, width: int, height: int) -> spy.T
     texture = getattr(viewer.s, attr)
     if texture is not None and int(texture.width) == int(width) and int(texture.height) == int(height):
         return texture
-    created = viewer.device.create_texture(format=spy.Format.rgba32_float, width=int(width), height=int(height), usage=_DEBUG_TEXTURE_USAGE)
+    created = alloc_texture_2d(
+        viewer.device,
+        format=spy.Format.rgba32_float,
+        width=int(width),
+        height=int(height),
+        usage=_DEBUG_TEXTURE_USAGE,
+    )
     setattr(viewer.s, attr, created)
     return created
 

@@ -6,7 +6,7 @@ import numpy as np
 import slangpy as spy
 from slangpy import math as smath
 
-from ..common import VEC_EPS, as_float3, normalize3
+from ..utility import VEC_EPS, as_float3, normalize3
 
 SPLAT_PIXEL_CLAMP_PX = 0.75
 

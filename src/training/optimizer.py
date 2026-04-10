@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 import slangpy as spy
 
-from ..common import SHADER_ROOT, debug_region, thread_count_1d
+from ..utility import RO_BUFFER_USAGE, SHADER_ROOT, alloc_buffer, dispatch, load_compute_kernels, thread_count_1d
 from ..renderer import Camera, GaussianRenderer
 from .schedule import resolve_learning_rate_scale, resolve_position_lr_mul, resolve_sh_lr_mul
 
@@ -14,7 +13,6 @@ from .schedule import resolve_learning_rate_scale, resolve_position_lr_mul, reso
 class GaussianOptimizer:
     _GROUPS = ((0, 3), (3, 3), (6, 4), (10, 12), (22, 1))
     _PARAM_SETTINGS_U32_WIDTH = 8
-    _RO_BUFFER_USAGE = spy.BufferUsage.shader_resource | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
     _threads = staticmethod(thread_count_1d)
 
     def __init__(self, device: spy.Device, renderer: GaussianRenderer, adam_hparams: Any, stability_hparams: Any) -> None:
@@ -31,22 +29,22 @@ class GaussianOptimizer:
         self._upload_param_settings()
 
     def _create_kernels(self) -> dict[str, spy.ComputeKernel]:
-        shader_path = Path(SHADER_ROOT / "utility" / "optimizer" / "gaussian_optimizer_stage.slang")
-        entries = {
-            "accumulate_regularizers": "csAccumulateRegularizationGrads",
-            "project_params": "csProjectGaussianParams",
-        }
-        return {
-            name: self.device.create_compute_kernel(self.device.load_program(str(shader_path), [entry]))
-            for name, entry in entries.items()
-        }
-
-    def _create_buffer(self, size: int) -> spy.Buffer:
-        return self.device.create_buffer(size=max(int(size), 4), usage=self._RO_BUFFER_USAGE)
+        return load_compute_kernels(
+            self.device,
+            SHADER_ROOT / "utility" / "optimizer" / "gaussian_optimizer_stage.slang",
+            {
+                "accumulate_regularizers": "csAccumulateRegularizationGrads",
+                "project_params": "csProjectGaussianParams",
+            },
+        )
 
     def _ensure_static_buffers(self) -> None:
         if "param_settings" in self._buffers: return
-        self._buffers["param_settings"] = self._create_buffer(self.renderer.TRAINABLE_PARAM_COUNT * self._PARAM_SETTINGS_U32_WIDTH * 4)
+        self._buffers["param_settings"] = alloc_buffer(
+            self.device,
+            size=self.renderer.TRAINABLE_PARAM_COUNT * self._PARAM_SETTINGS_U32_WIDTH * 4,
+            usage=RO_BUFFER_USAGE,
+        )
 
     @staticmethod
     def _raw_opacity_from_alpha(alpha: float) -> float:
@@ -158,17 +156,19 @@ class GaussianOptimizer:
         training_hparams: Any,
         scale_reg_reference: float,
     ) -> None:
-        with debug_region(encoder, "Gaussian Regularizers", 70):
-            self._kernels["accumulate_regularizers"].dispatch(
-                thread_count=self._threads(splat_count),
-                vars={
-                    "g_LossBuffer": loss_buffer,
-                    "g_ParamGrads": work_buffers["param_grads"],
-                    "g_SplatParamsRW": scene_buffers["splat_params"],
-                    **self._vars(splat_count, training_hparams, scale_reg_reference),
-                },
-                command_encoder=encoder,
-            )
+        dispatch(
+            kernel=self._kernels["accumulate_regularizers"],
+            thread_count=self._threads(splat_count),
+            vars={
+                "g_LossBuffer": loss_buffer,
+                "g_ParamGrads": work_buffers["param_grads"],
+                "g_SplatParamsRW": scene_buffers["splat_params"],
+                **self._vars(splat_count, training_hparams, scale_reg_reference),
+            },
+            command_encoder=encoder,
+            debug_label="Gaussian Regularizers",
+            debug_color_index=70,
+        )
 
     @property
     def param_settings(self) -> spy.Buffer:
@@ -191,40 +191,42 @@ class GaussianOptimizer:
         width: int | None = None,
         height: int | None = None,
     ) -> None:
-        with debug_region(encoder, "Gaussian Param Projection", 71):
-            camera_vars: dict[str, object]
-            if frame_camera is None or width is None or height is None:
-                camera_vars = {
-                    "g_CurrentCamera": {
-                        "viewport": spy.float2(1.0, 1.0),
-                        "camPos": spy.float3(0.0, 0.0, 0.0),
-                        "camBasis": spy.float3x3(np.eye(3, dtype=np.float32)),
-                        "focalPixels": spy.float2(1.0, 1.0),
-                        "principalPoint": spy.float2(0.0, 0.0),
-                        "nearDepth": 0.0,
-                        "farDepth": 0.0,
-                        "projDistortionK1": 0.0,
-                        "projDistortionK2": 0.0,
-                    },
-                    "g_EnableCurrentCameraScreenScaleCap": np.uint32(0),
-                }
-            else:
-                k1, k2 = frame_camera.distortion_coeffs()
-                camera_vars = {
-                    "g_CurrentCamera": {
-                        **frame_camera.gpu_params(int(width), int(height)),
-                        "projDistortionK1": float(k1),
-                        "projDistortionK2": float(k2),
-                    },
-                    "g_EnableCurrentCameraScreenScaleCap": np.uint32(1),
-                }
-            self._kernels["project_params"].dispatch(
-                thread_count=self._threads(splat_count),
-                vars={
-                    "g_ParamGrads": work_buffers["param_grads"],
-                    "g_SplatParamsRW": scene_buffers["splat_params"],
-                    **camera_vars,
-                    **self._vars(splat_count, training_hparams, scale_reg_reference),
+        camera_vars: dict[str, object]
+        if frame_camera is None or width is None or height is None:
+            camera_vars = {
+                "g_CurrentCamera": {
+                    "viewport": spy.float2(1.0, 1.0),
+                    "camPos": spy.float3(0.0, 0.0, 0.0),
+                    "camBasis": spy.float3x3(np.eye(3, dtype=np.float32)),
+                    "focalPixels": spy.float2(1.0, 1.0),
+                    "principalPoint": spy.float2(0.0, 0.0),
+                    "nearDepth": 0.0,
+                    "farDepth": 0.0,
+                    "projDistortionK1": 0.0,
+                    "projDistortionK2": 0.0,
                 },
-                command_encoder=encoder,
-            )
+                "g_EnableCurrentCameraScreenScaleCap": np.uint32(0),
+            }
+        else:
+            k1, k2 = frame_camera.distortion_coeffs()
+            camera_vars = {
+                "g_CurrentCamera": {
+                    **frame_camera.gpu_params(int(width), int(height)),
+                    "projDistortionK1": float(k1),
+                    "projDistortionK2": float(k2),
+                },
+                "g_EnableCurrentCameraScreenScaleCap": np.uint32(1),
+            }
+        dispatch(
+            kernel=self._kernels["project_params"],
+            thread_count=self._threads(splat_count),
+            vars={
+                "g_ParamGrads": work_buffers["param_grads"],
+                "g_SplatParamsRW": scene_buffers["splat_params"],
+                **camera_vars,
+                **self._vars(splat_count, training_hparams, scale_reg_reference),
+            },
+            command_encoder=encoder,
+            debug_label="Gaussian Param Projection",
+            debug_color_index=71,
+        )

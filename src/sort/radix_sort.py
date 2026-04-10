@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 import slangpy as spy
 
-from ..common import ROOT, debug_color, debug_group, dispatch_indirect
+from ..utility import INDIRECT_BUFFER_USAGE, ROOT, alloc_buffer, debug_color, debug_group, dispatch_indirect, grow_capacity, load_compute_items
 
 SHADER_DIR = ROOT / "shaders" / "utility" / "radix_sort"
 PREFIX_SHADER_PATH = str(ROOT / "shaders" / "utility" / "prefix_sum" / "prefix_sum.slang")
@@ -41,13 +41,18 @@ class GPURadixSort:
 
     def __init__(self, device: spy.Device):
         self.device = device
-        load = device.load_program
-        self.compute_args = device.create_compute_kernel(load(str(SHADER_DIR / "compute_indirect_args.slang"), ["csComputeIndirectArgs"]))
-        self.compute_args_from_buffer = device.create_compute_kernel(load(str(SHADER_DIR / "compute_indirect_args_from_buffer.slang"), ["csComputeIndirectArgsFromBuffer"]))
-        self.histogram = device.create_compute_pipeline(load(str(SHADER_DIR / "histogram.slang"), ["csRadixHistogram"]))
-        self.prefix_level = device.create_compute_pipeline(load(str(SHADER_DIR / "prefix_block.slang"), ["csRadixPrefixLevel"]))
-        self.prefix_add = device.create_compute_pipeline(load(PREFIX_SHADER_PATH, ["csPrefixAddOffsets"]))
-        self.scatter = device.create_compute_pipeline(load(str(SHADER_DIR / "scatter.slang"), ["csRadixScatter"]))
+        for name, item in load_compute_items(
+            device,
+            {
+                "compute_args": ("kernel", SHADER_DIR / "compute_indirect_args.slang", "csComputeIndirectArgs"),
+                "compute_args_from_buffer": ("kernel", SHADER_DIR / "compute_indirect_args_from_buffer.slang", "csComputeIndirectArgsFromBuffer"),
+                "histogram": ("pipeline", SHADER_DIR / "histogram.slang", "csRadixHistogram"),
+                "prefix_level": ("pipeline", SHADER_DIR / "prefix_block.slang", "csRadixPrefixLevel"),
+                "prefix_add": ("pipeline", PREFIX_SHADER_PATH, "csPrefixAddOffsets"),
+                "scatter": ("pipeline", SHADER_DIR / "scatter.slang", "csRadixScatter"),
+            },
+        ).items():
+            setattr(self, name, item)
         self._capacity_n = 0
         self._buffers: dict[str, object] | None = None
         self.indirect_args: spy.Buffer | None = None
@@ -94,30 +99,26 @@ class GPURadixSort:
     def ensure_buffers(self, n: int) -> dict[str, object]:
         if self._buffers is not None and n <= self._capacity_n:
             return self._buffers
-        old_capacity = max(self._capacity_n, 1)
-        grow_n = max(int(n), old_capacity + old_capacity // 2)
+        grow_n = grow_capacity(n, self._capacity_n)
         layout = self._layout(grow_n)
         self._buffers = {
             "keys": [
-                self.device.create_buffer(size=max(grow_n, 1) * 4, usage=self._copy_usage),
-                self.device.create_buffer(size=max(grow_n, 1) * 4, usage=self._copy_usage),
+                alloc_buffer(self.device, size=max(grow_n, 1) * 4, usage=self._copy_usage),
+                alloc_buffer(self.device, size=max(grow_n, 1) * 4, usage=self._copy_usage),
             ],
             "values": [
-                self.device.create_buffer(size=max(grow_n, 1) * 4, usage=self._copy_usage),
-                self.device.create_buffer(size=max(grow_n, 1) * 4, usage=self._copy_usage),
+                alloc_buffer(self.device, size=max(grow_n, 1) * 4, usage=self._copy_usage),
+                alloc_buffer(self.device, size=max(grow_n, 1) * 4, usage=self._copy_usage),
             ],
-            "histogram": self.device.create_buffer(size=max(layout["packed_hist_n"], 1) * 4, usage=self._rw_usage),
-            "prefix": self.device.create_buffer(size=max(layout["prefix_n"], 1) * 4, usage=self._rw_usage),
+            "histogram": alloc_buffer(self.device, size=max(layout["packed_hist_n"], 1) * 4, usage=self._rw_usage),
+            "prefix": alloc_buffer(self.device, size=max(layout["prefix_n"], 1) * 4, usage=self._rw_usage),
         }
         self._capacity_n = grow_n
         return self._buffers
 
     def ensure_indirect_args(self) -> spy.Buffer:
         if self.indirect_args is None:
-            self.indirect_args = self.device.create_buffer(
-                size=INDIRECT_ARGS_UINT_COUNT * 4,
-                usage=spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.indirect_argument,
-            )
+            self.indirect_args = alloc_buffer(self.device, size=INDIRECT_ARGS_UINT_COUNT * 4, usage=INDIRECT_BUFFER_USAGE)
         return self.indirect_args
 
     def compute_indirect_args_from_buffer_dispatch(
@@ -338,8 +339,8 @@ def sort_numpy(device: spy.Device, keys: np.ndarray, values: np.ndarray, max_bit
         | spy.BufferUsage.copy_destination
         | spy.BufferUsage.copy_source
     )
-    keys_buffer = device.create_buffer(size=n * 4, usage=usage)
-    values_buffer = device.create_buffer(size=n * 4, usage=usage)
+    keys_buffer = alloc_buffer(device, size=n * 4, usage=usage)
+    values_buffer = alloc_buffer(device, size=n * 4, usage=usage)
     keys_buffer.copy_from_numpy(np.ascontiguousarray(keys.astype(np.uint32, copy=False)))
     values_buffer.copy_from_numpy(np.ascontiguousarray(values.astype(np.uint32, copy=False)))
     encoder = device.create_command_encoder()

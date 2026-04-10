@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import slangpy as spy
 
-from ..common import SHADER_ROOT, buffer_to_numpy, clamp_index, debug_region, dispatch, thread_count_1d, thread_count_2d
+from ..utility import RW_BUFFER_USAGE, SHADER_ROOT, alloc_buffer, alloc_texture_2d, buffer_to_numpy, clamp_index, debug_region, dispatch, grow_capacity, load_compute_items, thread_count_1d, thread_count_2d
 from ..filter import SeparableGaussianBlur
 from ..metrics import Metrics, psnr_from_mse
 from ..renderer import Camera, GaussianRenderer
@@ -599,10 +599,13 @@ class GaussianTrainer:
         self.state = TrainingState()
         self.state.last_base_lr = self.current_base_lr(0)
         self._frame_metrics = _FrameMetricBookkeeper.create(len(self.frames))
-        self._kernels = {
-            name: self.device.create_compute_kernel(self.device.load_program(str(shader_path), [entry]))
-            for name, (shader_path, entry) in self._KERNEL_ENTRIES.items()
-        }
+        self._kernels = load_compute_items(
+            self.device,
+            {
+                name: ("kernel", shader_path, entry)
+                for name, (shader_path, entry) in self._KERNEL_ENTRIES.items()
+            },
+        )
         self._buffers: dict[str, spy.Buffer] = {}
         self._refinement_buffers: dict[str, spy.Buffer] = {}
         self._splat_capacity = 0
@@ -653,11 +656,14 @@ class GaussianTrainer:
         count = max(int(splat_count), 1)
         required_batch_steps = max(int(batch_step_count), 1)
         if self._buffers and count <= self._splat_capacity and required_batch_steps <= self._batch_step_capacity: return
-        usage = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
-        self._splat_capacity = max(count, max(self._splat_capacity, 1) + max(self._splat_capacity, 1) // 2)
-        self._batch_step_capacity = max(required_batch_steps, max(self._batch_step_capacity, 1) + max(self._batch_step_capacity, 1) // 2)
-        self._buffers.setdefault("loss", self.device.create_buffer(size=16, usage=usage))
-        self._buffers["batch_step_info"] = self.device.create_buffer(size=self._batch_step_capacity * self._BATCH_STEP_INFO_STRIDE * 4, usage=usage)
+        self._splat_capacity = grow_capacity(count, self._splat_capacity)
+        self._batch_step_capacity = grow_capacity(required_batch_steps, self._batch_step_capacity)
+        self._buffers.setdefault("loss", alloc_buffer(self.device, size=16, usage=RW_BUFFER_USAGE))
+        self._buffers["batch_step_info"] = alloc_buffer(
+            self.device,
+            size=self._batch_step_capacity * self._BATCH_STEP_INFO_STRIDE * 4,
+            usage=RW_BUFFER_USAGE,
+        )
 
     def _ensure_ssim_buffers(self) -> None:
         width = max(int(self.renderer.width), 1)
@@ -686,30 +692,41 @@ class GaussianTrainer:
         grow_cameras = required_camera_count > self._refinement_camera_capacity
         if self._refinement_buffers and not grow_splats and not grow_append and not grow_output and not grow_cameras:
             return
-        usage = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
         packed_param_bytes = self.renderer.TRAINABLE_PARAM_COUNT * self._U32_BYTES
         if "total_clone_counter" not in self._refinement_buffers:
-            self._refinement_buffers["total_clone_counter"] = self.device.create_buffer(size=self._U32_BYTES, usage=usage)
+            self._refinement_buffers["total_clone_counter"] = alloc_buffer(self.device, size=self._U32_BYTES, usage=RW_BUFFER_USAGE)
         if "append_counter" not in self._refinement_buffers:
-            self._refinement_buffers["append_counter"] = self.device.create_buffer(size=self._U32_BYTES, usage=usage)
+            self._refinement_buffers["append_counter"] = alloc_buffer(self.device, size=self._U32_BYTES, usage=RW_BUFFER_USAGE)
         if grow_splats or "clone_counts" not in self._refinement_buffers:
-            self._refinement_splat_capacity = max(required_splats, max(self._refinement_splat_capacity, 1) + max(self._refinement_splat_capacity, 1) // 2)
-            self._refinement_buffers["clone_counts"] = self.device.create_buffer(size=self._refinement_splat_capacity * self._U32_BYTES, usage=usage)
-            self._refinement_buffers["splat_contribution"] = self.device.create_buffer(size=self._refinement_splat_capacity * self._U32_BYTES, usage=usage)
+            self._refinement_splat_capacity = grow_capacity(required_splats, self._refinement_splat_capacity)
+            self._refinement_buffers["clone_counts"] = alloc_buffer(self.device, size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE)
+            self._refinement_buffers["splat_contribution"] = alloc_buffer(self.device, size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE)
         elif "splat_contribution" not in self._refinement_buffers:
-            self._refinement_buffers["splat_contribution"] = self.device.create_buffer(size=self._refinement_splat_capacity * self._U32_BYTES, usage=usage)
+            self._refinement_buffers["splat_contribution"] = alloc_buffer(self.device, size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE)
         if grow_append or "append_params" not in self._refinement_buffers:
-            self._refinement_append_capacity = max(required_append, max(self._refinement_append_capacity, 1) + max(self._refinement_append_capacity, 1) // 2)
-            self._refinement_buffers["append_params"] = self.device.create_buffer(size=self._refinement_append_capacity * packed_param_bytes, usage=usage)
+            self._refinement_append_capacity = grow_capacity(required_append, self._refinement_append_capacity)
+            self._refinement_buffers["append_params"] = alloc_buffer(self.device, size=self._refinement_append_capacity * packed_param_bytes, usage=RW_BUFFER_USAGE)
         if grow_output or "dst_splat_params" not in self._refinement_buffers:
-            self._refinement_output_capacity = max(required_output, max(self._refinement_output_capacity, 1) + max(self._refinement_output_capacity, 1) // 2)
-            self._refinement_buffers["dst_splat_params"] = self.device.create_buffer(size=self._refinement_output_capacity * packed_param_bytes, usage=usage)
-            self._refinement_buffers["dst_adam_moments"] = self.device.create_buffer(size=self._refinement_output_capacity * self.renderer.TRAINABLE_PARAM_COUNT * self._U32_BYTES * 2, usage=usage)
+            self._refinement_output_capacity = grow_capacity(required_output, self._refinement_output_capacity)
+            self._refinement_buffers["dst_splat_params"] = alloc_buffer(self.device, size=self._refinement_output_capacity * packed_param_bytes, usage=RW_BUFFER_USAGE)
+            self._refinement_buffers["dst_adam_moments"] = alloc_buffer(
+                self.device,
+                size=self._refinement_output_capacity * self.renderer.TRAINABLE_PARAM_COUNT * self._U32_BYTES * 2,
+                usage=RW_BUFFER_USAGE,
+            )
         elif "dst_adam_moments" not in self._refinement_buffers:
-            self._refinement_buffers["dst_adam_moments"] = self.device.create_buffer(size=max(self._refinement_output_capacity, 1) * self.renderer.TRAINABLE_PARAM_COUNT * self._U32_BYTES * 2, usage=usage)
+            self._refinement_buffers["dst_adam_moments"] = alloc_buffer(
+                self.device,
+                size=max(self._refinement_output_capacity, 1) * self.renderer.TRAINABLE_PARAM_COUNT * self._U32_BYTES * 2,
+                usage=RW_BUFFER_USAGE,
+            )
         if grow_cameras or "camera_rows" not in self._refinement_buffers:
-            self._refinement_camera_capacity = max(required_camera_count, max(self._refinement_camera_capacity, 1) + max(self._refinement_camera_capacity, 1) // 2)
-            self._refinement_buffers["camera_rows"] = self.device.create_buffer(size=self._refinement_camera_capacity * self._REFINEMENT_CAMERA_ROW_COUNT * self._FLOAT4_BYTES, usage=usage)
+            self._refinement_camera_capacity = grow_capacity(required_camera_count, self._refinement_camera_capacity)
+            self._refinement_buffers["camera_rows"] = alloc_buffer(
+                self.device,
+                size=self._refinement_camera_capacity * self._REFINEMENT_CAMERA_ROW_COUNT * self._FLOAT4_BYTES,
+                usage=RW_BUFFER_USAGE,
+            )
             self._refinement_camera_signature = None
 
     def _refinement_camera_rows(self) -> np.ndarray:
@@ -879,7 +896,13 @@ class GaussianTrainer:
         return load_training_frame_rgba8(frame)
 
     def _create_gpu_texture(self, rgba8: np.ndarray) -> spy.Texture:
-        tex = self.device.create_texture(format=spy.Format.rgba8_unorm_srgb, width=int(rgba8.shape[1]), height=int(rgba8.shape[0]), usage=spy.TextureUsage.shader_resource | spy.TextureUsage.copy_destination)
+        tex = alloc_texture_2d(
+            self.device,
+            format=spy.Format.rgba8_unorm_srgb,
+            width=int(rgba8.shape[1]),
+            height=int(rgba8.shape[0]),
+            usage=spy.TextureUsage.shader_resource | spy.TextureUsage.copy_destination,
+        )
         tex.copy_from_numpy(np.ascontiguousarray(rgba8, dtype=np.uint8))
         return tex
 
@@ -907,7 +930,8 @@ class GaussianTrainer:
         texture = self._train_target_texture
         if texture is not None and int(texture.width) == width and int(texture.height) == height:
             return
-        self._train_target_texture = self.device.create_texture(
+        self._train_target_texture = alloc_texture_2d(
+            self.device,
             format=spy.Format.rgba32_float,
             width=width,
             height=height,

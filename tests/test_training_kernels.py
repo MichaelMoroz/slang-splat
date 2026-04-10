@@ -8,7 +8,7 @@ import pytest
 from PIL import Image
 import slangpy as spy
 
-from src.common import buffer_to_numpy
+from src.utility import buffer_to_numpy
 from src.filter import SeparableGaussianBlur
 from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene

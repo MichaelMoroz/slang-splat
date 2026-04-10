@@ -10,7 +10,7 @@ from slangpy import math as smath
 
 from .. import create_default_device
 from ..app.shared import RendererParams, build_init_params, build_training_params, fit_camera
-from ..common import normalize3
+from ..utility import normalize3
 from ..renderer import Camera, GaussianRenderer
 from ..scene import GaussianScene, save_gaussian_ply
 from ..training import resolve_sh_band

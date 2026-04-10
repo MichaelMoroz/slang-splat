@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import slangpy as spy
 
-from .common import SHADER_ROOT, buffer_to_numpy, debug_region, thread_count_1d, thread_count_2d
+from .utility import RW_BUFFER_USAGE, SHADER_ROOT, alloc_buffer, buffer_to_numpy, dispatch, grow_capacity, load_compute_kernels, thread_count_1d, thread_count_2d
 
 
 _METRICS_SHADER = Path(SHADER_ROOT / "utility" / "metrics" / "metrics.slang")
@@ -63,12 +63,7 @@ class Metrics:
 
     def __init__(self, device: spy.Device, max_bin_count: int = 256) -> None:
         self.device = device
-        self._buffer_usage = (
-            spy.BufferUsage.shader_resource
-            | spy.BufferUsage.unordered_access
-            | spy.BufferUsage.copy_source
-            | spy.BufferUsage.copy_destination
-        )
+        self._buffer_usage = RW_BUFFER_USAGE
         self._histogram_capacity = max(int(max_bin_count), 1)
         self._histogram_buffer = self._create_uint_buffer(self._histogram_capacity)
         self._range_capacity = 1
@@ -77,20 +72,27 @@ class Metrics:
         self._create_kernels()
 
     def _create_uint_buffer(self, count: int) -> spy.Buffer:
-        return self.device.create_buffer(size=max(int(count), 1) * 4, usage=self._buffer_usage)
+        return alloc_buffer(self.device, size=max(int(count), 1) * 4, usage=self._buffer_usage)
 
     def _create_float_buffer(self, count: int) -> spy.Buffer:
-        return self.device.create_buffer(size=max(int(count), 1) * 4, usage=self._buffer_usage)
+        return alloc_buffer(self.device, size=max(int(count), 1) * 4, usage=self._buffer_usage)
 
     def _create_kernels(self) -> None:
-        self._k_clear_uint = self.device.create_compute_kernel(self.device.load_program(str(_METRICS_SHADER), ["csClearUIntBuffer"]))
-        self._k_clear_float = self.device.create_compute_kernel(self.device.load_program(str(_METRICS_SHADER), ["csClearFloatBuffer"]))
-        self._k_scale_hist = self.device.create_compute_kernel(self.device.load_program(str(_METRICS_SHADER), ["csHistogramScaleLog10"]))
-        self._k_anisotropy_hist = self.device.create_compute_kernel(self.device.load_program(str(_METRICS_SHADER), ["csHistogramAnisotropyLog10"]))
-        self._k_param_tensor_hist = self.device.create_compute_kernel(self.device.load_program(str(_METRICS_SHADER), ["csHistogramParamTensorLog10"]))
-        self._k_init_param_ranges = self.device.create_compute_kernel(self.device.load_program(str(_METRICS_SHADER), ["csInitParamTensorRanges"]))
-        self._k_param_tensor_range = self.device.create_compute_kernel(self.device.load_program(str(_METRICS_SHADER), ["csRangeParamTensor"]))
-        self._k_image_mse = self.device.create_compute_kernel(self.device.load_program(str(_METRICS_SHADER), ["csAccumulateImageMSE"]))
+        for name, kernel in load_compute_kernels(
+            self.device,
+            _METRICS_SHADER,
+            {
+                "_k_clear_uint": "csClearUIntBuffer",
+                "_k_clear_float": "csClearFloatBuffer",
+                "_k_scale_hist": "csHistogramScaleLog10",
+                "_k_anisotropy_hist": "csHistogramAnisotropyLog10",
+                "_k_param_tensor_hist": "csHistogramParamTensorLog10",
+                "_k_init_param_ranges": "csInitParamTensorRanges",
+                "_k_param_tensor_range": "csRangeParamTensor",
+                "_k_image_mse": "csAccumulateImageMSE",
+            },
+        ).items():
+            setattr(self, name, kernel)
 
     @staticmethod
     def _validate_histogram_args(bin_count: int, min_log10: float, max_log10: float) -> tuple[int, float, float, float]:
@@ -112,74 +114,94 @@ class Metrics:
     def _ensure_histogram_capacity(self, bin_count: int) -> None:
         if int(bin_count) <= self._histogram_capacity:
             return
-        self._histogram_capacity = max(int(bin_count), self._histogram_capacity + self._histogram_capacity // 2)
+        self._histogram_capacity = grow_capacity(bin_count, self._histogram_capacity)
         self._histogram_buffer = self._create_uint_buffer(self._histogram_capacity)
 
     def _ensure_range_capacity(self, param_count: int) -> None:
         if int(param_count) <= self._range_capacity:
             return
-        self._range_capacity = max(int(param_count), self._range_capacity + self._range_capacity // 2)
+        self._range_capacity = grow_capacity(param_count, self._range_capacity)
         self._range_buffer = self._create_uint_buffer(self._range_capacity * 2)
 
     def _clear_uint_buffer(self, encoder: spy.CommandEncoder, buffer: spy.Buffer, count: int) -> None:
-        with debug_region(encoder, "Metrics Clear UInt", 90):
-            self._k_clear_uint.dispatch(thread_count=thread_count_1d(count), vars={"g_ClearUIntBuffer": buffer, "g_ClearCount": int(count)}, command_encoder=encoder)
+        dispatch(
+            kernel=self._k_clear_uint,
+            thread_count=thread_count_1d(count),
+            vars={"g_ClearUIntBuffer": buffer, "g_ClearCount": int(count)},
+            command_encoder=encoder,
+            debug_label="Metrics Clear UInt",
+            debug_color_index=90,
+        )
 
     def _clear_float_buffer(self, encoder: spy.CommandEncoder, buffer: spy.Buffer, count: int) -> None:
-        with debug_region(encoder, "Metrics Clear Float", 91):
-            self._k_clear_float.dispatch(thread_count=thread_count_1d(count), vars={"g_ClearFloatBuffer": buffer, "g_ClearCount": int(count)}, command_encoder=encoder)
+        dispatch(
+            kernel=self._k_clear_float,
+            thread_count=thread_count_1d(count),
+            vars={"g_ClearFloatBuffer": buffer, "g_ClearCount": int(count)},
+            command_encoder=encoder,
+            debug_label="Metrics Clear Float",
+            debug_color_index=91,
+        )
 
     def _dispatch_histogram(self, encoder: spy.CommandEncoder, kernel: spy.ComputeKernel, splat_params: spy.Buffer, splat_count: int, bin_count: int, min_log10: float, inv_bin_size: float) -> None:
-        with debug_region(encoder, "Metrics Histogram", 92):
-            kernel.dispatch(
-                thread_count=thread_count_1d(splat_count),
-                vars={
-                    "g_SplatParams": splat_params,
-                    "g_SplatCount": int(splat_count),
-                    "g_BinCount": int(bin_count),
-                    "g_Log10Min": float(min_log10),
-                    "g_Log10InvBinSize": float(inv_bin_size),
-                    "g_Histogram": self._histogram_buffer,
-                },
-                command_encoder=encoder,
-            )
+        dispatch(
+            kernel=kernel,
+            thread_count=thread_count_1d(splat_count),
+            vars={
+                "g_SplatParams": splat_params,
+                "g_SplatCount": int(splat_count),
+                "g_BinCount": int(bin_count),
+                "g_Log10Min": float(min_log10),
+                "g_Log10InvBinSize": float(inv_bin_size),
+                "g_Histogram": self._histogram_buffer,
+            },
+            command_encoder=encoder,
+            debug_label="Metrics Histogram",
+            debug_color_index=92,
+        )
 
     def _dispatch_param_tensor_histogram(self, encoder: spy.CommandEncoder, tensor: spy.Buffer, param_count: int, item_count: int, bin_count: int, min_log10: float, inv_bin_size: float) -> None:
-        with debug_region(encoder, "Metrics Tensor Histogram", 94):
-            self._k_param_tensor_hist.dispatch(
-                thread_count=thread_count_2d(item_count, param_count),
-                vars={
-                    "g_Tensor": tensor,
-                    "g_ParamCount": int(param_count),
-                    "g_ItemCount": int(item_count),
-                    "g_BinCount": int(bin_count),
-                    "g_Log10Min": float(min_log10),
-                    "g_Log10InvBinSize": float(inv_bin_size),
-                    "g_Histogram": self._histogram_buffer,
-                },
-                command_encoder=encoder,
-            )
+        dispatch(
+            kernel=self._k_param_tensor_hist,
+            thread_count=thread_count_2d(item_count, param_count),
+            vars={
+                "g_Tensor": tensor,
+                "g_ParamCount": int(param_count),
+                "g_ItemCount": int(item_count),
+                "g_BinCount": int(bin_count),
+                "g_Log10Min": float(min_log10),
+                "g_Log10InvBinSize": float(inv_bin_size),
+                "g_Histogram": self._histogram_buffer,
+            },
+            command_encoder=encoder,
+            debug_label="Metrics Tensor Histogram",
+            debug_color_index=94,
+        )
 
     def _init_param_tensor_ranges(self, encoder: spy.CommandEncoder, param_count: int) -> None:
-        with debug_region(encoder, "Metrics Init Tensor Ranges", 95):
-            self._k_init_param_ranges.dispatch(
-                thread_count=thread_count_1d(param_count),
-                vars={"g_ParamCount": int(param_count), "g_ParamRanges": self._range_buffer},
-                command_encoder=encoder,
-            )
+        dispatch(
+            kernel=self._k_init_param_ranges,
+            thread_count=thread_count_1d(param_count),
+            vars={"g_ParamCount": int(param_count), "g_ParamRanges": self._range_buffer},
+            command_encoder=encoder,
+            debug_label="Metrics Init Tensor Ranges",
+            debug_color_index=95,
+        )
 
     def _dispatch_param_tensor_ranges(self, encoder: spy.CommandEncoder, tensor: spy.Buffer, param_count: int, item_count: int) -> None:
-        with debug_region(encoder, "Metrics Tensor Ranges", 96):
-            self._k_param_tensor_range.dispatch(
-                thread_count=thread_count_2d(item_count, param_count),
-                vars={
-                    "g_Tensor": tensor,
-                    "g_ParamCount": int(param_count),
-                    "g_ItemCount": int(item_count),
-                    "g_ParamRanges": self._range_buffer,
-                },
-                command_encoder=encoder,
-            )
+        dispatch(
+            kernel=self._k_param_tensor_range,
+            thread_count=thread_count_2d(item_count, param_count),
+            vars={
+                "g_Tensor": tensor,
+                "g_ParamCount": int(param_count),
+                "g_ItemCount": int(item_count),
+                "g_ParamRanges": self._range_buffer,
+            },
+            command_encoder=encoder,
+            debug_label="Metrics Tensor Ranges",
+            debug_color_index=96,
+        )
 
     def _read_histogram(self, bin_count: int, min_log10: float, max_log10: float) -> Log10Histogram:
         counts = buffer_to_numpy(self._histogram_buffer, np.uint32)[:bin_count].astype(np.int64, copy=True)

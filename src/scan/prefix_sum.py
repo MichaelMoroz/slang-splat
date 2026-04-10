@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import slangpy as spy
 
-from ..common import ROOT, debug_region, dispatch_indirect
+from ..utility import INDIRECT_BUFFER_USAGE, ROOT, RW_BUFFER_USAGE, alloc_buffer, debug_region, dispatch_indirect, grow_capacity, load_compute_items
 
 SHADER_DIR = ROOT / "shaders" / "utility" / "prefix_sum"
 PREFIX_THREADS = 256
@@ -18,22 +18,19 @@ PREFIX_INDIRECT_ARGS_UINT_COUNT = PREFIX_PARAM_COUNT_OFFSET + 1
 class GPUPrefixSum:
     def __init__(self, device: spy.Device):
         self.device = device
-        shader_path = str(SHADER_DIR / "prefix_sum.slang")
-        load = device.load_program
-        self.scan_blocks = device.create_compute_kernel(load(shader_path, ["csPrefixScanBlocks"]))
-        self.add_offsets = device.create_compute_kernel(load(shader_path, ["csPrefixAddOffsets"]))
-        self.write_total_kernel = device.create_compute_kernel(load(shader_path, ["csPrefixWriteTotal"]))
-        self.compute_dispatch_args_from_buffer_kernel = device.create_compute_kernel(load(shader_path, ["csComputeDispatchArgsFromBuffer"]))
-        self.compute_prefix_args_from_buffer_kernel = device.create_compute_kernel(load(shader_path, ["csComputePrefixIndirectArgsFromBuffer"]))
-        self.scan_blocks_pipeline = device.create_compute_pipeline(load(shader_path, ["csPrefixScanBlocks"]))
-        self.add_offsets_pipeline = device.create_compute_pipeline(load(shader_path, ["csPrefixAddOffsets"]))
-        self._indirect_usage = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.indirect_argument
-        self._rw_usage = (
-            spy.BufferUsage.shader_resource
-            | spy.BufferUsage.unordered_access
-            | spy.BufferUsage.copy_source
-            | spy.BufferUsage.copy_destination
-        )
+        for name, item in load_compute_items(
+            device,
+            {
+                "scan_blocks": ("kernel", SHADER_DIR / "prefix_sum.slang", "csPrefixScanBlocks"),
+                "add_offsets": ("kernel", SHADER_DIR / "prefix_sum.slang", "csPrefixAddOffsets"),
+                "write_total_kernel": ("kernel", SHADER_DIR / "prefix_sum.slang", "csPrefixWriteTotal"),
+                "compute_dispatch_args_from_buffer_kernel": ("kernel", SHADER_DIR / "prefix_sum.slang", "csComputeDispatchArgsFromBuffer"),
+                "compute_prefix_args_from_buffer_kernel": ("kernel", SHADER_DIR / "prefix_sum.slang", "csComputePrefixIndirectArgsFromBuffer"),
+                "scan_blocks_pipeline": ("pipeline", SHADER_DIR / "prefix_sum.slang", "csPrefixScanBlocks"),
+                "add_offsets_pipeline": ("pipeline", SHADER_DIR / "prefix_sum.slang", "csPrefixAddOffsets"),
+            },
+        ).items():
+            setattr(self, name, item)
         self._scratch_capacity = 0
         self._block_sums: spy.Buffer | None = None
         self._block_offsets: spy.Buffer | None = None
@@ -65,21 +62,20 @@ class GPUPrefixSum:
         required = self.prefix_scratch_elements(count)
         if self._block_sums is not None and self._block_offsets is not None and required <= self._scratch_capacity:
             return self._block_sums, self._block_offsets
-        old_capacity = max(self._scratch_capacity, 1)
-        capacity = max(required, old_capacity + old_capacity // 2)
-        self._block_sums = self.device.create_buffer(size=max(capacity, 1) * 4, usage=self._rw_usage)
-        self._block_offsets = self.device.create_buffer(size=max(capacity, 1) * 4, usage=self._rw_usage)
+        capacity = grow_capacity(required, self._scratch_capacity)
+        self._block_sums = alloc_buffer(self.device, size=max(capacity, 1) * 4, usage=RW_BUFFER_USAGE)
+        self._block_offsets = alloc_buffer(self.device, size=max(capacity, 1) * 4, usage=RW_BUFFER_USAGE)
         self._scratch_capacity = capacity
         return self._block_sums, self._block_offsets
 
     def _ensure_dispatch_args(self) -> spy.Buffer:
         if self._dispatch_args is None:
-            self._dispatch_args = self.device.create_buffer(size=4 * 4, usage=self._indirect_usage)
+            self._dispatch_args = alloc_buffer(self.device, size=4 * 4, usage=INDIRECT_BUFFER_USAGE)
         return self._dispatch_args
 
     def _ensure_prefix_args(self) -> spy.Buffer:
         if self._prefix_args is None:
-            self._prefix_args = self.device.create_buffer(size=PREFIX_INDIRECT_ARGS_UINT_COUNT * 4, usage=self._indirect_usage)
+            self._prefix_args = alloc_buffer(self.device, size=PREFIX_INDIRECT_ARGS_UINT_COUNT * 4, usage=INDIRECT_BUFFER_USAGE)
         return self._prefix_args
 
     def dispatch_args_from_count_buffer(

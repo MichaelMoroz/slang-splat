@@ -10,7 +10,7 @@ import re
 import numpy as np
 import slangpy as spy
 
-from ..common import SHADER_ROOT, buffer_to_numpy, debug_region, dispatch, dispatch_indirect, remap_named_buffers, thread_count_1d
+from ..utility import RW_BUFFER_USAGE, SHADER_ROOT, alloc_buffer, alloc_texture_2d, buffer_to_numpy, debug_region, dispatch, dispatch_indirect, grow_capacity, load_compute_items, load_compute_kernel, load_compute_kernels, remap_named_buffers, thread_count_1d
 from ..metrics import Metrics, ParamLog10Histograms, ParamTensorRanges
 from ..scan.prefix_sum import GPUPrefixSum
 from ..scene.gaussian_scene import GaussianScene
@@ -161,7 +161,7 @@ class GaussianRenderer:
     _MEBIBYTE_BYTES = 1024 * 1024
     _PREPASS_ENTRY_BYTES = (_SCANLINE_WORK_ITEM_UINTS + 4) * _U32_BYTES
     _RASTER_CACHE_PARAM_COUNT = 14
-    _RW_BUFFER_USAGE = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
+    _RW_BUFFER_USAGE = RW_BUFFER_USAGE
     PARAM_POSITION_IDS = (0, 1, 2)
     PARAM_SCALE_IDS = (3, 4, 5)
     PARAM_ROTATION_IDS = (6, 7, 8, 9)
@@ -210,10 +210,6 @@ class GaussianRenderer:
             debug_label=label,
             debug_color_index=color_index,
         )
-
-    @staticmethod
-    def _grow(required: int, current: int) -> int:
-        return max(required, max(current, 1) + max(current, 1) // 2)
 
     def _max_prepass_entries_by_budget(self) -> int:
         return max(self._max_prepass_memory_bytes // self._PREPASS_ENTRY_BYTES, 1)
@@ -361,22 +357,28 @@ class GaussianRenderer:
         return np.asarray(self.output_texture.to_numpy(), dtype=np.float32).copy()
 
     def _create_shaders(self) -> None:
-        for attr, kind, shader_name, entry in self._SHADERS:
-            program = self.device.load_program(str(Path(SHADER_ROOT / "renderer" / shader_name)), [entry])
-            shader = self.device.create_compute_kernel(program) if kind == "kernel" else self.device.create_compute_pipeline(program)
+        for attr, shader in load_compute_items(
+            self.device,
+            {
+                attr: (kind, SHADER_ROOT / "renderer" / shader_name, entry)
+                for attr, kind, shader_name, entry in self._SHADERS
+            },
+        ).items():
             setattr(self, attr, shader)
         self._fixed_raster_grad_shaders = self._load_raster_grad_shaders("Fixed")
-        metrics_shader = str(Path(SHADER_ROOT / "utility" / "metrics" / "metrics.slang"))
-        self._k_clear_float_buffer = self.device.create_compute_kernel(self.device.load_program(metrics_shader, ["csClearFloatBuffer"]))
+        self._k_clear_float_buffer = load_compute_kernel(self.device, SHADER_ROOT / "utility" / "metrics" / "metrics.slang", "csClearFloatBuffer")
 
     def _load_raster_grad_shaders(self, entry_suffix: str) -> _RasterGradShaderSet:
-        shader_path = str(Path(SHADER_ROOT / "renderer" / "gaussian_raster_stage.slang"))
-        kernels = {
-            "training_forward": self.device.create_compute_kernel(self.device.load_program(shader_path, [f"csRasterizeTrainingForward{entry_suffix}"])),
-            "clear": self.device.create_compute_kernel(self.device.load_program(shader_path, [f"csClearRasterGrads{entry_suffix}"])),
-            "backward": self.device.create_compute_kernel(self.device.load_program(shader_path, [f"csRasterizeBackward{entry_suffix}"])),
-            "backprop": self.device.create_compute_kernel(self.device.load_program(shader_path, [f"csBackpropCachedRasterGrads{entry_suffix}"])),
-        }
+        kernels = load_compute_kernels(
+            self.device,
+            SHADER_ROOT / "renderer" / "gaussian_raster_stage.slang",
+            {
+                "training_forward": f"csRasterizeTrainingForward{entry_suffix}",
+                "clear": f"csClearRasterGrads{entry_suffix}",
+                "backward": f"csRasterizeBackward{entry_suffix}",
+                "backprop": f"csBackpropCachedRasterGrads{entry_suffix}",
+            },
+        )
         return _RasterGradShaderSet(
             training_forward=kernels["training_forward"],
             clear=kernels["clear"],
@@ -561,7 +563,11 @@ class GaussianRenderer:
         self._cached_raster_grad_fixed_quat_range = self._DEFAULT_RASTER_GRAD_FIXED_QUAT_RANGE
         self._cached_raster_grad_fixed_color_range = self._DEFAULT_RASTER_GRAD_FIXED_COLOR_RANGE
         self._cached_raster_grad_fixed_opacity_range = self._DEFAULT_RASTER_GRAD_FIXED_OPACITY_RANGE
-        self._zero_u32_buffer = self.device.create_buffer(size=self._U32_BYTES, usage=spy.BufferUsage.shader_resource | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination)
+        self._zero_u32_buffer = alloc_buffer(
+            self.device,
+            size=self._U32_BYTES,
+            usage=spy.BufferUsage.shader_resource | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination,
+        )
         self._zero_u32_buffer.copy_from_numpy(np.array([0], dtype=np.uint32))
         self.cached_raster_grad_atomic_mode = cached_raster_grad_atomic_mode
         self.cached_raster_grad_fixed_ro_local_range = cached_raster_grad_fixed_ro_local_range
@@ -610,10 +616,10 @@ class GaussianRenderer:
         if self._scene_buffers and splat_count <= self._scene_capacity:
             self._scene_count = splat_count
             return
-        self._scene_capacity, self._scene_count = self._grow(splat_count, self._scene_capacity), splat_count
+        self._scene_capacity, self._scene_count = grow_capacity(splat_count, self._scene_capacity), splat_count
         param_bytes = max(self._scene_capacity, 1) * self.TRAINABLE_PARAM_COUNT * self._U32_BYTES
         self._resource_groups.scene = {
-            name: self.device.create_buffer(size=param_bytes, usage=self._RW_BUFFER_USAGE)
+            name: alloc_buffer(self.device, size=param_bytes, usage=self._RW_BUFFER_USAGE)
             for name in self._SCENE_SHADER_VARS
         }
         self._scene_buffers = self._resource_groups.scene
@@ -624,9 +630,9 @@ class GaussianRenderer:
         required_entries = min(max(splat_count * self.list_capacity_multiplier, min_list_entries, 1), max_entries)
         if self._work_buffers and required_splats <= self._work_splat_capacity and required_entries <= self._max_list_entries and required_entries <= self._max_scanline_entries and self._output_texture is not None and self._training_depth_stats_texture is not None and self._output_grad_buffer is not None:
             return
-        self._work_splat_capacity = self._grow(required_splats, self._work_splat_capacity)
-        self._max_list_entries = min(self._grow(required_entries, self._max_list_entries), max_entries)
-        self._max_scanline_entries = min(self._grow(required_entries, self._max_scanline_entries), max_entries)
+        self._work_splat_capacity = grow_capacity(required_splats, self._work_splat_capacity)
+        self._max_list_entries = min(grow_capacity(required_entries, self._max_list_entries), max_entries)
+        self._max_scanline_entries = min(grow_capacity(required_entries, self._max_scanline_entries), max_entries)
         sized = {
             "screen_center_radius_depth": max(self._work_splat_capacity, 1) * self._F32X4_BYTES,
             "screen_color_alpha": max(self._work_splat_capacity, 1) * self._F32X4_BYTES,
@@ -663,7 +669,7 @@ class GaussianRenderer:
             "cached_raster_grads_float": max(self._work_splat_capacity, 1) * self._RASTER_CACHE_PARAM_COUNT * self._U32_BYTES,
             "cached_raster_grads_metrics_float": max(self._work_splat_capacity, 1) * self._RASTER_CACHE_PARAM_COUNT * self._U32_BYTES,
         }
-        allocated = {name: self.device.create_buffer(size=size, usage=self._RW_BUFFER_USAGE) for name, size in sized.items()}
+        allocated = {name: alloc_buffer(self.device, size=size, usage=self._RW_BUFFER_USAGE) for name, size in sized.items()}
         self._resource_groups.prepass = {
             name: allocated[name]
             for name in (
@@ -733,7 +739,8 @@ class GaussianRenderer:
 
     def _ensure_output_texture(self) -> None:
         if self._output_texture is None:
-            self._output_texture = self.device.create_texture(
+            self._output_texture = alloc_texture_2d(
+                self.device,
                 format=spy.Format.rgba32_float,
                 width=self.width,
                 height=self.height,
@@ -742,7 +749,8 @@ class GaussianRenderer:
 
     def _ensure_training_depth_stats_texture(self) -> None:
         if self._training_depth_stats_texture is None:
-            self._training_depth_stats_texture = self.device.create_texture(
+            self._training_depth_stats_texture = alloc_texture_2d(
+                self.device,
                 format=spy.Format.rgba32_float,
                 width=self.width,
                 height=self.height,
@@ -751,7 +759,8 @@ class GaussianRenderer:
 
     def _ensure_output_grad_buffer(self) -> None:
         if self._output_grad_buffer is None:
-            self._output_grad_buffer = self.device.create_buffer(
+            self._output_grad_buffer = alloc_buffer(
+                self.device,
                 size=max(self.width * self.height, 1) * 4 * self._U32_BYTES,
                 usage=self._RW_BUFFER_USAGE,
             )
@@ -861,7 +870,7 @@ class GaussianRenderer:
         if self._counter_readback_ring:
             return
         usage = spy.BufferUsage.copy_destination | spy.BufferUsage.copy_source
-        self._counter_readback_ring = [self.device.create_buffer(size=4, usage=usage) for _ in range(self._COUNTER_READBACK_RING_SIZE)]
+        self._counter_readback_ring = [alloc_buffer(self.device, size=4, usage=usage) for _ in range(self._COUNTER_READBACK_RING_SIZE)]
         self._counter_readback_capacity = [0] * self._COUNTER_READBACK_RING_SIZE
 
     def _update_delayed_counter_stats(self) -> None:

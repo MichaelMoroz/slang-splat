@@ -8,7 +8,7 @@ import slangpy as spy
 
 torch = pytest.importorskip("torch")
 
-from src.common import SHADER_INCLUDE_PATHS
+from src.utility import SHADER_INCLUDE_PATHS
 from src.renderer import Camera, GaussianRenderer, TorchGaussianRenderSettings, TorchGaussianRendererContext, render_gaussian_splats_torch
 from src.scene import GaussianScene, SH_C0, rgb_to_sh0, sh_coeffs_to_display_colors
 

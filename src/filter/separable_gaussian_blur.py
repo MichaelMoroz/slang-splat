@@ -1,32 +1,34 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import numpy as np
 import slangpy as spy
 
-from ..common import SHADER_ROOT, debug_region, thread_count_2d
+from ..utility import RW_BUFFER_USAGE, SHADER_ROOT, alloc_buffer, dispatch, load_compute_kernels, thread_count_2d
 
 
 class SeparableGaussianBlur:
-    _BUFFER_USAGE = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
     _KERNEL_ENTRIES = {
         "horizontal": "csGaussianBlurHorizontal",
         "vertical": "csGaussianBlurVertical",
     }
 
     def _dispatch(self, kernel: str, encoder: spy.CommandEncoder, channel_count: int, vars: dict[str, object]) -> None:
-        with debug_region(encoder, f"Blur::{kernel}", 80 + len(kernel)):
-            self._kernels[kernel].dispatch(thread_count=thread_count_2d(self.width, self.height, channel_count), vars=vars, command_encoder=encoder)
+        dispatch(
+            kernel=self._kernels[kernel],
+            thread_count=thread_count_2d(self.width, self.height, channel_count),
+            vars=vars,
+            command_encoder=encoder,
+            debug_label=f"Blur::{kernel}",
+            debug_color_index=80 + len(kernel),
+        )
 
     def __init__(self, device: spy.Device, width: int, height: int) -> None:
         self.device, self.width, self.height = device, int(width), int(height)
-        self._shader_path = Path(SHADER_ROOT / "utility" / "blur" / "separable_gaussian_blur.slang")
-        self._kernels = {name: self.device.create_compute_kernel(self.device.load_program(str(self._shader_path), [entry])) for name, entry in self._KERNEL_ENTRIES.items()}
+        self._kernels = load_compute_kernels(device, SHADER_ROOT / "utility" / "blur" / "separable_gaussian_blur.slang", self._KERNEL_ENTRIES)
         self._scratch_buffers: dict[int, spy.Buffer] = {}
 
     def make_buffer(self, channel_count: int) -> spy.Buffer:
-        return self.device.create_buffer(size=self._buffer_size(channel_count), usage=self._BUFFER_USAGE)
+        return alloc_buffer(self.device, size=self._buffer_size(channel_count), usage=RW_BUFFER_USAGE)
 
     def _buffer_size(self, channel_count: int) -> int:
         channels = int(channel_count)

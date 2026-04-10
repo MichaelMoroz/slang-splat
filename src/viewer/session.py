@@ -11,7 +11,7 @@ from PIL import Image
 import slangpy as spy
 
 from ..app.shared import apply_training_profile, estimate_point_bounds, estimate_scene_bounds, renderer_kwargs
-from ..common import SHADER_ROOT, clamp_index
+from ..utility import SHADER_ROOT, alloc_texture_2d, clamp_index, load_compute_kernels
 from ..metrics import ParamTensorRanges
 from ..renderer import GaussianRenderSettings, GaussianRenderer
 from ..scene import (
@@ -375,7 +375,8 @@ def _append_training_frame(progress: ColmapImportProgress, image_id: int, image:
 
 
 def _create_native_dataset_texture_from_rgba8(viewer: object, rgba8: np.ndarray) -> spy.Texture:
-    texture = viewer.device.create_texture(
+    texture = alloc_texture_2d(
+        viewer.device,
         format=spy.Format.rgba8_unorm_srgb,
         width=int(rgba8.shape[1]),
         height=int(rgba8.shape[0]),
@@ -652,10 +653,18 @@ def _clear_loaded_scene(viewer: object) -> None:
 
 
 def create_debug_shaders(viewer: object) -> None:
-    shader_path = str(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang")
-    viewer.s.debug_abs_diff_kernel = viewer.device.create_compute_kernel(viewer.device.load_program(shader_path, ["csComposeAbsDiffDebug"]))
-    viewer.s.debug_edge_kernel = viewer.device.create_compute_kernel(viewer.device.load_program(shader_path, ["csComposeEdgeDebug"]))
-    viewer.s.debug_letterbox_kernel = viewer.device.create_compute_kernel(viewer.device.load_program(shader_path, ["csComposeLetterboxDebug"]))
+    kernels = load_compute_kernels(
+        viewer.device,
+        SHADER_ROOT / "renderer" / "gaussian_training_stage.slang",
+        {
+            "debug_abs_diff_kernel": "csComposeAbsDiffDebug",
+            "debug_edge_kernel": "csComposeEdgeDebug",
+            "debug_letterbox_kernel": "csComposeLetterboxDebug",
+        },
+    )
+    viewer.s.debug_abs_diff_kernel = kernels["debug_abs_diff_kernel"]
+    viewer.s.debug_edge_kernel = kernels["debug_edge_kernel"]
+    viewer.s.debug_letterbox_kernel = kernels["debug_letterbox_kernel"]
 
 
 def update_debug_frame_slider_range(viewer: object) -> None:

@@ -6,7 +6,7 @@ from typing import Any
 import numpy as np
 import slangpy as spy
 
-from ..common import SHADER_INCLUDE_PATHS, SHADER_ROOT, debug_region, thread_count_2d
+from ..utility import SHADER_INCLUDE_PATHS, SHADER_ROOT, alloc_buffer, debug_region, grow_capacity, load_compute_kernel, thread_count_2d
 from .camera import Camera
 from .gaussian_renderer import GaussianRenderer
 from .renderer_context import GaussianRenderSettings, GaussianRendererContext
@@ -120,30 +120,21 @@ class TorchGaussianRendererContext(GaussianRendererContext):
         )
 
     def _create_pack_output_kernel(self) -> spy.ComputeKernel:
-        program = self.device.load_program(str(self._output_pack_shader_path), ["csPackOutputTexture"])
-        return self.device.create_compute_kernel(program)
-
-    @staticmethod
-    def _grow(required: int, current: int) -> int:
-        base = max(int(current), 1)
-        return max(int(required), base + base // 2)
-
-    def _create_bridge_buffer(self, size: int) -> spy.Buffer:
-        return self.device.create_buffer(size=max(int(size), 1), usage=_TORCH_BRIDGE_USAGE)
+        return load_compute_kernel(self.device, self._output_pack_shader_path, "csPackOutputTexture")
 
     def _ensure_bridge_buffers(self, splat_count: int, pixel_count: int) -> None:
         required_splats = max(int(splat_count), 1)
         required_pixels = max(int(pixel_count), 1)
         if required_splats > self._splat_capacity:
-            self._splat_capacity = self._grow(required_splats, self._splat_capacity)
+            self._splat_capacity = grow_capacity(required_splats, self._splat_capacity)
             byte_count = self._splat_capacity * _TORCH_RENDER_PARAM_COUNT * np.dtype(np.float32).itemsize
-            self._bridge_buffers[_TORCH_SCENE_INPUT_BUFFER_NAME] = self._create_bridge_buffer(byte_count)
-            self._bridge_buffers[_TORCH_PARAM_GRAD_BUFFER_NAME] = self._create_bridge_buffer(byte_count)
+            self._bridge_buffers[_TORCH_SCENE_INPUT_BUFFER_NAME] = alloc_buffer(self.device, size=byte_count, usage=_TORCH_BRIDGE_USAGE, min_size=1)
+            self._bridge_buffers[_TORCH_PARAM_GRAD_BUFFER_NAME] = alloc_buffer(self.device, size=byte_count, usage=_TORCH_BRIDGE_USAGE, min_size=1)
         if required_pixels > self._pixel_capacity:
-            self._pixel_capacity = self._grow(required_pixels, self._pixel_capacity)
+            self._pixel_capacity = grow_capacity(required_pixels, self._pixel_capacity)
             byte_count = self._pixel_capacity * _TORCH_OUTPUT_CHANNELS * np.dtype(np.float32).itemsize
-            self._bridge_buffers[_TORCH_IMAGE_OUTPUT_BUFFER_NAME] = self._create_bridge_buffer(byte_count)
-            self._bridge_buffers[_TORCH_OUTPUT_GRAD_BUFFER_NAME] = self._create_bridge_buffer(byte_count)
+            self._bridge_buffers[_TORCH_IMAGE_OUTPUT_BUFFER_NAME] = alloc_buffer(self.device, size=byte_count, usage=_TORCH_BRIDGE_USAGE, min_size=1)
+            self._bridge_buffers[_TORCH_OUTPUT_GRAD_BUFFER_NAME] = alloc_buffer(self.device, size=byte_count, usage=_TORCH_BRIDGE_USAGE, min_size=1)
 
     @property
     def torch_device(self) -> Any:

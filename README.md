@@ -141,6 +141,7 @@ This sweeps a single splat across a wide scale range, records the rendered fitte
 - `src/filter`: reusable image-space Gaussian blur utilities.
 - `src/sort`: GPU radix sort wrapper.
 - `src/renderer`: camera, renderer orchestration, and optional CUDA/PyTorch bridge.
+- `src/utility`: shared Slangpy runtime helpers for device creation, shader loading, dispatch, and resource allocation.
 - `reference_impls`: CPU and analytical reference implementations used by tests.
 - `src/viewer`: viewer state, UI schema, session logic, and frame presentation.
 - `shaders/utility`: reusable shader math, splatting, loss, optimizer, blur, prefix-sum, and radix-sort modules.
