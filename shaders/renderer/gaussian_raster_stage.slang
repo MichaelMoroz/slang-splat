@@ -364,6 +364,13 @@ float4 raster_output_from_state(RasterState state, no_diff float3 background)
     return float4(pow(max(finalColor, 0.0), OUTPUT_GAMMA), 1.0 - state.trans);
 }
 
+[Differentiable]
+float4 raster_training_output_from_state(RasterState state, no_diff float3 background)
+{
+    float3 finalColor = state.accum + state.trans * background;
+    return float4(finalColor, 1.0 - state.trans);
+}
+
 float raster_random_unit_float(uint seed)
 {
     return (float(hash_u32(seed)) + 0.5) * UINT_TO_UNIT_FLOAT;
@@ -792,6 +799,15 @@ float4 raster_forward_output_pixel(RasterPixelInfo info, RasterState state)
         : float4(pow(max(background, 0.0), OUTPUT_GAMMA), 1.0);
 }
 
+float4 raster_training_output_pixel(RasterPixelInfo info, RasterState state)
+{
+    if (!info.pixelActive) return float4(0.0, 0.0, 0.0, 1.0);
+    float3 background = raster_resolved_background(info.pixelCoord);
+    return info.hasTileRange
+        ? raster_training_output_from_state(state, background)
+        : float4(background, 1.0);
+}
+
 float4 raster_debug_output_pixel(RasterPixelInfo info, RasterReplayState replayState)
 {
     if (!info.pixelActive) return float4(0.0, 0.0, 0.0, 1.0);
@@ -812,7 +828,7 @@ RasterState.Differential raster_output_gradient_pixel(RasterPixelInfo info, Rast
     if (!info.pixelActive || !info.hasTileRange) return { 0.0, 0.0 };
 
     var dpState = diffPair(state);
-    bwd_diff(raster_output_from_state)(dpState, raster_resolved_background(info.pixelCoord), g_OutputGrad[info.pixelCoord.y * g_Raster.width + info.pixelCoord.x]);
+    bwd_diff(raster_training_output_from_state)(dpState, raster_resolved_background(info.pixelCoord), g_OutputGrad[info.pixelCoord.y * g_Raster.width + info.pixelCoord.x]);
     return dpState.getDifferential();
 }
 
@@ -1111,7 +1127,7 @@ void csRasterizeTrainingForwardFixed(uint3 dispatchThreadID : SV_DispatchThreadI
     if (info.hasTileRange) raster_replay<TrainingRasterReplayVariant>(info, lane, replayState);
     store_training_forward_cache(info, replayState, lane);
     if (!info.pixelActive) return;
-    g_Output[info.pixelCoord] = raster_forward_output_pixel(info, replayState.pixelState);
+    g_Output[info.pixelCoord] = raster_training_output_pixel(info, replayState.pixelState);
 }
 
 [shader("compute")]
@@ -1124,7 +1140,7 @@ void csRasterizeTrainingForwardFloat(uint3 dispatchThreadID : SV_DispatchThreadI
     if (info.hasTileRange) raster_replay<TrainingRasterReplayVariant>(info, lane, replayState);
     store_training_forward_cache(info, replayState, lane);
     if (!info.pixelActive) return;
-    g_Output[info.pixelCoord] = raster_forward_output_pixel(info, replayState.pixelState);
+    g_Output[info.pixelCoord] = raster_training_output_pixel(info, replayState.pixelState);
 }
 
 [shader("compute")]
