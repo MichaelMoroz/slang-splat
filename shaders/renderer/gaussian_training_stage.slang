@@ -648,16 +648,16 @@ void clear_ssim_feature_grads(RWStructuredBuffer<float> buffer, uint2 pixel)
 }
 
 [Differentiable]
-float rgb_to_luminance_bt601(float3 rgb)
+float rgb_to_ssim_scalar(float3 rgb)
 {
-    return dot(rgb, float3(0.299, 0.587, 0.114));
+    return dot(rgb, float3(1.0 / 3.0));
 }
 
 [Differentiable]
 SSIMMoments ssim_feature_moments(float3 renderedRgb, no_diff float3 targetRgb)
 {
-    float rendered = rgb_to_luminance_bt601(renderedRgb);
-    float target = rgb_to_luminance_bt601(targetRgb);
+    float rendered = rgb_to_ssim_scalar(renderedRgb);
+    float target = rgb_to_ssim_scalar(targetRgb);
     SSIMMoments moments;
     moments.x = rendered;
     moments.y = target;

@@ -190,14 +190,14 @@ def _read_ssim_buffer(trainer: GaussianTrainer, name: str) -> np.ndarray:
     return np.asarray(flat[: max(width * height, 1) * _SSIM_FEATURE_CHANNELS], dtype=np.float32).reshape(height, width, _SSIM_FEATURE_CHANNELS).copy()
 
 
-def _rgb_to_ycbcr_bt601_np(rgb: np.ndarray) -> np.ndarray:
+def _rgb_to_ssim_scalar_np(rgb: np.ndarray) -> np.ndarray:
     value = np.asarray(rgb, dtype=np.float32)
-    return np.tensordot(value, np.array([0.299, 0.587, 0.114], dtype=np.float32), axes=([-1], [0])).astype(np.float32, copy=False)
+    return np.mean(value, axis=-1, dtype=np.float32).astype(np.float32, copy=False)
 
 
 def _ssim_feature_moments_np(rendered_rgb: np.ndarray, target_rgb: np.ndarray) -> np.ndarray:
-    rendered = _rgb_to_ycbcr_bt601_np(rendered_rgb)[..., None]
-    target = _rgb_to_ycbcr_bt601_np(target_rgb)[..., None]
+    rendered = _rgb_to_ssim_scalar_np(rendered_rgb)[..., None]
+    target = _rgb_to_ssim_scalar_np(target_rgb)[..., None]
     return np.concatenate((rendered, target, rendered * rendered, target * target, rendered * target), axis=2).astype(np.float32, copy=False)
 
 
@@ -915,11 +915,11 @@ def test_ssim_backward_matches_torch_image_gradients(device, tmp_path: Path):
     target_mask = target_t[:, 3:4].clamp(0.0, 1.0)
     inv_pixel_count = 1.0 / float(rendered.shape[0] * rendered.shape[1])
 
-    def rgb_to_luminance_bt601_torch(value):
-        return (value * torch.tensor([0.299, 0.587, 0.114], dtype=value.dtype).view(1, 3, 1, 1)).sum(dim=1, keepdim=True)
+    def rgb_to_ssim_scalar_torch(value):
+        return value.mean(dim=1, keepdim=True)
 
-    rendered_y = rgb_to_luminance_bt601_torch(rendered_t)
-    target_y = rgb_to_luminance_bt601_torch(target_rgb)
+    rendered_y = rgb_to_ssim_scalar_torch(rendered_t)
+    target_y = rgb_to_ssim_scalar_torch(target_rgb)
     moments = torch.cat((rendered_y, target_y, rendered_y * rendered_y, target_y * target_y, rendered_y * target_y), dim=1)
     blurred = F.conv2d(F.pad(moments, (5, 5, 0, 0), mode="replicate"), weight_h, groups=_SSIM_FEATURE_CHANNELS)
     blurred = F.conv2d(F.pad(blurred, (0, 0, 5, 5), mode="replicate"), weight_v, groups=_SSIM_FEATURE_CHANNELS)
@@ -968,6 +968,36 @@ def test_ssim_blurred_gradients_leave_target_side_moments_zero(device, tmp_path:
     assert blurred_grads.shape[-1] == _SSIM_FEATURE_CHANNELS
     np.testing.assert_allclose(blurred_grads[..., 1], 0.0, rtol=0.0, atol=1e-7)
     np.testing.assert_allclose(blurred_grads[..., 3], 0.0, rtol=0.0, atol=1e-7)
+
+
+def test_ssim_scalar_projection_keeps_neutral_black_gradients_neutral(device, tmp_path: Path):
+    trainer = _make_loss_only_trainer(
+        device,
+        tmp_path,
+        width=8,
+        height=8,
+        training_hparams=TrainingHyperParams(
+            ssim_weight=1.0,
+            scale_l2_weight=0.0,
+            scale_abs_reg_weight=0.0,
+            opacity_reg_weight=0.0,
+            sh1_reg_weight=0.0,
+            density_regularizer=0.0,
+            depth_ratio_weight=0.0,
+        ),
+        image_name="ssim_neutral_black_target.png",
+        image_id=36,
+    )
+    rendered = np.full((8, 8, 4), 0.1, dtype=np.float32)
+    target = np.zeros((8, 8, 4), dtype=np.float32)
+    rendered[..., 3] = 1.0
+    target[..., 3] = 1.0
+
+    _dispatch_manual_loss(trainer, rendered, target)
+    gpu_grad = _read_output_grads(trainer.renderer)[..., :3]
+
+    np.testing.assert_allclose(gpu_grad[..., 0], gpu_grad[..., 1], rtol=0.0, atol=1e-7)
+    np.testing.assert_allclose(gpu_grad[..., 1], gpu_grad[..., 2], rtol=0.0, atol=1e-7)
 
 
 def test_target_alpha_mask_skips_masked_pixel_loss_and_output_grads(device, tmp_path: Path):
