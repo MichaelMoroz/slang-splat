@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import slangpy as spy
 
-from .utility import RW_BUFFER_USAGE, SHADER_ROOT, alloc_buffer, buffer_to_numpy, dispatch, grow_capacity, load_compute_kernels, thread_count_1d, thread_count_2d
+from .utility import RW_BUFFER_USAGE, SHADER_ROOT, alloc_buffer, buffer_to_numpy, debug_region, dispatch, grow_capacity, load_compute_kernels, thread_count_1d, thread_count_2d
 
 
 _METRICS_SHADER = Path(SHADER_ROOT / "utility" / "metrics" / "metrics.slang")

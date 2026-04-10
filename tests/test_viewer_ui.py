@@ -179,7 +179,7 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["colmap_min_track_length"] == 3
     assert viewer_ui._values["colmap_depth_point_count"] == 100000
     assert viewer_ui._values["_histogram_update_y_limit"] is True
-    assert viewer_ui._values["_histogram_update_log_range"] is False
+    assert viewer_ui._values["_histogram_update_range"] is False
     assert viewer_ui._values["_show_histograms_prev"] is False
     assert viewer_ui._values["_training_views_rows"] == ()
     assert viewer_ui._values["_training_view_overlay_segments"] == ()
@@ -783,25 +783,25 @@ def test_adam_momentum_colorbar_ticks_use_grad_norm_log_band() -> None:
     assert np.isclose(hi, 2e-3, rtol=0.0, atol=1e-12)
 
 
-def test_histogram_log_range_from_histogram_keeps_central_99_percent_of_counts() -> None:
+def test_histogram_range_from_histogram_keeps_central_99_percent_of_counts() -> None:
     payload = SimpleNamespace(
-        bin_centers_log10=np.array([-6.0, -5.0, -4.0, -3.0, -2.0, -1.0], dtype=np.float64),
+        bin_centers=np.array([-6.0, -5.0, -4.0, -3.0, -2.0, -1.0], dtype=np.float64),
         counts=np.array([[1.0, 1.0, 120.0, 200.0, 120.0, 1.0]], dtype=np.float64),
     )
 
-    lo, hi = ui._histogram_log_range_from_histogram(payload)
+    lo, hi = ui._histogram_range_from_histogram(payload)
 
     assert np.isclose(lo, -4.0)
     assert np.isclose(hi, -2.0)
 
 
-def test_histogram_log_range_from_ranges_uses_nonzero_finite_extrema_as_fallback() -> None:
+def test_histogram_range_from_ranges_uses_finite_extrema_as_fallback() -> None:
     payload = SimpleNamespace(
         min_values=np.array([0.0, -1e-4, -1.0, np.nan], dtype=np.float32),
         max_values=np.array([0.0, 1e-2, 10.0, np.inf], dtype=np.float32),
     )
 
-    lo, hi = ui._histogram_log_range_from_ranges(payload)
+    lo, hi = ui._histogram_range_from_ranges(payload)
 
-    assert np.isclose(lo, -2.0)
-    assert np.isclose(hi, 1.0)
+    assert np.isclose(lo, -1.0)
+    assert np.isclose(hi, 10.0)

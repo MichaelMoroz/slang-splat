@@ -81,8 +81,8 @@ _DOCKSPACE_FLAGS = int(imgui.DockNodeFlags_.none)
 _TOOLKIT_WINDOW_NAME = "Toolkit"
 _VIEWPORT_WINDOW_NAME = "Viewport###Viewport"
 _HISTOGRAM_BIN_COUNT_DEFAULT = 64
-_HISTOGRAM_MIN_LOG10_DEFAULT = -8.0
-_HISTOGRAM_MAX_LOG10_DEFAULT = 2.0
+_HISTOGRAM_MIN_VALUE_DEFAULT = -1.0
+_HISTOGRAM_MAX_VALUE_DEFAULT = 1.0
 _HISTOGRAM_Y_LIMIT_DEFAULT = 1.0
 _HISTOGRAM_WINDOW_WIDTH = 1200.0
 _HISTOGRAM_WINDOW_HEIGHT = 860.0
@@ -348,10 +348,16 @@ def _debug_range_tick_value(t: float, value_min: float, value_max: float) -> flo
     return lo + _saturate(t) * (hi - lo)
 
 
-def _histogram_log_range_from_histogram(payload: object) -> tuple[float, float] | None:
+def _histogram_centers(payload: object) -> np.ndarray:
+    centers = getattr(payload, "bin_centers", None)
+    if centers is None: centers = getattr(payload, "bin_centers_log10", np.zeros((0,), dtype=np.float64))
+    return np.asarray(centers, dtype=np.float64)
+
+
+def _histogram_range_from_histogram(payload: object) -> tuple[float, float] | None:
     if payload is None:
         return None
-    centers = np.asarray(getattr(payload, "bin_centers_log10", np.zeros((0,), dtype=np.float64)), dtype=np.float64)
+    centers = _histogram_centers(payload)
     counts = np.asarray(getattr(payload, "counts", np.zeros((0, 0), dtype=np.int64)), dtype=np.float64)
     if counts.ndim != 2 or centers.ndim != 1 or counts.shape[1] != centers.size or centers.size == 0:
         return None
@@ -376,19 +382,17 @@ def _histogram_log_range_from_histogram(payload: object) -> tuple[float, float] 
     return float(filtered_centers[lo_index]), float(filtered_centers[hi_index])
 
 
-def _histogram_log_range_from_ranges(payload: object) -> tuple[float, float] | None:
+def _histogram_range_from_ranges(payload: object) -> tuple[float, float] | None:
     if payload is None:
         return None
     min_values = np.asarray(getattr(payload, "min_values", np.zeros((0,), dtype=np.float32)), dtype=np.float64)
     max_values = np.asarray(getattr(payload, "max_values", np.zeros((0,), dtype=np.float32)), dtype=np.float64)
     if min_values.ndim != 1 or max_values.ndim != 1 or min_values.size != max_values.size or min_values.size == 0:
         return None
-    extrema = np.maximum(np.abs(min_values), np.abs(max_values))
-    finite_nonzero = extrema[np.isfinite(extrema) & (extrema > 0.0)]
-    if finite_nonzero.size == 0:
-        return None
-    log_values = np.log10(finite_nonzero)
-    return float(np.min(log_values)), float(np.max(log_values))
+    finite_min = min_values[np.isfinite(min_values)]
+    finite_max = max_values[np.isfinite(max_values)]
+    if finite_min.size == 0 or finite_max.size == 0: return None
+    return float(np.min(finite_min)), float(np.max(finite_max))
 
 
 @dataclass(frozen=True, slots=True)
@@ -1494,7 +1498,7 @@ class ToolkitWindow:
             status = str(ui._texts.get("histogram_status", "")).strip()
             payload = ui._values.get("_histogram_payload")
             range_payload = ui._values.get("_histogram_range_payload")
-            self._update_histogram_log_range(ui, payload, range_payload)
+            self._update_histogram_range(ui, payload, range_payload)
             if status:
                 imgui.text_disabled(status)
                 imgui.separator()
@@ -1578,15 +1582,15 @@ class ToolkitWindow:
         if imgui.button("Update Y Scale"):
             ui._values["_histogram_update_y_limit"] = True
         imgui.same_line()
-        if imgui.button("Update Log Range"):
-            ui._values["_histogram_update_log_range"] = True
+        if imgui.button("Update Range"):
+            ui._values["_histogram_update_range"] = True
         flags = imgui.TableFlags_.sizing_stretch_prop.value | imgui.TableFlags_.pad_outer_x.value
         if imgui.begin_table("##hist_controls", 2, flags):
             imgui.table_setup_column("Label", imgui.TableColumnFlags_.width_fixed.value, _HISTOGRAM_CONTROL_LABEL_WIDTH)
             imgui.table_setup_column("Value", imgui.TableColumnFlags_.width_stretch.value)
             self._draw_histogram_control_row_int(ui, "Bin Count", "##hist_bin_count", "hist_bin_count", _HISTOGRAM_BIN_COUNT_DEFAULT, 1)
-            self._draw_histogram_control_row_float(ui, "Min Log10", "##hist_min_log10", "hist_min_log10", _HISTOGRAM_MIN_LOG10_DEFAULT, "%.3f")
-            self._draw_histogram_control_row_float(ui, "Max Log10", "##hist_max_log10", "hist_max_log10", _HISTOGRAM_MAX_LOG10_DEFAULT, "%.3f")
+            self._draw_histogram_control_row_float(ui, "Min", "##hist_min_value", "hist_min_value", _HISTOGRAM_MIN_VALUE_DEFAULT, "%.3f")
+            self._draw_histogram_control_row_float(ui, "Max", "##hist_max_value", "hist_max_value", _HISTOGRAM_MAX_VALUE_DEFAULT, "%.3f")
             self._draw_histogram_control_row_float(ui, "Y Limit", "##hist_y_limit", "hist_y_limit", _HISTOGRAM_Y_LIMIT_DEFAULT, "%.1f", min_value=1.0)
             imgui.end_table()
         imgui.separator()
@@ -1629,22 +1633,22 @@ class ToolkitWindow:
         ui._values["hist_y_limit"] = max(1.3 * float(np.max(counts) if counts.size > 0 else 0.0), 1.0)
         ui._values["_histogram_update_y_limit"] = False
 
-    def _update_histogram_log_range(self, ui: ViewerUI, histogram_payload: object, range_payload: object) -> None:
-        if not bool(ui._values.get("_histogram_update_log_range", False)):
+    def _update_histogram_range(self, ui: ViewerUI, histogram_payload: object, range_payload: object) -> None:
+        if not bool(ui._values.get("_histogram_update_range", False)):
             return
-        log_range = _histogram_log_range_from_histogram(histogram_payload)
-        if log_range is None:
-            log_range = _histogram_log_range_from_ranges(range_payload)
-        if log_range is not None:
-            ui._values["hist_min_log10"] = float(log_range[0])
-            ui._values["hist_max_log10"] = float(log_range[1])
+        value_range = _histogram_range_from_histogram(histogram_payload)
+        if value_range is None:
+            value_range = _histogram_range_from_ranges(range_payload)
+        if value_range is not None:
+            ui._values["hist_min_value"] = float(value_range[0])
+            ui._values["hist_max_value"] = float(value_range[1])
             ui._values["_histograms_refresh_requested"] = True
-        ui._values["_histogram_update_log_range"] = False
+        ui._values["_histogram_update_range"] = False
 
     def _draw_histogram_groups(self, ui: ViewerUI, payload: object) -> None:
         labels = tuple(str(label) for label in getattr(payload, "param_labels", ()))
         groups = tuple(getattr(payload, "param_groups", _DEFAULT_HISTOGRAM_GROUPS))
-        centers = np.asarray(getattr(payload, "bin_centers_log10", np.zeros((0,), dtype=np.float64)), dtype=np.float64)
+        centers = _histogram_centers(payload)
         counts = np.asarray(getattr(payload, "counts", np.zeros((0, 0), dtype=np.int64)), dtype=np.float64)
         if counts.ndim != 2 or centers.size == 0:
             imgui.text_wrapped("Histogram payload is malformed.")
@@ -1667,7 +1671,7 @@ class ToolkitWindow:
         imgui.text_disabled(label)
         plot_id = f"##plot_{label}"
         if implot.begin_plot(plot_id, imgui.ImVec2(-1, _HISTOGRAM_PLOT_HEIGHT)):
-            implot.setup_axes("log10(abs(grad))", "count", 0, 0)
+            implot.setup_axes("value", "count", 0, 0)
             if centers.size > 0:
                 implot.setup_axis_limits(implot.ImAxis_.x1.value, float(centers[0]), float(centers[-1]), implot.Cond_.always.value)
             implot.setup_axis_limits(implot.ImAxis_.y1.value, 0.0, max(float(y_limit), 1.0), implot.Cond_.always.value)
@@ -2324,13 +2328,13 @@ def build_ui(renderer) -> ViewerUI:
     values["show_camera_labels"] = False
     values["show_training_cameras"] = False
     values["hist_bin_count"] = _HISTOGRAM_BIN_COUNT_DEFAULT
-    values["hist_min_log10"] = _HISTOGRAM_MIN_LOG10_DEFAULT
-    values["hist_max_log10"] = _HISTOGRAM_MAX_LOG10_DEFAULT
+    values["hist_min_value"] = _HISTOGRAM_MIN_VALUE_DEFAULT
+    values["hist_max_value"] = _HISTOGRAM_MAX_VALUE_DEFAULT
     values["hist_y_limit"] = _HISTOGRAM_Y_LIMIT_DEFAULT
     values["_histograms_refresh_requested"] = False
     values["_show_histograms_prev"] = False
     values["_histogram_update_y_limit"] = True
-    values["_histogram_update_log_range"] = False
+    values["_histogram_update_range"] = False
     values["_histogram_payload"] = None
     values["_histogram_range_payload"] = None
     values["_training_views_rows"] = ()

@@ -117,6 +117,26 @@ def test_gpu_param_tensor_ranges_track_signed_extrema(device) -> None:
     assert ranges.param_labels == ("first", "second")
 
 
+def test_scene_param_histograms_use_linear_value_bins(device) -> None:
+    renderer = GaussianRenderer(device, width=8, height=8)
+    scene = GaussianScene(
+        positions=np.array([[-0.75, 0.0, 0.75], [0.25, -0.25, 0.5]], dtype=np.float32),
+        scales=_log_scale(np.ones((2, 3), dtype=np.float32)),
+        rotations=np.array([[1.0, 0.0, 0.0, 0.0], [0.5, -0.5, 0.5, -0.5]], dtype=np.float32),
+        opacities=np.array([0.0, 0.0], dtype=np.float32),
+        colors=np.array([[0.1, 0.2, 0.3], [0.8, 0.6, 0.4]], dtype=np.float32),
+        sh_coeffs=np.zeros((2, 1, 3), dtype=np.float32),
+    )
+    renderer.set_scene(scene)
+
+    hist = renderer.compute_scene_param_histograms(2, bin_count=4, min_value=-1.0, max_value=1.0)
+
+    np.testing.assert_allclose(hist.bin_edges_log10, np.array([-1.0, -0.5, 0.0, 0.5, 1.0], dtype=np.float64), rtol=0.0, atol=0.0)
+    np.testing.assert_array_equal(hist.counts[0], np.array([1, 0, 1, 0], dtype=np.int64))
+    np.testing.assert_array_equal(hist.counts[1], np.array([0, 1, 1, 0], dtype=np.int64))
+    np.testing.assert_array_equal(hist.counts[2], np.array([0, 0, 0, 2], dtype=np.int64))
+
+
 def test_psnr_from_mse_zero_is_infinite() -> None:
     assert math.isinf(psnr_from_mse(0.0))
 

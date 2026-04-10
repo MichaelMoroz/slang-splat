@@ -802,11 +802,11 @@ def test_refresh_cached_raster_grad_histograms_requires_explicit_request() -> No
     ranges = SimpleNamespace(min_values=np.full((14,), -1.0, dtype=np.float32), max_values=np.full((14,), 2.0, dtype=np.float32), param_labels=("p",) * 14)
     renderer = SimpleNamespace(
         cached_raster_grad_atomic_mode="float",
-        compute_scene_param_histograms=lambda scene_count, *, bin_count, min_log10, max_log10: calls.append((scene_count, bin_count, min_log10, max_log10)) or hist,
+        compute_scene_param_histograms=lambda scene_count, *, bin_count, min_value, max_value: calls.append((scene_count, bin_count, min_value, max_value)) or hist,
         compute_scene_param_ranges=lambda scene_count: ranges,
     )
     viewer = SimpleNamespace(
-        ui=SimpleNamespace(_values={"hist_bin_count": 8, "hist_min_log10": -7.0, "hist_max_log10": 1.0, "_histograms_refresh_requested": True}),
+        ui=SimpleNamespace(_values={"hist_bin_count": 8, "hist_min_value": -7.0, "hist_max_value": 1.0, "_histograms_refresh_requested": True}),
         s=SimpleNamespace(
             trainer=SimpleNamespace(state=SimpleNamespace(step=3), scene=SimpleNamespace(count=32), metrics=object()),
             training_renderer=renderer,
@@ -833,11 +833,11 @@ def test_refresh_cached_raster_grad_histograms_skips_without_request() -> None:
     calls: list[int] = []
     renderer = SimpleNamespace(
         cached_raster_grad_atomic_mode="float",
-        compute_scene_param_histograms=lambda scene_count, *, bin_count, min_log10, max_log10: calls.append(scene_count),
+        compute_scene_param_histograms=lambda scene_count, *, bin_count, min_value, max_value: calls.append(scene_count),
         compute_scene_param_ranges=lambda scene_count: None,
     )
     viewer = SimpleNamespace(
-        ui=SimpleNamespace(_values={"hist_bin_count": 8, "hist_min_log10": -7.0, "hist_max_log10": 1.0, "_histograms_refresh_requested": False}),
+        ui=SimpleNamespace(_values={"hist_bin_count": 8, "hist_min_value": -7.0, "hist_max_value": 1.0, "_histograms_refresh_requested": False}),
         s=SimpleNamespace(
             trainer=SimpleNamespace(state=SimpleNamespace(step=3), scene=SimpleNamespace(count=32), metrics=object()),
             training_renderer=renderer,
@@ -862,11 +862,11 @@ def test_refresh_cached_raster_grad_histograms_honors_manual_refresh() -> None:
     calls: list[int] = []
     renderer = SimpleNamespace(
         cached_raster_grad_atomic_mode="fixed",
-        compute_scene_param_histograms=lambda scene_count, *, bin_count, min_log10, max_log10: calls.append(scene_count) or SimpleNamespace(counts=np.zeros((14, bin_count), dtype=np.int64), param_labels=(), param_groups=()),
+        compute_scene_param_histograms=lambda scene_count, *, bin_count, min_value, max_value: calls.append(scene_count) or SimpleNamespace(counts=np.zeros((14, bin_count), dtype=np.int64), param_labels=(), param_groups=()),
         compute_scene_param_ranges=lambda scene_count: SimpleNamespace(min_values=np.zeros((14,), dtype=np.float32), max_values=np.zeros((14,), dtype=np.float32), param_labels=(), param_groups=()),
     )
     viewer = SimpleNamespace(
-        ui=SimpleNamespace(_values={"hist_bin_count": 4, "hist_min_log10": -8.0, "hist_max_log10": 2.0, "_histograms_refresh_requested": True}),
+        ui=SimpleNamespace(_values={"hist_bin_count": 4, "hist_min_value": -1.0, "hist_max_value": 1.0, "_histograms_refresh_requested": True}),
         s=SimpleNamespace(
             trainer=SimpleNamespace(state=SimpleNamespace(step=0), scene=SimpleNamespace(count=12), metrics=object()),
             training_renderer=renderer,
@@ -896,11 +896,11 @@ def test_refresh_cached_raster_grad_histograms_uses_scene_param_ranges_directly(
     )
     renderer = SimpleNamespace(
         cached_raster_grad_atomic_mode="float",
-        compute_scene_param_histograms=lambda scene_count, *, bin_count, min_log10, max_log10: hist,
+        compute_scene_param_histograms=lambda scene_count, *, bin_count, min_value, max_value: hist,
         compute_scene_param_ranges=lambda scene_count: ranges,
     )
     viewer = SimpleNamespace(
-        ui=SimpleNamespace(_values={"hist_bin_count": 4, "hist_min_log10": -8.0, "hist_max_log10": 2.0, "_histograms_refresh_requested": True}),
+        ui=SimpleNamespace(_values={"hist_bin_count": 4, "hist_min_value": -1.0, "hist_max_value": 1.0, "_histograms_refresh_requested": True}),
         s=SimpleNamespace(
             trainer=SimpleNamespace(state=SimpleNamespace(step=5), scene=SimpleNamespace(count=7), metrics=object()),
             training_renderer=renderer,

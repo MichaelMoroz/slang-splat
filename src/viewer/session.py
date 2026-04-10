@@ -942,18 +942,18 @@ def refresh_cached_raster_grad_histograms(viewer: object, force: bool = False) -
         viewer.ui._values["_histograms_refresh_requested"] = False
         return
     bin_count = max(int(viewer.ui._values.get("hist_bin_count", 64)), 1)
-    min_log10 = float(viewer.ui._values.get("hist_min_log10", -8.0))
-    max_log10 = float(viewer.ui._values.get("hist_max_log10", 2.0))
+    min_value = float(viewer.ui._values.get("hist_min_value", -1.0))
+    max_value = float(viewer.ui._values.get("hist_max_value", 1.0))
     step = int(viewer.s.trainer.state.step)
     scene_count = int(viewer.s.trainer.scene.count)
-    signature = (step, scene_count, bin_count, min_log10, max_log10)
+    signature = (step, scene_count, bin_count, min_value, max_value)
     if not refresh_requested:
         return
     viewer.s.cached_raster_grad_histograms = viewer.s.training_renderer.compute_scene_param_histograms(
         scene_count,
         bin_count=bin_count,
-        min_log10=min_log10,
-        max_log10=max_log10,
+        min_value=min_value,
+        max_value=max_value,
     )
     viewer.s.cached_raster_grad_ranges = viewer.s.training_renderer.compute_scene_param_ranges(scene_count)
     viewer.s.cached_raster_grad_histogram_mode = ""

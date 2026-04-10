@@ -1417,27 +1417,26 @@ class GaussianRenderer:
         return np.ascontiguousarray(tensor.T, dtype=np.float32)
 
     @staticmethod
-    def _param_tensor_log10_histograms(
+    def _param_tensor_histograms(
         tensor: np.ndarray,
         *,
         bin_count: int,
-        min_log10: float,
-        max_log10: float,
+        min_value: float,
+        max_value: float,
         param_labels: tuple[str, ...],
         param_groups: tuple[tuple[str, tuple[int, ...]], ...],
     ) -> ParamLog10Histograms:
         bins = max(int(bin_count), 1)
-        lo = float(min_log10)
-        hi = float(max_log10) if float(max_log10) > lo else lo + 1e-6
+        lo = float(min_value)
+        hi = float(max_value) if float(max_value) > lo else lo + 1e-6
         counts = np.zeros((tensor.shape[0], bins), dtype=np.int64)
         inv_bin_size = float(bins) / (hi - lo)
         for param_index in range(tensor.shape[0]):
             values = np.asarray(tensor[param_index], dtype=np.float64)
-            valid = np.isfinite(values) & (values != 0.0)
+            valid = np.isfinite(values)
             if not np.any(valid):
                 continue
-            log_values = np.log10(np.abs(values[valid]))
-            bin_indices = np.clip(np.floor((log_values - lo) * inv_bin_size).astype(np.int64), 0, bins - 1)
+            bin_indices = np.clip(np.floor((values[valid] - lo) * inv_bin_size).astype(np.int64), 0, bins - 1)
             np.add.at(counts[param_index], bin_indices, 1)
         return ParamLog10Histograms(
             counts=counts,
@@ -1474,22 +1473,22 @@ class GaussianRenderer:
         splat_count: int | None = None,
         *,
         bin_count: int = 64,
-        min_log10: float = -8.0,
-        max_log10: float = 2.0,
+        min_value: float = -1.0,
+        max_value: float = 1.0,
     ) -> ParamLog10Histograms:
         count = self._scene_count if splat_count is None else int(splat_count)
         if count <= 0:
             return ParamLog10Histograms(
                 counts=np.zeros((0, max(int(bin_count), 1)), dtype=np.int64),
-                bin_edges_log10=np.linspace(float(min_log10), float(max(max_log10, min_log10 + 1e-6)), max(int(bin_count), 1) + 1, dtype=np.float64),
+                bin_edges_log10=np.linspace(float(min_value), float(max(max_value, min_value + 1e-6)), max(int(bin_count), 1) + 1, dtype=np.float64),
                 param_labels=(),
                 param_groups=(),
             )
-        return self._param_tensor_log10_histograms(
+        return self._param_tensor_histograms(
             self._scene_histogram_tensor(count),
             bin_count=bin_count,
-            min_log10=min_log10,
-            max_log10=max_log10,
+            min_value=min_value,
+            max_value=max_value,
             param_labels=self.SCENE_PARAM_HISTOGRAM_LABELS,
             param_groups=self.SCENE_PARAM_HISTOGRAM_GROUPS,
         )
