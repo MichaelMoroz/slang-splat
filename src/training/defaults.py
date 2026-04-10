@@ -6,7 +6,7 @@ DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY = 0.995
 DEPTH_RATIO_GRAD_MIN_BAND_WIDTH = 1e-4
 DEFAULT_DEPTH_RATIO_GRAD_MIN = 0.0
 DEFAULT_DEPTH_RATIO_GRAD_MAX = 0.1
-DEFAULT_SSIM_WEIGHT = 0.2
+DEFAULT_SSIM_WEIGHT = 0.05
 DEFAULT_SSIM_C2 = 9e-4
 DEFAULT_MAX_SCREEN_FRACTION = 0.25
 DEFAULT_LR_SCHEDULE_STEPS = 30_000
@@ -38,7 +38,7 @@ TRAINING_BUILD_ARG_DEFAULTS: dict[str, object] = {
     "opacity_reg_weight": 0.01,
     "density_regularizer": 0.02,
     "color_non_negative_reg": 0.01,
-    "depth_ratio_weight": 0.1,
+    "depth_ratio_weight": 0.5,
     "max_screen_fraction": DEFAULT_MAX_SCREEN_FRACTION,
     "ssim_weight": DEFAULT_SSIM_WEIGHT,
     "ssim_c2": DEFAULT_SSIM_C2,
@@ -81,6 +81,9 @@ TRAINING_BUILD_ARG_DEFAULTS: dict[str, object] = {
     "depth_ratio_stage1_weight": 0.03,
     "depth_ratio_stage2_weight": 0.01,
     "depth_ratio_stage3_weight": 0.001,
+    "ssim_weight_stage1": 0.1,
+    "ssim_weight_stage2": 0.3,
+    "ssim_weight_stage3": 0.4,
     "max_screen_fraction_stage1": 0.05,
     "max_screen_fraction_stage2": 0.04,
     "max_screen_fraction_stage3": 0.03,

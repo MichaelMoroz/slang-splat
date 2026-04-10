@@ -80,8 +80,9 @@ def test_build_training_params_clamps_ranges():
     assert params.training.refinement_target_edge_weight == 0.0
     assert params.training.density_regularizer == 0.02
     assert params.training.color_non_negative_reg == 0.01
-    assert params.training.depth_ratio_weight == 0.1
+    assert params.training.depth_ratio_weight == 0.5
     assert params.training.max_screen_fraction == 0.25
+    assert params.training.ssim_weight == 0.05
     assert params.training.ssim_c2 == 9e-4
     assert params.training.depth_ratio_grad_min == 0.2
     assert params.training.depth_ratio_grad_max == 0.2 + DEPTH_RATIO_GRAD_MIN_BAND_WIDTH
@@ -112,6 +113,9 @@ def test_build_training_params_clamps_ranges():
     assert params.training.depth_ratio_stage1_weight == 0.03
     assert params.training.depth_ratio_stage2_weight == 0.01
     assert params.training.depth_ratio_stage3_weight == 0.001
+    assert params.training.ssim_weight_stage1 == 0.1
+    assert params.training.ssim_weight_stage2 == 0.3
+    assert params.training.ssim_weight_stage3 == 0.4
     assert params.training.use_sh_stage1 is False
     assert params.training.use_sh_stage2 is True
     assert params.training.use_sh_stage3 is True
@@ -140,9 +144,9 @@ def test_default_training_params_match_fixed_count_defaults():
     assert params.training.refinement_target_edge_weight == 0.75
     assert params.training.density_regularizer == 0.02
     assert params.training.color_non_negative_reg == 0.01
-    assert params.training.depth_ratio_weight == 0.1
+    assert params.training.depth_ratio_weight == 0.5
     assert params.training.max_screen_fraction == 0.25
-    assert params.training.ssim_weight == 0.2
+    assert params.training.ssim_weight == 0.05
     assert params.training.ssim_c2 == 9e-4
     assert params.training.depth_ratio_grad_min == 0.0
     assert params.training.depth_ratio_grad_max == 0.1
@@ -173,6 +177,9 @@ def test_default_training_params_match_fixed_count_defaults():
     assert params.training.depth_ratio_stage1_weight == 0.03
     assert params.training.depth_ratio_stage2_weight == 0.01
     assert params.training.depth_ratio_stage3_weight == 0.001
+    assert params.training.ssim_weight_stage1 == 0.1
+    assert params.training.ssim_weight_stage2 == 0.3
+    assert params.training.ssim_weight_stage3 == 0.4
     assert params.training.use_sh_stage1 is False
     assert params.training.use_sh_stage2 is True
     assert params.training.use_sh_stage3 is True
@@ -194,7 +201,7 @@ def test_auto_profile_resolves_to_legacy_defaults():
     assert profile.name == "legacy"
     assert params.training.scale_abs_reg_weight == 0.01
     assert params.training.sh1_reg_weight == 0.01
-    assert params.training.depth_ratio_weight == 0.1
+    assert params.training.depth_ratio_weight == 0.5
     assert params.training.refinement_loss_weight == 0.25
     assert params.training.refinement_target_edge_weight == 0.75
     assert params.training.depth_ratio_grad_min == 0.0
@@ -227,7 +234,7 @@ def test_viewer_effective_training_setup_keeps_requested_init_opacity():
     assert profile.name == "legacy"
     assert params.training.scale_abs_reg_weight == 0.01
     assert params.training.sh1_reg_weight == 0.01
-    assert params.training.depth_ratio_weight == 0.1
+    assert params.training.depth_ratio_weight == 0.5
     assert params.training.refinement_loss_weight == 0.25
     assert params.training.refinement_target_edge_weight == 0.75
     assert params.training.depth_ratio_grad_min == 0.0
@@ -265,7 +272,10 @@ def test_viewer_defaults_expose_only_fixed_count_training_controls():
     assert defaults["max_screen_fraction_stage1"] == 0.05
     assert defaults["max_screen_fraction_stage2"] == 0.04
     assert defaults["max_screen_fraction_stage3"] == 0.03
-    assert defaults["ssim_weight"] == 0.2
+    assert defaults["ssim_weight"] == 0.05
+    assert defaults["ssim_weight_stage1"] == 0.1
+    assert defaults["ssim_weight_stage2"] == 0.3
+    assert defaults["ssim_weight_stage3"] == 0.4
     assert defaults["ssim_c2"] == 9e-4
     assert "lambda_dssim" not in defaults
     assert "mcmc_growth_ratio" not in defaults

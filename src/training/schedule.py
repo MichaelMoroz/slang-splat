@@ -141,6 +141,21 @@ def resolve_depth_ratio_weight(training_hparams: Any, step: int) -> float:
     )
 
 
+def resolve_ssim_weight(training_hparams: Any, step: int) -> float:
+    if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
+        return min(max(float(getattr(training_hparams, "ssim_weight", 0.05)), 0.0), 1.0)
+    return _resolve_staged_linear_value(
+        training_hparams,
+        step,
+        min(max(float(getattr(training_hparams, "ssim_weight", 0.05)), 0.0), 1.0),
+        (
+            min(max(float(getattr(training_hparams, "ssim_weight_stage1", 0.1)), 0.0), 1.0),
+            min(max(float(getattr(training_hparams, "ssim_weight_stage2", 0.3)), 0.0), 1.0),
+            min(max(float(getattr(training_hparams, "ssim_weight_stage3", 0.4)), 0.0), 1.0),
+        ),
+    )
+
+
 def resolve_max_screen_fraction(training_hparams: Any, step: int) -> float:
     if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
         return max(float(getattr(training_hparams, "max_screen_fraction", 0.1)), 1e-8)
