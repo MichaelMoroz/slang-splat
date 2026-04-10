@@ -182,6 +182,7 @@ def test_default_training_params_include_background_mode_and_density() -> None:
     assert params.training.sh_band == 0
     assert params.training.density_regularizer == 0.02
     assert params.training.depth_ratio_weight == 1.0
+    assert params.training.ssim_weight == 0.2
     assert params.training.refinement_loss_weight == 0.25
     assert params.training.refinement_target_edge_weight == 0.75
     assert params.training.depth_ratio_grad_min == 0.0

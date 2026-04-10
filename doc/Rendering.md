@@ -91,9 +91,12 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - Shader: `shaders/renderer/gaussian_training_stage.slang`.
 - Kernels:
   - `csClearLossBuffer`: clears the scalar loss buffer for the current fixed-count step.
-  - `csComputeL1LossForward`: computes RGB L1 loss and RGB MSE only, reducing them into the scalar metrics buffer used by the host.
-  - `csComputeL1LossBackward`: computes only the image-space RGB L1 gradient into `g_OutputGrad`.
-- The fixed-count trainer runs forward as `rasterize -> loss forward`, then backward as `loss backward -> raster backward -> optimizer`, so the training path keeps distinct forward and backward kernels while still reusing the packed-parameter optimizer path.
+  - `csComputeSSIMFeatures`: converts rendered and target RGB into BT.601 YCbCr and writes 15 channels of per-pixel moments (`x`, `y`, `x²`, `y²`, `xy`) into a flat buffer.
+  - The separable Gaussian buffer blur utility blurs those 15 channels in two dispatches and is reused unchanged for the blur adjoint in backward.
+  - `csComputeBlendedLossForward`: computes RGB MSE plus the blended RGB reconstruction term `(1 - ssim_weight) * L1 + ssim_weight * DSSIM`, then adds density and depth-ratio regularization into the scalar metrics buffer used by the host.
+  - `csComputeSSIMBlurredGradients`: differentiates DSSIM with respect to the blurred rendered-side moments using Slang autodiff.
+  - `csComputeBlendedLossBackward`: combines the weighted RGB L1 image gradient with the autodiff-propagated DSSIM image gradient and writes the final image-space gradient into `g_OutputGrad`.
+- The fixed-count trainer runs forward as `rasterize -> feature extraction -> blur -> loss forward`, then backward as `blurred-moment grad -> blur adjoint -> loss backward -> raster backward -> optimizer`, so the training path keeps distinct forward and backward kernels while still reusing the packed-parameter optimizer path.
 
 ## 9. Debug Histograms
 - `src/metrics.py` now exposes both single log10 histograms and grouped per-parameter log10 histograms for generic float tensors laid out as `tensor[param_id * item_count + item_id]`.

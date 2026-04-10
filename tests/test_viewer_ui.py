@@ -155,6 +155,7 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["refinement_target_edge_weight"] == 0.75
     assert viewer_ui._values["density_regularizer"] == 0.02
     assert viewer_ui._values["depth_ratio_weight"] == 1.0
+    assert viewer_ui._values["ssim_weight"] == 0.2
     assert viewer_ui._values["depth_ratio_stage1_weight"] == 0.05
     assert viewer_ui._values["depth_ratio_stage2_weight"] == 0.01
     assert viewer_ui._values["depth_ratio_stage3_weight"] == 0.001

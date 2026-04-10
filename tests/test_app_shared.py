@@ -247,5 +247,6 @@ def test_viewer_defaults_expose_only_fixed_count_training_controls():
     assert "scale_abs_reg" in defaults
     assert "sh1_reg" in defaults
     assert "opacity_reg" in defaults
+    assert defaults["ssim_weight"] == 0.2
     assert "lambda_dssim" not in defaults
     assert "mcmc_growth_ratio" not in defaults
