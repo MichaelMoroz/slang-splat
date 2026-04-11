@@ -85,6 +85,7 @@ Each trainer `step()` performs:
   - multiply the user-facing minimum contribution percent by `refinement_min_contribution_decay` after each completed refinement pass (`0.995` by default, i.e. a `0.5%` drop per pass),
   - convert that decayed percent-of-observed-dataset-pixels threshold into the shader's raw 24.8 fixed-point units with `percent * observed_pixels * 256 / 100`,
   - split selected splats into `N + 1` family members from the accumulated clone counts using centered Gaussian samples in local splat space, seeded from a Python-provided hash of the selected training-frame `image_id`,
+  - `refinement_sample_radius` controls that local-space sampling radius at runtime and now defaults to `4.0`,
   - shrink each child sigma by `family_size^(-1/3)` and offset child means with the analytically matched residual covariance so the expected family covariance stays aligned with the parent,
   - clamp each normalized residual offset sample to a maximum radius of `3 sigma` in splat space before applying it,
   - keep family opacity unchanged because that analytically preserves the expected unnormalized Gaussian kernel amplitude under that covariance split,

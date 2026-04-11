@@ -2127,6 +2127,7 @@ class ToolkitWindow:
         "refinement_min_contribution_percent": "Minimum accumulated alpha contribution, as a percent of observed dataset pixels, required for a splat to survive refinement",
         "refinement_min_contribution_decay": "Multiply the minimum contribution percent by this factor after each completed refinement pass",
         "refinement_opacity_mul": "Multiply every surviving splat alpha by this factor during each refinement rewrite pass",
+        "refinement_sample_radius": "Radius of the centered local-space Fibonacci volume used when spawning new refinement samples",
         "refinement_loss_weight": "Weight of normalized per-pixel RGB loss in hybrid clone selection during refinement",
         "refinement_target_edge_weight": "Weight of normalized target-image Sobel edge intensity in hybrid clone selection during refinement",
         "density_regularizer": "Weight applied to the per-pixel hinge penalty max(density - max_allowed_density, 0)",

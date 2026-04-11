@@ -71,6 +71,7 @@ TRAINING_BUILD_ARG_DEFAULTS: dict[str, object] = {
     "refinement_min_contribution_percent": DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT,
     "refinement_min_contribution_decay": DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY,
     "refinement_opacity_mul": 1.0,
+    "refinement_sample_radius": 4.0,
     "lr_pos_stage1_mul": 0.1,
     "lr_pos_stage2_mul": 0.05,
     "lr_pos_stage3_mul": 0.02,

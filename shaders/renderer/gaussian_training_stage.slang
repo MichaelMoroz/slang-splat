@@ -17,7 +17,6 @@ static const float POSITION_RANDOM_STEP_MAX_ANISOTROPY = 4.0;
 static const float DENSIFY_SCALE_SHRINK_EXPONENT = -1.0 / 3.0;
 static const float DENSIFY_MAX_STANDARDIZED_SIGMA = 3.0;
 static const float REFINEMENT_CHILD_ANISOTROPY_RATIO_SCALE = 0.5;
-static const float REFINEMENT_FIBONACCI_RADIUS = 2.0;
 static const float REFINEMENT_FIBONACCI_JITTER_RATIO = 0.2;
 static const float REFINEMENT_FIBONACCI_GOLDEN_ANGLE = 2.39996322972865332;
 static const float SRGB_LINEAR_THRESHOLD = 0.0031308;
@@ -121,6 +120,7 @@ uniform uint g_RefinementCameraCount;
 uniform float g_RefinementAlphaCullThreshold;
 uniform uint g_RefinementMinContributionThreshold;
 uniform float g_RefinementOpacityMul;
+uniform float g_RefinementSampleRadius;
 uniform float g_RefinementRadiusScale;
 
 groupshared float gsLoss[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
@@ -432,10 +432,10 @@ float3 refinement_fibonacci_direction(uint subsampleId, uint familySize)
 float3 refinement_volume_sample_raw(uint frameHash, uint splatId, uint subsampleId, uint familySize)
 {
     uint sampleSeed = refinement_sample_seed(frameHash, splatId, subsampleId);
-    float radius = REFINEMENT_FIBONACCI_RADIUS * refinement_family_root(subsampleId + 1u) / refinement_family_root(familySize);
+    float radius = g_RefinementSampleRadius * refinement_family_root(subsampleId + 1u) / refinement_family_root(familySize);
     float3 sample = refinement_fibonacci_direction(subsampleId, familySize) * radius;
     uint jitterState = refinement_hash_combine(sampleSeed, 0x7f4a7c15u);
-    float jitterScale = REFINEMENT_FIBONACCI_RADIUS * REFINEMENT_FIBONACCI_JITTER_RATIO / refinement_family_root(familySize);
+    float jitterScale = g_RefinementSampleRadius * REFINEMENT_FIBONACCI_JITTER_RATIO / refinement_family_root(familySize);
     return sample + rng_normal3_box_muller(jitterState) * jitterScale;
 }
 

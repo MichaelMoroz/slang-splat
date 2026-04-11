@@ -151,6 +151,7 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["refinement_min_contribution_percent"] == 1e-05
     assert viewer_ui._values["refinement_min_contribution_decay"] == 0.995
     assert viewer_ui._values["refinement_opacity_mul"] == 1.0
+    assert viewer_ui._values["refinement_sample_radius"] == 4.0
     assert viewer_ui._values["refinement_loss_weight"] == 0.25
     assert viewer_ui._values["refinement_target_edge_weight"] == 0.75
     assert viewer_ui._values["density_regularizer"] == 0.02
@@ -192,6 +193,12 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["_viewport_sh_stage_label"] == "Stage 0"
     assert viewer_ui._values["_colmap_camera_rows"] == ()
     assert "show_renderer_debug" not in viewer_ui._values
+
+
+def test_build_ui_exposes_refinement_sample_radius_default() -> None:
+    viewer_ui = ui.build_ui(_dummy_renderer())
+
+    assert viewer_ui._values["refinement_sample_radius"] == 4.0
 
 
 def test_colmap_init_mode_labels_append_depth_only_for_valid_depth_root(tmp_path) -> None:

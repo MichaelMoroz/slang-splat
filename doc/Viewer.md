@@ -145,6 +145,7 @@ Training background is configured separately from the viewer clear color:
 - `Start Densification After` now defaults to `500`.
 - Refinement contribution culling is expressed in percent of observed dataset pixels, with a base default threshold of `1e-05%`.
 - `Refinement Cull Decay` multiplies that threshold after each completed refinement pass and defaults to `0.995` (`0.5%` drop per pass).
+- `Refinement Sample Radius` controls the local-space radius used for newly spawned refinement samples and defaults to `4.0`.
 - Schedule step sliders in `Train Setup`, `Learning Rates`, and `Regularization` all clamp to the current `Schedule Steps` value so breakpoint timing can be edited directly in the viewer without touching code.
 
 - `Auto`
