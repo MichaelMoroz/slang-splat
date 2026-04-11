@@ -23,8 +23,6 @@ CAMERA_MIN_FAR = 80.0
 MOVE_SPEED_RADIUS_SCALE = 0.15
 MOVE_SPEED_MIN = 0.25
 GAUSSIAN_SIGMA_SUPPORT = 3.0
-_LR_LIMITS = (0.1, 20.0)
-_SH_LR_LIMITS = (1e-4, 10.0)
 _CLAMP_LIMITS = {
     "grad_component_clip": (1e-5, 1e6),
     "grad_norm_clip": (1e-5, 1e6),
@@ -242,7 +240,7 @@ def build_training_params(
     base_lr = clamp_float(base_lr, 1e-8, 1.0)
     adam = AdamHyperParams(
         **{
-            name: base_lr * clamp_float(value, *_LR_LIMITS)
+            name: max(float(value), 0.0) * base_lr
             for name, value in {
                 "position_lr": lr_pos_mul,
                 "scale_lr": lr_scale_mul,
@@ -301,14 +299,14 @@ def build_training_params(
         depth_ratio_grad_max=resolved_depth_ratio_grad_max,
         max_allowed_density_start=clamp_float(max_allowed_density_start, 0.0, 1e6),
         max_allowed_density=clamp_float(max_allowed_density, 0.0, 1e6),
-        lr_pos_mul=clamp_float(lr_pos_mul, *_LR_LIMITS),
-        lr_pos_stage1_mul=clamp_float(lr_pos_stage1_mul, *_LR_LIMITS),
-        lr_pos_stage2_mul=clamp_float(lr_pos_stage2_mul, *_LR_LIMITS),
-        lr_pos_stage3_mul=clamp_float(lr_pos_stage3_mul, *_LR_LIMITS),
-        lr_sh_mul=clamp_float(lr_sh_mul, *_SH_LR_LIMITS),
-        lr_sh_stage1_mul=clamp_float(lr_sh_stage1_mul, *_SH_LR_LIMITS),
-        lr_sh_stage2_mul=clamp_float(lr_sh_stage2_mul, *_SH_LR_LIMITS),
-        lr_sh_stage3_mul=clamp_float(lr_sh_stage3_mul, *_SH_LR_LIMITS),
+        lr_pos_mul=max(float(lr_pos_mul), 0.0),
+        lr_pos_stage1_mul=max(float(lr_pos_stage1_mul), 0.0),
+        lr_pos_stage2_mul=max(float(lr_pos_stage2_mul), 0.0),
+        lr_pos_stage3_mul=max(float(lr_pos_stage3_mul), 0.0),
+        lr_sh_mul=max(float(lr_sh_mul), 0.0),
+        lr_sh_stage1_mul=max(float(lr_sh_stage1_mul), 0.0),
+        lr_sh_stage2_mul=max(float(lr_sh_stage2_mul), 0.0),
+        lr_sh_stage3_mul=max(float(lr_sh_stage3_mul), 0.0),
         position_random_step_noise_lr=clamp_float(position_random_step_noise_lr, 0.0, 1e12),
         position_random_step_opacity_gate_center=clamp_float(position_random_step_opacity_gate_center, 0.0, 1.0),
         position_random_step_opacity_gate_sharpness=clamp_float(position_random_step_opacity_gate_sharpness, 0.0, 1e6),

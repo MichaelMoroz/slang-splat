@@ -34,11 +34,18 @@ def test_build_training_params_clamps_ranges():
     params = build_training_params(
         background=(0.1, 0.2, 0.3),
         base_lr=10.0,
-        lr_pos_mul=20.0,
+        lr_pos_mul=200.0,
+        lr_pos_stage1_mul=123.0,
+        lr_pos_stage2_mul=234.0,
+        lr_pos_stage3_mul=345.0,
         lr_scale_mul=0.01,
-        lr_rot_mul=1.0,
-        lr_color_mul=1.0,
-        lr_opacity_mul=1.0,
+        lr_rot_mul=30.0,
+        lr_color_mul=40.0,
+        lr_opacity_mul=50.0,
+        lr_sh_mul=67.0,
+        lr_sh_stage1_mul=78.0,
+        lr_sh_stage2_mul=89.0,
+        lr_sh_stage3_mul=90.0,
         beta1=2.0,
         beta2=-1.0,
         grad_clip=0.0,
@@ -63,8 +70,11 @@ def test_build_training_params_clamps_ranges():
         depth_ratio_grad_max=0.1,
         max_gaussians=-1,
     )
-    assert params.adam.position_lr == 20.0
-    assert params.adam.scale_lr == 0.1
+    assert params.adam.position_lr == 200.0
+    assert params.adam.scale_lr == 0.01
+    assert params.adam.rotation_lr == 30.0
+    assert params.adam.color_lr == 40.0
+    assert params.adam.opacity_lr == 50.0
     assert params.stability.max_scale == 1.0
     assert params.stability.max_opacity == params.stability.min_opacity == 0.8
     assert params.training.far > params.training.near
@@ -88,14 +98,14 @@ def test_build_training_params_clamps_ranges():
     assert params.training.depth_ratio_grad_max == 0.2 + DEPTH_RATIO_GRAD_MIN_BAND_WIDTH
     assert params.training.max_allowed_density_start == 5.0
     assert params.training.max_allowed_density == 12.0
-    assert params.training.lr_pos_mul == 20.0
-    assert params.training.lr_pos_stage1_mul == 0.3
-    assert params.training.lr_pos_stage2_mul == 0.2
-    assert params.training.lr_pos_stage3_mul == 0.2
-    assert params.training.lr_sh_mul == 0.05
-    assert params.training.lr_sh_stage1_mul == 0.05
-    assert params.training.lr_sh_stage2_mul == 0.05
-    assert params.training.lr_sh_stage3_mul == 0.05
+    assert params.training.lr_pos_mul == 200.0
+    assert params.training.lr_pos_stage1_mul == 123.0
+    assert params.training.lr_pos_stage2_mul == 234.0
+    assert params.training.lr_pos_stage3_mul == 345.0
+    assert params.training.lr_sh_mul == 67.0
+    assert params.training.lr_sh_stage1_mul == 78.0
+    assert params.training.lr_sh_stage2_mul == 89.0
+    assert params.training.lr_sh_stage3_mul == 90.0
     assert params.training.max_screen_fraction_stage1 == 0.05
     assert params.training.max_screen_fraction_stage2 == 0.04
     assert params.training.max_screen_fraction_stage3 == 0.03
