@@ -163,16 +163,16 @@ def test_default_training_params_match_fixed_count_defaults():
     assert params.training.max_allowed_density_start == 5.0
     assert params.training.max_allowed_density == 12.0
     assert params.training.lr_pos_mul == 0.5
-    assert params.training.lr_pos_stage1_mul == 0.3
-    assert params.training.lr_pos_stage2_mul == 0.2
-    assert params.training.lr_pos_stage3_mul == 0.2
-    assert params.training.lr_sh_mul == 0.05
-    assert params.training.lr_sh_stage1_mul == 0.05
-    assert params.training.lr_sh_stage2_mul == 0.05
-    assert params.training.lr_sh_stage3_mul == 0.05
-    assert params.training.max_screen_fraction_stage1 == 0.05
-    assert params.training.max_screen_fraction_stage2 == 0.04
-    assert params.training.max_screen_fraction_stage3 == 0.03
+    assert params.training.lr_pos_stage1_mul == 0.1
+    assert params.training.lr_pos_stage2_mul == 0.05
+    assert params.training.lr_pos_stage3_mul == 0.02
+    assert params.training.lr_sh_mul == 0.1
+    assert params.training.lr_sh_stage1_mul == 0.1
+    assert params.training.lr_sh_stage2_mul == 0.1
+    assert params.training.lr_sh_stage3_mul == 0.1
+    assert params.training.max_screen_fraction_stage1 == 0.07
+    assert params.training.max_screen_fraction_stage2 == 0.02
+    assert params.training.max_screen_fraction_stage3 == 0.007
     assert params.training.position_random_step_noise_lr == 5e5
     assert np.isclose(params.training.position_random_step_noise_stage1_lr, 466666.6666666667)
     assert np.isclose(params.training.position_random_step_noise_stage2_lr, 416666.6666666667)
@@ -196,7 +196,7 @@ def test_default_training_params_match_fixed_count_defaults():
     assert params.training.sh_band_stage1 == 0
     assert params.training.sh_band_stage2 == 2
     assert params.training.sh_band_stage3 == 3
-    assert params.training.refinement_growth_ratio == 0.035
+    assert params.training.refinement_growth_ratio == 0.04
     assert params.training.refinement_growth_start_step == 500
     assert params.training.refinement_alpha_cull_threshold == 1e-2
     assert params.training.refinement_min_contribution_percent == 1e-05
@@ -279,9 +279,9 @@ def test_viewer_defaults_expose_only_fixed_count_training_controls():
     assert "opacity_reg" in defaults
     assert defaults["color_non_negative_reg"] == 0.01
     assert defaults["max_screen_fraction"] == 0.25
-    assert defaults["max_screen_fraction_stage1"] == 0.05
-    assert defaults["max_screen_fraction_stage2"] == 0.04
-    assert defaults["max_screen_fraction_stage3"] == 0.03
+    assert defaults["max_screen_fraction_stage1"] == 0.07
+    assert defaults["max_screen_fraction_stage2"] == 0.02
+    assert defaults["max_screen_fraction_stage3"] == 0.007
     assert defaults["ssim_weight"] == 0.05
     assert defaults["ssim_weight_stage1"] == 0.1
     assert defaults["ssim_weight_stage2"] == 0.3
