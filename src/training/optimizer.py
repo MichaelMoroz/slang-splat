@@ -126,7 +126,6 @@ class GaussianOptimizer:
     def _vars(self, splat_count: int, training_hparams: Any, scale_reg_reference: float, color_non_negative_seed: int, max_screen_fraction: float | None = None) -> dict[str, object]:
         return {
             "g_SplatCount": int(splat_count),
-            "g_RadiusScale": float(max(self.renderer.radius_scale, 1e-8)),
             "g_MaxScreenFraction": float(max(resolve_max_screen_fraction(training_hparams, 0) if max_screen_fraction is None else max_screen_fraction, 1e-8)),
             "g_ScaleL2Weight": float(max(training_hparams.scale_l2_weight, 0.0)),
             "g_ScaleAbsRegWeight": float(max(training_hparams.scale_abs_reg_weight, 0.0)),
@@ -229,6 +228,8 @@ class GaussianOptimizer:
             vars={
                 "g_ParamGrads": work_buffers["param_grads"],
                 "g_SplatParamsRW": scene_buffers["splat_params"],
+                "g_ScreenEllipseConic": work_buffers["screen_ellipse_conic"],
+                "g_SplatVisible": work_buffers["splat_visible"],
                 **camera_vars,
                 **self._vars(
                     splat_count,

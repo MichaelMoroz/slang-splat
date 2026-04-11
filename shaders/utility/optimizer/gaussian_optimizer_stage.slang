@@ -30,7 +30,6 @@ uniform GaussianStabilityParams g_Stability;
 uniform uint g_SplatCount;
 uniform CameraParams g_CurrentCamera;
 uniform uint g_EnableCurrentCameraScreenScaleCap;
-uniform float g_RadiusScale;
 uniform float g_MaxScreenFraction;
 uniform float g_ScaleL2Weight;
 uniform float g_ScaleAbsRegWeight;
@@ -44,6 +43,8 @@ uniform uint g_ColorNonNegativeRegSeed;
 uniform RWStructuredBuffer<float> g_LossBuffer;
 uniform RWStructuredBuffer<float> g_ParamGrads;
 uniform RWStructuredBuffer<float> g_SplatParamsRW;
+uniform StructuredBuffer<float4> g_ScreenEllipseConic;
+uniform StructuredBuffer<uint> g_SplatVisible;
 
 struct TrainableGaussianState
 {
@@ -302,22 +303,22 @@ float3 clamp_sh_rest_coeffs(float3 sh)
     return clamp(sh, -1.0, 1.0);
 }
 
-float3 clamp_screen_area_upper_bound(float3 position, float3 logScale)
+float3 clamp_screen_area_upper_bound(uint splatId, float3 logScale)
 {
     if (g_EnableCurrentCameraScreenScaleCap == 0u) return logScale;
+    if (g_SplatVisible[splatId] == 0u) return logScale;
+    float maxScreenAreaPx = g_MaxScreenFraction * g_CurrentCamera.viewport.x * g_CurrentCamera.viewport.y;
+    if (!(maxScreenAreaPx > SMALL_VALUE)) return logScale;
 
-    PinholeCamera camera = PinholeCamera.from_params(g_CurrentCamera);
-    float currentMaxScale = max(exp(logScale.x), max(exp(logScale.y), exp(logScale.z)));
-    if (!(currentMaxScale > SMALL_VALUE)) return logScale;
+    float3 conic = g_ScreenEllipseConic[splatId].xyz;
+    float det = conic.x * conic.z - conic.y * conic.y;
+    if (!all(isfinite(conic)) || !(conic.x > 0.0) || !(conic.z > 0.0) || !(det > CONIC_DETERMINANT_FLOOR)) return logScale;
 
-    float maxScreenRadiusPx = sqrt(max(g_MaxScreenFraction * g_CurrentCamera.viewport.x * g_CurrentCamera.viewport.y / PI, SMALL_VALUE));
-    float maxSupportScale;
-    if (!world_support_radius_from_screen_circle(camera, position, maxScreenRadiusPx, maxSupportScale)) return logScale;
+    float currentAreaPx = projected_ellipse_area(conic);
+    if (!(currentAreaPx > maxScreenAreaPx)) return logScale;
 
-    float currentSupportScale = currentMaxScale * max(g_RadiusScale, SMALL_VALUE) * GAUSSIAN_SUPPORT_SIGMA_RADIUS;
-    if (!(maxSupportScale > SMALL_VALUE) || currentSupportScale <= maxSupportScale) return logScale;
-
-    return logScale + log(maxSupportScale / currentSupportScale);
+    float areaRatio = max(maxScreenAreaPx / currentAreaPx, SMALL_VALUE);
+    return logScale + 0.5 * log(areaRatio);
 }
 
 [Differentiable]
@@ -607,7 +608,7 @@ void csProjectGaussianParams(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (splatId >= g_SplatCount) return;
 
     TrainableGaussianState state = TrainableGaussianState.load(splatId);
-    state.logScale = clamp_screen_area_upper_bound(state.position, sanitize_float3(state.logScale, g_Stability.hugeValue));
+    state.logScale = clamp_screen_area_upper_bound(splatId, sanitize_float3(state.logScale, g_Stability.hugeValue));
     state.logScale = clamp_scale_anisotropy(state.logScale);
     state.rotation = normalize_quaternion_safe(sanitize_float4(state.rotation, g_Stability.hugeValue));
     state.sh0 = clamp_sh0_base_color(sanitize_float3(state.sh0, g_Stability.hugeValue));
