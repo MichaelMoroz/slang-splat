@@ -1,8 +1,8 @@
 static const uint BLUR_TILE_DIM = 16u;
+static const uint BLUR_GROUP_SIZE = 256u;
 static const uint GAUSSIAN_BLUR_RADIUS = 5u;
 static const uint GAUSSIAN_BLUR_TAP_COUNT = GAUSSIAN_BLUR_RADIUS * 2u + 1u;
-static const uint BLUR_SHARED_STRIDE = BLUR_TILE_DIM + GAUSSIAN_BLUR_RADIUS * 2u;
-static const uint BLUR_SHARED_SIZE = BLUR_TILE_DIM * BLUR_SHARED_STRIDE;
+static const uint BLUR_SHARED_STRIDE = BLUR_GROUP_SIZE + GAUSSIAN_BLUR_RADIUS * 2u;
 static const uint MAX_GAUSSIAN_TEXTURE_BLUR_RADIUS = 24u;
 static const uint MAX_GAUSSIAN_TEXTURE_BLUR_TAP_COUNT = MAX_GAUSSIAN_TEXTURE_BLUR_RADIUS * 2u + 1u;
 static const float GAUSSIAN_BLUR_WEIGHTS[GAUSSIAN_BLUR_TAP_COUNT] = {
@@ -37,7 +37,8 @@ uniform uint g_BlurDynamicRadius;
 uniform Texture2D<float4> g_BlurTextureInput;
 uniform RWTexture2D<float4> g_BlurTextureOutput;
 
-groupshared float gsBlurTile[BLUR_SHARED_SIZE];
+groupshared float gsHorizontalBlurRow[BLUR_SHARED_STRIDE];
+groupshared float gsVerticalBlurColumn[BLUR_SHARED_STRIDE];
 
 uint clamp_blur_index(int2 pixel, uint channel)
 {
@@ -50,183 +51,158 @@ uint blur_index(uint2 pixel, uint channel)
     return ((pixel.y * g_BlurWidth) + pixel.x) * g_BlurChannelCount + channel;
 }
 
-uint blur_thread_index(uint2 groupThreadID)
+void load_horizontal_blur_row(uint3 groupID, uint3 groupThreadID, uint channel)
 {
-    return groupThreadID.y * BLUR_TILE_DIM + groupThreadID.x;
-}
-
-uint horizontal_shared_index(uint localX, uint localY)
-{
-    return localY * BLUR_SHARED_STRIDE + localX;
-}
-
-uint vertical_shared_index(uint localX, uint localY)
-{
-    return localY * BLUR_TILE_DIM + localX;
-}
-
-void load_horizontal_blur_tile(uint2 groupID, uint2 groupThreadID, uint channel)
-{
-    uint threadIndex = blur_thread_index(groupThreadID);
-    uint2 groupOrigin = groupID * BLUR_TILE_DIM;
-    for (uint linear = threadIndex; linear < BLUR_SHARED_SIZE; linear += BLUR_TILE_DIM * BLUR_TILE_DIM)
+    uint pxBase = groupID.x * BLUR_GROUP_SIZE;
+    uint py = groupID.y;
+    for (uint localX = groupThreadID.x; localX < BLUR_SHARED_STRIDE; localX += BLUR_GROUP_SIZE)
     {
-        uint localY = linear / BLUR_SHARED_STRIDE;
-        uint localX = linear - localY * BLUR_SHARED_STRIDE;
-        if (channel >= g_BlurChannelCount) gsBlurTile[linear] = 0.0;
+        if (channel >= g_BlurChannelCount) gsHorizontalBlurRow[localX] = 0.0;
         else
         {
-            int2 sample = int2(int(groupOrigin.x + localX) - int(GAUSSIAN_BLUR_RADIUS), int(groupOrigin.y + localY));
-            gsBlurTile[linear] = g_BlurInput[clamp_blur_index(sample, channel)];
+            int2 sample = int2(int(pxBase + localX) - int(GAUSSIAN_BLUR_RADIUS), int(py));
+            gsHorizontalBlurRow[localX] = g_BlurInput[clamp_blur_index(sample, channel)];
         }
     }
     GroupMemoryBarrierWithGroupSync();
 }
 
-void load_vertical_blur_tile(uint2 groupID, uint2 groupThreadID, uint channel)
+void load_vertical_blur_column(uint3 groupID, uint3 groupThreadID, uint channel)
 {
-    uint threadIndex = blur_thread_index(groupThreadID);
-    uint2 groupOrigin = groupID * BLUR_TILE_DIM;
-    for (uint linear = threadIndex; linear < BLUR_SHARED_SIZE; linear += BLUR_TILE_DIM * BLUR_TILE_DIM)
+    uint px = groupID.x;
+    uint pyBase = groupID.y * BLUR_GROUP_SIZE;
+    for (uint localY = groupThreadID.y; localY < BLUR_SHARED_STRIDE; localY += BLUR_GROUP_SIZE)
     {
-        uint localY = linear / BLUR_TILE_DIM;
-        uint localX = linear - localY * BLUR_TILE_DIM;
-        if (channel >= g_BlurChannelCount) gsBlurTile[linear] = 0.0;
+        if (channel >= g_BlurChannelCount) gsVerticalBlurColumn[localY] = 0.0;
         else
         {
-            int2 sample = int2(int(groupOrigin.x + localX), int(groupOrigin.y + localY) - int(GAUSSIAN_BLUR_RADIUS));
-            gsBlurTile[linear] = g_BlurInput[clamp_blur_index(sample, channel)];
+            int2 sample = int2(int(px), int(pyBase + localY) - int(GAUSSIAN_BLUR_RADIUS));
+            gsVerticalBlurColumn[localY] = g_BlurInput[clamp_blur_index(sample, channel)];
         }
     }
     GroupMemoryBarrierWithGroupSync();
 }
 
-float horizontal_blur_from_shared(uint2 groupThreadID)
+float horizontal_blur_from_shared(uint localThreadX)
 {
     float accum = 0.0;
-    [unroll] for (uint tap = 0u; tap < GAUSSIAN_BLUR_TAP_COUNT; ++tap)
-        accum += gsBlurTile[horizontal_shared_index(groupThreadID.x + tap, groupThreadID.y)] * GAUSSIAN_BLUR_WEIGHTS[tap];
+    [unroll] for (uint tap = 0u; tap < GAUSSIAN_BLUR_TAP_COUNT; ++tap) accum += gsHorizontalBlurRow[localThreadX + tap] * GAUSSIAN_BLUR_WEIGHTS[tap];
     return accum;
 }
 
-float vertical_blur_from_shared(uint2 groupThreadID)
+float vertical_blur_from_shared(uint localThreadY)
 {
     float accum = 0.0;
-    [unroll] for (uint tap = 0u; tap < GAUSSIAN_BLUR_TAP_COUNT; ++tap)
-        accum += gsBlurTile[vertical_shared_index(groupThreadID.x, groupThreadID.y + tap)] * GAUSSIAN_BLUR_WEIGHTS[tap];
+    [unroll] for (uint tap = 0u; tap < GAUSSIAN_BLUR_TAP_COUNT; ++tap) accum += gsVerticalBlurColumn[localThreadY + tap] * GAUSSIAN_BLUR_WEIGHTS[tap];
     return accum;
 }
 
-float horizontal_blur_adjoint_from_shared(uint2 groupThreadID, uint2 groupID, uint px)
+float horizontal_blur_adjoint_from_shared(uint localThreadX, uint groupBaseX, uint px)
 {
-    if (g_BlurWidth == 1u) return gsBlurTile[horizontal_shared_index(GAUSSIAN_BLUR_RADIUS, groupThreadID.y)];
+    if (g_BlurWidth == 1u) return gsHorizontalBlurRow[GAUSSIAN_BLUR_RADIUS];
 
     uint maxX = g_BlurWidth - 1u;
     if (px == 0u || px == maxX)
     {
         float accum = 0.0;
-        uint groupOriginX = groupID.x * BLUR_TILE_DIM;
         uint edgeSpan = min(GAUSSIAN_BLUR_RADIUS, maxX);
         [unroll] for (uint distance = 0u; distance <= GAUSSIAN_BLUR_RADIUS; ++distance)
         {
             if (distance > edgeSpan) continue;
             uint sampleX = px == 0u ? distance : maxX - distance;
-            uint localX = uint(int(sampleX) - int(groupOriginX) + int(GAUSSIAN_BLUR_RADIUS));
-            accum += gsBlurTile[horizontal_shared_index(localX, groupThreadID.y)] * GAUSSIAN_BLUR_EDGE_ACCUM_WEIGHTS[distance];
+            uint localX = uint(int(sampleX) - int(groupBaseX) + int(GAUSSIAN_BLUR_RADIUS));
+            accum += gsHorizontalBlurRow[localX] * GAUSSIAN_BLUR_EDGE_ACCUM_WEIGHTS[distance];
         }
         return accum;
     }
 
     float accum = 0.0;
-    uint groupOriginX = groupID.x * BLUR_TILE_DIM;
     [unroll] for (uint tap = 0u; tap < GAUSSIAN_BLUR_TAP_COUNT; ++tap)
     {
         int sampleX = int(px) - (int(tap) - int(GAUSSIAN_BLUR_RADIUS));
         if (sampleX < 0 || sampleX >= int(g_BlurWidth)) continue;
-        uint localX = uint(sampleX - int(groupOriginX) + int(GAUSSIAN_BLUR_RADIUS));
-        accum += gsBlurTile[horizontal_shared_index(localX, groupThreadID.y)] * GAUSSIAN_BLUR_WEIGHTS[tap];
+        uint localX = uint(sampleX - int(groupBaseX) + int(GAUSSIAN_BLUR_RADIUS));
+        accum += gsHorizontalBlurRow[localX] * GAUSSIAN_BLUR_WEIGHTS[tap];
     }
     return accum;
 }
 
-float vertical_blur_adjoint_from_shared(uint2 groupThreadID, uint2 groupID, uint py)
+float vertical_blur_adjoint_from_shared(uint localThreadY, uint groupBaseY, uint py)
 {
-    if (g_BlurHeight == 1u) return gsBlurTile[vertical_shared_index(groupThreadID.x, GAUSSIAN_BLUR_RADIUS)];
+    if (g_BlurHeight == 1u) return gsVerticalBlurColumn[GAUSSIAN_BLUR_RADIUS];
 
     uint maxY = g_BlurHeight - 1u;
     if (py == 0u || py == maxY)
     {
         float accum = 0.0;
-        uint groupOriginY = groupID.y * BLUR_TILE_DIM;
         uint edgeSpan = min(GAUSSIAN_BLUR_RADIUS, maxY);
         [unroll] for (uint distance = 0u; distance <= GAUSSIAN_BLUR_RADIUS; ++distance)
         {
             if (distance > edgeSpan) continue;
             uint sampleY = py == 0u ? distance : maxY - distance;
-            uint localY = uint(int(sampleY) - int(groupOriginY) + int(GAUSSIAN_BLUR_RADIUS));
-            accum += gsBlurTile[vertical_shared_index(groupThreadID.x, localY)] * GAUSSIAN_BLUR_EDGE_ACCUM_WEIGHTS[distance];
+            uint localY = uint(int(sampleY) - int(groupBaseY) + int(GAUSSIAN_BLUR_RADIUS));
+            accum += gsVerticalBlurColumn[localY] * GAUSSIAN_BLUR_EDGE_ACCUM_WEIGHTS[distance];
         }
         return accum;
     }
 
     float accum = 0.0;
-    uint groupOriginY = groupID.y * BLUR_TILE_DIM;
     [unroll] for (uint tap = 0u; tap < GAUSSIAN_BLUR_TAP_COUNT; ++tap)
     {
         int sampleY = int(py) - (int(tap) - int(GAUSSIAN_BLUR_RADIUS));
         if (sampleY < 0 || sampleY >= int(g_BlurHeight)) continue;
-        uint localY = uint(sampleY - int(groupOriginY) + int(GAUSSIAN_BLUR_RADIUS));
-        accum += gsBlurTile[vertical_shared_index(groupThreadID.x, localY)] * GAUSSIAN_BLUR_WEIGHTS[tap];
+        uint localY = uint(sampleY - int(groupBaseY) + int(GAUSSIAN_BLUR_RADIUS));
+        accum += gsVerticalBlurColumn[localY] * GAUSSIAN_BLUR_WEIGHTS[tap];
     }
     return accum;
 }
 
 [shader("compute")]
-[numthreads(BLUR_TILE_DIM, BLUR_TILE_DIM, 1)]
+[numthreads(BLUR_GROUP_SIZE, 1, 1)]
 void csGaussianBlurHorizontal(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupThreadID : SV_GroupThreadID, uint3 groupID : SV_GroupID)
 {
     uint px = dispatchThreadID.x;
     uint py = dispatchThreadID.y;
     uint channel = dispatchThreadID.z;
-    load_horizontal_blur_tile(groupID.xy, groupThreadID.xy, channel);
+    load_horizontal_blur_row(groupID, groupThreadID, channel);
     if (px >= g_BlurWidth || py >= g_BlurHeight || channel >= g_BlurChannelCount) return;
-    g_BlurOutput[blur_index(uint2(px, py), channel)] = horizontal_blur_from_shared(groupThreadID.xy);
+    g_BlurOutput[blur_index(uint2(px, py), channel)] = horizontal_blur_from_shared(groupThreadID.x);
 }
 
 [shader("compute")]
-[numthreads(BLUR_TILE_DIM, BLUR_TILE_DIM, 1)]
+[numthreads(1, BLUR_GROUP_SIZE, 1)]
 void csGaussianBlurVertical(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupThreadID : SV_GroupThreadID, uint3 groupID : SV_GroupID)
 {
     uint px = dispatchThreadID.x;
     uint py = dispatchThreadID.y;
     uint channel = dispatchThreadID.z;
-    load_vertical_blur_tile(groupID.xy, groupThreadID.xy, channel);
+    load_vertical_blur_column(groupID, groupThreadID, channel);
     if (px >= g_BlurWidth || py >= g_BlurHeight || channel >= g_BlurChannelCount) return;
-    g_BlurOutput[blur_index(uint2(px, py), channel)] = vertical_blur_from_shared(groupThreadID.xy);
+    g_BlurOutput[blur_index(uint2(px, py), channel)] = vertical_blur_from_shared(groupThreadID.y);
 }
 
 [shader("compute")]
-[numthreads(BLUR_TILE_DIM, BLUR_TILE_DIM, 1)]
+[numthreads(BLUR_GROUP_SIZE, 1, 1)]
 void csGaussianBlurHorizontalAdjoint(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupThreadID : SV_GroupThreadID, uint3 groupID : SV_GroupID)
 {
     uint px = dispatchThreadID.x;
     uint py = dispatchThreadID.y;
     uint channel = dispatchThreadID.z;
-    load_horizontal_blur_tile(groupID.xy, groupThreadID.xy, channel);
+    load_horizontal_blur_row(groupID, groupThreadID, channel);
     if (px >= g_BlurWidth || py >= g_BlurHeight || channel >= g_BlurChannelCount) return;
-    g_BlurOutput[blur_index(uint2(px, py), channel)] = horizontal_blur_adjoint_from_shared(groupThreadID.xy, groupID.xy, px);
+    g_BlurOutput[blur_index(uint2(px, py), channel)] = horizontal_blur_adjoint_from_shared(groupThreadID.x, groupID.x * BLUR_GROUP_SIZE, px);
 }
 
 [shader("compute")]
-[numthreads(BLUR_TILE_DIM, BLUR_TILE_DIM, 1)]
+[numthreads(1, BLUR_GROUP_SIZE, 1)]
 void csGaussianBlurVerticalAdjoint(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupThreadID : SV_GroupThreadID, uint3 groupID : SV_GroupID)
 {
     uint px = dispatchThreadID.x;
     uint py = dispatchThreadID.y;
     uint channel = dispatchThreadID.z;
-    load_vertical_blur_tile(groupID.xy, groupThreadID.xy, channel);
+    load_vertical_blur_column(groupID, groupThreadID, channel);
     if (px >= g_BlurWidth || py >= g_BlurHeight || channel >= g_BlurChannelCount) return;
-    g_BlurOutput[blur_index(uint2(px, py), channel)] = vertical_blur_adjoint_from_shared(groupThreadID.xy, groupID.xy, py);
+    g_BlurOutput[blur_index(uint2(px, py), channel)] = vertical_blur_adjoint_from_shared(groupThreadID.y, groupID.y * BLUR_GROUP_SIZE, py);
 }
 
 [shader("compute")]
