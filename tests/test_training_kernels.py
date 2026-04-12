@@ -64,24 +64,7 @@ def _training_rendered_to_display_np(rendered_rgb: np.ndarray) -> np.ndarray:
 def _expected_refinement_child_scale(parent_scale: np.ndarray, family_size: int) -> np.ndarray:
     scale = np.asarray(parent_scale, dtype=np.float32).reshape(3)
     shrink = float(max(int(family_size), 1)) ** (-1.0 / 3.0)
-    child_log = np.log(scale) + np.log(shrink)
-    order = np.argsort(np.log(scale))
-    sorted_parent_log = np.log(scale[order])
-    parent_span = float(sorted_parent_log[2] - sorted_parent_log[0])
-    if not parent_span > 1e-6:
-        return np.exp(child_log).astype(np.float32)
-    target_ratio = max(float(scale[order[2]] / scale[order[0]]) * 0.5, 1.0)
-    target_span = float(np.log(target_ratio))
-    if not target_span > 1e-6:
-        return np.full((3,), np.exp(np.mean(child_log, dtype=np.float64)), dtype=np.float32)
-    mid_t = float((sorted_parent_log[1] - sorted_parent_log[0]) / parent_span)
-    mean_log = float(np.mean(child_log, dtype=np.float64))
-    sorted_min = mean_log - ((1.0 + mid_t) * target_span) / 3.0
-    sorted_mid = sorted_min + mid_t * target_span
-    sorted_max = sorted_min + target_span
-    child_scale = np.zeros((3,), dtype=np.float32)
-    child_scale[order] = np.exp(np.array([sorted_min, sorted_mid, sorted_max], dtype=np.float64)).astype(np.float32)
-    return child_scale
+    return (scale * np.float32(shrink)).astype(np.float32, copy=False)
 
 
 def _make_scene(count: int = 24, seed: int = 7) -> GaussianScene:
@@ -2300,7 +2283,12 @@ def test_refinement_rewrite_culls_and_splits_families(device, tmp_path: Path) ->
         rtol=0.0,
         atol=1e-6,
     )
-    np.testing.assert_allclose(np.max(actual_scales, axis=1) / np.min(actual_scales, axis=1), np.full((3,), 1.5, dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(
+        np.max(actual_scales, axis=1) / np.min(actual_scales, axis=1),
+        np.full((3,), 3.0, dtype=np.float32),
+        rtol=0.0,
+        atol=1e-6,
+    )
     np.testing.assert_allclose(actual_opacity, np.full((3,), 0.6, dtype=np.float32), rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(np.mean(groups["positions"][:, :3], axis=0), source_position, rtol=0.0, atol=2e-3)
     offsets = groups["positions"][:, :3] - source_position[None, :]

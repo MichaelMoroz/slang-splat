@@ -16,7 +16,6 @@ static const uint LOSS_SLOT_DISPLAY_MSE = 3u;
 static const float POSITION_RANDOM_STEP_MAX_ANISOTROPY = 4.0;
 static const float DENSIFY_SCALE_SHRINK_EXPONENT = -1.0 / 3.0;
 static const float DENSIFY_MAX_STANDARDIZED_SIGMA = 3.0;
-static const float REFINEMENT_CHILD_ANISOTROPY_RATIO_SCALE = 0.5;
 static const float REFINEMENT_FIBONACCI_JITTER_RATIO = 0.2;
 static const float REFINEMENT_FIBONACCI_GOLDEN_ANGLE = 2.39996322972865332;
 static const float SRGB_LINEAR_THRESHOLD = 0.0031308;
@@ -455,71 +454,9 @@ float3 refinement_centered_volume_sample(uint frameHash, uint splatId, uint slot
     return sampleLength > DENSIFY_MAX_STANDARDIZED_SIGMA ? sample * (DENSIFY_MAX_STANDARDIZED_SIGMA / sampleLength) : sample;
 }
 
-float refinement_axis_value(uint axisIndex, uint minIndex, uint midIndex, float minValue, float midValue, float maxValue)
-{
-    if (axisIndex == minIndex) return minValue;
-    if (axisIndex == midIndex) return midValue;
-    return maxValue;
-}
-
 float3 refinement_child_log_scale(float3 parentLogScale, float shrink)
 {
-    float3 childLogScale = parentLogScale + log(shrink);
-    float sortedMin = parentLogScale.x;
-    float sortedMid = parentLogScale.y;
-    float sortedMax = parentLogScale.z;
-    uint minIndex = 0u;
-    uint midIndex = 1u;
-    uint maxIndex = 2u;
-    if (sortedMin > sortedMid)
-    {
-        float tempValue = sortedMin;
-        sortedMin = sortedMid;
-        sortedMid = tempValue;
-        uint tempIndex = minIndex;
-        minIndex = midIndex;
-        midIndex = tempIndex;
-    }
-    if (sortedMid > sortedMax)
-    {
-        float tempValue = sortedMid;
-        sortedMid = sortedMax;
-        sortedMax = tempValue;
-        uint tempIndex = midIndex;
-        midIndex = maxIndex;
-        maxIndex = tempIndex;
-    }
-    if (sortedMin > sortedMid)
-    {
-        float tempValue = sortedMin;
-        sortedMin = sortedMid;
-        sortedMid = tempValue;
-        uint tempIndex = minIndex;
-        minIndex = midIndex;
-        midIndex = tempIndex;
-    }
-
-    float parentSpan = sortedMax - sortedMin;
-    if (!(parentSpan > SMALL_VALUE)) return childLogScale;
-
-    float targetRatio = max(exp(parentSpan) * REFINEMENT_CHILD_ANISOTROPY_RATIO_SCALE, 1.0);
-    float targetSpan = log(targetRatio);
-    if (!(targetSpan > SMALL_VALUE))
-    {
-        float meanLog = (childLogScale.x + childLogScale.y + childLogScale.z) / 3.0;
-        return float3(meanLog);
-    }
-
-    float midT = min(max((sortedMid - sortedMin) / parentSpan, 0.0), 1.0);
-    float meanLog = (childLogScale.x + childLogScale.y + childLogScale.z) / 3.0;
-    sortedMin = meanLog - ((1.0 + midT) * targetSpan) / 3.0;
-    sortedMid = sortedMin + midT * targetSpan;
-    sortedMax = sortedMin + targetSpan;
-    return float3(
-        refinement_axis_value(0u, minIndex, midIndex, sortedMin, sortedMid, sortedMax),
-        refinement_axis_value(1u, minIndex, midIndex, sortedMin, sortedMid, sortedMax),
-        refinement_axis_value(2u, minIndex, midIndex, sortedMin, sortedMid, sortedMax)
-    );
+    return parentLogScale + log(shrink);
 }
 
 float position_random_step_gate(float opacity)
