@@ -68,7 +68,6 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - Shared gaussian staging uses `256`-splat batches.
 - Raster evaluation uses the true decoded support cached in prepass with no separate pixel-floor clamp or fallback alpha branch.
 - Debug processed-count, grad-norm, and ellipse-outline views are handled in the same forward replay loop as normal rendering rather than by a separate debug pass.
-- Display RGB output now uses the exact piecewise transfer helpers shared with the training path: linear values `<= 0` map to `0`, values in the sRGB toe and body use the standard `12.92` / `1.055 * x^(1/2.4) - 0.055` branches, and HDR values `>= 1` use the explicit `x^(1/2.2)` fallback branch.
 - Writes RGBA output texture.
 - Primary ray generation goes through `PinholeCamera.screen_to_world_ray(...)`.
 
@@ -96,9 +95,8 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
   - The separable Gaussian buffer blur utility blurs those 15 channels in two dispatches and is reused unchanged for the blur adjoint in backward.
   - `csComputeBlendedLossForward`: computes RGB MSE plus the blended RGB reconstruction term `(1 - ssim_weight) * L1 + ssim_weight * DSSIM`, with DSSIM taken from blurred luminance moments, then adds density and depth-ratio regularization into the scalar metrics buffer used by the host.
   - `csComputeSSIMBlurredGradients`: differentiates DSSIM with respect to the blurred rendered-side moments using Slang autodiff.
-- `csComputeBlendedLossBackward`: combines the weighted RGB L1 image gradient with the autodiff-propagated DSSIM image gradient and writes the final image-space gradient into `g_OutputGrad`.
+  - `csComputeBlendedLossBackward`: combines the weighted RGB L1 image gradient with the autodiff-propagated DSSIM image gradient and writes the final image-space gradient into `g_OutputGrad`.
 - The fixed-count trainer runs forward as `rasterize -> feature extraction -> blur -> loss forward`, then backward as `blurred-moment grad -> blur adjoint -> loss backward -> raster backward -> optimizer`, so the training path keeps distinct forward and backward kernels while still reusing the packed-parameter optimizer path.
-- Training target decode uses the exact inverse piecewise helper as well: `<= 0.04045` follows the linear `x / 12.92` branch, `[0.04045, 1)` follows the standard `((x + 0.055) / 1.055)^2.4` branch, and values `>= 1` use the explicit `x^2.2` fallback.
 
 ## 9. Debug Histograms
 - `src/metrics.py` now exposes both single log10 histograms and grouped per-parameter log10 histograms for generic float tensors laid out as `tensor[param_id * item_count + item_id]`.

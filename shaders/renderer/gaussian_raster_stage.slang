@@ -1,6 +1,5 @@
 import "gaussian_types.slang";
 import "utility/math/camera.slang";
-import "utility/math/color.slang";
 import "utility/math/constants.slang";
 import "utility/random/random.slang";
 import "utility/splatting/common.slang";
@@ -362,7 +361,7 @@ float3 raster_forward_color(RasterGaussian gaussian, uint splatId, uint debugMod
 float4 raster_output_from_state(RasterState state, no_diff float3 background)
 {
     float3 finalColor = state.accum + state.trans * background;
-    return float4(LinearToGammaSpaceExact(finalColor), 1.0 - state.trans);
+    return float4(pow(max(finalColor, 0.0), OUTPUT_GAMMA), 1.0 - state.trans);
 }
 
 [Differentiable]
@@ -797,7 +796,7 @@ float4 raster_forward_output_pixel(RasterPixelInfo info, RasterState state)
     float3 background = raster_resolved_background(info.pixelCoord);
     return info.hasTileRange
         ? raster_output_from_state(state, background)
-        : float4(LinearToGammaSpaceExact(background), 1.0);
+        : float4(pow(max(background, 0.0), OUTPUT_GAMMA), 1.0);
 }
 
 float4 raster_training_output_pixel(RasterPixelInfo info, RasterState state)

@@ -20,15 +20,6 @@ static const float ELLIPSE_SAFETY_SCALE = 1.0;
 static const float ELLIPSE_RADIUS_PAD_PX = 1.0;
 static const float ELLIPSE_EPS = 1e-6;
 static const float OUTPUT_GAMMA = 2.2;
-static const float SRGB_TO_LINEAR_THRESHOLD = 0.04045;
-static const float LINEAR_TO_SRGB_THRESHOLD = 0.0031308;
-static const float SRGB_LINEAR_SCALE = 12.92;
-static const float SRGB_GAMMA_SCALE = 1.055;
-static const float SRGB_GAMMA_OFFSET = 0.055;
-static const float SRGB_TO_LINEAR_EXPONENT = 2.4;
-static const float LINEAR_TO_SRGB_EXPONENT = 0.4166667;
-static const float SRGB_HDR_TO_LINEAR_EXPONENT = 2.2;
-static const float LINEAR_TO_SRGB_HDR_EXPONENT = 0.45454545;
 static const float SOFTPLUS_INPUT_LIMIT = 30.0;
 static const float PI = 3.14159265359;
 
