@@ -21,14 +21,21 @@ from src.filter import SeparableGaussianBlur
 @dataclass(frozen=True, slots=True)
 class BenchmarkStats:
     group_size: int
+    channel_pack: int
     forward_avg_ms: float
     forward_min_ms: float
     adjoint_avg_ms: float
     adjoint_min_ms: float
+    forward_bandwidth_gbps: float
+    adjoint_bandwidth_gbps: float
 
     @property
     def total_avg_ms(self) -> float:
         return self.forward_avg_ms + self.adjoint_avg_ms
+
+    @property
+    def total_bandwidth_gbps(self) -> float:
+        return min(self.forward_bandwidth_gbps, self.adjoint_bandwidth_gbps)
 
 
 class BlurBenchmark:
@@ -40,17 +47,27 @@ class BlurBenchmark:
         self.iterations = int(iterations)
         self.device = create_default_device(device_type=spy.DeviceType.vulkan, enable_debug_layers=False)
 
-    def _create_shader_variant(self, group_size: int) -> Path:
+    def _create_shader_variant(self, group_size: int, channel_pack: int) -> Path:
         temp_dir = Path(tempfile.gettempdir())
-        path = temp_dir / f"benchmark_gaussian_blur_{int(group_size)}.slang"
+        path = temp_dir / f"benchmark_gaussian_blur_{int(group_size)}_{int(channel_pack)}.slang"
         path.write_text(
-            f"#define BLUR_GROUP_SIZE_OVERRIDE {int(group_size)}u\n#include \"utility/blur/separable_gaussian_blur.slang\"\n",
+            (
+                f"#define BLUR_GROUP_SIZE_OVERRIDE {int(group_size)}u\n"
+                f"#define BLUR_CHANNEL_PACK_OVERRIDE {int(channel_pack)}u\n"
+                "#include \"utility/blur/separable_gaussian_blur.slang\"\n"
+            ),
             encoding="ascii",
         )
         return path
 
-    def _create_blur(self, group_size: int) -> SeparableGaussianBlur:
-        return SeparableGaussianBlur(self.device, width=self.width, height=self.height, shader_path=self._create_shader_variant(group_size))
+    def _create_blur(self, group_size: int, channel_pack: int) -> SeparableGaussianBlur:
+        return SeparableGaussianBlur(
+            self.device,
+            width=self.width,
+            height=self.height,
+            shader_path=self._create_shader_variant(group_size, channel_pack),
+            channel_pack=channel_pack,
+        )
 
     def _create_buffers(self, blur: SeparableGaussianBlur) -> tuple[spy.Buffer, spy.Buffer]:
         return blur.make_buffer(self.channel_count), blur.make_buffer(self.channel_count)
@@ -78,8 +95,14 @@ class BlurBenchmark:
         for _ in range(self.warmup):
             self._execute(blur, input_buffer, output_buffer)
 
-    def run_case(self, group_size: int) -> BenchmarkStats:
-        blur = self._create_blur(group_size)
+    def _pass_bytes(self) -> int:
+        return self.width * self.height * self.channel_count * 4 * 4
+
+    def _bandwidth_gbps(self, elapsed_ms: float) -> float:
+        return self._pass_bytes() / (float(elapsed_ms) * 1.0e6)
+
+    def run_case(self, group_size: int, channel_pack: int) -> BenchmarkStats:
+        blur = self._create_blur(group_size, channel_pack)
         input_buffer, output_buffer = self._create_buffers(blur)
         self._upload_inputs(input_buffer, output_buffer)
         self._warm_up(blur, input_buffer, output_buffer)
@@ -91,10 +114,13 @@ class BlurBenchmark:
             adjoint_ms.append(adjoint)
         return BenchmarkStats(
             group_size=int(group_size),
+            channel_pack=int(channel_pack),
             forward_avg_ms=float(np.mean(forward_ms)),
             forward_min_ms=float(np.min(forward_ms)),
             adjoint_avg_ms=float(np.mean(adjoint_ms)),
             adjoint_min_ms=float(np.min(adjoint_ms)),
+            forward_bandwidth_gbps=self._bandwidth_gbps(float(np.mean(forward_ms))),
+            adjoint_bandwidth_gbps=self._bandwidth_gbps(float(np.mean(adjoint_ms))),
         )
 
 
@@ -105,20 +131,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--channels", type=int, default=15)
     parser.add_argument("--warmup", type=int, default=5)
     parser.add_argument("--iterations", type=int, default=20)
-    parser.add_argument("--group-sizes", type=int, nargs="+", default=[32, 64, 128, 256])
+    parser.add_argument("--group-sizes", type=int, nargs="+", default=[8, 12, 16, 24, 32, 64, 128])
+    parser.add_argument("--channel-packs", type=int, nargs="+", default=[1, 2, 4, 8, 16])
     return parser
 
 
 def _print_results(stats: list[BenchmarkStats]) -> None:
     print(f"shader={SHADER_PATH}")
-    print("group_size forward_avg_ms forward_min_ms adjoint_avg_ms adjoint_min_ms total_avg_ms")
+    print("group_size channel_pack forward_avg_ms forward_bw_gbps adjoint_avg_ms adjoint_bw_gbps total_avg_ms")
     for row in stats:
         print(
-            f"{row.group_size:10d} {row.forward_avg_ms:14.6f} {row.forward_min_ms:14.6f} "
-            f"{row.adjoint_avg_ms:15.6f} {row.adjoint_min_ms:15.6f} {row.total_avg_ms:12.6f}"
+            f"{row.group_size:10d} {row.channel_pack:12d} {row.forward_avg_ms:14.6f} {row.forward_bandwidth_gbps:15.3f} "
+            f"{row.adjoint_avg_ms:15.6f} {row.adjoint_bandwidth_gbps:15.3f} {row.total_avg_ms:12.6f}"
         )
     best = min(stats, key=lambda item: item.total_avg_ms)
-    print(f"best_group_size={best.group_size} best_total_avg_ms={best.total_avg_ms:.6f}")
+    print(
+        f"best_group_size={best.group_size} best_channel_pack={best.channel_pack} "
+        f"best_total_avg_ms={best.total_avg_ms:.6f} best_min_bw_gbps={best.total_bandwidth_gbps:.3f}"
+    )
 
 
 def main() -> int:
@@ -130,7 +160,7 @@ def main() -> int:
         warmup=args.warmup,
         iterations=args.iterations,
     )
-    results = [benchmark.run_case(group_size) for group_size in args.group_sizes]
+    results = [benchmark.run_case(group_size, channel_pack) for group_size in args.group_sizes for channel_pack in args.channel_packs]
     _print_results(results)
     return 0
 

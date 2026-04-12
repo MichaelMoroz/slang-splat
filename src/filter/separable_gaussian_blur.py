@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import slangpy as spy
 
-from ..utility import RW_BUFFER_USAGE, SHADER_ROOT, alloc_buffer, dispatch, load_compute_kernels, thread_count_2d
+from ..utility import RW_BUFFER_USAGE, SHADER_ROOT, alloc_buffer, dispatch, load_compute_kernels
 
 
 class SeparableGaussianBlur:
@@ -16,18 +16,28 @@ class SeparableGaussianBlur:
         "vertical_adjoint": "csGaussianBlurVerticalAdjoint",
     }
 
+    def _channel_block_count(self, channel_count: int) -> int:
+        return (int(channel_count) + self.channel_pack - 1) // self.channel_pack
+
+    def _thread_count(self, kernel: str, channel_count: int) -> spy.uint3:
+        channels = self._channel_block_count(channel_count) * self.channel_pack
+        if kernel in {"horizontal", "horizontal_adjoint"}:
+            return spy.uint3(channels, self.width, self.height)
+        return spy.uint3(channels, self.height, self.width)
+
     def _dispatch(self, kernel: str, encoder: spy.CommandEncoder, channel_count: int, vars: dict[str, object]) -> None:
         dispatch(
             kernel=self._kernels[kernel],
-            thread_count=thread_count_2d(self.width, self.height, channel_count),
+            thread_count=self._thread_count(kernel, channel_count),
             vars=vars,
             command_encoder=encoder,
             debug_label=f"Blur::{kernel}",
             debug_color_index=80 + len(kernel),
         )
 
-    def __init__(self, device: spy.Device, width: int, height: int, shader_path: str | Path | None = None) -> None:
+    def __init__(self, device: spy.Device, width: int, height: int, shader_path: str | Path | None = None, channel_pack: int = 16) -> None:
         self.device, self.width, self.height = device, int(width), int(height)
+        self.channel_pack = max(int(channel_pack), 1)
         path = Path(shader_path) if shader_path is not None else SHADER_ROOT / "utility" / "blur" / "separable_gaussian_blur.slang"
         self._kernels = load_compute_kernels(device, path, self._KERNEL_ENTRIES)
         self._scratch_buffers: dict[int, spy.Buffer] = {}
