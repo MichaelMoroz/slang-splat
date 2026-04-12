@@ -50,15 +50,41 @@ _SSIM_C1 = _SSIM_C2 / 9.0
 _SSIM_SMALL_VALUE = 1e-6
 _SSIM_FEATURES_PER_COLOR = 5
 _SSIM_FEATURE_CHANNELS = 3 * _SSIM_FEATURES_PER_COLOR
-_OUTPUT_GAMMA = 2.2
+
+
+def _gamma_to_linear_exact_np(value: np.ndarray) -> np.ndarray:
+    tensor = np.asarray(value, dtype=np.float32)
+    return np.where(
+        tensor <= 0.04045,
+        tensor / 12.92,
+        np.where(
+            tensor < 1.0,
+            np.power(np.maximum((tensor + 0.055) / 1.055, 0.0), 2.4),
+            np.power(np.maximum(tensor, 0.0), 2.2),
+        ),
+    ).astype(np.float32, copy=False)
+
+
+def _linear_to_gamma_exact_np(value: np.ndarray) -> np.ndarray:
+    tensor = np.asarray(value, dtype=np.float32)
+    positive = np.where(
+        tensor <= 0.0031308,
+        12.92 * tensor,
+        np.where(
+            tensor < 1.0,
+            1.055 * np.power(np.maximum(tensor, 0.0), 0.4166667) - 0.055,
+            np.power(np.maximum(tensor, 0.0), 0.45454545),
+        ),
+    )
+    return np.where(tensor <= 0.0, 0.0, positive).astype(np.float32, copy=False)
 
 
 def _training_target_to_linear_np(target_rgb: np.ndarray) -> np.ndarray:
-    return np.power(np.maximum(np.asarray(target_rgb, dtype=np.float32), 0.0), np.float32(1.0 / _OUTPUT_GAMMA)).astype(np.float32, copy=False)
+    return _gamma_to_linear_exact_np(target_rgb)
 
 
 def _training_rendered_to_display_np(rendered_rgb: np.ndarray) -> np.ndarray:
-    return np.power(np.maximum(np.asarray(rendered_rgb, dtype=np.float32), 0.0), np.float32(_OUTPUT_GAMMA)).astype(np.float32, copy=False)
+    return _linear_to_gamma_exact_np(rendered_rgb)
 
 
 def _expected_refinement_child_scale(parent_scale: np.ndarray, family_size: int) -> np.ndarray:
@@ -300,7 +326,15 @@ def _torch_blended_rgb_grad_np(rendered_rgba: np.ndarray, target_rgba: np.ndarra
     target_t = torch.tensor(target[..., :4].transpose(2, 0, 1)[None], dtype=torch.float32)
     target_rgb = target_t[:, :3]
     target_mask = target_t[:, 3:4].clamp(0.0, 1.0)
-    target_rgb = torch.pow(torch.clamp(target_rgb, min=0.0), 1.0 / _OUTPUT_GAMMA)
+    target_rgb = torch.where(
+        target_rgb <= 0.04045,
+        target_rgb / 12.92,
+        torch.where(
+            target_rgb < 1.0,
+            torch.pow(torch.clamp((target_rgb + 0.055) / 1.055, min=0.0), 2.4),
+            torch.pow(torch.clamp(target_rgb, min=0.0), 2.2),
+        ),
+    )
     inv_pixel_count = 1.0 / float(rendered.shape[0] * rendered.shape[1])
     moments = torch.cat(
         tuple(
@@ -1334,7 +1368,7 @@ def test_training_raster_output_stays_linear_while_display_render_uses_gamma(dev
     np.testing.assert_allclose(training_output, expected_training, rtol=0.0, atol=1e-6)
 
     display_output = np.asarray(renderer.render(scene, camera, background=background).image, dtype=np.float32)
-    expected_display = np.broadcast_to(np.array([0.25**2.2, 0.5**2.2, 0.75**2.2, 1.0], dtype=np.float32), display_output.shape)
+    expected_display = np.broadcast_to(np.concatenate((_linear_to_gamma_exact_np(background), np.array([1.0], dtype=np.float32))), display_output.shape)
     np.testing.assert_allclose(display_output, expected_display, rtol=0.0, atol=1e-6)
 
 
@@ -2867,7 +2901,7 @@ def test_box_downscale_matches_expected_mean(device, tmp_path: Path) -> None:
     target = trainer.get_frame_target_texture(0, native_resolution=False)
     target_np = np.asarray(target.to_numpy(), dtype=np.float32)
     srgb = image.astype(np.float32) / 255.0
-    linear = np.where(srgb <= 0.04045, srgb / 12.92, np.power((srgb + 0.055) / 1.055, 2.4))
+    linear = _gamma_to_linear_exact_np(srgb)
     expected = np.array(
         [
             [np.mean(linear[0:2, 0:2], axis=(0, 1)), np.mean(linear[0:2, 2:3], axis=(0, 1))],
@@ -2917,7 +2951,7 @@ def test_subsample_factor_contributes_to_downscaled_target_resolution(device, tm
     target = trainer.get_frame_target_texture(0, native_resolution=False)
     target_np = np.asarray(target.to_numpy(), dtype=np.float32)
     srgb = image.astype(np.float32) / 255.0
-    linear = np.where(srgb <= 0.04045, srgb / 12.92, np.power((srgb + 0.055) / 1.055, 2.4))
+    linear = _gamma_to_linear_exact_np(srgb)
     expected = np.array(
         [
             [np.mean(linear[0:2, 0:2], axis=(0, 1)), np.mean(linear[0:2, 2:3], axis=(0, 1))],

@@ -27,6 +27,20 @@ class ProjectedSplats:
     quat: np.ndarray
 
 
+def _linear_to_gamma_exact_np(value: np.ndarray) -> np.ndarray:
+    tensor = np.asarray(value, dtype=np.float32)
+    positive = np.where(
+        tensor <= 0.0031308,
+        12.92 * tensor,
+        np.where(
+            tensor < 1.0,
+            1.055 * np.power(np.maximum(tensor, 0.0), 0.4166667) - 0.055,
+            np.power(np.maximum(tensor, 0.0), 0.45454545),
+        ),
+    )
+    return np.where(tensor <= 0.0, 0.0, positive).astype(np.float32, copy=False)
+
+
 def quantize_depth(depth: float, near_depth: float, far_depth: float, depth_bits: int) -> np.uint32:
     max_value = (1 << depth_bits) - 1
     t = np.float32(np.clip((depth - near_depth) / max(far_depth - near_depth, 1e-6), 0.0, 1.0))
@@ -418,7 +432,7 @@ def build_tile_ranges(sorted_keys: np.ndarray, sorted_count: int, tile_count: in
 
 def rasterize(projected: ProjectedSplats, sorted_values: np.ndarray, tile_ranges: np.ndarray, camera: Camera, width: int, height: int, tile_size: int, tile_width: int, background: np.ndarray, alpha_cutoff: float, max_splat_steps: int, transmittance_threshold: float) -> np.ndarray:
     output = np.zeros((height, width, 4), dtype=np.float32)
-    bg_linear = np.power(np.clip(background.reshape(3), 0.0, None), 2.2).astype(np.float32)
+    bg_display = _linear_to_gamma_exact_np(background.reshape(3))
 
     def quat_rotate(v: np.ndarray, q: np.ndarray) -> np.ndarray:
         return v + 2.0 * np.cross(np.cross(v, q[1:4]) + q[0] * v, q[1:4])
@@ -429,7 +443,7 @@ def rasterize(projected: ProjectedSplats, sorted_values: np.ndarray, tile_ranges
             tile = tile_y * tile_width + px // tile_size
             start, end = tile_ranges[tile]
             if start == np.uint32(0xFFFFFFFF) or int(end) <= int(start):
-                output[py, px, :3], output[py, px, 3] = bg_linear, 1.0
+                output[py, px, :3], output[py, px, 3] = bg_display, 1.0
                 continue
             ray = camera.screen_to_world_ray(np.array([float(px) + 0.5, float(py) + 0.5], dtype=np.float32), width, height)
             accum, trans = np.zeros((3,), dtype=np.float32), 1.0
@@ -452,6 +466,6 @@ def rasterize(projected: ProjectedSplats, sorted_values: np.ndarray, tile_ranges
                 trans *= 1.0 - alpha
                 if trans < transmittance_threshold:
                     break
-            output[py, px, :3] = np.power(np.clip(accum + trans * background, 0.0, None), 2.2).astype(np.float32)
+            output[py, px, :3] = _linear_to_gamma_exact_np(accum + trans * background)
             output[py, px, 3] = 1.0 - trans
     return output

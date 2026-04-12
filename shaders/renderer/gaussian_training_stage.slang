@@ -1,5 +1,6 @@
 import "utility/losses/losses.slang";
 import "utility/math/camera.slang";
+import "utility/math/color.slang";
 import "utility/math/constants.slang";
 import "utility/math/numeric.slang";
 import "utility/math/quaternion.slang";
@@ -19,11 +20,6 @@ static const float DENSIFY_MAX_STANDARDIZED_SIGMA = 3.0;
 static const float REFINEMENT_CHILD_ANISOTROPY_RATIO_SCALE = 0.5;
 static const float REFINEMENT_FIBONACCI_JITTER_RATIO = 0.2;
 static const float REFINEMENT_FIBONACCI_GOLDEN_ANGLE = 2.39996322972865332;
-static const float SRGB_LINEAR_THRESHOLD = 0.0031308;
-static const float SRGB_LINEAR_SCALE = 12.92;
-static const float SRGB_GAMMA_SCALE = 1.055;
-static const float SRGB_GAMMA_OFFSET = 0.055;
-static const float SRGB_INV_GAMMA = 1.0 / 2.4;
 static const float DEPTH_RATIO_GRAD_MIN_BAND_WIDTH = 1e-4;
 static const float DEPTH_RATIO_GRAD_SOFTNESS_RATIO = 0.1;
 static const float DEPTH_RATIO_GRAD_SOFTNESS_FLOOR = 1e-4;
@@ -167,14 +163,12 @@ static const uint REFINEMENT_CAMERA_ROW_COUNT = 6u;
 
 float linear_to_srgb_safe(float value)
 {
-    if (!(value > 0.0)) return 0.0;
-    if (value <= SRGB_LINEAR_THRESHOLD) return SRGB_LINEAR_SCALE * value;
-    return SRGB_GAMMA_SCALE * pow(value, SRGB_INV_GAMMA) - SRGB_GAMMA_OFFSET;
+    return LinearToGammaSpaceExact(value);
 }
 
 float3 linear_to_srgb_safe(float3 value)
 {
-    return float3(linear_to_srgb_safe(value.x), linear_to_srgb_safe(value.y), linear_to_srgb_safe(value.z));
+    return LinearToGammaSpaceExact(value);
 }
 
 bool should_cull_refinement_splat(float alpha, uint contribution)
@@ -583,7 +577,7 @@ float4 training_raw_target_rgba(uint2 pixel)
 
 float3 training_target_to_linear_rgb(float3 target)
 {
-    return pow(max(target, 0.0), 1.0 / OUTPUT_GAMMA);
+    return GammaToLinearSpaceExact(target);
 }
 
 float4 training_target_rgba(uint2 pixel)
@@ -595,7 +589,7 @@ float4 training_target_rgba(uint2 pixel)
 
 float3 training_rendered_to_display_rgb(float3 rendered)
 {
-    return pow(max(rendered, 0.0), OUTPUT_GAMMA);
+    return LinearToGammaSpaceExact(rendered);
 }
 
 float training_target_mask(float alpha)
