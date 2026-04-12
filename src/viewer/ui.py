@@ -43,6 +43,7 @@ _LOSS_DEBUG_ABS_SCALE_MIN = 0.125
 _LOSS_DEBUG_ABS_SCALE_MAX = 64.0
 _LOSS_DEBUG_ABS_SCALE_KEY = "loss_debug_abs_scale"
 _INTERFACE_SCALE_KEY = "interface_scale"
+_THEME_KEY = "theme"
 _INTERFACE_SCALE_OPTIONS = (
     ("75%", 0.75),
     ("100%", 1.0),
@@ -50,7 +51,12 @@ _INTERFACE_SCALE_OPTIONS = (
     ("150%", 1.5),
     ("175%", 1.75),
     ("200%", 2.0),
+    ("225%", 2.25),
+    ("250%", 2.5),
+    ("275%", 2.75),
+    ("300%", 3.0),
 )
+_THEME_OPTIONS = ("White", "Dark")
 _DEFAULT_INTERFACE_SCALE_INDEX = 3
 _BASE_FONT_SIZE_PX = 16.0
 _FONT_ATLAS_SIZE_PX = _BASE_FONT_SIZE_PX * _INTERFACE_SCALE_OPTIONS[-1][1]
@@ -434,6 +440,7 @@ _TRAIN_STABILITY_SPECS = tuple(_control_spec(defn) for defn in TRAINING_UI_GROUP
 GROUP_SPECS = {
     "View": (
         ControlSpec(_INTERFACE_SCALE_KEY, "combo", "Interface Scale", {"value": int(_VIEWER_CONTROL_DEFAULTS["interface_scale"]), "options": tuple(label for label, _ in _INTERFACE_SCALE_OPTIONS)}),
+        ControlSpec(_THEME_KEY, "combo", "Theme", {"value": int(_VIEWER_CONTROL_DEFAULTS.get("theme", 0)), "options": _THEME_OPTIONS}),
     ),
     "Main": (
         ControlSpec("loss_debug_view", "slider_int", "Debug View", {"value": int(_VIEWER_CONTROL_DEFAULTS["loss_debug_view"]), "min": 0, "max": len(LOSS_DEBUG_OPTIONS) - 1}),
@@ -495,6 +502,7 @@ def export_repo_defaults_from_ui_values(values: dict[str, object]) -> dict[str, 
             "controls": json_value(
                 {
                     "interface_scale": int(values[_INTERFACE_SCALE_KEY]),
+                    "theme": int(values[_THEME_KEY]),
                     "loss_debug_view": int(values["loss_debug_view"]),
                     "loss_debug_frame": int(values["loss_debug_frame"]),
                     "loss_debug_abs_scale": float(values[_LOSS_DEBUG_ABS_SCALE_KEY]),
@@ -690,7 +698,6 @@ class ToolkitWindow:
         imgui.get_io().config_flags |= imgui.ConfigFlags_.docking_enable.value
         self.renderer = spy.ui.Context(device)
         self._configure_default_font()
-        self._apply_theme()
         self.callbacks = SimpleNamespace(
             load_ply=_noop,
             export_ply=_noop,
@@ -716,6 +723,7 @@ class ToolkitWindow:
         self._documentation_text = _build_documentation_text()
         self._menu_bar_height = 0.0
         self._applied_interface_scale = -1.0
+        self._applied_theme_index = -1
         self._dockspace_id = 0
         self._dock_layout_initialized = False
         self._viewport_dock_id = 0
@@ -731,7 +739,7 @@ class ToolkitWindow:
         self._viewport_content_rect = self._viewport_rect
         self._viewport_window_focused = False
         self._viewport_input_active = False
-        self._set_interface_scale(_INTERFACE_SCALE_OPTIONS[_DEFAULT_INTERFACE_SCALE_INDEX][1])
+        self._apply_visual_state(_INTERFACE_SCALE_OPTIONS[_DEFAULT_INTERFACE_SCALE_INDEX][1], int(_VIEWER_CONTROL_DEFAULTS.get("theme", 0)))
 
     def _set_current_context(self) -> None:
         imgui.set_current_context(self.ctx)
@@ -739,9 +747,12 @@ class ToolkitWindow:
     def reset_plot_history(self) -> None:
         self.tk.clear_plot_history()
 
-    def _apply_theme(self):
+    def _apply_theme(self, theme_index: int) -> None:
         self._set_current_context()
-        imgui.style_colors_light()
+        if int(theme_index) == 1:
+            imgui.style_colors_dark()
+        else:
+            imgui.style_colors_light()
         style = imgui.get_style()
         style.window_rounding = 4.0
         style.frame_rounding = 3.0
@@ -758,42 +769,81 @@ class ToolkitWindow:
         style.indent_spacing = 18.0
         style.scrollbar_size = 12.0
         _c = style.set_color_
-        _c(imgui.Col_.text, imgui.ImVec4(0.12, 0.16, 0.22, 1.00))
-        _c(imgui.Col_.text_disabled, imgui.ImVec4(0.28, 0.33, 0.41, 1.00))
-        _c(imgui.Col_.window_bg, imgui.ImVec4(0.965, 0.970, 0.978, 1.00))
-        _c(imgui.Col_.child_bg, imgui.ImVec4(0.975, 0.980, 0.988, 0.98))
-        _c(imgui.Col_.popup_bg, imgui.ImVec4(0.995, 0.997, 1.000, 0.99))
-        _c(imgui.Col_.border, imgui.ImVec4(0.66, 0.71, 0.79, 0.82))
-        _c(imgui.Col_.border_shadow, imgui.ImVec4(0.0, 0.0, 0.0, 0.0))
-        _c(imgui.Col_.title_bg, imgui.ImVec4(0.84, 0.90, 0.96, 1.0))
-        _c(imgui.Col_.title_bg_active, imgui.ImVec4(0.76, 0.85, 0.95, 1.0))
-        _c(imgui.Col_.menu_bar_bg, imgui.ImVec4(0.93, 0.95, 0.98, 1.0))
-        _c(imgui.Col_.header, imgui.ImVec4(0.65, 0.79, 0.95, 0.62))
-        _c(imgui.Col_.header_hovered, imgui.ImVec4(0.50, 0.72, 0.94, 0.86))
-        _c(imgui.Col_.header_active, imgui.ImVec4(0.43, 0.67, 0.92, 1.00))
-        _c(imgui.Col_.button, imgui.ImVec4(0.32, 0.53, 0.79, 0.92))
-        _c(imgui.Col_.button_hovered, imgui.ImVec4(0.25, 0.47, 0.74, 0.96))
-        _c(imgui.Col_.button_active, imgui.ImVec4(0.22, 0.42, 0.68, 1.00))
-        _c(imgui.Col_.tab, imgui.ImVec4(0.84, 0.90, 0.96, 1.00))
-        _c(imgui.Col_.tab_hovered, imgui.ImVec4(0.67, 0.81, 0.95, 0.92))
-        _c(imgui.Col_.tab_selected, imgui.ImVec4(0.52, 0.73, 0.93, 1.00))
-        _c(imgui.Col_.separator, imgui.ImVec4(0.66, 0.71, 0.79, 0.82))
-        _c(imgui.Col_.separator_hovered, imgui.ImVec4(0.38, 0.60, 0.85, 0.85))
-        _c(imgui.Col_.plot_lines, imgui.ImVec4(0.18, 0.48, 0.82, 1.00))
-        _c(imgui.Col_.frame_bg, imgui.ImVec4(0.985, 0.989, 0.995, 1.00))
-        _c(imgui.Col_.frame_bg_hovered, imgui.ImVec4(0.93, 0.96, 0.99, 1.00))
-        _c(imgui.Col_.frame_bg_active, imgui.ImVec4(0.86, 0.92, 0.98, 1.00))
-        _c(imgui.Col_.slider_grab, imgui.ImVec4(0.34, 0.58, 0.88, 0.82))
-        _c(imgui.Col_.slider_grab_active, imgui.ImVec4(0.22, 0.48, 0.82, 1.00))
-        _c(imgui.Col_.check_mark, imgui.ImVec4(0.18, 0.48, 0.82, 1.00))
-        _c(imgui.Col_.scrollbar_bg, imgui.ImVec4(0.92, 0.94, 0.97, 1.00))
-        _c(imgui.Col_.scrollbar_grab, imgui.ImVec4(0.70, 0.77, 0.86, 0.85))
-        _c(imgui.Col_.scrollbar_grab_hovered, imgui.ImVec4(0.58, 0.69, 0.82, 0.92))
-        _c(imgui.Col_.scrollbar_grab_active, imgui.ImVec4(0.46, 0.61, 0.78, 1.00))
-        _c(imgui.Col_.resize_grip, imgui.ImVec4(0.52, 0.70, 0.92, 0.28))
-        _c(imgui.Col_.resize_grip_hovered, imgui.ImVec4(0.40, 0.61, 0.88, 0.72))
-        _c(imgui.Col_.resize_grip_active, imgui.ImVec4(0.28, 0.51, 0.82, 0.95))
-        _c(imgui.Col_.text_selected_bg, imgui.ImVec4(0.56, 0.77, 0.96, 0.42))
+        if int(theme_index) == 1:
+            _c(imgui.Col_.text, imgui.ImVec4(0.90, 0.93, 0.97, 1.00))
+            _c(imgui.Col_.text_disabled, imgui.ImVec4(0.55, 0.61, 0.69, 1.00))
+            _c(imgui.Col_.window_bg, imgui.ImVec4(0.11, 0.12, 0.14, 1.00))
+            _c(imgui.Col_.child_bg, imgui.ImVec4(0.13, 0.14, 0.17, 0.98))
+            _c(imgui.Col_.popup_bg, imgui.ImVec4(0.14, 0.15, 0.18, 0.99))
+            _c(imgui.Col_.border, imgui.ImVec4(0.32, 0.36, 0.43, 0.82))
+            _c(imgui.Col_.border_shadow, imgui.ImVec4(0.0, 0.0, 0.0, 0.0))
+            _c(imgui.Col_.title_bg, imgui.ImVec4(0.16, 0.20, 0.25, 1.0))
+            _c(imgui.Col_.title_bg_active, imgui.ImVec4(0.21, 0.28, 0.36, 1.0))
+            _c(imgui.Col_.menu_bar_bg, imgui.ImVec4(0.15, 0.18, 0.22, 1.0))
+            _c(imgui.Col_.header, imgui.ImVec4(0.24, 0.39, 0.59, 0.68))
+            _c(imgui.Col_.header_hovered, imgui.ImVec4(0.31, 0.49, 0.73, 0.86))
+            _c(imgui.Col_.header_active, imgui.ImVec4(0.36, 0.55, 0.80, 1.00))
+            _c(imgui.Col_.button, imgui.ImVec4(0.23, 0.42, 0.67, 0.92))
+            _c(imgui.Col_.button_hovered, imgui.ImVec4(0.29, 0.50, 0.78, 0.96))
+            _c(imgui.Col_.button_active, imgui.ImVec4(0.35, 0.58, 0.85, 1.00))
+            _c(imgui.Col_.tab, imgui.ImVec4(0.17, 0.22, 0.28, 1.00))
+            _c(imgui.Col_.tab_hovered, imgui.ImVec4(0.27, 0.42, 0.64, 0.92))
+            _c(imgui.Col_.tab_selected, imgui.ImVec4(0.23, 0.42, 0.67, 1.00))
+            _c(imgui.Col_.separator, imgui.ImVec4(0.32, 0.36, 0.43, 0.82))
+            _c(imgui.Col_.separator_hovered, imgui.ImVec4(0.42, 0.57, 0.78, 0.85))
+            _c(imgui.Col_.plot_lines, imgui.ImVec4(0.45, 0.72, 0.98, 1.00))
+            _c(imgui.Col_.frame_bg, imgui.ImVec4(0.15, 0.17, 0.20, 1.00))
+            _c(imgui.Col_.frame_bg_hovered, imgui.ImVec4(0.18, 0.22, 0.27, 1.00))
+            _c(imgui.Col_.frame_bg_active, imgui.ImVec4(0.20, 0.26, 0.33, 1.00))
+            _c(imgui.Col_.slider_grab, imgui.ImVec4(0.41, 0.66, 0.96, 0.82))
+            _c(imgui.Col_.slider_grab_active, imgui.ImVec4(0.52, 0.74, 0.99, 1.00))
+            _c(imgui.Col_.check_mark, imgui.ImVec4(0.47, 0.73, 0.98, 1.00))
+            _c(imgui.Col_.scrollbar_bg, imgui.ImVec4(0.09, 0.11, 0.13, 1.00))
+            _c(imgui.Col_.scrollbar_grab, imgui.ImVec4(0.25, 0.30, 0.37, 0.85))
+            _c(imgui.Col_.scrollbar_grab_hovered, imgui.ImVec4(0.33, 0.40, 0.49, 0.92))
+            _c(imgui.Col_.scrollbar_grab_active, imgui.ImVec4(0.41, 0.49, 0.60, 1.00))
+            _c(imgui.Col_.resize_grip, imgui.ImVec4(0.33, 0.51, 0.74, 0.28))
+            _c(imgui.Col_.resize_grip_hovered, imgui.ImVec4(0.42, 0.63, 0.90, 0.72))
+            _c(imgui.Col_.resize_grip_active, imgui.ImVec4(0.52, 0.74, 0.99, 0.95))
+            _c(imgui.Col_.text_selected_bg, imgui.ImVec4(0.31, 0.49, 0.73, 0.42))
+        else:
+            _c(imgui.Col_.text, imgui.ImVec4(0.12, 0.16, 0.22, 1.00))
+            _c(imgui.Col_.text_disabled, imgui.ImVec4(0.28, 0.33, 0.41, 1.00))
+            _c(imgui.Col_.window_bg, imgui.ImVec4(0.965, 0.970, 0.978, 1.00))
+            _c(imgui.Col_.child_bg, imgui.ImVec4(0.975, 0.980, 0.988, 0.98))
+            _c(imgui.Col_.popup_bg, imgui.ImVec4(0.995, 0.997, 1.000, 0.99))
+            _c(imgui.Col_.border, imgui.ImVec4(0.66, 0.71, 0.79, 0.82))
+            _c(imgui.Col_.border_shadow, imgui.ImVec4(0.0, 0.0, 0.0, 0.0))
+            _c(imgui.Col_.title_bg, imgui.ImVec4(0.84, 0.90, 0.96, 1.0))
+            _c(imgui.Col_.title_bg_active, imgui.ImVec4(0.76, 0.85, 0.95, 1.0))
+            _c(imgui.Col_.menu_bar_bg, imgui.ImVec4(0.93, 0.95, 0.98, 1.0))
+            _c(imgui.Col_.header, imgui.ImVec4(0.65, 0.79, 0.95, 0.62))
+            _c(imgui.Col_.header_hovered, imgui.ImVec4(0.50, 0.72, 0.94, 0.86))
+            _c(imgui.Col_.header_active, imgui.ImVec4(0.43, 0.67, 0.92, 1.00))
+            _c(imgui.Col_.button, imgui.ImVec4(0.32, 0.53, 0.79, 0.92))
+            _c(imgui.Col_.button_hovered, imgui.ImVec4(0.25, 0.47, 0.74, 0.96))
+            _c(imgui.Col_.button_active, imgui.ImVec4(0.22, 0.42, 0.68, 1.00))
+            _c(imgui.Col_.tab, imgui.ImVec4(0.84, 0.90, 0.96, 1.00))
+            _c(imgui.Col_.tab_hovered, imgui.ImVec4(0.67, 0.81, 0.95, 0.92))
+            _c(imgui.Col_.tab_selected, imgui.ImVec4(0.52, 0.73, 0.93, 1.00))
+            _c(imgui.Col_.separator, imgui.ImVec4(0.66, 0.71, 0.79, 0.82))
+            _c(imgui.Col_.separator_hovered, imgui.ImVec4(0.38, 0.60, 0.85, 0.85))
+            _c(imgui.Col_.plot_lines, imgui.ImVec4(0.18, 0.48, 0.82, 1.00))
+            _c(imgui.Col_.frame_bg, imgui.ImVec4(0.985, 0.989, 0.995, 1.00))
+            _c(imgui.Col_.frame_bg_hovered, imgui.ImVec4(0.93, 0.96, 0.99, 1.00))
+            _c(imgui.Col_.frame_bg_active, imgui.ImVec4(0.86, 0.92, 0.98, 1.00))
+            _c(imgui.Col_.slider_grab, imgui.ImVec4(0.34, 0.58, 0.88, 0.82))
+            _c(imgui.Col_.slider_grab_active, imgui.ImVec4(0.22, 0.48, 0.82, 1.00))
+            _c(imgui.Col_.check_mark, imgui.ImVec4(0.18, 0.48, 0.82, 1.00))
+            _c(imgui.Col_.scrollbar_bg, imgui.ImVec4(0.92, 0.94, 0.97, 1.00))
+            _c(imgui.Col_.scrollbar_grab, imgui.ImVec4(0.70, 0.77, 0.86, 0.85))
+            _c(imgui.Col_.scrollbar_grab_hovered, imgui.ImVec4(0.58, 0.69, 0.82, 0.92))
+            _c(imgui.Col_.scrollbar_grab_active, imgui.ImVec4(0.46, 0.61, 0.78, 1.00))
+            _c(imgui.Col_.resize_grip, imgui.ImVec4(0.52, 0.70, 0.92, 0.28))
+            _c(imgui.Col_.resize_grip_hovered, imgui.ImVec4(0.40, 0.61, 0.88, 0.72))
+            _c(imgui.Col_.resize_grip_active, imgui.ImVec4(0.28, 0.51, 0.82, 0.95))
+            _c(imgui.Col_.text_selected_bg, imgui.ImVec4(0.56, 0.77, 0.96, 0.42))
+        self._applied_theme_index = int(theme_index)
 
     def _configure_default_font(self) -> None:
         io = imgui.get_io()
@@ -820,19 +870,26 @@ class ToolkitWindow:
         idx = min(max(int(ui._values.get(_INTERFACE_SCALE_KEY, _DEFAULT_INTERFACE_SCALE_INDEX)), 0), len(_INTERFACE_SCALE_OPTIONS) - 1)
         return float(_INTERFACE_SCALE_OPTIONS[idx][1])
 
+    def _theme_index(self, ui: ViewerUI) -> int:
+        return min(max(int(ui._values.get(_THEME_KEY, int(_VIEWER_CONTROL_DEFAULTS.get("theme", 0)))), 0), len(_THEME_OPTIONS) - 1)
+
     def _set_interface_scale(self, scale: float) -> None:
+        self._apply_visual_state(scale, self._applied_theme_index if self._applied_theme_index >= 0 else int(_VIEWER_CONTROL_DEFAULTS.get("theme", 0)))
+
+    def _apply_visual_state(self, scale: float, theme_index: int) -> None:
         clamped_scale = max(float(scale), 0.5)
-        if abs(clamped_scale - self._applied_interface_scale) <= 1e-6:
+        resolved_theme_index = min(max(int(theme_index), 0), len(_THEME_OPTIONS) - 1)
+        if abs(clamped_scale - self._applied_interface_scale) <= 1e-6 and resolved_theme_index == self._applied_theme_index:
             return
         self._set_current_context()
-        self._apply_theme()
+        self._apply_theme(resolved_theme_index)
         style = imgui.get_style()
         style.scale_all_sizes(clamped_scale)
         style.font_scale_main = clamped_scale * (_BASE_FONT_SIZE_PX / _FONT_ATLAS_SIZE_PX)
         self._applied_interface_scale = clamped_scale
 
     def _sync_interface_scale(self, ui: ViewerUI) -> None:
-        self._set_interface_scale(self._interface_scale_factor(ui))
+        self._apply_visual_state(self._interface_scale_factor(ui), self._theme_index(ui))
 
     def handle_keyboard_event(self, event) -> bool:
         if not self._alive:

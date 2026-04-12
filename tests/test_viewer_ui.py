@@ -84,9 +84,15 @@ def test_status_suffix_strips_presenter_prefix() -> None:
     assert ui._status_suffix("Manual 1x") == "Manual 1x"
 
 
+def test_view_scale_options_extend_to_300_percent() -> None:
+    assert ui._INTERFACE_SCALE_OPTIONS[-1] == ("300%", 3.0)
+
+
 def test_build_ui_initializes_histogram_controls() -> None:
     viewer_ui = ui.build_ui(_dummy_renderer())
 
+    assert viewer_ui._values["interface_scale"] == 3
+    assert viewer_ui._values["theme"] == 0
     assert viewer_ui._values["show_histograms"] is False
     assert viewer_ui._values["show_training_views"] is False
     assert viewer_ui._values["show_camera_overlays"] is True
