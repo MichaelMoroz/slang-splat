@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import slangpy as spy
 
-from ..utility import RW_BUFFER_USAGE, SHADER_ROOT, alloc_buffer, dispatch, load_compute_kernel, load_compute_kernels, thread_count_1d, thread_count_2d
+from ..utility import RW_BUFFER_USAGE, SHADER_ROOT, alloc_buffer, dispatch, load_compute_kernels, thread_count_2d
 
 
 class SeparableGaussianBlur:
@@ -27,7 +27,6 @@ class SeparableGaussianBlur:
     def __init__(self, device: spy.Device, width: int, height: int) -> None:
         self.device, self.width, self.height = device, int(width), int(height)
         self._kernels = load_compute_kernels(device, SHADER_ROOT / "utility" / "blur" / "separable_gaussian_blur.slang", self._KERNEL_ENTRIES)
-        self._k_clear_float = load_compute_kernel(device, SHADER_ROOT / "utility" / "metrics" / "metrics.slang", "csClearFloatBuffer")
         self._scratch_buffers: dict[int, spy.Buffer] = {}
 
     def make_buffer(self, channel_count: int) -> spy.Buffer:
@@ -45,16 +44,6 @@ class SeparableGaussianBlur:
             self._scratch_buffers[channels] = self.make_buffer(channels)
         return self._scratch_buffers[channels]
 
-    def _clear_buffer(self, encoder: spy.CommandEncoder, buffer: spy.Buffer, channel_count: int) -> None:
-        dispatch(
-            kernel=self._k_clear_float,
-            thread_count=thread_count_1d(self.width * self.height * int(channel_count)),
-            vars={"g_ClearFloatBuffer": buffer, "g_ClearCount": self.width * self.height * int(channel_count)},
-            command_encoder=encoder,
-            debug_label="Blur::clear",
-            debug_color_index=88,
-        )
-
     def blur(self, encoder: spy.CommandEncoder, input_buffer: spy.Buffer, output_buffer: spy.Buffer, channel_count: int) -> spy.Buffer:
         shared = {"g_BlurWidth": self.width, "g_BlurHeight": self.height, "g_BlurChannelCount": int(channel_count)}
         scratch = self._ensure_scratch_buffer(channel_count)
@@ -65,8 +54,6 @@ class SeparableGaussianBlur:
     def blur_adjoint(self, encoder: spy.CommandEncoder, input_buffer: spy.Buffer, output_buffer: spy.Buffer, channel_count: int) -> spy.Buffer:
         shared = {"g_BlurWidth": self.width, "g_BlurHeight": self.height, "g_BlurChannelCount": int(channel_count)}
         scratch = self._ensure_scratch_buffer(channel_count)
-        self._clear_buffer(encoder, scratch, channel_count)
         self._dispatch("vertical_adjoint", encoder, channel_count, {"g_BlurInput": input_buffer, "g_BlurOutput": scratch, **shared})
-        self._clear_buffer(encoder, output_buffer, channel_count)
         self._dispatch("horizontal_adjoint", encoder, channel_count, {"g_BlurInput": scratch, "g_BlurOutput": output_buffer, **shared})
         return output_buffer
