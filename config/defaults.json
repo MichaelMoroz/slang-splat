@@ -124,7 +124,7 @@
   "viewer": {
     "controls": {
       "interface_scale": 3,
-      "theme": 0,
+      "theme": 1,
       "loss_debug_view": 0,
       "loss_debug_frame": 0,
       "loss_debug_abs_scale": 1.0,

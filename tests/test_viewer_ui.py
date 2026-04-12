@@ -96,7 +96,7 @@ def test_build_ui_initializes_histogram_controls() -> None:
     viewer_ui = ui.build_ui(_dummy_renderer())
 
     assert viewer_ui._values["interface_scale"] == 3
-    assert viewer_ui._values["theme"] == 0
+    assert viewer_ui._values["theme"] == 1
     assert viewer_ui._values["show_histograms"] is False
     assert viewer_ui._values["show_training_views"] is False
     assert viewer_ui._values["show_camera_overlays"] is True
