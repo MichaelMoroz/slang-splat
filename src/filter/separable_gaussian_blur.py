@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import slangpy as spy
 
@@ -24,9 +26,10 @@ class SeparableGaussianBlur:
             debug_color_index=80 + len(kernel),
         )
 
-    def __init__(self, device: spy.Device, width: int, height: int) -> None:
+    def __init__(self, device: spy.Device, width: int, height: int, shader_path: str | Path | None = None) -> None:
         self.device, self.width, self.height = device, int(width), int(height)
-        self._kernels = load_compute_kernels(device, SHADER_ROOT / "utility" / "blur" / "separable_gaussian_blur.slang", self._KERNEL_ENTRIES)
+        path = Path(shader_path) if shader_path is not None else SHADER_ROOT / "utility" / "blur" / "separable_gaussian_blur.slang"
+        self._kernels = load_compute_kernels(device, path, self._KERNEL_ENTRIES)
         self._scratch_buffers: dict[int, spy.Buffer] = {}
 
     def make_buffer(self, channel_count: int) -> spy.Buffer:
