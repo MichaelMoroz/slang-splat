@@ -8,6 +8,7 @@ import numpy as np
 import slangpy as spy
 
 from ..utility import alloc_texture_2d, clamp_index, debug_region, require_not_none
+from ..filter import SeparableGaussianBlur
 from ..training import resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_depth_ratio_weight, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_sh_band, resolve_sh_lr_mul
 from . import session
 
@@ -16,6 +17,7 @@ _DEBUG_TEXTURE_USAGE = spy.TextureUsage.shader_resource | spy.TextureUsage.unord
 _DEBUG_ABS_DIFF_SCALE_DEFAULT = 1.0
 _DEBUG_ABS_DIFF_SCALE_MIN = 0.125
 _DEBUG_ABS_DIFF_SCALE_MAX = 64.0
+_DEBUG_DSSIM_FEATURE_CHANNELS = 15
 _DEFAULT_TRAINING_STEPS_PER_FRAME = 3
 _MAX_TRAINING_STEPS_PER_FRAME = 8
 _TRAIN_DOWNSCALE_MODE_AUTO = 0
@@ -626,6 +628,91 @@ def _dispatch_debug_edge_filter(viewer: object, encoder: spy.CommandEncoder, sou
     return output
 
 
+def _debug_ssim_c2(viewer: object) -> float:
+    trainer = getattr(viewer.s, "trainer", None)
+    if trainer is not None and hasattr(trainer, "training") and hasattr(trainer.training, "ssim_c2"):
+        return float(trainer.training.ssim_c2)
+    try:
+        return float(viewer.c("ssim_c2").value)
+    except Exception:
+        return 9e-4
+
+
+def _debug_target_alpha_mask_enabled(viewer: object) -> int:
+    trainer = getattr(viewer.s, "trainer", None)
+    if trainer is not None and hasattr(trainer, "training") and hasattr(trainer.training, "use_target_alpha_mask"):
+        return int(bool(trainer.training.use_target_alpha_mask))
+    return 0
+
+
+def _ensure_debug_dssim_runtime(viewer: object, width: int, height: int) -> None:
+    resolution = (int(width), int(height))
+    if (
+        getattr(viewer.s, "debug_dssim_resolution", None) == resolution
+        and getattr(viewer.s, "debug_dssim_blur", None) is not None
+        and getattr(viewer.s, "debug_dssim_moments", None) is not None
+        and getattr(viewer.s, "debug_dssim_blurred_moments", None) is not None
+    ):
+        return
+    blur = SeparableGaussianBlur(viewer.device, width=resolution[0], height=resolution[1])
+    viewer.s.debug_dssim_blur = blur
+    viewer.s.debug_dssim_resolution = resolution
+    viewer.s.debug_dssim_moments = blur.make_buffer(_DEBUG_DSSIM_FEATURE_CHANNELS)
+    viewer.s.debug_dssim_blurred_moments = blur.make_buffer(_DEBUG_DSSIM_FEATURE_CHANNELS)
+
+
+def _dispatch_debug_dssim_features(viewer: object, encoder: spy.CommandEncoder, rendered_tex: spy.Texture, target_tex: spy.Texture, width: int, height: int) -> None:
+    _ensure_debug_dssim_runtime(viewer, width, height)
+    with debug_region(encoder, "Viewer DSSIM Features", 153):
+        require_not_none(viewer.s.debug_dssim_features_kernel, "Debug DSSIM feature kernel is not initialized.").dispatch(
+            thread_count=spy.uint3(int(width), int(height), 1),
+            vars={
+                "g_DebugRendered": rendered_tex,
+                "g_DebugTarget": target_tex,
+                "g_SSIMMoments": require_not_none(viewer.s.debug_dssim_moments, "Debug DSSIM moments buffer is not initialized."),
+                "g_Width": int(width),
+                "g_Height": int(height),
+                "g_DebugWidth": int(width),
+                "g_DebugHeight": int(height),
+                "g_HugeValue": _DEBUG_HUGE_VALUE,
+            },
+            command_encoder=encoder,
+        )
+
+
+def _dispatch_debug_dssim_compose(viewer: object, encoder: spy.CommandEncoder, target_tex: spy.Texture, width: int, height: int) -> spy.Texture:
+    output = _ensure_texture(viewer, "loss_debug_texture", width, height)
+    with debug_region(encoder, "Viewer DSSIM Compose", 154):
+        require_not_none(viewer.s.debug_dssim_compose_kernel, "Debug DSSIM compose kernel is not initialized.").dispatch(
+            thread_count=spy.uint3(int(width), int(height), 1),
+            vars={
+                "g_DebugTarget": target_tex,
+                "g_DebugOutput": output,
+                "g_SSIMBlurredMoments": require_not_none(viewer.s.debug_dssim_blurred_moments, "Debug DSSIM blurred moments buffer is not initialized."),
+                "g_DebugWidth": int(width),
+                "g_DebugHeight": int(height),
+                "g_Width": int(width),
+                "g_Height": int(height),
+                "g_HugeValue": _DEBUG_HUGE_VALUE,
+                "g_SSIMC2": _debug_ssim_c2(viewer),
+                "g_UseTargetAlphaMask": _debug_target_alpha_mask_enabled(viewer),
+            },
+            command_encoder=encoder,
+        )
+    return output
+
+
+def _dispatch_debug_dssim(viewer: object, encoder: spy.CommandEncoder, rendered_tex: spy.Texture, target_tex: spy.Texture, width: int, height: int) -> spy.Texture:
+    _dispatch_debug_dssim_features(viewer, encoder, rendered_tex, target_tex, width, height)
+    require_not_none(viewer.s.debug_dssim_blur, "Debug DSSIM blur is not initialized.").blur(
+        encoder,
+        require_not_none(viewer.s.debug_dssim_moments, "Debug DSSIM moments buffer is not initialized."),
+        require_not_none(viewer.s.debug_dssim_blurred_moments, "Debug DSSIM blurred moments buffer is not initialized."),
+        _DEBUG_DSSIM_FEATURE_CHANNELS,
+    )
+    return _dispatch_debug_dssim_compose(viewer, encoder, target_tex, width, height)
+
+
 def _dispatch_viewport_present(viewer: object, encoder: spy.CommandEncoder, source_tex: spy.Texture, source_width: int, source_height: int, output_width: int, output_height: int) -> spy.Texture:
     output = _ensure_texture(viewer, "debug_present_texture", output_width, output_height)
     with debug_region(encoder, "Viewer Present", 151):
@@ -752,6 +839,7 @@ def _render_debug_view(viewer: object, encoder: spy.CommandEncoder, output_width
         debug_render_tex if debug_view == "rendered"
         else target_tex if debug_view == "target"
         else _dispatch_debug_abs_diff(viewer, encoder, debug_render_tex, target_tex, debug_width, debug_height) if debug_view == "abs_diff"
+        else _dispatch_debug_dssim(viewer, encoder, debug_render_tex, target_tex, debug_width, debug_height) if debug_view == "dssim"
         else _dispatch_debug_edge_filter(viewer, encoder, debug_render_tex, debug_width, debug_height) if debug_view == "rendered_edges"
         else _dispatch_debug_edge_filter(viewer, encoder, target_tex, debug_width, debug_height)
     )

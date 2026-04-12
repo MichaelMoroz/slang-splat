@@ -146,6 +146,7 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         "loss_debug_frame": _control(0),
         "loss_debug_view": _control(0),
         "loss_debug_abs_scale": _control(1.0),
+        "ssim_c2": _control(9e-4),
         "images_subdir": _control(0),
         "training_steps_per_frame": _control(3),
         "train_downscale_factor": _control(1),
@@ -196,7 +197,7 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
     viewer = SimpleNamespace()
     viewer.device = SimpleNamespace()
     viewer.toolkit = SimpleNamespace(viewport_size=lambda: (640, 360))
-    viewer.loss_debug_view_options = (("rendered", "Rendered"), ("target", "Target"), ("abs_diff", "Abs Diff"), ("rendered_edges", "Rendered Edges"), ("target_edges", "Target Edges"))
+    viewer.loss_debug_view_options = (("rendered", "Rendered"), ("target", "Target"), ("abs_diff", "Abs Diff"), ("dssim", "DSSIM"), ("rendered_edges", "Rendered Edges"), ("target_edges", "Target Edges"))
     viewer.ui = SimpleNamespace(controls=controls, texts=texts, _values={"show_histograms": False, "_histogram_payload": None, "_histogram_range_payload": None, "show_training_cameras": bool(loss_debug)}, _texts={key: value.text for key, value in texts.items()})
     viewer.c = lambda key: viewer.ui.controls[key]
     viewer.t = lambda key: viewer.ui.texts[key]
@@ -222,6 +223,12 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         last_error="",
         last_training_batch_steps=0,
         viewport_texture=None,
+        debug_dssim_features_kernel=None,
+        debug_dssim_compose_kernel=None,
+        debug_dssim_blur=None,
+        debug_dssim_resolution=None,
+        debug_dssim_moments=None,
+        debug_dssim_blurred_moments=None,
         colmap_import_progress=None,
         cached_raster_grad_ranges=None,
     )
@@ -622,6 +629,31 @@ def test_dispatch_debug_edge_filter_uses_source_texture(monkeypatch) -> None:
     assert vars["g_DebugHeight"] == 360
 
 
+def test_dispatch_debug_dssim_runs_features_blur_and_compose(monkeypatch) -> None:
+    viewer = _viewer(loss_debug=True)
+    encoder = _DummyEncoder()
+    blur_calls: list[tuple[object, object, int]] = []
+
+    class _DummyBlur:
+        def blur(self, encoder_obj, input_buffer, output_buffer, channel_count):
+            blur_calls.append((input_buffer, output_buffer, channel_count))
+
+    output = SimpleNamespace(width=640, height=360)
+    monkeypatch.setattr(presenter, "_ensure_texture", lambda viewer_obj, attr, width, height: output)
+    monkeypatch.setattr(presenter, "_ensure_debug_dssim_runtime", lambda viewer_obj, width, height: setattr(viewer_obj.s, "debug_dssim_blur", _DummyBlur()) or setattr(viewer_obj.s, "debug_dssim_moments", "moments") or setattr(viewer_obj.s, "debug_dssim_blurred_moments", "blurred"))
+    viewer.s.debug_dssim_features_kernel = _CaptureKernel()
+    viewer.s.debug_dssim_compose_kernel = _CaptureKernel()
+
+    result = presenter._dispatch_debug_dssim(viewer, encoder, "rendered_tex", "target_tex", 640, 360)
+
+    assert result is output
+    assert blur_calls == [("moments", "blurred", 15)]
+    assert viewer.s.debug_dssim_features_kernel.calls[0]["vars"]["g_DebugRendered"] == "rendered_tex"
+    assert viewer.s.debug_dssim_features_kernel.calls[0]["vars"]["g_DebugTarget"] == "target_tex"
+    assert viewer.s.debug_dssim_compose_kernel.calls[0]["vars"]["g_DebugTarget"] == "target_tex"
+    assert viewer.s.debug_dssim_compose_kernel.calls[0]["vars"]["g_SSIMC2"] == 9e-4
+
+
 def test_render_debug_view_routes_edge_modes(monkeypatch) -> None:
     viewer = _viewer(loss_debug=True)
     encoder = _DummyEncoder()
@@ -630,6 +662,7 @@ def test_render_debug_view_routes_edge_modes(monkeypatch) -> None:
     monkeypatch.setattr(presenter, "_render_debug_source", lambda viewer_obj, enc, frame_idx: ("rendered_tex", {"generated_entries": 1}, 640, 360))
     monkeypatch.setattr(viewer.s.trainer, "get_frame_target_texture", lambda frame_idx, native_resolution=True, encoder=None: "target_tex")
     monkeypatch.setattr(presenter, "_dispatch_debug_abs_diff", lambda viewer_obj, enc, rendered_tex, target_tex, width, height: calls.append(("abs_diff", rendered_tex, target_tex, width, height)) or "abs_diff_tex")
+    monkeypatch.setattr(presenter, "_dispatch_debug_dssim", lambda viewer_obj, enc, rendered_tex, target_tex, width, height: calls.append(("dssim", rendered_tex, target_tex, width, height)) or "dssim_tex")
     monkeypatch.setattr(presenter, "_dispatch_debug_edge_filter", lambda viewer_obj, enc, source_tex, width, height: calls.append(("edge", source_tex, width, height)) or f"edge_{source_tex}")
     monkeypatch.setattr(presenter, "_dispatch_viewport_present", lambda viewer_obj, enc, source_tex, source_width, source_height, output_width, output_height: calls.append(("present", source_tex, source_width, source_height, output_width, output_height)) or "present_tex")
 
@@ -637,8 +670,12 @@ def test_render_debug_view_routes_edge_modes(monkeypatch) -> None:
     assert presenter._render_debug_view(viewer, encoder, 800, 600) == "present_tex"
     viewer.c("loss_debug_view").value = 4
     assert presenter._render_debug_view(viewer, encoder, 800, 600) == "present_tex"
+    viewer.c("loss_debug_view").value = 5
+    assert presenter._render_debug_view(viewer, encoder, 800, 600) == "present_tex"
 
     assert calls == [
+        ("dssim", "rendered_tex", "target_tex", 640, 360),
+        ("present", "dssim_tex", 640, 360, 800, 600),
         ("edge", "rendered_tex", 640, 360),
         ("present", "edge_rendered_tex", 640, 360, 800, 600),
         ("edge", "target_tex", 640, 360),

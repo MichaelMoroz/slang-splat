@@ -1180,6 +1180,42 @@ void csComposeEdgeDebug(uint3 dispatchThreadID : SV_DispatchThreadID)
 
 [shader("compute")]
 [numthreads(TRAIN_TILE_DIM, TRAIN_TILE_DIM, 1)]
+void csComputeSSIMFeaturesDebug(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint px = dispatchThreadID.x;
+    uint py = dispatchThreadID.y;
+    if (px >= g_DebugWidth || py >= g_DebugHeight) return;
+
+    uint2 pixel = uint2(px, py);
+    float3 rendered = sanitize_float3(g_DebugRendered[pixel].xyz, g_HugeValue);
+    float3 target = training_target_to_linear_rgb(sanitize_float3(g_DebugTarget[pixel].xyz, g_HugeValue));
+    store_ssim_moments(g_SSIMMoments, pixel, ssim_feature_moments(rendered, target));
+}
+
+[shader("compute")]
+[numthreads(TRAIN_TILE_DIM, TRAIN_TILE_DIM, 1)]
+void csComposeDSSIMDebug(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint px = dispatchThreadID.x;
+    uint py = dispatchThreadID.y;
+    if (px >= g_DebugWidth || py >= g_DebugHeight) return;
+
+    uint2 pixel = uint2(px, py);
+    SSIMMoments blurredMoments = load_ssim_moments(g_SSIMBlurredMoments, pixel);
+    float targetMask = training_target_mask(sanitize_scalar(g_DebugTarget[pixel].w, g_HugeValue));
+    float dssim = ssim_dssim_from_blurred_moments(
+        blurredMoments.x,
+        blurredMoments.y,
+        blurredMoments.x2,
+        blurredMoments.y2,
+        blurredMoments.xy
+    );
+    float normalized = saturate(dssim) * targetMask;
+    g_DebugOutput[pixel] = float4(normalized.xxx, 1.0);
+}
+
+[shader("compute")]
+[numthreads(TRAIN_TILE_DIM, TRAIN_TILE_DIM, 1)]
 void csComposeLetterboxDebug(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     uint px = dispatchThreadID.x;

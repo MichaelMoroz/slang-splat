@@ -659,11 +659,15 @@ def create_debug_shaders(viewer: object) -> None:
         {
             "debug_abs_diff_kernel": "csComposeAbsDiffDebug",
             "debug_edge_kernel": "csComposeEdgeDebug",
+            "debug_dssim_features_kernel": "csComputeSSIMFeaturesDebug",
+            "debug_dssim_compose_kernel": "csComposeDSSIMDebug",
             "debug_letterbox_kernel": "csComposeLetterboxDebug",
         },
     )
     viewer.s.debug_abs_diff_kernel = kernels["debug_abs_diff_kernel"]
     viewer.s.debug_edge_kernel = kernels["debug_edge_kernel"]
+    viewer.s.debug_dssim_features_kernel = kernels["debug_dssim_features_kernel"]
+    viewer.s.debug_dssim_compose_kernel = kernels["debug_dssim_compose_kernel"]
     viewer.s.debug_letterbox_kernel = kernels["debug_letterbox_kernel"]
 
 
