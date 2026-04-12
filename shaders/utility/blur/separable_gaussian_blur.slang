@@ -16,6 +16,14 @@ static const float GAUSSIAN_BLUR_WEIGHTS[GAUSSIAN_BLUR_TAP_COUNT] = {
     0.00759875813523919,
     0.00102838008447911
 };
+static const float GAUSSIAN_BLUR_EDGE_ACCUM_WEIGHTS[GAUSSIAN_BLUR_RADIUS + 1u] = {
+    0.6330058624308972,
+    0.3669941375691028,
+    0.15398859985784916,
+    0.04462791034814913,
+    0.0086271382197183,
+    0.00102838008447911
+};
 
 uniform StructuredBuffer<float> g_BlurInput;
 uniform RWStructuredBuffer<float> g_BlurOutput;
@@ -31,6 +39,69 @@ uint clamp_blur_index(int2 pixel, uint channel)
 {
     uint2 clamped = uint2(clamp(pixel.x, 0, int(g_BlurWidth) - 1), clamp(pixel.y, 0, int(g_BlurHeight) - 1));
     return ((clamped.y * g_BlurWidth) + clamped.x) * g_BlurChannelCount + channel;
+}
+
+uint blur_index(uint2 pixel, uint channel)
+{
+    return ((pixel.y * g_BlurWidth) + pixel.x) * g_BlurChannelCount + channel;
+}
+
+float gather_horizontal_blur_adjoint(uint px, uint py, uint channel)
+{
+    if (g_BlurWidth == 1u) return g_BlurInput[blur_index(uint2(0u, py), channel)];
+
+    uint maxX = g_BlurWidth - 1u;
+    if (px == 0u || px == maxX)
+    {
+        float accum = 0.0;
+        uint edgeSpan = min(GAUSSIAN_BLUR_RADIUS, maxX);
+        [unroll] for (uint distance = 0u; distance <= GAUSSIAN_BLUR_RADIUS; ++distance)
+        {
+            if (distance > edgeSpan) continue;
+            uint sampleX = px == 0u ? distance : maxX - distance;
+            accum += g_BlurInput[blur_index(uint2(sampleX, py), channel)] * GAUSSIAN_BLUR_EDGE_ACCUM_WEIGHTS[distance];
+        }
+        return accum;
+    }
+
+    float accum = 0.0;
+    [unroll] for (uint tap = 0u; tap < GAUSSIAN_BLUR_TAP_COUNT; ++tap)
+    {
+        int offset = int(tap) - int(GAUSSIAN_BLUR_RADIUS);
+        int sampleX = int(px) - offset;
+        if (sampleX < 0 || sampleX >= int(g_BlurWidth)) continue;
+        accum += g_BlurInput[blur_index(uint2(uint(sampleX), py), channel)] * GAUSSIAN_BLUR_WEIGHTS[tap];
+    }
+    return accum;
+}
+
+float gather_vertical_blur_adjoint(uint px, uint py, uint channel)
+{
+    if (g_BlurHeight == 1u) return g_BlurInput[blur_index(uint2(px, 0u), channel)];
+
+    uint maxY = g_BlurHeight - 1u;
+    if (py == 0u || py == maxY)
+    {
+        float accum = 0.0;
+        uint edgeSpan = min(GAUSSIAN_BLUR_RADIUS, maxY);
+        [unroll] for (uint distance = 0u; distance <= GAUSSIAN_BLUR_RADIUS; ++distance)
+        {
+            if (distance > edgeSpan) continue;
+            uint sampleY = py == 0u ? distance : maxY - distance;
+            accum += g_BlurInput[blur_index(uint2(px, sampleY), channel)] * GAUSSIAN_BLUR_EDGE_ACCUM_WEIGHTS[distance];
+        }
+        return accum;
+    }
+
+    float accum = 0.0;
+    [unroll] for (uint tap = 0u; tap < GAUSSIAN_BLUR_TAP_COUNT; ++tap)
+    {
+        int offset = int(tap) - int(GAUSSIAN_BLUR_RADIUS);
+        int sampleY = int(py) - offset;
+        if (sampleY < 0 || sampleY >= int(g_BlurHeight)) continue;
+        accum += g_BlurInput[blur_index(uint2(px, uint(sampleY)), channel)] * GAUSSIAN_BLUR_WEIGHTS[tap];
+    }
+    return accum;
 }
 
 [shader("compute")]
@@ -77,14 +148,7 @@ void csGaussianBlurHorizontalAdjoint(uint3 dispatchThreadID : SV_DispatchThreadI
     uint py = dispatchThreadID.y;
     uint channel = dispatchThreadID.z;
     if (px >= g_BlurWidth || py >= g_BlurHeight || channel >= g_BlurChannelCount) return;
-
-    float grad = g_BlurInput[((py * g_BlurWidth) + px) * g_BlurChannelCount + channel];
-    [unroll] for (uint tap = 0u; tap < GAUSSIAN_BLUR_TAP_COUNT; ++tap)
-    {
-        int offset = int(tap) - int(GAUSSIAN_BLUR_RADIUS);
-        uint sampleX = uint(clamp(int(px) + offset, 0, int(g_BlurWidth) - 1));
-        InterlockedAdd(g_BlurOutput[((py * g_BlurWidth) + sampleX) * g_BlurChannelCount + channel], grad * GAUSSIAN_BLUR_WEIGHTS[tap]);
-    }
+    g_BlurOutput[blur_index(uint2(px, py), channel)] = gather_horizontal_blur_adjoint(px, py, channel);
 }
 
 [shader("compute")]
@@ -95,14 +159,7 @@ void csGaussianBlurVerticalAdjoint(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint py = dispatchThreadID.y;
     uint channel = dispatchThreadID.z;
     if (px >= g_BlurWidth || py >= g_BlurHeight || channel >= g_BlurChannelCount) return;
-
-    float grad = g_BlurInput[((py * g_BlurWidth) + px) * g_BlurChannelCount + channel];
-    [unroll] for (uint tap = 0u; tap < GAUSSIAN_BLUR_TAP_COUNT; ++tap)
-    {
-        int offset = int(tap) - int(GAUSSIAN_BLUR_RADIUS);
-        uint sampleY = uint(clamp(int(py) + offset, 0, int(g_BlurHeight) - 1));
-        InterlockedAdd(g_BlurOutput[((sampleY * g_BlurWidth) + px) * g_BlurChannelCount + channel], grad * GAUSSIAN_BLUR_WEIGHTS[tap]);
-    }
+    g_BlurOutput[blur_index(uint2(px, py), channel)] = gather_vertical_blur_adjoint(px, py, channel);
 }
 
 [shader("compute")]
