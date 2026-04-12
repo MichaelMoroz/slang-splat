@@ -7,15 +7,20 @@ import time
 import numpy as np
 import slangpy as spy
 
+from ..repo_defaults import viewer_defaults
 from ..metrics import ParamLog10Histograms, ParamTensorRanges
 from ..scene import ColmapFrame, ColmapReconstruction, GaussianScene
 from ..training import GaussianTrainer
 from ..renderer import GaussianRenderer
 
-DEFAULT_LIST_CAPACITY_MULTIPLIER = 16
-DEFAULT_MAX_PREPASS_MEMORY_MB = 4096
-DEFAULT_VIEWER_BACKGROUND = (0.0, 0.0, 0.0)
-DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH = 3
+_VIEWER_DEFAULTS = viewer_defaults()
+_VIEWER_STATE_DEFAULTS = _VIEWER_DEFAULTS["state"]
+_VIEWER_IMPORT_DEFAULTS = _VIEWER_DEFAULTS["import"]
+
+DEFAULT_LIST_CAPACITY_MULTIPLIER = int(_VIEWER_STATE_DEFAULTS["list_capacity_multiplier"])
+DEFAULT_MAX_PREPASS_MEMORY_MB = int(_VIEWER_STATE_DEFAULTS["max_prepass_memory_mb"])
+DEFAULT_VIEWER_BACKGROUND = tuple(float(v) for v in _VIEWER_STATE_DEFAULTS["background"])
+DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH = int(_VIEWER_IMPORT_DEFAULTS["colmap_min_track_length"])
 
 @dataclass(slots=True)
 class SceneCountProxy:
@@ -32,13 +37,13 @@ class ColmapImportSettings:
     init_mode: str = "pointcloud"
     custom_ply_path: Path | None = None
     image_downscale_mode: str = "original"
-    image_downscale_max_size: int = 2048
-    image_downscale_scale: float = 1.0
-    nn_radius_scale_coef: float = 0.5
+    image_downscale_max_size: int = int(_VIEWER_IMPORT_DEFAULTS["colmap_image_max_size"])
+    image_downscale_scale: float = float(_VIEWER_IMPORT_DEFAULTS["colmap_image_scale"])
+    nn_radius_scale_coef: float = float(_VIEWER_IMPORT_DEFAULTS["colmap_nn_radius_scale_coef"])
     min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH
-    depth_point_count: int = 100000
-    diffused_point_count: int = 100000
-    diffusion_radius: float = 1.0
+    depth_point_count: int = int(_VIEWER_IMPORT_DEFAULTS["colmap_depth_point_count"])
+    diffused_point_count: int = int(_VIEWER_IMPORT_DEFAULTS["colmap_diffused_point_count"])
+    diffusion_radius: float = float(_VIEWER_IMPORT_DEFAULTS["colmap_diffusion_radius"])
     use_target_alpha_mask: bool = False
 
 

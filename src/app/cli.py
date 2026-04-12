@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from .. import create_default_device
+from ..repo_defaults import cli_defaults
 from .training_controls import TRAINING_CLI_ARG_DEFS, training_cli_build_kwargs
 from ..renderer import Camera, GaussianRenderSettings, GaussianRenderer
 from ..scene import GaussianInitHyperParams, build_training_frames, initialize_scene_from_colmap_points, load_colmap_reconstruction, load_gaussian_ply, resolve_colmap_init_hparams
@@ -15,6 +16,11 @@ from ..training import GaussianTrainer
 from ..training.defaults import DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT, TRAINING_BUILD_ARG_DEFAULTS
 from .shared import RendererParams, apply_training_profile, build_training_params, estimate_scene_bounds, renderer_kwargs, save_snapshot
 from ..training import TRAINING_PROFILE_CHOICES
+_CLI_DEFAULTS = cli_defaults()
+_CLI_COMMON_RENDER_DEFAULTS = _CLI_DEFAULTS["common_render"]
+_CLI_TRAIN_COLMAP_DEFAULTS = _CLI_DEFAULTS["train_colmap"]
+_CLI_RENDER_PLY_DEFAULTS = _CLI_DEFAULTS["render_ply"]
+_CLI_RENDER_SINGLE_DEFAULTS = _CLI_DEFAULTS["render_single"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,7 +57,7 @@ def _renderer(args: argparse.Namespace, width: int, height: int) -> GaussianRend
         max_anisotropy=float(getattr(args, "max_anisotropy", 32.0)),
         transmittance_threshold=float(args.trans_threshold),
         max_prepass_memory_mb=int(args.prepass_memory_mb),
-        list_capacity_multiplier=int(getattr(args, "list_capacity_multiplier", 64)),
+        list_capacity_multiplier=int(getattr(args, "list_capacity_multiplier", _CLI_COMMON_RENDER_DEFAULTS["list_capacity_multiplier"])),
     )
     settings = GaussianRenderSettings(width=int(width), height=int(height), **renderer_kwargs(params))
     return settings.create_renderer(create_default_device(enable_debug_layers=False))
@@ -171,15 +177,15 @@ def run_render_single(args: argparse.Namespace) -> int:
 
 
 COMMON_RENDER_ARGS = (
-    A("--prepass-memory-mb", type=int, default=4096),
-    A("--radius-scale", type=float, default=1.0),
-    A("--alpha-cutoff", type=float, default=1.0 / 255.0),
-    A("--trans-threshold", type=float, default=0.005),
-    A("--debug-layers", action="store_true"),
+    A("--prepass-memory-mb", type=int, default=int(_CLI_COMMON_RENDER_DEFAULTS["prepass_memory_mb"])),
+    A("--radius-scale", type=float, default=float(_CLI_COMMON_RENDER_DEFAULTS["radius_scale"])),
+    A("--alpha-cutoff", type=float, default=float(_CLI_COMMON_RENDER_DEFAULTS["alpha_cutoff"])),
+    A("--trans-threshold", type=float, default=float(_CLI_COMMON_RENDER_DEFAULTS["trans_threshold"])),
+    A("--debug-layers", action="store_true", default=bool(_CLI_COMMON_RENDER_DEFAULTS["debug_layers"])),
 )
 TRAIN_RENDER_ARGS = tuple(A(*spec.flags, **spec.kwargs) for spec in TRAINING_CLI_ARG_DEFS)
 TRAIN_INIT_ARGS = tuple(
-    A(flag, type=float, default=None)
+    A(flag, type=float, default=_CLI_TRAIN_COLMAP_DEFAULTS["init_opacity"])
     for flag in ("--init-opacity",)
 )
 COMMANDS = (
@@ -188,23 +194,23 @@ COMMANDS = (
         "Train gaussians on a COLMAP reconstruction.",
         (
             A("--colmap-root", type=Path, required=True),
-            A("--sparse-subdir", type=str, default="sparse/0"),
-            A("--images-subdir", type=str, default="images_4"),
-            A("--iters", type=int, default=1000),
-            A("--max-gaussians", type=int, default=TRAINING_BUILD_ARG_DEFAULTS["max_gaussians"]),
-            A("--refinement-min-contribution-percent", type=float, default=DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT),
-            A("--no-use-sh", action="store_false", dest="use_sh", default=True),
-            A("--training-profile", type=str, default="auto", choices=TRAINING_PROFILE_CHOICES),
-            A("--seed", type=int, default=1234),
-            A("--width", type=int, default=0),
-            A("--height", type=int, default=0),
+            A("--sparse-subdir", type=str, default=str(_CLI_TRAIN_COLMAP_DEFAULTS["sparse_subdir"])),
+            A("--images-subdir", type=str, default=str(_CLI_TRAIN_COLMAP_DEFAULTS["images_subdir"])),
+            A("--iters", type=int, default=int(_CLI_TRAIN_COLMAP_DEFAULTS["iters"])),
+            A("--max-gaussians", type=int, default=int(_CLI_TRAIN_COLMAP_DEFAULTS["max_gaussians"])),
+            A("--refinement-min-contribution-percent", type=float, default=float(_CLI_TRAIN_COLMAP_DEFAULTS["refinement_min_contribution_percent"])),
+            A("--no-use-sh", action="store_false", dest="use_sh", default=bool(_CLI_TRAIN_COLMAP_DEFAULTS["use_sh"])),
+            A("--training-profile", type=str, default=str(_CLI_TRAIN_COLMAP_DEFAULTS["training_profile"]), choices=TRAINING_PROFILE_CHOICES),
+            A("--seed", type=int, default=int(_CLI_TRAIN_COLMAP_DEFAULTS["seed"])),
+            A("--width", type=int, default=int(_CLI_TRAIN_COLMAP_DEFAULTS["width"])),
+            A("--height", type=int, default=int(_CLI_TRAIN_COLMAP_DEFAULTS["height"])),
             *COMMON_RENDER_ARGS,
             *TRAIN_RENDER_ARGS,
-            A("--bg", type=float, nargs=3, default=(0.0, 0.0, 0.0)),
+            A("--bg", type=float, nargs=3, default=tuple(float(v) for v in _CLI_TRAIN_COLMAP_DEFAULTS["bg"])),
             *TRAIN_INIT_ARGS,
-            A("--log-interval", type=int, default=10),
-            A("--snapshot-interval", type=int, default=0),
-            A("--snapshot-dir", type=Path, default=Path("outputs/train_snapshots")),
+            A("--log-interval", type=int, default=int(_CLI_TRAIN_COLMAP_DEFAULTS["log_interval"])),
+            A("--snapshot-interval", type=int, default=int(_CLI_TRAIN_COLMAP_DEFAULTS["snapshot_interval"])),
+            A("--snapshot-dir", type=Path, default=Path(str(_CLI_TRAIN_COLMAP_DEFAULTS["snapshot_dir"]))),
         ),
         "run_train_colmap",
     ),
@@ -213,17 +219,17 @@ COMMANDS = (
         "Render a set of views for a PLY scene.",
         (
             A("--ply", type=Path, required=True),
-            A("--output-dir", type=Path, default=Path("outputs/ply_views")),
-            A("--views", type=int, default=24),
-            A("--log-interval", type=int, default=5),
-            A("--width", type=int, default=1280),
-            A("--height", type=int, default=720),
-            A("--fov-y", type=float, default=60.0),
-            A("--near", type=float, default=0.1),
-            A("--far", type=float, default=120.0),
-            A("--distance-multiplier", type=float, default=1.35),
-            A("--elevation-ratio", type=float, default=0.0),
-            A("--bg", type=float, nargs=3, default=(0.0, 0.0, 0.0)),
+            A("--output-dir", type=Path, default=Path(str(_CLI_RENDER_PLY_DEFAULTS["output_dir"]))),
+            A("--views", type=int, default=int(_CLI_RENDER_PLY_DEFAULTS["views"])),
+            A("--log-interval", type=int, default=int(_CLI_RENDER_PLY_DEFAULTS["log_interval"])),
+            A("--width", type=int, default=int(_CLI_RENDER_PLY_DEFAULTS["width"])),
+            A("--height", type=int, default=int(_CLI_RENDER_PLY_DEFAULTS["height"])),
+            A("--fov-y", type=float, default=float(_CLI_RENDER_PLY_DEFAULTS["fov_y"])),
+            A("--near", type=float, default=float(_CLI_RENDER_PLY_DEFAULTS["near"])),
+            A("--far", type=float, default=float(_CLI_RENDER_PLY_DEFAULTS["far"])),
+            A("--distance-multiplier", type=float, default=float(_CLI_RENDER_PLY_DEFAULTS["distance_multiplier"])),
+            A("--elevation-ratio", type=float, default=float(_CLI_RENDER_PLY_DEFAULTS["elevation_ratio"])),
+            A("--bg", type=float, nargs=3, default=tuple(float(v) for v in _CLI_RENDER_PLY_DEFAULTS["bg"])),
             *COMMON_RENDER_ARGS,
         ),
         "run_render_ply",
@@ -231,18 +237,18 @@ COMMANDS = (
 )
 SINGLE_RENDER_ARGS = (
     A("--ply", type=Path, required=True),
-    A("--output", type=Path, default=Path("render.png")),
-    A("--width", type=int, default=1280),
-    A("--height", type=int, default=720),
-    A("--max-splats", type=int, default=0),
-    A("--max-splat-radius-px", type=float, default=64.0),
-    A("--cam-pos", type=float, nargs=3, default=(0.0, 0.0, 3.0)),
-    A("--cam-target", type=float, nargs=3, default=(0.0, 0.0, 0.0)),
-    A("--fov", type=float, default=60.0),
-    A("--near", type=float, default=0.1),
-    A("--far", type=float, default=120.0),
-    A("--bg", type=float, nargs=3, default=(0.0, 0.0, 0.0)),
-    A("--no-flip-y", action="store_true"),
+    A("--output", type=Path, default=Path(str(_CLI_RENDER_SINGLE_DEFAULTS["output"]))),
+    A("--width", type=int, default=int(_CLI_RENDER_SINGLE_DEFAULTS["width"])),
+    A("--height", type=int, default=int(_CLI_RENDER_SINGLE_DEFAULTS["height"])),
+    A("--max-splats", type=int, default=int(_CLI_RENDER_SINGLE_DEFAULTS["max_splats"])),
+    A("--max-splat-radius-px", type=float, default=float(_CLI_RENDER_SINGLE_DEFAULTS["max_splat_radius_px"])),
+    A("--cam-pos", type=float, nargs=3, default=tuple(float(v) for v in _CLI_RENDER_SINGLE_DEFAULTS["cam_pos"])),
+    A("--cam-target", type=float, nargs=3, default=tuple(float(v) for v in _CLI_RENDER_SINGLE_DEFAULTS["cam_target"])),
+    A("--fov", type=float, default=float(_CLI_RENDER_SINGLE_DEFAULTS["fov"])),
+    A("--near", type=float, default=float(_CLI_RENDER_SINGLE_DEFAULTS["near"])),
+    A("--far", type=float, default=float(_CLI_RENDER_SINGLE_DEFAULTS["far"])),
+    A("--bg", type=float, nargs=3, default=tuple(float(v) for v in _CLI_RENDER_SINGLE_DEFAULTS["bg"])),
+    A("--no-flip-y", action="store_true", default=bool(_CLI_RENDER_SINGLE_DEFAULTS["no_flip_y"])),
     *COMMON_RENDER_ARGS,
 )
 

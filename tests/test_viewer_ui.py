@@ -111,7 +111,7 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["debug_depth_local_mismatch_smooth_radius"] == 2.0
     assert viewer_ui._values["debug_depth_local_mismatch_reject_radius"] == 4.0
     assert viewer_ui._values["loss_debug_view"] == 0
-    assert viewer_ui._values["lr_scale_mul"] == 10.0
+    assert viewer_ui._values["lr_scale_mul"] == 15.0
     assert viewer_ui._values["lr_color_mul"] == 5.0
     assert viewer_ui._values["lr_opacity_mul"] == 5.0
     assert viewer_ui._values["lr_schedule_enabled"] is True
@@ -120,13 +120,13 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["lr_schedule_stage2_lr"] == 0.001
     assert viewer_ui._values["lr_schedule_end_lr"] == 1.5e-4
     assert viewer_ui._values["lr_pos_mul"] == 0.5
-    assert viewer_ui._values["lr_pos_stage1_mul"] == 0.3
-    assert viewer_ui._values["lr_pos_stage2_mul"] == 0.2
-    assert viewer_ui._values["lr_pos_stage3_mul"] == 0.2
-    assert viewer_ui._values["lr_sh_mul"] == 0.05
-    assert viewer_ui._values["lr_sh_stage1_mul"] == 0.05
-    assert viewer_ui._values["lr_sh_stage2_mul"] == 0.05
-    assert viewer_ui._values["lr_sh_stage3_mul"] == 0.05
+    assert viewer_ui._values["lr_pos_stage1_mul"] == 0.1
+    assert viewer_ui._values["lr_pos_stage2_mul"] == 0.05
+    assert viewer_ui._values["lr_pos_stage3_mul"] == 0.02
+    assert viewer_ui._values["lr_sh_mul"] == 0.1
+    assert viewer_ui._values["lr_sh_stage1_mul"] == 0.1
+    assert viewer_ui._values["lr_sh_stage2_mul"] == 0.1
+    assert viewer_ui._values["lr_sh_stage3_mul"] == 0.1
     assert viewer_ui._values["lr_schedule_steps"] == 30000
     assert viewer_ui._values["lr_schedule_stage1_step"] == 3000
     assert viewer_ui._values["lr_schedule_stage2_step"] == 14000
@@ -138,14 +138,17 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["position_random_step_opacity_gate_sharpness"] == 100.0
     assert viewer_ui._values["background_mode"] == 1
     assert viewer_ui._values["use_target_alpha_mask"] is False
+    assert viewer_ui._values["training_steps_per_frame"] == 3
     assert viewer_ui._values["train_background_color"] == (1.0, 1.0, 1.0)
+    assert viewer_ui._values["seed"] == 1234
+    assert viewer_ui._values["init_opacity"] == 0.5
     assert viewer_ui._values["sh_band"] == 0
     assert viewer_ui._values["sh_band_stage1"] == 0
     assert viewer_ui._values["sh_band_stage2"] == 2
     assert viewer_ui._values["sh_band_stage3"] == 3
     assert viewer_ui._values["sh1_reg"] == 0.01
     assert viewer_ui._values["refinement_interval"] == 200
-    assert viewer_ui._values["refinement_growth_ratio"] == 0.035
+    assert viewer_ui._values["refinement_growth_ratio"] == 0.04
     assert viewer_ui._values["refinement_growth_start_step"] == 500
     assert viewer_ui._values["refinement_alpha_cull_threshold"] == 1e-2
     assert viewer_ui._values["refinement_min_contribution_percent"] == 1e-05
@@ -156,16 +159,16 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["refinement_target_edge_weight"] == 0.75
     assert viewer_ui._values["density_regularizer"] == 0.02
     assert viewer_ui._values["color_non_negative_reg"] == 0.01
-    assert viewer_ui._values["depth_ratio_weight"] == 0.1
+    assert viewer_ui._values["depth_ratio_weight"] == 0.5
     assert viewer_ui._values["max_screen_fraction"] == 0.25
-    assert viewer_ui._values["ssim_weight"] == 0.2
+    assert viewer_ui._values["ssim_weight"] == 0.05
     assert viewer_ui._values["ssim_c2"] == 9e-4
     assert viewer_ui._values["depth_ratio_stage1_weight"] == 0.03
     assert viewer_ui._values["depth_ratio_stage2_weight"] == 0.01
     assert viewer_ui._values["depth_ratio_stage3_weight"] == 0.001
-    assert viewer_ui._values["max_screen_fraction_stage1"] == 0.05
-    assert viewer_ui._values["max_screen_fraction_stage2"] == 0.04
-    assert viewer_ui._values["max_screen_fraction_stage3"] == 0.03
+    assert viewer_ui._values["max_screen_fraction_stage1"] == 0.07
+    assert viewer_ui._values["max_screen_fraction_stage2"] == 0.02
+    assert viewer_ui._values["max_screen_fraction_stage3"] == 0.007
     assert viewer_ui._values["depth_ratio_grad_min"] == 0.0
     assert viewer_ui._values["depth_ratio_grad_max"] == 0.1
     assert viewer_ui._values["max_allowed_density"] == 12.0

@@ -9,6 +9,7 @@ import slangpy as spy
 from slangpy import math as smath
 
 from .. import create_default_device
+from ..repo_defaults import defaults_path, load_defaults, write_defaults
 from ..app.training_controls import TRAINING_BUILD_ARG_UI_KEYS
 from ..app.shared import RendererParams, build_init_params, build_training_params, fit_camera
 from ..utility import normalize3
@@ -18,10 +19,10 @@ from ..training import resolve_sh_band
 from . import presenter, session
 from .constants import _WINDOW_TITLE
 from .state import (
-    DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH,
+    DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH, DEFAULT_MAX_PREPASS_MEMORY_MB,
     LOSS_DEBUG_OPTIONS, ViewerState,
 )
-from .ui import _threshold_band_range, build_ui, create_toolkit_window, default_control_values
+from .ui import _threshold_band_range, build_ui, create_toolkit_window, default_control_values, export_repo_defaults_from_ui_values
 
 _VIEW_VEC_EPS = 1e-6
 _SCROLL_SPEED_BASE = 1.1
@@ -294,6 +295,7 @@ class SplatViewer(spy.AppWindow):
         cb.reinitialize = self._reinitialize_callback
         cb.start_training = self._start_training_callback
         cb.stop_training = self._stop_training_callback
+        cb.save_defaults = self._save_defaults_callback
 
     def _run_action(self, action, *, close_colmap_import: bool = False) -> None:
         try:
@@ -399,6 +401,30 @@ class SplatViewer(spy.AppWindow):
     def _stop_training_callback(self) -> None:
         session.set_training_active(self, False)
 
+    def _save_defaults_callback(self) -> None:
+        try:
+            defaults = load_defaults()
+            defaults["training_build_args"] = {
+                **defaults["training_build_args"],
+                **{
+                    build_arg: self.ui._values[control_key]
+                    for build_arg, control_key in _TRAINING_PARAM_KEYS.items()
+                    if control_key in self.ui._values
+                },
+            }
+            exported = export_repo_defaults_from_ui_values(self.ui._values)
+            defaults["renderer"] = exported["renderer"]
+            defaults["viewer"]["controls"] = exported["viewer"]["controls"]
+            defaults["viewer"]["import"] = exported["viewer"]["import"]
+            defaults["viewer"]["ui"] = exported["viewer"]["ui"]
+            write_defaults(defaults)
+        except Exception as exc:
+            self.t("defaults_status").text = ""
+            self.s.last_error = str(exc)
+            return
+        self.t("defaults_status").text = f"Saved {defaults_path().relative_to(defaults_path().parents[1])}"
+        self.s.last_error = ""
+
     def _render_frame(self, render_context) -> None:
         presenter.render_frame(self, render_context)
         self.toolkit.render(self.ui, render_context.surface_texture, render_context.command_encoder, viewport_texture=self.s.viewport_texture)
@@ -447,7 +473,7 @@ def main() -> int:
     view_w, view_h = _compute_view_geometry()
     device = create_default_device(enable_debug_layers=False)
     app = spy.App(device=device)
-    viewer = SplatViewer(app, width=view_w, height=view_h, title=_WINDOW_TITLE, max_prepass_memory_mb=4096)
+    viewer = SplatViewer(app, width=view_w, height=view_h, title=_WINDOW_TITLE, max_prepass_memory_mb=DEFAULT_MAX_PREPASS_MEMORY_MB)
     try:
         app.run()
     finally:

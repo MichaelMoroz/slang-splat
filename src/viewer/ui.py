@@ -15,6 +15,7 @@ import slangpy as spy
 import slangpy.ui.imgui_bundle as simgui
 from imgui_bundle import hello_imgui, imgui, imgui_md, implot
 
+from ..repo_defaults import json_value, renderer_defaults, viewer_defaults
 from ..app.training_controls import (
     SH_BAND_LABELS as _SH_BAND_LABELS,
     SCHEDULE_STAGE_CONTROL_DEFS,
@@ -132,6 +133,25 @@ _DEBUG_MODE_LABELS = (
     "SH Coefficient",
 )
 _DEBUG_SH_COEFF_LABELS = ("SH0 DC", "SH1 X", "SH1 Y", "SH1 Z", "SH2 0", "SH2 1", "SH2 2", "SH2 3", "SH2 4", "SH3 0", "SH3 1", "SH3 2", "SH3 3", "SH3 4", "SH3 5", "SH3 6")
+_VIEWER_DEFAULTS = viewer_defaults()
+_VIEWER_CONTROL_DEFAULTS = _VIEWER_DEFAULTS["controls"]
+_VIEWER_IMPORT_DEFAULTS = _VIEWER_DEFAULTS["import"]
+_VIEWER_UI_DEFAULTS = _VIEWER_DEFAULTS["ui"]
+_RENDERER_DEFAULTS = renderer_defaults()
+_DEFAULT_INTERFACE_SCALE_INDEX = int(_VIEWER_CONTROL_DEFAULTS["interface_scale"])
+_HISTOGRAM_BIN_COUNT_DEFAULT = int(_VIEWER_UI_DEFAULTS["hist_bin_count"])
+_HISTOGRAM_MIN_VALUE_DEFAULT = float(_VIEWER_UI_DEFAULTS["hist_min_value"])
+_HISTOGRAM_MAX_VALUE_DEFAULT = float(_VIEWER_UI_DEFAULTS["hist_max_value"])
+_HISTOGRAM_Y_LIMIT_DEFAULT = float(_VIEWER_UI_DEFAULTS["hist_y_limit"])
+
+
+def _renderer_atomic_mode_index(value: object) -> int:
+    return 0 if str(value) == "float" else 1
+
+
+def _renderer_debug_mode_index(value: object) -> int:
+    mode = "normal" if value is None else str(value)
+    return _DEBUG_MODE_VALUES.index(mode) if mode in _DEBUG_MODE_VALUES else 0
 def _valid_depth_root_text(value: object) -> bool:
     text = str(value or "").strip()
     return bool(text) and Path(text).expanduser().is_dir()
@@ -413,18 +433,18 @@ _TRAIN_STABILITY_SPECS = tuple(_control_spec(defn) for defn in TRAINING_UI_GROUP
 
 GROUP_SPECS = {
     "View": (
-        ControlSpec(_INTERFACE_SCALE_KEY, "combo", "Interface Scale", {"value": _DEFAULT_INTERFACE_SCALE_INDEX, "options": tuple(label for label, _ in _INTERFACE_SCALE_OPTIONS)}),
+        ControlSpec(_INTERFACE_SCALE_KEY, "combo", "Interface Scale", {"value": int(_VIEWER_CONTROL_DEFAULTS["interface_scale"]), "options": tuple(label for label, _ in _INTERFACE_SCALE_OPTIONS)}),
     ),
     "Main": (
-        ControlSpec("loss_debug_view", "slider_int", "Debug View", {"value": 0, "min": 0, "max": len(LOSS_DEBUG_OPTIONS) - 1}),
-        ControlSpec("loss_debug_frame", "slider_int", "Debug Frame", {"value": 0, "min": 0, "max": 10000}),
-        ControlSpec(_LOSS_DEBUG_ABS_SCALE_KEY, "slider_float", "Abs Diff Scale", {"value": _LOSS_DEBUG_ABS_SCALE_DEFAULT, "min": _LOSS_DEBUG_ABS_SCALE_MIN, "max": _LOSS_DEBUG_ABS_SCALE_MAX, "format": "%.3gx", "logarithmic": True}),
+        ControlSpec("loss_debug_view", "slider_int", "Debug View", {"value": int(_VIEWER_CONTROL_DEFAULTS["loss_debug_view"]), "min": 0, "max": len(LOSS_DEBUG_OPTIONS) - 1}),
+        ControlSpec("loss_debug_frame", "slider_int", "Debug Frame", {"value": int(_VIEWER_CONTROL_DEFAULTS["loss_debug_frame"]), "min": 0, "max": 10000}),
+        ControlSpec(_LOSS_DEBUG_ABS_SCALE_KEY, "slider_float", "Abs Diff Scale", {"value": float(_VIEWER_CONTROL_DEFAULTS["loss_debug_abs_scale"]), "min": _LOSS_DEBUG_ABS_SCALE_MIN, "max": _LOSS_DEBUG_ABS_SCALE_MAX, "format": "%.3gx", "logarithmic": True}),
     ),
     "Camera": (
-        ControlSpec("move_speed", "input_float", "Move Speed", {"value": 2.0, "step": 0.1, "step_fast": 1.0, "format": "%.6g"}),
-        ControlSpec("fov", "slider_float", "FOV", {"value": 60.0, "min": 25.0, "max": 100.0}),
-        ControlSpec("render_background_mode", "combo", "Render Background", {"value": 1, "options": _VIEWER_BACKGROUND_MODE_LABELS}),
-        ControlSpec("render_background_color", "color_edit3", "Render BG Color", {"value": (0.0, 0.0, 0.0)}),
+        ControlSpec("move_speed", "input_float", "Move Speed", {"value": float(_VIEWER_CONTROL_DEFAULTS["move_speed"]), "step": 0.1, "step_fast": 1.0, "format": "%.6g"}),
+        ControlSpec("fov", "slider_float", "FOV", {"value": float(_VIEWER_CONTROL_DEFAULTS["fov"]), "min": 25.0, "max": 100.0}),
+        ControlSpec("render_background_mode", "combo", "Render Background", {"value": int(_VIEWER_CONTROL_DEFAULTS["render_background_mode"]), "options": _VIEWER_BACKGROUND_MODE_LABELS}),
+        ControlSpec("render_background_color", "color_edit3", "Render BG Color", {"value": tuple(float(v) for v in _VIEWER_CONTROL_DEFAULTS["render_background_color"])}),
     ),
     "Train Setup": _TRAIN_SETUP_SPECS,
     "Train Optimizer": _TRAIN_OPTIMIZER_SPECS,
@@ -437,38 +457,123 @@ def default_control_values(*group_names: str) -> dict[str, object]:
     return {spec.key: spec.kwargs["value"] for specs in groups for spec in specs if "value" in spec.kwargs}
 
 
+def export_repo_defaults_from_ui_values(values: dict[str, object]) -> dict[str, dict[str, object]]:
+    return {
+        "renderer": json_value(
+            {
+                "radius_scale": float(values["radius_scale"]),
+                "alpha_cutoff": float(values["alpha_cutoff"]),
+                "max_anisotropy": float(values["max_anisotropy"]),
+                "transmittance_threshold": float(values["trans_threshold"]),
+                "list_capacity_multiplier": int(_RENDERER_DEFAULTS["list_capacity_multiplier"]),
+                "max_prepass_memory_mb": int(_RENDERER_DEFAULTS["max_prepass_memory_mb"]),
+                "cached_raster_grad_atomic_mode": _CACHED_RASTER_GRAD_ATOMIC_MODE_LABELS[min(max(int(values["cached_raster_grad_atomic_mode"]), 0), len(_CACHED_RASTER_GRAD_ATOMIC_MODE_LABELS) - 1)].lower().split()[0],
+                "cached_raster_grad_fixed_ro_local_range": float(values["cached_raster_grad_fixed_ro_local_range"]),
+                "cached_raster_grad_fixed_scale_range": float(values["cached_raster_grad_fixed_scale_range"]),
+                "cached_raster_grad_fixed_quat_range": float(values["cached_raster_grad_fixed_quat_range"]),
+                "cached_raster_grad_fixed_color_range": float(values["cached_raster_grad_fixed_color_range"]),
+                "cached_raster_grad_fixed_opacity_range": float(values["cached_raster_grad_fixed_opacity_range"]),
+                "debug_mode": None if _DEBUG_MODE_VALUES[min(max(int(values["debug_mode"]), 0), len(_DEBUG_MODE_VALUES) - 1)] == "normal" else _DEBUG_MODE_VALUES[min(max(int(values["debug_mode"]), 0), len(_DEBUG_MODE_VALUES) - 1)],
+                "debug_grad_norm_threshold": float(values["debug_grad_norm_threshold"]),
+                "debug_ellipse_thickness_px": float(values["debug_ellipse_thickness_px"]),
+                "debug_clone_count_range": [float(values["debug_clone_count_min"]), float(values["debug_clone_count_max"])],
+                "debug_density_range": [float(values["debug_density_min"]), float(values["debug_density_max"])],
+                "debug_contribution_range": [float(values["debug_contribution_min"]), float(values["debug_contribution_max"])],
+                "debug_adam_momentum_range": list(_threshold_band_range(float(values["debug_adam_momentum_threshold"]))),
+                "debug_depth_mean_range": [float(values["debug_depth_mean_min"]), float(values["debug_depth_mean_max"])],
+                "debug_depth_std_range": [float(values["debug_depth_std_min"]), float(values["debug_depth_std_max"])],
+                "debug_depth_local_mismatch_range": [float(values["debug_depth_local_mismatch_min"]), float(values["debug_depth_local_mismatch_max"])],
+                "debug_depth_local_mismatch_smooth_radius": float(values["debug_depth_local_mismatch_smooth_radius"]),
+                "debug_depth_local_mismatch_reject_radius": float(values["debug_depth_local_mismatch_reject_radius"]),
+                "debug_sh_coeff_index": int(values["debug_sh_coeff_index"]),
+                "debug_show_ellipses": False,
+                "debug_show_processed_count": False,
+                "debug_show_grad_norm": False,
+            }
+        ),
+        "viewer": {
+            "controls": json_value(
+                {
+                    "interface_scale": int(values[_INTERFACE_SCALE_KEY]),
+                    "loss_debug_view": int(values["loss_debug_view"]),
+                    "loss_debug_frame": int(values["loss_debug_frame"]),
+                    "loss_debug_abs_scale": float(values[_LOSS_DEBUG_ABS_SCALE_KEY]),
+                    "move_speed": float(values["move_speed"]),
+                    "fov": float(values["fov"]),
+                    "render_background_mode": int(values["render_background_mode"]),
+                    "render_background_color": values["render_background_color"],
+                    "training_steps_per_frame": int(values["training_steps_per_frame"]),
+                    "train_background_color": values["train_background_color"],
+                    "seed": int(values["seed"]),
+                    "init_opacity": float(values["init_opacity"]),
+                }
+            ),
+            "import": json_value(
+                {
+                    "colmap_depth_value_mode": int(values["colmap_depth_value_mode"]),
+                    "colmap_init_mode": int(values["colmap_init_mode"]),
+                    "colmap_image_downscale_mode": int(values["colmap_image_downscale_mode"]),
+                    "colmap_image_max_size": int(values["colmap_image_max_size"]),
+                    "colmap_image_scale": float(values["colmap_image_scale"]),
+                    "colmap_nn_radius_scale_coef": float(values["colmap_nn_radius_scale_coef"]),
+                    "colmap_min_track_length": int(values["colmap_min_track_length"]),
+                    "colmap_depth_point_count": int(values["colmap_depth_point_count"]),
+                    "colmap_diffused_point_count": int(values["colmap_diffused_point_count"]),
+                    "colmap_diffusion_radius": float(values["colmap_diffusion_radius"]),
+                }
+            ),
+            "ui": json_value(
+                {
+                    "show_histograms": bool(values["show_histograms"]),
+                    "show_training_views": bool(values["show_training_views"]),
+                    "show_camera_overlays": bool(values["show_camera_overlays"]),
+                    "show_camera_labels": bool(values["show_camera_labels"]),
+                    "show_training_cameras": bool(values["show_training_cameras"]),
+                    "hist_bin_count": int(values["hist_bin_count"]),
+                    "hist_min_value": float(values["hist_min_value"]),
+                    "hist_max_value": float(values["hist_max_value"]),
+                    "hist_y_limit": float(values["hist_y_limit"]),
+                    "viewport_sh_band": int(values["_viewport_sh_band"]),
+                    "viewport_sh_control_key": str(values["_viewport_sh_control_key"]),
+                    "viewport_sh_stage_label": str(values["_viewport_sh_stage_label"]),
+                }
+            ),
+        },
+    }
+
+
 RENDER_PARAM_SPECS = (
-    ControlSpec("radius_scale", "slider_float", "Radius Scale", {"value": 1.0, "min": 0.25, "max": 4.0, "format": "%.3g"}),
-    ControlSpec("alpha_cutoff", "slider_float", "Alpha Cutoff", {"value": 0.0039, "min": 0.0001, "max": 0.1, "format": "%.2e"}),
-    ControlSpec("trans_threshold", "slider_float", "Trans Threshold", {"value": 0.005, "min": 0.001, "max": 0.2, "format": "%.2e"}),
-    ControlSpec("cached_raster_grad_atomic_mode", "combo", "Cached Grad Atomics", {"value": 1, "options": _CACHED_RASTER_GRAD_ATOMIC_MODE_LABELS}),
-    ControlSpec("cached_raster_grad_fixed_ro_local_range", "slider_float", "Cached Grad Pos Range", {"value": 0.01, "min": 1e-4, "max": 1024.0, "format": "%.4g", "logarithmic": True}),
-    ControlSpec("cached_raster_grad_fixed_scale_range", "slider_float", "Cached Grad Scale Range", {"value": 0.01, "min": 1e-4, "max": 1024.0, "format": "%.4g", "logarithmic": True}),
-    ControlSpec("cached_raster_grad_fixed_quat_range", "slider_float", "Cached Grad Rot Range", {"value": 0.01, "min": 1e-4, "max": 1024.0, "format": "%.4g", "logarithmic": True}),
-    ControlSpec("cached_raster_grad_fixed_color_range", "slider_float", "Cached Grad Color Range", {"value": 0.2, "min": 1e-4, "max": 2048.0, "format": "%.4g", "logarithmic": True}),
-    ControlSpec("cached_raster_grad_fixed_opacity_range", "slider_float", "Cached Grad Opacity Range", {"value": 0.2, "min": 1e-4, "max": 2048.0, "format": "%.4g", "logarithmic": True}),
+    ControlSpec("radius_scale", "slider_float", "Radius Scale", {"value": float(_RENDERER_DEFAULTS["radius_scale"]), "min": 0.25, "max": 4.0, "format": "%.3g"}),
+    ControlSpec("alpha_cutoff", "slider_float", "Alpha Cutoff", {"value": float(_RENDERER_DEFAULTS["alpha_cutoff"]), "min": 0.0001, "max": 0.1, "format": "%.2e"}),
+    ControlSpec("trans_threshold", "slider_float", "Trans Threshold", {"value": float(_RENDERER_DEFAULTS["transmittance_threshold"]), "min": 0.001, "max": 0.2, "format": "%.2e"}),
+    ControlSpec("cached_raster_grad_atomic_mode", "combo", "Cached Grad Atomics", {"value": _renderer_atomic_mode_index(_RENDERER_DEFAULTS["cached_raster_grad_atomic_mode"]), "options": _CACHED_RASTER_GRAD_ATOMIC_MODE_LABELS}),
+    ControlSpec("cached_raster_grad_fixed_ro_local_range", "slider_float", "Cached Grad Pos Range", {"value": float(_RENDERER_DEFAULTS["cached_raster_grad_fixed_ro_local_range"]), "min": 1e-4, "max": 1024.0, "format": "%.4g", "logarithmic": True}),
+    ControlSpec("cached_raster_grad_fixed_scale_range", "slider_float", "Cached Grad Scale Range", {"value": float(_RENDERER_DEFAULTS["cached_raster_grad_fixed_scale_range"]), "min": 1e-4, "max": 1024.0, "format": "%.4g", "logarithmic": True}),
+    ControlSpec("cached_raster_grad_fixed_quat_range", "slider_float", "Cached Grad Rot Range", {"value": float(_RENDERER_DEFAULTS["cached_raster_grad_fixed_quat_range"]), "min": 1e-4, "max": 1024.0, "format": "%.4g", "logarithmic": True}),
+    ControlSpec("cached_raster_grad_fixed_color_range", "slider_float", "Cached Grad Color Range", {"value": float(_RENDERER_DEFAULTS["cached_raster_grad_fixed_color_range"]), "min": 1e-4, "max": 2048.0, "format": "%.4g", "logarithmic": True}),
+    ControlSpec("cached_raster_grad_fixed_opacity_range", "slider_float", "Cached Grad Opacity Range", {"value": float(_RENDERER_DEFAULTS["cached_raster_grad_fixed_opacity_range"]), "min": 1e-4, "max": 2048.0, "format": "%.4g", "logarithmic": True}),
 )
 
 DEBUG_RENDER_SPECS = (
-    ControlSpec("debug_mode", "combo", "Mode", {"value": _DEBUG_MODE_VALUES.index("normal"), "options": _DEBUG_MODE_LABELS}),
-    ControlSpec("debug_sh_coeff_index", "combo", "SH Coefficient", {"value": 0, "options": _DEBUG_SH_COEFF_LABELS}),
-    ControlSpec("debug_grad_norm_threshold", "input_float", "Grad Norm Threshold", {"value": _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT, "step": 1e-5, "step_fast": 1e-4, "format": "%.6g"}),
-    ControlSpec("debug_ellipse_thickness_px", "slider_float", "Ellipse Thickness", {"value": 4.0, "min": 0.25, "max": 8.0, "format": "%.2f px"}),
-    ControlSpec("debug_clone_count_min", "input_float", "Clone Count Min", {"value": 0.0, "step": 1.0, "step_fast": 4.0, "format": "%.5g"}),
-    ControlSpec("debug_clone_count_max", "input_float", "Clone Count Max", {"value": 16.0, "step": 1.0, "step_fast": 4.0, "format": "%.5g"}),
-    ControlSpec("debug_density_min", "input_float", "Density Min", {"value": 0.0, "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
-    ControlSpec("debug_density_max", "input_float", "Density Max", {"value": 20.0, "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
-    ControlSpec("debug_contribution_min", "input_float", "Contribution Min", {"value": 0.001, "step": 1e-4, "step_fast": 1e-3, "format": "%.6g%%"}),
-    ControlSpec("debug_contribution_max", "input_float", "Contribution Max", {"value": 1.0, "step": 0.1, "step_fast": 1.0, "format": "%.6g%%"}),
-    ControlSpec("debug_adam_momentum_threshold", "input_float", "Adam Momentum Threshold", {"value": _DEBUG_ADAM_MOMENTUM_THRESHOLD_DEFAULT, "step": 1e-5, "step_fast": 1e-4, "format": "%.6g"}),
-    ControlSpec("debug_depth_mean_min", "input_float", "Depth Mean Min", {"value": 0.0, "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
-    ControlSpec("debug_depth_mean_max", "input_float", "Depth Mean Max", {"value": 10.0, "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
-    ControlSpec("debug_depth_std_min", "input_float", "Depth Std Min", {"value": 0.0, "step": 0.01, "step_fast": 0.1, "format": "%.5g"}),
-    ControlSpec("debug_depth_std_max", "input_float", "Depth Std Max", {"value": 0.5, "step": 0.01, "step_fast": 0.1, "format": "%.5g"}),
-    ControlSpec("debug_depth_local_mismatch_min", "input_float", "Depth Local Mismatch Min", {"value": 0.0, "step": 0.01, "step_fast": 0.1, "format": "%.5g"}),
-    ControlSpec("debug_depth_local_mismatch_max", "input_float", "Depth Local Mismatch Max", {"value": 0.5, "step": 0.01, "step_fast": 0.1, "format": "%.5g"}),
-    ControlSpec("debug_depth_local_mismatch_smooth_radius", "input_float", "Depth Smooth Radius", {"value": 2.0, "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
-    ControlSpec("debug_depth_local_mismatch_reject_radius", "input_float", "Depth Reject Radius", {"value": 4.0, "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
+    ControlSpec("debug_mode", "combo", "Mode", {"value": _renderer_debug_mode_index(_RENDERER_DEFAULTS["debug_mode"]), "options": _DEBUG_MODE_LABELS}),
+    ControlSpec("debug_sh_coeff_index", "combo", "SH Coefficient", {"value": int(_RENDERER_DEFAULTS["debug_sh_coeff_index"]), "options": _DEBUG_SH_COEFF_LABELS}),
+    ControlSpec("debug_grad_norm_threshold", "input_float", "Grad Norm Threshold", {"value": float(_RENDERER_DEFAULTS["debug_grad_norm_threshold"]), "step": 1e-5, "step_fast": 1e-4, "format": "%.6g"}),
+    ControlSpec("debug_ellipse_thickness_px", "slider_float", "Ellipse Thickness", {"value": float(_RENDERER_DEFAULTS["debug_ellipse_thickness_px"]), "min": 0.25, "max": 8.0, "format": "%.2f px"}),
+    ControlSpec("debug_clone_count_min", "input_float", "Clone Count Min", {"value": float(_RENDERER_DEFAULTS["debug_clone_count_range"][0]), "step": 1.0, "step_fast": 4.0, "format": "%.5g"}),
+    ControlSpec("debug_clone_count_max", "input_float", "Clone Count Max", {"value": float(_RENDERER_DEFAULTS["debug_clone_count_range"][1]), "step": 1.0, "step_fast": 4.0, "format": "%.5g"}),
+    ControlSpec("debug_density_min", "input_float", "Density Min", {"value": float(_RENDERER_DEFAULTS["debug_density_range"][0]), "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
+    ControlSpec("debug_density_max", "input_float", "Density Max", {"value": float(_RENDERER_DEFAULTS["debug_density_range"][1]), "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
+    ControlSpec("debug_contribution_min", "input_float", "Contribution Min", {"value": float(_RENDERER_DEFAULTS["debug_contribution_range"][0]), "step": 1e-4, "step_fast": 1e-3, "format": "%.6g%%"}),
+    ControlSpec("debug_contribution_max", "input_float", "Contribution Max", {"value": float(_RENDERER_DEFAULTS["debug_contribution_range"][1]), "step": 0.1, "step_fast": 1.0, "format": "%.6g%%"}),
+    ControlSpec("debug_adam_momentum_threshold", "input_float", "Adam Momentum Threshold", {"value": _threshold_from_band_range(float(_RENDERER_DEFAULTS["debug_adam_momentum_range"][0]), float(_RENDERER_DEFAULTS["debug_adam_momentum_range"][1]), _DEBUG_ADAM_MOMENTUM_THRESHOLD_DEFAULT), "step": 1e-5, "step_fast": 1e-4, "format": "%.6g"}),
+    ControlSpec("debug_depth_mean_min", "input_float", "Depth Mean Min", {"value": float(_RENDERER_DEFAULTS["debug_depth_mean_range"][0]), "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
+    ControlSpec("debug_depth_mean_max", "input_float", "Depth Mean Max", {"value": float(_RENDERER_DEFAULTS["debug_depth_mean_range"][1]), "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
+    ControlSpec("debug_depth_std_min", "input_float", "Depth Std Min", {"value": float(_RENDERER_DEFAULTS["debug_depth_std_range"][0]), "step": 0.01, "step_fast": 0.1, "format": "%.5g"}),
+    ControlSpec("debug_depth_std_max", "input_float", "Depth Std Max", {"value": float(_RENDERER_DEFAULTS["debug_depth_std_range"][1]), "step": 0.01, "step_fast": 0.1, "format": "%.5g"}),
+    ControlSpec("debug_depth_local_mismatch_min", "input_float", "Depth Local Mismatch Min", {"value": float(_RENDERER_DEFAULTS["debug_depth_local_mismatch_range"][0]), "step": 0.01, "step_fast": 0.1, "format": "%.5g"}),
+    ControlSpec("debug_depth_local_mismatch_max", "input_float", "Depth Local Mismatch Max", {"value": float(_RENDERER_DEFAULTS["debug_depth_local_mismatch_range"][1]), "step": 0.01, "step_fast": 0.1, "format": "%.5g"}),
+    ControlSpec("debug_depth_local_mismatch_smooth_radius", "input_float", "Depth Smooth Radius", {"value": float(_RENDERER_DEFAULTS["debug_depth_local_mismatch_smooth_radius"]), "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
+    ControlSpec("debug_depth_local_mismatch_reject_radius", "input_float", "Depth Reject Radius", {"value": float(_RENDERER_DEFAULTS["debug_depth_local_mismatch_reject_radius"]), "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
 )
 
 _ALL_DEFAULTS = {spec.key: spec.kwargs["value"] for group in GROUP_SPECS.values() for spec in group if "value" in spec.kwargs}
@@ -598,6 +703,7 @@ class ToolkitWindow:
             reinitialize=_noop,
             start_training=_noop,
             stop_training=_noop,
+            save_defaults=_noop,
         )
         self.tk = ToolkitState()
         self._alive = True
@@ -827,6 +933,7 @@ class ToolkitWindow:
             self._section_optimizer(ui)
             self._section_stability(ui)
             self._section_render_params(ui)
+            self._section_defaults_footer(ui)
         imgui.end()
         self._draw_about_window()
         self._draw_documentation_window()
@@ -1995,6 +2102,12 @@ class ToolkitWindow:
         self._ctx_reset("render_ctx", ui, [s.key for s in RENDER_PARAM_SPECS])
         imgui.separator()
 
+    def _section_defaults_footer(self, ui: ViewerUI) -> None:
+        if imgui.button("Update Repo Defaults"):
+            self.callbacks.save_defaults()
+        _draw_disabled_wrapped_text(ui._texts.get("defaults_status", ""))
+        imgui.separator()
+
     def _section_performance(self, ui: ViewerUI) -> None:
         if not imgui.collapsing_header("Plots", imgui.TreeNodeFlags_.default_open.value):
             return
@@ -2274,23 +2387,22 @@ def build_ui(renderer) -> ViewerUI:
     values["radius_scale"] = float(renderer.radius_scale)
     values["alpha_cutoff"] = float(renderer.alpha_cutoff)
     values["trans_threshold"] = float(renderer.transmittance_threshold)
-    values["cached_raster_grad_atomic_mode"] = 0 if getattr(renderer, "cached_raster_grad_atomic_mode", "fixed") == "float" else 1
-    values["cached_raster_grad_fixed_ro_local_range"] = float(getattr(renderer, "cached_raster_grad_fixed_ro_local_range", 0.01))
-    values["cached_raster_grad_fixed_scale_range"] = float(getattr(renderer, "cached_raster_grad_fixed_scale_range", 0.01))
-    values["cached_raster_grad_fixed_quat_range"] = float(getattr(renderer, "cached_raster_grad_fixed_quat_range", 0.01))
-    values["cached_raster_grad_fixed_color_range"] = float(getattr(renderer, "cached_raster_grad_fixed_color_range", 0.2))
-    values["cached_raster_grad_fixed_opacity_range"] = float(getattr(renderer, "cached_raster_grad_fixed_opacity_range", 0.2))
-    debug_mode = getattr(renderer, "debug_mode", "normal")
-    values["debug_mode"] = _DEBUG_MODE_VALUES.index(debug_mode) if debug_mode in _DEBUG_MODE_VALUES else 0
-    values["debug_grad_norm_threshold"] = float(getattr(renderer, "debug_grad_norm_threshold", _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT))
-    values["debug_ellipse_thickness_px"] = float(getattr(renderer, "debug_ellipse_thickness_px", 4.0))
-    clone_count_range = tuple(getattr(renderer, "debug_clone_count_range", (0.0, 16.0)))
-    density_range = tuple(getattr(renderer, "debug_density_range", (0.0, 20.0)))
-    contribution_range = tuple(getattr(renderer, "debug_contribution_range", (0.001, 1.0)))
-    adam_momentum_range = tuple(getattr(renderer, "debug_adam_momentum_range", _threshold_band_range(_DEBUG_ADAM_MOMENTUM_THRESHOLD_DEFAULT)))
-    depth_mean_range = tuple(getattr(renderer, "debug_depth_mean_range", (0.0, 10.0)))
-    depth_std_range = tuple(getattr(renderer, "debug_depth_std_range", (0.0, 0.5)))
-    depth_local_mismatch_range = tuple(getattr(renderer, "debug_depth_local_mismatch_range", (0.0, 0.5)))
+    values["cached_raster_grad_atomic_mode"] = _renderer_atomic_mode_index(getattr(renderer, "cached_raster_grad_atomic_mode", _RENDERER_DEFAULTS["cached_raster_grad_atomic_mode"]))
+    values["cached_raster_grad_fixed_ro_local_range"] = float(getattr(renderer, "cached_raster_grad_fixed_ro_local_range", _RENDERER_DEFAULTS["cached_raster_grad_fixed_ro_local_range"]))
+    values["cached_raster_grad_fixed_scale_range"] = float(getattr(renderer, "cached_raster_grad_fixed_scale_range", _RENDERER_DEFAULTS["cached_raster_grad_fixed_scale_range"]))
+    values["cached_raster_grad_fixed_quat_range"] = float(getattr(renderer, "cached_raster_grad_fixed_quat_range", _RENDERER_DEFAULTS["cached_raster_grad_fixed_quat_range"]))
+    values["cached_raster_grad_fixed_color_range"] = float(getattr(renderer, "cached_raster_grad_fixed_color_range", _RENDERER_DEFAULTS["cached_raster_grad_fixed_color_range"]))
+    values["cached_raster_grad_fixed_opacity_range"] = float(getattr(renderer, "cached_raster_grad_fixed_opacity_range", _RENDERER_DEFAULTS["cached_raster_grad_fixed_opacity_range"]))
+    values["debug_mode"] = _renderer_debug_mode_index(getattr(renderer, "debug_mode", _RENDERER_DEFAULTS["debug_mode"]))
+    values["debug_grad_norm_threshold"] = float(getattr(renderer, "debug_grad_norm_threshold", _RENDERER_DEFAULTS["debug_grad_norm_threshold"]))
+    values["debug_ellipse_thickness_px"] = float(getattr(renderer, "debug_ellipse_thickness_px", _RENDERER_DEFAULTS["debug_ellipse_thickness_px"]))
+    clone_count_range = tuple(getattr(renderer, "debug_clone_count_range", _RENDERER_DEFAULTS["debug_clone_count_range"]))
+    density_range = tuple(getattr(renderer, "debug_density_range", _RENDERER_DEFAULTS["debug_density_range"]))
+    contribution_range = tuple(getattr(renderer, "debug_contribution_range", _RENDERER_DEFAULTS["debug_contribution_range"]))
+    adam_momentum_range = tuple(getattr(renderer, "debug_adam_momentum_range", _RENDERER_DEFAULTS["debug_adam_momentum_range"]))
+    depth_mean_range = tuple(getattr(renderer, "debug_depth_mean_range", _RENDERER_DEFAULTS["debug_depth_mean_range"]))
+    depth_std_range = tuple(getattr(renderer, "debug_depth_std_range", _RENDERER_DEFAULTS["debug_depth_std_range"]))
+    depth_local_mismatch_range = tuple(getattr(renderer, "debug_depth_local_mismatch_range", _RENDERER_DEFAULTS["debug_depth_local_mismatch_range"]))
     values["debug_clone_count_min"] = float(clone_count_range[0])
     values["debug_clone_count_max"] = float(clone_count_range[1])
     values["debug_density_min"] = float(density_range[0])
@@ -2304,34 +2416,34 @@ def build_ui(renderer) -> ViewerUI:
     values["debug_depth_std_max"] = float(depth_std_range[1])
     values["debug_depth_local_mismatch_min"] = float(depth_local_mismatch_range[0])
     values["debug_depth_local_mismatch_max"] = float(depth_local_mismatch_range[1])
-    values["debug_depth_local_mismatch_smooth_radius"] = float(getattr(renderer, "debug_depth_local_mismatch_smooth_radius", 2.0))
-    values["debug_depth_local_mismatch_reject_radius"] = float(getattr(renderer, "debug_depth_local_mismatch_reject_radius", 4.0))
-    values["debug_sh_coeff_index"] = int(getattr(renderer, "debug_sh_coeff_index", 0))
+    values["debug_depth_local_mismatch_smooth_radius"] = float(getattr(renderer, "debug_depth_local_mismatch_smooth_radius", _RENDERER_DEFAULTS["debug_depth_local_mismatch_smooth_radius"]))
+    values["debug_depth_local_mismatch_reject_radius"] = float(getattr(renderer, "debug_depth_local_mismatch_reject_radius", _RENDERER_DEFAULTS["debug_depth_local_mismatch_reject_radius"]))
+    values["debug_sh_coeff_index"] = int(getattr(renderer, "debug_sh_coeff_index", _RENDERER_DEFAULTS["debug_sh_coeff_index"]))
     values["colmap_root_path"] = ""
     values["colmap_database_path"] = ""
     values["colmap_images_root"] = ""
     values["colmap_depth_root"] = ""
-    values["colmap_depth_value_mode"] = 1
-    values["colmap_init_mode"] = 0
+    values["colmap_depth_value_mode"] = int(_VIEWER_IMPORT_DEFAULTS["colmap_depth_value_mode"])
+    values["colmap_init_mode"] = int(_VIEWER_IMPORT_DEFAULTS["colmap_init_mode"])
     values["colmap_custom_ply_path"] = ""
     values["colmap_selected_camera_ids"] = ()
-    values["colmap_image_downscale_mode"] = 0
-    values["colmap_image_max_size"] = 2048
-    values["colmap_image_scale"] = 1.0
-    values["colmap_nn_radius_scale_coef"] = 0.5
-    values["colmap_min_track_length"] = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH
-    values["colmap_depth_point_count"] = 100000
-    values["colmap_diffused_point_count"] = 100000
-    values["colmap_diffusion_radius"] = 1.0
-    values["show_histograms"] = False
-    values["show_training_views"] = False
-    values["show_camera_overlays"] = True
-    values["show_camera_labels"] = False
-    values["show_training_cameras"] = False
-    values["hist_bin_count"] = _HISTOGRAM_BIN_COUNT_DEFAULT
-    values["hist_min_value"] = _HISTOGRAM_MIN_VALUE_DEFAULT
-    values["hist_max_value"] = _HISTOGRAM_MAX_VALUE_DEFAULT
-    values["hist_y_limit"] = _HISTOGRAM_Y_LIMIT_DEFAULT
+    values["colmap_image_downscale_mode"] = int(_VIEWER_IMPORT_DEFAULTS["colmap_image_downscale_mode"])
+    values["colmap_image_max_size"] = int(_VIEWER_IMPORT_DEFAULTS["colmap_image_max_size"])
+    values["colmap_image_scale"] = float(_VIEWER_IMPORT_DEFAULTS["colmap_image_scale"])
+    values["colmap_nn_radius_scale_coef"] = float(_VIEWER_IMPORT_DEFAULTS["colmap_nn_radius_scale_coef"])
+    values["colmap_min_track_length"] = int(_VIEWER_IMPORT_DEFAULTS["colmap_min_track_length"])
+    values["colmap_depth_point_count"] = int(_VIEWER_IMPORT_DEFAULTS["colmap_depth_point_count"])
+    values["colmap_diffused_point_count"] = int(_VIEWER_IMPORT_DEFAULTS["colmap_diffused_point_count"])
+    values["colmap_diffusion_radius"] = float(_VIEWER_IMPORT_DEFAULTS["colmap_diffusion_radius"])
+    values["show_histograms"] = bool(_VIEWER_UI_DEFAULTS["show_histograms"])
+    values["show_training_views"] = bool(_VIEWER_UI_DEFAULTS["show_training_views"])
+    values["show_camera_overlays"] = bool(_VIEWER_UI_DEFAULTS["show_camera_overlays"])
+    values["show_camera_labels"] = bool(_VIEWER_UI_DEFAULTS["show_camera_labels"])
+    values["show_training_cameras"] = bool(_VIEWER_UI_DEFAULTS["show_training_cameras"])
+    values["hist_bin_count"] = int(_VIEWER_UI_DEFAULTS["hist_bin_count"])
+    values["hist_min_value"] = float(_VIEWER_UI_DEFAULTS["hist_min_value"])
+    values["hist_max_value"] = float(_VIEWER_UI_DEFAULTS["hist_max_value"])
+    values["hist_y_limit"] = float(_VIEWER_UI_DEFAULTS["hist_y_limit"])
     values["_histograms_refresh_requested"] = False
     values["_show_histograms_prev"] = False
     values["_histogram_update_y_limit"] = True
@@ -2341,9 +2453,9 @@ def build_ui(renderer) -> ViewerUI:
     values["_training_views_rows"] = ()
     values["_training_view_overlay_segments"] = ()
     values["_loss_debug_frame_max"] = 0
-    values["_viewport_sh_band"] = 3
-    values["_viewport_sh_control_key"] = "sh_band"
-    values["_viewport_sh_stage_label"] = "Stage 0"
+    values["_viewport_sh_band"] = int(_VIEWER_UI_DEFAULTS["viewport_sh_band"])
+    values["_viewport_sh_control_key"] = str(_VIEWER_UI_DEFAULTS["viewport_sh_control_key"])
+    values["_viewport_sh_stage_label"] = str(_VIEWER_UI_DEFAULTS["viewport_sh_stage_label"])
     values["_colmap_camera_rows"] = ()
     values["_colmap_import_active"] = False
     values["_colmap_import_fraction"] = 0.0
@@ -2357,7 +2469,7 @@ def build_ui(renderer) -> ViewerUI:
             "colmap_import_status", "colmap_import_current",
             "training_resolution", "training_downscale", "training_schedule", "training_schedule_values", "training_refinement",
             "histogram_status",
-            "setup_hint", "stability_hint",
+            "setup_hint", "stability_hint", "defaults_status",
         )
     }
     return ViewerUI(_values=values, _texts=texts)

@@ -20,6 +20,8 @@ The overlay uses a right-side control panel with a menu bar:
 - `session.py`: scene loading, renderer recreation, and training control actions
 - `state.py`: persistent viewer runtime state
 
+Viewer and CLI defaults are stored in `config/defaults.json`. The toolkit footer includes `Update Repo Defaults`, which writes the current stable viewer, renderer, and training-control values back into that file.
+
 ## Frame Flow
 
 Each frame follows this order:

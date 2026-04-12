@@ -7,6 +7,7 @@ import numpy as np
 from PIL import Image
 import slangpy as spy
 
+from ..repo_defaults import renderer_defaults
 from ..utility import clamp_float, clamp_int
 from ..scene import GaussianInitHyperParams, GaussianScene
 from ..training.defaults import TRAINING_BUILD_ARG_DEFAULTS
@@ -34,19 +35,20 @@ _CLAMP_LIMITS = {
     "position_abs_max": (1e-3, 1e9),
     "loss_grad_clip": (1e-5, 1e6),
 }
+_RENDERER_DEFAULTS = renderer_defaults()
 
 
 @dataclass(frozen=True, slots=True)
 class RendererParams:
-    radius_scale: float = 1.0; alpha_cutoff: float = 1.0 / 255.0
-    max_anisotropy: float = 32.0
-    transmittance_threshold: float = 0.005; list_capacity_multiplier: int = 64
-    max_prepass_memory_mb: int = 4096; cached_raster_grad_atomic_mode: str = "fixed"; cached_raster_grad_fixed_ro_local_range: float = 0.01; cached_raster_grad_fixed_scale_range: float = 0.01
-    cached_raster_grad_fixed_quat_range: float = 0.01; cached_raster_grad_fixed_color_range: float = 0.2; cached_raster_grad_fixed_opacity_range: float = 0.2
-    debug_mode: str | None = None; debug_grad_norm_threshold: float = 2e-4; debug_ellipse_thickness_px: float = 4.0
-    debug_clone_count_range: tuple[float, float] = (0.0, 16.0); debug_density_range: tuple[float, float] = (0.0, 20.0); debug_contribution_range: tuple[float, float] = DEFAULT_DEBUG_CONTRIBUTION_RANGE_PERCENT; debug_adam_momentum_range: tuple[float, float] = (0.0, 0.1); debug_depth_mean_range: tuple[float, float] = (0.0, 10.0); debug_depth_std_range: tuple[float, float] = (0.0, 0.5)
-    debug_depth_local_mismatch_range: tuple[float, float] = (0.0, 0.5); debug_depth_local_mismatch_smooth_radius: float = 2.0; debug_depth_local_mismatch_reject_radius: float = 4.0; debug_sh_coeff_index: int = 0
-    debug_show_ellipses: bool = False; debug_show_processed_count: bool = False; debug_show_grad_norm: bool = False
+    radius_scale: float = float(_RENDERER_DEFAULTS["radius_scale"]); alpha_cutoff: float = float(_RENDERER_DEFAULTS["alpha_cutoff"])
+    max_anisotropy: float = float(_RENDERER_DEFAULTS["max_anisotropy"])
+    transmittance_threshold: float = float(_RENDERER_DEFAULTS["transmittance_threshold"]); list_capacity_multiplier: int = int(_RENDERER_DEFAULTS["list_capacity_multiplier"])
+    max_prepass_memory_mb: int = int(_RENDERER_DEFAULTS["max_prepass_memory_mb"]); cached_raster_grad_atomic_mode: str = str(_RENDERER_DEFAULTS["cached_raster_grad_atomic_mode"]); cached_raster_grad_fixed_ro_local_range: float = float(_RENDERER_DEFAULTS["cached_raster_grad_fixed_ro_local_range"]); cached_raster_grad_fixed_scale_range: float = float(_RENDERER_DEFAULTS["cached_raster_grad_fixed_scale_range"])
+    cached_raster_grad_fixed_quat_range: float = float(_RENDERER_DEFAULTS["cached_raster_grad_fixed_quat_range"]); cached_raster_grad_fixed_color_range: float = float(_RENDERER_DEFAULTS["cached_raster_grad_fixed_color_range"]); cached_raster_grad_fixed_opacity_range: float = float(_RENDERER_DEFAULTS["cached_raster_grad_fixed_opacity_range"])
+    debug_mode: str | None = _RENDERER_DEFAULTS["debug_mode"]; debug_grad_norm_threshold: float = float(_RENDERER_DEFAULTS["debug_grad_norm_threshold"]); debug_ellipse_thickness_px: float = float(_RENDERER_DEFAULTS["debug_ellipse_thickness_px"])
+    debug_clone_count_range: tuple[float, float] = tuple(float(v) for v in _RENDERER_DEFAULTS["debug_clone_count_range"]); debug_density_range: tuple[float, float] = tuple(float(v) for v in _RENDERER_DEFAULTS["debug_density_range"]); debug_contribution_range: tuple[float, float] = tuple(float(v) for v in _RENDERER_DEFAULTS["debug_contribution_range"]); debug_adam_momentum_range: tuple[float, float] = tuple(float(v) for v in _RENDERER_DEFAULTS["debug_adam_momentum_range"]); debug_depth_mean_range: tuple[float, float] = tuple(float(v) for v in _RENDERER_DEFAULTS["debug_depth_mean_range"]); debug_depth_std_range: tuple[float, float] = tuple(float(v) for v in _RENDERER_DEFAULTS["debug_depth_std_range"])
+    debug_depth_local_mismatch_range: tuple[float, float] = tuple(float(v) for v in _RENDERER_DEFAULTS["debug_depth_local_mismatch_range"]); debug_depth_local_mismatch_smooth_radius: float = float(_RENDERER_DEFAULTS["debug_depth_local_mismatch_smooth_radius"]); debug_depth_local_mismatch_reject_radius: float = float(_RENDERER_DEFAULTS["debug_depth_local_mismatch_reject_radius"]); debug_sh_coeff_index: int = int(_RENDERER_DEFAULTS["debug_sh_coeff_index"])
+    debug_show_ellipses: bool = bool(_RENDERER_DEFAULTS["debug_show_ellipses"]); debug_show_processed_count: bool = bool(_RENDERER_DEFAULTS["debug_show_processed_count"]); debug_show_grad_norm: bool = bool(_RENDERER_DEFAULTS["debug_show_grad_norm"])
 
 
 @dataclass(frozen=True, slots=True)

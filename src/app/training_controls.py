@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ..repo_defaults import viewer_defaults
 from ..training.defaults import (
     DEFAULT_LR_SCHEDULE_STEPS,
     DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY,
     DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT,
     TRAINING_BUILD_ARG_DEFAULTS,
 )
+_VIEWER_CONTROL_DEFAULTS = viewer_defaults()["controls"]
 
 TRAIN_BACKGROUND_MODE_LABELS = ("Custom", "Random")
 TRAIN_DOWNSCALE_MODE_LABELS = ("Auto",) + tuple(f"{i}x" for i in range(1, 17))
@@ -75,10 +77,10 @@ def _cli_arg(*flags: str, dest: str, build_arg: str | None = None, **kwargs: obj
 
 TRAIN_SETUP_CONTROL_DEFS = (
     _control("max_gaussians", "slider_int", "Max Gaussians", {"value": _default("max_gaussians"), "min": 1000, "max": 10000000}, group=TRAINING_SETUP_GROUP, build_args=("max_gaussians",)),
-    _control("training_steps_per_frame", "slider_int", "Steps / Frame", {"value": 3, "min": 1, "max": 8}, group=TRAINING_SETUP_GROUP),
+    _control("training_steps_per_frame", "slider_int", "Steps / Frame", {"value": int(_VIEWER_CONTROL_DEFAULTS["training_steps_per_frame"]), "min": 1, "max": 8}, group=TRAINING_SETUP_GROUP),
     _control("background_mode", "combo", "Train Background", {"value": _default("background_mode"), "options": TRAIN_BACKGROUND_MODE_LABELS}, group=TRAINING_SETUP_GROUP, build_args=("background_mode",)),
     _control("use_target_alpha_mask", "checkbox", "Use Target Alpha Mask", {"value": _default("use_target_alpha_mask")}, group=TRAINING_SETUP_GROUP, build_args=("use_target_alpha_mask",)),
-    _control("train_background_color", "color_edit3", "Train BG Color", {"value": (1.0, 1.0, 1.0)}, group=TRAINING_SETUP_GROUP),
+    _control("train_background_color", "color_edit3", "Train BG Color", {"value": tuple(float(v) for v in _VIEWER_CONTROL_DEFAULTS["train_background_color"])}, group=TRAINING_SETUP_GROUP),
     _control("refinement_interval", "input_int", "Refinement Interval", {"value": _default("refinement_interval"), "step": 10, "step_fast": 50}, group=TRAINING_SETUP_GROUP, build_args=("refinement_interval",)),
     _control("refinement_growth_ratio", "input_float", "Refinement Growth", {"value": _default("refinement_growth_ratio"), "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}, group=TRAINING_SETUP_GROUP, build_args=("refinement_growth_ratio",)),
     _control("refinement_growth_start_step", "slider_int", "Start Refinement After", {"value": _default("refinement_growth_start_step"), "min": 0, "max": DEFAULT_LR_SCHEDULE_STEPS, "max_from": "lr_schedule_steps"}, group=TRAINING_SETUP_GROUP, build_args=("refinement_growth_start_step",)),
@@ -95,8 +97,8 @@ TRAIN_SETUP_CONTROL_DEFS = (
     _control("train_downscale_base_iters", "input_int", "Downscale Base Iters", {"value": _default("train_downscale_base_iters"), "step": 25, "step_fast": 100}, group=TRAINING_SETUP_GROUP, build_args=("train_downscale_base_iters",)),
     _control("train_downscale_iter_step", "input_int", "Downscale Iter Step", {"value": _default("train_downscale_iter_step"), "step": 10, "step_fast": 50}, group=TRAINING_SETUP_GROUP, build_args=("train_downscale_iter_step",)),
     _control("train_downscale_max_iters", "input_int", "Downscale Max Iters", {"value": _default("train_downscale_max_iters"), "step": 1000, "step_fast": 5000}, group=TRAINING_SETUP_GROUP, build_args=("train_downscale_max_iters",)),
-    _control("seed", "slider_int", "Shuffle Seed", {"value": 1234, "min": 0, "max": 1000000}, group=TRAINING_SETUP_GROUP),
-    _control("init_opacity", "input_float", "Init Opacity", {"value": 0.5, "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}, group=TRAINING_SETUP_GROUP),
+    _control("seed", "slider_int", "Shuffle Seed", {"value": int(_VIEWER_CONTROL_DEFAULTS["seed"]), "min": 0, "max": 1000000}, group=TRAINING_SETUP_GROUP),
+    _control("init_opacity", "input_float", "Init Opacity", {"value": float(_VIEWER_CONTROL_DEFAULTS["init_opacity"]), "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}, group=TRAINING_SETUP_GROUP),
 )
 
 TRAIN_OPTIMIZER_CONTROL_DEFS = (
