@@ -88,6 +88,10 @@ def test_view_scale_options_extend_to_300_percent() -> None:
     assert ui._INTERFACE_SCALE_OPTIONS[-1] == ("300%", 3.0)
 
 
+def test_view_panel_defaults_only_expose_interface_scale() -> None:
+    assert ui.default_control_values("View") == {"interface_scale": 3}
+
+
 def test_build_ui_initializes_histogram_controls() -> None:
     viewer_ui = ui.build_ui(_dummy_renderer())
 

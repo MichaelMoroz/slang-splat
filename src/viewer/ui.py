@@ -440,7 +440,6 @@ _TRAIN_STABILITY_SPECS = tuple(_control_spec(defn) for defn in TRAINING_UI_GROUP
 GROUP_SPECS = {
     "View": (
         ControlSpec(_INTERFACE_SCALE_KEY, "combo", "Interface Scale", {"value": int(_VIEWER_CONTROL_DEFAULTS["interface_scale"]), "options": tuple(label for label, _ in _INTERFACE_SCALE_OPTIONS)}),
-        ControlSpec(_THEME_KEY, "combo", "Theme", {"value": int(_VIEWER_CONTROL_DEFAULTS.get("theme", 0)), "options": _THEME_OPTIONS}),
     ),
     "Main": (
         ControlSpec("loss_debug_view", "slider_int", "Debug View", {"value": int(_VIEWER_CONTROL_DEFAULTS["loss_debug_view"]), "min": 0, "max": len(LOSS_DEBUG_OPTIONS) - 1}),
@@ -1353,6 +1352,16 @@ class ToolkitWindow:
             imgui.separator()
             if _menu_item("Reset Interface Scale"):
                 ui._values[_INTERFACE_SCALE_KEY] = _DEFAULT_INTERFACE_SCALE_INDEX
+            imgui.separator()
+            if imgui.begin_menu("Theme"):
+                active_theme_idx = self._theme_index(ui)
+                for idx, label in enumerate(_THEME_OPTIONS):
+                    if _menu_item(label, selected=idx == active_theme_idx):
+                        ui._values[_THEME_KEY] = idx
+                imgui.separator()
+                if _menu_item("Reset Theme"):
+                    ui._values[_THEME_KEY] = int(_VIEWER_CONTROL_DEFAULTS.get("theme", 0))
+                imgui.end_menu()
             imgui.end_menu()
         if imgui.begin_menu("Debug"):
             selected = bool(ui._values.get("show_histograms", False))
@@ -2437,6 +2446,7 @@ def build_ui(renderer) -> ViewerUI:
         for spec in specs:
             if "value" in spec.kwargs:
                 values[spec.key] = spec.kwargs["value"]
+    values[_THEME_KEY] = int(_VIEWER_CONTROL_DEFAULTS.get("theme", 0))
     for spec in RENDER_PARAM_SPECS:
         values[spec.key] = spec.kwargs.get("value", 0)
     for spec in DEBUG_RENDER_SPECS:
