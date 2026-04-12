@@ -34,6 +34,7 @@ from .constants import _WINDOW_TITLE
 from .state import DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH, LOSS_DEBUG_OPTIONS
 
 TOOLKIT_WIDTH_FRACTION = 0.1875
+_TOOLKIT_MIN_WIDTH = 280.0
 LOSS_HISTORY_SIZE = 512
 FPS_HISTORY_SIZE = 128
 _DOC_MAX_WIDTH = 104
@@ -253,8 +254,16 @@ def _build_documentation_text() -> str:
     return text if text else "Documentation is unavailable."
 
 
-def _panel_rect(width: int, height: int, menu_bar_height: float) -> tuple[float, float, float, float]:
-    panel_width = float(max(int(width * TOOLKIT_WIDTH_FRACTION), 280))
+def _toolkit_panel_width(width: float, interface_scale: float) -> float:
+    return float(max(int(float(width) * TOOLKIT_WIDTH_FRACTION), int(_TOOLKIT_MIN_WIDTH * max(float(interface_scale), 1.0))))
+
+
+def _toolkit_width_fraction(width: float, interface_scale: float) -> float:
+    return max(min(_toolkit_panel_width(width, interface_scale) / max(float(width), 1.0), 0.45), TOOLKIT_WIDTH_FRACTION)
+
+
+def _panel_rect(width: int, height: int, menu_bar_height: float, interface_scale: float = 1.0) -> tuple[float, float, float, float]:
+    panel_width = _toolkit_panel_width(width, interface_scale)
     return max(float(width) - panel_width, 0.0), float(menu_bar_height), panel_width, max(float(height) - float(menu_bar_height), 1.0)
 
 
@@ -304,6 +313,19 @@ def _jet_colormap(value: float) -> tuple[float, float, float]:
 
 def _color_u32(r: float, g: float, b: float, a: float = 1.0) -> int:
     return imgui.color_convert_float4_to_u32(imgui.ImVec4(float(r), float(g), float(b), float(a)))
+
+
+def _copy_vec2(value: object) -> imgui.ImVec2:
+    return imgui.ImVec2(float(value.x), float(value.y))
+
+
+def _viewer_theme_index(ui: object) -> int:
+    values = getattr(ui, "_values", {})
+    return min(max(int(values.get(_THEME_KEY, int(_VIEWER_CONTROL_DEFAULTS.get("theme", 0)))), 0), len(_THEME_OPTIONS) - 1)
+
+
+def _theme_color(ui: object, light: tuple[float, float, float, float], dark: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+    return dark if _viewer_theme_index(ui) == 1 else light
 
 
 def _debug_colorbar_mode(ui: "ViewerUI") -> str | None:
@@ -728,17 +750,20 @@ class ToolkitWindow:
         self._viewport_dock_id = 0
         self._toolkit_dock_id = 0
         self._toolkit_window_open = True
+        initial_scale = _INTERFACE_SCALE_OPTIONS[_DEFAULT_INTERFACE_SCALE_INDEX][1]
+        initial_panel_width = _toolkit_panel_width(width, initial_scale)
         self._toolkit_rect = (
-            max(float(width) - float(max(int(width * TOOLKIT_WIDTH_FRACTION), 280)), 0.0),
+            max(float(width) - initial_panel_width, 0.0),
             0.0,
-            float(max(int(width * TOOLKIT_WIDTH_FRACTION), 280)),
+            initial_panel_width,
             max(float(height), 1.0),
         )
         self._viewport_rect = (0.0, 0.0, max(float(width) - self._toolkit_rect[2], 1.0), max(float(height), 1.0))
         self._viewport_content_rect = self._viewport_rect
         self._viewport_window_focused = False
         self._viewport_input_active = False
-        self._apply_visual_state(_INTERFACE_SCALE_OPTIONS[_DEFAULT_INTERFACE_SCALE_INDEX][1], int(_VIEWER_CONTROL_DEFAULTS.get("theme", 0)))
+        self._base_style = imgui.Style()
+        self._apply_visual_state(initial_scale, int(_VIEWER_CONTROL_DEFAULTS.get("theme", 0)))
 
     def _set_current_context(self) -> None:
         imgui.set_current_context(self.ctx)
@@ -746,8 +771,104 @@ class ToolkitWindow:
     def reset_plot_history(self) -> None:
         self.tk.clear_plot_history()
 
+    def _restore_base_style(self) -> None:
+        style = imgui.get_style()
+        base = self._base_style
+        scalar_fields = (
+            "alpha",
+            "disabled_alpha",
+            "window_rounding",
+            "window_border_size",
+            "child_rounding",
+            "child_border_size",
+            "popup_rounding",
+            "popup_border_size",
+            "frame_rounding",
+            "frame_border_size",
+            "indent_spacing",
+            "columns_min_spacing",
+            "scrollbar_size",
+            "scrollbar_padding",
+            "scrollbar_rounding",
+            "grab_min_size",
+            "grab_rounding",
+            "log_slider_deadzone",
+            "image_border_size",
+            "image_rounding",
+            "tab_rounding",
+            "tab_border_size",
+            "tab_bar_border_size",
+            "tab_bar_overline_size",
+            "tab_min_width_base",
+            "tab_min_width_shrink",
+            "tab_close_button_min_width_selected",
+            "tab_close_button_min_width_unselected",
+            "table_angled_headers_angle",
+            "separator_text_border_size",
+            "mouse_cursor_scale",
+            "curve_tessellation_tol",
+            "circle_tessellation_max_error",
+            "hover_stationary_delay",
+            "hover_delay_short",
+            "hover_delay_normal",
+            "color_marker_size",
+            "window_border_hover_padding",
+            "docking_separator_size",
+            "drag_drop_target_padding",
+            "drag_drop_target_rounding",
+            "drag_drop_target_border_size",
+            "tree_lines_size",
+            "tree_lines_rounding",
+            "font_scale_main",
+            "font_scale_dpi",
+            "font_size_base",
+        )
+        vec2_fields = (
+            "window_padding",
+            "window_min_size",
+            "window_title_align",
+            "frame_padding",
+            "item_spacing",
+            "item_inner_spacing",
+            "cell_padding",
+            "touch_extra_padding",
+            "button_text_align",
+            "selectable_text_align",
+            "separator_text_align",
+            "separator_text_padding",
+            "display_window_padding",
+            "display_safe_area_padding",
+            "table_angled_headers_text_align",
+        )
+        int_fields = (
+            "window_menu_button_position",
+            "color_button_position",
+            "hover_flags_for_tooltip_mouse",
+            "hover_flags_for_tooltip_nav",
+            "layout_align",
+            "tree_lines_flags",
+        )
+        bool_fields = (
+            "anti_aliased_lines",
+            "anti_aliased_lines_use_tex",
+            "anti_aliased_fill",
+            "docking_node_has_close_button",
+        )
+        for field in scalar_fields:
+            setattr(style, field, getattr(base, field))
+        for field in vec2_fields:
+            setattr(style, field, _copy_vec2(getattr(base, field)))
+        for field in int_fields:
+            setattr(style, field, int(getattr(base, field)))
+        for field in bool_fields:
+            setattr(style, field, bool(getattr(base, field)))
+        for color_idx in range(int(imgui.Col_.count)):
+            color = base.color_(imgui.Col_(color_idx))
+            style.set_color_(imgui.Col_(color_idx), imgui.ImVec4(float(color.x), float(color.y), float(color.z), float(color.w)))
+
     def _apply_theme(self, theme_index: int) -> None:
         self._set_current_context()
+        self._restore_base_style()
         if int(theme_index) == 1:
             imgui.style_colors_dark()
         else:
@@ -778,6 +899,7 @@ class ToolkitWindow:
             _c(imgui.Col_.border_shadow, imgui.ImVec4(0.0, 0.0, 0.0, 0.0))
             _c(imgui.Col_.title_bg, imgui.ImVec4(0.16, 0.20, 0.25, 1.0))
             _c(imgui.Col_.title_bg_active, imgui.ImVec4(0.21, 0.28, 0.36, 1.0))
+            _c(imgui.Col_.title_bg_collapsed, imgui.ImVec4(0.14, 0.17, 0.21, 0.92))
             _c(imgui.Col_.menu_bar_bg, imgui.ImVec4(0.15, 0.18, 0.22, 1.0))
             _c(imgui.Col_.header, imgui.ImVec4(0.24, 0.39, 0.59, 0.68))
             _c(imgui.Col_.header_hovered, imgui.ImVec4(0.31, 0.49, 0.73, 0.86))
@@ -788,9 +910,17 @@ class ToolkitWindow:
             _c(imgui.Col_.tab, imgui.ImVec4(0.17, 0.22, 0.28, 1.00))
             _c(imgui.Col_.tab_hovered, imgui.ImVec4(0.27, 0.42, 0.64, 0.92))
             _c(imgui.Col_.tab_selected, imgui.ImVec4(0.23, 0.42, 0.67, 1.00))
+            _c(imgui.Col_.tab_dimmed, imgui.ImVec4(0.13, 0.17, 0.22, 1.00))
+            _c(imgui.Col_.tab_dimmed_selected, imgui.ImVec4(0.19, 0.28, 0.41, 1.00))
+            _c(imgui.Col_.tab_selected_overline, imgui.ImVec4(0.48, 0.73, 0.98, 1.00))
+            _c(imgui.Col_.tab_dimmed_selected_overline, imgui.ImVec4(0.35, 0.56, 0.80, 0.85))
             _c(imgui.Col_.separator, imgui.ImVec4(0.32, 0.36, 0.43, 0.82))
             _c(imgui.Col_.separator_hovered, imgui.ImVec4(0.42, 0.57, 0.78, 0.85))
+            _c(imgui.Col_.separator_active, imgui.ImVec4(0.52, 0.69, 0.92, 0.96))
             _c(imgui.Col_.plot_lines, imgui.ImVec4(0.45, 0.72, 0.98, 1.00))
+            _c(imgui.Col_.plot_lines_hovered, imgui.ImVec4(0.68, 0.84, 1.00, 1.00))
+            _c(imgui.Col_.plot_histogram, imgui.ImVec4(0.38, 0.66, 0.96, 0.92))
+            _c(imgui.Col_.plot_histogram_hovered, imgui.ImVec4(0.58, 0.79, 1.00, 1.00))
             _c(imgui.Col_.frame_bg, imgui.ImVec4(0.15, 0.17, 0.20, 1.00))
             _c(imgui.Col_.frame_bg_hovered, imgui.ImVec4(0.18, 0.22, 0.27, 1.00))
             _c(imgui.Col_.frame_bg_active, imgui.ImVec4(0.20, 0.26, 0.33, 1.00))
@@ -805,6 +935,21 @@ class ToolkitWindow:
             _c(imgui.Col_.resize_grip_hovered, imgui.ImVec4(0.42, 0.63, 0.90, 0.72))
             _c(imgui.Col_.resize_grip_active, imgui.ImVec4(0.52, 0.74, 0.99, 0.95))
             _c(imgui.Col_.text_selected_bg, imgui.ImVec4(0.31, 0.49, 0.73, 0.42))
+            _c(imgui.Col_.text_link, imgui.ImVec4(0.58, 0.80, 1.00, 1.00))
+            _c(imgui.Col_.table_header_bg, imgui.ImVec4(0.18, 0.22, 0.27, 1.00))
+            _c(imgui.Col_.table_border_strong, imgui.ImVec4(0.33, 0.39, 0.48, 0.92))
+            _c(imgui.Col_.table_border_light, imgui.ImVec4(0.25, 0.30, 0.37, 0.82))
+            _c(imgui.Col_.table_row_bg_alt, imgui.ImVec4(0.14, 0.16, 0.19, 0.72))
+            _c(imgui.Col_.docking_preview, imgui.ImVec4(0.32, 0.54, 0.82, 0.62))
+            _c(imgui.Col_.docking_empty_bg, imgui.ImVec4(0.09, 0.10, 0.12, 1.00))
+            _c(imgui.Col_.drag_drop_target, imgui.ImVec4(0.55, 0.80, 1.00, 0.96))
+            _c(imgui.Col_.drag_drop_target_bg, imgui.ImVec4(0.27, 0.46, 0.71, 0.32))
+            _c(imgui.Col_.nav_cursor, imgui.ImVec4(0.48, 0.73, 0.98, 1.00))
+            _c(imgui.Col_.nav_windowing_highlight, imgui.ImVec4(0.48, 0.73, 0.98, 1.00))
+            _c(imgui.Col_.nav_windowing_dim_bg, imgui.ImVec4(0.0, 0.0, 0.0, 0.42))
+            _c(imgui.Col_.modal_window_dim_bg, imgui.ImVec4(0.0, 0.0, 0.0, 0.52))
+            _c(imgui.Col_.unsaved_marker, imgui.ImVec4(0.90, 0.66, 0.20, 1.00))
+            _c(imgui.Col_.input_text_cursor, imgui.ImVec4(0.72, 0.82, 0.96, 1.00))
         else:
             _c(imgui.Col_.text, imgui.ImVec4(0.12, 0.16, 0.22, 1.00))
             _c(imgui.Col_.text_disabled, imgui.ImVec4(0.28, 0.33, 0.41, 1.00))
@@ -815,6 +960,7 @@ class ToolkitWindow:
             _c(imgui.Col_.border_shadow, imgui.ImVec4(0.0, 0.0, 0.0, 0.0))
             _c(imgui.Col_.title_bg, imgui.ImVec4(0.84, 0.90, 0.96, 1.0))
             _c(imgui.Col_.title_bg_active, imgui.ImVec4(0.76, 0.85, 0.95, 1.0))
+            _c(imgui.Col_.title_bg_collapsed, imgui.ImVec4(0.89, 0.93, 0.97, 0.96))
             _c(imgui.Col_.menu_bar_bg, imgui.ImVec4(0.93, 0.95, 0.98, 1.0))
             _c(imgui.Col_.header, imgui.ImVec4(0.65, 0.79, 0.95, 0.62))
             _c(imgui.Col_.header_hovered, imgui.ImVec4(0.50, 0.72, 0.94, 0.86))
@@ -825,9 +971,17 @@ class ToolkitWindow:
             _c(imgui.Col_.tab, imgui.ImVec4(0.84, 0.90, 0.96, 1.00))
             _c(imgui.Col_.tab_hovered, imgui.ImVec4(0.67, 0.81, 0.95, 0.92))
             _c(imgui.Col_.tab_selected, imgui.ImVec4(0.52, 0.73, 0.93, 1.00))
+            _c(imgui.Col_.tab_dimmed, imgui.ImVec4(0.90, 0.94, 0.98, 1.00))
+            _c(imgui.Col_.tab_dimmed_selected, imgui.ImVec4(0.72, 0.84, 0.96, 1.00))
+            _c(imgui.Col_.tab_selected_overline, imgui.ImVec4(0.27, 0.54, 0.86, 1.00))
+            _c(imgui.Col_.tab_dimmed_selected_overline, imgui.ImVec4(0.40, 0.63, 0.90, 0.90))
             _c(imgui.Col_.separator, imgui.ImVec4(0.66, 0.71, 0.79, 0.82))
             _c(imgui.Col_.separator_hovered, imgui.ImVec4(0.38, 0.60, 0.85, 0.85))
+            _c(imgui.Col_.separator_active, imgui.ImVec4(0.22, 0.48, 0.82, 0.96))
             _c(imgui.Col_.plot_lines, imgui.ImVec4(0.18, 0.48, 0.82, 1.00))
+            _c(imgui.Col_.plot_lines_hovered, imgui.ImVec4(0.10, 0.40, 0.78, 1.00))
+            _c(imgui.Col_.plot_histogram, imgui.ImVec4(0.28, 0.56, 0.88, 0.92))
+            _c(imgui.Col_.plot_histogram_hovered, imgui.ImVec4(0.16, 0.48, 0.84, 1.00))
             _c(imgui.Col_.frame_bg, imgui.ImVec4(0.985, 0.989, 0.995, 1.00))
             _c(imgui.Col_.frame_bg_hovered, imgui.ImVec4(0.93, 0.96, 0.99, 1.00))
             _c(imgui.Col_.frame_bg_active, imgui.ImVec4(0.86, 0.92, 0.98, 1.00))
@@ -842,6 +996,21 @@ class ToolkitWindow:
             _c(imgui.Col_.resize_grip_hovered, imgui.ImVec4(0.40, 0.61, 0.88, 0.72))
             _c(imgui.Col_.resize_grip_active, imgui.ImVec4(0.28, 0.51, 0.82, 0.95))
             _c(imgui.Col_.text_selected_bg, imgui.ImVec4(0.56, 0.77, 0.96, 0.42))
+            _c(imgui.Col_.text_link, imgui.ImVec4(0.16, 0.48, 0.82, 1.00))
+            _c(imgui.Col_.table_header_bg, imgui.ImVec4(0.89, 0.93, 0.97, 1.00))
+            _c(imgui.Col_.table_border_strong, imgui.ImVec4(0.63, 0.70, 0.79, 0.90))
+            _c(imgui.Col_.table_border_light, imgui.ImVec4(0.77, 0.82, 0.89, 0.82))
+            _c(imgui.Col_.table_row_bg_alt, imgui.ImVec4(0.94, 0.97, 1.00, 0.62))
+            _c(imgui.Col_.docking_preview, imgui.ImVec4(0.35, 0.61, 0.90, 0.36))
+            _c(imgui.Col_.docking_empty_bg, imgui.ImVec4(0.95, 0.97, 0.99, 1.00))
+            _c(imgui.Col_.drag_drop_target, imgui.ImVec4(0.16, 0.48, 0.82, 0.96))
+            _c(imgui.Col_.drag_drop_target_bg, imgui.ImVec4(0.48, 0.71, 0.95, 0.26))
+            _c(imgui.Col_.nav_cursor, imgui.ImVec4(0.22, 0.48, 0.82, 1.00))
+            _c(imgui.Col_.nav_windowing_highlight, imgui.ImVec4(0.22, 0.48, 0.82, 1.00))
+            _c(imgui.Col_.nav_windowing_dim_bg, imgui.ImVec4(0.0, 0.0, 0.0, 0.15))
+            _c(imgui.Col_.modal_window_dim_bg, imgui.ImVec4(0.0, 0.0, 0.0, 0.18))
+            _c(imgui.Col_.unsaved_marker, imgui.ImVec4(0.90, 0.63, 0.08, 1.00))
+            _c(imgui.Col_.input_text_cursor, imgui.ImVec4(0.16, 0.40, 0.74, 1.00))
         self._applied_theme_index = int(theme_index)
 
     def _configure_default_font(self) -> None:
@@ -884,14 +1053,14 @@ class ToolkitWindow:
         if abs(clamped_scale - self._applied_interface_scale) <= 1e-6 and resolved_theme_index == self._applied_theme_index:
             return
         self._set_current_context()
-        style = imgui.get_style()
-        if self._applied_interface_scale > 0.0:
-            style.scale_all_sizes(1.0 / self._applied_interface_scale)
+        scale_changed = abs(clamped_scale - self._applied_interface_scale) > 1e-6
         self._apply_theme(resolved_theme_index)
+        imgui.get_style().scale_all_sizes(clamped_scale)
         style = imgui.get_style()
-        style.scale_all_sizes(clamped_scale)
         style.font_scale_main = clamped_scale * (_BASE_FONT_SIZE_PX / _FONT_ATLAS_SIZE_PX)
         self._applied_interface_scale = clamped_scale
+        if scale_changed:
+            self._dock_layout_initialized = False
 
     def _sync_interface_scale(self, ui: ViewerUI) -> None:
         self._apply_visual_state(self._interface_scale_factor(ui), self._theme_index(ui))
@@ -958,7 +1127,8 @@ class ToolkitWindow:
         imgui.internal.dock_builder_remove_node(self._dockspace_id)
         root_id = int(imgui.internal.dock_builder_add_node(self._dockspace_id, _DOCKSPACE_FLAGS))
         imgui.internal.dock_builder_set_node_size(root_id, viewport.work_size)
-        split_ids = tuple(int(node_id) for node_id in imgui.internal.dock_builder_split_node_py(root_id, imgui.Dir_.right, TOOLKIT_WIDTH_FRACTION))
+        split_fraction = _toolkit_width_fraction(float(viewport.work_size.x), self._applied_interface_scale if self._applied_interface_scale > 0.0 else 1.0)
+        split_ids = tuple(int(node_id) for node_id in imgui.internal.dock_builder_split_node_py(root_id, imgui.Dir_.right, split_fraction))
         leaf_ids = tuple(dict.fromkeys(node_id for node_id in split_ids if node_id != root_id))
         central_node = imgui.internal.dock_builder_get_central_node(root_id)
         viewport_dock_id = 0 if central_node is None else int(central_node.id_)
@@ -973,7 +1143,7 @@ class ToolkitWindow:
         self._dock_layout_initialized = True
 
     def _draw_panel(self, ui: ViewerUI, width: int, height: int) -> None:
-        panel_x, panel_y, panel_width, panel_height = _panel_rect(width, height, self._menu_bar_height)
+        panel_x, panel_y, panel_width, panel_height = _panel_rect(width, height, self._menu_bar_height, self._interface_scale_factor(ui))
         imgui.set_next_window_pos(imgui.ImVec2(panel_x, panel_y), imgui.Cond_.first_use_ever.value)
         imgui.set_next_window_size(imgui.ImVec2(panel_width, panel_height), imgui.Cond_.first_use_ever.value)
         if self._toolkit_dock_id != 0:
@@ -1035,12 +1205,14 @@ class ToolkitWindow:
             else:
                 imgui.dummy(image_size)
                 draw_list = imgui.get_window_draw_list()
-                draw_list.add_rect_filled(cursor, imgui.ImVec2(cursor.x + content_width, cursor.y + content_height), _color_u32(0.04, 0.045, 0.055, 1.0))
+                placeholder_bg = _theme_color(ui, (0.92, 0.94, 0.97, 1.0), (0.04, 0.045, 0.055, 1.0))
+                placeholder_text = _theme_color(ui, (0.30, 0.36, 0.45, 0.95), (0.72, 0.76, 0.82, 0.95))
+                draw_list.add_rect_filled(cursor, imgui.ImVec2(cursor.x + content_width, cursor.y + content_height), _color_u32(*placeholder_bg))
                 label = "Load a scene to populate the viewport"
                 text_size = imgui.calc_text_size(label)
                 draw_list.add_text(
                     imgui.ImVec2(cursor.x + 0.5 * (content_width - float(text_size.x)), cursor.y + 0.5 * (content_height - float(text_size.y))),
-                    _color_u32(0.72, 0.76, 0.82, 0.95),
+                    _color_u32(*placeholder_text),
                     label,
                 )
             self._draw_viewport_camera_overlays(ui, cursor)
@@ -1101,10 +1273,11 @@ class ToolkitWindow:
         draw_list.add_rect_filled(
             imgui.ImVec2(label_pos.x - badge_pad_x, label_pos.y - badge_pad_y),
             imgui.ImVec2(label_pos.x + float(current_label_size.x) + badge_pad_x, label_pos.y + float(current_label_size.y) + badge_pad_y),
-            _color_u32(0.06, 0.08, 0.12, 0.68),
+            _color_u32(*_theme_color(ui, (0.80, 0.88, 0.97, 0.82), (0.06, 0.08, 0.12, 0.68))),
             4.0 * scale,
         )
-        imgui.push_style_color(imgui.Col_.text.value, imgui.ImVec4(0.985, 0.992, 1.000, 1.00))
+        badge_text_color = _theme_color(ui, (0.18, 0.26, 0.38, 1.0), (0.985, 0.992, 1.000, 1.0))
+        imgui.push_style_color(imgui.Col_.text.value, imgui.ImVec4(*badge_text_color))
         imgui.text_unformatted(current_label)
         imgui.pop_style_color()
         if opened:
@@ -1189,10 +1362,10 @@ class ToolkitWindow:
                 draw_list.add_rect_filled(
                     imgui.ImVec2(label_pos.x - label_pad_x, label_pos.y - label_pad_y),
                     imgui.ImVec2(label_pos.x + float(label_size.x) + label_pad_x, label_pos.y + float(label_size.y) + label_pad_y),
-                    _color_u32(0.04, 0.05, 0.07, 0.74),
+                    _color_u32(*_theme_color(ui, (0.95, 0.97, 0.99, 0.84), (0.04, 0.05, 0.07, 0.74))),
                     4.0 * scale,
                 )
-                draw_list.add_text(label_font, label_font_size, label_pos, _color_u32(0.98, 0.99, 1.0, 1.0), str(label_text))
+                draw_list.add_text(label_font, label_font_size, label_pos, _color_u32(*_theme_color(ui, (0.16, 0.22, 0.30, 1.0), (0.98, 0.99, 1.0, 1.0))), str(label_text))
 
     def _draw_viewport_debug_overlay(self, ui: ViewerUI, overlay_origin: imgui.ImVec2) -> None:
         debug_mode = _DEBUG_MODE_VALUES[min(max(int(ui._values.get("debug_mode", 0)), 0), len(_DEBUG_MODE_VALUES) - 1)]
@@ -1221,8 +1394,10 @@ class ToolkitWindow:
         if max_height <= 0.0:
             return
         height = min(height, max_height)
-        imgui.push_style_color(imgui.Col_.child_bg.value, imgui.ImVec4(0.982, 0.987, 0.994, 0.94))
-        imgui.push_style_color(imgui.Col_.border.value, imgui.ImVec4(0.65, 0.72, 0.80, 0.92))
+        child_bg = _theme_color(ui, (0.982, 0.987, 0.994, 0.94), (0.13, 0.14, 0.17, 0.94))
+        child_border = _theme_color(ui, (0.65, 0.72, 0.80, 0.92), (0.32, 0.36, 0.43, 0.92))
+        imgui.push_style_color(imgui.Col_.child_bg.value, imgui.ImVec4(*child_bg))
+        imgui.push_style_color(imgui.Col_.border.value, imgui.ImVec4(*child_border))
         imgui.push_style_var(imgui.StyleVar_.window_padding, imgui.ImVec2(padding, padding))
         imgui.set_cursor_screen_pos(overlay_origin)
         if _imgui_opened(imgui.begin_child("##viewport_debug_overlay", imgui.ImVec2(width, height), imgui.ChildFlags_.borders.value)):
@@ -1266,12 +1441,12 @@ class ToolkitWindow:
         draw_list.add_rect_filled(
             imgui.ImVec2(box_x, box_y),
             imgui.ImVec2(box_x + box_width, box_y + box_height),
-            _color_u32(0.985, 0.989, 0.995, 0.94),
+            _color_u32(*_theme_color(ui, (0.985, 0.989, 0.995, 0.94), (0.13, 0.14, 0.17, 0.94))),
             8.0 * scale,
         )
-        draw_list.add_text(imgui.ImVec2(box_x + 0.5 * side_pad, box_y + 0.25 * top_pad), _color_u32(0.20, 0.26, 0.34, 0.95), self._debug_colorbar_title(mode))
+        draw_list.add_text(imgui.ImVec2(box_x + 0.5 * side_pad, box_y + 0.25 * top_pad), _color_u32(*_theme_color(ui, (0.20, 0.26, 0.34, 0.95), (0.90, 0.93, 0.97, 0.95))), self._debug_colorbar_title(mode))
         self._draw_debug_colorbar_gradient(draw_list, x0, y0, x1, y1)
-        draw_list.add_rect(imgui.ImVec2(x0, y0), imgui.ImVec2(x1, y1), _color_u32(0.50, 0.60, 0.72, 0.95), 2.0 * scale, 0, max(scale, 1.0))
+        draw_list.add_rect(imgui.ImVec2(x0, y0), imgui.ImVec2(x1, y1), _color_u32(*_theme_color(ui, (0.50, 0.60, 0.72, 0.95), (0.43, 0.57, 0.76, 0.95))), 2.0 * scale, 0, max(scale, 1.0))
         self._draw_debug_colorbar_ticks(draw_list, mode, x0, y0, x1, y1, ui, scale)
 
     def _draw_debug_colorbar_gradient(self, draw_list: object, x0: float, y0: float, x1: float, y1: float) -> None:
@@ -1292,8 +1467,8 @@ class ToolkitWindow:
             x = x0 + t * (x1 - x0)
             label = self._debug_colorbar_tick_label(mode, t, ui)
             label_size = imgui.calc_text_size(label)
-            draw_list.add_line(imgui.ImVec2(x, y1 + 2.0 * scale), imgui.ImVec2(x, y1 + 10.0 * scale), _color_u32(0.44, 0.53, 0.64, 0.9), max(scale, 1.0))
-            draw_list.add_text(imgui.ImVec2(x - 0.5 * float(label_size.x), y1 + 12.0 * scale), _color_u32(0.22, 0.28, 0.36, 0.95), label)
+            draw_list.add_line(imgui.ImVec2(x, y1 + 2.0 * scale), imgui.ImVec2(x, y1 + 10.0 * scale), _color_u32(*_theme_color(ui, (0.44, 0.53, 0.64, 0.9), (0.58, 0.68, 0.80, 0.9))), max(scale, 1.0))
+            draw_list.add_text(imgui.ImVec2(x - 0.5 * float(label_size.x), y1 + 12.0 * scale), _color_u32(*_theme_color(ui, (0.22, 0.28, 0.36, 0.95), (0.86, 0.90, 0.95, 0.95))), label)
 
     def _debug_colorbar_title(self, mode: str) -> str:
         return {
@@ -1391,8 +1566,9 @@ class ToolkitWindow:
         if not self._show_about:
             return
         self._dock_tool_window(imgui.Cond_.appearing.value)
-        imgui.set_next_window_pos(imgui.ImVec2(24.0, self._menu_bar_height + 24.0), imgui.Cond_.first_use_ever.value)
-        imgui.set_next_window_size(imgui.ImVec2(420.0, 220.0), imgui.Cond_.first_use_ever.value)
+        scale = max(self._applied_interface_scale, 1.0)
+        imgui.set_next_window_pos(imgui.ImVec2(24.0 * scale, self._menu_bar_height + 24.0 * scale), imgui.Cond_.first_use_ever.value)
+        imgui.set_next_window_size(imgui.ImVec2(420.0 * scale, 220.0 * scale), imgui.Cond_.first_use_ever.value)
         opened, self._show_about = imgui.begin("About", True)
         if opened:
             _draw_markdown_text(self._about_text)
@@ -1402,8 +1578,9 @@ class ToolkitWindow:
         if not self._show_docs:
             return
         self._dock_tool_window(imgui.Cond_.appearing.value)
-        imgui.set_next_window_pos(imgui.ImVec2(40.0, self._menu_bar_height + 32.0), imgui.Cond_.first_use_ever.value)
-        imgui.set_next_window_size(imgui.ImVec2(760.0, 620.0), imgui.Cond_.first_use_ever.value)
+        scale = max(self._applied_interface_scale, 1.0)
+        imgui.set_next_window_pos(imgui.ImVec2(40.0 * scale, self._menu_bar_height + 32.0 * scale), imgui.Cond_.first_use_ever.value)
+        imgui.set_next_window_size(imgui.ImVec2(760.0 * scale, 620.0 * scale), imgui.Cond_.first_use_ever.value)
         opened, self._show_docs = imgui.begin("Documentation", True)
         if opened:
             imgui.text_disabled("Local viewer documentation")
@@ -1434,8 +1611,9 @@ class ToolkitWindow:
         if not self._show_colmap_import:
             return
         self._dock_tool_window(imgui.Cond_.appearing.value)
-        imgui.set_next_window_pos(imgui.ImVec2(56.0, self._menu_bar_height + 40.0), imgui.Cond_.first_use_ever.value)
-        imgui.set_next_window_size(imgui.ImVec2(540.0, 0.0), imgui.Cond_.first_use_ever.value)
+        scale = max(self._applied_interface_scale, 1.0)
+        imgui.set_next_window_pos(imgui.ImVec2(56.0 * scale, self._menu_bar_height + 40.0 * scale), imgui.Cond_.first_use_ever.value)
+        imgui.set_next_window_size(imgui.ImVec2(540.0 * scale, 0.0), imgui.Cond_.first_use_ever.value)
         opened, self._show_colmap_import = imgui.begin("COLMAP Import", True)
         import_active = bool(ui._values.get("_colmap_import_active", False))
         if import_active and not self._show_colmap_import:
@@ -1666,9 +1844,10 @@ class ToolkitWindow:
             return
         if not bool(ui._values.get("_show_histograms_prev", False)):
             ui._values["_histograms_refresh_requested"] = True
+        scale = max(self._applied_interface_scale, 1.0)
         self._dock_tool_window(imgui.Cond_.appearing.value)
-        imgui.set_next_window_pos(imgui.ImVec2(72.0, self._menu_bar_height + 56.0), imgui.Cond_.first_use_ever.value)
-        imgui.set_next_window_size(imgui.ImVec2(_HISTOGRAM_WINDOW_WIDTH, _HISTOGRAM_WINDOW_HEIGHT), imgui.Cond_.first_use_ever.value)
+        imgui.set_next_window_pos(imgui.ImVec2(72.0 * scale, self._menu_bar_height + 56.0 * scale), imgui.Cond_.first_use_ever.value)
+        imgui.set_next_window_size(imgui.ImVec2(_HISTOGRAM_WINDOW_WIDTH * scale, _HISTOGRAM_WINDOW_HEIGHT * scale), imgui.Cond_.first_use_ever.value)
         opened, show = imgui.begin("Histograms", True)
         ui._values["show_histograms"] = bool(show)
         ui._values["_show_histograms_prev"] = bool(show)
@@ -1704,9 +1883,10 @@ class ToolkitWindow:
     def _draw_training_views_window(self, ui: ViewerUI) -> None:
         if not bool(ui._values.get("show_training_views", False)):
             return
+        scale = max(self._applied_interface_scale, 1.0)
         self._dock_tool_window(imgui.Cond_.appearing.value)
-        imgui.set_next_window_pos(imgui.ImVec2(88.0, self._menu_bar_height + 64.0), imgui.Cond_.first_use_ever.value)
-        imgui.set_next_window_size(imgui.ImVec2(980.0, 420.0), imgui.Cond_.first_use_ever.value)
+        imgui.set_next_window_pos(imgui.ImVec2(88.0 * scale, self._menu_bar_height + 64.0 * scale), imgui.Cond_.first_use_ever.value)
+        imgui.set_next_window_size(imgui.ImVec2(980.0 * scale, 420.0 * scale), imgui.Cond_.first_use_ever.value)
         opened, show = imgui.begin("Training Views", True)
         ui._values["show_training_views"] = bool(show)
         if opened:
@@ -2175,7 +2355,7 @@ class ToolkitWindow:
         imgui.separator()
 
     def _section_defaults_footer(self, ui: ViewerUI) -> None:
-        if imgui.button("Update Repo Defaults"):
+        if imgui.button("Update Defaults"):
             self.callbacks.save_defaults()
         _draw_disabled_wrapped_text(ui._texts.get("defaults_status", ""))
         imgui.separator()
