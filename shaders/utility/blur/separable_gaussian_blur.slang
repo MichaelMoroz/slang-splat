@@ -1,5 +1,5 @@
 static const uint BLUR_TILE_DIM = 16u;
-static const uint BLUR_GROUP_SIZE = 256u;
+static const uint BLUR_GROUP_SIZE = 64u;
 static const uint GAUSSIAN_BLUR_RADIUS = 5u;
 static const uint GAUSSIAN_BLUR_TAP_COUNT = GAUSSIAN_BLUR_RADIUS * 2u + 1u;
 static const uint BLUR_SHARED_STRIDE = BLUR_GROUP_SIZE + GAUSSIAN_BLUR_RADIUS * 2u;
