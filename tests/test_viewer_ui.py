@@ -712,6 +712,57 @@ def test_debug_colorbar_height_scales_with_interface_scale(monkeypatch) -> None:
     assert boxes[1][0] > boxes[0][0] * 1.5
 
 
+def test_apply_visual_state_unscales_before_reapplying_theme(monkeypatch) -> None:
+    scale_calls: list[float] = []
+    style = SimpleNamespace(font_scale_main=1.0, scale_all_sizes=lambda value: scale_calls.append(float(value)))
+    monkeypatch.setattr(ui.imgui, "get_style", lambda: style)
+    toolkit = SimpleNamespace(
+        _applied_interface_scale=2.0,
+        _applied_theme_index=0,
+        _set_current_context=lambda: None,
+        _apply_theme=lambda _theme_index: None,
+    )
+
+    ui.ToolkitWindow._apply_visual_state(toolkit, 2.0, 1)
+
+    assert scale_calls == [0.5, 2.0]
+    assert np.isclose(style.font_scale_main, 2.0 * (ui._BASE_FONT_SIZE_PX / ui._FONT_ATLAS_SIZE_PX))
+
+
+def test_performance_plot_heights_scale_with_interface_scale(monkeypatch) -> None:
+    plot_sizes: list[tuple[str, float, float]] = []
+    monkeypatch.setattr(ui.imgui, "collapsing_header", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(ui.imgui, "text_disabled", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ui.imgui, "separator_text", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ui.implot, "begin_plot", lambda label, size: plot_sizes.append((str(label), float(size.x), float(size.y))) or False)
+    toolkit = SimpleNamespace(
+        tk=SimpleNamespace(
+            fps_history=[60.0, 58.0],
+            loss_history=[1.0, 0.5],
+            psnr_history=[20.0, 22.0],
+            step_history=[0.0, 1.0],
+            step_time_history=[0.0, 1.0],
+        ),
+        _iters_per_second=lambda *_args: 1.0,
+        _plot_scale=lambda viewer_ui: float(viewer_ui._values["scale"]),
+    )
+
+    ui.ToolkitWindow._section_performance(toolkit, SimpleNamespace(_values={"scale": 2.0}, _texts={}))
+
+    assert plot_sizes == [("##FPS", -1.0, 220.0), ("##Loss", -1.0, 360.0), ("##PSNR", -1.0, 360.0)]
+
+
+def test_histogram_plot_height_scales_with_interface_scale(monkeypatch) -> None:
+    plot_sizes: list[tuple[str, float, float]] = []
+    monkeypatch.setattr(ui.imgui, "text_disabled", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ui.implot, "begin_plot", lambda label, size: plot_sizes.append((str(label), float(size.x), float(size.y))) or False)
+    toolkit = SimpleNamespace(_plot_scale=lambda viewer_ui: float(viewer_ui._values["scale"]))
+
+    ui.ToolkitWindow._draw_histogram_plot(toolkit, SimpleNamespace(_values={"scale": 1.5}, _texts={}), "test", np.array([0.0, 1.0], dtype=np.float64), np.array([1.0, 2.0], dtype=np.float64), 10.0)
+
+    assert plot_sizes == [("##plot_test", -1.0, 345.0)]
+
+
 def test_optimizer_regularization_tab_includes_density_controls() -> None:
     assert "sh1_reg" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "density_regularizer" in ui._OPTIMIZER_TAB_KEYS["Regularization"]

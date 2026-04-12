@@ -875,12 +875,18 @@ class ToolkitWindow:
     def _set_interface_scale(self, scale: float) -> None:
         self._apply_visual_state(scale, self._applied_theme_index if self._applied_theme_index >= 0 else int(_VIEWER_CONTROL_DEFAULTS.get("theme", 0)))
 
+    def _plot_scale(self, ui: ViewerUI) -> float:
+        return self._interface_scale_factor(ui)
+
     def _apply_visual_state(self, scale: float, theme_index: int) -> None:
         clamped_scale = max(float(scale), 0.5)
         resolved_theme_index = min(max(int(theme_index), 0), len(_THEME_OPTIONS) - 1)
         if abs(clamped_scale - self._applied_interface_scale) <= 1e-6 and resolved_theme_index == self._applied_theme_index:
             return
         self._set_current_context()
+        style = imgui.get_style()
+        if self._applied_interface_scale > 0.0:
+            style.scale_all_sizes(1.0 / self._applied_interface_scale)
         self._apply_theme(resolved_theme_index)
         style = imgui.get_style()
         style.scale_all_sizes(clamped_scale)
@@ -1836,14 +1842,14 @@ class ToolkitWindow:
             if imgui.begin_table(f"##hist_{group_name}", column_count, imgui.TableFlags_.sizing_stretch_same.value):
                 for index in valid:
                     imgui.table_next_column()
-                    self._draw_histogram_plot(labels[index] if index < len(labels) else f"param {index}", centers, counts[index], y_limit)
+                    self._draw_histogram_plot(ui, labels[index] if index < len(labels) else f"param {index}", centers, counts[index], y_limit)
                 imgui.end_table()
             imgui.spacing()
 
-    def _draw_histogram_plot(self, label: str, centers: np.ndarray, counts: np.ndarray, y_limit: float) -> None:
+    def _draw_histogram_plot(self, ui: ViewerUI, label: str, centers: np.ndarray, counts: np.ndarray, y_limit: float) -> None:
         imgui.text_disabled(label)
         plot_id = f"##plot_{label}"
-        if implot.begin_plot(plot_id, imgui.ImVec2(-1, _HISTOGRAM_PLOT_HEIGHT)):
+        if implot.begin_plot(plot_id, imgui.ImVec2(-1, _HISTOGRAM_PLOT_HEIGHT * self._plot_scale(ui))):
             implot.setup_axes("value", "count", 0, 0)
             if centers.size > 0:
                 implot.setup_axis_limits(implot.ImAxis_.x1.value, float(centers[0]), float(centers[-1]), implot.Cond_.always.value)
@@ -2177,6 +2183,7 @@ class ToolkitWindow:
     def _section_performance(self, ui: ViewerUI) -> None:
         if not imgui.collapsing_header("Plots", imgui.TreeNodeFlags_.default_open.value):
             return
+        plot_scale = self._plot_scale(ui)
 
         iters_per_second = self._iters_per_second(self.tk.step_history, self.tk.step_time_history)
         if iters_per_second > 0.0:
@@ -2185,7 +2192,7 @@ class ToolkitWindow:
         fps_arr = np.array(self.tk.fps_history, dtype=np.float64)
         if len(fps_arr) >= 2:
             imgui.text_disabled(f"avg {np.mean(fps_arr):.1f}  min {np.min(fps_arr):.1f}  max {np.max(fps_arr):.1f}")
-            if implot.begin_plot("##FPS", imgui.ImVec2(-1, 110)):
+            if implot.begin_plot("##FPS", imgui.ImVec2(-1, 110.0 * plot_scale)):
                 implot.setup_axes("", "FPS", implot.AxisFlags_.no_tick_labels.value, implot.AxisFlags_.auto_fit.value)
                 implot.setup_axis_limits(implot.ImAxis_.x1.value, 0, len(fps_arr) - 1, implot.Cond_.always.value)
                 shade_spec = implot.Spec()
@@ -2205,7 +2212,7 @@ class ToolkitWindow:
             imgui.separator_text("Loss")
             loss_spec = implot.Spec()
             loss_spec.line_color = imgui.ImVec4(1.0, 0.6, 0.2, 1.0)
-            if implot.begin_plot("##Loss", imgui.ImVec2(-1, 180)):
+            if implot.begin_plot("##Loss", imgui.ImVec2(-1, 180.0 * plot_scale)):
                 implot.setup_axes("step", "loss", 0, implot.AxisFlags_.auto_fit.value)
                 implot.setup_axis_limits(implot.ImAxis_.x1.value, float(s[0]), float(s[-1]), implot.Cond_.always.value)
                 implot.setup_axis_scale(implot.ImAxis_.y1.value, implot.Scale_.log10.value)
@@ -2220,7 +2227,7 @@ class ToolkitWindow:
             imgui.separator_text("PSNR")
             psnr_spec = implot.Spec()
             psnr_spec.line_color = imgui.ImVec4(0.3, 0.85, 0.5, 1.0)
-            if implot.begin_plot("##PSNR", imgui.ImVec2(-1, 180)):
+            if implot.begin_plot("##PSNR", imgui.ImVec2(-1, 180.0 * plot_scale)):
                 implot.setup_axes("step", "PSNR (dB)", 0, implot.AxisFlags_.auto_fit.value)
                 implot.setup_axis_limits(implot.ImAxis_.x1.value, float(s[0]), float(s[-1]), implot.Cond_.always.value)
                 implot.plot_line("PSNR", s, p, spec=psnr_spec)
