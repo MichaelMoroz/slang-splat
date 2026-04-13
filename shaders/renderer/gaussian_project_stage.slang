@@ -71,6 +71,7 @@ void csProjectVisibleSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
     g_ScreenColorAlpha[splatId] = 0.0;
     g_ScreenEllipseConic[splatId] = 0.0;
     g_SplatVisible[splatId] = 0u;
+    g_SplatVisibleAreaPx[splatId] = 0.0;
 
     Gaussian3D gaussian = load_gaussian3d(splatId);
     float fusedOpacity = build_raster_fused_opacity(g_Camera, g_Prepass.radiusScale, gaussian.position, gaussian.logScale, gaussian.rawOpacity);
@@ -117,6 +118,7 @@ void csProjectVisibleSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
     g_ScreenColorAlpha[splatId] = float4(evaluatedColor, gaussian.rawOpacity);
     g_ScreenEllipseConic[splatId] = float4(projectedEllipse.conic, projectionEllipsoid.opacityScale);
     g_SplatVisible[splatId] = 1u;
+    g_SplatVisibleAreaPx[splatId] = projectedEllipse.clippedAreaPx(camera.params.viewport);
     CachedEllipsoid cached = build_cached_ellipsoid(g_Camera, g_Prepass.radiusScale, g_MaxAnisotropy, gaussian.position, gaussian.logScale, gaussian.rotation);
     store_raster_cache(splatId, cached, float4(evaluatedColor, fusedOpacity));
     append_visible_splat(float_to_ordered_uint(camDistance), splatId);

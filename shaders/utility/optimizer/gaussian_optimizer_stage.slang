@@ -12,6 +12,7 @@ static const uint OPTIMIZER_GROUP_SIZE = 256u;
 static const uint COLOR_NON_NEGATIVE_HASH_SPLAT = 0x9e3779b9u;
 static const uint COLOR_NON_NEGATIVE_HASH_PHI = 0x85ebca6bu;
 static const uint COLOR_NON_NEGATIVE_HASH_Z = 0xc2b2ae35u;
+static const float MIN_SCREEN_CAP_VISIBLE_AREA_FRACTION = 0.5;
 
 struct GaussianStabilityParams
 {
@@ -45,6 +46,7 @@ uniform RWStructuredBuffer<float> g_ParamGrads;
 uniform RWStructuredBuffer<float> g_SplatParamsRW;
 uniform StructuredBuffer<float4> g_ScreenEllipseConic;
 uniform StructuredBuffer<uint> g_SplatVisible;
+uniform StructuredBuffer<float> g_SplatVisibleAreaPx;
 
 struct TrainableGaussianState
 {
@@ -309,13 +311,13 @@ float3 clamp_screen_area_upper_bound(uint splatId, float3 logScale)
     if (g_SplatVisible[splatId] == 0u) return logScale;
     float maxScreenAreaPx = g_MaxScreenFraction * g_CurrentCamera.viewport.x * g_CurrentCamera.viewport.y;
     if (!(maxScreenAreaPx > SMALL_VALUE)) return logScale;
-
+    float currentAreaPx = g_SplatVisibleAreaPx[splatId];
+    if (!(currentAreaPx > maxScreenAreaPx)) return logScale;
     float3 conic = g_ScreenEllipseConic[splatId].xyz;
     float det = conic.x * conic.z - conic.y * conic.y;
     if (!all(isfinite(conic)) || !(conic.x > 0.0) || !(conic.z > 0.0) || !(det > CONIC_DETERMINANT_FLOOR)) return logScale;
-
-    float currentAreaPx = projected_ellipse_area(conic);
-    if (!(currentAreaPx > maxScreenAreaPx)) return logScale;
+    float fullAreaPx = projected_ellipse_area(conic);
+    if (!(currentAreaPx >= MIN_SCREEN_CAP_VISIBLE_AREA_FRACTION * fullAreaPx)) return logScale;
 
     float areaRatio = max(maxScreenAreaPx / currentAreaPx, SMALL_VALUE);
     return logScale + 0.5 * log(areaRatio);

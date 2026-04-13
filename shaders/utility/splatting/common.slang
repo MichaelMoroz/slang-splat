@@ -394,6 +394,48 @@ struct Ellipse
             && (centerPx.y - radiusPx) < viewport.y;
     }
 
+    float clippedVerticalLength(float x, float2 viewport, float det)
+    {
+        float dx = x - centerPx.x;
+        float root = conic.z - det * dx * dx;
+        if (!(root > 0.0)) return 0.0;
+        float midY = centerPx.y - conic.y * dx / conic.z;
+        float halfLength = sqrt(root) / conic.z;
+        return max(min(midY + halfLength, viewport.y) - max(midY - halfLength, 0.0), 0.0);
+    }
+
+    float clippedHorizontalLength(float y, float2 viewport, float det)
+    {
+        float dy = y - centerPx.y;
+        float root = conic.x - det * dy * dy;
+        if (!(root > 0.0)) return 0.0;
+        float midX = centerPx.x - conic.y * dy / conic.x;
+        float halfLength = sqrt(root) / conic.x;
+        return max(min(midX + halfLength, viewport.x) - max(midX - halfLength, 0.0), 0.0);
+    }
+
+    float clippedAreaPx(float2 viewport)
+    {
+        static const uint CLIPPED_AREA_SAMPLE_COUNT = 32u;
+        float det = conic.x * conic.z - conic.y * conic.y;
+        if (!all(isfinite(conic)) || !(conic.x > 0.0) || !(conic.z > 0.0) || !(det > CONIC_DETERMINANT_FLOOR)) return 0.0;
+        float2 extent = sqrt(float2(conic.z, conic.x) / det);
+        if (!all(isfinite(extent))) return 0.0;
+        bool integrateX = extent.x <= extent.y;
+        float2 bounds = integrateX
+            ? float2(max(centerPx.x - extent.x, 0.0), min(centerPx.x + extent.x, viewport.x))
+            : float2(max(centerPx.y - extent.y, 0.0), min(centerPx.y + extent.y, viewport.y));
+        if (!(bounds.y > bounds.x)) return 0.0;
+        float stepSize = (bounds.y - bounds.x) / float(CLIPPED_AREA_SAMPLE_COUNT);
+        float area = 0.0;
+        [unroll] for (uint i = 0u; i < CLIPPED_AREA_SAMPLE_COUNT; i++)
+        {
+            float sampleCoord = bounds.x + (float(i) + 0.5) * stepSize;
+            area += integrateX ? clippedVerticalLength(sampleCoord, viewport, det) : clippedHorizontalLength(sampleCoord, viewport, det);
+        }
+        return area * stepSize;
+    }
+
     bool chooseScanAlongX(uint spanX, uint spanY)
     {
         bool scanAlongX = bboxExtent.x >= bboxExtent.y;

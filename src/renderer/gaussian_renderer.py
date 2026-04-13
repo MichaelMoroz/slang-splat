@@ -201,7 +201,7 @@ class GaussianRenderer:
         "color.r", "color.g", "color.b", "opacity",
     )
     _SCENE_SHADER_VARS = {"splat_params": "g_SplatParams"}
-    _SCREEN_SHADER_VARS = {"screen_center_radius_depth": "g_ScreenCenterRadiusDepth", "screen_color_alpha": "g_ScreenColorAlpha", "screen_ellipse_conic": "g_ScreenEllipseConic", "splat_visible": "g_SplatVisible"}
+    _SCREEN_SHADER_VARS = {"screen_center_radius_depth": "g_ScreenCenterRadiusDepth", "screen_color_alpha": "g_ScreenColorAlpha", "screen_ellipse_conic": "g_ScreenEllipseConic", "splat_visible": "g_SplatVisible", "splat_visible_area_px": "g_SplatVisibleAreaPx"}
     _RASTER_CACHE_SHADER_VARS = {"raster_cache": "g_RasterCache"}
     _RASTER_GRAD_SHADER_VARS = {
         "param_grads": "g_ParamGrads",
@@ -658,6 +658,7 @@ class GaussianRenderer:
             "screen_color_alpha": max(self._work_splat_capacity, 1) * self._F32X4_BYTES,
             "screen_ellipse_conic": max(self._work_splat_capacity, 1) * self._F32X4_BYTES,
             "splat_visible": max(self._work_splat_capacity, 1) * self._U32_BYTES,
+            "splat_visible_area_px": max(self._work_splat_capacity, 1) * self._U32_BYTES,
             "debug_clone_count": max(self._work_splat_capacity, 1) * self._U32_BYTES,
             "debug_grad_norm": max(self._work_splat_capacity, 1) * self._U32_BYTES,
             "visible_keys": max(self._work_splat_capacity, 1) * self._U32_BYTES,
@@ -715,6 +716,7 @@ class GaussianRenderer:
                 "screen_color_alpha",
                 "screen_ellipse_conic",
                 "splat_visible",
+                "splat_visible_area_px",
                 "training_forward_state",
                 "training_density",
                 "training_rgb_loss",
@@ -1839,6 +1841,7 @@ class GaussianRenderer:
             "screen_center_radius_depth": self._read_array(self._work_buffers["screen_center_radius_depth"], np.float32, scene.count, 4),
             "screen_color_alpha": self._read_array(self._work_buffers["screen_color_alpha"], np.float32, scene.count, 4),
             "screen_ellipse_conic": self._read_array(self._work_buffers["screen_ellipse_conic"], np.float32, scene.count, 4),
+            "splat_visible_area_px": self._read_array(self._work_buffers["splat_visible_area_px"], np.float32, scene.count),
             "splat_visible": self._read_array(self._work_buffers["splat_visible"], np.uint32, scene.count),
             "raster_cache": self.read_raster_cache(scene.count),
         }

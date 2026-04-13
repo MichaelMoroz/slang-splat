@@ -230,6 +230,7 @@ class GaussianOptimizer:
                 "g_SplatParamsRW": scene_buffers["splat_params"],
                 "g_ScreenEllipseConic": work_buffers["screen_ellipse_conic"],
                 "g_SplatVisible": work_buffers["splat_visible"],
+                "g_SplatVisibleAreaPx": work_buffers["splat_visible_area_px"],
                 **camera_vars,
                 **self._vars(
                     splat_count,
