@@ -55,7 +55,7 @@ Load scenes from the in-window overlay (`Load PLY...` / `Load COLMAP...`).
 
 The viewer now runs as a single Slangpy window. The renderer draws the scene into an offscreen texture sized from the docked viewport panel, then `imgui_bundle` composites that texture and the rest of the UI into the swapchain through Slangpy's draw-data bridge.
 
-Repo-wide CLI and viewer defaults live in `config/defaults.json`. The viewer toolkit footer can write the current control state back into that file through `Update Repo Defaults`.
+Repo-wide CLI and viewer defaults live in `config/defaults.json`. The viewer toolkit footer can write the current control state back into that file through `Update Defaults`.
 
 Viewer controls:
 - `LMB + drag`: look around
