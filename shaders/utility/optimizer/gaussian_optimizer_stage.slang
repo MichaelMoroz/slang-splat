@@ -5,6 +5,7 @@ import "utility/math/numeric.slang";
 import "utility/math/quaternion.slang";
 import "utility/random/random.slang";
 import "utility/splatting/common.slang";
+import "utility/splatting/opacity.slang";
 import "utility/splatting/params.slang";
 
 static const uint LOSS_SLOT_TOTAL = 0u;
@@ -32,6 +33,8 @@ uniform uint g_SplatCount;
 uniform CameraParams g_CurrentCamera;
 uniform uint g_EnableCurrentCameraScreenScaleCap;
 uniform float g_MaxScreenFraction;
+uniform float g_ScreenScaleCapRadiusScale;
+uniform float g_ScreenScaleCapAlphaCutoff;
 uniform float g_ScaleL2Weight;
 uniform float g_ScaleAbsRegWeight;
 uniform float g_SH1RegWeight;
@@ -305,7 +308,16 @@ float3 clamp_sh_rest_coeffs(float3 sh)
     return clamp(sh, -1.0, 1.0);
 }
 
-float3 clamp_screen_area_upper_bound(uint splatId, float3 logScale)
+float projected_support_axis_radius_px(PinholeCamera camera, float3 centerWorld, float2 centerPx, float3 axisWorldOffset)
+{
+    float radius = 0.0;
+    float2 axisPx = 0.0;
+    if (camera.project_world_to_screen(centerWorld + axisWorldOffset, axisPx)) radius = max(radius, length(axisPx - centerPx));
+    if (camera.project_world_to_screen(centerWorld - axisWorldOffset, axisPx)) radius = max(radius, length(axisPx - centerPx));
+    return radius;
+}
+
+float3 clamp_screen_scale_upper_bound(uint splatId, float3 position, float3 logScale, float4 rotation, float rawOpacity)
 {
     if (g_EnableCurrentCameraScreenScaleCap == 0u) return logScale;
     if (g_SplatVisible[splatId] == 0u) return logScale;
@@ -319,8 +331,26 @@ float3 clamp_screen_area_upper_bound(uint splatId, float3 logScale)
     float fullAreaPx = projected_ellipse_area(conic);
     if (!(currentAreaPx >= MIN_SCREEN_CAP_VISIBLE_AREA_FRACTION * fullAreaPx)) return logScale;
 
-    float areaRatio = max(maxScreenAreaPx / currentAreaPx, SMALL_VALUE);
-    return logScale + 0.5 * log(areaRatio);
+    PinholeCamera camera = PinholeCamera.from_params(g_CurrentCamera);
+    float2 centerPx = 0.0;
+    if (!camera.project_world_to_screen(position, centerPx)) return logScale;
+
+    float opacity = opacity_from_raw(rawOpacity);
+    float supportSigmaRadius = sqrt(max(-2.0 * log(max(g_ScreenScaleCapAlphaCutoff, TINY_VALUE) / max(opacity, TINY_VALUE)), 0.0));
+    float supportScaleMul = g_ScreenScaleCapRadiusScale * supportSigmaRadius;
+    if (!(supportScaleMul > SMALL_VALUE)) return logScale;
+
+    float maxRadiusPx = sqrt(max(maxScreenAreaPx / PI, SMALL_VALUE));
+    float3 scale = exp(logScale);
+    float3 supportScale = scale * supportScaleMul;
+    float4 qInv = float4(rotation.x, -rotation.y, -rotation.z, -rotation.w);
+    float3 axisRadiusPx = float3(
+        projected_support_axis_radius_px(camera, position, centerPx, rotate_by_quat(float3(supportScale.x, 0.0, 0.0), qInv)),
+        projected_support_axis_radius_px(camera, position, centerPx, rotate_by_quat(float3(0.0, supportScale.y, 0.0), qInv)),
+        projected_support_axis_radius_px(camera, position, centerPx, rotate_by_quat(float3(0.0, 0.0, supportScale.z), qInv))
+    );
+    float3 shrink = min(float3(1.0), maxRadiusPx / max(axisRadiusPx, float3(SMALL_VALUE)));
+    return log(max(scale * shrink, float3(TINY_VALUE)));
 }
 
 [Differentiable]
@@ -610,9 +640,16 @@ void csProjectGaussianParams(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (splatId >= g_SplatCount) return;
 
     TrainableGaussianState state = TrainableGaussianState.load(splatId);
-    state.logScale = clamp_screen_area_upper_bound(splatId, sanitize_float3(state.logScale, g_Stability.hugeValue));
+    float4 normalizedRotation = normalize_quaternion_safe(sanitize_float4(state.rotation, g_Stability.hugeValue));
+    state.logScale = clamp_screen_scale_upper_bound(
+        splatId,
+        state.position,
+        sanitize_float3(state.logScale, g_Stability.hugeValue),
+        normalizedRotation,
+        state.rawOpacity
+    );
     state.logScale = clamp_scale_anisotropy(state.logScale);
-    state.rotation = normalize_quaternion_safe(sanitize_float4(state.rotation, g_Stability.hugeValue));
+    state.rotation = normalizedRotation;
     state.sh0 = clamp_sh0_base_color(sanitize_float3(state.sh0, g_Stability.hugeValue));
     state.sh1X = clamp_sh1_coeffs(sanitize_float3(state.sh1X, g_Stability.hugeValue));
     state.sh1Y = clamp_sh1_coeffs(sanitize_float3(state.sh1Y, g_Stability.hugeValue));

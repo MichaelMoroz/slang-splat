@@ -78,7 +78,7 @@ Each trainer `step()` performs:
    - `csClipPackedParamGrads` clips gradients from a structured per-parameter settings buffer owned by the optimizer module.
    - `csComputePackedSplatGradNorms` can optionally reduce the packed gradient vector of each splat into one scalar `L2` norm for debug visualization.
    - `csAdamStepPacked` applies one-thread-per-packed-parameter ADAM using that same settings buffer plus a packed `float2` moments buffer.
-  - `csProjectGaussianParams` applies the remaining Gaussian-specific post-step projection: quaternion normalization, anisotropy clamp, and a camera-aware upper screen-space size clamp driven by the projected support ellipse and clipped visible area already produced by the projection pass. The clamp uses prepass screen metadata and does not recompute projection visibility.
+  - `csProjectGaussianParams` applies the remaining Gaussian-specific post-step projection: quaternion normalization, anisotropy clamp, and a camera-aware upper screen-space size clamp. The clamp keeps `max_screen_fraction` as an area-equivalent viewport fraction, converts it to a circular pixel radius, then caps each local scale component by projecting that axis' current support radius into the active training camera. It still uses prepass visibility and clipped-area metadata to avoid clamping invisible or heavily cropped splats.
 8. When the configured refinement boundary is reached, run the refinement pass:
   - `csClampRefinementMinScreenSize` loops over all training cameras on GPU, ignores offscreen centers, finds the minimum visible 1-pixel support-radius bound, and raises undersized splats before rewrite,
   - cull splats with alpha below `refinement_alpha_cull_threshold`,

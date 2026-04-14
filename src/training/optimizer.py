@@ -127,6 +127,8 @@ class GaussianOptimizer:
         return {
             "g_SplatCount": int(splat_count),
             "g_MaxScreenFraction": float(max(resolve_max_screen_fraction(training_hparams, 0) if max_screen_fraction is None else max_screen_fraction, 1e-8)),
+            "g_ScreenScaleCapRadiusScale": float(self.renderer.radius_scale),
+            "g_ScreenScaleCapAlphaCutoff": float(self.renderer.alpha_cutoff),
             "g_ScaleL2Weight": float(max(training_hparams.scale_l2_weight, 0.0)),
             "g_ScaleAbsRegWeight": float(max(training_hparams.scale_abs_reg_weight, 0.0)),
             "g_SH1RegWeight": float(max(training_hparams.sh1_reg_weight, 0.0)),
