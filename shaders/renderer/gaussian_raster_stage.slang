@@ -710,7 +710,7 @@ struct DebugRasterReplayVariant : IRasterReplayVariant
     {
         uint debugMode = replayState.debugMode;
         float trans = replayState.pixelState.trans;
-        float contributionWeight = trans * alpha;
+        float contributionWeight = smoothstep(0.0, 0.5, trans) * smoothstep(1.0, 0.5, trans) * alpha;
         if ((debugMode == DEBUG_MODE_DEPTH_MEAN || debugMode == DEBUG_MODE_DEPTH_STD) && rayDepth > 0.0) replayState.depthState = depth_state_step(replayState.depthState, contributionWeight, rayDepth);
         if (debugMode == DEBUG_MODE_DEPTH_LOCAL_MISMATCH && rayDepth > 0.0)
         {

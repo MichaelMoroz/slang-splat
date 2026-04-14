@@ -2,7 +2,7 @@
   "training_build_args": {
     "base_lr": 0.002,
     "lr_pos_mul": 0.5,
-    "lr_scale_mul": 15.0,
+    "lr_scale_mul": 10.0,
     "lr_rot_mul": 1.0,
     "lr_color_mul": 5.0,
     "lr_opacity_mul": 5.0,
@@ -24,9 +24,9 @@
     "opacity_reg_weight": 0.01,
     "density_regularizer": 0.02,
     "color_non_negative_reg": 0.01,
-    "depth_ratio_weight": 0.5,
+    "depth_ratio_weight": 0.0,
     "max_screen_fraction": 0.25,
-    "ssim_weight": 0.05,
+    "ssim_weight": 0.20000000298023224,
     "ssim_c2": 0.0009,
     "refinement_loss_weight": 0.25,
     "refinement_target_edge_weight": 0.75,
@@ -50,14 +50,14 @@
     "lr_schedule_steps": 30000,
     "lr_schedule_stage1_step": 3000,
     "lr_schedule_stage2_step": 14000,
-    "refinement_interval": 200,
-    "refinement_growth_ratio": 0.04,
-    "refinement_growth_start_step": 500,
+    "refinement_interval": 1410065408,
+    "refinement_growth_ratio": 0.0,
+    "refinement_growth_start_step": 30000,
     "refinement_alpha_cull_threshold": 0.01,
-    "refinement_min_contribution_percent": 0.00001,
+    "refinement_min_contribution_percent": 1e-05,
     "refinement_min_contribution_decay": 0.995,
     "refinement_opacity_mul": 1.0,
-    "refinement_sample_radius": 4.0,
+    "refinement_sample_radius": 2.0,
     "lr_pos_stage1_mul": 0.1,
     "lr_pos_stage2_mul": 0.05,
     "lr_pos_stage3_mul": 0.02,
@@ -65,15 +65,15 @@
     "lr_sh_stage1_mul": 0.1,
     "lr_sh_stage2_mul": 0.1,
     "lr_sh_stage3_mul": 0.1,
-    "depth_ratio_stage1_weight": 0.03,
-    "depth_ratio_stage2_weight": 0.01,
-    "depth_ratio_stage3_weight": 0.001,
-    "ssim_weight_stage1": 0.1,
-    "ssim_weight_stage2": 0.3,
-    "ssim_weight_stage3": 0.4,
-    "max_screen_fraction_stage1": 0.07,
-    "max_screen_fraction_stage2": 0.02,
-    "max_screen_fraction_stage3": 0.007,
+    "depth_ratio_stage1_weight": 0.0,
+    "depth_ratio_stage2_weight": 0.0,
+    "depth_ratio_stage3_weight": 0.0,
+    "ssim_weight_stage1": 0.20000000298023224,
+    "ssim_weight_stage2": 0.20000000298023224,
+    "ssim_weight_stage3": 0.20000000298023224,
+    "max_screen_fraction_stage1": 0.10000000149011612,
+    "max_screen_fraction_stage2": 0.10000000149011612,
+    "max_screen_fraction_stage3": 0.05000000074505806,
     "position_random_step_noise_stage1_lr": 466666.6666666667,
     "position_random_step_noise_stage2_lr": 416666.6666666667,
     "position_random_step_noise_stage3_lr": 0.0,
@@ -107,13 +107,34 @@
     "debug_mode": null,
     "debug_grad_norm_threshold": 0.0002,
     "debug_ellipse_thickness_px": 4.0,
-    "debug_clone_count_range": [0.0, 16.0],
-    "debug_density_range": [0.0, 20.0],
-    "debug_contribution_range": [0.001, 1.0],
-    "debug_adam_momentum_range": [0.0, 0.1],
-    "debug_depth_mean_range": [0.0, 10.0],
-    "debug_depth_std_range": [0.0, 0.5],
-    "debug_depth_local_mismatch_range": [0.0, 0.5],
+    "debug_clone_count_range": [
+      0.0,
+      16.0
+    ],
+    "debug_density_range": [
+      0.0,
+      20.0
+    ],
+    "debug_contribution_range": [
+      0.001,
+      1.0
+    ],
+    "debug_adam_momentum_range": [
+      1e-05,
+      0.1
+    ],
+    "debug_depth_mean_range": [
+      0.0,
+      10.0
+    ],
+    "debug_depth_std_range": [
+      0.0,
+      0.5
+    ],
+    "debug_depth_local_mismatch_range": [
+      0.0,
+      0.5
+    ],
     "debug_depth_local_mismatch_smooth_radius": 2.0,
     "debug_depth_local_mismatch_reject_radius": 4.0,
     "debug_sh_coeff_index": 0,
@@ -128,26 +149,34 @@
       "loss_debug_view": 0,
       "loss_debug_frame": 0,
       "loss_debug_abs_scale": 1.0,
-      "move_speed": 2.0,
+      "move_speed": 1.9057955308394083,
       "fov": 60.0,
       "render_background_mode": 1,
-      "render_background_color": [0.0, 0.0, 0.0],
+      "render_background_color": [
+        0.0,
+        0.0,
+        0.0
+      ],
       "training_steps_per_frame": 3,
-      "train_background_color": [1.0, 1.0, 1.0],
+      "train_background_color": [
+        1.0,
+        1.0,
+        1.0
+      ],
       "seed": 1234,
       "init_opacity": 0.5
     },
     "import": {
       "colmap_depth_value_mode": 1,
-      "colmap_init_mode": 0,
+      "colmap_init_mode": 1,
       "colmap_image_downscale_mode": 0,
       "colmap_image_max_size": 2048,
       "colmap_image_scale": 1.0,
       "colmap_nn_radius_scale_coef": 0.5,
       "colmap_min_track_length": 3,
       "colmap_depth_point_count": 100000,
-      "colmap_diffused_point_count": 100000,
-      "colmap_diffusion_radius": 1.0
+      "colmap_diffused_point_count": 2000000,
+      "colmap_diffusion_radius": 1.5210000276565552
     },
     "ui": {
       "show_histograms": false,
@@ -160,13 +189,17 @@
       "hist_max_value": 1.0,
       "hist_y_limit": 1.0,
       "viewport_sh_band": 3,
-      "viewport_sh_control_key": "sh_band",
-      "viewport_sh_stage_label": "Stage 0"
+      "viewport_sh_control_key": "sh_band_stage2",
+      "viewport_sh_stage_label": "Stage 2"
     },
     "state": {
       "list_capacity_multiplier": 16,
       "max_prepass_memory_mb": 4096,
-      "background": [0.0, 0.0, 0.0]
+      "background": [
+        0.0,
+        0.0,
+        0.0
+      ]
     }
   },
   "cli": {
@@ -183,13 +216,17 @@
       "images_subdir": "images_4",
       "iters": 1000,
       "max_gaussians": 1000000,
-      "refinement_min_contribution_percent": 0.00001,
+      "refinement_min_contribution_percent": 1e-05,
       "use_sh": true,
       "training_profile": "auto",
       "seed": 1234,
       "width": 0,
       "height": 0,
-      "bg": [0.0, 0.0, 0.0],
+      "bg": [
+        0.0,
+        0.0,
+        0.0
+      ],
       "log_interval": 10,
       "snapshot_interval": 0,
       "snapshot_dir": "outputs/train_snapshots",
@@ -206,7 +243,11 @@
       "far": 120.0,
       "distance_multiplier": 1.35,
       "elevation_ratio": 0.0,
-      "bg": [0.0, 0.0, 0.0]
+      "bg": [
+        0.0,
+        0.0,
+        0.0
+      ]
     },
     "render_single": {
       "output": "render.png",
@@ -214,12 +255,24 @@
       "height": 720,
       "max_splats": 0,
       "max_splat_radius_px": 64.0,
-      "cam_pos": [0.0, 0.0, 3.0],
-      "cam_target": [0.0, 0.0, 0.0],
+      "cam_pos": [
+        0.0,
+        0.0,
+        3.0
+      ],
+      "cam_target": [
+        0.0,
+        0.0,
+        0.0
+      ],
       "fov": 60.0,
       "near": 0.1,
       "far": 120.0,
-      "bg": [0.0, 0.0, 0.0],
+      "bg": [
+        0.0,
+        0.0,
+        0.0
+      ],
       "no_flip_y": false
     }
   }

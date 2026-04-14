@@ -998,7 +998,7 @@ void csPrepareRefinementCounts(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (should_cull_refinement_splat(alpha, g_SplatContribution[splatId])) return;
     uint _;
     InterlockedAdd(g_AppendCounter[0], 1u, _);
-    uint cloneCount = g_CloneCounts[splatId];
+    uint cloneCount = min(g_CloneCounts[splatId], 3);
     if (cloneCount > 0u) InterlockedAdd(g_TotalCloneCounter[0], cloneCount, _);
 }
 
@@ -1041,7 +1041,7 @@ void csRewriteRefinementSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (should_cull_refinement_splat(alpha, g_SplatContribution[splatId])) return;
     apply_refinement_opacity_mul(source);
 
-    uint cloneCount = g_CloneCounts[splatId];
+    uint cloneCount = min(g_CloneCounts[splatId], 3);
     uint parentIndex = 0u;
     InterlockedAdd(g_AppendCounter[0], 1u, parentIndex);
 
