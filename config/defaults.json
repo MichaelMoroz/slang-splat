@@ -20,7 +20,7 @@
     "far": 120.0,
     "scale_l2_weight": 0.0,
     "scale_abs_reg_weight": 0.01,
-    "sh1_reg_weight": 0.01,
+    "sh1_reg_weight": 0.30000001192092896,
     "opacity_reg_weight": 0.01,
     "density_regularizer": 0.02,
     "color_non_negative_reg": 0.01,
@@ -148,9 +148,9 @@
       "interface_scale": 3,
       "theme": 1,
       "loss_debug_view": 0,
-      "loss_debug_frame": 0,
+      "loss_debug_frame": 306,
       "loss_debug_abs_scale": 1.0,
-      "move_speed": 7.9609808924794265,
+      "move_speed": 5.524552626277441,
       "fov": 60.0,
       "render_background_mode": 1,
       "render_background_color": [
@@ -190,8 +190,8 @@
       "hist_max_value": 1.0,
       "hist_y_limit": 1.0,
       "viewport_sh_band": 3,
-      "viewport_sh_control_key": "sh_band_stage1",
-      "viewport_sh_stage_label": "Stage 1"
+      "viewport_sh_control_key": "sh_band_stage3",
+      "viewport_sh_stage_label": "Stage 3"
     },
     "state": {
       "list_capacity_multiplier": 16,
