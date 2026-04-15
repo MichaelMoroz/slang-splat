@@ -738,10 +738,18 @@ def update_ui_text(viewer: object, dt: float) -> None:
     session.update_debug_frame_slider_range(viewer)
     frame_idx = _debug_frame_idx(viewer)
     debug_idx = clamp_index(int(viewer.c("loss_debug_view").value), len(viewer.loss_debug_view_options))
+    debug_metrics = _frame_metrics_snapshot(viewer, len(getattr(viewer.s, "training_frames", ())))
     stats = viewer.s.stats
     viewer.t("fps").text = f"FPS: {viewer.s.fps_smooth:.1f}"
     viewer.t("loss_debug_view").text = f"View: {viewer.loss_debug_view_options[debug_idx][1]}"
     viewer.t("loss_debug_frame").text = f"Frame[{frame_idx}]: {Path(viewer.s.training_frames[frame_idx].image_path).name}" if viewer.s.training_frames else "Frame: <none>"
+    viewer.t("loss_debug_psnr").text = (
+        f"PSNR: {float(debug_metrics['psnr'][frame_idx]):.2f} dB"
+        if frame_idx < debug_metrics["psnr"].size and np.isfinite(float(debug_metrics["psnr"][frame_idx]))
+        else "PSNR: inf"
+        if frame_idx < debug_metrics["psnr"].size and float(debug_metrics["psnr"][frame_idx]) == float("inf")
+        else "PSNR: n/a"
+    )
     viewer.t("path").text = f"Scene: {viewer.s.scene_path.name} [PLY]" if viewer.s.scene_path is not None else f"Scene: {viewer.s.colmap_root.name} [COLMAP]" if viewer.s.colmap_root is not None else "Scene: <none>"
     import_progress = getattr(viewer.s, "colmap_import_progress", None)
     viewer.ui._values["_colmap_import_active"] = bool(import_progress is not None)

@@ -1303,6 +1303,8 @@ class ToolkitWindow:
             height += frame_height + spacing_y
         if ui._texts.get("loss_debug_frame", ""):
             height += line_height + spacing_y
+        if ui._texts.get("loss_debug_psnr", ""):
+            height += line_height + spacing_y
         return height
 
     def _draw_training_camera_debug_controls(self, ui: ViewerUI) -> None:
@@ -1324,6 +1326,9 @@ class ToolkitWindow:
         frame_text = ui._texts.get("loss_debug_frame", "")
         if frame_text:
             imgui.text_disabled(_status_suffix(frame_text))
+        psnr_text = ui._texts.get("loss_debug_psnr", "")
+        if psnr_text:
+            imgui.text_disabled(_status_suffix(psnr_text))
 
     def _draw_viewport_camera_overlays(self, ui: ViewerUI, image_origin: imgui.ImVec2) -> None:
         if not bool(ui._values.get("show_camera_overlays", True)):
@@ -2720,7 +2725,7 @@ def build_ui(renderer) -> ViewerUI:
         key: "" for key in (
             "fps", "path", "scene_stats", "render_stats", "training",
             "training_time", "training_iters_avg", "training_loss", "training_mse", "training_density", "training_psnr", "training_instability", "error",
-            "loss_debug_view", "loss_debug_frame",
+            "loss_debug_view", "loss_debug_frame", "loss_debug_psnr",
             "colmap_import_status", "colmap_import_current",
             "training_resolution", "training_downscale", "training_schedule", "training_schedule_values", "training_refinement",
             "histogram_status",

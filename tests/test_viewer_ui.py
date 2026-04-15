@@ -641,7 +641,7 @@ def test_viewport_debug_overlay_draws_training_camera_controls(monkeypatch) -> N
     )
     viewer_ui = SimpleNamespace(
         _values={"debug_mode": ui._DEBUG_MODE_VALUES.index("normal"), "show_training_cameras": True, "loss_debug_view": 0, "loss_debug_frame": 3, "_loss_debug_frame_max": 12},
-        _texts={"loss_debug_view": "View: Rendered", "loss_debug_frame": "Frame[3]: frame.png"},
+        _texts={"loss_debug_view": "View: Rendered", "loss_debug_frame": "Frame[3]: frame.png", "loss_debug_psnr": "PSNR: 32.50 dB"},
     )
 
     ui.ToolkitWindow._draw_viewport_debug_overlay(toolkit, viewer_ui, ui.imgui.ImVec2(12.0, 34.0))
@@ -649,7 +649,13 @@ def test_viewport_debug_overlay_draws_training_camera_controls(monkeypatch) -> N
     assert child_sizes and child_sizes[0][0] >= 220.0
     assert combo_labels == [("##training_camera_view", "Rendered")]
     assert slider_calls == [("##training_camera_frame", 3, 0, 12)]
-    assert disabled_text == ["View: Rendered", "frame.png"]
+    assert disabled_text == ["View: Rendered", "frame.png", "32.50 dB"]
+
+
+def test_build_ui_initializes_loss_debug_psnr_text() -> None:
+    viewer_ui = ui.build_ui(_dummy_renderer())
+
+    assert viewer_ui._texts["loss_debug_psnr"] == ""
 
 
 def test_training_setup_section_draws_subsampling_control(monkeypatch) -> None:

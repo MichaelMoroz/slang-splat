@@ -193,7 +193,7 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         "train_auto_start_downscale": _control(1),
         "train_downscale_max_iters": _control(30000),
     }
-    texts = {key: _text() for key in ("fps", "images_subdir", "loss_debug_view", "loss_debug_frame", "path", "scene_stats", "render_stats", "training", "training_time", "training_iters_avg", "training_loss", "training_mse", "training_density", "training_psnr", "training_instability", "training_resolution", "training_downscale", "training_schedule", "training_schedule_values", "training_refinement", "colmap_import_status", "colmap_import_current", "histogram_status", "error")}
+    texts = {key: _text() for key in ("fps", "images_subdir", "loss_debug_view", "loss_debug_frame", "loss_debug_psnr", "path", "scene_stats", "render_stats", "training", "training_time", "training_iters_avg", "training_loss", "training_mse", "training_density", "training_psnr", "training_instability", "training_resolution", "training_downscale", "training_schedule", "training_schedule_values", "training_refinement", "colmap_import_status", "colmap_import_current", "histogram_status", "error")}
     viewer = SimpleNamespace()
     viewer.device = SimpleNamespace()
     viewer.toolkit = SimpleNamespace(viewport_size=lambda: (640, 360))
@@ -400,7 +400,8 @@ def test_update_ui_text_reports_training_schedule_and_refinement() -> None:
 
     assert viewer.t("training_schedule").text == "LR Schedule: 5.00e-03@0 -> 2.00e-03@3,000 -> 1.00e-03@14,000 -> 1.50e-04@30,000 | current=5.00e-03"
     assert viewer.t("training_schedule_values").text == "Current Values: step=0 | Stage 0 | lr=5.00e-03 | pos=1.00x | shlr=0.05x | depth=1.00e+00 | noise=5.00e+05 | sh=SH0"
-    assert viewer.t("training_refinement").text == "Refinement: every 200 | growth=0.00% now | target=5.00% after 500 | alpha<1.00e-02 or min contrib<1e-05% | decay=99.50%/pass | alpha mul=1.00x | max=1,000,000"
+    assert viewer.t("training_refinement").text == "Refinement: every 200 | growth=0.00% now | target=5.00% after 500 | alpha<1.00e-02 or min contrib<1e-05% | decay=99.50%/pass | alpha mul=1.00x | clone scale=1.00x | max=1,000,000"
+    assert viewer.t("loss_debug_psnr").text == "PSNR: 32.50 dB"
     assert viewer.ui._values["_training_view_overlay_segments"] == ()
     assert viewer.ui._values["_training_views_rows"] == (
         {
@@ -531,6 +532,7 @@ def test_update_ui_text_uses_permutation_averages() -> None:
     assert viewer.t("training_mse").text == "MSE Avg: 2.500000e-03"
     assert viewer.t("training_density").text == "Density Avg: 6.500000e-03"
     assert viewer.t("training_psnr").text == "PSNR Avg: 26.750 dB"
+    assert viewer.t("loss_debug_psnr").text == "PSNR: 32.50 dB"
     assert viewer.t("training_resolution").text == "Train Res: 640x360 (N=1)"
 
 
