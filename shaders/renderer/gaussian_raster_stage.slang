@@ -924,7 +924,9 @@ void raster_backward_replay<T : IRasterGradVariant>(RasterPixelInfo info, inout 
 
             RasterState state = replayState.pixelState;
             RasterState prevState = state.undo(gaussian.colorAlpha.xyz, alpha);
-            if (replayState.cloneSelected && alpha > CLONE_COUNT_ALPHA_THRESHOLD && state.trans <= replayState.cloneThreshold && prevState.trans > replayState.cloneThreshold)
+            float prevTrans = smoothstep(0.0, 0.1, prevState.trans);
+            float nextTrans = smoothstep(0.0, 0.1, state.trans);
+            if (replayState.cloneSelected && alpha > CLONE_COUNT_ALPHA_THRESHOLD && nextTrans <= replayState.cloneThreshold && prevTrans > replayState.cloneThreshold)
             {
                 InterlockedAdd(g_CloneCounts[splatId], 1u);
             }
