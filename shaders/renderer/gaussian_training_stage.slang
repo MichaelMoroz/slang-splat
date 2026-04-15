@@ -120,6 +120,7 @@ uniform float g_RefinementAlphaCullThreshold;
 uniform uint g_RefinementMinContributionThreshold;
 uniform float g_RefinementOpacityMul;
 uniform float g_RefinementSampleRadius;
+uniform float g_RefinementCloneScaleMul;
 uniform float g_RefinementRadiusScale;
 
 groupshared float gsLoss[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
@@ -456,7 +457,12 @@ float3 refinement_centered_volume_sample(uint frameHash, uint splatId, uint slot
 
 float3 refinement_child_log_scale(float3 parentLogScale, float shrink)
 {
-    return parentLogScale + log(shrink);
+    return parentLogScale + log(max(shrink, SMALL_VALUE));
+}
+
+float refinement_child_shrink(float familySize)
+{
+    return pow(max(familySize, 1.0), DENSIFY_SCALE_SHRINK_EXPONENT) * max(g_RefinementCloneScaleMul, 0.0);
 }
 
 float position_random_step_gate(float opacity)
@@ -700,7 +706,7 @@ SplatState split_family_member(SplatState source, uint splatId, uint slot, uint 
 {
     if (familySize <= 1u) return source;
     float family = float(familySize);
-    float shrink = pow(family, DENSIFY_SCALE_SHRINK_EXPONENT);
+    float shrink = refinement_child_shrink(family);
     float3 parentScale = exp(source.logScale);
     float shrinkOffset = sqrt(max(1.0 - shrink * shrink, 0.0));
     float4 qInv = float4(source.rotation.x, -source.rotation.y, -source.rotation.z, -source.rotation.w);

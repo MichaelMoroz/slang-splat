@@ -18,6 +18,7 @@ from .defaults import (
     DEFAULT_DEBUG_CONTRIBUTION_RANGE_PERCENT,
     DEFAULT_DEPTH_RATIO_GRAD_MAX,
     DEFAULT_DEPTH_RATIO_GRAD_MIN,
+    DEFAULT_REFINEMENT_CLONE_SCALE_MUL,
     DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY,
     DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT,
     DEFAULT_SSIM_C2,
@@ -198,7 +199,7 @@ class TrainingHyperParams:
     lr_sh_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_sh_mul"]; lr_sh_stage1_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_sh_stage1_mul"]; lr_sh_stage2_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_sh_stage2_mul"]; lr_sh_stage3_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_sh_stage3_mul"]
     position_random_step_noise_lr: float = TRAINING_BUILD_ARG_DEFAULTS["position_random_step_noise_lr"]; position_random_step_opacity_gate_center: float = TRAINING_BUILD_ARG_DEFAULTS["position_random_step_opacity_gate_center"]; position_random_step_opacity_gate_sharpness: float = TRAINING_BUILD_ARG_DEFAULTS["position_random_step_opacity_gate_sharpness"]
     lr_schedule_enabled: bool = TRAINING_BUILD_ARG_DEFAULTS["lr_schedule_enabled"]; lr_schedule_start_lr: float = TRAINING_BUILD_ARG_DEFAULTS["lr_schedule_start_lr"]; lr_schedule_stage1_lr: float = TRAINING_BUILD_ARG_DEFAULTS["lr_schedule_stage1_lr"]; lr_schedule_stage2_lr: float = TRAINING_BUILD_ARG_DEFAULTS["lr_schedule_stage2_lr"]; lr_schedule_end_lr: float = TRAINING_BUILD_ARG_DEFAULTS["lr_schedule_end_lr"]; lr_schedule_steps: int = TRAINING_BUILD_ARG_DEFAULTS["lr_schedule_steps"]; lr_schedule_stage1_step: int = TRAINING_BUILD_ARG_DEFAULTS["lr_schedule_stage1_step"]; lr_schedule_stage2_step: int = TRAINING_BUILD_ARG_DEFAULTS["lr_schedule_stage2_step"]
-    refinement_interval: int = TRAINING_BUILD_ARG_DEFAULTS["refinement_interval"]; refinement_growth_ratio: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_growth_ratio"]; refinement_growth_start_step: int = TRAINING_BUILD_ARG_DEFAULTS["refinement_growth_start_step"]; refinement_alpha_cull_threshold: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_alpha_cull_threshold"]; refinement_min_contribution_percent: float = DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT; refinement_min_contribution_decay: float = DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY; refinement_opacity_mul: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_opacity_mul"]; refinement_sample_radius: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_sample_radius"]
+    refinement_interval: int = TRAINING_BUILD_ARG_DEFAULTS["refinement_interval"]; refinement_growth_ratio: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_growth_ratio"]; refinement_growth_start_step: int = TRAINING_BUILD_ARG_DEFAULTS["refinement_growth_start_step"]; refinement_alpha_cull_threshold: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_alpha_cull_threshold"]; refinement_min_contribution_percent: float = DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT; refinement_min_contribution_decay: float = DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY; refinement_opacity_mul: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_opacity_mul"]; refinement_sample_radius: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_sample_radius"]; refinement_clone_scale_mul: float = DEFAULT_REFINEMENT_CLONE_SCALE_MUL
     depth_ratio_stage1_weight: float = TRAINING_BUILD_ARG_DEFAULTS["depth_ratio_stage1_weight"]; depth_ratio_stage2_weight: float = TRAINING_BUILD_ARG_DEFAULTS["depth_ratio_stage2_weight"]; depth_ratio_stage3_weight: float = TRAINING_BUILD_ARG_DEFAULTS["depth_ratio_stage3_weight"]; ssim_weight_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["ssim_weight_stage1"]; ssim_weight_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["ssim_weight_stage2"]; ssim_weight_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["ssim_weight_stage3"]; max_screen_fraction_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["max_screen_fraction_stage1"]; max_screen_fraction_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["max_screen_fraction_stage2"]; max_screen_fraction_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["max_screen_fraction_stage3"]
     position_random_step_noise_stage1_lr: float = TRAINING_BUILD_ARG_DEFAULTS["position_random_step_noise_stage1_lr"]; position_random_step_noise_stage2_lr: float = TRAINING_BUILD_ARG_DEFAULTS["position_random_step_noise_stage2_lr"]; position_random_step_noise_stage3_lr: float = TRAINING_BUILD_ARG_DEFAULTS["position_random_step_noise_stage3_lr"]
     use_sh_stage1: bool = TRAINING_BUILD_ARG_DEFAULTS["use_sh_stage1"]; use_sh_stage2: bool = TRAINING_BUILD_ARG_DEFAULTS["use_sh_stage2"]; use_sh_stage3: bool = TRAINING_BUILD_ARG_DEFAULTS["use_sh_stage3"]
@@ -238,6 +239,7 @@ class TrainingHyperParams:
         self.refinement_min_contribution_decay = min(max(float(self.refinement_min_contribution_decay), 0.0), 1.0)
         self.refinement_opacity_mul = min(max(float(self.refinement_opacity_mul), 0.0), 1.0)
         self.refinement_sample_radius = max(float(self.refinement_sample_radius), 0.0)
+        self.refinement_clone_scale_mul = max(float(self.refinement_clone_scale_mul), 0.0)
         self.refinement_loss_weight = max(float(self.refinement_loss_weight), 0.0)
         self.refinement_target_edge_weight = max(float(self.refinement_target_edge_weight), 0.0)
         self.sh1_reg_weight = max(float(self.sh1_reg_weight), 0.0)
@@ -536,6 +538,7 @@ class GaussianTrainer:
             "g_RefinementMinContributionThreshold": np.uint32(contribution_fixed_count_from_percent(refinement_threshold, self._observed_contribution_pixel_count)),
             "g_RefinementOpacityMul": float(self.training.refinement_opacity_mul),
             "g_RefinementSampleRadius": float(self.training.refinement_sample_radius),
+            "g_RefinementCloneScaleMul": float(self.training.refinement_clone_scale_mul),
             "g_RefinementRadiusScale": float(max(self.renderer.radius_scale, 1e-8)),
         }
 

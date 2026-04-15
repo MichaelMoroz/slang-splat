@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from ..repo_defaults import viewer_defaults
 from ..training.defaults import (
     DEFAULT_LR_SCHEDULE_STEPS,
+    DEFAULT_REFINEMENT_CLONE_SCALE_MUL,
     DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY,
     DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT,
     TRAINING_BUILD_ARG_DEFAULTS,
@@ -43,7 +44,7 @@ class TrainingCliArgDef:
 
 
 def _default(name: str) -> object:
-    return TRAINING_BUILD_ARG_DEFAULTS[name]
+    return DEFAULT_REFINEMENT_CLONE_SCALE_MUL if name == "refinement_clone_scale_mul" else TRAINING_BUILD_ARG_DEFAULTS[name]
 
 
 def _control(
@@ -89,6 +90,7 @@ TRAIN_SETUP_CONTROL_DEFS = (
     _control("refinement_min_contribution_decay", "input_float", "Refinement Min Contribution Decay", {"value": DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY, "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}, group=TRAINING_SETUP_GROUP, build_args=("refinement_min_contribution_decay",)),
     _control("refinement_opacity_mul", "input_float", "Refinement Alpha Mul", {"value": _default("refinement_opacity_mul"), "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}, group=TRAINING_SETUP_GROUP, build_args=("refinement_opacity_mul",)),
     _control("refinement_sample_radius", "input_float", "Refinement Sample Radius", {"value": _default("refinement_sample_radius"), "step": 1e-2, "step_fast": 1e-1, "format": "%.5f"}, group=TRAINING_SETUP_GROUP, build_args=("refinement_sample_radius",)),
+    _control("refinement_clone_scale_mul", "input_float", "Refinement Clone Scale Mul", {"value": _default("refinement_clone_scale_mul"), "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}, group=TRAINING_SETUP_GROUP, build_args=("refinement_clone_scale_mul",)),
     _control("refinement_loss_weight", "input_float", "Refinement Loss Weight", {"value": _default("refinement_loss_weight"), "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}, group=TRAINING_SETUP_GROUP, build_args=("refinement_loss_weight",)),
     _control("refinement_target_edge_weight", "input_float", "Refinement Edge Weight", {"value": _default("refinement_target_edge_weight"), "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}, group=TRAINING_SETUP_GROUP, build_args=("refinement_target_edge_weight",)),
     _control("train_downscale_mode", "combo", "Downscale Mode", {"value": _default("train_downscale_mode"), "options": TRAIN_DOWNSCALE_MODE_LABELS}, group=TRAINING_SETUP_GROUP, build_args=("train_downscale_mode",)),
@@ -253,6 +255,7 @@ TRAIN_SETUP_PRIMARY_KEYS = (
     "refinement_min_contribution_decay",
     "refinement_opacity_mul",
     "refinement_sample_radius",
+    "refinement_clone_scale_mul",
     "refinement_loss_weight",
     "refinement_target_edge_weight",
     "train_downscale_mode",
@@ -300,6 +303,7 @@ TRAINING_CLI_ARG_DEFS = (
     _cli_arg("--ssim-weight", dest="ssim_weight", build_arg="ssim_weight", type=float, default=_default("ssim_weight")),
     _cli_arg("--refinement-loss-weight", dest="refinement_loss_weight", build_arg="refinement_loss_weight", type=float, default=_default("refinement_loss_weight")),
     _cli_arg("--refinement-target-edge-weight", dest="refinement_target_edge_weight", build_arg="refinement_target_edge_weight", type=float, default=_default("refinement_target_edge_weight")),
+    _cli_arg("--refinement-clone-scale-mul", dest="refinement_clone_scale_mul", build_arg="refinement_clone_scale_mul", type=float, default=_default("refinement_clone_scale_mul")),
     _cli_arg("--depth-ratio-grad-min", dest="depth_ratio_grad_min", build_arg="depth_ratio_grad_min", type=float, default=_default("depth_ratio_grad_min")),
     _cli_arg("--depth-ratio-grad-max", dest="depth_ratio_grad_max", build_arg="depth_ratio_grad_max", type=float, default=_default("depth_ratio_grad_max")),
     _cli_arg("--max-allowed-density-start", dest="max_allowed_density_start", build_arg="max_allowed_density_start", type=float, default=_default("max_allowed_density_start")),

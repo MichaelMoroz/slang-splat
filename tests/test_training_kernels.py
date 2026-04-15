@@ -62,9 +62,9 @@ def _training_rendered_to_display_np(rendered_rgb: np.ndarray) -> np.ndarray:
     return np.power(np.maximum(np.asarray(rendered_rgb, dtype=np.float32), 0.0), np.float32(_OUTPUT_GAMMA)).astype(np.float32, copy=False)
 
 
-def _expected_refinement_child_scale(parent_scale: np.ndarray, family_size: int) -> np.ndarray:
+def _expected_refinement_child_scale(parent_scale: np.ndarray, family_size: int, scale_mul: float = 1.0) -> np.ndarray:
     scale = np.asarray(parent_scale, dtype=np.float32).reshape(3)
-    shrink = float(max(int(family_size), 1)) ** (-1.0 / 3.0)
+    shrink = float(max(int(family_size), 1)) ** (-1.0 / 3.0) * float(scale_mul)
     return (scale * np.float32(shrink)).astype(np.float32, copy=False)
 
 
@@ -2364,6 +2364,38 @@ def test_refinement_rewrite_culls_and_splits_families(device, tmp_path: Path) ->
     contribution_after = buffer_to_numpy(trainer.refinement_buffers["splat_contribution"], np.uint32)[: trainer.scene.count]
     assert np.all(clone_counts_after == 0)
     assert np.all(contribution_after == 0)
+
+
+def test_refinement_clone_scale_mul_scales_split_family_sigma(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=1, seed=90)
+    scene.opacities[:] = np.array([0.6], dtype=np.float32)
+    scene.scales[:] = _log_sigma(np.array([[0.09, 0.06, 0.03]], dtype=np.float32))
+    frame = _make_frame(tmp_path, image_name="refinement_clone_scale_mul_target.png", image_id=111)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    observed_pixels = renderer.width * renderer.height
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(
+            refinement_alpha_cull_threshold=1e-6,
+            refinement_min_contribution_percent=contribution_percent_from_fixed_count(50, observed_pixels),
+            refinement_clone_scale_mul=1.5,
+        ),
+        seed=123,
+    )
+
+    trainer._observed_contribution_pixel_count = observed_pixels
+    trainer.refinement_buffers["clone_counts"].copy_from_numpy(np.array([1], dtype=np.uint32))
+    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
+    trainer._run_refinement()
+
+    assert trainer.scene.count == 2
+    groups = _read_scene_groups(renderer, trainer.scene.count)
+    actual_scales = _actual_scale(groups["scales"][:, :3])
+    expected_scale = _expected_refinement_child_scale(np.array([0.09, 0.06, 0.03], dtype=np.float32), 2, scale_mul=1.5)
+    np.testing.assert_allclose(actual_scales, np.repeat(expected_scale[None, :], 2, axis=0), rtol=0.0, atol=1e-6)
 
 
 def test_refinement_runtime_uses_base_min_contribution_for_first_refinement_then_decays(device, tmp_path: Path) -> None:

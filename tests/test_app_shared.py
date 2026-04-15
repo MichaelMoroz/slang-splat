@@ -67,6 +67,7 @@ def test_build_training_params_clamps_ranges():
         refinement_loss_weight=-1.0,
         refinement_target_edge_weight=-2.0,
         refinement_sample_radius=-2.0,
+        refinement_clone_scale_mul=-3.0,
         depth_ratio_grad_min=0.2,
         depth_ratio_grad_max=0.1,
         max_gaussians=-1,
@@ -137,6 +138,7 @@ def test_build_training_params_clamps_ranges():
     assert params.training.refinement_min_contribution_decay == 0.995
     assert params.training.refinement_opacity_mul == 1.0
     assert params.training.refinement_sample_radius == 0.0
+    assert params.training.refinement_clone_scale_mul == 0.0
     assert params.training.max_gaussians == 0
     assert params.training.train_subsample_factor == 0
 
@@ -205,6 +207,7 @@ def test_default_training_params_match_fixed_count_defaults():
     assert params.training.refinement_min_contribution_decay == 0.995
     assert params.training.refinement_opacity_mul == 1.0
     assert params.training.refinement_sample_radius == 4.0
+    assert params.training.refinement_clone_scale_mul == 1.0
     assert params.training.max_gaussians == 1_000_000
     assert params.training.train_subsample_factor == 0
 
@@ -213,6 +216,14 @@ def test_default_training_params_include_refinement_sample_radius() -> None:
     params = default_training_params()
 
     assert params.training.refinement_sample_radius == 4.0
+
+
+def test_build_training_params_exposes_refinement_clone_scale_mul() -> None:
+    params = build_training_params(background=(1.0, 1.0, 1.0), refinement_clone_scale_mul=1.5)
+    clamped = build_training_params(background=(1.0, 1.0, 1.0), refinement_clone_scale_mul=-2.0)
+
+    assert params.training.refinement_clone_scale_mul == 1.5
+    assert clamped.training.refinement_clone_scale_mul == 0.0
 
 
 def test_auto_profile_resolves_to_legacy_defaults():

@@ -10,7 +10,7 @@ import slangpy as spy
 from ..repo_defaults import renderer_defaults
 from ..utility import clamp_float, clamp_int
 from ..scene import GaussianInitHyperParams, GaussianScene
-from ..training.defaults import TRAINING_BUILD_ARG_DEFAULTS
+from ..training.defaults import DEFAULT_REFINEMENT_CLONE_SCALE_MUL, TRAINING_BUILD_ARG_DEFAULTS
 from ..training import AdamHyperParams, DEFAULT_DEBUG_CONTRIBUTION_RANGE_PERCENT, DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY, DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, resolve_depth_ratio_grad_band, resolve_training_profile
 
 EPS = 1e-8
@@ -210,6 +210,7 @@ def build_training_params(
     refinement_min_contribution_decay: float = DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY,
     refinement_opacity_mul: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_opacity_mul"],
     refinement_sample_radius: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_sample_radius"],
+    refinement_clone_scale_mul: float = DEFAULT_REFINEMENT_CLONE_SCALE_MUL,
     depth_ratio_stage1_weight: float = TRAINING_BUILD_ARG_DEFAULTS["depth_ratio_stage1_weight"],
     depth_ratio_stage2_weight: float = TRAINING_BUILD_ARG_DEFAULTS["depth_ratio_stage2_weight"],
     depth_ratio_stage3_weight: float = TRAINING_BUILD_ARG_DEFAULTS["depth_ratio_stage3_weight"],
@@ -329,6 +330,7 @@ def build_training_params(
         refinement_min_contribution_decay=clamp_float(refinement_min_contribution_decay, 0.0, 1.0),
         refinement_opacity_mul=clamp_float(refinement_opacity_mul, 0.0, 1.0),
         refinement_sample_radius=clamp_float(refinement_sample_radius, 0.0, 1e6),
+        refinement_clone_scale_mul=clamp_float(refinement_clone_scale_mul, 0.0, 1e6),
         depth_ratio_stage1_weight=clamp_float(depth_ratio_stage1_weight, 0.0, 1e4),
         depth_ratio_stage2_weight=clamp_float(depth_ratio_stage2_weight, 0.0, 1e4),
         depth_ratio_stage3_weight=clamp_float(depth_ratio_stage3_weight, 0.0, 1e4),
