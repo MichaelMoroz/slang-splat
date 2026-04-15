@@ -384,9 +384,8 @@ float3 apply_support_radius_lower_bound(float3 logScale, float supportRadius)
 float refinement_min_support_radius(PinholeCamera camera, float3 worldPos)
 {
     float minFocal = max(min(camera.params.focalPixels.x, camera.params.focalPixels.y), SMALL_VALUE);
-    float pixelAngle = atan(REFINEMENT_MIN_SCREEN_RADIUS_PX / minFocal);
     float cameraDistance = length(worldPos - camera.position_world());
-    return cameraDistance * tan(pixelAngle);
+    return cameraDistance * REFINEMENT_MIN_SCREEN_RADIUS_PX / minFocal;
 }
 
 void copy_adam_state(uint srcSplatId, uint dstSplatId)

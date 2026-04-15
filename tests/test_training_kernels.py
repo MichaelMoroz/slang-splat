@@ -417,9 +417,8 @@ def _circle_bound_support_radius(camera, position: np.ndarray, width: int, heigh
     del width, height
     focal = np.asarray(camera.focal_pixels_xy(1, 1), dtype=np.float32)
     min_focal = max(float(min(focal[0], focal[1])), 1e-8)
-    pixel_angle = float(np.arctan(float(radius_px) / min_focal))
     camera_distance = float(np.linalg.norm(np.asarray(position, dtype=np.float32) - np.asarray(camera.position, dtype=np.float32)))
-    return float(camera_distance * np.tan(pixel_angle))
+    return float(camera_distance * float(radius_px) / min_focal)
 
 
 def _screen_scale_cap_expected(
@@ -435,9 +434,8 @@ def _screen_scale_cap_expected(
     target_radius_px = np.sqrt(max(max_area_px / np.pi, 1e-8))
     focal = np.asarray(camera.focal_pixels_xy(renderer.width, renderer.height), dtype=np.float32)
     min_focal = max(float(min(focal[0], focal[1])), 1e-8)
-    target_angle = float(np.arctan(target_radius_px / min_focal))
     camera_distance = float(np.linalg.norm(np.asarray(position, dtype=np.float32) - np.asarray(camera.position, dtype=np.float32)))
-    max_support_radius = camera_distance * np.tan(target_angle)
+    max_support_radius = camera_distance * target_radius_px / min_focal
     max_sigma = max_support_radius / max(float(renderer.radius_scale) * _GAUSSIAN_SUPPORT_SIGMA_RADIUS, 1e-8)
     return np.minimum(scale, np.full((3,), max_sigma, dtype=np.float32)).astype(np.float32, copy=False)
 

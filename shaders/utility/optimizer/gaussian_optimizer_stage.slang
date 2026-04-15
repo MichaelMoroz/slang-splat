@@ -309,8 +309,7 @@ float angle_only_screen_scale_cap_slope(PinholeCamera camera)
     if (!(maxScreenAreaPx > SMALL_VALUE)) return 0.0;
     float targetRadiusPx = sqrt(max(maxScreenAreaPx / PI, SMALL_VALUE));
     float minFocal = max(min(camera.params.focalPixels.x, camera.params.focalPixels.y), SMALL_VALUE);
-    float targetAngle = atan(targetRadiusPx / minFocal);
-    return tan(targetAngle) / max(g_ScreenScaleCapRadiusScale * GAUSSIAN_SUPPORT_SIGMA_RADIUS, SMALL_VALUE);
+    return targetRadiusPx / minFocal / max(g_ScreenScaleCapRadiusScale * GAUSSIAN_SUPPORT_SIGMA_RADIUS, SMALL_VALUE);
 }
 
 float3 clamp_screen_scale_upper_bound(float3 position, float3 logScale)
