@@ -22,14 +22,13 @@ _raw_opacity = lambda alpha: (np.log(np.clip(np.asarray(alpha, dtype=np.float32)
 _actual_opacity = lambda raw: (1.0 / (1.0 + np.exp(-np.asarray(raw, dtype=np.float32)))).astype(np.float32, copy=False)
 _actual_scale = lambda log_scale: np.exp(np.asarray(log_scale, dtype=np.float32))
 _GAUSSIAN_SUPPORT_SIGMA_RADIUS = 3.0
-_REFINEMENT_MIN_SCREEN_RADIUS_PX = 1.0
+_REFINEMENT_MIN_SCREEN_RADIUS_PX = 0.05
 _log_sigma = lambda sigma: np.log(np.asarray(sigma, dtype=np.float32))
 _stored_from_support_scale = lambda support_scale: np.log(np.asarray(support_scale, dtype=np.float32) / _GAUSSIAN_SUPPORT_SIGMA_RADIUS)
 _SCALE_GRAD_MULS = (0.015625, 0.03125, 0.0625, 0.125, 0.25, 0.5, 0.75, 0.875, 0.9375, 0.96875, 1.0, 1.05)
 _TARGET_MULS = (2.0, 3.0, 4.0, 6.0, 7.5)
 _DEPTH_RATIO_GRAD_SOFTNESS_RATIO = 0.1
 _DEPTH_RATIO_GRAD_SOFTNESS_FLOOR = 1e-4
-_MIN_SCREEN_CAP_VISIBLE_AREA_FRACTION = 0.5
 _SSIM_BLUR_WEIGHTS = np.array(
     [
         0.00102838008447911,
@@ -414,110 +413,33 @@ def _read_adam_moments(trainer: GaussianTrainer, splat_count: int) -> np.ndarray
     return flat[:count].reshape(trainer.renderer.TRAINABLE_PARAM_COUNT, max(int(splat_count), 1), 2).copy()
 
 
-def _circle_bound_support_radius(camera, position: np.ndarray, width: int, height: int, radius_px: float) -> float | None:
-    center_px, visible = camera.project_world_to_screen(position, width, height)
-    if not visible:
-        return None
-    if center_px[0] < 0.0 or center_px[0] >= float(width) or center_px[1] < 0.0 or center_px[1] >= float(height):
-        return None
-    viewport_center = np.array([0.5 * float(width), 0.5 * float(height)], dtype=np.float32)
-    to_viewport_center = viewport_center - np.asarray(center_px, dtype=np.float32)
-    distance = float(np.linalg.norm(to_viewport_center))
-    if distance <= 1e-6:
-        sample_px = np.asarray(center_px, dtype=np.float32) + np.array([radius_px, 0.0], dtype=np.float32)
-    else:
-        sample_px = np.asarray(center_px, dtype=np.float32) + to_viewport_center * np.float32(radius_px / distance)
-    ray_dir = camera.screen_to_world_ray(sample_px, width, height)
-    to_center = np.asarray(position, dtype=np.float32) - np.asarray(camera.position, dtype=np.float32)
-    return float(np.linalg.norm(np.cross(to_center, ray_dir)))
-
-
-def _read_splat_visible_area_px(renderer: GaussianRenderer, count: int) -> np.ndarray:
-    flat = buffer_to_numpy(renderer.work_buffers["splat_visible_area_px"], np.float32)
-    return flat[: max(int(count), 1)].copy()
-
-
-def _read_screen_ellipse_conic(renderer: GaussianRenderer, count: int) -> np.ndarray:
-    flat = buffer_to_numpy(renderer.work_buffers["screen_ellipse_conic"], np.float32)
-    return flat[: max(int(count), 1) * 4].reshape(max(int(count), 1), 4).copy()
-
-
-def _projected_ellipse_area(conic: np.ndarray) -> float:
-    coeffs = np.asarray(conic, dtype=np.float32)
-    det = float(coeffs[0] * coeffs[2] - coeffs[1] * coeffs[1])
-    return max(float(np.pi / np.sqrt(max(det, 1e-12))), 1e-12)
-
-
-def _quat_rotate_np(vector: np.ndarray, quat: np.ndarray) -> np.ndarray:
-    vec = np.asarray(vector, dtype=np.float32).reshape(3)
-    q = np.asarray(quat, dtype=np.float32).reshape(4)
-    q_vec = q[1:4]
-    return (vec + np.float32(2.0) * np.cross(np.cross(vec, q_vec) + q[0] * vec, q_vec)).astype(np.float32, copy=False)
+def _circle_bound_support_radius(camera, position: np.ndarray, width: int, height: int, radius_px: float) -> float:
+    del width, height
+    focal = np.asarray(camera.focal_pixels_xy(1, 1), dtype=np.float32)
+    min_focal = max(float(min(focal[0], focal[1])), 1e-8)
+    pixel_angle = float(np.arctan(float(radius_px) / min_focal))
+    camera_distance = float(np.linalg.norm(np.asarray(position, dtype=np.float32) - np.asarray(camera.position, dtype=np.float32)))
+    return float(camera_distance * np.tan(pixel_angle))
 
 
 def _screen_scale_cap_expected(
     *,
     scale: np.ndarray,
     position: np.ndarray,
-    rotation: np.ndarray,
-    opacity: float,
     camera,
     renderer: GaussianRenderer,
     max_screen_fraction: float,
-    current_area_px: float,
-    full_area_px: float,
 ) -> np.ndarray:
     scale = np.asarray(scale, dtype=np.float32).reshape(3)
-    max_area_px = float(max_screen_fraction) * float(renderer.width) * float(renderer.height)
-    if current_area_px <= max_area_px or current_area_px < _MIN_SCREEN_CAP_VISIBLE_AREA_FRACTION * full_area_px:
-        return scale.copy()
-
-    center_px, visible = camera.project_world_to_screen(position, renderer.width, renderer.height)
-    if not visible:
-        return scale.copy()
-
-    opacity_safe = max(float(opacity), _OPACITY_EPS)
-    support_sigma_radius = np.sqrt(
-        max(-2.0 * np.log(max(float(renderer.alpha_cutoff), _OPACITY_EPS) / opacity_safe), 0.0)
-    )
-    support_scale_mul = float(renderer.radius_scale) * float(support_sigma_radius)
-    if support_scale_mul <= 1e-6:
-        return scale.copy()
-
-    quat = np.asarray(rotation, dtype=np.float32).reshape(4)
-    quat = quat / np.float32(max(float(np.linalg.norm(quat)), 1e-8))
-    q_inv = quat * np.array([1.0, -1.0, -1.0, -1.0], dtype=np.float32)
-    max_radius_px = np.sqrt(max(max_area_px / np.pi, 1e-6))
-    axis_radius_px = np.zeros((3,), dtype=np.float32)
-    for axis_index in range(3):
-        local_offset = np.zeros((3,), dtype=np.float32)
-        local_offset[axis_index] = scale[axis_index] * np.float32(support_scale_mul)
-        world_offset = _quat_rotate_np(local_offset, q_inv)
-        for sign in (-1.0, 1.0):
-            axis_px, axis_visible = camera.project_world_to_screen(
-                np.asarray(position, dtype=np.float32) + np.float32(sign) * world_offset,
-                renderer.width,
-                renderer.height,
-            )
-            if axis_visible:
-                axis_radius_px[axis_index] = max(float(axis_radius_px[axis_index]), float(np.linalg.norm(axis_px - center_px)))
-    shrink = np.minimum(
-        np.ones((3,), dtype=np.float32),
-        np.float32(max_radius_px) / np.maximum(axis_radius_px, np.float32(1e-6)),
-    )
-    return (scale * shrink).astype(np.float32, copy=False)
-
-
-def _read_splat_visible(renderer: GaussianRenderer, count: int) -> np.ndarray:
-    flat = buffer_to_numpy(renderer.work_buffers["splat_visible"], np.uint32)
-    return flat[:count].copy()
-
-
-def _run_prepass(renderer: GaussianRenderer, camera) -> None:
-    enc = renderer.device.create_command_encoder()
-    renderer.record_prepass_for_current_scene(enc, camera)
-    renderer.device.submit_command_buffer(enc.finish())
-    renderer.device.wait()
+    max_area_px = max(float(max_screen_fraction) * float(renderer.width) * float(renderer.height), 1e-8)
+    target_radius_px = np.sqrt(max(max_area_px / np.pi, 1e-8))
+    focal = np.asarray(camera.focal_pixels_xy(renderer.width, renderer.height), dtype=np.float32)
+    min_focal = max(float(min(focal[0], focal[1])), 1e-8)
+    target_angle = float(np.arctan(target_radius_px / min_focal))
+    camera_distance = float(np.linalg.norm(np.asarray(position, dtype=np.float32) - np.asarray(camera.position, dtype=np.float32)))
+    max_support_radius = camera_distance * np.tan(target_angle)
+    max_sigma = max_support_radius / max(float(renderer.radius_scale) * _GAUSSIAN_SUPPORT_SIGMA_RADIUS, 1e-8)
+    return np.minimum(scale, np.full((3,), max_sigma, dtype=np.float32)).astype(np.float32, copy=False)
 
 
 class _ScaleGradProbe:
@@ -2718,13 +2640,10 @@ def test_refinement_min_screen_size_raises_small_splats(device, tmp_path: Path) 
     )
 
     expected_support = min(
-        value
-        for value in (
-            _circle_bound_support_radius(trainer.make_frame_camera(frame_index, renderer.width, renderer.height), scene.positions[0], renderer.width, renderer.height, _REFINEMENT_MIN_SCREEN_RADIUS_PX)
-            for frame_index in range(3)
-        )
-        if value is not None
+        _circle_bound_support_radius(trainer.make_frame_camera(frame_index, renderer.width, renderer.height), scene.positions[0], renderer.width, renderer.height, _REFINEMENT_MIN_SCREEN_RADIUS_PX)
+        for frame_index in range(3)
     )
+    expected_sigma = expected_support / (renderer.radius_scale * _GAUSSIAN_SUPPORT_SIGMA_RADIUS)
 
     trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
     trainer._run_refinement()
@@ -2733,7 +2652,40 @@ def test_refinement_min_screen_size_raises_small_splats(device, tmp_path: Path) 
     initial_scale = _actual_scale(scene.scales[0, :3])
     assert np.all(scales > initial_scale)
     np.testing.assert_allclose(scales, np.full((3,), scales[0], dtype=np.float32), rtol=0.0, atol=1e-6)
-    assert float(scales[0]) <= float(expected_support / _GAUSSIAN_SUPPORT_SIGMA_RADIUS) + 1e-6
+    np.testing.assert_allclose(scales, np.full((3,), expected_sigma, dtype=np.float32), rtol=0.0, atol=1e-6)
+
+
+def test_refinement_min_screen_size_scales_with_distance(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=2, seed=130)
+    scene.positions[0] = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+    scene.positions[1] = np.array([0.0, 0.0, 6.0], dtype=np.float32)
+    scene.scales[:, :3] = _log_sigma(np.full((2, 3), 1e-5, dtype=np.float32))
+    frame = _make_frame(tmp_path, image_name="refinement_min_distance.png", image_id=131)
+    renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.0, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-3),
+        seed=123,
+    )
+
+    camera = trainer.make_frame_camera(0, renderer.width, renderer.height)
+    expected_near = _circle_bound_support_radius(camera, scene.positions[0], renderer.width, renderer.height, _REFINEMENT_MIN_SCREEN_RADIUS_PX) / (
+        renderer.radius_scale * _GAUSSIAN_SUPPORT_SIGMA_RADIUS
+    )
+    expected_far = _circle_bound_support_radius(camera, scene.positions[1], renderer.width, renderer.height, _REFINEMENT_MIN_SCREEN_RADIUS_PX) / (
+        renderer.radius_scale * _GAUSSIAN_SUPPORT_SIGMA_RADIUS
+    )
+
+    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200, 200], dtype=np.uint32))
+    trainer._run_refinement()
+
+    scales = _actual_scale(_read_scene_groups(renderer, trainer.scene.count)["scales"][:, :3])
+    np.testing.assert_allclose(scales[0], np.full((3,), expected_near, dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(scales[1], np.full((3,), expected_far, dtype=np.float32), rtol=0.0, atol=1e-6)
+    assert float(scales[1, 0]) > float(scales[0, 0])
 
 
 def test_training_max_screen_size_clamps_large_splats(device, tmp_path: Path) -> None:
@@ -2751,21 +2703,12 @@ def test_training_max_screen_size_clamps_large_splats(device, tmp_path: Path) ->
         seed=123,
     )
     camera = trainer.make_frame_camera(0, renderer.width, renderer.height)
-    _run_prepass(renderer, camera)
-    assert int(_read_splat_visible(renderer, 1)[0]) == 1
-    current_area = float(_read_splat_visible_area_px(renderer, 1)[0])
-    full_area = _projected_ellipse_area(_read_screen_ellipse_conic(renderer, 1)[0, :3])
-    assert current_area >= _MIN_SCREEN_CAP_VISIBLE_AREA_FRACTION * full_area
     expected_scales = _screen_scale_cap_expected(
         scale=_actual_scale(scene.scales[0, :3]),
         position=scene.positions[0],
-        rotation=scene.rotations[0],
-        opacity=float(scene.opacities[0]),
         camera=camera,
         renderer=renderer,
         max_screen_fraction=resolve_max_screen_fraction(trainer.training, 1),
-        current_area_px=current_area,
-        full_area_px=full_area,
     )
 
     zeros = np.zeros((scene.count, 4), dtype=np.float32)
@@ -2780,7 +2723,7 @@ def test_training_max_screen_size_clamps_large_splats(device, tmp_path: Path) ->
     np.testing.assert_allclose(scales, expected_scales, rtol=0.0, atol=1e-6)
 
 
-def test_training_max_screen_size_clamps_scale_components_independently(device, tmp_path: Path) -> None:
+def test_training_max_screen_size_clamps_scale_components_with_shared_scalar_cap(device, tmp_path: Path) -> None:
     scene = _make_scene(count=1, seed=108)
     scene.positions[0] = np.array([0.0, 0.0, 0.0], dtype=np.float32)
     scene.scales[0] = _log_sigma(np.array([1.0, 0.2, 0.1], dtype=np.float32))
@@ -2795,24 +2738,16 @@ def test_training_max_screen_size_clamps_scale_components_independently(device, 
         seed=123,
     )
     camera = trainer.make_frame_camera(0, renderer.width, renderer.height)
-    _run_prepass(renderer, camera)
-    assert int(_read_splat_visible(renderer, 1)[0]) == 1
-    current_area = float(_read_splat_visible_area_px(renderer, 1)[0])
-    full_area = _projected_ellipse_area(_read_screen_ellipse_conic(renderer, 1)[0, :3])
-    assert current_area >= _MIN_SCREEN_CAP_VISIBLE_AREA_FRACTION * full_area
     expected_scales = _screen_scale_cap_expected(
         scale=_actual_scale(scene.scales[0, :3]),
         position=scene.positions[0],
-        rotation=scene.rotations[0],
-        opacity=float(scene.opacities[0]),
         camera=camera,
         renderer=renderer,
         max_screen_fraction=resolve_max_screen_fraction(trainer.training, 1),
-        current_area_px=current_area,
-        full_area_px=full_area,
     )
+    max_sigma = float(expected_scales[0])
     assert expected_scales[0] < _actual_scale(scene.scales[0, :3])[0]
-    np.testing.assert_allclose(expected_scales[1:], _actual_scale(scene.scales[0, :3])[1:], rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(expected_scales, np.minimum(_actual_scale(scene.scales[0, :3]), np.full((3,), max_sigma, dtype=np.float32)), rtol=0.0, atol=1e-6)
 
     zeros = np.zeros((scene.count, 4), dtype=np.float32)
     _write_grad_groups(renderer, scene.count, grad_positions=zeros, grad_scales=zeros, grad_rotations=zeros, grad_color_alpha=zeros)
@@ -2826,7 +2761,7 @@ def test_training_max_screen_size_clamps_scale_components_independently(device, 
     np.testing.assert_allclose(scales, expected_scales, rtol=0.0, atol=1e-6)
 
 
-def test_training_max_screen_size_ignores_heavily_cropped_visible_footprints(device, tmp_path: Path) -> None:
+def test_training_max_screen_size_clamps_offscreen_splats_by_distance(device, tmp_path: Path) -> None:
     scene = _make_scene(count=1, seed=109)
     scene.positions[0] = np.array([4.0, 0.0, 0.0], dtype=np.float32)
     scene.scales[0] = _log_sigma(np.array([2.0, 1.5, 1.0], dtype=np.float32))
@@ -2841,13 +2776,13 @@ def test_training_max_screen_size_ignores_heavily_cropped_visible_footprints(dev
         seed=123,
     )
     camera = trainer.make_frame_camera(0, renderer.width, renderer.height)
-    _run_prepass(renderer, camera)
-    assert int(_read_splat_visible(renderer, 1)[0]) == 1
-    max_area = float(resolve_max_screen_fraction(trainer.training, 1) * renderer.width * renderer.height)
-    current_area = float(_read_splat_visible_area_px(renderer, 1)[0])
-    full_area = _projected_ellipse_area(_read_screen_ellipse_conic(renderer, 1)[0, :3])
-    assert current_area > max_area
-    assert current_area < _MIN_SCREEN_CAP_VISIBLE_AREA_FRACTION * full_area
+    expected_scales = _screen_scale_cap_expected(
+        scale=_actual_scale(scene.scales[0, :3]),
+        position=scene.positions[0],
+        camera=camera,
+        renderer=renderer,
+        max_screen_fraction=resolve_max_screen_fraction(trainer.training, 1),
+    )
 
     zeros = np.zeros((scene.count, 4), dtype=np.float32)
     _write_grad_groups(renderer, scene.count, grad_positions=zeros, grad_scales=zeros, grad_rotations=zeros, grad_color_alpha=zeros)
@@ -2858,10 +2793,10 @@ def test_training_max_screen_size_ignores_heavily_cropped_visible_footprints(dev
     device.wait()
 
     scales = _actual_scale(_read_scene_groups(renderer, 1)["scales"][0, :3])
-    np.testing.assert_allclose(scales, np.array([2.0, 1.5, 1.0], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(scales, expected_scales, rtol=0.0, atol=1e-6)
 
 
-def test_training_max_screen_size_ignores_invisible_splats(device, tmp_path: Path) -> None:
+def test_training_max_screen_size_clamps_previously_invisible_splats_by_distance(device, tmp_path: Path) -> None:
     scene = _make_scene(count=1, seed=111)
     scene.positions[0] = np.array([100.0, 0.0, 0.0], dtype=np.float32)
     scene.scales[0] = _log_sigma(np.array([2.0, 1.5, 1.0], dtype=np.float32))
@@ -2876,8 +2811,13 @@ def test_training_max_screen_size_ignores_invisible_splats(device, tmp_path: Pat
         seed=123,
     )
     camera = trainer.make_frame_camera(0, renderer.width, renderer.height)
-    _run_prepass(renderer, camera)
-    assert int(_read_splat_visible(renderer, 1)[0]) == 0
+    expected_scales = _screen_scale_cap_expected(
+        scale=_actual_scale(scene.scales[0, :3]),
+        position=scene.positions[0],
+        camera=camera,
+        renderer=renderer,
+        max_screen_fraction=resolve_max_screen_fraction(trainer.training, 1),
+    )
 
     zeros = np.zeros((scene.count, 4), dtype=np.float32)
     _write_grad_groups(renderer, scene.count, grad_positions=zeros, grad_scales=zeros, grad_rotations=zeros, grad_color_alpha=zeros)
@@ -2888,7 +2828,7 @@ def test_training_max_screen_size_ignores_invisible_splats(device, tmp_path: Pat
     device.wait()
 
     scales = _actual_scale(_read_scene_groups(renderer, 1)["scales"][0, :3])
-    np.testing.assert_allclose(scales, np.array([2.0, 1.5, 1.0], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(scales, expected_scales, rtol=0.0, atol=1e-6)
 
 
 def test_training_max_screen_size_uses_scheduled_value(device, tmp_path: Path) -> None:
@@ -2912,21 +2852,12 @@ def test_training_max_screen_size_uses_scheduled_value(device, tmp_path: Path) -
     trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], training_hparams=training, seed=123)
     camera = trainer.make_frame_camera(0, renderer.width, renderer.height)
     scheduled_fraction = resolve_max_screen_fraction(training, 2)
-    _run_prepass(renderer, camera)
-    assert int(_read_splat_visible(renderer, 1)[0]) == 1
-    current_area = float(_read_splat_visible_area_px(renderer, 1)[0])
-    full_area = _projected_ellipse_area(_read_screen_ellipse_conic(renderer, 1)[0, :3])
-    assert current_area >= _MIN_SCREEN_CAP_VISIBLE_AREA_FRACTION * full_area
     expected_scales = _screen_scale_cap_expected(
         scale=_actual_scale(scene.scales[0, :3]),
         position=scene.positions[0],
-        rotation=scene.rotations[0],
-        opacity=float(scene.opacities[0]),
         camera=camera,
         renderer=renderer,
         max_screen_fraction=scheduled_fraction,
-        current_area_px=current_area,
-        full_area_px=full_area,
     )
 
     zeros = np.zeros((scene.count, 4), dtype=np.float32)
@@ -2939,6 +2870,135 @@ def test_training_max_screen_size_uses_scheduled_value(device, tmp_path: Path) -
 
     scales = _actual_scale(_read_scene_groups(renderer, 1)["scales"][0, :3])
     np.testing.assert_allclose(scales, expected_scales, rtol=0.0, atol=1e-6)
+
+
+def test_training_max_screen_size_matches_same_distance_for_offscreen_splats(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=2, seed=132)
+    scene.positions[0] = np.array([0.0, 0.0, 2.0], dtype=np.float32)
+    scene.positions[1] = np.array([4.0, 0.0, 0.0], dtype=np.float32)
+    scene.scales[:, :3] = _log_sigma(np.array([[2.0, 1.5, 1.0], [2.0, 1.5, 1.0]], dtype=np.float32))
+    frame = _make_frame(tmp_path, image_name="max_screen_same_distance.png", image_id=132)
+    renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.0, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(scale_l2_weight=0.0, scale_abs_reg_weight=0.0, opacity_reg_weight=0.0),
+        seed=123,
+    )
+    camera = trainer.make_frame_camera(0, renderer.width, renderer.height)
+    expected_scales = np.stack(
+        [
+            _screen_scale_cap_expected(
+                scale=_actual_scale(scene.scales[index, :3]),
+                position=scene.positions[index],
+                camera=camera,
+                renderer=renderer,
+                max_screen_fraction=resolve_max_screen_fraction(trainer.training, 1),
+            )
+            for index in range(2)
+        ],
+        axis=0,
+    )
+
+    zeros = np.zeros((scene.count, 4), dtype=np.float32)
+    _write_grad_groups(renderer, scene.count, grad_positions=zeros, grad_scales=zeros, grad_rotations=zeros, grad_color_alpha=zeros)
+
+    enc = device.create_command_encoder()
+    trainer._dispatch_optimizer_step(enc, 1, camera)
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+
+    scales = _actual_scale(_read_scene_groups(renderer, scene.count)["scales"][:, :3])
+    np.testing.assert_allclose(scales, expected_scales, rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(scales[0], scales[1], rtol=0.0, atol=1e-6)
+
+
+def test_training_max_screen_size_gets_looser_with_distance(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=2, seed=133)
+    scene.positions[0] = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+    scene.positions[1] = np.array([0.0, 0.0, 6.0], dtype=np.float32)
+    scene.scales[:, :3] = _log_sigma(np.array([[2.0, 1.5, 1.0], [2.0, 1.5, 1.0]], dtype=np.float32))
+    frame = _make_frame(tmp_path, image_name="max_screen_distance.png", image_id=133)
+    renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.0, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(scale_l2_weight=0.0, scale_abs_reg_weight=0.0, opacity_reg_weight=0.0),
+        seed=123,
+    )
+    camera = trainer.make_frame_camera(0, renderer.width, renderer.height)
+    expected_scales = np.stack(
+        [
+            _screen_scale_cap_expected(
+                scale=_actual_scale(scene.scales[index, :3]),
+                position=scene.positions[index],
+                camera=camera,
+                renderer=renderer,
+                max_screen_fraction=resolve_max_screen_fraction(trainer.training, 1),
+            )
+            for index in range(2)
+        ],
+        axis=0,
+    )
+
+    zeros = np.zeros((scene.count, 4), dtype=np.float32)
+    _write_grad_groups(renderer, scene.count, grad_positions=zeros, grad_scales=zeros, grad_rotations=zeros, grad_color_alpha=zeros)
+
+    enc = device.create_command_encoder()
+    trainer._dispatch_optimizer_step(enc, 1, camera)
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+
+    scales = _actual_scale(_read_scene_groups(renderer, scene.count)["scales"][:, :3])
+    np.testing.assert_allclose(scales, expected_scales, rtol=0.0, atol=1e-6)
+    assert float(scales[1, 0]) > float(scales[0, 0])
+
+
+def test_training_max_screen_size_is_independent_of_opacity(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=2, seed=134)
+    scene.positions[:] = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]], dtype=np.float32)
+    scene.scales[:, :3] = _log_sigma(np.array([[2.0, 1.5, 1.0], [2.0, 1.5, 1.0]], dtype=np.float32))
+    scene.opacities[:] = _raw_opacity(np.array([0.05, 0.95], dtype=np.float32))
+    frame = _make_frame(tmp_path, image_name="max_screen_opacity.png", image_id=134)
+    renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.0, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(scale_l2_weight=0.0, scale_abs_reg_weight=0.0, opacity_reg_weight=0.0),
+        seed=123,
+    )
+    camera = trainer.make_frame_camera(0, renderer.width, renderer.height)
+    expected_scales = np.stack(
+        [
+            _screen_scale_cap_expected(
+                scale=_actual_scale(scene.scales[index, :3]),
+                position=scene.positions[index],
+                camera=camera,
+                renderer=renderer,
+                max_screen_fraction=resolve_max_screen_fraction(trainer.training, 1),
+            )
+            for index in range(2)
+        ],
+        axis=0,
+    )
+
+    zeros = np.zeros((scene.count, 4), dtype=np.float32)
+    _write_grad_groups(renderer, scene.count, grad_positions=zeros, grad_scales=zeros, grad_rotations=zeros, grad_color_alpha=zeros)
+
+    enc = device.create_command_encoder()
+    trainer._dispatch_optimizer_step(enc, 1, camera)
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+
+    scales = _actual_scale(_read_scene_groups(renderer, scene.count)["scales"][:, :3])
+    np.testing.assert_allclose(scales, expected_scales, rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(scales[0], scales[1], rtol=0.0, atol=1e-6)
 
 
 def test_optimizer_projection_clamps_sh_coefficients(device, tmp_path: Path) -> None:

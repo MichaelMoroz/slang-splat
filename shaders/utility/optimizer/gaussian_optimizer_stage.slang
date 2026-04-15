@@ -13,7 +13,6 @@ static const uint OPTIMIZER_GROUP_SIZE = 256u;
 static const uint COLOR_NON_NEGATIVE_HASH_SPLAT = 0x9e3779b9u;
 static const uint COLOR_NON_NEGATIVE_HASH_PHI = 0x85ebca6bu;
 static const uint COLOR_NON_NEGATIVE_HASH_Z = 0xc2b2ae35u;
-static const float MIN_SCREEN_CAP_VISIBLE_AREA_FRACTION = 0.5;
 
 struct GaussianStabilityParams
 {
@@ -34,7 +33,6 @@ uniform CameraParams g_CurrentCamera;
 uniform uint g_EnableCurrentCameraScreenScaleCap;
 uniform float g_MaxScreenFraction;
 uniform float g_ScreenScaleCapRadiusScale;
-uniform float g_ScreenScaleCapAlphaCutoff;
 uniform float g_ScaleL2Weight;
 uniform float g_ScaleAbsRegWeight;
 uniform float g_SH1RegWeight;
@@ -47,9 +45,6 @@ uniform uint g_ColorNonNegativeRegSeed;
 uniform RWStructuredBuffer<float> g_LossBuffer;
 uniform RWStructuredBuffer<float> g_ParamGrads;
 uniform RWStructuredBuffer<float> g_SplatParamsRW;
-uniform StructuredBuffer<float4> g_ScreenEllipseConic;
-uniform StructuredBuffer<uint> g_SplatVisible;
-uniform StructuredBuffer<float> g_SplatVisibleAreaPx;
 
 struct TrainableGaussianState
 {
@@ -308,49 +303,25 @@ float3 clamp_sh_rest_coeffs(float3 sh)
     return clamp(sh, -1.0, 1.0);
 }
 
-float projected_support_axis_radius_px(PinholeCamera camera, float3 centerWorld, float2 centerPx, float3 axisWorldOffset)
+float angle_only_screen_scale_cap_slope(PinholeCamera camera)
 {
-    float radius = 0.0;
-    float2 axisPx = 0.0;
-    if (camera.project_world_to_screen(centerWorld + axisWorldOffset, axisPx)) radius = max(radius, length(axisPx - centerPx));
-    if (camera.project_world_to_screen(centerWorld - axisWorldOffset, axisPx)) radius = max(radius, length(axisPx - centerPx));
-    return radius;
+    float maxScreenAreaPx = g_MaxScreenFraction * camera.params.viewport.x * camera.params.viewport.y;
+    if (!(maxScreenAreaPx > SMALL_VALUE)) return 0.0;
+    float targetRadiusPx = sqrt(max(maxScreenAreaPx / PI, SMALL_VALUE));
+    float minFocal = max(min(camera.params.focalPixels.x, camera.params.focalPixels.y), SMALL_VALUE);
+    float targetAngle = atan(targetRadiusPx / minFocal);
+    return tan(targetAngle) / max(g_ScreenScaleCapRadiusScale * GAUSSIAN_SUPPORT_SIGMA_RADIUS, SMALL_VALUE);
 }
 
-float3 clamp_screen_scale_upper_bound(uint splatId, float3 position, float3 logScale, float4 rotation, float rawOpacity)
+float3 clamp_screen_scale_upper_bound(float3 position, float3 logScale)
 {
     if (g_EnableCurrentCameraScreenScaleCap == 0u) return logScale;
-    if (g_SplatVisible[splatId] == 0u) return logScale;
-    float maxScreenAreaPx = g_MaxScreenFraction * g_CurrentCamera.viewport.x * g_CurrentCamera.viewport.y;
-    if (!(maxScreenAreaPx > SMALL_VALUE)) return logScale;
-    float currentAreaPx = g_SplatVisibleAreaPx[splatId];
-    if (!(currentAreaPx > maxScreenAreaPx)) return logScale;
-    float3 conic = g_ScreenEllipseConic[splatId].xyz;
-    float det = conic.x * conic.z - conic.y * conic.y;
-    if (!all(isfinite(conic)) || !(conic.x > 0.0) || !(conic.z > 0.0) || !(det > CONIC_DETERMINANT_FLOOR)) return logScale;
-    float fullAreaPx = projected_ellipse_area(conic);
-    if (!(currentAreaPx >= MIN_SCREEN_CAP_VISIBLE_AREA_FRACTION * fullAreaPx)) return logScale;
-
     PinholeCamera camera = PinholeCamera.from_params(g_CurrentCamera);
-    float2 centerPx = 0.0;
-    if (!camera.project_world_to_screen(position, centerPx)) return logScale;
-
-    float opacity = opacity_from_raw(rawOpacity);
-    float supportSigmaRadius = sqrt(max(-2.0 * log(max(g_ScreenScaleCapAlphaCutoff, TINY_VALUE) / max(opacity, TINY_VALUE)), 0.0));
-    float supportScaleMul = g_ScreenScaleCapRadiusScale * supportSigmaRadius;
-    if (!(supportScaleMul > SMALL_VALUE)) return logScale;
-
-    float maxRadiusPx = sqrt(max(maxScreenAreaPx / PI, SMALL_VALUE));
+    float maxSigmaSlope = angle_only_screen_scale_cap_slope(camera);
+    if (!(maxSigmaSlope > SMALL_VALUE)) return logScale;
+    float maxSigma = length(position - camera.position_world()) * maxSigmaSlope;
     float3 scale = exp(logScale);
-    float3 supportScale = scale * supportScaleMul;
-    float4 qInv = float4(rotation.x, -rotation.y, -rotation.z, -rotation.w);
-    float3 axisRadiusPx = float3(
-        projected_support_axis_radius_px(camera, position, centerPx, rotate_by_quat(float3(supportScale.x, 0.0, 0.0), qInv)),
-        projected_support_axis_radius_px(camera, position, centerPx, rotate_by_quat(float3(0.0, supportScale.y, 0.0), qInv)),
-        projected_support_axis_radius_px(camera, position, centerPx, rotate_by_quat(float3(0.0, 0.0, supportScale.z), qInv))
-    );
-    float3 shrink = min(float3(1.0), maxRadiusPx / max(axisRadiusPx, float3(SMALL_VALUE)));
-    return log(max(scale * shrink, float3(TINY_VALUE)));
+    return log(max(min(scale, float3(maxSigma)), float3(TINY_VALUE)));
 }
 
 [Differentiable]
@@ -641,14 +612,9 @@ void csProjectGaussianParams(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     TrainableGaussianState state = TrainableGaussianState.load(splatId);
     float4 normalizedRotation = normalize_quaternion_safe(sanitize_float4(state.rotation, g_Stability.hugeValue));
-    state.logScale = clamp_screen_scale_upper_bound(
-        splatId,
-        state.position,
-        sanitize_float3(state.logScale, g_Stability.hugeValue),
-        normalizedRotation,
-        state.rawOpacity
-    );
+    state.logScale = sanitize_float3(state.logScale, g_Stability.hugeValue);
     state.logScale = clamp_scale_anisotropy(state.logScale);
+    state.logScale = clamp_screen_scale_upper_bound(state.position, state.logScale);
     state.rotation = normalizedRotation;
     state.sh0 = clamp_sh0_base_color(sanitize_float3(state.sh0, g_Stability.hugeValue));
     state.sh1X = clamp_sh1_coeffs(sanitize_float3(state.sh1X, g_Stability.hugeValue));

@@ -381,6 +381,14 @@ float3 apply_support_radius_lower_bound(float3 logScale, float supportRadius)
     return logScale + log(supportRadius / currentSupportRadius);
 }
 
+float refinement_min_support_radius(PinholeCamera camera, float3 worldPos)
+{
+    float minFocal = max(min(camera.params.focalPixels.x, camera.params.focalPixels.y), SMALL_VALUE);
+    float pixelAngle = atan(REFINEMENT_MIN_SCREEN_RADIUS_PX / minFocal);
+    float cameraDistance = length(worldPos - camera.position_world());
+    return cameraDistance * tan(pixelAngle);
+}
+
 void copy_adam_state(uint srcSplatId, uint dstSplatId)
 {
     [unroll] for (uint paramId = 0u; paramId < TRAINABLE_PARAM_COUNT; paramId++)
@@ -1017,21 +1025,14 @@ void csClampRefinementMinScreenSize(uint3 dispatchThreadID : SV_DispatchThreadID
     if (g_RefinementCameraCount == 0u) return;
 
     SplatState source = load_splat_state(g_SrcSplatParams, g_SrcSplatCount, splatId);
-    float minVisibleSupportRadius = 0.0;
-    bool hasVisibleCamera = false;
+    float minSupportRadius = 0.0;
     [loop] for (uint cameraIndex = 0u; cameraIndex < g_RefinementCameraCount; cameraIndex++)
     {
-        float supportRadius;
-        if (!world_support_radius_from_screen_circle(refinement_camera(cameraIndex), source.position, REFINEMENT_MIN_SCREEN_RADIUS_PX, supportRadius)) continue;
-        if (!hasVisibleCamera || supportRadius < minVisibleSupportRadius)
-        {
-            minVisibleSupportRadius = supportRadius;
-            hasVisibleCamera = true;
-        }
+        float supportRadius = refinement_min_support_radius(refinement_camera(cameraIndex), source.position);
+        if (cameraIndex == 0u || supportRadius < minSupportRadius) minSupportRadius = supportRadius;
     }
-    if (!hasVisibleCamera) return;
 
-    source.logScale = apply_support_radius_lower_bound(source.logScale, minVisibleSupportRadius);
+    source.logScale = apply_support_radius_lower_bound(source.logScale, minSupportRadius);
     store_splat_state(g_SrcSplatParams, g_SrcSplatCount, splatId, source);
 }
 
