@@ -188,7 +188,7 @@ def test_default_training_params_include_training_control_fields() -> None:
         "lr_schedule_stage1_lr",
         "depth_ratio_stage1_weight",
         "refinement_growth_ratio",
-        "refinement_min_contribution_percent",
+        "refinement_min_contribution",
         "train_subsample_factor",
     ):
         assert hasattr(params.training, key)
@@ -284,8 +284,8 @@ def test_renderer_params_maps_adam_momentum_to_grad_norm_log_range() -> None:
         "cached_raster_grad_fixed_opacity_range": SimpleNamespace(value=0.2),
         "debug_grad_norm_threshold": SimpleNamespace(value=2e-4),
         "debug_ellipse_thickness_px": SimpleNamespace(value=4.0),
-        "debug_clone_count_min": SimpleNamespace(value=0.0),
-        "debug_clone_count_max": SimpleNamespace(value=16.0),
+        "debug_splat_age_min": SimpleNamespace(value=0.0),
+        "debug_splat_age_max": SimpleNamespace(value=1.0),
         "debug_density_min": SimpleNamespace(value=0.0),
         "debug_density_max": SimpleNamespace(value=20.0),
         "debug_contribution_min": SimpleNamespace(value=0.001),

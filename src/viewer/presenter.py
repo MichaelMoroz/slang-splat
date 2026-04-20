@@ -9,7 +9,7 @@ import slangpy as spy
 
 from ..utility import alloc_texture_2d, clamp_index, debug_region, require_not_none
 from ..filter import SeparableGaussianBlur
-from ..training import TRAIN_SUBSAMPLE_MAX_FACTOR, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_depth_ratio_weight, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering
+from ..training import TRAIN_SUBSAMPLE_MAX_FACTOR, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_depth_ratio_weight, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering
 from . import session
 
 _DEBUG_HUGE_VALUE = 1e8
@@ -172,23 +172,23 @@ def _training_refinement_text(viewer: object) -> str:
         start_step = max(int(getattr(training, "refinement_growth_start_step", 0)), 0)
         interval = int(viewer.s.trainer.effective_refinement_interval()) if hasattr(viewer.s.trainer, "effective_refinement_interval") else int(training.refinement_interval)
         frame_count = len(getattr(viewer.s.trainer, "frames", getattr(viewer.s, "training_frames", ())))
-        contribution_cull = resolve_refinement_min_contribution_percent(training, current_step, frame_count)
+        contribution_cull = resolve_refinement_min_contribution(training, current_step, frame_count)
         decay = min(max(float(getattr(training, "refinement_min_contribution_decay", 0.995)), 0.0), 1.0)
         alpha_mul = min(max(float(getattr(training, "refinement_opacity_mul", 1.0)), 0.0), 1.0)
         clone_scale_mul = max(float(getattr(training, "refinement_clone_scale_mul", 1.0)), 0.0)
         return (
             f"Refinement: every {interval:,} | growth={current_growth * 100.0:.2f}% now | target={target_growth * 100.0:.2f}% after {start_step:,} | "
-            f"alpha<{float(training.refinement_alpha_cull_threshold):.2e} or min contrib<{contribution_cull:.6g}% | decay={decay * 100.0:.2f}%/pass | alpha mul={alpha_mul:.2f}x | clone scale={clone_scale_mul:.2f}x | max={int(training.max_gaussians):,}"
+            f"alpha<{float(training.refinement_alpha_cull_threshold):.2e} or min contrib<{int(contribution_cull):,} | decay={decay * 100.0:.2f}%/pass | alpha mul={alpha_mul:.2f}x | clone scale={clone_scale_mul:.2f}x | max={int(training.max_gaussians):,}"
         )
     target_growth = max(float(viewer.c("refinement_growth_ratio").value), 0.0)
     start_step = max(int(viewer.c("refinement_growth_start_step").value), 0)
-    contribution_cull = max(float(viewer.c("refinement_min_contribution_percent").value), 0.0)
+    contribution_cull = max(int(viewer.c("refinement_min_contribution").value), 0)
     decay = min(max(float(viewer.c("refinement_min_contribution_decay").value), 0.0), 1.0)
     alpha_mul = min(max(float(viewer.c("refinement_opacity_mul").value), 0.0), 1.0)
     clone_scale_mul = max(float(viewer.c("refinement_clone_scale_mul").value), 0.0)
     return (
         f"Refinement: every {max(int(viewer.c('refinement_interval').value), 1):,} | growth=0.00% now | target={target_growth * 100.0:.2f}% after {start_step:,} | "
-        f"alpha<{max(float(viewer.c('refinement_alpha_cull_threshold').value), 1e-8):.2e} or min contrib<{contribution_cull:.6g}% | decay={decay * 100.0:.2f}%/pass | alpha mul={alpha_mul:.2f}x | clone scale={clone_scale_mul:.2f}x | max={max(int(viewer.c('max_gaussians').value), 0):,}"
+        f"alpha<{max(float(viewer.c('refinement_alpha_cull_threshold').value), 1e-8):.2e} or min contrib<{contribution_cull:,} | decay={decay * 100.0:.2f}%/pass | alpha mul={alpha_mul:.2f}x | clone scale={clone_scale_mul:.2f}x | max={max(int(viewer.c('max_gaussians').value), 0):,}"
     )
 
 
@@ -901,7 +901,7 @@ def _render_debug_source(viewer: object, encoder: spy.CommandEncoder, frame_idx:
     session.sync_scene_from_training_renderer(viewer, debug_renderer, target="debug")
     _apply_training_debug_renderer_hparams(viewer, debug_renderer, step)
     sample_vars = _training_debug_sample_vars(viewer, frame_idx, step, render_frame_index)
-    sort_dither = viewer.s.trainer.sorting_dither(frame_idx, render_frame_index, frame_camera) if hasattr(viewer.s.trainer, "sorting_dither") else None
+    sort_dither = viewer.s.trainer.sorting_dither(frame_idx, step, frame_camera) if hasattr(viewer.s.trainer, "sorting_dither") else None
     training = viewer.s.trainer.training
     source_tex, stats = debug_renderer.render_training_forward_to_texture(
         frame_camera,

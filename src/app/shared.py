@@ -11,7 +11,7 @@ from ..repo_defaults import renderer_defaults
 from ..utility import clamp_float, clamp_int
 from ..scene import GaussianInitHyperParams, GaussianScene
 from ..training.defaults import DEFAULT_REFINEMENT_CLONE_SCALE_MUL, DEFAULT_REFINEMENT_MOMENTUM_WEIGHT_EXPONENT, DEFAULT_REFINEMENT_SPLIT_BETA, TRAINING_BUILD_ARG_DEFAULTS
-from ..training import AdamHyperParams, DEFAULT_DEBUG_CONTRIBUTION_RANGE_PERCENT, DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY, DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TRAIN_SUBSAMPLE_MAX_FACTOR, TrainingHyperParams, resolve_depth_ratio_grad_band, resolve_training_profile
+from ..training import AdamHyperParams, DEFAULT_DEBUG_CONTRIBUTION_RANGE_PERCENT, DEFAULT_REFINEMENT_MIN_CONTRIBUTION, DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TRAIN_SUBSAMPLE_MAX_FACTOR, TrainingHyperParams, resolve_depth_ratio_grad_band, resolve_training_profile
 
 EPS = 1e-8
 MIN_SCENE_RADIUS = 1.0
@@ -46,7 +46,7 @@ class RendererParams:
     max_prepass_memory_mb: int = int(_RENDERER_DEFAULTS["max_prepass_memory_mb"]); cached_raster_grad_atomic_mode: str = str(_RENDERER_DEFAULTS["cached_raster_grad_atomic_mode"]); cached_raster_grad_fixed_ro_local_range: float = float(_RENDERER_DEFAULTS["cached_raster_grad_fixed_ro_local_range"]); cached_raster_grad_fixed_scale_range: float = float(_RENDERER_DEFAULTS["cached_raster_grad_fixed_scale_range"])
     cached_raster_grad_fixed_quat_range: float = float(_RENDERER_DEFAULTS["cached_raster_grad_fixed_quat_range"]); cached_raster_grad_fixed_color_range: float = float(_RENDERER_DEFAULTS["cached_raster_grad_fixed_color_range"]); cached_raster_grad_fixed_opacity_range: float = float(_RENDERER_DEFAULTS["cached_raster_grad_fixed_opacity_range"])
     debug_mode: str | None = _RENDERER_DEFAULTS["debug_mode"]; debug_grad_norm_threshold: float = float(_RENDERER_DEFAULTS["debug_grad_norm_threshold"]); debug_ellipse_thickness_px: float = float(_RENDERER_DEFAULTS["debug_ellipse_thickness_px"])
-    debug_clone_count_range: tuple[float, float] = tuple(float(v) for v in _RENDERER_DEFAULTS["debug_clone_count_range"]); debug_density_range: tuple[float, float] = tuple(float(v) for v in _RENDERER_DEFAULTS["debug_density_range"]); debug_contribution_range: tuple[float, float] = tuple(float(v) for v in _RENDERER_DEFAULTS["debug_contribution_range"]); debug_adam_momentum_range: tuple[float, float] = tuple(float(v) for v in _RENDERER_DEFAULTS["debug_adam_momentum_range"]); debug_depth_mean_range: tuple[float, float] = tuple(float(v) for v in _RENDERER_DEFAULTS["debug_depth_mean_range"]); debug_depth_std_range: tuple[float, float] = tuple(float(v) for v in _RENDERER_DEFAULTS["debug_depth_std_range"])
+    debug_splat_age_range: tuple[float, float] = tuple(float(v) for v in _RENDERER_DEFAULTS["debug_splat_age_range"]); debug_density_range: tuple[float, float] = tuple(float(v) for v in _RENDERER_DEFAULTS["debug_density_range"]); debug_contribution_range: tuple[float, float] = tuple(float(v) for v in _RENDERER_DEFAULTS["debug_contribution_range"]); debug_adam_momentum_range: tuple[float, float] = tuple(float(v) for v in _RENDERER_DEFAULTS["debug_adam_momentum_range"]); debug_depth_mean_range: tuple[float, float] = tuple(float(v) for v in _RENDERER_DEFAULTS["debug_depth_mean_range"]); debug_depth_std_range: tuple[float, float] = tuple(float(v) for v in _RENDERER_DEFAULTS["debug_depth_std_range"])
     debug_depth_local_mismatch_range: tuple[float, float] = tuple(float(v) for v in _RENDERER_DEFAULTS["debug_depth_local_mismatch_range"]); debug_depth_local_mismatch_smooth_radius: float = float(_RENDERER_DEFAULTS["debug_depth_local_mismatch_smooth_radius"]); debug_depth_local_mismatch_reject_radius: float = float(_RENDERER_DEFAULTS["debug_depth_local_mismatch_reject_radius"]); debug_sh_coeff_index: int = int(_RENDERER_DEFAULTS["debug_sh_coeff_index"])
     debug_show_ellipses: bool = bool(_RENDERER_DEFAULTS["debug_show_ellipses"]); debug_show_processed_count: bool = bool(_RENDERER_DEFAULTS["debug_show_processed_count"]); debug_show_grad_norm: bool = bool(_RENDERER_DEFAULTS["debug_show_grad_norm"])
 
@@ -210,7 +210,7 @@ def build_training_params(
     refinement_growth_ratio: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_growth_ratio"],
     refinement_growth_start_step: int = TRAINING_BUILD_ARG_DEFAULTS["refinement_growth_start_step"],
     refinement_alpha_cull_threshold: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_alpha_cull_threshold"],
-    refinement_min_contribution_percent: float = DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT,
+    refinement_min_contribution: int = DEFAULT_REFINEMENT_MIN_CONTRIBUTION,
     refinement_min_contribution_decay: float = DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY,
     refinement_opacity_mul: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_opacity_mul"],
     refinement_sample_radius: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_sample_radius"],
@@ -338,7 +338,7 @@ def build_training_params(
         refinement_growth_ratio=clamp_float(refinement_growth_ratio, 0.0, 10.0),
         refinement_growth_start_step=clamp_int(refinement_growth_start_step, 0, 1_000_000_000),
         refinement_alpha_cull_threshold=clamp_float(refinement_alpha_cull_threshold, 1e-8, 1.0),
-        refinement_min_contribution_percent=clamp_float(refinement_min_contribution_percent, 0.0, 100.0),
+        refinement_min_contribution=clamp_int(refinement_min_contribution, 0, 1_000_000_000),
         refinement_min_contribution_decay=clamp_float(refinement_min_contribution_decay, 0.0, 1.0),
         refinement_opacity_mul=clamp_float(refinement_opacity_mul, 0.0, 1.0),
         refinement_sample_radius=clamp_float(refinement_sample_radius, 0.0, 1e6),

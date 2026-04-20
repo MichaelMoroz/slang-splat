@@ -117,7 +117,7 @@ def test_build_training_params_clamps_ranges():
     assert params.training.sh_band_stage1 == 0
     assert params.training.sh_band_stage2 == 2
     assert params.training.sh_band_stage3 == 3
-    assert params.training.refinement_min_contribution_percent == 1e-05
+    assert params.training.refinement_min_contribution == 512
     assert params.training.refinement_min_contribution_decay == 0.995
     assert params.training.refinement_opacity_mul == 1.0
     assert params.training.refinement_sample_radius == 0.0

@@ -39,7 +39,7 @@ _CACHED_RASTER_GRAD_ATOMIC_MODE_VALUES = ("float", "fixed")
 _DEBUG_MODE_VALUES = (
     GaussianRenderer.DEBUG_MODE_NORMAL,
     GaussianRenderer.DEBUG_MODE_PROCESSED_COUNT,
-    GaussianRenderer.DEBUG_MODE_CLONE_COUNT,
+    GaussianRenderer.DEBUG_MODE_SPLAT_AGE,
     GaussianRenderer.DEBUG_MODE_ELLIPSE_OUTLINES,
     GaussianRenderer.DEBUG_MODE_SPLAT_DENSITY,
     GaussianRenderer.DEBUG_MODE_SPLAT_SPATIAL_DENSITY,
@@ -161,7 +161,7 @@ class SplatViewer(spy.AppWindow):
             debug_mode=debug_mode,
             debug_grad_norm_threshold=float(self.c("debug_grad_norm_threshold").value),
             debug_ellipse_thickness_px=float(self.c("debug_ellipse_thickness_px").value),
-            debug_clone_count_range=(float(self.c("debug_clone_count_min").value), float(self.c("debug_clone_count_max").value)),
+            debug_splat_age_range=(float(self.c("debug_splat_age_min").value), float(self.c("debug_splat_age_max").value)),
             debug_density_range=(float(self.c("debug_density_min").value), float(self.c("debug_density_max").value)),
             debug_contribution_range=(float(self.c("debug_contribution_min").value), float(self.c("debug_contribution_max").value)),
             debug_adam_momentum_range=_threshold_band_range(float(self.c("debug_grad_norm_threshold").value)),

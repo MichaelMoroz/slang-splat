@@ -8,7 +8,7 @@ from ..training.defaults import (
     DEFAULT_LR_SCHEDULE_STEPS,
     DEFAULT_REFINEMENT_CLONE_SCALE_MUL,
     DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY,
-    DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT,
+    DEFAULT_REFINEMENT_MIN_CONTRIBUTION,
     TRAINING_BUILD_ARG_DEFAULTS,
 )
 _VIEWER_CONTROL_DEFAULTS = viewer_defaults()["controls"]
@@ -87,7 +87,7 @@ TRAIN_SETUP_CONTROL_DEFS = (
     _control("refinement_growth_ratio", "input_float", "Refinement Growth", {"value": _default("refinement_growth_ratio"), "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}, group=TRAINING_SETUP_GROUP, build_args=("refinement_growth_ratio",)),
     _control("refinement_growth_start_step", "slider_int", "Start Refinement After", {"value": _default("refinement_growth_start_step"), "min": 0, "max": DEFAULT_LR_SCHEDULE_STEPS, "max_from": "lr_schedule_steps"}, group=TRAINING_SETUP_GROUP, build_args=("refinement_growth_start_step",)),
     _control("refinement_alpha_cull_threshold", "input_float", "Refinement Alpha Cull", {"value": _default("refinement_alpha_cull_threshold"), "step": 1e-5, "step_fast": 1e-4, "format": "%.6e"}, group=TRAINING_SETUP_GROUP, build_args=("refinement_alpha_cull_threshold",)),
-    _control("refinement_min_contribution_percent", "input_float", "Refinement Min Contribution", {"value": DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT, "step": 1e-6, "step_fast": 1e-5, "format": "%.6g%%"}, group=TRAINING_SETUP_GROUP, build_args=("refinement_min_contribution_percent",)),
+    _control("refinement_min_contribution", "input_int", "Refinement Min Contribution", {"value": DEFAULT_REFINEMENT_MIN_CONTRIBUTION, "step": 16, "step_fast": 64}, group=TRAINING_SETUP_GROUP, build_args=("refinement_min_contribution",)),
     _control("refinement_min_contribution_decay", "input_float", "Refinement Min Contribution Decay", {"value": DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY, "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}, group=TRAINING_SETUP_GROUP, build_args=("refinement_min_contribution_decay",)),
     _control("refinement_opacity_mul", "input_float", "Refinement Alpha Mul", {"value": _default("refinement_opacity_mul"), "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}, group=TRAINING_SETUP_GROUP, build_args=("refinement_opacity_mul",)),
     _control("refinement_sample_radius", "input_float", "Refinement Sample Radius", {"value": _default("refinement_sample_radius"), "step": 1e-2, "step_fast": 1e-1, "format": "%.5f"}, group=TRAINING_SETUP_GROUP, build_args=("refinement_sample_radius",)),
@@ -259,7 +259,7 @@ TRAIN_SETUP_PRIMARY_KEYS = (
     "refinement_growth_ratio",
     "refinement_growth_start_step",
     "refinement_alpha_cull_threshold",
-    "refinement_min_contribution_percent",
+    "refinement_min_contribution",
     "refinement_min_contribution_decay",
     "refinement_opacity_mul",
     "refinement_sample_radius",

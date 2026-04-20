@@ -26,7 +26,7 @@ def _dummy_renderer() -> SimpleNamespace:
         debug_show_processed_count=False,
         debug_show_grad_norm=False,
         debug_grad_norm_threshold=2e-4,
-        debug_clone_count_range=(0.0, 16.0),
+        debug_splat_age_range=(0.0, 1.0),
         debug_contribution_range=(0.001, 1.0),
         debug_adam_momentum_range=(1e-5, 0.1),
     )

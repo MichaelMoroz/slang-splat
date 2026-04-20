@@ -144,7 +144,7 @@ def test_train_cli_forwards_resolved_init_hparams(monkeypatch, tmp_path: Path):
         max_allowed_density=12.0,
         max_gaussians=17,
         use_sh=True,
-        refinement_min_contribution_percent=1e-05,
+        refinement_min_contribution=512,
         snapshot_dir=tmp_path / "snapshots",
     )
 
@@ -174,7 +174,7 @@ def test_train_cli_parser_defaults_color_and_opacity_lr_mul_to_five() -> None:
     assert training_cli_build_kwargs(args)["sorting_order_dithering_stage3"] == 0.01
     assert args.depth_ratio_grad_min == 0.0
     assert args.depth_ratio_grad_max == 0.1
-    assert args.refinement_min_contribution_percent == 1e-05
+    assert args.refinement_min_contribution == 512
     assert args.init_opacity is None
 
 

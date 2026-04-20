@@ -108,7 +108,7 @@ _CACHED_RASTER_GRAD_ATOMIC_MODE_LABELS = ("Float Atomics", "Fixed Point")
 _DEBUG_MODE_VALUES = (
     "normal",
     "processed_count",
-    "clone_count",
+    "splat_age",
     "ellipse_outlines",
     "splat_density",
     "splat_spatial_density",
@@ -125,7 +125,7 @@ _DEBUG_MODE_VALUES = (
 _DEBUG_MODE_LABELS = (
     "Normal",
     "Processed Count",
-    "Clone Count",
+    "Splat Age",
     "Ellipse Outlines",
     "Splat Density",
     "Spatial Density",
@@ -338,7 +338,7 @@ def _renderer_debug_control_keys(mode: str) -> tuple[str, ...]:
     if mode == "ellipse_outlines": return ("debug_mode", "debug_ellipse_thickness_px")
     if mode == "grad_norm": return ("debug_mode", "debug_grad_norm_threshold")
     if mode == "sh_coefficient": return ("debug_mode", "debug_sh_coeff_index")
-    if mode == "clone_count": return ("debug_mode", "debug_clone_count_min", "debug_clone_count_max")
+    if mode == "splat_age": return ("debug_mode", "debug_splat_age_min", "debug_splat_age_max")
     if mode in ("splat_density", "splat_spatial_density", "splat_screen_density"): return ("debug_mode", "debug_density_min", "debug_density_max")
     if mode == "contribution_amount": return ("debug_mode", "debug_contribution_min", "debug_contribution_max")
     if mode == "adam_momentum": return ("debug_mode", "debug_grad_norm_threshold")
@@ -504,7 +504,7 @@ def export_repo_defaults_from_ui_values(values: dict[str, object]) -> dict[str, 
                 "debug_mode": None if _DEBUG_MODE_VALUES[min(max(int(values["debug_mode"]), 0), len(_DEBUG_MODE_VALUES) - 1)] == "normal" else _DEBUG_MODE_VALUES[min(max(int(values["debug_mode"]), 0), len(_DEBUG_MODE_VALUES) - 1)],
                 "debug_grad_norm_threshold": float(values["debug_grad_norm_threshold"]),
                 "debug_ellipse_thickness_px": float(values["debug_ellipse_thickness_px"]),
-                "debug_clone_count_range": [float(values["debug_clone_count_min"]), float(values["debug_clone_count_max"])],
+                "debug_splat_age_range": [float(values["debug_splat_age_min"]), float(values["debug_splat_age_max"])],
                 "debug_density_range": [float(values["debug_density_min"]), float(values["debug_density_max"])],
                 "debug_contribution_range": [float(values["debug_contribution_min"]), float(values["debug_contribution_max"])],
                 "debug_adam_momentum_range": list(_threshold_band_range(float(values["debug_adam_momentum_threshold"]))),
@@ -588,8 +588,8 @@ DEBUG_RENDER_SPECS = (
     ControlSpec("debug_sh_coeff_index", "combo", "SH Coefficient", {"value": int(_RENDERER_DEFAULTS["debug_sh_coeff_index"]), "options": _DEBUG_SH_COEFF_LABELS}),
     ControlSpec("debug_grad_norm_threshold", "input_float", "Grad Norm Threshold", {"value": float(_RENDERER_DEFAULTS["debug_grad_norm_threshold"]), "step": 1e-5, "step_fast": 1e-4, "format": "%.6g"}),
     ControlSpec("debug_ellipse_thickness_px", "slider_float", "Ellipse Thickness", {"value": float(_RENDERER_DEFAULTS["debug_ellipse_thickness_px"]), "min": 0.25, "max": 8.0, "format": "%.2f px"}),
-    ControlSpec("debug_clone_count_min", "input_float", "Clone Count Min", {"value": float(_RENDERER_DEFAULTS["debug_clone_count_range"][0]), "step": 1.0, "step_fast": 4.0, "format": "%.5g"}),
-    ControlSpec("debug_clone_count_max", "input_float", "Clone Count Max", {"value": float(_RENDERER_DEFAULTS["debug_clone_count_range"][1]), "step": 1.0, "step_fast": 4.0, "format": "%.5g"}),
+    ControlSpec("debug_splat_age_min", "input_float", "Splat Age Min", {"value": float(_RENDERER_DEFAULTS["debug_splat_age_range"][0]), "step": 0.05, "step_fast": 0.25, "format": "%.5g"}),
+    ControlSpec("debug_splat_age_max", "input_float", "Splat Age Max", {"value": float(_RENDERER_DEFAULTS["debug_splat_age_range"][1]), "step": 0.05, "step_fast": 0.25, "format": "%.5g"}),
     ControlSpec("debug_density_min", "input_float", "Density Min", {"value": float(_RENDERER_DEFAULTS["debug_density_range"][0]), "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
     ControlSpec("debug_density_max", "input_float", "Density Max", {"value": float(_RENDERER_DEFAULTS["debug_density_range"][1]), "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
     ControlSpec("debug_contribution_min", "input_float", "Contribution Min", {"value": float(_RENDERER_DEFAULTS["debug_contribution_range"][0]), "step": 1e-4, "step_fast": 1e-3, "format": "%.6g%%"}),
@@ -1478,7 +1478,7 @@ class ToolkitWindow:
     def _debug_colorbar_title(self, mode: str) -> str:
         return {
             "processed_count": "Processed Count",
-            "clone_count": "Clone Count",
+            "splat_age": "Splat Age",
             "splat_density": "Splat Density",
             "splat_spatial_density": "Spatial Density",
             "splat_screen_density": "Screen Density",
@@ -1497,8 +1497,8 @@ class ToolkitWindow:
         if mode == "grad_norm":
             threshold = float(ui._values.get("debug_grad_norm_threshold", _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT))
             return f"{_threshold_band_tick_value(t, threshold):.1e}"
-        if mode == "clone_count":
-            return f"{_debug_range_tick_value(t, float(ui._values.get('debug_clone_count_min', 0.0)), float(ui._values.get('debug_clone_count_max', 16.0))):.3g}"
+        if mode == "splat_age":
+            return f"{_debug_range_tick_value(t, float(ui._values.get('debug_splat_age_min', 0.0)), float(ui._values.get('debug_splat_age_max', 1.0))):.3g}"
         if mode in ("splat_density", "splat_spatial_density", "splat_screen_density"):
             return f"{_debug_range_tick_value(t, float(ui._values.get('debug_density_min', 0.0)), float(ui._values.get('debug_density_max', 20.0))):.3g}"
         if mode == "contribution_amount":
@@ -2437,8 +2437,8 @@ class ToolkitWindow:
         "debug_sh_coeff_index": "Select which raw SH coefficient float3 to display; zero is mapped to 0.5 gray in this debug view",
         "debug_grad_norm_threshold": "Reference threshold for the gradient norm heatmap",
         "debug_ellipse_thickness_px": "Thickness used by ellipse outline debug rendering",
-        "debug_clone_count_min": "Lower bound for the per-splat clone counter heatmap",
-        "debug_clone_count_max": "Upper bound for the per-splat clone counter heatmap",
+        "debug_splat_age_min": "Lower bound for the per-splat age heatmap",
+        "debug_splat_age_max": "Upper bound for the per-splat age heatmap",
         "debug_density_min": "Lower bound for density debug heatmaps",
         "debug_density_max": "Upper bound for density debug heatmaps",
         "debug_contribution_min": "Lower bound for the log-scaled contribution heatmap in percent of observed dataset pixels",
@@ -2495,8 +2495,8 @@ class ToolkitWindow:
         "refinement_growth_ratio": "Target fractional scene growth per refinement step once densification is enabled",
         "refinement_growth_start_step": "Keep densification growth at zero until this training iteration, then use the configured refinement growth; slider range follows Schedule Steps",
         "refinement_alpha_cull_threshold": "Cull splats below this decoded alpha threshold during refinement",
-        "refinement_min_contribution_percent": "Minimum accumulated alpha contribution, as a percent of observed dataset pixels, required for a splat to survive refinement",
-        "refinement_min_contribution_decay": "Multiply the minimum contribution percent by this factor after each completed refinement pass",
+        "refinement_min_contribution": "Minimum accumulated alpha contribution count required for a splat to survive refinement",
+        "refinement_min_contribution_decay": "Multiply the minimum contribution count by this factor after each completed refinement pass",
         "refinement_opacity_mul": "Multiply every surviving splat alpha by this factor during each refinement rewrite pass",
         "refinement_sample_radius": "Radius of the centered local-space Fibonacci volume used when spawning new refinement samples",
         "refinement_clone_scale_mul": "Multiply the split-family sigma after the default family-size shrink used for refinement clones",
@@ -2662,15 +2662,15 @@ def build_ui(renderer) -> ViewerUI:
     values["debug_mode"] = _renderer_debug_mode_index(getattr(renderer, "debug_mode", _RENDERER_DEFAULTS["debug_mode"]))
     values["debug_grad_norm_threshold"] = float(getattr(renderer, "debug_grad_norm_threshold", _RENDERER_DEFAULTS["debug_grad_norm_threshold"]))
     values["debug_ellipse_thickness_px"] = float(getattr(renderer, "debug_ellipse_thickness_px", _RENDERER_DEFAULTS["debug_ellipse_thickness_px"]))
-    clone_count_range = tuple(getattr(renderer, "debug_clone_count_range", _RENDERER_DEFAULTS["debug_clone_count_range"]))
+    splat_age_range = tuple(getattr(renderer, "debug_splat_age_range", _RENDERER_DEFAULTS["debug_splat_age_range"]))
     density_range = tuple(getattr(renderer, "debug_density_range", _RENDERER_DEFAULTS["debug_density_range"]))
     contribution_range = tuple(getattr(renderer, "debug_contribution_range", _RENDERER_DEFAULTS["debug_contribution_range"]))
     adam_momentum_range = tuple(getattr(renderer, "debug_adam_momentum_range", _RENDERER_DEFAULTS["debug_adam_momentum_range"]))
     depth_mean_range = tuple(getattr(renderer, "debug_depth_mean_range", _RENDERER_DEFAULTS["debug_depth_mean_range"]))
     depth_std_range = tuple(getattr(renderer, "debug_depth_std_range", _RENDERER_DEFAULTS["debug_depth_std_range"]))
     depth_local_mismatch_range = tuple(getattr(renderer, "debug_depth_local_mismatch_range", _RENDERER_DEFAULTS["debug_depth_local_mismatch_range"]))
-    values["debug_clone_count_min"] = float(clone_count_range[0])
-    values["debug_clone_count_max"] = float(clone_count_range[1])
+    values["debug_splat_age_min"] = float(splat_age_range[0])
+    values["debug_splat_age_max"] = float(splat_age_range[1])
     values["debug_density_min"] = float(density_range[0])
     values["debug_density_max"] = float(density_range[1])
     values["debug_contribution_min"] = float(contribution_range[0])

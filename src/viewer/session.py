@@ -618,7 +618,7 @@ def _reset_training_runtime(viewer: object) -> None:
     viewer.s.trainer = None
     if viewer.s.renderer is not None:
         viewer.s.renderer.set_debug_grad_norm_buffer(None)
-        viewer.s.renderer.set_debug_clone_count_buffer(None)
+        viewer.s.renderer.set_debug_splat_age_buffer(None)
     viewer.s.applied_renderer_params_training = None
     viewer.s.applied_renderer_params_debug = None
     viewer.s.applied_training_signature = None
@@ -683,10 +683,10 @@ def update_debug_frame_slider_range(viewer: object) -> None:
     slider.value = clamp_index(int(slider.value), max_index + 1)
 
 
-def _training_debug_clone_count_buffer(viewer: object):
+def _training_debug_splat_age_buffer(viewer: object):
     return (
-        viewer.s.trainer.refinement_buffers["clone_counts"]
-        if viewer.s.trainer is not None and "clone_counts" in viewer.s.trainer.refinement_buffers
+        viewer.s.trainer.refinement_buffers["splat_age"]
+        if viewer.s.trainer is not None and "splat_age" in viewer.s.trainer.refinement_buffers
         else None
     )
 
@@ -711,7 +711,7 @@ def _apply_debug_buffers(viewer: object, renderer: GaussianRenderer | None) -> N
         if viewer.s.training_renderer is not None and viewer.s.trainer is not None
         else None
     )
-    renderer.set_debug_clone_count_buffer(_training_debug_clone_count_buffer(viewer))
+    renderer.set_debug_splat_age_buffer(_training_debug_splat_age_buffer(viewer))
     bind_contribution = getattr(renderer, "set_debug_splat_contribution_buffer", None)
     if callable(bind_contribution):
         bind_contribution(_training_debug_splat_contribution_buffer(viewer))

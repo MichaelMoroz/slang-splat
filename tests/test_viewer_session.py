@@ -154,7 +154,7 @@ def test_ensure_training_runtime_resolution_rebinds_renderer_without_reset(monke
         def set_debug_grad_norm_buffer(self, buffer) -> None:
             self.bound = buffer
 
-        def set_debug_clone_count_buffer(self, buffer) -> None:
+        def set_debug_splat_age_buffer(self, buffer) -> None:
             del buffer
 
         def set_debug_splat_contribution_buffer(self, buffer) -> None:
@@ -339,7 +339,7 @@ def test_import_colmap_dataset_clears_loaded_scene_before_loading(monkeypatch) -
             renderer=SimpleNamespace(
                 clear_scene_resources=lambda: calls.append(("clear_renderer", None)),
                 set_debug_grad_norm_buffer=lambda buffer: calls.append(("clear_grad_debug", buffer)),
-                set_debug_clone_count_buffer=lambda buffer: calls.append(("clear_clone_debug", buffer)),
+                set_debug_splat_age_buffer=lambda buffer: calls.append(("clear_splat_age_debug", buffer)),
             ),
             trainer=SimpleNamespace(state=SimpleNamespace(step=0)),
             training_active=False,
@@ -395,7 +395,7 @@ def test_import_colmap_dataset_clears_loaded_scene_before_loading(monkeypatch) -
 
     assert calls[:8] == [
         ("clear_grad_debug", None),
-        ("clear_clone_debug", None),
+        ("clear_splat_age_debug", None),
         ("reset_training_visual", None),
         ("reset_loss_debug", None),
         ("clear_cached_init", None),
@@ -442,7 +442,7 @@ def test_import_colmap_from_ui_clears_loaded_scene_before_queueing(tmp_path: Pat
             renderer=SimpleNamespace(
                 clear_scene_resources=lambda: calls.append(("clear_renderer", None)),
                 set_debug_grad_norm_buffer=lambda buffer: calls.append(("clear_grad_debug", buffer)),
-                set_debug_clone_count_buffer=lambda buffer: calls.append(("clear_clone_debug", buffer)),
+                set_debug_splat_age_buffer=lambda buffer: calls.append(("clear_splat_age_debug", buffer)),
             ),
             trainer=None,
             training_active=False,
@@ -477,7 +477,7 @@ def test_import_colmap_from_ui_clears_loaded_scene_before_queueing(tmp_path: Pat
 
     assert calls == [
         ("clear_grad_debug", None),
-        ("clear_clone_debug", None),
+        ("clear_splat_age_debug", None),
         ("reset_training_visual", None),
         ("reset_loss_debug", None),
         ("clear_cached_init", None),
@@ -714,7 +714,7 @@ def test_import_colmap_dataset_uses_aligned_reconstruction(monkeypatch) -> None:
             renderer=SimpleNamespace(
                 clear_scene_resources=lambda: calls.append(("clear_renderer", None)),
                 set_debug_grad_norm_buffer=lambda buffer: calls.append(("clear_grad_debug", buffer)),
-                set_debug_clone_count_buffer=lambda buffer: calls.append(("clear_clone_debug", buffer)),
+                set_debug_splat_age_buffer=lambda buffer: calls.append(("clear_splat_age_debug", buffer)),
             ),
             trainer=None,
             training_active=False,
@@ -774,7 +774,7 @@ def test_import_colmap_dataset_uses_aligned_reconstruction(monkeypatch) -> None:
 
     assert calls[:3] == [
         ("clear_grad_debug", None),
-        ("clear_clone_debug", None),
+        ("clear_splat_age_debug", None),
         ("clear_renderer", None),
     ]
     assert calls[-2:] == [
@@ -929,14 +929,14 @@ def test_initialize_training_scene_rebinds_debug_buffers_for_new_trainer(monkeyp
     class _ViewportRenderer:
         def __init__(self) -> None:
             self.grad_buffer = "stale-grad"
-            self.clone_buffer = "stale-clone"
+            self.splat_age_buffer = "stale-splat-age"
             self.copy_targets: list[object] = []
 
         def set_debug_grad_norm_buffer(self, buffer) -> None:
             self.grad_buffer = buffer
 
-        def set_debug_clone_count_buffer(self, buffer) -> None:
-            self.clone_buffer = buffer
+        def set_debug_splat_age_buffer(self, buffer) -> None:
+            self.splat_age_buffer = buffer
 
         def copy_scene_state_to(self, encoder, dst) -> None:
             del encoder
@@ -956,7 +956,7 @@ def test_initialize_training_scene_rebinds_debug_buffers_for_new_trainer(monkeyp
     main_renderer = _ViewportRenderer()
     debug_renderer = _ViewportRenderer()
     new_trainer = SimpleNamespace(
-        refinement_buffers={"clone_counts": "new-clone"},
+        refinement_buffers={"splat_age": "new-splat-age"},
         effective_train_downscale_factor=lambda step=0: 1,
         effective_train_render_factor=lambda step=0: 1,
     )
@@ -981,7 +981,7 @@ def test_initialize_training_scene_rebinds_debug_buffers_for_new_trainer(monkeyp
                 diffused_point_count=100,
                 diffusion_radius=1.0,
             ),
-            trainer=SimpleNamespace(refinement_buffers={"clone_counts": "old-clone"}),
+            trainer=SimpleNamespace(refinement_buffers={"splat_age": "old-splat-age"}),
             renderer=main_renderer,
             debug_renderer=debug_renderer,
             training_renderer=old_training_renderer,
@@ -1029,9 +1029,9 @@ def test_initialize_training_scene_rebinds_debug_buffers_for_new_trainer(monkeyp
     assert viewer.s.trainer is new_trainer
     assert calls == ["reset_plot_history", "ensure_renderer_cleared=True", "apply_live_params_trainer_is_none=True", "reset_plot_history"]
     assert main_renderer.grad_buffer == "new-grad"
-    assert main_renderer.clone_buffer == "new-clone"
+    assert main_renderer.splat_age_buffer == "new-splat-age"
     assert debug_renderer.grad_buffer == "new-grad"
-    assert debug_renderer.clone_buffer == "new-clone"
+    assert debug_renderer.splat_age_buffer == "new-splat-age"
     assert viewer.s.cached_raster_grad_histograms is None
     assert viewer.s.cached_raster_grad_ranges is None
     assert viewer.s.cached_raster_grad_histogram_mode == ""
@@ -1044,8 +1044,8 @@ def test_initialize_training_scene_rebinds_debug_buffers_for_new_trainer(monkeyp
 def test_initialize_training_scene_rebuilds_training_frames_from_colmap(monkeypatch) -> None:
     frame = SimpleNamespace(width=48, height=24, image_id=9)
     training_renderer = SimpleNamespace(copy_scene_state_to=lambda encoder, dst: None)
-    main_renderer = SimpleNamespace(set_debug_grad_norm_buffer=lambda buffer: None, set_debug_clone_count_buffer=lambda buffer: None)
-    debug_renderer = SimpleNamespace(set_debug_grad_norm_buffer=lambda buffer: None, set_debug_clone_count_buffer=lambda buffer: None)
+    main_renderer = SimpleNamespace(set_debug_grad_norm_buffer=lambda buffer: None, set_debug_splat_age_buffer=lambda buffer: None)
+    debug_renderer = SimpleNamespace(set_debug_grad_norm_buffer=lambda buffer: None, set_debug_splat_age_buffer=lambda buffer: None)
     new_trainer = SimpleNamespace(effective_train_downscale_factor=lambda step=0: 1, effective_train_render_factor=lambda step=0: 1, scene=SimpleNamespace(count=8), refinement_buffers={})
     built_scene = SimpleNamespace(count=8)
     viewer = SimpleNamespace(

@@ -69,7 +69,7 @@ class _DummyTrainer:
             refinement_growth_ratio=0.05,
             refinement_growth_start_step=500,
             refinement_alpha_cull_threshold=1e-2,
-            refinement_min_contribution_percent=1e-05,
+            refinement_min_contribution=512,
             refinement_min_contribution_decay=0.995,
             refinement_opacity_mul=1.0,
             refinement_use_compact_split=True,
@@ -234,7 +234,7 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         "refinement_growth_ratio": _control(0.05),
         "refinement_growth_start_step": _control(500),
         "refinement_alpha_cull_threshold": _control(1e-2),
-        "refinement_min_contribution_percent": _control(1e-05),
+        "refinement_min_contribution": _control(512),
         "refinement_min_contribution_decay": _control(0.995),
         "refinement_opacity_mul": _control(1.0),
         "refinement_clone_scale_mul": _control(1.0),
@@ -470,7 +470,7 @@ def test_update_ui_text_reports_training_schedule_and_refinement() -> None:
 
     assert viewer.t("training_schedule").text == "LR Schedule: 5.00e-03@0 -> 2.00e-03@3,000 -> 1.00e-03@14,000 -> 1.50e-04@30,000 | current=5.00e-03"
     assert viewer.t("training_schedule_values").text == "Current Values: step=0 | Stage 0 | lr=5.00e-03 | pos=1.00x | shlr=0.05x | depth=1.00e+00 | dither=0.5 | noise=5.00e+05 | sh=SH0"
-    assert viewer.t("training_refinement").text == "Refinement: every 200 | growth=0.00% now | target=5.00% after 500 | alpha<1.00e-02 or min contrib<1e-05% | decay=99.50%/pass | alpha mul=1.00x | clone scale=1.00x | max=1,000,000"
+    assert viewer.t("training_refinement").text == "Refinement: every 200 | growth=0.00% now | target=5.00% after 500 | alpha<1.00e-02 or min contrib<512 | decay=99.50%/pass | alpha mul=1.00x | clone scale=1.00x | max=1,000,000"
     assert viewer.t("loss_debug_psnr").text == "PSNR: 32.50 dB"
     assert viewer.ui._values["_training_view_overlay_segments"] == ()
     assert viewer.ui._values["_training_views_rows"] == (
@@ -636,6 +636,7 @@ def test_update_ui_text_populates_colmap_import_progress_fields() -> None:
 def test_render_debug_source_uses_overlay_renderer_for_rendered_view(monkeypatch) -> None:
     viewer = _viewer(loss_debug=True)
     viewer.c("loss_debug_view").value = 0
+    viewer.s.trainer.state.step = 17
     overlay_renderer = _DummyRenderer()
     calls: list[tuple[str, object]] = []
 
@@ -649,11 +650,11 @@ def test_render_debug_source_uses_overlay_renderer_for_rendered_view(monkeypatch
     assert height == 180
     assert stats["generated_entries"] == 1
     assert calls == [("ensure", True), ("sync", "debug")]
-    assert viewer.s.trainer.training_resolution_calls == [(0, 0)]
-    assert viewer.s.trainer.sample_vars_calls == [(0, 0, 42)]
+    assert viewer.s.trainer.training_resolution_calls == [(0, 17)]
+    assert viewer.s.trainer.sample_vars_calls == [(0, 17, 42)]
     assert viewer.s.trainer.background_seed_calls == [42]
-    assert viewer.s.trainer.hparam_calls == [(0, overlay_renderer)]
-    assert viewer.s.trainer.sort_calls == [(0, 42, (0, 320, 180))]
+    assert viewer.s.trainer.hparam_calls == [(17, overlay_renderer)]
+    assert viewer.s.trainer.sort_calls == [(0, 17, (0, 320, 180))]
     assert sample_vars["g_TrainingSubsample"]["stepIndex"] == np.uint32(42)
     render_call = overlay_renderer.training_forward_calls[0]
     assert render_call["camera"] == (0, 320, 180)
