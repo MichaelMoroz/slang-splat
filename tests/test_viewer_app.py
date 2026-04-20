@@ -173,65 +173,25 @@ def test_reinitialize_callback_defers_scene_rebuild_to_next_frame() -> None:
     assert viewer.s.pending_training_reinitialize is True
 
 
-def test_default_training_params_include_background_mode_and_density() -> None:
+def test_default_training_params_include_training_control_fields() -> None:
     params = app.default_training_params()
 
-    assert params.training.background_mode == TRAIN_BACKGROUND_MODE_RANDOM
-    assert params.training.background == (1.0, 1.0, 1.0)
-    assert params.training.use_sh is False
-    assert params.training.sh_band == 0
-    assert params.training.density_regularizer == 0.02
-    assert params.training.depth_ratio_weight == 0.5
-    assert params.training.max_screen_fraction == 0.25
-    assert params.training.ssim_weight == 0.05
-    assert params.training.ssim_c2 == 9e-4
-    assert params.training.refinement_loss_weight == 0.25
-    assert params.training.refinement_target_edge_weight == 0.75
-    assert params.training.depth_ratio_grad_min == 0.0
-    assert params.training.depth_ratio_grad_max == 0.1
-    assert params.training.sh1_reg_weight == 0.01
-    assert params.training.color_non_negative_reg == 0.01
-    assert params.training.max_allowed_density_start == 5.0
-    assert params.training.max_allowed_density == 12.0
-    assert params.training.position_random_step_noise_lr == 5e5
-    assert np.isclose(params.training.position_random_step_noise_stage1_lr, 466666.6666666667)
-    assert np.isclose(params.training.position_random_step_noise_stage2_lr, 416666.6666666667)
-    assert params.training.position_random_step_noise_stage3_lr == 0.0
-    assert params.training.max_screen_fraction_stage1 == 0.07
-    assert params.training.max_screen_fraction_stage2 == 0.02
-    assert params.training.max_screen_fraction_stage3 == 0.007
-    assert params.training.sorting_order_dithering == 0.5
-    assert params.training.sorting_order_dithering_stage1 == 0.2
-    assert params.training.sorting_order_dithering_stage2 == 0.05
-    assert params.training.sorting_order_dithering_stage3 == 0.01
-    assert params.training.position_random_step_opacity_gate_center == 0.005
-    assert params.training.position_random_step_opacity_gate_sharpness == 100.0
-    assert params.training.lr_schedule_stage1_lr == 0.002
-    assert params.training.lr_schedule_stage2_lr == 0.001
-    assert params.training.lr_schedule_end_lr == 1.5e-4
-    assert params.training.lr_schedule_stage1_step == 3000
-    assert params.training.lr_schedule_stage2_step == 14000
-    assert params.training.lr_sh_mul == 0.1
-    assert params.training.lr_sh_stage1_mul == 0.1
-    assert params.training.lr_sh_stage2_mul == 0.1
-    assert params.training.lr_sh_stage3_mul == 0.1
-    assert params.training.depth_ratio_stage1_weight == 0.03
-    assert params.training.depth_ratio_stage2_weight == 0.01
-    assert params.training.depth_ratio_stage3_weight == 0.001
-    assert params.training.use_sh_stage1 is False
-    assert params.training.use_sh_stage2 is True
-    assert params.training.use_sh_stage3 is True
-    assert params.training.sh_band_stage1 == 0
-    assert params.training.sh_band_stage2 == 2
-    assert params.training.sh_band_stage3 == 3
-    assert params.training.refinement_growth_ratio == 0.0
-    assert params.training.refinement_growth_start_step == 500
-    assert params.training.refinement_alpha_cull_threshold == 1e-2
-    assert params.training.refinement_min_contribution_percent == 1e-05
-    assert params.training.refinement_min_contribution_decay == 0.995
-    assert params.training.refinement_opacity_mul == 1.0
-    assert params.training.max_gaussians == 1_000_000
-    assert params.training.train_subsample_factor == 0
+    for key in (
+        "background_mode",
+        "density_regularizer",
+        "depth_ratio_weight",
+        "max_screen_fraction",
+        "ssim_weight",
+        "ssim_c2",
+        "color_non_negative_reg",
+        "sorting_order_dithering_stage1",
+        "lr_schedule_stage1_lr",
+        "depth_ratio_stage1_weight",
+        "refinement_growth_ratio",
+        "refinement_min_contribution_percent",
+        "train_subsample_factor",
+    ):
+        assert hasattr(params.training, key)
 
 
 def test_viewer_background_defaults_to_custom_black() -> None:

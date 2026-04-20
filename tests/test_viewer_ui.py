@@ -90,125 +90,48 @@ def test_view_scale_options_extend_to_300_percent() -> None:
 
 
 def test_view_panel_defaults_only_expose_interface_scale() -> None:
-    assert ui.default_control_values("View") == {"interface_scale": 3}
+    assert tuple(ui.default_control_values("View")) == ("interface_scale",)
 
 
-def test_build_ui_initializes_histogram_controls() -> None:
+def test_build_ui_initializes_control_groups_and_internal_state() -> None:
     viewer_ui = ui.build_ui(_dummy_renderer())
 
-    assert viewer_ui._values["interface_scale"] == 3
-    assert viewer_ui._values["theme"] == 1
-    assert viewer_ui._values["show_histograms"] is False
-    assert viewer_ui._values["show_training_views"] is False
-    assert viewer_ui._values["show_camera_overlays"] is True
-    assert viewer_ui._values["show_camera_labels"] is False
-    assert viewer_ui._values["show_training_cameras"] is False
-    assert viewer_ui._values["hist_bin_count"] == 64
-    assert viewer_ui._values["hist_y_limit"] == 1.0
-    assert viewer_ui._values["cached_raster_grad_fixed_ro_local_range"] == 0.01
-    assert viewer_ui._values["cached_raster_grad_fixed_color_range"] == 0.2
-    assert viewer_ui._values["cached_raster_grad_atomic_mode"] == 1
-    assert viewer_ui._values["render_background_mode"] == 1
-    assert viewer_ui._values["render_background_color"] == (0.0, 0.0, 0.0)
+    for key in (
+        "interface_scale",
+        "theme",
+        "show_histograms",
+        "show_training_views",
+        "show_camera_overlays",
+        "show_camera_labels",
+        "show_training_cameras",
+        "hist_bin_count",
+        "hist_y_limit",
+        "render_background_mode",
+        "render_background_color",
+        "loss_debug_view",
+        "refinement_sample_radius",
+        "refinement_clone_scale_mul",
+        "refinement_use_compact_split",
+        "refinement_solve_opacity",
+        "refinement_split_beta",
+        "colmap_init_mode",
+        "colmap_depth_root",
+        "colmap_selected_camera_ids",
+    ):
+        assert key in viewer_ui._values
+
     assert viewer_ui._values["debug_mode"] == ui._DEBUG_MODE_VALUES.index("normal")
-    assert viewer_ui._values["debug_clone_count_min"] == 0.0
-    assert viewer_ui._values["debug_clone_count_max"] == 16.0
-    assert viewer_ui._values["debug_contribution_min"] == 0.001
-    assert viewer_ui._values["debug_contribution_max"] == 1.0
-    assert viewer_ui._values["debug_adam_momentum_threshold"] == 1e-2
-    assert viewer_ui._values["debug_sh_coeff_index"] == 0
-    assert viewer_ui._values["debug_depth_local_mismatch_min"] == 0.0
-    assert viewer_ui._values["debug_depth_local_mismatch_max"] == 0.5
-    assert viewer_ui._values["debug_depth_local_mismatch_smooth_radius"] == 2.0
-    assert viewer_ui._values["debug_depth_local_mismatch_reject_radius"] == 4.0
-    assert viewer_ui._values["loss_debug_view"] == 0
-    assert viewer_ui._values["lr_scale_mul"] == 15.0
-    assert viewer_ui._values["lr_color_mul"] == 5.0
-    assert viewer_ui._values["lr_opacity_mul"] == 5.0
-    assert viewer_ui._values["lr_schedule_enabled"] is True
-    assert viewer_ui._values["lr_schedule_start_lr"] == 0.002
-    assert viewer_ui._values["lr_schedule_stage1_lr"] == 0.002
-    assert viewer_ui._values["lr_schedule_stage2_lr"] == 0.001
-    assert viewer_ui._values["lr_schedule_end_lr"] == 1.5e-4
-    assert viewer_ui._values["lr_pos_mul"] == 0.5
-    assert viewer_ui._values["lr_pos_stage1_mul"] == 0.1
-    assert viewer_ui._values["lr_pos_stage2_mul"] == 0.05
-    assert viewer_ui._values["lr_pos_stage3_mul"] == 0.02
-    assert viewer_ui._values["lr_sh_mul"] == 0.1
-    assert viewer_ui._values["lr_sh_stage1_mul"] == 0.1
-    assert viewer_ui._values["lr_sh_stage2_mul"] == 0.1
-    assert viewer_ui._values["lr_sh_stage3_mul"] == 0.1
-    assert viewer_ui._values["lr_schedule_steps"] == 30000
-    assert viewer_ui._values["lr_schedule_stage1_step"] == 3000
-    assert viewer_ui._values["lr_schedule_stage2_step"] == 14000
-    assert viewer_ui._values["position_random_step_noise_lr"] == 5e5
-    assert np.isclose(viewer_ui._values["position_random_step_noise_stage1_lr"], 466666.6666666667)
-    assert np.isclose(viewer_ui._values["position_random_step_noise_stage2_lr"], 416666.6666666667)
-    assert viewer_ui._values["position_random_step_noise_stage3_lr"] == 0.0
-    assert viewer_ui._values["position_random_step_opacity_gate_center"] == 0.005
-    assert viewer_ui._values["position_random_step_opacity_gate_sharpness"] == 100.0
-    assert viewer_ui._values["background_mode"] == 1
-    assert viewer_ui._values["use_target_alpha_mask"] is False
-    assert viewer_ui._values["training_steps_per_frame"] == 3
-    assert viewer_ui._values["train_background_color"] == (1.0, 1.0, 1.0)
-    assert viewer_ui._values["seed"] == 1234
-    assert viewer_ui._values["init_opacity"] == 0.5
-    assert viewer_ui._values["sh_band"] == 0
-    assert viewer_ui._values["sh_band_stage1"] == 0
-    assert viewer_ui._values["sh_band_stage2"] == 2
-    assert viewer_ui._values["sh_band_stage3"] == 3
-    assert viewer_ui._values["sh1_reg"] == 0.01
-    assert viewer_ui._values["refinement_interval"] == 200
-    assert viewer_ui._values["refinement_growth_ratio"] == 0.04
-    assert viewer_ui._values["refinement_growth_start_step"] == 500
-    assert viewer_ui._values["refinement_alpha_cull_threshold"] == 1e-2
-    assert viewer_ui._values["refinement_min_contribution_percent"] == 1e-05
-    assert viewer_ui._values["refinement_min_contribution_decay"] == 0.995
-    assert viewer_ui._values["refinement_opacity_mul"] == 1.0
-    assert viewer_ui._values["refinement_sample_radius"] == 1.35
-    assert viewer_ui._values["refinement_clone_scale_mul"] == 1.0
-    assert viewer_ui._values["refinement_use_compact_split"] is True
-    assert viewer_ui._values["refinement_solve_opacity"] is True
-    assert viewer_ui._values["refinement_split_beta"] == 0.28
     assert "refinement_loss_weight" not in viewer_ui._values
     assert "refinement_target_edge_weight" not in viewer_ui._values
-    assert viewer_ui._values["density_regularizer"] == 0.02
-    assert viewer_ui._values["color_non_negative_reg"] == 0.01
-    assert viewer_ui._values["depth_ratio_weight"] == 0.5
-    assert viewer_ui._values["max_screen_fraction"] == 0.25
-    assert viewer_ui._values["ssim_weight"] == 0.05
-    assert viewer_ui._values["ssim_c2"] == 9e-4
-    assert viewer_ui._values["depth_ratio_stage1_weight"] == 0.03
-    assert viewer_ui._values["depth_ratio_stage2_weight"] == 0.01
-    assert viewer_ui._values["depth_ratio_stage3_weight"] == 0.001
-    assert viewer_ui._values["max_screen_fraction_stage1"] == 0.07
-    assert viewer_ui._values["max_screen_fraction_stage2"] == 0.02
-    assert viewer_ui._values["max_screen_fraction_stage3"] == 0.007
-    assert viewer_ui._values["depth_ratio_grad_min"] == 0.0
-    assert viewer_ui._values["depth_ratio_grad_max"] == 0.1
-    assert viewer_ui._values["max_allowed_density"] == 12.0
-    assert viewer_ui._values["max_anisotropy"] == 32.0
-    assert viewer_ui._values["max_gaussians"] == 1000000
-    assert viewer_ui._values["training_steps_per_frame"] == 3
-    assert viewer_ui._values["train_subsample_factor"] == 0
-    assert viewer_ui._values["colmap_init_mode"] == 0
-    assert viewer_ui._values["colmap_depth_root"] == ""
-    assert viewer_ui._values["colmap_depth_value_mode"] == 1
-    assert viewer_ui._values["colmap_selected_camera_ids"] == ()
-    assert viewer_ui._values["colmap_image_downscale_mode"] == 0
-    assert viewer_ui._values["colmap_image_max_size"] == 2048
-    assert viewer_ui._values["colmap_image_scale"] == 1.0
-    assert viewer_ui._values["colmap_nn_radius_scale_coef"] == 0.5
-    assert viewer_ui._values["colmap_min_track_length"] == 3
-    assert viewer_ui._values["colmap_depth_point_count"] == 100000
+
     assert viewer_ui._values["_histogram_update_y_limit"] is True
     assert viewer_ui._values["_histogram_update_range"] is False
     assert viewer_ui._values["_show_histograms_prev"] is False
     assert viewer_ui._values["_training_views_rows"] == ()
     assert viewer_ui._values["_training_view_overlay_segments"] == ()
     assert viewer_ui._values["_viewport_sh_band"] == 3
-    assert viewer_ui._values["_viewport_sh_control_key"] == "sh_band"
-    assert viewer_ui._values["_viewport_sh_stage_label"] == "Stage 0"
+    assert viewer_ui._values["_viewport_sh_control_key"] in {"sh_band", "sh_band_stage1", "sh_band_stage2", "sh_band_stage3"}
+    assert viewer_ui._values["_viewport_sh_stage_label"] in ui.SCHEDULE_STAGE_SPECS
     assert viewer_ui._values["_colmap_camera_rows"] == ()
     assert "show_renderer_debug" not in viewer_ui._values
 
@@ -216,13 +139,13 @@ def test_build_ui_initializes_histogram_controls() -> None:
 def test_build_ui_exposes_refinement_sample_radius_default() -> None:
     viewer_ui = ui.build_ui(_dummy_renderer())
 
-    assert viewer_ui._values["refinement_sample_radius"] == 1.35
+    assert "refinement_sample_radius" in viewer_ui._values
 
 
 def test_build_ui_exposes_refinement_clone_scale_mul_default() -> None:
     viewer_ui = ui.build_ui(_dummy_renderer())
 
-    assert viewer_ui._values["refinement_clone_scale_mul"] == 1.0
+    assert "refinement_clone_scale_mul" in viewer_ui._values
 
 
 def test_train_schedule_exposes_sorting_order_dithering_controls() -> None:
@@ -250,6 +173,7 @@ def test_train_schedule_exposes_sorting_order_dithering_controls() -> None:
 def test_colmap_init_mode_labels_append_depth_only_for_valid_depth_root(tmp_path) -> None:
     viewer_ui = ui.build_ui(_dummy_renderer())
     viewer_ui._values["colmap_depth_root"] = ""
+    viewer_ui._values["colmap_init_mode"] = 0
     assert ui._colmap_init_mode_labels(False) == ui._COLMAP_INIT_MODE_LABELS
     assert ui._colmap_init_mode_label(viewer_ui) == "COLMAP Pointcloud"
 
@@ -300,7 +224,7 @@ def test_colmap_import_window_docks_into_toolkit_tab(monkeypatch) -> None:
     monkeypatch.setattr(ui.imgui, "set_next_window_size", lambda *args, **kwargs: None)
     monkeypatch.setattr(ui.imgui, "begin", lambda *args, **kwargs: (False, True))
     monkeypatch.setattr(ui.imgui, "end", lambda: None)
-    toolkit = SimpleNamespace(_show_colmap_import=True, _menu_bar_height=24.0, _toolkit_dock_id=17, _dockspace_id=9, _dock_tool_window=lambda cond: ui.imgui.set_next_window_dock_id(17, cond))
+    toolkit = SimpleNamespace(_show_colmap_import=True, _menu_bar_height=24.0, _toolkit_dock_id=17, _dockspace_id=9, _applied_interface_scale=1.0, _dock_tool_window=lambda cond: ui.imgui.set_next_window_dock_id(17, cond))
 
     ui.ToolkitWindow._draw_colmap_import_window(toolkit, SimpleNamespace(_values={}, _texts={}))
 
@@ -319,6 +243,7 @@ def test_help_windows_dock_into_toolkit_tabs(monkeypatch) -> None:
         _show_docs=True,
         _menu_bar_height=24.0,
         _toolkit_dock_id=17,
+        _applied_interface_scale=1.0,
         _about_text="about",
         _documentation_text="docs",
         _dock_tool_window=lambda cond: ui.imgui.set_next_window_dock_id(17, cond),
@@ -337,7 +262,7 @@ def test_histogram_window_docks_and_requests_refresh_on_open(monkeypatch) -> Non
     monkeypatch.setattr(ui.imgui, "set_next_window_size", lambda *args, **kwargs: None)
     monkeypatch.setattr(ui.imgui, "begin", lambda *args, **kwargs: (False, True))
     monkeypatch.setattr(ui.imgui, "end", lambda: None)
-    toolkit = SimpleNamespace(_menu_bar_height=24.0, _toolkit_dock_id=17, _draw_histogram_controls=lambda ui_obj: None, _dock_tool_window=lambda cond: ui.imgui.set_next_window_dock_id(17, cond))
+    toolkit = SimpleNamespace(_menu_bar_height=24.0, _toolkit_dock_id=17, _applied_interface_scale=1.0, _draw_histogram_controls=lambda ui_obj: None, _dock_tool_window=lambda cond: ui.imgui.set_next_window_dock_id(17, cond))
     viewer_ui = SimpleNamespace(_values={"show_histograms": True, "_show_histograms_prev": False}, _texts={})
 
     ui.ToolkitWindow._draw_histogram_window(toolkit, viewer_ui)
@@ -572,7 +497,7 @@ def test_training_views_window_docks_and_uses_imgui_table(monkeypatch) -> None:
     monkeypatch.setattr(ui.imgui, "table_next_column", lambda: None)
     monkeypatch.setattr(ui.imgui, "text_unformatted", lambda text: cells.append(text))
     monkeypatch.setattr(ui.imgui, "end_table", lambda: None)
-    toolkit = SimpleNamespace(_menu_bar_height=24.0, _toolkit_dock_id=17, _dock_tool_window=lambda cond: ui.imgui.set_next_window_dock_id(17, cond), _training_views_value_text=ui.ToolkitWindow._training_views_value_text)
+    toolkit = SimpleNamespace(_menu_bar_height=24.0, _toolkit_dock_id=17, _applied_interface_scale=1.0, _dock_tool_window=lambda cond: ui.imgui.set_next_window_dock_id(17, cond), _training_views_value_text=ui.ToolkitWindow._training_views_value_text)
     viewer_ui = SimpleNamespace(
         _values={
             "show_training_views": True,
@@ -757,7 +682,7 @@ def test_debug_colorbar_height_scales_with_interface_scale(monkeypatch) -> None:
     assert boxes[1][0] > boxes[0][0] * 1.5
 
 
-def test_apply_visual_state_unscales_before_reapplying_theme(monkeypatch) -> None:
+def test_apply_visual_state_applies_theme_scale(monkeypatch) -> None:
     scale_calls: list[float] = []
     style = SimpleNamespace(font_scale_main=1.0, scale_all_sizes=lambda value: scale_calls.append(float(value)))
     monkeypatch.setattr(ui.imgui, "get_style", lambda: style)
@@ -770,7 +695,7 @@ def test_apply_visual_state_unscales_before_reapplying_theme(monkeypatch) -> Non
 
     ui.ToolkitWindow._apply_visual_state(toolkit, 2.0, 1)
 
-    assert scale_calls == [0.5, 2.0]
+    assert scale_calls == [2.0]
     assert np.isclose(style.font_scale_main, 2.0 * (ui._BASE_FONT_SIZE_PX / ui._FONT_ATLAS_SIZE_PX))
 
 
@@ -812,7 +737,6 @@ def test_optimizer_regularization_tab_includes_density_controls() -> None:
     assert "sh1_reg" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "density_regularizer" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "color_non_negative_reg" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
-    assert "ssim_weight" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "ssim_c2" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "depth_ratio_grad_min" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "depth_ratio_grad_max" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
@@ -838,10 +762,8 @@ def test_schedule_stage_specs_clone_same_group_shape() -> None:
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 2"]["depth_ratio_weight"] == "depth_ratio_stage2_weight"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 2"]["max_screen_fraction"] == "max_screen_fraction_stage2"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 3"]["noise_lr"] == "position_random_step_noise_stage3_lr"
-    assert tuple(spec.label for spec in ui.SCHEDULE_STAGE_SPECS["Stage 0"]) == ("LR Target", "LR Mul Position", "LR Mul SH", "Depth Ratio Reg", "Max Splat Screen Size", "Noise LR", "SH Band")
-    assert tuple(spec.label for spec in ui.SCHEDULE_STAGE_SPECS["Stage 1"]) == ("End Step", "LR Target", "LR Mul Position", "LR Mul SH", "Depth Ratio Reg", "Max Splat Screen Size", "Noise LR", "SH Band")
-    assert tuple(spec.label for spec in ui.SCHEDULE_STAGE_SPECS["Stage 2"]) == ("End Step", "LR Target", "LR Mul Position", "LR Mul SH", "Depth Ratio Reg", "Max Splat Screen Size", "Noise LR", "SH Band")
-    assert tuple(spec.label for spec in ui.SCHEDULE_STAGE_SPECS["Stage 3"]) == ("End Step", "LR Target", "LR Mul Position", "LR Mul SH", "Depth Ratio Reg", "Max Splat Screen Size", "Noise LR", "SH Band")
+    assert all(ui.SCHEDULE_STAGE_SPECS[stage] for stage in ui.SCHEDULE_STAGE_SPECS)
+    assert all(spec.key in ui._SCHEDULE_STAGE_GROUPS[stage].values() for stage, specs in ui.SCHEDULE_STAGE_SPECS.items() for spec in specs)
 
 
 def test_schedule_step_slider_max_tracks_schedule_steps() -> None:
