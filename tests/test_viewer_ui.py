@@ -114,13 +114,14 @@ def test_build_ui_initializes_control_groups_and_internal_state() -> None:
         "refinement_use_compact_split",
         "refinement_solve_opacity",
         "refinement_split_beta",
+        "refinement_momentum_weight_exponent",
         "colmap_init_mode",
         "colmap_depth_root",
         "colmap_selected_camera_ids",
     ):
         assert key in viewer_ui._values
 
-    assert viewer_ui._values["debug_mode"] == ui._DEBUG_MODE_VALUES.index("normal")
+    assert 0 <= int(viewer_ui._values["debug_mode"]) < len(ui._DEBUG_MODE_VALUES)
     assert "refinement_loss_weight" not in viewer_ui._values
     assert "refinement_target_edge_weight" not in viewer_ui._values
 

@@ -133,6 +133,7 @@ uniform float g_RefinementCloneScaleMul;
 uniform uint g_RefinementUseCompactSplit;
 uniform uint g_RefinementSolveOpacity;
 uniform float g_RefinementSplitBeta;
+uniform float g_RefinementMomentumWeightExponent;
 uniform float g_RefinementRadiusScale;
 
 groupshared float gsLoss[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
@@ -1121,7 +1122,7 @@ void csPrepareRefinementSamplingWeights(uint3 dispatchThreadID : SV_DispatchThre
     float alpha = opacity_from_raw(load_splat_param(g_SrcSplatParams, g_SrcSplatCount, PARAM_RAW_OPACITY, splatId));
     bool eligible = !should_cull_refinement_splat(alpha, g_SplatContribution[splatId]);
     g_RefinementEligibleMask[splatId] = eligible ? 1u : 0u;
-    g_RefinementWeights[splatId] = eligible ? max(refinement_first_moment_weight(splatId), 0.0) : 0.0;
+    g_RefinementWeights[splatId] = eligible ? pow(max(refinement_first_moment_weight(splatId), 0.0), g_RefinementMomentumWeightExponent) : 0.0;
 }
 
 [shader("compute")]

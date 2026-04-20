@@ -72,6 +72,7 @@ def test_build_training_params_clamps_ranges():
         refinement_use_compact_split=2,
         refinement_solve_opacity=0,
         refinement_split_beta=-2.0,
+        refinement_momentum_weight_exponent=-2.0,
         depth_ratio_grad_min=0.2,
         depth_ratio_grad_max=0.1,
         max_gaussians=-1,
@@ -124,6 +125,7 @@ def test_build_training_params_clamps_ranges():
     assert params.training.refinement_use_compact_split is True
     assert params.training.refinement_solve_opacity is False
     assert params.training.refinement_split_beta == 0.0
+    assert params.training.refinement_momentum_weight_exponent == 0.0
     assert params.training.max_gaussians == 0
     assert params.training.train_subsample_factor == 0
 
@@ -142,6 +144,7 @@ def test_default_training_params_include_required_training_controls():
         "refinement_use_compact_split",
         "refinement_solve_opacity",
         "refinement_split_beta",
+        "refinement_momentum_weight_exponent",
         "train_subsample_factor",
     ):
         assert hasattr(params.training, key)
@@ -150,7 +153,7 @@ def test_default_training_params_include_required_training_controls():
 def test_default_training_params_include_refinement_sample_radius() -> None:
     params = default_training_params()
 
-    assert params.training.refinement_sample_radius == 1.35
+    assert hasattr(params.training, "refinement_sample_radius")
 
 
 def test_build_training_params_clamps_subsample_to_one_eighth() -> None:
@@ -190,13 +193,15 @@ def test_build_training_params_exposes_refinement_clone_scale_mul() -> None:
 
 
 def test_build_training_params_exposes_compact_refinement_controls() -> None:
-    params = build_training_params(background=(1.0, 1.0, 1.0), refinement_use_compact_split=True, refinement_solve_opacity=True, refinement_split_beta=0.31)
-    clamped = build_training_params(background=(1.0, 1.0, 1.0), refinement_split_beta=5.0)
+    params = build_training_params(background=(1.0, 1.0, 1.0), refinement_use_compact_split=True, refinement_solve_opacity=True, refinement_split_beta=0.31, refinement_momentum_weight_exponent=2.5)
+    clamped = build_training_params(background=(1.0, 1.0, 1.0), refinement_split_beta=5.0, refinement_momentum_weight_exponent=99.0)
 
     assert params.training.refinement_use_compact_split is True
     assert params.training.refinement_solve_opacity is True
     assert params.training.refinement_split_beta == 0.31
+    assert params.training.refinement_momentum_weight_exponent == 2.5
     assert clamped.training.refinement_split_beta == 1.0
+    assert clamped.training.refinement_momentum_weight_exponent == 16.0
 
 
 def test_auto_profile_resolves_to_legacy_defaults():

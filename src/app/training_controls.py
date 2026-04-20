@@ -95,6 +95,7 @@ TRAIN_SETUP_CONTROL_DEFS = (
     _control("refinement_use_compact_split", "checkbox", "Use Compact Split", {"value": _default("refinement_use_compact_split")}, group=TRAINING_SETUP_GROUP, build_args=("refinement_use_compact_split",)),
     _control("refinement_solve_opacity", "checkbox", "Solve Split Opacity", {"value": _default("refinement_solve_opacity")}, group=TRAINING_SETUP_GROUP, build_args=("refinement_solve_opacity",)),
     _control("refinement_split_beta", "input_float", "Refinement Split Beta", {"value": _default("refinement_split_beta"), "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}, group=TRAINING_SETUP_GROUP, build_args=("refinement_split_beta",)),
+    _control("refinement_momentum_weight_exponent", "input_float", "Refinement Momentum Exponent", {"value": _default("refinement_momentum_weight_exponent"), "step": 1e-2, "step_fast": 1e-1, "format": "%.5f"}, group=TRAINING_SETUP_GROUP, build_args=("refinement_momentum_weight_exponent",)),
     _control("train_downscale_mode", "combo", "Downscale Mode", {"value": _default("train_downscale_mode"), "options": TRAIN_DOWNSCALE_MODE_LABELS}, group=TRAINING_SETUP_GROUP, build_args=("train_downscale_mode",)),
     _control("train_subsample_factor", "combo", "Subsampling", {"value": _default("train_subsample_factor"), "options": TRAIN_SUBSAMPLE_LABELS}, group=TRAINING_SETUP_GROUP, build_args=("train_subsample_factor",)),
     _control("train_auto_start_downscale", "slider_int", "Auto Start Downscale", {"value": _default("train_auto_start_downscale"), "min": 1, "max": 16}, group=TRAINING_SETUP_GROUP, build_args=("train_auto_start_downscale",)),
@@ -266,6 +267,7 @@ TRAIN_SETUP_PRIMARY_KEYS = (
     "refinement_use_compact_split",
     "refinement_solve_opacity",
     "refinement_split_beta",
+    "refinement_momentum_weight_exponent",
     "train_downscale_mode",
     "train_subsample_factor",
 )
@@ -319,6 +321,7 @@ TRAINING_CLI_ARG_DEFS = (
     _cli_arg("--refinement-use-compact-split", dest="refinement_use_compact_split", build_arg="refinement_use_compact_split", type=int, default=int(bool(_default("refinement_use_compact_split")))),
     _cli_arg("--refinement-solve-opacity", dest="refinement_solve_opacity", build_arg="refinement_solve_opacity", type=int, default=int(bool(_default("refinement_solve_opacity")))),
     _cli_arg("--refinement-split-beta", dest="refinement_split_beta", build_arg="refinement_split_beta", type=float, default=_default("refinement_split_beta")),
+    _cli_arg("--refinement-momentum-weight-exponent", dest="refinement_momentum_weight_exponent", build_arg="refinement_momentum_weight_exponent", type=float, default=_default("refinement_momentum_weight_exponent")),
     _cli_arg("--depth-ratio-grad-min", dest="depth_ratio_grad_min", build_arg="depth_ratio_grad_min", type=float, default=_default("depth_ratio_grad_min")),
     _cli_arg("--depth-ratio-grad-max", dest="depth_ratio_grad_max", build_arg="depth_ratio_grad_max", type=float, default=_default("depth_ratio_grad_max")),
     _cli_arg("--max-allowed-density-start", dest="max_allowed_density_start", build_arg="max_allowed_density_start", type=float, default=_default("max_allowed_density_start")),

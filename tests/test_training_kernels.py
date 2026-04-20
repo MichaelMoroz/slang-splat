@@ -1540,6 +1540,42 @@ def test_refinement_sampling_prefers_higher_momentum_norm(device, tmp_path: Path
     assert selections[0] > selections[1]
 
 
+def test_refinement_sampling_exponent_controls_momentum_spikiness(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=2, seed=196)
+    scene.opacities[:] = np.array([0.9, 0.9], dtype=np.float32)
+    frame = _make_frame(tmp_path, image_name="momentum_exponent_target.png", image_id=196)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(
+            refinement_growth_ratio=5.0,
+            refinement_growth_start_step=0,
+            refinement_interval=9999,
+            refinement_momentum_weight_exponent=2.0,
+        ),
+        seed=123,
+    )
+    trainer._observed_contribution_pixel_count = renderer.width * renderer.height
+    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.full((scene.count,), 500, dtype=np.uint32))
+
+    moments = np.zeros((renderer.TRAINABLE_PARAM_COUNT, scene.count, 2), dtype=np.float32)
+    moments[0, :, 0] = np.array([2.0, 4.0], dtype=np.float32)
+    trainer.adam_optimizer.buffers["adam_moments"].copy_from_numpy(moments.reshape(-1, 2))
+
+    selections = np.zeros((scene.count,), dtype=np.int32)
+    for seed in range(64):
+        trainer._seed = seed
+        clone_counts, survivor_mask = trainer._sample_refinement_clone_counts()
+        assert int(np.count_nonzero(survivor_mask)) == scene.count
+        selections += clone_counts.astype(np.int32)
+
+    ratio = float(selections[1]) / max(float(selections[0]), 1.0)
+    assert 3.0 < ratio < 5.5
+
+
 def test_refinement_sampling_is_seed_reproducible(device, tmp_path: Path) -> None:
     scene = _make_scene(count=3, seed=92)
     scene.opacities[:] = np.array([0.9, 0.9, 0.9], dtype=np.float32)

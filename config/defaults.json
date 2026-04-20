@@ -65,6 +65,7 @@
     "refinement_use_compact_split": true,
     "refinement_solve_opacity": true,
     "refinement_split_beta": 0.28,
+    "refinement_momentum_weight_exponent": 1.5,
     "lr_pos_stage1_mul": 0.1,
     "lr_pos_stage2_mul": 0.05,
     "lr_pos_stage3_mul": 0.02,
