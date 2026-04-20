@@ -105,7 +105,7 @@ class _UIntExprEvaluator(ast.NodeVisitor):
 class GaussianRenderer:
     DEBUG_MODE_NORMAL = "normal"
     DEBUG_MODE_PROCESSED_COUNT = "processed_count"
-    DEBUG_MODE_CLONE_COUNT = "clone_count"
+    DEBUG_MODE_SPLAT_AGE = "splat_age"
     DEBUG_MODE_DEPTH_MEAN = "depth_mean"
     DEBUG_MODE_DEPTH_STD = "depth_std"
     DEBUG_MODE_DEPTH_LOCAL_MISMATCH = "depth_local_mismatch"
@@ -121,7 +121,7 @@ class GaussianRenderer:
     DEBUG_MODES = (
         DEBUG_MODE_NORMAL,
         DEBUG_MODE_PROCESSED_COUNT,
-        DEBUG_MODE_CLONE_COUNT,
+        DEBUG_MODE_SPLAT_AGE,
         DEBUG_MODE_DEPTH_MEAN,
         DEBUG_MODE_DEPTH_STD,
         DEBUG_MODE_DEPTH_LOCAL_MISMATCH,
@@ -144,7 +144,7 @@ class GaussianRenderer:
     _DEFAULT_RASTER_GRAD_FIXED_QUAT_RANGE = np.float32(0.01)
     _DEFAULT_RASTER_GRAD_FIXED_COLOR_RANGE = np.float32(0.2)
     _DEFAULT_RASTER_GRAD_FIXED_OPACITY_RANGE = np.float32(0.2)
-    _DEFAULT_DEBUG_CLONE_COUNT_RANGE = (0.0, 16.0)
+    _DEFAULT_DEBUG_SPLAT_AGE_RANGE = (0.0, 1.0)
     _DEFAULT_DEBUG_DENSITY_RANGE = (0.0, 20.0)
     _DEFAULT_DEBUG_CONTRIBUTION_RANGE = (0.001, 1.0)
     _DEFAULT_DEBUG_ADAM_MOMENTUM_RANGE = (0.0, 0.1)
@@ -287,7 +287,7 @@ class GaussianRenderer:
                 "shBand": np.uint32(self.sh_band),
                 "debugGradNormThreshold": float(max(self.debug_grad_norm_threshold, 0.0)),
                 "debugEllipseThicknessPx": float(self.debug_ellipse_thickness_px),
-                "debugCloneCountRange": spy.float2(*self.debug_clone_count_range),
+                "debugSplatAgeRange": spy.float2(*self.debug_splat_age_range),
                 "debugDensityRange": spy.float2(*self.debug_density_range),
                 "debugContributionRange": spy.float2(*self.debug_contribution_range),
                 "debugContributionPercentScale": float(self._debug_contribution_percent_scale),
@@ -344,8 +344,8 @@ class GaussianRenderer:
     def _debug_grad_norm_var(self) -> dict[str, object]:
         return {"g_DebugGradNorm": self._debug_grad_norm_buffer if self._debug_grad_norm_buffer is not None else self._work_buffers["debug_grad_norm"]}
 
-    def _debug_clone_count_var(self) -> dict[str, object]:
-        return {"g_CloneCounts": self._debug_clone_count_buffer if self._debug_clone_count_buffer is not None else self._work_buffers["debug_clone_count"]}
+    def _debug_splat_age_var(self) -> dict[str, object]:
+        return {"g_SplatAges": self._debug_splat_age_buffer if self._debug_splat_age_buffer is not None else self._work_buffers["debug_splat_age"]}
 
     def _debug_splat_contribution_var(self) -> dict[str, object]:
         return {"g_SplatContribution": self._debug_splat_contribution_buffer if self._debug_splat_contribution_buffer is not None else self._work_buffers["training_splat_contribution"]}
@@ -507,7 +507,7 @@ class GaussianRenderer:
         debug_show_grad_norm: bool = False,
         debug_grad_norm_threshold: float = 2e-4,
         debug_ellipse_thickness_px: float = 4.0,
-        debug_clone_count_range: tuple[float, float] = _DEFAULT_DEBUG_CLONE_COUNT_RANGE,
+        debug_splat_age_range: tuple[float, float] = _DEFAULT_DEBUG_SPLAT_AGE_RANGE,
         debug_density_range: tuple[float, float] = _DEFAULT_DEBUG_DENSITY_RANGE,
         debug_contribution_range: tuple[float, float] = _DEFAULT_DEBUG_CONTRIBUTION_RANGE,
         debug_adam_momentum_range: tuple[float, float] = _DEFAULT_DEBUG_ADAM_MOMENTUM_RANGE,
@@ -545,7 +545,7 @@ class GaussianRenderer:
         self.debug_show_grad_norm = self.debug_mode == self.DEBUG_MODE_GRAD_NORM
         self.debug_grad_norm_threshold = float(debug_grad_norm_threshold)
         self.debug_ellipse_thickness_px = float(debug_ellipse_thickness_px)
-        self.debug_clone_count_range = tuple(float(x) for x in debug_clone_count_range)
+        self.debug_splat_age_range = tuple(float(x) for x in debug_splat_age_range)
         self.debug_density_range = tuple(float(x) for x in debug_density_range)
         self.debug_contribution_range = tuple(float(x) for x in debug_contribution_range)
         self.debug_adam_momentum_range = tuple(float(x) for x in debug_adam_momentum_range)
@@ -568,7 +568,7 @@ class GaussianRenderer:
         self._work_buffers: dict[str, spy.Buffer] = {}
         self._resource_groups = _RendererResourceGroups(scene={}, frame={}, prepass={}, raster={}, grad={}, debug={})
         self._debug_grad_norm_buffer: spy.Buffer | None = None
-        self._debug_clone_count_buffer: spy.Buffer | None = None
+        self._debug_splat_age_buffer: spy.Buffer | None = None
         self._debug_splat_contribution_buffer: spy.Buffer | None = None
         self._debug_adam_moments_buffer: spy.Buffer | None = None
         self._debug_contribution_percent_scale = 100.0 / self._SPLAT_CONTRIBUTION_FIXED_SCALE
@@ -667,7 +667,8 @@ class GaussianRenderer:
             "screen_ellipse_conic": max(self._work_splat_capacity, 1) * self._F32X4_BYTES,
             "splat_visible": max(self._work_splat_capacity, 1) * self._U32_BYTES,
             "splat_visible_area_px": max(self._work_splat_capacity, 1) * self._U32_BYTES,
-            "debug_clone_count": max(self._work_splat_capacity, 1) * self._U32_BYTES,
+            "fallback_clone_counts": max(self._work_splat_capacity, 1) * self._U32_BYTES,
+            "debug_splat_age": max(self._work_splat_capacity, 1) * self._U32_BYTES,
             "debug_grad_norm": max(self._work_splat_capacity, 1) * self._U32_BYTES,
             "visible_keys": max(self._work_splat_capacity, 1) * self._U32_BYTES,
             "visible_values": max(self._work_splat_capacity, 1) * self._U32_BYTES,
@@ -743,13 +744,15 @@ class GaussianRenderer:
             for name in ("param_grads", "cached_raster_grads_fixed", "cached_raster_grads_float", "cached_raster_grads_metrics_float")
         }
         self._resource_groups.debug = {
-            "debug_clone_count": allocated["debug_clone_count"],
+            "fallback_clone_counts": allocated["fallback_clone_counts"],
+            "debug_splat_age": allocated["debug_splat_age"],
             "debug_grad_norm": allocated["debug_grad_norm"],
         }
         self._work_buffers = self._resource_groups.merged_work_buffers()
         self._sorted_keys_buffer = self._work_buffers["keys"]
         self._sorted_values_buffer = self._work_buffers["values"]
-        self._work_buffers["debug_clone_count"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1),), dtype=np.uint32))
+        self._work_buffers["fallback_clone_counts"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1),), dtype=np.uint32))
+        self._work_buffers["debug_splat_age"].copy_from_numpy(np.ones((max(self._work_splat_capacity, 1),), dtype=np.float32))
         self._work_buffers["debug_grad_norm"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1),), dtype=np.float32))
         self._work_buffers["training_splat_contribution"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1),), dtype=np.uint32))
         self._work_buffers["training_rgb_loss"].copy_from_numpy(np.zeros((max(self.width * self.height, 1),), dtype=np.float32))
@@ -1116,8 +1119,8 @@ class GaussianRenderer:
         target = self.output_texture if output is None else output
         shader = self._k_raster_debug if self._debug_render_enabled() else self._k_raster
         vars = {**self._scene_vars(), **self._screen_vars(), **self._raster_cache_vars(), "g_SortedValues": self._sorted_values(), "g_TileRanges": self._work_buffers["tile_ranges"], "g_Output": target, **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_range_vars(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._anisotropy_uniforms(), **self._camera_uniforms(camera), **self._camera_uniforms(camera, "g_TrainingNativeCamera"), **self._disabled_training_sample_vars()}
-        if self.debug_mode == self.DEBUG_MODE_CLONE_COUNT:
-            vars.update(self._debug_clone_count_var())
+        if self.debug_mode == self.DEBUG_MODE_SPLAT_AGE:
+            vars.update(self._debug_splat_age_var())
         if self.debug_mode == self.DEBUG_MODE_CONTRIBUTION_AMOUNT:
             vars.update(self._debug_splat_contribution_var())
         if self.debug_mode == self.DEBUG_MODE_ADAM_MOMENTUM:
@@ -1158,7 +1161,7 @@ class GaussianRenderer:
             "g_TrainingDensity": self._work_buffers["training_density"],
             "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"],
             "g_TrainingBatchEnd": self._work_buffers["training_batch_end"],
-            "g_CloneCounts": self._work_buffers["debug_clone_count"] if clone_counts_buffer is None else clone_counts_buffer,
+            "g_CloneCounts": self._work_buffers["fallback_clone_counts"] if clone_counts_buffer is None else clone_counts_buffer,
             "g_SplatContribution": self._work_buffers["training_splat_contribution"] if splat_contribution_buffer is None else splat_contribution_buffer,
             **self._raster_grad_decode_scale_var(1.0),
             **self._raster_grad_fixed_range_vars(),
@@ -1189,7 +1192,7 @@ class GaussianRenderer:
         resolved_sample_vars = self._disabled_training_sample_vars() if training_sample_vars is None else training_sample_vars
         if regularizer_grad is None:
             self._clear_float_buffer(encoder, resolved_regularizer_grad, max(self.width * self.height, 1) * 2)
-        vars = {**self._scene_vars(), **self._raster_cache_vars(), "g_SortedValues": self._sorted_values(), "g_TileRanges": self._work_buffers["tile_ranges"], "g_OutputGrad": output_grad, "g_TrainingForwardState": self._work_buffers["training_forward_state"], "g_TrainingDepthStats": self._training_depth_stats_texture, "g_TrainingRegularizerGrad": resolved_regularizer_grad, "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"], "g_TrainingBatchEnd": self._work_buffers["training_batch_end"], "g_CloneCounts": self._work_buffers["debug_clone_count"] if clone_counts_buffer is None else clone_counts_buffer, **self._raster_grad_vars(), **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_range_vars(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background, training_background_mode, training_background_seed), **self._anisotropy_uniforms(), **self._camera_uniforms(camera), **self._camera_uniforms(resolved_native_camera, "g_TrainingNativeCamera"), **resolved_sample_vars}
+        vars = {**self._scene_vars(), **self._raster_cache_vars(), "g_SortedValues": self._sorted_values(), "g_TileRanges": self._work_buffers["tile_ranges"], "g_OutputGrad": output_grad, "g_TrainingForwardState": self._work_buffers["training_forward_state"], "g_TrainingDepthStats": self._training_depth_stats_texture, "g_TrainingRegularizerGrad": resolved_regularizer_grad, "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"], "g_TrainingBatchEnd": self._work_buffers["training_batch_end"], "g_CloneCounts": self._work_buffers["fallback_clone_counts"] if clone_counts_buffer is None else clone_counts_buffer, **self._raster_grad_vars(), **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_range_vars(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background, training_background_mode, training_background_seed), **self._anisotropy_uniforms(), **self._camera_uniforms(camera), **self._camera_uniforms(resolved_native_camera, "g_TrainingNativeCamera"), **resolved_sample_vars}
         self._dispatch(self._raster_grad_shader_set().backward, encoder, self._raster_thread_count(), vars, "Rasterize Backward", 27)
 
     def _backprop_cached_raster_grads(self, encoder: spy.CommandEncoder, splat_count: int, camera: Camera, grad_scale: float = 1.0) -> None:
@@ -1645,8 +1648,8 @@ class GaussianRenderer:
     def set_debug_grad_norm_buffer(self, buffer: spy.Buffer | None) -> None:
         self._debug_grad_norm_buffer = buffer
 
-    def set_debug_clone_count_buffer(self, buffer: spy.Buffer | None) -> None:
-        self._debug_clone_count_buffer = buffer
+    def set_debug_splat_age_buffer(self, buffer: spy.Buffer | None) -> None:
+        self._debug_splat_age_buffer = buffer
 
     def set_debug_splat_contribution_buffer(self, buffer: spy.Buffer | None) -> None:
         self._debug_splat_contribution_buffer = buffer
@@ -1658,11 +1661,11 @@ class GaussianRenderer:
         pixels = max(float(observed_pixel_count), 1.0)
         self._debug_contribution_percent_scale = 100.0 / (self._SPLAT_CONTRIBUTION_FIXED_SCALE * pixels)
 
-    def upload_debug_clone_counts(self, values: np.ndarray) -> None:
-        clone_counts = np.ascontiguousarray(values, dtype=np.uint32).reshape(-1)
-        self._ensure_work_buffers(max(int(clone_counts.shape[0]), self._scene_count, 1))
-        self._work_buffers["debug_clone_count"].copy_from_numpy(np.pad(clone_counts, (0, max(self._work_splat_capacity - clone_counts.shape[0], 0))))
-        self._debug_clone_count_buffer = None
+    def upload_debug_splat_age(self, values: np.ndarray) -> None:
+        splat_age = np.ascontiguousarray(values, dtype=np.float32).reshape(-1)
+        self._ensure_work_buffers(max(int(splat_age.shape[0]), self._scene_count, 1))
+        self._work_buffers["debug_splat_age"].copy_from_numpy(np.pad(splat_age, (0, max(self._work_splat_capacity - splat_age.shape[0], 0)), constant_values=1.0))
+        self._debug_splat_age_buffer = None
 
     def upload_debug_splat_contribution(self, values: np.ndarray) -> None:
         contribution = np.ascontiguousarray(values, dtype=np.uint32).reshape(-1)

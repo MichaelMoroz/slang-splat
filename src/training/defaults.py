@@ -4,7 +4,7 @@ from ..repo_defaults import training_build_arg_defaults
 
 TRAINING_BUILD_ARG_DEFAULTS: dict[str, object] = training_build_arg_defaults()
 DEFAULT_DEBUG_CONTRIBUTION_RANGE_PERCENT = (0.001, 1.0)
-DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT = float(TRAINING_BUILD_ARG_DEFAULTS["refinement_min_contribution_percent"])
+DEFAULT_REFINEMENT_MIN_CONTRIBUTION = int(TRAINING_BUILD_ARG_DEFAULTS["refinement_min_contribution"])
 DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY = float(TRAINING_BUILD_ARG_DEFAULTS["refinement_min_contribution_decay"])
 DEFAULT_REFINEMENT_CLONE_SCALE_MUL = float(TRAINING_BUILD_ARG_DEFAULTS.get("refinement_clone_scale_mul", 1.0))
 DEFAULT_REFINEMENT_SPLIT_BETA = float(TRAINING_BUILD_ARG_DEFAULTS.get("refinement_split_beta", 0.28))

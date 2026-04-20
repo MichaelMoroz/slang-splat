@@ -35,6 +35,7 @@ static const uint SSIM_FEATURE_Y_OFFSET = 1u;
 static const uint SSIM_FEATURE_X2_OFFSET = 2u;
 static const uint SSIM_FEATURE_Y2_OFFSET = 3u;
 static const uint SSIM_FEATURE_XY_OFFSET = 4u;
+static const uint REFINEMENT_MAX_CLONES_PER_SPLAT = 8u;
 static const uint REFINEMENT_HASH_INIT = 0x9e3779b9u;
 static const uint REFINEMENT_HASH_MIX = 0x85ebca6bu;
 uniform uint g_Width;
@@ -104,10 +105,13 @@ uniform uint g_LetterboxOutputHeight;
 uniform uint g_LetterboxSourceIsLinear;
 
 uniform RWStructuredBuffer<float> g_SrcSplatParams;
+uniform StructuredBuffer<float> g_SrcSplatAge;
 uniform StructuredBuffer<float2> g_SrcAdamMoments;
 uniform RWStructuredBuffer<float> g_DstSplatParams;
+uniform RWStructuredBuffer<float> g_DstSplatAge;
 uniform RWStructuredBuffer<float2> g_DstAdamMoments;
 uniform RWStructuredBuffer<float> g_AppendParams;
+uniform RWStructuredBuffer<float> g_AppendSplatAge;
 uniform RWStructuredBuffer<uint> g_CloneCounts;
 uniform RWStructuredBuffer<uint> g_SplatContribution;
 uniform RWStructuredBuffer<float> g_RefinementWeights;
@@ -807,6 +811,13 @@ void apply_refinement_opacity_mul(inout SplatState state)
     state.rawOpacity = raw_opacity_from_alpha(max(scaledAlpha, min(0.25, alpha)));
 }
 
+float decayed_splat_age(uint splatId)
+{
+    float age = g_SrcSplatAge[splatId];
+    if (!isfinite(age)) age = 0.0;
+    return max(age, 0.0) * 0.5;
+}
+
 [shader("compute")]
 [numthreads(TRAIN_TILE_DIM, TRAIN_TILE_DIM, 1)]
 void csResampleDownscaledTargetNearest(uint3 dispatchThreadID : SV_DispatchThreadID)
@@ -1087,7 +1098,7 @@ void csPrepareRefinementCounts(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (should_cull_refinement_splat(alpha, g_SplatContribution[splatId])) return;
     uint _;
     InterlockedAdd(g_AppendCounter[0], 1u, _);
-    uint cloneCount = min(g_CloneCounts[splatId], 3);
+    uint cloneCount = g_CloneCounts[splatId];
     if (cloneCount > 0u) InterlockedAdd(g_TotalCloneCounter[0], cloneCount, _);
 }
 
@@ -1155,6 +1166,15 @@ void csSampleRefinementCloneCounts(uint3 dispatchThreadID : SV_DispatchThreadID)
 
 [shader("compute")]
 [numthreads(256, 1, 1)]
+void csClampRefinementCloneCounts(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint splatId = dispatchThreadID.x;
+    if (splatId >= g_SrcSplatCount) return;
+    g_CloneCounts[splatId] = min(g_CloneCounts[splatId], REFINEMENT_MAX_CLONES_PER_SPLAT);
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
 void csRewriteRefinementSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     uint splatId = dispatchThreadID.x;
@@ -1164,7 +1184,7 @@ void csRewriteRefinementSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
     float alpha = opacity_from_raw(source.rawOpacity);
     if (should_cull_refinement_splat(alpha, g_SplatContribution[splatId])) return;
 
-    uint cloneCount = min(g_CloneCounts[splatId], 3);
+    uint cloneCount = min(g_CloneCounts[splatId], REFINEMENT_MAX_CLONES_PER_SPLAT);
     bool solveOpacity = g_RefinementSolveOpacity != 0u && cloneCount > 0u;
     if (!solveOpacity) apply_refinement_opacity_mul(source);
     uint parentIndex = 0u;
@@ -1187,19 +1207,23 @@ void csRewriteRefinementSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
             source.rawOpacity = raw_opacity_from_alpha(solve_refinement_split_alpha(alpha, splatId, familySize, frameHash, parentScale, shrink, familyMean));
         }
         store_splat_state(g_DstSplatParams, g_DstSplatCount, parentIndex, split_family_member(source, splatId, 0u, familySize, frameHash, familyMean));
+        g_DstSplatAge[parentIndex] = 1.0;
         copy_adam_state(splatId, parentIndex);
         [loop] for (uint childSlot = 0u; childSlot < emittedCloneCount; childSlot++)
         {
             SplatState child = split_family_member(source, splatId, childSlot + 1u, familySize, frameHash, familyMean);
             uint childIndex = g_SurvivorCount + childBase + childSlot;
             store_splat_state(g_AppendParams, g_AppendSplatCount, childBase + childSlot, child);
+            g_AppendSplatAge[childBase + childSlot] = 1.0;
             store_splat_state(g_DstSplatParams, g_DstSplatCount, childIndex, child);
+            g_DstSplatAge[childIndex] = 1.0;
             copy_adam_state(splatId, childIndex);
         }
         return;
     }
 
     store_splat_state(g_DstSplatParams, g_DstSplatCount, parentIndex, source);
+    g_DstSplatAge[parentIndex] = decayed_splat_age(splatId);
     copy_adam_state(splatId, parentIndex);
 }
 

@@ -11,6 +11,7 @@ uniform float g_MaxAnisotropy;
 uniform CameraParams g_TrainingNativeCamera;
 uniform TrainingSubsampleParams g_TrainingSubsample;
 uniform RWStructuredBuffer<uint> g_CloneCounts;
+uniform StructuredBuffer<float> g_SplatAges;
 uniform RWStructuredBuffer<uint> g_SplatContribution;
 
 struct RasterState : IDifferentiable
@@ -307,9 +308,9 @@ float3 raster_processed_count_color(uint processedCount)
     return jet_colormap(saturate(normalized));
 }
 
-float3 raster_clone_count_color(uint cloneCount)
+float3 raster_splat_age_color(float splatAge)
 {
-    return jet_colormap(debug_normalize_range(float(cloneCount), g_Raster.debugCloneCountRange));
+    return jet_colormap(debug_normalize_range(max(splatAge, 0.0), g_Raster.debugSplatAgeRange));
 }
 
 float3 raster_contribution_amount_color(uint contribution)
@@ -339,7 +340,7 @@ float3 raster_forward_color(RasterGaussian gaussian, uint splatId, uint debugMod
 {
     if (debugMode == DEBUG_MODE_SH_VIEW_DEPENDENT) return raster_debug_signed_color(gaussian_sh_view_dependent_component(load_gaussian3d(splatId), g_Camera.camPos));
     if (debugMode == DEBUG_MODE_SH_COEFFICIENT) return raster_debug_signed_color(gaussian_sh_coeff(load_gaussian3d(splatId), min(g_Raster.debugSHCoeffIndex, DEBUG_SH_COEFF_COUNT - 1u)));
-    if (debugMode == DEBUG_MODE_CLONE_COUNT) return raster_clone_count_color(g_CloneCounts[splatId]);
+    if (debugMode == DEBUG_MODE_SPLAT_AGE) return raster_splat_age_color(g_SplatAges[splatId]);
     if (debugMode == DEBUG_MODE_CONTRIBUTION_AMOUNT) return raster_contribution_amount_color(g_SplatContribution[splatId]);
     if (debugMode == DEBUG_MODE_ADAM_MOMENTUM) return jet_colormap(raster_normalize_threshold_band(raster_adam_momentum_length(splatId), raster_threshold_from_range(g_Raster.debugAdamMomentumRange)));
     if (debugMode != DEBUG_MODE_GRAD_NORM) return gaussian.colorAlpha.xyz;

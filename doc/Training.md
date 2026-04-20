@@ -83,8 +83,8 @@ Each trainer `step()` performs:
 8. When the configured refinement boundary is reached, run the refinement pass:
   - `csClampRefinementMinScreenSize` loops over all training cameras on GPU, converts the refinement pixel-angle floor plus Euclidean camera-to-splat distance into a support-radius lower bound for each camera, takes the minimum of those bounds across all cameras, and raises undersized splats before rewrite. Offscreen and otherwise previously invisible splats still participate because this path no longer uses projection or visibility tests,
   - cull splats with alpha below `refinement_alpha_cull_threshold`,
-  - multiply the user-facing minimum contribution percent by `refinement_min_contribution_decay` after each completed refinement pass (`0.995` by default, i.e. a `0.5%` drop per pass),
-  - convert that decayed percent-of-observed-dataset-pixels threshold into the shader's raw 24.8 fixed-point units with `percent * observed_pixels * 256 / 100`,
+  - multiply the user-facing minimum contribution count by `refinement_min_contribution_decay` after each completed refinement pass (`0.995` by default, i.e. a `0.5%` drop per pass),
+  - round that decayed threshold to a non-negative integer count and pass it directly to the shader as `g_RefinementMinContributionThreshold`,
   - compute clone resampling weights as `pow(norm(adam_first_moment), refinement_momentum_weight_exponent)` over eligible splats, then prefix-sum those weights and binary-search random samples against the cumulative distribution,
   - split selected splats into `N + 1` family members from the accumulated clone counts using centered circular Fibonacci samples on the gaussian's largest-area local plane, seeded from a Python-provided hash of the selected training-frame `image_id`,
   - `refinement_sample_radius` controls that local-plane sampling radius at runtime,

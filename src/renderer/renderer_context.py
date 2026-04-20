@@ -28,7 +28,7 @@ class GaussianRenderSettings:
     debug_mode: str | None = None
     debug_grad_norm_threshold: float = 2e-4
     debug_ellipse_thickness_px: float = 4.0
-    debug_clone_count_range: tuple[float, float] = (0.0, 16.0)
+    debug_splat_age_range: tuple[float, float] = (0.0, 1.0)
     debug_density_range: tuple[float, float] = (0.0, 20.0)
     debug_contribution_range: tuple[float, float] = (0.001, 1.0)
     debug_adam_momentum_range: tuple[float, float] = (0.0, 0.1)
@@ -75,7 +75,7 @@ class GaussianRenderSettings:
             "debug_mode": None if self.debug_mode is None else str(self.debug_mode),
             "debug_grad_norm_threshold": float(self.debug_grad_norm_threshold),
             "debug_ellipse_thickness_px": float(self.debug_ellipse_thickness_px),
-            "debug_clone_count_range": tuple(float(x) for x in self.debug_clone_count_range),
+            "debug_splat_age_range": tuple(float(x) for x in self.debug_splat_age_range),
             "debug_density_range": tuple(float(x) for x in self.debug_density_range),
             "debug_contribution_range": tuple(float(x) for x in self.debug_contribution_range),
             "debug_adam_momentum_range": tuple(float(x) for x in self.debug_adam_momentum_range),

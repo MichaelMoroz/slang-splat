@@ -7,7 +7,7 @@ static const uint ELLIPSE_POINT_COUNT = 5u;
 static const float GAUSSIAN_SUPPORT_SIGMA_RADIUS = 3.0;
 static const uint DEBUG_MODE_NORMAL = 0u;
 static const uint DEBUG_MODE_PROCESSED_COUNT = 1u;
-static const uint DEBUG_MODE_CLONE_COUNT = 2u;
+static const uint DEBUG_MODE_SPLAT_AGE = 2u;
 static const uint DEBUG_MODE_DEPTH_MEAN = 3u;
 static const uint DEBUG_MODE_DEPTH_STD = 4u;
 static const uint DEBUG_MODE_DEPTH_LOCAL_MISMATCH = 5u;
@@ -257,7 +257,7 @@ struct RasterParams
     uint shBand;
     float debugGradNormThreshold;
     float debugEllipseThicknessPx;
-    float2 debugCloneCountRange;
+    float2 debugSplatAgeRange;
     float2 debugDensityRange;
     float2 debugContributionRange;
     float debugContributionPercentScale;

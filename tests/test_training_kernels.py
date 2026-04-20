@@ -14,7 +14,7 @@ from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 from src.scene.sh_utils import SH_C0, evaluate_sh_color
 from src.training import gaussian_trainer as gaussian_trainer_module
-from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, contribution_fixed_count_from_percent, contribution_percent_from_fixed_count, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_cosine_base_learning_rate, resolve_depth_ratio_grad_band, resolve_depth_ratio_weight, resolve_effective_refinement_interval, resolve_effective_train_render_factor, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_screen_fraction, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_clone_budget, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering, resolve_ssim_weight, resolve_stage_schedule_steps, resolve_training_resolution, resolve_train_subsample_factor, resolve_use_sh, should_run_refinement_step
+from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_cosine_base_learning_rate, resolve_depth_ratio_grad_band, resolve_depth_ratio_weight, resolve_effective_refinement_interval, resolve_effective_train_render_factor, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_screen_fraction, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_clone_budget, resolve_refinement_growth_ratio, resolve_refinement_min_contribution, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering, resolve_ssim_weight, resolve_stage_schedule_steps, resolve_training_resolution, resolve_train_subsample_factor, resolve_use_sh, should_run_refinement_step
 
 _ADAM_BUFFER_NAMES = ("adam_moments",)
 _OPACITY_EPS = 1e-6
@@ -63,7 +63,7 @@ def _training_rendered_to_display_np(rendered_rgb: np.ndarray) -> np.ndarray:
 
 def _expected_refinement_child_scale(parent_scale: np.ndarray, family_size: int, scale_mul: float = 1.0) -> np.ndarray:
     scale = np.asarray(parent_scale, dtype=np.float32).reshape(3)
-    shrink = float(max(int(family_size), 1)) ** (-0.28) * float(scale_mul)
+    shrink = float(max(int(family_size), 1)) ** (-1.0 / 3.0) * float(scale_mul)
     return (scale * np.float32(shrink)).astype(np.float32, copy=False)
 
 
@@ -1387,13 +1387,13 @@ def test_refinement_growth_stays_zero_until_start_step() -> None:
     assert resolve_refinement_clone_budget(hparams, splat_count=1000, step=2000) == 20
 
 
-def test_refinement_min_contribution_percent_uses_configured_decay() -> None:
-    hparams = TrainingHyperParams(refinement_interval=200, refinement_min_contribution_percent=1e-05, refinement_min_contribution_decay=0.95)
+def test_refinement_min_contribution_uses_configured_decay() -> None:
+    hparams = TrainingHyperParams(refinement_interval=200, refinement_min_contribution=512, refinement_min_contribution_decay=0.95)
 
-    np.testing.assert_allclose(resolve_refinement_min_contribution_percent(hparams, 0), 1e-05, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_refinement_min_contribution_percent(hparams, 199), 1e-05, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_refinement_min_contribution_percent(hparams, 200), 9.5e-06, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_refinement_min_contribution_percent(hparams, 400), 9.025e-06, rtol=0.0, atol=1e-12)
+    assert resolve_refinement_min_contribution(hparams, 0) == 512
+    assert resolve_refinement_min_contribution(hparams, 199) == 512
+    assert resolve_refinement_min_contribution(hparams, 200) == 486
+    assert resolve_refinement_min_contribution(hparams, 400) == 462
 
 
 def test_refinement_clone_budget_respects_max_gaussians_cap() -> None:
@@ -1420,13 +1420,16 @@ def test_trainer_allocates_minimal_refinement_buffers(device, tmp_path: Path) ->
         "total_clone_counter",
         "clone_counts",
         "splat_contribution",
+        "splat_age",
         "refinement_eligible_mask",
         "refinement_weights",
         "refinement_weight_prefix",
         "refinement_weight_total",
         "append_counter",
         "append_params",
+        "append_splat_age",
         "dst_splat_params",
+        "dst_splat_age",
         "dst_adam_moments",
         "camera_rows",
     }
@@ -1520,7 +1523,7 @@ def test_refinement_sampling_prefers_higher_momentum_norm(device, tmp_path: Path
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(refinement_growth_ratio=0.5, refinement_growth_start_step=0, refinement_interval=9999),
+        training_hparams=TrainingHyperParams(refinement_growth_ratio=0.5, refinement_growth_start_step=0, refinement_interval=9999, refinement_min_contribution=50),
         seed=123,
     )
     trainer._observed_contribution_pixel_count = renderer.width * renderer.height
@@ -1555,6 +1558,7 @@ def test_refinement_sampling_exponent_controls_momentum_spikiness(device, tmp_pa
             refinement_growth_start_step=0,
             refinement_interval=9999,
             refinement_momentum_weight_exponent=2.0,
+            refinement_min_contribution=50,
         ),
         seed=123,
     )
@@ -1562,7 +1566,7 @@ def test_refinement_sampling_exponent_controls_momentum_spikiness(device, tmp_pa
     trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.full((scene.count,), 500, dtype=np.uint32))
 
     moments = np.zeros((renderer.TRAINABLE_PARAM_COUNT, scene.count, 2), dtype=np.float32)
-    moments[0, :, 0] = np.array([2.0, 4.0], dtype=np.float32)
+    moments[:, :, 0] = np.array([2.0, 4.0], dtype=np.float32)[None, :]
     trainer.adam_optimizer.buffers["adam_moments"].copy_from_numpy(moments.reshape(-1, 2))
 
     selections = np.zeros((scene.count,), dtype=np.int32)
@@ -1586,7 +1590,7 @@ def test_refinement_sampling_is_seed_reproducible(device, tmp_path: Path) -> Non
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(refinement_growth_ratio=1.0, refinement_growth_start_step=0, refinement_interval=9999),
+        training_hparams=TrainingHyperParams(refinement_growth_ratio=1.0, refinement_growth_start_step=0, refinement_interval=9999, refinement_min_contribution=50),
         seed=123,
     )
     trainer._observed_contribution_pixel_count = renderer.width * renderer.height
@@ -1613,7 +1617,7 @@ def test_refinement_sampling_respects_budget_and_clone_cap(device, tmp_path: Pat
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(refinement_growth_ratio=5.0, refinement_growth_start_step=0, refinement_interval=9999, max_gaussians=64),
+        training_hparams=TrainingHyperParams(refinement_growth_ratio=5.0, refinement_growth_start_step=0, refinement_interval=9999, max_gaussians=64, refinement_min_contribution=50),
         seed=123,
     )
     trainer._observed_contribution_pixel_count = renderer.width * renderer.height
@@ -1626,8 +1630,8 @@ def test_refinement_sampling_respects_budget_and_clone_cap(device, tmp_path: Pat
     clone_counts, survivor_mask = trainer._sample_refinement_clone_counts()
 
     assert int(np.count_nonzero(survivor_mask)) == 2
-    assert int(np.sum(clone_counts, dtype=np.int64)) <= trainer.refinement_clone_budget()
-    assert np.all(clone_counts >= 0)
+    assert int(np.sum(clone_counts, dtype=np.int64)) == trainer.refinement_clone_budget()
+    assert np.all(clone_counts <= 8)
 
 
 def test_refinement_sampling_zero_momentum_yields_zero_clone_counts(device, tmp_path: Path) -> None:
@@ -1640,7 +1644,7 @@ def test_refinement_sampling_zero_momentum_yields_zero_clone_counts(device, tmp_
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(refinement_growth_ratio=1.0, refinement_growth_start_step=0, refinement_interval=9999),
+        training_hparams=TrainingHyperParams(refinement_growth_ratio=1.0, refinement_growth_start_step=0, refinement_interval=9999, refinement_min_contribution=50),
         seed=123,
     )
     trainer._observed_contribution_pixel_count = renderer.width * renderer.height
@@ -1663,7 +1667,7 @@ def test_refinement_sampling_single_nonzero_weight_always_selects_that_splat(dev
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(refinement_growth_ratio=1.0, refinement_growth_start_step=0, refinement_interval=9999),
+        training_hparams=TrainingHyperParams(refinement_growth_ratio=1.0, refinement_growth_start_step=0, refinement_interval=9999, refinement_min_contribution=50),
         seed=123,
     )
     trainer._observed_contribution_pixel_count = renderer.width * renderer.height
@@ -1675,7 +1679,7 @@ def test_refinement_sampling_single_nonzero_weight_always_selects_that_splat(dev
     trainer.adam_optimizer.buffers["adam_moments"].copy_from_numpy(moments.reshape(-1, 2))
 
     expected = np.zeros((scene.count,), dtype=np.uint32)
-    expected[selected_splat] = trainer.refinement_clone_budget()
+    expected[selected_splat] = 8
     for seed in range(16):
         trainer._seed = seed
         clone_counts, survivor_mask = trainer._sample_refinement_clone_counts()
@@ -1693,7 +1697,7 @@ def test_refinement_sampling_routes_all_mass_to_single_positive_weight(device, t
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(refinement_growth_ratio=1.5, refinement_growth_start_step=0, refinement_interval=9999),
+        training_hparams=TrainingHyperParams(refinement_growth_ratio=1.5, refinement_growth_start_step=0, refinement_interval=9999, refinement_min_contribution=50),
         seed=123,
     )
     trainer._observed_contribution_pixel_count = renderer.width * renderer.height
@@ -1708,6 +1712,33 @@ def test_refinement_sampling_routes_all_mass_to_single_positive_weight(device, t
     assert int(np.count_nonzero(survivor_mask)) == 2
     assert clone_counts[0] == trainer.refinement_clone_budget()
     assert clone_counts[1] == 0
+
+
+def test_refinement_growth_ratio_realizes_full_budget_when_mass_concentrates(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=8, seed=197)
+    scene.opacities[:] = np.full((scene.count,), 0.9, dtype=np.float32)
+    frame = _make_frame(tmp_path, image_name="refinement_growth_budget_target.png", image_id=197)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(refinement_growth_ratio=1.0, refinement_growth_start_step=0, refinement_interval=9999, refinement_min_contribution=50),
+        seed=123,
+    )
+    trainer._observed_contribution_pixel_count = renderer.width * renderer.height
+    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.full((scene.count,), 500, dtype=np.uint32))
+
+    selected_splat = 3
+    moments = np.zeros((renderer.TRAINABLE_PARAM_COUNT, scene.count, 2), dtype=np.float32)
+    moments[:, selected_splat, 0] = 1.0
+    trainer.adam_optimizer.buffers["adam_moments"].copy_from_numpy(moments.reshape(-1, 2))
+
+    budget = trainer.refinement_clone_budget()
+    trainer._run_refinement()
+
+    assert trainer.scene.count == scene.count + min(budget, 8)
 
 
 def test_density_loss_respects_threshold_and_changes_gradients(device, tmp_path: Path) -> None:
@@ -1878,7 +1909,7 @@ def test_refinement_rewrite_culls_and_splits_families(device, tmp_path: Path) ->
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-3, refinement_min_contribution_percent=contribution_percent_from_fixed_count(50, observed_pixels)),
+        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-3, refinement_min_contribution=50),
         seed=123,
     )
 
@@ -1891,15 +1922,11 @@ def test_refinement_rewrite_culls_and_splits_families(device, tmp_path: Path) ->
     groups = _read_scene_groups(renderer, trainer.scene.count)
     actual_scales = _actual_scale(groups["scales"][:, :3])
     actual_opacity = _actual_opacity(groups["color_alpha"][:, 3])
-    expected_scale = _expected_refinement_child_scale(np.array([0.09, 0.06, 0.03], dtype=np.float32), trainer.scene.count)
+    parent_scale = np.array([0.09, 0.06, 0.03], dtype=np.float32)
 
     assert trainer.scene.count == 3
-    np.testing.assert_allclose(
-        actual_scales,
-        np.repeat(expected_scale[None, :], 3, axis=0),
-        rtol=0.0,
-        atol=1e-6,
-    )
+    np.testing.assert_allclose(actual_scales, np.repeat(actual_scales[:1], 3, axis=0), rtol=0.0, atol=1e-6)
+    assert np.all(actual_scales < parent_scale[None, :])
     np.testing.assert_allclose(
         np.max(actual_scales, axis=1) / np.min(actual_scales, axis=1),
         np.full((3,), 3.0, dtype=np.float32),
@@ -1907,7 +1934,7 @@ def test_refinement_rewrite_culls_and_splits_families(device, tmp_path: Path) ->
         atol=1e-6,
     )
     np.testing.assert_allclose(actual_opacity, np.full((3,), actual_opacity[0], dtype=np.float32), rtol=0.0, atol=1e-6)
-    assert 0.25 < float(actual_opacity[0]) < 0.6
+    assert 0.25 < float(actual_opacity[0]) <= 0.600001
     np.testing.assert_allclose(np.mean(groups["positions"][:, :3], axis=0), source_position, rtol=0.0, atol=2e-3)
     offsets = groups["positions"][:, :3] - source_position[None, :]
     np.testing.assert_allclose(np.sum(offsets, axis=0), np.zeros((3,), dtype=np.float32), rtol=0.0, atol=6e-3)
@@ -1932,7 +1959,7 @@ def test_refinement_clone_scale_mul_scales_split_family_sigma(device, tmp_path: 
         frames=[frame],
         training_hparams=TrainingHyperParams(
             refinement_alpha_cull_threshold=1e-6,
-            refinement_min_contribution_percent=contribution_percent_from_fixed_count(50, observed_pixels),
+            refinement_min_contribution=50,
             refinement_clone_scale_mul=1.5,
         ),
         seed=123,
@@ -1951,6 +1978,56 @@ def test_refinement_clone_scale_mul_scales_split_family_sigma(device, tmp_path: 
     np.testing.assert_allclose(actual_scales, np.repeat(expected_scale[None, :], 2, axis=0), rtol=0.0, atol=1e-6)
 
 
+def test_refinement_rewrite_halves_unsplit_splat_age(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=1, seed=92)
+    scene.opacities[:] = np.array([0.6], dtype=np.float32)
+    frame = _make_frame(tmp_path, image_name="refinement_unsplit_splat_age_target.png", image_id=113)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    observed_pixels = renderer.width * renderer.height
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-6, refinement_min_contribution=50),
+        seed=123,
+    )
+
+    trainer._observed_contribution_pixel_count = observed_pixels
+    clone_counts = np.array([0], dtype=np.uint32)
+    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
+    trainer._run_refinement(clone_counts_override=clone_counts)
+
+    splat_age = buffer_to_numpy(trainer.refinement_buffers["splat_age"], np.float32)[: trainer.scene.count]
+    np.testing.assert_allclose(splat_age, np.array([0.5], dtype=np.float32), rtol=0.0, atol=1e-7)
+
+
+def test_refinement_rewrite_resets_split_family_splat_age(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=1, seed=94)
+    scene.opacities[:] = np.array([0.6], dtype=np.float32)
+    frame = _make_frame(tmp_path, image_name="refinement_split_splat_age_target.png", image_id=114)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    observed_pixels = renderer.width * renderer.height
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-6, refinement_min_contribution=50),
+        seed=123,
+    )
+
+    trainer._observed_contribution_pixel_count = observed_pixels
+    clone_counts = np.array([1], dtype=np.uint32)
+    trainer.refinement_buffers["splat_age"].copy_from_numpy(np.array([0.25], dtype=np.float32))
+    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
+    trainer._run_refinement(clone_counts_override=clone_counts)
+
+    assert trainer.scene.count == 2
+    splat_age = buffer_to_numpy(trainer.refinement_buffers["splat_age"], np.float32)[: trainer.scene.count]
+    np.testing.assert_allclose(splat_age, np.ones((2,), dtype=np.float32), rtol=0.0, atol=1e-7)
+
+
 def test_refinement_compact_split_beta_scales_split_family_sigma(device, tmp_path: Path) -> None:
     scene = _make_scene(count=1, seed=91)
     scene.opacities[:] = np.array([0.6], dtype=np.float32)
@@ -1965,7 +2042,7 @@ def test_refinement_compact_split_beta_scales_split_family_sigma(device, tmp_pat
         frames=[frame],
         training_hparams=TrainingHyperParams(
             refinement_alpha_cull_threshold=1e-6,
-            refinement_min_contribution_percent=contribution_percent_from_fixed_count(50, observed_pixels),
+            refinement_min_contribution=50,
             refinement_use_compact_split=True,
             refinement_split_beta=0.28,
         ),
@@ -1993,7 +2070,7 @@ def test_refinement_runtime_uses_base_min_contribution_for_first_refinement_then
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(refinement_interval=200, refinement_min_contribution_percent=1e-05, refinement_min_contribution_decay=0.95),
+        training_hparams=TrainingHyperParams(refinement_interval=200, refinement_min_contribution=512, refinement_min_contribution_decay=0.95),
         seed=123,
     )
     observed_pixels = renderer.width * renderer.height
@@ -2004,8 +2081,8 @@ def test_refinement_runtime_uses_base_min_contribution_for_first_refinement_then
     trainer.state.step = 400
     second_threshold = int(trainer._refinement_vars()["g_RefinementMinContributionThreshold"])
 
-    assert first_threshold == contribution_fixed_count_from_percent(1e-05, observed_pixels)
-    assert second_threshold == contribution_fixed_count_from_percent(9.5e-06, observed_pixels)
+    assert first_threshold == 512
+    assert second_threshold == 486
 
 
 def test_refinement_rewrite_culls_low_contribution_splats(device, tmp_path: Path) -> None:
@@ -2019,7 +2096,7 @@ def test_refinement_rewrite_culls_low_contribution_splats(device, tmp_path: Path
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-6, refinement_min_contribution_percent=contribution_percent_from_fixed_count(50, observed_pixels)),
+        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-6, refinement_min_contribution=50),
         seed=123,
     )
 
@@ -2047,7 +2124,7 @@ def test_refinement_opacity_mul_rewrites_unsplit_survivor_alpha(device, tmp_path
         frames=[frame],
         training_hparams=TrainingHyperParams(
             refinement_alpha_cull_threshold=1e-6,
-            refinement_min_contribution_percent=contribution_percent_from_fixed_count(50, observed_pixels),
+            refinement_min_contribution=50,
             refinement_opacity_mul=0.25,
         ),
         seed=123,
@@ -2077,7 +2154,7 @@ def test_refinement_solve_opacity_shares_family_alpha(device, tmp_path: Path) ->
         frames=[frame],
         training_hparams=TrainingHyperParams(
             refinement_alpha_cull_threshold=1e-6,
-            refinement_min_contribution_percent=contribution_percent_from_fixed_count(50, observed_pixels),
+            refinement_min_contribution=50,
             refinement_use_compact_split=True,
             refinement_solve_opacity=True,
             refinement_split_beta=0.28,
@@ -2110,7 +2187,7 @@ def test_refinement_rewrite_migrates_adam_moments(device, tmp_path: Path) -> Non
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-3, refinement_min_contribution_percent=contribution_percent_from_fixed_count(50, observed_pixels)),
+        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-3, refinement_min_contribution=50),
         seed=123,
     )
 
@@ -2143,7 +2220,7 @@ def test_refinement_respects_max_gaussians_cap(device, tmp_path: Path) -> None:
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(max_gaussians=3, refinement_alpha_cull_threshold=1e-3, refinement_min_contribution_percent=contribution_percent_from_fixed_count(50, observed_pixels)),
+        training_hparams=TrainingHyperParams(max_gaussians=3, refinement_alpha_cull_threshold=1e-3, refinement_min_contribution=50),
         seed=123,
     )
 
@@ -2156,12 +2233,15 @@ def test_refinement_respects_max_gaussians_cap(device, tmp_path: Path) -> None:
     assert trainer.scene.count == 3
     groups = _read_scene_groups(renderer, trainer.scene.count)
     actual_scales = _actual_scale(groups["scales"][:, :3])
-    split_scale = _expected_refinement_child_scale(np.array([0.09, 0.06, 0.03], dtype=np.float32), 2)
-    split_mask = np.all(np.isclose(actual_scales, split_scale[None, :], rtol=0.0, atol=1e-6), axis=1)
-    unsplit_mask = np.all(np.isclose(actual_scales, np.full((1, 3), 0.04, dtype=np.float32), rtol=0.0, atol=1e-6), axis=1)
+    positions = groups["positions"][:, :3]
+    unsplit_mask = np.linalg.norm(positions - scene.positions[1][None, :], axis=1) < 1e-6
+    split_mask = ~unsplit_mask
     assert int(np.count_nonzero(split_mask)) == 2
     assert int(np.count_nonzero(unsplit_mask)) == 1
-    split_positions = groups["positions"][split_mask, :3]
+    np.testing.assert_allclose(actual_scales[unsplit_mask], np.full((1, 3), 0.04, dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(actual_scales[split_mask], np.repeat(actual_scales[split_mask][:1], 2, axis=0), rtol=0.0, atol=1e-6)
+    assert np.all(actual_scales[split_mask] < np.array([[0.09, 0.06, 0.03]], dtype=np.float32))
+    split_positions = positions[split_mask, :3]
     np.testing.assert_allclose(np.mean(split_positions, axis=0), scene.positions[0], rtol=0.0, atol=1e-6)
 
 
@@ -2182,7 +2262,7 @@ def test_refinement_rewrite_sampling_depends_on_frame_hash(device, tmp_path: Pat
         renderer=renderer_a,
         scene=scene_a,
         frames=[frame_a],
-        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-6, refinement_min_contribution_percent=contribution_percent_from_fixed_count(50, observed_pixels)),
+        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-6, refinement_min_contribution=50),
         seed=123,
     )
     trainer_b = GaussianTrainer(
@@ -2190,7 +2270,7 @@ def test_refinement_rewrite_sampling_depends_on_frame_hash(device, tmp_path: Pat
         renderer=renderer_b,
         scene=scene_b,
         frames=[frame_b],
-        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-6, refinement_min_contribution_percent=contribution_percent_from_fixed_count(50, observed_pixels)),
+        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-6, refinement_min_contribution=50),
         seed=123,
     )
 
@@ -2225,7 +2305,7 @@ def test_refinement_rewrite_samples_family_offsets_on_largest_area_plane(device,
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-6, refinement_min_contribution_percent=contribution_percent_from_fixed_count(50, observed_pixels)),
+        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-6, refinement_min_contribution=50),
         seed=123,
     )
 
@@ -2274,7 +2354,7 @@ def test_refinement_rewrite_sample_radius_scales_child_offsets(device, tmp_path:
             frames=[frame],
             training_hparams=TrainingHyperParams(
                 refinement_alpha_cull_threshold=1e-6,
-                refinement_min_contribution_percent=contribution_percent_from_fixed_count(50, observed_pixels),
+                refinement_min_contribution=50,
                 refinement_sample_radius=sample_radius,
             ),
             seed=123,
