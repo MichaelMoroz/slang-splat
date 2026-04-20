@@ -600,7 +600,7 @@ def _training_downscale_text(viewer: object) -> str:
     return f"Downscale: Manual {max(mode, 1)}x | subsampling={subsample_text} | effective={combined}x"
 
 
-def _dispatch_debug_abs_diff(viewer: object, encoder: spy.CommandEncoder, rendered_tex: spy.Texture, target_tex: spy.Texture, width: int, height: int) -> spy.Texture:
+def _dispatch_debug_abs_diff(viewer: object, encoder: spy.CommandEncoder, rendered_tex: spy.Texture, target_tex: spy.Texture, width: int, height: int, *, rendered_is_linear: bool = True) -> spy.Texture:
     output = _ensure_texture(viewer, "loss_debug_texture", width, height)
     with debug_region(encoder, "Viewer Debug Abs Diff", 150):
         require_not_none(viewer.s.debug_abs_diff_kernel, "Debug abs-diff kernel is not initialized.").dispatch(
@@ -612,6 +612,7 @@ def _dispatch_debug_abs_diff(viewer: object, encoder: spy.CommandEncoder, render
                 "g_DebugWidth": int(width),
                 "g_DebugHeight": int(height),
                 "g_DebugDiffScale": _debug_abs_diff_scale(viewer),
+                "g_DebugRenderedIsLinear": int(rendered_is_linear),
                 "g_HugeValue": _DEBUG_HUGE_VALUE,
             },
             command_encoder=encoder,
@@ -619,7 +620,7 @@ def _dispatch_debug_abs_diff(viewer: object, encoder: spy.CommandEncoder, render
     return output
 
 
-def _dispatch_debug_edge_filter(viewer: object, encoder: spy.CommandEncoder, source_tex: spy.Texture, width: int, height: int) -> spy.Texture:
+def _dispatch_debug_edge_filter(viewer: object, encoder: spy.CommandEncoder, source_tex: spy.Texture, width: int, height: int, *, source_is_linear: bool = False) -> spy.Texture:
     output = _ensure_texture(viewer, "loss_debug_texture", width, height)
     with debug_region(encoder, "Viewer Debug Edge", 152):
         require_not_none(viewer.s.debug_edge_kernel, "Debug edge kernel is not initialized.").dispatch(
@@ -629,6 +630,7 @@ def _dispatch_debug_edge_filter(viewer: object, encoder: spy.CommandEncoder, sou
                 "g_DebugOutput": output,
                 "g_DebugWidth": int(width),
                 "g_DebugHeight": int(height),
+                "g_DebugSourceIsLinear": int(source_is_linear),
                 "g_HugeValue": _DEBUG_HUGE_VALUE,
             },
             command_encoder=encoder,
@@ -721,7 +723,7 @@ def _dispatch_debug_dssim(viewer: object, encoder: spy.CommandEncoder, rendered_
     return _dispatch_debug_dssim_compose(viewer, encoder, target_tex, width, height)
 
 
-def _dispatch_viewport_present(viewer: object, encoder: spy.CommandEncoder, source_tex: spy.Texture, source_width: int, source_height: int, output_width: int, output_height: int) -> spy.Texture:
+def _dispatch_viewport_present(viewer: object, encoder: spy.CommandEncoder, source_tex: spy.Texture, source_width: int, source_height: int, output_width: int, output_height: int, *, source_is_linear: bool = False) -> spy.Texture:
     output = _ensure_texture(viewer, "debug_present_texture", output_width, output_height)
     with debug_region(encoder, "Viewer Present", 151):
         require_not_none(viewer.s.debug_letterbox_kernel, "Debug letterbox kernel is not initialized.").dispatch(
@@ -733,6 +735,8 @@ def _dispatch_viewport_present(viewer: object, encoder: spy.CommandEncoder, sour
                 "g_LetterboxSourceHeight": int(source_height),
                 "g_LetterboxOutputWidth": int(output_width),
                 "g_LetterboxOutputHeight": int(output_height),
+                "g_LetterboxSourceIsLinear": int(source_is_linear),
+                "g_HugeValue": _DEBUG_HUGE_VALUE,
             },
             command_encoder=encoder,
         )
@@ -950,21 +954,22 @@ def _render_debug_view(viewer: object, encoder: spy.CommandEncoder, output_width
     debug_render_tex, viewer.s.stats, debug_width, debug_height, sample_vars = _render_debug_source(viewer, encoder, frame_idx, render_frame_index)
     target_tex = _render_debug_target(viewer, encoder, frame_idx, debug_width, debug_height, _training_debug_step(viewer), sample_vars)
     debug_view = _debug_view_key(viewer)
+    source_is_linear = debug_view == "rendered"
     source_tex = (
         debug_render_tex if debug_view == "rendered"
         else target_tex if debug_view == "target"
-        else _dispatch_debug_abs_diff(viewer, encoder, debug_render_tex, target_tex, debug_width, debug_height) if debug_view == "abs_diff"
+        else _dispatch_debug_abs_diff(viewer, encoder, debug_render_tex, target_tex, debug_width, debug_height, rendered_is_linear=True) if debug_view == "abs_diff"
         else _dispatch_debug_dssim(viewer, encoder, debug_render_tex, target_tex, debug_width, debug_height) if debug_view == "dssim"
-        else _dispatch_debug_edge_filter(viewer, encoder, debug_render_tex, debug_width, debug_height) if debug_view == "rendered_edges"
-        else _dispatch_debug_edge_filter(viewer, encoder, target_tex, debug_width, debug_height)
+        else _dispatch_debug_edge_filter(viewer, encoder, debug_render_tex, debug_width, debug_height, source_is_linear=True) if debug_view == "rendered_edges"
+        else _dispatch_debug_edge_filter(viewer, encoder, target_tex, debug_width, debug_height, source_is_linear=False)
     )
-    return _dispatch_viewport_present(viewer, encoder, source_tex, debug_width, debug_height, output_width, output_height)
+    return _dispatch_viewport_present(viewer, encoder, source_tex, debug_width, debug_height, output_width, output_height, source_is_linear=source_is_linear)
 def _render_main_view(viewer: object, encoder: spy.CommandEncoder) -> spy.Texture:
     if viewer.s.trainer is not None and viewer.s.training_renderer is not None:
         session.sync_scene_from_training_renderer(viewer, viewer.s.renderer, target="main")
     out_tex, stats = viewer.s.renderer.render_to_texture(viewer.camera(), background=viewer.s.background, read_stats=True, command_encoder=encoder)
     viewer.s.stats = stats
-    return _dispatch_viewport_present(viewer, encoder, out_tex, int(viewer.s.renderer.width), int(viewer.s.renderer.height), int(viewer.s.renderer.width), int(viewer.s.renderer.height))
+    return _dispatch_viewport_present(viewer, encoder, out_tex, int(viewer.s.renderer.width), int(viewer.s.renderer.height), int(viewer.s.renderer.width), int(viewer.s.renderer.height), source_is_linear=False)
 
 
 def render_frame(viewer: object, render_context: spy.AppWindow.RenderContext) -> None:

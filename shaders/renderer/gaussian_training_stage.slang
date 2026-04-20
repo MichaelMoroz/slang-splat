@@ -93,12 +93,15 @@ uniform RWTexture2D<float4> g_DebugOutput;
 uniform uint g_DebugWidth;
 uniform uint g_DebugHeight;
 uniform float g_DebugDiffScale;
+uniform uint g_DebugRenderedIsLinear;
+uniform uint g_DebugSourceIsLinear;
 uniform Texture2D<float4> g_LetterboxSource;
 uniform RWTexture2D<float4> g_LetterboxOutput;
 uniform uint g_LetterboxSourceWidth;
 uniform uint g_LetterboxSourceHeight;
 uniform uint g_LetterboxOutputWidth;
 uniform uint g_LetterboxOutputHeight;
+uniform uint g_LetterboxSourceIsLinear;
 
 uniform RWStructuredBuffer<float> g_SrcSplatParams;
 uniform StructuredBuffer<float2> g_SrcAdamMoments;
@@ -594,6 +597,12 @@ float4 training_target_rgba(uint2 pixel)
 float3 training_rendered_to_display_rgb(float3 rendered)
 {
     return pow(max(rendered, 0.0), OUTPUT_GAMMA);
+}
+
+float3 debug_display_rgb(float3 rgb, uint isLinear)
+{
+    float3 sanitized = sanitize_float3(rgb, g_HugeValue);
+    return isLinear != 0u ? training_rendered_to_display_rgb(sanitized) : max(sanitized, 0.0);
 }
 
 float training_target_mask(float alpha)
@@ -1153,8 +1162,8 @@ void csComposeAbsDiffDebug(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint py = dispatchThreadID.y;
     if (px >= g_DebugWidth || py >= g_DebugHeight) return;
     uint2 pixel = uint2(px, py);
-    float3 rendered = g_DebugRendered[pixel].xyz;
-    float3 target = g_DebugTarget[pixel].xyz;
+    float3 rendered = debug_display_rgb(g_DebugRendered[pixel].xyz, g_DebugRenderedIsLinear);
+    float3 target = debug_display_rgb(g_DebugTarget[pixel].xyz, 0u);
     float3 diff = abs(sanitize_float3(rendered - target, g_HugeValue)) * max(g_DebugDiffScale, 0.0);
     g_DebugOutput[pixel] = float4(diff, 1.0);
 }
@@ -1172,14 +1181,15 @@ void csComposeEdgeDebug(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint px2 = min(px + 1u, g_DebugWidth - 1u);
     uint py2 = min(py + 1u, g_DebugHeight - 1u);
 
-    float tl = dot(max(sanitize_float3(g_DebugRendered[uint2(px0, py0)].xyz, g_HugeValue), 0.0), float3(0.2126, 0.7152, 0.0722));
-    float tc = dot(max(sanitize_float3(g_DebugRendered[uint2(px, py0)].xyz, g_HugeValue), 0.0), float3(0.2126, 0.7152, 0.0722));
-    float tr = dot(max(sanitize_float3(g_DebugRendered[uint2(px2, py0)].xyz, g_HugeValue), 0.0), float3(0.2126, 0.7152, 0.0722));
-    float ml = dot(max(sanitize_float3(g_DebugRendered[uint2(px0, py)].xyz, g_HugeValue), 0.0), float3(0.2126, 0.7152, 0.0722));
-    float mr = dot(max(sanitize_float3(g_DebugRendered[uint2(px2, py)].xyz, g_HugeValue), 0.0), float3(0.2126, 0.7152, 0.0722));
-    float bl = dot(max(sanitize_float3(g_DebugRendered[uint2(px0, py2)].xyz, g_HugeValue), 0.0), float3(0.2126, 0.7152, 0.0722));
-    float bc = dot(max(sanitize_float3(g_DebugRendered[uint2(px, py2)].xyz, g_HugeValue), 0.0), float3(0.2126, 0.7152, 0.0722));
-    float br = dot(max(sanitize_float3(g_DebugRendered[uint2(px2, py2)].xyz, g_HugeValue), 0.0), float3(0.2126, 0.7152, 0.0722));
+    float3 lumaWeights = float3(0.2126, 0.7152, 0.0722);
+    float tl = dot(debug_display_rgb(g_DebugRendered[uint2(px0, py0)].xyz, g_DebugSourceIsLinear), lumaWeights);
+    float tc = dot(debug_display_rgb(g_DebugRendered[uint2(px, py0)].xyz, g_DebugSourceIsLinear), lumaWeights);
+    float tr = dot(debug_display_rgb(g_DebugRendered[uint2(px2, py0)].xyz, g_DebugSourceIsLinear), lumaWeights);
+    float ml = dot(debug_display_rgb(g_DebugRendered[uint2(px0, py)].xyz, g_DebugSourceIsLinear), lumaWeights);
+    float mr = dot(debug_display_rgb(g_DebugRendered[uint2(px2, py)].xyz, g_DebugSourceIsLinear), lumaWeights);
+    float bl = dot(debug_display_rgb(g_DebugRendered[uint2(px0, py2)].xyz, g_DebugSourceIsLinear), lumaWeights);
+    float bc = dot(debug_display_rgb(g_DebugRendered[uint2(px, py2)].xyz, g_DebugSourceIsLinear), lumaWeights);
+    float br = dot(debug_display_rgb(g_DebugRendered[uint2(px2, py2)].xyz, g_DebugSourceIsLinear), lumaWeights);
 
     float gx = -tl + tr - 2.0 * ml + 2.0 * mr - bl + br;
     float gy = -tl - 2.0 * tc - tr + bl + 2.0 * bc + br;
@@ -1260,5 +1270,6 @@ void csComposeLetterboxDebug(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint srcX = min(uint(u * srcW), g_LetterboxSourceWidth - 1u);
     uint srcY = min(uint(v * srcH), g_LetterboxSourceHeight - 1u);
     float4 sampled = g_LetterboxSource[uint2(srcX, srcY)];
-    g_LetterboxOutput[uint2(px, py)] = float4(linear_to_srgb_safe(sampled.xyz), 1.0);
+    float3 displayRgb = debug_display_rgb(sampled.xyz, g_LetterboxSourceIsLinear);
+    g_LetterboxOutput[uint2(px, py)] = float4(linear_to_srgb_safe(displayRgb), 1.0);
 }

@@ -726,7 +726,9 @@ def test_dispatch_debug_abs_diff_uses_runtime_ui_scale(monkeypatch) -> None:
 
     assert result is output
     assert len(viewer.s.debug_abs_diff_kernel.calls) == 1
-    assert viewer.s.debug_abs_diff_kernel.calls[0]["vars"]["g_DebugDiffScale"] == 3.5
+    vars = viewer.s.debug_abs_diff_kernel.calls[0]["vars"]
+    assert vars["g_DebugDiffScale"] == 3.5
+    assert vars["g_DebugRenderedIsLinear"] == 1
 
 
 def test_dispatch_debug_edge_filter_uses_source_texture(monkeypatch) -> None:
@@ -745,6 +747,7 @@ def test_dispatch_debug_edge_filter_uses_source_texture(monkeypatch) -> None:
     assert vars["g_DebugRendered"] == "source_tex"
     assert vars["g_DebugWidth"] == 640
     assert vars["g_DebugHeight"] == 360
+    assert vars["g_DebugSourceIsLinear"] == 0
 
 
 def test_dispatch_debug_dssim_runs_features_blur_and_compose(monkeypatch) -> None:
@@ -779,10 +782,10 @@ def test_render_debug_view_routes_edge_modes(monkeypatch) -> None:
 
     monkeypatch.setattr(presenter, "_render_debug_source", lambda viewer_obj, enc, frame_idx, render_frame_index: ("rendered_tex", {"generated_entries": 1}, 640, 360, {"g_TrainingSubsample": {"enabled": np.uint32(0)}}))
     monkeypatch.setattr(viewer.s.trainer, "get_frame_target_texture", lambda frame_idx, native_resolution=True, encoder=None: "target_tex")
-    monkeypatch.setattr(presenter, "_dispatch_debug_abs_diff", lambda viewer_obj, enc, rendered_tex, target_tex, width, height: calls.append(("abs_diff", rendered_tex, target_tex, width, height)) or "abs_diff_tex")
+    monkeypatch.setattr(presenter, "_dispatch_debug_abs_diff", lambda viewer_obj, enc, rendered_tex, target_tex, width, height, *, rendered_is_linear=True: calls.append(("abs_diff", rendered_tex, target_tex, width, height, rendered_is_linear)) or "abs_diff_tex")
     monkeypatch.setattr(presenter, "_dispatch_debug_dssim", lambda viewer_obj, enc, rendered_tex, target_tex, width, height: calls.append(("dssim", rendered_tex, target_tex, width, height)) or "dssim_tex")
-    monkeypatch.setattr(presenter, "_dispatch_debug_edge_filter", lambda viewer_obj, enc, source_tex, width, height: calls.append(("edge", source_tex, width, height)) or f"edge_{source_tex}")
-    monkeypatch.setattr(presenter, "_dispatch_viewport_present", lambda viewer_obj, enc, source_tex, source_width, source_height, output_width, output_height: calls.append(("present", source_tex, source_width, source_height, output_width, output_height)) or "present_tex")
+    monkeypatch.setattr(presenter, "_dispatch_debug_edge_filter", lambda viewer_obj, enc, source_tex, width, height, *, source_is_linear=False: calls.append(("edge", source_tex, width, height, source_is_linear)) or f"edge_{source_tex}")
+    monkeypatch.setattr(presenter, "_dispatch_viewport_present", lambda viewer_obj, enc, source_tex, source_width, source_height, output_width, output_height, *, source_is_linear=False: calls.append(("present", source_tex, source_width, source_height, output_width, output_height, source_is_linear)) or "present_tex")
 
     viewer.c("loss_debug_view").value = 3
     assert presenter._render_debug_view(viewer, encoder, 800, 600, 123) == "present_tex"
@@ -793,11 +796,31 @@ def test_render_debug_view_routes_edge_modes(monkeypatch) -> None:
 
     assert calls == [
         ("dssim", "rendered_tex", "target_tex", 640, 360),
-        ("present", "dssim_tex", 640, 360, 800, 600),
-        ("edge", "rendered_tex", 640, 360),
-        ("present", "edge_rendered_tex", 640, 360, 800, 600),
-        ("edge", "target_tex", 640, 360),
-        ("present", "edge_target_tex", 640, 360, 800, 600),
+        ("present", "dssim_tex", 640, 360, 800, 600, False),
+        ("edge", "rendered_tex", 640, 360, True),
+        ("present", "edge_rendered_tex", 640, 360, 800, 600, False),
+        ("edge", "target_tex", 640, 360, False),
+        ("present", "edge_target_tex", 640, 360, 800, 600, False),
+    ]
+
+
+def test_render_debug_view_presents_rendered_as_linear_and_target_as_display(monkeypatch) -> None:
+    viewer = _viewer(loss_debug=True)
+    encoder = _DummyEncoder()
+    calls: list[tuple[str, object, bool]] = []
+
+    monkeypatch.setattr(presenter, "_render_debug_source", lambda viewer_obj, enc, frame_idx, render_frame_index: ("rendered_tex", {"generated_entries": 1}, 640, 360, {"g_TrainingSubsample": {"enabled": np.uint32(0)}}))
+    monkeypatch.setattr(viewer.s.trainer, "get_frame_target_texture", lambda frame_idx, native_resolution=True, encoder=None: "target_tex")
+    monkeypatch.setattr(presenter, "_dispatch_viewport_present", lambda viewer_obj, enc, source_tex, source_width, source_height, output_width, output_height, *, source_is_linear=False: calls.append(("present", source_tex, source_is_linear)) or "present_tex")
+
+    viewer.c("loss_debug_view").value = 0
+    assert presenter._render_debug_view(viewer, encoder, 800, 600, 123) == "present_tex"
+    viewer.c("loss_debug_view").value = 1
+    assert presenter._render_debug_view(viewer, encoder, 800, 600, 123) == "present_tex"
+
+    assert calls == [
+        ("present", "rendered_tex", True),
+        ("present", "target_tex", False),
     ]
 
 
@@ -819,6 +842,10 @@ def test_dispatch_viewport_present_uses_present_kernel(monkeypatch) -> None:
     assert vars["g_LetterboxSourceHeight"] == 180
     assert vars["g_LetterboxOutputWidth"] == 640
     assert vars["g_LetterboxOutputHeight"] == 360
+    assert vars["g_LetterboxSourceIsLinear"] == 0
+
+    presenter._dispatch_viewport_present(viewer, encoder, "linear_source_tex", 320, 180, 640, 360, source_is_linear=True)
+    assert viewer.s.debug_letterbox_kernel.calls[1]["vars"]["g_LetterboxSourceIsLinear"] == 1
 
 
 def test_dispatch_viewport_present_zero_stays_zero_and_output_is_finite(device) -> None:
@@ -853,3 +880,27 @@ def test_dispatch_viewport_present_zero_stays_zero_and_output_is_finite(device) 
     np.testing.assert_allclose(image[0, 0, :3], np.zeros((3,), dtype=np.float32), rtol=0.0, atol=1e-7)
     np.testing.assert_allclose(image[0, 1, :3], np.zeros((3,), dtype=np.float32), rtol=0.0, atol=1e-7)
     np.testing.assert_allclose(image[..., 3], np.ones((2, 2), dtype=np.float32), rtol=0.0, atol=1e-7)
+
+
+def test_dispatch_viewport_present_keeps_existing_display_transform(device) -> None:
+    viewer = SimpleNamespace(
+        device=device,
+        s=SimpleNamespace(debug_present_texture=None, debug_letterbox_kernel=None),
+    )
+    viewer_session.create_debug_shaders(viewer)
+    source = device.create_texture(
+        format=spy.Format.rgba32_float,
+        width=1,
+        height=1,
+        usage=spy.TextureUsage.shader_resource | spy.TextureUsage.copy_destination,
+    )
+    source.copy_from_numpy(np.array([[[0.25, 0.5, 1.0, 1.0]]], dtype=np.float32))
+
+    encoder = device.create_command_encoder()
+    output = presenter._dispatch_viewport_present(viewer, encoder, source, 1, 1, 1, 1, source_is_linear=False)
+    device.submit_command_buffer(encoder.finish())
+    device.wait()
+
+    image = np.asarray(output.to_numpy(), dtype=np.float32)
+    expected = np.array([0.5370987, 0.735357, 1.0], dtype=np.float32)
+    np.testing.assert_allclose(image[0, 0, :3], expected, rtol=0.0, atol=1e-5)
