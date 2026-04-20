@@ -101,7 +101,7 @@ The loss-debug controls expose a runtime `Abs Diff Scale` slider when `View = Ab
 - Higher values amplify subtle differences without changing the rendered or target views.
 - Training-camera debug rendering uses the same effective training resolution, training-forward raster path, background mode, active SH band, and native-camera sampling parameters as training.
 - When training subsampling is active, the debug target view is sampled from the native target with the same per-pixel subsample mapping as training; its random seed comes from the current viewer render frame so repeated viewport frames preview the live stochastic sample pattern.
-- Sorting-order dithering is also applied to the training-camera debug prepass using the current viewer render-frame seed.
+- Sorting-order dithering is also applied to the training-camera debug prepass using the current viewer render-frame seed; the projection shader expands that seed into independent per-splat sort-camera offsets.
 - Density debug views share the same range controls. `Splat Density` accumulates a soft per-pixel splat count using `sqrt(transmittance) * alpha / opacity`, while `Spatial Density` and `Screen Density` continue to normalize by 3D volume and projected ellipse area respectively.
 - `Contribution Amount` visualizes the per-splat `g_SplatContribution` atomic buffer accumulated during training forward, normalized to percent of observed dataset pixels as `count / 256 / observed_pixels * 100`.
 - The heatmap is logarithmic and uses dedicated `Contribution Min` and `Contribution Max` controls in percent units instead of sharing density ranges.

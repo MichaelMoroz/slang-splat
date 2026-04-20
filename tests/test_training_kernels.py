@@ -1371,7 +1371,7 @@ def _make_sorting_dither_trainer(frames: list[ColmapFrame], amount: float, seed:
     return trainer
 
 
-def test_sorting_dithered_camera_position_is_deterministic_per_step_and_frame() -> None:
+def test_sorting_dither_params_are_deterministic_per_step_and_frame() -> None:
     frames = [
         _make_frame_at_position((0.0, 0.0, 0.0), 11),
         _make_frame_at_position((2.0, 0.0, 0.0), 12),
@@ -1383,22 +1383,24 @@ def test_sorting_dithered_camera_position_is_deterministic_per_step_and_frame() 
     camera = frames[2].make_camera()
 
     real_position = np.asarray(camera.position, dtype=np.float32)
-    np.testing.assert_allclose(disabled.sorting_dithered_camera_position(2, 7, camera), real_position, rtol=0.0, atol=0.0)
-    first = trainer.sorting_dithered_camera_position(2, 7, camera)
-    second = trainer.sorting_dithered_camera_position(2, 7, camera)
-    next_step = trainer.sorting_dithered_camera_position(2, 8, camera)
+    disabled_params = disabled.sorting_dither(2, 7, camera)
+    first = trainer.sorting_dither(2, 7, camera)
+    second = trainer.sorting_dither(2, 7, camera)
+    next_step = trainer.sorting_dither(2, 8, camera)
     other_frame_camera = frames[1].make_camera()
-    other_frame = trainer.sorting_dithered_camera_position(1, 7, other_frame_camera)
+    other_frame = trainer.sorting_dither(1, 7, other_frame_camera)
+    scaled_params = scaled.sorting_dither(2, 7, camera)
 
-    np.testing.assert_allclose(first, second, rtol=0.0, atol=0.0)
-    assert not np.allclose(first - real_position, next_step - real_position)
-    assert not np.allclose(first - real_position, other_frame - np.asarray(other_frame_camera.position, dtype=np.float32))
-    np.testing.assert_allclose(
-        scaled.sorting_dithered_camera_position(2, 7, camera) - real_position,
-        (first - real_position) * np.float32(0.25),
-        rtol=2e-6,
-        atol=2e-6,
-    )
+    np.testing.assert_allclose(disabled_params.position, real_position, rtol=0.0, atol=0.0)
+    assert disabled_params.sigma == 0.0
+    np.testing.assert_allclose(first.position, second.position, rtol=0.0, atol=0.0)
+    np.testing.assert_allclose(first.position, real_position, rtol=0.0, atol=0.0)
+    assert first.sigma == second.sigma
+    assert first.seed == second.seed
+    assert first.seed != next_step.seed
+    assert first.seed != other_frame.seed
+    assert scaled_params.seed == first.seed
+    assert np.isclose(scaled_params.sigma, first.sigma * 0.25)
 
 
 def test_auto_train_subsample_targets_nearest_strictly_above_1k_max_side() -> None:

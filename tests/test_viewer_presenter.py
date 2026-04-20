@@ -160,9 +160,9 @@ class _DummyTrainer:
         if renderer is not None:
             renderer.sh_band = 2
 
-    def sorting_dithered_camera_position(self, frame_index: int, step: int, camera: object) -> np.ndarray:
+    def sorting_dither(self, frame_index: int, step: int, camera: object) -> SimpleNamespace:
         self.sort_calls.append((int(frame_index), int(step), camera))
-        return np.asarray([1.0, 2.0, 3.0], dtype=np.float32)
+        return SimpleNamespace(position=np.asarray([1.0, 2.0, 3.0], dtype=np.float32), sigma=0.125, seed=555)
 
     def frame_metrics_snapshot(self) -> dict[str, np.ndarray]:
         return {
@@ -645,6 +645,8 @@ def test_render_debug_source_uses_overlay_renderer_for_rendered_view(monkeypatch
     assert render_call["training_native_camera"] == (0, 640, 360)
     assert render_call["training_background_seed"] == 1042
     np.testing.assert_allclose(render_call["sort_camera_position"], np.asarray([1.0, 2.0, 3.0], dtype=np.float32))
+    assert render_call["sort_camera_dither_sigma"] == 0.125
+    assert render_call["sort_camera_dither_seed"] == 555
 
 
 def test_render_debug_source_uses_overlay_renderer_for_abs_diff(monkeypatch) -> None:

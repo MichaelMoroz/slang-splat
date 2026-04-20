@@ -892,18 +892,16 @@ def _render_debug_source(viewer: object, encoder: spy.CommandEncoder, frame_idx:
     session.sync_scene_from_training_renderer(viewer, debug_renderer, target="debug")
     _apply_training_debug_renderer_hparams(viewer, debug_renderer, step)
     sample_vars = _training_debug_sample_vars(viewer, frame_idx, step, render_frame_index)
-    sort_camera_position = (
-        viewer.s.trainer.sorting_dithered_camera_position(frame_idx, render_frame_index, frame_camera)
-        if hasattr(viewer.s.trainer, "sorting_dithered_camera_position")
-        else None
-    )
+    sort_dither = viewer.s.trainer.sorting_dither(frame_idx, render_frame_index, frame_camera) if hasattr(viewer.s.trainer, "sorting_dither") else None
     training = viewer.s.trainer.training
     source_tex, stats = debug_renderer.render_training_forward_to_texture(
         frame_camera,
         background=_training_debug_background(viewer),
         read_stats=True,
         command_encoder=encoder,
-        sort_camera_position=sort_camera_position,
+        sort_camera_position=None if sort_dither is None else sort_dither.position,
+        sort_camera_dither_sigma=0.0 if sort_dither is None else sort_dither.sigma,
+        sort_camera_dither_seed=0 if sort_dither is None else sort_dither.seed,
         training_background_mode=int(getattr(training, "background_mode", 0)),
         training_background_seed=_training_debug_background_seed(viewer, render_frame_index),
         training_native_camera=native_camera,

@@ -1,12 +1,18 @@
 import "gaussian_types.slang";
 import "utility/math/camera.slang";
 import "utility/math/constants.slang";
+import "utility/random/random.slang";
 import "utility/splatting/common.slang";
 import "utility/splatting/projection.slang";
 import "utility/splatting/raster.slang";
 
+static const uint SORT_CAMERA_DITHER_SPLAT_HASH = 0x6d2b79f5u;
+static const uint SORT_CAMERA_DITHER_SEED_HASH = 0x9e3779b9u;
+
 uniform float g_MaxAnisotropy;
 uniform float3 g_SortCameraPosition;
+uniform float g_SortCameraDitherSigma;
+uniform uint g_SortCameraDitherSeed;
 
 uint float_to_ordered_uint(float value)
 {
@@ -31,6 +37,14 @@ void append_visible_splat(uint distanceKey, uint splatId)
     if (writeIndex >= g_Prepass.splatCount) return;
     g_VisibleKeys[writeIndex] = distanceKey;
     g_VisibleValues[writeIndex] = splatId;
+}
+
+float3 sort_camera_position_for_splat(uint splatId)
+{
+    if (g_SortCameraDitherSigma <= 0.0) return g_SortCameraPosition;
+    uint rngState = hash_u32(g_SortCameraDitherSeed ^ ((splatId + 1u) * SORT_CAMERA_DITHER_SPLAT_HASH));
+    rngState = hash_u32(rngState ^ SORT_CAMERA_DITHER_SEED_HASH);
+    return g_SortCameraPosition + rng_normal3_box_muller(rngState) * g_SortCameraDitherSigma;
 }
 
 bool load_projected_ellipse(uint splatId, out Ellipse ellipse)
@@ -122,7 +136,7 @@ void csProjectVisibleSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
     g_SplatVisibleAreaPx[splatId] = projectedEllipse.clippedAreaPx(camera.params.viewport);
     CachedEllipsoid cached = build_cached_ellipsoid(g_Camera, g_Prepass.radiusScale, g_MaxAnisotropy, gaussian.position, gaussian.logScale, gaussian.rotation);
     store_raster_cache(splatId, cached, float4(evaluatedColor, fusedOpacity));
-    float sortDistance = length(projectionEllipsoid.centerWorld - g_SortCameraPosition);
+    float sortDistance = length(projectionEllipsoid.centerWorld - sort_camera_position_for_splat(splatId));
     append_visible_splat(float_to_ordered_uint(sortDistance), splatId);
 }
 

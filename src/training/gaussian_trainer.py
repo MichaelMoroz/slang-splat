@@ -139,6 +139,13 @@ class _SceneCountProxy:
     count: int
 
 
+@dataclass(frozen=True, slots=True)
+class SortCameraDither:
+    position: np.ndarray
+    sigma: float
+    seed: int
+
+
 @dataclass(slots=True)
 class _FrameMetricBookkeeper:
     loss: np.ndarray
@@ -602,18 +609,16 @@ class GaussianTrainer:
         nearest[~np.isfinite(nearest)] = 0.0
         return nearest.astype(np.float32, copy=False)
 
-    def sorting_dithered_camera_position(self, frame_index: int, step: int, camera: Camera) -> np.ndarray:
+    def sorting_dither(self, frame_index: int, step: int, camera: Camera) -> SortCameraDither:
         amount = min(max(float(self.training.sorting_order_dithering), 0.0), 1.0)
         frame_idx = clamp_index(frame_index, len(self.frames))
         sigma = amount * float(self._frame_camera_nn_distances[frame_idx])
-        if not (sigma > 0.0):
-            return np.asarray(camera.position, dtype=np.float32).copy()
+        position = np.asarray(camera.position, dtype=np.float32).copy()
         frame = self._frame(frame_idx)
         seed = int(_refinement_hash_combine(self._seed ^ 0x6D2B79F5, max(int(step), 0)))
         seed = int(_refinement_hash_combine(seed, max(int(frame.image_id), 0) + 1))
         seed = int(_refinement_hash_combine(seed, frame_idx + 1))
-        offset = np.random.default_rng(seed).normal(0.0, sigma, size=3).astype(np.float32)
-        return np.asarray(camera.position, dtype=np.float32) + offset
+        return SortCameraDither(position=position, sigma=float(max(sigma, 0.0)), seed=seed)
 
     def _dispatch_position_random_steps(self, encoder: spy.CommandEncoder, step_index: int) -> None:
         if self._scene_count <= 0 or resolve_position_random_step_noise_lr(self.training, int(step_index)) <= 0.0:
@@ -1326,8 +1331,8 @@ class GaussianTrainer:
             native_camera = self._native_frame_camera(frame_index)
             self._apply_renderer_training_hparams(training_step)
             self._maybe_sync_prepass_capacity(frame_camera, training_step)
-            sort_camera_position = self.sorting_dithered_camera_position(frame_index, training_step, frame_camera)
-            self.renderer.record_prepass_for_current_scene(enc, frame_camera, sort_camera_position=sort_camera_position)
+            sort_dither = self.sorting_dither(frame_index, training_step, frame_camera)
+            self.renderer.record_prepass_for_current_scene(enc, frame_camera, sort_camera_position=sort_dither.position, sort_camera_dither_sigma=sort_dither.sigma, sort_camera_dither_seed=sort_dither.seed)
             target_texture = self.get_frame_target_texture(frame_index, native_resolution=self.effective_train_subsample_factor(frame_index) > 1, encoder=enc)
             self._dispatch_training_forward(enc, frame_camera, background, target_texture, training_step, frame_index, native_camera)
             self._dispatch_training_backward(enc, frame_camera, background, target_texture, training_step, frame_index, native_camera)
