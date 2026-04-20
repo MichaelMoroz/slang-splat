@@ -95,8 +95,6 @@ TRAIN_SETUP_CONTROL_DEFS = (
     _control("refinement_use_compact_split", "checkbox", "Use Compact Split", {"value": _default("refinement_use_compact_split")}, group=TRAINING_SETUP_GROUP, build_args=("refinement_use_compact_split",)),
     _control("refinement_solve_opacity", "checkbox", "Solve Split Opacity", {"value": _default("refinement_solve_opacity")}, group=TRAINING_SETUP_GROUP, build_args=("refinement_solve_opacity",)),
     _control("refinement_split_beta", "input_float", "Refinement Split Beta", {"value": _default("refinement_split_beta"), "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}, group=TRAINING_SETUP_GROUP, build_args=("refinement_split_beta",)),
-    _control("refinement_loss_weight", "input_float", "Refinement Loss Weight", {"value": _default("refinement_loss_weight"), "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}, group=TRAINING_SETUP_GROUP, build_args=("refinement_loss_weight",)),
-    _control("refinement_target_edge_weight", "input_float", "Refinement Edge Weight", {"value": _default("refinement_target_edge_weight"), "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}, group=TRAINING_SETUP_GROUP, build_args=("refinement_target_edge_weight",)),
     _control("train_downscale_mode", "combo", "Downscale Mode", {"value": _default("train_downscale_mode"), "options": TRAIN_DOWNSCALE_MODE_LABELS}, group=TRAINING_SETUP_GROUP, build_args=("train_downscale_mode",)),
     _control("train_subsample_factor", "combo", "Subsampling", {"value": _default("train_subsample_factor"), "options": TRAIN_SUBSAMPLE_LABELS}, group=TRAINING_SETUP_GROUP, build_args=("train_subsample_factor",)),
     _control("train_auto_start_downscale", "slider_int", "Auto Start Downscale", {"value": _default("train_auto_start_downscale"), "min": 1, "max": 16}, group=TRAINING_SETUP_GROUP, build_args=("train_auto_start_downscale",)),
@@ -268,8 +266,6 @@ TRAIN_SETUP_PRIMARY_KEYS = (
     "refinement_use_compact_split",
     "refinement_solve_opacity",
     "refinement_split_beta",
-    "refinement_loss_weight",
-    "refinement_target_edge_weight",
     "train_downscale_mode",
     "train_subsample_factor",
 )

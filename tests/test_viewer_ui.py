@@ -170,8 +170,8 @@ def test_build_ui_initializes_histogram_controls() -> None:
     assert viewer_ui._values["refinement_use_compact_split"] is True
     assert viewer_ui._values["refinement_solve_opacity"] is True
     assert viewer_ui._values["refinement_split_beta"] == 0.28
-    assert viewer_ui._values["refinement_loss_weight"] == 0.25
-    assert viewer_ui._values["refinement_target_edge_weight"] == 0.75
+    assert "refinement_loss_weight" not in viewer_ui._values
+    assert "refinement_target_edge_weight" not in viewer_ui._values
     assert viewer_ui._values["density_regularizer"] == 0.02
     assert viewer_ui._values["color_non_negative_reg"] == 0.01
     assert viewer_ui._values["depth_ratio_weight"] == 0.5

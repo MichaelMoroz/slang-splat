@@ -1138,8 +1138,6 @@ class GaussianRenderer:
         output: spy.Texture | None = None,
         clone_counts_buffer: spy.Buffer | None = None,
         splat_contribution_buffer: spy.Buffer | None = None,
-        clone_select_probability: float = 0.0,
-        clone_seed: int = 0,
         training_background_mode: int = 0,
         training_background_seed: int = 0,
         training_native_camera: Camera | None = None,
@@ -1160,6 +1158,7 @@ class GaussianRenderer:
             "g_TrainingDensity": self._work_buffers["training_density"],
             "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"],
             "g_TrainingBatchEnd": self._work_buffers["training_batch_end"],
+            "g_CloneCounts": self._work_buffers["debug_clone_count"] if clone_counts_buffer is None else clone_counts_buffer,
             "g_SplatContribution": self._work_buffers["training_splat_contribution"] if splat_contribution_buffer is None else splat_contribution_buffer,
             **self._raster_grad_decode_scale_var(1.0),
             **self._raster_grad_fixed_range_vars(),
@@ -1170,14 +1169,6 @@ class GaussianRenderer:
             **self._camera_uniforms(resolved_native_camera, "g_TrainingNativeCamera"),
             **resolved_sample_vars,
         }
-        if clone_counts_buffer is not None:
-            vars.update(
-                {
-                    "g_CloneCounts": clone_counts_buffer,
-                    "g_CloneSelectProbability": float(max(clone_select_probability, 0.0)),
-                    "g_CloneSeed": np.uint32(int(clone_seed)),
-                }
-            )
         self._dispatch(self._raster_grad_shader_set().training_forward, encoder, self._raster_thread_count(), vars, "Rasterize Training Forward", 26)
 
     def _rasterize_backward(
@@ -1188,21 +1179,17 @@ class GaussianRenderer:
         output_grad: spy.Buffer,
         regularizer_grad: spy.Buffer | None = None,
         clone_counts_buffer: spy.Buffer | None = None,
-        clone_select_probability: float = 0.0,
-        clone_seed: int = 0,
         training_background_mode: int = 0,
         training_background_seed: int = 0,
         training_native_camera: Camera | None = None,
         training_sample_vars: dict[str, object] | None = None,
-        refinement_loss_weight: float = 0.25,
-        refinement_target_edge_weight: float = 0.75,
     ) -> None:
         resolved_regularizer_grad = self._work_buffers["training_regularizer_grad"] if regularizer_grad is None else regularizer_grad
         resolved_native_camera = camera if training_native_camera is None else training_native_camera
         resolved_sample_vars = self._disabled_training_sample_vars() if training_sample_vars is None else training_sample_vars
         if regularizer_grad is None:
             self._clear_float_buffer(encoder, resolved_regularizer_grad, max(self.width * self.height, 1) * 2)
-        vars = {**self._scene_vars(), **self._raster_cache_vars(), "g_SortedValues": self._sorted_values(), "g_TileRanges": self._work_buffers["tile_ranges"], "g_OutputGrad": output_grad, "g_TrainingForwardState": self._work_buffers["training_forward_state"], "g_TrainingDepthStats": self._training_depth_stats_texture, "g_TrainingRgbLoss": self._work_buffers["training_rgb_loss"], "g_TrainingRgbLossTotal": self._work_buffers["training_rgb_loss_total"], "g_TrainingTargetEdge": self._work_buffers["training_target_edge"], "g_TrainingTargetEdgeTotal": self._work_buffers["training_target_edge_total"], "g_RefinementLossWeight": float(max(refinement_loss_weight, 0.0)), "g_RefinementTargetEdgeWeight": float(max(refinement_target_edge_weight, 0.0)), "g_TrainingRegularizerGrad": resolved_regularizer_grad, "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"], "g_TrainingBatchEnd": self._work_buffers["training_batch_end"], "g_CloneCounts": self._work_buffers["debug_clone_count"] if clone_counts_buffer is None else clone_counts_buffer, "g_CloneSelectProbability": float(max(clone_select_probability, 0.0)), "g_CloneSeed": np.uint32(int(clone_seed)), **self._raster_grad_vars(), **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_range_vars(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background, training_background_mode, training_background_seed), **self._anisotropy_uniforms(), **self._camera_uniforms(camera), **self._camera_uniforms(resolved_native_camera, "g_TrainingNativeCamera"), **resolved_sample_vars}
+        vars = {**self._scene_vars(), **self._raster_cache_vars(), "g_SortedValues": self._sorted_values(), "g_TileRanges": self._work_buffers["tile_ranges"], "g_OutputGrad": output_grad, "g_TrainingForwardState": self._work_buffers["training_forward_state"], "g_TrainingDepthStats": self._training_depth_stats_texture, "g_TrainingRegularizerGrad": resolved_regularizer_grad, "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"], "g_TrainingBatchEnd": self._work_buffers["training_batch_end"], "g_CloneCounts": self._work_buffers["debug_clone_count"] if clone_counts_buffer is None else clone_counts_buffer, **self._raster_grad_vars(), **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_range_vars(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background, training_background_mode, training_background_seed), **self._anisotropy_uniforms(), **self._camera_uniforms(camera), **self._camera_uniforms(resolved_native_camera, "g_TrainingNativeCamera"), **resolved_sample_vars}
         self._dispatch(self._raster_grad_shader_set().backward, encoder, self._raster_thread_count(), vars, "Rasterize Backward", 27)
 
     def _backprop_cached_raster_grads(self, encoder: spy.CommandEncoder, splat_count: int, camera: Camera, grad_scale: float = 1.0) -> None:
@@ -1742,15 +1729,13 @@ class GaussianRenderer:
         output: spy.Texture | None = None,
         clone_counts_buffer: spy.Buffer | None = None,
         splat_contribution_buffer: spy.Buffer | None = None,
-        clone_select_probability: float = 0.0,
-        clone_seed: int = 0,
         training_background_mode: int = 0,
         training_background_seed: int = 0,
         training_native_camera: Camera | None = None,
         training_sample_vars: dict[str, object] | None = None,
     ) -> None:
         self._require_scene()
-        self._rasterize_training_forward(encoder, camera, background, output, clone_counts_buffer, splat_contribution_buffer, clone_select_probability, clone_seed, training_background_mode, training_background_seed, training_native_camera, training_sample_vars)
+        self._rasterize_training_forward(encoder, camera, background, output, clone_counts_buffer, splat_contribution_buffer, training_background_mode, training_background_seed, training_native_camera, training_sample_vars)
 
     def rasterize_backward_current_scene(
         self,
@@ -1761,17 +1746,13 @@ class GaussianRenderer:
         grad_scale: float = 1.0,
         regularizer_grad: spy.Buffer | None = None,
         clone_counts_buffer: spy.Buffer | None = None,
-        clone_select_probability: float = 0.0,
-        clone_seed: int = 0,
         training_background_mode: int = 0,
         training_background_seed: int = 0,
         training_native_camera: Camera | None = None,
         training_sample_vars: dict[str, object] | None = None,
-        refinement_loss_weight: float = 0.25,
-        refinement_target_edge_weight: float = 0.75,
     ) -> None:
         self._require_scene()
-        self._rasterize_backward(encoder, camera, background, output_grad, regularizer_grad, clone_counts_buffer, clone_select_probability, clone_seed, training_background_mode, training_background_seed, training_native_camera, training_sample_vars, refinement_loss_weight, refinement_target_edge_weight)
+        self._rasterize_backward(encoder, camera, background, output_grad, regularizer_grad, clone_counts_buffer, training_background_mode, training_background_seed, training_native_camera, training_sample_vars)
         self._backprop_cached_raster_grads(encoder, self._scene_count, camera, grad_scale)
 
     def render_to_texture(
