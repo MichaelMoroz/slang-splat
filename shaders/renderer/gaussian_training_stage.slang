@@ -121,6 +121,9 @@ uniform uint g_RefinementMinContributionThreshold;
 uniform float g_RefinementOpacityMul;
 uniform float g_RefinementSampleRadius;
 uniform float g_RefinementCloneScaleMul;
+uniform uint g_RefinementUseCompactSplit;
+uniform uint g_RefinementSolveOpacity;
+uniform float g_RefinementSplitBeta;
 uniform float g_RefinementRadiusScale;
 
 groupshared float gsLoss[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
@@ -478,7 +481,43 @@ float3 refinement_child_log_scale(float3 parentLogScale, float shrink)
 
 float refinement_child_shrink(float familySize)
 {
+    if (g_RefinementUseCompactSplit != 0u) return pow(max(familySize, 1.0), -max(g_RefinementSplitBeta, 0.0)) * max(g_RefinementCloneScaleMul, 0.0);
     return pow(max(familySize, 1.0), DENSIFY_SCALE_SHRINK_EXPONENT) * max(g_RefinementCloneScaleMul, 0.0);
+}
+
+float refinement_child_kernel_at_parent_center(float3 centeredSampleStd, float shrink)
+{
+    if (!(shrink > SMALL_VALUE)) return 0.0;
+    float shrinkOffset = sqrt(max(1.0 - shrink * shrink, 0.0));
+    float offsetScale = shrinkOffset / max(shrink, SMALL_VALUE);
+    float3 normalizedOffset = centeredSampleStd * offsetScale;
+    return exp(-0.5 * dot(normalizedOffset, normalizedOffset));
+}
+
+float solve_refinement_split_alpha(float parentAlpha, uint splatId, uint familySize, uint frameHash, float3 parentScale, float shrink, float3 familyMean)
+{
+    if (familySize <= 1u) return saturate(parentAlpha);
+
+    float targetTrans = saturate(1.0 - saturate(parentAlpha));
+    float lo = 0.0;
+    float hi = 1.0;
+    [unroll] for (uint iter = 0u; iter < 8u; iter++)
+    {
+        float mid = 0.5 * (lo + hi);
+        float trans = 1.0;
+        [loop] for (uint slot = 0u; slot < familySize; slot++)
+        {
+            float3 sampleStd = refinement_centered_plane_sample(frameHash, splatId, slot, familySize, parentScale, familyMean);
+            float kernel = refinement_child_kernel_at_parent_center(sampleStd, shrink);
+            trans *= max(1.0 - mid * kernel, SMALL_VALUE);
+        }
+        if (trans > targetTrans) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    return hi;
 }
 
 float position_random_step_gate(float opacity)
@@ -1054,9 +1093,10 @@ void csRewriteRefinementSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
     SplatState source = load_splat_state(g_SrcSplatParams, g_SrcSplatCount, splatId);
     float alpha = opacity_from_raw(source.rawOpacity);
     if (should_cull_refinement_splat(alpha, g_SplatContribution[splatId])) return;
-    apply_refinement_opacity_mul(source);
 
     uint cloneCount = min(g_CloneCounts[splatId], 3);
+    bool solveOpacity = g_RefinementSolveOpacity != 0u && cloneCount > 0u;
+    if (!solveOpacity) apply_refinement_opacity_mul(source);
     uint parentIndex = 0u;
     InterlockedAdd(g_AppendCounter[0], 1u, parentIndex);
 
@@ -1071,6 +1111,11 @@ void csRewriteRefinementSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
         uint frameHash = refinement_family_frame_hash(splatId);
         float3 parentScale = exp(source.logScale);
         float3 familyMean = refinement_plane_family_mean(frameHash, splatId, familySize, parentScale);
+        if (solveOpacity)
+        {
+            float shrink = refinement_child_shrink(float(familySize));
+            source.rawOpacity = raw_opacity_from_alpha(solve_refinement_split_alpha(alpha, splatId, familySize, frameHash, parentScale, shrink, familyMean));
+        }
         store_splat_state(g_DstSplatParams, g_DstSplatCount, parentIndex, split_family_member(source, splatId, 0u, familySize, frameHash, familyMean));
         copy_adam_state(splatId, parentIndex);
         [loop] for (uint childSlot = 0u; childSlot < emittedCloneCount; childSlot++)

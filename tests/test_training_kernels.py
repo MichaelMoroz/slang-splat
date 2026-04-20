@@ -63,7 +63,13 @@ def _training_rendered_to_display_np(rendered_rgb: np.ndarray) -> np.ndarray:
 
 def _expected_refinement_child_scale(parent_scale: np.ndarray, family_size: int, scale_mul: float = 1.0) -> np.ndarray:
     scale = np.asarray(parent_scale, dtype=np.float32).reshape(3)
-    shrink = float(max(int(family_size), 1)) ** (-1.0 / 3.0) * float(scale_mul)
+    shrink = float(max(int(family_size), 1)) ** (-0.28) * float(scale_mul)
+    return (scale * np.float32(shrink)).astype(np.float32, copy=False)
+
+
+def _expected_refinement_child_scale_beta(parent_scale: np.ndarray, family_size: int, beta: float, scale_mul: float = 1.0) -> np.ndarray:
+    scale = np.asarray(parent_scale, dtype=np.float32).reshape(3)
+    shrink = float(max(int(family_size), 1)) ** (-float(beta)) * float(scale_mul)
     return (scale * np.float32(shrink)).astype(np.float32, copy=False)
 
 
@@ -2382,7 +2388,8 @@ def test_refinement_rewrite_culls_and_splits_families(device, tmp_path: Path) ->
         rtol=0.0,
         atol=1e-6,
     )
-    np.testing.assert_allclose(actual_opacity, np.full((3,), 0.6, dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(actual_opacity, np.full((3,), actual_opacity[0], dtype=np.float32), rtol=0.0, atol=1e-6)
+    assert 0.25 < float(actual_opacity[0]) < 0.6
     np.testing.assert_allclose(np.mean(groups["positions"][:, :3], axis=0), source_position, rtol=0.0, atol=2e-3)
     offsets = groups["positions"][:, :3] - source_position[None, :]
     np.testing.assert_allclose(np.sum(offsets, axis=0), np.zeros((3,), dtype=np.float32), rtol=0.0, atol=6e-3)
@@ -2422,6 +2429,38 @@ def test_refinement_clone_scale_mul_scales_split_family_sigma(device, tmp_path: 
     groups = _read_scene_groups(renderer, trainer.scene.count)
     actual_scales = _actual_scale(groups["scales"][:, :3])
     expected_scale = _expected_refinement_child_scale(np.array([0.09, 0.06, 0.03], dtype=np.float32), 2, scale_mul=1.5)
+    np.testing.assert_allclose(actual_scales, np.repeat(expected_scale[None, :], 2, axis=0), rtol=0.0, atol=1e-6)
+
+
+def test_refinement_compact_split_beta_scales_split_family_sigma(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=1, seed=91)
+    scene.opacities[:] = np.array([0.6], dtype=np.float32)
+    scene.scales[:] = _log_sigma(np.array([[0.09, 0.06, 0.03]], dtype=np.float32))
+    frame = _make_frame(tmp_path, image_name="refinement_compact_split_beta_target.png", image_id=112)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    observed_pixels = renderer.width * renderer.height
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(
+            refinement_alpha_cull_threshold=1e-6,
+            refinement_min_contribution_percent=contribution_percent_from_fixed_count(50, observed_pixels),
+            refinement_use_compact_split=True,
+            refinement_split_beta=0.28,
+        ),
+        seed=123,
+    )
+
+    trainer._observed_contribution_pixel_count = observed_pixels
+    trainer.refinement_buffers["clone_counts"].copy_from_numpy(np.array([1], dtype=np.uint32))
+    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
+    trainer._run_refinement()
+
+    groups = _read_scene_groups(renderer, trainer.scene.count)
+    actual_scales = _actual_scale(groups["scales"][:, :3])
+    expected_scale = _expected_refinement_child_scale_beta(np.array([0.09, 0.06, 0.03], dtype=np.float32), 2, beta=0.28)
     np.testing.assert_allclose(actual_scales, np.repeat(expected_scale[None, :], 2, axis=0), rtol=0.0, atol=1e-6)
 
 
@@ -2474,7 +2513,7 @@ def test_refinement_rewrite_culls_low_contribution_splats(device, tmp_path: Path
     np.testing.assert_allclose(groups["positions"][0, :3], scene.positions[0], rtol=0.0, atol=1e-6)
 
 
-def test_refinement_opacity_mul_respects_half_opacity_floor(device, tmp_path: Path) -> None:
+def test_refinement_opacity_mul_rewrites_unsplit_survivor_alpha(device, tmp_path: Path) -> None:
     scene = _make_scene(count=1, seed=191)
     scene.opacities[:] = np.array([0.6], dtype=np.float32)
     frame = _make_frame(tmp_path, image_name="refinement_opacity_floor_target.png", image_id=191)
@@ -2499,7 +2538,42 @@ def test_refinement_opacity_mul_respects_half_opacity_floor(device, tmp_path: Pa
     trainer._run_refinement()
 
     groups = _read_scene_groups(renderer, trainer.scene.count)
-    np.testing.assert_allclose(_actual_opacity(groups["color_alpha"][:, 3]), np.array([0.5], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(_actual_opacity(groups["color_alpha"][:, 3]), np.array([0.25], dtype=np.float32), rtol=0.0, atol=1e-6)
+
+
+def test_refinement_solve_opacity_shares_family_alpha(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=1, seed=192)
+    scene.opacities[:] = np.array([0.6], dtype=np.float32)
+    scene.scales[:] = _log_sigma(np.array([[0.09, 0.06, 0.03]], dtype=np.float32))
+    frame = _make_frame(tmp_path, image_name="refinement_solve_opacity_target.png", image_id=192)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    observed_pixels = renderer.width * renderer.height
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(
+            refinement_alpha_cull_threshold=1e-6,
+            refinement_min_contribution_percent=contribution_percent_from_fixed_count(50, observed_pixels),
+            refinement_use_compact_split=True,
+            refinement_solve_opacity=True,
+            refinement_split_beta=0.28,
+            refinement_sample_radius=1.35,
+        ),
+        seed=123,
+    )
+
+    trainer._observed_contribution_pixel_count = observed_pixels
+    trainer.refinement_buffers["clone_counts"].copy_from_numpy(np.array([1], dtype=np.uint32))
+    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
+    trainer._run_refinement()
+
+    groups = _read_scene_groups(renderer, trainer.scene.count)
+    actual_opacity = _actual_opacity(groups["color_alpha"][:, 3])
+    assert trainer.scene.count == 2
+    np.testing.assert_allclose(actual_opacity, np.full((2,), actual_opacity[0], dtype=np.float32), rtol=0.0, atol=1e-6)
+    assert 0.25 < float(actual_opacity[0]) < 0.6
 
 
 def test_refinement_rewrite_migrates_adam_moments(device, tmp_path: Path) -> None:
@@ -2638,7 +2712,7 @@ def test_refinement_rewrite_samples_family_offsets_on_largest_area_plane(device,
     family_positions = groups["positions"][:, :3]
     parent_scale = np.array([0.7, 0.5, 0.3], dtype=np.float32)
     family_size = trainer.scene.count
-    shrink = family_size ** (-1.0 / 3.0)
+    shrink = family_size ** (-0.28)
     residual_sigma = parent_scale * np.sqrt(max(1.0 - shrink * shrink, 0.0))
     normalized_lengths = np.linalg.norm((family_positions - scene.positions[0][None, :]) / residual_sigma[None, :], axis=1)
 
