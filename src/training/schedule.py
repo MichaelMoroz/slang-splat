@@ -186,6 +186,30 @@ def resolve_position_random_step_noise_lr(training_hparams: Any, step: int) -> f
     )
 
 
+def _clamp_unit_interval(value: Any, default: float) -> float:
+    try:
+        resolved = float(value)
+    except (TypeError, ValueError):
+        resolved = float(default)
+    return min(max(resolved, 0.0), 1.0)
+
+
+def resolve_sorting_order_dithering(training_hparams: Any, step: int) -> float:
+    start = _clamp_unit_interval(getattr(training_hparams, "sorting_order_dithering", 0.5), 0.5)
+    if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
+        return start
+    return _resolve_staged_linear_value(
+        training_hparams,
+        step,
+        start,
+        (
+            _clamp_unit_interval(getattr(training_hparams, "sorting_order_dithering_stage1", 0.2), 0.2),
+            _clamp_unit_interval(getattr(training_hparams, "sorting_order_dithering_stage2", 0.05), 0.05),
+            _clamp_unit_interval(getattr(training_hparams, "sorting_order_dithering_stage3", 0.01), 0.01),
+        ),
+    )
+
+
 def _clamp_sh_band(value: Any, default: int) -> int:
     try:
         resolved = int(value)

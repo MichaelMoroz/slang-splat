@@ -200,6 +200,10 @@ def test_default_training_params_include_background_mode_and_density() -> None:
     assert params.training.max_screen_fraction_stage1 == 0.07
     assert params.training.max_screen_fraction_stage2 == 0.02
     assert params.training.max_screen_fraction_stage3 == 0.007
+    assert params.training.sorting_order_dithering == 0.5
+    assert params.training.sorting_order_dithering_stage1 == 0.2
+    assert params.training.sorting_order_dithering_stage2 == 0.05
+    assert params.training.sorting_order_dithering_stage3 == 0.01
     assert params.training.position_random_step_opacity_gate_center == 0.005
     assert params.training.position_random_step_opacity_gate_sharpness == 100.0
     assert params.training.lr_schedule_stage1_lr == 0.002

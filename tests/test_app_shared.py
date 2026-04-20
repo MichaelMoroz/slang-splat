@@ -6,7 +6,7 @@ import numpy as np
 
 from src.app.shared import apply_training_profile, build_training_params, estimate_scene_bounds
 from src.scene import GaussianInitHyperParams, GaussianScene
-from src.training import DEPTH_RATIO_GRAD_MIN_BAND_WIDTH, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams
+from src.training import DEPTH_RATIO_GRAD_MIN_BAND_WIDTH, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, resolve_sorting_order_dithering
 from src.viewer.app import default_training_params
 from src.viewer.session import resolve_effective_training_setup
 from src.viewer.ui import default_control_values
@@ -162,7 +162,10 @@ def test_default_training_params_match_fixed_count_defaults():
     assert params.training.color_non_negative_reg == 0.01
     assert params.training.depth_ratio_weight == 0.5
     assert params.training.max_screen_fraction == 0.25
-    assert params.training.sorting_order_dithering == 0.1
+    assert params.training.sorting_order_dithering == 0.5
+    assert params.training.sorting_order_dithering_stage1 == 0.2
+    assert params.training.sorting_order_dithering_stage2 == 0.05
+    assert params.training.sorting_order_dithering_stage3 == 0.01
     assert params.training.ssim_weight == 0.05
     assert params.training.ssim_c2 == 9e-4
     assert params.training.depth_ratio_grad_min == 0.0
@@ -230,11 +233,23 @@ def test_build_training_params_clamps_subsample_to_one_eighth() -> None:
 def test_build_training_params_clamps_sorting_order_dithering() -> None:
     default = build_training_params(background=(1.0, 1.0, 1.0))
     low = build_training_params(background=(1.0, 1.0, 1.0), sorting_order_dithering=-1.0)
-    high = build_training_params(background=(1.0, 1.0, 1.0), sorting_order_dithering=8.0)
+    high = build_training_params(
+        background=(1.0, 1.0, 1.0),
+        sorting_order_dithering=8.0,
+        sorting_order_dithering_stage1=1.5,
+        sorting_order_dithering_stage2=-0.5,
+        sorting_order_dithering_stage3=0.25,
+    )
 
-    assert default.training.sorting_order_dithering == 0.1
+    assert default.training.sorting_order_dithering == 0.5
+    assert default.training.sorting_order_dithering_stage1 == 0.2
+    assert default.training.sorting_order_dithering_stage2 == 0.05
+    assert default.training.sorting_order_dithering_stage3 == 0.01
     assert low.training.sorting_order_dithering == 0.0
     assert high.training.sorting_order_dithering == 1.0
+    assert high.training.sorting_order_dithering_stage1 == 1.0
+    assert high.training.sorting_order_dithering_stage2 == 0.0
+    assert high.training.sorting_order_dithering_stage3 == 0.25
 
 
 def test_build_training_params_exposes_refinement_clone_scale_mul() -> None:
@@ -300,9 +315,41 @@ def test_training_hparams_clamp_depth_ratio_grad_band() -> None:
 
 
 def test_training_hparams_clamp_sorting_order_dithering() -> None:
-    assert TrainingHyperParams().sorting_order_dithering == 0.1
+    assert TrainingHyperParams().sorting_order_dithering == 0.5
+    assert TrainingHyperParams().sorting_order_dithering_stage1 == 0.2
+    assert TrainingHyperParams().sorting_order_dithering_stage2 == 0.05
+    assert TrainingHyperParams().sorting_order_dithering_stage3 == 0.01
     assert TrainingHyperParams(sorting_order_dithering=-0.5).sorting_order_dithering == 0.0
     assert TrainingHyperParams(sorting_order_dithering=1.5).sorting_order_dithering == 1.0
+    params = TrainingHyperParams(
+        sorting_order_dithering_stage1=2.0,
+        sorting_order_dithering_stage2=-1.0,
+        sorting_order_dithering_stage3=0.25,
+    )
+    assert params.sorting_order_dithering_stage1 == 1.0
+    assert params.sorting_order_dithering_stage2 == 0.0
+    assert params.sorting_order_dithering_stage3 == 0.25
+
+
+def test_sorting_order_dithering_resolves_as_staged_schedule() -> None:
+    params = TrainingHyperParams(
+        lr_schedule_steps=100,
+        lr_schedule_stage1_step=20,
+        lr_schedule_stage2_step=60,
+        sorting_order_dithering=0.5,
+        sorting_order_dithering_stage1=0.2,
+        sorting_order_dithering_stage2=0.05,
+        sorting_order_dithering_stage3=0.01,
+    )
+
+    assert resolve_sorting_order_dithering(params, 0) == 0.5
+    assert resolve_sorting_order_dithering(params, 20) == 0.2
+    assert np.isclose(resolve_sorting_order_dithering(params, 60), 0.05)
+    assert np.isclose(resolve_sorting_order_dithering(params, 100), 0.01)
+    assert np.isclose(resolve_sorting_order_dithering(params, 10), 0.35)
+    disabled = TrainingHyperParams(lr_schedule_enabled=False, sorting_order_dithering=0.4, sorting_order_dithering_stage1=0.0)
+    assert disabled.sorting_order_dithering == 0.4
+    assert resolve_sorting_order_dithering(disabled, 100) == 0.4
 
 
 def test_training_hparams_clamp_schedule_breakpoints() -> None:

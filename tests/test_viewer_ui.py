@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import numpy as np
 import slangpy as spy
 
-from src.app.training_controls import TRAIN_SETUP_CONTROL_DEFS, TRAIN_SETUP_PRIMARY_KEYS
+from src.app.training_controls import SCHEDULE_STAGE_CONTROL_DEFS, SCHEDULE_STAGE_GROUPS, TRAIN_SETUP_CONTROL_DEFS, TRAIN_SETUP_PRIMARY_KEYS
 from src.viewer import ui
 from src.viewer.constants import _WINDOW_TITLE
 
@@ -222,17 +222,26 @@ def test_build_ui_exposes_refinement_clone_scale_mul_default() -> None:
     assert viewer_ui._values["refinement_clone_scale_mul"] == 1.0
 
 
-def test_train_setup_exposes_sorting_order_dithering_control() -> None:
-    controls = {control.key: control for control in TRAIN_SETUP_CONTROL_DEFS}
-    control = controls["sorting_order_dithering"]
+def test_train_schedule_exposes_sorting_order_dithering_controls() -> None:
+    stage_controls = {stage: {control.key: control for control in controls} for stage, controls in SCHEDULE_STAGE_CONTROL_DEFS.items()}
+    expected = {
+        "Stage 0": ("sorting_order_dithering", 0.5),
+        "Stage 1": ("sorting_order_dithering_stage1", 0.2),
+        "Stage 2": ("sorting_order_dithering_stage2", 0.05),
+        "Stage 3": ("sorting_order_dithering_stage3", 0.01),
+    }
 
-    assert control.kind == "input_float"
-    assert control.label == "Sorting Order Dithering"
-    assert control.kwargs["value"] == 0.1
-    assert control.kwargs["step"] == 1e-3
-    assert control.kwargs["step_fast"] == 1e-2
-    assert control.build_args == ("sorting_order_dithering",)
-    assert "sorting_order_dithering" in TRAIN_SETUP_PRIMARY_KEYS
+    assert "sorting_order_dithering" not in {control.key for control in TRAIN_SETUP_CONTROL_DEFS}
+    assert "sorting_order_dithering" not in TRAIN_SETUP_PRIMARY_KEYS
+    for stage, (key, value) in expected.items():
+        control = stage_controls[stage][key]
+        assert control.kind == "input_float"
+        assert control.label == "Sort Dither"
+        assert control.kwargs["value"] == value
+        assert control.kwargs["step"] == 1e-3
+        assert control.kwargs["step_fast"] == 1e-2
+        assert control.build_args == (key,)
+        assert SCHEDULE_STAGE_GROUPS[stage]["sort_dither"] == key
 
 
 def test_colmap_init_mode_labels_append_depth_only_for_valid_depth_root(tmp_path) -> None:

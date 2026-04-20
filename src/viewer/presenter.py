@@ -9,7 +9,7 @@ import slangpy as spy
 
 from ..utility import alloc_texture_2d, clamp_index, debug_region, require_not_none
 from ..filter import SeparableGaussianBlur
-from ..training import TRAIN_SUBSAMPLE_MAX_FACTOR, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_depth_ratio_weight, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_sh_band, resolve_sh_lr_mul
+from ..training import TRAIN_SUBSAMPLE_MAX_FACTOR, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_depth_ratio_weight, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering
 from . import session
 
 _DEBUG_HUGE_VALUE = 1e8
@@ -66,6 +66,10 @@ def _schedule_state_from_controls(viewer: object) -> object:
         depth_ratio_stage1_weight=float(viewer.c("depth_ratio_stage1_weight").value),
         depth_ratio_stage2_weight=float(viewer.c("depth_ratio_stage2_weight").value),
         depth_ratio_stage3_weight=float(viewer.c("depth_ratio_stage3_weight").value),
+        sorting_order_dithering=float(viewer.c("sorting_order_dithering").value),
+        sorting_order_dithering_stage1=float(viewer.c("sorting_order_dithering_stage1").value),
+        sorting_order_dithering_stage2=float(viewer.c("sorting_order_dithering_stage2").value),
+        sorting_order_dithering_stage3=float(viewer.c("sorting_order_dithering_stage3").value),
         position_random_step_noise_lr=float(viewer.c("position_random_step_noise_lr").value),
         position_random_step_noise_stage1_lr=float(viewer.c("position_random_step_noise_stage1_lr").value),
         position_random_step_noise_stage2_lr=float(viewer.c("position_random_step_noise_stage2_lr").value),
@@ -123,6 +127,7 @@ def _current_schedule_values_text(viewer: object) -> str:
         f"pos={resolve_position_lr_mul(training, step):.2f}x | "
         f"shlr={resolve_sh_lr_mul(training, step):.2f}x | "
         f"depth={resolve_depth_ratio_weight(training, step):.2e} | "
+        f"dither={resolve_sorting_order_dithering(training, step):.3g} | "
         f"noise={resolve_position_random_step_noise_lr(training, step):.2e} | "
         f"sh=SH{resolve_sh_band(training, step)}"
     )

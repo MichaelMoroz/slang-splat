@@ -14,7 +14,7 @@ from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 from src.scene.sh_utils import SH_C0, evaluate_sh_color
 from src.training import gaussian_trainer as gaussian_trainer_module
-from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, contribution_fixed_count_from_percent, contribution_percent_from_fixed_count, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_depth_ratio_grad_band, resolve_depth_ratio_weight, resolve_effective_refinement_interval, resolve_effective_train_render_factor, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_screen_fraction, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_sh_band, resolve_sh_lr_mul, resolve_ssim_weight, resolve_stage_schedule_steps, resolve_training_resolution, resolve_train_subsample_factor, resolve_use_sh, should_run_refinement_step
+from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, contribution_fixed_count_from_percent, contribution_percent_from_fixed_count, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_depth_ratio_grad_band, resolve_depth_ratio_weight, resolve_effective_refinement_interval, resolve_effective_train_render_factor, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_screen_fraction, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering, resolve_ssim_weight, resolve_stage_schedule_steps, resolve_training_resolution, resolve_train_subsample_factor, resolve_use_sh, should_run_refinement_step
 
 _ADAM_BUFFER_NAMES = ("adam_moments",)
 _OPACITY_EPS = 1e-6
@@ -1362,13 +1362,36 @@ def test_nearest_camera_distances_cover_single_pair_and_uneven_layouts() -> None
     np.testing.assert_allclose(GaussianTrainer._nearest_camera_distances(uneven), np.array([2.0, 2.0, 8.0], dtype=np.float32))
 
 
-def _make_sorting_dither_trainer(frames: list[ColmapFrame], amount: float, seed: int = 123) -> GaussianTrainer:
+def _make_sorting_dither_trainer(frames: list[ColmapFrame], amount: float, seed: int = 123, **kwargs: object) -> GaussianTrainer:
     trainer = object.__new__(GaussianTrainer)
     trainer.frames = frames
-    trainer.training = TrainingHyperParams(sorting_order_dithering=amount)
+    dither_kwargs = {
+        "sorting_order_dithering_stage1": amount,
+        "sorting_order_dithering_stage2": amount,
+        "sorting_order_dithering_stage3": amount,
+    } | kwargs
+    trainer.training = TrainingHyperParams(sorting_order_dithering=amount, **dither_kwargs)
     trainer._seed = seed
     trainer._frame_camera_nn_distances = GaussianTrainer._nearest_camera_distances(frames)
     return trainer
+
+
+def test_sorting_order_dithering_schedule_resolves_piecewise_linear_values() -> None:
+    hparams = TrainingHyperParams(
+        lr_schedule_steps=100,
+        lr_schedule_stage1_step=25,
+        lr_schedule_stage2_step=75,
+        sorting_order_dithering=0.5,
+        sorting_order_dithering_stage1=0.2,
+        sorting_order_dithering_stage2=0.05,
+        sorting_order_dithering_stage3=0.01,
+    )
+
+    assert resolve_sorting_order_dithering(hparams, 0) == 0.5
+    assert resolve_sorting_order_dithering(hparams, 25) == 0.2
+    assert np.isclose(resolve_sorting_order_dithering(hparams, 75), 0.05)
+    assert np.isclose(resolve_sorting_order_dithering(hparams, 100), 0.01)
+    assert np.isclose(resolve_sorting_order_dithering(hparams, 50), 0.125)
 
 
 def test_sorting_dither_params_are_deterministic_per_step_and_frame() -> None:
