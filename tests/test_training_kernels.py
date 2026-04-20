@@ -2514,7 +2514,7 @@ def test_refinement_rewrite_sampling_depends_on_frame_hash(device, tmp_path: Pat
     assert not np.allclose(positions_a, positions_b, rtol=0.0, atol=1e-6)
 
 
-def test_refinement_rewrite_keeps_sampled_family_offsets_within_fibonacci_volume(device, tmp_path: Path) -> None:
+def test_refinement_rewrite_samples_family_offsets_on_largest_area_plane(device, tmp_path: Path) -> None:
     scene = _make_scene(count=1, seed=173)
     scene.positions[0] = np.array([0.0, 0.0, 0.0], dtype=np.float32)
     scene.scales[0] = _log_sigma(np.array([0.7, 0.5, 0.3], dtype=np.float32))
@@ -2533,7 +2533,7 @@ def test_refinement_rewrite_keeps_sampled_family_offsets_within_fibonacci_volume
     )
 
     trainer._observed_contribution_pixel_count = observed_pixels
-    trainer.refinement_buffers["clone_counts"].copy_from_numpy(np.array([31], dtype=np.uint32))
+    trainer.refinement_buffers["clone_counts"].copy_from_numpy(np.array([3], dtype=np.uint32))
     trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
     trainer._run_refinement()
 
@@ -2545,7 +2545,8 @@ def test_refinement_rewrite_keeps_sampled_family_offsets_within_fibonacci_volume
     residual_sigma = parent_scale * np.sqrt(max(1.0 - shrink * shrink, 0.0))
     normalized_lengths = np.linalg.norm((family_positions - scene.positions[0][None, :]) / residual_sigma[None, :], axis=1)
 
-    assert trainer.scene.count == 32
+    assert trainer.scene.count == 4
+    np.testing.assert_allclose(family_positions[:, 2], scene.positions[0, 2], rtol=0.0, atol=1e-6)
     assert float(np.max(normalized_lengths)) <= 3.0 + 1e-5
 
 
