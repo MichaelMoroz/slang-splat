@@ -66,6 +66,7 @@ def test_build_training_params_clamps_ranges():
         opacity_reg_weight=-1.0,
         refinement_loss_weight=-1.0,
         refinement_target_edge_weight=-2.0,
+        sorting_order_dithering=2.0,
         refinement_sample_radius=-2.0,
         refinement_clone_scale_mul=-3.0,
         depth_ratio_grad_min=0.2,
@@ -94,6 +95,7 @@ def test_build_training_params_clamps_ranges():
     assert params.training.color_non_negative_reg == 0.01
     assert params.training.depth_ratio_weight == 0.5
     assert params.training.max_screen_fraction == 0.25
+    assert params.training.sorting_order_dithering == 1.0
     assert params.training.ssim_weight == 0.05
     assert params.training.ssim_c2 == 9e-4
     assert params.training.depth_ratio_grad_min == 0.2
@@ -160,6 +162,7 @@ def test_default_training_params_match_fixed_count_defaults():
     assert params.training.color_non_negative_reg == 0.01
     assert params.training.depth_ratio_weight == 0.5
     assert params.training.max_screen_fraction == 0.25
+    assert params.training.sorting_order_dithering == 0.1
     assert params.training.ssim_weight == 0.05
     assert params.training.ssim_c2 == 9e-4
     assert params.training.depth_ratio_grad_min == 0.0
@@ -224,6 +227,16 @@ def test_build_training_params_clamps_subsample_to_one_eighth() -> None:
     assert params.training.train_subsample_factor == 8
 
 
+def test_build_training_params_clamps_sorting_order_dithering() -> None:
+    default = build_training_params(background=(1.0, 1.0, 1.0))
+    low = build_training_params(background=(1.0, 1.0, 1.0), sorting_order_dithering=-1.0)
+    high = build_training_params(background=(1.0, 1.0, 1.0), sorting_order_dithering=8.0)
+
+    assert default.training.sorting_order_dithering == 0.1
+    assert low.training.sorting_order_dithering == 0.0
+    assert high.training.sorting_order_dithering == 1.0
+
+
 def test_build_training_params_exposes_refinement_clone_scale_mul() -> None:
     params = build_training_params(background=(1.0, 1.0, 1.0), refinement_clone_scale_mul=1.5)
     clamped = build_training_params(background=(1.0, 1.0, 1.0), refinement_clone_scale_mul=-2.0)
@@ -284,6 +297,12 @@ def test_training_hparams_clamp_depth_ratio_grad_band() -> None:
 
     assert params.depth_ratio_grad_min == 0.05
     assert params.depth_ratio_grad_max == 0.05 + DEPTH_RATIO_GRAD_MIN_BAND_WIDTH
+
+
+def test_training_hparams_clamp_sorting_order_dithering() -> None:
+    assert TrainingHyperParams().sorting_order_dithering == 0.1
+    assert TrainingHyperParams(sorting_order_dithering=-0.5).sorting_order_dithering == 0.0
+    assert TrainingHyperParams(sorting_order_dithering=1.5).sorting_order_dithering == 1.0
 
 
 def test_training_hparams_clamp_schedule_breakpoints() -> None:

@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.app import cli
+from src.app.training_controls import training_cli_build_kwargs
 from src.scene import GaussianInitHyperParams
 
 
@@ -163,7 +164,21 @@ def test_train_cli_parser_defaults_color_and_opacity_lr_mul_to_five() -> None:
     assert args.lr_mul_scale == 15.0
     assert args.refinement_loss_weight == 0.25
     assert args.refinement_target_edge_weight == 0.75
+    assert args.sorting_order_dithering == 0.1
+    assert training_cli_build_kwargs(args)["sorting_order_dithering"] == 0.1
     assert args.depth_ratio_grad_min == 0.0
     assert args.depth_ratio_grad_max == 0.1
     assert args.refinement_min_contribution_percent == 1e-05
     assert args.init_opacity is None
+
+
+def test_train_cli_parser_maps_sorting_order_dithering() -> None:
+    parser = cli.build_parser()
+
+    default_args = parser.parse_args(["train-colmap", "--colmap-root", "dummy"])
+    explicit_args = parser.parse_args(["train-colmap", "--colmap-root", "dummy", "--sorting-order-dithering", "0.375"])
+
+    assert default_args.sorting_order_dithering == 0.1
+    assert training_cli_build_kwargs(default_args)["sorting_order_dithering"] == 0.1
+    assert explicit_args.sorting_order_dithering == 0.375
+    assert training_cli_build_kwargs(explicit_args)["sorting_order_dithering"] == 0.375

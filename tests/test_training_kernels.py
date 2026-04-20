@@ -99,6 +99,22 @@ def _make_frame(tmp_path: Path, width: int = 64, height: int = 64, *, image_name
     )
 
 
+def _make_frame_at_position(position: tuple[float, float, float], image_id: int) -> ColmapFrame:
+    camera_position = np.asarray(position, dtype=np.float32)
+    return ColmapFrame(
+        image_id=image_id,
+        image_path=Path(f"frame_{image_id}.png"),
+        q_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        t_xyz=-camera_position,
+        fx=72.0,
+        fy=72.0,
+        cx=32.0,
+        cy=32.0,
+        width=64,
+        height=64,
+    )
+
+
 def _make_rgba_frame(tmp_path: Path, rgba: np.ndarray, *, image_name: str = "target_rgba.png", image_id: int = 0) -> ColmapFrame:
     image = np.asarray(rgba, dtype=np.uint8)
     height, width = image.shape[:2]
@@ -1327,6 +1343,62 @@ def test_train_subsample_accepts_one_eighth_mode() -> None:
     assert resolve_train_subsample_factor(hparams) == 8
     assert resolve_effective_train_render_factor(hparams, 0) == 8
     assert resolve_train_subsample_factor(clamped) == 8
+
+
+def test_nearest_camera_distances_cover_single_pair_and_uneven_layouts() -> None:
+    single = [_make_frame_at_position((0.0, 0.0, 0.0), 1)]
+    pair = [
+        _make_frame_at_position((0.0, 0.0, 0.0), 1),
+        _make_frame_at_position((3.0, 0.0, 0.0), 2),
+    ]
+    uneven = [
+        _make_frame_at_position((0.0, 0.0, 0.0), 1),
+        _make_frame_at_position((2.0, 0.0, 0.0), 2),
+        _make_frame_at_position((10.0, 0.0, 0.0), 3),
+    ]
+
+    np.testing.assert_allclose(GaussianTrainer._nearest_camera_distances(single), np.array([0.0], dtype=np.float32))
+    np.testing.assert_allclose(GaussianTrainer._nearest_camera_distances(pair), np.array([3.0, 3.0], dtype=np.float32))
+    np.testing.assert_allclose(GaussianTrainer._nearest_camera_distances(uneven), np.array([2.0, 2.0, 8.0], dtype=np.float32))
+
+
+def _make_sorting_dither_trainer(frames: list[ColmapFrame], amount: float, seed: int = 123) -> GaussianTrainer:
+    trainer = object.__new__(GaussianTrainer)
+    trainer.frames = frames
+    trainer.training = TrainingHyperParams(sorting_order_dithering=amount)
+    trainer._seed = seed
+    trainer._frame_camera_nn_distances = GaussianTrainer._nearest_camera_distances(frames)
+    return trainer
+
+
+def test_sorting_dithered_camera_position_is_deterministic_per_step_and_frame() -> None:
+    frames = [
+        _make_frame_at_position((0.0, 0.0, 0.0), 11),
+        _make_frame_at_position((2.0, 0.0, 0.0), 12),
+        _make_frame_at_position((10.0, 0.0, 0.0), 13),
+    ]
+    disabled = _make_sorting_dither_trainer(frames, 0.0, seed=29)
+    trainer = _make_sorting_dither_trainer(frames, 1.0, seed=29)
+    scaled = _make_sorting_dither_trainer(frames, 0.25, seed=29)
+    camera = frames[2].make_camera()
+
+    real_position = np.asarray(camera.position, dtype=np.float32)
+    np.testing.assert_allclose(disabled.sorting_dithered_camera_position(2, 7, camera), real_position, rtol=0.0, atol=0.0)
+    first = trainer.sorting_dithered_camera_position(2, 7, camera)
+    second = trainer.sorting_dithered_camera_position(2, 7, camera)
+    next_step = trainer.sorting_dithered_camera_position(2, 8, camera)
+    other_frame_camera = frames[1].make_camera()
+    other_frame = trainer.sorting_dithered_camera_position(1, 7, other_frame_camera)
+
+    np.testing.assert_allclose(first, second, rtol=0.0, atol=0.0)
+    assert not np.allclose(first - real_position, next_step - real_position)
+    assert not np.allclose(first - real_position, other_frame - np.asarray(other_frame_camera.position, dtype=np.float32))
+    np.testing.assert_allclose(
+        scaled.sorting_dithered_camera_position(2, 7, camera) - real_position,
+        (first - real_position) * np.float32(0.25),
+        rtol=2e-6,
+        atol=2e-6,
+    )
 
 
 def test_auto_train_subsample_targets_nearest_strictly_above_1k_max_side() -> None:

@@ -60,6 +60,7 @@ Each trainer `step()` performs:
    - Auto mode starts from `train_auto_start_downscale` and descends toward `1x` with per-phase duration `train_downscale_base_iters + level_index * train_downscale_iter_step`.
 3. Use the cached native target texture for that frame and, when needed, refresh the reusable train target texture with an exact `NxN` box filter on the GPU.
 4. Run renderer prepass + raster forward.
+   - The prepass can dither only the camera position used for sort-distance keys via `sorting_order_dithering` (default `0.1`). The offset is one deterministic isotropic Gaussian sample per training frame/step, scaled by the active frame's nearest-neighbor camera distance, while projection, visibility, SH view direction, raster cache, and debug depth still use the real camera.
 5. Run the fixed-count forward stage:
    - `csRasterizeTrainingForward` renders the current image and stores per-pixel raster forward cache data for backward,
   - the same pass also stores softened splat density scalars plus the weighted per-pixel depth accumulation state used by the depth-std-over-mean-depth regularizer,

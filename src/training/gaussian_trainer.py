@@ -192,7 +192,7 @@ class StabilityHyperParams:
 class TrainingHyperParams:
     background: tuple[float, float, float] = (1.0, 1.0, 1.0); near: float = 0.1; far: float = 120.0
     background_mode: int = TRAIN_BACKGROUND_MODE_RANDOM; use_target_alpha_mask: bool = TRAINING_BUILD_ARG_DEFAULTS["use_target_alpha_mask"]; use_sh: bool = TRAINING_BUILD_ARG_DEFAULTS["use_sh"]; sh_band: int = 0
-    scale_l2_weight: float = TRAINING_BUILD_ARG_DEFAULTS["scale_l2_weight"]; scale_abs_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["scale_abs_reg_weight"]; sh1_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["sh1_reg_weight"]; opacity_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"]; density_regularizer: float = TRAINING_BUILD_ARG_DEFAULTS["density_regularizer"]; color_non_negative_reg: float = TRAINING_BUILD_ARG_DEFAULTS["color_non_negative_reg"]; depth_ratio_weight: float = TRAINING_BUILD_ARG_DEFAULTS["depth_ratio_weight"]; max_screen_fraction: float = TRAINING_BUILD_ARG_DEFAULTS["max_screen_fraction"]; ssim_weight: float = DEFAULT_SSIM_WEIGHT; ssim_c2: float = DEFAULT_SSIM_C2; max_allowed_density_start: float = TRAINING_BUILD_ARG_DEFAULTS["max_allowed_density_start"]; max_allowed_density: float = TRAINING_BUILD_ARG_DEFAULTS["max_allowed_density"]
+    scale_l2_weight: float = TRAINING_BUILD_ARG_DEFAULTS["scale_l2_weight"]; scale_abs_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["scale_abs_reg_weight"]; sh1_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["sh1_reg_weight"]; opacity_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"]; density_regularizer: float = TRAINING_BUILD_ARG_DEFAULTS["density_regularizer"]; color_non_negative_reg: float = TRAINING_BUILD_ARG_DEFAULTS["color_non_negative_reg"]; depth_ratio_weight: float = TRAINING_BUILD_ARG_DEFAULTS["depth_ratio_weight"]; max_screen_fraction: float = TRAINING_BUILD_ARG_DEFAULTS["max_screen_fraction"]; sorting_order_dithering: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering"]; ssim_weight: float = DEFAULT_SSIM_WEIGHT; ssim_c2: float = DEFAULT_SSIM_C2; max_allowed_density_start: float = TRAINING_BUILD_ARG_DEFAULTS["max_allowed_density_start"]; max_allowed_density: float = TRAINING_BUILD_ARG_DEFAULTS["max_allowed_density"]
     refinement_loss_weight: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_loss_weight"]; refinement_target_edge_weight: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_target_edge_weight"]
     depth_ratio_grad_min: float = DEFAULT_DEPTH_RATIO_GRAD_MIN; depth_ratio_grad_max: float = DEFAULT_DEPTH_RATIO_GRAD_MAX
     lr_pos_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_mul"]; lr_pos_stage1_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_stage1_mul"]; lr_pos_stage2_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_stage2_mul"]; lr_pos_stage3_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_stage3_mul"]
@@ -247,6 +247,7 @@ class TrainingHyperParams:
         self.color_non_negative_reg = max(float(self.color_non_negative_reg), 0.0)
         self.depth_ratio_weight = max(float(self.depth_ratio_weight), 0.0)
         self.max_screen_fraction = max(float(self.max_screen_fraction), 1e-8)
+        self.sorting_order_dithering = min(max(float(self.sorting_order_dithering), 0.0), 1.0)
         self.ssim_weight = min(max(float(self.ssim_weight), 0.0), 1.0)
         self.ssim_c2 = max(float(self.ssim_c2), 1e-8)
         self.depth_ratio_grad_min, self.depth_ratio_grad_max = resolve_depth_ratio_grad_band(self.depth_ratio_grad_min, self.depth_ratio_grad_max)
@@ -570,6 +571,36 @@ class GaussianTrainer:
             "g_PositionRandomStepOpacityGateSharpness": float(self.training.position_random_step_opacity_gate_sharpness),
         }
 
+    @staticmethod
+    def _nearest_camera_distances(frames: list[ColmapFrame]) -> np.ndarray:
+        if len(frames) <= 1:
+            return np.zeros((len(frames),), dtype=np.float32)
+        positions = np.asarray([frame.make_camera().position for frame in frames], dtype=np.float32).reshape(len(frames), 3)
+        valid = np.isfinite(positions).all(axis=1)
+        distances = np.full((len(frames), len(frames)), np.inf, dtype=np.float32)
+        if np.count_nonzero(valid) > 1:
+            valid_positions = positions[valid]
+            delta = valid_positions[:, None, :] - valid_positions[None, :, :]
+            valid_distances = np.linalg.norm(delta, axis=2).astype(np.float32, copy=False)
+            np.fill_diagonal(valid_distances, np.inf)
+            distances[np.ix_(valid, valid)] = valid_distances
+        nearest = np.min(distances, axis=1)
+        nearest[~np.isfinite(nearest)] = 0.0
+        return nearest.astype(np.float32, copy=False)
+
+    def sorting_dithered_camera_position(self, frame_index: int, step: int, camera: Camera) -> np.ndarray:
+        amount = min(max(float(self.training.sorting_order_dithering), 0.0), 1.0)
+        frame_idx = clamp_index(frame_index, len(self.frames))
+        sigma = amount * float(self._frame_camera_nn_distances[frame_idx])
+        if not (sigma > 0.0):
+            return np.asarray(camera.position, dtype=np.float32).copy()
+        frame = self._frame(frame_idx)
+        seed = int(_refinement_hash_combine(self._seed ^ 0x6D2B79F5, max(int(step), 0)))
+        seed = int(_refinement_hash_combine(seed, max(int(frame.image_id), 0) + 1))
+        seed = int(_refinement_hash_combine(seed, frame_idx + 1))
+        offset = np.random.default_rng(seed).normal(0.0, sigma, size=3).astype(np.float32)
+        return np.asarray(camera.position, dtype=np.float32) + offset
+
     def _dispatch_position_random_steps(self, encoder: spy.CommandEncoder, step_index: int) -> None:
         if self._scene_count <= 0 or resolve_position_random_step_noise_lr(self.training, int(step_index)) <= 0.0:
             return
@@ -611,6 +642,7 @@ class GaussianTrainer:
         self.adam = AdamHyperParams() if adam_hparams is None else adam_hparams
         self.stability = StabilityHyperParams() if stability_hparams is None else stability_hparams
         self.training = TrainingHyperParams() if training_hparams is None else training_hparams
+        self._frame_camera_nn_distances = self._nearest_camera_distances(self.frames)
         self._apply_renderer_training_hparams()
         self.metrics = Metrics(self.device)
         self.adam_optimizer = AdamOptimizer(self.device, self.adam, self._adam_runtime_hparams())
@@ -1280,7 +1312,8 @@ class GaussianTrainer:
             native_camera = self._native_frame_camera(frame_index)
             self._apply_renderer_training_hparams(training_step)
             self._maybe_sync_prepass_capacity(frame_camera, training_step)
-            self.renderer.record_prepass_for_current_scene(enc, frame_camera)
+            sort_camera_position = self.sorting_dithered_camera_position(frame_index, training_step, frame_camera)
+            self.renderer.record_prepass_for_current_scene(enc, frame_camera, sort_camera_position=sort_camera_position)
             target_texture = self.get_frame_target_texture(frame_index, native_resolution=self.effective_train_subsample_factor(frame_index) > 1, encoder=enc)
             self._dispatch_training_forward(enc, frame_camera, background, target_texture, training_step, frame_index, native_camera)
             self._dispatch_training_backward(enc, frame_camera, background, target_texture, training_step, frame_index, native_camera)

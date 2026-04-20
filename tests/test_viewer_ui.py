@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import numpy as np
 import slangpy as spy
 
+from src.app.training_controls import TRAIN_SETUP_CONTROL_DEFS, TRAIN_SETUP_PRIMARY_KEYS
 from src.viewer import ui
 from src.viewer.constants import _WINDOW_TITLE
 
@@ -219,6 +220,19 @@ def test_build_ui_exposes_refinement_clone_scale_mul_default() -> None:
     viewer_ui = ui.build_ui(_dummy_renderer())
 
     assert viewer_ui._values["refinement_clone_scale_mul"] == 1.0
+
+
+def test_train_setup_exposes_sorting_order_dithering_control() -> None:
+    controls = {control.key: control for control in TRAIN_SETUP_CONTROL_DEFS}
+    control = controls["sorting_order_dithering"]
+
+    assert control.kind == "input_float"
+    assert control.label == "Sorting Order Dithering"
+    assert control.kwargs["value"] == 0.1
+    assert control.kwargs["step"] == 1e-3
+    assert control.kwargs["step_fast"] == 1e-2
+    assert control.build_args == ("sorting_order_dithering",)
+    assert "sorting_order_dithering" in TRAIN_SETUP_PRIMARY_KEYS
 
 
 def test_colmap_init_mode_labels_append_depth_only_for_valid_depth_root(tmp_path) -> None:

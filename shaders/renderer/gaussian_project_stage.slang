@@ -6,6 +6,7 @@ import "utility/splatting/projection.slang";
 import "utility/splatting/raster.slang";
 
 uniform float g_MaxAnisotropy;
+uniform float3 g_SortCameraPosition;
 
 uint float_to_ordered_uint(float value)
 {
@@ -121,7 +122,8 @@ void csProjectVisibleSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
     g_SplatVisibleAreaPx[splatId] = projectedEllipse.clippedAreaPx(camera.params.viewport);
     CachedEllipsoid cached = build_cached_ellipsoid(g_Camera, g_Prepass.radiusScale, g_MaxAnisotropy, gaussian.position, gaussian.logScale, gaussian.rotation);
     store_raster_cache(splatId, cached, float4(evaluatedColor, fusedOpacity));
-    append_visible_splat(float_to_ordered_uint(camDistance), splatId);
+    float sortDistance = length(projectionEllipsoid.centerWorld - g_SortCameraPosition);
+    append_visible_splat(float_to_ordered_uint(sortDistance), splatId);
 }
 
 [shader("compute")]

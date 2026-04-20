@@ -338,6 +338,27 @@ def test_renderer_tile_sort_keeps_stable_order_for_equal_keys(device):
     np.testing.assert_array_equal(matching, np.sort(matching, kind="stable"))
 
 
+def test_prepass_sort_camera_position_changes_sort_order_without_reprojecting(device):
+    scene = _make_layered_depth_scene((0.0, 1.0), sigma=0.04, opacity=0.8)
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, list_capacity_multiplier=16)
+
+    real_sort = renderer.debug_pipeline_data(scene, camera)
+    dither_sort = renderer.debug_pipeline_data(scene, camera, sort_camera_position=np.array([0.0, 0.0, -4.0], dtype=np.float32))
+    center_tile = (renderer.tile_height // 2) * renderer.tile_width + renderer.tile_width // 2
+    real_start, real_end = np.asarray(real_sort["tile_ranges"], dtype=np.uint32)[center_tile]
+    dither_start, dither_end = np.asarray(dither_sort["tile_ranges"], dtype=np.uint32)[center_tile]
+    real_values = np.asarray(real_sort["values"], dtype=np.uint32)[int(real_start): int(real_end)]
+    dither_values = np.asarray(dither_sort["values"], dtype=np.uint32)[int(dither_start): int(dither_end)]
+
+    assert int(real_sort["generated_entries"]) == int(dither_sort["generated_entries"])
+    assert int(real_sort["sorted_count"]) == int(dither_sort["sorted_count"])
+    np.testing.assert_allclose(real_sort["screen_center_radius_depth"], dither_sort["screen_center_radius_depth"], rtol=0.0, atol=0.0)
+    np.testing.assert_allclose(real_sort["raster_cache"], dither_sort["raster_cache"], rtol=0.0, atol=0.0)
+    np.testing.assert_array_equal(real_values[:2], np.array([1, 0], dtype=np.uint32))
+    np.testing.assert_array_equal(dither_values[:2], np.array([0, 1], dtype=np.uint32))
+
+
 def test_tiny_render_matches_cpu_reference(device):
     scene = make_scene(18, seed=5)
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)

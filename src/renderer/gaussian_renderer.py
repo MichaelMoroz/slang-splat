@@ -248,6 +248,10 @@ class GaussianRenderer:
             }
         }
 
+    def _sort_camera_position_var(self, camera: Camera, sort_camera_position: np.ndarray | None = None) -> dict[str, object]:
+        position = camera.position if sort_camera_position is None else np.asarray(sort_camera_position, dtype=np.float32).reshape(3)
+        return {"g_SortCameraPosition": spy.float3(float(position[0]), float(position[1]), float(position[2]))}
+
     def _prepass_uniforms(self, splat_count: int, sorted_count_offset: int = 0) -> dict[str, object]:
         return {
             "g_Prepass": {
@@ -916,7 +920,7 @@ class GaussianRenderer:
             overflow = False
         return {"generated_entries": generated, "written_entries": written, "overflow": overflow, "capacity_limited": overflow, "depth_bits": int(self.depth_bits), "tile_count": int(self.tile_count), "splat_count": int(splat_count), "max_list_entries": int(self._max_list_entries), "max_scanline_entries": int(self._max_scanline_entries), "prepass_entry_cap": int(self._max_prepass_entries_by_budget()), "prepass_memory_mb": int(self.max_prepass_memory_mb), "stats_valid": bool(valid) if read_stats else False, "stats_latency_frames": 1}
 
-    def _project_visible_splats(self, encoder: spy.CommandEncoder, scene: GaussianScene, camera: Camera) -> None:
+    def _project_visible_splats(self, encoder: spy.CommandEncoder, scene: GaussianScene, camera: Camera, sort_camera_position: np.ndarray | None = None) -> None:
         self._dispatch(
             self._k_project_visible,
             encoder,
@@ -932,6 +936,7 @@ class GaussianRenderer:
                 **self._raster_uniforms(np.zeros((3,), dtype=np.float32)),
                 **self._anisotropy_uniforms(),
                 **self._camera_uniforms(camera),
+                **self._sort_camera_position_var(camera, sort_camera_position),
             },
             "Project Visible Splats",
             20,
@@ -1216,10 +1221,10 @@ class GaussianRenderer:
             28,
         )
 
-    def _execute_prepass(self, scene: GaussianScene, camera: Camera, sync_counts: bool = False) -> tuple[int, int]:
+    def _execute_prepass(self, scene: GaussianScene, camera: Camera, sync_counts: bool = False, sort_camera_position: np.ndarray | None = None) -> tuple[int, int]:
         enc = self.device.create_command_encoder()
         with debug_region(enc, "Renderer Prepass", 19):
-            self._record_prepass(enc, scene, camera, enqueue_counter_readback=True)
+            self._record_prepass(enc, scene, camera, enqueue_counter_readback=True, sort_camera_position=sort_camera_position)
         self.device.submit_command_buffer(enc.finish())
         if sync_counts:
             self.device.wait()
@@ -1231,9 +1236,9 @@ class GaussianRenderer:
         self._counter_readback_frame_id += 1
         return generated, sorted_count
 
-    def _record_prepass(self, encoder: spy.CommandEncoder, scene: GaussianScene, camera: Camera, enqueue_counter_readback: bool) -> None:
+    def _record_prepass(self, encoder: spy.CommandEncoder, scene: GaussianScene, camera: Camera, enqueue_counter_readback: bool, sort_camera_position: np.ndarray | None = None) -> None:
         self._reset_prepass_counters(encoder)
-        self._project_visible_splats(encoder, scene, camera)
+        self._project_visible_splats(encoder, scene, camera, sort_camera_position)
         self._sort_visible_splats(encoder)
         visible_args = self._visible_dispatch_args(encoder)
         self._count_visible_scanlines(encoder, visible_args)
@@ -1700,8 +1705,8 @@ class GaussianRenderer:
     def output_grad_buffer(self) -> spy.Buffer:
         return self._require_buffer("_output_grad_buffer", "Output grad")
 
-    def execute_prepass_for_current_scene(self, camera: Camera, sync_counts: bool = False) -> tuple[int, int]:
-        return self._execute_prepass(self._require_scene(), camera, sync_counts=sync_counts)
+    def execute_prepass_for_current_scene(self, camera: Camera, sync_counts: bool = False, sort_camera_position: np.ndarray | None = None) -> tuple[int, int]:
+        return self._execute_prepass(self._require_scene(), camera, sync_counts=sync_counts, sort_camera_position=sort_camera_position)
 
     def sync_prepass_capacity_for_current_scene(self, camera: Camera) -> bool:
         scene = self._require_scene()
@@ -1714,9 +1719,9 @@ class GaussianRenderer:
         self._ensure_work_buffers(scene.count, self._pending_min_list_entries)
         return True
 
-    def record_prepass_for_current_scene(self, encoder: spy.CommandEncoder, camera: Camera) -> None:
+    def record_prepass_for_current_scene(self, encoder: spy.CommandEncoder, camera: Camera, sort_camera_position: np.ndarray | None = None) -> None:
         scene = self._require_scene()
-        self._record_prepass(encoder, scene, camera, enqueue_counter_readback=False)
+        self._record_prepass(encoder, scene, camera, enqueue_counter_readback=False, sort_camera_position=sort_camera_position)
 
     def rasterize_current_scene(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray) -> None:
         self._require_scene()
@@ -1827,11 +1832,11 @@ class GaussianRenderer:
         grads["cached_raster_grads_active"] = grads["cached_raster_grads_float"] if self.cached_raster_grad_atomic_mode == self.CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT else grads["cached_raster_grads_fixed"]
         return grads
 
-    def debug_pipeline_data(self, scene: GaussianScene, camera: Camera) -> dict[str, np.ndarray | int]:
+    def debug_pipeline_data(self, scene: GaussianScene, camera: Camera, sort_camera_position: np.ndarray | None = None) -> dict[str, np.ndarray | int]:
         self._ensure_scene_buffers(scene.count)
         self._ensure_work_buffers(scene.count)
         self._upload_scene(scene)
-        generated_entries, sorted_count = self._execute_prepass(scene, camera, sync_counts=True)
+        generated_entries, sorted_count = self._execute_prepass(scene, camera, sync_counts=True, sort_camera_position=sort_camera_position)
         return {
             "generated_entries": generated_entries,
             "sorted_count": sorted_count,

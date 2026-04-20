@@ -94,6 +94,7 @@ TRAIN_SETUP_CONTROL_DEFS = (
     _control("refinement_clone_scale_mul", "input_float", "Refinement Clone Scale Mul", {"value": _default("refinement_clone_scale_mul"), "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}, group=TRAINING_SETUP_GROUP, build_args=("refinement_clone_scale_mul",)),
     _control("refinement_loss_weight", "input_float", "Refinement Loss Weight", {"value": _default("refinement_loss_weight"), "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}, group=TRAINING_SETUP_GROUP, build_args=("refinement_loss_weight",)),
     _control("refinement_target_edge_weight", "input_float", "Refinement Edge Weight", {"value": _default("refinement_target_edge_weight"), "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}, group=TRAINING_SETUP_GROUP, build_args=("refinement_target_edge_weight",)),
+    _control("sorting_order_dithering", "input_float", "Sorting Order Dithering", {"value": _default("sorting_order_dithering"), "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}, group=TRAINING_SETUP_GROUP, build_args=("sorting_order_dithering",)),
     _control("train_downscale_mode", "combo", "Downscale Mode", {"value": _default("train_downscale_mode"), "options": TRAIN_DOWNSCALE_MODE_LABELS}, group=TRAINING_SETUP_GROUP, build_args=("train_downscale_mode",)),
     _control("train_subsample_factor", "combo", "Subsampling", {"value": _default("train_subsample_factor"), "options": TRAIN_SUBSAMPLE_LABELS}, group=TRAINING_SETUP_GROUP, build_args=("train_subsample_factor",)),
     _control("train_auto_start_downscale", "slider_int", "Auto Start Downscale", {"value": _default("train_auto_start_downscale"), "min": 1, "max": 16}, group=TRAINING_SETUP_GROUP, build_args=("train_auto_start_downscale",)),
@@ -259,6 +260,7 @@ TRAIN_SETUP_PRIMARY_KEYS = (
     "refinement_clone_scale_mul",
     "refinement_loss_weight",
     "refinement_target_edge_weight",
+    "sorting_order_dithering",
     "train_downscale_mode",
     "train_subsample_factor",
 )
@@ -302,6 +304,7 @@ TRAINING_CLI_ARG_DEFS = (
     _cli_arg("--density-reg", dest="density_reg", build_arg="density_regularizer", type=float, default=_default("density_regularizer")),
     _cli_arg("--depth-ratio-weight", dest="depth_ratio_weight", build_arg="depth_ratio_weight", type=float, default=_default("depth_ratio_weight")),
     _cli_arg("--ssim-weight", dest="ssim_weight", build_arg="ssim_weight", type=float, default=_default("ssim_weight")),
+    _cli_arg("--sorting-order-dithering", dest="sorting_order_dithering", build_arg="sorting_order_dithering", type=float, default=_default("sorting_order_dithering")),
     _cli_arg("--refinement-loss-weight", dest="refinement_loss_weight", build_arg="refinement_loss_weight", type=float, default=_default("refinement_loss_weight")),
     _cli_arg("--refinement-target-edge-weight", dest="refinement_target_edge_weight", build_arg="refinement_target_edge_weight", type=float, default=_default("refinement_target_edge_weight")),
     _cli_arg("--refinement-clone-scale-mul", dest="refinement_clone_scale_mul", build_arg="refinement_clone_scale_mul", type=float, default=_default("refinement_clone_scale_mul")),

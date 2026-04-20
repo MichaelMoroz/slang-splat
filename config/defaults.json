@@ -26,6 +26,7 @@
     "color_non_negative_reg": 0.01,
     "depth_ratio_weight": 0.0,
     "max_screen_fraction": 0.25,
+    "sorting_order_dithering": 0.1,
     "ssim_weight": 0.20000000298023224,
     "ssim_c2": 0.0009,
     "refinement_loss_weight": 0.25,
