@@ -224,7 +224,7 @@ def test_default_training_params_include_background_mode_and_density() -> None:
     assert params.training.sh_band_stage1 == 0
     assert params.training.sh_band_stage2 == 2
     assert params.training.sh_band_stage3 == 3
-    assert params.training.refinement_growth_ratio == 0.04
+    assert params.training.refinement_growth_ratio == 0.0
     assert params.training.refinement_growth_start_step == 500
     assert params.training.refinement_alpha_cull_threshold == 1e-2
     assert params.training.refinement_min_contribution_percent == 1e-05

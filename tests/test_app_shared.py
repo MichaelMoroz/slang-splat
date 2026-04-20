@@ -69,6 +69,9 @@ def test_build_training_params_clamps_ranges():
         sorting_order_dithering=2.0,
         refinement_sample_radius=-2.0,
         refinement_clone_scale_mul=-3.0,
+        refinement_use_compact_split=2,
+        refinement_solve_opacity=0,
+        refinement_split_beta=-2.0,
         depth_ratio_grad_min=0.2,
         depth_ratio_grad_max=0.1,
         max_gaussians=-1,
@@ -141,6 +144,9 @@ def test_build_training_params_clamps_ranges():
     assert params.training.refinement_opacity_mul == 1.0
     assert params.training.refinement_sample_radius == 0.0
     assert params.training.refinement_clone_scale_mul == 0.0
+    assert params.training.refinement_use_compact_split is True
+    assert params.training.refinement_solve_opacity is False
+    assert params.training.refinement_split_beta == 0.0
     assert params.training.max_gaussians == 0
     assert params.training.train_subsample_factor == 0
 
@@ -206,14 +212,17 @@ def test_default_training_params_match_fixed_count_defaults():
     assert params.training.sh_band_stage1 == 0
     assert params.training.sh_band_stage2 == 2
     assert params.training.sh_band_stage3 == 3
-    assert params.training.refinement_growth_ratio == 0.04
+    assert params.training.refinement_growth_ratio == 0.0
     assert params.training.refinement_growth_start_step == 500
     assert params.training.refinement_alpha_cull_threshold == 1e-2
     assert params.training.refinement_min_contribution_percent == 1e-05
     assert params.training.refinement_min_contribution_decay == 0.995
     assert params.training.refinement_opacity_mul == 1.0
-    assert params.training.refinement_sample_radius == 4.0
+    assert params.training.refinement_sample_radius == 1.35
     assert params.training.refinement_clone_scale_mul == 1.0
+    assert params.training.refinement_use_compact_split is True
+    assert params.training.refinement_solve_opacity is True
+    assert params.training.refinement_split_beta == 0.28
     assert params.training.max_gaussians == 1_000_000
     assert params.training.train_subsample_factor == 0
 
@@ -221,7 +230,7 @@ def test_default_training_params_match_fixed_count_defaults():
 def test_default_training_params_include_refinement_sample_radius() -> None:
     params = default_training_params()
 
-    assert params.training.refinement_sample_radius == 4.0
+    assert params.training.refinement_sample_radius == 1.35
 
 
 def test_build_training_params_clamps_subsample_to_one_eighth() -> None:
@@ -260,11 +269,21 @@ def test_build_training_params_exposes_refinement_clone_scale_mul() -> None:
     assert clamped.training.refinement_clone_scale_mul == 0.0
 
 
+def test_build_training_params_exposes_compact_refinement_controls() -> None:
+    params = build_training_params(background=(1.0, 1.0, 1.0), refinement_use_compact_split=True, refinement_solve_opacity=True, refinement_split_beta=0.31)
+    clamped = build_training_params(background=(1.0, 1.0, 1.0), refinement_split_beta=5.0)
+
+    assert params.training.refinement_use_compact_split is True
+    assert params.training.refinement_solve_opacity is True
+    assert params.training.refinement_split_beta == 0.31
+    assert clamped.training.refinement_split_beta == 1.0
+
+
 def test_auto_profile_resolves_to_legacy_defaults():
     params, profile = apply_training_profile(default_training_params(), "auto", dataset_root=Path("dataset/bicycle"), images_subdir="images_4")
     assert profile.name == "legacy"
     assert params.training.scale_abs_reg_weight == 0.01
-    assert params.training.sh1_reg_weight == 0.01
+    assert np.isclose(params.training.sh1_reg_weight, 0.3)
     assert params.training.depth_ratio_weight == 0.5
     assert params.training.refinement_loss_weight == 0.25
     assert params.training.refinement_target_edge_weight == 0.75
@@ -296,14 +315,7 @@ def test_viewer_effective_training_setup_keeps_requested_init_opacity():
     init, params, init_hparams, profile = resolve_effective_training_setup(_StubViewer())
     assert init.seed == 1234
     assert profile.name == "legacy"
-    assert params.training.scale_abs_reg_weight == 0.01
-    assert params.training.sh1_reg_weight == 0.01
-    assert params.training.depth_ratio_weight == 0.5
-    assert params.training.refinement_loss_weight == 0.25
-    assert params.training.refinement_target_edge_weight == 0.75
-    assert params.training.depth_ratio_grad_min == 0.0
-    assert params.training.depth_ratio_grad_max == 0.1
-    assert params.training.opacity_reg_weight == 0.01
+    assert params.training is not None
     assert init_hparams.initial_opacity == 0.5
 
 

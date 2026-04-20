@@ -110,6 +110,10 @@ uniform RWStructuredBuffer<float2> g_DstAdamMoments;
 uniform RWStructuredBuffer<float> g_AppendParams;
 uniform RWStructuredBuffer<uint> g_CloneCounts;
 uniform RWStructuredBuffer<uint> g_SplatContribution;
+uniform RWStructuredBuffer<float> g_RefinementWeights;
+uniform RWStructuredBuffer<float> g_RefinementWeightPrefix;
+uniform StructuredBuffer<float> g_RefinementWeightTotal;
+uniform RWStructuredBuffer<uint> g_RefinementEligibleMask;
 uniform RWStructuredBuffer<uint> g_TotalCloneCounter;
 uniform RWStructuredBuffer<uint> g_AppendCounter;
 uniform StructuredBuffer<float4> g_RefinementCameraRows;
@@ -118,6 +122,8 @@ uniform uint g_DstSplatCount;
 uniform uint g_AppendSplatCount;
 uniform uint g_SurvivorCount;
 uniform uint g_RefinementSeed;
+uniform uint g_RefinementSamplingSeed;
+uniform uint g_RefinementSampleCount;
 uniform uint g_RefinementCameraCount;
 uniform float g_RefinementAlphaCullThreshold;
 uniform uint g_RefinementMinContributionThreshold;
@@ -521,6 +527,18 @@ float solve_refinement_split_alpha(float parentAlpha, uint splatId, uint familyS
         }
     }
     return hi;
+}
+
+float refinement_first_moment_weight(uint splatId)
+{
+    float sumSq = 0.0;
+    [unroll] for (uint paramId = 0u; paramId < TRAINABLE_PARAM_COUNT; paramId++)
+    {
+        float moment = load_adam_moment(g_SrcAdamMoments, g_SrcSplatCount, paramId, splatId).x;
+        if (!isfinite(moment)) continue;
+        sumSq += moment * moment;
+    }
+    return sqrt(max(sumSq, 0.0));
 }
 
 float position_random_step_gate(float opacity)
@@ -1090,6 +1108,48 @@ void csClampRefinementMinScreenSize(uint3 dispatchThreadID : SV_DispatchThreadID
 
     source.logScale = apply_support_radius_lower_bound(source.logScale, minSupportRadius);
     store_splat_state(g_SrcSplatParams, g_SrcSplatCount, splatId, source);
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void csPrepareRefinementSamplingWeights(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint splatId = dispatchThreadID.x;
+    if (splatId >= g_SrcSplatCount) return;
+
+    g_CloneCounts[splatId] = 0u;
+    float alpha = opacity_from_raw(load_splat_param(g_SrcSplatParams, g_SrcSplatCount, PARAM_RAW_OPACITY, splatId));
+    bool eligible = !should_cull_refinement_splat(alpha, g_SplatContribution[splatId]);
+    g_RefinementEligibleMask[splatId] = eligible ? 1u : 0u;
+    g_RefinementWeights[splatId] = eligible ? max(refinement_first_moment_weight(splatId), 0.0) : 0.0;
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void csSampleRefinementCloneCounts(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint sampleId = dispatchThreadID.x;
+    if (sampleId >= g_RefinementSampleCount || g_SrcSplatCount == 0u) return;
+
+    float totalWeight = g_RefinementWeightTotal[0];
+    if (!(isfinite(totalWeight) && totalWeight > 0.0)) return;
+
+    uint rngState = refinement_hash_combine(g_RefinementSamplingSeed, sampleId + 1u);
+    float target = rng_uniform_open01(rngState) * totalWeight;
+    uint lo = 0u;
+    uint hi = g_SrcSplatCount - 1u;
+    while (lo < hi)
+    {
+        uint mid = lo + ((hi - lo) >> 1u);
+        if (g_RefinementWeightPrefix[mid] < target) {
+            lo = mid + 1u;
+        } else {
+            hi = mid;
+        }
+    }
+    if (g_RefinementEligibleMask[lo] == 0u) return;
+    uint _;
+    InterlockedAdd(g_CloneCounts[lo], 1u, _);
 }
 
 [shader("compute")]

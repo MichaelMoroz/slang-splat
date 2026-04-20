@@ -19,8 +19,20 @@ def _buffer_u32(device: spy.Device, values: np.ndarray) -> spy.Buffer:
     return buffer
 
 
+def _buffer_f32(device: spy.Device, values: np.ndarray) -> spy.Buffer:
+    data = np.ascontiguousarray(values, dtype=np.float32).reshape(-1)
+    buffer = device.create_buffer(size=max(data.size, 1) * 4, usage=_USAGE)
+    if data.size > 0:
+        buffer.copy_from_numpy(data)
+    return buffer
+
+
 def _read_u32(buffer: spy.Buffer, count: int) -> np.ndarray:
     return np.frombuffer(buffer.to_numpy().tobytes(), dtype=np.uint32)[:count].copy()
+
+
+def _read_f32(buffer: spy.Buffer, count: int) -> np.ndarray:
+    return np.frombuffer(buffer.to_numpy().tobytes(), dtype=np.float32)[:count].copy()
 
 
 def _run_prefix(device: spy.Device, prefix_sum, values: np.ndarray, exclusive: bool) -> tuple[np.ndarray, int]:
@@ -46,6 +58,17 @@ def _run_prefix_from_count_buffer(device: spy.Device, prefix_sum, values: np.nda
     return _read_u32(dst, values.size), int(_read_u32(total, 1)[0])
 
 
+def _run_prefix_float(device: spy.Device, prefix_sum, values: np.ndarray, exclusive: bool) -> tuple[np.ndarray, float]:
+    src = _buffer_f32(device, values)
+    dst = _buffer_f32(device, np.zeros((values.size,), dtype=np.float32))
+    total = _buffer_f32(device, np.zeros((1,), dtype=np.float32))
+    enc = device.create_command_encoder()
+    prefix_sum.scan_float(enc, src, dst, values.size, total, exclusive=exclusive)
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+    return _read_f32(dst, values.size), float(_read_f32(total, 1)[0])
+
+
 @pytest.mark.parametrize("count", [0, 7, 513, 8197])
 @pytest.mark.parametrize("exclusive", [False, True])
 def test_prefix_sum_matches_numpy(device: spy.Device, prefix_sum, count: int, exclusive: bool) -> None:
@@ -68,6 +91,20 @@ def test_prefix_sum_from_count_buffer_matches_direct(device: spy.Device, prefix_
     indirect_out, indirect_total = _run_prefix_from_count_buffer(device, prefix_sum, values, exclusive)
     np.testing.assert_array_equal(indirect_out, direct_out)
     assert indirect_total == direct_total
+
+
+@pytest.mark.parametrize("count", [0, 7, 513, 8197])
+@pytest.mark.parametrize("exclusive", [False, True])
+def test_prefix_sum_float_matches_numpy(device: spy.Device, prefix_sum, count: int, exclusive: bool) -> None:
+    values = np.random.default_rng(2468 + count + int(exclusive)).uniform(0.0, 4.0, size=count).astype(np.float32)
+    out, total = _run_prefix_float(device, prefix_sum, values, exclusive)
+    expected = np.cumsum(values.astype(np.float64), dtype=np.float64).astype(np.float32, copy=False)
+    if exclusive and count > 0:
+        expected = np.concatenate((np.zeros((1,), dtype=np.float32), expected[:-1]))
+    elif exclusive:
+        expected = np.zeros((0,), dtype=np.float32)
+    np.testing.assert_allclose(out, expected, rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(total, float(np.sum(values, dtype=np.float64)), rtol=1e-6, atol=1e-6)
 
 
 @pytest.mark.skipif(not _RUN_LARGE, reason="set RUN_SLOW_GPU_UTILITY_TESTS=1 to run large prefix-sum regressions")

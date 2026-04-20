@@ -24,6 +24,9 @@ class GPUPrefixSum:
                 "scan_blocks": ("kernel", SHADER_DIR / "prefix_sum.slang", "csPrefixScanBlocks"),
                 "add_offsets": ("kernel", SHADER_DIR / "prefix_sum.slang", "csPrefixAddOffsets"),
                 "write_total_kernel": ("kernel", SHADER_DIR / "prefix_sum.slang", "csPrefixWriteTotal"),
+                "scan_blocks_float": ("kernel", SHADER_DIR / "prefix_sum.slang", "csPrefixScanBlocksFloat"),
+                "add_offsets_float": ("kernel", SHADER_DIR / "prefix_sum.slang", "csPrefixAddOffsetsFloat"),
+                "write_total_kernel_float": ("kernel", SHADER_DIR / "prefix_sum.slang", "csPrefixWriteTotalFloat"),
                 "compute_dispatch_args_from_buffer_kernel": ("kernel", SHADER_DIR / "prefix_sum.slang", "csComputeDispatchArgsFromBuffer"),
                 "compute_prefix_args_from_buffer_kernel": ("kernel", SHADER_DIR / "prefix_sum.slang", "csComputePrefixIndirectArgsFromBuffer"),
                 "scan_blocks_pipeline": ("pipeline", SHADER_DIR / "prefix_sum.slang", "csPrefixScanBlocks"),
@@ -34,6 +37,8 @@ class GPUPrefixSum:
         self._scratch_capacity = 0
         self._block_sums: spy.Buffer | None = None
         self._block_offsets: spy.Buffer | None = None
+        self._float_block_sums: spy.Buffer | None = None
+        self._float_block_offsets: spy.Buffer | None = None
         self._dispatch_args: spy.Buffer | None = None
         self._prefix_args: spy.Buffer | None = None
 
@@ -65,8 +70,16 @@ class GPUPrefixSum:
         capacity = grow_capacity(required, self._scratch_capacity)
         self._block_sums = alloc_buffer(self.device, size=max(capacity, 1) * 4, usage=RW_BUFFER_USAGE)
         self._block_offsets = alloc_buffer(self.device, size=max(capacity, 1) * 4, usage=RW_BUFFER_USAGE)
+        self._float_block_sums = alloc_buffer(self.device, size=max(capacity, 1) * 4, usage=RW_BUFFER_USAGE)
+        self._float_block_offsets = alloc_buffer(self.device, size=max(capacity, 1) * 4, usage=RW_BUFFER_USAGE)
         self._scratch_capacity = capacity
         return self._block_sums, self._block_offsets
+
+    def _ensure_float_scratch_buffers(self, count: int) -> tuple[spy.Buffer, spy.Buffer]:
+        self._ensure_scratch_buffers(count)
+        if self._float_block_sums is None or self._float_block_offsets is None:
+            raise RuntimeError("Float prefix scratch buffers are not initialized.")
+        return self._float_block_sums, self._float_block_offsets
 
     def _ensure_dispatch_args(self) -> spy.Buffer:
         if self._dispatch_args is None:
@@ -174,6 +187,76 @@ class GPUPrefixSum:
                 )
         if total_buffer is not None:
             self._write_total(encoder, input_buffer, output_buffer, total_buffer, count, exclusive)
+
+    def scan_float(
+        self,
+        encoder: spy.CommandEncoder,
+        input_buffer: spy.Buffer,
+        output_buffer: spy.Buffer,
+        element_count: int,
+        total_buffer: spy.Buffer | None = None,
+        exclusive: bool = False,
+    ) -> None:
+        count = int(element_count)
+        block_sums, block_offsets = self._ensure_float_scratch_buffers(count)
+        layout = self._level_layout(count)
+        for level, (_, block_count, offset) in enumerate(layout):
+            prev_offset = layout[level - 1][2] if level > 0 else 0
+            scan_input = input_buffer if level == 0 else block_sums
+            scan_output = output_buffer if level == 0 else block_offsets
+            with debug_region(encoder, f"Prefix Sum Float Scan Level {level}", 201 + level):
+                self.scan_blocks_float.dispatch(
+                    thread_count=spy.uint3(max(block_count * PREFIX_THREADS, 1), 1, 1),
+                    vars={
+                        "g_PrefixFloatInput": scan_input,
+                        "g_PrefixFloatOutput": scan_output,
+                        "g_PrefixFloatBlockSums": block_sums,
+                        "g_Count": count,
+                        "g_Exclusive": 1 if (exclusive or level > 0) else 0,
+                        "g_UsePrefixParams": 0,
+                        "g_Level": int(level),
+                        "g_PrefixInputOffset": int(prev_offset),
+                        "g_PrefixOutputOffset": 0 if level == 0 else int(prev_offset),
+                        "g_PrefixBlockSumsOffset": int(offset),
+                    },
+                    command_encoder=encoder,
+                )
+        for level in range(len(layout) - 2, -1, -1):
+            offset = layout[level][2]
+            prev_offset = layout[level - 1][2] if level > 0 else 0
+            add_output = output_buffer if level == 0 else block_offsets
+            with debug_region(encoder, f"Prefix Sum Float Add Level {level}", 220 + level):
+                self.add_offsets_float.dispatch(
+                    thread_count=spy.uint3(max((layout[level][0] + PREFIX_THREADS - 1) // PREFIX_THREADS * PREFIX_THREADS, 1), 1, 1),
+                    vars={
+                        "g_PrefixFloatOutput": add_output,
+                        "g_PrefixFloatBlockOffsets": block_offsets,
+                        "g_Count": count,
+                        "g_Exclusive": 1 if exclusive else 0,
+                        "g_UsePrefixParams": 0,
+                        "g_Level": int(level),
+                        "g_PrefixOutputOffset": 0 if level == 0 else int(prev_offset),
+                        "g_PrefixBlockOffsetsOffset": int(offset),
+                    },
+                    command_encoder=encoder,
+                )
+        if total_buffer is not None:
+            with debug_region(encoder, "Prefix Sum Float Total", 240):
+                self.write_total_kernel_float.dispatch(
+                    thread_count=spy.uint3(1, 1, 1),
+                    vars={
+                        "g_PrefixFloatInput": input_buffer,
+                        "g_PrefixFloatOutput": output_buffer,
+                        "g_PrefixFloatTotalOut": total_buffer,
+                        "g_Count": count,
+                        "g_Exclusive": 1 if exclusive else 0,
+                        "g_UsePrefixParams": 0,
+                        "g_Level": 0,
+                        "g_PrefixInputOffset": 0,
+                        "g_PrefixOutputOffset": 0,
+                    },
+                    command_encoder=encoder,
+                )
 
     def scan_uint_from_count_buffer(
         self,

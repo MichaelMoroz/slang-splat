@@ -30,6 +30,11 @@ uniform RWStructuredBuffer<uint> g_PrefixOutput;
 uniform RWStructuredBuffer<uint> g_PrefixBlockSums;
 uniform StructuredBuffer<uint> g_PrefixBlockOffsets;
 uniform RWStructuredBuffer<uint> g_TotalOut;
+uniform StructuredBuffer<float> g_PrefixFloatInput;
+uniform RWStructuredBuffer<float> g_PrefixFloatOutput;
+uniform RWStructuredBuffer<float> g_PrefixFloatBlockSums;
+uniform StructuredBuffer<float> g_PrefixFloatBlockOffsets;
+uniform RWStructuredBuffer<float> g_PrefixFloatTotalOut;
 uniform StructuredBuffer<uint> g_PrefixParamsBuffer;
 uniform RWStructuredBuffer<uint> g_HistogramOffsets;
 uniform StructuredBuffer<uint> g_RadixParamsBuffer;
@@ -39,6 +44,8 @@ uniform RWStructuredBuffer<uint> g_IndirectArgs;
 
 groupshared uint gsPrefixWaveTotals[PREFIX_THREADS];
 groupshared uint gsPrefixWaveScan[PREFIX_THREADS];
+groupshared float gsPrefixFloatWaveTotals[PREFIX_THREADS];
+groupshared float gsPrefixFloatWaveScan[PREFIX_THREADS];
 
 uint ceil_div_prefix(uint value, uint divisor) { return (value + divisor - 1u) / divisor; }
 
@@ -100,6 +107,32 @@ uint block_exclusive_scan(uint value, uint localId, out uint blockTotal)
 
     blockTotal = gsPrefixWaveScan[numWaves - 1u] + gsPrefixWaveTotals[numWaves - 1u];
     uint waveBase = gsPrefixWaveScan[waveId];
+    GroupMemoryBarrierWithGroupSync();
+    return waveBase + wavePrefix;
+}
+
+float block_exclusive_scan_float(float value, uint localId, out float blockTotal)
+{
+    uint waveSize = WaveGetLaneCount();
+    uint laneId = WaveGetLaneIndex();
+    uint waveId = (localId - laneId) / waveSize;
+    uint numWaves = (PREFIX_THREADS + waveSize - 1u) / waveSize;
+    float wavePrefix = WavePrefixSum(value);
+    float waveTotal = WaveReadLaneAt(wavePrefix, waveSize - 1u) + WaveReadLaneAt(value, waveSize - 1u);
+
+    if (WaveIsFirstLane()) gsPrefixFloatWaveTotals[waveId] = waveTotal;
+    GroupMemoryBarrierWithGroupSync();
+
+    if (waveId == 0u)
+    {
+        float reshuffledTotal = localId < numWaves ? gsPrefixFloatWaveTotals[localId] : 0.0;
+        float reshuffledPrefix = WavePrefixSum(reshuffledTotal);
+        if (localId < numWaves) gsPrefixFloatWaveScan[localId] = reshuffledPrefix;
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    blockTotal = gsPrefixFloatWaveScan[numWaves - 1u] + gsPrefixFloatWaveTotals[numWaves - 1u];
+    float waveBase = gsPrefixFloatWaveScan[waveId];
     GroupMemoryBarrierWithGroupSync();
     return waveBase + wavePrefix;
 }
@@ -186,6 +219,54 @@ void csPrefixWriteTotal(uint3 dispatchThreadID : SV_DispatchThreadID)
         if (g_Exclusive != 0u) total += g_PrefixInput[g_PrefixInputOffset + count - 1u];
     }
     g_TotalOut[0] = total;
+}
+
+[shader("compute")]
+[numthreads(PREFIX_THREADS, 1, 1)]
+void csPrefixScanBlocksFloat(uint3 groupID : SV_GroupID, uint3 localID : SV_GroupThreadID)
+{
+    uint count = prefix_level_count(load_prefix_count(), g_Level);
+    uint lane = localID.x;
+    uint blockBase = groupID.x * PREFIX_BLOCK_SIZE;
+    uint idx0 = blockBase + lane;
+    uint idx1 = idx0 + PREFIX_THREADS;
+    float value0 = idx0 < count ? g_PrefixFloatInput[g_PrefixInputOffset + idx0] : 0.0;
+    float value1 = idx1 < count ? g_PrefixFloatInput[g_PrefixInputOffset + idx1] : 0.0;
+    float firstHalfTotal;
+    float secondHalfTotal;
+    float scan0 = block_exclusive_scan_float(value0, lane, firstHalfTotal);
+    float scan1 = block_exclusive_scan_float(value1, lane, secondHalfTotal) + firstHalfTotal;
+    float blockTotal = firstHalfTotal + secondHalfTotal;
+
+    if (idx0 < count) g_PrefixFloatOutput[g_PrefixOutputOffset + idx0] = scan0 + (g_Exclusive != 0u ? 0.0 : value0);
+    if (idx1 < count) g_PrefixFloatOutput[g_PrefixOutputOffset + idx1] = scan1 + (g_Exclusive != 0u ? 0.0 : value1);
+    if (lane == 0u) g_PrefixFloatBlockSums[g_PrefixBlockSumsOffset + groupID.x] = blockTotal;
+}
+
+[shader("compute")]
+[numthreads(PREFIX_THREADS, 1, 1)]
+void csPrefixAddOffsetsFloat(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint count = prefix_level_count(load_prefix_count(), g_Level);
+    uint index = dispatchThreadID.x;
+    if (index >= count) return;
+    uint blockId = index / PREFIX_BLOCK_SIZE;
+    if (blockId == 0u) return;
+    g_PrefixFloatOutput[g_PrefixOutputOffset + index] = g_PrefixFloatOutput[g_PrefixOutputOffset + index] + g_PrefixFloatBlockOffsets[g_PrefixBlockOffsetsOffset + blockId];
+}
+
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void csPrefixWriteTotalFloat(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint count = load_prefix_count();
+    float total = 0.0;
+    if (count != 0u)
+    {
+        total = g_PrefixFloatOutput[g_PrefixOutputOffset + count - 1u];
+        if (g_Exclusive != 0u) total += g_PrefixFloatInput[g_PrefixInputOffset + count - 1u];
+    }
+    g_PrefixFloatTotalOut[0] = total;
 }
 
 [shader("compute")]

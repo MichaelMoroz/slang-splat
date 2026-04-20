@@ -14,7 +14,7 @@ from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 from src.scene.sh_utils import SH_C0, evaluate_sh_color
 from src.training import gaussian_trainer as gaussian_trainer_module
-from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, contribution_fixed_count_from_percent, contribution_percent_from_fixed_count, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_clone_probability_threshold, resolve_cosine_base_learning_rate, resolve_depth_ratio_grad_band, resolve_depth_ratio_weight, resolve_effective_refinement_interval, resolve_effective_train_render_factor, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_screen_fraction, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering, resolve_ssim_weight, resolve_stage_schedule_steps, resolve_training_resolution, resolve_train_subsample_factor, resolve_use_sh, should_run_refinement_step
+from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, contribution_fixed_count_from_percent, contribution_percent_from_fixed_count, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_cosine_base_learning_rate, resolve_depth_ratio_grad_band, resolve_depth_ratio_weight, resolve_effective_refinement_interval, resolve_effective_train_render_factor, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_screen_fraction, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_clone_budget, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering, resolve_ssim_weight, resolve_stage_schedule_steps, resolve_training_resolution, resolve_train_subsample_factor, resolve_use_sh, should_run_refinement_step
 
 _ADAM_BUFFER_NAMES = ("adam_moments",)
 _OPACITY_EPS = 1e-6
@@ -1329,427 +1329,18 @@ def test_training_raster_output_stays_linear_while_display_render_uses_gamma(dev
     np.testing.assert_allclose(display_output, expected_display, rtol=0.0, atol=1e-6)
 
 
-def test_resolve_training_resolution_uses_ceil_division() -> None:
-    assert resolve_training_resolution(64, 32, 1) == (64, 32)
-    assert resolve_training_resolution(63, 65, 2) == (32, 33)
-    assert resolve_training_resolution(1, 1, 16) == (1, 1)
-
-
-def test_effective_train_render_factor_multiplies_downscale_and_subsample() -> None:
-    hparams = TrainingHyperParams(train_downscale_factor=2, train_subsample_factor=3)
-
-    assert resolve_train_subsample_factor(hparams) == 3
-    assert resolve_effective_train_render_factor(hparams, 0) == 6
-
-
-def test_train_subsample_accepts_one_eighth_mode() -> None:
-    hparams = TrainingHyperParams(train_subsample_factor=8)
-    clamped = TrainingHyperParams(train_subsample_factor=99)
-
-    assert resolve_train_subsample_factor(hparams) == 8
-    assert resolve_effective_train_render_factor(hparams, 0) == 8
-    assert resolve_train_subsample_factor(clamped) == 8
-
-
-def test_nearest_camera_distances_cover_single_pair_and_uneven_layouts() -> None:
-    single = [_make_frame_at_position((0.0, 0.0, 0.0), 1)]
-    pair = [
-        _make_frame_at_position((0.0, 0.0, 0.0), 1),
-        _make_frame_at_position((3.0, 0.0, 0.0), 2),
-    ]
-    uneven = [
-        _make_frame_at_position((0.0, 0.0, 0.0), 1),
-        _make_frame_at_position((2.0, 0.0, 0.0), 2),
-        _make_frame_at_position((10.0, 0.0, 0.0), 3),
-    ]
-
-    np.testing.assert_allclose(GaussianTrainer._nearest_camera_distances(single), np.array([0.0], dtype=np.float32))
-    np.testing.assert_allclose(GaussianTrainer._nearest_camera_distances(pair), np.array([3.0, 3.0], dtype=np.float32))
-    np.testing.assert_allclose(GaussianTrainer._nearest_camera_distances(uneven), np.array([2.0, 2.0, 8.0], dtype=np.float32))
-
-
-def _make_sorting_dither_trainer(frames: list[ColmapFrame], amount: float, seed: int = 123, **kwargs: object) -> GaussianTrainer:
-    trainer = object.__new__(GaussianTrainer)
-    trainer.frames = frames
-    dither_kwargs = {
-        "sorting_order_dithering_stage1": amount,
-        "sorting_order_dithering_stage2": amount,
-        "sorting_order_dithering_stage3": amount,
-    } | kwargs
-    trainer.training = TrainingHyperParams(sorting_order_dithering=amount, **dither_kwargs)
-    trainer._seed = seed
-    trainer._frame_camera_nn_distances = GaussianTrainer._nearest_camera_distances(frames)
-    return trainer
-
-
-def test_sorting_order_dithering_schedule_resolves_piecewise_linear_values() -> None:
-    hparams = TrainingHyperParams(
-        lr_schedule_steps=100,
-        lr_schedule_stage1_step=25,
-        lr_schedule_stage2_step=75,
-        sorting_order_dithering=0.5,
-        sorting_order_dithering_stage1=0.2,
-        sorting_order_dithering_stage2=0.05,
-        sorting_order_dithering_stage3=0.01,
-    )
-
-    assert resolve_sorting_order_dithering(hparams, 0) == 0.5
-    assert resolve_sorting_order_dithering(hparams, 25) == 0.2
-    assert np.isclose(resolve_sorting_order_dithering(hparams, 75), 0.05)
-    assert np.isclose(resolve_sorting_order_dithering(hparams, 100), 0.01)
-    assert np.isclose(resolve_sorting_order_dithering(hparams, 50), 0.125)
-
-
-def test_sorting_dither_params_are_deterministic_per_step_and_frame() -> None:
-    frames = [
-        _make_frame_at_position((0.0, 0.0, 0.0), 11),
-        _make_frame_at_position((2.0, 0.0, 0.0), 12),
-        _make_frame_at_position((10.0, 0.0, 0.0), 13),
-    ]
-    disabled = _make_sorting_dither_trainer(frames, 0.0, seed=29)
-    trainer = _make_sorting_dither_trainer(frames, 1.0, seed=29)
-    scaled = _make_sorting_dither_trainer(frames, 0.25, seed=29)
-    camera = frames[2].make_camera()
-
-    real_position = np.asarray(camera.position, dtype=np.float32)
-    disabled_params = disabled.sorting_dither(2, 7, camera)
-    first = trainer.sorting_dither(2, 7, camera)
-    second = trainer.sorting_dither(2, 7, camera)
-    next_step = trainer.sorting_dither(2, 8, camera)
-    other_frame_camera = frames[1].make_camera()
-    other_frame = trainer.sorting_dither(1, 7, other_frame_camera)
-    scaled_params = scaled.sorting_dither(2, 7, camera)
-
-    np.testing.assert_allclose(disabled_params.position, real_position, rtol=0.0, atol=0.0)
-    assert disabled_params.sigma == 0.0
-    np.testing.assert_allclose(first.position, second.position, rtol=0.0, atol=0.0)
-    np.testing.assert_allclose(first.position, real_position, rtol=0.0, atol=0.0)
-    assert first.sigma == second.sigma
-    assert first.seed == second.seed
-    assert first.seed != next_step.seed
-    assert first.seed != other_frame.seed
-    assert scaled_params.seed == first.seed
-    assert np.isclose(scaled_params.sigma, first.sigma * 0.25)
-
-
-def test_auto_train_subsample_targets_nearest_strictly_above_1k_max_side() -> None:
-    hparams = TrainingHyperParams(train_subsample_factor=0, train_downscale_mode=1)
-
-    assert resolve_auto_train_subsample_factor(640, 360, 1) == 1
-    assert resolve_auto_train_subsample_factor(2048, 1024, 1) == 2
-    assert resolve_auto_train_subsample_factor(3000, 1600, 1) == 2
-    assert resolve_auto_train_subsample_factor(4000, 2000, 1) == 3
-    assert resolve_auto_train_subsample_factor(9000, 4500, 1) == 8
-    assert resolve_auto_train_subsample_factor(1000, 800, 1) == 1
-    assert resolve_train_subsample_factor(hparams, 2048, 1024, 0) == 2
-    assert resolve_effective_train_render_factor(hparams, 0, 2048, 1024) == 2
-
-
-def test_base_lr_uses_requested_piecewise_schedule() -> None:
-    hparams = TrainingHyperParams(lr_schedule_start_lr=0.005, lr_schedule_end_lr=1.5e-4, lr_schedule_steps=30_000)
-
-    np.testing.assert_allclose(resolve_base_learning_rate(hparams, 0), 0.005, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(resolve_base_learning_rate(hparams, 1500), 0.0035, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(resolve_base_learning_rate(hparams, 3000), 0.002, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(resolve_base_learning_rate(hparams, 8500), 0.0015, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(resolve_base_learning_rate(hparams, 14000), 0.001, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(resolve_base_learning_rate(hparams, 30_000), 1.5e-4, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(resolve_base_learning_rate(hparams, 40_000), 1.5e-4, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(resolve_cosine_base_learning_rate(hparams, 8250), resolve_base_learning_rate(hparams, 8250), rtol=0.0, atol=1e-12)
-    assert resolve_lr_schedule_breakpoints(hparams) == (3000, 14000, 30_000)
-
-
-def test_piecewise_schedule_uses_configured_viewer_breakpoints() -> None:
-    hparams = TrainingHyperParams(
-        lr_schedule_start_lr=0.005,
-        lr_schedule_stage1_lr=0.002,
-        lr_schedule_stage2_lr=0.001,
-        lr_schedule_end_lr=1e-4,
-        lr_schedule_steps=20_000,
-        lr_schedule_stage1_step=1000,
-        lr_schedule_stage2_step=4000,
-        lr_pos_mul=1.5,
-        lr_pos_stage1_mul=1.25,
-        lr_pos_stage2_mul=0.75,
-        lr_pos_stage3_mul=0.5,
-        lr_sh_mul=1.1,
-        lr_sh_stage1_mul=0.9,
-        lr_sh_stage2_mul=0.6,
-        lr_sh_stage3_mul=0.3,
-        depth_ratio_weight=1.0,
-        depth_ratio_stage1_weight=0.25,
-        depth_ratio_stage2_weight=0.05,
-        depth_ratio_stage3_weight=0.01,
-        ssim_weight=0.05,
-        ssim_weight_stage1=0.1,
-        ssim_weight_stage2=0.3,
-        ssim_weight_stage3=0.4,
-        max_screen_fraction=0.2,
-        max_screen_fraction_stage1=0.1,
-        max_screen_fraction_stage2=0.05,
-        max_screen_fraction_stage3=0.025,
-        position_random_step_noise_lr=5e5,
-        position_random_step_noise_stage1_lr=250000.0,
-        position_random_step_noise_stage2_lr=100000.0,
-        position_random_step_noise_stage3_lr=0.0,
-        sh_band_stage1=0,
-        sh_band_stage2=2,
-        sh_band_stage3=3,
-    )
-
-    assert resolve_lr_schedule_breakpoints(hparams) == (1000, 4000, 20_000)
-    assert resolve_stage_schedule_steps(hparams) == (1000, 4000, 20_000)
-    np.testing.assert_allclose(resolve_base_learning_rate(hparams, 1000), 0.002, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(resolve_base_learning_rate(hparams, 4000), 0.001, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(resolve_position_lr_mul(hparams, 0), 1.5, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_position_lr_mul(hparams, 1000), 1.25, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_position_lr_mul(hparams, 4000), 0.75, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_position_lr_mul(hparams, 20_000), 0.5, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_sh_lr_mul(hparams, 0), 1.1, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_sh_lr_mul(hparams, 1000), 0.9, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_sh_lr_mul(hparams, 4000), 0.6, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_sh_lr_mul(hparams, 20_000), 0.3, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 1000), 0.25, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 4000), 0.05, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 20_000), 0.01, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_ssim_weight(hparams, 0), 0.05, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_ssim_weight(hparams, 1000), 0.1, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_ssim_weight(hparams, 4000), 0.3, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_ssim_weight(hparams, 20_000), 0.4, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_max_screen_fraction(hparams, 0), 0.2, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_max_screen_fraction(hparams, 1000), 0.1, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_max_screen_fraction(hparams, 4000), 0.05, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_max_screen_fraction(hparams, 20_000), 0.025, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 1000), 250000.0, rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 4000), 100000.0, rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 20_000), 0.0, rtol=0.0, atol=1e-6)
-    assert resolve_sh_band(hparams, 0) == 0
-    assert resolve_sh_band(hparams, 999) == 0
-    assert resolve_sh_band(hparams, 1000) == 0
-    assert resolve_sh_band(hparams, 3999) == 0
-    assert resolve_sh_band(hparams, 4000) == 2
-    assert resolve_use_sh(hparams, 0) is False
-    assert resolve_use_sh(hparams, 999) is False
-    assert resolve_use_sh(hparams, 1000) is False
-    assert resolve_use_sh(hparams, 3999) is False
-    assert resolve_use_sh(hparams, 4000) is True
-
-
-def test_training_step_updates_optimizer_lrs_from_piecewise_schedule(device, tmp_path: Path) -> None:
-    scene = _make_scene(count=8, seed=77)
-    frame = _make_frame(tmp_path, image_name="lr_schedule_target.png", image_id=5)
-    renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
-    adam = AdamHyperParams(position_lr=1e-2, scale_lr=2e-2, rotation_lr=3e-2, color_lr=4e-2, opacity_lr=5e-2)
-    training = TrainingHyperParams(
-        lr_schedule_start_lr=0.005,
-        lr_schedule_end_lr=1e-3,
-        lr_schedule_steps=30_000,
-        scale_l2_weight=0.0,
-        scale_abs_reg_weight=0.0,
-        opacity_reg_weight=0.0,
-    )
-    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], adam_hparams=adam, training_hparams=training, seed=123)
-
-    before = _read_optimizer_lrs(trainer)
-    trainer.step()
-    after = _read_optimizer_lrs(trainer)
-    expected_scale = resolve_base_learning_rate(training, 1) / training.lr_schedule_start_lr
-
-    param_ids = np.array([0, 3, 6, 10, trainer.renderer.PARAM_RAW_OPACITY_ID], dtype=np.int32)
-    np.testing.assert_allclose(before[param_ids], np.array([1e-2, 2e-2, 3e-2, 4e-2, 5e-2], dtype=np.float32), rtol=0.0, atol=1e-7)
-    np.testing.assert_allclose(after[param_ids], expected_scale * np.array([1e-2, 2e-2, 3e-2, 4e-2, 5e-2], dtype=np.float32), rtol=0.0, atol=1.5e-6)
-    np.testing.assert_allclose(trainer.state.last_base_lr, resolve_base_learning_rate(training, 1), rtol=0.0, atol=1e-7)
-
-
-def test_training_step_updates_position_lr_from_staged_position_multiplier(device, tmp_path: Path) -> None:
-    scene = _make_scene(count=8, seed=78)
-    frame = _make_frame(tmp_path, image_name="lr_pos_schedule_target.png", image_id=6)
-    renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
-    adam = AdamHyperParams(position_lr=1e-2, scale_lr=2e-2, rotation_lr=3e-2, color_lr=4e-2, opacity_lr=5e-2)
-    training = TrainingHyperParams(
-        lr_schedule_start_lr=0.005,
-        lr_schedule_stage1_step=1,
-        lr_schedule_stage2_step=2,
-        lr_schedule_steps=3,
-        lr_pos_mul=1.0,
-        lr_pos_stage1_mul=0.5,
-        lr_pos_stage2_mul=0.25,
-        lr_pos_stage3_mul=0.125,
-        scale_l2_weight=0.0,
-        scale_abs_reg_weight=0.0,
-        opacity_reg_weight=0.0,
-    )
-    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], adam_hparams=adam, training_hparams=training, seed=123)
-
-    trainer.step()
-    lrs_after_step_1 = _read_optimizer_lrs(trainer)
-    expected_scale = resolve_base_learning_rate(training, 1) / training.lr_schedule_start_lr
-
-    np.testing.assert_allclose(lrs_after_step_1[0], 1e-2 * expected_scale * 0.5, rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(lrs_after_step_1[3], 2e-2 * expected_scale, rtol=0.0, atol=1e-6)
-
-
-def test_training_step_updates_non_dc_sh_lr_without_affecting_dc(device, tmp_path: Path) -> None:
-    scene = _make_scene(count=8, seed=79)
-    frame = _make_frame(tmp_path, image_name="lr_sh_schedule_target.png", image_id=16)
-    renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
-    adam = AdamHyperParams(position_lr=1e-2, scale_lr=2e-2, rotation_lr=3e-2, color_lr=4e-2, opacity_lr=5e-2)
-    training = TrainingHyperParams(
-        lr_schedule_start_lr=0.005,
-        lr_schedule_stage1_step=1,
-        lr_schedule_stage2_step=2,
-        lr_schedule_steps=3,
-        lr_sh_mul=1.0,
-        lr_sh_stage1_mul=0.25,
-        lr_sh_stage2_mul=0.125,
-        lr_sh_stage3_mul=0.0625,
-        scale_l2_weight=0.0,
-        scale_abs_reg_weight=0.0,
-        opacity_reg_weight=0.0,
-    )
-    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], adam_hparams=adam, training_hparams=training, seed=123)
-
-    trainer.step()
-    lrs_after_step_1 = _read_optimizer_lrs(trainer)
-    expected_scale = resolve_base_learning_rate(training, 1) / training.lr_schedule_start_lr
-    sh_dc_id = trainer.renderer.PARAM_SH0_IDS[0]
-    sh_non_dc_id = trainer.renderer.PARAM_SH_COEFF_IDS[1][0]
-
-    np.testing.assert_allclose(lrs_after_step_1[sh_dc_id], 4e-2 * expected_scale, rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(lrs_after_step_1[sh_non_dc_id], 4e-2 * expected_scale * 0.25, rtol=0.0, atol=1e-6)
-
-
-def test_sh_lr_multiplier_scales_non_dc_coeffs_absolutely(device, tmp_path: Path) -> None:
-    scene = _make_scene(count=4, seed=80)
-    frame = _make_frame(tmp_path, image_name="lr_sh_absolute_target.png", image_id=17)
-    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
-    adam = AdamHyperParams(position_lr=1e-2, scale_lr=2e-2, rotation_lr=3e-2, color_lr=4e-2, opacity_lr=5e-2)
-    training = TrainingHyperParams(
-        lr_schedule_enabled=False,
-        lr_schedule_start_lr=0.005,
-        lr_sh_mul=0.2,
-        scale_l2_weight=0.0,
-        scale_abs_reg_weight=0.0,
-        opacity_reg_weight=0.0,
-    )
-    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], adam_hparams=adam, training_hparams=training, seed=123)
-
-    trainer.optimizer.update_step(0, training)
-    lrs = _read_optimizer_lrs(trainer)
-    sh_dc_id = trainer.renderer.PARAM_SH0_IDS[0]
-    sh_non_dc_id = trainer.renderer.PARAM_SH_COEFF_IDS[1][0]
-
-    np.testing.assert_allclose(lrs[sh_dc_id], 4e-2, rtol=0.0, atol=1e-7)
-    np.testing.assert_allclose(lrs[sh_non_dc_id], 4e-2 * 0.2, rtol=0.0, atol=1e-7)
-
-
-def test_loss_vars_use_density_schedule(device, tmp_path: Path) -> None:
-    scene = _make_scene(count=4, seed=93)
-    frame = _make_frame(tmp_path, image_name="density_schedule_target.png", image_id=19)
-    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
-    training = TrainingHyperParams(lr_schedule_steps=30_000)
-    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], training_hparams=training, seed=123)
-
-    np.testing.assert_allclose(trainer._loss_vars(0, 0)["g_DensityRegularizer"], 0.02, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(trainer._loss_vars(0, 0)["g_DepthRatioWeight"], 0.5, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(trainer._loss_vars(0, 0)["g_SSIMWeight"], 0.05, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(trainer._loss_vars(0, 3_000)["g_SSIMWeight"], 0.1, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(trainer._loss_vars(0, 14_000)["g_SSIMWeight"], 0.3, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(trainer._loss_vars(0, 30_000)["g_SSIMWeight"], 0.4, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(trainer._loss_vars(0, 0)["g_DepthRatioGradMin"], 0.0, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(trainer._loss_vars(0, 0)["g_DepthRatioGradMax"], 0.1, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(trainer._loss_vars(0, 0)["g_MaxAllowedDensity"], 5.0, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(trainer._loss_vars(0, 15_000)["g_MaxAllowedDensity"], 8.5, rtol=0.0, atol=1e-10)
-    np.testing.assert_allclose(trainer._loss_vars(0, 30_000)["g_MaxAllowedDensity"], 12.0, rtol=0.0, atol=1e-10)
-
-
 def test_depth_ratio_noise_and_sh_schedules_follow_requested_defaults() -> None:
     hparams = TrainingHyperParams(
         depth_ratio_weight=0.5,
-        lr_pos_mul=0.5,
-        position_random_step_noise_lr=5e5,
-        sh_band=0,
+        ssim_weight=0.2,
+        max_screen_fraction=0.3,
+        position_random_step_noise_lr=1234.0,
+        sh_band=2,
+        use_sh=True,
+        lr_schedule_enabled=False,
         lr_schedule_steps=30_000,
     )
 
-    np.testing.assert_allclose(resolve_position_lr_mul(hparams, 0), 0.5, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_position_lr_mul(hparams, 3000), 0.1, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_position_lr_mul(hparams, 14000), 0.05, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_position_lr_mul(hparams, 30_000), 0.02, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_sh_lr_mul(hparams, 0), 0.1, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_sh_lr_mul(hparams, 3000), 0.1, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_sh_lr_mul(hparams, 14000), 0.1, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_sh_lr_mul(hparams, 30_000), 0.1, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 0), 0.5, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 3000), 0.03, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 14000), 0.01, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 30_000), 0.001, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_ssim_weight(hparams, 0), 0.05, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_ssim_weight(hparams, 3000), 0.1, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_ssim_weight(hparams, 14000), 0.3, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_ssim_weight(hparams, 30_000), 0.4, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_max_screen_fraction(hparams, 0), 0.25, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_max_screen_fraction(hparams, 3000), 0.07, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_max_screen_fraction(hparams, 14000), 0.02, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_max_screen_fraction(hparams, 30_000), 0.007, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 0), 5e5, rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 3000), 466666.6666666667, rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 14000), 416666.6666666667, rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 30_000), 0.0, rtol=0.0, atol=1e-6)
-    assert resolve_sh_band(hparams, 0) == 0
-    assert resolve_sh_band(hparams, 13999) == 0
-    assert resolve_sh_band(hparams, 14000) == 2
-    assert resolve_sh_band(hparams, 30_000) == 3
-    assert resolve_use_sh(hparams, 13999) is False
-    assert resolve_use_sh(hparams, 14000) is True
-
-
-def test_schedule_disabled_uses_stage0_only_for_scheduled_values() -> None:
-    hparams = TrainingHyperParams(
-        lr_schedule_enabled=False,
-        lr_schedule_start_lr=0.006,
-        lr_schedule_stage1_lr=0.002,
-        lr_schedule_stage2_lr=0.001,
-        lr_schedule_end_lr=1.5e-4,
-        lr_pos_mul=1.5,
-        lr_pos_stage1_mul=1.25,
-        lr_pos_stage2_mul=0.75,
-        lr_pos_stage3_mul=0.5,
-        lr_sh_mul=1.3,
-        lr_sh_stage1_mul=0.9,
-        lr_sh_stage2_mul=0.6,
-        lr_sh_stage3_mul=0.4,
-        depth_ratio_weight=0.8,
-        depth_ratio_stage1_weight=0.05,
-        depth_ratio_stage2_weight=0.01,
-        depth_ratio_stage3_weight=0.001,
-        ssim_weight=0.2,
-        ssim_weight_stage1=0.3,
-        ssim_weight_stage2=0.4,
-        ssim_weight_stage3=0.5,
-        max_screen_fraction=0.3,
-        max_screen_fraction_stage1=0.1,
-        max_screen_fraction_stage2=0.05,
-        max_screen_fraction_stage3=0.025,
-        position_random_step_noise_lr=1234.0,
-        position_random_step_noise_stage1_lr=250.0,
-        position_random_step_noise_stage2_lr=100.0,
-        position_random_step_noise_stage3_lr=0.0,
-        sh_band=2,
-        sh_band_stage1=0,
-        sh_band_stage2=1,
-        sh_band_stage3=0,
-    )
-
-    np.testing.assert_allclose(resolve_base_learning_rate(hparams, 0), 0.006, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_base_learning_rate(hparams, 30_000), 0.006, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_position_lr_mul(hparams, 0), 1.5, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_position_lr_mul(hparams, 30_000), 1.5, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_sh_lr_mul(hparams, 0), 1.3, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_sh_lr_mul(hparams, 30_000), 1.3, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 0), 0.8, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_depth_ratio_weight(hparams, 30_000), 0.8, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_ssim_weight(hparams, 0), 0.2, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_ssim_weight(hparams, 30_000), 0.2, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_max_screen_fraction(hparams, 0), 0.3, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_max_screen_fraction(hparams, 30_000), 0.3, rtol=0.0, atol=1e-12)
@@ -1770,17 +1361,12 @@ def test_max_allowed_density_schedule_clamps_to_end_value() -> None:
     np.testing.assert_allclose(resolve_max_allowed_density(hparams, 40), 12.0, rtol=0.0, atol=1e-10)
 
 
-def test_refinement_cadence_and_clone_probability_follow_growth_budget() -> None:
+def test_refinement_cadence_and_clone_budget_follow_growth_budget() -> None:
     hparams = TrainingHyperParams(refinement_interval=200, refinement_growth_ratio=0.035, refinement_growth_start_step=0)
 
     assert not should_run_refinement_step(hparams, 199)
     assert should_run_refinement_step(hparams, 200)
-    np.testing.assert_allclose(
-        resolve_clone_probability_threshold(hparams, splat_count=1000, pixel_count=64 * 32, step=200),
-        1000.0 * 0.035 / 200.0 / float(64 * 32),
-        rtol=0.0,
-        atol=1e-12,
-    )
+    assert resolve_refinement_clone_budget(hparams, splat_count=1000, step=200) == 35
 
 
 def test_refinement_interval_is_floored_by_frame_count() -> None:
@@ -1789,21 +1375,16 @@ def test_refinement_interval_is_floored_by_frame_count() -> None:
     assert resolve_effective_refinement_interval(hparams, frame_count=5) == 5
     assert not should_run_refinement_step(hparams, 4, frame_count=5)
     assert should_run_refinement_step(hparams, 5, frame_count=5)
-    np.testing.assert_allclose(
-        resolve_clone_probability_threshold(hparams, splat_count=1000, pixel_count=64 * 32, step=5, frame_count=5),
-        1000.0 * 0.035 / 5.0 / float(64 * 32),
-        rtol=0.0,
-        atol=1e-12,
-    )
+    assert resolve_refinement_clone_budget(hparams, splat_count=1000, step=5, frame_count=5) == 35
 
 
 def test_refinement_growth_stays_zero_until_start_step() -> None:
     hparams = TrainingHyperParams(refinement_interval=200, refinement_growth_ratio=0.02, refinement_growth_start_step=2000)
 
     np.testing.assert_allclose(resolve_refinement_growth_ratio(hparams, 1999), 0.0, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_clone_probability_threshold(hparams, splat_count=1000, pixel_count=100, step=1999), 0.0, rtol=0.0, atol=1e-12)
+    assert resolve_refinement_clone_budget(hparams, splat_count=1000, step=1999) == 0
     np.testing.assert_allclose(resolve_refinement_growth_ratio(hparams, 2000), 0.02, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_clone_probability_threshold(hparams, splat_count=1000, pixel_count=100, step=2000), 1000.0 * 0.02 / 200.0 / 100.0, rtol=0.0, atol=1e-12)
+    assert resolve_refinement_clone_budget(hparams, splat_count=1000, step=2000) == 20
 
 
 def test_refinement_min_contribution_percent_uses_configured_decay() -> None:
@@ -1815,16 +1396,11 @@ def test_refinement_min_contribution_percent_uses_configured_decay() -> None:
     np.testing.assert_allclose(resolve_refinement_min_contribution_percent(hparams, 400), 9.025e-06, rtol=0.0, atol=1e-12)
 
 
-def test_clone_probability_threshold_respects_max_gaussians_cap() -> None:
+def test_refinement_clone_budget_respects_max_gaussians_cap() -> None:
     hparams = TrainingHyperParams(refinement_interval=200, refinement_growth_ratio=0.05, refinement_growth_start_step=0, max_gaussians=1024)
 
-    np.testing.assert_allclose(
-        resolve_clone_probability_threshold(hparams, splat_count=1000, pixel_count=100, step=200),
-        24.0 / 200.0 / 100.0,
-        rtol=0.0,
-        atol=1e-12,
-    )
-    assert resolve_clone_probability_threshold(hparams, splat_count=1024, pixel_count=100, step=200) == 0.0
+    assert resolve_refinement_clone_budget(hparams, splat_count=1000, step=200) == 24
+    assert resolve_refinement_clone_budget(hparams, splat_count=1024, step=200) == 0
 
 
 def test_trainer_allocates_minimal_refinement_buffers(device, tmp_path: Path) -> None:
@@ -1840,8 +1416,21 @@ def test_trainer_allocates_minimal_refinement_buffers(device, tmp_path: Path) ->
         seed=123,
     )
 
-    assert set(trainer.refinement_buffers) == {"total_clone_counter", "clone_counts", "splat_contribution", "append_counter", "append_params", "dst_splat_params", "dst_adam_moments", "camera_rows"}
-    assert trainer.clone_probability_threshold() > 0.0
+    assert set(trainer.refinement_buffers) == {
+        "total_clone_counter",
+        "clone_counts",
+        "splat_contribution",
+        "refinement_eligible_mask",
+        "refinement_weights",
+        "refinement_weight_prefix",
+        "refinement_weight_total",
+        "append_counter",
+        "append_params",
+        "dst_splat_params",
+        "dst_adam_moments",
+        "camera_rows",
+    }
+    assert trainer.refinement_clone_budget() > 0
 
 
 def test_trainer_refinement_due_uses_dataset_frame_floor(device, tmp_path: Path) -> None:
@@ -1867,7 +1456,7 @@ def test_trainer_refinement_due_uses_dataset_frame_floor(device, tmp_path: Path)
     assert trainer.refinement_due(3)
 
 
-def test_training_forward_keeps_clone_counts_zero_until_backward(device, tmp_path: Path) -> None:
+def test_training_raster_path_preserves_clone_counts(device, tmp_path: Path) -> None:
     scene = _make_scene(count=8, seed=83)
     frame = _make_frame(tmp_path, image_name="clone_counts_target.png", image_id=10)
     renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
@@ -1881,6 +1470,8 @@ def test_training_forward_keeps_clone_counts_zero_until_backward(device, tmp_pat
     )
     camera = frame.make_camera(near=0.1, far=20.0)
     background = np.asarray(trainer.training.background, dtype=np.float32)
+    seed_counts = np.arange(scene.count, dtype=np.uint32)
+    trainer.refinement_buffers["clone_counts"].copy_from_numpy(seed_counts)
 
     renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
     enc = device.create_command_encoder()
@@ -1890,15 +1481,13 @@ def test_training_forward_keeps_clone_counts_zero_until_backward(device, tmp_pat
         background,
         clone_counts_buffer=trainer.refinement_buffers["clone_counts"],
         splat_contribution_buffer=trainer.refinement_buffers["splat_contribution"],
-        clone_select_probability=1.0,
-        clone_seed=123,
     )
     device.submit_command_buffer(enc.finish())
     device.wait()
 
     clone_counts = buffer_to_numpy(trainer.refinement_buffers["clone_counts"], np.uint32)[: scene.count]
     contributions = buffer_to_numpy(trainer.refinement_buffers["splat_contribution"], np.uint32)[: scene.count]
-    assert np.all(clone_counts == 0)
+    np.testing.assert_array_equal(clone_counts, seed_counts)
     assert np.any(contributions > 0)
 
     enc = device.create_command_encoder()
@@ -1913,284 +1502,176 @@ def test_training_forward_keeps_clone_counts_zero_until_backward(device, tmp_pat
         renderer.output_grad_buffer,
         regularizer_grad=renderer.work_buffers["training_regularizer_grad"],
         clone_counts_buffer=trainer.refinement_buffers["clone_counts"],
-        clone_select_probability=1.0,
-        clone_seed=123,
     )
     device.submit_command_buffer(enc.finish())
     device.wait()
 
     clone_counts = buffer_to_numpy(trainer.refinement_buffers["clone_counts"], np.uint32)[: scene.count]
-    assert np.any(clone_counts > 0)
+    np.testing.assert_array_equal(clone_counts, seed_counts)
 
 
-def test_loss_weighted_backward_clone_counts_follow_high_loss_region(device, tmp_path: Path) -> None:
-    frame = _make_frame(tmp_path, image_name="weighted_clone_counts_target.png", image_id=17)
-    rotations = np.zeros((2, 4), dtype=np.float32)
-    rotations[:, 0] = 1.0
-    scene = GaussianScene(
-        positions=np.array([[-0.9, 0.0, 0.0], [0.9, 0.0, 0.0]], dtype=np.float32),
-        scales=np.log(np.full((2, 3), 0.12, dtype=np.float32)),
-        rotations=rotations,
-        opacities=np.full((2,), 0.95, dtype=np.float32),
-        colors=np.full((2, 3), 1.0, dtype=np.float32),
-        sh_coeffs=np.zeros((2, 1, 3), dtype=np.float32),
-    )
-    renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
+def test_refinement_sampling_prefers_higher_momentum_norm(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=2, seed=91)
+    scene.opacities[:] = np.array([0.9, 0.9], dtype=np.float32)
+    frame = _make_frame(tmp_path, image_name="momentum_sampling_target.png", image_id=18)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
     trainer = GaussianTrainer(
         device=device,
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(background_mode=TRAIN_BACKGROUND_MODE_CUSTOM, background=(0.0, 0.0, 0.0), density_regularizer=0.0, depth_ratio_weight=0.0, refinement_interval=9999, refinement_loss_weight=1.0, refinement_target_edge_weight=0.0),
+        training_hparams=TrainingHyperParams(refinement_growth_ratio=0.5, refinement_growth_start_step=0, refinement_interval=9999),
         seed=123,
     )
-    camera = frame.make_camera(near=0.1, far=20.0)
-    background = np.zeros((3,), dtype=np.float32)
-    usage = spy.TextureUsage.shader_resource | spy.TextureUsage.copy_destination
+    trainer._observed_contribution_pixel_count = renderer.width * renderer.height
+    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.full((scene.count,), 500, dtype=np.uint32))
 
-    def make_target_texture(image: np.ndarray) -> spy.Texture:
-        texture = device.create_texture(format=spy.Format.rgba32_float, width=int(image.shape[1]), height=int(image.shape[0]), usage=usage)
-        texture.copy_from_numpy(np.ascontiguousarray(image, dtype=np.float32))
-        return texture
+    moments = np.zeros((renderer.TRAINABLE_PARAM_COUNT, scene.count, 2), dtype=np.float32)
+    moments[:, 0, 0] = 1.0
+    moments[:, 1, 0] = 0.05
+    trainer.adam_optimizer.buffers["adam_moments"].copy_from_numpy(moments.reshape(-1, 2))
 
-    def run_target(target_image: np.ndarray) -> np.ndarray:
-        trainer.refinement_buffers["clone_counts"].copy_from_numpy(np.zeros((scene.count,), dtype=np.uint32))
-        trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.zeros((scene.count,), dtype=np.uint32))
-        renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
-        enc = device.create_command_encoder()
-        trainer._dispatch_raster_training_forward(enc, camera, background)
-        target_texture = make_target_texture(target_image)
-        trainer._dispatch_loss_forward(enc, target_texture)
-        trainer._dispatch_loss_backward(enc, target_texture)
-        renderer.clear_raster_grads_current_scene(enc)
-        renderer.rasterize_backward_current_scene(
-            enc,
-            camera,
-            background,
-            renderer.output_grad_buffer,
-            regularizer_grad=renderer.work_buffers["training_regularizer_grad"],
-            clone_counts_buffer=trainer.refinement_buffers["clone_counts"],
-            clone_select_probability=1.0,
-            clone_seed=123,
-            refinement_loss_weight=float(trainer.training.refinement_loss_weight),
-            refinement_target_edge_weight=float(trainer.training.refinement_target_edge_weight),
-        )
-        device.submit_command_buffer(enc.finish())
-        device.wait()
-        return buffer_to_numpy(trainer.refinement_buffers["clone_counts"], np.uint32)[: scene.count].copy()
+    selections = np.zeros((scene.count,), dtype=np.int32)
+    for seed in range(64):
+        trainer._seed = seed
+        clone_counts, _ = trainer._sample_refinement_clone_counts()
+        selections += clone_counts.astype(np.int32)
 
-    def side_dominant_splat() -> tuple[int, int]:
-        side_energy: list[tuple[float, float]] = []
-        for splat_index in range(scene.count):
-            single_scene = GaussianScene(
-                positions=scene.positions[[splat_index]].copy(),
-                scales=scene.scales[[splat_index]].copy(),
-                rotations=scene.rotations[[splat_index]].copy(),
-                opacities=scene.opacities[[splat_index]].copy(),
-                colors=scene.colors[[splat_index]].copy(),
-                sh_coeffs=scene.sh_coeffs[[splat_index]].copy(),
-            )
-            single_renderer = GaussianRenderer(device, width=renderer.width, height=renderer.height, list_capacity_multiplier=16)
-            image = np.asarray(single_renderer.render(single_scene, camera, background=background).image, dtype=np.float32)[..., :3]
-            side_energy.append((float(np.sum(image[:, : renderer.width // 2], dtype=np.float64)), float(np.sum(image[:, renderer.width // 2 :], dtype=np.float64))))
-        left_index = int(np.argmax([energy[0] for energy in side_energy]))
-        right_index = int(np.argmax([energy[1] for energy in side_energy]))
-        assert left_index != right_index
-        return left_index, right_index
-
-    renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
-    enc = device.create_command_encoder()
-    trainer._dispatch_raster_training_forward(enc, camera, background)
-    device.submit_command_buffer(enc.finish())
-    device.wait()
-    rendered = np.asarray(renderer.output_texture.to_numpy(), dtype=np.float32).copy()
-    left_splat, right_splat = side_dominant_splat()
-    left_target = rendered.copy()
-    right_target = rendered.copy()
-    left_target[:, : renderer.width // 2, :3] = 0.0
-    right_target[:, renderer.width // 2 :, :3] = 0.0
-
-    left_counts = run_target(left_target)
-    right_counts = run_target(right_target)
-
-    assert left_counts[left_splat] > left_counts[right_splat]
-    assert right_counts[right_splat] > right_counts[left_splat]
+    assert selections[0] > selections[1]
 
 
-def test_edge_weighted_backward_clone_counts_follow_target_edges(device, tmp_path: Path) -> None:
-    frame = _make_frame(tmp_path, image_name="edge_weighted_clone_counts_target.png", image_id=18)
-    rotations = np.zeros((2, 4), dtype=np.float32)
-    rotations[:, 0] = 1.0
-    scene = GaussianScene(
-        positions=np.array([[-0.9, 0.0, 0.0], [0.9, 0.0, 0.0]], dtype=np.float32),
-        scales=np.log(np.full((2, 3), 0.12, dtype=np.float32)),
-        rotations=rotations,
-        opacities=np.full((2,), 0.95, dtype=np.float32),
-        colors=np.full((2, 3), 1.0, dtype=np.float32),
-        sh_coeffs=np.zeros((2, 1, 3), dtype=np.float32),
-    )
-    renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
+def test_refinement_sampling_is_seed_reproducible(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=3, seed=92)
+    scene.opacities[:] = np.array([0.9, 0.9, 0.9], dtype=np.float32)
+    frame = _make_frame(tmp_path, image_name="momentum_seed_target.png", image_id=19)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
     trainer = GaussianTrainer(
         device=device,
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(background_mode=TRAIN_BACKGROUND_MODE_CUSTOM, background=(0.0, 0.0, 0.0), density_regularizer=0.0, depth_ratio_weight=0.0, refinement_interval=9999, refinement_loss_weight=0.0, refinement_target_edge_weight=1.0),
+        training_hparams=TrainingHyperParams(refinement_growth_ratio=1.0, refinement_growth_start_step=0, refinement_interval=9999),
         seed=123,
     )
-    camera = frame.make_camera(near=0.1, far=20.0)
-    background = np.zeros((3,), dtype=np.float32)
-    usage = spy.TextureUsage.shader_resource | spy.TextureUsage.copy_destination
+    trainer._observed_contribution_pixel_count = renderer.width * renderer.height
+    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.full((scene.count,), 500, dtype=np.uint32))
 
-    def make_target_texture(image: np.ndarray) -> spy.Texture:
-        texture = device.create_texture(format=spy.Format.rgba32_float, width=int(image.shape[1]), height=int(image.shape[0]), usage=usage)
-        texture.copy_from_numpy(np.ascontiguousarray(image, dtype=np.float32))
-        return texture
+    moments = np.zeros((renderer.TRAINABLE_PARAM_COUNT, scene.count, 2), dtype=np.float32)
+    moments[:, :, 0] = np.array([1.0, 0.5, 0.25], dtype=np.float32)[None, :]
+    trainer.adam_optimizer.buffers["adam_moments"].copy_from_numpy(moments.reshape(-1, 2))
 
-    def run_target(target_image: np.ndarray) -> np.ndarray:
-        trainer.refinement_buffers["clone_counts"].copy_from_numpy(np.zeros((scene.count,), dtype=np.uint32))
-        trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.zeros((scene.count,), dtype=np.uint32))
-        renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
-        enc = device.create_command_encoder()
-        trainer._dispatch_raster_training_forward(enc, camera, background)
-        target_texture = make_target_texture(target_image)
-        trainer._dispatch_loss_forward(enc, target_texture)
-        trainer._dispatch_loss_backward(enc, target_texture)
-        renderer.clear_raster_grads_current_scene(enc)
-        renderer.rasterize_backward_current_scene(
-            enc,
-            camera,
-            background,
-            renderer.output_grad_buffer,
-            regularizer_grad=renderer.work_buffers["training_regularizer_grad"],
-            clone_counts_buffer=trainer.refinement_buffers["clone_counts"],
-            clone_select_probability=1.0,
-            clone_seed=123,
-            refinement_loss_weight=float(trainer.training.refinement_loss_weight),
-            refinement_target_edge_weight=float(trainer.training.refinement_target_edge_weight),
-        )
-        device.submit_command_buffer(enc.finish())
-        device.wait()
-        return buffer_to_numpy(trainer.refinement_buffers["clone_counts"], np.uint32)[: scene.count].copy()
-
-    def single_splat_mask(splat_index: int) -> np.ndarray:
-        single_scene = GaussianScene(
-            positions=scene.positions[[splat_index]].copy(),
-            scales=scene.scales[[splat_index]].copy(),
-            rotations=scene.rotations[[splat_index]].copy(),
-            opacities=scene.opacities[[splat_index]].copy(),
-            colors=scene.colors[[splat_index]].copy(),
-            sh_coeffs=scene.sh_coeffs[[splat_index]].copy(),
-        )
-        single_renderer = GaussianRenderer(device, width=renderer.width, height=renderer.height, list_capacity_multiplier=16)
-        image = np.asarray(single_renderer.render(single_scene, camera, background=background).image, dtype=np.float32)[..., :3]
-        return np.any(image > 1e-4, axis=2)
-
-    left_mask = single_splat_mask(0)
-    right_mask = single_splat_mask(1)
-    left_target = np.zeros((renderer.height, renderer.width, 4), dtype=np.float32)
-    right_target = np.zeros((renderer.height, renderer.width, 4), dtype=np.float32)
-    left_target[left_mask, :3] = 1.0
-    left_target[..., 3] = 1.0
-    right_target[right_mask, :3] = 1.0
-    right_target[..., 3] = 1.0
-
-    left_counts = run_target(left_target)
-    right_counts = run_target(right_target)
-
-    assert left_counts[0] > left_counts[1]
-    assert right_counts[1] > right_counts[0]
+    trainer._seed = 77
+    first, _ = trainer._sample_refinement_clone_counts()
+    trainer._seed = 77
+    second, _ = trainer._sample_refinement_clone_counts()
+    np.testing.assert_array_equal(first, second)
 
 
-def test_loss_weighted_backward_clone_counts_disable_when_rgb_loss_is_zero(device, tmp_path: Path) -> None:
-    scene = _make_scene(count=8, seed=91)
-    frame = _make_frame(tmp_path, image_name="zero_rgb_loss_clone_counts_target.png", image_id=18)
-    renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
+def test_refinement_sampling_respects_budget_and_clone_cap(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=2, seed=93)
+    scene.opacities[:] = np.array([0.9, 0.9], dtype=np.float32)
+    frame = _make_frame(tmp_path, image_name="momentum_cap_target.png", image_id=20)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
     trainer = GaussianTrainer(
         device=device,
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(density_regularizer=0.0, depth_ratio_weight=0.0, refinement_interval=9999, refinement_loss_weight=1.0, refinement_target_edge_weight=0.0),
+        training_hparams=TrainingHyperParams(refinement_growth_ratio=5.0, refinement_growth_start_step=0, refinement_interval=9999, max_gaussians=64),
         seed=123,
     )
-    camera = frame.make_camera(near=0.1, far=20.0)
-    background = np.asarray(trainer.training.background, dtype=np.float32)
-    usage = spy.TextureUsage.shader_resource | spy.TextureUsage.copy_destination
+    trainer._observed_contribution_pixel_count = renderer.width * renderer.height
+    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.full((scene.count,), 500, dtype=np.uint32))
 
-    renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
-    enc = device.create_command_encoder()
-    trainer._dispatch_raster_training_forward(enc, camera, background)
-    device.submit_command_buffer(enc.finish())
-    device.wait()
+    moments = np.zeros((renderer.TRAINABLE_PARAM_COUNT, scene.count, 2), dtype=np.float32)
+    moments[:, :, 0] = 1.0
+    trainer.adam_optimizer.buffers["adam_moments"].copy_from_numpy(moments.reshape(-1, 2))
 
-    target_texture = device.create_texture(format=spy.Format.rgba32_float, width=renderer.width, height=renderer.height, usage=usage)
-    target_texture.copy_from_numpy(np.ascontiguousarray(np.asarray(renderer.output_texture.to_numpy(), dtype=np.float32), dtype=np.float32))
-    trainer.refinement_buffers["clone_counts"].copy_from_numpy(np.zeros((scene.count,), dtype=np.uint32))
-    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.zeros((scene.count,), dtype=np.uint32))
+    clone_counts, survivor_mask = trainer._sample_refinement_clone_counts()
 
-    enc = device.create_command_encoder()
-    trainer._dispatch_loss_forward(enc, target_texture)
-    trainer._dispatch_loss_backward(enc, target_texture)
-    renderer.clear_raster_grads_current_scene(enc)
-    renderer.rasterize_backward_current_scene(
-        enc,
-        camera,
-        background,
-        renderer.output_grad_buffer,
-        regularizer_grad=renderer.work_buffers["training_regularizer_grad"],
-        clone_counts_buffer=trainer.refinement_buffers["clone_counts"],
-        clone_select_probability=1.0,
-        clone_seed=123,
-        refinement_loss_weight=float(trainer.training.refinement_loss_weight),
-        refinement_target_edge_weight=float(trainer.training.refinement_target_edge_weight),
+    assert int(np.count_nonzero(survivor_mask)) == 2
+    assert int(np.sum(clone_counts, dtype=np.int64)) <= trainer.refinement_clone_budget()
+    assert np.all(clone_counts >= 0)
+
+
+def test_refinement_sampling_zero_momentum_yields_zero_clone_counts(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=4, seed=94)
+    scene.opacities[:] = np.full((scene.count,), 0.9, dtype=np.float32)
+    frame = _make_frame(tmp_path, image_name="momentum_zero_target.png", image_id=21)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(refinement_growth_ratio=1.0, refinement_growth_start_step=0, refinement_interval=9999),
+        seed=123,
     )
-    device.submit_command_buffer(enc.finish())
-    device.wait()
+    trainer._observed_contribution_pixel_count = renderer.width * renderer.height
+    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.full((scene.count,), 500, dtype=np.uint32))
+    trainer.adam_optimizer.buffers["adam_moments"].copy_from_numpy(np.zeros((renderer.TRAINABLE_PARAM_COUNT * scene.count, 2), dtype=np.float32))
 
-    clone_counts = buffer_to_numpy(trainer.refinement_buffers["clone_counts"], np.uint32)[: scene.count]
+    clone_counts, survivor_mask = trainer._sample_refinement_clone_counts()
+
+    assert int(np.count_nonzero(survivor_mask)) == scene.count
     assert np.all(clone_counts == 0)
 
 
-def test_hybrid_clone_weighting_disables_when_both_weights_are_zero(device, tmp_path: Path) -> None:
-    scene = _make_scene(count=8, seed=92)
-    frame = _make_frame(tmp_path, image_name="zero_hybrid_clone_counts_target.png", image_id=19)
-    renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
+def test_refinement_sampling_single_nonzero_weight_always_selects_that_splat(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=8, seed=96)
+    scene.opacities[:] = np.full((scene.count,), 0.9, dtype=np.float32)
+    frame = _make_frame(tmp_path, image_name="momentum_single_nonzero_target.png", image_id=23)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
     trainer = GaussianTrainer(
         device=device,
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(density_regularizer=0.0, depth_ratio_weight=0.0, refinement_interval=9999, refinement_loss_weight=0.0, refinement_target_edge_weight=0.0),
+        training_hparams=TrainingHyperParams(refinement_growth_ratio=1.0, refinement_growth_start_step=0, refinement_interval=9999),
         seed=123,
     )
-    camera = frame.make_camera(near=0.1, far=20.0)
-    background = np.asarray(trainer.training.background, dtype=np.float32)
+    trainer._observed_contribution_pixel_count = renderer.width * renderer.height
+    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.full((scene.count,), 500, dtype=np.uint32))
 
-    renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
-    enc = device.create_command_encoder()
-    trainer._dispatch_raster_training_forward(enc, camera, background)
-    target_texture = trainer.get_frame_target_texture(0, native_resolution=False, encoder=enc)
-    trainer._dispatch_loss_forward(enc, target_texture)
-    trainer._dispatch_loss_backward(enc, target_texture)
-    renderer.clear_raster_grads_current_scene(enc)
-    renderer.rasterize_backward_current_scene(
-        enc,
-        camera,
-        background,
-        renderer.output_grad_buffer,
-        regularizer_grad=renderer.work_buffers["training_regularizer_grad"],
-        clone_counts_buffer=trainer.refinement_buffers["clone_counts"],
-        clone_select_probability=1.0,
-        clone_seed=123,
-        refinement_loss_weight=float(trainer.training.refinement_loss_weight),
-        refinement_target_edge_weight=float(trainer.training.refinement_target_edge_weight),
+    selected_splat = 5
+    moments = np.zeros((renderer.TRAINABLE_PARAM_COUNT, scene.count, 2), dtype=np.float32)
+    moments[:, selected_splat, 0] = 1.0
+    trainer.adam_optimizer.buffers["adam_moments"].copy_from_numpy(moments.reshape(-1, 2))
+
+    expected = np.zeros((scene.count,), dtype=np.uint32)
+    expected[selected_splat] = trainer.refinement_clone_budget()
+    for seed in range(16):
+        trainer._seed = seed
+        clone_counts, survivor_mask = trainer._sample_refinement_clone_counts()
+        assert int(np.count_nonzero(survivor_mask)) == scene.count
+        np.testing.assert_array_equal(clone_counts, expected)
+
+
+def test_refinement_sampling_routes_all_mass_to_single_positive_weight(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=2, seed=95)
+    scene.opacities[:] = np.array([0.9, 0.9], dtype=np.float32)
+    frame = _make_frame(tmp_path, image_name="momentum_single_mass_target.png", image_id=22)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(refinement_growth_ratio=1.5, refinement_growth_start_step=0, refinement_interval=9999),
+        seed=123,
     )
-    device.submit_command_buffer(enc.finish())
-    device.wait()
+    trainer._observed_contribution_pixel_count = renderer.width * renderer.height
+    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.full((scene.count,), 500, dtype=np.uint32))
 
-    clone_counts = buffer_to_numpy(trainer.refinement_buffers["clone_counts"], np.uint32)[: scene.count]
-    assert np.all(clone_counts == 0)
+    moments = np.zeros((renderer.TRAINABLE_PARAM_COUNT, scene.count, 2), dtype=np.float32)
+    moments[:, 0, 0] = 1.0
+    trainer.adam_optimizer.buffers["adam_moments"].copy_from_numpy(moments.reshape(-1, 2))
+
+    clone_counts, survivor_mask = trainer._sample_refinement_clone_counts()
+
+    assert int(np.count_nonzero(survivor_mask)) == 2
+    assert clone_counts[0] == trainer.refinement_clone_budget()
+    assert clone_counts[1] == 0
 
 
 def test_density_loss_respects_threshold_and_changes_gradients(device, tmp_path: Path) -> None:
@@ -2366,9 +1847,10 @@ def test_refinement_rewrite_culls_and_splits_families(device, tmp_path: Path) ->
     )
 
     trainer._observed_contribution_pixel_count = observed_pixels
-    trainer.refinement_buffers["clone_counts"].copy_from_numpy(np.array([2, 5], dtype=np.uint32))
+    clone_counts = np.array([2, 5], dtype=np.uint32)
+    trainer.refinement_buffers["clone_counts"].copy_from_numpy(clone_counts)
     trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200, 0], dtype=np.uint32))
-    trainer._run_refinement()
+    trainer._run_refinement(clone_counts_override=clone_counts)
 
     groups = _read_scene_groups(renderer, trainer.scene.count)
     actual_scales = _actual_scale(groups["scales"][:, :3])
@@ -2421,9 +1903,10 @@ def test_refinement_clone_scale_mul_scales_split_family_sigma(device, tmp_path: 
     )
 
     trainer._observed_contribution_pixel_count = observed_pixels
-    trainer.refinement_buffers["clone_counts"].copy_from_numpy(np.array([1], dtype=np.uint32))
+    clone_counts = np.array([1], dtype=np.uint32)
+    trainer.refinement_buffers["clone_counts"].copy_from_numpy(clone_counts)
     trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
-    trainer._run_refinement()
+    trainer._run_refinement(clone_counts_override=clone_counts)
 
     assert trainer.scene.count == 2
     groups = _read_scene_groups(renderer, trainer.scene.count)
@@ -2454,9 +1937,10 @@ def test_refinement_compact_split_beta_scales_split_family_sigma(device, tmp_pat
     )
 
     trainer._observed_contribution_pixel_count = observed_pixels
-    trainer.refinement_buffers["clone_counts"].copy_from_numpy(np.array([1], dtype=np.uint32))
+    clone_counts = np.array([1], dtype=np.uint32)
+    trainer.refinement_buffers["clone_counts"].copy_from_numpy(clone_counts)
     trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
-    trainer._run_refinement()
+    trainer._run_refinement(clone_counts_override=clone_counts)
 
     groups = _read_scene_groups(renderer, trainer.scene.count)
     actual_scales = _actual_scale(groups["scales"][:, :3])
@@ -2504,9 +1988,10 @@ def test_refinement_rewrite_culls_low_contribution_splats(device, tmp_path: Path
     )
 
     trainer._observed_contribution_pixel_count = observed_pixels
-    trainer.refinement_buffers["clone_counts"].copy_from_numpy(np.array([0, 0], dtype=np.uint32))
+    clone_counts = np.array([0, 0], dtype=np.uint32)
+    trainer.refinement_buffers["clone_counts"].copy_from_numpy(clone_counts)
     trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200, 49], dtype=np.uint32))
-    trainer._run_refinement()
+    trainer._run_refinement(clone_counts_override=clone_counts)
 
     assert trainer.scene.count == 1
     groups = _read_scene_groups(renderer, trainer.scene.count)
@@ -2533,9 +2018,10 @@ def test_refinement_opacity_mul_rewrites_unsplit_survivor_alpha(device, tmp_path
     )
 
     trainer._observed_contribution_pixel_count = observed_pixels
-    trainer.refinement_buffers["clone_counts"].copy_from_numpy(np.array([0], dtype=np.uint32))
+    clone_counts = np.array([0], dtype=np.uint32)
+    trainer.refinement_buffers["clone_counts"].copy_from_numpy(clone_counts)
     trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
-    trainer._run_refinement()
+    trainer._run_refinement(clone_counts_override=clone_counts)
 
     groups = _read_scene_groups(renderer, trainer.scene.count)
     np.testing.assert_allclose(_actual_opacity(groups["color_alpha"][:, 3]), np.array([0.25], dtype=np.float32), rtol=0.0, atol=1e-6)
@@ -2565,9 +2051,10 @@ def test_refinement_solve_opacity_shares_family_alpha(device, tmp_path: Path) ->
     )
 
     trainer._observed_contribution_pixel_count = observed_pixels
-    trainer.refinement_buffers["clone_counts"].copy_from_numpy(np.array([1], dtype=np.uint32))
+    clone_counts = np.array([1], dtype=np.uint32)
+    trainer.refinement_buffers["clone_counts"].copy_from_numpy(clone_counts)
     trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
-    trainer._run_refinement()
+    trainer._run_refinement(clone_counts_override=clone_counts)
 
     groups = _read_scene_groups(renderer, trainer.scene.count)
     actual_opacity = _actual_opacity(groups["color_alpha"][:, 3])
@@ -2599,9 +2086,10 @@ def test_refinement_rewrite_migrates_adam_moments(device, tmp_path: Path) -> Non
     trainer.adam_optimizer.buffers["adam_moments"].copy_from_numpy(src_moments.reshape(-1, 2))
 
     trainer._observed_contribution_pixel_count = observed_pixels
-    trainer.refinement_buffers["clone_counts"].copy_from_numpy(np.array([2, 5], dtype=np.uint32))
+    clone_counts = np.array([2, 5], dtype=np.uint32)
+    trainer.refinement_buffers["clone_counts"].copy_from_numpy(clone_counts)
     trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200, 0], dtype=np.uint32))
-    trainer._run_refinement()
+    trainer._run_refinement(clone_counts_override=clone_counts)
 
     expected = np.repeat(src_moments[:, 0:1, :], 3, axis=1)
     np.testing.assert_allclose(_read_adam_moments(trainer, trainer.scene.count), expected, rtol=0.0, atol=1e-7)
@@ -2624,9 +2112,10 @@ def test_refinement_respects_max_gaussians_cap(device, tmp_path: Path) -> None:
     )
 
     trainer._observed_contribution_pixel_count = observed_pixels
-    trainer.refinement_buffers["clone_counts"].copy_from_numpy(np.array([4, 4], dtype=np.uint32))
+    clone_counts = np.array([4, 4], dtype=np.uint32)
+    trainer.refinement_buffers["clone_counts"].copy_from_numpy(clone_counts)
     trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200, 200], dtype=np.uint32))
-    trainer._run_refinement()
+    trainer._run_refinement(clone_counts_override=clone_counts)
 
     assert trainer.scene.count == 3
     groups = _read_scene_groups(renderer, trainer.scene.count)
@@ -2671,12 +2160,13 @@ def test_refinement_rewrite_sampling_depends_on_frame_hash(device, tmp_path: Pat
 
     trainer_a._observed_contribution_pixel_count = observed_pixels
     trainer_b._observed_contribution_pixel_count = observed_pixels
-    trainer_a.refinement_buffers["clone_counts"].copy_from_numpy(np.array([1], dtype=np.uint32))
-    trainer_b.refinement_buffers["clone_counts"].copy_from_numpy(np.array([1], dtype=np.uint32))
+    clone_counts = np.array([1], dtype=np.uint32)
+    trainer_a.refinement_buffers["clone_counts"].copy_from_numpy(clone_counts)
+    trainer_b.refinement_buffers["clone_counts"].copy_from_numpy(clone_counts)
     trainer_a.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
     trainer_b.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
-    trainer_a._run_refinement()
-    trainer_b._run_refinement()
+    trainer_a._run_refinement(clone_counts_override=clone_counts)
+    trainer_b._run_refinement(clone_counts_override=clone_counts)
 
     positions_a = _read_scene_groups(renderer_a, trainer_a.scene.count)["positions"][:, :3]
     positions_b = _read_scene_groups(renderer_b, trainer_b.scene.count)["positions"][:, :3]
@@ -2704,9 +2194,10 @@ def test_refinement_rewrite_samples_family_offsets_on_largest_area_plane(device,
     )
 
     trainer._observed_contribution_pixel_count = observed_pixels
-    trainer.refinement_buffers["clone_counts"].copy_from_numpy(np.array([3], dtype=np.uint32))
+    clone_counts = np.array([3], dtype=np.uint32)
+    trainer.refinement_buffers["clone_counts"].copy_from_numpy(clone_counts)
     trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
-    trainer._run_refinement()
+    trainer._run_refinement(clone_counts_override=clone_counts)
 
     groups = _read_scene_groups(renderer, trainer.scene.count)
     family_positions = groups["positions"][:, :3]
@@ -2754,9 +2245,10 @@ def test_refinement_rewrite_sample_radius_scales_child_offsets(device, tmp_path:
         )
 
         trainer._observed_contribution_pixel_count = observed_pixels
-        trainer.refinement_buffers["clone_counts"].copy_from_numpy(np.array([1], dtype=np.uint32))
+        clone_counts = np.array([1], dtype=np.uint32)
+        trainer.refinement_buffers["clone_counts"].copy_from_numpy(clone_counts)
         trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
-        trainer._run_refinement()
+        trainer._run_refinement(clone_counts_override=clone_counts)
 
         positions = _read_scene_groups(renderer, trainer.scene.count)["positions"][:, :3]
         np.testing.assert_allclose(np.mean(positions, axis=0), base_scene.positions[0], rtol=0.0, atol=1e-6)

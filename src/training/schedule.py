@@ -277,14 +277,12 @@ def should_run_refinement_step(training_hparams: Any, step: int, frame_count: in
     return int(step) > 0 and int(step) % interval == 0
 
 
-def resolve_clone_probability_threshold(training_hparams: Any, splat_count: int, pixel_count: int, step: int = 0, frame_count: int = 1) -> float:
-    interval = resolve_effective_refinement_interval(training_hparams, frame_count)
+def resolve_refinement_clone_budget(training_hparams: Any, splat_count: int, step: int = 0, frame_count: int = 1) -> int:
     growth_ratio = resolve_refinement_growth_ratio(training_hparams, step)
-    pixels = max(int(pixel_count), 1)
     max_gaussians = max(int(getattr(training_hparams, "max_gaussians", 0)), 0)
     if max_gaussians > 0 and int(splat_count) >= max_gaussians:
-        return 0.0
-    target_clones = float(splat_count) * growth_ratio
+        return 0
+    target_clones = int(math.ceil(float(max(int(splat_count), 0)) * growth_ratio))
     if max_gaussians > 0:
-        target_clones = min(target_clones, float(max(max_gaussians - int(splat_count), 0)))
-    return min(max(target_clones / float(interval * pixels), 0.0), 1.0)
+        target_clones = min(target_clones, max(max_gaussians - int(splat_count), 0))
+    return max(int(target_clones), 0)
