@@ -218,6 +218,12 @@ def test_default_training_params_include_refinement_sample_radius() -> None:
     assert params.training.refinement_sample_radius == 4.0
 
 
+def test_build_training_params_clamps_subsample_to_one_eighth() -> None:
+    params = build_training_params(background=(1.0, 1.0, 1.0), train_subsample_factor=99)
+
+    assert params.training.train_subsample_factor == 8
+
+
 def test_build_training_params_exposes_refinement_clone_scale_mul() -> None:
     params = build_training_params(background=(1.0, 1.0, 1.0), refinement_clone_scale_mul=1.5)
     clamped = build_training_params(background=(1.0, 1.0, 1.0), refinement_clone_scale_mul=-2.0)

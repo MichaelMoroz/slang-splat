@@ -680,6 +680,12 @@ def test_training_setup_section_draws_subsampling_control(monkeypatch) -> None:
     assert reset_calls == [("train_setup_ctx", tuple(spec.key for spec in ui.GROUP_SPECS["Train Setup"]))]
 
 
+def test_subsampling_control_exposes_one_eighth() -> None:
+    spec = next(spec for spec in ui.GROUP_SPECS["Train Setup"] if spec.key == "train_subsample_factor")
+
+    assert spec.kwargs["options"] == ("Auto", "Off", "1/2", "1/3", "1/4", "1/5", "1/6", "1/7", "1/8")
+
+
 def test_draw_control_compact_uses_stacked_hidden_labels(monkeypatch) -> None:
     labels: list[str] = []
     widget_labels: list[str] = []

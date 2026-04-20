@@ -153,6 +153,7 @@ Training background is configured separately from the viewer clear color:
 
 - `Auto`
 - manual `1x` through `16x`
+- Subsampling `Auto`, `Off`, and manual `1/2` through `1/8`
 
 Auto mode has its own `Auto Start Downscale` parameter and schedule controls:
 
@@ -165,7 +166,7 @@ Behavior:
 - Manual modes force a fixed training downscale immediately.
 - Auto mode starts from `Auto Start Downscale`, then descends toward `1x`.
 - Each lower factor lasts `base_iters + level_index * iter_step`.
-- Training render resolution is always `ceil(native_width / N) x ceil(native_height / N)` for the effective factor.
+- Training render resolution is always `ceil(native_width / N) x ceil(native_height / N)` for the effective factor, where `N` is downscale multiplied by the active subsampling factor.
 - Loss targets are generated from the native dataset image with an exact `NxN` box filter on the GPU.
 - Changing mode or crossing an auto schedule boundary recreates only the train-resolution renderer and target resources; scene state, ADAM moments, shuffle order, step counter, and pause/run state are preserved.
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..repo_defaults import viewer_defaults
+from ..training import TRAIN_SUBSAMPLE_MAX_FACTOR
 from ..training.defaults import (
     DEFAULT_LR_SCHEDULE_STEPS,
     DEFAULT_REFINEMENT_CLONE_SCALE_MUL,
@@ -14,7 +15,7 @@ _VIEWER_CONTROL_DEFAULTS = viewer_defaults()["controls"]
 
 TRAIN_BACKGROUND_MODE_LABELS = ("Custom", "Random")
 TRAIN_DOWNSCALE_MODE_LABELS = ("Auto",) + tuple(f"{i}x" for i in range(1, 17))
-TRAIN_SUBSAMPLE_LABELS = ("Auto", "Off", "1/2", "1/3", "1/4")
+TRAIN_SUBSAMPLE_LABELS = ("Auto", "Off") + tuple(f"1/{i}" for i in range(2, TRAIN_SUBSAMPLE_MAX_FACTOR + 1))
 SH_BAND_LABELS = ("SH0", "SH1", "SH2", "SH3")
 
 TRAINING_SETUP_GROUP = "Train Setup"

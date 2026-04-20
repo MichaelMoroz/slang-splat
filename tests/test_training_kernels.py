@@ -1320,6 +1320,15 @@ def test_effective_train_render_factor_multiplies_downscale_and_subsample() -> N
     assert resolve_effective_train_render_factor(hparams, 0) == 6
 
 
+def test_train_subsample_accepts_one_eighth_mode() -> None:
+    hparams = TrainingHyperParams(train_subsample_factor=8)
+    clamped = TrainingHyperParams(train_subsample_factor=99)
+
+    assert resolve_train_subsample_factor(hparams) == 8
+    assert resolve_effective_train_render_factor(hparams, 0) == 8
+    assert resolve_train_subsample_factor(clamped) == 8
+
+
 def test_auto_train_subsample_targets_nearest_strictly_above_1k_max_side() -> None:
     hparams = TrainingHyperParams(train_subsample_factor=0, train_downscale_mode=1)
 
@@ -1327,6 +1336,7 @@ def test_auto_train_subsample_targets_nearest_strictly_above_1k_max_side() -> No
     assert resolve_auto_train_subsample_factor(2048, 1024, 1) == 2
     assert resolve_auto_train_subsample_factor(3000, 1600, 1) == 2
     assert resolve_auto_train_subsample_factor(4000, 2000, 1) == 3
+    assert resolve_auto_train_subsample_factor(9000, 4500, 1) == 8
     assert resolve_auto_train_subsample_factor(1000, 800, 1) == 1
     assert resolve_train_subsample_factor(hparams, 2048, 1024, 0) == 2
     assert resolve_effective_train_render_factor(hparams, 0, 2048, 1024) == 2

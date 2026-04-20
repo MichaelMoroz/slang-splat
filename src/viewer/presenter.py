@@ -9,7 +9,7 @@ import slangpy as spy
 
 from ..utility import alloc_texture_2d, clamp_index, debug_region, require_not_none
 from ..filter import SeparableGaussianBlur
-from ..training import resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_depth_ratio_weight, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_sh_band, resolve_sh_lr_mul
+from ..training import TRAIN_SUBSAMPLE_MAX_FACTOR, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_depth_ratio_weight, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution_percent, resolve_sh_band, resolve_sh_lr_mul
 from . import session
 
 _DEBUG_HUGE_VALUE = 1e8
@@ -541,7 +541,7 @@ def _preview_train_subsample_factor(viewer: object) -> int:
     except Exception:
         return 1
     if mode != 0:
-        return max(min(mode, 4), 1)
+        return max(min(mode, TRAIN_SUBSAMPLE_MAX_FACTOR), 1)
     if not getattr(viewer.s, "training_frames", None):
         return 1
     native_width = max(int(viewer.s.training_frames[0].width), 1)

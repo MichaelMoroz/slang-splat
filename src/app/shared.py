@@ -11,7 +11,7 @@ from ..repo_defaults import renderer_defaults
 from ..utility import clamp_float, clamp_int
 from ..scene import GaussianInitHyperParams, GaussianScene
 from ..training.defaults import DEFAULT_REFINEMENT_CLONE_SCALE_MUL, TRAINING_BUILD_ARG_DEFAULTS
-from ..training import AdamHyperParams, DEFAULT_DEBUG_CONTRIBUTION_RANGE_PERCENT, DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY, DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, resolve_depth_ratio_grad_band, resolve_training_profile
+from ..training import AdamHyperParams, DEFAULT_DEBUG_CONTRIBUTION_RANGE_PERCENT, DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY, DEFAULT_REFINEMENT_MIN_CONTRIBUTION_PERCENT, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TRAIN_SUBSAMPLE_MAX_FACTOR, TrainingHyperParams, resolve_depth_ratio_grad_band, resolve_training_profile
 
 EPS = 1e-8
 MIN_SCENE_RADIUS = 1.0
@@ -356,7 +356,7 @@ def build_training_params(
         train_downscale_iter_step=clamp_int(train_downscale_iter_step, 0, 1_000_000_000),
         train_downscale_max_iters=clamp_int(train_downscale_max_iters, 1, 1_000_000_000),
         train_downscale_factor=clamp_int(train_downscale_factor, 1, 16),
-        train_subsample_factor=clamp_int(train_subsample_factor, 0, 4),
+        train_subsample_factor=clamp_int(train_subsample_factor, 0, TRAIN_SUBSAMPLE_MAX_FACTOR),
     )
     stability.max_opacity = max(stability.max_opacity, stability.min_opacity)
     if training.far <= training.near:
