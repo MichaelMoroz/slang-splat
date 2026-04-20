@@ -1090,6 +1090,18 @@ void csRewriteRefinementSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
 
 [shader("compute")]
 [numthreads(TRAIN_TILE_DIM, TRAIN_TILE_DIM, 1)]
+void csSampleTrainingDebugTarget(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint px = dispatchThreadID.x;
+    uint py = dispatchThreadID.y;
+    if (px >= g_TargetWidth || py >= g_TargetHeight) return;
+
+    uint2 pixel = uint2(px, py);
+    g_DownscaledTarget[pixel] = g_SourceTarget[training_sample_native_pixel(pixel, g_TrainingSubsample)];
+}
+
+[shader("compute")]
+[numthreads(TRAIN_TILE_DIM, TRAIN_TILE_DIM, 1)]
 void csComposeAbsDiffDebug(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     uint px = dispatchThreadID.x;

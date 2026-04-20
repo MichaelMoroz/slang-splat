@@ -18,6 +18,7 @@ _DEBUG_ABS_DIFF_SCALE_DEFAULT = 1.0
 _DEBUG_ABS_DIFF_SCALE_MIN = 0.125
 _DEBUG_ABS_DIFF_SCALE_MAX = 64.0
 _DEBUG_DSSIM_FEATURE_CHANNELS = 15
+_DEBUG_TARGET_SAMPLE_REGION = 155
 _DEFAULT_TRAINING_STEPS_PER_FRAME = 3
 _MAX_TRAINING_STEPS_PER_FRAME = 8
 _TRAIN_DOWNSCALE_MODE_AUTO = 0
@@ -830,20 +831,121 @@ def _update_toolkit_history(viewer: object, dt: float) -> None:
                 tk.tk.psnr_history.append(tk.tk.psnr_history[-1])
 
 
-def _render_debug_source(viewer: object, encoder: spy.CommandEncoder, frame_idx: int) -> tuple[spy.Texture, dict[str, int | bool | float], int, int]:
+def _training_debug_step(viewer: object) -> int:
+    return max(int(getattr(getattr(viewer.s.trainer, "state", None), "step", 0)), 0)
+
+
+def _training_debug_resolution(viewer: object, frame_idx: int, step: int) -> tuple[int, int]:
+    trainer = viewer.s.trainer
+    if hasattr(trainer, "training_resolution"):
+        width, height = trainer.training_resolution(frame_idx, step)
+        return max(int(width), 1), max(int(height), 1)
     frame = viewer.s.training_frames[frame_idx]
-    debug_width, debug_height = max(int(frame.width), 1), max(int(frame.height), 1)
+    return max(int(frame.width), 1), max(int(frame.height), 1)
+
+
+def _training_debug_frame_size(viewer: object, frame_idx: int) -> tuple[int, int]:
+    trainer = viewer.s.trainer
+    if hasattr(trainer, "frame_size"):
+        width, height = trainer.frame_size(frame_idx)
+        return max(int(width), 1), max(int(height), 1)
+    frame = viewer.s.training_frames[frame_idx]
+    return max(int(frame.width), 1), max(int(frame.height), 1)
+
+
+def _training_debug_sample_vars(viewer: object, frame_idx: int, step: int, render_frame_index: int) -> dict[str, object]:
+    trainer = viewer.s.trainer
+    if hasattr(trainer, "training_sample_vars"):
+        return trainer.training_sample_vars(frame_idx, step, sample_seed_step=render_frame_index)
+    return {}
+
+
+def _training_debug_background(viewer: object) -> np.ndarray:
+    trainer = viewer.s.trainer
+    if hasattr(trainer, "training_background"):
+        return np.asarray(trainer.training_background(), dtype=np.float32).reshape(3)
+    return np.asarray(getattr(viewer.s, "background", (0.0, 0.0, 0.0)), dtype=np.float32).reshape(3)
+
+
+def _training_debug_background_seed(viewer: object, render_frame_index: int) -> int:
+    trainer = viewer.s.trainer
+    if hasattr(trainer, "training_background_seed"):
+        return int(trainer.training_background_seed(render_frame_index))
+    return int(render_frame_index)
+
+
+def _apply_training_debug_renderer_hparams(viewer: object, debug_renderer: object, step: int) -> None:
+    trainer = viewer.s.trainer
+    if hasattr(trainer, "apply_renderer_training_hparams"):
+        trainer.apply_renderer_training_hparams(step, renderer=debug_renderer)
+    else:
+        debug_renderer.sh_band = resolve_sh_band(trainer.training, step)
+
+
+def _render_debug_source(viewer: object, encoder: spy.CommandEncoder, frame_idx: int, render_frame_index: int) -> tuple[spy.Texture, dict[str, int | bool | float], int, int, dict[str, object]]:
+    step = _training_debug_step(viewer)
+    debug_width, debug_height = _training_debug_resolution(viewer, frame_idx, step)
+    native_width, native_height = _training_debug_frame_size(viewer, frame_idx)
     frame_camera = viewer.s.trainer.make_frame_camera(frame_idx, debug_width, debug_height)
+    native_camera = viewer.s.trainer.make_frame_camera(frame_idx, native_width, native_height)
     debug_renderer = session.ensure_renderer(viewer, "debug_renderer", debug_width, debug_height, allow_debug_overlays=True)
     session.sync_scene_from_training_renderer(viewer, debug_renderer, target="debug")
-    source_tex, stats = debug_renderer.render_to_texture(frame_camera, background=viewer.s.background, read_stats=True, command_encoder=encoder)
-    return source_tex, stats, debug_width, debug_height
+    _apply_training_debug_renderer_hparams(viewer, debug_renderer, step)
+    sample_vars = _training_debug_sample_vars(viewer, frame_idx, step, render_frame_index)
+    sort_camera_position = (
+        viewer.s.trainer.sorting_dithered_camera_position(frame_idx, render_frame_index, frame_camera)
+        if hasattr(viewer.s.trainer, "sorting_dithered_camera_position")
+        else None
+    )
+    training = viewer.s.trainer.training
+    source_tex, stats = debug_renderer.render_training_forward_to_texture(
+        frame_camera,
+        background=_training_debug_background(viewer),
+        read_stats=True,
+        command_encoder=encoder,
+        sort_camera_position=sort_camera_position,
+        training_background_mode=int(getattr(training, "background_mode", 0)),
+        training_background_seed=_training_debug_background_seed(viewer, render_frame_index),
+        training_native_camera=native_camera,
+        training_sample_vars=sample_vars,
+    )
+    return source_tex, stats, debug_width, debug_height, sample_vars
 
 
-def _render_debug_view(viewer: object, encoder: spy.CommandEncoder, output_width: int, output_height: int) -> spy.Texture:
+def _sample_training_debug_target(viewer: object, encoder: spy.CommandEncoder, source_tex: spy.Texture, width: int, height: int, sample_vars: dict[str, object], frame_idx: int) -> spy.Texture:
+    output = _ensure_texture(viewer, "debug_target_texture", width, height)
+    frame = viewer.s.training_frames[frame_idx]
+    with debug_region(encoder, "Viewer Debug Target Sample", _DEBUG_TARGET_SAMPLE_REGION):
+        require_not_none(viewer.s.debug_target_sample_kernel, "Debug target sample kernel is not initialized.").dispatch(
+            thread_count=spy.uint3(int(width), int(height), 1),
+            vars={
+                "g_SourceTarget": source_tex,
+                "g_DownscaledTarget": output,
+                "g_SourceWidth": max(int(frame.width), 1),
+                "g_SourceHeight": max(int(frame.height), 1),
+                "g_TargetWidth": int(width),
+                "g_TargetHeight": int(height),
+                "g_DownscaleFactor": int(sample_vars.get("g_TrainingSubsample", {}).get("factor", 1)),
+                **sample_vars,
+            },
+            command_encoder=encoder,
+        )
+    return output
+
+
+def _render_debug_target(viewer: object, encoder: spy.CommandEncoder, frame_idx: int, width: int, height: int, step: int, sample_vars: dict[str, object]) -> spy.Texture:
+    trainer = viewer.s.trainer
+    subsample = int(trainer.effective_train_subsample_factor(frame_idx, step)) if hasattr(trainer, "effective_train_subsample_factor") else 1
+    if subsample > 1:
+        native_target = trainer.get_frame_target_texture(frame_idx, native_resolution=True, encoder=encoder)
+        return _sample_training_debug_target(viewer, encoder, native_target, width, height, sample_vars, frame_idx)
+    return trainer.get_frame_target_texture(frame_idx, native_resolution=False, encoder=encoder)
+
+
+def _render_debug_view(viewer: object, encoder: spy.CommandEncoder, output_width: int, output_height: int, render_frame_index: int) -> spy.Texture:
     frame_idx = _debug_frame_idx(viewer)
-    debug_render_tex, viewer.s.stats, debug_width, debug_height = _render_debug_source(viewer, encoder, frame_idx)
-    target_tex = viewer.s.trainer.get_frame_target_texture(frame_idx, native_resolution=True, encoder=encoder)
+    debug_render_tex, viewer.s.stats, debug_width, debug_height, sample_vars = _render_debug_source(viewer, encoder, frame_idx, render_frame_index)
+    target_tex = _render_debug_target(viewer, encoder, frame_idx, debug_width, debug_height, _training_debug_step(viewer), sample_vars)
     debug_view = _debug_view_key(viewer)
     source_tex = (
         debug_render_tex if debug_view == "rendered"
@@ -854,10 +956,6 @@ def _render_debug_view(viewer: object, encoder: spy.CommandEncoder, output_width
         else _dispatch_debug_edge_filter(viewer, encoder, target_tex, debug_width, debug_height)
     )
     return _dispatch_viewport_present(viewer, encoder, source_tex, debug_width, debug_height, output_width, output_height)
-
-
-
-
 def _render_main_view(viewer: object, encoder: spy.CommandEncoder) -> spy.Texture:
     if viewer.s.trainer is not None and viewer.s.training_renderer is not None:
         session.sync_scene_from_training_renderer(viewer, viewer.s.renderer, target="main")
@@ -873,6 +971,8 @@ def render_frame(viewer: object, render_context: spy.AppWindow.RenderContext) ->
     viewer.s.last_time = now
     iw, ih = int(image.width), int(image.height)
     render_width, render_height = _viewport_target_size(viewer, iw, ih)
+    render_frame_index = int(getattr(viewer.s, "render_frame_index", 0))
+    viewer.s.render_frame_index = render_frame_index + 1
     try:
         viewer.update_camera(dt)
         runtime_reconfigured = False
@@ -902,7 +1002,7 @@ def render_frame(viewer: object, render_context: spy.AppWindow.RenderContext) ->
             session.ensure_training_runtime_resolution(viewer)
         viewer.s.training_runtime_factor_changed = False
         if _training_camera_debug_active(viewer) and viewer.s.trainer is not None and viewer.s.training_frames:
-            viewer.s.viewport_texture = _render_debug_view(viewer, encoder, render_width, render_height)
+            viewer.s.viewport_texture = _render_debug_view(viewer, encoder, render_width, render_height, render_frame_index)
         else:
             viewer.s.viewport_texture = _render_main_view(viewer, encoder)
         if bool(viewer.ui._values.get("_histograms_refresh_requested", False)):

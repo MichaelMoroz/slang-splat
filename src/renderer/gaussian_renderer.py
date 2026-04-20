@@ -1800,6 +1800,41 @@ class GaussianRenderer:
         self._last_stats = self._stats_payload(scene.count, read_stats)
         return self.output_texture, self._last_stats
 
+    def render_training_forward_to_texture(
+        self,
+        camera: Camera,
+        background: np.ndarray | tuple[float, float, float] = (0.0, 0.0, 0.0),
+        read_stats: bool = True,
+        command_encoder: spy.CommandEncoder | None = None,
+        sort_camera_position: np.ndarray | None = None,
+        training_background_mode: int = 0,
+        training_background_seed: int = 0,
+        training_native_camera: Camera | None = None,
+        training_sample_vars: dict[str, object] | None = None,
+    ) -> tuple[spy.Texture, dict[str, int | bool | float]]:
+        scene = self._require_scene()
+        if scene.count <= 0:
+            raise RuntimeError("Cannot render empty scene.")
+        self._ensure_work_buffers(scene.count, self._pending_min_list_entries)
+        background_np = self._background_array(background)
+        if command_encoder is None:
+            enc = self.device.create_command_encoder()
+            with debug_region(enc, "Renderer Training Preview Prepass", 19):
+                self._record_prepass(enc, scene, camera, enqueue_counter_readback=True, sort_camera_position=sort_camera_position)
+            self._rasterize_training_forward(enc, camera, background_np, training_background_mode=training_background_mode, training_background_seed=training_background_seed, training_native_camera=training_native_camera, training_sample_vars=training_sample_vars)
+            self.device.submit_command_buffer(enc.finish())
+            self._counter_readback_frame_id += 1
+            self.device.wait()
+        else:
+            with debug_region(command_encoder, "Renderer Training Preview Prepass", 19):
+                self._record_prepass(command_encoder, scene, camera, enqueue_counter_readback=True, sort_camera_position=sort_camera_position)
+            self._counter_readback_frame_id += 1
+            self._rasterize_training_forward(command_encoder, camera, background_np, training_background_mode=training_background_mode, training_background_seed=training_background_seed, training_native_camera=training_native_camera, training_sample_vars=training_sample_vars)
+        if read_stats:
+            self._update_delayed_counter_stats()
+        self._last_stats = self._stats_payload(scene.count, read_stats)
+        return self.output_texture, self._last_stats
+
     def render(self, scene: GaussianScene, camera: Camera, background: np.ndarray | tuple[float, float, float] = (0.0, 0.0, 0.0)) -> RenderOutput:
         if scene.count <= 0:
             return RenderOutput(image=np.zeros((self.height, self.width, 4), dtype=np.float32), stats=self._stats_payload(0, True, stats_valid=True))

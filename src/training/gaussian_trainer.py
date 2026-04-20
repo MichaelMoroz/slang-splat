@@ -328,9 +328,15 @@ class GaussianTrainer:
     def _training_background(self) -> np.ndarray:
         return np.asarray(self.training.background, dtype=np.float32).reshape(3)
 
+    def training_background(self) -> np.ndarray:
+        return self._training_background()
+
     def _training_background_seed(self, step: int | None = None) -> int:
         resolved_step = self.state.step if step is None else int(step)
         return int(_refinement_hash_combine(self._seed + 0x9E3779B9, max(resolved_step, 0)))
+
+    def training_background_seed(self, seed_index: int | None = None) -> int:
+        return self._training_background_seed(seed_index)
 
     def _frame(self, frame_index: int) -> ColmapFrame:
         return self.frames[clamp_index(frame_index, len(self.frames))]
@@ -413,9 +419,13 @@ class GaussianTrainer:
             huge_value=float(self.stability.huge_value),
         )
 
-    def _apply_renderer_training_hparams(self, step: int | None = None) -> None:
+    def apply_renderer_training_hparams(self, step: int | None = None, renderer: GaussianRenderer | None = None) -> None:
         resolved_step = 0 if step is None and not hasattr(self, "state") else self.state.step if step is None else int(step)
-        self.renderer.sh_band = resolve_sh_band(self.training, resolved_step)
+        target_renderer = self.renderer if renderer is None else renderer
+        target_renderer.sh_band = resolve_sh_band(self.training, resolved_step)
+
+    def _apply_renderer_training_hparams(self, step: int | None = None) -> None:
+        self.apply_renderer_training_hparams(step)
 
     def _dispatch(self, kernel: str, encoder: spy.CommandEncoder, thread_count: spy.uint3, vars: dict[str, object]) -> None:
         dispatch(
@@ -431,8 +441,9 @@ class GaussianTrainer:
         width, height = self.frame_size(frame_index)
         return self.make_frame_camera(frame_index, width, height)
 
-    def _training_sample_vars(self, frame_index: int, step: int | None = None) -> dict[str, object]:
+    def training_sample_vars(self, frame_index: int, step: int | None = None, sample_seed_step: int | None = None) -> dict[str, object]:
         resolved_step = self.state.step if step is None else int(step)
+        resolved_sample_step = resolved_step if sample_seed_step is None else int(sample_seed_step)
         frame = self._frame(frame_index)
         subsample_factor = self.effective_train_subsample_factor(frame_index, resolved_step)
         return {
@@ -442,9 +453,12 @@ class GaussianTrainer:
                 "nativeWidth": np.uint32(max(int(frame.width), 1)),
                 "nativeHeight": np.uint32(max(int(frame.height), 1)),
                 "frameIndex": np.uint32(max(int(frame_index), 0)),
-                "stepIndex": np.uint32(max(resolved_step, 0)),
+                "stepIndex": np.uint32(max(resolved_sample_step, 0)),
             }
         }
+
+    def _training_sample_vars(self, frame_index: int, step: int | None = None) -> dict[str, object]:
+        return self.training_sample_vars(frame_index, step)
 
     def _dispatch_raster_training_forward(
         self,

@@ -121,8 +121,8 @@ class ViewerState:
     colmap_import_progress: ColmapImportProgress | None = None
     cached_init_point_positions: np.ndarray | None = None; cached_init_point_colors: np.ndarray | None = None
     cached_init_scene: GaussianScene | None = None; cached_init_signature: tuple[object, ...] | None = None
-    trainer: GaussianTrainer | None = None; training_active: bool = False; viewport_texture: spy.Texture | None = None; loss_debug_texture: spy.Texture | None = None
-    debug_abs_diff_kernel: spy.ComputeKernel | None = None; debug_edge_kernel: spy.ComputeKernel | None = None; debug_dssim_features_kernel: spy.ComputeKernel | None = None; debug_dssim_compose_kernel: spy.ComputeKernel | None = None; debug_letterbox_kernel: spy.ComputeKernel | None = None; debug_present_texture: spy.Texture | None = None
+    trainer: GaussianTrainer | None = None; training_active: bool = False; viewport_texture: spy.Texture | None = None; loss_debug_texture: spy.Texture | None = None; debug_target_texture: spy.Texture | None = None
+    debug_abs_diff_kernel: spy.ComputeKernel | None = None; debug_edge_kernel: spy.ComputeKernel | None = None; debug_dssim_features_kernel: spy.ComputeKernel | None = None; debug_dssim_compose_kernel: spy.ComputeKernel | None = None; debug_letterbox_kernel: spy.ComputeKernel | None = None; debug_target_sample_kernel: spy.ComputeKernel | None = None; debug_present_texture: spy.Texture | None = None
     debug_dssim_blur: object | None = None; debug_dssim_resolution: tuple[int, int] | None = None
     debug_dssim_moments: spy.Buffer | None = None; debug_dssim_blurred_moments: spy.Buffer | None = None
     synced_step_main: int = -1; synced_step_debug: int = -1
@@ -130,7 +130,7 @@ class ViewerState:
     applied_training_signature: tuple[object, ...] | None = None; applied_training_runtime_signature: tuple[object, ...] | None = None; applied_training_runtime_factor: int | None = None
     cached_training_setup_signature: tuple[object, ...] | None = None; cached_training_setup: tuple[object, object, object, object] | None = None
     training_runtime_factor_changed: bool = False; pending_training_runtime_resize: bool = False; pending_training_reinitialize: bool = False
-    last_training_batch_steps: int = 0
+    last_training_batch_steps: int = 0; render_frame_index: int = 0
     training_elapsed_s: float = 0.0; training_resume_time: float | None = None
     cached_raster_grad_histograms: ParamLog10Histograms | None = None
     cached_raster_grad_ranges: ParamTensorRanges | None = None

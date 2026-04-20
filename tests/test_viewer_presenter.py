@@ -27,9 +27,15 @@ class _DummyRenderer:
     def __init__(self, width: int = 640, height: int = 360) -> None:
         self.width = width
         self.height = height
+        self.sh_band = 0
+        self.training_forward_calls: list[dict[str, object]] = []
 
     def render_to_texture(self, camera: object, background: object, read_stats: bool, command_encoder: object) -> tuple[object, dict[str, int | bool | float]]:
         return object(), {"generated_entries": 1, "written_entries": 2, "overflow": False}
+
+    def render_training_forward_to_texture(self, camera: object, background: object, read_stats: bool, command_encoder: object, **kwargs) -> tuple[object, dict[str, int | bool | float]]:
+        self.training_forward_calls.append({"camera": camera, "background": background, "read_stats": read_stats, "command_encoder": command_encoder, **kwargs})
+        return "training_preview_tex", {"generated_entries": 1, "written_entries": 2, "overflow": False}
 
 
 class _DummyTrainer:
@@ -87,6 +93,13 @@ class _DummyTrainer:
         )
         self.step_calls = 0
         self.step_batch_calls: list[int] = []
+        self.training_resolution_calls: list[tuple[int, int]] = []
+        self.sample_vars_calls: list[tuple[int, int, int | None]] = []
+        self.background_seed_calls: list[int | None] = []
+        self.hparam_calls: list[tuple[int | None, object]] = []
+        self.sort_calls: list[tuple[int, int, object]] = []
+        self.target_calls: list[tuple[int, bool]] = []
+        self.subsample_factor = 1
 
     def step(self) -> None:
         self.step_calls += 1
@@ -102,17 +115,54 @@ class _DummyTrainer:
     def effective_train_downscale_factor(self) -> int:
         return 1
 
-    def effective_train_subsample_factor(self) -> int:
-        return 1
+    def effective_train_subsample_factor(self, frame_index: int = 0, step: int | None = None) -> int:
+        return int(self.subsample_factor)
 
     def effective_train_render_factor(self) -> int:
         return 1
+
+    def training_resolution(self, frame_index: int = 0, step: int | None = None) -> tuple[int, int]:
+        self.training_resolution_calls.append((int(frame_index), int(step or 0)))
+        return (320, 180)
+
+    def frame_size(self, frame_index: int) -> tuple[int, int]:
+        return (640, 360)
 
     def current_base_lr(self) -> float:
         return 0.005
 
     def get_frame_target_texture(self, frame_index: int, native_resolution: bool = True, encoder: object | None = None) -> str:
+        self.target_calls.append((int(frame_index), bool(native_resolution)))
         return f"target_tex_{frame_index}_{native_resolution}"
+
+    def training_background(self) -> np.ndarray:
+        return np.asarray([0.25, 0.5, 0.75], dtype=np.float32)
+
+    def training_background_seed(self, seed_index: int | None = None) -> int:
+        self.background_seed_calls.append(None if seed_index is None else int(seed_index))
+        return 1000 + int(seed_index or 0)
+
+    def training_sample_vars(self, frame_index: int, step: int | None = None, sample_seed_step: int | None = None) -> dict[str, object]:
+        self.sample_vars_calls.append((int(frame_index), int(step or 0), None if sample_seed_step is None else int(sample_seed_step)))
+        return {
+            "g_TrainingSubsample": {
+                "enabled": np.uint32(1 if self.subsample_factor > 1 else 0),
+                "factor": np.uint32(2),
+                "nativeWidth": np.uint32(640),
+                "nativeHeight": np.uint32(360),
+                "frameIndex": np.uint32(frame_index),
+                "stepIndex": np.uint32(0 if sample_seed_step is None else sample_seed_step),
+            }
+        }
+
+    def apply_renderer_training_hparams(self, step: int | None = None, renderer: object | None = None) -> None:
+        self.hparam_calls.append((None if step is None else int(step), renderer))
+        if renderer is not None:
+            renderer.sh_band = 2
+
+    def sorting_dithered_camera_position(self, frame_index: int, step: int, camera: object) -> np.ndarray:
+        self.sort_calls.append((int(frame_index), int(step), camera))
+        return np.asarray([1.0, 2.0, 3.0], dtype=np.float32)
 
     def frame_metrics_snapshot(self) -> dict[str, np.ndarray]:
         return {
@@ -176,6 +226,7 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         "refinement_min_contribution_percent": _control(1e-05),
         "refinement_min_contribution_decay": _control(0.995),
         "refinement_opacity_mul": _control(1.0),
+        "refinement_clone_scale_mul": _control(1.0),
         "refinement_loss_weight": _control(0.25),
         "refinement_target_edge_weight": _control(0.75),
         "depth_ratio_stage1_weight": _control(0.05),
@@ -223,14 +274,17 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         last_error="",
         last_training_batch_steps=0,
         viewport_texture=None,
+        debug_target_texture=None,
         debug_dssim_features_kernel=None,
         debug_dssim_compose_kernel=None,
         debug_dssim_blur=None,
         debug_dssim_resolution=None,
         debug_dssim_moments=None,
         debug_dssim_blurred_moments=None,
+        debug_target_sample_kernel=None,
         colmap_import_progress=None,
         cached_raster_grad_ranges=None,
+        render_frame_index=0,
     )
     return viewer
 
@@ -244,7 +298,7 @@ def test_render_frame_uses_debug_branch_when_visual_loss_debug_enabled(monkeypat
     monkeypatch.setattr(presenter.session, "ensure_training_runtime_resolution", lambda viewer_obj: calls.append("train_resize"))
     monkeypatch.setattr(presenter.session, "recreate_renderer", lambda viewer_obj, width, height: calls.append("resize"))
     monkeypatch.setattr(presenter.session, "update_debug_frame_slider_range", lambda viewer_obj: None)
-    monkeypatch.setattr(presenter, "_render_debug_view", lambda viewer_obj, encoder, width, height: calls.append("debug") or "debug_tex")
+    monkeypatch.setattr(presenter, "_render_debug_view", lambda viewer_obj, encoder, width, height, render_frame_index: calls.append(f"debug:{render_frame_index}") or "debug_tex")
     monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, encoder: calls.append("main") or "main_tex")
     monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
 
@@ -252,7 +306,8 @@ def test_render_frame_uses_debug_branch_when_visual_loss_debug_enabled(monkeypat
 
     assert viewer.s.trainer.step_calls == 3
     assert viewer.s.viewport_texture == "debug_tex"
-    assert calls == ["apply", "debug", "ui"]
+    assert viewer.s.render_frame_index == 1
+    assert calls == ["apply", "debug:0", "ui"]
 
 
 def test_render_frame_uses_main_branch_when_visual_loss_debug_disabled(monkeypatch):
@@ -264,7 +319,7 @@ def test_render_frame_uses_main_branch_when_visual_loss_debug_disabled(monkeypat
     monkeypatch.setattr(presenter.session, "ensure_training_runtime_resolution", lambda viewer_obj: calls.append("train_resize"))
     monkeypatch.setattr(presenter.session, "recreate_renderer", lambda viewer_obj, width, height: calls.append("resize"))
     monkeypatch.setattr(presenter.session, "update_debug_frame_slider_range", lambda viewer_obj: None)
-    monkeypatch.setattr(presenter, "_render_debug_view", lambda viewer_obj, encoder, width, height: calls.append("debug") or "debug_tex")
+    monkeypatch.setattr(presenter, "_render_debug_view", lambda viewer_obj, encoder, width, height, render_frame_index: calls.append("debug") or "debug_tex")
     monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, encoder: calls.append("main") or "main_tex")
     monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
 
@@ -285,7 +340,7 @@ def test_render_frame_runs_configured_training_batch(monkeypatch):
     monkeypatch.setattr(presenter.session, "ensure_training_runtime_resolution", lambda viewer_obj: calls.append("train_resize"))
     monkeypatch.setattr(presenter.session, "recreate_renderer", lambda viewer_obj, width, height: calls.append("resize"))
     monkeypatch.setattr(presenter.session, "update_debug_frame_slider_range", lambda viewer_obj: None)
-    monkeypatch.setattr(presenter, "_render_debug_view", lambda viewer_obj, encoder, width, height: calls.append("debug") or "debug_tex")
+    monkeypatch.setattr(presenter, "_render_debug_view", lambda viewer_obj, encoder, width, height, render_frame_index: calls.append("debug") or "debug_tex")
     monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, encoder: calls.append("main") or "main_tex")
     monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
 
@@ -572,12 +627,24 @@ def test_render_debug_source_uses_overlay_renderer_for_rendered_view(monkeypatch
     monkeypatch.setattr(presenter.session, "ensure_renderer", lambda viewer_obj, attr, width, height, allow_debug_overlays: calls.append(("ensure", allow_debug_overlays)) or overlay_renderer)
     monkeypatch.setattr(presenter.session, "sync_scene_from_training_renderer", lambda viewer_obj, dst_renderer, target: calls.append(("sync", target)))
 
-    source_tex, stats, width, height = presenter._render_debug_source(viewer, _DummyEncoder(), 0)
+    source_tex, stats, width, height, sample_vars = presenter._render_debug_source(viewer, _DummyEncoder(), 0, 42)
 
-    assert width == 640
-    assert height == 360
+    assert source_tex == "training_preview_tex"
+    assert width == 320
+    assert height == 180
     assert stats["generated_entries"] == 1
     assert calls == [("ensure", True), ("sync", "debug")]
+    assert viewer.s.trainer.training_resolution_calls == [(0, 0)]
+    assert viewer.s.trainer.sample_vars_calls == [(0, 0, 42)]
+    assert viewer.s.trainer.background_seed_calls == [42]
+    assert viewer.s.trainer.hparam_calls == [(0, overlay_renderer)]
+    assert viewer.s.trainer.sort_calls == [(0, 42, (0, 320, 180))]
+    assert sample_vars["g_TrainingSubsample"]["stepIndex"] == np.uint32(42)
+    render_call = overlay_renderer.training_forward_calls[0]
+    assert render_call["camera"] == (0, 320, 180)
+    assert render_call["training_native_camera"] == (0, 640, 360)
+    assert render_call["training_background_seed"] == 1042
+    np.testing.assert_allclose(render_call["sort_camera_position"], np.asarray([1.0, 2.0, 3.0], dtype=np.float32))
 
 
 def test_render_debug_source_uses_overlay_renderer_for_abs_diff(monkeypatch) -> None:
@@ -589,12 +656,45 @@ def test_render_debug_source_uses_overlay_renderer_for_abs_diff(monkeypatch) -> 
     monkeypatch.setattr(presenter.session, "ensure_renderer", lambda viewer_obj, attr, width, height, allow_debug_overlays: calls.append(("ensure", allow_debug_overlays)) or overlay_renderer)
     monkeypatch.setattr(presenter.session, "sync_scene_from_training_renderer", lambda viewer_obj, dst_renderer, target: calls.append(("sync", target)))
 
-    source_tex, stats, width, height = presenter._render_debug_source(viewer, _DummyEncoder(), 0)
+    source_tex, stats, width, height, _ = presenter._render_debug_source(viewer, _DummyEncoder(), 0, 7)
 
-    assert width == 640
-    assert height == 360
+    assert source_tex == "training_preview_tex"
+    assert width == 320
+    assert height == 180
     assert stats["written_entries"] == 2
     assert calls == [("ensure", True), ("sync", "debug")]
+
+
+def test_render_debug_target_uses_downscaled_target_without_subsampling() -> None:
+    viewer = _viewer(loss_debug=True)
+    encoder = _DummyEncoder()
+    sample_vars = {"g_TrainingSubsample": {"enabled": np.uint32(0), "factor": np.uint32(1)}}
+
+    target = presenter._render_debug_target(viewer, encoder, 0, 320, 180, 5, sample_vars)
+
+    assert target == "target_tex_0_False"
+    assert viewer.s.trainer.target_calls == [(0, False)]
+
+
+def test_render_debug_target_samples_native_target_with_render_frame_seed(monkeypatch) -> None:
+    viewer = _viewer(loss_debug=True)
+    viewer.s.trainer.subsample_factor = 2
+    viewer.s.debug_target_sample_kernel = _CaptureKernel()
+    output = SimpleNamespace(width=320, height=180)
+    sample_vars = viewer.s.trainer.training_sample_vars(0, 9, sample_seed_step=77)
+
+    monkeypatch.setattr(presenter, "_ensure_texture", lambda viewer_obj, attr, width, height: output)
+
+    target = presenter._render_debug_target(viewer, _DummyEncoder(), 0, 320, 180, 9, sample_vars)
+
+    assert target is output
+    assert viewer.s.trainer.target_calls == [(0, True)]
+    vars = viewer.s.debug_target_sample_kernel.calls[0]["vars"]
+    assert vars["g_SourceTarget"] == "target_tex_0_True"
+    assert vars["g_DownscaledTarget"] is output
+    assert vars["g_TargetWidth"] == 320
+    assert vars["g_TargetHeight"] == 180
+    assert vars["g_TrainingSubsample"]["stepIndex"] == np.uint32(77)
 
 
 def test_dispatch_debug_abs_diff_uses_runtime_ui_scale(monkeypatch) -> None:
@@ -661,7 +761,7 @@ def test_render_debug_view_routes_edge_modes(monkeypatch) -> None:
     encoder = _DummyEncoder()
     calls: list[tuple[str, object]] = []
 
-    monkeypatch.setattr(presenter, "_render_debug_source", lambda viewer_obj, enc, frame_idx: ("rendered_tex", {"generated_entries": 1}, 640, 360))
+    monkeypatch.setattr(presenter, "_render_debug_source", lambda viewer_obj, enc, frame_idx, render_frame_index: ("rendered_tex", {"generated_entries": 1}, 640, 360, {"g_TrainingSubsample": {"enabled": np.uint32(0)}}))
     monkeypatch.setattr(viewer.s.trainer, "get_frame_target_texture", lambda frame_idx, native_resolution=True, encoder=None: "target_tex")
     monkeypatch.setattr(presenter, "_dispatch_debug_abs_diff", lambda viewer_obj, enc, rendered_tex, target_tex, width, height: calls.append(("abs_diff", rendered_tex, target_tex, width, height)) or "abs_diff_tex")
     monkeypatch.setattr(presenter, "_dispatch_debug_dssim", lambda viewer_obj, enc, rendered_tex, target_tex, width, height: calls.append(("dssim", rendered_tex, target_tex, width, height)) or "dssim_tex")
@@ -669,11 +769,11 @@ def test_render_debug_view_routes_edge_modes(monkeypatch) -> None:
     monkeypatch.setattr(presenter, "_dispatch_viewport_present", lambda viewer_obj, enc, source_tex, source_width, source_height, output_width, output_height: calls.append(("present", source_tex, source_width, source_height, output_width, output_height)) or "present_tex")
 
     viewer.c("loss_debug_view").value = 3
-    assert presenter._render_debug_view(viewer, encoder, 800, 600) == "present_tex"
+    assert presenter._render_debug_view(viewer, encoder, 800, 600, 123) == "present_tex"
     viewer.c("loss_debug_view").value = 4
-    assert presenter._render_debug_view(viewer, encoder, 800, 600) == "present_tex"
+    assert presenter._render_debug_view(viewer, encoder, 800, 600, 123) == "present_tex"
     viewer.c("loss_debug_view").value = 5
-    assert presenter._render_debug_view(viewer, encoder, 800, 600) == "present_tex"
+    assert presenter._render_debug_view(viewer, encoder, 800, 600, 123) == "present_tex"
 
     assert calls == [
         ("dssim", "rendered_tex", "target_tex", 640, 360),
