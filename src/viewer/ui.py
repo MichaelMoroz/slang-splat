@@ -547,7 +547,8 @@ def export_repo_defaults_from_ui_values(values: dict[str, object]) -> dict[str, 
             "import": json_value(
                 {
                     "colmap_depth_value_mode": int(values["colmap_depth_value_mode"]),
-                    "colmap_init_mode": int(values["colmap_init_mode"]),`r`n                    "compress_dataset_using_bc7": bool(values["compress_dataset_using_bc7"]),
+                    "colmap_init_mode": int(values["colmap_init_mode"]),
+                    "compress_dataset_using_bc7": bool(values["compress_dataset_using_bc7"]),`r`n                    "compress_dataset_using_bc7": bool(values["compress_dataset_using_bc7"]),
                     "colmap_image_downscale_mode": int(values["colmap_image_downscale_mode"]),
                     "colmap_image_max_size": int(values["colmap_image_max_size"]),
                     "colmap_image_scale": float(values["colmap_image_scale"]),
@@ -1717,6 +1718,12 @@ class ToolkitWindow:
                     imgui.end_child()
                 ui._values["colmap_selected_camera_ids"] = tuple(camera_id for camera_id in camera_ids if camera_id in selected)
             imgui.spacing()
+            changed, value = imgui.checkbox("Compress Dataset using BC7", bool(ui._values.get("compress_dataset_using_bc7", False)))
+            if changed:
+                ui._values["compress_dataset_using_bc7"] = bool(value)
+            if imgui.is_item_hovered():
+                imgui.set_item_tooltip("Compress imported training images into BC7 DDS files under Image Folder/cache and reuse that cache on later loads.")
+            imgui.spacing()
             downscale_idx = max(0, min(int(ui._values.get("colmap_image_downscale_mode", 1)), len(_COLMAP_IMAGE_DOWNSCALE_LABELS) - 1))
             if imgui.begin_combo("Image Downscale", _COLMAP_IMAGE_DOWNSCALE_LABELS[downscale_idx]):
                 for idx, label in enumerate(_COLMAP_IMAGE_DOWNSCALE_LABELS):
@@ -2783,7 +2790,8 @@ def build_ui(renderer) -> ViewerUI:
     values["colmap_images_root"] = ""
     values["colmap_depth_root"] = ""
     values["colmap_depth_value_mode"] = int(_VIEWER_IMPORT_DEFAULTS["colmap_depth_value_mode"])
-    values["colmap_init_mode"] = int(_VIEWER_IMPORT_DEFAULTS["colmap_init_mode"])`r`n    values["compress_dataset_using_bc7"] = bool(_VIEWER_IMPORT_DEFAULTS.get("compress_dataset_using_bc7", False))
+    values["colmap_init_mode"] = int(_VIEWER_IMPORT_DEFAULTS["colmap_init_mode"])
+    values["compress_dataset_using_bc7"] = bool(_VIEWER_IMPORT_DEFAULTS.get("compress_dataset_using_bc7", False))`r`n    values["compress_dataset_using_bc7"] = bool(_VIEWER_IMPORT_DEFAULTS.get("compress_dataset_using_bc7", False))
     values["colmap_custom_ply_path"] = ""
     values["colmap_selected_camera_ids"] = ()
     values["colmap_image_downscale_mode"] = int(_VIEWER_IMPORT_DEFAULTS["colmap_image_downscale_mode"])
@@ -2839,3 +2847,4 @@ def build_ui(renderer) -> ViewerUI:
 
 def create_toolkit_window(device: spy.Device, width: int, height: int) -> ToolkitWindow:
     return ToolkitWindow(device=device, width=width, height=height)
+
