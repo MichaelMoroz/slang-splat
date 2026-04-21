@@ -35,6 +35,7 @@ class ColmapImportSettings:
     selected_camera_ids: tuple[int, ...] = ()
     depth_value_mode: str = "z_depth"
     init_mode: str = "pointcloud"
+    compress_dataset_using_bc7: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("compress_dataset_using_bc7", False))
     custom_ply_path: Path | None = None
     image_downscale_mode: str = "original"
     image_downscale_max_size: int = int(_VIEWER_IMPORT_DEFAULTS["colmap_image_max_size"])
@@ -54,6 +55,7 @@ class ColmapImportProgress:
     database_path: Path | None
     images_root: Path
     init_mode: str
+    compress_dataset_using_bc7: bool
     custom_ply_path: Path | None
     image_downscale_mode: str
     image_downscale_max_size: int

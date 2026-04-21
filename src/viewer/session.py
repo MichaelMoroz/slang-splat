@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 import sqlite3
+import struct
+import subprocess
 import time
+import urllib.request
 
 import numpy as np
 from PIL import Image
 import slangpy as spy
 
 from ..app.shared import apply_training_profile, estimate_point_bounds, estimate_scene_bounds, renderer_kwargs
-from ..utility import SHADER_ROOT, alloc_texture_2d, clamp_index, load_compute_kernels
+from ..utility import SHADER_ROOT, alloc_texture_2d, clamp_index, load_compute_kernels, register_debug_resource
 from ..metrics import ParamTensorRanges
 from ..renderer import GaussianRenderSettings, GaussianRenderer
 from ..scene import (
@@ -59,6 +62,17 @@ _COLMAP_CAMERA_MODEL_NAMES = {
 _COLMAP_DB_SAMPLE_LIMIT = 64
 _COLMAP_DB_SEARCH_PATTERNS = ("database.db", "*.db", "*.sqlite", "*.sqlite3")
 _COLMAP_IMPORT_IMAGES_PER_TICK = 1
+_DATASET_BC7_TEXCONV_URL = "https://github.com/microsoft/DirectXTex/releases/download/oct2024/texconv.exe"
+_DATASET_BC7_TEXCONV_PATH = Path(__file__).resolve().parents[2] / "temp" / "bc_texture_tools" / "texconv.exe"
+_DDS_MAGIC = 0x20534444
+_DDS_HEADER_SIZE = 124
+_DDS_FOURCC_FLAG = 0x4
+_DDS_FOURCC_DXT1 = 0x31545844
+_DDS_FOURCC_DX10 = 0x30315844
+_DXGI_BC1_UNORM = 71
+_DXGI_BC1_UNORM_SRGB = 72
+_DXGI_BC7_UNORM = 98
+_DXGI_BC7_UNORM_SRGB = 99
 _TRAINING_RUNTIME_PARAM_NAMES = (
     "train_downscale_mode",
     "train_auto_start_downscale",
@@ -68,6 +82,156 @@ _TRAINING_RUNTIME_PARAM_NAMES = (
     "train_downscale_factor",
     "train_subsample_factor",
 )
+
+
+@dataclass(frozen=True, slots=True)
+class _CompressedDatasetTexture:
+    width: int
+    height: int
+    format: spy.Format
+    payload: np.ndarray
+
+
+def _dataset_cache_root(images_root: Path) -> Path:
+    return Path(images_root).resolve() / "cache"
+
+
+def _dataset_bc7_cache_dir(images_root: Path, width: int, height: int) -> Path:
+    return _dataset_cache_root(images_root) / "bc7" / f"{max(int(width), 1)}x{max(int(height), 1)}"
+
+
+def _dataset_bc7_cache_path(images_root: Path, frame: ColmapFrame) -> Path:
+    relative = Path(frame.image_path).resolve().relative_to(Path(images_root).resolve())
+    return (_dataset_bc7_cache_dir(images_root, frame.width, frame.height) / relative).with_suffix(".dds")
+
+
+def _ensure_dataset_bc7_texconv() -> Path:
+    path = _DATASET_BC7_TEXCONV_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        return path
+    urllib.request.urlretrieve(_DATASET_BC7_TEXCONV_URL, path)
+    return path
+
+
+def _compress_dataset_frame_to_bc7_cache(frame: ColmapFrame, images_root: Path) -> Path:
+    texconv_path = _ensure_dataset_bc7_texconv()
+    cache_path = _dataset_bc7_cache_path(images_root, frame)
+    if cache_path.exists():
+        return cache_path
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    staging_path = cache_path.with_suffix(".png")
+    rgba8 = load_training_frame_rgba8(frame)
+    rgb = np.asarray(rgba8[..., :3], dtype=np.float32) / 255.0
+    linear_rgb = np.power(np.clip(rgb, 0.0, 1.0), 2.2)
+    linear_rgba8 = np.empty_like(rgba8)
+    linear_rgba8[..., :3] = np.clip(np.round(linear_rgb * 255.0), 0.0, 255.0).astype(np.uint8)
+    linear_rgba8[..., 3] = rgba8[..., 3]
+    Image.fromarray(np.ascontiguousarray(linear_rgba8, dtype=np.uint8), mode="RGBA").save(staging_path)
+    try:
+        subprocess.run(
+            [
+                str(texconv_path),
+                "-y",
+                "-f",
+                "BC7_UNORM",
+                "-m",
+                "1",
+                "-o",
+                str(cache_path.parent),
+                str(staging_path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"texconv failed for {frame.image_path.name}: {exc.stderr.strip() or exc.stdout.strip()}") from exc
+    finally:
+        if staging_path.exists():
+            staging_path.unlink()
+    if not cache_path.exists():
+        raise FileNotFoundError(f"Expected BC7 cache file was not created: {cache_path}")
+    return cache_path
+
+
+def _bc_payload_byte_count(width: int, height: int, format: spy.Format) -> int:
+    block_bytes = 8 if format in (spy.Format.bc1_unorm, spy.Format.bc1_unorm_srgb) else 16 if format in (spy.Format.bc7_unorm, spy.Format.bc7_unorm_srgb) else 0
+    if block_bytes <= 0:
+        raise ValueError(f"Unsupported BC format: {format}")
+    blocks_x = (max(int(width), 1) + 3) // 4
+    blocks_y = (max(int(height), 1) + 3) // 4
+    return int(blocks_x * blocks_y * block_bytes)
+
+
+def _parse_compressed_dataset_texture(dds_path: Path) -> _CompressedDatasetTexture:
+    blob = dds_path.read_bytes()
+    if len(blob) < 128:
+        raise RuntimeError(f"DDS file is too small: {dds_path}")
+    magic, header_size = struct.unpack_from("<II", blob, 0)
+    if magic != _DDS_MAGIC or header_size != _DDS_HEADER_SIZE:
+        raise RuntimeError(f"Invalid DDS header in {dds_path}")
+    height, width = struct.unpack_from("<II", blob, 12)
+    pf_flags, fourcc = struct.unpack_from("<II", blob, 80)
+    if (pf_flags & _DDS_FOURCC_FLAG) == 0:
+        raise RuntimeError(f"DDS cache is not block-compressed: {dds_path}")
+    payload_offset = 128
+    if fourcc == _DDS_FOURCC_DXT1:
+        texture_format = spy.Format.bc1_unorm
+    elif fourcc == _DDS_FOURCC_DX10:
+        if len(blob) < 148:
+            raise RuntimeError(f"DDS DX10 header is truncated: {dds_path}")
+        dxgi_format = struct.unpack_from("<I", blob, 128)[0]
+        payload_offset = 148
+        if dxgi_format == _DXGI_BC1_UNORM:
+            texture_format = spy.Format.bc1_unorm
+        elif dxgi_format == _DXGI_BC1_UNORM_SRGB:
+            texture_format = spy.Format.bc1_unorm_srgb
+        elif dxgi_format == _DXGI_BC7_UNORM:
+            texture_format = spy.Format.bc7_unorm
+        elif dxgi_format == _DXGI_BC7_UNORM_SRGB:
+            texture_format = spy.Format.bc7_unorm_srgb
+        else:
+            raise RuntimeError(f"Unsupported DDS DXGI format {dxgi_format} in {dds_path}")
+    else:
+        raise RuntimeError(f"Unsupported DDS FOURCC 0x{fourcc:08x} in {dds_path}")
+    payload = np.frombuffer(blob[payload_offset:], dtype=np.uint8).copy()
+    expected_bytes = _bc_payload_byte_count(int(width), int(height), texture_format)
+    if int(payload.size) != expected_bytes:
+        raise RuntimeError(f"DDS payload size mismatch in {dds_path}: expected {expected_bytes} bytes, got {int(payload.size)}")
+    return _CompressedDatasetTexture(width=int(width), height=int(height), format=texture_format, payload=payload)
+
+
+def _load_or_create_bc7_dataset_texture(frame: ColmapFrame, images_root: Path) -> _CompressedDatasetTexture:
+    cache_path = _dataset_bc7_cache_path(images_root, frame)
+    if not cache_path.exists():
+        cache_path = _compress_dataset_frame_to_bc7_cache(frame, images_root)
+    payload = _parse_compressed_dataset_texture(cache_path)
+    if payload.format != spy.Format.bc7_unorm or payload.width != int(frame.width) or payload.height != int(frame.height):
+        cache_path.unlink(missing_ok=True)
+        cache_path = _compress_dataset_frame_to_bc7_cache(frame, images_root)
+        payload = _parse_compressed_dataset_texture(cache_path)
+    if payload.format != spy.Format.bc7_unorm:
+        raise RuntimeError(f"Expected BC7 UNORM cache for {frame.image_path.name}, got {payload.format}")
+    return payload
+
+
+def _create_native_dataset_texture_from_bc_payload(viewer: object, payload: _CompressedDatasetTexture) -> spy.Texture:
+    texture = viewer.device.create_texture(
+        format=payload.format,
+        width=int(payload.width),
+        height=int(payload.height),
+        usage=spy.TextureUsage.shader_resource | spy.TextureUsage.copy_destination,
+        label="viewer.dataset_texture_bc7",
+    )
+    texture.copy_from_numpy(np.ascontiguousarray(payload.payload, dtype=np.uint8))
+    return register_debug_resource(
+        texture,
+        kind="Texture",
+        name="viewer.dataset_texture_bc7",
+        byte_size=_bc_payload_byte_count(payload.width, payload.height, payload.format),
+        usage=spy.TextureUsage.shader_resource | spy.TextureUsage.copy_destination,
+    )
 
 
 def _load_aligned_colmap_reconstruction(colmap_root: Path):
@@ -281,6 +445,7 @@ def _update_import_settings(
     selected_camera_ids: tuple[int, ...],
     depth_value_mode: str,
     init_mode: str,
+    compress_dataset_using_bc7: bool,
     custom_ply_path: Path | None,
     image_downscale_mode: str,
     image_downscale_max_size: int,
@@ -299,6 +464,7 @@ def _update_import_settings(
         selected_camera_ids=tuple(int(camera_id) for camera_id in selected_camera_ids),
         depth_value_mode=str(depth_value_mode),
         init_mode=str(init_mode),
+        compress_dataset_using_bc7=bool(compress_dataset_using_bc7),
         custom_ply_path=None if custom_ply_path is None else Path(custom_ply_path).resolve(),
         image_downscale_mode=str(image_downscale_mode),
         image_downscale_max_size=max(int(image_downscale_max_size), 1),
@@ -322,6 +488,7 @@ def _update_import_settings(
         3 if str(init_mode) == _COLMAP_IMPORT_DEPTH else
         0
     )
+    viewer.ui._values["compress_dataset_using_bc7"] = bool(compress_dataset_using_bc7)
     _set_ui_path(viewer, "colmap_custom_ply_path", custom_ply_path)
     viewer.ui._values["colmap_image_downscale_mode"] = 1 if str(image_downscale_mode) == _COLMAP_IMAGE_DOWNSCALE_MAX_SIZE else 2 if str(image_downscale_mode) == _COLMAP_IMAGE_DOWNSCALE_SCALE else 0
     viewer.ui._values["colmap_image_max_size"] = max(int(image_downscale_max_size), 1)
@@ -387,6 +554,45 @@ def _create_native_dataset_texture_from_rgba8(viewer: object, rgba8: np.ndarray)
     return texture
 
 
+def _load_dataset_texture(frame: ColmapFrame, images_root: Path, compress_dataset_using_bc7: bool) -> np.ndarray | _CompressedDatasetTexture:
+    return _load_or_create_bc7_dataset_texture(frame, images_root) if bool(compress_dataset_using_bc7) else load_training_frame_rgba8(frame)
+
+
+def _load_dataset_texture_with_depth_payload(task: tuple[ColmapReconstruction, object, object, ColmapFrame, Path | None, str, bool, Path]) -> tuple[np.ndarray | _CompressedDatasetTexture, object | None]:
+    recon, image, camera, frame, depth_path, depth_value_mode, compress_dataset_using_bc7, images_root = task
+    rgba8, payload = load_training_frame_rgba8_with_depth_payload((recon, image, camera, frame, depth_path, depth_value_mode))
+    if not bool(compress_dataset_using_bc7):
+        return rgba8, payload
+    cache_path = _dataset_bc7_cache_path(images_root, frame)
+    if not cache_path.exists():
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        staging_path = cache_path.with_suffix(".png")
+        Image.fromarray(np.ascontiguousarray(rgba8, dtype=np.uint8), mode="RGBA").save(staging_path)
+        try:
+            subprocess.run(
+                [
+                    str(_ensure_dataset_bc7_texconv()),
+                    "-y",
+                    "-f",
+                    "BC7_UNORM_SRGB",
+                    "-m",
+                    "1",
+                    "-o",
+                    str(cache_path.parent),
+                    str(staging_path),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError(f"texconv failed for {frame.image_path.name}: {exc.stderr.strip() or exc.stdout.strip()}") from exc
+        finally:
+            if staging_path.exists():
+                staging_path.unlink()
+    return _parse_compressed_dataset_texture(cache_path), payload
+
+
 def _close_colmap_texture_loader(progress: ColmapImportProgress) -> None:
     loader = progress.native_rgba8_loader
     progress.native_rgba8_loader = None
@@ -397,6 +603,8 @@ def _close_colmap_texture_loader(progress: ColmapImportProgress) -> None:
 
 def _start_colmap_texture_loader(progress: ColmapImportProgress) -> None:
     _close_colmap_texture_loader(progress)
+    if bool(progress.compress_dataset_using_bc7):
+        _ensure_dataset_bc7_texconv()
     loader = ThreadPoolExecutor(max_workers=TRAINING_FRAME_LOAD_THREADS, thread_name_prefix="viewer-target")
     progress.native_rgba8_loader = loader
     if progress.init_mode == _COLMAP_IMPORT_DEPTH:
@@ -407,17 +615,19 @@ def _start_colmap_texture_loader(progress: ColmapImportProgress) -> None:
             camera = progress.recon.cameras.get(image.camera_id)
             if camera is None:
                 raise RuntimeError(f"Missing COLMAP camera {image.camera_id} for {image.name}.")
-            tasks.append((progress.recon, image, camera, frame, depth_path, progress.depth_value_mode))
-        progress.native_rgba8_iter = loader.map(load_training_frame_rgba8_with_depth_payload, tasks)
+            tasks.append((progress.recon, image, camera, frame, depth_path, progress.depth_value_mode, progress.compress_dataset_using_bc7, progress.images_root))
+        progress.native_rgba8_iter = loader.map(_load_dataset_texture_with_depth_payload, tasks)
         return
-    progress.native_rgba8_iter = loader.map(load_training_frame_rgba8, progress.frames)
+    progress.native_rgba8_iter = loader.map(lambda frame: _load_dataset_texture(frame, progress.images_root, progress.compress_dataset_using_bc7), progress.frames)
 
 
-def _create_native_dataset_textures(viewer: object, frames: list[ColmapFrame]) -> list[spy.Texture]:
+def _create_native_dataset_textures(viewer: object, frames: list[ColmapFrame], *, images_root: Path, compress_dataset_using_bc7: bool) -> list[spy.Texture]:
     textures: list[spy.Texture] = []
+    if bool(compress_dataset_using_bc7):
+        _ensure_dataset_bc7_texconv()
     with ThreadPoolExecutor(max_workers=TRAINING_FRAME_LOAD_THREADS, thread_name_prefix="viewer-target") as executor:
-        for rgba8 in executor.map(load_training_frame_rgba8, frames):
-            textures.append(_create_native_dataset_texture_from_rgba8(viewer, rgba8))
+        for payload in executor.map(lambda frame: _load_dataset_texture(frame, images_root, compress_dataset_using_bc7), frames):
+            textures.append(_create_native_dataset_texture_from_bc_payload(viewer, payload) if isinstance(payload, _CompressedDatasetTexture) else _create_native_dataset_texture_from_rgba8(viewer, payload))
     return textures
 
 
@@ -1027,6 +1237,7 @@ def _finish_import_colmap_dataset(
     selected_camera_ids: tuple[int, ...] = (),
     depth_value_mode: str = _COLMAP_DEPTH_VALUE_Z_DEPTH,
     init_mode: str,
+    compress_dataset_using_bc7: bool = False,
     custom_ply_path: Path | None,
     image_downscale_mode: str,
     image_downscale_max_size: int,
@@ -1058,6 +1269,7 @@ def _finish_import_colmap_dataset(
         selected_camera_ids=resolved_selected_camera_ids,
         depth_value_mode=depth_value_mode,
         init_mode=init_mode,
+        compress_dataset_using_bc7=compress_dataset_using_bc7,
         custom_ply_path=custom_ply_path,
         image_downscale_mode=image_downscale_mode,
         image_downscale_max_size=image_downscale_max_size,
@@ -1110,6 +1322,7 @@ def import_colmap_dataset(
     diffused_point_count: int = 100000,
     diffusion_radius: float = 1.0,
     use_target_alpha_mask: bool = False,
+    compress_dataset_using_bc7: bool = False,
 ) -> None:
     _clear_loaded_scene(viewer)
     root = Path(colmap_root).resolve()
@@ -1123,7 +1336,12 @@ def import_colmap_dataset(
         downscale_max_size=image_downscale_max_size,
         downscale_scale=image_downscale_scale,
     )
-    frame_targets_native = _create_native_dataset_textures(viewer, training_frames)
+    frame_targets_native = _create_native_dataset_textures(
+        viewer,
+        training_frames,
+        images_root=images_root,
+        compress_dataset_using_bc7=compress_dataset_using_bc7,
+    )
     cached_init_point_positions = None
     cached_init_point_colors = None
     if init_mode == _COLMAP_IMPORT_DEPTH:
@@ -1147,6 +1365,7 @@ def import_colmap_dataset(
         selected_camera_ids=resolved_selected_camera_ids,
         depth_value_mode=depth_value_mode,
         init_mode=init_mode,
+        compress_dataset_using_bc7=compress_dataset_using_bc7,
         custom_ply_path=custom_ply_path,
         image_downscale_mode=image_downscale_mode,
         image_downscale_max_size=image_downscale_max_size,
@@ -1187,6 +1406,7 @@ def import_colmap_from_ui(viewer: object) -> None:
     diffused_point_count = max(int(viewer.ui._values.get("colmap_diffused_point_count", 100000)), 1)
     diffusion_radius = max(float(viewer.ui._values.get("colmap_diffusion_radius", 1.0)), 0.0)
     use_target_alpha_mask = bool(viewer.ui._values.get("use_target_alpha_mask", False))
+    compress_dataset_using_bc7 = bool(viewer.ui._values.get("compress_dataset_using_bc7", False))
     if not colmap_root.exists():
         raise FileNotFoundError(f"COLMAP root does not exist: {colmap_root}")
     if not _has_colmap_sparse(colmap_root):
@@ -1212,6 +1432,7 @@ def import_colmap_from_ui(viewer: object) -> None:
         depth_value_mode=depth_value_mode,
         init_mode=init_mode,
         custom_ply_path=None if custom_ply_path is None else custom_ply_path.resolve(),
+        compress_dataset_using_bc7=compress_dataset_using_bc7,
         image_downscale_mode=image_downscale_mode,
         image_downscale_max_size=image_downscale_max_size,
         image_downscale_scale=image_downscale_scale,
@@ -1266,8 +1487,12 @@ def advance_colmap_import(viewer: object) -> None:
                 if progress.native_rgba8_iter is None:
                     _start_colmap_texture_loader(progress)
                 load_result = next(progress.native_rgba8_iter)
-                rgba8, payload = load_result if progress.init_mode == _COLMAP_IMPORT_DEPTH else (load_result, None)
-                progress.native_textures.append(_create_native_dataset_texture_from_rgba8(viewer, rgba8))
+                image_source, payload = load_result if progress.init_mode == _COLMAP_IMPORT_DEPTH else (load_result, None)
+                progress.native_textures.append(
+                    _create_native_dataset_texture_from_bc_payload(viewer, image_source)
+                    if isinstance(image_source, _CompressedDatasetTexture)
+                    else _create_native_dataset_texture_from_rgba8(viewer, image_source)
+                )
                 if payload is not None:
                     progress.depth_init_payloads.append(payload)
                 progress.current += 1
@@ -1298,6 +1523,7 @@ def advance_colmap_import(viewer: object) -> None:
                 selected_camera_ids=tuple(int(camera_id) for camera_id in getattr(progress, "selected_camera_ids", ())),
                 depth_value_mode=progress.depth_value_mode,
                 init_mode=progress.init_mode,
+                compress_dataset_using_bc7=progress.compress_dataset_using_bc7,
                 custom_ply_path=progress.custom_ply_path,
                 image_downscale_mode=progress.image_downscale_mode,
                 image_downscale_max_size=progress.image_downscale_max_size,
@@ -1359,6 +1585,13 @@ def initialize_training_scene(viewer: object, frame_targets_native: list[spy.Tex
         trainer_kwargs["scale_reg_reference"] = scale_reg_reference
     if frame_targets_native is not None:
         trainer_kwargs["frame_targets_native"] = frame_targets_native
+    elif getattr(viewer.s.colmap_import, "images_root", None) is not None:
+        trainer_kwargs["frame_targets_native"] = _create_native_dataset_textures(
+            viewer,
+            viewer.s.training_frames,
+            images_root=Path(viewer.s.colmap_import.images_root).resolve(),
+            compress_dataset_using_bc7=bool(getattr(viewer.s.colmap_import, "compress_dataset_using_bc7", False)),
+        )
     viewer.s.trainer = GaussianTrainer(**trainer_kwargs)
     viewer.s.scene = SceneCountProxy(scene.count)
     _apply_initial_camera_fit(viewer, fallback_factory=lambda: estimate_scene_bounds(scene))
