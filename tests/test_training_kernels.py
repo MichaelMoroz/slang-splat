@@ -1430,7 +1430,6 @@ def test_trainer_allocates_minimal_refinement_buffers(device, tmp_path: Path) ->
         "append_splat_age",
         "dst_splat_params",
         "dst_splat_age",
-        "dst_adam_moments",
         "camera_rows",
     }
     assert trainer.refinement_clone_budget() > 0

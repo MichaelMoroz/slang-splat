@@ -587,7 +587,15 @@ class GaussianTrainer:
         survivor_mask = buffer_to_numpy(self._refinement_buffers["refinement_eligible_mask"], np.uint32)[: self._scene_count] != 0
         return clone_counts, survivor_mask
 
-    def _refinement_vars(self, *, dst_splat_count: int = 0, append_splat_count: int = 0, survivor_count: int = 0, refinement_sample_count: int = 0) -> dict[str, object]:
+    def _refinement_vars(
+        self,
+        *,
+        dst_splat_count: int = 0,
+        append_splat_count: int = 0,
+        survivor_count: int = 0,
+        refinement_sample_count: int = 0,
+        dst_adam_moments: spy.Buffer | None = None,
+    ) -> dict[str, object]:
         refinement_threshold = resolve_refinement_min_contribution(self.training, max(self.state.step - 1, 0), len(self.frames))
         return {
             "g_SrcSplatParams": self.renderer.scene_buffers["splat_params"],
@@ -595,7 +603,7 @@ class GaussianTrainer:
             "g_SrcAdamMoments": self.adam_optimizer.buffers["adam_moments"],
             "g_DstSplatParams": self._refinement_buffers["dst_splat_params"],
             "g_DstSplatAge": self._refinement_buffers["dst_splat_age"],
-            "g_DstAdamMoments": self._refinement_buffers["dst_adam_moments"],
+            "g_DstAdamMoments": self.adam_optimizer.buffers["adam_moments"] if dst_adam_moments is None else dst_adam_moments,
             "g_AppendParams": self._refinement_buffers["append_params"],
             "g_AppendSplatAge": self._refinement_buffers["append_splat_age"],
             "g_CloneCounts": self._refinement_buffers["clone_counts"],
@@ -863,21 +871,8 @@ class GaussianTrainer:
             self._refinement_output_capacity = grow_capacity(required_output, self._refinement_output_capacity)
             self._refinement_buffers["dst_splat_params"] = alloc_buffer(self.device, name="trainer.refinement.dst_splat_params", size=self._refinement_output_capacity * packed_param_bytes, usage=RW_BUFFER_USAGE)
             self._refinement_buffers["dst_splat_age"] = alloc_buffer(self.device, name="trainer.refinement.dst_splat_age", size=self._refinement_output_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE)
-            self._refinement_buffers["dst_adam_moments"] = alloc_buffer(
-                self.device,
-                name="trainer.refinement.dst_adam_moments",
-                size=self._refinement_output_capacity * self.renderer.TRAINABLE_PARAM_COUNT * self._U32_BYTES * 2,
-                usage=RW_BUFFER_USAGE,
-            )
         elif "dst_splat_age" not in self._refinement_buffers:
             self._refinement_buffers["dst_splat_age"] = alloc_buffer(self.device, name="trainer.refinement.dst_splat_age", size=max(self._refinement_output_capacity, 1) * self._U32_BYTES, usage=RW_BUFFER_USAGE)
-        if "dst_adam_moments" not in self._refinement_buffers:
-            self._refinement_buffers["dst_adam_moments"] = alloc_buffer(
-                self.device,
-                name="trainer.refinement.dst_adam_moments",
-                size=max(self._refinement_output_capacity, 1) * self.renderer.TRAINABLE_PARAM_COUNT * self._U32_BYTES * 2,
-                usage=RW_BUFFER_USAGE,
-            )
         self._ensure_splat_age_capacity(required_splats)
         if grow_cameras or "camera_rows" not in self._refinement_buffers:
             self._refinement_camera_capacity = grow_capacity(required_camera_count, self._refinement_camera_capacity)
@@ -888,6 +883,14 @@ class GaussianTrainer:
                 usage=RW_BUFFER_USAGE,
             )
             self._refinement_camera_signature = None
+
+    def _alloc_refinement_adam_moments(self, splat_count: int) -> spy.Buffer:
+        return alloc_buffer(
+            self.device,
+            name="trainer.refinement.dst_adam_moments",
+            size=max(int(splat_count), 1) * self.renderer.TRAINABLE_PARAM_COUNT * self._U32_BYTES * 2,
+            usage=RW_BUFFER_USAGE,
+        )
 
     def _ensure_splat_age_capacity(self, splat_count: int, *, reset: bool = False) -> None:
         required = max(int(splat_count), 1)
@@ -1001,7 +1004,13 @@ class GaussianTrainer:
             return
 
         self._ensure_refinement_buffers(self._scene_count, capped_clone_total)
-        vars = self._refinement_vars(dst_splat_count=next_count, append_splat_count=capped_clone_total, survivor_count=survivor_count)
+        dst_adam_moments = self._alloc_refinement_adam_moments(next_count)
+        vars = self._refinement_vars(
+            dst_splat_count=next_count,
+            append_splat_count=capped_clone_total,
+            survivor_count=survivor_count,
+            dst_adam_moments=dst_adam_moments,
+        )
         enc = self.device.create_command_encoder()
         self._dispatch("clear_refinement_counters", enc, spy.uint3(1, 1, 1), vars)
         self._dispatch("rewrite_refinement_splats", enc, spy.uint3(max(self._scene_count, 1), 1, 1), vars)
@@ -1025,7 +1034,7 @@ class GaussianTrainer:
         copy_enc.copy_buffer(
             self.adam_optimizer.buffers["adam_moments"],
             0,
-            self._refinement_buffers["dst_adam_moments"],
+            dst_adam_moments,
             0,
             self._scene_count * self.renderer.TRAINABLE_PARAM_COUNT * self._U32_BYTES * 2,
         )
