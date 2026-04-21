@@ -545,6 +545,9 @@ def test_resource_debug_window_draws_largest_first_table(monkeypatch) -> None:
     monkeypatch.setattr(ui.imgui, "begin", lambda *args, **kwargs: (True, True))
     monkeypatch.setattr(ui.imgui, "end", lambda: None)
     monkeypatch.setattr(ui.imgui, "separator", lambda: None)
+    monkeypatch.setattr(ui.imgui, "button", lambda _label: False)
+    monkeypatch.setattr(ui.imgui, "same_line", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ui.imgui, "text_disabled", lambda text: summary.append(text))
     monkeypatch.setattr(ui.imgui, "begin_table", lambda name, columns, flags: table_calls.append((name, int(columns), int(flags))) or True)
     monkeypatch.setattr(ui.imgui, "table_setup_column", lambda name, *_args: table_columns.append(name))
     monkeypatch.setattr(ui.imgui, "table_headers_row", lambda: None)
@@ -554,8 +557,8 @@ def test_resource_debug_window_draws_largest_first_table(monkeypatch) -> None:
     monkeypatch.setattr(ui.imgui, "end_table", lambda: None)
     snapshot = ResourceDebugSnapshot(
         rows=(
-            ResourceDebugRow("Texture", "target", "viewer.state.viewport_texture", 1024, "srv", 2),
-            ResourceDebugRow("Buffer", "large", "viewer.renderer.large", 4096, "rw", 1),
+            ResourceDebugRow("Texture", "target", "viewer.state.viewport_texture", 1024, "64x4 rgba32_float", "srv", 2),
+            ResourceDebugRow("Buffer", "large", "viewer.renderer.large", 4096, "1,024 elements x 4 B", "rw", 1),
         ),
         total_consumption=5120,
         buffer_count=1,
@@ -568,7 +571,7 @@ def test_resource_debug_window_draws_largest_first_table(monkeypatch) -> None:
     toolkit = SimpleNamespace(_menu_bar_height=24.0, _toolkit_dock_id=17, _applied_interface_scale=1.0, _dock_tool_window=lambda cond: ui.imgui.set_next_window_dock_id(17, cond))
     toolkit._draw_resource_debug_summary = lambda snapshot: ui.ToolkitWindow._draw_resource_debug_summary(toolkit, snapshot)
     toolkit._draw_resource_debug_table = lambda snapshot: ui.ToolkitWindow._draw_resource_debug_table(toolkit, snapshot)
-    viewer_ui = SimpleNamespace(_values={"show_resource_debug": True, "_resource_debug_snapshot": snapshot}, _texts={})
+    viewer_ui = SimpleNamespace(_values={"show_resource_debug": True, "_resource_debug_snapshot": snapshot}, _texts={"resource_debug_status": ""})
 
     ui.ToolkitWindow._draw_resource_debug_window(toolkit, viewer_ui)
 
@@ -578,10 +581,10 @@ def test_resource_debug_window_draws_largest_first_table(monkeypatch) -> None:
         "Buffers: 1 | total=4.00 KiB | mean=4.00 KiB | median=4.00 KiB",
         "Textures: 1 | total=1.00 KiB",
     ]
-    assert table_calls and table_calls[0][0] == "##resource_debug" and table_calls[0][1] == 5
-    assert table_columns == ["Size", "Type", "Name", "Owner", "Usage"]
-    assert cells[:5] == ["4.00 KiB", "Buffer", "large", "viewer.renderer.large", "rw"]
-    assert cells[5:] == ["1.00 KiB", "Texture", "target", "viewer.state.viewport_texture", "srv"]
+    assert table_calls and table_calls[0][0] == "##resource_debug" and table_calls[0][1] == 6
+    assert table_columns == ["Size", "Type", "Details", "Name", "Owner", "Usage"]
+    assert cells[:6] == ["4.00 KiB", "Buffer", "1,024 elements x 4 B", "large", "viewer.renderer.large", "rw"]
+    assert cells[6:] == ["1.00 KiB", "Texture", "64x4 rgba32_float", "target", "viewer.state.viewport_texture", "srv"]
 
 
 def test_viewport_debug_overlay_draws_mode_specific_controls(monkeypatch) -> None:

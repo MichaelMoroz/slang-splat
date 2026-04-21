@@ -31,7 +31,7 @@ from ..app.training_controls import (
     TRAIN_STABILITY_PAIRED_KEYS,
 )
 from .constants import _WINDOW_TITLE
-from .buffer_debug import ResourceDebugSnapshot, format_resource_bytes
+from .buffer_debug import ResourceDebugSnapshot, format_resource_bytes, write_resource_debug_log
 from .state import DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH, LOSS_DEBUG_OPTIONS
 
 TOOLKIT_WIDTH_FRACTION = 0.1875
@@ -1969,6 +1969,16 @@ class ToolkitWindow:
                 imgui.text_wrapped("No resource allocation data is available yet.")
             else:
                 self._draw_resource_debug_summary(snapshot)
+                if imgui.button("Write Log"):
+                    try:
+                        path = write_resource_debug_log(snapshot)
+                        ui._texts["resource_debug_status"] = f"Wrote {path}"
+                    except Exception as exc:
+                        ui._texts["resource_debug_status"] = f"Log failed: {exc}"
+                status = str(ui._texts.get("resource_debug_status", "")).strip()
+                if status:
+                    imgui.same_line()
+                    imgui.text_disabled(status)
                 imgui.separator()
                 self._draw_resource_debug_table(snapshot)
         imgui.end()
@@ -1994,16 +2004,17 @@ class ToolkitWindow:
             | imgui.TableFlags_.scroll_y.value
             | imgui.TableFlags_.hideable.value
         )
-        if imgui.begin_table("##resource_debug", 5, flags):
+        if imgui.begin_table("##resource_debug", 6, flags):
             imgui.table_setup_column("Size", imgui.TableColumnFlags_.width_fixed.value, 104.0)
             imgui.table_setup_column("Type", imgui.TableColumnFlags_.width_fixed.value, 76.0)
+            imgui.table_setup_column("Details", imgui.TableColumnFlags_.width_fixed.value, 180.0)
             imgui.table_setup_column("Name", imgui.TableColumnFlags_.width_stretch.value)
             imgui.table_setup_column("Owner", imgui.TableColumnFlags_.width_stretch.value)
             imgui.table_setup_column("Usage", imgui.TableColumnFlags_.width_stretch.value)
             imgui.table_headers_row()
             for row in rows:
                 imgui.table_next_row()
-                for value in (format_resource_bytes(row.byte_size), row.kind, row.name, row.owner, row.usage):
+                for value in (format_resource_bytes(row.byte_size), row.kind, row.details, row.name, row.owner, row.usage):
                     imgui.table_next_column()
                     imgui.text_unformatted(str(value))
             imgui.end_table()
@@ -2814,6 +2825,7 @@ def build_ui(renderer) -> ViewerUI:
             "colmap_import_status", "colmap_import_current",
             "training_resolution", "training_downscale", "training_schedule", "training_schedule_values", "training_refinement",
             "histogram_status",
+            "resource_debug_status",
             "setup_hint", "stability_hint", "defaults_status",
         )
     }

@@ -127,6 +127,8 @@ The loss-debug controls expose a runtime `Abs Diff Scale` slider when `View = Ab
 - The helpers read Slangpy's native per-resource `memory_usage.device` value when available and keep a Python-side name registry because Slangpy exposes per-resource memory but not a live allocation enumerator.
 - The window reports combined tracked GPU consumption, buffer count, total buffer bytes, mean buffer size, median buffer size, texture count, and texture bytes.
 - The table includes buffers and textures reachable from the active viewer renderers, trainer, and viewer debug resources, de-duplicates shared references, and displays entries largest-first.
+- Buffer details include element count when Slangpy reports a structured element stride; texture details include dimensions, format, array count, and mip count when present.
+- `Write Log` saves the current largest-first table and summary as a tab-separated text file under `temp/resource_logs`.
 
 ## Cached Gradient Atomics
 

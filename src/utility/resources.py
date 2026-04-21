@@ -23,6 +23,7 @@ class ResourceAllocation:
     kind: str
     name: str
     byte_size: int
+    details: str
     usage: str
     order: int
 
@@ -46,6 +47,7 @@ def _register_resource(resource: object, *, kind: str, name: str, byte_size: int
         kind=str(kind),
         name=str(name),
         byte_size=_native_device_bytes(resource, max(int(byte_size), 0)),
+        details=_resource_details(resource, str(kind), max(int(byte_size), 0)),
         usage=_usage_text(usage),
         order=_next_resource_order(),
     )
@@ -81,6 +83,50 @@ def _native_device_bytes(resource: object, fallback: int) -> int:
     except Exception:
         return int(fallback)
     return device_bytes if device_bytes > 0 else int(fallback)
+
+
+def _format_format(format: object) -> str:
+    return str(format).replace("Format.", "")
+
+
+def _buffer_details(resource: object, byte_size: int) -> str:
+    try:
+        struct_size = int(resource.struct_size)
+    except Exception:
+        struct_size = 0
+    if struct_size > 0:
+        element_count = max(int(byte_size), 0) // struct_size
+        return f"{element_count:,} elements x {struct_size} B"
+    try:
+        reported_size = int(resource.size)
+    except Exception:
+        reported_size = int(byte_size)
+    size = max(reported_size, 0)
+    if size > 0 and size % 4 == 0:
+        return f"{size // 4:,} x 4 B units"
+    return f"{size:,} bytes"
+
+
+def _texture_details(resource: object) -> str:
+    try:
+        width, height, depth = int(resource.width), int(resource.height), int(resource.depth)
+        array_length = int(resource.array_length)
+        mip_count = int(resource.mip_count)
+        format_text = _format_format(resource.format)
+    except Exception:
+        return ""
+    depth_text = f"x{depth}" if depth > 1 else ""
+    array_text = f" array={array_length}" if array_length > 1 else ""
+    mip_text = f" mips={mip_count}" if mip_count > 1 else ""
+    return f"{width}x{height}{depth_text} {format_text}{array_text}{mip_text}"
+
+
+def _resource_details(resource: object, kind: str, byte_size: int) -> str:
+    if kind == "Buffer":
+        return _buffer_details(resource, byte_size)
+    if kind == "Texture":
+        return _texture_details(resource)
+    return ""
 
 
 def grow_capacity(required: int, current: int) -> int:

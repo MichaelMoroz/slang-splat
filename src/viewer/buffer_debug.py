@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, fields, is_dataclass
+from datetime import datetime
+from pathlib import Path
 from statistics import median
 from types import SimpleNamespace
 from typing import Any
@@ -39,6 +41,7 @@ class ResourceDebugRow:
     name: str
     owner: str
     byte_size: int
+    details: str
     usage: str
     order: int
 
@@ -64,6 +67,44 @@ def format_resource_bytes(byte_count: float | int) -> str:
     return f"{value:.2f} GiB"
 
 
+def write_resource_debug_log(snapshot: ResourceDebugSnapshot, directory: Path | str | None = None) -> Path:
+    root = Path(__file__).resolve().parents[2]
+    log_dir = root / "temp" / "resource_logs" if directory is None else Path(directory)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    path = log_dir / f"resource_debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    path.write_text(format_resource_debug_log(snapshot), encoding="utf-8")
+    return path
+
+
+def format_resource_debug_log(snapshot: ResourceDebugSnapshot) -> str:
+    lines = [
+        "Slang Splat Resource Debug Log",
+        "",
+        f"Total Consumption: {format_resource_bytes(snapshot.total_consumption)} ({snapshot.total_consumption:,} bytes)",
+        (
+            f"Buffers: {snapshot.buffer_count:,} | total={format_resource_bytes(snapshot.buffer_total)} ({snapshot.buffer_total:,} bytes) | "
+            f"mean={format_resource_bytes(snapshot.buffer_mean)} | median={format_resource_bytes(snapshot.buffer_median)}"
+        ),
+        f"Textures: {snapshot.texture_count:,} | total={format_resource_bytes(snapshot.texture_total)} ({snapshot.texture_total:,} bytes)",
+        "",
+        "Size\tType\tDetails\tName\tOwner\tUsage",
+    ]
+    for row in tuple(sorted(snapshot.rows, key=lambda item: (-item.byte_size, item.order))):
+        lines.append(
+            "\t".join(
+                (
+                    f"{format_resource_bytes(row.byte_size)} ({row.byte_size:,} bytes)",
+                    row.kind,
+                    row.details,
+                    row.name,
+                    row.owner,
+                    row.usage,
+                )
+            )
+        )
+    return "\n".join(lines) + "\n"
+
+
 def collect_resource_debug_snapshot(viewer: object) -> ResourceDebugSnapshot:
     found: dict[int, tuple[ResourceAllocation, list[str]]] = {}
     visited: set[int] = set()
@@ -78,6 +119,7 @@ def collect_resource_debug_snapshot(viewer: object) -> ResourceDebugSnapshot:
                     name=allocation.name,
                     owner=min(paths, key=len),
                     byte_size=allocation.byte_size,
+                    details=allocation.details,
                     usage=allocation.usage,
                     order=allocation.order,
                 )
