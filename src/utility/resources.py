@@ -56,7 +56,11 @@ def _register_resource(resource: object, *, kind: str, name: str, byte_size: int
         usage=_usage_text(usage),
         order=_next_resource_order(),
     )
-    _RESOURCE_REFS[resource_id] = _make_resource_ref(resource)
+    ref = _make_resource_ref(resource)
+    if ref is None:
+        _RESOURCE_REFS.pop(resource_id, None)
+    else:
+        _RESOURCE_REFS[resource_id] = ref
     return resource
 
 

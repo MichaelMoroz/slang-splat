@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from src.utility import clear_debug_resource_allocations, register_debug_resource
+from src.utility import clear_debug_resource_allocations, debug_resource_allocations, register_debug_resource
 from src.viewer.buffer_debug import collect_resource_debug_snapshot, format_resource_bytes, format_resource_debug_log
 
 
@@ -21,6 +21,7 @@ def test_resource_debug_snapshot_deduplicates_and_sorts_largest_first() -> None:
     register_debug_resource(texture, kind="Texture", name="target", byte_size=64, usage="srv")
     register_debug_resource(unowned, kind="Buffer", name="unowned", byte_size=16, usage="rw")
     register_debug_resource(non_weakref_unowned, kind="Buffer", name="non_weakref_unowned", byte_size=8, usage="rw")
+    assert [allocation.name for _, allocation in debug_resource_allocations()] == ["unowned"]
     viewer = SimpleNamespace(
         s=SimpleNamespace(
             renderer=SimpleNamespace(small=small_buffer, nested={"large": large_buffer}),
