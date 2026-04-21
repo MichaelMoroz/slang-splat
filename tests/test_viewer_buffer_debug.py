@@ -8,14 +8,19 @@ from src.viewer.buffer_debug import collect_resource_debug_snapshot, format_reso
 
 def test_resource_debug_snapshot_deduplicates_and_sorts_largest_first() -> None:
     clear_debug_resource_allocations()
+    class WeakResource:
+        pass
+
     large_buffer = object()
     small_buffer = object()
     texture = object()
-    unowned = object()
+    unowned = WeakResource()
+    non_weakref_unowned = object()
     register_debug_resource(small_buffer, kind="Buffer", name="small", byte_size=32, usage="rw")
     register_debug_resource(large_buffer, kind="Buffer", name="large", byte_size=128, usage="rw")
     register_debug_resource(texture, kind="Texture", name="target", byte_size=64, usage="srv")
     register_debug_resource(unowned, kind="Buffer", name="unowned", byte_size=16, usage="rw")
+    register_debug_resource(non_weakref_unowned, kind="Buffer", name="non_weakref_unowned", byte_size=8, usage="rw")
     viewer = SimpleNamespace(
         s=SimpleNamespace(
             renderer=SimpleNamespace(small=small_buffer, nested={"large": large_buffer}),
@@ -31,6 +36,7 @@ def test_resource_debug_snapshot_deduplicates_and_sorts_largest_first() -> None:
     assert [row.name for row in snapshot.rows] == ["large", "target", "small", "unowned"]
     assert [row.details for row in snapshot.rows] == ["32 x 4 B units", "", "8 x 4 B units", "4 x 4 B units"]
     assert snapshot.rows[-1].owner == "debug_registry.unowned"
+    assert "non_weakref_unowned" not in {row.name for row in snapshot.rows}
     assert snapshot.total_consumption == 240
     assert snapshot.buffer_count == 3
     assert snapshot.buffer_total == 176

@@ -30,7 +30,8 @@ class ResourceAllocation:
 
 
 _RESOURCE_ALLOCATIONS: dict[int, ResourceAllocation] = {}
-_RESOURCE_REFS: dict[int, object] = {}
+_RESOURCE_REFS: dict[int, object | None] = {}
+_RESOURCE_TYPES: dict[int, type] = {}
 _RESOURCE_ALLOCATION_ORDER = 0
 
 
@@ -46,6 +47,7 @@ def _usage_text(usage: object) -> str:
 
 def _register_resource(resource: object, *, kind: str, name: str, byte_size: int, usage: object) -> object:
     resource_id = id(resource)
+    _RESOURCE_TYPES[resource_id] = type(resource)
     _RESOURCE_ALLOCATIONS[resource_id] = ResourceAllocation(
         kind=str(kind),
         name=str(name),
@@ -64,13 +66,19 @@ def register_debug_resource(resource: object, *, kind: str, name: str, byte_size
 
 def resource_allocation(resource: object) -> ResourceAllocation | None:
     resource_id = id(resource)
+    if resource_id not in _RESOURCE_ALLOCATIONS:
+        return None
+    expected_type = _RESOURCE_TYPES.get(resource_id)
+    if expected_type is not None and not isinstance(resource, expected_type):
+        return None
     ref = _RESOURCE_REFS.get(resource_id)
     if ref is None:
-        return None
+        return _RESOURCE_ALLOCATIONS.get(resource_id)
     target = ref()
     if target is None:
         _RESOURCE_REFS.pop(resource_id, None)
         _RESOURCE_ALLOCATIONS.pop(resource_id, None)
+        _RESOURCE_TYPES.pop(resource_id, None)
         return None
     return _RESOURCE_ALLOCATIONS.get(resource_id) if target is resource else None
 
@@ -78,10 +86,13 @@ def resource_allocation(resource: object) -> ResourceAllocation | None:
 def debug_resource_allocations() -> tuple[tuple[object, ResourceAllocation], ...]:
     resources: list[tuple[object, ResourceAllocation]] = []
     for resource_id, ref in tuple(_RESOURCE_REFS.items()):
+        if ref is None:
+            continue
         target = ref()
         if target is None:
             _RESOURCE_REFS.pop(resource_id, None)
             _RESOURCE_ALLOCATIONS.pop(resource_id, None)
+            _RESOURCE_TYPES.pop(resource_id, None)
             continue
         allocation = _RESOURCE_ALLOCATIONS.get(resource_id)
         if allocation is not None:
@@ -93,25 +104,16 @@ def clear_debug_resource_allocations() -> None:
     global _RESOURCE_ALLOCATION_ORDER
     _RESOURCE_ALLOCATIONS.clear()
     _RESOURCE_REFS.clear()
+    _RESOURCE_TYPES.clear()
     _RESOURCE_ALLOCATION_ORDER = 0
 
 
-class _StrongResourceRef:
-    __slots__ = ("_resource",)
-
-    def __init__(self, resource: object) -> None:
-        self._resource = resource
-
-    def __call__(self) -> object:
-        return self._resource
-
-
-def _make_resource_ref(resource: object) -> object:
+def _make_resource_ref(resource: object) -> object | None:
     resource_id = id(resource)
     try:
-        return weakref.ref(resource, lambda _ref: (_RESOURCE_REFS.pop(resource_id, None), _RESOURCE_ALLOCATIONS.pop(resource_id, None)))
+        return weakref.ref(resource, lambda _ref: (_RESOURCE_REFS.pop(resource_id, None), _RESOURCE_ALLOCATIONS.pop(resource_id, None), _RESOURCE_TYPES.pop(resource_id, None)))
     except TypeError:
-        return _StrongResourceRef(resource)
+        return None
 
 
 def _texture_bytes_per_pixel(format: spy.Format) -> int:
