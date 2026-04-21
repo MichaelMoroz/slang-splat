@@ -548,7 +548,7 @@ def export_repo_defaults_from_ui_values(values: dict[str, object]) -> dict[str, 
                 {
                     "colmap_depth_value_mode": int(values["colmap_depth_value_mode"]),
                     "colmap_init_mode": int(values["colmap_init_mode"]),
-                    "compress_dataset_using_bc7": bool(values["compress_dataset_using_bc7"]),`r`n                    "compress_dataset_using_bc7": bool(values["compress_dataset_using_bc7"]),
+                    "compress_dataset_using_bc7": bool(values["compress_dataset_using_bc7"]),
                     "colmap_image_downscale_mode": int(values["colmap_image_downscale_mode"]),
                     "colmap_image_max_size": int(values["colmap_image_max_size"]),
                     "colmap_image_scale": float(values["colmap_image_scale"]),
@@ -662,7 +662,7 @@ class _TextProxy:
 
 @dataclass(slots=True)
 class ViewerUI:
-    """Backward-compatible wrapper over plain dicts ??? provides .controls[key].value and .texts[key].text."""
+    """Backward-compatible wrapper over plain dicts — provides .controls[key].value and .texts[key].text."""
     _values: dict[str, object] = field(default_factory=dict)
     _texts: dict[str, str] = field(default_factory=dict)
 
@@ -1971,11 +1971,18 @@ class ToolkitWindow:
         opened, show = imgui.begin("Buffers", True)
         ui._values["show_resource_debug"] = bool(show)
         if opened:
+            if imgui.button("Refresh"):
+                ui._values["_resource_debug_refresh_requested"] = True
+            imgui.same_line()
+            if imgui.button("Refresh VRAM"):
+                ui._values["_resource_debug_refresh_requested"] = True
+                ui._values["_resource_debug_process_vram_requested"] = True
             snapshot = ui._values.get("_resource_debug_snapshot")
             if not isinstance(snapshot, ResourceDebugSnapshot):
                 imgui.text_wrapped("No resource allocation data is available yet.")
             else:
                 self._draw_resource_debug_summary(snapshot)
+                imgui.same_line()
                 if imgui.button("Write Log"):
                     try:
                         path = write_resource_debug_log(snapshot)
@@ -2517,7 +2524,7 @@ class ToolkitWindow:
         "render_background_mode": "Choose whether the main renderer uses the training background color or a separate custom RGB background",
         "render_background_color": "Custom RGB background for the main renderer",
         "radius_scale": "Multiplier on top of true 3DGS gaussian size for rendering",
-        "alpha_cutoff": "Minimum alpha threshold ??? splats below this are skipped",
+        "alpha_cutoff": "Minimum alpha threshold — splats below this are skipped",
         "trans_threshold": "Transmittance threshold for early ray termination",
         "cached_raster_grad_atomic_mode": "Choose float atomics or fixed-point atomics for cached ellipsoid gradient accumulation during raster backward",
         "cached_raster_grad_fixed_ro_local_range": "Symmetric [-X, X] range for avgInvScale-normalized cached position gradients",
@@ -2791,7 +2798,7 @@ def build_ui(renderer) -> ViewerUI:
     values["colmap_depth_root"] = ""
     values["colmap_depth_value_mode"] = int(_VIEWER_IMPORT_DEFAULTS["colmap_depth_value_mode"])
     values["colmap_init_mode"] = int(_VIEWER_IMPORT_DEFAULTS["colmap_init_mode"])
-    values["compress_dataset_using_bc7"] = bool(_VIEWER_IMPORT_DEFAULTS.get("compress_dataset_using_bc7", False))`r`n    values["compress_dataset_using_bc7"] = bool(_VIEWER_IMPORT_DEFAULTS.get("compress_dataset_using_bc7", False))
+    values["compress_dataset_using_bc7"] = bool(_VIEWER_IMPORT_DEFAULTS.get("compress_dataset_using_bc7", False))
     values["colmap_custom_ply_path"] = ""
     values["colmap_selected_camera_ids"] = ()
     values["colmap_image_downscale_mode"] = int(_VIEWER_IMPORT_DEFAULTS["colmap_image_downscale_mode"])
@@ -2819,6 +2826,9 @@ def build_ui(renderer) -> ViewerUI:
     values["_histogram_payload"] = None
     values["_histogram_range_payload"] = None
     values["_resource_debug_snapshot"] = None
+    values["_resource_debug_next_update"] = 0.0
+    values["_resource_debug_refresh_requested"] = True
+    values["_resource_debug_process_vram_requested"] = False
     values["_training_views_rows"] = ()
     values["_training_view_overlay_segments"] = ()
     values["_loss_debug_frame_max"] = 0
@@ -2847,4 +2857,3 @@ def build_ui(renderer) -> ViewerUI:
 
 def create_toolkit_window(device: spy.Device, width: int, height: int) -> ToolkitWindow:
     return ToolkitWindow(device=device, width=width, height=height)
-

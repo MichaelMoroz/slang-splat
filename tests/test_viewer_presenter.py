@@ -492,6 +492,41 @@ def test_update_ui_text_reports_training_schedule_and_refinement() -> None:
     )
 
 
+def test_update_ui_text_skips_resource_debug_snapshot_when_closed(monkeypatch) -> None:
+    viewer = _viewer(loss_debug=False)
+    calls: list[object] = []
+    monkeypatch.setattr(presenter, "collect_resource_debug_snapshot", lambda viewer_obj, **_kwargs: calls.append(viewer_obj) or object())
+
+    presenter.update_ui_text(viewer, 1.0 / 60.0)
+
+    assert calls == []
+    assert "_resource_debug_snapshot" not in viewer.ui._values
+
+
+def test_update_ui_text_throttles_resource_debug_snapshot(monkeypatch) -> None:
+    viewer = _viewer(loss_debug=False)
+    viewer.ui._values.update({"show_resource_debug": True, "_resource_debug_snapshot": None, "_resource_debug_next_update": 0.0})
+    snapshots = ["snapshot_a", "snapshot_b"]
+    calls: list[bool] = []
+
+    def collect(_viewer_obj, *, include_process_vram: bool = False):
+        calls.append(bool(include_process_vram))
+        return snapshots[min(len(calls) - 1, len(snapshots) - 1)]
+
+    monkeypatch.setattr(presenter, "collect_resource_debug_snapshot", collect)
+
+    presenter.update_ui_text(viewer, 1.0 / 60.0)
+    presenter.update_ui_text(viewer, 1.0 / 60.0)
+    viewer.ui._values["_resource_debug_refresh_requested"] = True
+    viewer.ui._values["_resource_debug_process_vram_requested"] = True
+    presenter.update_ui_text(viewer, 1.0 / 60.0)
+
+    assert calls == [False, True]
+    assert viewer.ui._values["_resource_debug_snapshot"] == "snapshot_b"
+    assert viewer.ui._values["_resource_debug_refresh_requested"] is False
+    assert viewer.ui._values["_resource_debug_process_vram_requested"] is False
+
+
 def test_update_ui_text_previews_current_schedule_values_without_trainer() -> None:
     viewer = _viewer(loss_debug=False)
     viewer.s.trainer = None
