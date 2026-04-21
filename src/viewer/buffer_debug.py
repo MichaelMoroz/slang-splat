@@ -3,17 +3,22 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import datetime
+import os
 from pathlib import Path
+import subprocess
+import sys
 from statistics import median
+import time
 from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
 
-from ..utility import ResourceAllocation, resource_allocation
+from ..utility import ResourceAllocation, debug_resource_allocations, resource_allocation
 
 _MAX_WALK_DEPTH = 12
 _MAX_WALK_NODES = 20000
+_PROCESS_VRAM_CACHE_SECONDS = 5.0
 _STATE_RESOURCE_ATTRS = (
     "viewport_texture",
     "loss_debug_texture",
@@ -57,6 +62,12 @@ class ResourceDebugSnapshot:
     buffer_median: float
     texture_count: int
     texture_total: int
+    process_vram: int | None = None
+    process_vram_delta: int | None = None
+    process_vram_source: str = ""
+
+
+_PROCESS_VRAM_CACHE: tuple[float, int | None, str] = (0.0, None, "")
 
 
 def format_resource_bytes(byte_count: float | int) -> str:
@@ -88,10 +99,17 @@ def format_resource_debug_log(snapshot: ResourceDebugSnapshot) -> str:
             f"mean={format_resource_bytes(snapshot.buffer_mean)} | median={format_resource_bytes(snapshot.buffer_median)}"
         ),
         f"Textures: {snapshot.texture_count:,} | total={format_resource_bytes(snapshot.texture_total)} ({snapshot.texture_total:,} bytes)",
-        "",
-        "Duplicate-Looking Groups",
-        "Count\tTotal Size\tSingle Size\tType\tDetails\tName",
     ]
+    if snapshot.process_vram is not None:
+        source = f" [{snapshot.process_vram_source}]" if snapshot.process_vram_source else ""
+        delta = 0 if snapshot.process_vram_delta is None else snapshot.process_vram_delta
+        lines.extend(
+            (
+                f"Process Dedicated VRAM: {format_resource_bytes(snapshot.process_vram)} ({snapshot.process_vram:,} bytes){source}",
+                f"Untracked / Driver Reserved: {format_resource_bytes(delta)} ({delta:,} bytes)",
+            )
+        )
+    lines.extend(("", "Duplicate-Looking Groups", "Count\tTotal Size\tSingle Size\tType\tDetails\tName"))
     duplicate_lines = _duplicate_group_lines(rows)
     lines.extend(duplicate_lines if duplicate_lines else ("<none>",))
     lines.extend(
@@ -140,12 +158,14 @@ def _duplicate_group_lines(rows: tuple[ResourceDebugRow, ...]) -> tuple[str, ...
     )
 
 
-def collect_resource_debug_snapshot(viewer: object) -> ResourceDebugSnapshot:
+def collect_resource_debug_snapshot(viewer: object, *, include_process_vram: bool = False) -> ResourceDebugSnapshot:
     found: dict[int, tuple[ResourceAllocation, list[str]]] = {}
     visited: set[int] = set()
     node_count = [0]
     for root_name, root in _viewer_resource_roots(viewer):
         _walk_resource_graph(root, root_name, found, visited, node_count, _MAX_WALK_DEPTH)
+    for resource, allocation in debug_resource_allocations():
+        found.setdefault(id(resource), (allocation, ["debug_registry.unowned"]))
     rows = tuple(
         sorted(
             (
@@ -163,7 +183,8 @@ def collect_resource_debug_snapshot(viewer: object) -> ResourceDebugSnapshot:
             key=lambda row: (-row.byte_size, row.order),
         )
     )
-    return _snapshot_from_rows(rows)
+    process_vram, source = _process_vram_snapshot() if include_process_vram else (None, "")
+    return _snapshot_from_rows(rows, process_vram=process_vram, process_vram_source=source)
 
 
 def _viewer_resource_roots(viewer: object) -> tuple[tuple[str, object], ...]:
@@ -189,21 +210,100 @@ def _viewer_resource_roots(viewer: object) -> tuple[tuple[str, object], ...]:
     return tuple(roots)
 
 
-def _snapshot_from_rows(rows: tuple[ResourceDebugRow, ...]) -> ResourceDebugSnapshot:
+def _snapshot_from_rows(rows: tuple[ResourceDebugRow, ...], *, process_vram: int | None = None, process_vram_source: str = "") -> ResourceDebugSnapshot:
     buffer_sizes = [row.byte_size for row in rows if row.kind == "Buffer"]
     texture_sizes = [row.byte_size for row in rows if row.kind == "Texture"]
     buffer_total = int(sum(buffer_sizes))
     texture_total = int(sum(texture_sizes))
+    total = buffer_total + texture_total
+    delta = None if process_vram is None else max(int(process_vram) - total, 0)
     return ResourceDebugSnapshot(
         rows=rows,
-        total_consumption=buffer_total + texture_total,
+        total_consumption=total,
         buffer_count=len(buffer_sizes),
         buffer_total=buffer_total,
         buffer_mean=float(buffer_total / len(buffer_sizes)) if buffer_sizes else 0.0,
         buffer_median=float(median(buffer_sizes)) if buffer_sizes else 0.0,
         texture_count=len(texture_sizes),
         texture_total=texture_total,
+        process_vram=process_vram,
+        process_vram_delta=delta,
+        process_vram_source=process_vram_source,
     )
+
+
+def _process_vram_snapshot() -> tuple[int | None, str]:
+    global _PROCESS_VRAM_CACHE
+    now = time.monotonic()
+    cached_at, cached_value, cached_source = _PROCESS_VRAM_CACHE
+    if cached_at > 0.0 and now - cached_at < _PROCESS_VRAM_CACHE_SECONDS:
+        return cached_value, cached_source
+    value, source = _query_process_vram()
+    _PROCESS_VRAM_CACHE = (now, value, source)
+    return value, source
+
+
+def _query_process_vram() -> tuple[int | None, str]:
+    if sys.platform == "win32":
+        value = _query_windows_process_dedicated_vram()
+        return value, "Windows GPU Process Memory" if value is not None else ""
+    value = _query_nvidia_smi_process_vram()
+    return value, "nvidia-smi" if value is not None else ""
+
+
+def _query_windows_process_dedicated_vram() -> int | None:
+    pid = int(os.getpid())
+    command = (
+        f"$pidValue={pid}; "
+        "$samples=(Get-Counter '\\GPU Process Memory(*)\\Dedicated Usage' -ErrorAction Stop).CounterSamples; "
+        "[int64](($samples | Where-Object { $_.InstanceName -like \"pid_${pidValue}_*\" } | "
+        "Measure-Object -Property CookedValue -Sum).Sum)"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=False,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        value = int(float(result.stdout.strip().splitlines()[-1]))
+    except Exception:
+        return None
+    return max(value, 0)
+
+
+def _query_nvidia_smi_process_vram() -> int | None:
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-compute-apps=pid,used_gpu_memory", "--format=csv,noheader,nounits"],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=False,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    total_mib = 0
+    pid = str(os.getpid())
+    for line in result.stdout.splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 2 or parts[0] != pid:
+            continue
+        if parts[1].upper() == "N/A":
+            return None
+        try:
+            total_mib += int(parts[1])
+        except ValueError:
+            return None
+    return total_mib * 1024 * 1024 if total_mib > 0 else None
 
 
 def _walk_resource_graph(value: object, path: str, found: dict[int, tuple[ResourceAllocation, list[str]]], visited: set[int], node_count: list[int], depth: int) -> None:

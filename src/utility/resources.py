@@ -75,6 +75,20 @@ def resource_allocation(resource: object) -> ResourceAllocation | None:
     return _RESOURCE_ALLOCATIONS.get(resource_id) if target is resource else None
 
 
+def debug_resource_allocations() -> tuple[tuple[object, ResourceAllocation], ...]:
+    resources: list[tuple[object, ResourceAllocation]] = []
+    for resource_id, ref in tuple(_RESOURCE_REFS.items()):
+        target = ref()
+        if target is None:
+            _RESOURCE_REFS.pop(resource_id, None)
+            _RESOURCE_ALLOCATIONS.pop(resource_id, None)
+            continue
+        allocation = _RESOURCE_ALLOCATIONS.get(resource_id)
+        if allocation is not None:
+            resources.append((target, allocation))
+    return tuple(resources)
+
+
 def clear_debug_resource_allocations() -> None:
     global _RESOURCE_ALLOCATION_ORDER
     _RESOURCE_ALLOCATIONS.clear()

@@ -792,7 +792,7 @@ def update_ui_text(viewer: object, dt: float) -> None:
     viewer.ui._values["_histogram_range_payload"] = getattr(viewer.s, "cached_raster_grad_ranges", None)
     viewer.ui._values["_training_views_rows"] = _training_view_rows(viewer)
     viewer.ui._values["_training_view_overlay_segments"] = _camera_overlay_segments(viewer)
-    viewer.ui._values["_resource_debug_snapshot"] = collect_resource_debug_snapshot(viewer)
+    viewer.ui._values["_resource_debug_snapshot"] = collect_resource_debug_snapshot(viewer, include_process_vram=bool(viewer.ui._values.get("show_resource_debug", False)))
     viewer.t("render_stats").text = "Generated: 0 | Written: 0" if not stats else f"Generated: {int(stats['generated_entries']):,} | Written: {int(stats['written_entries']):,} | Overflow: {bool(stats['overflow'])}{' [cap]' if bool(stats.get('capacity_limited', False)) else ''}{' (delayed)' if bool(stats.get('stats_latency_frames', 0)) else ''}{'' if bool(stats.get('stats_valid', True)) else ' [warming]'}"
     if viewer.s.trainer is None:
         viewer.t("training").text = "Training: not initialized"

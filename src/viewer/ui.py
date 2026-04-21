@@ -1990,6 +1990,11 @@ class ToolkitWindow:
             f"mean={format_resource_bytes(snapshot.buffer_mean)} | median={format_resource_bytes(snapshot.buffer_median)}"
         )
         imgui.text_unformatted(f"Textures: {snapshot.texture_count:,} | total={format_resource_bytes(snapshot.texture_total)}")
+        if snapshot.process_vram is not None:
+            source = f" ({snapshot.process_vram_source})" if snapshot.process_vram_source else ""
+            delta = 0 if snapshot.process_vram_delta is None else snapshot.process_vram_delta
+            imgui.text_unformatted(f"Process VRAM: {format_resource_bytes(snapshot.process_vram)}{source}")
+            imgui.text_unformatted(f"Untracked / Driver Reserved: {format_resource_bytes(delta)}")
 
     def _draw_resource_debug_table(self, snapshot: ResourceDebugSnapshot) -> None:
         rows = tuple(sorted(snapshot.rows, key=lambda row: (-row.byte_size, row.order)))
