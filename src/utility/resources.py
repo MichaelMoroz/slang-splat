@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import weakref
 from typing import Any
 
 import numpy as np
@@ -29,6 +30,7 @@ class ResourceAllocation:
 
 
 _RESOURCE_ALLOCATIONS: dict[int, ResourceAllocation] = {}
+_RESOURCE_REFS: dict[int, object] = {}
 _RESOURCE_ALLOCATION_ORDER = 0
 
 
@@ -43,7 +45,8 @@ def _usage_text(usage: object) -> str:
 
 
 def _register_resource(resource: object, *, kind: str, name: str, byte_size: int, usage: object) -> object:
-    _RESOURCE_ALLOCATIONS[id(resource)] = ResourceAllocation(
+    resource_id = id(resource)
+    _RESOURCE_ALLOCATIONS[resource_id] = ResourceAllocation(
         kind=str(kind),
         name=str(name),
         byte_size=_native_device_bytes(resource, max(int(byte_size), 0)),
@@ -51,6 +54,7 @@ def _register_resource(resource: object, *, kind: str, name: str, byte_size: int
         usage=_usage_text(usage),
         order=_next_resource_order(),
     )
+    _RESOURCE_REFS[resource_id] = _make_resource_ref(resource)
     return resource
 
 
@@ -59,13 +63,41 @@ def register_debug_resource(resource: object, *, kind: str, name: str, byte_size
 
 
 def resource_allocation(resource: object) -> ResourceAllocation | None:
-    return _RESOURCE_ALLOCATIONS.get(id(resource))
+    resource_id = id(resource)
+    ref = _RESOURCE_REFS.get(resource_id)
+    if ref is None:
+        return None
+    target = ref()
+    if target is None:
+        _RESOURCE_REFS.pop(resource_id, None)
+        _RESOURCE_ALLOCATIONS.pop(resource_id, None)
+        return None
+    return _RESOURCE_ALLOCATIONS.get(resource_id) if target is resource else None
 
 
 def clear_debug_resource_allocations() -> None:
     global _RESOURCE_ALLOCATION_ORDER
     _RESOURCE_ALLOCATIONS.clear()
+    _RESOURCE_REFS.clear()
     _RESOURCE_ALLOCATION_ORDER = 0
+
+
+class _StrongResourceRef:
+    __slots__ = ("_resource",)
+
+    def __init__(self, resource: object) -> None:
+        self._resource = resource
+
+    def __call__(self) -> object:
+        return self._resource
+
+
+def _make_resource_ref(resource: object) -> object:
+    resource_id = id(resource)
+    try:
+        return weakref.ref(resource, lambda _ref: (_RESOURCE_REFS.pop(resource_id, None), _RESOURCE_ALLOCATIONS.pop(resource_id, None)))
+    except TypeError:
+        return _StrongResourceRef(resource)
 
 
 def _texture_bytes_per_pixel(format: spy.Format) -> int:

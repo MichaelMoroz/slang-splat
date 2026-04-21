@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import datetime
 from pathlib import Path
@@ -77,6 +78,7 @@ def write_resource_debug_log(snapshot: ResourceDebugSnapshot, directory: Path | 
 
 
 def format_resource_debug_log(snapshot: ResourceDebugSnapshot) -> str:
+    rows = tuple(sorted(snapshot.rows, key=lambda item: (-item.byte_size, item.order)))
     lines = [
         "Slang Splat Resource Debug Log",
         "",
@@ -87,9 +89,19 @@ def format_resource_debug_log(snapshot: ResourceDebugSnapshot) -> str:
         ),
         f"Textures: {snapshot.texture_count:,} | total={format_resource_bytes(snapshot.texture_total)} ({snapshot.texture_total:,} bytes)",
         "",
-        "Size\tType\tDetails\tName\tOwner\tUsage",
+        "Duplicate-Looking Groups",
+        "Count\tTotal Size\tSingle Size\tType\tDetails\tName",
     ]
-    for row in tuple(sorted(snapshot.rows, key=lambda item: (-item.byte_size, item.order))):
+    duplicate_lines = _duplicate_group_lines(rows)
+    lines.extend(duplicate_lines if duplicate_lines else ("<none>",))
+    lines.extend(
+        (
+            "",
+            "Resource Table",
+            "Size\tType\tDetails\tName\tOwner\tUsage",
+        )
+    )
+    for row in rows:
         lines.append(
             "\t".join(
                 (
@@ -103,6 +115,29 @@ def format_resource_debug_log(snapshot: ResourceDebugSnapshot) -> str:
             )
         )
     return "\n".join(lines) + "\n"
+
+
+def _duplicate_group_lines(rows: tuple[ResourceDebugRow, ...]) -> tuple[str, ...]:
+    groups: dict[tuple[str, str, int, str], list[ResourceDebugRow]] = defaultdict(list)
+    for row in rows:
+        groups[(row.kind, row.name, row.byte_size, row.details)].append(row)
+    duplicate_groups = sorted(
+        (group for group in groups.values() if len(group) > 1),
+        key=lambda group: (-len(group) * group[0].byte_size, -len(group), group[0].name),
+    )
+    return tuple(
+        "\t".join(
+            (
+                f"{len(group):,}",
+                f"{format_resource_bytes(len(group) * group[0].byte_size)} ({len(group) * group[0].byte_size:,} bytes)",
+                f"{format_resource_bytes(group[0].byte_size)} ({group[0].byte_size:,} bytes)",
+                group[0].kind,
+                group[0].details,
+                group[0].name,
+            )
+        )
+        for group in duplicate_groups
+    )
 
 
 def collect_resource_debug_snapshot(viewer: object) -> ResourceDebugSnapshot:
