@@ -145,6 +145,14 @@ def test_renderer_params_default_to_fixed_cached_grad_atomics():
     assert kwargs["cached_raster_grad_fixed_opacity_range"] == 0.2
     assert params.max_anisotropy == 32.0
     assert kwargs["max_anisotropy"] == 32.0
+    assert params.debug_gaussian_scale_multiplier == 1.0
+    assert kwargs["debug_gaussian_scale_multiplier"] == 1.0
+    assert params.debug_min_opacity == 0.0
+    assert kwargs["debug_min_opacity"] == 0.0
+    assert params.debug_opacity_multiplier == 1.0
+    assert kwargs["debug_opacity_multiplier"] == 1.0
+    assert params.debug_ellipse_scale_multiplier == 1.0
+    assert kwargs["debug_ellipse_scale_multiplier"] == 1.0
 
 
 def test_render_ignores_max_splat_steps_cap(device):
@@ -593,6 +601,10 @@ def test_debug_ellipse_overlay_render_smoke(device):
 def test_debug_ellipse_overlay_defaults_to_4px_thickness(device):
     renderer = GaussianRenderer(device, width=64, height=64)
     assert renderer.debug_ellipse_thickness_px == 4.0
+    assert renderer.debug_gaussian_scale_multiplier == 1.0
+    assert renderer.debug_min_opacity == 0.0
+    assert renderer.debug_opacity_multiplier == 1.0
+    assert renderer.debug_ellipse_scale_multiplier == 1.0
 
 
 def test_debug_ellipse_overlay_antialiases_across_boundary(device):

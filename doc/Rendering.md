@@ -75,7 +75,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - Debug modes are integrated into `csRasterize`.
 - Processed-count mode outputs the per-pixel count of splats that successfully blended in the forward replay, normalized in log space against `maxSplatSteps` and visualized with the same `jet` colormap used by grad-norm mode.
 - Grad-norm mode keeps the normal alpha/transmittance path and replaces each splat's RGB with a colormapped value derived from `g_DebugGradNorm[splatId]`, which is optionally produced by the optimizer as one packed-gradient `L2` norm per splat.
-- Ellipse mode reuses the same tiled forward replay and switches splat alpha evaluation from filled-gaussian coverage to a symmetric antialiased outline band derived from the projected conic's signed edge distance. `debugEllipseThicknessPx` is the full outline thickness in pixels, and the default is `4`, so the visible ring spans both sides of the projected ellipse boundary instead of being clipped to the interior.
+- Ellipse mode reuses the same tiled forward replay and switches splat alpha evaluation from filled-gaussian coverage to a symmetric antialiased outline band derived from the projected conic's signed edge distance. `debugEllipseThicknessPx` is the full outline thickness in pixels, and the default is `4`, so the visible ring spans both sides of the projected ellipse boundary instead of being clipped to the interior. The ellipse debug scale and opacity controls are applied only inside the raster replay loop; projection, binning, and prepass visibility keep using the scene values.
 
 ## 7. Raster Backward
 - Shaders: `csClearRasterGrads`, `csRasterizeTrainingForward`, `csRasterizeBackward`, `csBackpropCachedRasterGrads`.

@@ -298,6 +298,10 @@ class GaussianRenderer:
                 "debugDepthLocalMismatchSmoothRadius": float(self.debug_depth_local_mismatch_smooth_radius),
                 "debugDepthLocalMismatchRejectRadius": float(self.debug_depth_local_mismatch_reject_radius),
                 "debugSHCoeffIndex": np.uint32(self.debug_sh_coeff_index),
+                "debugGaussianScaleMultiplier": float(self.debug_gaussian_scale_multiplier),
+                "debugMinOpacity": float(self.debug_min_opacity),
+                "debugOpacityMultiplier": float(self.debug_opacity_multiplier),
+                "debugEllipseScaleMultiplier": float(self.debug_ellipse_scale_multiplier),
             }
         }
 
@@ -507,6 +511,10 @@ class GaussianRenderer:
         debug_show_grad_norm: bool = False,
         debug_grad_norm_threshold: float = 2e-4,
         debug_ellipse_thickness_px: float = 4.0,
+        debug_gaussian_scale_multiplier: float = 1.0,
+        debug_min_opacity: float = 0.0,
+        debug_opacity_multiplier: float = 1.0,
+        debug_ellipse_scale_multiplier: float = 1.0,
         debug_splat_age_range: tuple[float, float] = _DEFAULT_DEBUG_SPLAT_AGE_RANGE,
         debug_density_range: tuple[float, float] = _DEFAULT_DEBUG_DENSITY_RANGE,
         debug_contribution_range: tuple[float, float] = _DEFAULT_DEBUG_CONTRIBUTION_RANGE,
@@ -545,6 +553,10 @@ class GaussianRenderer:
         self.debug_show_grad_norm = self.debug_mode == self.DEBUG_MODE_GRAD_NORM
         self.debug_grad_norm_threshold = float(debug_grad_norm_threshold)
         self.debug_ellipse_thickness_px = float(debug_ellipse_thickness_px)
+        self.debug_gaussian_scale_multiplier = float(max(debug_gaussian_scale_multiplier, 1e-8))
+        self.debug_min_opacity = float(max(debug_min_opacity, 0.0))
+        self.debug_opacity_multiplier = float(max(debug_opacity_multiplier, 0.0))
+        self.debug_ellipse_scale_multiplier = float(max(debug_ellipse_scale_multiplier, 1e-8))
         self.debug_splat_age_range = tuple(float(x) for x in debug_splat_age_range)
         self.debug_density_range = tuple(float(x) for x in debug_density_range)
         self.debug_contribution_range = tuple(float(x) for x in debug_contribution_range)

@@ -41,8 +41,6 @@ static const float SPLAT_CONTRIBUTION_FIXED_SCALE = 256.0;
 static const float SPLAT_CONTRIBUTION_FIXED_MAX_F = 16777215.99609375;
 static const float DEPTH_LOCAL_MISMATCH_REJECT_ALPHA_SCALE_MAX = 2.0;
 static const float DEBUG_ELLIPSE_FILL_ALPHA_SCALE = 0.25;
-static const float DEBUG_ELLIPSE_OUTLINE_ALPHA_SCALE = 1.0;
-static const float DEBUG_ELLIPSE_OUTLINE_ALPHA_MIN = 0.5;
 static const float UINT_TO_UNIT_FLOAT = 2.3283064365386963e-10;
 
 int raster_grad_fixed_quantize(float value, float range)
@@ -213,12 +211,15 @@ void flush_cached_raster_grad_float(uint splatId, RasterGaussian.Differential dG
     if (colorAlpha.w != 0.0) InterlockedAdd(g_CachedRasterGradsFloat[cached_raster_grad_index(splatCount, RASTER_CACHE_FUSED_OPACITY, splatId)], colorAlpha.w);
 }
 
-float raster_eval_outline_alpha(uint splatId, float fusedOpacity, float2 samplePoint)
+float raster_eval_outline_alpha(uint splatId, float opacity, float2 samplePoint)
 {
     float4 centerRadiusDepth = g_ScreenCenterRadiusDepth[splatId];
     float4 conicAndOpacity = g_ScreenEllipseConic[splatId];
+    float ellipseScale = max(g_Raster.debugGaussianScaleMultiplier * g_Raster.debugEllipseScaleMultiplier, SMALL_VALUE);
+    float conicScale = 1.0 / (ellipseScale * ellipseScale);
+    float3 conic = conicAndOpacity.xyz * conicScale;
     float2 delta = samplePoint - centerRadiusDepth.xy;
-    float2 grad = mul(float2x2(conicAndOpacity.x, conicAndOpacity.y, conicAndOpacity.y, conicAndOpacity.z), delta);
+    float2 grad = mul(float2x2(conic.x, conic.y, conic.y, conic.z), delta);
     float quad = dot(delta, grad);
     float gradLen = max(length(2.0 * grad), GRADIENT_LENGTH_FLOOR);
     float fullWidth = max(g_Raster.debugEllipseThicknessPx, 2.0 * MIN_DEBUG_THICKNESS_PX);
@@ -226,8 +227,27 @@ float raster_eval_outline_alpha(uint splatId, float fusedOpacity, float2 sampleP
     float edgeDistance = abs((quad - 1.0) / gradLen);
     float coverage = saturate(1.0 - edgeDistance / halfWidth);
     coverage = coverage * coverage * (3.0 - 2.0 * coverage);
-    float alpha = fusedOpacity * coverage;
+    float alpha = saturate(opacity) * coverage;
     return alpha >= g_Raster.alphaCutoff ? alpha : 0.0;
+}
+
+float ellipse_debug_opacity(float opacity)
+{
+    return saturate(max(opacity * max(g_Raster.debugOpacityMultiplier, 0.0), max(g_Raster.debugMinOpacity, 0.0)));
+}
+
+float ellipse_debug_outline_opacity()
+{
+    return saturate(max(g_Raster.debugOpacityMultiplier, max(g_Raster.debugMinOpacity, 0.0)));
+}
+
+RasterGaussian ellipse_debug_gaussian(RasterGaussian gaussian)
+{
+    float scaleMultiplier = max(g_Raster.debugGaussianScaleMultiplier, SMALL_VALUE);
+    gaussian.roLocal /= scaleMultiplier;
+    gaussian.scale *= scaleMultiplier;
+    gaussian.colorAlpha.w = ellipse_debug_opacity(gaussian.colorAlpha.w);
+    return gaussian;
 }
 
 [Differentiable]
@@ -628,9 +648,12 @@ struct DebugRasterReplayVariant : IRasterReplayVariant
     static bool eval_hit(RasterPixelInfo info, uint splatId, RasterGaussian gaussian, out float alpha, out float rayDepth)
     {
         rayDepth = 0.0;
+        bool ellipseMode = g_Raster.debugMode == DEBUG_MODE_ELLIPSE_OUTLINES;
+        if (ellipseMode) gaussian = ellipse_debug_gaussian(gaussian);
         float2 eval = raster_eval_alpha_depth_gaussian(gaussian, info.rayDir);
         alpha = eval.x;
         rayDepth = eval.y;
+        if (ellipseMode) return alpha > 0.0 || raster_eval_outline_alpha(splatId, ellipse_debug_outline_opacity(), info.samplePoint) > 0.0;
         return alpha > 0.0;
     }
 
@@ -659,8 +682,7 @@ struct DebugRasterReplayVariant : IRasterReplayVariant
         if (debugMode == DEBUG_MODE_ELLIPSE_OUTLINES)
         {
             replayState.pixelState = replayState.pixelState.blend(color, DEBUG_ELLIPSE_FILL_ALPHA_SCALE * alpha);
-            float outlineAlpha = raster_eval_outline_alpha(splatId, gaussian.colorAlpha.w, info.samplePoint);
-            if (outlineAlpha > 0.0) outlineAlpha = saturate(max(DEBUG_ELLIPSE_OUTLINE_ALPHA_MIN, DEBUG_ELLIPSE_OUTLINE_ALPHA_SCALE * outlineAlpha));
+            float outlineAlpha = raster_eval_outline_alpha(splatId, ellipse_debug_outline_opacity(), info.samplePoint);
             if (outlineAlpha > 0.0) replayState.pixelState = replayState.pixelState.blend(color, outlineAlpha);
             return;
         }

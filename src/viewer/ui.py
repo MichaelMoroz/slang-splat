@@ -335,7 +335,7 @@ def _debug_colorbar_mode(ui: "ViewerUI") -> str | None:
 
 
 def _renderer_debug_control_keys(mode: str) -> tuple[str, ...]:
-    if mode == "ellipse_outlines": return ("debug_mode", "debug_ellipse_thickness_px")
+    if mode == "ellipse_outlines": return ("debug_mode", "debug_ellipse_thickness_px", "debug_gaussian_scale_multiplier", "debug_min_opacity", "debug_opacity_multiplier", "debug_ellipse_scale_multiplier")
     if mode == "grad_norm": return ("debug_mode", "debug_grad_norm_threshold")
     if mode == "sh_coefficient": return ("debug_mode", "debug_sh_coeff_index")
     if mode == "splat_age": return ("debug_mode", "debug_splat_age_min", "debug_splat_age_max")
@@ -504,6 +504,10 @@ def export_repo_defaults_from_ui_values(values: dict[str, object]) -> dict[str, 
                 "debug_mode": None if _DEBUG_MODE_VALUES[min(max(int(values["debug_mode"]), 0), len(_DEBUG_MODE_VALUES) - 1)] == "normal" else _DEBUG_MODE_VALUES[min(max(int(values["debug_mode"]), 0), len(_DEBUG_MODE_VALUES) - 1)],
                 "debug_grad_norm_threshold": float(values["debug_grad_norm_threshold"]),
                 "debug_ellipse_thickness_px": float(values["debug_ellipse_thickness_px"]),
+                "debug_gaussian_scale_multiplier": float(values["debug_gaussian_scale_multiplier"]),
+                "debug_min_opacity": float(values["debug_min_opacity"]),
+                "debug_opacity_multiplier": float(values["debug_opacity_multiplier"]),
+                "debug_ellipse_scale_multiplier": float(values["debug_ellipse_scale_multiplier"]),
                 "debug_splat_age_range": [float(values["debug_splat_age_min"]), float(values["debug_splat_age_max"])],
                 "debug_density_range": [float(values["debug_density_min"]), float(values["debug_density_max"])],
                 "debug_contribution_range": [float(values["debug_contribution_min"]), float(values["debug_contribution_max"])],
@@ -588,6 +592,10 @@ DEBUG_RENDER_SPECS = (
     ControlSpec("debug_sh_coeff_index", "combo", "SH Coefficient", {"value": int(_RENDERER_DEFAULTS["debug_sh_coeff_index"]), "options": _DEBUG_SH_COEFF_LABELS}),
     ControlSpec("debug_grad_norm_threshold", "input_float", "Grad Norm Threshold", {"value": float(_RENDERER_DEFAULTS["debug_grad_norm_threshold"]), "step": 1e-5, "step_fast": 1e-4, "format": "%.6g"}),
     ControlSpec("debug_ellipse_thickness_px", "slider_float", "Ellipse Thickness", {"value": float(_RENDERER_DEFAULTS["debug_ellipse_thickness_px"]), "min": 0.25, "max": 8.0, "format": "%.2f px"}),
+    ControlSpec("debug_gaussian_scale_multiplier", "slider_float", "Gaussian Scale", {"value": float(_RENDERER_DEFAULTS["debug_gaussian_scale_multiplier"]), "min": 0.05, "max": 16.0, "format": "%.3gx", "logarithmic": True}),
+    ControlSpec("debug_min_opacity", "slider_float", "Min Opacity", {"value": float(_RENDERER_DEFAULTS["debug_min_opacity"]), "min": 0.0, "max": 1.0, "format": "%.4f"}),
+    ControlSpec("debug_opacity_multiplier", "slider_float", "Opacity Mul", {"value": float(_RENDERER_DEFAULTS["debug_opacity_multiplier"]), "min": 0.0, "max": 16.0, "format": "%.3gx"}),
+    ControlSpec("debug_ellipse_scale_multiplier", "slider_float", "Ellipse Scale", {"value": float(_RENDERER_DEFAULTS["debug_ellipse_scale_multiplier"]), "min": 0.05, "max": 16.0, "format": "%.3gx", "logarithmic": True}),
     ControlSpec("debug_splat_age_min", "input_float", "Splat Age Min", {"value": float(_RENDERER_DEFAULTS["debug_splat_age_range"][0]), "step": 0.05, "step_fast": 0.25, "format": "%.5g"}),
     ControlSpec("debug_splat_age_max", "input_float", "Splat Age Max", {"value": float(_RENDERER_DEFAULTS["debug_splat_age_range"][1]), "step": 0.05, "step_fast": 0.25, "format": "%.5g"}),
     ControlSpec("debug_density_min", "input_float", "Density Min", {"value": float(_RENDERER_DEFAULTS["debug_density_range"][0]), "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
@@ -2437,6 +2445,10 @@ class ToolkitWindow:
         "debug_sh_coeff_index": "Select which raw SH coefficient float3 to display; zero is mapped to 0.5 gray in this debug view",
         "debug_grad_norm_threshold": "Reference threshold for the gradient norm heatmap",
         "debug_ellipse_thickness_px": "Thickness used by ellipse outline debug rendering",
+        "debug_gaussian_scale_multiplier": "Ellipse debug raster-loop multiplier applied to the cached Gaussian scale",
+        "debug_min_opacity": "Ellipse debug raster-loop opacity floor applied after the opacity multiplier",
+        "debug_opacity_multiplier": "Ellipse debug raster-loop multiplier applied to cached splat opacity",
+        "debug_ellipse_scale_multiplier": "Ellipse debug raster-loop multiplier applied only to outline conic evaluation",
         "debug_splat_age_min": "Lower bound for the per-splat age heatmap",
         "debug_splat_age_max": "Upper bound for the per-splat age heatmap",
         "debug_density_min": "Lower bound for density debug heatmaps",
@@ -2662,6 +2674,10 @@ def build_ui(renderer) -> ViewerUI:
     values["debug_mode"] = _renderer_debug_mode_index(getattr(renderer, "debug_mode", _RENDERER_DEFAULTS["debug_mode"]))
     values["debug_grad_norm_threshold"] = float(getattr(renderer, "debug_grad_norm_threshold", _RENDERER_DEFAULTS["debug_grad_norm_threshold"]))
     values["debug_ellipse_thickness_px"] = float(getattr(renderer, "debug_ellipse_thickness_px", _RENDERER_DEFAULTS["debug_ellipse_thickness_px"]))
+    values["debug_gaussian_scale_multiplier"] = float(getattr(renderer, "debug_gaussian_scale_multiplier", _RENDERER_DEFAULTS["debug_gaussian_scale_multiplier"]))
+    values["debug_min_opacity"] = float(getattr(renderer, "debug_min_opacity", _RENDERER_DEFAULTS["debug_min_opacity"]))
+    values["debug_opacity_multiplier"] = float(getattr(renderer, "debug_opacity_multiplier", _RENDERER_DEFAULTS["debug_opacity_multiplier"]))
+    values["debug_ellipse_scale_multiplier"] = float(getattr(renderer, "debug_ellipse_scale_multiplier", _RENDERER_DEFAULTS["debug_ellipse_scale_multiplier"]))
     splat_age_range = tuple(getattr(renderer, "debug_splat_age_range", _RENDERER_DEFAULTS["debug_splat_age_range"]))
     density_range = tuple(getattr(renderer, "debug_density_range", _RENDERER_DEFAULTS["debug_density_range"]))
     contribution_range = tuple(getattr(renderer, "debug_contribution_range", _RENDERER_DEFAULTS["debug_contribution_range"]))

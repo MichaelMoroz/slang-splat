@@ -118,6 +118,10 @@ def test_build_ui_initializes_control_groups_and_internal_state() -> None:
         "colmap_init_mode",
         "colmap_depth_root",
         "colmap_selected_camera_ids",
+        "debug_gaussian_scale_multiplier",
+        "debug_min_opacity",
+        "debug_opacity_multiplier",
+        "debug_ellipse_scale_multiplier",
     ):
         assert key in viewer_ui._values
 
@@ -790,6 +794,7 @@ def test_contribution_amount_debug_mode_exposes_no_extra_range_controls() -> Non
     viewer_ui = SimpleNamespace(_values={"debug_mode": ui._DEBUG_MODE_VALUES.index("normal")})
 
     assert ui._debug_colorbar_mode(viewer_ui) is None
+    assert ui._renderer_debug_control_keys("ellipse_outlines") == ("debug_mode", "debug_ellipse_thickness_px", "debug_gaussian_scale_multiplier", "debug_min_opacity", "debug_opacity_multiplier", "debug_ellipse_scale_multiplier")
     assert ui._renderer_debug_control_keys("contribution_amount") == ("debug_mode", "debug_contribution_min", "debug_contribution_max")
     assert ui._renderer_debug_control_keys("adam_momentum") == ("debug_mode", "debug_grad_norm_threshold")
     assert ui._renderer_debug_control_keys("sh_coefficient") == ("debug_mode", "debug_sh_coeff_index")

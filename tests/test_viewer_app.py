@@ -284,6 +284,10 @@ def test_renderer_params_maps_adam_momentum_to_grad_norm_log_range() -> None:
         "cached_raster_grad_fixed_opacity_range": SimpleNamespace(value=0.2),
         "debug_grad_norm_threshold": SimpleNamespace(value=2e-4),
         "debug_ellipse_thickness_px": SimpleNamespace(value=4.0),
+        "debug_gaussian_scale_multiplier": SimpleNamespace(value=1.5),
+        "debug_min_opacity": SimpleNamespace(value=0.05),
+        "debug_opacity_multiplier": SimpleNamespace(value=2.0),
+        "debug_ellipse_scale_multiplier": SimpleNamespace(value=0.75),
         "debug_splat_age_min": SimpleNamespace(value=0.0),
         "debug_splat_age_max": SimpleNamespace(value=1.0),
         "debug_density_min": SimpleNamespace(value=0.0),
@@ -309,6 +313,10 @@ def test_renderer_params_maps_adam_momentum_to_grad_norm_log_range() -> None:
     params = app.SplatViewer.renderer_params(viewer, allow_debug_overlays=True)
 
     assert params.debug_mode == "adam_momentum"
+    assert params.debug_gaussian_scale_multiplier == 1.5
+    assert params.debug_min_opacity == 0.05
+    assert params.debug_opacity_multiplier == 2.0
+    assert params.debug_ellipse_scale_multiplier == 0.75
     assert np.isclose(params.debug_adam_momentum_range[0], 2e-7, rtol=0.0, atol=1e-15)
     assert np.isclose(params.debug_adam_momentum_range[1], 2e-3, rtol=0.0, atol=1e-15)
 

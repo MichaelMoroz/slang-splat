@@ -28,6 +28,10 @@ class GaussianRenderSettings:
     debug_mode: str | None = None
     debug_grad_norm_threshold: float = 2e-4
     debug_ellipse_thickness_px: float = 4.0
+    debug_gaussian_scale_multiplier: float = 1.0
+    debug_min_opacity: float = 0.0
+    debug_opacity_multiplier: float = 1.0
+    debug_ellipse_scale_multiplier: float = 1.0
     debug_splat_age_range: tuple[float, float] = (0.0, 1.0)
     debug_density_range: tuple[float, float] = (0.0, 20.0)
     debug_contribution_range: tuple[float, float] = (0.001, 1.0)
@@ -75,6 +79,10 @@ class GaussianRenderSettings:
             "debug_mode": None if self.debug_mode is None else str(self.debug_mode),
             "debug_grad_norm_threshold": float(self.debug_grad_norm_threshold),
             "debug_ellipse_thickness_px": float(self.debug_ellipse_thickness_px),
+            "debug_gaussian_scale_multiplier": float(self.debug_gaussian_scale_multiplier),
+            "debug_min_opacity": float(self.debug_min_opacity),
+            "debug_opacity_multiplier": float(self.debug_opacity_multiplier),
+            "debug_ellipse_scale_multiplier": float(self.debug_ellipse_scale_multiplier),
             "debug_splat_age_range": tuple(float(x) for x in self.debug_splat_age_range),
             "debug_density_range": tuple(float(x) for x in self.debug_density_range),
             "debug_contribution_range": tuple(float(x) for x in self.debug_contribution_range),

@@ -268,6 +268,10 @@ struct RasterParams
     float debugDepthLocalMismatchSmoothRadius;
     float debugDepthLocalMismatchRejectRadius;
     uint debugSHCoeffIndex;
+    float debugGaussianScaleMultiplier;
+    float debugMinOpacity;
+    float debugOpacityMultiplier;
+    float debugEllipseScaleMultiplier;
 };
 
 float3 gaussian_sh_coeff(Gaussian3D gaussian, uint coeffIndex)
