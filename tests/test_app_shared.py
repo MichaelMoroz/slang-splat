@@ -263,6 +263,22 @@ def test_training_hparams_clamp_sorting_order_dithering() -> None:
     assert params.sorting_order_dithering_stage3 == 0.25
 
 
+def test_training_hparams_clamp_colorspace_mod() -> None:
+    assert TrainingHyperParams().colorspace_mod == 0.5
+    assert TrainingHyperParams().colorspace_mod_stage1 == 0.75
+    assert TrainingHyperParams().colorspace_mod_stage2 == 0.9
+    assert TrainingHyperParams().colorspace_mod_stage3 == 1.0
+    assert TrainingHyperParams(colorspace_mod=-0.5).colorspace_mod == 1e-08
+    params = TrainingHyperParams(
+        colorspace_mod_stage1=-1.0,
+        colorspace_mod_stage2=0.25,
+        colorspace_mod_stage3=99.0,
+    )
+    assert params.colorspace_mod_stage1 == 1e-08
+    assert params.colorspace_mod_stage2 == 0.25
+    assert params.colorspace_mod_stage3 == 99.0
+
+
 def test_sorting_order_dithering_resolves_as_staged_schedule() -> None:
     params = TrainingHyperParams(
         lr_schedule_steps=100,

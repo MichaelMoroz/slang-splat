@@ -469,7 +469,7 @@ def test_update_ui_text_reports_training_schedule_and_refinement() -> None:
     presenter.update_ui_text(viewer, 1.0 / 60.0)
 
     assert viewer.t("training_schedule").text == "LR Schedule: 5.00e-03@0 -> 2.00e-03@3,000 -> 1.00e-03@14,000 -> 1.50e-04@30,000 | current=5.00e-03"
-    assert viewer.t("training_schedule_values").text == "Current Values: step=0 | Stage 0 | lr=5.00e-03 | pos=1.00x | shlr=0.05x | depth=1.00e+00 | dither=0.5 | noise=5.00e+05 | sh=SH0"
+    assert viewer.t("training_schedule_values").text == "Current Values: step=0 | Stage 0 | lr=5.00e-03 | pos=1.00x | shlr=0.05x | depth=1.00e+00 | cspace=0.5 | dither=0.5 | noise=5.00e+05 | sh=SH0"
     assert viewer.t("training_refinement").text == "Refinement: every 200 | growth=0.00% now | target=5.00% after 500 | alpha<1.00e-02 or min contrib<512 | decay=99.50%/pass | alpha mul=1.00x | clone scale=1.00x | max=1,000,000"
     assert viewer.t("loss_debug_psnr").text == "PSNR: 32.50 dB"
     assert viewer.ui._values["_training_view_overlay_segments"] == ()
@@ -534,7 +534,7 @@ def test_update_ui_text_previews_current_schedule_values_without_trainer() -> No
 
     presenter.update_ui_text(viewer, 1.0 / 60.0)
 
-    assert viewer.t("training_schedule_values").text == "Current Values: step=0 | Stage 0 | lr=5.00e-03 | pos=1.00x | shlr=0.05x | depth=1.00e+00 | dither=0.5 | noise=5.00e+05 | sh=SH0"
+    assert viewer.t("training_schedule_values").text == "Current Values: step=0 | Stage 0 | lr=5.00e-03 | pos=1.00x | shlr=0.05x | depth=1.00e+00 | cspace=0.5 | dither=0.5 | noise=5.00e+05 | sh=SH0"
 
 
 def test_render_frame_recovers_missing_main_renderer_by_recreating_it(monkeypatch):
@@ -822,7 +822,7 @@ def test_render_debug_view_routes_edge_modes(monkeypatch) -> None:
     monkeypatch.setattr(presenter, "_dispatch_debug_abs_diff", lambda viewer_obj, enc, rendered_tex, target_tex, width, height, *, rendered_is_linear=True: calls.append(("abs_diff", rendered_tex, target_tex, width, height, rendered_is_linear)) or "abs_diff_tex")
     monkeypatch.setattr(presenter, "_dispatch_debug_dssim", lambda viewer_obj, enc, rendered_tex, target_tex, width, height: calls.append(("dssim", rendered_tex, target_tex, width, height)) or "dssim_tex")
     monkeypatch.setattr(presenter, "_dispatch_debug_edge_filter", lambda viewer_obj, enc, source_tex, width, height, *, source_is_linear=False: calls.append(("edge", source_tex, width, height, source_is_linear)) or f"edge_{source_tex}")
-    monkeypatch.setattr(presenter, "_dispatch_viewport_present", lambda viewer_obj, enc, source_tex, source_width, source_height, output_width, output_height, *, source_is_linear=False: calls.append(("present", source_tex, source_width, source_height, output_width, output_height, source_is_linear)) or "present_tex")
+    monkeypatch.setattr(presenter, "_dispatch_training_debug_present", lambda viewer_obj, enc, source_tex, source_width, source_height, output_width, output_height, *, source_is_linear=False, apply_loss_colorspace=False: calls.append(("present", source_tex, source_width, source_height, output_width, output_height, source_is_linear, apply_loss_colorspace)) or "present_tex")
 
     viewer.c("loss_debug_view").value = 3
     assert presenter._render_debug_view(viewer, encoder, 800, 600, 123) == "present_tex"
@@ -833,22 +833,22 @@ def test_render_debug_view_routes_edge_modes(monkeypatch) -> None:
 
     assert calls == [
         ("dssim", "rendered_tex", "target_tex", 640, 360),
-        ("present", "dssim_tex", 640, 360, 800, 600, False),
+        ("present", "dssim_tex", 640, 360, 800, 600, False, False),
         ("edge", "rendered_tex", 640, 360, True),
-        ("present", "edge_rendered_tex", 640, 360, 800, 600, False),
+        ("present", "edge_rendered_tex", 640, 360, 800, 600, False, False),
         ("edge", "target_tex", 640, 360, False),
-        ("present", "edge_target_tex", 640, 360, 800, 600, False),
+        ("present", "edge_target_tex", 640, 360, 800, 600, False, False),
     ]
 
 
 def test_render_debug_view_presents_rendered_as_linear_and_target_as_display(monkeypatch) -> None:
     viewer = _viewer(loss_debug=True)
     encoder = _DummyEncoder()
-    calls: list[tuple[str, object, bool]] = []
+    calls: list[tuple[str, object, bool, bool]] = []
 
     monkeypatch.setattr(presenter, "_render_debug_source", lambda viewer_obj, enc, frame_idx, render_frame_index: ("rendered_tex", {"generated_entries": 1}, 640, 360, {"g_TrainingSubsample": {"enabled": np.uint32(0)}}))
     monkeypatch.setattr(viewer.s.trainer, "get_frame_target_texture", lambda frame_idx, native_resolution=True, encoder=None: "target_tex")
-    monkeypatch.setattr(presenter, "_dispatch_viewport_present", lambda viewer_obj, enc, source_tex, source_width, source_height, output_width, output_height, *, source_is_linear=False: calls.append(("present", source_tex, source_is_linear)) or "present_tex")
+    monkeypatch.setattr(presenter, "_dispatch_training_debug_present", lambda viewer_obj, enc, source_tex, source_width, source_height, output_width, output_height, *, source_is_linear=False, apply_loss_colorspace=False: calls.append(("present", source_tex, source_is_linear, apply_loss_colorspace)) or "present_tex")
 
     viewer.c("loss_debug_view").value = 0
     assert presenter._render_debug_view(viewer, encoder, 800, 600, 123) == "present_tex"
@@ -856,9 +856,28 @@ def test_render_debug_view_presents_rendered_as_linear_and_target_as_display(mon
     assert presenter._render_debug_view(viewer, encoder, 800, 600, 123) == "present_tex"
 
     assert calls == [
-        ("present", "rendered_tex", True),
-        ("present", "target_tex", False),
+        ("present", "rendered_tex", True, True),
+        ("present", "target_tex", False, True),
     ]
+
+
+def test_dispatch_training_debug_present_passes_colorspace_mod(monkeypatch) -> None:
+    viewer = _viewer(loss_debug=True)
+    viewer.s.debug_letterbox_kernel = _CaptureKernel()
+    viewer.s.trainer.state.step = 17
+    encoder = _DummyEncoder()
+    output = SimpleNamespace(width=640, height=360)
+
+    monkeypatch.setattr(presenter, "_ensure_texture", lambda viewer_obj, attr, width, height: output)
+
+    result = presenter._dispatch_training_debug_present(viewer, encoder, "source_tex", 320, 180, 640, 360, source_is_linear=True, apply_loss_colorspace=True)
+
+    assert result is output
+    vars = viewer.s.debug_letterbox_kernel.calls[0]["vars"]
+    assert vars["g_LetterboxSource"] == "source_tex"
+    assert vars["g_LetterboxSourceIsLinear"] == 1
+    assert vars["g_LetterboxApplyLossColorspace"] == 1
+    assert np.isclose(vars["g_ColorspaceMod"], presenter.resolve_colorspace_mod(viewer.s.trainer.training, 17))
 
 
 def test_dispatch_viewport_present_uses_present_kernel(monkeypatch) -> None:

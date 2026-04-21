@@ -20,6 +20,7 @@ static const uint DEBUG_MODE_CONTRIBUTION_AMOUNT = 11u;
 static const uint DEBUG_MODE_ADAM_MOMENTUM = 12u;
 static const uint DEBUG_MODE_SH_VIEW_DEPENDENT = 13u;
 static const uint DEBUG_MODE_SH_COEFFICIENT = 14u;
+static const uint DEBUG_MODE_BLACK_NEGATIVE = 15u;
 static const float DEBUG_CONTRIBUTION_AMOUNT_FLOOR = 1e-6;
 static const uint DEBUG_SH_COEFF_COUNT = 16u;
 static const float SH_C0 = 0.28209479177387814;

@@ -124,6 +124,7 @@ _DEBUG_MODE_VALUES = (
     "grad_norm",
     "sh_view_dependent",
     "sh_coefficient",
+    "black_negative",
 )
 _DEBUG_MODE_LABELS = (
     "Normal",
@@ -141,6 +142,7 @@ _DEBUG_MODE_LABELS = (
     "Grad Norm",
     "SH View-Dependent",
     "SH Coefficient",
+    "Black/Negative Regions",
 )
 _DEBUG_SH_COEFF_LABELS = ("SH0 DC", "SH1 X", "SH1 Y", "SH1 Z", "SH2 0", "SH2 1", "SH2 2", "SH2 3", "SH2 4", "SH3 0", "SH3 1", "SH3 2", "SH3 3", "SH3 4", "SH3 5", "SH3 6")
 _VIEWER_DEFAULTS = viewer_defaults()
@@ -334,7 +336,7 @@ def _theme_color(ui: object, light: tuple[float, float, float, float], dark: tup
 def _debug_colorbar_mode(ui: "ViewerUI") -> str | None:
     index = min(max(int(ui._values.get("debug_mode", 0)), 0), len(_DEBUG_MODE_VALUES) - 1)
     mode = _DEBUG_MODE_VALUES[index]
-    return None if mode in ("normal", "ellipse_outlines", "sh_view_dependent", "sh_coefficient") else mode
+    return None if mode in ("normal", "ellipse_outlines", "sh_view_dependent", "sh_coefficient", "black_negative") else mode
 
 
 def _renderer_debug_control_keys(mode: str) -> tuple[str, ...]:

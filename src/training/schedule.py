@@ -210,6 +210,22 @@ def resolve_sorting_order_dithering(training_hparams: Any, step: int) -> float:
     )
 
 
+def resolve_colorspace_mod(training_hparams: Any, step: int) -> float:
+    start = max(float(getattr(training_hparams, "colorspace_mod", 0.5)), 1e-8)
+    if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
+        return start
+    return _resolve_staged_linear_value(
+        training_hparams,
+        step,
+        start,
+        (
+            max(float(getattr(training_hparams, "colorspace_mod_stage1", 0.75)), 1e-8),
+            max(float(getattr(training_hparams, "colorspace_mod_stage2", 0.9)), 1e-8),
+            max(float(getattr(training_hparams, "colorspace_mod_stage3", 1.0)), 1e-8),
+        ),
+    )
+
+
 def _clamp_sh_band(value: Any, default: int) -> int:
     try:
         resolved = int(value)

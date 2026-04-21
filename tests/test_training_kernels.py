@@ -14,7 +14,7 @@ from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 from src.scene.sh_utils import SH_C0, evaluate_sh_color
 from src.training import gaussian_trainer as gaussian_trainer_module
-from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_cosine_base_learning_rate, resolve_depth_ratio_grad_band, resolve_depth_ratio_weight, resolve_effective_refinement_interval, resolve_effective_train_render_factor, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_screen_fraction, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_clone_budget, resolve_refinement_growth_ratio, resolve_refinement_min_contribution, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering, resolve_ssim_weight, resolve_stage_schedule_steps, resolve_training_resolution, resolve_train_subsample_factor, resolve_use_sh, should_run_refinement_step
+from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_colorspace_mod, resolve_cosine_base_learning_rate, resolve_depth_ratio_grad_band, resolve_depth_ratio_weight, resolve_effective_refinement_interval, resolve_effective_train_render_factor, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_screen_fraction, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_clone_budget, resolve_refinement_growth_ratio, resolve_refinement_min_contribution, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering, resolve_ssim_weight, resolve_stage_schedule_steps, resolve_training_resolution, resolve_train_subsample_factor, resolve_use_sh, should_run_refinement_step
 
 _ADAM_BUFFER_NAMES = ("adam_moments",)
 _OPACITY_EPS = 1e-6
@@ -29,6 +29,12 @@ _SCALE_GRAD_MULS = (0.015625, 0.03125, 0.0625, 0.125, 0.25, 0.5, 0.75, 0.875, 0.
 _TARGET_MULS = (2.0, 3.0, 4.0, 6.0, 7.5)
 _DEPTH_RATIO_GRAD_SOFTNESS_RATIO = 0.1
 _DEPTH_RATIO_GRAD_SOFTNESS_FLOOR = 1e-4
+_RNG_OPEN01_SCALE = np.float32(1.0 / 4294967297.0)
+_SH_CLAMP_SAMPLE_COUNT = 8
+_SH_CLAMP_HASH_SPLAT = np.uint32(0x68E31DA4)
+_SH_CLAMP_HASH_SAMPLE = np.uint32(0xB5297A4D)
+_SH_CLAMP_HASH_PHI = np.uint32(0x1B56C4E9)
+_SH_CLAMP_HASH_Z = np.uint32(0x7F4A7C15)
 _SSIM_BLUR_WEIGHTS = np.array(
     [
         0.00102838008447911,
@@ -51,6 +57,28 @@ _SSIM_SMALL_VALUE = 1e-6
 _SSIM_FEATURES_PER_COLOR = 5
 _SSIM_FEATURE_CHANNELS = 3 * _SSIM_FEATURES_PER_COLOR
 _OUTPUT_GAMMA = 2.2
+
+
+def _hash_u32(x: int) -> np.uint32:
+    value = int(x) & 0xFFFFFFFF
+    value ^= value >> 16
+    value = (value * 0x7FEB352D) & 0xFFFFFFFF
+    value ^= value >> 15
+    value = (value * 0x846CA68B) & 0xFFFFFFFF
+    value ^= value >> 16
+    return np.uint32(value)
+
+
+def _sh_clamp_random01(seed: int) -> np.float32:
+    return np.float32((float(_hash_u32(seed)) + 1.0) * float(_RNG_OPEN01_SCALE))
+
+
+def _sh_clamp_sample_dir(splat_id: int, sample_id: int) -> np.ndarray:
+    splat_seed = _hash_u32((((splat_id + 1) * int(_SH_CLAMP_HASH_SPLAT)) & 0xFFFFFFFF) ^ (((sample_id + 1) * int(_SH_CLAMP_HASH_SAMPLE)) & 0xFFFFFFFF))
+    z = np.float32(1.0 - 2.0 * float(_sh_clamp_random01(int(splat_seed ^ _SH_CLAMP_HASH_Z))))
+    phi = np.float32(2.0 * np.pi * float(_sh_clamp_random01(int(splat_seed ^ _SH_CLAMP_HASH_PHI))))
+    radial = np.float32(np.sqrt(max(1.0 - float(z * z), 0.0)))
+    return np.array([radial * np.cos(phi), radial * np.sin(phi), z], dtype=np.float32)
 
 
 def _training_target_to_linear_np(target_rgb: np.ndarray) -> np.ndarray:
@@ -1332,6 +1360,7 @@ def test_training_raster_output_stays_linear_while_display_render_uses_gamma(dev
 def test_depth_ratio_noise_and_sh_schedules_follow_requested_defaults() -> None:
     hparams = TrainingHyperParams(
         depth_ratio_weight=0.5,
+        colorspace_mod=0.5,
         ssim_weight=0.2,
         max_screen_fraction=0.3,
         position_random_step_noise_lr=1234.0,
@@ -1342,6 +1371,8 @@ def test_depth_ratio_noise_and_sh_schedules_follow_requested_defaults() -> None:
     )
 
     np.testing.assert_allclose(resolve_ssim_weight(hparams, 30_000), 0.2, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_colorspace_mod(hparams, 0), 0.5, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_colorspace_mod(hparams, 30_000), 0.5, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_max_screen_fraction(hparams, 0), 0.3, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_max_screen_fraction(hparams, 30_000), 0.3, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 0), 1234.0, rtol=0.0, atol=1e-12)
@@ -1350,6 +1381,25 @@ def test_depth_ratio_noise_and_sh_schedules_follow_requested_defaults() -> None:
     assert resolve_sh_band(hparams, 30_000) == 2
     assert resolve_use_sh(hparams, 0) is True
     assert resolve_use_sh(hparams, 30_000) is True
+
+
+def test_colorspace_mod_schedule_interpolates_across_stages() -> None:
+    hparams = TrainingHyperParams(
+        colorspace_mod=0.5,
+        colorspace_mod_stage1=0.75,
+        colorspace_mod_stage2=0.9,
+        colorspace_mod_stage3=1.0,
+        lr_schedule_enabled=True,
+        lr_schedule_steps=100,
+        lr_schedule_stage1_step=25,
+        lr_schedule_stage2_step=75,
+    )
+
+    np.testing.assert_allclose(resolve_colorspace_mod(hparams, 0), 0.5, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_colorspace_mod(hparams, 25), 0.75, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_colorspace_mod(hparams, 50), 0.825, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_colorspace_mod(hparams, 75), 0.9, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_colorspace_mod(hparams, 100), 1.0, rtol=0.0, atol=1e-12)
 
 
 def test_max_allowed_density_schedule_clamps_to_end_value() -> None:
@@ -2416,7 +2466,7 @@ def test_refinement_min_screen_size_raises_small_splats(device, tmp_path: Path) 
         width=64,
         height=64,
     )
-    renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.0, list_capacity_multiplier=16)
+    renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.0, list_capacity_multiplier=16, sh_band=3)
     trainer = GaussianTrainer(
         device=device,
         renderer=renderer,
@@ -2797,7 +2847,7 @@ def test_optimizer_projection_clamps_sh_coefficients(device, tmp_path: Path) -> 
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(scale_l2_weight=0.0, scale_abs_reg_weight=0.0, opacity_reg_weight=0.0, sh1_reg_weight=0.0),
+        training_hparams=TrainingHyperParams(use_sh=True, sh_band=3, scale_l2_weight=0.0, scale_abs_reg_weight=0.0, opacity_reg_weight=0.0, sh1_reg_weight=0.0),
         seed=123,
     )
     camera = trainer.make_frame_camera(0, renderer.width, renderer.height)
@@ -2825,12 +2875,14 @@ def test_optimizer_projection_clamps_sh_coefficients(device, tmp_path: Path) -> 
     sh_coeffs = _read_scene_groups(renderer, 1)["sh_coeffs"][0]
     sh0_limit = np.float32(0.5 / SH_C0)
     np.testing.assert_allclose(sh_coeffs[0], np.array([sh0_limit, -sh0_limit, 0.25], dtype=np.float32), rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(
-        sh_coeffs[1:4],
-        np.array([[1.0, -1.0, 0.5], [-1.0, 0.25, 1.0], [0.0, 1.0, -1.0]], dtype=np.float32),
-        rtol=0.0,
-        atol=1e-6,
-    )
+    per_component_clamped = np.array([[1.0, -1.0, 0.5], [-1.0, 0.25, 1.0], [0.0, 1.0, -1.0]], dtype=np.float32)
+    assert np.all(np.abs(sh_coeffs[1:4]) <= np.abs(per_component_clamped) + 1e-6)
+    sampled_dirs = np.stack([_sh_clamp_sample_dir(0, sample_id) for sample_id in range(_SH_CLAMP_SAMPLE_COUNT)], axis=0)
+    sampled_sh = np.repeat(sh_coeffs[None, :, :], _SH_CLAMP_SAMPLE_COUNT, axis=0)
+    sampled_colors = evaluate_sh_color(sampled_sh, sampled_dirs)
+    assert np.all(np.isfinite(sampled_colors))
+    assert np.all(sampled_colors >= -1e-5)
+    assert np.all(sampled_colors <= 1.0 + 1e-5)
     np.testing.assert_allclose(sh_coeffs[4:], 0.0, rtol=0.0, atol=1e-6)
 
 

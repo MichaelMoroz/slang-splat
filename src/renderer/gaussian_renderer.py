@@ -118,6 +118,7 @@ class GaussianRenderer:
     DEBUG_MODE_ADAM_MOMENTUM = "adam_momentum"
     DEBUG_MODE_SH_VIEW_DEPENDENT = "sh_view_dependent"
     DEBUG_MODE_SH_COEFFICIENT = "sh_coefficient"
+    DEBUG_MODE_BLACK_NEGATIVE = "black_negative"
     DEBUG_MODES = (
         DEBUG_MODE_NORMAL,
         DEBUG_MODE_PROCESSED_COUNT,
@@ -134,6 +135,7 @@ class GaussianRenderer:
         DEBUG_MODE_ADAM_MOMENTUM,
         DEBUG_MODE_SH_VIEW_DEPENDENT,
         DEBUG_MODE_SH_COEFFICIENT,
+        DEBUG_MODE_BLACK_NEGATIVE,
     )
     CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT = "float"
     CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED = "fixed"

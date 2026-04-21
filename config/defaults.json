@@ -26,10 +26,14 @@
     "color_non_negative_reg": 0.01,
     "depth_ratio_weight": 0.0,
     "max_screen_fraction": 0.25,
-    "sorting_order_dithering": 0.5,
-    "sorting_order_dithering_stage1": 0.2,
+    "sorting_order_dithering": 0.10000000149011612,
+    "sorting_order_dithering_stage1": 0.05000000074505806,
     "sorting_order_dithering_stage2": 0.05,
     "sorting_order_dithering_stage3": 0.0,
+    "colorspace_mod": 0.5,
+    "colorspace_mod_stage1": 0.4000000059604645,
+    "colorspace_mod_stage2": 0.9,
+    "colorspace_mod_stage3": 1.0,
     "ssim_weight": 0.10000000149011612,
     "ssim_c2": 0.0009,
     "refinement_loss_weight": 0.25,
@@ -160,9 +164,9 @@
       "interface_scale": 4,
       "theme": 1,
       "loss_debug_view": 0,
-      "loss_debug_frame": 0,
+      "loss_debug_frame": 39,
       "loss_debug_abs_scale": 1.0,
-      "move_speed": 14.103363270861779,
+      "move_speed": 1.4055431842803965,
       "fov": 60.0,
       "render_background_mode": 1,
       "render_background_color": [
@@ -182,7 +186,7 @@
     "import": {
       "colmap_depth_value_mode": 1,
       "colmap_init_mode": 1,
-      "compress_dataset_using_bc7": false,
+      "compress_dataset_using_bc7": true,
       "colmap_image_downscale_mode": 0,
       "colmap_image_max_size": 2048,
       "colmap_image_scale": 1.0,
@@ -203,8 +207,8 @@
       "hist_max_value": 1.0,
       "hist_y_limit": 1290263.0,
       "viewport_sh_band": 3,
-      "viewport_sh_control_key": "sh_band",
-      "viewport_sh_stage_label": "Stage 0"
+      "viewport_sh_control_key": "sh_band_stage1",
+      "viewport_sh_stage_label": "Stage 1"
     },
     "state": {
       "list_capacity_multiplier": 16,

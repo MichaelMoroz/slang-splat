@@ -42,6 +42,7 @@ static const float SPLAT_CONTRIBUTION_FIXED_MAX_F = 16777215.99609375;
 static const float DEPTH_LOCAL_MISMATCH_REJECT_ALPHA_SCALE_MAX = 2.0;
 static const float DEBUG_ELLIPSE_FILL_ALPHA_SCALE = 0.25;
 static const float UINT_TO_UNIT_FLOAT = 2.3283064365386963e-10;
+static const float DEBUG_BLACK_COLOR_THRESHOLD = 1e-4;
 
 int raster_grad_fixed_quantize(float value, float range)
 {
@@ -363,6 +364,16 @@ float3 raster_forward_color(RasterGaussian gaussian, uint splatId, uint debugMod
     if (debugMode == DEBUG_MODE_SPLAT_AGE) return raster_splat_age_color(g_SplatAges[splatId]);
     if (debugMode == DEBUG_MODE_CONTRIBUTION_AMOUNT) return raster_contribution_amount_color(g_SplatContribution[splatId]);
     if (debugMode == DEBUG_MODE_ADAM_MOMENTUM) return jet_colormap(raster_normalize_threshold_band(raster_adam_momentum_length(splatId), raster_threshold_from_range(g_Raster.debugAdamMomentumRange)));
+    if (debugMode == DEBUG_MODE_BLACK_NEGATIVE)
+    {
+        float3 color = gaussian.colorAlpha.xyz;
+        bool hasNegative = color.x < 0.0 || color.y < 0.0 || color.z < 0.0;
+        bool isBlack = max(color.x, max(color.y, color.z)) <= DEBUG_BLACK_COLOR_THRESHOLD;
+        if (hasNegative && isBlack) return 1.0;
+        if (hasNegative) return float3(1.0, 0.0, 1.0);
+        if (isBlack) return float3(1.0, 1.0, 0.0);
+        return 0.125 * saturate(color);
+    }
     if (debugMode != DEBUG_MODE_GRAD_NORM) return gaussian.colorAlpha.xyz;
     float gradNorm = g_DebugGradNorm[splatId];
     if (!isfinite(gradNorm)) gradNorm = 0.0;

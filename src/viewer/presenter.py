@@ -9,11 +9,10 @@ import slangpy as spy
 
 from ..utility import alloc_texture_2d, clamp_index, debug_region, require_not_none
 from ..filter import SeparableGaussianBlur
-from ..training import TRAIN_SUBSAMPLE_MAX_FACTOR, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_depth_ratio_weight, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering
+from ..training import TRAIN_SUBSAMPLE_MAX_FACTOR, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_colorspace_mod, resolve_depth_ratio_weight, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering
 from . import session
 from .buffer_debug import collect_resource_debug_snapshot
 
-_DEBUG_HUGE_VALUE = 1e8
 _DEBUG_TEXTURE_USAGE = spy.TextureUsage.shader_resource | spy.TextureUsage.unordered_access | spy.TextureUsage.copy_destination
 _DEBUG_ABS_DIFF_SCALE_DEFAULT = 1.0
 _DEBUG_ABS_DIFF_SCALE_MIN = 0.125
@@ -46,40 +45,49 @@ _CAMERA_OVERLAY_EDGE_INDICES = (
 )
 
 
+def _control_value(viewer: object, key: str, default: object) -> object:
+    control = getattr(getattr(viewer, "ui", None), "controls", {}).get(key)
+    return default if control is None else control.value
+
+
 def _schedule_state_from_controls(viewer: object) -> object:
     return SimpleNamespace(
-        lr_schedule_enabled=bool(viewer.c("lr_schedule_enabled").value),
-        lr_schedule_start_lr=float(viewer.c("lr_schedule_start_lr").value),
-        lr_schedule_stage1_lr=float(viewer.c("lr_schedule_stage1_lr").value),
-        lr_schedule_stage2_lr=float(viewer.c("lr_schedule_stage2_lr").value),
-        lr_schedule_end_lr=float(viewer.c("lr_schedule_end_lr").value),
-        lr_schedule_steps=int(viewer.c("lr_schedule_steps").value),
-        lr_schedule_stage1_step=int(viewer.c("lr_schedule_stage1_step").value),
-        lr_schedule_stage2_step=int(viewer.c("lr_schedule_stage2_step").value),
-        lr_pos_mul=float(viewer.c("lr_pos_mul").value),
-        lr_pos_stage1_mul=float(viewer.c("lr_pos_stage1_mul").value),
-        lr_pos_stage2_mul=float(viewer.c("lr_pos_stage2_mul").value),
-        lr_pos_stage3_mul=float(viewer.c("lr_pos_stage3_mul").value),
-        lr_sh_mul=float(viewer.c("lr_sh_mul").value),
-        lr_sh_stage1_mul=float(viewer.c("lr_sh_stage1_mul").value),
-        lr_sh_stage2_mul=float(viewer.c("lr_sh_stage2_mul").value),
-        lr_sh_stage3_mul=float(viewer.c("lr_sh_stage3_mul").value),
-        depth_ratio_weight=float(viewer.c("depth_ratio_weight").value),
-        depth_ratio_stage1_weight=float(viewer.c("depth_ratio_stage1_weight").value),
-        depth_ratio_stage2_weight=float(viewer.c("depth_ratio_stage2_weight").value),
-        depth_ratio_stage3_weight=float(viewer.c("depth_ratio_stage3_weight").value),
-        sorting_order_dithering=float(viewer.c("sorting_order_dithering").value),
-        sorting_order_dithering_stage1=float(viewer.c("sorting_order_dithering_stage1").value),
-        sorting_order_dithering_stage2=float(viewer.c("sorting_order_dithering_stage2").value),
-        sorting_order_dithering_stage3=float(viewer.c("sorting_order_dithering_stage3").value),
-        position_random_step_noise_lr=float(viewer.c("position_random_step_noise_lr").value),
-        position_random_step_noise_stage1_lr=float(viewer.c("position_random_step_noise_stage1_lr").value),
-        position_random_step_noise_stage2_lr=float(viewer.c("position_random_step_noise_stage2_lr").value),
-        position_random_step_noise_stage3_lr=float(viewer.c("position_random_step_noise_stage3_lr").value),
-        sh_band=int(viewer.c("sh_band").value),
-        sh_band_stage1=int(viewer.c("sh_band_stage1").value),
-        sh_band_stage2=int(viewer.c("sh_band_stage2").value),
-        sh_band_stage3=int(viewer.c("sh_band_stage3").value),
+        lr_schedule_enabled=bool(_control_value(viewer, "lr_schedule_enabled", True)),
+        lr_schedule_start_lr=float(_control_value(viewer, "lr_schedule_start_lr", 0.005)),
+        lr_schedule_stage1_lr=float(_control_value(viewer, "lr_schedule_stage1_lr", 0.002)),
+        lr_schedule_stage2_lr=float(_control_value(viewer, "lr_schedule_stage2_lr", 0.001)),
+        lr_schedule_end_lr=float(_control_value(viewer, "lr_schedule_end_lr", 1.5e-4)),
+        lr_schedule_steps=int(_control_value(viewer, "lr_schedule_steps", 30000)),
+        lr_schedule_stage1_step=int(_control_value(viewer, "lr_schedule_stage1_step", 3000)),
+        lr_schedule_stage2_step=int(_control_value(viewer, "lr_schedule_stage2_step", 14000)),
+        lr_pos_mul=float(_control_value(viewer, "lr_pos_mul", 1.0)),
+        lr_pos_stage1_mul=float(_control_value(viewer, "lr_pos_stage1_mul", 0.75)),
+        lr_pos_stage2_mul=float(_control_value(viewer, "lr_pos_stage2_mul", 0.2)),
+        lr_pos_stage3_mul=float(_control_value(viewer, "lr_pos_stage3_mul", 0.2)),
+        lr_sh_mul=float(_control_value(viewer, "lr_sh_mul", 0.05)),
+        lr_sh_stage1_mul=float(_control_value(viewer, "lr_sh_stage1_mul", 0.05)),
+        lr_sh_stage2_mul=float(_control_value(viewer, "lr_sh_stage2_mul", 0.05)),
+        lr_sh_stage3_mul=float(_control_value(viewer, "lr_sh_stage3_mul", 0.05)),
+        depth_ratio_weight=float(_control_value(viewer, "depth_ratio_weight", 1.0)),
+        depth_ratio_stage1_weight=float(_control_value(viewer, "depth_ratio_stage1_weight", 0.05)),
+        depth_ratio_stage2_weight=float(_control_value(viewer, "depth_ratio_stage2_weight", 0.01)),
+        depth_ratio_stage3_weight=float(_control_value(viewer, "depth_ratio_stage3_weight", 0.001)),
+        colorspace_mod=float(_control_value(viewer, "colorspace_mod", 0.5)),
+        colorspace_mod_stage1=float(_control_value(viewer, "colorspace_mod_stage1", 0.75)),
+        colorspace_mod_stage2=float(_control_value(viewer, "colorspace_mod_stage2", 0.9)),
+        colorspace_mod_stage3=float(_control_value(viewer, "colorspace_mod_stage3", 1.0)),
+        sorting_order_dithering=float(_control_value(viewer, "sorting_order_dithering", 0.5)),
+        sorting_order_dithering_stage1=float(_control_value(viewer, "sorting_order_dithering_stage1", 0.2)),
+        sorting_order_dithering_stage2=float(_control_value(viewer, "sorting_order_dithering_stage2", 0.05)),
+        sorting_order_dithering_stage3=float(_control_value(viewer, "sorting_order_dithering_stage3", 0.01)),
+        position_random_step_noise_lr=float(_control_value(viewer, "position_random_step_noise_lr", 5e5)),
+        position_random_step_noise_stage1_lr=float(_control_value(viewer, "position_random_step_noise_stage1_lr", 466666.6666666667)),
+        position_random_step_noise_stage2_lr=float(_control_value(viewer, "position_random_step_noise_stage2_lr", 416666.6666666667)),
+        position_random_step_noise_stage3_lr=float(_control_value(viewer, "position_random_step_noise_stage3_lr", 0.0)),
+        sh_band=int(_control_value(viewer, "sh_band", 0)),
+        sh_band_stage1=int(_control_value(viewer, "sh_band_stage1", 1)),
+        sh_band_stage2=int(_control_value(viewer, "sh_band_stage2", 1)),
+        sh_band_stage3=int(_control_value(viewer, "sh_band_stage3", 1)),
     )
 
 
@@ -129,6 +137,7 @@ def _current_schedule_values_text(viewer: object) -> str:
         f"pos={resolve_position_lr_mul(training, step):.2f}x | "
         f"shlr={resolve_sh_lr_mul(training, step):.2f}x | "
         f"depth={resolve_depth_ratio_weight(training, step):.2e} | "
+        f"cspace={resolve_colorspace_mod(training, step):.3g} | "
         f"dither={resolve_sorting_order_dithering(training, step):.3g} | "
         f"noise={resolve_position_random_step_noise_lr(training, step):.2e} | "
         f"sh=SH{resolve_sh_band(training, step)}"
@@ -616,7 +625,6 @@ def _dispatch_debug_abs_diff(viewer: object, encoder: spy.CommandEncoder, render
                 "g_DebugHeight": int(height),
                 "g_DebugDiffScale": _debug_abs_diff_scale(viewer),
                 "g_DebugRenderedIsLinear": int(rendered_is_linear),
-                "g_HugeValue": _DEBUG_HUGE_VALUE,
             },
             command_encoder=encoder,
         )
@@ -634,7 +642,6 @@ def _dispatch_debug_edge_filter(viewer: object, encoder: spy.CommandEncoder, sou
                 "g_DebugWidth": int(width),
                 "g_DebugHeight": int(height),
                 "g_DebugSourceIsLinear": int(source_is_linear),
-                "g_HugeValue": _DEBUG_HUGE_VALUE,
             },
             command_encoder=encoder,
         )
@@ -687,7 +694,6 @@ def _dispatch_debug_dssim_features(viewer: object, encoder: spy.CommandEncoder, 
                 "g_Height": int(height),
                 "g_DebugWidth": int(width),
                 "g_DebugHeight": int(height),
-                "g_HugeValue": _DEBUG_HUGE_VALUE,
             },
             command_encoder=encoder,
         )
@@ -706,7 +712,6 @@ def _dispatch_debug_dssim_compose(viewer: object, encoder: spy.CommandEncoder, t
                 "g_DebugHeight": int(height),
                 "g_Width": int(width),
                 "g_Height": int(height),
-                "g_HugeValue": _DEBUG_HUGE_VALUE,
                 "g_SSIMC2": _debug_ssim_c2(viewer),
                 "g_UseTargetAlphaMask": _debug_target_alpha_mask_enabled(viewer),
             },
@@ -726,6 +731,45 @@ def _dispatch_debug_dssim(viewer: object, encoder: spy.CommandEncoder, rendered_
     return _dispatch_debug_dssim_compose(viewer, encoder, target_tex, width, height)
 
 
+def _training_debug_colorspace_mod(viewer: object) -> float:
+    trainer = getattr(viewer.s, "trainer", None)
+    if trainer is None or not hasattr(trainer, "training"):
+        return 1.0
+    return float(resolve_colorspace_mod(trainer.training, _training_debug_step(viewer)))
+
+
+def _dispatch_training_debug_present(
+    viewer: object,
+    encoder: spy.CommandEncoder,
+    source_tex: spy.Texture,
+    source_width: int,
+    source_height: int,
+    output_width: int,
+    output_height: int,
+    *,
+    source_is_linear: bool = False,
+    apply_loss_colorspace: bool = False,
+) -> spy.Texture:
+    output = _ensure_texture(viewer, "debug_present_texture", output_width, output_height)
+    with debug_region(encoder, "Viewer Present", 151):
+        require_not_none(viewer.s.debug_letterbox_kernel, "Debug letterbox kernel is not initialized.").dispatch(
+            thread_count=spy.uint3(int(output_width), int(output_height), 1),
+            vars={
+                "g_LetterboxSource": source_tex,
+                "g_LetterboxOutput": output,
+                "g_LetterboxSourceWidth": int(source_width),
+                "g_LetterboxSourceHeight": int(source_height),
+                "g_LetterboxOutputWidth": int(output_width),
+                "g_LetterboxOutputHeight": int(output_height),
+                "g_LetterboxSourceIsLinear": int(source_is_linear),
+                "g_LetterboxApplyLossColorspace": int(apply_loss_colorspace),
+                "g_ColorspaceMod": _training_debug_colorspace_mod(viewer),
+            },
+            command_encoder=encoder,
+        )
+    return output
+
+
 def _dispatch_viewport_present(viewer: object, encoder: spy.CommandEncoder, source_tex: spy.Texture, source_width: int, source_height: int, output_width: int, output_height: int, *, source_is_linear: bool = False) -> spy.Texture:
     output = _ensure_texture(viewer, "debug_present_texture", output_width, output_height)
     with debug_region(encoder, "Viewer Present", 151):
@@ -739,7 +783,6 @@ def _dispatch_viewport_present(viewer: object, encoder: spy.CommandEncoder, sour
                 "g_LetterboxOutputWidth": int(output_width),
                 "g_LetterboxOutputHeight": int(output_height),
                 "g_LetterboxSourceIsLinear": int(source_is_linear),
-                "g_HugeValue": _DEBUG_HUGE_VALUE,
             },
             command_encoder=encoder,
         )
@@ -976,6 +1019,7 @@ def _render_debug_view(viewer: object, encoder: spy.CommandEncoder, output_width
     target_tex = _render_debug_target(viewer, encoder, frame_idx, debug_width, debug_height, _training_debug_step(viewer), sample_vars)
     debug_view = _debug_view_key(viewer)
     source_is_linear = debug_view == "rendered"
+    apply_loss_colorspace = debug_view in ("rendered", "target")
     source_tex = (
         debug_render_tex if debug_view == "rendered"
         else target_tex if debug_view == "target"
@@ -984,7 +1028,7 @@ def _render_debug_view(viewer: object, encoder: spy.CommandEncoder, output_width
         else _dispatch_debug_edge_filter(viewer, encoder, debug_render_tex, debug_width, debug_height, source_is_linear=True) if debug_view == "rendered_edges"
         else _dispatch_debug_edge_filter(viewer, encoder, target_tex, debug_width, debug_height, source_is_linear=False)
     )
-    return _dispatch_viewport_present(viewer, encoder, source_tex, debug_width, debug_height, output_width, output_height, source_is_linear=source_is_linear)
+    return _dispatch_training_debug_present(viewer, encoder, source_tex, debug_width, debug_height, output_width, output_height, source_is_linear=source_is_linear, apply_loss_colorspace=apply_loss_colorspace)
 def _render_main_view(viewer: object, encoder: spy.CommandEncoder) -> spy.Texture:
     if viewer.s.trainer is not None and viewer.s.training_renderer is not None:
         session.sync_scene_from_training_renderer(viewer, viewer.s.renderer, target="main")

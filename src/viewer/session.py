@@ -120,26 +120,20 @@ def _compress_dataset_frame_to_bc7_cache(frame: ColmapFrame, images_root: Path) 
     if cache_path.exists():
         return cache_path
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    staging_path = cache_path.with_suffix(".png")
-    rgba8 = load_training_frame_rgba8(frame)
-    rgb = np.asarray(rgba8[..., :3], dtype=np.float32) / 255.0
-    linear_rgb = np.power(np.clip(rgb, 0.0, 1.0), 2.2)
-    linear_rgba8 = np.empty_like(rgba8)
-    linear_rgba8[..., :3] = np.clip(np.round(linear_rgb * 255.0), 0.0, 255.0).astype(np.uint8)
-    linear_rgba8[..., 3] = rgba8[..., 3]
-    Image.fromarray(np.ascontiguousarray(linear_rgba8, dtype=np.uint8), mode="RGBA").save(staging_path)
     try:
         subprocess.run(
             [
                 str(texconv_path),
                 "-y",
+                "-srgbi",
+                "-srgbo",
                 "-f",
-                "BC7_UNORM",
+                "BC7_UNORM_SRGB",
                 "-m",
                 "1",
                 "-o",
                 str(cache_path.parent),
-                str(staging_path),
+                str(frame.image_path),
             ],
             check=True,
             capture_output=True,
@@ -147,9 +141,6 @@ def _compress_dataset_frame_to_bc7_cache(frame: ColmapFrame, images_root: Path) 
         )
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(f"texconv failed for {frame.image_path.name}: {exc.stderr.strip() or exc.stdout.strip()}") from exc
-    finally:
-        if staging_path.exists():
-            staging_path.unlink()
     if not cache_path.exists():
         raise FileNotFoundError(f"Expected BC7 cache file was not created: {cache_path}")
     return cache_path
@@ -207,12 +198,12 @@ def _load_or_create_bc7_dataset_texture(frame: ColmapFrame, images_root: Path) -
     if not cache_path.exists():
         cache_path = _compress_dataset_frame_to_bc7_cache(frame, images_root)
     payload = _parse_compressed_dataset_texture(cache_path)
-    if payload.format != spy.Format.bc7_unorm or payload.width != int(frame.width) or payload.height != int(frame.height):
+    if payload.format != spy.Format.bc7_unorm_srgb or payload.width != int(frame.width) or payload.height != int(frame.height):
         cache_path.unlink(missing_ok=True)
         cache_path = _compress_dataset_frame_to_bc7_cache(frame, images_root)
         payload = _parse_compressed_dataset_texture(cache_path)
-    if payload.format != spy.Format.bc7_unorm:
-        raise RuntimeError(f"Expected BC7 UNORM cache for {frame.image_path.name}, got {payload.format}")
+    if payload.format != spy.Format.bc7_unorm_srgb:
+        raise RuntimeError(f"Expected BC7 UNORM SRGB cache for {frame.image_path.name}, got {payload.format}")
     return payload
 
 
@@ -573,6 +564,8 @@ def _load_dataset_texture_with_depth_payload(task: tuple[ColmapReconstruction, o
                 [
                     str(_ensure_dataset_bc7_texconv()),
                     "-y",
+                    "-srgbi",
+                    "-srgbo",
                     "-f",
                     "BC7_UNORM_SRGB",
                     "-m",

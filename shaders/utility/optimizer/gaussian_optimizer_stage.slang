@@ -13,6 +13,11 @@ static const uint OPTIMIZER_GROUP_SIZE = 256u;
 static const uint COLOR_NON_NEGATIVE_HASH_SPLAT = 0x9e3779b9u;
 static const uint COLOR_NON_NEGATIVE_HASH_PHI = 0x85ebca6bu;
 static const uint COLOR_NON_NEGATIVE_HASH_Z = 0xc2b2ae35u;
+static const uint SH_CLAMP_SAMPLE_COUNT = 8u;
+static const uint SH_CLAMP_HASH_SPLAT = 0x68e31da4u;
+static const uint SH_CLAMP_HASH_SAMPLE = 0xb5297a4du;
+static const uint SH_CLAMP_HASH_PHI = 0x1b56c4e9u;
+static const uint SH_CLAMP_HASH_Z = 0x7f4a7c15u;
 
 struct GaussianStabilityParams
 {
@@ -301,6 +306,101 @@ float3 clamp_sh1_coeffs(float3 sh1)
 float3 clamp_sh_rest_coeffs(float3 sh)
 {
     return clamp(sh, -1.0, 1.0);
+}
+
+float sh_clamp_random01(uint seed)
+{
+    return (float(hash_u32(seed)) + 1.0) * RNG_OPEN01_SCALE;
+}
+
+float3 sh_clamp_sample_dir(uint splatId, uint sampleId)
+{
+    uint splatSeed = hash_u32(((splatId + 1u) * SH_CLAMP_HASH_SPLAT) ^ ((sampleId + 1u) * SH_CLAMP_HASH_SAMPLE));
+    float z = 1.0 - 2.0 * sh_clamp_random01(splatSeed ^ SH_CLAMP_HASH_Z);
+    float phi = TAU_RADIANS * sh_clamp_random01(splatSeed ^ SH_CLAMP_HASH_PHI);
+    float sinPhi, cosPhi;
+    sincos(phi, sinPhi, cosPhi);
+    float radial = sqrt(max(1.0 - z * z, 0.0));
+    return float3(radial * cosPhi, radial * sinPhi, z);
+}
+
+float sh_view_dependent_scale_limit(float base, float delta)
+{
+    if (delta > 0.0) return (1.0 - base) / delta;
+    if (delta < 0.0) return base / -delta;
+    return 1.0;
+}
+
+float sh_view_dependent_scale_limit(float3 baseColor, float3 deltaColor)
+{
+    return min(
+        sh_view_dependent_scale_limit(baseColor.x, deltaColor.x),
+        min(
+            sh_view_dependent_scale_limit(baseColor.y, deltaColor.y),
+            sh_view_dependent_scale_limit(baseColor.z, deltaColor.z)
+        )
+    );
+}
+
+float sh_rescale_to_sampled_color_range(
+    float3 sh0,
+    float3 sh1X,
+    float3 sh1Y,
+    float3 sh1Z,
+    float3 sh2_0,
+    float3 sh2_1,
+    float3 sh2_2,
+    float3 sh2_3,
+    float3 sh2_4,
+    float3 sh3_0,
+    float3 sh3_1,
+    float3 sh3_2,
+    float3 sh3_3,
+    float3 sh3_4,
+    float3 sh3_5,
+    float3 sh3_6,
+    no_diff uint shBand,
+    no_diff uint splatId
+)
+{
+    if (shBand == 0u) return 1.0;
+    float3 baseColor = evaluate_sh0_color_raw(sh0);
+    float scale = 1.0;
+    [unroll] for (uint sampleId = 0u; sampleId < SH_CLAMP_SAMPLE_COUNT; sampleId++)
+    {
+        float3 sampleColor = evaluate_sh_band_raw(sh0, sh1X, sh1Y, sh1Z, sh2_0, sh2_1, sh2_2, sh2_3, sh2_4, sh3_0, sh3_1, sh3_2, sh3_3, sh3_4, sh3_5, sh3_6, shBand, sh_clamp_sample_dir(splatId, sampleId));
+        scale = min(scale, sh_view_dependent_scale_limit(baseColor, sampleColor - baseColor));
+    }
+    return saturate(scale);
+}
+
+void scale_active_sh_coeffs(inout TrainableGaussianState state, float scale, uint shBand)
+{
+    if (!(scale < 1.0) || shBand == 0u) return;
+    if (shBand >= 1u)
+    {
+        state.sh1X *= scale;
+        state.sh1Y *= scale;
+        state.sh1Z *= scale;
+    }
+    if (shBand >= 2u)
+    {
+        state.sh2_0 *= scale;
+        state.sh2_1 *= scale;
+        state.sh2_2 *= scale;
+        state.sh2_3 *= scale;
+        state.sh2_4 *= scale;
+    }
+    if (shBand >= 3u)
+    {
+        state.sh3_0 *= scale;
+        state.sh3_1 *= scale;
+        state.sh3_2 *= scale;
+        state.sh3_3 *= scale;
+        state.sh3_4 *= scale;
+        state.sh3_5 *= scale;
+        state.sh3_6 *= scale;
+    }
 }
 
 float angle_only_screen_scale_cap_slope(PinholeCamera camera)
@@ -631,5 +731,29 @@ void csProjectGaussianParams(uint3 dispatchThreadID : SV_DispatchThreadID)
     state.sh3_4 = clamp_sh_rest_coeffs(sanitize_float3(state.sh3_4, g_Stability.hugeValue));
     state.sh3_5 = clamp_sh_rest_coeffs(sanitize_float3(state.sh3_5, g_Stability.hugeValue));
     state.sh3_6 = clamp_sh_rest_coeffs(sanitize_float3(state.sh3_6, g_Stability.hugeValue));
+    scale_active_sh_coeffs(
+        state,
+        sh_rescale_to_sampled_color_range(
+            state.sh0,
+            state.sh1X,
+            state.sh1Y,
+            state.sh1Z,
+            state.sh2_0,
+            state.sh2_1,
+            state.sh2_2,
+            state.sh2_3,
+            state.sh2_4,
+            state.sh3_0,
+            state.sh3_1,
+            state.sh3_2,
+            state.sh3_3,
+            state.sh3_4,
+            state.sh3_5,
+            state.sh3_6,
+            g_SHBand,
+            splatId
+        ),
+        g_SHBand
+    );
     state.store(splatId);
 }

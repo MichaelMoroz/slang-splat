@@ -841,6 +841,8 @@ def test_debug_mode_labels_include_contribution_amount() -> None:
     assert "SH View-Dependent" in ui._DEBUG_MODE_LABELS
     assert "sh_coefficient" in ui._DEBUG_MODE_VALUES
     assert "SH Coefficient" in ui._DEBUG_MODE_LABELS
+    assert "black_negative" in ui._DEBUG_MODE_VALUES
+    assert "Black/Negative Regions" in ui._DEBUG_MODE_LABELS
     assert "depth_local_mismatch" in ui._DEBUG_MODE_VALUES
     assert "Depth Local Mismatch" in ui._DEBUG_MODE_LABELS
 
@@ -853,6 +855,7 @@ def test_contribution_amount_debug_mode_exposes_no_extra_range_controls() -> Non
     assert ui._renderer_debug_control_keys("contribution_amount") == ("debug_mode", "debug_contribution_min", "debug_contribution_max")
     assert ui._renderer_debug_control_keys("adam_momentum") == ("debug_mode", "debug_grad_norm_threshold")
     assert ui._renderer_debug_control_keys("sh_coefficient") == ("debug_mode", "debug_sh_coeff_index")
+    assert ui._renderer_debug_control_keys("black_negative") == ("debug_mode",)
     assert ui._renderer_debug_control_keys("processed_count") == ("debug_mode",)
     assert ui._renderer_debug_control_keys("splat_density") == ("debug_mode", "debug_density_min", "debug_density_max")
     assert ui._renderer_debug_control_keys("depth_local_mismatch") == ("debug_mode", "debug_depth_local_mismatch_min", "debug_depth_local_mismatch_max", "debug_depth_local_mismatch_smooth_radius", "debug_depth_local_mismatch_reject_radius")
