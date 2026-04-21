@@ -10,7 +10,7 @@ import re
 import numpy as np
 import slangpy as spy
 
-from ..utility import RW_BUFFER_USAGE, SHADER_ROOT, alloc_buffer, alloc_texture_2d, buffer_to_numpy, debug_region, dispatch, dispatch_indirect, grow_capacity, load_compute_items, load_compute_kernel, load_compute_kernels, remap_named_buffers, thread_count_1d
+from ..utility import RW_BUFFER_USAGE, SHADER_ROOT, alloc_buffer, alloc_texture_2d, buffer_to_numpy, debug_region, defer_resource_releases, dispatch, dispatch_indirect, grow_capacity, load_compute_items, load_compute_kernel, load_compute_kernels, remap_named_buffers, thread_count_1d
 from ..metrics import Metrics, ParamLog10Histograms, ParamTensorRanges
 from ..scan.prefix_sum import GPUPrefixSum
 from ..scene.gaussian_scene import GaussianScene
@@ -462,6 +462,14 @@ class GaussianRenderer:
         self._current_scene = scene
 
     def clear_scene_resources(self) -> None:
+        defer_resource_releases((
+            *self._scene_buffers.values(),
+            *self._work_buffers.values(),
+            self._output_texture,
+            self._training_depth_stats_texture,
+            self._output_grad_buffer,
+            *self._counter_readback_ring,
+        ))
         self._current_scene = None
         self._scene_count = self._scene_capacity = self._max_list_entries = self._work_splat_capacity = self._max_scanline_entries = 0
         self._scene_buffers = {}
@@ -657,6 +665,7 @@ class GaussianRenderer:
         if self._scene_buffers and splat_count <= self._scene_capacity:
             self._scene_count = splat_count
             return
+        defer_resource_releases(self._scene_buffers.values())
         self._scene_capacity, self._scene_count = grow_capacity(splat_count, self._scene_capacity), splat_count
         param_bytes = max(self._scene_capacity, 1) * self.TRAINABLE_PARAM_COUNT * self._U32_BYTES
         self._resource_groups.scene = {
@@ -671,6 +680,7 @@ class GaussianRenderer:
         required_entries = min(max(splat_count * self.list_capacity_multiplier, min_list_entries, 1), max_entries)
         if self._work_buffers and required_splats <= self._work_splat_capacity and required_entries <= self._max_list_entries and required_entries <= self._max_scanline_entries and self._output_texture is not None and self._training_depth_stats_texture is not None and self._output_grad_buffer is not None:
             return
+        defer_resource_releases(self._work_buffers.values())
         self._work_splat_capacity = grow_capacity(required_splats, self._work_splat_capacity)
         self._max_list_entries = min(grow_capacity(required_entries, self._max_list_entries), max_entries)
         self._max_scanline_entries = min(grow_capacity(required_entries, self._max_scanline_entries), max_entries)

@@ -10,6 +10,9 @@ from src.utility import (
     SHADER_ROOT,
     alloc_buffer,
     alloc_texture_2d,
+    clear_debug_resource_allocations,
+    defer_resource_release,
+    drain_deferred_resource_releases,
     dispatch,
     dispatch_indirect,
     grow_capacity,
@@ -33,6 +36,16 @@ def test_alloc_helpers_create_minimum_sized_resources(device: spy.Device) -> Non
     assert texture is not None
     assert int(texture.width) == 1
     assert int(texture.height) == 1
+
+
+def test_deferred_resource_release_waits_for_min_age() -> None:
+    clear_debug_resource_allocations()
+    resource = object()
+    defer_resource_release(resource)
+
+    assert drain_deferred_resource_releases(max_bytes=1_000_000, min_age=2) == (0, 0)
+    assert drain_deferred_resource_releases(max_bytes=1_000_000, min_age=2) == (1, 0)
+    clear_debug_resource_allocations()
 
 
 def test_load_compute_items_loads_kernel_and_pipeline(device: spy.Device) -> None:

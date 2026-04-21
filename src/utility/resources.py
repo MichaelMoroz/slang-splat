@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 import weakref
 from typing import Any
@@ -33,6 +34,21 @@ _RESOURCE_ALLOCATIONS: dict[int, ResourceAllocation] = {}
 _RESOURCE_REFS: dict[int, object | None] = {}
 _RESOURCE_TYPES: dict[int, type] = {}
 _RESOURCE_ALLOCATION_ORDER = 0
+_DEFERRED_RELEASE_MIN_AGE = 3
+_DEFERRED_RELEASE_DRAIN_BYTES = 256 * 1024 * 1024
+_DEFERRED_RELEASE_HARD_LIMIT_BYTES = 4 * 1024 * 1024 * 1024
+_DEFERRED_RELEASE_GENERATION = 0
+_DEFERRED_RELEASE_BYTES = 0
+
+
+@dataclass(slots=True)
+class _DeferredResourceRelease:
+    resource: object
+    byte_size: int
+    generation: int
+
+
+_DEFERRED_RELEASES: deque[_DeferredResourceRelease] = deque()
 
 
 def _next_resource_order() -> int:
@@ -104,11 +120,62 @@ def debug_resource_allocations() -> tuple[tuple[object, ResourceAllocation], ...
     return tuple(resources)
 
 
+def defer_resource_release(resource: object | None) -> None:
+    if resource is None:
+        return
+    global _DEFERRED_RELEASE_BYTES
+    allocation = resource_allocation(resource)
+    byte_size = 0 if allocation is None else max(int(allocation.byte_size), 0)
+    if byte_size <= 0:
+        byte_size = _native_device_bytes(resource, 0)
+    _DEFERRED_RELEASES.append(_DeferredResourceRelease(resource=resource, byte_size=max(byte_size, 0), generation=_DEFERRED_RELEASE_GENERATION))
+    _DEFERRED_RELEASE_BYTES += max(byte_size, 0)
+    if _DEFERRED_RELEASE_BYTES > _DEFERRED_RELEASE_HARD_LIMIT_BYTES:
+        drain_deferred_resource_releases(max_bytes=_DEFERRED_RELEASE_BYTES - _DEFERRED_RELEASE_HARD_LIMIT_BYTES, min_age=0, advance_generation=False)
+
+
+def defer_resource_releases(resources: Any) -> None:
+    seen: set[int] = set()
+    for resource in tuple(resources):
+        resource_id = id(resource)
+        if resource_id in seen:
+            continue
+        seen.add(resource_id)
+        defer_resource_release(resource)
+
+
+def drain_deferred_resource_releases(
+    *,
+    max_bytes: int = _DEFERRED_RELEASE_DRAIN_BYTES,
+    min_age: int = _DEFERRED_RELEASE_MIN_AGE,
+    advance_generation: bool = True,
+) -> tuple[int, int]:
+    global _DEFERRED_RELEASE_BYTES, _DEFERRED_RELEASE_GENERATION
+    if advance_generation:
+        _DEFERRED_RELEASE_GENERATION += 1
+    released_count = 0
+    released_bytes = 0
+    byte_budget = max(int(max_bytes), 0)
+    while _DEFERRED_RELEASES and (released_bytes < byte_budget or _DEFERRED_RELEASE_BYTES > _DEFERRED_RELEASE_HARD_LIMIT_BYTES):
+        item = _DEFERRED_RELEASES[0]
+        if _DEFERRED_RELEASE_GENERATION - item.generation < int(min_age) and _DEFERRED_RELEASE_BYTES <= _DEFERRED_RELEASE_HARD_LIMIT_BYTES:
+            break
+        item = _DEFERRED_RELEASES.popleft()
+        released_count += 1
+        released_bytes += item.byte_size
+        _DEFERRED_RELEASE_BYTES = max(_DEFERRED_RELEASE_BYTES - item.byte_size, 0)
+        del item
+    return released_count, released_bytes
+
+
 def clear_debug_resource_allocations() -> None:
-    global _RESOURCE_ALLOCATION_ORDER
+    global _RESOURCE_ALLOCATION_ORDER, _DEFERRED_RELEASE_BYTES, _DEFERRED_RELEASE_GENERATION
     _RESOURCE_ALLOCATIONS.clear()
     _RESOURCE_REFS.clear()
     _RESOURCE_TYPES.clear()
+    _DEFERRED_RELEASES.clear()
+    _DEFERRED_RELEASE_BYTES = 0
+    _DEFERRED_RELEASE_GENERATION = 0
     _RESOURCE_ALLOCATION_ORDER = 0
 
 

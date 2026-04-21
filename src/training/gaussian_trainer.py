@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import slangpy as spy
 
-from ..utility import RW_BUFFER_USAGE, SHADER_ROOT, alloc_buffer, alloc_texture_2d, buffer_to_numpy, clamp_index, debug_region, dispatch, grow_capacity, load_compute_items, thread_count_1d, thread_count_2d
+from ..utility import RW_BUFFER_USAGE, SHADER_ROOT, alloc_buffer, alloc_texture_2d, buffer_to_numpy, clamp_index, debug_region, defer_resource_release, dispatch, grow_capacity, load_compute_items, thread_count_1d, thread_count_2d
 from ..filter import SeparableGaussianBlur
 from ..metrics import Metrics, psnr_from_mse
 from ..renderer import Camera, GaussianRenderer
@@ -804,6 +804,7 @@ class GaussianTrainer:
         self._splat_capacity = grow_capacity(count, self._splat_capacity)
         self._batch_step_capacity = grow_capacity(required_batch_steps, self._batch_step_capacity)
         self._buffers.setdefault("loss", alloc_buffer(self.device, name="trainer.loss", size=16, usage=RW_BUFFER_USAGE))
+        defer_resource_release(self._buffers.get("batch_step_info"))
         self._buffers["batch_step_info"] = alloc_buffer(
             self.device,
             name="trainer.batch_step_info",
@@ -817,6 +818,8 @@ class GaussianTrainer:
         resolution = (width, height)
         if self._ssim_resolution == resolution and self._ssim_blur is not None and all(name in self._buffers for name in ("ssim_moments", "ssim_blurred_moments", "ssim_blurred_feature_grads", "ssim_feature_grads")):
             return
+        for name in ("ssim_moments", "ssim_blurred_moments", "ssim_blurred_feature_grads", "ssim_feature_grads"):
+            defer_resource_release(self._buffers.get(name))
         self._ssim_blur = SeparableGaussianBlur(self.device, width=width, height=height)
         self._buffers["ssim_moments"] = self._ssim_blur.make_buffer(self._SSIM_FEATURE_CHANNELS, name="trainer.ssim_moments")
         self._buffers["ssim_blurred_moments"] = self._ssim_blur.make_buffer(self._SSIM_FEATURE_CHANNELS, name="trainer.ssim_blurred_moments")
@@ -826,6 +829,10 @@ class GaussianTrainer:
 
     def _expected_refinement_append_count(self, splat_count: int) -> int:
         return max(self.refinement_clone_budget(splat_count=splat_count, step=self.state.step), 1)
+
+    def _set_refinement_buffer(self, name: str, buffer: spy.Buffer) -> None:
+        defer_resource_release(self._refinement_buffers.get(name))
+        self._refinement_buffers[name] = buffer
 
     def _ensure_refinement_buffers(self, splat_count: int, append_count: int | None = None) -> None:
         required_splats = max(int(splat_count), 1)
@@ -846,11 +853,11 @@ class GaussianTrainer:
             self._refinement_buffers["append_counter"] = alloc_buffer(self.device, name="trainer.refinement.append_counter", size=self._U32_BYTES, usage=RW_BUFFER_USAGE)
         if grow_splats or "clone_counts" not in self._refinement_buffers:
             self._refinement_splat_capacity = grow_capacity(required_splats, self._refinement_splat_capacity)
-            self._refinement_buffers["clone_counts"] = alloc_buffer(self.device, name="trainer.refinement.clone_counts", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE)
-            self._refinement_buffers["splat_contribution"] = alloc_buffer(self.device, name="trainer.refinement.splat_contribution", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE)
-            self._refinement_buffers["refinement_eligible_mask"] = alloc_buffer(self.device, name="trainer.refinement.eligible_mask", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE)
-            self._refinement_buffers["refinement_weights"] = alloc_buffer(self.device, name="trainer.refinement.weights", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE)
-            self._refinement_buffers["refinement_weight_prefix"] = alloc_buffer(self.device, name="trainer.refinement.weight_prefix", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE)
+            self._set_refinement_buffer("clone_counts", alloc_buffer(self.device, name="trainer.refinement.clone_counts", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
+            self._set_refinement_buffer("splat_contribution", alloc_buffer(self.device, name="trainer.refinement.splat_contribution", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
+            self._set_refinement_buffer("refinement_eligible_mask", alloc_buffer(self.device, name="trainer.refinement.eligible_mask", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
+            self._set_refinement_buffer("refinement_weights", alloc_buffer(self.device, name="trainer.refinement.weights", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
+            self._set_refinement_buffer("refinement_weight_prefix", alloc_buffer(self.device, name="trainer.refinement.weight_prefix", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
         elif "splat_contribution" not in self._refinement_buffers:
             self._refinement_buffers["splat_contribution"] = alloc_buffer(self.device, name="trainer.refinement.splat_contribution", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE)
         if "refinement_eligible_mask" not in self._refinement_buffers:
@@ -863,25 +870,25 @@ class GaussianTrainer:
             self._refinement_buffers["refinement_weight_total"] = alloc_buffer(self.device, name="trainer.refinement.weight_total", size=self._U32_BYTES, usage=RW_BUFFER_USAGE)
         if grow_append or "append_params" not in self._refinement_buffers:
             self._refinement_append_capacity = grow_capacity(required_append, self._refinement_append_capacity)
-            self._refinement_buffers["append_params"] = alloc_buffer(self.device, name="trainer.refinement.append_params", size=self._refinement_append_capacity * packed_param_bytes, usage=RW_BUFFER_USAGE)
-            self._refinement_buffers["append_splat_age"] = alloc_buffer(self.device, name="trainer.refinement.append_splat_age", size=self._refinement_append_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE)
+            self._set_refinement_buffer("append_params", alloc_buffer(self.device, name="trainer.refinement.append_params", size=self._refinement_append_capacity * packed_param_bytes, usage=RW_BUFFER_USAGE))
+            self._set_refinement_buffer("append_splat_age", alloc_buffer(self.device, name="trainer.refinement.append_splat_age", size=self._refinement_append_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
         elif "append_splat_age" not in self._refinement_buffers:
             self._refinement_buffers["append_splat_age"] = alloc_buffer(self.device, name="trainer.refinement.append_splat_age", size=max(self._refinement_append_capacity, 1) * self._U32_BYTES, usage=RW_BUFFER_USAGE)
         if grow_output or "dst_splat_params" not in self._refinement_buffers:
             self._refinement_output_capacity = grow_capacity(required_output, self._refinement_output_capacity)
-            self._refinement_buffers["dst_splat_params"] = alloc_buffer(self.device, name="trainer.refinement.dst_splat_params", size=self._refinement_output_capacity * packed_param_bytes, usage=RW_BUFFER_USAGE)
-            self._refinement_buffers["dst_splat_age"] = alloc_buffer(self.device, name="trainer.refinement.dst_splat_age", size=self._refinement_output_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE)
+            self._set_refinement_buffer("dst_splat_params", alloc_buffer(self.device, name="trainer.refinement.dst_splat_params", size=self._refinement_output_capacity * packed_param_bytes, usage=RW_BUFFER_USAGE))
+            self._set_refinement_buffer("dst_splat_age", alloc_buffer(self.device, name="trainer.refinement.dst_splat_age", size=self._refinement_output_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
         elif "dst_splat_age" not in self._refinement_buffers:
             self._refinement_buffers["dst_splat_age"] = alloc_buffer(self.device, name="trainer.refinement.dst_splat_age", size=max(self._refinement_output_capacity, 1) * self._U32_BYTES, usage=RW_BUFFER_USAGE)
         self._ensure_splat_age_capacity(required_splats)
         if grow_cameras or "camera_rows" not in self._refinement_buffers:
             self._refinement_camera_capacity = grow_capacity(required_camera_count, self._refinement_camera_capacity)
-            self._refinement_buffers["camera_rows"] = alloc_buffer(
+            self._set_refinement_buffer("camera_rows", alloc_buffer(
                 self.device,
                 name="trainer.refinement.camera_rows",
                 size=self._refinement_camera_capacity * self._REFINEMENT_CAMERA_ROW_COUNT * self._FLOAT4_BYTES,
                 usage=RW_BUFFER_USAGE,
-            )
+            ))
             self._refinement_camera_signature = None
 
     def _alloc_refinement_adam_moments(self, splat_count: int) -> spy.Buffer:
@@ -901,7 +908,7 @@ class GaussianTrainer:
         if not reset and "splat_age" in self._refinement_buffers:
             old_count = min(self._refinement_splat_age_capacity, capacity)
             ages[:old_count] = buffer_to_numpy(self._refinement_buffers["splat_age"], np.float32)[:old_count]
-        self._refinement_buffers["splat_age"] = alloc_buffer(self.device, name="trainer.refinement.splat_age", size=capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE)
+        self._set_refinement_buffer("splat_age", alloc_buffer(self.device, name="trainer.refinement.splat_age", size=capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
         self._refinement_buffers["splat_age"].copy_from_numpy(ages)
         self._refinement_splat_age_capacity = capacity
 
@@ -1040,6 +1047,7 @@ class GaussianTrainer:
         )
         self.device.submit_command_buffer(copy_enc.finish())
         self.device.wait()
+        defer_resource_release(dst_adam_moments)
         self._ensure_refinement_buffers(self._scene_count)
         self._clear_clone_counts()
 
@@ -1131,6 +1139,7 @@ class GaussianTrainer:
         texture = self._train_target_texture
         if texture is not None and int(texture.width) == width and int(texture.height) == height:
             return
+        defer_resource_release(self._train_target_texture)
         self._train_target_texture = alloc_texture_2d(
             self.device,
             name="trainer.train_target",

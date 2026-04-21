@@ -12,7 +12,7 @@ from .. import create_default_device
 from ..repo_defaults import defaults_path, load_defaults, write_defaults
 from ..app.training_controls import TRAINING_BUILD_ARG_UI_KEYS
 from ..app.shared import RendererParams, build_init_params, build_training_params, fit_camera
-from ..utility import normalize3
+from ..utility import drain_deferred_resource_releases, normalize3
 from ..renderer import Camera, GaussianRenderer
 from ..scene import GaussianScene, save_gaussian_ply
 from ..training import resolve_sh_band
@@ -432,6 +432,7 @@ class SplatViewer(spy.AppWindow):
     def _render_frame(self, render_context) -> None:
         presenter.render_frame(self, render_context)
         self.toolkit.render(self.ui, render_context.surface_texture, render_context.command_encoder, viewport_texture=self.s.viewport_texture)
+        drain_deferred_resource_releases()
 
     def render(self, render_context) -> None:
         try:
