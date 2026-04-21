@@ -104,6 +104,7 @@ def test_build_ui_initializes_control_groups_and_internal_state() -> None:
         "show_training_views",
         "show_camera_overlays",
         "show_camera_labels",
+        "show_camera_min_dist_spheres",
         "show_training_cameras",
         "hist_bin_count",
         "hist_y_limit",
@@ -157,10 +158,10 @@ def test_build_ui_exposes_refinement_clone_scale_mul_default() -> None:
 def test_train_schedule_exposes_sorting_order_dithering_controls() -> None:
     stage_controls = {stage: {control.key: control for control in controls} for stage, controls in SCHEDULE_STAGE_CONTROL_DEFS.items()}
     expected = {
-        "Stage 0": ("sorting_order_dithering", 0.5),
-        "Stage 1": ("sorting_order_dithering_stage1", 0.2),
+        "Stage 0": ("sorting_order_dithering", 0.10000000149011612),
+        "Stage 1": ("sorting_order_dithering_stage1", 0.05000000074505806),
         "Stage 2": ("sorting_order_dithering_stage2", 0.05),
-        "Stage 3": ("sorting_order_dithering_stage3", 0.01),
+        "Stage 3": ("sorting_order_dithering_stage3", 0.0),
     }
 
     assert "sorting_order_dithering" not in {control.key for control in TRAIN_SETUP_CONTROL_DEFS}
@@ -308,13 +309,13 @@ def test_viewport_view_menu_left_aligns_view_mode_button(monkeypatch) -> None:
     monkeypatch.setattr(ui.imgui, "begin_popup", lambda *_args: False)
     monkeypatch.setattr(ui.imgui, "begin_combo", lambda *_args: False)
     toolkit = SimpleNamespace(_viewport_content_rect=(50.0, 60.0, 400.0, 240.0), _interface_scale_factor=lambda _ui_obj: 1.5)
-    viewer_ui = SimpleNamespace(_values={"debug_mode": ui._DEBUG_MODE_VALUES.index("depth_std"), "show_camera_overlays": True, "show_camera_labels": False, "show_training_cameras": False, "_viewport_sh_band": 0, "_viewport_sh_control_key": "sh_band", "sh_band": 0})
+    viewer_ui = SimpleNamespace(_values={"debug_mode": ui._DEBUG_MODE_VALUES.index("depth_std"), "show_camera_overlays": True, "show_camera_labels": False, "show_camera_min_dist_spheres": True, "show_training_cameras": False, "_viewport_sh_band": 0, "_viewport_sh_control_key": "sh_band", "sh_band": 0})
 
     origin = ui.ToolkitWindow._draw_viewport_view_menu(toolkit, viewer_ui, ui.imgui.ImVec2(50.0, 60.0))
 
-    assert button_labels == ["View Mode", "Cameras On", "Labels Off", "Training Cameras Off"]
+    assert button_labels == ["View Mode", "Cameras On", "Labels Off", "Min Dist On", "Training Cameras Off"]
     assert cursor_positions == [(62.0, 72.0)]
-    assert same_line_calls == [(0.0, 15.0), (0.0, 15.0), (0.0, 15.0), (0.0, 15.0), (0.0, 15.0)]
+    assert same_line_calls == [(0.0, 15.0), (0.0, 15.0), (0.0, 15.0), (0.0, 15.0), (0.0, 15.0), (0.0, 15.0)]
     assert filled_rects == [(148.0, 69.0, 250.0, 89.0, 6.0)]
     assert len(pushed_colors) == 1
     assert pushed_colors[0][0] == int(ui.imgui.Col_.text.value)
@@ -358,6 +359,7 @@ def test_viewport_view_menu_keeps_training_sh_controls_unchanged(monkeypatch) ->
             "debug_mode": ui._DEBUG_MODE_VALUES.index("normal"),
             "show_camera_overlays": True,
             "show_camera_labels": False,
+            "show_camera_min_dist_spheres": True,
             "show_training_cameras": False,
             "_viewport_sh_band": 0,
             "_viewport_sh_control_key": "sh_band_stage2",
@@ -368,7 +370,7 @@ def test_viewport_view_menu_keeps_training_sh_controls_unchanged(monkeypatch) ->
 
     ui.ToolkitWindow._draw_viewport_view_menu(toolkit, viewer_ui, ui.imgui.ImVec2(50.0, 60.0))
 
-    assert button_labels == ["View Mode", "Cameras On", "Labels Off", "Training Cameras Off"]
+    assert button_labels == ["View Mode", "Cameras On", "Labels Off", "Min Dist On", "Training Cameras Off"]
     assert select_calls == [("SH0", True), ("SH1", False), ("SH2", False), ("SH3", False)]
     assert viewer_ui._values["_viewport_sh_band"] == 2
     assert viewer_ui._values["sh_band"] == 0
@@ -408,11 +410,15 @@ def test_viewport_camera_overlays_draw_lines_when_enabled(monkeypatch) -> None:
         _values={
             "show_camera_overlays": True,
             "show_camera_labels": True,
+            "show_camera_min_dist_spheres": True,
             "_training_view_overlay_segments": (
                 (
                     ((1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0)),
                     ((9.0, 10.0), (11.0, 12.0), (13.0, 14.0), (15.0, 16.0)),
                     ((1.0, 2.0, 9.0, 10.0), (3.0, 4.0, 11.0, 12.0), (5.0, 6.0, 13.0, 14.0), (7.0, 8.0, 15.0, 16.0)),
+                    (
+                        ((2.0, 3.0), (4.0, 5.0), (6.0, 7.0)),
+                    ),
                     (13.0, 14.0),
                     "frame.png | 32.50 dB",
                     (0.1, 0.2, 0.3, 0.4),
@@ -427,6 +433,7 @@ def test_viewport_camera_overlays_draw_lines_when_enabled(monkeypatch) -> None:
     assert polylines == [
         ([(11.0, 22.0), (13.0, 24.0), (15.0, 26.0), (17.0, 28.0)], int(ui.imgui.ImDrawFlags_.closed.value), 1.5),
         ([(19.0, 30.0), (21.0, 32.0), (23.0, 34.0), (25.0, 36.0)], int(ui.imgui.ImDrawFlags_.closed.value), 1.5),
+        ([(12.0, 23.0), (14.0, 25.0), (16.0, 27.0)], int(ui.imgui.ImDrawFlags_.closed.value), 1.275),
     ]
     assert lines == [
         (11.0, 22.0, 19.0, 30.0, 1.5),
@@ -470,6 +477,7 @@ def test_viewport_camera_overlays_skip_lines_when_disabled(monkeypatch) -> None:
                     ((1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0)),
                     ((9.0, 10.0), (11.0, 12.0), (13.0, 14.0), (15.0, 16.0)),
                     ((1.0, 2.0, 9.0, 10.0), (3.0, 4.0, 11.0, 12.0), (5.0, 6.0, 13.0, 14.0), (7.0, 8.0, 15.0, 16.0)),
+                    (),
                     (13.0, 14.0),
                     "frame.png | 32.50 dB",
                     (0.1, 0.2, 0.3, 0.4),
@@ -515,8 +523,7 @@ def test_training_views_window_docks_and_uses_imgui_table(monkeypatch) -> None:
                     "fy": 520.0,
                     "cx": 320.0,
                     "cy": 180.0,
-                    "near": 0.1,
-                    "far": 100.0,
+                    "camera_min_dist": 0.1,
                     "loss": 0.25,
                     "psnr": 32.5,
                 },
@@ -528,9 +535,9 @@ def test_training_views_window_docks_and_uses_imgui_table(monkeypatch) -> None:
     ui.ToolkitWindow._draw_training_views_window(toolkit, viewer_ui)
 
     assert dock_calls == [(17, int(ui.imgui.Cond_.appearing.value))]
-    assert table_calls and table_calls[0][0] == "##training_views" and table_calls[0][1] == 10
-    assert table_columns == ["Image", "Res", "Fx", "Fy", "Cx", "Cy", "Near", "Far", "Loss", "PSNR"]
-    assert cells == ["frame.png", "640x360", "525.000", "520.000", "320.000", "180.000", "0.10", "100.00", "0.2500", "32.50"]
+    assert table_calls and table_calls[0][0] == "##training_views" and table_calls[0][1] == 9
+    assert table_columns == ["Image", "Res", "Fx", "Fy", "Cx", "Cy", "Min Dist", "Loss", "PSNR"]
+    assert cells == ["frame.png", "640x360", "525.000", "520.000", "320.000", "180.000", "0.100", "0.2500", "32.50"]
 
 
 def test_resource_debug_window_draws_largest_first_table(monkeypatch) -> None:
@@ -814,13 +821,13 @@ def test_schedule_stage_specs_clone_same_group_shape() -> None:
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 0"]["lr"] == "lr_schedule_start_lr"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 0"]["lr_pos_mul"] == "lr_pos_mul"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 0"]["lr_sh_mul"] == "lr_sh_mul"
-    assert ui._SCHEDULE_STAGE_GROUPS["Stage 0"]["max_screen_fraction"] == "max_screen_fraction"
+    assert ui._SCHEDULE_STAGE_GROUPS["Stage 0"]["max_visible_angle_deg"] == "max_visible_angle_deg"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 0"]["sh_band"] == "sh_band"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 1"]["lr"] == "lr_schedule_stage1_lr"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 1"]["lr_pos_mul"] == "lr_pos_stage1_mul"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 1"]["lr_sh_mul"] == "lr_sh_stage1_mul"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 2"]["depth_ratio_weight"] == "depth_ratio_stage2_weight"
-    assert ui._SCHEDULE_STAGE_GROUPS["Stage 2"]["max_screen_fraction"] == "max_screen_fraction_stage2"
+    assert ui._SCHEDULE_STAGE_GROUPS["Stage 2"]["max_visible_angle_deg"] == "max_visible_angle_deg_stage2"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 3"]["noise_lr"] == "position_random_step_noise_stage3_lr"
     assert all(ui.SCHEDULE_STAGE_SPECS[stage] for stage in ui.SCHEDULE_STAGE_SPECS)
     assert all(spec.key in ui._SCHEDULE_STAGE_GROUPS[stage].values() for stage, specs in ui.SCHEDULE_STAGE_SPECS.items() for spec in specs)

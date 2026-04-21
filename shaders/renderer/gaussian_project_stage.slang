@@ -99,6 +99,7 @@ void csProjectVisibleSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
     float3 cameraOffset = projectionEllipsoid.centerWorld - camera.position_world();
     float3 camPos = camera.world_to_camera(cameraOffset);
     float camDistance = length(cameraOffset);
+    if (camDistance < g_Camera.minCameraDistance) return;
     float depthValue = camPos.z;
     float supportRadius = max(projectionEllipsoid.projectedScale.x, max(projectionEllipsoid.projectedScale.y, projectionEllipsoid.projectedScale.z));
     if (depthValue + supportRadius <= DEPTH_VISIBILITY_FLOOR) return;

@@ -43,8 +43,7 @@ class _DummyTrainer:
         self.state = SimpleNamespace(step=0, last_loss=0.0, avg_loss=0.0, last_mse=0.0, avg_mse=0.0, last_psnr=float("inf"), avg_psnr=float("inf"), avg_density_loss=0.0, last_frame_index=0, last_instability="")
         self.scene = SimpleNamespace(count=4)
         self.training = SimpleNamespace(
-            near=0.1,
-            far=100.0,
+            camera_min_dist=0.1,
             train_downscale_mode=1,
             train_auto_start_downscale=1,
             train_subsample_factor=1,
@@ -482,8 +481,7 @@ def test_update_ui_text_reports_training_schedule_and_refinement() -> None:
             "fy": 520.0,
             "cx": 320.0,
             "cy": 180.0,
-            "near": 0.1,
-            "far": 100.0,
+            "camera_min_dist": 0.1,
             "loss": 0.25,
             "psnr": 32.5,
             "visited": True,
@@ -564,7 +562,7 @@ def test_render_frame_consumes_pending_reinitialize_before_live_params(monkeypat
     render_context = SimpleNamespace(surface_texture=SimpleNamespace(width=640, height=360), command_encoder=_DummyEncoder())
     calls: list[str] = []
 
-    monkeypatch.setattr(presenter.session, "initialize_training_scene", lambda viewer_obj: calls.append("init"))
+    monkeypatch.setattr(presenter.session, "reinitialize_training_scene", lambda viewer_obj: calls.append("init"))
     monkeypatch.setattr(presenter.session, "apply_live_params", lambda viewer_obj: calls.append("apply"))
     monkeypatch.setattr(presenter.session, "advance_colmap_import", lambda viewer_obj: calls.append("import"))
     monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, encoder: calls.append("main") or "main_tex")
@@ -649,6 +647,7 @@ def test_update_ui_text_populates_colmap_import_progress_fields() -> None:
         database_path=None,
         images_root=Path("dataset/images"),
         init_mode="pointcloud",
+        compress_dataset_using_bc7=False,
         custom_ply_path=None,
         image_downscale_mode="original",
         image_downscale_max_size=1600,
@@ -859,6 +858,21 @@ def test_render_debug_view_presents_rendered_as_linear_and_target_as_display(mon
         ("present", "rendered_tex", True, True),
         ("present", "target_tex", False, True),
     ]
+
+
+def test_render_debug_view_skips_target_work_for_rendered_mode(monkeypatch) -> None:
+    viewer = _viewer(loss_debug=True)
+    encoder = _DummyEncoder()
+    calls: list[tuple[str, object, bool, bool]] = []
+
+    monkeypatch.setattr(presenter, "_render_debug_source", lambda viewer_obj, enc, frame_idx, render_frame_index: ("rendered_tex", {"generated_entries": 1}, 640, 360, {"g_TrainingSubsample": {"enabled": np.uint32(0)}}))
+    monkeypatch.setattr(presenter, "_render_debug_target", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("rendered view should not render the target path")))
+    monkeypatch.setattr(presenter, "_dispatch_training_debug_present", lambda viewer_obj, enc, source_tex, source_width, source_height, output_width, output_height, *, source_is_linear=False, apply_loss_colorspace=False: calls.append(("present", source_tex, source_is_linear, apply_loss_colorspace)) or "present_tex")
+
+    viewer.c("loss_debug_view").value = 0
+    assert presenter._render_debug_view(viewer, encoder, 800, 600, 123) == "present_tex"
+
+    assert calls == [("present", "rendered_tex", True, True)]
 
 
 def test_dispatch_training_debug_present_passes_colorspace_mod(monkeypatch) -> None:

@@ -36,8 +36,8 @@ uniform GaussianStabilityParams g_Stability;
 uniform uint g_SplatCount;
 uniform CameraParams g_CurrentCamera;
 uniform uint g_EnableCurrentCameraScreenScaleCap;
-uniform float g_MaxScreenFraction;
-uniform float g_ScreenScaleCapRadiusScale;
+uniform float g_MaxViewAngleSlope;
+uniform float g_RendererRadiusScale;
 uniform float g_ScaleL2Weight;
 uniform float g_ScaleAbsRegWeight;
 uniform float g_SH1RegWeight;
@@ -403,20 +403,12 @@ void scale_active_sh_coeffs(inout TrainableGaussianState state, float scale, uin
     }
 }
 
-float angle_only_screen_scale_cap_slope(PinholeCamera camera)
-{
-    float maxScreenAreaPx = g_MaxScreenFraction * camera.params.viewport.x * camera.params.viewport.y;
-    if (!(maxScreenAreaPx > SMALL_VALUE)) return 0.0;
-    float targetRadiusPx = sqrt(max(maxScreenAreaPx / PI, SMALL_VALUE));
-    float minFocal = max(min(camera.params.focalPixels.x, camera.params.focalPixels.y), SMALL_VALUE);
-    return targetRadiusPx / minFocal / max(g_ScreenScaleCapRadiusScale * GAUSSIAN_SUPPORT_SIGMA_RADIUS, SMALL_VALUE);
-}
-
 float3 clamp_screen_scale_upper_bound(float3 position, float3 logScale)
 {
     if (g_EnableCurrentCameraScreenScaleCap == 0u) return logScale;
     PinholeCamera camera = PinholeCamera.from_params(g_CurrentCamera);
-    float maxSigmaSlope = angle_only_screen_scale_cap_slope(camera);
+    if (length(position - camera.position_world()) < g_CurrentCamera.minCameraDistance) return logScale;
+    float maxSigmaSlope = g_MaxViewAngleSlope / max(g_RendererRadiusScale * GAUSSIAN_SUPPORT_SIGMA_RADIUS, SMALL_VALUE);
     if (!(maxSigmaSlope > SMALL_VALUE)) return logScale;
     float maxSigma = length(position - camera.position_world()) * maxSigmaSlope;
     float3 scale = exp(logScale);

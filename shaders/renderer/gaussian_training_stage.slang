@@ -383,6 +383,7 @@ PinholeCamera refinement_camera(uint cameraIndex)
     );
     params.focalPixels = row1.yz;
     params.principalPoint = float2(row1.w, row2.x);
+    params.minCameraDistance = row5.w;
     params.nearDepth = row2.y;
     params.farDepth = row2.z;
     params.projDistortionK1 = row2.w;

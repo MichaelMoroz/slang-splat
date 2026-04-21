@@ -13,6 +13,7 @@ struct CameraParams
     float farDepth;
     float projDistortionK1;
     float projDistortionK2;
+    float minCameraDistance;
 };
 
 interface ICamera

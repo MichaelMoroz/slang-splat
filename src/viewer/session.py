@@ -312,7 +312,9 @@ def _unique_paths(paths: list[Path]) -> list[Path]:
 
 def _has_colmap_sparse(root: Path) -> bool:
     sparse_dir = Path(root).resolve() / "sparse" / "0"
-    return all((sparse_dir / name).exists() for name in ("cameras.bin", "images.bin", "points3D.bin"))
+    return all((sparse_dir / name).exists() for name in ("cameras.bin", "images.bin", "points3D.bin")) or all(
+        (sparse_dir / name).exists() for name in ("cameras.txt", "images.txt", "points3D.txt")
+    )
 
 
 def _looks_like_colmap_database(database_path: Path) -> bool:
@@ -1607,6 +1609,16 @@ def initialize_training_scene(viewer: object, frame_targets_native: list[spy.Tex
     _reset_loss_debug(viewer)
     viewer.s.last_error = ""
     print(f"Initialized training scene ({scene.count:,} gaussians, profile={profile.name})")
+
+
+def reinitialize_training_scene(viewer: object) -> None:
+    frame_targets_native = None
+    trainer = getattr(viewer.s, "trainer", None)
+    training_frames = tuple(getattr(viewer.s, "training_frames", ()))
+    existing_targets = getattr(trainer, "_frame_targets_native", None) if trainer is not None else None
+    if isinstance(existing_targets, list) and len(existing_targets) == len(training_frames) and len(existing_targets) > 0:
+        frame_targets_native = list(existing_targets)
+    initialize_training_scene(viewer, frame_targets_native=frame_targets_native)
 
 
 def training_elapsed_seconds(viewer: object, now: float | None = None) -> float:

@@ -56,8 +56,7 @@ def test_build_training_params_clamps_ranges():
         min_opacity=0.8,
         max_opacity=0.2,
         position_abs_max=0.0,
-        near=5.0,
-        far=1.0,
+        camera_min_dist=-5.0,
         background_mode=7,
         use_sh=0,
         scale_l2_weight=-1.0,
@@ -84,7 +83,7 @@ def test_build_training_params_clamps_ranges():
     assert params.adam.opacity_lr == 50.0
     assert params.stability.max_scale == 1.0
     assert params.stability.max_opacity == params.stability.min_opacity == 0.8
-    assert params.training.far > params.training.near
+    assert params.training.camera_min_dist == 0.0
     assert params.training.background_mode == TRAIN_BACKGROUND_MODE_RANDOM
     assert params.training.use_target_alpha_mask is False
     assert params.training.use_sh is False
@@ -106,7 +105,7 @@ def test_build_training_params_clamps_ranges():
     assert params.training.lr_sh_stage1_mul == 78.0
     assert params.training.lr_sh_stage2_mul == 89.0
     assert params.training.lr_sh_stage3_mul == 90.0
-    assert hasattr(params.training, "max_screen_fraction_stage1")
+    assert hasattr(params.training, "max_visible_angle_deg_stage1")
     assert hasattr(params.training, "position_random_step_noise_lr")
     assert hasattr(params.training, "lr_schedule_stage1_lr")
     assert hasattr(params.training, "depth_ratio_stage1_weight")
@@ -136,7 +135,7 @@ def test_default_training_params_include_required_training_controls():
         "density_regularizer",
         "color_non_negative_reg",
         "depth_ratio_weight",
-        "max_screen_fraction",
+        "max_visible_angle_deg",
         "ssim_weight",
         "ssim_c2",
         "refinement_sample_radius",
@@ -318,7 +317,7 @@ def test_viewer_defaults_expose_only_fixed_count_training_controls():
     assert "sh1_reg" in defaults
     assert "opacity_reg" in defaults
     assert "color_non_negative_reg" in defaults
-    assert "max_screen_fraction" in defaults
+    assert "max_visible_angle_deg" in defaults
     assert "ssim_weight_stage1" in defaults
     assert "ssim_c2" in defaults
     assert "lambda_dssim" not in defaults

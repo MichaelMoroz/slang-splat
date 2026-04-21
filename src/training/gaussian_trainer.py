@@ -199,9 +199,9 @@ class StabilityHyperParams:
 
 @dataclass(slots=True)
 class TrainingHyperParams:
-    background: tuple[float, float, float] = (1.0, 1.0, 1.0); near: float = 0.1; far: float = 120.0
+    background: tuple[float, float, float] = (1.0, 1.0, 1.0); camera_min_dist: float = TRAINING_BUILD_ARG_DEFAULTS["camera_min_dist"]
     background_mode: int = TRAIN_BACKGROUND_MODE_RANDOM; use_target_alpha_mask: bool = TRAINING_BUILD_ARG_DEFAULTS["use_target_alpha_mask"]; use_sh: bool = TRAINING_BUILD_ARG_DEFAULTS["use_sh"]; sh_band: int = 0
-    scale_l2_weight: float = TRAINING_BUILD_ARG_DEFAULTS["scale_l2_weight"]; scale_abs_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["scale_abs_reg_weight"]; sh1_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["sh1_reg_weight"]; opacity_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"]; density_regularizer: float = TRAINING_BUILD_ARG_DEFAULTS["density_regularizer"]; color_non_negative_reg: float = TRAINING_BUILD_ARG_DEFAULTS["color_non_negative_reg"]; depth_ratio_weight: float = TRAINING_BUILD_ARG_DEFAULTS["depth_ratio_weight"]; max_screen_fraction: float = TRAINING_BUILD_ARG_DEFAULTS["max_screen_fraction"]; sorting_order_dithering: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering"]; sorting_order_dithering_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage1"]; sorting_order_dithering_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage2"]; sorting_order_dithering_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage3"]; colorspace_mod: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod"]; colorspace_mod_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage1"]; colorspace_mod_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage2"]; colorspace_mod_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage3"]; ssim_weight: float = DEFAULT_SSIM_WEIGHT; ssim_c2: float = DEFAULT_SSIM_C2; max_allowed_density_start: float = TRAINING_BUILD_ARG_DEFAULTS["max_allowed_density_start"]; max_allowed_density: float = TRAINING_BUILD_ARG_DEFAULTS["max_allowed_density"]
+    scale_l2_weight: float = TRAINING_BUILD_ARG_DEFAULTS["scale_l2_weight"]; scale_abs_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["scale_abs_reg_weight"]; sh1_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["sh1_reg_weight"]; opacity_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"]; density_regularizer: float = TRAINING_BUILD_ARG_DEFAULTS["density_regularizer"]; color_non_negative_reg: float = TRAINING_BUILD_ARG_DEFAULTS["color_non_negative_reg"]; depth_ratio_weight: float = TRAINING_BUILD_ARG_DEFAULTS["depth_ratio_weight"]; max_visible_angle_deg: float = TRAINING_BUILD_ARG_DEFAULTS["max_visible_angle_deg"]; sorting_order_dithering: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering"]; sorting_order_dithering_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage1"]; sorting_order_dithering_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage2"]; sorting_order_dithering_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage3"]; colorspace_mod: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod"]; colorspace_mod_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage1"]; colorspace_mod_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage2"]; colorspace_mod_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage3"]; ssim_weight: float = DEFAULT_SSIM_WEIGHT; ssim_c2: float = DEFAULT_SSIM_C2; max_allowed_density_start: float = TRAINING_BUILD_ARG_DEFAULTS["max_allowed_density_start"]; max_allowed_density: float = TRAINING_BUILD_ARG_DEFAULTS["max_allowed_density"]
     refinement_loss_weight: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_loss_weight"]; refinement_target_edge_weight: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_target_edge_weight"]
     depth_ratio_grad_min: float = DEFAULT_DEPTH_RATIO_GRAD_MIN; depth_ratio_grad_max: float = DEFAULT_DEPTH_RATIO_GRAD_MAX
     lr_pos_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_mul"]; lr_pos_stage1_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_stage1_mul"]; lr_pos_stage2_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_stage2_mul"]; lr_pos_stage3_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_stage3_mul"]
@@ -209,7 +209,7 @@ class TrainingHyperParams:
     position_random_step_noise_lr: float = TRAINING_BUILD_ARG_DEFAULTS["position_random_step_noise_lr"]; position_random_step_opacity_gate_center: float = TRAINING_BUILD_ARG_DEFAULTS["position_random_step_opacity_gate_center"]; position_random_step_opacity_gate_sharpness: float = TRAINING_BUILD_ARG_DEFAULTS["position_random_step_opacity_gate_sharpness"]
     lr_schedule_enabled: bool = TRAINING_BUILD_ARG_DEFAULTS["lr_schedule_enabled"]; lr_schedule_start_lr: float = TRAINING_BUILD_ARG_DEFAULTS["lr_schedule_start_lr"]; lr_schedule_stage1_lr: float = TRAINING_BUILD_ARG_DEFAULTS["lr_schedule_stage1_lr"]; lr_schedule_stage2_lr: float = TRAINING_BUILD_ARG_DEFAULTS["lr_schedule_stage2_lr"]; lr_schedule_end_lr: float = TRAINING_BUILD_ARG_DEFAULTS["lr_schedule_end_lr"]; lr_schedule_steps: int = TRAINING_BUILD_ARG_DEFAULTS["lr_schedule_steps"]; lr_schedule_stage1_step: int = TRAINING_BUILD_ARG_DEFAULTS["lr_schedule_stage1_step"]; lr_schedule_stage2_step: int = TRAINING_BUILD_ARG_DEFAULTS["lr_schedule_stage2_step"]
     refinement_interval: int = TRAINING_BUILD_ARG_DEFAULTS["refinement_interval"]; refinement_growth_ratio: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_growth_ratio"]; refinement_growth_start_step: int = TRAINING_BUILD_ARG_DEFAULTS["refinement_growth_start_step"]; refinement_alpha_cull_threshold: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_alpha_cull_threshold"]; refinement_min_contribution: int = DEFAULT_REFINEMENT_MIN_CONTRIBUTION; refinement_min_contribution_decay: float = DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY; refinement_opacity_mul: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_opacity_mul"]; refinement_sample_radius: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_sample_radius"]; refinement_clone_scale_mul: float = DEFAULT_REFINEMENT_CLONE_SCALE_MUL; refinement_use_compact_split: bool = bool(TRAINING_BUILD_ARG_DEFAULTS.get("refinement_use_compact_split", False)); refinement_solve_opacity: bool = bool(TRAINING_BUILD_ARG_DEFAULTS.get("refinement_solve_opacity", False)); refinement_split_beta: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("refinement_split_beta", 0.28)); refinement_momentum_weight_exponent: float = DEFAULT_REFINEMENT_MOMENTUM_WEIGHT_EXPONENT
-    depth_ratio_stage1_weight: float = TRAINING_BUILD_ARG_DEFAULTS["depth_ratio_stage1_weight"]; depth_ratio_stage2_weight: float = TRAINING_BUILD_ARG_DEFAULTS["depth_ratio_stage2_weight"]; depth_ratio_stage3_weight: float = TRAINING_BUILD_ARG_DEFAULTS["depth_ratio_stage3_weight"]; ssim_weight_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["ssim_weight_stage1"]; ssim_weight_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["ssim_weight_stage2"]; ssim_weight_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["ssim_weight_stage3"]; max_screen_fraction_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["max_screen_fraction_stage1"]; max_screen_fraction_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["max_screen_fraction_stage2"]; max_screen_fraction_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["max_screen_fraction_stage3"]
+    depth_ratio_stage1_weight: float = TRAINING_BUILD_ARG_DEFAULTS["depth_ratio_stage1_weight"]; depth_ratio_stage2_weight: float = TRAINING_BUILD_ARG_DEFAULTS["depth_ratio_stage2_weight"]; depth_ratio_stage3_weight: float = TRAINING_BUILD_ARG_DEFAULTS["depth_ratio_stage3_weight"]; ssim_weight_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["ssim_weight_stage1"]; ssim_weight_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["ssim_weight_stage2"]; ssim_weight_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["ssim_weight_stage3"]; max_visible_angle_deg_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["max_visible_angle_deg_stage1"]; max_visible_angle_deg_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["max_visible_angle_deg_stage2"]; max_visible_angle_deg_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["max_visible_angle_deg_stage3"]
     position_random_step_noise_stage1_lr: float = TRAINING_BUILD_ARG_DEFAULTS["position_random_step_noise_stage1_lr"]; position_random_step_noise_stage2_lr: float = TRAINING_BUILD_ARG_DEFAULTS["position_random_step_noise_stage2_lr"]; position_random_step_noise_stage3_lr: float = TRAINING_BUILD_ARG_DEFAULTS["position_random_step_noise_stage3_lr"]
     use_sh_stage1: bool = TRAINING_BUILD_ARG_DEFAULTS["use_sh_stage1"]; use_sh_stage2: bool = TRAINING_BUILD_ARG_DEFAULTS["use_sh_stage2"]; use_sh_stage3: bool = TRAINING_BUILD_ARG_DEFAULTS["use_sh_stage3"]
     sh_band_stage1: int = TRAINING_BUILD_ARG_DEFAULTS["sh_band_stage1"]; sh_band_stage2: int = TRAINING_BUILD_ARG_DEFAULTS["sh_band_stage2"]; sh_band_stage3: int = TRAINING_BUILD_ARG_DEFAULTS["sh_band_stage3"]
@@ -223,6 +223,7 @@ class TrainingHyperParams:
         self.lr_schedule_end_lr = max(float(self.lr_schedule_end_lr), 1e-8)
         background = np.asarray(self.background, dtype=np.float32).reshape(3)
         self.background = tuple(float(v) for v in np.clip(background, 0.0, 1.0))
+        self.camera_min_dist = max(float(self.camera_min_dist), 0.0)
         self.background_mode = TRAIN_BACKGROUND_MODE_RANDOM if int(self.background_mode) == TRAIN_BACKGROUND_MODE_RANDOM else TRAIN_BACKGROUND_MODE_CUSTOM
         self.use_target_alpha_mask = bool(self.use_target_alpha_mask)
         self.sh_band = min(max(int(self.sh_band), 0), 3) if int(self.sh_band) != 0 else (3 if bool(self.use_sh) else 0)
@@ -259,7 +260,7 @@ class TrainingHyperParams:
         self.density_regularizer = max(float(self.density_regularizer), 0.0)
         self.color_non_negative_reg = max(float(self.color_non_negative_reg), 0.0)
         self.depth_ratio_weight = max(float(self.depth_ratio_weight), 0.0)
-        self.max_screen_fraction = max(float(self.max_screen_fraction), 1e-8)
+        self.max_visible_angle_deg = min(max(float(self.max_visible_angle_deg), 1e-8), 89.999)
         self.sorting_order_dithering = min(max(float(self.sorting_order_dithering), 0.0), 1.0)
         self.sorting_order_dithering_stage1 = min(max(float(self.sorting_order_dithering_stage1), 0.0), 1.0)
         self.sorting_order_dithering_stage2 = min(max(float(self.sorting_order_dithering_stage2), 0.0), 1.0)
@@ -277,9 +278,9 @@ class TrainingHyperParams:
         self.ssim_weight_stage1 = min(max(float(self.ssim_weight_stage1), 0.0), 1.0)
         self.ssim_weight_stage2 = min(max(float(self.ssim_weight_stage2), 0.0), 1.0)
         self.ssim_weight_stage3 = min(max(float(self.ssim_weight_stage3), 0.0), 1.0)
-        self.max_screen_fraction_stage1 = max(float(self.max_screen_fraction_stage1), 1e-8)
-        self.max_screen_fraction_stage2 = max(float(self.max_screen_fraction_stage2), 1e-8)
-        self.max_screen_fraction_stage3 = max(float(self.max_screen_fraction_stage3), 1e-8)
+        self.max_visible_angle_deg_stage1 = min(max(float(self.max_visible_angle_deg_stage1), 1e-8), 89.999)
+        self.max_visible_angle_deg_stage2 = min(max(float(self.max_visible_angle_deg_stage2), 1e-8), 89.999)
+        self.max_visible_angle_deg_stage3 = min(max(float(self.max_visible_angle_deg_stage3), 1e-8), 89.999)
         self.max_allowed_density_start = max(float(self.max_allowed_density_start), 0.0)
         self.max_allowed_density = max(float(self.max_allowed_density), 0.0)
         self.max_allowed_density = max(self.max_allowed_density, self.max_allowed_density_start)
@@ -944,15 +945,14 @@ class GaussianTrainer:
             rows[base + 2] = np.array([cy, camera.near, camera.far, k1], dtype=np.float32)
             rows[base + 3] = np.array([k2, right[0], right[1], right[2]], dtype=np.float32)
             rows[base + 4] = np.array([up[0], up[1], up[2], forward[0]], dtype=np.float32)
-            rows[base + 5] = np.array([forward[1], forward[2], camera_hash, 0.0], dtype=np.float32)
+            rows[base + 5] = np.array([forward[1], forward[2], camera_hash, camera.min_camera_distance], dtype=np.float32)
         return rows
 
     def _refinement_camera_signature_value(self) -> tuple[object, ...]:
         signature: list[object] = [
             int(self.renderer.width),
             int(self.renderer.height),
-            round(float(self.training.near), 8),
-            round(float(self.training.far), 8),
+            round(float(self.training.camera_min_dist), 8),
             int(len(self.frames)),
         ]
         for frame in self.frames:
@@ -1093,7 +1093,8 @@ class GaussianTrainer:
         self._init_point_colors_cpu = col[:, :3].copy()
 
     def _make_frame_camera(self, frame: ColmapFrame, width: int, height: int) -> Camera:
-        camera = frame.make_camera(near=float(self.training.near), far=float(self.training.far))
+        camera = frame.make_camera()
+        camera.min_camera_distance = float(self.training.camera_min_dist)
         frame_width, frame_height = max(int(frame.width), 1), max(int(frame.height), 1)
         if int(width) == frame_width and int(height) == frame_height:
             return camera

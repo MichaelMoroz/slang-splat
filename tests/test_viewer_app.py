@@ -180,7 +180,7 @@ def test_default_training_params_include_training_control_fields() -> None:
         "background_mode",
         "density_regularizer",
         "depth_ratio_weight",
-        "max_screen_fraction",
+        "max_visible_angle_deg",
         "ssim_weight",
         "ssim_c2",
         "color_non_negative_reg",

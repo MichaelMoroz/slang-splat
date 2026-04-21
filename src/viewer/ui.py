@@ -568,6 +568,7 @@ def export_repo_defaults_from_ui_values(values: dict[str, object]) -> dict[str, 
                     "show_camera_overlays": bool(values["show_camera_overlays"]),
                     "show_camera_labels": bool(values["show_camera_labels"]),
                     "show_training_cameras": bool(values["show_training_cameras"]),
+                    "show_camera_min_dist_spheres": bool(values["show_camera_min_dist_spheres"]),
                     "hist_bin_count": int(values["hist_bin_count"]),
                     "hist_min_value": float(values["hist_min_value"]),
                     "hist_max_value": float(values["hist_max_value"]),
@@ -1244,6 +1245,7 @@ class ToolkitWindow:
         label = "View Mode"
         camera_label = "Cameras On" if bool(ui._values.get("show_camera_overlays", True)) else "Cameras Off"
         text_label = "Labels On" if bool(ui._values.get("show_camera_labels", False)) else "Labels Off"
+        sphere_label = "Min Dist On" if bool(ui._values.get("show_camera_min_dist_spheres", True)) else "Min Dist Off"
         training_label = "Training Cameras On" if bool(ui._values.get("show_training_cameras", False)) else "Training Cameras Off"
         sh_band = min(max(int(ui._values.get("_viewport_sh_band", ui._values.get("sh_band", 0))), 0), len(_SH_BAND_LABELS) - 1)
         sh_label = _SH_BAND_LABELS[sh_band]
@@ -1261,6 +1263,9 @@ class ToolkitWindow:
         imgui.same_line(0.0, 10.0 * scale)
         if _imgui_opened(imgui.small_button(text_label)):
             ui._values["show_camera_labels"] = not bool(ui._values.get("show_camera_labels", False))
+        imgui.same_line(0.0, 10.0 * scale)
+        if _imgui_opened(imgui.small_button(sphere_label)):
+            ui._values["show_camera_min_dist_spheres"] = not bool(ui._values.get("show_camera_min_dist_spheres", True))
         imgui.same_line(0.0, 10.0 * scale)
         if _imgui_opened(imgui.small_button(training_label)):
             ui._values["show_training_cameras"] = not bool(ui._values.get("show_training_cameras", False))
@@ -1360,7 +1365,7 @@ class ToolkitWindow:
         label_pad_y = 3.0 * scale
         label_font = imgui.get_font()
         label_font_size = float(imgui.get_font_size()) * 0.9
-        for near_points, far_points, connectors, label_anchor, label_text, color, thickness in overlays:
+        for near_points, far_points, connectors, sphere_rings, label_anchor, label_text, color, thickness in overlays:
             color_u32 = _color_u32(*color)
             near_polyline = [imgui.ImVec2(base_x + float(x), base_y + float(y)) for x, y in near_points]
             far_polyline = [imgui.ImVec2(base_x + float(x), base_y + float(y)) for x, y in far_points]
@@ -1368,6 +1373,10 @@ class ToolkitWindow:
                 draw_list.add_polyline(near_polyline, color_u32, imgui.ImDrawFlags_.closed.value, float(thickness))
             if len(far_polyline) >= 2:
                 draw_list.add_polyline(far_polyline, color_u32, imgui.ImDrawFlags_.closed.value, float(thickness))
+            for ring in sphere_rings:
+                ring_polyline = [imgui.ImVec2(base_x + float(x), base_y + float(y)) for x, y in ring]
+                if len(ring_polyline) >= 2:
+                    draw_list.add_polyline(ring_polyline, color_u32, imgui.ImDrawFlags_.closed.value, float(max(thickness * 0.85, 1.0)))
             for x0, y0, x1, y1 in connectors:
                 draw_list.add_line(
                     imgui.ImVec2(base_x + float(x0), base_y + float(y0)),
@@ -1931,15 +1940,14 @@ class ToolkitWindow:
                     | imgui.TableFlags_.scroll_y.value
                     | imgui.TableFlags_.hideable.value
                 )
-                if imgui.begin_table("##training_views", 10, flags):
+                if imgui.begin_table("##training_views", 9, flags):
                     imgui.table_setup_column("Image", imgui.TableColumnFlags_.width_stretch.value)
                     imgui.table_setup_column("Res", imgui.TableColumnFlags_.width_fixed.value, 92.0)
                     imgui.table_setup_column("Fx", imgui.TableColumnFlags_.width_fixed.value, 76.0)
                     imgui.table_setup_column("Fy", imgui.TableColumnFlags_.width_fixed.value, 76.0)
                     imgui.table_setup_column("Cx", imgui.TableColumnFlags_.width_fixed.value, 76.0)
                     imgui.table_setup_column("Cy", imgui.TableColumnFlags_.width_fixed.value, 76.0)
-                    imgui.table_setup_column("Near", imgui.TableColumnFlags_.width_fixed.value, 68.0)
-                    imgui.table_setup_column("Far", imgui.TableColumnFlags_.width_fixed.value, 68.0)
+                    imgui.table_setup_column("Min Dist", imgui.TableColumnFlags_.width_fixed.value, 78.0)
                     imgui.table_setup_column("Loss", imgui.TableColumnFlags_.width_fixed.value, 88.0)
                     imgui.table_setup_column("PSNR", imgui.TableColumnFlags_.width_fixed.value, 80.0)
                     imgui.table_headers_row()
@@ -1952,8 +1960,7 @@ class ToolkitWindow:
                             self._training_views_value_text(row.get("fy")),
                             self._training_views_value_text(row.get("cx")),
                             self._training_views_value_text(row.get("cy")),
-                            self._training_views_value_text(row.get("near"), precision=2),
-                            self._training_views_value_text(row.get("far"), precision=2),
+                            self._training_views_value_text(row.get("camera_min_dist"), precision=3),
                             self._training_views_value_text(row.get("loss"), precision=4),
                             self._training_views_value_text(row.get("psnr"), precision=2),
                         )
@@ -2589,8 +2596,7 @@ class ToolkitWindow:
         "min_opacity": "Floor for opacity",
         "max_opacity": "Ceiling for opacity",
         "position_abs_max": "Absolute position bounding box (per axis)",
-        "train_near": "Near clip plane for training camera",
-        "train_far": "Far clip plane for training camera",
+        "camera_min_dist": "Cull any splat whose center is closer to the camera than this distance, regardless of projected size",
         "max_gaussians": "Maximum number of gaussians in the scene",
         "training_steps_per_frame": "Number of training optimizer steps to run before each viewer redraw; higher improves training throughput but reduces UI refresh rate",
         "background_mode": "Choose whether training uses a fixed custom RGB background or a new seeded white-noise background each optimizer step",
@@ -2817,6 +2823,7 @@ def build_ui(renderer) -> ViewerUI:
     values["show_camera_overlays"] = bool(_VIEWER_UI_DEFAULTS["show_camera_overlays"])
     values["show_camera_labels"] = bool(_VIEWER_UI_DEFAULTS["show_camera_labels"])
     values["show_training_cameras"] = bool(_VIEWER_UI_DEFAULTS["show_training_cameras"])
+    values["show_camera_min_dist_spheres"] = bool(_VIEWER_UI_DEFAULTS.get("show_camera_min_dist_spheres", True))
     values["hist_bin_count"] = int(_VIEWER_UI_DEFAULTS["hist_bin_count"])
     values["hist_min_value"] = float(_VIEWER_UI_DEFAULTS["hist_min_value"])
     values["hist_max_value"] = float(_VIEWER_UI_DEFAULTS["hist_max_value"])

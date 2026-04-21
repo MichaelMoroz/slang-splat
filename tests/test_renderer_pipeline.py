@@ -290,7 +290,7 @@ def test_large_rotated_splat_tile_coverage_matches_reference(device):
     np.testing.assert_array_equal(debug["tile_ranges"], ref_ranges)
 
 
-def test_projection_ignores_camera_far_clip_for_visible_splats(device):
+def test_projection_culls_splats_inside_camera_min_distance(device):
     scene = GaussianScene(
         positions=np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
         scales=np.full((1, 3), _log_sigma(0.05), dtype=np.float32),
@@ -299,15 +299,14 @@ def test_projection_ignores_camera_far_clip_for_visible_splats(device):
         colors=np.array([[0.9, 0.7, 0.5]], dtype=np.float32),
         sh_coeffs=np.zeros((1, 1, 3), dtype=np.float32),
     )
-    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=1.0)
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    camera.min_camera_distance = 4.5
     renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, list_capacity_multiplier=8)
 
-    projected = project_splats(scene, camera, renderer.width, renderer.height, renderer.radius_scale)
     debug = renderer.debug_pipeline_data(scene, camera)
 
-    assert int(projected.valid[0]) == 1
-    assert float(debug["screen_center_radius_depth"][0, 2]) > 0.0
-    assert int(debug["generated_entries"]) > 0
+    assert float(debug["screen_center_radius_depth"][0, 2]) == 0.0
+    assert int(debug["generated_entries"]) == 0
 
 
 def test_renderer_tile_sort_keeps_stable_order_for_equal_keys(device):

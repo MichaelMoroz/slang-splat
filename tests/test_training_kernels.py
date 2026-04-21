@@ -14,7 +14,7 @@ from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 from src.scene.sh_utils import SH_C0, evaluate_sh_color
 from src.training import gaussian_trainer as gaussian_trainer_module
-from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_colorspace_mod, resolve_cosine_base_learning_rate, resolve_depth_ratio_grad_band, resolve_depth_ratio_weight, resolve_effective_refinement_interval, resolve_effective_train_render_factor, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_screen_fraction, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_clone_budget, resolve_refinement_growth_ratio, resolve_refinement_min_contribution, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering, resolve_ssim_weight, resolve_stage_schedule_steps, resolve_training_resolution, resolve_train_subsample_factor, resolve_use_sh, should_run_refinement_step
+from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_colorspace_mod, resolve_cosine_base_learning_rate, resolve_depth_ratio_grad_band, resolve_depth_ratio_weight, resolve_effective_refinement_interval, resolve_effective_train_render_factor, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_visible_angle_deg, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_clone_budget, resolve_refinement_growth_ratio, resolve_refinement_min_contribution, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering, resolve_ssim_weight, resolve_stage_schedule_steps, resolve_training_resolution, resolve_train_subsample_factor, resolve_use_sh, should_run_refinement_step
 
 _ADAM_BUFFER_NAMES = ("adam_moments",)
 _OPACITY_EPS = 1e-6
@@ -471,21 +471,22 @@ def _circle_bound_support_radius(camera, position: np.ndarray, width: int, heigh
     return float(camera_distance * float(radius_px) / min_focal)
 
 
-def _screen_scale_cap_expected(
+def _legacy_screen_fraction_to_visible_angle_deg(screen_fraction: float) -> float:
+    fraction = max(float(screen_fraction), 1e-8)
+    return float(np.degrees(np.arctan(2.0 * np.sqrt(fraction / np.pi))))
+
+
+def _view_angle_cap_expected(
     *,
     scale: np.ndarray,
     position: np.ndarray,
     camera,
     renderer: GaussianRenderer,
-    max_screen_fraction: float,
+    max_visible_angle_deg: float,
 ) -> np.ndarray:
     scale = np.asarray(scale, dtype=np.float32).reshape(3)
-    max_area_px = max(float(max_screen_fraction) * float(renderer.width) * float(renderer.height), 1e-8)
-    target_radius_px = np.sqrt(max(max_area_px / np.pi, 1e-8))
-    focal = np.asarray(camera.focal_pixels_xy(renderer.width, renderer.height), dtype=np.float32)
-    min_focal = max(float(min(focal[0], focal[1])), 1e-8)
     camera_distance = float(np.linalg.norm(np.asarray(position, dtype=np.float32) - np.asarray(camera.position, dtype=np.float32)))
-    max_support_radius = camera_distance * target_radius_px / min_focal
+    max_support_radius = camera_distance * float(np.tan(np.radians(float(max_visible_angle_deg))))
     max_sigma = max_support_radius / max(float(renderer.radius_scale) * _GAUSSIAN_SUPPORT_SIGMA_RADIUS, 1e-8)
     return np.minimum(scale, np.full((3,), max_sigma, dtype=np.float32)).astype(np.float32, copy=False)
 
@@ -638,6 +639,57 @@ def test_training_step_smoke_with_subsampling_produces_finite_updates(device, tm
     assert np.isfinite(trainer.state.last_mse)
     assert np.all(np.isfinite(after))
     assert np.any(np.abs(after - before) > 0.0)
+
+
+def test_optimizer_screen_scale_cap_skips_clamp_inside_camera_min_distance(device, tmp_path: Path):
+    initial_sigma = np.array([1.5, 1.5, 1.5], dtype=np.float32)
+
+    def _make_single_scene() -> GaussianScene:
+        return GaussianScene(
+            positions=np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
+            scales=_log_sigma(initial_sigma[None, :]),
+            rotations=np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+            opacities=np.array([0.8], dtype=np.float32),
+            colors=np.array([[0.8, 0.7, 0.6]], dtype=np.float32),
+            sh_coeffs=np.zeros((1, 1, 3), dtype=np.float32),
+        )
+
+    frame = _make_frame(tmp_path, image_name="screen_scale_cap_target.png", image_id=23)
+
+    def _project_once(camera_min_dist: float) -> np.ndarray:
+        scene = _make_single_scene()
+        renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
+        trainer = GaussianTrainer(
+            device=device,
+            renderer=renderer,
+            scene=scene,
+            frames=[frame],
+            training_hparams=TrainingHyperParams(camera_min_dist=camera_min_dist, max_visible_angle_deg=0.5),
+            seed=123,
+        )
+        camera = trainer.make_frame_camera(0, renderer.width, renderer.height)
+        encoder = device.create_command_encoder()
+        trainer.optimizer.dispatch_projection(
+            encoder,
+            scene_buffers=renderer.scene_buffers,
+            work_buffers=renderer.work_buffers,
+            splat_count=scene.count,
+            training_hparams=trainer.training,
+            scale_reg_reference=trainer._scale_reg_reference,
+            frame_camera=camera,
+            width=renderer.width,
+            height=renderer.height,
+            step_index=0,
+        )
+        device.submit_command_buffer(encoder.finish())
+        device.wait()
+        return _actual_scale(_read_scene_groups(renderer, scene.count)["scales"][:, :3])[0]
+
+    clamped_scale = _project_once(0.0)
+    skipped_scale = _project_once(4.0)
+
+    assert np.all(clamped_scale < initial_sigma * 0.1)
+    np.testing.assert_allclose(skipped_scale, initial_sigma, rtol=1e-6, atol=1e-6)
 
 
 def test_random_training_background_seeds_are_deterministic(device, tmp_path: Path):
@@ -1362,7 +1414,7 @@ def test_depth_ratio_noise_and_sh_schedules_follow_requested_defaults() -> None:
         depth_ratio_weight=0.5,
         colorspace_mod=0.5,
         ssim_weight=0.2,
-        max_screen_fraction=0.3,
+        max_visible_angle_deg=_legacy_screen_fraction_to_visible_angle_deg(0.3),
         position_random_step_noise_lr=1234.0,
         sh_band=2,
         use_sh=True,
@@ -1373,8 +1425,8 @@ def test_depth_ratio_noise_and_sh_schedules_follow_requested_defaults() -> None:
     np.testing.assert_allclose(resolve_ssim_weight(hparams, 30_000), 0.2, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_colorspace_mod(hparams, 0), 0.5, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_colorspace_mod(hparams, 30_000), 0.5, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_max_screen_fraction(hparams, 0), 0.3, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_max_screen_fraction(hparams, 30_000), 0.3, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_max_visible_angle_deg(hparams, 0), _legacy_screen_fraction_to_visible_angle_deg(0.3), rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_max_visible_angle_deg(hparams, 30_000), _legacy_screen_fraction_to_visible_angle_deg(0.3), rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 0), 1234.0, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_position_random_step_noise_lr(hparams, 30_000), 1234.0, rtol=0.0, atol=1e-12)
     assert resolve_sh_band(hparams, 0) == 2
@@ -2540,12 +2592,12 @@ def test_training_max_screen_size_clamps_large_splats(device, tmp_path: Path) ->
         seed=123,
     )
     camera = trainer.make_frame_camera(0, renderer.width, renderer.height)
-    expected_scales = _screen_scale_cap_expected(
+    expected_scales = _view_angle_cap_expected(
         scale=_actual_scale(scene.scales[0, :3]),
         position=scene.positions[0],
         camera=camera,
         renderer=renderer,
-        max_screen_fraction=resolve_max_screen_fraction(trainer.training, 1),
+        max_visible_angle_deg=resolve_max_visible_angle_deg(trainer.training, 1),
     )
 
     zeros = np.zeros((scene.count, 4), dtype=np.float32)
@@ -2575,12 +2627,12 @@ def test_training_max_screen_size_clamps_scale_components_with_shared_scalar_cap
         seed=123,
     )
     camera = trainer.make_frame_camera(0, renderer.width, renderer.height)
-    expected_scales = _screen_scale_cap_expected(
+    expected_scales = _view_angle_cap_expected(
         scale=_actual_scale(scene.scales[0, :3]),
         position=scene.positions[0],
         camera=camera,
         renderer=renderer,
-        max_screen_fraction=resolve_max_screen_fraction(trainer.training, 1),
+        max_visible_angle_deg=resolve_max_visible_angle_deg(trainer.training, 1),
     )
     max_sigma = float(expected_scales[0])
     assert expected_scales[0] < _actual_scale(scene.scales[0, :3])[0]
@@ -2613,12 +2665,12 @@ def test_training_max_screen_size_clamps_offscreen_splats_by_distance(device, tm
         seed=123,
     )
     camera = trainer.make_frame_camera(0, renderer.width, renderer.height)
-    expected_scales = _screen_scale_cap_expected(
+    expected_scales = _view_angle_cap_expected(
         scale=_actual_scale(scene.scales[0, :3]),
         position=scene.positions[0],
         camera=camera,
         renderer=renderer,
-        max_screen_fraction=resolve_max_screen_fraction(trainer.training, 1),
+        max_visible_angle_deg=resolve_max_visible_angle_deg(trainer.training, 1),
     )
 
     zeros = np.zeros((scene.count, 4), dtype=np.float32)
@@ -2648,12 +2700,12 @@ def test_training_max_screen_size_clamps_previously_invisible_splats_by_distance
         seed=123,
     )
     camera = trainer.make_frame_camera(0, renderer.width, renderer.height)
-    expected_scales = _screen_scale_cap_expected(
+    expected_scales = _view_angle_cap_expected(
         scale=_actual_scale(scene.scales[0, :3]),
         position=scene.positions[0],
         camera=camera,
         renderer=renderer,
-        max_screen_fraction=resolve_max_screen_fraction(trainer.training, 1),
+        max_visible_angle_deg=resolve_max_visible_angle_deg(trainer.training, 1),
     )
 
     zeros = np.zeros((scene.count, 4), dtype=np.float32)
@@ -2678,23 +2730,23 @@ def test_training_max_screen_size_uses_scheduled_value(device, tmp_path: Path) -
         lr_schedule_stage1_step=1,
         lr_schedule_stage2_step=2,
         lr_schedule_steps=3,
-        max_screen_fraction=0.2,
-        max_screen_fraction_stage1=0.05,
-        max_screen_fraction_stage2=0.025,
-        max_screen_fraction_stage3=0.0125,
+        max_visible_angle_deg=_legacy_screen_fraction_to_visible_angle_deg(0.2),
+        max_visible_angle_deg_stage1=_legacy_screen_fraction_to_visible_angle_deg(0.05),
+        max_visible_angle_deg_stage2=_legacy_screen_fraction_to_visible_angle_deg(0.025),
+        max_visible_angle_deg_stage3=_legacy_screen_fraction_to_visible_angle_deg(0.0125),
         scale_l2_weight=0.0,
         scale_abs_reg_weight=0.0,
         opacity_reg_weight=0.0,
     )
     trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], training_hparams=training, seed=123)
     camera = trainer.make_frame_camera(0, renderer.width, renderer.height)
-    scheduled_fraction = resolve_max_screen_fraction(training, 2)
-    expected_scales = _screen_scale_cap_expected(
+    scheduled_angle = resolve_max_visible_angle_deg(training, 2)
+    expected_scales = _view_angle_cap_expected(
         scale=_actual_scale(scene.scales[0, :3]),
         position=scene.positions[0],
         camera=camera,
         renderer=renderer,
-        max_screen_fraction=scheduled_fraction,
+        max_visible_angle_deg=scheduled_angle,
     )
 
     zeros = np.zeros((scene.count, 4), dtype=np.float32)
@@ -2727,12 +2779,12 @@ def test_training_max_screen_size_matches_same_distance_for_offscreen_splats(dev
     camera = trainer.make_frame_camera(0, renderer.width, renderer.height)
     expected_scales = np.stack(
         [
-            _screen_scale_cap_expected(
+            _view_angle_cap_expected(
                 scale=_actual_scale(scene.scales[index, :3]),
                 position=scene.positions[index],
                 camera=camera,
                 renderer=renderer,
-                max_screen_fraction=resolve_max_screen_fraction(trainer.training, 1),
+                max_visible_angle_deg=resolve_max_visible_angle_deg(trainer.training, 1),
             )
             for index in range(2)
         ],
@@ -2770,12 +2822,12 @@ def test_training_max_screen_size_gets_looser_with_distance(device, tmp_path: Pa
     camera = trainer.make_frame_camera(0, renderer.width, renderer.height)
     expected_scales = np.stack(
         [
-            _screen_scale_cap_expected(
+            _view_angle_cap_expected(
                 scale=_actual_scale(scene.scales[index, :3]),
                 position=scene.positions[index],
                 camera=camera,
                 renderer=renderer,
-                max_screen_fraction=resolve_max_screen_fraction(trainer.training, 1),
+                max_visible_angle_deg=resolve_max_visible_angle_deg(trainer.training, 1),
             )
             for index in range(2)
         ],
@@ -2813,12 +2865,12 @@ def test_training_max_screen_size_is_independent_of_opacity(device, tmp_path: Pa
     camera = trainer.make_frame_camera(0, renderer.width, renderer.height)
     expected_scales = np.stack(
         [
-            _screen_scale_cap_expected(
+            _view_angle_cap_expected(
                 scale=_actual_scale(scene.scales[index, :3]),
                 position=scene.positions[index],
                 camera=camera,
                 renderer=renderer,
-                max_screen_fraction=resolve_max_screen_fraction(trainer.training, 1),
+                max_visible_angle_deg=resolve_max_visible_angle_deg(trainer.training, 1),
             )
             for index in range(2)
         ],

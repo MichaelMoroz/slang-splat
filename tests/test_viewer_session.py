@@ -122,6 +122,27 @@ def test_set_training_active_accumulates_elapsed_time_on_pause(monkeypatch) -> N
     assert viewer.s.training_elapsed_s == 4.5
 
 
+def test_reinitialize_training_scene_reuses_existing_native_targets(monkeypatch) -> None:
+    textures = [object(), object()]
+    viewer = SimpleNamespace(
+        s=SimpleNamespace(
+            trainer=SimpleNamespace(_frame_targets_native=textures),
+            training_frames=[SimpleNamespace(), SimpleNamespace()],
+        )
+    )
+    captured: list[object] = []
+
+    monkeypatch.setattr(
+        session,
+        "initialize_training_scene",
+        lambda viewer_obj, frame_targets_native=None: captured.append(frame_targets_native),
+    )
+
+    session.reinitialize_training_scene(viewer)
+
+    assert captured == [textures]
+
+
 def test_training_elapsed_seconds_includes_current_active_segment() -> None:
     viewer = _viewer()
     viewer.s.training_active = True

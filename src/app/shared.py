@@ -162,8 +162,7 @@ def build_training_params(
     min_opacity: float = TRAINING_BUILD_ARG_DEFAULTS["min_opacity"],
     max_opacity: float = TRAINING_BUILD_ARG_DEFAULTS["max_opacity"],
     position_abs_max: float = TRAINING_BUILD_ARG_DEFAULTS["position_abs_max"],
-    near: float = TRAINING_BUILD_ARG_DEFAULTS["near"],
-    far: float = TRAINING_BUILD_ARG_DEFAULTS["far"],
+    camera_min_dist: float = TRAINING_BUILD_ARG_DEFAULTS["camera_min_dist"],
     scale_l2_weight: float = TRAINING_BUILD_ARG_DEFAULTS["scale_l2_weight"],
     scale_abs_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["scale_abs_reg_weight"],
     opacity_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"],
@@ -171,7 +170,7 @@ def build_training_params(
     density_regularizer: float = TRAINING_BUILD_ARG_DEFAULTS["density_regularizer"],
     color_non_negative_reg: float = TRAINING_BUILD_ARG_DEFAULTS["color_non_negative_reg"],
     depth_ratio_weight: float = TRAINING_BUILD_ARG_DEFAULTS["depth_ratio_weight"],
-    max_screen_fraction: float = TRAINING_BUILD_ARG_DEFAULTS["max_screen_fraction"],
+    max_visible_angle_deg: float = TRAINING_BUILD_ARG_DEFAULTS["max_visible_angle_deg"],
     sorting_order_dithering: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering"],
     sorting_order_dithering_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage1"],
     sorting_order_dithering_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage2"],
@@ -230,9 +229,9 @@ def build_training_params(
     ssim_weight_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["ssim_weight_stage1"],
     ssim_weight_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["ssim_weight_stage2"],
     ssim_weight_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["ssim_weight_stage3"],
-    max_screen_fraction_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["max_screen_fraction_stage1"],
-    max_screen_fraction_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["max_screen_fraction_stage2"],
-    max_screen_fraction_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["max_screen_fraction_stage3"],
+    max_visible_angle_deg_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["max_visible_angle_deg_stage1"],
+    max_visible_angle_deg_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["max_visible_angle_deg_stage2"],
+    max_visible_angle_deg_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["max_visible_angle_deg_stage3"],
     position_random_step_noise_stage1_lr: float = TRAINING_BUILD_ARG_DEFAULTS["position_random_step_noise_stage1_lr"],
     position_random_step_noise_stage2_lr: float = TRAINING_BUILD_ARG_DEFAULTS["position_random_step_noise_stage2_lr"],
     position_random_step_noise_stage3_lr: float = TRAINING_BUILD_ARG_DEFAULTS["position_random_step_noise_stage3_lr"],
@@ -294,8 +293,7 @@ def build_training_params(
     )
     training = TrainingHyperParams(
         background=tuple(float(v) for v in np.asarray(background, dtype=np.float32).reshape(3)),
-        near=clamp_float(near, 1e-6, 1e4),
-        far=clamp_float(far, 1e-5, 1e6),
+        camera_min_dist=clamp_float(camera_min_dist, 0.0, 1e6),
         background_mode=TRAIN_BACKGROUND_MODE_RANDOM if clamp_int(background_mode, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM) == TRAIN_BACKGROUND_MODE_RANDOM else TRAIN_BACKGROUND_MODE_CUSTOM,
         use_target_alpha_mask=bool(use_target_alpha_mask),
         use_sh=resolved_sh_band > 0,
@@ -307,7 +305,7 @@ def build_training_params(
         density_regularizer=clamp_float(density_regularizer, 0.0, 1e4),
         color_non_negative_reg=clamp_float(color_non_negative_reg, 0.0, 1e4),
         depth_ratio_weight=clamp_float(depth_ratio_weight, 0.0, 1e4),
-        max_screen_fraction=clamp_float(max_screen_fraction, 1e-8, 1e6),
+        max_visible_angle_deg=clamp_float(max_visible_angle_deg, 1e-8, 89.999),
         sorting_order_dithering=clamp_float(sorting_order_dithering, 0.0, 1.0),
         sorting_order_dithering_stage1=clamp_float(sorting_order_dithering_stage1, 0.0, 1.0),
         sorting_order_dithering_stage2=clamp_float(sorting_order_dithering_stage2, 0.0, 1.0),
@@ -362,9 +360,9 @@ def build_training_params(
         ssim_weight_stage1=clamp_float(ssim_weight_stage1, 0.0, 1.0),
         ssim_weight_stage2=clamp_float(ssim_weight_stage2, 0.0, 1.0),
         ssim_weight_stage3=clamp_float(ssim_weight_stage3, 0.0, 1.0),
-        max_screen_fraction_stage1=clamp_float(max_screen_fraction_stage1, 1e-8, 1e6),
-        max_screen_fraction_stage2=clamp_float(max_screen_fraction_stage2, 1e-8, 1e6),
-        max_screen_fraction_stage3=clamp_float(max_screen_fraction_stage3, 1e-8, 1e6),
+        max_visible_angle_deg_stage1=clamp_float(max_visible_angle_deg_stage1, 1e-8, 89.999),
+        max_visible_angle_deg_stage2=clamp_float(max_visible_angle_deg_stage2, 1e-8, 89.999),
+        max_visible_angle_deg_stage3=clamp_float(max_visible_angle_deg_stage3, 1e-8, 89.999),
         position_random_step_noise_stage1_lr=clamp_float(position_random_step_noise_stage1_lr, 0.0, 1e12),
         position_random_step_noise_stage2_lr=clamp_float(position_random_step_noise_stage2_lr, 0.0, 1e12),
         position_random_step_noise_stage3_lr=clamp_float(position_random_step_noise_stage3_lr, 0.0, 1e12),
@@ -384,8 +382,6 @@ def build_training_params(
         train_subsample_factor=clamp_int(train_subsample_factor, 0, TRAIN_SUBSAMPLE_MAX_FACTOR),
     )
     stability.max_opacity = max(stability.max_opacity, stability.min_opacity)
-    if training.far <= training.near:
-        training.far = training.near + 1e-3
     return AppTrainingParams(adam=adam, stability=stability, training=training)
 
 

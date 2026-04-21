@@ -19,6 +19,7 @@ class Camera:
     fov_y_degrees: float = 60.0
     near: float = 0.1
     far: float = 100.0
+    min_camera_distance: float = 0.0
     fx: float | None = None
     fy: float | None = None
     cx: float | None = None
@@ -70,6 +71,7 @@ class Camera:
             self.distortion_k1 = float(self.distortion_k1)
         if self.distortion_k2 is not None:
             self.distortion_k2 = float(self.distortion_k2)
+        self.min_camera_distance = max(float(self.min_camera_distance), 0.0)
         if self.basis_override is not None:
             basis = np.asarray(self.basis_override, dtype=np.float32).reshape(3, 3)
             self.basis_override = basis
@@ -176,6 +178,7 @@ class Camera:
             "principalPoint": spy.float2(cx, cy),
             "nearDepth": float(self.near),
             "farDepth": float(self.far),
+            "minCameraDistance": float(self.min_camera_distance),
         }
 
 

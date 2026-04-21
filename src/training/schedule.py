@@ -156,17 +156,17 @@ def resolve_ssim_weight(training_hparams: Any, step: int) -> float:
     )
 
 
-def resolve_max_screen_fraction(training_hparams: Any, step: int) -> float:
+def resolve_max_visible_angle_deg(training_hparams: Any, step: int) -> float:
     if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
-        return max(float(getattr(training_hparams, "max_screen_fraction", 0.1)), 1e-8)
+        return min(max(float(getattr(training_hparams, "max_visible_angle_deg", 1.0)), 1e-8), 89.999)
     return _resolve_staged_linear_value(
         training_hparams,
         step,
-        max(float(getattr(training_hparams, "max_screen_fraction", 0.1)), 1e-8),
+        min(max(float(getattr(training_hparams, "max_visible_angle_deg", 1.0)), 1e-8), 89.999),
         (
-            max(float(getattr(training_hparams, "max_screen_fraction_stage1", 0.1)), 1e-8),
-            max(float(getattr(training_hparams, "max_screen_fraction_stage2", 0.1)), 1e-8),
-            max(float(getattr(training_hparams, "max_screen_fraction_stage3", 0.1)), 1e-8),
+            min(max(float(getattr(training_hparams, "max_visible_angle_deg_stage1", 1.0)), 1e-8), 89.999),
+            min(max(float(getattr(training_hparams, "max_visible_angle_deg_stage2", 1.0)), 1e-8), 89.999),
+            min(max(float(getattr(training_hparams, "max_visible_angle_deg_stage3", 1.0)), 1e-8), 89.999),
         ),
     )
 

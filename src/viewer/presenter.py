@@ -28,6 +28,7 @@ _CAMERA_OVERLAY_MIN_LENGTH = 0.05
 _CAMERA_OVERLAY_NEAR_FRACTION = 0.35
 _CAMERA_OVERLAY_COLOR = (0.18, 0.70, 0.98, 0.72)
 _CAMERA_OVERLAY_ACTIVE_COLOR = (1.00, 0.78, 0.18, 0.96)
+_CAMERA_MIN_DIST_RING_SAMPLES = 40
 _RESOURCE_DEBUG_REFRESH_SECONDS = 5.0
 _CAMERA_OVERLAY_EDGE_INDICES = (
     (0, 1),
@@ -312,8 +313,7 @@ def _training_view_rows(viewer: object) -> tuple[dict[str, object], ...]:
     metrics = _frame_metrics_snapshot(viewer, len(frames))
     trainer = getattr(viewer.s, "trainer", None)
     training = getattr(trainer, "training", None)
-    near_value = float(getattr(training, "near", float("nan")))
-    far_value = float(getattr(training, "far", float("nan")))
+    camera_min_dist = float(getattr(training, "camera_min_dist", float("nan")))
     last_frame_index = int(getattr(getattr(trainer, "state", None), "last_frame_index", -1))
     rows: list[dict[str, object]] = []
     for frame_index, frame in enumerate(frames):
@@ -326,8 +326,7 @@ def _training_view_rows(viewer: object) -> tuple[dict[str, object], ...]:
                 "fy": float(getattr(frame, "fy", float("nan"))),
                 "cx": float(getattr(frame, "cx", float("nan"))),
                 "cy": float(getattr(frame, "cy", float("nan"))),
-                "near": near_value,
-                "far": far_value,
+                "camera_min_dist": camera_min_dist,
                 "loss": float(metrics["loss"][frame_index]) if frame_index < metrics["loss"].size else float("nan"),
                 "psnr": float(metrics["psnr"][frame_index]) if frame_index < metrics["psnr"].size else float("nan"),
                 "visited": bool(metrics["visited"][frame_index]) if frame_index < metrics["visited"].size else False,
@@ -365,18 +364,19 @@ def _camera_overlay_scale(viewer: object) -> float:
 def _camera_overlay_signature(viewer: object) -> tuple[object, ...]:
     frames = tuple(getattr(viewer.s, "training_frames", ()))
     trainer = getattr(viewer.s, "trainer", None)
-    return (id(trainer), tuple(id(frame) for frame in frames))
+    return (id(trainer), tuple(id(frame) for frame in frames), round(float(getattr(getattr(trainer, "training", None), "camera_min_dist", 0.0)), 8))
 
 
-def _build_camera_overlay_geometry(viewer: object) -> tuple[np.ndarray, np.ndarray]:
+def _build_camera_overlay_geometry(viewer: object) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     frames = tuple(getattr(viewer.s, "training_frames", ()))
     trainer = getattr(viewer.s, "trainer", None)
     if trainer is None or len(frames) == 0:
-        return np.zeros((0, 8, 3), dtype=np.float32), np.zeros((0,), dtype=np.int32)
+        return np.zeros((0, 8, 3), dtype=np.float32), np.zeros((0,), dtype=np.int32), np.zeros((0, 3), dtype=np.float32)
     overlay_far = _camera_overlay_scale(viewer)
     overlay_near = overlay_far * _CAMERA_OVERLAY_NEAR_FRACTION
     cameras: list[np.ndarray] = []
     frame_indices: list[int] = []
+    camera_positions: list[np.ndarray] = []
     for frame_index, frame in enumerate(frames):
         try:
             camera = trainer.make_frame_camera(frame_index, int(getattr(frame, "width", 1)), int(getattr(frame, "height", 1)))
@@ -415,23 +415,42 @@ def _build_camera_overlay_geometry(viewer: object) -> tuple[np.ndarray, np.ndarr
         ).astype(np.float32, copy=False)
         cameras.append(corners)
         frame_indices.append(int(frame_index))
+        camera_positions.append(position.astype(np.float32, copy=False))
     if len(cameras) == 0:
-        return np.zeros((0, 8, 3), dtype=np.float32), np.zeros((0,), dtype=np.int32)
-    return np.stack(cameras, axis=0), np.asarray(frame_indices, dtype=np.int32)
+        return np.zeros((0, 8, 3), dtype=np.float32), np.zeros((0,), dtype=np.int32), np.zeros((0, 3), dtype=np.float32)
+    return np.stack(cameras, axis=0), np.asarray(frame_indices, dtype=np.int32), np.stack(camera_positions, axis=0)
 
 
-def _camera_overlay_geometry(viewer: object) -> tuple[np.ndarray, np.ndarray]:
+def _camera_overlay_geometry(viewer: object) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     signature = _camera_overlay_signature(viewer)
     cached_signature = getattr(viewer.s, "camera_overlay_signature", None)
     cached_segments = getattr(viewer.s, "camera_overlay_world_segments", None)
     cached_indices = getattr(viewer.s, "camera_overlay_frame_indices", None)
-    if cached_signature == signature and cached_segments is not None and cached_indices is not None:
-        return cached_segments, cached_indices
-    world_segments, frame_indices = _build_camera_overlay_geometry(viewer)
+    cached_positions = getattr(viewer.s, "camera_overlay_world_positions", None)
+    if cached_signature == signature and cached_segments is not None and cached_indices is not None and cached_positions is not None:
+        return cached_segments, cached_indices, cached_positions
+    world_segments, frame_indices, camera_positions = _build_camera_overlay_geometry(viewer)
     viewer.s.camera_overlay_signature = signature
     viewer.s.camera_overlay_world_segments = world_segments
     viewer.s.camera_overlay_frame_indices = frame_indices
-    return world_segments, frame_indices
+    viewer.s.camera_overlay_world_positions = camera_positions
+    return world_segments, frame_indices, camera_positions
+
+
+def _camera_min_dist_rings(position: np.ndarray, basis: tuple[np.ndarray, np.ndarray, np.ndarray], radius: float) -> tuple[np.ndarray, ...]:
+    if not (np.isfinite(radius) and radius > 1e-8):
+        return ()
+    angles = np.linspace(0.0, 2.0 * np.pi, _CAMERA_MIN_DIST_RING_SAMPLES, endpoint=False, dtype=np.float32)
+    cos_theta = np.cos(angles)[:, None].astype(np.float32, copy=False)
+    sin_theta = np.sin(angles)[:, None].astype(np.float32, copy=False)
+    right, up, forward = (np.asarray(axis, dtype=np.float32).reshape(3) for axis in basis)
+    origin = np.asarray(position, dtype=np.float32).reshape(1, 3)
+    radius32 = np.float32(radius)
+    return (
+        origin + radius32 * (cos_theta * right[None, :] + sin_theta * up[None, :]),
+        origin + radius32 * (cos_theta * up[None, :] + sin_theta * forward[None, :]),
+        origin + radius32 * (cos_theta * forward[None, :] + sin_theta * right[None, :]),
+    )
 
 
 def _project_overlay_points(viewer_camera: object, points_world: np.ndarray, viewport_width: int, viewport_height: int) -> tuple[np.ndarray, np.ndarray]:
@@ -472,6 +491,7 @@ def _camera_overlay_segments(
         tuple[tuple[float, float], ...],
         tuple[tuple[float, float], ...],
         tuple[tuple[float, float, float, float], ...],
+        tuple[tuple[tuple[float, float], ...], ...],
         tuple[float, float],
         str,
         tuple[float, float, float, float],
@@ -488,7 +508,7 @@ def _camera_overlay_segments(
     fallback_width = int(getattr(getattr(viewer.s, "renderer", None), "width", 1))
     fallback_height = int(getattr(getattr(viewer.s, "renderer", None), "height", 1))
     viewport_width, viewport_height = _viewport_target_size(viewer, fallback_width, fallback_height)
-    world_corners, frame_indices = _camera_overlay_geometry(viewer)
+    world_corners, frame_indices, camera_positions = _camera_overlay_geometry(viewer)
     if world_corners.size == 0:
         return ()
     last_frame_index = int(getattr(getattr(trainer, "state", None), "last_frame_index", -1))
@@ -502,6 +522,26 @@ def _camera_overlay_segments(
     if not np.any(valid_corners):
         return ()
     active_cameras = frame_indices == last_frame_index
+    min_dist = max(float(getattr(getattr(trainer, "training", None), "camera_min_dist", 0.0)), 0.0)
+    show_min_dist_spheres = bool(getattr(getattr(viewer, "ui", None), "_values", {}).get("show_camera_min_dist_spheres", True))
+    sphere_rings_by_camera: list[tuple[tuple[float, float], ...]] = []
+    if show_min_dist_spheres and min_dist > 1e-8:
+        for frame_index, position in enumerate(camera_positions):
+            frame = viewer.s.training_frames[int(frame_index)]
+            try:
+                frame_camera = trainer.make_frame_camera(int(frame_index), int(getattr(frame, "width", 1)), int(getattr(frame, "height", 1)))
+            except Exception:
+                sphere_rings_by_camera.append(())
+                continue
+            rings: list[tuple[tuple[float, float], ...]] = []
+            for ring_world in _camera_min_dist_rings(position, frame_camera.basis(), min_dist):
+                ring_screen, ring_valid = _project_overlay_points(viewport_camera, ring_world, viewport_width, viewport_height)
+                if ring_screen.size == 0 or not bool(np.all(ring_valid)):
+                    continue
+                rings.append(tuple((float(point[0]), float(point[1])) for point in ring_screen))
+            sphere_rings_by_camera.append(tuple(rings))
+    else:
+        sphere_rings_by_camera = [()] * int(frame_indices.shape[0])
     return tuple(
         (
             tuple((float(point[0]), float(point[1])) for point in corners[:4]),
@@ -515,6 +555,7 @@ def _camera_overlay_segments(
                 )
                 for i0, i1 in ((0, 4), (1, 5), (2, 6), (3, 7))
             ),
+            sphere_rings,
             (float(corners[6, 0]), float(corners[6, 1])),
             (
                 f"{Path(getattr(viewer.s.training_frames[int(frame_index)], 'image_path', f'frame_{int(frame_index)}')).name}"
@@ -525,7 +566,7 @@ def _camera_overlay_segments(
             _CAMERA_OVERLAY_ACTIVE_COLOR if bool(is_active) else _CAMERA_OVERLAY_COLOR,
             2.0 if bool(is_active) else 1.25,
         )
-        for corners, frame_index, is_valid, is_active in zip(screen_corners, frame_indices, valid_corners, active_cameras, strict=False)
+        for corners, frame_index, is_valid, is_active, sphere_rings in zip(screen_corners, frame_indices, valid_corners, active_cameras, sphere_rings_by_camera, strict=False)
         if bool(is_valid)
     )
 
@@ -1016,18 +1057,25 @@ def _render_debug_target(viewer: object, encoder: spy.CommandEncoder, frame_idx:
 def _render_debug_view(viewer: object, encoder: spy.CommandEncoder, output_width: int, output_height: int, render_frame_index: int) -> spy.Texture:
     frame_idx = _debug_frame_idx(viewer)
     debug_render_tex, viewer.s.stats, debug_width, debug_height, sample_vars = _render_debug_source(viewer, encoder, frame_idx, render_frame_index)
-    target_tex = _render_debug_target(viewer, encoder, frame_idx, debug_width, debug_height, _training_debug_step(viewer), sample_vars)
     debug_view = _debug_view_key(viewer)
-    source_is_linear = debug_view == "rendered"
-    apply_loss_colorspace = debug_view in ("rendered", "target")
-    source_tex = (
-        debug_render_tex if debug_view == "rendered"
-        else target_tex if debug_view == "target"
-        else _dispatch_debug_abs_diff(viewer, encoder, debug_render_tex, target_tex, debug_width, debug_height, rendered_is_linear=True) if debug_view == "abs_diff"
-        else _dispatch_debug_dssim(viewer, encoder, debug_render_tex, target_tex, debug_width, debug_height) if debug_view == "dssim"
-        else _dispatch_debug_edge_filter(viewer, encoder, debug_render_tex, debug_width, debug_height, source_is_linear=True) if debug_view == "rendered_edges"
-        else _dispatch_debug_edge_filter(viewer, encoder, target_tex, debug_width, debug_height, source_is_linear=False)
-    )
+    if debug_view == "rendered":
+        source_tex = debug_render_tex
+        source_is_linear = True
+        apply_loss_colorspace = True
+    elif debug_view == "rendered_edges":
+        source_tex = _dispatch_debug_edge_filter(viewer, encoder, debug_render_tex, debug_width, debug_height, source_is_linear=True)
+        source_is_linear = False
+        apply_loss_colorspace = False
+    else:
+        target_tex = _render_debug_target(viewer, encoder, frame_idx, debug_width, debug_height, _training_debug_step(viewer), sample_vars)
+        source_is_linear = False
+        apply_loss_colorspace = debug_view == "target"
+        source_tex = (
+            target_tex if debug_view == "target"
+            else _dispatch_debug_abs_diff(viewer, encoder, debug_render_tex, target_tex, debug_width, debug_height, rendered_is_linear=True) if debug_view == "abs_diff"
+            else _dispatch_debug_dssim(viewer, encoder, debug_render_tex, target_tex, debug_width, debug_height) if debug_view == "dssim"
+            else _dispatch_debug_edge_filter(viewer, encoder, target_tex, debug_width, debug_height, source_is_linear=False)
+        )
     return _dispatch_training_debug_present(viewer, encoder, source_tex, debug_width, debug_height, output_width, output_height, source_is_linear=source_is_linear, apply_loss_colorspace=apply_loss_colorspace)
 def _render_main_view(viewer: object, encoder: spy.CommandEncoder) -> spy.Texture:
     if viewer.s.trainer is not None and viewer.s.training_renderer is not None:
@@ -1051,7 +1099,7 @@ def render_frame(viewer: object, render_context: spy.AppWindow.RenderContext) ->
         runtime_reconfigured = False
         if bool(getattr(viewer.s, "pending_training_reinitialize", False)):
             viewer.s.pending_training_reinitialize = False
-            session.initialize_training_scene(viewer)
+            session.reinitialize_training_scene(viewer)
         session.apply_live_params(viewer)
         session.advance_colmap_import(viewer)
         if bool(getattr(viewer.s, "pending_training_runtime_resize", False)):

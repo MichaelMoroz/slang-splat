@@ -4,10 +4,11 @@ from typing import Any
 
 import numpy as np
 import slangpy as spy
+import math
 
 from ..utility import RO_BUFFER_USAGE, SHADER_ROOT, alloc_buffer, dispatch, load_compute_kernels, thread_count_1d
 from ..renderer import Camera, GaussianRenderer
-from .schedule import resolve_learning_rate_scale, resolve_max_screen_fraction, resolve_position_lr_mul, resolve_sh_lr_mul
+from .schedule import resolve_learning_rate_scale, resolve_max_visible_angle_deg, resolve_position_lr_mul, resolve_sh_lr_mul
 
 
 class GaussianOptimizer:
@@ -124,11 +125,12 @@ class GaussianOptimizer:
             return
         self._upload_param_settings(lr_scale, position_lr_mul_scale, sh_lr_mul_scale)
 
-    def _vars(self, splat_count: int, training_hparams: Any, scale_reg_reference: float, color_non_negative_seed: int, max_screen_fraction: float | None = None) -> dict[str, object]:
+    def _vars(self, splat_count: int, training_hparams: Any, scale_reg_reference: float, color_non_negative_seed: int, max_visible_angle_deg: float | None = None) -> dict[str, object]:
+        resolved_max_visible_angle_deg = resolve_max_visible_angle_deg(training_hparams, 0) if max_visible_angle_deg is None else max_visible_angle_deg
         return {
             "g_SplatCount": int(splat_count),
-            "g_MaxScreenFraction": float(max(resolve_max_screen_fraction(training_hparams, 0) if max_screen_fraction is None else max_screen_fraction, 1e-8)),
-            "g_ScreenScaleCapRadiusScale": float(self.renderer.radius_scale),
+            "g_MaxViewAngleSlope": float(max(math.tan(math.radians(min(max(float(resolved_max_visible_angle_deg), 1e-8), 89.999))), 1e-8)),
+            "g_RendererRadiusScale": float(self.renderer.radius_scale),
             "g_ScaleL2Weight": float(max(training_hparams.scale_l2_weight, 0.0)),
             "g_ScaleAbsRegWeight": float(max(training_hparams.scale_abs_reg_weight, 0.0)),
             "g_SH1RegWeight": float(max(training_hparams.sh1_reg_weight, 0.0)),
@@ -209,6 +211,7 @@ class GaussianOptimizer:
                     "principalPoint": spy.float2(0.0, 0.0),
                     "nearDepth": 0.0,
                     "farDepth": 0.0,
+                    "minCameraDistance": 0.0,
                     "projDistortionK1": 0.0,
                     "projDistortionK2": 0.0,
                 },
@@ -236,7 +239,7 @@ class GaussianOptimizer:
                     training_hparams,
                     scale_reg_reference,
                     0,
-                    max_screen_fraction=resolve_max_screen_fraction(training_hparams, int(step_index)),
+                    max_visible_angle_deg=resolve_max_visible_angle_deg(training_hparams, int(step_index)),
                 ),
             },
             command_encoder=encoder,

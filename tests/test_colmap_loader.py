@@ -84,6 +84,51 @@ def _build_tiny_colmap_tree(tmp_path: Path, model_id: int = 1) -> Path:
     return root
 
 
+def _write_cameras_txt(path: Path, model_name: str = "PINHOLE") -> None:
+    params = {
+        "SIMPLE_PINHOLE": "420 200 100",
+        "PINHOLE": "400 420 200 100",
+        "SIMPLE_RADIAL": "420 200 100 0.07",
+        "RADIAL": "420 200 100 0.07 -0.02",
+    }[model_name]
+    path.write_text(
+        "# Camera list\n"
+        f"7 {model_name} 400 200 {params}\n",
+        encoding="utf-8",
+    )
+
+
+def _write_images_txt(path: Path, image_name: str) -> None:
+    path.write_text(
+        "# Image list\n"
+        f"3 1 0 0 0 0 0 -2 7 {image_name}\n"
+        "10 20 11 30 40 -1\n",
+        encoding="utf-8",
+    )
+
+
+def _write_points3d_txt(path: Path) -> None:
+    path.write_text(
+        "# 3D point list\n"
+        "11 1 2 3 255 128 64 0.5 3 0 5 1 9 2\n"
+        "12 -1 0 2 12 34 56 0.5 3 0 5 1 9 2\n",
+        encoding="utf-8",
+    )
+
+
+def _build_tiny_colmap_text_tree(tmp_path: Path, model_name: str = "PINHOLE") -> Path:
+    root = tmp_path / "scene_text"
+    sparse = root / "sparse" / "0"
+    images = root / "images_4"
+    sparse.mkdir(parents=True)
+    images.mkdir(parents=True)
+    _write_cameras_txt(sparse / "cameras.txt", model_name=model_name)
+    _write_images_txt(sparse / "images.txt", "frame.png")
+    _write_points3d_txt(sparse / "points3D.txt")
+    Image.fromarray(np.full((100, 200, 3), 127, dtype=np.uint8), mode="RGB").save(images / "frame.png")
+    return root
+
+
 def test_colmap_loader_and_frame_scaling(tmp_path: Path):
     root = _build_tiny_colmap_tree(tmp_path, model_id=1)
     recon = load_colmap_reconstruction(root)
@@ -112,6 +157,23 @@ def test_colmap_loader_and_frame_scaling(tmp_path: Path):
     assert scene.rotations.shape == (1, 4)
     assert scene.colors.shape == (1, 3)
     assert np.all(np.isfinite(scene.positions))
+
+
+def test_colmap_loader_supports_text_sparse_exports(tmp_path: Path) -> None:
+    root = _build_tiny_colmap_text_tree(tmp_path, model_name="PINHOLE")
+
+    recon = load_colmap_reconstruction(root)
+    frames = build_training_frames(recon, images_subdir="images_4")
+
+    assert len(recon.cameras) == 1
+    assert len(recon.images) == 1
+    assert len(recon.points3d) == 2
+    assert recon.points3d[11].track_length == 3
+    assert len(frames) == 1
+    assert frames[0].width == 200
+    assert frames[0].height == 100
+    assert np.isclose(frames[0].fx, 200.0)
+    assert np.isclose(frames[0].fy, 210.0)
 
 
 def test_build_training_frames_uses_sixteen_loader_threads(tmp_path: Path, monkeypatch) -> None:
