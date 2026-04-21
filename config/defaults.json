@@ -50,7 +50,7 @@
     "lr_schedule_start_lr": 0.002,
     "lr_schedule_stage1_lr": 0.002,
     "lr_schedule_stage2_lr": 0.001,
-    "lr_schedule_end_lr": 0.00015,
+    "lr_schedule_end_lr": 0.0003000000142492354,
     "lr_schedule_steps": 30000,
     "lr_schedule_stage1_step": 3000,
     "lr_schedule_stage2_step": 14000,
@@ -156,9 +156,9 @@
       "interface_scale": 4,
       "theme": 1,
       "loss_debug_view": 0,
-      "loss_debug_frame": 46,
+      "loss_debug_frame": 0,
       "loss_debug_abs_scale": 1.0,
-      "move_speed": 8.164573746000588,
+      "move_speed": 14.103363270861779,
       "fov": 60.0,
       "render_background_mode": 1,
       "render_background_color": [
@@ -198,8 +198,8 @@
       "hist_max_value": 1.0,
       "hist_y_limit": 1290263.0,
       "viewport_sh_band": 3,
-      "viewport_sh_control_key": "sh_band_stage1",
-      "viewport_sh_stage_label": "Stage 1"
+      "viewport_sh_control_key": "sh_band_stage3",
+      "viewport_sh_stage_label": "Stage 3"
     },
     "state": {
       "list_capacity_multiplier": 16,
