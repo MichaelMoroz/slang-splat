@@ -7,6 +7,7 @@ import slangpy as spy
 
 from src.app.training_controls import SCHEDULE_STAGE_CONTROL_DEFS, SCHEDULE_STAGE_GROUPS, TRAIN_SETUP_CONTROL_DEFS, TRAIN_SETUP_PRIMARY_KEYS
 from src.viewer import ui
+from src.viewer.buffer_debug import ResourceDebugRow, ResourceDebugSnapshot
 from src.viewer.constants import _WINDOW_TITLE
 
 
@@ -530,6 +531,57 @@ def test_training_views_window_docks_and_uses_imgui_table(monkeypatch) -> None:
     assert table_calls and table_calls[0][0] == "##training_views" and table_calls[0][1] == 10
     assert table_columns == ["Image", "Res", "Fx", "Fy", "Cx", "Cy", "Near", "Far", "Loss", "PSNR"]
     assert cells == ["frame.png", "640x360", "525.000", "520.000", "320.000", "180.000", "0.10", "100.00", "0.2500", "32.50"]
+
+
+def test_resource_debug_window_draws_largest_first_table(monkeypatch) -> None:
+    dock_calls: list[tuple[int, int]] = []
+    table_columns: list[str] = []
+    cells: list[str] = []
+    summary: list[str] = []
+    table_calls: list[tuple[str, int, int]] = []
+    monkeypatch.setattr(ui.imgui, "set_next_window_dock_id", lambda dock_id, cond: dock_calls.append((int(dock_id), int(cond))))
+    monkeypatch.setattr(ui.imgui, "set_next_window_pos", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ui.imgui, "set_next_window_size", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ui.imgui, "begin", lambda *args, **kwargs: (True, True))
+    monkeypatch.setattr(ui.imgui, "end", lambda: None)
+    monkeypatch.setattr(ui.imgui, "separator", lambda: None)
+    monkeypatch.setattr(ui.imgui, "begin_table", lambda name, columns, flags: table_calls.append((name, int(columns), int(flags))) or True)
+    monkeypatch.setattr(ui.imgui, "table_setup_column", lambda name, *_args: table_columns.append(name))
+    monkeypatch.setattr(ui.imgui, "table_headers_row", lambda: None)
+    monkeypatch.setattr(ui.imgui, "table_next_row", lambda: None)
+    monkeypatch.setattr(ui.imgui, "table_next_column", lambda: None)
+    monkeypatch.setattr(ui.imgui, "text_unformatted", lambda text: summary.append(text) if str(text).startswith(("Total", "Buffers:", "Textures:")) else cells.append(text))
+    monkeypatch.setattr(ui.imgui, "end_table", lambda: None)
+    snapshot = ResourceDebugSnapshot(
+        rows=(
+            ResourceDebugRow("Texture", "target", "viewer.state.viewport_texture", 1024, "srv", 2),
+            ResourceDebugRow("Buffer", "large", "viewer.renderer.large", 4096, "rw", 1),
+        ),
+        total_consumption=5120,
+        buffer_count=1,
+        buffer_total=4096,
+        buffer_mean=4096.0,
+        buffer_median=4096.0,
+        texture_count=1,
+        texture_total=1024,
+    )
+    toolkit = SimpleNamespace(_menu_bar_height=24.0, _toolkit_dock_id=17, _applied_interface_scale=1.0, _dock_tool_window=lambda cond: ui.imgui.set_next_window_dock_id(17, cond))
+    toolkit._draw_resource_debug_summary = lambda snapshot: ui.ToolkitWindow._draw_resource_debug_summary(toolkit, snapshot)
+    toolkit._draw_resource_debug_table = lambda snapshot: ui.ToolkitWindow._draw_resource_debug_table(toolkit, snapshot)
+    viewer_ui = SimpleNamespace(_values={"show_resource_debug": True, "_resource_debug_snapshot": snapshot}, _texts={})
+
+    ui.ToolkitWindow._draw_resource_debug_window(toolkit, viewer_ui)
+
+    assert dock_calls == [(17, int(ui.imgui.Cond_.appearing.value))]
+    assert summary == [
+        "Total Consumption: 5.00 KiB",
+        "Buffers: 1 | total=4.00 KiB | mean=4.00 KiB | median=4.00 KiB",
+        "Textures: 1 | total=1.00 KiB",
+    ]
+    assert table_calls and table_calls[0][0] == "##resource_debug" and table_calls[0][1] == 5
+    assert table_columns == ["Size", "Type", "Name", "Owner", "Usage"]
+    assert cells[:5] == ["4.00 KiB", "Buffer", "large", "viewer.renderer.large", "rw"]
+    assert cells[5:] == ["1.00 KiB", "Texture", "target", "viewer.state.viewport_texture", "srv"]
 
 
 def test_viewport_debug_overlay_draws_mode_specific_controls(monkeypatch) -> None:

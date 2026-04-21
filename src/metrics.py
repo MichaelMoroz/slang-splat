@@ -67,17 +67,17 @@ class Metrics:
         self.device = device
         self._buffer_usage = RW_BUFFER_USAGE
         self._histogram_capacity = max(int(max_bin_count), 1)
-        self._histogram_buffer = self._create_uint_buffer(self._histogram_capacity)
+        self._histogram_buffer = self._create_uint_buffer(self._histogram_capacity, "metrics.histogram")
         self._range_capacity = 1
-        self._range_buffer = self._create_uint_buffer(self._range_capacity * 2)
-        self._image_metric_buffer = self._create_float_buffer(self._METRIC_BUFFER_FLOATS)
+        self._range_buffer = self._create_uint_buffer(self._range_capacity * 2, "metrics.range")
+        self._image_metric_buffer = self._create_float_buffer(self._METRIC_BUFFER_FLOATS, "metrics.image_metric")
         self._create_kernels()
 
-    def _create_uint_buffer(self, count: int) -> spy.Buffer:
-        return alloc_buffer(self.device, size=max(int(count), 1) * 4, usage=self._buffer_usage)
+    def _create_uint_buffer(self, count: int, name: str) -> spy.Buffer:
+        return alloc_buffer(self.device, name=name, size=max(int(count), 1) * 4, usage=self._buffer_usage)
 
-    def _create_float_buffer(self, count: int) -> spy.Buffer:
-        return alloc_buffer(self.device, size=max(int(count), 1) * 4, usage=self._buffer_usage)
+    def _create_float_buffer(self, count: int, name: str) -> spy.Buffer:
+        return alloc_buffer(self.device, name=name, size=max(int(count), 1) * 4, usage=self._buffer_usage)
 
     def _create_kernels(self) -> None:
         for name, kernel in load_compute_kernels(
@@ -117,13 +117,13 @@ class Metrics:
         if int(bin_count) <= self._histogram_capacity:
             return
         self._histogram_capacity = grow_capacity(bin_count, self._histogram_capacity)
-        self._histogram_buffer = self._create_uint_buffer(self._histogram_capacity)
+        self._histogram_buffer = self._create_uint_buffer(self._histogram_capacity, "metrics.histogram")
 
     def _ensure_range_capacity(self, param_count: int) -> None:
         if int(param_count) <= self._range_capacity:
             return
         self._range_capacity = grow_capacity(param_count, self._range_capacity)
-        self._range_buffer = self._create_uint_buffer(self._range_capacity * 2)
+        self._range_buffer = self._create_uint_buffer(self._range_capacity * 2, "metrics.range")
 
     def _clear_uint_buffer(self, encoder: spy.CommandEncoder, buffer: spy.Buffer, count: int) -> None:
         dispatch(

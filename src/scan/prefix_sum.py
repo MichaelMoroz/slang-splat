@@ -68,10 +68,10 @@ class GPUPrefixSum:
         if self._block_sums is not None and self._block_offsets is not None and required <= self._scratch_capacity:
             return self._block_sums, self._block_offsets
         capacity = grow_capacity(required, self._scratch_capacity)
-        self._block_sums = alloc_buffer(self.device, size=max(capacity, 1) * 4, usage=RW_BUFFER_USAGE)
-        self._block_offsets = alloc_buffer(self.device, size=max(capacity, 1) * 4, usage=RW_BUFFER_USAGE)
-        self._float_block_sums = alloc_buffer(self.device, size=max(capacity, 1) * 4, usage=RW_BUFFER_USAGE)
-        self._float_block_offsets = alloc_buffer(self.device, size=max(capacity, 1) * 4, usage=RW_BUFFER_USAGE)
+        self._block_sums = alloc_buffer(self.device, name="prefix_sum.block_sums", size=max(capacity, 1) * 4, usage=RW_BUFFER_USAGE)
+        self._block_offsets = alloc_buffer(self.device, name="prefix_sum.block_offsets", size=max(capacity, 1) * 4, usage=RW_BUFFER_USAGE)
+        self._float_block_sums = alloc_buffer(self.device, name="prefix_sum.float_block_sums", size=max(capacity, 1) * 4, usage=RW_BUFFER_USAGE)
+        self._float_block_offsets = alloc_buffer(self.device, name="prefix_sum.float_block_offsets", size=max(capacity, 1) * 4, usage=RW_BUFFER_USAGE)
         self._scratch_capacity = capacity
         return self._block_sums, self._block_offsets
 
@@ -83,12 +83,12 @@ class GPUPrefixSum:
 
     def _ensure_dispatch_args(self) -> spy.Buffer:
         if self._dispatch_args is None:
-            self._dispatch_args = alloc_buffer(self.device, size=4 * 4, usage=INDIRECT_BUFFER_USAGE)
+            self._dispatch_args = alloc_buffer(self.device, name="prefix_sum.dispatch_args", size=4 * 4, usage=INDIRECT_BUFFER_USAGE)
         return self._dispatch_args
 
     def _ensure_prefix_args(self) -> spy.Buffer:
         if self._prefix_args is None:
-            self._prefix_args = alloc_buffer(self.device, size=PREFIX_INDIRECT_ARGS_UINT_COUNT * 4, usage=INDIRECT_BUFFER_USAGE)
+            self._prefix_args = alloc_buffer(self.device, name="prefix_sum.prefix_args", size=PREFIX_INDIRECT_ARGS_UINT_COUNT * 4, usage=INDIRECT_BUFFER_USAGE)
         return self._prefix_args
 
     def dispatch_args_from_count_buffer(

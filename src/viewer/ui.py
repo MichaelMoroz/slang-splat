@@ -31,6 +31,7 @@ from ..app.training_controls import (
     TRAIN_STABILITY_PAIRED_KEYS,
 )
 from .constants import _WINDOW_TITLE
+from .buffer_debug import ResourceDebugSnapshot, format_resource_bytes
 from .state import DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH, LOSS_DEBUG_OPTIONS
 
 TOOLKIT_WIDTH_FRACTION = 0.1875
@@ -97,6 +98,8 @@ _HISTOGRAM_WINDOW_HEIGHT = 860.0
 _HISTOGRAM_CONTROL_LABEL_WIDTH = 150.0
 _HISTOGRAM_PLOT_HEIGHT = 230.0
 _HISTOGRAM_PLOT_MIN_COLUMN_WIDTH = 460.0
+_RESOURCE_DEBUG_WINDOW_WIDTH = 1120.0
+_RESOURCE_DEBUG_WINDOW_HEIGHT = 620.0
 _DEFAULT_HISTOGRAM_GROUPS = (
     ("roLocal", (0, 1, 2)),
     ("scale", (3, 4, 5)),
@@ -1116,6 +1119,7 @@ class ToolkitWindow:
         self._draw_debug_colorbar(ui)
         self._draw_histogram_window(ui)
         self._draw_training_views_window(ui)
+        self._draw_resource_debug_window(ui)
         imgui.render()
         draw_data = imgui.get_draw_data()
         self._frame_textures = simgui.sync_draw_data_textures(self.device, self.renderer, draw_data)
@@ -1558,6 +1562,9 @@ class ToolkitWindow:
                 imgui.end_menu()
             imgui.end_menu()
         if imgui.begin_menu("Debug"):
+            selected = bool(ui._values.get("show_resource_debug", False))
+            if _menu_item("Buffers", selected=selected):
+                ui._values["show_resource_debug"] = not selected
             selected = bool(ui._values.get("show_histograms", False))
             if _menu_item("Histograms", selected=selected):
                 ui._values["show_histograms"] = not selected
@@ -1946,6 +1953,60 @@ class ToolkitWindow:
                             imgui.text_unformatted(value)
                     imgui.end_table()
         imgui.end()
+
+    def _draw_resource_debug_window(self, ui: ViewerUI) -> None:
+        if not bool(ui._values.get("show_resource_debug", False)):
+            return
+        scale = max(self._applied_interface_scale, 1.0)
+        self._dock_tool_window(imgui.Cond_.appearing.value)
+        imgui.set_next_window_pos(imgui.ImVec2(104.0 * scale, self._menu_bar_height + 72.0 * scale), imgui.Cond_.first_use_ever.value)
+        imgui.set_next_window_size(imgui.ImVec2(_RESOURCE_DEBUG_WINDOW_WIDTH * scale, _RESOURCE_DEBUG_WINDOW_HEIGHT * scale), imgui.Cond_.first_use_ever.value)
+        opened, show = imgui.begin("Buffers", True)
+        ui._values["show_resource_debug"] = bool(show)
+        if opened:
+            snapshot = ui._values.get("_resource_debug_snapshot")
+            if not isinstance(snapshot, ResourceDebugSnapshot):
+                imgui.text_wrapped("No resource allocation data is available yet.")
+            else:
+                self._draw_resource_debug_summary(snapshot)
+                imgui.separator()
+                self._draw_resource_debug_table(snapshot)
+        imgui.end()
+
+    def _draw_resource_debug_summary(self, snapshot: ResourceDebugSnapshot) -> None:
+        imgui.text_unformatted(f"Total Consumption: {format_resource_bytes(snapshot.total_consumption)}")
+        imgui.text_unformatted(
+            f"Buffers: {snapshot.buffer_count:,} | total={format_resource_bytes(snapshot.buffer_total)} | "
+            f"mean={format_resource_bytes(snapshot.buffer_mean)} | median={format_resource_bytes(snapshot.buffer_median)}"
+        )
+        imgui.text_unformatted(f"Textures: {snapshot.texture_count:,} | total={format_resource_bytes(snapshot.texture_total)}")
+
+    def _draw_resource_debug_table(self, snapshot: ResourceDebugSnapshot) -> None:
+        rows = tuple(sorted(snapshot.rows, key=lambda row: (-row.byte_size, row.order)))
+        if len(rows) == 0:
+            imgui.text_wrapped("No tracked buffers or textures are currently reachable from the viewer.")
+            return
+        flags = (
+            imgui.TableFlags_.row_bg.value
+            | imgui.TableFlags_.borders.value
+            | imgui.TableFlags_.resizable.value
+            | imgui.TableFlags_.scroll_x.value
+            | imgui.TableFlags_.scroll_y.value
+            | imgui.TableFlags_.hideable.value
+        )
+        if imgui.begin_table("##resource_debug", 5, flags):
+            imgui.table_setup_column("Size", imgui.TableColumnFlags_.width_fixed.value, 104.0)
+            imgui.table_setup_column("Type", imgui.TableColumnFlags_.width_fixed.value, 76.0)
+            imgui.table_setup_column("Name", imgui.TableColumnFlags_.width_stretch.value)
+            imgui.table_setup_column("Owner", imgui.TableColumnFlags_.width_stretch.value)
+            imgui.table_setup_column("Usage", imgui.TableColumnFlags_.width_stretch.value)
+            imgui.table_headers_row()
+            for row in rows:
+                imgui.table_next_row()
+                for value in (format_resource_bytes(row.byte_size), row.kind, row.name, row.owner, row.usage):
+                    imgui.table_next_column()
+                    imgui.text_unformatted(str(value))
+            imgui.end_table()
 
     def _draw_histogram_controls(self, ui: ViewerUI) -> None:
         if imgui.button("Refresh"):
@@ -2719,6 +2780,7 @@ def build_ui(renderer) -> ViewerUI:
     values["colmap_diffusion_radius"] = float(_VIEWER_IMPORT_DEFAULTS["colmap_diffusion_radius"])
     values["show_histograms"] = bool(_VIEWER_UI_DEFAULTS["show_histograms"])
     values["show_training_views"] = bool(_VIEWER_UI_DEFAULTS["show_training_views"])
+    values["show_resource_debug"] = False
     values["show_camera_overlays"] = bool(_VIEWER_UI_DEFAULTS["show_camera_overlays"])
     values["show_camera_labels"] = bool(_VIEWER_UI_DEFAULTS["show_camera_labels"])
     values["show_training_cameras"] = bool(_VIEWER_UI_DEFAULTS["show_training_cameras"])
@@ -2732,6 +2794,7 @@ def build_ui(renderer) -> ViewerUI:
     values["_histogram_update_range"] = False
     values["_histogram_payload"] = None
     values["_histogram_range_payload"] = None
+    values["_resource_debug_snapshot"] = None
     values["_training_views_rows"] = ()
     values["_training_view_overlay_segments"] = ()
     values["_loss_debug_frame_max"] = 0

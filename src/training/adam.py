@@ -45,7 +45,7 @@ class AdamOptimizer:
         count = max(int(packed_param_count), 1)
         if self._capacity >= count and "adam_moments" in self._buffers: return
         self._capacity = grow_capacity(count, self._capacity)
-        self._buffers["adam_moments"] = alloc_buffer(self.device, size=self._capacity * 8, usage=RW_BUFFER_USAGE)
+        self._buffers["adam_moments"] = alloc_buffer(self.device, name="adam.moments", size=self._capacity * 8, usage=RW_BUFFER_USAGE)
 
     def update_hyperparams(self, adam_hparams: Any, runtime_hparams: AdamRuntimeHyperParams) -> None:
         self.adam = adam_hparams

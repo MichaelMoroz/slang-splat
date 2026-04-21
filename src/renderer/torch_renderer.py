@@ -128,13 +128,13 @@ class TorchGaussianRendererContext(GaussianRendererContext):
         if required_splats > self._splat_capacity:
             self._splat_capacity = grow_capacity(required_splats, self._splat_capacity)
             byte_count = self._splat_capacity * _TORCH_RENDER_PARAM_COUNT * np.dtype(np.float32).itemsize
-            self._bridge_buffers[_TORCH_SCENE_INPUT_BUFFER_NAME] = alloc_buffer(self.device, size=byte_count, usage=_TORCH_BRIDGE_USAGE, min_size=1)
-            self._bridge_buffers[_TORCH_PARAM_GRAD_BUFFER_NAME] = alloc_buffer(self.device, size=byte_count, usage=_TORCH_BRIDGE_USAGE, min_size=1)
+            self._bridge_buffers[_TORCH_SCENE_INPUT_BUFFER_NAME] = alloc_buffer(self.device, name=f"torch_renderer.{_TORCH_SCENE_INPUT_BUFFER_NAME}", size=byte_count, usage=_TORCH_BRIDGE_USAGE, min_size=1)
+            self._bridge_buffers[_TORCH_PARAM_GRAD_BUFFER_NAME] = alloc_buffer(self.device, name=f"torch_renderer.{_TORCH_PARAM_GRAD_BUFFER_NAME}", size=byte_count, usage=_TORCH_BRIDGE_USAGE, min_size=1)
         if required_pixels > self._pixel_capacity:
             self._pixel_capacity = grow_capacity(required_pixels, self._pixel_capacity)
             byte_count = self._pixel_capacity * _TORCH_OUTPUT_CHANNELS * np.dtype(np.float32).itemsize
-            self._bridge_buffers[_TORCH_IMAGE_OUTPUT_BUFFER_NAME] = alloc_buffer(self.device, size=byte_count, usage=_TORCH_BRIDGE_USAGE, min_size=1)
-            self._bridge_buffers[_TORCH_OUTPUT_GRAD_BUFFER_NAME] = alloc_buffer(self.device, size=byte_count, usage=_TORCH_BRIDGE_USAGE, min_size=1)
+            self._bridge_buffers[_TORCH_IMAGE_OUTPUT_BUFFER_NAME] = alloc_buffer(self.device, name=f"torch_renderer.{_TORCH_IMAGE_OUTPUT_BUFFER_NAME}", size=byte_count, usage=_TORCH_BRIDGE_USAGE, min_size=1)
+            self._bridge_buffers[_TORCH_OUTPUT_GRAD_BUFFER_NAME] = alloc_buffer(self.device, name=f"torch_renderer.{_TORCH_OUTPUT_GRAD_BUFFER_NAME}", size=byte_count, usage=_TORCH_BRIDGE_USAGE, min_size=1)
 
     @property
     def torch_device(self) -> Any:

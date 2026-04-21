@@ -103,22 +103,22 @@ class GPURadixSort:
         layout = self._layout(grow_n)
         self._buffers = {
             "keys": [
-                alloc_buffer(self.device, size=max(grow_n, 1) * 4, usage=self._copy_usage),
-                alloc_buffer(self.device, size=max(grow_n, 1) * 4, usage=self._copy_usage),
+                alloc_buffer(self.device, name="radix_sort.keys[0]", size=max(grow_n, 1) * 4, usage=self._copy_usage),
+                alloc_buffer(self.device, name="radix_sort.keys[1]", size=max(grow_n, 1) * 4, usage=self._copy_usage),
             ],
             "values": [
-                alloc_buffer(self.device, size=max(grow_n, 1) * 4, usage=self._copy_usage),
-                alloc_buffer(self.device, size=max(grow_n, 1) * 4, usage=self._copy_usage),
+                alloc_buffer(self.device, name="radix_sort.values[0]", size=max(grow_n, 1) * 4, usage=self._copy_usage),
+                alloc_buffer(self.device, name="radix_sort.values[1]", size=max(grow_n, 1) * 4, usage=self._copy_usage),
             ],
-            "histogram": alloc_buffer(self.device, size=max(layout["packed_hist_n"], 1) * 4, usage=self._rw_usage),
-            "prefix": alloc_buffer(self.device, size=max(layout["prefix_n"], 1) * 4, usage=self._rw_usage),
+            "histogram": alloc_buffer(self.device, name="radix_sort.histogram", size=max(layout["packed_hist_n"], 1) * 4, usage=self._rw_usage),
+            "prefix": alloc_buffer(self.device, name="radix_sort.prefix", size=max(layout["prefix_n"], 1) * 4, usage=self._rw_usage),
         }
         self._capacity_n = grow_n
         return self._buffers
 
     def ensure_indirect_args(self) -> spy.Buffer:
         if self.indirect_args is None:
-            self.indirect_args = alloc_buffer(self.device, size=INDIRECT_ARGS_UINT_COUNT * 4, usage=INDIRECT_BUFFER_USAGE)
+            self.indirect_args = alloc_buffer(self.device, name="radix_sort.indirect_args", size=INDIRECT_ARGS_UINT_COUNT * 4, usage=INDIRECT_BUFFER_USAGE)
         return self.indirect_args
 
     def compute_indirect_args_from_buffer_dispatch(
@@ -339,8 +339,8 @@ def sort_numpy(device: spy.Device, keys: np.ndarray, values: np.ndarray, max_bit
         | spy.BufferUsage.copy_destination
         | spy.BufferUsage.copy_source
     )
-    keys_buffer = alloc_buffer(device, size=n * 4, usage=usage)
-    values_buffer = alloc_buffer(device, size=n * 4, usage=usage)
+    keys_buffer = alloc_buffer(device, name="radix_sort.run.keys", size=n * 4, usage=usage)
+    values_buffer = alloc_buffer(device, name="radix_sort.run.values", size=n * 4, usage=usage)
     keys_buffer.copy_from_numpy(np.ascontiguousarray(keys.astype(np.uint32, copy=False)))
     values_buffer.copy_from_numpy(np.ascontiguousarray(values.astype(np.uint32, copy=False)))
     encoder = device.create_command_encoder()

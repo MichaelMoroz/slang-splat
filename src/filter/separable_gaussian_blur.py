@@ -42,8 +42,9 @@ class SeparableGaussianBlur:
         self._kernels = load_compute_kernels(device, path, self._KERNEL_ENTRIES)
         self._scratch_buffers: dict[int, spy.Buffer] = {}
 
-    def make_buffer(self, channel_count: int) -> spy.Buffer:
-        return alloc_buffer(self.device, size=self._buffer_size(channel_count), usage=RW_BUFFER_USAGE)
+    def make_buffer(self, channel_count: int, name: str | None = None) -> spy.Buffer:
+        buffer_name = str(name) if name is not None else f"blur.{self.width}x{self.height}.{int(channel_count)}ch"
+        return alloc_buffer(self.device, name=buffer_name, size=self._buffer_size(channel_count), usage=RW_BUFFER_USAGE)
 
     def _buffer_size(self, channel_count: int) -> int:
         channels = int(channel_count)
@@ -54,7 +55,7 @@ class SeparableGaussianBlur:
     def _ensure_scratch_buffer(self, channel_count: int) -> spy.Buffer:
         channels = int(channel_count)
         if channels not in self._scratch_buffers:
-            self._scratch_buffers[channels] = self.make_buffer(channels)
+            self._scratch_buffers[channels] = self.make_buffer(channels, name=f"blur.scratch.{self.width}x{self.height}.{channels}ch")
         return self._scratch_buffers[channels]
 
     def blur(self, encoder: spy.CommandEncoder, input_buffer: spy.Buffer, output_buffer: spy.Buffer, channel_count: int) -> spy.Buffer:

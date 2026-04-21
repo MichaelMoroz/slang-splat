@@ -42,6 +42,7 @@ class GaussianOptimizer:
         if "param_settings" in self._buffers: return
         self._buffers["param_settings"] = alloc_buffer(
             self.device,
+            name="gaussian_optimizer.param_settings",
             size=self.renderer.TRAINABLE_PARAM_COUNT * self._PARAM_SETTINGS_U32_WIDTH * 4,
             usage=RO_BUFFER_USAGE,
         )

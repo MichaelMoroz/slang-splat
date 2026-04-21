@@ -11,6 +11,7 @@ from ..utility import alloc_texture_2d, clamp_index, debug_region, require_not_n
 from ..filter import SeparableGaussianBlur
 from ..training import TRAIN_SUBSAMPLE_MAX_FACTOR, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_depth_ratio_weight, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering
 from . import session
+from .buffer_debug import collect_resource_debug_snapshot
 
 _DEBUG_HUGE_VALUE = 1e8
 _DEBUG_TEXTURE_USAGE = spy.TextureUsage.shader_resource | spy.TextureUsage.unordered_access | spy.TextureUsage.copy_destination
@@ -213,6 +214,7 @@ def _ensure_texture(viewer: object, attr: str, width: int, height: int) -> spy.T
         return texture
     created = alloc_texture_2d(
         viewer.device,
+        name=f"viewer.{attr}",
         format=spy.Format.rgba32_float,
         width=int(width),
         height=int(height),
@@ -790,6 +792,7 @@ def update_ui_text(viewer: object, dt: float) -> None:
     viewer.ui._values["_histogram_range_payload"] = getattr(viewer.s, "cached_raster_grad_ranges", None)
     viewer.ui._values["_training_views_rows"] = _training_view_rows(viewer)
     viewer.ui._values["_training_view_overlay_segments"] = _camera_overlay_segments(viewer)
+    viewer.ui._values["_resource_debug_snapshot"] = collect_resource_debug_snapshot(viewer)
     viewer.t("render_stats").text = "Generated: 0 | Written: 0" if not stats else f"Generated: {int(stats['generated_entries']):,} | Written: {int(stats['written_entries']):,} | Overflow: {bool(stats['overflow'])}{' [cap]' if bool(stats.get('capacity_limited', False)) else ''}{' (delayed)' if bool(stats.get('stats_latency_frames', 0)) else ''}{'' if bool(stats.get('stats_valid', True)) else ' [warming]'}"
     if viewer.s.trainer is None:
         viewer.t("training").text = "Training: not initialized"

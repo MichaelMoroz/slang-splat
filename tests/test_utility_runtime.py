@@ -26,8 +26,8 @@ def test_grow_capacity_scales_monotonically() -> None:
 
 
 def test_alloc_helpers_create_minimum_sized_resources(device: spy.Device) -> None:
-    buffer = alloc_buffer(device, size=0, usage=RW_BUFFER_USAGE)
-    texture = alloc_texture_2d(device, format=spy.Format.rgba32_float, width=0, height=0, usage=spy.TextureUsage.shader_resource)
+    buffer = alloc_buffer(device, name="test.buffer", size=0, usage=RW_BUFFER_USAGE)
+    texture = alloc_texture_2d(device, name="test.texture", format=spy.Format.rgba32_float, width=0, height=0, usage=spy.TextureUsage.shader_resource)
 
     assert buffer is not None
     assert texture is not None

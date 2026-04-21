@@ -377,6 +377,7 @@ def _append_training_frame(progress: ColmapImportProgress, image_id: int, image:
 def _create_native_dataset_texture_from_rgba8(viewer: object, rgba8: np.ndarray) -> spy.Texture:
     texture = alloc_texture_2d(
         viewer.device,
+        name="viewer.dataset_texture",
         format=spy.Format.rgba8_unorm_srgb,
         width=int(rgba8.shape[1]),
         height=int(rgba8.shape[0]),

@@ -605,6 +605,7 @@ class GaussianRenderer:
         self._cached_raster_grad_fixed_opacity_range = self._DEFAULT_RASTER_GRAD_FIXED_OPACITY_RANGE
         self._zero_u32_buffer = alloc_buffer(
             self.device,
+            name="renderer.zero_u32",
             size=self._U32_BYTES,
             usage=spy.BufferUsage.shader_resource | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination,
         )
@@ -659,7 +660,7 @@ class GaussianRenderer:
         self._scene_capacity, self._scene_count = grow_capacity(splat_count, self._scene_capacity), splat_count
         param_bytes = max(self._scene_capacity, 1) * self.TRAINABLE_PARAM_COUNT * self._U32_BYTES
         self._resource_groups.scene = {
-            name: alloc_buffer(self.device, size=param_bytes, usage=self._RW_BUFFER_USAGE)
+            name: alloc_buffer(self.device, name=f"renderer.scene.{name}", size=param_bytes, usage=self._RW_BUFFER_USAGE)
             for name in self._SCENE_SHADER_VARS
         }
         self._scene_buffers = self._resource_groups.scene
@@ -711,7 +712,7 @@ class GaussianRenderer:
             "cached_raster_grads_float": max(self._work_splat_capacity, 1) * self._RASTER_CACHE_PARAM_COUNT * self._U32_BYTES,
             "cached_raster_grads_metrics_float": max(self._work_splat_capacity, 1) * self._RASTER_CACHE_PARAM_COUNT * self._U32_BYTES,
         }
-        allocated = {name: alloc_buffer(self.device, size=size, usage=self._RW_BUFFER_USAGE) for name, size in sized.items()}
+        allocated = {name: alloc_buffer(self.device, name=f"renderer.work.{name}", size=size, usage=self._RW_BUFFER_USAGE) for name, size in sized.items()}
         self._resource_groups.prepass = {
             name: allocated[name]
             for name in (
@@ -786,6 +787,7 @@ class GaussianRenderer:
         if self._output_texture is None:
             self._output_texture = alloc_texture_2d(
                 self.device,
+                name="renderer.output_texture",
                 format=spy.Format.rgba32_float,
                 width=self.width,
                 height=self.height,
@@ -796,6 +798,7 @@ class GaussianRenderer:
         if self._training_depth_stats_texture is None:
             self._training_depth_stats_texture = alloc_texture_2d(
                 self.device,
+                name="renderer.training_depth_stats_texture",
                 format=spy.Format.rgba32_float,
                 width=self.width,
                 height=self.height,
@@ -806,6 +809,7 @@ class GaussianRenderer:
         if self._output_grad_buffer is None:
             self._output_grad_buffer = alloc_buffer(
                 self.device,
+                name="renderer.output_grad",
                 size=max(self.width * self.height, 1) * 4 * self._U32_BYTES,
                 usage=self._RW_BUFFER_USAGE,
             )
@@ -915,7 +919,7 @@ class GaussianRenderer:
         if self._counter_readback_ring:
             return
         usage = spy.BufferUsage.copy_destination | spy.BufferUsage.copy_source
-        self._counter_readback_ring = [alloc_buffer(self.device, size=4, usage=usage) for _ in range(self._COUNTER_READBACK_RING_SIZE)]
+        self._counter_readback_ring = [alloc_buffer(self.device, name=f"renderer.counter_readback[{idx}]", size=4, usage=usage) for idx in range(self._COUNTER_READBACK_RING_SIZE)]
         self._counter_readback_capacity = [0] * self._COUNTER_READBACK_RING_SIZE
 
     def _update_delayed_counter_stats(self) -> None:

@@ -8,8 +8,9 @@ The overlay uses a right-side control panel with a menu bar:
 
 - `File`: scene load, scene export, COLMAP import, reload, and gaussian reinitialization actions
 - `View`: interface scale presets from `75%` to `200%`, with a reset action
+- `Debug`: resource, histogram, and training-view inspection windows
 - `Help`: `Documentation` and `About` windows
-- Auxiliary windows such as `Documentation`, `About`, `Histograms`, `Training Views`, and `COLMAP Import` open as tabs in that right-side panel by default.
+- Auxiliary windows such as `Documentation`, `About`, `Buffers`, `Histograms`, `Training Views`, and `COLMAP Import` open as tabs in that right-side panel by default.
 - The menu bar spans the full viewport width and the left control panel starts below it to avoid overlap.
 - The viewport header row includes quick controls for debug mode, camera overlays, training-camera debug view, and the active SH band cap (`SH0` / `SH1` / `SH2` / `SH3`).
 
@@ -117,6 +118,15 @@ The loss-debug controls expose a runtime `Abs Diff Scale` slider when `View = Ab
 - `baseColor` is derived directly from the clamped SH0/DC term, so it is not presented as a separate parameter from DC anymore.
 - The first open requests one histogram refresh automatically.
 - After that, histogram data is recomputed only when `Refresh` is pressed or another histogram action explicitly requests it.
+
+## Buffer Window
+
+`Debug -> Buffers` opens a resource table for live viewer GPU allocations.
+
+- All project-owned buffers and textures are created through the shared resource helpers with Slangpy labels.
+- The helpers read Slangpy's native per-resource `memory_usage.device` value when available and keep a Python-side name registry because Slangpy exposes per-resource memory but not a live allocation enumerator.
+- The window reports combined tracked GPU consumption, buffer count, total buffer bytes, mean buffer size, median buffer size, texture count, and texture bytes.
+- The table includes buffers and textures reachable from the active viewer renderers, trainer, and viewer debug resources, de-duplicates shared references, and displays entries largest-first.
 
 ## Cached Gradient Atomics
 
