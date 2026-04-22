@@ -388,7 +388,7 @@ def _torch_blended_rgb_grad_np(rendered_rgba: np.ndarray, target_rgba: np.ndarra
     dssim = torch.stack(channel_dssim, dim=1).mean(dim=1, keepdim=False)
     l1 = (rendered_t - target_rgb).abs().mean(dim=1, keepdim=True)
     low_l1 = (blurred_rendered - blurred_target).abs().mean(dim=1, keepdim=True)
-    high_l1 = ((rendered_t - blurred_rendered.detach()) - (target_rgb - blurred_target)).abs().mean(dim=1, keepdim=True)
+    high_l1 = ((rendered_t - blurred_rendered) - (target_rgb - blurred_target)).abs().mean(dim=1, keepdim=True)
     normal_weight, ssim_weight, high_frequency_weight, low_frequency_weight = _image_loss_weights_np(ssim_weight, high_frequency_weight, low_frequency_weight)
     loss = ((normal_weight * l1 + ssim_weight * dssim + high_frequency_weight * high_l1 + low_frequency_weight * low_l1) * inv_pixel_count * target_mask).sum()
     loss.backward()

@@ -71,7 +71,7 @@ Each trainer `step()` performs:
 6. Run the fixed-count backward stage:
    - `csComputeSSIMBlurredGradients` differentiates DSSIM with respect to the blurred rendered-side moment channels using Slang autodiff,
    - the same separable Gaussian blur utility is reused as the blur adjoint to propagate those gradients back into the unblurred rendered-side moments,
-   - `csComputeBlendedLossBackward` differentiates the rendered-side moment extraction with Slang autodiff, combines the resulting DSSIM and low-frequency blur-adjoint gradients with direct normal/high-frequency RGB L1 sign gradients, and writes the unnormalized per-pixel RGB gradient into flat `RWStructuredBuffer<float4>` `g_OutputGrad`, plus one packed `float2` regularizer gradient buffer for density and depth-ratio replay, indexed as `pixel = y * width + x`,
+   - `csComputeBlendedLossBackward` differentiates the rendered-side moment extraction with Slang autodiff, combines the resulting DSSIM and blur-adjoint frequency gradients with direct normal/high-frequency RGB L1 sign gradients, and writes the unnormalized per-pixel RGB gradient into flat `RWStructuredBuffer<float4>` `g_OutputGrad`, plus one packed `float2` regularizer gradient buffer for density and depth-ratio replay, indexed as `pixel = y * width + x`,
    - `csRasterizeBackward` consumes the cached raster forward state and accumulates quantized cached raster-field gradients for the precomputed raster-cache fields; the depth-ratio replay uses the same alpha-depth hit evaluation as training forward so the cached depth state and replay stay consistent,
    - `csBackpropCachedRasterGrads` decodes that cached-field intermediate inline, backprops through `build_cached_ellipsoid`, and writes the final float packed scene-parameter gradient buffer with the final `1 / pixel_count` normalization before the rest of training.
 7. Run the optimizer pipeline:
@@ -105,7 +105,7 @@ There is still no opacity reset schedule, MCMC exploration term, or standalone P
 - `csClearLossBuffer`: zero scalar loss slots for the current training step.
 - `csComputeSSIMFeatures`: computes per-pixel BT.601 YCbCr moment features for rendered and target images into a 15-channel flat buffer.
 - `csComputeBlendedLossForward`: computes RGB MSE, the weighted normal/low-frequency/high-frequency L1 plus DSSIM image loss, density hinge regularization, and windowed-sigmoid depth-ratio regularization.
-- `csComputeSSIMBlurredGradients`: computes the blurred-moment DSSIM and low-frequency L1 adjoints. The high-frequency L1 term uses the blurred rendered mean for the forward split but does not backpropagate through that mean, avoiding scale-growth pressure from smoothing the render.
+- `csComputeSSIMBlurredGradients`: computes the blurred-moment DSSIM and frequency-split L1 adjoints.
 - `csComputeBlendedLossBackward`: computes the final image-space blended RGB gradient into `g_OutputGrad` plus the per-pixel density/depth-ratio replay gradients; the depth-ratio window is controlled by `depth_ratio_grad_min` and `depth_ratio_grad_max`, with transition softness derived from band width in shader code.
 - UI-driven multi-step training batches keep per-substep loss/MSE records on the GPU and defer the single CPU readback until the batch finishes, rather than synchronizing after every substep.
 - Packed trainable storage remains param-major scalar packing: `param_id * splat_count + splat_id`.
