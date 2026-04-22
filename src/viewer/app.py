@@ -263,11 +263,16 @@ class SplatViewer(spy.AppWindow):
                 self.s.mx = event.pos.x
                 self.s.my = event.pos.y
                 self.s.mouse_delta = spy.float2(0.0, 0.0)
-            elif event.type in (spy.MouseEventType.button_down, spy.MouseEventType.button_up) and event.button == spy.MouseButton.left:
-                self.s.mouse_left = False
+            elif event.type in (spy.MouseEventType.button_down, spy.MouseEventType.button_up):
+                if event.button == spy.MouseButton.left:
+                    self.s.mouse_left = False
+                elif event.button == spy.MouseButton.right:
+                    self.s.mouse_right = False
             return
         if event.type in (spy.MouseEventType.button_down, spy.MouseEventType.button_up) and event.button == spy.MouseButton.left:
             self.s.mouse_left = event.type == spy.MouseEventType.button_down
+        if event.type in (spy.MouseEventType.button_down, spy.MouseEventType.button_up) and event.button == spy.MouseButton.right:
+            self.s.mouse_right = event.type == spy.MouseEventType.button_down
         if event.type == spy.MouseEventType.move:
             if self.s.mx is not None and self.s.my is not None:
                 self.s.mouse_delta += spy.float2(event.pos.x - self.s.mx, event.pos.y - self.s.my)
@@ -447,7 +452,8 @@ class SplatViewer(spy.AppWindow):
         if abs(self.s.scroll_delta) > 1e-5:
             self.s.move_speed = max(self.s.move_speed * (_SCROLL_SPEED_BASE ** self.s.scroll_delta), 0.0)
             self.c("move_speed").value, self.s.scroll_delta = self.s.move_speed, 0.0
-        target_rot = self.s.mouse_delta * self.s.look_speed if self.s.mouse_left else spy.float2(0.0, 0.0)
+        mouse_delta = spy.float2(float(self.s.mouse_delta.x), float(self.s.mouse_delta.y))
+        target_rot = mouse_delta * self.s.look_speed if self.s.mouse_left else spy.float2(0.0, 0.0)
         self.s.rot_vel += (target_rot - self.s.rot_vel) * min(1.0, _LOOK_SMOOTH * dt)
         self.s.mouse_delta = spy.float2(0.0, 0.0)
         if float(smath.length(self.s.rot_vel)) > _VIEW_VEC_EPS:
@@ -458,6 +464,9 @@ class SplatViewer(spy.AppWindow):
         move = spy.float3(float(self.s.keys.get(spy.KeyCode.e, False)) - float(self.s.keys.get(spy.KeyCode.q, False)), float(self.s.keys.get(spy.KeyCode.d, False)) - float(self.s.keys.get(spy.KeyCode.a, False)), float(self.s.keys.get(spy.KeyCode.w, False)) - float(self.s.keys.get(spy.KeyCode.s, False)))
         move_length = float(smath.length(move))
         target_move = move * (self.s.move_speed / max(move_length, _VIEW_VEC_EPS)) if move_length > _VIEW_VEC_EPS else spy.float3(0.0, 0.0, 0.0)
+        if self.s.mouse_right:
+            drag_speed = self.s.move_speed * self.s.look_speed / max(float(dt), _VIEW_VEC_EPS)
+            target_move += spy.float3(-float(mouse_delta.y) * drag_speed, -float(mouse_delta.x) * drag_speed, 0.0)
         self.s.move_vel += (target_move - self.s.move_vel) * min(1.0, _MOVE_SMOOTH * dt)
         self.s.camera_pos += (up * self.s.move_vel.x + right * self.s.move_vel.y + forward * self.s.move_vel.z) * dt
 

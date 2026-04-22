@@ -29,9 +29,9 @@
     "sorting_order_dithering_stage1": 0.05000000074505806,
     "sorting_order_dithering_stage2": 0.05,
     "sorting_order_dithering_stage3": 0.0,
-    "colorspace_mod": 0.30000001192092896,
-    "colorspace_mod_stage1": 0.30000001192092896,
-    "colorspace_mod_stage2": 0.9,
+    "colorspace_mod": 1.0,
+    "colorspace_mod_stage1": 1.0,
+    "colorspace_mod_stage2": 1.0,
     "colorspace_mod_stage3": 1.0,
     "ssim_weight": 0.10000000149011612,
     "ssim_c2": 0.0009,
@@ -165,7 +165,7 @@
       "loss_debug_view": 0,
       "loss_debug_frame": 0,
       "loss_debug_abs_scale": 1.0,
-      "move_speed": 1.546097502708441,
+      "move_speed": 9.455791701021319,
       "fov": 60.0,
       "render_background_mode": 1,
       "render_background_color": [
@@ -207,8 +207,8 @@
       "hist_max_value": 1.0,
       "hist_y_limit": 1290263.0,
       "viewport_sh_band": 3,
-      "viewport_sh_control_key": "sh_band_stage2",
-      "viewport_sh_stage_label": "Stage 2"
+      "viewport_sh_control_key": "sh_band",
+      "viewport_sh_stage_label": "Stage 0"
     },
     "state": {
       "list_capacity_multiplier": 16,

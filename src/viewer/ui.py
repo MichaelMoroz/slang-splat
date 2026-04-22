@@ -2301,7 +2301,7 @@ class ToolkitWindow:
         if int(ui._values.get("render_background_mode", 1)) == 1:
             self._draw_control(ui, next(spec for spec in GROUP_SPECS["Camera"] if spec.key == "render_background_color"))
         imgui.spacing()
-        imgui.text_disabled("LMB drag=look | WASDQE=move | Wheel=speed")
+        imgui.text_disabled("LMB drag=look | RMB drag=pan | WASDQE=move | Wheel=speed")
         self._ctx_reset("camera_ctx", ui, ("move_speed", "fov", "render_background_mode", "render_background_color"))
         imgui.separator()
 

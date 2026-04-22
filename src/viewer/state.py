@@ -148,7 +148,7 @@ class ViewerState:
     camera_pos: spy.float3 = field(default_factory=_default_camera_pos); yaw: float = 0.0; pitch: float = 0.0
     up: spy.float3 = field(default_factory=_default_up); fov_y: float = 60.0; near: float = 0.1; far: float = 120.0
     move_speed: float = 2.0; look_speed: float = 0.003; background: spy.float3 = field(default_factory=_default_background)
-    keys: dict[spy.KeyCode, bool] = field(default_factory=dict); mouse_left: bool = False; mouse_delta: spy.float2 = field(default_factory=_default_mouse_delta)
+    keys: dict[spy.KeyCode, bool] = field(default_factory=dict); mouse_left: bool = False; mouse_right: bool = False; mouse_delta: spy.float2 = field(default_factory=_default_mouse_delta)
     scroll_delta: float = 0.0; move_vel: spy.float3 = field(default_factory=_default_move_vel); rot_vel: spy.float2 = field(default_factory=_default_rot_vel)
     mx: float | None = None; my: float | None = None; last_time: float = field(default_factory=time.perf_counter); fps_smooth: float = 60.0
     last_error: str = ""; last_resize_exception: str = ""; last_render_exception: str = ""

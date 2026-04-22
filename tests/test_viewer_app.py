@@ -21,6 +21,7 @@ def _viewer(keyboard_capture: bool = False, mouse_capture: bool = False) -> Simp
     viewer.s = SimpleNamespace(
         keys={},
         mouse_left=False,
+        mouse_right=False,
         mouse_delta=app.spy.float2(1.0, 2.0),
         scroll_delta=0.0,
         mx=None,
@@ -63,6 +64,21 @@ def test_mouse_capture_resets_camera_drag_state() -> None:
     assert viewer.s.mouse_left is False
 
 
+def test_mouse_capture_resets_camera_pan_drag_state() -> None:
+    viewer = _viewer(mouse_capture=True)
+    viewer.s.mouse_right = True
+    event = SimpleNamespace(
+        type=app.spy.MouseEventType.button_down,
+        button=app.spy.MouseButton.right,
+        pos=app.spy.float2(16.0, 24.0),
+        scroll=app.spy.float2(0.0, 0.0),
+    )
+
+    app.SplatViewer.on_mouse_event(viewer, event)
+
+    assert viewer.s.mouse_right is False
+
+
 def test_mouse_capture_updates_reference_cursor_without_motion() -> None:
     viewer = _viewer(mouse_capture=True)
     event = SimpleNamespace(
@@ -96,6 +112,60 @@ def test_mouse_passthrough_keeps_existing_camera_behavior() -> None:
 
     assert viewer.s.mouse_delta.x == 4.0
     assert viewer.s.mouse_delta.y == 6.0
+
+
+def test_right_mouse_button_updates_pan_drag_state() -> None:
+    viewer = _viewer(mouse_capture=False)
+    down = SimpleNamespace(
+        type=app.spy.MouseEventType.button_down,
+        button=app.spy.MouseButton.right,
+        pos=app.spy.float2(14.0, 26.0),
+        scroll=app.spy.float2(0.0, 0.0),
+    )
+    up = SimpleNamespace(
+        type=app.spy.MouseEventType.button_up,
+        button=app.spy.MouseButton.right,
+        pos=app.spy.float2(14.0, 26.0),
+        scroll=app.spy.float2(0.0, 0.0),
+    )
+
+    app.SplatViewer.on_mouse_event(viewer, down)
+    app.SplatViewer.on_mouse_event(viewer, up)
+
+    assert viewer.s.mouse_right is False
+
+
+def test_update_camera_right_drag_pans_along_view_plane() -> None:
+    controls = {
+        "move_speed": SimpleNamespace(value=2.0),
+        "fov": SimpleNamespace(value=60.0),
+    }
+    viewer = SimpleNamespace(
+        s=SimpleNamespace(
+            move_speed=2.0,
+            fov_y=60.0,
+            scroll_delta=0.0,
+            mouse_delta=app.spy.float2(10.0, -20.0),
+            mouse_left=False,
+            mouse_right=True,
+            look_speed=0.003,
+            rot_vel=app.spy.float2(0.0, 0.0),
+            yaw=0.0,
+            pitch=0.0,
+            up=app.spy.float3(0.0, 1.0, 0.0),
+            keys={},
+            move_vel=app.spy.float3(0.0, 0.0, 0.0),
+            camera_pos=app.spy.float3(0.0, 0.0, -3.0),
+        ),
+        c=lambda key: controls[key],
+        _forward=lambda: app.spy.float3(0.0, 0.0, 1.0),
+    )
+
+    app.SplatViewer.update_camera(viewer, 0.1)
+
+    np.testing.assert_allclose(np.asarray(viewer.s.camera_pos, dtype=np.float32), np.array([-0.06, 0.12, -3.0], dtype=np.float32), rtol=0.0, atol=1e-6)
+    assert viewer.s.mouse_delta.x == 0.0
+    assert viewer.s.mouse_delta.y == 0.0
 
 
 def test_on_resize_records_exception_without_raising() -> None:
