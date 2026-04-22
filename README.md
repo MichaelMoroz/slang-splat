@@ -99,7 +99,7 @@ Training notes:
 - The resolved COLMAP init bundle is shared by the CLI and viewer, so `base_scale`, jitter, and opacity overrides flow through the same path in both entrypoints.
 - CLI and viewer scene initialization now honor the configured gaussian cap instead of always forcing the full COLMAP point cloud into the initial scene.
 - The active trainer keeps a fixed gaussian count after initialization with periodic refinement; there is still no pruning, opacity reset schedule, or MCMC exploration term.
-- The RGB image term is a blended `(1 - ssim_weight) * L1 + ssim_weight * DSSIM` loss. DSSIM is computed in BT.601 YCbCr from blurred per-pixel first and second moments using the reusable separable Gaussian buffer blur utility.
+- The RGB image term combines normal L1, low-frequency L1, high-frequency L1, and DSSIM. Low/high-frequency terms split rendered and target loss-space RGB with the existing SSIM blurred means; `ssim_weight`, `high_frequency_weight`, and `low_frequency_weight` are scheduled directly, and the normal L1 weight receives the remaining normalized weight.
 - GPU trainable state is packed into one param-major float buffer shared by renderer and trainer: `param[param_id * splat_count + splat_id]`.
 - Raster backward supports selectable cached ellipsoid gradient atomics: `fixed` atomics by default, with `float` atomics still available when the backend supports them.
 - Optimizer settings live in one structured per-parameter buffer, and ADAM moments are packed into one `float2` buffer (`m`, `v`) per parameter element.

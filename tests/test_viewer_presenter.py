@@ -468,7 +468,7 @@ def test_update_ui_text_reports_training_schedule_and_refinement() -> None:
     presenter.update_ui_text(viewer, 1.0 / 60.0)
 
     assert viewer.t("training_schedule").text == "LR Schedule: 5.00e-03@0 -> 2.00e-03@3,000 -> 1.00e-03@14,000 -> 1.50e-04@30,000 | current=5.00e-03"
-    assert viewer.t("training_schedule_values").text == "Current Values: step=0 | Stage 0 | lr=5.00e-03 | pos=1.00x | shlr=0.05x | depth=1.00e+00 | cspace=0.5 | dither=0.5 | noise=5.00e+05 | sh=SH0"
+    assert viewer.t("training_schedule_values").text == "Current Values: step=0 | Stage 0 | lr=5.00e-03 | pos=1.00x | shlr=0.05x | depth=1.00e+00 | cspace=0.5 | hi=0 | lo=0 | dither=0.5 | noise=5.00e+05 | sh=SH0"
     assert viewer.t("training_refinement").text == "Refinement: every 200 | growth=0.00% now | target=5.00% after 500 | alpha<1.00e-02 or min contrib<512 | decay=99.50%/pass | alpha mul=1.00x | clone scale=1.00x | max=1,000,000"
     assert viewer.t("loss_debug_psnr").text == "PSNR: 32.50 dB"
     assert viewer.ui._values["_training_view_overlay_segments"] == ()
@@ -532,7 +532,7 @@ def test_update_ui_text_previews_current_schedule_values_without_trainer() -> No
 
     presenter.update_ui_text(viewer, 1.0 / 60.0)
 
-    assert viewer.t("training_schedule_values").text == "Current Values: step=0 | Stage 0 | lr=5.00e-03 | pos=1.00x | shlr=0.05x | depth=1.00e+00 | cspace=0.5 | dither=0.5 | noise=5.00e+05 | sh=SH0"
+    assert viewer.t("training_schedule_values").text == "Current Values: step=0 | Stage 0 | lr=5.00e-03 | pos=1.00x | shlr=0.05x | depth=1.00e+00 | cspace=0.5 | hi=0 | lo=0 | dither=0.5 | noise=5.00e+05 | sh=SH0"
 
 
 def test_render_frame_recovers_missing_main_renderer_by_recreating_it(monkeypatch):

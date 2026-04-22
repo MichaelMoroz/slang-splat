@@ -31,7 +31,7 @@ from .gaussian_trainer import (
 )
 from .optimizer import GaussianOptimizer
 from .profiles import TRAINING_PROFILE_CHOICES, TrainingProfile, resolve_training_profile
-from .schedule import resolve_base_learning_rate, resolve_colorspace_mod, resolve_refinement_clone_budget, resolve_cosine_base_learning_rate, resolve_depth_ratio_weight, resolve_effective_refinement_interval, resolve_learning_rate_scale, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_visible_angle_deg, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering, resolve_ssim_weight, resolve_stage_schedule_steps, resolve_use_sh, should_run_refinement_step
+from .schedule import resolve_base_learning_rate, resolve_colorspace_mod, resolve_refinement_clone_budget, resolve_cosine_base_learning_rate, resolve_depth_ratio_weight, resolve_effective_refinement_interval, resolve_high_frequency_weight, resolve_image_loss_weights, resolve_learning_rate_scale, resolve_low_frequency_weight, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_visible_angle_deg, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering, resolve_ssim_weight, resolve_stage_schedule_steps, resolve_use_sh, should_run_refinement_step
 from .schedule import resolve_refinement_min_contribution
 
 __all__ = [
@@ -81,6 +81,9 @@ __all__ = [
     "resolve_sh_lr_mul",
     "resolve_depth_ratio_weight",
     "resolve_ssim_weight",
+    "resolve_high_frequency_weight",
+    "resolve_low_frequency_weight",
+    "resolve_image_loss_weights",
     "resolve_position_random_step_noise_lr",
     "resolve_sorting_order_dithering",
     "resolve_sh_band",
