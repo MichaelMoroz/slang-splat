@@ -156,47 +156,6 @@ def resolve_ssim_weight(training_hparams: Any, step: int) -> float:
     )
 
 
-def resolve_high_frequency_weight(training_hparams: Any, step: int) -> float:
-    if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
-        return min(max(float(getattr(training_hparams, "high_frequency_weight", 0.0)), 0.0), 1.0)
-    return _resolve_staged_linear_value(
-        training_hparams,
-        step,
-        min(max(float(getattr(training_hparams, "high_frequency_weight", 0.0)), 0.0), 1.0),
-        (
-            min(max(float(getattr(training_hparams, "high_frequency_weight_stage1", 0.0)), 0.0), 1.0),
-            min(max(float(getattr(training_hparams, "high_frequency_weight_stage2", 0.0)), 0.0), 1.0),
-            min(max(float(getattr(training_hparams, "high_frequency_weight_stage3", 0.0)), 0.0), 1.0),
-        ),
-    )
-
-
-def resolve_low_frequency_weight(training_hparams: Any, step: int) -> float:
-    if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
-        return min(max(float(getattr(training_hparams, "low_frequency_weight", 0.0)), 0.0), 1.0)
-    return _resolve_staged_linear_value(
-        training_hparams,
-        step,
-        min(max(float(getattr(training_hparams, "low_frequency_weight", 0.0)), 0.0), 1.0),
-        (
-            min(max(float(getattr(training_hparams, "low_frequency_weight_stage1", 0.0)), 0.0), 1.0),
-            min(max(float(getattr(training_hparams, "low_frequency_weight_stage2", 0.0)), 0.0), 1.0),
-            min(max(float(getattr(training_hparams, "low_frequency_weight_stage3", 0.0)), 0.0), 1.0),
-        ),
-    )
-
-
-def resolve_image_loss_weights(training_hparams: Any, step: int) -> tuple[float, float, float, float]:
-    ssim = min(max(resolve_ssim_weight(training_hparams, step), 0.0), 1.0)
-    high = min(max(resolve_high_frequency_weight(training_hparams, step), 0.0), 1.0)
-    low = min(max(resolve_low_frequency_weight(training_hparams, step), 0.0), 1.0)
-    requested = ssim + high + low
-    if requested > 1.0:
-        scale = 1.0 / max(requested, 1e-8)
-        return 0.0, ssim * scale, high * scale, low * scale
-    return 1.0 - requested, ssim, high, low
-
-
 def resolve_max_visible_angle_deg(training_hparams: Any, step: int) -> float:
     if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
         return min(max(float(getattr(training_hparams, "max_visible_angle_deg", 1.0)), 1e-8), 89.999)

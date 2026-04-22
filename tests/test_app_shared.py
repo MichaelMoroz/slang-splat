@@ -6,7 +6,7 @@ import numpy as np
 
 from src.app.shared import apply_training_profile, build_training_params, estimate_scene_bounds
 from src.scene import GaussianInitHyperParams, GaussianScene
-from src.training import DEPTH_RATIO_GRAD_MIN_BAND_WIDTH, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, resolve_high_frequency_weight, resolve_image_loss_weights, resolve_low_frequency_weight, resolve_sorting_order_dithering
+from src.training import DEPTH_RATIO_GRAD_MIN_BAND_WIDTH, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, resolve_sorting_order_dithering
 from src.viewer.app import default_training_params
 from src.viewer.session import resolve_effective_training_setup
 from src.viewer.ui import default_control_values
@@ -110,8 +110,6 @@ def test_build_training_params_clamps_ranges():
     assert hasattr(params.training, "lr_schedule_stage1_lr")
     assert hasattr(params.training, "depth_ratio_stage1_weight")
     assert hasattr(params.training, "ssim_weight_stage1")
-    assert hasattr(params.training, "high_frequency_weight_stage1")
-    assert hasattr(params.training, "low_frequency_weight_stage1")
     assert params.training.use_sh_stage1 is False
     assert params.training.use_sh_stage2 is True
     assert params.training.use_sh_stage3 is True
@@ -139,8 +137,6 @@ def test_default_training_params_include_required_training_controls():
         "depth_ratio_weight",
         "max_visible_angle_deg",
         "ssim_weight",
-        "high_frequency_weight",
-        "low_frequency_weight",
         "ssim_c2",
         "refinement_sample_radius",
         "refinement_clone_scale_mul",
@@ -301,40 +297,6 @@ def test_sorting_order_dithering_resolves_as_staged_schedule() -> None:
     disabled = TrainingHyperParams(lr_schedule_enabled=False, sorting_order_dithering=0.4, sorting_order_dithering_stage1=0.0)
     assert disabled.sorting_order_dithering == 0.4
     assert resolve_sorting_order_dithering(disabled, 100) == 0.4
-
-
-def test_frequency_loss_weights_resolve_as_staged_schedule() -> None:
-    params = TrainingHyperParams(
-        lr_schedule_steps=100,
-        lr_schedule_stage1_step=20,
-        lr_schedule_stage2_step=60,
-        high_frequency_weight=0.0,
-        high_frequency_weight_stage1=0.1,
-        high_frequency_weight_stage2=0.3,
-        high_frequency_weight_stage3=0.5,
-        low_frequency_weight=0.4,
-        low_frequency_weight_stage1=0.3,
-        low_frequency_weight_stage2=0.2,
-        low_frequency_weight_stage3=0.1,
-    )
-
-    assert resolve_high_frequency_weight(params, 0) == 0.0
-    assert np.isclose(resolve_high_frequency_weight(params, 20), 0.1)
-    assert np.isclose(resolve_high_frequency_weight(params, 60), 0.3)
-    assert np.isclose(resolve_high_frequency_weight(params, 100), 0.5)
-    assert resolve_low_frequency_weight(params, 0) == 0.4
-    assert np.isclose(resolve_low_frequency_weight(params, 100), 0.1)
-
-
-def test_image_loss_weights_normalize_excess_requested_terms() -> None:
-    normal, ssim, high, low = resolve_image_loss_weights(
-        TrainingHyperParams(lr_schedule_enabled=False, ssim_weight=0.7, high_frequency_weight=0.7, low_frequency_weight=0.1),
-        0,
-    )
-
-    assert normal == 0.0
-    np.testing.assert_allclose(ssim + high + low, 1.0, rtol=0.0, atol=1e-7)
-    np.testing.assert_allclose((ssim, high, low), (7.0 / 15.0, 7.0 / 15.0, 1.0 / 15.0), rtol=0.0, atol=1e-7)
 
 
 def test_training_hparams_clamp_schedule_breakpoints() -> None:

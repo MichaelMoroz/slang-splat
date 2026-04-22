@@ -145,12 +145,11 @@ The `Train Setup` section exposes train downscale as a mode selector:
 
 It also exposes per-stage `SH Band` dropdowns. `SH0` uses only the DC term, while `SH1`, `SH2`, and `SH3` progressively enable the higher bands in both the viewport and the training schedule.
 
-The optimizer controls expose per-stage DSSIM and frequency-split image-loss weights used by training. The normal L1 weight is derived from the remaining normalized weight.
+The `Optimizer -> Regularization` tab exposes the DSSIM controls used by training:
 
 - `Color >= 0 Reg`
 - `DSSIM Weight`
-- `High Freq Weight`
-- `Low Freq Weight`
+- `SSIM C1`
 - `SSIM C2`
 
 The blur window remains the fixed 11-tap separable Gaussian used by the shader path.

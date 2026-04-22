@@ -14,7 +14,7 @@ from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 from src.scene.sh_utils import SH_C0, evaluate_sh_color
 from src.training import gaussian_trainer as gaussian_trainer_module
-from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_colorspace_mod, resolve_cosine_base_learning_rate, resolve_depth_ratio_grad_band, resolve_depth_ratio_weight, resolve_effective_refinement_interval, resolve_effective_train_render_factor, resolve_image_loss_weights, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_visible_angle_deg, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_clone_budget, resolve_refinement_growth_ratio, resolve_refinement_min_contribution, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering, resolve_ssim_weight, resolve_stage_schedule_steps, resolve_training_resolution, resolve_train_subsample_factor, resolve_use_sh, should_run_refinement_step
+from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_colorspace_mod, resolve_cosine_base_learning_rate, resolve_depth_ratio_grad_band, resolve_depth_ratio_weight, resolve_effective_refinement_interval, resolve_effective_train_render_factor, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_visible_angle_deg, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_clone_budget, resolve_refinement_growth_ratio, resolve_refinement_min_contribution, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering, resolve_ssim_weight, resolve_stage_schedule_steps, resolve_training_resolution, resolve_train_subsample_factor, resolve_use_sh, should_run_refinement_step
 
 _ADAM_BUFFER_NAMES = ("adam_moments",)
 _OPACITY_EPS = 1e-6
@@ -273,24 +273,11 @@ def _training_target_mask_np(alpha: np.ndarray, use_target_alpha_mask: bool) -> 
     return np.clip(np.asarray(alpha, dtype=np.float32), 0.0, 1.0) if bool(use_target_alpha_mask) else np.ones_like(alpha, dtype=np.float32)
 
 
-def _image_loss_weights_np(ssim_weight: float, high_frequency_weight: float = 0.0, low_frequency_weight: float = 0.0) -> tuple[float, float, float, float]:
-    ssim = min(max(float(ssim_weight), 0.0), 1.0)
-    high = min(max(float(high_frequency_weight), 0.0), 1.0)
-    low = min(max(float(low_frequency_weight), 0.0), 1.0)
-    total = ssim + high + low
-    if total > 1.0:
-        scale = 1.0 / max(total, 1e-8)
-        return 0.0, ssim * scale, high * scale, low * scale
-    return 1.0 - total, ssim, high, low
-
-
 def _blended_rgb_metrics_np(
     rendered_rgba: np.ndarray,
     target_rgba: np.ndarray,
     *,
     ssim_weight: float,
-    high_frequency_weight: float = 0.0,
-    low_frequency_weight: float = 0.0,
     use_target_alpha_mask: bool,
 ) -> tuple[np.ndarray, float, float, np.ndarray]:
     rendered = np.asarray(rendered_rgba, dtype=np.float32)[..., :3]
@@ -302,10 +289,6 @@ def _blended_rgb_metrics_np(
     l1 = np.mean(np.abs(diff), axis=2).astype(np.float32) * inv_pixel_count * mask
     mse = float(np.sum(np.mean(diff * diff, axis=2).astype(np.float32) * inv_pixel_count * mask, dtype=np.float64))
     blurred = _separable_gaussian_blur_np(_ssim_feature_moments_np(rendered, target))
-    blurred_rendered = np.stack([blurred[..., channel * _SSIM_FEATURES_PER_COLOR] for channel in range(3)], axis=2)
-    blurred_target = np.stack([blurred[..., channel * _SSIM_FEATURES_PER_COLOR + 1] for channel in range(3)], axis=2)
-    low_l1 = np.mean(np.abs(blurred_rendered - blurred_target), axis=2).astype(np.float32) * inv_pixel_count * mask
-    high_l1 = np.mean(np.abs((rendered - blurred_rendered) - (target - blurred_target)), axis=2).astype(np.float32) * inv_pixel_count * mask
     channel_dssim: list[np.ndarray] = []
     for channel in range(3):
         offset = channel * _SSIM_FEATURES_PER_COLOR
@@ -322,9 +305,8 @@ def _blended_rgb_metrics_np(
         channel_dssim.append(1.0 - numer / denom)
     dssim = np.mean(np.stack(channel_dssim, axis=2), axis=2, dtype=np.float32)
     dssim = dssim.astype(np.float32, copy=False) * inv_pixel_count * mask
-    normal_weight, ssim_weight, high_frequency_weight, low_frequency_weight = _image_loss_weights_np(ssim_weight, high_frequency_weight, low_frequency_weight)
-    blended = (normal_weight * l1 + ssim_weight * dssim + high_frequency_weight * high_l1 + low_frequency_weight * low_l1).astype(np.float32, copy=False)
-    l1_grad = np.sign(diff).astype(np.float32) * (np.float32(1.0 / 3.0) * inv_pixel_count * mask[..., None] * np.float32(normal_weight))
+    blended = ((1.0 - float(ssim_weight)) * l1 + float(ssim_weight) * dssim).astype(np.float32, copy=False)
+    l1_grad = np.sign(diff).astype(np.float32) * (np.float32(1.0 / 3.0) * inv_pixel_count * mask[..., None] * np.float32(1.0 - float(ssim_weight)))
     return blended, float(np.sum(blended, dtype=np.float64)), mse, l1_grad
 
 
@@ -338,7 +320,7 @@ def _display_mse_np(rendered_rgba: np.ndarray, target_rgba: np.ndarray, *, use_t
     return float(np.sum(np.mean(diff * diff, axis=2).astype(np.float32) * inv_pixel_count * mask, dtype=np.float64))
 
 
-def _torch_blended_rgb_grad_np(rendered_rgba: np.ndarray, target_rgba: np.ndarray, *, ssim_weight: float, high_frequency_weight: float = 0.0, low_frequency_weight: float = 0.0) -> np.ndarray:
+def _torch_blended_rgb_grad_np(rendered_rgba: np.ndarray, target_rgba: np.ndarray, *, ssim_weight: float) -> np.ndarray:
     torch = pytest.importorskip("torch")
     import torch.nn.functional as F
 
@@ -369,8 +351,6 @@ def _torch_blended_rgb_grad_np(rendered_rgba: np.ndarray, target_rgba: np.ndarra
     )
     blurred = F.conv2d(F.pad(moments, (5, 5, 0, 0), mode="replicate"), weight_h, groups=_SSIM_FEATURE_CHANNELS)
     blurred = F.conv2d(F.pad(blurred, (0, 0, 5, 5), mode="replicate"), weight_v, groups=_SSIM_FEATURE_CHANNELS)
-    blurred_rendered = torch.cat(tuple(blurred[:, channel * _SSIM_FEATURES_PER_COLOR : channel * _SSIM_FEATURES_PER_COLOR + 1] for channel in range(3)), dim=1)
-    blurred_target = torch.cat(tuple(blurred[:, channel * _SSIM_FEATURES_PER_COLOR + 1 : channel * _SSIM_FEATURES_PER_COLOR + 2] for channel in range(3)), dim=1)
     channel_dssim = []
     for channel in range(3):
         offset = channel * _SSIM_FEATURES_PER_COLOR
@@ -387,10 +367,7 @@ def _torch_blended_rgb_grad_np(rendered_rgba: np.ndarray, target_rgba: np.ndarra
         channel_dssim.append(1.0 - numer / denom)
     dssim = torch.stack(channel_dssim, dim=1).mean(dim=1, keepdim=False)
     l1 = (rendered_t - target_rgb).abs().mean(dim=1, keepdim=True)
-    low_l1 = (blurred_rendered - blurred_target).abs().mean(dim=1, keepdim=True)
-    high_l1 = ((rendered_t - blurred_rendered) - (target_rgb - blurred_target)).abs().mean(dim=1, keepdim=True)
-    normal_weight, ssim_weight, high_frequency_weight, low_frequency_weight = _image_loss_weights_np(ssim_weight, high_frequency_weight, low_frequency_weight)
-    loss = ((normal_weight * l1 + ssim_weight * dssim + high_frequency_weight * high_l1 + low_frequency_weight * low_l1) * inv_pixel_count * target_mask).sum()
+    loss = ((((1.0 - float(ssim_weight)) * l1) + (float(ssim_weight) * dssim)) * inv_pixel_count * target_mask).sum()
     loss.backward()
     return rendered_t.grad.detach().cpu().numpy()[0].transpose(1, 2, 0)
 
@@ -1098,84 +1075,6 @@ def test_identical_images_zero_blended_ssim_loss(device, tmp_path: Path):
     np.testing.assert_allclose(_read_output_grads(trainer.renderer)[..., :3], 0.0, rtol=0.0, atol=2e-5)
 
 
-def test_low_frequency_l1_loss_matches_cpu_reference(device, tmp_path: Path):
-    rng = np.random.default_rng(3301)
-    trainer = _make_loss_only_trainer(
-        device,
-        tmp_path,
-        width=9,
-        height=7,
-        training_hparams=TrainingHyperParams(
-            background_mode=TRAIN_BACKGROUND_MODE_CUSTOM,
-            background=(0.0, 0.0, 0.0),
-            density_regularizer=0.0,
-            depth_ratio_weight=0.0,
-            ssim_weight=0.0,
-            high_frequency_weight=0.0,
-            low_frequency_weight=1.0,
-        ),
-        image_name="low_frequency_l1_target.png",
-        image_id=39,
-    )
-    rendered = rng.uniform(0.05, 0.95, size=(7, 9, 4)).astype(np.float32)
-    target = rng.uniform(0.05, 0.95, size=(7, 9, 4)).astype(np.float32)
-    rendered[..., 3] = 1.0
-    target[..., 3] = 1.0
-
-    _dispatch_manual_loss(trainer, rendered, target, run_backward=False)
-    expected_loss, expected_total, _, _ = _blended_rgb_metrics_np(
-        rendered,
-        target,
-        ssim_weight=0.0,
-        low_frequency_weight=1.0,
-        use_target_alpha_mask=False,
-    )
-
-    total, _, density = trainer._read_loss_metrics()
-    assert density == 0.0
-    np.testing.assert_allclose(total, expected_total, rtol=0.0, atol=2e-6)
-    np.testing.assert_allclose(_read_training_rgb_loss(trainer.renderer), expected_loss, rtol=0.0, atol=2e-6)
-
-
-def test_high_frequency_l1_loss_matches_cpu_reference(device, tmp_path: Path):
-    rng = np.random.default_rng(3302)
-    trainer = _make_loss_only_trainer(
-        device,
-        tmp_path,
-        width=9,
-        height=7,
-        training_hparams=TrainingHyperParams(
-            background_mode=TRAIN_BACKGROUND_MODE_CUSTOM,
-            background=(0.0, 0.0, 0.0),
-            density_regularizer=0.0,
-            depth_ratio_weight=0.0,
-            ssim_weight=0.0,
-            high_frequency_weight=1.0,
-            low_frequency_weight=0.0,
-        ),
-        image_name="high_frequency_l1_target.png",
-        image_id=40,
-    )
-    rendered = rng.uniform(0.05, 0.95, size=(7, 9, 4)).astype(np.float32)
-    target = rng.uniform(0.05, 0.95, size=(7, 9, 4)).astype(np.float32)
-    rendered[..., 3] = 1.0
-    target[..., 3] = 1.0
-
-    _dispatch_manual_loss(trainer, rendered, target, run_backward=False)
-    expected_loss, expected_total, _, _ = _blended_rgb_metrics_np(
-        rendered,
-        target,
-        ssim_weight=0.0,
-        high_frequency_weight=1.0,
-        use_target_alpha_mask=False,
-    )
-
-    total, _, density = trainer._read_loss_metrics()
-    assert density == 0.0
-    np.testing.assert_allclose(total, expected_total, rtol=0.0, atol=2e-6)
-    np.testing.assert_allclose(_read_training_rgb_loss(trainer.renderer), expected_loss, rtol=0.0, atol=2e-6)
-
-
 def test_ssim_backward_matches_torch_image_gradients(device, tmp_path: Path):
     rng = np.random.default_rng(1234)
     trainer = _make_loss_only_trainer(
@@ -1203,80 +1102,6 @@ def test_ssim_backward_matches_torch_image_gradients(device, tmp_path: Path):
     torch_grad = _torch_blended_rgb_grad_np(rendered, target, ssim_weight=trainer.training.ssim_weight)
 
     np.testing.assert_allclose(gpu_grad, torch_grad, rtol=0.0, atol=1.6e-3)
-
-
-def test_frequency_split_backward_matches_torch_image_gradients(device, tmp_path: Path):
-    rng = np.random.default_rng(3303)
-    trainer = _make_loss_only_trainer(
-        device,
-        tmp_path,
-        width=12,
-        height=12,
-        training_hparams=TrainingHyperParams(
-            background_mode=TRAIN_BACKGROUND_MODE_CUSTOM,
-            background=(0.0, 0.0, 0.0),
-            density_regularizer=0.0,
-            depth_ratio_weight=0.0,
-            ssim_weight=0.2,
-            high_frequency_weight=0.25,
-            low_frequency_weight=0.15,
-        ),
-        image_name="frequency_split_torch_grad_target.png",
-        image_id=41,
-    )
-    rendered = rng.uniform(0.05, 0.95, size=(12, 12, 4)).astype(np.float32)
-    target = rng.uniform(0.05, 0.95, size=(12, 12, 4)).astype(np.float32)
-    rendered[..., 3] = 1.0
-    target[..., 3] = 1.0
-
-    _dispatch_manual_loss(trainer, rendered, target)
-    gpu_grad = _read_output_grads(trainer.renderer)[..., :3]
-    torch_grad = _torch_blended_rgb_grad_np(rendered, target, ssim_weight=0.2, high_frequency_weight=0.25, low_frequency_weight=0.15)
-
-    np.testing.assert_allclose(gpu_grad, torch_grad, rtol=0.0, atol=1.6e-3)
-
-
-def test_image_loss_weight_normalization_matches_gpu_loss(device, tmp_path: Path):
-    rng = np.random.default_rng(3304)
-    trainer = _make_loss_only_trainer(
-        device,
-        tmp_path,
-        width=8,
-        height=8,
-        training_hparams=TrainingHyperParams(
-            background_mode=TRAIN_BACKGROUND_MODE_CUSTOM,
-            background=(0.0, 0.0, 0.0),
-            density_regularizer=0.0,
-            depth_ratio_weight=0.0,
-            ssim_weight=0.7,
-            high_frequency_weight=0.7,
-            low_frequency_weight=0.1,
-        ),
-        image_name="frequency_weight_normalization_target.png",
-        image_id=42,
-    )
-    rendered = rng.uniform(0.05, 0.95, size=(8, 8, 4)).astype(np.float32)
-    target = rng.uniform(0.05, 0.95, size=(8, 8, 4)).astype(np.float32)
-    rendered[..., 3] = 1.0
-    target[..., 3] = 1.0
-
-    _dispatch_manual_loss(trainer, rendered, target, run_backward=False)
-    normal, ssim, high, low = resolve_image_loss_weights(trainer.training, 0)
-    expected_loss, expected_total, _, _ = _blended_rgb_metrics_np(
-        rendered,
-        target,
-        ssim_weight=trainer.training.ssim_weight,
-        high_frequency_weight=trainer.training.high_frequency_weight,
-        low_frequency_weight=trainer.training.low_frequency_weight,
-        use_target_alpha_mask=False,
-    )
-
-    assert normal == 0.0
-    np.testing.assert_allclose(ssim + high + low, 1.0, rtol=0.0, atol=1e-7)
-    total, _, density = trainer._read_loss_metrics()
-    assert density == 0.0
-    np.testing.assert_allclose(total, expected_total, rtol=0.0, atol=2e-6)
-    np.testing.assert_allclose(_read_training_rgb_loss(trainer.renderer), expected_loss, rtol=0.0, atol=2e-6)
 
 
 def test_ssim_backward_matches_torch_garden_blur_distortion(device, tmp_path: Path):
