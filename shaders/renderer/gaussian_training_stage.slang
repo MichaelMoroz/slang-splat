@@ -1047,7 +1047,6 @@ void csComputeSSIMBlurredGradients(uint3 dispatchThreadID : SV_DispatchThreadID)
     float3 targetLoss = training_target_loss_colorspace_rgb(training_target_rgb(pixel));
     float lossScale = g_InvPixelCount * targetMask;
     if (g_LowFrequencyWeight > 0.0) grads.x += rgb_l1_grad(moments.x, moments.y) * (g_LowFrequencyWeight * lossScale);
-    if (g_HighFrequencyWeight > 0.0) grads.x -= rgb_l1_grad(renderedLoss - moments.x, targetLoss - moments.y) * (g_HighFrequencyWeight * lossScale);
     store_ssim_rendered_moment_grads(g_SSIMBlurredFeatureGrads, pixel, grads);
 }
 

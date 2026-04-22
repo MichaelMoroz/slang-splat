@@ -94,7 +94,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
   - `csComputeSSIMFeatures`: converts rendered and target RGB into BT.601 YCbCr and writes 15 channels of per-pixel moments (`x`, `y`, `x²`, `y²`, `xy`) into a flat buffer.
   - The separable Gaussian buffer blur utility blurs those 15 channels in two dispatches and is reused unchanged for the blur adjoint in backward.
   - `csComputeBlendedLossForward`: computes RGB MSE plus the four-term RGB reconstruction loss: normal L1, low-frequency L1 on blurred means, high-frequency L1 on residuals after subtracting blurred means, and DSSIM, then adds density and depth-ratio regularization into the scalar metrics buffer used by the host.
-  - `csComputeSSIMBlurredGradients`: differentiates DSSIM and the low/high-frequency L1 mean terms with respect to the blurred rendered-side moments.
+  - `csComputeSSIMBlurredGradients`: differentiates DSSIM and the low-frequency L1 mean term with respect to the blurred rendered-side moments; the high-frequency term treats the blurred rendered mean as a fixed split baseline for gradient purposes.
   - `csComputeBlendedLossBackward`: combines the direct normal/high-frequency RGB L1 image gradients with the blur-adjoint and DSSIM image gradients and writes the final image-space gradient into `g_OutputGrad`.
 - The fixed-count trainer runs forward as `rasterize -> feature extraction -> blur -> loss forward`, then backward as `blurred-moment grad -> blur adjoint -> loss backward -> raster backward -> optimizer`, so the training path keeps distinct forward and backward kernels while still reusing the packed-parameter optimizer path.
 
