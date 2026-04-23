@@ -339,7 +339,7 @@ def test_apply_camera_fit_to_training_views_updates_free_fly_state() -> None:
     assert np.allclose(np.asarray(viewer.s.rot_vel, dtype=np.float32), np.zeros((2,), dtype=np.float32))
 
 
-def test_renderer_params_maps_adam_momentum_to_grad_norm_log_range() -> None:
+def test_renderer_params_maps_adam_moment_modes_to_grad_norm_log_range() -> None:
     controls = {
         "cached_raster_grad_atomic_mode": SimpleNamespace(value=1),
         "debug_mode": SimpleNamespace(value=app._DEBUG_MODE_VALUES.index("adam_momentum")),
@@ -380,15 +380,17 @@ def test_renderer_params_maps_adam_momentum_to_grad_norm_log_range() -> None:
         c=lambda key: controls[key],
     )
 
-    params = app.SplatViewer.renderer_params(viewer, allow_debug_overlays=True)
+    for mode in ("adam_momentum", "adam_second_moment"):
+        controls["debug_mode"].value = app._DEBUG_MODE_VALUES.index(mode)
+        params = app.SplatViewer.renderer_params(viewer, allow_debug_overlays=True)
 
-    assert params.debug_mode == "adam_momentum"
-    assert params.debug_gaussian_scale_multiplier == 1.5
-    assert params.debug_min_opacity == 0.05
-    assert params.debug_opacity_multiplier == 2.0
-    assert params.debug_ellipse_scale_multiplier == 0.75
-    assert np.isclose(params.debug_adam_momentum_range[0], 2e-7, rtol=0.0, atol=1e-15)
-    assert np.isclose(params.debug_adam_momentum_range[1], 2e-3, rtol=0.0, atol=1e-15)
+        assert params.debug_mode == mode
+        assert params.debug_gaussian_scale_multiplier == 1.5
+        assert params.debug_min_opacity == 0.05
+        assert params.debug_opacity_multiplier == 2.0
+        assert params.debug_ellipse_scale_multiplier == 0.75
+        assert np.isclose(params.debug_adam_momentum_range[0], 2e-7, rtol=0.0, atol=1e-15)
+        assert np.isclose(params.debug_adam_momentum_range[1], 2e-3, rtol=0.0, atol=1e-15)
 
 
 def test_export_ply_callback_saves_active_scene(monkeypatch, tmp_path: Path) -> None:

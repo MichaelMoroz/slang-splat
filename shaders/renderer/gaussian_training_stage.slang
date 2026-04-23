@@ -537,16 +537,16 @@ float solve_refinement_split_alpha(float parentAlpha, uint splatId, uint familyS
     return hi;
 }
 
-float refinement_first_moment_weight(uint splatId)
+float refinement_second_moment_weight(uint splatId)
 {
-    float sumSq = 0.0;
+    float sum = 0.0;
     [unroll] for (uint paramId = 0u; paramId < TRAINABLE_PARAM_COUNT; paramId++)
     {
-        float moment = load_adam_moment(g_SrcAdamMoments, g_SrcSplatCount, paramId, splatId).x;
+        float moment = load_adam_moment(g_SrcAdamMoments, g_SrcSplatCount, paramId, splatId).y;
         if (!isfinite(moment)) continue;
-        sumSq += moment * moment;
+        sum += max(moment, 0.0);
     }
-    return sqrt(max(sumSq, 0.0));
+    return sqrt(max(sum, 0.0));
 }
 
 float position_random_step_gate(float opacity)
@@ -1169,7 +1169,7 @@ void csPrepareRefinementSamplingWeights(uint3 dispatchThreadID : SV_DispatchThre
     float alpha = opacity_from_raw(load_splat_param(g_SrcSplatParams, g_SrcSplatCount, PARAM_RAW_OPACITY, splatId));
     bool eligible = !should_cull_refinement_splat(alpha, g_SplatContribution[splatId]);
     g_RefinementEligibleMask[splatId] = eligible ? 1u : 0u;
-    g_RefinementWeights[splatId] = eligible ? pow(max(refinement_first_moment_weight(splatId), 0.0), g_RefinementMomentumWeightExponent) : 0.0;
+    g_RefinementWeights[splatId] = eligible ? pow(max(refinement_second_moment_weight(splatId), 0.0), g_RefinementMomentumWeightExponent) : 0.0;
 }
 
 [shader("compute")]

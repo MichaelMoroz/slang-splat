@@ -85,7 +85,7 @@ Each trainer `step()` performs:
   - cull splats with alpha below `refinement_alpha_cull_threshold`,
   - multiply the user-facing minimum contribution count by `refinement_min_contribution_decay` after each completed refinement pass (`0.995` by default, i.e. a `0.5%` drop per pass),
   - round that decayed threshold to a non-negative integer count and pass it directly to the shader as `g_RefinementMinContributionThreshold`,
-  - compute clone resampling weights as `pow(norm(adam_first_moment), refinement_momentum_weight_exponent)` over eligible splats, then prefix-sum those weights and binary-search random samples against the cumulative distribution,
+  - compute clone resampling weights as `pow(sqrt(sum(adam_second_moment)), refinement_momentum_weight_exponent)` over eligible splats, then prefix-sum those weights and binary-search random samples against the cumulative distribution,
   - split selected splats into `N + 1` family members from the accumulated clone counts using centered circular Fibonacci samples on the gaussian's largest-area local plane, seeded from a Python-provided hash of the selected training-frame `image_id`,
   - `refinement_sample_radius` controls that local-plane sampling radius at runtime,
   - `refinement_clone_scale_mul` multiplies the split-family sigma after the default `family_size^(-1/3)` shrink and defaults to `1.0`,

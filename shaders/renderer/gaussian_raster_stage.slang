@@ -357,6 +357,18 @@ float raster_adam_momentum_length(uint splatId)
     return sqrt(max(momentumSq, 0.0));
 }
 
+float raster_adam_second_moment_length(uint splatId)
+{
+    uint splatCount = g_Prepass.splatCount;
+    float secondMomentSum = 0.0;
+    [unroll] for (uint paramId = 0u; paramId < TRAINABLE_PARAM_COUNT; paramId++)
+    {
+        float moment = g_DebugAdamMoments[raster_adam_moment_index(splatCount, paramId, splatId)].y;
+        if (isfinite(moment)) secondMomentSum += max(moment, 0.0);
+    }
+    return sqrt(max(secondMomentSum, 0.0));
+}
+
 float3 raster_forward_color(RasterGaussian gaussian, uint splatId, uint debugMode)
 {
     if (debugMode == DEBUG_MODE_SH_VIEW_DEPENDENT) return raster_debug_signed_color(gaussian_sh_view_dependent_component(load_gaussian3d(splatId), g_Camera.camPos));
@@ -364,6 +376,7 @@ float3 raster_forward_color(RasterGaussian gaussian, uint splatId, uint debugMod
     if (debugMode == DEBUG_MODE_SPLAT_AGE) return raster_splat_age_color(g_SplatAges[splatId]);
     if (debugMode == DEBUG_MODE_CONTRIBUTION_AMOUNT) return raster_contribution_amount_color(g_SplatContribution[splatId]);
     if (debugMode == DEBUG_MODE_ADAM_MOMENTUM) return jet_colormap(raster_normalize_threshold_band(raster_adam_momentum_length(splatId), raster_threshold_from_range(g_Raster.debugAdamMomentumRange)));
+    if (debugMode == DEBUG_MODE_ADAM_SECOND_MOMENT) return jet_colormap(raster_normalize_threshold_band(raster_adam_second_moment_length(splatId), raster_threshold_from_range(g_Raster.debugAdamMomentumRange)));
     if (debugMode == DEBUG_MODE_BLACK_NEGATIVE)
     {
         float3 color = gaussian.colorAlpha.xyz;

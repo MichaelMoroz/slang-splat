@@ -1631,8 +1631,8 @@ def test_refinement_sampling_prefers_higher_momentum_norm(device, tmp_path: Path
     trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.full((scene.count,), 500, dtype=np.uint32))
 
     moments = np.zeros((renderer.TRAINABLE_PARAM_COUNT, scene.count, 2), dtype=np.float32)
-    moments[:, 0, 0] = 1.0
-    moments[:, 1, 0] = 0.05
+    moments[0, 0, 1] = 1.0
+    moments[0, 1, 1] = 0.05 * 0.05
     trainer.adam_optimizer.buffers["adam_moments"].copy_from_numpy(moments.reshape(-1, 2))
 
     selections = np.zeros((scene.count,), dtype=np.int32)
@@ -1667,7 +1667,7 @@ def test_refinement_sampling_exponent_controls_momentum_spikiness(device, tmp_pa
     trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.full((scene.count,), 500, dtype=np.uint32))
 
     moments = np.zeros((renderer.TRAINABLE_PARAM_COUNT, scene.count, 2), dtype=np.float32)
-    moments[:, :, 0] = np.array([2.0, 4.0], dtype=np.float32)[None, :]
+    moments[0, :, 1] = np.array([4.0, 16.0], dtype=np.float32)
     trainer.adam_optimizer.buffers["adam_moments"].copy_from_numpy(moments.reshape(-1, 2))
 
     selections = np.zeros((scene.count,), dtype=np.int32)
@@ -1698,7 +1698,7 @@ def test_refinement_sampling_is_seed_reproducible(device, tmp_path: Path) -> Non
     trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.full((scene.count,), 500, dtype=np.uint32))
 
     moments = np.zeros((renderer.TRAINABLE_PARAM_COUNT, scene.count, 2), dtype=np.float32)
-    moments[:, :, 0] = np.array([1.0, 0.5, 0.25], dtype=np.float32)[None, :]
+    moments[0, :, 1] = np.array([1.0, 0.25, 0.0625], dtype=np.float32)
     trainer.adam_optimizer.buffers["adam_moments"].copy_from_numpy(moments.reshape(-1, 2))
 
     trainer._seed = 77
@@ -1725,7 +1725,7 @@ def test_refinement_sampling_respects_budget_and_clone_cap(device, tmp_path: Pat
     trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.full((scene.count,), 500, dtype=np.uint32))
 
     moments = np.zeros((renderer.TRAINABLE_PARAM_COUNT, scene.count, 2), dtype=np.float32)
-    moments[:, :, 0] = 1.0
+    moments[:, :, 1] = 1.0
     trainer.adam_optimizer.buffers["adam_moments"].copy_from_numpy(moments.reshape(-1, 2))
 
     clone_counts, survivor_mask = trainer._sample_refinement_clone_counts()
@@ -1776,7 +1776,7 @@ def test_refinement_sampling_single_nonzero_weight_always_selects_that_splat(dev
 
     selected_splat = 5
     moments = np.zeros((renderer.TRAINABLE_PARAM_COUNT, scene.count, 2), dtype=np.float32)
-    moments[:, selected_splat, 0] = 1.0
+    moments[:, selected_splat, 1] = 1.0
     trainer.adam_optimizer.buffers["adam_moments"].copy_from_numpy(moments.reshape(-1, 2))
 
     expected = np.zeros((scene.count,), dtype=np.uint32)
@@ -1805,7 +1805,7 @@ def test_refinement_sampling_routes_all_mass_to_single_positive_weight(device, t
     trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.full((scene.count,), 500, dtype=np.uint32))
 
     moments = np.zeros((renderer.TRAINABLE_PARAM_COUNT, scene.count, 2), dtype=np.float32)
-    moments[:, 0, 0] = 1.0
+    moments[:, 0, 1] = 1.0
     trainer.adam_optimizer.buffers["adam_moments"].copy_from_numpy(moments.reshape(-1, 2))
 
     clone_counts, survivor_mask = trainer._sample_refinement_clone_counts()
@@ -1833,7 +1833,7 @@ def test_refinement_growth_ratio_realizes_full_budget_when_mass_concentrates(dev
 
     selected_splat = 3
     moments = np.zeros((renderer.TRAINABLE_PARAM_COUNT, scene.count, 2), dtype=np.float32)
-    moments[:, selected_splat, 0] = 1.0
+    moments[:, selected_splat, 1] = 1.0
     trainer.adam_optimizer.buffers["adam_moments"].copy_from_numpy(moments.reshape(-1, 2))
 
     budget = trainer.refinement_clone_budget()

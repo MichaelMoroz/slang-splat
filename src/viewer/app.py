@@ -46,6 +46,7 @@ _DEBUG_MODE_VALUES = (
     GaussianRenderer.DEBUG_MODE_SPLAT_SCREEN_DENSITY,
     GaussianRenderer.DEBUG_MODE_CONTRIBUTION_AMOUNT,
     GaussianRenderer.DEBUG_MODE_ADAM_MOMENTUM,
+    GaussianRenderer.DEBUG_MODE_ADAM_SECOND_MOMENT,
     GaussianRenderer.DEBUG_MODE_DEPTH_MEAN,
     GaussianRenderer.DEBUG_MODE_DEPTH_STD,
     GaussianRenderer.DEBUG_MODE_DEPTH_LOCAL_MISMATCH,

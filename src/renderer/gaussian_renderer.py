@@ -116,6 +116,7 @@ class GaussianRenderer:
     DEBUG_MODE_GRAD_NORM = "grad_norm"
     DEBUG_MODE_CONTRIBUTION_AMOUNT = "contribution_amount"
     DEBUG_MODE_ADAM_MOMENTUM = "adam_momentum"
+    DEBUG_MODE_ADAM_SECOND_MOMENT = "adam_second_moment"
     DEBUG_MODE_SH_VIEW_DEPENDENT = "sh_view_dependent"
     DEBUG_MODE_SH_COEFFICIENT = "sh_coefficient"
     DEBUG_MODE_BLACK_NEGATIVE = "black_negative"
@@ -133,6 +134,7 @@ class GaussianRenderer:
         DEBUG_MODE_SPLAT_DENSITY,
         DEBUG_MODE_CONTRIBUTION_AMOUNT,
         DEBUG_MODE_ADAM_MOMENTUM,
+        DEBUG_MODE_ADAM_SECOND_MOMENT,
         DEBUG_MODE_SH_VIEW_DEPENDENT,
         DEBUG_MODE_SH_COEFFICIENT,
         DEBUG_MODE_BLACK_NEGATIVE,
@@ -357,7 +359,7 @@ class GaussianRenderer:
         return {"g_SplatContribution": self._debug_splat_contribution_buffer if self._debug_splat_contribution_buffer is not None else self._work_buffers["training_splat_contribution"]}
 
     def _debug_adam_moments_var(self) -> dict[str, object]:
-        if self._debug_adam_moments_buffer is None: raise RuntimeError("Adam momentum debug mode requires an Adam moments buffer.")
+        if self._debug_adam_moments_buffer is None: raise RuntimeError("Adam moment debug mode requires an Adam moments buffer.")
         return {"g_DebugAdamMoments": self._debug_adam_moments_buffer}
 
     @classmethod
@@ -1151,7 +1153,7 @@ class GaussianRenderer:
             vars.update(self._debug_splat_age_var())
         if self.debug_mode == self.DEBUG_MODE_CONTRIBUTION_AMOUNT:
             vars.update(self._debug_splat_contribution_var())
-        if self.debug_mode == self.DEBUG_MODE_ADAM_MOMENTUM:
+        if self.debug_mode in (self.DEBUG_MODE_ADAM_MOMENTUM, self.DEBUG_MODE_ADAM_SECOND_MOMENT):
             vars.update(self._debug_adam_moments_var())
         if self.debug_mode == self.DEBUG_MODE_GRAD_NORM:
             vars.update(self._debug_grad_norm_var())

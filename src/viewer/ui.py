@@ -118,6 +118,7 @@ _DEBUG_MODE_VALUES = (
     "splat_screen_density",
     "contribution_amount",
     "adam_momentum",
+    "adam_second_moment",
     "depth_mean",
     "depth_std",
     "depth_local_mismatch",
@@ -136,6 +137,7 @@ _DEBUG_MODE_LABELS = (
     "Screen Density",
     "Contribution Amount",
     "Adam Momentum",
+    "Adam Second Moment",
     "Depth Mean",
     "Depth Std",
     "Depth Local Mismatch",
@@ -346,7 +348,7 @@ def _renderer_debug_control_keys(mode: str) -> tuple[str, ...]:
     if mode == "splat_age": return ("debug_mode", "debug_splat_age_min", "debug_splat_age_max")
     if mode in ("splat_density", "splat_spatial_density", "splat_screen_density"): return ("debug_mode", "debug_density_min", "debug_density_max")
     if mode == "contribution_amount": return ("debug_mode", "debug_contribution_min", "debug_contribution_max")
-    if mode == "adam_momentum": return ("debug_mode", "debug_grad_norm_threshold")
+    if mode in ("adam_momentum", "adam_second_moment"): return ("debug_mode", "debug_grad_norm_threshold")
     if mode == "depth_mean": return ("debug_mode", "debug_depth_mean_min", "debug_depth_mean_max")
     if mode == "depth_std": return ("debug_mode", "debug_depth_std_min", "debug_depth_std_max")
     if mode == "depth_local_mismatch": return ("debug_mode", "debug_depth_local_mismatch_min", "debug_depth_local_mismatch_max", "debug_depth_local_mismatch_smooth_radius", "debug_depth_local_mismatch_reject_radius")
@@ -1508,6 +1510,7 @@ class ToolkitWindow:
             "splat_screen_density": "Screen Density",
             "contribution_amount": "Contribution Amount",
             "adam_momentum": "Adam Momentum",
+            "adam_second_moment": "Adam Second Moment",
             "depth_mean": "Depth Mean",
             "depth_std": "Depth Std",
             "depth_local_mismatch": "Depth Local Mismatch",
@@ -1527,7 +1530,7 @@ class ToolkitWindow:
             return f"{_debug_range_tick_value(t, float(ui._values.get('debug_density_min', 0.0)), float(ui._values.get('debug_density_max', 20.0))):.3g}"
         if mode == "contribution_amount":
             return f"{_contribution_amount_tick_value(t, float(ui._values.get('debug_contribution_min', 0.001)), float(ui._values.get('debug_contribution_max', 1.0))):.1e}"
-        if mode == "adam_momentum":
+        if mode in ("adam_momentum", "adam_second_moment"):
             threshold = float(ui._values.get("debug_grad_norm_threshold", _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT))
             return f"{_threshold_band_tick_value(t, threshold):.1e}"
         if mode == "depth_mean":
@@ -2555,7 +2558,7 @@ class ToolkitWindow:
         "debug_density_max": "Upper bound for density debug heatmaps",
         "debug_contribution_min": "Lower bound for the log-scaled contribution heatmap in percent of observed dataset pixels",
         "debug_contribution_max": "Upper bound for the log-scaled contribution heatmap in percent of observed dataset pixels",
-        "debug_adam_momentum_threshold": "Reference threshold for the per-splat Adam first-moment length heatmap; the displayed range is derived around it on a log scale",
+        "debug_adam_momentum_threshold": "Reference threshold for the per-splat Adam moment heatmaps; the displayed range is derived around it on a log scale",
         "debug_depth_mean_min": "Lower bound for depth mean debug heatmap",
         "debug_depth_mean_max": "Upper bound for depth mean debug heatmap",
         "debug_depth_std_min": "Lower bound for depth standard deviation heatmap",
@@ -2614,7 +2617,7 @@ class ToolkitWindow:
         "refinement_use_compact_split": "Use the compact split shrink rule instead of the legacy N^(-1/3) refinement shrink",
         "refinement_solve_opacity": "Solve one shared child alpha per split family so composed center transmittance matches the parent",
         "refinement_split_beta": "Exponent used by compact split shrink: child sigma scales as N^(-beta)",
-        "refinement_momentum_weight_exponent": "Exponent applied to Adam first-moment norm before prefix-sum refinement clone resampling",
+        "refinement_momentum_weight_exponent": "Exponent applied to Adam second-moment RMS norm before prefix-sum refinement clone resampling",
         "density_regularizer": "Weight applied to the per-pixel hinge penalty max(density - max_allowed_density, 0)",
         "depth_ratio_weight": "Stage 0 depth-ratio regularizer weight; when scheduling is disabled this value is used for the whole run",
         "sorting_order_dithering": "Stage 0 sort-camera dither amount; when scheduling is disabled this value is used for the whole run",
