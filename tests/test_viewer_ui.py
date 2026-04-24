@@ -119,6 +119,8 @@ def test_build_ui_initializes_control_groups_and_internal_state() -> None:
         "refinement_momentum_weight_exponent",
         "colmap_init_mode",
         "colmap_depth_root",
+        "colmap_fibonacci_sphere_point_count",
+        "colmap_fibonacci_sphere_radius",
         "colmap_selected_camera_ids",
         "debug_gaussian_scale_multiplier",
         "debug_min_opacity",

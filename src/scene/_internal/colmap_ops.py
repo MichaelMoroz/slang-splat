@@ -39,6 +39,8 @@ DEPTH_INIT_DISTANCE_FLOOR = 1e-4
 DEPTH_INIT_VALUE_DISTANCE = "distance"
 DEPTH_INIT_VALUE_Z_DEPTH = "z_depth"
 DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH = 3
+FIBONACCI_SPHERE_GOLDEN_ANGLE = np.pi * (3.0 - np.sqrt(5.0))
+FIBONACCI_SPHERE_COLOR = np.array([0.8, 0.8, 0.8], dtype=np.float32)
 
 
 @dataclass(slots=True)
@@ -187,6 +189,33 @@ def _min_track_length_error(min_track_length: int) -> str:
 def _colmap_point_positions(recon: ColmapReconstruction, min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH) -> np.ndarray:
     points = point_tables(recon, min_track_length=min_track_length)[0]
     return points[np.isfinite(points).all(axis=1)]
+
+
+def colmap_camera_centers(recon: ColmapReconstruction) -> np.ndarray:
+    centers = [_camera_to_world_pose(image.q_wxyz, image.t_xyz)[:3, 3] for _, image in sorted(recon.images.items())]
+    return np.ascontiguousarray(np.stack(centers, axis=0), dtype=np.float32) if centers else np.zeros((0, 3), dtype=np.float32)
+
+
+def sample_colmap_fibonacci_sphere_points(
+    recon: ColmapReconstruction,
+    point_count: int,
+    radius: float = 20.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    count = max(int(point_count), 0)
+    if count <= 0:
+        return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.float32)
+    centers = colmap_camera_centers(recon)
+    if centers.shape[0] == 0:
+        raise RuntimeError("Fibonacci sphere initialization requires at least one COLMAP camera pose.")
+    center = np.mean(centers, axis=0, dtype=np.float32)
+    indices = np.arange(count, dtype=np.float32)
+    z = np.float32(1.0) - np.float32(2.0) * (indices + np.float32(0.5)) / np.float32(count)
+    xy_radius = np.sqrt(np.maximum(np.float32(0.0), np.float32(1.0) - z * z)).astype(np.float32)
+    theta = indices * np.float32(FIBONACCI_SPHERE_GOLDEN_ANGLE)
+    directions = np.stack((np.cos(theta) * xy_radius, z, np.sin(theta) * xy_radius), axis=1).astype(np.float32)
+    positions = center[None, :] + directions * np.float32(max(float(radius), 0.0))
+    colors = np.repeat(FIBONACCI_SPHERE_COLOR[None, :], count, axis=0)
+    return np.ascontiguousarray(positions, dtype=np.float32), np.ascontiguousarray(colors, dtype=np.float32)
 
 
 def _subsample_points(points: np.ndarray, max_points: int) -> np.ndarray:

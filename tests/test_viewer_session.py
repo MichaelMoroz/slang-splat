@@ -814,6 +814,8 @@ def test_colmap_import_settings_defaults_prefer_pointcloud() -> None:
     assert defaults.selected_camera_ids == ()
     assert defaults.depth_value_mode == "z_depth"
     assert defaults.depth_point_count == 100000
+    assert defaults.fibonacci_sphere_point_count == 0
+    assert defaults.fibonacci_sphere_radius == 20.0
     assert defaults.use_target_alpha_mask is False
 
 
@@ -1191,6 +1193,38 @@ def test_build_initial_training_scene_uses_cached_diffused_points(monkeypatch) -
 
     assert scene is built_scene
     assert scale_reg_reference == 0.25
+
+
+def test_build_initial_training_scene_appends_cached_fibonacci_points_after_pointcloud_cap(monkeypatch) -> None:
+    cached_positions = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 1.0, 0.0]], dtype=np.float32)
+    cached_colors = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.8, 0.8, 0.8], [0.8, 0.8, 0.8]], dtype=np.float32)
+    built_scene = SimpleNamespace(count=3)
+    viewer = SimpleNamespace(
+        s=SimpleNamespace(
+            colmap_recon=object(),
+            colmap_root=Path("dataset/garden"),
+            colmap_import=SimpleNamespace(init_mode="pointcloud", nn_radius_scale_coef=0.5, min_track_length=3, fibonacci_sphere_point_count=2),
+            cached_init_point_positions=cached_positions,
+            cached_init_point_colors=cached_colors,
+            cached_init_scene=None,
+            cached_init_signature=("cached",),
+        )
+    )
+
+    expected_positions = np.array([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 1.0, 0.0]], dtype=np.float32)
+    expected_colors = np.array([[1.0, 0.0, 0.0], [0.8, 0.8, 0.8], [0.8, 0.8, 0.8]], dtype=np.float32)
+    monkeypatch.setattr(session, "_ensure_cached_init_source", lambda viewer_obj, init: None)
+    monkeypatch.setattr(
+        session,
+        "_diffused_pointcloud_init_hparams_from_positions",
+        lambda recon, positions, init_hparams, nn_radius_scale_coef, min_track_length: SimpleNamespace(base_scale=0.5) if np.array_equal(positions, expected_positions) else (_ for _ in ()).throw(AssertionError("fibonacci points were not appended after pointcloud cap")),
+    )
+    monkeypatch.setattr(session, "initialize_scene_from_points_colors", lambda positions, colors, seed, init_hparams: built_scene if np.array_equal(positions, expected_positions) and np.array_equal(colors, expected_colors) else (_ for _ in ()).throw(AssertionError("unexpected initializer data")))
+
+    scene, scale_reg_reference = session._build_initial_training_scene(viewer, SimpleNamespace(seed=7), SimpleNamespace(training=SimpleNamespace(max_gaussians=1)), SimpleNamespace())
+
+    assert scene is built_scene
+    assert scale_reg_reference == 0.5
 
 
 def test_apply_live_params_defers_subsample_runtime_change_until_resize(monkeypatch) -> None:

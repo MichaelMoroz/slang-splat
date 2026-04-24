@@ -25,6 +25,7 @@ from ..scene import (
     load_gaussian_ply,
     resolve_colmap_init_hparams,
     sample_colmap_diffused_points,
+    sample_colmap_fibonacci_sphere_points,
     transform_colmap_reconstruction_pca,
 )
 from ..scene._internal.colmap_ops import point_nn_scales, resolve_training_frame_image_size
@@ -448,6 +449,8 @@ def _update_import_settings(
     depth_point_count: int,
     diffused_point_count: int,
     diffusion_radius: float,
+    fibonacci_sphere_point_count: int,
+    fibonacci_sphere_radius: float,
     use_target_alpha_mask: bool,
 ) -> None:
     viewer.s.colmap_import = ColmapImportSettings(
@@ -467,6 +470,8 @@ def _update_import_settings(
         depth_point_count=max(int(depth_point_count), 1),
         diffused_point_count=max(int(diffused_point_count), 1),
         diffusion_radius=max(float(diffusion_radius), 0.0),
+        fibonacci_sphere_point_count=max(int(fibonacci_sphere_point_count), 0),
+        fibonacci_sphere_radius=max(float(fibonacci_sphere_radius), 0.0),
         use_target_alpha_mask=bool(use_target_alpha_mask),
     )
     _set_ui_path(viewer, "colmap_root_path", dataset_root)
@@ -491,6 +496,8 @@ def _update_import_settings(
     viewer.ui._values["colmap_depth_point_count"] = max(int(depth_point_count), 1)
     viewer.ui._values["colmap_diffused_point_count"] = max(int(diffused_point_count), 1)
     viewer.ui._values["colmap_diffusion_radius"] = max(float(diffusion_radius), 0.0)
+    viewer.ui._values["colmap_fibonacci_sphere_point_count"] = max(int(fibonacci_sphere_point_count), 0)
+    viewer.ui._values["colmap_fibonacci_sphere_radius"] = max(float(fibonacci_sphere_radius), 0.0)
     viewer.ui._values["use_target_alpha_mask"] = bool(use_target_alpha_mask)
 
 
@@ -702,6 +709,23 @@ def _diffused_pointcloud_init_hparams_from_positions(recon: object, positions: n
     return replace(resolved, base_scale=float(max(float(nn_radius_scale_coef), 1e-4) * max(median_nn_scale, 1e-6)))
 
 
+def _append_fibonacci_sphere_points(
+    recon: object,
+    positions: np.ndarray,
+    colors: np.ndarray,
+    point_count: int,
+    radius: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    count = max(int(point_count), 0)
+    if count <= 0:
+        return positions, colors
+    sphere_positions, sphere_colors = sample_colmap_fibonacci_sphere_points(recon, count, radius)
+    return (
+        np.ascontiguousarray(np.concatenate((np.asarray(positions, dtype=np.float32), sphere_positions), axis=0), dtype=np.float32),
+        np.ascontiguousarray(np.concatenate((np.asarray(colors, dtype=np.float32), sphere_colors), axis=0), dtype=np.float32),
+    )
+
+
 def _copy_gaussian_scene(scene: GaussianScene) -> GaussianScene:
     return GaussianScene(
         positions=np.array(scene.positions, dtype=np.float32, copy=True),
@@ -737,6 +761,8 @@ def _cached_init_signature(viewer: object, init: object) -> tuple[object, ...] |
             round(float(import_cfg.image_downscale_scale), 6),
             min_track_length,
             int(import_cfg.depth_point_count),
+            int(getattr(import_cfg, "fibonacci_sphere_point_count", 0)),
+            round(float(getattr(import_cfg, "fibonacci_sphere_radius", 20.0)), 6),
         )
     return (
         None if viewer.s.colmap_root is None else str(Path(viewer.s.colmap_root).resolve()),
@@ -745,6 +771,8 @@ def _cached_init_signature(viewer: object, init: object) -> tuple[object, ...] |
         min_track_length,
         int(import_cfg.diffused_point_count),
         round(float(import_cfg.diffusion_radius), 6),
+        int(getattr(import_cfg, "fibonacci_sphere_point_count", 0)),
+        round(float(getattr(import_cfg, "fibonacci_sphere_radius", 20.0)), 6),
         int(init.seed),
     )
 
@@ -780,10 +808,16 @@ def _ensure_cached_init_source(viewer: object, init: object) -> None:
             init.seed,
             min_track_length=min_track_length,
         )
-        setattr(viewer.s, "cached_init_point_positions", np.array(positions, dtype=np.float32, copy=True))
-        setattr(viewer.s, "cached_init_point_colors", np.array(colors, dtype=np.float32, copy=True))
     else:
         positions, colors = _point_tables(viewer.s.colmap_recon, min_track_length)
+    if import_cfg.init_mode != _COLMAP_IMPORT_CUSTOM_PLY:
+        positions, colors = _append_fibonacci_sphere_points(
+            viewer.s.colmap_recon,
+            positions,
+            colors,
+            int(getattr(import_cfg, "fibonacci_sphere_point_count", 0)),
+            float(getattr(import_cfg, "fibonacci_sphere_radius", 20.0)),
+        )
         setattr(viewer.s, "cached_init_point_positions", np.array(positions, dtype=np.float32, copy=True))
         setattr(viewer.s, "cached_init_point_colors", np.array(colors, dtype=np.float32, copy=True))
     setattr(viewer.s, "cached_init_signature", signature)
@@ -1073,9 +1107,18 @@ def _build_initial_training_scene(viewer: object, init: object, params: object, 
         resolved_init = _diffused_pointcloud_init_hparams_from_positions(viewer.s.colmap_recon, positions, init_hparams, import_cfg.nn_radius_scale_coef, min_track_length)
         return initialize_scene_from_points_colors(positions, colors, init.seed, resolved_init), float(max(resolved_init.base_scale, 1e-8))
 
-    resolved_init = _pointcloud_init_hparams_from_positions(viewer.s.colmap_recon, positions, params.training.max_gaussians, init_hparams, import_cfg.nn_radius_scale_coef, min_track_length)
-    chosen_count = positions.shape[0] if params.training.max_gaussians <= 0 else min(max(int(params.training.max_gaussians), 1), positions.shape[0])
-    scene = initialize_scene_from_points_colors(positions[:chosen_count], colors[:chosen_count], init.seed, resolved_init)
+    sphere_count = min(max(int(getattr(import_cfg, "fibonacci_sphere_point_count", 0)), 0), int(positions.shape[0]))
+    base_count = int(positions.shape[0]) - sphere_count
+    chosen_base_count = base_count if params.training.max_gaussians <= 0 else min(max(int(params.training.max_gaussians), 1), base_count)
+    if sphere_count > 0:
+        chosen_positions = np.concatenate((positions[:chosen_base_count], positions[base_count:]), axis=0)
+        chosen_colors = np.concatenate((colors[:chosen_base_count], colors[base_count:]), axis=0)
+        resolved_init = _diffused_pointcloud_init_hparams_from_positions(viewer.s.colmap_recon, chosen_positions, init_hparams, import_cfg.nn_radius_scale_coef, min_track_length)
+    else:
+        chosen_positions = positions[:chosen_base_count]
+        chosen_colors = colors[:chosen_base_count]
+        resolved_init = _pointcloud_init_hparams_from_positions(viewer.s.colmap_recon, positions, params.training.max_gaussians, init_hparams, import_cfg.nn_radius_scale_coef, min_track_length)
+    scene = initialize_scene_from_points_colors(chosen_positions, chosen_colors, init.seed, resolved_init)
     return scene, float(max(resolved_init.base_scale, 1e-8))
 
 
@@ -1242,6 +1285,8 @@ def _finish_import_colmap_dataset(
     depth_point_count: int = 100000,
     diffused_point_count: int = 100000,
     diffusion_radius: float = 1.0,
+    fibonacci_sphere_point_count: int = 0,
+    fibonacci_sphere_radius: float = 20.0,
     use_target_alpha_mask: bool = False,
     recon: object = None,
     training_frames: list[ColmapFrame] | None = None,
@@ -1274,6 +1319,8 @@ def _finish_import_colmap_dataset(
         depth_point_count=depth_point_count,
         diffused_point_count=diffused_point_count,
         diffusion_radius=diffusion_radius,
+        fibonacci_sphere_point_count=fibonacci_sphere_point_count,
+        fibonacci_sphere_radius=fibonacci_sphere_radius,
         use_target_alpha_mask=use_target_alpha_mask,
     )
     viewer.s.colmap_root = Path(colmap_root)
@@ -1282,6 +1329,13 @@ def _finish_import_colmap_dataset(
     viewer.s.training_frames = list(training_frames)
     viewer.s.scene_path = None
     if cached_init_point_positions is not None and cached_init_point_colors is not None:
+        cached_init_point_positions, cached_init_point_colors = _append_fibonacci_sphere_points(
+            recon,
+            cached_init_point_positions,
+            cached_init_point_colors,
+            fibonacci_sphere_point_count,
+            fibonacci_sphere_radius,
+        )
         viewer.s.cached_init_point_positions = np.array(cached_init_point_positions, dtype=np.float32, copy=True)
         viewer.s.cached_init_point_colors = np.array(cached_init_point_colors, dtype=np.float32, copy=True)
         init_params_fn = getattr(viewer, "init_params", None)
@@ -1316,6 +1370,8 @@ def import_colmap_dataset(
     depth_point_count: int = 100000,
     diffused_point_count: int = 100000,
     diffusion_radius: float = 1.0,
+    fibonacci_sphere_point_count: int = 0,
+    fibonacci_sphere_radius: float = 20.0,
     use_target_alpha_mask: bool = False,
     compress_dataset_using_bc7: bool = False,
 ) -> None:
@@ -1370,6 +1426,8 @@ def import_colmap_dataset(
         depth_point_count=depth_point_count,
         diffused_point_count=diffused_point_count,
         diffusion_radius=diffusion_radius,
+        fibonacci_sphere_point_count=fibonacci_sphere_point_count,
+        fibonacci_sphere_radius=fibonacci_sphere_radius,
         use_target_alpha_mask=use_target_alpha_mask,
         recon=recon,
         training_frames=training_frames,
@@ -1400,6 +1458,8 @@ def import_colmap_from_ui(viewer: object) -> None:
     depth_point_count = max(int(viewer.ui._values.get("colmap_depth_point_count", 100000)), 1)
     diffused_point_count = max(int(viewer.ui._values.get("colmap_diffused_point_count", 100000)), 1)
     diffusion_radius = max(float(viewer.ui._values.get("colmap_diffusion_radius", 1.0)), 0.0)
+    fibonacci_sphere_point_count = max(int(viewer.ui._values.get("colmap_fibonacci_sphere_point_count", 0)), 0)
+    fibonacci_sphere_radius = max(float(viewer.ui._values.get("colmap_fibonacci_sphere_radius", 20.0)), 0.0)
     use_target_alpha_mask = bool(viewer.ui._values.get("use_target_alpha_mask", False))
     compress_dataset_using_bc7 = bool(viewer.ui._values.get("compress_dataset_using_bc7", False))
     if not colmap_root.exists():
@@ -1436,6 +1496,8 @@ def import_colmap_from_ui(viewer: object) -> None:
         depth_point_count=depth_point_count,
         diffused_point_count=diffused_point_count,
         diffusion_radius=diffusion_radius,
+        fibonacci_sphere_point_count=fibonacci_sphere_point_count,
+        fibonacci_sphere_radius=fibonacci_sphere_radius,
         use_target_alpha_mask=use_target_alpha_mask,
     )
     viewer.s.last_error = ""
@@ -1528,6 +1590,8 @@ def advance_colmap_import(viewer: object) -> None:
                 depth_point_count=progress.depth_point_count,
                 diffused_point_count=progress.diffused_point_count,
                 diffusion_radius=progress.diffusion_radius,
+                fibonacci_sphere_point_count=progress.fibonacci_sphere_point_count,
+                fibonacci_sphere_radius=progress.fibonacci_sphere_radius,
                 use_target_alpha_mask=progress.use_target_alpha_mask,
                 recon=progress.recon,
                 training_frames=progress.frames,

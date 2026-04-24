@@ -561,6 +561,8 @@ def export_repo_defaults_from_ui_values(values: dict[str, object]) -> dict[str, 
                     "colmap_depth_point_count": int(values["colmap_depth_point_count"]),
                     "colmap_diffused_point_count": int(values["colmap_diffused_point_count"]),
                     "colmap_diffusion_radius": float(values["colmap_diffusion_radius"]),
+                    "colmap_fibonacci_sphere_point_count": int(values["colmap_fibonacci_sphere_point_count"]),
+                    "colmap_fibonacci_sphere_radius": float(values["colmap_fibonacci_sphere_radius"]),
                 }
             ),
             "ui": json_value(
@@ -1870,6 +1872,36 @@ class ToolkitWindow:
                     ui._values["colmap_nn_radius_scale_coef"] = max(float(value), 1e-4)
                 if imgui.is_item_hovered():
                     imgui.set_item_tooltip("Multiplier applied to the median COLMAP nearest-neighbor radius when initializing gaussian scales.")
+                changed, enabled = imgui.checkbox("Append Fibonacci Sphere", int(ui._values.get("colmap_fibonacci_sphere_point_count", 0)) > 0)
+                if changed:
+                    ui._values["colmap_fibonacci_sphere_point_count"] = max(int(ui._values.get("colmap_fibonacci_sphere_point_count", 1024)), 1) if enabled else 0
+                if imgui.is_item_hovered():
+                    imgui.set_item_tooltip("Append evenly distributed shell points around the mean COLMAP camera center.")
+                if int(ui._values.get("colmap_fibonacci_sphere_point_count", 0)) > 0:
+                    changed, value = imgui.drag_int(
+                        "Sphere Point Count",
+                        int(ui._values.get("colmap_fibonacci_sphere_point_count", 1024)),
+                        100.0,
+                        1,
+                        10000000,
+                    )
+                    if changed:
+                        ui._values["colmap_fibonacci_sphere_point_count"] = max(int(value), 1)
+                    if imgui.is_item_hovered():
+                        imgui.set_item_tooltip("Number of Fibonacci shell points appended to the initialization point cloud.")
+                    changed, value = imgui.drag_float(
+                        "Sphere Radius",
+                        float(ui._values.get("colmap_fibonacci_sphere_radius", 20.0)),
+                        0.1,
+                        0.0,
+                        10000.0,
+                        "%.3f",
+                        imgui.SliderFlags_.logarithmic.value,
+                    )
+                    if changed:
+                        ui._values["colmap_fibonacci_sphere_radius"] = max(float(value), 0.0)
+                    if imgui.is_item_hovered():
+                        imgui.set_item_tooltip("World-space radius of the appended shell around the mean camera pose.")
             else:
                 imgui.spacing()
                 self._draw_import_path_selector(ui, label="Custom PLY", key="colmap_custom_ply_path", button_label="Browse PLY...", callback=self.callbacks.browse_colmap_ply)
@@ -2820,6 +2852,8 @@ def build_ui(renderer) -> ViewerUI:
     values["colmap_depth_point_count"] = int(_VIEWER_IMPORT_DEFAULTS["colmap_depth_point_count"])
     values["colmap_diffused_point_count"] = int(_VIEWER_IMPORT_DEFAULTS["colmap_diffused_point_count"])
     values["colmap_diffusion_radius"] = float(_VIEWER_IMPORT_DEFAULTS["colmap_diffusion_radius"])
+    values["colmap_fibonacci_sphere_point_count"] = int(_VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_point_count", 0))
+    values["colmap_fibonacci_sphere_radius"] = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_radius", 20.0))
     values["show_histograms"] = bool(_VIEWER_UI_DEFAULTS["show_histograms"])
     values["show_training_views"] = bool(_VIEWER_UI_DEFAULTS["show_training_views"])
     values["show_resource_debug"] = False
