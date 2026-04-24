@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 
+from src.scene import ColmapFrame
+from src.training import GaussianTrainer, TrainingHyperParams, TrainingState
 from src.training.gaussian_trainer import _FrameMetricBookkeeper
 
 
@@ -37,3 +41,28 @@ def test_frame_metric_bookkeeper_reset_clears_stored_frame_values() -> None:
     assert np.isclose(tracker.mean("loss"), 5.0)
     assert np.isclose(tracker.mean("mse"), 0.5)
     assert np.isclose(tracker.mean("psnr"), 30.0)
+
+
+def _frame(width: int, height: int) -> ColmapFrame:
+    return ColmapFrame(
+        image_id=int(width + height),
+        image_path=Path("synthetic.png"),
+        q_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        t_xyz=np.zeros((3,), dtype=np.float32),
+        fx=float(width),
+        fy=float(width),
+        cx=float(width) * 0.5,
+        cy=float(height) * 0.5,
+        width=int(width),
+        height=int(height),
+    )
+
+
+def test_trainer_max_training_resolution_uses_all_frames() -> None:
+    trainer = object.__new__(GaussianTrainer)
+    trainer.frames = [_frame(7692, 5098), _frame(7965, 5275), _frame(7533, 5037)]
+    trainer.training = TrainingHyperParams(train_downscale_mode=4, train_subsample_factor=1)
+    trainer.state = TrainingState()
+
+    assert trainer.max_training_resolution(0) == (1992, 1319)
+    assert trainer.training_resolutions_vary(0)

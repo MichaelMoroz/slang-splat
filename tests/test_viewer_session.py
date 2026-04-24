@@ -9,6 +9,7 @@ import numpy as np
 from PIL import Image
 import pytest
 
+from src.scene._internal.colmap_types import ColmapFrame
 from src.viewer import session
 from src.viewer.state import ColmapImportProgress, ColmapImportSettings
 
@@ -22,6 +23,10 @@ def _viewer() -> SimpleNamespace:
             training_resume_time=None,
         )
     )
+
+
+def _identity_q() -> np.ndarray:
+    return np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
 
 
 def _write_cameras_bin(path: Path, model_id: int = 1) -> None:
@@ -107,6 +112,42 @@ def _build_colmap_tree_without_database(tmp_path: Path, *, image_names: list[str
         image_path.parent.mkdir(parents=True, exist_ok=True)
         Image.fromarray(np.full((8, 8, 3), 127, dtype=np.uint8)).save(image_path)
     return root.resolve(), images_root.resolve()
+
+
+def test_bc7_cache_compression_uses_resized_frame_image(tmp_path: Path, monkeypatch) -> None:
+    images_root = tmp_path / "images"
+    images_root.mkdir()
+    image_path = images_root / "frame.png"
+    Image.fromarray(np.full((4, 8, 4), 127, dtype=np.uint8), mode="RGBA").save(image_path)
+    frame = ColmapFrame(
+        image_id=1,
+        image_path=image_path,
+        q_wxyz=_identity_q(),
+        t_xyz=np.zeros((3,), dtype=np.float32),
+        fx=4.0,
+        fy=2.0,
+        cx=2.0,
+        cy=1.0,
+        width=4,
+        height=2,
+    )
+    seen: dict[str, object] = {}
+
+    def _fake_run(args, **_kwargs):
+        source_path = Path(args[-1])
+        with Image.open(source_path) as source_image:
+            seen["source_size"] = source_image.size
+        out_dir = Path(args[args.index("-o") + 1])
+        (out_dir / source_path.with_suffix(".dds").name).write_bytes(b"dds")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(session, "_ensure_dataset_bc7_texconv", lambda: tmp_path / "texconv.exe")
+    monkeypatch.setattr(session.subprocess, "run", _fake_run)
+
+    cache_path = session._compress_dataset_frame_to_bc7_cache(frame, images_root)
+
+    assert seen["source_size"] == (4, 2)
+    assert cache_path.exists()
 
 
 def test_set_training_active_accumulates_elapsed_time_on_pause(monkeypatch) -> None:

@@ -90,6 +90,8 @@ def _write_cameras_txt(path: Path, model_name: str = "PINHOLE") -> None:
         "PINHOLE": "400 420 200 100",
         "SIMPLE_RADIAL": "420 200 100 0.07",
         "RADIAL": "420 200 100 0.07 -0.02",
+        "OPENCV": "400 420 200 100 0.07 -0.02 0.001 -0.002",
+        "FULL_OPENCV": "400 420 200 100 0.07 -0.02 0.001 -0.002 0.0 0.0 0.0 0.0",
     }[model_name]
     path.write_text(
         "# Camera list\n"
@@ -254,6 +256,24 @@ def test_colmap_loader_supports_radial_camera_model(tmp_path: Path):
     assert np.isclose(camera.fy, 420.0)
     assert np.isclose(camera.k1, 0.07)
     assert np.isclose(camera.k2, -0.02)
+    assert np.isclose(frame.k1, 0.07)
+    assert np.isclose(frame.k2, -0.02)
+
+
+@pytest.mark.parametrize("model_name", ["OPENCV", "FULL_OPENCV"])
+def test_colmap_loader_supports_opencv_camera_models(tmp_path: Path, model_name: str) -> None:
+    root = _build_tiny_colmap_text_tree(tmp_path, model_name=model_name)
+
+    recon = load_colmap_reconstruction(root)
+    camera = recon.cameras[7]
+    frame = build_training_frames(recon, images_subdir="images_4")[0]
+
+    assert np.isclose(camera.fx, 400.0)
+    assert np.isclose(camera.fy, 420.0)
+    assert np.isclose(camera.k1, 0.07)
+    assert np.isclose(camera.k2, -0.02)
+    assert np.isclose(frame.fx, 200.0)
+    assert np.isclose(frame.fy, 210.0)
     assert np.isclose(frame.k1, 0.07)
     assert np.isclose(frame.k2, -0.02)
 

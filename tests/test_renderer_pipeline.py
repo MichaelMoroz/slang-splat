@@ -15,7 +15,7 @@ from src.app.shared import RendererParams, renderer_kwargs
 from src.utility import SHADER_ROOT
 from src.renderer import Camera, GaussianRenderer
 from src.scene import GaussianScene, SH_C0, SUPPORTED_SH_COEFF_COUNT
-from src.training import contribution_fixed_count_from_percent
+from src.training import contribution_fixed_count_from_value
 
 _GAUSSIAN_SUPPORT_SIGMA_RADIUS = 3.0
 _TYPES_SHADER_PATH = Path(SHADER_ROOT / "renderer" / "gaussian_types.slang")
@@ -768,7 +768,7 @@ def test_debug_contribution_amount_render_smoke(device):
     renderer.set_debug_contribution_observed_pixel_count(observed_pixels)
     renderer.upload_debug_splat_contribution(
         np.array(
-            [contribution_fixed_count_from_percent(value, observed_pixels) for value in np.geomspace(0.001, 1.0, scene.count, dtype=np.float32)],
+            [contribution_fixed_count_from_value(value, observed_pixels) for value in np.geomspace(0.001, 1.0, scene.count, dtype=np.float32)],
             dtype=np.uint32,
         )
     )

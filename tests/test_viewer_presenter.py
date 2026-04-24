@@ -137,7 +137,7 @@ class _DummyTrainer:
     def current_base_lr(self) -> float:
         return 0.005
 
-    def get_frame_target_texture(self, frame_index: int, native_resolution: bool = True, encoder: object | None = None) -> str:
+    def get_frame_target_texture(self, frame_index: int, native_resolution: bool = True, encoder: object | None = None, step: int | None = None) -> str:
         self.target_calls.append((int(frame_index), bool(native_resolution)))
         return f"target_tex_{frame_index}_{native_resolution}"
 
