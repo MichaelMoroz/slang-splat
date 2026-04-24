@@ -11,12 +11,25 @@ COLMAP_SIMPLE_PINHOLE_MODEL_ID = 0
 COLMAP_PINHOLE_MODEL_ID = 1
 COLMAP_SIMPLE_RADIAL_MODEL_ID = 2
 COLMAP_RADIAL_MODEL_ID = 3
+COLMAP_OPENCV_MODEL_ID = 4
+COLMAP_FULL_OPENCV_MODEL_ID = 6
 COLMAP_CAMERA_MODEL_IDS = {
     "SIMPLE_PINHOLE": COLMAP_SIMPLE_PINHOLE_MODEL_ID,
     "PINHOLE": COLMAP_PINHOLE_MODEL_ID,
     "SIMPLE_RADIAL": COLMAP_SIMPLE_RADIAL_MODEL_ID,
     "RADIAL": COLMAP_RADIAL_MODEL_ID,
+    "OPENCV": COLMAP_OPENCV_MODEL_ID,
+    "FULL_OPENCV": COLMAP_FULL_OPENCV_MODEL_ID,
 }
+COLMAP_CAMERA_MODEL_PARAM_COUNTS = {
+    COLMAP_SIMPLE_PINHOLE_MODEL_ID: 3,
+    COLMAP_PINHOLE_MODEL_ID: 4,
+    COLMAP_SIMPLE_RADIAL_MODEL_ID: 4,
+    COLMAP_RADIAL_MODEL_ID: 5,
+    COLMAP_OPENCV_MODEL_ID: 8,
+    COLMAP_FULL_OPENCV_MODEL_ID: 12,
+}
+COLMAP_SUPPORTED_CAMERA_MODEL_NAMES = tuple(COLMAP_CAMERA_MODEL_IDS)
 U64 = struct.Struct("<Q")
 I32 = struct.Struct("<i")
 
@@ -39,13 +52,11 @@ def _read_string(handle) -> str:
 
 
 def _camera_params_count(model_id: int) -> int:
-    if model_id == COLMAP_SIMPLE_PINHOLE_MODEL_ID: return 3
-    if model_id == COLMAP_PINHOLE_MODEL_ID: return 4
-    if model_id == COLMAP_SIMPLE_RADIAL_MODEL_ID: return 4
-    if model_id == COLMAP_RADIAL_MODEL_ID: return 5
+    count = COLMAP_CAMERA_MODEL_PARAM_COUNTS.get(int(model_id))
+    if count is not None: return count
     raise ValueError(
         f"Unsupported COLMAP camera model id {model_id}. "
-        "Supported models are SIMPLE_PINHOLE (0), PINHOLE (1), SIMPLE_RADIAL (2), and RADIAL (3)."
+        f"Supported models are {', '.join(COLMAP_SUPPORTED_CAMERA_MODEL_NAMES)}."
     )
 
 
@@ -54,6 +65,8 @@ def _camera_intrinsics(model_id: int, params: tuple[float, ...]) -> tuple[float,
     if model_id == COLMAP_PINHOLE_MODEL_ID: return params[0], params[1], params[2], params[3], 0.0, 0.0
     if model_id == COLMAP_SIMPLE_RADIAL_MODEL_ID: return params[0], params[0], params[1], params[2], params[3], 0.0
     if model_id == COLMAP_RADIAL_MODEL_ID: return params[0], params[0], params[1], params[2], params[3], params[4]
+    if model_id == COLMAP_OPENCV_MODEL_ID: return params[0], params[1], params[2], params[3], params[4], params[5]
+    if model_id == COLMAP_FULL_OPENCV_MODEL_ID: return params[0], params[1], params[2], params[3], params[4], params[5]
     raise ValueError(f"Unsupported COLMAP camera model id {model_id}.")
 
 
@@ -127,7 +140,7 @@ def _load_cameras_txt(path: Path) -> dict[int, ColmapCamera]:
         if model_id is None:
             raise ValueError(
                 f"Unsupported COLMAP camera model {model_name}. "
-                "Supported models are SIMPLE_PINHOLE, PINHOLE, SIMPLE_RADIAL, and RADIAL."
+                f"Supported models are {', '.join(COLMAP_SUPPORTED_CAMERA_MODEL_NAMES)}."
             )
         width = int(tokens[2])
         height = int(tokens[3])
