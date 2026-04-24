@@ -13,6 +13,7 @@ from .training_controls import TRAINING_CLI_ARG_DEFS, training_cli_build_kwargs
 from ..renderer import Camera, GaussianRenderSettings, GaussianRenderer
 from ..scene import GaussianInitHyperParams, build_training_frames, initialize_scene_from_colmap_points, load_colmap_reconstruction, load_gaussian_ply, resolve_colmap_init_hparams
 from ..training import GaussianTrainer
+from ..training import resolve_effective_train_render_factor, resolve_training_resolution
 from ..training.defaults import DEFAULT_REFINEMENT_MIN_CONTRIBUTION, TRAINING_BUILD_ARG_DEFAULTS
 from .shared import RendererParams, apply_training_profile, build_training_params, estimate_scene_bounds, renderer_kwargs, save_snapshot
 from ..training import TRAINING_PROFILE_CHOICES
@@ -87,10 +88,14 @@ def run_train_colmap(args: argparse.Namespace) -> int:
     root = Path(args.colmap_root).resolve()
     recon = load_colmap_reconstruction(root, sparse_subdir=args.sparse_subdir)
     frames = build_training_frames(recon, images_subdir=args.images_subdir)
-    width, height = (int(args.width), int(args.height))
-    width, height = (width if width > 0 else int(frames[0].width), height if height > 0 else int(frames[0].height))
     init_hparams = _init_hparams(args)
     params, profile = apply_training_profile(_training_params(args), args.training_profile, dataset_root=root, images_subdir=args.images_subdir)
+    width, height = int(args.width), int(args.height)
+    if width <= 0 and height <= 0:
+        resolutions = [resolve_training_resolution(int(frame.width), int(frame.height), resolve_effective_train_render_factor(params.training, 0, int(frame.width), int(frame.height))) for frame in frames]
+        width, height = max(w for w, _ in resolutions), max(h for _, h in resolutions)
+    else:
+        width, height = width if width > 0 else int(frames[0].width), height if height > 0 else int(frames[0].height)
     init_hparams = replace(init_hparams, initial_opacity=profile.init_opacity_override) if init_hparams.initial_opacity is None and profile.init_opacity_override is not None else init_hparams
     resolved_init = resolve_colmap_init_hparams(recon, params.training.max_gaussians, init_hparams)
     scene = initialize_scene_from_colmap_points(recon=recon, max_gaussians=params.training.max_gaussians, seed=int(args.seed), init_hparams=resolved_init)

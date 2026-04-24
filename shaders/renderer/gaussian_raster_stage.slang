@@ -336,8 +336,8 @@ float3 raster_splat_age_color(float splatAge)
 
 float3 raster_contribution_amount_color(uint contribution)
 {
-    float contributionPercent = float(contribution) * max(g_Raster.debugContributionPercentScale, 0.0);
-    return jet_colormap(debug_normalize_log_range(contributionPercent, max(g_Raster.debugContributionRange.x, DEBUG_CONTRIBUTION_AMOUNT_FLOOR), max(g_Raster.debugContributionRange.y, DEBUG_CONTRIBUTION_AMOUNT_FLOOR)));
+    float contributionValue = float(contribution) * max(g_Raster.debugContributionScale, 0.0);
+    return jet_colormap(debug_normalize_log_range(contributionValue, max(g_Raster.debugContributionRange.x, DEBUG_CONTRIBUTION_AMOUNT_FLOOR), max(g_Raster.debugContributionRange.y, DEBUG_CONTRIBUTION_AMOUNT_FLOOR)));
 }
 
 uint raster_adam_moment_index(uint splatCount, uint paramId, uint splatId)
@@ -651,13 +651,15 @@ struct TrainingRasterReplayVariant : IRasterReplayVariant
     static void process_hit(RasterPixelInfo info, uint splatId, RasterGaussian gaussian, float alpha, float rayDepth, inout RasterReplayState replayState)
     {
         RasterState state = replayState.pixelState;
-        float contributionWeight = state.trans * alpha;
         float3 color = raster_forward_color(gaussian, splatId, replayState.debugMode);
-        uint contribution = splat_contribution_fixed_quantize(contributionWeight);
+        RasterState blendedState = state.blend(color, alpha);
+        float contributionValue = length(blendedState.accum - state.accum);
+        float contributionWeight = state.trans * alpha;
+        uint contribution = splat_contribution_fixed_quantize(contributionValue);
         if (contribution > 0u) InterlockedAdd(g_SplatContribution[splatId], contribution);
         if (rayDepth > 0.0) replayState.depthState = depth_state_step(replayState.depthState, contributionWeight, rayDepth);
         replayState.splatDensitySum = raster_splat_density_step(replayState.splatDensitySum, state.trans, alpha, gaussian.colorAlpha.w);
-        replayState.pixelState = state.blend(color, alpha);
+        replayState.pixelState = blendedState;
         replayState.processedCount += 1u;
     }
 }

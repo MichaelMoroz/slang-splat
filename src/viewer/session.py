@@ -121,6 +121,17 @@ def _compress_dataset_frame_to_bc7_cache(frame: ColmapFrame, images_root: Path) 
     if cache_path.exists():
         return cache_path
     cache_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path = frame.image_path
+    temp_source_path: Path | None = None
+    target_size = (max(int(frame.width), 1), max(int(frame.height), 1))
+    with Image.open(frame.image_path) as pil_image:
+        if pil_image.size != target_size:
+            temp_source_path = cache_path.with_suffix(".png")
+            resized = pil_image.convert("RGBA")
+            if resized.size != target_size:
+                resized = resized.resize(target_size, Image.Resampling.LANCZOS)
+            resized.save(temp_source_path)
+            source_path = temp_source_path
     try:
         subprocess.run(
             [
@@ -134,7 +145,7 @@ def _compress_dataset_frame_to_bc7_cache(frame: ColmapFrame, images_root: Path) 
                 "1",
                 "-o",
                 str(cache_path.parent),
-                str(frame.image_path),
+                str(source_path),
             ],
             check=True,
             capture_output=True,
@@ -142,6 +153,13 @@ def _compress_dataset_frame_to_bc7_cache(frame: ColmapFrame, images_root: Path) 
         )
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(f"texconv failed for {frame.image_path.name}: {exc.stderr.strip() or exc.stdout.strip()}") from exc
+    finally:
+        if temp_source_path is not None:
+            temp_source_path.unlink(missing_ok=True)
+    generated_candidates = (cache_path, cache_path.with_suffix(".DDS"))
+    generated_path = next((path for path in generated_candidates if path.exists()), None)
+    if generated_path is not None and generated_path != cache_path:
+        generated_path.replace(cache_path)
     if not cache_path.exists():
         raise FileNotFoundError(f"Expected BC7 cache file was not created: {cache_path}")
     return cache_path
@@ -205,6 +223,11 @@ def _load_or_create_bc7_dataset_texture(frame: ColmapFrame, images_root: Path) -
         payload = _parse_compressed_dataset_texture(cache_path)
     if payload.format != spy.Format.bc7_unorm_srgb:
         raise RuntimeError(f"Expected BC7 UNORM SRGB cache for {frame.image_path.name}, got {payload.format}")
+    if payload.width != int(frame.width) or payload.height != int(frame.height):
+        raise RuntimeError(
+            f"BC7 cache size mismatch for {frame.image_path.name}: expected {int(frame.width)}x{int(frame.height)}, "
+            f"got {int(payload.width)}x{int(payload.height)}"
+        )
     return payload
 
 
@@ -965,8 +988,12 @@ def _apply_debug_buffers(viewer: object, renderer: GaussianRenderer | None) -> N
 
 def ensure_renderer(viewer: object, attr: str, width: int, height: int, allow_debug_overlays: bool) -> GaussianRenderer:
     size, renderer = (int(width), int(height)), getattr(viewer.s, attr)
-    if renderer is not None and (renderer.width, renderer.height) == size:
-        return renderer
+    if renderer is not None:
+        renderer_size = (
+            int(getattr(renderer, "_render_capacity_width", renderer.width)),
+            int(getattr(renderer, "_render_capacity_height", renderer.height)),
+        ) if attr == "training_renderer" else (int(renderer.width), int(renderer.height))
+        if renderer_size == size: return renderer
     previous_renderer = renderer
     renderer = GaussianRenderSettings(width=size[0], height=size[1], **renderer_kwargs(viewer.renderer_params(allow_debug_overlays))).create_renderer(viewer.device)
     if isinstance(viewer.s.scene, GaussianScene):
@@ -1033,12 +1060,15 @@ def ensure_training_runtime_resolution(viewer: object) -> bool:
             viewer.s.applied_training_signature = _training_live_params_signature(params)
             viewer.s.applied_training_runtime_signature = runtime_signature
     current_factor = int(viewer.s.trainer.effective_train_render_factor()) if hasattr(viewer.s.trainer, "effective_train_render_factor") else int(viewer.s.trainer.effective_train_downscale_factor())
-    current_size = (int(viewer.s.training_renderer.width), int(viewer.s.training_renderer.height))
+    current_size = (
+        int(getattr(viewer.s.training_renderer, "_render_capacity_width", viewer.s.training_renderer.width)),
+        int(getattr(viewer.s.training_renderer, "_render_capacity_height", viewer.s.training_renderer.height)),
+    )
     if viewer.s.applied_training_runtime_factor == current_factor:
-        desired_width, desired_height = viewer.s.trainer.training_resolution(0)
+        desired_width, desired_height = viewer.s.trainer.max_training_resolution()
         if current_size == (int(desired_width), int(desired_height)):
             return False
-    desired_width, desired_height = viewer.s.trainer.training_resolution(0)
+    desired_width, desired_height = viewer.s.trainer.max_training_resolution()
     desired_size = (int(desired_width), int(desired_height))
     if current_size == desired_size:
         viewer.s.applied_training_runtime_factor = current_factor
@@ -1618,15 +1648,14 @@ def initialize_training_scene(viewer: object, frame_targets_native: list[spy.Tex
     if viewer.s.colmap_recon is None or not viewer.s.training_frames:
         return
     init, params, init_hparams, profile = resolve_effective_training_setup(viewer)
-    try:
-        factor = resolve_effective_train_render_factor(params.training, 0, int(viewer.s.training_frames[0].width), int(viewer.s.training_frames[0].height))
-    except TypeError:
-        factor = resolve_effective_train_render_factor(params.training, 0)
-    width, height = resolve_training_resolution(
-        int(viewer.s.training_frames[0].width),
-        int(viewer.s.training_frames[0].height),
-        int(factor),
-    )
+    resolutions = []
+    for frame in viewer.s.training_frames:
+        try:
+            factor = resolve_effective_train_render_factor(params.training, 0, int(frame.width), int(frame.height))
+        except TypeError:
+            factor = resolve_effective_train_render_factor(params.training, 0)
+        resolutions.append(resolve_training_resolution(int(frame.width), int(frame.height), int(factor)))
+    width, height = max(w for w, _ in resolutions), max(h for _, h in resolutions)
     renderer = ensure_renderer(viewer, "training_renderer", width, height, allow_debug_overlays=False)
     scene, scale_reg_reference = _build_initial_training_scene(viewer, init, params, init_hparams)
     apply_live_params(viewer)

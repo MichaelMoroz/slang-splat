@@ -35,27 +35,42 @@ class SeparableGaussianBlur:
             debug_color_index=80 + len(kernel),
         )
 
-    def __init__(self, device: spy.Device, width: int, height: int, shader_path: str | Path | None = None, channel_pack: int = 16) -> None:
-        self.device, self.width, self.height = device, int(width), int(height)
+    def __init__(
+        self,
+        device: spy.Device,
+        width: int,
+        height: int,
+        shader_path: str | Path | None = None,
+        channel_pack: int = 16,
+        capacity_width: int | None = None,
+        capacity_height: int | None = None,
+    ) -> None:
+        self.device, self.width, self.height = device, max(int(width), 1), max(int(height), 1)
+        self.capacity_width = max(int(self.width if capacity_width is None else capacity_width), self.width)
+        self.capacity_height = max(int(self.height if capacity_height is None else capacity_height), self.height)
         self.channel_pack = max(int(channel_pack), 1)
         path = Path(shader_path) if shader_path is not None else SHADER_ROOT / "utility" / "blur" / "separable_gaussian_blur.slang"
         self._kernels = load_compute_kernels(device, path, self._KERNEL_ENTRIES)
         self._scratch_buffers: dict[int, spy.Buffer] = {}
 
+    def set_active_size(self, width: int, height: int) -> None:
+        self.width = min(max(int(width), 1), self.capacity_width)
+        self.height = min(max(int(height), 1), self.capacity_height)
+
     def make_buffer(self, channel_count: int, name: str | None = None) -> spy.Buffer:
-        buffer_name = str(name) if name is not None else f"blur.{self.width}x{self.height}.{int(channel_count)}ch"
+        buffer_name = str(name) if name is not None else f"blur.{self.capacity_width}x{self.capacity_height}.{int(channel_count)}ch"
         return alloc_buffer(self.device, name=buffer_name, size=self._buffer_size(channel_count), usage=RW_BUFFER_USAGE)
 
     def _buffer_size(self, channel_count: int) -> int:
         channels = int(channel_count)
         if channels <= 0:
             raise ValueError("Blur channel_count must be positive.")
-        return self.width * self.height * channels * np.dtype(np.float32).itemsize
+        return self.capacity_width * self.capacity_height * channels * np.dtype(np.float32).itemsize
 
     def _ensure_scratch_buffer(self, channel_count: int) -> spy.Buffer:
         channels = int(channel_count)
         if channels not in self._scratch_buffers:
-            self._scratch_buffers[channels] = self.make_buffer(channels, name=f"blur.scratch.{self.width}x{self.height}.{channels}ch")
+            self._scratch_buffers[channels] = self.make_buffer(channels, name=f"blur.scratch.{self.capacity_width}x{self.capacity_height}.{channels}ch")
         return self._scratch_buffers[channels]
 
     def blur(self, encoder: spy.CommandEncoder, input_buffer: spy.Buffer, output_buffer: spy.Buffer, channel_count: int) -> spy.Buffer:

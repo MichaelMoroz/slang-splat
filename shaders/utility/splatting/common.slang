@@ -262,7 +262,7 @@ struct RasterParams
     float2 debugSplatAgeRange;
     float2 debugDensityRange;
     float2 debugContributionRange;
-    float debugContributionPercentScale;
+    float debugContributionScale;
     float2 debugAdamMomentumRange;
     float2 debugDepthMeanRange;
     float2 debugDepthStdRange;

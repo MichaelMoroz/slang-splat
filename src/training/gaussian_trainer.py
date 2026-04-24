@@ -16,7 +16,7 @@ from ..scene import ColmapFrame, GaussianInitHyperParams, GaussianScene, SUPPORT
 from ..scene._internal.colmap_ops import TRAINING_FRAME_LOAD_THREADS, load_training_frame_rgba8
 from .adam import AdamOptimizer, AdamRuntimeHyperParams
 from .defaults import (
-    DEFAULT_DEBUG_CONTRIBUTION_RANGE_PERCENT,
+    DEFAULT_DEBUG_CONTRIBUTION_RANGE,
     DEFAULT_DEPTH_RATIO_GRAD_MAX,
     DEFAULT_DEPTH_RATIO_GRAD_MIN,
     DEFAULT_REFINEMENT_CLONE_SCALE_MUL,
@@ -66,20 +66,20 @@ def _u32_bits_to_f32(value: int) -> np.float32:
     return np.asarray([np.uint32(value)], dtype=np.uint32).view(np.float32)[0]
 
 
-def contribution_percent_from_fixed_count(contribution_fixed: float | np.ndarray, observed_pixel_count: float) -> float | np.ndarray:
+def contribution_value_from_fixed_count(contribution_fixed: float | np.ndarray, observed_pixel_count: float) -> float | np.ndarray:
     pixels = max(float(observed_pixel_count), 1.0)
-    contribution = np.asarray(contribution_fixed, dtype=np.float64) * (100.0 / (SPLAT_CONTRIBUTION_FIXED_SCALE * pixels))
+    contribution = np.asarray(contribution_fixed, dtype=np.float64) * (1.0 / (SPLAT_CONTRIBUTION_FIXED_SCALE * pixels))
     if contribution.ndim == 0:
         return float(contribution)
     return contribution
 
 
-def contribution_fixed_count_from_percent(contribution_percent: float, observed_pixel_count: float) -> int:
-    percent = max(float(contribution_percent), 0.0)
+def contribution_fixed_count_from_value(contribution_value: float, observed_pixel_count: float) -> int:
+    value = max(float(contribution_value), 0.0)
     pixels = max(float(observed_pixel_count), 0.0)
-    if percent <= 0.0 or pixels <= 0.0:
+    if value <= 0.0 or pixels <= 0.0:
         return 0
-    return max(int(round((percent * 0.01) * pixels * SPLAT_CONTRIBUTION_FIXED_SCALE)), 0)
+    return max(int(round(value * pixels * SPLAT_CONTRIBUTION_FIXED_SCALE)), 0)
 
 
 def resolve_training_resolution(width: int, height: int, downscale_factor: int) -> tuple[int, int]:
@@ -349,6 +349,11 @@ class GaussianTrainer:
     def _pixel_thread_count(self) -> spy.uint3:
         return thread_count_2d(self.renderer.width, self.renderer.height)
 
+    def _max_training_resolution(self, step: int | None = None) -> tuple[int, int]:
+        resolved_step = self.state.step if step is None else int(step)
+        resolutions = [self.training_resolution(frame_index, resolved_step) for frame_index in range(len(self.frames))]
+        return max(width for width, _ in resolutions), max(height for _, height in resolutions)
+
     def _training_background(self) -> np.ndarray:
         return np.asarray(self.training.background, dtype=np.float32).reshape(3)
 
@@ -390,6 +395,16 @@ class GaussianTrainer:
         width, height = self.frame_size(frame_index)
         return resolve_training_resolution(width, height, self.effective_train_render_factor(step, frame_index))
 
+    def training_resolutions_vary(self, step: int | None = None) -> bool:
+        resolved_step = self.state.step if step is None else int(step)
+        if len(self.frames) <= 1:
+            return False
+        first = self.training_resolution(0, resolved_step)
+        return any(self.training_resolution(frame_index, resolved_step) != first for frame_index in range(1, len(self.frames)))
+
+    def max_training_resolution(self, step: int | None = None) -> tuple[int, int]:
+        return self._max_training_resolution(step)
+
     def current_base_lr(self, step: int | None = None) -> float:
         resolved_step = self.state.step if step is None else int(step)
         return resolve_base_learning_rate(self.training, resolved_step)
@@ -422,6 +437,7 @@ class GaussianTrainer:
         frame_index: int,
         native_resolution: bool = True,
         encoder: spy.CommandEncoder | None = None,
+        step: int | None = None,
     ) -> spy.Texture:
         frame_index = clamp_index(frame_index, len(self.frames))
         if native_resolution:
@@ -429,11 +445,11 @@ class GaussianTrainer:
         self._ensure_train_target_texture()
         if encoder is None:
             local_encoder = self.device.create_command_encoder()
-            self._refresh_train_target(local_encoder, frame_index)
+            self._refresh_train_target(local_encoder, frame_index, step)
             self.device.submit_command_buffer(local_encoder.finish())
             self.device.wait()
         else:
-            self._refresh_train_target(encoder, frame_index)
+            self._refresh_train_target(encoder, frame_index, step)
         return self._require_train_target_texture()
 
     def _adam_runtime_hparams(self) -> AdamRuntimeHyperParams:
@@ -645,6 +661,10 @@ class GaussianTrainer:
         self.stability = stability_hparams
         self.training = training_hparams
         self._apply_renderer_training_hparams()
+        self._dynamic_frame_resolution = (
+            int(getattr(self.renderer, "_render_capacity_width", self.renderer.width)),
+            int(getattr(self.renderer, "_render_capacity_height", self.renderer.height)),
+        ) == self._max_training_resolution(self.state.step)
         self.training.train_downscale_factor = self.effective_train_downscale_factor(self.state.step)
         self.state.last_base_lr = self.current_base_lr(self.state.step)
         self.adam_optimizer.update_hyperparams(self.adam, self._adam_runtime_hparams())
@@ -739,6 +759,10 @@ class GaussianTrainer:
         self.training = TrainingHyperParams() if training_hparams is None else training_hparams
         self._frame_camera_nn_distances = self._nearest_camera_distances(self.frames)
         self._apply_renderer_training_hparams()
+        self._dynamic_frame_resolution = (
+            int(getattr(renderer, "_render_capacity_width", renderer.width)),
+            int(getattr(renderer, "_render_capacity_height", renderer.height)),
+        ) == self._max_training_resolution(0)
         self.metrics = Metrics(self.device)
         self.adam_optimizer = AdamOptimizer(self.device, self.adam, self._adam_runtime_hparams())
         self.optimizer = GaussianOptimizer(self.device, self.renderer, self.adam, self.stability)
@@ -818,14 +842,17 @@ class GaussianTrainer:
         )
 
     def _ensure_ssim_buffers(self) -> None:
-        width = max(int(self.renderer.width), 1)
-        height = max(int(self.renderer.height), 1)
-        resolution = (width, height)
+        active_width = max(int(self.renderer.width), 1)
+        active_height = max(int(self.renderer.height), 1)
+        capacity_width = max(int(getattr(self.renderer, "_render_capacity_width", self.renderer.width)), active_width)
+        capacity_height = max(int(getattr(self.renderer, "_render_capacity_height", self.renderer.height)), active_height)
+        resolution = (capacity_width, capacity_height)
         if self._ssim_resolution == resolution and self._ssim_blur is not None and all(name in self._buffers for name in ("ssim_moments", "ssim_blurred_moments", "ssim_blurred_feature_grads", "ssim_feature_grads")):
+            self._ssim_blur.set_active_size(active_width, active_height)
             return
         for name in ("ssim_moments", "ssim_blurred_moments", "ssim_blurred_feature_grads", "ssim_feature_grads"):
             defer_resource_release(self._buffers.get(name))
-        self._ssim_blur = SeparableGaussianBlur(self.device, width=width, height=height)
+        self._ssim_blur = SeparableGaussianBlur(self.device, width=active_width, height=active_height, capacity_width=capacity_width, capacity_height=capacity_height)
         self._buffers["ssim_moments"] = self._ssim_blur.make_buffer(self._SSIM_FEATURE_CHANNELS, name="trainer.ssim_moments")
         self._buffers["ssim_blurred_moments"] = self._ssim_blur.make_buffer(self._SSIM_FEATURE_CHANNELS, name="trainer.ssim_blurred_moments")
         self._buffers["ssim_blurred_feature_grads"] = self._ssim_blur.make_buffer(self._SSIM_FEATURE_CHANNELS, name="trainer.ssim_blurred_feature_grads")
@@ -1105,6 +1132,25 @@ class GaussianTrainer:
                 setattr(camera, name, float(value) * mul)
         return camera
 
+    def _ensure_frame_render_resolution(self, frame_index: int, step: int | None = None) -> None:
+        if not self._dynamic_frame_resolution:
+            return
+        width, height = self.training_resolution(frame_index, step)
+        set_resolution = getattr(self.renderer, "set_render_resolution", None)
+        if set_resolution is None:
+            if (int(self.renderer.width), int(self.renderer.height)) != (int(width), int(height)):
+                raise RuntimeError("Training renderer does not support per-frame resolution changes.")
+            return
+        max_width, max_height = self._max_training_resolution(step)
+        ensure_capacity = getattr(self.renderer, "ensure_render_capacity", None)
+        capacity_changed = bool(ensure_capacity(max_width, max_height)) if ensure_capacity is not None else False
+        if bool(set_resolution(int(width), int(height))) or capacity_changed:
+            self._invalidate_downscaled_target()
+            self._refinement_camera_signature = None
+
+    def ensure_frame_render_resolution(self, frame_index: int, step: int | None = None) -> None:
+        self._ensure_frame_render_resolution(frame_index, step)
+
     def _frame_target_rgba8(self, frame: ColmapFrame) -> np.ndarray:
         return load_training_frame_rgba8(frame)
 
@@ -1139,8 +1185,8 @@ class GaussianTrainer:
         self._downscaled_target_key = None
 
     def _ensure_train_target_texture(self) -> None:
-        width = max(int(self.renderer.width), 1)
-        height = max(int(self.renderer.height), 1)
+        width = max(int(getattr(self.renderer, "_render_capacity_width", self.renderer.width)), 1)
+        height = max(int(getattr(self.renderer, "_render_capacity_height", self.renderer.height)), 1)
         texture = self._train_target_texture
         if texture is not None and int(texture.width) == width and int(texture.height) == height:
             return
@@ -1155,9 +1201,9 @@ class GaussianTrainer:
         )
         self._invalidate_downscaled_target()
 
-    def _downscale_vars(self, frame_index: int) -> dict[str, object]:
+    def _downscale_vars(self, frame_index: int, step: int | None = None) -> dict[str, object]:
         frame = self._frame(frame_index)
-        factor = self.effective_train_render_factor()
+        factor = self.effective_train_render_factor(step, frame_index)
         return {
             "g_DownscaleFactor": int(factor),
             "g_SourceWidth": int(frame.width),
@@ -1166,7 +1212,7 @@ class GaussianTrainer:
             "g_TargetHeight": int(self.renderer.height),
         }
 
-    def _dispatch_downscale_target(self, encoder: spy.CommandEncoder, frame_index: int) -> None:
+    def _dispatch_downscale_target(self, encoder: spy.CommandEncoder, frame_index: int, step: int | None = None) -> None:
         self._ensure_train_target_texture()
         self._dispatch(
             "downscale_target",
@@ -1175,12 +1221,12 @@ class GaussianTrainer:
             {
                 "g_SourceTarget": self._frame_targets_native[frame_index],
                 "g_DownscaledTarget": self._require_train_target_texture(),
-                **self._downscale_vars(frame_index),
+                **self._downscale_vars(frame_index, step),
             },
         )
 
-    def _refresh_train_target(self, encoder: spy.CommandEncoder, frame_index: int) -> None:
-        factor = self.effective_train_render_factor()
+    def _refresh_train_target(self, encoder: spy.CommandEncoder, frame_index: int, step: int | None = None) -> None:
+        factor = self.effective_train_render_factor(step, frame_index)
         key = (
             int(frame_index),
             int(factor),
@@ -1189,7 +1235,7 @@ class GaussianTrainer:
         )
         if self._downscaled_target_key == key:
             return
-        self._dispatch_downscale_target(encoder, frame_index)
+        self._dispatch_downscale_target(encoder, frame_index, step)
         self._downscaled_target_key = key
 
     def _loss_vars(self, frame_index: int, step: int | None = None) -> dict[str, object]:
@@ -1421,6 +1467,10 @@ class GaussianTrainer:
     def rebind_renderer(self, renderer: GaussianRenderer) -> None:
         self.renderer = renderer
         self.optimizer.renderer = renderer
+        self._dynamic_frame_resolution = (
+            int(getattr(renderer, "_render_capacity_width", renderer.width)),
+            int(getattr(renderer, "_render_capacity_height", renderer.height)),
+        ) == self._max_training_resolution(self.state.step)
         self.training.train_downscale_factor = self.effective_train_downscale_factor(self.state.step)
         self._ensure_training_buffers(self._scene_count, 1)
         self._ensure_refinement_buffers(self._scene_count)
@@ -1463,6 +1513,8 @@ class GaussianTrainer:
             batch_steps += 1
         if batch_steps <= 0:
             return 0
+        if batch_steps > 1 and self.training_resolutions_vary(self.state.step):
+            batch_steps = 1
 
         self.training.train_downscale_factor = first_factor
         self._ensure_training_buffers(self._scene_count, batch_steps)
@@ -1473,13 +1525,14 @@ class GaussianTrainer:
             training_step = self.state.step + batch_index
             frame_index = self._next_frame_index()
             frame_indices.append(frame_index)
+            self._ensure_frame_render_resolution(frame_index, training_step)
             frame_camera = self.make_frame_camera(frame_index, self.renderer.width, self.renderer.height)
             native_camera = self._native_frame_camera(frame_index)
             self._apply_renderer_training_hparams(training_step)
             self._maybe_sync_prepass_capacity(frame_camera, training_step)
             sort_dither = self.sorting_dither(frame_index, training_step, frame_camera)
             self.renderer.record_prepass_for_current_scene(enc, frame_camera, sort_camera_position=sort_dither.position, sort_camera_dither_sigma=sort_dither.sigma, sort_camera_dither_seed=sort_dither.seed)
-            target_texture = self.get_frame_target_texture(frame_index, native_resolution=self.effective_train_subsample_factor(frame_index) > 1, encoder=enc)
+            target_texture = self.get_frame_target_texture(frame_index, native_resolution=self.effective_train_subsample_factor(frame_index, training_step) > 1, encoder=enc, step=training_step)
             self._dispatch_training_forward(enc, frame_camera, background, target_texture, training_step, frame_index, native_camera)
             self._dispatch_training_backward(enc, frame_camera, background, target_texture, training_step, frame_index, native_camera)
             self._dispatch_optimizer_step(enc, self.state.step + batch_index + 1, frame_camera)

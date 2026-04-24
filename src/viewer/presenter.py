@@ -1047,11 +1047,19 @@ def _sample_training_debug_target(viewer: object, encoder: spy.CommandEncoder, s
 
 def _render_debug_target(viewer: object, encoder: spy.CommandEncoder, frame_idx: int, width: int, height: int, step: int, sample_vars: dict[str, object]) -> spy.Texture:
     trainer = viewer.s.trainer
+    if hasattr(trainer, "ensure_frame_render_resolution"):
+        trainer.ensure_frame_render_resolution(frame_idx, step)
     subsample = int(trainer.effective_train_subsample_factor(frame_idx, step)) if hasattr(trainer, "effective_train_subsample_factor") else 1
     if subsample > 1:
-        native_target = trainer.get_frame_target_texture(frame_idx, native_resolution=True, encoder=encoder)
+        try:
+            native_target = trainer.get_frame_target_texture(frame_idx, native_resolution=True, encoder=encoder, step=step)
+        except TypeError:
+            native_target = trainer.get_frame_target_texture(frame_idx, native_resolution=True, encoder=encoder)
         return _sample_training_debug_target(viewer, encoder, native_target, width, height, sample_vars, frame_idx)
-    return trainer.get_frame_target_texture(frame_idx, native_resolution=False, encoder=encoder)
+    try:
+        return trainer.get_frame_target_texture(frame_idx, native_resolution=False, encoder=encoder, step=step)
+    except TypeError:
+        return trainer.get_frame_target_texture(frame_idx, native_resolution=False, encoder=encoder)
 
 
 def _render_debug_view(viewer: object, encoder: spy.CommandEncoder, output_width: int, output_height: int, render_frame_index: int) -> spy.Texture:

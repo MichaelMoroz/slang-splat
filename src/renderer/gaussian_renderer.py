@@ -294,7 +294,7 @@ class GaussianRenderer:
                 "debugSplatAgeRange": spy.float2(*self.debug_splat_age_range),
                 "debugDensityRange": spy.float2(*self.debug_density_range),
                 "debugContributionRange": spy.float2(*self.debug_contribution_range),
-                "debugContributionPercentScale": float(self._debug_contribution_percent_scale),
+                "debugContributionScale": float(self._debug_contribution_scale),
                 "debugAdamMomentumRange": spy.float2(*self.debug_adam_momentum_range),
                 "debugDepthMeanRange": spy.float2(*self.debug_depth_mean_range),
                 "debugDepthStdRange": spy.float2(*self.debug_depth_std_range),
@@ -390,7 +390,7 @@ class GaussianRenderer:
         return thread_count_1d(self.tile_count * self._raster_config.thread_tile_dim * self._raster_config.thread_tile_dim)
 
     def _read_image(self) -> np.ndarray:
-        return np.asarray(self.output_texture.to_numpy(), dtype=np.float32).copy()
+        return np.asarray(self.output_texture.to_numpy(), dtype=np.float32)[: self.height, : self.width].copy()
 
     def _create_shaders(self) -> None:
         for attr, shader in load_compute_items(
@@ -491,6 +491,80 @@ class GaussianRenderer:
         self._pending_min_list_entries = self._delayed_generated_entries = self._delayed_written_entries = 0
         self._delayed_overflow = self._delayed_stats_valid = False
 
+    def _set_render_resolution_geometry(self, width: int, height: int) -> None:
+        self.width, self.height = max(int(width), 1), max(int(height), 1)
+        self.tile_width, self.tile_height = (self.width + self.tile_size - 1) // self.tile_size, (self.height + self.tile_size - 1) // self.tile_size
+        self.tile_count = self.tile_width * self.tile_height
+        self.tile_bits = int(np.ceil(np.log2(max(self.tile_count, 2))))
+        self.depth_bits = 32 - self.tile_bits
+
+    def _set_render_capacity_geometry(self, width: int, height: int) -> None:
+        self._render_capacity_width, self._render_capacity_height = max(int(width), 1), max(int(height), 1)
+        self._render_capacity_tile_width = (self._render_capacity_width + self.tile_size - 1) // self.tile_size
+        self._render_capacity_tile_height = (self._render_capacity_height + self.tile_size - 1) // self.tile_size
+        self._render_capacity_tile_count = self._render_capacity_tile_width * self._render_capacity_tile_height
+
+    def _render_pixel_capacity(self) -> int:
+        return max(int(self._render_capacity_width) * int(self._render_capacity_height), 1)
+
+    def _release_frame_sized_resources(self) -> None:
+        defer_resource_releases((
+            *self._work_buffers.values(),
+            self._output_texture,
+            self._training_depth_stats_texture,
+            self._output_grad_buffer,
+            *self._counter_readback_ring,
+        ))
+        self._work_buffers = {}
+        self._resource_groups.prepass = {}
+        self._resource_groups.raster = {}
+        self._resource_groups.grad = {}
+        self._resource_groups.debug = {}
+        self._resource_groups.frame = {}
+        self._output_texture = None
+        self._training_depth_stats_texture = None
+        self._output_grad_buffer = None
+        self._sorted_keys_buffer = None
+        self._sorted_values_buffer = None
+        self._max_list_entries = self._work_splat_capacity = self._max_scanline_entries = 0
+        self._counter_readback_ring = []
+        self._counter_readback_capacity = []
+        self._counter_readback_frame_id = 0
+        self._pending_min_list_entries = self._delayed_generated_entries = self._delayed_written_entries = 0
+        self._delayed_overflow = self._delayed_stats_valid = False
+
+    def ensure_render_capacity(self, width: int, height: int) -> bool:
+        target_width = max(max(int(width), 1), int(self._render_capacity_width))
+        target_height = max(max(int(height), 1), int(self._render_capacity_height))
+        if (target_width, target_height) == (self._render_capacity_width, self._render_capacity_height):
+            return False
+        self._release_frame_sized_resources()
+        self._set_render_capacity_geometry(target_width, target_height)
+        if self._scene_count > 0:
+            self._ensure_work_buffers(self._scene_count)
+        return True
+
+    def set_render_resolution(self, width: int, height: int) -> bool:
+        target_size = (max(int(width), 1), max(int(height), 1))
+        capacity_changed = self.ensure_render_capacity(*target_size)
+        if (self.width, self.height) == target_size:
+            return capacity_changed
+        self._set_render_resolution_geometry(*target_size)
+        if self._scene_count > 0:
+            self._ensure_work_buffers(self._scene_count)
+        return True
+
+    def resize(self, width: int, height: int) -> bool:
+        target_size = (max(int(width), 1), max(int(height), 1))
+        if (self.width, self.height) == target_size and (self._render_capacity_width, self._render_capacity_height) == target_size:
+            return False
+        self._release_frame_sized_resources()
+        self._set_render_resolution_geometry(*target_size)
+        self._set_render_capacity_geometry(*target_size)
+        if self._scene_count > 0:
+            self._ensure_work_buffers(self._scene_count)
+        return True
+
     def bind_scene_count(self, splat_count: int) -> None:
         count = max(int(splat_count), 0)
         self._ensure_scene_buffers(count)
@@ -579,13 +653,11 @@ class GaussianRenderer:
         self.debug_depth_local_mismatch_smooth_radius = float(debug_depth_local_mismatch_smooth_radius)
         self.debug_depth_local_mismatch_reject_radius = float(debug_depth_local_mismatch_reject_radius)
         self.debug_sh_coeff_index = min(max(int(debug_sh_coeff_index), 0), SUPPORTED_SH_COEFF_COUNT - 1)
-        self.tile_width, self.tile_height = (self.width + self.tile_size - 1) // self.tile_size, (self.height + self.tile_size - 1) // self.tile_size
-        self.tile_count = self.tile_width * self.tile_height
-        self.tile_bits = int(np.ceil(np.log2(max(self.tile_count, 2))))
-        self.depth_bits = 32 - self.tile_bits
+        self._set_render_resolution_geometry(self.width, self.height)
         self._create_shaders()
         self._sorter = GPURadixSort(self.device)
         self._prefix_sum = GPUPrefixSum(self.device)
+        self._set_render_capacity_geometry(self.width, self.height)
         self._scene_count = self._scene_capacity = self._max_list_entries = self._work_splat_capacity = self._max_scanline_entries = 0
         self._current_scene: GaussianScene | None = None
         self._scene_buffers: dict[str, spy.Buffer] = {}
@@ -595,7 +667,7 @@ class GaussianRenderer:
         self._debug_splat_age_buffer: spy.Buffer | None = None
         self._debug_splat_contribution_buffer: spy.Buffer | None = None
         self._debug_adam_moments_buffer: spy.Buffer | None = None
-        self._debug_contribution_percent_scale = 100.0 / self._SPLAT_CONTRIBUTION_FIXED_SCALE
+        self._debug_contribution_scale = 1.0 / self._SPLAT_CONTRIBUTION_FIXED_SCALE
         self._output_texture: spy.Texture | None = None
         self._training_depth_stats_texture: spy.Texture | None = None
         self._output_grad_buffer: spy.Buffer | None = None
@@ -709,16 +781,16 @@ class GaussianRenderer:
             "scanline_counter": self._U32_BYTES,
             "scanline_tile_counts": self._max_scanline_entries * self._U32_BYTES,
             "scanline_tile_offsets": self._max_scanline_entries * self._U32_BYTES,
-            "tile_ranges": max(self.tile_count, 1) * 8,
-            "training_forward_state": max(self.width * self.height, 1) * self._F32X4_BYTES,
-            "training_density": max(self.width * self.height, 1) * self._U32_BYTES,
-            "training_rgb_loss": max(self.width * self.height, 1) * self._U32_BYTES,
+            "tile_ranges": max(self._render_capacity_tile_count, 1) * 8,
+            "training_forward_state": self._render_pixel_capacity() * self._F32X4_BYTES,
+            "training_density": self._render_pixel_capacity() * self._U32_BYTES,
+            "training_rgb_loss": self._render_pixel_capacity() * self._U32_BYTES,
             "training_rgb_loss_total": self._U32_BYTES,
-            "training_target_edge": max(self.width * self.height, 1) * self._U32_BYTES,
+            "training_target_edge": self._render_pixel_capacity() * self._U32_BYTES,
             "training_target_edge_total": self._U32_BYTES,
-            "training_regularizer_grad": max(self.width * self.height, 1) * 2 * self._U32_BYTES,
-            "training_processed_end": max(self.width * self.height, 1) * self._U32_BYTES,
-            "training_batch_end": max(self.tile_count, 1) * self._U32_BYTES,
+            "training_regularizer_grad": self._render_pixel_capacity() * 2 * self._U32_BYTES,
+            "training_processed_end": self._render_pixel_capacity() * self._U32_BYTES,
+            "training_batch_end": max(self._render_capacity_tile_count, 1) * self._U32_BYTES,
             "training_splat_contribution": max(self._work_splat_capacity, 1) * self._U32_BYTES,
             "raster_cache": max(self._work_splat_capacity, 1) * self._RASTER_CACHE_PARAM_COUNT * self._U32_BYTES,
             "param_grads": max(self._work_splat_capacity, 1) * self.TRAINABLE_PARAM_COUNT * self._U32_BYTES,
@@ -782,9 +854,9 @@ class GaussianRenderer:
         self._work_buffers["debug_splat_age"].copy_from_numpy(np.ones((max(self._work_splat_capacity, 1),), dtype=np.float32))
         self._work_buffers["debug_grad_norm"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1),), dtype=np.float32))
         self._work_buffers["training_splat_contribution"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1),), dtype=np.uint32))
-        self._work_buffers["training_rgb_loss"].copy_from_numpy(np.zeros((max(self.width * self.height, 1),), dtype=np.float32))
+        self._work_buffers["training_rgb_loss"].copy_from_numpy(np.zeros((self._render_pixel_capacity(),), dtype=np.float32))
         self._work_buffers["training_rgb_loss_total"].copy_from_numpy(np.zeros((1,), dtype=np.float32))
-        self._work_buffers["training_target_edge"].copy_from_numpy(np.zeros((max(self.width * self.height, 1),), dtype=np.float32))
+        self._work_buffers["training_target_edge"].copy_from_numpy(np.zeros((self._render_pixel_capacity(),), dtype=np.float32))
         self._work_buffers["training_target_edge_total"].copy_from_numpy(np.zeros((1,), dtype=np.float32))
         self._ensure_output_texture()
         self._ensure_training_depth_stats_texture()
@@ -803,8 +875,8 @@ class GaussianRenderer:
                 self.device,
                 name="renderer.output_texture",
                 format=spy.Format.rgba32_float,
-                width=self.width,
-                height=self.height,
+                width=self._render_capacity_width,
+                height=self._render_capacity_height,
                 usage=spy.TextureUsage.shader_resource | spy.TextureUsage.unordered_access,
             )
 
@@ -814,8 +886,8 @@ class GaussianRenderer:
                 self.device,
                 name="renderer.training_depth_stats_texture",
                 format=spy.Format.rgba32_float,
-                width=self.width,
-                height=self.height,
+                width=self._render_capacity_width,
+                height=self._render_capacity_height,
                 usage=spy.TextureUsage.shader_resource | spy.TextureUsage.unordered_access,
             )
 
@@ -824,7 +896,7 @@ class GaussianRenderer:
             self._output_grad_buffer = alloc_buffer(
                 self.device,
                 name="renderer.output_grad",
-                size=max(self.width * self.height, 1) * 4 * self._U32_BYTES,
+                size=self._render_pixel_capacity() * 4 * self._U32_BYTES,
                 usage=self._RW_BUFFER_USAGE,
             )
 
@@ -1689,7 +1761,7 @@ class GaussianRenderer:
 
     def set_debug_contribution_observed_pixel_count(self, observed_pixel_count: float) -> None:
         pixels = max(float(observed_pixel_count), 1.0)
-        self._debug_contribution_percent_scale = 100.0 / (self._SPLAT_CONTRIBUTION_FIXED_SCALE * pixels)
+        self._debug_contribution_scale = 1.0 / (self._SPLAT_CONTRIBUTION_FIXED_SCALE * pixels)
 
     def upload_debug_splat_age(self, values: np.ndarray) -> None:
         splat_age = np.ascontiguousarray(values, dtype=np.float32).reshape(-1)

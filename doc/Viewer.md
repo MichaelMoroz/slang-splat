@@ -105,8 +105,8 @@ The loss-debug controls expose a runtime `Abs Diff Scale` slider when `View = Ab
 - When training subsampling is active, the debug target view is sampled from the native target with the same per-pixel subsample mapping as training; its random seed comes from the current viewer render frame so repeated viewport frames preview the live stochastic sample pattern.
 - Scheduled sorting-order dithering is also applied to the training-camera debug prepass using the current viewer render-frame seed; the projection shader expands that seed into independent per-splat sort-camera offsets.
 - Density debug views share the same range controls. `Splat Density` accumulates a soft per-pixel splat count using `sqrt(transmittance) * alpha / opacity`, while `Spatial Density` and `Screen Density` continue to normalize by 3D volume and projected ellipse area respectively.
-- `Contribution Amount` visualizes the per-splat `g_SplatContribution` atomic buffer accumulated during training forward, normalized to percent of observed dataset pixels as `count / 256 / observed_pixels * 100`.
-- The heatmap is logarithmic and uses dedicated `Contribution Min` and `Contribution Max` controls in percent units instead of sharing density ranges.
+- `Contribution Amount` visualizes the per-splat `g_SplatContribution` atomic buffer accumulated during training forward from the linear-RGB color change each fragment causes after blending, normalized by observed dataset pixels as `count / 256 / observed_pixels`.
+- The heatmap is logarithmic and uses dedicated `Contribution Min` and `Contribution Max` controls in normalized color-change units instead of sharing density ranges.
 - `Depth Local Mismatch` tracks a front-to-back online depth estimate per pixel and visualizes the contribution-weighted local absolute depth deviation from that estimate, normalized by mean depth like `Depth Std`, with separate smooth and reject sigma-multiple controls to avoid coupling distant transparent layers.
 - The renderer debug colorbar is drawn as a horizontal legend near the bottom of the docked viewport window.
 
@@ -161,7 +161,7 @@ Training background is configured separately from the viewer clear color:
 - `Custom` exposes a fixed training RGB color picker and defaults to white
 - `Random` re-samples the training background color per step
 - `Start Densification After` now defaults to `500`.
-- Refinement contribution culling is expressed in percent of observed dataset pixels, with a base default threshold of `1e-05%`.
+- Refinement contribution culling is expressed as observed-pixel-normalized color-change contribution, with a base default threshold of `1e-7`.
 - `Refinement Cull Decay` multiplies that threshold after each completed refinement pass and defaults to `0.995` (`0.5%` drop per pass).
 - `Refinement Sample Radius` controls the local-space radius used for newly spawned refinement samples and defaults to `4.0`.
 - `Refinement Clone Scale Mul` multiplies the split-family sigma after the default `family_size^(-1/3)` refinement shrink and defaults to `1.0`.
