@@ -63,6 +63,9 @@ _COLMAP_CAMERA_MODEL_NAMES = {
 _COLMAP_DB_SAMPLE_LIMIT = 64
 _COLMAP_DB_SEARCH_PATTERNS = ("database.db", "*.db", "*.sqlite", "*.sqlite3")
 _COLMAP_IMPORT_IMAGES_PER_TICK = 1
+_FIBONACCI_SPHERE_EQUAL_AREA_RADIUS_FACTOR = 2.0
+_FIBONACCI_SPHERE_SCALE_MIN = 1e-4
+_FIBONACCI_SPHERE_SCALE_MAX = 1e4
 _DATASET_BC7_TEXCONV_URL = "https://github.com/microsoft/DirectXTex/releases/download/oct2024/texconv.exe"
 _DATASET_BC7_TEXCONV_PATH = Path(__file__).resolve().parents[2] / "temp" / "bc_texture_tools" / "texconv.exe"
 _DDS_MAGIC = 0x20534444
@@ -749,6 +752,25 @@ def _append_fibonacci_sphere_points(
     )
 
 
+def _resolve_fibonacci_sphere_count(total_count: int, point_count: int) -> int:
+    return min(max(int(point_count), 0), max(int(total_count), 0))
+
+
+def _fibonacci_sphere_dense_overlap_scale(point_count: int, radius: float) -> float:
+    if point_count <= 0 or radius <= 0.0:
+        return _FIBONACCI_SPHERE_SCALE_MIN
+    scale = _FIBONACCI_SPHERE_EQUAL_AREA_RADIUS_FACTOR * float(radius) / float(np.sqrt(float(point_count)))
+    return float(np.clip(scale, _FIBONACCI_SPHERE_SCALE_MIN, _FIBONACCI_SPHERE_SCALE_MAX))
+
+
+def _apply_fibonacci_sphere_dense_overlap_scales(scene: GaussianScene, point_count: int, radius: float) -> GaussianScene:
+    if int(point_count) <= 0 or not hasattr(scene, "scales"):
+        return scene
+    count = min(int(point_count), int(scene.scales.shape[0]))
+    scene.scales[-count:, :] = np.float32(np.log(_fibonacci_sphere_dense_overlap_scale(count, radius)))
+    return scene
+
+
 def _copy_gaussian_scene(scene: GaussianScene) -> GaussianScene:
     return GaussianScene(
         positions=np.array(scene.positions, dtype=np.float32, copy=True),
@@ -1133,22 +1155,29 @@ def _build_initial_training_scene(viewer: object, init: object, params: object, 
     if positions is None or colors is None:
         raise RuntimeError("Cached pointcloud initializer data is unavailable.")
 
-    if import_cfg.init_mode == _COLMAP_IMPORT_DIFFUSED_POINTCLOUD:
-        resolved_init = _diffused_pointcloud_init_hparams_from_positions(viewer.s.colmap_recon, positions, init_hparams, import_cfg.nn_radius_scale_coef, min_track_length)
-        return initialize_scene_from_points_colors(positions, colors, init.seed, resolved_init), float(max(resolved_init.base_scale, 1e-8))
+    sphere_count = _resolve_fibonacci_sphere_count(int(positions.shape[0]), int(getattr(import_cfg, "fibonacci_sphere_point_count", 0)))
+    sphere_radius = float(getattr(import_cfg, "fibonacci_sphere_radius", 20.0))
 
-    sphere_count = min(max(int(getattr(import_cfg, "fibonacci_sphere_point_count", 0)), 0), int(positions.shape[0]))
+    if import_cfg.init_mode == _COLMAP_IMPORT_DIFFUSED_POINTCLOUD:
+        base_count = int(positions.shape[0]) - sphere_count
+        init_positions = positions[:base_count] if sphere_count > 0 and base_count > 0 else positions
+        resolved_init = _diffused_pointcloud_init_hparams_from_positions(viewer.s.colmap_recon, init_positions, init_hparams, import_cfg.nn_radius_scale_coef, min_track_length)
+        scene = initialize_scene_from_points_colors(positions, colors, init.seed, resolved_init)
+        scene = _apply_fibonacci_sphere_dense_overlap_scales(scene, sphere_count, sphere_radius)
+        return scene, float(max(resolved_init.base_scale, 1e-8))
+
     base_count = int(positions.shape[0]) - sphere_count
     chosen_base_count = base_count if params.training.max_gaussians <= 0 else min(max(int(params.training.max_gaussians), 1), base_count)
+    init_positions = positions[:base_count] if sphere_count > 0 and base_count > 0 else positions
     if sphere_count > 0:
         chosen_positions = np.concatenate((positions[:chosen_base_count], positions[base_count:]), axis=0)
         chosen_colors = np.concatenate((colors[:chosen_base_count], colors[base_count:]), axis=0)
-        resolved_init = _diffused_pointcloud_init_hparams_from_positions(viewer.s.colmap_recon, chosen_positions, init_hparams, import_cfg.nn_radius_scale_coef, min_track_length)
     else:
         chosen_positions = positions[:chosen_base_count]
         chosen_colors = colors[:chosen_base_count]
-        resolved_init = _pointcloud_init_hparams_from_positions(viewer.s.colmap_recon, positions, params.training.max_gaussians, init_hparams, import_cfg.nn_radius_scale_coef, min_track_length)
+    resolved_init = _pointcloud_init_hparams_from_positions(viewer.s.colmap_recon, init_positions, params.training.max_gaussians, init_hparams, import_cfg.nn_radius_scale_coef, min_track_length)
     scene = initialize_scene_from_points_colors(chosen_positions, chosen_colors, init.seed, resolved_init)
+    scene = _apply_fibonacci_sphere_dense_overlap_scales(scene, sphere_count, sphere_radius)
     return scene, float(max(resolved_init.base_scale, 1e-8))
 
 

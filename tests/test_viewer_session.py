@@ -1254,18 +1254,72 @@ def test_build_initial_training_scene_appends_cached_fibonacci_points_after_poin
 
     expected_positions = np.array([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 1.0, 0.0]], dtype=np.float32)
     expected_colors = np.array([[1.0, 0.0, 0.0], [0.8, 0.8, 0.8], [0.8, 0.8, 0.8]], dtype=np.float32)
+    expected_init_positions = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float32)
     monkeypatch.setattr(session, "_ensure_cached_init_source", lambda viewer_obj, init: None)
     monkeypatch.setattr(
         session,
-        "_diffused_pointcloud_init_hparams_from_positions",
-        lambda recon, positions, init_hparams, nn_radius_scale_coef, min_track_length: SimpleNamespace(base_scale=0.5) if np.array_equal(positions, expected_positions) else (_ for _ in ()).throw(AssertionError("fibonacci points were not appended after pointcloud cap")),
+        "_pointcloud_init_hparams_from_positions",
+        lambda recon, positions, max_gaussians, init_hparams, nn_radius_scale_coef, min_track_length: SimpleNamespace(base_scale=0.5) if np.array_equal(positions, expected_init_positions) and int(max_gaussians) == 1 else (_ for _ in ()).throw(AssertionError("fibonacci shell leaked into pointcloud NN scale initialization")),
     )
     monkeypatch.setattr(session, "initialize_scene_from_points_colors", lambda positions, colors, seed, init_hparams: built_scene if np.array_equal(positions, expected_positions) and np.array_equal(colors, expected_colors) else (_ for _ in ()).throw(AssertionError("unexpected initializer data")))
+    monkeypatch.setattr(session, "_apply_fibonacci_sphere_dense_overlap_scales", lambda scene, point_count, radius: scene if scene is built_scene and int(point_count) == 2 else (_ for _ in ()).throw(AssertionError("unexpected fibonacci shell scale application")))
 
     scene, scale_reg_reference = session._build_initial_training_scene(viewer, SimpleNamespace(seed=7), SimpleNamespace(training=SimpleNamespace(max_gaussians=1)), SimpleNamespace())
 
     assert scene is built_scene
     assert scale_reg_reference == 0.5
+
+
+@pytest.mark.parametrize(("init_mode", "helper_name"), (("pointcloud", "_pointcloud_init_hparams_from_positions"), ("diffused_pointcloud", "_diffused_pointcloud_init_hparams_from_positions")))
+def test_build_initial_training_scene_keeps_fibonacci_shell_scale_independent_of_nn_coef(monkeypatch, init_mode: str, helper_name: str) -> None:
+    cached_positions = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [10.0, 1.0, 0.0],
+            [10.0, -1.0, 0.0],
+            [11.0, 0.0, 0.0],
+            [9.0, 0.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    cached_colors = np.ones((6, 3), dtype=np.float32)
+
+    def _viewer_with_coef(nn_radius_scale_coef: float) -> SimpleNamespace:
+        return SimpleNamespace(
+            s=SimpleNamespace(
+                colmap_recon=object(),
+                colmap_root=Path("dataset/garden"),
+                colmap_import=SimpleNamespace(
+                    init_mode=init_mode,
+                    nn_radius_scale_coef=nn_radius_scale_coef,
+                    min_track_length=3,
+                    fibonacci_sphere_point_count=4,
+                    fibonacci_sphere_radius=1.0,
+                ),
+                cached_init_point_positions=cached_positions,
+                cached_init_point_colors=cached_colors,
+                cached_init_scene=None,
+                cached_init_signature=("cached",),
+            )
+        )
+
+    def _resolved_init(recon, positions, *args):
+        del recon
+        assert np.array_equal(positions, cached_positions[:2])
+        nn_radius_scale_coef = float(args[-2])
+        return SimpleNamespace(position_jitter_std=None, base_scale=nn_radius_scale_coef, scale_jitter_ratio=None, initial_opacity=None)
+
+    monkeypatch.setattr(session, "_ensure_cached_init_source", lambda viewer_obj, init: None)
+    monkeypatch.setattr(session, helper_name, _resolved_init)
+
+    low_scene, _ = session._build_initial_training_scene(_viewer_with_coef(0.1), SimpleNamespace(seed=7), SimpleNamespace(training=SimpleNamespace(max_gaussians=2)), SimpleNamespace())
+    high_scene, _ = session._build_initial_training_scene(_viewer_with_coef(3.0), SimpleNamespace(seed=7), SimpleNamespace(training=SimpleNamespace(max_gaussians=2)), SimpleNamespace())
+
+    expected_scale = session._fibonacci_sphere_dense_overlap_scale(4, 1.0)
+    np.testing.assert_allclose(np.exp(low_scene.scales[-4:, 0]), np.full((4,), expected_scale, dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(np.exp(high_scene.scales[-4:, 0]), np.full((4,), expected_scale, dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(low_scene.scales[-4:, :], high_scene.scales[-4:, :], rtol=0.0, atol=1e-6)
 
 
 def test_apply_live_params_defers_subsample_runtime_change_until_resize(monkeypatch) -> None:
