@@ -44,7 +44,6 @@ uniform RWStructuredBuffer<float> g_OptimizerParams;
 uniform RWStructuredBuffer<float> g_OptimizerGrads;
 uniform RWStructuredBuffer<float2> g_OptimizerAdamMoments;
 uniform RWStructuredBuffer<float> g_OptimizerElementGradNorms;
-uniform RWStructuredBuffer<float4> g_OptimizerElementGradStats;
 
 uint optimizer_param_index(uint elementCount, uint paramId, uint elementId)
 {
@@ -75,28 +74,6 @@ void csComputePackedElementGradNorms(uint3 dispatchThreadID : SV_DispatchThreadI
         gradNorm2 += grad * grad;
     }
     g_OptimizerElementGradNorms[elementId] = sqrt(max(gradNorm2, 0.0));
-}
-
-[shader("compute")]
-[numthreads(ADAM_GROUP_SIZE, 1, 1)]
-void csAccumulatePackedElementGradStats(uint3 dispatchThreadID : SV_DispatchThreadID)
-{
-    uint elementId = dispatchThreadID.x;
-    if (elementId >= g_OptimizerElementCount) return;
-
-    float gradNorm2 = 0.0;
-    [unroll] for (uint paramId = 0u; paramId < g_OptimizerParamSettingsCount; paramId++)
-    {
-        float grad = sanitize_scalar(load_optimizer_grad(paramId, elementId), g_OptimizerParamSettings[paramId].gradClipAbs);
-        gradNorm2 += grad * grad;
-    }
-    float gradNorm = sqrt(max(gradNorm2, 0.0));
-    if (!isfinite(gradNorm)) gradNorm = 0.0;
-    float4 stats = g_OptimizerElementGradStats[elementId];
-    stats.x += gradNorm;
-    stats.y += gradNorm * gradNorm;
-    stats.z += 1.0;
-    g_OptimizerElementGradStats[elementId] = stats;
 }
 
 [shader("compute")]

@@ -55,7 +55,7 @@ uniform StructuredBuffer<uint> g_SortedKeys;
 uniform StructuredBuffer<uint> g_SortedValues;
 uniform StructuredBuffer<uint> g_PrepassParams;
 uniform StructuredBuffer<float> g_DebugGradNorm;
-uniform StructuredBuffer<float4> g_DebugGradStats;
+uniform StructuredBuffer<float> g_DebugGradStats;
 uniform StructuredBuffer<float2> g_DebugAdamMoments;
 
 uniform RWTexture2D<float4> g_Output;
@@ -69,6 +69,7 @@ uniform RWStructuredBuffer<uint> g_TrainingBatchEnd;
 uniform RWStructuredBuffer<float> g_ParamGrads;
 uniform RWStructuredBuffer<int> g_CachedRasterGradsFixed;
 uniform RWStructuredBuffer<float> g_CachedRasterGradsFloat;
+uniform RWStructuredBuffer<float> g_GradientStats;
 uniform float g_RasterGradDecodeScale;
 uniform float g_CachedRasterGradFixedROLocalRange;
 uniform float g_CachedRasterGradFixedScaleRange;

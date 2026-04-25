@@ -843,11 +843,11 @@ def test_debug_grad_variance_render_smoke(device):
         debug_mode=GaussianRenderer.DEBUG_MODE_GRAD_VARIANCE,
     )
     samples = np.geomspace(1e-8, 1e-2, scene.count, dtype=np.float32)
-    stats = np.zeros((scene.count, 4), dtype=np.float32)
+    stats = np.zeros((scene.count, 2), dtype=np.float32)
     stats[:, 0] = samples + samples * 3.0
     stats[:, 1] = samples * samples + (samples * 3.0) * (samples * 3.0)
-    stats[:, 2] = 2.0
     renderer.upload_debug_grad_stats(stats)
+    renderer.set_debug_contribution_observed_pixel_count(2.0)
     out = renderer.render(scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32))
     assert out.image.shape == (64, 64, 4)
     assert np.all(np.isfinite(out.image))

@@ -167,6 +167,7 @@ class GaussianRenderer:
     _PREPASS_ENTRY_BYTES = (_SCANLINE_WORK_ITEM_UINTS + 4) * _U32_BYTES
     _RASTER_GAUSSIAN_PARAM_COUNT = 11
     _RASTER_GRAD_PARAM_COUNT = 10
+    _GRAD_STATS_STRIDE = 2
     _RW_BUFFER_USAGE = RW_BUFFER_USAGE
     PARAM_POSITION_IDS = (0, 1, 2)
     PARAM_SCALE_IDS = (3, 4, 5)
@@ -296,6 +297,7 @@ class GaussianRenderer:
                 "debugDensityRange": spy.float2(*self.debug_density_range),
                 "debugContributionRange": spy.float2(*self.debug_contribution_range),
                 "debugContributionScale": float(self._debug_contribution_scale),
+                "debugGradVarianceInvSampleCount": float(self._debug_grad_variance_inv_sample_count),
                 "debugAdamMomentumRange": spy.float2(*self.debug_adam_momentum_range),
                 "debugDepthMeanRange": spy.float2(*self.debug_depth_mean_range),
                 "debugDepthStdRange": spy.float2(*self.debug_depth_std_range),
@@ -667,6 +669,7 @@ class GaussianRenderer:
         self._debug_splat_contribution_buffer: spy.Buffer | None = None
         self._debug_adam_moments_buffer: spy.Buffer | None = None
         self._debug_contribution_scale = 1.0 / self._SPLAT_CONTRIBUTION_FIXED_SCALE
+        self._debug_grad_variance_inv_sample_count = 1.0
         self._output_texture: spy.Texture | None = None
         self._output_grad_buffer: spy.Buffer | None = None
         self._last_stats: dict[str, int | bool | float] = {}
@@ -765,7 +768,7 @@ class GaussianRenderer:
             "fallback_clone_counts": max(self._work_splat_capacity, 1) * self._U32_BYTES,
             "debug_splat_age": max(self._work_splat_capacity, 1) * self._U32_BYTES,
             "debug_grad_norm": max(self._work_splat_capacity, 1) * self._U32_BYTES,
-            "debug_grad_stats": max(self._work_splat_capacity, 1) * self._F32X4_BYTES,
+            "debug_grad_stats": max(self._work_splat_capacity, 1) * self._GRAD_STATS_STRIDE * self._U32_BYTES,
             "visible_keys": max(self._work_splat_capacity, 1) * self._U32_BYTES,
             "visible_values": max(self._work_splat_capacity, 1) * self._U32_BYTES,
             "visible_counter": self._U32_BYTES,
@@ -851,7 +854,7 @@ class GaussianRenderer:
         self._work_buffers["fallback_clone_counts"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1),), dtype=np.uint32))
         self._work_buffers["debug_splat_age"].copy_from_numpy(np.ones((max(self._work_splat_capacity, 1),), dtype=np.float32))
         self._work_buffers["debug_grad_norm"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1),), dtype=np.float32))
-        self._work_buffers["debug_grad_stats"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1), 4), dtype=np.float32))
+        self._work_buffers["debug_grad_stats"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1), self._GRAD_STATS_STRIDE), dtype=np.float32))
         self._work_buffers["training_splat_contribution"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1),), dtype=np.uint32))
         self._work_buffers["training_rgb_loss"].copy_from_numpy(np.zeros((self._render_pixel_capacity(),), dtype=np.float32))
         self._work_buffers["training_rgb_loss_total"].copy_from_numpy(np.zeros((1,), dtype=np.float32))
@@ -1275,13 +1278,15 @@ class GaussianRenderer:
         training_background_seed: int = 0,
         training_native_camera: Camera | None = None,
         training_sample_vars: dict[str, object] | None = None,
+        gradient_stats_buffer: spy.Buffer | None = None,
     ) -> None:
         resolved_regularizer_grad = self._work_buffers["training_regularizer_grad"] if regularizer_grad is None else regularizer_grad
+        resolved_gradient_stats = self._work_buffers["debug_grad_stats"] if gradient_stats_buffer is None else gradient_stats_buffer
         resolved_native_camera = camera if training_native_camera is None else training_native_camera
         resolved_sample_vars = self._disabled_training_sample_vars() if training_sample_vars is None else training_sample_vars
         if regularizer_grad is None:
             self._clear_float_buffer(encoder, resolved_regularizer_grad, max(self.width * self.height, 1))
-        vars = {**self._scene_vars(), **self._raster_cache_vars(), "g_SortedValues": self._sorted_values(), "g_TileRanges": self._work_buffers["tile_ranges"], "g_OutputGrad": output_grad, "g_TrainingForwardState": self._work_buffers["training_forward_state"], "g_TrainingRegularizerGrad": resolved_regularizer_grad, "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"], "g_TrainingBatchEnd": self._work_buffers["training_batch_end"], "g_CloneCounts": self._work_buffers["fallback_clone_counts"] if clone_counts_buffer is None else clone_counts_buffer, **self._raster_grad_vars(), **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_range_vars(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background, training_background_mode, training_background_seed), **self._anisotropy_uniforms(), **self._camera_uniforms(camera), **self._camera_uniforms(resolved_native_camera, "g_TrainingNativeCamera"), **resolved_sample_vars}
+        vars = {**self._scene_vars(), **self._raster_cache_vars(), "g_SortedValues": self._sorted_values(), "g_TileRanges": self._work_buffers["tile_ranges"], "g_OutputGrad": output_grad, "g_TrainingForwardState": self._work_buffers["training_forward_state"], "g_TrainingRegularizerGrad": resolved_regularizer_grad, "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"], "g_TrainingBatchEnd": self._work_buffers["training_batch_end"], "g_CloneCounts": self._work_buffers["fallback_clone_counts"] if clone_counts_buffer is None else clone_counts_buffer, "g_GradientStats": resolved_gradient_stats, **self._raster_grad_vars(), **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_range_vars(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background, training_background_mode, training_background_seed), **self._anisotropy_uniforms(), **self._camera_uniforms(camera), **self._camera_uniforms(resolved_native_camera, "g_TrainingNativeCamera"), **resolved_sample_vars}
         self._dispatch(self._raster_grad_shader_set().backward, encoder, self._raster_thread_count(), vars, "Rasterize Backward", 27)
 
     def _backprop_cached_raster_grads(self, encoder: spy.CommandEncoder, splat_count: int, camera: Camera, grad_scale: float = 1.0) -> None:
@@ -1741,6 +1746,7 @@ class GaussianRenderer:
     def set_debug_contribution_observed_pixel_count(self, observed_pixel_count: float) -> None:
         pixels = max(float(observed_pixel_count), 1.0)
         self._debug_contribution_scale = 1.0 / (self._SPLAT_CONTRIBUTION_FIXED_SCALE * pixels)
+        self._debug_grad_variance_inv_sample_count = 1.0 / pixels
 
     def upload_debug_splat_age(self, values: np.ndarray) -> None:
         splat_age = np.ascontiguousarray(values, dtype=np.float32).reshape(-1)
@@ -1761,7 +1767,7 @@ class GaussianRenderer:
         self._debug_grad_norm_buffer = None
 
     def upload_debug_grad_stats(self, values: np.ndarray) -> None:
-        stats = np.ascontiguousarray(values, dtype=np.float32).reshape(-1, 4)
+        stats = np.ascontiguousarray(values, dtype=np.float32).reshape(-1, self._GRAD_STATS_STRIDE)
         self._ensure_work_buffers(max(int(stats.shape[0]), self._scene_count, 1))
         padded = np.pad(stats, ((0, max(self._work_splat_capacity - stats.shape[0], 0)), (0, 0)))
         self._work_buffers["debug_grad_stats"].copy_from_numpy(padded)
@@ -1837,9 +1843,10 @@ class GaussianRenderer:
         training_background_seed: int = 0,
         training_native_camera: Camera | None = None,
         training_sample_vars: dict[str, object] | None = None,
+        gradient_stats_buffer: spy.Buffer | None = None,
     ) -> None:
         self._require_scene()
-        self._rasterize_backward(encoder, camera, background, output_grad, regularizer_grad, clone_counts_buffer, training_background_mode, training_background_seed, training_native_camera, training_sample_vars)
+        self._rasterize_backward(encoder, camera, background, output_grad, regularizer_grad, clone_counts_buffer, training_background_mode, training_background_seed, training_native_camera, training_sample_vars, gradient_stats_buffer)
         self._backprop_cached_raster_grads(encoder, self._scene_count, camera, grad_scale)
 
     def render_to_texture(

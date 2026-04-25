@@ -72,13 +72,12 @@ Each trainer `step()` performs:
    - `csComputeSSIMBlurredGradients` differentiates DSSIM with respect to the blurred rendered-side moment channels using Slang autodiff,
    - the same separable Gaussian blur utility is reused as the blur adjoint to propagate those gradients back into the unblurred rendered-side moments,
   - `csComputeBlendedLossBackward` differentiates the rendered-side moment extraction with Slang autodiff, combines the resulting DSSIM image gradient with the weighted RGB L1 sign gradient, and writes the unnormalized per-pixel RGB gradient into flat `RWStructuredBuffer<float4>` `g_OutputGrad`, plus one scalar regularizer gradient buffer for density replay, indexed as `pixel = y * width + x`,
-  - `csRasterizeBackward` consumes the cached raster forward state and accumulates quantized cached raster-field gradients for the precomputed raster-cache fields,
+  - `csRasterizeBackward` consumes the cached raster forward state, accumulates quantized cached raster-field gradients for the precomputed raster-cache fields, and atomically accumulates per-splat raster contribution-gradient `sum(norm)` and `sum(norm²)` for variance debug visualization,
   - `csBackpropCachedRasterGrads` decodes that cached-field intermediate inline, backprops the directional raster state back into the unchanged full scene-parameter layout, and writes the final float packed scene-parameter gradient buffer with the final `1 / pixel_count` normalization before the rest of training.
 7. Run the optimizer pipeline:
   - `csAccumulateRegularizationGrads` adds scale, SH1, and opacity regularizers on the packed param-major state.
    - `csClipPackedParamGrads` clips gradients from a structured per-parameter settings buffer owned by the optimizer module.
    - `csComputePackedSplatGradNorms` can optionally reduce the packed gradient vector of each splat into one scalar `L2` norm for debug visualization.
-   - `csAccumulatePackedElementGradStats` accumulates one clipped packed-gradient norm sample per splat per completed training step as `(sum, sumSq, count)` for variance debug visualization.
    - `csAdamStepPacked` applies one-thread-per-packed-parameter ADAM using that same settings buffer plus a packed `float2` moments buffer.
   - `csProjectGaussianParams` applies the remaining Gaussian-specific post-step projection: quaternion normalization, anisotropy clamp, and an angle-only upper screen-size clamp. The clamp keeps `max_screen_fraction` as an area-equivalent viewport fraction, converts it to a circular pixel radius, maps that radius to an angular radius from the active training camera focal length, then converts that angle plus Euclidean camera-to-splat distance into one shared scalar sigma cap applied to all three scale components. It does not use visibility, cropping, projected footprint, or opacity.
 8. When the configured refinement boundary is reached, run the refinement pass:

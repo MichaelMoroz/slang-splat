@@ -1657,48 +1657,23 @@ def test_refinement_sampling_prefers_higher_momentum_norm(device, tmp_path: Path
     assert selections[0] > selections[1]
 
 
-def test_gradient_stats_accumulate_clipped_grad_norms_and_clear(device, tmp_path: Path) -> None:
-    scene = _make_scene(count=2, seed=190)
+def test_gradient_stats_accumulate_raster_contribution_squares_and_clear(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=4, seed=190)
     frame = _make_frame(tmp_path, image_name="gradient_stats_target.png", image_id=190)
-    renderer = GaussianRenderer(device, width=16, height=16, list_capacity_multiplier=8)
+    renderer = GaussianRenderer(device, width=24, height=24, radius_scale=1.6, list_capacity_multiplier=16)
     trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], seed=123)
 
-    def dispatch_sample(values: np.ndarray, step_index: int) -> None:
-        renderer.work_buffers["param_grads"].copy_from_numpy(np.ascontiguousarray(values.reshape(-1), dtype=np.float32))
-        enc = device.create_command_encoder()
-        trainer.adam_optimizer.dispatch_step(
-            enc,
-            params_buffer=renderer.scene_buffers["splat_params"],
-            grads_buffer=renderer.work_buffers["param_grads"],
-            element_count=scene.count,
-            packed_param_count=scene.count * renderer.TRAINABLE_PARAM_COUNT,
-            param_group_size=scene.count,
-            param_settings=trainer.optimizer.param_settings,
-            param_settings_count=trainer.optimizer.param_settings_count,
-            step_index=step_index,
-            element_grad_stats_buffer=trainer.refinement_buffers["gradient_stats"],
-        )
-        device.submit_command_buffer(enc.finish())
-        device.wait()
+    trainer.step()
 
-    grads = np.zeros((renderer.TRAINABLE_PARAM_COUNT, scene.count), dtype=np.float32)
-    grads[0, :] = np.array([3.0, 1.0], dtype=np.float32)
-    grads[1, :] = np.array([4.0, 2.0], dtype=np.float32)
-    grads[2, 1] = 2.0
-    dispatch_sample(grads, 1)
-
-    grads.fill(0.0)
-    grads[0, :] = np.array([2.0, 0.5], dtype=np.float32)
-    dispatch_sample(grads, 2)
-
-    stats = buffer_to_numpy(trainer.refinement_buffers["gradient_stats"], np.float32).reshape(-1, 4)[: scene.count]
-    np.testing.assert_allclose(stats[:, 0], np.array([7.0, 3.5], dtype=np.float32), rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(stats[:, 1], np.array([29.0, 9.25], dtype=np.float32), rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(stats[:, 2], np.array([2.0, 2.0], dtype=np.float32), rtol=0.0, atol=1e-6)
+    stats = buffer_to_numpy(trainer.refinement_buffers["gradient_stats"], np.float32).reshape(-1, 2)[: scene.count]
+    assert np.any(stats[:, 0] > 0.0)
+    assert np.any(stats[:, 1] > 0.0)
+    assert trainer.observed_contribution_pixel_count == renderer.width * renderer.height
 
     trainer._clear_clone_counts()
-    cleared = buffer_to_numpy(trainer.refinement_buffers["gradient_stats"], np.float32).reshape(-1, 4)[: scene.count]
-    np.testing.assert_allclose(cleared, np.zeros((scene.count, 4), dtype=np.float32), rtol=0.0, atol=0.0)
+    cleared = buffer_to_numpy(trainer.refinement_buffers["gradient_stats"], np.float32).reshape(-1, 2)[: scene.count]
+    np.testing.assert_allclose(cleared, np.zeros((scene.count, 2), dtype=np.float32), rtol=0.0, atol=0.0)
+    assert trainer.observed_contribution_pixel_count == 0
 
 
 def test_refinement_sampling_exponent_controls_momentum_spikiness(device, tmp_path: Path) -> None:

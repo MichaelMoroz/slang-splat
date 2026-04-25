@@ -109,7 +109,7 @@ uniform RWStructuredBuffer<float> g_AppendParams;
 uniform RWStructuredBuffer<float> g_AppendSplatAge;
 uniform RWStructuredBuffer<uint> g_CloneCounts;
 uniform RWStructuredBuffer<uint> g_SplatContribution;
-uniform RWStructuredBuffer<float4> g_GradientStats;
+uniform RWStructuredBuffer<float> g_GradientStats;
 uniform RWStructuredBuffer<float> g_RefinementWeights;
 uniform RWStructuredBuffer<float> g_RefinementWeightPrefix;
 uniform StructuredBuffer<float> g_RefinementWeightTotal;
@@ -1052,7 +1052,8 @@ void csClearCloneCounts(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (splatId >= g_SrcSplatCount) return;
     g_CloneCounts[splatId] = 0u;
     g_SplatContribution[splatId] = 0u;
-    g_GradientStats[splatId] = float4(0.0);
+    g_GradientStats[splatId * DEBUG_GRAD_STATS_STRIDE + 0u] = 0.0;
+    g_GradientStats[splatId * DEBUG_GRAD_STATS_STRIDE + 1u] = 0.0;
 }
 
 [shader("compute")]

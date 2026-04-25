@@ -309,6 +309,7 @@ class GaussianTrainer:
     _BATCH_STEP_INFO_STRIDE = 4
     _U32_BYTES = 4
     _FLOAT4_BYTES = 16
+    _GRAD_STATS_STRIDE = 2
     _SSIM_FEATURE_CHANNELS = 15
     _PREPASS_CAPACITY_SYNC_INTERVAL = 32
     _REFINEMENT_CAMERA_ROW_COUNT = 6
@@ -526,6 +527,7 @@ class GaussianTrainer:
             output_grad=self.renderer.output_grad_buffer,
             grad_scale=1.0,
             regularizer_grad=self.renderer.work_buffers["training_regularizer_grad"],
+            gradient_stats_buffer=self._refinement_buffers["gradient_stats"],
             training_background_mode=int(self.training.background_mode),
             training_background_seed=self._training_background_seed(resolved_step),
             training_native_camera=self._native_frame_camera(frame_index) if native_camera is None else native_camera,
@@ -874,7 +876,7 @@ class GaussianTrainer:
             self._refinement_splat_capacity = grow_capacity(required_splats, self._refinement_splat_capacity)
             self._set_refinement_buffer("clone_counts", alloc_buffer(self.device, name="trainer.refinement.clone_counts", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
             self._set_refinement_buffer("splat_contribution", alloc_buffer(self.device, name="trainer.refinement.splat_contribution", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
-            self._set_refinement_buffer("gradient_stats", alloc_buffer(self.device, name="trainer.refinement.gradient_stats", size=self._refinement_splat_capacity * self._FLOAT4_BYTES, usage=RW_BUFFER_USAGE))
+            self._set_refinement_buffer("gradient_stats", alloc_buffer(self.device, name="trainer.refinement.gradient_stats", size=self._refinement_splat_capacity * self._GRAD_STATS_STRIDE * self._U32_BYTES, usage=RW_BUFFER_USAGE))
             reset_gradient_stats = True
             self._set_refinement_buffer("refinement_eligible_mask", alloc_buffer(self.device, name="trainer.refinement.eligible_mask", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
             self._set_refinement_buffer("refinement_weights", alloc_buffer(self.device, name="trainer.refinement.weights", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
@@ -882,7 +884,7 @@ class GaussianTrainer:
         elif "splat_contribution" not in self._refinement_buffers:
             self._refinement_buffers["splat_contribution"] = alloc_buffer(self.device, name="trainer.refinement.splat_contribution", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE)
         if "gradient_stats" not in self._refinement_buffers:
-            self._refinement_buffers["gradient_stats"] = alloc_buffer(self.device, name="trainer.refinement.gradient_stats", size=self._refinement_splat_capacity * self._FLOAT4_BYTES, usage=RW_BUFFER_USAGE)
+            self._refinement_buffers["gradient_stats"] = alloc_buffer(self.device, name="trainer.refinement.gradient_stats", size=self._refinement_splat_capacity * self._GRAD_STATS_STRIDE * self._U32_BYTES, usage=RW_BUFFER_USAGE)
             reset_gradient_stats = True
         if "refinement_eligible_mask" not in self._refinement_buffers:
             self._refinement_buffers["refinement_eligible_mask"] = alloc_buffer(self.device, name="trainer.refinement.eligible_mask", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE)
@@ -915,7 +917,7 @@ class GaussianTrainer:
             ))
             self._refinement_camera_signature = None
         if reset_gradient_stats:
-            self._refinement_buffers["gradient_stats"].copy_from_numpy(np.zeros((self._refinement_splat_capacity, 4), dtype=np.float32))
+            self._refinement_buffers["gradient_stats"].copy_from_numpy(np.zeros((self._refinement_splat_capacity, self._GRAD_STATS_STRIDE), dtype=np.float32))
 
     def _alloc_refinement_adam_moments(self, splat_count: int) -> spy.Buffer:
         return alloc_buffer(
@@ -1404,7 +1406,6 @@ class GaussianTrainer:
                 param_settings_count=self.optimizer.param_settings_count,
                 step_index=int(step_index),
                 debug_element_grad_norm_buffer=self.renderer.work_buffers["debug_grad_norm"] if self.compute_debug_grad_norm else None,
-                element_grad_stats_buffer=self._refinement_buffers["gradient_stats"],
             )
             self.optimizer.dispatch_projection(
                 encoder,

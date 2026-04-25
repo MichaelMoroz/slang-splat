@@ -88,6 +88,24 @@ void store_param_grad<let N : int>(uint splatCount, uint firstParamId, uint spla
     }
 }
 
+uint gradient_stat_index(uint splatId, uint slot)
+{
+    return splatId * DEBUG_GRAD_STATS_STRIDE + slot;
+}
+
+float raster_grad_contribution_norm(RasterGaussian.Differential dGaussian)
+{
+    float sumSq = dot(dGaussian.centerDir, dGaussian.centerDir) + dot(dGaussian.sigmaOrtho, dGaussian.sigmaOrtho) + dot(dGaussian.colorAlpha, dGaussian.colorAlpha);
+    return sqrt(max(sumSq, 0.0));
+}
+
+void accumulate_gradient_stats(uint splatId, float contributionNorm)
+{
+    if (!(isfinite(contributionNorm) && contributionNorm > 0.0)) return;
+    InterlockedAdd(g_GradientStats[gradient_stat_index(splatId, 0u)], contributionNorm);
+    InterlockedAdd(g_GradientStats[gradient_stat_index(splatId, 1u)], contributionNorm * contributionNorm);
+}
+
 RasterGaussian load_cached_raster_grad_fixed(uint splatId)
 {
     uint splatCount = g_Prepass.splatCount;
@@ -140,6 +158,7 @@ RasterGaussian load_cached_raster_grad_float(uint splatId)
 void flush_cached_raster_grad_fixed(uint splatId, RasterGaussian gaussian, RasterGaussian.Differential dGaussian)
 {
     uint splatCount = g_Prepass.splatCount;
+    accumulate_gradient_stats(splatId, raster_grad_contribution_norm(dGaussian));
     float avgInvScale = 1.0 / raster_grad_fixed_avg_inv_scale(gaussian.sigmaOrtho, gaussian.depthDistance);
     float sigmaInvScale = 1.0 / raster_grad_fixed_sigma_inv_scale(gaussian.sigmaOrtho, gaussian.depthDistance);
     // float3 centerDir = WaveActiveSum(dGaussian.centerDir * avgInvScale);
@@ -178,6 +197,7 @@ void flush_cached_raster_grad_fixed(uint splatId, RasterGaussian gaussian, Raste
 void flush_cached_raster_grad_float(uint splatId, RasterGaussian.Differential dGaussian)
 {
     uint splatCount = g_Prepass.splatCount;
+    accumulate_gradient_stats(splatId, raster_grad_contribution_norm(dGaussian));
     float3 centerDir = WaveActiveSum(dGaussian.centerDir);
     float3 sigmaOrtho = WaveActiveSum(dGaussian.sigmaOrtho);
     float4 colorAlpha = WaveActiveSum(dGaussian.colorAlpha);
@@ -343,12 +363,12 @@ float raster_adam_second_moment_length(uint splatId)
 
 float raster_grad_variance(uint splatId)
 {
-    float4 stats = g_DebugGradStats[splatId];
-    float count = stats.z;
-    if (!(isfinite(count) && count > 0.0)) return 0.0;
-    float invCount = 1.0 / count;
-    float mean = stats.x * invCount;
-    float variance = stats.y * invCount - mean * mean;
+    float invSampleCount = g_Raster.debugGradVarianceInvSampleCount;
+    if (!(isfinite(invSampleCount) && invSampleCount > 0.0)) return 0.0;
+    float sum = g_DebugGradStats[gradient_stat_index(splatId, 0u)];
+    float sumSq = g_DebugGradStats[gradient_stat_index(splatId, 1u)];
+    float mean = sum * invSampleCount;
+    float variance = sumSq * invSampleCount - mean * mean;
     if (!isfinite(variance)) return 0.0;
     return max(variance, 0.0);
 }
