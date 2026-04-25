@@ -134,6 +134,7 @@ uniform uint g_RefinementUseCompactSplit;
 uniform uint g_RefinementSolveOpacity;
 uniform float g_RefinementSplitBeta;
 uniform float g_RefinementGradientVarianceWeightExponent;
+uniform float g_RefinementContributionWeightExponent;
 uniform float g_RefinementGradientVarianceInvSampleCount;
 uniform float g_RefinementRadiusScale;
 
@@ -546,6 +547,23 @@ float refinement_gradient_variance_weight(uint splatId)
     float mean = sum * invSampleCount;
     float variance = sumSq * invSampleCount - mean * mean;
     return isfinite(variance) ? max(variance, 0.0) : 0.0;
+}
+
+float refinement_pixel_contribution_weight(uint splatId)
+{
+    float invSampleCount = g_RefinementGradientVarianceInvSampleCount;
+    if (!(isfinite(invSampleCount) && invSampleCount > 0.0)) return 0.0;
+    float contribution = float(g_SplatContribution[splatId]) * invSampleCount / SPLAT_CONTRIBUTION_FIXED_SCALE;
+    return isfinite(contribution) ? max(contribution, 0.0) : 0.0;
+}
+
+float refinement_sampling_distribution(uint splatId)
+{
+    if (!(isfinite(g_RefinementGradientVarianceInvSampleCount) && g_RefinementGradientVarianceInvSampleCount > 0.0)) return 0.0;
+    float varianceWeight = pow(refinement_gradient_variance_weight(splatId), g_RefinementGradientVarianceWeightExponent);
+    float contributionWeight = pow(refinement_pixel_contribution_weight(splatId), g_RefinementContributionWeightExponent);
+    float distribution = varianceWeight * contributionWeight;
+    return isfinite(distribution) ? max(distribution, 0.0) : 0.0;
 }
 
 float position_random_step_gate(float opacity)
@@ -1115,7 +1133,7 @@ void csPrepareRefinementSamplingWeights(uint3 dispatchThreadID : SV_DispatchThre
     float alpha = opacity_from_raw(load_splat_param(g_SrcSplatParams, g_SrcSplatCount, PARAM_RAW_OPACITY, splatId));
     bool eligible = !should_cull_refinement_splat(alpha, g_SplatContribution[splatId]);
     g_RefinementEligibleMask[splatId] = eligible ? 1u : 0u;
-    g_RefinementWeights[splatId] = eligible ? pow(refinement_gradient_variance_weight(splatId), g_RefinementGradientVarianceWeightExponent) : 0.0;
+    g_RefinementWeights[splatId] = eligible ? refinement_sampling_distribution(splatId) : 0.0;
 }
 
 [shader("compute")]

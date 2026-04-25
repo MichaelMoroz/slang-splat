@@ -14,7 +14,7 @@ from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 from src.scene.sh_utils import SH_C0, evaluate_sh_color
 from src.training import gaussian_trainer as gaussian_trainer_module
-from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_colorspace_mod, resolve_cosine_base_learning_rate, resolve_effective_refinement_interval, resolve_effective_train_render_factor, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_visible_angle_deg, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_clone_budget, resolve_refinement_growth_ratio, resolve_refinement_min_contribution, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering, resolve_ssim_weight, resolve_stage_schedule_steps, resolve_training_resolution, resolve_train_subsample_factor, resolve_use_sh, should_run_refinement_step
+from src.training import AdamHyperParams, GaussianTrainer, SPLAT_CONTRIBUTION_FIXED_SCALE, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_colorspace_mod, resolve_cosine_base_learning_rate, resolve_effective_refinement_interval, resolve_effective_train_render_factor, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_visible_angle_deg, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_clone_budget, resolve_refinement_growth_ratio, resolve_refinement_min_contribution, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering, resolve_ssim_weight, resolve_stage_schedule_steps, resolve_training_resolution, resolve_train_subsample_factor, resolve_use_sh, should_run_refinement_step
 
 _ADAM_BUFFER_NAMES = ("adam_moments",)
 _OPACITY_EPS = 1e-6
@@ -1627,14 +1627,20 @@ def test_training_raster_path_preserves_clone_counts(device, tmp_path: Path) -> 
     np.testing.assert_array_equal(clone_counts, seed_counts)
 
 
-def _write_refinement_variance_stats(trainer: GaussianTrainer, variances: np.ndarray) -> None:
+def _write_refinement_distribution_inputs(trainer: GaussianTrainer, variances: np.ndarray, contributions: np.ndarray | None = None) -> None:
     variances = np.ascontiguousarray(variances, dtype=np.float32).reshape(-1)
+    contributions = np.ones_like(variances) if contributions is None else np.ascontiguousarray(contributions, dtype=np.float32).reshape(-1)
     samples = np.sqrt(np.maximum(variances, 0.0)).astype(np.float32, copy=False)
     stats = np.zeros((variances.shape[0], 2), dtype=np.float32)
     stats[:, 0] = samples * 2.0
     stats[:, 1] = samples * samples * 4.0
     trainer._observed_contribution_pixel_count = 2
     trainer.refinement_buffers["gradient_stats"].copy_from_numpy(stats)
+    contribution_fixed = np.maximum(
+        np.rint(np.maximum(contributions, 0.0) * trainer.observed_contribution_pixel_count * SPLAT_CONTRIBUTION_FIXED_SCALE),
+        0.0,
+    ).astype(np.uint32)
+    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(contribution_fixed)
 
 
 def test_refinement_sampling_prefers_higher_gradient_variance(device, tmp_path: Path) -> None:
@@ -1651,7 +1657,7 @@ def test_refinement_sampling_prefers_higher_gradient_variance(device, tmp_path: 
         seed=123,
     )
     trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.full((scene.count,), 500, dtype=np.uint32))
-    _write_refinement_variance_stats(trainer, np.array([1.0, 0.05 * 0.05], dtype=np.float32))
+    _write_refinement_distribution_inputs(trainer, np.array([1.0, 0.05 * 0.05], dtype=np.float32))
 
     selections = np.zeros((scene.count,), dtype=np.int32)
     for seed in range(64):
@@ -1701,7 +1707,41 @@ def test_refinement_sampling_exponent_controls_variance_spikiness(device, tmp_pa
         seed=123,
     )
     trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.full((scene.count,), 500, dtype=np.uint32))
-    _write_refinement_variance_stats(trainer, np.array([1.0, 2.0], dtype=np.float32))
+    _write_refinement_distribution_inputs(trainer, np.array([1.0, 2.0], dtype=np.float32))
+
+    selections = np.zeros((scene.count,), dtype=np.int32)
+    for seed in range(64):
+        trainer._seed = seed
+        clone_counts, survivor_mask = trainer._sample_refinement_clone_counts()
+        assert int(np.count_nonzero(survivor_mask)) == scene.count
+        selections += clone_counts.astype(np.int32)
+
+    ratio = float(selections[1]) / max(float(selections[0]), 1.0)
+    assert 3.0 < ratio < 5.5
+
+
+def test_refinement_sampling_exponent_controls_contribution_spikiness(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=2, seed=198)
+    scene.opacities[:] = np.array([0.9, 0.9], dtype=np.float32)
+    frame = _make_frame(tmp_path, image_name="contribution_exponent_target.png", image_id=198)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(
+            refinement_growth_ratio=5.0,
+            refinement_growth_start_step=0,
+            refinement_interval=9999,
+            refinement_grad_variance_weight_exponent=0.0,
+            refinement_contribution_weight_exponent=2.0,
+            refinement_min_contribution=50,
+        ),
+        seed=123,
+    )
+    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.full((scene.count,), 500, dtype=np.uint32))
+    _write_refinement_distribution_inputs(trainer, np.ones((scene.count,), dtype=np.float32), np.array([1.0, 2.0], dtype=np.float32))
 
     selections = np.zeros((scene.count,), dtype=np.int32)
     for seed in range(64):
@@ -1728,7 +1768,7 @@ def test_refinement_sampling_is_seed_reproducible(device, tmp_path: Path) -> Non
         seed=123,
     )
     trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.full((scene.count,), 500, dtype=np.uint32))
-    _write_refinement_variance_stats(trainer, np.array([1.0, 0.25, 0.0625], dtype=np.float32))
+    _write_refinement_distribution_inputs(trainer, np.array([1.0, 0.25, 0.0625], dtype=np.float32))
 
     trainer._seed = 77
     first, _ = trainer._sample_refinement_clone_counts()
@@ -1751,7 +1791,7 @@ def test_refinement_sampling_respects_budget_and_clone_cap(device, tmp_path: Pat
         seed=123,
     )
     trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.full((scene.count,), 500, dtype=np.uint32))
-    _write_refinement_variance_stats(trainer, np.ones((scene.count,), dtype=np.float32))
+    _write_refinement_distribution_inputs(trainer, np.ones((scene.count,), dtype=np.float32))
 
     clone_counts, survivor_mask = trainer._sample_refinement_clone_counts()
 
@@ -1774,7 +1814,7 @@ def test_refinement_sampling_zero_variance_yields_zero_clone_counts(device, tmp_
         seed=123,
     )
     trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.full((scene.count,), 500, dtype=np.uint32))
-    _write_refinement_variance_stats(trainer, np.zeros((scene.count,), dtype=np.float32))
+    _write_refinement_distribution_inputs(trainer, np.zeros((scene.count,), dtype=np.float32))
 
     clone_counts, survivor_mask = trainer._sample_refinement_clone_counts()
 
@@ -1800,7 +1840,7 @@ def test_refinement_sampling_single_nonzero_weight_always_selects_that_splat(dev
     selected_splat = 5
     variances = np.zeros((scene.count,), dtype=np.float32)
     variances[selected_splat] = 1.0
-    _write_refinement_variance_stats(trainer, variances)
+    _write_refinement_distribution_inputs(trainer, variances)
 
     expected = np.zeros((scene.count,), dtype=np.uint32)
     expected[selected_splat] = 8
@@ -1825,7 +1865,7 @@ def test_refinement_sampling_routes_all_mass_to_single_positive_weight(device, t
         seed=123,
     )
     trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.full((scene.count,), 500, dtype=np.uint32))
-    _write_refinement_variance_stats(trainer, np.array([1.0, 0.0], dtype=np.float32))
+    _write_refinement_distribution_inputs(trainer, np.array([1.0, 0.0], dtype=np.float32))
 
     clone_counts, survivor_mask = trainer._sample_refinement_clone_counts()
 
@@ -1853,7 +1893,7 @@ def test_refinement_growth_ratio_realizes_full_budget_when_mass_concentrates(dev
     selected_splat = 3
     variances = np.zeros((scene.count,), dtype=np.float32)
     variances[selected_splat] = 1.0
-    _write_refinement_variance_stats(trainer, variances)
+    _write_refinement_distribution_inputs(trainer, variances)
 
     budget = trainer.refinement_clone_budget()
     trainer._run_refinement()

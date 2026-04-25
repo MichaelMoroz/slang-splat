@@ -24,6 +24,7 @@ static const uint DEBUG_MODE_SH_COEFFICIENT = 15u;
 static const uint DEBUG_MODE_BLACK_NEGATIVE = 16u;
 static const uint DEBUG_MODE_GRAD_VARIANCE = 17u;
 static const uint DEBUG_GRAD_STATS_STRIDE = 2u;
+static const float SPLAT_CONTRIBUTION_FIXED_SCALE = 256.0;
 static const float DEBUG_CONTRIBUTION_AMOUNT_FLOOR = 1e-6;
 static const uint DEBUG_SH_COEFF_COUNT = 16u;
 static const float SH_C0 = 0.28209479177387814;

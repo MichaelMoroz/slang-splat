@@ -46,7 +46,9 @@ class TrainingCliArgDef:
 
 def _default(name: str) -> object:
     if name == "refinement_grad_variance_weight_exponent":
-        return TRAINING_BUILD_ARG_DEFAULTS.get(name, TRAINING_BUILD_ARG_DEFAULTS.get("refinement_momentum_weight_exponent", 1.5))
+        return TRAINING_BUILD_ARG_DEFAULTS.get(name, 0.1)
+    if name == "refinement_contribution_weight_exponent":
+        return TRAINING_BUILD_ARG_DEFAULTS.get(name, 0.1)
     return DEFAULT_REFINEMENT_CLONE_SCALE_MUL if name == "refinement_clone_scale_mul" else TRAINING_BUILD_ARG_DEFAULTS[name]
 
 
@@ -98,6 +100,7 @@ TRAIN_SETUP_CONTROL_DEFS = (
     _control("refinement_solve_opacity", "checkbox", "Solve Split Opacity", {"value": _default("refinement_solve_opacity")}, group=TRAINING_SETUP_GROUP, build_args=("refinement_solve_opacity",)),
     _control("refinement_split_beta", "input_float", "Refinement Split Beta", {"value": _default("refinement_split_beta"), "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}, group=TRAINING_SETUP_GROUP, build_args=("refinement_split_beta",)),
     _control("refinement_grad_variance_weight_exponent", "input_float", "Refinement Variance Exponent", {"value": _default("refinement_grad_variance_weight_exponent"), "step": 1e-2, "step_fast": 1e-1, "format": "%.5f"}, group=TRAINING_SETUP_GROUP, build_args=("refinement_grad_variance_weight_exponent",)),
+    _control("refinement_contribution_weight_exponent", "input_float", "Refinement Contribution Exponent", {"value": _default("refinement_contribution_weight_exponent"), "step": 1e-2, "step_fast": 1e-1, "format": "%.5f"}, group=TRAINING_SETUP_GROUP, build_args=("refinement_contribution_weight_exponent",)),
     _control("train_downscale_mode", "combo", "Downscale Mode", {"value": _default("train_downscale_mode"), "options": TRAIN_DOWNSCALE_MODE_LABELS}, group=TRAINING_SETUP_GROUP, build_args=("train_downscale_mode",)),
     _control("train_subsample_factor", "combo", "Subsampling", {"value": _default("train_subsample_factor"), "options": TRAIN_SUBSAMPLE_LABELS}, group=TRAINING_SETUP_GROUP, build_args=("train_subsample_factor",)),
     _control("train_auto_start_downscale", "slider_int", "Auto Start Downscale", {"value": _default("train_auto_start_downscale"), "min": 1, "max": 16}, group=TRAINING_SETUP_GROUP, build_args=("train_auto_start_downscale",)),
@@ -267,6 +270,7 @@ TRAIN_SETUP_PRIMARY_KEYS = (
     "refinement_solve_opacity",
     "refinement_split_beta",
     "refinement_grad_variance_weight_exponent",
+    "refinement_contribution_weight_exponent",
     "train_downscale_mode",
     "train_subsample_factor",
 )
@@ -326,6 +330,7 @@ TRAINING_CLI_ARG_DEFS = (
     _cli_arg("--refinement-solve-opacity", dest="refinement_solve_opacity", build_arg="refinement_solve_opacity", type=int, default=int(bool(_default("refinement_solve_opacity")))),
     _cli_arg("--refinement-split-beta", dest="refinement_split_beta", build_arg="refinement_split_beta", type=float, default=_default("refinement_split_beta")),
     _cli_arg("--refinement-grad-variance-weight-exponent", "--refinement-momentum-weight-exponent", dest="refinement_grad_variance_weight_exponent", build_arg="refinement_grad_variance_weight_exponent", type=float, default=_default("refinement_grad_variance_weight_exponent")),
+    _cli_arg("--refinement-contribution-weight-exponent", dest="refinement_contribution_weight_exponent", build_arg="refinement_contribution_weight_exponent", type=float, default=_default("refinement_contribution_weight_exponent")),
     _cli_arg("--max-allowed-density-start", dest="max_allowed_density_start", build_arg="max_allowed_density_start", type=float, default=_default("max_allowed_density_start")),
     _cli_arg("--max-allowed-density", dest="max_allowed_density", build_arg="max_allowed_density", type=float, default=_default("max_allowed_density")),
     _cli_arg("--max-anisotropy", dest="max_anisotropy", build_arg="max_anisotropy", type=float, default=_default("max_anisotropy")),

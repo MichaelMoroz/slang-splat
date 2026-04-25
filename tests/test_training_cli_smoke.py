@@ -217,13 +217,14 @@ def test_train_cli_parser_defaults_color_and_opacity_lr_mul_to_five() -> None:
     assert args.init_opacity is None
 
 
-def test_train_cli_refinement_variance_exponent_flag_and_alias() -> None:
+def test_train_cli_refinement_distribution_exponent_flags_and_alias() -> None:
     parser = cli.build_parser()
 
-    args = parser.parse_args(["train-colmap", "--colmap-root", "dummy", "--refinement-grad-variance-weight-exponent", "2.25"])
+    args = parser.parse_args(["train-colmap", "--colmap-root", "dummy", "--refinement-grad-variance-weight-exponent", "2.25", "--refinement-contribution-weight-exponent", "3.25"])
     alias_args = parser.parse_args(["train-colmap", "--colmap-root", "dummy", "--refinement-momentum-weight-exponent", "1.75"])
 
     assert training_cli_build_kwargs(args)["refinement_grad_variance_weight_exponent"] == 2.25
+    assert training_cli_build_kwargs(args)["refinement_contribution_weight_exponent"] == 3.25
     assert training_cli_build_kwargs(alias_args)["refinement_grad_variance_weight_exponent"] == 1.75
 
 

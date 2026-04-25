@@ -234,6 +234,7 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         "refinement_solve_opacity": _control(True),
         "refinement_split_beta": _control(0.28),
         "refinement_grad_variance_weight_exponent": _control(1.5),
+        "refinement_contribution_weight_exponent": _control(1.5),
         "refinement_loss_weight": _control(0.25),
         "refinement_target_edge_weight": _control(0.75),
         "position_random_step_noise_stage1_lr": _control(466666.6666666667),
