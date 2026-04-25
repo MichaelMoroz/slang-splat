@@ -1699,8 +1699,34 @@ class ToolkitWindow:
     def _draw_import_path_selector(self, ui: ViewerUI, *, label: str, key: str, button_label: str, callback) -> None:
         imgui.text_disabled(label)
         imgui.text_wrapped(self._path_text(ui, key))
-        if imgui.button(button_label):
-            callback()
+        if imgui.button(button_label): callback()
+
+    @staticmethod
+    def _draw_combo(label: str, options: tuple[str, ...], current: int) -> int:
+        current = max(0, min(int(current), len(options) - 1))
+        if imgui.begin_combo(label, options[current]):
+            for idx, option in enumerate(options):
+                is_selected = idx == current
+                if imgui.selectable(option, is_selected)[0]: current = idx
+                if is_selected: imgui.set_item_default_focus()
+            imgui.end_combo()
+        return current
+
+    @staticmethod
+    def _set_tooltip(text: str) -> None:
+        if imgui.is_item_hovered(): imgui.set_item_tooltip(text)
+
+    @staticmethod
+    def _draw_clamped_int(ui: ViewerUI, *, key: str, label: str, default: int, speed: float, min_value: int, max_value: int, tooltip: str) -> None:
+        changed, value = imgui.drag_int(label, int(ui._values.get(key, default)), speed, min_value, max_value)
+        if changed: ui._values[key] = min(max(int(value), min_value), max_value)
+        ToolkitWindow._set_tooltip(tooltip)
+
+    @staticmethod
+    def _draw_clamped_float(ui: ViewerUI, *, key: str, label: str, default: float, speed: float, min_value: float, max_value: float, fmt: str, tooltip: str, flags: int = 0) -> None:
+        changed, value = imgui.drag_float(label, float(ui._values.get(key, default)), speed, min_value, max_value, fmt, flags)
+        if changed: ui._values[key] = min(max(float(value), min_value), max_value)
+        ToolkitWindow._set_tooltip(tooltip)
 
     def _draw_colmap_camera_selection_table(self, ui: ViewerUI, camera_rows: tuple[dict[str, object], ...]) -> None:
         selected_camera_ids = tuple(int(camera_id) for camera_id in ui._values.get("colmap_selected_camera_ids", ()))
@@ -1709,11 +1735,9 @@ class ToolkitWindow:
         selected_frame_count = sum(int(row["frame_count"]) for row in camera_rows if int(row["camera_id"]) in selected)
         total_frame_count = sum(int(row["frame_count"]) for row in camera_rows)
         imgui.text_disabled(f"Camera Models: {len(selected)}/{len(camera_rows)} selected | Frames/Poses: {selected_frame_count}/{total_frame_count}")
-        if imgui.button("All Models"):
-            selected = set(camera_ids)
+        if imgui.button("All Models"): selected = set(camera_ids)
         imgui.same_line()
-        if imgui.button("No Models"):
-            selected.clear()
+        if imgui.button("No Models"): selected.clear()
         table_height = min(max(88.0, 28.0 * float(len(camera_rows)) + 8.0), 180.0)
         if imgui.begin_child("##colmap_cameras", imgui.ImVec2(0.0, table_height), True):
             flags = (
@@ -1724,13 +1748,16 @@ class ToolkitWindow:
                 | imgui.TableFlags_.scroll_y.value
             )
             if imgui.begin_table("##colmap_camera_table", 7, flags):
-                imgui.table_setup_column("Use", imgui.TableColumnFlags_.width_fixed.value, 36.0)
-                imgui.table_setup_column("Camera Id", imgui.TableColumnFlags_.width_fixed.value, 72.0)
-                imgui.table_setup_column("Model", imgui.TableColumnFlags_.width_fixed.value, 132.0)
-                imgui.table_setup_column("Frames / Poses", imgui.TableColumnFlags_.width_fixed.value, 96.0)
-                imgui.table_setup_column("Res", imgui.TableColumnFlags_.width_fixed.value, 86.0)
-                imgui.table_setup_column("Focal", imgui.TableColumnFlags_.width_fixed.value, 120.0)
-                imgui.table_setup_column("Principal / Dist", imgui.TableColumnFlags_.width_stretch.value)
+                for name, column_flags, width in (
+                    ("Use", imgui.TableColumnFlags_.width_fixed.value, 36.0),
+                    ("Camera Id", imgui.TableColumnFlags_.width_fixed.value, 72.0),
+                    ("Model", imgui.TableColumnFlags_.width_fixed.value, 132.0),
+                    ("Frames / Poses", imgui.TableColumnFlags_.width_fixed.value, 96.0),
+                    ("Res", imgui.TableColumnFlags_.width_fixed.value, 86.0),
+                    ("Focal", imgui.TableColumnFlags_.width_fixed.value, 120.0),
+                    ("Principal / Dist", imgui.TableColumnFlags_.width_stretch.value, 0.0),
+                ):
+                    imgui.table_setup_column(name, column_flags, width)
                 imgui.table_headers_row()
                 for row in camera_rows:
                     camera_id = int(row["camera_id"])
@@ -1738,189 +1765,150 @@ class ToolkitWindow:
                     imgui.table_next_column()
                     changed, value = imgui.checkbox(f"##colmap_camera_{camera_id}", camera_id in selected)
                     if changed:
-                        if value:
-                            selected.add(camera_id)
-                        else:
-                            selected.discard(camera_id)
-                    imgui.table_next_column()
-                    imgui.text_unformatted(str(camera_id))
-                    imgui.table_next_column()
-                    imgui.text_unformatted(str(row["model_name"]))
-                    imgui.table_next_column()
-                    imgui.text_unformatted(str(row["frame_count"]))
-                    imgui.table_next_column()
-                    imgui.text_unformatted(str(row["resolution_text"]))
-                    imgui.table_next_column()
-                    imgui.text_unformatted(str(row["focal_text"]))
-                    imgui.table_next_column()
-                    imgui.text_unformatted(f"{row['principal_text']} | {row['distortion_text']}")
+                        if value: selected.add(camera_id)
+                        else: selected.discard(camera_id)
+                    for text in (
+                        str(camera_id),
+                        str(row["model_name"]),
+                        str(row["frame_count"]),
+                        str(row["resolution_text"]),
+                        str(row["focal_text"]),
+                        f"{row['principal_text']} | {row['distortion_text']}",
+                    ):
+                        imgui.table_next_column()
+                        imgui.text_unformatted(text)
                 imgui.end_table()
             imgui.end_child()
         ui._values["colmap_selected_camera_ids"] = tuple(camera_id for camera_id in camera_ids if camera_id in selected)
 
     def _draw_colmap_downscale_controls(self, ui: ViewerUI) -> None:
-        downscale_idx = max(0, min(int(ui._values.get("colmap_image_downscale_mode", 1)), len(_COLMAP_IMAGE_DOWNSCALE_LABELS) - 1))
-        if imgui.begin_combo("Image Downscale", _COLMAP_IMAGE_DOWNSCALE_LABELS[downscale_idx]):
-            for idx, label in enumerate(_COLMAP_IMAGE_DOWNSCALE_LABELS):
-                is_selected = idx == downscale_idx
-                if imgui.selectable(label, is_selected)[0]:
-                    ui._values["colmap_image_downscale_mode"] = idx
-                    downscale_idx = idx
-                if is_selected:
-                    imgui.set_item_default_focus()
-            imgui.end_combo()
+        downscale_idx = ToolkitWindow._draw_combo("Image Downscale", _COLMAP_IMAGE_DOWNSCALE_LABELS, int(ui._values.get("colmap_image_downscale_mode", 1)))
+        ui._values["colmap_image_downscale_mode"] = downscale_idx
         if downscale_idx == 1:
             changed, value = imgui.input_int("Max Size", int(ui._values.get("colmap_image_max_size", 2048)), 64, 256)
             if changed:
                 ui._values["colmap_image_max_size"] = max(int(value), 1)
-            if imgui.is_item_hovered():
-                imgui.set_item_tooltip("Clamp imported training images so their longer side is at most this size while preserving aspect ratio. The importer never upscales.")
+            ToolkitWindow._set_tooltip("Clamp imported training images so their longer side is at most this size while preserving aspect ratio. The importer never upscales.")
             return
         if downscale_idx == 2:
-            changed, value = imgui.drag_float(
-                "Scale Factor",
-                float(ui._values.get("colmap_image_scale", 1.0)),
-                0.01,
-                1e-3,
-                1.0,
-                "%.4f",
-                imgui.SliderFlags_.logarithmic.value,
+            ToolkitWindow._draw_clamped_float(
+                ui,
+                key="colmap_image_scale",
+                label="Scale Factor",
+                default=1.0,
+                speed=0.01,
+                min_value=1e-3,
+                max_value=1.0,
+                fmt="%.4f",
+                tooltip="Uniform scale applied to imported training images. Both axes stay proportional and the importer never upscales.",
+                flags=imgui.SliderFlags_.logarithmic.value,
             )
-            if changed:
-                ui._values["colmap_image_scale"] = min(max(float(value), 1e-3), 1.0)
-            if imgui.is_item_hovered():
-                imgui.set_item_tooltip("Uniform scale applied to imported training images. Both axes stay proportional and the importer never upscales.")
             return
         imgui.text_disabled("Imported images keep their source resolution.")
 
     def _draw_colmap_init_mode_controls(self, ui: ViewerUI) -> None:
         init_labels = _colmap_init_mode_labels(_valid_depth_root_text(ui._values.get("colmap_depth_root", "")))
-        mode_idx = max(0, min(int(ui._values.get("colmap_init_mode", 0)), len(init_labels) - 1))
-        if int(ui._values.get("colmap_init_mode", 0)) != mode_idx:
-            ui._values["colmap_init_mode"] = mode_idx
-        if imgui.begin_combo("Initialization", init_labels[mode_idx]):
-            for idx, label in enumerate(init_labels):
-                is_selected = idx == mode_idx
-                if imgui.selectable(label, is_selected)[0]:
-                    ui._values["colmap_init_mode"] = idx
-                    mode_idx = idx
-                if is_selected:
-                    imgui.set_item_default_focus()
-            imgui.end_combo()
-        if imgui.is_item_hovered():
-            imgui.set_item_tooltip("COLMAP Pointcloud uses sparse points filtered by Min Camera Observations, Diffused Pointcloud resamples that filtered set, Custom PLY loads a chosen gaussian seed scene, and From Depth calibrates matched 16-bit PNG depth maps into a point cloud using an iteratively reweighted robust per-pose affine depth fit from all valid observed points, while rejecting projected samples that land on strong local depth-gradient spikes.")
+        mode_idx = ToolkitWindow._draw_combo("Initialization", init_labels, int(ui._values.get("colmap_init_mode", 0)))
+        ui._values["colmap_init_mode"] = mode_idx
+        ToolkitWindow._set_tooltip("COLMAP Pointcloud uses sparse points filtered by Min Camera Observations, Diffused Pointcloud resamples that filtered set, Custom PLY loads a chosen gaussian seed scene, and From Depth calibrates matched 16-bit PNG depth maps into a point cloud using an iteratively reweighted robust per-pose affine depth fit from all valid observed points, while rejecting projected samples that land on strong local depth-gradient spikes.")
         if mode_idx not in (0, 1, 3):
             imgui.spacing()
             self._draw_import_path_selector(ui, label="Custom PLY", key="colmap_custom_ply_path", button_label="Browse PLY...", callback=self.callbacks.browse_colmap_ply)
             return
         if mode_idx in (0, 1):
-            changed, value = imgui.drag_int(
-                "Min Camera Observations",
-                int(ui._values.get("colmap_min_track_length", DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH)),
-                0.25,
-                0,
-                32,
+            ToolkitWindow._draw_clamped_int(
+                ui,
+                key="colmap_min_track_length",
+                label="Min Camera Observations",
+                default=DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH,
+                speed=0.25,
+                min_value=0,
+                max_value=32,
+                tooltip="Ignore sparse COLMAP points whose track is shorter than this many observing cameras. Set 0 to keep all sparse points.",
             )
-            if changed:
-                ui._values["colmap_min_track_length"] = max(int(value), 0)
-            if imgui.is_item_hovered():
-                imgui.set_item_tooltip("Ignore sparse COLMAP points whose track is shorter than this many observing cameras. Set 0 to keep all sparse points.")
         if mode_idx == 3:
             imgui.push_text_wrap_pos(imgui.get_cursor_pos_x() + imgui.get_content_region_avail().x)
             imgui.text_disabled("From Depth matches RGB and depth by relative stem under Depth Folder, uses each pose's own positive COLMAP point observations, reprojects those 3D points through the frame camera model to sample depth, rejects projected samples whose local pixel-footprint gradients are a strong outlier relative to nearby gradients, then solves one iteratively reweighted robust affine map `a + b*d` per pose from the remaining observed points before sampling a dataset-wide calibrated point budget. Frames without usable depth stay in training but are skipped for depth-based initialization.")
             imgui.pop_text_wrap_pos()
-            depth_value_mode = max(0, min(int(ui._values.get("colmap_depth_value_mode", 1)), len(_COLMAP_DEPTH_VALUE_MODE_LABELS) - 1))
-            if imgui.begin_combo("Depth Interpretation", _COLMAP_DEPTH_VALUE_MODE_LABELS[depth_value_mode]):
-                for idx, label in enumerate(_COLMAP_DEPTH_VALUE_MODE_LABELS):
-                    is_selected = idx == depth_value_mode
-                    if imgui.selectable(label, is_selected)[0]:
-                        ui._values["colmap_depth_value_mode"] = idx
-                        depth_value_mode = idx
-                    if is_selected:
-                        imgui.set_item_default_focus()
-                imgui.end_combo()
-            if imgui.is_item_hovered():
-                imgui.set_item_tooltip("Choose whether calibrated depth values represent Euclidean camera distance or camera-space z-depth before reverse projection.")
-            changed, value = imgui.drag_int(
-                "Depth Point Count",
-                int(ui._values.get("colmap_depth_point_count", 100000)),
-                1000.0,
-                1,
-                10000000,
+            ui._values["colmap_depth_value_mode"] = ToolkitWindow._draw_combo(
+                "Depth Interpretation",
+                _COLMAP_DEPTH_VALUE_MODE_LABELS,
+                int(ui._values.get("colmap_depth_value_mode", 1)),
             )
-            if changed:
-                ui._values["colmap_depth_point_count"] = max(int(value), 1)
-            if imgui.is_item_hovered():
-                imgui.set_item_tooltip("Total calibrated points sampled across all matched RGB/depth pairs for depth-based initialization.")
+            ToolkitWindow._set_tooltip("Choose whether calibrated depth values represent Euclidean camera distance or camera-space z-depth before reverse projection.")
+            ToolkitWindow._draw_clamped_int(
+                ui,
+                key="colmap_depth_point_count",
+                label="Depth Point Count",
+                default=100000,
+                speed=1000.0,
+                min_value=1,
+                max_value=10000000,
+                tooltip="Total calibrated points sampled across all matched RGB/depth pairs for depth-based initialization.",
+            )
         if mode_idx == 1:
-            changed, value = imgui.drag_int(
-                "Point Count",
-                int(ui._values.get("colmap_diffused_point_count", 100000)),
-                1000.0,
-                1,
-                10000000,
+            ToolkitWindow._draw_clamped_int(
+                ui,
+                key="colmap_diffused_point_count",
+                label="Point Count",
+                default=100000,
+                speed=1000.0,
+                min_value=1,
+                max_value=10000000,
+                tooltip="Number of gaussians synthesized by resampling COLMAP points with replacement before diffusion.",
             )
-            if changed:
-                ui._values["colmap_diffused_point_count"] = max(int(value), 1)
-            if imgui.is_item_hovered():
-                imgui.set_item_tooltip("Number of gaussians synthesized by resampling COLMAP points with replacement before diffusion.")
-            changed, value = imgui.drag_float(
-                "Diffusion Radius",
-                float(ui._values.get("colmap_diffusion_radius", 1.0)),
-                0.01,
-                0.0,
-                16.0,
-                "%.4f",
-                imgui.SliderFlags_.logarithmic.value,
+            ToolkitWindow._draw_clamped_float(
+                ui,
+                key="colmap_diffusion_radius",
+                label="Diffusion Radius",
+                default=1.0,
+                speed=0.01,
+                min_value=0.0,
+                max_value=16.0,
+                fmt="%.4f",
+                tooltip="Local diffusion multiplier applied to each sampled point's original-cloud nearest-neighbor distance.",
+                flags=imgui.SliderFlags_.logarithmic.value,
             )
-            if changed:
-                ui._values["colmap_diffusion_radius"] = max(float(value), 0.0)
-            if imgui.is_item_hovered():
-                imgui.set_item_tooltip("Local diffusion multiplier applied to each sampled point's original-cloud nearest-neighbor distance.")
-        changed, value = imgui.drag_float(
-            "NN Radius Scale Coef",
-            float(ui._values.get("colmap_nn_radius_scale_coef", 0.5)),
-            0.01,
-            1e-4,
-            16.0,
-            "%.4f",
-            imgui.SliderFlags_.logarithmic.value,
+        ToolkitWindow._draw_clamped_float(
+            ui,
+            key="colmap_nn_radius_scale_coef",
+            label="NN Radius Scale Coef",
+            default=0.5,
+            speed=0.01,
+            min_value=1e-4,
+            max_value=16.0,
+            fmt="%.4f",
+            tooltip="Multiplier applied to the median COLMAP nearest-neighbor radius when initializing gaussian scales.",
+            flags=imgui.SliderFlags_.logarithmic.value,
         )
-        if changed:
-            ui._values["colmap_nn_radius_scale_coef"] = max(float(value), 1e-4)
-        if imgui.is_item_hovered():
-            imgui.set_item_tooltip("Multiplier applied to the median COLMAP nearest-neighbor radius when initializing gaussian scales.")
         changed, enabled = imgui.checkbox("Append Fibonacci Sphere", int(ui._values.get("colmap_fibonacci_sphere_point_count", 0)) > 0)
         if changed:
             ui._values["colmap_fibonacci_sphere_point_count"] = max(int(ui._values.get("colmap_fibonacci_sphere_point_count", 1024)), 1) if enabled else 0
-        if imgui.is_item_hovered():
-            imgui.set_item_tooltip("Append evenly distributed shell points around the mean COLMAP camera center.")
+        ToolkitWindow._set_tooltip("Append evenly distributed shell points around the mean COLMAP camera center.")
         if int(ui._values.get("colmap_fibonacci_sphere_point_count", 0)) <= 0:
             return
-        changed, value = imgui.drag_int(
-            "Sphere Point Count",
-            int(ui._values.get("colmap_fibonacci_sphere_point_count", 1024)),
-            100.0,
-            1,
-            10000000,
+        ToolkitWindow._draw_clamped_int(
+            ui,
+            key="colmap_fibonacci_sphere_point_count",
+            label="Sphere Point Count",
+            default=1024,
+            speed=100.0,
+            min_value=1,
+            max_value=10000000,
+            tooltip="Number of Fibonacci shell points appended to the initialization point cloud.",
         )
-        if changed:
-            ui._values["colmap_fibonacci_sphere_point_count"] = max(int(value), 1)
-        if imgui.is_item_hovered():
-            imgui.set_item_tooltip("Number of Fibonacci shell points appended to the initialization point cloud.")
-        changed, value = imgui.drag_float(
-            "Sphere Radius",
-            float(ui._values.get("colmap_fibonacci_sphere_radius", 20.0)),
-            0.1,
-            0.0,
-            10000.0,
-            "%.3f",
-            imgui.SliderFlags_.logarithmic.value,
+        ToolkitWindow._draw_clamped_float(
+            ui,
+            key="colmap_fibonacci_sphere_radius",
+            label="Sphere Radius",
+            default=20.0,
+            speed=0.1,
+            min_value=0.0,
+            max_value=10000.0,
+            fmt="%.3f",
+            tooltip="World-space radius of the appended shell around the mean camera pose.",
+            flags=imgui.SliderFlags_.logarithmic.value,
         )
-        if changed:
-            ui._values["colmap_fibonacci_sphere_radius"] = max(float(value), 0.0)
-        if imgui.is_item_hovered():
-            imgui.set_item_tooltip("World-space radius of the appended shell around the mean camera pose.")
 
     def _draw_colmap_import_window(self, ui: ViewerUI) -> None:
         if not self._show_colmap_import:
@@ -1947,31 +1935,29 @@ class ToolkitWindow:
                     imgui.text_disabled(current_name)
                 imgui.spacing()
             imgui.begin_disabled(import_active)
-            self._draw_import_path_selector(ui, label="COLMAP Root", key="colmap_root_path", button_label="Browse Root...", callback=self.callbacks.browse_colmap_root)
-            imgui.spacing()
-            self._draw_import_path_selector(ui, label="Image Folder", key="colmap_images_root", button_label="Browse Image Folder...", callback=self.callbacks.browse_colmap_images)
-            imgui.spacing()
-            self._draw_import_path_selector(ui, label="Depth Folder", key="colmap_depth_root", button_label="Browse Depth Folder...", callback=self.callbacks.browse_colmap_depth)
-            if imgui.is_item_hovered():
-                imgui.set_item_tooltip("Optional root containing 16-bit depth PNGs matched to RGB images by relative path stem.")
+            for label, key, button_label, callback, tooltip in (
+                ("COLMAP Root", "colmap_root_path", "Browse Root...", self.callbacks.browse_colmap_root, None),
+                ("Image Folder", "colmap_images_root", "Browse Image Folder...", self.callbacks.browse_colmap_images, None),
+                ("Depth Folder", "colmap_depth_root", "Browse Depth Folder...", self.callbacks.browse_colmap_depth, "Optional root containing 16-bit depth PNGs matched to RGB images by relative path stem."),
+            ):
+                self._draw_import_path_selector(ui, label=label, key=key, button_label=button_label, callback=callback)
+                if tooltip is not None:
+                    ToolkitWindow._set_tooltip(tooltip)
+                imgui.spacing()
             camera_rows = tuple(ui._values.get("_colmap_camera_rows", ()))
             if len(camera_rows) > 0:
-                imgui.spacing()
                 self._draw_colmap_camera_selection_table(ui, camera_rows)
             imgui.spacing()
-            changed, value = imgui.checkbox("Compress Dataset using BC7", bool(ui._values.get("compress_dataset_using_bc7", False)))
-            if changed:
-                ui._values["compress_dataset_using_bc7"] = bool(value)
-            if imgui.is_item_hovered():
-                imgui.set_item_tooltip("Compress imported training images into BC7 DDS files under Image Folder/cache and reuse that cache on later loads.")
-            imgui.spacing()
+            for label, key, tooltip in (
+                ("Compress Dataset using BC7", "compress_dataset_using_bc7", "Compress imported training images into BC7 DDS files under Image Folder/cache and reuse that cache on later loads."),
+                ("Use Alpha Mask", "use_target_alpha_mask", "If imported images have alpha, transparent pixels are masked out of per-pixel training loss and gradients."),
+            ):
+                changed, value = imgui.checkbox(label, bool(ui._values.get(key, False)))
+                if changed:
+                    ui._values[key] = bool(value)
+                ToolkitWindow._set_tooltip(tooltip)
+                imgui.spacing()
             self._draw_colmap_downscale_controls(ui)
-            imgui.spacing()
-            changed, value = imgui.checkbox("Use Alpha Mask", bool(ui._values.get("use_target_alpha_mask", False)))
-            if changed:
-                ui._values["use_target_alpha_mask"] = bool(value)
-            if imgui.is_item_hovered():
-                imgui.set_item_tooltip("If imported images have alpha, transparent pixels are masked out of per-pixel training loss and gradients.")
             imgui.spacing()
             self._draw_colmap_init_mode_controls(ui)
             imgui.spacing()
