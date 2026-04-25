@@ -37,7 +37,7 @@ The training schedule resolves that band cap per stage, and the renderer uses th
   - native dataset textures cached as `rgba8_unorm_srgb`,
   - one reusable train target texture in `rgba32_float`,
   - a GPU box-filter downscale dispatch that writes the current frame into the train target.
-- COLMAP imports can optionally treat target alpha as a per-pixel training mask; when enabled, transparent pixels contribute no RGB, density, depth-ratio, or refinement-edge loss/gradient.
+- COLMAP imports can optionally treat target alpha as a per-pixel training mask; when enabled, transparent pixels contribute no RGB, density, or refinement-edge loss/gradient.
 - Native dataset texture preparation uses a fixed 8-thread CPU loader for image decode and resize work, while GPU texture creation/upload remains serialized on the owning thread and is pipelined against those background CPU tasks.
 - Dataset texture creation and point-cloud upload/binding are isolated inside trainer helpers instead of being interleaved with the optimization step.
 
@@ -63,17 +63,17 @@ Each trainer `step()` performs:
    - The prepass can dither only the camera position used for sort-distance keys via the scheduled `sorting_order_dithering` parameter (defaults `0.5 -> 0.2 -> 0.05 -> 0.01`). The renderer passes a deterministic frame/step seed and a sigma scaled by the active frame's nearest-neighbor camera distance, then the projection shader generates an independent isotropic Gaussian sort-camera offset per splat. Projection, visibility, SH view direction, raster cache, and debug depth still use the real camera.
 5. Run the fixed-count forward stage:
    - `csRasterizeTrainingForward` renders the current image and stores per-pixel raster forward cache data for backward,
-  - the same pass also stores softened splat density scalars plus the weighted per-pixel depth accumulation state used by the depth-std-over-mean-depth regularizer,
+  - the same pass also stores softened splat density scalars for the density-only regularizer path,
    - `csClearLossBuffer` resets the scalar loss slots,
    - `csComputeSSIMFeatures` converts rendered and target RGB into BT.601 YCbCr and writes 15 channels of per-pixel first and second moments (`x`, `y`, `x²`, `y²`, `xy`) into a flat buffer,
    - the reusable separable Gaussian buffer blur utility blurs those 15 channels in two dispatches,
-  - `csComputeBlendedLossForward` computes RGB MSE, the blended `(1 - ssim_weight) * L1 + ssim_weight * DSSIM` image loss using runtime `ssim_c1` / `ssim_c2` stabilizers, where DSSIM is evaluated from blurred luminance moments so it does not steer hue directly, the density hinge regularizer, and the differentiable windowed-sigmoid depth-std-over-mean-depth ratio regularizer whose strongest gradients lie inside a user-controlled interval, then reduces total and tracked metrics into the loss buffer.
+  - `csComputeBlendedLossForward` computes RGB MSE, the blended `(1 - ssim_weight) * L1 + ssim_weight * DSSIM` image loss using runtime `ssim_c1` / `ssim_c2` stabilizers, where DSSIM is evaluated from blurred luminance moments so it does not steer hue directly, plus the density hinge regularizer, then reduces total and tracked metrics into the loss buffer.
 6. Run the fixed-count backward stage:
    - `csComputeSSIMBlurredGradients` differentiates DSSIM with respect to the blurred rendered-side moment channels using Slang autodiff,
    - the same separable Gaussian blur utility is reused as the blur adjoint to propagate those gradients back into the unblurred rendered-side moments,
-   - `csComputeBlendedLossBackward` differentiates the rendered-side moment extraction with Slang autodiff, combines the resulting DSSIM image gradient with the weighted RGB L1 sign gradient, and writes the unnormalized per-pixel RGB gradient into flat `RWStructuredBuffer<float4>` `g_OutputGrad`, plus one packed `float2` regularizer gradient buffer for density and depth-ratio replay, indexed as `pixel = y * width + x`,
-   - `csRasterizeBackward` consumes the cached raster forward state and accumulates quantized cached raster-field gradients for the precomputed raster-cache fields; the depth-ratio replay uses the same alpha-depth hit evaluation as training forward so the cached depth state and replay stay consistent,
-   - `csBackpropCachedRasterGrads` decodes that cached-field intermediate inline, backprops through `build_cached_ellipsoid`, and writes the final float packed scene-parameter gradient buffer with the final `1 / pixel_count` normalization before the rest of training.
+  - `csComputeBlendedLossBackward` differentiates the rendered-side moment extraction with Slang autodiff, combines the resulting DSSIM image gradient with the weighted RGB L1 sign gradient, and writes the unnormalized per-pixel RGB gradient into flat `RWStructuredBuffer<float4>` `g_OutputGrad`, plus one scalar regularizer gradient buffer for density replay, indexed as `pixel = y * width + x`,
+  - `csRasterizeBackward` consumes the cached raster forward state and accumulates quantized cached raster-field gradients for the precomputed raster-cache fields,
+  - `csBackpropCachedRasterGrads` decodes that cached-field intermediate inline, backprops the directional raster state back into the unchanged full scene-parameter layout, and writes the final float packed scene-parameter gradient buffer with the final `1 / pixel_count` normalization before the rest of training.
 7. Run the optimizer pipeline:
   - `csAccumulateRegularizationGrads` adds scale, SH1, and opacity regularizers on the packed param-major state.
    - `csClipPackedParamGrads` clips gradients from a structured per-parameter settings buffer owned by the optimizer module.
@@ -98,15 +98,15 @@ Each trainer `step()` performs:
 
 Random training backgrounds now use seeded per-pixel white noise in the training raster path instead of a single random RGB color, while custom mode still uses the configured uniform color.
 
-There is still no opacity reset schedule, MCMC exploration term, or standalone PSNR/SSIM metric tracking on the active path.
+There is still no opacity reset schedule, MCMC exploration term, or standalone SSIM metric tracking on the active path. PSNR is tracked from display-space MSE and exposed as both per-step and rolling-average metrics.
 
 ## Kernels
 - `csDownscaleTarget`: exact integer-factor box-filter downscale from the native dataset texture into the reusable train target.
 - `csClearLossBuffer`: zero scalar loss slots for the current training step.
 - `csComputeSSIMFeatures`: computes per-pixel BT.601 YCbCr moment features for rendered and target images into a 15-channel flat buffer.
-- `csComputeBlendedLossForward`: computes RGB MSE, blended L1+DSSIM image loss with runtime `ssim_c1` / `ssim_c2`, density hinge regularization, and windowed-sigmoid depth-ratio regularization.
+- `csComputeBlendedLossForward`: computes RGB MSE, blended L1+DSSIM image loss with runtime `ssim_c1` / `ssim_c2`, and density hinge regularization.
 - `csComputeSSIMBlurredGradients`: computes the blurred-moment DSSIM adjoint with Slang autodiff.
-- `csComputeBlendedLossBackward`: computes the final image-space blended RGB gradient into `g_OutputGrad` plus the per-pixel density/depth-ratio replay gradients; the depth-ratio window is controlled by `depth_ratio_grad_min` and `depth_ratio_grad_max`, with transition softness derived from band width in shader code.
+- `csComputeBlendedLossBackward`: computes the final image-space blended RGB gradient into `g_OutputGrad` plus the per-pixel density replay gradient used by raster backward.
 - UI-driven multi-step training batches keep per-substep loss/MSE records on the GPU and defer the single CPU readback until the batch finishes, rather than synchronizing after every substep.
 - Packed trainable storage remains param-major scalar packing: `param_id * splat_count + splat_id`.
 - Raster backward uses a separate param-major int accumulation buffer for cached raster-field gradients, then backprops that intermediate into final float scene-parameter gradients before optimizer consumption.

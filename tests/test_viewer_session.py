@@ -1284,7 +1284,6 @@ def test_apply_live_params_defers_subsample_runtime_change_until_resize(monkeypa
                     "train_downscale_max_iters": None,
                     "train_downscale_factor": None,
                     "train_subsample_factor": None,
-                    "depth_ratio_weight": None,
                 },
                 train_downscale_mode=1,
                 train_auto_start_downscale=1,
@@ -1293,7 +1292,6 @@ def test_apply_live_params_defers_subsample_runtime_change_until_resize(monkeypa
                 train_downscale_max_iters=30_000,
                 train_downscale_factor=1,
                 train_subsample_factor=train_subsample_factor,
-                depth_ratio_weight=0.1,
             ),
         )
 
@@ -1346,7 +1344,6 @@ def test_apply_live_params_syncs_renderer_sh_band(monkeypatch) -> None:
             train_downscale_max_iters=30_000,
             train_downscale_factor=1,
             train_subsample_factor=1,
-            depth_ratio_weight=0.1,
         ),
     )
     viewer = SimpleNamespace(

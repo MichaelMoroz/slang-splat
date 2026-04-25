@@ -192,10 +192,10 @@ The panel shows both the resolved active train resolution and the current downsc
 
 The `Optimizer` panel exposes the active training schedule directly:
 
-- `Schedule Steps` defines the shared max-iteration budget for the LR, depth-ratio, SH band, and noise schedules.
+- `Schedule Steps` defines the shared max-iteration budget for the staged LR, colorspace, DSSIM, visible-angle, sort-dither, SH band, and noise schedules.
 - `LR Stage 1 Step` and `LR Stage 2 Step` move the two intermediate LR breakpoints.
 - `Noise End Step` moves the point where random-step position noise reaches zero.
-- `Depth Reg Stage 1/2/3` move the three intermediate depth-ratio regularizer breakpoints.
+- Stage-specific SH band, colorspace, DSSIM, visible-angle, sort-dither, and noise targets live in the stage sections below.
 - The viewport SH dropdown writes back to the currently active schedule-stage `SH Band` control, so the visible band cap always targets the phase currently being trained.
 
 These breakpoint controls are regular integer sliders with a live `0..Schedule Steps` range rather than a compound multi-value slider.

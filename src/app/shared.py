@@ -11,7 +11,7 @@ from ..repo_defaults import renderer_defaults
 from ..utility import clamp_float, clamp_int
 from ..scene import GaussianInitHyperParams, GaussianScene
 from ..training.defaults import DEFAULT_REFINEMENT_CLONE_SCALE_MUL, DEFAULT_REFINEMENT_MOMENTUM_WEIGHT_EXPONENT, DEFAULT_REFINEMENT_SPLIT_BETA, TRAINING_BUILD_ARG_DEFAULTS
-from ..training import AdamHyperParams, DEFAULT_DEBUG_CONTRIBUTION_RANGE, DEFAULT_REFINEMENT_MIN_CONTRIBUTION, DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TRAIN_SUBSAMPLE_MAX_FACTOR, TrainingHyperParams, resolve_depth_ratio_grad_band, resolve_training_profile
+from ..training import AdamHyperParams, DEFAULT_DEBUG_CONTRIBUTION_RANGE, DEFAULT_REFINEMENT_MIN_CONTRIBUTION, DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TRAIN_SUBSAMPLE_MAX_FACTOR, TrainingHyperParams, resolve_training_profile
 
 EPS = 1e-8
 MIN_SCENE_RADIUS = 1.0
@@ -44,7 +44,7 @@ class RendererParams:
     max_anisotropy: float = float(_RENDERER_DEFAULTS["max_anisotropy"])
     transmittance_threshold: float = float(_RENDERER_DEFAULTS["transmittance_threshold"]); list_capacity_multiplier: int = int(_RENDERER_DEFAULTS["list_capacity_multiplier"])
     max_prepass_memory_mb: int = int(_RENDERER_DEFAULTS["max_prepass_memory_mb"]); cached_raster_grad_atomic_mode: str = str(_RENDERER_DEFAULTS["cached_raster_grad_atomic_mode"]); cached_raster_grad_fixed_ro_local_range: float = float(_RENDERER_DEFAULTS["cached_raster_grad_fixed_ro_local_range"]); cached_raster_grad_fixed_scale_range: float = float(_RENDERER_DEFAULTS["cached_raster_grad_fixed_scale_range"])
-    cached_raster_grad_fixed_quat_range: float = float(_RENDERER_DEFAULTS["cached_raster_grad_fixed_quat_range"]); cached_raster_grad_fixed_color_range: float = float(_RENDERER_DEFAULTS["cached_raster_grad_fixed_color_range"]); cached_raster_grad_fixed_opacity_range: float = float(_RENDERER_DEFAULTS["cached_raster_grad_fixed_opacity_range"])
+    cached_raster_grad_fixed_color_range: float = float(_RENDERER_DEFAULTS["cached_raster_grad_fixed_color_range"]); cached_raster_grad_fixed_opacity_range: float = float(_RENDERER_DEFAULTS["cached_raster_grad_fixed_opacity_range"])
     debug_mode: str | None = _RENDERER_DEFAULTS["debug_mode"]; debug_grad_norm_threshold: float = float(_RENDERER_DEFAULTS["debug_grad_norm_threshold"]); debug_ellipse_thickness_px: float = float(_RENDERER_DEFAULTS["debug_ellipse_thickness_px"])
     debug_gaussian_scale_multiplier: float = float(_RENDERER_DEFAULTS["debug_gaussian_scale_multiplier"]); debug_min_opacity: float = float(_RENDERER_DEFAULTS["debug_min_opacity"]); debug_opacity_multiplier: float = float(_RENDERER_DEFAULTS["debug_opacity_multiplier"]); debug_ellipse_scale_multiplier: float = float(_RENDERER_DEFAULTS["debug_ellipse_scale_multiplier"])
     debug_splat_age_range: tuple[float, float] = tuple(float(v) for v in _RENDERER_DEFAULTS["debug_splat_age_range"]); debug_density_range: tuple[float, float] = tuple(float(v) for v in _RENDERER_DEFAULTS["debug_density_range"]); debug_contribution_range: tuple[float, float] = tuple(float(v) for v in _RENDERER_DEFAULTS["debug_contribution_range"]); debug_adam_momentum_range: tuple[float, float] = tuple(float(v) for v in _RENDERER_DEFAULTS["debug_adam_momentum_range"]); debug_depth_mean_range: tuple[float, float] = tuple(float(v) for v in _RENDERER_DEFAULTS["debug_depth_mean_range"]); debug_depth_std_range: tuple[float, float] = tuple(float(v) for v in _RENDERER_DEFAULTS["debug_depth_std_range"])
@@ -169,7 +169,6 @@ def build_training_params(
     sh1_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["sh1_reg_weight"],
     density_regularizer: float = TRAINING_BUILD_ARG_DEFAULTS["density_regularizer"],
     color_non_negative_reg: float = TRAINING_BUILD_ARG_DEFAULTS["color_non_negative_reg"],
-    depth_ratio_weight: float = TRAINING_BUILD_ARG_DEFAULTS["depth_ratio_weight"],
     max_visible_angle_deg: float = TRAINING_BUILD_ARG_DEFAULTS["max_visible_angle_deg"],
     sorting_order_dithering: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering"],
     sorting_order_dithering_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage1"],
@@ -180,8 +179,6 @@ def build_training_params(
     ssim_c2: float = TRAINING_BUILD_ARG_DEFAULTS["ssim_c2"],
     refinement_loss_weight: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_loss_weight"],
     refinement_target_edge_weight: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_target_edge_weight"],
-    depth_ratio_grad_min: float = TRAINING_BUILD_ARG_DEFAULTS["depth_ratio_grad_min"],
-    depth_ratio_grad_max: float = TRAINING_BUILD_ARG_DEFAULTS["depth_ratio_grad_max"],
     max_allowed_density_start: float = TRAINING_BUILD_ARG_DEFAULTS["max_allowed_density_start"],
     max_allowed_density: float = TRAINING_BUILD_ARG_DEFAULTS["max_allowed_density"],
     lr_pos_stage1_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_stage1_mul"],
@@ -220,9 +217,6 @@ def build_training_params(
     refinement_solve_opacity: bool = bool(TRAINING_BUILD_ARG_DEFAULTS.get("refinement_solve_opacity", False)),
     refinement_split_beta: float = DEFAULT_REFINEMENT_SPLIT_BETA,
     refinement_momentum_weight_exponent: float = DEFAULT_REFINEMENT_MOMENTUM_WEIGHT_EXPONENT,
-    depth_ratio_stage1_weight: float = TRAINING_BUILD_ARG_DEFAULTS["depth_ratio_stage1_weight"],
-    depth_ratio_stage2_weight: float = TRAINING_BUILD_ARG_DEFAULTS["depth_ratio_stage2_weight"],
-    depth_ratio_stage3_weight: float = TRAINING_BUILD_ARG_DEFAULTS["depth_ratio_stage3_weight"],
     colorspace_mod_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage1"],
     colorspace_mod_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage2"],
     colorspace_mod_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage3"],
@@ -287,10 +281,6 @@ def build_training_params(
             )
         }
     )
-    resolved_depth_ratio_grad_min, resolved_depth_ratio_grad_max = resolve_depth_ratio_grad_band(
-        clamp_float(depth_ratio_grad_min, 0.0, 1e6),
-        clamp_float(depth_ratio_grad_max, 0.0, 1e6),
-    )
     training = TrainingHyperParams(
         background=tuple(float(v) for v in np.asarray(background, dtype=np.float32).reshape(3)),
         camera_min_dist=clamp_float(camera_min_dist, 0.0, 1e6),
@@ -304,7 +294,6 @@ def build_training_params(
         opacity_reg_weight=clamp_float(opacity_reg_weight, 0.0, 1e4),
         density_regularizer=clamp_float(density_regularizer, 0.0, 1e4),
         color_non_negative_reg=clamp_float(color_non_negative_reg, 0.0, 1e4),
-        depth_ratio_weight=clamp_float(depth_ratio_weight, 0.0, 1e4),
         max_visible_angle_deg=clamp_float(max_visible_angle_deg, 1e-8, 89.999),
         sorting_order_dithering=clamp_float(sorting_order_dithering, 0.0, 1.0),
         sorting_order_dithering_stage1=clamp_float(sorting_order_dithering_stage1, 0.0, 1.0),
@@ -315,8 +304,6 @@ def build_training_params(
         ssim_c2=clamp_float(ssim_c2, 1e-8, 1.0),
         refinement_loss_weight=clamp_float(refinement_loss_weight, 0.0, 1e4),
         refinement_target_edge_weight=clamp_float(refinement_target_edge_weight, 0.0, 1e4),
-        depth_ratio_grad_min=resolved_depth_ratio_grad_min,
-        depth_ratio_grad_max=resolved_depth_ratio_grad_max,
         max_allowed_density_start=clamp_float(max_allowed_density_start, 0.0, 1e6),
         max_allowed_density=clamp_float(max_allowed_density, 0.0, 1e6),
         lr_pos_mul=max(float(lr_pos_mul), 0.0),
@@ -351,9 +338,6 @@ def build_training_params(
         refinement_solve_opacity=bool(refinement_solve_opacity),
         refinement_split_beta=clamp_float(refinement_split_beta, 0.0, 1.0),
         refinement_momentum_weight_exponent=clamp_float(refinement_momentum_weight_exponent, 0.0, 16.0),
-        depth_ratio_stage1_weight=clamp_float(depth_ratio_stage1_weight, 0.0, 1e4),
-        depth_ratio_stage2_weight=clamp_float(depth_ratio_stage2_weight, 0.0, 1e4),
-        depth_ratio_stage3_weight=clamp_float(depth_ratio_stage3_weight, 0.0, 1e4),
         colorspace_mod_stage1=clamp_float(colorspace_mod_stage1, 1e-8, 8.0),
         colorspace_mod_stage2=clamp_float(colorspace_mod_stage2, 1e-8, 8.0),
         colorspace_mod_stage3=clamp_float(colorspace_mod_stage3, 1e-8, 8.0),

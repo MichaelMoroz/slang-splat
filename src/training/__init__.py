@@ -1,11 +1,8 @@
 from .adam import AdamOptimizer, AdamRuntimeHyperParams
 from .defaults import (
     DEFAULT_DEBUG_CONTRIBUTION_RANGE,
-    DEFAULT_DEPTH_RATIO_GRAD_MAX,
-    DEFAULT_DEPTH_RATIO_GRAD_MIN,
     DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY,
     DEFAULT_REFINEMENT_MIN_CONTRIBUTION,
-    DEPTH_RATIO_GRAD_MIN_BAND_WIDTH,
 )
 from .gaussian_trainer import (
     AdamHyperParams,
@@ -17,7 +14,6 @@ from .gaussian_trainer import (
     contribution_fixed_count_from_value,
     contribution_value_from_fixed_count,
     resolve_auto_train_subsample_factor,
-    resolve_depth_ratio_grad_band,
     SPLAT_CONTRIBUTION_FIXED_SCALE,
     TRAIN_BACKGROUND_MODE_CUSTOM,
     TRAIN_BACKGROUND_MODE_RANDOM,
@@ -31,7 +27,7 @@ from .gaussian_trainer import (
 )
 from .optimizer import GaussianOptimizer
 from .profiles import TRAINING_PROFILE_CHOICES, TrainingProfile, resolve_training_profile
-from .schedule import resolve_base_learning_rate, resolve_colorspace_mod, resolve_refinement_clone_budget, resolve_cosine_base_learning_rate, resolve_depth_ratio_weight, resolve_effective_refinement_interval, resolve_learning_rate_scale, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_visible_angle_deg, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering, resolve_ssim_weight, resolve_stage_schedule_steps, resolve_use_sh, should_run_refinement_step
+from .schedule import resolve_base_learning_rate, resolve_colorspace_mod, resolve_refinement_clone_budget, resolve_cosine_base_learning_rate, resolve_effective_refinement_interval, resolve_learning_rate_scale, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_visible_angle_deg, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering, resolve_ssim_weight, resolve_stage_schedule_steps, resolve_use_sh, should_run_refinement_step
 from .schedule import resolve_refinement_min_contribution
 
 __all__ = [
@@ -44,9 +40,6 @@ __all__ = [
     "contribution_fixed_count_from_value",
     "DEFAULT_REFINEMENT_MIN_CONTRIBUTION",
     "DEFAULT_DEBUG_CONTRIBUTION_RANGE",
-    "DEFAULT_DEPTH_RATIO_GRAD_MIN",
-    "DEFAULT_DEPTH_RATIO_GRAD_MAX",
-    "DEPTH_RATIO_GRAD_MIN_BAND_WIDTH",
     "TRAIN_BACKGROUND_MODE_CUSTOM",
     "TRAIN_BACKGROUND_MODE_RANDOM",
     "TRAIN_DOWNSCALE_MODE_AUTO",
@@ -61,7 +54,6 @@ __all__ = [
     "resolve_auto_train_subsample_factor",
     "resolve_train_subsample_factor",
     "resolve_training_resolution",
-    "resolve_depth_ratio_grad_band",
     "GaussianOptimizer",
     "should_run_refinement_step",
     "resolve_refinement_clone_budget",
@@ -79,7 +71,6 @@ __all__ = [
     "resolve_max_visible_angle_deg",
     "resolve_position_lr_mul",
     "resolve_sh_lr_mul",
-    "resolve_depth_ratio_weight",
     "resolve_ssim_weight",
     "resolve_position_random_step_noise_lr",
     "resolve_sorting_order_dithering",

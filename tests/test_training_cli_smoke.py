@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import re
 import subprocess
 import sys
 from argparse import Namespace
@@ -11,6 +13,9 @@ import pytest
 from src.app import cli
 from src.app.training_controls import training_cli_build_kwargs
 from src.scene import GaussianInitHyperParams
+from src.training.defaults import TRAINING_BUILD_ARG_DEFAULTS
+
+_RUN_SLOW_TRAINING_REGRESSIONS = os.environ.get("RUN_SLOW_TRAINING_REGRESSIONS") == "1"
 
 
 def test_train_cli_smoke():
@@ -49,6 +54,38 @@ def test_train_cli_smoke():
     assert "step=" in result.stdout
     assert "mse=" in result.stdout
     assert "psnr=" in result.stdout
+
+
+@pytest.mark.skipif(not _RUN_SLOW_TRAINING_REGRESSIONS, reason="set RUN_SLOW_TRAINING_REGRESSIONS=1 to run the 5k-iteration garden PSNR regression")
+def test_train_cli_garden_images4_reaches_25db(capsys) -> None:
+    repo_root = Path(__file__).resolve().parent.parent
+    dataset_root = repo_root / "dataset" / "garden"
+    if not dataset_root.exists():
+        pytest.skip("dataset/garden is unavailable.")
+
+    parser = cli.build_parser()
+    args = parser.parse_args(
+        [
+            "train-colmap",
+            "--colmap-root",
+            str(dataset_root),
+            "--images-subdir",
+            "images_4",
+            "--iters",
+            "5000",
+            "--log-interval",
+            "1000",
+            "--seed",
+            "123",
+        ]
+    )
+
+    assert cli.run_train_colmap(args) == 0
+    stdout = capsys.readouterr().out
+    matches = re.findall(r"avg_psnr=([0-9]+(?:\\.[0-9]+)?)dB", stdout)
+
+    assert matches, stdout
+    assert float(matches[-1]) >= 25.0, stdout
 
 
 def test_train_cli_forwards_resolved_init_hparams(monkeypatch, tmp_path: Path):
@@ -135,11 +172,8 @@ def test_train_cli_forwards_resolved_init_hparams(monkeypatch, tmp_path: Path):
         opacity_reg=0.01,
         sh1_reg=0.01,
         density_reg=0.02,
-        depth_ratio_weight=1.0,
         refinement_loss_weight=0.25,
         refinement_target_edge_weight=0.75,
-        depth_ratio_grad_min=0.0,
-        depth_ratio_grad_max=0.1,
         max_allowed_density_start=5.0,
         max_allowed_density=12.0,
         max_gaussians=17,
@@ -159,21 +193,21 @@ def test_train_cli_parser_defaults_color_and_opacity_lr_mul_to_five() -> None:
 
     assert args.lr_mul_color == 5.0
     assert args.lr_mul_opacity == 5.0
-    assert args.sh1_reg == 0.01
-    assert args.depth_ratio_weight == 0.5
-    assert args.lr_mul_scale == 15.0
+    assert args.sh1_reg == float(TRAINING_BUILD_ARG_DEFAULTS["sh1_reg_weight"])
+    assert args.lr_mul_scale == float(TRAINING_BUILD_ARG_DEFAULTS["lr_scale_mul"])
     assert args.refinement_loss_weight == 0.25
     assert args.refinement_target_edge_weight == 0.75
-    assert args.sorting_order_dithering == 0.5
-    assert args.sorting_order_dithering_stage1 == 0.2
-    assert args.sorting_order_dithering_stage2 == 0.05
-    assert args.sorting_order_dithering_stage3 == 0.01
-    assert training_cli_build_kwargs(args)["sorting_order_dithering"] == 0.5
-    assert training_cli_build_kwargs(args)["sorting_order_dithering_stage1"] == 0.2
-    assert training_cli_build_kwargs(args)["sorting_order_dithering_stage2"] == 0.05
-    assert training_cli_build_kwargs(args)["sorting_order_dithering_stage3"] == 0.01
-    assert args.depth_ratio_grad_min == 0.0
-    assert args.depth_ratio_grad_max == 0.1
+    assert args.sorting_order_dithering == float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering"])
+    assert args.sorting_order_dithering_stage1 == float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage1"])
+    assert args.sorting_order_dithering_stage2 == float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage2"])
+    assert args.sorting_order_dithering_stage3 == float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage3"])
+    assert training_cli_build_kwargs(args)["sorting_order_dithering"] == float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering"])
+    assert training_cli_build_kwargs(args)["sorting_order_dithering_stage1"] == float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage1"])
+    assert training_cli_build_kwargs(args)["sorting_order_dithering_stage2"] == float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage2"])
+    assert training_cli_build_kwargs(args)["sorting_order_dithering_stage3"] == float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage3"])
+    assert not hasattr(args, "depth_ratio_weight")
+    assert not hasattr(args, "depth_ratio_grad_min")
+    assert not hasattr(args, "depth_ratio_grad_max")
     assert args.refinement_min_contribution == 512
     assert args.init_opacity is None
 
@@ -198,11 +232,11 @@ def test_train_cli_parser_maps_sorting_order_dithering() -> None:
         ]
     )
 
-    assert default_args.sorting_order_dithering == 0.5
-    assert training_cli_build_kwargs(default_args)["sorting_order_dithering"] == 0.5
-    assert training_cli_build_kwargs(default_args)["sorting_order_dithering_stage1"] == 0.2
-    assert training_cli_build_kwargs(default_args)["sorting_order_dithering_stage2"] == 0.05
-    assert training_cli_build_kwargs(default_args)["sorting_order_dithering_stage3"] == 0.01
+    assert default_args.sorting_order_dithering == float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering"])
+    assert training_cli_build_kwargs(default_args)["sorting_order_dithering"] == float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering"])
+    assert training_cli_build_kwargs(default_args)["sorting_order_dithering_stage1"] == float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage1"])
+    assert training_cli_build_kwargs(default_args)["sorting_order_dithering_stage2"] == float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage2"])
+    assert training_cli_build_kwargs(default_args)["sorting_order_dithering_stage3"] == float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage3"])
     assert explicit_args.sorting_order_dithering == 0.375
     assert explicit_args.sorting_order_dithering_stage1 == 0.25
     assert explicit_args.sorting_order_dithering_stage2 == 0.125
@@ -211,3 +245,99 @@ def test_train_cli_parser_maps_sorting_order_dithering() -> None:
     assert training_cli_build_kwargs(explicit_args)["sorting_order_dithering_stage1"] == 0.25
     assert training_cli_build_kwargs(explicit_args)["sorting_order_dithering_stage2"] == 0.125
     assert training_cli_build_kwargs(explicit_args)["sorting_order_dithering_stage3"] == 0.0625
+
+
+def test_train_cli_parser_exposes_training_setup_overrides() -> None:
+    parser = cli.build_parser()
+
+    args = parser.parse_args(
+        [
+            "train-colmap",
+            "--colmap-root",
+            "dummy",
+            "--background-mode",
+            "0",
+            "--train-downscale-mode",
+            "4",
+            "--train-subsample-factor",
+            "2",
+            "--train-auto-start-downscale",
+            "8",
+            "--train-downscale-base-iters",
+            "150",
+            "--train-downscale-iter-step",
+            "25",
+            "--train-downscale-max-iters",
+            "4000",
+        ]
+    )
+
+    kwargs = training_cli_build_kwargs(args)
+
+    assert kwargs["background_mode"] == 0
+    assert kwargs["train_downscale_mode"] == 4
+    assert kwargs["train_subsample_factor"] == 2
+    assert kwargs["train_auto_start_downscale"] == 8
+    assert kwargs["train_downscale_base_iters"] == 150
+    assert kwargs["train_downscale_iter_step"] == 25
+    assert kwargs["train_downscale_max_iters"] == 4000
+
+
+def test_run_train_cli_logs_average_psnr(monkeypatch, capsys, tmp_path: Path) -> None:
+    monkeypatch.setattr(cli, "load_colmap_reconstruction", lambda root, sparse_subdir="sparse/0": object())
+    monkeypatch.setattr(cli, "build_training_frames", lambda recon, images_subdir="images_4": [SimpleNamespace(width=64, height=32, make_camera=lambda near=0.1, far=120.0: object())])
+    monkeypatch.setattr(cli, "_training_params", lambda args: object())
+    monkeypatch.setattr(
+        cli,
+        "apply_training_profile",
+        lambda params, profile_name, dataset_root=None, images_subdir=None: (
+            SimpleNamespace(training=SimpleNamespace(max_gaussians=17), adam=object(), stability=object()),
+            SimpleNamespace(name="test", init_opacity_override=None),
+        ),
+    )
+    monkeypatch.setattr(cli, "resolve_colmap_init_hparams", lambda recon, max_gaussians, init_hparams=None: GaussianInitHyperParams(base_scale=1.0))
+    monkeypatch.setattr(cli, "initialize_scene_from_colmap_points", lambda recon, max_gaussians, seed, init_hparams=None: SimpleNamespace(count=max_gaussians))
+    monkeypatch.setattr(cli, "_renderer", lambda args, width, height: SimpleNamespace(device=object()))
+
+    class _StubTrainer:
+        def __init__(self, **kwargs):
+            self.state = SimpleNamespace(
+                avg_loss=2.5e-1,
+                last_mse=1.25e-2,
+                last_psnr=19.031,
+                avg_psnr=21.875,
+                last_instability="",
+                last_frame_index=0,
+            )
+
+        def step(self):
+            return 5.0e-1
+
+    monkeypatch.setattr(cli, "GaussianTrainer", _StubTrainer)
+
+    args = Namespace(
+        colmap_root=tmp_path,
+        sparse_subdir="sparse/0",
+        images_subdir="images_4",
+        width=64,
+        height=32,
+        seed=123,
+        iters=1,
+        log_interval=1,
+        snapshot_interval=0,
+        snapshot_dir=tmp_path / "snapshots",
+        training_profile="auto",
+        init_opacity=None,
+        use_sh=True,
+        max_gaussians=17,
+        refinement_min_contribution=512,
+        bg=(0.0, 0.0, 0.0),
+        near=0.1,
+        far=120.0,
+    )
+
+    assert cli.run_train_colmap(args) == 0
+
+    stdout = capsys.readouterr().out
+    assert "psnr=19.031dB" in stdout
+    assert "avg_psnr=21.875dB" in stdout

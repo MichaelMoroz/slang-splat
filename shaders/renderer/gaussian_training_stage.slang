@@ -23,9 +23,6 @@ static const float SRGB_LINEAR_SCALE = 12.92;
 static const float SRGB_GAMMA_SCALE = 1.055;
 static const float SRGB_GAMMA_OFFSET = 0.055;
 static const float SRGB_INV_GAMMA = 1.0 / 2.4;
-static const float DEPTH_RATIO_GRAD_MIN_BAND_WIDTH = 1e-4;
-static const float DEPTH_RATIO_GRAD_SOFTNESS_RATIO = 0.1;
-static const float DEPTH_RATIO_GRAD_SOFTNESS_FLOOR = 1e-4;
 static const float DEBUG_EDGE_GRADIENT_DISPLAY_MAX = 4.0;
 static const uint SSIM_COLOR_CHANNELS = 3u;
 static const uint SSIM_FEATURES_PER_COLOR = 5u;
@@ -52,10 +49,9 @@ uniform float g_ColorspaceMod;
 
 uniform Texture2D<float4> g_Rendered;
 uniform Texture2D<float4> g_Target;
-uniform Texture2D<float4> g_RenderedDepthStats;
 uniform StructuredBuffer<float> g_RenderedDensity;
 uniform RWStructuredBuffer<float4> g_OutputGrad;
-uniform RWStructuredBuffer<float2> g_RegularizerGrad;
+uniform RWStructuredBuffer<float> g_RegularizerGrad;
 uniform RWStructuredBuffer<float> g_LossBuffer;
 uniform RWStructuredBuffer<float4> g_BatchStepInfo;
 uniform RWStructuredBuffer<float> g_TrainingRgbLoss;
@@ -67,11 +63,8 @@ uniform StructuredBuffer<float> g_SSIMBlurredMoments;
 uniform RWStructuredBuffer<float> g_SSIMBlurredFeatureGrads;
 uniform StructuredBuffer<float> g_SSIMFeatureGrads;
 uniform float g_DensityRegularizer;
-uniform float g_DepthRatioWeight;
 uniform float g_RefinementLossWeight;
 uniform float g_RefinementTargetEdgeWeight;
-uniform float g_DepthRatioGradMin;
-uniform float g_DepthRatioGradMax;
 uniform float g_MaxAllowedDensity;
 uniform RWStructuredBuffer<float> g_PositionRandomStepParams;
 uniform uint g_PositionRandomStepSplatCount;
@@ -555,49 +548,6 @@ float position_random_step_gate(float opacity)
     return rcp(1.0 + exp(-x));
 }
 
-float depth_ratio_sigmoid(float x)
-{
-    if (x >= 0.0)
-    {
-        float z = exp(-x);
-        return rcp(1.0 + z);
-    }
-    float z = exp(x);
-    return z / (1.0 + z);
-}
-
-float depth_ratio_softplus(float x)
-{
-    if (x >= SOFTPLUS_INPUT_LIMIT) return x;
-    if (x <= -SOFTPLUS_INPUT_LIMIT) return exp(x);
-    return log(1.0 + exp(x));
-}
-
-float4 depth_ratio_window_params(float depthRatio)
-{
-    float x = max(depthRatio, 0.0);
-    float bandMin = max(g_DepthRatioGradMin, 0.0);
-    float bandMax = max(g_DepthRatioGradMax, bandMin + DEPTH_RATIO_GRAD_MIN_BAND_WIDTH);
-    float softness = max((bandMax - bandMin) * DEPTH_RATIO_GRAD_SOFTNESS_RATIO, DEPTH_RATIO_GRAD_SOFTNESS_FLOOR);
-    return float4(x, bandMin, bandMax, softness);
-}
-
-float depth_ratio_window_loss(float depthRatio)
-{
-    float4 params = depth_ratio_window_params(depthRatio);
-    float scaledLo = (params.x - params.y) / params.w;
-    float scaledHi = (params.x - params.z) / params.w;
-    return g_DepthRatioWeight * params.w * (depth_ratio_softplus(scaledLo) - depth_ratio_softplus(scaledHi)) * g_InvPixelCount;
-}
-
-float depth_ratio_window_grad(float depthRatio)
-{
-    float4 params = depth_ratio_window_params(depthRatio);
-    float scaledLo = (params.x - params.y) / params.w;
-    float scaledHi = (params.x - params.z) / params.w;
-    return g_DepthRatioWeight * (depth_ratio_sigmoid(scaledLo) - depth_ratio_sigmoid(scaledHi)) * g_InvPixelCount;
-}
-
 uint2 training_target_pixel(uint2 pixel)
 {
     return g_TrainingSubsample.enabled == 0u ? pixel : training_sample_native_pixel(pixel, g_TrainingSubsample);
@@ -945,19 +895,17 @@ void csComputeBlendedLossForward(
         ) * (g_InvPixelCount * targetMask);
         float blendedRgbLoss = lerp(l1Loss, dssimLoss, g_SSIMWeight);
         float mse = rgb_mse_loss(rendered, target, g_InvPixelCount) * targetMask;
-        float displayMSE = rgb_mse_loss(training_rendered_to_display_rgb(rendered), rawTargetRgba.xyz, g_InvPixelCount) * targetMask;
-        float depthRatio = sanitize_scalar(g_RenderedDepthStats[pixel].w, SANITIZE_HUGE_VALUE);
+        float displayMSE = rgb_mse_loss(
+            debug_training_camera_display_rgb(rendered, 1u, 1u),
+            debug_training_camera_display_rgb(rawTargetRgba.xyz, 0u, 1u),
+            g_InvPixelCount
+        ) * targetMask;
         float density = sanitize_scalar(g_RenderedDensity[py * g_Width + px], SANITIZE_HUGE_VALUE);
         localRgbLoss = isfinite(blendedRgbLoss) ? blendedRgbLoss : 0.0;
         localDisplayMSE = isfinite(displayMSE) ? displayMSE : 0.0;
         localTargetEdge = isfinite(g_RefinementTargetEdgeWeight) && g_RefinementTargetEdgeWeight > 0.0 ? max(training_target_edge_intensity(pixel), 0.0) * targetMask : 0.0;
         localLoss = localRgbLoss;
         localMSE = isfinite(mse) ? mse : 0.0;
-        if (g_DepthRatioWeight > 0.0)
-        {
-            float depthRatioLoss = depth_ratio_window_loss(depthRatio) * targetMask;
-            if (isfinite(depthRatioLoss)) localLoss += depthRatioLoss;
-        }
         if (g_DensityRegularizer > 0.0)
         {
             float densityExcess = max(density - g_MaxAllowedDensity, 0.0);
@@ -1065,17 +1013,7 @@ void csComputeBlendedLossBackward(uint3 dispatchThreadID : SV_DispatchThreadID)
     {
         densityGrad = g_DensityRegularizer * g_InvPixelCount * targetMask;
     }
-
-    float depthRatioGrad = 0.0;
-    if (g_DepthRatioWeight > 0.0)
-    {
-        float depthRatio = sanitize_scalar(g_RenderedDepthStats[pixel].w, SANITIZE_HUGE_VALUE);
-        depthRatioGrad = depth_ratio_window_grad(depthRatio) * targetMask;
-    }
-    g_RegularizerGrad[py * g_Width + px] = float2(
-        clamp(sanitize_scalar(densityGrad, g_LossGradClip), -g_LossGradClip, g_LossGradClip),
-        clamp(sanitize_scalar(depthRatioGrad, g_LossGradClip), -g_LossGradClip, g_LossGradClip)
-    );
+    g_RegularizerGrad[py * g_Width + px] = clamp(sanitize_scalar(densityGrad, g_LossGradClip), -g_LossGradClip, g_LossGradClip);
 }
 
 [shader("compute")]

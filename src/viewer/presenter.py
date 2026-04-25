@@ -9,7 +9,7 @@ import slangpy as spy
 
 from ..utility import alloc_texture_2d, clamp_index, debug_region, require_not_none
 from ..filter import SeparableGaussianBlur
-from ..training import TRAIN_SUBSAMPLE_MAX_FACTOR, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_colorspace_mod, resolve_depth_ratio_weight, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering
+from ..training import TRAIN_SUBSAMPLE_MAX_FACTOR, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_colorspace_mod, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering
 from . import session
 from .buffer_debug import collect_resource_debug_snapshot
 
@@ -69,13 +69,9 @@ def _schedule_state_from_controls(viewer: object) -> object:
         lr_sh_stage1_mul=float(_control_value(viewer, "lr_sh_stage1_mul", 0.05)),
         lr_sh_stage2_mul=float(_control_value(viewer, "lr_sh_stage2_mul", 0.05)),
         lr_sh_stage3_mul=float(_control_value(viewer, "lr_sh_stage3_mul", 0.05)),
-        depth_ratio_weight=float(_control_value(viewer, "depth_ratio_weight", 1.0)),
-        depth_ratio_stage1_weight=float(_control_value(viewer, "depth_ratio_stage1_weight", 0.05)),
-        depth_ratio_stage2_weight=float(_control_value(viewer, "depth_ratio_stage2_weight", 0.01)),
-        depth_ratio_stage3_weight=float(_control_value(viewer, "depth_ratio_stage3_weight", 0.001)),
-        colorspace_mod=float(_control_value(viewer, "colorspace_mod", 0.5)),
-        colorspace_mod_stage1=float(_control_value(viewer, "colorspace_mod_stage1", 0.75)),
-        colorspace_mod_stage2=float(_control_value(viewer, "colorspace_mod_stage2", 0.9)),
+        colorspace_mod=float(_control_value(viewer, "colorspace_mod", 1.0)),
+        colorspace_mod_stage1=float(_control_value(viewer, "colorspace_mod_stage1", 1.0)),
+        colorspace_mod_stage2=float(_control_value(viewer, "colorspace_mod_stage2", 1.0)),
         colorspace_mod_stage3=float(_control_value(viewer, "colorspace_mod_stage3", 1.0)),
         sorting_order_dithering=float(_control_value(viewer, "sorting_order_dithering", 0.5)),
         sorting_order_dithering_stage1=float(_control_value(viewer, "sorting_order_dithering_stage1", 0.2)),
@@ -137,7 +133,6 @@ def _current_schedule_values_text(viewer: object) -> str:
         f"lr={resolve_base_learning_rate(training, step):.2e} | "
         f"pos={resolve_position_lr_mul(training, step):.2f}x | "
         f"shlr={resolve_sh_lr_mul(training, step):.2f}x | "
-        f"depth={resolve_depth_ratio_weight(training, step):.2e} | "
         f"cspace={resolve_colorspace_mod(training, step):.3g} | "
         f"dither={resolve_sorting_order_dithering(training, step):.3g} | "
         f"noise={resolve_position_random_step_noise_lr(training, step):.2e} | "

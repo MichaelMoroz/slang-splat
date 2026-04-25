@@ -119,7 +119,7 @@ def run_train_colmap(args: argparse.Namespace) -> int:
             elapsed = max(time.perf_counter() - start, 1e-6)
             print(
                 f"step={step + 1:6d} loss={loss:.6e} avg={trainer.state.avg_loss:.6e} "
-                f"mse={_format_metric(trainer.state.last_mse, '.6e')} psnr={_format_metric(trainer.state.last_psnr, '.3f')}dB iter/s={(step + 1) / elapsed:.2f} "
+                f"mse={_format_metric(trainer.state.last_mse, '.6e')} psnr={_format_metric(trainer.state.last_psnr, '.3f')}dB avg_psnr={_format_metric(trainer.state.avg_psnr, '.3f')}dB iter/s={(step + 1) / elapsed:.2f} "
                 f"instability='{trainer.state.last_instability}'"
             )
         if int(args.snapshot_interval) > 0 and (step + 1) % int(args.snapshot_interval) == 0:

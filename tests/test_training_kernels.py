@@ -14,7 +14,7 @@ from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 from src.scene.sh_utils import SH_C0, evaluate_sh_color
 from src.training import gaussian_trainer as gaussian_trainer_module
-from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_colorspace_mod, resolve_cosine_base_learning_rate, resolve_depth_ratio_grad_band, resolve_depth_ratio_weight, resolve_effective_refinement_interval, resolve_effective_train_render_factor, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_visible_angle_deg, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_clone_budget, resolve_refinement_growth_ratio, resolve_refinement_min_contribution, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering, resolve_ssim_weight, resolve_stage_schedule_steps, resolve_training_resolution, resolve_train_subsample_factor, resolve_use_sh, should_run_refinement_step
+from src.training import AdamHyperParams, GaussianTrainer, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_colorspace_mod, resolve_cosine_base_learning_rate, resolve_effective_refinement_interval, resolve_effective_train_render_factor, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_visible_angle_deg, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_clone_budget, resolve_refinement_growth_ratio, resolve_refinement_min_contribution, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering, resolve_ssim_weight, resolve_stage_schedule_steps, resolve_training_resolution, resolve_train_subsample_factor, resolve_use_sh, should_run_refinement_step
 
 _ADAM_BUFFER_NAMES = ("adam_moments",)
 _OPACITY_EPS = 1e-6
@@ -27,8 +27,6 @@ _log_sigma = lambda sigma: np.log(np.asarray(sigma, dtype=np.float32))
 _stored_from_support_scale = lambda support_scale: np.log(np.asarray(support_scale, dtype=np.float32) / _GAUSSIAN_SUPPORT_SIGMA_RADIUS)
 _SCALE_GRAD_MULS = (0.015625, 0.03125, 0.0625, 0.125, 0.25, 0.5, 0.75, 0.875, 0.9375, 0.96875, 1.0, 1.05)
 _TARGET_MULS = (2.0, 3.0, 4.0, 6.0, 7.5)
-_DEPTH_RATIO_GRAD_SOFTNESS_RATIO = 0.1
-_DEPTH_RATIO_GRAD_SOFTNESS_FLOOR = 1e-4
 _RNG_OPEN01_SCALE = np.float32(1.0 / 4294967297.0)
 _SH_CLAMP_SAMPLE_COUNT = 8
 _SH_CLAMP_HASH_SPLAT = np.uint32(0x68E31DA4)
@@ -87,6 +85,11 @@ def _training_target_to_linear_np(target_rgb: np.ndarray) -> np.ndarray:
 
 def _training_rendered_to_display_np(rendered_rgb: np.ndarray) -> np.ndarray:
     return np.power(np.maximum(np.asarray(rendered_rgb, dtype=np.float32), 0.0), np.float32(_OUTPUT_GAMMA)).astype(np.float32, copy=False)
+
+
+def _training_loss_colorspace_np(rgb: np.ndarray, colorspace_mod: float) -> np.ndarray:
+    values = np.asarray(rgb, dtype=np.float32)
+    return (np.sign(values) * np.power(np.abs(values), np.float32(colorspace_mod))).astype(np.float32, copy=False)
 
 
 def _expected_refinement_child_scale(parent_scale: np.ndarray, family_size: int, scale_mul: float = 1.0) -> np.ndarray:
@@ -221,10 +224,6 @@ def _read_training_rgb_loss_total(renderer: GaussianRenderer) -> float:
     return float(buffer_to_numpy(renderer.work_buffers["training_rgb_loss_total"], np.float32)[0])
 
 
-def _read_training_depth_ratios(renderer: GaussianRenderer) -> np.ndarray:
-    return np.asarray(renderer.training_depth_stats_texture.to_numpy(), dtype=np.float32)[..., 3].reshape(-1).copy()
-
-
 def _read_ssim_buffer(trainer: GaussianTrainer, name: str) -> np.ndarray:
     width = int(trainer.renderer.width)
     height = int(trainer.renderer.height)
@@ -279,16 +278,22 @@ def _blended_rgb_metrics_np(
     *,
     ssim_weight: float,
     use_target_alpha_mask: bool,
+    colorspace_mod: float,
 ) -> tuple[np.ndarray, float, float, np.ndarray]:
     rendered = np.asarray(rendered_rgba, dtype=np.float32)[..., :3]
-    target = _training_target_to_linear_np(np.asarray(target_rgba, dtype=np.float32)[..., :3])
+    target_linear = _training_target_to_linear_np(np.asarray(target_rgba, dtype=np.float32)[..., :3])
+    target_loss = _training_loss_colorspace_np(
+        _training_target_to_linear_np(np.asarray(target_rgba, dtype=np.float32)[..., :3]),
+        colorspace_mod,
+    )
     alpha = np.asarray(target_rgba, dtype=np.float32)[..., 3]
     inv_pixel_count = np.float32(1.0 / max(rendered.shape[0] * rendered.shape[1], 1))
     mask = _training_target_mask_np(alpha, use_target_alpha_mask)
-    diff = rendered - target
-    l1 = np.mean(np.abs(diff), axis=2).astype(np.float32) * inv_pixel_count * mask
-    mse = float(np.sum(np.mean(diff * diff, axis=2).astype(np.float32) * inv_pixel_count * mask, dtype=np.float64))
-    blurred = _separable_gaussian_blur_np(_ssim_feature_moments_np(rendered, target))
+    loss_diff = rendered - target_loss
+    mse_diff = rendered - target_linear
+    l1 = np.mean(np.abs(loss_diff), axis=2).astype(np.float32) * inv_pixel_count * mask
+    mse = float(np.sum(np.mean(mse_diff * mse_diff, axis=2).astype(np.float32) * inv_pixel_count * mask, dtype=np.float64))
+    blurred = _separable_gaussian_blur_np(_ssim_feature_moments_np(rendered, target_loss))
     channel_dssim: list[np.ndarray] = []
     for channel in range(3):
         offset = channel * _SSIM_FEATURES_PER_COLOR
@@ -306,13 +311,18 @@ def _blended_rgb_metrics_np(
     dssim = np.mean(np.stack(channel_dssim, axis=2), axis=2, dtype=np.float32)
     dssim = dssim.astype(np.float32, copy=False) * inv_pixel_count * mask
     blended = ((1.0 - float(ssim_weight)) * l1 + float(ssim_weight) * dssim).astype(np.float32, copy=False)
-    l1_grad = np.sign(diff).astype(np.float32) * (np.float32(1.0 / 3.0) * inv_pixel_count * mask[..., None] * np.float32(1.0 - float(ssim_weight)))
+    l1_grad = np.sign(loss_diff).astype(np.float32) * (np.float32(1.0 / 3.0) * inv_pixel_count * mask[..., None] * np.float32(1.0 - float(ssim_weight)))
     return blended, float(np.sum(blended, dtype=np.float64)), mse, l1_grad
 
 
-def _display_mse_np(rendered_rgba: np.ndarray, target_rgba: np.ndarray, *, use_target_alpha_mask: bool) -> float:
+def _display_mse_np(rendered_rgba: np.ndarray, target_rgba: np.ndarray, *, use_target_alpha_mask: bool, colorspace_mod: float) -> float:
     rendered = _training_rendered_to_display_np(np.asarray(rendered_rgba, dtype=np.float32)[..., :3])
-    target = np.asarray(target_rgba, dtype=np.float32)[..., :3]
+    target = _training_rendered_to_display_np(
+        _training_loss_colorspace_np(
+            _training_target_to_linear_np(np.asarray(target_rgba, dtype=np.float32)[..., :3]),
+            colorspace_mod,
+        )
+    )
     alpha = np.asarray(target_rgba, dtype=np.float32)[..., 3]
     inv_pixel_count = np.float32(1.0 / max(rendered.shape[0] * rendered.shape[1], 1))
     mask = _training_target_mask_np(alpha, use_target_alpha_mask)
@@ -404,7 +414,6 @@ def _dispatch_manual_loss(
     rendered = np.asarray(rendered_rgba, dtype=np.float32)
     target = np.asarray(target_rgba, dtype=np.float32)
     renderer.output_texture.copy_from_numpy(np.ascontiguousarray(rendered, dtype=np.float32))
-    renderer.training_depth_stats_texture.copy_from_numpy(np.zeros((renderer.height, renderer.width, 4), dtype=np.float32))
     renderer.work_buffers["training_density"].copy_from_numpy(np.zeros((renderer.width * renderer.height,), dtype=np.float32))
     target_texture = _make_float_texture(trainer.device, target)
     enc = trainer.device.create_command_encoder()
@@ -414,42 +423,6 @@ def _dispatch_manual_loss(
     trainer.device.submit_command_buffer(enc.finish())
     trainer.device.wait()
     return target_texture
-
-
-def _depth_ratio_window_softplus(x: float) -> float:
-    if x >= 30.0: return float(x)
-    if x <= -30.0: return float(np.exp(x))
-    return float(np.log1p(np.exp(x)))
-
-
-def _depth_ratio_window_sigmoid(x: float) -> float:
-    if x >= 0.0:
-        z = float(np.exp(-x))
-        return 1.0 / (1.0 + z)
-    z = float(np.exp(x))
-    return z / (1.0 + z)
-
-
-def _depth_ratio_window_params(grad_min: float, grad_max: float) -> tuple[float, float, float]:
-    band_min, band_max = resolve_depth_ratio_grad_band(grad_min, grad_max)
-    softness = max((band_max - band_min) * _DEPTH_RATIO_GRAD_SOFTNESS_RATIO, _DEPTH_RATIO_GRAD_SOFTNESS_FLOOR)
-    return band_min, band_max, softness
-
-
-def _depth_ratio_window_loss(depth_ratio: float, weight: float, grad_min: float, grad_max: float) -> float:
-    band_min, band_max, softness = _depth_ratio_window_params(grad_min, grad_max)
-    x = max(float(depth_ratio), 0.0)
-    return float(weight) * softness * (
-        _depth_ratio_window_softplus((x - band_min) / softness) - _depth_ratio_window_softplus((x - band_max) / softness)
-    )
-
-
-def _depth_ratio_window_grad(depth_ratio: float, weight: float, grad_min: float, grad_max: float, inv_pixel_count: float) -> float:
-    band_min, band_max, softness = _depth_ratio_window_params(grad_min, grad_max)
-    x = max(float(depth_ratio), 0.0)
-    return float(weight) * (
-        _depth_ratio_window_sigmoid((x - band_min) / softness) - _depth_ratio_window_sigmoid((x - band_max) / softness)
-    ) * float(inv_pixel_count)
 
 
 def _read_optimizer_lrs(trainer: GaussianTrainer) -> np.ndarray:
@@ -954,7 +927,6 @@ def test_ssim_weight_zero_matches_l1_metrics_and_gradients(device, tmp_path: Pat
             background_mode=TRAIN_BACKGROUND_MODE_CUSTOM,
             background=(0.0, 0.0, 0.0),
             density_regularizer=0.0,
-            depth_ratio_weight=0.0,
             ssim_weight=0.0,
         ),
         image_name="ssim_weight_zero_target.png",
@@ -984,6 +956,7 @@ def test_ssim_weight_zero_matches_l1_metrics_and_gradients(device, tmp_path: Pat
         target,
         ssim_weight=0.0,
         use_target_alpha_mask=False,
+        colorspace_mod=resolve_colorspace_mod(trainer.training, 0),
     )
     total, mse, density = trainer._read_loss_metrics()
     np.testing.assert_allclose(_read_training_rgb_loss(trainer.renderer), expected_rgb_loss, rtol=0.0, atol=1e-7)
@@ -1003,10 +976,60 @@ def test_ssim_weight_zero_matches_l1_metrics_and_gradients(device, tmp_path: Pat
     np.testing.assert_allclose(batch_metrics[0, trainer._LOSS_SLOT_MSE], expected_mse, rtol=0.0, atol=1e-7)
     np.testing.assert_allclose(
         batch_metrics[0, trainer._BATCH_STEP_INFO_DISPLAY_MSE],
-        _display_mse_np(rendered, target, use_target_alpha_mask=False),
+        _display_mse_np(
+            rendered,
+            target,
+            use_target_alpha_mask=False,
+            colorspace_mod=resolve_colorspace_mod(trainer.training, 0),
+        ),
         rtol=0.0,
         atol=1e-7,
     )
+
+
+def test_display_mse_uses_loss_colorspace_target(device, tmp_path: Path):
+    trainer = _make_loss_only_trainer(
+        device,
+        tmp_path,
+        width=2,
+        height=1,
+        training_hparams=TrainingHyperParams(
+            background_mode=TRAIN_BACKGROUND_MODE_CUSTOM,
+            background=(0.0, 0.0, 0.0),
+            density_regularizer=0.0,
+            ssim_weight=0.0,
+            colorspace_mod=0.5,
+            colorspace_mod_stage1=0.5,
+            colorspace_mod_stage2=0.5,
+            colorspace_mod_stage3=0.5,
+        ),
+        image_name="display_mse_colorspace_target.png",
+        image_id=32,
+    )
+    rendered = np.array(
+        [[[0.25, 0.49, 0.81, 1.0], [0.36, 0.64, 0.16, 1.0]]],
+        dtype=np.float32,
+    )
+    target = np.array(rendered, copy=True)
+    target[..., :3] = _training_rendered_to_display_np(rendered[..., :3])
+
+    _dispatch_manual_loss(trainer, rendered, target)
+
+    enc = device.create_command_encoder()
+    trainer._dispatch_cache_step_info(enc, 0)
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+
+    batch_metrics = trainer._read_batch_step_metrics(1)
+    expected_display_mse = _display_mse_np(
+        rendered,
+        target,
+        use_target_alpha_mask=False,
+        colorspace_mod=resolve_colorspace_mod(trainer.training, 0),
+    )
+
+    assert expected_display_mse > 0.0
+    np.testing.assert_allclose(batch_metrics[0, trainer._BATCH_STEP_INFO_DISPLAY_MSE], expected_display_mse, rtol=0.0, atol=1e-7)
 
 
 def test_ssim_feature_blur_matches_cpu_reference(device, tmp_path: Path):
@@ -1019,7 +1042,6 @@ def test_ssim_feature_blur_matches_cpu_reference(device, tmp_path: Path):
             background_mode=TRAIN_BACKGROUND_MODE_CUSTOM,
             background=(0.0, 0.0, 0.0),
             density_regularizer=0.0,
-            depth_ratio_weight=0.0,
             ssim_weight=1.0,
         ),
         image_name="ssim_feature_blur_target.png",
@@ -1054,7 +1076,6 @@ def test_identical_images_zero_blended_ssim_loss(device, tmp_path: Path):
             background_mode=TRAIN_BACKGROUND_MODE_CUSTOM,
             background=(0.0, 0.0, 0.0),
             density_regularizer=0.0,
-            depth_ratio_weight=0.0,
             ssim_weight=1.0,
         ),
         image_name="ssim_identical_target.png",
@@ -1086,7 +1107,6 @@ def test_ssim_backward_matches_torch_image_gradients(device, tmp_path: Path):
             background_mode=TRAIN_BACKGROUND_MODE_CUSTOM,
             background=(0.0, 0.0, 0.0),
             density_regularizer=0.0,
-            depth_ratio_weight=0.0,
             ssim_weight=0.2,
         ),
         image_name="ssim_torch_grad_target.png",
@@ -1126,7 +1146,6 @@ def test_ssim_backward_matches_torch_garden_blur_distortion(device, tmp_path: Pa
             background_mode=TRAIN_BACKGROUND_MODE_CUSTOM,
             background=(0.0, 0.0, 0.0),
             density_regularizer=0.0,
-            depth_ratio_weight=0.0,
             ssim_weight=1.0,
         ),
         image_name="ssim_garden_blur_target.png",
@@ -1153,7 +1172,6 @@ def test_ssim_blurred_gradients_leave_target_side_moments_zero(device, tmp_path:
             opacity_reg_weight=0.0,
             sh1_reg_weight=0.0,
             density_regularizer=0.0,
-            depth_ratio_weight=0.0,
         ),
         image_name="ssim_luma_only_target.png",
         image_id=35,
@@ -1186,7 +1204,6 @@ def test_ssim_keeps_neutral_black_gradients_neutral(device, tmp_path: Path):
             opacity_reg_weight=0.0,
             sh1_reg_weight=0.0,
             density_regularizer=0.0,
-            depth_ratio_weight=0.0,
         ),
         image_name="ssim_neutral_black_target.png",
         image_id=36,
@@ -1217,7 +1234,6 @@ def test_full_ssim_penalizes_flat_mean_only_chroma_shift(device, tmp_path: Path)
             opacity_reg_weight=0.0,
             sh1_reg_weight=0.0,
             density_regularizer=0.0,
-            depth_ratio_weight=0.0,
         ),
         image_name="ssim_equal_mean_chroma_shift.png",
         image_id=37,
@@ -1239,6 +1255,7 @@ def test_full_ssim_penalizes_flat_mean_only_chroma_shift(device, tmp_path: Path)
         target,
         ssim_weight=1.0,
         use_target_alpha_mask=False,
+        colorspace_mod=resolve_colorspace_mod(trainer.training, 0),
     )
 
     assert total > 0.0
@@ -1267,7 +1284,6 @@ def test_target_alpha_mask_skips_masked_pixel_loss_and_output_grads(device, tmp_
             background_mode=TRAIN_BACKGROUND_MODE_CUSTOM,
             background=(0.0, 0.0, 0.0),
             density_regularizer=0.0,
-            depth_ratio_weight=0.0,
             use_target_alpha_mask=False,
         ),
         seed=123,
@@ -1281,7 +1297,6 @@ def test_target_alpha_mask_skips_masked_pixel_loss_and_output_grads(device, tmp_
             background_mode=TRAIN_BACKGROUND_MODE_CUSTOM,
             background=(0.0, 0.0, 0.0),
             density_regularizer=0.0,
-            depth_ratio_weight=0.0,
             use_target_alpha_mask=True,
         ),
         seed=123,
@@ -1387,7 +1402,6 @@ def test_training_raster_output_stays_linear_while_display_render_uses_gamma(dev
             background_mode=TRAIN_BACKGROUND_MODE_CUSTOM,
             background=(0.25, 0.5, 0.75),
             density_regularizer=0.0,
-            depth_ratio_weight=0.0,
         ),
         seed=123,
     )
@@ -1409,9 +1423,8 @@ def test_training_raster_output_stays_linear_while_display_render_uses_gamma(dev
     np.testing.assert_allclose(display_output, expected_display, rtol=0.0, atol=1e-6)
 
 
-def test_depth_ratio_noise_and_sh_schedules_follow_requested_defaults() -> None:
+def test_colorspace_noise_and_sh_schedules_follow_requested_defaults() -> None:
     hparams = TrainingHyperParams(
-        depth_ratio_weight=0.5,
         colorspace_mod=0.5,
         ssim_weight=0.2,
         max_visible_angle_deg=_legacy_screen_fraction_to_visible_angle_deg(0.3),
@@ -1873,126 +1886,6 @@ def test_density_loss_respects_threshold_and_changes_gradients(device, tmp_path:
     assert density_off == 0.0
     assert density_on > 0.0
     assert total_on >= total_off - 1e-7
-    grad_delta = sum(float(np.max(np.abs(grads_on[name] - grads_off[name]))) for name in grads_on)
-    assert grad_delta > 0.0
-
-
-def test_depth_ratio_loss_changes_total_loss_and_gradients(device, tmp_path: Path) -> None:
-    scene = _make_scene(count=8, seed=90)
-    frame = _make_frame(tmp_path, image_name="depth_ratio_target.png", image_id=17)
-    grad_min = 0.01
-    grad_max = 0.05
-    weight = 0.5
-    renderer_off = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
-    renderer_on = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
-    trainer_off = GaussianTrainer(device=device, renderer=renderer_off, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(density_regularizer=0.0, depth_ratio_weight=0.0, depth_ratio_grad_min=grad_min, depth_ratio_grad_max=grad_max), seed=123)
-    trainer_on = GaussianTrainer(device=device, renderer=renderer_on, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(density_regularizer=0.0, depth_ratio_weight=weight, depth_ratio_grad_min=grad_min, depth_ratio_grad_max=grad_max), seed=123)
-
-    def run_pass(trainer: GaussianTrainer, renderer: GaussianRenderer, depth_ratio: float):
-        packed_depth_stats = np.zeros((renderer.height, renderer.width, 4), dtype=np.float32)
-        packed_depth_stats[:, :, :] = np.array([1.0, 2.0, 1.0, depth_ratio], dtype=np.float32)
-        renderer.training_depth_stats_texture.copy_from_numpy(packed_depth_stats)
-        target_texture = trainer.get_frame_target_texture(0, native_resolution=False)
-        enc = device.create_command_encoder()
-        trainer._dispatch_loss_forward(enc, target_texture)
-        trainer._dispatch_loss_backward(enc, target_texture)
-        device.submit_command_buffer(enc.finish())
-        device.wait()
-        regularizer_grad = buffer_to_numpy(renderer.work_buffers["training_regularizer_grad"], np.float32).reshape(-1, 2)
-        return trainer._read_loss_metrics(), regularizer_grad
-
-    inv_pixel_count = 1.0 / float(renderer_on.width * renderer_on.height)
-    samples = (0.005, 0.03, 0.2)
-    losses_on: list[float] = []
-    grads_on: list[float] = []
-    for depth_ratio in samples:
-        (total_off, mse_off, density_off), regularizer_grad_off = run_pass(trainer_off, renderer_off, depth_ratio)
-        (total_on, mse_on, density_on), regularizer_grad_on = run_pass(trainer_on, renderer_on, depth_ratio)
-
-        expected_loss = _depth_ratio_window_loss(depth_ratio, weight, grad_min, grad_max)
-        expected_grad = _depth_ratio_window_grad(depth_ratio, weight, grad_min, grad_max, inv_pixel_count)
-
-        assert np.isfinite(total_off)
-        assert np.isfinite(total_on)
-        np.testing.assert_allclose(mse_on, mse_off, rtol=1e-5, atol=1e-7)
-        assert density_off == 0.0
-        assert density_on == 0.0
-        np.testing.assert_allclose(total_on - total_off, expected_loss, rtol=1e-5, atol=1e-7)
-        assert np.allclose(regularizer_grad_off[:, 1], 0.0)
-        np.testing.assert_allclose(regularizer_grad_on[:, 1], np.full_like(regularizer_grad_on[:, 1], expected_grad), rtol=1e-5, atol=1e-7)
-        losses_on.append(float(total_on - total_off))
-        grads_on.append(float(regularizer_grad_on[0, 1]))
-
-    assert losses_on[0] < losses_on[1] < losses_on[2]
-    assert grads_on[1] > grads_on[0] > grads_on[2]
-
-
-def test_depth_ratio_regularizer_affects_training_raster_replay(device, tmp_path: Path) -> None:
-    scene = GaussianScene(
-        positions=np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.2], [0.03, -0.02, 0.1]], dtype=np.float32),
-        scales=_log_sigma(np.full((3, 3), 0.12, dtype=np.float32)),
-        rotations=np.array([[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
-        opacities=np.full((3,), 0.8, dtype=np.float32),
-        colors=np.array([[0.7, 0.2, 0.1], [0.1, 0.7, 0.2], [0.2, 0.1, 0.7]], dtype=np.float32),
-        sh_coeffs=np.zeros((3, 1, 3), dtype=np.float32),
-    )
-    frame = _make_frame(tmp_path, image_name="depth_ratio_raster_target.png", image_id=18)
-    renderer_off = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
-    renderer_on = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=16)
-    trainer_off = GaussianTrainer(device=device, renderer=renderer_off, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(density_regularizer=0.0, depth_ratio_weight=0.0), seed=123)
-    trainer_on = GaussianTrainer(device=device, renderer=renderer_on, scene=scene, frames=[frame], training_hparams=TrainingHyperParams(density_regularizer=0.0, depth_ratio_weight=0.5), seed=123)
-    camera = frame.make_camera(near=0.1, far=20.0)
-    background = np.asarray(trainer_on.training.background, dtype=np.float32)
-
-    def configure_band(trainer: GaussianTrainer, renderer: GaussianRenderer) -> tuple[float, float]:
-        renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
-        enc = device.create_command_encoder()
-        trainer._dispatch_raster_training_forward(enc, camera, background)
-        device.submit_command_buffer(enc.finish())
-        device.wait()
-        ratios = _read_training_depth_ratios(renderer)
-        positive = ratios[np.isfinite(ratios) & (ratios > 0.0)]
-        assert positive.size >= 4
-        grad_min = float(np.quantile(positive, 0.25))
-        grad_max = float(np.quantile(positive, 0.75))
-        grad_min, grad_max = resolve_depth_ratio_grad_band(grad_min, grad_max)
-        trainer.training.depth_ratio_grad_min = grad_min
-        trainer.training.depth_ratio_grad_max = grad_max
-        return grad_min, grad_max
-
-    def run_pass(trainer: GaussianTrainer, renderer: GaussianRenderer):
-        renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
-        enc = device.create_command_encoder()
-        trainer._dispatch_raster_training_forward(enc, camera, background)
-        target_texture = trainer.get_frame_target_texture(0, native_resolution=False, encoder=enc)
-        trainer._dispatch_loss_forward(enc, target_texture)
-        trainer._dispatch_loss_backward(enc, target_texture)
-        trainer._dispatch_raster_backward(enc, camera, background)
-        device.submit_command_buffer(enc.finish())
-        device.wait()
-        regularizer_grad = buffer_to_numpy(renderer.work_buffers["training_regularizer_grad"], np.float32).reshape(-1, 2)
-        return trainer._read_loss_metrics(), _read_grad_groups(renderer, scene.count), regularizer_grad, _read_training_depth_ratios(renderer)
-
-    grad_min, grad_max = configure_band(trainer_on, renderer_on)
-    trainer_off.training.depth_ratio_grad_min = grad_min
-    trainer_off.training.depth_ratio_grad_max = grad_max
-    (total_off, mse_off, density_off), grads_off, regularizer_grad_off, depth_ratio_off = run_pass(trainer_off, renderer_off)
-    (total_on, mse_on, density_on), grads_on, regularizer_grad_on, depth_ratio_on = run_pass(trainer_on, renderer_on)
-
-    assert np.isfinite(total_off)
-    assert np.isfinite(total_on)
-    np.testing.assert_allclose(mse_on, mse_off, rtol=1e-5, atol=1e-7)
-    assert density_off == 0.0
-    assert density_on == 0.0
-    assert total_on > total_off
-    assert np.allclose(regularizer_grad_off[:, 1], 0.0)
-    assert float(np.max(np.abs(regularizer_grad_on[:, 1]))) > 0.0
-    inside_mask = np.isfinite(depth_ratio_on) & (depth_ratio_on >= grad_min) & (depth_ratio_on <= grad_max)
-    outside_mask = np.isfinite(depth_ratio_on) & (depth_ratio_on > 0.0) & ~inside_mask
-    assert np.any(inside_mask)
-    assert np.any(outside_mask)
-    assert float(np.max(np.abs(regularizer_grad_on[inside_mask, 1]))) > float(np.max(np.abs(regularizer_grad_on[outside_mask, 1])))
-    np.testing.assert_allclose(depth_ratio_off, depth_ratio_on, rtol=1e-5, atol=1e-7)
     grad_delta = sum(float(np.max(np.abs(grads_on[name] - grads_off[name]))) for name in grads_on)
     assert grad_delta > 0.0
 
@@ -3354,7 +3247,6 @@ def test_color_non_negative_regularizer_pushes_negative_sh_color_toward_zero(dev
             sh1_reg_weight=0.0,
             density_regularizer=0.0,
             color_non_negative_reg=1.0,
-            depth_ratio_weight=0.0,
             refinement_interval=9999,
         ),
         seed=44,
@@ -3395,7 +3287,6 @@ def test_training_with_sh_enabled_updates_non_dc_sh_coeffs(device, tmp_path: Pat
             opacity_reg_weight=0.0,
             sh1_reg_weight=0.0,
             density_regularizer=0.0,
-            depth_ratio_weight=0.0,
             refinement_interval=9999,
         ),
         seed=123,
