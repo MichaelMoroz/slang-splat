@@ -10,6 +10,7 @@ import re
 import numpy as np
 import slangpy as spy
 
+from ..repo_defaults import training_build_arg_defaults
 from ..utility import RW_BUFFER_USAGE, SHADER_ROOT, alloc_buffer, alloc_texture_2d, buffer_to_numpy, debug_region, defer_resource_releases, dispatch, dispatch_indirect, grow_capacity, load_compute_items, load_compute_kernel, load_compute_kernels, remap_named_buffers, thread_count_1d
 from ..metrics import Metrics, ParamLog10Histograms, ParamTensorRanges
 from ..scan.prefix_sum import GPUPrefixSum
@@ -17,6 +18,8 @@ from ..scene.gaussian_scene import GaussianScene
 from ..scene.sh_utils import SH_C0, SUPPORTED_SH_COEFF_COUNT, pad_sh_coeffs, resolve_supported_sh_coeffs, rgb_to_sh0, sh_coeffs_to_display_colors
 from ..sort.radix_sort import GPURadixSort
 from .camera import Camera
+
+_TRAINING_BUILD_ARG_DEFAULTS = training_build_arg_defaults()
 
 
 @dataclass(slots=True)
@@ -121,6 +124,7 @@ class GaussianRenderer:
     DEBUG_MODE_SH_VIEW_DEPENDENT = "sh_view_dependent"
     DEBUG_MODE_SH_COEFFICIENT = "sh_coefficient"
     DEBUG_MODE_BLACK_NEGATIVE = "black_negative"
+    DEBUG_MODE_REFINEMENT_DISTRIBUTION = "refinement_distribution"
     DEBUG_MODES = (
         DEBUG_MODE_NORMAL,
         DEBUG_MODE_PROCESSED_COUNT,
@@ -140,6 +144,7 @@ class GaussianRenderer:
         DEBUG_MODE_SH_COEFFICIENT,
         DEBUG_MODE_BLACK_NEGATIVE,
         DEBUG_MODE_GRAD_VARIANCE,
+        DEBUG_MODE_REFINEMENT_DISTRIBUTION,
     )
     CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT = "float"
     CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED = "fixed"
@@ -152,11 +157,14 @@ class GaussianRenderer:
     _DEFAULT_DEBUG_SPLAT_AGE_RANGE = (0.0, 1.0)
     _DEFAULT_DEBUG_DENSITY_RANGE = (0.0, 20.0)
     _DEFAULT_DEBUG_CONTRIBUTION_RANGE = (0.001, 1.0)
+    _DEFAULT_DEBUG_REFINEMENT_DISTRIBUTION_RANGE = _DEFAULT_DEBUG_CONTRIBUTION_RANGE
     _DEFAULT_DEBUG_ADAM_MOMENTUM_RANGE = (0.0, 0.1)
     _DEFAULT_DEBUG_DEPTH_MEAN_RANGE = (0.0, 10.0)
     _DEFAULT_DEBUG_DEPTH_STD_RANGE = (0.0, 0.5)
     _DEFAULT_DEBUG_DEPTH_LOCAL_MISMATCH_RANGE = (0.0, 0.5)
     _DEFAULT_DEBUG_SH_COEFF_INDEX = 0
+    _DEFAULT_DEBUG_REFINEMENT_GRAD_VARIANCE_WEIGHT_EXPONENT = float(_TRAINING_BUILD_ARG_DEFAULTS.get("refinement_grad_variance_weight_exponent", 0.1))
+    _DEFAULT_DEBUG_REFINEMENT_CONTRIBUTION_WEIGHT_EXPONENT = float(_TRAINING_BUILD_ARG_DEFAULTS.get("refinement_contribution_weight_exponent", 0.1))
     _SPLAT_CONTRIBUTION_FIXED_SCALE = 256.0
     _COUNTER_READBACK_RING_SIZE = 2
     _SCANLINE_WORK_ITEM_UINTS = 4
@@ -296,8 +304,11 @@ class GaussianRenderer:
                 "debugSplatAgeRange": spy.float2(*self.debug_splat_age_range),
                 "debugDensityRange": spy.float2(*self.debug_density_range),
                 "debugContributionRange": spy.float2(*self.debug_contribution_range),
+                "debugRefinementDistributionRange": spy.float2(*self.debug_refinement_distribution_range),
                 "debugContributionScale": float(self._debug_contribution_scale),
                 "debugGradVarianceInvSampleCount": float(self._debug_grad_variance_inv_sample_count),
+                "debugRefinementGradientVarianceWeightExponent": float(max(self.debug_refinement_grad_variance_weight_exponent, 0.0)),
+                "debugRefinementContributionWeightExponent": float(max(self.debug_refinement_contribution_weight_exponent, 0.0)),
                 "debugAdamMomentumRange": spy.float2(*self.debug_adam_momentum_range),
                 "debugDepthMeanRange": spy.float2(*self.debug_depth_mean_range),
                 "debugDepthStdRange": spy.float2(*self.debug_depth_std_range),
@@ -605,6 +616,7 @@ class GaussianRenderer:
         debug_splat_age_range: tuple[float, float] = _DEFAULT_DEBUG_SPLAT_AGE_RANGE,
         debug_density_range: tuple[float, float] = _DEFAULT_DEBUG_DENSITY_RANGE,
         debug_contribution_range: tuple[float, float] = _DEFAULT_DEBUG_CONTRIBUTION_RANGE,
+        debug_refinement_distribution_range: tuple[float, float] = _DEFAULT_DEBUG_REFINEMENT_DISTRIBUTION_RANGE,
         debug_adam_momentum_range: tuple[float, float] = _DEFAULT_DEBUG_ADAM_MOMENTUM_RANGE,
         debug_depth_mean_range: tuple[float, float] = _DEFAULT_DEBUG_DEPTH_MEAN_RANGE,
         debug_depth_std_range: tuple[float, float] = _DEFAULT_DEBUG_DEPTH_STD_RANGE,
@@ -646,6 +658,7 @@ class GaussianRenderer:
         self.debug_splat_age_range = tuple(float(x) for x in debug_splat_age_range)
         self.debug_density_range = tuple(float(x) for x in debug_density_range)
         self.debug_contribution_range = tuple(float(x) for x in debug_contribution_range)
+        self.debug_refinement_distribution_range = tuple(float(x) for x in debug_refinement_distribution_range)
         self.debug_adam_momentum_range = tuple(float(x) for x in debug_adam_momentum_range)
         self.debug_depth_mean_range = tuple(float(x) for x in debug_depth_mean_range)
         self.debug_depth_std_range = tuple(float(x) for x in debug_depth_std_range)
@@ -653,6 +666,8 @@ class GaussianRenderer:
         self.debug_depth_local_mismatch_smooth_radius = float(debug_depth_local_mismatch_smooth_radius)
         self.debug_depth_local_mismatch_reject_radius = float(debug_depth_local_mismatch_reject_radius)
         self.debug_sh_coeff_index = min(max(int(debug_sh_coeff_index), 0), SUPPORTED_SH_COEFF_COUNT - 1)
+        self.debug_refinement_grad_variance_weight_exponent = self._DEFAULT_DEBUG_REFINEMENT_GRAD_VARIANCE_WEIGHT_EXPONENT
+        self.debug_refinement_contribution_weight_exponent = self._DEFAULT_DEBUG_REFINEMENT_CONTRIBUTION_WEIGHT_EXPONENT
         self._set_render_resolution_geometry(self.width, self.height)
         self._create_shaders()
         self._sorter = GPURadixSort(self.device)
@@ -1212,13 +1227,13 @@ class GaussianRenderer:
         vars = {**self._scene_vars(), **self._screen_vars(), **self._raster_cache_vars(), "g_SortedValues": self._sorted_values(), "g_TileRanges": self._work_buffers["tile_ranges"], "g_Output": target, **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_range_vars(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._anisotropy_uniforms(), **self._camera_uniforms(camera), **self._camera_uniforms(camera, "g_TrainingNativeCamera"), **self._disabled_training_sample_vars()}
         if self.debug_mode == self.DEBUG_MODE_SPLAT_AGE:
             vars.update(self._debug_splat_age_var())
-        if self.debug_mode == self.DEBUG_MODE_CONTRIBUTION_AMOUNT:
+        if self.debug_mode in (self.DEBUG_MODE_CONTRIBUTION_AMOUNT, self.DEBUG_MODE_REFINEMENT_DISTRIBUTION):
             vars.update(self._debug_splat_contribution_var())
         if self.debug_mode in (self.DEBUG_MODE_ADAM_MOMENTUM, self.DEBUG_MODE_ADAM_SECOND_MOMENT):
             vars.update(self._debug_adam_moments_var())
         if self.debug_mode == self.DEBUG_MODE_GRAD_NORM:
             vars.update(self._debug_grad_norm_var())
-        if self.debug_mode == self.DEBUG_MODE_GRAD_VARIANCE:
+        if self.debug_mode in (self.DEBUG_MODE_GRAD_VARIANCE, self.DEBUG_MODE_REFINEMENT_DISTRIBUTION):
             vars.update(self._debug_grad_stats_var())
         self._dispatch(shader, encoder, self._raster_thread_count(), vars, "Rasterize", 24)
 

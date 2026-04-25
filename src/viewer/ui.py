@@ -120,6 +120,7 @@ _DEBUG_MODE_VALUES = (
     "adam_momentum",
     "adam_second_moment",
     "grad_variance",
+    "refinement_distribution",
     "depth_mean",
     "depth_std",
     "depth_local_mismatch",
@@ -140,6 +141,7 @@ _DEBUG_MODE_LABELS = (
     "Adam Momentum",
     "Adam Second Moment",
     "Grad Variance",
+    "Refinement Distribution",
     "Depth Mean",
     "Depth Std",
     "Depth Local Mismatch",
@@ -350,6 +352,7 @@ def _renderer_debug_control_keys(mode: str) -> tuple[str, ...]:
     if mode == "splat_age": return ("debug_mode", "debug_splat_age_min", "debug_splat_age_max")
     if mode in ("splat_density", "splat_spatial_density", "splat_screen_density"): return ("debug_mode", "debug_density_min", "debug_density_max")
     if mode == "contribution_amount": return ("debug_mode", "debug_contribution_min", "debug_contribution_max")
+    if mode == "refinement_distribution": return ("debug_mode", "debug_refinement_distribution_min", "debug_refinement_distribution_max")
     if mode in ("adam_momentum", "adam_second_moment", "grad_variance"): return ("debug_mode", "debug_grad_norm_threshold")
     if mode == "depth_mean": return ("debug_mode", "debug_depth_mean_min", "debug_depth_mean_max")
     if mode == "depth_std": return ("debug_mode", "debug_depth_std_min", "debug_depth_std_max")
@@ -397,6 +400,10 @@ def _contribution_amount_tick_value(t: float, value_min: float, value_max: float
     lo = math.log10(max(float(min(value_min, value_max)), _DEBUG_CONTRIBUTION_AMOUNT_FLOOR))
     hi = math.log10(max(float(max(value_min, value_max)), max(float(min(value_min, value_max)), _DEBUG_CONTRIBUTION_AMOUNT_FLOOR) * (1.0 + _DEBUG_CONTRIBUTION_AMOUNT_FLOOR)))
     return math.pow(10.0, lo + _saturate(t) * (hi - lo))
+
+
+def _refinement_distribution_tick_value(t: float, value_min: float, value_max: float) -> float:
+    return _contribution_amount_tick_value(t, value_min, value_max)
 
 
 def _debug_range_tick_value(t: float, value_min: float, value_max: float) -> float:
@@ -520,6 +527,7 @@ def export_repo_defaults_from_ui_values(values: dict[str, object]) -> dict[str, 
                 "debug_splat_age_range": [float(values["debug_splat_age_min"]), float(values["debug_splat_age_max"])],
                 "debug_density_range": [float(values["debug_density_min"]), float(values["debug_density_max"])],
                 "debug_contribution_range": [float(values["debug_contribution_min"]), float(values["debug_contribution_max"])],
+                "debug_refinement_distribution_range": [float(values["debug_refinement_distribution_min"]), float(values["debug_refinement_distribution_max"])],
                 "debug_adam_momentum_range": list(_threshold_band_range(float(values["debug_adam_momentum_threshold"]))),
                 "debug_depth_mean_range": [float(values["debug_depth_mean_min"]), float(values["debug_depth_mean_max"])],
                 "debug_depth_std_range": [float(values["debug_depth_std_min"]), float(values["debug_depth_std_max"])],
@@ -631,6 +639,8 @@ DEBUG_RENDER_SPECS = (
     ControlSpec("debug_density_max", "input_float", "Density Max", {"value": float(_RENDERER_DEFAULTS["debug_density_range"][1]), "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
     ControlSpec("debug_contribution_min", "input_float", "Contribution Min", {"value": float(_RENDERER_DEFAULTS["debug_contribution_range"][0]), "step": 1e-4, "step_fast": 1e-3, "format": "%.6g"}),
     ControlSpec("debug_contribution_max", "input_float", "Contribution Max", {"value": float(_RENDERER_DEFAULTS["debug_contribution_range"][1]), "step": 0.1, "step_fast": 1.0, "format": "%.6g"}),
+    ControlSpec("debug_refinement_distribution_min", "input_float", "Refine Dist Min", {"value": float(_RENDERER_DEFAULTS["debug_refinement_distribution_range"][0]), "step": 1e-4, "step_fast": 1e-3, "format": "%.6g"}),
+    ControlSpec("debug_refinement_distribution_max", "input_float", "Refine Dist Max", {"value": float(_RENDERER_DEFAULTS["debug_refinement_distribution_range"][1]), "step": 0.1, "step_fast": 1.0, "format": "%.6g"}),
     ControlSpec("debug_adam_momentum_threshold", "input_float", "Adam Momentum Threshold", {"value": _threshold_from_band_range(float(_RENDERER_DEFAULTS["debug_adam_momentum_range"][0]), float(_RENDERER_DEFAULTS["debug_adam_momentum_range"][1]), _DEBUG_ADAM_MOMENTUM_THRESHOLD_DEFAULT), "step": 1e-5, "step_fast": 1e-4, "format": "%.6g"}),
     ControlSpec("debug_depth_mean_min", "input_float", "Depth Mean Min", {"value": float(_RENDERER_DEFAULTS["debug_depth_mean_range"][0]), "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
     ControlSpec("debug_depth_mean_max", "input_float", "Depth Mean Max", {"value": float(_RENDERER_DEFAULTS["debug_depth_mean_range"][1]), "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
@@ -1538,6 +1548,7 @@ class ToolkitWindow:
             "adam_momentum": "Adam Momentum",
             "adam_second_moment": "Adam Second Moment",
             "grad_variance": "Grad Variance",
+            "refinement_distribution": "Refinement Distribution",
             "depth_mean": "Depth Mean",
             "depth_std": "Depth Std",
             "depth_local_mismatch": "Depth Local Mismatch",
@@ -1564,6 +1575,8 @@ class ToolkitWindow:
             threshold = float(ui._values.get("debug_grad_norm_threshold", _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT))
             value = _threshold_band_tick_value(t, threshold)
             return f"{value * value:.1e}"
+        if mode == "refinement_distribution":
+            return f"{_refinement_distribution_tick_value(t, float(ui._values.get('debug_refinement_distribution_min', 0.001)), float(ui._values.get('debug_refinement_distribution_max', 1.0))):.1e}"
         if mode == "depth_mean":
             return f"{_debug_range_tick_value(t, float(ui._values.get('debug_depth_mean_min', 0.0)), float(ui._values.get('debug_depth_mean_max', 10.0))):.3g}"
         if mode == "depth_std":
@@ -2619,6 +2632,8 @@ class ToolkitWindow:
         "debug_density_max": "Upper bound for density debug heatmaps",
         "debug_contribution_min": "Lower bound for the log-scaled contribution heatmap in observed-pixel-normalized color-change units",
         "debug_contribution_max": "Upper bound for the log-scaled contribution heatmap in observed-pixel-normalized color-change units",
+        "debug_refinement_distribution_min": "Lower bound for the refinement CDF sampling distribution heatmap",
+        "debug_refinement_distribution_max": "Upper bound for the refinement CDF sampling distribution heatmap",
         "debug_adam_momentum_threshold": "Reference threshold for the per-splat Adam moment heatmaps; the displayed range is derived around it on a log scale",
         "debug_depth_mean_min": "Lower bound for depth mean debug heatmap",
         "debug_depth_mean_max": "Upper bound for depth mean debug heatmap",
@@ -2838,6 +2853,7 @@ def build_ui(renderer) -> ViewerUI:
     splat_age_range = tuple(getattr(renderer, "debug_splat_age_range", _RENDERER_DEFAULTS["debug_splat_age_range"]))
     density_range = tuple(getattr(renderer, "debug_density_range", _RENDERER_DEFAULTS["debug_density_range"]))
     contribution_range = tuple(getattr(renderer, "debug_contribution_range", _RENDERER_DEFAULTS["debug_contribution_range"]))
+    refinement_distribution_range = tuple(getattr(renderer, "debug_refinement_distribution_range", _RENDERER_DEFAULTS["debug_refinement_distribution_range"]))
     adam_momentum_range = tuple(getattr(renderer, "debug_adam_momentum_range", _RENDERER_DEFAULTS["debug_adam_momentum_range"]))
     depth_mean_range = tuple(getattr(renderer, "debug_depth_mean_range", _RENDERER_DEFAULTS["debug_depth_mean_range"]))
     depth_std_range = tuple(getattr(renderer, "debug_depth_std_range", _RENDERER_DEFAULTS["debug_depth_std_range"]))
@@ -2848,6 +2864,8 @@ def build_ui(renderer) -> ViewerUI:
     values["debug_density_max"] = float(density_range[1])
     values["debug_contribution_min"] = float(contribution_range[0])
     values["debug_contribution_max"] = float(contribution_range[1])
+    values["debug_refinement_distribution_min"] = float(refinement_distribution_range[0])
+    values["debug_refinement_distribution_max"] = float(refinement_distribution_range[1])
     values["debug_adam_momentum_threshold"] = _threshold_from_band_range(float(adam_momentum_range[0]), float(adam_momentum_range[1]), _DEBUG_ADAM_MOMENTUM_THRESHOLD_DEFAULT)
     values["debug_depth_mean_min"] = float(depth_mean_range[0])
     values["debug_depth_mean_max"] = float(depth_mean_range[1])

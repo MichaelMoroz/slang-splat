@@ -1230,6 +1230,8 @@ def apply_live_params(viewer: object, force_init_defaults: bool = False) -> None
             continue
         for key, value in renderer_kwargs(params).items():
             setattr(renderer, key, value)
+        renderer.debug_refinement_grad_variance_weight_exponent = float(getattr(training_params, "refinement_grad_variance_weight_exponent", getattr(renderer, "debug_refinement_grad_variance_weight_exponent", 0.0)))
+        renderer.debug_refinement_contribution_weight_exponent = float(getattr(training_params, "refinement_contribution_weight_exponent", getattr(renderer, "debug_refinement_contribution_weight_exponent", 0.0)))
         setattr(viewer.s, state_attr, signature)
     _apply_debug_buffers(viewer, viewer.s.renderer)
     _apply_debug_buffers(viewer, viewer.s.debug_renderer)

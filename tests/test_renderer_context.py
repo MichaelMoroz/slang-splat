@@ -55,6 +55,7 @@ def test_render_settings_forward_debug_overlays_to_renderer(monkeypatch) -> None
         "debug_splat_age_range": (0.0, 1.0),
         "debug_density_range": (0.0, 20.0),
         "debug_contribution_range": (0.001, 1.0),
+        "debug_refinement_distribution_range": (0.001, 1.0),
         "debug_adam_momentum_range": (0.0, 0.1),
         "debug_depth_mean_range": (0.0, 10.0),
         "debug_depth_std_range": (0.0, 0.5),

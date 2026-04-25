@@ -916,6 +916,39 @@ def test_debug_contribution_amount_render_smoke(device):
     assert float(np.max(channel_spread)) > 1e-4
 
 
+def test_debug_refinement_distribution_render_smoke(device):
+    scene = make_scene(24, seed=61)
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    renderer = GaussianRenderer(
+        device,
+        width=64,
+        height=64,
+        radius_scale=1.6,
+        list_capacity_multiplier=32,
+        debug_mode=GaussianRenderer.DEBUG_MODE_REFINEMENT_DISTRIBUTION,
+    )
+    observed_pixels = renderer.width * renderer.height
+    samples = np.geomspace(1e-8, 1e-2, scene.count, dtype=np.float32)
+    stats = np.zeros((scene.count, 2), dtype=np.float32)
+    stats[:, 0] = samples + samples * 3.0
+    stats[:, 1] = samples * samples + (samples * 3.0) * (samples * 3.0)
+    renderer.upload_debug_grad_stats(stats)
+    renderer.set_debug_contribution_observed_pixel_count(observed_pixels)
+    renderer.upload_debug_splat_contribution(
+        np.array(
+            [contribution_fixed_count_from_value(value, observed_pixels) for value in np.geomspace(0.001, 1.0, scene.count, dtype=np.float32)],
+            dtype=np.uint32,
+        )
+    )
+    renderer.debug_refinement_grad_variance_weight_exponent = 0.1
+    renderer.debug_refinement_contribution_weight_exponent = 0.1
+    out = renderer.render(scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32))
+    assert out.image.shape == (64, 64, 4)
+    assert np.all(np.isfinite(out.image))
+    channel_spread = np.max(out.image[..., :3], axis=-1) - np.min(out.image[..., :3], axis=-1)
+    assert float(np.max(channel_spread)) > 1e-4
+
+
 def test_debug_adam_momentum_render_smoke(device):
     scene = make_scene(24, seed=67)
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)

@@ -452,6 +452,8 @@ class GaussianTrainer:
         resolved_step = 0 if step is None and not hasattr(self, "state") else self.state.step if step is None else int(step)
         target_renderer = self.renderer if renderer is None else renderer
         target_renderer.sh_band = resolve_sh_band(self.training, resolved_step)
+        target_renderer.debug_refinement_grad_variance_weight_exponent = float(self.training.refinement_grad_variance_weight_exponent)
+        target_renderer.debug_refinement_contribution_weight_exponent = float(self.training.refinement_contribution_weight_exponent)
 
     def _apply_renderer_training_hparams(self, step: int | None = None) -> None:
         self.apply_renderer_training_hparams(step)

@@ -372,6 +372,22 @@ float raster_grad_variance(uint splatId)
     return max(variance, 0.0);
 }
 
+float raster_refinement_distribution(uint splatId)
+{
+    float varianceWeight = pow(raster_grad_variance(splatId), max(g_Raster.debugRefinementGradientVarianceWeightExponent, 0.0));
+    float contribution = float(g_SplatContribution[splatId]) * max(g_Raster.debugContributionScale, 0.0);
+    float contributionWeight = pow(max(contribution, 0.0), max(g_Raster.debugRefinementContributionWeightExponent, 0.0));
+    float distribution = varianceWeight * contributionWeight;
+    return isfinite(distribution) ? max(distribution, 0.0) : 0.0;
+}
+
+float2 raster_refinement_distribution_range()
+{
+    float valueMin = max(min(g_Raster.debugRefinementDistributionRange.x, g_Raster.debugRefinementDistributionRange.y), DEBUG_CONTRIBUTION_AMOUNT_FLOOR);
+    float valueMax = max(max(g_Raster.debugRefinementDistributionRange.x, g_Raster.debugRefinementDistributionRange.y), valueMin * (1.0 + DEBUG_CONTRIBUTION_AMOUNT_FLOOR));
+    return float2(valueMin, valueMax);
+}
+
 float3 raster_forward_color(RasterGaussian gaussian, uint splatId, uint debugMode)
 {
     if (debugMode == DEBUG_MODE_SH_VIEW_DEPENDENT) return raster_debug_signed_color(gaussian_sh_view_dependent_component(load_gaussian3d(splatId), g_Camera.camPos));
@@ -391,6 +407,11 @@ float3 raster_forward_color(RasterGaussian gaussian, uint splatId, uint debugMod
         return 0.125 * saturate(color);
     }
     if (debugMode == DEBUG_MODE_GRAD_VARIANCE) return jet_colormap(raster_normalize_grad_norm(sqrt(raster_grad_variance(splatId))));
+    if (debugMode == DEBUG_MODE_REFINEMENT_DISTRIBUTION)
+    {
+        float2 distributionRange = raster_refinement_distribution_range();
+        return jet_colormap(debug_normalize_log_range(max(raster_refinement_distribution(splatId), DEBUG_CONTRIBUTION_AMOUNT_FLOOR), distributionRange.x, distributionRange.y));
+    }
     if (debugMode != DEBUG_MODE_GRAD_NORM) return gaussian.colorAlpha.xyz;
     float gradNorm = g_DebugGradNorm[splatId];
     if (!isfinite(gradNorm)) gradNorm = 0.0;
