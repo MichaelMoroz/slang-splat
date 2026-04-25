@@ -119,6 +119,7 @@ _DEBUG_MODE_VALUES = (
     "contribution_amount",
     "adam_momentum",
     "adam_second_moment",
+    "grad_variance",
     "depth_mean",
     "depth_std",
     "depth_local_mismatch",
@@ -138,6 +139,7 @@ _DEBUG_MODE_LABELS = (
     "Contribution Amount",
     "Adam Momentum",
     "Adam Second Moment",
+    "Grad Variance",
     "Depth Mean",
     "Depth Std",
     "Depth Local Mismatch",
@@ -348,7 +350,7 @@ def _renderer_debug_control_keys(mode: str) -> tuple[str, ...]:
     if mode == "splat_age": return ("debug_mode", "debug_splat_age_min", "debug_splat_age_max")
     if mode in ("splat_density", "splat_spatial_density", "splat_screen_density"): return ("debug_mode", "debug_density_min", "debug_density_max")
     if mode == "contribution_amount": return ("debug_mode", "debug_contribution_min", "debug_contribution_max")
-    if mode in ("adam_momentum", "adam_second_moment"): return ("debug_mode", "debug_grad_norm_threshold")
+    if mode in ("adam_momentum", "adam_second_moment", "grad_variance"): return ("debug_mode", "debug_grad_norm_threshold")
     if mode == "depth_mean": return ("debug_mode", "debug_depth_mean_min", "debug_depth_mean_max")
     if mode == "depth_std": return ("debug_mode", "debug_depth_std_min", "debug_depth_std_max")
     if mode == "depth_local_mismatch": return ("debug_mode", "debug_depth_local_mismatch_min", "debug_depth_local_mismatch_max", "debug_depth_local_mismatch_smooth_radius", "debug_depth_local_mismatch_reject_radius")
@@ -1535,6 +1537,7 @@ class ToolkitWindow:
             "contribution_amount": "Contribution Amount",
             "adam_momentum": "Adam Momentum",
             "adam_second_moment": "Adam Second Moment",
+            "grad_variance": "Grad Variance",
             "depth_mean": "Depth Mean",
             "depth_std": "Depth Std",
             "depth_local_mismatch": "Depth Local Mismatch",
@@ -1557,6 +1560,10 @@ class ToolkitWindow:
         if mode in ("adam_momentum", "adam_second_moment"):
             threshold = float(ui._values.get("debug_grad_norm_threshold", _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT))
             return f"{_threshold_band_tick_value(t, threshold):.1e}"
+        if mode == "grad_variance":
+            threshold = float(ui._values.get("debug_grad_norm_threshold", _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT))
+            value = _threshold_band_tick_value(t, threshold)
+            return f"{value * value:.1e}"
         if mode == "depth_mean":
             return f"{_debug_range_tick_value(t, float(ui._values.get('debug_depth_mean_min', 0.0)), float(ui._values.get('debug_depth_mean_max', 10.0))):.3g}"
         if mode == "depth_std":
@@ -2600,7 +2607,7 @@ class ToolkitWindow:
         "cached_raster_grad_fixed_opacity_range": "Symmetric [-X, X] range for cached opacity gradients",
         "debug_mode": "Select the renderer debug output mode",
         "debug_sh_coeff_index": "Select which raw SH coefficient float3 to display; zero is mapped to 0.5 gray in this debug view",
-        "debug_grad_norm_threshold": "Reference threshold for the gradient norm heatmap",
+        "debug_grad_norm_threshold": "Reference threshold for gradient norm and gradient variance heatmaps",
         "debug_ellipse_thickness_px": "Thickness used by ellipse outline debug rendering",
         "debug_gaussian_scale_multiplier": "Ellipse debug raster-loop multiplier applied to the cached Gaussian scale",
         "debug_min_opacity": "Ellipse debug raster-loop opacity floor applied after the opacity multiplier",

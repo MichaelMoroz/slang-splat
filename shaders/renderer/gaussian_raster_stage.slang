@@ -341,6 +341,18 @@ float raster_adam_second_moment_length(uint splatId)
     return sqrt(max(secondMomentSum, 0.0));
 }
 
+float raster_grad_variance(uint splatId)
+{
+    float4 stats = g_DebugGradStats[splatId];
+    float count = stats.z;
+    if (!(isfinite(count) && count > 0.0)) return 0.0;
+    float invCount = 1.0 / count;
+    float mean = stats.x * invCount;
+    float variance = stats.y * invCount - mean * mean;
+    if (!isfinite(variance)) return 0.0;
+    return max(variance, 0.0);
+}
+
 float3 raster_forward_color(RasterGaussian gaussian, uint splatId, uint debugMode)
 {
     if (debugMode == DEBUG_MODE_SH_VIEW_DEPENDENT) return raster_debug_signed_color(gaussian_sh_view_dependent_component(load_gaussian3d(splatId), g_Camera.camPos));
@@ -359,6 +371,7 @@ float3 raster_forward_color(RasterGaussian gaussian, uint splatId, uint debugMod
         if (isBlack) return float3(1.0, 1.0, 0.0);
         return 0.125 * saturate(color);
     }
+    if (debugMode == DEBUG_MODE_GRAD_VARIANCE) return jet_colormap(raster_normalize_grad_norm(sqrt(raster_grad_variance(splatId))));
     if (debugMode != DEBUG_MODE_GRAD_NORM) return gaussian.colorAlpha.xyz;
     float gradNorm = g_DebugGradNorm[splatId];
     if (!isfinite(gradNorm)) gradNorm = 0.0;

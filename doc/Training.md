@@ -78,6 +78,7 @@ Each trainer `step()` performs:
   - `csAccumulateRegularizationGrads` adds scale, SH1, and opacity regularizers on the packed param-major state.
    - `csClipPackedParamGrads` clips gradients from a structured per-parameter settings buffer owned by the optimizer module.
    - `csComputePackedSplatGradNorms` can optionally reduce the packed gradient vector of each splat into one scalar `L2` norm for debug visualization.
+   - `csAccumulatePackedElementGradStats` accumulates one clipped packed-gradient norm sample per splat per completed training step as `(sum, sumSq, count)` for variance debug visualization.
    - `csAdamStepPacked` applies one-thread-per-packed-parameter ADAM using that same settings buffer plus a packed `float2` moments buffer.
   - `csProjectGaussianParams` applies the remaining Gaussian-specific post-step projection: quaternion normalization, anisotropy clamp, and an angle-only upper screen-size clamp. The clamp keeps `max_screen_fraction` as an area-equivalent viewport fraction, converts it to a circular pixel radius, maps that radius to an angular radius from the active training camera focal length, then converts that angle plus Euclidean camera-to-splat distance into one shared scalar sigma cap applied to all three scale components. It does not use visibility, cropping, projected footprint, or opacity.
 8. When the configured refinement boundary is reached, run the refinement pass:
@@ -115,6 +116,7 @@ There is still no opacity reset schedule, MCMC exploration term, or standalone S
   - packed ADAM,
   - packed gradient clipping,
   - optional packed per-splat gradient-norm reduction,
+  - per-splat gradient norm statistics accumulated until the next refinement reset,
   - structured per-parameter settings buffer (`lr`, grad clips, scalar clamp range, group metadata),
   - packed `float2` moments buffer (`m`, `v`).
 - The refinement rewrite stage now treats that packed ADAM state as topology-coupled data and rewrites/migrates it alongside the packed scene parameters.

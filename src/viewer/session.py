@@ -903,6 +903,9 @@ def _reset_training_runtime(viewer: object) -> None:
     viewer.s.trainer = None
     if viewer.s.renderer is not None:
         viewer.s.renderer.set_debug_grad_norm_buffer(None)
+        clear_grad_stats = getattr(viewer.s.renderer, "set_debug_grad_stats_buffer", None)
+        if callable(clear_grad_stats):
+            clear_grad_stats(None)
         viewer.s.renderer.set_debug_splat_age_buffer(None)
     viewer.s.applied_renderer_params_training = None
     viewer.s.applied_renderer_params_debug = None
@@ -996,6 +999,14 @@ def _apply_debug_buffers(viewer: object, renderer: GaussianRenderer | None) -> N
         if viewer.s.training_renderer is not None and viewer.s.trainer is not None
         else None
     )
+    bind_grad_stats = getattr(renderer, "set_debug_grad_stats_buffer", None)
+    if callable(bind_grad_stats):
+        refinement_buffers = getattr(viewer.s.trainer, "refinement_buffers", {}) if viewer.s.trainer is not None else {}
+        bind_grad_stats(
+            refinement_buffers["gradient_stats"]
+            if "gradient_stats" in refinement_buffers
+            else None
+        )
     renderer.set_debug_splat_age_buffer(_training_debug_splat_age_buffer(viewer))
     bind_contribution = getattr(renderer, "set_debug_splat_contribution_buffer", None)
     if callable(bind_contribution):

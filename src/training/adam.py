@@ -36,6 +36,7 @@ class AdamOptimizer:
             SHADER_ROOT / "utility" / "optimizer" / "optimizer.slang",
             {
                 "compute_grad_norms": "csComputePackedElementGradNorms",
+                "accumulate_grad_stats": "csAccumulatePackedElementGradStats",
                 "clip_grads": "csClipPackedParamGrads",
                 "adam_step": "csAdamStepPacked",
             },
@@ -102,6 +103,7 @@ class AdamOptimizer:
         param_settings_count: int,
         step_index: int,
         debug_element_grad_norm_buffer: spy.Buffer | None = None,
+        element_grad_stats_buffer: spy.Buffer | None = None,
     ) -> None:
         count = max(int(packed_param_count), 1)
         self._ensure_state_buffers(count)
@@ -125,6 +127,15 @@ class AdamOptimizer:
                 vars={**vars, "g_OptimizerElementGradNorms": debug_element_grad_norm_buffer},
                 command_encoder=encoder,
                 debug_label="Adam Compute Grad Norms",
+                debug_color_index=61,
+            )
+        if element_grad_stats_buffer is not None:
+            dispatch(
+                kernel=self._kernels["accumulate_grad_stats"],
+                thread_count=self._grad_norm_threads(element_count),
+                vars={**vars, "g_OptimizerElementGradStats": element_grad_stats_buffer},
+                command_encoder=encoder,
+                debug_label="Adam Accumulate Grad Stats",
                 debug_color_index=61,
             )
         dispatch(

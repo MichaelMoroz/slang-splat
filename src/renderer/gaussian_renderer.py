@@ -114,6 +114,7 @@ class GaussianRenderer:
     DEBUG_MODE_SPLAT_SPATIAL_DENSITY = "splat_spatial_density"
     DEBUG_MODE_SPLAT_SCREEN_DENSITY = "splat_screen_density"
     DEBUG_MODE_GRAD_NORM = "grad_norm"
+    DEBUG_MODE_GRAD_VARIANCE = "grad_variance"
     DEBUG_MODE_CONTRIBUTION_AMOUNT = "contribution_amount"
     DEBUG_MODE_ADAM_MOMENTUM = "adam_momentum"
     DEBUG_MODE_ADAM_SECOND_MOMENT = "adam_second_moment"
@@ -138,6 +139,7 @@ class GaussianRenderer:
         DEBUG_MODE_SH_VIEW_DEPENDENT,
         DEBUG_MODE_SH_COEFFICIENT,
         DEBUG_MODE_BLACK_NEGATIVE,
+        DEBUG_MODE_GRAD_VARIANCE,
     )
     CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT = "float"
     CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED = "fixed"
@@ -349,6 +351,9 @@ class GaussianRenderer:
 
     def _debug_grad_norm_var(self) -> dict[str, object]:
         return {"g_DebugGradNorm": self._debug_grad_norm_buffer if self._debug_grad_norm_buffer is not None else self._work_buffers["debug_grad_norm"]}
+
+    def _debug_grad_stats_var(self) -> dict[str, object]:
+        return {"g_DebugGradStats": self._debug_grad_stats_buffer if self._debug_grad_stats_buffer is not None else self._work_buffers["debug_grad_stats"]}
 
     def _debug_splat_age_var(self) -> dict[str, object]:
         return {"g_SplatAges": self._debug_splat_age_buffer if self._debug_splat_age_buffer is not None else self._work_buffers["debug_splat_age"]}
@@ -657,6 +662,7 @@ class GaussianRenderer:
         self._work_buffers: dict[str, spy.Buffer] = {}
         self._resource_groups = _RendererResourceGroups(scene={}, frame={}, prepass={}, raster={}, grad={}, debug={})
         self._debug_grad_norm_buffer: spy.Buffer | None = None
+        self._debug_grad_stats_buffer: spy.Buffer | None = None
         self._debug_splat_age_buffer: spy.Buffer | None = None
         self._debug_splat_contribution_buffer: spy.Buffer | None = None
         self._debug_adam_moments_buffer: spy.Buffer | None = None
@@ -759,6 +765,7 @@ class GaussianRenderer:
             "fallback_clone_counts": max(self._work_splat_capacity, 1) * self._U32_BYTES,
             "debug_splat_age": max(self._work_splat_capacity, 1) * self._U32_BYTES,
             "debug_grad_norm": max(self._work_splat_capacity, 1) * self._U32_BYTES,
+            "debug_grad_stats": max(self._work_splat_capacity, 1) * self._F32X4_BYTES,
             "visible_keys": max(self._work_splat_capacity, 1) * self._U32_BYTES,
             "visible_values": max(self._work_splat_capacity, 1) * self._U32_BYTES,
             "visible_counter": self._U32_BYTES,
@@ -836,6 +843,7 @@ class GaussianRenderer:
             "fallback_clone_counts": allocated["fallback_clone_counts"],
             "debug_splat_age": allocated["debug_splat_age"],
             "debug_grad_norm": allocated["debug_grad_norm"],
+            "debug_grad_stats": allocated["debug_grad_stats"],
         }
         self._work_buffers = self._resource_groups.merged_work_buffers()
         self._sorted_keys_buffer = self._work_buffers["keys"]
@@ -843,6 +851,7 @@ class GaussianRenderer:
         self._work_buffers["fallback_clone_counts"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1),), dtype=np.uint32))
         self._work_buffers["debug_splat_age"].copy_from_numpy(np.ones((max(self._work_splat_capacity, 1),), dtype=np.float32))
         self._work_buffers["debug_grad_norm"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1),), dtype=np.float32))
+        self._work_buffers["debug_grad_stats"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1), 4), dtype=np.float32))
         self._work_buffers["training_splat_contribution"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1),), dtype=np.uint32))
         self._work_buffers["training_rgb_loss"].copy_from_numpy(np.zeros((self._render_pixel_capacity(),), dtype=np.float32))
         self._work_buffers["training_rgb_loss_total"].copy_from_numpy(np.zeros((1,), dtype=np.float32))
@@ -1206,6 +1215,8 @@ class GaussianRenderer:
             vars.update(self._debug_adam_moments_var())
         if self.debug_mode == self.DEBUG_MODE_GRAD_NORM:
             vars.update(self._debug_grad_norm_var())
+        if self.debug_mode == self.DEBUG_MODE_GRAD_VARIANCE:
+            vars.update(self._debug_grad_stats_var())
         self._dispatch(shader, encoder, self._raster_thread_count(), vars, "Rasterize", 24)
 
     def _clear_raster_grads(self, encoder: spy.CommandEncoder, splat_count: int) -> None:
@@ -1715,6 +1726,9 @@ class GaussianRenderer:
     def set_debug_grad_norm_buffer(self, buffer: spy.Buffer | None) -> None:
         self._debug_grad_norm_buffer = buffer
 
+    def set_debug_grad_stats_buffer(self, buffer: spy.Buffer | None) -> None:
+        self._debug_grad_stats_buffer = buffer
+
     def set_debug_splat_age_buffer(self, buffer: spy.Buffer | None) -> None:
         self._debug_splat_age_buffer = buffer
 
@@ -1745,6 +1759,13 @@ class GaussianRenderer:
         self._ensure_work_buffers(max(int(grad.shape[0]), self._scene_count, 1))
         self._work_buffers["debug_grad_norm"].copy_from_numpy(np.pad(grad, (0, max(self._work_splat_capacity - grad.shape[0], 0))))
         self._debug_grad_norm_buffer = None
+
+    def upload_debug_grad_stats(self, values: np.ndarray) -> None:
+        stats = np.ascontiguousarray(values, dtype=np.float32).reshape(-1, 4)
+        self._ensure_work_buffers(max(int(stats.shape[0]), self._scene_count, 1))
+        padded = np.pad(stats, ((0, max(self._work_splat_capacity - stats.shape[0], 0)), (0, 0)))
+        self._work_buffers["debug_grad_stats"].copy_from_numpy(padded)
+        self._debug_grad_stats_buffer = None
 
     @property
     def scene_buffers(self) -> dict[str, spy.Buffer]:

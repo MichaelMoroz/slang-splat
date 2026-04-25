@@ -47,12 +47,14 @@ _DEBUG_MODE_VALUES = (
     GaussianRenderer.DEBUG_MODE_CONTRIBUTION_AMOUNT,
     GaussianRenderer.DEBUG_MODE_ADAM_MOMENTUM,
     GaussianRenderer.DEBUG_MODE_ADAM_SECOND_MOMENT,
+    GaussianRenderer.DEBUG_MODE_GRAD_VARIANCE,
     GaussianRenderer.DEBUG_MODE_DEPTH_MEAN,
     GaussianRenderer.DEBUG_MODE_DEPTH_STD,
     GaussianRenderer.DEBUG_MODE_DEPTH_LOCAL_MISMATCH,
     GaussianRenderer.DEBUG_MODE_GRAD_NORM,
     GaussianRenderer.DEBUG_MODE_SH_VIEW_DEPENDENT,
     GaussianRenderer.DEBUG_MODE_SH_COEFFICIENT,
+    GaussianRenderer.DEBUG_MODE_BLACK_NEGATIVE,
 )
 
 

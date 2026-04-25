@@ -614,6 +614,7 @@ class GaussianTrainer:
             "g_AppendSplatAge": self._refinement_buffers["append_splat_age"],
             "g_CloneCounts": self._refinement_buffers["clone_counts"],
             "g_SplatContribution": self._refinement_buffers["splat_contribution"],
+            "g_GradientStats": self._refinement_buffers["gradient_stats"],
             "g_RefinementWeights": self._refinement_buffers["refinement_weights"],
             "g_RefinementWeightPrefix": self._refinement_buffers["refinement_weight_prefix"],
             "g_RefinementWeightTotal": self._refinement_buffers["refinement_weight_total"],
@@ -861,9 +862,10 @@ class GaussianTrainer:
         grow_output = required_output > self._refinement_output_capacity
         grow_cameras = required_camera_count > self._refinement_camera_capacity
         age_buffers_ready = all(name in self._refinement_buffers for name in ("splat_age", "dst_splat_age", "append_splat_age")) and required_splats <= self._refinement_splat_age_capacity
-        if self._refinement_buffers and age_buffers_ready and not grow_splats and not grow_append and not grow_output and not grow_cameras:
+        if self._refinement_buffers and age_buffers_ready and "gradient_stats" in self._refinement_buffers and not grow_splats and not grow_append and not grow_output and not grow_cameras:
             return
         packed_param_bytes = self.renderer.TRAINABLE_PARAM_COUNT * self._U32_BYTES
+        reset_gradient_stats = False
         if "total_clone_counter" not in self._refinement_buffers:
             self._refinement_buffers["total_clone_counter"] = alloc_buffer(self.device, name="trainer.refinement.total_clone_counter", size=self._U32_BYTES, usage=RW_BUFFER_USAGE)
         if "append_counter" not in self._refinement_buffers:
@@ -872,11 +874,16 @@ class GaussianTrainer:
             self._refinement_splat_capacity = grow_capacity(required_splats, self._refinement_splat_capacity)
             self._set_refinement_buffer("clone_counts", alloc_buffer(self.device, name="trainer.refinement.clone_counts", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
             self._set_refinement_buffer("splat_contribution", alloc_buffer(self.device, name="trainer.refinement.splat_contribution", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
+            self._set_refinement_buffer("gradient_stats", alloc_buffer(self.device, name="trainer.refinement.gradient_stats", size=self._refinement_splat_capacity * self._FLOAT4_BYTES, usage=RW_BUFFER_USAGE))
+            reset_gradient_stats = True
             self._set_refinement_buffer("refinement_eligible_mask", alloc_buffer(self.device, name="trainer.refinement.eligible_mask", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
             self._set_refinement_buffer("refinement_weights", alloc_buffer(self.device, name="trainer.refinement.weights", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
             self._set_refinement_buffer("refinement_weight_prefix", alloc_buffer(self.device, name="trainer.refinement.weight_prefix", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
         elif "splat_contribution" not in self._refinement_buffers:
             self._refinement_buffers["splat_contribution"] = alloc_buffer(self.device, name="trainer.refinement.splat_contribution", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE)
+        if "gradient_stats" not in self._refinement_buffers:
+            self._refinement_buffers["gradient_stats"] = alloc_buffer(self.device, name="trainer.refinement.gradient_stats", size=self._refinement_splat_capacity * self._FLOAT4_BYTES, usage=RW_BUFFER_USAGE)
+            reset_gradient_stats = True
         if "refinement_eligible_mask" not in self._refinement_buffers:
             self._refinement_buffers["refinement_eligible_mask"] = alloc_buffer(self.device, name="trainer.refinement.eligible_mask", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE)
         if "refinement_weights" not in self._refinement_buffers:
@@ -907,6 +914,8 @@ class GaussianTrainer:
                 usage=RW_BUFFER_USAGE,
             ))
             self._refinement_camera_signature = None
+        if reset_gradient_stats:
+            self._refinement_buffers["gradient_stats"].copy_from_numpy(np.zeros((self._refinement_splat_capacity, 4), dtype=np.float32))
 
     def _alloc_refinement_adam_moments(self, splat_count: int) -> spy.Buffer:
         return alloc_buffer(
@@ -1395,6 +1404,7 @@ class GaussianTrainer:
                 param_settings_count=self.optimizer.param_settings_count,
                 step_index=int(step_index),
                 debug_element_grad_norm_buffer=self.renderer.work_buffers["debug_grad_norm"] if self.compute_debug_grad_norm else None,
+                element_grad_stats_buffer=self._refinement_buffers["gradient_stats"],
             )
             self.optimizer.dispatch_projection(
                 encoder,

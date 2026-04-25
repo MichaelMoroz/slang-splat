@@ -210,11 +210,15 @@ def test_ensure_training_runtime_resolution_rebinds_renderer_without_reset(monke
     class _MainRenderer:
         def __init__(self) -> None:
             self.bound = None
+            self.grad_stats_bound = None
             self.contribution_bound = None
             self.contribution_pixels = None
 
         def set_debug_grad_norm_buffer(self, buffer) -> None:
             self.bound = buffer
+
+        def set_debug_grad_stats_buffer(self, buffer) -> None:
+            self.grad_stats_bound = buffer
 
         def set_debug_splat_age_buffer(self, buffer) -> None:
             del buffer
@@ -228,9 +232,10 @@ def test_ensure_training_runtime_resolution_rebinds_renderer_without_reset(monke
     new_renderer = SimpleNamespace(width=32, height=32, work_buffers={"debug_grad_norm": "grad_norm"})
     trainer = SimpleNamespace(
         compute_debug_grad_norm=True,
-        refinement_buffers={"splat_contribution": "contrib"},
+        refinement_buffers={"splat_contribution": "contrib", "gradient_stats": "grad_stats"},
         observed_contribution_pixel_count=2048,
         effective_train_downscale_factor=lambda: 2,
+        max_training_resolution=lambda: (32, 32),
         training_resolution=lambda frame_index=0: (32, 32),
         rebind_renderer=lambda renderer: calls.append(("rebind", renderer)),
     )
@@ -258,6 +263,7 @@ def test_ensure_training_runtime_resolution_rebinds_renderer_without_reset(monke
 
     assert viewer.s.training_renderer is new_renderer
     assert viewer.s.renderer.bound == "grad_norm"
+    assert viewer.s.renderer.grad_stats_bound == "grad_stats"
     assert viewer.s.renderer.contribution_bound == "contrib"
     assert viewer.s.renderer.contribution_pixels == 2048
     assert calls == [

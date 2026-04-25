@@ -831,6 +831,28 @@ def test_debug_grad_norm_render_smoke(device):
     assert np.all(np.isfinite(out.image))
 
 
+def test_debug_grad_variance_render_smoke(device):
+    scene = make_scene(24, seed=44)
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    renderer = GaussianRenderer(
+        device,
+        width=64,
+        height=64,
+        radius_scale=1.6,
+        list_capacity_multiplier=32,
+        debug_mode=GaussianRenderer.DEBUG_MODE_GRAD_VARIANCE,
+    )
+    samples = np.geomspace(1e-8, 1e-2, scene.count, dtype=np.float32)
+    stats = np.zeros((scene.count, 4), dtype=np.float32)
+    stats[:, 0] = samples + samples * 3.0
+    stats[:, 1] = samples * samples + (samples * 3.0) * (samples * 3.0)
+    stats[:, 2] = 2.0
+    renderer.upload_debug_grad_stats(stats)
+    out = renderer.render(scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32))
+    assert out.image.shape == (64, 64, 4)
+    assert np.all(np.isfinite(out.image))
+
+
 def test_debug_splat_age_render_smoke(device):
     scene = make_scene(24, seed=47)
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)

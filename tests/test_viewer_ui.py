@@ -870,6 +870,8 @@ def test_debug_mode_labels_include_contribution_amount() -> None:
     assert "Adam Momentum" in ui._DEBUG_MODE_LABELS
     assert "adam_second_moment" in ui._DEBUG_MODE_VALUES
     assert "Adam Second Moment" in ui._DEBUG_MODE_LABELS
+    assert "grad_variance" in ui._DEBUG_MODE_VALUES
+    assert "Grad Variance" in ui._DEBUG_MODE_LABELS
     assert "sh_view_dependent" in ui._DEBUG_MODE_VALUES
     assert "SH View-Dependent" in ui._DEBUG_MODE_LABELS
     assert "sh_coefficient" in ui._DEBUG_MODE_VALUES
@@ -888,6 +890,7 @@ def test_contribution_amount_debug_mode_exposes_no_extra_range_controls() -> Non
     assert ui._renderer_debug_control_keys("contribution_amount") == ("debug_mode", "debug_contribution_min", "debug_contribution_max")
     assert ui._renderer_debug_control_keys("adam_momentum") == ("debug_mode", "debug_grad_norm_threshold")
     assert ui._renderer_debug_control_keys("adam_second_moment") == ("debug_mode", "debug_grad_norm_threshold")
+    assert ui._renderer_debug_control_keys("grad_variance") == ("debug_mode", "debug_grad_norm_threshold")
     assert ui._renderer_debug_control_keys("sh_coefficient") == ("debug_mode", "debug_sh_coeff_index")
     assert ui._renderer_debug_control_keys("black_negative") == ("debug_mode",)
     assert ui._renderer_debug_control_keys("processed_count") == ("debug_mode",)
@@ -924,6 +927,16 @@ def test_adam_momentum_colorbar_ticks_use_grad_norm_log_band() -> None:
 
         assert np.isclose(lo, 2e-7, rtol=0.0, atol=1e-12)
         assert np.isclose(hi, 2e-3, rtol=0.0, atol=1e-12)
+
+
+def test_grad_variance_colorbar_ticks_square_grad_norm_band() -> None:
+    viewer_ui = SimpleNamespace(_values={"debug_grad_norm_threshold": 2e-4})
+
+    lo = float(ui.ToolkitWindow._debug_colorbar_tick_label(SimpleNamespace(), "grad_variance", 0.0, viewer_ui))
+    hi = float(ui.ToolkitWindow._debug_colorbar_tick_label(SimpleNamespace(), "grad_variance", 1.0, viewer_ui))
+
+    assert np.isclose(lo, 4e-14, rtol=0.0, atol=1e-20)
+    assert np.isclose(hi, 4e-6, rtol=0.0, atol=1e-12)
 
 
 def test_histogram_range_from_histogram_keeps_central_99_percent_of_counts() -> None:
