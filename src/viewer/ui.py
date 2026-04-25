@@ -2678,7 +2678,7 @@ class ToolkitWindow:
         "refinement_use_compact_split": "Use the compact split shrink rule instead of the legacy N^(-1/3) refinement shrink",
         "refinement_solve_opacity": "Solve one shared child alpha per split family so composed center transmittance matches the parent",
         "refinement_split_beta": "Exponent used by compact split shrink: child sigma scales as N^(-beta)",
-        "refinement_momentum_weight_exponent": "Exponent applied to Adam second-moment RMS norm before prefix-sum refinement clone resampling",
+        "refinement_grad_variance_weight_exponent": "Exponent applied to per-splat raster gradient variance before prefix-sum refinement clone resampling",
         "density_regularizer": "Weight applied to the per-pixel hinge penalty max(density - max_allowed_density, 0)",
         "sorting_order_dithering": "Stage 0 sort-camera dither amount; when scheduling is disabled this value is used for the whole run",
         "sorting_order_dithering_stage1": "Sort-camera dither target reached at the end of Stage 1",

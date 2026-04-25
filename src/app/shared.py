@@ -10,7 +10,7 @@ import slangpy as spy
 from ..repo_defaults import renderer_defaults
 from ..utility import clamp_float, clamp_int
 from ..scene import GaussianInitHyperParams, GaussianScene
-from ..training.defaults import DEFAULT_REFINEMENT_CLONE_SCALE_MUL, DEFAULT_REFINEMENT_MOMENTUM_WEIGHT_EXPONENT, DEFAULT_REFINEMENT_SPLIT_BETA, TRAINING_BUILD_ARG_DEFAULTS
+from ..training.defaults import DEFAULT_REFINEMENT_CLONE_SCALE_MUL, DEFAULT_REFINEMENT_GRAD_VARIANCE_WEIGHT_EXPONENT, DEFAULT_REFINEMENT_SPLIT_BETA, TRAINING_BUILD_ARG_DEFAULTS
 from ..training import AdamHyperParams, DEFAULT_DEBUG_CONTRIBUTION_RANGE, DEFAULT_REFINEMENT_MIN_CONTRIBUTION, DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TRAIN_SUBSAMPLE_MAX_FACTOR, TrainingHyperParams, resolve_training_profile
 
 EPS = 1e-8
@@ -216,7 +216,8 @@ def build_training_params(
     refinement_use_compact_split: bool = bool(TRAINING_BUILD_ARG_DEFAULTS.get("refinement_use_compact_split", False)),
     refinement_solve_opacity: bool = bool(TRAINING_BUILD_ARG_DEFAULTS.get("refinement_solve_opacity", False)),
     refinement_split_beta: float = DEFAULT_REFINEMENT_SPLIT_BETA,
-    refinement_momentum_weight_exponent: float = DEFAULT_REFINEMENT_MOMENTUM_WEIGHT_EXPONENT,
+    refinement_grad_variance_weight_exponent: float | None = None,
+    refinement_momentum_weight_exponent: float | None = None,
     colorspace_mod_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage1"],
     colorspace_mod_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage2"],
     colorspace_mod_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage3"],
@@ -247,6 +248,11 @@ def build_training_params(
     resolved_sh_band_stage1 = clamp_int(1 if sh_band_stage1 is None and bool(use_sh_stage1) else (0 if sh_band_stage1 is None else sh_band_stage1), 0, 3)
     resolved_sh_band_stage2 = clamp_int(2 if sh_band_stage2 is None and bool(use_sh_stage2) else (0 if sh_band_stage2 is None else sh_band_stage2), 0, 3)
     resolved_sh_band_stage3 = clamp_int(3 if sh_band_stage3 is None and bool(use_sh_stage3) else (0 if sh_band_stage3 is None else sh_band_stage3), 0, 3)
+    resolved_refinement_variance_exponent = (
+        DEFAULT_REFINEMENT_GRAD_VARIANCE_WEIGHT_EXPONENT
+        if refinement_grad_variance_weight_exponent is None and refinement_momentum_weight_exponent is None
+        else (refinement_momentum_weight_exponent if refinement_grad_variance_weight_exponent is None else refinement_grad_variance_weight_exponent)
+    )
     base_lr = clamp_float(base_lr, 1e-8, 1.0)
     adam = AdamHyperParams(
         **{
@@ -337,7 +343,7 @@ def build_training_params(
         refinement_use_compact_split=bool(refinement_use_compact_split),
         refinement_solve_opacity=bool(refinement_solve_opacity),
         refinement_split_beta=clamp_float(refinement_split_beta, 0.0, 1.0),
-        refinement_momentum_weight_exponent=clamp_float(refinement_momentum_weight_exponent, 0.0, 16.0),
+        refinement_grad_variance_weight_exponent=clamp_float(resolved_refinement_variance_exponent, 0.0, 16.0),
         colorspace_mod_stage1=clamp_float(colorspace_mod_stage1, 1e-8, 8.0),
         colorspace_mod_stage2=clamp_float(colorspace_mod_stage2, 1e-8, 8.0),
         colorspace_mod_stage3=clamp_float(colorspace_mod_stage3, 1e-8, 8.0),

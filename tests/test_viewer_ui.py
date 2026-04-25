@@ -115,7 +115,7 @@ def test_build_ui_initializes_control_groups_and_internal_state() -> None:
         "refinement_use_compact_split",
         "refinement_solve_opacity",
         "refinement_split_beta",
-        "refinement_momentum_weight_exponent",
+        "refinement_grad_variance_weight_exponent",
         "colmap_init_mode",
         "colmap_depth_root",
         "colmap_fibonacci_sphere_point_count",

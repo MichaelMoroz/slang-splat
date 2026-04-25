@@ -72,7 +72,7 @@ def test_build_training_params_clamps_ranges():
         refinement_use_compact_split=2,
         refinement_solve_opacity=0,
         refinement_split_beta=-2.0,
-        refinement_momentum_weight_exponent=-2.0,
+        refinement_grad_variance_weight_exponent=-2.0,
         max_gaussians=-1,
     )
     assert params.adam.position_lr == 200.0
@@ -120,7 +120,7 @@ def test_build_training_params_clamps_ranges():
     assert params.training.refinement_use_compact_split is True
     assert params.training.refinement_solve_opacity is False
     assert params.training.refinement_split_beta == 0.0
-    assert params.training.refinement_momentum_weight_exponent == 0.0
+    assert params.training.refinement_grad_variance_weight_exponent == 0.0
     assert params.training.max_gaussians == 0
     assert params.training.train_subsample_factor == 0
 
@@ -138,7 +138,7 @@ def test_default_training_params_include_required_training_controls():
         "refinement_use_compact_split",
         "refinement_solve_opacity",
         "refinement_split_beta",
-        "refinement_momentum_weight_exponent",
+        "refinement_grad_variance_weight_exponent",
         "train_subsample_factor",
     ):
         assert hasattr(params.training, key)
@@ -187,15 +187,15 @@ def test_build_training_params_exposes_refinement_clone_scale_mul() -> None:
 
 
 def test_build_training_params_exposes_compact_refinement_controls() -> None:
-    params = build_training_params(background=(1.0, 1.0, 1.0), refinement_use_compact_split=True, refinement_solve_opacity=True, refinement_split_beta=0.31, refinement_momentum_weight_exponent=2.5)
-    clamped = build_training_params(background=(1.0, 1.0, 1.0), refinement_split_beta=5.0, refinement_momentum_weight_exponent=99.0)
+    params = build_training_params(background=(1.0, 1.0, 1.0), refinement_use_compact_split=True, refinement_solve_opacity=True, refinement_split_beta=0.31, refinement_grad_variance_weight_exponent=2.5)
+    clamped = build_training_params(background=(1.0, 1.0, 1.0), refinement_split_beta=5.0, refinement_grad_variance_weight_exponent=99.0)
 
     assert params.training.refinement_use_compact_split is True
     assert params.training.refinement_solve_opacity is True
     assert params.training.refinement_split_beta == 0.31
-    assert params.training.refinement_momentum_weight_exponent == 2.5
+    assert params.training.refinement_grad_variance_weight_exponent == 2.5
     assert clamped.training.refinement_split_beta == 1.0
-    assert clamped.training.refinement_momentum_weight_exponent == 16.0
+    assert clamped.training.refinement_grad_variance_weight_exponent == 16.0
 
 
 def test_auto_profile_resolves_to_legacy_defaults():

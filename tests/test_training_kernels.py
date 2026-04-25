@@ -1627,10 +1627,20 @@ def test_training_raster_path_preserves_clone_counts(device, tmp_path: Path) -> 
     np.testing.assert_array_equal(clone_counts, seed_counts)
 
 
-def test_refinement_sampling_prefers_higher_momentum_norm(device, tmp_path: Path) -> None:
+def _write_refinement_variance_stats(trainer: GaussianTrainer, variances: np.ndarray) -> None:
+    variances = np.ascontiguousarray(variances, dtype=np.float32).reshape(-1)
+    samples = np.sqrt(np.maximum(variances, 0.0)).astype(np.float32, copy=False)
+    stats = np.zeros((variances.shape[0], 2), dtype=np.float32)
+    stats[:, 0] = samples * 2.0
+    stats[:, 1] = samples * samples * 4.0
+    trainer._observed_contribution_pixel_count = 2
+    trainer.refinement_buffers["gradient_stats"].copy_from_numpy(stats)
+
+
+def test_refinement_sampling_prefers_higher_gradient_variance(device, tmp_path: Path) -> None:
     scene = _make_scene(count=2, seed=91)
     scene.opacities[:] = np.array([0.9, 0.9], dtype=np.float32)
-    frame = _make_frame(tmp_path, image_name="momentum_sampling_target.png", image_id=18)
+    frame = _make_frame(tmp_path, image_name="variance_sampling_target.png", image_id=18)
     renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
     trainer = GaussianTrainer(
         device=device,
@@ -1640,13 +1650,8 @@ def test_refinement_sampling_prefers_higher_momentum_norm(device, tmp_path: Path
         training_hparams=TrainingHyperParams(refinement_growth_ratio=0.5, refinement_growth_start_step=0, refinement_interval=9999, refinement_min_contribution=50),
         seed=123,
     )
-    trainer._observed_contribution_pixel_count = renderer.width * renderer.height
     trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.full((scene.count,), 500, dtype=np.uint32))
-
-    moments = np.zeros((renderer.TRAINABLE_PARAM_COUNT, scene.count, 2), dtype=np.float32)
-    moments[0, 0, 1] = 1.0
-    moments[0, 1, 1] = 0.05 * 0.05
-    trainer.adam_optimizer.buffers["adam_moments"].copy_from_numpy(moments.reshape(-1, 2))
+    _write_refinement_variance_stats(trainer, np.array([1.0, 0.05 * 0.05], dtype=np.float32))
 
     selections = np.zeros((scene.count,), dtype=np.int32)
     for seed in range(64):
@@ -1676,10 +1681,10 @@ def test_gradient_stats_accumulate_raster_contribution_squares_and_clear(device,
     assert trainer.observed_contribution_pixel_count == 0
 
 
-def test_refinement_sampling_exponent_controls_momentum_spikiness(device, tmp_path: Path) -> None:
+def test_refinement_sampling_exponent_controls_variance_spikiness(device, tmp_path: Path) -> None:
     scene = _make_scene(count=2, seed=196)
     scene.opacities[:] = np.array([0.9, 0.9], dtype=np.float32)
-    frame = _make_frame(tmp_path, image_name="momentum_exponent_target.png", image_id=196)
+    frame = _make_frame(tmp_path, image_name="variance_exponent_target.png", image_id=196)
     renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
     trainer = GaussianTrainer(
         device=device,
@@ -1690,17 +1695,13 @@ def test_refinement_sampling_exponent_controls_momentum_spikiness(device, tmp_pa
             refinement_growth_ratio=5.0,
             refinement_growth_start_step=0,
             refinement_interval=9999,
-            refinement_momentum_weight_exponent=2.0,
+            refinement_grad_variance_weight_exponent=2.0,
             refinement_min_contribution=50,
         ),
         seed=123,
     )
-    trainer._observed_contribution_pixel_count = renderer.width * renderer.height
     trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.full((scene.count,), 500, dtype=np.uint32))
-
-    moments = np.zeros((renderer.TRAINABLE_PARAM_COUNT, scene.count, 2), dtype=np.float32)
-    moments[0, :, 1] = np.array([4.0, 16.0], dtype=np.float32)
-    trainer.adam_optimizer.buffers["adam_moments"].copy_from_numpy(moments.reshape(-1, 2))
+    _write_refinement_variance_stats(trainer, np.array([1.0, 2.0], dtype=np.float32))
 
     selections = np.zeros((scene.count,), dtype=np.int32)
     for seed in range(64):
@@ -1716,7 +1717,7 @@ def test_refinement_sampling_exponent_controls_momentum_spikiness(device, tmp_pa
 def test_refinement_sampling_is_seed_reproducible(device, tmp_path: Path) -> None:
     scene = _make_scene(count=3, seed=92)
     scene.opacities[:] = np.array([0.9, 0.9, 0.9], dtype=np.float32)
-    frame = _make_frame(tmp_path, image_name="momentum_seed_target.png", image_id=19)
+    frame = _make_frame(tmp_path, image_name="variance_seed_target.png", image_id=19)
     renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
     trainer = GaussianTrainer(
         device=device,
@@ -1726,12 +1727,8 @@ def test_refinement_sampling_is_seed_reproducible(device, tmp_path: Path) -> Non
         training_hparams=TrainingHyperParams(refinement_growth_ratio=1.0, refinement_growth_start_step=0, refinement_interval=9999, refinement_min_contribution=50),
         seed=123,
     )
-    trainer._observed_contribution_pixel_count = renderer.width * renderer.height
     trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.full((scene.count,), 500, dtype=np.uint32))
-
-    moments = np.zeros((renderer.TRAINABLE_PARAM_COUNT, scene.count, 2), dtype=np.float32)
-    moments[0, :, 1] = np.array([1.0, 0.25, 0.0625], dtype=np.float32)
-    trainer.adam_optimizer.buffers["adam_moments"].copy_from_numpy(moments.reshape(-1, 2))
+    _write_refinement_variance_stats(trainer, np.array([1.0, 0.25, 0.0625], dtype=np.float32))
 
     trainer._seed = 77
     first, _ = trainer._sample_refinement_clone_counts()
@@ -1743,7 +1740,7 @@ def test_refinement_sampling_is_seed_reproducible(device, tmp_path: Path) -> Non
 def test_refinement_sampling_respects_budget_and_clone_cap(device, tmp_path: Path) -> None:
     scene = _make_scene(count=2, seed=93)
     scene.opacities[:] = np.array([0.9, 0.9], dtype=np.float32)
-    frame = _make_frame(tmp_path, image_name="momentum_cap_target.png", image_id=20)
+    frame = _make_frame(tmp_path, image_name="variance_cap_target.png", image_id=20)
     renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
     trainer = GaussianTrainer(
         device=device,
@@ -1753,12 +1750,8 @@ def test_refinement_sampling_respects_budget_and_clone_cap(device, tmp_path: Pat
         training_hparams=TrainingHyperParams(refinement_growth_ratio=5.0, refinement_growth_start_step=0, refinement_interval=9999, max_gaussians=64, refinement_min_contribution=50),
         seed=123,
     )
-    trainer._observed_contribution_pixel_count = renderer.width * renderer.height
     trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.full((scene.count,), 500, dtype=np.uint32))
-
-    moments = np.zeros((renderer.TRAINABLE_PARAM_COUNT, scene.count, 2), dtype=np.float32)
-    moments[:, :, 1] = 1.0
-    trainer.adam_optimizer.buffers["adam_moments"].copy_from_numpy(moments.reshape(-1, 2))
+    _write_refinement_variance_stats(trainer, np.ones((scene.count,), dtype=np.float32))
 
     clone_counts, survivor_mask = trainer._sample_refinement_clone_counts()
 
@@ -1767,10 +1760,10 @@ def test_refinement_sampling_respects_budget_and_clone_cap(device, tmp_path: Pat
     assert np.all(clone_counts <= 8)
 
 
-def test_refinement_sampling_zero_momentum_yields_zero_clone_counts(device, tmp_path: Path) -> None:
+def test_refinement_sampling_zero_variance_yields_zero_clone_counts(device, tmp_path: Path) -> None:
     scene = _make_scene(count=4, seed=94)
     scene.opacities[:] = np.full((scene.count,), 0.9, dtype=np.float32)
-    frame = _make_frame(tmp_path, image_name="momentum_zero_target.png", image_id=21)
+    frame = _make_frame(tmp_path, image_name="variance_zero_target.png", image_id=21)
     renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
     trainer = GaussianTrainer(
         device=device,
@@ -1780,9 +1773,8 @@ def test_refinement_sampling_zero_momentum_yields_zero_clone_counts(device, tmp_
         training_hparams=TrainingHyperParams(refinement_growth_ratio=1.0, refinement_growth_start_step=0, refinement_interval=9999, refinement_min_contribution=50),
         seed=123,
     )
-    trainer._observed_contribution_pixel_count = renderer.width * renderer.height
     trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.full((scene.count,), 500, dtype=np.uint32))
-    trainer.adam_optimizer.buffers["adam_moments"].copy_from_numpy(np.zeros((renderer.TRAINABLE_PARAM_COUNT * scene.count, 2), dtype=np.float32))
+    _write_refinement_variance_stats(trainer, np.zeros((scene.count,), dtype=np.float32))
 
     clone_counts, survivor_mask = trainer._sample_refinement_clone_counts()
 
@@ -1793,7 +1785,7 @@ def test_refinement_sampling_zero_momentum_yields_zero_clone_counts(device, tmp_
 def test_refinement_sampling_single_nonzero_weight_always_selects_that_splat(device, tmp_path: Path) -> None:
     scene = _make_scene(count=8, seed=96)
     scene.opacities[:] = np.full((scene.count,), 0.9, dtype=np.float32)
-    frame = _make_frame(tmp_path, image_name="momentum_single_nonzero_target.png", image_id=23)
+    frame = _make_frame(tmp_path, image_name="variance_single_nonzero_target.png", image_id=23)
     renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
     trainer = GaussianTrainer(
         device=device,
@@ -1803,13 +1795,12 @@ def test_refinement_sampling_single_nonzero_weight_always_selects_that_splat(dev
         training_hparams=TrainingHyperParams(refinement_growth_ratio=1.0, refinement_growth_start_step=0, refinement_interval=9999, refinement_min_contribution=50),
         seed=123,
     )
-    trainer._observed_contribution_pixel_count = renderer.width * renderer.height
     trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.full((scene.count,), 500, dtype=np.uint32))
 
     selected_splat = 5
-    moments = np.zeros((renderer.TRAINABLE_PARAM_COUNT, scene.count, 2), dtype=np.float32)
-    moments[:, selected_splat, 1] = 1.0
-    trainer.adam_optimizer.buffers["adam_moments"].copy_from_numpy(moments.reshape(-1, 2))
+    variances = np.zeros((scene.count,), dtype=np.float32)
+    variances[selected_splat] = 1.0
+    _write_refinement_variance_stats(trainer, variances)
 
     expected = np.zeros((scene.count,), dtype=np.uint32)
     expected[selected_splat] = 8
@@ -1823,7 +1814,7 @@ def test_refinement_sampling_single_nonzero_weight_always_selects_that_splat(dev
 def test_refinement_sampling_routes_all_mass_to_single_positive_weight(device, tmp_path: Path) -> None:
     scene = _make_scene(count=2, seed=95)
     scene.opacities[:] = np.array([0.9, 0.9], dtype=np.float32)
-    frame = _make_frame(tmp_path, image_name="momentum_single_mass_target.png", image_id=22)
+    frame = _make_frame(tmp_path, image_name="variance_single_mass_target.png", image_id=22)
     renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
     trainer = GaussianTrainer(
         device=device,
@@ -1833,12 +1824,8 @@ def test_refinement_sampling_routes_all_mass_to_single_positive_weight(device, t
         training_hparams=TrainingHyperParams(refinement_growth_ratio=1.5, refinement_growth_start_step=0, refinement_interval=9999, refinement_min_contribution=50),
         seed=123,
     )
-    trainer._observed_contribution_pixel_count = renderer.width * renderer.height
     trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.full((scene.count,), 500, dtype=np.uint32))
-
-    moments = np.zeros((renderer.TRAINABLE_PARAM_COUNT, scene.count, 2), dtype=np.float32)
-    moments[:, 0, 1] = 1.0
-    trainer.adam_optimizer.buffers["adam_moments"].copy_from_numpy(moments.reshape(-1, 2))
+    _write_refinement_variance_stats(trainer, np.array([1.0, 0.0], dtype=np.float32))
 
     clone_counts, survivor_mask = trainer._sample_refinement_clone_counts()
 
@@ -1864,9 +1851,9 @@ def test_refinement_growth_ratio_realizes_full_budget_when_mass_concentrates(dev
     trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.full((scene.count,), 500, dtype=np.uint32))
 
     selected_splat = 3
-    moments = np.zeros((renderer.TRAINABLE_PARAM_COUNT, scene.count, 2), dtype=np.float32)
-    moments[:, selected_splat, 1] = 1.0
-    trainer.adam_optimizer.buffers["adam_moments"].copy_from_numpy(moments.reshape(-1, 2))
+    variances = np.zeros((scene.count,), dtype=np.float32)
+    variances[selected_splat] = 1.0
+    _write_refinement_variance_stats(trainer, variances)
 
     budget = trainer.refinement_clone_budget()
     trainer._run_refinement()
