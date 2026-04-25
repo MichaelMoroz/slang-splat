@@ -156,7 +156,6 @@ class SplatViewer(spy.AppWindow):
             cached_raster_grad_atomic_mode=_CACHED_RASTER_GRAD_ATOMIC_MODE_VALUES[atomic_mode_index],
             cached_raster_grad_fixed_ro_local_range=float(self.c("cached_raster_grad_fixed_ro_local_range").value),
             cached_raster_grad_fixed_scale_range=float(self.c("cached_raster_grad_fixed_scale_range").value),
-            cached_raster_grad_fixed_quat_range=float(self.c("cached_raster_grad_fixed_quat_range").value),
             cached_raster_grad_fixed_color_range=float(self.c("cached_raster_grad_fixed_color_range").value),
             cached_raster_grad_fixed_opacity_range=float(self.c("cached_raster_grad_fixed_opacity_range").value),
             debug_mode=debug_mode,

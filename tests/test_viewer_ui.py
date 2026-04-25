@@ -18,11 +18,10 @@ def _dummy_renderer() -> SimpleNamespace:
         max_splat_steps=32768,
         transmittance_threshold=0.005,
         cached_raster_grad_atomic_mode="fixed",
-        cached_raster_grad_fixed_ro_local_range=0.01,
-        cached_raster_grad_fixed_scale_range=0.01,
-        cached_raster_grad_fixed_quat_range=0.01,
-        cached_raster_grad_fixed_color_range=0.2,
-        cached_raster_grad_fixed_opacity_range=0.2,
+        cached_raster_grad_fixed_ro_local_range=2.0,
+        cached_raster_grad_fixed_scale_range=256.0,
+        cached_raster_grad_fixed_color_range=8.0,
+        cached_raster_grad_fixed_opacity_range=8.0,
         debug_show_ellipses=False,
         debug_show_processed_count=False,
         debug_show_grad_norm=False,
@@ -807,8 +806,8 @@ def test_optimizer_regularization_tab_includes_density_controls() -> None:
     assert "density_regularizer" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "color_non_negative_reg" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "ssim_c2" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
-    assert "depth_ratio_grad_min" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
-    assert "depth_ratio_grad_max" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
+    assert "depth_ratio_grad_min" not in ui._OPTIMIZER_TAB_KEYS["Regularization"]
+    assert "depth_ratio_grad_max" not in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "max_allowed_density" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "depth_ratio_weight" not in ui._OPTIMIZER_TAB_KEYS["Schedule"]
     assert "position_random_step_noise_lr" not in ui._OPTIMIZER_TAB_KEYS["Schedule"]
@@ -828,7 +827,7 @@ def test_schedule_stage_specs_clone_same_group_shape() -> None:
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 1"]["lr"] == "lr_schedule_stage1_lr"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 1"]["lr_pos_mul"] == "lr_pos_stage1_mul"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 1"]["lr_sh_mul"] == "lr_sh_stage1_mul"
-    assert ui._SCHEDULE_STAGE_GROUPS["Stage 2"]["depth_ratio_weight"] == "depth_ratio_stage2_weight"
+    assert ui._SCHEDULE_STAGE_GROUPS["Stage 2"]["colorspace_mod"] == "colorspace_mod_stage2"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 2"]["max_visible_angle_deg"] == "max_visible_angle_deg_stage2"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 3"]["noise_lr"] == "position_random_step_noise_stage3_lr"
     assert all(ui.SCHEDULE_STAGE_SPECS[stage] for stage in ui.SCHEDULE_STAGE_SPECS)

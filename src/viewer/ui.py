@@ -505,7 +505,6 @@ def export_repo_defaults_from_ui_values(values: dict[str, object]) -> dict[str, 
                 "cached_raster_grad_atomic_mode": _CACHED_RASTER_GRAD_ATOMIC_MODE_LABELS[min(max(int(values["cached_raster_grad_atomic_mode"]), 0), len(_CACHED_RASTER_GRAD_ATOMIC_MODE_LABELS) - 1)].lower().split()[0],
                 "cached_raster_grad_fixed_ro_local_range": float(values["cached_raster_grad_fixed_ro_local_range"]),
                 "cached_raster_grad_fixed_scale_range": float(values["cached_raster_grad_fixed_scale_range"]),
-                "cached_raster_grad_fixed_quat_range": float(values["cached_raster_grad_fixed_quat_range"]),
                 "cached_raster_grad_fixed_color_range": float(values["cached_raster_grad_fixed_color_range"]),
                 "cached_raster_grad_fixed_opacity_range": float(values["cached_raster_grad_fixed_opacity_range"]),
                 "debug_mode": None if _DEBUG_MODE_VALUES[min(max(int(values["debug_mode"]), 0), len(_DEBUG_MODE_VALUES) - 1)] == "normal" else _DEBUG_MODE_VALUES[min(max(int(values["debug_mode"]), 0), len(_DEBUG_MODE_VALUES) - 1)],
@@ -591,9 +590,8 @@ RENDER_PARAM_SPECS = (
     ControlSpec("alpha_cutoff", "slider_float", "Alpha Cutoff", {"value": float(_RENDERER_DEFAULTS["alpha_cutoff"]), "min": 0.0001, "max": 0.1, "format": "%.2e"}),
     ControlSpec("trans_threshold", "slider_float", "Trans Threshold", {"value": float(_RENDERER_DEFAULTS["transmittance_threshold"]), "min": 0.001, "max": 0.2, "format": "%.2e"}),
     ControlSpec("cached_raster_grad_atomic_mode", "combo", "Cached Grad Atomics", {"value": _renderer_atomic_mode_index(_RENDERER_DEFAULTS["cached_raster_grad_atomic_mode"]), "options": _CACHED_RASTER_GRAD_ATOMIC_MODE_LABELS}),
-    ControlSpec("cached_raster_grad_fixed_ro_local_range", "slider_float", "Cached Grad Pos Range", {"value": float(_RENDERER_DEFAULTS["cached_raster_grad_fixed_ro_local_range"]), "min": 1e-4, "max": 1024.0, "format": "%.4g", "logarithmic": True}),
-    ControlSpec("cached_raster_grad_fixed_scale_range", "slider_float", "Cached Grad Scale Range", {"value": float(_RENDERER_DEFAULTS["cached_raster_grad_fixed_scale_range"]), "min": 1e-4, "max": 1024.0, "format": "%.4g", "logarithmic": True}),
-    ControlSpec("cached_raster_grad_fixed_quat_range", "slider_float", "Cached Grad Rot Range", {"value": float(_RENDERER_DEFAULTS["cached_raster_grad_fixed_quat_range"]), "min": 1e-4, "max": 1024.0, "format": "%.4g", "logarithmic": True}),
+    ControlSpec("cached_raster_grad_fixed_ro_local_range", "slider_float", "Cached Grad Dir Range", {"value": float(_RENDERER_DEFAULTS["cached_raster_grad_fixed_ro_local_range"]), "min": 1e-4, "max": 1024.0, "format": "%.4g", "logarithmic": True}),
+    ControlSpec("cached_raster_grad_fixed_scale_range", "slider_float", "Cached Grad Sigma Range", {"value": float(_RENDERER_DEFAULTS["cached_raster_grad_fixed_scale_range"]), "min": 1e-4, "max": 4096.0, "format": "%.4g", "logarithmic": True}),
     ControlSpec("cached_raster_grad_fixed_color_range", "slider_float", "Cached Grad Color Range", {"value": float(_RENDERER_DEFAULTS["cached_raster_grad_fixed_color_range"]), "min": 1e-4, "max": 2048.0, "format": "%.4g", "logarithmic": True}),
     ControlSpec("cached_raster_grad_fixed_opacity_range", "slider_float", "Cached Grad Opacity Range", {"value": float(_RENDERER_DEFAULTS["cached_raster_grad_fixed_opacity_range"]), "min": 1e-4, "max": 2048.0, "format": "%.4g", "logarithmic": True}),
 )
@@ -2497,7 +2495,7 @@ class ToolkitWindow:
             self._draw_control(ui, next(spec for spec in RENDER_PARAM_SPECS if spec.key == key))
 
         imgui.separator_text("Cached Grad Ranges")
-        for key in ("cached_raster_grad_fixed_ro_local_range", "cached_raster_grad_fixed_scale_range", "cached_raster_grad_fixed_quat_range", "cached_raster_grad_fixed_color_range", "cached_raster_grad_fixed_opacity_range"):
+        for key in ("cached_raster_grad_fixed_ro_local_range", "cached_raster_grad_fixed_scale_range", "cached_raster_grad_fixed_color_range", "cached_raster_grad_fixed_opacity_range"):
             self._draw_control(ui, next(spec for spec in RENDER_PARAM_SPECS if spec.key == key))
         self._ctx_reset("render_ctx", ui, [s.key for s in RENDER_PARAM_SPECS])
         imgui.separator()
@@ -2570,10 +2568,9 @@ class ToolkitWindow:
         "radius_scale": "Multiplier on top of true 3DGS gaussian size for rendering",
         "alpha_cutoff": "Minimum alpha threshold — splats below this are skipped",
         "trans_threshold": "Transmittance threshold for early ray termination",
-        "cached_raster_grad_atomic_mode": "Choose float atomics or fixed-point atomics for cached ellipsoid gradient accumulation during raster backward",
-        "cached_raster_grad_fixed_ro_local_range": "Symmetric [-X, X] range for avgInvScale-normalized cached position gradients",
-        "cached_raster_grad_fixed_scale_range": "Symmetric [-X, X] range for avgInvScale-normalized cached scale gradients",
-        "cached_raster_grad_fixed_quat_range": "Symmetric [-X, X] range for avgInvScale-normalized cached rotation gradients",
+        "cached_raster_grad_atomic_mode": "Choose float atomics or fixed-point atomics for cached directional gradient accumulation during raster backward",
+        "cached_raster_grad_fixed_ro_local_range": "Symmetric [-X, X] range for avgInvScale-normalized cached center-direction gradients",
+        "cached_raster_grad_fixed_scale_range": "Symmetric [-X, X] range for avgInvScale^2-normalized cached sigmaOrtho gradients",
         "cached_raster_grad_fixed_color_range": "Symmetric [-X, X] range for cached color gradients",
         "cached_raster_grad_fixed_opacity_range": "Symmetric [-X, X] range for cached opacity gradients",
         "debug_mode": "Select the renderer debug output mode",
@@ -2651,13 +2648,10 @@ class ToolkitWindow:
         "refinement_split_beta": "Exponent used by compact split shrink: child sigma scales as N^(-beta)",
         "refinement_momentum_weight_exponent": "Exponent applied to Adam second-moment RMS norm before prefix-sum refinement clone resampling",
         "density_regularizer": "Weight applied to the per-pixel hinge penalty max(density - max_allowed_density, 0)",
-        "depth_ratio_weight": "Stage 0 depth-ratio regularizer weight; when scheduling is disabled this value is used for the whole run",
         "sorting_order_dithering": "Stage 0 sort-camera dither amount; when scheduling is disabled this value is used for the whole run",
         "sorting_order_dithering_stage1": "Sort-camera dither target reached at the end of Stage 1",
         "sorting_order_dithering_stage2": "Sort-camera dither target reached at the end of Stage 2",
         "sorting_order_dithering_stage3": "Sort-camera dither target reached at the end of Stage 3",
-        "depth_ratio_grad_min": "Start of the high-gradient depth-ratio interval; gradients taper below this value",
-        "depth_ratio_grad_max": "End of the high-gradient depth-ratio interval; gradients taper above this value",
         "max_allowed_density": "End-of-training per-pixel density threshold above which the density regularizer activates; runtime ramps from 5.0 to this value over the LR schedule",
         "lr_schedule_enabled": "Enable the piecewise-linear base learning-rate schedule",
         "lr_schedule_start_lr": "Stage 0 base learning rate; when scheduling is disabled this value is used for the whole run",
@@ -2666,10 +2660,7 @@ class ToolkitWindow:
         "lr_schedule_stage1_lr": "Base learning-rate target reached at the end of Stage 1",
         "lr_schedule_stage2_lr": "Base learning-rate target reached at the end of Stage 2",
         "lr_schedule_end_lr": "Base learning-rate target reached at the end of Stage 3",
-        "lr_schedule_steps": "Stage 3 end step and total step budget shared by the LR, depth-ratio, noise, and SH schedules",
-        "depth_ratio_stage1_weight": "Depth-ratio regularizer target reached at the end of Stage 1",
-        "depth_ratio_stage2_weight": "Depth-ratio regularizer target reached at the end of Stage 2",
-        "depth_ratio_stage3_weight": "Depth-ratio regularizer target reached at the end of Stage 3",
+        "lr_schedule_steps": "Stage 3 end step and total step budget shared by the LR, colorspace, noise, and SH schedules",
         "position_random_step_noise_stage1_lr": "Position-noise LR target reached at the end of Stage 1",
         "position_random_step_noise_stage2_lr": "Position-noise LR target reached at the end of Stage 2",
         "position_random_step_noise_stage3_lr": "Position-noise LR target reached at the end of Stage 3",
@@ -2802,7 +2793,6 @@ def build_ui(renderer) -> ViewerUI:
     values["cached_raster_grad_atomic_mode"] = _renderer_atomic_mode_index(getattr(renderer, "cached_raster_grad_atomic_mode", _RENDERER_DEFAULTS["cached_raster_grad_atomic_mode"]))
     values["cached_raster_grad_fixed_ro_local_range"] = float(getattr(renderer, "cached_raster_grad_fixed_ro_local_range", _RENDERER_DEFAULTS["cached_raster_grad_fixed_ro_local_range"]))
     values["cached_raster_grad_fixed_scale_range"] = float(getattr(renderer, "cached_raster_grad_fixed_scale_range", _RENDERER_DEFAULTS["cached_raster_grad_fixed_scale_range"]))
-    values["cached_raster_grad_fixed_quat_range"] = float(getattr(renderer, "cached_raster_grad_fixed_quat_range", _RENDERER_DEFAULTS["cached_raster_grad_fixed_quat_range"]))
     values["cached_raster_grad_fixed_color_range"] = float(getattr(renderer, "cached_raster_grad_fixed_color_range", _RENDERER_DEFAULTS["cached_raster_grad_fixed_color_range"]))
     values["cached_raster_grad_fixed_opacity_range"] = float(getattr(renderer, "cached_raster_grad_fixed_opacity_range", _RENDERER_DEFAULTS["cached_raster_grad_fixed_opacity_range"]))
     values["debug_mode"] = _renderer_debug_mode_index(getattr(renderer, "debug_mode", _RENDERER_DEFAULTS["debug_mode"]))
