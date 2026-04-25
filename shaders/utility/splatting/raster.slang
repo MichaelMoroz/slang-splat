@@ -22,22 +22,6 @@ struct CachedDirectionalGaussian : IDifferentiable
 };
 
 [Differentiable]
-float3 pick_tangent_axis(float3 direction)
-{
-    return abs(direction.z) < 0.999
-        ? float3(0.0, 0.0, 1.0)
-        : float3(0.0, 1.0, 0.0);
-}
-
-[Differentiable]
-void build_direction_frame(float3 centerDir, out float3 tangentX, out float3 tangentY)
-{
-    float3 helperAxis = pick_tangent_axis(centerDir);
-    tangentX = normalize(cross(helperAxis, centerDir));
-    tangentY = cross(centerDir, tangentX);
-}
-
-[Differentiable]
 float3 world_to_local_dir(float3 dir, float3 scale, float4 rotation)
 {
     return rotate_by_quat(dir, rotation) / max(scale, float3(SMALL_VALUE));

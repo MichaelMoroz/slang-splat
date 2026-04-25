@@ -17,6 +17,63 @@ void init_fullscreen_fallback_ellipse(float2 viewport, out Ellipse ellipse)
     ellipse.bboxExtent = float2(radius, radius);
 }
 
+bool fit_projected_outline_ellipse(float2 outlinePoints[ELLIPSE_POINT_COUNT], float2 outlineMin, float2 outlineMax, bool hasScreenCenter, float2 screenCenter, float2 viewport, out Ellipse ellipse)
+{
+    ellipse.centerPx = 0.0;
+    ellipse.radiusPx = 0.0;
+    ellipse.conic = 0.0;
+    ellipse.bboxExtent = 0.0;
+
+    if (hasScreenCenter)
+    {
+        outlineMin = min(outlineMin, screenCenter);
+        outlineMax = max(outlineMax, screenCenter);
+    }
+    if (outlineMax.x < 0.0 || outlineMin.x >= viewport.x || outlineMax.y < 0.0 || outlineMin.y >= viewport.y) return false;
+
+    float2 bboxCenter = 0.5 * (outlineMin + outlineMax);
+    float2 bboxHalfExtent = max(0.5 * (outlineMax - outlineMin), float2(ELLIPSE_EPS));
+    float2 normPoints[ELLIPSE_POINT_COUNT];
+    [unroll] for (uint i = 0u; i < ELLIPSE_POINT_COUNT; i++) normPoints[i] = (outlinePoints[i] - bboxCenter) / bboxHalfExtent;
+
+    float solution[5];
+    if (!solve_conic_renorm(normPoints, ELLIPSE_EPS, solution)) return false;
+
+    float3 conicNorm = float3(solution[0], solution[1], solution[2]);
+    float2 linear = float2(solution[3], solution[4]);
+    float detA = conicNorm.x * conicNorm.z - conicNorm.y * conicNorm.y;
+    if (detA <= ELLIPSE_EPS) return false;
+
+    float2 ellipseCenter = 0.5 * float2(
+        (conicNorm.y * linear.y - conicNorm.z * linear.x) / detA,
+        (conicNorm.y * linear.x - conicNorm.x * linear.y) / detA
+    );
+    float2 centerTimesA = float2(
+        conicNorm.x * ellipseCenter.x + conicNorm.y * ellipseCenter.y,
+        conicNorm.y * ellipseCenter.x + conicNorm.z * ellipseCenter.y
+    );
+    float centerScale = 1.0 + dot(ellipseCenter, centerTimesA);
+    if (centerScale <= ELLIPSE_EPS) return false;
+    conicNorm /= centerScale;
+
+    float trace = conicNorm.x + conicNorm.z;
+    detA = conicNorm.x * conicNorm.z - conicNorm.y * conicNorm.y;
+    if (detA <= ELLIPSE_EPS || conicNorm.x <= ELLIPSE_EPS || conicNorm.z <= ELLIPSE_EPS) return false;
+    float disc = sqrt(max(0.25 * trace * trace - detA, 0.0));
+    float axis0 = rsqrt(max(0.5 * trace + disc, ELLIPSE_EPS));
+    float axis1 = rsqrt(max(0.5 * trace - disc, ELLIPSE_EPS));
+
+    ellipse.centerPx = bboxCenter + ellipseCenter * bboxHalfExtent;
+    ellipse.radiusPx = max(axis0 * bboxHalfExtent.x, axis1 * bboxHalfExtent.y);
+    ellipse.conic = float3(
+        conicNorm.x / max(bboxHalfExtent.x * bboxHalfExtent.x, ELLIPSE_EPS),
+        conicNorm.y / max(bboxHalfExtent.x * bboxHalfExtent.y, ELLIPSE_EPS),
+        conicNorm.z / max(bboxHalfExtent.y * bboxHalfExtent.y, ELLIPSE_EPS)
+    );
+    ellipse.bboxExtent = bboxHalfExtent;
+    return all(isfinite(ellipse.centerPx)) && isfinite(ellipse.radiusPx) && all(isfinite(ellipse.conic)) && ellipse.radiusPx > 0.0;
+}
+
 // 5-point conic fit via renormalization: maps two points to canonical positions,
 // reducing the 5x5 system to 3x3. Returns coefficients for Ax^2+2Bxy+Cy^2+Dx+Ey = 1.
 bool solve_conic_renorm(float2 points[ELLIPSE_POINT_COUNT], float eps, out float solution[5])
@@ -164,55 +221,64 @@ bool compute_ellipsoid_outline_ellipse(Ellipsoid ellipsoid, PinholeCamera camera
         outlineMin = min(outlineMin, screenPoint);
         outlineMax = max(outlineMax, screenPoint);
     }
-    if (hasScreenCenter)
+    return fit_projected_outline_ellipse(outlinePoints, outlineMin, outlineMax, hasScreenCenter, screenCenter, camera.params.viewport, ellipse);
+}
+
+bool compute_directional_outline_ellipse(float3 centerDir, float3 sigmaOrtho, float centerDistance, float opacity, float alphaCutoff, PinholeCamera camera, bool supportIntersectsFront, out Ellipse ellipse)
+{
+    ellipse.centerPx = 0.0;
+    ellipse.radiusPx = 0.0;
+    ellipse.conic = 0.0;
+    ellipse.bboxExtent = 0.0;
+
+    if (!all(isfinite(centerDir)) || !all(isfinite(sigmaOrtho)) || !isfinite(centerDistance) || !isfinite(opacity) || centerDistance <= SMALL_VALUE) return false;
+    if (opacity < alphaCutoff) return false;
+
+    float cutoffQuad = -2.0 * log(alphaCutoff / max(opacity, alphaCutoff));
+    if (!(cutoffQuad > ELLIPSE_EPS) || !isfinite(cutoffQuad)) return false;
+
+    float detFloor = RAY_DENOMINATOR_FLOOR * RAY_DENOMINATOR_FLOOR;
+    float det = sigmaOrtho.x * sigmaOrtho.z - sigmaOrtho.y * sigmaOrtho.y;
+    if (det <= detFloor || !isfinite(det)) return false;
+
+    float2 screenCenter = 0.0;
+    bool hasScreenCenter = camera.project_camera_to_screen(centerDir * centerDistance, screenCenter);
+    if (!hasScreenCenter && !supportIntersectsFront) return false;
+
+    float l00 = sqrt(max(sigmaOrtho.x, 0.0));
+    if (!(l00 > RAY_DENOMINATOR_FLOOR) || !isfinite(l00)) return false;
+    float l10 = sigmaOrtho.y / l00;
+    float l11Sq = sigmaOrtho.z - l10 * l10;
+    float l11 = sqrt(max(l11Sq, 0.0));
+    if (!(l11 > RAY_DENOMINATOR_FLOOR) || !isfinite(l11)) return false;
+
+    float cutoffRadius = sqrt(cutoffQuad);
+    float3 tangentX;
+    float3 tangentY;
+    build_direction_frame(centerDir, tangentX, tangentY);
+
+    float2 outlinePoints[ELLIPSE_POINT_COUNT];
+    float2 outlineMin = float2(1e30, 1e30);
+    float2 outlineMax = float2(-1e30, -1e30);
+    [unroll] for (uint i = 0u; i < ELLIPSE_POINT_COUNT; i++)
     {
-        outlineMin = min(outlineMin, screenCenter);
-        outlineMax = max(outlineMax, screenCenter);
+        float theta = TAU_RADIANS * (float(i) / float(ELLIPSE_POINT_COUNT));
+        float s, c;
+        sincos(theta, s, c);
+        float2 eta = cutoffRadius * float2(l00 * c, l10 * c + l11 * s);
+        float3 rayDirCamera = normalize(centerDir + tangentX * eta.x + tangentY * eta.y);
+        float2 screenPoint = 0.0;
+        if (!camera.project_camera_to_screen(rayDirCamera, screenPoint))
+        {
+            if (!supportIntersectsFront) return false;
+            init_fullscreen_fallback_ellipse(camera.params.viewport, ellipse);
+            return true;
+        }
+        outlinePoints[i] = screenPoint;
+        outlineMin = min(outlineMin, screenPoint);
+        outlineMax = max(outlineMax, screenPoint);
     }
-    if (outlineMax.x < 0.0 || outlineMin.x >= camera.params.viewport.x || outlineMax.y < 0.0 || outlineMin.y >= camera.params.viewport.y) return false;
-
-    // Solve for the ellipse conic coefficients in normalized space, then convert back to pixel space.
-    float2 bboxCenter = 0.5 * (outlineMin + outlineMax);
-    float2 bboxHalfExtent = max(0.5 * (outlineMax - outlineMin), float2(ELLIPSE_EPS));
-    float2 normPoints[ELLIPSE_POINT_COUNT];
-    [unroll] for (uint i = 0u; i < ELLIPSE_POINT_COUNT; i++) normPoints[i] = (outlinePoints[i] - bboxCenter) / bboxHalfExtent;
-
-    float solution[5];
-    if (!solve_conic_renorm(normPoints, ELLIPSE_EPS, solution)) return false;
-
-    float3 conicNorm = float3(solution[0], solution[1], solution[2]);
-    float2 linear = float2(solution[3], solution[4]);
-    float detA = conicNorm.x * conicNorm.z - conicNorm.y * conicNorm.y;
-    if (detA <= ELLIPSE_EPS) return false;
-
-    float2 ellipseCenter = 0.5 * float2(
-        (conicNorm.y * linear.y - conicNorm.z * linear.x) / detA,
-        (conicNorm.y * linear.x - conicNorm.x * linear.y) / detA
-    );
-    float2 centerTimesA = float2(
-        conicNorm.x * ellipseCenter.x + conicNorm.y * ellipseCenter.y,
-        conicNorm.y * ellipseCenter.x + conicNorm.z * ellipseCenter.y
-    );
-    float centerScale = 1.0 + dot(ellipseCenter, centerTimesA);
-    if (centerScale <= ELLIPSE_EPS) return false;
-    conicNorm /= centerScale;
-
-    float trace = conicNorm.x + conicNorm.z;
-    detA = conicNorm.x * conicNorm.z - conicNorm.y * conicNorm.y;
-    if (detA <= ELLIPSE_EPS || conicNorm.x <= ELLIPSE_EPS || conicNorm.z <= ELLIPSE_EPS) return false;
-    float disc = sqrt(max(0.25 * trace * trace - detA, 0.0));
-    float axis0 = rsqrt(max(0.5 * trace + disc, ELLIPSE_EPS));
-    float axis1 = rsqrt(max(0.5 * trace - disc, ELLIPSE_EPS));
-
-    ellipse.centerPx = bboxCenter + ellipseCenter * bboxHalfExtent;
-    ellipse.radiusPx = max(axis0 * bboxHalfExtent.x, axis1 * bboxHalfExtent.y);
-    ellipse.conic = float3(
-        conicNorm.x / max(bboxHalfExtent.x * bboxHalfExtent.x, ELLIPSE_EPS),
-        conicNorm.y / max(bboxHalfExtent.x * bboxHalfExtent.y, ELLIPSE_EPS),
-        conicNorm.z / max(bboxHalfExtent.y * bboxHalfExtent.y, ELLIPSE_EPS)
-    );
-    ellipse.bboxExtent = bboxHalfExtent;
-    return all(isfinite(ellipse.centerPx)) && isfinite(ellipse.radiusPx) && all(isfinite(ellipse.conic)) && ellipse.radiusPx > 0.0;
+    return fit_projected_outline_ellipse(outlinePoints, outlineMin, outlineMax, hasScreenCenter, screenCenter, camera.params.viewport, ellipse);
 }
 
 bool try_prepare_conic_for_binning(inout Ellipse ellipse, float halfTile)

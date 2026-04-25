@@ -40,23 +40,112 @@ def _outline_screen_point(center: np.ndarray, conic: np.ndarray, theta: float) -
     return np.asarray(center, dtype=np.float32) + direction / np.float32(np.sqrt(max(float(denom), 1e-12)))
 
 
-def _ray_splat_intersection_alpha(ray_origin: np.ndarray, ray_direction: np.ndarray, splat: np.ndarray, radius_scale: float, alpha_cutoff: float) -> float:
+def _pick_tangent_axis(direction: np.ndarray) -> np.ndarray:
+    direction_arr = np.asarray(direction, dtype=np.float32).reshape(3)
+    return np.array((0.0, 0.0, 1.0), dtype=np.float32) if abs(float(direction_arr[2])) < 0.999 else np.array((0.0, 1.0, 0.0), dtype=np.float32)
+
+
+def _build_direction_frame(center_dir: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    center_dir_arr = np.asarray(center_dir, dtype=np.float32).reshape(3)
+    tangent_x = np.cross(_pick_tangent_axis(center_dir_arr), center_dir_arr).astype(np.float32, copy=False)
+    tangent_x /= np.float32(max(float(np.linalg.norm(tangent_x)), 1e-12))
+    tangent_y = np.cross(center_dir_arr, tangent_x).astype(np.float32, copy=False)
+    return tangent_x, tangent_y
+
+
+def _directional_alpha(camera: Camera, ray_direction: np.ndarray, splat: np.ndarray, radius_scale: float, alpha_cutoff: float) -> float:
     opacity = float(np.clip(splat[13], 0.0, 1.0))
     if opacity < alpha_cutoff:
         return 0.0
-    support_sigma_radius = float(np.sqrt(max(-2.0 * np.log(alpha_cutoff / max(opacity, alpha_cutoff)), 0.0)))
-    scale = np.maximum(np.exp(splat[3:6]).astype(np.float32) * np.float32(radius_scale * support_sigma_radius), np.float32(1e-6))
-    ro_local = _quat_rotate(ray_origin - splat[0:3], splat[6:10]) / scale
-    ray_local = _quat_rotate(ray_direction, splat[6:10]) / scale
-    denom = float(np.dot(ray_local, ray_local))
+
+    camera_pos = camera.world_point_to_camera(splat[0:3])
+    center_distance = float(np.linalg.norm(camera_pos))
+    if center_distance <= 1e-12:
+        return 0.0
+
+    center_dir = camera_pos / np.float32(center_distance)
+    tangent_x, tangent_y = _build_direction_frame(center_dir)
+    sigma = np.exp(splat[3:6]).astype(np.float32) * np.float32(radius_scale)
+    variance = sigma * sigma
+    local_tangent_x = _quat_rotate(camera.camera_to_world(tangent_x), splat[6:10])
+    local_tangent_y = _quat_rotate(camera.camera_to_world(tangent_y), splat[6:10])
+    sigma_ortho = np.array(
+        (
+            float(np.dot(local_tangent_x * variance, local_tangent_x)),
+            float(np.dot(local_tangent_x * variance, local_tangent_y)),
+            float(np.dot(local_tangent_y * variance, local_tangent_y)),
+        ),
+        dtype=np.float32,
+    ) / np.float32(max(center_distance * center_distance, 1e-12))
+    det = float(sigma_ortho[0] * sigma_ortho[2] - sigma_ortho[1] * sigma_ortho[1])
+    if det <= 1e-12 or not np.isfinite(det):
+        return 0.0
+
+    ray_dir_camera = np.asarray(camera.world_to_camera(ray_direction), dtype=np.float32)
+    denom = float(np.dot(center_dir, ray_dir_camera))
     if denom <= 1e-10:
         return 0.0
-    t_closest = -float(np.dot(ray_local, ro_local)) / denom
-    if t_closest <= 0.0:
-        return 0.0
-    closest = ro_local + ray_local * np.float32(t_closest)
-    rho2 = max(float(np.dot(closest, closest)), 0.0)
-    return float(opacity * np.exp(-0.5 * support_sigma_radius * support_sigma_radius * rho2))
+    eta = np.array(
+        (
+            float(np.dot(tangent_x, ray_dir_camera)),
+            float(np.dot(tangent_y, ray_dir_camera)),
+        ),
+        dtype=np.float32,
+    ) / np.float32(denom)
+    quad_vec = np.array(
+        (
+            sigma_ortho[2] * eta[0] - sigma_ortho[1] * eta[1],
+            -sigma_ortho[1] * eta[0] + sigma_ortho[0] * eta[1],
+        ),
+        dtype=np.float32,
+    ) / np.float32(det)
+    return float(opacity * np.exp(-0.5 * float(np.dot(eta, quad_vec))))
+
+
+def _directional_outline_screen_point(camera: Camera, splat: np.ndarray, radius_scale: float, alpha_cutoff: float, width: int, height: int, sample_index: int, default_k1: float = 0.0, default_k2: float = 0.0) -> np.ndarray | None:
+    opacity = float(np.clip(splat[13], 0.0, 1.0))
+    if opacity < alpha_cutoff:
+        return None
+
+    camera_pos = camera.world_point_to_camera(splat[0:3])
+    center_distance = float(np.linalg.norm(camera_pos))
+    if center_distance <= 1e-12:
+        return None
+
+    center_dir = camera_pos / np.float32(center_distance)
+    tangent_x, tangent_y = _build_direction_frame(center_dir)
+    sigma = np.exp(splat[3:6]).astype(np.float32) * np.float32(radius_scale)
+    variance = sigma * sigma
+    local_tangent_x = _quat_rotate(camera.camera_to_world(tangent_x), splat[6:10])
+    local_tangent_y = _quat_rotate(camera.camera_to_world(tangent_y), splat[6:10])
+    sigma_ortho = np.array(
+        (
+            float(np.dot(local_tangent_x * variance, local_tangent_x)),
+            float(np.dot(local_tangent_x * variance, local_tangent_y)),
+            float(np.dot(local_tangent_y * variance, local_tangent_y)),
+        ),
+        dtype=np.float32,
+    ) / np.float32(max(center_distance * center_distance, 1e-12))
+    det = float(sigma_ortho[0] * sigma_ortho[2] - sigma_ortho[1] * sigma_ortho[1])
+    if det <= 1e-12 or not np.isfinite(det):
+        return None
+
+    l00 = float(np.sqrt(max(float(sigma_ortho[0]), 0.0)))
+    if l00 <= 1e-6 or not np.isfinite(l00):
+        return None
+    l10 = float(sigma_ortho[1]) / l00
+    l11_sq = float(sigma_ortho[2]) - l10 * l10
+    l11 = float(np.sqrt(max(l11_sq, 0.0)))
+    if l11 <= 1e-6 or not np.isfinite(l11):
+        return None
+
+    cutoff_radius = float(np.sqrt(max(-2.0 * np.log(alpha_cutoff / max(opacity, alpha_cutoff)), 0.0)))
+    theta = float(2.0 * np.pi * sample_index / 5.0)
+    eta = np.array((l00 * np.cos(theta), l10 * np.cos(theta) + l11 * np.sin(theta)), dtype=np.float32) * np.float32(cutoff_radius)
+    ray_dir_camera = center_dir + tangent_x * eta[0] + tangent_y * eta[1]
+    ray_dir_camera /= np.float32(max(float(np.linalg.norm(ray_dir_camera)), 1e-12))
+    screen_point, ok = camera.project_camera_to_screen(ray_dir_camera, width, height, default_k1, default_k2)
+    return screen_point if ok else None
 
 
 def make_scene(count: int, seed: int = 0) -> GaussianScene:
@@ -144,14 +233,14 @@ def test_renderer_params_default_to_fixed_cached_grad_atomics():
 
     assert params.cached_raster_grad_atomic_mode == "fixed"
     assert kwargs["cached_raster_grad_atomic_mode"] == "fixed"
-    assert params.cached_raster_grad_fixed_ro_local_range == 2.0
-    assert kwargs["cached_raster_grad_fixed_ro_local_range"] == 2.0
-    assert params.cached_raster_grad_fixed_scale_range == 256.0
-    assert kwargs["cached_raster_grad_fixed_scale_range"] == 256.0
-    assert params.cached_raster_grad_fixed_color_range == 8.0
-    assert kwargs["cached_raster_grad_fixed_color_range"] == 8.0
-    assert params.cached_raster_grad_fixed_opacity_range == 8.0
-    assert kwargs["cached_raster_grad_fixed_opacity_range"] == 8.0
+    assert params.cached_raster_grad_fixed_ro_local_range == 0.01
+    assert kwargs["cached_raster_grad_fixed_ro_local_range"] == 0.01
+    assert params.cached_raster_grad_fixed_scale_range == 0.01
+    assert kwargs["cached_raster_grad_fixed_scale_range"] == 0.01
+    assert params.cached_raster_grad_fixed_color_range == 0.2
+    assert kwargs["cached_raster_grad_fixed_color_range"] == 0.2
+    assert params.cached_raster_grad_fixed_opacity_range == 0.2
+    assert kwargs["cached_raster_grad_fixed_opacity_range"] == 0.2
     assert params.max_anisotropy == 32.0
     assert kwargs["max_anisotropy"] == 32.0
     assert params.debug_gaussian_scale_multiplier == 1.0
@@ -455,10 +544,16 @@ def test_projection_outline_hits_alpha_cutoff(device):
     for splat_index in sampled.tolist():
         center = debug["screen_center_radius_depth"][splat_index, :2]
         conic = debug["screen_ellipse_conic"][splat_index, :3]
-        outline_point = _outline_screen_point(center, conic, float(rng.uniform(0.0, 2.0 * np.pi)))
-        ray_direction = camera.screen_to_world_ray(outline_point, renderer.width, renderer.height, renderer.proj_distortion_k1, renderer.proj_distortion_k2)
-        alpha = _ray_splat_intersection_alpha(camera.position, ray_direction, np.concatenate((scene.positions[splat_index], scene.scales[splat_index], scene.rotations[splat_index], scene.colors[splat_index], scene.opacities[splat_index:splat_index + 1])), renderer.radius_scale, renderer.alpha_cutoff)
-        assert abs(alpha - renderer.alpha_cutoff) <= _PROJECTION_ALPHA_TOL
+        packed = np.concatenate((scene.positions[splat_index], scene.scales[splat_index], scene.rotations[splat_index], scene.colors[splat_index], scene.opacities[splat_index:splat_index + 1]))
+        for sample_index in range(5):
+            outline_point = _directional_outline_screen_point(camera, packed, renderer.radius_scale, renderer.alpha_cutoff, renderer.width, renderer.height, sample_index, renderer.proj_distortion_k1, renderer.proj_distortion_k2)
+            assert outline_point is not None
+            ray_direction = camera.screen_to_world_ray(outline_point, renderer.width, renderer.height, renderer.proj_distortion_k1, renderer.proj_distortion_k2)
+            alpha = _directional_alpha(camera, ray_direction, packed, renderer.radius_scale, renderer.alpha_cutoff)
+            delta = outline_point - center
+            quad = float(conic[0] * delta[0] * delta[0] + 2.0 * conic[1] * delta[0] * delta[1] + conic[2] * delta[1] * delta[1])
+            assert abs(alpha - renderer.alpha_cutoff) <= _PROJECTION_ALPHA_TOL
+            assert abs(quad - 1.0) <= 1e-3
 
 
 def test_distorted_render_matches_cpu_reference(device):

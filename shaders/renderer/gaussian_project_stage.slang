@@ -96,16 +96,18 @@ void csProjectVisibleSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
     PinholeCamera camera = PinholeCamera.from_params(g_Camera);
     float supportSigmaRadius = sqrt(max(-2.0 * log(g_Raster.alphaCutoff / fusedOpacity), 0.0));
     Ellipsoid projectionEllipsoid = build_ellipsoid_with_support(g_Camera, g_Prepass.radiusScale, supportSigmaRadius, g_MaxAnisotropy, gaussian);
+    CachedDirectionalGaussian cached = build_cached_directional_gaussian(g_Camera, g_Prepass.radiusScale, g_MaxAnisotropy, gaussian.position, gaussian.logScale, gaussian.rotation);
     float3 cameraOffset = projectionEllipsoid.centerWorld - camera.position_world();
     float3 camPos = camera.world_to_camera(cameraOffset);
     float camDistance = length(cameraOffset);
     if (camDistance < g_Camera.minCameraDistance) return;
     float depthValue = camPos.z;
     float supportRadius = max(projectionEllipsoid.projectedScale.x, max(projectionEllipsoid.projectedScale.y, projectionEllipsoid.projectedScale.z));
-    if (depthValue + supportRadius <= DEPTH_VISIBILITY_FLOOR) return;
+    bool supportIntersectsFront = depthValue + supportRadius > DEPTH_VISIBILITY_FLOOR;
+    if (!supportIntersectsFront) return;
 
     Ellipse projectedEllipse;
-    if (!compute_ellipsoid_outline_ellipse(projectionEllipsoid, camera, projectedEllipse)) return;
+    if (!compute_directional_outline_ellipse(cached.centerDir, cached.sigmaOrtho, cached.centerDistance, fusedOpacity, g_Raster.alphaCutoff, camera, supportIntersectsFront, projectedEllipse)) return;
     projectedEllipse.radiusPx = max(projectedEllipse.radiusPx * ELLIPSE_SAFETY_SCALE + ELLIPSE_RADIUS_PAD_PX, MIN_SCREEN_RADIUS_PX);
     projectedEllipse.bboxExtent = float2(projectedEllipse.radiusPx, projectedEllipse.radiusPx);
     if (!projectedEllipse.isVisible(camDistance, depthValue, camera.params.viewport, g_Camera.nearDepth, g_Camera.farDepth)) return;
@@ -135,7 +137,6 @@ void csProjectVisibleSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
     g_ScreenEllipseConic[splatId] = float4(projectedEllipse.conic, projectionEllipsoid.opacityScale);
     g_SplatVisible[splatId] = 1u;
     g_SplatVisibleAreaPx[splatId] = projectedEllipse.clippedAreaPx(camera.params.viewport);
-    CachedDirectionalGaussian cached = build_cached_directional_gaussian(g_Camera, g_Prepass.radiusScale, g_MaxAnisotropy, gaussian.position, gaussian.logScale, gaussian.rotation);
     store_raster_cache(splatId, cached, float4(evaluatedColor, fusedOpacity));
     float sortDistance = length(projectionEllipsoid.centerWorld - sort_camera_position_for_splat(splatId));
     append_visible_splat(float_to_ordered_uint(sortDistance), splatId);

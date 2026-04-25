@@ -538,6 +538,22 @@ uint quantize_depth(CameraParams cameraParams, PrepassParams prepass, float dept
     return min((uint)round(t * float(maxValue)), maxValue);
 }
 
+[Differentiable]
+float3 pick_tangent_axis(float3 direction)
+{
+    return abs(direction.z) < 0.999
+        ? float3(0.0, 0.0, 1.0)
+        : float3(0.0, 1.0, 0.0);
+}
+
+[Differentiable]
+void build_direction_frame(float3 centerDir, out float3 tangentX, out float3 tangentY)
+{
+    float3 helperAxis = pick_tangent_axis(centerDir);
+    tangentX = normalize(cross(helperAxis, centerDir));
+    tangentY = cross(centerDir, tangentX);
+}
+
 float3 local_point_to_world(float3 pLocal, float3 worldPos, float3 invScale, float4 q)
 {
     float3 invScaleSafe = max(invScale, float3(SMALL_VALUE));
