@@ -1277,43 +1277,27 @@ class ToolkitWindow:
             self._viewport_input_active = False
         imgui.end()
 
-    def _draw_viewport_view_menu(self, ui: ViewerUI, image_origin: imgui.ImVec2) -> imgui.ImVec2:
-        style = imgui.get_style()
-        scale = self._interface_scale_factor(ui)
-        label = "View Mode"
-        camera_label = "Cameras On" if bool(ui._values.get("show_camera_overlays", True)) else "Cameras Off"
-        text_label = "Labels On" if bool(ui._values.get("show_camera_labels", False)) else "Labels Off"
-        sphere_label = "Min Dist On" if bool(ui._values.get("show_camera_min_dist_spheres", True)) else "Min Dist Off"
-        training_label = "Training Cameras On" if bool(ui._values.get("show_training_cameras", False)) else "Training Cameras Off"
+    def _draw_viewport_view_toggles(self, ui: ViewerUI, scale: float) -> bool:
+        opened = _imgui_opened(imgui.small_button("View Mode"))
+        for key, enabled_label, disabled_label, default in (
+            ("show_camera_overlays", "Cameras On", "Cameras Off", True),
+            ("show_camera_labels", "Labels On", "Labels Off", False),
+            ("show_camera_min_dist_spheres", "Min Dist On", "Min Dist Off", True),
+            ("show_training_cameras", "Training Cameras On", "Training Cameras Off", False),
+        ):
+            imgui.same_line(0.0, 10.0 * scale)
+            enabled = bool(ui._values.get(key, default))
+            if _imgui_opened(imgui.small_button(enabled_label if enabled else disabled_label)):
+                ui._values[key] = not enabled
+        return opened
+
+    def _draw_viewport_sh_band_combo(self, ui: ViewerUI, scale: float) -> int:
         sh_band = min(max(int(ui._values.get("_viewport_sh_band", ui._values.get("sh_band", 0))), 0), len(_SH_BAND_LABELS) - 1)
-        sh_label = _SH_BAND_LABELS[sh_band]
-        label_size = imgui.calc_text_size(label)
-        button_pos = imgui.ImVec2(float(image_origin.x) + _VIEWPORT_OVERLAY_MARGIN * scale, float(image_origin.y) + _VIEWPORT_OVERLAY_MARGIN * scale)
-        button_height = float(label_size.y) + 2.0 * float(style.frame_padding.y)
-        current = min(max(int(ui._values.get("debug_mode", 0)), 0), len(_DEBUG_MODE_LABELS) - 1)
-        current_label = _DEBUG_MODE_LABELS[current]
-        imgui.push_id("viewport_view")
-        imgui.set_cursor_screen_pos(button_pos)
-        opened = _imgui_opened(imgui.small_button(label))
-        imgui.same_line(0.0, 10.0 * scale)
-        if _imgui_opened(imgui.small_button(camera_label)):
-            ui._values["show_camera_overlays"] = not bool(ui._values.get("show_camera_overlays", True))
-        imgui.same_line(0.0, 10.0 * scale)
-        if _imgui_opened(imgui.small_button(text_label)):
-            ui._values["show_camera_labels"] = not bool(ui._values.get("show_camera_labels", False))
-        imgui.same_line(0.0, 10.0 * scale)
-        if _imgui_opened(imgui.small_button(sphere_label)):
-            ui._values["show_camera_min_dist_spheres"] = not bool(ui._values.get("show_camera_min_dist_spheres", True))
-        imgui.same_line(0.0, 10.0 * scale)
-        if _imgui_opened(imgui.small_button(training_label)):
-            ui._values["show_training_cameras"] = not bool(ui._values.get("show_training_cameras", False))
-        imgui.same_line(0.0, 10.0 * scale)
         sh_label_width = max(float(imgui.calc_text_size(option).x) for option in _SH_BAND_LABELS)
-        sh_combo_width = sh_label_width + 28.0 * scale
-        sh_frame_padding = imgui.ImVec2(max(4.0 * scale, 1.0), max(1.0 * scale, 1.0))
-        imgui.set_next_item_width(sh_combo_width)
-        imgui.push_style_var(imgui.StyleVar_.frame_padding.value, sh_frame_padding)
-        if imgui.begin_combo("##viewport_sh_band", sh_label):
+        imgui.same_line(0.0, 10.0 * scale)
+        imgui.set_next_item_width(sh_label_width + 28.0 * scale)
+        imgui.push_style_var(imgui.StyleVar_.frame_padding.value, imgui.ImVec2(max(4.0 * scale, 1.0), max(1.0 * scale, 1.0)))
+        if imgui.begin_combo("##viewport_sh_band", _SH_BAND_LABELS[sh_band]):
             for idx, option in enumerate(_SH_BAND_LABELS):
                 selected = idx == sh_band
                 if imgui.selectable(option, selected)[0]:
@@ -1322,6 +1306,9 @@ class ToolkitWindow:
                     imgui.set_item_default_focus()
             imgui.end_combo()
         imgui.pop_style_var()
+        return min(max(int(ui._values.get("_viewport_sh_band", sh_band)), 0), len(_SH_BAND_LABELS) - 1)
+
+    def _draw_viewport_mode_badge(self, ui: ViewerUI, scale: float, current_label: str) -> None:
         imgui.same_line(0.0, 10.0 * scale)
         label_pos = imgui.get_cursor_screen_pos()
         current_label_size = imgui.calc_text_size(current_label)
@@ -1338,18 +1325,36 @@ class ToolkitWindow:
         imgui.push_style_color(imgui.Col_.text.value, imgui.ImVec4(*badge_text_color))
         imgui.text_unformatted(current_label)
         imgui.pop_style_color()
+
+    def _draw_viewport_view_popup(self, ui: ViewerUI, current: int) -> None:
+        if not _imgui_opened(imgui.begin_popup("viewport_view_popup")):
+            return
+        for idx, label in enumerate(_DEBUG_MODE_LABELS):
+            selected = idx == current
+            if _imgui_opened(imgui.selectable(label, selected)):
+                ui._values["debug_mode"] = idx
+            if selected:
+                imgui.set_item_default_focus()
+        imgui.end_popup()
+
+    def _draw_viewport_view_menu(self, ui: ViewerUI, image_origin: imgui.ImVec2) -> imgui.ImVec2:
+        style = imgui.get_style()
+        scale = self._interface_scale_factor(ui)
+        label_size = imgui.calc_text_size("View Mode")
+        button_pos = imgui.ImVec2(float(image_origin.x) + _VIEWPORT_OVERLAY_MARGIN * scale, float(image_origin.y) + _VIEWPORT_OVERLAY_MARGIN * scale)
+        button_height = float(label_size.y) + 2.0 * float(style.frame_padding.y)
+        current = min(max(int(ui._values.get("debug_mode", 0)), 0), len(_DEBUG_MODE_LABELS) - 1)
+        imgui.push_id("viewport_view")
+        imgui.set_cursor_screen_pos(button_pos)
+        opened = ToolkitWindow._draw_viewport_view_toggles(self, ui, scale)
+        current_sh_band = ToolkitWindow._draw_viewport_sh_band_combo(self, ui, scale)
+        ToolkitWindow._draw_viewport_mode_badge(self, ui, scale, _DEBUG_MODE_LABELS[current])
         if opened:
             imgui.set_next_window_pos(imgui.ImVec2(button_pos.x, button_pos.y + button_height + _VIEWPORT_OVERLAY_MARGIN * scale), imgui.Cond_.appearing.value)
             imgui.open_popup("viewport_view_popup")
-        if _imgui_opened(imgui.begin_popup("viewport_view_popup")):
-            for idx, label in enumerate(_DEBUG_MODE_LABELS):
-                selected = idx == current
-                if _imgui_opened(imgui.selectable(label, selected)):
-                    ui._values["debug_mode"] = idx
-                if selected:
-                    imgui.set_item_default_focus()
-            imgui.end_popup()
+        ToolkitWindow._draw_viewport_view_popup(self, ui, current)
         imgui.pop_id()
+        ui._values["_viewport_sh_band"] = current_sh_band
         return imgui.ImVec2(button_pos.x, button_pos.y + button_height + _VIEWPORT_OVERLAY_MARGIN * scale)
 
     def _training_camera_debug_section_height(self, ui: ViewerUI) -> float:
@@ -1585,58 +1590,69 @@ class ToolkitWindow:
             return f"{_debug_range_tick_value(t, float(ui._values.get('debug_depth_local_mismatch_min', 0.0)), float(ui._values.get('debug_depth_local_mismatch_max', 0.5))):.3g}"
         return ""
 
+    def _draw_file_menu(self, ui: ViewerUI) -> None:
+        if not imgui.begin_menu("File"):
+            return
+        if _menu_item("Load PLY..."):
+            self.callbacks.load_ply()
+        if _menu_item("Export PLY...", enabled=bool(ui._values.get("_can_export_ply", False))):
+            self.callbacks.export_ply()
+        if _menu_item("Load COLMAP..."):
+            self._show_colmap_import = True
+        if _menu_item("Reload"):
+            self.callbacks.reload()
+        imgui.separator()
+        if _menu_item("Reinitialize Gaussians"):
+            self.callbacks.reinitialize()
+        imgui.end_menu()
+
+    def _draw_view_menu(self, ui: ViewerUI) -> None:
+        if not imgui.begin_menu("View"):
+            return
+        active_idx = min(max(int(ui._values.get(_INTERFACE_SCALE_KEY, _DEFAULT_INTERFACE_SCALE_INDEX)), 0), len(_INTERFACE_SCALE_OPTIONS) - 1)
+        for idx, (label, _) in enumerate(_INTERFACE_SCALE_OPTIONS):
+            if _menu_item(label, selected=idx == active_idx):
+                ui._values[_INTERFACE_SCALE_KEY] = idx
+        imgui.separator()
+        if _menu_item("Reset Interface Scale"):
+            ui._values[_INTERFACE_SCALE_KEY] = _DEFAULT_INTERFACE_SCALE_INDEX
+        imgui.separator()
+        if imgui.begin_menu("Theme"):
+            active_theme_idx = self._theme_index(ui)
+            for idx, label in enumerate(_THEME_OPTIONS):
+                if _menu_item(label, selected=idx == active_theme_idx):
+                    ui._values[_THEME_KEY] = idx
+            imgui.separator()
+            if _menu_item("Reset Theme"):
+                ui._values[_THEME_KEY] = int(_VIEWER_CONTROL_DEFAULTS.get("theme", 0))
+            imgui.end_menu()
+        imgui.end_menu()
+
+    def _draw_debug_menu(self, ui: ViewerUI) -> None:
+        if not imgui.begin_menu("Debug"):
+            return
+        for key, label in (("show_resource_debug", "Buffers"), ("show_histograms", "Histograms"), ("show_training_views", "Training Views")):
+            selected = bool(ui._values.get(key, False))
+            if _menu_item(label, selected=selected):
+                ui._values[key] = not selected
+        imgui.end_menu()
+
+    def _draw_help_menu(self) -> None:
+        if not imgui.begin_menu("Help"):
+            return
+        if _menu_item("Documentation"):
+            self._show_docs = True
+        if _menu_item("About"):
+            self._show_about = True
+        imgui.end_menu()
+
     def _draw_main_menu_bar(self, ui: ViewerUI) -> float:
         if not imgui.begin_main_menu_bar():
             return 0.0
-        if imgui.begin_menu("File"):
-            if _menu_item("Load PLY..."):
-                self.callbacks.load_ply()
-            if _menu_item("Export PLY...", enabled=bool(ui._values.get("_can_export_ply", False))):
-                self.callbacks.export_ply()
-            if _menu_item("Load COLMAP..."):
-                self._show_colmap_import = True
-            if _menu_item("Reload"):
-                self.callbacks.reload()
-            imgui.separator()
-            if _menu_item("Reinitialize Gaussians"):
-                self.callbacks.reinitialize()
-            imgui.end_menu()
-        if imgui.begin_menu("View"):
-            active_idx = min(max(int(ui._values.get(_INTERFACE_SCALE_KEY, _DEFAULT_INTERFACE_SCALE_INDEX)), 0), len(_INTERFACE_SCALE_OPTIONS) - 1)
-            for idx, (label, _) in enumerate(_INTERFACE_SCALE_OPTIONS):
-                if _menu_item(label, selected=idx == active_idx):
-                    ui._values[_INTERFACE_SCALE_KEY] = idx
-            imgui.separator()
-            if _menu_item("Reset Interface Scale"):
-                ui._values[_INTERFACE_SCALE_KEY] = _DEFAULT_INTERFACE_SCALE_INDEX
-            imgui.separator()
-            if imgui.begin_menu("Theme"):
-                active_theme_idx = self._theme_index(ui)
-                for idx, label in enumerate(_THEME_OPTIONS):
-                    if _menu_item(label, selected=idx == active_theme_idx):
-                        ui._values[_THEME_KEY] = idx
-                imgui.separator()
-                if _menu_item("Reset Theme"):
-                    ui._values[_THEME_KEY] = int(_VIEWER_CONTROL_DEFAULTS.get("theme", 0))
-                imgui.end_menu()
-            imgui.end_menu()
-        if imgui.begin_menu("Debug"):
-            selected = bool(ui._values.get("show_resource_debug", False))
-            if _menu_item("Buffers", selected=selected):
-                ui._values["show_resource_debug"] = not selected
-            selected = bool(ui._values.get("show_histograms", False))
-            if _menu_item("Histograms", selected=selected):
-                ui._values["show_histograms"] = not selected
-            selected = bool(ui._values.get("show_training_views", False))
-            if _menu_item("Training Views", selected=selected):
-                ui._values["show_training_views"] = not selected
-            imgui.end_menu()
-        if imgui.begin_menu("Help"):
-            if _menu_item("Documentation"):
-                self._show_docs = True
-            if _menu_item("About"):
-                self._show_about = True
-            imgui.end_menu()
+        ToolkitWindow._draw_file_menu(self, ui)
+        ToolkitWindow._draw_view_menu(self, ui)
+        ToolkitWindow._draw_debug_menu(self, ui)
+        ToolkitWindow._draw_help_menu(self)
         menu_bar_height = float(imgui.get_window_height())
         imgui.end_main_menu_bar()
         return menu_bar_height
@@ -1686,6 +1702,226 @@ class ToolkitWindow:
         if imgui.button(button_label):
             callback()
 
+    def _draw_colmap_camera_selection_table(self, ui: ViewerUI, camera_rows: tuple[dict[str, object], ...]) -> None:
+        selected_camera_ids = tuple(int(camera_id) for camera_id in ui._values.get("colmap_selected_camera_ids", ()))
+        camera_ids = tuple(int(row["camera_id"]) for row in camera_rows)
+        selected = {camera_id for camera_id in selected_camera_ids if camera_id in camera_ids}
+        selected_frame_count = sum(int(row["frame_count"]) for row in camera_rows if int(row["camera_id"]) in selected)
+        total_frame_count = sum(int(row["frame_count"]) for row in camera_rows)
+        imgui.text_disabled(f"Camera Models: {len(selected)}/{len(camera_rows)} selected | Frames/Poses: {selected_frame_count}/{total_frame_count}")
+        if imgui.button("All Models"):
+            selected = set(camera_ids)
+        imgui.same_line()
+        if imgui.button("No Models"):
+            selected.clear()
+        table_height = min(max(88.0, 28.0 * float(len(camera_rows)) + 8.0), 180.0)
+        if imgui.begin_child("##colmap_cameras", imgui.ImVec2(0.0, table_height), True):
+            flags = (
+                imgui.TableFlags_.row_bg.value
+                | imgui.TableFlags_.borders.value
+                | imgui.TableFlags_.resizable.value
+                | imgui.TableFlags_.scroll_x.value
+                | imgui.TableFlags_.scroll_y.value
+            )
+            if imgui.begin_table("##colmap_camera_table", 7, flags):
+                imgui.table_setup_column("Use", imgui.TableColumnFlags_.width_fixed.value, 36.0)
+                imgui.table_setup_column("Camera Id", imgui.TableColumnFlags_.width_fixed.value, 72.0)
+                imgui.table_setup_column("Model", imgui.TableColumnFlags_.width_fixed.value, 132.0)
+                imgui.table_setup_column("Frames / Poses", imgui.TableColumnFlags_.width_fixed.value, 96.0)
+                imgui.table_setup_column("Res", imgui.TableColumnFlags_.width_fixed.value, 86.0)
+                imgui.table_setup_column("Focal", imgui.TableColumnFlags_.width_fixed.value, 120.0)
+                imgui.table_setup_column("Principal / Dist", imgui.TableColumnFlags_.width_stretch.value)
+                imgui.table_headers_row()
+                for row in camera_rows:
+                    camera_id = int(row["camera_id"])
+                    imgui.table_next_row()
+                    imgui.table_next_column()
+                    changed, value = imgui.checkbox(f"##colmap_camera_{camera_id}", camera_id in selected)
+                    if changed:
+                        if value:
+                            selected.add(camera_id)
+                        else:
+                            selected.discard(camera_id)
+                    imgui.table_next_column()
+                    imgui.text_unformatted(str(camera_id))
+                    imgui.table_next_column()
+                    imgui.text_unformatted(str(row["model_name"]))
+                    imgui.table_next_column()
+                    imgui.text_unformatted(str(row["frame_count"]))
+                    imgui.table_next_column()
+                    imgui.text_unformatted(str(row["resolution_text"]))
+                    imgui.table_next_column()
+                    imgui.text_unformatted(str(row["focal_text"]))
+                    imgui.table_next_column()
+                    imgui.text_unformatted(f"{row['principal_text']} | {row['distortion_text']}")
+                imgui.end_table()
+            imgui.end_child()
+        ui._values["colmap_selected_camera_ids"] = tuple(camera_id for camera_id in camera_ids if camera_id in selected)
+
+    def _draw_colmap_downscale_controls(self, ui: ViewerUI) -> None:
+        downscale_idx = max(0, min(int(ui._values.get("colmap_image_downscale_mode", 1)), len(_COLMAP_IMAGE_DOWNSCALE_LABELS) - 1))
+        if imgui.begin_combo("Image Downscale", _COLMAP_IMAGE_DOWNSCALE_LABELS[downscale_idx]):
+            for idx, label in enumerate(_COLMAP_IMAGE_DOWNSCALE_LABELS):
+                is_selected = idx == downscale_idx
+                if imgui.selectable(label, is_selected)[0]:
+                    ui._values["colmap_image_downscale_mode"] = idx
+                    downscale_idx = idx
+                if is_selected:
+                    imgui.set_item_default_focus()
+            imgui.end_combo()
+        if downscale_idx == 1:
+            changed, value = imgui.input_int("Max Size", int(ui._values.get("colmap_image_max_size", 2048)), 64, 256)
+            if changed:
+                ui._values["colmap_image_max_size"] = max(int(value), 1)
+            if imgui.is_item_hovered():
+                imgui.set_item_tooltip("Clamp imported training images so their longer side is at most this size while preserving aspect ratio. The importer never upscales.")
+            return
+        if downscale_idx == 2:
+            changed, value = imgui.drag_float(
+                "Scale Factor",
+                float(ui._values.get("colmap_image_scale", 1.0)),
+                0.01,
+                1e-3,
+                1.0,
+                "%.4f",
+                imgui.SliderFlags_.logarithmic.value,
+            )
+            if changed:
+                ui._values["colmap_image_scale"] = min(max(float(value), 1e-3), 1.0)
+            if imgui.is_item_hovered():
+                imgui.set_item_tooltip("Uniform scale applied to imported training images. Both axes stay proportional and the importer never upscales.")
+            return
+        imgui.text_disabled("Imported images keep their source resolution.")
+
+    def _draw_colmap_init_mode_controls(self, ui: ViewerUI) -> None:
+        init_labels = _colmap_init_mode_labels(_valid_depth_root_text(ui._values.get("colmap_depth_root", "")))
+        mode_idx = max(0, min(int(ui._values.get("colmap_init_mode", 0)), len(init_labels) - 1))
+        if int(ui._values.get("colmap_init_mode", 0)) != mode_idx:
+            ui._values["colmap_init_mode"] = mode_idx
+        if imgui.begin_combo("Initialization", init_labels[mode_idx]):
+            for idx, label in enumerate(init_labels):
+                is_selected = idx == mode_idx
+                if imgui.selectable(label, is_selected)[0]:
+                    ui._values["colmap_init_mode"] = idx
+                    mode_idx = idx
+                if is_selected:
+                    imgui.set_item_default_focus()
+            imgui.end_combo()
+        if imgui.is_item_hovered():
+            imgui.set_item_tooltip("COLMAP Pointcloud uses sparse points filtered by Min Camera Observations, Diffused Pointcloud resamples that filtered set, Custom PLY loads a chosen gaussian seed scene, and From Depth calibrates matched 16-bit PNG depth maps into a point cloud using an iteratively reweighted robust per-pose affine depth fit from all valid observed points, while rejecting projected samples that land on strong local depth-gradient spikes.")
+        if mode_idx not in (0, 1, 3):
+            imgui.spacing()
+            self._draw_import_path_selector(ui, label="Custom PLY", key="colmap_custom_ply_path", button_label="Browse PLY...", callback=self.callbacks.browse_colmap_ply)
+            return
+        if mode_idx in (0, 1):
+            changed, value = imgui.drag_int(
+                "Min Camera Observations",
+                int(ui._values.get("colmap_min_track_length", DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH)),
+                0.25,
+                0,
+                32,
+            )
+            if changed:
+                ui._values["colmap_min_track_length"] = max(int(value), 0)
+            if imgui.is_item_hovered():
+                imgui.set_item_tooltip("Ignore sparse COLMAP points whose track is shorter than this many observing cameras. Set 0 to keep all sparse points.")
+        if mode_idx == 3:
+            imgui.push_text_wrap_pos(imgui.get_cursor_pos_x() + imgui.get_content_region_avail().x)
+            imgui.text_disabled("From Depth matches RGB and depth by relative stem under Depth Folder, uses each pose's own positive COLMAP point observations, reprojects those 3D points through the frame camera model to sample depth, rejects projected samples whose local pixel-footprint gradients are a strong outlier relative to nearby gradients, then solves one iteratively reweighted robust affine map `a + b*d` per pose from the remaining observed points before sampling a dataset-wide calibrated point budget. Frames without usable depth stay in training but are skipped for depth-based initialization.")
+            imgui.pop_text_wrap_pos()
+            depth_value_mode = max(0, min(int(ui._values.get("colmap_depth_value_mode", 1)), len(_COLMAP_DEPTH_VALUE_MODE_LABELS) - 1))
+            if imgui.begin_combo("Depth Interpretation", _COLMAP_DEPTH_VALUE_MODE_LABELS[depth_value_mode]):
+                for idx, label in enumerate(_COLMAP_DEPTH_VALUE_MODE_LABELS):
+                    is_selected = idx == depth_value_mode
+                    if imgui.selectable(label, is_selected)[0]:
+                        ui._values["colmap_depth_value_mode"] = idx
+                        depth_value_mode = idx
+                    if is_selected:
+                        imgui.set_item_default_focus()
+                imgui.end_combo()
+            if imgui.is_item_hovered():
+                imgui.set_item_tooltip("Choose whether calibrated depth values represent Euclidean camera distance or camera-space z-depth before reverse projection.")
+            changed, value = imgui.drag_int(
+                "Depth Point Count",
+                int(ui._values.get("colmap_depth_point_count", 100000)),
+                1000.0,
+                1,
+                10000000,
+            )
+            if changed:
+                ui._values["colmap_depth_point_count"] = max(int(value), 1)
+            if imgui.is_item_hovered():
+                imgui.set_item_tooltip("Total calibrated points sampled across all matched RGB/depth pairs for depth-based initialization.")
+        if mode_idx == 1:
+            changed, value = imgui.drag_int(
+                "Point Count",
+                int(ui._values.get("colmap_diffused_point_count", 100000)),
+                1000.0,
+                1,
+                10000000,
+            )
+            if changed:
+                ui._values["colmap_diffused_point_count"] = max(int(value), 1)
+            if imgui.is_item_hovered():
+                imgui.set_item_tooltip("Number of gaussians synthesized by resampling COLMAP points with replacement before diffusion.")
+            changed, value = imgui.drag_float(
+                "Diffusion Radius",
+                float(ui._values.get("colmap_diffusion_radius", 1.0)),
+                0.01,
+                0.0,
+                16.0,
+                "%.4f",
+                imgui.SliderFlags_.logarithmic.value,
+            )
+            if changed:
+                ui._values["colmap_diffusion_radius"] = max(float(value), 0.0)
+            if imgui.is_item_hovered():
+                imgui.set_item_tooltip("Local diffusion multiplier applied to each sampled point's original-cloud nearest-neighbor distance.")
+        changed, value = imgui.drag_float(
+            "NN Radius Scale Coef",
+            float(ui._values.get("colmap_nn_radius_scale_coef", 0.5)),
+            0.01,
+            1e-4,
+            16.0,
+            "%.4f",
+            imgui.SliderFlags_.logarithmic.value,
+        )
+        if changed:
+            ui._values["colmap_nn_radius_scale_coef"] = max(float(value), 1e-4)
+        if imgui.is_item_hovered():
+            imgui.set_item_tooltip("Multiplier applied to the median COLMAP nearest-neighbor radius when initializing gaussian scales.")
+        changed, enabled = imgui.checkbox("Append Fibonacci Sphere", int(ui._values.get("colmap_fibonacci_sphere_point_count", 0)) > 0)
+        if changed:
+            ui._values["colmap_fibonacci_sphere_point_count"] = max(int(ui._values.get("colmap_fibonacci_sphere_point_count", 1024)), 1) if enabled else 0
+        if imgui.is_item_hovered():
+            imgui.set_item_tooltip("Append evenly distributed shell points around the mean COLMAP camera center.")
+        if int(ui._values.get("colmap_fibonacci_sphere_point_count", 0)) <= 0:
+            return
+        changed, value = imgui.drag_int(
+            "Sphere Point Count",
+            int(ui._values.get("colmap_fibonacci_sphere_point_count", 1024)),
+            100.0,
+            1,
+            10000000,
+        )
+        if changed:
+            ui._values["colmap_fibonacci_sphere_point_count"] = max(int(value), 1)
+        if imgui.is_item_hovered():
+            imgui.set_item_tooltip("Number of Fibonacci shell points appended to the initialization point cloud.")
+        changed, value = imgui.drag_float(
+            "Sphere Radius",
+            float(ui._values.get("colmap_fibonacci_sphere_radius", 20.0)),
+            0.1,
+            0.0,
+            10000.0,
+            "%.3f",
+            imgui.SliderFlags_.logarithmic.value,
+        )
+        if changed:
+            ui._values["colmap_fibonacci_sphere_radius"] = max(float(value), 0.0)
+        if imgui.is_item_hovered():
+            imgui.set_item_tooltip("World-space radius of the appended shell around the mean camera pose.")
+
     def _draw_colmap_import_window(self, ui: ViewerUI) -> None:
         if not self._show_colmap_import:
             return
@@ -1721,60 +1957,7 @@ class ToolkitWindow:
             camera_rows = tuple(ui._values.get("_colmap_camera_rows", ()))
             if len(camera_rows) > 0:
                 imgui.spacing()
-                selected_camera_ids = tuple(int(camera_id) for camera_id in ui._values.get("colmap_selected_camera_ids", ()))
-                camera_ids = tuple(int(row["camera_id"]) for row in camera_rows)
-                selected = {camera_id for camera_id in selected_camera_ids if camera_id in camera_ids}
-                selected_frame_count = sum(int(row["frame_count"]) for row in camera_rows if int(row["camera_id"]) in selected)
-                total_frame_count = sum(int(row["frame_count"]) for row in camera_rows)
-                imgui.text_disabled(f"Camera Models: {len(selected)}/{len(camera_rows)} selected | Frames/Poses: {selected_frame_count}/{total_frame_count}")
-                if imgui.button("All Models"):
-                    selected = set(camera_ids)
-                imgui.same_line()
-                if imgui.button("No Models"):
-                    selected.clear()
-                table_height = min(max(88.0, 28.0 * float(len(camera_rows)) + 8.0), 180.0)
-                if imgui.begin_child("##colmap_cameras", imgui.ImVec2(0.0, table_height), True):
-                    flags = (
-                        imgui.TableFlags_.row_bg.value
-                        | imgui.TableFlags_.borders.value
-                        | imgui.TableFlags_.resizable.value
-                        | imgui.TableFlags_.scroll_x.value
-                        | imgui.TableFlags_.scroll_y.value
-                    )
-                    if imgui.begin_table("##colmap_camera_table", 7, flags):
-                        imgui.table_setup_column("Use", imgui.TableColumnFlags_.width_fixed.value, 36.0)
-                        imgui.table_setup_column("Camera Id", imgui.TableColumnFlags_.width_fixed.value, 72.0)
-                        imgui.table_setup_column("Model", imgui.TableColumnFlags_.width_fixed.value, 132.0)
-                        imgui.table_setup_column("Frames / Poses", imgui.TableColumnFlags_.width_fixed.value, 96.0)
-                        imgui.table_setup_column("Res", imgui.TableColumnFlags_.width_fixed.value, 86.0)
-                        imgui.table_setup_column("Focal", imgui.TableColumnFlags_.width_fixed.value, 120.0)
-                        imgui.table_setup_column("Principal / Dist", imgui.TableColumnFlags_.width_stretch.value)
-                        imgui.table_headers_row()
-                        for row in camera_rows:
-                            camera_id = int(row["camera_id"])
-                            imgui.table_next_row()
-                            imgui.table_next_column()
-                            changed, value = imgui.checkbox(f"##colmap_camera_{camera_id}", camera_id in selected)
-                            if changed:
-                                if value:
-                                    selected.add(camera_id)
-                                else:
-                                    selected.discard(camera_id)
-                            imgui.table_next_column()
-                            imgui.text_unformatted(str(camera_id))
-                            imgui.table_next_column()
-                            imgui.text_unformatted(str(row["model_name"]))
-                            imgui.table_next_column()
-                            imgui.text_unformatted(str(row["frame_count"]))
-                            imgui.table_next_column()
-                            imgui.text_unformatted(str(row["resolution_text"]))
-                            imgui.table_next_column()
-                            imgui.text_unformatted(str(row["focal_text"]))
-                            imgui.table_next_column()
-                            imgui.text_unformatted(f"{row['principal_text']} | {row['distortion_text']}")
-                        imgui.end_table()
-                    imgui.end_child()
-                ui._values["colmap_selected_camera_ids"] = tuple(camera_id for camera_id in camera_ids if camera_id in selected)
+                self._draw_colmap_camera_selection_table(ui, camera_rows)
             imgui.spacing()
             changed, value = imgui.checkbox("Compress Dataset using BC7", bool(ui._values.get("compress_dataset_using_bc7", False)))
             if changed:
@@ -1782,38 +1965,7 @@ class ToolkitWindow:
             if imgui.is_item_hovered():
                 imgui.set_item_tooltip("Compress imported training images into BC7 DDS files under Image Folder/cache and reuse that cache on later loads.")
             imgui.spacing()
-            downscale_idx = max(0, min(int(ui._values.get("colmap_image_downscale_mode", 1)), len(_COLMAP_IMAGE_DOWNSCALE_LABELS) - 1))
-            if imgui.begin_combo("Image Downscale", _COLMAP_IMAGE_DOWNSCALE_LABELS[downscale_idx]):
-                for idx, label in enumerate(_COLMAP_IMAGE_DOWNSCALE_LABELS):
-                    selected = idx == downscale_idx
-                    if imgui.selectable(label, selected)[0]:
-                        ui._values["colmap_image_downscale_mode"] = idx
-                        downscale_idx = idx
-                    if selected:
-                        imgui.set_item_default_focus()
-                imgui.end_combo()
-            if downscale_idx == 1:
-                changed, value = imgui.input_int("Max Size", int(ui._values.get("colmap_image_max_size", 2048)), 64, 256)
-                if changed:
-                    ui._values["colmap_image_max_size"] = max(int(value), 1)
-                if imgui.is_item_hovered():
-                    imgui.set_item_tooltip("Clamp imported training images so their longer side is at most this size while preserving aspect ratio. The importer never upscales.")
-            elif downscale_idx == 2:
-                changed, value = imgui.drag_float(
-                    "Scale Factor",
-                    float(ui._values.get("colmap_image_scale", 1.0)),
-                    0.01,
-                    1e-3,
-                    1.0,
-                    "%.4f",
-                    imgui.SliderFlags_.logarithmic.value,
-                )
-                if changed:
-                    ui._values["colmap_image_scale"] = min(max(float(value), 1e-3), 1.0)
-                if imgui.is_item_hovered():
-                    imgui.set_item_tooltip("Uniform scale applied to imported training images. Both axes stay proportional and the importer never upscales.")
-            else:
-                imgui.text_disabled("Imported images keep their source resolution.")
+            self._draw_colmap_downscale_controls(ui)
             imgui.spacing()
             changed, value = imgui.checkbox("Use Alpha Mask", bool(ui._values.get("use_target_alpha_mask", False)))
             if changed:
@@ -1821,132 +1973,7 @@ class ToolkitWindow:
             if imgui.is_item_hovered():
                 imgui.set_item_tooltip("If imported images have alpha, transparent pixels are masked out of per-pixel training loss and gradients.")
             imgui.spacing()
-            init_labels = _colmap_init_mode_labels(_valid_depth_root_text(ui._values.get("colmap_depth_root", "")))
-            mode_idx = max(0, min(int(ui._values.get("colmap_init_mode", 0)), len(init_labels) - 1))
-            if int(ui._values.get("colmap_init_mode", 0)) != mode_idx:
-                ui._values["colmap_init_mode"] = mode_idx
-            if imgui.begin_combo("Initialization", init_labels[mode_idx]):
-                for idx, label in enumerate(init_labels):
-                    selected = idx == mode_idx
-                    if imgui.selectable(label, selected)[0]:
-                        ui._values["colmap_init_mode"] = idx
-                        mode_idx = idx
-                    if selected:
-                        imgui.set_item_default_focus()
-                imgui.end_combo()
-            if imgui.is_item_hovered():
-                imgui.set_item_tooltip("COLMAP Pointcloud uses sparse points filtered by Min Camera Observations, Diffused Pointcloud resamples that filtered set, Custom PLY loads a chosen gaussian seed scene, and From Depth calibrates matched 16-bit PNG depth maps into a point cloud using an iteratively reweighted robust per-pose affine depth fit from all valid observed points, while rejecting projected samples that land on strong local depth-gradient spikes.")
-            if mode_idx in (0, 1, 3):
-                if mode_idx in (0, 1):
-                    changed, value = imgui.drag_int(
-                        "Min Camera Observations",
-                        int(ui._values.get("colmap_min_track_length", DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH)),
-                        0.25,
-                        0,
-                        32,
-                    )
-                    if changed:
-                        ui._values["colmap_min_track_length"] = max(int(value), 0)
-                    if imgui.is_item_hovered():
-                        imgui.set_item_tooltip("Ignore sparse COLMAP points whose track is shorter than this many observing cameras. Set 0 to keep all sparse points.")
-                if mode_idx == 3:
-                    imgui.push_text_wrap_pos(imgui.get_cursor_pos_x() + imgui.get_content_region_avail().x)
-                    imgui.text_disabled("From Depth matches RGB and depth by relative stem under Depth Folder, uses each pose's own positive COLMAP point observations, reprojects those 3D points through the frame camera model to sample depth, rejects projected samples whose local pixel-footprint gradients are a strong outlier relative to nearby gradients, then solves one iteratively reweighted robust affine map `a + b*d` per pose from the remaining observed points before sampling a dataset-wide calibrated point budget. Frames without usable depth stay in training but are skipped for depth-based initialization.")
-                    imgui.pop_text_wrap_pos()
-                    depth_value_mode = max(0, min(int(ui._values.get("colmap_depth_value_mode", 1)), len(_COLMAP_DEPTH_VALUE_MODE_LABELS) - 1))
-                    if imgui.begin_combo("Depth Interpretation", _COLMAP_DEPTH_VALUE_MODE_LABELS[depth_value_mode]):
-                        for idx, label in enumerate(_COLMAP_DEPTH_VALUE_MODE_LABELS):
-                            selected = idx == depth_value_mode
-                            if imgui.selectable(label, selected)[0]:
-                                ui._values["colmap_depth_value_mode"] = idx
-                                depth_value_mode = idx
-                            if selected:
-                                imgui.set_item_default_focus()
-                        imgui.end_combo()
-                    if imgui.is_item_hovered():
-                        imgui.set_item_tooltip("Choose whether calibrated depth values represent Euclidean camera distance or camera-space z-depth before reverse projection.")
-                    changed, value = imgui.drag_int(
-                        "Depth Point Count",
-                        int(ui._values.get("colmap_depth_point_count", 100000)),
-                        1000.0,
-                        1,
-                        10000000,
-                    )
-                    if changed:
-                        ui._values["colmap_depth_point_count"] = max(int(value), 1)
-                    if imgui.is_item_hovered():
-                        imgui.set_item_tooltip("Total calibrated points sampled across all matched RGB/depth pairs for depth-based initialization.")
-                if mode_idx == 1:
-                    changed, value = imgui.drag_int(
-                        "Point Count",
-                        int(ui._values.get("colmap_diffused_point_count", 100000)),
-                        1000.0,
-                        1,
-                        10000000,
-                    )
-                    if changed:
-                        ui._values["colmap_diffused_point_count"] = max(int(value), 1)
-                    if imgui.is_item_hovered():
-                        imgui.set_item_tooltip("Number of gaussians synthesized by resampling COLMAP points with replacement before diffusion.")
-                    changed, value = imgui.drag_float(
-                        "Diffusion Radius",
-                        float(ui._values.get("colmap_diffusion_radius", 1.0)),
-                        0.01,
-                        0.0,
-                        16.0,
-                        "%.4f",
-                        imgui.SliderFlags_.logarithmic.value,
-                    )
-                    if changed:
-                        ui._values["colmap_diffusion_radius"] = max(float(value), 0.0)
-                    if imgui.is_item_hovered():
-                        imgui.set_item_tooltip("Local diffusion multiplier applied to each sampled point's original-cloud nearest-neighbor distance.")
-                changed, value = imgui.drag_float(
-                    "NN Radius Scale Coef",
-                    float(ui._values.get("colmap_nn_radius_scale_coef", 0.5)),
-                    0.01,
-                    1e-4,
-                    16.0,
-                    "%.4f",
-                    imgui.SliderFlags_.logarithmic.value,
-                )
-                if changed:
-                    ui._values["colmap_nn_radius_scale_coef"] = max(float(value), 1e-4)
-                if imgui.is_item_hovered():
-                    imgui.set_item_tooltip("Multiplier applied to the median COLMAP nearest-neighbor radius when initializing gaussian scales.")
-                changed, enabled = imgui.checkbox("Append Fibonacci Sphere", int(ui._values.get("colmap_fibonacci_sphere_point_count", 0)) > 0)
-                if changed:
-                    ui._values["colmap_fibonacci_sphere_point_count"] = max(int(ui._values.get("colmap_fibonacci_sphere_point_count", 1024)), 1) if enabled else 0
-                if imgui.is_item_hovered():
-                    imgui.set_item_tooltip("Append evenly distributed shell points around the mean COLMAP camera center.")
-                if int(ui._values.get("colmap_fibonacci_sphere_point_count", 0)) > 0:
-                    changed, value = imgui.drag_int(
-                        "Sphere Point Count",
-                        int(ui._values.get("colmap_fibonacci_sphere_point_count", 1024)),
-                        100.0,
-                        1,
-                        10000000,
-                    )
-                    if changed:
-                        ui._values["colmap_fibonacci_sphere_point_count"] = max(int(value), 1)
-                    if imgui.is_item_hovered():
-                        imgui.set_item_tooltip("Number of Fibonacci shell points appended to the initialization point cloud.")
-                    changed, value = imgui.drag_float(
-                        "Sphere Radius",
-                        float(ui._values.get("colmap_fibonacci_sphere_radius", 20.0)),
-                        0.1,
-                        0.0,
-                        10000.0,
-                        "%.3f",
-                        imgui.SliderFlags_.logarithmic.value,
-                    )
-                    if changed:
-                        ui._values["colmap_fibonacci_sphere_radius"] = max(float(value), 0.0)
-                    if imgui.is_item_hovered():
-                        imgui.set_item_tooltip("World-space radius of the appended shell around the mean camera pose.")
-            else:
-                imgui.spacing()
-                self._draw_import_path_selector(ui, label="Custom PLY", key="colmap_custom_ply_path", button_label="Browse PLY...", callback=self.callbacks.browse_colmap_ply)
+            self._draw_colmap_init_mode_controls(ui)
             imgui.spacing()
             if imgui.button("Importing..." if import_active else "Import", imgui.ImVec2(imgui.get_content_region_avail().x, 0.0)):
                 self.callbacks.import_colmap()

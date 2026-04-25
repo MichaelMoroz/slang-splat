@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import slangpy as spy
 
-from ..utility import INDIRECT_BUFFER_USAGE, ROOT, RW_BUFFER_USAGE, alloc_buffer, debug_region, dispatch_indirect, grow_capacity, load_compute_items
+from ..utility import INDIRECT_BUFFER_USAGE, ROOT, RW_BUFFER_USAGE, alloc_buffer, debug_region, dispatch_indirect, ensure_capacity_resources, load_compute_items
 
 SHADER_DIR = ROOT / "shaders" / "utility" / "prefix_sum"
 PREFIX_THREADS = 256
@@ -35,10 +35,7 @@ class GPUPrefixSum:
         ).items():
             setattr(self, name, item)
         self._scratch_capacity = 0
-        self._block_sums: spy.Buffer | None = None
-        self._block_offsets: spy.Buffer | None = None
-        self._float_block_sums: spy.Buffer | None = None
-        self._float_block_offsets: spy.Buffer | None = None
+        self._scratch_buffers: dict[str, spy.Buffer] | None = None
         self._dispatch_args: spy.Buffer | None = None
         self._prefix_args: spy.Buffer | None = None
 
@@ -65,21 +62,28 @@ class GPUPrefixSum:
 
     def _ensure_scratch_buffers(self, count: int) -> tuple[spy.Buffer, spy.Buffer]:
         required = self.prefix_scratch_elements(count)
-        if self._block_sums is not None and self._block_offsets is not None and required <= self._scratch_capacity:
-            return self._block_sums, self._block_offsets
-        capacity = grow_capacity(required, self._scratch_capacity)
-        self._block_sums = alloc_buffer(self.device, name="prefix_sum.block_sums", size=max(capacity, 1) * 4, usage=RW_BUFFER_USAGE)
-        self._block_offsets = alloc_buffer(self.device, name="prefix_sum.block_offsets", size=max(capacity, 1) * 4, usage=RW_BUFFER_USAGE)
-        self._float_block_sums = alloc_buffer(self.device, name="prefix_sum.float_block_sums", size=max(capacity, 1) * 4, usage=RW_BUFFER_USAGE)
-        self._float_block_offsets = alloc_buffer(self.device, name="prefix_sum.float_block_offsets", size=max(capacity, 1) * 4, usage=RW_BUFFER_USAGE)
-        self._scratch_capacity = capacity
-        return self._block_sums, self._block_offsets
+        self._scratch_capacity, self._scratch_buffers = ensure_capacity_resources(
+            required,
+            self._scratch_capacity,
+            self._scratch_buffers,
+            create=self._create_scratch_buffers,
+        )
+        return self._scratch_buffers["block_sums"], self._scratch_buffers["block_offsets"]
+
+    def _create_scratch_buffers(self, capacity: int) -> dict[str, spy.Buffer]:
+        size = max(int(capacity), 1) * 4
+        return {
+            "block_sums": alloc_buffer(self.device, name="prefix_sum.block_sums", size=size, usage=RW_BUFFER_USAGE),
+            "block_offsets": alloc_buffer(self.device, name="prefix_sum.block_offsets", size=size, usage=RW_BUFFER_USAGE),
+            "float_block_sums": alloc_buffer(self.device, name="prefix_sum.float_block_sums", size=size, usage=RW_BUFFER_USAGE),
+            "float_block_offsets": alloc_buffer(self.device, name="prefix_sum.float_block_offsets", size=size, usage=RW_BUFFER_USAGE),
+        }
 
     def _ensure_float_scratch_buffers(self, count: int) -> tuple[spy.Buffer, spy.Buffer]:
         self._ensure_scratch_buffers(count)
-        if self._float_block_sums is None or self._float_block_offsets is None:
+        if self._scratch_buffers is None:
             raise RuntimeError("Float prefix scratch buffers are not initialized.")
-        return self._float_block_sums, self._float_block_offsets
+        return self._scratch_buffers["float_block_sums"], self._scratch_buffers["float_block_offsets"]
 
     def _ensure_dispatch_args(self) -> spy.Buffer:
         if self._dispatch_args is None:

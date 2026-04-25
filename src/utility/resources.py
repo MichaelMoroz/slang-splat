@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 import weakref
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 import numpy as np
 import slangpy as spy
@@ -49,6 +49,7 @@ class _DeferredResourceRelease:
 
 
 _DEFERRED_RELEASES: deque[_DeferredResourceRelease] = deque()
+_TResourceSet = TypeVar("_TResourceSet")
 
 
 def _next_resource_order() -> int:
@@ -251,6 +252,23 @@ def _resource_details(resource: object, kind: str, byte_size: int) -> str:
 def grow_capacity(required: int, current: int) -> int:
     base = max(int(current), 1)
     return max(int(required), base + base // 2)
+
+
+def ensure_capacity_resources(
+    required: int,
+    current: int,
+    resources: _TResourceSet | None,
+    *,
+    create: Callable[[int], _TResourceSet],
+    release: Callable[[_TResourceSet], None] | None = None,
+) -> tuple[int, _TResourceSet]:
+    needed = int(required)
+    if resources is not None and needed <= int(current):
+        return int(current), resources
+    capacity = grow_capacity(needed, current)
+    if release is not None and resources is not None:
+        release(resources)
+    return capacity, create(capacity)
 
 
 def alloc_buffer(

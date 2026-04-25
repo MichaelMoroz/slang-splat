@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 import slangpy as spy
 
-from ..utility import INDIRECT_BUFFER_USAGE, ROOT, alloc_buffer, debug_color, debug_group, dispatch_indirect, grow_capacity, load_compute_items
+from ..utility import INDIRECT_BUFFER_USAGE, ROOT, alloc_buffer, debug_color, debug_group, dispatch_indirect, ensure_capacity_resources, load_compute_items
 
 SHADER_DIR = ROOT / "shaders" / "utility" / "radix_sort"
 PREFIX_SHADER_PATH = str(ROOT / "shaders" / "utility" / "prefix_sum" / "prefix_sum.slang")
@@ -97,24 +97,28 @@ class GPURadixSort:
         }
 
     def ensure_buffers(self, n: int) -> dict[str, object]:
-        if self._buffers is not None and n <= self._capacity_n:
-            return self._buffers
-        grow_n = grow_capacity(n, self._capacity_n)
-        layout = self._layout(grow_n)
-        self._buffers = {
+        self._capacity_n, self._buffers = ensure_capacity_resources(
+            n,
+            self._capacity_n,
+            self._buffers,
+            create=self._create_buffers,
+        )
+        return self._buffers
+
+    def _create_buffers(self, capacity_n: int) -> dict[str, object]:
+        layout = self._layout(capacity_n)
+        return {
             "keys": [
-                alloc_buffer(self.device, name="radix_sort.keys[0]", size=max(grow_n, 1) * 4, usage=self._copy_usage),
-                alloc_buffer(self.device, name="radix_sort.keys[1]", size=max(grow_n, 1) * 4, usage=self._copy_usage),
+                alloc_buffer(self.device, name="radix_sort.keys[0]", size=max(capacity_n, 1) * 4, usage=self._copy_usage),
+                alloc_buffer(self.device, name="radix_sort.keys[1]", size=max(capacity_n, 1) * 4, usage=self._copy_usage),
             ],
             "values": [
-                alloc_buffer(self.device, name="radix_sort.values[0]", size=max(grow_n, 1) * 4, usage=self._copy_usage),
-                alloc_buffer(self.device, name="radix_sort.values[1]", size=max(grow_n, 1) * 4, usage=self._copy_usage),
+                alloc_buffer(self.device, name="radix_sort.values[0]", size=max(capacity_n, 1) * 4, usage=self._copy_usage),
+                alloc_buffer(self.device, name="radix_sort.values[1]", size=max(capacity_n, 1) * 4, usage=self._copy_usage),
             ],
             "histogram": alloc_buffer(self.device, name="radix_sort.histogram", size=max(layout["packed_hist_n"], 1) * 4, usage=self._rw_usage),
             "prefix": alloc_buffer(self.device, name="radix_sort.prefix", size=max(layout["prefix_n"], 1) * 4, usage=self._rw_usage),
         }
-        self._capacity_n = grow_n
-        return self._buffers
 
     def ensure_indirect_args(self) -> spy.Buffer:
         if self.indirect_args is None:

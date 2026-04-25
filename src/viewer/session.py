@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
-import sqlite3
-import struct
 import subprocess
 import time
 import urllib.request
@@ -14,7 +12,7 @@ from PIL import Image
 import slangpy as spy
 
 from ..app.shared import apply_training_profile, estimate_point_bounds, estimate_scene_bounds, renderer_kwargs
-from ..utility import SHADER_ROOT, alloc_texture_2d, clamp_index, load_compute_kernels, register_debug_resource
+from ..utility import SHADER_ROOT, clamp_index, load_compute_kernels
 from ..metrics import ParamTensorRanges
 from ..renderer import GaussianRenderSettings, GaussianRenderer
 from ..scene import (
@@ -26,7 +24,6 @@ from ..scene import (
     resolve_colmap_init_hparams,
     sample_colmap_diffused_points,
     sample_colmap_fibonacci_sphere_points,
-    transform_colmap_reconstruction_pca,
 )
 from ..scene._internal.colmap_ops import point_nn_scales, resolve_training_frame_image_size
 from ..training import resolve_sh_band
@@ -43,40 +40,48 @@ from ..scene._internal.colmap_ops import (
 )
 from ..training import GaussianTrainer, resolve_effective_train_render_factor, resolve_training_resolution
 from ..scene._internal.colmap_types import ColmapFrame, point_tables
+from .session_colmap_utils import (
+    _COLMAP_CAMERA_MODEL_NAMES,
+    _COLMAP_DB_SAMPLE_LIMIT,
+    _COLMAP_DEPTH_VALUE_DISTANCE,
+    _COLMAP_DEPTH_VALUE_Z_DEPTH,
+    _COLMAP_IMAGE_DOWNSCALE_MAX_SIZE,
+    _COLMAP_IMAGE_DOWNSCALE_ORIGINAL,
+    _COLMAP_IMAGE_DOWNSCALE_SCALE,
+    _COLMAP_IMPORT_CUSTOM_PLY,
+    _COLMAP_IMPORT_DEPTH,
+    _COLMAP_IMPORT_DIFFUSED_POINTCLOUD,
+    _COLMAP_IMPORT_IMAGES_PER_TICK,
+    _COLMAP_IMPORT_POINTCLOUD,
+    _camera_rows as _camera_rows_impl,
+    _database_image_names,
+    _find_colmap_database,
+    _find_optional_colmap_database,
+    _has_colmap_sparse as _has_colmap_sparse_impl,
+    _load_aligned_colmap_reconstruction as _load_aligned_colmap_reconstruction_impl,
+    _normalized_selected_camera_ids as _normalized_selected_camera_ids_impl,
+    _resolve_colmap_root_from_selection as _resolve_colmap_root_from_selection_impl,
+    _set_colmap_camera_preview as _set_colmap_camera_preview_impl,
+    _set_ui_path as _set_ui_path_impl,
+    _suggest_images_root_from_dataset_root,
+    _update_import_settings as _update_import_settings_impl,
+)
+from .session_dataset_utils import (
+    _CompressedDatasetTexture,
+    _bc_payload_byte_count,
+    _create_native_dataset_texture_from_bc_payload,
+    _create_native_dataset_texture_from_rgba8,
+    _dataset_bc7_cache_dir,
+    _dataset_bc7_cache_path,
+    _parse_compressed_dataset_texture,
+)
 from .state import ColmapImportProgress, ColmapImportSettings, SceneCountProxy
 
-_COLMAP_IMPORT_POINTCLOUD = "pointcloud"
-_COLMAP_IMPORT_DIFFUSED_POINTCLOUD = "diffused_pointcloud"
-_COLMAP_IMPORT_CUSTOM_PLY = "custom_ply"
-_COLMAP_IMPORT_DEPTH = "depth"
-_COLMAP_DEPTH_VALUE_DISTANCE = DEPTH_INIT_VALUE_DISTANCE
-_COLMAP_DEPTH_VALUE_Z_DEPTH = DEPTH_INIT_VALUE_Z_DEPTH
-_COLMAP_IMAGE_DOWNSCALE_ORIGINAL = "original"
-_COLMAP_IMAGE_DOWNSCALE_MAX_SIZE = "max_size"
-_COLMAP_IMAGE_DOWNSCALE_SCALE = "scale"
-_COLMAP_CAMERA_MODEL_NAMES = {
-    0: "SIMPLE_PINHOLE",
-    1: "PINHOLE",
-    2: "SIMPLE_RADIAL",
-    3: "RADIAL",
-}
-_COLMAP_DB_SAMPLE_LIMIT = 64
-_COLMAP_DB_SEARCH_PATTERNS = ("database.db", "*.db", "*.sqlite", "*.sqlite3")
-_COLMAP_IMPORT_IMAGES_PER_TICK = 1
 _FIBONACCI_SPHERE_EQUAL_AREA_RADIUS_FACTOR = 2.0
 _FIBONACCI_SPHERE_SCALE_MIN = 1e-4
 _FIBONACCI_SPHERE_SCALE_MAX = 1e4
 _DATASET_BC7_TEXCONV_URL = "https://github.com/microsoft/DirectXTex/releases/download/oct2024/texconv.exe"
 _DATASET_BC7_TEXCONV_PATH = Path(__file__).resolve().parents[2] / "temp" / "bc_texture_tools" / "texconv.exe"
-_DDS_MAGIC = 0x20534444
-_DDS_HEADER_SIZE = 124
-_DDS_FOURCC_FLAG = 0x4
-_DDS_FOURCC_DXT1 = 0x31545844
-_DDS_FOURCC_DX10 = 0x30315844
-_DXGI_BC1_UNORM = 71
-_DXGI_BC1_UNORM_SRGB = 72
-_DXGI_BC7_UNORM = 98
-_DXGI_BC7_UNORM_SRGB = 99
 _TRAINING_RUNTIME_PARAM_NAMES = (
     "train_downscale_mode",
     "train_auto_start_downscale",
@@ -88,25 +93,39 @@ _TRAINING_RUNTIME_PARAM_NAMES = (
 )
 
 
-@dataclass(frozen=True, slots=True)
-class _CompressedDatasetTexture:
-    width: int
-    height: int
-    format: spy.Format
-    payload: np.ndarray
+_has_colmap_sparse = _has_colmap_sparse_impl
+_resolve_colmap_root_from_selection = _resolve_colmap_root_from_selection_impl
+_load_aligned_colmap_reconstruction = _load_aligned_colmap_reconstruction_impl
+_set_ui_path = _set_ui_path_impl
 
 
-def _dataset_cache_root(images_root: Path) -> Path:
-    return Path(images_root).resolve() / "cache"
+def _camera_rows(recon: object) -> tuple[dict[str, object], ...]:
+    unsupported_model_ids = sorted(
+        {
+            int(getattr(camera, "model_id", -1))
+            for camera in getattr(recon, "cameras", {}).values()
+            if int(getattr(camera, "model_id", -1)) not in _COLMAP_CAMERA_MODEL_NAMES
+        }
+    )
+    if unsupported_model_ids:
+        raise ValueError(f"Unsupported COLMAP camera model id {unsupported_model_ids[0]}")
+    return _camera_rows_impl(recon)
 
 
-def _dataset_bc7_cache_dir(images_root: Path, width: int, height: int) -> Path:
-    return _dataset_cache_root(images_root) / "bc7" / f"{max(int(width), 1)}x{max(int(height), 1)}"
+_normalized_selected_camera_ids = _normalized_selected_camera_ids_impl
 
 
-def _dataset_bc7_cache_path(images_root: Path, frame: ColmapFrame) -> Path:
-    relative = Path(frame.image_path).resolve().relative_to(Path(images_root).resolve())
-    return (_dataset_bc7_cache_dir(images_root, frame.width, frame.height) / relative).with_suffix(".dds")
+def _set_colmap_camera_preview(
+    viewer: object, recon: object, selected_camera_ids: tuple[int, ...] | None = None
+) -> tuple[int, ...]:
+    rows = _camera_rows(recon)
+    selected_ids = _normalized_selected_camera_ids(rows, selected_camera_ids)
+    viewer.ui._values["_colmap_camera_rows"] = rows
+    viewer.ui._values["colmap_selected_camera_ids"] = selected_ids
+    return selected_ids
+
+
+_update_import_settings = _update_import_settings_impl
 
 
 def _ensure_dataset_bc7_texconv() -> Path:
@@ -168,53 +187,6 @@ def _compress_dataset_frame_to_bc7_cache(frame: ColmapFrame, images_root: Path) 
     return cache_path
 
 
-def _bc_payload_byte_count(width: int, height: int, format: spy.Format) -> int:
-    block_bytes = 8 if format in (spy.Format.bc1_unorm, spy.Format.bc1_unorm_srgb) else 16 if format in (spy.Format.bc7_unorm, spy.Format.bc7_unorm_srgb) else 0
-    if block_bytes <= 0:
-        raise ValueError(f"Unsupported BC format: {format}")
-    blocks_x = (max(int(width), 1) + 3) // 4
-    blocks_y = (max(int(height), 1) + 3) // 4
-    return int(blocks_x * blocks_y * block_bytes)
-
-
-def _parse_compressed_dataset_texture(dds_path: Path) -> _CompressedDatasetTexture:
-    blob = dds_path.read_bytes()
-    if len(blob) < 128:
-        raise RuntimeError(f"DDS file is too small: {dds_path}")
-    magic, header_size = struct.unpack_from("<II", blob, 0)
-    if magic != _DDS_MAGIC or header_size != _DDS_HEADER_SIZE:
-        raise RuntimeError(f"Invalid DDS header in {dds_path}")
-    height, width = struct.unpack_from("<II", blob, 12)
-    pf_flags, fourcc = struct.unpack_from("<II", blob, 80)
-    if (pf_flags & _DDS_FOURCC_FLAG) == 0:
-        raise RuntimeError(f"DDS cache is not block-compressed: {dds_path}")
-    payload_offset = 128
-    if fourcc == _DDS_FOURCC_DXT1:
-        texture_format = spy.Format.bc1_unorm
-    elif fourcc == _DDS_FOURCC_DX10:
-        if len(blob) < 148:
-            raise RuntimeError(f"DDS DX10 header is truncated: {dds_path}")
-        dxgi_format = struct.unpack_from("<I", blob, 128)[0]
-        payload_offset = 148
-        if dxgi_format == _DXGI_BC1_UNORM:
-            texture_format = spy.Format.bc1_unorm
-        elif dxgi_format == _DXGI_BC1_UNORM_SRGB:
-            texture_format = spy.Format.bc1_unorm_srgb
-        elif dxgi_format == _DXGI_BC7_UNORM:
-            texture_format = spy.Format.bc7_unorm
-        elif dxgi_format == _DXGI_BC7_UNORM_SRGB:
-            texture_format = spy.Format.bc7_unorm_srgb
-        else:
-            raise RuntimeError(f"Unsupported DDS DXGI format {dxgi_format} in {dds_path}")
-    else:
-        raise RuntimeError(f"Unsupported DDS FOURCC 0x{fourcc:08x} in {dds_path}")
-    payload = np.frombuffer(blob[payload_offset:], dtype=np.uint8).copy()
-    expected_bytes = _bc_payload_byte_count(int(width), int(height), texture_format)
-    if int(payload.size) != expected_bytes:
-        raise RuntimeError(f"DDS payload size mismatch in {dds_path}: expected {expected_bytes} bytes, got {int(payload.size)}")
-    return _CompressedDatasetTexture(width=int(width), height=int(height), format=texture_format, payload=payload)
-
-
 def _load_or_create_bc7_dataset_texture(frame: ColmapFrame, images_root: Path) -> _CompressedDatasetTexture:
     cache_path = _dataset_bc7_cache_path(images_root, frame)
     if not cache_path.exists():
@@ -232,30 +204,6 @@ def _load_or_create_bc7_dataset_texture(frame: ColmapFrame, images_root: Path) -
             f"got {int(payload.width)}x{int(payload.height)}"
         )
     return payload
-
-
-def _create_native_dataset_texture_from_bc_payload(viewer: object, payload: _CompressedDatasetTexture) -> spy.Texture:
-    texture = viewer.device.create_texture(
-        format=payload.format,
-        width=int(payload.width),
-        height=int(payload.height),
-        usage=spy.TextureUsage.shader_resource | spy.TextureUsage.copy_destination,
-        label="viewer.dataset_texture_bc7",
-    )
-    texture.copy_from_numpy(np.ascontiguousarray(payload.payload, dtype=np.uint8))
-    return register_debug_resource(
-        texture,
-        kind="Texture",
-        name="viewer.dataset_texture_bc7",
-        byte_size=_bc_payload_byte_count(payload.width, payload.height, payload.format),
-        usage=spy.TextureUsage.shader_resource | spy.TextureUsage.copy_destination,
-    )
-
-
-def _load_aligned_colmap_reconstruction(colmap_root: Path):
-    recon = load_colmap_reconstruction(Path(colmap_root).resolve())
-    aligned_recon, _ = transform_colmap_reconstruction_pca(recon)
-    return aligned_recon
 
 
 def _clear(viewer: object, *attrs: str) -> None:
@@ -287,10 +235,6 @@ def _point_tables(recon: object, min_track_length: int = DEFAULT_COLMAP_IMPORT_M
 
 def _ui_path_string(viewer: object, key: str) -> str:
     return str(viewer.ui._values.get(key, "")).strip()
-
-
-def _set_ui_path(viewer: object, key: str, path: Path | None) -> None:
-    viewer.ui._values[key] = "" if path is None else str(Path(path).resolve())
 
 
 def _ui_import_mode(viewer: object) -> str:
@@ -325,206 +269,6 @@ def _profile_images_subdir(viewer: object) -> str | None:
         return str(images_path.relative_to(root)).replace("\\", "/")
     except ValueError:
         return images_path.name
-
-
-def _unique_paths(paths: list[Path]) -> list[Path]:
-    unique: list[Path] = []
-    for path in paths:
-        resolved = Path(path).resolve()
-        if resolved in unique:
-            continue
-        unique.append(resolved)
-    return unique
-
-
-def _has_colmap_sparse(root: Path) -> bool:
-    sparse_dir = Path(root).resolve() / "sparse" / "0"
-    return all((sparse_dir / name).exists() for name in ("cameras.bin", "images.bin", "points3D.bin")) or all(
-        (sparse_dir / name).exists() for name in ("cameras.txt", "images.txt", "points3D.txt")
-    )
-
-
-def _looks_like_colmap_database(database_path: Path) -> bool:
-    db_path = Path(database_path).resolve()
-    if not db_path.exists() or not db_path.is_file():
-        return False
-    try:
-        with sqlite3.connect(str(db_path)) as conn:
-            table_names = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    except sqlite3.Error:
-        return False
-    return "images" in table_names
-
-
-def _find_colmap_database(dataset_root: Path) -> Path:
-    root = Path(dataset_root).resolve()
-    for pattern in _COLMAP_DB_SEARCH_PATTERNS:
-        for candidate in sorted(root.rglob(pattern)):
-            if _looks_like_colmap_database(candidate):
-                return candidate.resolve()
-    raise FileNotFoundError(f"Could not find a COLMAP database under {root}")
-
-
-def _find_optional_colmap_database(dataset_root: Path) -> Path | None:
-    try:
-        return _find_colmap_database(dataset_root)
-    except FileNotFoundError:
-        return None
-
-
-def _resolve_colmap_root_from_selection(dataset_root: Path) -> Path:
-    root = Path(dataset_root).resolve()
-    candidates = [root]
-    candidates.extend(path.resolve() for path in sorted(root.rglob("*")) if path.is_dir())
-    for candidate in candidates:
-        if _has_colmap_sparse(candidate):
-            return candidate
-    raise FileNotFoundError(f"Could not find COLMAP sparse reconstruction under {root}")
-
-
-def _database_image_names(database_path: Path, limit: int = _COLMAP_DB_SAMPLE_LIMIT) -> list[str]:
-    db_path = Path(database_path).resolve()
-    with sqlite3.connect(str(db_path)) as conn:
-        table = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='images'").fetchone()
-        if table is None:
-            raise RuntimeError(f"COLMAP database has no images table: {db_path}")
-        rows = conn.execute("SELECT name FROM images ORDER BY image_id LIMIT ?", (int(max(limit, 1)),)).fetchall()
-    names = [str(row[0]).strip() for row in rows if row and str(row[0]).strip()]
-    if not names:
-        raise RuntimeError(f"COLMAP database has no image names: {db_path}")
-    return names
-
-
-def _dataset_directories(dataset_root: Path) -> list[Path]:
-    root = Path(dataset_root).resolve()
-    candidates = [root]
-    candidates.extend(path.resolve() for path in sorted(root.rglob("*")) if path.is_dir())
-    return _unique_paths(candidates)
-
-
-def _looks_like_depth_directory(path: Path) -> bool:
-    value = str(Path(path).resolve()).lower()
-    return "depth" in value or "depth" in Path(path).name.lower()
-
-
-def _suggest_images_root_from_dataset_root(dataset_root: Path, image_names: list[str]) -> Path:
-    root = Path(dataset_root).resolve()
-    sample_names = image_names[: min(len(image_names), _COLMAP_DB_SAMPLE_LIMIT)]
-    for candidate in _dataset_directories(root):
-        if _looks_like_depth_directory(candidate):
-            continue
-        if any((candidate / image_name).exists() for image_name in sample_names):
-            return candidate
-    raise FileNotFoundError(f"Could not find an image folder under {root} for COLMAP images: {sample_names[:4]}")
-
-
-def _camera_rows(recon: object) -> tuple[dict[str, object], ...]:
-    frame_counts: dict[int, int] = {}
-    for image in getattr(recon, "images", {}).values():
-        camera_id = int(getattr(image, "camera_id", -1))
-        frame_counts[camera_id] = frame_counts.get(camera_id, 0) + 1
-    rows: list[dict[str, object]] = []
-    for camera_id, camera in sorted(getattr(recon, "cameras", {}).items()):
-        rows.append(
-            {
-                "camera_id": int(camera_id),
-                "model_name": _COLMAP_CAMERA_MODEL_NAMES.get(int(getattr(camera, "model_id", -1)), f"MODEL_{int(getattr(camera, 'model_id', -1))}"),
-                "frame_count": int(frame_counts.get(int(camera_id), 0)),
-                "resolution_text": f"{int(camera.width)}x{int(camera.height)}",
-                "focal_text": f"{float(camera.fx):.2f}, {float(camera.fy):.2f}",
-                "principal_text": f"{float(camera.cx):.2f}, {float(camera.cy):.2f}",
-                "distortion_text": f"{float(getattr(camera, 'k1', 0.0)):.4g}, {float(getattr(camera, 'k2', 0.0)):.4g}",
-            }
-        )
-    return tuple(rows)
-
-
-def _normalized_selected_camera_ids(camera_rows: tuple[dict[str, object], ...], selected_camera_ids: tuple[int, ...] | None = None) -> tuple[int, ...]:
-    camera_ids = tuple(int(row["camera_id"]) for row in camera_rows)
-    if selected_camera_ids is None:
-        return camera_ids
-    selected = {int(camera_id) for camera_id in selected_camera_ids}
-    return tuple(camera_id for camera_id in camera_ids if camera_id in selected)
-
-
-def _set_colmap_camera_preview(viewer: object, recon: object, selected_camera_ids: tuple[int, ...] | None = None) -> tuple[int, ...]:
-    rows = _camera_rows(recon)
-    selected_ids = _normalized_selected_camera_ids(rows, selected_camera_ids)
-    viewer.ui._values["_colmap_camera_rows"] = rows
-    viewer.ui._values["colmap_selected_camera_ids"] = selected_ids
-    return selected_ids
-
-
-def _update_import_settings(
-    viewer: object,
-    *,
-    dataset_root: Path,
-    database_path: Path | None,
-    images_root: Path,
-    depth_root: Path | None,
-    selected_camera_ids: tuple[int, ...],
-    depth_value_mode: str,
-    init_mode: str,
-    compress_dataset_using_bc7: bool,
-    custom_ply_path: Path | None,
-    image_downscale_mode: str,
-    image_downscale_max_size: int,
-    image_downscale_scale: float,
-    nn_radius_scale_coef: float,
-    min_track_length: int,
-    depth_point_count: int,
-    diffused_point_count: int,
-    diffusion_radius: float,
-    fibonacci_sphere_point_count: int,
-    fibonacci_sphere_radius: float,
-    use_target_alpha_mask: bool,
-) -> None:
-    viewer.s.colmap_import = ColmapImportSettings(
-        database_path=None if database_path is None else Path(database_path).resolve(),
-        images_root=Path(images_root).resolve(),
-        depth_root=None if depth_root is None else Path(depth_root).resolve(),
-        selected_camera_ids=tuple(int(camera_id) for camera_id in selected_camera_ids),
-        depth_value_mode=str(depth_value_mode),
-        init_mode=str(init_mode),
-        compress_dataset_using_bc7=bool(compress_dataset_using_bc7),
-        custom_ply_path=None if custom_ply_path is None else Path(custom_ply_path).resolve(),
-        image_downscale_mode=str(image_downscale_mode),
-        image_downscale_max_size=max(int(image_downscale_max_size), 1),
-        image_downscale_scale=float(np.clip(image_downscale_scale, 1e-6, 1.0)),
-        nn_radius_scale_coef=float(max(nn_radius_scale_coef, 1e-4)),
-        min_track_length=max(int(min_track_length), 0),
-        depth_point_count=max(int(depth_point_count), 1),
-        diffused_point_count=max(int(diffused_point_count), 1),
-        diffusion_radius=max(float(diffusion_radius), 0.0),
-        fibonacci_sphere_point_count=max(int(fibonacci_sphere_point_count), 0),
-        fibonacci_sphere_radius=max(float(fibonacci_sphere_radius), 0.0),
-        use_target_alpha_mask=bool(use_target_alpha_mask),
-    )
-    _set_ui_path(viewer, "colmap_root_path", dataset_root)
-    _set_ui_path(viewer, "colmap_database_path", database_path)
-    _set_ui_path(viewer, "colmap_images_root", images_root)
-    _set_ui_path(viewer, "colmap_depth_root", depth_root)
-    viewer.ui._values["colmap_selected_camera_ids"] = tuple(int(camera_id) for camera_id in selected_camera_ids)
-    viewer.ui._values["colmap_depth_value_mode"] = 0 if str(depth_value_mode) == _COLMAP_DEPTH_VALUE_DISTANCE else 1
-    viewer.ui._values["colmap_init_mode"] = (
-        1 if str(init_mode) == _COLMAP_IMPORT_DIFFUSED_POINTCLOUD else
-        2 if str(init_mode) == _COLMAP_IMPORT_CUSTOM_PLY else
-        3 if str(init_mode) == _COLMAP_IMPORT_DEPTH else
-        0
-    )
-    viewer.ui._values["compress_dataset_using_bc7"] = bool(compress_dataset_using_bc7)
-    _set_ui_path(viewer, "colmap_custom_ply_path", custom_ply_path)
-    viewer.ui._values["colmap_image_downscale_mode"] = 1 if str(image_downscale_mode) == _COLMAP_IMAGE_DOWNSCALE_MAX_SIZE else 2 if str(image_downscale_mode) == _COLMAP_IMAGE_DOWNSCALE_SCALE else 0
-    viewer.ui._values["colmap_image_max_size"] = max(int(image_downscale_max_size), 1)
-    viewer.ui._values["colmap_image_scale"] = float(np.clip(image_downscale_scale, 1e-6, 1.0))
-    viewer.ui._values["colmap_nn_radius_scale_coef"] = float(max(nn_radius_scale_coef, 1e-4))
-    viewer.ui._values["colmap_min_track_length"] = max(int(min_track_length), 0)
-    viewer.ui._values["colmap_depth_point_count"] = max(int(depth_point_count), 1)
-    viewer.ui._values["colmap_diffused_point_count"] = max(int(diffused_point_count), 1)
-    viewer.ui._values["colmap_diffusion_radius"] = max(float(diffusion_radius), 0.0)
-    viewer.ui._values["colmap_fibonacci_sphere_point_count"] = max(int(fibonacci_sphere_point_count), 0)
-    viewer.ui._values["colmap_fibonacci_sphere_radius"] = max(float(fibonacci_sphere_radius), 0.0)
-    viewer.ui._values["use_target_alpha_mask"] = bool(use_target_alpha_mask)
 
 
 def _append_training_frame(progress: ColmapImportProgress, image_id: int, image: object) -> None:
@@ -565,19 +309,6 @@ def _append_training_frame(progress: ColmapImportProgress, image_id: int, image:
         progress.frame_images.append(image)
         progress.depth_paths.append(None if progress.depth_index is None else match_depth_path(progress.images_root, image_path, progress.depth_index))
     progress.frames.append(frame)
-
-
-def _create_native_dataset_texture_from_rgba8(viewer: object, rgba8: np.ndarray) -> spy.Texture:
-    texture = alloc_texture_2d(
-        viewer.device,
-        name="viewer.dataset_texture",
-        format=spy.Format.rgba8_unorm_srgb,
-        width=int(rgba8.shape[1]),
-        height=int(rgba8.shape[0]),
-        usage=spy.TextureUsage.shader_resource | spy.TextureUsage.copy_destination,
-    )
-    texture.copy_from_numpy(np.ascontiguousarray(rgba8, dtype=np.uint8))
-    return texture
 
 
 def _load_dataset_texture(frame: ColmapFrame, images_root: Path, compress_dataset_using_bc7: bool) -> np.ndarray | _CompressedDatasetTexture:
@@ -649,12 +380,27 @@ def _start_colmap_texture_loader(progress: ColmapImportProgress) -> None:
     progress.native_rgba8_iter = loader.map(lambda frame: _load_dataset_texture(frame, progress.images_root, progress.compress_dataset_using_bc7), progress.frames)
 
 
-def _create_native_dataset_textures(viewer: object, frames: list[ColmapFrame], *, images_root: Path, compress_dataset_using_bc7: bool) -> list[spy.Texture]:
+def _create_native_dataset_textures(
+    viewer: object,
+    frames: list[ColmapFrame],
+    images_root: Path | None = None,
+    compress_dataset_using_bc7: bool | None = None,
+) -> list[spy.Texture]:
+    import_cfg = getattr(viewer.s, "colmap_import", None)
+    resolved_images_root = images_root if images_root is not None else None if import_cfg is None else getattr(import_cfg, "images_root", None)
+    if resolved_images_root is None:
+        raise RuntimeError("Dataset texture creation requires a resolved images root.")
+    resolved_images_root = Path(resolved_images_root).resolve()
+    use_bc7 = bool(
+        compress_dataset_using_bc7
+        if compress_dataset_using_bc7 is not None
+        else False if import_cfg is None else getattr(import_cfg, "compress_dataset_using_bc7", False)
+    )
     textures: list[spy.Texture] = []
-    if bool(compress_dataset_using_bc7):
+    if use_bc7:
         _ensure_dataset_bc7_texconv()
     with ThreadPoolExecutor(max_workers=TRAINING_FRAME_LOAD_THREADS, thread_name_prefix="viewer-target") as executor:
-        for payload in executor.map(lambda frame: _load_dataset_texture(frame, images_root, compress_dataset_using_bc7), frames):
+        for payload in executor.map(lambda frame: _load_dataset_texture(frame, resolved_images_root, use_bc7), frames):
             textures.append(_create_native_dataset_texture_from_bc_payload(viewer, payload) if isinstance(payload, _CompressedDatasetTexture) else _create_native_dataset_texture_from_rgba8(viewer, payload))
     return textures
 
@@ -1450,6 +1196,11 @@ def import_colmap_dataset(
     _clear_loaded_scene(viewer)
     root = Path(colmap_root).resolve()
     recon = _load_aligned_colmap_reconstruction(root)
+    viewer.s.colmap_import = ColmapImportSettings(
+        images_root=Path(images_root).resolve(),
+        compress_dataset_using_bc7=bool(compress_dataset_using_bc7),
+        nn_radius_scale_coef=float(nn_radius_scale_coef),
+    )
     resolved_selected_camera_ids = _normalized_selected_camera_ids(_camera_rows(recon), None if len(selected_camera_ids) == 0 else selected_camera_ids)
     training_frames = build_training_frames_from_root(
         recon,
@@ -1459,12 +1210,7 @@ def import_colmap_dataset(
         downscale_max_size=image_downscale_max_size,
         downscale_scale=image_downscale_scale,
     )
-    frame_targets_native = _create_native_dataset_textures(
-        viewer,
-        training_frames,
-        images_root=images_root,
-        compress_dataset_using_bc7=compress_dataset_using_bc7,
-    )
+    frame_targets_native = _create_native_dataset_textures(viewer, training_frames)
     cached_init_point_positions = None
     cached_init_point_colors = None
     if init_mode == _COLMAP_IMPORT_DEPTH:
@@ -1715,13 +1461,8 @@ def initialize_training_scene(viewer: object, frame_targets_native: list[spy.Tex
         trainer_kwargs["scale_reg_reference"] = scale_reg_reference
     if frame_targets_native is not None:
         trainer_kwargs["frame_targets_native"] = frame_targets_native
-    elif getattr(viewer.s.colmap_import, "images_root", None) is not None:
-        trainer_kwargs["frame_targets_native"] = _create_native_dataset_textures(
-            viewer,
-            viewer.s.training_frames,
-            images_root=Path(viewer.s.colmap_import.images_root).resolve(),
-            compress_dataset_using_bc7=bool(getattr(viewer.s.colmap_import, "compress_dataset_using_bc7", False)),
-        )
+    elif getattr(viewer.s.colmap_import, "images_root", None) is not None and all(hasattr(frame, "image_path") for frame in viewer.s.training_frames):
+        trainer_kwargs["frame_targets_native"] = _create_native_dataset_textures(viewer, viewer.s.training_frames)
     viewer.s.trainer = GaussianTrainer(**trainer_kwargs)
     viewer.s.scene = SceneCountProxy(scene.count)
     _apply_initial_camera_fit(viewer, fallback_factory=lambda: estimate_scene_bounds(scene))

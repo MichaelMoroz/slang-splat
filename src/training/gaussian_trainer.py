@@ -41,6 +41,16 @@ _REFINEMENT_HASH_INIT = 0x9E3779B9
 _REFINEMENT_HASH_MIX = 0x85EBCA6B
 
 
+def _clamp_float_min(owner: object, minimum: float, *names: str) -> None:
+    for name in names:
+        setattr(owner, name, max(float(getattr(owner, name)), minimum))
+
+
+def _clamp_float_range(owner: object, minimum: float, maximum: float, *names: str) -> None:
+    for name in names:
+        setattr(owner, name, min(max(float(getattr(owner, name)), minimum), maximum))
+
+
 def _hash_u32_scalar(value: int) -> np.uint32:
     x = int(value) & 0xFFFFFFFF
     x ^= x >> 16
@@ -89,12 +99,12 @@ def resolve_training_resolution(width: int, height: int, downscale_factor: int) 
 
 def resolve_effective_train_downscale_factor(training_hparams: "TrainingHyperParams", step: int) -> int:
     resolved_step = max(int(step), 0)
-    mode = int(training_hparams.train_downscale_mode)
+    mode = int(getattr(training_hparams, "train_downscale_mode", 1))
     if mode != TRAIN_DOWNSCALE_MODE_AUTO:
         return min(max(mode, 1), TRAIN_DOWNSCALE_MAX_FACTOR)
-    start_factor = min(max(int(training_hparams.train_auto_start_downscale), 1), TRAIN_DOWNSCALE_MAX_FACTOR)
-    base_iters = max(int(training_hparams.train_downscale_base_iters), 1)
-    iter_step = max(int(training_hparams.train_downscale_iter_step), 0)
+    start_factor = min(max(int(getattr(training_hparams, "train_auto_start_downscale", 1)), 1), TRAIN_DOWNSCALE_MAX_FACTOR)
+    base_iters = max(int(getattr(training_hparams, "train_downscale_base_iters", 1)), 1)
+    iter_step = max(int(getattr(training_hparams, "train_downscale_iter_step", 0)), 0)
     elapsed = 0
     for factor in range(start_factor, 0, -1):
         duration = max(base_iters + (start_factor - factor) * iter_step, 1)
@@ -117,7 +127,7 @@ def resolve_auto_train_subsample_factor(width: int, height: int, downscale_facto
 
 
 def resolve_train_subsample_factor(training_hparams: "TrainingHyperParams", width: int | None = None, height: int | None = None, step: int = 0) -> int:
-    mode = int(training_hparams.train_subsample_factor)
+    mode = int(getattr(training_hparams, "train_subsample_factor", 1))
     if mode != TRAIN_SUBSAMPLE_MODE_AUTO:
         return min(max(mode, 1), TRAIN_SUBSAMPLE_MAX_FACTOR)
     downscale_factor = resolve_effective_train_downscale_factor(training_hparams, step)
@@ -210,8 +220,7 @@ class TrainingHyperParams:
 
     def __post_init__(self) -> None:
         self.lr_schedule_enabled = bool(self.lr_schedule_enabled)
-        self.lr_schedule_start_lr = max(float(self.lr_schedule_start_lr), 1e-8)
-        self.lr_schedule_end_lr = max(float(self.lr_schedule_end_lr), 1e-8)
+        _clamp_float_min(self, 1e-8, "lr_schedule_start_lr", "lr_schedule_end_lr")
         background = np.asarray(self.background, dtype=np.float32).reshape(3)
         self.background = tuple(float(v) for v in np.clip(background, 0.0, 1.0))
         self.camera_min_dist = max(float(self.camera_min_dist), 0.0)
@@ -222,61 +231,45 @@ class TrainingHyperParams:
         self.lr_schedule_steps = max(int(self.lr_schedule_steps), 1)
         self.lr_schedule_stage1_step = min(max(int(self.lr_schedule_stage1_step), 0), self.lr_schedule_steps)
         self.lr_schedule_stage2_step = min(max(int(self.lr_schedule_stage2_step), self.lr_schedule_stage1_step), self.lr_schedule_steps)
-        self.lr_schedule_stage1_lr = max(float(self.lr_schedule_stage1_lr), 1e-8)
-        self.lr_schedule_stage2_lr = max(float(self.lr_schedule_stage2_lr), 1e-8)
-        self.lr_pos_mul = max(float(self.lr_pos_mul), 1e-8)
-        self.lr_pos_stage1_mul = max(float(self.lr_pos_stage1_mul), 1e-8)
-        self.lr_pos_stage2_mul = max(float(self.lr_pos_stage2_mul), 1e-8)
-        self.lr_pos_stage3_mul = max(float(self.lr_pos_stage3_mul), 1e-8)
-        self.lr_sh_mul = max(float(self.lr_sh_mul), 1e-8)
-        self.lr_sh_stage1_mul = max(float(self.lr_sh_stage1_mul), 1e-8)
-        self.lr_sh_stage2_mul = max(float(self.lr_sh_stage2_mul), 1e-8)
-        self.lr_sh_stage3_mul = max(float(self.lr_sh_stage3_mul), 1e-8)
+        _clamp_float_min(
+            self,
+            1e-8,
+            "lr_schedule_stage1_lr",
+            "lr_schedule_stage2_lr",
+            "lr_pos_mul",
+            "lr_pos_stage1_mul",
+            "lr_pos_stage2_mul",
+            "lr_pos_stage3_mul",
+            "lr_sh_mul",
+            "lr_sh_stage1_mul",
+            "lr_sh_stage2_mul",
+            "lr_sh_stage3_mul",
+        )
         self.refinement_interval = max(int(self.refinement_interval), 1)
         self.refinement_growth_ratio = max(float(self.refinement_growth_ratio), 0.0)
         self.refinement_growth_start_step = max(int(self.refinement_growth_start_step), 0)
-        self.refinement_alpha_cull_threshold = min(max(float(self.refinement_alpha_cull_threshold), 1e-8), 1.0)
+        _clamp_float_range(self, 1e-8, 1.0, "refinement_alpha_cull_threshold")
         self.refinement_min_contribution = max(int(self.refinement_min_contribution), 0)
-        self.refinement_min_contribution_decay = min(max(float(self.refinement_min_contribution_decay), 0.0), 1.0)
-        self.refinement_opacity_mul = min(max(float(self.refinement_opacity_mul), 0.0), 1.0)
+        _clamp_float_range(self, 0.0, 1.0, "refinement_min_contribution_decay", "refinement_opacity_mul", "refinement_split_beta")
         self.refinement_sample_radius = max(float(self.refinement_sample_radius), 0.0)
         self.refinement_clone_scale_mul = max(float(self.refinement_clone_scale_mul), 0.0)
         self.refinement_use_compact_split = bool(self.refinement_use_compact_split)
         self.refinement_solve_opacity = bool(self.refinement_solve_opacity)
-        self.refinement_split_beta = min(max(float(self.refinement_split_beta), 0.0), 1.0)
-        self.refinement_grad_variance_weight_exponent = min(max(float(self.refinement_grad_variance_weight_exponent), 0.0), 16.0)
-        self.refinement_contribution_weight_exponent = min(max(float(self.refinement_contribution_weight_exponent), 0.0), 16.0)
+        _clamp_float_range(self, 0.0, 16.0, "refinement_grad_variance_weight_exponent", "refinement_contribution_weight_exponent")
         self.refinement_loss_weight = max(float(self.refinement_loss_weight), 0.0)
         self.refinement_target_edge_weight = max(float(self.refinement_target_edge_weight), 0.0)
         self.sh1_reg_weight = max(float(self.sh1_reg_weight), 0.0)
         self.density_regularizer = max(float(self.density_regularizer), 0.0)
         self.color_non_negative_reg = max(float(self.color_non_negative_reg), 0.0)
-        self.max_visible_angle_deg = min(max(float(self.max_visible_angle_deg), 1e-8), 89.999)
-        self.sorting_order_dithering = min(max(float(self.sorting_order_dithering), 0.0), 1.0)
-        self.sorting_order_dithering_stage1 = min(max(float(self.sorting_order_dithering_stage1), 0.0), 1.0)
-        self.sorting_order_dithering_stage2 = min(max(float(self.sorting_order_dithering_stage2), 0.0), 1.0)
-        self.sorting_order_dithering_stage3 = min(max(float(self.sorting_order_dithering_stage3), 0.0), 1.0)
-        self.colorspace_mod = max(float(self.colorspace_mod), 1e-8)
-        self.colorspace_mod_stage1 = max(float(self.colorspace_mod_stage1), 1e-8)
-        self.colorspace_mod_stage2 = max(float(self.colorspace_mod_stage2), 1e-8)
-        self.colorspace_mod_stage3 = max(float(self.colorspace_mod_stage3), 1e-8)
-        self.ssim_weight = min(max(float(self.ssim_weight), 0.0), 1.0)
+        _clamp_float_range(self, 1e-8, 89.999, "max_visible_angle_deg", "max_visible_angle_deg_stage1", "max_visible_angle_deg_stage2", "max_visible_angle_deg_stage3")
+        _clamp_float_range(self, 0.0, 1.0, "sorting_order_dithering", "sorting_order_dithering_stage1", "sorting_order_dithering_stage2", "sorting_order_dithering_stage3", "ssim_weight", "ssim_weight_stage1", "ssim_weight_stage2", "ssim_weight_stage3")
+        _clamp_float_min(self, 1e-8, "colorspace_mod", "colorspace_mod_stage1", "colorspace_mod_stage2", "colorspace_mod_stage3")
         self.ssim_c2 = max(float(self.ssim_c2), 1e-8)
-        self.ssim_weight_stage1 = min(max(float(self.ssim_weight_stage1), 0.0), 1.0)
-        self.ssim_weight_stage2 = min(max(float(self.ssim_weight_stage2), 0.0), 1.0)
-        self.ssim_weight_stage3 = min(max(float(self.ssim_weight_stage3), 0.0), 1.0)
-        self.max_visible_angle_deg_stage1 = min(max(float(self.max_visible_angle_deg_stage1), 1e-8), 89.999)
-        self.max_visible_angle_deg_stage2 = min(max(float(self.max_visible_angle_deg_stage2), 1e-8), 89.999)
-        self.max_visible_angle_deg_stage3 = min(max(float(self.max_visible_angle_deg_stage3), 1e-8), 89.999)
         self.max_allowed_density_start = max(float(self.max_allowed_density_start), 0.0)
         self.max_allowed_density = max(float(self.max_allowed_density), 0.0)
         self.max_allowed_density = max(self.max_allowed_density, self.max_allowed_density_start)
-        self.position_random_step_noise_lr = max(float(self.position_random_step_noise_lr), 0.0)
-        self.position_random_step_noise_stage1_lr = max(float(self.position_random_step_noise_stage1_lr), 0.0)
-        self.position_random_step_noise_stage2_lr = max(float(self.position_random_step_noise_stage2_lr), 0.0)
-        self.position_random_step_noise_stage3_lr = max(float(self.position_random_step_noise_stage3_lr), 0.0)
-        self.position_random_step_opacity_gate_center = min(max(float(self.position_random_step_opacity_gate_center), 0.0), 1.0)
-        self.position_random_step_opacity_gate_sharpness = max(float(self.position_random_step_opacity_gate_sharpness), 0.0)
+        _clamp_float_min(self, 0.0, "position_random_step_noise_lr", "position_random_step_noise_stage1_lr", "position_random_step_noise_stage2_lr", "position_random_step_noise_stage3_lr", "position_random_step_opacity_gate_sharpness")
+        _clamp_float_range(self, 0.0, 1.0, "position_random_step_opacity_gate_center")
         self.sh_band_stage1 = min(max(int(self.sh_band_stage1), 0), 3) if int(self.sh_band_stage1) != 3 else (0 if not bool(self.use_sh_stage1) else 3)
         self.sh_band_stage2 = min(max(int(self.sh_band_stage2), 0), 3) if int(self.sh_band_stage2) != 3 else (0 if not bool(self.use_sh_stage2) else 3)
         self.sh_band_stage3 = min(max(int(self.sh_band_stage3), 0), 3) if int(self.sh_band_stage3) != 3 else (0 if not bool(self.use_sh_stage3) else 3)

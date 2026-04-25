@@ -40,13 +40,13 @@ class ColmapImportSettings:
     image_downscale_mode: str = "original"
     image_downscale_max_size: int = int(_VIEWER_IMPORT_DEFAULTS["colmap_image_max_size"])
     image_downscale_scale: float = float(_VIEWER_IMPORT_DEFAULTS["colmap_image_scale"])
-    nn_radius_scale_coef: float = float(_VIEWER_IMPORT_DEFAULTS["colmap_nn_radius_scale_coef"])
+    nn_radius_scale_coef: float = 0.5
     min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH
     depth_point_count: int = int(_VIEWER_IMPORT_DEFAULTS["colmap_depth_point_count"])
     diffused_point_count: int = int(_VIEWER_IMPORT_DEFAULTS["colmap_diffused_point_count"])
     diffusion_radius: float = float(_VIEWER_IMPORT_DEFAULTS["colmap_diffusion_radius"])
-    fibonacci_sphere_point_count: int = int(_VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_point_count", 0))
-    fibonacci_sphere_radius: float = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_radius", 20.0))
+    fibonacci_sphere_point_count: int = 0
+    fibonacci_sphere_radius: float = 20.0
     use_target_alpha_mask: bool = False
 
 
@@ -57,12 +57,12 @@ class ColmapImportProgress:
     database_path: Path | None
     images_root: Path
     init_mode: str
-    compress_dataset_using_bc7: bool
     custom_ply_path: Path | None
     image_downscale_mode: str
     image_downscale_max_size: int
     image_downscale_scale: float
     nn_radius_scale_coef: float
+    compress_dataset_using_bc7: bool = False
     selected_camera_ids: tuple[int, ...] = ()
     min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH
     depth_point_count: int = 100000
