@@ -117,6 +117,17 @@ def _make_layered_depth_scene(depths: tuple[float, ...], sigma: float = 0.04, op
     )
 
 
+def _make_longitudinal_depth_scene(depth: float, transverse_sigma: float, longitudinal_sigma: float, opacity: float = 0.75) -> GaussianScene:
+    return GaussianScene(
+        positions=np.array([[0.0, 0.0, depth]], dtype=np.float32),
+        scales=np.array([_log_sigma((transverse_sigma, transverse_sigma, longitudinal_sigma))], dtype=np.float32),
+        rotations=np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+        opacities=np.array([opacity], dtype=np.float32),
+        colors=np.array([[0.5, 0.5, 0.5]], dtype=np.float32),
+        sh_coeffs=np.zeros((1, 1, 3), dtype=np.float32),
+    )
+
+
 def test_renderer_loads_raster_constants_from_shader(device):
     renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, list_capacity_multiplier=32)
     config = GaussianRenderer._load_raster_config(Path(SHADER_ROOT / "renderer" / "gaussian_types.slang"))
@@ -133,16 +144,14 @@ def test_renderer_params_default_to_fixed_cached_grad_atomics():
 
     assert params.cached_raster_grad_atomic_mode == "fixed"
     assert kwargs["cached_raster_grad_atomic_mode"] == "fixed"
-    assert params.cached_raster_grad_fixed_ro_local_range == 0.01
-    assert kwargs["cached_raster_grad_fixed_ro_local_range"] == 0.01
-    assert params.cached_raster_grad_fixed_scale_range == 0.01
-    assert kwargs["cached_raster_grad_fixed_scale_range"] == 0.01
-    assert params.cached_raster_grad_fixed_quat_range == 0.01
-    assert kwargs["cached_raster_grad_fixed_quat_range"] == 0.01
-    assert params.cached_raster_grad_fixed_color_range == 0.2
-    assert kwargs["cached_raster_grad_fixed_color_range"] == 0.2
-    assert params.cached_raster_grad_fixed_opacity_range == 0.2
-    assert kwargs["cached_raster_grad_fixed_opacity_range"] == 0.2
+    assert params.cached_raster_grad_fixed_ro_local_range == 2.0
+    assert kwargs["cached_raster_grad_fixed_ro_local_range"] == 2.0
+    assert params.cached_raster_grad_fixed_scale_range == 256.0
+    assert kwargs["cached_raster_grad_fixed_scale_range"] == 256.0
+    assert params.cached_raster_grad_fixed_color_range == 8.0
+    assert kwargs["cached_raster_grad_fixed_color_range"] == 8.0
+    assert params.cached_raster_grad_fixed_opacity_range == 8.0
+    assert kwargs["cached_raster_grad_fixed_opacity_range"] == 8.0
     assert params.max_anisotropy == 32.0
     assert kwargs["max_anisotropy"] == 32.0
     assert params.debug_gaussian_scale_multiplier == 1.0
@@ -209,8 +218,8 @@ def test_max_anisotropy_clamps_cached_raster_scale(device):
     unconstrained_cache = np.asarray(unconstrained.debug_pipeline_data(scene, camera)["raster_cache"], dtype=np.float32)
     constrained_cache = np.asarray(constrained.debug_pipeline_data(scene, camera)["raster_cache"], dtype=np.float32)
 
-    np.testing.assert_allclose(unconstrained_cache[0, 3:6], np.array([0.6, 0.06, 0.06], dtype=np.float32), rtol=2e-4, atol=2e-4)
-    np.testing.assert_allclose(constrained_cache[0, 3:6], np.array([0.6, 0.3, 0.3], dtype=np.float32), rtol=2e-4, atol=2e-4)
+    np.testing.assert_allclose(unconstrained_cache[0, 3:6], np.array([0.0025, 0.0, 0.000025], dtype=np.float32), rtol=2e-4, atol=2e-4)
+    np.testing.assert_allclose(constrained_cache[0, 3:6], np.array([0.0025, 0.0, 0.000625], dtype=np.float32), rtol=2e-4, atol=2e-4)
 
 
 def test_projection_keeps_partially_visible_splat_when_center_is_behind_camera(device):
@@ -501,18 +510,29 @@ def test_prepass_populates_raster_cache(device):
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
     renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, list_capacity_multiplier=32)
     debug = renderer.debug_pipeline_data(scene, camera)
-    projected = project_splats(scene, camera, renderer.width, renderer.height, renderer.radius_scale)
 
     raster_cache = np.asarray(debug["raster_cache"], dtype=np.float32)
-    assert raster_cache.shape == (scene.count, 14)
+    screen_center_radius_depth = np.asarray(debug["screen_center_radius_depth"], dtype=np.float32)
+    screen_color_alpha = np.asarray(debug["screen_color_alpha"], dtype=np.float32)
+    expected_center_dir = np.asarray(
+        [
+            camera.world_point_to_camera(scene.positions[index]) / max(np.linalg.norm(camera.world_point_to_camera(scene.positions[index])), 1e-12)
+            for index in range(scene.count)
+        ],
+        dtype=np.float32,
+    )
+
+    assert raster_cache.shape == (scene.count, 11)
     assert np.all(np.isfinite(raster_cache))
     assert float(np.max(np.abs(raster_cache[:, :10]))) > 0.0
-    expected_ro = np.asarray(projected.pos_local, dtype=np.float32)
-    expected_scale = 1.0 / np.maximum(np.asarray(projected.inv_scale, dtype=np.float32), 1e-12)
-    expected_quat = np.asarray(projected.quat, dtype=np.float32)
-    np.testing.assert_allclose(raster_cache[:, :3], expected_ro, rtol=2e-4, atol=2e-4)
-    np.testing.assert_allclose(raster_cache[:, 3:6], expected_scale, rtol=3e-4, atol=3e-4)
-    np.testing.assert_allclose(raster_cache[:, 6:10], expected_quat, rtol=3e-4, atol=3e-4)
+    np.testing.assert_allclose(raster_cache[:, :3], expected_center_dir, rtol=2e-4, atol=2e-4)
+    np.testing.assert_allclose(np.linalg.norm(raster_cache[:, :3], axis=1), np.ones((scene.count,), dtype=np.float32), rtol=2e-4, atol=2e-4)
+    assert np.all(raster_cache[:, 3] > 0.0)
+    assert np.all(raster_cache[:, 5] > 0.0)
+    assert np.all(raster_cache[:, 3] * raster_cache[:, 5] - raster_cache[:, 4] * raster_cache[:, 4] > 0.0)
+    np.testing.assert_allclose(raster_cache[:, 6], screen_center_radius_depth[:, 3], rtol=2e-4, atol=2e-4)
+    np.testing.assert_allclose(raster_cache[:, 7:10], screen_color_alpha[:, :3], rtol=0.0, atol=1e-5)
+    np.testing.assert_allclose(raster_cache[:, 10], scene.opacities, rtol=0.0, atol=1e-6)
 
 
 def test_projected_color_prepass_keeps_out_of_range_values(device):
@@ -533,9 +553,9 @@ def test_projected_color_prepass_keeps_out_of_range_values(device):
     render_cache = np.asarray(render_debug["raster_cache"], dtype=np.float32)
 
     renderer.set_scene(scene)
-    np.testing.assert_allclose(render_cache[0, 10:13], np.array([1.35, -0.2, 0.6], dtype=np.float32), rtol=0.0, atol=1e-5)
+    np.testing.assert_allclose(render_cache[0, 7:10], np.array([1.35, -0.2, 0.6], dtype=np.float32), rtol=0.0, atol=1e-5)
     renderer.execute_prepass_for_current_scene(camera, sync_counts=True)
-    np.testing.assert_allclose(renderer.read_raster_cache(scene.count)[0, 10:13], np.array([1.35, -0.2, 0.6], dtype=np.float32), rtol=0.0, atol=1e-5)
+    np.testing.assert_allclose(renderer.read_raster_cache(scene.count)[0, 7:10], np.array([1.35, -0.2, 0.6], dtype=np.float32), rtol=0.0, atol=1e-5)
 
 
 def test_projection_render_smoke(device):
@@ -876,8 +896,8 @@ def test_debug_depth_local_mismatch_render_smoke(device):
 
 def test_debug_depth_local_mismatch_highlights_close_layered_splats_more_than_far_layers(device):
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
-    near_scene = _make_layered_depth_scene((0.0, 0.03))
-    far_scene = _make_layered_depth_scene((0.0, 0.5))
+    near_scene = _make_layered_depth_scene((0.0, 0.03, 0.06))
+    far_scene = _make_layered_depth_scene((0.0, 0.5, 1.0))
     renderer = GaussianRenderer(
         device,
         width=64,
@@ -894,6 +914,29 @@ def test_debug_depth_local_mismatch_highlights_close_layered_splats_more_than_fa
     far_out = renderer.render(far_scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32)).image
 
     assert float(np.max(near_out[..., :3])) > float(np.max(far_out[..., :3])) + 1e-3
+
+
+def test_debug_depth_mean_uses_center_distance_not_longitudinal_intersection(device):
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    compact_scene = _make_longitudinal_depth_scene(depth=0.0, transverse_sigma=0.04, longitudinal_sigma=0.04, opacity=0.9)
+    stretched_scene = _make_longitudinal_depth_scene(depth=0.0, transverse_sigma=0.04, longitudinal_sigma=1.2, opacity=0.9)
+    renderer = GaussianRenderer(
+        device,
+        width=64,
+        height=64,
+        radius_scale=1.6,
+        list_capacity_multiplier=32,
+        debug_mode=GaussianRenderer.DEBUG_MODE_DEPTH_MEAN,
+        debug_depth_mean_range=(3.0, 5.0),
+    )
+
+    compact_out = renderer.render(compact_scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32)).image
+    stretched_out = renderer.render(stretched_scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32)).image
+    center_y = renderer.height // 2
+    center_x = renderer.width // 2
+
+    assert float(np.max(compact_out[center_y, center_x, :3])) > 1e-3
+    np.testing.assert_allclose(stretched_out[center_y, center_x, :3], compact_out[center_y, center_x, :3], rtol=0.0, atol=2e-4)
 
 
 def test_render_stats_are_one_frame_delayed(device):
@@ -946,7 +989,7 @@ def test_raster_backward_decodes_fixed_grad_grid(device):
 
     assert grads["cached_raster_grads_mode"] == "fixed"
     values = np.asarray(grads["cached_raster_grads_fixed"], dtype=np.int32)
-    assert values.shape == (scene.count, 14)
+    assert values.shape == (scene.count, 10)
     nonzero = values[values != 0]
     assert nonzero.size > 0
     decoded = np.asarray(renderer.read_cached_raster_grads_fixed_decoded(scene.count), dtype=np.float32)
@@ -967,7 +1010,7 @@ def test_raster_backward_float_mode_produces_float_intermediate_and_final_grads(
     assert active_nonzero.size > 0
     requantized = float_nonzero / renderer.cached_raster_grad_fixed_decode_scale_table(scene.count)
     assert np.any(np.abs(requantized[np.abs(float_nonzero) > 0.0] - np.rint(requantized[np.abs(float_nonzero) > 0.0])) > 1e-4)
-    assert np.count_nonzero(float_nonzero[:, 10:13]) > 0
+    assert np.count_nonzero(float_nonzero[:, 6:9]) > 0
 
     final_values = np.concatenate(
         [
@@ -981,6 +1024,37 @@ def test_raster_backward_float_mode_produces_float_intermediate_and_final_grads(
     assert final_nonzero.size > 0
     assert np.any(np.abs(final_nonzero * 65536.0 - np.rint(final_nonzero * 65536.0)) > 1e-4)
     assert np.count_nonzero(np.asarray(grads["grad_color_alpha"], dtype=np.float32)[:, :3]) > 0
+
+
+def test_raster_backward_fixed_mode_tracks_float_mode_for_anisotropic_scales(device):
+    scene = GaussianScene(
+        positions=np.array([[-0.18, 0.0, 0.0], [0.0, 0.0, 0.05], [0.18, 0.0, -0.05]], dtype=np.float32),
+        scales=np.array(
+            [
+                _log_sigma((0.04, 0.04, 1.2)),
+                _log_sigma((0.2, 0.02, 0.02)),
+                _log_sigma((0.2, 0.02, 1.2)),
+            ],
+            dtype=np.float32,
+        ),
+        rotations=np.array([[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+        opacities=np.full((3,), 0.8, dtype=np.float32),
+        colors=np.array([[0.75, 0.2, 0.1], [0.1, 0.75, 0.2], [0.2, 0.1, 0.75]], dtype=np.float32),
+        sh_coeffs=np.zeros((3, 1, 3), dtype=np.float32),
+    )
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    background = np.array([0.03, 0.05, 0.07], dtype=np.float32)
+    fixed_renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, list_capacity_multiplier=32, cached_raster_grad_atomic_mode="fixed")
+    float_renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, list_capacity_multiplier=32, cached_raster_grad_atomic_mode="float")
+
+    fixed_grads = fixed_renderer.debug_raster_backward_grads(scene, camera, background=background)
+    float_grads = float_renderer.debug_raster_backward_grads(scene, camera, background=background)
+
+    for name in ("grad_positions", "grad_scales", "grad_rotations", "grad_color_alpha"):
+        fixed_values = np.asarray(fixed_grads[name], dtype=np.float32)
+        float_values = np.asarray(float_grads[name], dtype=np.float32)
+        assert np.any(np.abs(float_values) > 0.0)
+        np.testing.assert_allclose(fixed_values, float_values, rtol=0.05, atol=5e-4)
 
 
 def test_active_cached_raster_grad_metrics_tensor_matches_float_mode_buffer(device):

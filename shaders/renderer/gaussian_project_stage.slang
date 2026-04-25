@@ -20,12 +20,12 @@ uint float_to_ordered_uint(float value)
     return (bits & 0x80000000u) != 0u ? ~bits : (bits | 0x80000000u);
 }
 
-void store_raster_cache(uint splatId, CachedEllipsoid cached, float4 colorAlpha)
+void store_raster_cache(uint splatId, CachedDirectionalGaussian cached, float4 colorAlpha)
 {
     RasterGaussian gaussian;
-    gaussian.roLocal = cached.roLocal;
-    gaussian.scale = cached.scale;
-    gaussian.rotation = cached.rotation;
+    gaussian.centerDir = cached.centerDir;
+    gaussian.sigmaOrtho = cached.sigmaOrtho;
+    gaussian.depthDistance = cached.centerDistance;
     gaussian.colorAlpha = colorAlpha;
     g_RasterCache[splatId] = gaussian;
 }
@@ -135,7 +135,7 @@ void csProjectVisibleSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
     g_ScreenEllipseConic[splatId] = float4(projectedEllipse.conic, projectionEllipsoid.opacityScale);
     g_SplatVisible[splatId] = 1u;
     g_SplatVisibleAreaPx[splatId] = projectedEllipse.clippedAreaPx(camera.params.viewport);
-    CachedEllipsoid cached = build_cached_ellipsoid(g_Camera, g_Prepass.radiusScale, g_MaxAnisotropy, gaussian.position, gaussian.logScale, gaussian.rotation);
+    CachedDirectionalGaussian cached = build_cached_directional_gaussian(g_Camera, g_Prepass.radiusScale, g_MaxAnisotropy, gaussian.position, gaussian.logScale, gaussian.rotation);
     store_raster_cache(splatId, cached, float4(evaluatedColor, fusedOpacity));
     float sortDistance = length(projectionEllipsoid.centerWorld - sort_camera_position_for_splat(splatId));
     append_visible_splat(float_to_ordered_uint(sortDistance), splatId);
