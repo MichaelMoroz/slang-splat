@@ -217,6 +217,33 @@ def test_apply_resize_prefers_viewport_size_when_available(monkeypatch) -> None:
     assert calls == ["wait", (512, 288)]
 
 
+def test_save_defaults_callback_updates_cli_common_render(monkeypatch) -> None:
+    written: dict[str, object] = {}
+    viewer = SimpleNamespace(ui=SimpleNamespace(_values={}))
+    exported = {
+        "renderer": {"radius_scale": 1.25},
+        "cli": {"common_render": {"cached_raster_grad_atomic_mode": "fixed", "cached_raster_grad_fixed_scale_range": 512.0}},
+        "viewer": {"controls": {}, "import": {}, "ui": {}},
+    }
+
+    monkeypatch.setattr(
+        "src.viewer.app.load_defaults",
+        lambda: {
+            "training_build_args": {},
+            "renderer": {},
+            "cli": {"common_render": {}},
+            "viewer": {"controls": {}, "import": {}, "ui": {}},
+        },
+    )
+    monkeypatch.setattr("src.viewer.app.export_repo_defaults_from_ui_values", lambda values: exported)
+    monkeypatch.setattr("src.viewer.app.write_defaults", lambda defaults: written.setdefault("defaults", defaults))
+
+    SplatViewer._save_defaults_callback(viewer)
+
+    assert written["defaults"]["renderer"] == exported["renderer"]
+    assert written["defaults"]["cli"]["common_render"] == exported["cli"]["common_render"]
+
+
 def test_render_records_toolkit_failure_without_raising() -> None:
     viewer = SimpleNamespace(
         s=SimpleNamespace(training_active=True, last_error="", last_render_exception=""),

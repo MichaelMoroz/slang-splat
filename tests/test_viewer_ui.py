@@ -18,10 +18,10 @@ def _dummy_renderer() -> SimpleNamespace:
         max_splat_steps=32768,
         transmittance_threshold=0.005,
         cached_raster_grad_atomic_mode="fixed",
-        cached_raster_grad_fixed_ro_local_range=2.0,
-        cached_raster_grad_fixed_scale_range=256.0,
-        cached_raster_grad_fixed_color_range=8.0,
-        cached_raster_grad_fixed_opacity_range=8.0,
+        cached_raster_grad_fixed_ro_local_range=0.01,
+        cached_raster_grad_fixed_scale_range=0.01,
+        cached_raster_grad_fixed_color_range=0.2,
+        cached_raster_grad_fixed_opacity_range=0.2,
         debug_show_ellipses=False,
         debug_show_processed_count=False,
         debug_show_grad_norm=False,
@@ -154,6 +154,29 @@ def test_build_ui_exposes_refinement_clone_scale_mul_default() -> None:
     viewer_ui = ui.build_ui(_dummy_renderer())
 
     assert "refinement_clone_scale_mul" in viewer_ui._values
+
+
+def test_export_repo_defaults_writes_cached_raster_grad_training_render_defaults() -> None:
+    viewer_ui = ui.build_ui(_dummy_renderer())
+
+    viewer_ui._values["cached_raster_grad_atomic_mode"] = 0
+    viewer_ui._values["cached_raster_grad_fixed_ro_local_range"] = 3.0
+    viewer_ui._values["cached_raster_grad_fixed_scale_range"] = 512.0
+    viewer_ui._values["cached_raster_grad_fixed_color_range"] = 9.0
+    viewer_ui._values["cached_raster_grad_fixed_opacity_range"] = 10.0
+
+    exported = ui.export_repo_defaults_from_ui_values(viewer_ui._values)
+
+    assert exported["renderer"]["cached_raster_grad_atomic_mode"] == "float"
+    assert exported["renderer"]["cached_raster_grad_fixed_ro_local_range"] == 3.0
+    assert exported["renderer"]["cached_raster_grad_fixed_scale_range"] == 512.0
+    assert exported["renderer"]["cached_raster_grad_fixed_color_range"] == 9.0
+    assert exported["renderer"]["cached_raster_grad_fixed_opacity_range"] == 10.0
+    assert exported["cli"]["common_render"]["cached_raster_grad_atomic_mode"] == "float"
+    assert exported["cli"]["common_render"]["cached_raster_grad_fixed_ro_local_range"] == 3.0
+    assert exported["cli"]["common_render"]["cached_raster_grad_fixed_scale_range"] == 512.0
+    assert exported["cli"]["common_render"]["cached_raster_grad_fixed_color_range"] == 9.0
+    assert exported["cli"]["common_render"]["cached_raster_grad_fixed_opacity_range"] == 10.0
 
 
 def test_train_schedule_exposes_sorting_order_dithering_controls() -> None:

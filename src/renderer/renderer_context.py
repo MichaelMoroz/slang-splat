@@ -20,10 +20,10 @@ class GaussianRenderSettings:
     list_capacity_multiplier: int = 64
     max_prepass_memory_mb: int = 4096
     cached_raster_grad_atomic_mode: str = GaussianRenderer.CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED
-    cached_raster_grad_fixed_ro_local_range: float = 2.0
-    cached_raster_grad_fixed_scale_range: float = 256.0
-    cached_raster_grad_fixed_color_range: float = 8.0
-    cached_raster_grad_fixed_opacity_range: float = 8.0
+    cached_raster_grad_fixed_ro_local_range: float = 0.01
+    cached_raster_grad_fixed_scale_range: float = 0.01
+    cached_raster_grad_fixed_color_range: float = 0.2
+    cached_raster_grad_fixed_opacity_range: float = 0.2
     debug_mode: str | None = None
     debug_grad_norm_threshold: float = 2e-4
     debug_ellipse_thickness_px: float = 4.0

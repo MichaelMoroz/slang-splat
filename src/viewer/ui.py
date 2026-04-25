@@ -493,6 +493,7 @@ def default_control_values(*group_names: str) -> dict[str, object]:
 
 
 def export_repo_defaults_from_ui_values(values: dict[str, object]) -> dict[str, dict[str, object]]:
+    cached_raster_grad_atomic_mode = _CACHED_RASTER_GRAD_ATOMIC_MODE_LABELS[min(max(int(values["cached_raster_grad_atomic_mode"]), 0), len(_CACHED_RASTER_GRAD_ATOMIC_MODE_LABELS) - 1)].lower().split()[0]
     return {
         "renderer": json_value(
             {
@@ -502,7 +503,7 @@ def export_repo_defaults_from_ui_values(values: dict[str, object]) -> dict[str, 
                 "transmittance_threshold": float(values["trans_threshold"]),
                 "list_capacity_multiplier": int(_RENDERER_DEFAULTS["list_capacity_multiplier"]),
                 "max_prepass_memory_mb": int(_RENDERER_DEFAULTS["max_prepass_memory_mb"]),
-                "cached_raster_grad_atomic_mode": _CACHED_RASTER_GRAD_ATOMIC_MODE_LABELS[min(max(int(values["cached_raster_grad_atomic_mode"]), 0), len(_CACHED_RASTER_GRAD_ATOMIC_MODE_LABELS) - 1)].lower().split()[0],
+                "cached_raster_grad_atomic_mode": cached_raster_grad_atomic_mode,
                 "cached_raster_grad_fixed_ro_local_range": float(values["cached_raster_grad_fixed_ro_local_range"]),
                 "cached_raster_grad_fixed_scale_range": float(values["cached_raster_grad_fixed_scale_range"]),
                 "cached_raster_grad_fixed_color_range": float(values["cached_raster_grad_fixed_color_range"]),
@@ -529,6 +530,23 @@ def export_repo_defaults_from_ui_values(values: dict[str, object]) -> dict[str, 
                 "debug_show_grad_norm": False,
             }
         ),
+        "cli": {
+            "common_render": json_value(
+                {
+                    "prepass_memory_mb": int(_RENDERER_DEFAULTS["max_prepass_memory_mb"]),
+                    "radius_scale": float(values["radius_scale"]),
+                    "alpha_cutoff": float(values["alpha_cutoff"]),
+                    "trans_threshold": float(values["trans_threshold"]),
+                    "cached_raster_grad_atomic_mode": cached_raster_grad_atomic_mode,
+                    "cached_raster_grad_fixed_ro_local_range": float(values["cached_raster_grad_fixed_ro_local_range"]),
+                    "cached_raster_grad_fixed_scale_range": float(values["cached_raster_grad_fixed_scale_range"]),
+                    "cached_raster_grad_fixed_color_range": float(values["cached_raster_grad_fixed_color_range"]),
+                    "cached_raster_grad_fixed_opacity_range": float(values["cached_raster_grad_fixed_opacity_range"]),
+                    "debug_layers": False,
+                    "list_capacity_multiplier": int(_RENDERER_DEFAULTS["list_capacity_multiplier"]),
+                }
+            )
+        },
         "viewer": {
             "controls": json_value(
                 {
@@ -627,6 +645,13 @@ _ALL_DEFAULTS.update({spec.key: spec.kwargs["value"] for spec in RENDER_PARAM_SP
 _ALL_DEFAULTS.update({spec.key: spec.kwargs["value"] for spec in DEBUG_RENDER_SPECS if "value" in spec.kwargs})
 
 _OPTIMIZER_TAB_KEYS = TRAINING_OPTIMIZER_TAB_KEYS
+_TRAINING_RASTER_GRAD_KEYS = (
+    "cached_raster_grad_atomic_mode",
+    "cached_raster_grad_fixed_ro_local_range",
+    "cached_raster_grad_fixed_scale_range",
+    "cached_raster_grad_fixed_color_range",
+    "cached_raster_grad_fixed_opacity_range",
+)
 
 _TRAIN_OPTIMIZER_SPEC_BY_KEY = {spec.key: spec for spec in GROUP_SPECS[TRAINING_OPTIMIZER_GROUP]}
 
@@ -711,7 +736,6 @@ class ToolkitState:
 
 def _noop() -> None:
     return None
-
 
 class ToolkitWindow:
     """Dear ImGui overlay rendered into the active Slangpy AppWindow surface."""
@@ -2454,8 +2478,13 @@ class ToolkitWindow:
                 for key in _OPTIMIZER_TAB_KEYS["Regularization"]:
                     self._draw_control(ui, _TRAIN_OPTIMIZER_SPEC_BY_KEY[key])
                 imgui.end_tab_item()
+            if imgui.begin_tab_item("Raster Grads")[0]:
+                imgui.spacing()
+                for key in _TRAINING_RASTER_GRAD_KEYS:
+                    self._draw_control(ui, next(spec for spec in RENDER_PARAM_SPECS if spec.key == key))
+                imgui.end_tab_item()
             imgui.end_tab_bar()
-        self._ctx_reset("optimizer_ctx", ui, [s.key for s in GROUP_SPECS[TRAINING_OPTIMIZER_GROUP]])
+        self._ctx_reset("optimizer_ctx", ui, [s.key for s in GROUP_SPECS[TRAINING_OPTIMIZER_GROUP]] + list(_TRAINING_RASTER_GRAD_KEYS))
         imgui.separator()
 
     def _section_stability(self, ui: ViewerUI) -> None:
@@ -2491,13 +2520,9 @@ class ToolkitWindow:
     def _section_render_params(self, ui: ViewerUI) -> None:
         if not imgui.collapsing_header("Render Params"):
             return
-        for key in ("radius_scale", "alpha_cutoff", "trans_threshold", "cached_raster_grad_atomic_mode"):
+        for key in ("radius_scale", "alpha_cutoff", "trans_threshold"):
             self._draw_control(ui, next(spec for spec in RENDER_PARAM_SPECS if spec.key == key))
-
-        imgui.separator_text("Cached Grad Ranges")
-        for key in ("cached_raster_grad_fixed_ro_local_range", "cached_raster_grad_fixed_scale_range", "cached_raster_grad_fixed_color_range", "cached_raster_grad_fixed_opacity_range"):
-            self._draw_control(ui, next(spec for spec in RENDER_PARAM_SPECS if spec.key == key))
-        self._ctx_reset("render_ctx", ui, [s.key for s in RENDER_PARAM_SPECS])
+        self._ctx_reset("render_ctx", ui, ["radius_scale", "alpha_cutoff", "trans_threshold"])
         imgui.separator()
 
     def _section_defaults_footer(self, ui: ViewerUI) -> None:

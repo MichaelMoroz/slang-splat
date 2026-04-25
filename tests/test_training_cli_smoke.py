@@ -208,8 +208,41 @@ def test_train_cli_parser_defaults_color_and_opacity_lr_mul_to_five() -> None:
     assert not hasattr(args, "depth_ratio_weight")
     assert not hasattr(args, "depth_ratio_grad_min")
     assert not hasattr(args, "depth_ratio_grad_max")
+    assert args.cached_raster_grad_atomic_mode == "float"
+    assert args.cached_raster_grad_fixed_ro_local_range == 0.01
+    assert args.cached_raster_grad_fixed_scale_range == 0.01
+    assert args.cached_raster_grad_fixed_color_range == 0.2
+    assert args.cached_raster_grad_fixed_opacity_range == 0.2
     assert args.refinement_min_contribution == 512
     assert args.init_opacity is None
+
+
+def test_train_cli_parser_maps_cached_raster_grad_render_defaults() -> None:
+    parser = cli.build_parser()
+
+    args = parser.parse_args(
+        [
+            "train-colmap",
+            "--colmap-root",
+            "dummy",
+            "--cached-raster-grad-atomic-mode",
+            "fixed",
+            "--cached-raster-grad-fixed-ro-local-range",
+            "4.0",
+            "--cached-raster-grad-fixed-scale-range",
+            "768.0",
+            "--cached-raster-grad-fixed-color-range",
+            "12.0",
+            "--cached-raster-grad-fixed-opacity-range",
+            "6.0",
+        ]
+    )
+
+    assert args.cached_raster_grad_atomic_mode == "fixed"
+    assert args.cached_raster_grad_fixed_ro_local_range == 4.0
+    assert args.cached_raster_grad_fixed_scale_range == 768.0
+    assert args.cached_raster_grad_fixed_color_range == 12.0
+    assert args.cached_raster_grad_fixed_opacity_range == 6.0
 
 
 def test_train_cli_parser_maps_sorting_order_dithering() -> None:

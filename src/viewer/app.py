@@ -425,6 +425,7 @@ class SplatViewer(spy.AppWindow):
             }
             exported = export_repo_defaults_from_ui_values(self.ui._values)
             defaults["renderer"] = exported["renderer"]
+            defaults["cli"]["common_render"] = exported["cli"]["common_render"]
             defaults["viewer"]["controls"] = exported["viewer"]["controls"]
             defaults["viewer"]["import"] = exported["viewer"]["import"]
             defaults["viewer"]["ui"] = exported["viewer"]["ui"]

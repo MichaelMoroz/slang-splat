@@ -59,6 +59,11 @@ def _renderer(args: argparse.Namespace, width: int, height: int) -> GaussianRend
         transmittance_threshold=float(args.trans_threshold),
         max_prepass_memory_mb=int(args.prepass_memory_mb),
         list_capacity_multiplier=int(getattr(args, "list_capacity_multiplier", _CLI_COMMON_RENDER_DEFAULTS["list_capacity_multiplier"])),
+        cached_raster_grad_atomic_mode=str(getattr(args, "cached_raster_grad_atomic_mode", _CLI_COMMON_RENDER_DEFAULTS["cached_raster_grad_atomic_mode"])),
+        cached_raster_grad_fixed_ro_local_range=float(getattr(args, "cached_raster_grad_fixed_ro_local_range", _CLI_COMMON_RENDER_DEFAULTS["cached_raster_grad_fixed_ro_local_range"])),
+        cached_raster_grad_fixed_scale_range=float(getattr(args, "cached_raster_grad_fixed_scale_range", _CLI_COMMON_RENDER_DEFAULTS["cached_raster_grad_fixed_scale_range"])),
+        cached_raster_grad_fixed_color_range=float(getattr(args, "cached_raster_grad_fixed_color_range", _CLI_COMMON_RENDER_DEFAULTS["cached_raster_grad_fixed_color_range"])),
+        cached_raster_grad_fixed_opacity_range=float(getattr(args, "cached_raster_grad_fixed_opacity_range", _CLI_COMMON_RENDER_DEFAULTS["cached_raster_grad_fixed_opacity_range"])),
     )
     settings = GaussianRenderSettings(width=int(width), height=int(height), **renderer_kwargs(params))
     return settings.create_renderer(create_default_device(enable_debug_layers=False))
@@ -186,6 +191,11 @@ COMMON_RENDER_ARGS = (
     A("--radius-scale", type=float, default=float(_CLI_COMMON_RENDER_DEFAULTS["radius_scale"])),
     A("--alpha-cutoff", type=float, default=float(_CLI_COMMON_RENDER_DEFAULTS["alpha_cutoff"])),
     A("--trans-threshold", type=float, default=float(_CLI_COMMON_RENDER_DEFAULTS["trans_threshold"])),
+    A("--cached-raster-grad-atomic-mode", type=str, choices=("float", "fixed"), default=str(_CLI_COMMON_RENDER_DEFAULTS["cached_raster_grad_atomic_mode"])),
+    A("--cached-raster-grad-fixed-ro-local-range", type=float, default=float(_CLI_COMMON_RENDER_DEFAULTS["cached_raster_grad_fixed_ro_local_range"])),
+    A("--cached-raster-grad-fixed-scale-range", type=float, default=float(_CLI_COMMON_RENDER_DEFAULTS["cached_raster_grad_fixed_scale_range"])),
+    A("--cached-raster-grad-fixed-color-range", type=float, default=float(_CLI_COMMON_RENDER_DEFAULTS["cached_raster_grad_fixed_color_range"])),
+    A("--cached-raster-grad-fixed-opacity-range", type=float, default=float(_CLI_COMMON_RENDER_DEFAULTS["cached_raster_grad_fixed_opacity_range"])),
     A("--debug-layers", action="store_true", default=bool(_CLI_COMMON_RENDER_DEFAULTS["debug_layers"])),
 )
 TRAIN_RENDER_ARGS = tuple(A(*spec.flags, **spec.kwargs) for spec in TRAINING_CLI_ARG_DEFS)
