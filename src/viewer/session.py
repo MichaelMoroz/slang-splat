@@ -1224,14 +1224,14 @@ def apply_live_params(viewer: object, force_init_defaults: bool = False) -> None
             setattr(viewer.s, state_attr, None)
             continue
         renderer.sh_band = active_sh_band if attr == "training_renderer" else viewport_sh_band
+        renderer.debug_refinement_grad_variance_weight_exponent = float(getattr(training_params, "refinement_grad_variance_weight_exponent", getattr(renderer, "debug_refinement_grad_variance_weight_exponent", 0.0)))
+        renderer.debug_refinement_contribution_weight_exponent = float(getattr(training_params, "refinement_contribution_weight_exponent", getattr(renderer, "debug_refinement_contribution_weight_exponent", 0.0)))
         params = viewer.renderer_params(allow_debug)
         signature = _renderer_params_signature(params)
         if getattr(viewer.s, state_attr) == signature:
             continue
         for key, value in renderer_kwargs(params).items():
             setattr(renderer, key, value)
-        renderer.debug_refinement_grad_variance_weight_exponent = float(getattr(training_params, "refinement_grad_variance_weight_exponent", getattr(renderer, "debug_refinement_grad_variance_weight_exponent", 0.0)))
-        renderer.debug_refinement_contribution_weight_exponent = float(getattr(training_params, "refinement_contribution_weight_exponent", getattr(renderer, "debug_refinement_contribution_weight_exponent", 0.0)))
         setattr(viewer.s, state_attr, signature)
     _apply_debug_buffers(viewer, viewer.s.renderer)
     _apply_debug_buffers(viewer, viewer.s.debug_renderer)

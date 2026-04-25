@@ -1438,6 +1438,72 @@ def test_apply_live_params_syncs_renderer_sh_band(monkeypatch) -> None:
     assert len(update_calls) == 1
 
 
+def test_apply_live_params_updates_refinement_exponents_without_renderer_signature_change(monkeypatch) -> None:
+    renderer = SimpleNamespace(
+        sh_band=0,
+        debug_show_grad_norm=False,
+        debug_refinement_grad_variance_weight_exponent=0.25,
+        debug_refinement_contribution_weight_exponent=0.5,
+    )
+    debug_renderer = SimpleNamespace(
+        sh_band=0,
+        debug_show_grad_norm=False,
+        debug_refinement_grad_variance_weight_exponent=0.25,
+        debug_refinement_contribution_weight_exponent=0.5,
+    )
+    params = SimpleNamespace(
+        adam=SimpleNamespace(),
+        stability=SimpleNamespace(),
+        training=SimpleNamespace(
+            sh_band=0,
+            use_sh=False,
+            refinement_grad_variance_weight_exponent=1.5,
+            refinement_contribution_weight_exponent=2.5,
+            train_downscale_mode="auto",
+            train_auto_start_downscale=4,
+            train_downscale_base_iters=200,
+            train_downscale_iter_step=50,
+            train_downscale_max_iters=30_000,
+            train_downscale_factor=1,
+            train_subsample_factor=1,
+        ),
+    )
+    renderer_signature = (True,)
+    viewer = SimpleNamespace(
+        ui=SimpleNamespace(_values={"_viewport_sh_band": 3}),
+        render_background=lambda: (0.0, 0.0, 0.0),
+        renderer_params=lambda allow_debug_overlays: SimpleNamespace(__dataclass_fields__={"debug": None}, debug=bool(allow_debug_overlays)),
+        training_params=lambda: SimpleNamespace(training=SimpleNamespace(
+            sh_band=0,
+            use_sh=False,
+            refinement_grad_variance_weight_exponent=1.5,
+            refinement_contribution_weight_exponent=2.5,
+        )),
+        s=SimpleNamespace(
+            background=None,
+            renderer=renderer,
+            training_renderer=None,
+            debug_renderer=debug_renderer,
+            trainer=None,
+            applied_renderer_params_main=renderer_signature,
+            applied_renderer_params_training=None,
+            applied_renderer_params_debug=renderer_signature,
+        ),
+    )
+
+    monkeypatch.setattr(session, "resolve_effective_training_setup", lambda viewer_obj: (None, params, None, None))
+    monkeypatch.setattr(session, "_renderer_params_signature", lambda params_obj: renderer_signature)
+    monkeypatch.setattr(session, "renderer_kwargs", lambda *_args: pytest.fail("renderer_kwargs should not run when signature is unchanged"))
+    monkeypatch.setattr(session, "_apply_debug_buffers", lambda *_args: None)
+
+    session.apply_live_params(viewer)
+
+    assert viewer.s.renderer.debug_refinement_grad_variance_weight_exponent == 1.5
+    assert viewer.s.renderer.debug_refinement_contribution_weight_exponent == 2.5
+    assert viewer.s.debug_renderer.debug_refinement_grad_variance_weight_exponent == 1.5
+    assert viewer.s.debug_renderer.debug_refinement_contribution_weight_exponent == 2.5
+
+
 def test_apply_live_params_uses_viewport_sh_default_without_trainer(monkeypatch) -> None:
     renderer = SimpleNamespace(sh_band=0, debug_show_grad_norm=False)
     debug_renderer = SimpleNamespace(sh_band=0, debug_show_grad_norm=False)
