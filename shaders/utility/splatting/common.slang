@@ -234,16 +234,17 @@ float3 gaussian_sh_view_dependent_component(Gaussian3D gaussian, float3 cameraPo
 
 struct RasterGaussian : IDifferentiable
 {
-    float3 centerDir;
-    float3 sigmaOrtho;
-    float depthDistance;
+    float3 roLocal;
+    float3 scale;
+    float4 rotation;
     float4 colorAlpha;
 };
 
 struct FixedRasterGaussianGrad
 {
-    int3 centerDir;
-    int3 sigmaOrtho;
+    int3 roLocal;
+    int3 scale;
+    int4 rotation;
     int4 colorAlpha;
 };
 

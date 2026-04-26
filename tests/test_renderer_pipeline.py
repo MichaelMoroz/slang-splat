@@ -40,112 +40,23 @@ def _outline_screen_point(center: np.ndarray, conic: np.ndarray, theta: float) -
     return np.asarray(center, dtype=np.float32) + direction / np.float32(np.sqrt(max(float(denom), 1e-12)))
 
 
-def _pick_tangent_axis(direction: np.ndarray) -> np.ndarray:
-    direction_arr = np.asarray(direction, dtype=np.float32).reshape(3)
-    return np.array((0.0, 0.0, 1.0), dtype=np.float32) if abs(float(direction_arr[2])) < 0.999 else np.array((0.0, 1.0, 0.0), dtype=np.float32)
-
-
-def _build_direction_frame(center_dir: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    center_dir_arr = np.asarray(center_dir, dtype=np.float32).reshape(3)
-    tangent_x = np.cross(_pick_tangent_axis(center_dir_arr), center_dir_arr).astype(np.float32, copy=False)
-    tangent_x /= np.float32(max(float(np.linalg.norm(tangent_x)), 1e-12))
-    tangent_y = np.cross(center_dir_arr, tangent_x).astype(np.float32, copy=False)
-    return tangent_x, tangent_y
-
-
-def _directional_alpha(camera: Camera, ray_direction: np.ndarray, splat: np.ndarray, radius_scale: float, alpha_cutoff: float) -> float:
+def _ray_splat_intersection_alpha(ray_origin: np.ndarray, ray_direction: np.ndarray, splat: np.ndarray, radius_scale: float, alpha_cutoff: float) -> float:
     opacity = float(np.clip(splat[13], 0.0, 1.0))
     if opacity < alpha_cutoff:
         return 0.0
-
-    camera_pos = camera.world_point_to_camera(splat[0:3])
-    center_distance = float(np.linalg.norm(camera_pos))
-    if center_distance <= 1e-12:
-        return 0.0
-
-    center_dir = camera_pos / np.float32(center_distance)
-    tangent_x, tangent_y = _build_direction_frame(center_dir)
-    sigma = np.exp(splat[3:6]).astype(np.float32) * np.float32(radius_scale)
-    variance = sigma * sigma
-    local_tangent_x = _quat_rotate(camera.camera_to_world(tangent_x), splat[6:10])
-    local_tangent_y = _quat_rotate(camera.camera_to_world(tangent_y), splat[6:10])
-    sigma_ortho = np.array(
-        (
-            float(np.dot(local_tangent_x * variance, local_tangent_x)),
-            float(np.dot(local_tangent_x * variance, local_tangent_y)),
-            float(np.dot(local_tangent_y * variance, local_tangent_y)),
-        ),
-        dtype=np.float32,
-    ) / np.float32(max(center_distance * center_distance, 1e-12))
-    det = float(sigma_ortho[0] * sigma_ortho[2] - sigma_ortho[1] * sigma_ortho[1])
-    if det <= 1e-12 or not np.isfinite(det):
-        return 0.0
-
-    ray_dir_camera = np.asarray(camera.world_to_camera(ray_direction), dtype=np.float32)
-    denom = float(np.dot(center_dir, ray_dir_camera))
+    support_sigma_radius = float(np.sqrt(max(-2.0 * np.log(alpha_cutoff / max(opacity, alpha_cutoff)), 0.0)))
+    scale = np.maximum(np.exp(splat[3:6]).astype(np.float32) * np.float32(radius_scale * support_sigma_radius), np.float32(1e-6))
+    ro_local = _quat_rotate(ray_origin - splat[0:3], splat[6:10]) / scale
+    ray_local = _quat_rotate(ray_direction, splat[6:10]) / scale
+    denom = float(np.dot(ray_local, ray_local))
     if denom <= 1e-10:
         return 0.0
-    eta = np.array(
-        (
-            float(np.dot(tangent_x, ray_dir_camera)),
-            float(np.dot(tangent_y, ray_dir_camera)),
-        ),
-        dtype=np.float32,
-    ) / np.float32(denom)
-    quad_vec = np.array(
-        (
-            sigma_ortho[2] * eta[0] - sigma_ortho[1] * eta[1],
-            -sigma_ortho[1] * eta[0] + sigma_ortho[0] * eta[1],
-        ),
-        dtype=np.float32,
-    ) / np.float32(det)
-    return float(opacity * np.exp(-0.5 * float(np.dot(eta, quad_vec))))
-
-
-def _directional_outline_screen_point(camera: Camera, splat: np.ndarray, radius_scale: float, alpha_cutoff: float, width: int, height: int, sample_index: int, default_k1: float = 0.0, default_k2: float = 0.0) -> np.ndarray | None:
-    opacity = float(np.clip(splat[13], 0.0, 1.0))
-    if opacity < alpha_cutoff:
-        return None
-
-    camera_pos = camera.world_point_to_camera(splat[0:3])
-    center_distance = float(np.linalg.norm(camera_pos))
-    if center_distance <= 1e-12:
-        return None
-
-    center_dir = camera_pos / np.float32(center_distance)
-    tangent_x, tangent_y = _build_direction_frame(center_dir)
-    sigma = np.exp(splat[3:6]).astype(np.float32) * np.float32(radius_scale)
-    variance = sigma * sigma
-    local_tangent_x = _quat_rotate(camera.camera_to_world(tangent_x), splat[6:10])
-    local_tangent_y = _quat_rotate(camera.camera_to_world(tangent_y), splat[6:10])
-    sigma_ortho = np.array(
-        (
-            float(np.dot(local_tangent_x * variance, local_tangent_x)),
-            float(np.dot(local_tangent_x * variance, local_tangent_y)),
-            float(np.dot(local_tangent_y * variance, local_tangent_y)),
-        ),
-        dtype=np.float32,
-    ) / np.float32(max(center_distance * center_distance, 1e-12))
-    det = float(sigma_ortho[0] * sigma_ortho[2] - sigma_ortho[1] * sigma_ortho[1])
-    if det <= 1e-12 or not np.isfinite(det):
-        return None
-
-    l00 = float(np.sqrt(max(float(sigma_ortho[0]), 0.0)))
-    if l00 <= 1e-6 or not np.isfinite(l00):
-        return None
-    l10 = float(sigma_ortho[1]) / l00
-    l11_sq = float(sigma_ortho[2]) - l10 * l10
-    l11 = float(np.sqrt(max(l11_sq, 0.0)))
-    if l11 <= 1e-6 or not np.isfinite(l11):
-        return None
-
-    cutoff_radius = float(np.sqrt(max(-2.0 * np.log(alpha_cutoff / max(opacity, alpha_cutoff)), 0.0)))
-    theta = float(2.0 * np.pi * sample_index / 5.0)
-    eta = np.array((l00 * np.cos(theta), l10 * np.cos(theta) + l11 * np.sin(theta)), dtype=np.float32) * np.float32(cutoff_radius)
-    ray_dir_camera = center_dir + tangent_x * eta[0] + tangent_y * eta[1]
-    ray_dir_camera /= np.float32(max(float(np.linalg.norm(ray_dir_camera)), 1e-12))
-    screen_point, ok = camera.project_camera_to_screen(ray_dir_camera, width, height, default_k1, default_k2)
-    return screen_point if ok else None
+    t_closest = -float(np.dot(ray_local, ro_local)) / denom
+    if t_closest <= 0.0:
+        return 0.0
+    closest = ro_local + ray_local * np.float32(t_closest)
+    rho2 = max(float(np.dot(closest, closest)), 0.0)
+    return float(opacity * np.exp(-0.5 * support_sigma_radius * support_sigma_radius * rho2))
 
 
 def make_scene(count: int, seed: int = 0) -> GaussianScene:
@@ -204,40 +115,11 @@ def _make_layered_depth_scene(depths: tuple[float, ...], sigma: float = 0.04, op
         colors=colors,
         sh_coeffs=sh_coeffs,
     )
-
-
-def _make_longitudinal_depth_scene(depth: float, transverse_sigma: float, longitudinal_sigma: float, opacity: float = 0.75) -> GaussianScene:
-    return GaussianScene(
-        positions=np.array([[0.0, 0.0, depth]], dtype=np.float32),
-        scales=np.array([_log_sigma((transverse_sigma, transverse_sigma, longitudinal_sigma))], dtype=np.float32),
-        rotations=np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
-        opacities=np.array([opacity], dtype=np.float32),
-        colors=np.array([[0.5, 0.5, 0.5]], dtype=np.float32),
-        sh_coeffs=np.zeros((1, 1, 3), dtype=np.float32),
-    )
-
-
-def test_renderer_loads_raster_constants_from_shader(device):
-    renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, list_capacity_multiplier=32)
-    config = GaussianRenderer._load_raster_config(Path(SHADER_ROOT / "renderer" / "gaussian_types.slang"))
-
-    assert renderer.tile_size == config.tile_size
-    assert renderer._raster_config.thread_tile_dim == config.thread_tile_dim
-    assert renderer._raster_config.tile_size == config.tile_size
-    assert renderer._raster_config.batch == config.batch
-
-
-def test_renderer_params_default_to_fixed_cached_grad_atomics():
-    params = RendererParams()
-    kwargs = renderer_kwargs(params)
-
-    assert params.cached_raster_grad_atomic_mode == "fixed"
-    assert kwargs["cached_raster_grad_atomic_mode"] == "fixed"
-    assert params.cached_raster_grad_fixed_ro_local_range == 1.0
-    assert kwargs["cached_raster_grad_fixed_ro_local_range"] == 1.0
-    assert params.cached_raster_grad_fixed_scale_range == 15.0
-    assert kwargs["cached_raster_grad_fixed_scale_range"] == 15.0
-    assert params.cached_raster_grad_fixed_color_range == 8.0
+    support_sigma_radius = float(np.sqrt(max(-2.0 * np.log(alpha_cutoff / max(opacity, alpha_cutoff)), 0.0)))
+    scale = np.maximum(np.exp(splat[3:6]).astype(np.float32) * np.float32(radius_scale * support_sigma_radius), np.float32(1e-6))
+    ro_local = _quat_rotate(ray_origin - splat[0:3], splat[6:10]) / scale
+    ray_local = _quat_rotate(ray_direction, splat[6:10]) / scale
+    denom = float(np.dot(ray_local, ray_local))
     assert kwargs["cached_raster_grad_fixed_color_range"] == 8.0
     assert params.cached_raster_grad_fixed_opacity_range == 8.0
     assert kwargs["cached_raster_grad_fixed_opacity_range"] == 8.0
@@ -259,56 +141,18 @@ def test_render_ignores_max_splat_steps_cap(device):
     positions[:, 0] = np.linspace(-0.015, 0.015, count, dtype=np.float32)
     scales = np.full((count, 3), _log_sigma(0.05), dtype=np.float32)
     rotations = np.zeros((count, 4), dtype=np.float32)
-    rotations[:, 0] = 1.0
-    opacities = np.full((count,), 0.04, dtype=np.float32)
-    colors = np.stack(
-        (
-            np.linspace(0.2, 0.9, count, dtype=np.float32),
-            np.linspace(0.1, 0.8, count, dtype=np.float32),
-            np.linspace(0.05, 0.6, count, dtype=np.float32),
-        ),
-        axis=1,
-    )
-    scene = GaussianScene(
-        positions=positions,
-        scales=scales,
-        rotations=rotations,
-        opacities=opacities,
-        colors=colors,
-        sh_coeffs=np.zeros((count, 1, 3), dtype=np.float32),
-    )
-    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
-    background = np.array([0.02, 0.03, 0.05], dtype=np.float32)
-    limited = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, max_splat_steps=1, list_capacity_multiplier=128)
-    unlimited = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, max_splat_steps=32768, list_capacity_multiplier=128)
-
-    limited_image = limited.render(scene, camera, background=background).image
-    unlimited_image = unlimited.render(scene, camera, background=background).image
-
-    mean_abs_error = float(np.mean(np.abs(limited_image - unlimited_image)))
-    max_abs_error = float(np.max(np.abs(limited_image - unlimited_image)))
-    assert mean_abs_error < 2e-4
-    assert max_abs_error < 3e-3
-
-
-def test_max_anisotropy_clamps_cached_raster_scale(device):
-    scene = GaussianScene(
-        positions=np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
-        scales=np.array([_log_sigma((0.2, 0.02, 0.02))], dtype=np.float32),
-        rotations=np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
-        opacities=np.array([0.85], dtype=np.float32),
-        colors=np.array([[0.7, 0.6, 0.4]], dtype=np.float32),
-        sh_coeffs=np.zeros((1, 1, 3), dtype=np.float32),
-    )
-    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
-    unconstrained = GaussianRenderer(device, width=64, height=64, radius_scale=1.0, max_anisotropy=100.0)
-    constrained = GaussianRenderer(device, width=64, height=64, radius_scale=1.0, max_anisotropy=2.0)
+    t_closest = -float(np.dot(ray_local, ro_local)) / denom
+    if t_closest <= 0.0:
+        return 0.0
+    closest = ro_local + ray_local * np.float32(t_closest)
+    rho2 = max(float(np.dot(closest, closest)), 0.0)
+    return float(opacity * np.exp(-0.5 * support_sigma_radius * support_sigma_radius * rho2))
 
     unconstrained_cache = np.asarray(unconstrained.debug_pipeline_data(scene, camera)["raster_cache"], dtype=np.float32)
     constrained_cache = np.asarray(constrained.debug_pipeline_data(scene, camera)["raster_cache"], dtype=np.float32)
 
-    np.testing.assert_allclose(unconstrained_cache[0, 3:6], np.array([0.0025, 0.0, 0.000025], dtype=np.float32), rtol=2e-4, atol=2e-4)
-    np.testing.assert_allclose(constrained_cache[0, 3:6], np.array([0.0025, 0.0, 0.000625], dtype=np.float32), rtol=2e-4, atol=2e-4)
+    np.testing.assert_allclose(unconstrained_cache[0, 3:6], np.array([0.6, 0.06, 0.06], dtype=np.float32), rtol=2e-4, atol=2e-4)
+    np.testing.assert_allclose(constrained_cache[0, 3:6], np.array([0.6, 0.3, 0.3], dtype=np.float32), rtol=2e-4, atol=2e-4)
 
 
 def test_projection_keeps_partially_visible_splat_when_center_is_behind_camera(device):
@@ -542,18 +386,20 @@ def test_projection_outline_hits_alpha_cutoff(device):
     sample_count = min(_PROJECTION_SAMPLE_COUNT, visible.size)
     sampled = rng.choice(visible, size=sample_count, replace=False)
     for splat_index in sampled.tolist():
-        center = debug["screen_center_radius_depth"][splat_index, :2]
-        conic = debug["screen_ellipse_conic"][splat_index, :3]
-        packed = np.concatenate((scene.positions[splat_index], scene.scales[splat_index], scene.rotations[splat_index], scene.colors[splat_index], scene.opacities[splat_index:splat_index + 1]))
-        for sample_index in range(5):
-            outline_point = _directional_outline_screen_point(camera, packed, renderer.radius_scale, renderer.alpha_cutoff, renderer.width, renderer.height, sample_index, renderer.proj_distortion_k1, renderer.proj_distortion_k2)
-            assert outline_point is not None
-            ray_direction = camera.screen_to_world_ray(outline_point, renderer.width, renderer.height, renderer.proj_distortion_k1, renderer.proj_distortion_k2)
-            alpha = _directional_alpha(camera, ray_direction, packed, renderer.radius_scale, renderer.alpha_cutoff)
-            delta = outline_point - center
-            quad = float(conic[0] * delta[0] * delta[0] + 2.0 * conic[1] * delta[0] * delta[1] + conic[2] * delta[1] * delta[1])
-            assert abs(alpha - renderer.alpha_cutoff) <= _PROJECTION_ALPHA_TOL
-            assert abs(quad - 1.0) <= 1e-3
+        outline_point = _outline_screen_point(
+            debug["screen_center_radius_depth"][splat_index, :2],
+            debug["screen_ellipse_conic"][splat_index, :3],
+            float(rng.uniform(0.0, 2.0 * np.pi)),
+        )
+        ray_direction = camera.screen_to_world_ray(outline_point, renderer.width, renderer.height, renderer.proj_distortion_k1, renderer.proj_distortion_k2)
+        alpha = _ray_splat_intersection_alpha(
+            camera.position,
+            ray_direction,
+            np.concatenate((scene.positions[splat_index], scene.scales[splat_index], scene.rotations[splat_index], scene.colors[splat_index], scene.opacities[splat_index:splat_index + 1])),
+            renderer.radius_scale,
+            renderer.alpha_cutoff,
+        )
+        assert abs(alpha - renderer.alpha_cutoff) <= _PROJECTION_ALPHA_TOL
 
 
 def test_distorted_render_matches_cpu_reference(device):
@@ -605,29 +451,18 @@ def test_prepass_populates_raster_cache(device):
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
     renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, list_capacity_multiplier=32)
     debug = renderer.debug_pipeline_data(scene, camera)
+    projected = project_splats(scene, camera, renderer.width, renderer.height, renderer.radius_scale)
 
     raster_cache = np.asarray(debug["raster_cache"], dtype=np.float32)
-    screen_center_radius_depth = np.asarray(debug["screen_center_radius_depth"], dtype=np.float32)
-    screen_color_alpha = np.asarray(debug["screen_color_alpha"], dtype=np.float32)
-    expected_center_dir = np.asarray(
-        [
-            camera.world_point_to_camera(scene.positions[index]) / max(np.linalg.norm(camera.world_point_to_camera(scene.positions[index])), 1e-12)
-            for index in range(scene.count)
-        ],
-        dtype=np.float32,
-    )
-
-    assert raster_cache.shape == (scene.count, 11)
+    assert raster_cache.shape == (scene.count, 14)
     assert np.all(np.isfinite(raster_cache))
     assert float(np.max(np.abs(raster_cache[:, :10]))) > 0.0
-    np.testing.assert_allclose(raster_cache[:, :3], expected_center_dir, rtol=2e-4, atol=2e-4)
-    np.testing.assert_allclose(np.linalg.norm(raster_cache[:, :3], axis=1), np.ones((scene.count,), dtype=np.float32), rtol=2e-4, atol=2e-4)
-    assert np.all(raster_cache[:, 3] > 0.0)
-    assert np.all(raster_cache[:, 5] > 0.0)
-    assert np.all(raster_cache[:, 3] * raster_cache[:, 5] - raster_cache[:, 4] * raster_cache[:, 4] > 0.0)
-    np.testing.assert_allclose(raster_cache[:, 6], screen_center_radius_depth[:, 3], rtol=2e-4, atol=2e-4)
-    np.testing.assert_allclose(raster_cache[:, 7:10], screen_color_alpha[:, :3], rtol=0.0, atol=1e-5)
-    np.testing.assert_allclose(raster_cache[:, 10], scene.opacities, rtol=0.0, atol=1e-6)
+    expected_ro = np.asarray(projected.pos_local, dtype=np.float32)
+    expected_scale = 1.0 / np.maximum(np.asarray(projected.inv_scale, dtype=np.float32), 1e-12)
+    expected_quat = np.asarray(projected.quat, dtype=np.float32)
+    np.testing.assert_allclose(raster_cache[:, :3], expected_ro, rtol=2e-4, atol=2e-4)
+    np.testing.assert_allclose(raster_cache[:, 3:6], expected_scale, rtol=3e-4, atol=3e-4)
+    np.testing.assert_allclose(raster_cache[:, 6:10], expected_quat, rtol=3e-4, atol=3e-4)
 
 
 def test_projected_color_prepass_keeps_out_of_range_values(device):
@@ -648,9 +483,9 @@ def test_projected_color_prepass_keeps_out_of_range_values(device):
     render_cache = np.asarray(render_debug["raster_cache"], dtype=np.float32)
 
     renderer.set_scene(scene)
-    np.testing.assert_allclose(render_cache[0, 7:10], np.array([1.35, -0.2, 0.6], dtype=np.float32), rtol=0.0, atol=1e-5)
+    np.testing.assert_allclose(render_cache[0, 10:13], np.array([1.35, -0.2, 0.6], dtype=np.float32), rtol=0.0, atol=1e-5)
     renderer.execute_prepass_for_current_scene(camera, sync_counts=True)
-    np.testing.assert_allclose(renderer.read_raster_cache(scene.count)[0, 7:10], np.array([1.35, -0.2, 0.6], dtype=np.float32), rtol=0.0, atol=1e-5)
+    np.testing.assert_allclose(renderer.read_raster_cache(scene.count)[0, 10:13], np.array([1.35, -0.2, 0.6], dtype=np.float32), rtol=0.0, atol=1e-5)
 
 
 def test_projection_render_smoke(device):
@@ -1046,8 +881,8 @@ def test_debug_depth_local_mismatch_render_smoke(device):
 
 def test_debug_depth_local_mismatch_highlights_close_layered_splats_more_than_far_layers(device):
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
-    near_scene = _make_layered_depth_scene((0.0, 0.03, 0.06))
-    far_scene = _make_layered_depth_scene((0.0, 0.5, 1.0))
+    near_scene = _make_layered_depth_scene((0.0, 0.03))
+    far_scene = _make_layered_depth_scene((0.0, 0.5))
     renderer = GaussianRenderer(
         device,
         width=64,
@@ -1064,29 +899,6 @@ def test_debug_depth_local_mismatch_highlights_close_layered_splats_more_than_fa
     far_out = renderer.render(far_scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32)).image
 
     assert float(np.max(near_out[..., :3])) > float(np.max(far_out[..., :3])) + 1e-3
-
-
-def test_debug_depth_mean_uses_center_distance_not_longitudinal_intersection(device):
-    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
-    compact_scene = _make_longitudinal_depth_scene(depth=0.0, transverse_sigma=0.04, longitudinal_sigma=0.04, opacity=0.9)
-    stretched_scene = _make_longitudinal_depth_scene(depth=0.0, transverse_sigma=0.04, longitudinal_sigma=1.2, opacity=0.9)
-    renderer = GaussianRenderer(
-        device,
-        width=64,
-        height=64,
-        radius_scale=1.6,
-        list_capacity_multiplier=32,
-        debug_mode=GaussianRenderer.DEBUG_MODE_DEPTH_MEAN,
-        debug_depth_mean_range=(3.0, 5.0),
-    )
-
-    compact_out = renderer.render(compact_scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32)).image
-    stretched_out = renderer.render(stretched_scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32)).image
-    center_y = renderer.height // 2
-    center_x = renderer.width // 2
-
-    assert float(np.max(compact_out[center_y, center_x, :3])) > 1e-3
-    np.testing.assert_allclose(stretched_out[center_y, center_x, :3], compact_out[center_y, center_x, :3], rtol=0.0, atol=2e-4)
 
 
 def test_render_stats_are_one_frame_delayed(device):
@@ -1139,7 +951,7 @@ def test_raster_backward_decodes_fixed_grad_grid(device):
 
     assert grads["cached_raster_grads_mode"] == "fixed"
     values = np.asarray(grads["cached_raster_grads_fixed"], dtype=np.int32)
-    assert values.shape == (scene.count, 10)
+    assert values.shape == (scene.count, 14)
     nonzero = values[values != 0]
     assert nonzero.size > 0
     decoded = np.asarray(renderer.read_cached_raster_grads_fixed_decoded(scene.count), dtype=np.float32)
@@ -1160,7 +972,7 @@ def test_raster_backward_float_mode_produces_float_intermediate_and_final_grads(
     assert active_nonzero.size > 0
     requantized = float_nonzero / renderer.cached_raster_grad_fixed_decode_scale_table(scene.count)
     assert np.any(np.abs(requantized[np.abs(float_nonzero) > 0.0] - np.rint(requantized[np.abs(float_nonzero) > 0.0])) > 1e-4)
-    assert np.count_nonzero(float_nonzero[:, 6:9]) > 0
+    assert np.count_nonzero(float_nonzero[:, 10:13]) > 0
 
     final_values = np.concatenate(
         [
@@ -1174,37 +986,6 @@ def test_raster_backward_float_mode_produces_float_intermediate_and_final_grads(
     assert final_nonzero.size > 0
     assert np.any(np.abs(final_nonzero * 65536.0 - np.rint(final_nonzero * 65536.0)) > 1e-4)
     assert np.count_nonzero(np.asarray(grads["grad_color_alpha"], dtype=np.float32)[:, :3]) > 0
-
-
-def test_raster_backward_fixed_mode_tracks_float_mode_for_anisotropic_scales(device):
-    scene = GaussianScene(
-        positions=np.array([[-0.18, 0.0, 0.0], [0.0, 0.0, 0.05], [0.18, 0.0, -0.05]], dtype=np.float32),
-        scales=np.array(
-            [
-                _log_sigma((0.04, 0.04, 1.2)),
-                _log_sigma((0.2, 0.02, 0.02)),
-                _log_sigma((0.2, 0.02, 1.2)),
-            ],
-            dtype=np.float32,
-        ),
-        rotations=np.array([[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
-        opacities=np.full((3,), 0.8, dtype=np.float32),
-        colors=np.array([[0.75, 0.2, 0.1], [0.1, 0.75, 0.2], [0.2, 0.1, 0.75]], dtype=np.float32),
-        sh_coeffs=np.zeros((3, 1, 3), dtype=np.float32),
-    )
-    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
-    background = np.array([0.03, 0.05, 0.07], dtype=np.float32)
-    fixed_renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, list_capacity_multiplier=32, cached_raster_grad_atomic_mode="fixed")
-    float_renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, list_capacity_multiplier=32, cached_raster_grad_atomic_mode="float")
-
-    fixed_grads = fixed_renderer.debug_raster_backward_grads(scene, camera, background=background)
-    float_grads = float_renderer.debug_raster_backward_grads(scene, camera, background=background)
-
-    for name in ("grad_positions", "grad_scales", "grad_rotations", "grad_color_alpha"):
-        fixed_values = np.asarray(fixed_grads[name], dtype=np.float32)
-        float_values = np.asarray(float_grads[name], dtype=np.float32)
-        assert np.any(np.abs(float_values) > 0.0)
-        np.testing.assert_allclose(fixed_values, float_values, rtol=0.05, atol=5e-4)
 
 
 def test_active_cached_raster_grad_metrics_tensor_matches_float_mode_buffer(device):

@@ -224,63 +224,6 @@ bool compute_ellipsoid_outline_ellipse(Ellipsoid ellipsoid, PinholeCamera camera
     return fit_projected_outline_ellipse(outlinePoints, outlineMin, outlineMax, hasScreenCenter, screenCenter, camera.params.viewport, ellipse);
 }
 
-bool compute_directional_outline_ellipse(float3 centerDir, float3 sigmaOrtho, float centerDistance, float opacity, float alphaCutoff, PinholeCamera camera, bool supportIntersectsFront, out Ellipse ellipse)
-{
-    ellipse.centerPx = 0.0;
-    ellipse.radiusPx = 0.0;
-    ellipse.conic = 0.0;
-    ellipse.bboxExtent = 0.0;
-
-    if (!all(isfinite(centerDir)) || !all(isfinite(sigmaOrtho)) || !isfinite(centerDistance) || !isfinite(opacity) || centerDistance <= SMALL_VALUE) return false;
-    if (opacity < alphaCutoff) return false;
-
-    float cutoffQuad = -2.0 * log(alphaCutoff / max(opacity, alphaCutoff));
-    if (!(cutoffQuad > ELLIPSE_EPS) || !isfinite(cutoffQuad)) return false;
-
-    float detFloor = RAY_DENOMINATOR_FLOOR * RAY_DENOMINATOR_FLOOR;
-    float det = sigmaOrtho.x * sigmaOrtho.z - sigmaOrtho.y * sigmaOrtho.y;
-    if (det <= detFloor || !isfinite(det)) return false;
-
-    float2 screenCenter = 0.0;
-    bool hasScreenCenter = camera.project_camera_to_screen(centerDir * centerDistance, screenCenter);
-    if (!hasScreenCenter && !supportIntersectsFront) return false;
-
-    float l00 = sqrt(max(sigmaOrtho.x, 0.0));
-    if (!(l00 > RAY_DENOMINATOR_FLOOR) || !isfinite(l00)) return false;
-    float l10 = sigmaOrtho.y / l00;
-    float l11Sq = sigmaOrtho.z - l10 * l10;
-    float l11 = sqrt(max(l11Sq, 0.0));
-    if (!(l11 > RAY_DENOMINATOR_FLOOR) || !isfinite(l11)) return false;
-
-    float cutoffRadius = sqrt(cutoffQuad);
-    float3 tangentX;
-    float3 tangentY;
-    build_direction_frame(centerDir, tangentX, tangentY);
-
-    float2 outlinePoints[ELLIPSE_POINT_COUNT];
-    float2 outlineMin = float2(1e30, 1e30);
-    float2 outlineMax = float2(-1e30, -1e30);
-    [unroll] for (uint i = 0u; i < ELLIPSE_POINT_COUNT; i++)
-    {
-        float theta = TAU_RADIANS * (float(i) / float(ELLIPSE_POINT_COUNT));
-        float s, c;
-        sincos(theta, s, c);
-        float2 eta = cutoffRadius * float2(l00 * c, l10 * c + l11 * s);
-        float3 rayDirCamera = normalize(centerDir + tangentX * eta.x + tangentY * eta.y);
-        float2 screenPoint = 0.0;
-        if (!camera.project_camera_to_screen(rayDirCamera, screenPoint))
-        {
-            if (!supportIntersectsFront) return false;
-            init_fullscreen_fallback_ellipse(camera.params.viewport, ellipse);
-            return true;
-        }
-        outlinePoints[i] = screenPoint;
-        outlineMin = min(outlineMin, screenPoint);
-        outlineMax = max(outlineMax, screenPoint);
-    }
-    return fit_projected_outline_ellipse(outlinePoints, outlineMin, outlineMax, hasScreenCenter, screenCenter, camera.params.viewport, ellipse);
-}
-
 bool try_prepare_conic_for_binning(inout Ellipse ellipse, float halfTile)
 {
     ellipse.bboxExtent = float2(ellipse.radiusPx, ellipse.radiusPx);

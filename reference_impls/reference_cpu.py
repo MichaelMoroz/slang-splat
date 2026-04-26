@@ -45,51 +45,6 @@ def _quat_conj(q_wxyz: np.ndarray) -> np.ndarray:
     return np.array([q[0], -q[1], -q[2], -q[3]], dtype=np.float32)
 
 
-def _pick_tangent_axis(direction: np.ndarray) -> np.ndarray:
-    direction_arr = np.asarray(direction, dtype=np.float32).reshape(3)
-    return np.array((0.0, 0.0, 1.0), dtype=np.float32) if abs(float(direction_arr[2])) < 0.999 else np.array((0.0, 1.0, 0.0), dtype=np.float32)
-
-
-def _build_direction_frame(center_dir: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    center_dir_arr = np.asarray(center_dir, dtype=np.float32).reshape(3)
-    helper_axis = _pick_tangent_axis(center_dir_arr)
-    tangent_x = np.cross(helper_axis, center_dir_arr).astype(np.float32, copy=False)
-    tangent_x_norm = float(np.linalg.norm(tangent_x))
-    if tangent_x_norm <= 1e-12 or not np.isfinite(tangent_x_norm):
-        return np.zeros((3,), dtype=np.float32), np.zeros((3,), dtype=np.float32)
-    tangent_x /= tangent_x_norm
-    tangent_y = np.cross(center_dir_arr, tangent_x).astype(np.float32, copy=False)
-    return tangent_x, tangent_y
-
-
-def _build_cached_directional_gaussian(camera_pos: np.ndarray, camera_basis: np.ndarray, rotation: np.ndarray, sigma: np.ndarray) -> tuple[np.ndarray, np.ndarray, float] | None:
-    camera_mean = np.asarray(camera_pos, dtype=np.float32).reshape(3)
-    center_distance = float(np.linalg.norm(camera_mean))
-    if center_distance <= 1e-12 or not np.isfinite(camera_mean).all():
-        return None
-
-    center_dir = (camera_mean / np.float32(center_distance)).astype(np.float32, copy=False)
-    tangent_x, tangent_y = _build_direction_frame(center_dir)
-    if not np.isfinite(tangent_x).all() or not np.isfinite(tangent_y).all():
-        return None
-
-    world_tangent_x = (np.asarray(camera_basis, dtype=np.float32).reshape(3, 3).T @ tangent_x).astype(np.float32, copy=False)
-    world_tangent_y = (np.asarray(camera_basis, dtype=np.float32).reshape(3, 3).T @ tangent_y).astype(np.float32, copy=False)
-    local_tangent_x = _quat_rotate(world_tangent_x, rotation)
-    local_tangent_y = _quat_rotate(world_tangent_y, rotation)
-    variance = np.square(np.asarray(sigma, dtype=np.float32).reshape(3), dtype=np.float32)
-    inv_center_distance_sq = np.float32(1.0 / max(center_distance * center_distance, 1e-12))
-    sigma_ortho = np.array(
-        (
-            float(np.dot(local_tangent_x * variance, local_tangent_x)),
-            float(np.dot(local_tangent_x * variance, local_tangent_y)),
-            float(np.dot(local_tangent_y * variance, local_tangent_y)),
-        ),
-        dtype=np.float32,
-    ) * inv_center_distance_sq
-    return center_dir, sigma_ortho.astype(np.float32, copy=False), center_distance
-
-
 def _solve_conic_renorm(points: np.ndarray, eps: float) -> np.ndarray | None:
     pts = np.asarray(points, dtype=np.float64).reshape(5, 2)
     sx = float(pts[0, 0] - pts[1, 0])
@@ -165,67 +120,55 @@ def _solve_conic_renorm(points: np.ndarray, eps: float) -> np.ndarray | None:
 
 
 def _compute_outline_ellipse(
-    center_dir: np.ndarray,
-    sigma_ortho: np.ndarray,
-    center_distance: float,
-    opacity: float,
-    alpha_cutoff: float,
+    world_pos: np.ndarray,
+    inv_scale: np.ndarray,
+    rotation: np.ndarray,
     camera: Camera,
     width: int,
     height: int,
-    support_intersects_front: bool,
 ) -> tuple[np.ndarray, float, np.ndarray] | None:
-    center_camera = np.asarray(center_dir, dtype=np.float32).reshape(3) * np.float32(center_distance)
-    screen_center, screen_ok = camera.project_camera_to_screen(center_camera, width, height)
-    if not screen_ok and not support_intersects_front:
+    screen_center, screen_ok = camera.project_world_to_screen(world_pos, width, height)
+    if not screen_ok:
         return None
 
-    if opacity < alpha_cutoff:
-        return None
-    cutoff_quad = float(max(-2.0 * math.log(alpha_cutoff / max(opacity, alpha_cutoff)), 0.0))
-    if not np.isfinite(cutoff_quad) or cutoff_quad <= ELLIPSE_EPS:
-        return None
-
-    sigma = np.asarray(sigma_ortho, dtype=np.float64).reshape(3)
-    det = float(sigma[0] * sigma[2] - sigma[1] * sigma[1])
-    if det <= 1e-12 or not np.isfinite(det):
+    view_origin_local = _quat_rotate(camera.position - world_pos, rotation) * inv_scale
+    view_distance = float(np.linalg.norm(view_origin_local))
+    if view_distance <= 1.0 + ELLIPSE_EPS:
         return None
 
-    l00 = math.sqrt(max(float(sigma[0]), 0.0))
-    if l00 <= 1e-6 or not np.isfinite(l00):
+    view_dir_local = view_origin_local / view_distance
+    tangent_circle_center = view_dir_local / view_distance
+    tangent_circle_radius = math.sqrt(max(1.0 - 1.0 / (view_distance * view_distance), 0.0))
+    tangent_axis = np.array((0.0, 0.0, 1.0), dtype=np.float32) if abs(float(view_dir_local[2])) < 0.999 else np.array((0.0, 1.0, 0.0), dtype=np.float32)
+    tangent_basis_u = np.cross(tangent_axis, view_dir_local).astype(np.float32, copy=False)
+    tangent_basis_u_norm = float(np.linalg.norm(tangent_basis_u))
+    if tangent_basis_u_norm <= ELLIPSE_EPS or not np.isfinite(tangent_basis_u_norm):
         return None
-    l10 = float(sigma[1]) / l00
-    l11_sq = float(sigma[2]) - l10 * l10
-    l11 = math.sqrt(max(l11_sq, 0.0))
-    if l11 <= 1e-6 or not np.isfinite(l11):
+    tangent_basis_u /= tangent_basis_u_norm
+    tangent_basis_v = np.cross(view_dir_local, tangent_basis_u).astype(np.float32, copy=False)
+    tangent_basis_v_norm = float(np.linalg.norm(tangent_basis_v))
+    if tangent_basis_v_norm <= ELLIPSE_EPS or not np.isfinite(tangent_basis_v_norm):
         return None
-
-    tangent_x, tangent_y = _build_direction_frame(center_dir)
-    if not np.isfinite(tangent_x).all() or not np.isfinite(tangent_y).all():
-        return None
-    cutoff_radius = math.sqrt(cutoff_quad)
+    tangent_basis_v /= tangent_basis_v_norm
 
     outline_points = np.zeros((5, 2), dtype=np.float32)
     outline_min = np.full((2,), 1e30, dtype=np.float32)
     outline_max = np.full((2,), -1e30, dtype=np.float32)
+    q_inv = _quat_conj(rotation)
+    scale = 1.0 / np.maximum(inv_scale, np.float32(1e-12))
     for index in range(5):
         theta = np.float32(2.0 * np.pi * index / 5.0)
-        eta = np.array((l00 * np.cos(theta), l10 * np.cos(theta) + l11 * np.sin(theta)), dtype=np.float32) * np.float32(cutoff_radius)
-        ray_dir_camera = center_dir + tangent_x * eta[0] + tangent_y * eta[1]
-        ray_dir_camera_norm = float(np.linalg.norm(ray_dir_camera))
-        if ray_dir_camera_norm <= 1e-12 or not np.isfinite(ray_dir_camera_norm):
-            return None if not support_intersects_front else (np.array((0.5 * width, 0.5 * height), dtype=np.float32), float(max(width, height)), np.array((1.0 / max(float(max(width, height)) ** 2, ELLIPSE_EPS), 0.0, 1.0 / max(float(max(width, height)) ** 2, ELLIPSE_EPS)), dtype=np.float32))
-        ray_dir_camera = (ray_dir_camera / np.float32(ray_dir_camera_norm)).astype(np.float32, copy=False)
-        screen_point, point_ok = camera.project_camera_to_screen(ray_dir_camera, width, height)
+        local_point = tangent_circle_center + tangent_circle_radius * (np.cos(theta) * tangent_basis_u + np.sin(theta) * tangent_basis_v)
+        world_point = world_pos + _quat_rotate(local_point * scale, q_inv)
+        screen_point, point_ok = camera.project_world_to_screen(world_point, width, height)
         if not point_ok:
-            return None if not support_intersects_front else (np.array((0.5 * width, 0.5 * height), dtype=np.float32), float(max(width, height)), np.array((1.0 / max(float(max(width, height)) ** 2, ELLIPSE_EPS), 0.0, 1.0 / max(float(max(width, height)) ** 2, ELLIPSE_EPS)), dtype=np.float32))
+            return None
         outline_points[index] = screen_point
         outline_min = np.minimum(outline_min, screen_point)
         outline_max = np.maximum(outline_max, screen_point)
 
-    if screen_ok:
-        outline_min = np.minimum(outline_min, screen_center.astype(np.float32, copy=False))
-        outline_max = np.maximum(outline_max, screen_center.astype(np.float32, copy=False))
+    outline_min = np.minimum(outline_min, screen_center.astype(np.float32, copy=False))
+    outline_max = np.maximum(outline_max, screen_center.astype(np.float32, copy=False))
     if outline_max[0] < 0.0 or outline_min[0] >= width or outline_max[1] < 0.0 or outline_min[1] >= height:
         return None
 
@@ -303,7 +246,6 @@ def project_splats(
 
     radius_scale = float(radius_scale)
     alpha_cutoff = float(alpha_cutoff)
-    camera_basis = np.asarray(camera.basis(), dtype=np.float32)
     for index in range(count):
         world_pos = scene.positions[index].astype(np.float32, copy=False)
         rotation = quat[index]
@@ -320,13 +262,8 @@ def project_splats(
             continue
         support_sigma_radius = math.sqrt(max(-2.0 * math.log(alpha_cutoff / max(opacity, alpha_cutoff)), 0.0))
         outline_scale = np.maximum(sigma * np.float32(radius_scale * support_sigma_radius), np.float32(1e-6))
-        support_intersects_front = depth_value + float(np.max(outline_scale)) > 1e-4
-        if not support_intersects_front:
-            continue
-        cached = _build_cached_directional_gaussian(camera_pos, camera_basis, rotation, sigma * np.float32(radius_scale))
-        if cached is None:
-            continue
-        fitted = _compute_outline_ellipse(cached[0], cached[1], cached[2], opacity, alpha_cutoff, camera, width, height, support_intersects_front)
+        outline_inv_scale = 1.0 / outline_scale
+        fitted = _compute_outline_ellipse(world_pos, outline_inv_scale, rotation, camera, width, height)
         if fitted is None:
             continue
 

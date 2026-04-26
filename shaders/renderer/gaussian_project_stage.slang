@@ -13,7 +13,6 @@ uniform float g_MaxAnisotropy;
 uniform float3 g_SortCameraPosition;
 uniform float g_SortCameraDitherSigma;
 uniform uint g_SortCameraDitherSeed;
-
 bool load_projected_ellipse(uint splatId, out Ellipse ellipse)
 {
     ellipse.init(0.0, 0.0, 0.0);
@@ -75,7 +74,7 @@ void csProjectVisibleSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (!supportIntersectsFront) return;
 
     Ellipse projectedEllipse;
-    if (!compute_directional_outline_ellipse(rasterGaussian.centerDir, rasterGaussian.sigmaOrtho, rasterGaussian.depthDistance, fusedOpacity, g_Raster.alphaCutoff, camera, supportIntersectsFront, projectedEllipse)) return;
+    if (!compute_ellipsoid_outline_ellipse(projectionEllipsoid, camera, projectedEllipse)) return;
     projectedEllipse.radiusPx = max(projectedEllipse.radiusPx * ELLIPSE_SAFETY_SCALE + ELLIPSE_RADIUS_PAD_PX, MIN_SCREEN_RADIUS_PX);
     projectedEllipse.bboxExtent = float2(projectedEllipse.radiusPx, projectedEllipse.radiusPx);
     if (!projectedEllipse.isVisible(camDistance, depthValue, camera.params.viewport, g_Camera.nearDepth, g_Camera.farDepth)) return;

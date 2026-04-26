@@ -16,10 +16,11 @@ float3 world_to_local_dir(float3 dir, float3 scale, float4 rotation)
 [Differentiable]
 RasterGaussian build_raster_gaussian(no_diff CameraParams cameraParams, no_diff float radiusScale, no_diff float maxAnisotropy, no_diff float3 cameraPosition, no_diff uint shBand, Gaussian3D gaussian)
 {
-    RasterGaussian result = {
-        float3(0.0, 0.0, 1.0),
-        0.0,
-        0.0,
+    Ellipsoid ellipsoid = build_ellipsoid(cameraParams, radiusScale, maxAnisotropy, gaussian);
+    return {
+        ellipsoid.rasterRoLocal,
+        ellipsoid.rasterScale,
+        ellipsoid.rotation,
         float4(
             evaluate_gaussian_color(
                 gaussian.position,
@@ -30,30 +31,6 @@ RasterGaussian build_raster_gaussian(no_diff CameraParams cameraParams, no_diff 
             opacity_from_raw(gaussian.rawOpacity)
         )
     };
-
-    Ellipsoid ellipsoid = build_ellipsoid(cameraParams, radiusScale, maxAnisotropy, gaussian);
-    float3 cameraMean = mul(cameraParams.camBasis, gaussian.position - cameraParams.camPos);
-    float centerDistance = length(cameraMean);
-    if (centerDistance <= SMALL_VALUE || !all(isfinite(cameraMean))) return result;
-
-    float3 centerDir = cameraMean / centerDistance;
-    float3 tangentX;
-    float3 tangentY;
-    build_direction_frame(centerDir, tangentX, tangentY);
-
-    float3 localTangentX = rotate_by_quat(mul(transpose(cameraParams.camBasis), tangentX), ellipsoid.rotation);
-    float3 localTangentY = rotate_by_quat(mul(transpose(cameraParams.camBasis), tangentY), ellipsoid.rotation);
-    float3 variance = (ellipsoid.rasterScale * ellipsoid.rasterScale) / (ENVELOPE_SIGMA_RADIUS * ENVELOPE_SIGMA_RADIUS);
-    float invCenterDistance2 = 1.0 / max(centerDistance * centerDistance, SMALL_VALUE);
-
-    result.centerDir = centerDir;
-    result.sigmaOrtho = float3(
-        dot(localTangentX * variance, localTangentX),
-        dot(localTangentX * variance, localTangentY),
-        dot(localTangentY * variance, localTangentY)
-    ) * invCenterDistance2;
-    result.depthDistance = centerDistance;
-    return result;
 }
 
 [Differentiable]
@@ -78,34 +55,6 @@ float raster_eval_alpha(float3 roLocal, float3 scale, float4 rotation, float fus
     float rho2 = dot(closest, closest);
     if (rho2 < 0.0) rho2 = 0.0;
     float alpha = fusedOpacity * exp(-ENVELOPE_EXPONENT_SCALE * rho2);
-    if (alpha < alphaCutoff) return 0.0;
-    return alpha;
-}
-
-[Differentiable]
-float raster_eval_directional_alpha(no_diff CameraParams cameraParams, float3 centerDir, float3 sigmaOrtho, float opacity, no_diff float3 rayDirWorld, no_diff float alphaCutoff)
-{
-    float det = sigmaOrtho.x * sigmaOrtho.z - sigmaOrtho.y * sigmaOrtho.y;
-    if (det <= (RAY_DENOMINATOR_FLOOR * RAY_DENOMINATOR_FLOOR) || !isfinite(det)) return 0.0;
-
-    float3 rayDirCamera = mul(cameraParams.camBasis, rayDirWorld);
-    float3 tangentX;
-    float3 tangentY;
-    build_direction_frame(centerDir, tangentX, tangentY);
-    float denom = dot(centerDir, rayDirCamera);
-    if (denom <= RAY_DENOMINATOR_FLOOR) return 0.0;
-    float2 eta = float2(dot(tangentX, rayDirCamera), dot(tangentY, rayDirCamera)) / denom;
-    if (!all(isfinite(eta))) return 0.0;
-
-    float invDet = 1.0 / det;
-    float quad = dot(
-        eta,
-        float2(
-            sigmaOrtho.z * eta.x - sigmaOrtho.y * eta.y,
-            -sigmaOrtho.y * eta.x + sigmaOrtho.x * eta.y
-        ) * invDet
-    );
-    float alpha = opacity * exp(-0.5 * quad);
     if (alpha < alphaCutoff) return 0.0;
     return alpha;
 }
