@@ -152,6 +152,18 @@ def _make_frame_at_position(position: tuple[float, float, float], image_id: int)
     )
 
 
+def test_auto_train_subsample_factor_chooses_resolution_area_closest_to_one_megapixel() -> None:
+    assert resolve_auto_train_subsample_factor(1920, 1080) == 2
+
+
+def test_auto_train_subsample_factor_uses_combined_downscale_and_subsample_area() -> None:
+    assert resolve_auto_train_subsample_factor(3840, 2160, downscale_factor=2) == 2
+
+
+def test_auto_train_subsample_factor_selects_exact_one_k_square_match_when_available() -> None:
+    assert resolve_auto_train_subsample_factor(4000, 4000) == 4
+
+
 def _make_rgba_frame(tmp_path: Path, rgba: np.ndarray, *, image_name: str = "target_rgba.png", image_id: int = 0) -> ColmapFrame:
     image = np.asarray(rgba, dtype=np.uint8)
     height, width = image.shape[:2]

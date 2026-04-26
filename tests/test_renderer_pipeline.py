@@ -59,6 +59,17 @@ def _ray_splat_intersection_alpha(ray_origin: np.ndarray, ray_direction: np.ndar
     return float(opacity * np.exp(-0.5 * support_sigma_radius * support_sigma_radius * rho2))
 
 
+def _is_fullscreen_fallback_ellipse(center_radius_depth: np.ndarray, conic: np.ndarray, width: int, height: int) -> bool:
+    radius = float(center_radius_depth[2])
+    expected_radius = float(max(width, height))
+    inv_radius_sq = 1.0 / max(expected_radius * expected_radius, 1e-12)
+    return (
+        np.allclose(center_radius_depth[:2], np.array((0.5 * width, 0.5 * height), dtype=np.float32), atol=1e-4)
+        and radius >= expected_radius
+        and np.allclose(conic[:3], np.array((inv_radius_sq, 0.0, inv_radius_sq), dtype=np.float32), atol=1e-7)
+    )
+
+
 def make_scene(count: int, seed: int = 0) -> GaussianScene:
     rng = np.random.default_rng(seed)
     positions = np.zeros((count, 3), dtype=np.float32)
@@ -379,7 +390,19 @@ def test_projection_outline_hits_alpha_cutoff(device):
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
     renderer = GaussianRenderer(device, width=96, height=96, radius_scale=1.7, list_capacity_multiplier=32)
     debug = renderer.debug_pipeline_data(scene, camera)
-    visible = np.flatnonzero(np.asarray(debug["screen_center_radius_depth"], dtype=np.float32)[:, 2] > 0.0)
+    visible = np.array(
+        [
+            splat_index
+            for splat_index in np.flatnonzero(np.asarray(debug["screen_center_radius_depth"], dtype=np.float32)[:, 2] > 0.0)
+            if not _is_fullscreen_fallback_ellipse(
+                np.asarray(debug["screen_center_radius_depth"], dtype=np.float32)[splat_index],
+                np.asarray(debug["screen_ellipse_conic"], dtype=np.float32)[splat_index],
+                renderer.width,
+                renderer.height,
+            )
+        ],
+        dtype=np.int32,
+    )
 
     assert visible.size > 0
     rng = np.random.default_rng(123)
@@ -400,6 +423,33 @@ def test_projection_outline_hits_alpha_cutoff(device):
             renderer.alpha_cutoff,
         )
         assert abs(alpha - renderer.alpha_cutoff) <= _PROJECTION_ALPHA_TOL
+
+
+def test_projection_culls_offscreen_near_plane_grazer(device):
+    scene = GaussianScene(
+        positions=np.array([[5.0, 0.0, 0.05]], dtype=np.float32),
+        scales=_log_sigma(np.array([[0.5, 0.5, 0.5]], dtype=np.float32)),
+        rotations=np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+        opacities=np.array([0.9], dtype=np.float32),
+        colors=np.array([[0.5, 0.5, 0.5]], dtype=np.float32),
+        sh_coeffs=np.zeros((1, 1, 3), dtype=np.float32),
+    )
+    camera = Camera.look_at(position=(0.0, 0.0, 0.0), target=(0.0, 0.0, 1.0), near=0.1, far=20.0)
+    renderer = GaussianRenderer(device, width=96, height=96, radius_scale=1.6, list_capacity_multiplier=32)
+
+    debug = renderer.debug_pipeline_data(scene, camera)
+    projected = project_splats(scene, camera, renderer.width, renderer.height, renderer.radius_scale)
+    _, _, generated = build_tile_key_value_pairs(
+        projected=projected,
+        tile_width=renderer.tile_width,
+        tile_height=renderer.tile_height,
+        tile_size=renderer.tile_size,
+        max_list_entries=renderer._max_list_entries,
+    )
+
+    assert int(debug["generated_entries"]) == 0
+    assert int(np.asarray(debug["splat_visible"], dtype=np.uint32)[0]) == 0
+    assert int(generated) == 0
 
 
 def test_distorted_render_matches_cpu_reference(device):

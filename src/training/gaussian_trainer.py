@@ -136,13 +136,17 @@ def resolve_effective_train_downscale_factor(training_hparams: "TrainingHyperPar
 
 
 def resolve_auto_train_subsample_factor(width: int, height: int, downscale_factor: int = 1) -> int:
-    native_max_side = max(int(width), int(height), 1)
     base_factor = max(int(downscale_factor), 1)
+    target_area = TRAIN_SUBSAMPLE_TARGET_MAX_SIDE * TRAIN_SUBSAMPLE_TARGET_MAX_SIDE
     resolved_factor = 1
+    resolved_error = None
     for factor in range(1, TRAIN_SUBSAMPLE_MAX_FACTOR + 1):
-        max_side = (native_max_side + base_factor * factor - 1) // (base_factor * factor)
-        if max_side <= TRAIN_SUBSAMPLE_TARGET_MAX_SIDE: break
-        resolved_factor = factor
+        total_factor = base_factor * factor
+        eff_width, eff_height = resolve_training_resolution(width, height, total_factor)
+        area_error = abs(eff_width * eff_height - target_area)
+        if resolved_error is None or area_error < resolved_error:
+            resolved_factor = factor
+            resolved_error = area_error
     return resolved_factor
 
 
@@ -1559,7 +1563,6 @@ class GaussianTrainer:
             self._dispatch_position_random_steps(enc, self.state.step + batch_index + 1)
             self._dispatch_cache_step_info(enc, batch_index)
         self.device.submit_command_buffer(enc.finish())
-        self.device.wait()
         self._observed_contribution_pixel_count += batch_steps * max(int(self.renderer.width) * int(self.renderer.height), 0)
 
         step_metrics = self._read_batch_step_metrics(batch_steps)

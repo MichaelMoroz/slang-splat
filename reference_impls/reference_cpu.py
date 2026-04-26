@@ -119,6 +119,38 @@ def _solve_conic_renorm(points: np.ndarray, eps: float) -> np.ndarray | None:
     return np.array((coeff_a * inv_f, coeff_b * inv_f, coeff_c * inv_f, coeff_d * inv_f, coeff_e * inv_f), dtype=np.float32)
 
 
+def _init_fullscreen_fallback_ellipse(width: int, height: int) -> tuple[np.ndarray, float, np.ndarray]:
+    radius = float(max(max(width, height), 1.0))
+    inv_radius_sq = 1.0 / max(radius * radius, ELLIPSE_EPS)
+    center_px = np.array((0.5 * float(width), 0.5 * float(height)), dtype=np.float32)
+    conic = np.array((inv_radius_sq, 0.0, inv_radius_sq), dtype=np.float32)
+    return center_px, radius, conic
+
+
+def _support_sphere_intersects_view_frustum(camera_center: np.ndarray, camera: Camera, width: int, height: int, support_radius: float) -> bool:
+    center = np.asarray(camera_center, dtype=np.float64).reshape(3)
+    radius = float(support_radius)
+    if not (np.isfinite(center).all() and math.isfinite(radius) and radius > 0.0):
+        return False
+    if center[2] + radius <= 1e-4:
+        return False
+    if center[2] - radius >= float(camera.far):
+        return False
+
+    fx, fy = camera.focal_pixels_xy(width, height)
+    cx, cy = camera.principal_point(width, height)
+    planes = (
+        np.array((fx, 0.0, cx), dtype=np.float64),
+        np.array((-fx, 0.0, float(width) - cx), dtype=np.float64),
+        np.array((0.0, fy, cy), dtype=np.float64),
+        np.array((0.0, -fy, float(height) - cy), dtype=np.float64),
+    )
+    for plane in planes:
+        if float(np.dot(plane, center)) < -radius * float(np.linalg.norm(plane)):
+            return False
+    return True
+
+
 def _compute_outline_ellipse(
     world_pos: np.ndarray,
     inv_scale: np.ndarray,
@@ -128,13 +160,16 @@ def _compute_outline_ellipse(
     height: int,
 ) -> tuple[np.ndarray, float, np.ndarray] | None:
     screen_center, screen_ok = camera.project_world_to_screen(world_pos, width, height)
-    if not screen_ok:
+    scale = 1.0 / np.maximum(inv_scale, np.float32(1e-12))
+    camera_center = camera.world_point_to_camera(world_pos)
+    support_intersects_frustum = _support_sphere_intersects_view_frustum(camera_center, camera, width, height, float(np.max(scale)))
+    if not screen_ok and not support_intersects_frustum:
         return None
 
     view_origin_local = _quat_rotate(camera.position - world_pos, rotation) * inv_scale
     view_distance = float(np.linalg.norm(view_origin_local))
     if view_distance <= 1.0 + ELLIPSE_EPS:
-        return None
+        return _init_fullscreen_fallback_ellipse(width, height) if support_intersects_frustum else None
 
     view_dir_local = view_origin_local / view_distance
     tangent_circle_center = view_dir_local / view_distance
@@ -155,20 +190,20 @@ def _compute_outline_ellipse(
     outline_min = np.full((2,), 1e30, dtype=np.float32)
     outline_max = np.full((2,), -1e30, dtype=np.float32)
     q_inv = _quat_conj(rotation)
-    scale = 1.0 / np.maximum(inv_scale, np.float32(1e-12))
     for index in range(5):
         theta = np.float32(2.0 * np.pi * index / 5.0)
         local_point = tangent_circle_center + tangent_circle_radius * (np.cos(theta) * tangent_basis_u + np.sin(theta) * tangent_basis_v)
         world_point = world_pos + _quat_rotate(local_point * scale, q_inv)
         screen_point, point_ok = camera.project_world_to_screen(world_point, width, height)
         if not point_ok:
-            return None
+            return _init_fullscreen_fallback_ellipse(width, height) if support_intersects_frustum else None
         outline_points[index] = screen_point
         outline_min = np.minimum(outline_min, screen_point)
         outline_max = np.maximum(outline_max, screen_point)
 
-    outline_min = np.minimum(outline_min, screen_center.astype(np.float32, copy=False))
-    outline_max = np.maximum(outline_max, screen_center.astype(np.float32, copy=False))
+    if screen_ok:
+        outline_min = np.minimum(outline_min, screen_center.astype(np.float32, copy=False))
+        outline_max = np.maximum(outline_max, screen_center.astype(np.float32, copy=False))
     if outline_max[0] < 0.0 or outline_min[0] >= width or outline_max[1] < 0.0 or outline_min[1] >= height:
         return None
 
@@ -309,36 +344,62 @@ def _try_prepare_conic_for_binning(conic: np.ndarray, radius: float, half_tile: 
     return (False, bbox) if not np.isfinite(extent).all() else (True, np.clip(extent, 1e-4, radius).astype(np.float32))
 
 
-def _eval_conic(conic: np.ndarray, x: float, y: float) -> float:
-    return float(conic[0]) * x * x + 2.0 * float(conic[1]) * x * y + float(conic[2]) * y * y
+def _solve_quadratic_interval(quadratic_coeff: float, linear_coeff: float, constant_coeff: float, level: float) -> tuple[bool, tuple[float, float]]:
+    disc = linear_coeff * linear_coeff - quadratic_coeff * (constant_coeff - level)
+    if disc < 0.0 or not math.isfinite(disc):
+        return False, (0.0, 0.0)
+    root = math.sqrt(max(disc, 0.0))
+    interval = ((-linear_coeff - root) / quadratic_coeff, (-linear_coeff + root) / quadratic_coeff)
+    return (math.isfinite(interval[0]) and math.isfinite(interval[1]) and interval[0] <= interval[1]), interval
 
 
-def _min_conic_over_tile_box(conic: np.ndarray, x0: float, x1: float, y0: float, y1: float) -> float:
-    values = [_eval_conic(conic, x, y) for x in (x0, x1) for y in (y0, y1)]
-    if x0 <= 0.0 <= x1 and y0 <= 0.0 <= y1:
-        return 0.0
-    a, b, c = map(float, conic)
-    if c > 1e-12:
-        values.extend(_eval_conic(conic, x, float(np.clip(-b * x / c, y0, y1))) for x in (x0, x1))
-    if a > 1e-12:
-        values.extend(_eval_conic(conic, float(np.clip(-b * y / a, x0, x1)), y) for y in (y0, y1))
-    return float(min(values))
-
-
-def _tile_box(center: tuple[float, float], scan_along_x: bool, tile_size: int, line_tile: int, minor_tile: int) -> tuple[float, float, float, float]:
-    major = np.array([minor_tile, line_tile], dtype=np.float32) if scan_along_x else np.array([line_tile, minor_tile], dtype=np.float32)
-    lo = major * float(tile_size) - np.asarray(center, dtype=np.float32)
-    hi = (major + 1.0) * float(tile_size) - np.asarray(center, dtype=np.float32)
-    return float(lo[0]), float(hi[0]), float(lo[1]), float(hi[1])
-
-
-def _tile_intersects_ellipse(center: tuple[float, float], conic: np.ndarray, scan_along_x: bool, tile_size: int, line_tile: int, minor_tile: int) -> bool:
-    return _min_conic_over_tile_box(conic, *_tile_box(center, scan_along_x, tile_size, line_tile, minor_tile)) <= 1.0 + ELLIPSE_EPS
+def _merge_interval(current: tuple[float, float] | None, candidate: tuple[float, float]) -> tuple[float, float]:
+    return candidate if current is None else (min(current[0], candidate[0]), max(current[1], candidate[1]))
 
 
 def _compute_scanline_tile_span_universal(center: tuple[float, float], conic: np.ndarray, scan_along_x: bool, tile_size: int, line_coord_tile: int, min_minor_tile: int, max_minor_tile: int) -> tuple[bool, int, int]:
-    hits = [minor for minor in range(max(min_minor_tile, 0), max_minor_tile + 1) if _tile_intersects_ellipse(center, conic, scan_along_x, tile_size, line_coord_tile, minor)]
-    return (False, 0, 0) if not hits else (True, hits[0], hits[-1] - hits[0] + 1)
+    minor_coeff = float(conic[0] if scan_along_x else conic[2])
+    line_coeff = float(conic[2] if scan_along_x else conic[0])
+    mixed_coeff = float(conic[1])
+    det = minor_coeff * line_coeff - mixed_coeff * mixed_coeff
+    if not (minor_coeff > MIN_CONIC_DET and line_coeff > MIN_CONIC_DET and det > MIN_CONIC_DET):
+        return False, 0, 0
+
+    center_minor = float(center[0] if scan_along_x else center[1])
+    center_line = float(center[1] if scan_along_x else center[0])
+    line_start = float(line_coord_tile) * float(tile_size) - center_line
+    line_end = float(line_coord_tile + 1) * float(tile_size) - center_line
+    level = 1.0 + ELLIPSE_EPS
+
+    interval: tuple[float, float] | None = None
+    for line_value in (line_start, line_end):
+        ok, candidate = _solve_quadratic_interval(minor_coeff, mixed_coeff * line_value, line_coeff * line_value * line_value, level)
+        if ok:
+            interval = _merge_interval(interval, candidate)
+
+    interior_coeff = det / line_coeff
+    if interior_coeff > MIN_CONIC_DET:
+        interior_radius = math.sqrt(level / interior_coeff)
+        interior_interval = (-interior_radius, interior_radius)
+        if abs(mixed_coeff) <= MIN_CONIC_DET:
+            if line_start <= 0.0 <= line_end:
+                interval = _merge_interval(interval, interior_interval)
+        else:
+            stationary_minor_start = -line_coeff * line_start / mixed_coeff
+            stationary_minor_end = -line_coeff * line_end / mixed_coeff
+            stationary_interval = (min(stationary_minor_start, stationary_minor_end), max(stationary_minor_start, stationary_minor_end))
+            clipped = (max(interior_interval[0], stationary_interval[0]), min(interior_interval[1], stationary_interval[1]))
+            if clipped[0] <= clipped[1]:
+                interval = _merge_interval(interval, clipped)
+
+    if interval is None:
+        return False, 0, 0
+
+    first_hit = math.ceil((interval[0] + center_minor) / float(tile_size)) - 1
+    last_hit = math.floor((interval[1] + center_minor) / float(tile_size))
+    first_hit = max(first_hit, max(min_minor_tile, 0))
+    last_hit = min(last_hit, max_minor_tile)
+    return (False, 0, 0) if first_hit > last_hit else (True, first_hit, last_hit - first_hit + 1)
 
 
 def _iter_spans(center: tuple[float, float], conic: np.ndarray, scan_along_x: bool, tile_size: int, primary_lo: int, primary_hi: int, minor_lo: int, minor_hi: int):
