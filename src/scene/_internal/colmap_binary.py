@@ -60,13 +60,13 @@ def _camera_params_count(model_id: int) -> int:
     )
 
 
-def _camera_intrinsics(model_id: int, params: tuple[float, ...]) -> tuple[float, float, float, float, float, float]:
-    if model_id == COLMAP_SIMPLE_PINHOLE_MODEL_ID: return params[0], params[0], params[1], params[2], 0.0, 0.0
-    if model_id == COLMAP_PINHOLE_MODEL_ID: return params[0], params[1], params[2], params[3], 0.0, 0.0
-    if model_id == COLMAP_SIMPLE_RADIAL_MODEL_ID: return params[0], params[0], params[1], params[2], params[3], 0.0
-    if model_id == COLMAP_RADIAL_MODEL_ID: return params[0], params[0], params[1], params[2], params[3], params[4]
-    if model_id == COLMAP_OPENCV_MODEL_ID: return params[0], params[1], params[2], params[3], params[4], params[5]
-    if model_id == COLMAP_FULL_OPENCV_MODEL_ID: return params[0], params[1], params[2], params[3], params[4], params[5]
+def _camera_intrinsics(model_id: int, params: tuple[float, ...]) -> tuple[float, float, float, float, float, float, float, float, float, float, float, float]:
+    if model_id == COLMAP_SIMPLE_PINHOLE_MODEL_ID: return params[0], params[0], params[1], params[2], 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    if model_id == COLMAP_PINHOLE_MODEL_ID: return params[0], params[1], params[2], params[3], 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    if model_id == COLMAP_SIMPLE_RADIAL_MODEL_ID: return params[0], params[0], params[1], params[2], params[3], 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    if model_id == COLMAP_RADIAL_MODEL_ID: return params[0], params[0], params[1], params[2], params[3], params[4], 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    if model_id == COLMAP_OPENCV_MODEL_ID: return params[0], params[1], params[2], params[3], params[4], params[5], params[6], params[7], 0.0, 0.0, 0.0, 0.0
+    if model_id == COLMAP_FULL_OPENCV_MODEL_ID: return params[0], params[1], params[2], params[3], params[4], params[5], params[6], params[7], params[8], params[9], params[10], params[11]
     raise ValueError(f"Unsupported COLMAP camera model id {model_id}.")
 
 
@@ -77,8 +77,8 @@ def _load_cameras_bin(path: Path) -> dict[int, ColmapCamera]:
             camera_id, model_id = _read(handle, I32), _read(handle, I32)
             width, height = _read(handle, U64), _read(handle, U64)
             params = _read_f64_array(handle, _camera_params_count(model_id))
-            fx, fy, cx, cy, k1, k2 = _camera_intrinsics(model_id, params)
-            cameras[camera_id] = ColmapCamera(camera_id, model_id, width, height, fx, fy, cx, cy, k1, k2)
+            fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, k5, k6 = _camera_intrinsics(model_id, params)
+            cameras[camera_id] = ColmapCamera(camera_id, model_id, width, height, fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, k5, k6)
     return cameras
 
 
@@ -150,8 +150,8 @@ def _load_cameras_txt(path: Path) -> dict[int, ColmapCamera]:
             raise ValueError(
                 f"COLMAP camera {camera_id} expected {expected_param_count} params for {model_name}, got {len(params)}."
             )
-        fx, fy, cx, cy, k1, k2 = _camera_intrinsics(model_id, params)
-        cameras[camera_id] = ColmapCamera(camera_id, model_id, width, height, fx, fy, cx, cy, k1, k2)
+        fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, k5, k6 = _camera_intrinsics(model_id, params)
+        cameras[camera_id] = ColmapCamera(camera_id, model_id, width, height, fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, k5, k6)
     return cameras
 
 

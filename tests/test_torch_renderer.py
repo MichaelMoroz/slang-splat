@@ -53,7 +53,7 @@ def _make_splats(device: torch.device, count: int = 8, seed: int = 7) -> torch.T
 
 def _make_camera_params(device: torch.device) -> torch.Tensor:
     return torch.tensor(
-        [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 3.0, 72.0, 72.0, 32.0, 32.0, 0.1, 20.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 3.0, 72.0, 72.0, 32.0, 32.0, 0.1, 20.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         device=device,
         dtype=torch.float32,
     )
@@ -82,6 +82,12 @@ def _make_forward_camera(
             height * 0.5,
             0.1,
             40.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
             0.0,
             0.0,
         ),
@@ -179,19 +185,49 @@ def _quat_rotate_torch(v: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
     return v + 2.0 * torch.cross(torch.cross(v, qv.expand_as(v), dim=-1) + q[..., 0:1] * v, qv.expand_as(v), dim=-1)
 
 
-def _undistort_normalized(uv_distorted: torch.Tensor, k1: float, k2: float) -> torch.Tensor:
-    if abs(k1) <= _TORCH_GT_SMALL_VALUE and abs(k2) <= _TORCH_GT_SMALL_VALUE:
+def _radial_distortion(r2: torch.Tensor, k1: float, k2: float, k3: float, k4: float, k5: float, k6: float) -> tuple[torch.Tensor, torch.Tensor]:
+    numerator = 1.0 + k1 * r2 + k2 * (r2 * r2) + k3 * (r2 * r2 * r2)
+    denominator_raw = 1.0 + k4 * r2 + k5 * (r2 * r2) + k6 * (r2 * r2 * r2)
+    denominator = torch.where(denominator_raw.abs() > _TORCH_GT_SMALL_VALUE, denominator_raw, torch.sign(denominator_raw + _TORCH_GT_SMALL_VALUE) * _TORCH_GT_SMALL_VALUE)
+    d_numerator = k1 + 2.0 * k2 * r2 + 3.0 * k3 * (r2 * r2)
+    d_denominator = k4 + 2.0 * k5 * r2 + 3.0 * k6 * (r2 * r2)
+    radial = numerator / denominator
+    d_radial_dr2 = (d_numerator * denominator - numerator * d_denominator) / (denominator * denominator)
+    return radial, d_radial_dr2
+
+
+def _distort_normalized(uv: torch.Tensor, k1: float, k2: float, p1: float, p2: float, k3: float, k4: float, k5: float, k6: float) -> torch.Tensor:
+    x = uv[..., 0:1]
+    y = uv[..., 1:2]
+    r2 = x * x + y * y
+    radial, _ = _radial_distortion(r2, k1, k2, k3, k4, k5, k6)
+    tangential = torch.cat((2.0 * p1 * x * y + p2 * (r2 + 2.0 * x * x), p1 * (r2 + 2.0 * y * y) + 2.0 * p2 * x * y), dim=-1)
+    return uv * radial + tangential
+
+
+def _undistort_normalized(uv_distorted: torch.Tensor, k1: float, k2: float, p1: float, p2: float, k3: float, k4: float, k5: float, k6: float) -> torch.Tensor:
+    if max(abs(k1), abs(k2), abs(p1), abs(p2), abs(k3), abs(k4), abs(k5), abs(k6)) <= _TORCH_GT_SMALL_VALUE:
         return uv_distorted
-    radius_distorted = torch.linalg.norm(uv_distorted, dim=-1, keepdim=True)
-    radius = radius_distorted.clone()
+    uv = uv_distorted.clone()
     for _ in range(6):
-        r2 = radius * radius
-        r4 = r2 * r2
-        deriv = 1.0 + 3.0 * k1 * r2 + 5.0 * k2 * r4
-        safe = deriv.abs() > _TORCH_GT_SMALL_VALUE
-        next_radius = radius - (radius * (1.0 + k1 * r2 + k2 * r4) - radius_distorted) / torch.where(safe, deriv, torch.ones_like(deriv))
-        radius = torch.where(safe & torch.isfinite(next_radius) & (next_radius >= 0.0), next_radius, radius)
-    return uv_distorted * (radius / torch.clamp(radius_distorted, min=_TORCH_GT_SMALL_VALUE))
+        x = uv[..., 0:1]
+        y = uv[..., 1:2]
+        r2 = x * x + y * y
+        radial, d_radial_dr2 = _radial_distortion(r2, k1, k2, k3, k4, k5, k6)
+        distorted = _distort_normalized(uv, k1, k2, p1, p2, k3, k4, k5, k6)
+        error = distorted - uv_distorted
+        d_radial_dx = d_radial_dr2 * 2.0 * x
+        d_radial_dy = d_radial_dr2 * 2.0 * y
+        j00 = radial + x * d_radial_dx + 2.0 * p1 * y + 6.0 * p2 * x
+        j01 = x * d_radial_dy + 2.0 * p1 * x + 2.0 * p2 * y
+        j10 = y * d_radial_dx + 2.0 * p1 * x + 2.0 * p2 * y
+        j11 = radial + y * d_radial_dy + 6.0 * p1 * y + 2.0 * p2 * x
+        det = j00 * j11 - j01 * j10
+        safe = det.abs() > _TORCH_GT_SMALL_VALUE
+        step = torch.cat(((j11 * error[..., 0:1] - j01 * error[..., 1:2]) / torch.where(safe, det, torch.ones_like(det)), (-j10 * error[..., 0:1] + j00 * error[..., 1:2]) / torch.where(safe, det, torch.ones_like(det))), dim=-1)
+        next_uv = uv - step
+        uv = torch.where(safe.expand_as(uv) & torch.isfinite(next_uv), next_uv, uv)
+    return uv
 
 
 def _screen_to_world_rays(camera: torch.Tensor, image_size: tuple[int, int], pixel_indices: torch.Tensor) -> torch.Tensor:
@@ -200,7 +236,17 @@ def _screen_to_world_rays(camera: torch.Tensor, image_size: tuple[int, int], pix
     ys = torch.div(pixel_indices, width, rounding_mode="floor").to(dtype=torch.float32)
     sample_positions = torch.stack((xs + 0.5, ys + 0.5), dim=-1)
     uv_distorted = (sample_positions - camera[9:11]) / torch.clamp(camera[7:9], min=_TORCH_GT_SMALL_VALUE)
-    uv = _undistort_normalized(uv_distorted, float(camera[13].item()), float(camera[14].item()))
+    uv = _undistort_normalized(
+        uv_distorted,
+        float(camera[13].item()),
+        float(camera[14].item()),
+        float(camera[15].item()),
+        float(camera[16].item()),
+        float(camera[17].item()),
+        float(camera[18].item()),
+        float(camera[19].item()),
+        float(camera[20].item()),
+    )
     camera_rays = torch.cat((uv, torch.ones_like(uv[..., :1])), dim=-1)
     camera_rays = camera_rays / torch.clamp(torch.linalg.norm(camera_rays, dim=-1, keepdim=True), min=_TORCH_GT_SMALL_VALUE)
     return camera_rays @ _camera_basis(camera[0:4]).T
@@ -321,6 +367,12 @@ def _camera_from_tensor(camera_params: torch.Tensor) -> Camera:
         cy=float(values[10]),
         distortion_k1=float(values[13]),
         distortion_k2=float(values[14]),
+        distortion_p1=float(values[15]),
+        distortion_p2=float(values[16]),
+        distortion_k3=float(values[17]),
+        distortion_k4=float(values[18]),
+        distortion_k5=float(values[19]),
+        distortion_k6=float(values[20]),
         near=float(values[11]),
         far=float(values[12]),
     )

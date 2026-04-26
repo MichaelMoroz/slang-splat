@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
+from src.renderer.render_params import CachedRasterGradParams, runtime_renderer_params
 from src.renderer import renderer_context
 
 
@@ -14,6 +17,10 @@ def test_render_settings_forward_debug_overlays_to_renderer(monkeypatch) -> None
         def _validate_cached_raster_grad_atomic_mode(mode: str) -> str:
             return str(mode).strip().lower()
 
+        @staticmethod
+        def _validate_debug_mode(mode: str) -> str:
+            return str(mode).strip().lower()
+
         def __init__(self, device, width: int, height: int, **kwargs) -> None:
             captured["device"] = device
             captured["width"] = width
@@ -25,17 +32,15 @@ def test_render_settings_forward_debug_overlays_to_renderer(monkeypatch) -> None
     settings = renderer_context.GaussianRenderSettings(
         width=64,
         height=32,
-        debug_show_ellipses=True,
-        debug_show_processed_count=True,
-        debug_show_grad_norm=True,
+        params=replace(
+            runtime_renderer_params(),
+            debug_show_ellipses=True,
+            debug_show_processed_count=True,
+            debug_show_grad_norm=True,
+        ),
     )
     renderer = settings.create_renderer(device="stub-device")
-
-    assert isinstance(renderer, _RendererStub)
-    assert captured["device"] == "stub-device"
-    assert captured["width"] == 64
-    assert captured["height"] == 32
-    assert captured["kwargs"] == {
+    expected_kwargs = {
         "radius_scale": 1.0,
         "alpha_cutoff": 1.0 / 255.0,
         "max_anisotropy": 32.0,
@@ -43,8 +48,10 @@ def test_render_settings_forward_debug_overlays_to_renderer(monkeypatch) -> None
         "list_capacity_multiplier": 64,
         "max_prepass_memory_mb": 4096,
         "cached_raster_grad_atomic_mode": "float",
+        "cached_raster_grad_include_depth": CachedRasterGradParams().include_depth,
         "cached_raster_grad_fixed_ro_local_range": 1.0,
         "cached_raster_grad_fixed_scale_range": 15.0,
+        "cached_raster_grad_fixed_quat_range": 0.01,
         "cached_raster_grad_fixed_color_range": 8.0,
         "cached_raster_grad_fixed_opacity_range": 8.0,
         "debug_grad_norm_threshold": 2e-4,
@@ -68,3 +75,11 @@ def test_render_settings_forward_debug_overlays_to_renderer(monkeypatch) -> None
         "debug_show_processed_count": True,
         "debug_show_grad_norm": True,
     }
+    if runtime_renderer_params().debug_mode is not None:
+        expected_kwargs["debug_mode"] = runtime_renderer_params().debug_mode
+
+    assert isinstance(renderer, _RendererStub)
+    assert captured["device"] == "stub-device"
+    assert captured["width"] == 64
+    assert captured["height"] == 32
+    assert captured["kwargs"] == expected_kwargs

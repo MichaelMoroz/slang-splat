@@ -7,7 +7,7 @@ import numpy as np
 from PIL import Image
 import slangpy as spy
 
-from ..repo_defaults import renderer_defaults
+from ..renderer.render_params import RendererParams
 from ..utility import clamp_float, clamp_int
 from ..scene import GaussianInitHyperParams, GaussianScene
 from ..training.defaults import DEFAULT_REFINEMENT_CLONE_SCALE_MUL, DEFAULT_REFINEMENT_CONTRIBUTION_WEIGHT_EXPONENT, DEFAULT_REFINEMENT_GRAD_VARIANCE_WEIGHT_EXPONENT, DEFAULT_REFINEMENT_SPLIT_BETA, TRAINING_BUILD_ARG_DEFAULTS
@@ -35,23 +35,6 @@ _CLAMP_LIMITS = {
     "position_abs_max": (1e-3, 1e9),
     "loss_grad_clip": (1e-5, 1e6),
 }
-_RENDERER_DEFAULTS = renderer_defaults()
-
-
-@dataclass(frozen=True, slots=True)
-class RendererParams:
-    radius_scale: float = float(_RENDERER_DEFAULTS["radius_scale"]); alpha_cutoff: float = float(_RENDERER_DEFAULTS["alpha_cutoff"])
-    max_anisotropy: float = float(_RENDERER_DEFAULTS["max_anisotropy"])
-    transmittance_threshold: float = float(_RENDERER_DEFAULTS["transmittance_threshold"]); list_capacity_multiplier: int = int(_RENDERER_DEFAULTS["list_capacity_multiplier"])
-    max_prepass_memory_mb: int = int(_RENDERER_DEFAULTS["max_prepass_memory_mb"]); cached_raster_grad_atomic_mode: str = str(_RENDERER_DEFAULTS["cached_raster_grad_atomic_mode"]); cached_raster_grad_fixed_ro_local_range: float = float(_RENDERER_DEFAULTS["cached_raster_grad_fixed_ro_local_range"]); cached_raster_grad_fixed_scale_range: float = float(_RENDERER_DEFAULTS["cached_raster_grad_fixed_scale_range"])
-    cached_raster_grad_fixed_color_range: float = float(_RENDERER_DEFAULTS["cached_raster_grad_fixed_color_range"]); cached_raster_grad_fixed_opacity_range: float = float(_RENDERER_DEFAULTS["cached_raster_grad_fixed_opacity_range"])
-    debug_mode: str | None = _RENDERER_DEFAULTS["debug_mode"]; debug_grad_norm_threshold: float = float(_RENDERER_DEFAULTS["debug_grad_norm_threshold"]); debug_ellipse_thickness_px: float = float(_RENDERER_DEFAULTS["debug_ellipse_thickness_px"])
-    debug_gaussian_scale_multiplier: float = float(_RENDERER_DEFAULTS["debug_gaussian_scale_multiplier"]); debug_min_opacity: float = float(_RENDERER_DEFAULTS["debug_min_opacity"]); debug_opacity_multiplier: float = float(_RENDERER_DEFAULTS["debug_opacity_multiplier"]); debug_ellipse_scale_multiplier: float = float(_RENDERER_DEFAULTS["debug_ellipse_scale_multiplier"])
-    debug_splat_age_range: tuple[float, float] = tuple(float(v) for v in _RENDERER_DEFAULTS["debug_splat_age_range"]); debug_density_range: tuple[float, float] = tuple(float(v) for v in _RENDERER_DEFAULTS["debug_density_range"]); debug_contribution_range: tuple[float, float] = tuple(float(v) for v in _RENDERER_DEFAULTS["debug_contribution_range"]); debug_refinement_distribution_range: tuple[float, float] = tuple(float(v) for v in _RENDERER_DEFAULTS["debug_refinement_distribution_range"]); debug_adam_momentum_range: tuple[float, float] = tuple(float(v) for v in _RENDERER_DEFAULTS["debug_adam_momentum_range"]); debug_depth_mean_range: tuple[float, float] = tuple(float(v) for v in _RENDERER_DEFAULTS["debug_depth_mean_range"]); debug_depth_std_range: tuple[float, float] = tuple(float(v) for v in _RENDERER_DEFAULTS["debug_depth_std_range"])
-    debug_depth_local_mismatch_range: tuple[float, float] = tuple(float(v) for v in _RENDERER_DEFAULTS["debug_depth_local_mismatch_range"]); debug_depth_local_mismatch_smooth_radius: float = float(_RENDERER_DEFAULTS["debug_depth_local_mismatch_smooth_radius"]); debug_depth_local_mismatch_reject_radius: float = float(_RENDERER_DEFAULTS["debug_depth_local_mismatch_reject_radius"]); debug_sh_coeff_index: int = int(_RENDERER_DEFAULTS["debug_sh_coeff_index"])
-    debug_show_ellipses: bool = bool(_RENDERER_DEFAULTS["debug_show_ellipses"]); debug_show_processed_count: bool = bool(_RENDERER_DEFAULTS["debug_show_processed_count"]); debug_show_grad_norm: bool = bool(_RENDERER_DEFAULTS["debug_show_grad_norm"])
-
-
 @dataclass(frozen=True, slots=True)
 class InitParams:
     hparams: GaussianInitHyperParams; seed: int
@@ -178,6 +161,7 @@ def build_training_params(
     ssim_c2: float = TRAINING_BUILD_ARG_DEFAULTS["ssim_c2"],
     refinement_loss_weight: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_loss_weight"],
     refinement_target_edge_weight: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_target_edge_weight"],
+    refinement_min_screen_radius_px: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_min_screen_radius_px"],
     max_allowed_density_start: float = TRAINING_BUILD_ARG_DEFAULTS["max_allowed_density_start"],
     max_allowed_density: float = TRAINING_BUILD_ARG_DEFAULTS["max_allowed_density"],
     lr_pos_stage1_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_stage1_mul"],
@@ -227,6 +211,9 @@ def build_training_params(
     max_visible_angle_deg_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["max_visible_angle_deg_stage1"],
     max_visible_angle_deg_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["max_visible_angle_deg_stage2"],
     max_visible_angle_deg_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["max_visible_angle_deg_stage3"],
+    refinement_min_screen_radius_px_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_min_screen_radius_px_stage1"],
+    refinement_min_screen_radius_px_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_min_screen_radius_px_stage2"],
+    refinement_min_screen_radius_px_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_min_screen_radius_px_stage3"],
     position_random_step_noise_stage1_lr: float = TRAINING_BUILD_ARG_DEFAULTS["position_random_step_noise_stage1_lr"],
     position_random_step_noise_stage2_lr: float = TRAINING_BUILD_ARG_DEFAULTS["position_random_step_noise_stage2_lr"],
     position_random_step_noise_stage3_lr: float = TRAINING_BUILD_ARG_DEFAULTS["position_random_step_noise_stage3_lr"],
@@ -310,6 +297,7 @@ def build_training_params(
         ssim_c2=clamp_float(ssim_c2, 1e-8, 1.0),
         refinement_loss_weight=clamp_float(refinement_loss_weight, 0.0, 1e4),
         refinement_target_edge_weight=clamp_float(refinement_target_edge_weight, 0.0, 1e4),
+        refinement_min_screen_radius_px=clamp_float(refinement_min_screen_radius_px, 0.0, 1e6),
         max_allowed_density_start=clamp_float(max_allowed_density_start, 0.0, 1e6),
         max_allowed_density=clamp_float(max_allowed_density, 0.0, 1e6),
         lr_pos_mul=max(float(lr_pos_mul), 0.0),
@@ -354,6 +342,9 @@ def build_training_params(
         max_visible_angle_deg_stage1=clamp_float(max_visible_angle_deg_stage1, 1e-8, 89.999),
         max_visible_angle_deg_stage2=clamp_float(max_visible_angle_deg_stage2, 1e-8, 89.999),
         max_visible_angle_deg_stage3=clamp_float(max_visible_angle_deg_stage3, 1e-8, 89.999),
+        refinement_min_screen_radius_px_stage1=clamp_float(refinement_min_screen_radius_px_stage1, 0.0, 1e6),
+        refinement_min_screen_radius_px_stage2=clamp_float(refinement_min_screen_radius_px_stage2, 0.0, 1e6),
+        refinement_min_screen_radius_px_stage3=clamp_float(refinement_min_screen_radius_px_stage3, 0.0, 1e6),
         position_random_step_noise_stage1_lr=clamp_float(position_random_step_noise_stage1_lr, 0.0, 1e12),
         position_random_step_noise_stage2_lr=clamp_float(position_random_step_noise_stage2_lr, 0.0, 1e12),
         position_random_step_noise_stage3_lr=clamp_float(position_random_step_noise_stage3_lr, 0.0, 1e12),
@@ -392,15 +383,6 @@ def apply_training_profile(
         ),
         profile,
     )
-
-
-def renderer_kwargs(params: RendererParams) -> dict[str, object]:
-    kwargs = {name: getattr(params, name) for name in RendererParams.__dataclass_fields__}
-    if kwargs.get("debug_mode") is None:
-        del kwargs["debug_mode"]
-    return kwargs
-
-
 def save_snapshot(path: Path, rgba: np.ndarray, flip_y: bool = True) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     rgb = np.clip(np.asarray(rgba, dtype=np.float32)[:, :, :3], 0.0, 1.0)

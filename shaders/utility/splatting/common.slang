@@ -199,6 +199,7 @@ struct RasterParams
     uint trainingBackgroundSeed;
     uint debugMode;
     uint shBand;
+    uint cachedRasterGradIncludeDepth;
     float debugGradNormThreshold;
     float debugEllipseThicknessPx;
     float2 debugSplatAgeRange;
@@ -207,6 +208,7 @@ struct RasterParams
     float2 debugRefinementDistributionRange;
     float debugContributionScale;
     float debugGradVarianceInvSampleCount;
+    float debugGradVarianceStepInvSampleCount;
     float debugRefinementGradientVarianceWeightExponent;
     float debugRefinementContributionWeightExponent;
     float2 debugAdamMomentumRange;

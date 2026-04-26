@@ -189,19 +189,16 @@ class GaussianOptimizer:
                     "principalPoint": spy.float2(0.0, 0.0),
                     "nearDepth": 0.0,
                     "farDepth": 0.0,
+                    "projDistortionK1K2P1P2": spy.float4(0.0, 0.0, 0.0, 0.0),
+                    "projDistortionK3K4K5K6": spy.float4(0.0, 0.0, 0.0, 0.0),
                     "minCameraDistance": 0.0,
-                    "projDistortionK1": 0.0,
-                    "projDistortionK2": 0.0,
                 },
                 "g_EnableCurrentCameraScreenScaleCap": np.uint32(0),
             }
         else:
-            k1, k2 = frame_camera.distortion_coeffs()
             camera_vars = {
                 "g_CurrentCamera": {
                     **frame_camera.gpu_params(int(width), int(height)),
-                    "projDistortionK1": float(k1),
-                    "projDistortionK2": float(k2),
                 },
                 "g_EnableCurrentCameraScreenScaleCap": np.uint32(1),
             }

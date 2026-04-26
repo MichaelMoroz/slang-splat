@@ -1082,6 +1082,25 @@ def test_raster_backward_float_mode_produces_float_intermediate_and_final_grads(
     assert np.count_nonzero(np.asarray(grads["grad_color_alpha"], dtype=np.float32)[:, :3]) > 0
 
 
+def test_raster_backward_can_include_depth_cached_grad_channels(device):
+    scene = make_scene(18, seed=83)
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    renderer = GaussianRenderer(
+        device,
+        width=64,
+        height=64,
+        radius_scale=1.6,
+        list_capacity_multiplier=32,
+        cached_raster_grad_atomic_mode="float",
+        cached_raster_grad_include_depth=True,
+    )
+    grads = renderer.debug_raster_backward_grads(scene, camera, background=np.array([0.02, 0.04, 0.06], dtype=np.float32))
+
+    float_values = np.asarray(grads["cached_raster_grads_float"], dtype=np.float32)
+
+    assert np.count_nonzero(float_values[:, _DEPTH_RASTER_GRAD_COMPONENT_IDS]) > 0
+
+
 def test_active_cached_raster_grad_metrics_tensor_matches_float_mode_buffer(device):
     scene = make_scene(10, seed=89)
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)

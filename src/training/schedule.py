@@ -156,6 +156,22 @@ def resolve_max_visible_angle_deg(training_hparams: Any, step: int) -> float:
     )
 
 
+def resolve_refinement_min_screen_radius_px(training_hparams: Any, step: int) -> float:
+    start = max(float(getattr(training_hparams, "refinement_min_screen_radius_px", 0.05)), 0.0)
+    if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
+        return start
+    return _resolve_staged_linear_value(
+        training_hparams,
+        step,
+        start,
+        (
+            max(float(getattr(training_hparams, "refinement_min_screen_radius_px_stage1", start)), 0.0),
+            max(float(getattr(training_hparams, "refinement_min_screen_radius_px_stage2", start)), 0.0),
+            max(float(getattr(training_hparams, "refinement_min_screen_radius_px_stage3", start)), 0.0),
+        ),
+    )
+
+
 def resolve_position_random_step_noise_lr(training_hparams: Any, step: int) -> float:
     if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
         return max(float(getattr(training_hparams, "position_random_step_noise_lr", 5e5)), 0.0)

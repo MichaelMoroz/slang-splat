@@ -20,6 +20,12 @@ class ColmapCamera:
     cy: float
     k1: float = 0.0
     k2: float = 0.0
+    p1: float = 0.0
+    p2: float = 0.0
+    k3: float = 0.0
+    k4: float = 0.0
+    k5: float = 0.0
+    k6: float = 0.0
 
 
 @dataclass(slots=True)
@@ -65,6 +71,12 @@ class ColmapFrame:
     height: int
     k1: float = 0.0
     k2: float = 0.0
+    p1: float = 0.0
+    p2: float = 0.0
+    k3: float = 0.0
+    k4: float = 0.0
+    k5: float = 0.0
+    k6: float = 0.0
 
     def make_camera(self, near: float = 0.1, far: float = 120.0) -> Camera:
         return Camera.from_colmap(
@@ -76,6 +88,12 @@ class ColmapFrame:
             cy=self.cy,
             distortion_k1=self.k1,
             distortion_k2=self.k2,
+            distortion_p1=self.p1,
+            distortion_p2=self.p2,
+            distortion_k3=self.k3,
+            distortion_k4=self.k4,
+            distortion_k5=self.k5,
+            distortion_k6=self.k6,
             near=near,
             far=far,
         )

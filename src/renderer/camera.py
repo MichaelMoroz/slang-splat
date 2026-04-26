@@ -9,6 +9,9 @@ from slangpy import math as smath
 from ..utility import VEC_EPS, as_float3, normalize3
 
 SPLAT_PIXEL_CLAMP_PX = 0.75
+_DISTORTION_COEFF_COUNT = 8
+_DISTORTION_EPS = 1e-12
+_DISTORTION_NEWTON_ITERS = 8
 
 
 @dataclass(slots=True)
@@ -26,6 +29,12 @@ class Camera:
     cy: float | None = None
     distortion_k1: float | None = None
     distortion_k2: float | None = None
+    distortion_p1: float | None = None
+    distortion_p2: float | None = None
+    distortion_k3: float | None = None
+    distortion_k4: float | None = None
+    distortion_k5: float | None = None
+    distortion_k6: float | None = None
     basis_override: np.ndarray | None = None
 
     def focal_pixels(self, height: int) -> float:
@@ -51,6 +60,12 @@ class Camera:
         far=100.0,
         distortion_k1: float | None = None,
         distortion_k2: float | None = None,
+        distortion_p1: float | None = None,
+        distortion_p2: float | None = None,
+        distortion_k3: float | None = None,
+        distortion_k4: float | None = None,
+        distortion_k5: float | None = None,
+        distortion_k6: float | None = None,
     ) -> "Camera":
         return Camera(
             position=np.asarray(position, dtype=np.float32),
@@ -61,54 +76,129 @@ class Camera:
             far=far,
             distortion_k1=distortion_k1,
             distortion_k2=distortion_k2,
+            distortion_p1=distortion_p1,
+            distortion_p2=distortion_p2,
+            distortion_k3=distortion_k3,
+            distortion_k4=distortion_k4,
+            distortion_k5=distortion_k5,
+            distortion_k6=distortion_k6,
         )
 
     def __post_init__(self) -> None:
         self.position = np.asarray(self.position, dtype=np.float32).reshape(3)
         self.target = np.asarray(self.target, dtype=np.float32).reshape(3)
         self.up = np.asarray(normalize3(self.up, eps=VEC_EPS), dtype=np.float32)
-        if self.distortion_k1 is not None:
-            self.distortion_k1 = float(self.distortion_k1)
-        if self.distortion_k2 is not None:
-            self.distortion_k2 = float(self.distortion_k2)
+        for attr in ("distortion_k1", "distortion_k2", "distortion_p1", "distortion_p2", "distortion_k3", "distortion_k4", "distortion_k5", "distortion_k6"):
+            value = getattr(self, attr)
+            if value is not None:
+                setattr(self, attr, float(value))
         self.min_camera_distance = max(float(self.min_camera_distance), 0.0)
         if self.basis_override is not None:
             basis = np.asarray(self.basis_override, dtype=np.float32).reshape(3, 3)
             self.basis_override = basis
 
-    def distortion_coeffs(self, default_k1: float = 0.0, default_k2: float = 0.0) -> tuple[float, float]:
+    @staticmethod
+    def _resolve_distortion_defaults(defaults: tuple[float, ...] | None = None) -> tuple[float, float, float, float, float, float, float, float]:
+        if defaults is None:
+            return (0.0,) * _DISTORTION_COEFF_COUNT
+        values = tuple(float(value) for value in defaults)
+        if len(values) != _DISTORTION_COEFF_COUNT:
+            raise ValueError(f"Expected {_DISTORTION_COEFF_COUNT} distortion coefficients, got {len(values)}.")
+        return values
+
+    def distortion_params(self, defaults: tuple[float, ...] | None = None) -> tuple[float, float, float, float, float, float, float, float]:
+        resolved = self._resolve_distortion_defaults(defaults)
         return (
-            float(default_k1 if self.distortion_k1 is None else self.distortion_k1),
-            float(default_k2 if self.distortion_k2 is None else self.distortion_k2),
+            float(resolved[0] if self.distortion_k1 is None else self.distortion_k1),
+            float(resolved[1] if self.distortion_k2 is None else self.distortion_k2),
+            float(resolved[2] if self.distortion_p1 is None else self.distortion_p1),
+            float(resolved[3] if self.distortion_p2 is None else self.distortion_p2),
+            float(resolved[4] if self.distortion_k3 is None else self.distortion_k3),
+            float(resolved[5] if self.distortion_k4 is None else self.distortion_k4),
+            float(resolved[6] if self.distortion_k5 is None else self.distortion_k5),
+            float(resolved[7] if self.distortion_k6 is None else self.distortion_k6),
+        )
+
+    def distortion_coeffs(self, default_k1: float = 0.0, default_k2: float = 0.0) -> tuple[float, float]:
+        k1, k2, *_ = self.distortion_params((default_k1, default_k2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+        return k1, k2
+
+    @staticmethod
+    def _safe_denominator(value: float) -> float:
+        return value if abs(value) > _DISTORTION_EPS else float(np.copysign(_DISTORTION_EPS, value if value != 0.0 else 1.0))
+
+    @staticmethod
+    def _radial_distortion(r2: float, k1: float, k2: float, k3: float, k4: float, k5: float, k6: float) -> tuple[float, float]:
+        r4 = r2 * r2
+        r6 = r4 * r2
+        numerator = 1.0 + k1 * r2 + k2 * r4 + k3 * r6
+        denominator = Camera._safe_denominator(1.0 + k4 * r2 + k5 * r4 + k6 * r6)
+        d_numerator = k1 + 2.0 * k2 * r2 + 3.0 * k3 * r4
+        d_denominator = k4 + 2.0 * k5 * r2 + 3.0 * k6 * r4
+        radial = numerator / denominator
+        d_radial_dr2 = (d_numerator * denominator - numerator * d_denominator) / (denominator * denominator)
+        return radial, d_radial_dr2
+
+    @staticmethod
+    def _tangential_distortion(x: float, y: float, r2: float, p1: float, p2: float) -> tuple[float, float]:
+        return 2.0 * p1 * x * y + p2 * (r2 + 2.0 * x * x), p1 * (r2 + 2.0 * y * y) + 2.0 * p2 * x * y
+
+    @staticmethod
+    def _distort_normalized_with_params(uv: np.ndarray, params: tuple[float, float, float, float, float, float, float, float]) -> np.ndarray:
+        x, y = np.asarray(uv, dtype=np.float64).reshape(2)
+        k1, k2, p1, p2, k3, k4, k5, k6 = (float(value) for value in params)
+        r2 = x * x + y * y
+        radial, _ = Camera._radial_distortion(r2, k1, k2, k3, k4, k5, k6)
+        tx, ty = Camera._tangential_distortion(x, y, r2, p1, p2)
+        return np.array((x * radial + tx, y * radial + ty), dtype=np.float64)
+
+    @staticmethod
+    def _distort_normalized(uv: np.ndarray, k1: float, k2: float, p1: float = 0.0, p2: float = 0.0, k3: float = 0.0, k4: float = 0.0, k5: float = 0.0, k6: float = 0.0) -> np.ndarray:
+        return Camera._distort_normalized_with_params(uv, (k1, k2, p1, p2, k3, k4, k5, k6)).astype(np.float32, copy=False)
+
+    @staticmethod
+    def _distortion_jacobian(uv: np.ndarray, params: tuple[float, float, float, float, float, float, float, float]) -> np.ndarray:
+        x, y = np.asarray(uv, dtype=np.float64).reshape(2)
+        k1, k2, p1, p2, k3, k4, k5, k6 = (float(value) for value in params)
+        r2 = x * x + y * y
+        radial, d_radial_dr2 = Camera._radial_distortion(r2, k1, k2, k3, k4, k5, k6)
+        d_radial_dx = d_radial_dr2 * 2.0 * x
+        d_radial_dy = d_radial_dr2 * 2.0 * y
+        return np.array(
+            (
+                (radial + x * d_radial_dx + 2.0 * p1 * y + 6.0 * p2 * x, x * d_radial_dy + 2.0 * p1 * x + 2.0 * p2 * y),
+                (y * d_radial_dx + 2.0 * p1 * x + 2.0 * p2 * y, radial + y * d_radial_dy + 6.0 * p1 * y + 2.0 * p2 * x),
+            ),
+            dtype=np.float64,
         )
 
     @staticmethod
-    def _distort_normalized(uv: np.ndarray, k1: float, k2: float) -> np.ndarray:
-        uv_arr = np.asarray(uv, dtype=np.float32).reshape(2)
-        r2 = float(np.dot(uv_arr, uv_arr))
-        return uv_arr * np.float32(1.0 + k1 * r2 + k2 * r2 * r2)
-
-    @staticmethod
-    def _undistort_normalized(uv_distorted: np.ndarray, k1: float, k2: float, iters: int = 6) -> np.ndarray:
-        uv_d = np.asarray(uv_distorted, dtype=np.float32).reshape(2)
-        if (not np.isfinite(uv_d).all()) or (abs(k1) <= 1e-12 and abs(k2) <= 1e-12):
-            return uv_d
-        radius_d = float(np.linalg.norm(uv_d))
-        if radius_d <= 1e-12:
-            return uv_d
-        radius = radius_d
+    def _undistort_normalized(uv_distorted: np.ndarray, k1: float, k2: float, p1: float = 0.0, p2: float = 0.0, k3: float = 0.0, k4: float = 0.0, k5: float = 0.0, k6: float = 0.0, iters: int = _DISTORTION_NEWTON_ITERS) -> np.ndarray:
+        uv_d = np.asarray(uv_distorted, dtype=np.float64).reshape(2)
+        params = (float(k1), float(k2), float(p1), float(p2), float(k3), float(k4), float(k5), float(k6))
+        if (not np.isfinite(uv_d).all()) or all(abs(value) <= _DISTORTION_EPS for value in params):
+            return uv_d.astype(np.float32, copy=False)
+        estimate = np.array(uv_d, dtype=np.float64, copy=True)
         for _ in range(max(int(iters), 0)):
-            r2 = radius * radius
-            r4 = r2 * r2
-            deriv = 1.0 + 3.0 * k1 * r2 + 5.0 * k2 * r4
-            if abs(deriv) <= 1e-12:
+            error = Camera._distort_normalized_with_params(estimate, params) - uv_d
+            if float(np.dot(error, error)) <= _DISTORTION_EPS * _DISTORTION_EPS:
                 break
-            step = (radius * (1.0 + k1 * r2 + k2 * r4) - radius_d) / deriv
-            next_radius = radius - step
-            if not np.isfinite(next_radius) or next_radius < 0.0:
+            jacobian = Camera._distortion_jacobian(estimate, params)
+            det = float(jacobian[0, 0] * jacobian[1, 1] - jacobian[0, 1] * jacobian[1, 0])
+            if (not np.isfinite(det)) or abs(det) <= _DISTORTION_EPS:
                 break
-            radius = next_radius
-        return uv_d * np.float32(radius / max(radius_d, 1e-12))
+            step = np.array(
+                (
+                    (jacobian[1, 1] * error[0] - jacobian[0, 1] * error[1]) / det,
+                    (-jacobian[1, 0] * error[0] + jacobian[0, 0] * error[1]) / det,
+                ),
+                dtype=np.float64,
+            )
+            next_estimate = estimate - step
+            if not np.isfinite(next_estimate).all():
+                break
+            estimate = next_estimate
+        return estimate.astype(np.float32, copy=False)
 
     def basis(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         if self.basis_override is not None:
@@ -142,8 +232,7 @@ class Camera:
             return np.zeros((2,), dtype=np.float32), False
         fx, fy = self.focal_pixels_xy(width, height)
         cx, cy = self.principal_point(width, height)
-        k1, k2 = self.distortion_coeffs(default_k1, default_k2)
-        uv = self._distort_normalized(cam[:2] / np.float32(depth), k1, k2)
+        uv = self._distort_normalized(cam[:2] / np.float32(depth), *self.distortion_params((default_k1, default_k2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)))
         screen = uv * np.asarray((fx, fy), dtype=np.float32) + np.asarray((cx, cy), dtype=np.float32)
         return screen.astype(np.float32, copy=False), bool(np.isfinite(screen).all())
 
@@ -157,7 +246,7 @@ class Camera:
             np.asarray((fx, fy), dtype=np.float32),
             np.float32(1e-12),
         )
-        undistorted = self._undistort_normalized(uv, *self.distortion_coeffs(default_k1, default_k2))
+        undistorted = self._undistort_normalized(uv, *self.distortion_params((default_k1, default_k2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)))
         depth_safe = max(float(depth), 1e-12)
         return self.camera_point_to_world(np.array([undistorted[0] * depth_safe, undistorted[1] * depth_safe, depth_safe], dtype=np.float32))
 
@@ -165,11 +254,12 @@ class Camera:
         world = self.screen_to_world(screen_pos, 1.0, width, height, default_k1, default_k2)
         return np.asarray(normalize3(world - self.position, eps=VEC_EPS), dtype=np.float32)
 
-    def gpu_params(self, width: int, height: int) -> dict[str, object]:
+    def gpu_params(self, width: int, height: int, default_distortion: tuple[float, ...] | None = None) -> dict[str, object]:
         right, up, forward = self.basis()
         basis = np.stack((right, up, forward), axis=0).astype(np.float32)
         fx, fy = self.focal_pixels_xy(width, height)
         cx, cy = self.principal_point(width, height)
+        distortion = self.distortion_params(default_distortion)
         return {
             "viewport": spy.float2(float(width), float(height)),
             "camPos": as_float3(self.position),
@@ -178,6 +268,8 @@ class Camera:
             "principalPoint": spy.float2(cx, cy),
             "nearDepth": float(self.near),
             "farDepth": float(self.far),
+            "projDistortionK1K2P1P2": spy.float4(*distortion[:4]),
+            "projDistortionK3K4K5K6": spy.float4(*distortion[4:]),
             "minCameraDistance": float(self.min_camera_distance),
         }
 
@@ -209,6 +301,12 @@ class Camera:
         cy: float,
         distortion_k1: float | None = None,
         distortion_k2: float | None = None,
+        distortion_p1: float | None = None,
+        distortion_p2: float | None = None,
+        distortion_k3: float | None = None,
+        distortion_k4: float | None = None,
+        distortion_k5: float | None = None,
+        distortion_k6: float | None = None,
         near: float = 0.1,
         far: float = 100.0,
     ) -> "Camera":
@@ -230,5 +328,11 @@ class Camera:
             cy=float(cy),
             distortion_k1=distortion_k1,
             distortion_k2=distortion_k2,
+            distortion_p1=distortion_p1,
+            distortion_p2=distortion_p2,
+            distortion_k3=distortion_k3,
+            distortion_k4=distortion_k4,
+            distortion_k5=distortion_k5,
+            distortion_k6=distortion_k6,
             basis_override=rot,
         )

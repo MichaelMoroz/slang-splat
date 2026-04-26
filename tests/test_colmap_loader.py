@@ -278,6 +278,27 @@ def test_colmap_loader_supports_opencv_camera_models(tmp_path: Path, model_name:
     assert np.isclose(frame.k2, -0.02)
 
 
+def test_colmap_loader_preserves_full_opencv_higher_order_terms(tmp_path: Path) -> None:
+    root = _build_tiny_colmap_text_tree(tmp_path, model_name="FULL_OPENCV")
+
+    recon = load_colmap_reconstruction(root)
+    camera = recon.cameras[7]
+    frame = build_training_frames(recon, images_subdir="images_4")[0]
+
+    assert np.isclose(camera.p1, 0.001)
+    assert np.isclose(camera.p2, -0.002)
+    assert np.isclose(camera.k3, 0.0)
+    assert np.isclose(camera.k4, 0.0)
+    assert np.isclose(camera.k5, 0.0)
+    assert np.isclose(camera.k6, 0.0)
+    assert np.isclose(frame.p1, 0.001)
+    assert np.isclose(frame.p2, -0.002)
+    assert np.isclose(frame.k3, 0.0)
+    assert np.isclose(frame.k4, 0.0)
+    assert np.isclose(frame.k5, 0.0)
+    assert np.isclose(frame.k6, 0.0)
+
+
 def test_transform_poses_pca_defaults_to_no_rescale_and_wrapper_matches() -> None:
     poses = np.repeat(np.eye(4, dtype=np.float32)[None, :, :], 3, axis=0)
     poses[:, 0, 3] = np.array([0.0, 10.0, 20.0], dtype=np.float32)

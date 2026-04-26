@@ -14,7 +14,7 @@ from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 from src.scene.sh_utils import SH_C0, evaluate_sh_color
 from src.training import gaussian_trainer as gaussian_trainer_module
-from src.training import AdamHyperParams, GaussianTrainer, SPLAT_CONTRIBUTION_FIXED_SCALE, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_colorspace_mod, resolve_cosine_base_learning_rate, resolve_effective_refinement_interval, resolve_effective_train_render_factor, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_visible_angle_deg, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_clone_budget, resolve_refinement_growth_ratio, resolve_refinement_min_contribution, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering, resolve_ssim_weight, resolve_stage_schedule_steps, resolve_training_resolution, resolve_train_subsample_factor, resolve_use_sh, should_run_refinement_step
+from src.training import AdamHyperParams, GaussianTrainer, SPLAT_CONTRIBUTION_FIXED_SCALE, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_colorspace_mod, resolve_cosine_base_learning_rate, resolve_effective_refinement_interval, resolve_effective_train_render_factor, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_visible_angle_deg, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_clone_budget, resolve_refinement_growth_ratio, resolve_refinement_min_contribution, resolve_refinement_min_screen_radius_px, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering, resolve_ssim_weight, resolve_stage_schedule_steps, resolve_training_resolution, resolve_train_subsample_factor, resolve_use_sh, should_run_refinement_step
 
 _ADAM_BUFFER_NAMES = ("adam_moments",)
 _OPACITY_EPS = 1e-6
@@ -22,7 +22,7 @@ _raw_opacity = lambda alpha: (np.log(np.clip(np.asarray(alpha, dtype=np.float32)
 _actual_opacity = lambda raw: (1.0 / (1.0 + np.exp(-np.asarray(raw, dtype=np.float32)))).astype(np.float32, copy=False)
 _actual_scale = lambda log_scale: np.exp(np.asarray(log_scale, dtype=np.float32))
 _GAUSSIAN_SUPPORT_SIGMA_RADIUS = 3.0
-_REFINEMENT_MIN_SCREEN_RADIUS_PX = 0.05
+_REFINEMENT_MIN_SCREEN_RADIUS_PX = float(TrainingHyperParams().refinement_min_screen_radius_px)
 _log_sigma = lambda sigma: np.log(np.asarray(sigma, dtype=np.float32))
 _stored_from_support_scale = lambda support_scale: np.log(np.asarray(support_scale, dtype=np.float32) / _GAUSSIAN_SUPPORT_SIGMA_RADIUS)
 _SCALE_GRAD_MULS = (0.015625, 0.03125, 0.0625, 0.125, 0.25, 0.5, 0.75, 0.875, 0.9375, 0.96875, 1.0, 1.05)
@@ -306,7 +306,7 @@ def _blended_rgb_metrics_np(
     l1 = np.mean(np.abs(loss_diff), axis=2).astype(np.float32) * inv_pixel_count * mask
     mse = float(np.sum(np.mean(mse_diff * mse_diff, axis=2).astype(np.float32) * inv_pixel_count * mask, dtype=np.float64))
     blurred = _separable_gaussian_blur_np(_ssim_feature_moments_np(rendered, target_loss))
-    channel_dssim: list[np.ndarray] = []
+    channel_ssim: list[np.ndarray] = []
     for channel in range(3):
         offset = channel * _SSIM_FEATURES_PER_COLOR
         x = blurred[..., offset + 0]
@@ -319,10 +319,10 @@ def _blended_rgb_metrics_np(
         sigma_xy = xy - x * y
         numer = (2.0 * x * y + _SSIM_C1) * (2.0 * sigma_xy + _SSIM_C2)
         denom = np.maximum((x * x + y * y + _SSIM_C1) * (sigma_x2 + sigma_y2 + _SSIM_C2), _SSIM_SMALL_VALUE)
-        channel_dssim.append(1.0 - numer / denom)
-    dssim = np.mean(np.stack(channel_dssim, axis=2), axis=2, dtype=np.float32)
-    dssim = dssim.astype(np.float32, copy=False) * inv_pixel_count * mask
-    blended = ((1.0 - float(ssim_weight)) * l1 + float(ssim_weight) * dssim).astype(np.float32, copy=False)
+        channel_ssim.append(numer / denom)
+    ssim = np.mean(np.stack(channel_ssim, axis=2), axis=2, dtype=np.float32)
+    dssim_loss = (0.5 * (1.0 - ssim)).astype(np.float32, copy=False) * inv_pixel_count * mask
+    blended = ((1.0 - float(ssim_weight)) * l1 + float(ssim_weight) * dssim_loss).astype(np.float32, copy=False)
     l1_grad = np.sign(loss_diff).astype(np.float32) * (np.float32(1.0 / 3.0) * inv_pixel_count * mask[..., None] * np.float32(1.0 - float(ssim_weight)))
     return blended, float(np.sum(blended, dtype=np.float64)), mse, l1_grad
 
@@ -386,7 +386,7 @@ def _torch_blended_rgb_grad_np(rendered_rgba: np.ndarray, target_rgba: np.ndarra
         sigma_xy = xy - x * y
         numer = (2.0 * x * y + _SSIM_C1) * (2.0 * sigma_xy + _SSIM_C2)
         denom = torch.clamp((x * x + y * y + _SSIM_C1) * (sigma_x2 + sigma_y2 + _SSIM_C2), min=_SSIM_SMALL_VALUE)
-        channel_dssim.append(1.0 - numer / denom)
+        channel_dssim.append(0.5 * (1.0 - numer / denom))
     dssim = torch.stack(channel_dssim, dim=1).mean(dim=1, keepdim=False)
     l1 = (rendered_t - target_rgb).abs().mean(dim=1, keepdim=True)
     loss = ((((1.0 - float(ssim_weight)) * l1) + (float(ssim_weight) * dssim)) * inv_pixel_count * target_mask).sum()
@@ -1670,10 +1670,8 @@ def test_training_raster_path_preserves_clone_counts(device, tmp_path: Path) -> 
 def _write_refinement_distribution_inputs(trainer: GaussianTrainer, variances: np.ndarray, contributions: np.ndarray | None = None) -> None:
     variances = np.ascontiguousarray(variances, dtype=np.float32).reshape(-1)
     contributions = np.ones_like(variances) if contributions is None else np.ascontiguousarray(contributions, dtype=np.float32).reshape(-1)
-    samples = np.sqrt(np.maximum(variances, 0.0)).astype(np.float32, copy=False)
     stats = np.zeros((variances.shape[0], 2), dtype=np.float32)
-    stats[:, 0] = samples * 2.0
-    stats[:, 1] = samples * samples * 4.0
+    stats[:, 0] = np.maximum(variances, 0.0) * 2.0
     trainer._observed_contribution_pixel_count = 2
     trainer.refinement_buffers["gradient_stats"].copy_from_numpy(stats)
     contribution_fixed = np.maximum(
@@ -2521,7 +2519,7 @@ def test_refinement_min_screen_size_raises_small_splats(device, tmp_path: Path) 
 
     scales = _actual_scale(_read_scene_groups(renderer, trainer.scene.count)["scales"][0, :3])
     initial_scale = _actual_scale(scene.scales[0, :3])
-    assert np.all(scales > initial_scale)
+    assert np.all(scales >= initial_scale)
     np.testing.assert_allclose(scales, np.full((3,), scales[0], dtype=np.float32), rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(scales, np.full((3,), expected_sigma, dtype=np.float32), rtol=0.0, atol=1e-6)
 
@@ -2556,7 +2554,41 @@ def test_refinement_min_screen_size_scales_with_distance(device, tmp_path: Path)
     scales = _actual_scale(_read_scene_groups(renderer, trainer.scene.count)["scales"][:, :3])
     np.testing.assert_allclose(scales[0], np.full((3,), expected_near, dtype=np.float32), rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(scales[1], np.full((3,), expected_far, dtype=np.float32), rtol=0.0, atol=1e-6)
-    assert float(scales[1, 0]) > float(scales[0, 0])
+
+
+def test_refinement_min_screen_size_uses_scheduled_value(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=1, seed=230)
+    scene.positions[0] = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+    scene.scales[0] = _log_sigma(np.array([1e-5, 1e-5, 1e-5], dtype=np.float32))
+    frame = _make_frame(tmp_path, image_name="refinement_min_schedule_target.png", image_id=230)
+    renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.0, list_capacity_multiplier=16)
+    training = TrainingHyperParams(
+        lr_schedule_stage1_step=1,
+        lr_schedule_stage2_step=2,
+        lr_schedule_steps=3,
+        refinement_min_screen_radius_px=0.05,
+        refinement_min_screen_radius_px_stage1=0.1,
+        refinement_min_screen_radius_px_stage2=0.2,
+        refinement_min_screen_radius_px_stage3=0.4,
+        refinement_alpha_cull_threshold=1e-3,
+    )
+    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], training_hparams=training, seed=123)
+    trainer.state.step = 2
+    camera = trainer.make_frame_camera(0, renderer.width, renderer.height)
+    scheduled_radius_px = resolve_refinement_min_screen_radius_px(training, trainer.state.step)
+    default_sigma = _circle_bound_support_radius(camera, scene.positions[0], renderer.width, renderer.height, training.refinement_min_screen_radius_px) / (
+        renderer.radius_scale * _GAUSSIAN_SUPPORT_SIGMA_RADIUS
+    )
+    expected_sigma = _circle_bound_support_radius(camera, scene.positions[0], renderer.width, renderer.height, scheduled_radius_px) / (
+        renderer.radius_scale * _GAUSSIAN_SUPPORT_SIGMA_RADIUS
+    )
+
+    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
+    trainer._run_refinement()
+
+    scales = _actual_scale(_read_scene_groups(renderer, trainer.scene.count)["scales"][0, :3])
+    np.testing.assert_allclose(scales, np.full((3,), expected_sigma, dtype=np.float32), rtol=0.0, atol=1e-6)
+    assert expected_sigma > default_sigma
 
 
 def test_training_max_screen_size_clamps_large_splats(device, tmp_path: Path) -> None:

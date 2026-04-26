@@ -11,8 +11,8 @@ struct CameraParams
     float2 principalPoint;
     float nearDepth;
     float farDepth;
-    float projDistortionK1;
-    float projDistortionK2;
+    float4 projDistortionK1K2P1P2;
+    float4 projDistortionK3K4K5K6;
     float minCameraDistance;
 };
 
@@ -70,32 +70,76 @@ struct PinholeCamera : ICamera
         return cameraPos.xy * (params.focalPixels * invDepth) + params.principalPoint;
     }
 
+    float radial_distortion(float r2, out float dRadialDr2)
+    {
+        float r4 = r2 * r2;
+        float r6 = r4 * r2;
+        float numerator = 1.0 + params.projDistortionK1K2P1P2.x * r2 + params.projDistortionK1K2P1P2.y * r4 + params.projDistortionK3K4K5K6.x * r6;
+        float denominatorRaw = 1.0 + params.projDistortionK3K4K5K6.y * r2 + params.projDistortionK3K4K5K6.z * r4 + params.projDistortionK3K4K5K6.w * r6;
+        float denominator = abs(denominatorRaw) > SMALL_VALUE ? denominatorRaw : (denominatorRaw >= 0.0 ? SMALL_VALUE : -SMALL_VALUE);
+        float dNumerator = params.projDistortionK1K2P1P2.x + 2.0 * params.projDistortionK1K2P1P2.y * r2 + 3.0 * params.projDistortionK3K4K5K6.x * r4;
+        float dDenominator = params.projDistortionK3K4K5K6.y + 2.0 * params.projDistortionK3K4K5K6.z * r2 + 3.0 * params.projDistortionK3K4K5K6.w * r4;
+        dRadialDr2 = (dNumerator * denominator - numerator * dDenominator) / (denominator * denominator);
+        return numerator / denominator;
+    }
+
+    float2 tangential_distortion(float2 uv, float r2)
+    {
+        float x = uv.x;
+        float y = uv.y;
+        float p1 = params.projDistortionK1K2P1P2.z;
+        float p2 = params.projDistortionK1K2P1P2.w;
+        return float2(
+            2.0 * p1 * x * y + p2 * (r2 + 2.0 * x * x),
+            p1 * (r2 + 2.0 * y * y) + 2.0 * p2 * x * y
+        );
+    }
+
     float2 distort_normalized(float2 uv)
     {
         float r2 = dot(uv, uv);
-        return uv * (1.0 + params.projDistortionK1 * r2 + params.projDistortionK2 * r2 * r2);
+        float dRadialDr2 = 0.0;
+        float radial = radial_distortion(r2, dRadialDr2);
+        return uv * radial + tangential_distortion(uv, r2);
     }
 
     float2 undistort_normalized(float2 uvDistorted)
     {
-        if (all(abs(float2(params.projDistortionK1, params.projDistortionK2)) <= SMALL_VALUE)) return uvDistorted;
+        if (
+            all(abs(params.projDistortionK1K2P1P2) <= SMALL_VALUE)
+            && all(abs(params.projDistortionK3K4K5K6) <= SMALL_VALUE)
+        ) return uvDistorted;
 
-        float radiusDistorted = length(uvDistorted);
-        if (radiusDistorted <= SMALL_VALUE) return uvDistorted;
-
-        float radius = radiusDistorted;
+        float2 estimate = uvDistorted;
         [unroll] for (uint iter = 0u; iter < CAMERA_UNDISTORT_NEWTON_ITERS; iter++)
         {
-            float r2 = radius * radius;
-            float r4 = r2 * r2;
-            float deriv = 1.0 + 3.0 * params.projDistortionK1 * r2 + 5.0 * params.projDistortionK2 * r4;
-            if (abs(deriv) <= SMALL_VALUE) break;
+            float x = estimate.x;
+            float y = estimate.y;
+            float r2 = dot(estimate, estimate);
+            float dRadialDr2 = 0.0;
+            float radial = radial_distortion(r2, dRadialDr2);
+            float2 distorted = estimate * radial + tangential_distortion(estimate, r2);
+            float2 error = distorted - uvDistorted;
+            if (dot(error, error) <= SMALL_VALUE * SMALL_VALUE) break;
 
-            float nextRadius = radius - (radius * (1.0 + params.projDistortionK1 * r2 + params.projDistortionK2 * r4) - radiusDistorted) / deriv;
-            if (!isfinite(nextRadius) || nextRadius < 0.0) break;
-            radius = nextRadius;
+            float dRadialDx = dRadialDr2 * 2.0 * x;
+            float dRadialDy = dRadialDr2 * 2.0 * y;
+            float p1 = params.projDistortionK1K2P1P2.z;
+            float p2 = params.projDistortionK1K2P1P2.w;
+            float2 jacobianRow0 = float2(radial + x * dRadialDx + 2.0 * p1 * y + 6.0 * p2 * x, x * dRadialDy + 2.0 * p1 * x + 2.0 * p2 * y);
+            float2 jacobianRow1 = float2(y * dRadialDx + 2.0 * p1 * x + 2.0 * p2 * y, radial + y * dRadialDy + 6.0 * p1 * y + 2.0 * p2 * x);
+            float det = jacobianRow0.x * jacobianRow1.y - jacobianRow0.y * jacobianRow1.x;
+            if (abs(det) <= SMALL_VALUE || !isfinite(det)) break;
+
+            float2 step = float2(
+                (jacobianRow1.y * error.x - jacobianRow0.y * error.y) / det,
+                (-jacobianRow1.x * error.x + jacobianRow0.x * error.y) / det
+            );
+            float2 nextEstimate = estimate - step;
+            if (!all(isfinite(nextEstimate))) break;
+            estimate = nextEstimate;
         }
-        return uvDistorted * (radius / max(radiusDistorted, SMALL_VALUE));
+        return estimate;
     }
 
     bool project_camera_to_screen(float3 cameraPos, out float2 screenPos)

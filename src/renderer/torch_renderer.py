@@ -20,7 +20,7 @@ else:
     _TORCH_IMPORT_ERROR = None
 
 
-_TORCH_CAMERA_PARAM_COUNT = 15
+_TORCH_CAMERA_PARAM_COUNT = 21
 _TORCH_RENDER_PARAM_COUNT = GaussianRenderer.TRAINABLE_PARAM_COUNT
 _TORCH_OUTPUT_CHANNELS = 4
 _TORCH_SCENE_INPUT_BUFFER_NAME = "scene_input"
@@ -281,6 +281,12 @@ def _camera_from_tensor(camera_params: Any) -> Camera:
         cy=float(values[10]),
         distortion_k1=float(values[13]),
         distortion_k2=float(values[14]),
+        distortion_p1=float(values[15]),
+        distortion_p2=float(values[16]),
+        distortion_k3=float(values[17]),
+        distortion_k4=float(values[18]),
+        distortion_k5=float(values[19]),
+        distortion_k6=float(values[20]),
         near=float(values[11]),
         far=float(values[12]),
     )

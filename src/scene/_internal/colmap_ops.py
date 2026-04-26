@@ -331,6 +331,12 @@ def _build_training_frame(task: tuple[int, object, object, Path, str, int | None
         int(height),
         float(getattr(camera, "k1", 0.0)),
         float(getattr(camera, "k2", 0.0)),
+        float(getattr(camera, "p1", 0.0)),
+        float(getattr(camera, "p2", 0.0)),
+        float(getattr(camera, "k3", 0.0)),
+        float(getattr(camera, "k4", 0.0)),
+        float(getattr(camera, "k5", 0.0)),
+        float(getattr(camera, "k6", 0.0)),
     )
 
 

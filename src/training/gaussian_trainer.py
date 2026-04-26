@@ -28,7 +28,7 @@ from .defaults import (
     TRAINING_BUILD_ARG_DEFAULTS,
 )
 from .optimizer import GaussianOptimizer
-from .schedule import resolve_base_learning_rate, resolve_colorspace_mod, resolve_effective_refinement_interval, resolve_learning_rate_scale, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_clone_budget, resolve_refinement_min_contribution, resolve_max_allowed_density, resolve_sh_band, resolve_sorting_order_dithering, resolve_ssim_weight, should_run_refinement_step
+from .schedule import resolve_base_learning_rate, resolve_colorspace_mod, resolve_effective_refinement_interval, resolve_learning_rate_scale, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_clone_budget, resolve_refinement_min_contribution, resolve_refinement_min_screen_radius_px, resolve_max_allowed_density, resolve_sh_band, resolve_sorting_order_dithering, resolve_ssim_weight, should_run_refinement_step
 
 TRAIN_DOWNSCALE_MODE_AUTO = 0
 TRAIN_DOWNSCALE_MAX_FACTOR = 16
@@ -178,6 +178,7 @@ class SortCameraDither:
 class _FrameMetricBookkeeper:
     loss: np.ndarray
     mse: np.ndarray
+    ssim: np.ndarray
     psnr: np.ndarray
     visited: np.ndarray
 
@@ -187,6 +188,7 @@ class _FrameMetricBookkeeper:
         return cls(
             loss=np.full((count,), np.nan, dtype=np.float64),
             mse=np.full((count,), np.nan, dtype=np.float64),
+            ssim=np.full((count,), np.nan, dtype=np.float64),
             psnr=np.full((count,), np.nan, dtype=np.float64),
             visited=np.zeros((count,), dtype=bool),
         )
@@ -194,13 +196,15 @@ class _FrameMetricBookkeeper:
     def reset(self) -> None:
         self.loss.fill(np.nan)
         self.mse.fill(np.nan)
+        self.ssim.fill(np.nan)
         self.psnr.fill(np.nan)
         self.visited.fill(False)
 
-    def update(self, frame_index: int, loss: float, mse: float, psnr: float) -> None:
+    def update(self, frame_index: int, loss: float, mse: float, ssim: float, psnr: float) -> None:
         idx = int(frame_index)
         self.loss[idx] = float(loss)
         self.mse[idx] = float(mse)
+        self.ssim[idx] = float(ssim)
         self.psnr[idx] = float(psnr)
         self.visited[idx] = True
 
@@ -228,7 +232,7 @@ class TrainingHyperParams:
     background: tuple[float, float, float] = (1.0, 1.0, 1.0); camera_min_dist: float = TRAINING_BUILD_ARG_DEFAULTS["camera_min_dist"]
     background_mode: int = TRAIN_BACKGROUND_MODE_RANDOM; use_target_alpha_mask: bool = TRAINING_BUILD_ARG_DEFAULTS["use_target_alpha_mask"]; use_sh: bool = TRAINING_BUILD_ARG_DEFAULTS["use_sh"]; sh_band: int = 0
     scale_l2_weight: float = TRAINING_BUILD_ARG_DEFAULTS["scale_l2_weight"]; scale_abs_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["scale_abs_reg_weight"]; sh1_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["sh1_reg_weight"]; opacity_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"]; density_regularizer: float = TRAINING_BUILD_ARG_DEFAULTS["density_regularizer"]; max_visible_angle_deg: float = TRAINING_BUILD_ARG_DEFAULTS["max_visible_angle_deg"]; sorting_order_dithering: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering"]; sorting_order_dithering_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage1"]; sorting_order_dithering_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage2"]; sorting_order_dithering_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage3"]; colorspace_mod: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod"]; colorspace_mod_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage1"]; colorspace_mod_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage2"]; colorspace_mod_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage3"]; ssim_weight: float = DEFAULT_SSIM_WEIGHT; ssim_c2: float = DEFAULT_SSIM_C2; max_allowed_density_start: float = TRAINING_BUILD_ARG_DEFAULTS["max_allowed_density_start"]; max_allowed_density: float = TRAINING_BUILD_ARG_DEFAULTS["max_allowed_density"]
-    refinement_loss_weight: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_loss_weight"]; refinement_target_edge_weight: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_target_edge_weight"]
+    refinement_loss_weight: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_loss_weight"]; refinement_target_edge_weight: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_target_edge_weight"]; refinement_min_screen_radius_px: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_min_screen_radius_px"]
     lr_pos_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_mul"]; lr_pos_stage1_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_stage1_mul"]; lr_pos_stage2_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_stage2_mul"]; lr_pos_stage3_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_stage3_mul"]
     lr_sh_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_sh_mul"]; lr_sh_stage1_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_sh_stage1_mul"]; lr_sh_stage2_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_sh_stage2_mul"]; lr_sh_stage3_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_sh_stage3_mul"]
     position_random_step_noise_lr: float = TRAINING_BUILD_ARG_DEFAULTS["position_random_step_noise_lr"]; position_random_step_opacity_gate_center: float = TRAINING_BUILD_ARG_DEFAULTS["position_random_step_opacity_gate_center"]; position_random_step_opacity_gate_sharpness: float = TRAINING_BUILD_ARG_DEFAULTS["position_random_step_opacity_gate_sharpness"]
@@ -236,6 +240,7 @@ class TrainingHyperParams:
     refinement_interval: int = TRAINING_BUILD_ARG_DEFAULTS["refinement_interval"]; refinement_growth_ratio: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_growth_ratio"]; refinement_growth_start_step: int = TRAINING_BUILD_ARG_DEFAULTS["refinement_growth_start_step"]; refinement_alpha_cull_threshold: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_alpha_cull_threshold"]; refinement_min_contribution: int = DEFAULT_REFINEMENT_MIN_CONTRIBUTION; refinement_min_contribution_decay: float = DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY; refinement_opacity_mul: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_opacity_mul"]; refinement_sample_radius: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_sample_radius"]; refinement_clone_scale_mul: float = DEFAULT_REFINEMENT_CLONE_SCALE_MUL; refinement_use_compact_split: bool = bool(TRAINING_BUILD_ARG_DEFAULTS.get("refinement_use_compact_split", False)); refinement_solve_opacity: bool = bool(TRAINING_BUILD_ARG_DEFAULTS.get("refinement_solve_opacity", False)); refinement_split_beta: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("refinement_split_beta", 0.28)); refinement_grad_variance_weight_exponent: float = DEFAULT_REFINEMENT_GRAD_VARIANCE_WEIGHT_EXPONENT; refinement_contribution_weight_exponent: float = DEFAULT_REFINEMENT_CONTRIBUTION_WEIGHT_EXPONENT
     ssim_weight_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["ssim_weight_stage1"]; ssim_weight_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["ssim_weight_stage2"]; ssim_weight_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["ssim_weight_stage3"]; max_visible_angle_deg_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["max_visible_angle_deg_stage1"]; max_visible_angle_deg_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["max_visible_angle_deg_stage2"]; max_visible_angle_deg_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["max_visible_angle_deg_stage3"]
     position_random_step_noise_stage1_lr: float = TRAINING_BUILD_ARG_DEFAULTS["position_random_step_noise_stage1_lr"]; position_random_step_noise_stage2_lr: float = TRAINING_BUILD_ARG_DEFAULTS["position_random_step_noise_stage2_lr"]; position_random_step_noise_stage3_lr: float = TRAINING_BUILD_ARG_DEFAULTS["position_random_step_noise_stage3_lr"]
+    refinement_min_screen_radius_px_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_min_screen_radius_px_stage1"]; refinement_min_screen_radius_px_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_min_screen_radius_px_stage2"]; refinement_min_screen_radius_px_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_min_screen_radius_px_stage3"]
     use_sh_stage1: bool = TRAINING_BUILD_ARG_DEFAULTS["use_sh_stage1"]; use_sh_stage2: bool = TRAINING_BUILD_ARG_DEFAULTS["use_sh_stage2"]; use_sh_stage3: bool = TRAINING_BUILD_ARG_DEFAULTS["use_sh_stage3"]
     sh_band_stage1: int = TRAINING_BUILD_ARG_DEFAULTS["sh_band_stage1"]; sh_band_stage2: int = TRAINING_BUILD_ARG_DEFAULTS["sh_band_stage2"]; sh_band_stage3: int = TRAINING_BUILD_ARG_DEFAULTS["sh_band_stage3"]
     max_gaussians: int = TRAINING_BUILD_ARG_DEFAULTS["max_gaussians"]; train_downscale_mode: int = TRAINING_BUILD_ARG_DEFAULTS["train_downscale_mode"]; train_auto_start_downscale: int = TRAINING_BUILD_ARG_DEFAULTS["train_auto_start_downscale"]
@@ -275,6 +280,7 @@ class TrainingHyperParams:
         _clamp_float_range(self, 1e-8, 1.0, "refinement_alpha_cull_threshold")
         self.refinement_min_contribution = max(int(self.refinement_min_contribution), 0)
         _clamp_float_range(self, 0.0, 1.0, "refinement_min_contribution_decay", "refinement_opacity_mul", "refinement_split_beta")
+        _clamp_float_min(self, 0.0, "refinement_min_screen_radius_px", "refinement_min_screen_radius_px_stage1", "refinement_min_screen_radius_px_stage2", "refinement_min_screen_radius_px_stage3")
         self.refinement_sample_radius = max(float(self.refinement_sample_radius), 0.0)
         self.refinement_clone_scale_mul = max(float(self.refinement_clone_scale_mul), 0.0)
         self.refinement_use_compact_split = bool(self.refinement_use_compact_split)
@@ -314,7 +320,7 @@ class TrainingHyperParams:
 
 @dataclass(slots=True)
 class TrainingState:
-    step: int = 0; last_loss: float = float("nan"); avg_loss: float = float("nan"); last_mse: float = float("nan"); avg_mse: float = float("nan"); last_psnr: float = float("nan"); avg_psnr: float = float("nan")
+    step: int = 0; last_loss: float = float("nan"); avg_loss: float = float("nan"); last_mse: float = float("nan"); avg_mse: float = float("nan"); last_ssim: float = float("nan"); avg_ssim: float = float("nan"); last_psnr: float = float("nan"); avg_psnr: float = float("nan")
     avg_density_loss: float = float("nan")
     last_frame_index: int = -1; last_instability: str = ""; last_base_lr: float = float("nan")
 
@@ -324,13 +330,15 @@ class GaussianTrainer:
     _LOSS_SLOT_MSE = 1
     _LOSS_SLOT_DENSITY = 2
     _BATCH_STEP_INFO_DISPLAY_MSE = 3
-    _BATCH_STEP_INFO_STRIDE = 4
+    _BATCH_STEP_INFO_SSIM = 4
+    _BATCH_STEP_INFO_STRIDE = 5
+    _LOSS_SLOT_COUNT = 5
     _U32_BYTES = 4
     _FLOAT4_BYTES = 16
     _GRAD_STATS_STRIDE = 2
     _SSIM_FEATURE_CHANNELS = 15
     _PREPASS_CAPACITY_SYNC_INTERVAL = 32
-    _REFINEMENT_CAMERA_ROW_COUNT = 6
+    _REFINEMENT_CAMERA_ROW_COUNT = 8
     _KERNEL_ENTRIES = {
         "downscale_target": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csResampleDownscaledTargetNearest"),
         "clear_loss": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csClearLossBuffer"),
@@ -417,6 +425,7 @@ class GaussianTrainer:
         return {
             "loss": np.asarray(self._frame_metrics.loss, dtype=np.float64).copy(),
             "mse": np.asarray(self._frame_metrics.mse, dtype=np.float64).copy(),
+            "ssim": np.asarray(self._frame_metrics.ssim, dtype=np.float64).copy(),
             "psnr": np.asarray(self._frame_metrics.psnr, dtype=np.float64).copy(),
             "visited": np.asarray(self._frame_metrics.visited, dtype=bool).copy(),
         }
@@ -657,6 +666,7 @@ class GaussianTrainer:
             "g_RefinementAlphaCullThreshold": float(self.training.refinement_alpha_cull_threshold),
             "g_RefinementMinContributionThreshold": np.uint32(refinement_threshold),
             "g_RefinementOpacityMul": float(self.training.refinement_opacity_mul),
+            "g_RefinementMinScreenRadiusPx": float(resolve_refinement_min_screen_radius_px(self.training, self.state.step)),
             "g_RefinementSampleRadius": float(self.training.refinement_sample_radius),
             "g_RefinementCloneScaleMul": float(self.training.refinement_clone_scale_mul),
             "g_RefinementUseCompactSplit": np.uint32(1 if self.training.refinement_use_compact_split else 0),
@@ -845,7 +855,7 @@ class GaussianTrainer:
         if self._buffers and count <= self._splat_capacity and required_batch_steps <= self._batch_step_capacity: return
         self._splat_capacity = grow_capacity(count, self._splat_capacity)
         self._batch_step_capacity = grow_capacity(required_batch_steps, self._batch_step_capacity)
-        self._buffers.setdefault("loss", alloc_buffer(self.device, name="trainer.loss", size=16, usage=RW_BUFFER_USAGE))
+        self._buffers.setdefault("loss", alloc_buffer(self.device, name="trainer.loss", size=self._LOSS_SLOT_COUNT * 4, usage=RW_BUFFER_USAGE))
         defer_resource_release(self._buffers.get("batch_step_info"))
         self._buffers["batch_step_info"] = alloc_buffer(
             self.device,
@@ -995,15 +1005,17 @@ class GaussianTrainer:
             right, up, forward = camera.basis()
             fx, fy = camera.focal_pixels_xy(width, height)
             cx, cy = camera.principal_point(width, height)
-            k1, k2 = camera.distortion_coeffs()
+            distortion = camera.distortion_params()
             camera_hash = _u32_bits_to_f32(int(_refinement_camera_hash(frame.image_id)))
             base = frame_index * self._REFINEMENT_CAMERA_ROW_COUNT
             rows[base + 0] = np.array([width, height, camera.position[0], camera.position[1]], dtype=np.float32)
             rows[base + 1] = np.array([camera.position[2], fx, fy, cx], dtype=np.float32)
-            rows[base + 2] = np.array([cy, camera.near, camera.far, k1], dtype=np.float32)
-            rows[base + 3] = np.array([k2, right[0], right[1], right[2]], dtype=np.float32)
-            rows[base + 4] = np.array([up[0], up[1], up[2], forward[0]], dtype=np.float32)
-            rows[base + 5] = np.array([forward[1], forward[2], camera_hash, camera.min_camera_distance], dtype=np.float32)
+            rows[base + 2] = np.array([cy, camera.near, camera.far, camera.min_camera_distance], dtype=np.float32)
+            rows[base + 3] = np.array([right[0], right[1], right[2], up[0]], dtype=np.float32)
+            rows[base + 4] = np.array([up[1], up[2], forward[0], forward[1]], dtype=np.float32)
+            rows[base + 5] = np.array([forward[2], camera_hash, distortion[0], distortion[1]], dtype=np.float32)
+            rows[base + 6] = np.array(distortion[2:6], dtype=np.float32)
+            rows[base + 7] = np.array([distortion[6], distortion[7], 0.0, 0.0], dtype=np.float32)
         return rows
 
     def _refinement_camera_signature_value(self) -> tuple[object, ...]:
@@ -1025,6 +1037,12 @@ class GaussianTrainer:
                     round(float(frame.cy), 6),
                     round(float(frame.k1), 8),
                     round(float(frame.k2), 8),
+                    round(float(frame.p1), 8),
+                    round(float(frame.p2), 8),
+                    round(float(frame.k3), 8),
+                    round(float(frame.k4), 8),
+                    round(float(frame.k5), 8),
+                    round(float(frame.k6), 8),
                     *(round(float(v), 8) for v in np.asarray(frame.q_wxyz, dtype=np.float32).reshape(4)),
                     *(round(float(v), 8) for v in np.asarray(frame.t_xyz, dtype=np.float32).reshape(3)),
                 )
@@ -1571,14 +1589,16 @@ class GaussianTrainer:
             loss = float(step_metrics[batch_index, self._LOSS_SLOT_TOTAL])
             image_mse = float(step_metrics[batch_index, self._LOSS_SLOT_MSE])
             image_display_mse = float(step_metrics[batch_index, self._BATCH_STEP_INFO_DISPLAY_MSE])
+            image_ssim = float(step_metrics[batch_index, self._BATCH_STEP_INFO_SSIM])
             had_nonfinite = had_nonfinite or not np.isfinite(loss)
             self.state.step += 1
             self.state.last_base_lr = self.current_base_lr(self.state.step)
             self.state.last_frame_index = frame_index
             self.state.last_loss = loss
             self.state.last_mse = image_mse
+            self.state.last_ssim = image_ssim
             self.state.last_psnr = float(psnr_from_mse(image_display_mse))
-            self._frame_metrics.update(frame_index, self.state.last_loss, self.state.last_mse, self.state.last_psnr)
+            self._frame_metrics.update(frame_index, self.state.last_loss, self.state.last_mse, self.state.last_ssim, self.state.last_psnr)
         if had_nonfinite:
             self.state.last_instability = "Non-finite loss after batched ADAM; moments reset."
             self._zero_optimizer_moments()
@@ -1586,6 +1606,7 @@ class GaussianTrainer:
             self.state.last_instability = ""
         self.state.avg_loss = self._frame_metrics.mean("loss")
         self.state.avg_mse = self._frame_metrics.mean("mse")
+        self.state.avg_ssim = self._frame_metrics.mean("ssim")
         self.state.avg_psnr = self._frame_metrics.mean("psnr")
         self.state.avg_density_loss = float(np.mean(step_metrics[:, self._LOSS_SLOT_DENSITY], dtype=np.float64)) if batch_steps > 0 else float("nan")
         self.training.train_downscale_factor = self.effective_train_downscale_factor(self.state.step)

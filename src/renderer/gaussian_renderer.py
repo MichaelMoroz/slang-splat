@@ -217,6 +217,7 @@ class GaussianRenderer:
         "sigma.xy", "sigma.xz", "sigma.yz",
         "color.r", "color.g", "color.b", "opacity",
     )
+    _DEFAULT_CACHED_RASTER_GRAD_INCLUDE_DEPTH = False
     _SCENE_SHADER_VARS = {"splat_params": "g_SplatParams"}
     _SCREEN_SHADER_VARS = {"screen_center_radius_depth": "g_ScreenCenterRadiusDepth", "screen_color_alpha": "g_ScreenColorAlpha", "screen_ellipse_conic": "g_ScreenEllipseConic", "splat_visible": "g_SplatVisible", "splat_visible_area_px": "g_SplatVisibleAreaPx"}
     _RASTER_CACHE_SHADER_VARS = {"raster_cache": "g_RasterCache"}
@@ -255,13 +256,13 @@ class GaussianRenderer:
     def _background_array(background: np.ndarray | tuple[float, float, float]) -> np.ndarray:
         return np.asarray(background, dtype=np.float32).reshape(3)
 
+    def _projection_distortion_defaults(self) -> tuple[float, float, float, float, float, float, float, float]:
+        return (float(self.proj_distortion_k1), float(self.proj_distortion_k2), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
     def _camera_uniforms(self, camera: Camera, uniform_name: str = "g_Camera") -> dict[str, object]:
-        k1, k2 = camera.distortion_coeffs(self.proj_distortion_k1, self.proj_distortion_k2)
         return {
             str(uniform_name): {
-                **camera.gpu_params(self.width, self.height),
-                "projDistortionK1": float(k1),
-                "projDistortionK2": float(k2),
+                **camera.gpu_params(self.width, self.height, default_distortion=self._projection_distortion_defaults()),
             }
         }
 
@@ -290,6 +291,7 @@ class GaussianRenderer:
         }
 
     def _raster_uniforms(self, background: np.ndarray, training_background_mode: int = 0, training_background_seed: int = 0) -> dict[str, object]:
+        pixel_count = max(int(self.width) * int(self.height), 1)
         return {
             "g_Raster": {
                 "width": int(self.width),
@@ -302,6 +304,7 @@ class GaussianRenderer:
                 "trainingBackgroundSeed": np.uint32(int(training_background_seed)),
                 "debugMode": np.uint32(self._debug_mode_u32(self.debug_mode)),
                 "shBand": np.uint32(self.sh_band),
+                "cachedRasterGradIncludeDepth": np.uint32(1 if self.cached_raster_grad_include_depth else 0),
                 "debugGradNormThreshold": float(max(self.debug_grad_norm_threshold, 0.0)),
                 "debugEllipseThicknessPx": float(self.debug_ellipse_thickness_px),
                 "debugSplatAgeRange": spy.float2(*self.debug_splat_age_range),
@@ -310,6 +313,7 @@ class GaussianRenderer:
                 "debugRefinementDistributionRange": spy.float2(*self.debug_refinement_distribution_range),
                 "debugContributionScale": float(self._debug_contribution_scale),
                 "debugGradVarianceInvSampleCount": float(self._debug_grad_variance_inv_sample_count),
+                "debugGradVarianceStepInvSampleCount": 1.0 / float(pixel_count),
                 "debugRefinementGradientVarianceWeightExponent": float(max(self.debug_refinement_grad_variance_weight_exponent, 0.0)),
                 "debugRefinementContributionWeightExponent": float(max(self.debug_refinement_contribution_weight_exponent, 0.0)),
                 "debugAdamMomentumRange": spy.float2(*self.debug_adam_momentum_range),
@@ -635,6 +639,7 @@ class GaussianRenderer:
         debug_depth_local_mismatch_reject_radius: float = 4.0,
         debug_sh_coeff_index: int = _DEFAULT_DEBUG_SH_COEFF_INDEX,
         cached_raster_grad_atomic_mode: str = CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT,
+        cached_raster_grad_include_depth: bool = _DEFAULT_CACHED_RASTER_GRAD_INCLUDE_DEPTH,
         cached_raster_grad_fixed_ro_local_range: float = 1.0,
         cached_raster_grad_fixed_scale_range: float = 15.0,
         cached_raster_grad_fixed_quat_range: float = 0.01,
@@ -710,6 +715,7 @@ class GaussianRenderer:
         self._sorted_keys_buffer: spy.Buffer | None = None
         self._sorted_values_buffer: spy.Buffer | None = None
         self._cached_raster_grad_atomic_mode = self.CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT
+        self._cached_raster_grad_include_depth = self._DEFAULT_CACHED_RASTER_GRAD_INCLUDE_DEPTH
         self._cached_raster_grad_fixed_ro_local_range = self._DEFAULT_RASTER_GRAD_FIXED_RO_LOCAL_RANGE
         self._cached_raster_grad_fixed_scale_range = self._DEFAULT_RASTER_GRAD_FIXED_SCALE_RANGE
         self._cached_raster_grad_fixed_quat_range = self._DEFAULT_RASTER_GRAD_FIXED_QUAT_RANGE
@@ -723,6 +729,7 @@ class GaussianRenderer:
         )
         self._zero_u32_buffer.copy_from_numpy(np.array([0], dtype=np.uint32))
         self.cached_raster_grad_atomic_mode = cached_raster_grad_atomic_mode
+        self.cached_raster_grad_include_depth = cached_raster_grad_include_depth
         self.cached_raster_grad_fixed_ro_local_range = cached_raster_grad_fixed_ro_local_range
         self.cached_raster_grad_fixed_scale_range = cached_raster_grad_fixed_scale_range
         self.cached_raster_grad_fixed_quat_range = cached_raster_grad_fixed_quat_range
@@ -1713,6 +1720,14 @@ class GaussianRenderer:
         if resolved == self.CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT:
             self._ensure_float_raster_grad_shaders()
         self._cached_raster_grad_atomic_mode = resolved
+
+    @property
+    def cached_raster_grad_include_depth(self) -> bool:
+        return self._cached_raster_grad_include_depth
+
+    @cached_raster_grad_include_depth.setter
+    def cached_raster_grad_include_depth(self, value: bool) -> None:
+        self._cached_raster_grad_include_depth = bool(value)
 
     @staticmethod
     def _validate_positive_finite(name: str, value: float) -> float:
