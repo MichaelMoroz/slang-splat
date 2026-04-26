@@ -150,8 +150,8 @@ class GaussianRenderer:
     CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED = "fixed"
     CACHED_RASTER_GRAD_ATOMIC_MODES = (CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT, CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED)
     _RASTER_GRAD_FIXED_INT_MAX = np.float32(2147483647.0)
-    _DEFAULT_RASTER_GRAD_FIXED_RO_LOCAL_RANGE = np.float32(2.0)
-    _DEFAULT_RASTER_GRAD_FIXED_SCALE_RANGE = np.float32(256.0)
+    _DEFAULT_RASTER_GRAD_FIXED_RO_LOCAL_RANGE = np.float32(1.0)
+    _DEFAULT_RASTER_GRAD_FIXED_SCALE_RANGE = np.float32(15.0)
     _DEFAULT_RASTER_GRAD_FIXED_COLOR_RANGE = np.float32(8.0)
     _DEFAULT_RASTER_GRAD_FIXED_OPACITY_RANGE = np.float32(8.0)
     _DEFAULT_DEBUG_SPLAT_AGE_RANGE = (0.0, 1.0)
@@ -625,8 +625,8 @@ class GaussianRenderer:
         debug_depth_local_mismatch_reject_radius: float = 4.0,
         debug_sh_coeff_index: int = _DEFAULT_DEBUG_SH_COEFF_INDEX,
         cached_raster_grad_atomic_mode: str = CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED,
-        cached_raster_grad_fixed_ro_local_range: float = 2.0,
-        cached_raster_grad_fixed_scale_range: float = 256.0,
+        cached_raster_grad_fixed_ro_local_range: float = 1.0,
+        cached_raster_grad_fixed_scale_range: float = 15.0,
         cached_raster_grad_fixed_color_range: float = 8.0,
         cached_raster_grad_fixed_opacity_range: float = 8.0,
         use_sh: bool = True,

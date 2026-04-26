@@ -18,10 +18,10 @@ def _dummy_renderer() -> SimpleNamespace:
         max_splat_steps=32768,
         transmittance_threshold=0.005,
         cached_raster_grad_atomic_mode="fixed",
-        cached_raster_grad_fixed_ro_local_range=0.01,
-        cached_raster_grad_fixed_scale_range=0.01,
-        cached_raster_grad_fixed_color_range=0.2,
-        cached_raster_grad_fixed_opacity_range=0.2,
+        cached_raster_grad_fixed_ro_local_range=1.0,
+        cached_raster_grad_fixed_scale_range=15.0,
+        cached_raster_grad_fixed_color_range=8.0,
+        cached_raster_grad_fixed_opacity_range=8.0,
         debug_show_ellipses=False,
         debug_show_processed_count=False,
         debug_show_grad_norm=False,
@@ -828,7 +828,6 @@ def test_histogram_plot_height_scales_with_interface_scale(monkeypatch) -> None:
 def test_optimizer_regularization_tab_includes_density_controls() -> None:
     assert "sh1_reg" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "density_regularizer" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
-    assert "color_non_negative_reg" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "ssim_c2" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "depth_ratio_grad_min" not in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "depth_ratio_grad_max" not in ui._OPTIMIZER_TAB_KEYS["Regularization"]

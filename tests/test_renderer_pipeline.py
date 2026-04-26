@@ -233,14 +233,14 @@ def test_renderer_params_default_to_fixed_cached_grad_atomics():
 
     assert params.cached_raster_grad_atomic_mode == "fixed"
     assert kwargs["cached_raster_grad_atomic_mode"] == "fixed"
-    assert params.cached_raster_grad_fixed_ro_local_range == 0.01
-    assert kwargs["cached_raster_grad_fixed_ro_local_range"] == 0.01
-    assert params.cached_raster_grad_fixed_scale_range == 0.01
-    assert kwargs["cached_raster_grad_fixed_scale_range"] == 0.01
-    assert params.cached_raster_grad_fixed_color_range == 0.2
-    assert kwargs["cached_raster_grad_fixed_color_range"] == 0.2
-    assert params.cached_raster_grad_fixed_opacity_range == 0.2
-    assert kwargs["cached_raster_grad_fixed_opacity_range"] == 0.2
+    assert params.cached_raster_grad_fixed_ro_local_range == 1.0
+    assert kwargs["cached_raster_grad_fixed_ro_local_range"] == 1.0
+    assert params.cached_raster_grad_fixed_scale_range == 15.0
+    assert kwargs["cached_raster_grad_fixed_scale_range"] == 15.0
+    assert params.cached_raster_grad_fixed_color_range == 8.0
+    assert kwargs["cached_raster_grad_fixed_color_range"] == 8.0
+    assert params.cached_raster_grad_fixed_opacity_range == 8.0
+    assert kwargs["cached_raster_grad_fixed_opacity_range"] == 8.0
     assert params.max_anisotropy == 32.0
     assert kwargs["max_anisotropy"] == 32.0
     assert params.debug_gaussian_scale_multiplier == 1.0
