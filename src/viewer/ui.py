@@ -15,7 +15,7 @@ import slangpy as spy
 import slangpy.ui.imgui_bundle as simgui
 from imgui_bundle import hello_imgui, imgui, imgui_md, implot
 
-from ..repo_defaults import json_value, renderer_defaults, viewer_defaults
+from ..repo_defaults import json_value
 from ..app.training_controls import (
     SH_BAND_LABELS as _SH_BAND_LABELS,
     SCHEDULE_STAGE_CONTROL_DEFS,
@@ -30,36 +30,49 @@ from ..app.training_controls import (
     TRAIN_SETUP_TRAILING_KEYS,
     TRAIN_STABILITY_PAIRED_KEYS,
 )
-from .constants import _WINDOW_TITLE
 from .buffer_debug import ResourceDebugSnapshot, format_resource_bytes, write_resource_debug_log
 from .state import DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH, LOSS_DEBUG_OPTIONS
+from .ui_schema import (
+    ControlSpec,
+    GROUP_SPECS,
+    SCHEDULE_STAGE_SPECS,
+    UI_TOOLTIPS,
+    _DEBUG_MODE_LABELS,
+    _DEBUG_MODE_VALUES,
+    _DEFAULT_INTERFACE_SCALE_INDEX,
+    _HISTOGRAM_BIN_COUNT_DEFAULT,
+    _HISTOGRAM_MAX_VALUE_DEFAULT,
+    _HISTOGRAM_MIN_VALUE_DEFAULT,
+    _HISTOGRAM_Y_LIMIT_DEFAULT,
+    _INTERFACE_SCALE_KEY,
+    _INTERFACE_SCALE_OPTIONS,
+    _LOSS_DEBUG_ABS_SCALE_KEY,
+    _OPTIMIZER_TAB_KEYS,
+    _THEME_KEY,
+    _TRAINING_RASTER_GRAD_KEYS,
+    _TRAIN_OPTIMIZER_SPEC_BY_KEY,
+    _VIEWER_CONTROL_DEFAULTS,
+    _VIEWER_IMPORT_DEFAULTS,
+    _VIEWER_IMPORT_EXPORT_FIELDS,
+    _VIEWER_UI_DEFAULTS,
+    _VIEWER_UI_EXPORT_FIELDS,
+    _VIEWER_CONTROL_EXPORT_FIELDS,
+    build_render_spec_bundle,
+    _renderer_atomic_mode_index,
+    _renderer_debug_mode_index,
+    default_control_values,
+)
+from .ui_text import _build_about_text, _build_documentation_text, _draw_disabled_wrapped_text, _draw_markdown_text, _imgui_bundle_assets_path, _markdown_font_base_path, _status_suffix
+from ..renderer.render_params import RendererParams
 
 TOOLKIT_WIDTH_FRACTION = 0.1875
 _TOOLKIT_MIN_WIDTH = 280.0
-LOSS_HISTORY_SIZE = 512
+LOSS_HISTORY_SIZE = 5000
 FPS_HISTORY_SIZE = 128
-_DOC_MAX_WIDTH = 104
-_SHORTCUTS_TEXT = "Controls: LMB drag look | WASDQE move | wheel speed"
 _LOSS_DEBUG_ABS_SCALE_DEFAULT = 1.0
 _LOSS_DEBUG_ABS_SCALE_MIN = 0.125
 _LOSS_DEBUG_ABS_SCALE_MAX = 64.0
-_LOSS_DEBUG_ABS_SCALE_KEY = "loss_debug_abs_scale"
-_INTERFACE_SCALE_KEY = "interface_scale"
-_THEME_KEY = "theme"
-_INTERFACE_SCALE_OPTIONS = (
-    ("75%", 0.75),
-    ("100%", 1.0),
-    ("125%", 1.25),
-    ("150%", 1.5),
-    ("175%", 1.75),
-    ("200%", 2.0),
-    ("225%", 2.25),
-    ("250%", 2.5),
-    ("275%", 2.75),
-    ("300%", 3.0),
-)
 _THEME_OPTIONS = ("White", "Dark")
-_DEFAULT_INTERFACE_SCALE_INDEX = 3
 _BASE_FONT_SIZE_PX = 16.0
 _FONT_ATLAS_SIZE_PX = _BASE_FONT_SIZE_PX * _INTERFACE_SCALE_OPTIONS[-1][1]
 _COLMAP_INIT_MODE_BASE_LABELS = ("COLMAP Pointcloud", "Diffused Pointcloud", "Custom PLY")
@@ -67,9 +80,7 @@ _COLMAP_INIT_MODE_DEPTH_LABEL = "From Depth"
 _COLMAP_INIT_MODE_LABELS = _COLMAP_INIT_MODE_BASE_LABELS
 _COLMAP_DEPTH_VALUE_MODE_LABELS = ("Depth Is Distance", "Depth Is Z-Depth")
 _COLMAP_IMAGE_DOWNSCALE_LABELS = ("Original", "Max Size", "Scale Factor")
-_VIEWER_BACKGROUND_MODE_LABELS = ("Train Background", "Custom")
 _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT = 2e-4
-_DEBUG_ADAM_MOMENTUM_THRESHOLD_DEFAULT = 1e-2
 _DEBUG_CONTRIBUTION_AMOUNT_FLOOR = 1e-6
 _DEBUG_COLORBAR_HEIGHT = 28.0
 _DEBUG_COLORBAR_MIN_WIDTH = 320.0
@@ -89,10 +100,6 @@ _HISTOGRAM_AUTO_RANGE_KEEP_FRACTION = 0.99
 _DOCKSPACE_FLAGS = int(imgui.DockNodeFlags_.none)
 _TOOLKIT_WINDOW_NAME = "Toolkit"
 _VIEWPORT_WINDOW_NAME = "Viewport###Viewport"
-_HISTOGRAM_BIN_COUNT_DEFAULT = 64
-_HISTOGRAM_MIN_VALUE_DEFAULT = -1.0
-_HISTOGRAM_MAX_VALUE_DEFAULT = 1.0
-_HISTOGRAM_Y_LIMIT_DEFAULT = 1.0
 _HISTOGRAM_WINDOW_WIDTH = 1200.0
 _HISTOGRAM_WINDOW_HEIGHT = 860.0
 _HISTOGRAM_CONTROL_LABEL_WIDTH = 150.0
@@ -107,69 +114,6 @@ _DEFAULT_HISTOGRAM_GROUPS = (
     ("color", (10, 11, 12)),
     ("opacity", (13,)),
 )
-_CACHED_RASTER_GRAD_ATOMIC_MODE_LABELS = ("Float Atomics", "Fixed Point")
-_DEBUG_MODE_VALUES = (
-    "normal",
-    "processed_count",
-    "splat_age",
-    "ellipse_outlines",
-    "splat_density",
-    "splat_spatial_density",
-    "splat_screen_density",
-    "contribution_amount",
-    "adam_momentum",
-    "adam_second_moment",
-    "grad_variance",
-    "refinement_distribution",
-    "depth_mean",
-    "depth_std",
-    "depth_local_mismatch",
-    "grad_norm",
-    "sh_view_dependent",
-    "sh_coefficient",
-    "black_negative",
-)
-_DEBUG_MODE_LABELS = (
-    "Normal",
-    "Processed Count",
-    "Splat Age",
-    "Ellipse Outlines",
-    "Splat Density",
-    "Spatial Density",
-    "Screen Density",
-    "Contribution Amount",
-    "Adam Momentum",
-    "Adam Second Moment",
-    "Grad Variance",
-    "Refinement Distribution",
-    "Depth Mean",
-    "Depth Std",
-    "Depth Local Mismatch",
-    "Grad Norm",
-    "SH View-Dependent",
-    "SH Coefficient",
-    "Black/Negative Regions",
-)
-_DEBUG_SH_COEFF_LABELS = ("SH0 DC", "SH1 X", "SH1 Y", "SH1 Z", "SH2 0", "SH2 1", "SH2 2", "SH2 3", "SH2 4", "SH3 0", "SH3 1", "SH3 2", "SH3 3", "SH3 4", "SH3 5", "SH3 6")
-_VIEWER_DEFAULTS = viewer_defaults()
-_VIEWER_CONTROL_DEFAULTS = _VIEWER_DEFAULTS["controls"]
-_VIEWER_IMPORT_DEFAULTS = _VIEWER_DEFAULTS["import"]
-_VIEWER_UI_DEFAULTS = _VIEWER_DEFAULTS["ui"]
-_RENDERER_DEFAULTS = renderer_defaults()
-_DEFAULT_INTERFACE_SCALE_INDEX = int(_VIEWER_CONTROL_DEFAULTS["interface_scale"])
-_HISTOGRAM_BIN_COUNT_DEFAULT = int(_VIEWER_UI_DEFAULTS["hist_bin_count"])
-_HISTOGRAM_MIN_VALUE_DEFAULT = float(_VIEWER_UI_DEFAULTS["hist_min_value"])
-_HISTOGRAM_MAX_VALUE_DEFAULT = float(_VIEWER_UI_DEFAULTS["hist_max_value"])
-_HISTOGRAM_Y_LIMIT_DEFAULT = float(_VIEWER_UI_DEFAULTS["hist_y_limit"])
-
-
-def _renderer_atomic_mode_index(value: object) -> int:
-    return 0 if str(value) == "float" else 1
-
-
-def _renderer_debug_mode_index(value: object) -> int:
-    mode = "normal" if value is None else str(value)
-    return _DEBUG_MODE_VALUES.index(mode) if mode in _DEBUG_MODE_VALUES else 0
 def _valid_depth_root_text(value: object) -> bool:
     text = str(value or "").strip()
     return bool(text) and Path(text).expanduser().is_dir()
@@ -196,73 +140,6 @@ def _shader_debug_constants() -> dict[str, float]:
             raise RuntimeError(f"Missing shader debug constant: {name}")
         constants[name] = float(match.group(1).strip())
     return constants
-
-
-def _read_text_if_exists(path: Path) -> str:
-    return path.read_text(encoding="utf-8") if path.exists() else ""
-
-
-def _imgui_bundle_assets_path() -> Path:
-    package = importlib.import_module("imgui_bundle")
-    return Path(package.__file__).resolve().parent / "assets"
-
-
-def _markdown_font_base_path() -> Path | None:
-    path = _imgui_bundle_assets_path() / "fonts" / "Roboto" / "Roboto"
-    return path if path.with_name(path.name + "-Regular.ttf").exists() else None
-
-
-def _status_suffix(text: str) -> str:
-    value = str(text).strip()
-    return value.split(": ", 1)[-1] if ": " in value else value
-
-
-def _draw_disabled_wrapped_text(text: str) -> None:
-    value = _status_suffix(text)
-    if not value:
-        return
-    imgui.push_text_wrap_pos(imgui.get_cursor_pos_x() + imgui.get_content_region_avail().x)
-    imgui.begin_disabled()
-    imgui.text_unformatted(value)
-    imgui.end_disabled()
-    imgui.pop_text_wrap_pos()
-
-
-def _draw_markdown_text(text: str) -> None:
-    value = str(text).strip()
-    if not value:
-        return
-    try:
-        imgui_md.render_unindented(value)
-    except Exception:
-        imgui.push_text_wrap_pos(_DOC_MAX_WIDTH * imgui.get_font_size() * 0.5)
-        imgui.text_unformatted(value)
-        imgui.pop_text_wrap_pos()
-
-
-def _build_about_text() -> str:
-    return "\n".join(
-        (
-            f"# {_WINDOW_TITLE}",
-            "",
-            "Single-window Gaussian splat viewer and trainer built on **Slangpy**.",
-            "",
-            "The scene is presented inside a docked viewport window with the **imgui-bundle** UI around it.",
-            "",
-            f"**Controls:** {_SHORTCUTS_TEXT.split(': ', 1)[-1]}",
-        )
-    )
-
-
-def _build_documentation_text() -> str:
-    repo_root = Path(__file__).resolve().parents[2]
-    parts = [
-        "Viewer Documentation",
-        "",
-        _read_text_if_exists(repo_root / "doc" / "Viewer.md").strip(),
-    ]
-    text = "\n\n".join(part for part in parts if part)
-    return text if text else "Documentation is unavailable."
 
 
 def _toolkit_panel_width(width: float, interface_scale: float) -> float:
@@ -459,213 +336,31 @@ def _histogram_range_from_ranges(payload: object) -> tuple[float, float] | None:
     return float(np.min(finite_min)), float(np.max(finite_max))
 
 
-@dataclass(frozen=True, slots=True)
-class ControlSpec:
-    key: str
-    kind: str
-    label: str
-    kwargs: dict[str, object]
-
-def _control_spec(defn) -> ControlSpec:
-    return ControlSpec(defn.key, defn.kind, defn.label, dict(defn.kwargs))
-
-
-_TRAIN_SETUP_SPECS = tuple(_control_spec(defn) for defn in TRAINING_UI_GROUP_DEFS[TRAINING_SETUP_GROUP])
-_TRAIN_OPTIMIZER_SPECS = tuple(_control_spec(defn) for defn in TRAINING_UI_GROUP_DEFS[TRAINING_OPTIMIZER_GROUP])
-SCHEDULE_STAGE_SPECS = {stage: tuple(_control_spec(defn) for defn in defs) for stage, defs in SCHEDULE_STAGE_CONTROL_DEFS.items()}
-_TRAIN_STABILITY_SPECS = tuple(_control_spec(defn) for defn in TRAINING_UI_GROUP_DEFS[TRAINING_STABILITY_GROUP])
-
-GROUP_SPECS = {
-    "View": (
-        ControlSpec(_INTERFACE_SCALE_KEY, "combo", "Interface Scale", {"value": int(_VIEWER_CONTROL_DEFAULTS["interface_scale"]), "options": tuple(label for label, _ in _INTERFACE_SCALE_OPTIONS)}),
-    ),
-    "Main": (
-        ControlSpec("loss_debug_view", "slider_int", "Debug View", {"value": int(_VIEWER_CONTROL_DEFAULTS["loss_debug_view"]), "min": 0, "max": len(LOSS_DEBUG_OPTIONS) - 1}),
-        ControlSpec("loss_debug_frame", "slider_int", "Debug Frame", {"value": int(_VIEWER_CONTROL_DEFAULTS["loss_debug_frame"]), "min": 0, "max": 10000}),
-        ControlSpec(_LOSS_DEBUG_ABS_SCALE_KEY, "slider_float", "Abs Diff Scale", {"value": float(_VIEWER_CONTROL_DEFAULTS["loss_debug_abs_scale"]), "min": _LOSS_DEBUG_ABS_SCALE_MIN, "max": _LOSS_DEBUG_ABS_SCALE_MAX, "format": "%.3gx", "logarithmic": True}),
-    ),
-    "Camera": (
-        ControlSpec("move_speed", "input_float", "Move Speed", {"value": float(_VIEWER_CONTROL_DEFAULTS["move_speed"]), "step": 0.1, "step_fast": 1.0, "format": "%.6g"}),
-        ControlSpec("fov", "slider_float", "FOV", {"value": float(_VIEWER_CONTROL_DEFAULTS["fov"]), "min": 25.0, "max": 100.0}),
-        ControlSpec("render_background_mode", "combo", "Render Background", {"value": int(_VIEWER_CONTROL_DEFAULTS["render_background_mode"]), "options": _VIEWER_BACKGROUND_MODE_LABELS}),
-        ControlSpec("render_background_color", "color_edit3", "Render BG Color", {"value": tuple(float(v) for v in _VIEWER_CONTROL_DEFAULTS["render_background_color"])}),
-    ),
-    "Train Setup": _TRAIN_SETUP_SPECS,
-    "Train Optimizer": _TRAIN_OPTIMIZER_SPECS,
-    "Train Stability": _TRAIN_STABILITY_SPECS,
-}
-
-
-def default_control_values(*group_names: str) -> dict[str, object]:
-    groups = GROUP_SPECS.values() if not group_names else (GROUP_SPECS[name] for name in group_names)
-    return {spec.key: spec.kwargs["value"] for specs in groups for spec in specs if "value" in spec.kwargs}
+def _export_fields(values: dict[str, object], fields: tuple[tuple[str, object], ...]) -> dict[str, object]:
+    return {key: cast(values[key]) for key, cast in fields}
 
 
 def export_repo_defaults_from_ui_values(values: dict[str, object]) -> dict[str, dict[str, object]]:
-    cached_raster_grad_atomic_mode = _CACHED_RASTER_GRAD_ATOMIC_MODE_LABELS[min(max(int(values["cached_raster_grad_atomic_mode"]), 0), len(_CACHED_RASTER_GRAD_ATOMIC_MODE_LABELS) - 1)].lower().split()[0]
+    renderer_params = RendererParams.from_ui_values(values, _DEBUG_MODE_VALUES, _threshold_band_range)
     return {
-        "renderer": json_value(
-            {
-                "radius_scale": float(values["radius_scale"]),
-                "alpha_cutoff": float(values["alpha_cutoff"]),
-                "max_anisotropy": float(values["max_anisotropy"]),
-                "transmittance_threshold": float(values["trans_threshold"]),
-                "list_capacity_multiplier": int(_RENDERER_DEFAULTS["list_capacity_multiplier"]),
-                "max_prepass_memory_mb": int(_RENDERER_DEFAULTS["max_prepass_memory_mb"]),
-                "cached_raster_grad_atomic_mode": cached_raster_grad_atomic_mode,
-                "cached_raster_grad_fixed_ro_local_range": float(values["cached_raster_grad_fixed_ro_local_range"]),
-                "cached_raster_grad_fixed_scale_range": float(values["cached_raster_grad_fixed_scale_range"]),
-                "cached_raster_grad_fixed_color_range": float(values["cached_raster_grad_fixed_color_range"]),
-                "cached_raster_grad_fixed_opacity_range": float(values["cached_raster_grad_fixed_opacity_range"]),
-                "debug_mode": None if _DEBUG_MODE_VALUES[min(max(int(values["debug_mode"]), 0), len(_DEBUG_MODE_VALUES) - 1)] == "normal" else _DEBUG_MODE_VALUES[min(max(int(values["debug_mode"]), 0), len(_DEBUG_MODE_VALUES) - 1)],
-                "debug_grad_norm_threshold": float(values["debug_grad_norm_threshold"]),
-                "debug_ellipse_thickness_px": float(values["debug_ellipse_thickness_px"]),
-                "debug_gaussian_scale_multiplier": float(values["debug_gaussian_scale_multiplier"]),
-                "debug_min_opacity": float(values["debug_min_opacity"]),
-                "debug_opacity_multiplier": float(values["debug_opacity_multiplier"]),
-                "debug_ellipse_scale_multiplier": float(values["debug_ellipse_scale_multiplier"]),
-                "debug_splat_age_range": [float(values["debug_splat_age_min"]), float(values["debug_splat_age_max"])],
-                "debug_density_range": [float(values["debug_density_min"]), float(values["debug_density_max"])],
-                "debug_contribution_range": [float(values["debug_contribution_min"]), float(values["debug_contribution_max"])],
-                "debug_refinement_distribution_range": [float(values["debug_refinement_distribution_min"]), float(values["debug_refinement_distribution_max"])],
-                "debug_adam_momentum_range": list(_threshold_band_range(float(values["debug_adam_momentum_threshold"]))),
-                "debug_depth_mean_range": [float(values["debug_depth_mean_min"]), float(values["debug_depth_mean_max"])],
-                "debug_depth_std_range": [float(values["debug_depth_std_min"]), float(values["debug_depth_std_max"])],
-                "debug_depth_local_mismatch_range": [float(values["debug_depth_local_mismatch_min"]), float(values["debug_depth_local_mismatch_max"])],
-                "debug_depth_local_mismatch_smooth_radius": float(values["debug_depth_local_mismatch_smooth_radius"]),
-                "debug_depth_local_mismatch_reject_radius": float(values["debug_depth_local_mismatch_reject_radius"]),
-                "debug_sh_coeff_index": int(values["debug_sh_coeff_index"]),
-                "debug_show_ellipses": False,
-                "debug_show_processed_count": False,
-                "debug_show_grad_norm": False,
-            }
-        ),
+        "renderer": json_value(renderer_params.renderer_kwargs()),
         "cli": {
-            "common_render": json_value(
-                {
-                    "prepass_memory_mb": int(_RENDERER_DEFAULTS["max_prepass_memory_mb"]),
-                    "radius_scale": float(values["radius_scale"]),
-                    "alpha_cutoff": float(values["alpha_cutoff"]),
-                    "trans_threshold": float(values["trans_threshold"]),
-                    "cached_raster_grad_atomic_mode": cached_raster_grad_atomic_mode,
-                    "cached_raster_grad_fixed_ro_local_range": float(values["cached_raster_grad_fixed_ro_local_range"]),
-                    "cached_raster_grad_fixed_scale_range": float(values["cached_raster_grad_fixed_scale_range"]),
-                    "cached_raster_grad_fixed_color_range": float(values["cached_raster_grad_fixed_color_range"]),
-                    "cached_raster_grad_fixed_opacity_range": float(values["cached_raster_grad_fixed_opacity_range"]),
-                    "debug_layers": False,
-                    "list_capacity_multiplier": int(_RENDERER_DEFAULTS["list_capacity_multiplier"]),
-                }
-            )
+            "common_render": json_value(renderer_params.cli_common_render_defaults_dict())
         },
         "viewer": {
-            "controls": json_value(
-                {
-                    "interface_scale": int(values[_INTERFACE_SCALE_KEY]),
-                    "theme": int(values[_THEME_KEY]),
-                    "loss_debug_view": int(values["loss_debug_view"]),
-                    "loss_debug_frame": int(values["loss_debug_frame"]),
-                    "loss_debug_abs_scale": float(values[_LOSS_DEBUG_ABS_SCALE_KEY]),
-                    "move_speed": float(values["move_speed"]),
-                    "fov": float(values["fov"]),
-                    "render_background_mode": int(values["render_background_mode"]),
-                    "render_background_color": values["render_background_color"],
-                    "training_steps_per_frame": int(values["training_steps_per_frame"]),
-                    "train_background_color": values["train_background_color"],
-                    "seed": int(values["seed"]),
-                    "init_opacity": float(values["init_opacity"]),
-                }
-            ),
-            "import": json_value(
-                {
-                    "colmap_depth_value_mode": int(values["colmap_depth_value_mode"]),
-                    "colmap_init_mode": int(values["colmap_init_mode"]),
-                    "compress_dataset_using_bc7": bool(values["compress_dataset_using_bc7"]),
-                    "colmap_image_downscale_mode": int(values["colmap_image_downscale_mode"]),
-                    "colmap_image_max_size": int(values["colmap_image_max_size"]),
-                    "colmap_image_scale": float(values["colmap_image_scale"]),
-                    "colmap_nn_radius_scale_coef": float(values["colmap_nn_radius_scale_coef"]),
-                    "colmap_min_track_length": int(values["colmap_min_track_length"]),
-                    "colmap_depth_point_count": int(values["colmap_depth_point_count"]),
-                    "colmap_diffused_point_count": int(values["colmap_diffused_point_count"]),
-                    "colmap_diffusion_radius": float(values["colmap_diffusion_radius"]),
-                    "colmap_fibonacci_sphere_point_count": int(values["colmap_fibonacci_sphere_point_count"]),
-                    "colmap_fibonacci_sphere_radius": float(values["colmap_fibonacci_sphere_radius"]),
-                }
-            ),
-            "ui": json_value(
-                {
-                    "show_histograms": bool(values["show_histograms"]),
-                    "show_training_views": bool(values["show_training_views"]),
-                    "show_camera_overlays": bool(values["show_camera_overlays"]),
-                    "show_camera_labels": bool(values["show_camera_labels"]),
-                    "show_training_cameras": bool(values["show_training_cameras"]),
-                    "show_camera_min_dist_spheres": bool(values["show_camera_min_dist_spheres"]),
-                    "hist_bin_count": int(values["hist_bin_count"]),
-                    "hist_min_value": float(values["hist_min_value"]),
-                    "hist_max_value": float(values["hist_max_value"]),
-                    "hist_y_limit": float(values["hist_y_limit"]),
-                    "viewport_sh_band": int(values["_viewport_sh_band"]),
-                    "viewport_sh_control_key": str(values["_viewport_sh_control_key"]),
-                    "viewport_sh_stage_label": str(values["_viewport_sh_stage_label"]),
-                }
-            ),
+            "controls": json_value(_export_fields(values, _VIEWER_CONTROL_EXPORT_FIELDS)),
+            "import": json_value(_export_fields(values, _VIEWER_IMPORT_EXPORT_FIELDS)),
+            "ui": json_value({
+                **_export_fields(values, _VIEWER_UI_EXPORT_FIELDS[:-3]),
+                "viewport_sh_band": int(values["_viewport_sh_band"]),
+                "viewport_sh_control_key": str(values["_viewport_sh_control_key"]),
+                "viewport_sh_stage_label": str(values["_viewport_sh_stage_label"]),
+            }),
         },
     }
 
 
-RENDER_PARAM_SPECS = (
-    ControlSpec("radius_scale", "slider_float", "Radius Scale", {"value": float(_RENDERER_DEFAULTS["radius_scale"]), "min": 0.25, "max": 4.0, "format": "%.3g"}),
-    ControlSpec("alpha_cutoff", "slider_float", "Alpha Cutoff", {"value": float(_RENDERER_DEFAULTS["alpha_cutoff"]), "min": 0.0001, "max": 0.1, "format": "%.2e"}),
-    ControlSpec("trans_threshold", "slider_float", "Trans Threshold", {"value": float(_RENDERER_DEFAULTS["transmittance_threshold"]), "min": 0.001, "max": 0.2, "format": "%.2e"}),
-    ControlSpec("cached_raster_grad_atomic_mode", "combo", "Cached Grad Atomics", {"value": _renderer_atomic_mode_index(_RENDERER_DEFAULTS["cached_raster_grad_atomic_mode"]), "options": _CACHED_RASTER_GRAD_ATOMIC_MODE_LABELS}),
-    ControlSpec("cached_raster_grad_fixed_ro_local_range", "slider_float", "Cached Grad Local Range", {"value": float(_RENDERER_DEFAULTS["cached_raster_grad_fixed_ro_local_range"]), "min": 1e-4, "max": 1024.0, "format": "%.4g", "logarithmic": True}),
-    ControlSpec("cached_raster_grad_fixed_scale_range", "slider_float", "Cached Grad Scale Range", {"value": float(_RENDERER_DEFAULTS["cached_raster_grad_fixed_scale_range"]), "min": 1e-4, "max": 4096.0, "format": "%.4g", "logarithmic": True}),
-    ControlSpec("cached_raster_grad_fixed_color_range", "slider_float", "Cached Grad Color Range", {"value": float(_RENDERER_DEFAULTS["cached_raster_grad_fixed_color_range"]), "min": 1e-4, "max": 2048.0, "format": "%.4g", "logarithmic": True}),
-    ControlSpec("cached_raster_grad_fixed_opacity_range", "slider_float", "Cached Grad Opacity Range", {"value": float(_RENDERER_DEFAULTS["cached_raster_grad_fixed_opacity_range"]), "min": 1e-4, "max": 2048.0, "format": "%.4g", "logarithmic": True}),
-)
-
-DEBUG_RENDER_SPECS = (
-    ControlSpec("debug_mode", "combo", "Mode", {"value": _renderer_debug_mode_index(_RENDERER_DEFAULTS["debug_mode"]), "options": _DEBUG_MODE_LABELS}),
-    ControlSpec("debug_sh_coeff_index", "combo", "SH Coefficient", {"value": int(_RENDERER_DEFAULTS["debug_sh_coeff_index"]), "options": _DEBUG_SH_COEFF_LABELS}),
-    ControlSpec("debug_grad_norm_threshold", "input_float", "Grad Norm Threshold", {"value": float(_RENDERER_DEFAULTS["debug_grad_norm_threshold"]), "step": 1e-5, "step_fast": 1e-4, "format": "%.6g"}),
-    ControlSpec("debug_ellipse_thickness_px", "slider_float", "Ellipse Thickness", {"value": float(_RENDERER_DEFAULTS["debug_ellipse_thickness_px"]), "min": 0.25, "max": 8.0, "format": "%.2f px"}),
-    ControlSpec("debug_gaussian_scale_multiplier", "slider_float", "Gaussian Scale", {"value": float(_RENDERER_DEFAULTS["debug_gaussian_scale_multiplier"]), "min": 0.05, "max": 16.0, "format": "%.3gx", "logarithmic": True}),
-    ControlSpec("debug_min_opacity", "slider_float", "Min Opacity", {"value": float(_RENDERER_DEFAULTS["debug_min_opacity"]), "min": 0.0, "max": 1.0, "format": "%.4f"}),
-    ControlSpec("debug_opacity_multiplier", "slider_float", "Opacity Mul", {"value": float(_RENDERER_DEFAULTS["debug_opacity_multiplier"]), "min": 0.0, "max": 16.0, "format": "%.3gx"}),
-    ControlSpec("debug_ellipse_scale_multiplier", "slider_float", "Ellipse Scale", {"value": float(_RENDERER_DEFAULTS["debug_ellipse_scale_multiplier"]), "min": 0.05, "max": 16.0, "format": "%.3gx", "logarithmic": True}),
-    ControlSpec("debug_splat_age_min", "input_float", "Splat Age Min", {"value": float(_RENDERER_DEFAULTS["debug_splat_age_range"][0]), "step": 0.05, "step_fast": 0.25, "format": "%.5g"}),
-    ControlSpec("debug_splat_age_max", "input_float", "Splat Age Max", {"value": float(_RENDERER_DEFAULTS["debug_splat_age_range"][1]), "step": 0.05, "step_fast": 0.25, "format": "%.5g"}),
-    ControlSpec("debug_density_min", "input_float", "Density Min", {"value": float(_RENDERER_DEFAULTS["debug_density_range"][0]), "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
-    ControlSpec("debug_density_max", "input_float", "Density Max", {"value": float(_RENDERER_DEFAULTS["debug_density_range"][1]), "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
-    ControlSpec("debug_contribution_min", "input_float", "Contribution Min", {"value": float(_RENDERER_DEFAULTS["debug_contribution_range"][0]), "step": 1e-4, "step_fast": 1e-3, "format": "%.6g"}),
-    ControlSpec("debug_contribution_max", "input_float", "Contribution Max", {"value": float(_RENDERER_DEFAULTS["debug_contribution_range"][1]), "step": 0.1, "step_fast": 1.0, "format": "%.6g"}),
-    ControlSpec("debug_refinement_distribution_min", "input_float", "Refine Dist Min", {"value": float(_RENDERER_DEFAULTS["debug_refinement_distribution_range"][0]), "step": 1e-4, "step_fast": 1e-3, "format": "%.6g"}),
-    ControlSpec("debug_refinement_distribution_max", "input_float", "Refine Dist Max", {"value": float(_RENDERER_DEFAULTS["debug_refinement_distribution_range"][1]), "step": 0.1, "step_fast": 1.0, "format": "%.6g"}),
-    ControlSpec("debug_adam_momentum_threshold", "input_float", "Adam Momentum Threshold", {"value": _threshold_from_band_range(float(_RENDERER_DEFAULTS["debug_adam_momentum_range"][0]), float(_RENDERER_DEFAULTS["debug_adam_momentum_range"][1]), _DEBUG_ADAM_MOMENTUM_THRESHOLD_DEFAULT), "step": 1e-5, "step_fast": 1e-4, "format": "%.6g"}),
-    ControlSpec("debug_depth_mean_min", "input_float", "Depth Mean Min", {"value": float(_RENDERER_DEFAULTS["debug_depth_mean_range"][0]), "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
-    ControlSpec("debug_depth_mean_max", "input_float", "Depth Mean Max", {"value": float(_RENDERER_DEFAULTS["debug_depth_mean_range"][1]), "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
-    ControlSpec("debug_depth_std_min", "input_float", "Depth Std Min", {"value": float(_RENDERER_DEFAULTS["debug_depth_std_range"][0]), "step": 0.01, "step_fast": 0.1, "format": "%.5g"}),
-    ControlSpec("debug_depth_std_max", "input_float", "Depth Std Max", {"value": float(_RENDERER_DEFAULTS["debug_depth_std_range"][1]), "step": 0.01, "step_fast": 0.1, "format": "%.5g"}),
-    ControlSpec("debug_depth_local_mismatch_min", "input_float", "Depth Local Mismatch Min", {"value": float(_RENDERER_DEFAULTS["debug_depth_local_mismatch_range"][0]), "step": 0.01, "step_fast": 0.1, "format": "%.5g"}),
-    ControlSpec("debug_depth_local_mismatch_max", "input_float", "Depth Local Mismatch Max", {"value": float(_RENDERER_DEFAULTS["debug_depth_local_mismatch_range"][1]), "step": 0.01, "step_fast": 0.1, "format": "%.5g"}),
-    ControlSpec("debug_depth_local_mismatch_smooth_radius", "input_float", "Depth Smooth Radius", {"value": float(_RENDERER_DEFAULTS["debug_depth_local_mismatch_smooth_radius"]), "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
-    ControlSpec("debug_depth_local_mismatch_reject_radius", "input_float", "Depth Reject Radius", {"value": float(_RENDERER_DEFAULTS["debug_depth_local_mismatch_reject_radius"]), "step": 0.1, "step_fast": 1.0, "format": "%.5g"}),
-)
-
-_ALL_DEFAULTS = {spec.key: spec.kwargs["value"] for group in GROUP_SPECS.values() for spec in group if "value" in spec.kwargs}
-_ALL_DEFAULTS.update({spec.key: spec.kwargs["value"] for spec in RENDER_PARAM_SPECS if "value" in spec.kwargs})
-_ALL_DEFAULTS.update({spec.key: spec.kwargs["value"] for spec in DEBUG_RENDER_SPECS if "value" in spec.kwargs})
-
-_OPTIMIZER_TAB_KEYS = TRAINING_OPTIMIZER_TAB_KEYS
-_TRAINING_RASTER_GRAD_KEYS = (
-    "cached_raster_grad_atomic_mode",
-    "cached_raster_grad_fixed_ro_local_range",
-    "cached_raster_grad_fixed_scale_range",
-    "cached_raster_grad_fixed_color_range",
-    "cached_raster_grad_fixed_opacity_range",
-)
-
-_TRAIN_OPTIMIZER_SPEC_BY_KEY = {spec.key: spec for spec in GROUP_SPECS[TRAINING_OPTIMIZER_GROUP]}
+RENDER_PARAM_SPECS, DEBUG_RENDER_SPECS, _ALL_DEFAULTS = build_render_spec_bundle(_threshold_from_band_range)
 
 
 class _ControlProxy:
@@ -734,6 +429,7 @@ def _control_bound(ui: ViewerUI, spec: ControlSpec, key: str, fallback: int) -> 
 class ToolkitState:
     loss_history: deque = field(default_factory=partial(deque, maxlen=LOSS_HISTORY_SIZE))
     fps_history: deque = field(default_factory=partial(deque, maxlen=FPS_HISTORY_SIZE))
+    ssim_history: deque = field(default_factory=partial(deque, maxlen=LOSS_HISTORY_SIZE))
     psnr_history: deque = field(default_factory=partial(deque, maxlen=LOSS_HISTORY_SIZE))
     step_history: deque = field(default_factory=partial(deque, maxlen=LOSS_HISTORY_SIZE))
     step_time_history: deque = field(default_factory=partial(deque, maxlen=LOSS_HISTORY_SIZE))
@@ -741,6 +437,7 @@ class ToolkitState:
     def clear_plot_history(self) -> None:
         self.loss_history.clear()
         self.fps_history.clear()
+        self.ssim_history.clear()
         self.psnr_history.clear()
         self.step_history.clear()
         self.step_time_history.clear()
@@ -751,6 +448,10 @@ def _noop() -> None:
 
 class ToolkitWindow:
     """Dear ImGui overlay rendered into the active Slangpy AppWindow surface."""
+
+    @staticmethod
+    def _format_plot_metric_value(value: float, digits: int = 6) -> str:
+        return "n/a" if not np.isfinite(value) else f"{float(value):.{max(int(digits), 1)}g}"
 
     @staticmethod
     def _iters_per_second(step_history: deque, step_time_history: deque) -> float:
@@ -2403,13 +2104,13 @@ class ToolkitWindow:
         time_text = ui._texts.get("training_time", "Time: n/a")
         avg_iters_text = ui._texts.get("training_iters_avg", "Avg it/s: n/a")
         loss_text = ui._texts.get("training_loss", "Loss Avg: n/a")
-        mse_text = ui._texts.get("training_mse", "MSE: n/a")
+        ssim_text = ui._texts.get("training_ssim", "SSIM: n/a")
         density_text = ui._texts.get("training_density", "Density Avg: n/a")
         psnr_text = ui._texts.get("training_psnr", "PSNR: n/a")
         if imgui.begin_table("##train_info", 2, imgui.TableFlags_.sizing_stretch_same.value):
             imgui.table_setup_column("L", imgui.TableColumnFlags_.width_fixed.value, 50)
             imgui.table_setup_column("V")
-            for label, text in (("Step", training_text), ("Time", time_text), ("Avg", avg_iters_text), ("Loss", loss_text), ("MSE", mse_text), ("Density", density_text), ("PSNR", psnr_text)):
+            for label, text in (("Step", training_text), ("Time", time_text), ("Avg", avg_iters_text), ("Loss", loss_text), ("SSIM", ssim_text), ("Density", density_text), ("PSNR", psnr_text)):
                 imgui.table_next_row()
                 imgui.table_next_column()
                 imgui.text_disabled(label)
@@ -2604,6 +2305,21 @@ class ToolkitWindow:
                 implot.annotation(float(s[-1]), float(l[-1]), imgui.ImVec4(1.0, 0.6, 0.2, 1.0), imgui.ImVec2(-10, -10), True, f"{l[-1]:.2e}")
                 implot.end_plot()
 
+        ssim_arr = np.array(self.tk.ssim_history, dtype=np.float64)
+        if len(ssim_arr) >= 2 and len(step_arr) >= 2:
+            min_len = min(len(ssim_arr), len(step_arr))
+            s, d = step_arr[:min_len], ssim_arr[:min_len]
+            imgui.separator_text("SSIM")
+            ssim_spec = implot.Spec()
+            ssim_spec.line_color = imgui.ImVec4(0.9, 0.35, 0.35, 1.0)
+            if implot.begin_plot("##SSIM", imgui.ImVec2(-1, 180.0 * plot_scale)):
+                implot.setup_axes("step", "SSIM", 0, implot.AxisFlags_.auto_fit.value)
+                implot.setup_axis_limits(implot.ImAxis_.x1.value, float(s[0]), float(s[-1]), implot.Cond_.always.value)
+                implot.setup_axis_limits(implot.ImAxis_.y1.value, 0.0, 1.0, implot.Cond_.once.value)
+                implot.plot_line("SSIM", s, d, spec=ssim_spec)
+                implot.annotation(float(s[-1]), float(d[-1]), imgui.ImVec4(0.9, 0.35, 0.35, 1.0), imgui.ImVec2(-10, -10), True, ToolkitWindow._format_plot_metric_value(float(d[-1])))
+                implot.end_plot()
+
         psnr_arr = np.array(self.tk.psnr_history, dtype=np.float64)
         if len(psnr_arr) >= 2 and len(step_arr) >= 2:
             min_len = min(len(psnr_arr), len(step_arr))
@@ -2620,122 +2336,7 @@ class ToolkitWindow:
 
     # -- Helpers --
 
-    _TOOLTIPS = {
-        "render_background_mode": "Choose whether the main renderer uses the training background color or a separate custom RGB background",
-        "render_background_color": "Custom RGB background for the main renderer",
-        "radius_scale": "Multiplier on top of true 3DGS gaussian size for rendering",
-        "alpha_cutoff": "Minimum alpha threshold — splats below this are skipped",
-        "trans_threshold": "Transmittance threshold for early ray termination",
-        "cached_raster_grad_atomic_mode": "Choose float atomics or fixed-point atomics for cached raster gradient accumulation during raster backward",
-        "cached_raster_grad_fixed_ro_local_range": "Symmetric [-X, X] range for avgInvScale-normalized cached local-origin gradients",
-        "cached_raster_grad_fixed_scale_range": "Symmetric [-X, X] range for avgInvScale-normalized cached scale gradients",
-        "cached_raster_grad_fixed_color_range": "Symmetric [-X, X] range for cached color gradients",
-        "cached_raster_grad_fixed_opacity_range": "Symmetric [-X, X] range for cached opacity gradients",
-        "debug_mode": "Select the renderer debug output mode",
-        "debug_sh_coeff_index": "Select which raw SH coefficient float3 to display; zero is mapped to 0.5 gray in this debug view",
-        "debug_grad_norm_threshold": "Reference threshold for gradient norm and gradient variance heatmaps",
-        "debug_ellipse_thickness_px": "Thickness used by ellipse outline debug rendering",
-        "debug_gaussian_scale_multiplier": "Ellipse debug raster-loop multiplier applied to the cached Gaussian scale",
-        "debug_min_opacity": "Ellipse debug raster-loop opacity floor applied after the opacity multiplier",
-        "debug_opacity_multiplier": "Ellipse debug raster-loop multiplier applied to cached splat opacity",
-        "debug_ellipse_scale_multiplier": "Ellipse debug raster-loop multiplier applied only to outline conic evaluation",
-        "debug_splat_age_min": "Lower bound for the per-splat age heatmap",
-        "debug_splat_age_max": "Upper bound for the per-splat age heatmap",
-        "debug_density_min": "Lower bound for density debug heatmaps",
-        "debug_density_max": "Upper bound for density debug heatmaps",
-        "debug_contribution_min": "Lower bound for the log-scaled contribution heatmap in observed-pixel-normalized color-change units",
-        "debug_contribution_max": "Upper bound for the log-scaled contribution heatmap in observed-pixel-normalized color-change units",
-        "debug_refinement_distribution_min": "Lower bound for the refinement CDF sampling distribution heatmap",
-        "debug_refinement_distribution_max": "Upper bound for the refinement CDF sampling distribution heatmap",
-        "debug_adam_momentum_threshold": "Reference threshold for the per-splat Adam moment heatmaps; the displayed range is derived around it on a log scale",
-        "debug_depth_mean_min": "Lower bound for depth mean debug heatmap",
-        "debug_depth_mean_max": "Upper bound for depth mean debug heatmap",
-        "debug_depth_std_min": "Lower bound for depth standard deviation heatmap",
-        "debug_depth_std_max": "Upper bound for depth standard deviation heatmap",
-        "debug_depth_local_mismatch_min": "Lower bound for the local depth mismatch ratio heatmap, normalized by mean depth",
-        "debug_depth_local_mismatch_max": "Upper bound for the local depth mismatch ratio heatmap, normalized by mean depth",
-        "debug_depth_local_mismatch_smooth_radius": "Sigma multiple for full local smoothing before the mismatch gate starts to fall off",
-        "debug_depth_local_mismatch_reject_radius": "Base sigma multiple, based on mean splat sigma, beyond which depth mismatch stops contributing; the effective reject radius scales smoothly up to 2x with current splat alpha",
-        "lr_pos_mul": "Learning rate multiplier for position",
-        "lr_pos_stage1_mul": "Position learning-rate multiplier target reached at the end of Stage 1",
-        "lr_pos_stage2_mul": "Position learning-rate multiplier target reached at the end of Stage 2",
-        "lr_pos_stage3_mul": "Position learning-rate multiplier target reached at the end of Stage 3",
-        "lr_sh_mul": "Learning rate multiplier for non-DC SH coefficients",
-        "lr_sh_stage1_mul": "Non-DC SH learning-rate multiplier target reached at the end of Stage 1",
-        "lr_sh_stage2_mul": "Non-DC SH learning-rate multiplier target reached at the end of Stage 2",
-        "lr_sh_stage3_mul": "Non-DC SH learning-rate multiplier target reached at the end of Stage 3",
-        "lr_scale_mul": "Learning rate multiplier for scale",
-        "lr_rot_mul": "Learning rate multiplier for rotation",
-        "lr_color_mul": "Base learning rate multiplier for the SH0/DC color term before non-DC SH multipliers are applied",
-        "lr_opacity_mul": "Learning rate multiplier for opacity",
-        "beta1": "Adam first moment decay (momentum)",
-        "beta2": "Adam second moment decay (RMSprop)",
-        "grad_clip": "Per-parameter gradient clipping threshold",
-        "grad_norm_clip": "Global gradient norm clipping threshold",
-        "max_update": "Maximum per-step parameter update magnitude",
-        "scale_l2": "L2 regularization on log-scale",
-        "scale_abs_reg": "Absolute scale regularization weight",
-        "sh1_reg": "L1 regularization weight applied to all non-DC SH coefficients",
-        "opacity_reg": "Opacity regularization weight (pushes toward 0 or 1)",
-        "ssim_weight": "Blend weight for DSSIM in the RGB image loss; 0 keeps pure L1 and 1 uses pure DSSIM",
-        "ssim_c2": "SSIM contrast/structure stabilizer constant used by the DSSIM path",
-        "position_random_step_noise_lr": "Stage 0 post-step MCMC-style position noise multiplier; when scheduling is disabled this value is used for the whole run",
-        "position_random_step_opacity_gate_center": "Opacity center for the random-step sigmoid gate; lower-opacity splats get stronger position noise",
-        "position_random_step_opacity_gate_sharpness": "Steepness of the random-step opacity gate",
-        "max_anisotropy": "Maximum ratio between largest and smallest scale axes",
-        "max_scale": "Ceiling for decoded gaussian sigma",
-        "min_opacity": "Floor for opacity",
-        "max_opacity": "Ceiling for opacity",
-        "position_abs_max": "Absolute position bounding box (per axis)",
-        "camera_min_dist": "Cull any splat whose center is closer to the camera than this distance, regardless of projected size",
-        "max_gaussians": "Maximum number of gaussians in the scene",
-        "training_steps_per_frame": "Number of training optimizer steps to run before each viewer redraw; higher improves training throughput but reduces UI refresh rate",
-        "background_mode": "Choose whether training uses a fixed custom RGB background or a new seeded white-noise background each optimizer step",
-        "train_background_color": "Custom RGB background used for training when Train Background is set to Custom",
-        "sh_band": "Stage 0 SH band limit; SH0 uses only the DC term and SH3 enables the full coefficient set",
-        "refinement_interval": "Run cull/split refinement every N training steps",
-        "refinement_growth_ratio": "Target fractional scene growth per refinement step once densification is enabled",
-        "refinement_growth_start_step": "Keep densification growth at zero until this training iteration, then use the configured refinement growth; slider range follows Schedule Steps",
-        "refinement_alpha_cull_threshold": "Cull splats below this decoded alpha threshold during refinement",
-        "refinement_min_contribution": "Minimum accumulated color-change contribution required for a splat to survive refinement",
-        "refinement_min_contribution_decay": "Multiply the minimum accumulated color-change contribution threshold by this factor after each completed refinement pass",
-        "refinement_opacity_mul": "Multiply every surviving splat alpha by this factor during each refinement rewrite pass",
-        "refinement_sample_radius": "Radius of the centered local-space Fibonacci volume used when spawning new refinement samples",
-        "refinement_clone_scale_mul": "Multiply the split-family sigma after the default family-size shrink used for refinement clones",
-        "refinement_use_compact_split": "Use the compact split shrink rule instead of the legacy N^(-1/3) refinement shrink",
-        "refinement_solve_opacity": "Solve one shared child alpha per split family so composed center transmittance matches the parent",
-        "refinement_split_beta": "Exponent used by compact split shrink: child sigma scales as N^(-beta)",
-        "refinement_grad_variance_weight_exponent": "Exponent a in pow(pixel_grad_variance, a) for refinement clone resampling",
-        "refinement_contribution_weight_exponent": "Exponent b in pow(pixel_contribution, b) for refinement clone resampling",
-        "density_regularizer": "Weight applied to the per-pixel hinge penalty max(density - max_allowed_density, 0)",
-        "sorting_order_dithering": "Stage 0 sort-camera dither amount; when scheduling is disabled this value is used for the whole run",
-        "sorting_order_dithering_stage1": "Sort-camera dither target reached at the end of Stage 1",
-        "sorting_order_dithering_stage2": "Sort-camera dither target reached at the end of Stage 2",
-        "sorting_order_dithering_stage3": "Sort-camera dither target reached at the end of Stage 3",
-        "max_allowed_density": "End-of-training per-pixel density threshold above which the density regularizer activates; runtime ramps from 5.0 to this value over the LR schedule",
-        "lr_schedule_enabled": "Enable the piecewise-linear base learning-rate schedule",
-        "lr_schedule_start_lr": "Stage 0 base learning rate; when scheduling is disabled this value is used for the whole run",
-        "lr_schedule_stage1_step": "Training step where Stage 1 ends and the Stage 1 targets are reached; slider range follows the Stage 3 end step",
-        "lr_schedule_stage2_step": "Training step where Stage 2 ends and the Stage 2 targets are reached; slider range follows the Stage 3 end step",
-        "lr_schedule_stage1_lr": "Base learning-rate target reached at the end of Stage 1",
-        "lr_schedule_stage2_lr": "Base learning-rate target reached at the end of Stage 2",
-        "lr_schedule_end_lr": "Base learning-rate target reached at the end of Stage 3",
-        "lr_schedule_steps": "Stage 3 end step and total step budget shared by the LR, colorspace, noise, and SH schedules",
-        "position_random_step_noise_stage1_lr": "Position-noise LR target reached at the end of Stage 1",
-        "position_random_step_noise_stage2_lr": "Position-noise LR target reached at the end of Stage 2",
-        "position_random_step_noise_stage3_lr": "Position-noise LR target reached at the end of Stage 3",
-        "sh_band_stage1": "SH band limit reached by the end of Stage 1",
-        "sh_band_stage2": "SH band limit reached by the end of Stage 2",
-        "sh_band_stage3": "SH band limit reached by the end of Stage 3",
-        "train_downscale_mode": "Use Auto for scheduled downscale descent or choose a fixed manual override from 1x to 16x",
-        "train_auto_start_downscale": "Initial downscale factor used at step 0 when Downscale Mode is Auto",
-        "train_downscale_base_iters": "Number of iterations spent at the auto start factor before descending",
-        "train_downscale_iter_step": "Additional iterations added to each lower auto downscale phase",
-        "train_downscale_max_iters": "Displayed training schedule budget for the auto downscale progression; training does not stop automatically",
-        _LOSS_DEBUG_ABS_SCALE_KEY: "Multiplier applied to absolute RGB difference before presenting the debug texture",
-        "seed": "Random seed for training frame shuffle order",
-        "init_opacity": "Initial opacity for new gaussians",
-    }
+    _TOOLTIPS = UI_TOOLTIPS
 
     def _draw_control(self, ui: ViewerUI, spec: ControlSpec, compact: bool = False) -> None:
         key = spec.key
@@ -2847,102 +2448,42 @@ def build_ui(renderer) -> ViewerUI:
         values[spec.key] = spec.kwargs.get("value", 0)
     for spec in DEBUG_RENDER_SPECS:
         values[spec.key] = spec.kwargs.get("value", 0)
-    values["radius_scale"] = float(renderer.radius_scale)
-    values["alpha_cutoff"] = float(renderer.alpha_cutoff)
-    values["trans_threshold"] = float(renderer.transmittance_threshold)
-    values["cached_raster_grad_atomic_mode"] = _renderer_atomic_mode_index(getattr(renderer, "cached_raster_grad_atomic_mode", _RENDERER_DEFAULTS["cached_raster_grad_atomic_mode"]))
-    values["cached_raster_grad_fixed_ro_local_range"] = float(getattr(renderer, "cached_raster_grad_fixed_ro_local_range", _RENDERER_DEFAULTS["cached_raster_grad_fixed_ro_local_range"]))
-    values["cached_raster_grad_fixed_scale_range"] = float(getattr(renderer, "cached_raster_grad_fixed_scale_range", _RENDERER_DEFAULTS["cached_raster_grad_fixed_scale_range"]))
-    values["cached_raster_grad_fixed_color_range"] = float(getattr(renderer, "cached_raster_grad_fixed_color_range", _RENDERER_DEFAULTS["cached_raster_grad_fixed_color_range"]))
-    values["cached_raster_grad_fixed_opacity_range"] = float(getattr(renderer, "cached_raster_grad_fixed_opacity_range", _RENDERER_DEFAULTS["cached_raster_grad_fixed_opacity_range"]))
-    values["debug_mode"] = _renderer_debug_mode_index(getattr(renderer, "debug_mode", _RENDERER_DEFAULTS["debug_mode"]))
-    values["debug_grad_norm_threshold"] = float(getattr(renderer, "debug_grad_norm_threshold", _RENDERER_DEFAULTS["debug_grad_norm_threshold"]))
-    values["debug_ellipse_thickness_px"] = float(getattr(renderer, "debug_ellipse_thickness_px", _RENDERER_DEFAULTS["debug_ellipse_thickness_px"]))
-    values["debug_gaussian_scale_multiplier"] = float(getattr(renderer, "debug_gaussian_scale_multiplier", _RENDERER_DEFAULTS["debug_gaussian_scale_multiplier"]))
-    values["debug_min_opacity"] = float(getattr(renderer, "debug_min_opacity", _RENDERER_DEFAULTS["debug_min_opacity"]))
-    values["debug_opacity_multiplier"] = float(getattr(renderer, "debug_opacity_multiplier", _RENDERER_DEFAULTS["debug_opacity_multiplier"]))
-    values["debug_ellipse_scale_multiplier"] = float(getattr(renderer, "debug_ellipse_scale_multiplier", _RENDERER_DEFAULTS["debug_ellipse_scale_multiplier"]))
-    splat_age_range = tuple(getattr(renderer, "debug_splat_age_range", _RENDERER_DEFAULTS["debug_splat_age_range"]))
-    density_range = tuple(getattr(renderer, "debug_density_range", _RENDERER_DEFAULTS["debug_density_range"]))
-    contribution_range = tuple(getattr(renderer, "debug_contribution_range", _RENDERER_DEFAULTS["debug_contribution_range"]))
-    refinement_distribution_range = tuple(getattr(renderer, "debug_refinement_distribution_range", _RENDERER_DEFAULTS["debug_refinement_distribution_range"]))
-    adam_momentum_range = tuple(getattr(renderer, "debug_adam_momentum_range", _RENDERER_DEFAULTS["debug_adam_momentum_range"]))
-    depth_mean_range = tuple(getattr(renderer, "debug_depth_mean_range", _RENDERER_DEFAULTS["debug_depth_mean_range"]))
-    depth_std_range = tuple(getattr(renderer, "debug_depth_std_range", _RENDERER_DEFAULTS["debug_depth_std_range"]))
-    depth_local_mismatch_range = tuple(getattr(renderer, "debug_depth_local_mismatch_range", _RENDERER_DEFAULTS["debug_depth_local_mismatch_range"]))
-    values["debug_splat_age_min"] = float(splat_age_range[0])
-    values["debug_splat_age_max"] = float(splat_age_range[1])
-    values["debug_density_min"] = float(density_range[0])
-    values["debug_density_max"] = float(density_range[1])
-    values["debug_contribution_min"] = float(contribution_range[0])
-    values["debug_contribution_max"] = float(contribution_range[1])
-    values["debug_refinement_distribution_min"] = float(refinement_distribution_range[0])
-    values["debug_refinement_distribution_max"] = float(refinement_distribution_range[1])
-    values["debug_adam_momentum_threshold"] = _threshold_from_band_range(float(adam_momentum_range[0]), float(adam_momentum_range[1]), _DEBUG_ADAM_MOMENTUM_THRESHOLD_DEFAULT)
-    values["debug_depth_mean_min"] = float(depth_mean_range[0])
-    values["debug_depth_mean_max"] = float(depth_mean_range[1])
-    values["debug_depth_std_min"] = float(depth_std_range[0])
-    values["debug_depth_std_max"] = float(depth_std_range[1])
-    values["debug_depth_local_mismatch_min"] = float(depth_local_mismatch_range[0])
-    values["debug_depth_local_mismatch_max"] = float(depth_local_mismatch_range[1])
-    values["debug_depth_local_mismatch_smooth_radius"] = float(getattr(renderer, "debug_depth_local_mismatch_smooth_radius", _RENDERER_DEFAULTS["debug_depth_local_mismatch_smooth_radius"]))
-    values["debug_depth_local_mismatch_reject_radius"] = float(getattr(renderer, "debug_depth_local_mismatch_reject_radius", _RENDERER_DEFAULTS["debug_depth_local_mismatch_reject_radius"]))
-    values["debug_sh_coeff_index"] = int(getattr(renderer, "debug_sh_coeff_index", _RENDERER_DEFAULTS["debug_sh_coeff_index"]))
-    values["colmap_root_path"] = ""
-    values["colmap_database_path"] = ""
-    values["colmap_images_root"] = ""
-    values["colmap_depth_root"] = ""
-    values["colmap_depth_value_mode"] = int(_VIEWER_IMPORT_DEFAULTS["colmap_depth_value_mode"])
-    values["colmap_init_mode"] = int(_VIEWER_IMPORT_DEFAULTS["colmap_init_mode"])
-    values["compress_dataset_using_bc7"] = bool(_VIEWER_IMPORT_DEFAULTS.get("compress_dataset_using_bc7", False))
-    values["colmap_custom_ply_path"] = ""
+    RendererParams.from_renderer(renderer).apply_ui_values(values, _renderer_atomic_mode_index, _renderer_debug_mode_index, _threshold_from_band_range)
+    for key in ("colmap_root_path", "colmap_database_path", "colmap_images_root", "colmap_depth_root", "colmap_custom_ply_path"):
+        values[key] = ""
     values["colmap_selected_camera_ids"] = ()
-    values["colmap_image_downscale_mode"] = int(_VIEWER_IMPORT_DEFAULTS["colmap_image_downscale_mode"])
-    values["colmap_image_max_size"] = int(_VIEWER_IMPORT_DEFAULTS["colmap_image_max_size"])
-    values["colmap_image_scale"] = float(_VIEWER_IMPORT_DEFAULTS["colmap_image_scale"])
-    values["colmap_nn_radius_scale_coef"] = float(_VIEWER_IMPORT_DEFAULTS["colmap_nn_radius_scale_coef"])
-    values["colmap_min_track_length"] = int(_VIEWER_IMPORT_DEFAULTS["colmap_min_track_length"])
-    values["colmap_depth_point_count"] = int(_VIEWER_IMPORT_DEFAULTS["colmap_depth_point_count"])
-    values["colmap_diffused_point_count"] = int(_VIEWER_IMPORT_DEFAULTS["colmap_diffused_point_count"])
-    values["colmap_diffusion_radius"] = float(_VIEWER_IMPORT_DEFAULTS["colmap_diffusion_radius"])
-    values["colmap_fibonacci_sphere_point_count"] = int(_VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_point_count", 0))
-    values["colmap_fibonacci_sphere_radius"] = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_radius", 20.0))
-    values["show_histograms"] = bool(_VIEWER_UI_DEFAULTS["show_histograms"])
-    values["show_training_views"] = bool(_VIEWER_UI_DEFAULTS["show_training_views"])
+    for key, cast in _VIEWER_IMPORT_EXPORT_FIELDS:
+        values[key] = cast(_VIEWER_IMPORT_DEFAULTS.get(key, False if cast is bool else 0 if cast is int else 20.0))
     values["show_resource_debug"] = False
-    values["show_camera_overlays"] = bool(_VIEWER_UI_DEFAULTS["show_camera_overlays"])
-    values["show_camera_labels"] = bool(_VIEWER_UI_DEFAULTS["show_camera_labels"])
-    values["show_training_cameras"] = bool(_VIEWER_UI_DEFAULTS["show_training_cameras"])
-    values["show_camera_min_dist_spheres"] = bool(_VIEWER_UI_DEFAULTS.get("show_camera_min_dist_spheres", True))
-    values["hist_bin_count"] = int(_VIEWER_UI_DEFAULTS["hist_bin_count"])
-    values["hist_min_value"] = float(_VIEWER_UI_DEFAULTS["hist_min_value"])
-    values["hist_max_value"] = float(_VIEWER_UI_DEFAULTS["hist_max_value"])
-    values["hist_y_limit"] = float(_VIEWER_UI_DEFAULTS["hist_y_limit"])
-    values["_histograms_refresh_requested"] = False
-    values["_show_histograms_prev"] = False
-    values["_histogram_update_y_limit"] = True
-    values["_histogram_update_range"] = False
-    values["_histogram_payload"] = None
-    values["_histogram_range_payload"] = None
-    values["_resource_debug_snapshot"] = None
-    values["_resource_debug_next_update"] = 0.0
-    values["_resource_debug_refresh_requested"] = True
-    values["_resource_debug_process_vram_requested"] = False
-    values["_training_views_rows"] = ()
-    values["_training_view_overlay_segments"] = ()
-    values["_loss_debug_frame_max"] = 0
-    values["_viewport_sh_band"] = int(_VIEWER_UI_DEFAULTS["viewport_sh_band"])
-    values["_viewport_sh_control_key"] = str(_VIEWER_UI_DEFAULTS["viewport_sh_control_key"])
-    values["_viewport_sh_stage_label"] = str(_VIEWER_UI_DEFAULTS["viewport_sh_stage_label"])
-    values["_colmap_camera_rows"] = ()
-    values["_colmap_import_active"] = False
-    values["_colmap_import_fraction"] = 0.0
-    values["_can_export_ply"] = False
+    for key, cast in _VIEWER_UI_EXPORT_FIELDS[:-3]:
+        values[key] = cast(_VIEWER_UI_DEFAULTS[key])
+    values.update({
+        "_histograms_refresh_requested": False,
+        "_show_histograms_prev": False,
+        "_histogram_update_y_limit": True,
+        "_histogram_update_range": False,
+        "_histogram_payload": None,
+        "_histogram_range_payload": None,
+        "_resource_debug_snapshot": None,
+        "_resource_debug_next_update": 0.0,
+        "_resource_debug_refresh_requested": True,
+        "_resource_debug_process_vram_requested": False,
+        "_training_views_rows": (),
+        "_training_view_overlay_segments": (),
+        "_loss_debug_frame_max": 0,
+        "_viewport_sh_band": int(_VIEWER_UI_DEFAULTS["viewport_sh_band"]),
+        "_viewport_sh_control_key": str(_VIEWER_UI_DEFAULTS["viewport_sh_control_key"]),
+        "_viewport_sh_stage_label": str(_VIEWER_UI_DEFAULTS["viewport_sh_stage_label"]),
+        "_colmap_camera_rows": (),
+        "_colmap_import_active": False,
+        "_colmap_import_fraction": 0.0,
+        "_can_export_ply": False,
+    })
 
     texts: dict[str, str] = {
         key: "" for key in (
             "fps", "path", "scene_stats", "render_stats", "training",
-            "training_time", "training_iters_avg", "training_loss", "training_mse", "training_density", "training_psnr", "training_instability", "error",
+            "training_time", "training_iters_avg", "training_loss", "training_ssim", "training_density", "training_psnr", "training_instability", "error",
             "loss_debug_view", "loss_debug_frame", "loss_debug_psnr",
             "colmap_import_status", "colmap_import_current",
             "training_resolution", "training_downscale", "training_schedule", "training_schedule_values", "training_refinement",

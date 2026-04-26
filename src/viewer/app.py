@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 from pathlib import Path
 
@@ -13,7 +13,7 @@ from ..repo_defaults import defaults_path, load_defaults, write_defaults
 from ..app.training_controls import TRAINING_BUILD_ARG_UI_KEYS
 from ..app.shared import RendererParams, build_init_params, build_training_params, fit_camera
 from ..utility import drain_deferred_resource_releases, normalize3
-from ..renderer import Camera, GaussianRenderer
+from ..renderer import Camera, GaussianRenderSettings, GaussianRenderer
 from ..scene import GaussianScene, save_gaussian_ply
 from ..training import resolve_sh_band
 from . import presenter, session
@@ -35,7 +35,6 @@ _TRAINING_CAMERA_FIT_ORBIT_DIR = np.array([0.0, 0.0, -1.0], dtype=np.float32)
 _TRAINING_PARAM_KEYS = TRAINING_BUILD_ARG_UI_KEYS
 _TRAIN_SETUP_DEFAULTS = default_control_values("Train Setup")
 _TRAINING_DEFAULTS = default_control_values("Train Optimizer", "Train Stability")
-_CACHED_RASTER_GRAD_ATOMIC_MODE_VALUES = ("float", "fixed")
 _DEBUG_MODE_VALUES = (
     GaussianRenderer.DEBUG_MODE_NORMAL,
     GaussianRenderer.DEBUG_MODE_PROCESSED_COUNT,
@@ -57,6 +56,14 @@ _DEBUG_MODE_VALUES = (
     GaussianRenderer.DEBUG_MODE_SH_COEFFICIENT,
     GaussianRenderer.DEBUG_MODE_BLACK_NEGATIVE,
 )
+
+
+def _viewer_ui_values(viewer: object) -> dict[str, object]:
+    values = getattr(getattr(viewer, "ui", None), "_values", None)
+    if isinstance(values, dict):
+        return values
+    controls = getattr(getattr(viewer, "ui", None), "controls", {})
+    return {str(key): control.value for key, control in controls.items()}
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,6 +144,14 @@ def default_training_params(background=(1.0, 1.0, 1.0)):
     return build_training_params(background=background, **_training_kwargs(_default_training_control_value))
 
 
+def _initial_renderer_params(state: object) -> RendererParams:
+    return replace(
+        RendererParams(),
+        list_capacity_multiplier=int(getattr(state, "list_capacity_multiplier")),
+        max_prepass_memory_mb=int(getattr(state, "max_prepass_memory_mb")),
+    )
+
+
 class SplatViewer(spy.AppWindow):
 
     def c(self, key: str):
@@ -146,39 +161,14 @@ class SplatViewer(spy.AppWindow):
         return self.ui.text(key)
 
     def renderer_params(self, allow_debug_overlays: bool) -> RendererParams:
-        atomic_mode_index = min(max(int(self.c("cached_raster_grad_atomic_mode").value), 0), len(_CACHED_RASTER_GRAD_ATOMIC_MODE_VALUES) - 1)
-        debug_mode_index = min(max(int(self.c("debug_mode").value), 0), len(_DEBUG_MODE_VALUES) - 1)
-        debug_mode = _DEBUG_MODE_VALUES[debug_mode_index] if allow_debug_overlays else GaussianRenderer.DEBUG_MODE_NORMAL
-        return RendererParams(
-            radius_scale=float(self.c("radius_scale").value),
-            alpha_cutoff=float(self.c("alpha_cutoff").value),
-            max_anisotropy=float(self.c("max_anisotropy").value),
-            transmittance_threshold=float(self.c("trans_threshold").value),
+        ui_values = _viewer_ui_values(self)
+        params = RendererParams.from_ui_values(ui_values, _DEBUG_MODE_VALUES, _threshold_band_range)
+        debug_mode = params.debug_mode if allow_debug_overlays else GaussianRenderer.DEBUG_MODE_NORMAL
+        return replace(
+            params,
             list_capacity_multiplier=self.s.list_capacity_multiplier,
             max_prepass_memory_mb=self.s.max_prepass_memory_mb,
-            cached_raster_grad_atomic_mode=_CACHED_RASTER_GRAD_ATOMIC_MODE_VALUES[atomic_mode_index],
-            cached_raster_grad_fixed_ro_local_range=float(self.c("cached_raster_grad_fixed_ro_local_range").value),
-            cached_raster_grad_fixed_scale_range=float(self.c("cached_raster_grad_fixed_scale_range").value),
-            cached_raster_grad_fixed_color_range=float(self.c("cached_raster_grad_fixed_color_range").value),
-            cached_raster_grad_fixed_opacity_range=float(self.c("cached_raster_grad_fixed_opacity_range").value),
             debug_mode=debug_mode,
-            debug_grad_norm_threshold=float(self.c("debug_grad_norm_threshold").value),
-            debug_ellipse_thickness_px=float(self.c("debug_ellipse_thickness_px").value),
-            debug_gaussian_scale_multiplier=float(self.c("debug_gaussian_scale_multiplier").value),
-            debug_min_opacity=float(self.c("debug_min_opacity").value),
-            debug_opacity_multiplier=float(self.c("debug_opacity_multiplier").value),
-            debug_ellipse_scale_multiplier=float(self.c("debug_ellipse_scale_multiplier").value),
-            debug_splat_age_range=(float(self.c("debug_splat_age_min").value), float(self.c("debug_splat_age_max").value)),
-            debug_density_range=(float(self.c("debug_density_min").value), float(self.c("debug_density_max").value)),
-            debug_contribution_range=(float(self.c("debug_contribution_min").value), float(self.c("debug_contribution_max").value)),
-            debug_refinement_distribution_range=(float(self.c("debug_refinement_distribution_min").value), float(self.c("debug_refinement_distribution_max").value)),
-            debug_adam_momentum_range=_threshold_band_range(float(self.c("debug_grad_norm_threshold").value)),
-            debug_depth_mean_range=(float(self.c("debug_depth_mean_min").value), float(self.c("debug_depth_mean_max").value)),
-            debug_depth_std_range=(float(self.c("debug_depth_std_min").value), float(self.c("debug_depth_std_max").value)),
-            debug_depth_local_mismatch_range=(float(self.c("debug_depth_local_mismatch_min").value), float(self.c("debug_depth_local_mismatch_max").value)),
-            debug_depth_local_mismatch_smooth_radius=float(self.c("debug_depth_local_mismatch_smooth_radius").value),
-            debug_depth_local_mismatch_reject_radius=float(self.c("debug_depth_local_mismatch_reject_radius").value),
-            debug_sh_coeff_index=int(self.c("debug_sh_coeff_index").value),
             debug_show_ellipses=debug_mode == GaussianRenderer.DEBUG_MODE_ELLIPSE_OUTLINES,
             debug_show_processed_count=debug_mode == GaussianRenderer.DEBUG_MODE_PROCESSED_COUNT,
             debug_show_grad_norm=debug_mode == GaussianRenderer.DEBUG_MODE_GRAD_NORM,
@@ -289,7 +279,7 @@ class SplatViewer(spy.AppWindow):
         super().__init__(app, width=width, height=height, title=title, resizable=True, enable_vsync=False)
         self.loss_debug_view_options = LOSS_DEBUG_OPTIONS
         self.s = ViewerState(max_prepass_memory_mb=max(int(max_prepass_memory_mb), 1))
-        self.s.renderer = GaussianRenderer(self.device, width=width, height=height, list_capacity_multiplier=self.s.list_capacity_multiplier, max_prepass_memory_mb=self.s.max_prepass_memory_mb)
+        self.s.renderer = GaussianRenderSettings.from_renderer_params(width, height, _initial_renderer_params(self.s)).create_renderer(self.device)
         self.ui = build_ui(self.s.renderer)
         self.toolkit = create_toolkit_window(self.device, width, height)
         self._bind_toolkit_callbacks()
@@ -418,16 +408,17 @@ class SplatViewer(spy.AppWindow):
 
     def _save_defaults_callback(self) -> None:
         try:
+            ui_values = _viewer_ui_values(self)
             defaults = load_defaults()
             defaults["training_build_args"] = {
                 **defaults["training_build_args"],
                 **{
-                    build_arg: self.ui._values[control_key]
+                    build_arg: ui_values[control_key]
                     for build_arg, control_key in _TRAINING_PARAM_KEYS.items()
-                    if control_key in self.ui._values
+                    if control_key in ui_values
                 },
             }
-            exported = export_repo_defaults_from_ui_values(self.ui._values)
+            exported = export_repo_defaults_from_ui_values(ui_values)
             defaults["renderer"] = exported["renderer"]
             defaults["cli"]["common_render"] = exported["cli"]["common_render"]
             defaults["viewer"]["controls"] = exported["viewer"]["controls"]
@@ -435,11 +426,15 @@ class SplatViewer(spy.AppWindow):
             defaults["viewer"]["ui"] = exported["viewer"]["ui"]
             write_defaults(defaults)
         except Exception as exc:
-            self.t("defaults_status").text = ""
-            self.s.last_error = str(exc)
+            if hasattr(self, "t"):
+                self.t("defaults_status").text = ""
+            if hasattr(self, "s"):
+                self.s.last_error = str(exc)
             return
-        self.t("defaults_status").text = f"Saved {defaults_path().relative_to(defaults_path().parents[1])}"
-        self.s.last_error = ""
+        if hasattr(self, "t"):
+            self.t("defaults_status").text = f"Saved {defaults_path().relative_to(defaults_path().parents[1])}"
+        if hasattr(self, "s"):
+            self.s.last_error = ""
 
     def _render_frame(self, render_context) -> None:
         presenter.render_frame(self, render_context)

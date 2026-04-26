@@ -317,6 +317,10 @@ def _update_toolkit_history(viewer: object, dt: float) -> None:
                 tk.tk.loss_history.append(float(state.avg_loss))
             elif tk.tk.loss_history:
                 tk.tk.loss_history.append(tk.tk.loss_history[-1])
+            if np.isfinite(getattr(state, "avg_ssim", float("nan"))):
+                tk.tk.ssim_history.append(float(np.clip(state.avg_ssim, 0.0, 1.0)))
+            elif tk.tk.ssim_history:
+                tk.tk.ssim_history.append(tk.tk.ssim_history[-1])
             if np.isfinite(state.avg_psnr):
                 tk.tk.psnr_history.append(float(state.avg_psnr))
             elif tk.tk.psnr_history:

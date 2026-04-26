@@ -40,7 +40,7 @@ class _DummyRenderer:
 
 class _DummyTrainer:
     def __init__(self) -> None:
-        self.state = SimpleNamespace(step=0, last_loss=0.0, avg_loss=0.0, last_mse=0.0, avg_mse=0.0, last_psnr=float("inf"), avg_psnr=float("inf"), avg_density_loss=0.0, last_frame_index=0, last_instability="")
+        self.state = SimpleNamespace(step=0, last_loss=0.0, avg_loss=0.0, last_mse=0.0, avg_mse=0.0, last_ssim=1.0, avg_ssim=1.0, last_psnr=float("inf"), avg_psnr=float("inf"), avg_density_loss=0.0, last_frame_index=0, last_instability="")
         self.scene = SimpleNamespace(count=4)
         self.training = SimpleNamespace(
             camera_min_dist=0.1,
@@ -249,7 +249,7 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         "train_auto_start_downscale": _control(1),
         "train_downscale_max_iters": _control(30000),
     }
-    texts = {key: _text() for key in ("fps", "images_subdir", "loss_debug_view", "loss_debug_frame", "loss_debug_psnr", "path", "scene_stats", "render_stats", "training", "training_time", "training_iters_avg", "training_loss", "training_mse", "training_density", "training_psnr", "training_instability", "training_resolution", "training_downscale", "training_schedule", "training_schedule_values", "training_refinement", "colmap_import_status", "colmap_import_current", "histogram_status", "error")}
+    texts = {key: _text() for key in ("fps", "images_subdir", "loss_debug_view", "loss_debug_frame", "loss_debug_psnr", "path", "scene_stats", "render_stats", "training", "training_time", "training_iters_avg", "training_loss", "training_ssim", "training_density", "training_psnr", "training_instability", "training_resolution", "training_downscale", "training_schedule", "training_schedule_values", "training_refinement", "colmap_import_status", "colmap_import_current", "histogram_status", "error")}
     viewer = SimpleNamespace()
     viewer.device = SimpleNamespace()
     viewer.toolkit = SimpleNamespace(viewport_size=lambda: (640, 360))
@@ -612,7 +612,7 @@ def test_render_frame_resizes_main_renderer_from_viewport_size(monkeypatch):
 def test_update_ui_text_uses_permutation_averages() -> None:
     viewer = _viewer(loss_debug=False)
     viewer.s.trainer.state.avg_loss = 1.25
-    viewer.s.trainer.state.avg_mse = 2.5e-3
+    viewer.s.trainer.state.avg_ssim = 0.9975
     viewer.s.trainer.state.avg_density_loss = 6.5e-3
     viewer.s.trainer.state.avg_psnr = 26.75
     viewer.s.trainer.state.step = 120
@@ -623,7 +623,7 @@ def test_update_ui_text_uses_permutation_averages() -> None:
     assert viewer.t("training_time").text == "Time: 00:30"
     assert viewer.t("training_iters_avg").text == "Avg it/s: 4.00"
     assert viewer.t("training_loss").text == "Loss Avg: 1.250000e+00"
-    assert viewer.t("training_mse").text == "MSE Avg: 2.500000e-03"
+    assert viewer.t("training_ssim").text == "SSIM Avg: 0.9975"
     assert viewer.t("training_density").text == "Density Avg: 6.500000e-03"
     assert viewer.t("training_psnr").text == "PSNR Avg: 26.750 dB"
     assert viewer.t("loss_debug_psnr").text == "PSNR: 32.50 dB"

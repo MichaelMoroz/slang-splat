@@ -6,22 +6,20 @@ import numpy as np
 import slangpy as spy
 
 from src.app.training_controls import SCHEDULE_STAGE_CONTROL_DEFS, SCHEDULE_STAGE_GROUPS, TRAIN_SETUP_CONTROL_DEFS, TRAIN_SETUP_PRIMARY_KEYS
+from src.renderer.render_params import CachedRasterGradParams
 from src.viewer import ui
 from src.viewer.buffer_debug import ResourceDebugRow, ResourceDebugSnapshot
 from src.viewer.constants import _WINDOW_TITLE
 
 
 def _dummy_renderer() -> SimpleNamespace:
+    cached_raster_grad = CachedRasterGradParams(atomic_mode="fixed")
     return SimpleNamespace(
         radius_scale=1.0,
         alpha_cutoff=1.0 / 255.0,
         max_splat_steps=32768,
         transmittance_threshold=0.005,
-        cached_raster_grad_atomic_mode="fixed",
-        cached_raster_grad_fixed_ro_local_range=1.0,
-        cached_raster_grad_fixed_scale_range=15.0,
-        cached_raster_grad_fixed_color_range=8.0,
-        cached_raster_grad_fixed_opacity_range=8.0,
+        **cached_raster_grad.renderer_kwargs(),
         debug_show_ellipses=False,
         debug_show_processed_count=False,
         debug_show_grad_norm=False,
@@ -161,21 +159,27 @@ def test_export_repo_defaults_writes_cached_raster_grad_training_render_defaults
     viewer_ui = ui.build_ui(_dummy_renderer())
 
     viewer_ui._values["cached_raster_grad_atomic_mode"] = 0
+    viewer_ui._values["cached_raster_grad_include_depth"] = True
     viewer_ui._values["cached_raster_grad_fixed_ro_local_range"] = 3.0
     viewer_ui._values["cached_raster_grad_fixed_scale_range"] = 512.0
+    viewer_ui._values["cached_raster_grad_fixed_quat_range"] = 0.125
     viewer_ui._values["cached_raster_grad_fixed_color_range"] = 9.0
     viewer_ui._values["cached_raster_grad_fixed_opacity_range"] = 10.0
 
     exported = ui.export_repo_defaults_from_ui_values(viewer_ui._values)
 
     assert exported["renderer"]["cached_raster_grad_atomic_mode"] == "float"
+    assert exported["renderer"]["cached_raster_grad_include_depth"] is True
     assert exported["renderer"]["cached_raster_grad_fixed_ro_local_range"] == 3.0
     assert exported["renderer"]["cached_raster_grad_fixed_scale_range"] == 512.0
+    assert exported["renderer"]["cached_raster_grad_fixed_quat_range"] == 0.125
     assert exported["renderer"]["cached_raster_grad_fixed_color_range"] == 9.0
     assert exported["renderer"]["cached_raster_grad_fixed_opacity_range"] == 10.0
     assert exported["cli"]["common_render"]["cached_raster_grad_atomic_mode"] == "float"
+    assert exported["cli"]["common_render"]["cached_raster_grad_include_depth"] is True
     assert exported["cli"]["common_render"]["cached_raster_grad_fixed_ro_local_range"] == 3.0
     assert exported["cli"]["common_render"]["cached_raster_grad_fixed_scale_range"] == 512.0
+    assert exported["cli"]["common_render"]["cached_raster_grad_fixed_quat_range"] == 0.125
     assert exported["cli"]["common_render"]["cached_raster_grad_fixed_color_range"] == 9.0
     assert exported["cli"]["common_render"]["cached_raster_grad_fixed_opacity_range"] == 10.0
 
@@ -793,14 +797,23 @@ def test_apply_visual_state_applies_theme_scale(monkeypatch) -> None:
 
 def test_performance_plot_heights_scale_with_interface_scale(monkeypatch) -> None:
     plot_sizes: list[tuple[str, float, float]] = []
+    annotations: list[str] = []
     monkeypatch.setattr(ui.imgui, "collapsing_header", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(ui.imgui, "text_disabled", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(ui.imgui, "separator_text", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(ui.implot, "begin_plot", lambda label, size: plot_sizes.append((str(label), float(size.x), float(size.y))) or False)
+    monkeypatch.setattr(ui.implot, "begin_plot", lambda label, size: plot_sizes.append((str(label), float(size.x), float(size.y))) or True)
+    monkeypatch.setattr(ui.implot, "setup_axes", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ui.implot, "setup_axis_limits", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ui.implot, "setup_axis_scale", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ui.implot, "plot_shaded", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ui.implot, "plot_line", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ui.implot, "annotation", lambda _x, _y, _color, _offset, _clamp, text: annotations.append(str(text)))
+    monkeypatch.setattr(ui.implot, "end_plot", lambda *_args, **_kwargs: None)
     toolkit = SimpleNamespace(
         tk=SimpleNamespace(
             fps_history=[60.0, 58.0],
             loss_history=[1.0, 0.5],
+            ssim_history=[0.8, 0.9],
             psnr_history=[20.0, 22.0],
             step_history=[0.0, 1.0],
             step_time_history=[0.0, 1.0],
@@ -811,7 +824,8 @@ def test_performance_plot_heights_scale_with_interface_scale(monkeypatch) -> Non
 
     ui.ToolkitWindow._section_performance(toolkit, SimpleNamespace(_values={"scale": 2.0}, _texts={}))
 
-    assert plot_sizes == [("##FPS", -1.0, 220.0), ("##Loss", -1.0, 360.0), ("##PSNR", -1.0, 360.0)]
+    assert plot_sizes == [("##FPS", -1.0, 220.0), ("##Loss", -1.0, 360.0), ("##SSIM", -1.0, 360.0), ("##PSNR", -1.0, 360.0)]
+    assert "0.9" in annotations
 
 
 def test_histogram_plot_height_scales_with_interface_scale(monkeypatch) -> None:

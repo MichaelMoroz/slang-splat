@@ -24,6 +24,8 @@ _COLMAP_CAMERA_MODEL_NAMES = {
     1: "PINHOLE",
     2: "SIMPLE_RADIAL",
     3: "RADIAL",
+    4: "OPENCV",
+    6: "FULL_OPENCV",
 }
 _COLMAP_DB_SAMPLE_LIMIT = 64
 _COLMAP_DB_SEARCH_PATTERNS = ("database.db", "*.db", "*.sqlite", "*.sqlite3")
@@ -132,6 +134,9 @@ def _camera_rows(recon: object) -> tuple[dict[str, object], ...]:
         frame_counts[camera_id] = frame_counts.get(camera_id, 0) + 1
     rows: list[dict[str, object]] = []
     for camera_id, camera in sorted(getattr(recon, "cameras", {}).items()):
+        distortion_values = tuple(float(getattr(camera, name, 0.0)) for name in ("k1", "k2", "p1", "p2", "k3", "k4", "k5", "k6"))
+        while len(distortion_values) > 2 and abs(distortion_values[-1]) <= 1e-12:
+            distortion_values = distortion_values[:-1]
         rows.append(
             {
                 "camera_id": int(camera_id),
@@ -140,7 +145,7 @@ def _camera_rows(recon: object) -> tuple[dict[str, object], ...]:
                 "resolution_text": f"{int(camera.width)}x{int(camera.height)}",
                 "focal_text": f"{float(camera.fx):.2f}, {float(camera.fy):.2f}",
                 "principal_text": f"{float(camera.cx):.2f}, {float(camera.cy):.2f}",
-                "distortion_text": f"{float(getattr(camera, 'k1', 0.0)):.4g}, {float(getattr(camera, 'k2', 0.0)):.4g}",
+                "distortion_text": ", ".join(f"{value:.4g}" for value in distortion_values),
             }
         )
     return tuple(rows)

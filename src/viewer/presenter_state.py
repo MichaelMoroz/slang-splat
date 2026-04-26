@@ -189,6 +189,10 @@ def _format_duration(seconds: float) -> str:
     return f"{hours:d}:{minutes:02d}:{secs:02d}" if hours > 0 else f"{minutes:02d}:{secs:02d}"
 
 
+def _format_compact_metric(value: float, digits: int = 6) -> str:
+    return "n/a" if not np.isfinite(value) else f"{float(value):.{max(int(digits), 1)}g}"
+
+
 def _debug_psnr_text(debug_metrics: dict[str, np.ndarray], frame_idx: int) -> str:
     if frame_idx < debug_metrics["psnr"].size and np.isfinite(float(debug_metrics["psnr"][frame_idx])):
         return f"PSNR: {float(debug_metrics['psnr'][frame_idx]):.2f} dB"
@@ -237,12 +241,13 @@ def _training_status_texts(viewer: object, current_splat_count: int, training_el
             "training_time": "Time: n/a",
             "training_iters_avg": "Avg it/s: n/a",
             "training_loss": "Loss Avg: n/a",
-            "training_mse": "MSE Avg: n/a",
+            "training_ssim": "SSIM Avg: n/a",
             "training_density": "Density Avg: n/a",
             "training_psnr": "PSNR Avg: n/a",
             "training_instability": "",
         }
     state = trainer.state
+    avg_ssim = float(getattr(state, "avg_ssim", float("nan")))
     batch_steps = int(getattr(viewer.s, "last_training_batch_steps", 0))
     batch_text = f" | batch={batch_steps}" if viewer.s.training_active else ""
     avg_iters_s = float(state.step) / training_elapsed_s if training_elapsed_s > 1e-6 else 0.0
@@ -251,7 +256,7 @@ def _training_status_texts(viewer: object, current_splat_count: int, training_el
         "training_time": f"Time: {_format_duration(training_elapsed_s)}",
         "training_iters_avg": f"Avg it/s: {avg_iters_s:.2f}" if training_elapsed_s > 1e-6 else "Avg it/s: n/a",
         "training_loss": f"Loss Avg: {state.avg_loss:.6e}",
-        "training_mse": f"MSE Avg: {state.avg_mse:.6e}" if np.isfinite(state.avg_mse) else "MSE Avg: n/a",
+        "training_ssim": f"SSIM Avg: {_format_compact_metric(np.clip(avg_ssim, 0.0, 1.0))}",
         "training_density": f"Density Avg: {state.avg_density_loss:.6e}" if np.isfinite(state.avg_density_loss) else "Density Avg: n/a",
         "training_psnr": f"PSNR Avg: {state.avg_psnr:.3f} dB" if np.isfinite(state.avg_psnr) else "PSNR Avg: inf" if state.avg_psnr == float("inf") else "PSNR Avg: n/a",
         "training_instability": state.last_instability,
@@ -342,6 +347,7 @@ def _frame_metrics_snapshot(viewer: object, frame_count: int) -> dict[str, np.nd
         return {
             "loss": np.full((frame_count,), np.nan, dtype=np.float64),
             "mse": np.full((frame_count,), np.nan, dtype=np.float64),
+            "ssim": np.full((frame_count,), np.nan, dtype=np.float64),
             "psnr": np.full((frame_count,), np.nan, dtype=np.float64),
             "visited": np.zeros((frame_count,), dtype=bool),
         }
@@ -351,6 +357,7 @@ def _frame_metrics_snapshot(viewer: object, frame_count: int) -> dict[str, np.nd
         return {
             "loss": np.full((frame_count,), np.nan, dtype=np.float64),
             "mse": np.full((frame_count,), np.nan, dtype=np.float64),
+            "ssim": np.full((frame_count,), np.nan, dtype=np.float64),
             "psnr": np.full((frame_count,), np.nan, dtype=np.float64),
             "visited": np.zeros((frame_count,), dtype=bool),
         }
@@ -360,6 +367,7 @@ def _frame_metrics_snapshot(viewer: object, frame_count: int) -> dict[str, np.nd
     return {
         "loss": _coerce_metric_array(snapshot.get("loss"), frame_count),
         "mse": _coerce_metric_array(snapshot.get("mse"), frame_count),
+        "ssim": _coerce_metric_array(snapshot.get("ssim"), frame_count),
         "psnr": _coerce_metric_array(snapshot.get("psnr"), frame_count),
         "visited": visited,
     }

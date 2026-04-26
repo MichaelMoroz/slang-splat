@@ -25,6 +25,24 @@ def _viewer() -> SimpleNamespace:
     )
 
 
+def _renderer_params(**kwargs) -> SimpleNamespace:
+    values = {
+        "debug_mode": None,
+        "debug_show_ellipses": False,
+        "debug_show_processed_count": False,
+        "debug_show_grad_norm": False,
+        **kwargs,
+    }
+
+    class _Params(SimpleNamespace):
+        __dataclass_fields__ = {key: None for key in values}
+
+        def renderer_kwargs(self) -> dict[str, object]:
+            return dict(values)
+
+    return _Params(**values)
+
+
 def _identity_q() -> np.ndarray:
     return np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
 
@@ -44,6 +62,10 @@ def _write_cameras_bin(path: Path, model_id: int = 1) -> None:
             handle.write(struct.pack("<dddd", 64.0, 32.0, 32.0, 0.01))
         elif model_id == 3:
             handle.write(struct.pack("<ddddd", 64.0, 32.0, 32.0, 0.01, -0.01))
+        elif model_id == 4:
+            handle.write(struct.pack("<dddddddd", 64.0, 64.0, 32.0, 32.0, 0.01, -0.01, 0.0, 0.0))
+        elif model_id == 6:
+            handle.write(struct.pack("<dddddddddddd", 64.0, 64.0, 32.0, 32.0, 0.01, -0.01, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
         else:
             handle.write(struct.pack("<dddddddd", 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0))
 
@@ -279,15 +301,15 @@ def test_ensure_renderer_keeps_existing_main_renderer_when_replacement_fails(mon
     existing_renderer = SimpleNamespace(width=64, height=64)
     viewer = SimpleNamespace(
         device=SimpleNamespace(),
-        renderer_params=lambda allow_debug_overlays: SimpleNamespace(),
+        renderer_params=lambda allow_debug_overlays: _renderer_params(),
         s=SimpleNamespace(renderer=existing_renderer, scene=None),
     )
 
-    monkeypatch.setattr(session, "renderer_kwargs", lambda params: {})
-
     class _FailingSettings:
-        def __init__(self, width: int, height: int, **kwargs) -> None:
-            del width, height, kwargs
+        @classmethod
+        def from_renderer_params(cls, width: int, height: int, params: object):
+            del width, height, params
+            return cls()
 
         def create_renderer(self, device) -> object:
             del device
@@ -384,20 +406,27 @@ def test_choose_colmap_root_works_without_database(tmp_path: Path) -> None:
     assert viewer.s.last_error == ""
 
 
-def test_choose_colmap_root_rejects_unknown_camera_model(tmp_path: Path) -> None:
-    database_path, _ = _build_colmap_tree(
+@pytest.mark.parametrize(("model_id", "model_name"), ((4, "OPENCV"), (6, "FULL_OPENCV")))
+def test_choose_colmap_root_supports_opencv_camera_models(tmp_path: Path, model_id: int, model_name: str) -> None:
+    database_path, images_root = _build_colmap_tree(
         tmp_path,
         image_names=["frame_000.png"],
         image_root_rel=Path("images"),
-        model_id=4,
+        model_id=model_id,
     )
     viewer = SimpleNamespace(
         ui=SimpleNamespace(_values={}),
         s=SimpleNamespace(last_error="stale"),
     )
 
-    with pytest.raises(ValueError, match="Unsupported COLMAP camera model id 4"):
-        session.choose_colmap_root(viewer, database_path.parents[1])
+    session.choose_colmap_root(viewer, database_path.parents[1])
+
+    assert viewer.ui._values["colmap_root_path"] == str(database_path.resolve().parents[1])
+    assert viewer.ui._values["colmap_database_path"] == str(database_path.resolve())
+    assert viewer.ui._values["colmap_images_root"] == str(images_root)
+    assert viewer.ui._values["colmap_selected_camera_ids"] == (7,)
+    assert viewer.ui._values["_colmap_camera_rows"][0]["model_name"] == model_name
+    assert viewer.s.last_error == ""
 
 
 def test_import_colmap_dataset_clears_loaded_scene_before_loading(monkeypatch) -> None:
@@ -771,6 +800,72 @@ def test_finish_import_colmap_dataset_prefers_training_view_camera_fit(monkeypat
     )
 
     assert calls == ["reset", ("view_fit", tuple(training_frames))]
+
+
+def test_finish_import_colmap_dataset_seeds_pointcloud_cached_init_source(monkeypatch) -> None:
+    recon = SimpleNamespace(points3d={1: object()})
+    expected_positions = np.array([[1.0, 2.0, 3.0]], dtype=np.float32)
+    expected_colors = np.array([[0.25, 0.5, 0.75]], dtype=np.float32)
+    calls: list[object] = []
+    viewer = SimpleNamespace(
+        toolkit=SimpleNamespace(reset_plot_history=lambda: calls.append("reset")),
+        ui=SimpleNamespace(_values={}),
+        s=SimpleNamespace(
+            cached_init_point_positions=None,
+            cached_init_point_colors=None,
+            cached_init_signature=None,
+        ),
+        init_params=lambda: SimpleNamespace(seed=7),
+        apply_camera_fit=lambda bounds: calls.append(("fit", bounds)),
+    )
+
+    monkeypatch.setattr(session, "_point_tables", lambda recon_obj, min_track_length=3: (np.zeros((1, 3), dtype=np.float32), np.zeros((1, 3), dtype=np.float32)))
+    monkeypatch.setattr(session, "_reset_loaded_runtime", lambda viewer_obj: None)
+    monkeypatch.setattr(session, "_reset_training_visual_state", lambda viewer_obj: None)
+    monkeypatch.setattr(session, "_update_import_settings", lambda viewer_obj, **kwargs: setattr(viewer_obj.s, "colmap_import", SimpleNamespace(**kwargs)))
+    monkeypatch.setattr(session, "_set_colmap_camera_preview", lambda viewer_obj, recon_obj, camera_ids: None)
+    monkeypatch.setattr(session, "apply_live_params", lambda viewer_obj: calls.append("apply_live"))
+    monkeypatch.setattr(session, "estimate_point_bounds", lambda xyz: ("bounds", xyz.shape[0]))
+    monkeypatch.setattr(session, "initialize_training_scene", lambda viewer_obj, frame_targets_native=None: calls.append(("initialize", frame_targets_native)))
+
+    def _ensure_cached(viewer_obj, init) -> None:
+        calls.append(("ensure_cached", init.seed, viewer_obj.s.colmap_import.init_mode, viewer_obj.s.colmap_import.fibonacci_sphere_point_count))
+        viewer_obj.s.cached_init_point_positions = expected_positions
+        viewer_obj.s.cached_init_point_colors = expected_colors
+        viewer_obj.s.cached_init_signature = ("cached",)
+
+    monkeypatch.setattr(session, "_ensure_cached_init_source", _ensure_cached)
+
+    session._finish_import_colmap_dataset(
+        viewer,
+        colmap_root=Path("dataset/garden"),
+        database_path=None,
+        images_root=Path("dataset/garden/images"),
+        init_mode="pointcloud",
+        custom_ply_path=None,
+        image_downscale_mode="original",
+        image_downscale_max_size=1600,
+        image_downscale_scale=1.0,
+        nn_radius_scale_coef=0.25,
+        min_track_length=3,
+        diffused_point_count=100000,
+        diffusion_radius=1.0,
+        fibonacci_sphere_point_count=4,
+        fibonacci_sphere_radius=2.0,
+        recon=recon,
+        training_frames=[],
+        frame_targets_native=None,
+    )
+
+    assert calls == [
+        ("ensure_cached", 7, "pointcloud", 4),
+        "apply_live",
+        ("fit", ("bounds", 1)),
+        ("initialize", None),
+    ]
+    np.testing.assert_allclose(viewer.s.cached_init_point_positions, expected_positions, rtol=0.0, atol=0.0)
+    np.testing.assert_allclose(viewer.s.cached_init_point_colors, expected_colors, rtol=0.0, atol=0.0)
+    assert viewer.s.cached_init_signature == ("cached",)
 
 
 def test_import_colmap_dataset_uses_aligned_reconstruction(monkeypatch) -> None:
@@ -1409,7 +1504,7 @@ def test_apply_live_params_syncs_renderer_sh_band(monkeypatch) -> None:
     viewer = SimpleNamespace(
         ui=SimpleNamespace(_values={"_viewport_sh_band": 3}),
         render_background=lambda: (0.0, 0.0, 0.0),
-        renderer_params=lambda allow_debug_overlays: SimpleNamespace(__dataclass_fields__={"debug": None}, debug=bool(allow_debug_overlays)),
+        renderer_params=lambda allow_debug_overlays: _renderer_params(debug=bool(allow_debug_overlays)),
         training_params=lambda: SimpleNamespace(training=SimpleNamespace(sh_band=0, use_sh=False)),
         s=SimpleNamespace(
             background=None,
@@ -1427,7 +1522,6 @@ def test_apply_live_params_syncs_renderer_sh_band(monkeypatch) -> None:
     )
 
     monkeypatch.setattr(session, "resolve_effective_training_setup", lambda viewer_obj: (None, params, None, None))
-    monkeypatch.setattr(session, "renderer_kwargs", lambda *_args: {})
     monkeypatch.setattr(session, "_apply_debug_buffers", lambda *_args: None)
 
     session.apply_live_params(viewer)
@@ -1436,6 +1530,68 @@ def test_apply_live_params_syncs_renderer_sh_band(monkeypatch) -> None:
     assert viewer.s.debug_renderer.sh_band == 3
     assert viewer.s.training_renderer.sh_band == 0
     assert len(update_calls) == 1
+
+
+def test_apply_live_params_resets_existing_renderer_debug_mode_to_normal(monkeypatch) -> None:
+    class _Params(SimpleNamespace):
+        __dataclass_fields__ = {
+            "debug_mode": None,
+            "debug_show_ellipses": None,
+            "debug_show_processed_count": None,
+            "debug_show_grad_norm": None,
+        }
+
+        def renderer_kwargs(self) -> dict[str, object]:
+            return {
+                "debug_mode": self.debug_mode,
+                "debug_show_ellipses": self.debug_show_ellipses,
+                "debug_show_processed_count": self.debug_show_processed_count,
+                "debug_show_grad_norm": self.debug_show_grad_norm,
+            }
+
+    renderer = SimpleNamespace(
+        sh_band=0,
+        debug_mode=session.GaussianRenderer.DEBUG_MODE_SPLAT_AGE,
+        debug_show_ellipses=False,
+        debug_show_processed_count=False,
+        debug_show_grad_norm=False,
+    )
+    debug_renderer = SimpleNamespace(
+        sh_band=0,
+        debug_mode=session.GaussianRenderer.DEBUG_MODE_SPLAT_AGE,
+        debug_show_ellipses=False,
+        debug_show_processed_count=False,
+        debug_show_grad_norm=False,
+    )
+    params = _Params(
+        debug_mode=None,
+        debug_show_ellipses=False,
+        debug_show_processed_count=False,
+        debug_show_grad_norm=False,
+    )
+    viewer = SimpleNamespace(
+        ui=SimpleNamespace(_values={"_viewport_sh_band": 0}),
+        render_background=lambda: (0.0, 0.0, 0.0),
+        renderer_params=lambda allow_debug_overlays: params,
+        training_params=lambda: SimpleNamespace(training=SimpleNamespace(sh_band=0, use_sh=False)),
+        s=SimpleNamespace(
+            background=None,
+            renderer=renderer,
+            training_renderer=None,
+            debug_renderer=debug_renderer,
+            trainer=None,
+            applied_renderer_params_main=None,
+            applied_renderer_params_training=None,
+            applied_renderer_params_debug=None,
+        ),
+    )
+
+    monkeypatch.setattr(session, "_apply_debug_buffers", lambda *_args: None)
+
+    session.apply_live_params(viewer)
+
+    assert viewer.s.renderer.debug_mode == session.GaussianRenderer.DEBUG_MODE_NORMAL
+    assert viewer.s.debug_renderer.debug_mode == session.GaussianRenderer.DEBUG_MODE_NORMAL
 
 
 def test_apply_live_params_updates_refinement_exponents_without_renderer_signature_change(monkeypatch) -> None:
@@ -1472,7 +1628,7 @@ def test_apply_live_params_updates_refinement_exponents_without_renderer_signatu
     viewer = SimpleNamespace(
         ui=SimpleNamespace(_values={"_viewport_sh_band": 3}),
         render_background=lambda: (0.0, 0.0, 0.0),
-        renderer_params=lambda allow_debug_overlays: SimpleNamespace(__dataclass_fields__={"debug": None}, debug=bool(allow_debug_overlays)),
+        renderer_params=lambda allow_debug_overlays: _renderer_params(debug=bool(allow_debug_overlays)),
         training_params=lambda: SimpleNamespace(training=SimpleNamespace(
             sh_band=0,
             use_sh=False,
@@ -1493,7 +1649,6 @@ def test_apply_live_params_updates_refinement_exponents_without_renderer_signatu
 
     monkeypatch.setattr(session, "resolve_effective_training_setup", lambda viewer_obj: (None, params, None, None))
     monkeypatch.setattr(session, "_renderer_params_signature", lambda params_obj: renderer_signature)
-    monkeypatch.setattr(session, "renderer_kwargs", lambda *_args: pytest.fail("renderer_kwargs should not run when signature is unchanged"))
     monkeypatch.setattr(session, "_apply_debug_buffers", lambda *_args: None)
 
     session.apply_live_params(viewer)
@@ -1510,7 +1665,7 @@ def test_apply_live_params_uses_viewport_sh_default_without_trainer(monkeypatch)
     viewer = SimpleNamespace(
         ui=SimpleNamespace(_values={"_viewport_sh_band": 3}),
         render_background=lambda: (0.0, 0.0, 0.0),
-        renderer_params=lambda allow_debug_overlays: SimpleNamespace(__dataclass_fields__={"debug": None}, debug=bool(allow_debug_overlays)),
+        renderer_params=lambda allow_debug_overlays: _renderer_params(debug=bool(allow_debug_overlays)),
         training_params=lambda: SimpleNamespace(training=SimpleNamespace(sh_band=0, use_sh=False)),
         s=SimpleNamespace(
             background=None,
@@ -1524,7 +1679,6 @@ def test_apply_live_params_uses_viewport_sh_default_without_trainer(monkeypatch)
         ),
     )
 
-    monkeypatch.setattr(session, "renderer_kwargs", lambda *_args: {})
     monkeypatch.setattr(session, "_apply_debug_buffers", lambda *_args: None)
 
     session.apply_live_params(viewer)

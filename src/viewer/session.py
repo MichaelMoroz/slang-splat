@@ -11,7 +11,7 @@ import numpy as np
 from PIL import Image
 import slangpy as spy
 
-from ..app.shared import apply_training_profile, estimate_point_bounds, estimate_scene_bounds, renderer_kwargs
+from ..app.shared import apply_training_profile, estimate_point_bounds, estimate_scene_bounds
 from ..utility import SHADER_ROOT, clamp_index, load_compute_kernels
 from ..metrics import ParamTensorRanges
 from ..renderer import GaussianRenderSettings, GaussianRenderer
@@ -774,7 +774,7 @@ def ensure_renderer(viewer: object, attr: str, width: int, height: int, allow_de
         ) if attr == "training_renderer" else (int(renderer.width), int(renderer.height))
         if renderer_size == size: return renderer
     previous_renderer = renderer
-    renderer = GaussianRenderSettings(width=size[0], height=size[1], **renderer_kwargs(viewer.renderer_params(allow_debug_overlays))).create_renderer(viewer.device)
+    renderer = GaussianRenderSettings.from_renderer_params(size[0], size[1], viewer.renderer_params(allow_debug_overlays)).create_renderer(viewer.device)
     if isinstance(viewer.s.scene, GaussianScene):
         renderer.set_scene(viewer.s.scene)
     setattr(viewer.s, attr, renderer)
@@ -787,7 +787,7 @@ def ensure_renderer(viewer: object, attr: str, width: int, height: int, allow_de
 
 
 def _create_renderer(viewer: object, width: int, height: int, allow_debug_overlays: bool) -> GaussianRenderer:
-    return GaussianRenderSettings(width=int(width), height=int(height), **renderer_kwargs(viewer.renderer_params(allow_debug_overlays))).create_renderer(viewer.device)
+    return GaussianRenderSettings.from_renderer_params(int(width), int(height), viewer.renderer_params(allow_debug_overlays)).create_renderer(viewer.device)
 
 
 def _renderer_params_signature(params: object) -> tuple[object, ...]:
@@ -976,7 +976,9 @@ def apply_live_params(viewer: object, force_init_defaults: bool = False) -> None
         signature = _renderer_params_signature(params)
         if getattr(viewer.s, state_attr) == signature:
             continue
-        for key, value in renderer_kwargs(params).items():
+        runtime_kwargs = params.renderer_kwargs()
+        if params.debug_mode is None: runtime_kwargs["debug_mode"] = GaussianRenderer.DEBUG_MODE_NORMAL
+        for key, value in runtime_kwargs.items():
             setattr(renderer, key, value)
         setattr(viewer.s, state_attr, signature)
     _apply_debug_buffers(viewer, viewer.s.renderer)
@@ -1159,6 +1161,10 @@ def _finish_import_colmap_dataset(
         init_params_fn = getattr(viewer, "init_params", None)
         if callable(init_params_fn):
             viewer.s.cached_init_signature = _cached_init_signature(viewer, init_params_fn())
+    else:
+        init_params_fn = getattr(viewer, "init_params", None)
+        if init_mode != _COLMAP_IMPORT_DEPTH and callable(init_params_fn):
+            _ensure_cached_init_source(viewer, init_params_fn())
     apply_live_params(viewer)
     _apply_initial_camera_fit(viewer, fallback_factory=lambda: estimate_point_bounds(xyz))
     initialize_training_scene(viewer, frame_targets_native=frame_targets_native)

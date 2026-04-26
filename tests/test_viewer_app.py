@@ -387,6 +387,8 @@ def test_renderer_params_maps_adam_moment_modes_to_grad_norm_log_range() -> None
         "debug_density_max": SimpleNamespace(value=20.0),
         "debug_contribution_min": SimpleNamespace(value=0.001),
         "debug_contribution_max": SimpleNamespace(value=1.0),
+        "debug_refinement_distribution_min": SimpleNamespace(value=0.0),
+        "debug_refinement_distribution_max": SimpleNamespace(value=1.0),
         "debug_sh_coeff_index": SimpleNamespace(value=0),
         "debug_depth_mean_min": SimpleNamespace(value=0.0),
         "debug_depth_mean_max": SimpleNamespace(value=10.0),
@@ -414,6 +416,18 @@ def test_renderer_params_maps_adam_moment_modes_to_grad_norm_log_range() -> None
         assert params.debug_ellipse_scale_multiplier == 0.75
         assert np.isclose(params.debug_adam_momentum_range[0], 2e-7, rtol=0.0, atol=1e-15)
         assert np.isclose(params.debug_adam_momentum_range[1], 2e-3, rtol=0.0, atol=1e-15)
+
+
+def test_initial_renderer_params_use_repo_defaults_for_cached_grad_depth() -> None:
+    base = app.RendererParams()
+
+    params = app._initial_renderer_params(
+        SimpleNamespace(list_capacity_multiplier=17, max_prepass_memory_mb=3072),
+    )
+
+    assert params.list_capacity_multiplier == 17
+    assert params.max_prepass_memory_mb == 3072
+    assert params.cached_raster_grad.include_depth is base.cached_raster_grad.include_depth
 
 
 def test_export_ply_callback_saves_active_scene(monkeypatch, tmp_path: Path) -> None:
