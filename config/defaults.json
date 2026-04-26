@@ -63,7 +63,7 @@
     "refinement_sample_radius": 2.0,
     "refinement_use_compact_split": false,
     "refinement_solve_opacity": true,
-    "refinement_split_beta": 0.28,
+    "refinement_split_beta": 0.30000001192092896,
     "refinement_momentum_weight_exponent": 0.5,
     "lr_pos_stage1_mul": 0.1,
     "lr_pos_stage2_mul": 0.05,
@@ -95,12 +95,12 @@
     "train_downscale_factor": 1,
     "train_subsample_factor": 0,
     "refinement_clone_scale_mul": 1.0,
-    "refinement_grad_variance_weight_exponent": 0.36000001430511475,
-    "refinement_contribution_weight_exponent": 0.4000000059604645
+    "refinement_grad_variance_weight_exponent": 0.10000000149011612,
+    "refinement_contribution_weight_exponent": 0.0
   },
   "renderer": {
     "radius_scale": 1.0,
-    "alpha_cutoff": 0.009960000403225422,
+    "alpha_cutoff": 0.00392156862745098,
     "max_anisotropy": 32.0,
     "transmittance_threshold": 0.005,
     "list_capacity_multiplier": 64,
@@ -110,7 +110,7 @@
     "cached_raster_grad_fixed_scale_range": 15.0,
     "cached_raster_grad_fixed_color_range": 8.0,
     "cached_raster_grad_fixed_opacity_range": 8.0,
-    "debug_mode": null,
+    "debug_mode": "splat_age",
     "debug_grad_norm_threshold": 0.0002,
     "debug_ellipse_thickness_px": 4.0,
     "debug_gaussian_scale_multiplier": 1.0,
@@ -131,7 +131,7 @@
     ],
     "debug_refinement_distribution_range": [
       0.0,
-      0.0010000000474974513
+      0.20000000298023224
     ],
     "debug_adam_momentum_range": [
       1e-05,
@@ -163,7 +163,7 @@
       "loss_debug_view": 0,
       "loss_debug_frame": 0,
       "loss_debug_abs_scale": 1.0,
-      "move_speed": 2.790275236701988,
+      "move_speed": 7.832817244149061,
       "fov": 60.0,
       "render_background_mode": 1,
       "render_background_color": [
@@ -207,8 +207,8 @@
       "hist_max_value": 1.0,
       "hist_y_limit": 1290263.0,
       "viewport_sh_band": 3,
-      "viewport_sh_control_key": "sh_band_stage3",
-      "viewport_sh_stage_label": "Stage 3"
+      "viewport_sh_control_key": "sh_band_stage1",
+      "viewport_sh_stage_label": "Stage 1"
     },
     "state": {
       "list_capacity_multiplier": 16,
@@ -224,7 +224,7 @@
     "common_render": {
       "prepass_memory_mb": 4096,
       "radius_scale": 1.0,
-      "alpha_cutoff": 0.009960000403225422,
+      "alpha_cutoff": 0.00392156862745098,
       "trans_threshold": 0.005,
       "cached_raster_grad_atomic_mode": "float",
       "cached_raster_grad_fixed_ro_local_range": 1.0,
