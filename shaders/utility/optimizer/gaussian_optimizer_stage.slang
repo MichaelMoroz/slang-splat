@@ -51,192 +51,37 @@ uniform RWStructuredBuffer<float> g_LossBuffer;
 uniform RWStructuredBuffer<float> g_ParamGrads;
 uniform RWStructuredBuffer<float> g_SplatParamsRW;
 
-struct TrainableGaussianState
+struct TrainableGaussianState : IDifferentiable
 {
     float3 position;
     float3 logScale;
     float4 rotation;
-    float3 sh0;
-    float3 sh1X;
-    float3 sh1Y;
-    float3 sh1Z;
-    float3 sh2_0;
-    float3 sh2_1;
-    float3 sh2_2;
-    float3 sh2_3;
-    float3 sh2_4;
-    float3 sh3_0;
-    float3 sh3_1;
-    float3 sh3_2;
-    float3 sh3_3;
-    float3 sh3_4;
-    float3 sh3_5;
-    float3 sh3_6;
+    float3 shCoeffs[SH_COEFF_COUNT];
     float rawOpacity;
 
     static TrainableGaussianState load(uint splatId)
     {
         TrainableGaussianState state;
-        state.position = float3(
-            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_POSITION_X, splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_POSITION_Y, splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_POSITION_Z, splatId)
-        );
-        state.logScale = float3(
-            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SCALE_X, splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SCALE_Y, splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SCALE_Z, splatId)
-        );
-        state.rotation = float4(
-            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_ROTATION_X, splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_ROTATION_Y, splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_ROTATION_Z, splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_ROTATION_W, splatId)
-        );
-        state.sh0 = float3(
-            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH0_R, splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH0_G, splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH0_B, splatId)
-        );
-        state.sh1X = float3(
-            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_X_R, splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_X_G, splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_X_B, splatId)
-        );
-        state.sh1Y = float3(
-            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_Y_R, splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_Y_G, splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_Y_B, splatId)
-        );
-        state.sh1Z = float3(
-            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_Z_R, splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_Z_G, splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_Z_B, splatId)
-        );
-        state.sh2_0 = float3(
-            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(4u, 0u), splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(4u, 1u), splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(4u, 2u), splatId)
-        );
-        state.sh2_1 = float3(
-            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(5u, 0u), splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(5u, 1u), splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(5u, 2u), splatId)
-        );
-        state.sh2_2 = float3(
-            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(6u, 0u), splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(6u, 1u), splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(6u, 2u), splatId)
-        );
-        state.sh2_3 = float3(
-            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(7u, 0u), splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(7u, 1u), splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(7u, 2u), splatId)
-        );
-        state.sh2_4 = float3(
-            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(8u, 0u), splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(8u, 1u), splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(8u, 2u), splatId)
-        );
-        state.sh3_0 = float3(
-            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(9u, 0u), splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(9u, 1u), splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(9u, 2u), splatId)
-        );
-        state.sh3_1 = float3(
-            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(10u, 0u), splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(10u, 1u), splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(10u, 2u), splatId)
-        );
-        state.sh3_2 = float3(
-            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(11u, 0u), splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(11u, 1u), splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(11u, 2u), splatId)
-        );
-        state.sh3_3 = float3(
-            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(12u, 0u), splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(12u, 1u), splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(12u, 2u), splatId)
-        );
-        state.sh3_4 = float3(
-            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(13u, 0u), splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(13u, 1u), splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(13u, 2u), splatId)
-        );
-        state.sh3_5 = float3(
-            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(14u, 0u), splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(14u, 1u), splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(14u, 2u), splatId)
-        );
-        state.sh3_6 = float3(
-            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(15u, 0u), splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(15u, 1u), splatId),
-            load_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(15u, 2u), splatId)
-        );
+        state.position = load_splat_param_vector<3>(g_SplatParamsRW, g_SplatCount, PARAM_POSITION_X, splatId);
+        state.logScale = load_splat_param_vector<3>(g_SplatParamsRW, g_SplatCount, PARAM_SCALE_X, splatId);
+        state.rotation = load_splat_param_vector<4>(g_SplatParamsRW, g_SplatCount, PARAM_ROTATION_X, splatId);
+        [unroll] for (uint coeffIndex = 0u; coeffIndex < SH_COEFF_COUNT; coeffIndex++)
+        {
+            state.shCoeffs[coeffIndex] = load_splat_param_vector<3>(g_SplatParamsRW, g_SplatCount, sh_param_id(coeffIndex, 0u), splatId);
+        }
         state.rawOpacity = load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_RAW_OPACITY, splatId);
         return state;
     }
 
     void store(uint splatId)
     {
-        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_POSITION_X, splatId, position.x);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_POSITION_Y, splatId, position.y);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_POSITION_Z, splatId, position.z);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SCALE_X, splatId, logScale.x);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SCALE_Y, splatId, logScale.y);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SCALE_Z, splatId, logScale.z);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_ROTATION_X, splatId, rotation.x);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_ROTATION_Y, splatId, rotation.y);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_ROTATION_Z, splatId, rotation.z);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_ROTATION_W, splatId, rotation.w);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH0_R, splatId, sh0.x);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH0_G, splatId, sh0.y);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH0_B, splatId, sh0.z);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_X_R, splatId, sh1X.x);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_X_G, splatId, sh1X.y);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_X_B, splatId, sh1X.z);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_Y_R, splatId, sh1Y.x);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_Y_G, splatId, sh1Y.y);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_Y_B, splatId, sh1Y.z);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_Z_R, splatId, sh1Z.x);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_Z_G, splatId, sh1Z.y);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_SH1_Z_B, splatId, sh1Z.z);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(4u, 0u), splatId, sh2_0.x);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(4u, 1u), splatId, sh2_0.y);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(4u, 2u), splatId, sh2_0.z);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(5u, 0u), splatId, sh2_1.x);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(5u, 1u), splatId, sh2_1.y);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(5u, 2u), splatId, sh2_1.z);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(6u, 0u), splatId, sh2_2.x);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(6u, 1u), splatId, sh2_2.y);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(6u, 2u), splatId, sh2_2.z);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(7u, 0u), splatId, sh2_3.x);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(7u, 1u), splatId, sh2_3.y);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(7u, 2u), splatId, sh2_3.z);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(8u, 0u), splatId, sh2_4.x);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(8u, 1u), splatId, sh2_4.y);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(8u, 2u), splatId, sh2_4.z);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(9u, 0u), splatId, sh3_0.x);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(9u, 1u), splatId, sh3_0.y);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(9u, 2u), splatId, sh3_0.z);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(10u, 0u), splatId, sh3_1.x);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(10u, 1u), splatId, sh3_1.y);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(10u, 2u), splatId, sh3_1.z);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(11u, 0u), splatId, sh3_2.x);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(11u, 1u), splatId, sh3_2.y);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(11u, 2u), splatId, sh3_2.z);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(12u, 0u), splatId, sh3_3.x);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(12u, 1u), splatId, sh3_3.y);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(12u, 2u), splatId, sh3_3.z);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(13u, 0u), splatId, sh3_4.x);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(13u, 1u), splatId, sh3_4.y);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(13u, 2u), splatId, sh3_4.z);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(14u, 0u), splatId, sh3_5.x);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(14u, 1u), splatId, sh3_5.y);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(14u, 2u), splatId, sh3_5.z);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(15u, 0u), splatId, sh3_6.x);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(15u, 1u), splatId, sh3_6.y);
-        store_splat_param(g_SplatParamsRW, g_SplatCount, sh_param_id(15u, 2u), splatId, sh3_6.z);
+        store_splat_param_vector<3>(g_SplatParamsRW, g_SplatCount, PARAM_POSITION_X, splatId, position);
+        store_splat_param_vector<3>(g_SplatParamsRW, g_SplatCount, PARAM_SCALE_X, splatId, logScale);
+        store_splat_param_vector<4>(g_SplatParamsRW, g_SplatCount, PARAM_ROTATION_X, splatId, rotation);
+        [unroll] for (uint coeffIndex = 0u; coeffIndex < SH_COEFF_COUNT; coeffIndex++)
+        {
+            store_splat_param_vector<3>(g_SplatParamsRW, g_SplatCount, sh_param_id(coeffIndex, 0u), splatId, shCoeffs[coeffIndex]);
+        }
         store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_RAW_OPACITY, splatId, rawOpacity);
     }
 };
@@ -342,33 +187,14 @@ float sh_view_dependent_scale_limit(float3 baseColor, float3 deltaColor)
     );
 }
 
-float sh_rescale_to_sampled_color_range(
-    float3 sh0,
-    float3 sh1X,
-    float3 sh1Y,
-    float3 sh1Z,
-    float3 sh2_0,
-    float3 sh2_1,
-    float3 sh2_2,
-    float3 sh2_3,
-    float3 sh2_4,
-    float3 sh3_0,
-    float3 sh3_1,
-    float3 sh3_2,
-    float3 sh3_3,
-    float3 sh3_4,
-    float3 sh3_5,
-    float3 sh3_6,
-    no_diff uint shBand,
-    no_diff uint splatId
-)
+float sh_rescale_to_sampled_color_range(TrainableGaussianState state, no_diff uint shBand, no_diff uint splatId)
 {
     if (shBand == 0u) return 1.0;
-    float3 baseColor = evaluate_sh0_color_raw(sh0);
+    float3 baseColor = evaluate_sh0_color_raw(state.shCoeffs[0u]);
     float scale = 1.0;
     [unroll] for (uint sampleId = 0u; sampleId < SH_CLAMP_SAMPLE_COUNT; sampleId++)
     {
-        float3 sampleColor = evaluate_sh_band_raw(sh0, sh1X, sh1Y, sh1Z, sh2_0, sh2_1, sh2_2, sh2_3, sh2_4, sh3_0, sh3_1, sh3_2, sh3_3, sh3_4, sh3_5, sh3_6, shBand, sh_clamp_sample_dir(splatId, sampleId));
+        float3 sampleColor = evaluate_sh_band_raw(state.shCoeffs, shBand, sh_clamp_sample_dir(splatId, sampleId));
         scale = min(scale, sh_view_dependent_scale_limit(baseColor, sampleColor - baseColor));
     }
     return saturate(scale);
@@ -377,30 +203,8 @@ float sh_rescale_to_sampled_color_range(
 void scale_active_sh_coeffs(inout TrainableGaussianState state, float scale, uint shBand)
 {
     if (!(scale < 1.0) || shBand == 0u) return;
-    if (shBand >= 1u)
-    {
-        state.sh1X *= scale;
-        state.sh1Y *= scale;
-        state.sh1Z *= scale;
-    }
-    if (shBand >= 2u)
-    {
-        state.sh2_0 *= scale;
-        state.sh2_1 *= scale;
-        state.sh2_2 *= scale;
-        state.sh2_3 *= scale;
-        state.sh2_4 *= scale;
-    }
-    if (shBand >= 3u)
-    {
-        state.sh3_0 *= scale;
-        state.sh3_1 *= scale;
-        state.sh3_2 *= scale;
-        state.sh3_3 *= scale;
-        state.sh3_4 *= scale;
-        state.sh3_5 *= scale;
-        state.sh3_6 *= scale;
-    }
+    uint activeCoeffCount = shBand == 1u ? 4u : shBand == 2u ? 9u : SH_COEFF_COUNT;
+    [unroll] for (uint coeffIndex = 1u; coeffIndex < SH_COEFF_COUNT; coeffIndex++) if (coeffIndex < activeCoeffCount) state.shCoeffs[coeffIndex] *= scale;
 }
 
 float3 clamp_screen_scale_upper_bound(float3 position, float3 logScale)
@@ -416,28 +220,17 @@ float3 clamp_screen_scale_upper_bound(float3 position, float3 logScale)
 }
 
 [Differentiable]
-float color_non_negative_loss(
-    float3 sh0,
-    float3 sh1X,
-    float3 sh1Y,
-    float3 sh1Z,
-    float3 sh2_0,
-    float3 sh2_1,
-    float3 sh2_2,
-    float3 sh2_3,
-    float3 sh2_4,
-    float3 sh3_0,
-    float3 sh3_1,
-    float3 sh3_2,
-    float3 sh3_3,
-    float3 sh3_4,
-    float3 sh3_5,
-    float3 sh3_6,
-    no_diff uint shBand,
-    no_diff float3 viewDir
-)
+float sh_rest_abs_l1_loss(TrainableGaussianState state)
 {
-    float3 color = evaluate_sh_band_raw(sh0, sh1X, sh1Y, sh1Z, sh2_0, sh2_1, sh2_2, sh2_3, sh2_4, sh3_0, sh3_1, sh3_2, sh3_3, sh3_4, sh3_5, sh3_6, shBand, viewDir);
+    float3 sumAbs = 0.0;
+    [unroll] for (uint coeffIndex = 1u; coeffIndex < SH_COEFF_COUNT; coeffIndex++) sumAbs += abs(state.shCoeffs[coeffIndex]);
+    return dot(sumAbs, float3(1.0, 1.0, 1.0)) * (1.0 / float((SH_COEFF_COUNT - 1u) * SH_PARAM_STRIDE));
+}
+
+[Differentiable]
+float color_non_negative_loss(TrainableGaussianState state, no_diff uint shBand, no_diff float3 viewDir)
+{
+    float3 color = evaluate_sh_band_raw(state.shCoeffs, shBand, viewDir);
     float3 negative = max(-color, 0.0);
     return dot(negative, negative);
 }
@@ -466,23 +259,9 @@ void csAccumulateRegularizationGrads(uint3 dispatchThreadID : SV_DispatchThreadI
     if (splatId >= g_SplatCount) return;
 
     TrainableGaussianState state = TrainableGaussianState.load(splatId);
-    float3 gradSh0 = load_param_grad3(PARAM_SH0_R, splatId);
     float3 gradScale = load_param_grad3(PARAM_SCALE_X, splatId);
-    float3 gradSh1X = load_param_grad3(PARAM_SH1_X_R, splatId);
-    float3 gradSh1Y = load_param_grad3(PARAM_SH1_Y_R, splatId);
-    float3 gradSh1Z = load_param_grad3(PARAM_SH1_Z_R, splatId);
-    float3 gradSh2_0 = load_param_grad3(sh_param_id(4u, 0u), splatId);
-    float3 gradSh2_1 = load_param_grad3(sh_param_id(5u, 0u), splatId);
-    float3 gradSh2_2 = load_param_grad3(sh_param_id(6u, 0u), splatId);
-    float3 gradSh2_3 = load_param_grad3(sh_param_id(7u, 0u), splatId);
-    float3 gradSh2_4 = load_param_grad3(sh_param_id(8u, 0u), splatId);
-    float3 gradSh3_0 = load_param_grad3(sh_param_id(9u, 0u), splatId);
-    float3 gradSh3_1 = load_param_grad3(sh_param_id(10u, 0u), splatId);
-    float3 gradSh3_2 = load_param_grad3(sh_param_id(11u, 0u), splatId);
-    float3 gradSh3_3 = load_param_grad3(sh_param_id(12u, 0u), splatId);
-    float3 gradSh3_4 = load_param_grad3(sh_param_id(13u, 0u), splatId);
-    float3 gradSh3_5 = load_param_grad3(sh_param_id(14u, 0u), splatId);
-    float3 gradSh3_6 = load_param_grad3(sh_param_id(15u, 0u), splatId);
+    float3 gradSh[SH_COEFF_COUNT];
+    [unroll] for (uint coeffIndex = 0u; coeffIndex < SH_COEFF_COUNT; coeffIndex++) gradSh[coeffIndex] = load_param_grad3(sh_param_id(coeffIndex, 0u), splatId);
     float gradRawOpacity = load_param_grad(PARAM_RAW_OPACITY, splatId);
     float invSplatCount = 1.0 / max(float(g_SplatCount), 1.0);
 
@@ -523,71 +302,11 @@ void csAccumulateRegularizationGrads(uint3 dispatchThreadID : SV_DispatchThreadI
     float sh1RegWeight = max(g_SH1RegWeight, 0.0);
     if (sh1RegWeight > 0.0)
     {
-        var dpSh1X = diffPair(state.sh1X);
-        var dpSh1Y = diffPair(state.sh1Y);
-        var dpSh1Z = diffPair(state.sh1Z);
-        var dpSh2_0 = diffPair(state.sh2_0);
-        var dpSh2_1 = diffPair(state.sh2_1);
-        var dpSh2_2 = diffPair(state.sh2_2);
-        var dpSh2_3 = diffPair(state.sh2_3);
-        var dpSh2_4 = diffPair(state.sh2_4);
-        var dpSh3_0 = diffPair(state.sh3_0);
-        var dpSh3_1 = diffPair(state.sh3_1);
-        var dpSh3_2 = diffPair(state.sh3_2);
-        var dpSh3_3 = diffPair(state.sh3_3);
-        var dpSh3_4 = diffPair(state.sh3_4);
-        var dpSh3_5 = diffPair(state.sh3_5);
-        var dpSh3_6 = diffPair(state.sh3_6);
-        float sh1RegLoss = sh_rest_abs_l1_loss(
-            state.sh1X,
-            state.sh1Y,
-            state.sh1Z,
-            state.sh2_0,
-            state.sh2_1,
-            state.sh2_2,
-            state.sh2_3,
-            state.sh2_4,
-            state.sh3_0,
-            state.sh3_1,
-            state.sh3_2,
-            state.sh3_3,
-            state.sh3_4,
-            state.sh3_5,
-            state.sh3_6
-        );
-        bwd_diff(sh_rest_abs_l1_loss)(
-            dpSh1X,
-            dpSh1Y,
-            dpSh1Z,
-            dpSh2_0,
-            dpSh2_1,
-            dpSh2_2,
-            dpSh2_3,
-            dpSh2_4,
-            dpSh3_0,
-            dpSh3_1,
-            dpSh3_2,
-            dpSh3_3,
-            dpSh3_4,
-            dpSh3_5,
-            dpSh3_6,
-            sh1RegWeight * invSplatCount
-        );
-        gradSh1X += dpSh1X.getDifferential();
-        gradSh1Y += dpSh1Y.getDifferential();
-        gradSh1Z += dpSh1Z.getDifferential();
-        gradSh2_0 += dpSh2_0.getDifferential();
-        gradSh2_1 += dpSh2_1.getDifferential();
-        gradSh2_2 += dpSh2_2.getDifferential();
-        gradSh2_3 += dpSh2_3.getDifferential();
-        gradSh2_4 += dpSh2_4.getDifferential();
-        gradSh3_0 += dpSh3_0.getDifferential();
-        gradSh3_1 += dpSh3_1.getDifferential();
-        gradSh3_2 += dpSh3_2.getDifferential();
-        gradSh3_3 += dpSh3_3.getDifferential();
-        gradSh3_4 += dpSh3_4.getDifferential();
-        gradSh3_5 += dpSh3_5.getDifferential();
-        gradSh3_6 += dpSh3_6.getDifferential();
+        var dpShRest = diffPair(state);
+        float sh1RegLoss = sh_rest_abs_l1_loss(state);
+        bwd_diff(sh_rest_abs_l1_loss)(dpShRest, sh1RegWeight * invSplatCount);
+        TrainableGaussianState.Differential dShRest = dpShRest.getDifferential();
+        [unroll] for (uint coeffIndex = 1u; coeffIndex < SH_COEFF_COUNT; coeffIndex++) gradSh[coeffIndex] += dShRest.shCoeffs[coeffIndex];
         float lossAdd = sh1RegWeight * sh1RegLoss * invSplatCount;
         if (isfinite(lossAdd) && lossAdd != 0.0) InterlockedAdd(g_LossBuffer[LOSS_SLOT_TOTAL], lossAdd);
     }
@@ -595,102 +314,19 @@ void csAccumulateRegularizationGrads(uint3 dispatchThreadID : SV_DispatchThreadI
     float colorNonNegativeRegWeight = max(g_ColorNonNegativeRegWeight, 0.0);
     if (colorNonNegativeRegWeight > 0.0)
     {
-        var dpSh0 = diffPair(state.sh0);
-        var dpSh1X = diffPair(state.sh1X);
-        var dpSh1Y = diffPair(state.sh1Y);
-        var dpSh1Z = diffPair(state.sh1Z);
-        var dpSh2_0 = diffPair(state.sh2_0);
-        var dpSh2_1 = diffPair(state.sh2_1);
-        var dpSh2_2 = diffPair(state.sh2_2);
-        var dpSh2_3 = diffPair(state.sh2_3);
-        var dpSh2_4 = diffPair(state.sh2_4);
-        var dpSh3_0 = diffPair(state.sh3_0);
-        var dpSh3_1 = diffPair(state.sh3_1);
-        var dpSh3_2 = diffPair(state.sh3_2);
-        var dpSh3_3 = diffPair(state.sh3_3);
-        var dpSh3_4 = diffPair(state.sh3_4);
-        var dpSh3_5 = diffPair(state.sh3_5);
-        var dpSh3_6 = diffPair(state.sh3_6);
+        var dpColorNonNegative = diffPair(state);
         float sampleWeight = colorNonNegativeRegWeight * invSplatCount;
         float3 viewDir = color_non_negative_sample_dir(g_ColorNonNegativeRegSeed, splatId);
-        float sampleLoss = color_non_negative_loss(
-            state.sh0,
-            state.sh1X,
-            state.sh1Y,
-            state.sh1Z,
-            state.sh2_0,
-            state.sh2_1,
-            state.sh2_2,
-            state.sh2_3,
-            state.sh2_4,
-            state.sh3_0,
-            state.sh3_1,
-            state.sh3_2,
-            state.sh3_3,
-            state.sh3_4,
-            state.sh3_5,
-            state.sh3_6,
-            g_SHBand,
-            viewDir
-        );
-        bwd_diff(color_non_negative_loss)(
-            dpSh0,
-            dpSh1X,
-            dpSh1Y,
-            dpSh1Z,
-            dpSh2_0,
-            dpSh2_1,
-            dpSh2_2,
-            dpSh2_3,
-            dpSh2_4,
-            dpSh3_0,
-            dpSh3_1,
-            dpSh3_2,
-            dpSh3_3,
-            dpSh3_4,
-            dpSh3_5,
-            dpSh3_6,
-            g_SHBand,
-            viewDir,
-            sampleWeight
-        );
+        float sampleLoss = color_non_negative_loss(state, g_SHBand, viewDir);
+        bwd_diff(color_non_negative_loss)(dpColorNonNegative, g_SHBand, viewDir, sampleWeight);
         float lossAdd = sampleWeight * sampleLoss;
-        gradSh0 += dpSh0.getDifferential();
-        gradSh1X += dpSh1X.getDifferential();
-        gradSh1Y += dpSh1Y.getDifferential();
-        gradSh1Z += dpSh1Z.getDifferential();
-        gradSh2_0 += dpSh2_0.getDifferential();
-        gradSh2_1 += dpSh2_1.getDifferential();
-        gradSh2_2 += dpSh2_2.getDifferential();
-        gradSh2_3 += dpSh2_3.getDifferential();
-        gradSh2_4 += dpSh2_4.getDifferential();
-        gradSh3_0 += dpSh3_0.getDifferential();
-        gradSh3_1 += dpSh3_1.getDifferential();
-        gradSh3_2 += dpSh3_2.getDifferential();
-        gradSh3_3 += dpSh3_3.getDifferential();
-        gradSh3_4 += dpSh3_4.getDifferential();
-        gradSh3_5 += dpSh3_5.getDifferential();
-        gradSh3_6 += dpSh3_6.getDifferential();
+        TrainableGaussianState.Differential dColorNonNegative = dpColorNonNegative.getDifferential();
+        [unroll] for (uint coeffIndex = 0u; coeffIndex < SH_COEFF_COUNT; coeffIndex++) gradSh[coeffIndex] += dColorNonNegative.shCoeffs[coeffIndex];
         if (isfinite(lossAdd) && lossAdd != 0.0) InterlockedAdd(g_LossBuffer[LOSS_SLOT_TOTAL], lossAdd);
     }
 
-    store_param_grad3(PARAM_SH0_R, splatId, gradSh0);
     store_param_grad3(PARAM_SCALE_X, splatId, gradScale);
-    store_param_grad3(PARAM_SH1_X_R, splatId, gradSh1X);
-    store_param_grad3(PARAM_SH1_Y_R, splatId, gradSh1Y);
-    store_param_grad3(PARAM_SH1_Z_R, splatId, gradSh1Z);
-    store_param_grad3(sh_param_id(4u, 0u), splatId, gradSh2_0);
-    store_param_grad3(sh_param_id(5u, 0u), splatId, gradSh2_1);
-    store_param_grad3(sh_param_id(6u, 0u), splatId, gradSh2_2);
-    store_param_grad3(sh_param_id(7u, 0u), splatId, gradSh2_3);
-    store_param_grad3(sh_param_id(8u, 0u), splatId, gradSh2_4);
-    store_param_grad3(sh_param_id(9u, 0u), splatId, gradSh3_0);
-    store_param_grad3(sh_param_id(10u, 0u), splatId, gradSh3_1);
-    store_param_grad3(sh_param_id(11u, 0u), splatId, gradSh3_2);
-    store_param_grad3(sh_param_id(12u, 0u), splatId, gradSh3_3);
-    store_param_grad3(sh_param_id(13u, 0u), splatId, gradSh3_4);
-    store_param_grad3(sh_param_id(14u, 0u), splatId, gradSh3_5);
-    store_param_grad3(sh_param_id(15u, 0u), splatId, gradSh3_6);
+    [unroll] for (uint coeffIndex = 0u; coeffIndex < SH_COEFF_COUNT; coeffIndex++) store_param_grad3(sh_param_id(coeffIndex, 0u), splatId, gradSh[coeffIndex]);
     store_param_grad(PARAM_RAW_OPACITY, splatId, gradRawOpacity);
 }
 
@@ -707,45 +343,12 @@ void csProjectGaussianParams(uint3 dispatchThreadID : SV_DispatchThreadID)
     state.logScale = clamp_scale_anisotropy(state.logScale);
     state.logScale = clamp_screen_scale_upper_bound(state.position, state.logScale);
     state.rotation = normalizedRotation;
-    state.sh0 = clamp_sh0_base_color(sanitize_float3(state.sh0, g_Stability.hugeValue));
-    state.sh1X = clamp_sh1_coeffs(sanitize_float3(state.sh1X, g_Stability.hugeValue));
-    state.sh1Y = clamp_sh1_coeffs(sanitize_float3(state.sh1Y, g_Stability.hugeValue));
-    state.sh1Z = clamp_sh1_coeffs(sanitize_float3(state.sh1Z, g_Stability.hugeValue));
-    state.sh2_0 = clamp_sh_rest_coeffs(sanitize_float3(state.sh2_0, g_Stability.hugeValue));
-    state.sh2_1 = clamp_sh_rest_coeffs(sanitize_float3(state.sh2_1, g_Stability.hugeValue));
-    state.sh2_2 = clamp_sh_rest_coeffs(sanitize_float3(state.sh2_2, g_Stability.hugeValue));
-    state.sh2_3 = clamp_sh_rest_coeffs(sanitize_float3(state.sh2_3, g_Stability.hugeValue));
-    state.sh2_4 = clamp_sh_rest_coeffs(sanitize_float3(state.sh2_4, g_Stability.hugeValue));
-    state.sh3_0 = clamp_sh_rest_coeffs(sanitize_float3(state.sh3_0, g_Stability.hugeValue));
-    state.sh3_1 = clamp_sh_rest_coeffs(sanitize_float3(state.sh3_1, g_Stability.hugeValue));
-    state.sh3_2 = clamp_sh_rest_coeffs(sanitize_float3(state.sh3_2, g_Stability.hugeValue));
-    state.sh3_3 = clamp_sh_rest_coeffs(sanitize_float3(state.sh3_3, g_Stability.hugeValue));
-    state.sh3_4 = clamp_sh_rest_coeffs(sanitize_float3(state.sh3_4, g_Stability.hugeValue));
-    state.sh3_5 = clamp_sh_rest_coeffs(sanitize_float3(state.sh3_5, g_Stability.hugeValue));
-    state.sh3_6 = clamp_sh_rest_coeffs(sanitize_float3(state.sh3_6, g_Stability.hugeValue));
-    scale_active_sh_coeffs(
-        state,
-        sh_rescale_to_sampled_color_range(
-            state.sh0,
-            state.sh1X,
-            state.sh1Y,
-            state.sh1Z,
-            state.sh2_0,
-            state.sh2_1,
-            state.sh2_2,
-            state.sh2_3,
-            state.sh2_4,
-            state.sh3_0,
-            state.sh3_1,
-            state.sh3_2,
-            state.sh3_3,
-            state.sh3_4,
-            state.sh3_5,
-            state.sh3_6,
-            g_SHBand,
-            splatId
-        ),
-        g_SHBand
-    );
+    state.shCoeffs[0u] = clamp_sh0_base_color(sanitize_float3(state.shCoeffs[0u], g_Stability.hugeValue));
+    [unroll] for (uint coeffIndex = 1u; coeffIndex < SH_COEFF_COUNT; coeffIndex++)
+    {
+        float3 coeff = sanitize_float3(state.shCoeffs[coeffIndex], g_Stability.hugeValue);
+        state.shCoeffs[coeffIndex] = coeffIndex < 4u ? clamp_sh1_coeffs(coeff) : clamp_sh_rest_coeffs(coeff);
+    }
+    scale_active_sh_coeffs(state, sh_rescale_to_sampled_color_range(state, g_SHBand, splatId), g_SHBand);
     state.store(splatId);
 }

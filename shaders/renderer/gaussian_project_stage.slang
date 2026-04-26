@@ -14,39 +14,6 @@ uniform float3 g_SortCameraPosition;
 uniform float g_SortCameraDitherSigma;
 uniform uint g_SortCameraDitherSeed;
 
-uint float_to_ordered_uint(float value)
-{
-    uint bits = asuint(value);
-    return (bits & 0x80000000u) != 0u ? ~bits : (bits | 0x80000000u);
-}
-
-void store_raster_cache(uint splatId, CachedDirectionalGaussian cached, float4 colorAlpha)
-{
-    RasterGaussian gaussian;
-    gaussian.centerDir = cached.centerDir;
-    gaussian.sigmaOrtho = cached.sigmaOrtho;
-    gaussian.depthDistance = cached.centerDistance;
-    gaussian.colorAlpha = colorAlpha;
-    g_RasterCache[splatId] = gaussian;
-}
-
-void append_visible_splat(uint distanceKey, uint splatId)
-{
-    uint writeIndex = 0u;
-    InterlockedAdd(g_VisibleCounter[0], 1u, writeIndex);
-    if (writeIndex >= g_Prepass.splatCount) return;
-    g_VisibleKeys[writeIndex] = distanceKey;
-    g_VisibleValues[writeIndex] = splatId;
-}
-
-float3 sort_camera_position_for_splat(uint splatId)
-{
-    if (g_SortCameraDitherSigma <= 0.0) return g_SortCameraPosition;
-    uint rngState = hash_u32(g_SortCameraDitherSeed ^ ((splatId + 1u) * SORT_CAMERA_DITHER_SPLAT_HASH));
-    rngState = hash_u32(rngState ^ SORT_CAMERA_DITHER_SEED_HASH);
-    return g_SortCameraPosition + rng_normal3_box_muller(rngState) * g_SortCameraDitherSigma;
-}
-
 bool load_projected_ellipse(uint splatId, out Ellipse ellipse)
 {
     ellipse.init(0.0, 0.0, 0.0);
@@ -89,15 +56,16 @@ void csProjectVisibleSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
     g_SplatVisibleAreaPx[splatId] = 0.0;
 
     Gaussian3D gaussian = load_gaussian3d(splatId);
-    float fusedOpacity = build_raster_fused_opacity(g_Camera, g_Prepass.radiusScale, gaussian.position, gaussian.logScale, gaussian.rawOpacity);
+    PinholeCamera camera = PinholeCamera.from_params(g_Camera);
+    float3 cameraPosition = camera.position_world();
+    RasterGaussian rasterGaussian = build_raster_gaussian(g_Camera, g_Prepass.radiusScale, g_MaxAnisotropy, cameraPosition, g_Raster.shBand, gaussian);
+    float fusedOpacity = rasterGaussian.colorAlpha.w;
     if (fusedOpacity < g_Raster.alphaCutoff) return;
 
     // Project only splats whose cutoff isosurface can contribute within the camera frustum.
-    PinholeCamera camera = PinholeCamera.from_params(g_Camera);
     float supportSigmaRadius = sqrt(max(-2.0 * log(g_Raster.alphaCutoff / fusedOpacity), 0.0));
     Ellipsoid projectionEllipsoid = build_ellipsoid_with_support(g_Camera, g_Prepass.radiusScale, supportSigmaRadius, g_MaxAnisotropy, gaussian);
-    CachedDirectionalGaussian cached = build_cached_directional_gaussian(g_Camera, g_Prepass.radiusScale, g_MaxAnisotropy, gaussian.position, gaussian.logScale, gaussian.rotation);
-    float3 cameraOffset = projectionEllipsoid.centerWorld - camera.position_world();
+    float3 cameraOffset = projectionEllipsoid.centerWorld - cameraPosition;
     float3 camPos = camera.world_to_camera(cameraOffset);
     float camDistance = length(cameraOffset);
     if (camDistance < g_Camera.minCameraDistance) return;
@@ -107,39 +75,30 @@ void csProjectVisibleSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (!supportIntersectsFront) return;
 
     Ellipse projectedEllipse;
-    if (!compute_directional_outline_ellipse(cached.centerDir, cached.sigmaOrtho, cached.centerDistance, fusedOpacity, g_Raster.alphaCutoff, camera, supportIntersectsFront, projectedEllipse)) return;
+    if (!compute_directional_outline_ellipse(rasterGaussian.centerDir, rasterGaussian.sigmaOrtho, rasterGaussian.depthDistance, fusedOpacity, g_Raster.alphaCutoff, camera, supportIntersectsFront, projectedEllipse)) return;
     projectedEllipse.radiusPx = max(projectedEllipse.radiusPx * ELLIPSE_SAFETY_SCALE + ELLIPSE_RADIUS_PAD_PX, MIN_SCREEN_RADIUS_PX);
     projectedEllipse.bboxExtent = float2(projectedEllipse.radiusPx, projectedEllipse.radiusPx);
     if (!projectedEllipse.isVisible(camDistance, depthValue, camera.params.viewport, g_Camera.nearDepth, g_Camera.farDepth)) return;
-    float3 evaluatedColor = evaluate_gaussian_color(
-        gaussian.sh0,
-        gaussian.sh1X,
-        gaussian.sh1Y,
-        gaussian.sh1Z,
-        gaussian.sh2_0,
-        gaussian.sh2_1,
-        gaussian.sh2_2,
-        gaussian.sh2_3,
-        gaussian.sh2_4,
-        gaussian.sh3_0,
-        gaussian.sh3_1,
-        gaussian.sh3_2,
-        gaussian.sh3_3,
-        gaussian.sh3_4,
-        gaussian.sh3_5,
-        gaussian.sh3_6,
-        camera.position_world(),
-        projectionEllipsoid.centerWorld,
-        g_Raster.shBand
-    );
     g_ScreenCenterRadiusDepth[splatId] = float4(projectedEllipse.centerPx, projectedEllipse.radiusPx, camDistance);
-    g_ScreenColorAlpha[splatId] = float4(evaluatedColor, gaussian.rawOpacity);
+    g_ScreenColorAlpha[splatId] = float4(rasterGaussian.colorAlpha.xyz, gaussian.rawOpacity);
     g_ScreenEllipseConic[splatId] = float4(projectedEllipse.conic, projectionEllipsoid.opacityScale);
     g_SplatVisible[splatId] = 1u;
     g_SplatVisibleAreaPx[splatId] = projectedEllipse.clippedAreaPx(camera.params.viewport);
-    store_raster_cache(splatId, cached, float4(evaluatedColor, fusedOpacity));
-    float sortDistance = length(projectionEllipsoid.centerWorld - sort_camera_position_for_splat(splatId));
-    append_visible_splat(float_to_ordered_uint(sortDistance), splatId);
+    g_RasterCache[splatId] = rasterGaussian;
+    float3 sortCameraPosition = g_SortCameraPosition;
+    if (g_SortCameraDitherSigma > 0.0)
+    {
+        uint rngState = hash_u32(g_SortCameraDitherSeed ^ ((splatId + 1u) * SORT_CAMERA_DITHER_SPLAT_HASH));
+        rngState = hash_u32(rngState ^ SORT_CAMERA_DITHER_SEED_HASH);
+        sortCameraPosition += rng_normal3_box_muller(rngState) * g_SortCameraDitherSigma;
+    }
+    uint orderedDistance = asuint(length(projectionEllipsoid.centerWorld - sortCameraPosition));
+    orderedDistance = (orderedDistance & 0x80000000u) != 0u ? ~orderedDistance : (orderedDistance | 0x80000000u);
+    uint writeIndex = 0u;
+    InterlockedAdd(g_VisibleCounter[0], 1u, writeIndex);
+    if (writeIndex >= g_Prepass.splatCount) return;
+    g_VisibleKeys[writeIndex] = orderedDistance;
+    g_VisibleValues[writeIndex] = splatId;
 }
 
 [shader("compute")]
@@ -189,8 +148,7 @@ void csEmitScanlines(uint3 dispatchThreadID : SV_DispatchThreadID)
         item.splatId = splatId;
         item.lineCoord = lineCoord;
         item.clear(loopCfg.scanAlongX);
-        bool hasSpan = compute_scanline_tile_span_universal(preparedEllipse, loopCfg, tileSize, lineCoord, span);
-        if (hasSpan && span.lineCount > 0u) item.setSpan(span.lineStartMinor, span.lineCount, loopCfg.scanAlongX);
+        if (compute_scanline_tile_span_universal(preparedEllipse, loopCfg, tileSize, lineCoord, span) && span.lineCount > 0u) item.setSpan(span.lineStartMinor, span.lineCount, loopCfg.scanAlongX);
         g_ScanlineWorkItems[scanlineBase + i] = item;
     }
 }
@@ -228,9 +186,8 @@ void csEmitTileEntries(uint3 dispatchThreadID : SV_DispatchThreadID)
         uint tileId = scanAlongX
             ? (lineCoord * g_Prepass.tileWidth + minorCoord)
             : (minorCoord * g_Prepass.tileWidth + lineCoord);
-        uint writeIndex = baseIndex + i;
-        g_Keys[writeIndex] = tileId;
-        g_Values[writeIndex] = item.splatId;
+        g_Keys[baseIndex + i] = tileId;
+        g_Values[baseIndex + i] = item.splatId;
     }
 }
 

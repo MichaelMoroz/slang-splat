@@ -46,7 +46,35 @@ float load_splat_param(RWStructuredBuffer<float> params, uint splatCount, uint p
     return params[splat_param_index(splatCount, paramId, splatId)];
 }
 
+vector<float, N> load_splat_param_vector<let N : int>(StructuredBuffer<float> params, uint splatCount, uint firstParamId, uint splatId)
+{
+    vector<float, N> value = 0.0;
+    [unroll] for (int i = 0; i < N; i++)
+    {
+        value[i] = load_splat_param(params, splatCount, firstParamId + uint(i), splatId);
+    }
+    return value;
+}
+
+vector<float, N> load_splat_param_vector<let N : int>(RWStructuredBuffer<float> params, uint splatCount, uint firstParamId, uint splatId)
+{
+    vector<float, N> value = 0.0;
+    [unroll] for (int i = 0; i < N; i++)
+    {
+        value[i] = load_splat_param(params, splatCount, firstParamId + uint(i), splatId);
+    }
+    return value;
+}
+
 void store_splat_param(RWStructuredBuffer<float> params, uint splatCount, uint paramId, uint splatId, float value)
 {
     params[splat_param_index(splatCount, paramId, splatId)] = value;
+}
+
+void store_splat_param_vector<let N : int>(RWStructuredBuffer<float> params, uint splatCount, uint firstParamId, uint splatId, vector<float, N> value)
+{
+    [unroll] for (int i = 0; i < N; i++)
+    {
+        store_splat_param(params, splatCount, firstParamId + uint(i), splatId, value[i]);
+    }
 }

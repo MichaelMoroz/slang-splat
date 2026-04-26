@@ -87,11 +87,7 @@ void csHistogramScaleLog10(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint splatId = dispatchThreadID.x;
     if (splatId >= g_SplatCount || g_BinCount == 0u) return;
 
-    float3 logScale = float3(
-        load_splat_param(g_SplatParams, g_SplatCount, PARAM_SCALE_X, splatId),
-        load_splat_param(g_SplatParams, g_SplatCount, PARAM_SCALE_Y, splatId),
-        load_splat_param(g_SplatParams, g_SplatCount, PARAM_SCALE_Z, splatId)
-    );
+    float3 logScale = load_splat_param_vector<3>(g_SplatParams, g_SplatCount, PARAM_SCALE_X, splatId);
     if (!all(isfinite(logScale))) return;
 
     float3 scale = exp(logScale);
@@ -106,11 +102,7 @@ void csHistogramAnisotropyLog10(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint splatId = dispatchThreadID.x;
     if (splatId >= g_SplatCount || g_BinCount == 0u) return;
 
-    float3 logScale = float3(
-        load_splat_param(g_SplatParams, g_SplatCount, PARAM_SCALE_X, splatId),
-        load_splat_param(g_SplatParams, g_SplatCount, PARAM_SCALE_Y, splatId),
-        load_splat_param(g_SplatParams, g_SplatCount, PARAM_SCALE_Z, splatId)
-    );
+    float3 logScale = load_splat_param_vector<3>(g_SplatParams, g_SplatCount, PARAM_SCALE_X, splatId);
     if (!all(isfinite(logScale))) return;
 
     float3 scale = exp(logScale);

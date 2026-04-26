@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
@@ -39,6 +40,25 @@ TRAIN_BACKGROUND_MODE_RANDOM = 1
 SPLAT_CONTRIBUTION_FIXED_SCALE = 256.0
 _REFINEMENT_HASH_INIT = 0x9E3779B9
 _REFINEMENT_HASH_MIX = 0x85EBCA6B
+
+
+class _RefinementBufferView(Mapping[str, spy.Buffer]):
+    def __init__(self, trainer: GaussianTrainer) -> None:
+        self._trainer = trainer
+
+    def __getitem__(self, key: str) -> spy.Buffer:
+        if key == "gradient_stats":
+            self._trainer._ensure_gradient_stats_buffer()
+        return self._trainer._refinement_buffers[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._trainer._refinement_buffers)
+
+    def __len__(self) -> int:
+        return len(self._trainer._refinement_buffers)
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._trainer._refinement_buffers
 
 
 def _clamp_float_min(owner: object, minimum: float, *names: str) -> None:
@@ -517,6 +537,7 @@ class GaussianTrainer:
     ) -> None:
         resolved_step = self.state.step if step is None else int(step)
         self.renderer.clear_raster_grads_current_scene(encoder)
+        self._ensure_gradient_stats_buffer()
         self.renderer.rasterize_backward_current_scene(
             encoder=encoder,
             camera=frame_camera,
@@ -601,6 +622,7 @@ class GaussianTrainer:
         refinement_sample_count: int = 0,
         dst_adam_moments: spy.Buffer | None = None,
     ) -> dict[str, object]:
+        self._ensure_gradient_stats_buffer()
         refinement_threshold = resolve_refinement_min_contribution(self.training, max(self.state.step - 1, 0), len(self.frames))
         return {
             "g_SrcSplatParams": self.renderer.scene_buffers["splat_params"],
@@ -767,6 +789,7 @@ class GaussianTrainer:
         )
         self._buffers: dict[str, spy.Buffer] = {}
         self._refinement_buffers: dict[str, spy.Buffer] = {}
+        self._refinement_buffer_view = _RefinementBufferView(self)
         self._splat_capacity = 0
         self._batch_step_capacity = 0
         self._refinement_splat_capacity = 0
@@ -853,6 +876,18 @@ class GaussianTrainer:
         defer_resource_release(self._refinement_buffers.get(name))
         self._refinement_buffers[name] = buffer
 
+    def _ensure_gradient_stats_buffer(self) -> None:
+        if "gradient_stats" in self._refinement_buffers:
+            return
+        self._refinement_splat_capacity = max(self._refinement_splat_capacity, max(int(self._scene_count), 1))
+        self._refinement_buffers["gradient_stats"] = alloc_buffer(
+            self.device,
+            name="trainer.refinement.gradient_stats",
+            size=self._refinement_splat_capacity * self._GRAD_STATS_STRIDE * self._U32_BYTES,
+            usage=RW_BUFFER_USAGE,
+        )
+        self._refinement_buffers["gradient_stats"].copy_from_numpy(np.zeros((self._refinement_splat_capacity, self._GRAD_STATS_STRIDE), dtype=np.float32))
+
     def _ensure_refinement_buffers(self, splat_count: int, append_count: int | None = None) -> None:
         required_splats = max(int(splat_count), 1)
         required_append = self._expected_refinement_append_count(required_splats) if append_count is None else max(int(append_count), 1)
@@ -863,7 +898,7 @@ class GaussianTrainer:
         grow_output = required_output > self._refinement_output_capacity
         grow_cameras = required_camera_count > self._refinement_camera_capacity
         age_buffers_ready = all(name in self._refinement_buffers for name in ("splat_age", "dst_splat_age", "append_splat_age")) and required_splats <= self._refinement_splat_age_capacity
-        if self._refinement_buffers and age_buffers_ready and "gradient_stats" in self._refinement_buffers and not grow_splats and not grow_append and not grow_output and not grow_cameras:
+        if self._refinement_buffers and age_buffers_ready and not grow_splats and not grow_append and not grow_output and not grow_cameras:
             return
         packed_param_bytes = self.renderer.TRAINABLE_PARAM_COUNT * self._U32_BYTES
         reset_gradient_stats = False
@@ -875,16 +910,14 @@ class GaussianTrainer:
             self._refinement_splat_capacity = grow_capacity(required_splats, self._refinement_splat_capacity)
             self._set_refinement_buffer("clone_counts", alloc_buffer(self.device, name="trainer.refinement.clone_counts", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
             self._set_refinement_buffer("splat_contribution", alloc_buffer(self.device, name="trainer.refinement.splat_contribution", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
-            self._set_refinement_buffer("gradient_stats", alloc_buffer(self.device, name="trainer.refinement.gradient_stats", size=self._refinement_splat_capacity * self._GRAD_STATS_STRIDE * self._U32_BYTES, usage=RW_BUFFER_USAGE))
-            reset_gradient_stats = True
+            if "gradient_stats" in self._refinement_buffers:
+                self._set_refinement_buffer("gradient_stats", alloc_buffer(self.device, name="trainer.refinement.gradient_stats", size=self._refinement_splat_capacity * self._GRAD_STATS_STRIDE * self._U32_BYTES, usage=RW_BUFFER_USAGE))
+                reset_gradient_stats = True
             self._set_refinement_buffer("refinement_eligible_mask", alloc_buffer(self.device, name="trainer.refinement.eligible_mask", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
             self._set_refinement_buffer("refinement_weights", alloc_buffer(self.device, name="trainer.refinement.weights", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
             self._set_refinement_buffer("refinement_weight_prefix", alloc_buffer(self.device, name="trainer.refinement.weight_prefix", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
         elif "splat_contribution" not in self._refinement_buffers:
             self._refinement_buffers["splat_contribution"] = alloc_buffer(self.device, name="trainer.refinement.splat_contribution", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE)
-        if "gradient_stats" not in self._refinement_buffers:
-            self._refinement_buffers["gradient_stats"] = alloc_buffer(self.device, name="trainer.refinement.gradient_stats", size=self._refinement_splat_capacity * self._GRAD_STATS_STRIDE * self._U32_BYTES, usage=RW_BUFFER_USAGE)
-            reset_gradient_stats = True
         if "refinement_eligible_mask" not in self._refinement_buffers:
             self._refinement_buffers["refinement_eligible_mask"] = alloc_buffer(self.device, name="trainer.refinement.eligible_mask", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE)
         if "refinement_weights" not in self._refinement_buffers:
@@ -1004,6 +1037,13 @@ class GaussianTrainer:
         self._refinement_camera_signature = signature
 
     def _clear_clone_counts(self) -> None:
+        if "gradient_stats" not in self._refinement_buffers:
+            self._refinement_buffers["total_clone_counter"].copy_from_numpy(np.zeros((1,), dtype=np.uint32))
+            self._refinement_buffers["append_counter"].copy_from_numpy(np.zeros((1,), dtype=np.uint32))
+            self._refinement_buffers["clone_counts"].copy_from_numpy(np.zeros((max(self._refinement_splat_capacity, 1),), dtype=np.uint32))
+            self._refinement_buffers["splat_contribution"].copy_from_numpy(np.zeros((max(self._refinement_splat_capacity, 1),), dtype=np.uint32))
+            self._observed_contribution_pixel_count = 0
+            return
         enc = self.device.create_command_encoder()
         self._dispatch("clear_clone_counts", enc, spy.uint3(max(self._scene_count, 1), 1, 1), self._refinement_vars())
         self.device.submit_command_buffer(enc.finish())
@@ -1565,5 +1605,5 @@ class GaussianTrainer:
         return float(self.state.last_loss)
 
     @property
-    def refinement_buffers(self) -> dict[str, spy.Buffer]:
-        return self._refinement_buffers
+    def refinement_buffers(self) -> Mapping[str, spy.Buffer]:
+        return self._refinement_buffer_view

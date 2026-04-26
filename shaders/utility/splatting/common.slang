@@ -2,6 +2,7 @@ import "utility/math/camera.slang";
 import "utility/math/constants.slang";
 import "utility/math/quaternion.slang";
 import "utility/random/random.slang";
+import "utility/splatting/params.slang";
 
 static const uint ELLIPSE_POINT_COUNT = 5u;
 static const float GAUSSIAN_SUPPORT_SIGMA_RADIUS = 3.0;
@@ -27,7 +28,7 @@ static const uint DEBUG_MODE_REFINEMENT_DISTRIBUTION = 18u;
 static const uint DEBUG_GRAD_STATS_STRIDE = 2u;
 static const float SPLAT_CONTRIBUTION_FIXED_SCALE = 256.0;
 static const float DEBUG_CONTRIBUTION_AMOUNT_FLOOR = 1e-6;
-static const uint DEBUG_SH_COEFF_COUNT = 16u;
+static const uint DEBUG_SH_COEFF_COUNT = SH_COEFF_COUNT;
 static const float SH_C0 = 0.28209479177387814;
 static const float SH_C1 = 0.4886025119029199;
 static const float SH_C2_0 = 1.0925484305920792;
@@ -94,28 +95,8 @@ float3 evaluate_sh0_color_raw(float3 sh0)
 }
 
 [Differentiable]
-float3 evaluate_sh_band_raw(
-    float3 sh0,
-    float3 sh1X,
-    float3 sh1Y,
-    float3 sh1Z,
-    float3 sh2_0,
-    float3 sh2_1,
-    float3 sh2_2,
-    float3 sh2_3,
-    float3 sh2_4,
-    float3 sh3_0,
-    float3 sh3_1,
-    float3 sh3_2,
-    float3 sh3_3,
-    float3 sh3_4,
-    float3 sh3_5,
-    float3 sh3_6,
-    no_diff uint shBand,
-    float3 viewDir
-)
+float3 evaluate_sh_band_raw(float3 shCoeffs[SH_COEFF_COUNT], no_diff uint shBand, float3 viewDir)
 {
-    if (shBand == 0u) return evaluate_sh0_color_raw(sh0);
     float3 dir = normalize_vector_safe(viewDir);
     float x = dir.x;
     float y = dir.y;
@@ -126,81 +107,38 @@ float3 evaluate_sh_band_raw(
     float xy = x * y;
     float yz = y * z;
     float xz = x * z;
-    float3 color = 0.5 + SH_C0 * sh0;
-    if (shBand >= 1u)
-    {
-        color += -SH_C1 * y * sh1X
-            + SH_C1 * z * sh1Y
-            - SH_C1 * x * sh1Z;
-    }
-    if (shBand >= 2u)
-    {
-        color += SH_C2_0 * xy * sh2_0
-            + SH_C2_1 * yz * sh2_1
-            + SH_C2_2 * (2.0 * zz - xx - yy) * sh2_2
-            + SH_C2_3 * xz * sh2_3
-            + SH_C2_4 * (xx - yy) * sh2_4;
-    }
-    if (shBand >= 3u)
-    {
-        color += SH_C3_0 * y * (3.0 * xx - yy) * sh3_0
-            + SH_C3_1 * xy * z * sh3_1
-            + SH_C3_2 * y * (4.0 * zz - xx - yy) * sh3_2
-            + SH_C3_3 * z * (2.0 * zz - 3.0 * xx - 3.0 * yy) * sh3_3
-            + SH_C3_4 * x * (4.0 * zz - xx - yy) * sh3_4
-            + SH_C3_5 * z * (xx - yy) * sh3_5
-            + SH_C3_6 * x * (xx - 3.0 * yy) * sh3_6;
-    }
+    float basis[SH_COEFF_COUNT];
+    basis[0u] = SH_C0;
+    basis[1u] = -SH_C1 * y;
+    basis[2u] = SH_C1 * z;
+    basis[3u] = -SH_C1 * x;
+    basis[4u] = SH_C2_0 * xy;
+    basis[5u] = SH_C2_1 * yz;
+    basis[6u] = SH_C2_2 * (2.0 * zz - xx - yy);
+    basis[7u] = SH_C2_3 * xz;
+    basis[8u] = SH_C2_4 * (xx - yy);
+    basis[9u] = SH_C3_0 * y * (3.0 * xx - yy);
+    basis[10u] = SH_C3_1 * xy * z;
+    basis[11u] = SH_C3_2 * y * (4.0 * zz - xx - yy);
+    basis[12u] = SH_C3_3 * z * (2.0 * zz - 3.0 * xx - 3.0 * yy);
+    basis[13u] = SH_C3_4 * x * (4.0 * zz - xx - yy);
+    basis[14u] = SH_C3_5 * z * (xx - yy);
+    basis[15u] = SH_C3_6 * x * (xx - 3.0 * yy);
+    uint activeCoeffCount = shBand == 0u ? 1u : shBand == 1u ? 4u : shBand == 2u ? 9u : SH_COEFF_COUNT;
+    float3 color = float3(0.5, 0.5, 0.5);
+    [unroll] for (uint coeffIndex = 0u; coeffIndex < SH_COEFF_COUNT; coeffIndex++) if (coeffIndex < activeCoeffCount) color += basis[coeffIndex] * shCoeffs[coeffIndex];
     return color;
 }
 
-float3 evaluate_sh3_color(
-    float3 sh0,
-    float3 sh1X,
-    float3 sh1Y,
-    float3 sh1Z,
-    float3 sh2_0,
-    float3 sh2_1,
-    float3 sh2_2,
-    float3 sh2_3,
-    float3 sh2_4,
-    float3 sh3_0,
-    float3 sh3_1,
-    float3 sh3_2,
-    float3 sh3_3,
-    float3 sh3_4,
-    float3 sh3_5,
-    float3 sh3_6,
-    float3 viewDir
-)
+float3 evaluate_sh3_color(float3 shCoeffs[SH_COEFF_COUNT], float3 viewDir)
 {
-    return evaluate_sh_band_raw(sh0, sh1X, sh1Y, sh1Z, sh2_0, sh2_1, sh2_2, sh2_3, sh2_4, sh3_0, sh3_1, sh3_2, sh3_3, sh3_4, sh3_5, sh3_6, 3u, viewDir);
+    return evaluate_sh_band_raw(shCoeffs, 3u, viewDir);
 }
 
 [Differentiable]
-float3 evaluate_gaussian_color(
-    float3 sh0,
-    float3 sh1X,
-    float3 sh1Y,
-    float3 sh1Z,
-    float3 sh2_0,
-    float3 sh2_1,
-    float3 sh2_2,
-    float3 sh2_3,
-    float3 sh2_4,
-    float3 sh3_0,
-    float3 sh3_1,
-    float3 sh3_2,
-    float3 sh3_3,
-    float3 sh3_4,
-    float3 sh3_5,
-    float3 sh3_6,
-    no_diff float3 cameraPosition,
-    float3 position,
-    no_diff uint shBand
-)
+float3 evaluate_gaussian_color(float3 position, float3 shCoeffs[SH_COEFF_COUNT], no_diff float3 cameraPosition, no_diff uint shBand)
 {
-    return evaluate_sh_band_raw(sh0, sh1X, sh1Y, sh1Z, sh2_0, sh2_1, sh2_2, sh2_3, sh2_4, sh3_0, sh3_1, sh3_2, sh3_3, sh3_4, sh3_5, sh3_6, shBand, position - cameraPosition);
+    return evaluate_sh_band_raw(shCoeffs, shBand, position - cameraPosition);
 }
 
 struct ScanlineWorkItem
@@ -286,49 +224,12 @@ struct RasterParams
 
 float3 gaussian_sh_coeff(Gaussian3D gaussian, uint coeffIndex)
 {
-    switch (coeffIndex)
-    {
-    case 0u: return gaussian.sh0;
-    case 1u: return gaussian.sh1X;
-    case 2u: return gaussian.sh1Y;
-    case 3u: return gaussian.sh1Z;
-    case 4u: return gaussian.sh2_0;
-    case 5u: return gaussian.sh2_1;
-    case 6u: return gaussian.sh2_2;
-    case 7u: return gaussian.sh2_3;
-    case 8u: return gaussian.sh2_4;
-    case 9u: return gaussian.sh3_0;
-    case 10u: return gaussian.sh3_1;
-    case 11u: return gaussian.sh3_2;
-    case 12u: return gaussian.sh3_3;
-    case 13u: return gaussian.sh3_4;
-    case 14u: return gaussian.sh3_5;
-    default: return gaussian.sh3_6;
-    }
+    return gaussian.shCoeffs[min(coeffIndex, SH_COEFF_COUNT - 1u)];
 }
 
 float3 gaussian_sh_view_dependent_component(Gaussian3D gaussian, float3 cameraPosition)
 {
-    return evaluate_sh_band_raw(
-        gaussian.sh0,
-        gaussian.sh1X,
-        gaussian.sh1Y,
-        gaussian.sh1Z,
-        gaussian.sh2_0,
-        gaussian.sh2_1,
-        gaussian.sh2_2,
-        gaussian.sh2_3,
-        gaussian.sh2_4,
-        gaussian.sh3_0,
-        gaussian.sh3_1,
-        gaussian.sh3_2,
-        gaussian.sh3_3,
-        gaussian.sh3_4,
-        gaussian.sh3_5,
-        gaussian.sh3_6,
-        3u,
-        gaussian.position - cameraPosition
-    ) - evaluate_sh0_color_raw(gaussian.sh0);
+    return evaluate_sh_band_raw(gaussian.shCoeffs, 3u, gaussian.position - cameraPosition) - evaluate_sh0_color_raw(gaussian.shCoeffs[0u]);
 }
 
 struct RasterGaussian : IDifferentiable
@@ -351,22 +252,7 @@ struct Gaussian3D : IDifferentiable
     float3 position;
     float3 logScale;
     float4 rotation;
-    float3 sh0;
-    float3 sh1X;
-    float3 sh1Y;
-    float3 sh1Z;
-    float3 sh2_0;
-    float3 sh2_1;
-    float3 sh2_2;
-    float3 sh2_3;
-    float3 sh2_4;
-    float3 sh3_0;
-    float3 sh3_1;
-    float3 sh3_2;
-    float3 sh3_3;
-    float3 sh3_4;
-    float3 sh3_5;
-    float3 sh3_6;
+    float3 shCoeffs[SH_COEFF_COUNT];
     float rawOpacity;
 };
 
