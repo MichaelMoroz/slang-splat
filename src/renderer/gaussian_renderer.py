@@ -213,8 +213,8 @@ class GaussianRenderer:
     )
     CACHED_RASTER_GRAD_COMPONENT_LABELS = (
         "roCamera.x", "roCamera.y", "roCamera.z",
-        "precision.xx", "precision.yy", "precision.zz",
-        "precision.xy", "precision.xz", "precision.yz",
+        "sigma.xx", "sigma.yy", "sigma.zz",
+        "sigma.xy", "sigma.xz", "sigma.yz",
         "color.r", "color.g", "color.b", "opacity",
     )
     _SCENE_SHADER_VARS = {"splat_params": "g_SplatParams"}
@@ -1788,8 +1788,8 @@ class GaussianRenderer:
         if count <= 0:
             return decode_scales
         cache = self.read_raster_cache(count) if raster_cache is None else np.asarray(raster_cache, dtype=np.float64).reshape(count, self._RASTER_CACHE_PARAM_COUNT)
-        precision_diag = np.maximum(np.asarray(cache[:, 3:6], dtype=np.float64), 1e-12)
-        characteristic_inv_scale = np.maximum(np.power(precision_diag[:, 0] * precision_diag[:, 1] * precision_diag[:, 2], 1.0 / 6.0), float(self._RASTER_GRAD_FIXED_CHARACTERISTIC_INV_SCALE_FLOOR))
+        sigma_diag = np.maximum(np.asarray(cache[:, 3:6], dtype=np.float64), 1e-12)
+        characteristic_inv_scale = np.maximum(np.power(sigma_diag[:, 0] * sigma_diag[:, 1] * sigma_diag[:, 2], 1.0 / 6.0), float(self._RASTER_GRAD_FIXED_CHARACTERISTIC_INV_SCALE_FLOOR))
         decode_scales[:, :3] *= characteristic_inv_scale[:, None]
         decode_scales[:, 3:9] /= (characteristic_inv_scale[:, None] * characteristic_inv_scale[:, None])
         return decode_scales

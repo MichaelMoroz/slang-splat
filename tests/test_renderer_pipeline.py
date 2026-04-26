@@ -34,23 +34,26 @@ def _quat_rotate(v: np.ndarray, q_wxyz: np.ndarray) -> np.ndarray:
     return np.asarray(vec + 2.0 * np.cross(np.cross(vec, qv) + q[0] * vec, qv), dtype=np.float32)
 
 
-def _expected_raster_precision(camera: Camera, support_scale: np.ndarray, quat_wxyz: np.ndarray) -> np.ndarray:
+def _expected_raster_sigma(camera: Camera, support_scale: np.ndarray, quat_wxyz: np.ndarray) -> np.ndarray:
     scale = np.maximum(np.asarray(support_scale, dtype=np.float64).reshape(3), 1e-12)
     rotation = np.asarray(Camera._rotation_matrix_from_quaternion_wxyz(quat_wxyz), dtype=np.float64).reshape(3, 3)
     camera_to_world = np.asarray(camera.basis(), dtype=np.float64).reshape(3, 3).T
     transform = np.diag(1.0 / scale) @ rotation @ camera_to_world
-    precision = transform.T @ transform
+    sigma = transform.T @ transform
     return np.array(
         [
-            precision[0, 0],
-            precision[1, 1],
-            precision[2, 2],
-            precision[0, 1],
-            precision[0, 2],
-            precision[1, 2],
+            sigma[0, 0],
+            sigma[1, 1],
+            sigma[2, 2],
+            sigma[0, 1],
+            sigma[0, 2],
+            sigma[1, 2],
         ],
         dtype=np.float32,
     )
+
+
+_DEPTH_RASTER_GRAD_COMPONENT_IDS = np.array([2, 5, 7, 8], dtype=np.int64)
 
 
 def _outline_screen_point(center: np.ndarray, conic: np.ndarray, theta: float) -> np.ndarray:
@@ -202,6 +205,25 @@ def test_projection_keeps_partially_visible_splat_when_center_is_behind_camera(d
 
     assert center_radius_depth[0, 2] >= 64.0
     assert int(debug["generated_entries"]) > 0
+
+
+def test_projection_does_not_cull_splats_beyond_camera_far(device):
+    scene = GaussianScene(
+        positions=np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
+        scales=np.full((1, 3), _log_sigma(0.05), dtype=np.float32),
+        rotations=np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+        opacities=np.array([0.8], dtype=np.float32),
+        colors=np.array([[0.7, 0.6, 0.5]], dtype=np.float32),
+        sh_coeffs=np.zeros((1, 1, 3), dtype=np.float32),
+    )
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=1.0)
+    renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, list_capacity_multiplier=16)
+
+    debug = renderer.debug_pipeline_data(scene, camera)
+
+    assert int(debug["generated_entries"]) > 0
+    assert int(np.asarray(debug["splat_visible"], dtype=np.uint32)[0]) == 1
+    assert float(np.asarray(debug["screen_center_radius_depth"], dtype=np.float32)[0, 2]) > 0.0
 
 
 def test_tile_keys_and_ranges_match_reference(device):
@@ -529,9 +551,9 @@ def test_prepass_populates_raster_cache(device):
     expected_ro = np.asarray([camera.world_to_camera(camera.position - position) for position in scene.positions], dtype=np.float32)
     expected_scale = 1.0 / np.maximum(np.asarray(projected.inv_scale, dtype=np.float32), 1e-12)
     expected_quat = np.asarray(projected.quat, dtype=np.float32)
-    expected_precision = np.asarray([_expected_raster_precision(camera, scale, quat) for scale, quat in zip(expected_scale, expected_quat, strict=False)], dtype=np.float32)
+    expected_sigma = np.asarray([_expected_raster_sigma(camera, scale, quat) for scale, quat in zip(expected_scale, expected_quat, strict=False)], dtype=np.float32)
     np.testing.assert_allclose(raster_cache[:, :3], expected_ro, rtol=2e-4, atol=2e-4)
-    np.testing.assert_allclose(raster_cache[:, 3:9], expected_precision, rtol=3e-4, atol=3e-4)
+    np.testing.assert_allclose(raster_cache[:, 3:9], expected_sigma, rtol=3e-4, atol=3e-4)
 
 
 def test_projected_color_prepass_keeps_out_of_range_values(device):
@@ -1023,7 +1045,9 @@ def test_raster_backward_decodes_fixed_grad_grid(device):
     assert values.shape == (scene.count, 13)
     nonzero = values[values != 0]
     assert nonzero.size > 0
+    assert np.count_nonzero(values[:, _DEPTH_RASTER_GRAD_COMPONENT_IDS]) == 0
     decoded = np.asarray(renderer.read_cached_raster_grads_fixed_decoded(scene.count), dtype=np.float32)
+    assert np.count_nonzero(decoded[:, _DEPTH_RASTER_GRAD_COMPONENT_IDS]) == 0
     requantized = np.rint(decoded / renderer.cached_raster_grad_fixed_decode_scale_table(scene.count)).astype(np.int32)
     assert int(np.max(np.abs(requantized[values != 0] - values[values != 0]))) <= 128
 
@@ -1039,6 +1063,7 @@ def test_raster_backward_float_mode_produces_float_intermediate_and_final_grads(
     assert np.any(float_nonzero != 0.0)
     active_nonzero = float_nonzero[np.abs(float_nonzero) > 0.0]
     assert active_nonzero.size > 0
+    assert np.count_nonzero(float_nonzero[:, _DEPTH_RASTER_GRAD_COMPONENT_IDS]) == 0
     requantized = float_nonzero / renderer.cached_raster_grad_fixed_decode_scale_table(scene.count)
     assert np.any(np.abs(requantized[np.abs(float_nonzero) > 0.0] - np.rint(requantized[np.abs(float_nonzero) > 0.0])) > 1e-4)
     assert np.count_nonzero(float_nonzero[:, 9:12]) > 0

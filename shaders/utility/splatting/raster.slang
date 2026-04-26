@@ -73,17 +73,17 @@ float envelope(float rho)
 }
 
 [Differentiable]
-float raster_eval_alpha(float3 roCamera, float3 precisionDiag, float3 precisionOffDiag, float fusedOpacity, no_diff float3 rayDirCamera, no_diff float alphaCutoff)
+float raster_eval_alpha(float3 roCamera, float3 sigmaDiag, float3 sigmaOffDiag, float fusedOpacity, no_diff float3 rayDirCamera, no_diff float alphaCutoff)
 {
-    float denom = symmetric_matrix3_quadratic(precisionDiag, precisionOffDiag, rayDirCamera);
+    float denom = symmetric_matrix3_quadratic(sigmaDiag, sigmaOffDiag, rayDirCamera);
     if (denom <= RAY_DENOMINATOR_FLOOR) return 0.0;
 
-    float numer = dot(rayDirCamera, symmetric_matrix3_mul(precisionDiag, precisionOffDiag, roCamera));
+    float numer = dot(rayDirCamera, symmetric_matrix3_mul(sigmaDiag, sigmaOffDiag, roCamera));
     float tClosest = -numer / denom;
     if (tClosest <= 0.0) return 0.0;
 
     float3 closest = roCamera + rayDirCamera * tClosest;
-    float rho2 = symmetric_matrix3_quadratic(precisionDiag, precisionOffDiag, closest);
+    float rho2 = symmetric_matrix3_quadratic(sigmaDiag, sigmaOffDiag, closest);
     if (rho2 < 0.0) rho2 = 0.0;
     float alpha = fusedOpacity * exp(-ENVELOPE_EXPONENT_SCALE * rho2);
     if (alpha < alphaCutoff) return 0.0;

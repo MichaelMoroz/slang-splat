@@ -235,16 +235,16 @@ float3 gaussian_sh_view_dependent_component(Gaussian3D gaussian, float3 cameraPo
 struct RasterGaussian : IDifferentiable
 {
     float3 roCamera;
-    float3 precisionDiag;
-    float3 precisionOffDiag;
+    float3 sigmaDiag;
+    float3 sigmaOffDiag;
     float4 colorAlpha;
 };
 
 struct FixedRasterGaussianGrad
 {
     int3 roCamera;
-    int3 precisionDiag;
-    int3 precisionOffDiag;
+    int3 sigmaDiag;
+    int3 sigmaOffDiag;
     int4 colorAlpha;
 };
 

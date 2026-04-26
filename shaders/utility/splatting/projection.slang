@@ -26,7 +26,6 @@ bool support_sphere_intersects_view_frustum(PinholeCamera camera, float3 cameraC
 {
     if (!(supportRadius > 0.0) || !all(isfinite(cameraCenter)) || !isfinite(supportRadius)) return false;
     if (cameraCenter.z + supportRadius <= DEPTH_VISIBILITY_FLOOR) return false;
-    if (cameraCenter.z - supportRadius >= camera.params.farDepth) return false;
 
     float3 leftPlane = float3(camera.params.focalPixels.x, 0.0, camera.params.principalPoint.x);
     float3 rightPlane = float3(-camera.params.focalPixels.x, 0.0, camera.params.viewport.x - camera.params.principalPoint.x);
