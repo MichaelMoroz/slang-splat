@@ -38,6 +38,7 @@ class AdamOptimizer:
                 "compute_grad_norms": "csComputePackedElementGradNorms",
                 "clip_grads": "csClipPackedParamGrads",
                 "adam_step": "csAdamStepPacked",
+                "regularize": "csRegularizePacked",
             },
         )
 
@@ -101,6 +102,7 @@ class AdamOptimizer:
         param_settings: spy.Buffer,
         param_settings_count: int,
         step_index: int,
+        extra_vars: dict[str, object] | None = None,
         debug_element_grad_norm_buffer: spy.Buffer | None = None,
     ) -> None:
         count = max(int(packed_param_count), 1)
@@ -109,6 +111,7 @@ class AdamOptimizer:
             **self._packed_shader_vars(params_buffer, grads_buffer, param_settings),
             **self._buffer_shader_vars(),
             **self._optimizer_vars(element_count, count, param_group_size, param_settings_count, step_index),
+            **({} if extra_vars is None else extra_vars),
         }
         dispatch(
             kernel=self._kernels["clip_grads"],
@@ -134,6 +137,14 @@ class AdamOptimizer:
             command_encoder=encoder,
             debug_label="Adam Step",
             debug_color_index=62,
+        )
+        dispatch(
+            kernel=self._kernels["regularize"],
+            thread_count=self._param_threads(count),
+            vars=vars,
+            command_encoder=encoder,
+            debug_label="Adam Regularize",
+            debug_color_index=63,
         )
 
     @property

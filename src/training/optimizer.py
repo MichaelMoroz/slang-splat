@@ -34,7 +34,6 @@ class GaussianOptimizer:
             self.device,
             SHADER_ROOT / "utility" / "optimizer" / "gaussian_optimizer_stage.slang",
             {
-                "accumulate_regularizers": "csAccumulateRegularizationGrads",
                 "project_params": "csProjectGaussianParams",
             },
         )
@@ -125,20 +124,14 @@ class GaussianOptimizer:
             return
         self._upload_param_settings(lr_scale, position_lr_mul_scale, sh_lr_mul_scale)
 
-    def _vars(self, splat_count: int, training_hparams: Any, scale_reg_reference: float, color_non_negative_seed: int, max_visible_angle_deg: float | None = None) -> dict[str, object]:
+    def _projection_vars(self, splat_count: int, training_hparams: Any, step_index: int, max_visible_angle_deg: float | None = None) -> dict[str, object]:
         resolved_max_visible_angle_deg = resolve_max_visible_angle_deg(training_hparams, 0) if max_visible_angle_deg is None else max_visible_angle_deg
         return {
             "g_SplatCount": int(splat_count),
             "g_MaxViewAngleSlope": float(max(math.tan(math.radians(min(max(float(resolved_max_visible_angle_deg), 1e-8), 89.999))), 1e-8)),
             "g_RendererRadiusScale": float(self.renderer.radius_scale),
-            "g_ScaleL2Weight": float(max(training_hparams.scale_l2_weight, 0.0)),
-            "g_ScaleAbsRegWeight": float(max(training_hparams.scale_abs_reg_weight, 0.0)),
-            "g_SH1RegWeight": float(max(training_hparams.sh1_reg_weight, 0.0)),
-            "g_OpacityRegWeight": float(max(training_hparams.opacity_reg_weight, 0.0)),
-            "g_ColorNonNegativeRegWeight": float(max(getattr(training_hparams, "color_non_negative_reg", 0.0), 0.0)),
             "g_SHBand": np.uint32(int(self.renderer.sh_band)),
-            "g_ColorNonNegativeRegSeed": np.uint32(int(color_non_negative_seed)),
-            "g_ScaleRegReference": float(max(scale_reg_reference, 1e-8)),
+            "g_SHNonNegativeStepIndex": np.uint32(int(step_index)),
             "g_Stability": {
                 "gradComponentClip": float(self.stability.grad_component_clip),
                 "gradNormClip": float(self.stability.grad_norm_clip),
@@ -152,31 +145,16 @@ class GaussianOptimizer:
             },
         }
 
-    def dispatch_regularizers(
-        self,
-        encoder: spy.CommandEncoder,
-        *,
-        scene_buffers: dict[str, spy.Buffer],
-        work_buffers: dict[str, spy.Buffer],
-        loss_buffer: spy.Buffer,
-        splat_count: int,
-        training_hparams: Any,
-        scale_reg_reference: float,
-        color_non_negative_seed: int,
-    ) -> None:
-        dispatch(
-            kernel=self._kernels["accumulate_regularizers"],
-            thread_count=self._threads(splat_count),
-            vars={
-                "g_LossBuffer": loss_buffer,
-                "g_ParamGrads": work_buffers["param_grads"],
-                "g_SplatParamsRW": scene_buffers["splat_params"],
-                **self._vars(splat_count, training_hparams, scale_reg_reference, color_non_negative_seed),
-            },
-            command_encoder=encoder,
-            debug_label="Gaussian Regularizers",
-            debug_color_index=70,
-        )
+    def regularization_vars(self, training_hparams: Any, scale_reg_reference: float) -> dict[str, object]:
+        return {
+            "g_OptimizerRegularization": {
+                "scaleL2Weight": float(max(training_hparams.scale_l2_weight, 0.0)),
+                "scaleAbsWeight": float(max(training_hparams.scale_abs_reg_weight, 0.0)),
+                "sh1Weight": float(max(training_hparams.sh1_reg_weight, 0.0)),
+                "opacityWeight": float(max(training_hparams.opacity_reg_weight, 0.0)),
+                "scaleReference": float(max(scale_reg_reference, 1e-8)),
+            }
+        }
 
     @property
     def param_settings(self) -> spy.Buffer:
@@ -231,14 +209,12 @@ class GaussianOptimizer:
             kernel=self._kernels["project_params"],
             thread_count=self._threads(splat_count),
             vars={
-                "g_ParamGrads": work_buffers["param_grads"],
                 "g_SplatParamsRW": scene_buffers["splat_params"],
                 **camera_vars,
-                **self._vars(
+                **self._projection_vars(
                     splat_count,
                     training_hparams,
-                    scale_reg_reference,
-                    0,
+                    int(step_index),
                     max_visible_angle_deg=resolve_max_visible_angle_deg(training_hparams, int(step_index)),
                 ),
             },

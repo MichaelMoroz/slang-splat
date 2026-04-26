@@ -131,7 +131,6 @@ def test_default_training_params_include_required_training_controls():
     params = default_training_params()
     for key in (
         "density_regularizer",
-        "color_non_negative_reg",
         "max_visible_angle_deg",
         "ssim_weight",
         "ssim_c2",
@@ -308,7 +307,6 @@ def test_viewer_defaults_expose_only_fixed_count_training_controls():
     assert "scale_abs_reg" in defaults
     assert "sh1_reg" in defaults
     assert "opacity_reg" in defaults
-    assert "color_non_negative_reg" in defaults
     assert "max_visible_angle_deg" in defaults
     assert "ssim_weight_stage1" in defaults
     assert "ssim_c2" in defaults

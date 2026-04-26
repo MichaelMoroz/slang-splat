@@ -1,5 +1,7 @@
 import "utility/math/constants.slang";
 import "utility/math/numeric.slang";
+import "utility/splatting/opacity.slang";
+import "utility/splatting/params.slang";
 
 struct AdamParams
 {
@@ -30,6 +32,15 @@ struct OptimizerParamSettings
     uint reserved;
 };
 
+struct OptimizerRegularizationParams
+{
+    float scaleL2Weight;
+    float scaleAbsWeight;
+    float sh1Weight;
+    float opacityWeight;
+    float scaleReference;
+};
+
 static const uint ADAM_GROUP_SIZE = 256u;
 
 uniform AdamParams g_OptimizerAdam;
@@ -38,6 +49,7 @@ uniform uint g_OptimizerElementCount;
 uniform uint g_OptimizerParamCount;
 uniform uint g_OptimizerParamGroupSize;
 uniform uint g_OptimizerParamSettingsCount;
+uniform OptimizerRegularizationParams g_OptimizerRegularization;
 
 uniform StructuredBuffer<OptimizerParamSettings> g_OptimizerParamSettings;
 uniform RWStructuredBuffer<float> g_OptimizerParams;
@@ -58,6 +70,14 @@ float load_optimizer_grad(uint paramId, uint elementId)
 void store_optimizer_grad(uint paramId, uint elementId, float value)
 {
     g_OptimizerGrads[optimizer_param_index(g_OptimizerElementCount, paramId, elementId)] = value;
+}
+
+float optimizer_shrink_abs(float value, float delta)
+{
+    if (!(delta > 0.0)) return value;
+    if (value > 0.0) return max(value - delta, 0.0);
+    if (value < 0.0) return min(value + delta, 0.0);
+    return 0.0;
 }
 
 [shader("compute")]
@@ -153,4 +173,37 @@ void csAdamStepPacked(uint3 dispatchThreadID : SV_DispatchThreadID)
     float nextValue = sanitize_scalar(value - update, g_OptimizerRuntime.hugeValue);
     g_OptimizerParams[paramIndex] = clamp(nextValue, settings.valueMin, settings.valueMax);
     g_OptimizerAdamMoments[paramIndex] = moments;
+}
+
+[shader("compute")]
+[numthreads(ADAM_GROUP_SIZE, 1, 1)]
+void csRegularizePacked(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint paramIndex = dispatchThreadID.x;
+    if (paramIndex >= g_OptimizerParamCount) return;
+
+    uint paramGroupSize = max(g_OptimizerParamGroupSize, 1u);
+    uint paramId = paramIndex / paramGroupSize;
+    OptimizerParamSettings settings = g_OptimizerParamSettings[paramId];
+    float value = sanitize_scalar(g_OptimizerParams[paramIndex], g_OptimizerRuntime.hugeValue);
+
+    if (paramId >= PARAM_SCALE_X && paramId <= PARAM_SCALE_Z)
+    {
+        if (g_OptimizerRegularization.scaleL2Weight > 0.0)
+        {
+            float logReference = log(max(g_OptimizerRegularization.scaleReference, TINY_VALUE));
+            value = lerp(value, logReference, saturate(settings.lr * g_OptimizerRegularization.scaleL2Weight * (2.0 / 3.0)));
+        }
+        if (g_OptimizerRegularization.scaleAbsWeight > 0.0) value -= exp(value) * (settings.lr * g_OptimizerRegularization.scaleAbsWeight * (1.0 / 3.0));
+    } else if (paramId > PARAM_SH0_B && paramId < PARAM_RAW_OPACITY) {
+        if (g_OptimizerRegularization.sh1Weight > 0.0) value = optimizer_shrink_abs(value, settings.lr * g_OptimizerRegularization.sh1Weight * (1.0 / float((SH_COEFF_COUNT - 1u) * SH_PARAM_STRIDE)));
+    } else if (paramId == PARAM_RAW_OPACITY) {
+        if (g_OptimizerRegularization.opacityWeight > 0.0)
+        {
+            float opacity = opacity_from_raw(value);
+            value -= settings.lr * g_OptimizerRegularization.opacityWeight * opacity * (1.0 - opacity);
+        }
+    }
+
+    g_OptimizerParams[paramIndex] = clamp(sanitize_scalar(value, g_OptimizerRuntime.hugeValue), settings.valueMin, settings.valueMax);
 }

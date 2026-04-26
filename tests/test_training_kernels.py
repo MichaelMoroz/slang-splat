@@ -3274,10 +3274,10 @@ def test_sh1_regularizer_pushes_all_non_dc_sh_coeffs_toward_zero(device, tmp_pat
     assert np.all(after < before)
 
 
-def test_color_non_negative_regularizer_pushes_negative_sh_color_toward_zero(device, tmp_path: Path):
-    color_non_negative_hash_splat = 0x9E3779B9
-    color_non_negative_hash_phi = 0x85EBCA6B
-    color_non_negative_hash_z = 0xC2B2AE35
+def test_optimizer_projection_enforces_single_sample_sh_non_negativity(device, tmp_path: Path):
+    sh_non_negative_hash_splat = 0x9E3779B9
+    sh_non_negative_hash_phi = 0x85EBCA6B
+    sh_non_negative_hash_z = 0xC2B2AE35
 
     def hash_u32(value: int) -> int:
         value &= 0xFFFFFFFF
@@ -3291,16 +3291,17 @@ def test_color_non_negative_regularizer_pushes_negative_sh_color_toward_zero(dev
     def random01(seed: int) -> float:
         return float(hash_u32(seed) + 1) / 4294967297.0
 
-    def sample_dir(seed: int, splat_id: int) -> np.ndarray:
-        splat_seed = hash_u32(seed ^ (((splat_id + 1) * color_non_negative_hash_splat) & 0xFFFFFFFF))
-        z = 1.0 - 2.0 * random01(splat_seed ^ color_non_negative_hash_z)
-        phi = 2.0 * np.pi * random01(splat_seed ^ color_non_negative_hash_phi)
+    def sample_dir(step_index: int, splat_id: int) -> np.ndarray:
+        splat_seed = hash_u32(step_index ^ (((splat_id + 1) * sh_non_negative_hash_splat) & 0xFFFFFFFF))
+        z = 1.0 - 2.0 * random01(splat_seed ^ sh_non_negative_hash_z)
+        phi = 2.0 * np.pi * random01(splat_seed ^ sh_non_negative_hash_phi)
         radial = np.sqrt(max(1.0 - z * z, 0.0))
         return np.array([radial * np.cos(phi), radial * np.sin(phi), z], dtype=np.float32)
 
     scene = _make_scene(count=1, seed=44)
     scene.sh_coeffs = np.zeros((1, 16, 3), dtype=np.float32)
-    view_dir = sample_dir(45, 0)
+    step_index = 1
+    view_dir = sample_dir(step_index, 0)
     strength = np.float32(2.0)
     scene.sh_coeffs[0, 1, :] = view_dir[1] * strength
     scene.sh_coeffs[0, 2, :] = -view_dir[2] * strength
@@ -3320,7 +3321,6 @@ def test_color_non_negative_regularizer_pushes_negative_sh_color_toward_zero(dev
             opacity_reg_weight=0.0,
             sh1_reg_weight=0.0,
             density_regularizer=0.0,
-            color_non_negative_reg=1.0,
             refinement_interval=9999,
         ),
         seed=44,
@@ -3333,15 +3333,16 @@ def test_color_non_negative_regularizer_pushes_negative_sh_color_toward_zero(dev
     before_coeffs = _read_scene_groups(renderer, 1)["sh_coeffs"].copy()
     before_color = evaluate_sh_color(before_coeffs, view_dir[None, :])[0]
     encoder = device.create_command_encoder()
-    trainer._dispatch_optimizer_step(encoder, 1, camera)
+    trainer._dispatch_optimizer_step(encoder, step_index, camera)
     device.submit_command_buffer(encoder.finish())
     device.wait()
     after_coeffs = _read_scene_groups(renderer, 1)["sh_coeffs"].copy()
     after_color = evaluate_sh_color(after_coeffs, view_dir[None, :])[0]
 
     assert np.all(before_color < 0.0)
-    assert np.all(after_color > before_color)
-    assert np.all(after_coeffs[0, 0, :] > before_coeffs[0, 0, :])
+    assert np.all(after_color >= -1e-6)
+    np.testing.assert_allclose(after_coeffs[0, 0, :], before_coeffs[0, 0, :], rtol=0.0, atol=1e-6)
+    assert np.linalg.norm(after_coeffs[0, 1:4, :]) < np.linalg.norm(before_coeffs[0, 1:4, :])
 
 
 def test_training_with_sh_enabled_updates_non_dc_sh_coeffs(device, tmp_path: Path):

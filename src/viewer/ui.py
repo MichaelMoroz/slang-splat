@@ -2677,7 +2677,6 @@ class ToolkitWindow:
         "scale_abs_reg": "Absolute scale regularization weight",
         "sh1_reg": "L1 regularization weight applied to all non-DC SH coefficients",
         "opacity_reg": "Opacity regularization weight (pushes toward 0 or 1)",
-        "color_non_negative_reg": "Penalty weight for negative evaluated SH color sampled over one deterministic random view direction per splat and step",
         "ssim_weight": "Blend weight for DSSIM in the RGB image loss; 0 keeps pure L1 and 1 uses pure DSSIM",
         "ssim_c2": "SSIM contrast/structure stabilizer constant used by the DSSIM path",
         "position_random_step_noise_lr": "Stage 0 post-step MCMC-style position noise multiplier; when scheduling is disabled this value is used for the whole run",

@@ -279,7 +279,6 @@ def test_default_training_params_include_training_control_fields() -> None:
         "max_visible_angle_deg",
         "ssim_weight",
         "ssim_c2",
-        "color_non_negative_reg",
         "sorting_order_dithering_stage1",
         "lr_schedule_stage1_lr",
         "refinement_growth_ratio",
