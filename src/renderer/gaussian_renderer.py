@@ -151,6 +151,7 @@ class GaussianRenderer:
     CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED = "fixed"
     CACHED_RASTER_GRAD_ATOMIC_MODES = (CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT, CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED)
     _RASTER_GRAD_FIXED_INT_MAX = np.float32(2147483647.0)
+    _RASTER_GRAD_FIXED_CHARACTERISTIC_INV_SCALE_FLOOR = np.float32(0.25)
     _DEFAULT_RASTER_GRAD_FIXED_RO_LOCAL_RANGE = np.float32(1.0)
     _DEFAULT_RASTER_GRAD_FIXED_SCALE_RANGE = np.float32(15.0)
     _DEFAULT_RASTER_GRAD_FIXED_QUAT_RANGE = np.float32(0.01)
@@ -176,7 +177,7 @@ class GaussianRenderer:
     _MEBIBYTE_BYTES = 1024 * 1024
     _PREPASS_ENTRY_BYTES = (_SCANLINE_WORK_ITEM_UINTS + 4) * _U32_BYTES
     _GRAD_STATS_STRIDE = 2
-    _RASTER_CACHE_PARAM_COUNT = 14
+    _RASTER_CACHE_PARAM_COUNT = 13
     _RW_BUFFER_USAGE = RW_BUFFER_USAGE
     PARAM_POSITION_IDS = (0, 1, 2)
     PARAM_SCALE_IDS = (3, 4, 5)
@@ -211,9 +212,9 @@ class GaussianRenderer:
         ("opacity", (58,)),
     )
     CACHED_RASTER_GRAD_COMPONENT_LABELS = (
-        "roLocal.x", "roLocal.y", "roLocal.z",
-        "scale.x", "scale.y", "scale.z",
-        "quat.w", "quat.x", "quat.y", "quat.z",
+        "roCamera.x", "roCamera.y", "roCamera.z",
+        "precision.xx", "precision.yy", "precision.zz",
+        "precision.xy", "precision.xz", "precision.yz",
         "color.r", "color.g", "color.b", "opacity",
     )
     _SCENE_SHADER_VARS = {"splat_params": "g_SplatParams"}
@@ -633,7 +634,7 @@ class GaussianRenderer:
         debug_depth_local_mismatch_smooth_radius: float = 2.0,
         debug_depth_local_mismatch_reject_radius: float = 4.0,
         debug_sh_coeff_index: int = _DEFAULT_DEBUG_SH_COEFF_INDEX,
-        cached_raster_grad_atomic_mode: str = CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED,
+        cached_raster_grad_atomic_mode: str = CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT,
         cached_raster_grad_fixed_ro_local_range: float = 1.0,
         cached_raster_grad_fixed_scale_range: float = 15.0,
         cached_raster_grad_fixed_quat_range: float = 0.01,
@@ -708,7 +709,7 @@ class GaussianRenderer:
         self._float_raster_grad_shaders: _RasterGradShaderSet | None = None
         self._sorted_keys_buffer: spy.Buffer | None = None
         self._sorted_values_buffer: spy.Buffer | None = None
-        self._cached_raster_grad_atomic_mode = self.CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED
+        self._cached_raster_grad_atomic_mode = self.CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT
         self._cached_raster_grad_fixed_ro_local_range = self._DEFAULT_RASTER_GRAD_FIXED_RO_LOCAL_RANGE
         self._cached_raster_grad_fixed_scale_range = self._DEFAULT_RASTER_GRAD_FIXED_SCALE_RANGE
         self._cached_raster_grad_fixed_quat_range = self._DEFAULT_RASTER_GRAD_FIXED_QUAT_RANGE
@@ -1773,7 +1774,6 @@ class GaussianRenderer:
                 self.cached_raster_grad_fixed_quat_range / self._RASTER_GRAD_FIXED_INT_MAX,
                 self.cached_raster_grad_fixed_quat_range / self._RASTER_GRAD_FIXED_INT_MAX,
                 self.cached_raster_grad_fixed_quat_range / self._RASTER_GRAD_FIXED_INT_MAX,
-                self.cached_raster_grad_fixed_quat_range / self._RASTER_GRAD_FIXED_INT_MAX,
                 self.cached_raster_grad_fixed_color_range / self._RASTER_GRAD_FIXED_INT_MAX,
                 self.cached_raster_grad_fixed_color_range / self._RASTER_GRAD_FIXED_INT_MAX,
                 self.cached_raster_grad_fixed_color_range / self._RASTER_GRAD_FIXED_INT_MAX,
@@ -1788,12 +1788,10 @@ class GaussianRenderer:
         if count <= 0:
             return decode_scales
         cache = self.read_raster_cache(count) if raster_cache is None else np.asarray(raster_cache, dtype=np.float64).reshape(count, self._RASTER_CACHE_PARAM_COUNT)
-        scale = np.asarray(cache[:, 3:6], dtype=np.float64)
-        avg_scale = np.cbrt(np.maximum(scale[:, 0] * scale[:, 1] * scale[:, 2], 1e-12))
-        avg_inv_scale = np.maximum(1.0 / np.maximum(avg_scale, 1e-12), 0.25)
-        decode_scales[:, 0:3] *= avg_inv_scale[:, None]
-        decode_scales[:, 3:6] *= avg_inv_scale[:, None]
-        decode_scales[:, 6:10] *= avg_inv_scale[:, None]
+        precision_diag = np.maximum(np.asarray(cache[:, 3:6], dtype=np.float64), 1e-12)
+        characteristic_inv_scale = np.maximum(np.power(precision_diag[:, 0] * precision_diag[:, 1] * precision_diag[:, 2], 1.0 / 6.0), float(self._RASTER_GRAD_FIXED_CHARACTERISTIC_INV_SCALE_FLOOR))
+        decode_scales[:, :3] *= characteristic_inv_scale[:, None]
+        decode_scales[:, 3:9] /= (characteristic_inv_scale[:, None] * characteristic_inv_scale[:, None])
         return decode_scales
 
     def set_debug_grad_norm_buffer(self, buffer: spy.Buffer | None) -> None:

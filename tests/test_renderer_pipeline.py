@@ -34,6 +34,25 @@ def _quat_rotate(v: np.ndarray, q_wxyz: np.ndarray) -> np.ndarray:
     return np.asarray(vec + 2.0 * np.cross(np.cross(vec, qv) + q[0] * vec, qv), dtype=np.float32)
 
 
+def _expected_raster_precision(camera: Camera, support_scale: np.ndarray, quat_wxyz: np.ndarray) -> np.ndarray:
+    scale = np.maximum(np.asarray(support_scale, dtype=np.float64).reshape(3), 1e-12)
+    rotation = np.asarray(Camera._rotation_matrix_from_quaternion_wxyz(quat_wxyz), dtype=np.float64).reshape(3, 3)
+    camera_to_world = np.asarray(camera.basis(), dtype=np.float64).reshape(3, 3).T
+    transform = np.diag(1.0 / scale) @ rotation @ camera_to_world
+    precision = transform.T @ transform
+    return np.array(
+        [
+            precision[0, 0],
+            precision[1, 1],
+            precision[2, 2],
+            precision[0, 1],
+            precision[0, 2],
+            precision[1, 2],
+        ],
+        dtype=np.float32,
+    )
+
+
 def _outline_screen_point(center: np.ndarray, conic: np.ndarray, theta: float) -> np.ndarray:
     direction = np.array([np.cos(theta), np.sin(theta)], dtype=np.float32)
     denom = conic[0] * direction[0] * direction[0] + 2.0 * conic[1] * direction[0] * direction[1] + conic[2] * direction[1] * direction[1]
@@ -162,8 +181,8 @@ def test_render_ignores_max_splat_steps_cap(device):
     unconstrained_cache = np.asarray(unconstrained.debug_pipeline_data(scene, camera)["raster_cache"], dtype=np.float32)
     constrained_cache = np.asarray(constrained.debug_pipeline_data(scene, camera)["raster_cache"], dtype=np.float32)
 
-    np.testing.assert_allclose(unconstrained_cache[0, 3:6], np.array([0.6, 0.06, 0.06], dtype=np.float32), rtol=2e-4, atol=2e-4)
-    np.testing.assert_allclose(constrained_cache[0, 3:6], np.array([0.6, 0.3, 0.3], dtype=np.float32), rtol=2e-4, atol=2e-4)
+    np.testing.assert_allclose(unconstrained_cache[0, 3:6], np.array([1.0 / (0.6 * 0.6), 1.0 / (0.06 * 0.06), 1.0 / (0.06 * 0.06)], dtype=np.float32), rtol=2e-4, atol=2e-4)
+    np.testing.assert_allclose(constrained_cache[0, 3:6], np.array([1.0 / (0.6 * 0.6), 1.0 / (0.3 * 0.3), 1.0 / (0.3 * 0.3)], dtype=np.float32), rtol=2e-4, atol=2e-4)
 
 
 def test_projection_keeps_partially_visible_splat_when_center_is_behind_camera(device):
@@ -504,15 +523,15 @@ def test_prepass_populates_raster_cache(device):
     projected = project_splats(scene, camera, renderer.width, renderer.height, renderer.radius_scale)
 
     raster_cache = np.asarray(debug["raster_cache"], dtype=np.float32)
-    assert raster_cache.shape == (scene.count, 14)
+    assert raster_cache.shape == (scene.count, 13)
     assert np.all(np.isfinite(raster_cache))
-    assert float(np.max(np.abs(raster_cache[:, :10]))) > 0.0
-    expected_ro = np.asarray(projected.pos_local, dtype=np.float32)
+    assert float(np.max(np.abs(raster_cache[:, :9]))) > 0.0
+    expected_ro = np.asarray([camera.world_to_camera(camera.position - position) for position in scene.positions], dtype=np.float32)
     expected_scale = 1.0 / np.maximum(np.asarray(projected.inv_scale, dtype=np.float32), 1e-12)
     expected_quat = np.asarray(projected.quat, dtype=np.float32)
+    expected_precision = np.asarray([_expected_raster_precision(camera, scale, quat) for scale, quat in zip(expected_scale, expected_quat, strict=False)], dtype=np.float32)
     np.testing.assert_allclose(raster_cache[:, :3], expected_ro, rtol=2e-4, atol=2e-4)
-    np.testing.assert_allclose(raster_cache[:, 3:6], expected_scale, rtol=3e-4, atol=3e-4)
-    np.testing.assert_allclose(raster_cache[:, 6:10], expected_quat, rtol=3e-4, atol=3e-4)
+    np.testing.assert_allclose(raster_cache[:, 3:9], expected_precision, rtol=3e-4, atol=3e-4)
 
 
 def test_projected_color_prepass_keeps_out_of_range_values(device):
@@ -533,9 +552,9 @@ def test_projected_color_prepass_keeps_out_of_range_values(device):
     render_cache = np.asarray(render_debug["raster_cache"], dtype=np.float32)
 
     renderer.set_scene(scene)
-    np.testing.assert_allclose(render_cache[0, 10:13], np.array([1.35, -0.2, 0.6], dtype=np.float32), rtol=0.0, atol=1e-5)
+    np.testing.assert_allclose(render_cache[0, 9:12], np.array([1.35, -0.2, 0.6], dtype=np.float32), rtol=0.0, atol=1e-5)
     renderer.execute_prepass_for_current_scene(camera, sync_counts=True)
-    np.testing.assert_allclose(renderer.read_raster_cache(scene.count)[0, 10:13], np.array([1.35, -0.2, 0.6], dtype=np.float32), rtol=0.0, atol=1e-5)
+    np.testing.assert_allclose(renderer.read_raster_cache(scene.count)[0, 9:12], np.array([1.35, -0.2, 0.6], dtype=np.float32), rtol=0.0, atol=1e-5)
 
 
 def test_projection_render_smoke(device):
@@ -1001,7 +1020,7 @@ def test_raster_backward_decodes_fixed_grad_grid(device):
 
     assert grads["cached_raster_grads_mode"] == "fixed"
     values = np.asarray(grads["cached_raster_grads_fixed"], dtype=np.int32)
-    assert values.shape == (scene.count, 14)
+    assert values.shape == (scene.count, 13)
     nonzero = values[values != 0]
     assert nonzero.size > 0
     decoded = np.asarray(renderer.read_cached_raster_grads_fixed_decoded(scene.count), dtype=np.float32)
@@ -1022,7 +1041,7 @@ def test_raster_backward_float_mode_produces_float_intermediate_and_final_grads(
     assert active_nonzero.size > 0
     requantized = float_nonzero / renderer.cached_raster_grad_fixed_decode_scale_table(scene.count)
     assert np.any(np.abs(requantized[np.abs(float_nonzero) > 0.0] - np.rint(requantized[np.abs(float_nonzero) > 0.0])) > 1e-4)
-    assert np.count_nonzero(float_nonzero[:, 10:13]) > 0
+    assert np.count_nonzero(float_nonzero[:, 9:12]) > 0
 
     final_values = np.concatenate(
         [
@@ -1067,6 +1086,38 @@ def test_cached_raster_grad_fixed_range_updates_decode_scales(device):
     np.testing.assert_allclose(
         renderer.cached_raster_grad_fixed_decode_scales[:3],
         np.full((3,), np.float32(2.5 / GaussianRenderer._RASTER_GRAD_FIXED_INT_MAX), dtype=np.float32),
+        rtol=0.0,
+        atol=0.0,
+    )
+
+
+def test_cached_raster_grad_fixed_decode_scale_table_uses_precision_diagonal_only(device):
+    renderer = GaussianRenderer(device, width=32, height=32)
+    raster_cache = np.zeros((2, renderer._RASTER_CACHE_PARAM_COUNT), dtype=np.float32)
+    raster_cache[0, 3:6] = np.array([16.0, 1.0, 1.0], dtype=np.float32)
+    raster_cache[0, 6:9] = np.array([9.0, 9.0, 9.0], dtype=np.float32)
+    raster_cache[1, 3:6] = np.array([1.0, 1.0, 1.0], dtype=np.float32)
+    raster_cache[1, 6:9] = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+
+    decode_scales = renderer.cached_raster_grad_fixed_decode_scale_table(2, raster_cache=raster_cache)
+    expected_avg_inv_scale = np.power(np.array([16.0, 1.0], dtype=np.float32), np.float32(1.0 / 6.0))
+    expected_scale_sq = 1.0 / (expected_avg_inv_scale * expected_avg_inv_scale)
+
+    np.testing.assert_allclose(
+        decode_scales[:, :3],
+        expected_avg_inv_scale[:, None] * renderer.cached_raster_grad_fixed_decode_scales[None, :3],
+        rtol=1e-6,
+        atol=1e-12,
+    )
+    np.testing.assert_allclose(
+        decode_scales[:, 3:9],
+        expected_scale_sq[:, None] * renderer.cached_raster_grad_fixed_decode_scales[None, 3:9],
+        rtol=1e-6,
+        atol=1e-12,
+    )
+    np.testing.assert_allclose(
+        decode_scales[:, 9:],
+        np.broadcast_to(renderer.cached_raster_grad_fixed_decode_scales[9:], (2, renderer._RASTER_CACHE_PARAM_COUNT - 9)),
         rtol=0.0,
         atol=0.0,
     )

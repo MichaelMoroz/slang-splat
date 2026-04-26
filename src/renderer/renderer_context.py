@@ -19,7 +19,7 @@ class GaussianRenderSettings:
     transmittance_threshold: float = 0.005
     list_capacity_multiplier: int = 64
     max_prepass_memory_mb: int = 4096
-    cached_raster_grad_atomic_mode: str = GaussianRenderer.CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED
+    cached_raster_grad_atomic_mode: str = GaussianRenderer.CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT
     cached_raster_grad_fixed_ro_local_range: float = 1.0
     cached_raster_grad_fixed_scale_range: float = 15.0
     cached_raster_grad_fixed_color_range: float = 8.0

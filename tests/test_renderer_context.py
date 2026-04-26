@@ -7,6 +7,7 @@ def test_render_settings_forward_debug_overlays_to_renderer(monkeypatch) -> None
     captured: dict[str, object] = {}
 
     class _RendererStub:
+        CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT = "float"
         CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED = "fixed"
 
         @staticmethod
@@ -41,7 +42,7 @@ def test_render_settings_forward_debug_overlays_to_renderer(monkeypatch) -> None
         "transmittance_threshold": 0.005,
         "list_capacity_multiplier": 64,
         "max_prepass_memory_mb": 4096,
-        "cached_raster_grad_atomic_mode": "fixed",
+        "cached_raster_grad_atomic_mode": "float",
         "cached_raster_grad_fixed_ro_local_range": 1.0,
         "cached_raster_grad_fixed_scale_range": 15.0,
         "cached_raster_grad_fixed_color_range": 8.0,
