@@ -84,17 +84,21 @@ uint gradient_stat_index(uint splatId, uint slot)
     return splatId * DEBUG_GRAD_STATS_STRIDE + slot;
 }
 
-float raster_grad_contribution_norm(RasterGaussian.Differential dGaussian)
+float raster_grad_contribution_norm_sq(RasterGaussian.Differential dGaussian)
 {
-    float sumSq = dot(dGaussian.roLocal, dGaussian.roLocal) + dot(dGaussian.scale, dGaussian.scale) + dot(dGaussian.rotation, dGaussian.rotation) + dot(dGaussian.colorAlpha, dGaussian.colorAlpha);
-    return sqrt(max(sumSq, 0.0));
+    return max(dot(dGaussian.roLocal, dGaussian.roLocal) + dot(dGaussian.scale, dGaussian.scale) + dot(dGaussian.rotation, dGaussian.rotation) + dot(dGaussian.colorAlpha, dGaussian.colorAlpha), 0.0);
 }
 
-void accumulate_gradient_stats(uint splatId, float contributionNorm)
+float raster_grad_contribution_norm(RasterGaussian grad)
 {
-    if (!(isfinite(contributionNorm) && contributionNorm > 0.0)) return;
-    InterlockedAdd(g_GradientStats[gradient_stat_index(splatId, 0u)], contributionNorm);
-    InterlockedAdd(g_GradientStats[gradient_stat_index(splatId, 1u)], contributionNorm * contributionNorm);
+    return sqrt(max(dot(grad.roLocal, grad.roLocal) + dot(grad.scale, grad.scale) + dot(grad.rotation, grad.rotation) + dot(grad.colorAlpha, grad.colorAlpha), 0.0));
+}
+
+void accumulate_gradient_stats(uint splatId, float contributionNormSq)
+{
+    float waveContributionNormSq = WaveActiveSum((isfinite(contributionNormSq) && contributionNormSq > 0.0) ? contributionNormSq : 0.0);
+    if (!WaveIsFirstLane() || !(waveContributionNormSq > 0.0)) return;
+    InterlockedAdd(g_GradientStats[gradient_stat_index(splatId, 1u)], waveContributionNormSq);
 }
 
 RasterGaussian load_cached_raster_grad_fixed(uint splatId)
@@ -160,7 +164,7 @@ RasterGaussian load_cached_raster_grad_float(uint splatId)
 void flush_cached_raster_grad_fixed(uint splatId, RasterGaussian gaussian, RasterGaussian.Differential dGaussian)
 {
     uint splatCount = g_Prepass.splatCount;
-    accumulate_gradient_stats(splatId, raster_grad_contribution_norm(dGaussian));
+    accumulate_gradient_stats(splatId, raster_grad_contribution_norm_sq(dGaussian));
     float avgInvScale = 1.0 / raster_grad_fixed_avg_inv_scale(gaussian.scale);
     // float3 roLocal = WaveActiveSum(dGaussian.roLocal * avgInvScale);
     // float3 scale = WaveActiveSum(dGaussian.scale * avgInvScale);
@@ -208,7 +212,7 @@ void flush_cached_raster_grad_fixed(uint splatId, RasterGaussian gaussian, Raste
 void flush_cached_raster_grad_float(uint splatId, RasterGaussian.Differential dGaussian)
 {
     uint splatCount = g_Prepass.splatCount;
-    accumulate_gradient_stats(splatId, raster_grad_contribution_norm(dGaussian));
+    accumulate_gradient_stats(splatId, raster_grad_contribution_norm_sq(dGaussian));
     float3 roLocal = WaveActiveSum(dGaussian.roLocal);
     float3 scale = WaveActiveSum(dGaussian.scale);
     float4 rotation = WaveActiveSum(dGaussian.rotation);
@@ -344,6 +348,20 @@ float raster_normalize_grad_norm(float gradNorm)
     return saturate((gradLog10 - gradLog10Min) / max(gradLog10Max - gradLog10Min, TINY_VALUE));
 }
 
+float raster_normalize_grad_variance(float gradVariance)
+{
+    float varianceFloor = DEBUG_GRAD_NORM_FLOOR * DEBUG_GRAD_NORM_FLOOR;
+    float varianceValue = max(gradVariance, varianceFloor);
+    float varianceLog10 = log2(varianceValue) * LOG2_TO_LOG10;
+    float gradThreshold = max(g_Raster.debugGradNormThreshold, DEBUG_GRAD_NORM_FLOOR);
+    float varianceThreshold = gradThreshold * gradThreshold;
+    float varianceThresholdMinScale = DEBUG_GRAD_THRESHOLD_MIN_SCALE * DEBUG_GRAD_THRESHOLD_MIN_SCALE;
+    float varianceThresholdMaxScale = DEBUG_GRAD_THRESHOLD_MAX_SCALE * DEBUG_GRAD_THRESHOLD_MAX_SCALE;
+    float varianceLog10Min = log2(max(varianceThreshold * varianceThresholdMinScale, varianceFloor)) * LOG2_TO_LOG10;
+    float varianceLog10Max = log2(max(varianceThreshold * varianceThresholdMaxScale, varianceFloor)) * LOG2_TO_LOG10;
+    return saturate((varianceLog10 - varianceLog10Min) / max(varianceLog10Max - varianceLog10Min, TINY_VALUE));
+}
+
 float raster_normalize_threshold_band(float value, float threshold)
 {
     float normalizedValue = max(value, DEBUG_GRAD_NORM_FLOOR);
@@ -432,8 +450,8 @@ float raster_refinement_distribution(uint splatId)
 
 float2 raster_refinement_distribution_range()
 {
-    float valueMin = max(min(g_Raster.debugRefinementDistributionRange.x, g_Raster.debugRefinementDistributionRange.y), DEBUG_CONTRIBUTION_AMOUNT_FLOOR);
-    float valueMax = max(max(g_Raster.debugRefinementDistributionRange.x, g_Raster.debugRefinementDistributionRange.y), valueMin * (1.0 + DEBUG_CONTRIBUTION_AMOUNT_FLOOR));
+    float valueMin = max(min(g_Raster.debugRefinementDistributionRange.x, g_Raster.debugRefinementDistributionRange.y), 0.0);
+    float valueMax = max(max(g_Raster.debugRefinementDistributionRange.x, g_Raster.debugRefinementDistributionRange.y), valueMin + DEBUG_CONTRIBUTION_AMOUNT_FLOOR);
     return float2(valueMin, valueMax);
 }
 
@@ -455,11 +473,11 @@ float3 raster_forward_color(RasterGaussian gaussian, uint splatId, uint debugMod
         if (isBlack) return float3(1.0, 1.0, 0.0);
         return 0.125 * saturate(color);
     }
-    if (debugMode == DEBUG_MODE_GRAD_VARIANCE) return jet_colormap(raster_normalize_grad_norm(sqrt(raster_grad_variance(splatId))));
+    if (debugMode == DEBUG_MODE_GRAD_VARIANCE) return jet_colormap(raster_normalize_grad_variance(raster_grad_variance(splatId)));
     if (debugMode == DEBUG_MODE_REFINEMENT_DISTRIBUTION)
     {
         float2 distributionRange = raster_refinement_distribution_range();
-        return jet_colormap(debug_normalize_log_range(max(raster_refinement_distribution(splatId), DEBUG_CONTRIBUTION_AMOUNT_FLOOR), distributionRange.x, distributionRange.y));
+        return jet_colormap(debug_normalize_range(raster_refinement_distribution(splatId), distributionRange));
     }
     if (debugMode != DEBUG_MODE_GRAD_NORM) return gaussian.colorAlpha.xyz;
     float gradNorm = g_DebugGradNorm[splatId];
@@ -895,6 +913,14 @@ interface IRasterGradVariant
     static void flush_cached_raster_grad(uint splatId, RasterGaussian gaussian, RasterGaussian.Differential dGaussian);
 }
 
+void resolve_gradient_stats<T : IRasterGradVariant>(uint3 dispatchThreadID)
+{
+    uint splatId = dispatchThreadID.x;
+    if (splatId >= g_Prepass.splatCount) return;
+
+    g_GradientStats[gradient_stat_index(splatId, 0u)] = raster_grad_contribution_norm(T.load_cached_raster_grad(splatId));
+}
+
 struct FixedRasterGradVariant : IRasterGradVariant
 {
     static RasterGaussian load_cached_raster_grad(uint splatId)
@@ -1045,9 +1071,23 @@ void csBackpropCachedRasterGradsFixed(uint3 dispatchThreadID : SV_DispatchThread
 
 [shader("compute")]
 [numthreads(TILE_GROUP_SIZE, 1, 1)]
+void csResolveGradientStatsFixed(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    resolve_gradient_stats<FixedRasterGradVariant>(dispatchThreadID);
+}
+
+[shader("compute")]
+[numthreads(TILE_GROUP_SIZE, 1, 1)]
 void csBackpropCachedRasterGradsFloat(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     backprop_cached_raster_grads<FloatRasterGradVariant>(dispatchThreadID);
+}
+
+[shader("compute")]
+[numthreads(TILE_GROUP_SIZE, 1, 1)]
+void csResolveGradientStatsFloat(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    resolve_gradient_stats<FloatRasterGradVariant>(dispatchThreadID);
 }
 
 [shader("compute")]

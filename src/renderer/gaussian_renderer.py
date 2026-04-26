@@ -44,6 +44,7 @@ class _RasterGradShaderSet:
     training_forward: spy.ComputeKernel
     clear: spy.ComputeKernel
     backward: spy.ComputeKernel
+    resolve_stats: spy.ComputeKernel
     backprop: spy.ComputeKernel
 
 
@@ -158,7 +159,7 @@ class GaussianRenderer:
     _DEFAULT_DEBUG_SPLAT_AGE_RANGE = (0.0, 1.0)
     _DEFAULT_DEBUG_DENSITY_RANGE = (0.0, 20.0)
     _DEFAULT_DEBUG_CONTRIBUTION_RANGE = (0.001, 1.0)
-    _DEFAULT_DEBUG_REFINEMENT_DISTRIBUTION_RANGE = _DEFAULT_DEBUG_CONTRIBUTION_RANGE
+    _DEFAULT_DEBUG_REFINEMENT_DISTRIBUTION_RANGE = (0.0, 1.0)
     _DEFAULT_DEBUG_ADAM_MOMENTUM_RANGE = (0.0, 0.1)
     _DEFAULT_DEBUG_DEPTH_MEAN_RANGE = (0.0, 10.0)
     _DEFAULT_DEBUG_DEPTH_STD_RANGE = (0.0, 0.5)
@@ -430,6 +431,7 @@ class GaussianRenderer:
                 "training_forward": f"csRasterizeTrainingForward{entry_suffix}",
                 "clear": f"csClearRasterGrads{entry_suffix}",
                 "backward": f"csRasterizeBackward{entry_suffix}",
+                "resolve_stats": f"csResolveGradientStats{entry_suffix}",
                 "backprop": f"csBackpropCachedRasterGrads{entry_suffix}",
             },
         )
@@ -437,6 +439,7 @@ class GaussianRenderer:
             training_forward=kernels["training_forward"],
             clear=kernels["clear"],
             backward=kernels["backward"],
+            resolve_stats=kernels["resolve_stats"],
             backprop=kernels["backprop"],
         )
 
@@ -1327,6 +1330,21 @@ class GaussianRenderer:
             self._clear_float_buffer(encoder, resolved_regularizer_grad, max(self.width * self.height, 1) * 2)
         vars = {**self._scene_vars(), **self._raster_cache_vars(), "g_SortedValues": self._sorted_values(), "g_TileRanges": self._work_buffers["tile_ranges"], "g_OutputGrad": output_grad, "g_TrainingForwardState": self._work_buffers["training_forward_state"], "g_TrainingDepthStats": self._training_depth_stats_texture, "g_TrainingRegularizerGrad": resolved_regularizer_grad, "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"], "g_TrainingBatchEnd": self._work_buffers["training_batch_end"], "g_CloneCounts": self._work_buffers["fallback_clone_counts"] if clone_counts_buffer is None else clone_counts_buffer, "g_GradientStats": resolved_gradient_stats, **self._raster_grad_vars(), **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_range_vars(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background, training_background_mode, training_background_seed), **self._anisotropy_uniforms(), **self._camera_uniforms(camera), **self._camera_uniforms(resolved_native_camera, "g_TrainingNativeCamera"), **resolved_sample_vars}
         self._dispatch(self._raster_grad_shader_set().backward, encoder, self._raster_thread_count(), vars, "Rasterize Backward", 27)
+        self._dispatch(
+            self._raster_grad_shader_set().resolve_stats,
+            encoder,
+            spy.uint3(max(int(self._scene_count), 1), 1, 1),
+            {
+                "g_GradientStats": resolved_gradient_stats,
+                **self._raster_cache_vars(),
+                **self._raster_grad_vars(),
+                **self._raster_grad_decode_scale_var(1.0),
+                **self._raster_grad_fixed_range_vars(),
+                **self._prepass_uniforms(self._scene_count),
+            },
+            "Resolve Gradient Stats",
+            28,
+        )
 
     def _backprop_cached_raster_grads(self, encoder: spy.CommandEncoder, splat_count: int, camera: Camera, grad_scale: float = 1.0) -> None:
         self._dispatch(
@@ -1345,7 +1363,7 @@ class GaussianRenderer:
                 **self._camera_uniforms(camera),
             },
             "Backprop Cached Raster Grads",
-            28,
+            29,
         )
 
     def _execute_prepass(self, scene: GaussianScene, camera: Camera, sync_counts: bool = False, sort_camera_position: np.ndarray | None = None, sort_camera_dither_sigma: float = 0.0, sort_camera_dither_seed: int = 0) -> tuple[int, int]:

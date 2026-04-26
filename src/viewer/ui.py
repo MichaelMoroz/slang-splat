@@ -403,7 +403,7 @@ def _contribution_amount_tick_value(t: float, value_min: float, value_max: float
 
 
 def _refinement_distribution_tick_value(t: float, value_min: float, value_max: float) -> float:
-    return _contribution_amount_tick_value(t, value_min, value_max)
+    return _debug_range_tick_value(t, value_min, value_max)
 
 
 def _debug_range_tick_value(t: float, value_min: float, value_max: float) -> float:
@@ -1581,7 +1581,7 @@ class ToolkitWindow:
             value = _threshold_band_tick_value(t, threshold)
             return f"{value * value:.1e}"
         if mode == "refinement_distribution":
-            return f"{_refinement_distribution_tick_value(t, float(ui._values.get('debug_refinement_distribution_min', 0.001)), float(ui._values.get('debug_refinement_distribution_max', 1.0))):.1e}"
+            return f"{_refinement_distribution_tick_value(t, float(ui._values.get('debug_refinement_distribution_min', 0.0)), float(ui._values.get('debug_refinement_distribution_max', 1.0))):.3g}"
         if mode == "depth_mean":
             return f"{_debug_range_tick_value(t, float(ui._values.get('debug_depth_mean_min', 0.0)), float(ui._values.get('debug_depth_mean_max', 10.0))):.3g}"
         if mode == "depth_std":

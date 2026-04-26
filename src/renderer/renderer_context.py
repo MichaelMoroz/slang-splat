@@ -34,7 +34,7 @@ class GaussianRenderSettings:
     debug_splat_age_range: tuple[float, float] = (0.0, 1.0)
     debug_density_range: tuple[float, float] = (0.0, 20.0)
     debug_contribution_range: tuple[float, float] = (0.001, 1.0)
-    debug_refinement_distribution_range: tuple[float, float] = (0.001, 1.0)
+    debug_refinement_distribution_range: tuple[float, float] = (0.0, 1.0)
     debug_adam_momentum_range: tuple[float, float] = (0.0, 0.1)
     debug_depth_mean_range: tuple[float, float] = (0.0, 10.0)
     debug_depth_std_range: tuple[float, float] = (0.0, 0.5)

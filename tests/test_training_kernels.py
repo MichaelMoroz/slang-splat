@@ -1717,6 +1717,9 @@ def test_gradient_stats_accumulate_raster_contribution_squares_and_clear(device,
     trainer.step()
 
     stats = buffer_to_numpy(trainer.refinement_buffers["gradient_stats"], np.float32).reshape(-1, 2)[: scene.count]
+    cached_grads = renderer.read_active_cached_raster_grads_float_tensor(scene.count)
+    cached_grad_norm = np.linalg.norm(cached_grads, axis=1)
+    np.testing.assert_allclose(stats[:, 0], cached_grad_norm, rtol=5e-4, atol=5e-5)
     assert np.any(stats[:, 0] > 0.0)
     assert np.any(stats[:, 1] > 0.0)
     assert trainer.observed_contribution_pixel_count == renderer.width * renderer.height
