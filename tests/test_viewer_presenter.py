@@ -262,6 +262,7 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
     viewer.s = SimpleNamespace(
         fps_smooth=60.0,
         last_time=time.perf_counter(),
+        last_interaction_time=0.0,
         renderer=_DummyRenderer(),
         debug_renderer=None,
         scene=SimpleNamespace(count=4),
@@ -354,6 +355,29 @@ def test_render_frame_runs_configured_training_batch(monkeypatch):
     assert viewer.s.trainer.step_calls == 3
     assert viewer.s.trainer.step_batch_calls == [3]
     assert viewer.s.last_training_batch_steps == 3
+    assert calls == ["apply", "main", "ui"]
+
+
+def test_render_frame_reduces_training_batch_while_recently_interacting(monkeypatch):
+    viewer = _viewer(loss_debug=False)
+    viewer.c("training_steps_per_frame").value = 3
+    viewer.s.last_interaction_time = viewer.s.last_time
+    render_context = SimpleNamespace(surface_texture=SimpleNamespace(width=640, height=360), command_encoder=_DummyEncoder())
+    calls: list[str] = []
+
+    monkeypatch.setattr(presenter.session, "apply_live_params", lambda viewer_obj: calls.append("apply"))
+    monkeypatch.setattr(presenter.session, "ensure_training_runtime_resolution", lambda viewer_obj: calls.append("train_resize"))
+    monkeypatch.setattr(presenter.session, "recreate_renderer", lambda viewer_obj, width, height: calls.append("resize"))
+    monkeypatch.setattr(presenter.session, "update_debug_frame_slider_range", lambda viewer_obj: None)
+    monkeypatch.setattr(presenter, "_render_debug_view", lambda viewer_obj, encoder, width, height, render_frame_index: calls.append("debug") or "debug_tex")
+    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, encoder: calls.append("main") or "main_tex")
+    monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
+
+    presenter.render_frame(viewer, render_context)
+
+    assert viewer.s.trainer.step_calls == 1
+    assert viewer.s.trainer.step_batch_calls == [1]
+    assert viewer.s.last_training_batch_steps == 1
     assert calls == ["apply", "main", "ui"]
 
 

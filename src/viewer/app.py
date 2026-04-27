@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 import math
 from pathlib import Path
+import time
 
 import numpy as np
 import slangpy as spy
@@ -56,6 +57,14 @@ _DEBUG_MODE_VALUES = (
     GaussianRenderer.DEBUG_MODE_SH_COEFFICIENT,
     GaussianRenderer.DEBUG_MODE_BLACK_NEGATIVE,
 )
+
+
+def _mark_recent_interaction(viewer: object, timestamp: float | None = None) -> None:
+    state = getattr(viewer, "s", None)
+    if state is None:
+        return
+    resolved = float(timestamp) if timestamp is not None else time.perf_counter()
+    state.last_interaction_time = resolved
 
 
 def _viewer_ui_values(viewer: object) -> dict[str, object]:
@@ -214,6 +223,8 @@ class SplatViewer(spy.AppWindow):
         return True
 
     def on_keyboard_event(self, event) -> None:
+        if event.type in (spy.KeyboardEventType.key_press, spy.KeyboardEventType.key_release):
+            _mark_recent_interaction(self)
         if self.toolkit.handle_keyboard_event(event):
             if event.type == spy.KeyboardEventType.key_release:
                 self.s.keys[event.key] = False
@@ -253,6 +264,8 @@ class SplatViewer(spy.AppWindow):
 
     def on_mouse_event(self, event) -> None:
         if self.toolkit.handle_mouse_event(event):
+            if event.type in (spy.MouseEventType.button_down, spy.MouseEventType.button_up, spy.MouseEventType.move, spy.MouseEventType.scroll):
+                _mark_recent_interaction(self)
             if event.type == spy.MouseEventType.move:
                 self.s.mx = event.pos.x
                 self.s.my = event.pos.y
@@ -263,11 +276,15 @@ class SplatViewer(spy.AppWindow):
                 elif event.button == spy.MouseButton.right:
                     self.s.mouse_right = False
             return
+        if event.type in (spy.MouseEventType.button_down, spy.MouseEventType.button_up, spy.MouseEventType.scroll):
+            _mark_recent_interaction(self)
         if event.type in (spy.MouseEventType.button_down, spy.MouseEventType.button_up) and event.button == spy.MouseButton.left:
             self.s.mouse_left = event.type == spy.MouseEventType.button_down
         if event.type in (spy.MouseEventType.button_down, spy.MouseEventType.button_up) and event.button == spy.MouseButton.right:
             self.s.mouse_right = event.type == spy.MouseEventType.button_down
         if event.type == spy.MouseEventType.move:
+            if self.s.mouse_left or self.s.mouse_right:
+                _mark_recent_interaction(self)
             if self.s.mx is not None and self.s.my is not None:
                 self.s.mouse_delta += spy.float2(event.pos.x - self.s.mx, event.pos.y - self.s.my)
             self.s.mx = event.pos.x
@@ -451,7 +468,8 @@ class SplatViewer(spy.AppWindow):
 
     def update_camera(self, dt: float) -> None:
         self.s.move_speed, self.s.fov_y = float(self.c("move_speed").value), float(self.c("fov").value)
-        if abs(self.s.scroll_delta) > 1e-5:
+        scroll_active = abs(self.s.scroll_delta) > 1e-5
+        if scroll_active:
             self.s.move_speed = max(self.s.move_speed * (_SCROLL_SPEED_BASE ** self.s.scroll_delta), 0.0)
             self.c("move_speed").value, self.s.scroll_delta = self.s.move_speed, 0.0
         mouse_delta = spy.float2(float(self.s.mouse_delta.x), float(self.s.mouse_delta.y))
@@ -465,6 +483,8 @@ class SplatViewer(spy.AppWindow):
         right, up = normalize3(smath.cross(self.s.up, forward), eps=_VIEW_VEC_EPS), normalize3(smath.cross(forward, normalize3(smath.cross(self.s.up, forward), eps=_VIEW_VEC_EPS)), eps=_VIEW_VEC_EPS)
         move = spy.float3(float(self.s.keys.get(spy.KeyCode.e, False)) - float(self.s.keys.get(spy.KeyCode.q, False)), float(self.s.keys.get(spy.KeyCode.d, False)) - float(self.s.keys.get(spy.KeyCode.a, False)), float(self.s.keys.get(spy.KeyCode.w, False)) - float(self.s.keys.get(spy.KeyCode.s, False)))
         move_length = float(smath.length(move))
+        if scroll_active or self.s.mouse_left or self.s.mouse_right or move_length > _VIEW_VEC_EPS:
+            _mark_recent_interaction(self, float(getattr(self.s, "last_time", time.perf_counter())))
         target_move = move * (self.s.move_speed / max(move_length, _VIEW_VEC_EPS)) if move_length > _VIEW_VEC_EPS else spy.float3(0.0, 0.0, 0.0)
         if self.s.mouse_right:
             drag_speed = self.s.move_speed * self.s.look_speed / max(float(dt), _VIEW_VEC_EPS)

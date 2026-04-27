@@ -24,6 +24,8 @@ def _viewer(keyboard_capture: bool = False, mouse_capture: bool = False) -> Simp
         mouse_right=False,
         mouse_delta=app.spy.float2(1.0, 2.0),
         scroll_delta=0.0,
+        last_interaction_time=0.0,
+        last_time=0.0,
         mx=None,
         my=None,
     )
@@ -37,6 +39,15 @@ def test_keyboard_capture_blocks_camera_input() -> None:
     app.SplatViewer.on_keyboard_event(viewer, event)
 
     assert viewer.s.keys == {}
+
+
+def test_keyboard_capture_marks_recent_interaction() -> None:
+    viewer = _viewer(keyboard_capture=True)
+    event = SimpleNamespace(type=app.spy.KeyboardEventType.key_press, key=app.spy.KeyCode.w)
+
+    app.SplatViewer.on_keyboard_event(viewer, event)
+
+    assert viewer.s.last_interaction_time > 0.0
 
 
 def test_keyboard_capture_clears_released_key() -> None:
@@ -166,6 +177,39 @@ def test_update_camera_right_drag_pans_along_view_plane() -> None:
     np.testing.assert_allclose(np.asarray(viewer.s.camera_pos, dtype=np.float32), np.array([-0.06, 0.12, -3.0], dtype=np.float32), rtol=0.0, atol=1e-6)
     assert viewer.s.mouse_delta.x == 0.0
     assert viewer.s.mouse_delta.y == 0.0
+
+
+def test_update_camera_marks_recent_interaction_while_keyboard_motion_is_active() -> None:
+    controls = {
+        "move_speed": SimpleNamespace(value=2.0),
+        "fov": SimpleNamespace(value=60.0),
+    }
+    viewer = SimpleNamespace(
+        s=SimpleNamespace(
+            move_speed=2.0,
+            fov_y=60.0,
+            scroll_delta=0.0,
+            mouse_delta=app.spy.float2(0.0, 0.0),
+            mouse_left=False,
+            mouse_right=False,
+            look_speed=0.003,
+            rot_vel=app.spy.float2(0.0, 0.0),
+            yaw=0.0,
+            pitch=0.0,
+            up=app.spy.float3(0.0, 1.0, 0.0),
+            keys={app.spy.KeyCode.w: True},
+            move_vel=app.spy.float3(0.0, 0.0, 0.0),
+            camera_pos=app.spy.float3(0.0, 0.0, -3.0),
+            last_time=123.0,
+            last_interaction_time=0.0,
+        ),
+        c=lambda key: controls[key],
+        _forward=lambda: app.spy.float3(0.0, 0.0, 1.0),
+    )
+
+    app.SplatViewer.update_camera(viewer, 0.1)
+
+    assert viewer.s.last_interaction_time == 123.0
 
 
 def test_on_resize_records_exception_without_raising() -> None:

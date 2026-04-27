@@ -22,6 +22,7 @@ from ..utility import clamp_index
 
 _DEFAULT_TRAINING_STEPS_PER_FRAME = 3
 _MAX_TRAINING_STEPS_PER_FRAME = 8
+_INTERACTION_TRAINING_COOLDOWN_S = 0.2
 _TRAIN_DOWNSCALE_MODE_AUTO = 0
 _CAMERA_OVERLAY_LENGTH_FRACTION = 0.08
 _CAMERA_OVERLAY_MIN_LENGTH = 0.05
@@ -311,8 +312,13 @@ def _training_steps_per_frame(viewer: object) -> int:
     try:
         value = int(viewer.c("training_steps_per_frame").value)
     except Exception:
-        return _DEFAULT_TRAINING_STEPS_PER_FRAME
-    return max(1, min(value, _MAX_TRAINING_STEPS_PER_FRAME))
+        value = _DEFAULT_TRAINING_STEPS_PER_FRAME
+    configured = max(1, min(value, _MAX_TRAINING_STEPS_PER_FRAME))
+    now = float(getattr(getattr(viewer, "s", None), "last_time", 0.0))
+    last_interaction = float(getattr(getattr(viewer, "s", None), "last_interaction_time", 0.0))
+    if now - last_interaction <= _INTERACTION_TRAINING_COOLDOWN_S:
+        return 1
+    return configured
 
 
 def _training_camera_debug_active(viewer: object) -> bool:
