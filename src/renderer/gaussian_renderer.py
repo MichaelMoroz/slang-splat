@@ -609,7 +609,7 @@ class GaussianRenderer:
         width: int,
         height: int,
         radius_scale: float = 1.0,
-        alpha_cutoff: float = 1.0 / 255.0,
+        alpha_cutoff: float = 1e-2,
         max_splat_steps: int = 32768,
         max_anisotropy: float = 32.0,
         transmittance_threshold: float = 0.005,

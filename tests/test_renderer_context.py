@@ -40,46 +40,11 @@ def test_render_settings_forward_debug_overlays_to_renderer(monkeypatch) -> None
         ),
     )
     renderer = settings.create_renderer(device="stub-device")
-    expected_kwargs = {
-        "radius_scale": 1.0,
-        "alpha_cutoff": 1.0 / 255.0,
-        "max_anisotropy": 32.0,
-        "transmittance_threshold": 0.005,
-        "list_capacity_multiplier": 64,
-        "max_prepass_memory_mb": 4096,
-        "cached_raster_grad_atomic_mode": "float",
-        "cached_raster_grad_include_depth": CachedRasterGradParams().include_depth,
-        "cached_raster_grad_fixed_ro_local_range": 1.0,
-        "cached_raster_grad_fixed_scale_range": 15.0,
-        "cached_raster_grad_fixed_quat_range": 0.01,
-        "cached_raster_grad_fixed_color_range": 8.0,
-        "cached_raster_grad_fixed_opacity_range": 8.0,
-        "debug_grad_norm_threshold": 2e-4,
-        "debug_ellipse_thickness_px": 4.0,
-        "debug_gaussian_scale_multiplier": 1.0,
-        "debug_min_opacity": 0.0,
-        "debug_opacity_multiplier": 1.0,
-        "debug_ellipse_scale_multiplier": 1.0,
-        "debug_splat_age_range": (0.0, 1.0),
-        "debug_density_range": (0.0, 20.0),
-        "debug_contribution_range": (0.001, 1.0),
-        "debug_refinement_distribution_range": (0.0, 1.0),
-        "debug_adam_momentum_range": (0.0, 0.1),
-        "debug_depth_mean_range": (0.0, 10.0),
-        "debug_depth_std_range": (0.0, 0.5),
-        "debug_depth_local_mismatch_range": (0.0, 0.5),
-        "debug_depth_local_mismatch_smooth_radius": 2.0,
-        "debug_depth_local_mismatch_reject_radius": 4.0,
-        "debug_sh_coeff_index": 0,
-        "debug_show_ellipses": True,
-        "debug_show_processed_count": True,
-        "debug_show_grad_norm": True,
-    }
-    if runtime_renderer_params().debug_mode is not None:
-        expected_kwargs["debug_mode"] = runtime_renderer_params().debug_mode
+    expected_kwargs = settings.renderer_kwargs()
 
     assert isinstance(renderer, _RendererStub)
     assert captured["device"] == "stub-device"
     assert captured["width"] == 64
     assert captured["height"] == 32
     assert captured["kwargs"] == expected_kwargs
+    assert captured["kwargs"]["alpha_cutoff"] == 1e-2

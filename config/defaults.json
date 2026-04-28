@@ -1,7 +1,7 @@
 {
   "training_build_args": {
     "base_lr": 0.002,
-    "lr_pos_mul": 0.75,
+    "lr_pos_mul": 0.25,
     "lr_scale_mul": 5.0,
     "lr_rot_mul": 1.0,
     "lr_color_mul": 5.0,
@@ -49,7 +49,7 @@
     "lr_schedule_start_lr": 0.002,
     "lr_schedule_stage1_lr": 0.002,
     "lr_schedule_stage2_lr": 0.001,
-    "lr_schedule_end_lr": 0.0003000000142492354,
+    "lr_schedule_end_lr": 0.00022099976195022464,
     "lr_schedule_steps": 30000,
     "lr_schedule_stage1_step": 3000,
     "lr_schedule_stage2_step": 14000,
@@ -78,7 +78,7 @@
     "lr_sh_stage3_mul": 0.1,
     "ssim_weight_stage1": 0.10000000149011612,
     "ssim_weight_stage2": 0.20000000298023224,
-    "ssim_weight_stage3": 0.4000000059604645,
+    "ssim_weight_stage3": 0.2500019967556,
     "max_visible_angle_deg_stage1": 20.0,
     "max_visible_angle_deg_stage2": 18.0,
     "max_visible_angle_deg_stage3": 18.0,
@@ -104,7 +104,7 @@
   },
   "renderer": {
     "radius_scale": 1.0,
-    "alpha_cutoff": 0.00392156862745098,
+    "alpha_cutoff": 0.01,
     "max_anisotropy": 32.0,
     "transmittance_threshold": 0.005,
     "list_capacity_multiplier": 64,
@@ -169,7 +169,7 @@
       "loss_debug_view": 0,
       "loss_debug_frame": 0,
       "loss_debug_abs_scale": 1.0,
-      "move_speed": 6.0296242738763475,
+      "move_speed": 1.1971221047448903,
       "fov": 60.0,
       "render_background_mode": 1,
       "render_background_color": [
@@ -197,10 +197,10 @@
       "colmap_nn_radius_scale_coef": 0.40230000019073486,
       "colmap_min_track_length": 3,
       "colmap_depth_point_count": 100000,
-      "colmap_diffused_point_count": 95001,
+      "colmap_diffused_point_count": 394001,
       "colmap_diffusion_radius": 1.030400037765503,
-      "colmap_fibonacci_sphere_point_count": 0,
-      "colmap_fibonacci_sphere_radius": 70.09500122070312
+      "colmap_fibonacci_sphere_point_count": 50601,
+      "colmap_fibonacci_sphere_radius": 101.02799987792969
     },
     "ui": {
       "show_histograms": false,
@@ -214,8 +214,8 @@
       "hist_max_value": 0.984375,
       "hist_y_limit": 1282299.2,
       "viewport_sh_band": 3,
-      "viewport_sh_control_key": "sh_band_stage1",
-      "viewport_sh_stage_label": "Stage 1"
+      "viewport_sh_control_key": "sh_band_stage2",
+      "viewport_sh_stage_label": "Stage 2"
     },
     "state": {
       "list_capacity_multiplier": 16,
@@ -231,7 +231,7 @@
     "common_render": {
       "prepass_memory_mb": 4096,
       "radius_scale": 1.0,
-      "alpha_cutoff": 0.00392156862745098,
+      "alpha_cutoff": 0.01,
       "trans_threshold": 0.005,
       "cached_raster_grad_atomic_mode": "float",
       "cached_raster_grad_include_depth": true,
