@@ -282,8 +282,10 @@ def _ui_header_state(viewer: object, debug_metrics: dict[str, np.ndarray], frame
     }
 
 
-def _viewer_panel_state(viewer: object) -> dict[str, object]:
+def _viewer_panel_state(viewer: object, debug_metrics: dict[str, np.ndarray] | None = None) -> dict[str, object]:
     _, viewport_sh_control_key, viewport_sh_stage_label = _viewport_sh_state(viewer)
+    show_training_views = _ui_flag(viewer, "show_training_views", False)
+    show_camera_overlays = _ui_flag(viewer, "show_camera_overlays", False)
     return {
         "training_resolution": _training_resolution_text(viewer),
         "training_downscale": _training_downscale_text(viewer),
@@ -295,8 +297,8 @@ def _viewer_panel_state(viewer: object) -> dict[str, object]:
         "histogram_status": str(getattr(viewer.s, "cached_raster_grad_histogram_status", "")),
         "histogram_payload": getattr(viewer.s, "cached_raster_grad_histograms", None),
         "histogram_range_payload": getattr(viewer.s, "cached_raster_grad_ranges", None),
-        "training_views_rows": _training_view_rows(viewer),
-        "training_view_overlay_segments": _camera_overlay_segments(viewer),
+        "training_views_rows": _training_view_rows(viewer, debug_metrics) if show_training_views else (),
+        "training_view_overlay_segments": _camera_overlay_segments(viewer, debug_metrics) if show_camera_overlays else (),
     }
 
 
@@ -326,6 +328,13 @@ def _training_camera_debug_active(viewer: object) -> bool:
         return bool(viewer.ui._values.get("show_training_cameras", False))
     except Exception:
         return False
+
+
+def _ui_flag(viewer: object, key: str, default: bool = False) -> bool:
+    try:
+        return bool(viewer.ui._values.get(key, default))
+    except Exception:
+        return bool(default)
 
 
 def _viewport_target_size(viewer: object, fallback_width: int, fallback_height: int) -> tuple[int, int]:
@@ -379,11 +388,11 @@ def _frame_metrics_snapshot(viewer: object, frame_count: int) -> dict[str, np.nd
     }
 
 
-def _training_view_rows(viewer: object) -> tuple[dict[str, object], ...]:
+def _training_view_rows(viewer: object, metrics: dict[str, np.ndarray] | None = None) -> tuple[dict[str, object], ...]:
     frames = tuple(getattr(viewer.s, "training_frames", ()))
     if len(frames) == 0:
         return ()
-    metrics = _frame_metrics_snapshot(viewer, len(frames))
+    resolved_metrics = _frame_metrics_snapshot(viewer, len(frames)) if metrics is None else metrics
     trainer = getattr(viewer.s, "trainer", None)
     training = getattr(trainer, "training", None)
     camera_min_dist = float(getattr(training, "camera_min_dist", float("nan")))
@@ -400,9 +409,9 @@ def _training_view_rows(viewer: object) -> tuple[dict[str, object], ...]:
                 "cx": float(getattr(frame, "cx", float("nan"))),
                 "cy": float(getattr(frame, "cy", float("nan"))),
                 "camera_min_dist": camera_min_dist,
-                "loss": float(metrics["loss"][frame_index]) if frame_index < metrics["loss"].size else float("nan"),
-                "psnr": float(metrics["psnr"][frame_index]) if frame_index < metrics["psnr"].size else float("nan"),
-                "visited": bool(metrics["visited"][frame_index]) if frame_index < metrics["visited"].size else False,
+                "loss": float(resolved_metrics["loss"][frame_index]) if frame_index < resolved_metrics["loss"].size else float("nan"),
+                "psnr": float(resolved_metrics["psnr"][frame_index]) if frame_index < resolved_metrics["psnr"].size else float("nan"),
+                "visited": bool(resolved_metrics["visited"][frame_index]) if frame_index < resolved_metrics["visited"].size else False,
                 "is_last": int(frame_index) == last_frame_index,
             }
         )
@@ -559,6 +568,7 @@ def _project_overlay_points(viewer_camera: object, points_world: np.ndarray, vie
 
 def _camera_overlay_segments(
     viewer: object,
+    metrics: dict[str, np.ndarray] | None = None,
 ) -> tuple[
     tuple[
         tuple[tuple[float, float], ...],
@@ -573,7 +583,7 @@ def _camera_overlay_segments(
     ...,
 ]:
     trainer = getattr(viewer.s, "trainer", None)
-    if trainer is None or _training_camera_debug_active(viewer):
+    if trainer is None or _training_camera_debug_active(viewer) or not _ui_flag(viewer, "show_camera_overlays", False):
         return ()
     viewport_camera = viewer.camera()
     if not hasattr(viewport_camera, "basis"):
@@ -585,7 +595,8 @@ def _camera_overlay_segments(
     if world_corners.size == 0:
         return ()
     last_frame_index = int(getattr(getattr(trainer, "state", None), "last_frame_index", -1))
-    metrics = _frame_metrics_snapshot(viewer, len(getattr(viewer.s, "training_frames", ())))
+    show_camera_labels = _ui_flag(viewer, "show_camera_labels", False)
+    resolved_metrics = _frame_metrics_snapshot(viewer, len(getattr(viewer.s, "training_frames", ()))) if show_camera_labels and metrics is None else metrics
     points_world = world_corners.reshape(-1, 3)
     screen_points, valid_points = _project_overlay_points(viewport_camera, points_world, viewport_width, viewport_height)
     if screen_points.size == 0:
@@ -632,9 +643,9 @@ def _camera_overlay_segments(
             (float(corners[6, 0]), float(corners[6, 1])),
             (
                 f"{Path(getattr(viewer.s.training_frames[int(frame_index)], 'image_path', f'frame_{int(frame_index)}')).name}"
-                f" | {float(metrics['psnr'][int(frame_index)]):.2f} dB"
-                if int(frame_index) < metrics["psnr"].size and np.isfinite(float(metrics["psnr"][int(frame_index)]))
-                else Path(getattr(viewer.s.training_frames[int(frame_index)], "image_path", f"frame_{int(frame_index)}")).name
+                f" | {float(resolved_metrics['psnr'][int(frame_index)]):.2f} dB"
+                if show_camera_labels and resolved_metrics is not None and int(frame_index) < resolved_metrics["psnr"].size and np.isfinite(float(resolved_metrics["psnr"][int(frame_index)]))
+                else Path(getattr(viewer.s.training_frames[int(frame_index)], "image_path", f"frame_{int(frame_index)}")).name if show_camera_labels else ""
             ),
             _CAMERA_OVERLAY_ACTIVE_COLOR if bool(is_active) else _CAMERA_OVERLAY_COLOR,
             2.0 if bool(is_active) else 1.25,

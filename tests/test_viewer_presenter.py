@@ -254,7 +254,7 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
     viewer.device = SimpleNamespace()
     viewer.toolkit = SimpleNamespace(viewport_size=lambda: (640, 360))
     viewer.loss_debug_view_options = (("rendered", "Rendered"), ("target", "Target"), ("abs_diff", "Abs Diff"), ("dssim", "DSSIM"), ("rendered_edges", "Rendered Edges"), ("target_edges", "Target Edges"))
-    viewer.ui = SimpleNamespace(controls=controls, texts=texts, _values={"show_histograms": False, "_histogram_payload": None, "_histogram_range_payload": None, "show_training_cameras": bool(loss_debug)}, _texts={key: value.text for key, value in texts.items()})
+    viewer.ui = SimpleNamespace(controls=controls, texts=texts, _values={"show_histograms": False, "_histogram_payload": None, "_histogram_range_payload": None, "show_training_cameras": bool(loss_debug), "show_training_views": False, "show_camera_overlays": False, "show_camera_labels": False}, _texts={key: value.text for key, value in texts.items()})
     viewer.c = lambda key: viewer.ui.controls[key]
     viewer.t = lambda key: viewer.ui.texts[key]
     viewer.camera = lambda: "camera"
@@ -479,6 +479,7 @@ def test_render_frame_handles_import_failure_without_raising(monkeypatch):
 
 def test_update_ui_text_reports_training_schedule_and_refinement() -> None:
     viewer = _viewer(loss_debug=False)
+    viewer.ui._values["show_training_views"] = True
 
     presenter.update_ui_text(viewer, 1.0 / 60.0)
 
@@ -503,6 +504,36 @@ def test_update_ui_text_reports_training_schedule_and_refinement() -> None:
             "is_last": True,
         },
     )
+
+
+def test_update_ui_text_skips_training_view_rows_when_hidden() -> None:
+    viewer = _viewer(loss_debug=False)
+
+    presenter.update_ui_text(viewer, 1.0 / 60.0)
+
+    assert viewer.ui._values["_training_views_rows"] == ()
+
+
+def test_update_ui_text_reuses_single_metrics_snapshot_for_training_rows() -> None:
+    viewer = _viewer(loss_debug=False)
+    viewer.ui._values["show_training_views"] = True
+    calls = 0
+
+    def _snapshot() -> dict[str, np.ndarray]:
+        nonlocal calls
+        calls += 1
+        return {
+            "loss": np.asarray([0.25], dtype=np.float64),
+            "mse": np.asarray([0.125], dtype=np.float64),
+            "psnr": np.asarray([32.5], dtype=np.float64),
+            "visited": np.asarray([True], dtype=bool),
+        }
+
+    viewer.s.trainer.frame_metrics_snapshot = _snapshot
+
+    presenter.update_ui_text(viewer, 1.0 / 60.0)
+
+    assert calls == 1
 
 
 def test_update_ui_text_skips_resource_debug_snapshot_when_closed(monkeypatch) -> None:

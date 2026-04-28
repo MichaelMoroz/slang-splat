@@ -361,10 +361,46 @@ class GaussianTrainer:
     def _pixel_thread_count(self) -> spy.uint3:
         return thread_count_2d(self.renderer.width, self.renderer.height)
 
+    def _invalidate_training_resolution_summary(self) -> None:
+        self._training_resolution_summary_cache_key = None
+        self._training_resolution_summary_cache = None
+
+    def _training_resolution_summary_key(self, step: int | None = None) -> tuple[int, int]:
+        resolved_step = 0 if step is None and not hasattr(self, "state") else self.state.step if step is None else int(step)
+        return (
+            int(self.effective_train_downscale_factor(resolved_step)),
+            int(getattr(getattr(self, "training", None), "train_subsample_factor", 1)),
+        )
+
+    def _cached_training_resolution_summary(self, step: int | None = None) -> tuple[tuple[int, int], bool]:
+        if len(self.frames) <= 0:
+            return (1, 1), False
+        resolved_step = 0 if step is None and not hasattr(self, "state") else self.state.step if step is None else int(step)
+        cache_key = self._training_resolution_summary_key(resolved_step)
+        cached_key = getattr(self, "_training_resolution_summary_cache_key", None)
+        cached_summary = getattr(self, "_training_resolution_summary_cache", None)
+        if cached_key == cache_key and cached_summary is not None:
+            return cached_summary
+        first_resolution: tuple[int, int] | None = None
+        max_width = 1
+        max_height = 1
+        resolutions_vary = False
+        for frame_index in range(len(self.frames)):
+            width, height = self.training_resolution(frame_index, resolved_step)
+            max_width = max(max_width, int(width))
+            max_height = max(max_height, int(height))
+            resolution = (int(width), int(height))
+            if first_resolution is None:
+                first_resolution = resolution
+            elif resolution != first_resolution:
+                resolutions_vary = True
+        summary = ((max_width, max_height), resolutions_vary)
+        self._training_resolution_summary_cache_key = cache_key
+        self._training_resolution_summary_cache = summary
+        return summary
+
     def _max_training_resolution(self, step: int | None = None) -> tuple[int, int]:
-        resolved_step = self.state.step if step is None else int(step)
-        resolutions = [self.training_resolution(frame_index, resolved_step) for frame_index in range(len(self.frames))]
-        return max(width for width, _ in resolutions), max(height for _, height in resolutions)
+        return self._cached_training_resolution_summary(step)[0]
 
     def _training_background(self) -> np.ndarray:
         return np.asarray(self.training.background, dtype=np.float32).reshape(3)
@@ -408,11 +444,9 @@ class GaussianTrainer:
         return resolve_training_resolution(width, height, self.effective_train_render_factor(step, frame_index))
 
     def training_resolutions_vary(self, step: int | None = None) -> bool:
-        resolved_step = self.state.step if step is None else int(step)
         if len(self.frames) <= 1:
             return False
-        first = self.training_resolution(0, resolved_step)
-        return any(self.training_resolution(frame_index, resolved_step) != first for frame_index in range(1, len(self.frames)))
+        return bool(self._cached_training_resolution_summary(step)[1])
 
     def max_training_resolution(self, step: int | None = None) -> tuple[int, int]:
         return self._max_training_resolution(step)
@@ -682,6 +716,7 @@ class GaussianTrainer:
         self.adam = adam_hparams
         self.stability = stability_hparams
         self.training = training_hparams
+        self._invalidate_training_resolution_summary()
         self._apply_renderer_training_hparams()
         self._dynamic_frame_resolution = (
             int(getattr(self.renderer, "_render_capacity_width", self.renderer.width)),
@@ -779,6 +814,8 @@ class GaussianTrainer:
         self.adam = AdamHyperParams() if adam_hparams is None else adam_hparams
         self.stability = StabilityHyperParams() if stability_hparams is None else stability_hparams
         self.training = TrainingHyperParams() if training_hparams is None else training_hparams
+        self._training_resolution_summary_cache_key: tuple[int, int] | None = None
+        self._training_resolution_summary_cache: tuple[tuple[int, int], bool] | None = None
         self._frame_camera_nn_distances = self._nearest_camera_distances(self.frames)
         self._apply_renderer_training_hparams()
         self._dynamic_frame_resolution = (

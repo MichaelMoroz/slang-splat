@@ -279,7 +279,7 @@ def update_ui_text(viewer: object, dt: float) -> None:
     _set_text(viewer, "colmap_import_current", header_state["colmap_import_current"])
     _set_text(viewer, "scene_stats", header_state["scene_stats"])
     current_splat_count = int(header_state["current_splat_count"])
-    panel_state = _viewer_panel_state(viewer)
+    panel_state = _viewer_panel_state(viewer, debug_metrics=debug_metrics)
     _set_text(viewer, "training_resolution", panel_state["training_resolution"])
     _set_text(viewer, "training_downscale", panel_state["training_downscale"])
     _set_text(viewer, "training_schedule", panel_state["training_schedule"])
