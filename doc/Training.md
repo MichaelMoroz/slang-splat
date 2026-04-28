@@ -1,184 +1,286 @@
 # COLMAP Training Pipeline
 
-`cli.py` (`train-colmap`) is a thin wrapper over `src/app/cli.py`. `src/training/gaussian_trainer.py` remains the public training facade, `src/training/adam.py` owns generic ADAM buffers and generic optimizer-kernel dispatch, and `src/training/optimizer.py` keeps only Gaussian-specific optimizer logic.
+`cli.py train-colmap` and the viewer both feed the same core trainer in `src/training/gaussian_trainer.py`.
 
-The active training path keeps the fixed packed optimizer flow, but it now also supports periodic refinement: per-step clone-hit counting during raster training forward, alpha culling, contribution culling normalized to observed dataset pixels, and split-family densification on a configurable cadence. Densification growth is enabled by default after step `500`.
+The main training modules are:
 
-Training SH exposure is stage-controlled by a band cap rather than a boolean toggle:
+- `src/training/gaussian_trainer.py`: public trainer facade, runtime scheduling, frame resolution logic, and host-side orchestration.
+- `src/training/adam.py`: generic packed ADAM buffers and dispatch helpers.
+- `src/training/optimizer.py`: Gaussian-specific optimizer and projection logic.
+- `src/training/schedule.py`: schedule-resolution helpers for staged runtime parameters.
 
-- `SH0`: DC color only
-- `SH1`: SH0 + first-order view dependence
-- `SH2`: SH0 + SH1 + second-order terms
-- `SH3`: full supported SH set
-
-The training schedule resolves that band cap per stage, and the renderer uses the same resolved band for both viewport rendering and raster-backward differentiation.
+The active path is the fixed packed optimizer flow with periodic refinement. It no longer depends on the older adaptive training path.
 
 ## Data Ingestion
-- Loader facade: `src/scene/colmap_loader.py`
-- Internal split:
-  - `src/scene/_internal/colmap_binary.py`
-  - `src/scene/_internal/colmap_ops.py`
-  - `src/scene/_internal/colmap_types.py`
-- Supported camera models:
-  - `SIMPLE_PINHOLE` (model id `0`)
-  - `PINHOLE` (model id `1`)
-  - `SIMPLE_RADIAL` (model id `2`)
-  - `RADIAL` (model id `3`)
-- Radial distortion (`k1`, `k2`) stays attached to each training frame and is applied in both projection and inverse-projection during rendering/training.
-- Files:
-  - `sparse/0/cameras.bin`
-  - `sparse/0/images.bin`
-  - `sparse/0/points3D.bin`
-- Training frames are built from an image folder (default `images_4`) and include:
-  - resolved image path,
-  - COLMAP extrinsics (`q_wxyz`, `t_xyz`),
-  - scaled intrinsics (`fx`, `fy`, `cx`, `cy`) for the selected image resolution.
-- Frame target handling is split into:
-  - native dataset textures cached as `rgba8_unorm_srgb`,
-  - one reusable train target texture in `rgba32_float`,
-  - a GPU box-filter downscale dispatch that writes the current frame into the train target.
-- COLMAP imports can optionally treat target alpha as a per-pixel training mask; when enabled, transparent pixels contribute no RGB, density, or refinement-edge loss/gradient.
-- Native dataset texture preparation uses a fixed 8-thread CPU loader for image decode and resize work, while GPU texture creation/upload remains serialized on the owning thread and is pipelined against those background CPU tasks.
-- Dataset texture creation and point-cloud upload/binding are isolated inside trainer helpers instead of being interleaved with the optimization step.
+
+COLMAP loading flows through:
+
+- `src/scene/colmap_loader.py`
+- `src/scene/_internal/colmap_binary.py`
+- `src/scene/_internal/colmap_ops.py`
+- `src/scene/_internal/colmap_types.py`
+
+Supported camera models:
+
+- `SIMPLE_PINHOLE`
+- `PINHOLE`
+- `SIMPLE_RADIAL`
+- `RADIAL`
+
+Each training frame stores:
+
+- resolved image path,
+- COLMAP extrinsics (`q_wxyz`, `t_xyz`),
+- resized intrinsics (`fx`, `fy`, `cx`, `cy`),
+- radial distortion (`k1`, `k2`) when available.
+
+Training targets are handled in two layers:
+
+- native dataset textures cached as `rgba8_unorm_srgb`,
+- one reusable training target texture in float space for the current effective training resolution.
+
+Import and training can optionally honor the image alpha channel as a per-pixel training mask. When enabled, transparent pixels contribute no RGB, density, or refinement-edge loss/gradient.
 
 ## Initialization
-- Gaussians are initialized directly from COLMAP `points3D` on CPU.
-- Position is copied from the COLMAP point cloud.
-- Scale starts from nearest-neighbor point spacing repeated across XYZ; the default resolved `base_scale` matches that sigma after the requested-count density adjustment, and the trainable scene stores it as 3DGS log-scale.
-- Rotation starts as identity quaternion.
-- Opacity starts from the configured constant.
-- Initialization parameters:
-  - count cap (`max_gaussians`, default `5900000`),
-  - constant initial opacity,
-  - color from COLMAP RGB.
+
+The trainer consumes a prepared `GaussianScene`, but the viewer import path and CLI share the same initialization parameter model.
+
+Current scene-seeding paths include:
+
+- direct COLMAP sparse-point initialization,
+- diffused sparse-point initialization,
+- custom PLY scene seeding,
+- custom mesh area-weighted surface sampling,
+- depth-based initialization,
+- optional appended Fibonacci shell points.
+
+For point-based COLMAP initialization:
+
+- positions come from the filtered sparse point cloud,
+- scale starts from nearest-neighbor point spacing repeated across XYZ,
+- rotation starts as identity quaternion,
+- opacity starts from the configured constant,
+- the stored runtime scene keeps scale as 3DGS log-scale.
+
+Viewer and CLI both use the same resolved initialization hyperparameters, so count caps, scale coefficients, and opacity overrides stay aligned between the two entry points.
+
+## Training Schedule
+
+Training is stage-controlled rather than a single flat hyperparameter set.
+
+The schedule is keyed by:
+
+- `lr_schedule_steps`
+- `lr_schedule_stage1_step`
+- `lr_schedule_stage2_step`
+
+Those breakpoints split the run into three stage intervals plus the initial values at step `0`. The schedule helpers resolve piecewise-linear values for multiple runtime parameters.
+
+The staged controls currently include:
+
+- base learning rate,
+- position learning-rate multiplier,
+- SH learning-rate multiplier,
+- SH band cap,
+- DSSIM weight,
+- max visible angle,
+- refinement min screen radius,
+- sorting-order dithering,
+- colorspace modulation,
+- position-random-step noise.
+
+SH exposure is stage-controlled by band cap rather than a single boolean toggle:
+
+- `SH0`: DC only
+- `SH1`: first-order view dependence
+- `SH2`: second-order terms enabled
+- `SH3`: full supported band set
+
+The viewer uses the same resolved SH band for both viewport rendering and training.
+
+## Training Resolution
+
+Training resolution has two separate components.
+
+### Downscale
+
+`train_downscale_mode` can be manual or `Auto`.
+
+- manual modes force a fixed integer factor,
+- `Auto` starts from `train_auto_start_downscale` and descends toward `1x`,
+- each lower factor lasts `train_downscale_base_iters + level_index * train_downscale_iter_step`,
+- `train_downscale_max_iters` bounds the schedule duration.
+
+### Subsample
+
+`train_subsample_factor` is independent from downscale.
+
+- `0` means `Auto`,
+- manual values clamp to `1..8`.
+
+`Auto` does not simply clamp the max side. Instead, it picks the factor in `1..8` whose effective resolution is closest to a target area of `1000 x 1000` pixels after the active downscale factor is applied.
+
+The effective training render factor is:
+
+- `downscale_factor * subsample_factor`
+
+That factor drives:
+
+- training renderer resolution,
+- box-filter target generation,
+- training debug-target preview,
+- subsampled native-target sampling.
 
 ## Optimization Loop
-Each trainer `step()` performs:
-1. Pick the next training frame from a shuffled full-view epoch; after all views are consumed once, regenerate a new permutation.
-2. Resolve the active train resolution as `ceil(native / N)` from the current effective train downscale factor.
-   - Manual mode uses the selected fixed factor directly.
-   - Auto mode starts from `train_auto_start_downscale` and descends toward `1x` with per-phase duration `train_downscale_base_iters + level_index * train_downscale_iter_step`.
-3. Use the cached native target texture for that frame and, when needed, refresh the reusable train target texture with an exact `NxN` box filter on the GPU.
-4. Run renderer prepass + raster forward.
-   - The prepass can dither only the camera position used for sort-distance keys via the scheduled `sorting_order_dithering` parameter (defaults `0.5 -> 0.2 -> 0.05 -> 0.01`). The renderer passes a deterministic frame/step seed and a sigma scaled by the active frame's nearest-neighbor camera distance, then the projection shader generates an independent isotropic Gaussian sort-camera offset per splat. Projection, visibility, SH view direction, raster cache, and debug depth still use the real camera.
-5. Run the fixed-count forward stage:
-   - `csRasterizeTrainingForward` renders the current image and stores per-pixel raster forward cache data for backward,
-  - the same pass also stores softened splat density scalars for the density-only regularizer path,
-   - `csClearLossBuffer` resets the scalar loss slots,
-   - `csComputeSSIMFeatures` converts rendered and target RGB into BT.601 YCbCr and writes 15 channels of per-pixel first and second moments (`x`, `y`, `x²`, `y²`, `xy`) into a flat buffer,
-   - the reusable separable Gaussian buffer blur utility blurs those 15 channels in two dispatches,
-  - `csComputeBlendedLossForward` computes RGB MSE, the blended `(1 - ssim_weight) * L1 + ssim_weight * DSSIM` image loss using runtime `ssim_c1` / `ssim_c2` stabilizers, where DSSIM is evaluated from blurred luminance moments so it does not steer hue directly, plus the density hinge regularizer, then reduces total and tracked metrics into the loss buffer.
-6. Run the fixed-count backward stage:
-   - `csComputeSSIMBlurredGradients` differentiates DSSIM with respect to the blurred rendered-side moment channels using Slang autodiff,
-   - the same separable Gaussian blur utility is reused as the blur adjoint to propagate those gradients back into the unblurred rendered-side moments,
-  - `csComputeBlendedLossBackward` differentiates the rendered-side moment extraction with Slang autodiff, combines the resulting DSSIM image gradient with the weighted RGB L1 sign gradient, and writes the unnormalized per-pixel RGB gradient into flat `RWStructuredBuffer<float4>` `g_OutputGrad`, plus one scalar regularizer gradient buffer for density replay, indexed as `pixel = y * width + x`,
-  - `csRasterizeBackward` consumes the cached raster forward state, accumulates quantized cached raster-field gradients for the precomputed raster-cache fields, and atomically accumulates per-splat raster contribution-gradient `sum(norm)` and `sum(norm²)` for variance debug visualization,
-  - `csBackpropCachedRasterGrads` decodes that cached-field intermediate inline, backprops the directional raster state back into the unchanged full scene-parameter layout, and writes the final float packed scene-parameter gradient buffer with the final `1 / pixel_count` normalization before the rest of training.
-7. Run the optimizer pipeline:
-    - `csClipPackedParamGrads` clips gradients from a structured per-parameter settings buffer owned by the optimizer module.
-    - `csComputePackedSplatGradNorms` can optionally reduce the packed gradient vector of each splat into one scalar `L2` norm for debug visualization.
-    - `csAdamStepPacked` applies one-thread-per-packed-parameter ADAM using that same settings buffer plus a packed `float2` moments buffer.
-    - `csRegularizePacked` applies the decoupled scale, SH-rest, and opacity regularizers inside the optimizer module after the ADAM update instead of feeding them through the loss gradient path.
-    - `csProjectGaussianParams` applies the remaining Gaussian-specific post-step projection: quaternion normalization, anisotropy clamp, an angle-only upper screen-size clamp, and the sampled SH non-negativity rescale. The clamp keeps `max_screen_fraction` as an area-equivalent viewport fraction, converts it to a circular pixel radius, maps that radius to an angular radius from the active training camera focal length, then converts that angle plus Euclidean camera-to-splat distance into one shared scalar sigma cap applied to all three scale components. It does not use visibility, cropping, projected footprint, or opacity.
-8. When the configured refinement boundary is reached, run the refinement pass:
-  - `csClampRefinementMinScreenSize` loops over all training cameras on GPU, converts the refinement pixel-angle floor plus Euclidean camera-to-splat distance into a support-radius lower bound for each camera, takes the minimum of those bounds across all cameras, and raises undersized splats before rewrite. Offscreen and otherwise previously invisible splats still participate because this path no longer uses projection or visibility tests,
-  - cull splats with alpha below `refinement_alpha_cull_threshold`,
-  - multiply the user-facing minimum accumulated color-change contribution threshold by `refinement_min_contribution_decay` after each completed refinement pass (`0.995` by default, i.e. a `0.5%` drop per pass),
-  - round that decayed threshold to a non-negative fixed-point count and pass it directly to the shader as `g_RefinementMinContributionThreshold`,
-  - compute clone resampling weights as `pow(pixel_grad_variance, refinement_grad_variance_weight_exponent) * pow(pixel_contribution, refinement_contribution_weight_exponent)` over eligible splats, where gradient variance uses the raster backward `(sum, sumSq)` stats and contribution uses the training-forward color-change counts, both normalized by observed training pixels since the last reset, then prefix-sum those weights and binary-search random samples against the cumulative distribution,
-  - split selected splats into `N + 1` family members from the accumulated clone counts using centered circular Fibonacci samples on the gaussian's largest-area local plane, seeded from a Python-provided hash of the selected training-frame `image_id`,
-  - `refinement_sample_radius` controls that local-plane sampling radius at runtime,
-  - `refinement_clone_scale_mul` multiplies the split-family sigma after the default `family_size^(-1/3)` shrink and defaults to `1.0`,
-  - shrink each child sigma by `family_size^(-1/3)` and offset child means with the analytically matched residual covariance so the expected family covariance stays aligned with the parent,
-  - clamp each normalized residual offset sample to a maximum radius of `3 sigma` in splat space before applying it,
-  - keep family opacity unchanged because that analytically preserves the expected unnormalized Gaussian kernel amplitude under that covariance split,
-  - rewrite the packed scene buffer into a compact destination buffer,
-  - migrate packed ADAM `float2` moments into the rewritten topology so unrelated splats do not lose optimizer history.
-9. Update host-side rolling loss state and the last-frame MSE metric.
 
-Random training backgrounds now use seeded per-pixel white noise in the training raster path instead of a single random RGB color, while custom mode still uses the configured uniform color.
+Each trainer `step()` performs the following high-level sequence.
 
-There is still no opacity reset schedule, MCMC exploration term, or standalone SSIM metric tracking on the active path. PSNR is tracked from display-space MSE and exposed as both per-step and rolling-average metrics.
+1. Choose the next frame from a shuffled full-view epoch. After every full pass through the training views, generate a new shuffled permutation.
 
-## Kernels
-- `csDownscaleTarget`: exact integer-factor box-filter downscale from the native dataset texture into the reusable train target.
-- `csClearLossBuffer`: zero scalar loss slots for the current training step.
-- `csComputeSSIMFeatures`: computes per-pixel BT.601 YCbCr moment features for rendered and target images into a 15-channel flat buffer.
-- `csComputeBlendedLossForward`: computes RGB MSE, blended L1+DSSIM image loss with runtime `ssim_c1` / `ssim_c2`, and density hinge regularization.
-- `csComputeSSIMBlurredGradients`: computes the blurred-moment DSSIM adjoint with Slang autodiff.
-- `csComputeBlendedLossBackward`: computes the final image-space blended RGB gradient into `g_OutputGrad` plus the per-pixel density replay gradient used by raster backward.
-- UI-driven multi-step training batches keep per-substep loss/MSE records on the GPU and defer the single CPU readback until the batch finishes, rather than synchronizing after every substep.
-- Packed trainable storage remains param-major scalar packing: `param_id * splat_count + splat_id`.
-- Raster backward uses a separate param-major int accumulation buffer for cached raster-field gradients, then backprops that intermediate into final float scene-parameter gradients before optimizer consumption.
-- The stored opacity parameter is the raw sigmoid logit, not direct alpha.
-- `optimizer.slang` owns generic optimizer kernels and tables:
-  - packed ADAM,
-  - packed gradient clipping,
-  - optional packed per-splat gradient-norm reduction,
-  - per-splat gradient norm statistics accumulated until the next refinement reset,
-  - structured per-parameter settings buffer (`lr`, grad clips, scalar clamp range, group metadata),
-  - packed `float2` moments buffer (`m`, `v`).
-- The refinement rewrite stage now treats that packed ADAM state as topology-coupled data and rewrites/migrates it alongside the packed scene parameters.
-- `gaussian_optimizer_stage.slang` owns Gaussian-specific optimizer logic:
-  - scale/SH1/opacity regularizers,
-  - anisotropy clamp,
-  - quaternion normalization,
-  - SH0/DC projection back into valid display color space.
-- ADAM epsilon is a compile-time constant in `shaders/utility/optimizer/optimizer.slang`, not a runtime parameter.
+2. Resolve the current effective training resolution from the active downscale and subsample settings.
 
-## Numerical Reinforcement
-- Loss/grad and optimizer math sanitize non-finite values.
-- Gradient clipping:
-  - per-component clip,
-  - norm clip.
-- Update clipping (`max_update`).
-- Parameter bounds:
-  - position absolute clamp,
-  - scale max clamp,
-  - SH0/DC base color clamp to `[0, 1]`.
-- Scale-related runtime controls (`base_scale`, `scale_reg_reference`, `max_scale`) remain user-facing linear sigma values and are converted to stored log-scale at the optimizer boundary.
-- Quaternion normalization each step with identity fallback.
-- Host guard:
-  - if loss is non-finite, ADAM step is skipped and moments are reset.
-- Host metrics:
-  - `last_mse` stores the plain image MSE metric from the current training frame,
-  - `avg_loss` remains a rolling mean over one full image cycle for UI/CLI readability.
+3. Reuse the cached native target texture for the frame and, when necessary, refresh the reusable train target texture.
+   - Non-subsampled training uses an exact integer-factor GPU box filter.
+   - Subsampled training uses seeded native-pixel sampling inside the effective block.
 
-## CLI
-Example:
+4. Run renderer prepass and raster forward.
+   - The schedule can dither only the sort-distance camera used for ordering, without changing the actual projection/debug camera.
 
-```powershell
-python cli.py train-colmap --colmap-root dataset/garden --images-subdir images_4 --iters 100 --max-gaussians 50000
-```
+5. Run the fixed-count forward loss path.
+   - `csRasterizeTrainingForward`
+   - `csClearLossBuffer`
+   - `csComputeSSIMFeatures`
+   - separable Gaussian blur over the moment buffer
+   - `csComputeBlendedLossForward`
 
-Useful options:
-- `--width/--height` for train resolution (defaults to selected image resolution),
-- `--lr-*`, `--beta1`, `--beta2`,
-- `--scale-l2` for autodiff log-scale regularization around the init/reference scale,
-- `--ssim-weight` for the DSSIM blend factor in the RGB image loss,
-- the viewer toolkit also exposes `SSIM C1` and `SSIM C2` for the same DSSIM path,
-- `--max-anisotropy` for the hard per-gaussian scale-ratio cap,
-- `--grad-clip`, `--grad-norm-clip`, `--max-update`,
-- `--max-scale`, `--min-opacity`, `--max-opacity`.
-- `--training-profile auto|legacy`; `auto` currently resolves to `legacy`.
+6. Run the backward loss and raster path.
+   - `csComputeSSIMBlurredGradients`
+   - blur adjoint
+   - `csComputeBlendedLossBackward`
+   - `csRasterizeBackward`
+   - `csBackpropCachedRasterGrads`
+
+7. Run the optimizer path.
+   - packed gradient clipping,
+   - optional packed per-splat grad-norm reduction,
+   - packed ADAM update,
+   - Gaussian-specific regularization,
+   - post-step projection (quaternion normalization, anisotropy clamp, screen-size clamp, SH projection).
+
+8. When the current refinement boundary is reached, run the refinement pass.
+
+9. Update rolling host-side loss, MSE, PSNR, timing, and frame-metric state.
+
+The blended image term is:
+
+- `(1 - ssim_weight) * L1 + ssim_weight * DSSIM`
+
+DSSIM is evaluated from blurred BT.601 luminance moments rather than from hue directly.
+
+## Position Random Step Noise
+
+Position-random-step noise is a scheduled training parameter, not just a fixed scalar.
+
+The resolved value comes from:
+
+- `position_random_step_noise_lr`
+- `position_random_step_noise_stage1_lr`
+- `position_random_step_noise_stage2_lr`
+- `position_random_step_noise_stage3_lr`
+
+The opacity gating behavior is controlled by:
+
+- `position_random_step_opacity_gate_center`
+- `position_random_step_opacity_gate_sharpness`
+
+This path acts like a stochastic position regularizer/noise term during optimization and is turned off automatically when the resolved scheduled value reaches zero.
+
+## Refinement
+
+Periodic refinement is part of the active training path.
+
+Important refinement controls:
+
+- `refinement_interval`
+- `refinement_growth_ratio`
+- `refinement_growth_start_step`
+- `refinement_alpha_cull_threshold`
+- `refinement_min_contribution`
+- `refinement_min_contribution_decay`
+- `refinement_sample_radius`
+- `refinement_clone_scale_mul`
+- staged `refinement_min_screen_radius_px`
+
+Current behavior:
+
+- contribution thresholds are normalized to observed training pixels,
+- completed refinement passes decay the contribution threshold,
+- clone-budget growth stays off until `refinement_growth_start_step`, then ramps on by `refinement_growth_ratio`,
+- clone resampling weights combine gradient variance and contribution,
+- split-family samples are generated from centered Fibonacci samples on the dominant local plane,
+- child scales shrink by the family-size rule before `refinement_clone_scale_mul` is applied,
+- packed ADAM moments are migrated with the rewritten topology so unrelated splats keep optimizer history.
+
+## Metrics
+
+The trainer tracks:
+
+- total loss,
+- rolling average loss,
+- plain image MSE,
+- PSNR,
+- per-frame metrics for the training-view inspector,
+- recent and total throughput statistics.
+
+Random training backgrounds use seeded per-pixel white noise in the training raster path. `Custom` background mode still uses the configured uniform RGB color.
+
+There is still no opacity reset schedule, no MCMC exploration term, and no standalone continuously tracked SSIM metric outside the blended loss path.
+
+## Kernels And Packed State
+
+Important kernel groups:
+
+- `csResampleDownscaledTargetNearest`
+- `csClearLossBuffer`
+- `csComputeSSIMFeatures`
+- `csComputeBlendedLossForward`
+- `csComputeSSIMBlurredGradients`
+- `csComputeBlendedLossBackward`
+- `csRasterizeTrainingForward`
+- `csRasterizeBackward`
+- `csBackpropCachedRasterGrads`
+- optimizer kernels in `optimizer.slang`
+
+Packed runtime facts:
+
+- trainable state stays param-major as `param_id * splat_count + splat_id`,
+- opacity is stored as raw sigmoid logit,
+- scale is stored as 3DGS log-scale,
+- ADAM moments are stored as packed `float2` buffers (`m`, `v`),
+- raster backward uses cached raster-field intermediates before writing final float parameter gradients.
+
+## CLI And Viewer Integration
+
+The CLI and viewer share the same training/init abstractions.
+
+- `src/app/cli.py` resolves the active training profile and initialization path before trainer construction.
+- `src/app/shared.py` applies training-profile overrides to the `AdamHyperParams`, `StabilityHyperParams`, and `TrainingHyperParams` dataclasses.
+- the viewer creates `GaussianTrainer` through the same core parameter objects and can reinitialize a training scene without rebuilding the dataset textures.
+
+The default training profile interface remains:
+
+- `legacy`
+- `auto`
+
+`auto` currently resolves to `legacy`.
 
 ## Validation
-- `tests/test_training_kernels.py` covers the fixed-count trainer kernels, including the YCbCr SSIM moment path, Gaussian blur integration, PyTorch image-gradient validation for the blended RGB loss, ADAM stability clamps, and CPU pointcloud initialization with nearest-neighbor scales.
-- `tests/test_training_cli_smoke.py` exercises the simplified CLI training path.
-- `tests/test_optimizer_module.py` verifies the packed generic optimizer with Slang autodiff gradients on a standalone quadratic objective.
-- The old PSNR regression and bicycle benchmark were removed with the deleted adaptive training code.
 
-## Viewer Integration
-- `viewer.py` is a thin launcher over `src/viewer`, which is split into:
-  - state (`src/viewer/state.py`)
-  - UI schema (`src/viewer/ui.py`)
-  - session/runtime operations (`src/viewer/session.py`)
-  - frame presentation (`src/viewer/presenter.py`)
-- The viewer keeps PLY workflow and COLMAP training controls:
-  - load COLMAP folder,
-  - set train image directory,
-  - initialize training scene,
-  - start/stop one-step-per-frame optimization,
-  - switch between auto-scheduled and fixed manual train downscale while preserving optimizer state,
-  - live loss and MSE display,
-  - grad-norm raster debug sourced from the optimizer's per-splat packed-gradient reduction.
+The training path is covered primarily by:
+
+- `tests/test_training_kernels.py`
+- `tests/test_training_cli_smoke.py`
+- `tests/test_optimizer_module.py`
+- viewer/session integration tests covering import and training setup
+
+These tests cover the fixed-count trainer kernels, YCbCr SSIM feature path, blur integration, optimizer behavior, and the current CLI/viewer orchestration.

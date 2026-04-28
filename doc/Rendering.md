@@ -26,33 +26,35 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
   - `debug_show_grad_norm`
 - Because those toggles participate in renderer construction and cache keys, switching them creates or reuses the correct renderer instance instead of mutating hidden renderer state.
 
-## 1. Project and Bin
-- Shader: `csProjectAndBin`
+## 1. Project Visible Splats
+- Shader: `csProjectVisibleSplats`
 - For each splat:
   - decode the stored 3DGS log-scale to sigma, convert it to finite-support ellipsoid radius with `radius_scale * 3.0`, and use that same support consistently for projection, binning, and raster evaluation,
   - solve the projected cutoff outline analytically from the ellipsoid tangent circle and fit a renormalized conic in screen space,
   - inflate the fitted radius conservatively for visibility and scan conversion while keeping the conic on the actual alpha-cutoff boundary,
   - estimate projected radius,
-  - solve scanline spans and reserve final key/value slots once per splat,
-  - write per-splat list base offset,
-  - append scanline work items for overlapping tile spans with precomputed per-splat local offsets.
+  - write projected splat state, raster cache data, visibility flags, and a visible-splat sort key.
 - Output buffers:
   - projected splat data for raster stage,
-  - scanline work item append buffer,
-  - append counter.
+  - raster cache data,
+  - visible-splat key/value buffers,
+  - visible-splat append counter.
 
-## 2. Compose Key/Value Per Scanline
-- Shader: `csComposeScanlineKeyValues`
-- One thread handles one scanline work item and writes final `(tile_id, depth)` and splat index entries using `splat_base + local_scanline_offset`.
-- Atomic model:
-  - project/bin uses one atomic per splat to reserve scanline work items,
-  - project/bin uses one atomic per splat to reserve final tile-entry slots,
-  - compose uses no global reservation atomics.
-- Dispatch is indirect from `g_ScanlineCounter`.
+## 2. Emit Scanline Tiles
+- Shaders: `csCountVisibleScanlines`, `csEmitScanlines`, `csCountScanlineTiles`, `csEmitTileEntries`.
+- Process:
+  - sort visible splats by sort-camera distance,
+  - count visible scanlines per visible splat,
+  - prefix-sum scanline counts into offsets and `g_ScanlineCounter`,
+  - emit scanline work items,
+  - count tile entries per scanline,
+  - prefix-sum tile counts into final tile-entry offsets and the list-entry counter,
+  - write final `(tile_id, splat_id)` entries.
+- Dispatch uses GPU-generated indirect arguments from the visible-splat counter and `g_ScanlineCounter`.
 
-## 3. Sort
+## 3. Sort Tile Entries
 - Uses `src/sort/radix_sort.py`.
-- Sorts key/value pairs by packed key so records are grouped by tile and ordered by depth.
+- Sorts tile-entry key/value pairs by tile id so records are grouped by tile. The stable radix path preserves the visible-splat distance order inside equal tile ids.
 - Dispatch sizes are generated on GPU from the append counter; no same-frame CPU readback is required for sort sizing.
 
 ## 4. Tile Ranges

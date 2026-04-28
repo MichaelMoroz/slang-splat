@@ -2,212 +2,347 @@
 
 ## Overview
 
-The realtime viewer is a single `spy.AppWindow` that renders the control UI into the swapchain and presents the Gaussian scene inside a docked central viewport window.
-
-The overlay uses a right-side control panel with a menu bar:
-
-- `File`: scene load, scene export, COLMAP import, reload, and gaussian reinitialization actions
-- `View`: interface scale presets from `75%` to `200%`, with a reset action
-- `Debug`: resource, histogram, and training-view inspection windows
-- `Help`: `Documentation` and `About` windows
-- Auxiliary windows such as `Documentation`, `About`, `Buffers`, `Histograms`, `Training Views`, and `COLMAP Import` open as tabs in that right-side panel by default.
-- The menu bar spans the full viewport width and the left control panel starts below it to avoid overlap.
-- The viewport header row includes quick controls for debug mode, camera overlays, training-camera debug view, and the active SH band cap (`SH0` / `SH1` / `SH2` / `SH3`).
+The realtime viewer is a single `spy.AppWindow` that renders the Gaussian scene into an offscreen texture and composites the UI through `imgui_bundle` into the swapchain.
 
 `src/viewer` is split into:
-- `app.py`: window lifecycle, camera input, and UI event routing
-- `ui.py`: `imgui_bundle` overlay state, widget layout, and draw-data submission
-- `presenter.py`: per-frame scene rendering, debug-view composition, and status text updates
-- `session.py`: scene loading, renderer recreation, and training control actions
-- `state.py`: persistent viewer runtime state
 
-Viewer and CLI defaults are stored in `config/defaults.json`. The toolkit footer includes `Update Defaults`, which writes the current stable viewer, renderer, and training-control values back into that file.
+- `app.py`: window lifecycle, camera state, callbacks, and event routing.
+- `ui.py`: widget layout, menu handling, documentation/about windows, and docked tool windows.
+- `presenter.py`: per-frame scene rendering, debug composition, plots, and UI text refresh.
+- `presenter_state.py`: derived presenter/debug state such as training-view rows and camera-overlay segments.
+- `session.py`: scene loading, COLMAP import, training initialization, reload/export/reinitialize actions, and defaults updates.
+- `state.py`: persistent runtime state.
+
+The main UI is a docked layout with:
+
+- a top menu bar,
+- a central viewport window for scene presentation,
+- a right-side panel for control sections and optional tool windows,
+- auxiliary windows such as `Documentation`, `About`, `Buffers`, `Histograms`, `Training Views`, and `COLMAP Import`.
+
+Viewer defaults, renderer defaults, and training defaults all serialize into `config/defaults.json`. The footer `Update Defaults` action writes the current stable UI state back into that file.
+
+## Main Menus
+
+### File
+
+The `File` menu exposes the primary scene/runtime actions:
+
+- `Load PLY...`: load a gaussian scene from `.ply`.
+- `Export PLY...`: export the current runtime gaussian scene when export is possible.
+- `Load COLMAP...`: open the COLMAP import window.
+- `Reload`: reload the current scene/import source.
+- `Reinitialize Gaussians`: rebuild the training scene from the current initialization source while keeping the training dataset.
+
+### View
+
+The `View` menu controls presentation-only settings:
+
+- interface scale presets from `75%` to `200%`,
+- `Reset Interface Scale`,
+- theme selection and theme reset.
+
+### Debug
+
+The `Debug` menu toggles the docked inspection windows:
+
+- `Buffers`
+- `Histograms`
+- `Training Views`
+
+### Help
+
+The `Help` menu opens:
+
+- `Documentation`
+- `About`
+
+## Viewport And Camera Controls
+
+The viewport header exposes quick access to:
+
+- debug mode selection,
+- camera overlay toggles,
+- camera label toggles,
+- training-camera debug toggles,
+- the active SH band cap.
+
+Input routing is UI-first:
+
+- keyboard events go to ImGui first,
+- mouse capture outside the viewport blocks camera movement,
+- mouse interaction inside the viewport passes through to the camera controls.
+
+Camera controls:
+
+- `LMB + drag`: look
+- `RMB + drag`: pan
+- `WASDQE`: move
+- mouse wheel: adjust move speed
+
+When a training scene is initialized, the viewer prefers a real training-camera position when one is available. That startup path only copies the camera position and keeps the viewer orientation controls intact; if no usable training pose is available, the viewer falls back to a scene-bounds fit.
 
 ## Frame Flow
 
 Each frame follows this order:
 
-1. `SplatViewer.render(...)` calls `presenter.render_frame(...)` to render the scene or debug view into an offscreen texture sized from the current viewport content rect.
+1. `SplatViewer.render(...)` calls `presenter.render_frame(...)` to produce the scene or active debug view into an offscreen texture sized from the docked viewport.
 2. The swapchain is cleared for UI composition.
-3. The overlay begins an `imgui_bundle` frame with the current surface size and frame delta.
-4. The viewer presentation pass composes the currently displayed texture into a viewport-sized present texture, applying the viewport letterbox fit when needed and converting linear RGB to sRGB for UI display.
-5. The docked `Viewport` window emits an `imgui.image(...)` draw call referencing that present texture, while the rest of the control panels and plots emit normal Dear ImGui draw lists.
-6. Slangpy marshals any external font or image textures referenced by the draw data.
-7. Slangpy renders the full draw data into the swapchain with the current command encoder.
+3. The overlay begins an `imgui_bundle` frame using the current surface size and frame delta.
+4. The presenter composes the currently displayed texture into a viewport-sized present texture, including letterbox fit and linear-to-sRGB conversion for UI display.
+5. The docked viewport window emits `imgui.image(...)` for that texture, while the control windows emit ordinary Dear ImGui draw lists.
+6. Slangpy marshals the external textures referenced by the draw data.
+7. Slangpy renders the UI draw data into the swapchain.
 
-This keeps scene rendering and UI composition in one window and one graphics context while letting the renderer resolution follow the docked viewport size instead of the outer window size.
-
-## Input Routing
-
-Keyboard and mouse events are forwarded to the overlay first.
-
-- If ImGui reports keyboard capture, the viewer skips its own key handling.
-- If ImGui reports mouse capture outside the viewport, the viewer skips camera drag and scroll handling and only refreshes its cursor reference state.
-- Mouse events inside the viewport content area are passed back through to the camera so the docked viewport keeps the same fly/look controls as the old full-background renderer.
-- If ImGui does not capture the event, the existing camera controls run unchanged.
-
-This avoids camera movement while using sliders, combo boxes, text inputs, plot interactions, or scrollable UI regions.
+This keeps the renderer resolution tied to the docked viewport instead of the outer window size.
 
 ## COLMAP Import
 
-`File -> Load COLMAP...` opens a dedicated import window instead of using an image-subdirectory selector in the main panel.
+`File -> Load COLMAP...` opens a dedicated import window. The window collects:
 
-The import window collects:
+- the dataset root containing the COLMAP reconstruction,
+- the training image folder,
+- an optional depth folder,
+- camera-model selection,
+- import-time image downscale settings,
+- initialization mode,
+- initialization parameters,
+- import modifiers such as auto-rotation, BC7 dataset compression, and alpha masking.
 
-- the top-level dataset root
-- the image folder used for training frames
-- an optional `Depth Folder` used only by depth-based initialization
-- image downscale settings: original resolution, fixed max size, or uniform scale factor
-- an `Auto Rotate Scene` toggle that decides whether import applies the COLMAP auto-alignment rotation derived from the camera layout or preserves the original COLMAP orientation
-- the initialization mode: `COLMAP Pointcloud`, `Diffused Pointcloud`, `Custom PLY`, `Custom Mesh`, or `From Depth`
-- the nearest-neighbor radius scale coefficient used by COLMAP-based initialization
-- for `From Depth`: a dataset-wide `Depth Point Count` budget
-- for `Diffused Pointcloud`: synthesized point count and a dimensionless diffusion-radius multiplier
-- for `Custom Mesh`: a uniform surface-sample count used to seed gaussians from the selected triangle mesh
-- for point-cloud initializers: an optional Fibonacci sphere shell, specified by point count and radius, appended around the mean COLMAP camera center
+### Dataset Discovery
 
-After the dataset root is selected, the viewer resolves the COLMAP reconstruction from `sparse/0`. If a COLMAP database is present it samples image names from the `images` table; otherwise it falls back to the image names stored in `images.bin`. It then walks the selected root and its subfolders until it finds the first directory that contains one of those image entries. The image folder can still be overridden manually before pressing `Import`.
+After the dataset root is selected, the viewer:
 
-Automatic RGB folder discovery skips directories whose name or full path contains `depth` so a colocated depth tree is not mistaken for the main image set.
+1. resolves the reconstruction from `sparse/0`,
+2. samples image names from the COLMAP database when present, otherwise from reconstruction image names,
+3. searches the selected root and its subfolders for the first directory containing those images,
+4. skips directories whose path or name contains `depth` when auto-discovering the RGB image tree.
 
-Import-time downscale is applied before training textures are uploaded and before frame intrinsics are finalized. `Max Size` preserves aspect ratio by clamping the longer image side and scaling the shorter side to match. `Scale Factor` multiplies both dimensions uniformly. Both modes clamp to the source resolution, so the importer never upscales images.
+The image folder can still be overridden manually before import.
 
-Training-frame metadata discovery opens source images in a fixed 16-thread loader pool, which keeps large datasets from stalling on serial image-size probes while preserving the original sorted frame order.
+### Camera Selection
 
-Native training-target import uses the same 16-thread CPU loader for RGBA decode and resize work. Texture creation and `copy_from_numpy(...)` stay on the main thread, but the import path pipelines those uploads against ongoing background decode/resize work instead of waiting for the entire dataset to be processed serially.
+If the reconstruction contains multiple camera models, the import window shows a camera-selection table with:
 
-Pointcloud initialization builds gaussians directly from the COLMAP sparse points and scales them from the median nearest-neighbor spacing multiplied by the selected coefficient. Diffused pointcloud initialization resamples sparse points with replacement and offsets each sample by `nrand3() * diffusion_radius * original_nn_distance`, where `original_nn_distance` comes from the source COLMAP point cloud, then applies the same nearest-neighbor scale initialization to the synthesized positions. The optional Fibonacci sphere appends evenly distributed neutral-color points on a shell centered at the mean camera pose; those appended shell splats are then forced to an equal-area overlap scale based only on the shell radius and point count, so they stay densely overlapping without depending on the sparse-cloud NN scale coefficient. Custom PLY initialization keeps the COLMAP cameras and training frames, but seeds the scene from the chosen `.ply` file instead. Custom Mesh initialization keeps the same camera/training-frame path, samples triangles with probability proportional to area, draws barycentric surface samples in a vectorized pass, and colors those samples from the mesh texture before gaussian initialization.
+- camera id,
+- model name,
+- frame/pose count,
+- resolution,
+- focal parameters,
+- principal point and radial distortion summary.
 
-`From Depth` adds a CPU-only calibration stage before the initial point cloud is built:
+The import path can keep all models or restrict training frames to the selected subset.
 
-- RGB images are matched to depth files by relative path stem under `Depth Folder`, extension-agnostically.
-- Depth maps are expected to be scalar `16-bit PNG` images.
-- For each matched frame, the importer gathers positive COLMAP `points2d_point3d_ids`, reprojects those observed 3D points through the resized frame camera model, and samples the raw depth map at that projected location.
-- Calibration is solved per pose from that pose's own observed COLMAP correspondences, so occluded or otherwise unobserved points from other poses never enter the fit.
-- Reprojected correspondences that land on strong local depth discontinuities are discarded before fitting; the importer compares the sampled pixel-footprint depth gradients against nearby gradients and culls only local `4x` gradient spikes.
-- The remap is deliberately reduced to a robust affine model:
-  - `target ~= a + b * raw_depth`
-- `Depth Interpretation` selects the fitted target and reverse-projection mode:
-  - `Depth Is Distance`: `target` is Euclidean camera-to-point distance and reconstruction uses the camera ray.
-  - `Depth Is Z-Depth`: `target` is camera-space `z` depth and reconstruction uses `screen_to_world(...)`.
-- Fitting uses an iteratively reweighted ridge-regularized 2-parameter least-squares solve with MAD-scaled Tukey weights, so contaminated correspondences get downweighted instead of relying on one hard inlier cutoff.
-- Frames with missing or unusable depth, or with too few usable per-pose correspondences, are still imported as training views; they are only skipped when generating the depth-derived initialization cloud.
-- After calibration, the importer samples a unique dataset-wide point budget across usable frames approximately proportional to each frame's valid calibrated pixel count, reverse-projects those pixels through the COLMAP camera model, and colors them from the aligned RGB image.
-- The resulting positions/colors are then passed through the same nearest-neighbor scale initialization used by the point-based import modes.
-- Depth maps and calibration intermediates stay on CPU and are discarded once the calibrated point cloud has been built; they are not uploaded into the runtime training textures.
+### Import Modifiers
+
+The import window exposes three key toggles:
+
+- `Auto Rotate Scene`: run or skip the COLMAP auto-alignment pass derived from the camera layout.
+- `Compress Dataset using BC7`: compress imported training images into reusable BC7 DDS cache files under the image-folder cache.
+- `Use Alpha Mask`: treat transparent target pixels as masked-out training pixels.
+
+### Image Downscale Modes
+
+Import-time training-frame image sizes can be resolved in three ways:
+
+- `Original`: keep source resolution.
+- `Max Size`: clamp the longer side and preserve aspect ratio.
+- `Scale Factor`: uniformly scale both dimensions by a chosen factor.
+
+The importer never upscales. These resized dimensions also determine the final per-frame intrinsics used by training.
+
+Training-frame metadata and native texture preparation both use fixed CPU thread pools for image decode/resize work while keeping GPU texture creation on the owning thread.
+
+### Initialization Modes
+
+The current initialization modes are:
+
+- `COLMAP Pointcloud`
+  - Seeds directly from sparse COLMAP points.
+  - Respects `Min Camera Observations` filtering.
+  - Uses nearest-neighbor spacing with `NN Radius Scale Coef` to derive gaussian scales.
+
+- `Diffused Pointcloud`
+  - Resamples filtered sparse points with replacement.
+  - Offsets each sample by local jitter derived from the source-cloud NN distance and `Diffusion Radius`.
+  - Uses the same NN-based scale initialization afterward.
+
+- `Custom PLY`
+  - Keeps the COLMAP cameras and training frames.
+  - Seeds the scene from a chosen `.ply` gaussian scene.
+
+- `Custom Mesh`
+  - Keeps the COLMAP cameras and training frames.
+  - Uniformly samples the selected triangle mesh by triangle area.
+  - Uses vectorized barycentric surface sampling.
+  - Colors the samples from the mesh texture before gaussian initialization.
+
+- `From Depth`
+  - Matches RGB and depth files by relative path stem under the chosen depth root.
+  - Expects scalar `16-bit PNG` depth maps.
+  - Uses each pose's own positive COLMAP observations to sample raw depth.
+  - Rejects strong local depth-gradient spikes before calibration.
+  - Solves a robust per-pose affine map `a + b * raw_depth`.
+  - Supports two reverse-projection modes:
+    - `Depth Is Distance`
+    - `Depth Is Z-Depth`
+  - Samples a dataset-wide calibrated point budget from the usable depth maps.
+
+### Fibonacci Shell
+
+Point-based initializers can optionally append a Fibonacci shell around the arithmetic mean of the COLMAP camera centers.
+
+- `Sphere Point Count` controls the number of appended shell points.
+- `Sphere Radius` controls the shell radius in world space.
+
+Those appended shell splats are assigned an equal-area dense-overlap scale based only on shell radius and shell point count, not on sparse-cloud NN spacing.
+
+## Scene I/O Section
+
+The right-side `Scene I/O` section mirrors the active import state and provides a quick `Open COLMAP Import` button. It shows the currently selected root, image folder, optional depth folder, depth interpretation, and active initialization mode.
+
+## Training Controls
+
+The viewer keeps training controls grouped into five main sections.
+
+### Training
+
+The `Training` section shows:
+
+- current step,
+- elapsed pause-aware training time,
+- average iterations per second,
+- rolling loss,
+- SSIM,
+- density metric,
+- PSNR,
+- instability warnings when present.
+
+It also exposes:
+
+- `Start`
+- `Stop`
+- `Reinitialize Gaussians`
+
+### Train Setup
+
+`Train Setup` controls the runtime training dataset and schedule entry conditions.
+
+Important current behaviors:
+
+- training background is independent from the viewer clear color,
+- train resolution is controlled by both downscale and subsample,
+- the panel reports the resolved active train resolution, current downscale state, schedule state, and refinement state.
+
+The train-resolution system has two independent components:
+
+- `Train Downscale`
+  - `Auto` starts from `Auto Start Downscale` and walks toward `1x`.
+  - manual modes force a fixed integer factor.
+
+- `Train Subsample`
+  - `Auto` chooses a factor from `1..8` that brings the effective resolution closest to a `1000 x 1000` target area after the active downscale factor is applied.
+  - manual modes force a fixed subsample factor.
+
+The effective training render factor is the product of downscale and subsample.
+
+### Optimizer
+
+The `Optimizer` section is tabbed:
+
+- `Schedule`: schedule duration, stage breakpoints, and stage-specific values.
+- `Adam`: learning-rate and ADAM hyperparameters.
+- `Regularization`: DSSIM, density, opacity, scale, SH, visible-angle, and refinement controls.
+- `Raster Grads`: cached raster-gradient mode and related ranges.
+
+The schedule UI includes stage tabs that expose per-stage overrides for:
+
+- SH band,
+- DSSIM weight,
+- visible-angle limits,
+- sorting-order dithering,
+- position-random-step noise,
+- colorspace modulation,
+- stage-specific learning-rate multipliers.
+
+The viewport SH-band dropdown writes back to the currently active schedule stage.
+
+### Stability
+
+The `Stability` section holds post-step clamps and stability controls such as:
+
+- position bounds,
+- opacity bounds,
+- max scale,
+- max anisotropy,
+- gradient clip and norm clip,
+- max update.
+
+### Render Params
+
+The `Render Params` section exposes the runtime renderer controls that apply to the viewport:
+
+- `radius_scale`
+- `alpha_cutoff`
+- `trans_threshold`
+
+### Defaults Footer
+
+The footer `Update Defaults` action writes the current viewer, renderer, and training-control state into `config/defaults.json`.
 
 ## Debug Views
 
-The loss-debug controls expose a runtime `Abs Diff Scale` slider when `View = Abs Diff`.
+The renderer debug modes share the same forward replay path as normal rendering. Important viewer-facing modes include:
 
-- The shader computes `abs(rendered - target) * scale` in linear RGB.
-- `scale = 1.0` shows the raw absolute color difference.
-- Higher values amplify subtle differences without changing the rendered or target views.
-- Training-camera debug rendering uses the same effective training resolution, training-forward raster path, background mode, active SH band, and native-camera sampling parameters as training.
-- When training subsampling is active, the debug target view is sampled from the native target with the same per-pixel subsample mapping as training; its random seed comes from the current viewer render frame so repeated viewport frames preview the live stochastic sample pattern.
-- Scheduled sorting-order dithering is also applied to the training-camera debug prepass using the current viewer render-frame seed; the projection shader expands that seed into independent per-splat sort-camera offsets.
-- Density debug views share the same range controls. `Splat Density` accumulates a soft per-pixel splat count using `sqrt(transmittance) * alpha / opacity`, while `Spatial Density` and `Screen Density` continue to normalize by 3D volume and projected ellipse area respectively.
-- `Contribution Amount` visualizes the per-splat `g_SplatContribution` atomic buffer accumulated during training forward from the linear-RGB color change each fragment causes after blending, normalized by observed dataset pixels as `count / 256 / observed_pixels`.
-- The heatmap is logarithmic and uses dedicated `Contribution Min` and `Contribution Max` controls in normalized color-change units instead of sharing density ranges.
-- `Grad Variance` visualizes per-splat raster contribution-gradient norm variance accumulated across observed training pixels since the last refinement reset, using `E(x^2) - E(x)^2`; color normalization uses the square root of the variance so it shares the grad-norm threshold control.
-- `Depth Local Mismatch` tracks a front-to-back online depth estimate per pixel and visualizes the contribution-weighted local absolute depth deviation from that estimate, normalized by mean depth like `Depth Std`, with separate smooth and reject sigma-multiple controls to avoid coupling distant transparent layers.
-- The renderer debug colorbar is drawn as a horizontal legend near the bottom of the docked viewport window.
+- `Contribution Amount`: normalized color-change contribution accumulated during training forward.
+- `Grad Variance`: per-splat raster contribution-gradient variance computed from `(sum, sumSq)` statistics accumulated since the last refinement reset.
+- `Depth Local Mismatch`: contribution-weighted local deviation from the online front-to-back depth estimate.
+- `Splat Density`, `Spatial Density`, and `Screen Density`.
+- `Processed Count`, `Grad Norm`, `Ellipse Outlines`, and SH inspection modes.
 
-## Histogram Window
+The loss-debug controls also expose a runtime `Abs Diff Scale` slider for `Abs Diff` visualization.
 
-`Debug -> Histograms` opens a dedicated histogram window for live semantic splat parameters.
+## Histograms
 
-- Histogram values are computed over `log10(abs(value))`.
-- The window groups the current training scene into `position`, `scale`, `quat`, `baseColor (SH0/DC)`, `SH1`, `SH2`, `SH3`, and `opacity`.
-- `baseColor` is derived directly from the clamped SH0/DC term, so it is not presented as a separate parameter from DC anymore.
-- The first open requests one histogram refresh automatically.
-- After that, histogram data is recomputed only when `Refresh` is pressed or another histogram action explicitly requests it.
+`Debug -> Histograms` opens grouped log-scale parameter histograms for the live training scene.
 
-## Buffer Window
+Current behavior:
 
-`Debug -> Buffers` opens a resource table for live viewer GPU allocations.
+- the first open requests a refresh automatically,
+- after that, recomputation happens only on explicit refresh or another histogram-triggering action,
+- histogram values bucket `log10(abs(value))`,
+- groups include position, scale, quaternion, base color (SH0/DC), higher SH bands, and opacity.
 
-- All project-owned buffers and textures are created through the shared resource helpers with Slangpy labels.
-- The helpers read Slangpy's native per-resource `memory_usage.device` value when available and keep a Python-side name registry because Slangpy exposes per-resource memory but not a live allocation enumerator.
-- The window reports combined tracked GPU consumption, buffer count, total buffer bytes, mean buffer size, median buffer size, texture count, and texture bytes.
-- The table includes buffers and textures reachable from the active viewer renderers, trainer, and viewer debug resources, de-duplicates shared references, and displays entries largest-first.
-- Buffer details include element count when Slangpy reports a structured element stride; texture details include dimensions, format, array count, and mip count when present.
-- `Write Log` saves the current largest-first table, summary, and exact duplicate-looking allocation groups as a tab-separated text file under `temp/resource_logs`.
+## Buffers
 
-## Cached Gradient Atomics
+`Debug -> Buffers` opens the live GPU resource table.
 
-`Render Params` includes a `Cached Grad Atomics` selector:
+It reports:
 
-- `Float Atomics`
-- `Fixed Point`
+- combined tracked GPU consumption,
+- buffer and texture counts,
+- largest-first entries,
+- texture dimensions and format information when available,
+- exact duplicate-looking allocation groups.
 
-`Fixed Point` is the default and uses the current cached-gradient quantization path. `Float Atomics` remains available as a fallback/reference path when the backend supports float atomics. Changing this setting only swaps the raster-backward shader/buffer path; it does not reset scene state, optimizer state, or training progress.
+`Write Log` exports the current table and duplicate groups to `temp/resource_logs`.
 
-## Training Resolution
+## Training Views And Camera Overlays
 
-The `Train Setup` section exposes train downscale as a mode selector:
+`Debug -> Training Views` opens the per-frame training-view inspector. The window can show:
 
-It also exposes per-stage `SH Band` dropdowns. `SH0` uses only the DC term, while `SH1`, `SH2`, and `SH3` progressively enable the higher bands in both the viewport and the training schedule.
+- per-frame rows with loss, PSNR, visited state, and camera parameters,
+- optional world-camera overlays in the viewport,
+- optional camera labels,
+- active-frame highlighting.
 
-The `Optimizer -> Regularization` tab exposes the DSSIM controls used by training:
+Camera overlays and labels are independently gated so expensive per-frame label/metric generation is only done when needed.
 
-- `Color >= 0 Reg`
-- `DSSIM Weight`
-- `SSIM C1`
-- `SSIM C2`
+## Metrics And Plots
 
-The blur window remains the fixed 11-tap separable Gaussian used by the shader path.
+The plot section shows both short-horizon and run-level throughput and quality summaries.
 
-Training background is configured separately from the viewer clear color:
-
-- `Background Mode`: `Custom` or `Random`
-- `Custom` exposes a fixed training RGB color picker and defaults to white
-- `Random` re-samples the training background color per step
-- `Start Densification After` now defaults to `500`.
-- Refinement contribution culling is expressed as observed-pixel-normalized color-change contribution, with a base default threshold of `1e-7`.
-- `Refinement Cull Decay` multiplies that threshold after each completed refinement pass and defaults to `0.995` (`0.5%` drop per pass).
-- `Refinement Sample Radius` controls the local-space radius used for newly spawned refinement samples and defaults to `4.0`.
-- `Refinement Clone Scale Mul` multiplies the split-family sigma after the default `family_size^(-1/3)` refinement shrink and defaults to `1.0`.
-- `Refinement Variance Exponent` and `Refinement Contribution Exponent` shape the densification resampling distribution as `pow(pixel_grad_variance, a) * pow(pixel_contribution, b)` and both default to `0.1`.
-- Schedule step sliders in `Train Setup`, `Learning Rates`, and `Regularization` all clamp to the current `Schedule Steps` value so breakpoint timing can be edited directly in the viewer without touching code.
-
-- `Auto`
-- manual `1x` through `16x`
-- Subsampling `Auto`, `Off`, and manual `1/2` through `1/8`
-
-Auto mode has its own `Auto Start Downscale` parameter and schedule controls:
-
-- `Downscale Base Iters`
-- `Downscale Iter Step`
-- `Downscale Max Iters`
-
-Behavior:
-
-- Manual modes force a fixed training downscale immediately.
-- Auto mode starts from `Auto Start Downscale`, then descends toward `1x`.
-- Each lower factor lasts `base_iters + level_index * iter_step`.
-- Training render resolution is always `ceil(native_width / N) x ceil(native_height / N)` for the effective factor, where `N` is downscale multiplied by the active subsampling factor.
-- Non-subsampled loss targets are generated from the native dataset image with an exact `NxN` box filter on the GPU; subsampled loss uses seeded native-pixel samples inside each effective block.
-- Changing mode or crossing an auto schedule boundary recreates only the train-resolution renderer and target resources; scene state, ADAM moments, shuffle order, step counter, and pause/run state are preserved.
-
-The panel shows both the resolved active train resolution and the current downscale status so the training renderer, loss target, and debug target view are easy to verify.
-
-## Training Schedule
-
-The `Optimizer` panel exposes the active training schedule directly:
-
-- `Schedule Steps` defines the shared max-iteration budget for the staged LR, colorspace, DSSIM, visible-angle, sort-dither, SH band, and noise schedules.
-- `LR Stage 1 Step` and `LR Stage 2 Step` move the two intermediate LR breakpoints.
-- `Noise End Step` moves the point where random-step position noise reaches zero.
-- Stage-specific SH band, colorspace, DSSIM, visible-angle, sort-dither, and noise targets live in the stage sections below.
-- The viewport SH dropdown writes back to the currently active schedule-stage `SH Band` control, so the visible band cap always targets the phase currently being trained.
-
-These breakpoint controls are regular integer sliders with a live `0..Schedule Steps` range rather than a compound multi-value slider.
-
-## Training Metrics
-
-The training panel shows both short-horizon and run-level throughput data.
-
-- `Iter/s` in the status and plot sections is computed from the recent history window used for viewer plots.
-- `Avg it/s` in the training table is computed from total optimizer steps divided by total accumulated active training time for the current initialized scene.
-- `Time` is pause/resume-aware and accumulates only while training is active.
+- `Iter/s` is derived from the recent plot-history window.
+- `Avg it/s` is computed from total optimizer steps over accumulated active training time.
+- `Time` is pause/resume-aware.
+- FPS, loss, PSNR, and related viewer histories are plotted in the docked UI.
