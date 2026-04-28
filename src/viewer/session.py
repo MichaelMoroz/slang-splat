@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from functools import lru_cache
 from pathlib import Path
 import subprocess
 import time
@@ -12,7 +11,7 @@ import numpy as np
 from PIL import Image
 import slangpy as spy
 
-from ..app.shared import apply_training_profile, estimate_point_bounds, estimate_scene_bounds
+from ..app.shared import apply_training_profile, estimate_point_bounds, estimate_scene_bounds, fit_camera
 from ..utility import SHADER_ROOT, clamp_index, load_compute_kernels
 from ..metrics import ParamTensorRanges
 from ..renderer import GaussianRenderSettings, GaussianRenderer
@@ -42,7 +41,7 @@ from ..scene._internal.colmap_ops import (
     match_depth_path,
 )
 from ..training import GaussianTrainer, resolve_effective_train_render_factor, resolve_training_resolution
-from ..scene._internal.colmap_types import ColmapFrame, point_tables
+from ..scene._internal.colmap_types import ColmapFrame, ColmapReconstruction, point_tables
 from .session_colmap_utils import (
     _COLMAP_CAMERA_MODEL_NAMES,
     _COLMAP_DB_SAMPLE_LIMIT,
@@ -227,12 +226,43 @@ def _clear(viewer: object, *attrs: str) -> None:
             del value
 
 
+def _training_camera(frames: object, near: float, far: float):
+    for frame in tuple(frames):
+        make_camera = getattr(frame, "make_camera", None)
+        if not callable(make_camera):
+            continue
+        try:
+            camera = make_camera(near=float(near), far=float(far))
+        except TypeError:
+            camera = make_camera()
+        except Exception:
+            continue
+        position = np.asarray(getattr(camera, "position", ()), dtype=np.float32).reshape(-1)
+        target = np.asarray(getattr(camera, "target", ()), dtype=np.float32).reshape(-1)
+        up = np.asarray(getattr(camera, "up", ()), dtype=np.float32).reshape(-1)
+        if position.size >= 3 and target.size >= 3 and up.size >= 3 and np.all(np.isfinite(position[:3])) and np.all(np.isfinite(target[:3])) and np.all(np.isfinite(up[:3])):
+            return camera
+    return None
+
+
 def _apply_initial_camera_fit(viewer: object, fallback_bounds: object | None = None, fallback_factory=None) -> None:
-    fit_training_views = getattr(viewer, "apply_camera_fit_to_training_views", None)
-    if callable(fit_training_views) and fit_training_views(getattr(viewer.s, "training_frames", ())):
-        return
     if fallback_factory is not None:
         fallback_bounds = fallback_factory()
+    fit = None
+    if fallback_bounds is not None:
+        try:
+            fit = fit_camera(fallback_bounds, getattr(viewer.s, "fov_y", 60.0))
+        except Exception:
+            fit = None
+    camera = _training_camera(
+        getattr(viewer.s, "training_frames", ()),
+        getattr(viewer.s, "near", 0.1) if fit is None else fit.near,
+        getattr(viewer.s, "far", 120.0) if fit is None else fit.far,
+    )
+    apply_camera_position = getattr(viewer, "apply_camera_position", None)
+    if camera is not None and callable(apply_camera_position):
+        apply_camera_position(camera, near=None if fit is None else fit.near, far=None if fit is None else fit.far, move_speed=None if fit is None else fit.move_speed)
+        return
     viewer.apply_camera_fit(fallback_bounds)
 
 
@@ -566,25 +596,6 @@ def _clear_cached_init_source(viewer: object) -> None:
     setattr(viewer.s, "cached_init_signature", None)
 
 
-@lru_cache(maxsize=4)
-def _aligned_colmap_transform(colmap_root: str) -> np.ndarray:
-    from ..scene import transform_colmap_reconstruction_pca
-
-    recon = load_colmap_reconstruction(Path(colmap_root).resolve())
-    _, transform = transform_colmap_reconstruction_pca(recon)
-    return np.array(transform, dtype=np.float32, copy=True)
-
-
-def _transform_positions(positions: np.ndarray, transform: np.ndarray | None) -> np.ndarray:
-    pts = np.ascontiguousarray(positions, dtype=np.float32)
-    if pts.ndim != 2 or pts.shape[1] != 3 or transform is None:
-        return pts
-    affine = np.asarray(transform, dtype=np.float32)
-    if affine.shape != (4, 4):
-        raise RuntimeError("COLMAP alignment transform must have shape [4, 4].")
-    return np.ascontiguousarray(pts @ affine[:3, :3].T + affine[:3, 3][None, :], dtype=np.float32)
-
-
 def _cached_init_signature(viewer: object, init: object) -> tuple[object, ...] | None:
     import_cfg = getattr(viewer.s, "colmap_import", None)
     min_track_length = int(getattr(import_cfg, "min_track_length", DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH))
@@ -645,11 +656,7 @@ def _ensure_cached_init_source(viewer: object, init: object) -> None:
         if import_cfg.custom_ply_path is None:
             raise RuntimeError("Custom mesh initialization requires a selected mesh file.")
         positions, colors = sample_mesh_surface_points(import_cfg.custom_ply_path, import_cfg.diffused_point_count, init.seed)
-        positions = _transform_positions(positions, _MESH_TO_COLMAP_COORDINATE_TRANSFORM)
-        positions = _transform_positions(
-            positions,
-            None if viewer.s.colmap_root is None else _aligned_colmap_transform(str(Path(viewer.s.colmap_root).resolve())),
-        )
+        positions = np.ascontiguousarray(np.asarray(positions, dtype=np.float32) @ _MESH_TO_COLMAP_COORDINATE_TRANSFORM[:3, :3].T, dtype=np.float32)
     elif import_cfg.init_mode == _COLMAP_IMPORT_DIFFUSED_POINTCLOUD:
         positions, colors = sample_colmap_diffused_points(
             viewer.s.colmap_recon,
@@ -1169,6 +1176,7 @@ def _finish_import_colmap_dataset(
     selected_camera_ids: tuple[int, ...] = (),
     depth_value_mode: str = _COLMAP_DEPTH_VALUE_Z_DEPTH,
     init_mode: str,
+    auto_rotate_scene: bool = True,
     compress_dataset_using_bc7: bool = False,
     custom_ply_path: Path | None,
     image_downscale_mode: str,
@@ -1203,6 +1211,7 @@ def _finish_import_colmap_dataset(
         selected_camera_ids=resolved_selected_camera_ids,
         depth_value_mode=depth_value_mode,
         init_mode=init_mode,
+        auto_rotate_scene=auto_rotate_scene,
         compress_dataset_using_bc7=compress_dataset_using_bc7,
         custom_ply_path=custom_ply_path,
         image_downscale_mode=image_downscale_mode,
@@ -1259,6 +1268,7 @@ def import_colmap_dataset(
     selected_camera_ids: tuple[int, ...] = (),
     depth_value_mode: str = _COLMAP_DEPTH_VALUE_Z_DEPTH,
     init_mode: str,
+    auto_rotate_scene: bool = True,
     custom_ply_path: Path | None,
     image_downscale_mode: str,
     image_downscale_max_size: int,
@@ -1275,9 +1285,10 @@ def import_colmap_dataset(
 ) -> None:
     _clear_loaded_scene(viewer)
     root = Path(colmap_root).resolve()
-    recon = _load_aligned_colmap_reconstruction(root)
+    recon = _load_aligned_colmap_reconstruction(root, auto_rotate_scene=auto_rotate_scene)
     viewer.s.colmap_import = ColmapImportSettings(
         images_root=Path(images_root).resolve(),
+        auto_rotate_scene=bool(auto_rotate_scene),
         compress_dataset_using_bc7=bool(compress_dataset_using_bc7),
         nn_radius_scale_coef=float(nn_radius_scale_coef),
     )
@@ -1314,6 +1325,7 @@ def import_colmap_dataset(
         selected_camera_ids=resolved_selected_camera_ids,
         depth_value_mode=depth_value_mode,
         init_mode=init_mode,
+        auto_rotate_scene=auto_rotate_scene,
         compress_dataset_using_bc7=compress_dataset_using_bc7,
         custom_ply_path=custom_ply_path,
         image_downscale_mode=image_downscale_mode,
@@ -1358,6 +1370,7 @@ def import_colmap_from_ui(viewer: object) -> None:
     diffusion_radius = max(float(viewer.ui._values.get("colmap_diffusion_radius", 1.0)), 0.0)
     fibonacci_sphere_point_count = max(int(viewer.ui._values.get("colmap_fibonacci_sphere_point_count", 0)), 0)
     fibonacci_sphere_radius = max(float(viewer.ui._values.get("colmap_fibonacci_sphere_radius", 20.0)), 0.0)
+    auto_rotate_scene = bool(viewer.ui._values.get("colmap_auto_rotate_scene", True))
     use_target_alpha_mask = bool(viewer.ui._values.get("use_target_alpha_mask", False))
     compress_dataset_using_bc7 = bool(viewer.ui._values.get("compress_dataset_using_bc7", False))
     if not colmap_root.exists():
@@ -1386,6 +1399,7 @@ def import_colmap_from_ui(viewer: object) -> None:
         depth_root=None if depth_root is None else depth_root.resolve(),
         depth_value_mode=depth_value_mode,
         init_mode=init_mode,
+        auto_rotate_scene=auto_rotate_scene,
         custom_ply_path=None if custom_ply_path is None else custom_ply_path.resolve(),
         compress_dataset_using_bc7=compress_dataset_using_bc7,
         image_downscale_mode=image_downscale_mode,
@@ -1409,7 +1423,7 @@ def advance_colmap_import(viewer: object) -> None:
         return
     try:
         if progress.phase == "prepare":
-            progress.recon = _load_aligned_colmap_reconstruction(progress.colmap_root)
+            progress.recon = _load_aligned_colmap_reconstruction(progress.colmap_root, auto_rotate_scene=progress.auto_rotate_scene)
             progress.image_items = sorted(progress.recon.images.items())
             progress.depth_index = build_depth_path_index(progress.depth_root) if progress.init_mode == _COLMAP_IMPORT_DEPTH and progress.depth_root is not None else None
             progress.total = max(len(progress.image_items), 1)
@@ -1480,6 +1494,7 @@ def advance_colmap_import(viewer: object) -> None:
                 selected_camera_ids=tuple(int(camera_id) for camera_id in getattr(progress, "selected_camera_ids", ())),
                 depth_value_mode=progress.depth_value_mode,
                 init_mode=progress.init_mode,
+                auto_rotate_scene=progress.auto_rotate_scene,
                 compress_dataset_using_bc7=progress.compress_dataset_using_bc7,
                 custom_ply_path=progress.custom_ply_path,
                 image_downscale_mode=progress.image_downscale_mode,

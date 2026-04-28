@@ -178,6 +178,7 @@ def _update_import_settings(
     selected_camera_ids: tuple[int, ...],
     depth_value_mode: str,
     init_mode: str,
+    auto_rotate_scene: bool,
     compress_dataset_using_bc7: bool,
     custom_ply_path: Path | None,
     image_downscale_mode: str,
@@ -199,6 +200,7 @@ def _update_import_settings(
         selected_camera_ids=tuple(int(camera_id) for camera_id in selected_camera_ids),
         depth_value_mode=str(depth_value_mode),
         init_mode=str(init_mode),
+        auto_rotate_scene=bool(auto_rotate_scene),
         compress_dataset_using_bc7=bool(compress_dataset_using_bc7),
         custom_ply_path=None if custom_ply_path is None else Path(custom_ply_path).resolve(),
         image_downscale_mode=str(image_downscale_mode),
@@ -226,6 +228,7 @@ def _update_import_settings(
         4 if str(init_mode) == _COLMAP_IMPORT_DEPTH else
         0
     )
+    viewer.ui._values["colmap_auto_rotate_scene"] = bool(auto_rotate_scene)
     viewer.ui._values["compress_dataset_using_bc7"] = bool(compress_dataset_using_bc7)
     _set_ui_path(viewer, "colmap_custom_ply_path", custom_ply_path)
     viewer.ui._values["colmap_image_downscale_mode"] = 1 if str(image_downscale_mode) == _COLMAP_IMAGE_DOWNSCALE_MAX_SIZE else 2 if str(image_downscale_mode) == _COLMAP_IMAGE_DOWNSCALE_SCALE else 0
@@ -241,8 +244,10 @@ def _update_import_settings(
     viewer.ui._values["use_target_alpha_mask"] = bool(use_target_alpha_mask)
 
 
-def _load_aligned_colmap_reconstruction(colmap_root: Path):
+def _load_aligned_colmap_reconstruction(colmap_root: Path, auto_rotate_scene: bool = True):
     recon = load_colmap_reconstruction(Path(colmap_root).resolve())
+    if not bool(auto_rotate_scene):
+        return recon
     from ..scene import transform_colmap_reconstruction_pca
     aligned_recon, _ = transform_colmap_reconstruction_pca(recon)
     return aligned_recon

@@ -35,6 +35,7 @@ class ColmapImportSettings:
     selected_camera_ids: tuple[int, ...] = ()
     depth_value_mode: str = "z_depth"
     init_mode: str = "pointcloud"
+    auto_rotate_scene: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_auto_rotate_scene", True))
     compress_dataset_using_bc7: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("compress_dataset_using_bc7", False))
     custom_ply_path: Path | None = None
     image_downscale_mode: str = "original"
@@ -62,6 +63,7 @@ class ColmapImportProgress:
     image_downscale_max_size: int
     image_downscale_scale: float
     nn_radius_scale_coef: float
+    auto_rotate_scene: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_auto_rotate_scene", True))
     compress_dataset_using_bc7: bool = False
     selected_camera_ids: tuple[int, ...] = ()
     min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH

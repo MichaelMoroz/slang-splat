@@ -1665,6 +1665,7 @@ class ToolkitWindow:
                 self._draw_colmap_camera_selection_table(ui, camera_rows)
             imgui.spacing()
             for label, key, tooltip in (
+                ("Auto Rotate Scene", "colmap_auto_rotate_scene", "Apply the COLMAP import auto-alignment pass that reorients the reconstructed scene from the camera layout. Disable this to preserve the original COLMAP orientation."),
                 ("Compress Dataset using BC7", "compress_dataset_using_bc7", "Compress imported training images into BC7 DDS files under Image Folder/cache and reuse that cache on later loads."),
                 ("Use Alpha Mask", "use_target_alpha_mask", "If imported images have alpha, transparent pixels are masked out of per-pixel training loss and gradients."),
             ):

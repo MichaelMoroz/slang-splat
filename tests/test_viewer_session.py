@@ -466,7 +466,7 @@ def test_import_colmap_dataset_clears_loaded_scene_before_loading(monkeypatch) -
     monkeypatch.setattr(session, "_clear_cached_init_source", lambda viewer_obj: calls.append(("clear_cached_init", None)))
     monkeypatch.setattr(session, "_reset_training_visual_state", lambda viewer_obj: calls.append(("reset_training_visual", None)))
     monkeypatch.setattr(session, "_reset_loss_debug", lambda viewer_obj: calls.append(("reset_loss_debug", None)))
-    monkeypatch.setattr(session, "_load_aligned_colmap_reconstruction", lambda root: calls.append(("load_recon", root)) or "recon")
+    monkeypatch.setattr(session, "_load_aligned_colmap_reconstruction", lambda root, auto_rotate_scene=True: calls.append(("load_recon", root, auto_rotate_scene)) or "recon")
     monkeypatch.setattr(
         session,
         "build_training_frames_from_root",
@@ -614,6 +614,7 @@ def test_import_colmap_from_ui_queues_custom_mesh_mode(tmp_path: Path, monkeypat
                 "colmap_image_downscale_mode": 0,
                 "colmap_image_max_size": 2048,
                 "colmap_image_scale": 1.0,
+                "colmap_auto_rotate_scene": False,
                 "colmap_nn_radius_scale_coef": 0.5,
                 "colmap_min_track_length": 5,
                 "colmap_diffused_point_count": 4096,
@@ -662,6 +663,7 @@ def test_import_colmap_from_ui_queues_custom_mesh_mode(tmp_path: Path, monkeypat
 
     assert viewer.s.colmap_import_progress is not None
     assert viewer.s.colmap_import_progress.init_mode == "custom_mesh"
+    assert viewer.s.colmap_import_progress.auto_rotate_scene is False
     assert viewer.s.colmap_import_progress.custom_ply_path == mesh_path.resolve()
     assert viewer.s.colmap_import_progress.diffused_point_count == 4096
 
@@ -735,7 +737,7 @@ def test_advance_colmap_import_processes_images_incrementally(tmp_path: Path, mo
         ),
     )
 
-    monkeypatch.setattr(session, "_load_aligned_colmap_reconstruction", lambda root: recon)
+    monkeypatch.setattr(session, "_load_aligned_colmap_reconstruction", lambda root, auto_rotate_scene=True: recon)
     monkeypatch.setattr(session, "load_training_frame_rgba8", lambda frame: f"rgba:{Path(frame.image_path).name}")
     monkeypatch.setattr(session, "_create_native_dataset_texture_from_rgba8", lambda viewer_obj, rgba8: f"tex:{rgba8}")
 
@@ -782,7 +784,7 @@ def test_advance_colmap_import_applies_selected_image_downscale(tmp_path: Path, 
         ),
     )
 
-    monkeypatch.setattr(session, "_load_aligned_colmap_reconstruction", lambda root: recon)
+    monkeypatch.setattr(session, "_load_aligned_colmap_reconstruction", lambda root, auto_rotate_scene=True: recon)
     monkeypatch.setattr(session, "load_training_frame_rgba8", lambda frame: calls.append((frame.width, frame.height, frame.fx, frame.fy)) or "rgba")
     monkeypatch.setattr(session, "_create_native_dataset_texture_from_rgba8", lambda viewer_obj, rgba8: calls.append(("upload", rgba8)) or "tex")
 
@@ -836,22 +838,23 @@ def test_finish_import_colmap_dataset_resets_toolkit_plot_history(monkeypatch) -
     assert calls == ["reset", "fit"]
 
 
-def test_finish_import_colmap_dataset_prefers_training_view_camera_fit(monkeypatch) -> None:
+def test_finish_import_colmap_dataset_uses_training_camera_position_only(monkeypatch) -> None:
     recon = SimpleNamespace(points3d={1: object()})
-    training_frames = [SimpleNamespace()]
+    training_frames = [SimpleNamespace(make_camera=lambda near=0.1, far=120.0: SimpleNamespace(position=np.array([1.0, 2.0, 3.0], dtype=np.float32), target=np.array([1.0, 2.0, 4.0], dtype=np.float32), up=np.array([0.0, 1.0, 0.0], dtype=np.float32), near=near, far=far))]
     monkeypatch.setattr(session, "_point_tables", lambda recon_obj, min_track_length=3: (np.zeros((1, 3), dtype=np.float32), np.zeros((1, 3), dtype=np.float32)))
     monkeypatch.setattr(session, "_reset_loaded_runtime", lambda viewer_obj: None)
     monkeypatch.setattr(session, "_update_import_settings", lambda viewer_obj, **kwargs: None)
     monkeypatch.setattr(session, "apply_live_params", lambda viewer_obj: None)
-    monkeypatch.setattr(session, "estimate_point_bounds", lambda xyz: (_ for _ in ()).throw(AssertionError("bounds fit should not be used when training-view fit succeeds")))
+    monkeypatch.setattr(session, "estimate_point_bounds", lambda xyz: SimpleNamespace(center=np.zeros((3,), dtype=np.float32), radius=2.0))
     monkeypatch.setattr(session, "initialize_training_scene", lambda viewer_obj, frame_targets_native=None: None)
     calls: list[object] = []
     viewer = SimpleNamespace(
         toolkit=SimpleNamespace(reset_plot_history=lambda: calls.append("reset")),
         ui=SimpleNamespace(_values={}),
-        s=SimpleNamespace(),
+        s=SimpleNamespace(fov_y=60.0, near=0.1, far=120.0),
         apply_camera_fit=lambda bounds: calls.append(("fit", bounds)),
-        apply_camera_fit_to_training_views=lambda frames: calls.append(("view_fit", tuple(frames))) or True,
+        apply_camera_position=lambda camera, **kwargs: calls.append(("camera_position", np.asarray(camera.position, dtype=np.float32).copy(), kwargs)),
+        apply_camera_pose=lambda camera, **kwargs: (_ for _ in ()).throw(AssertionError("should not apply training orientation")),
     )
 
     session._finish_import_colmap_dataset(
@@ -872,7 +875,49 @@ def test_finish_import_colmap_dataset_prefers_training_view_camera_fit(monkeypat
         frame_targets_native=None,
     )
 
-    assert calls == ["reset", ("view_fit", tuple(training_frames))]
+    assert calls[0] == "reset"
+    assert calls[1][0] == "camera_position"
+    np.testing.assert_allclose(calls[1][1], np.array([1.0, 2.0, 3.0], dtype=np.float32), rtol=0.0, atol=1e-6)
+    assert set(calls[1][2]) == {"near", "far", "move_speed"}
+
+
+def test_finish_import_colmap_dataset_falls_back_to_bounds_fit_without_training_camera(monkeypatch) -> None:
+    recon = SimpleNamespace(points3d={1: object()})
+    training_frames = [SimpleNamespace(make_camera=lambda near=0.1, far=120.0: (_ for _ in ()).throw(RuntimeError("bad frame")))]
+    monkeypatch.setattr(session, "_point_tables", lambda recon_obj, min_track_length=3: (np.zeros((1, 3), dtype=np.float32), np.zeros((1, 3), dtype=np.float32)))
+    monkeypatch.setattr(session, "_reset_loaded_runtime", lambda viewer_obj: None)
+    monkeypatch.setattr(session, "_update_import_settings", lambda viewer_obj, **kwargs: None)
+    monkeypatch.setattr(session, "apply_live_params", lambda viewer_obj: None)
+    monkeypatch.setattr(session, "estimate_point_bounds", lambda xyz: ("bounds", xyz.shape[0]))
+    monkeypatch.setattr(session, "initialize_training_scene", lambda viewer_obj, frame_targets_native=None: None)
+    calls: list[object] = []
+    viewer = SimpleNamespace(
+        toolkit=SimpleNamespace(reset_plot_history=lambda: calls.append("reset")),
+        ui=SimpleNamespace(_values={}),
+        s=SimpleNamespace(fov_y=60.0, near=0.1, far=120.0),
+        apply_camera_fit=lambda bounds: calls.append(("fit", bounds)),
+        apply_camera_position=lambda camera, **kwargs: calls.append(("camera_position", camera, kwargs)),
+    )
+
+    session._finish_import_colmap_dataset(
+        viewer,
+        colmap_root=Path("dataset/garden"),
+        database_path=None,
+        images_root=Path("dataset/garden/images"),
+        init_mode="pointcloud",
+        custom_ply_path=None,
+        image_downscale_mode="original",
+        image_downscale_max_size=1600,
+        image_downscale_scale=1.0,
+        nn_radius_scale_coef=0.25,
+        diffused_point_count=100000,
+        diffusion_radius=1.0,
+        recon=recon,
+        training_frames=training_frames,
+        frame_targets_native=None,
+    )
+
+    assert calls == ["reset", ("fit", ("bounds", 1))]
 
 
 def test_finish_import_colmap_dataset_seeds_pointcloud_cached_init_source(monkeypatch) -> None:
@@ -942,7 +987,7 @@ def test_finish_import_colmap_dataset_seeds_pointcloud_cached_init_source(monkey
 
 
 def test_import_colmap_dataset_uses_aligned_reconstruction(monkeypatch) -> None:
-    aligned_recon = object()
+    recon = object()
     frames = [SimpleNamespace(width=32, height=32, image_id=1)]
     calls: list[object] = []
     viewer = SimpleNamespace(
@@ -979,8 +1024,7 @@ def test_import_colmap_dataset_uses_aligned_reconstruction(monkeypatch) -> None:
     monkeypatch.setattr(session, "_clear_cached_init_source", lambda viewer_obj: None)
     monkeypatch.setattr(session, "_reset_training_visual_state", lambda viewer_obj: None)
     monkeypatch.setattr(session, "_reset_loss_debug", lambda viewer_obj: None)
-
-    monkeypatch.setattr(session, "_load_aligned_colmap_reconstruction", lambda root: aligned_recon)
+    monkeypatch.setattr(session, "_load_aligned_colmap_reconstruction", lambda root, auto_rotate_scene=True: recon if auto_rotate_scene else (_ for _ in ()).throw(AssertionError("expected aligned reconstruction")))
     monkeypatch.setattr(
         session,
         "build_training_frames_from_root",
@@ -999,6 +1043,7 @@ def test_import_colmap_dataset_uses_aligned_reconstruction(monkeypatch) -> None:
         database_path=None,
         images_root=Path("dataset/garden/images_8"),
         init_mode="pointcloud",
+        auto_rotate_scene=True,
         custom_ply_path=None,
         image_downscale_mode="original",
         image_downscale_max_size=2048,
@@ -1014,15 +1059,121 @@ def test_import_colmap_dataset_uses_aligned_reconstruction(monkeypatch) -> None:
         ("clear_renderer", None),
     ]
     assert calls[-2:] == [
-        ("frames", aligned_recon, Path("dataset/garden/images_8"), (), "original", 2048, 1.0),
-        ("finish", aligned_recon, frames, ["tex0"]),
+        ("frames", recon, Path("dataset/garden/images_8"), (), "original", 2048, 1.0),
+        ("finish", recon, frames, ["tex0"]),
     ]
+
+
+def test_import_colmap_dataset_can_skip_aligned_reconstruction(monkeypatch) -> None:
+    raw_recon = object()
+    frames = [SimpleNamespace(width=32, height=32, image_id=1)]
+    calls: list[object] = []
+    viewer = SimpleNamespace(
+        s=SimpleNamespace(
+            renderer=SimpleNamespace(
+                clear_scene_resources=lambda: calls.append(("clear_renderer", None)),
+                set_debug_grad_norm_buffer=lambda buffer: calls.append(("clear_grad_debug", buffer)),
+                set_debug_splat_age_buffer=lambda buffer: calls.append(("clear_splat_age_debug", buffer)),
+            ),
+            trainer=None,
+            training_active=False,
+            training_elapsed_s=0.0,
+            training_resume_time=None,
+            training_renderer=None,
+            training_frames=[],
+            scene=None,
+            scene_path=None,
+            colmap_root=None,
+            colmap_recon=None,
+            colmap_import_progress=None,
+            applied_renderer_params_training=None,
+            applied_renderer_params_debug=None,
+            applied_training_signature=None,
+            applied_training_runtime_factor=None,
+            pending_training_runtime_resize=False,
+            applied_renderer_params_main=None,
+            cached_training_setup_signature=None,
+            cached_training_setup=None,
+        ),
+        c=lambda key: SimpleNamespace(value=0),
+    )
+
+    monkeypatch.setattr(session, "update_debug_frame_slider_range", lambda viewer_obj: None)
+    monkeypatch.setattr(session, "_clear_cached_init_source", lambda viewer_obj: None)
+    monkeypatch.setattr(session, "_reset_training_visual_state", lambda viewer_obj: None)
+    monkeypatch.setattr(session, "_reset_loss_debug", lambda viewer_obj: None)
+    monkeypatch.setattr(session, "_load_aligned_colmap_reconstruction", lambda root, auto_rotate_scene=True: raw_recon if not auto_rotate_scene else (_ for _ in ()).throw(AssertionError("expected raw reconstruction")))
+    monkeypatch.setattr(
+        session,
+        "build_training_frames_from_root",
+        lambda recon, images_root, selected_camera_ids=(), downscale_mode="original", downscale_max_size=None, downscale_scale=1.0: calls.append(("frames", recon, Path(images_root), tuple(selected_camera_ids), downscale_mode, downscale_max_size, downscale_scale)) or frames,
+    )
+    monkeypatch.setattr(
+        session,
+        "_finish_import_colmap_dataset",
+        lambda viewer_obj, **kwargs: calls.append(("finish", kwargs["recon"], kwargs["training_frames"], kwargs["frame_targets_native"])),
+    )
+    monkeypatch.setattr(session, "_create_native_dataset_textures", lambda viewer_obj, resolved_frames: ["tex0"] if resolved_frames is frames else (_ for _ in ()).throw(AssertionError("unexpected frames")))
+
+    session.import_colmap_dataset(
+        viewer,
+        colmap_root=Path("dataset/garden"),
+        database_path=None,
+        images_root=Path("dataset/garden/images_8"),
+        init_mode="pointcloud",
+        auto_rotate_scene=False,
+        custom_ply_path=None,
+        image_downscale_mode="original",
+        image_downscale_max_size=2048,
+        image_downscale_scale=1.0,
+        nn_radius_scale_coef=0.5,
+        diffused_point_count=100000,
+        diffusion_radius=1.0,
+    )
+
+    assert calls[-2:] == [
+        ("frames", raw_recon, Path("dataset/garden/images_8"), (), "original", 2048, 1.0),
+        ("finish", raw_recon, frames, ["tex0"]),
+    ]
+
+
+def test_advance_colmap_import_prepare_respects_auto_rotate_scene(monkeypatch) -> None:
+    raw_recon = SimpleNamespace(images={})
+    calls: list[object] = []
+    viewer = SimpleNamespace(
+        s=SimpleNamespace(
+            colmap_import_progress=ColmapImportProgress(
+                dataset_root=Path("dataset"),
+                colmap_root=Path("dataset"),
+                database_path=None,
+                images_root=Path("dataset/images"),
+                init_mode="pointcloud",
+                custom_ply_path=None,
+                image_downscale_mode="original",
+                image_downscale_max_size=2048,
+                image_downscale_scale=1.0,
+                nn_radius_scale_coef=0.5,
+                auto_rotate_scene=False,
+            )
+        ),
+        init_params=lambda: SimpleNamespace(seed=0),
+    )
+
+    monkeypatch.setattr(session, "_load_aligned_colmap_reconstruction", lambda root, auto_rotate_scene=True: calls.append((Path(root), auto_rotate_scene)) or raw_recon)
+    monkeypatch.setattr(session, "build_depth_path_index", lambda depth_root: (_ for _ in ()).throw(AssertionError("depth index should not be built")))
+
+    session.advance_colmap_import(viewer)
+
+    assert calls == [(Path("dataset"), False)]
+    assert viewer.s.colmap_import_progress.recon is raw_recon
+    assert viewer.s.colmap_import_progress.phase == "scan_frames"
 
 
 def test_colmap_import_settings_defaults_prefer_pointcloud() -> None:
     defaults = ColmapImportSettings()
 
     assert defaults.init_mode == "pointcloud"
+    assert defaults.auto_rotate_scene is True
     assert defaults.nn_radius_scale_coef == 0.5
     assert defaults.min_track_length == 3
     assert defaults.depth_root is None
@@ -1368,7 +1519,7 @@ def test_refresh_training_frames_uses_cached_reconstruction(monkeypatch) -> None
         )
     )
 
-    monkeypatch.setattr(session, "_load_aligned_colmap_reconstruction", lambda root: (_ for _ in ()).throw(AssertionError("should not reload reconstruction")))
+    monkeypatch.setattr(session, "load_colmap_reconstruction", lambda root: (_ for _ in ()).throw(AssertionError("should not reload reconstruction")))
     monkeypatch.setattr(
         session,
         "build_training_frames_from_root",
@@ -1442,69 +1593,12 @@ def test_ensure_cached_init_source_samples_custom_mesh(monkeypatch, tmp_path: Pa
         if Path(mesh_arg) == mesh_path and int(point_count) == 2048 and int(seed) == 11
         else (_ for _ in ()).throw(AssertionError("unexpected mesh sample request")),
     )
-    monkeypatch.setattr(session, "_aligned_colmap_transform", lambda root: np.eye(4, dtype=np.float32))
-
     session._ensure_cached_init_source(viewer, SimpleNamespace(seed=11))
 
     expected_positions = sampled_positions @ session._MESH_TO_COLMAP_COORDINATE_TRANSFORM[:3, :3].T
     assert np.array_equal(viewer.s.cached_init_point_positions, expected_positions)
     assert np.array_equal(viewer.s.cached_init_point_colors, sampled_colors)
     assert viewer.s.cached_init_signature == session._cached_init_signature(viewer, SimpleNamespace(seed=11))
-
-
-def test_ensure_cached_init_source_transforms_custom_mesh_positions(monkeypatch, tmp_path: Path) -> None:
-    mesh_path = tmp_path / "seed.obj"
-    mesh_path.write_text("o seed\n", encoding="utf-8")
-    sampled_positions = np.array([[1.0, 2.0, 3.0], [3.0, 2.0, 1.0]], dtype=np.float32)
-    sampled_colors = np.array([[0.2, 0.3, 0.4], [0.4, 0.3, 0.2]], dtype=np.float32)
-    transform = np.array(
-        [
-            [0.0, -1.0, 0.0, 10.0],
-            [1.0, 0.0, 0.0, 20.0],
-            [0.0, 0.0, 1.0, 30.0],
-            [0.0, 0.0, 0.0, 1.0],
-        ],
-        dtype=np.float32,
-    )
-    viewer = SimpleNamespace(
-        s=SimpleNamespace(
-            colmap_recon=object(),
-            colmap_root=Path("dataset/garden"),
-            colmap_import=SimpleNamespace(
-                init_mode="custom_mesh",
-                custom_ply_path=mesh_path,
-                diffused_point_count=2048,
-                diffusion_radius=1.0,
-                min_track_length=3,
-                fibonacci_sphere_point_count=0,
-                fibonacci_sphere_radius=20.0,
-            ),
-            cached_init_point_positions=None,
-            cached_init_point_colors=None,
-            cached_init_scene=None,
-            cached_init_signature=None,
-        )
-    )
-
-    monkeypatch.setattr(
-        session,
-        "sample_mesh_surface_points",
-        lambda mesh_arg, point_count, seed: (sampled_positions, sampled_colors)
-        if Path(mesh_arg) == mesh_path and int(point_count) == 2048 and int(seed) == 11
-        else (_ for _ in ()).throw(AssertionError("unexpected mesh sample request")),
-    )
-    monkeypatch.setattr(
-        session,
-        "_aligned_colmap_transform",
-        lambda root: transform if root == str(Path("dataset/garden").resolve()) else (_ for _ in ()).throw(AssertionError("unexpected alignment root")),
-    )
-
-    session._ensure_cached_init_source(viewer, SimpleNamespace(seed=11))
-
-    expected_positions = sampled_positions @ session._MESH_TO_COLMAP_COORDINATE_TRANSFORM[:3, :3].T
-    expected_positions = expected_positions @ transform[:3, :3].T + transform[:3, 3][None, :]
-    np.testing.assert_allclose(viewer.s.cached_init_point_positions, expected_positions, rtol=0.0, atol=0.0)
-    assert np.array_equal(viewer.s.cached_init_point_colors, sampled_colors)
 
 
 def test_build_initial_training_scene_uses_cached_mesh_points(monkeypatch) -> None:

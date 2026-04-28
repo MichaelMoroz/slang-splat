@@ -189,6 +189,7 @@
     "import": {
       "colmap_depth_value_mode": 1,
       "colmap_init_mode": 1,
+      "colmap_auto_rotate_scene": true,
       "compress_dataset_using_bc7": true,
       "colmap_image_downscale_mode": 0,
       "colmap_image_max_size": 2048,

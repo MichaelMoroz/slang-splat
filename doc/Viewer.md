@@ -58,6 +58,7 @@ The import window collects:
 - the image folder used for training frames
 - an optional `Depth Folder` used only by depth-based initialization
 - image downscale settings: original resolution, fixed max size, or uniform scale factor
+- an `Auto Rotate Scene` toggle that decides whether import applies the COLMAP auto-alignment rotation derived from the camera layout or preserves the original COLMAP orientation
 - the initialization mode: `COLMAP Pointcloud`, `Diffused Pointcloud`, `Custom PLY`, `Custom Mesh`, or `From Depth`
 - the nearest-neighbor radius scale coefficient used by COLMAP-based initialization
 - for `From Depth`: a dataset-wide `Depth Point Count` budget

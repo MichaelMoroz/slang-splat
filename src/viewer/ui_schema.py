@@ -163,6 +163,7 @@ _VIEWER_CONTROL_EXPORT_FIELDS = (
 _VIEWER_IMPORT_EXPORT_FIELDS = (
     ("colmap_depth_value_mode", int),
     ("colmap_init_mode", int),
+    ("colmap_auto_rotate_scene", bool),
     ("compress_dataset_using_bc7", bool),
     ("colmap_image_downscale_mode", int),
     ("colmap_image_max_size", int),

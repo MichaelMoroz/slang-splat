@@ -8,7 +8,6 @@ import numpy as np
 from PIL import Image
 from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation
-
 from ..gaussian_scene import GaussianScene
 from ..sh_utils import SUPPORTED_SH_COEFF_COUNT, rgb_to_sh0
 from .colmap_types import ColmapCamera, ColmapFrame, ColmapImage, ColmapReconstruction, GaussianInitHyperParams, point_tables
@@ -98,10 +97,6 @@ def rescale_poses_to_unit_cube(poses: np.ndarray, transform: np.ndarray) -> tupl
 
 
 def transform_poses_pca(poses: np.ndarray, rescale: bool = False) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Aligns the scene by assuming that most movement happened parallel to the ground plane during capture.
-    Adapted from Zip-NeRF (https://github.com/jonbarron/camp_zipnerf)
-    """
     poses_arr = np.asarray(poses, dtype=np.float32).reshape(-1, 4, 4).copy()
     if poses_arr.shape[0] == 0:
         return poses_arr, np.eye(4, dtype=np.float32)
