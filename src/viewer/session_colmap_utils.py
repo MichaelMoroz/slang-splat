@@ -6,6 +6,7 @@ import sqlite3
 import numpy as np
 
 from ..scene._internal.colmap_ops import DEPTH_INIT_VALUE_DISTANCE, DEPTH_INIT_VALUE_Z_DEPTH
+from ..scene._internal.colmap_binary import _resolve_colmap_sparse_paths
 from ..scene import load_colmap_reconstruction
 from ..scene._internal.colmap_types import ColmapFrame
 from .state import ColmapImportSettings
@@ -49,11 +50,11 @@ def _unique_paths(paths: list[Path]) -> list[Path]:
 
 def _has_colmap_sparse(root: Path) -> bool:
     root_path = Path(root).resolve()
-    for sparse_dir in (root_path / "sparse" / "0", root_path / "sparse", root_path):
-        for names in (("cameras.bin", "images.bin", "points3D.bin"), ("cameras.txt", "images.txt", "points3D.txt")):
-            if all((sparse_dir / name).exists() for name in names):
-                return True
-    return False
+    try:
+        _resolve_colmap_sparse_paths(root_path / "sparse" / "0", root_path / "sparse", root_path)
+    except FileNotFoundError:
+        return False
+    return True
 
 
 def _looks_like_colmap_database(database_path: Path) -> bool:

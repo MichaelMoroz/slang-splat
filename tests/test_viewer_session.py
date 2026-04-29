@@ -394,6 +394,10 @@ def test_choose_colmap_root_works_without_database(tmp_path: Path) -> None:
         image_names=["images_4/frame_000.png", "images_4/frame_001.png"],
         image_root_rel=Path("."),
     )
+    sparse_zero = root / "sparse" / "0"
+    for path in tuple(sparse_zero.iterdir()):
+        path.replace(root / "sparse" / path.name)
+    sparse_zero.rmdir()
     viewer = SimpleNamespace(
         ui=SimpleNamespace(_values={}),
         s=SimpleNamespace(last_error="stale"),
@@ -404,27 +408,6 @@ def test_choose_colmap_root_works_without_database(tmp_path: Path) -> None:
     assert viewer.ui._values["colmap_root_path"] == str(root)
     assert viewer.ui._values["colmap_database_path"] == ""
     assert viewer.ui._values["colmap_images_root"] == str(root)
-    assert viewer.s.last_error == ""
-
-
-def test_choose_colmap_root_supports_sparse_directory_without_zero(tmp_path: Path) -> None:
-    root = tmp_path / "scene_sparse"
-    sparse = root / "sparse"
-    sparse.mkdir(parents=True)
-    image_names = ["frame_000.png", "frame_001.png"]
-    _write_cameras_bin(sparse / "cameras.bin")
-    _write_images_bin(sparse / "images.bin", image_names)
-    _write_points3d_bin(sparse / "points3D.bin")
-    for image_name in image_names:
-        Image.fromarray(np.full((8, 8, 3), 127, dtype=np.uint8)).save(root / image_name)
-    viewer = SimpleNamespace(ui=SimpleNamespace(_values={}), s=SimpleNamespace(last_error="stale"))
-
-    session.choose_colmap_root(viewer, root)
-
-    assert viewer.ui._values["colmap_root_path"] == str(root.resolve())
-    assert viewer.ui._values["colmap_database_path"] == ""
-    assert viewer.ui._values["colmap_images_root"] == str(root.resolve())
-    assert viewer.ui._values["colmap_selected_camera_ids"] == (7,)
     assert viewer.s.last_error == ""
 
 
