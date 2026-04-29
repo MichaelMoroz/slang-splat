@@ -40,7 +40,7 @@
     "position_random_step_noise_lr": 500000.0,
     "position_random_step_opacity_gate_center": 0.005,
     "position_random_step_opacity_gate_sharpness": 100.0,
-    "max_gaussians": 1000900,
+    "max_gaussians": 1493525,
     "background_mode": 1,
     "use_target_alpha_mask": false,
     "use_sh": false,
@@ -57,7 +57,7 @@
     "refinement_growth_ratio": 0.05999999865889549,
     "refinement_growth_start_step": 3084,
     "refinement_alpha_cull_threshold": 0.01,
-    "refinement_min_contribution": 300,
+    "refinement_min_contribution": 3500,
     "refinement_min_contribution_decay": 0.995,
     "refinement_opacity_mul": 1.0,
     "refinement_sample_radius": 2.5,
@@ -138,7 +138,7 @@
     ],
     "debug_depth_mean_range": [
       0.0,
-      10.0
+      30.0
     ],
     "debug_depth_std_range": [
       0.0,
@@ -169,7 +169,7 @@
       "loss_debug_view": 0,
       "loss_debug_frame": 0,
       "loss_debug_abs_scale": 1.0,
-      "move_speed": 1.1971221047448903,
+      "move_speed": 8.12777894190918,
       "fov": 60.0,
       "render_background_mode": 1,
       "render_background_color": [
@@ -197,7 +197,7 @@
       "colmap_nn_radius_scale_coef": 0.40230000019073486,
       "colmap_min_track_length": 3,
       "colmap_depth_point_count": 100000,
-      "colmap_diffused_point_count": 394001,
+      "colmap_diffused_point_count": 905001,
       "colmap_diffusion_radius": 1.030400037765503,
       "colmap_fibonacci_sphere_point_count": 50601,
       "colmap_fibonacci_sphere_radius": 101.02799987792969
