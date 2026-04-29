@@ -105,6 +105,8 @@ _HISTOGRAM_WINDOW_HEIGHT = 860.0
 _HISTOGRAM_CONTROL_LABEL_WIDTH = 150.0
 _HISTOGRAM_PLOT_HEIGHT = 230.0
 _HISTOGRAM_PLOT_MIN_COLUMN_WIDTH = 460.0
+_HISTOGRAM_LOG_Y_MIN = 1.0
+_HISTOGRAM_LOG_Y_MAX_MIN = 1.01
 _RESOURCE_DEBUG_WINDOW_WIDTH = 1120.0
 _RESOURCE_DEBUG_WINDOW_HEIGHT = 620.0
 _DEFAULT_HISTOGRAM_GROUPS = (
@@ -1954,10 +1956,11 @@ class ToolkitWindow:
         imgui.text_disabled(label)
         plot_id = f"##plot_{label}"
         if implot.begin_plot(plot_id, imgui.ImVec2(-1, _HISTOGRAM_PLOT_HEIGHT * self._plot_scale(ui))):
-            implot.setup_axes("value", "count", 0, 0)
+            implot.setup_axes("value", "count (log10)", 0, 0)
             if centers.size > 0:
                 implot.setup_axis_limits(implot.ImAxis_.x1.value, float(centers[0]), float(centers[-1]), implot.Cond_.always.value)
-            implot.setup_axis_limits(implot.ImAxis_.y1.value, 0.0, max(float(y_limit), 1.0), implot.Cond_.always.value)
+            implot.setup_axis_scale(implot.ImAxis_.y1.value, implot.Scale_.log10.value)
+            implot.setup_axis_limits(implot.ImAxis_.y1.value, _HISTOGRAM_LOG_Y_MIN, max(float(y_limit), _HISTOGRAM_LOG_Y_MAX_MIN), implot.Cond_.always.value)
             implot.plot_line(label, centers, np.asarray(counts, dtype=np.float64))
             implot.end_plot()
 

@@ -846,6 +846,29 @@ def test_histogram_plot_height_scales_with_interface_scale(monkeypatch) -> None:
     assert plot_sizes == [("##plot_test", -1.0, 345.0)]
 
 
+def test_histogram_plot_uses_log_count_axis(monkeypatch) -> None:
+    axes: list[tuple[str, str, int, int]] = []
+    scales: list[tuple[int, int]] = []
+    limits: list[tuple[int, float, float, int]] = []
+    lines: list[tuple[str, np.ndarray, np.ndarray]] = []
+    monkeypatch.setattr(ui.imgui, "text_disabled", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ui.implot, "begin_plot", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(ui.implot, "setup_axes", lambda x_label, y_label, x_flags, y_flags: axes.append((str(x_label), str(y_label), int(x_flags), int(y_flags))))
+    monkeypatch.setattr(ui.implot, "setup_axis_scale", lambda axis, scale: scales.append((int(axis), int(scale))))
+    monkeypatch.setattr(ui.implot, "setup_axis_limits", lambda axis, lo, hi, cond: limits.append((int(axis), float(lo), float(hi), int(cond))))
+    monkeypatch.setattr(ui.implot, "plot_line", lambda label, xs, ys: lines.append((str(label), np.asarray(xs), np.asarray(ys))))
+    monkeypatch.setattr(ui.implot, "end_plot", lambda: None)
+    toolkit = SimpleNamespace(_plot_scale=lambda _viewer_ui: 1.0)
+
+    ui.ToolkitWindow._draw_histogram_plot(toolkit, SimpleNamespace(_values={}, _texts={}), "counts", np.array([0.0, 1.0], dtype=np.float64), np.array([1.0, 100.0], dtype=np.float64), 128.0)
+
+    assert axes == [("value", "count (log10)", 0, 0)]
+    assert scales == [(int(ui.implot.ImAxis_.y1.value), int(ui.implot.Scale_.log10.value))]
+    assert (int(ui.implot.ImAxis_.y1.value), 1.0, 128.0, int(ui.implot.Cond_.always.value)) in limits
+    assert lines[0][0] == "counts"
+    np.testing.assert_allclose(lines[0][2], np.array([1.0, 100.0], dtype=np.float64))
+
+
 def test_optimizer_regularization_tab_includes_density_controls() -> None:
     assert "sh1_reg" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "density_regularizer" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
