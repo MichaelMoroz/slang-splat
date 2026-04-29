@@ -10,6 +10,8 @@ import "utility/splatting/raster.slang";
 uniform float g_MaxAnisotropy;
 uniform CameraParams g_TrainingNativeCamera;
 uniform TrainingSubsampleParams g_TrainingSubsample;
+uniform Texture2D<float4> g_Target;
+uniform uint g_UseTargetAlphaMask;
 uniform RWStructuredBuffer<uint> g_CloneCounts;
 uniform StructuredBuffer<float> g_SplatAges;
 uniform RWStructuredBuffer<uint> g_SplatContribution;
@@ -742,6 +744,14 @@ RasterPixelInfo resolve_raster_pixel(uint3 groupID, uint lane)
     return info;
 }
 
+bool raster_target_allows_contribution(RasterPixelInfo info)
+{
+    if (!info.pixelActive) return true;
+    if (g_UseTargetAlphaMask == 0u) return true;
+    uint2 targetPixel = g_TrainingSubsample.enabled == 0u ? info.pixelCoord : training_sample_native_pixel(info.pixelCoord, g_TrainingSubsample);
+    return g_Target[targetPixel].w > 0.0;
+}
+
 interface IRasterReplayVariant
 {
     static void init_state(RasterPixelInfo info, out RasterReplayState replayState);
@@ -1017,6 +1027,7 @@ void raster_backward_replay<T : IRasterGradVariant>(RasterPixelInfo info, inout 
     }
 
     float3 background = raster_resolved_background(info.pixelCoord);
+    bool contributionEnabled = raster_target_allows_contribution(info);
     RasterState suffixState = { 0.0, 1.0 };
     for (uint batchBase = replayState.replayBatchEnd; batchBase > info.start;)
     {
@@ -1043,7 +1054,7 @@ void raster_backward_replay<T : IRasterGradVariant>(RasterPixelInfo info, inout 
             {
                 RasterReplayStepState prevState;
                 prevState.pixelState = replayState.pixelState.undo(gaussian.colorAlpha.xyz, alpha);
-                accumulate_bidirectional_splat_contribution(splatId, prevState.pixelState, suffixState, gaussian.colorAlpha.xyz, alpha, background);
+                if (contributionEnabled) accumulate_bidirectional_splat_contribution(splatId, prevState.pixelState, suffixState, gaussian.colorAlpha.xyz, alpha, background);
                 prevState.splatDensityState = replayState.splatDensitySum - raster_splat_density_weight(prevState.pixelState.trans, alpha, gaussian.colorAlpha.w);
                 prevState.depthState = depth_state_rewind(replayState.depthState, prevState.pixelState.trans * alpha, rayDepth);
                 var dpPrevState = diffPair(prevState);

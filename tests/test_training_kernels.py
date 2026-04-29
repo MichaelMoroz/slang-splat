@@ -1311,8 +1311,10 @@ def test_target_alpha_mask_skips_masked_pixel_loss_and_output_grads(device, tmp_
     image[..., 1] = 255
     frame = _make_rgba_frame(tmp_path, image, image_name="alpha_mask_target.png", image_id=21)
     scene = _make_scene(count=1, seed=111)
-    scene.opacities[:] = 0.0
-    scene.colors[:] = 0.0
+    scene.positions[:] = np.array([[0.0, 0.0, 2.0]], dtype=np.float32)
+    scene.scales[:] = _log_sigma(np.full((1, 3), 0.2, dtype=np.float32))
+    scene.opacities[:] = 2.0
+    scene.colors[:] = np.array([[1.0, 0.0, 0.0]], dtype=np.float32)
     renderer_off = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
     renderer_on = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
     trainer_off = GaussianTrainer(
@@ -1344,26 +1346,30 @@ def test_target_alpha_mask_skips_masked_pixel_loss_and_output_grads(device, tmp_
     camera = frame.make_camera(near=0.1, far=20.0)
     background = np.zeros((3,), dtype=np.float32)
 
-    def run_pass(trainer: GaussianTrainer, renderer: GaussianRenderer) -> tuple[tuple[float, float, float], np.ndarray]:
+    def run_pass(trainer: GaussianTrainer, renderer: GaussianRenderer) -> tuple[tuple[float, float, float], np.ndarray, np.ndarray]:
         renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
         enc = device.create_command_encoder()
         trainer._dispatch_raster_training_forward(enc, camera, background)
         target_texture = trainer.get_frame_target_texture(0, native_resolution=False, encoder=enc)
         trainer._dispatch_loss_forward(enc, target_texture)
         trainer._dispatch_loss_backward(enc, target_texture)
+        trainer._dispatch_raster_backward(enc, camera, background, target_texture=target_texture)
         device.submit_command_buffer(enc.finish())
         device.wait()
-        return trainer._read_loss_metrics(), _read_output_grads(renderer).copy()
+        contributions = buffer_to_numpy(trainer.refinement_buffers["splat_contribution"], np.uint32)[: scene.count].copy()
+        return trainer._read_loss_metrics(), _read_output_grads(renderer).copy(), contributions
 
-    (loss_off, mse_off, density_off), grads_off = run_pass(trainer_off, renderer_off)
-    (loss_on, mse_on, density_on), grads_on = run_pass(trainer_on, renderer_on)
+    (loss_off, mse_off, density_off), grads_off, contributions_off = run_pass(trainer_off, renderer_off)
+    (loss_on, mse_on, density_on), grads_on, contributions_on = run_pass(trainer_on, renderer_on)
 
     assert loss_off > 0.0
     assert mse_off > 0.0
     assert density_off == 0.0
     assert np.any(np.abs(grads_off[..., :3]) > 0.0)
+    assert np.any(contributions_off > 0)
     np.testing.assert_allclose((loss_on, mse_on, density_on), (0.0, 0.0, 0.0), rtol=0.0, atol=1e-7)
     np.testing.assert_allclose(grads_on[..., :3], 0.0, rtol=0.0, atol=1e-7)
+    np.testing.assert_array_equal(contributions_on, np.zeros_like(contributions_on))
 
 
 def test_split_raster_backward_consumes_forward_cache_only(device, tmp_path: Path):

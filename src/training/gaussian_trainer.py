@@ -582,6 +582,7 @@ class GaussianTrainer:
         step: int | None = None,
         frame_index: int = 0,
         native_camera: Camera | None = None,
+        target_texture: spy.Texture | None = None,
     ) -> None:
         resolved_step = self.state.step if step is None else int(step)
         self.renderer.clear_raster_grads_current_scene(encoder)
@@ -592,6 +593,8 @@ class GaussianTrainer:
             background=background,
             output_grad=self.renderer.output_grad_buffer,
             grad_scale=1.0,
+            target_texture=target_texture,
+            use_target_alpha_mask=bool(self.training.use_target_alpha_mask and target_texture is not None),
             regularizer_grad=self.renderer.work_buffers["training_regularizer_grad"],
             gradient_stats_buffer=self._refinement_buffers["gradient_stats"],
             splat_contribution_buffer=self._refinement_buffers["splat_contribution"],
@@ -1512,7 +1515,7 @@ class GaussianTrainer:
     ) -> None:
         with debug_region(encoder, "Trainer Backward", 51):
             self._dispatch_loss_backward(encoder, target_texture, step, frame_index)
-            self._dispatch_raster_backward(encoder, frame_camera, background, step, frame_index, native_camera)
+            self._dispatch_raster_backward(encoder, frame_camera, background, step, frame_index, native_camera, target_texture)
 
     def _dispatch_cache_step_info(self, encoder: spy.CommandEncoder, batch_step_index: int) -> None:
         self._dispatch(
