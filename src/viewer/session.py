@@ -13,7 +13,7 @@ import slangpy as spy
 
 from ..app.shared import apply_training_profile, estimate_point_bounds, estimate_scene_bounds, fit_camera
 from ..utility import SHADER_ROOT, clamp_index, load_compute_kernels
-from ..metrics import ParamLog10Histograms, ParamTensorRanges
+from ..metrics import PARAM_HISTOGRAM_SCALE_LINEAR, PARAM_HISTOGRAM_SCALE_LOG10, ParamLog10Histograms, ParamTensorRanges
 from ..renderer import GaussianRenderSettings, GaussianRenderer
 from ..scene import (
     GaussianScene,
@@ -80,6 +80,8 @@ from .session_dataset_utils import (
 )
 from .state import ColmapImportProgress, ColmapImportSettings, SceneCountProxy
 
+_REFINEMENT_HISTOGRAM_LOG10_FALLBACK_RANGE = (-6.0, 1.0)
+_HISTOGRAM_RANGE_EPS = 1e-6
 _FIBONACCI_SPHERE_EQUAL_AREA_RADIUS_FACTOR = 2.0
 _FIBONACCI_SPHERE_SCALE_MIN = 1e-4
 _FIBONACCI_SPHERE_SCALE_MAX = 1e4
@@ -109,6 +111,28 @@ _has_colmap_sparse = _has_colmap_sparse_impl
 _resolve_colmap_root_from_selection = _resolve_colmap_root_from_selection_impl
 _load_aligned_colmap_reconstruction = _load_aligned_colmap_reconstruction_impl
 _set_ui_path = _set_ui_path_impl
+
+
+def _param_value_scales(payload: object, row_count: int, default: str = PARAM_HISTOGRAM_SCALE_LINEAR) -> tuple[str, ...]:
+    scales = tuple(str(scale) for scale in getattr(payload, "param_value_scales", ()))
+    return scales if len(scales) == int(row_count) else (default,) * int(row_count)
+
+
+def _param_range_bounds(payload: object, value_scale: str, fallback: tuple[float, float]) -> tuple[float, float]:
+    if payload is None:
+        return fallback
+    min_values = np.asarray(getattr(payload, "min_values", np.zeros((0,), dtype=np.float32)), dtype=np.float64).reshape(-1)
+    max_values = np.asarray(getattr(payload, "max_values", np.zeros((0,), dtype=np.float32)), dtype=np.float64).reshape(-1)
+    if min_values.size == 0 or min_values.size != max_values.size:
+        return fallback
+    scales = _param_value_scales(payload, min_values.size)
+    scale_mask = np.asarray([scale == value_scale for scale in scales], dtype=bool)
+    values = np.concatenate((min_values[scale_mask], max_values[scale_mask]), axis=0)
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return fallback
+    lo, hi = float(np.min(values)), float(np.max(values))
+    return (lo, hi) if hi > lo else (lo, lo + _HISTOGRAM_RANGE_EPS)
 
 
 def _camera_rows(recon: object) -> tuple[dict[str, object], ...]:
@@ -1115,10 +1139,11 @@ def refresh_cached_raster_grad_histograms(viewer: object, force: bool = False) -
         metrics=metrics,
     )
     scene_ranges = viewer.s.training_renderer.compute_scene_param_ranges(scene_count, metrics=metrics)
-    compute_refinement_histograms = getattr(viewer.s.trainer, "compute_refinement_distribution_histograms", None)
-    refinement_histograms = compute_refinement_histograms(scene_count, bin_count=bin_count, min_log10=min_value, max_log10=max_value) if callable(compute_refinement_histograms) else None
     compute_refinement_ranges = getattr(viewer.s.trainer, "compute_refinement_distribution_ranges", None)
     refinement_ranges = compute_refinement_ranges(scene_count) if callable(compute_refinement_ranges) else None
+    refinement_min_log10, refinement_max_log10 = _param_range_bounds(refinement_ranges, PARAM_HISTOGRAM_SCALE_LOG10, _REFINEMENT_HISTOGRAM_LOG10_FALLBACK_RANGE)
+    compute_refinement_histograms = getattr(viewer.s.trainer, "compute_refinement_distribution_histograms", None)
+    refinement_histograms = compute_refinement_histograms(scene_count, bin_count=bin_count, min_log10=refinement_min_log10, max_log10=refinement_max_log10) if callable(compute_refinement_histograms) else None
     viewer.s.cached_raster_grad_histograms = _concat_param_histograms(scene_histograms, refinement_histograms)
     viewer.s.cached_raster_grad_ranges = _concat_param_tensor_ranges(scene_ranges, refinement_ranges)
     viewer.s.cached_raster_grad_histogram_mode = ""
@@ -1141,17 +1166,25 @@ def _concat_param_histograms(*payloads: object) -> object:
     if len(valid) == 1:
         return valid[0]
     counts: list[np.ndarray] = []
+    row_edges: list[np.ndarray] = []
     labels: list[str] = []
+    value_scales: list[str] = []
     groups: list[tuple[str, tuple[int, ...]]] = []
     offset = 0
     bin_edges = np.asarray(getattr(valid[0], "bin_edges_log10", np.zeros((0,), dtype=np.float64)), dtype=np.float64).reshape(-1)
     for payload in valid:
         payload_counts = np.asarray(getattr(payload, "counts", np.zeros((0, 0), dtype=np.int64)), dtype=np.int64)
-        if payload_counts.ndim != 2 or payload_counts.shape[1] != max(bin_edges.size - 1, 0):
+        payload_edges = np.asarray(getattr(payload, "bin_edges_by_param_log10", np.zeros((0, 0), dtype=np.float64)), dtype=np.float64)
+        if payload_edges.ndim != 2 or payload_edges.shape[0] != payload_counts.shape[0]:
+            shared_edges = np.asarray(getattr(payload, "bin_edges_log10", np.zeros((0,), dtype=np.float64)), dtype=np.float64).reshape(-1)
+            payload_edges = np.repeat(shared_edges[None, :], payload_counts.shape[0], axis=0) if shared_edges.size > 0 else np.zeros((payload_counts.shape[0], 0), dtype=np.float64)
+        if payload_counts.ndim != 2 or payload_edges.shape != (payload_counts.shape[0], payload_counts.shape[1] + 1) or payload_counts.shape[1] != max(bin_edges.size - 1, 0):
             continue
         row_count = int(payload_counts.shape[0])
         counts.append(payload_counts)
+        row_edges.append(payload_edges)
         payload_labels = tuple(str(label) for label in getattr(payload, "param_labels", ()))
+        value_scales.extend(_param_value_scales(payload, row_count))
         labels.extend(payload_labels[index] if index < len(payload_labels) else f"param {offset + index}" for index in range(row_count))
         for group_name, indices in tuple(getattr(payload, "param_groups", ())):
             group_indices = tuple(offset + int(index) for index in indices if 0 <= int(index) < row_count)
@@ -1165,6 +1198,8 @@ def _concat_param_histograms(*payloads: object) -> object:
         bin_edges_log10=bin_edges.copy(),
         param_labels=tuple(labels),
         param_groups=tuple(groups),
+        param_value_scales=tuple(value_scales),
+        bin_edges_by_param_log10=np.concatenate(row_edges, axis=0),
     )
 
 
@@ -1177,6 +1212,7 @@ def _concat_param_tensor_ranges(*payloads: object) -> object:
     min_values = []
     max_values = []
     labels: list[str] = []
+    value_scales: list[str] = []
     groups: list[tuple[str, tuple[int, ...]]] = []
     offset = 0
     for payload in valid:
@@ -1188,6 +1224,7 @@ def _concat_param_tensor_ranges(*payloads: object) -> object:
         max_values.append(payload_max)
         row_count = int(payload_min.size)
         payload_labels = tuple(str(label) for label in getattr(payload, "param_labels", ()))
+        value_scales.extend(_param_value_scales(payload, row_count))
         labels.extend(payload_labels[index] if index < len(payload_labels) else f"param {offset + index}" for index in range(row_count))
         for group_name, indices in tuple(getattr(payload, "param_groups", ())):
             group_indices = tuple(offset + int(index) for index in indices if 0 <= int(index) < row_count)
@@ -1201,6 +1238,7 @@ def _concat_param_tensor_ranges(*payloads: object) -> object:
         max_values=np.concatenate(max_values, axis=0),
         param_labels=tuple(labels),
         param_groups=tuple(groups),
+        param_value_scales=tuple(value_scales),
     )
 
 

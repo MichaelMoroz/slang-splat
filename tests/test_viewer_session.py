@@ -1321,25 +1321,30 @@ def test_refresh_cached_raster_grad_histograms_appends_refinement_distributions(
         bin_edges_log10=np.linspace(0.0, 1.0, 5, dtype=np.float64),
         param_labels=("position.x",),
         param_groups=(("position", (0,)),),
+        param_value_scales=(session.PARAM_HISTOGRAM_SCALE_LINEAR,),
     )
     scene_ranges = SimpleNamespace(
         min_values=np.array([-1.0], dtype=np.float32),
         max_values=np.array([1.0], dtype=np.float32),
         param_labels=("position.x",),
         param_groups=(("position", (0,)),),
+        param_value_scales=(session.PARAM_HISTOGRAM_SCALE_LINEAR,),
     )
     refinement_hist = SimpleNamespace(
         counts=np.array([[4, 3, 2, 1], [0, 1, 0, 2]], dtype=np.int64),
-        bin_edges_log10=np.linspace(0.0, 1.0, 5, dtype=np.float64),
+        bin_edges_log10=np.linspace(-4.0, 1.0, 5, dtype=np.float64),
         param_labels=("Contribution distribution", "Refinement distribution"),
         param_groups=(("Contribution distribution", (0,)), ("Refinement distribution", (1,))),
+        param_value_scales=(session.PARAM_HISTOGRAM_SCALE_LOG10, session.PARAM_HISTOGRAM_SCALE_LOG10),
     )
     refinement_ranges = SimpleNamespace(
-        min_values=np.array([0.0, 0.25], dtype=np.float32),
-        max_values=np.array([0.75, 1.5], dtype=np.float32),
+        min_values=np.array([-3.0, -4.0], dtype=np.float32),
+        max_values=np.array([0.0, 1.0], dtype=np.float32),
         param_labels=("Contribution distribution", "Refinement distribution"),
         param_groups=(("Contribution distribution", (0,)), ("Refinement distribution", (1,))),
+        param_value_scales=(session.PARAM_HISTOGRAM_SCALE_LOG10, session.PARAM_HISTOGRAM_SCALE_LOG10),
     )
+    hist_bounds: list[tuple[float, float]] = []
     renderer = SimpleNamespace(
         cached_raster_grad_atomic_mode="float",
         compute_scene_param_histograms=lambda scene_count, *, bin_count, min_value, max_value, metrics=None: scene_hist,
@@ -1349,7 +1354,7 @@ def test_refresh_cached_raster_grad_histograms_appends_refinement_distributions(
         state=SimpleNamespace(step=8),
         scene=SimpleNamespace(count=16),
         metrics=object(),
-        compute_refinement_distribution_histograms=lambda scene_count, *, bin_count, min_log10, max_log10: refinement_hist,
+        compute_refinement_distribution_histograms=lambda scene_count, *, bin_count, min_log10, max_log10: hist_bounds.append((min_log10, max_log10)) or refinement_hist,
         compute_refinement_distribution_ranges=lambda scene_count: refinement_ranges,
     )
     viewer = SimpleNamespace(
@@ -1372,11 +1377,18 @@ def test_refresh_cached_raster_grad_histograms_appends_refinement_distributions(
     hist = viewer.s.cached_raster_grad_histograms
     ranges = viewer.s.cached_raster_grad_ranges
     np.testing.assert_array_equal(hist.counts, np.concatenate((scene_hist.counts, refinement_hist.counts), axis=0))
+    np.testing.assert_allclose(
+        hist.bin_edges_by_param_log10,
+        np.stack((scene_hist.bin_edges_log10, refinement_hist.bin_edges_log10, refinement_hist.bin_edges_log10), axis=0),
+    )
     assert hist.param_labels == ("position.x", "Contribution distribution", "Refinement distribution")
     assert hist.param_groups == (("position", (0,)), ("Contribution distribution", (1,)), ("Refinement distribution", (2,)))
-    np.testing.assert_allclose(ranges.min_values, np.array([-1.0, 0.0, 0.25], dtype=np.float32))
-    np.testing.assert_allclose(ranges.max_values, np.array([1.0, 0.75, 1.5], dtype=np.float32))
+    assert hist.param_value_scales == (session.PARAM_HISTOGRAM_SCALE_LINEAR, session.PARAM_HISTOGRAM_SCALE_LOG10, session.PARAM_HISTOGRAM_SCALE_LOG10)
+    assert hist_bounds == [(-4.0, 1.0)]
+    np.testing.assert_allclose(ranges.min_values, np.array([-1.0, -3.0, -4.0], dtype=np.float32))
+    np.testing.assert_allclose(ranges.max_values, np.array([1.0, 0.0, 1.0], dtype=np.float32))
     assert ranges.param_groups == hist.param_groups
+    assert ranges.param_value_scales == hist.param_value_scales
 
 
 def test_initialize_training_scene_rebinds_debug_buffers_for_new_trainer(monkeypatch) -> None:

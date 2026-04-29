@@ -841,7 +841,7 @@ def test_histogram_plot_height_scales_with_interface_scale(monkeypatch) -> None:
     monkeypatch.setattr(ui.implot, "begin_plot", lambda label, size: plot_sizes.append((str(label), float(size.x), float(size.y))) or False)
     toolkit = SimpleNamespace(_plot_scale=lambda viewer_ui: float(viewer_ui._values["scale"]))
 
-    ui.ToolkitWindow._draw_histogram_plot(toolkit, SimpleNamespace(_values={"scale": 1.5}, _texts={}), "test", np.array([0.0, 1.0], dtype=np.float64), np.array([1.0, 2.0], dtype=np.float64), 10.0)
+    ui.ToolkitWindow._draw_histogram_plot(toolkit, SimpleNamespace(_values={"scale": 1.5}, _texts={}), "test", "value", np.array([0.0, 1.0], dtype=np.float64), np.array([1.0, 2.0], dtype=np.float64), 10.0)
 
     assert plot_sizes == [("##plot_test", -1.0, 345.0)]
 
@@ -860,13 +860,26 @@ def test_histogram_plot_uses_log_count_axis(monkeypatch) -> None:
     monkeypatch.setattr(ui.implot, "end_plot", lambda: None)
     toolkit = SimpleNamespace(_plot_scale=lambda _viewer_ui: 1.0)
 
-    ui.ToolkitWindow._draw_histogram_plot(toolkit, SimpleNamespace(_values={}, _texts={}), "counts", np.array([0.0, 1.0], dtype=np.float64), np.array([1.0, 100.0], dtype=np.float64), 128.0)
+    ui.ToolkitWindow._draw_histogram_plot(toolkit, SimpleNamespace(_values={}, _texts={}), "counts", "log10(value)", np.array([0.0, 1.0], dtype=np.float64), np.array([1.0, 100.0], dtype=np.float64), 128.0)
 
-    assert axes == [("value", "count (log10)", 0, 0)]
+    assert axes == [("log10(value)", "count (log10)", 0, 0)]
     assert scales == [(int(ui.implot.ImAxis_.y1.value), int(ui.implot.Scale_.log10.value))]
     assert (int(ui.implot.ImAxis_.y1.value), 1.0, 128.0, int(ui.implot.Cond_.always.value)) in limits
     assert lines[0][0] == "counts"
     np.testing.assert_allclose(lines[0][2], np.array([1.0, 100.0], dtype=np.float64))
+
+
+def test_histogram_uses_per_param_centers_and_scale_labels() -> None:
+    payload = SimpleNamespace(
+        bin_edges_log10=np.array([0.0, 1.0, 2.0], dtype=np.float64),
+        bin_edges_by_param_log10=np.array([[0.0, 1.0, 2.0], [-6.0, -3.0, 0.0]], dtype=np.float64),
+        param_value_scales=(ui.PARAM_HISTOGRAM_SCALE_LINEAR, ui.PARAM_HISTOGRAM_SCALE_LOG10),
+    )
+
+    np.testing.assert_allclose(ui._histogram_centers_for_param(payload, 0), np.array([0.5, 1.5], dtype=np.float64))
+    np.testing.assert_allclose(ui._histogram_centers_for_param(payload, 1), np.array([-4.5, -1.5], dtype=np.float64))
+    assert ui._histogram_x_label_for_param(payload, 0) == "value"
+    assert ui._histogram_x_label_for_param(payload, 1) == "log10(value)"
 
 
 def test_optimizer_regularization_tab_includes_density_controls() -> None:
@@ -1020,6 +1033,19 @@ def test_histogram_range_from_ranges_uses_finite_extrema_as_fallback() -> None:
 
     assert np.isclose(lo, -1.0)
     assert np.isclose(hi, 10.0)
+
+
+def test_histogram_range_from_ranges_ignores_log10_distribution_rows() -> None:
+    payload = SimpleNamespace(
+        min_values=np.array([-150.0, -6.0, -4.0], dtype=np.float32),
+        max_values=np.array([250.0, 0.0, 1.0], dtype=np.float32),
+        param_value_scales=(ui.PARAM_HISTOGRAM_SCALE_LINEAR, ui.PARAM_HISTOGRAM_SCALE_LOG10, ui.PARAM_HISTOGRAM_SCALE_LOG10),
+    )
+
+    lo, hi = ui._histogram_range_from_ranges(payload)
+
+    assert lo == -150.0
+    assert hi == 250.0
 
 
 def test_update_histogram_range_prefers_true_ranges_over_clipped_counts() -> None:

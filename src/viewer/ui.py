@@ -15,6 +15,7 @@ import slangpy as spy
 import slangpy.ui.imgui_bundle as simgui
 from imgui_bundle import hello_imgui, imgui, imgui_md, implot
 
+from ..metrics import PARAM_HISTOGRAM_SCALE_LINEAR, PARAM_HISTOGRAM_SCALE_LOG10
 from ..repo_defaults import json_value
 from ..app.training_controls import (
     SH_BAND_LABELS as _SH_BAND_LABELS,
@@ -297,19 +298,52 @@ def _histogram_centers(payload: object) -> np.ndarray:
     return np.asarray(centers, dtype=np.float64)
 
 
+def _histogram_param_value_scales(payload: object, row_count: int, default: str = PARAM_HISTOGRAM_SCALE_LINEAR) -> tuple[str, ...]:
+    scales = tuple(str(scale) for scale in getattr(payload, "param_value_scales", ()))
+    return scales if len(scales) == int(row_count) else (default,) * int(row_count)
+
+
+def _histogram_centers_by_param(payload: object, row_count: int) -> np.ndarray:
+    edges_by_param = np.asarray(getattr(payload, "bin_edges_by_param_log10", np.zeros((0, 0), dtype=np.float64)), dtype=np.float64)
+    if edges_by_param.ndim == 2 and edges_by_param.shape[0] >= int(row_count) and edges_by_param.shape[1] > 1:
+        return 0.5 * (edges_by_param[: int(row_count), :-1] + edges_by_param[: int(row_count), 1:])
+    centers = _histogram_centers(payload)
+    return np.repeat(centers[None, :], int(row_count), axis=0) if centers.size > 0 else np.zeros((int(row_count), 0), dtype=np.float64)
+
+
+def _histogram_centers_for_param(payload: object, param_index: int) -> np.ndarray:
+    centers = _histogram_centers_by_param(payload, int(param_index) + 1)
+    return centers[int(param_index)] if centers.shape[0] > int(param_index) else np.zeros((0,), dtype=np.float64)
+
+
+def _histogram_x_label_for_param(payload: object, param_index: int) -> str:
+    scales = tuple(str(scale) for scale in getattr(payload, "param_value_scales", ()))
+    return "log10(value)" if int(param_index) < len(scales) and scales[int(param_index)] == PARAM_HISTOGRAM_SCALE_LOG10 else "value"
+
+
 def _histogram_range_from_histogram(payload: object) -> tuple[float, float] | None:
     if payload is None:
         return None
-    centers = _histogram_centers(payload)
     counts = np.asarray(getattr(payload, "counts", np.zeros((0, 0), dtype=np.int64)), dtype=np.float64)
-    if counts.ndim != 2 or centers.ndim != 1 or counts.shape[1] != centers.size or centers.size == 0:
+    if counts.ndim != 2 or counts.shape[0] == 0 or counts.shape[1] == 0:
         return None
-    summed = np.sum(counts, axis=0)
+    scales = _histogram_param_value_scales(payload, counts.shape[0])
+    row_mask = np.asarray([scale == PARAM_HISTOGRAM_SCALE_LINEAR for scale in scales], dtype=bool)
+    if not np.any(row_mask):
+        return None
+    centers_by_param = _histogram_centers_by_param(payload, counts.shape[0])
+    if centers_by_param.shape != counts.shape:
+        return None
+    centers = centers_by_param[row_mask].reshape(-1)
+    summed = counts[row_mask].reshape(-1)
     finite = np.isfinite(centers) & np.isfinite(summed) & (summed > 0.0)
     if not np.any(finite):
         return None
     filtered_centers = centers[finite]
     filtered_counts = summed[finite]
+    order = np.argsort(filtered_centers)
+    filtered_centers = filtered_centers[order]
+    filtered_counts = filtered_counts[order]
     total = float(np.sum(filtered_counts))
     if total <= 0.0:
         return None
@@ -332,8 +366,10 @@ def _histogram_range_from_ranges(payload: object) -> tuple[float, float] | None:
     max_values = np.asarray(getattr(payload, "max_values", np.zeros((0,), dtype=np.float32)), dtype=np.float64)
     if min_values.ndim != 1 or max_values.ndim != 1 or min_values.size != max_values.size or min_values.size == 0:
         return None
-    finite_min = min_values[np.isfinite(min_values)]
-    finite_max = max_values[np.isfinite(max_values)]
+    scales = _histogram_param_value_scales(payload, min_values.size)
+    scale_mask = np.asarray([scale == PARAM_HISTOGRAM_SCALE_LINEAR for scale in scales], dtype=bool)
+    finite_min = min_values[scale_mask & np.isfinite(min_values)]
+    finite_max = max_values[scale_mask & np.isfinite(max_values)]
     if finite_min.size == 0 or finite_max.size == 0: return None
     return float(np.min(finite_min)), float(np.max(finite_max))
 
@@ -1933,9 +1969,8 @@ class ToolkitWindow:
     def _draw_histogram_groups(self, ui: ViewerUI, payload: object) -> None:
         labels = tuple(str(label) for label in getattr(payload, "param_labels", ()))
         groups = tuple(getattr(payload, "param_groups", _DEFAULT_HISTOGRAM_GROUPS))
-        centers = _histogram_centers(payload)
         counts = np.asarray(getattr(payload, "counts", np.zeros((0, 0), dtype=np.int64)), dtype=np.float64)
-        if counts.ndim != 2 or centers.size == 0:
+        if counts.ndim != 2 or counts.shape[1] == 0:
             imgui.text_wrapped("Histogram payload is malformed.")
             return
         y_limit = float(ui._values.get("hist_y_limit", _HISTOGRAM_Y_LIMIT_DEFAULT))
@@ -1948,15 +1983,16 @@ class ToolkitWindow:
             if imgui.begin_table(f"##hist_{group_name}", column_count, imgui.TableFlags_.sizing_stretch_same.value):
                 for index in valid:
                     imgui.table_next_column()
-                    self._draw_histogram_plot(ui, labels[index] if index < len(labels) else f"param {index}", centers, counts[index], y_limit)
+                    centers = _histogram_centers_for_param(payload, index)
+                    self._draw_histogram_plot(ui, labels[index] if index < len(labels) else f"param {index}", _histogram_x_label_for_param(payload, index), centers, counts[index], y_limit)
                 imgui.end_table()
             imgui.spacing()
 
-    def _draw_histogram_plot(self, ui: ViewerUI, label: str, centers: np.ndarray, counts: np.ndarray, y_limit: float) -> None:
+    def _draw_histogram_plot(self, ui: ViewerUI, label: str, x_label: str, centers: np.ndarray, counts: np.ndarray, y_limit: float) -> None:
         imgui.text_disabled(label)
         plot_id = f"##plot_{label}"
         if implot.begin_plot(plot_id, imgui.ImVec2(-1, _HISTOGRAM_PLOT_HEIGHT * self._plot_scale(ui))):
-            implot.setup_axes("value", "count (log10)", 0, 0)
+            implot.setup_axes(x_label, "count (log10)", 0, 0)
             if centers.size > 0:
                 implot.setup_axis_limits(implot.ImAxis_.x1.value, float(centers[0]), float(centers[-1]), implot.Cond_.always.value)
             implot.setup_axis_scale(implot.ImAxis_.y1.value, implot.Scale_.log10.value)
@@ -1975,10 +2011,12 @@ class ToolkitWindow:
         if min_values.ndim != 1 or max_values.ndim != 1 or min_values.size != max_values.size:
             imgui.text_wrapped("Range payload is malformed.")
             return
+        scales = _histogram_param_value_scales(payload, min_values.size)
         flags = imgui.TableFlags_.row_bg.value | imgui.TableFlags_.borders.value | imgui.TableFlags_.sizing_stretch_same.value
-        if not imgui.begin_table("##hist_range_debug", 4, flags):
+        if not imgui.begin_table("##hist_range_debug", 5, flags):
             return
         imgui.table_setup_column("Component")
+        imgui.table_setup_column("Scale")
         imgui.table_setup_column("Min")
         imgui.table_setup_column("Max")
         imgui.table_setup_column("Max Abs")
@@ -1991,6 +2029,8 @@ class ToolkitWindow:
             imgui.table_next_row()
             imgui.table_next_column()
             imgui.text_unformatted(label)
+            imgui.table_next_column()
+            imgui.text_unformatted(scales[index])
             imgui.table_next_column()
             imgui.text_unformatted(self._format_histogram_range_value(min_value))
             imgui.table_next_column()

@@ -12,6 +12,8 @@ from .utility import RW_BUFFER_USAGE, SHADER_ROOT, alloc_buffer, buffer_to_numpy
 
 _METRICS_SHADER = Path(SHADER_ROOT / "utility" / "metrics" / "metrics.slang")
 _HISTOGRAM_RANGE_EPS = 1e-6
+PARAM_HISTOGRAM_SCALE_LINEAR = "linear"
+PARAM_HISTOGRAM_SCALE_LOG10 = "log10"
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +40,8 @@ class ParamLog10Histograms:
     bin_edges_log10: np.ndarray
     param_labels: tuple[str, ...] = ()
     param_groups: tuple[tuple[str, tuple[int, ...]], ...] = ()
+    param_value_scales: tuple[str, ...] = ()
+    bin_edges_by_param_log10: np.ndarray | None = None
 
     @property
     def bin_edges(self) -> np.ndarray:
@@ -58,6 +62,7 @@ class ParamTensorRanges:
     max_values: np.ndarray
     param_labels: tuple[str, ...] = ()
     param_groups: tuple[tuple[str, tuple[int, ...]], ...] = ()
+    param_value_scales: tuple[str, ...] = ()
 
     @property
     def max_abs_values(self) -> np.ndarray:
@@ -340,9 +345,18 @@ class Metrics:
         counts = buffer_to_numpy(self._histogram_buffer, np.uint32)[:bin_count].astype(np.int64, copy=True)
         return Log10Histogram(counts=counts, bin_edges_log10=self._histogram_edges(bin_count, min_log10, max_log10))
 
-    def _read_param_histograms(self, param_count: int, bin_count: int, min_log10: float, max_log10: float, labels: tuple[str, ...], groups: tuple[tuple[str, tuple[int, ...]], ...] = ()) -> ParamLog10Histograms:
+    def _read_param_histograms(
+        self,
+        param_count: int,
+        bin_count: int,
+        min_log10: float,
+        max_log10: float,
+        labels: tuple[str, ...],
+        groups: tuple[tuple[str, tuple[int, ...]], ...] = (),
+        value_scales: tuple[str, ...] = (),
+    ) -> ParamLog10Histograms:
         counts = buffer_to_numpy(self._histogram_buffer, np.uint32)[: param_count * bin_count].astype(np.int64, copy=True).reshape(param_count, bin_count)
-        return ParamLog10Histograms(counts=counts, bin_edges_log10=self._histogram_edges(bin_count, min_log10, max_log10), param_labels=labels, param_groups=groups)
+        return ParamLog10Histograms(counts=counts, bin_edges_log10=self._histogram_edges(bin_count, min_log10, max_log10), param_labels=labels, param_groups=groups, param_value_scales=value_scales)
 
     @staticmethod
     def _ordered_uints_to_floats(values: np.ndarray) -> np.ndarray:
@@ -350,11 +364,11 @@ class Metrics:
         bits = np.where((ordered & np.uint32(0x80000000)) != 0, ordered & np.uint32(0x7FFFFFFF), np.bitwise_not(ordered))
         return bits.view(np.float32)
 
-    def _read_param_ranges(self, param_count: int, labels: tuple[str, ...], groups: tuple[tuple[str, tuple[int, ...]], ...] = ()) -> ParamTensorRanges:
+    def _read_param_ranges(self, param_count: int, labels: tuple[str, ...], groups: tuple[tuple[str, tuple[int, ...]], ...] = (), value_scales: tuple[str, ...] = ()) -> ParamTensorRanges:
         raw = buffer_to_numpy(self._range_buffer, np.uint32)[: param_count * 2].astype(np.uint32, copy=True).reshape(param_count, 2)
         min_values = self._ordered_uints_to_floats(raw[:, 0]).astype(np.float32, copy=False)
         max_values = self._ordered_uints_to_floats(raw[:, 1]).astype(np.float32, copy=False)
-        return ParamTensorRanges(min_values=min_values.copy(), max_values=max_values.copy(), param_labels=labels, param_groups=groups)
+        return ParamTensorRanges(min_values=min_values.copy(), max_values=max_values.copy(), param_labels=labels, param_groups=groups, param_value_scales=value_scales)
 
     def compute_scale_histogram(self, splat_params: spy.Buffer, splat_count: int, *, bin_count: int = 64, min_log10: float = -6.0, max_log10: float = 1.0) -> Log10Histogram:
         bins, lo, hi, inv_bin_size = self._validate_histogram_args(bin_count, min_log10, max_log10)
@@ -401,7 +415,7 @@ class Metrics:
             self._dispatch_param_tensor_histogram(encoder, tensor, params, items, bins, lo, inv_bin_size)
         self.device.submit_command_buffer(encoder.finish())
         self.device.wait()
-        return self._read_param_histograms(params, bins, lo, hi, labels, tuple(param_groups))
+        return self._read_param_histograms(params, bins, lo, hi, labels, tuple(param_groups), (PARAM_HISTOGRAM_SCALE_LOG10,) * params)
 
     def compute_param_tensor_histograms(
         self,
@@ -429,7 +443,7 @@ class Metrics:
             self._dispatch_param_tensor_histogram_linear(encoder, tensor, params, items, bins, lo, inv_bin_size)
         self.device.submit_command_buffer(encoder.finish())
         self.device.wait()
-        return self._read_param_histograms(params, bins, lo, hi, labels, groups)
+        return self._read_param_histograms(params, bins, lo, hi, labels, groups, (PARAM_HISTOGRAM_SCALE_LINEAR,) * params)
 
     def compute_scene_param_histograms(
         self,
@@ -457,7 +471,7 @@ class Metrics:
             self._dispatch_scene_param_histogram(encoder, splat_params, splats, params, bins, lo, inv_bin_size)
         self.device.submit_command_buffer(encoder.finish())
         self.device.wait()
-        return self._read_param_histograms(params, bins, lo, hi, labels, groups)
+        return self._read_param_histograms(params, bins, lo, hi, labels, groups, (PARAM_HISTOGRAM_SCALE_LINEAR,) * params)
 
     def compute_refinement_distribution_histograms(
         self,
@@ -488,7 +502,7 @@ class Metrics:
             self._dispatch_refinement_distribution_histogram(encoder, splat_contribution, gradient_stats, splats, params, bins, lo, inv_bin_size, inv_sample_count, grad_variance_exponent, contribution_exponent)
         self.device.submit_command_buffer(encoder.finish())
         self.device.wait()
-        return self._read_param_histograms(params, bins, lo, hi, labels, groups)
+        return self._read_param_histograms(params, bins, lo, hi, labels, groups, (PARAM_HISTOGRAM_SCALE_LOG10,) * params)
 
     def compute_param_tensor_ranges(
         self,
@@ -513,7 +527,7 @@ class Metrics:
                 self._dispatch_param_tensor_ranges(encoder, tensor, params, items)
         self.device.submit_command_buffer(encoder.finish())
         self.device.wait()
-        return self._read_param_ranges(params, labels, groups)
+        return self._read_param_ranges(params, labels, groups, (PARAM_HISTOGRAM_SCALE_LINEAR,) * params)
 
     def compute_scene_param_ranges(
         self,
@@ -538,7 +552,7 @@ class Metrics:
                 self._dispatch_scene_param_ranges(encoder, splat_params, splats, params)
         self.device.submit_command_buffer(encoder.finish())
         self.device.wait()
-        return self._read_param_ranges(params, labels, groups)
+        return self._read_param_ranges(params, labels, groups, (PARAM_HISTOGRAM_SCALE_LINEAR,) * params)
 
     def compute_refinement_distribution_ranges(
         self,
@@ -566,7 +580,7 @@ class Metrics:
                 self._dispatch_refinement_distribution_ranges(encoder, splat_contribution, gradient_stats, splats, params, inv_sample_count, grad_variance_exponent, contribution_exponent)
         self.device.submit_command_buffer(encoder.finish())
         self.device.wait()
-        return self._read_param_ranges(params, labels, groups)
+        return self._read_param_ranges(params, labels, groups, (PARAM_HISTOGRAM_SCALE_LOG10,) * params)
 
     def dispatch_image_mse(self, encoder: spy.CommandEncoder, rendered: spy.Texture, target: spy.Texture, width: int, height: int) -> None:
         self._clear_float_buffer(encoder, self._image_metric_buffer, self._METRIC_BUFFER_FLOATS)
@@ -599,4 +613,4 @@ class Metrics:
         return psnr_from_mse(self.compute_image_mse(rendered, target, width, height), peak_value=peak_value)
 
 
-__all__ = ["Metrics", "Log10Histogram", "ParamLog10Histograms", "ParamTensorRanges", "psnr_from_mse"]
+__all__ = ["Metrics", "Log10Histogram", "ParamLog10Histograms", "ParamTensorRanges", "PARAM_HISTOGRAM_SCALE_LINEAR", "PARAM_HISTOGRAM_SCALE_LOG10", "psnr_from_mse"]
