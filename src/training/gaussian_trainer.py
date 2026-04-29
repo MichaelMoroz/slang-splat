@@ -1272,26 +1272,13 @@ class GaussianTrainer:
     def observed_contribution_pixel_count(self) -> int:
         return int(max(self._observed_contribution_pixel_count, 0))
 
-    def _refinement_histogram_tensor(self, splat_count: int | None = None) -> np.ndarray:
+    def _refinement_histogram_inputs(self, splat_count: int | None = None) -> tuple[int, float]:
         count = min(max(int(self._scene_count if splat_count is None else splat_count), 0), self._scene_count)
-        if count <= 0:
-            return np.zeros((len(self.REFINEMENT_HISTOGRAM_LABELS), 0), dtype=np.float32)
-        self._ensure_refinement_buffers(self._scene_count)
-        self._ensure_gradient_stats_buffer()
         observed_pixels = float(self.observed_contribution_pixel_count)
         inv_sample_count = 1.0 / observed_pixels if observed_pixels > 0.0 else 0.0
-        contribution_fixed = buffer_to_numpy(self._refinement_buffers["splat_contribution"], np.uint32)[:count].astype(np.float64, copy=False)
-        contribution = contribution_fixed * inv_sample_count / SPLAT_CONTRIBUTION_FIXED_SCALE
-        gradient_stats = buffer_to_numpy(self._refinement_buffers["gradient_stats"], np.float32).reshape(-1, self._GRAD_STATS_STRIDE)[:count, 0].astype(np.float64, copy=False)
-        variance = np.maximum(gradient_stats * inv_sample_count, 0.0)
-        if inv_sample_count <= 0.0:
-            distribution = np.zeros_like(contribution)
-        else:
-            with np.errstate(invalid="ignore", over="ignore"):
-                distribution = np.power(variance, max(float(self.training.refinement_grad_variance_weight_exponent), 0.0)) * np.power(contribution, max(float(self.training.refinement_contribution_weight_exponent), 0.0))
-        contribution = np.where(np.isfinite(contribution), np.maximum(contribution, 0.0), 0.0)
-        distribution = np.where(np.isfinite(distribution), np.maximum(distribution, 0.0), 0.0)
-        return np.ascontiguousarray(np.stack((contribution, distribution), axis=0), dtype=np.float32)
+        self._ensure_refinement_buffers(self._scene_count)
+        self._ensure_gradient_stats_buffer()
+        return count, inv_sample_count
 
     def compute_refinement_distribution_histograms(
         self,
@@ -1301,18 +1288,30 @@ class GaussianTrainer:
         min_value: float = -1.0,
         max_value: float = 1.0,
     ) -> ParamLog10Histograms:
-        return GaussianRenderer._param_tensor_histograms(
-            self._refinement_histogram_tensor(splat_count),
+        count, inv_sample_count = self._refinement_histogram_inputs(splat_count)
+        return self.metrics.compute_refinement_distribution_histograms(
+            self._refinement_buffers["splat_contribution"],
+            self._refinement_buffers["gradient_stats"],
+            count,
             bin_count=bin_count,
             min_value=min_value,
             max_value=max_value,
+            inv_sample_count=inv_sample_count,
+            grad_variance_exponent=max(float(self.training.refinement_grad_variance_weight_exponent), 0.0),
+            contribution_exponent=max(float(self.training.refinement_contribution_weight_exponent), 0.0),
             param_labels=self.REFINEMENT_HISTOGRAM_LABELS,
             param_groups=self.REFINEMENT_HISTOGRAM_GROUPS,
         )
 
     def compute_refinement_distribution_ranges(self, splat_count: int | None = None) -> ParamTensorRanges:
-        return GaussianRenderer._param_tensor_ranges(
-            self._refinement_histogram_tensor(splat_count),
+        count, inv_sample_count = self._refinement_histogram_inputs(splat_count)
+        return self.metrics.compute_refinement_distribution_ranges(
+            self._refinement_buffers["splat_contribution"],
+            self._refinement_buffers["gradient_stats"],
+            count,
+            inv_sample_count=inv_sample_count,
+            grad_variance_exponent=max(float(self.training.refinement_grad_variance_weight_exponent), 0.0),
+            contribution_exponent=max(float(self.training.refinement_contribution_weight_exponent), 0.0),
             param_labels=self.REFINEMENT_HISTOGRAM_LABELS,
             param_groups=self.REFINEMENT_HISTOGRAM_GROUPS,
         )

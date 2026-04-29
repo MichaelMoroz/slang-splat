@@ -134,6 +134,7 @@ def test_build_ui_initializes_control_groups_and_internal_state() -> None:
 
     assert viewer_ui._values["_histogram_update_y_limit"] is True
     assert viewer_ui._values["_histogram_update_range"] is False
+    assert viewer_ui._values["hist_bin_count"] == 256
     assert viewer_ui._values["_show_histograms_prev"] is False
     assert viewer_ui._values["_training_views_rows"] == ()
     assert viewer_ui._values["_training_view_overlay_segments"] == ()
@@ -992,3 +993,22 @@ def test_histogram_range_from_ranges_uses_finite_extrema_as_fallback() -> None:
 
     assert np.isclose(lo, -1.0)
     assert np.isclose(hi, 10.0)
+
+
+def test_update_histogram_range_prefers_true_ranges_over_clipped_counts() -> None:
+    viewer_ui = SimpleNamespace(_values={"_histogram_update_range": True, "hist_min_value": 0.0, "hist_max_value": 1.0, "_histograms_refresh_requested": False})
+    histogram_payload = SimpleNamespace(
+        bin_centers=np.array([0.0, 0.5, 1.0], dtype=np.float64),
+        counts=np.array([[10.0, 1.0, 10.0]], dtype=np.float64),
+    )
+    range_payload = SimpleNamespace(
+        min_values=np.array([-4.0, 0.0], dtype=np.float32),
+        max_values=np.array([1.0, 8.0], dtype=np.float32),
+    )
+
+    ui.ToolkitWindow._update_histogram_range(SimpleNamespace(), viewer_ui, histogram_payload, range_payload)
+
+    assert viewer_ui._values["hist_min_value"] == -4.0
+    assert viewer_ui._values["hist_max_value"] == 8.0
+    assert viewer_ui._values["_histograms_refresh_requested"] is True
+    assert viewer_ui._values["_histogram_update_range"] is False

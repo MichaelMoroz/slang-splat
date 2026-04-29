@@ -313,8 +313,10 @@ The loss-debug controls also expose a runtime `Abs Diff Scale` slider for `Abs D
 Current behavior:
 
 - the first open requests a refresh automatically,
-- after that, recomputation happens only on explicit refresh or another histogram-triggering action,
-- histogram values use the current linear min/max controls,
+- after that, recomputation happens on explicit refresh, bin/range edits, or another histogram-triggering action,
+- histogram values use the current linear min/max controls and default to `256` bins,
+- `Update Range` derives min/max from the combined true per-row ranges before refreshing the histograms,
+- `Update Y Scale` derives a shared y-axis limit from the combined histogram payload,
 - groups include position, scale, quaternion, base color (SH0/DC), higher SH bands, opacity, contribution distribution, and refinement distribution.
 
 ## Buffers

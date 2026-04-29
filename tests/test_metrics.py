@@ -101,6 +101,31 @@ def test_gpu_param_tensor_histograms_ignore_zero_and_nonfinite_values(device) ->
     np.testing.assert_array_equal(hist.counts.sum(axis=1), np.array([1, 3], dtype=np.int64))
 
 
+def test_gpu_param_tensor_histograms_bucket_linear_values(device) -> None:
+    metrics = Metrics(device)
+    tensor = device.create_buffer(
+        size=8 * 4,
+        usage=spy.BufferUsage.shader_resource | spy.BufferUsage.copy_destination | spy.BufferUsage.copy_source | spy.BufferUsage.unordered_access,
+    )
+    tensor.copy_from_numpy(np.array([-1.0, -0.5, 0.0, 0.5, 1.0, np.nan, 2.0, -2.0], dtype=np.float32))
+
+    hist = metrics.compute_param_tensor_histograms(
+        tensor,
+        2,
+        4,
+        bin_count=4,
+        min_value=-1.0,
+        max_value=1.0,
+        param_labels=("first", "second"),
+        param_groups=(("all", (0, 1)),),
+    )
+
+    np.testing.assert_array_equal(hist.counts, np.array([[1, 1, 1, 1], [1, 0, 0, 2]], dtype=np.int64))
+    np.testing.assert_allclose(hist.bin_edges, np.array([-1.0, -0.5, 0.0, 0.5, 1.0], dtype=np.float64), rtol=0.0, atol=0.0)
+    assert hist.param_labels == ("first", "second")
+    assert hist.param_groups == (("all", (0, 1)),)
+
+
 def test_gpu_param_tensor_ranges_track_signed_extrema(device) -> None:
     metrics = Metrics(device)
     tensor = device.create_buffer(
@@ -119,6 +144,7 @@ def test_gpu_param_tensor_ranges_track_signed_extrema(device) -> None:
 
 def test_scene_param_histograms_use_linear_value_bins(device) -> None:
     renderer = GaussianRenderer(device, width=8, height=8)
+    metrics = Metrics(device)
     scene = GaussianScene(
         positions=np.array([[-0.75, 0.0, 0.75], [0.25, -0.25, 0.5]], dtype=np.float32),
         scales=_log_scale(np.ones((2, 3), dtype=np.float32)),
@@ -129,12 +155,13 @@ def test_scene_param_histograms_use_linear_value_bins(device) -> None:
     )
     renderer.set_scene(scene)
 
-    hist = renderer.compute_scene_param_histograms(2, bin_count=4, min_value=-1.0, max_value=1.0)
+    hist = renderer.compute_scene_param_histograms(2, bin_count=4, min_value=-1.0, max_value=1.0, metrics=metrics)
 
     np.testing.assert_allclose(hist.bin_edges_log10, np.array([-1.0, -0.5, 0.0, 0.5, 1.0], dtype=np.float64), rtol=0.0, atol=0.0)
     np.testing.assert_array_equal(hist.counts[0], np.array([1, 0, 1, 0], dtype=np.int64))
     np.testing.assert_array_equal(hist.counts[1], np.array([0, 1, 1, 0], dtype=np.int64))
     np.testing.assert_array_equal(hist.counts[2], np.array([0, 0, 0, 2], dtype=np.int64))
+    assert hist.param_groups == renderer.SCENE_PARAM_HISTOGRAM_GROUPS
 
 
 def test_psnr_from_mse_zero_is_infinite() -> None:

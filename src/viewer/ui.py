@@ -1884,6 +1884,8 @@ class ToolkitWindow:
         changed, value = imgui.input_int(input_id, int(ui._values.get(value_key, default)), 8, 32)
         if changed:
             ui._values[value_key] = max(int(value), int(min_value))
+            if value_key == "hist_bin_count":
+                ui._values["_histograms_refresh_requested"] = True
 
     def _draw_histogram_control_row_float(
         self,
@@ -1904,6 +1906,8 @@ class ToolkitWindow:
         changed, value = imgui.input_float(input_id, float(ui._values.get(value_key, default)), 0.25, 1.0, display_format)
         if changed:
             ui._values[value_key] = float(value) if min_value is None else max(float(value), float(min_value))
+            if value_key in {"hist_min_value", "hist_max_value"}:
+                ui._values["_histograms_refresh_requested"] = True
 
     def _update_histogram_y_limit(self, ui: ViewerUI, payload: object) -> None:
         if not bool(ui._values.get("_histogram_update_y_limit", False)):
@@ -1915,9 +1919,9 @@ class ToolkitWindow:
     def _update_histogram_range(self, ui: ViewerUI, histogram_payload: object, range_payload: object) -> None:
         if not bool(ui._values.get("_histogram_update_range", False)):
             return
-        value_range = _histogram_range_from_histogram(histogram_payload)
+        value_range = _histogram_range_from_ranges(range_payload)
         if value_range is None:
-            value_range = _histogram_range_from_ranges(range_payload)
+            value_range = _histogram_range_from_histogram(histogram_payload)
         if value_range is not None:
             ui._values["hist_min_value"] = float(value_range[0])
             ui._values["hist_max_value"] = float(value_range[1])

@@ -1637,6 +1637,7 @@ class GaussianRenderer:
         bin_count: int = 64,
         min_value: float = -1.0,
         max_value: float = 1.0,
+        metrics: Metrics | None = None,
     ) -> ParamLog10Histograms:
         count = self._scene_count if splat_count is None else int(splat_count)
         if count <= 0:
@@ -1645,6 +1646,17 @@ class GaussianRenderer:
                 bin_edges_log10=np.linspace(float(min_value), float(max(max_value, min_value + 1e-6)), max(int(bin_count), 1) + 1, dtype=np.float64),
                 param_labels=(),
                 param_groups=(),
+            )
+        if metrics is not None:
+            return metrics.compute_scene_param_histograms(
+                self.scene_buffers["splat_params"],
+                count,
+                param_count=len(self.SCENE_PARAM_HISTOGRAM_LABELS),
+                bin_count=bin_count,
+                min_value=min_value,
+                max_value=max_value,
+                param_labels=self.SCENE_PARAM_HISTOGRAM_LABELS,
+                param_groups=self.SCENE_PARAM_HISTOGRAM_GROUPS,
             )
         return self._param_tensor_histograms(
             self._scene_histogram_tensor(count),
@@ -1655,7 +1667,7 @@ class GaussianRenderer:
             param_groups=self.SCENE_PARAM_HISTOGRAM_GROUPS,
         )
 
-    def compute_scene_param_ranges(self, splat_count: int | None = None) -> ParamTensorRanges:
+    def compute_scene_param_ranges(self, splat_count: int | None = None, *, metrics: Metrics | None = None) -> ParamTensorRanges:
         count = self._scene_count if splat_count is None else int(splat_count)
         if count <= 0:
             return ParamTensorRanges(
@@ -1663,6 +1675,14 @@ class GaussianRenderer:
                 max_values=np.zeros((0,), dtype=np.float32),
                 param_labels=(),
                 param_groups=(),
+            )
+        if metrics is not None:
+            return metrics.compute_scene_param_ranges(
+                self.scene_buffers["splat_params"],
+                count,
+                param_count=len(self.SCENE_PARAM_HISTOGRAM_LABELS),
+                param_labels=self.SCENE_PARAM_HISTOGRAM_LABELS,
+                param_groups=self.SCENE_PARAM_HISTOGRAM_GROUPS,
             )
         return self._param_tensor_ranges(
             self._scene_histogram_tensor(count),

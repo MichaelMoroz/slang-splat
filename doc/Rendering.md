@@ -104,9 +104,9 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - The fixed-count trainer runs forward as `rasterize -> feature extraction -> blur -> loss forward`, then backward as `blurred-moment grad -> blur adjoint -> loss backward -> raster backward -> optimizer`, so the training path keeps distinct forward and backward kernels while still reusing the packed-parameter optimizer path.
 
 ## 9. Debug Histograms
-- `src/metrics.py` now exposes both single log10 histograms and grouped per-parameter log10 histograms for generic float tensors laid out as `tensor[param_id * item_count + item_id]`.
-- The grouped tensor histogram kernel buckets `log10(abs(value))`, ignoring zeros and non-finite values.
-- The viewer histogram window now reports live semantic splat parameters rather than cached raster-gradient buffers.
+- `src/metrics.py` exposes single log10 histograms, grouped per-parameter log10 histograms, and grouped linear-value histograms for generic float tensors laid out as `tensor[param_id * item_count + item_id]`.
+- The viewer histogram window reports live semantic splat parameters plus contribution/refinement distributions through the metrics utility shader. Refresh-time compute kernels use atomic bin increments, so large scenes avoid CPU tensor readback before bucketing.
+- Scene histogram kernels decode semantic values directly from the packed splat buffer: position, decoded scale, quaternion, base color, higher SH coefficients, and decoded opacity.
 - Base color in that window is derived from the clamped SH0/DC term, so the debug UI no longer presents color and DC as separate concepts.
 
 ## Stats Notes
