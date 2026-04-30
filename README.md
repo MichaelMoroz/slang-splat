@@ -30,10 +30,13 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
-python -m pip install slangpy
 ```
 
-If you have a local Slangpy checkout, replace the last line with an editable install.
+`viewer.py` and `cli.py` install the matching local `slangpy` wheel from `slangpy_wheels` automatically on first launch when `slangpy` is missing.
+
+`viewer.py`, `cli.py`, and `render.py` also auto-install the Python packages declared in `requirements.txt` when they are missing from the active environment.
+
+If you need `slangpy` before launching those entrypoints, install it manually from a local wheel or replace it with an editable install from your local Slangpy checkout.
 
 Optional PyTorch support:
 

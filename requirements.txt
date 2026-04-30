@@ -1,8 +1,10 @@
 numpy>=1.26
 plyfile>=1.1
 pillow>=10.4
+scipy>=1.14
 trimesh>=4.5
 pytest>=8.3
 lizard>=1.21
 imgui-bundle>=1.92
+matplotlib>=3.9
 tqdm>=4.67
