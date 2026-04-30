@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from src.viewer import buffer_debug
 from src.utility import clear_debug_resource_allocations, debug_resource_allocations, register_debug_resource
 from src.viewer.buffer_debug import collect_resource_debug_snapshot, format_resource_bytes, format_resource_debug_log
 
@@ -72,3 +73,111 @@ def test_resource_debug_log_includes_process_vram_delta() -> None:
 
     assert "Process Dedicated VRAM: 512 B (512 bytes) [test]" in log
     assert "Untracked / Driver Reserved: 384 B (384 bytes)" in log
+
+
+def test_counter_prefix_from_luid_matches_windows_counter_format() -> None:
+    prefix = buffer_debug._counter_prefix_from_luid([0x6C, 0xDF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+
+    assert prefix == "luid_0x00000000_0x0000df6c"
+
+
+def test_query_total_device_vram_used_uses_windows_adapter_counter(monkeypatch) -> None:
+    buffer_debug._DEVICE_VRAM_CACHE.clear()
+    buffer_debug._DEVICE_VRAM_IN_FLIGHT.clear()
+    monkeypatch.setattr(buffer_debug.sys, "platform", "win32")
+    commands: list[list[str]] = []
+
+    def _run(args, capture_output, text, timeout, check):
+        commands.append(list(args))
+        return SimpleNamespace(returncode=0, stdout="2147483648\n")
+
+    monkeypatch.setattr(buffer_debug.subprocess, "run", _run)
+    device = SimpleNamespace(
+        info=SimpleNamespace(adapter_name="GPU X", api_name="Vulkan"),
+        desc=SimpleNamespace(adapter_luid=[0x6C, 0xDF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
+        report_heaps=lambda: [],
+    )
+
+    used, source = buffer_debug.query_total_device_vram_used(device)
+
+    assert used == 2147483648
+    assert source == "Windows GPU Adapter Memory"
+    assert commands and "luid_0x00000000_0x0000df6c" in commands[0][-1]
+
+
+def test_query_total_device_vram_used_cached_starts_background_refresh(monkeypatch) -> None:
+    buffer_debug._DEVICE_VRAM_CACHE.clear()
+    buffer_debug._DEVICE_VRAM_IN_FLIGHT.clear()
+    monkeypatch.setattr(buffer_debug, "_query_device_heap_usage_bytes", lambda _device: None)
+    launches: list[buffer_debug.DeviceVramQueryContext] = []
+    monkeypatch.setattr(buffer_debug, "_start_device_vram_refresh", lambda query_context: launches.append(query_context))
+    device = SimpleNamespace(
+        info=SimpleNamespace(adapter_name="GPU X", api_name="Vulkan"),
+        desc=SimpleNamespace(adapter_luid=[0x6C, 0xDF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
+        report_heaps=lambda: [],
+    )
+
+    used, source = buffer_debug.query_total_device_vram_used_cached(device)
+
+    assert used is None
+    assert source == ""
+    assert launches == [buffer_debug.DeviceVramQueryContext(cache_key="Vulkan|GPU X|luid_0x00000000_0x0000df6c", adapter_prefixes=("luid_0x00000000_0x0000df6c",))]
+
+
+def test_split_resource_usage_separates_dataset_textures_from_app_resources() -> None:
+    snapshot = buffer_debug.ResourceDebugSnapshot(
+        rows=(
+            buffer_debug.ResourceDebugRow("Texture", "viewer.dataset_texture", "viewer.trainer.frame_targets_native[0]", 256, "rgba8", "srv", 1),
+            buffer_debug.ResourceDebugRow("Texture", "viewer.dataset_texture_bc7", "viewer.state.colmap_import_textures[1]", 512, "bc7", "srv", 2),
+            buffer_debug.ResourceDebugRow("Buffer", "renderer.buf", "viewer.main_renderer.buf", 1024, "buf", "rw", 3),
+            buffer_debug.ResourceDebugRow("Texture", "viewer.viewport_texture", "viewer.state.viewport_texture", 2048, "rgba32", "srv", 4),
+        ),
+        total_consumption=3840,
+        buffer_count=1,
+        buffer_total=1024,
+        buffer_mean=1024.0,
+        buffer_median=1024.0,
+        texture_count=3,
+        texture_total=2816,
+    )
+
+    usage = buffer_debug.split_resource_usage(snapshot)
+
+    assert usage.dataset_bytes == 768
+    assert usage.app_bytes == 3072
+    assert usage.total_bytes == 3840
+
+
+def test_query_total_device_vram_capacity_uses_cached_result(monkeypatch) -> None:
+    buffer_debug._DEVICE_VRAM_CAPACITY_CACHE.clear()
+    calls: list[object] = []
+    monkeypatch.setattr(buffer_debug, "_query_total_device_vram_capacity", lambda device: calls.append(device) or (8 * 1024**3, "DXGI Adapter Desc"))
+    device = SimpleNamespace(info=SimpleNamespace(adapter_name="GPU X", api_name="Vulkan"), desc=SimpleNamespace(adapter_luid=None))
+
+    total_a, source_a = buffer_debug.query_total_device_vram_capacity(device)
+    total_b, source_b = buffer_debug.query_total_device_vram_capacity(device)
+
+    assert total_a == 8 * 1024**3
+    assert total_b == 8 * 1024**3
+    assert source_a == "DXGI Adapter Desc"
+    assert source_b == "DXGI Adapter Desc"
+    assert calls == [device]
+
+
+def test_device_adapter_counter_prefixes_fall_back_to_enumerated_adapter_name(monkeypatch) -> None:
+    monkeypatch.setattr(
+        buffer_debug.spy.Device,
+        "enumerate_adapters",
+        lambda: [
+            SimpleNamespace(name="Other GPU", luid=[0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
+            SimpleNamespace(name="GPU X", luid=[0x6C, 0xDF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
+        ],
+    )
+    device = SimpleNamespace(
+        info=SimpleNamespace(adapter_name="GPU X"),
+        desc=SimpleNamespace(adapter_luid=None),
+    )
+
+    prefixes = buffer_debug._device_adapter_counter_prefixes(device)
+
+    assert prefixes == ("luid_0x00000000_0x0000df6c",)

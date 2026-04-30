@@ -8,6 +8,7 @@ import numpy as np
 import slangpy as spy
 
 from src.viewer import presenter
+from src.viewer.buffer_debug import ResourceDebugRow, ResourceDebugSnapshot
 from src.viewer import session as viewer_session
 from src.viewer.state import ColmapImportProgress
 
@@ -557,19 +558,41 @@ def test_update_ui_text_reuses_single_metrics_snapshot_for_training_rows() -> No
 
 def test_update_ui_text_skips_resource_debug_snapshot_when_closed(monkeypatch) -> None:
     viewer = _viewer(loss_debug=False)
-    calls: list[object] = []
-    monkeypatch.setattr(presenter, "collect_resource_debug_snapshot", lambda viewer_obj, **_kwargs: calls.append(viewer_obj) or object())
+    calls: list[bool] = []
+
+    def collect(_viewer_obj, *, include_process_vram: bool = False):
+        calls.append(bool(include_process_vram))
+        return ResourceDebugSnapshot(
+            rows=(),
+            total_consumption=128,
+            buffer_count=1,
+            buffer_total=128,
+            buffer_mean=128.0,
+            buffer_median=128.0,
+            texture_count=0,
+            texture_total=0,
+        )
+
+    monkeypatch.setattr(presenter, "collect_resource_debug_snapshot", collect)
+    monkeypatch.setattr(presenter, "query_total_device_vram_used_cached", lambda _device: (None, ""))
+    monkeypatch.setattr(presenter, "query_total_device_vram_capacity", lambda _device: (None, ""))
 
     presenter.update_ui_text(viewer, 1.0 / 60.0)
 
-    assert calls == []
+    assert calls == [False]
     assert "_resource_debug_snapshot" not in viewer.ui._values
+    assert viewer.ui._values["_menu_bar_dataset_vram_bytes"] == 0
+    assert viewer.ui._values["_menu_bar_app_vram_bytes"] == 128
+    assert viewer.ui._values["_menu_bar_total_vram_bytes"] == 128
 
 
 def test_update_ui_text_throttles_resource_debug_snapshot(monkeypatch) -> None:
     viewer = _viewer(loss_debug=False)
     viewer.ui._values.update({"show_resource_debug": True, "_resource_debug_snapshot": None, "_resource_debug_next_update": 0.0})
-    snapshots = ["snapshot_a", "snapshot_b"]
+    snapshots = [
+        ResourceDebugSnapshot(rows=(), total_consumption=64, buffer_count=1, buffer_total=64, buffer_mean=64.0, buffer_median=64.0, texture_count=0, texture_total=0),
+        ResourceDebugSnapshot(rows=(), total_consumption=96, buffer_count=1, buffer_total=96, buffer_mean=96.0, buffer_median=96.0, texture_count=0, texture_total=0),
+    ]
     calls: list[bool] = []
 
     def collect(_viewer_obj, *, include_process_vram: bool = False):
@@ -585,9 +608,71 @@ def test_update_ui_text_throttles_resource_debug_snapshot(monkeypatch) -> None:
     presenter.update_ui_text(viewer, 1.0 / 60.0)
 
     assert calls == [False, True]
-    assert viewer.ui._values["_resource_debug_snapshot"] == "snapshot_b"
+    assert viewer.ui._values["_resource_debug_snapshot"] is snapshots[1]
     assert viewer.ui._values["_resource_debug_refresh_requested"] is False
     assert viewer.ui._values["_resource_debug_process_vram_requested"] is False
+
+
+def test_update_ui_text_refreshes_menu_bar_device_vram(monkeypatch) -> None:
+    viewer = _viewer(loss_debug=False)
+    monkeypatch.setattr(presenter, "query_total_device_vram_used_cached", lambda _device: (3 * 1024**3, "Windows GPU Adapter Memory"))
+    monkeypatch.setattr(presenter, "query_total_device_vram_capacity", lambda _device: (24 * 1024**3, "DXGI Adapter Desc"))
+    monkeypatch.setattr(
+        presenter,
+        "collect_resource_debug_snapshot",
+        lambda _viewer, include_process_vram=False: ResourceDebugSnapshot(
+            rows=(
+                ResourceDebugRow("Texture", "viewer.dataset_texture", "viewer.trainer.frame_targets_native[0]", 256 * 1024**2, "rgba8", "srv", 1),
+                ResourceDebugRow("Buffer", "renderer.buf", "viewer.main_renderer.buf", 512 * 1024**2, "buf", "rw", 2),
+            ),
+            total_consumption=768 * 1024**2,
+            buffer_count=1,
+            buffer_total=512 * 1024**2,
+            buffer_mean=float(512 * 1024**2),
+            buffer_median=float(512 * 1024**2),
+            texture_count=1,
+            texture_total=256 * 1024**2,
+        ),
+    )
+
+    presenter.update_ui_text(viewer, 1.0 / 60.0)
+
+    assert viewer.ui._values["_menu_bar_device_vram_bytes"] == 3 * 1024**3
+    assert viewer.ui._values["_menu_bar_device_vram_source"] == "Windows GPU Adapter Memory"
+    assert viewer.ui._values["_menu_bar_device_vram_total_bytes"] == 24 * 1024**3
+    assert viewer.ui._values["_menu_bar_device_vram_total_source"] == "DXGI Adapter Desc"
+    assert viewer.ui._values["_menu_bar_dataset_vram_bytes"] == 256 * 1024**2
+    assert viewer.ui._values["_menu_bar_app_vram_bytes"] == 512 * 1024**2
+    assert viewer.ui._values["_menu_bar_total_vram_bytes"] == 768 * 1024**2
+
+
+def test_update_ui_text_reuses_resource_debug_snapshot_for_menu_bar_dataset_vram(monkeypatch) -> None:
+    viewer = _viewer(loss_debug=False)
+    snapshot = ResourceDebugSnapshot(
+        rows=(
+            ResourceDebugRow("Texture", "viewer.dataset_texture_bc7", "viewer.state.colmap_import_textures[0]", 256, "bc7", "srv", 1),
+            ResourceDebugRow("Buffer", "renderer.buf", "viewer.main_renderer.buf", 768, "buf", "rw", 2),
+        ),
+        total_consumption=1024,
+        buffer_count=1,
+        buffer_total=768,
+        buffer_mean=768.0,
+        buffer_median=768.0,
+        texture_count=0,
+        texture_total=0,
+    )
+    viewer.ui._values["show_resource_debug"] = True
+    viewer.ui._values["_resource_debug_snapshot"] = snapshot
+    viewer.ui._values["_resource_debug_next_update"] = viewer.s.last_time + 60.0
+    monkeypatch.setattr(presenter, "query_total_device_vram_used_cached", lambda _device: (None, ""))
+    monkeypatch.setattr(presenter, "query_total_device_vram_capacity", lambda _device: (None, ""))
+    monkeypatch.setattr(presenter, "collect_resource_debug_snapshot", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not recollect snapshot")))
+
+    presenter.update_ui_text(viewer, 1.0 / 60.0)
+
+    assert viewer.ui._values["_menu_bar_dataset_vram_bytes"] == 256
+    assert viewer.ui._values["_menu_bar_app_vram_bytes"] == 768
+    assert viewer.ui._values["_menu_bar_total_vram_bytes"] == 1024
 
 
 def test_update_ui_text_previews_current_schedule_values_without_trainer() -> None:

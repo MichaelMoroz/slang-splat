@@ -200,7 +200,7 @@
     },
     "import": {
       "colmap_depth_value_mode": 1,
-      "colmap_init_mode": 1,
+      "colmap_init_mode": 0,
       "colmap_auto_rotate_scene": true,
       "compress_dataset_using_bc7": true,
       "colmap_image_downscale_mode": 0,
@@ -209,10 +209,21 @@
       "colmap_nn_radius_scale_coef": 0.40230000019073486,
       "colmap_min_track_length": 3,
       "colmap_depth_point_count": 100000,
+      "colmap_pointcloud_enabled": false,
+      "colmap_pointcloud_nn_radius_scale_coef": 0.40230000019073486,
+      "colmap_diffused_enabled": true,
       "colmap_diffused_point_count": 905001,
-      "colmap_diffusion_radius": 1.030400037765503,
+      "colmap_diffused_diffusion_radius": 1.030400037765503,
+      "colmap_diffused_nn_radius_scale_coef": 0.40230000019073486,
+      "colmap_custom_ply_enabled": false,
+      "colmap_custom_ply_nn_radius_scale_coef": 1.0,
+      "colmap_custom_mesh_enabled": false,
+      "colmap_custom_mesh_point_count": 500000,
+      "colmap_custom_mesh_nn_radius_scale_coef": 0.40230000019073486,
+      "colmap_fibonacci_sphere_enabled": true,
       "colmap_fibonacci_sphere_point_count": 50601,
-      "colmap_fibonacci_sphere_radius": 101.02799987792969
+      "colmap_fibonacci_sphere_radius": 101.02799987792969,
+      "colmap_fibonacci_sphere_nn_radius_scale_coef": 1.0
     },
     "ui": {
       "show_histograms": false,

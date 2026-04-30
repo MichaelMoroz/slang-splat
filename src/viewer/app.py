@@ -387,10 +387,22 @@ class SplatViewer(spy.AppWindow):
                     min_track_length=int(getattr(import_cfg, "min_track_length", DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH)),
                     depth_point_count=import_cfg.depth_point_count,
                     diffused_point_count=import_cfg.diffused_point_count,
-                    diffusion_radius=import_cfg.diffusion_radius,
                     fibonacci_sphere_point_count=import_cfg.fibonacci_sphere_point_count,
                     fibonacci_sphere_radius=import_cfg.fibonacci_sphere_radius,
                     use_target_alpha_mask=import_cfg.use_target_alpha_mask,
+                    pointcloud_enabled=bool(getattr(import_cfg, "pointcloud_enabled", False)),
+                    pointcloud_nn_radius_scale_coef=getattr(import_cfg, "pointcloud_nn_radius_scale_coef", None),
+                    diffused_enabled=bool(getattr(import_cfg, "diffused_enabled", False)),
+                    diffused_diffusion_radius=getattr(import_cfg, "diffused_diffusion_radius", None),
+                    diffused_nn_radius_scale_coef=getattr(import_cfg, "diffused_nn_radius_scale_coef", None),
+                    custom_ply_enabled=bool(getattr(import_cfg, "custom_ply_enabled", False)),
+                    custom_ply_nn_radius_scale_coef=getattr(import_cfg, "custom_ply_nn_radius_scale_coef", None),
+                    custom_mesh_enabled=bool(getattr(import_cfg, "custom_mesh_enabled", False)),
+                    custom_mesh_path=getattr(import_cfg, "custom_mesh_path", None),
+                    custom_mesh_point_count=getattr(import_cfg, "custom_mesh_point_count", None),
+                    custom_mesh_nn_radius_scale_coef=getattr(import_cfg, "custom_mesh_nn_radius_scale_coef", None),
+                    fibonacci_sphere_enabled=bool(getattr(import_cfg, "fibonacci_sphere_enabled", False)),
+                    fibonacci_sphere_nn_radius_scale_coef=getattr(import_cfg, "fibonacci_sphere_nn_radius_scale_coef", None),
                 )
             )
 

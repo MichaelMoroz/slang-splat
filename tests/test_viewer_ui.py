@@ -8,8 +8,8 @@ import slangpy as spy
 from src.app.training_controls import SCHEDULE_STAGE_CONTROL_DEFS, SCHEDULE_STAGE_GROUPS, TRAIN_SETUP_CONTROL_DEFS, TRAIN_SETUP_PRIMARY_KEYS
 from src.renderer.render_params import CachedRasterGradParams
 from src.training.defaults import TRAINING_BUILD_ARG_DEFAULTS
-from src.viewer import ui
 from src.viewer.buffer_debug import ResourceDebugRow, ResourceDebugSnapshot
+from src.viewer import ui
 from src.viewer.constants import _WINDOW_TITLE
 
 
@@ -117,6 +117,19 @@ def test_build_ui_initializes_control_groups_and_internal_state() -> None:
         "refinement_grad_variance_weight_exponent",
         "refinement_contribution_weight_exponent",
         "colmap_init_mode",
+        "colmap_pointcloud_enabled",
+        "colmap_pointcloud_nn_radius_scale_coef",
+        "colmap_diffused_enabled",
+        "colmap_diffused_diffusion_radius",
+        "colmap_diffused_nn_radius_scale_coef",
+        "colmap_custom_ply_enabled",
+        "colmap_custom_ply_nn_radius_scale_coef",
+        "colmap_custom_mesh_enabled",
+        "colmap_custom_mesh_path",
+        "colmap_custom_mesh_point_count",
+        "colmap_custom_mesh_nn_radius_scale_coef",
+        "colmap_fibonacci_sphere_enabled",
+        "colmap_fibonacci_sphere_nn_radius_scale_coef",
         "colmap_auto_rotate_scene",
         "colmap_depth_root",
         "colmap_fibonacci_sphere_point_count",
@@ -144,6 +157,16 @@ def test_build_ui_initializes_control_groups_and_internal_state() -> None:
     assert viewer_ui._values["_viewport_sh_stage_label"] in ui.SCHEDULE_STAGE_SPECS
     assert viewer_ui._values["_colmap_camera_rows"] == ()
     assert "show_renderer_debug" not in viewer_ui._values
+
+
+def test_colmap_init_summary_lists_enabled_sources() -> None:
+    viewer_ui = ui.build_ui(_dummy_renderer())
+    viewer_ui._values["colmap_pointcloud_enabled"] = True
+    viewer_ui._values["colmap_diffused_enabled"] = False
+    viewer_ui._values["colmap_custom_mesh_enabled"] = True
+    viewer_ui._values["colmap_fibonacci_sphere_enabled"] = True
+
+    assert ui._colmap_init_summary(viewer_ui) == "COLMAP Pointcloud, Custom Mesh, Fibonacci Sky Sphere"
 
 
 def test_build_ui_exposes_refinement_sample_radius_default() -> None:
@@ -215,13 +238,10 @@ def test_colmap_init_mode_labels_append_depth_only_for_valid_depth_root(tmp_path
     viewer_ui._values["colmap_depth_root"] = ""
     viewer_ui._values["colmap_init_mode"] = 0
     assert ui._colmap_init_mode_labels(False) == ui._COLMAP_INIT_MODE_LABELS
-    assert ui._colmap_init_mode_label(viewer_ui) == "COLMAP Pointcloud"
-
-    viewer_ui._values["colmap_init_mode"] = 3
-    assert ui._colmap_init_mode_label(viewer_ui) == "Custom Mesh"
+    assert ui._colmap_init_mode_label(viewer_ui) == "Point Sources"
 
     viewer_ui._values["colmap_depth_root"] = str(tmp_path)
-    viewer_ui._values["colmap_init_mode"] = 4
+    viewer_ui._values["colmap_init_mode"] = 1
 
     assert ui._colmap_init_mode_labels(True) == ui._COLMAP_INIT_MODE_LABELS + ("From Depth",)
     assert ui._colmap_init_mode_label(viewer_ui) == "From Depth"
@@ -710,6 +730,57 @@ def test_build_ui_initializes_loss_debug_psnr_text() -> None:
     viewer_ui = ui.build_ui(_dummy_renderer())
 
     assert viewer_ui._texts["loss_debug_psnr"] == ""
+
+
+def test_main_menu_bar_draws_right_aligned_status(monkeypatch) -> None:
+    cursor_positions: list[float] = []
+    cursor_y_positions: list[float] = []
+    texts: list[str] = []
+    pushed_colors: list[tuple[int, tuple[float, float, float, float]]] = []
+    pop_counts: list[int] = []
+    monkeypatch.setattr(ui.imgui, "begin_main_menu_bar", lambda: True)
+    monkeypatch.setattr(ui.imgui, "end_main_menu_bar", lambda: None)
+    monkeypatch.setattr(ui.imgui, "get_window_height", lambda: 24.0)
+    monkeypatch.setattr(ui.imgui, "get_window_width", lambda: 400.0)
+    monkeypatch.setattr(ui.imgui, "get_cursor_pos_x", lambda: 90.0)
+    monkeypatch.setattr(ui.imgui, "get_cursor_pos_y", lambda: 6.0)
+    monkeypatch.setattr(ui.imgui, "get_style", lambda: SimpleNamespace(item_spacing=ui.imgui.ImVec2(8.0, 0.0), window_padding=ui.imgui.ImVec2(10.0, 0.0)))
+    monkeypatch.setattr(ui.imgui, "calc_text_size", lambda text: ui.imgui.ImVec2(float(len(str(text)) * 10), 16.0))
+    monkeypatch.setattr(ui.imgui, "set_cursor_pos_x", lambda value: cursor_positions.append(float(value)))
+    monkeypatch.setattr(ui.imgui, "set_cursor_pos_y", lambda value: cursor_y_positions.append(float(value)))
+    monkeypatch.setattr(ui.imgui, "text_unformatted", lambda text: texts.append(str(text)))
+    monkeypatch.setattr(ui.imgui, "push_style_color", lambda idx, color: pushed_colors.append((int(idx), (float(color.x), float(color.y), float(color.z), float(color.w)))))
+    monkeypatch.setattr(ui.imgui, "pop_style_color", lambda count=1: pop_counts.append(int(count)))
+    monkeypatch.setattr(ui.ToolkitWindow, "_draw_file_menu", lambda self, viewer_ui: None)
+    monkeypatch.setattr(ui.ToolkitWindow, "_draw_view_menu", lambda self, viewer_ui: None)
+    monkeypatch.setattr(ui.ToolkitWindow, "_draw_debug_menu", lambda self, viewer_ui: None)
+    monkeypatch.setattr(ui.ToolkitWindow, "_draw_help_menu", lambda self: None)
+    toolkit = SimpleNamespace(
+        tk=SimpleNamespace(fps_history=[58.25]),
+        _menu_bar_status_text=lambda viewer_ui: ui.ToolkitWindow._menu_bar_status_text(toolkit, viewer_ui),
+        _menu_bar_vram_fraction=lambda viewer_ui: ui.ToolkitWindow._menu_bar_vram_fraction(toolkit, viewer_ui),
+        _menu_bar_vram_color=lambda viewer_ui: ui.ToolkitWindow._menu_bar_vram_color(toolkit, viewer_ui),
+        _menu_bar_status_segments=lambda viewer_ui: ui.ToolkitWindow._menu_bar_status_segments(toolkit, viewer_ui),
+        _draw_menu_bar_status=lambda viewer_ui: ui.ToolkitWindow._draw_menu_bar_status(toolkit, viewer_ui),
+    )
+    viewer_ui = SimpleNamespace(_values={"_menu_bar_device_vram_bytes": 2 * 1024**3, "_menu_bar_device_vram_total_bytes": 8 * 1024**3, "_menu_bar_dataset_vram_bytes": 512 * 1024**2, "_menu_bar_app_vram_bytes": 768 * 1024**2, "_menu_bar_total_vram_bytes": int(1.25 * 1024**3)}, _texts={})
+
+    height = ui.ToolkitWindow._draw_main_menu_bar(toolkit, viewer_ui)
+
+    assert height == 24.0
+    assert texts == ["FPS 58.2", " | VRAM ", "25%", " (2.00 GiB / 8.00 GiB)", " | dataset: 512.00 MiB", " | app: 768.00 MiB", " | total: 1.25 GiB"]
+    start_x = max(90.0, 400.0 - sum(len(text) * 10.0 for text in texts) - 18.0)
+    expected_positions: list[float] = []
+    segment_x = start_x
+    for text in texts:
+        expected_positions.append(segment_x)
+        segment_x += len(text) * 10.0
+    assert cursor_positions == expected_positions
+    assert cursor_y_positions == [6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0]
+    assert len(pushed_colors) == 1
+    assert pushed_colors[0][0] == int(ui.imgui.Col_.text.value)
+    np.testing.assert_allclose(np.asarray(pushed_colors[0][1], dtype=np.float32), np.asarray((0.2, 0.9, 0.3, 1.0), dtype=np.float32), rtol=0.0, atol=1e-6)
+    assert pop_counts == [1]
 
 
 def test_training_setup_section_draws_subsampling_control(monkeypatch) -> None:

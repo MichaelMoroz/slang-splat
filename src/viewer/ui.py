@@ -76,7 +76,7 @@ _LOSS_DEBUG_ABS_SCALE_MAX = 64.0
 _THEME_OPTIONS = ("White", "Dark")
 _BASE_FONT_SIZE_PX = 16.0
 _FONT_ATLAS_SIZE_PX = _BASE_FONT_SIZE_PX * _INTERFACE_SCALE_OPTIONS[-1][1]
-_COLMAP_INIT_MODE_BASE_LABELS = ("COLMAP Pointcloud", "Diffused Pointcloud", "Custom PLY", "Custom Mesh")
+_COLMAP_INIT_MODE_BASE_LABELS = ("Point Sources",)
 _COLMAP_INIT_MODE_DEPTH_LABEL = "From Depth"
 _COLMAP_INIT_MODE_LABELS = _COLMAP_INIT_MODE_BASE_LABELS
 _COLMAP_DEPTH_VALUE_MODE_LABELS = ("Depth Is Distance", "Depth Is Z-Depth")
@@ -132,6 +132,26 @@ def _colmap_init_mode_label(ui: "ViewerUI", index: int | None = None) -> str:
     labels = _colmap_init_mode_labels(_valid_depth_root_text(ui._values.get("colmap_depth_root", "")))
     mode_idx = max(0, min(int(ui._values.get("colmap_init_mode", 0) if index is None else index), len(labels) - 1))
     return labels[mode_idx]
+
+
+def _enabled_colmap_init_labels(ui: "ViewerUI") -> tuple[str, ...]:
+    labels: list[str] = []
+    if bool(ui._values.get("colmap_pointcloud_enabled", False)):
+        labels.append("COLMAP Pointcloud")
+    if bool(ui._values.get("colmap_diffused_enabled", False)):
+        labels.append("Diffused COLMAP")
+    if bool(ui._values.get("colmap_custom_ply_enabled", False)):
+        labels.append("Custom PLY")
+    if bool(ui._values.get("colmap_custom_mesh_enabled", False)):
+        labels.append("Custom Mesh")
+    if bool(ui._values.get("colmap_fibonacci_sphere_enabled", False)):
+        labels.append("Fibonacci Sky Sphere")
+    return tuple(labels)
+
+
+def _colmap_init_summary(ui: "ViewerUI") -> str:
+    labels = _enabled_colmap_init_labels(ui)
+    return "None" if len(labels) == 0 else ", ".join(labels)
 
 
 @lru_cache(maxsize=1)
@@ -1419,6 +1439,100 @@ class ToolkitWindow:
             self._show_about = True
         imgui.end_menu()
 
+    def _menu_bar_status_text(self, ui: ViewerUI) -> str:
+        fps = self.tk.fps_history[-1] if self.tk.fps_history else 0.0
+        used_bytes = ui._values.get("_menu_bar_device_vram_bytes")
+        total_bytes = ui._values.get("_menu_bar_device_vram_total_bytes")
+        dataset_bytes = ui._values.get("_menu_bar_dataset_vram_bytes")
+        app_bytes = ui._values.get("_menu_bar_app_vram_bytes")
+        tracked_total_bytes = ui._values.get("_menu_bar_total_vram_bytes")
+        used_text = "n/a" if used_bytes is None else format_resource_bytes(int(used_bytes))
+        total_text = None if total_bytes is None else format_resource_bytes(int(total_bytes))
+        dataset_text = "n/a" if dataset_bytes is None else format_resource_bytes(int(dataset_bytes))
+        app_text = "n/a" if app_bytes is None else format_resource_bytes(int(app_bytes))
+        tracked_total_text = "n/a" if tracked_total_bytes is None else format_resource_bytes(int(tracked_total_bytes))
+        fraction = self._menu_bar_vram_fraction(ui)
+        if fraction is None:
+            vram_text = used_text if total_text is None else f"{used_text} / {total_text}"
+        else:
+            vram_text = f"{fraction * 100.0:.0f}% ({used_text} / {total_text})"
+        return f"FPS {fps:.1f} | VRAM {vram_text} | dataset: {dataset_text} | app: {app_text} | total: {tracked_total_text}"
+
+    def _menu_bar_vram_fraction(self, ui: ViewerUI) -> float | None:
+        used_bytes = ui._values.get("_menu_bar_device_vram_bytes")
+        total_bytes = ui._values.get("_menu_bar_device_vram_total_bytes")
+        if used_bytes is None or total_bytes is None:
+            return None
+        total = max(int(total_bytes), 0)
+        if total <= 0:
+            return None
+        used = max(int(used_bytes), 0)
+        return min(max(float(used) / float(total), 0.0), 1.0)
+
+    def _menu_bar_vram_color(self, ui: ViewerUI) -> imgui.ImVec4 | None:
+        fraction = self._menu_bar_vram_fraction(ui)
+        if fraction is None:
+            return None
+        if fraction < 0.70:
+            return imgui.ImVec4(0.2, 0.9, 0.3, 1.0)
+        if fraction < 0.90:
+            return imgui.ImVec4(1.0, 0.85, 0.2, 1.0)
+        return imgui.ImVec4(1.0, 0.3, 0.3, 1.0)
+
+    def _menu_bar_status_segments(self, ui: ViewerUI) -> tuple[tuple[str, imgui.ImVec4 | None], ...]:
+        fps = self.tk.fps_history[-1] if self.tk.fps_history else 0.0
+        used_bytes = ui._values.get("_menu_bar_device_vram_bytes")
+        total_bytes = ui._values.get("_menu_bar_device_vram_total_bytes")
+        dataset_bytes = ui._values.get("_menu_bar_dataset_vram_bytes")
+        app_bytes = ui._values.get("_menu_bar_app_vram_bytes")
+        tracked_total_bytes = ui._values.get("_menu_bar_total_vram_bytes")
+        used_text = "n/a" if used_bytes is None else format_resource_bytes(int(used_bytes))
+        total_text = None if total_bytes is None else format_resource_bytes(int(total_bytes))
+        dataset_text = "n/a" if dataset_bytes is None else format_resource_bytes(int(dataset_bytes))
+        app_text = "n/a" if app_bytes is None else format_resource_bytes(int(app_bytes))
+        tracked_total_text = "n/a" if tracked_total_bytes is None else format_resource_bytes(int(tracked_total_bytes))
+        fraction = self._menu_bar_vram_fraction(ui)
+        if fraction is None:
+            vram_value_text = used_text if total_text is None else f"{used_text} / {total_text}"
+            return (
+                (f"FPS {fps:.1f}", None),
+                (" | VRAM ", None),
+                (vram_value_text, self._menu_bar_vram_color(ui)),
+                (f" | dataset: {dataset_text}", None),
+                (f" | app: {app_text}", None),
+                (f" | total: {tracked_total_text}", None),
+            )
+        return (
+            (f"FPS {fps:.1f}", None),
+            (" | VRAM ", None),
+            (f"{fraction * 100.0:.0f}%", self._menu_bar_vram_color(ui)),
+            (f" ({used_text} / {total_text})", None),
+            (f" | dataset: {dataset_text}", None),
+            (f" | app: {app_text}", None),
+            (f" | total: {tracked_total_text}", None),
+        )
+
+    def _draw_menu_bar_status(self, ui: ViewerUI) -> None:
+        segments = self._menu_bar_status_segments(ui)
+        if len(segments) == 0:
+            return
+        style = imgui.get_style()
+        current_x = float(imgui.get_cursor_pos_x())
+        current_y = float(imgui.get_cursor_pos_y())
+        text_width = sum(float(imgui.calc_text_size(text).x) for text, _color in segments)
+        right_padding = float(style.item_spacing.x + style.window_padding.x)
+        target_x = max(current_x, float(imgui.get_window_width()) - text_width - right_padding)
+        segment_x = target_x
+        for text, color in segments:
+            imgui.set_cursor_pos_x(segment_x)
+            imgui.set_cursor_pos_y(current_y)
+            if color is not None:
+                imgui.push_style_color(imgui.Col_.text.value, color)
+            imgui.text_unformatted(text)
+            if color is not None:
+                imgui.pop_style_color()
+            segment_x += float(imgui.calc_text_size(text).x)
+
     def _draw_main_menu_bar(self, ui: ViewerUI) -> float:
         if not imgui.begin_main_menu_bar():
             return 0.0
@@ -1426,6 +1540,7 @@ class ToolkitWindow:
         ToolkitWindow._draw_view_menu(self, ui)
         ToolkitWindow._draw_debug_menu(self, ui)
         ToolkitWindow._draw_help_menu(self)
+        self._draw_menu_bar_status(ui)
         menu_bar_height = float(imgui.get_window_height())
         imgui.end_main_menu_bar()
         return menu_bar_height
@@ -1581,28 +1696,10 @@ class ToolkitWindow:
 
     def _draw_colmap_init_mode_controls(self, ui: ViewerUI) -> None:
         init_labels = _colmap_init_mode_labels(_valid_depth_root_text(ui._values.get("colmap_depth_root", "")))
-        mode_idx = ToolkitWindow._draw_combo("Initialization", init_labels, int(ui._values.get("colmap_init_mode", 0)))
+        mode_idx = ToolkitWindow._draw_combo("Initialization", init_labels, min(int(ui._values.get("colmap_init_mode", 0)), len(init_labels) - 1))
         ui._values["colmap_init_mode"] = mode_idx
-        ToolkitWindow._set_tooltip("COLMAP Pointcloud uses sparse points filtered by Min Camera Observations, Diffused Pointcloud resamples that filtered set, Custom PLY loads a chosen gaussian seed scene, Custom Mesh uniformly samples a chosen triangle mesh by triangle area and colors those samples from the mesh texture, and From Depth calibrates matched 16-bit PNG depth maps into a point cloud using an iteratively reweighted robust per-pose affine depth fit from all valid observed points, while rejecting projected samples that land on strong local depth-gradient spikes.")
-        if mode_idx == 2:
-            imgui.spacing()
-            self._draw_import_path_selector(ui, label="Custom PLY", key="colmap_custom_ply_path", button_label="Browse PLY...", callback=self.callbacks.browse_colmap_ply)
-            return
-        if mode_idx == 3:
-            imgui.spacing()
-            self._draw_import_path_selector(ui, label="Custom Mesh", key="colmap_custom_ply_path", button_label="Browse Mesh...", callback=self.callbacks.browse_colmap_mesh)
-        if mode_idx in (0, 1):
-            ToolkitWindow._draw_clamped_int(
-                ui,
-                key="colmap_min_track_length",
-                label="Min Camera Observations",
-                default=DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH,
-                speed=0.25,
-                min_value=0,
-                max_value=32,
-                tooltip="Ignore sparse COLMAP points whose track is shorter than this many observing cameras. Set 0 to keep all sparse points.",
-            )
-        if mode_idx == 4:
+        ToolkitWindow._set_tooltip("Point Sources combines any enabled source rows below. From Depth calibrates matched 16-bit PNG depth maps into a point cloud using an iteratively reweighted robust per-pose affine depth fit from valid observed points while rejecting local depth-gradient spikes.")
+        if mode_idx == 1:
             imgui.push_text_wrap_pos(imgui.get_cursor_pos_x() + imgui.get_content_region_avail().x)
             imgui.text_disabled("From Depth matches RGB and depth by relative stem under Depth Folder, uses each pose's own positive COLMAP point observations, reprojects those 3D points through the frame camera model to sample depth, rejects projected samples whose local pixel-footprint gradients are a strong outlier relative to nearby gradients, then solves one iteratively reweighted robust affine map `a + b*d` per pose from the remaining observed points before sampling a dataset-wide calibrated point budget. Frames without usable depth stay in training but are skipped for depth-based initialization.")
             imgui.pop_text_wrap_pos()
@@ -1622,80 +1719,170 @@ class ToolkitWindow:
                 max_value=10000000,
                 tooltip="Total calibrated points sampled across all matched RGB/depth pairs for depth-based initialization.",
             )
-        if mode_idx == 1:
+            return
+
+        imgui.text_wrapped("Enable any combination of initialization sources. Each row owns its own point budget and NN scale coefficient.")
+        ToolkitWindow._draw_clamped_int(
+            ui,
+            key="colmap_min_track_length",
+            label="Min Camera Observations",
+            default=DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH,
+            speed=0.25,
+            min_value=0,
+            max_value=32,
+            tooltip="Ignore sparse COLMAP points whose track is shorter than this many observing cameras. Set 0 to keep all sparse points.",
+        )
+        imgui.spacing()
+        flags = imgui.TableFlags_.row_bg.value | imgui.TableFlags_.borders.value | imgui.TableFlags_.resizable.value | imgui.TableFlags_.sizing_stretch_prop.value
+        if imgui.begin_table("##colmap_init_sources", 5, flags):
+            for label, column_flags, width in (
+                ("Use", imgui.TableColumnFlags_.width_fixed.value, 38.0),
+                ("Source", imgui.TableColumnFlags_.width_fixed.value, 150.0),
+                ("Points", imgui.TableColumnFlags_.width_fixed.value, 96.0),
+                ("Path / Radius", imgui.TableColumnFlags_.width_stretch.value, 0.0),
+                ("NN Scale", imgui.TableColumnFlags_.width_fixed.value, 112.0),
+            ):
+                imgui.table_setup_column(label, column_flags, width)
+            imgui.table_headers_row()
+
+            def _row_toggle(key: str) -> bool:
+                imgui.table_next_column()
+                changed, enabled = imgui.checkbox(f"##{key}", bool(ui._values.get(key, False)))
+                if changed:
+                    ui._values[key] = bool(enabled)
+                return bool(ui._values.get(key, False))
+
+            def _row_nn_scale(key: str, default: float, enabled: bool) -> None:
+                imgui.table_next_column()
+                imgui.begin_disabled(not enabled)
+                ToolkitWindow._draw_clamped_float(
+                    ui,
+                    key=key,
+                    label=f"##{key}",
+                    default=default,
+                    speed=0.01,
+                    min_value=1e-4,
+                    max_value=16.0,
+                    fmt="%.4f",
+                    tooltip="Multiplier applied to the source-local nearest-neighbor radius when initializing gaussian scales.",
+                    flags=imgui.SliderFlags_.logarithmic.value,
+                )
+                imgui.end_disabled()
+
+            imgui.table_next_row()
+            pointcloud_enabled = _row_toggle("colmap_pointcloud_enabled")
+            imgui.table_next_column()
+            imgui.text_unformatted("COLMAP Pointcloud")
+            imgui.table_next_column()
+            imgui.text_disabled("all")
+            imgui.table_next_column()
+            imgui.text_disabled("Sparse COLMAP points")
+            _row_nn_scale("colmap_pointcloud_nn_radius_scale_coef", 0.5, pointcloud_enabled)
+
+            imgui.table_next_row()
+            diffused_enabled = _row_toggle("colmap_diffused_enabled")
+            imgui.table_next_column()
+            imgui.text_unformatted("Diffused COLMAP")
+            imgui.table_next_column()
+            imgui.begin_disabled(not diffused_enabled)
             ToolkitWindow._draw_clamped_int(
                 ui,
                 key="colmap_diffused_point_count",
-                label="Point Count",
-                default=100000,
+                label="##colmap_diffused_point_count",
+                default=500000,
                 speed=1000.0,
                 min_value=1,
                 max_value=10000000,
-                tooltip="Number of gaussians synthesized by resampling COLMAP points with replacement before diffusion.",
+                tooltip="Number of resampled diffused COLMAP points.",
             )
+            imgui.end_disabled()
+            imgui.table_next_column()
+            imgui.begin_disabled(not diffused_enabled)
             ToolkitWindow._draw_clamped_float(
                 ui,
-                key="colmap_diffusion_radius",
-                label="Diffusion Radius",
+                key="colmap_diffused_diffusion_radius",
+                label="##colmap_diffused_diffusion_radius",
                 default=1.0,
                 speed=0.01,
                 min_value=0.0,
                 max_value=16.0,
                 fmt="%.4f",
-                tooltip="Local diffusion multiplier applied to each sampled point's original-cloud nearest-neighbor distance.",
+                tooltip="Local diffusion multiplier applied before point synthesis.",
                 flags=imgui.SliderFlags_.logarithmic.value,
             )
-        if mode_idx == 3:
+            imgui.end_disabled()
+            _row_nn_scale("colmap_diffused_nn_radius_scale_coef", 0.5, diffused_enabled)
+
+            imgui.table_next_row()
+            custom_ply_enabled = _row_toggle("colmap_custom_ply_enabled")
+            imgui.table_next_column()
+            imgui.text_unformatted("Custom PLY")
+            imgui.table_next_column()
+            imgui.text_disabled("scene")
+            imgui.table_next_column()
+            imgui.begin_disabled(not custom_ply_enabled)
+            self._draw_import_path_selector(ui, label="PLY", key="colmap_custom_ply_path", button_label="Browse PLY...", callback=self.callbacks.browse_colmap_ply)
+            imgui.end_disabled()
+            _row_nn_scale("colmap_custom_ply_nn_radius_scale_coef", 1.0, custom_ply_enabled)
+
+            imgui.table_next_row()
+            custom_mesh_enabled = _row_toggle("colmap_custom_mesh_enabled")
+            imgui.table_next_column()
+            imgui.text_unformatted("Custom Mesh")
+            imgui.table_next_column()
+            imgui.begin_disabled(not custom_mesh_enabled)
             ToolkitWindow._draw_clamped_int(
                 ui,
-                key="colmap_diffused_point_count",
-                label="Mesh Sample Count",
-                default=100000,
+                key="colmap_custom_mesh_point_count",
+                label="##colmap_custom_mesh_point_count",
+                default=500000,
                 speed=1000.0,
                 min_value=1,
                 max_value=10000000,
-                tooltip="Number of uniformly sampled surface points generated from the selected mesh for gaussian initialization.",
+                tooltip="Number of uniformly sampled mesh surface points.",
             )
-        ToolkitWindow._draw_clamped_float(
-            ui,
-            key="colmap_nn_radius_scale_coef",
-            label="NN Radius Scale Coef",
-            default=0.5,
-            speed=0.01,
-            min_value=1e-4,
-            max_value=16.0,
-            fmt="%.4f",
-            tooltip="Multiplier applied to the median initializer nearest-neighbor radius when initializing gaussian scales.",
-            flags=imgui.SliderFlags_.logarithmic.value,
-        )
-        changed, enabled = imgui.checkbox("Append Fibonacci Sphere", int(ui._values.get("colmap_fibonacci_sphere_point_count", 0)) > 0)
-        if changed:
-            ui._values["colmap_fibonacci_sphere_point_count"] = max(int(ui._values.get("colmap_fibonacci_sphere_point_count", 1024)), 1) if enabled else 0
-        ToolkitWindow._set_tooltip("Append evenly distributed shell points around the mean COLMAP camera center.")
-        if int(ui._values.get("colmap_fibonacci_sphere_point_count", 0)) <= 0:
-            return
-        ToolkitWindow._draw_clamped_int(
-            ui,
-            key="colmap_fibonacci_sphere_point_count",
-            label="Sphere Point Count",
-            default=1024,
-            speed=100.0,
-            min_value=1,
-            max_value=10000000,
-            tooltip="Number of Fibonacci shell points appended to the initialization point cloud.",
-        )
-        ToolkitWindow._draw_clamped_float(
-            ui,
-            key="colmap_fibonacci_sphere_radius",
-            label="Sphere Radius",
-            default=20.0,
-            speed=0.1,
-            min_value=0.0,
-            max_value=10000.0,
-            fmt="%.3f",
-            tooltip="World-space radius of the appended shell around the mean camera pose.",
-            flags=imgui.SliderFlags_.logarithmic.value,
-        )
+            imgui.end_disabled()
+            imgui.table_next_column()
+            imgui.begin_disabled(not custom_mesh_enabled)
+            self._draw_import_path_selector(ui, label="Mesh", key="colmap_custom_mesh_path", button_label="Browse Mesh...", callback=self.callbacks.browse_colmap_mesh)
+            imgui.end_disabled()
+            _row_nn_scale("colmap_custom_mesh_nn_radius_scale_coef", 0.5, custom_mesh_enabled)
+
+            imgui.table_next_row()
+            fibonacci_enabled = _row_toggle("colmap_fibonacci_sphere_enabled")
+            imgui.table_next_column()
+            imgui.text_unformatted("Fibonacci Sky Sphere")
+            imgui.table_next_column()
+            imgui.begin_disabled(not fibonacci_enabled)
+            ToolkitWindow._draw_clamped_int(
+                ui,
+                key="colmap_fibonacci_sphere_point_count",
+                label="##colmap_fibonacci_sphere_point_count",
+                default=50000,
+                speed=1000.0,
+                min_value=1,
+                max_value=10000000,
+                tooltip="Number of sky-sphere samples.",
+            )
+            imgui.end_disabled()
+            imgui.table_next_column()
+            imgui.begin_disabled(not fibonacci_enabled)
+            ToolkitWindow._draw_clamped_float(
+                ui,
+                key="colmap_fibonacci_sphere_radius",
+                label="##colmap_fibonacci_sphere_radius",
+                default=20.0,
+                speed=0.1,
+                min_value=0.0,
+                max_value=10000.0,
+                fmt="%.3f",
+                tooltip="World-space sky sphere radius around the mean camera pose.",
+                flags=imgui.SliderFlags_.logarithmic.value,
+            )
+            imgui.end_disabled()
+            _row_nn_scale("colmap_fibonacci_sphere_nn_radius_scale_coef", 1.0, fibonacci_enabled)
+
+            imgui.end_table()
 
     def _draw_colmap_import_window(self, ui: ViewerUI) -> None:
         if not self._show_colmap_import:
@@ -1709,7 +1896,7 @@ class ToolkitWindow:
         if import_active and not self._show_colmap_import:
             self._show_colmap_import = True
         if opened:
-            imgui.text_wrapped("Select the dataset root, verify the RGB image folder, optionally provide a depth folder, choose import-time downscale and initialization mode, then import the dataset.")
+            imgui.text_wrapped("Select the dataset root, verify the RGB image folder, optionally provide a depth folder, choose import-time downscale, then enable any combination of initialization sources.")
             imgui.separator()
             if import_active:
                 status = ui._texts.get("colmap_import_status", "")
@@ -2186,7 +2373,7 @@ class ToolkitWindow:
         if depth_text != "<none>":
             imgui.text_disabled(f"Depth: {Path(depth_text).name}")
             imgui.text_disabled(f"Depth Mode: {_COLMAP_DEPTH_VALUE_MODE_LABELS[max(0, min(int(ui._values.get('colmap_depth_value_mode', 1)), len(_COLMAP_DEPTH_VALUE_MODE_LABELS) - 1))]}")
-        imgui.text_disabled(f"Init: {_colmap_init_mode_label(ui)}")
+        imgui.text_disabled(f"Init: {_colmap_init_mode_label(ui) if int(ui._values.get('colmap_init_mode', 0)) == 1 else _colmap_init_summary(ui)}")
         imgui.separator()
 
     def _section_camera(self, ui: ViewerUI) -> None:
@@ -2287,7 +2474,7 @@ class ToolkitWindow:
         refinement_status = ui._texts.get("training_refinement", "")
         if refinement_status:
             _draw_disabled_wrapped_text(refinement_status)
-        _draw_disabled_wrapped_text("COLMAP import chooses direct pointcloud init, diffused pointcloud init, or a custom PLY scene.")
+        _draw_disabled_wrapped_text("COLMAP import can combine sparse COLMAP points, diffused COLMAP points, custom PLY seeds, custom mesh samples, and a Fibonacci sky sphere in one initialization pass.")
         self._ctx_reset("train_setup_ctx", ui, [s.key for s in GROUP_SPECS[TRAINING_SETUP_GROUP]])
         imgui.separator()
 
@@ -2566,7 +2753,7 @@ def build_ui(renderer) -> ViewerUI:
     for spec in DEBUG_RENDER_SPECS:
         values[spec.key] = spec.kwargs.get("value", 0)
     RendererParams.from_renderer(renderer).apply_ui_values(values, _renderer_atomic_mode_index, _renderer_debug_mode_index, _threshold_from_band_range)
-    for key in ("colmap_root_path", "colmap_database_path", "colmap_images_root", "colmap_depth_root", "colmap_custom_ply_path"):
+    for key in ("colmap_root_path", "colmap_database_path", "colmap_images_root", "colmap_depth_root", "colmap_custom_ply_path", "colmap_custom_mesh_path"):
         values[key] = ""
     values["colmap_selected_camera_ids"] = ()
     for key, cast in _VIEWER_IMPORT_EXPORT_FIELDS:
@@ -2585,6 +2772,14 @@ def build_ui(renderer) -> ViewerUI:
         "_resource_debug_next_update": 0.0,
         "_resource_debug_refresh_requested": True,
         "_resource_debug_process_vram_requested": False,
+        "_menu_bar_device_vram_bytes": None,
+        "_menu_bar_device_vram_source": "",
+        "_menu_bar_device_vram_total_bytes": None,
+        "_menu_bar_device_vram_total_source": "",
+        "_menu_bar_dataset_vram_bytes": 0,
+        "_menu_bar_app_vram_bytes": 0,
+        "_menu_bar_total_vram_bytes": 0,
+        "_menu_bar_resource_next_update": 0.0,
         "_training_views_rows": (),
         "_training_view_overlay_segments": (),
         "_loss_debug_frame_max": 0,

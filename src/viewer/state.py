@@ -45,10 +45,22 @@ class ColmapImportSettings:
     min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH
     depth_point_count: int = int(_VIEWER_IMPORT_DEFAULTS["colmap_depth_point_count"])
     diffused_point_count: int = int(_VIEWER_IMPORT_DEFAULTS["colmap_diffused_point_count"])
-    diffusion_radius: float = float(_VIEWER_IMPORT_DEFAULTS["colmap_diffusion_radius"])
     fibonacci_sphere_point_count: int = 0
     fibonacci_sphere_radius: float = 20.0
     use_target_alpha_mask: bool = False
+    pointcloud_enabled: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_pointcloud_enabled", False))
+    pointcloud_nn_radius_scale_coef: float = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_pointcloud_nn_radius_scale_coef", _VIEWER_IMPORT_DEFAULTS.get("colmap_nn_radius_scale_coef", 0.5)))
+    diffused_enabled: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_diffused_enabled", False))
+    diffused_diffusion_radius: float = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_diffused_diffusion_radius", 1.0))
+    diffused_nn_radius_scale_coef: float = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_diffused_nn_radius_scale_coef", _VIEWER_IMPORT_DEFAULTS.get("colmap_nn_radius_scale_coef", 0.5)))
+    custom_ply_enabled: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_custom_ply_enabled", False))
+    custom_ply_nn_radius_scale_coef: float = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_custom_ply_nn_radius_scale_coef", 1.0))
+    custom_mesh_enabled: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_custom_mesh_enabled", False))
+    custom_mesh_path: Path | None = None
+    custom_mesh_point_count: int = int(_VIEWER_IMPORT_DEFAULTS.get("colmap_custom_mesh_point_count", _VIEWER_IMPORT_DEFAULTS.get("colmap_diffused_point_count", 500000)))
+    custom_mesh_nn_radius_scale_coef: float = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_custom_mesh_nn_radius_scale_coef", _VIEWER_IMPORT_DEFAULTS.get("colmap_nn_radius_scale_coef", 0.5)))
+    fibonacci_sphere_enabled: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_enabled", int(_VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_point_count", 0)) > 0))
+    fibonacci_sphere_nn_radius_scale_coef: float = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_nn_radius_scale_coef", 1.0))
 
 
 @dataclass(slots=True)
@@ -69,12 +81,24 @@ class ColmapImportProgress:
     min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH
     depth_point_count: int = 100000
     diffused_point_count: int = 100000
-    diffusion_radius: float = 1.0
     fibonacci_sphere_point_count: int = 0
     fibonacci_sphere_radius: float = 20.0
     use_target_alpha_mask: bool = False
     depth_value_mode: str = "z_depth"
     depth_root: Path | None = None
+    pointcloud_enabled: bool = False
+    pointcloud_nn_radius_scale_coef: float = 0.5
+    diffused_enabled: bool = False
+    diffused_diffusion_radius: float = 1.0
+    diffused_nn_radius_scale_coef: float = 0.5
+    custom_ply_enabled: bool = False
+    custom_ply_nn_radius_scale_coef: float = 1.0
+    custom_mesh_enabled: bool = False
+    custom_mesh_path: Path | None = None
+    custom_mesh_point_count: int = 500000
+    custom_mesh_nn_radius_scale_coef: float = 0.5
+    fibonacci_sphere_enabled: bool = False
+    fibonacci_sphere_nn_radius_scale_coef: float = 1.0
     phase: str = "prepare"
     current: int = 0
     total: int = 1
@@ -128,7 +152,12 @@ class ViewerState:
     colmap_import: ColmapImportSettings = field(default_factory=ColmapImportSettings)
     colmap_import_progress: ColmapImportProgress | None = None
     cached_init_point_positions: np.ndarray | None = None; cached_init_point_colors: np.ndarray | None = None
-    cached_init_scene: GaussianScene | None = None; cached_init_signature: tuple[object, ...] | None = None
+    cached_init_signature: tuple[object, ...] | None = None
+    cached_init_pointcloud_positions: np.ndarray | None = None; cached_init_pointcloud_colors: np.ndarray | None = None
+    cached_init_diffused_positions: np.ndarray | None = None; cached_init_diffused_colors: np.ndarray | None = None
+    cached_init_custom_ply_scene: GaussianScene | None = None
+    cached_init_custom_mesh_positions: np.ndarray | None = None; cached_init_custom_mesh_colors: np.ndarray | None = None
+    cached_init_fibonacci_positions: np.ndarray | None = None; cached_init_fibonacci_colors: np.ndarray | None = None
     trainer: GaussianTrainer | None = None; training_active: bool = False; viewport_texture: spy.Texture | None = None; loss_debug_texture: spy.Texture | None = None; debug_target_texture: spy.Texture | None = None
     debug_abs_diff_kernel: spy.ComputeKernel | None = None; debug_edge_kernel: spy.ComputeKernel | None = None; debug_dssim_features_kernel: spy.ComputeKernel | None = None; debug_dssim_compose_kernel: spy.ComputeKernel | None = None; debug_letterbox_kernel: spy.ComputeKernel | None = None; debug_target_sample_kernel: spy.ComputeKernel | None = None; debug_present_texture: spy.Texture | None = None
     debug_dssim_blur: object | None = None; debug_dssim_resolution: tuple[int, int] | None = None

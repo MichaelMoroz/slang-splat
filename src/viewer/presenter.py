@@ -9,7 +9,7 @@ from ..utility import alloc_texture_2d, clamp_index, debug_region, require_not_n
 from ..filter import SeparableGaussianBlur
 from ..training import resolve_colorspace_mod, resolve_sh_band
 from . import session
-from .buffer_debug import collect_resource_debug_snapshot
+from .buffer_debug import ResourceDebugSnapshot, collect_resource_debug_snapshot, query_total_device_vram_capacity, query_total_device_vram_used_cached, split_resource_usage
 from .presenter_state import (
     _debug_frame_idx,
     _debug_view_key,
@@ -31,6 +31,7 @@ _DEBUG_DSSIM_FEATURE_CHANNELS = 15
 _DEBUG_TARGET_SAMPLE_REGION = 155
 _VIEWER_CLEAR_COLOR = [0.08, 0.09, 0.11, 1.0]
 _RESOURCE_DEBUG_REFRESH_SECONDS = 5.0
+_MENU_BAR_RESOURCE_REFRESH_SECONDS = 1.0
 
 
 def _ensure_texture(viewer: object, attr: str, width: int, height: int) -> spy.Texture:
@@ -251,6 +252,49 @@ def _refresh_resource_debug_snapshot(viewer: object) -> None:
     values["_resource_debug_process_vram_requested"] = False
 
 
+def _refresh_menu_bar_device_vram(viewer: object) -> None:
+    values = viewer.ui._values
+    previous_value = values.get("_menu_bar_device_vram_bytes")
+    try:
+        used_bytes, source = query_total_device_vram_used_cached(getattr(viewer, "device", None))
+        total_bytes, total_source = query_total_device_vram_capacity(getattr(viewer, "device", None))
+    except Exception:
+        return
+    if used_bytes is None and previous_value is not None:
+        used_bytes = previous_value
+    values["_menu_bar_device_vram_bytes"] = None if used_bytes is None else int(used_bytes)
+    values["_menu_bar_device_vram_source"] = str(source)
+    values["_menu_bar_device_vram_total_bytes"] = None if total_bytes is None else int(total_bytes)
+    values["_menu_bar_device_vram_total_source"] = str(total_source)
+
+
+def _refresh_menu_bar_resource_totals(viewer: object) -> None:
+    values = viewer.ui._values
+    now = float(getattr(viewer.s, "last_time", time.perf_counter()))
+    snapshot = values.get("_resource_debug_snapshot")
+    if isinstance(snapshot, ResourceDebugSnapshot):
+        usage = split_resource_usage(snapshot)
+        values["_menu_bar_dataset_vram_bytes"] = int(usage.dataset_bytes)
+        values["_menu_bar_app_vram_bytes"] = int(usage.app_bytes)
+        values["_menu_bar_total_vram_bytes"] = int(usage.total_bytes)
+        values["_menu_bar_resource_next_update"] = now + _MENU_BAR_RESOURCE_REFRESH_SECONDS
+        return
+    next_update = float(values.get("_menu_bar_resource_next_update", 0.0) or 0.0)
+    if now < next_update:
+        return
+    try:
+        snapshot = collect_resource_debug_snapshot(viewer, include_process_vram=False)
+    except Exception:
+        return
+    if not isinstance(snapshot, ResourceDebugSnapshot):
+        return
+    usage = split_resource_usage(snapshot)
+    values["_menu_bar_dataset_vram_bytes"] = int(usage.dataset_bytes)
+    values["_menu_bar_app_vram_bytes"] = int(usage.app_bytes)
+    values["_menu_bar_total_vram_bytes"] = int(usage.total_bytes)
+    values["_menu_bar_resource_next_update"] = now + _MENU_BAR_RESOURCE_REFRESH_SECONDS
+
+
 def _set_text(viewer: object, key: str, value: object) -> None:
     viewer.t(key).text = str(value)
 
@@ -293,6 +337,8 @@ def update_ui_text(viewer: object, dt: float) -> None:
     _set_ui_value(viewer, "_training_views_rows", panel_state["training_views_rows"])
     _set_ui_value(viewer, "_training_view_overlay_segments", panel_state["training_view_overlay_segments"])
     _refresh_resource_debug_snapshot(viewer)
+    _refresh_menu_bar_device_vram(viewer)
+    _refresh_menu_bar_resource_totals(viewer)
     _set_text(viewer, "render_stats", _render_stats_text(stats))
     training_elapsed_s = 0.0 if viewer.s.trainer is None else float(session.training_elapsed_seconds(viewer, now=viewer.s.last_time))
     for key, text in _training_status_texts(viewer, current_splat_count, training_elapsed_s).items():

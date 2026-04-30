@@ -191,11 +191,36 @@ def _update_import_settings(
     min_track_length: int,
     depth_point_count: int,
     diffused_point_count: int,
-    diffusion_radius: float,
     fibonacci_sphere_point_count: int,
     fibonacci_sphere_radius: float,
     use_target_alpha_mask: bool,
+    pointcloud_enabled: bool | None = None,
+    pointcloud_nn_radius_scale_coef: float | None = None,
+    diffused_enabled: bool | None = None,
+    diffused_diffusion_radius: float = 1.0,
+    diffused_nn_radius_scale_coef: float | None = None,
+    custom_ply_enabled: bool | None = None,
+    custom_ply_nn_radius_scale_coef: float | None = None,
+    custom_mesh_enabled: bool | None = None,
+    custom_mesh_path: Path | None = None,
+    custom_mesh_point_count: int | None = None,
+    custom_mesh_nn_radius_scale_coef: float | None = None,
+    fibonacci_sphere_enabled: bool | None = None,
+    fibonacci_sphere_nn_radius_scale_coef: float | None = None,
 ) -> None:
+    resolved_pointcloud_enabled = bool(pointcloud_enabled)
+    resolved_pointcloud_nn_radius_scale_coef = float(max(pointcloud_nn_radius_scale_coef if pointcloud_nn_radius_scale_coef is not None else nn_radius_scale_coef, 1e-4))
+    resolved_diffused_enabled = bool(diffused_enabled)
+    resolved_diffused_diffusion_radius = max(float(diffused_diffusion_radius), 0.0)
+    resolved_diffused_nn_radius_scale_coef = float(max(diffused_nn_radius_scale_coef if diffused_nn_radius_scale_coef is not None else nn_radius_scale_coef, 1e-4))
+    resolved_custom_ply_enabled = bool(custom_ply_enabled)
+    resolved_custom_ply_nn_radius_scale_coef = float(max(custom_ply_nn_radius_scale_coef if custom_ply_nn_radius_scale_coef is not None else 1.0, 1e-4))
+    resolved_custom_mesh_enabled = bool(custom_mesh_enabled)
+    resolved_custom_mesh_path = custom_mesh_path
+    resolved_custom_mesh_point_count = max(int(custom_mesh_point_count if custom_mesh_point_count is not None else diffused_point_count), 1)
+    resolved_custom_mesh_nn_radius_scale_coef = float(max(custom_mesh_nn_radius_scale_coef if custom_mesh_nn_radius_scale_coef is not None else nn_radius_scale_coef, 1e-4))
+    resolved_fibonacci_sphere_enabled = bool(fibonacci_sphere_enabled)
+    resolved_fibonacci_sphere_nn_radius_scale_coef = float(max(fibonacci_sphere_nn_radius_scale_coef if fibonacci_sphere_nn_radius_scale_coef is not None else 1.0, 1e-4))
     viewer.s.colmap_import = ColmapImportSettings(
         database_path=None if database_path is None else Path(database_path).resolve(),
         images_root=Path(images_root).resolve(),
@@ -213,10 +238,22 @@ def _update_import_settings(
         min_track_length=max(int(min_track_length), 0),
         depth_point_count=max(int(depth_point_count), 1),
         diffused_point_count=max(int(diffused_point_count), 1),
-        diffusion_radius=max(float(diffusion_radius), 0.0),
         fibonacci_sphere_point_count=max(int(fibonacci_sphere_point_count), 0),
         fibonacci_sphere_radius=max(float(fibonacci_sphere_radius), 0.0),
         use_target_alpha_mask=bool(use_target_alpha_mask),
+        pointcloud_enabled=resolved_pointcloud_enabled,
+        pointcloud_nn_radius_scale_coef=resolved_pointcloud_nn_radius_scale_coef,
+        diffused_enabled=resolved_diffused_enabled,
+        diffused_diffusion_radius=resolved_diffused_diffusion_radius,
+        diffused_nn_radius_scale_coef=resolved_diffused_nn_radius_scale_coef,
+        custom_ply_enabled=resolved_custom_ply_enabled,
+        custom_ply_nn_radius_scale_coef=resolved_custom_ply_nn_radius_scale_coef,
+        custom_mesh_enabled=resolved_custom_mesh_enabled,
+        custom_mesh_path=None if resolved_custom_mesh_path is None else Path(resolved_custom_mesh_path).resolve(),
+        custom_mesh_point_count=resolved_custom_mesh_point_count,
+        custom_mesh_nn_radius_scale_coef=resolved_custom_mesh_nn_radius_scale_coef,
+        fibonacci_sphere_enabled=resolved_fibonacci_sphere_enabled,
+        fibonacci_sphere_nn_radius_scale_coef=resolved_fibonacci_sphere_nn_radius_scale_coef,
     )
     _set_ui_path(viewer, "colmap_root_path", dataset_root)
     _set_ui_path(viewer, "colmap_database_path", database_path)
@@ -225,11 +262,7 @@ def _update_import_settings(
     viewer.ui._values["colmap_selected_camera_ids"] = tuple(int(camera_id) for camera_id in selected_camera_ids)
     viewer.ui._values["colmap_depth_value_mode"] = 0 if str(depth_value_mode) == _COLMAP_DEPTH_VALUE_DISTANCE else 1
     viewer.ui._values["colmap_init_mode"] = (
-        1 if str(init_mode) == _COLMAP_IMPORT_DIFFUSED_POINTCLOUD else
-        2 if str(init_mode) == _COLMAP_IMPORT_CUSTOM_PLY else
-        3 if str(init_mode) == _COLMAP_IMPORT_CUSTOM_MESH else
-        4 if str(init_mode) == _COLMAP_IMPORT_DEPTH else
-        0
+        1 if str(init_mode) == _COLMAP_IMPORT_DEPTH else 0
     )
     viewer.ui._values["colmap_auto_rotate_scene"] = bool(auto_rotate_scene)
     viewer.ui._values["compress_dataset_using_bc7"] = bool(compress_dataset_using_bc7)
@@ -240,10 +273,22 @@ def _update_import_settings(
     viewer.ui._values["colmap_nn_radius_scale_coef"] = float(max(nn_radius_scale_coef, 1e-4))
     viewer.ui._values["colmap_min_track_length"] = max(int(min_track_length), 0)
     viewer.ui._values["colmap_depth_point_count"] = max(int(depth_point_count), 1)
+    viewer.ui._values["colmap_pointcloud_enabled"] = resolved_pointcloud_enabled
+    viewer.ui._values["colmap_pointcloud_nn_radius_scale_coef"] = resolved_pointcloud_nn_radius_scale_coef
+    viewer.ui._values["colmap_diffused_enabled"] = resolved_diffused_enabled
     viewer.ui._values["colmap_diffused_point_count"] = max(int(diffused_point_count), 1)
-    viewer.ui._values["colmap_diffusion_radius"] = max(float(diffusion_radius), 0.0)
+    viewer.ui._values["colmap_diffused_diffusion_radius"] = resolved_diffused_diffusion_radius
+    viewer.ui._values["colmap_diffused_nn_radius_scale_coef"] = resolved_diffused_nn_radius_scale_coef
+    viewer.ui._values["colmap_custom_ply_enabled"] = resolved_custom_ply_enabled
+    viewer.ui._values["colmap_custom_ply_nn_radius_scale_coef"] = resolved_custom_ply_nn_radius_scale_coef
+    viewer.ui._values["colmap_custom_mesh_enabled"] = resolved_custom_mesh_enabled
+    _set_ui_path(viewer, "colmap_custom_mesh_path", resolved_custom_mesh_path)
+    viewer.ui._values["colmap_custom_mesh_point_count"] = resolved_custom_mesh_point_count
+    viewer.ui._values["colmap_custom_mesh_nn_radius_scale_coef"] = resolved_custom_mesh_nn_radius_scale_coef
+    viewer.ui._values["colmap_fibonacci_sphere_enabled"] = resolved_fibonacci_sphere_enabled
     viewer.ui._values["colmap_fibonacci_sphere_point_count"] = max(int(fibonacci_sphere_point_count), 0)
     viewer.ui._values["colmap_fibonacci_sphere_radius"] = max(float(fibonacci_sphere_radius), 0.0)
+    viewer.ui._values["colmap_fibonacci_sphere_nn_radius_scale_coef"] = resolved_fibonacci_sphere_nn_radius_scale_coef
     viewer.ui._values["use_target_alpha_mask"] = bool(use_target_alpha_mask)
 
 
