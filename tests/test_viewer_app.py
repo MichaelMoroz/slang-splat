@@ -261,6 +261,42 @@ def test_apply_resize_prefers_viewport_size_when_available(monkeypatch) -> None:
     assert calls == ["wait", (512, 288)]
 
 
+def test_precompile_runtime_shaders_loads_lazy_runtime_shader_sets(monkeypatch) -> None:
+    item_calls: list[dict[str, tuple[str, str, str]]] = []
+    kernel_calls: list[tuple[str, dict[str, str]]] = []
+
+    monkeypatch.setattr(app, "load_compute_items", lambda _device, specs: item_calls.append({name: (kind, str(path), entry) for name, (kind, path, entry) in specs.items()}) or {})
+    monkeypatch.setattr(app, "load_compute_kernels", lambda _device, path, entries: kernel_calls.append((str(path), dict(entries))) or {})
+
+    app._precompile_runtime_shaders(object())
+
+    assert any(specs.get("scan_blocks_pipeline") == ("pipeline", str(app.SHADER_ROOT / "utility" / "prefix_sum" / "prefix_sum.slang"), "csPrefixScanBlocks") for specs in item_calls)
+    assert any(specs.get("scatter") == ("pipeline", str(app.SHADER_ROOT / "utility" / "radix_sort" / "scatter.slang"), "csRadixScatter") for specs in item_calls)
+    assert any(path == str(app.SHADER_ROOT / "renderer" / "gaussian_raster_stage.slang") and entries.get("training_forward") == "csRasterizeTrainingForwardFixed" for path, entries in kernel_calls)
+    assert any(path == str(app.SHADER_ROOT / "renderer" / "gaussian_raster_stage.slang") and entries.get("training_forward") == "csRasterizeTrainingForwardFloat" for path, entries in kernel_calls)
+    assert any(path == str(app.SHADER_ROOT / "renderer" / "gaussian_training_stage.slang") and entries.get("debug_target_sample_kernel") == "csSampleTrainingDebugTarget" for path, entries in kernel_calls)
+    assert any(path == str(app.SHADER_ROOT / "utility" / "blur" / "separable_gaussian_blur.slang") and entries.get("horizontal") == "csGaussianBlurHorizontal" for path, entries in kernel_calls)
+    assert any(path == str(app.SHADER_ROOT / "utility" / "optimizer" / "optimizer.slang") and entries.get("adam_step") == "csAdamStepPacked" for path, entries in kernel_calls)
+
+
+def test_viewer_init_precompiles_runtime_shaders_before_renderer_setup(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+
+    monkeypatch.setattr(app.spy.AppWindow, "__init__", lambda self, _app, **_kwargs: setattr(self, "_device", "device"))
+    monkeypatch.setattr(app.SplatViewer, "device", property(lambda _self: "device"))
+    monkeypatch.setattr(app, "ViewerState", lambda **_kwargs: SimpleNamespace(list_capacity_multiplier=64, max_prepass_memory_mb=4096))
+    monkeypatch.setattr(app, "_precompile_runtime_shaders", lambda device: calls.append(("precompile", device)))
+    monkeypatch.setattr(app.GaussianRenderSettings, "from_renderer_params", lambda *_args, **_kwargs: SimpleNamespace(create_renderer=lambda device: calls.append(("renderer", device)) or "renderer"))
+    monkeypatch.setattr(app, "build_ui", lambda renderer: calls.append(("ui", renderer)) or "ui")
+    monkeypatch.setattr(app, "create_toolkit_window", lambda device, width, height: calls.append(("toolkit", (device, width, height))) or SimpleNamespace(callbacks=SimpleNamespace()))
+    monkeypatch.setattr(app.SplatViewer, "_bind_toolkit_callbacks", lambda self: calls.append(("bind", None)))
+    monkeypatch.setattr(app.session, "create_debug_shaders", lambda viewer: calls.append(("debug", viewer.device)))
+
+    app.SplatViewer(SimpleNamespace(), width=640, height=360)
+
+    assert calls[:2] == [("precompile", "device"), ("renderer", "device")]
+
+
 def test_save_defaults_callback_updates_cli_common_render(monkeypatch) -> None:
     written: dict[str, object] = {}
     viewer = SimpleNamespace(ui=SimpleNamespace(_values={}))
@@ -326,6 +362,7 @@ def test_default_training_params_include_training_control_fields() -> None:
         "sorting_order_dithering_stage1",
         "lr_schedule_stage1_lr",
         "refinement_growth_ratio",
+        "refinement_prune_lowest_contribution_ratio_stage1",
         "refinement_min_contribution",
         "train_subsample_factor",
     ):

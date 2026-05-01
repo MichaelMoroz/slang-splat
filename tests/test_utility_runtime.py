@@ -17,6 +17,8 @@ from src.utility import (
     dispatch_indirect,
     grow_capacity,
     load_compute_items,
+    load_compute_kernel,
+    load_compute_pipeline,
 )
 
 
@@ -60,6 +62,48 @@ def test_load_compute_items_loads_kernel_and_pipeline(device: spy.Device) -> Non
     assert set(items) == {"blur_horizontal", "prefix_scan"}
     assert items["blur_horizontal"] is not None
     assert items["prefix_scan"] is not None
+
+
+class _FakeProgramDevice:
+    def __init__(self) -> None:
+        self.program_calls: list[tuple[str, tuple[str, ...]]] = []
+        self.kernel_calls: list[object] = []
+        self.pipeline_calls: list[object] = []
+
+    def load_program(self, path: str, entry_points: list[str]) -> object:
+        program = {"path": str(path), "entries": tuple(entry_points)}
+        self.program_calls.append((str(path), tuple(entry_points)))
+        return program
+
+    def create_compute_kernel(self, program: object) -> object:
+        kernel = object()
+        self.kernel_calls.append(program)
+        return kernel
+
+    def create_compute_pipeline(self, program: object) -> object:
+        pipeline = object()
+        self.pipeline_calls.append(program)
+        return pipeline
+
+
+def test_compute_shader_loaders_cache_per_device() -> None:
+    device = _FakeProgramDevice()
+    blur_shader = SHADER_ROOT / "utility" / "blur" / "separable_gaussian_blur.slang"
+    prefix_shader = SHADER_ROOT / "utility" / "prefix_sum" / "prefix_sum.slang"
+
+    first_kernel = load_compute_kernel(device, blur_shader, "csGaussianBlurHorizontal")
+    second_kernel = load_compute_kernel(device, blur_shader, "csGaussianBlurHorizontal")
+    first_pipeline = load_compute_pipeline(device, prefix_shader, "csPrefixScanBlocks")
+    second_pipeline = load_compute_pipeline(device, prefix_shader, "csPrefixScanBlocks")
+
+    assert first_kernel is second_kernel
+    assert first_pipeline is second_pipeline
+    assert device.program_calls == [
+        (str(blur_shader), ("csGaussianBlurHorizontal",)),
+        (str(prefix_shader), ("csPrefixScanBlocks",)),
+    ]
+    assert len(device.kernel_calls) == 1
+    assert len(device.pipeline_calls) == 1
 
 
 class _FakeKernel:

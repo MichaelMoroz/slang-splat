@@ -13,10 +13,14 @@ from .. import create_default_device
 from ..repo_defaults import defaults_path, load_defaults, write_defaults
 from ..app.training_controls import TRAINING_BUILD_ARG_UI_KEYS
 from ..app.shared import RendererParams, build_init_params, build_training_params, fit_camera
-from ..utility import drain_deferred_resource_releases, normalize3
+from ..filter import SeparableGaussianBlur
+from ..metrics import Metrics
+from ..scan.prefix_sum import GPUPrefixSum
+from ..sort.radix_sort import GPURadixSort
+from ..training import AdamOptimizer, GaussianOptimizer, GaussianTrainer, resolve_sh_band
+from ..utility import SHADER_ROOT, drain_deferred_resource_releases, load_compute_items, load_compute_kernels, normalize3
 from ..renderer import Camera, GaussianRenderSettings, GaussianRenderer
 from ..scene import GaussianScene, save_gaussian_ply
-from ..training import resolve_sh_band
 from . import presenter, session
 from .constants import _WINDOW_TITLE
 from .state import (
@@ -33,6 +37,56 @@ _PITCH_LIMIT = math.radians(89.0)
 _TRAINING_PARAM_KEYS = TRAINING_BUILD_ARG_UI_KEYS
 _TRAIN_SETUP_DEFAULTS = default_control_values("Train Setup")
 _TRAINING_DEFAULTS = default_control_values("Train Optimizer", "Train Stability")
+_METRICS_KERNEL_ENTRIES = {
+    "_k_clear_uint": "csClearUIntBuffer",
+    "_k_clear_float": "csClearFloatBuffer",
+    "_k_scale_hist": "csHistogramScaleLog10",
+    "_k_anisotropy_hist": "csHistogramAnisotropyLog10",
+    "_k_param_tensor_hist": "csHistogramParamTensorLog10",
+    "_k_param_tensor_hist_linear": "csHistogramParamTensorLinear",
+    "_k_scene_param_hist_linear": "csHistogramSceneParamsLinear",
+    "_k_refinement_distribution_hist": "csHistogramRefinementDistributionsLog10",
+    "_k_init_param_ranges": "csInitParamTensorRanges",
+    "_k_param_tensor_range": "csRangeParamTensor",
+    "_k_scene_param_range": "csRangeSceneParams",
+    "_k_refinement_distribution_range": "csRangeRefinementDistributions",
+    "_k_image_mse": "csAccumulateImageMSE",
+}
+_VIEWER_DEBUG_KERNEL_ENTRIES = {
+    "debug_abs_diff_kernel": "csComposeAbsDiffDebug",
+    "debug_edge_kernel": "csComposeEdgeDebug",
+    "debug_dssim_features_kernel": "csComputeSSIMFeaturesDebug",
+    "debug_dssim_compose_kernel": "csComposeDSSIMDebug",
+    "debug_letterbox_kernel": "csComposeLetterboxDebug",
+    "debug_target_sample_kernel": "csSampleTrainingDebugTarget",
+}
+_ADAM_KERNEL_ENTRIES = {
+    "compute_grad_norms": "csComputePackedElementGradNorms",
+    "clip_grads": "csClipPackedParamGrads",
+    "adam_step": "csAdamStepPacked",
+    "regularize": "csRegularizePacked",
+}
+_GAUSSIAN_OPTIMIZER_KERNEL_ENTRIES = {"project_params": "csProjectGaussianParams"}
+_PREFIX_SUM_ITEM_SPECS = {
+    "scan_blocks": ("kernel", SHADER_ROOT / "utility" / "prefix_sum" / "prefix_sum.slang", "csPrefixScanBlocks"),
+    "add_offsets": ("kernel", SHADER_ROOT / "utility" / "prefix_sum" / "prefix_sum.slang", "csPrefixAddOffsets"),
+    "write_total_kernel": ("kernel", SHADER_ROOT / "utility" / "prefix_sum" / "prefix_sum.slang", "csPrefixWriteTotal"),
+    "scan_blocks_float": ("kernel", SHADER_ROOT / "utility" / "prefix_sum" / "prefix_sum.slang", "csPrefixScanBlocksFloat"),
+    "add_offsets_float": ("kernel", SHADER_ROOT / "utility" / "prefix_sum" / "prefix_sum.slang", "csPrefixAddOffsetsFloat"),
+    "write_total_kernel_float": ("kernel", SHADER_ROOT / "utility" / "prefix_sum" / "prefix_sum.slang", "csPrefixWriteTotalFloat"),
+    "compute_dispatch_args_from_buffer_kernel": ("kernel", SHADER_ROOT / "utility" / "prefix_sum" / "prefix_sum.slang", "csComputeDispatchArgsFromBuffer"),
+    "compute_prefix_args_from_buffer_kernel": ("kernel", SHADER_ROOT / "utility" / "prefix_sum" / "prefix_sum.slang", "csComputePrefixIndirectArgsFromBuffer"),
+    "scan_blocks_pipeline": ("pipeline", SHADER_ROOT / "utility" / "prefix_sum" / "prefix_sum.slang", "csPrefixScanBlocks"),
+    "add_offsets_pipeline": ("pipeline", SHADER_ROOT / "utility" / "prefix_sum" / "prefix_sum.slang", "csPrefixAddOffsets"),
+}
+_RADIX_SORT_ITEM_SPECS = {
+    "compute_args": ("kernel", SHADER_ROOT / "utility" / "radix_sort" / "compute_indirect_args.slang", "csComputeIndirectArgs"),
+    "compute_args_from_buffer": ("kernel", SHADER_ROOT / "utility" / "radix_sort" / "compute_indirect_args_from_buffer.slang", "csComputeIndirectArgsFromBuffer"),
+    "histogram": ("pipeline", SHADER_ROOT / "utility" / "radix_sort" / "histogram.slang", "csRadixHistogram"),
+    "prefix_level": ("pipeline", SHADER_ROOT / "utility" / "radix_sort" / "prefix_block.slang", "csRadixPrefixLevel"),
+    "prefix_add": ("pipeline", SHADER_ROOT / "utility" / "prefix_sum" / "prefix_sum.slang", "csPrefixAddOffsets"),
+    "scatter": ("pipeline", SHADER_ROOT / "utility" / "radix_sort" / "scatter.slang", "csRadixScatter"),
+}
 _DEBUG_MODE_VALUES = (
     GaussianRenderer.DEBUG_MODE_NORMAL,
     GaussianRenderer.DEBUG_MODE_PROCESSED_COUNT,
@@ -54,6 +108,41 @@ _DEBUG_MODE_VALUES = (
     GaussianRenderer.DEBUG_MODE_SH_COEFFICIENT,
     GaussianRenderer.DEBUG_MODE_BLACK_NEGATIVE,
 )
+
+
+
+def _raster_grad_kernel_entries(entry_suffix: str) -> dict[str, str]:
+    return {
+        "training_forward": f"csRasterizeTrainingForward{entry_suffix}",
+        "clear": f"csClearRasterGrads{entry_suffix}",
+        "backward": f"csRasterizeBackward{entry_suffix}",
+        "resolve_stats": f"csResolveGradientStats{entry_suffix}",
+        "backprop": f"csBackpropCachedRasterGrads{entry_suffix}",
+    }
+
+
+def _precompile_runtime_shaders(device: spy.Device) -> None:
+    load_compute_items(
+        device,
+        {
+            attr: (kind, SHADER_ROOT / "renderer" / shader_name, entry)
+            for attr, kind, shader_name, entry in GaussianRenderer._SHADERS
+        },
+    )
+    load_compute_kernels(device, SHADER_ROOT / "renderer" / "gaussian_raster_stage.slang", _raster_grad_kernel_entries("Fixed"))
+    load_compute_kernels(device, SHADER_ROOT / "renderer" / "gaussian_raster_stage.slang", _raster_grad_kernel_entries("Float"))
+    load_compute_kernels(device, SHADER_ROOT / "utility" / "metrics" / "metrics.slang", _METRICS_KERNEL_ENTRIES)
+    load_compute_kernels(
+        device,
+        SHADER_ROOT / "renderer" / "gaussian_training_stage.slang",
+        {name: entry for name, (shader_path, entry) in GaussianTrainer._KERNEL_ENTRIES.items() if Path(shader_path) == SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"},
+    )
+    load_compute_kernels(device, SHADER_ROOT / "renderer" / "gaussian_training_stage.slang", _VIEWER_DEBUG_KERNEL_ENTRIES)
+    load_compute_kernels(device, SHADER_ROOT / "utility" / "blur" / "separable_gaussian_blur.slang", SeparableGaussianBlur._KERNEL_ENTRIES)
+    load_compute_kernels(device, SHADER_ROOT / "utility" / "optimizer" / "optimizer.slang", _ADAM_KERNEL_ENTRIES)
+    load_compute_kernels(device, SHADER_ROOT / "utility" / "optimizer" / "gaussian_optimizer_stage.slang", _GAUSSIAN_OPTIMIZER_KERNEL_ENTRIES)
+    load_compute_items(device, _PREFIX_SUM_ITEM_SPECS)
+    load_compute_items(device, _RADIX_SORT_ITEM_SPECS)
 
 
 def _mark_recent_interaction(viewer: object, timestamp: float | None = None) -> None:
@@ -267,6 +356,7 @@ class SplatViewer(spy.AppWindow):
         super().__init__(app, width=width, height=height, title=title, resizable=True, enable_vsync=False)
         self.loss_debug_view_options = LOSS_DEBUG_OPTIONS
         self.s = ViewerState(max_prepass_memory_mb=max(int(max_prepass_memory_mb), 1))
+        _precompile_runtime_shaders(self.device)
         self.s.renderer = GaussianRenderSettings.from_renderer_params(width, height, _initial_renderer_params(self.s)).create_renderer(self.device)
         self.ui = build_ui(self.s.renderer)
         self.toolkit = create_toolkit_window(self.device, width, height)

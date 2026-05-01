@@ -9,6 +9,11 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 SHADER_ROOT = ROOT / "shaders"
 SLANGPY_SHADER_ROOT = Path(spy.__file__).resolve().parent / "slang"
 SHADER_INCLUDE_PATHS = (SLANGPY_SHADER_ROOT, SHADER_ROOT, SHADER_ROOT / "renderer", SHADER_ROOT / "utility")
+_COMPUTE_ITEM_CACHE: dict[tuple[int, str, str, str], spy.ComputeKernel | spy.ComputePipeline] = {}
+
+
+def _compute_item_cache_key(device: spy.Device, kind: str, shader_path: str | Path, entry_point: str) -> tuple[int, str, str, str]:
+    return (id(device), str(kind), str(Path(shader_path).resolve()), str(entry_point))
 
 
 def device_type_from_name(name: str) -> spy.DeviceType:
@@ -31,11 +36,21 @@ def create_default_device(device_type: spy.DeviceType = spy.DeviceType.vulkan, e
 
 
 def load_compute_kernel(device: spy.Device, shader_path: str | Path, entry_point: str) -> spy.ComputeKernel:
-    return device.create_compute_kernel(device.load_program(str(shader_path), [str(entry_point)]))
+    key = _compute_item_cache_key(device, "kernel", shader_path, entry_point)
+    cached = _COMPUTE_ITEM_CACHE.get(key)
+    if cached is None:
+        cached = device.create_compute_kernel(device.load_program(str(shader_path), [str(entry_point)]))
+        _COMPUTE_ITEM_CACHE[key] = cached
+    return cached
 
 
 def load_compute_pipeline(device: spy.Device, shader_path: str | Path, entry_point: str) -> spy.ComputePipeline:
-    return device.create_compute_pipeline(device.load_program(str(shader_path), [str(entry_point)]))
+    key = _compute_item_cache_key(device, "pipeline", shader_path, entry_point)
+    cached = _COMPUTE_ITEM_CACHE.get(key)
+    if cached is None:
+        cached = device.create_compute_pipeline(device.load_program(str(shader_path), [str(entry_point)]))
+        _COMPUTE_ITEM_CACHE[key] = cached
+    return cached
 
 
 def load_compute_items(
