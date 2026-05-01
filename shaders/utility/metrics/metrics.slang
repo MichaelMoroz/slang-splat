@@ -29,7 +29,7 @@ uniform StructuredBuffer<float> g_SplatParams;
 uniform uint g_SplatCount;
 uniform StructuredBuffer<float> g_Tensor;
 uniform StructuredBuffer<int> g_FixedIntBuffer;
-uniform StructuredBuffer<uint> g_SplatContribution;
+uniform StructuredBuffer<uint4> g_SplatContributionInfo;
 uniform StructuredBuffer<float> g_GradientStats;
 uniform uint g_ParamCount;
 uniform uint g_ItemCount;
@@ -116,12 +116,12 @@ bool scene_metric_histogram_value(uint paramId, uint splatId, out float value)
 
 float refinement_metric_value(uint paramId, uint splatId)
 {
-    if (!(isfinite(g_RefinementInvSampleCount) && g_RefinementInvSampleCount > 0.0)) return 0.0;
-    float contribution = float(g_SplatContribution[splatId]) * g_RefinementInvSampleCount / SPLAT_CONTRIBUTION_FIXED_SCALE;
+    float contribution = asfloat(g_SplatContributionInfo[splatId].z) / SPLAT_CONTRIBUTION_FIXED_SCALE;
     contribution = isfinite(contribution) ? max(contribution, 0.0) : 0.0;
     if (paramId == REFINEMENT_METRIC_CONTRIBUTION) return contribution;
     if (paramId != REFINEMENT_METRIC_DISTRIBUTION) return 0.0;
-    float variance = g_GradientStats[splatId * DEBUG_GRAD_STATS_STRIDE] * g_RefinementInvSampleCount;
+    float invSampleCount = isfinite(g_RefinementInvSampleCount) && g_RefinementInvSampleCount > 0.0 ? g_RefinementInvSampleCount : 0.0;
+    float variance = g_GradientStats[splatId * DEBUG_GRAD_STATS_STRIDE] * invSampleCount;
     variance = isfinite(variance) ? max(variance, 0.0) : 0.0;
     float distribution = pow(variance, max(g_RefinementGradientVarianceWeightExponent, 0.0)) * pow(contribution, max(g_RefinementContributionWeightExponent, 0.0));
     return isfinite(distribution) ? max(distribution, 0.0) : 0.0;

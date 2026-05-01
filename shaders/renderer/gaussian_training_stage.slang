@@ -109,7 +109,7 @@ uniform RWStructuredBuffer<float2> g_DstAdamMoments;
 uniform RWStructuredBuffer<float> g_AppendParams;
 uniform RWStructuredBuffer<float> g_AppendSplatAge;
 uniform RWStructuredBuffer<uint> g_CloneCounts;
-uniform RWStructuredBuffer<uint> g_SplatContribution;
+uniform RWStructuredBuffer<uint4> g_SplatContributionInfo;
 uniform RWStructuredBuffer<float> g_GradientStats;
 uniform RWStructuredBuffer<float> g_RefinementWeights;
 uniform RWStructuredBuffer<float> g_RefinementWeightPrefix;
@@ -152,6 +152,7 @@ groupshared float gsRgbLoss[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
 groupshared float gsDisplayMSE[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
 groupshared float gsSSIM[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
 groupshared float gsTargetEdge[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
+groupshared uint gsContributionMax[256];
 
 struct SSIMMoments : IDifferentiable
 {
@@ -185,9 +186,21 @@ float3 linear_to_srgb_safe(float3 value)
     return float3(linear_to_srgb_safe(value.x), linear_to_srgb_safe(value.y), linear_to_srgb_safe(value.z));
 }
 
-bool should_cull_refinement_splat(uint splatId, float alpha, uint contribution)
+float splat_average_contribution_raw(uint splatId)
 {
-    return g_RefinementPruneMask[splatId] != 0u || alpha < g_RefinementAlphaCullThreshold || contribution < g_RefinementMinContributionThreshold;
+    float contribution = asfloat(g_SplatContributionInfo[splatId].z);
+    return isfinite(contribution) ? max(contribution, 0.0) : 0.0;
+}
+
+uint ordered_float_sort_key(float value)
+{
+    uint bits = asuint(value);
+    return (bits & 0x80000000u) != 0u ? ~bits : (bits | 0x80000000u);
+}
+
+bool should_cull_refinement_splat(uint splatId, float alpha)
+{
+    return g_RefinementPruneMask[splatId] != 0u || alpha < g_RefinementAlphaCullThreshold || splat_average_contribution_raw(splatId) < float(g_RefinementMinContributionThreshold);
 }
 
 uint refinement_prune_target_count(uint candidateCount)
@@ -431,15 +444,11 @@ float refinement_gradient_variance_weight(uint splatId)
 
 float refinement_pixel_contribution_weight(uint splatId)
 {
-    float invSampleCount = g_RefinementGradientVarianceInvSampleCount;
-    if (!(isfinite(invSampleCount) && invSampleCount > 0.0)) return 0.0;
-    float contribution = float(g_SplatContribution[splatId]) * invSampleCount / SPLAT_CONTRIBUTION_FIXED_SCALE;
-    return isfinite(contribution) ? max(contribution, 0.0) : 0.0;
+    return splat_average_contribution_raw(splatId);
 }
 
 float refinement_sampling_distribution(uint splatId)
 {
-    if (!(isfinite(g_RefinementGradientVarianceInvSampleCount) && g_RefinementGradientVarianceInvSampleCount > 0.0)) return 0.0;
     float varianceWeight = pow(refinement_gradient_variance_weight(splatId), g_RefinementGradientVarianceWeightExponent);
     float contributionWeight = pow(refinement_pixel_contribution_weight(splatId), g_RefinementContributionWeightExponent);
     float distribution = varianceWeight * contributionWeight;
@@ -971,9 +980,61 @@ void csClearCloneCounts(uint3 dispatchThreadID : SV_DispatchThreadID)
     }
     if (splatId >= g_SrcSplatCount) return;
     g_CloneCounts[splatId] = 0u;
-    g_SplatContribution[splatId] = 0u;
+    g_SplatContributionInfo[splatId] = uint4(0u);
     g_GradientStats[splatId * DEBUG_GRAD_STATS_STRIDE + 0u] = 0.0;
     g_GradientStats[splatId * DEBUG_GRAD_STATS_STRIDE + 1u] = 0.0;
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void csClearCurrentContribution(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint splatId = dispatchThreadID.x;
+    if (splatId == 0u)
+    {
+        uint4 info = g_SplatContributionInfo[0];
+        info.x = 0u;
+        info.w = 0u;
+        g_SplatContributionInfo[0] = info;
+        return;
+    }
+    if (splatId >= g_SrcSplatCount) return;
+    uint4 info = g_SplatContributionInfo[splatId];
+    info.x = 0u;
+    g_SplatContributionInfo[splatId] = info;
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void csUpdateVisibleAverageContribution(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupThreadID : SV_GroupThreadID)
+{
+    uint splatId = dispatchThreadID.x;
+    uint lane = groupThreadID.x;
+    uint current = 0u;
+    if (splatId < g_SrcSplatCount)
+    {
+        uint4 info = g_SplatContributionInfo[splatId];
+        current = info.x;
+        if (current > 0u)
+        {
+            float average = asfloat(info.z);
+            average = isfinite(average) ? max(average, 0.0) : 0.0;
+            uint nextCount = info.y + 1u;
+            float nextAverage = average + (float(current) - average) / max(float(nextCount), 1.0);
+            info.y = nextCount;
+            info.z = asuint(isfinite(nextAverage) ? max(nextAverage, 0.0) : 0.0);
+            g_SplatContributionInfo[splatId] = info;
+        }
+    }
+
+    gsContributionMax[lane] = current;
+    GroupMemoryBarrierWithGroupSync();
+    for (uint stride = 128u; stride > 0u; stride >>= 1u)
+    {
+        if (lane < stride) gsContributionMax[lane] = max(gsContributionMax[lane], gsContributionMax[lane + stride]);
+        GroupMemoryBarrierWithGroupSync();
+    }
+    if (lane == 0u && gsContributionMax[0] > 0u) InterlockedMax(g_SplatContributionInfo[0].w, gsContributionMax[0]);
 }
 
 [shader("compute")]
@@ -992,7 +1053,7 @@ void csPrepareRefinementCounts(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint splatId = dispatchThreadID.x;
     if (splatId >= g_SrcSplatCount) return;
     float alpha = opacity_from_raw(load_splat_param(g_SrcSplatParams, g_SrcSplatCount, PARAM_RAW_OPACITY, splatId));
-    if (should_cull_refinement_splat(splatId, alpha, g_SplatContribution[splatId])) return;
+    if (should_cull_refinement_splat(splatId, alpha)) return;
     uint _;
     InterlockedAdd(g_AppendCounter[0], 1u, _);
     uint cloneCount = g_CloneCounts[splatId];
@@ -1027,10 +1088,11 @@ void csPrepareRefinementPruneSortInputs(uint3 dispatchThreadID : SV_DispatchThre
     if (splatId >= g_SrcSplatCount) return;
 
     float alpha = opacity_from_raw(load_splat_param(g_SrcSplatParams, g_SrcSplatCount, PARAM_RAW_OPACITY, splatId));
-    bool eligible = alpha >= g_RefinementAlphaCullThreshold && g_SplatContribution[splatId] >= g_RefinementMinContributionThreshold;
+    float contribution = splat_average_contribution_raw(splatId);
+    bool eligible = alpha >= g_RefinementAlphaCullThreshold && contribution >= float(g_RefinementMinContributionThreshold);
     g_RefinementEligibleMask[splatId] = eligible ? 1u : 0u;
     g_RefinementPruneMask[splatId] = 0u;
-    g_RefinementPruneSortKeys[splatId] = eligible ? g_SplatContribution[splatId] : 0xFFFFFFFFu;
+    g_RefinementPruneSortKeys[splatId] = eligible ? ordered_float_sort_key(contribution) : 0xFFFFFFFFu;
     g_RefinementPruneSortValues[splatId] = splatId;
 }
 
@@ -1055,7 +1117,7 @@ void csPrepareRefinementSamplingWeights(uint3 dispatchThreadID : SV_DispatchThre
 
     g_CloneCounts[splatId] = 0u;
     float alpha = opacity_from_raw(load_splat_param(g_SrcSplatParams, g_SrcSplatCount, PARAM_RAW_OPACITY, splatId));
-    bool eligible = !should_cull_refinement_splat(splatId, alpha, g_SplatContribution[splatId]);
+    bool eligible = !should_cull_refinement_splat(splatId, alpha);
     g_RefinementEligibleMask[splatId] = eligible ? 1u : 0u;
     g_RefinementWeights[splatId] = eligible ? refinement_sampling_distribution(splatId) : 0.0;
 }
@@ -1106,7 +1168,7 @@ void csRewriteRefinementSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     SplatState source = load_splat_state(g_SrcSplatParams, g_SrcSplatCount, splatId);
     float alpha = opacity_from_raw(source.rawOpacity);
-    if (should_cull_refinement_splat(splatId, alpha, g_SplatContribution[splatId])) return;
+    if (should_cull_refinement_splat(splatId, alpha)) return;
 
     uint cloneCount = min(g_CloneCounts[splatId], REFINEMENT_MAX_CLONES_PER_SPLAT);
     bool solveOpacity = g_RefinementSolveOpacity != 0u && cloneCount > 0u;

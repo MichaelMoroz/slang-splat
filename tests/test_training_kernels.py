@@ -14,7 +14,7 @@ from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 from src.scene.sh_utils import SH_C0, evaluate_sh_color
 from src.training import gaussian_trainer as gaussian_trainer_module
-from src.training import AdamHyperParams, GaussianTrainer, SPLAT_CONTRIBUTION_FIXED_SCALE, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_colorspace_mod, resolve_cosine_base_learning_rate, resolve_effective_refinement_interval, resolve_effective_train_render_factor, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_visible_angle_deg, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_clone_budget, resolve_refinement_growth_ratio, resolve_refinement_min_contribution, resolve_refinement_min_screen_radius_px, resolve_refinement_prune_lowest_contribution_ratio, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering, resolve_ssim_weight, resolve_stage_schedule_steps, resolve_training_resolution, resolve_train_subsample_factor, resolve_use_sh, should_run_refinement_step
+from src.training import AdamHyperParams, GaussianTrainer, SPLAT_CONTRIBUTION_FIXED_SCALE, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, contribution_info_from_average_raw_fixed, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_colorspace_mod, resolve_cosine_base_learning_rate, resolve_effective_refinement_interval, resolve_effective_train_render_factor, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_visible_angle_deg, resolve_position_lr_mul, resolve_position_push_away_from_camera_step, resolve_position_random_step_noise_lr, resolve_refinement_clone_budget, resolve_refinement_growth_ratio, resolve_refinement_min_contribution, resolve_refinement_min_screen_radius_px, resolve_refinement_prune_lowest_contribution_ratio, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering, resolve_ssim_weight, resolve_stage_schedule_steps, resolve_training_resolution, resolve_train_subsample_factor, resolve_use_sh, should_run_refinement_step
 
 _ADAM_BUFFER_NAMES = ("adam_moments",)
 _OPACITY_EPS = 1e-6
@@ -115,6 +115,31 @@ def _make_scene(count: int = 24, seed: int = 7) -> GaussianScene:
     colors = rng.uniform(0.0, 1.0, size=(count, 3)).astype(np.float32)
     sh_coeffs = np.zeros((count, 1, 3), dtype=np.float32)
     return GaussianScene(positions=positions, scales=scales, rotations=rotations, opacities=opacities, colors=colors, sh_coeffs=sh_coeffs)
+
+
+def _packed_contribution_info(values: np.ndarray | list[float], capacity: int | None = None, current: np.ndarray | list[int] | None = None, current_max: int | None = None) -> np.ndarray:
+    packed = contribution_info_from_average_raw_fixed(np.asarray(values, dtype=np.float32).reshape(-1))
+    if current is not None:
+        current_values = np.asarray(current, dtype=np.uint32).reshape(-1)
+        packed[: current_values.shape[0], 0] = current_values
+        packed[0, 3] = np.uint32(int(np.max(current_values)) if current_max is None and current_values.size > 0 else max(int(current_max or 0), 0))
+    if capacity is None or capacity <= packed.shape[0]: return packed
+    padded = np.zeros((int(capacity), 4), dtype=np.uint32)
+    padded[: packed.shape[0]] = packed
+    return padded
+
+
+def _write_contribution_info(trainer: GaussianTrainer, values: np.ndarray | list[float], current: np.ndarray | list[int] | None = None, current_max: int | None = None) -> None:
+    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(_packed_contribution_info(values, trainer._refinement_splat_capacity, current, current_max))
+
+
+def _read_contribution_info(trainer: GaussianTrainer, count: int | None = None) -> np.ndarray:
+    resolved = trainer.scene.count if count is None else int(count)
+    return buffer_to_numpy(trainer.refinement_buffers["splat_contribution"], np.uint32).reshape(-1, 4)[:resolved].copy()
+
+
+def _average_contribution_from_info(info: np.ndarray) -> np.ndarray:
+    return np.ascontiguousarray(info[:, 2], dtype=np.uint32).view(np.float32)
 
 
 class _CopyRecorder:
@@ -1397,7 +1422,7 @@ def test_target_alpha_mask_skips_masked_pixel_loss_and_output_grads(device, tmp_
         trainer._dispatch_raster_backward(enc, camera, background, target_texture=target_texture)
         device.submit_command_buffer(enc.finish())
         device.wait()
-        contributions = buffer_to_numpy(trainer.refinement_buffers["splat_contribution"], np.uint32)[: scene.count].copy()
+        contributions = _average_contribution_from_info(_read_contribution_info(trainer, scene.count))
         return trainer._read_loss_metrics(), _read_output_grads(renderer).copy(), contributions
 
     (loss_off, mse_off, density_off), grads_off, contributions_off = run_pass(trainer_off, renderer_off)
@@ -1636,6 +1661,34 @@ def test_refinement_prune_ratio_resolves_as_staged_schedule() -> None:
     np.testing.assert_allclose(resolve_refinement_prune_lowest_contribution_ratio(disabled, 100), 0.2, rtol=0.0, atol=1e-12)
 
 
+def test_camera_push_step_resolves_as_staged_schedule() -> None:
+    hparams = TrainingHyperParams(
+        position_push_away_from_camera_step=1e-3,
+        position_push_away_from_camera_step_stage1=5e-4,
+        position_push_away_from_camera_step_stage2=2.5e-4,
+        position_push_away_from_camera_step_stage3=1e-4,
+        position_push_away_from_camera_step_stage4=5e-5,
+        lr_schedule_enabled=True,
+        lr_schedule_steps=100,
+        lr_schedule_stage1_step=20,
+        lr_schedule_stage2_step=60,
+        lr_schedule_stage3_step=80,
+    )
+
+    np.testing.assert_allclose(resolve_position_push_away_from_camera_step(hparams, 0), 1e-3, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_position_push_away_from_camera_step(hparams, 20), 5e-4, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_position_push_away_from_camera_step(hparams, 60), 2.5e-4, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_position_push_away_from_camera_step(hparams, 80), 1e-4, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_position_push_away_from_camera_step(hparams, 100), 5e-5, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_position_push_away_from_camera_step(hparams, 10), 7.5e-4, rtol=0.0, atol=1e-12)
+    disabled = TrainingHyperParams(
+        lr_schedule_enabled=False,
+        position_push_away_from_camera_step=0.2,
+        position_push_away_from_camera_step_stage1=0.0,
+    )
+    np.testing.assert_allclose(resolve_position_push_away_from_camera_step(disabled, 100), 0.2, rtol=0.0, atol=1e-12)
+
+
 def test_refinement_clone_budget_respects_max_gaussians_cap() -> None:
     hparams = TrainingHyperParams(refinement_interval=200, refinement_growth_ratio=0.05, refinement_growth_start_step=0, max_gaussians=1024)
 
@@ -1707,14 +1760,42 @@ def test_refinement_prune_mask_selects_lowest_exact_ratio(device, tmp_path: Path
     )
     trainer.state.step = 1
 
-    contributions = np.zeros((trainer._refinement_splat_capacity,), dtype=np.uint32)
-    contributions[: scene.count] = np.array([10, 20, 30, 40, 50, 60, 70, 80, 90, 100], dtype=np.uint32)
-    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(contributions)
+    _write_contribution_info(trainer, np.array([10.5, 10.25, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0, 100.0], dtype=np.float32))
 
     gaussian_trainer_module.GaussianTrainer._update_refinement_prune_mask(trainer)
     mask = buffer_to_numpy(trainer.refinement_buffers["refinement_prune_mask"], np.uint32)[: scene.count].copy()
 
     np.testing.assert_array_equal(mask, np.array([1, 1, 0, 0, 0, 0, 0, 0, 0, 0], dtype=np.uint32))
+
+
+def test_refinement_prune_sort_uses_exact_float_average_contribution(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=4, seed=184)
+    frame = _make_frame(tmp_path, image_name="refinement_float_prune_target.png", image_id=184)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(
+            refinement_growth_ratio=0.05,
+            refinement_growth_start_step=0,
+            refinement_interval=9999,
+            refinement_min_contribution=0,
+            refinement_prune_lowest_contribution_ratio=0.25,
+            refinement_prune_lowest_contribution_ratio_stage1=0.25,
+            refinement_prune_lowest_contribution_ratio_stage2=0.25,
+            refinement_prune_lowest_contribution_ratio_stage3=0.25,
+            refinement_prune_lowest_contribution_ratio_stage4=0.25,
+        ),
+        seed=123,
+    )
+    _write_contribution_info(trainer, [10.5, 10.25, 10.75, 100.0])
+
+    gaussian_trainer_module.GaussianTrainer._update_refinement_prune_mask(trainer)
+    mask = buffer_to_numpy(trainer.refinement_buffers["refinement_prune_mask"], np.uint32)[: scene.count].copy()
+
+    np.testing.assert_array_equal(mask, np.array([0, 1, 0, 0], dtype=np.uint32))
 
 
 def test_refinement_prune_mask_clears_when_ratio_is_zero(device, tmp_path: Path) -> None:
@@ -1740,9 +1821,7 @@ def test_refinement_prune_mask_clears_when_ratio_is_zero(device, tmp_path: Path)
         seed=123,
     )
 
-    contributions = np.zeros((trainer._refinement_splat_capacity,), dtype=np.uint32)
-    contributions[: scene.count] = np.arange(1, scene.count + 1, dtype=np.uint32)
-    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(contributions)
+    _write_contribution_info(trainer, np.arange(1, scene.count + 1, dtype=np.float32))
 
     gaussian_trainer_module.GaussianTrainer._update_refinement_prune_mask(trainer)
     mask = buffer_to_numpy(trainer.refinement_buffers["refinement_prune_mask"], np.uint32)[: scene.count].copy()
@@ -1803,9 +1882,9 @@ def test_training_raster_path_preserves_clone_counts(device, tmp_path: Path) -> 
     device.wait()
 
     clone_counts = buffer_to_numpy(trainer.refinement_buffers["clone_counts"], np.uint32)[: scene.count]
-    contributions = buffer_to_numpy(trainer.refinement_buffers["splat_contribution"], np.uint32)[: scene.count]
+    contributions = _read_contribution_info(trainer, scene.count)
     np.testing.assert_array_equal(clone_counts, seed_counts)
-    np.testing.assert_array_equal(contributions, np.zeros((scene.count,), dtype=np.uint32))
+    np.testing.assert_array_equal(contributions, np.zeros((scene.count, 4), dtype=np.uint32))
 
     enc = device.create_command_encoder()
     target_texture = trainer.get_frame_target_texture(0, native_resolution=False, encoder=enc)
@@ -1825,9 +1904,47 @@ def test_training_raster_path_preserves_clone_counts(device, tmp_path: Path) -> 
     device.wait()
 
     clone_counts = buffer_to_numpy(trainer.refinement_buffers["clone_counts"], np.uint32)[: scene.count]
-    contributions = buffer_to_numpy(trainer.refinement_buffers["splat_contribution"], np.uint32)[: scene.count]
+    contributions = _read_contribution_info(trainer, scene.count)
     np.testing.assert_array_equal(clone_counts, seed_counts)
-    assert np.any(contributions > 0)
+    assert np.any(contributions[:, 0] > 0)
+
+
+def test_visible_average_contribution_update_ignores_zero_and_tracks_max(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=3, seed=183)
+    frame = _make_frame(tmp_path, image_name="visible_avg_target.png", image_id=183)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], seed=123)
+    _write_contribution_info(trainer, [10.0, 20.0, 30.0], current=[0, 200, 400], current_max=0)
+
+    enc = device.create_command_encoder()
+    trainer._dispatch("update_visible_average_contribution", enc, spy.uint3(scene.count, 1, 1), trainer._refinement_vars())
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+
+    info = _read_contribution_info(trainer, scene.count)
+    np.testing.assert_array_equal(info[:, 0], np.array([0, 200, 400], dtype=np.uint32))
+    np.testing.assert_array_equal(info[:, 1], np.array([1, 2, 2], dtype=np.uint32))
+    np.testing.assert_allclose(_average_contribution_from_info(info), np.array([10.0, 110.0, 215.0], dtype=np.float32), rtol=0.0, atol=1e-5)
+    assert int(info[0, 3]) == 400
+
+
+def test_clear_current_contribution_preserves_visible_average(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=2, seed=187)
+    frame = _make_frame(tmp_path, image_name="visible_avg_clear_target.png", image_id=187)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], seed=123)
+    _write_contribution_info(trainer, [25.0, 50.0], current=[100, 200], current_max=200)
+
+    enc = device.create_command_encoder()
+    trainer._dispatch("clear_current_contribution", enc, spy.uint3(scene.count, 1, 1), trainer._refinement_vars())
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+
+    info = _read_contribution_info(trainer, scene.count)
+    np.testing.assert_array_equal(info[:, 0], np.zeros((scene.count,), dtype=np.uint32))
+    np.testing.assert_array_equal(info[:, 1], np.ones((scene.count,), dtype=np.uint32))
+    np.testing.assert_allclose(_average_contribution_from_info(info), np.array([25.0, 50.0], dtype=np.float32), rtol=0.0, atol=0.0)
+    assert int(info[0, 3]) == 0
 
 
 def _write_refinement_distribution_inputs(trainer: GaussianTrainer, variances: np.ndarray, contributions: np.ndarray | None = None) -> None:
@@ -1837,11 +1954,7 @@ def _write_refinement_distribution_inputs(trainer: GaussianTrainer, variances: n
     stats[:, 0] = np.maximum(variances, 0.0) * 2.0
     trainer._observed_contribution_pixel_count = 2
     trainer.refinement_buffers["gradient_stats"].copy_from_numpy(stats)
-    contribution_fixed = np.maximum(
-        np.rint(np.maximum(contributions, 0.0) * trainer.observed_contribution_pixel_count * SPLAT_CONTRIBUTION_FIXED_SCALE),
-        0.0,
-    ).astype(np.uint32)
-    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(contribution_fixed)
+    _write_contribution_info(trainer, np.maximum(contributions, 0.0) * SPLAT_CONTRIBUTION_FIXED_SCALE)
 
 
 def test_refinement_distribution_histograms_use_contribution_and_variance(device, tmp_path: Path) -> None:
@@ -1886,7 +1999,7 @@ def test_refinement_sampling_prefers_higher_gradient_variance(device, tmp_path: 
         training_hparams=TrainingHyperParams(refinement_growth_ratio=0.5, refinement_growth_start_step=0, refinement_interval=9999, refinement_min_contribution=50),
         seed=123,
     )
-    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.full((scene.count,), 500, dtype=np.uint32))
+    _write_contribution_info(trainer, np.full((scene.count,), 500, dtype=np.float32))
     _write_refinement_distribution_inputs(trainer, np.array([1.0, 0.05 * 0.05], dtype=np.float32))
 
     selections = np.zeros((scene.count,), dtype=np.int32)
@@ -1940,7 +2053,7 @@ def test_refinement_sampling_exponent_controls_variance_spikiness(device, tmp_pa
         ),
         seed=123,
     )
-    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.full((scene.count,), 500, dtype=np.uint32))
+    _write_contribution_info(trainer, np.full((scene.count,), 500, dtype=np.float32))
     _write_refinement_distribution_inputs(trainer, np.array([1.0, 2.0], dtype=np.float32))
 
     selections = np.zeros((scene.count,), dtype=np.int32)
@@ -1974,7 +2087,7 @@ def test_refinement_sampling_exponent_controls_contribution_spikiness(device, tm
         ),
         seed=123,
     )
-    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.full((scene.count,), 500, dtype=np.uint32))
+    _write_contribution_info(trainer, np.full((scene.count,), 500, dtype=np.float32))
     _write_refinement_distribution_inputs(trainer, np.ones((scene.count,), dtype=np.float32), np.array([1.0, 2.0], dtype=np.float32))
 
     selections = np.zeros((scene.count,), dtype=np.int32)
@@ -2001,7 +2114,7 @@ def test_refinement_sampling_is_seed_reproducible(device, tmp_path: Path) -> Non
         training_hparams=TrainingHyperParams(refinement_growth_ratio=1.0, refinement_growth_start_step=0, refinement_interval=9999, refinement_min_contribution=50),
         seed=123,
     )
-    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.full((scene.count,), 500, dtype=np.uint32))
+    _write_contribution_info(trainer, np.full((scene.count,), 500, dtype=np.float32))
     _write_refinement_distribution_inputs(trainer, np.array([1.0, 0.25, 0.0625], dtype=np.float32))
 
     trainer._seed = 77
@@ -2024,7 +2137,7 @@ def test_refinement_sampling_respects_budget_and_clone_cap(device, tmp_path: Pat
         training_hparams=TrainingHyperParams(refinement_growth_ratio=5.0, refinement_growth_start_step=0, refinement_interval=9999, max_gaussians=64, refinement_min_contribution=50),
         seed=123,
     )
-    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.full((scene.count,), 500, dtype=np.uint32))
+    _write_contribution_info(trainer, np.full((scene.count,), 500, dtype=np.float32))
     _write_refinement_distribution_inputs(trainer, np.ones((scene.count,), dtype=np.float32))
 
     clone_counts, survivor_mask = trainer._sample_refinement_clone_counts()
@@ -2047,7 +2160,7 @@ def test_refinement_sampling_zero_variance_yields_zero_clone_counts(device, tmp_
         training_hparams=TrainingHyperParams(refinement_growth_ratio=1.0, refinement_growth_start_step=0, refinement_interval=9999, refinement_min_contribution=50),
         seed=123,
     )
-    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.full((scene.count,), 500, dtype=np.uint32))
+    _write_contribution_info(trainer, np.full((scene.count,), 500, dtype=np.float32))
     _write_refinement_distribution_inputs(trainer, np.zeros((scene.count,), dtype=np.float32))
 
     clone_counts, survivor_mask = trainer._sample_refinement_clone_counts()
@@ -2069,7 +2182,7 @@ def test_refinement_sampling_single_nonzero_weight_always_selects_that_splat(dev
         training_hparams=TrainingHyperParams(refinement_growth_ratio=1.0, refinement_growth_start_step=0, refinement_interval=9999, refinement_min_contribution=50),
         seed=123,
     )
-    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.full((scene.count,), 500, dtype=np.uint32))
+    _write_contribution_info(trainer, np.full((scene.count,), 500, dtype=np.float32))
 
     selected_splat = 5
     variances = np.zeros((scene.count,), dtype=np.float32)
@@ -2098,7 +2211,7 @@ def test_refinement_sampling_routes_all_mass_to_single_positive_weight(device, t
         training_hparams=TrainingHyperParams(refinement_growth_ratio=1.5, refinement_growth_start_step=0, refinement_interval=9999, refinement_min_contribution=50),
         seed=123,
     )
-    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.full((scene.count,), 500, dtype=np.uint32))
+    _write_contribution_info(trainer, np.full((scene.count,), 500, dtype=np.float32))
     _write_refinement_distribution_inputs(trainer, np.array([1.0, 0.0], dtype=np.float32))
 
     clone_counts, survivor_mask = trainer._sample_refinement_clone_counts()
@@ -2122,7 +2235,7 @@ def test_refinement_growth_ratio_realizes_full_budget_when_mass_concentrates(dev
         seed=123,
     )
     trainer._observed_contribution_pixel_count = renderer.width * renderer.height
-    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.full((scene.count,), 500, dtype=np.uint32))
+    _write_contribution_info(trainer, np.full((scene.count,), 500, dtype=np.float32))
 
     selected_splat = 3
     variances = np.zeros((scene.count,), dtype=np.float32)
@@ -2190,7 +2303,7 @@ def test_refinement_rewrite_culls_and_splits_families(device, tmp_path: Path) ->
     trainer._observed_contribution_pixel_count = observed_pixels
     clone_counts = np.array([2, 5], dtype=np.uint32)
     trainer.refinement_buffers["clone_counts"].copy_from_numpy(clone_counts)
-    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200, 0], dtype=np.uint32))
+    _write_contribution_info(trainer, [200.0, 0.0])
     trainer._run_refinement(clone_counts_override=clone_counts)
 
     groups = _read_scene_groups(renderer, trainer.scene.count)
@@ -2214,7 +2327,7 @@ def test_refinement_rewrite_culls_and_splits_families(device, tmp_path: Path) ->
     np.testing.assert_allclose(np.sum(offsets, axis=0), np.zeros((3,), dtype=np.float32), rtol=0.0, atol=6e-3)
     assert float(np.max(np.linalg.norm(offsets, axis=1))) > 1e-3
     clone_counts_after = buffer_to_numpy(trainer.refinement_buffers["clone_counts"], np.uint32)[: trainer.scene.count]
-    contribution_after = buffer_to_numpy(trainer.refinement_buffers["splat_contribution"], np.uint32)[: trainer.scene.count]
+    contribution_after = _read_contribution_info(trainer, trainer.scene.count)
     assert np.all(clone_counts_after == 0)
     assert np.all(contribution_after == 0)
 
@@ -2242,7 +2355,7 @@ def test_refinement_clone_scale_mul_scales_split_family_sigma(device, tmp_path: 
     trainer._observed_contribution_pixel_count = observed_pixels
     clone_counts = np.array([1], dtype=np.uint32)
     trainer.refinement_buffers["clone_counts"].copy_from_numpy(clone_counts)
-    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
+    _write_contribution_info(trainer, [200.0])
     trainer._run_refinement(clone_counts_override=clone_counts)
 
     assert trainer.scene.count == 2
@@ -2269,7 +2382,7 @@ def test_refinement_rewrite_halves_unsplit_splat_age(device, tmp_path: Path) -> 
 
     trainer._observed_contribution_pixel_count = observed_pixels
     clone_counts = np.array([0], dtype=np.uint32)
-    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
+    _write_contribution_info(trainer, [200.0])
     trainer._run_refinement(clone_counts_override=clone_counts)
 
     splat_age = buffer_to_numpy(trainer.refinement_buffers["splat_age"], np.float32)[: trainer.scene.count]
@@ -2294,7 +2407,7 @@ def test_refinement_rewrite_resets_split_family_splat_age(device, tmp_path: Path
     trainer._observed_contribution_pixel_count = observed_pixels
     clone_counts = np.array([1], dtype=np.uint32)
     trainer.refinement_buffers["splat_age"].copy_from_numpy(np.array([0.25], dtype=np.float32))
-    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
+    _write_contribution_info(trainer, [200.0])
     trainer._run_refinement(clone_counts_override=clone_counts)
 
     assert trainer.scene.count == 2
@@ -2326,7 +2439,7 @@ def test_refinement_compact_split_beta_scales_split_family_sigma(device, tmp_pat
     trainer._observed_contribution_pixel_count = observed_pixels
     clone_counts = np.array([1], dtype=np.uint32)
     trainer.refinement_buffers["clone_counts"].copy_from_numpy(clone_counts)
-    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
+    _write_contribution_info(trainer, [200.0])
     trainer._run_refinement(clone_counts_override=clone_counts)
 
     groups = _read_scene_groups(renderer, trainer.scene.count)
@@ -2377,7 +2490,7 @@ def test_refinement_rewrite_culls_low_contribution_splats(device, tmp_path: Path
     trainer._observed_contribution_pixel_count = observed_pixels
     clone_counts = np.array([0, 0], dtype=np.uint32)
     trainer.refinement_buffers["clone_counts"].copy_from_numpy(clone_counts)
-    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200, 49], dtype=np.uint32))
+    _write_contribution_info(trainer, [200.0, 49.0])
     trainer._run_refinement(clone_counts_override=clone_counts)
 
     assert trainer.scene.count == 1
@@ -2407,7 +2520,7 @@ def test_refinement_opacity_mul_rewrites_unsplit_survivor_alpha(device, tmp_path
     trainer._observed_contribution_pixel_count = observed_pixels
     clone_counts = np.array([0], dtype=np.uint32)
     trainer.refinement_buffers["clone_counts"].copy_from_numpy(clone_counts)
-    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
+    _write_contribution_info(trainer, [200.0])
     trainer._run_refinement(clone_counts_override=clone_counts)
 
     groups = _read_scene_groups(renderer, trainer.scene.count)
@@ -2440,7 +2553,7 @@ def test_refinement_solve_opacity_shares_family_alpha(device, tmp_path: Path) ->
     trainer._observed_contribution_pixel_count = observed_pixels
     clone_counts = np.array([1], dtype=np.uint32)
     trainer.refinement_buffers["clone_counts"].copy_from_numpy(clone_counts)
-    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
+    _write_contribution_info(trainer, [200.0])
     trainer._run_refinement(clone_counts_override=clone_counts)
 
     groups = _read_scene_groups(renderer, trainer.scene.count)
@@ -2475,7 +2588,7 @@ def test_refinement_rewrite_migrates_adam_moments(device, tmp_path: Path) -> Non
     trainer._observed_contribution_pixel_count = observed_pixels
     clone_counts = np.array([2, 5], dtype=np.uint32)
     trainer.refinement_buffers["clone_counts"].copy_from_numpy(clone_counts)
-    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200, 0], dtype=np.uint32))
+    _write_contribution_info(trainer, [200.0, 0.0])
     trainer._run_refinement(clone_counts_override=clone_counts)
 
     expected = np.repeat(src_moments[:, 0:1, :], 3, axis=1)
@@ -2501,7 +2614,7 @@ def test_refinement_respects_max_gaussians_cap(device, tmp_path: Path) -> None:
     trainer._observed_contribution_pixel_count = observed_pixels
     clone_counts = np.array([4, 4], dtype=np.uint32)
     trainer.refinement_buffers["clone_counts"].copy_from_numpy(clone_counts)
-    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200, 200], dtype=np.uint32))
+    _write_contribution_info(trainer, [200.0, 200.0])
     trainer._run_refinement(clone_counts_override=clone_counts)
 
     assert trainer.scene.count == 3
@@ -2553,8 +2666,8 @@ def test_refinement_rewrite_sampling_depends_on_frame_hash(device, tmp_path: Pat
     clone_counts = np.array([1], dtype=np.uint32)
     trainer_a.refinement_buffers["clone_counts"].copy_from_numpy(clone_counts)
     trainer_b.refinement_buffers["clone_counts"].copy_from_numpy(clone_counts)
-    trainer_a.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
-    trainer_b.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
+    _write_contribution_info(trainer_a, [200.0])
+    _write_contribution_info(trainer_b, [200.0])
     trainer_a._run_refinement(clone_counts_override=clone_counts)
     trainer_b._run_refinement(clone_counts_override=clone_counts)
 
@@ -2586,7 +2699,7 @@ def test_refinement_rewrite_samples_family_offsets_on_largest_area_plane(device,
     trainer._observed_contribution_pixel_count = observed_pixels
     clone_counts = np.array([3], dtype=np.uint32)
     trainer.refinement_buffers["clone_counts"].copy_from_numpy(clone_counts)
-    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
+    _write_contribution_info(trainer, [200.0])
     trainer._run_refinement(clone_counts_override=clone_counts)
 
     groups = _read_scene_groups(renderer, trainer.scene.count)
@@ -2637,7 +2750,7 @@ def test_refinement_rewrite_sample_radius_scales_child_offsets(device, tmp_path:
         trainer._observed_contribution_pixel_count = observed_pixels
         clone_counts = np.array([1], dtype=np.uint32)
         trainer.refinement_buffers["clone_counts"].copy_from_numpy(clone_counts)
-        trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
+        _write_contribution_info(trainer, [200.0])
         trainer._run_refinement(clone_counts_override=clone_counts)
 
         positions = _read_scene_groups(renderer, trainer.scene.count)["positions"][:, :3]
@@ -2707,7 +2820,7 @@ def test_refinement_min_screen_size_raises_small_splats(device, tmp_path: Path) 
     )
     expected_sigma = expected_support / (renderer.radius_scale * _GAUSSIAN_SUPPORT_SIGMA_RADIUS)
 
-    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
+    _write_contribution_info(trainer, [200.0])
     trainer._run_refinement()
 
     scales = _actual_scale(_read_scene_groups(renderer, trainer.scene.count)["scales"][0, :3])
@@ -2741,7 +2854,7 @@ def test_refinement_min_screen_size_scales_with_distance(device, tmp_path: Path)
         renderer.radius_scale * _GAUSSIAN_SUPPORT_SIGMA_RADIUS
     )
 
-    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200, 200], dtype=np.uint32))
+    _write_contribution_info(trainer, [200.0, 200.0])
     trainer._run_refinement()
 
     scales = _actual_scale(_read_scene_groups(renderer, trainer.scene.count)["scales"][:, :3])
@@ -2776,7 +2889,7 @@ def test_refinement_min_screen_size_uses_scheduled_value(device, tmp_path: Path)
         renderer.radius_scale * _GAUSSIAN_SUPPORT_SIGMA_RADIUS
     )
 
-    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(np.array([200], dtype=np.uint32))
+    _write_contribution_info(trainer, [200.0])
     trainer._run_refinement()
 
     scales = _actual_scale(_read_scene_groups(renderer, trainer.scene.count)["scales"][0, :3])
@@ -3425,6 +3538,70 @@ def test_log_scale_regularizer_pulls_scales_toward_reference(device, tmp_path: P
     scales_after = _read_scene_groups(renderer, scene.count)["scales"]
     assert scales_after[0, 0] > scene.scales[0, 0]
     assert scales_after[1, 0] < scene.scales[1, 0]
+
+
+def test_camera_push_regularizer_moves_positions_away_from_current_frame_camera(device, tmp_path: Path):
+    scene = _make_scene(count=1, seed=30)
+    scene.positions[0] = np.array([0.0, 0.0, 2.0], dtype=np.float32)
+    scene.scales[:] = _log_sigma(np.array([[0.2, 0.2, 0.2]], dtype=np.float32))
+    frame = _make_frame(tmp_path)
+    renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(scale_l2_weight=0.0, scale_abs_reg_weight=0.0, opacity_reg_weight=0.0, sh1_reg_weight=0.0, position_push_away_from_camera_step=0.5, lr_schedule_enabled=False),
+        seed=42,
+    )
+    camera = frame.make_camera(near=0.1, far=20.0)
+    renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
+    device.wait()
+
+    zeros = np.zeros((scene.count, 4), dtype=np.float32)
+    _write_grad_groups(renderer, scene.count, grad_positions=zeros, grad_scales=zeros, grad_rotations=zeros, grad_color_alpha=zeros)
+    _write_contribution_info(trainer, [0.0], current=[100], current_max=100)
+
+    before = _read_scene_groups(renderer, scene.count)["positions"].copy()
+    enc = device.create_command_encoder()
+    trainer._dispatch_optimizer_step(enc, 1, camera)
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+    after = _read_scene_groups(renderer, scene.count)["positions"]
+
+    np.testing.assert_allclose(after[0, :2], before[0, :2], rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(after[0, 2] - before[0, 2], np.float32(0.1), rtol=0.0, atol=1e-6)
+
+
+def test_camera_push_regularizer_ignores_zero_current_contribution(device, tmp_path: Path):
+    scene = _make_scene(count=1, seed=300)
+    scene.positions[0] = np.array([0.0, 0.0, 2.0], dtype=np.float32)
+    scene.scales[:] = _log_sigma(np.array([[0.2, 0.2, 0.2]], dtype=np.float32))
+    frame = _make_frame(tmp_path)
+    renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(scale_l2_weight=0.0, scale_abs_reg_weight=0.0, opacity_reg_weight=0.0, sh1_reg_weight=0.0, position_push_away_from_camera_step=0.5, lr_schedule_enabled=False),
+        seed=42,
+    )
+    camera = frame.make_camera(near=0.1, far=20.0)
+    renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
+    device.wait()
+    zeros = np.zeros((scene.count, 4), dtype=np.float32)
+    _write_grad_groups(renderer, scene.count, grad_positions=zeros, grad_scales=zeros, grad_rotations=zeros, grad_color_alpha=zeros)
+    _write_contribution_info(trainer, [100.0], current=[0], current_max=100)
+
+    before = _read_scene_groups(renderer, scene.count)["positions"].copy()
+    enc = device.create_command_encoder()
+    trainer._dispatch_optimizer_step(enc, 1, camera)
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+    after = _read_scene_groups(renderer, scene.count)["positions"]
+
+    np.testing.assert_allclose(after, before, rtol=0.0, atol=1e-6)
 
 
 def test_opacity_regularizer_pushes_true_opacity_down(device, tmp_path: Path):

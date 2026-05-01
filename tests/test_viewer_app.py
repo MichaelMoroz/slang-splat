@@ -356,6 +356,8 @@ def test_default_training_params_include_training_control_fields() -> None:
     for key in (
         "background_mode",
         "density_regularizer",
+        "position_push_away_from_camera_step",
+        "position_push_away_from_camera_step_stage1",
         "max_visible_angle_deg",
         "ssim_weight",
         "ssim_c2",
@@ -482,7 +484,7 @@ def test_renderer_params_maps_adam_moment_modes_to_grad_norm_log_range() -> None
         "debug_splat_age_max": SimpleNamespace(value=1.0),
         "debug_density_min": SimpleNamespace(value=0.0),
         "debug_density_max": SimpleNamespace(value=20.0),
-        "debug_contribution_min": SimpleNamespace(value=0.001),
+        "debug_contribution_min": SimpleNamespace(value=0.0),
         "debug_contribution_max": SimpleNamespace(value=1.0),
         "debug_refinement_distribution_min": SimpleNamespace(value=0.0),
         "debug_refinement_distribution_max": SimpleNamespace(value=1.0),

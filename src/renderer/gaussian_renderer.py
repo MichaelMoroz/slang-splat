@@ -165,7 +165,7 @@ class GaussianRenderer:
     _DEFAULT_RASTER_GRAD_FIXED_OPACITY_RANGE = np.float32(8.0)
     _DEFAULT_DEBUG_SPLAT_AGE_RANGE = (0.0, 1.0)
     _DEFAULT_DEBUG_DENSITY_RANGE = (0.0, 20.0)
-    _DEFAULT_DEBUG_CONTRIBUTION_RANGE = (0.001, 1.0)
+    _DEFAULT_DEBUG_CONTRIBUTION_RANGE = (0.0, 1.0)
     _DEFAULT_DEBUG_REFINEMENT_DISTRIBUTION_RANGE = (0.0, 1.0)
     _DEFAULT_DEBUG_ADAM_MOMENTUM_RANGE = (0.0, 0.1)
     _DEFAULT_DEBUG_DEPTH_MEAN_RANGE = (0.0, 10.0)
@@ -387,7 +387,7 @@ class GaussianRenderer:
         return {"g_SplatAges": self._debug_splat_age_buffer if self._debug_splat_age_buffer is not None else self._work_buffers["debug_splat_age"]}
 
     def _debug_splat_contribution_var(self) -> dict[str, object]:
-        return {"g_SplatContribution": self._debug_splat_contribution_buffer if self._debug_splat_contribution_buffer is not None else self._work_buffers["training_splat_contribution"]}
+        return {"g_SplatContributionInfo": self._debug_splat_contribution_buffer if self._debug_splat_contribution_buffer is not None else self._work_buffers["training_splat_contribution"]}
 
     def _debug_adam_moments_var(self) -> dict[str, object]:
         if self._debug_adam_moments_buffer is None: raise RuntimeError("Adam moment debug mode requires an Adam moments buffer.")
@@ -834,7 +834,7 @@ class GaussianRenderer:
             "training_regularizer_grad": self._render_pixel_capacity() * 2 * self._U32_BYTES,
             "training_processed_end": self._render_pixel_capacity() * self._U32_BYTES,
             "training_batch_end": max(self._render_capacity_tile_count, 1) * self._U32_BYTES,
-            "training_splat_contribution": max(self._work_splat_capacity, 1) * self._U32_BYTES,
+            "training_splat_contribution": max(self._work_splat_capacity, 1) * self._F32X4_BYTES,
             "raster_cache": max(self._work_splat_capacity, 1) * self._RASTER_CACHE_PARAM_COUNT * self._U32_BYTES,
             "param_grads": max(self._work_splat_capacity, 1) * self.TRAINABLE_PARAM_COUNT * self._U32_BYTES,
             "cached_raster_grads_fixed": max(self._work_splat_capacity, 1) * self._RASTER_CACHE_PARAM_COUNT * self._U32_BYTES,
@@ -898,7 +898,7 @@ class GaussianRenderer:
         self._work_buffers["debug_splat_age"].copy_from_numpy(np.ones((max(self._work_splat_capacity, 1),), dtype=np.float32))
         self._work_buffers["debug_grad_norm"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1),), dtype=np.float32))
         self._work_buffers["debug_grad_stats"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1), self._GRAD_STATS_STRIDE), dtype=np.float32))
-        self._work_buffers["training_splat_contribution"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1),), dtype=np.uint32))
+        self._work_buffers["training_splat_contribution"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1), 4), dtype=np.uint32))
         self._work_buffers["training_rgb_loss"].copy_from_numpy(np.zeros((self._render_pixel_capacity(),), dtype=np.float32))
         self._work_buffers["training_rgb_loss_total"].copy_from_numpy(np.zeros((1,), dtype=np.float32))
         self._work_buffers["training_target_edge"].copy_from_numpy(np.zeros((self._render_pixel_capacity(),), dtype=np.float32))
@@ -1311,7 +1311,7 @@ class GaussianRenderer:
             "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"],
             "g_TrainingBatchEnd": self._work_buffers["training_batch_end"],
             "g_CloneCounts": self._work_buffers["fallback_clone_counts"] if clone_counts_buffer is None else clone_counts_buffer,
-            "g_SplatContribution": self._work_buffers["training_splat_contribution"] if splat_contribution_buffer is None else splat_contribution_buffer,
+            "g_SplatContributionInfo": self._work_buffers["training_splat_contribution"] if splat_contribution_buffer is None else splat_contribution_buffer,
             **self._raster_grad_decode_scale_var(1.0),
             **self._raster_grad_fixed_range_vars(),
             **self._prepass_uniforms(self._scene_count),
@@ -1347,7 +1347,7 @@ class GaussianRenderer:
         resolved_sample_vars = self._disabled_training_sample_vars() if training_sample_vars is None else training_sample_vars
         if regularizer_grad is None:
             self._clear_float_buffer(encoder, resolved_regularizer_grad, max(self.width * self.height, 1) * 2)
-        vars = {**self._scene_vars(), **self._raster_cache_vars(), "g_SortedValues": self._sorted_values(), "g_TileRanges": self._work_buffers["tile_ranges"], "g_OutputGrad": output_grad, "g_Target": self.output_texture if target_texture is None else target_texture, "g_UseTargetAlphaMask": int(bool(use_target_alpha_mask)), "g_TrainingForwardState": self._work_buffers["training_forward_state"], "g_TrainingDepthStats": self._training_depth_stats_texture, "g_TrainingRegularizerGrad": resolved_regularizer_grad, "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"], "g_TrainingBatchEnd": self._work_buffers["training_batch_end"], "g_CloneCounts": self._work_buffers["fallback_clone_counts"] if clone_counts_buffer is None else clone_counts_buffer, "g_SplatContribution": resolved_splat_contribution, "g_GradientStats": resolved_gradient_stats, **self._raster_grad_vars(), **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_range_vars(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background, training_background_mode, training_background_seed), **self._anisotropy_uniforms(), **self._camera_uniforms(camera), **self._camera_uniforms(resolved_native_camera, "g_TrainingNativeCamera"), **resolved_sample_vars}
+        vars = {**self._scene_vars(), **self._raster_cache_vars(), "g_SortedValues": self._sorted_values(), "g_TileRanges": self._work_buffers["tile_ranges"], "g_OutputGrad": output_grad, "g_Target": self.output_texture if target_texture is None else target_texture, "g_UseTargetAlphaMask": int(bool(use_target_alpha_mask)), "g_TrainingForwardState": self._work_buffers["training_forward_state"], "g_TrainingDepthStats": self._training_depth_stats_texture, "g_TrainingRegularizerGrad": resolved_regularizer_grad, "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"], "g_TrainingBatchEnd": self._work_buffers["training_batch_end"], "g_CloneCounts": self._work_buffers["fallback_clone_counts"] if clone_counts_buffer is None else clone_counts_buffer, "g_SplatContributionInfo": resolved_splat_contribution, "g_GradientStats": resolved_gradient_stats, **self._raster_grad_vars(), **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_range_vars(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background, training_background_mode, training_background_seed), **self._anisotropy_uniforms(), **self._camera_uniforms(camera), **self._camera_uniforms(resolved_native_camera, "g_TrainingNativeCamera"), **resolved_sample_vars}
         self._dispatch(self._raster_grad_shader_set().backward, encoder, self._raster_thread_count(), vars, "Rasterize Backward", 27)
         self._dispatch(
             self._raster_grad_shader_set().resolve_stats,
@@ -1884,7 +1884,6 @@ class GaussianRenderer:
 
     def set_debug_contribution_observed_pixel_count(self, observed_pixel_count: float) -> None:
         pixels = max(float(observed_pixel_count), 1.0)
-        self._debug_contribution_scale = 1.0 / (self._SPLAT_CONTRIBUTION_FIXED_SCALE * pixels)
         self._debug_grad_variance_inv_sample_count = 1.0 / pixels
 
     def upload_debug_splat_age(self, values: np.ndarray) -> None:
@@ -1894,9 +1893,13 @@ class GaussianRenderer:
         self._debug_splat_age_buffer = None
 
     def upload_debug_splat_contribution(self, values: np.ndarray) -> None:
-        contribution = np.ascontiguousarray(values, dtype=np.uint32).reshape(-1)
+        contribution = np.ascontiguousarray(values, dtype=np.float32).reshape(-1)
         self._ensure_work_buffers(max(int(contribution.shape[0]), self._scene_count, 1))
-        self._work_buffers["training_splat_contribution"].copy_from_numpy(np.pad(contribution, (0, max(self._work_splat_capacity - contribution.shape[0], 0))))
+        packed = np.zeros((max(self._work_splat_capacity, 1), 4), dtype=np.uint32)
+        average_raw_fixed = np.maximum(contribution, 0.0) * self._SPLAT_CONTRIBUTION_FIXED_SCALE
+        packed[: contribution.shape[0], 1] = (average_raw_fixed > 0.0).astype(np.uint32)
+        packed[: contribution.shape[0], 2] = np.ascontiguousarray(average_raw_fixed, dtype=np.float32).view(np.uint32)
+        self._work_buffers["training_splat_contribution"].copy_from_numpy(packed)
         self._debug_splat_contribution_buffer = None
 
     def upload_debug_grad_norm(self, values: np.ndarray) -> None:

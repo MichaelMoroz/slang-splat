@@ -15,7 +15,6 @@ from src.app.shared import RendererParams, renderer_kwargs
 from src.utility import SHADER_ROOT
 from src.renderer import Camera, GaussianRenderer
 from src.scene import GaussianScene, SH_C0, SUPPORTED_SH_COEFF_COUNT
-from src.training import contribution_fixed_count_from_value
 
 _GAUSSIAN_SUPPORT_SIGMA_RADIUS = 3.0
 _TYPES_SHADER_PATH = Path(SHADER_ROOT / "renderer" / "gaussian_types.slang")
@@ -829,12 +828,7 @@ def test_debug_contribution_amount_render_smoke(device):
     )
     observed_pixels = renderer.width * renderer.height
     renderer.set_debug_contribution_observed_pixel_count(observed_pixels)
-    renderer.upload_debug_splat_contribution(
-        np.array(
-            [contribution_fixed_count_from_value(value, observed_pixels) for value in np.geomspace(0.001, 1.0, scene.count, dtype=np.float32)],
-            dtype=np.uint32,
-        )
-    )
+    renderer.upload_debug_splat_contribution(np.geomspace(0.001, 1.0, scene.count, dtype=np.float32))
     out = renderer.render(scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32))
     assert out.image.shape == (64, 64, 4)
     assert np.all(np.isfinite(out.image))
@@ -860,12 +854,7 @@ def test_debug_refinement_distribution_render_smoke(device):
     stats[:, 1] = samples * samples + (samples * 3.0) * (samples * 3.0)
     renderer.upload_debug_grad_stats(stats)
     renderer.set_debug_contribution_observed_pixel_count(observed_pixels)
-    renderer.upload_debug_splat_contribution(
-        np.array(
-            [contribution_fixed_count_from_value(value, observed_pixels) for value in np.geomspace(0.001, 1.0, scene.count, dtype=np.float32)],
-            dtype=np.uint32,
-        )
-    )
+    renderer.upload_debug_splat_contribution(np.geomspace(0.001, 1.0, scene.count, dtype=np.float32))
     renderer.debug_refinement_grad_variance_weight_exponent = 0.1
     renderer.debug_refinement_contribution_weight_exponent = 0.1
     out = renderer.render(scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32))

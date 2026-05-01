@@ -298,7 +298,7 @@ The footer `Update Defaults` action writes the current viewer, renderer, and tra
 
 The renderer debug modes share the same forward replay path as normal rendering. Important viewer-facing modes include:
 
-- `Contribution Amount`: normalized leave-one-out RGB contribution accumulated during training backward; it estimates how much the final pixel color would change if each splat were removed while ignoring final alpha differences.
+- `Contribution Amount`: visible-average leave-one-out RGB contribution accumulated during training backward; it estimates how much the final pixel color would change if each splat were removed while ignoring final alpha differences and averages only nonzero per-view observations.
 - `Grad Variance`: per-splat raster contribution-gradient variance computed from `(sum, sumSq)` statistics accumulated since the last refinement reset.
 - `Depth Local Mismatch`: contribution-weighted local deviation from the online front-to-back depth estimate.
 - `Splat Density`, `Spatial Density`, and `Screen Density`.

@@ -12,6 +12,7 @@ from .gaussian_trainer import (
     TRAIN_SUBSAMPLE_MODE_AUTO,
     TRAIN_SUBSAMPLE_TARGET_MAX_SIDE,
     contribution_fixed_count_from_value,
+    contribution_info_from_average_raw_fixed,
     contribution_value_from_fixed_count,
     resolve_auto_train_subsample_factor,
     SPLAT_CONTRIBUTION_FIXED_SCALE,
@@ -27,7 +28,7 @@ from .gaussian_trainer import (
 )
 from .optimizer import GaussianOptimizer
 from .profiles import TRAINING_PROFILE_CHOICES, TrainingProfile, resolve_training_profile
-from .schedule import resolve_base_learning_rate, resolve_colorspace_mod, resolve_refinement_clone_budget, resolve_cosine_base_learning_rate, resolve_effective_refinement_interval, resolve_learning_rate_scale, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_visible_angle_deg, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution, resolve_refinement_min_screen_radius_px, resolve_refinement_prune_lowest_contribution_ratio, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering, resolve_ssim_weight, resolve_stage_schedule_steps, resolve_use_sh, should_run_refinement_step
+from .schedule import resolve_base_learning_rate, resolve_colorspace_mod, resolve_refinement_clone_budget, resolve_cosine_base_learning_rate, resolve_effective_refinement_interval, resolve_learning_rate_scale, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_visible_angle_deg, resolve_position_lr_mul, resolve_position_push_away_from_camera_step, resolve_position_random_step_noise_lr, resolve_refinement_growth_ratio, resolve_refinement_min_contribution, resolve_refinement_min_screen_radius_px, resolve_refinement_prune_lowest_contribution_ratio, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering, resolve_ssim_weight, resolve_stage_schedule_steps, resolve_use_sh, should_run_refinement_step
 
 __all__ = [
     "AdamOptimizer",
@@ -37,6 +38,7 @@ __all__ = [
     "SPLAT_CONTRIBUTION_FIXED_SCALE",
     "contribution_value_from_fixed_count",
     "contribution_fixed_count_from_value",
+    "contribution_info_from_average_raw_fixed",
     "DEFAULT_REFINEMENT_MIN_CONTRIBUTION",
     "DEFAULT_DEBUG_CONTRIBUTION_RANGE",
     "TRAIN_BACKGROUND_MODE_CUSTOM",
@@ -71,6 +73,7 @@ __all__ = [
     "resolve_max_allowed_density",
     "resolve_max_visible_angle_deg",
     "resolve_position_lr_mul",
+    "resolve_position_push_away_from_camera_step",
     "resolve_sh_lr_mul",
     "resolve_ssim_weight",
     "resolve_position_random_step_noise_lr",

@@ -14,7 +14,7 @@ uniform Texture2D<float4> g_Target;
 uniform uint g_UseTargetAlphaMask;
 uniform RWStructuredBuffer<uint> g_CloneCounts;
 uniform StructuredBuffer<float> g_SplatAges;
-uniform RWStructuredBuffer<uint> g_SplatContribution;
+uniform RWStructuredBuffer<uint4> g_SplatContributionInfo;
 
 struct RasterState : IDifferentiable
 {
@@ -84,7 +84,7 @@ void accumulate_bidirectional_splat_contribution(uint splatId, RasterState prefi
     float contributionValue = prefixState.trans * alpha * length(color - behindColor);
     if (!isfinite(contributionValue) || !(contributionValue > 0.0)) return;
     uint contribution = splat_contribution_fixed_quantize(contributionValue);
-    if (contribution > 0u) InterlockedAdd(g_SplatContribution[splatId], contribution);
+    if (contribution > 0u) InterlockedAdd(g_SplatContributionInfo[splatId].x, contribution);
 }
 
 void store_param_grad<let N : int>(uint splatCount, uint firstParamId, uint splatId, vector<float, N> grad)
@@ -440,9 +440,15 @@ float3 raster_splat_age_color(float splatAge)
     return jet_colormap(debug_normalize_range(max(splatAge, 0.0), g_Raster.debugSplatAgeRange));
 }
 
-float3 raster_contribution_amount_color(uint contribution)
+float splat_average_contribution(uint splatId)
 {
-    float contributionValue = float(contribution) * max(g_Raster.debugContributionScale, 0.0);
+    float contribution = asfloat(g_SplatContributionInfo[splatId].z);
+    return isfinite(contribution) ? max(contribution, 0.0) : 0.0;
+}
+
+float3 raster_contribution_amount_color(uint splatId)
+{
+    float contributionValue = splat_average_contribution(splatId) * max(g_Raster.debugContributionScale, 0.0);
     return jet_colormap(debug_normalize_log_range(contributionValue, max(g_Raster.debugContributionRange.x, DEBUG_CONTRIBUTION_AMOUNT_FLOOR), max(g_Raster.debugContributionRange.y, DEBUG_CONTRIBUTION_AMOUNT_FLOOR)));
 }
 
@@ -488,7 +494,7 @@ float raster_grad_variance(uint splatId)
 float raster_refinement_distribution(uint splatId)
 {
     float varianceWeight = pow(raster_grad_variance(splatId), max(g_Raster.debugRefinementGradientVarianceWeightExponent, 0.0));
-    float contribution = float(g_SplatContribution[splatId]) * max(g_Raster.debugContributionScale, 0.0);
+    float contribution = splat_average_contribution(splatId) * max(g_Raster.debugContributionScale, 0.0);
     float contributionWeight = pow(max(contribution, 0.0), max(g_Raster.debugRefinementContributionWeightExponent, 0.0));
     float distribution = varianceWeight * contributionWeight;
     return isfinite(distribution) ? max(distribution, 0.0) : 0.0;
@@ -689,7 +695,7 @@ float3 raster_debug_color(RasterPixelInfo info, RasterReplayState replayState, u
     if (debugMode == DEBUG_MODE_SH_VIEW_DEPENDENT) return raster_debug_signed_color(gaussian_sh_view_dependent_component(load_gaussian3d(splatId), g_Camera.camPos));
     if (debugMode == DEBUG_MODE_SH_COEFFICIENT) return raster_debug_signed_color(gaussian_sh_coeff(load_gaussian3d(splatId), min(g_Raster.debugSHCoeffIndex, DEBUG_SH_COEFF_COUNT - 1u)));
     if (debugMode == DEBUG_MODE_SPLAT_AGE) return raster_splat_age_color(g_SplatAges[splatId]);
-    if (debugMode == DEBUG_MODE_CONTRIBUTION_AMOUNT) return raster_contribution_amount_color(g_SplatContribution[splatId]);
+    if (debugMode == DEBUG_MODE_CONTRIBUTION_AMOUNT) return raster_contribution_amount_color(splatId);
     if (debugMode == DEBUG_MODE_ADAM_MOMENTUM) return jet_colormap(raster_normalize_threshold_band(raster_adam_momentum_length(splatId), raster_threshold_from_range(g_Raster.debugAdamMomentumRange)));
     if (debugMode == DEBUG_MODE_ADAM_SECOND_MOMENT) return jet_colormap(raster_normalize_threshold_band(raster_adam_second_moment_length(splatId), raster_threshold_from_range(g_Raster.debugAdamMomentumRange)));
     if (debugMode == DEBUG_MODE_BLACK_NEGATIVE)

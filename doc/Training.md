@@ -220,8 +220,8 @@ Important refinement controls:
 
 Current behavior:
 
-- contribution thresholds are normalized to observed training pixels,
-- contribution values use a bidirectional leave-one-out RGB estimate: prefix transmittance times alpha times the distance between the splat color and the color composited behind it,
+- contribution thresholds use the raw fixed-unit visible-average contribution,
+- contribution values use a bidirectional leave-one-out RGB estimate: prefix transmittance times alpha times the distance between the splat color and the color composited behind it, averaged only across views where the current-frame contribution was nonzero,
 - completed refinement passes decay the contribution threshold,
 - each refinement pass can additionally prune the exact lowest contribution fraction of otherwise surviving splats by building a GPU candidate mask, radix-sorting contribution/id pairs, and marking the lowest-ranked survivors before the topology rewrite,
 - clone-budget growth stays off until `refinement_growth_start_step`, then ramps on by `refinement_growth_ratio`,

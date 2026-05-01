@@ -26,7 +26,7 @@ def _dummy_renderer() -> SimpleNamespace:
         debug_show_grad_norm=False,
         debug_grad_norm_threshold=2e-4,
         debug_splat_age_range=(0.0, 1.0),
-        debug_contribution_range=(0.001, 1.0),
+        debug_contribution_range=(0.0, 1.0),
         debug_adam_momentum_range=(1e-5, 0.1),
     )
 
@@ -254,6 +254,27 @@ def test_train_schedule_exposes_refinement_prune_controls() -> None:
         assert control.kwargs["step_fast"] == 1e-2
         assert control.build_args == (key,)
         assert SCHEDULE_STAGE_GROUPS[stage]["prune_lowest"] == key
+
+
+def test_train_schedule_exposes_camera_push_controls() -> None:
+    stage_controls = {stage: {control.key: control for control in controls} for stage, controls in SCHEDULE_STAGE_CONTROL_DEFS.items()}
+    expected = {
+        "Stage 0": ("position_push_away_from_camera_step", float(TRAINING_BUILD_ARG_DEFAULTS["position_push_away_from_camera_step"])),
+        "Stage 1": ("position_push_away_from_camera_step_stage1", float(TRAINING_BUILD_ARG_DEFAULTS["position_push_away_from_camera_step_stage1"])),
+        "Stage 2": ("position_push_away_from_camera_step_stage2", float(TRAINING_BUILD_ARG_DEFAULTS["position_push_away_from_camera_step_stage2"])),
+        "Stage 3": ("position_push_away_from_camera_step_stage3", float(TRAINING_BUILD_ARG_DEFAULTS["position_push_away_from_camera_step_stage3"])),
+        "Stage 4": ("position_push_away_from_camera_step_stage4", float(TRAINING_BUILD_ARG_DEFAULTS["position_push_away_from_camera_step_stage4"])),
+    }
+
+    for stage, (key, value) in expected.items():
+        control = stage_controls[stage][key]
+        assert control.kind == "input_float"
+        assert control.label == "Cam Push Step"
+        assert control.kwargs["value"] == value
+        assert control.kwargs["step"] == 1e-5
+        assert control.kwargs["step_fast"] == 1e-4
+        assert control.build_args == (key,)
+        assert SCHEDULE_STAGE_GROUPS[stage]["cam_push"] == key
 
 
 def test_colmap_init_mode_labels_append_depth_only_for_valid_depth_root(tmp_path) -> None:
@@ -1029,6 +1050,7 @@ def test_histogram_group_type_uses_value_scale_metadata() -> None:
 
 def test_optimizer_regularization_tab_includes_density_controls() -> None:
     assert "sh1_reg" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
+    assert "position_push_away_from_camera_step" not in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "density_regularizer" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "ssim_c2" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "depth_ratio_grad_min" not in ui._OPTIMIZER_TAB_KEYS["Regularization"]
@@ -1106,12 +1128,12 @@ def test_contribution_amount_debug_mode_exposes_no_extra_range_controls() -> Non
 
 
 def test_contribution_amount_colorbar_ticks_use_log_scale() -> None:
-    viewer_ui = SimpleNamespace(_values={"debug_contribution_min": 0.001, "debug_contribution_max": 1.0})
+    viewer_ui = SimpleNamespace(_values={"debug_contribution_min": 0.0, "debug_contribution_max": 1.0})
 
     lo = float(ui.ToolkitWindow._debug_colorbar_tick_label(SimpleNamespace(), "contribution_amount", 0.0, viewer_ui))
     hi = float(ui.ToolkitWindow._debug_colorbar_tick_label(SimpleNamespace(), "contribution_amount", 1.0, viewer_ui))
 
-    assert np.isclose(lo, 0.001, rtol=0.0, atol=1e-9)
+    assert np.isclose(lo, 1e-6, rtol=0.0, atol=1e-12)
     assert np.isclose(hi, 1.0, rtol=0.0, atol=1e-6)
 
 

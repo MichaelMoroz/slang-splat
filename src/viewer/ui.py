@@ -1365,7 +1365,7 @@ class ToolkitWindow:
         if mode in ("splat_density", "splat_spatial_density", "splat_screen_density"):
             return f"{_debug_range_tick_value(t, float(ui._values.get('debug_density_min', 0.0)), float(ui._values.get('debug_density_max', 20.0))):.3g}"
         if mode == "contribution_amount":
-            return f"{_contribution_amount_tick_value(t, float(ui._values.get('debug_contribution_min', 0.001)), float(ui._values.get('debug_contribution_max', 1.0))):.1e}"
+            return f"{_contribution_amount_tick_value(t, float(ui._values.get('debug_contribution_min', 0.0)), float(ui._values.get('debug_contribution_max', 1.0))):.1e}"
         if mode in ("adam_momentum", "adam_second_moment"):
             threshold = float(ui._values.get("debug_grad_norm_threshold", _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT))
             return f"{_threshold_band_tick_value(t, threshold):.1e}"

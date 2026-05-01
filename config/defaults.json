@@ -142,7 +142,7 @@
       20.0
     ],
     "debug_contribution_range": [
-      0.001,
+      0.0,
       1.0
     ],
     "debug_refinement_distribution_range": [

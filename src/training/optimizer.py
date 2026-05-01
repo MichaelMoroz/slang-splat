@@ -8,7 +8,7 @@ import math
 
 from ..utility import RO_BUFFER_USAGE, SHADER_ROOT, alloc_buffer, dispatch, load_compute_kernels, thread_count_1d
 from ..renderer import Camera, GaussianRenderer
-from .schedule import resolve_learning_rate_scale, resolve_max_visible_angle_deg, resolve_position_lr_mul, resolve_sh_lr_mul
+from .schedule import resolve_learning_rate_scale, resolve_max_visible_angle_deg, resolve_position_lr_mul, resolve_position_push_away_from_camera_step, resolve_sh_lr_mul
 
 
 class GaussianOptimizer:
@@ -145,15 +145,20 @@ class GaussianOptimizer:
             },
         }
 
-    def regularization_vars(self, training_hparams: Any, scale_reg_reference: float) -> dict[str, object]:
+    def regularization_vars(self, training_hparams: Any, scale_reg_reference: float, frame_camera: Camera | None = None, step_index: int = 0, splat_contribution_buffer: spy.Buffer | None = None) -> dict[str, object]:
+        camera_position = np.zeros((3,), dtype=np.float32) if frame_camera is None else np.asarray(frame_camera.position, dtype=np.float32).reshape(3)
         return {
             "g_OptimizerRegularization": {
                 "scaleL2Weight": float(max(training_hparams.scale_l2_weight, 0.0)),
                 "scaleAbsWeight": float(max(training_hparams.scale_abs_reg_weight, 0.0)),
                 "sh1Weight": float(max(training_hparams.sh1_reg_weight, 0.0)),
                 "opacityWeight": float(max(training_hparams.opacity_reg_weight, 0.0)),
+                "positionPushAwayFromCameraStep": float(resolve_position_push_away_from_camera_step(training_hparams, int(step_index))),
                 "scaleReference": float(max(scale_reg_reference, 1e-8)),
-            }
+            },
+            "g_OptimizerRegularizationCameraPosition": spy.float3(*camera_position.tolist()),
+            "g_OptimizerRegularizationHasCamera": np.uint32(0 if frame_camera is None else 1),
+            "g_OptimizerSplatContributionInfo": self.renderer.work_buffers["training_splat_contribution"] if splat_contribution_buffer is None else splat_contribution_buffer,
         }
 
     @property

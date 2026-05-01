@@ -282,7 +282,7 @@ class Metrics:
             kernel=self._k_refinement_distribution_hist,
             thread_count=thread_count_2d(splat_count, param_count),
             vars={
-                "g_SplatContribution": splat_contribution,
+                "g_SplatContributionInfo": splat_contribution,
                 "g_GradientStats": gradient_stats,
                 "g_ItemCount": int(splat_count),
                 "g_ParamCount": int(param_count),
@@ -349,7 +349,7 @@ class Metrics:
             kernel=self._k_refinement_distribution_range,
             thread_count=thread_count_2d(splat_count, param_count),
             vars={
-                "g_SplatContribution": splat_contribution,
+                "g_SplatContributionInfo": splat_contribution,
                 "g_GradientStats": gradient_stats,
                 "g_ItemCount": int(splat_count),
                 "g_ParamCount": int(param_count),

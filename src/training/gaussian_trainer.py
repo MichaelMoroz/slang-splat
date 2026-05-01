@@ -29,7 +29,7 @@ from .defaults import (
     TRAINING_BUILD_ARG_DEFAULTS,
 )
 from .optimizer import GaussianOptimizer
-from .schedule import resolve_base_learning_rate, resolve_colorspace_mod, resolve_effective_refinement_interval, resolve_learning_rate_scale, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_clone_budget, resolve_refinement_min_contribution, resolve_refinement_min_screen_radius_px, resolve_refinement_prune_lowest_contribution_ratio, resolve_max_allowed_density, resolve_sh_band, resolve_sorting_order_dithering, resolve_ssim_weight, should_run_refinement_step
+from .schedule import resolve_base_learning_rate, resolve_colorspace_mod, resolve_effective_refinement_interval, resolve_learning_rate_scale, resolve_position_lr_mul, resolve_position_push_away_from_camera_step, resolve_position_random_step_noise_lr, resolve_refinement_clone_budget, resolve_refinement_min_contribution, resolve_refinement_min_screen_radius_px, resolve_refinement_prune_lowest_contribution_ratio, resolve_max_allowed_density, resolve_sh_band, resolve_sorting_order_dithering, resolve_ssim_weight, should_run_refinement_step
 
 TRAIN_DOWNSCALE_MODE_AUTO = 0
 TRAIN_DOWNSCALE_MAX_FACTOR = 16
@@ -109,6 +109,15 @@ def contribution_fixed_count_from_value(contribution_value: float, observed_pixe
     if value <= 0.0 or pixels <= 0.0:
         return 0
     return max(int(round(value * pixels * SPLAT_CONTRIBUTION_FIXED_SCALE)), 0)
+
+
+def contribution_info_from_average_raw_fixed(values: float | np.ndarray) -> np.ndarray:
+    average = np.asarray(values, dtype=np.float32).reshape(-1)
+    packed = np.zeros((average.shape[0], 4), dtype=np.uint32)
+    sanitized = np.maximum(np.nan_to_num(average, nan=0.0, posinf=0.0, neginf=0.0), 0.0).astype(np.float32, copy=False)
+    packed[:, 1] = (sanitized > 0.0).astype(np.uint32)
+    packed[:, 2] = np.ascontiguousarray(sanitized, dtype=np.float32).view(np.uint32)
+    return packed
 
 
 def resolve_training_resolution(width: int, height: int, downscale_factor: int) -> tuple[int, int]:
@@ -232,7 +241,7 @@ class StabilityHyperParams:
 class TrainingHyperParams:
     background: tuple[float, float, float] = (1.0, 1.0, 1.0); camera_min_dist: float = TRAINING_BUILD_ARG_DEFAULTS["camera_min_dist"]
     background_mode: int = TRAIN_BACKGROUND_MODE_RANDOM; use_target_alpha_mask: bool = TRAINING_BUILD_ARG_DEFAULTS["use_target_alpha_mask"]; use_sh: bool = TRAINING_BUILD_ARG_DEFAULTS["use_sh"]; sh_band: int = 0
-    scale_l2_weight: float = TRAINING_BUILD_ARG_DEFAULTS["scale_l2_weight"]; scale_abs_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["scale_abs_reg_weight"]; sh1_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["sh1_reg_weight"]; opacity_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"]; density_regularizer: float = TRAINING_BUILD_ARG_DEFAULTS["density_regularizer"]; max_visible_angle_deg: float = TRAINING_BUILD_ARG_DEFAULTS["max_visible_angle_deg"]; sorting_order_dithering: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering"]; sorting_order_dithering_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage1"]; sorting_order_dithering_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage2"]; sorting_order_dithering_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage3"]; sorting_order_dithering_stage4: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage4"]; colorspace_mod: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod"]; colorspace_mod_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage1"]; colorspace_mod_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage2"]; colorspace_mod_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage3"]; colorspace_mod_stage4: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage4"]; ssim_weight: float = DEFAULT_SSIM_WEIGHT; ssim_c2: float = DEFAULT_SSIM_C2; max_allowed_density_start: float = TRAINING_BUILD_ARG_DEFAULTS["max_allowed_density_start"]; max_allowed_density: float = TRAINING_BUILD_ARG_DEFAULTS["max_allowed_density"]
+    scale_l2_weight: float = TRAINING_BUILD_ARG_DEFAULTS["scale_l2_weight"]; scale_abs_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["scale_abs_reg_weight"]; sh1_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["sh1_reg_weight"]; opacity_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"]; position_push_away_from_camera_step: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0)); position_push_away_from_camera_step_stage1: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage1", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0))); position_push_away_from_camera_step_stage2: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage2", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0))); position_push_away_from_camera_step_stage3: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage3", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0))); position_push_away_from_camera_step_stage4: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage4", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage3", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0)))); density_regularizer: float = TRAINING_BUILD_ARG_DEFAULTS["density_regularizer"]; max_visible_angle_deg: float = TRAINING_BUILD_ARG_DEFAULTS["max_visible_angle_deg"]; sorting_order_dithering: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering"]; sorting_order_dithering_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage1"]; sorting_order_dithering_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage2"]; sorting_order_dithering_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage3"]; sorting_order_dithering_stage4: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage4"]; colorspace_mod: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod"]; colorspace_mod_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage1"]; colorspace_mod_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage2"]; colorspace_mod_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage3"]; colorspace_mod_stage4: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage4"]; ssim_weight: float = DEFAULT_SSIM_WEIGHT; ssim_c2: float = DEFAULT_SSIM_C2; max_allowed_density_start: float = TRAINING_BUILD_ARG_DEFAULTS["max_allowed_density_start"]; max_allowed_density: float = TRAINING_BUILD_ARG_DEFAULTS["max_allowed_density"]
     refinement_loss_weight: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_loss_weight"]; refinement_target_edge_weight: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_target_edge_weight"]; refinement_min_screen_radius_px: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_min_screen_radius_px"]
     lr_pos_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_mul"]; lr_pos_stage1_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_stage1_mul"]; lr_pos_stage2_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_stage2_mul"]; lr_pos_stage3_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_stage3_mul"]; lr_pos_stage4_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_stage4_mul"]
     lr_sh_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_sh_mul"]; lr_sh_stage1_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_sh_stage1_mul"]; lr_sh_stage2_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_sh_stage2_mul"]; lr_sh_stage3_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_sh_stage3_mul"]; lr_sh_stage4_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_sh_stage4_mul"]
@@ -306,6 +315,15 @@ class TrainingHyperParams:
         self.refinement_loss_weight = max(float(self.refinement_loss_weight), 0.0)
         self.refinement_target_edge_weight = max(float(self.refinement_target_edge_weight), 0.0)
         self.sh1_reg_weight = max(float(self.sh1_reg_weight), 0.0)
+        _clamp_float_min(
+            self,
+            0.0,
+            "position_push_away_from_camera_step",
+            "position_push_away_from_camera_step_stage1",
+            "position_push_away_from_camera_step_stage2",
+            "position_push_away_from_camera_step_stage3",
+            "position_push_away_from_camera_step_stage4",
+        )
         self.density_regularizer = max(float(self.density_regularizer), 0.0)
         _clamp_float_range(self, 1e-8, 89.999, "max_visible_angle_deg", "max_visible_angle_deg_stage1", "max_visible_angle_deg_stage2", "max_visible_angle_deg_stage3", "max_visible_angle_deg_stage4")
         _clamp_float_range(self, 0.0, 1.0, "sorting_order_dithering", "sorting_order_dithering_stage1", "sorting_order_dithering_stage2", "sorting_order_dithering_stage3", "sorting_order_dithering_stage4", "ssim_weight", "ssim_weight_stage1", "ssim_weight_stage2", "ssim_weight_stage3", "ssim_weight_stage4")
@@ -370,6 +388,8 @@ class GaussianTrainer:
         "cache_step_info": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csCacheTrainingStepInfo"),
         "position_random_step": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csApplyPositionRandomSteps"),
         "clear_clone_counts": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csClearCloneCounts"),
+        "clear_current_contribution": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csClearCurrentContribution"),
+        "update_visible_average_contribution": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csUpdateVisibleAverageContribution"),
         "clear_refinement_counters": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csClearRefinementCounters"),
         "clamp_refinement_min_screen_size": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csClampRefinementMinScreenSize"),
         "prepare_refinement_prune_sort_inputs": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csPrepareRefinementPruneSortInputs"),
@@ -608,6 +628,12 @@ class GaussianTrainer:
         resolved_step = self.state.step if step is None else int(step)
         self.renderer.clear_raster_grads_current_scene(encoder)
         self._ensure_gradient_stats_buffer()
+        self._dispatch(
+            "clear_current_contribution",
+            encoder,
+            thread_count_1d(self._scene_count),
+            self._refinement_vars(),
+        )
         self.renderer.rasterize_backward_current_scene(
             encoder=encoder,
             camera=frame_camera,
@@ -623,6 +649,12 @@ class GaussianTrainer:
             training_background_seed=self._training_background_seed(resolved_step),
             training_native_camera=self._native_frame_camera(frame_index) if native_camera is None else native_camera,
             training_sample_vars=self._training_sample_vars(frame_index, resolved_step),
+        )
+        self._dispatch(
+            "update_visible_average_contribution",
+            encoder,
+            thread_count_1d(self._scene_count),
+            self._refinement_vars(),
         )
 
     def _read_loss_metrics(self) -> tuple[float, float, float]:
@@ -752,7 +784,7 @@ class GaussianTrainer:
             "g_AppendParams": self._refinement_buffers["append_params"],
             "g_AppendSplatAge": self._refinement_buffers["append_splat_age"],
             "g_CloneCounts": self._refinement_buffers["clone_counts"],
-            "g_SplatContribution": self._refinement_buffers["splat_contribution"],
+            "g_SplatContributionInfo": self._refinement_buffers["splat_contribution"],
             "g_GradientStats": self._refinement_buffers["gradient_stats"],
             "g_RefinementWeights": self._refinement_buffers["refinement_weights"],
             "g_RefinementWeightPrefix": self._refinement_buffers["refinement_weight_prefix"],
@@ -1038,7 +1070,7 @@ class GaussianTrainer:
         if grow_splats or "clone_counts" not in self._refinement_buffers:
             self._refinement_splat_capacity = grow_capacity(required_splats, self._refinement_splat_capacity)
             self._set_refinement_buffer("clone_counts", alloc_buffer(self.device, name="trainer.refinement.clone_counts", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
-            self._set_refinement_buffer("splat_contribution", alloc_buffer(self.device, name="trainer.refinement.splat_contribution", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
+            self._set_refinement_buffer("splat_contribution", alloc_buffer(self.device, name="trainer.refinement.splat_contribution", size=self._refinement_splat_capacity * self._FLOAT4_BYTES, usage=RW_BUFFER_USAGE))
             if "gradient_stats" in self._refinement_buffers:
                 self._set_refinement_buffer("gradient_stats", alloc_buffer(self.device, name="trainer.refinement.gradient_stats", size=self._refinement_splat_capacity * self._GRAD_STATS_STRIDE * self._U32_BYTES, usage=RW_BUFFER_USAGE))
                 reset_gradient_stats = True
@@ -1050,7 +1082,7 @@ class GaussianTrainer:
             self._set_refinement_buffer("refinement_weights", alloc_buffer(self.device, name="trainer.refinement.weights", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
             self._set_refinement_buffer("refinement_weight_prefix", alloc_buffer(self.device, name="trainer.refinement.weight_prefix", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
         elif "splat_contribution" not in self._refinement_buffers:
-            self._refinement_buffers["splat_contribution"] = alloc_buffer(self.device, name="trainer.refinement.splat_contribution", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE)
+            self._refinement_buffers["splat_contribution"] = alloc_buffer(self.device, name="trainer.refinement.splat_contribution", size=self._refinement_splat_capacity * self._FLOAT4_BYTES, usage=RW_BUFFER_USAGE)
         if "refinement_eligible_mask" not in self._refinement_buffers:
             self._refinement_buffers["refinement_eligible_mask"] = alloc_buffer(self.device, name="trainer.refinement.eligible_mask", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE)
         if "refinement_prune_mask" not in self._refinement_buffers:
@@ -1196,7 +1228,7 @@ class GaussianTrainer:
         if preserve_refinement_history:
             return
         if "gradient_stats" not in self._refinement_buffers:
-            self._refinement_buffers["splat_contribution"].copy_from_numpy(np.zeros((max(self._refinement_splat_capacity, 1),), dtype=np.uint32))
+            self._refinement_buffers["splat_contribution"].copy_from_numpy(np.zeros((max(self._refinement_splat_capacity, 1), 4), dtype=np.uint32))
             self._observed_contribution_pixel_count = 0
             return
         enc = self.device.create_command_encoder()
@@ -1634,7 +1666,13 @@ class GaussianTrainer:
                 param_settings=self.optimizer.param_settings,
                 param_settings_count=self.optimizer.param_settings_count,
                 step_index=int(step_index),
-                extra_vars=self.optimizer.regularization_vars(self.training, self._scale_reg_reference),
+                extra_vars=self.optimizer.regularization_vars(
+                    self.training,
+                    self._scale_reg_reference,
+                    frame_camera=frame_camera,
+                    step_index=int(step_index),
+                    splat_contribution_buffer=self._refinement_buffers["splat_contribution"],
+                ),
                 debug_element_grad_norm_buffer=self.renderer.work_buffers["debug_grad_norm"] if self.compute_debug_grad_norm else None,
             )
             self.optimizer.dispatch_projection(
