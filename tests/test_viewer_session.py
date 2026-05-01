@@ -230,6 +230,9 @@ def test_ensure_training_runtime_resolution_rebinds_renderer_without_reset(monke
         def copy_scene_state_to(self, encoder, dst) -> None:
             calls.append(("copy", dst))
 
+        def clear_scene_resources(self) -> None:
+            calls.append(("clear", None))
+
     class _MainRenderer:
         def __init__(self) -> None:
             self.bound = None
@@ -295,7 +298,58 @@ def test_ensure_training_runtime_resolution_rebinds_renderer_without_reset(monke
         ("rebind", new_renderer),
         ("invalidate", ()),
         ("reset_loss_debug", None),
+        ("clear", None),
     ]
+
+
+def test_ensure_renderer_clears_replaced_renderer_resources(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+    previous_renderer = SimpleNamespace(width=64, height=64, clear_scene_resources=lambda: calls.append(("clear", None)))
+    new_renderer = SimpleNamespace(width=128, height=72)
+    viewer = SimpleNamespace(
+        device=SimpleNamespace(),
+        renderer_params=lambda allow_debug_overlays: _renderer_params(),
+        s=SimpleNamespace(renderer=previous_renderer, scene=None),
+    )
+
+    class _Settings:
+        @classmethod
+        def from_renderer_params(cls, width: int, height: int, params: object):
+            del params
+            return cls(width, height)
+
+        def __init__(self, width: int, height: int) -> None:
+            self.width = width
+            self.height = height
+
+        def create_renderer(self, device) -> object:
+            del device
+            return new_renderer
+
+    monkeypatch.setattr(session, "GaussianRenderSettings", _Settings)
+    monkeypatch.setattr(session, "_apply_debug_buffers", lambda viewer_obj, renderer: calls.append(("debug", renderer)))
+    monkeypatch.setattr(session, "_invalidate", lambda viewer_obj, *targets: calls.append(("invalidate", targets)))
+
+    result = session.ensure_renderer(viewer, "renderer", 128, 72, allow_debug_overlays=True)
+
+    assert result is new_renderer
+    assert viewer.s.renderer is new_renderer
+    assert calls == [
+        ("debug", new_renderer),
+        ("clear", None),
+        ("invalidate", ("main", "debug")),
+    ]
+
+
+def test_clear_releases_renderer_scene_resources() -> None:
+    calls: list[str] = []
+    renderer = SimpleNamespace(clear_scene_resources=lambda: calls.append("clear"))
+    viewer = SimpleNamespace(s=SimpleNamespace(training_renderer=renderer, debug_renderer=None))
+
+    session._clear(viewer, "training_renderer")
+
+    assert viewer.s.training_renderer is None
+    assert calls == ["clear"]
 
 
 def test_ensure_renderer_keeps_existing_main_renderer_when_replacement_fails(monkeypatch) -> None:
@@ -358,6 +412,42 @@ def test_maybe_reallocate_renderers_recycles_live_renderers_at_interval(monkeypa
         ("training", (80, 40, False)),
     ]
     assert viewer.s.last_periodic_renderer_reallocation_time == pytest.approx(current_time)
+
+
+def test_rebind_renderer_preserves_refinement_history() -> None:
+    calls: list[tuple[str, object]] = []
+    renderer = SimpleNamespace(width=80, height=40, _render_capacity_width=80, _render_capacity_height=40)
+    trainer = SimpleNamespace(
+        renderer=None,
+        optimizer=SimpleNamespace(renderer=None),
+        training=SimpleNamespace(train_downscale_factor=1),
+        state=SimpleNamespace(step=7),
+        _scene_count=32,
+        _refinement_splat_capacity=32,
+        _max_training_resolution=lambda _step: (80, 40),
+        effective_train_downscale_factor=lambda _step: 1,
+        _ensure_training_buffers=lambda splat_count, batch_step_count=1: calls.append(("training_buffers", (splat_count, batch_step_count))),
+        _ensure_refinement_buffers=lambda splat_count: calls.append(("refinement_buffers", splat_count)),
+        _ensure_train_target_texture=lambda: calls.append(("target", None)),
+        _invalidate_downscaled_target=lambda: calls.append(("invalidate", None)),
+        apply_renderer_training_hparams=lambda step=None, renderer=None: calls.append(("params", (step, renderer))),
+        _clear_clone_counts=lambda preserve_refinement_history=False: calls.append(("clear", preserve_refinement_history)),
+    )
+
+    session.GaussianTrainer.rebind_renderer(trainer, renderer)
+
+    assert trainer.renderer is renderer
+    assert trainer.optimizer.renderer is renderer
+    assert trainer._dynamic_frame_resolution is True
+    assert trainer.training.train_downscale_factor == 1
+    assert calls == [
+        ("params", (None, renderer)),
+        ("training_buffers", (32, 1)),
+        ("refinement_buffers", 32),
+        ("clear", True),
+        ("target", None),
+        ("invalidate", None),
+    ]
 
 
 def test_choose_colmap_root_auto_selects_first_matching_image_folder(tmp_path: Path) -> None:

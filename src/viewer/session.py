@@ -279,6 +279,9 @@ def _clear(viewer: object, *attrs: str) -> None:
     for attr in attrs:
         value = getattr(viewer.s, attr)
         if value is not None:
+            clear_scene_resources = getattr(value, "clear_scene_resources", None)
+            if callable(clear_scene_resources):
+                clear_scene_resources()
             setattr(viewer.s, attr, None)
             del value
 
@@ -1069,6 +1072,9 @@ def ensure_renderer(viewer: object, attr: str, width: int, height: int, allow_de
     if attr != "training_renderer":
         _apply_debug_buffers(viewer, renderer)
     if previous_renderer is not None:
+        clear_scene_resources = getattr(previous_renderer, "clear_scene_resources", None)
+        if callable(clear_scene_resources):
+            clear_scene_resources()
         del previous_renderer
     _invalidate(viewer, "debug" if attr == "debug_renderer" else "main", "debug")
     return renderer
@@ -1089,6 +1095,9 @@ def _replace_training_renderer(viewer: object, width: int, height: int, *, reset
     _invalidate(viewer)
     if reset_loss_debug:
         _reset_loss_debug(viewer)
+    clear_scene_resources = getattr(previous_renderer, "clear_scene_resources", None)
+    if callable(clear_scene_resources):
+        clear_scene_resources()
     return renderer
 
 
