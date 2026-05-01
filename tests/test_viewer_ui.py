@@ -1127,14 +1127,16 @@ def test_contribution_amount_debug_mode_exposes_no_extra_range_controls() -> Non
     assert ui._renderer_debug_control_keys("depth_local_mismatch") == ("debug_mode", "debug_depth_local_mismatch_min", "debug_depth_local_mismatch_max", "debug_depth_local_mismatch_smooth_radius", "debug_depth_local_mismatch_reject_radius")
 
 
-def test_contribution_amount_colorbar_ticks_use_log_scale() -> None:
+def test_contribution_amount_colorbar_ticks_use_linear_values() -> None:
     viewer_ui = SimpleNamespace(_values={"debug_contribution_min": 0.0, "debug_contribution_max": 1.0})
 
     lo = float(ui.ToolkitWindow._debug_colorbar_tick_label(SimpleNamespace(), "contribution_amount", 0.0, viewer_ui))
+    mid = float(ui.ToolkitWindow._debug_colorbar_tick_label(SimpleNamespace(), "contribution_amount", 0.5, viewer_ui))
     hi = float(ui.ToolkitWindow._debug_colorbar_tick_label(SimpleNamespace(), "contribution_amount", 1.0, viewer_ui))
 
-    assert np.isclose(lo, 1e-6, rtol=0.0, atol=1e-12)
-    assert np.isclose(hi, 1.0, rtol=0.0, atol=1e-6)
+    assert np.isclose(lo, 0.0, rtol=0.0, atol=1e-12)
+    assert np.isclose(mid, 0.5, rtol=0.0, atol=1e-12)
+    assert np.isclose(hi, 1.0, rtol=0.0, atol=1e-12)
 
 
 def test_refinement_distribution_colorbar_ticks_use_distribution_values() -> None:

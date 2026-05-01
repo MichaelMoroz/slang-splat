@@ -449,7 +449,7 @@ float splat_average_contribution(uint splatId)
 float3 raster_contribution_amount_color(uint splatId)
 {
     float contributionValue = splat_average_contribution(splatId) * max(g_Raster.debugContributionScale, 0.0);
-    return jet_colormap(debug_normalize_log_range(contributionValue, max(g_Raster.debugContributionRange.x, DEBUG_CONTRIBUTION_AMOUNT_FLOOR), max(g_Raster.debugContributionRange.y, DEBUG_CONTRIBUTION_AMOUNT_FLOOR)));
+    return jet_colormap(debug_normalize_range(contributionValue, g_Raster.debugContributionRange));
 }
 
 uint raster_adam_moment_index(uint splatCount, uint paramId, uint splatId)

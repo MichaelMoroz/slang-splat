@@ -82,7 +82,6 @@ _COLMAP_INIT_MODE_LABELS = _COLMAP_INIT_MODE_BASE_LABELS
 _COLMAP_DEPTH_VALUE_MODE_LABELS = ("Depth Is Distance", "Depth Is Z-Depth")
 _COLMAP_IMAGE_DOWNSCALE_LABELS = ("Original", "Max Size", "Scale Factor")
 _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT = 2e-4
-_DEBUG_CONTRIBUTION_AMOUNT_FLOOR = 1e-6
 _DEBUG_COLORBAR_HEIGHT = 28.0
 _DEBUG_COLORBAR_MIN_WIDTH = 320.0
 _DEBUG_COLORBAR_MAX_WIDTH = 640.0
@@ -296,12 +295,6 @@ def _threshold_from_band_range(value_min: float, value_max: float, default: floa
     if len(candidates) == 1:
         return max(candidates[0], floor)
     return max(math.sqrt(candidates[0] * candidates[1]), floor)
-
-
-def _contribution_amount_tick_value(t: float, value_min: float, value_max: float) -> float:
-    lo = math.log10(max(float(min(value_min, value_max)), _DEBUG_CONTRIBUTION_AMOUNT_FLOOR))
-    hi = math.log10(max(float(max(value_min, value_max)), max(float(min(value_min, value_max)), _DEBUG_CONTRIBUTION_AMOUNT_FLOOR) * (1.0 + _DEBUG_CONTRIBUTION_AMOUNT_FLOOR)))
-    return math.pow(10.0, lo + _saturate(t) * (hi - lo))
 
 
 def _refinement_distribution_tick_value(t: float, value_min: float, value_max: float) -> float:
@@ -1365,7 +1358,7 @@ class ToolkitWindow:
         if mode in ("splat_density", "splat_spatial_density", "splat_screen_density"):
             return f"{_debug_range_tick_value(t, float(ui._values.get('debug_density_min', 0.0)), float(ui._values.get('debug_density_max', 20.0))):.3g}"
         if mode == "contribution_amount":
-            return f"{_contribution_amount_tick_value(t, float(ui._values.get('debug_contribution_min', 0.0)), float(ui._values.get('debug_contribution_max', 1.0))):.1e}"
+            return f"{_debug_range_tick_value(t, float(ui._values.get('debug_contribution_min', 0.0)), float(ui._values.get('debug_contribution_max', 1.0))):.3g}"
         if mode in ("adam_momentum", "adam_second_moment"):
             threshold = float(ui._values.get("debug_grad_norm_threshold", _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT))
             return f"{_threshold_band_tick_value(t, threshold):.1e}"
