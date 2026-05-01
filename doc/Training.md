@@ -213,6 +213,7 @@ Important refinement controls:
 - `refinement_alpha_cull_threshold`
 - `refinement_min_contribution`
 - `refinement_min_contribution_decay`
+- staged `refinement_prune_lowest_contribution_ratio` (defaults: 10%, 5%, 3%, 2%, 1%)
 - `refinement_sample_radius`
 - `refinement_clone_scale_mul`
 - staged `refinement_min_screen_radius_px`
@@ -222,6 +223,7 @@ Current behavior:
 - contribution thresholds are normalized to observed training pixels,
 - contribution values use a bidirectional leave-one-out RGB estimate: prefix transmittance times alpha times the distance between the splat color and the color composited behind it,
 - completed refinement passes decay the contribution threshold,
+- each refinement pass can additionally prune the exact lowest contribution fraction of otherwise surviving splats by building a GPU candidate mask, radix-sorting contribution/id pairs, and marking the lowest-ranked survivors before the topology rewrite,
 - clone-budget growth stays off until `refinement_growth_start_step`, then ramps on by `refinement_growth_ratio`,
 - clone resampling weights combine gradient variance and contribution,
 - split-family samples are generated from centered Fibonacci samples on the dominant local plane,

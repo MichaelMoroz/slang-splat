@@ -75,6 +75,11 @@ class _DummyTrainer:
             refinement_alpha_cull_threshold=1e-2,
             refinement_min_contribution=512,
             refinement_min_contribution_decay=0.995,
+            refinement_prune_lowest_contribution_ratio=0.1,
+            refinement_prune_lowest_contribution_ratio_stage1=0.05,
+            refinement_prune_lowest_contribution_ratio_stage2=0.03,
+            refinement_prune_lowest_contribution_ratio_stage3=0.02,
+            refinement_prune_lowest_contribution_ratio_stage4=0.01,
             refinement_opacity_mul=1.0,
             refinement_use_compact_split=True,
             refinement_solve_opacity=True,
@@ -230,6 +235,11 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         "sorting_order_dithering_stage2": _control(0.05),
         "sorting_order_dithering_stage3": _control(0.01),
         "sorting_order_dithering_stage4": _control(0.01),
+        "refinement_prune_lowest_contribution_ratio": _control(0.1),
+        "refinement_prune_lowest_contribution_ratio_stage1": _control(0.05),
+        "refinement_prune_lowest_contribution_ratio_stage2": _control(0.03),
+        "refinement_prune_lowest_contribution_ratio_stage3": _control(0.02),
+        "refinement_prune_lowest_contribution_ratio_stage4": _control(0.01),
         "position_random_step_noise_lr": _control(5e5),
         "sh_band": _control(0),
         "lr_schedule_stage1_lr": _control(0.002),
@@ -527,8 +537,8 @@ def test_update_ui_text_reports_training_schedule_and_refinement() -> None:
     presenter.update_ui_text(viewer, 1.0 / 60.0)
 
     assert viewer.t("training_schedule").text == "LR Schedule: 5.00e-03@0 -> 2.00e-03@3,000 -> 1.00e-03@14,000 -> 1.50e-04@30,000 -> 1.00e-03@100,000 | current=5.00e-03"
-    assert viewer.t("training_schedule_values").text == "Current Values: step=0 | Stage 0 | lr=5.00e-03 | pos=1.00x | shlr=0.05x | cspace=1 | dither=0.5 | noise=5.00e+05 | sh=SH0"
-    assert viewer.t("training_refinement").text == "Refinement: every 200 | growth=0.00% now | target=5.00% after 500 | alpha<1.00e-02 or min contrib<512 | decay=99.50%/pass | alpha mul=1.00x | clone scale=1.00x | max=1,000,000"
+    assert viewer.t("training_schedule_values").text == "Current Values: step=0 | Stage 0 | lr=5.00e-03 | pos=1.00x | shlr=0.05x | cspace=1 | dither=0.5 | prune=10.00% | noise=5.00e+05 | sh=SH0"
+    assert viewer.t("training_refinement").text == "Refinement: every 200 | growth=0.00% now | target=5.00% after 500 | alpha<1.00e-02 or min contrib<512 | prune lowest=10.00% | decay=99.50%/pass | alpha mul=1.00x | clone scale=1.00x | max=1,000,000"
     assert viewer.t("loss_debug_psnr").text == "PSNR: 32.50 dB"
     assert viewer.ui._values["_training_view_overlay_segments"] == ()
     assert viewer.ui._values["_training_views_rows"] == (
@@ -705,7 +715,7 @@ def test_update_ui_text_previews_current_schedule_values_without_trainer() -> No
 
     presenter.update_ui_text(viewer, 1.0 / 60.0)
 
-    assert viewer.t("training_schedule_values").text == "Current Values: step=0 | Stage 0 | lr=5.00e-03 | pos=1.00x | shlr=0.05x | cspace=1 | dither=0.5 | noise=5.00e+05 | sh=SH0"
+    assert viewer.t("training_schedule_values").text == "Current Values: step=0 | Stage 0 | lr=5.00e-03 | pos=1.00x | shlr=0.05x | cspace=1 | dither=0.5 | prune=10.00% | noise=5.00e+05 | sh=SH0"
 
 
 def test_render_frame_recovers_missing_main_renderer_by_recreating_it(monkeypatch):

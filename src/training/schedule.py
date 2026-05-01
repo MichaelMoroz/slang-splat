@@ -289,6 +289,30 @@ def resolve_refinement_growth_ratio(training_hparams: Any, step: int) -> float:
     return growth_ratio if int(step) >= start_step else 0.0
 
 
+def resolve_refinement_prune_lowest_contribution_ratio(training_hparams: Any, step: int) -> float:
+    start = _clamp_unit_interval(getattr(training_hparams, "refinement_prune_lowest_contribution_ratio", 0.0), 0.0)
+    if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
+        return start
+    return _resolve_staged_linear_value(
+        training_hparams,
+        step,
+        start,
+        (
+            _clamp_unit_interval(getattr(training_hparams, "refinement_prune_lowest_contribution_ratio_stage1", start), start),
+            _clamp_unit_interval(getattr(training_hparams, "refinement_prune_lowest_contribution_ratio_stage2", start), start),
+            _clamp_unit_interval(getattr(training_hparams, "refinement_prune_lowest_contribution_ratio_stage3", start), start),
+            _clamp_unit_interval(
+                getattr(
+                    training_hparams,
+                    "refinement_prune_lowest_contribution_ratio_stage4",
+                    getattr(training_hparams, "refinement_prune_lowest_contribution_ratio_stage3", start),
+                ),
+                start,
+            ),
+        ),
+    )
+
+
 def resolve_refinement_min_contribution(training_hparams: Any, step: int, frame_count: int = 1) -> int:
     base_threshold = max(int(getattr(training_hparams, "refinement_min_contribution", 512)), 0)
     decay = min(max(float(getattr(training_hparams, "refinement_min_contribution_decay", DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY)), 0.0), 1.0)

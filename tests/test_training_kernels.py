@@ -14,7 +14,7 @@ from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 from src.scene.sh_utils import SH_C0, evaluate_sh_color
 from src.training import gaussian_trainer as gaussian_trainer_module
-from src.training import AdamHyperParams, GaussianTrainer, SPLAT_CONTRIBUTION_FIXED_SCALE, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_colorspace_mod, resolve_cosine_base_learning_rate, resolve_effective_refinement_interval, resolve_effective_train_render_factor, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_visible_angle_deg, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_clone_budget, resolve_refinement_growth_ratio, resolve_refinement_min_contribution, resolve_refinement_min_screen_radius_px, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering, resolve_ssim_weight, resolve_stage_schedule_steps, resolve_training_resolution, resolve_train_subsample_factor, resolve_use_sh, should_run_refinement_step
+from src.training import AdamHyperParams, GaussianTrainer, SPLAT_CONTRIBUTION_FIXED_SCALE, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_colorspace_mod, resolve_cosine_base_learning_rate, resolve_effective_refinement_interval, resolve_effective_train_render_factor, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_visible_angle_deg, resolve_position_lr_mul, resolve_position_random_step_noise_lr, resolve_refinement_clone_budget, resolve_refinement_growth_ratio, resolve_refinement_min_contribution, resolve_refinement_min_screen_radius_px, resolve_refinement_prune_lowest_contribution_ratio, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering, resolve_ssim_weight, resolve_stage_schedule_steps, resolve_training_resolution, resolve_train_subsample_factor, resolve_use_sh, should_run_refinement_step
 
 _ADAM_BUFFER_NAMES = ("adam_moments",)
 _OPACITY_EPS = 1e-6
@@ -115,6 +115,47 @@ def _make_scene(count: int = 24, seed: int = 7) -> GaussianScene:
     colors = rng.uniform(0.0, 1.0, size=(count, 3)).astype(np.float32)
     sh_coeffs = np.zeros((count, 1, 3), dtype=np.float32)
     return GaussianScene(positions=positions, scales=scales, rotations=rotations, opacities=opacities, colors=colors, sh_coeffs=sh_coeffs)
+
+
+class _CopyRecorder:
+    def __init__(self) -> None:
+        self.writes: list[np.ndarray] = []
+
+    def copy_from_numpy(self, values: np.ndarray) -> None:
+        self.writes.append(np.asarray(values).copy())
+
+
+def test_clear_clone_counts_can_preserve_refinement_history() -> None:
+    total_clone_counter = _CopyRecorder()
+    append_counter = _CopyRecorder()
+    clone_counts = _CopyRecorder()
+    splat_contribution = _CopyRecorder()
+    refinement_prune_mask = _CopyRecorder()
+    trainer = SimpleNamespace(
+        _refinement_splat_capacity=4,
+        _refinement_buffers={
+            "total_clone_counter": total_clone_counter,
+            "append_counter": append_counter,
+            "clone_counts": clone_counts,
+            "splat_contribution": splat_contribution,
+            "refinement_prune_mask": refinement_prune_mask,
+            "gradient_stats": object(),
+        },
+        _observed_contribution_pixel_count=99,
+    )
+
+    gaussian_trainer_module.GaussianTrainer._clear_clone_counts(trainer, preserve_refinement_history=True)
+
+    assert len(total_clone_counter.writes) == 1
+    assert len(append_counter.writes) == 1
+    assert len(clone_counts.writes) == 1
+    assert np.array_equal(total_clone_counter.writes[0], np.zeros((1,), dtype=np.uint32))
+    assert np.array_equal(append_counter.writes[0], np.zeros((1,), dtype=np.uint32))
+    assert np.array_equal(clone_counts.writes[0], np.zeros((4,), dtype=np.uint32))
+    assert len(refinement_prune_mask.writes) == 1
+    assert np.array_equal(refinement_prune_mask.writes[0], np.zeros((4,), dtype=np.uint32))
+    assert splat_contribution.writes == []
+    assert trainer._observed_contribution_pixel_count == 99
 
 
 def _make_frame(tmp_path: Path, width: int = 64, height: int = 64, *, image_name: str = "target.png", image_id: int = 0, green_value: int = 180) -> ColmapFrame:
@@ -1567,6 +1608,34 @@ def test_refinement_min_contribution_uses_configured_decay() -> None:
     assert resolve_refinement_min_contribution(hparams, 400) == 462
 
 
+def test_refinement_prune_ratio_resolves_as_staged_schedule() -> None:
+    hparams = TrainingHyperParams(
+        refinement_prune_lowest_contribution_ratio=0.10,
+        refinement_prune_lowest_contribution_ratio_stage1=0.05,
+        refinement_prune_lowest_contribution_ratio_stage2=0.03,
+        refinement_prune_lowest_contribution_ratio_stage3=0.02,
+        refinement_prune_lowest_contribution_ratio_stage4=0.01,
+        lr_schedule_enabled=True,
+        lr_schedule_steps=100,
+        lr_schedule_stage1_step=20,
+        lr_schedule_stage2_step=60,
+        lr_schedule_stage3_step=80,
+    )
+
+    np.testing.assert_allclose(resolve_refinement_prune_lowest_contribution_ratio(hparams, 0), 0.10, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_refinement_prune_lowest_contribution_ratio(hparams, 20), 0.05, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_refinement_prune_lowest_contribution_ratio(hparams, 60), 0.03, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_refinement_prune_lowest_contribution_ratio(hparams, 80), 0.02, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_refinement_prune_lowest_contribution_ratio(hparams, 100), 0.01, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_refinement_prune_lowest_contribution_ratio(hparams, 10), 0.075, rtol=0.0, atol=1e-12)
+    disabled = TrainingHyperParams(
+        lr_schedule_enabled=False,
+        refinement_prune_lowest_contribution_ratio=0.2,
+        refinement_prune_lowest_contribution_ratio_stage1=0.0,
+    )
+    np.testing.assert_allclose(resolve_refinement_prune_lowest_contribution_ratio(disabled, 100), 0.2, rtol=0.0, atol=1e-12)
+
+
 def test_refinement_clone_budget_respects_max_gaussians_cap() -> None:
     hparams = TrainingHyperParams(refinement_interval=200, refinement_growth_ratio=0.05, refinement_growth_start_step=0, max_gaussians=1024)
 
@@ -1593,6 +1662,10 @@ def test_trainer_allocates_minimal_refinement_buffers(device, tmp_path: Path) ->
         "splat_contribution",
         "splat_age",
         "refinement_eligible_mask",
+        "refinement_prune_mask",
+        "refinement_prune_sort_keys",
+        "refinement_prune_sort_values",
+        "refinement_prune_prefix",
         "refinement_weights",
         "refinement_weight_prefix",
         "refinement_weight_total",
@@ -1604,6 +1677,77 @@ def test_trainer_allocates_minimal_refinement_buffers(device, tmp_path: Path) ->
         "camera_rows",
     }
     assert trainer.refinement_clone_budget() > 0
+
+
+def test_refinement_prune_mask_selects_lowest_exact_ratio(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=10, seed=84)
+    frame = _make_frame(tmp_path, image_name="refinement_prune_target.png", image_id=11)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(
+            refinement_growth_ratio=0.05,
+            refinement_growth_start_step=0,
+            refinement_interval=9999,
+            refinement_min_contribution=0,
+            refinement_prune_lowest_contribution_ratio=0.0,
+            refinement_prune_lowest_contribution_ratio_stage1=0.2,
+            refinement_prune_lowest_contribution_ratio_stage2=0.2,
+            refinement_prune_lowest_contribution_ratio_stage3=0.2,
+            refinement_prune_lowest_contribution_ratio_stage4=0.2,
+            lr_schedule_steps=1,
+            lr_schedule_stage1_step=1,
+            lr_schedule_stage2_step=1,
+            lr_schedule_stage3_step=1,
+        ),
+        seed=123,
+    )
+    trainer.state.step = 1
+
+    contributions = np.zeros((trainer._refinement_splat_capacity,), dtype=np.uint32)
+    contributions[: scene.count] = np.array([10, 20, 30, 40, 50, 60, 70, 80, 90, 100], dtype=np.uint32)
+    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(contributions)
+
+    gaussian_trainer_module.GaussianTrainer._update_refinement_prune_mask(trainer)
+    mask = buffer_to_numpy(trainer.refinement_buffers["refinement_prune_mask"], np.uint32)[: scene.count].copy()
+
+    np.testing.assert_array_equal(mask, np.array([1, 1, 0, 0, 0, 0, 0, 0, 0, 0], dtype=np.uint32))
+
+
+def test_refinement_prune_mask_clears_when_ratio_is_zero(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=8, seed=85)
+    frame = _make_frame(tmp_path, image_name="refinement_prune_zero_target.png", image_id=12)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(
+            refinement_growth_ratio=0.05,
+            refinement_growth_start_step=0,
+            refinement_interval=9999,
+            refinement_min_contribution=0,
+            refinement_prune_lowest_contribution_ratio=0.0,
+            refinement_prune_lowest_contribution_ratio_stage1=0.0,
+            refinement_prune_lowest_contribution_ratio_stage2=0.0,
+            refinement_prune_lowest_contribution_ratio_stage3=0.0,
+            refinement_prune_lowest_contribution_ratio_stage4=0.0,
+        ),
+        seed=123,
+    )
+
+    contributions = np.zeros((trainer._refinement_splat_capacity,), dtype=np.uint32)
+    contributions[: scene.count] = np.arange(1, scene.count + 1, dtype=np.uint32)
+    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(contributions)
+
+    gaussian_trainer_module.GaussianTrainer._update_refinement_prune_mask(trainer)
+    mask = buffer_to_numpy(trainer.refinement_buffers["refinement_prune_mask"], np.uint32)[: scene.count].copy()
+
+    np.testing.assert_array_equal(mask, np.zeros((scene.count,), dtype=np.uint32))
 
 
 def test_trainer_refinement_due_uses_dataset_frame_floor(device, tmp_path: Path) -> None:

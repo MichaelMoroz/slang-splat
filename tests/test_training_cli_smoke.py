@@ -216,6 +216,11 @@ def test_train_cli_parser_defaults_color_and_opacity_lr_mul_to_five() -> None:
     assert args.cached_raster_grad_fixed_color_range == 8.0
     assert args.cached_raster_grad_fixed_opacity_range == 8.0
     assert args.refinement_min_contribution == 512
+    assert args.refinement_prune_lowest_contribution_ratio == float(TRAINING_BUILD_ARG_DEFAULTS["refinement_prune_lowest_contribution_ratio"])
+    assert args.refinement_prune_lowest_contribution_ratio_stage1 == float(TRAINING_BUILD_ARG_DEFAULTS["refinement_prune_lowest_contribution_ratio_stage1"])
+    assert args.refinement_prune_lowest_contribution_ratio_stage2 == float(TRAINING_BUILD_ARG_DEFAULTS["refinement_prune_lowest_contribution_ratio_stage2"])
+    assert args.refinement_prune_lowest_contribution_ratio_stage3 == float(TRAINING_BUILD_ARG_DEFAULTS["refinement_prune_lowest_contribution_ratio_stage3"])
+    assert args.refinement_prune_lowest_contribution_ratio_stage4 == float(TRAINING_BUILD_ARG_DEFAULTS["refinement_prune_lowest_contribution_ratio_stage4"])
     assert args.init_opacity is None
 
 
@@ -228,6 +233,34 @@ def test_train_cli_refinement_distribution_exponent_flags_and_alias() -> None:
     assert training_cli_build_kwargs(args)["refinement_grad_variance_weight_exponent"] == 2.25
     assert training_cli_build_kwargs(args)["refinement_contribution_weight_exponent"] == 3.25
     assert training_cli_build_kwargs(alias_args)["refinement_grad_variance_weight_exponent"] == 1.75
+
+
+def test_train_cli_training_params_include_refinement_prune_ratio() -> None:
+    parser = cli.build_parser()
+
+    args = parser.parse_args(
+        [
+            "train-colmap",
+            "--colmap-root",
+            "dummy",
+            "--refinement-prune-lowest-contribution-ratio",
+            "0.125",
+            "--refinement-prune-lowest-contribution-ratio-stage1",
+            "0.05",
+            "--refinement-prune-lowest-contribution-ratio-stage2",
+            "0.03",
+            "--refinement-prune-lowest-contribution-ratio-stage3",
+            "0.02",
+            "--refinement-prune-lowest-contribution-ratio-stage4",
+            "0.01",
+        ]
+    )
+
+    assert cli._training_params(args).training.refinement_prune_lowest_contribution_ratio == 0.125
+    assert cli._training_params(args).training.refinement_prune_lowest_contribution_ratio_stage1 == 0.05
+    assert cli._training_params(args).training.refinement_prune_lowest_contribution_ratio_stage2 == 0.03
+    assert cli._training_params(args).training.refinement_prune_lowest_contribution_ratio_stage3 == 0.02
+    assert cli._training_params(args).training.refinement_prune_lowest_contribution_ratio_stage4 == 0.01
 
 
 def test_train_cli_parser_maps_cached_raster_grad_render_defaults() -> None:

@@ -115,6 +115,10 @@ uniform RWStructuredBuffer<float> g_RefinementWeights;
 uniform RWStructuredBuffer<float> g_RefinementWeightPrefix;
 uniform StructuredBuffer<float> g_RefinementWeightTotal;
 uniform RWStructuredBuffer<uint> g_RefinementEligibleMask;
+uniform RWStructuredBuffer<uint> g_RefinementPruneMask;
+uniform RWStructuredBuffer<uint> g_RefinementPruneSortKeys;
+uniform RWStructuredBuffer<uint> g_RefinementPruneSortValues;
+uniform RWStructuredBuffer<uint> g_RefinementPrunePrefix;
 uniform RWStructuredBuffer<uint> g_TotalCloneCounter;
 uniform RWStructuredBuffer<uint> g_AppendCounter;
 uniform StructuredBuffer<float4> g_RefinementCameraRows;
@@ -137,6 +141,7 @@ uniform uint g_RefinementSolveOpacity;
 uniform float g_RefinementSplitBeta;
 uniform float g_RefinementGradientVarianceWeightExponent;
 uniform float g_RefinementContributionWeightExponent;
+uniform float g_RefinementPruneLowestContributionRatio;
 uniform float g_RefinementGradientVarianceInvSampleCount;
 uniform float g_RefinementRadiusScale;
 
@@ -180,9 +185,17 @@ float3 linear_to_srgb_safe(float3 value)
     return float3(linear_to_srgb_safe(value.x), linear_to_srgb_safe(value.y), linear_to_srgb_safe(value.z));
 }
 
-bool should_cull_refinement_splat(float alpha, uint contribution)
+bool should_cull_refinement_splat(uint splatId, float alpha, uint contribution)
 {
-    return alpha < g_RefinementAlphaCullThreshold || contribution < g_RefinementMinContributionThreshold;
+    return g_RefinementPruneMask[splatId] != 0u || alpha < g_RefinementAlphaCullThreshold || contribution < g_RefinementMinContributionThreshold;
+}
+
+uint refinement_prune_target_count(uint candidateCount)
+{
+    float ratio = clamp(g_RefinementPruneLowestContributionRatio, 0.0, 1.0);
+    if (!(ratio > 0.0) || candidateCount == 0u) return 0u;
+    uint pruneCount = uint(floor(float(candidateCount) * ratio + 0.5));
+    return min(pruneCount, candidateCount);
 }
 
 SplatState load_splat_state(RWStructuredBuffer<float> params, uint splatCount, uint splatId)
@@ -979,7 +992,7 @@ void csPrepareRefinementCounts(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint splatId = dispatchThreadID.x;
     if (splatId >= g_SrcSplatCount) return;
     float alpha = opacity_from_raw(load_splat_param(g_SrcSplatParams, g_SrcSplatCount, PARAM_RAW_OPACITY, splatId));
-    if (should_cull_refinement_splat(alpha, g_SplatContribution[splatId])) return;
+    if (should_cull_refinement_splat(splatId, alpha, g_SplatContribution[splatId])) return;
     uint _;
     InterlockedAdd(g_AppendCounter[0], 1u, _);
     uint cloneCount = g_CloneCounts[splatId];
@@ -1008,6 +1021,33 @@ void csClampRefinementMinScreenSize(uint3 dispatchThreadID : SV_DispatchThreadID
 
 [shader("compute")]
 [numthreads(256, 1, 1)]
+void csPrepareRefinementPruneSortInputs(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint splatId = dispatchThreadID.x;
+    if (splatId >= g_SrcSplatCount) return;
+
+    float alpha = opacity_from_raw(load_splat_param(g_SrcSplatParams, g_SrcSplatCount, PARAM_RAW_OPACITY, splatId));
+    bool eligible = alpha >= g_RefinementAlphaCullThreshold && g_SplatContribution[splatId] >= g_RefinementMinContributionThreshold;
+    g_RefinementEligibleMask[splatId] = eligible ? 1u : 0u;
+    g_RefinementPruneMask[splatId] = 0u;
+    g_RefinementPruneSortKeys[splatId] = eligible ? g_SplatContribution[splatId] : 0xFFFFFFFFu;
+    g_RefinementPruneSortValues[splatId] = splatId;
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void csMarkRefinementPruneMask(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint rank = dispatchThreadID.x;
+    if (rank >= g_SrcSplatCount) return;
+
+    uint pruneCount = refinement_prune_target_count(g_TotalCloneCounter[0]);
+    if (rank >= pruneCount) return;
+    g_RefinementPruneMask[g_RefinementPruneSortValues[rank]] = 1u;
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
 void csPrepareRefinementSamplingWeights(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     uint splatId = dispatchThreadID.x;
@@ -1015,7 +1055,7 @@ void csPrepareRefinementSamplingWeights(uint3 dispatchThreadID : SV_DispatchThre
 
     g_CloneCounts[splatId] = 0u;
     float alpha = opacity_from_raw(load_splat_param(g_SrcSplatParams, g_SrcSplatCount, PARAM_RAW_OPACITY, splatId));
-    bool eligible = !should_cull_refinement_splat(alpha, g_SplatContribution[splatId]);
+    bool eligible = !should_cull_refinement_splat(splatId, alpha, g_SplatContribution[splatId]);
     g_RefinementEligibleMask[splatId] = eligible ? 1u : 0u;
     g_RefinementWeights[splatId] = eligible ? refinement_sampling_distribution(splatId) : 0.0;
 }
@@ -1066,7 +1106,7 @@ void csRewriteRefinementSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     SplatState source = load_splat_state(g_SrcSplatParams, g_SrcSplatCount, splatId);
     float alpha = opacity_from_raw(source.rawOpacity);
-    if (should_cull_refinement_splat(alpha, g_SplatContribution[splatId])) return;
+    if (should_cull_refinement_splat(splatId, alpha, g_SplatContribution[splatId])) return;
 
     uint cloneCount = min(g_CloneCounts[splatId], REFINEMENT_MAX_CLONES_PER_SPLAT);
     bool solveOpacity = g_RefinementSolveOpacity != 0u && cloneCount > 0u;

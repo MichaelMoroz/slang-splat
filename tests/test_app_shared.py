@@ -76,6 +76,7 @@ def test_build_training_params_clamps_ranges():
         refinement_split_beta=-2.0,
         refinement_grad_variance_weight_exponent=-2.0,
         refinement_contribution_weight_exponent=-3.0,
+        refinement_prune_lowest_contribution_ratio=-4.0,
         max_gaussians=-1,
     )
     assert params.adam.position_lr == 200.0
@@ -121,6 +122,7 @@ def test_build_training_params_clamps_ranges():
     assert params.training.sh_band_stage4 == 3
     assert params.training.refinement_min_contribution == int(TRAINING_BUILD_ARG_DEFAULTS["refinement_min_contribution"])
     assert params.training.refinement_min_contribution_decay == 0.995
+    assert params.training.refinement_prune_lowest_contribution_ratio == 0.0
     assert params.training.refinement_opacity_mul == 1.0
     assert params.training.refinement_sample_radius == 0.0
     assert params.training.refinement_clone_scale_mul == 0.0
@@ -140,6 +142,8 @@ def test_default_training_params_include_required_training_controls():
         "max_visible_angle_deg",
         "ssim_weight",
         "ssim_c2",
+        "refinement_prune_lowest_contribution_ratio",
+        "refinement_prune_lowest_contribution_ratio_stage1",
         "refinement_sample_radius",
         "refinement_clone_scale_mul",
         "refinement_use_compact_split",
@@ -206,6 +210,36 @@ def test_build_training_params_exposes_compact_refinement_controls() -> None:
     assert clamped.training.refinement_split_beta == 1.0
     assert clamped.training.refinement_grad_variance_weight_exponent == 16.0
     assert clamped.training.refinement_contribution_weight_exponent == 16.0
+
+
+def test_build_training_params_clamps_refinement_prune_ratio() -> None:
+    params = build_training_params(
+        background=(1.0, 1.0, 1.0),
+        refinement_prune_lowest_contribution_ratio=0.125,
+        refinement_prune_lowest_contribution_ratio_stage1=0.05,
+        refinement_prune_lowest_contribution_ratio_stage2=0.03,
+        refinement_prune_lowest_contribution_ratio_stage3=0.02,
+        refinement_prune_lowest_contribution_ratio_stage4=0.01,
+    )
+    clamped = build_training_params(
+        background=(1.0, 1.0, 1.0),
+        refinement_prune_lowest_contribution_ratio=5.0,
+        refinement_prune_lowest_contribution_ratio_stage1=-1.0,
+        refinement_prune_lowest_contribution_ratio_stage2=3.0,
+        refinement_prune_lowest_contribution_ratio_stage3=0.25,
+        refinement_prune_lowest_contribution_ratio_stage4=2.0,
+    )
+
+    assert params.training.refinement_prune_lowest_contribution_ratio == 0.125
+    assert params.training.refinement_prune_lowest_contribution_ratio_stage1 == 0.05
+    assert params.training.refinement_prune_lowest_contribution_ratio_stage2 == 0.03
+    assert params.training.refinement_prune_lowest_contribution_ratio_stage3 == 0.02
+    assert params.training.refinement_prune_lowest_contribution_ratio_stage4 == 0.01
+    assert clamped.training.refinement_prune_lowest_contribution_ratio == 1.0
+    assert clamped.training.refinement_prune_lowest_contribution_ratio_stage1 == 0.0
+    assert clamped.training.refinement_prune_lowest_contribution_ratio_stage2 == 1.0
+    assert clamped.training.refinement_prune_lowest_contribution_ratio_stage3 == 0.25
+    assert clamped.training.refinement_prune_lowest_contribution_ratio_stage4 == 1.0
 
 
 def test_auto_profile_resolves_to_legacy_defaults():

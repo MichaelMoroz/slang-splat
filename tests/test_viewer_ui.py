@@ -233,6 +233,29 @@ def test_train_schedule_exposes_sorting_order_dithering_controls() -> None:
         assert SCHEDULE_STAGE_GROUPS[stage]["sort_dither"] == key
 
 
+def test_train_schedule_exposes_refinement_prune_controls() -> None:
+    stage_controls = {stage: {control.key: control for control in controls} for stage, controls in SCHEDULE_STAGE_CONTROL_DEFS.items()}
+    expected = {
+        "Stage 0": ("refinement_prune_lowest_contribution_ratio", float(TRAINING_BUILD_ARG_DEFAULTS["refinement_prune_lowest_contribution_ratio"])),
+        "Stage 1": ("refinement_prune_lowest_contribution_ratio_stage1", float(TRAINING_BUILD_ARG_DEFAULTS["refinement_prune_lowest_contribution_ratio_stage1"])),
+        "Stage 2": ("refinement_prune_lowest_contribution_ratio_stage2", float(TRAINING_BUILD_ARG_DEFAULTS["refinement_prune_lowest_contribution_ratio_stage2"])),
+        "Stage 3": ("refinement_prune_lowest_contribution_ratio_stage3", float(TRAINING_BUILD_ARG_DEFAULTS["refinement_prune_lowest_contribution_ratio_stage3"])),
+        "Stage 4": ("refinement_prune_lowest_contribution_ratio_stage4", float(TRAINING_BUILD_ARG_DEFAULTS["refinement_prune_lowest_contribution_ratio_stage4"])),
+    }
+
+    assert "refinement_prune_lowest_contribution_ratio" not in {control.key for control in TRAIN_SETUP_CONTROL_DEFS}
+    assert "refinement_prune_lowest_contribution_ratio" not in TRAIN_SETUP_PRIMARY_KEYS
+    for stage, (key, value) in expected.items():
+        control = stage_controls[stage][key]
+        assert control.kind == "input_float"
+        assert control.label == "Prune Lowest Ratio"
+        assert control.kwargs["value"] == value
+        assert control.kwargs["step"] == 1e-3
+        assert control.kwargs["step_fast"] == 1e-2
+        assert control.build_args == (key,)
+        assert SCHEDULE_STAGE_GROUPS[stage]["prune_lowest"] == key
+
+
 def test_colmap_init_mode_labels_append_depth_only_for_valid_depth_root(tmp_path) -> None:
     viewer_ui = ui.build_ui(_dummy_renderer())
     viewer_ui._values["colmap_depth_root"] = ""

@@ -14,6 +14,7 @@ from ..training import (
     resolve_position_random_step_noise_lr,
     resolve_refinement_growth_ratio,
     resolve_refinement_min_contribution,
+    resolve_refinement_prune_lowest_contribution_ratio,
     resolve_sh_band,
     resolve_sh_lr_mul,
     resolve_sorting_order_dithering,
@@ -69,6 +70,11 @@ def _schedule_state_from_controls(viewer: object) -> object:
         sorting_order_dithering_stage2=float(_control_value(viewer, "sorting_order_dithering_stage2", 0.05)),
         sorting_order_dithering_stage3=float(_control_value(viewer, "sorting_order_dithering_stage3", 0.01)),
         sorting_order_dithering_stage4=float(_control_value(viewer, "sorting_order_dithering_stage4", 0.01)),
+        refinement_prune_lowest_contribution_ratio=float(_control_value(viewer, "refinement_prune_lowest_contribution_ratio", 0.1)),
+        refinement_prune_lowest_contribution_ratio_stage1=float(_control_value(viewer, "refinement_prune_lowest_contribution_ratio_stage1", 0.05)),
+        refinement_prune_lowest_contribution_ratio_stage2=float(_control_value(viewer, "refinement_prune_lowest_contribution_ratio_stage2", 0.03)),
+        refinement_prune_lowest_contribution_ratio_stage3=float(_control_value(viewer, "refinement_prune_lowest_contribution_ratio_stage3", 0.02)),
+        refinement_prune_lowest_contribution_ratio_stage4=float(_control_value(viewer, "refinement_prune_lowest_contribution_ratio_stage4", 0.01)),
         position_random_step_noise_lr=float(_control_value(viewer, "position_random_step_noise_lr", 5e5)),
         position_random_step_noise_stage1_lr=float(_control_value(viewer, "position_random_step_noise_stage1_lr", 466666.6666666667)),
         position_random_step_noise_stage2_lr=float(_control_value(viewer, "position_random_step_noise_stage2_lr", 416666.6666666667)),
@@ -106,7 +112,7 @@ def _schedule_summary_text(training: object, current_lr: float) -> str:
     return f"LR Schedule: {lr0:.2e}@0 -> {lr1:.2e}@{stage1:,} -> {lr2:.2e}@{stage2:,} -> {lr3:.2e}@{stage3:,} -> {lr4:.2e}@{stage4:,} | current={current_lr:.2e}"
 
 
-def _refinement_summary_values(viewer: object) -> tuple[int, float, float, int, float, int, float, float, float, int]:
+def _refinement_summary_values(viewer: object) -> tuple[int, float, float, int, float, int, float, float, float, float, int]:
     trainer = getattr(viewer.s, "trainer", None)
     if trainer is not None:
         training = trainer.training
@@ -119,6 +125,7 @@ def _refinement_summary_values(viewer: object) -> tuple[int, float, float, int, 
             float(training.refinement_alpha_cull_threshold),
             int(resolve_refinement_min_contribution(training, current_step, len(getattr(trainer, "frames", getattr(viewer.s, "training_frames", ())))),),
             min(max(float(getattr(training, "refinement_min_contribution_decay", 0.995)), 0.0), 1.0) * 100.0,
+            resolve_refinement_prune_lowest_contribution_ratio(training, current_step) * 100.0,
             min(max(float(getattr(training, "refinement_opacity_mul", 1.0)), 0.0), 1.0),
             max(float(getattr(training, "refinement_clone_scale_mul", 1.0)), 0.0),
             int(training.max_gaussians),
@@ -131,6 +138,7 @@ def _refinement_summary_values(viewer: object) -> tuple[int, float, float, int, 
         max(float(viewer.c("refinement_alpha_cull_threshold").value), 1e-8),
         max(int(viewer.c("refinement_min_contribution").value), 0),
         min(max(float(viewer.c("refinement_min_contribution_decay").value), 0.0), 1.0) * 100.0,
+        min(max(float(viewer.c("refinement_prune_lowest_contribution_ratio").value), 0.0), 1.0) * 100.0,
         min(max(float(viewer.c("refinement_opacity_mul").value), 0.0), 1.0),
         max(float(viewer.c("refinement_clone_scale_mul").value), 0.0),
         max(int(viewer.c("max_gaussians").value), 0),
@@ -173,6 +181,7 @@ def _current_schedule_values_text(viewer: object) -> str:
         f"shlr={resolve_sh_lr_mul(training, step):.2f}x | "
         f"cspace={resolve_colorspace_mod(training, step):.3g} | "
         f"dither={resolve_sorting_order_dithering(training, step):.3g} | "
+        f"prune={resolve_refinement_prune_lowest_contribution_ratio(training, step) * 100.0:.2f}% | "
         f"noise={resolve_position_random_step_noise_lr(training, step):.2e} | "
         f"sh=SH{resolve_sh_band(training, step)}"
     )
@@ -188,10 +197,10 @@ def _training_schedule_text(viewer: object) -> str:
 
 
 def _training_refinement_text(viewer: object) -> str:
-    interval, current_growth, target_growth, start_step, alpha_threshold, contribution_cull, decay, alpha_mul, clone_scale_mul, max_gaussians = _refinement_summary_values(viewer)
+    interval, current_growth, target_growth, start_step, alpha_threshold, contribution_cull, decay, prune_ratio, alpha_mul, clone_scale_mul, max_gaussians = _refinement_summary_values(viewer)
     return (
         f"Refinement: every {interval:,} | growth={current_growth:.2f}% now | target={target_growth:.2f}% after {start_step:,} | "
-        f"alpha<{alpha_threshold:.2e} or min contrib<{contribution_cull:,} | decay={decay:.2f}%/pass | alpha mul={alpha_mul:.2f}x | clone scale={clone_scale_mul:.2f}x | max={max_gaussians:,}"
+        f"alpha<{alpha_threshold:.2e} or min contrib<{contribution_cull:,} | prune lowest={prune_ratio:.2f}% | decay={decay:.2f}%/pass | alpha mul={alpha_mul:.2f}x | clone scale={clone_scale_mul:.2f}x | max={max_gaussians:,}"
     )
 
 
