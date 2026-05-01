@@ -1568,9 +1568,10 @@ class ToolkitWindow:
         if opened:
             imgui.text_disabled("Local viewer documentation")
             imgui.separator()
-            if imgui.begin_child("##docs_scroll", imgui.ImVec2(0.0, 0.0), imgui.ChildFlags_.borders.value):
+            child_opened = _imgui_opened(imgui.begin_child("##docs_scroll", imgui.ImVec2(0.0, 0.0), imgui.ChildFlags_.borders.value))
+            if child_opened:
                 _draw_markdown_text(self._documentation_text)
-                imgui.end_child()
+            imgui.end_child()
         imgui.end()
 
     def close_colmap_import_window(self) -> None:
@@ -1627,7 +1628,8 @@ class ToolkitWindow:
         imgui.same_line()
         if imgui.button("No Models"): selected.clear()
         table_height = min(max(88.0, 28.0 * float(len(camera_rows)) + 8.0), 180.0)
-        if imgui.begin_child("##colmap_cameras", imgui.ImVec2(0.0, table_height), True):
+        child_opened = _imgui_opened(imgui.begin_child("##colmap_cameras", imgui.ImVec2(0.0, table_height), True))
+        if child_opened:
             flags = (
                 imgui.TableFlags_.row_bg.value
                 | imgui.TableFlags_.borders.value
@@ -1666,7 +1668,7 @@ class ToolkitWindow:
                         imgui.table_next_column()
                         imgui.text_unformatted(text)
                 imgui.end_table()
-            imgui.end_child()
+        imgui.end_child()
         ui._values["colmap_selected_camera_ids"] = tuple(camera_id for camera_id in camera_ids if camera_id in selected)
 
     def _draw_colmap_downscale_controls(self, ui: ViewerUI) -> None:

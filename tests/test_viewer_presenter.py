@@ -344,6 +344,7 @@ def test_render_frame_uses_main_branch_when_visual_loss_debug_disabled(monkeypat
     monkeypatch.setattr(presenter.session, "apply_live_params", lambda viewer_obj: calls.append("apply"))
     monkeypatch.setattr(presenter.session, "ensure_training_runtime_resolution", lambda viewer_obj: calls.append("train_resize"))
     monkeypatch.setattr(presenter.session, "recreate_renderer", lambda viewer_obj, width, height: calls.append("resize"))
+    monkeypatch.setattr(presenter.session, "maybe_reallocate_renderers", lambda viewer_obj, width, height, current_time: calls.append(f"periodic:{current_time:.1f}"))
     monkeypatch.setattr(presenter.session, "update_debug_frame_slider_range", lambda viewer_obj: None)
     monkeypatch.setattr(presenter, "_render_debug_view", lambda viewer_obj, encoder, width, height, render_frame_index: calls.append("debug") or "debug_tex")
     monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, encoder: calls.append("main") or "main_tex")
@@ -353,7 +354,29 @@ def test_render_frame_uses_main_branch_when_visual_loss_debug_disabled(monkeypat
 
     assert viewer.s.trainer.step_calls == 3
     assert viewer.s.viewport_texture == "main_tex"
-    assert calls == ["apply", "main", "ui"]
+    assert calls == ["apply", f"periodic:{viewer.s.last_time:.1f}", "main", "ui"]
+
+
+def test_render_frame_checks_time_based_renderer_recycling(monkeypatch):
+    viewer = _viewer(loss_debug=False)
+    viewer.s.last_periodic_renderer_reallocation_time = 0.0
+    render_context = SimpleNamespace(surface_texture=SimpleNamespace(width=640, height=360), command_encoder=_DummyEncoder())
+    calls: list[str] = []
+    current_time = viewer_session._PERIODIC_RENDERER_REALLOCATION_INTERVAL_S + 1.0
+
+    monkeypatch.setattr(presenter.session, "apply_live_params", lambda viewer_obj: calls.append("apply"))
+    monkeypatch.setattr(presenter.session, "ensure_training_runtime_resolution", lambda viewer_obj: calls.append("train_resize"))
+    monkeypatch.setattr(presenter.session, "recreate_renderer", lambda viewer_obj, width, height: calls.append("resize"))
+    monkeypatch.setattr(presenter.session, "maybe_reallocate_renderers", lambda viewer_obj, width, height, time_value: calls.append(f"periodic:{time_value:.1f}"))
+    monkeypatch.setattr(presenter.session, "update_debug_frame_slider_range", lambda viewer_obj: None)
+    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, encoder: calls.append("main") or "main_tex")
+    monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
+    monkeypatch.setattr(presenter.time, "perf_counter", lambda: current_time)
+
+    presenter.render_frame(viewer, render_context)
+
+    assert viewer.s.render_frame_index == 1
+    assert calls == ["apply", f"periodic:{current_time:.1f}", "main", "ui"]
 
 
 def test_render_frame_runs_configured_training_batch(monkeypatch):

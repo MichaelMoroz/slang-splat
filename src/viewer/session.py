@@ -87,6 +87,7 @@ _FIBONACCI_SPHERE_SCALE_MIN = 1e-4
 _FIBONACCI_SPHERE_SCALE_MAX = 1e4
 _DATASET_BC7_TEXCONV_URL = "https://github.com/microsoft/DirectXTex/releases/download/oct2024/texconv.exe"
 _DATASET_BC7_TEXCONV_PATH = Path(__file__).resolve().parents[2] / "temp" / "bc_texture_tools" / "texconv.exe"
+_PERIODIC_RENDERER_REALLOCATION_INTERVAL_S = 120.0
 _TRAINING_RUNTIME_PARAM_NAMES = (
     "train_downscale_mode",
     "train_auto_start_downscale",
@@ -1052,14 +1053,14 @@ def _apply_debug_buffers(viewer: object, renderer: GaussianRenderer | None) -> N
         set_contribution_pixels(0 if viewer.s.trainer is None else viewer.s.trainer.observed_contribution_pixel_count)
 
 
-def ensure_renderer(viewer: object, attr: str, width: int, height: int, allow_debug_overlays: bool) -> GaussianRenderer:
+def ensure_renderer(viewer: object, attr: str, width: int, height: int, allow_debug_overlays: bool, *, force_recreate: bool = False) -> GaussianRenderer:
     size, renderer = (int(width), int(height)), getattr(viewer.s, attr)
     if renderer is not None:
         renderer_size = (
             int(getattr(renderer, "_render_capacity_width", renderer.width)),
             int(getattr(renderer, "_render_capacity_height", renderer.height)),
         ) if attr == "training_renderer" else (int(renderer.width), int(renderer.height))
-        if renderer_size == size: return renderer
+        if renderer_size == size and not force_recreate: return renderer
     previous_renderer = renderer
     renderer = GaussianRenderSettings.from_renderer_params(size[0], size[1], viewer.renderer_params(allow_debug_overlays)).create_renderer(viewer.device)
     if isinstance(viewer.s.scene, GaussianScene):
@@ -1071,6 +1072,62 @@ def ensure_renderer(viewer: object, attr: str, width: int, height: int, allow_de
         del previous_renderer
     _invalidate(viewer, "debug" if attr == "debug_renderer" else "main", "debug")
     return renderer
+
+
+def _replace_training_renderer(viewer: object, width: int, height: int, *, reset_loss_debug: bool = True) -> GaussianRenderer:
+    previous_renderer = getattr(viewer.s, "training_renderer", None)
+    if previous_renderer is None:
+        raise RuntimeError("Training renderer is unavailable.")
+    renderer = _create_renderer(viewer, int(width), int(height), allow_debug_overlays=False)
+    enc = viewer.device.create_command_encoder()
+    previous_renderer.copy_scene_state_to(enc, renderer)
+    viewer.device.submit_command_buffer(enc.finish())
+    viewer.s.training_renderer = renderer
+    viewer.s.trainer.rebind_renderer(renderer)
+    _apply_debug_buffers(viewer, viewer.s.renderer)
+    _apply_debug_buffers(viewer, viewer.s.debug_renderer)
+    _invalidate(viewer)
+    if reset_loss_debug:
+        _reset_loss_debug(viewer)
+    return renderer
+
+
+def _periodic_renderer_reallocation_due(viewer: object, current_time: float) -> bool:
+    last_reallocation_time = getattr(viewer.s, "last_periodic_renderer_reallocation_time", None)
+    if last_reallocation_time is None:
+        return False
+    return float(current_time) - float(last_reallocation_time) >= _PERIODIC_RENDERER_REALLOCATION_INTERVAL_S
+
+
+def maybe_reallocate_renderers(viewer: object, render_width: int, render_height: int, current_time: float) -> bool:
+    now = float(current_time)
+    if getattr(viewer.s, "last_periodic_renderer_reallocation_time", None) is None:
+        viewer.s.last_periodic_renderer_reallocation_time = now
+        return False
+    if not _periodic_renderer_reallocation_due(viewer, now):
+        return False
+    recycled = False
+    loss_debug_reset = False
+    if getattr(viewer.s, "renderer", None) is not None:
+        recreate_renderer(viewer, int(render_width), int(render_height))
+        recycled = True
+        loss_debug_reset = True
+    debug_renderer = getattr(viewer.s, "debug_renderer", None)
+    if debug_renderer is not None:
+        ensure_renderer(viewer, "debug_renderer", int(debug_renderer.width), int(debug_renderer.height), allow_debug_overlays=True, force_recreate=True)
+        recycled = True
+    if getattr(viewer.s, "trainer", None) is not None and getattr(viewer.s, "training_renderer", None) is not None:
+        training_renderer = viewer.s.training_renderer
+        _replace_training_renderer(
+            viewer,
+            int(getattr(training_renderer, "_render_capacity_width", training_renderer.width)),
+            int(getattr(training_renderer, "_render_capacity_height", training_renderer.height)),
+            reset_loss_debug=not loss_debug_reset,
+        )
+        recycled = True
+    if recycled:
+        viewer.s.last_periodic_renderer_reallocation_time = now
+    return recycled
 
 
 def _create_renderer(viewer: object, width: int, height: int, allow_debug_overlays: bool) -> GaussianRenderer:
@@ -1111,7 +1168,7 @@ def _training_runtime_signature(params: object) -> tuple[object, ...]:
 
 
 def recreate_renderer(viewer: object, width: int, height: int) -> None:
-    ensure_renderer(viewer, "renderer", width, height, allow_debug_overlays=True)
+    ensure_renderer(viewer, "renderer", width, height, allow_debug_overlays=True, force_recreate=True)
     _reset_loss_debug(viewer)
 
 
@@ -1140,19 +1197,9 @@ def ensure_training_runtime_resolution(viewer: object) -> bool:
         viewer.s.applied_training_runtime_factor = current_factor
         viewer.s.pending_training_runtime_resize = False
         return True
-    previous_renderer = viewer.s.training_renderer
-    renderer = _create_renderer(viewer, desired_size[0], desired_size[1], allow_debug_overlays=False)
-    enc = viewer.device.create_command_encoder()
-    previous_renderer.copy_scene_state_to(enc, renderer)
-    viewer.device.submit_command_buffer(enc.finish())
-    viewer.s.training_renderer = renderer
-    viewer.s.trainer.rebind_renderer(renderer)
-    _apply_debug_buffers(viewer, viewer.s.renderer)
-    _apply_debug_buffers(viewer, viewer.s.debug_renderer)
+    _replace_training_renderer(viewer, desired_size[0], desired_size[1])
     viewer.s.applied_training_runtime_factor = current_factor
     viewer.s.pending_training_runtime_resize = False
-    _invalidate(viewer)
-    _reset_loss_debug(viewer)
     return True
 
 

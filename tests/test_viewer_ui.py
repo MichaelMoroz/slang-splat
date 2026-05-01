@@ -294,6 +294,22 @@ def test_colmap_import_window_docks_into_toolkit_tab(monkeypatch) -> None:
     assert dock_calls[0] == (17, int(ui.imgui.Cond_.appearing.value))
 
 
+def test_colmap_camera_selection_table_ends_child_when_begin_child_returns_false(monkeypatch) -> None:
+    child_end_calls: list[str] = []
+    monkeypatch.setattr(ui.imgui, "text_disabled", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "button", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(ui.imgui, "same_line", lambda: None)
+    monkeypatch.setattr(ui.imgui, "begin_child", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(ui.imgui, "end_child", lambda: child_end_calls.append("end"))
+    viewer_ui = SimpleNamespace(_values={"colmap_selected_camera_ids": (1,)}, _texts={})
+    camera_rows = ({"camera_id": 1, "frame_count": 4}, {"camera_id": 2, "frame_count": 6})
+
+    ui.ToolkitWindow._draw_colmap_camera_selection_table(SimpleNamespace(), viewer_ui, camera_rows)
+
+    assert child_end_calls == ["end"]
+    assert viewer_ui._values["colmap_selected_camera_ids"] == (1,)
+
+
 def test_help_windows_dock_into_toolkit_tabs(monkeypatch) -> None:
     dock_calls: list[tuple[int, int]] = []
     monkeypatch.setattr(ui.imgui, "set_next_window_dock_id", lambda dock_id, cond: dock_calls.append((int(dock_id), int(cond))))
@@ -316,6 +332,31 @@ def test_help_windows_dock_into_toolkit_tabs(monkeypatch) -> None:
     ui.ToolkitWindow._draw_documentation_window(toolkit)
 
     assert dock_calls == [(17, int(ui.imgui.Cond_.appearing.value)), (17, int(ui.imgui.Cond_.appearing.value))]
+
+
+def test_documentation_window_ends_child_when_begin_child_returns_false(monkeypatch) -> None:
+    child_end_calls: list[str] = []
+    monkeypatch.setattr(ui.imgui, "set_next_window_pos", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ui.imgui, "set_next_window_size", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ui.imgui, "begin", lambda *args, **kwargs: (True, True))
+    monkeypatch.setattr(ui.imgui, "text_disabled", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "separator", lambda: None)
+    monkeypatch.setattr(ui.imgui, "begin_child", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(ui.imgui, "end_child", lambda: child_end_calls.append("end"))
+    monkeypatch.setattr(ui.imgui, "end", lambda: None)
+    monkeypatch.setattr(ui, "_draw_markdown_text", lambda *_args: (_ for _ in ()).throw(AssertionError("markdown draw should be skipped when child is closed")))
+    toolkit = SimpleNamespace(
+        _show_docs=True,
+        _menu_bar_height=24.0,
+        _toolkit_dock_id=17,
+        _applied_interface_scale=1.0,
+        _documentation_text="docs",
+        _dock_tool_window=lambda *_args: None,
+    )
+
+    ui.ToolkitWindow._draw_documentation_window(toolkit)
+
+    assert child_end_calls == ["end"]
 
 
 def test_histogram_window_docks_and_requests_refresh_on_open(monkeypatch) -> None:

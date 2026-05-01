@@ -544,6 +544,8 @@ def render_frame(viewer: object, render_context: spy.AppWindow.RenderContext) ->
             session.recreate_renderer(viewer, render_width, render_height)
         elif (viewer.s.renderer.width, viewer.s.renderer.height) != (render_width, render_height):
             session.recreate_renderer(viewer, render_width, render_height)
+        else:
+            session.maybe_reallocate_renderers(viewer, render_width, render_height, now)
         encoder.clear_texture_float(image, clear_value=_VIEWER_CLEAR_COLOR)
         if viewer.s.scene is None:
             viewer.s.viewport_texture = None

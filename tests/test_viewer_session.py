@@ -324,6 +324,42 @@ def test_ensure_renderer_keeps_existing_main_renderer_when_replacement_fails(mon
     assert viewer.s.renderer is existing_renderer
 
 
+def test_maybe_reallocate_renderers_recycles_live_renderers_at_interval(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+    current_time = session._PERIODIC_RENDERER_REALLOCATION_INTERVAL_S + 1.0
+    viewer = SimpleNamespace(
+        s=SimpleNamespace(
+            renderer=SimpleNamespace(width=128, height=72),
+            debug_renderer=SimpleNamespace(width=96, height=54),
+            trainer=SimpleNamespace(),
+            training_renderer=SimpleNamespace(width=64, height=32, _render_capacity_width=80, _render_capacity_height=40),
+            last_periodic_renderer_reallocation_time=0.0,
+        )
+    )
+
+    monkeypatch.setattr(session, "recreate_renderer", lambda viewer_obj, width, height: calls.append(("main", (width, height))))
+    monkeypatch.setattr(
+        session,
+        "ensure_renderer",
+        lambda viewer_obj, attr, width, height, allow_debug_overlays, force_recreate=False: calls.append(("debug", (attr, width, height, allow_debug_overlays, force_recreate))),
+    )
+    monkeypatch.setattr(
+        session,
+        "_replace_training_renderer",
+        lambda viewer_obj, width, height, reset_loss_debug=True: calls.append(("training", (width, height, reset_loss_debug))),
+    )
+
+    recycled = session.maybe_reallocate_renderers(viewer, 128, 72, current_time)
+
+    assert recycled is True
+    assert calls == [
+        ("main", (128, 72)),
+        ("debug", ("debug_renderer", 96, 54, True, True)),
+        ("training", (80, 40, False)),
+    ]
+    assert viewer.s.last_periodic_renderer_reallocation_time == pytest.approx(current_time)
+
+
 def test_choose_colmap_root_auto_selects_first_matching_image_folder(tmp_path: Path) -> None:
     database_path, images_root = _build_colmap_tree(
         tmp_path,
