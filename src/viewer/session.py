@@ -89,6 +89,7 @@ _DATASET_BC7_TEXCONV_URL = "https://github.com/microsoft/DirectXTex/releases/dow
 _DATASET_BC7_TEXCONV_PATH = Path(__file__).resolve().parents[2] / "temp" / "bc_texture_tools" / "texconv.exe"
 _PERIODIC_RENDERER_REALLOCATION_INTERVAL_S = 120.0
 _TRAINING_RUNTIME_PARAM_NAMES = (
+    "max_sh_band",
     "train_downscale_mode",
     "train_auto_start_downscale",
     "train_downscale_base_iters",
@@ -665,16 +666,6 @@ def _concat_gaussian_scenes(scenes: list[GaussianScene]) -> GaussianScene:
     )
 
 
-def _rescale_gaussian_scene_to_nn_radius(scene: GaussianScene, nn_radius_scale_coef: float) -> GaussianScene:
-    if scene.count <= 1:
-        return scene
-    target_radius = float(max(nn_radius_scale_coef, 1e-4))
-    target_radius *= max(float(np.median(point_nn_scales(np.ascontiguousarray(scene.positions, dtype=np.float32)))), 1e-6)
-    current_radius = max(float(np.exp(np.median(np.mean(np.asarray(scene.scales, dtype=np.float32), axis=1)))), 1e-6)
-    scene.scales = np.ascontiguousarray(np.asarray(scene.scales, dtype=np.float32) + np.float32(np.log(target_radius / current_radius)), dtype=np.float32)
-    return scene
-
-
 def _pointcloud_init_hparams_from_positions(recon: object, positions: np.ndarray, max_gaussians: int, init_hparams: object, nn_radius_scale_coef: float, min_track_length: int):
     resolved = resolve_colmap_init_hparams(recon, max_gaussians, init_hparams, min_track_length=min_track_length)
     chosen_count = positions.shape[0] if max_gaussians <= 0 else min(max(int(max_gaussians), 1), positions.shape[0])
@@ -1065,7 +1056,7 @@ def ensure_renderer(viewer: object, attr: str, width: int, height: int, allow_de
         ) if attr == "training_renderer" else (int(renderer.width), int(renderer.height))
         if renderer_size == size and not force_recreate: return renderer
     previous_renderer = renderer
-    renderer = GaussianRenderSettings.from_renderer_params(size[0], size[1], viewer.renderer_params(allow_debug_overlays)).create_renderer(viewer.device)
+    renderer = _create_renderer(viewer, size[0], size[1], allow_debug_overlays)
     if isinstance(viewer.s.scene, GaussianScene):
         renderer.set_scene(viewer.s.scene)
     setattr(viewer.s, attr, renderer)
@@ -1140,7 +1131,11 @@ def maybe_reallocate_renderers(viewer: object, render_width: int, render_height:
 
 
 def _create_renderer(viewer: object, width: int, height: int, allow_debug_overlays: bool) -> GaussianRenderer:
-    return GaussianRenderSettings.from_renderer_params(int(width), int(height), viewer.renderer_params(allow_debug_overlays)).create_renderer(viewer.device)
+    renderer = GaussianRenderSettings.from_renderer_params(int(width), int(height), viewer.renderer_params(allow_debug_overlays)).create_renderer(viewer.device)
+    if not allow_debug_overlays or getattr(viewer.s, "trainer", None) is not None:
+        _, params, _, _ = resolve_effective_training_setup(viewer)
+        renderer.max_sh_band = int(getattr(params.training, "max_sh_band", 3))
+    return renderer
 
 
 def _renderer_params_signature(params: object) -> tuple[object, ...]:
@@ -1184,6 +1179,7 @@ def recreate_renderer(viewer: object, width: int, height: int) -> None:
 def ensure_training_runtime_resolution(viewer: object) -> bool:
     if viewer.s.trainer is None or viewer.s.training_renderer is None or not viewer.s.training_frames:
         return False
+    runtime_changed = False
     if bool(getattr(viewer.s, "pending_training_runtime_resize", False)):
         _, params, _, _ = resolve_effective_training_setup(viewer)
         runtime_signature = _training_runtime_signature(params)
@@ -1191,18 +1187,20 @@ def ensure_training_runtime_resolution(viewer: object) -> bool:
             viewer.s.trainer.update_hyperparams(params.adam, params.stability, params.training)
             viewer.s.applied_training_signature = _training_live_params_signature(params)
             viewer.s.applied_training_runtime_signature = runtime_signature
+            runtime_changed = True
     current_factor = int(viewer.s.trainer.effective_train_render_factor()) if hasattr(viewer.s.trainer, "effective_train_render_factor") else int(viewer.s.trainer.effective_train_downscale_factor())
     current_size = (
         int(getattr(viewer.s.training_renderer, "_render_capacity_width", viewer.s.training_renderer.width)),
         int(getattr(viewer.s.training_renderer, "_render_capacity_height", viewer.s.training_renderer.height)),
     )
-    if viewer.s.applied_training_runtime_factor == current_factor:
-        desired_width, desired_height = viewer.s.trainer.max_training_resolution()
-        if current_size == (int(desired_width), int(desired_height)):
-            return False
     desired_width, desired_height = viewer.s.trainer.max_training_resolution()
     desired_size = (int(desired_width), int(desired_height))
+    if viewer.s.applied_training_runtime_factor == current_factor and current_size == desired_size and not runtime_changed:
+        viewer.s.pending_training_runtime_resize = False
+        return False
     if current_size == desired_size:
+        if runtime_changed:
+            _replace_training_renderer(viewer, desired_size[0], desired_size[1])
         viewer.s.applied_training_runtime_factor = current_factor
         viewer.s.pending_training_runtime_resize = False
         return True
@@ -1287,7 +1285,7 @@ def _build_initial_training_scene(viewer: object, init: object, params: object, 
         cached_ply_scene = getattr(viewer.s, "cached_init_custom_ply_scene", None)
         if cached_ply_scene is None:
             raise RuntimeError("Cached custom PLY scene is unavailable.")
-        source_scenes.append(_rescale_gaussian_scene_to_nn_radius(_copy_gaussian_scene(cached_ply_scene), _custom_ply_nn_radius_scale_coef(import_cfg)))
+        source_scenes.append(_copy_gaussian_scene(cached_ply_scene))
 
     if _custom_mesh_source_enabled(import_cfg):
         positions = getattr(viewer.s, "cached_init_custom_mesh_positions", None)
@@ -1326,6 +1324,7 @@ def apply_live_params(viewer: object, force_init_defaults: bool = False) -> None
     del force_init_defaults
     training_params = viewer.training_params().training
     trainer = viewer.s.trainer
+    resolved_params = None
     active_sh_band = resolve_sh_band(trainer.training, trainer.state.step) if trainer is not None and hasattr(trainer, "training") and hasattr(trainer, "state") else int(getattr(training_params, "sh_band", 3 if bool(getattr(training_params, "use_sh", False)) else 0))
     viewport_sh_band = min(max(int(viewer.ui._values.get("_viewport_sh_band", active_sh_band)), 0), 3) if hasattr(viewer, "ui") else active_sh_band
     viewer.s.background = viewer.render_background()
@@ -1339,6 +1338,10 @@ def apply_live_params(viewer: object, force_init_defaults: bool = False) -> None
         if renderer is None:
             setattr(viewer.s, state_attr, None)
             continue
+        if trainer is not None and attr != "training_renderer":
+            if resolved_params is None:
+                _, resolved_params, _, _ = resolve_effective_training_setup(viewer)
+            renderer.max_sh_band = int(getattr(resolved_params.training, "max_sh_band", getattr(renderer, "max_sh_band", 3)))
         renderer.sh_band = active_sh_band if attr == "training_renderer" else viewport_sh_band
         renderer.debug_refinement_grad_variance_weight_exponent = float(getattr(training_params, "refinement_grad_variance_weight_exponent", getattr(renderer, "debug_refinement_grad_variance_weight_exponent", 0.0)))
         renderer.debug_refinement_contribution_weight_exponent = float(getattr(training_params, "refinement_contribution_weight_exponent", getattr(renderer, "debug_refinement_contribution_weight_exponent", 0.0)))
@@ -1355,7 +1358,9 @@ def apply_live_params(viewer: object, force_init_defaults: bool = False) -> None
     _apply_debug_buffers(viewer, viewer.s.debug_renderer)
     if viewer.s.trainer is not None:
         viewer.s.trainer.compute_debug_grad_norm = bool(viewer.s.renderer is not None and viewer.s.renderer.debug_show_grad_norm)
-        _, params, _, _ = resolve_effective_training_setup(viewer)
+        if resolved_params is None:
+            _, resolved_params, _, _ = resolve_effective_training_setup(viewer)
+        params = resolved_params
         signature = _training_live_params_signature(params)
         runtime_signature = _training_runtime_signature(params)
         if viewer.s.applied_training_signature != signature:
@@ -2020,6 +2025,11 @@ def initialize_training_scene(viewer: object, frame_targets_native: list[spy.Tex
     elif getattr(viewer.s.colmap_import, "images_root", None) is not None and all(hasattr(frame, "image_path") for frame in viewer.s.training_frames):
         trainer_kwargs["frame_targets_native"] = _create_native_dataset_textures(viewer, viewer.s.training_frames)
     viewer.s.trainer = GaussianTrainer(**trainer_kwargs)
+    capped_main_sh = int(getattr(params.training, "max_sh_band", 3))
+    if getattr(viewer.s, "renderer", None) is not None:
+        viewer.s.renderer.max_sh_band = capped_main_sh
+    if getattr(viewer.s, "debug_renderer", None) is not None:
+        viewer.s.debug_renderer.max_sh_band = capped_main_sh
     viewer.s.scene = SceneCountProxy(scene.count)
     _apply_initial_camera_fit(viewer, fallback_factory=lambda: estimate_scene_bounds(scene))
     enc = viewer.device.create_command_encoder()

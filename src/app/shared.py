@@ -203,6 +203,7 @@ def build_training_params(
     use_target_alpha_mask: bool = TRAINING_BUILD_ARG_DEFAULTS["use_target_alpha_mask"],
     use_sh: bool = TRAINING_BUILD_ARG_DEFAULTS["use_sh"],
     sh_band: int | None = None,
+    max_sh_band: int | None = None,
     lr_schedule_enabled: bool = TRAINING_BUILD_ARG_DEFAULTS["lr_schedule_enabled"],
     lr_schedule_start_lr: float = TRAINING_BUILD_ARG_DEFAULTS["lr_schedule_start_lr"],
     lr_schedule_stage1_lr: float = TRAINING_BUILD_ARG_DEFAULTS["lr_schedule_stage1_lr"],
@@ -270,6 +271,7 @@ def build_training_params(
     train_subsample_factor: int = 0,
 ) -> AppTrainingParams:
     resolved_sh_band = clamp_int(3 if sh_band is None and bool(use_sh) else (0 if sh_band is None else sh_band), 0, 3)
+    resolved_max_sh_band = 3 if max_sh_band is None else clamp_int(max_sh_band, 0, 3)
     resolved_sh_band_stage1 = clamp_int(1 if sh_band_stage1 is None and bool(use_sh_stage1) else (0 if sh_band_stage1 is None else sh_band_stage1), 0, 3)
     resolved_sh_band_stage2 = clamp_int(2 if sh_band_stage2 is None and bool(use_sh_stage2) else (0 if sh_band_stage2 is None else sh_band_stage2), 0, 3)
     resolved_sh_band_stage3 = clamp_int(3 if sh_band_stage3 is None and bool(use_sh_stage3) else (0 if sh_band_stage3 is None else sh_band_stage3), 0, 3)
@@ -321,6 +323,7 @@ def build_training_params(
         use_target_alpha_mask=bool(use_target_alpha_mask),
         use_sh=resolved_sh_band > 0,
         sh_band=resolved_sh_band,
+        max_sh_band=resolved_max_sh_band,
         scale_l2_weight=clamp_float(scale_l2_weight, 0.0, 1e4),
         scale_abs_reg_weight=clamp_float(scale_abs_reg_weight, 0.0, 1e4),
         sh1_reg_weight=clamp_float(sh1_reg_weight, 0.0, 1e4),

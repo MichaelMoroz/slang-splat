@@ -26,9 +26,6 @@ from ..app.training_controls import (
     TRAINING_SETUP_GROUP,
     TRAINING_STABILITY_GROUP,
     TRAINING_UI_GROUP_DEFS,
-    TRAIN_SETUP_AUTO_DOWNSCALE_KEYS,
-    TRAIN_SETUP_PRIMARY_KEYS,
-    TRAIN_SETUP_TRAILING_KEYS,
     TRAIN_STABILITY_PAIRED_KEYS,
 )
 from .buffer_debug import ResourceDebugSnapshot, format_resource_bytes, write_resource_debug_log
@@ -2448,15 +2445,14 @@ class ToolkitWindow:
     def _section_training_setup(self, ui: ViewerUI) -> None:
         if not imgui.collapsing_header("Train Setup"):
             return
-        for key in TRAIN_SETUP_PRIMARY_KEYS:
-            self._draw_control(ui, next(spec for spec in GROUP_SPECS[TRAINING_SETUP_GROUP] if spec.key == key))
-        if int(ui._values.get("background_mode", 1)) == 0:
-            self._draw_control(ui, next(spec for spec in GROUP_SPECS[TRAINING_SETUP_GROUP] if spec.key == "train_background_color"))
-        if int(ui._values.get("train_downscale_mode", 0)) == 0:
-            for key in TRAIN_SETUP_AUTO_DOWNSCALE_KEYS:
-                self._draw_control(ui, next(spec for spec in GROUP_SPECS[TRAINING_SETUP_GROUP] if spec.key == key))
-        for key in TRAIN_SETUP_TRAILING_KEYS:
-            self._draw_control(ui, next(spec for spec in GROUP_SPECS[TRAINING_SETUP_GROUP] if spec.key == key))
+        background_mode = int(ui._values.get("background_mode", 1))
+        train_downscale_mode = int(ui._values.get("train_downscale_mode", 0))
+        for spec in GROUP_SPECS[TRAINING_SETUP_GROUP]:
+            if spec.setup_visibility == "background_custom" and background_mode != 0:
+                continue
+            if spec.setup_visibility == "downscale_auto" and train_downscale_mode != 0:
+                continue
+            self._draw_control(ui, spec)
         train_resolution = ui._texts.get("training_resolution", "")
         if train_resolution:
             _draw_disabled_wrapped_text(train_resolution)

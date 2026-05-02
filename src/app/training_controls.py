@@ -34,6 +34,7 @@ class TrainingControlDef:
     optimizer_tab: str | None = None
     schedule_stage: str | None = None
     schedule_slot: str | None = None
+    setup_visibility: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +68,7 @@ def _control(
     optimizer_tab: str | None = None,
     schedule_stage: str | None = None,
     schedule_slot: str | None = None,
+    setup_visibility: str | None = None,
 ) -> TrainingControlDef:
     return TrainingControlDef(
         key=key,
@@ -78,6 +80,7 @@ def _control(
         optimizer_tab=optimizer_tab,
         schedule_stage=schedule_stage,
         schedule_slot=schedule_slot,
+        setup_visibility=setup_visibility,
     )
 
 
@@ -90,7 +93,8 @@ TRAIN_SETUP_CONTROL_DEFS = (
     _control("training_steps_per_frame", "slider_int", "Steps / Frame", {"value": int(_VIEWER_CONTROL_DEFAULTS["training_steps_per_frame"]), "min": 1, "max": 8}, group=TRAINING_SETUP_GROUP),
     _control("background_mode", "combo", "Train Background", {"value": _default("background_mode"), "options": TRAIN_BACKGROUND_MODE_LABELS}, group=TRAINING_SETUP_GROUP, build_args=("background_mode",)),
     _control("use_target_alpha_mask", "checkbox", "Use Target Alpha Mask", {"value": _default("use_target_alpha_mask")}, group=TRAINING_SETUP_GROUP, build_args=("use_target_alpha_mask",)),
-    _control("train_background_color", "color_edit3", "Train BG Color", {"value": tuple(float(v) for v in _VIEWER_CONTROL_DEFAULTS["train_background_color"])}, group=TRAINING_SETUP_GROUP),
+    _control("max_sh_band", "combo", "Global SH Cap", {"value": 3, "options": SH_BAND_LABELS}, group=TRAINING_SETUP_GROUP, build_args=("max_sh_band",)),
+    _control("train_background_color", "color_edit3", "Train BG Color", {"value": tuple(float(v) for v in _VIEWER_CONTROL_DEFAULTS["train_background_color"])}, group=TRAINING_SETUP_GROUP, setup_visibility="background_custom"),
     _control("refinement_interval", "input_int", "Refinement Interval", {"value": _default("refinement_interval"), "step": 10, "step_fast": 50}, group=TRAINING_SETUP_GROUP, build_args=("refinement_interval",)),
     _control("refinement_growth_ratio", "input_float", "Refinement Growth", {"value": _default("refinement_growth_ratio"), "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}, group=TRAINING_SETUP_GROUP, build_args=("refinement_growth_ratio",)),
     _control("refinement_growth_start_step", "slider_int", "Start Refinement After", {"value": _default("refinement_growth_start_step"), "min": 0, "max": DEFAULT_LR_SCHEDULE_STEPS, "max_from": "lr_schedule_steps"}, group=TRAINING_SETUP_GROUP, build_args=("refinement_growth_start_step",)),
@@ -107,10 +111,10 @@ TRAIN_SETUP_CONTROL_DEFS = (
     _control("refinement_contribution_weight_exponent", "input_float", "Refinement Contribution Exponent", {"value": _default("refinement_contribution_weight_exponent"), "step": 1e-2, "step_fast": 1e-1, "format": "%.5f"}, group=TRAINING_SETUP_GROUP, build_args=("refinement_contribution_weight_exponent",)),
     _control("train_downscale_mode", "combo", "Downscale Mode", {"value": _default("train_downscale_mode"), "options": TRAIN_DOWNSCALE_MODE_LABELS}, group=TRAINING_SETUP_GROUP, build_args=("train_downscale_mode",)),
     _control("train_subsample_factor", "combo", "Subsampling", {"value": _default("train_subsample_factor"), "options": TRAIN_SUBSAMPLE_LABELS}, group=TRAINING_SETUP_GROUP, build_args=("train_subsample_factor",)),
-    _control("train_auto_start_downscale", "slider_int", "Auto Start Downscale", {"value": _default("train_auto_start_downscale"), "min": 1, "max": 16}, group=TRAINING_SETUP_GROUP, build_args=("train_auto_start_downscale",)),
-    _control("train_downscale_base_iters", "input_int", "Downscale Base Iters", {"value": _default("train_downscale_base_iters"), "step": 25, "step_fast": 100}, group=TRAINING_SETUP_GROUP, build_args=("train_downscale_base_iters",)),
-    _control("train_downscale_iter_step", "input_int", "Downscale Iter Step", {"value": _default("train_downscale_iter_step"), "step": 10, "step_fast": 50}, group=TRAINING_SETUP_GROUP, build_args=("train_downscale_iter_step",)),
-    _control("train_downscale_max_iters", "input_int", "Downscale Max Iters", {"value": _default("train_downscale_max_iters"), "step": 1000, "step_fast": 5000}, group=TRAINING_SETUP_GROUP, build_args=("train_downscale_max_iters",)),
+    _control("train_auto_start_downscale", "slider_int", "Auto Start Downscale", {"value": _default("train_auto_start_downscale"), "min": 1, "max": 16}, group=TRAINING_SETUP_GROUP, build_args=("train_auto_start_downscale",), setup_visibility="downscale_auto"),
+    _control("train_downscale_base_iters", "input_int", "Downscale Base Iters", {"value": _default("train_downscale_base_iters"), "step": 25, "step_fast": 100}, group=TRAINING_SETUP_GROUP, build_args=("train_downscale_base_iters",), setup_visibility="downscale_auto"),
+    _control("train_downscale_iter_step", "input_int", "Downscale Iter Step", {"value": _default("train_downscale_iter_step"), "step": 10, "step_fast": 50}, group=TRAINING_SETUP_GROUP, build_args=("train_downscale_iter_step",), setup_visibility="downscale_auto"),
+    _control("train_downscale_max_iters", "input_int", "Downscale Max Iters", {"value": _default("train_downscale_max_iters"), "step": 1000, "step_fast": 5000}, group=TRAINING_SETUP_GROUP, build_args=("train_downscale_max_iters",), setup_visibility="downscale_auto"),
     _control("seed", "slider_int", "Shuffle Seed", {"value": int(_VIEWER_CONTROL_DEFAULTS["seed"]), "min": 0, "max": 1000000}, group=TRAINING_SETUP_GROUP),
     _control("init_opacity", "input_float", "Init Opacity", {"value": float(_VIEWER_CONTROL_DEFAULTS["init_opacity"]), "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}, group=TRAINING_SETUP_GROUP),
 )
@@ -310,34 +314,6 @@ TRAINING_OPTIMIZER_TAB_KEYS = {
     for tab in ("Schedule", "Adam", "Regularization")
 }
 
-TRAIN_SETUP_PRIMARY_KEYS = (
-    "max_gaussians",
-    "training_steps_per_frame",
-    "background_mode",
-    "refinement_interval",
-    "refinement_growth_ratio",
-    "refinement_growth_start_step",
-    "refinement_alpha_cull_threshold",
-    "refinement_min_contribution",
-    "refinement_min_contribution_decay",
-    "refinement_opacity_mul",
-    "refinement_sample_radius",
-    "refinement_clone_scale_mul",
-    "refinement_use_compact_split",
-    "refinement_solve_opacity",
-    "refinement_split_beta",
-    "refinement_grad_variance_weight_exponent",
-    "refinement_contribution_weight_exponent",
-    "train_downscale_mode",
-    "train_subsample_factor",
-)
-TRAIN_SETUP_AUTO_DOWNSCALE_KEYS = (
-    "train_auto_start_downscale",
-    "train_downscale_base_iters",
-    "train_downscale_iter_step",
-    "train_downscale_max_iters",
-)
-TRAIN_SETUP_TRAILING_KEYS = ("seed", "init_opacity")
 TRAIN_STABILITY_PAIRED_KEYS = (("min_opacity", "max_opacity"),)
 
 SCHEDULE_STAGE_GROUPS = {

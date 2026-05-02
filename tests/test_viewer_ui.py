@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import numpy as np
 import slangpy as spy
 
-from src.app.training_controls import SCHEDULE_STAGE_CONTROL_DEFS, SCHEDULE_STAGE_GROUPS, TRAIN_SETUP_CONTROL_DEFS, TRAIN_SETUP_PRIMARY_KEYS
+from src.app.training_controls import SCHEDULE_STAGE_CONTROL_DEFS, SCHEDULE_STAGE_GROUPS, TRAIN_SETUP_CONTROL_DEFS
 from src.renderer.render_params import CachedRasterGradParams
 from src.training.defaults import TRAINING_BUILD_ARG_DEFAULTS
 from src.viewer.buffer_debug import ResourceDebugRow, ResourceDebugSnapshot
@@ -181,6 +181,35 @@ def test_build_ui_exposes_refinement_clone_scale_mul_default() -> None:
     assert "refinement_clone_scale_mul" in viewer_ui._values
 
 
+def test_train_setup_exposes_global_sh_cap_and_target_alpha_mask_controls() -> None:
+    setup_keys = {control.key for control in TRAIN_SETUP_CONTROL_DEFS}
+
+    assert "max_sh_band" in setup_keys
+    assert "use_target_alpha_mask" in setup_keys
+
+
+def test_training_setup_section_draws_controls_from_ordered_specs(monkeypatch) -> None:
+    drawn: list[str] = []
+    monkeypatch.setattr(ui.imgui, "collapsing_header", lambda _label: True)
+    monkeypatch.setattr(ui, "_draw_disabled_wrapped_text", lambda _text: None)
+    monkeypatch.setattr(ui.imgui, "separator", lambda: None)
+    toolkit = SimpleNamespace(
+        _draw_control=lambda _ui_obj, spec, compact=False: drawn.append(spec.key),
+        _ctx_reset=lambda *_args: None,
+    )
+    viewer_ui = SimpleNamespace(
+        _values={"background_mode": 1, "train_downscale_mode": 1},
+        _texts={"training_resolution": "", "training_downscale": "", "training_schedule": "", "training_refinement": ""},
+    )
+
+    ui.ToolkitWindow._section_training_setup(toolkit, viewer_ui)
+
+    assert "use_target_alpha_mask" in drawn
+    assert "max_sh_band" in drawn
+    assert "train_background_color" not in drawn
+    assert "train_auto_start_downscale" not in drawn
+
+
 def test_export_repo_defaults_writes_cached_raster_grad_training_render_defaults() -> None:
     viewer_ui = ui.build_ui(_dummy_renderer())
 
@@ -221,7 +250,6 @@ def test_train_schedule_exposes_sorting_order_dithering_controls() -> None:
     }
 
     assert "sorting_order_dithering" not in {control.key for control in TRAIN_SETUP_CONTROL_DEFS}
-    assert "sorting_order_dithering" not in TRAIN_SETUP_PRIMARY_KEYS
     for stage, (key, value) in expected.items():
         control = stage_controls[stage][key]
         assert control.kind == "input_float"
@@ -244,7 +272,6 @@ def test_train_schedule_exposes_refinement_prune_controls() -> None:
     }
 
     assert "refinement_prune_lowest_contribution_ratio" not in {control.key for control in TRAIN_SETUP_CONTROL_DEFS}
-    assert "refinement_prune_lowest_contribution_ratio" not in TRAIN_SETUP_PRIMARY_KEYS
     for stage, (key, value) in expected.items():
         control = stage_controls[stage][key]
         assert control.kind == "input_float"

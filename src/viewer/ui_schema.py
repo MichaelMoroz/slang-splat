@@ -99,10 +99,11 @@ class ControlSpec:
     kind: str
     label: str
     kwargs: dict[str, object]
+    setup_visibility: str | None = None
 
 
 def _control_spec(defn) -> ControlSpec:
-    return ControlSpec(defn.key, defn.kind, defn.label, dict(defn.kwargs))
+    return ControlSpec(defn.key, defn.kind, defn.label, dict(defn.kwargs), getattr(defn, "setup_visibility", None))
 
 
 _TRAIN_SETUP_SPECS = tuple(_control_spec(defn) for defn in TRAINING_UI_GROUP_DEFS[TRAINING_SETUP_GROUP])

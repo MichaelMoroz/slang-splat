@@ -335,22 +335,31 @@ def _resolve_legacy_sh_band(training_hparams: Any, key: str, default: bool) -> i
     return _DEFAULT_MAX_SH_BAND if bool(getattr(training_hparams, key, default)) else 0
 
 
+def resolve_max_sh_band(training_hparams: Any) -> int:
+    return _clamp_sh_band(getattr(training_hparams, "max_sh_band", _DEFAULT_MAX_SH_BAND), _DEFAULT_MAX_SH_BAND)
+
+
 def resolve_sh_band(training_hparams: Any, step: int) -> int:
+    resolved_band: int
     if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
         if hasattr(training_hparams, "sh_band"):
-            return _clamp_sh_band(getattr(training_hparams, "sh_band", 0), 0)
-        return _resolve_legacy_sh_band(training_hparams, "use_sh", False)
+            resolved_band = _clamp_sh_band(getattr(training_hparams, "sh_band", 0), 0)
+        else:
+            resolved_band = _resolve_legacy_sh_band(training_hparams, "use_sh", False)
+        return min(resolved_band, resolve_max_sh_band(training_hparams))
     stage1, stage2, stage3, stage4 = resolve_stage_schedule_steps(training_hparams)
     current_step = max(int(step), 0)
     if current_step < stage1:
-        return _clamp_sh_band(getattr(training_hparams, "sh_band", _resolve_legacy_sh_band(training_hparams, "use_sh", False)), 0)
-    if current_step < stage2:
-        return _clamp_sh_band(getattr(training_hparams, "sh_band_stage1", _resolve_legacy_sh_band(training_hparams, "use_sh_stage1", False)), _DEFAULT_MAX_SH_BAND)
-    if current_step < stage3:
-        return _clamp_sh_band(getattr(training_hparams, "sh_band_stage2", _resolve_legacy_sh_band(training_hparams, "use_sh_stage2", True)), _DEFAULT_MAX_SH_BAND)
-    if current_step < stage4:
-        return _clamp_sh_band(getattr(training_hparams, "sh_band_stage3", _resolve_legacy_sh_band(training_hparams, "use_sh_stage3", True)), _DEFAULT_MAX_SH_BAND)
-    return _clamp_sh_band(getattr(training_hparams, "sh_band_stage4", getattr(training_hparams, "sh_band_stage3", _resolve_legacy_sh_band(training_hparams, "use_sh_stage4", True))), _DEFAULT_MAX_SH_BAND)
+        resolved_band = _clamp_sh_band(getattr(training_hparams, "sh_band", _resolve_legacy_sh_band(training_hparams, "use_sh", False)), 0)
+    elif current_step < stage2:
+        resolved_band = _clamp_sh_band(getattr(training_hparams, "sh_band_stage1", _resolve_legacy_sh_band(training_hparams, "use_sh_stage1", False)), _DEFAULT_MAX_SH_BAND)
+    elif current_step < stage3:
+        resolved_band = _clamp_sh_band(getattr(training_hparams, "sh_band_stage2", _resolve_legacy_sh_band(training_hparams, "use_sh_stage2", True)), _DEFAULT_MAX_SH_BAND)
+    elif current_step < stage4:
+        resolved_band = _clamp_sh_band(getattr(training_hparams, "sh_band_stage3", _resolve_legacy_sh_band(training_hparams, "use_sh_stage3", True)), _DEFAULT_MAX_SH_BAND)
+    else:
+        resolved_band = _clamp_sh_band(getattr(training_hparams, "sh_band_stage4", getattr(training_hparams, "sh_band_stage3", _resolve_legacy_sh_band(training_hparams, "use_sh_stage4", True))), _DEFAULT_MAX_SH_BAND)
+    return min(resolved_band, resolve_max_sh_band(training_hparams))
 
 
 def resolve_use_sh(training_hparams: Any, step: int) -> bool:

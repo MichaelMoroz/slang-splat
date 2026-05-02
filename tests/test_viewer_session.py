@@ -302,6 +302,133 @@ def test_ensure_training_runtime_resolution_rebinds_renderer_without_reset(monke
     ]
 
 
+def test_ensure_training_runtime_resolution_clears_pending_flag_without_realloc(monkeypatch) -> None:
+    update_calls: list[tuple[object, object, object]] = []
+    replace_calls: list[tuple[int, int]] = []
+
+    params = SimpleNamespace(
+        adam=SimpleNamespace(__dataclass_fields__={"lr": None}, lr=1e-3),
+        stability=SimpleNamespace(__dataclass_fields__={"eps": None}, eps=1e-8),
+        training=SimpleNamespace(
+            __dataclass_fields__={
+                "max_sh_band": None,
+                "train_downscale_mode": None,
+                "train_auto_start_downscale": None,
+                "train_downscale_base_iters": None,
+                "train_downscale_iter_step": None,
+                "train_downscale_max_iters": None,
+                "train_downscale_factor": None,
+                "train_subsample_factor": None,
+            },
+            max_sh_band=3,
+            train_downscale_mode=1,
+            train_auto_start_downscale=1,
+            train_downscale_base_iters=200,
+            train_downscale_iter_step=50,
+            train_downscale_max_iters=30_000,
+            train_downscale_factor=1,
+            train_subsample_factor=1,
+        ),
+    )
+    viewer = SimpleNamespace(
+        s=SimpleNamespace(
+            trainer=SimpleNamespace(
+                update_hyperparams=lambda adam, stability, training: update_calls.append((adam, stability, training)),
+                effective_train_render_factor=lambda: 2,
+                max_training_resolution=lambda: (32, 32),
+            ),
+            training_renderer=SimpleNamespace(width=32, height=32),
+            training_frames=[SimpleNamespace(width=64, height=64)],
+            applied_training_signature=session._training_live_params_signature(params),
+            applied_training_runtime_signature=session._training_runtime_signature(params),
+            applied_training_runtime_factor=2,
+            pending_training_runtime_resize=True,
+        ),
+    )
+
+    monkeypatch.setattr(session, "resolve_effective_training_setup", lambda viewer_obj: (None, params, None, None))
+    monkeypatch.setattr(session, "_replace_training_renderer", lambda viewer_obj, width, height, reset_loss_debug=True: replace_calls.append((width, height)))
+
+    changed = session.ensure_training_runtime_resolution(viewer)
+
+    assert changed is False
+    assert update_calls == []
+    assert replace_calls == []
+    assert viewer.s.pending_training_runtime_resize is False
+
+
+def test_ensure_training_runtime_resolution_replaces_same_size_renderer_for_runtime_change(monkeypatch) -> None:
+    update_calls: list[tuple[object, object, object]] = []
+    replace_calls: list[tuple[int, int]] = []
+
+    params_before = SimpleNamespace(
+        adam=SimpleNamespace(__dataclass_fields__={"lr": None}, lr=1e-3),
+        stability=SimpleNamespace(__dataclass_fields__={"eps": None}, eps=1e-8),
+        training=SimpleNamespace(
+            __dataclass_fields__={
+                "max_sh_band": None,
+                "train_downscale_mode": None,
+                "train_auto_start_downscale": None,
+                "train_downscale_base_iters": None,
+                "train_downscale_iter_step": None,
+                "train_downscale_max_iters": None,
+                "train_downscale_factor": None,
+                "train_subsample_factor": None,
+            },
+            max_sh_band=1,
+            train_downscale_mode=1,
+            train_auto_start_downscale=1,
+            train_downscale_base_iters=200,
+            train_downscale_iter_step=50,
+            train_downscale_max_iters=30_000,
+            train_downscale_factor=1,
+            train_subsample_factor=1,
+        ),
+    )
+    params_after = SimpleNamespace(
+        adam=params_before.adam,
+        stability=params_before.stability,
+        training=SimpleNamespace(
+            __dataclass_fields__=params_before.training.__dataclass_fields__,
+            max_sh_band=3,
+            train_downscale_mode=1,
+            train_auto_start_downscale=1,
+            train_downscale_base_iters=200,
+            train_downscale_iter_step=50,
+            train_downscale_max_iters=30_000,
+            train_downscale_factor=1,
+            train_subsample_factor=1,
+        ),
+    )
+    viewer = SimpleNamespace(
+        s=SimpleNamespace(
+            trainer=SimpleNamespace(
+                update_hyperparams=lambda adam, stability, training: update_calls.append((adam, stability, training)),
+                effective_train_render_factor=lambda: 2,
+                max_training_resolution=lambda: (32, 32),
+            ),
+            training_renderer=SimpleNamespace(width=32, height=32),
+            training_frames=[SimpleNamespace(width=64, height=64)],
+            applied_training_signature=session._training_live_params_signature(params_before),
+            applied_training_runtime_signature=session._training_runtime_signature(params_before),
+            applied_training_runtime_factor=2,
+            pending_training_runtime_resize=True,
+        ),
+    )
+
+    monkeypatch.setattr(session, "resolve_effective_training_setup", lambda viewer_obj: (None, params_after, None, None))
+    monkeypatch.setattr(session, "_replace_training_renderer", lambda viewer_obj, width, height, reset_loss_debug=True: replace_calls.append((width, height)))
+
+    changed = session.ensure_training_runtime_resolution(viewer)
+
+    assert changed is True
+    assert update_calls == [(params_after.adam, params_after.stability, params_after.training)]
+    assert replace_calls == [(32, 32)]
+    assert viewer.s.applied_training_signature == session._training_live_params_signature(params_after)
+    assert viewer.s.applied_training_runtime_signature == session._training_runtime_signature(params_after)
+    assert viewer.s.pending_training_runtime_resize is False
+
+
 def test_ensure_renderer_clears_replaced_renderer_resources(monkeypatch) -> None:
     calls: list[tuple[str, object]] = []
     previous_renderer = SimpleNamespace(width=64, height=64, clear_scene_resources=lambda: calls.append(("clear", None)))
@@ -339,6 +466,34 @@ def test_ensure_renderer_clears_replaced_renderer_resources(monkeypatch) -> None
         ("clear", None),
         ("invalidate", ("main", "debug")),
     ]
+
+
+def test_create_renderer_applies_training_sh_cap_when_trainer_exists(monkeypatch) -> None:
+    new_renderer = SimpleNamespace(max_sh_band=3)
+    params = SimpleNamespace(training=SimpleNamespace(max_sh_band=1))
+    viewer = SimpleNamespace(
+        device=SimpleNamespace(),
+        renderer_params=lambda allow_debug_overlays: _renderer_params(debug=bool(allow_debug_overlays)),
+        s=SimpleNamespace(trainer=SimpleNamespace()),
+    )
+
+    class _Settings:
+        @classmethod
+        def from_renderer_params(cls, width: int, height: int, params_obj: object):
+            del width, height, params_obj
+            return cls()
+
+        def create_renderer(self, device) -> object:
+            del device
+            return new_renderer
+
+    monkeypatch.setattr(session, "GaussianRenderSettings", _Settings)
+    monkeypatch.setattr(session, "resolve_effective_training_setup", lambda viewer_obj: (None, params, None, None))
+
+    result = session._create_renderer(viewer, 128, 72, allow_debug_overlays=True)
+
+    assert result is new_renderer
+    assert result.max_sh_band == 1
 
 
 def test_clear_releases_renderer_scene_resources() -> None:
@@ -904,9 +1059,10 @@ def test_build_initial_training_scene_combines_enabled_sources(monkeypatch) -> N
     point_positions = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float32)
     point_colors = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32)
     ply_positions = np.array([[2.0, 0.0, 0.0]], dtype=np.float32)
+    ply_scales = np.array([[1.25, -0.75, 0.5]], dtype=np.float32)
     ply_scene = GaussianScene(
         positions=ply_positions,
-        scales=np.zeros((1, 3), dtype=np.float32),
+        scales=ply_scales,
         rotations=np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
         opacities=np.ones((1,), dtype=np.float32),
         colors=np.array([[0.0, 0.0, 1.0]], dtype=np.float32),
@@ -948,13 +1104,13 @@ def test_build_initial_training_scene_combines_enabled_sources(monkeypatch) -> N
     monkeypatch.setattr(session, "_ensure_cached_init_source", lambda viewer_obj, init: None)
     monkeypatch.setattr(session, "_pointcloud_init_hparams_from_positions", lambda *args, **kwargs: SimpleNamespace(base_scale=0.25))
     monkeypatch.setattr(session, "initialize_scene_from_points_colors", lambda positions, colors, seed, init_hparams: _scene_from_points(positions, colors))
-    monkeypatch.setattr(session, "_rescale_gaussian_scene_to_nn_radius", lambda scene, nn_radius_scale_coef: scene)
 
     scene_obj, scale_reg_reference = session._build_initial_training_scene(viewer, SimpleNamespace(seed=7), SimpleNamespace(training=SimpleNamespace(max_gaussians=0)), SimpleNamespace())
 
     assert scale_reg_reference is None
     assert scene_obj.count == 3
     assert np.array_equal(scene_obj.positions, np.concatenate((point_positions, ply_positions), axis=0))
+    np.testing.assert_allclose(scene_obj.scales, np.concatenate((np.zeros((2, 3), dtype=np.float32), ply_scales), axis=0), atol=1e-6)
 
 
 def test_import_colmap_from_ui_rejects_empty_camera_selection(tmp_path: Path) -> None:
@@ -2216,15 +2372,16 @@ def test_apply_live_params_defers_subsample_runtime_change_until_resize(monkeypa
 
 def test_apply_live_params_syncs_renderer_sh_band(monkeypatch) -> None:
     update_calls: list[object] = []
-    renderer = SimpleNamespace(sh_band=0, use_sh=False, debug_show_grad_norm=False)
-    training_renderer = SimpleNamespace(sh_band=3, use_sh=True, debug_show_grad_norm=False)
-    debug_renderer = SimpleNamespace(sh_band=0, use_sh=False, debug_show_grad_norm=False)
+    renderer = SimpleNamespace(sh_band=0, max_sh_band=3, use_sh=False, debug_show_grad_norm=False)
+    training_renderer = SimpleNamespace(sh_band=3, max_sh_band=1, use_sh=True, debug_show_grad_norm=False)
+    debug_renderer = SimpleNamespace(sh_band=0, max_sh_band=3, use_sh=False, debug_show_grad_norm=False)
     params = SimpleNamespace(
         adam=SimpleNamespace(),
         stability=SimpleNamespace(),
         training=SimpleNamespace(
             sh_band=0,
             use_sh=False,
+            max_sh_band=1,
             train_downscale_mode="auto",
             train_auto_start_downscale=4,
             train_downscale_base_iters=200,
@@ -2260,8 +2417,11 @@ def test_apply_live_params_syncs_renderer_sh_band(monkeypatch) -> None:
     session.apply_live_params(viewer)
 
     assert viewer.s.renderer.sh_band == 3
+    assert viewer.s.renderer.max_sh_band == 1
     assert viewer.s.debug_renderer.sh_band == 3
+    assert viewer.s.debug_renderer.max_sh_band == 1
     assert viewer.s.training_renderer.sh_band == 0
+    assert viewer.s.training_renderer.max_sh_band == 1
     assert len(update_calls) == 1
 
 
