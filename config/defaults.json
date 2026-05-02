@@ -21,11 +21,11 @@
     "scale_abs_reg_weight": 0.01,
     "sh1_reg_weight": 0.30000001192092896,
     "opacity_reg_weight": 0.01,
-    "position_push_away_from_camera_step": 0.019999999552965164,
-    "position_push_away_from_camera_step_stage1": 0.019999999552965164,
-    "position_push_away_from_camera_step_stage2": 0.019999999552965164,
-    "position_push_away_from_camera_step_stage3": 0.019999999552965164,
-    "position_push_away_from_camera_step_stage4": 0.019999999552965164,
+    "position_push_away_from_camera_step": 0.024000000208616257,
+    "position_push_away_from_camera_step_stage1": 0.024000000208616257,
+    "position_push_away_from_camera_step_stage2": 0.024000000208616257,
+    "position_push_away_from_camera_step_stage3": 0.024000000208616257,
+    "position_push_away_from_camera_step_stage4": 0.03500000014901161,
     "density_regularizer": 0.009999999776482582,
     "max_visible_angle_deg": 30.0,
     "sorting_order_dithering": 0.009999999776482582,
@@ -66,13 +66,13 @@
     "refinement_growth_ratio": 0.05999999865889549,
     "refinement_growth_start_step": 1142,
     "refinement_alpha_cull_threshold": 0.01,
-    "refinement_min_contribution": 100,
+    "refinement_min_contribution": 0.009999999776482582,
     "refinement_min_contribution_decay": 0.995,
     "refinement_prune_lowest_contribution_ratio": 0.05000000074505806,
     "refinement_prune_lowest_contribution_ratio_stage1": 0.029999999329447746,
-    "refinement_prune_lowest_contribution_ratio_stage2": 0.03,
-    "refinement_prune_lowest_contribution_ratio_stage3": 0.029999999329447746,
-    "refinement_prune_lowest_contribution_ratio_stage4": 0.029999999329447746,
+    "refinement_prune_lowest_contribution_ratio_stage2": 0.019999999552965164,
+    "refinement_prune_lowest_contribution_ratio_stage3": 0.00800000037997961,
+    "refinement_prune_lowest_contribution_ratio_stage4": 0.004000000189989805,
     "refinement_opacity_mul": 1.0,
     "refinement_sample_radius": 2.5,
     "refinement_min_screen_radius_px": 3.0,
@@ -148,7 +148,7 @@
     ],
     "debug_contribution_range": [
       0.0,
-      1.0
+      10.0
     ],
     "debug_refinement_distribution_range": [
       0.0,
@@ -160,7 +160,7 @@
     ],
     "debug_depth_mean_range": [
       0.0,
-      1.0
+      10.0
     ],
     "debug_depth_std_range": [
       0.0,
@@ -189,9 +189,9 @@
       "interface_scale": 4,
       "theme": 1,
       "loss_debug_view": 0,
-      "loss_debug_frame": 14,
+      "loss_debug_frame": 0,
       "loss_debug_abs_scale": 1.0,
-      "move_speed": 1.27394210560201,
+      "move_speed": 2.635891368737207,
       "fov": 60.0,
       "render_background_mode": 1,
       "render_background_color": [
@@ -219,7 +219,7 @@
       "colmap_nn_radius_scale_coef": 0.40230000019073486,
       "colmap_min_track_length": 3,
       "colmap_depth_point_count": 100000,
-      "colmap_pointcloud_enabled": false,
+      "colmap_pointcloud_enabled": true,
       "colmap_pointcloud_nn_radius_scale_coef": 0.40230000019073486,
       "colmap_diffused_enabled": true,
       "colmap_diffused_point_count": 905001,
@@ -230,7 +230,7 @@
       "colmap_custom_mesh_enabled": false,
       "colmap_custom_mesh_point_count": 500000,
       "colmap_custom_mesh_nn_radius_scale_coef": 0.40230000019073486,
-      "colmap_fibonacci_sphere_enabled": true,
+      "colmap_fibonacci_sphere_enabled": false,
       "colmap_fibonacci_sphere_point_count": 50601,
       "colmap_fibonacci_sphere_radius": 101.02799987792969,
       "colmap_fibonacci_sphere_nn_radius_scale_coef": 1.0
@@ -245,10 +245,10 @@
       "hist_bin_count": 256,
       "hist_min_value": -0.984375,
       "hist_max_value": 0.984375,
-      "hist_y_limit": 1282299.2,
+      "hist_y_limit": 1918696.0,
       "viewport_sh_band": 3,
-      "viewport_sh_control_key": "sh_band_stage2",
-      "viewport_sh_stage_label": "Stage 2"
+      "viewport_sh_control_key": "sh_band_stage3",
+      "viewport_sh_stage_label": "Stage 3"
     },
     "state": {
       "list_capacity_multiplier": 16,
