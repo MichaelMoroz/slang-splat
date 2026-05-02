@@ -250,6 +250,69 @@ def test_reset_training_runtime_releases_trainer_resources(monkeypatch) -> None:
     assert viewer.s.pending_training_runtime_resize is False
 
 
+def test_reset_training_runtime_clears_all_training_debug_bindings(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+
+    class _BoundRenderer:
+        def __init__(self, prefix: str) -> None:
+            self.prefix = prefix
+
+        def set_debug_grad_norm_buffer(self, buffer) -> None:
+            calls.append((f"{self.prefix}_grad_norm", buffer))
+
+        def set_debug_grad_stats_buffer(self, buffer) -> None:
+            calls.append((f"{self.prefix}_grad_stats", buffer))
+
+        def set_debug_splat_age_buffer(self, buffer) -> None:
+            calls.append((f"{self.prefix}_splat_age", buffer))
+
+        def set_debug_splat_contribution_buffer(self, buffer) -> None:
+            calls.append((f"{self.prefix}_contribution", buffer))
+
+        def set_debug_adam_moments_buffer(self, buffer) -> None:
+            calls.append((f"{self.prefix}_adam", buffer))
+
+        def set_debug_contribution_observed_pixel_count(self, value) -> None:
+            calls.append((f"{self.prefix}_pixels", value))
+
+    viewer = SimpleNamespace(
+        s=SimpleNamespace(
+            trainer=SimpleNamespace(release_resources=lambda preserve_frame_targets=False: calls.append(("release", preserve_frame_targets))),
+            training_active=True,
+            training_elapsed_s=5.0,
+            training_resume_time=1.0,
+            renderer=_BoundRenderer("main"),
+            debug_renderer=_BoundRenderer("debug"),
+            applied_renderer_params_training="training",
+            applied_renderer_params_debug="debug",
+            applied_training_signature="sig",
+            applied_training_runtime_signature="runtime",
+            applied_training_runtime_factor=2,
+            cached_training_setup_signature="cached-sig",
+            cached_training_setup="cached",
+            pending_training_runtime_resize=True,
+        )
+    )
+    monkeypatch.setattr(session, "_reset_training_visual_state", lambda viewer_obj: calls.append(("visual", viewer_obj)))
+    monkeypatch.setattr(session, "_reset_loss_debug", lambda viewer_obj: calls.append(("loss", viewer_obj)))
+    monkeypatch.setattr(session, "_clear", lambda viewer_obj, *attrs: calls.append(("clear", attrs)))
+
+    session._reset_training_runtime(viewer)
+
+    assert ("main_grad_norm", None) in calls
+    assert ("main_grad_stats", None) in calls
+    assert ("main_splat_age", None) in calls
+    assert ("main_contribution", None) in calls
+    assert ("main_adam", None) in calls
+    assert ("main_pixels", 0) in calls
+    assert ("debug_grad_norm", None) in calls
+    assert ("debug_grad_stats", None) in calls
+    assert ("debug_splat_age", None) in calls
+    assert ("debug_contribution", None) in calls
+    assert ("debug_adam", None) in calls
+    assert ("debug_pixels", 0) in calls
+
+
 def test_training_elapsed_seconds_includes_current_active_segment() -> None:
     viewer = _viewer()
     viewer.s.training_active = True

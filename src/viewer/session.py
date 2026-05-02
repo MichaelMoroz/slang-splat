@@ -933,12 +933,8 @@ def _reset_training_runtime(viewer: object, *, preserve_frame_targets: bool = Fa
     if callable(release_resources):
         release_resources(preserve_frame_targets=bool(preserve_frame_targets))
     viewer.s.trainer = None
-    if viewer.s.renderer is not None:
-        viewer.s.renderer.set_debug_grad_norm_buffer(None)
-        clear_grad_stats = getattr(viewer.s.renderer, "set_debug_grad_stats_buffer", None)
-        if callable(clear_grad_stats):
-            clear_grad_stats(None)
-        viewer.s.renderer.set_debug_splat_age_buffer(None)
+    _clear_debug_buffers(getattr(viewer.s, "renderer", None))
+    _clear_debug_buffers(getattr(viewer.s, "debug_renderer", None))
     viewer.s.applied_renderer_params_training = None
     viewer.s.applied_renderer_params_debug = None
     viewer.s.applied_training_signature = None
@@ -1021,6 +1017,25 @@ def _training_debug_splat_contribution_buffer(viewer: object):
 
 def _training_debug_adam_moments_buffer(viewer: object):
     return viewer.s.trainer.adam_optimizer.buffers["adam_moments"] if viewer.s.trainer is not None else None
+
+
+def _clear_debug_buffers(renderer: GaussianRenderer | None) -> None:
+    if renderer is None:
+        return
+    renderer.set_debug_grad_norm_buffer(None)
+    bind_grad_stats = getattr(renderer, "set_debug_grad_stats_buffer", None)
+    if callable(bind_grad_stats):
+        bind_grad_stats(None)
+    renderer.set_debug_splat_age_buffer(None)
+    bind_contribution = getattr(renderer, "set_debug_splat_contribution_buffer", None)
+    if callable(bind_contribution):
+        bind_contribution(None)
+    bind_adam_moments = getattr(renderer, "set_debug_adam_moments_buffer", None)
+    if callable(bind_adam_moments):
+        bind_adam_moments(None)
+    set_contribution_pixels = getattr(renderer, "set_debug_contribution_observed_pixel_count", None)
+    if callable(set_contribution_pixels):
+        set_contribution_pixels(0)
 
 
 def _apply_debug_buffers(viewer: object, renderer: GaussianRenderer | None) -> None:
