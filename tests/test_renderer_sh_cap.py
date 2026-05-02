@@ -1,6 +1,8 @@
 import numpy as np
+from types import SimpleNamespace
 
 from src.renderer import GaussianRenderer
+from src.renderer import gaussian_renderer as gaussian_renderer_module
 from src.scene import SUPPORTED_SH_COEFF_COUNT
 
 
@@ -63,3 +65,51 @@ def test_pack_unpack_param_groups_zeroes_coeffs_above_cap() -> None:
     np.testing.assert_allclose(unpacked["sh_coeffs"][:, :4, :], sh_coeffs[:, :4, :], rtol=0.0, atol=0.0)
     np.testing.assert_allclose(unpacked["sh_coeffs"][:, 4:, :], 0.0, rtol=0.0, atol=0.0)
     np.testing.assert_allclose(unpacked["color_alpha"][:, 3], color_alpha[:, 3], rtol=0.0, atol=0.0)
+
+
+def test_max_sh_band_reuploads_bound_scene() -> None:
+    renderer = object.__new__(GaussianRenderer)
+    scene = object()
+    uploaded: list[object] = []
+    renderer._max_sh_band = 3
+    renderer._sh_band = 3
+    renderer._current_scene = scene
+    renderer._scene_buffers = {}
+
+    renderer.set_scene = lambda value: uploaded.append(value)
+
+    GaussianRenderer.max_sh_band.fset(renderer, 1)
+
+    assert renderer.max_sh_band == 1
+    assert renderer.sh_band == 1
+    assert uploaded == [scene]
+
+
+def test_ensure_scene_buffers_reallocates_when_packed_layout_changes(monkeypatch) -> None:
+    allocations: list[int] = []
+    released: list[object] = []
+    old_buffer = object()
+    renderer = object.__new__(GaussianRenderer)
+    renderer.device = object()
+    renderer._max_sh_band = 3
+    renderer._sh_band = 3
+    renderer._scene_buffers = {"splat_params": old_buffer}
+    renderer._scene_capacity = 16
+    renderer._scene_count = 16
+    renderer._scene_packed_param_count = 23
+    renderer._resource_groups = SimpleNamespace(scene={})
+    renderer._RW_BUFFER_USAGE = 0
+
+    monkeypatch.setattr(gaussian_renderer_module, "defer_resource_releases", lambda buffers: released.extend(list(buffers)))
+    monkeypatch.setattr(
+        gaussian_renderer_module,
+        "alloc_buffer",
+        lambda _device, *, name, size, usage: allocations.append(size) or SimpleNamespace(name=name, size=size, usage=usage),
+    )
+
+    GaussianRenderer._ensure_scene_buffers(renderer, 8)
+
+    assert released == [old_buffer]
+    assert allocations == [renderer._scene_capacity * renderer.packed_trainable_param_count * renderer._U32_BYTES]
+    assert renderer._scene_count == 8
+    assert renderer._scene_packed_param_count == renderer.packed_trainable_param_count

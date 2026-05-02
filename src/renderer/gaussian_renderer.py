@@ -749,6 +749,7 @@ class GaussianRenderer:
         self._prefix_sum = GPUPrefixSum(self.device)
         self._set_render_capacity_geometry(self.width, self.height)
         self._scene_count = self._scene_capacity = self._max_list_entries = self._work_splat_capacity = self._max_scanline_entries = 0
+        self._scene_packed_param_count = self._work_packed_param_count = 0
         self._current_scene: GaussianScene | None = None
         self._scene_buffers: dict[str, spy.Buffer] = {}
         self._work_buffers: dict[str, spy.Buffer] = {}
@@ -834,12 +835,14 @@ class GaussianRenderer:
         return constants[name]
 
     def _ensure_scene_buffers(self, splat_count: int) -> None:
-        if self._scene_buffers and splat_count <= self._scene_capacity:
+        packed_param_count = int(self.packed_trainable_param_count)
+        if self._scene_buffers and splat_count <= self._scene_capacity and packed_param_count == self._scene_packed_param_count:
             self._scene_count = splat_count
             return
         defer_resource_releases(self._scene_buffers.values())
         self._scene_capacity, self._scene_count = grow_capacity(splat_count, self._scene_capacity), splat_count
-        param_bytes = max(self._scene_capacity, 1) * self.packed_trainable_param_count * self._U32_BYTES
+        self._scene_packed_param_count = packed_param_count
+        param_bytes = max(self._scene_capacity, 1) * packed_param_count * self._U32_BYTES
         self._resource_groups.scene = {
             name: alloc_buffer(self.device, name=f"renderer.scene.{name}", size=param_bytes, usage=self._RW_BUFFER_USAGE)
             for name in self._SCENE_SHADER_VARS
@@ -859,12 +862,14 @@ class GaussianRenderer:
         required_splats = max(requested_splats, 1)
         required_scanline_entries = min(max(self._estimate_scanline_entries(requested_splats), int(min_scanline_entries), 1), max_entries)
         required_entries = min(max(requested_splats * self.list_capacity_multiplier, int(min_list_entries), required_scanline_entries, 1), max_entries)
-        if self._work_buffers and required_splats <= self._work_splat_capacity and required_entries <= self._max_list_entries and required_scanline_entries <= self._max_scanline_entries and self._output_texture is not None and self._training_depth_stats_texture is not None and self._output_grad_buffer is not None:
+        packed_param_count = int(self.packed_trainable_param_count)
+        if self._work_buffers and required_splats <= self._work_splat_capacity and required_entries <= self._max_list_entries and required_scanline_entries <= self._max_scanline_entries and packed_param_count == self._work_packed_param_count and self._output_texture is not None and self._training_depth_stats_texture is not None and self._output_grad_buffer is not None:
             return
         defer_resource_releases(self._work_buffers.values())
         self._work_splat_capacity = grow_capacity(required_splats, self._work_splat_capacity)
         self._max_list_entries = min(grow_capacity(required_entries, self._max_list_entries), max_entries)
         self._max_scanline_entries = min(grow_capacity(required_scanline_entries, self._max_scanline_entries), max_entries)
+        self._work_packed_param_count = packed_param_count
         sized = {
             "screen_center_radius_depth": max(self._work_splat_capacity, 1) * self._F32X4_BYTES,
             "screen_color_alpha": max(self._work_splat_capacity, 1) * self._F32X4_BYTES,
@@ -1855,9 +1860,14 @@ class GaussianRenderer:
 
     @max_sh_band.setter
     def max_sh_band(self, value: int) -> None:
+        previous = getattr(self, "_max_sh_band", None)
         self._max_sh_band = min(max(int(value), 0), 3)
         if hasattr(self, "_sh_band"):
             self._sh_band = min(self._sh_band, self._max_sh_band)
+        if previous == self._max_sh_band or not hasattr(self, "_scene_buffers"):
+            return
+        if getattr(self, "_current_scene", None) is not None:
+            self.set_scene(self._current_scene)
 
     @property
     def stored_sh_coeff_count(self) -> int:
