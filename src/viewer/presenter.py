@@ -568,7 +568,7 @@ def render_frame(viewer: object, render_context: spy.AppWindow.RenderContext) ->
         realtime_enabled = bool(viewer.ui._values.get("show_histograms", False)) and bool(viewer.ui._values.get("_histograms_update_realtime", False))
         realtime_refresh_due = realtime_enabled and now >= float(viewer.ui._values.get("_histograms_realtime_next_refresh_time", 0.0))
         if bool(viewer.ui._values.get("_histograms_refresh_requested", False)) or realtime_refresh_due:
-            session.refresh_cached_raster_grad_histograms(viewer)
+            session.refresh_cached_raster_grad_histograms(viewer, force=realtime_refresh_due)
             viewer.ui._values["_histograms_realtime_next_refresh_time"] = now + _HISTOGRAM_REALTIME_REFRESH_SECONDS if realtime_enabled else 0.0
         viewer.s.last_render_exception = ""
     except Exception as exc:
