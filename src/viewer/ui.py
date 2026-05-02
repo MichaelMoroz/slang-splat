@@ -1942,6 +1942,8 @@ class ToolkitWindow:
         opened, show = imgui.begin("Histograms", True)
         ui._values["show_histograms"] = bool(show)
         ui._values["_show_histograms_prev"] = bool(show)
+        if bool(show) and bool(ui._values.get("_histograms_update_realtime", False)):
+            ui._values["_histograms_refresh_requested"] = True
         if opened:
             self._draw_histogram_controls(ui)
             status = str(ui._texts.get("histogram_status", "")).strip()
@@ -2110,6 +2112,12 @@ class ToolkitWindow:
         imgui.same_line()
         if imgui.button("Update Range"):
             ui._values["_histogram_update_range"] = True
+        imgui.same_line()
+        changed, realtime = imgui.checkbox("Update Histograms in Realtime", bool(ui._values.get("_histograms_update_realtime", False)))
+        if changed:
+            ui._values["_histograms_update_realtime"] = bool(realtime)
+            if realtime:
+                ui._values["_histograms_refresh_requested"] = True
         flags = imgui.TableFlags_.sizing_stretch_prop.value | imgui.TableFlags_.pad_outer_x.value
         if imgui.begin_table("##hist_controls", 2, flags):
             imgui.table_setup_column("Label", imgui.TableColumnFlags_.width_fixed.value, _HISTOGRAM_CONTROL_LABEL_WIDTH)
@@ -2750,6 +2758,7 @@ def build_ui(renderer) -> ViewerUI:
         values[key] = cast(_VIEWER_UI_DEFAULTS[key])
     values.update({
         "_histograms_refresh_requested": False,
+        "_histograms_update_realtime": False,
         "_show_histograms_prev": False,
         "_histogram_update_y_limit": True,
         "_histogram_update_range": False,

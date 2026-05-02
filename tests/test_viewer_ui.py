@@ -148,6 +148,7 @@ def test_build_ui_initializes_control_groups_and_internal_state() -> None:
 
     assert viewer_ui._values["_histogram_update_y_limit"] is True
     assert viewer_ui._values["_histogram_update_range"] is False
+    assert viewer_ui._values["_histograms_update_realtime"] is False
     assert viewer_ui._values["hist_bin_count"] == 256
     assert viewer_ui._values["_show_histograms_prev"] is False
     assert viewer_ui._values["_training_views_rows"] == ()
@@ -472,6 +473,20 @@ def test_histogram_window_docks_and_requests_refresh_on_open(monkeypatch) -> Non
     ui.ToolkitWindow._draw_histogram_window(toolkit, viewer_ui)
 
     assert dock_calls == [(17, int(ui.imgui.Cond_.appearing.value))]
+    assert viewer_ui._values["_histograms_refresh_requested"] is True
+    assert viewer_ui._values["_show_histograms_prev"] is True
+
+
+def test_histogram_window_requests_refresh_each_frame_when_realtime_enabled(monkeypatch) -> None:
+    monkeypatch.setattr(ui.imgui, "set_next_window_pos", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ui.imgui, "set_next_window_size", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ui.imgui, "begin", lambda *args, **kwargs: (False, True))
+    monkeypatch.setattr(ui.imgui, "end", lambda: None)
+    toolkit = SimpleNamespace(_menu_bar_height=24.0, _toolkit_dock_id=17, _applied_interface_scale=1.0, _draw_histogram_controls=lambda ui_obj: None, _dock_tool_window=lambda *_args: None)
+    viewer_ui = SimpleNamespace(_values={"show_histograms": True, "_show_histograms_prev": True, "_histograms_refresh_requested": False, "_histograms_update_realtime": True}, _texts={})
+
+    ui.ToolkitWindow._draw_histogram_window(toolkit, viewer_ui)
+
     assert viewer_ui._values["_histograms_refresh_requested"] is True
     assert viewer_ui._values["_show_histograms_prev"] is True
 
