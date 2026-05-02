@@ -12,7 +12,7 @@ from PIL import Image
 import slangpy as spy
 
 from ..app.shared import apply_training_profile, estimate_point_bounds, estimate_scene_bounds, fit_camera
-from ..utility import SHADER_ROOT, clamp_index, load_compute_kernels
+from ..utility import SHADER_ROOT, clamp_index, drain_all_deferred_resource_releases, load_compute_kernels
 from ..metrics import PARAM_HISTOGRAM_SCALE_LINEAR, PARAM_HISTOGRAM_SCALE_LOG10, ParamLog10Histograms, ParamTensorRanges
 from ..renderer import GaussianRenderSettings, GaussianRenderer
 from ..scene import (
@@ -285,6 +285,13 @@ def _clear(viewer: object, *attrs: str) -> None:
                 clear_scene_resources()
             setattr(viewer.s, attr, None)
             del value
+
+
+def _flush_deferred_resources(viewer: object) -> None:
+    wait = getattr(getattr(viewer, "device", None), "wait", None)
+    if callable(wait):
+        wait()
+    drain_all_deferred_resource_releases(min_age=0, advance_generation=False)
 
 
 def _training_camera(frames: object, near: float, far: float):
@@ -946,6 +953,7 @@ def _reset_training_runtime(viewer: object, *, preserve_frame_targets: bool = Fa
     _reset_training_visual_state(viewer)
     _reset_loss_debug(viewer)
     _clear(viewer, "training_renderer")
+    _flush_deferred_resources(viewer)
 
 
 def _reset_loaded_runtime(viewer: object) -> None:
@@ -967,6 +975,7 @@ def _clear_loaded_scene(viewer: object) -> None:
     viewer.s.training_frames = []
     if viewer.s.renderer is not None:
         viewer.s.renderer.clear_scene_resources()
+    _flush_deferred_resources(viewer)
 
 
 def create_debug_shaders(viewer: object) -> None:

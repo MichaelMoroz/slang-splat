@@ -12,6 +12,7 @@ from src.utility import (
     alloc_texture_2d,
     clear_debug_resource_allocations,
     defer_resource_release,
+    drain_all_deferred_resource_releases,
     drain_deferred_resource_releases,
     dispatch,
     dispatch_indirect,
@@ -47,6 +48,15 @@ def test_deferred_resource_release_waits_for_min_age() -> None:
 
     assert drain_deferred_resource_releases(max_bytes=1_000_000, min_age=2) == (0, 0)
     assert drain_deferred_resource_releases(max_bytes=1_000_000, min_age=2) == (1, 0)
+    clear_debug_resource_allocations()
+
+
+def test_drain_all_deferred_resource_releases_ignores_default_age_when_requested() -> None:
+    clear_debug_resource_allocations()
+    resource = object()
+    defer_resource_release(resource)
+
+    assert drain_all_deferred_resource_releases(min_age=0, advance_generation=False) == (1, 0)
     clear_debug_resource_allocations()
 
 

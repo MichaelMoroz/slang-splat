@@ -169,6 +169,18 @@ def drain_deferred_resource_releases(
     return released_count, released_bytes
 
 
+def drain_all_deferred_resource_releases(
+    *,
+    min_age: int = _DEFERRED_RELEASE_MIN_AGE,
+    advance_generation: bool = True,
+) -> tuple[int, int]:
+    return drain_deferred_resource_releases(
+        max_bytes=max(int(_DEFERRED_RELEASE_BYTES), 1),
+        min_age=int(min_age),
+        advance_generation=bool(advance_generation),
+    )
+
+
 def clear_debug_resource_allocations() -> None:
     global _RESOURCE_ALLOCATION_ORDER, _DEFERRED_RELEASE_BYTES, _DEFERRED_RELEASE_GENERATION
     _RESOURCE_ALLOCATIONS.clear()

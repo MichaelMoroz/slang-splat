@@ -313,6 +313,67 @@ def test_reset_training_runtime_clears_all_training_debug_bindings(monkeypatch) 
     assert ("debug_pixels", 0) in calls
 
 
+def test_reset_training_runtime_waits_and_drains_deferred_resources(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+    viewer = SimpleNamespace(
+        device=SimpleNamespace(wait=lambda: calls.append(("wait", None))),
+        s=SimpleNamespace(
+            trainer=SimpleNamespace(release_resources=lambda preserve_frame_targets=False: calls.append(("release", preserve_frame_targets))),
+            training_active=True,
+            training_elapsed_s=1.0,
+            training_resume_time=2.0,
+            renderer=None,
+            debug_renderer=None,
+            applied_renderer_params_training="training",
+            applied_renderer_params_debug="debug",
+            applied_training_signature="sig",
+            applied_training_runtime_signature="runtime",
+            applied_training_runtime_factor=2,
+            cached_training_setup_signature="cached-sig",
+            cached_training_setup="cached",
+            pending_training_runtime_resize=True,
+        ),
+    )
+    monkeypatch.setattr(session, "_reset_training_visual_state", lambda viewer_obj: calls.append(("visual", viewer_obj)))
+    monkeypatch.setattr(session, "_reset_loss_debug", lambda viewer_obj: calls.append(("loss", viewer_obj)))
+    monkeypatch.setattr(session, "_clear", lambda viewer_obj, *attrs: calls.append(("clear", attrs)))
+    monkeypatch.setattr(session, "drain_all_deferred_resource_releases", lambda min_age=0, advance_generation=False: calls.append(("drain", (min_age, advance_generation))) or (0, 0))
+
+    session._reset_training_runtime(viewer)
+
+    assert ("wait", None) in calls
+    assert ("drain", (0, False)) in calls
+
+
+def test_clear_loaded_scene_waits_and_drains_deferred_resources(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+    viewer = SimpleNamespace(
+        device=SimpleNamespace(wait=lambda: calls.append(("wait", None))),
+        s=SimpleNamespace(
+            scene=object(),
+            scene_path="scene.ply",
+            colmap_root="dataset",
+            colmap_recon=object(),
+            training_frames=[object()],
+            renderer=SimpleNamespace(clear_scene_resources=lambda: calls.append(("clear_scene_resources", None))),
+        ),
+    )
+    monkeypatch.setattr(session, "_reset_loaded_runtime", lambda viewer_obj: calls.append(("reset_loaded_runtime", viewer_obj)))
+    monkeypatch.setattr(session, "drain_all_deferred_resource_releases", lambda min_age=0, advance_generation=False: calls.append(("drain", (min_age, advance_generation))) or (0, 0))
+
+    session._clear_loaded_scene(viewer)
+
+    assert calls[0][0] == "reset_loaded_runtime"
+    assert ("clear_scene_resources", None) in calls
+    assert ("wait", None) in calls
+    assert ("drain", (0, False)) in calls
+    assert viewer.s.scene is None
+    assert viewer.s.scene_path is None
+    assert viewer.s.colmap_root is None
+    assert viewer.s.colmap_recon is None
+    assert viewer.s.training_frames == []
+
+
 def test_training_elapsed_seconds_includes_current_active_segment() -> None:
     viewer = _viewer()
     viewer.s.training_active = True
