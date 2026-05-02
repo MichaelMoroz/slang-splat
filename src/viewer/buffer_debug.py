@@ -283,6 +283,9 @@ def _viewer_resource_roots(viewer: object) -> tuple[tuple[str, object], ...]:
     if state is None:
         return ()
     roots: list[tuple[str, object]] = []
+    device = getattr(viewer, "device", None)
+    if device is not None:
+        roots.append(("viewer.device", device))
     for attr, label in (
         ("renderer", "main_renderer"),
         ("training_renderer", "training_renderer"),
@@ -299,6 +302,74 @@ def _viewer_resource_roots(viewer: object) -> tuple[tuple[str, object], ...]:
     if state_resources:
         roots.append(("viewer.state", SimpleNamespace(**state_resources)))
     return tuple(roots)
+
+
+def _unregistered_resource_allocation(value: object) -> ResourceAllocation | None:
+    if isinstance(value, spy.Device) or hasattr(value, "report_heaps"):
+        return None
+    byte_size = _unregistered_device_bytes(value)
+    if byte_size <= 0:
+        return None
+    kind = _unregistered_resource_kind(value)
+    return ResourceAllocation(
+        kind=kind,
+        name=f"unregistered.{type(value).__name__}",
+        byte_size=byte_size,
+        details=_unregistered_resource_details(value, kind, byte_size),
+        usage=_unregistered_resource_usage(value),
+        order=-1,
+    )
+
+
+def _unregistered_device_bytes(value: object) -> int:
+    try:
+        memory_usage = getattr(value, "memory_usage")
+        device_bytes = int(getattr(memory_usage, "device", 0) or 0)
+    except Exception:
+        return 0
+    return max(device_bytes, 0)
+
+
+def _unregistered_resource_kind(value: object) -> str:
+    if all(hasattr(value, attr) for attr in ("width", "height", "format")):
+        return "Texture"
+    if hasattr(value, "struct_size") or hasattr(value, "size"):
+        return "Buffer"
+    return type(value).__name__
+
+
+def _unregistered_resource_usage(value: object) -> str:
+    try:
+        usage = getattr(value, "usage")
+    except Exception:
+        return ""
+    return str(usage).replace("BufferUsage.", "").replace("TextureUsage.", "")
+
+
+def _unregistered_resource_details(value: object, kind: str, byte_size: int) -> str:
+    if kind == "Buffer":
+        try:
+            struct_size = int(getattr(value, "struct_size"))
+        except Exception:
+            struct_size = 0
+        if struct_size > 0:
+            return f"{max(int(byte_size), 0) // struct_size:,} elements x {struct_size} B"
+        return f"{max(int(byte_size), 0):,} bytes"
+    if kind == "Texture":
+        try:
+            width = int(getattr(value, "width"))
+            height = int(getattr(value, "height"))
+            depth = int(getattr(value, "depth", 1))
+            array_length = int(getattr(value, "array_length", 1))
+            mip_count = int(getattr(value, "mip_count", 1))
+            format_text = str(getattr(value, "format")).replace("Format.", "")
+        except Exception:
+            return type(value).__name__
+        depth_text = f"x{depth}" if depth > 1 else ""
+        array_text = f" array={array_length}" if array_length > 1 else ""
+        mip_text = f" mips={mip_count}" if mip_count > 1 else ""
+        return f"{width}x{height}{depth_text} {format_text}{array_text}{mip_text}"
+    return type(value).__name__
 
 
 def _snapshot_from_rows(rows: tuple[ResourceDebugRow, ...], *, process_vram: int | None = None, process_vram_source: str = "") -> ResourceDebugSnapshot:
@@ -695,6 +766,8 @@ def _query_nvidia_smi_process_vram() -> int | None:
 
 def _walk_resource_graph(value: object, path: str, found: dict[int, tuple[ResourceAllocation, list[str]]], visited: set[int], node_count: list[int], depth: int) -> None:
     allocation = resource_allocation(value)
+    if allocation is None:
+        allocation = _unregistered_resource_allocation(value)
     if allocation is not None:
         entry = found.setdefault(id(value), (allocation, []))
         entry[1].append(path)

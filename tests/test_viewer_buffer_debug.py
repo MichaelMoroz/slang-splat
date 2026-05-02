@@ -75,6 +75,45 @@ def test_resource_debug_log_includes_process_vram_delta() -> None:
     assert "Untracked / Driver Reserved: 384 B (384 bytes)" in log
 
 
+def test_resource_debug_snapshot_includes_unregistered_device_backed_objects() -> None:
+    clear_debug_resource_allocations()
+
+    class FakeMemoryUsage:
+        def __init__(self, device: int) -> None:
+            self.device = device
+
+    class FakeTextureUsage:
+        def __str__(self) -> str:
+            return "TextureUsage.shader_resource"
+
+    class FakeTexture:
+        def __init__(self) -> None:
+            self.memory_usage = FakeMemoryUsage(256)
+            self.usage = FakeTextureUsage()
+            self.width = 8
+            self.height = 4
+            self.depth = 1
+            self.array_length = 1
+            self.mip_count = 1
+            self.format = "Format.rgba8_unorm_srgb"
+
+    viewer = SimpleNamespace(
+        device=SimpleNamespace(cached_texture=FakeTexture()),
+        s=SimpleNamespace(renderer=None, training_renderer=None, debug_renderer=None, trainer=None),
+    )
+
+    snapshot = collect_resource_debug_snapshot(viewer)
+
+    assert len(snapshot.rows) == 1
+    row = snapshot.rows[0]
+    assert row.kind == "Texture"
+    assert row.name == "unregistered.FakeTexture"
+    assert row.owner == "viewer.device.cached_texture"
+    assert row.byte_size == 256
+    assert row.details == "8x4 rgba8_unorm_srgb"
+    assert row.usage == "shader_resource"
+
+
 def test_counter_prefix_from_luid_matches_windows_counter_format() -> None:
     prefix = buffer_debug._counter_prefix_from_luid([0x6C, 0xDF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
 

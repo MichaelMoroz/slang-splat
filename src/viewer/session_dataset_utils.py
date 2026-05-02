@@ -8,7 +8,7 @@ import numpy as np
 import slangpy as spy
 
 from ..scene._internal.colmap_types import ColmapFrame
-from ..utility import alloc_texture_2d, register_debug_resource
+from ..utility import alloc_texture_2d
 
 _DDS_MAGIC = 0x20534444
 _DDS_HEADER_SIZE = 124
@@ -90,21 +90,16 @@ def _parse_compressed_dataset_texture(dds_path: Path) -> _CompressedDatasetTextu
 
 
 def _create_native_dataset_texture_from_bc_payload(viewer: object, payload: _CompressedDatasetTexture) -> spy.Texture:
-    texture = viewer.device.create_texture(
+    texture = alloc_texture_2d(
+        viewer.device,
+        name="viewer.dataset_texture_bc7",
         format=payload.format,
         width=int(payload.width),
         height=int(payload.height),
         usage=spy.TextureUsage.shader_resource | spy.TextureUsage.copy_destination,
-        label="viewer.dataset_texture_bc7",
     )
     texture.copy_from_numpy(np.ascontiguousarray(payload.payload, dtype=np.uint8))
-    return register_debug_resource(
-        texture,
-        kind="Texture",
-        name="viewer.dataset_texture_bc7",
-        byte_size=_bc_payload_byte_count(payload.width, payload.height, payload.format),
-        usage=spy.TextureUsage.shader_resource | spy.TextureUsage.copy_destination,
-    )
+    return texture
 
 
 def _create_native_dataset_texture_from_rgba8(viewer: object, rgba8: np.ndarray) -> spy.Texture:
