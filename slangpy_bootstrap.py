@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import os
 import re
 import subprocess
 import sys
@@ -9,8 +10,18 @@ import sysconfig
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent
+_PROJECT_VENV_DIR_NAME = ".venv"
 _REQUIREMENTS_FILE_NAME = "requirements.txt"
 _WHEEL_DIR_NAME = "slangpy_wheels"
+_BOOTSTRAP_REEXEC_ENV = "SLANGPY_BOOTSTRAP_PROJECT_PYTHON"
+_REEXEC_ENV_DROP_NAMES = (
+    "PYTHONHOME",
+    "PYTHONPATH",
+    "PYTHONEXECUTABLE",
+    "UV_INTERNAL__PYTHONHOME",
+    "VIRTUAL_ENV",
+    "__PYVENV_LAUNCHER__",
+)
 _PACKAGE_IMPORT_NAMES = {
     "imgui-bundle": "imgui_bundle",
     "pillow": "PIL",
@@ -23,6 +34,117 @@ def _repo_root(repo_root: Path | None = None) -> Path:
 
 def _requirements_path(repo_root: Path) -> Path:
     return repo_root / _REQUIREMENTS_FILE_NAME
+
+
+def _project_python_candidates(repo_root: Path) -> tuple[Path, ...]:
+    venv_root = repo_root / _PROJECT_VENV_DIR_NAME
+    return (venv_root / "Scripts" / "python.exe", venv_root / "bin" / "python")
+
+
+def find_project_python(repo_root: Path | None = None) -> Path | None:
+    resolved_root = _repo_root(repo_root)
+    for candidate in _project_python_candidates(resolved_root):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _resolved_path(path: Path) -> Path:
+    try:
+        return path.resolve()
+    except OSError:
+        return path
+
+
+def _same_path(first: Path, second: Path) -> bool:
+    return _resolved_path(first) == _resolved_path(second)
+
+
+def _project_dependencies_missing(repo_root: Path) -> bool:
+    return bool(_missing_requirements(repo_root)) or not _slangpy_available()
+
+
+def _running_inside_virtual_environment() -> bool:
+    if getattr(sys, "real_prefix", None):
+        return True
+    base_prefix = Path(getattr(sys, "base_prefix", sys.prefix))
+    prefix = Path(sys.prefix)
+    if _same_path(prefix, base_prefix):
+        return False
+    return True
+
+
+def _current_python_externally_managed() -> bool:
+    if _running_inside_virtual_environment():
+        return False
+    stdlib_path = sysconfig.get_path("stdlib")
+    if not stdlib_path:
+        return False
+    return (Path(stdlib_path) / "EXTERNALLY-MANAGED").is_file()
+
+
+def _project_python_command(project_python: Path) -> list[str]:
+    original_argv = list(getattr(sys, "orig_argv", ()))
+    if original_argv:
+        return [str(project_python), *original_argv[1:]]
+    return [str(project_python), *sys.argv]
+
+
+def _project_venv_root(project_python: Path) -> Path:
+    parent_name = project_python.parent.name.lower()
+    if parent_name in {"scripts", "bin"}:
+        return project_python.parent.parent
+    return project_python.parent
+
+
+def _project_python_environment(project_python: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    for name in _REEXEC_ENV_DROP_NAMES:
+        env.pop(name, None)
+    env[_BOOTSTRAP_REEXEC_ENV] = str(project_python)
+    env["VIRTUAL_ENV"] = str(_project_venv_root(project_python))
+    return env
+
+
+def _current_interpreter_matches(path: Path) -> bool:
+    return _same_path(_resolved_path(path), Path(sys.executable))
+
+
+def _create_project_venv(repo_root: Path) -> Path:
+    try:
+        subprocess.run([sys.executable, "-m", "venv", _PROJECT_VENV_DIR_NAME], cwd=repo_root, check=True)
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"Failed to create project virtual environment at {repo_root / _PROJECT_VENV_DIR_NAME}.") from exc
+    project_python = find_project_python(repo_root)
+    if project_python is None:
+        raise RuntimeError(f"Project virtual environment was created but no Python executable was found under {repo_root / _PROJECT_VENV_DIR_NAME}.")
+    return project_python
+
+
+def _ensure_project_python(repo_root: Path) -> Path | None:
+    project_python = find_project_python(repo_root)
+    if _running_inside_virtual_environment():
+        if project_python is None:
+            return None
+        return project_python if _current_interpreter_matches(project_python) else None
+    if project_python is not None or not _current_python_externally_managed():
+        return project_python
+    return _create_project_venv(repo_root)
+
+
+def _maybe_reexec_into_project_python(repo_root: Path) -> None:
+    if not _project_dependencies_missing(repo_root):
+        return
+    project_python = _ensure_project_python(repo_root)
+    if project_python is None:
+        return
+    resolved_project_python = _resolved_path(project_python)
+    if _current_interpreter_matches(resolved_project_python):
+        return
+    if os.environ.get(_BOOTSTRAP_REEXEC_ENV) == str(resolved_project_python):
+        return
+    env = _project_python_environment(resolved_project_python)
+    raise SystemExit(subprocess.run(_project_python_command(resolved_project_python), env=env, check=False).returncode)
 
 
 def _normalized_package_name(name: str) -> str:
@@ -162,8 +284,15 @@ def ensure_slangpy_available(repo_root: Path | None = None) -> None:
 
 def ensure_project_dependencies_available(repo_root: Path | None = None) -> None:
     resolved_root = _repo_root(repo_root)
+    _maybe_reexec_into_project_python(resolved_root)
     ensure_requirements_available(resolved_root)
     ensure_slangpy_available(resolved_root)
 
 
-__all__ = ["ensure_project_dependencies_available", "ensure_requirements_available", "ensure_slangpy_available", "find_local_slangpy_wheel"]
+__all__ = [
+    "ensure_project_dependencies_available",
+    "ensure_requirements_available",
+    "ensure_slangpy_available",
+    "find_local_slangpy_wheel",
+    "find_project_python",
+]

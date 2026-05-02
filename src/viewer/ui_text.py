@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib
 from pathlib import Path
 
 from imgui_bundle import imgui, imgui_md
@@ -13,16 +12,6 @@ _SHORTCUTS_TEXT = "Controls: LMB drag look | WASDQE move | wheel speed"
 
 def _read_text_if_exists(path: Path) -> str:
     return path.read_text(encoding="utf-8") if path.exists() else ""
-
-
-def _imgui_bundle_assets_path() -> Path:
-    package = importlib.import_module("imgui_bundle")
-    return Path(package.__file__).resolve().parent / "assets"
-
-
-def _markdown_font_base_path() -> Path | None:
-    path = _imgui_bundle_assets_path() / "fonts" / "Roboto" / "Roboto"
-    return path if path.with_name(path.name + "-Regular.ttf").exists() else None
 
 
 def _status_suffix(text: str) -> str:

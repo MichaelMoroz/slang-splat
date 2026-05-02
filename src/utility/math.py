@@ -3,11 +3,13 @@ from __future__ import annotations
 import numpy as np
 import slangpy as spy
 from slangpy import math as smath
+from typing import TypeVar
 
 VEC_EPS = 1e-8
+_T = TypeVar("_T")
 
 
-def require_not_none[T](value: T | None, message: str) -> T:
+def require_not_none(value: _T | None, message: str) -> _T:
     if value is None:
         raise RuntimeError(message)
     return value

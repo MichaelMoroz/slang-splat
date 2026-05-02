@@ -13,7 +13,7 @@ import time
 import numpy as np
 import slangpy as spy
 import slangpy.ui.imgui_bundle as simgui
-from imgui_bundle import hello_imgui, imgui, imgui_md, implot
+from imgui_bundle import imgui, imgui_md, implot
 
 from ..metrics import PARAM_HISTOGRAM_SCALE_LINEAR, PARAM_HISTOGRAM_SCALE_LOG10
 from ..repo_defaults import json_value
@@ -60,7 +60,7 @@ from .ui_schema import (
     _renderer_debug_mode_index,
     default_control_values,
 )
-from .ui_text import _build_about_text, _build_documentation_text, _draw_disabled_wrapped_text, _draw_markdown_text, _imgui_bundle_assets_path, _markdown_font_base_path, _status_suffix
+from .ui_text import _build_about_text, _build_documentation_text, _draw_disabled_wrapped_text, _draw_markdown_text, _status_suffix
 from ..renderer.render_params import RendererParams
 
 TOOLKIT_WIDTH_FRACTION = 0.1875
@@ -855,18 +855,14 @@ class ToolkitWindow:
         atlas.clear()
         font_path = _default_font_path()
         io.font_default = atlas.add_font_from_file_ttf(str(font_path), _FONT_ATLAS_SIZE_PX) if font_path is not None else atlas.add_font_default()
-        markdown_font_base_path = _markdown_font_base_path()
-        if markdown_font_base_path is not None:
-            try:
-                hello_imgui.set_assets_folder(str(_imgui_bundle_assets_path()))
-                markdown_options = imgui_md.MarkdownOptions()
-                markdown_options.font_options.font_base_path = str(markdown_font_base_path)
-                markdown_options.font_options.regular_size = _FONT_ATLAS_SIZE_PX
-                imgui_md.de_initialize_markdown()
-                imgui_md.initialize_markdown(markdown_options)
-                imgui_md.get_font_loader_function()()
-            except Exception:
-                pass
+        try:
+            markdown_options = imgui_md.MarkdownOptions()
+            markdown_options.font_options.regular_size = _FONT_ATLAS_SIZE_PX
+            imgui_md.de_initialize_markdown()
+            imgui_md.initialize_markdown(markdown_options)
+            imgui_md.get_font_loader_function()()
+        except Exception:
+            pass
         if atlas.tex_data is not None:
             atlas.tex_data.get_pixels_array()
 

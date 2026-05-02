@@ -351,6 +351,35 @@ def test_toolkit_window_render_draws_non_background_pixels(device) -> None:
     assert np.any(np.abs(image[..., :3]) > 1e-4)
 
 
+def test_toolkit_window_render_accepts_srgb_viewport_texture(device) -> None:
+    viewer_ui = ui.build_ui(_dummy_renderer())
+    toolkit = ui.create_toolkit_window(device, 640, 360)
+    surface = device.create_texture(
+        format=spy.Format.rgba32_float,
+        width=640,
+        height=360,
+        usage=spy.TextureUsage.render_target | spy.TextureUsage.copy_source,
+    )
+    viewport = device.create_texture(
+        format=spy.Format.rgba8_unorm_srgb,
+        width=320,
+        height=180,
+        usage=spy.TextureUsage.shader_resource | spy.TextureUsage.copy_destination,
+    )
+    viewport.copy_from_numpy(np.full((180, 320, 4), [0, 255, 0, 255], dtype=np.uint8))
+    try:
+        encoder = device.create_command_encoder()
+        encoder.clear_texture_float(surface, clear_value=spy.float4(0.0, 0.0, 0.0, 1.0))
+        toolkit.render(viewer_ui, surface, encoder, viewport_texture=viewport)
+        device.submit_command_buffer(encoder.finish())
+        device.wait()
+        image = np.asarray(surface.to_numpy(), dtype=np.float32)
+    finally:
+        toolkit.shutdown()
+
+    assert np.any(np.abs(image[..., :3]) > 1e-4)
+
+
 def test_colmap_import_window_docks_into_toolkit_tab(monkeypatch) -> None:
     dock_calls: list[tuple[int, int]] = []
     monkeypatch.setattr(ui.imgui, "set_next_window_dock_id", lambda dock_id, cond: dock_calls.append((int(dock_id), int(cond))))
