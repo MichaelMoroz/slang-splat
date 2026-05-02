@@ -38,6 +38,7 @@ uniform float g_MaxViewAngleSlope;
 uniform float g_RendererRadiusScale;
 uniform uint g_SHBand;
 uniform uint g_SHNonNegativeStepIndex;
+uniform uint g_StoredPackedParamCount;
 
 uniform RWStructuredBuffer<float> g_SplatParamsRW;
 
@@ -57,9 +58,9 @@ struct TrainableGaussianState : IDifferentiable
         state.rotation = load_splat_param_vector<4>(g_SplatParamsRW, g_SplatCount, PARAM_ROTATION_X, splatId);
         [unroll] for (uint coeffIndex = 0u; coeffIndex < SH_COEFF_COUNT; coeffIndex++)
         {
-            state.shCoeffs[coeffIndex] = load_splat_param_vector<3>(g_SplatParamsRW, g_SplatCount, sh_param_id(coeffIndex, 0u), splatId);
+            state.shCoeffs[coeffIndex] = load_splat_sh_coeff(g_SplatParamsRW, g_SplatCount, g_StoredPackedParamCount, coeffIndex, splatId);
         }
-        state.rawOpacity = load_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_RAW_OPACITY, splatId);
+        state.rawOpacity = load_splat_raw_opacity(g_SplatParamsRW, g_SplatCount, g_StoredPackedParamCount, splatId);
         return state;
     }
 
@@ -70,9 +71,9 @@ struct TrainableGaussianState : IDifferentiable
         store_splat_param_vector<4>(g_SplatParamsRW, g_SplatCount, PARAM_ROTATION_X, splatId, rotation);
         [unroll] for (uint coeffIndex = 0u; coeffIndex < SH_COEFF_COUNT; coeffIndex++)
         {
-            store_splat_param_vector<3>(g_SplatParamsRW, g_SplatCount, sh_param_id(coeffIndex, 0u), splatId, shCoeffs[coeffIndex]);
+            store_splat_sh_coeff(g_SplatParamsRW, g_SplatCount, g_StoredPackedParamCount, coeffIndex, splatId, shCoeffs[coeffIndex]);
         }
-        store_splat_param(g_SplatParamsRW, g_SplatCount, PARAM_RAW_OPACITY, splatId, rawOpacity);
+        store_splat_raw_opacity(g_SplatParamsRW, g_SplatCount, g_StoredPackedParamCount, splatId, rawOpacity);
     }
 };
 
@@ -146,10 +147,9 @@ float sh_rescale_to_sampled_color_range(TrainableGaussianState state, no_diff ui
     return saturate(scale);
 }
 
-void scale_active_sh_coeffs(inout TrainableGaussianState state, float scale, uint shBand)
+void scale_active_sh_coeffs(inout TrainableGaussianState state, float scale, uint activeCoeffCount)
 {
-    if (!(scale < 1.0) || shBand == 0u) return;
-    uint activeCoeffCount = shBand == 1u ? 4u : shBand == 2u ? 9u : SH_COEFF_COUNT;
+    if (!(scale < 1.0) || activeCoeffCount <= 1u) return;
     [unroll] for (uint coeffIndex = 1u; coeffIndex < SH_COEFF_COUNT; coeffIndex++) if (coeffIndex < activeCoeffCount) state.shCoeffs[coeffIndex] *= scale;
 }
 
@@ -198,6 +198,7 @@ void csProjectGaussianParams(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (splatId >= g_SplatCount) return;
 
     TrainableGaussianState state = TrainableGaussianState.load(splatId);
+    uint activeCoeffCount = min(g_SHBand == 0u ? 1u : g_SHBand == 1u ? 4u : g_SHBand == 2u ? 9u : SH_COEFF_COUNT, packed_sh_coeff_count(g_StoredPackedParamCount));
     float4 normalizedRotation = normalize_quaternion_safe(sanitize_float4(state.rotation, g_Stability.hugeValue));
     state.logScale = sanitize_float3(state.logScale, g_Stability.hugeValue);
     state.logScale = clamp_scale_anisotropy(state.logScale);
@@ -209,7 +210,7 @@ void csProjectGaussianParams(uint3 dispatchThreadID : SV_DispatchThreadID)
         float3 coeff = sanitize_float3(state.shCoeffs[coeffIndex], g_Stability.hugeValue);
         state.shCoeffs[coeffIndex] = coeffIndex < 4u ? clamp_sh1_coeffs(coeff) : clamp_sh_rest_coeffs(coeff);
     }
-    scale_active_sh_coeffs(state, sh_rescale_to_sampled_color_range(state, g_SHBand, splatId), g_SHBand);
-    scale_active_sh_coeffs(state, sh_non_negative_rescale(state, g_SHBand, splatId, g_SHNonNegativeStepIndex), g_SHBand);
+    scale_active_sh_coeffs(state, sh_rescale_to_sampled_color_range(state, g_SHBand, splatId), activeCoeffCount);
+    scale_active_sh_coeffs(state, sh_non_negative_rescale(state, g_SHBand, splatId, g_SHNonNegativeStepIndex), activeCoeffCount);
     state.store(splatId);
 }

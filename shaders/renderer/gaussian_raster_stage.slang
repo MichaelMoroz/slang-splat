@@ -461,8 +461,10 @@ float raster_adam_momentum_length(uint splatId)
 {
     uint splatCount = g_Prepass.splatCount;
     float momentumSq = 0.0;
+    uint paramCount = g_Prepass.packedParamCount;
     [unroll] for (uint paramId = 0u; paramId < TRAINABLE_PARAM_COUNT; paramId++)
     {
+        if (paramId >= paramCount) break;
         float moment = g_DebugAdamMoments[raster_adam_moment_index(splatCount, paramId, splatId)].x;
         if (isfinite(moment)) momentumSq += moment * moment;
     }
@@ -473,8 +475,10 @@ float raster_adam_second_moment_length(uint splatId)
 {
     uint splatCount = g_Prepass.splatCount;
     float secondMomentSum = 0.0;
+    uint paramCount = g_Prepass.packedParamCount;
     [unroll] for (uint paramId = 0u; paramId < TRAINABLE_PARAM_COUNT; paramId++)
     {
+        if (paramId >= paramCount) break;
         float moment = g_DebugAdamMoments[raster_adam_moment_index(splatCount, paramId, splatId)].y;
         if (isfinite(moment)) secondMomentSum += max(moment, 0.0);
     }
@@ -1108,7 +1112,7 @@ void csRasterizeDebug(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupI
 void clear_raster_grads(uint3 dispatchThreadID)
 {
     uint splatCount = g_Prepass.splatCount;
-    uint gradCount = splatCount * TRAINABLE_PARAM_COUNT;
+    uint gradCount = splatCount * g_Prepass.packedParamCount;
     uint cachedGradCount = splatCount * RASTER_CACHE_PARAM_COUNT;
     uint idx = dispatchThreadID.x;
     if (idx < gradCount) g_ParamGrads[idx] = 0.0;
@@ -1130,8 +1134,8 @@ void backprop_cached_raster_grads<T : IRasterGradVariant>(uint3 dispatchThreadID
     store_param_grad<3>(g_Prepass.splatCount, PARAM_POSITION_X, splatId, dGaussian.position * gradScale);
     store_param_grad<3>(g_Prepass.splatCount, PARAM_SCALE_X, splatId, dGaussian.logScale * gradScale);
     store_param_grad<4>(g_Prepass.splatCount, PARAM_ROTATION_X, splatId, dGaussian.rotation * gradScale);
-    [unroll] for (uint coeffIndex = 0u; coeffIndex < SH_COEFF_COUNT; coeffIndex++) store_param_grad<3>(g_Prepass.splatCount, sh_param_id(coeffIndex, 0u), splatId, dGaussian.shCoeffs[coeffIndex] * gradScale);
-    store_param_grad<1>(g_Prepass.splatCount, PARAM_RAW_OPACITY, splatId, float1(dGaussian.rawOpacity) * gradScale);
+    [unroll] for (uint coeffIndex = 0u; coeffIndex < SH_COEFF_COUNT; coeffIndex++) if (coeffIndex < packed_sh_coeff_count(g_Prepass.packedParamCount)) store_param_grad<3>(g_Prepass.splatCount, sh_param_id(coeffIndex, 0u), splatId, dGaussian.shCoeffs[coeffIndex] * gradScale);
+    store_param_grad<1>(g_Prepass.splatCount, packed_raw_opacity_param_id(g_Prepass.packedParamCount), splatId, float1(dGaussian.rawOpacity * gradScale));
 }
 
 [shader("compute")]

@@ -240,7 +240,7 @@ class StabilityHyperParams:
 @dataclass(slots=True)
 class TrainingHyperParams:
     background: tuple[float, float, float] = (1.0, 1.0, 1.0); camera_min_dist: float = TRAINING_BUILD_ARG_DEFAULTS["camera_min_dist"]
-    background_mode: int = TRAIN_BACKGROUND_MODE_RANDOM; use_target_alpha_mask: bool = TRAINING_BUILD_ARG_DEFAULTS["use_target_alpha_mask"]; use_sh: bool = TRAINING_BUILD_ARG_DEFAULTS["use_sh"]; sh_band: int = 0
+    background_mode: int = TRAIN_BACKGROUND_MODE_RANDOM; use_target_alpha_mask: bool = TRAINING_BUILD_ARG_DEFAULTS["use_target_alpha_mask"]; use_sh: bool = TRAINING_BUILD_ARG_DEFAULTS["use_sh"]; sh_band: int = 0; max_sh_band: int = 3
     scale_l2_weight: float = TRAINING_BUILD_ARG_DEFAULTS["scale_l2_weight"]; scale_abs_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["scale_abs_reg_weight"]; sh1_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["sh1_reg_weight"]; opacity_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"]; position_push_away_from_camera_step: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0)); position_push_away_from_camera_step_stage1: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage1", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0))); position_push_away_from_camera_step_stage2: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage2", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0))); position_push_away_from_camera_step_stage3: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage3", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0))); position_push_away_from_camera_step_stage4: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage4", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage3", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0)))); density_regularizer: float = TRAINING_BUILD_ARG_DEFAULTS["density_regularizer"]; max_visible_angle_deg: float = TRAINING_BUILD_ARG_DEFAULTS["max_visible_angle_deg"]; sorting_order_dithering: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering"]; sorting_order_dithering_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage1"]; sorting_order_dithering_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage2"]; sorting_order_dithering_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage3"]; sorting_order_dithering_stage4: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage4"]; colorspace_mod: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod"]; colorspace_mod_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage1"]; colorspace_mod_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage2"]; colorspace_mod_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage3"]; colorspace_mod_stage4: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage4"]; ssim_weight: float = DEFAULT_SSIM_WEIGHT; ssim_c2: float = DEFAULT_SSIM_C2; max_allowed_density_start: float = TRAINING_BUILD_ARG_DEFAULTS["max_allowed_density_start"]; max_allowed_density: float = TRAINING_BUILD_ARG_DEFAULTS["max_allowed_density"]
     refinement_loss_weight: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_loss_weight"]; refinement_target_edge_weight: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_target_edge_weight"]; refinement_min_screen_radius_px: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_min_screen_radius_px"]
     lr_pos_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_mul"]; lr_pos_stage1_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_stage1_mul"]; lr_pos_stage2_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_stage2_mul"]; lr_pos_stage3_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_stage3_mul"]; lr_pos_stage4_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_stage4_mul"]
@@ -270,6 +270,7 @@ class TrainingHyperParams:
         self.background_mode = TRAIN_BACKGROUND_MODE_RANDOM if int(self.background_mode) == TRAIN_BACKGROUND_MODE_RANDOM else TRAIN_BACKGROUND_MODE_CUSTOM
         self.use_target_alpha_mask = bool(self.use_target_alpha_mask)
         self.sh_band = min(max(int(self.sh_band), 0), 3) if int(self.sh_band) != 0 else (3 if bool(self.use_sh) else 0)
+        self.max_sh_band = min(max(int(self.max_sh_band), 0), 3)
         self.use_sh = self.sh_band > 0
         self.lr_schedule_steps = max(int(self.lr_schedule_steps), 1)
         self.lr_schedule_stage1_step = min(max(int(self.lr_schedule_stage1_step), 0), self.lr_schedule_steps)
@@ -822,7 +823,9 @@ class GaussianTrainer:
             "g_AppendCounter": self._refinement_buffers["append_counter"],
             "g_RefinementCameraRows": self._refinement_buffers["camera_rows"],
             "g_SrcSplatCount": int(self._scene_count),
+            "g_SrcPackedParamCount": np.uint32(int(self.renderer.packed_trainable_param_count)),
             "g_DstSplatCount": int(max(dst_splat_count, 1)),
+            "g_DstPackedParamCount": np.uint32(int(self.renderer.packed_trainable_param_count)),
             "g_AppendSplatCount": int(max(append_splat_count, 1)),
             "g_SurvivorCount": int(max(survivor_count, 0)),
             "g_RefinementSeed": np.uint32(self._seed + self.state.step),
@@ -871,6 +874,7 @@ class GaussianTrainer:
         return {
             "g_PositionRandomStepParams": self.renderer.scene_buffers["splat_params"],
             "g_PositionRandomStepSplatCount": int(self._scene_count),
+            "g_PositionRandomStepPackedParamCount": np.uint32(int(self.renderer.packed_trainable_param_count)),
             "g_PositionRandomStepSeed": np.uint32(self._seed + int(step_index)),
             "g_PositionRandomStepNoiseLr": float(resolve_position_random_step_noise_lr(self.training, int(step_index))),
             "g_PositionRandomStepPositionLr": float(self.adam.position_lr * resolve_learning_rate_scale(self.training, int(step_index)) * position_lr_mul_scale),
@@ -979,6 +983,7 @@ class GaussianTrainer:
         self._refinement_splat_capacity = 0
         self._refinement_append_capacity = 0
         self._refinement_output_capacity = 0
+        self._refinement_packed_param_bytes = 0
         self._refinement_splat_age_capacity = 0
         self._refinement_camera_capacity = 0
         self._refinement_camera_signature: tuple[int, int, float, float, int] | None = None
@@ -1077,15 +1082,15 @@ class GaussianTrainer:
         required_append = self._expected_refinement_append_count(required_splats) if append_count is None else max(int(append_count), 1)
         required_output = max(required_splats + required_append, 1)
         required_camera_count = max(len(self.frames), 1)
+        packed_param_bytes = self.renderer.packed_trainable_param_count * self._U32_BYTES
         grow_splats = required_splats > self._refinement_splat_capacity
-        grow_append = required_append > self._refinement_append_capacity
-        grow_output = required_output > self._refinement_output_capacity
+        grow_append = required_append > self._refinement_append_capacity or packed_param_bytes != self._refinement_packed_param_bytes
+        grow_output = required_output > self._refinement_output_capacity or packed_param_bytes != self._refinement_packed_param_bytes
         grow_cameras = required_camera_count > self._refinement_camera_capacity
         age_buffers_ready = all(name in self._refinement_buffers for name in ("splat_age", "dst_splat_age", "append_splat_age")) and required_splats <= self._refinement_splat_age_capacity
         prune_buffers_ready = all(name in self._refinement_buffers for name in ("refinement_prune_mask", "refinement_prune_sort_keys", "refinement_prune_sort_values", "refinement_prune_prefix"))
         if self._refinement_buffers and age_buffers_ready and prune_buffers_ready and not grow_splats and not grow_append and not grow_output and not grow_cameras:
                 return
-        packed_param_bytes = self.renderer.TRAINABLE_PARAM_COUNT * self._U32_BYTES
         reset_gradient_stats = False
         if "total_clone_counter" not in self._refinement_buffers:
             self._refinement_buffers["total_clone_counter"] = alloc_buffer(self.device, name="trainer.refinement.total_clone_counter", size=self._U32_BYTES, usage=RW_BUFFER_USAGE)
@@ -1135,6 +1140,7 @@ class GaussianTrainer:
             self._set_refinement_buffer("dst_splat_age", alloc_buffer(self.device, name="trainer.refinement.dst_splat_age", size=self._refinement_output_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
         elif "dst_splat_age" not in self._refinement_buffers:
             self._refinement_buffers["dst_splat_age"] = alloc_buffer(self.device, name="trainer.refinement.dst_splat_age", size=max(self._refinement_output_capacity, 1) * self._U32_BYTES, usage=RW_BUFFER_USAGE)
+        self._refinement_packed_param_bytes = packed_param_bytes
         self._ensure_splat_age_capacity(required_splats)
         if grow_cameras or "camera_rows" not in self._refinement_buffers:
             self._refinement_camera_capacity = grow_capacity(required_camera_count, self._refinement_camera_capacity)
@@ -1152,7 +1158,7 @@ class GaussianTrainer:
         return alloc_buffer(
             self.device,
             name="trainer.refinement.dst_adam_moments",
-            size=max(int(splat_count), 1) * self.renderer.TRAINABLE_PARAM_COUNT * self._U32_BYTES * 2,
+            size=max(int(splat_count), 1) * self.renderer.packed_trainable_param_count * self._U32_BYTES * 2,
             usage=RW_BUFFER_USAGE,
         )
 
@@ -1307,21 +1313,21 @@ class GaussianTrainer:
         self._scene_count = next_count
         self.scene.count = next_count
         self._ensure_training_buffers(self._scene_count, 1)
-        self.adam_optimizer.ensure_moment_capacity(self._scene_count * self.renderer.TRAINABLE_PARAM_COUNT)
+        self.adam_optimizer.ensure_moment_capacity(self._scene_count * self.renderer.packed_trainable_param_count)
         copy_enc = self.device.create_command_encoder()
         copy_enc.copy_buffer(
             self.renderer.scene_buffers["splat_params"],
             0,
             self._refinement_buffers["dst_splat_params"],
             0,
-            self._scene_count * self.renderer.TRAINABLE_PARAM_COUNT * self._U32_BYTES,
+            self._scene_count * self.renderer.packed_trainable_param_count * self._U32_BYTES,
         )
         copy_enc.copy_buffer(
             self.adam_optimizer.buffers["adam_moments"],
             0,
             dst_adam_moments,
             0,
-            self._scene_count * self.renderer.TRAINABLE_PARAM_COUNT * self._U32_BYTES * 2,
+            self._scene_count * self.renderer.packed_trainable_param_count * self._U32_BYTES * 2,
         )
         self.device.submit_command_buffer(copy_enc.finish())
         self.device.wait()
@@ -1330,7 +1336,7 @@ class GaussianTrainer:
         self._clear_clone_counts()
 
     def _zero_optimizer_moments(self) -> None:
-        self.adam_optimizer.zero_moments(self._scene_count * self.renderer.TRAINABLE_PARAM_COUNT)
+        self.adam_optimizer.zero_moments(self._scene_count * self.renderer.packed_trainable_param_count)
 
     def _reset_frame_order(self) -> None:
         self._frame_order = self._frame_rng.permutation(len(self.frames)).astype(np.int32)
@@ -1685,7 +1691,7 @@ class GaussianTrainer:
                 params_buffer=self.renderer.scene_buffers["splat_params"],
                 grads_buffer=self.renderer.work_buffers["param_grads"],
                 element_count=self._scene_count,
-                packed_param_count=self._scene_count * self.renderer.TRAINABLE_PARAM_COUNT,
+                packed_param_count=self._scene_count * self.renderer.packed_trainable_param_count,
                 param_group_size=self._scene_count,
                 param_settings=self.optimizer.param_settings,
                 param_settings_count=self.optimizer.param_settings_count,
@@ -1747,10 +1753,34 @@ class GaussianTrainer:
         self._reset_frame_order()
         self._invalidate_downscaled_target()
 
+    def _remap_adam_moments_for_renderer(self, src_renderer: GaussianRenderer, dst_renderer: GaussianRenderer) -> None:
+        src_param_count = int(src_renderer.packed_trainable_param_count)
+        dst_param_count = int(dst_renderer.packed_trainable_param_count)
+        splat_count = max(int(self._scene_count), 1)
+        dst = np.zeros((dst_param_count, splat_count, 2), dtype=np.float32)
+        if "adam_moments" not in self.adam_optimizer.buffers:
+            self.adam_optimizer.replace_moments(splat_count * dst_param_count, dst.reshape(-1, 2))
+            return
+        flat = buffer_to_numpy(self.adam_optimizer.buffers["adam_moments"], np.float32)
+        src = np.zeros((src_param_count, splat_count, 2), dtype=np.float32)
+        copy_value_count = min(flat.size, src.size)
+        if copy_value_count > 0:
+            src.reshape(-1)[:copy_value_count] = flat[:copy_value_count]
+        for param_id in (*src_renderer.PARAM_POSITION_IDS, *src_renderer.PARAM_SCALE_IDS, *src_renderer.PARAM_ROTATION_IDS):
+            dst[param_id, :, :] = src[param_id, :, :]
+        for coeff_index in range(min(src_renderer.stored_sh_coeff_count, dst_renderer.stored_sh_coeff_count)):
+            for param_id in src_renderer.PARAM_SH_COEFF_IDS[coeff_index]:
+                dst[param_id, :, :] = src[param_id, :, :]
+        dst[dst_renderer.packed_raw_opacity_param_id, :, :] = src[src_renderer.packed_raw_opacity_param_id, :, :]
+        self.adam_optimizer.replace_moments(splat_count * dst_param_count, dst.reshape(-1, 2))
+
     def rebind_renderer(self, renderer: GaussianRenderer) -> None:
+        old_renderer = self.renderer
         self.renderer = renderer
-        self.optimizer.renderer = renderer
+        self.optimizer.rebind_renderer(renderer)
         self.apply_renderer_training_hparams(renderer=renderer)
+        if old_renderer.packed_trainable_param_count != renderer.packed_trainable_param_count:
+            self._remap_adam_moments_for_renderer(old_renderer, renderer)
         self._dynamic_frame_resolution = (
             int(getattr(renderer, "_render_capacity_width", renderer.width)),
             int(getattr(renderer, "_render_capacity_height", renderer.height)),

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from reference_impls.reference_cpu import (
     build_tile_key_value_pairs,
@@ -1183,6 +1184,14 @@ def test_prepass_capacity_budget_caps_growth(device):
     assert stats1["stats_valid"] is True
     assert int(stats1["prepass_entry_cap"]) == int(entry_cap)
     assert int(stats1["prepass_memory_mb"]) == 1
+
+
+def test_packed_scanline_work_item_limits_apply_to_capacity_growth(device):
+    renderer = GaussianRenderer(device, width=64, height=64)
+    over_limit_width = GaussianRenderer._SCANLINE_WORK_ITEM_MAX_LINE_COUNT * renderer.tile_size + 1
+
+    with pytest.raises(ValueError, match="Packed scanline work items"):
+        renderer.ensure_render_capacity(over_limit_width, renderer.tile_size)
 
 
 def test_prepass_overflow_refresh_grows_capacity_and_converges(device):

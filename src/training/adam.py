@@ -60,6 +60,15 @@ class AdamOptimizer:
         self._ensure_state_buffers(packed_param_count)
         self._buffers["adam_moments"].copy_from_numpy(np.zeros((self._capacity, 2), dtype=np.float32))
 
+    def replace_moments(self, packed_param_count: int, moments: np.ndarray) -> None:
+        count = max(int(packed_param_count), 1)
+        values = np.asarray(moments, dtype=np.float32).reshape(count, 2)
+        if self._capacity != count or "adam_moments" not in self._buffers:
+            self._capacity = count
+            defer_resource_release(self._buffers.get("adam_moments"))
+            self._buffers["adam_moments"] = alloc_buffer(self.device, name="adam.moments", size=self._capacity * 8, usage=RW_BUFFER_USAGE)
+        self._buffers["adam_moments"].copy_from_numpy(values)
+
     def _buffer_shader_vars(self) -> dict[str, object]:
         return {"g_OptimizerAdamMoments": self._buffers["adam_moments"]}
 

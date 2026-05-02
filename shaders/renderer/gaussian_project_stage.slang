@@ -145,10 +145,15 @@ void csEmitScanlines(uint3 dispatchThreadID : SV_DispatchThreadID)
         ScanlineSpan span;
         ScanlineWorkItem item;
         item.splatId = splatId;
-        item.lineCoord = lineCoord;
         item.clear(loopCfg.scanAlongX);
-        if (compute_scanline_tile_span_universal(preparedEllipse, loopCfg, tileSize, lineCoord, span) && span.lineCount > 0u) item.setSpan(span.lineStartMinor, span.lineCount, loopCfg.scanAlongX);
-        g_ScanlineWorkItems[scanlineBase + i] = item;
+        if (compute_scanline_tile_span_universal(preparedEllipse, loopCfg, tileSize, lineCoord, span) && span.lineCount > 0u)
+        {
+            uint startTileId = loopCfg.scanAlongX
+                ? (lineCoord * g_Prepass.tileWidth + span.lineStartMinor)
+                : (span.lineStartMinor * g_Prepass.tileWidth + lineCoord);
+            item.setSpan(startTileId, span.lineCount, loopCfg.scanAlongX);
+        }
+        g_ScanlineWorkItems[scanlineBase + i] = item.packed();
     }
 }
 
@@ -159,7 +164,9 @@ void csCountScanlineTiles(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint scanlineId = dispatchThreadID.x;
     uint scanlineCount = min(g_ScanlineCounter[0], g_Prepass.maxScanlineEntries);
     if (scanlineId >= scanlineCount) return;
-    g_ScanlineTileCounts[scanlineId] = g_ScanlineWorkItems[scanlineId].lineCount();
+    ScanlineWorkItem item;
+    item.loadPacked(g_ScanlineWorkItems[scanlineId]);
+    g_ScanlineTileCounts[scanlineId] = item.lineCount();
 }
 
 [shader("compute")]
@@ -170,21 +177,19 @@ void csEmitTileEntries(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint scanlineCount = min(g_ScanlineCounter[0], g_Prepass.maxScanlineEntries);
     if (scanlineId >= scanlineCount) return;
 
-    ScanlineWorkItem item = g_ScanlineWorkItems[scanlineId];
+    ScanlineWorkItem item;
+    item.loadPacked(g_ScanlineWorkItems[scanlineId]);
     uint lineCount = item.lineCount();
     if (lineCount == 0u) return;
 
     uint baseIndex = g_ScanlineTileOffsets[scanlineId];
     if (baseIndex >= g_Prepass.maxListEntries) return;
     uint writeCount = min(lineCount, g_Prepass.maxListEntries - baseIndex);
-    uint lineCoord = item.lineCoord;
-    bool scanAlongX = item.scanAlongXAxis();
+    uint startTileId = item.startTileId();
+    uint stride = item.scanAlongXAxis() ? 1u : g_Prepass.tileWidth;
     for (uint i = 0u; i < writeCount; i++)
     {
-        uint minorCoord = item.lineStartMinor + i;
-        uint tileId = scanAlongX
-            ? (lineCoord * g_Prepass.tileWidth + minorCoord)
-            : (minorCoord * g_Prepass.tileWidth + lineCoord);
+        uint tileId = startTileId + i * stride;
         g_Keys[baseIndex + i] = tileId;
         g_Values[baseIndex + i] = item.splatId;
     }

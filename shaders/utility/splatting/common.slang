@@ -144,38 +144,60 @@ float3 evaluate_gaussian_color(float3 position, float3 shCoeffs[SH_COEFF_COUNT],
 struct ScanlineWorkItem
 {
     uint splatId;
-    uint lineCoord;
-    uint lineStartMinor;
-    uint packedLineCountAxis;
+    uint packedStartTileLineCountAxis;
+
+    static const uint START_TILE_BITS = 20u;
+    static const uint LINE_COUNT_BITS = 11u;
+    static const uint START_TILE_MASK = (1u << START_TILE_BITS) - 1u;
+    static const uint LINE_COUNT_MASK = (1u << LINE_COUNT_BITS) - 1u;
+    static const uint AXIS_MASK = 0x80000000u;
 
     [mutating]
     void clear(bool scanAlongX)
     {
-        lineStartMinor = 0u;
-        packedLineCountAxis = scanAlongX ? 0x80000000u : 0u;
+        packedStartTileLineCountAxis = scanAlongX ? AXIS_MASK : 0u;
     }
 
     [mutating]
-    void setSpan(uint lineStartMinorIn, uint lineCountIn, bool scanAlongX)
+    void loadPacked(uint2 packed)
     {
-        lineStartMinor = lineStartMinorIn;
-        packedLineCountAxis = (lineCountIn & 0x7fffffffu) | (scanAlongX ? 0x80000000u : 0u);
+        splatId = packed.x;
+        packedStartTileLineCountAxis = packed.y;
+    }
+
+    [mutating]
+    void setSpan(uint startTileIdIn, uint lineCountIn, bool scanAlongX)
+    {
+        packedStartTileLineCountAxis = (startTileIdIn & START_TILE_MASK)
+            | ((lineCountIn & LINE_COUNT_MASK) << START_TILE_BITS)
+            | (scanAlongX ? AXIS_MASK : 0u);
+    }
+
+    uint2 packed()
+    {
+        return uint2(splatId, packedStartTileLineCountAxis);
+    }
+
+    uint startTileId()
+    {
+        return packedStartTileLineCountAxis & START_TILE_MASK;
     }
 
     uint lineCount()
     {
-        return packedLineCountAxis & 0x7fffffffu;
+        return (packedStartTileLineCountAxis >> START_TILE_BITS) & LINE_COUNT_MASK;
     }
 
     bool scanAlongXAxis()
     {
-        return (packedLineCountAxis & 0x80000000u) != 0u;
+        return (packedStartTileLineCountAxis & AXIS_MASK) != 0u;
     }
 };
 
 struct PrepassParams
 {
     uint splatCount;
+    uint packedParamCount;
     uint tileSize;
     uint tileWidth;
     uint tileHeight;

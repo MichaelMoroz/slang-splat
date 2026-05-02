@@ -46,7 +46,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
   - sort visible splats by sort-camera distance,
   - count visible scanlines per visible splat,
   - prefix-sum scanline counts into offsets and `g_ScanlineCounter`,
-  - emit scanline work items,
+  - emit packed scanline work items as `(splat_id, axis|line_count|start_tile_id)` records,
   - count tile entries per scanline,
   - prefix-sum tile counts into final tile-entry offsets and the list-entry counter,
   - write final `(tile_id, splat_id)` entries.

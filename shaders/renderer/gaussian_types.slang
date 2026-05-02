@@ -48,7 +48,7 @@ uniform RWStructuredBuffer<uint> g_ScanlineTileOffsets;
 uniform RWStructuredBuffer<uint> g_Keys;
 uniform RWStructuredBuffer<uint> g_Values;
 uniform RWStructuredBuffer<uint> g_ListCounter;
-uniform RWStructuredBuffer<ScanlineWorkItem> g_ScanlineWorkItems;
+uniform RWStructuredBuffer<uint2> g_ScanlineWorkItems;
 uniform RWStructuredBuffer<uint> g_ScanlineCounter;
 uniform RWStructuredBuffer<uint2> g_TileRanges;
 
@@ -92,9 +92,9 @@ Gaussian3D load_gaussian3d(uint splatId)
     gaussian.rotation = load_splat_param_vector<4>(g_SplatParams, splatCount, PARAM_ROTATION_X, splatId);
     [unroll] for (uint coeffIndex = 0u; coeffIndex < SH_COEFF_COUNT; coeffIndex++)
     {
-        gaussian.shCoeffs[coeffIndex] = load_splat_param_vector<3>(g_SplatParams, splatCount, sh_param_id(coeffIndex, 0u), splatId);
+        gaussian.shCoeffs[coeffIndex] = load_splat_sh_coeff(g_SplatParams, splatCount, g_Prepass.packedParamCount, coeffIndex, splatId);
     }
-    gaussian.rawOpacity = load_splat_param(g_SplatParams, splatCount, PARAM_RAW_OPACITY, splatId);
+    gaussian.rawOpacity = load_splat_raw_opacity(g_SplatParams, splatCount, g_Prepass.packedParamCount, splatId);
     return gaussian;
 }
 

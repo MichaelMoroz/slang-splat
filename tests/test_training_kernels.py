@@ -885,6 +885,56 @@ def test_position_random_steps_move_low_opacity_splats(device, tmp_path: Path):
     assert np.any(np.abs(after - before) > 0.0)
 
 
+def test_capped_sh_layout_survives_training_state_roundtrip_and_render(device, tmp_path: Path):
+    scene = _make_scene(count=4, seed=42)
+    scene.opacities[:] = np.full((scene.count,), 1e-4, dtype=np.float32)
+    scene.scales[:] = _log_sigma(np.full((scene.count, 3), 0.1, dtype=np.float32))
+    frame = _make_frame(tmp_path, image_name="position_random_step_capped_sh.png", image_id=131)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16, max_sh_band=1)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(
+            scale_l2_weight=0.0,
+            scale_abs_reg_weight=0.0,
+            opacity_reg_weight=0.0,
+            sh1_reg_weight=0.0,
+            density_regularizer=0.0,
+            max_sh_band=1,
+            position_random_step_noise_lr=5e4,
+        ),
+        seed=123,
+    )
+
+    zeros = np.zeros((scene.count, 4), dtype=np.float32)
+    zero_sh = np.zeros((scene.count, 4, 3), dtype=np.float32)
+    _write_grad_groups(renderer, scene.count, grad_positions=zeros, grad_scales=zeros, grad_rotations=zeros, grad_sh_coeffs=zero_sh, grad_color_alpha=zeros)
+
+    before = _read_scene_groups(renderer, scene.count)
+    before_positions = before["positions"].copy()
+    before_sh = before["sh_coeffs"].copy()
+    before_color_alpha = before["color_alpha"].copy()
+
+    enc = device.create_command_encoder()
+    trainer._dispatch_adam_step(enc)
+    trainer._dispatch_position_random_steps(enc, 1)
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+
+    after = _read_scene_groups(renderer, scene.count)
+    assert np.all(np.isfinite(after["positions"]))
+    assert np.any(np.abs(after["positions"] - before_positions) > 0.0)
+    np.testing.assert_allclose(after["sh_coeffs"], before_sh, rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(after["color_alpha"][:, 3], before_color_alpha[:, 3], rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(after["sh_coeffs"][:, 4:, :], 0.0, rtol=0.0, atol=1e-8)
+
+    image = np.asarray(renderer.render(scene, frame.make_camera(), background=np.zeros((3,), dtype=np.float32)).image, dtype=np.float32)
+    assert image.shape == (32, 32, 4)
+    assert np.all(np.isfinite(image))
+
+
 def test_position_random_steps_are_gated_for_high_opacity_splats(device, tmp_path: Path):
     scene = _make_scene(count=4, seed=43)
     scene.opacities[:] = np.full((scene.count,), 0.5, dtype=np.float32)

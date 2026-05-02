@@ -53,6 +53,7 @@ uniform uint g_OptimizerParamSettingsCount;
 uniform OptimizerRegularizationParams g_OptimizerRegularization;
 uniform float3 g_OptimizerRegularizationCameraPosition;
 uniform uint g_OptimizerRegularizationHasCamera;
+uniform uint g_OptimizerStoredPackedParamCount;
 
 uniform StructuredBuffer<OptimizerParamSettings> g_OptimizerParamSettings;
 uniform RWStructuredBuffer<float> g_OptimizerParams;
@@ -195,6 +196,9 @@ void csRegularizePacked(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     uint paramGroupSize = max(g_OptimizerParamGroupSize, 1u);
     uint paramId = paramIndex / paramGroupSize;
+    uint rawOpacityParamId = packed_raw_opacity_param_id(g_OptimizerStoredPackedParamCount);
+    uint storedShCoeffCount = packed_sh_coeff_count(g_OptimizerStoredPackedParamCount);
+    uint higherShComponentCount = storedShCoeffCount > 1u ? (storedShCoeffCount - 1u) * SH_PARAM_STRIDE : 0u;
     OptimizerParamSettings settings = g_OptimizerParamSettings[paramId];
     float value = sanitize_scalar(g_OptimizerParams[paramIndex], g_OptimizerRuntime.hugeValue);
 
@@ -226,9 +230,9 @@ void csRegularizePacked(uint3 dispatchThreadID : SV_DispatchThreadID)
             value = lerp(value, logReference, saturate(settings.lr * g_OptimizerRegularization.scaleL2Weight * (2.0 / 3.0)));
         }
         if (g_OptimizerRegularization.scaleAbsWeight > 0.0) value -= exp(value) * (settings.lr * g_OptimizerRegularization.scaleAbsWeight * (1.0 / 3.0));
-    } else if (paramId > PARAM_SH0_B && paramId < PARAM_RAW_OPACITY) {
-        if (g_OptimizerRegularization.sh1Weight > 0.0) value = optimizer_shrink_abs(value, settings.lr * g_OptimizerRegularization.sh1Weight * (1.0 / float((SH_COEFF_COUNT - 1u) * SH_PARAM_STRIDE)));
-    } else if (paramId == PARAM_RAW_OPACITY) {
+    } else if (higherShComponentCount > 0u && paramId > PARAM_SH0_B && paramId < rawOpacityParamId) {
+        if (g_OptimizerRegularization.sh1Weight > 0.0) value = optimizer_shrink_abs(value, settings.lr * g_OptimizerRegularization.sh1Weight * (1.0 / float(higherShComponentCount)));
+    } else if (paramId == rawOpacityParamId) {
         if (g_OptimizerRegularization.opacityWeight > 0.0)
         {
             float opacity = opacity_from_raw(value);

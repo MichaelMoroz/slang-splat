@@ -26,6 +26,16 @@ static const uint PARAM_SH1_Z_B = PARAM_SH_FIRST + 11u;
 static const uint PARAM_RAW_OPACITY = PARAM_SH_FIRST + SH_COEFF_COUNT * SH_PARAM_STRIDE;
 static const uint TRAINABLE_PARAM_COUNT = PARAM_RAW_OPACITY + 1u;
 
+uint packed_raw_opacity_param_id(uint packedParamCount)
+{
+    return clamp(packedParamCount, PARAM_SH_FIRST + SH_PARAM_STRIDE + 1u, TRAINABLE_PARAM_COUNT) - 1u;
+}
+
+uint packed_sh_coeff_count(uint packedParamCount)
+{
+    return (packed_raw_opacity_param_id(packedParamCount) - PARAM_SH_FIRST) / SH_PARAM_STRIDE;
+}
+
 uint sh_param_id(uint coeffIndex, uint channelIndex)
 {
     return PARAM_SH_FIRST + coeffIndex * SH_PARAM_STRIDE + channelIndex;
@@ -66,6 +76,28 @@ vector<float, N> load_splat_param_vector<let N : int>(RWStructuredBuffer<float> 
     return value;
 }
 
+float3 load_splat_sh_coeff(StructuredBuffer<float> params, uint splatCount, uint packedParamCount, uint coeffIndex, uint splatId)
+{
+    if (coeffIndex >= packed_sh_coeff_count(packedParamCount)) return 0.0;
+    return load_splat_param_vector<3>(params, splatCount, sh_param_id(coeffIndex, 0u), splatId);
+}
+
+float3 load_splat_sh_coeff(RWStructuredBuffer<float> params, uint splatCount, uint packedParamCount, uint coeffIndex, uint splatId)
+{
+    if (coeffIndex >= packed_sh_coeff_count(packedParamCount)) return 0.0;
+    return load_splat_param_vector<3>(params, splatCount, sh_param_id(coeffIndex, 0u), splatId);
+}
+
+float load_splat_raw_opacity(StructuredBuffer<float> params, uint splatCount, uint packedParamCount, uint splatId)
+{
+    return load_splat_param(params, splatCount, packed_raw_opacity_param_id(packedParamCount), splatId);
+}
+
+float load_splat_raw_opacity(RWStructuredBuffer<float> params, uint splatCount, uint packedParamCount, uint splatId)
+{
+    return load_splat_param(params, splatCount, packed_raw_opacity_param_id(packedParamCount), splatId);
+}
+
 void store_splat_param(RWStructuredBuffer<float> params, uint splatCount, uint paramId, uint splatId, float value)
 {
     params[splat_param_index(splatCount, paramId, splatId)] = value;
@@ -77,4 +109,15 @@ void store_splat_param_vector<let N : int>(RWStructuredBuffer<float> params, uin
     {
         store_splat_param(params, splatCount, firstParamId + uint(i), splatId, value[i]);
     }
+}
+
+void store_splat_sh_coeff(RWStructuredBuffer<float> params, uint splatCount, uint packedParamCount, uint coeffIndex, uint splatId, float3 value)
+{
+    if (coeffIndex >= packed_sh_coeff_count(packedParamCount)) return;
+    store_splat_param_vector<3>(params, splatCount, sh_param_id(coeffIndex, 0u), splatId, value);
+}
+
+void store_splat_raw_opacity(RWStructuredBuffer<float> params, uint splatCount, uint packedParamCount, uint splatId, float value)
+{
+    store_splat_param(params, splatCount, packed_raw_opacity_param_id(packedParamCount), splatId, value);
 }

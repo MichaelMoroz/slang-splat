@@ -69,6 +69,7 @@ uniform float g_RefinementTargetEdgeWeight;
 uniform float g_MaxAllowedDensity;
 uniform RWStructuredBuffer<float> g_PositionRandomStepParams;
 uniform uint g_PositionRandomStepSplatCount;
+uniform uint g_PositionRandomStepPackedParamCount;
 uniform uint g_PositionRandomStepSeed;
 uniform float g_PositionRandomStepNoiseLr;
 uniform float g_PositionRandomStepPositionLr;
@@ -123,7 +124,9 @@ uniform RWStructuredBuffer<uint> g_TotalCloneCounter;
 uniform RWStructuredBuffer<uint> g_AppendCounter;
 uniform StructuredBuffer<float4> g_RefinementCameraRows;
 uniform uint g_SrcSplatCount;
+uniform uint g_SrcPackedParamCount;
 uniform uint g_DstSplatCount;
+uniform uint g_DstPackedParamCount;
 uniform uint g_AppendSplatCount;
 uniform uint g_SurvivorCount;
 uniform uint g_RefinementSeed;
@@ -211,7 +214,7 @@ uint refinement_prune_target_count(uint candidateCount)
     return min(pruneCount, candidateCount);
 }
 
-SplatState load_splat_state(RWStructuredBuffer<float> params, uint splatCount, uint splatId)
+SplatState load_splat_state(RWStructuredBuffer<float> params, uint splatCount, uint packedParamCount, uint splatId)
 {
     SplatState state;
     state.position = load_splat_param_vector<3>(params, splatCount, PARAM_POSITION_X, splatId);
@@ -219,22 +222,22 @@ SplatState load_splat_state(RWStructuredBuffer<float> params, uint splatCount, u
     state.rotation = normalize_quaternion_safe(load_splat_param_vector<4>(params, splatCount, PARAM_ROTATION_X, splatId));
     [unroll] for (uint coeffIndex = 0u; coeffIndex < SH_COEFF_COUNT; coeffIndex++)
     {
-        state.shCoeffs[coeffIndex] = load_splat_param_vector<3>(params, splatCount, sh_param_id(coeffIndex, 0u), splatId);
+        state.shCoeffs[coeffIndex] = load_splat_sh_coeff(params, splatCount, packedParamCount, coeffIndex, splatId);
     }
-    state.rawOpacity = load_splat_param(params, splatCount, PARAM_RAW_OPACITY, splatId);
+    state.rawOpacity = load_splat_raw_opacity(params, splatCount, packedParamCount, splatId);
     return state;
 }
 
-void store_splat_state(RWStructuredBuffer<float> params, uint splatCount, uint splatId, SplatState state)
+void store_splat_state(RWStructuredBuffer<float> params, uint splatCount, uint packedParamCount, uint splatId, SplatState state)
 {
     store_splat_param_vector<3>(params, splatCount, PARAM_POSITION_X, splatId, state.position);
     store_splat_param_vector<3>(params, splatCount, PARAM_SCALE_X, splatId, state.logScale);
     store_splat_param_vector<4>(params, splatCount, PARAM_ROTATION_X, splatId, state.rotation);
     [unroll] for (uint coeffIndex = 0u; coeffIndex < SH_COEFF_COUNT; coeffIndex++)
     {
-        store_splat_param_vector<3>(params, splatCount, sh_param_id(coeffIndex, 0u), splatId, state.shCoeffs[coeffIndex]);
+        store_splat_sh_coeff(params, splatCount, packedParamCount, coeffIndex, splatId, state.shCoeffs[coeffIndex]);
     }
-    store_splat_param(params, splatCount, PARAM_RAW_OPACITY, splatId, state.rawOpacity);
+    store_splat_raw_opacity(params, splatCount, packedParamCount, splatId, state.rawOpacity);
 }
 
 uint adam_moment_index(uint splatCount, uint paramId, uint splatId)
@@ -301,8 +304,10 @@ float refinement_min_support_radius(PinholeCamera camera, float3 worldPos)
 
 void copy_adam_state(uint srcSplatId, uint dstSplatId)
 {
+    uint paramCount = g_SrcPackedParamCount;
     [unroll] for (uint paramId = 0u; paramId < TRAINABLE_PARAM_COUNT; paramId++)
     {
+        if (paramId >= paramCount) break;
         store_adam_moment(
             g_DstAdamMoments,
             g_DstSplatCount,
@@ -962,10 +967,10 @@ void csApplyPositionRandomSteps(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (splatId >= g_PositionRandomStepSplatCount) return;
     if (!(g_PositionRandomStepNoiseLr > 0.0) || !(g_PositionRandomStepPositionLr > 0.0)) return;
 
-    SplatState state = load_splat_state(g_PositionRandomStepParams, g_PositionRandomStepSplatCount, splatId);
+    SplatState state = load_splat_state(g_PositionRandomStepParams, g_PositionRandomStepSplatCount, g_PositionRandomStepPackedParamCount, splatId);
     uint rngState = hash_u32(g_PositionRandomStepSeed ^ (0x9e3779b9u * (splatId + 1u)));
     state.position += position_random_step_world_delta(state, rngState);
-    store_splat_state(g_PositionRandomStepParams, g_PositionRandomStepSplatCount, splatId, state);
+    store_splat_state(g_PositionRandomStepParams, g_PositionRandomStepSplatCount, g_PositionRandomStepPackedParamCount, splatId, state);
 }
 
 [shader("compute")]
@@ -1052,7 +1057,7 @@ void csPrepareRefinementCounts(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     uint splatId = dispatchThreadID.x;
     if (splatId >= g_SrcSplatCount) return;
-    float alpha = opacity_from_raw(load_splat_param(g_SrcSplatParams, g_SrcSplatCount, PARAM_RAW_OPACITY, splatId));
+    float alpha = opacity_from_raw(load_splat_raw_opacity(g_SrcSplatParams, g_SrcSplatCount, g_SrcPackedParamCount, splatId));
     if (should_cull_refinement_splat(splatId, alpha)) return;
     uint _;
     InterlockedAdd(g_AppendCounter[0], 1u, _);
@@ -1068,7 +1073,7 @@ void csClampRefinementMinScreenSize(uint3 dispatchThreadID : SV_DispatchThreadID
     if (splatId >= g_SrcSplatCount) return;
     if (g_RefinementCameraCount == 0u) return;
 
-    SplatState source = load_splat_state(g_SrcSplatParams, g_SrcSplatCount, splatId);
+    SplatState source = load_splat_state(g_SrcSplatParams, g_SrcSplatCount, g_SrcPackedParamCount, splatId);
     float minSupportRadius = 0.0;
     [loop] for (uint cameraIndex = 0u; cameraIndex < g_RefinementCameraCount; cameraIndex++)
     {
@@ -1077,7 +1082,7 @@ void csClampRefinementMinScreenSize(uint3 dispatchThreadID : SV_DispatchThreadID
     }
 
     source.logScale = apply_support_radius_lower_bound(source.logScale, minSupportRadius);
-    store_splat_state(g_SrcSplatParams, g_SrcSplatCount, splatId, source);
+    store_splat_state(g_SrcSplatParams, g_SrcSplatCount, g_SrcPackedParamCount, splatId, source);
 }
 
 [shader("compute")]
@@ -1087,7 +1092,7 @@ void csPrepareRefinementPruneSortInputs(uint3 dispatchThreadID : SV_DispatchThre
     uint splatId = dispatchThreadID.x;
     if (splatId >= g_SrcSplatCount) return;
 
-    float alpha = opacity_from_raw(load_splat_param(g_SrcSplatParams, g_SrcSplatCount, PARAM_RAW_OPACITY, splatId));
+    float alpha = opacity_from_raw(load_splat_raw_opacity(g_SrcSplatParams, g_SrcSplatCount, g_SrcPackedParamCount, splatId));
     float contribution = splat_average_contribution_raw(splatId);
     bool eligible = alpha >= g_RefinementAlphaCullThreshold && contribution >= g_RefinementMinContributionThreshold;
     g_RefinementEligibleMask[splatId] = eligible ? 1u : 0u;
@@ -1116,7 +1121,7 @@ void csPrepareRefinementSamplingWeights(uint3 dispatchThreadID : SV_DispatchThre
     if (splatId >= g_SrcSplatCount) return;
 
     g_CloneCounts[splatId] = 0u;
-    float alpha = opacity_from_raw(load_splat_param(g_SrcSplatParams, g_SrcSplatCount, PARAM_RAW_OPACITY, splatId));
+    float alpha = opacity_from_raw(load_splat_raw_opacity(g_SrcSplatParams, g_SrcSplatCount, g_SrcPackedParamCount, splatId));
     bool eligible = !should_cull_refinement_splat(splatId, alpha);
     g_RefinementEligibleMask[splatId] = eligible ? 1u : 0u;
     g_RefinementWeights[splatId] = eligible ? refinement_sampling_distribution(splatId) : 0.0;
@@ -1166,7 +1171,7 @@ void csRewriteRefinementSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint splatId = dispatchThreadID.x;
     if (splatId >= g_SrcSplatCount) return;
 
-    SplatState source = load_splat_state(g_SrcSplatParams, g_SrcSplatCount, splatId);
+    SplatState source = load_splat_state(g_SrcSplatParams, g_SrcSplatCount, g_SrcPackedParamCount, splatId);
     float alpha = opacity_from_raw(source.rawOpacity);
     if (should_cull_refinement_splat(splatId, alpha)) return;
 
@@ -1192,23 +1197,23 @@ void csRewriteRefinementSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
             float shrink = refinement_child_shrink(float(familySize));
             source.rawOpacity = raw_opacity_from_alpha(solve_refinement_split_alpha(alpha, splatId, familySize, frameHash, parentScale, shrink, familyMean));
         }
-        store_splat_state(g_DstSplatParams, g_DstSplatCount, parentIndex, split_family_member(source, splatId, 0u, familySize, frameHash, familyMean));
+        store_splat_state(g_DstSplatParams, g_DstSplatCount, g_DstPackedParamCount, parentIndex, split_family_member(source, splatId, 0u, familySize, frameHash, familyMean));
         g_DstSplatAge[parentIndex] = 1.0;
         copy_adam_state(splatId, parentIndex);
         [loop] for (uint childSlot = 0u; childSlot < emittedCloneCount; childSlot++)
         {
             SplatState child = split_family_member(source, splatId, childSlot + 1u, familySize, frameHash, familyMean);
             uint childIndex = g_SurvivorCount + childBase + childSlot;
-            store_splat_state(g_AppendParams, g_AppendSplatCount, childBase + childSlot, child);
+            store_splat_state(g_AppendParams, g_AppendSplatCount, g_DstPackedParamCount, childBase + childSlot, child);
             g_AppendSplatAge[childBase + childSlot] = 1.0;
-            store_splat_state(g_DstSplatParams, g_DstSplatCount, childIndex, child);
+            store_splat_state(g_DstSplatParams, g_DstSplatCount, g_DstPackedParamCount, childIndex, child);
             g_DstSplatAge[childIndex] = 1.0;
             copy_adam_state(splatId, childIndex);
         }
         return;
     }
 
-    store_splat_state(g_DstSplatParams, g_DstSplatCount, parentIndex, source);
+    store_splat_state(g_DstSplatParams, g_DstSplatCount, g_DstPackedParamCount, parentIndex, source);
     g_DstSplatAge[parentIndex] = decayed_splat_age(splatId);
     copy_adam_state(splatId, parentIndex);
 }

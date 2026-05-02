@@ -247,13 +247,14 @@ class Metrics:
             debug_color_index=94,
         )
 
-    def _dispatch_scene_param_histogram(self, encoder: spy.CommandEncoder, splat_params: spy.Buffer, splat_count: int, param_count: int, bin_count: int) -> None:
+    def _dispatch_scene_param_histogram(self, encoder: spy.CommandEncoder, splat_params: spy.Buffer, splat_count: int, packed_param_count: int, param_count: int, bin_count: int) -> None:
         dispatch(
             kernel=self._k_scene_param_hist_linear,
             thread_count=thread_count_2d(splat_count, param_count),
             vars={
                 "g_SplatParams": splat_params,
                 "g_SplatCount": int(splat_count),
+                "g_SplatPackedParamCount": int(packed_param_count),
                 "g_ParamCount": int(param_count),
                 "g_BinCount": int(bin_count),
                 "g_ParamHistogramBounds": self._histogram_bounds_buffer,
@@ -324,11 +325,11 @@ class Metrics:
             debug_color_index=96,
         )
 
-    def _dispatch_scene_param_ranges(self, encoder: spy.CommandEncoder, splat_params: spy.Buffer, splat_count: int, param_count: int) -> None:
+    def _dispatch_scene_param_ranges(self, encoder: spy.CommandEncoder, splat_params: spy.Buffer, splat_count: int, packed_param_count: int, param_count: int) -> None:
         dispatch(
             kernel=self._k_scene_param_range,
             thread_count=thread_count_2d(splat_count, param_count),
-            vars={"g_SplatParams": splat_params, "g_SplatCount": int(splat_count), "g_ParamCount": int(param_count), "g_ParamRanges": self._range_buffer},
+            vars={"g_SplatParams": splat_params, "g_SplatCount": int(splat_count), "g_SplatPackedParamCount": int(packed_param_count), "g_ParamCount": int(param_count), "g_ParamRanges": self._range_buffer},
             command_encoder=encoder,
             debug_label="Metrics Scene Ranges",
             debug_color_index=96,
@@ -473,6 +474,7 @@ class Metrics:
         splat_params: spy.Buffer,
         splat_count: int,
         *,
+        packed_param_count: int = 59,
         param_count: int,
         bin_count: int = 64,
         min_value: float = -1.0,
@@ -506,7 +508,7 @@ class Metrics:
         encoder = self.device.create_command_encoder()
         self._clear_uint_buffer(encoder, self._histogram_buffer, max(params * bins, 1))
         if params > 0 and splats > 0:
-            self._dispatch_scene_param_histogram(encoder, splat_params, splats, params, bins)
+            self._dispatch_scene_param_histogram(encoder, splat_params, splats, int(packed_param_count), params, bins)
         self.device.submit_command_buffer(encoder.finish())
         self.device.wait()
         return self._read_param_histograms(params, bins, lo, hi, labels, groups, value_scales, bin_edges_by_param)
@@ -572,6 +574,7 @@ class Metrics:
         splat_params: spy.Buffer,
         splat_count: int,
         *,
+        packed_param_count: int = 59,
         param_count: int,
         param_labels: tuple[str, ...] | list[str] = (),
         param_groups: tuple[tuple[str, tuple[int, ...]], ...] = (),
@@ -591,7 +594,7 @@ class Metrics:
         if params > 0:
             self._init_param_tensor_ranges(encoder, params)
             if splats > 0:
-                self._dispatch_scene_param_ranges(encoder, splat_params, splats, params)
+                self._dispatch_scene_param_ranges(encoder, splat_params, splats, int(packed_param_count), params)
         self.device.submit_command_buffer(encoder.finish())
         self.device.wait()
         return self._read_param_ranges(params, labels, groups, value_scales)

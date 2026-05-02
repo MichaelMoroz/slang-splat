@@ -27,6 +27,7 @@ uniform RWStructuredBuffer<float> g_ClearFloatBuffer;
 
 uniform StructuredBuffer<float> g_SplatParams;
 uniform uint g_SplatCount;
+uniform uint g_SplatPackedParamCount;
 uniform StructuredBuffer<float> g_Tensor;
 uniform StructuredBuffer<int> g_FixedIntBuffer;
 uniform StructuredBuffer<uint4> g_SplatContributionInfo;
@@ -95,12 +96,17 @@ float scene_metric_param_value(uint paramId, uint splatId)
     if (paramId < SCENE_METRIC_BASE_COLOR_FIRST) return load_splat_param(g_SplatParams, g_SplatCount, PARAM_ROTATION_X + paramId - SCENE_METRIC_ROTATION_FIRST - 1u, splatId);
     if (paramId < SCENE_METRIC_HIGHER_SH_FIRST)
     {
-        float3 sh0 = load_splat_param_vector<3>(g_SplatParams, g_SplatCount, PARAM_SH_FIRST, splatId);
+        float3 sh0 = load_splat_sh_coeff(g_SplatParams, g_SplatCount, g_SplatPackedParamCount, 0u, splatId);
         float3 color = saturate(evaluate_sh0_color_raw(sh0));
         return color[paramId - SCENE_METRIC_BASE_COLOR_FIRST];
     }
-    if (paramId < SCENE_METRIC_OPACITY) return load_splat_param(g_SplatParams, g_SplatCount, PARAM_SH_FIRST + SH_PARAM_STRIDE + paramId - SCENE_METRIC_HIGHER_SH_FIRST, splatId);
-    if (paramId == SCENE_METRIC_OPACITY) return opacity_from_raw(load_splat_param(g_SplatParams, g_SplatCount, PARAM_RAW_OPACITY, splatId));
+    if (paramId < SCENE_METRIC_OPACITY)
+    {
+        uint shComponent = paramId - SCENE_METRIC_HIGHER_SH_FIRST + SH_PARAM_STRIDE;
+        float3 coeff = load_splat_sh_coeff(g_SplatParams, g_SplatCount, g_SplatPackedParamCount, shComponent / SH_PARAM_STRIDE, splatId);
+        return coeff[shComponent % SH_PARAM_STRIDE];
+    }
+    if (paramId == SCENE_METRIC_OPACITY) return opacity_from_raw(load_splat_raw_opacity(g_SplatParams, g_SplatCount, g_SplatPackedParamCount, splatId));
     return 0.0;
 }
 

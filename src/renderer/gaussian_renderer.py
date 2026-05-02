@@ -176,7 +176,11 @@ class GaussianRenderer:
     _DEFAULT_DEBUG_REFINEMENT_CONTRIBUTION_WEIGHT_EXPONENT = float(_TRAINING_BUILD_ARG_DEFAULTS.get("refinement_contribution_weight_exponent", 0.1))
     _SPLAT_CONTRIBUTION_FIXED_SCALE = 256.0
     _COUNTER_READBACK_RING_SIZE = 2
-    _SCANLINE_WORK_ITEM_UINTS = 4
+    _SCANLINE_WORK_ITEM_UINTS = 2
+    _SCANLINE_WORK_ITEM_START_TILE_BITS = 20
+    _SCANLINE_WORK_ITEM_LINE_COUNT_BITS = 11
+    _SCANLINE_WORK_ITEM_MAX_TILE_COUNT = 1 << _SCANLINE_WORK_ITEM_START_TILE_BITS
+    _SCANLINE_WORK_ITEM_MAX_LINE_COUNT = (1 << _SCANLINE_WORK_ITEM_LINE_COUNT_BITS) - 1
     _U32_BYTES = 4
     _F32X4_BYTES = 16
     _OPACITY_EPS = 1e-6
@@ -246,6 +250,30 @@ class GaussianRenderer:
     )
     _buffer_vars = staticmethod(remap_named_buffers)
 
+    @staticmethod
+    def sh_coeff_count_for_band(sh_band: int) -> int:
+        band = min(max(int(sh_band), 0), 3)
+        if band <= 0:
+            return 1
+        if band == 1:
+            return 4
+        if band == 2:
+            return 9
+        return SUPPORTED_SH_COEFF_COUNT
+
+    @classmethod
+    def raw_opacity_param_id_for_sh_coeff_count(cls, sh_coeff_count: int) -> int:
+        coeff_count = min(max(int(sh_coeff_count), 1), SUPPORTED_SH_COEFF_COUNT)
+        return cls.PARAM_SH_FIRST_ID + coeff_count * 3
+
+    @classmethod
+    def trainable_param_count_for_sh_coeff_count(cls, sh_coeff_count: int) -> int:
+        return cls.raw_opacity_param_id_for_sh_coeff_count(sh_coeff_count) + 1
+
+    @classmethod
+    def trainable_param_count_for_band(cls, sh_band: int) -> int:
+        return cls.trainable_param_count_for_sh_coeff_count(cls.sh_coeff_count_for_band(sh_band))
+
     def _dispatch(self, kernel: spy.ComputeKernel | spy.ComputePipeline, encoder: spy.CommandEncoder, thread_count: spy.uint3, vars: dict[str, object], label: str, color_index: int) -> None:
         dispatch(
             kernel=kernel,
@@ -285,6 +313,7 @@ class GaussianRenderer:
         return {
             "g_Prepass": {
                 "splatCount": int(splat_count),
+                "packedParamCount": int(self.packed_trainable_param_count),
                 "tileSize": int(self.tile_size),
                 "tileWidth": int(self.tile_width),
                 "tileHeight": int(self.tile_height),
@@ -521,21 +550,39 @@ class GaussianRenderer:
         self._counter_readback_ring = []
         self._counter_readback_capacity = []
         self._counter_readback_frame_id = 0
-        self._pending_min_list_entries = self._delayed_generated_entries = self._delayed_written_entries = 0
-        self._delayed_overflow = self._delayed_stats_valid = False
+        self._pending_min_list_entries = self._pending_min_scanline_entries = 0
+        self._delayed_generated_entries = self._delayed_written_entries = 0
+        self._delayed_generated_scanlines = self._delayed_written_scanlines = 0
+        self._delayed_list_overflow = self._delayed_scanline_overflow = self._delayed_overflow = self._delayed_stats_valid = False
 
     def _set_render_resolution_geometry(self, width: int, height: int) -> None:
-        self.width, self.height = max(int(width), 1), max(int(height), 1)
-        self.tile_width, self.tile_height = (self.width + self.tile_size - 1) // self.tile_size, (self.height + self.tile_size - 1) // self.tile_size
+        width, height = max(int(width), 1), max(int(height), 1)
+        tile_width, tile_height = (width + self.tile_size - 1) // self.tile_size, (height + self.tile_size - 1) // self.tile_size
+        self._validate_scanline_work_item_geometry(width, height, tile_width, tile_height, "render resolution")
+        self.width, self.height = width, height
+        self.tile_width, self.tile_height = tile_width, tile_height
         self.tile_count = self.tile_width * self.tile_height
         self.tile_bits = int(np.ceil(np.log2(max(self.tile_count, 2))))
         self.depth_bits = 32 - self.tile_bits
 
     def _set_render_capacity_geometry(self, width: int, height: int) -> None:
-        self._render_capacity_width, self._render_capacity_height = max(int(width), 1), max(int(height), 1)
-        self._render_capacity_tile_width = (self._render_capacity_width + self.tile_size - 1) // self.tile_size
-        self._render_capacity_tile_height = (self._render_capacity_height + self.tile_size - 1) // self.tile_size
+        width, height = max(int(width), 1), max(int(height), 1)
+        tile_width, tile_height = (width + self.tile_size - 1) // self.tile_size, (height + self.tile_size - 1) // self.tile_size
+        self._validate_scanline_work_item_geometry(width, height, tile_width, tile_height, "render capacity")
+        self._render_capacity_width, self._render_capacity_height = width, height
+        self._render_capacity_tile_width = tile_width
+        self._render_capacity_tile_height = tile_height
         self._render_capacity_tile_count = self._render_capacity_tile_width * self._render_capacity_tile_height
+
+    def _validate_scanline_work_item_geometry(self, width: int, height: int, tile_width: int, tile_height: int, label: str) -> None:
+        max_line_tiles = max(tile_width, tile_height)
+        tile_count = tile_width * tile_height
+        if max_line_tiles <= self._SCANLINE_WORK_ITEM_MAX_LINE_COUNT and tile_count <= self._SCANLINE_WORK_ITEM_MAX_TILE_COUNT:
+            return
+        raise ValueError(
+            f"Packed scanline work items only support up to {self._SCANLINE_WORK_ITEM_MAX_LINE_COUNT} tiles per span and "
+            f"{self._SCANLINE_WORK_ITEM_MAX_TILE_COUNT} tiles per frame; {label} {width}x{height} produced {tile_width}x{tile_height} tiles."
+        )
 
     def _render_pixel_capacity(self) -> int:
         return max(int(self._render_capacity_width) * int(self._render_capacity_height), 1)
@@ -563,8 +610,10 @@ class GaussianRenderer:
         self._counter_readback_ring = []
         self._counter_readback_capacity = []
         self._counter_readback_frame_id = 0
-        self._pending_min_list_entries = self._delayed_generated_entries = self._delayed_written_entries = 0
-        self._delayed_overflow = self._delayed_stats_valid = False
+        self._pending_min_list_entries = self._pending_min_scanline_entries = 0
+        self._delayed_generated_entries = self._delayed_written_entries = 0
+        self._delayed_generated_scanlines = self._delayed_written_scanlines = 0
+        self._delayed_list_overflow = self._delayed_scanline_overflow = self._delayed_overflow = self._delayed_stats_valid = False
 
     def ensure_render_capacity(self, width: int, height: int) -> bool:
         target_width = max(max(int(width), 1), int(self._render_capacity_width))
@@ -607,8 +656,9 @@ class GaussianRenderer:
     def _enqueue_counter_readback(self, encoder: spy.CommandEncoder) -> None:
         self._ensure_counter_readback_ring()
         slot = self._counter_readback_frame_id % self._COUNTER_READBACK_RING_SIZE
-        encoder.copy_buffer(self._counter_readback_ring[slot], 0, self._work_buffers["counter"], 0, 4)
-        self._counter_readback_capacity[slot] = int(self._max_list_entries)
+        encoder.copy_buffer(self._counter_readback_ring[slot], 0, self._work_buffers["counter"], 0, self._U32_BYTES)
+        encoder.copy_buffer(self._counter_readback_ring[slot], self._U32_BYTES, self._work_buffers["scanline_counter"], 0, self._U32_BYTES)
+        self._counter_readback_capacity[slot] = (int(self._max_list_entries), int(self._max_scanline_entries))
 
     def __init__(
         self,
@@ -654,6 +704,7 @@ class GaussianRenderer:
         cached_raster_grad_fixed_opacity_range: float = 8.0,
         use_sh: bool = True,
         sh_band: int | None = None,
+        max_sh_band: int = 3,
     ) -> None:
         self.device, self.width, self.height = device, int(width), int(height)
         self._types_shader_path = Path(SHADER_ROOT / "renderer" / "gaussian_types.slang")
@@ -667,6 +718,7 @@ class GaussianRenderer:
         self.max_prepass_memory_mb = max(int(max_prepass_memory_mb), 1)
         self._max_prepass_memory_bytes = self.max_prepass_memory_mb * self._MEBIBYTE_BYTES
         self.proj_distortion_k1, self.proj_distortion_k2 = float(proj_distortion_k1), float(proj_distortion_k2)
+        self.max_sh_band = int(max_sh_band)
         self.sh_band = (3 if bool(use_sh) else 0) if sh_band is None else int(sh_band)
         self.debug_mode = self._resolve_debug_mode(debug_mode, debug_show_ellipses, debug_show_processed_count, debug_show_grad_norm)
         self.debug_show_ellipses = self.debug_mode == self.DEBUG_MODE_ELLIPSE_OUTLINES
@@ -713,10 +765,12 @@ class GaussianRenderer:
         self._output_grad_buffer: spy.Buffer | None = None
         self._last_stats: dict[str, int | bool | float] = {}
         self._counter_readback_ring: list[spy.Buffer] = []
-        self._counter_readback_capacity: list[int] = []
+        self._counter_readback_capacity: list[tuple[int, int]] = []
         self._counter_readback_frame_id = 0
-        self._pending_min_list_entries = self._delayed_generated_entries = self._delayed_written_entries = 0
-        self._delayed_overflow = self._delayed_stats_valid = False
+        self._pending_min_list_entries = self._pending_min_scanline_entries = 0
+        self._delayed_generated_entries = self._delayed_written_entries = 0
+        self._delayed_generated_scanlines = self._delayed_written_scanlines = 0
+        self._delayed_list_overflow = self._delayed_scanline_overflow = self._delayed_overflow = self._delayed_stats_valid = False
         self._fixed_raster_grad_shaders: _RasterGradShaderSet
         self._float_raster_grad_shaders: _RasterGradShaderSet | None = None
         self._sorted_keys_buffer: spy.Buffer | None = None
@@ -785,23 +839,32 @@ class GaussianRenderer:
             return
         defer_resource_releases(self._scene_buffers.values())
         self._scene_capacity, self._scene_count = grow_capacity(splat_count, self._scene_capacity), splat_count
-        param_bytes = max(self._scene_capacity, 1) * self.TRAINABLE_PARAM_COUNT * self._U32_BYTES
+        param_bytes = max(self._scene_capacity, 1) * self.packed_trainable_param_count * self._U32_BYTES
         self._resource_groups.scene = {
             name: alloc_buffer(self.device, name=f"renderer.scene.{name}", size=param_bytes, usage=self._RW_BUFFER_USAGE)
             for name in self._SCENE_SHADER_VARS
         }
         self._scene_buffers = self._resource_groups.scene
 
-    def _ensure_work_buffers(self, splat_count: int, min_list_entries: int = 0) -> None:
+    def _estimate_scanline_entries(self, splat_count: int) -> int:
+        splat_count = max(int(splat_count), 0)
+        if splat_count <= 0:
+            return 1
+        scanlines_per_splat = max(int(np.ceil(np.sqrt(max(self.list_capacity_multiplier, 1)))), 1)
+        return splat_count * scanlines_per_splat
+
+    def _ensure_work_buffers(self, splat_count: int, min_list_entries: int = 0, min_scanline_entries: int = 0) -> None:
         max_entries = self._max_prepass_entries_by_budget()
-        required_splats = max(splat_count, 1)
-        required_entries = min(max(splat_count * self.list_capacity_multiplier, min_list_entries, 1), max_entries)
-        if self._work_buffers and required_splats <= self._work_splat_capacity and required_entries <= self._max_list_entries and required_entries <= self._max_scanline_entries and self._output_texture is not None and self._training_depth_stats_texture is not None and self._output_grad_buffer is not None:
+        requested_splats = max(int(splat_count), 0)
+        required_splats = max(requested_splats, 1)
+        required_scanline_entries = min(max(self._estimate_scanline_entries(requested_splats), int(min_scanline_entries), 1), max_entries)
+        required_entries = min(max(requested_splats * self.list_capacity_multiplier, int(min_list_entries), required_scanline_entries, 1), max_entries)
+        if self._work_buffers and required_splats <= self._work_splat_capacity and required_entries <= self._max_list_entries and required_scanline_entries <= self._max_scanline_entries and self._output_texture is not None and self._training_depth_stats_texture is not None and self._output_grad_buffer is not None:
             return
         defer_resource_releases(self._work_buffers.values())
         self._work_splat_capacity = grow_capacity(required_splats, self._work_splat_capacity)
         self._max_list_entries = min(grow_capacity(required_entries, self._max_list_entries), max_entries)
-        self._max_scanline_entries = min(grow_capacity(required_entries, self._max_scanline_entries), max_entries)
+        self._max_scanline_entries = min(grow_capacity(required_scanline_entries, self._max_scanline_entries), max_entries)
         sized = {
             "screen_center_radius_depth": max(self._work_splat_capacity, 1) * self._F32X4_BYTES,
             "screen_color_alpha": max(self._work_splat_capacity, 1) * self._F32X4_BYTES,
@@ -836,7 +899,7 @@ class GaussianRenderer:
             "training_batch_end": max(self._render_capacity_tile_count, 1) * self._U32_BYTES,
             "training_splat_contribution": max(self._work_splat_capacity, 1) * self._F32X4_BYTES,
             "raster_cache": max(self._work_splat_capacity, 1) * self._RASTER_CACHE_PARAM_COUNT * self._U32_BYTES,
-            "param_grads": max(self._work_splat_capacity, 1) * self.TRAINABLE_PARAM_COUNT * self._U32_BYTES,
+            "param_grads": max(self._work_splat_capacity, 1) * self.packed_trainable_param_count * self._U32_BYTES,
             "cached_raster_grads_fixed": max(self._work_splat_capacity, 1) * self._RASTER_CACHE_PARAM_COUNT * self._U32_BYTES,
             "cached_raster_grads_float": max(self._work_splat_capacity, 1) * self._RASTER_CACHE_PARAM_COUNT * self._U32_BYTES,
             "cached_raster_grads_metrics_float": max(self._work_splat_capacity, 1) * self._RASTER_CACHE_PARAM_COUNT * self._U32_BYTES,
@@ -913,6 +976,8 @@ class GaussianRenderer:
         }
         if self._pending_min_list_entries > 0 and self._max_list_entries >= self._pending_min_list_entries:
             self._pending_min_list_entries = 0
+        if self._pending_min_scanline_entries > 0 and self._max_scanline_entries >= self._pending_min_scanline_entries:
+            self._pending_min_scanline_entries = 0
 
     def _ensure_output_texture(self) -> None:
         if self._output_texture is None:
@@ -950,27 +1015,25 @@ class GaussianRenderer:
         start = int(param_id) * int(splat_count)
         return slice(start, start + int(splat_count))
 
-    @classmethod
-    def _pack_scene(cls, scene: GaussianScene) -> np.ndarray:
+    def _pack_scene(self, scene: GaussianScene) -> np.ndarray:
         count = max(int(scene.count), 0)
-        packed = np.zeros((cls.TRAINABLE_PARAM_COUNT * max(count, 1),), dtype=np.float32)
+        packed = np.zeros((self.packed_trainable_param_count * max(count, 1),), dtype=np.float32)
         if count <= 0:
             return packed
         sh_coeffs = resolve_supported_sh_coeffs(scene.sh_coeffs, scene.colors)
-        for axis, param_id in enumerate(cls.PARAM_POSITION_IDS):
-            packed[cls._param_slice(count, param_id)] = np.asarray(scene.positions[:, axis], dtype=np.float32)
-        for axis, param_id in enumerate(cls.PARAM_SCALE_IDS):
-            packed[cls._param_slice(count, param_id)] = np.asarray(scene.scales[:, axis], dtype=np.float32)
-        for axis, param_id in enumerate(cls.PARAM_ROTATION_IDS):
-            packed[cls._param_slice(count, param_id)] = np.asarray(scene.rotations[:, axis], dtype=np.float32)
-        for coeff_index, param_ids in enumerate(cls.PARAM_SH_COEFF_IDS):
+        for axis, param_id in enumerate(self.PARAM_POSITION_IDS):
+            packed[self._param_slice(count, param_id)] = np.asarray(scene.positions[:, axis], dtype=np.float32)
+        for axis, param_id in enumerate(self.PARAM_SCALE_IDS):
+            packed[self._param_slice(count, param_id)] = np.asarray(scene.scales[:, axis], dtype=np.float32)
+        for axis, param_id in enumerate(self.PARAM_ROTATION_IDS):
+            packed[self._param_slice(count, param_id)] = np.asarray(scene.rotations[:, axis], dtype=np.float32)
+        for coeff_index, param_ids in enumerate(self.PARAM_SH_COEFF_IDS[: self.stored_sh_coeff_count]):
             for axis, param_id in enumerate(param_ids):
-                packed[cls._param_slice(count, param_id)] = np.asarray(sh_coeffs[:, coeff_index, axis], dtype=np.float32)
-        packed[cls._param_slice(count, cls.PARAM_RAW_OPACITY_ID)] = cls._raw_opacity_from_alpha(scene.opacities)
+                packed[self._param_slice(count, param_id)] = np.asarray(sh_coeffs[:, coeff_index, axis], dtype=np.float32)
+        packed[self._param_slice(count, self.packed_raw_opacity_param_id)] = self._raw_opacity_from_alpha(scene.opacities)
         return packed
 
-    @classmethod
-    def _unpack_param_groups(cls, packed: np.ndarray, splat_count: int) -> dict[str, np.ndarray]:
+    def _unpack_param_groups(self, packed: np.ndarray, splat_count: int) -> dict[str, np.ndarray]:
         count = max(int(splat_count), 0)
         flat = np.asarray(packed, dtype=np.float32).reshape(-1)
         groups = {
@@ -982,22 +1045,21 @@ class GaussianRenderer:
         }
         if count <= 0:
             return groups
-        for axis, param_id in enumerate(cls.PARAM_POSITION_IDS):
-            groups["positions"][:, axis] = flat[cls._param_slice(count, param_id)]
-        for axis, param_id in enumerate(cls.PARAM_SCALE_IDS):
-            groups["scales"][:, axis] = flat[cls._param_slice(count, param_id)]
-        for axis, param_id in enumerate(cls.PARAM_ROTATION_IDS):
-            groups["rotations"][:, axis] = flat[cls._param_slice(count, param_id)]
-        for coeff_index, param_ids in enumerate(cls.PARAM_SH_COEFF_IDS):
+        for axis, param_id in enumerate(self.PARAM_POSITION_IDS):
+            groups["positions"][:, axis] = flat[self._param_slice(count, param_id)]
+        for axis, param_id in enumerate(self.PARAM_SCALE_IDS):
+            groups["scales"][:, axis] = flat[self._param_slice(count, param_id)]
+        for axis, param_id in enumerate(self.PARAM_ROTATION_IDS):
+            groups["rotations"][:, axis] = flat[self._param_slice(count, param_id)]
+        for coeff_index, param_ids in enumerate(self.PARAM_SH_COEFF_IDS[: self.stored_sh_coeff_count]):
             for axis, param_id in enumerate(param_ids):
-                groups["sh_coeffs"][:, coeff_index, axis] = flat[cls._param_slice(count, param_id)]
+                groups["sh_coeffs"][:, coeff_index, axis] = flat[self._param_slice(count, param_id)]
         groups["color_alpha"][:, :3] = sh_coeffs_to_display_colors(groups["sh_coeffs"])
-        groups["color_alpha"][:, 3] = flat[cls._param_slice(count, cls.PARAM_RAW_OPACITY_ID)]
+        groups["color_alpha"][:, 3] = flat[self._param_slice(count, self.packed_raw_opacity_param_id)]
         return groups
 
-    @classmethod
     def _pack_param_groups(
-        cls,
+        self,
         splat_count: int,
         *,
         positions: np.ndarray | None = None,
@@ -1008,7 +1070,7 @@ class GaussianRenderer:
         color_is_grad: bool = False,
     ) -> np.ndarray:
         count = max(int(splat_count), 0)
-        packed = np.zeros((cls.TRAINABLE_PARAM_COUNT * max(count, 1),), dtype=np.float32)
+        packed = np.zeros((self.packed_trainable_param_count * max(count, 1),), dtype=np.float32)
         if count <= 0:
             return packed
         sh_groups = np.zeros((count, SUPPORTED_SH_COEFF_COUNT, 3), dtype=np.float32)
@@ -1024,16 +1086,16 @@ class GaussianRenderer:
             "sh_coeffs": sh_groups,
             "color_alpha": np.zeros((count, 4), dtype=np.float32) if color_alpha is None else np.asarray(color_alpha, dtype=np.float32).reshape(count, 4),
         }
-        for axis, param_id in enumerate(cls.PARAM_POSITION_IDS):
-            packed[cls._param_slice(count, param_id)] = groups["positions"][:, axis]
-        for axis, param_id in enumerate(cls.PARAM_SCALE_IDS):
-            packed[cls._param_slice(count, param_id)] = groups["scales"][:, axis]
-        for axis, param_id in enumerate(cls.PARAM_ROTATION_IDS):
-            packed[cls._param_slice(count, param_id)] = groups["rotations"][:, axis]
-        for coeff_index, param_ids in enumerate(cls.PARAM_SH_COEFF_IDS):
+        for axis, param_id in enumerate(self.PARAM_POSITION_IDS):
+            packed[self._param_slice(count, param_id)] = groups["positions"][:, axis]
+        for axis, param_id in enumerate(self.PARAM_SCALE_IDS):
+            packed[self._param_slice(count, param_id)] = groups["scales"][:, axis]
+        for axis, param_id in enumerate(self.PARAM_ROTATION_IDS):
+            packed[self._param_slice(count, param_id)] = groups["rotations"][:, axis]
+        for coeff_index, param_ids in enumerate(self.PARAM_SH_COEFF_IDS[: self.stored_sh_coeff_count]):
             for axis, param_id in enumerate(param_ids):
-                packed[cls._param_slice(count, param_id)] = groups["sh_coeffs"][:, coeff_index, axis]
-        packed[cls._param_slice(count, cls.PARAM_RAW_OPACITY_ID)] = groups["color_alpha"][:, 3]
+                packed[self._param_slice(count, param_id)] = groups["sh_coeffs"][:, coeff_index, axis]
+        packed[self._param_slice(count, self.packed_raw_opacity_param_id)] = groups["color_alpha"][:, 3]
         return packed
 
     @classmethod
@@ -1050,29 +1112,43 @@ class GaussianRenderer:
         if self._counter_readback_ring:
             return
         usage = spy.BufferUsage.copy_destination | spy.BufferUsage.copy_source
-        self._counter_readback_ring = [alloc_buffer(self.device, name=f"renderer.counter_readback[{idx}]", size=4, usage=usage) for idx in range(self._COUNTER_READBACK_RING_SIZE)]
-        self._counter_readback_capacity = [0] * self._COUNTER_READBACK_RING_SIZE
+        readback_size = self._U32_BYTES * 2
+        self._counter_readback_ring = [alloc_buffer(self.device, name=f"renderer.counter_readback[{idx}]", size=readback_size, usage=usage) for idx in range(self._COUNTER_READBACK_RING_SIZE)]
+        self._counter_readback_capacity = [(0, 0)] * self._COUNTER_READBACK_RING_SIZE
 
     def _update_delayed_counter_stats(self) -> None:
         if self._counter_readback_frame_id <= 1:
             self._delayed_stats_valid = False
             return
         slot = (self._counter_readback_frame_id - 2) % self._COUNTER_READBACK_RING_SIZE
-        generated = int(self._read_array(self._counter_readback_ring[slot], np.uint32, 1)[0])
-        capacity = int(self._counter_readback_capacity[slot])
-        self._delayed_generated_entries, self._delayed_written_entries = generated, min(generated, capacity)
-        self._delayed_overflow, self._delayed_stats_valid = generated > capacity, True
-        if self._delayed_overflow:
+        generated_entries, generated_scanlines = self._read_array(self._counter_readback_ring[slot], np.uint32, 2)
+        list_capacity, scanline_capacity = self._counter_readback_capacity[slot]
+        generated = int(generated_entries)
+        scanlines = int(generated_scanlines)
+        list_capacity = int(list_capacity)
+        scanline_capacity = int(scanline_capacity)
+        self._delayed_generated_entries, self._delayed_written_entries = generated, min(generated, list_capacity)
+        self._delayed_generated_scanlines, self._delayed_written_scanlines = scanlines, min(scanlines, scanline_capacity)
+        self._delayed_list_overflow = generated > list_capacity
+        self._delayed_scanline_overflow = scanlines > scanline_capacity
+        self._delayed_overflow, self._delayed_stats_valid = self._delayed_list_overflow or self._delayed_scanline_overflow, True
+        if self._delayed_list_overflow:
             self._pending_min_list_entries = max(self._pending_min_list_entries, min(generated, self._max_prepass_entries_by_budget()))
+        if self._delayed_scanline_overflow:
+            required_scanlines = min(scanlines, self._max_prepass_entries_by_budget())
+            self._pending_min_scanline_entries = max(self._pending_min_scanline_entries, required_scanlines)
+            self._pending_min_list_entries = max(self._pending_min_list_entries, required_scanlines)
 
     def _stats_payload(self, splat_count: int, read_stats: bool, stats_valid: bool | None = None) -> dict[str, int | bool | float]:
         valid = bool(self._delayed_stats_valid) if stats_valid is None else bool(stats_valid)
         if read_stats and valid:
-            generated, written, overflow = int(self._delayed_generated_entries), int(self._delayed_written_entries), bool(self._delayed_overflow)
+            generated, written = int(self._delayed_generated_entries), int(self._delayed_written_entries)
+            generated_scanlines, written_scanlines = int(self._delayed_generated_scanlines), int(self._delayed_written_scanlines)
+            list_overflow, scanline_overflow, overflow = bool(self._delayed_list_overflow), bool(self._delayed_scanline_overflow), bool(self._delayed_overflow)
         else:
-            generated = written = 0
-            overflow = False
-        return {"generated_entries": generated, "written_entries": written, "overflow": overflow, "capacity_limited": overflow, "depth_bits": int(self.depth_bits), "tile_count": int(self.tile_count), "splat_count": int(splat_count), "max_list_entries": int(self._max_list_entries), "max_scanline_entries": int(self._max_scanline_entries), "prepass_entry_cap": int(self._max_prepass_entries_by_budget()), "prepass_memory_mb": int(self.max_prepass_memory_mb), "stats_valid": bool(valid) if read_stats else False, "stats_latency_frames": 1}
+            generated = written = generated_scanlines = written_scanlines = 0
+            list_overflow = scanline_overflow = overflow = False
+        return {"generated_entries": generated, "written_entries": written, "generated_scanlines": generated_scanlines, "written_scanlines": written_scanlines, "overflow": overflow, "capacity_limited": overflow, "list_overflow": list_overflow, "scanline_overflow": scanline_overflow, "depth_bits": int(self.depth_bits), "tile_count": int(self.tile_count), "splat_count": int(splat_count), "max_list_entries": int(self._max_list_entries), "max_scanline_entries": int(self._max_scanline_entries), "prepass_entry_cap": int(self._max_prepass_entries_by_budget()), "prepass_memory_mb": int(self.max_prepass_memory_mb), "stats_valid": bool(valid) if read_stats else False, "stats_latency_frames": 1}
 
     def _project_visible_splats(self, encoder: spy.CommandEncoder, scene: GaussianScene, camera: Camera, sort_camera_position: np.ndarray | None = None, sort_camera_dither_sigma: float = 0.0, sort_camera_dither_seed: int = 0) -> None:
         self._dispatch(
@@ -1279,7 +1355,7 @@ class GaussianRenderer:
         self._dispatch(shader, encoder, self._raster_thread_count(), vars, "Rasterize", 24)
 
     def _clear_raster_grads(self, encoder: spy.CommandEncoder, splat_count: int) -> None:
-        clear_count = int(splat_count) * max(self.TRAINABLE_PARAM_COUNT, self._RASTER_CACHE_PARAM_COUNT)
+        clear_count = int(splat_count) * max(self.packed_trainable_param_count, self._RASTER_CACHE_PARAM_COUNT)
         self._dispatch(self._raster_grad_shader_set().clear, encoder, spy.uint3(max(clear_count, 1), 1, 1), {**self._raster_grad_vars(), **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_range_vars(), **self._prepass_uniforms(splat_count)}, "Clear Raster Grads", 25)
 
     def _rasterize_training_forward(
@@ -1438,14 +1514,25 @@ class GaussianRenderer:
             raise RuntimeError("Source scene is empty.")
         dst._ensure_scene_buffers(self._scene_count)
         dst._ensure_work_buffers(self._scene_count)
-        copy_bytes = self._scene_count * self.TRAINABLE_PARAM_COUNT * self._U32_BYTES
-        for name in self._SCENE_SHADER_VARS:
-            encoder.copy_buffer(dst._scene_buffers[name], 0, self._scene_buffers[name], 0, copy_bytes)
+        if self.packed_trainable_param_count == dst.packed_trainable_param_count:
+            copy_bytes = self._scene_count * self.packed_trainable_param_count * self._U32_BYTES
+            for name in self._SCENE_SHADER_VARS:
+                encoder.copy_buffer(dst._scene_buffers[name], 0, self._scene_buffers[name], 0, copy_bytes)
+        else:
+            groups = self.read_scene_groups(self._scene_count)
+            dst.write_scene_groups(
+                self._scene_count,
+                positions=groups["positions"],
+                scales=groups["scales"],
+                rotations=groups["rotations"],
+                sh_coeffs=groups["sh_coeffs"],
+                color_alpha=groups["color_alpha"],
+            )
         dst._scene_count, dst._current_scene = self._scene_count, self._current_scene
 
     def read_scene_groups(self, splat_count: int | None = None) -> dict[str, np.ndarray]:
         count = self._scene_count if splat_count is None else int(splat_count)
-        flat = self._read_array(self._scene_buffers["splat_params"], np.float32, max(count, 1) * self.TRAINABLE_PARAM_COUNT)
+        flat = self._read_array(self._scene_buffers["splat_params"], np.float32, max(count, 1) * self.packed_trainable_param_count)
         return self._unpack_param_groups(flat, count)
 
     def write_scene_groups(
@@ -1470,7 +1557,7 @@ class GaussianRenderer:
 
     def read_grad_groups(self, splat_count: int | None = None) -> dict[str, np.ndarray]:
         count = self._scene_count if splat_count is None else int(splat_count)
-        flat = self._read_array(self._work_buffers["param_grads"], np.float32, max(count, 1) * self.TRAINABLE_PARAM_COUNT)
+        flat = self._read_array(self._work_buffers["param_grads"], np.float32, max(count, 1) * self.packed_trainable_param_count)
         groups = self._unpack_param_groups(flat, count)
         grad_color_alpha = np.zeros((count, 4), dtype=np.float32)
         grad_color_alpha[:, :3] = groups["sh_coeffs"][:, 0, :] / SH_C0
@@ -1679,6 +1766,7 @@ class GaussianRenderer:
             return metrics.compute_scene_param_histograms(
                 self.scene_buffers["splat_params"],
                 count,
+                packed_param_count=self.packed_trainable_param_count,
                 param_count=len(self.SCENE_PARAM_HISTOGRAM_LABELS),
                 bin_count=bin_count,
                 min_value=min_value,
@@ -1714,6 +1802,7 @@ class GaussianRenderer:
             return metrics.compute_scene_param_ranges(
                 self.scene_buffers["splat_params"],
                 count,
+                packed_param_count=self.packed_trainable_param_count,
                 param_count=len(self.SCENE_PARAM_HISTOGRAM_LABELS),
                 param_labels=self.SCENE_PARAM_HISTOGRAM_LABELS,
                 param_groups=self.SCENE_PARAM_HISTOGRAM_GROUPS,
@@ -1758,7 +1847,29 @@ class GaussianRenderer:
 
     @sh_band.setter
     def sh_band(self, value: int) -> None:
-        self._sh_band = min(max(int(value), 0), 3)
+        self._sh_band = min(max(int(value), 0), self.max_sh_band)
+
+    @property
+    def max_sh_band(self) -> int:
+        return self._max_sh_band
+
+    @max_sh_band.setter
+    def max_sh_band(self, value: int) -> None:
+        self._max_sh_band = min(max(int(value), 0), 3)
+        if hasattr(self, "_sh_band"):
+            self._sh_band = min(self._sh_band, self._max_sh_band)
+
+    @property
+    def stored_sh_coeff_count(self) -> int:
+        return self.sh_coeff_count_for_band(self.max_sh_band)
+
+    @property
+    def packed_raw_opacity_param_id(self) -> int:
+        return self.raw_opacity_param_id_for_sh_coeff_count(self.stored_sh_coeff_count)
+
+    @property
+    def packed_trainable_param_count(self) -> int:
+        return self.trainable_param_count_for_sh_coeff_count(self.stored_sh_coeff_count)
 
     @property
     def use_sh(self) -> bool:
@@ -1940,13 +2051,17 @@ class GaussianRenderer:
 
     def sync_prepass_capacity_for_current_scene(self, camera: Camera) -> bool:
         scene = self._require_scene()
-        self._ensure_work_buffers(scene.count, self._pending_min_list_entries)
+        self._ensure_work_buffers(scene.count, self._pending_min_list_entries, self._pending_min_scanline_entries)
         generated_entries, _ = self._execute_prepass(scene, camera, sync_counts=True)
-        required_entries = min(max(int(generated_entries), 1), self._max_prepass_entries_by_budget())
-        if required_entries <= self._max_list_entries:
+        generated_scanlines = int(self._read_array(self._work_buffers["scanline_counter"], np.uint32, 1)[0])
+        entry_cap = self._max_prepass_entries_by_budget()
+        required_scanlines = min(max(generated_scanlines, 1), entry_cap)
+        required_entries = min(max(int(generated_entries), required_scanlines, 1), entry_cap)
+        if required_entries <= self._max_list_entries and required_scanlines <= self._max_scanline_entries:
             return False
         self._pending_min_list_entries = max(self._pending_min_list_entries, required_entries)
-        self._ensure_work_buffers(scene.count, self._pending_min_list_entries)
+        self._pending_min_scanline_entries = max(self._pending_min_scanline_entries, required_scanlines)
+        self._ensure_work_buffers(scene.count, self._pending_min_list_entries, self._pending_min_scanline_entries)
         return True
 
     def record_prepass_for_current_scene(self, encoder: spy.CommandEncoder, camera: Camera, sort_camera_position: np.ndarray | None = None, sort_camera_dither_sigma: float = 0.0, sort_camera_dither_seed: int = 0) -> None:
@@ -2008,7 +2123,7 @@ class GaussianRenderer:
         scene = self._require_scene()
         if scene.count <= 0:
             raise RuntimeError("Cannot render empty scene.")
-        self._ensure_work_buffers(scene.count, self._pending_min_list_entries)
+        self._ensure_work_buffers(scene.count, self._pending_min_list_entries, self._pending_min_scanline_entries)
         background_np = self._background_array(background)
         if command_encoder is None:
             enc = self.device.create_command_encoder()
@@ -2045,7 +2160,7 @@ class GaussianRenderer:
         scene = self._require_scene()
         if scene.count <= 0:
             raise RuntimeError("Cannot render empty scene.")
-        self._ensure_work_buffers(scene.count, self._pending_min_list_entries)
+        self._ensure_work_buffers(scene.count, self._pending_min_list_entries, self._pending_min_scanline_entries)
         background_np = self._background_array(background)
         if command_encoder is None:
             enc = self.device.create_command_encoder()
