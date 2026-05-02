@@ -2545,7 +2545,7 @@ class ToolkitWindow:
         for spec in GROUP_SPECS[TRAINING_STABILITY_GROUP]:
             if spec.key not in paired_keys:
                 self._draw_control(ui, spec)
-        imgui.text_disabled("Opacity bounds, max scale, and anisotropy are clamped after each ADAM step")
+        imgui.text_disabled("Opacity bounds and anisotropy are clamped after each ADAM step")
         self._ctx_reset("stability_ctx", ui, [s.key for s in GROUP_SPECS[TRAINING_STABILITY_GROUP]])
         imgui.separator()
 

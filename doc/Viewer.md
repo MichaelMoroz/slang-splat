@@ -277,7 +277,6 @@ The `Stability` section holds post-step clamps and stability controls such as:
 
 - position bounds,
 - opacity bounds,
-- max scale,
 - max anisotropy,
 - gradient clip and norm clip,
 - max update.

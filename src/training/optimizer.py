@@ -70,7 +70,6 @@ class GaussianOptimizer:
 
     def _value_max_for_param(self, param_id: int) -> float:
         if param_id in self.renderer.PARAM_POSITION_IDS: return float(self.stability.position_abs_max)
-        if param_id in self.renderer.PARAM_SCALE_IDS: return float(np.log(max(self.stability.max_scale, 1e-8)))
         if param_id == self.renderer.packed_raw_opacity_param_id: return self._raw_opacity_from_alpha(float(self.stability.max_opacity))
         return float(self.stability.huge_value)
 
@@ -159,7 +158,6 @@ class GaussianOptimizer:
                 "gradComponentClip": float(self.stability.grad_component_clip),
                 "gradNormClip": float(self.stability.grad_norm_clip),
                 "maxUpdate": float(self.stability.max_update),
-                "maxScale": float(self.stability.max_scale),
                 "maxAnisotropy": float(max(self.stability.max_anisotropy, 1.0)),
                 "minOpacity": float(self.stability.min_opacity),
                 "maxOpacity": float(self.stability.max_opacity),

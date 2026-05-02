@@ -233,7 +233,6 @@ UI_TOOLTIPS = {
     "position_random_step_opacity_gate_center": "Opacity center for the random-step sigmoid gate; lower-opacity splats get stronger position noise",
     "position_random_step_opacity_gate_sharpness": "Steepness of the random-step opacity gate",
     "max_anisotropy": "Maximum ratio between largest and smallest scale axes",
-    "max_scale": "Ceiling for decoded gaussian sigma",
     "min_opacity": "Floor for opacity",
     "max_opacity": "Ceiling for opacity",
     "position_abs_max": "Absolute position bounding box (per axis)",

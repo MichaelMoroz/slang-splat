@@ -43,7 +43,6 @@ _DEFAULT_FAR = 120.0
 _MIN_ALPHA = 1e-4
 _MAX_ALPHA = 0.9999
 _MIN_SCALE = 1e-4
-_MAX_SCALE = 3.0
 _OUTPUT_RENDER_SUBDIR = "renders"
 _DEFAULT_CACHED_RASTER_GRAD_ATOMIC_MODE = "float"
 _DEFAULT_CACHED_RASTER_GRAD_FIXED_RO_LOCAL_RANGE = 0.01
@@ -313,7 +312,7 @@ def project_scene_params_(params_dict: dict[str, Any]) -> None:
         normalized[~safe_mask.squeeze(1), 0] = 1.0
         params_dict["rotations"].copy_(normalized)
         params_dict["alpha"].clamp_(_MIN_ALPHA, _MAX_ALPHA)
-        params_dict["log_scales"].clamp_(math.log(_MIN_SCALE), math.log(_MAX_SCALE))
+        params_dict["log_scales"].clamp_min_(math.log(_MIN_SCALE))
 
 
 def compute_rgb_loss_metrics(rendered_rgb: Any, target_rgb: Any) -> tuple[Any, float, float]:

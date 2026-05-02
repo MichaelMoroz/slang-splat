@@ -282,7 +282,6 @@ def _build_schedule_stage_defs() -> dict[str, tuple[TrainingControlDef, ...]]:
 SCHEDULE_STAGE_CONTROL_DEFS = _build_schedule_stage_defs()
 
 TRAIN_STABILITY_CONTROL_DEFS = (
-    _control("max_scale", "input_float", "Max Scale", {"value": _default("max_scale"), "step": 1e-2, "step_fast": 0.1, "format": "%.5f"}, group=TRAINING_STABILITY_GROUP, build_args=("max_scale",)),
     _control("min_opacity", "input_float", "Min Opacity", {"value": _default("min_opacity"), "step": 1e-5, "step_fast": 1e-4, "format": "%.8f"}, group=TRAINING_STABILITY_GROUP, build_args=("min_opacity",)),
     _control("max_opacity", "input_float", "Max Opacity", {"value": _default("max_opacity"), "step": 1e-4, "step_fast": 1e-3, "format": "%.6f"}, group=TRAINING_STABILITY_GROUP, build_args=("max_opacity",)),
     _control("position_abs_max", "input_float", "Pos Abs Max", {"value": _default("position_abs_max"), "step": 10.0, "step_fast": 100.0, "format": "%.3f"}, group=TRAINING_STABILITY_GROUP, build_args=("position_abs_max",)),
@@ -356,7 +355,6 @@ TRAINING_CLI_ARG_DEFS = (
     _cli_arg("--grad-clip", dest="grad_clip", build_arg="grad_clip", type=float, default=_default("grad_clip")),
     _cli_arg("--grad-norm-clip", dest="grad_norm_clip", build_arg="grad_norm_clip", type=float, default=_default("grad_norm_clip")),
     _cli_arg("--max-update", dest="max_update", build_arg="max_update", type=float, default=_default("max_update")),
-    _cli_arg("--max-scale", dest="max_scale", build_arg="max_scale", type=float, default=_default("max_scale")),
     _cli_arg("--min-opacity", dest="min_opacity", build_arg="min_opacity", type=float, default=_default("min_opacity")),
     _cli_arg("--max-opacity", dest="max_opacity", build_arg="max_opacity", type=float, default=_default("max_opacity")),
     _cli_arg("--position-abs-max", dest="position_abs_max", build_arg="position_abs_max", type=float, default=_default("position_abs_max")),

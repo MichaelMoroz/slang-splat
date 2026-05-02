@@ -101,7 +101,7 @@ def test_frame_order_matches_trainer_permutation_behavior() -> None:
     np.testing.assert_array_equal(actual1, expected1)
 
 
-def test_project_scene_params_normalizes_and_clamps(torch_cuda_or_cpu_device):
+def test_project_scene_params_normalizes_and_clamps_minimums(torch_cuda_or_cpu_device):
     params = {
         "positions": torch.nn.Parameter(torch.zeros((2, 3), device=torch_cuda_or_cpu_device)),
         "log_scales": torch.nn.Parameter(torch.tensor([[100.0, -100.0, 0.0], [0.0, 0.0, 0.0]], device=torch_cuda_or_cpu_device)),
@@ -119,7 +119,7 @@ def test_project_scene_params_normalizes_and_clamps(torch_cuda_or_cpu_device):
     np.testing.assert_allclose(rotations[1], np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32))
     assert np.all((alpha >= 1e-4) & (alpha <= 0.9999))
     assert np.all(log_scales >= np.float32(np.log(1e-4)))
-    assert np.all(log_scales <= np.float32(np.log(10.0)))
+    assert np.isclose(log_scales[0, 0], 100.0)
 
 
 def test_rgb_conversion_roundtrip_is_reasonable(torch_cuda_or_cpu_device):

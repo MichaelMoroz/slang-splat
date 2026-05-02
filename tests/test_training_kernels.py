@@ -572,7 +572,7 @@ class _ScaleGradProbe:
             ),
             frames=[self.frame],
             adam_hparams=AdamHyperParams(position_lr=0.0, scale_lr=0.1, rotation_lr=0.0, color_lr=0.0, opacity_lr=0.0),
-            stability_hparams=StabilityHyperParams(max_update=0.5, max_scale=16.0 * self.pixel_floor_scale),
+            stability_hparams=StabilityHyperParams(max_update=0.5),
             training_hparams=TrainingHyperParams(scale_l2_weight=0.0, scale_abs_reg_weight=0.0, opacity_reg_weight=0.0),
             seed=123,
         )
@@ -3705,7 +3705,6 @@ def test_synthetic_base_grads_update_and_respect_constraints(device, tmp_path: P
     assert np.all(np.isfinite(color_alpha))
     assert np.all(np.abs(positions[:, :3]) <= trainer.stability.position_abs_max + 1e-5)
     actual_scales = _actual_scale(scales[:, :3])
-    assert np.all(actual_scales <= trainer.stability.max_scale + 1e-6)
     assert np.all(color_alpha[:, :3] >= -1e-6)
     assert np.all(color_alpha[:, :3] <= 1.0 + 1e-6)
     assert np.all(_actual_opacity(color_alpha[:, 3]) >= 0.0)
