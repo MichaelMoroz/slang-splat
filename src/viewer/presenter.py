@@ -32,6 +32,7 @@ _DEBUG_TARGET_SAMPLE_REGION = 155
 _VIEWER_CLEAR_COLOR = [0.08, 0.09, 0.11, 1.0]
 _RESOURCE_DEBUG_REFRESH_SECONDS = 5.0
 _MENU_BAR_RESOURCE_REFRESH_SECONDS = 1.0
+_HISTOGRAM_REALTIME_REFRESH_SECONDS = 1.0
 
 
 def _ensure_texture(viewer: object, attr: str, width: int, height: int) -> spy.Texture:
@@ -564,11 +565,11 @@ def render_frame(viewer: object, render_context: spy.AppWindow.RenderContext) ->
             viewer.s.viewport_texture = _render_debug_view(viewer, encoder, render_width, render_height, render_frame_index)
         else:
             viewer.s.viewport_texture = _render_main_view(viewer, encoder)
-        if bool(viewer.ui._values.get("_histograms_refresh_requested", False)) or (
-            bool(viewer.ui._values.get("show_histograms", False))
-            and bool(viewer.ui._values.get("_histograms_update_realtime", False))
-        ):
+        realtime_enabled = bool(viewer.ui._values.get("show_histograms", False)) and bool(viewer.ui._values.get("_histograms_update_realtime", False))
+        realtime_refresh_due = realtime_enabled and now >= float(viewer.ui._values.get("_histograms_realtime_next_refresh_time", 0.0))
+        if bool(viewer.ui._values.get("_histograms_refresh_requested", False)) or realtime_refresh_due:
             session.refresh_cached_raster_grad_histograms(viewer)
+            viewer.ui._values["_histograms_realtime_next_refresh_time"] = now + _HISTOGRAM_REALTIME_REFRESH_SECONDS if realtime_enabled else 0.0
         viewer.s.last_render_exception = ""
     except Exception as exc:
         viewer.s.training_active = False

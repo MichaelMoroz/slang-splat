@@ -149,6 +149,7 @@ def test_build_ui_initializes_control_groups_and_internal_state() -> None:
     assert viewer_ui._values["_histogram_update_y_limit"] is True
     assert viewer_ui._values["_histogram_update_range"] is False
     assert viewer_ui._values["_histograms_update_realtime"] is False
+    assert viewer_ui._values["_histograms_realtime_next_refresh_time"] == 0.0
     assert viewer_ui._values["hist_bin_count"] == 256
     assert viewer_ui._values["_show_histograms_prev"] is False
     assert viewer_ui._values["_training_views_rows"] == ()
@@ -477,7 +478,7 @@ def test_histogram_window_docks_and_requests_refresh_on_open(monkeypatch) -> Non
     assert viewer_ui._values["_show_histograms_prev"] is True
 
 
-def test_histogram_window_requests_refresh_each_frame_when_realtime_enabled(monkeypatch) -> None:
+def test_histogram_window_does_not_request_refresh_each_frame_when_realtime_enabled(monkeypatch) -> None:
     monkeypatch.setattr(ui.imgui, "set_next_window_pos", lambda *args, **kwargs: None)
     monkeypatch.setattr(ui.imgui, "set_next_window_size", lambda *args, **kwargs: None)
     monkeypatch.setattr(ui.imgui, "begin", lambda *args, **kwargs: (False, True))
@@ -487,7 +488,7 @@ def test_histogram_window_requests_refresh_each_frame_when_realtime_enabled(monk
 
     ui.ToolkitWindow._draw_histogram_window(toolkit, viewer_ui)
 
-    assert viewer_ui._values["_histograms_refresh_requested"] is True
+    assert viewer_ui._values["_histograms_refresh_requested"] is False
     assert viewer_ui._values["_show_histograms_prev"] is True
 
 

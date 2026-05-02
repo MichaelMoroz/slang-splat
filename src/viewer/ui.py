@@ -1942,8 +1942,6 @@ class ToolkitWindow:
         opened, show = imgui.begin("Histograms", True)
         ui._values["show_histograms"] = bool(show)
         ui._values["_show_histograms_prev"] = bool(show)
-        if bool(show) and bool(ui._values.get("_histograms_update_realtime", False)):
-            ui._values["_histograms_refresh_requested"] = True
         if opened:
             self._draw_histogram_controls(ui)
             status = str(ui._texts.get("histogram_status", "")).strip()
@@ -2116,6 +2114,7 @@ class ToolkitWindow:
         changed, realtime = imgui.checkbox("Update Histograms in Realtime", bool(ui._values.get("_histograms_update_realtime", False)))
         if changed:
             ui._values["_histograms_update_realtime"] = bool(realtime)
+            ui._values["_histograms_realtime_next_refresh_time"] = 0.0
             if realtime:
                 ui._values["_histograms_refresh_requested"] = True
         flags = imgui.TableFlags_.sizing_stretch_prop.value | imgui.TableFlags_.pad_outer_x.value
@@ -2759,6 +2758,7 @@ def build_ui(renderer) -> ViewerUI:
     values.update({
         "_histograms_refresh_requested": False,
         "_histograms_update_realtime": False,
+        "_histograms_realtime_next_refresh_time": 0.0,
         "_show_histograms_prev": False,
         "_histogram_update_y_limit": True,
         "_histogram_update_range": False,
