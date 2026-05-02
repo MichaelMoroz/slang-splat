@@ -1185,7 +1185,7 @@ def test_dispatch_viewport_present_zero_stays_zero_and_output_is_finite(device) 
     np.testing.assert_allclose(image[..., 3], np.ones((2, 2), dtype=np.float32), rtol=0.0, atol=1e-7)
 
 
-def test_dispatch_viewport_present_keeps_existing_display_transform(device) -> None:
+def test_dispatch_viewport_present_does_not_apply_extra_srgb_transform(device) -> None:
     viewer = SimpleNamespace(
         device=device,
         s=SimpleNamespace(debug_present_texture=None, debug_letterbox_kernel=None),
@@ -1205,5 +1205,5 @@ def test_dispatch_viewport_present_keeps_existing_display_transform(device) -> N
     device.wait()
 
     image = np.asarray(output.to_numpy(), dtype=np.float32)
-    expected = np.array([0.5370987, 0.735357, 1.0], dtype=np.float32)
+    expected = np.array([0.25, 0.5, 1.0], dtype=np.float32)
     np.testing.assert_allclose(image[0, 0, :3], expected, rtol=0.0, atol=1e-5)

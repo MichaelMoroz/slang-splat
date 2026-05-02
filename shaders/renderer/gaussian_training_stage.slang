@@ -1347,5 +1347,5 @@ void csComposeLetterboxDebug(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint srcY = min(uint(v * srcH), g_LetterboxSourceHeight - 1u);
     float4 sampled = g_LetterboxSource[uint2(srcX, srcY)];
     float3 displayRgb = debug_training_camera_display_rgb(sampled.xyz, g_LetterboxSourceIsLinear, g_LetterboxApplyLossColorspace);
-    g_LetterboxOutput[uint2(px, py)] = float4(linear_to_srgb_safe(displayRgb), 1.0);
+    g_LetterboxOutput[uint2(px, py)] = float4(displayRgb, 1.0);
 }
