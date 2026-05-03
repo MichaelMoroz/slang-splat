@@ -1059,6 +1059,50 @@ def move_main_camera_to_selected_training_frame(viewer: object) -> int:
     return int(frame_idx)
 
 
+def _camera_reset_scene(viewer: object) -> GaussianScene | None:
+    trainer = getattr(getattr(viewer, "s", None), "trainer", None)
+    if trainer is not None and hasattr(trainer, "read_live_scene"):
+        try:
+            scene = trainer.read_live_scene()
+        except Exception:
+            scene = None
+        if isinstance(scene, GaussianScene) and scene.count > 0:
+            return scene
+    scene = getattr(getattr(viewer, "s", None), "scene", None)
+    if isinstance(scene, GaussianScene) and scene.count > 0:
+        return scene
+    return None
+
+
+def _camera_reset_points(viewer: object) -> np.ndarray | None:
+    state = getattr(viewer, "s", None)
+    for attr in (
+        "cached_init_point_positions",
+        "cached_init_pointcloud_positions",
+        "cached_init_diffused_positions",
+        "cached_init_custom_mesh_positions",
+        "cached_init_fibonacci_positions",
+    ):
+        points = getattr(state, attr, None)
+        if isinstance(points, np.ndarray) and points.ndim == 2 and points.shape[0] > 0:
+            return points
+    return None
+
+
+def reset_main_camera(viewer: object) -> None:
+    scene = _camera_reset_scene(viewer)
+    if scene is not None:
+        viewer.apply_camera_fit(estimate_scene_bounds(scene))
+    else:
+        points = _camera_reset_points(viewer)
+        if points is None:
+            raise RuntimeError("Viewer scene bounds are unavailable.")
+        viewer.apply_camera_fit(estimate_point_bounds(points))
+    ui_values = getattr(getattr(viewer, "ui", None), "_values", None)
+    if isinstance(ui_values, dict):
+        ui_values["show_training_cameras"] = False
+
+
 def _training_debug_splat_age_buffer(viewer: object):
     return (
         viewer.s.trainer.refinement_buffers["splat_age"]

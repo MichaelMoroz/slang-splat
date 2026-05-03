@@ -33,6 +33,7 @@ The `File` menu exposes the primary scene/runtime actions:
 - `Load COLMAP...`: open the COLMAP import window.
 - `Reload`: reload the current scene/import source.
 - `Reinitialize Gaussians`: rebuild the training scene from the current initialization source while keeping the training dataset.
+- `Exit`: opens an ImGui confirmation modal before shutdown so accidental exits do not immediately discard unsaved runtime state.
 
 ### View
 
@@ -65,6 +66,7 @@ The viewport header exposes quick access to:
 - camera overlay toggles,
 - camera label toggles,
 - training-camera debug toggles,
+- main camera reset,
 - the active SH band cap.
 
 ### Training Camera Mode
@@ -77,7 +79,8 @@ When `Training Cameras` is enabled in the viewport, the viewport switches from t
 - mouse wheel zooms,
 - left-drag pans while zoomed,
 - double-click resets the zoom/pan state.
-- `Move Main View Here` copies the selected training camera pose into the main free-fly camera and automatically exits training-camera mode.
+- `Move Main View Here` copies the selected training camera position and view direction into the main free-fly camera while keeping the viewer controls roll-free, then automatically exits training-camera mode.
+- `Reset Camera` returns the main free-fly camera to the current scene fit and exits training-camera mode.
 - The overlay also shows the selected frame/image id, source camera id, pose vectors, projection parameters, distortion coefficients, and current target resolution.
 
 ### Input Routing
@@ -87,6 +90,8 @@ Input routing is UI-first:
 - keyboard events go to ImGui first,
 - mouse capture outside the viewport blocks camera movement,
 - mouse interaction inside the viewport passes through to the camera controls.
+- `File -> Exit` opens the confirmation modal: `Do you want to exit? Any unsaved data will be lost`.
+- Native title-bar close recreates the viewer window and opens the same ImGui confirmation modal without platform-specific hooks.
 
 ### Camera Controls
 

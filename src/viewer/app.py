@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from dataclasses import replace
 import math
 from pathlib import Path
@@ -161,6 +162,176 @@ def _viewer_ui_values(viewer: object) -> dict[str, object]:
     return {str(key): control.value for key, control in controls.items()}
 
 
+def _canonical_viewer_up() -> spy.float3:
+    return spy.float3(0.0, 1.0, 0.0)
+
+
+@dataclass(slots=True)
+class _ViewerRenderContext:
+    surface_texture: spy.Texture
+    command_encoder: spy.CommandEncoder
+
+
+class _ViewerWindowHost:
+    def __init__(
+        self,
+        app: spy.App,
+        *,
+        width: int,
+        height: int,
+        title: str,
+        resizable: bool,
+        enable_vsync: bool,
+        surface_format: spy.Format = spy.Format.undefined,
+    ) -> None:
+        self._app = app
+        self._device = app.device
+        self._window_width = max(int(width), 1)
+        self._window_height = max(int(height), 1)
+        self._window_title = str(title)
+        self._window_resizable = bool(resizable)
+        self._surface_format = surface_format
+        self._enable_vsync = bool(enable_vsync)
+        self._window: spy.Window | None = None
+        self._surface: spy.Surface | None = None
+        self._window_position: spy.int2 | None = None
+        self._terminated = False
+        self._recreate_window(open_exit_confirmation=False)
+
+    @property
+    def device(self) -> spy.Device:
+        return self._device
+
+    def _bind_window_events(self) -> None:
+        if self._window is None:
+            return
+        self._window.on_resize = self._on_window_resize
+        self._window.on_keyboard_event = self.on_keyboard_event
+        self._window.on_mouse_event = self.on_mouse_event
+
+    def _configure_surface(self) -> None:
+        if self._surface is None:
+            return
+        self._surface.configure(
+            self._window_width,
+            self._window_height,
+            format=self._surface_format,
+            vsync=self._enable_vsync,
+        )
+
+    def _recreate_window(self, *, open_exit_confirmation: bool) -> None:
+        previous_window = getattr(self, "_window", None)
+        if previous_window is not None:
+            try:
+                self._window_position = previous_window.position
+            except Exception:
+                self._window_position = None
+            try:
+                self._window_width = max(int(previous_window.width), 1)
+                self._window_height = max(int(previous_window.height), 1)
+            except Exception:
+                pass
+        if self._surface is not None:
+            try:
+                self._surface.unconfigure()
+            except Exception:
+                pass
+        self._surface = None
+        self._window = spy.Window(
+            width=self._window_width,
+            height=self._window_height,
+            title=self._window_title,
+            resizable=self._window_resizable,
+        )
+        if self._window_position is not None:
+            try:
+                self._window.position = self._window_position
+            except Exception:
+                pass
+        self._bind_window_events()
+        self._surface = self.device.create_surface(self._window)
+        self._configure_surface()
+        if open_exit_confirmation:
+            _request_exit_confirmation(self)
+
+    def _on_window_resize(self, width: int, height: int) -> None:
+        self._window_width = max(int(width), 1)
+        self._window_height = max(int(height), 1)
+        self._configure_surface()
+        self.on_resize(width, height)
+
+    def close(self) -> None:
+        self._terminated = True
+        window = self._window
+        if window is not None and not window.should_close():
+            window.close()
+
+    def run(self) -> None:
+        while not self._terminated:
+            window = self._window
+            surface = self._surface
+            if window is None or surface is None:
+                raise RuntimeError("Viewer window host is not initialized")
+            window.process_events()
+            if self._terminated:
+                break
+            if window.should_close():
+                if bool(getattr(self, "_exit_confirmed", False)):
+                    break
+                self._recreate_window(open_exit_confirmation=True)
+                continue
+            surface_texture = surface.acquire_next_image()
+            command_encoder = self.device.create_command_encoder()
+            self.render(_ViewerRenderContext(surface_texture=surface_texture, command_encoder=command_encoder))
+            self.device.submit_command_buffer(command_encoder.finish())
+            surface.present()
+
+    def shutdown(self) -> None:
+        if self._surface is not None:
+            try:
+                self._surface.unconfigure()
+            except Exception:
+                pass
+            self._surface = None
+        self._window = None
+
+
+def _set_viewer_ui_value(viewer: object, key: str, value: object) -> None:
+    ui = getattr(viewer, "ui", None)
+    if ui is None:
+        return
+    values = getattr(ui, "_values", None)
+    if not isinstance(values, dict):
+        values = {}
+        setattr(ui, "_values", values)
+    values[str(key)] = value
+
+
+def _set_exit_confirmation_open(viewer: object, value: bool) -> None:
+    _set_viewer_ui_value(viewer, "_exit_confirmation_open", bool(value))
+
+
+def _request_exit_confirmation(viewer: object) -> None:
+    setattr(viewer, "_exit_confirmed", False)
+    _set_exit_confirmation_open(viewer, True)
+
+
+def _cancel_exit_confirmation(viewer: object) -> None:
+    _set_exit_confirmation_open(viewer, False)
+
+
+def _confirm_exit(viewer: object) -> None:
+    _set_exit_confirmation_open(viewer, False)
+    setattr(viewer, "_exit_confirmed", True)
+    close = getattr(viewer, "close", None)
+    if callable(close):
+        close()
+        return
+    app = getattr(viewer, "_app", None)
+    if app is not None and hasattr(app, "terminate"):
+        app.terminate()
+
+
 def _yaw_pitch_from_forward(forward: np.ndarray) -> tuple[float, float]:
     direction = np.asarray(normalize3(forward, eps=_VIEW_VEC_EPS), dtype=np.float32).reshape(3)
     yaw = math.atan2(float(direction[0]), float(direction[2]))
@@ -202,7 +373,7 @@ def _initial_renderer_params(state: object) -> RendererParams:
     )
 
 
-class SplatViewer(spy.AppWindow):
+class SplatViewer(_ViewerWindowHost):
 
     def c(self, key: str):
         return self.ui.control(key)
@@ -239,6 +410,7 @@ class SplatViewer(spy.AppWindow):
     def apply_camera_fit(self, bounds) -> None:
         fit = fit_camera(bounds, self.s.fov_y)
         self.s.camera_pos = fit.position
+        self.s.up = _canonical_viewer_up()
         self.s.near = fit.near
         self.s.far = fit.far
         self.s.move_speed = fit.move_speed
@@ -271,7 +443,7 @@ class SplatViewer(spy.AppWindow):
         )
         yaw, pitch = _yaw_pitch_from_forward(np.asarray(resolved_camera.target - resolved_camera.position, dtype=np.float32))
         self.s.camera_pos = spy.float3(*np.asarray(resolved_camera.position, dtype=np.float32).tolist())
-        self.s.up = spy.float3(*np.asarray(resolved_camera.up, dtype=np.float32).tolist())
+        self.s.up = _canonical_viewer_up()
         self.s.near = float(resolved_camera.near if near is None else near)
         self.s.far = float(resolved_camera.far if far is None else far)
         if move_speed is not None:
@@ -354,6 +526,7 @@ class SplatViewer(spy.AppWindow):
 
     def __init__(self, app: spy.App, width: int = 1280, height: int = 720, title: str = _WINDOW_TITLE, max_prepass_memory_mb: int = 4096) -> None:
         super().__init__(app, width=width, height=height, title=title, resizable=True, enable_vsync=False)
+        self._exit_confirmed = False
         self.loss_debug_view_options = LOSS_DEBUG_OPTIONS
         self.s = ViewerState(max_prepass_memory_mb=max(int(max_prepass_memory_mb), 1))
         _precompile_runtime_shaders(self.device)
@@ -375,10 +548,23 @@ class SplatViewer(spy.AppWindow):
         cb.import_colmap = self._import_colmap_callback
         cb.reload = self._reload_callback
         cb.reinitialize = self._reinitialize_callback
+        cb.request_exit = self._request_exit_callback
+        cb.confirm_exit = self._confirm_exit_callback
+        cb.cancel_exit = self._cancel_exit_callback
         cb.start_training = self._start_training_callback
         cb.stop_training = self._stop_training_callback
         cb.move_to_training_camera = self._move_to_training_camera_callback
+        cb.reset_camera = self._reset_camera_callback
         cb.save_defaults = self._save_defaults_callback
+
+    def _request_exit_callback(self) -> None:
+        _request_exit_confirmation(self)
+
+    def _confirm_exit_callback(self) -> None:
+        _confirm_exit(self)
+
+    def _cancel_exit_callback(self) -> None:
+        _cancel_exit_confirmation(self)
 
     def _run_action(self, action, *, close_colmap_import: bool = False) -> None:
         try:
@@ -510,6 +696,9 @@ class SplatViewer(spy.AppWindow):
     def _move_to_training_camera_callback(self) -> None:
         self._run_action(lambda: session.move_main_camera_to_selected_training_frame(self))
 
+    def _reset_camera_callback(self) -> None:
+        self._run_action(lambda: session.reset_main_camera(self))
+
     def _save_defaults_callback(self) -> None:
         try:
             ui_values = _viewer_ui_values(self)
@@ -579,6 +768,10 @@ class SplatViewer(spy.AppWindow):
         self.s.move_vel += (target_move - self.s.move_vel) * min(1.0, _MOVE_SMOOTH * dt)
         self.s.camera_pos += (up * self.s.move_vel.x + right * self.s.move_vel.y + forward * self.s.move_vel.z) * dt
 
+    def shutdown(self) -> None:
+        self.toolkit.shutdown()
+        super().shutdown()
+
 
 def _compute_view_geometry() -> tuple[int, int]:
     """Pick a single-window viewer size based on the current desktop size."""
@@ -598,7 +791,7 @@ def main() -> int:
     app = spy.App(device=device)
     viewer = SplatViewer(app, width=view_w, height=view_h, title=_WINDOW_TITLE, max_prepass_memory_mb=DEFAULT_MAX_PREPASS_MEMORY_MB)
     try:
-        app.run()
+        viewer.run()
     finally:
-        viewer.toolkit.shutdown()
+        viewer.shutdown()
     return 0

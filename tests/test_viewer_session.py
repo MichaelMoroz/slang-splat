@@ -347,6 +347,55 @@ def test_move_main_camera_to_selected_training_frame_applies_pose_and_exits_mode
     assert viewer.ui._values["show_training_cameras"] is False
 
 
+def test_reset_main_camera_fits_loaded_scene_and_exits_training_mode(monkeypatch) -> None:
+    fit_bounds = object()
+    scene = GaussianScene(
+        positions=np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
+        scales=np.array([[1.0, 1.0, 1.0]], dtype=np.float32),
+        rotations=np.array([[0.0, 0.0, 0.0, 1.0]], dtype=np.float32),
+        opacities=np.array([1.0], dtype=np.float32),
+        colors=np.array([[1.0, 1.0, 1.0]], dtype=np.float32),
+        sh_coeffs=np.zeros((1, 0, 3), dtype=np.float32),
+    )
+    calls: list[object] = []
+    viewer = SimpleNamespace(
+        ui=SimpleNamespace(_values={"show_training_cameras": True}),
+        s=SimpleNamespace(trainer=None, scene=scene),
+        apply_camera_fit=lambda bounds: calls.append(bounds),
+    )
+    monkeypatch.setattr(session, "estimate_scene_bounds", lambda scene_obj: fit_bounds if scene_obj is scene else None)
+
+    session.reset_main_camera(viewer)
+
+    assert calls == [fit_bounds]
+    assert viewer.ui._values["show_training_cameras"] is False
+
+
+def test_reset_main_camera_falls_back_to_cached_points(monkeypatch) -> None:
+    fit_bounds = object()
+    points = np.array([[0.0, 0.0, 0.0], [1.0, 2.0, 3.0]], dtype=np.float32)
+    calls: list[object] = []
+    viewer = SimpleNamespace(
+        ui=SimpleNamespace(_values={"show_training_cameras": True}),
+        s=SimpleNamespace(
+            trainer=None,
+            scene=None,
+            cached_init_point_positions=None,
+            cached_init_pointcloud_positions=points,
+            cached_init_diffused_positions=None,
+            cached_init_custom_mesh_positions=None,
+            cached_init_fibonacci_positions=None,
+        ),
+        apply_camera_fit=lambda bounds: calls.append(bounds),
+    )
+    monkeypatch.setattr(session, "estimate_point_bounds", lambda point_values: fit_bounds if point_values is points else None)
+
+    session.reset_main_camera(viewer)
+
+    assert calls == [fit_bounds]
+    assert viewer.ui._values["show_training_cameras"] is False
+
+
 def test_reset_training_runtime_waits_and_drains_deferred_resources(monkeypatch) -> None:
     calls: list[tuple[str, object]] = []
     viewer = SimpleNamespace(

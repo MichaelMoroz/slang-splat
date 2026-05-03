@@ -282,8 +282,8 @@ def test_precompile_runtime_shaders_loads_lazy_runtime_shader_sets(monkeypatch) 
 def test_viewer_init_precompiles_runtime_shaders_before_renderer_setup(monkeypatch) -> None:
     calls: list[tuple[str, object]] = []
 
-    monkeypatch.setattr(app.spy.AppWindow, "__init__", lambda self, _app, **_kwargs: setattr(self, "_device", "device"))
-    monkeypatch.setattr(app.SplatViewer, "device", property(lambda _self: "device"))
+    monkeypatch.setattr(app._ViewerWindowHost, "__init__", lambda self, _app, **_kwargs: (setattr(self, "_device", "device"), setattr(self, "_app", _app), setattr(self, "_window", None), setattr(self, "_surface", None), setattr(self, "_terminated", False)))
+    monkeypatch.setattr(app._ViewerWindowHost, "device", property(lambda _self: "device"))
     monkeypatch.setattr(app, "ViewerState", lambda **_kwargs: SimpleNamespace(list_capacity_multiplier=64, max_prepass_memory_mb=4096))
     monkeypatch.setattr(app, "_precompile_runtime_shaders", lambda device: calls.append(("precompile", device)))
     monkeypatch.setattr(app.GaussianRenderSettings, "from_renderer_params", lambda *_args, **_kwargs: SimpleNamespace(create_renderer=lambda device: calls.append(("renderer", device)) or "renderer"))
@@ -363,6 +363,19 @@ def test_move_to_training_camera_callback_routes_through_run_action(monkeypatch)
     assert calls[1] == ("move", viewer)
 
 
+def test_reset_camera_callback_routes_through_run_action(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+    viewer = SimpleNamespace(_run_action=lambda action: calls.append(("run_action", action)))
+
+    monkeypatch.setattr(app.session, "reset_main_camera", lambda viewer_obj: calls.append(("reset", viewer_obj)))
+
+    SplatViewer._reset_camera_callback(viewer)
+
+    assert calls[0][0] == "run_action"
+    calls[0][1]()
+    assert calls[1] == ("reset", viewer)
+
+
 def test_default_training_params_include_training_control_fields() -> None:
     params = app.default_training_params()
 
@@ -410,6 +423,127 @@ def test_viewer_background_can_follow_train_background_color() -> None:
     assert resolved == (0.25, 0.5, 0.75)
 
 
+def test_request_exit_callback_opens_confirmation() -> None:
+    viewer = SimpleNamespace(ui=SimpleNamespace(_values={}))
+
+    SplatViewer._request_exit_callback(viewer)
+
+    assert viewer.ui._values["_exit_confirmation_open"] is True
+    assert viewer._exit_confirmed is False
+
+
+def test_cancel_exit_callback_clears_confirmation() -> None:
+    viewer = SimpleNamespace(ui=SimpleNamespace(_values={"_exit_confirmation_open": True}))
+
+    SplatViewer._cancel_exit_callback(viewer)
+
+    assert viewer.ui._values["_exit_confirmation_open"] is False
+
+
+def test_confirm_exit_callback_requests_termination() -> None:
+    terminated: list[str] = []
+    viewer = SimpleNamespace(
+        ui=SimpleNamespace(_values={"_exit_confirmation_open": True}),
+        _app=SimpleNamespace(terminate=lambda: terminated.append("terminate")),
+    )
+
+    SplatViewer._confirm_exit_callback(viewer)
+
+    assert viewer.ui._values["_exit_confirmation_open"] is False
+    assert viewer._exit_confirmed is True
+    assert terminated == ["terminate"]
+
+
+def test_window_host_run_recreates_window_after_close_request(monkeypatch) -> None:
+    calls: list[str] = []
+    windows: list[object] = []
+    close_sequence = iter((True, False, True))
+
+    class _Window:
+        def __init__(self, width: int, height: int, title: str, resizable: bool) -> None:
+            self.width = width
+            self.height = height
+            self.title = title
+            self.resizable = resizable
+            self.position = None
+            self.on_resize = None
+            self.on_keyboard_event = None
+            self.on_mouse_event = None
+            windows.append(self)
+
+        def process_events(self) -> None:
+            calls.append("events")
+
+        def should_close(self) -> bool:
+            return next(close_sequence)
+
+        def close(self) -> None:
+            calls.append("window_close")
+
+    class _Surface:
+        def configure(self, width: int, height: int, format=app.spy.Format.undefined, vsync: bool = False) -> None:
+            calls.append(f"configure:{width}x{height}:{bool(vsync)}")
+
+        def unconfigure(self) -> None:
+            calls.append("unconfigure")
+
+        def acquire_next_image(self):
+            return SimpleNamespace(width=64, height=64)
+
+        def present(self) -> None:
+            calls.append("present")
+
+    device = SimpleNamespace(
+        create_surface=lambda _window: _Surface(),
+        create_command_encoder=lambda: SimpleNamespace(finish=lambda: "command_buffer"),
+        submit_command_buffer=lambda command_buffer: calls.append(str(command_buffer)),
+    )
+    host = object.__new__(app._ViewerWindowHost)
+    host._app = SimpleNamespace(device=device)
+    host._device = device
+    host._window_width = 64
+    host._window_height = 64
+    host._window_title = "Viewer"
+    host._window_resizable = True
+    host._surface_format = app.spy.Format.undefined
+    host._enable_vsync = False
+    host._window = None
+    host._surface = None
+    host._window_position = None
+    host._terminated = False
+    host._exit_confirmed = False
+    host.ui = SimpleNamespace(_values={})
+    host.render = lambda render_context: (calls.append(f"render:{render_context.surface_texture.width}x{render_context.surface_texture.height}"), setattr(host, "_terminated", True))
+    host.on_resize = lambda *_args: None
+    host.on_keyboard_event = lambda *_args: None
+    host.on_mouse_event = lambda *_args: None
+
+    monkeypatch.setattr(app.spy, "Window", _Window)
+
+    app._ViewerWindowHost._recreate_window(host, open_exit_confirmation=False)
+    app._ViewerWindowHost.run(host)
+
+    assert len(windows) == 2
+    assert host.ui._values["_exit_confirmation_open"] is True
+    assert calls.count("unconfigure") == 1
+    assert "render:64x64" in calls
+    assert "present" in calls
+
+
+def test_shutdown_unconfigures_surface_and_drops_window() -> None:
+    calls: list[str] = []
+    host = SimpleNamespace(
+        _surface=SimpleNamespace(unconfigure=lambda: calls.append("unconfigure")),
+        _window=object(),
+    )
+
+    app._ViewerWindowHost.shutdown(host)
+
+    assert calls == ["unconfigure"]
+    assert host._surface is None
+    assert host._window is None
+
+
 def test_apply_camera_pose_updates_free_fly_state() -> None:
     viewer = SimpleNamespace(
         s=SimpleNamespace(
@@ -436,6 +570,7 @@ def test_apply_camera_pose_updates_free_fly_state() -> None:
     SplatViewer.apply_camera_pose(viewer, camera, move_speed=3.5)
 
     np.testing.assert_allclose(np.asarray(viewer.s.camera_pos, dtype=np.float32), np.array([1.0, 2.0, 3.0], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(np.asarray(viewer.s.up, dtype=np.float32), np.array([0.0, 1.0, 0.0], dtype=np.float32), rtol=0.0, atol=1e-6)
     assert np.isclose(viewer.s.yaw, 0.0, rtol=0.0, atol=1e-6)
     assert np.isclose(viewer.s.pitch, 0.0, rtol=0.0, atol=1e-6)
     assert np.isclose(viewer.s.near, 0.25, rtol=0.0, atol=1e-6)
@@ -443,6 +578,47 @@ def test_apply_camera_pose_updates_free_fly_state() -> None:
     assert np.isclose(viewer.s.move_speed, 3.5, rtol=0.0, atol=1e-6)
     assert np.allclose(np.asarray(viewer.s.move_vel, dtype=np.float32), np.zeros((3,), dtype=np.float32))
     assert np.allclose(np.asarray(viewer.s.rot_vel, dtype=np.float32), np.zeros((2,), dtype=np.float32))
+
+
+def test_apply_camera_pose_keeps_pan_controls_in_free_fly_plane() -> None:
+    controls = {
+        "move_speed": SimpleNamespace(value=2.0),
+        "fov": SimpleNamespace(value=60.0),
+    }
+    viewer = SimpleNamespace()
+    viewer.c = lambda key: controls[key]
+    viewer.s = SimpleNamespace(
+        camera_pos=app.spy.float3(0.0, 0.0, -3.0),
+        yaw=0.0,
+        pitch=0.0,
+        up=app.spy.float3(0.0, 1.0, 0.0),
+        near=0.1,
+        far=120.0,
+        move_speed=2.0,
+        move_vel=app.spy.float3(0.0, 0.0, 0.0),
+        rot_vel=app.spy.float2(0.0, 0.0),
+        mouse_left=False,
+        mouse_right=True,
+        mouse_delta=app.spy.float2(10.0, -20.0),
+        scroll_delta=0.0,
+        look_speed=0.003,
+        keys={},
+        fov_y=60.0,
+    )
+    viewer._forward = lambda: SplatViewer._forward(viewer)
+    rolled_camera = SimpleNamespace(
+        position=np.array([0.0, 0.0, -3.0], dtype=np.float32),
+        target=np.array([0.0, 0.0, -2.0], dtype=np.float32),
+        up=np.array([1.0, 0.0, 0.0], dtype=np.float32),
+        near=0.1,
+        far=120.0,
+    )
+
+    SplatViewer.apply_camera_pose(viewer, rolled_camera, move_speed=2.0)
+    SplatViewer.update_camera(viewer, 0.1)
+
+    np.testing.assert_allclose(np.asarray(viewer.s.up, dtype=np.float32), np.array([0.0, 1.0, 0.0], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(np.asarray(viewer.s.camera_pos, dtype=np.float32), np.array([-0.06, 0.12, -3.0], dtype=np.float32), rtol=0.0, atol=1e-6)
 
 
 def test_apply_camera_position_preserves_orientation() -> None:

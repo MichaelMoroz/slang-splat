@@ -158,6 +158,7 @@ def test_build_ui_initializes_control_groups_and_internal_state() -> None:
     assert viewer_ui._values["_histogram_update_range"] is False
     assert viewer_ui._values["_histograms_update_realtime"] is False
     assert viewer_ui._values["_histograms_realtime_next_refresh_time"] == 0.0
+    assert viewer_ui._values["_exit_confirmation_open"] is False
     assert viewer_ui._values["hist_bin_count"] == 256
     assert viewer_ui._values["_show_histograms_prev"] is False
     assert viewer_ui._values["_training_views_rows"] == ()
@@ -177,6 +178,81 @@ def test_colmap_init_summary_lists_enabled_sources() -> None:
     viewer_ui._values["colmap_fibonacci_sphere_enabled"] = True
 
     assert ui._colmap_init_summary(viewer_ui) == "COLMAP Pointcloud, Custom Mesh, Fibonacci Sky Sphere"
+
+
+def test_file_menu_routes_exit_callback(monkeypatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(ui.imgui, "begin_menu", lambda _label: True)
+    monkeypatch.setattr(ui.imgui, "separator", lambda: None)
+    monkeypatch.setattr(ui.imgui, "end_menu", lambda: None)
+    monkeypatch.setattr(ui, "_menu_item", lambda label, shortcut="", selected=False, enabled=True: label == "Exit")
+    toolkit = SimpleNamespace(
+        callbacks=SimpleNamespace(
+            load_ply=lambda: calls.append("load"),
+            export_ply=lambda: calls.append("export"),
+            reload=lambda: calls.append("reload"),
+            reinitialize=lambda: calls.append("reinitialize"),
+            request_exit=lambda: calls.append("exit"),
+        ),
+        _show_colmap_import=False,
+    )
+    viewer_ui = SimpleNamespace(_values={"_can_export_ply": False})
+
+    ui.ToolkitWindow._draw_file_menu(toolkit, viewer_ui)
+
+    assert calls == ["exit"]
+
+
+def test_exit_confirmation_modal_confirms_exit(monkeypatch) -> None:
+    popup_names: list[str] = []
+    closed: list[str] = []
+    calls: list[str] = []
+    monkeypatch.setattr(ui.imgui, "open_popup", lambda name: popup_names.append(str(name)))
+    monkeypatch.setattr(ui.imgui, "set_next_window_size", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ui.imgui, "begin_popup_modal", lambda *_args, **_kwargs: (True, None))
+    monkeypatch.setattr(ui.imgui, "text_wrapped", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "separator", lambda: None)
+    monkeypatch.setattr(ui.imgui, "button", lambda label, *_args, **_kwargs: label == "Exit")
+    monkeypatch.setattr(ui.imgui, "same_line", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ui.imgui, "close_current_popup", lambda: closed.append("close"))
+    monkeypatch.setattr(ui.imgui, "end_popup", lambda: closed.append("end"))
+    toolkit = SimpleNamespace(
+        callbacks=SimpleNamespace(confirm_exit=lambda: calls.append("confirm"), cancel_exit=lambda: calls.append("cancel")),
+        _applied_interface_scale=1.0,
+    )
+    viewer_ui = SimpleNamespace(_values={"_exit_confirmation_open": True})
+
+    ui.ToolkitWindow._draw_exit_confirmation_modal(toolkit, viewer_ui)
+
+    assert popup_names == ["Confirm Exit"]
+    assert calls == ["confirm"]
+    assert closed == ["close", "end"]
+
+
+def test_exit_confirmation_modal_cancels_exit(monkeypatch) -> None:
+    popup_names: list[str] = []
+    closed: list[str] = []
+    calls: list[str] = []
+    monkeypatch.setattr(ui.imgui, "open_popup", lambda name: popup_names.append(str(name)))
+    monkeypatch.setattr(ui.imgui, "set_next_window_size", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ui.imgui, "begin_popup_modal", lambda *_args, **_kwargs: (True, None))
+    monkeypatch.setattr(ui.imgui, "text_wrapped", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "separator", lambda: None)
+    monkeypatch.setattr(ui.imgui, "button", lambda label, *_args, **_kwargs: label == "Cancel")
+    monkeypatch.setattr(ui.imgui, "same_line", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ui.imgui, "close_current_popup", lambda: closed.append("close"))
+    monkeypatch.setattr(ui.imgui, "end_popup", lambda: closed.append("end"))
+    toolkit = SimpleNamespace(
+        callbacks=SimpleNamespace(confirm_exit=lambda: calls.append("confirm"), cancel_exit=lambda: calls.append("cancel")),
+        _applied_interface_scale=1.0,
+    )
+    viewer_ui = SimpleNamespace(_values={"_exit_confirmation_open": True})
+
+    ui.ToolkitWindow._draw_exit_confirmation_modal(toolkit, viewer_ui)
+
+    assert popup_names == ["Confirm Exit"]
+    assert calls == ["cancel"]
+    assert closed == ["close", "end"]
 
 
 def test_build_ui_exposes_refinement_sample_radius_default() -> None:
@@ -534,9 +610,9 @@ def test_viewport_view_menu_left_aligns_view_mode_button(monkeypatch) -> None:
 
     origin = ui.ToolkitWindow._draw_viewport_view_menu(toolkit, viewer_ui, ui.imgui.ImVec2(50.0, 60.0))
 
-    assert button_labels == ["View Mode", "Cameras On", "Labels Off", "Min Dist On", "Training Cameras Off"]
+    assert button_labels == ["View Mode", "Cameras On", "Labels Off", "Min Dist On", "Training Cameras Off", "Reset Camera"]
     assert cursor_positions == [(62.0, 72.0)]
-    assert same_line_calls == [(0.0, 15.0), (0.0, 15.0), (0.0, 15.0), (0.0, 15.0), (0.0, 15.0), (0.0, 15.0)]
+    assert same_line_calls == [(0.0, 15.0), (0.0, 15.0), (0.0, 15.0), (0.0, 15.0), (0.0, 15.0), (0.0, 15.0), (0.0, 15.0)]
     assert filled_rects == [(148.0, 69.0, 250.0, 89.0, 6.0)]
     assert len(pushed_colors) == 1
     assert pushed_colors[0][0] == int(ui.imgui.Col_.text.value)
@@ -591,11 +667,33 @@ def test_viewport_view_menu_keeps_training_sh_controls_unchanged(monkeypatch) ->
 
     ui.ToolkitWindow._draw_viewport_view_menu(toolkit, viewer_ui, ui.imgui.ImVec2(50.0, 60.0))
 
-    assert button_labels == ["View Mode", "Cameras On", "Labels Off", "Min Dist On", "Training Cameras Off"]
+    assert button_labels == ["View Mode", "Cameras On", "Labels Off", "Min Dist On", "Training Cameras Off", "Reset Camera"]
     assert select_calls == [("SH0", True), ("SH1", False), ("SH2", False), ("SH3", False)]
     assert viewer_ui._values["_viewport_sh_band"] == 2
     assert viewer_ui._values["sh_band"] == 0
     assert viewer_ui._values["sh_band_stage2"] == 0
+
+
+def test_viewport_view_toggles_route_reset_camera_callback(monkeypatch) -> None:
+    calls: list[str] = []
+    button_labels: list[str] = []
+    monkeypatch.setattr(ui.imgui, "small_button", lambda label: button_labels.append(str(label)) or label == "Reset Camera")
+    monkeypatch.setattr(ui.imgui, "same_line", lambda *_args: None)
+    toolkit = SimpleNamespace(callbacks=SimpleNamespace(reset_camera=lambda: calls.append("reset")))
+    viewer_ui = SimpleNamespace(
+        _values={
+            "show_camera_overlays": True,
+            "show_camera_labels": False,
+            "show_camera_min_dist_spheres": True,
+            "show_training_cameras": False,
+        }
+    )
+
+    opened = ui.ToolkitWindow._draw_viewport_view_toggles(toolkit, viewer_ui, 1.0)
+
+    assert opened is False
+    assert button_labels == ["View Mode", "Cameras On", "Labels Off", "Min Dist On", "Training Cameras Off", "Reset Camera"]
+    assert calls == ["reset"]
 
 
 def test_viewport_camera_overlays_draw_lines_when_enabled(monkeypatch) -> None:

@@ -588,9 +588,13 @@ class ToolkitWindow:
             import_colmap=_noop,
             reload=_noop,
             reinitialize=_noop,
+            request_exit=_noop,
+            confirm_exit=_noop,
+            cancel_exit=_noop,
             start_training=_noop,
             stop_training=_noop,
             move_to_training_camera=_noop,
+            reset_camera=_noop,
             save_defaults=_noop,
         )
         self.tk = ToolkitState()
@@ -968,6 +972,7 @@ class ToolkitWindow:
         self._draw_histogram_window(ui)
         self._draw_training_views_window(ui)
         self._draw_resource_debug_window(ui)
+        self._draw_exit_confirmation_modal(ui)
         imgui.render()
         draw_data = imgui.get_draw_data()
         self._frame_textures = simgui.sync_draw_data_textures(self.device, self.renderer, draw_data)
@@ -1171,6 +1176,9 @@ class ToolkitWindow:
             enabled = bool(ui._values.get(key, default))
             if _imgui_opened(imgui.small_button(enabled_label if enabled else disabled_label)):
                 ui._values[key] = not enabled
+        imgui.same_line(0.0, 10.0 * scale)
+        if _imgui_opened(imgui.small_button("Reset Camera")):
+            self.callbacks.reset_camera()
         return opened
 
     def _draw_viewport_sh_band_combo(self, ui: ViewerUI, scale: float) -> int:
@@ -1513,6 +1521,9 @@ class ToolkitWindow:
         imgui.separator()
         if _menu_item("Reinitialize Gaussians"):
             self.callbacks.reinitialize()
+        imgui.separator()
+        if _menu_item("Exit"):
+            self.callbacks.request_exit()
         imgui.end_menu()
 
     def _draw_view_menu(self, ui: ViewerUI) -> None:
@@ -1554,6 +1565,24 @@ class ToolkitWindow:
         if _menu_item("About"):
             self._show_about = True
         imgui.end_menu()
+
+    def _draw_exit_confirmation_modal(self, ui: ViewerUI) -> None:
+        if bool(ui._values.get("_exit_confirmation_open", False)):
+            imgui.open_popup("Confirm Exit")
+        scale = max(self._applied_interface_scale, 1.0)
+        imgui.set_next_window_size(imgui.ImVec2(420.0 * scale, 0.0), imgui.Cond_.appearing.value)
+        if not _imgui_opened(imgui.begin_popup_modal("Confirm Exit", None, flags=imgui.WindowFlags_.always_auto_resize.value)):
+            return
+        imgui.text_wrapped("Do you want to exit? Any unsaved data will be lost")
+        imgui.separator()
+        if imgui.button("Cancel", imgui.ImVec2(120.0 * scale, 0.0)):
+            self.callbacks.cancel_exit()
+            imgui.close_current_popup()
+        imgui.same_line()
+        if imgui.button("Exit", imgui.ImVec2(120.0 * scale, 0.0)):
+            self.callbacks.confirm_exit()
+            imgui.close_current_popup()
+        imgui.end_popup()
 
     def _menu_bar_status_text(self, ui: ViewerUI) -> str:
         fps = self.tk.fps_history[-1] if self.tk.fps_history else 0.0
@@ -2886,6 +2915,7 @@ def build_ui(renderer) -> ViewerUI:
     for key, cast in _VIEWER_UI_EXPORT_FIELDS[:-3]:
         values[key] = cast(_VIEWER_UI_DEFAULTS[key])
     values.update({
+        "_exit_confirmation_open": False,
         "_histograms_refresh_requested": False,
         "_histograms_update_realtime": False,
         "_histograms_realtime_next_refresh_time": 0.0,
