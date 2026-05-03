@@ -195,6 +195,7 @@ class _ViewerWindowHost:
         self._enable_vsync = bool(enable_vsync)
         self._window: spy.Window | None = None
         self._surface: spy.Surface | None = None
+        self._surface_suspended = False
         self._window_position: spy.int2 | None = None
         self._terminated = False
         self._exit_confirmed = False
@@ -212,7 +213,7 @@ class _ViewerWindowHost:
         self._window.on_mouse_event = self.on_mouse_event
 
     def _configure_surface(self) -> None:
-        if self._surface is None:
+        if self._surface is None or self._surface_suspended:
             return
         self._surface.configure(
             self._window_width,
@@ -220,6 +221,30 @@ class _ViewerWindowHost:
             format=self._surface_format,
             vsync=self._enable_vsync,
         )
+
+    def _current_window_size(self) -> tuple[int, int]:
+        window = self._window
+        if window is not None:
+            try:
+                return int(window.width), int(window.height)
+            except Exception:
+                pass
+        return int(self._window_width), int(self._window_height)
+
+    def _suspend_surface(self) -> None:
+        if self._surface_suspended:
+            return
+        self._surface_suspended = True
+        if self._surface is None:
+            return
+        try:
+            self._surface.unconfigure()
+        except Exception:
+            pass
+
+    def _surface_renderable(self) -> bool:
+        width, height = self._current_window_size()
+        return width > 0 and height > 0 and not self._surface_suspended
 
     def _recreate_window(self, *, open_exit_confirmation: bool) -> None:
         previous_window = self._window
@@ -252,15 +277,22 @@ class _ViewerWindowHost:
                 pass
         self._bind_window_events()
         self._surface = self.device.create_surface(self._window)
+        self._surface_suspended = False
         self._configure_surface()
         if open_exit_confirmation:
             _request_exit_confirmation(self)
 
     def _on_window_resize(self, width: int, height: int) -> None:
-        self._window_width = max(int(width), 1)
-        self._window_height = max(int(height), 1)
+        resized_width = int(width)
+        resized_height = int(height)
+        if resized_width <= 0 or resized_height <= 0:
+            self._suspend_surface()
+            return
+        self._window_width = resized_width
+        self._window_height = resized_height
+        self._surface_suspended = False
         self._configure_surface()
-        self.on_resize(width, height)
+        self.on_resize(resized_width, resized_height)
 
     def close(self) -> None:
         self._terminated = True
@@ -282,6 +314,8 @@ class _ViewerWindowHost:
                     break
                 self._recreate_window(open_exit_confirmation=True)
                 continue
+            if not self._surface_renderable():
+                continue
             try:
                 surface_texture = surface.acquire_next_image()
             except Exception:
@@ -289,7 +323,10 @@ class _ViewerWindowHost:
                     if self._exit_confirmed:
                         break
                     self._recreate_window(open_exit_confirmation=True)
+                elif not self._surface_renderable():
+                    self._suspend_surface()
                 else:
+                    self._surface_suspended = False
                     self._configure_surface()
                 continue
             command_encoder = self.device.create_command_encoder()
