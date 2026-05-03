@@ -989,23 +989,24 @@ def update_debug_frame_slider_range(viewer: object) -> None:
 
 
 def _selected_training_debug_frame_index(viewer: object) -> int:
-    frames = tuple(getattr(viewer.s, "training_frames", ()))
+    frames = tuple(viewer.s.training_frames)
     if len(frames) == 0:
         return 0
     try:
         value = int(viewer.c("loss_debug_frame").value)
     except Exception:
-        value = int(getattr(getattr(viewer, "ui", None), "_values", {}).get("loss_debug_frame", 0))
+        value = int(viewer.ui._values.get("loss_debug_frame", 0))
     return clamp_index(value, len(frames))
 
 
 def selected_training_debug_camera(viewer: object):
-    frames = tuple(getattr(viewer.s, "training_frames", ()))
+    state = viewer.s
+    frames = tuple(state.training_frames)
     if len(frames) == 0:
         return None, None, 0
     frame_idx = _selected_training_debug_frame_index(viewer)
     frame = frames[frame_idx]
-    trainer = getattr(viewer.s, "trainer", None)
+    trainer = state.trainer
     if trainer is not None and hasattr(trainer, "make_frame_camera"):
         try:
             width, height = trainer.frame_size(frame_idx) if hasattr(trainer, "frame_size") else (int(getattr(frame, "width", 1)), int(getattr(frame, "height", 1)))
@@ -1016,7 +1017,7 @@ def selected_training_debug_camera(viewer: object):
     if not callable(make_camera):
         return frame, None, frame_idx
     try:
-        camera = make_camera(near=float(getattr(viewer.s, "near", 0.1)), far=float(getattr(viewer.s, "far", 120.0)))
+        camera = make_camera(near=float(getattr(state, "near", 0.1)), far=float(getattr(state, "far", 120.0)))
     except TypeError:
         camera = make_camera()
     except Exception:
@@ -1032,14 +1033,13 @@ def move_main_camera_to_selected_training_frame(viewer: object) -> int:
     if not callable(apply_camera_pose):
         raise RuntimeError("Viewer cannot apply camera poses.")
     apply_camera_pose(camera)
-    ui_values = getattr(getattr(viewer, "ui", None), "_values", None)
-    if isinstance(ui_values, dict):
-        ui_values["show_training_cameras"] = False
+    viewer.ui._values["show_training_cameras"] = False
     return int(frame_idx)
 
 
 def _camera_reset_scene(viewer: object) -> GaussianScene | None:
-    trainer = getattr(getattr(viewer, "s", None), "trainer", None)
+    state = viewer.s
+    trainer = getattr(state, "trainer", None)
     if trainer is not None and hasattr(trainer, "read_live_scene"):
         try:
             scene = trainer.read_live_scene()
@@ -1047,14 +1047,14 @@ def _camera_reset_scene(viewer: object) -> GaussianScene | None:
             scene = None
         if isinstance(scene, GaussianScene) and scene.count > 0:
             return scene
-    scene = getattr(getattr(viewer, "s", None), "scene", None)
+    scene = getattr(state, "scene", None)
     if isinstance(scene, GaussianScene) and scene.count > 0:
         return scene
     return None
 
 
 def _camera_reset_points(viewer: object) -> np.ndarray | None:
-    state = getattr(viewer, "s", None)
+    state = viewer.s
     for attr in (
         "cached_init_point_positions",
         "cached_init_pointcloud_positions",
@@ -1077,6 +1077,7 @@ def _camera_reset_points(viewer: object) -> np.ndarray | None:
 
 
 def reset_main_camera(viewer: object) -> None:
+    state = viewer.s
     fallback_bounds = None
     scene = _camera_reset_scene(viewer)
     if scene is not None:
@@ -1088,15 +1089,16 @@ def reset_main_camera(viewer: object) -> None:
     fit = None
     if fallback_bounds is not None:
         try:
-            fit = fit_camera(fallback_bounds, getattr(getattr(viewer, "s", None), "fov_y", 60.0))
+            fit = fit_camera(fallback_bounds, getattr(state, "fov_y", 60.0))
         except Exception:
             fit = None
-    if fallback_bounds is None and not getattr(getattr(viewer, "s", None), "training_frames", ()):
+    training_frames = getattr(state, "training_frames", ())
+    if fallback_bounds is None and not training_frames:
         raise RuntimeError("Viewer scene bounds are unavailable.")
     camera = _training_camera(
-        getattr(getattr(viewer, "s", None), "training_frames", ()),
-        getattr(getattr(viewer, "s", None), "near", 0.1) if fit is None else fit.near,
-        getattr(getattr(viewer, "s", None), "far", 120.0) if fit is None else fit.far,
+        training_frames,
+        getattr(state, "near", 0.1) if fit is None else fit.near,
+        getattr(state, "far", 120.0) if fit is None else fit.far,
     )
     apply_camera_position = getattr(viewer, "apply_camera_position", None)
     if camera is not None and callable(apply_camera_position):
@@ -1105,9 +1107,7 @@ def reset_main_camera(viewer: object) -> None:
         viewer.apply_camera_fit(fallback_bounds)
     else:
         raise RuntimeError("Viewer scene bounds are unavailable.")
-    ui_values = getattr(getattr(viewer, "ui", None), "_values", None)
-    if isinstance(ui_values, dict):
-        ui_values["show_training_cameras"] = False
+    viewer.ui._values["show_training_cameras"] = False
 
 
 def _training_debug_splat_age_buffer(viewer: object):

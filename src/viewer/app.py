@@ -147,18 +147,19 @@ def _precompile_runtime_shaders(device: spy.Device) -> None:
 
 
 def _mark_recent_interaction(viewer: object, timestamp: float | None = None) -> None:
-    state = getattr(viewer, "s", None)
-    if state is None:
-        return
     resolved = float(timestamp) if timestamp is not None else time.perf_counter()
-    state.last_interaction_time = resolved
+    viewer.s.last_interaction_time = resolved
 
 
 def _viewer_ui_values(viewer: object) -> dict[str, object]:
-    values = getattr(getattr(viewer, "ui", None), "_values", None)
+    ui = viewer.ui
+    try:
+        values = ui._values
+    except AttributeError:
+        values = None
     if isinstance(values, dict):
         return values
-    controls = getattr(getattr(viewer, "ui", None), "controls", {})
+    controls = ui.controls
     return {str(key): control.value for key, control in controls.items()}
 
 
@@ -196,6 +197,7 @@ class _ViewerWindowHost:
         self._surface: spy.Surface | None = None
         self._window_position: spy.int2 | None = None
         self._terminated = False
+        self._exit_confirmed = False
         self._recreate_window(open_exit_confirmation=False)
 
     @property
@@ -220,7 +222,7 @@ class _ViewerWindowHost:
         )
 
     def _recreate_window(self, *, open_exit_confirmation: bool) -> None:
-        previous_window = getattr(self, "_window", None)
+        previous_window = self._window
         if previous_window is not None:
             try:
                 self._window_position = previous_window.position
@@ -276,7 +278,7 @@ class _ViewerWindowHost:
             if self._terminated:
                 break
             if window.should_close():
-                if bool(getattr(self, "_exit_confirmed", False)):
+                if self._exit_confirmed:
                     break
                 self._recreate_window(open_exit_confirmation=True)
                 continue
@@ -284,7 +286,7 @@ class _ViewerWindowHost:
                 surface_texture = surface.acquire_next_image()
             except Exception:
                 if window.should_close():
-                    if bool(getattr(self, "_exit_confirmed", False)):
+                    if self._exit_confirmed:
                         break
                     self._recreate_window(open_exit_confirmation=True)
                 else:
@@ -306,13 +308,14 @@ class _ViewerWindowHost:
 
 
 def _set_viewer_ui_value(viewer: object, key: str, value: object) -> None:
-    ui = getattr(viewer, "ui", None)
-    if ui is None:
-        return
-    values = getattr(ui, "_values", None)
+    ui = viewer.ui
+    try:
+        values = ui._values
+    except AttributeError:
+        values = None
     if not isinstance(values, dict):
         values = {}
-        setattr(ui, "_values", values)
+        ui._values = values
     values[str(key)] = value
 
 
@@ -321,7 +324,7 @@ def _set_exit_confirmation_open(viewer: object, value: bool) -> None:
 
 
 def _request_exit_confirmation(viewer: object) -> None:
-    setattr(viewer, "_exit_confirmed", False)
+    viewer._exit_confirmed = False
     _set_exit_confirmation_open(viewer, True)
 
 
@@ -331,7 +334,7 @@ def _cancel_exit_confirmation(viewer: object) -> None:
 
 def _confirm_exit(viewer: object) -> None:
     _set_exit_confirmation_open(viewer, False)
-    setattr(viewer, "_exit_confirmed", True)
+    viewer._exit_confirmed = True
     close = getattr(viewer, "close", None)
     if callable(close):
         close()
