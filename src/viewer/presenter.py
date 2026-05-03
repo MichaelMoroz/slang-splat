@@ -321,8 +321,8 @@ def update_ui_text(viewer: object, dt: float) -> None:
     _set_text(viewer, "fps", f"FPS: {viewer.s.fps_smooth:.1f}")
     _set_text(viewer, "loss_debug_frame", header_state["loss_debug_frame"])
     _set_text(viewer, "loss_debug_psnr", header_state["loss_debug_psnr"])
-    training_camera_text, pose_available = _training_camera_debug_panel_text(viewer)
-    _set_text(viewer, "loss_debug_camera_info", training_camera_text)
+    training_camera_sections, pose_available = _training_camera_debug_panel_sections(viewer)
+    _set_ui_value(viewer, "_training_camera_struct_sections", training_camera_sections)
     _set_ui_value(viewer, "_training_camera_pose_available", pose_available)
     _set_text(viewer, "path", header_state["path"])
     _set_ui_value(viewer, "_colmap_import_active", bool(header_state["colmap_import_active"]))
@@ -336,7 +336,7 @@ def update_ui_text(viewer: object, dt: float) -> None:
     _set_text(viewer, "training_resolution", panel_state["training_resolution"])
     _set_text(viewer, "training_downscale", panel_state["training_downscale"])
     _set_text(viewer, "training_schedule", panel_state["training_schedule"])
-    _set_text(viewer, "training_schedule_values", panel_state["training_schedule_values"])
+    _set_ui_value(viewer, "_training_schedule_sections", panel_state["training_schedule_sections"])
     _set_text(viewer, "training_refinement", panel_state["training_refinement"])
     _set_ui_value(viewer, "_viewport_sh_control_key", str(panel_state["viewport_sh_control_key"]))
     _set_ui_value(viewer, "_viewport_sh_stage_label", str(panel_state["viewport_sh_stage_label"]))
@@ -463,28 +463,28 @@ def _training_debug_pose_camera(viewer: object, frame_idx: int, native_width: in
     return camera if _training_debug_pose_available(camera) else None
 
 
-def _format_training_debug_value(value: object) -> str:
+def _scalar_or_none(value: object) -> float | None:
     try:
         scalar = float(value)
     except Exception:
-        return "n/a"
-    return "n/a" if not np.isfinite(scalar) else f"{scalar:.4g}"
+        return None
+    return None if not np.isfinite(scalar) else scalar
 
 
-def _format_training_debug_vector(value: object) -> str:
+def _vec3_or_none(value: object) -> tuple[float, float, float] | None:
     try:
         vector = np.asarray(value, dtype=np.float32).reshape(-1)
     except Exception:
-        return "n/a"
+        return None
     if vector.size < 3 or not np.all(np.isfinite(vector[:3])):
-        return "n/a"
-    return f"({vector[0]:.4g}, {vector[1]:.4g}, {vector[2]:.4g})"
+        return None
+    return float(vector[0]), float(vector[1]), float(vector[2])
 
 
-def _training_camera_debug_panel_text(viewer: object) -> tuple[str, bool]:
+def _training_camera_debug_panel_sections(viewer: object) -> tuple[tuple, bool]:
     frames = tuple(getattr(viewer.s, "training_frames", ()))
     if len(frames) == 0:
-        return "", False
+        return (), False
     frame_idx = _debug_frame_idx(viewer)
     step = _training_debug_step(viewer)
     frame = frames[frame_idx]
@@ -492,58 +492,46 @@ def _training_camera_debug_panel_text(viewer: object) -> tuple[str, bool]:
     native_width, native_height = _training_debug_frame_size(viewer, frame_idx)
     camera = _training_debug_pose_camera(viewer, frame_idx, native_width, native_height)
     camera_id = getattr(frame, "camera_id", None)
-    return "\n".join(
-        part for part in (
-            "Resolution",
-            f"Target {int(target_width)}x{int(target_height)} | Source {int(native_width)}x{int(native_height)}",
-            f"Full-res {'on' if _training_camera_full_resolution(viewer) else 'off'}",
-            f"Ids: Image {int(getattr(frame, 'image_id', -1))} | Camera {int(camera_id) if camera_id is not None else 'n/a'}",
-            "" if camera is None else f"Pos: {_format_training_debug_vector(getattr(camera, 'position', None))}",
-            "" if camera is None else f"Target: {_format_training_debug_vector(getattr(camera, 'target', None))}",
-            "" if camera is None else f"Up: {_format_training_debug_vector(getattr(camera, 'up', None))}",
-            "Projection",
-            " | ".join(
-                (
-                    f"fx {_format_training_debug_value(getattr(frame, 'fx', None))}",
-                    f"fy {_format_training_debug_value(getattr(frame, 'fy', None))}",
-                    f"cx {_format_training_debug_value(getattr(frame, 'cx', None))}",
-                    f"cy {_format_training_debug_value(getattr(frame, 'cy', None))}",
-                )
-            ),
-            " | ".join(
-                (
-                    f"near {_format_training_debug_value(None if camera is None else getattr(camera, 'near', None))}",
-                    f"far {_format_training_debug_value(None if camera is None else getattr(camera, 'far', None))}",
-                )
-            ),
-            "Distortion A",
-            " | ".join(
-                (
-                    f"k1 {_format_training_debug_value(getattr(frame, 'k1', None))}",
-                    f"k2 {_format_training_debug_value(getattr(frame, 'k2', None))}",
-                )
-            ),
-            " | ".join(
-                (
-                    f"p1 {_format_training_debug_value(getattr(frame, 'p1', None))}",
-                    f"p2 {_format_training_debug_value(getattr(frame, 'p2', None))}",
-                )
-            ),
-            "Distortion B",
-            " | ".join(
-                (
-                    f"k3 {_format_training_debug_value(getattr(frame, 'k3', None))}",
-                    f"k4 {_format_training_debug_value(getattr(frame, 'k4', None))}",
-                )
-            ),
-            " | ".join(
-                (
-                    f"k5 {_format_training_debug_value(getattr(frame, 'k5', None))}",
-                    f"k6 {_format_training_debug_value(getattr(frame, 'k6', None))}",
-                )
-            ),
-        ) if part
-    ), camera is not None
+    pose_section: tuple = ()
+    if camera is not None:
+        pose_section = (("Pose", (
+            ("pos", _vec3_or_none(getattr(camera, "position", None))),
+            ("target", _vec3_or_none(getattr(camera, "target", None))),
+            ("up", _vec3_or_none(getattr(camera, "up", None))),
+            ("near", _scalar_or_none(getattr(camera, "near", None))),
+            ("far", _scalar_or_none(getattr(camera, "far", None))),
+        )),)
+    sections = (
+        ("Resolution", (
+            ("target", f"{int(target_width)}x{int(target_height)}"),
+            ("source", f"{int(native_width)}x{int(native_height)}"),
+            ("full_res", bool(_training_camera_full_resolution(viewer))),
+        )),
+        ("Ids", (
+            ("image", int(getattr(frame, "image_id", -1))),
+            ("camera", int(camera_id) if camera_id is not None else None),
+        )),
+        *pose_section,
+        ("Projection", (
+            ("fx", _scalar_or_none(getattr(frame, "fx", None))),
+            ("fy", _scalar_or_none(getattr(frame, "fy", None))),
+            ("cx", _scalar_or_none(getattr(frame, "cx", None))),
+            ("cy", _scalar_or_none(getattr(frame, "cy", None))),
+        )),
+        ("Distortion A", (
+            ("k1", _scalar_or_none(getattr(frame, "k1", None))),
+            ("k2", _scalar_or_none(getattr(frame, "k2", None))),
+            ("p1", _scalar_or_none(getattr(frame, "p1", None))),
+            ("p2", _scalar_or_none(getattr(frame, "p2", None))),
+        )),
+        ("Distortion B", (
+            ("k3", _scalar_or_none(getattr(frame, "k3", None))),
+            ("k4", _scalar_or_none(getattr(frame, "k4", None))),
+            ("k5", _scalar_or_none(getattr(frame, "k5", None))),
+            ("k6", _scalar_or_none(getattr(frame, "k6", None))),
+        )),
+    )
+    return sections, camera is not None
 
 
 def _apply_training_debug_renderer_hparams(viewer: object, debug_renderer: object, step: int) -> None:

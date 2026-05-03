@@ -202,23 +202,30 @@ def _viewport_sh_state(viewer: object) -> tuple[int, str, str]:
     return int(resolve_sh_band(training, step)), _active_sh_band_control_key(training, step), _schedule_stage_label(training, step)
 
 
-def _current_schedule_values_text(viewer: object) -> str:
+def _current_schedule_sections(viewer: object) -> tuple:
     training, step = _schedule_runtime(viewer)
     return (
-        f"Current Values: step={step:,} | { _schedule_stage_label(training, step) } | "
-        f"lr={resolve_base_learning_rate(training, step):.2e} | "
-        f"pos={resolve_position_lr_mul(training, step):.2f}x | "
-        f"scale={resolve_scale_lr_mul(training, step):.2f}x | "
-        f"rot={resolve_rotation_lr_mul(training, step):.2f}x | "
-        f"dc={resolve_color_lr_mul(training, step):.2f}x | "
-        f"op={resolve_opacity_lr_mul(training, step):.2f}x | "
-        f"shlr={resolve_sh_lr_mul(training, step):.2f}x | "
-        f"cspace={resolve_colorspace_mod(training, step):.3g} | "
-        f"dither={resolve_sorting_order_dithering(training, step):.3g} | "
-        f"prune={resolve_refinement_prune_lowest_contribution_ratio(training, step) * 100.0:.2f}% | "
-        f"push={resolve_position_push_away_from_camera_step(training, step):.2e} | "
-        f"noise={resolve_position_random_step_noise_lr(training, step):.2e} | "
-        f"sh=SH{resolve_sh_band(training, step)}"
+        ("", (
+            ("step", int(step)),
+            ("stage", _schedule_stage_label(training, step)),
+            ("sh", f"SH{int(resolve_sh_band(training, step))}"),
+        )),
+        ("Learning Rates", (
+            ("base", float(resolve_base_learning_rate(training, step))),
+            ("pos", float(resolve_position_lr_mul(training, step))),
+            ("scale", float(resolve_scale_lr_mul(training, step))),
+            ("rot", float(resolve_rotation_lr_mul(training, step))),
+            ("dc", float(resolve_color_lr_mul(training, step))),
+            ("opacity", float(resolve_opacity_lr_mul(training, step))),
+            ("sh", float(resolve_sh_lr_mul(training, step))),
+        )),
+        ("Other", (
+            ("colorspace", float(resolve_colorspace_mod(training, step))),
+            ("dither", float(resolve_sorting_order_dithering(training, step))),
+            ("prune%", float(resolve_refinement_prune_lowest_contribution_ratio(training, step)) * 100.0),
+            ("push", float(resolve_position_push_away_from_camera_step(training, step))),
+            ("noise", float(resolve_position_random_step_noise_lr(training, step))),
+        )),
     )
 
 
@@ -345,7 +352,7 @@ def _viewer_panel_state(viewer: object, debug_metrics: dict[str, np.ndarray] | N
         "training_resolution": _training_resolution_text(viewer),
         "training_downscale": _training_downscale_text(viewer),
         "training_schedule": _training_schedule_text(viewer),
-        "training_schedule_values": _current_schedule_values_text(viewer),
+        "training_schedule_sections": _current_schedule_sections(viewer),
         "training_refinement": _training_refinement_text(viewer),
         "viewport_sh_control_key": str(viewport_sh_control_key),
         "viewport_sh_stage_label": str(viewport_sh_stage_label),

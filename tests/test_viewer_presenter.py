@@ -329,7 +329,7 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         "train_auto_start_downscale": _control(1),
         "train_downscale_max_iters": _control(30000),
     }
-    texts = {key: _text() for key in ("fps", "images_subdir", "loss_debug_frame", "loss_debug_psnr", "loss_debug_camera_info", "path", "scene_stats", "render_stats", "training", "training_time", "training_iters_avg", "training_loss", "training_ssim", "training_density", "training_psnr", "training_instability", "training_resolution", "training_downscale", "training_schedule", "training_schedule_values", "training_refinement", "colmap_import_status", "colmap_import_current", "histogram_status", "error")}
+    texts = {key: _text() for key in ("fps", "images_subdir", "loss_debug_frame", "loss_debug_psnr", "path", "scene_stats", "render_stats", "training", "training_time", "training_iters_avg", "training_loss", "training_ssim", "training_density", "training_psnr", "training_instability", "training_resolution", "training_downscale", "training_schedule", "training_refinement", "colmap_import_status", "colmap_import_current", "histogram_status", "error")}
     viewer = SimpleNamespace()
     viewer.device = SimpleNamespace()
     viewer.toolkit = SimpleNamespace(viewport_size=lambda: (640, 360))
@@ -627,27 +627,21 @@ def test_update_ui_text_reports_training_schedule_and_refinement() -> None:
     presenter.update_ui_text(viewer, 1.0 / 60.0)
 
     assert viewer.t("training_schedule").text == "LR Schedule: 5.00e-03@0 -> 2.00e-03@3,000 -> 1.00e-03@14,000 -> 1.50e-04@30,000 -> 1.00e-03@100,000 | current=5.00e-03"
-    assert viewer.t("training_schedule_values").text == "Current Values: step=0 | Stage 0 | lr=5.00e-03 | pos=1.00x | scale=5.00x | rot=1.00x | dc=5.00x | op=5.00x | shlr=0.05x | cspace=1 | dither=0.5 | prune=10.00% | push=1.00e-03 | noise=5.00e+05 | sh=SH0"
+    assert viewer.ui._values["_training_schedule_sections"] == (
+        ("", (("step", 0), ("stage", "Stage 0"), ("sh", "SH0"))),
+        ("Learning Rates", (("base", 0.005), ("pos", 1.0), ("scale", 5.0), ("rot", 1.0), ("dc", 5.0), ("opacity", 5.0), ("sh", 0.05))),
+        ("Other", (("colorspace", 1.0), ("dither", 0.5), ("prune%", 10.0), ("push", 0.001), ("noise", 500000.0))),
+    )
     assert viewer.t("training_refinement").text == "Refinement: every 200 | growth=0.00% now | target=5.00% after 500 | alpha<1.00e-02 or min contrib<512 | prune lowest=10.00% | decay=99.50%/pass | alpha mul=1.00x | clone scale=1.00x | max=1,000,000"
     assert viewer.t("loss_debug_psnr").text == "PSNR: 32.50 dB"
-    assert viewer.t("loss_debug_camera_info").text == "\n".join((
-        "Resolution",
-        "Target 320x180 | Source 640x360",
-        "Full-res off",
-        "Ids: Image 5 | Camera 7",
-        "Pos: (1, 2, 3)",
-        "Target: (1.5, 2, 4)",
-        "Up: (0, 1, 0)",
-        "Projection",
-        "fx 525 | fy 520 | cx 320 | cy 180",
-        "near 0.1 | far 120",
-        "Distortion A",
-        "k1 0.01 | k2 -0.02",
-        "p1 0.001 | p2 -0.002",
-        "Distortion B",
-        "k3 0.003 | k4 -0.004",
-        "k5 0.005 | k6 -0.006",
-    ))
+    assert viewer.ui._values["_training_camera_struct_sections"] == (
+        ("Resolution", (("target", "320x180"), ("source", "640x360"), ("full_res", False))),
+        ("Ids", (("image", 5), ("camera", 7))),
+        ("Pose", (("pos", (1.0, 2.0, 3.0)), ("target", (1.5, 2.0, 4.0)), ("up", (0.0, 1.0, 0.0)), ("near", 0.1), ("far", 120.0))),
+        ("Projection", (("fx", 525.0), ("fy", 520.0), ("cx", 320.0), ("cy", 180.0))),
+        ("Distortion A", (("k1", 0.01), ("k2", -0.02), ("p1", 0.001), ("p2", -0.002))),
+        ("Distortion B", (("k3", 0.003), ("k4", -0.004), ("k5", 0.005), ("k6", -0.006))),
+    )
     assert viewer.ui._values["_training_camera_pose_available"] is True
     assert viewer.ui._values["_training_view_overlay_segments"] == ()
     assert viewer.ui._values["_training_views_rows"] == (
@@ -824,7 +818,11 @@ def test_update_ui_text_previews_current_schedule_values_without_trainer() -> No
 
     presenter.update_ui_text(viewer, 1.0 / 60.0)
 
-    assert viewer.t("training_schedule_values").text == "Current Values: step=0 | Stage 0 | lr=5.00e-03 | pos=1.00x | scale=5.00x | rot=1.00x | dc=5.00x | op=5.00x | shlr=0.05x | cspace=1 | dither=0.5 | prune=10.00% | push=1.00e-03 | noise=5.00e+05 | sh=SH0"
+    assert viewer.ui._values["_training_schedule_sections"] == (
+        ("", (("step", 0), ("stage", "Stage 0"), ("sh", "SH0"))),
+        ("Learning Rates", (("base", 0.005), ("pos", 1.0), ("scale", 5.0), ("rot", 1.0), ("dc", 5.0), ("opacity", 5.0), ("sh", 0.05))),
+        ("Other", (("colorspace", 1.0), ("dither", 0.5), ("prune%", 10.0), ("push", 0.001), ("noise", 500000.0))),
+    )
 
 
 def test_render_frame_recovers_missing_main_renderer_by_recreating_it(monkeypatch):

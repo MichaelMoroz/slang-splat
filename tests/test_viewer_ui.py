@@ -1026,6 +1026,10 @@ def test_viewport_debug_overlay_draws_training_camera_controls(monkeypatch) -> N
     monkeypatch.setattr(ui.imgui, "button", lambda label: button_labels.append(str(label)) or False)
     monkeypatch.setattr(ui, "_draw_disabled_wrapped_text", lambda text, strip_label=True: disabled_text.append(ui._status_suffix(text) if strip_label else str(text).strip()))
     monkeypatch.setattr(ui.imgui, "separator", lambda: None)
+    monkeypatch.setattr(ui.imgui, "get_content_region_avail", lambda: ui.imgui.ImVec2(220.0, 200.0))
+    monkeypatch.setattr(ui.imgui, "text_colored", lambda _color, _text: None)
+    monkeypatch.setattr(ui.imgui, "same_line", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ui.imgui, "dummy", lambda *_args: None)
     toolkit = SimpleNamespace(
         _viewport_content_rect=(0.0, 0.0, 640.0, 360.0),
         _interface_scale_factor=lambda _ui_obj: 1.0,
@@ -1035,28 +1039,13 @@ def test_viewport_debug_overlay_draws_training_camera_controls(monkeypatch) -> N
         _draw_training_camera_debug_controls=lambda ui_obj: ui.ToolkitWindow._draw_training_camera_debug_controls(toolkit, ui_obj),
     )
     viewer_ui = SimpleNamespace(
-        _values={"debug_mode": ui._DEBUG_MODE_VALUES.index("normal"), "show_training_cameras": True, "loss_debug_view": 0, "loss_debug_frame": 3, "_loss_debug_frame_max": 12, "training_camera_full_resolution": False},
+        _values={"debug_mode": ui._DEBUG_MODE_VALUES.index("normal"), "show_training_cameras": True, "loss_debug_view": 0, "loss_debug_frame": 3, "_loss_debug_frame_max": 12, "training_camera_full_resolution": False, "_training_camera_struct_sections": (
+            ("Resolution", (("target", "320x180"), ("source", "640x360"), ("full_res", False))),
+            ("Ids", (("image", 5), ("camera", 7))),
+        )},
         _texts={
             "loss_debug_frame": "Frame[3]: frame.png",
             "loss_debug_psnr": "PSNR: 32.50 dB",
-            "loss_debug_camera_info": "\n".join((
-                "Resolution",
-                "Target 320x180 | Source 640x360",
-                "Full-res off",
-                "Ids: Image 5 | Camera 7",
-                "Pos: (1, 2, 3)",
-                "Target: (1.5, 2, 4)",
-                "Up: (0, 1, 0)",
-                "Projection",
-                "fx 525 | fy 520 | cx 320 | cy 180",
-                "near 0.1 | far 120",
-                "Distortion A",
-                "k1 0.01 | k2 -0.02",
-                "p1 0.001 | p2 -0.002",
-                "Distortion B",
-                "k3 0.003 | k4 -0.004",
-                "k5 0.005 | k6 -0.006",
-            )),
         },
     )
 
@@ -1070,24 +1059,6 @@ def test_viewport_debug_overlay_draws_training_camera_controls(monkeypatch) -> N
     assert disabled_text == [
         "frame.png",
         "32.50 dB",
-        "\n".join((
-            "Resolution",
-            "Target 320x180 | Source 640x360",
-            "Full-res off",
-            "Ids: Image 5 | Camera 7",
-            "Pos: (1, 2, 3)",
-            "Target: (1.5, 2, 4)",
-            "Up: (0, 1, 0)",
-            "Projection",
-            "fx 525 | fy 520 | cx 320 | cy 180",
-            "near 0.1 | far 120",
-            "Distortion A",
-            "k1 0.01 | k2 -0.02",
-            "p1 0.001 | p2 -0.002",
-            "Distortion B",
-            "k3 0.003 | k4 -0.004",
-            "k5 0.005 | k6 -0.006",
-        )),
     ]
 
 
@@ -1095,7 +1066,6 @@ def test_build_ui_initializes_loss_debug_psnr_text() -> None:
     viewer_ui = ui.build_ui(_dummy_renderer())
 
     assert viewer_ui._texts["loss_debug_psnr"] == ""
-    assert viewer_ui._texts["loss_debug_camera_info"] == ""
     assert viewer_ui._values["_training_camera_pose_available"] is False
 
 

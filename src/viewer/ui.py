@@ -60,6 +60,7 @@ from .ui_schema import (
     _renderer_debug_mode_index,
     default_control_values,
 )
+from .ui_pretty import draw_struct_sections, measure_struct_sections
 from .ui_text import _build_about_text, _build_documentation_text, _draw_disabled_wrapped_text, _draw_markdown_text, _status_suffix
 from ..renderer.render_params import RendererParams
 
@@ -93,7 +94,7 @@ _VIEWPORT_OVERLAY_WIDTH = 320.0
 _VIEWPORT_OVERLAY_MIN_WIDTH = 220.0
 _VIEWPORT_OVERLAY_PADDING = 10.0
 _VIEWPORT_OVERLAY_MIN_HEIGHT = 44.0
-_TRAINING_CAMERA_DEBUG_TEXT_FIELDS = (("loss_debug_frame", True), ("loss_debug_psnr", True), ("loss_debug_camera_info", False))
+_TRAINING_CAMERA_DEBUG_TEXT_FIELDS = (("loss_debug_frame", True), ("loss_debug_psnr", True))
 _HISTOGRAM_AUTO_RANGE_KEEP_FRACTION = 0.99
 _DOCKSPACE_FLAGS = int(imgui.DockNodeFlags_.none)
 _TOOLKIT_WINDOW_NAME = "Toolkit"
@@ -1258,6 +1259,10 @@ class ToolkitWindow:
             text = str(ui._texts.get(key, "")).strip()
             if text:
                 height += max(text.count("\n") + 1, 1) * (line_height + spacing_y)
+        sections = ui._values.get("_training_camera_struct_sections", ())
+        if sections:
+            overlay_width = max(_VIEWPORT_OVERLAY_WIDTH * self._interface_scale_factor(ui) - 2.0 * _VIEWPORT_OVERLAY_PADDING * self._interface_scale_factor(ui), 80.0)
+            height += measure_struct_sections(sections, max_width=overlay_width) * (line_height + spacing_y)
         return height
 
     def _draw_training_camera_debug_controls(self, ui: ViewerUI) -> None:
@@ -1284,6 +1289,9 @@ class ToolkitWindow:
             text = ui._texts.get(key, "")
             if text:
                 _draw_disabled_wrapped_text(text, strip_label=suffix_only)
+        sections = ui._values.get("_training_camera_struct_sections", ())
+        if sections:
+            draw_struct_sections(sections)
 
     def _draw_viewport_camera_overlays(self, ui: ViewerUI, image_origin: imgui.ImVec2) -> None:
         if not bool(ui._values.get("show_camera_overlays", True)):
@@ -2628,11 +2636,11 @@ class ToolkitWindow:
                     self._draw_control(ui, _TRAIN_OPTIMIZER_SPEC_BY_KEY[key])
                 imgui.separator()
                 self._draw_schedule_stage_tabs(ui)
-                current_values = ui._texts.get("training_schedule_values", "")
-                if current_values:
+                schedule_sections = ui._values.get("_training_schedule_sections", ())
+                if schedule_sections:
                     imgui.separator()
                     imgui.text_unformatted("Current Values")
-                    _draw_disabled_wrapped_text(current_values)
+                    draw_struct_sections(schedule_sections)
                 imgui.end_tab_item()
             if imgui.begin_tab_item("Adam")[0]:
                 imgui.spacing()
@@ -2929,9 +2937,9 @@ def build_ui(renderer) -> ViewerUI:
         key: "" for key in (
             "fps", "path", "scene_stats", "render_stats", "training",
             "training_time", "training_iters_avg", "training_loss", "training_ssim", "training_density", "training_psnr", "training_instability", "error",
-            "loss_debug_frame", "loss_debug_psnr", "loss_debug_camera_info",
+            "loss_debug_frame", "loss_debug_psnr",
             "colmap_import_status", "colmap_import_current",
-            "training_resolution", "training_downscale", "training_schedule", "training_schedule_values", "training_refinement",
+            "training_resolution", "training_downscale", "training_schedule", "training_refinement",
             "histogram_status",
             "resource_debug_status",
             "setup_hint", "stability_hint", "defaults_status",
