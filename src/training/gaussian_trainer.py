@@ -871,7 +871,6 @@ class GaussianTrainer:
             "g_RefinementGradientVarianceWeightExponent": float(self.training.refinement_grad_variance_weight_exponent),
             "g_RefinementContributionWeightExponent": float(self.training.refinement_contribution_weight_exponent),
             "g_RefinementPruneLowestContributionRatio": float(prune_ratio),
-            "g_RefinementGradientVarianceInvSampleCount": 1.0 / float(self.observed_contribution_pixel_count) if self.observed_contribution_pixel_count > 0 else 0.0,
             "g_RefinementRadiusScale": float(max(self.renderer.radius_scale, 1e-8)),
         }
 
@@ -1521,13 +1520,11 @@ class GaussianTrainer:
     def observed_contribution_pixel_count(self) -> int:
         return int(max(self._observed_contribution_pixel_count, 0))
 
-    def _refinement_histogram_inputs(self, splat_count: int | None = None) -> tuple[int, float]:
+    def _refinement_histogram_inputs(self, splat_count: int | None = None) -> int:
         count = min(max(int(self._scene_count if splat_count is None else splat_count), 0), self._scene_count)
-        observed_pixels = float(self.observed_contribution_pixel_count)
-        inv_sample_count = 1.0 / observed_pixels if observed_pixels > 0.0 else 0.0
         self._ensure_refinement_buffers(self._scene_count)
         self._ensure_gradient_stats_buffer()
-        return count, inv_sample_count
+        return count
 
     def compute_refinement_distribution_histograms(
         self,
@@ -1537,7 +1534,7 @@ class GaussianTrainer:
         min_log10: float = -6.0,
         max_log10: float = 1.0,
     ) -> ParamLog10Histograms:
-        count, inv_sample_count = self._refinement_histogram_inputs(splat_count)
+        count = self._refinement_histogram_inputs(splat_count)
         return self.metrics.compute_refinement_distribution_histograms(
             self._refinement_buffers["splat_contribution"],
             self._refinement_buffers["gradient_stats"],
@@ -1545,7 +1542,6 @@ class GaussianTrainer:
             bin_count=bin_count,
             min_log10=min_log10,
             max_log10=max_log10,
-            inv_sample_count=inv_sample_count,
             grad_variance_exponent=max(float(self.training.refinement_grad_variance_weight_exponent), 0.0),
             contribution_exponent=max(float(self.training.refinement_contribution_weight_exponent), 0.0),
             param_labels=self.REFINEMENT_HISTOGRAM_LABELS,
@@ -1553,12 +1549,11 @@ class GaussianTrainer:
         )
 
     def compute_refinement_distribution_ranges(self, splat_count: int | None = None) -> ParamTensorRanges:
-        count, inv_sample_count = self._refinement_histogram_inputs(splat_count)
+        count = self._refinement_histogram_inputs(splat_count)
         return self.metrics.compute_refinement_distribution_ranges(
             self._refinement_buffers["splat_contribution"],
             self._refinement_buffers["gradient_stats"],
             count,
-            inv_sample_count=inv_sample_count,
             grad_variance_exponent=max(float(self.training.refinement_grad_variance_weight_exponent), 0.0),
             contribution_exponent=max(float(self.training.refinement_contribution_weight_exponent), 0.0),
             param_labels=self.REFINEMENT_HISTOGRAM_LABELS,

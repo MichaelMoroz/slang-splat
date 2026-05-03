@@ -275,7 +275,6 @@ class Metrics:
         bin_count: int,
         min_log10: float,
         inv_bin_size: float,
-        inv_sample_count: float,
         grad_variance_exponent: float,
         contribution_exponent: float,
     ) -> None:
@@ -290,7 +289,6 @@ class Metrics:
                 "g_BinCount": int(bin_count),
                 "g_Log10Min": float(min_log10),
                 "g_Log10InvBinSize": float(inv_bin_size),
-                "g_RefinementInvSampleCount": float(inv_sample_count),
                 "g_RefinementGradientVarianceWeightExponent": float(grad_variance_exponent),
                 "g_RefinementContributionWeightExponent": float(contribution_exponent),
                 "g_Histogram": self._histogram_buffer,
@@ -342,7 +340,6 @@ class Metrics:
         gradient_stats: spy.Buffer,
         splat_count: int,
         param_count: int,
-        inv_sample_count: float,
         grad_variance_exponent: float,
         contribution_exponent: float,
     ) -> None:
@@ -354,7 +351,6 @@ class Metrics:
                 "g_GradientStats": gradient_stats,
                 "g_ItemCount": int(splat_count),
                 "g_ParamCount": int(param_count),
-                "g_RefinementInvSampleCount": float(inv_sample_count),
                 "g_RefinementGradientVarianceWeightExponent": float(grad_variance_exponent),
                 "g_RefinementContributionWeightExponent": float(contribution_exponent),
                 "g_ParamRanges": self._range_buffer,
@@ -522,7 +518,6 @@ class Metrics:
         bin_count: int = 64,
         min_log10: float = -6.0,
         max_log10: float = 1.0,
-        inv_sample_count: float,
         grad_variance_exponent: float,
         contribution_exponent: float,
         param_labels: tuple[str, ...] | list[str] = (),
@@ -539,7 +534,7 @@ class Metrics:
         encoder = self.device.create_command_encoder()
         self._clear_uint_buffer(encoder, self._histogram_buffer, max(params * bins, 1))
         if params > 0 and splats > 0:
-            self._dispatch_refinement_distribution_histogram(encoder, splat_contribution, gradient_stats, splats, params, bins, lo, inv_bin_size, inv_sample_count, grad_variance_exponent, contribution_exponent)
+            self._dispatch_refinement_distribution_histogram(encoder, splat_contribution, gradient_stats, splats, params, bins, lo, inv_bin_size, grad_variance_exponent, contribution_exponent)
         self.device.submit_command_buffer(encoder.finish())
         self.device.wait()
         return self._read_param_histograms(params, bins, lo, hi, labels, groups, (PARAM_HISTOGRAM_SCALE_LOG10,) * params)
@@ -605,7 +600,6 @@ class Metrics:
         gradient_stats: spy.Buffer,
         splat_count: int,
         *,
-        inv_sample_count: float,
         grad_variance_exponent: float,
         contribution_exponent: float,
         param_labels: tuple[str, ...] | list[str] = (),
@@ -622,7 +616,7 @@ class Metrics:
         if params > 0:
             self._init_param_tensor_ranges(encoder, params)
             if splats > 0:
-                self._dispatch_refinement_distribution_ranges(encoder, splat_contribution, gradient_stats, splats, params, inv_sample_count, grad_variance_exponent, contribution_exponent)
+                self._dispatch_refinement_distribution_ranges(encoder, splat_contribution, gradient_stats, splats, params, grad_variance_exponent, contribution_exponent)
         self.device.submit_command_buffer(encoder.finish())
         self.device.wait()
         return self._read_param_ranges(params, labels, groups, (PARAM_HISTOGRAM_SCALE_LOG10,) * params)

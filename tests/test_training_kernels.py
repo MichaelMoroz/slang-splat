@@ -2172,14 +2172,25 @@ def test_clear_current_contribution_preserves_visible_average(device, tmp_path: 
     assert int(info[0, 3]) == 0
 
 
-def _write_refinement_distribution_inputs(trainer: GaussianTrainer, variances: np.ndarray, contributions: np.ndarray | None = None) -> None:
+def _write_refinement_distribution_inputs(
+    trainer: GaussianTrainer,
+    variances: np.ndarray,
+    contributions: np.ndarray | None = None,
+    contribution_counts: np.ndarray | None = None,
+) -> None:
     variances = np.ascontiguousarray(variances, dtype=np.float32).reshape(-1)
     contributions = np.ones_like(variances) if contributions is None else np.ascontiguousarray(contributions, dtype=np.float32).reshape(-1)
+    counts = (
+        (np.maximum(contributions, 0.0) > 0.0).astype(np.uint32)
+        if contribution_counts is None
+        else np.ascontiguousarray(contribution_counts, dtype=np.uint32).reshape(-1)
+    )
     stats = np.zeros((variances.shape[0], 2), dtype=np.float32)
-    stats[:, 0] = np.maximum(variances, 0.0) * 2.0
-    trainer._observed_contribution_pixel_count = 2
+    stats[:, 0] = np.maximum(variances, 0.0) * counts.astype(np.float32)
     trainer.refinement_buffers["gradient_stats"].copy_from_numpy(stats)
-    _write_contribution_info(trainer, np.maximum(contributions, 0.0) * SPLAT_CONTRIBUTION_FIXED_SCALE)
+    packed = _packed_contribution_info(np.maximum(contributions, 0.0) * SPLAT_CONTRIBUTION_FIXED_SCALE, trainer._refinement_splat_capacity)
+    packed[: counts.shape[0], 1] = np.where(np.maximum(contributions, 0.0) > 0.0, counts, 0).astype(np.uint32)
+    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(packed)
 
 
 def test_refinement_distribution_histograms_use_contribution_and_variance(device, tmp_path: Path) -> None:
@@ -2209,6 +2220,32 @@ def test_refinement_distribution_histograms_use_contribution_and_variance(device
     np.testing.assert_array_equal(hist.counts[1], np.array([1, 1, 1, 0], dtype=np.int64))
     np.testing.assert_allclose(ranges.min_values, np.log10(np.array([0.25, 0.125], dtype=np.float32)), rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(ranges.max_values, np.log10(np.array([0.75, 1.5], dtype=np.float32)), rtol=0.0, atol=1e-6)
+
+
+def test_refinement_distribution_averages_variance_over_nonzero_contributing_cameras(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=2, seed=171)
+    frame = _make_frame(tmp_path, image_name="refinement_count_target.png", image_id=171)
+    renderer = GaussianRenderer(device, width=16, height=16, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(refinement_grad_variance_weight_exponent=1.0, refinement_contribution_weight_exponent=1.0),
+        seed=123,
+    )
+    trainer._observed_contribution_pixel_count = 2
+    _write_refinement_distribution_inputs(
+        trainer,
+        np.array([0.5, 2.0], dtype=np.float32),
+        np.array([1.0, 1.0], dtype=np.float32),
+        contribution_counts=np.array([1, 4], dtype=np.uint32),
+    )
+
+    ranges = trainer.compute_refinement_distribution_ranges(scene.count)
+
+    np.testing.assert_allclose(ranges.min_values[1], np.log10(np.float32(0.5)), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(ranges.max_values[1], np.log10(np.float32(2.0)), rtol=0.0, atol=1e-6)
 
 
 def test_refinement_sampling_prefers_higher_gradient_variance(device, tmp_path: Path) -> None:

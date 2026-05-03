@@ -40,7 +40,6 @@ uniform float g_Log10InvBinSize;
 uniform float g_ValueMin;
 uniform float g_ValueInvBinSize;
 uniform float g_DecodeScale;
-uniform float g_RefinementInvSampleCount;
 uniform float g_RefinementGradientVarianceWeightExponent;
 uniform float g_RefinementContributionWeightExponent;
 uniform StructuredBuffer<float2> g_ParamHistogramBounds;
@@ -126,8 +125,8 @@ float refinement_metric_value(uint paramId, uint splatId)
     contribution = isfinite(contribution) ? max(contribution, 0.0) : 0.0;
     if (paramId == REFINEMENT_METRIC_CONTRIBUTION) return contribution;
     if (paramId != REFINEMENT_METRIC_DISTRIBUTION) return 0.0;
-    float invSampleCount = isfinite(g_RefinementInvSampleCount) && g_RefinementInvSampleCount > 0.0 ? g_RefinementInvSampleCount : 0.0;
-    float variance = g_GradientStats[splatId * DEBUG_GRAD_STATS_STRIDE] * invSampleCount;
+    float sampleCount = float(g_SplatContributionInfo[splatId].y);
+    float variance = sampleCount > 0.0 ? g_GradientStats[splatId * DEBUG_GRAD_STATS_STRIDE] / sampleCount : 0.0;
     variance = isfinite(variance) ? max(variance, 0.0) : 0.0;
     float distribution = pow(variance, max(g_RefinementGradientVarianceWeightExponent, 0.0)) * pow(contribution, max(g_RefinementContributionWeightExponent, 0.0));
     return isfinite(distribution) ? max(distribution, 0.0) : 0.0;

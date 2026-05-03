@@ -145,7 +145,6 @@ uniform float g_RefinementSplitBeta;
 uniform float g_RefinementGradientVarianceWeightExponent;
 uniform float g_RefinementContributionWeightExponent;
 uniform float g_RefinementPruneLowestContributionRatio;
-uniform float g_RefinementGradientVarianceInvSampleCount;
 uniform float g_RefinementRadiusScale;
 
 groupshared float gsLoss[TRAIN_TILE_DIM * TRAIN_TILE_DIM];
@@ -193,6 +192,11 @@ float splat_average_contribution_raw(uint splatId)
 {
     float contribution = asfloat(g_SplatContributionInfo[splatId].z);
     return isfinite(contribution) ? max(contribution, 0.0) : 0.0;
+}
+
+float splat_nonzero_contributing_camera_count(uint splatId)
+{
+    return float(g_SplatContributionInfo[splatId].y);
 }
 
 uint ordered_float_sort_key(float value)
@@ -440,10 +444,10 @@ uint refinement_gradient_stat_index(uint splatId, uint slot)
 
 float refinement_gradient_variance_weight(uint splatId)
 {
-    float invSampleCount = g_RefinementGradientVarianceInvSampleCount;
-    if (!(isfinite(invSampleCount) && invSampleCount > 0.0)) return 0.0;
+    float sampleCount = splat_nonzero_contributing_camera_count(splatId);
+    if (!(sampleCount > 0.0)) return 0.0;
     float varianceNumerator = g_GradientStats[refinement_gradient_stat_index(splatId, 0u)];
-    float variance = varianceNumerator * invSampleCount;
+    float variance = varianceNumerator / sampleCount;
     return isfinite(variance) ? max(variance, 0.0) : 0.0;
 }
 

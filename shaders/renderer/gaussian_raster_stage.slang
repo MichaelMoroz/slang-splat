@@ -446,6 +446,11 @@ float splat_average_contribution(uint splatId)
     return isfinite(contribution) ? max(contribution, 0.0) : 0.0;
 }
 
+float splat_nonzero_contributing_camera_count(uint splatId)
+{
+    return float(g_SplatContributionInfo[splatId].y);
+}
+
 float3 raster_contribution_amount_color(uint splatId)
 {
     float contributionValue = splat_average_contribution(splatId) * max(g_Raster.debugContributionScale, 0.0);
@@ -487,7 +492,8 @@ float raster_adam_second_moment_length(uint splatId)
 
 float raster_grad_variance(uint splatId)
 {
-    float invSampleCount = g_Raster.debugGradVarianceInvSampleCount;
+    float sampleCount = splat_nonzero_contributing_camera_count(splatId);
+    float invSampleCount = sampleCount > 0.0 ? 1.0 / sampleCount : g_Raster.debugGradVarianceInvSampleCount;
     if (!(isfinite(invSampleCount) && invSampleCount > 0.0)) return 0.0;
     float varianceNumerator = g_DebugGradStats[gradient_stat_index(splatId, 0u)];
     float variance = varianceNumerator * invSampleCount;
