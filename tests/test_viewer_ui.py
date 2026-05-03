@@ -329,6 +329,41 @@ def test_training_setup_section_draws_controls_from_ordered_specs(monkeypatch) -
     assert "train_auto_start_downscale" not in drawn
 
 
+def test_training_setup_section_uses_struct_pretty_printer_for_summaries(monkeypatch) -> None:
+    drawn_sections: list[tuple] = []
+    disabled_text: list[str] = []
+    monkeypatch.setattr(ui.imgui, "collapsing_header", lambda _label: True)
+    monkeypatch.setattr(ui, "draw_struct_sections", lambda sections, max_width=None: drawn_sections.append(tuple(sections)))
+    monkeypatch.setattr(ui, "_draw_disabled_wrapped_text", lambda text: disabled_text.append(str(text)))
+    monkeypatch.setattr(ui.imgui, "separator", lambda: None)
+    toolkit = SimpleNamespace(
+        _draw_control=lambda *_args, **_kwargs: None,
+        _ctx_reset=lambda *_args: None,
+    )
+    viewer_ui = SimpleNamespace(
+        _values={
+            "background_mode": 1,
+            "train_downscale_mode": 1,
+            "_training_resolution_sections": (("Train Res", (("size", "640x360"), ("factor", 1))),),
+            "_training_downscale_sections": (("Downscale", (("mode", "Manual"), ("current", 1), ("subsample", "Off"), ("effective", 1))),),
+            "_training_refinement_sections": (("Refinement", (("every", 200), ("growth_now%", 0.0))),),
+        },
+        _texts={"training_schedule": "LR Schedule: disabled"},
+    )
+
+    ui.ToolkitWindow._section_training_setup(toolkit, viewer_ui)
+
+    assert drawn_sections == [
+        (("Train Res", (("size", "640x360"), ("factor", 1))),),
+        (("Downscale", (("mode", "Manual"), ("current", 1), ("subsample", "Off"), ("effective", 1))),),
+        (("Refinement", (("every", 200), ("growth_now%", 0.0))),),
+    ]
+    assert disabled_text == [
+        "LR Schedule: disabled",
+        "COLMAP import can combine sparse COLMAP points, diffused COLMAP points, custom PLY seeds, custom mesh samples, and a Fibonacci sky sphere in one initialization pass.",
+    ]
+
+
 def test_export_repo_defaults_writes_cached_raster_grad_training_render_defaults() -> None:
     viewer_ui = ui.build_ui(_dummy_renderer())
 

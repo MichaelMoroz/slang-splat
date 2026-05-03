@@ -626,13 +626,15 @@ def test_update_ui_text_reports_training_schedule_and_refinement() -> None:
 
     presenter.update_ui_text(viewer, 1.0 / 60.0)
 
+    assert viewer.ui._values["_training_resolution_sections"] == (("Train Res", (("size", "640x360"), ("factor", 1))),)
+    assert viewer.ui._values["_training_downscale_sections"] == (("Downscale", (("mode", "Manual"), ("current", 1), ("subsample", "Off"), ("effective", 1))),)
     assert viewer.t("training_schedule").text == "LR Schedule: 5.00e-03@0 -> 2.00e-03@3,000 -> 1.00e-03@14,000 -> 1.50e-04@30,000 -> 1.00e-03@100,000 | current=5.00e-03"
     assert viewer.ui._values["_training_schedule_sections"] == (
         ("", (("step", 0), ("stage", "Stage 0"), ("sh", "SH0"))),
         ("Learning Rates", (("base", 0.005), ("pos", 1.0), ("scale", 5.0), ("rot", 1.0), ("dc", 5.0), ("opacity", 5.0), ("sh", 0.05))),
         ("Other", (("colorspace", 1.0), ("dither", 0.5), ("prune%", 10.0), ("push", 0.001), ("noise", 500000.0))),
     )
-    assert viewer.t("training_refinement").text == "Refinement: every 200 | growth=0.00% now | target=5.00% after 500 | alpha<1.00e-02 or min contrib<512 | prune lowest=10.00% | decay=99.50%/pass | alpha mul=1.00x | clone scale=1.00x | max=1,000,000"
+    assert viewer.ui._values["_training_refinement_sections"] == (("Refinement", (("every", 200), ("growth_now%", 0.0), ("target%", 5.0), ("after", 500), ("alpha<", 0.01), ("min_contrib<", 512.0), ("prune%", 10.0), ("decay%/pass", 99.5), ("alpha_mul", 1.0), ("clone_scale", 1.0), ("max", 1000000))),)
     assert viewer.t("loss_debug_psnr").text == "PSNR: 32.50 dB"
     assert viewer.ui._values["_training_camera_struct_sections"] == (
         ("Resolution", (("target", "320x180"), ("source", "640x360"), ("full_res", False))),
@@ -926,7 +928,7 @@ def test_update_ui_text_uses_permutation_averages() -> None:
     assert viewer.t("training_density").text == "Density Avg: 6.500000e-03"
     assert viewer.t("training_psnr").text == "PSNR Avg: 26.750 dB"
     assert viewer.t("loss_debug_psnr").text == "PSNR: 32.50 dB"
-    assert viewer.t("training_resolution").text == "Train Res: 640x360 (N=1)"
+    assert viewer.ui._values["_training_resolution_sections"] == (("Train Res", (("size", "640x360"), ("factor", 1))),)
 
 
 def test_update_ui_text_populates_colmap_import_progress_fields() -> None:

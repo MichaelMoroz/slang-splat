@@ -2598,18 +2598,27 @@ class ToolkitWindow:
             if spec.setup_visibility == "downscale_auto" and train_downscale_mode != 0:
                 continue
             self._draw_control(ui, spec)
-        train_resolution = ui._texts.get("training_resolution", "")
-        if train_resolution:
-            _draw_disabled_wrapped_text(train_resolution)
-        downscale_status = ui._texts.get("training_downscale", "")
-        if downscale_status:
-            _draw_disabled_wrapped_text(downscale_status)
+        for value_key, text_key in (
+            ("_training_resolution_sections", "training_resolution"),
+            ("_training_downscale_sections", "training_downscale"),
+        ):
+            sections = tuple(ui._values.get(value_key, ()))
+            if len(sections) > 0:
+                draw_struct_sections(sections)
+                continue
+            text = ui._texts.get(text_key, "")
+            if text:
+                _draw_disabled_wrapped_text(text)
         schedule_status = ui._texts.get("training_schedule", "")
         if schedule_status:
             _draw_disabled_wrapped_text(schedule_status)
-        refinement_status = ui._texts.get("training_refinement", "")
-        if refinement_status:
-            _draw_disabled_wrapped_text(refinement_status)
+        refinement_sections = tuple(ui._values.get("_training_refinement_sections", ()))
+        if len(refinement_sections) > 0:
+            draw_struct_sections(refinement_sections)
+        else:
+            refinement_status = ui._texts.get("training_refinement", "")
+            if refinement_status:
+                _draw_disabled_wrapped_text(refinement_status)
         _draw_disabled_wrapped_text("COLMAP import can combine sparse COLMAP points, diffused COLMAP points, custom PLY seeds, custom mesh samples, and a Fibonacci sky sphere in one initialization pass.")
         self._ctx_reset("train_setup_ctx", ui, [s.key for s in GROUP_SPECS[TRAINING_SETUP_GROUP]])
         imgui.separator()
@@ -2924,6 +2933,11 @@ def build_ui(renderer) -> ViewerUI:
         "_loss_debug_frame_max": 0,
         "training_camera_full_resolution": False,
         "_training_camera_pose_available": False,
+        "_training_camera_struct_sections": (),
+        "_training_resolution_sections": (),
+        "_training_downscale_sections": (),
+        "_training_schedule_sections": (),
+        "_training_refinement_sections": (),
         "_viewport_sh_band": int(_VIEWER_UI_DEFAULTS["viewport_sh_band"]),
         "_viewport_sh_control_key": str(_VIEWER_UI_DEFAULTS["viewport_sh_control_key"]),
         "_viewport_sh_stage_label": str(_VIEWER_UI_DEFAULTS["viewport_sh_stage_label"]),
@@ -2939,7 +2953,7 @@ def build_ui(renderer) -> ViewerUI:
             "training_time", "training_iters_avg", "training_loss", "training_ssim", "training_density", "training_psnr", "training_instability", "error",
             "loss_debug_frame", "loss_debug_psnr",
             "colmap_import_status", "colmap_import_current",
-            "training_resolution", "training_downscale", "training_schedule", "training_refinement",
+            "training_schedule",
             "histogram_status",
             "resource_debug_status",
             "setup_hint", "stability_hint", "defaults_status",

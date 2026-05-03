@@ -238,11 +238,22 @@ def _training_schedule_text(viewer: object) -> str:
     return _schedule_summary_text(training, current)
 
 
-def _training_refinement_text(viewer: object) -> str:
+def _training_refinement_sections(viewer: object) -> tuple:
     interval, current_growth, target_growth, start_step, alpha_threshold, contribution_cull, decay, prune_ratio, alpha_mul, clone_scale_mul, max_gaussians = _refinement_summary_values(viewer)
     return (
-        f"Refinement: every {interval:,} | growth={current_growth:.2f}% now | target={target_growth:.2f}% after {start_step:,} | "
-        f"alpha<{alpha_threshold:.2e} or min contrib<{contribution_cull:.6g} | prune lowest={prune_ratio:.2f}% | decay={decay:.2f}%/pass | alpha mul={alpha_mul:.2f}x | clone scale={clone_scale_mul:.2f}x | max={max_gaussians:,}"
+        ("Refinement", (
+            ("every", int(interval)),
+            ("growth_now%", float(current_growth)),
+            ("target%", float(target_growth)),
+            ("after", int(start_step)),
+            ("alpha<", float(alpha_threshold)),
+            ("min_contrib<", float(contribution_cull)),
+            ("prune%", float(prune_ratio)),
+            ("decay%/pass", float(decay)),
+            ("alpha_mul", float(alpha_mul)),
+            ("clone_scale", float(clone_scale_mul)),
+            ("max", int(max_gaussians)),
+        )),
     )
 
 
@@ -349,11 +360,11 @@ def _viewer_panel_state(viewer: object, debug_metrics: dict[str, np.ndarray] | N
     show_training_views = _ui_flag(viewer, "show_training_views", False)
     show_camera_overlays = _ui_flag(viewer, "show_camera_overlays", False)
     return {
-        "training_resolution": _training_resolution_text(viewer),
-        "training_downscale": _training_downscale_text(viewer),
+        "training_resolution_sections": _training_resolution_sections(viewer),
+        "training_downscale_sections": _training_downscale_sections(viewer),
         "training_schedule": _training_schedule_text(viewer),
         "training_schedule_sections": _current_schedule_sections(viewer),
-        "training_refinement": _training_refinement_text(viewer),
+        "training_refinement_sections": _training_refinement_sections(viewer),
         "viewport_sh_control_key": str(viewport_sh_control_key),
         "viewport_sh_stage_label": str(viewport_sh_stage_label),
         "histogram_status": str(getattr(viewer.s, "cached_raster_grad_histogram_status", "")),
@@ -758,42 +769,68 @@ def _preview_train_render_factor(viewer: object) -> int:
     return _preview_train_downscale_factor(viewer) * _preview_train_subsample_factor(viewer)
 
 
-def _training_resolution_text(viewer: object) -> str:
+def _training_resolution_sections(viewer: object) -> tuple:
     if viewer.s.training_renderer is not None and viewer.s.trainer is not None:
         factor = max(int(viewer.s.trainer.effective_train_render_factor()) if hasattr(viewer.s.trainer, "effective_train_render_factor") else int(viewer.s.trainer.effective_train_downscale_factor()), 1)
-        return f"Train Res: {int(viewer.s.training_renderer.width)}x{int(viewer.s.training_renderer.height)} (N={factor})"
-    if viewer.s.training_frames:
+        width = int(viewer.s.training_renderer.width)
+        height = int(viewer.s.training_renderer.height)
+    elif viewer.s.training_frames:
         factor = _preview_train_render_factor(viewer)
         native_width = max(int(viewer.s.training_frames[0].width), 1)
         native_height = max(int(viewer.s.training_frames[0].height), 1)
         width = (native_width + factor - 1) // factor
         height = (native_height + factor - 1) // factor
-        return f"Train Res: {width}x{height} (N={factor})"
-    return "Train Res: n/a"
+    else:
+        return (("Train Res", (("size", None),)),)
+    return (("Train Res", (("size", f"{width}x{height}"), ("factor", int(factor)))),)
 
 
-def _training_downscale_text(viewer: object) -> str:
+def _subsample_summary_text(subsample: int, auto: bool) -> str:
+    if auto:
+        return f"Auto (1/{subsample})" if subsample > 1 else "Auto (Off)"
+    return "Off" if subsample <= 1 else f"1/{subsample}"
+
+
+def _training_downscale_sections(viewer: object) -> tuple:
     if viewer.s.trainer is not None:
         training = viewer.s.trainer.training
         current = int(viewer.s.trainer.effective_train_downscale_factor())
         subsample = int(viewer.s.trainer.effective_train_subsample_factor()) if hasattr(viewer.s.trainer, "effective_train_subsample_factor") else max(int(getattr(training, "train_subsample_factor", 1)), 1)
         combined = int(viewer.s.trainer.effective_train_render_factor()) if hasattr(viewer.s.trainer, "effective_train_render_factor") else current
         auto = int(getattr(training, "train_subsample_factor", 1)) == 0
-        subsample_text = f"Auto (1/{subsample})" if auto and subsample > 1 else "Auto (Off)" if auto else "Off" if subsample <= 1 else f"1/{subsample}"
+        subsample_text = _subsample_summary_text(subsample, auto)
         if int(training.train_downscale_mode) == _TRAIN_DOWNSCALE_MODE_AUTO:
-            return (
-                f"Downscale: Auto | start={int(training.train_auto_start_downscale)}x | "
-                f"current={current}x | subsampling={subsample_text} | effective={combined}x | step {int(viewer.s.trainer.state.step)}/{int(training.train_downscale_max_iters)}"
-            )
-        return f"Downscale: Manual {current}x | subsampling={subsample_text} | effective={combined}x"
+            return (("Downscale", (
+                ("mode", "Auto"),
+                ("start", int(training.train_auto_start_downscale)),
+                ("current", int(current)),
+                ("subsample", subsample_text),
+                ("effective", int(combined)),
+                ("step", f"{int(viewer.s.trainer.state.step)}/{int(training.train_downscale_max_iters)}"),
+            )),)
+        return (("Downscale", (
+            ("mode", "Manual"),
+            ("current", int(current)),
+            ("subsample", subsample_text),
+            ("effective", int(combined)),
+        )),)
     mode = int(viewer.c("train_downscale_mode").value)
     subsample = _preview_train_subsample_factor(viewer)
     combined = _preview_train_render_factor(viewer)
     auto = int(viewer.c("train_subsample_factor").value) == 0
-    subsample_text = f"Auto (1/{subsample})" if auto and subsample > 1 else "Auto (Off)" if auto else "Off" if subsample <= 1 else f"1/{subsample}"
+    subsample_text = _subsample_summary_text(subsample, auto)
     if mode == _TRAIN_DOWNSCALE_MODE_AUTO:
-        return (
-            f"Downscale: Auto | start={max(int(viewer.c('train_auto_start_downscale').value), 1)}x | "
-            f"current={_preview_train_downscale_factor(viewer)}x | subsampling={subsample_text} | effective={combined}x | step 0/{max(int(viewer.c('train_downscale_max_iters').value), 1)}"
-        )
-    return f"Downscale: Manual {max(mode, 1)}x | subsampling={subsample_text} | effective={combined}x"
+        return (("Downscale", (
+            ("mode", "Auto"),
+            ("start", max(int(viewer.c("train_auto_start_downscale").value), 1)),
+            ("current", int(_preview_train_downscale_factor(viewer))),
+            ("subsample", subsample_text),
+            ("effective", int(combined)),
+            ("step", f"0/{max(int(viewer.c('train_downscale_max_iters').value), 1)}"),
+        )),)
+    return (("Downscale", (
+        ("mode", "Manual"),
+        ("current", max(int(mode), 1)),
+        ("subsample", subsample_text),
+        ("effective", int(combined)),
+    )),)
