@@ -320,11 +320,10 @@ def _training_status_texts(viewer: object, current_splat_count: int, training_el
     }
 
 
-def _ui_header_state(viewer: object, debug_metrics: dict[str, np.ndarray], frame_idx: int, debug_idx: int) -> dict[str, object]:
+def _ui_header_state(viewer: object, debug_metrics: dict[str, np.ndarray], frame_idx: int) -> dict[str, object]:
     import_progress = getattr(viewer.s, "colmap_import_progress", None)
     current_splat_count = viewer.s.trainer.scene.count if viewer.s.trainer is not None else (viewer.s.scene.count if viewer.s.scene is not None else 0)
     return {
-        "loss_debug_view": f"View: {viewer.loss_debug_view_options[debug_idx][1]}",
         "loss_debug_frame": f"Frame[{frame_idx}]: {Path(viewer.s.training_frames[frame_idx].image_path).name}" if viewer.s.training_frames else "Frame: <none>",
         "loss_debug_psnr": _debug_psnr_text(debug_metrics, frame_idx),
         "path": _scene_path_text(viewer),

@@ -315,24 +315,15 @@ def update_ui_text(viewer: object, dt: float) -> None:
     viewer.s.fps_smooth += (1.0 / max(dt, 1e-5) - viewer.s.fps_smooth) * min(dt * 5.0, 1.0)
     session.update_debug_frame_slider_range(viewer)
     frame_idx = _debug_frame_idx(viewer)
-    debug_idx = clamp_index(int(viewer.c("loss_debug_view").value), len(viewer.loss_debug_view_options))
     debug_metrics = _frame_metrics_snapshot(viewer, len(getattr(viewer.s, "training_frames", ())))
     stats = viewer.s.stats
-    header_state = _ui_header_state(viewer, debug_metrics, frame_idx, debug_idx)
+    header_state = _ui_header_state(viewer, debug_metrics, frame_idx)
     _set_text(viewer, "fps", f"FPS: {viewer.s.fps_smooth:.1f}")
-    _set_text(viewer, "loss_debug_view", header_state["loss_debug_view"])
     _set_text(viewer, "loss_debug_frame", header_state["loss_debug_frame"])
     _set_text(viewer, "loss_debug_psnr", header_state["loss_debug_psnr"])
-    training_camera_state = _training_camera_debug_panel_state(viewer)
-    _set_text(viewer, "loss_debug_resolution", training_camera_state["resolution"])
-    _set_text(viewer, "loss_debug_ids", training_camera_state["ids"])
-    _set_text(viewer, "loss_debug_pose_position", training_camera_state["pose_position"])
-    _set_text(viewer, "loss_debug_pose_target", training_camera_state["pose_target"])
-    _set_text(viewer, "loss_debug_pose_up", training_camera_state["pose_up"])
-    _set_text(viewer, "loss_debug_projection", training_camera_state["projection"])
-    _set_text(viewer, "loss_debug_distortion_primary", training_camera_state["distortion_primary"])
-    _set_text(viewer, "loss_debug_distortion_secondary", training_camera_state["distortion_secondary"])
-    _set_ui_value(viewer, "_training_camera_pose_available", bool(training_camera_state["pose_available"]))
+    training_camera_text, pose_available = _training_camera_debug_panel_text(viewer)
+    _set_text(viewer, "loss_debug_camera_info", training_camera_text)
+    _set_ui_value(viewer, "_training_camera_pose_available", pose_available)
     _set_text(viewer, "path", header_state["path"])
     _set_ui_value(viewer, "_colmap_import_active", bool(header_state["colmap_import_active"]))
     _set_ui_value(viewer, "_colmap_import_fraction", float(header_state["colmap_import_fraction"]))
@@ -490,24 +481,10 @@ def _format_training_debug_vector(value: object) -> str:
     return f"({vector[0]:.4g}, {vector[1]:.4g}, {vector[2]:.4g})"
 
 
-def _format_training_debug_block(title: str, *rows: str) -> str:
-    return "\n".join(part for part in (title, *rows) if part)
-
-
-def _training_camera_debug_panel_state(viewer: object) -> dict[str, object]:
+def _training_camera_debug_panel_text(viewer: object) -> tuple[str, bool]:
     frames = tuple(getattr(viewer.s, "training_frames", ()))
     if len(frames) == 0:
-        return {
-            "resolution": "",
-            "ids": "",
-            "pose_position": "",
-            "pose_target": "",
-            "pose_up": "",
-            "projection": "",
-            "distortion_primary": "",
-            "distortion_secondary": "",
-            "pose_available": False,
-        }
+        return "", False
     frame_idx = _debug_frame_idx(viewer)
     step = _training_debug_step(viewer)
     frame = frames[frame_idx]
@@ -515,20 +492,15 @@ def _training_camera_debug_panel_state(viewer: object) -> dict[str, object]:
     native_width, native_height = _training_debug_frame_size(viewer, frame_idx)
     camera = _training_debug_pose_camera(viewer, frame_idx, native_width, native_height)
     camera_id = getattr(frame, "camera_id", None)
-    return {
-        "resolution": _format_training_debug_block(
+    return "\n".join(
+        part for part in (
             "Resolution",
             f"Target {int(target_width)}x{int(target_height)} | Source {int(native_width)}x{int(native_height)}",
             f"Full-res {'on' if _training_camera_full_resolution(viewer) else 'off'}",
-        ),
-        "ids": _format_training_debug_block(
-            "Ids",
-            f"Image {int(getattr(frame, 'image_id', -1))} | Camera {int(camera_id) if camera_id is not None else 'n/a'}",
-        ),
-        "pose_position": "" if camera is None else f"Pos: {_format_training_debug_vector(getattr(camera, 'position', None))}",
-        "pose_target": "" if camera is None else f"Target: {_format_training_debug_vector(getattr(camera, 'target', None))}",
-        "pose_up": "" if camera is None else f"Up: {_format_training_debug_vector(getattr(camera, 'up', None))}",
-        "projection": _format_training_debug_block(
+            f"Ids: Image {int(getattr(frame, 'image_id', -1))} | Camera {int(camera_id) if camera_id is not None else 'n/a'}",
+            "" if camera is None else f"Pos: {_format_training_debug_vector(getattr(camera, 'position', None))}",
+            "" if camera is None else f"Target: {_format_training_debug_vector(getattr(camera, 'target', None))}",
+            "" if camera is None else f"Up: {_format_training_debug_vector(getattr(camera, 'up', None))}",
             "Projection",
             " | ".join(
                 (
@@ -544,8 +516,6 @@ def _training_camera_debug_panel_state(viewer: object) -> dict[str, object]:
                     f"far {_format_training_debug_value(None if camera is None else getattr(camera, 'far', None))}",
                 )
             ),
-        ),
-        "distortion_primary": _format_training_debug_block(
             "Distortion A",
             " | ".join(
                 (
@@ -559,8 +529,6 @@ def _training_camera_debug_panel_state(viewer: object) -> dict[str, object]:
                     f"p2 {_format_training_debug_value(getattr(frame, 'p2', None))}",
                 )
             ),
-        ),
-        "distortion_secondary": _format_training_debug_block(
             "Distortion B",
             " | ".join(
                 (
@@ -574,9 +542,8 @@ def _training_camera_debug_panel_state(viewer: object) -> dict[str, object]:
                     f"k6 {_format_training_debug_value(getattr(frame, 'k6', None))}",
                 )
             ),
-        ),
-        "pose_available": camera is not None,
-    }
+        ) if part
+    ), camera is not None
 
 
 def _apply_training_debug_renderer_hparams(viewer: object, debug_renderer: object, step: int) -> None:

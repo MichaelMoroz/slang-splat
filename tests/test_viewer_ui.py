@@ -1037,17 +1037,26 @@ def test_viewport_debug_overlay_draws_training_camera_controls(monkeypatch) -> N
     viewer_ui = SimpleNamespace(
         _values={"debug_mode": ui._DEBUG_MODE_VALUES.index("normal"), "show_training_cameras": True, "loss_debug_view": 0, "loss_debug_frame": 3, "_loss_debug_frame_max": 12, "training_camera_full_resolution": False},
         _texts={
-            "loss_debug_view": "View: Rendered",
             "loss_debug_frame": "Frame[3]: frame.png",
             "loss_debug_psnr": "PSNR: 32.50 dB",
-            "loss_debug_resolution": "Resolution\nTarget 320x180 | Source 640x360\nFull-res off",
-            "loss_debug_ids": "Ids\nImage 5 | Camera 7",
-            "loss_debug_pose_position": "Pos: (1, 2, 3)",
-            "loss_debug_pose_target": "Target: (1.5, 2, 4)",
-            "loss_debug_pose_up": "Up: (0, 1, 0)",
-            "loss_debug_projection": "Projection\nfx 525 | fy 520 | cx 320 | cy 180\nnear 0.1 | far 120",
-            "loss_debug_distortion_primary": "Distortion A\nk1 0.01 | k2 -0.02\np1 0.001 | p2 -0.002",
-            "loss_debug_distortion_secondary": "Distortion B\nk3 0.003 | k4 -0.004\nk5 0.005 | k6 -0.006",
+            "loss_debug_camera_info": "\n".join((
+                "Resolution",
+                "Target 320x180 | Source 640x360",
+                "Full-res off",
+                "Ids: Image 5 | Camera 7",
+                "Pos: (1, 2, 3)",
+                "Target: (1.5, 2, 4)",
+                "Up: (0, 1, 0)",
+                "Projection",
+                "fx 525 | fy 520 | cx 320 | cy 180",
+                "near 0.1 | far 120",
+                "Distortion A",
+                "k1 0.01 | k2 -0.02",
+                "p1 0.001 | p2 -0.002",
+                "Distortion B",
+                "k3 0.003 | k4 -0.004",
+                "k5 0.005 | k6 -0.006",
+            )),
         },
     )
 
@@ -1059,17 +1068,26 @@ def test_viewport_debug_overlay_draws_training_camera_controls(monkeypatch) -> N
     assert checkbox_calls == [("Full Resolution", False)]
     assert button_labels == ["Move Main View Here"]
     assert disabled_text == [
-        "View: Rendered",
         "frame.png",
         "32.50 dB",
-        "Resolution\nTarget 320x180 | Source 640x360\nFull-res off",
-        "Ids\nImage 5 | Camera 7",
-        "Pos: (1, 2, 3)",
-        "Target: (1.5, 2, 4)",
-        "Up: (0, 1, 0)",
-        "Projection\nfx 525 | fy 520 | cx 320 | cy 180\nnear 0.1 | far 120",
-        "Distortion A\nk1 0.01 | k2 -0.02\np1 0.001 | p2 -0.002",
-        "Distortion B\nk3 0.003 | k4 -0.004\nk5 0.005 | k6 -0.006",
+        "\n".join((
+            "Resolution",
+            "Target 320x180 | Source 640x360",
+            "Full-res off",
+            "Ids: Image 5 | Camera 7",
+            "Pos: (1, 2, 3)",
+            "Target: (1.5, 2, 4)",
+            "Up: (0, 1, 0)",
+            "Projection",
+            "fx 525 | fy 520 | cx 320 | cy 180",
+            "near 0.1 | far 120",
+            "Distortion A",
+            "k1 0.01 | k2 -0.02",
+            "p1 0.001 | p2 -0.002",
+            "Distortion B",
+            "k3 0.003 | k4 -0.004",
+            "k5 0.005 | k6 -0.006",
+        )),
     ]
 
 
@@ -1077,7 +1095,7 @@ def test_build_ui_initializes_loss_debug_psnr_text() -> None:
     viewer_ui = ui.build_ui(_dummy_renderer())
 
     assert viewer_ui._texts["loss_debug_psnr"] == ""
-    assert viewer_ui._texts["loss_debug_resolution"] == ""
+    assert viewer_ui._texts["loss_debug_camera_info"] == ""
     assert viewer_ui._values["_training_camera_pose_available"] is False
 
 

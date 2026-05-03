@@ -93,19 +93,7 @@ _VIEWPORT_OVERLAY_WIDTH = 320.0
 _VIEWPORT_OVERLAY_MIN_WIDTH = 220.0
 _VIEWPORT_OVERLAY_PADDING = 10.0
 _VIEWPORT_OVERLAY_MIN_HEIGHT = 44.0
-_TRAINING_CAMERA_DEBUG_TEXT_FIELDS = (
-    ("loss_debug_view", False),
-    ("loss_debug_frame", True),
-    ("loss_debug_psnr", True),
-    ("loss_debug_resolution", False),
-    ("loss_debug_ids", False),
-    ("loss_debug_pose_position", False),
-    ("loss_debug_pose_target", False),
-    ("loss_debug_pose_up", False),
-    ("loss_debug_projection", False),
-    ("loss_debug_distortion_primary", False),
-    ("loss_debug_distortion_secondary", False),
-)
+_TRAINING_CAMERA_DEBUG_TEXT_FIELDS = (("loss_debug_frame", True), ("loss_debug_psnr", True), ("loss_debug_camera_info", False))
 _HISTOGRAM_AUTO_RANGE_KEEP_FRACTION = 0.99
 _DOCKSPACE_FLAGS = int(imgui.DockNodeFlags_.none)
 _TOOLKIT_WINDOW_NAME = "Toolkit"
@@ -2941,7 +2929,7 @@ def build_ui(renderer) -> ViewerUI:
         key: "" for key in (
             "fps", "path", "scene_stats", "render_stats", "training",
             "training_time", "training_iters_avg", "training_loss", "training_ssim", "training_density", "training_psnr", "training_instability", "error",
-            "loss_debug_view", "loss_debug_frame", "loss_debug_psnr", "loss_debug_resolution", "loss_debug_ids", "loss_debug_pose_position", "loss_debug_pose_target", "loss_debug_pose_up", "loss_debug_projection", "loss_debug_distortion_primary", "loss_debug_distortion_secondary",
+            "loss_debug_frame", "loss_debug_psnr", "loss_debug_camera_info",
             "colmap_import_status", "colmap_import_current",
             "training_resolution", "training_downscale", "training_schedule", "training_schedule_values", "training_refinement",
             "histogram_status",
