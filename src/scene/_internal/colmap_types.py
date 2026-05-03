@@ -77,6 +77,7 @@ class ColmapFrame:
     k4: float = 0.0
     k5: float = 0.0
     k6: float = 0.0
+    camera_id: int | None = None
 
     def make_camera(self, near: float = 0.1, far: float = 120.0) -> Camera:
         return Camera.from_colmap(

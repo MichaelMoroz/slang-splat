@@ -313,6 +313,40 @@ def test_reset_training_runtime_clears_all_training_debug_bindings(monkeypatch) 
     assert ("debug_pixels", 0) in calls
 
 
+def test_move_main_camera_to_selected_training_frame_applies_pose_and_exits_mode() -> None:
+    calls: list[tuple[str, object]] = []
+    pose = SimpleNamespace(
+        position=np.array([1.0, 2.0, 3.0], dtype=np.float32),
+        target=np.array([1.0, 2.0, 4.0], dtype=np.float32),
+        up=np.array([0.0, 1.0, 0.0], dtype=np.float32),
+        near=0.25,
+        far=80.0,
+    )
+    viewer = SimpleNamespace(
+        ui=SimpleNamespace(_values={"show_training_cameras": True, "loss_debug_frame": 1}),
+        c=lambda _key: SimpleNamespace(value=1),
+        s=SimpleNamespace(
+            near=0.1,
+            far=120.0,
+            training_frames=[SimpleNamespace(width=320, height=180), SimpleNamespace(width=640, height=360)],
+            trainer=SimpleNamespace(
+                frame_size=lambda frame_idx: (640, 360) if int(frame_idx) == 1 else (320, 180),
+                make_frame_camera=lambda frame_idx, width, height: calls.append(("make", (int(frame_idx), int(width), int(height)))) or pose,
+            ),
+        ),
+        apply_camera_pose=lambda camera, **kwargs: calls.append(("apply", (camera, kwargs))),
+    )
+
+    frame_idx = session.move_main_camera_to_selected_training_frame(viewer)
+
+    assert frame_idx == 1
+    assert calls == [
+        ("make", (1, 640, 360)),
+        ("apply", (pose, {})),
+    ]
+    assert viewer.ui._values["show_training_cameras"] is False
+
+
 def test_reset_training_runtime_waits_and_drains_deferred_resources(monkeypatch) -> None:
     calls: list[tuple[str, object]] = []
     viewer = SimpleNamespace(

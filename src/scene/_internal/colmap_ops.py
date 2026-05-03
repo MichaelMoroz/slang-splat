@@ -350,6 +350,7 @@ def _build_training_frame(task: tuple[int, object, object, Path, str, int | None
         float(getattr(camera, "k4", 0.0)),
         float(getattr(camera, "k5", 0.0)),
         float(getattr(camera, "k6", 0.0)),
+        camera_id=int(getattr(image, "camera_id", 0)),
     )
 
 

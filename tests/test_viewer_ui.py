@@ -62,6 +62,13 @@ def test_clamp_viewport_size_rounds_and_clamps() -> None:
     assert ui._clamp_viewport_size(0.1, 0.1) == (1, 1)
 
 
+def test_training_camera_uv_bounds_clamp_zoom_window() -> None:
+    uv0, uv1 = ui._training_camera_uv_bounds(0.9, 0.1, 2.0)
+
+    assert uv0 == (0.5, 0.0)
+    assert uv1 == (1.0, 0.5)
+
+
 def test_rect_contains_matches_viewport_bounds() -> None:
     rect = (10.0, 20.0, 100.0, 50.0)
 
@@ -104,6 +111,7 @@ def test_build_ui_initializes_control_groups_and_internal_state() -> None:
         "show_camera_labels",
         "show_camera_min_dist_spheres",
         "show_training_cameras",
+        "training_camera_full_resolution",
         "hist_bin_count",
         "hist_y_limit",
         "render_background_mode",
@@ -845,6 +853,8 @@ def test_viewport_debug_overlay_draws_training_camera_controls(monkeypatch) -> N
     child_sizes: list[tuple[float, float]] = []
     combo_labels: list[tuple[str, str]] = []
     slider_calls: list[tuple[str, int, int, int]] = []
+    checkbox_calls: list[tuple[str, bool]] = []
+    button_labels: list[str] = []
     disabled_text: list[str] = []
     monkeypatch.setattr(ui.imgui, "get_text_line_height_with_spacing", lambda: 18.0)
     monkeypatch.setattr(ui.imgui, "get_frame_height", lambda: 20.0)
@@ -861,18 +871,33 @@ def test_viewport_debug_overlay_draws_training_camera_controls(monkeypatch) -> N
     monkeypatch.setattr(ui.imgui, "pop_item_width", lambda: None)
     monkeypatch.setattr(ui.imgui, "begin_combo", lambda label, preview: combo_labels.append((label, preview)) or False)
     monkeypatch.setattr(ui.imgui, "slider_int", lambda label, value, lo, hi: slider_calls.append((label, int(value), int(lo), int(hi))) or (False, value))
+    monkeypatch.setattr(ui.imgui, "checkbox", lambda label, value: checkbox_calls.append((label, bool(value))) or (False, value))
+    monkeypatch.setattr(ui.imgui, "button", lambda label: button_labels.append(str(label)) or False)
     monkeypatch.setattr(ui.imgui, "text_disabled", lambda text: disabled_text.append(text))
     monkeypatch.setattr(ui.imgui, "separator", lambda: None)
     toolkit = SimpleNamespace(
         _viewport_content_rect=(0.0, 0.0, 640.0, 360.0),
         _interface_scale_factor=lambda _ui_obj: 1.0,
         _draw_control=lambda *_args, **_kwargs: None,
+        callbacks=SimpleNamespace(move_to_training_camera=lambda: None),
         _training_camera_debug_section_height=lambda ui_obj: ui.ToolkitWindow._training_camera_debug_section_height(toolkit, ui_obj),
         _draw_training_camera_debug_controls=lambda ui_obj: ui.ToolkitWindow._draw_training_camera_debug_controls(toolkit, ui_obj),
     )
     viewer_ui = SimpleNamespace(
-        _values={"debug_mode": ui._DEBUG_MODE_VALUES.index("normal"), "show_training_cameras": True, "loss_debug_view": 0, "loss_debug_frame": 3, "_loss_debug_frame_max": 12},
-        _texts={"loss_debug_view": "View: Rendered", "loss_debug_frame": "Frame[3]: frame.png", "loss_debug_psnr": "PSNR: 32.50 dB"},
+        _values={"debug_mode": ui._DEBUG_MODE_VALUES.index("normal"), "show_training_cameras": True, "loss_debug_view": 0, "loss_debug_frame": 3, "_loss_debug_frame_max": 12, "training_camera_full_resolution": False},
+        _texts={
+            "loss_debug_view": "View: Rendered",
+            "loss_debug_frame": "Frame[3]: frame.png",
+            "loss_debug_psnr": "PSNR: 32.50 dB",
+            "loss_debug_resolution": "Resolution: target 320x180 | source 640x360 | full-res off",
+            "loss_debug_ids": "Ids: image=5 | camera=7",
+            "loss_debug_pose_position": "Pos: (1, 2, 3)",
+            "loss_debug_pose_target": "Target: (1.5, 2, 4)",
+            "loss_debug_pose_up": "Up: (0, 1, 0)",
+            "loss_debug_projection": "Proj: fx=525 fy=520 cx=320 cy=180 | near=0.1 far=120",
+            "loss_debug_distortion_primary": "Dist A: k1=0.01 k2=-0.02 p1=0.001 p2=-0.002",
+            "loss_debug_distortion_secondary": "Dist B: k3=0.003 k4=-0.004 k5=0.005 k6=-0.006",
+        },
     )
 
     ui.ToolkitWindow._draw_viewport_debug_overlay(toolkit, viewer_ui, ui.imgui.ImVec2(12.0, 34.0))
@@ -880,13 +905,29 @@ def test_viewport_debug_overlay_draws_training_camera_controls(monkeypatch) -> N
     assert child_sizes and child_sizes[0][0] >= 220.0
     assert combo_labels == [("##training_camera_view", "Rendered")]
     assert slider_calls == [("##training_camera_frame", 3, 0, 12)]
-    assert disabled_text == ["View: Rendered", "frame.png", "32.50 dB"]
+    assert checkbox_calls == [("Full Resolution", False)]
+    assert button_labels == ["Move Main View Here"]
+    assert disabled_text == [
+        "View: Rendered",
+        "frame.png",
+        "32.50 dB",
+        "Resolution: target 320x180 | source 640x360 | full-res off",
+        "Ids: image=5 | camera=7",
+        "Pos: (1, 2, 3)",
+        "Target: (1.5, 2, 4)",
+        "Up: (0, 1, 0)",
+        "Proj: fx=525 fy=520 cx=320 cy=180 | near=0.1 far=120",
+        "Dist A: k1=0.01 k2=-0.02 p1=0.001 p2=-0.002",
+        "Dist B: k3=0.003 k4=-0.004 k5=0.005 k6=-0.006",
+    ]
 
 
 def test_build_ui_initializes_loss_debug_psnr_text() -> None:
     viewer_ui = ui.build_ui(_dummy_renderer())
 
     assert viewer_ui._texts["loss_debug_psnr"] == ""
+    assert viewer_ui._texts["loss_debug_resolution"] == ""
+    assert viewer_ui._values["_training_camera_pose_available"] is False
 
 
 def test_main_menu_bar_draws_right_aligned_status(monkeypatch) -> None:

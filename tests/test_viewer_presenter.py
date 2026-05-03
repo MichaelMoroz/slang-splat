@@ -329,12 +329,12 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         "train_auto_start_downscale": _control(1),
         "train_downscale_max_iters": _control(30000),
     }
-    texts = {key: _text() for key in ("fps", "images_subdir", "loss_debug_view", "loss_debug_frame", "loss_debug_psnr", "path", "scene_stats", "render_stats", "training", "training_time", "training_iters_avg", "training_loss", "training_ssim", "training_density", "training_psnr", "training_instability", "training_resolution", "training_downscale", "training_schedule", "training_schedule_values", "training_refinement", "colmap_import_status", "colmap_import_current", "histogram_status", "error")}
+    texts = {key: _text() for key in ("fps", "images_subdir", "loss_debug_view", "loss_debug_frame", "loss_debug_psnr", "loss_debug_resolution", "loss_debug_ids", "loss_debug_pose_position", "loss_debug_pose_target", "loss_debug_pose_up", "loss_debug_projection", "loss_debug_distortion_primary", "loss_debug_distortion_secondary", "path", "scene_stats", "render_stats", "training", "training_time", "training_iters_avg", "training_loss", "training_ssim", "training_density", "training_psnr", "training_instability", "training_resolution", "training_downscale", "training_schedule", "training_schedule_values", "training_refinement", "colmap_import_status", "colmap_import_current", "histogram_status", "error")}
     viewer = SimpleNamespace()
     viewer.device = SimpleNamespace()
     viewer.toolkit = SimpleNamespace(viewport_size=lambda: (640, 360))
     viewer.loss_debug_view_options = (("rendered", "Rendered"), ("target", "Target"), ("abs_diff", "Abs Diff"), ("dssim", "DSSIM"), ("rendered_edges", "Rendered Edges"), ("target_edges", "Target Edges"))
-    viewer.ui = SimpleNamespace(controls=controls, texts=texts, _values={"show_histograms": False, "_histogram_payload": None, "_histogram_range_payload": None, "show_training_cameras": bool(loss_debug), "show_training_views": False, "show_camera_overlays": False, "show_camera_labels": False}, _texts={key: value.text for key, value in texts.items()})
+    viewer.ui = SimpleNamespace(controls=controls, texts=texts, _values={"show_histograms": False, "_histogram_payload": None, "_histogram_range_payload": None, "show_training_cameras": bool(loss_debug), "show_training_views": False, "show_camera_overlays": False, "show_camera_labels": False, "training_camera_full_resolution": False}, _texts={key: value.text for key, value in texts.items()})
     viewer.c = lambda key: viewer.ui.controls[key]
     viewer.t = lambda key: viewer.ui.texts[key]
     viewer.camera = lambda: "camera"
@@ -349,7 +349,7 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         stats={},
         scene_path=None,
         colmap_root=Path("dataset"),
-        training_frames=[SimpleNamespace(image_path=Path("frame.png"), width=640, height=360, fx=525.0, fy=520.0, cx=320.0, cy=180.0)],
+        training_frames=[SimpleNamespace(image_id=5, camera_id=7, image_path=Path("frame.png"), width=640, height=360, fx=525.0, fy=520.0, cx=320.0, cy=180.0, k1=0.01, k2=-0.02, p1=0.001, p2=-0.002, k3=0.003, k4=-0.004, k5=0.005, k6=-0.006, make_camera=lambda near=0.1, far=120.0: SimpleNamespace(position=np.array([1.0, 2.0, 3.0], dtype=np.float32), target=np.array([1.5, 2.0, 4.0], dtype=np.float32), up=np.array([0.0, 1.0, 0.0], dtype=np.float32), near=near, far=far))],
         trainer=trainer,
         training_active=True,
         training_renderer=_DummyRenderer(),
@@ -630,6 +630,15 @@ def test_update_ui_text_reports_training_schedule_and_refinement() -> None:
     assert viewer.t("training_schedule_values").text == "Current Values: step=0 | Stage 0 | lr=5.00e-03 | pos=1.00x | scale=5.00x | rot=1.00x | dc=5.00x | op=5.00x | shlr=0.05x | cspace=1 | dither=0.5 | prune=10.00% | push=1.00e-03 | noise=5.00e+05 | sh=SH0"
     assert viewer.t("training_refinement").text == "Refinement: every 200 | growth=0.00% now | target=5.00% after 500 | alpha<1.00e-02 or min contrib<512 | prune lowest=10.00% | decay=99.50%/pass | alpha mul=1.00x | clone scale=1.00x | max=1,000,000"
     assert viewer.t("loss_debug_psnr").text == "PSNR: 32.50 dB"
+    assert viewer.t("loss_debug_resolution").text == "Resolution: target 320x180 | source 640x360 | full-res off"
+    assert viewer.t("loss_debug_ids").text == "Ids: image=5 | camera=7"
+    assert viewer.t("loss_debug_pose_position").text == "Pos: (1, 2, 3)"
+    assert viewer.t("loss_debug_pose_target").text == "Target: (1.5, 2, 4)"
+    assert viewer.t("loss_debug_pose_up").text == "Up: (0, 1, 0)"
+    assert viewer.t("loss_debug_projection").text == "Proj: fx=525 fy=520 cx=320 cy=180 | near=0.1 far=120"
+    assert viewer.t("loss_debug_distortion_primary").text == "Dist A: k1=0.01 k2=-0.02 p1=0.001 p2=-0.002"
+    assert viewer.t("loss_debug_distortion_secondary").text == "Dist B: k3=0.003 k4=-0.004 k5=0.005 k6=-0.006"
+    assert viewer.ui._values["_training_camera_pose_available"] is True
     assert viewer.ui._values["_training_view_overlay_segments"] == ()
     assert viewer.ui._values["_training_views_rows"] == (
         {
@@ -1022,6 +1031,17 @@ def test_render_debug_target_samples_native_target_with_render_frame_seed(monkey
     assert vars["g_TrainingSubsample"]["stepIndex"] == np.uint32(77)
 
 
+def test_render_debug_target_uses_native_target_when_full_resolution_enabled() -> None:
+    viewer = _viewer(loss_debug=True)
+    viewer.ui._values["training_camera_full_resolution"] = True
+    viewer.s.trainer.subsample_factor = 2
+
+    target = presenter._render_debug_target(viewer, _DummyEncoder(), 0, 640, 360, 9, None)
+
+    assert target == "target_tex_0_True"
+    assert viewer.s.trainer.target_calls == [(0, True)]
+
+
 def test_dispatch_debug_abs_diff_uses_runtime_ui_scale(monkeypatch) -> None:
     viewer = _viewer(loss_debug=True)
     viewer.c("loss_debug_abs_scale").value = 3.5
@@ -1105,11 +1125,11 @@ def test_render_debug_view_routes_edge_modes(monkeypatch) -> None:
 
     assert calls == [
         ("dssim", "rendered_tex", "target_tex", 640, 360),
-        ("present", "dssim_tex", 640, 360, 800, 600, False, False),
+        ("present", "dssim_tex", 640, 360, 640, 360, False, False),
         ("edge", "rendered_tex", 640, 360, True),
-        ("present", "edge_rendered_tex", 640, 360, 800, 600, False, False),
+        ("present", "edge_rendered_tex", 640, 360, 640, 360, False, False),
         ("edge", "target_tex", 640, 360, False),
-        ("present", "edge_target_tex", 640, 360, 800, 600, False, False),
+        ("present", "edge_target_tex", 640, 360, 640, 360, False, False),
     ]
 
 

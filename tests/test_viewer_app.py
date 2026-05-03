@@ -350,6 +350,19 @@ def test_reinitialize_callback_defers_scene_rebuild_to_next_frame() -> None:
     assert viewer.s.pending_training_reinitialize is True
 
 
+def test_move_to_training_camera_callback_routes_through_run_action(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+    viewer = SimpleNamespace(_run_action=lambda action: calls.append(("run_action", action)))
+
+    monkeypatch.setattr(app.session, "move_main_camera_to_selected_training_frame", lambda viewer_obj: calls.append(("move", viewer_obj)))
+
+    SplatViewer._move_to_training_camera_callback(viewer)
+
+    assert calls[0][0] == "run_action"
+    calls[0][1]()
+    assert calls[1] == ("move", viewer)
+
+
 def test_default_training_params_include_training_control_fields() -> None:
     params = app.default_training_params()
 

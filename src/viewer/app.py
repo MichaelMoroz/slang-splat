@@ -377,6 +377,7 @@ class SplatViewer(spy.AppWindow):
         cb.reinitialize = self._reinitialize_callback
         cb.start_training = self._start_training_callback
         cb.stop_training = self._stop_training_callback
+        cb.move_to_training_camera = self._move_to_training_camera_callback
         cb.save_defaults = self._save_defaults_callback
 
     def _run_action(self, action, *, close_colmap_import: bool = False) -> None:
@@ -505,6 +506,9 @@ class SplatViewer(spy.AppWindow):
 
     def _stop_training_callback(self) -> None:
         session.set_training_active(self, False)
+
+    def _move_to_training_camera_callback(self) -> None:
+        self._run_action(lambda: session.move_main_camera_to_selected_training_frame(self))
 
     def _save_defaults_callback(self) -> None:
         try:

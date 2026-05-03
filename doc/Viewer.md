@@ -67,6 +67,19 @@ The viewport header exposes quick access to:
 - training-camera debug toggles,
 - the active SH band cap.
 
+### Training Camera Mode
+
+When `Training Cameras` is enabled in the viewport, the viewport switches from the free-fly scene render to the currently selected training frame/debug view.
+
+- The overlay keeps the frame selector and loss/debug view selector.
+- `Full Resolution` bypasses the current training subsample path and renders the selected training camera at its source frame resolution.
+- The viewport image is displayed with aspect-fit pan/zoom controls.
+- mouse wheel zooms,
+- left-drag pans while zoomed,
+- double-click resets the zoom/pan state.
+- `Move Main View Here` copies the selected training camera pose into the main free-fly camera and automatically exits training-camera mode.
+- The overlay also shows the selected frame/image id, source camera id, pose vectors, projection parameters, distortion coefficients, and current target resolution.
+
 ### Input Routing
 
 Input routing is UI-first:
@@ -93,10 +106,11 @@ Each frame follows this order:
 1. `SplatViewer.render(...)` calls `presenter.render_frame(...)` to produce the scene or active debug view into an offscreen texture sized from the docked viewport.
 2. The swapchain is cleared for UI composition.
 3. The overlay begins an `imgui_bundle` frame using the current surface size and frame delta.
-4. The presenter composes the currently displayed texture into a viewport-sized present texture, including letterbox fit and linear-to-sRGB conversion for UI display.
-5. The docked viewport window emits `imgui.image(...)` for that texture, while the control windows emit ordinary Dear ImGui draw lists.
-6. Slangpy marshals the external textures referenced by the draw data.
-7. Slangpy renders the UI draw data into the swapchain.
+4. The presenter composes the currently displayed texture into a UI-display texture.
+5. In the normal scene path that texture is viewport-sized. In training-camera mode it keeps the selected debug resolution so the UI can pan and zoom the raw training-camera image.
+6. The docked viewport window emits the texture widget for that image, while the control windows emit ordinary Dear ImGui draw lists.
+7. Slangpy marshals the external textures referenced by the draw data.
+8. Slangpy renders the UI draw data into the swapchain.
 
 This keeps the renderer resolution tied to the docked viewport instead of the outer window size.
 

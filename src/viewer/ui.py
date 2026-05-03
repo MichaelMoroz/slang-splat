@@ -180,6 +180,29 @@ def _clamp_viewport_size(width: float, height: float) -> tuple[int, int]:
     return max(int(round(float(width))), 1), max(int(round(float(height))), 1)
 
 
+def _fit_aspect_rect(container_width: float, container_height: float, image_width: int, image_height: int) -> tuple[float, float, float, float]:
+    width = max(float(container_width), 1.0)
+    height = max(float(container_height), 1.0)
+    source_width = max(int(image_width), 1)
+    source_height = max(int(image_height), 1)
+    scale = min(width / float(source_width), height / float(source_height))
+    draw_width = max(float(source_width) * scale, 1.0)
+    draw_height = max(float(source_height) * scale, 1.0)
+    return 0.5 * (width - draw_width), 0.5 * (height - draw_height), draw_width, draw_height
+
+
+def _clamp_training_camera_center(center_x: float, center_y: float, zoom: float) -> tuple[float, float]:
+    resolved_zoom = max(float(zoom), 1.0)
+    half_span = 0.5 / resolved_zoom
+    return min(max(float(center_x), half_span), 1.0 - half_span), min(max(float(center_y), half_span), 1.0 - half_span)
+
+
+def _training_camera_uv_bounds(center_x: float, center_y: float, zoom: float) -> tuple[tuple[float, float], tuple[float, float]]:
+    clamped_x, clamped_y = _clamp_training_camera_center(center_x, center_y, zoom)
+    half_span = 0.5 / max(float(zoom), 1.0)
+    return (clamped_x - half_span, clamped_y - half_span), (clamped_x + half_span, clamped_y + half_span)
+
+
 def _rect_contains(rect: tuple[float, float, float, float], point: tuple[float, float] | None) -> bool:
     if point is None:
         return False
@@ -567,6 +590,7 @@ class ToolkitWindow:
             reinitialize=_noop,
             start_training=_noop,
             stop_training=_noop,
+            move_to_training_camera=_noop,
             save_defaults=_noop,
         )
         self.tk = ToolkitState()
@@ -598,6 +622,9 @@ class ToolkitWindow:
         self._viewport_content_rect = self._viewport_rect
         self._viewport_window_focused = False
         self._viewport_input_active = False
+        self._training_camera_view_signature: tuple[object, ...] | None = None
+        self._training_camera_view_zoom = 1.0
+        self._training_camera_view_center = (0.5, 0.5)
         self._base_style = imgui.Style()
         self._apply_visual_state(initial_scale, int(_VIEWER_CONTROL_DEFAULTS.get("theme", 0)))
 
@@ -1004,6 +1031,76 @@ class ToolkitWindow:
         self._draw_documentation_window()
         self._draw_colmap_import_window(ui)
 
+    def _reset_training_camera_view(self) -> None:
+        self._training_camera_view_signature = None
+        self._training_camera_view_zoom = 1.0
+        self._training_camera_view_center = (0.5, 0.5)
+
+    def _draw_training_camera_viewport_image(self, ui: ViewerUI, viewport_texture: spy.Texture, content_width: float, content_height: float) -> None:
+        texture_width = max(int(getattr(viewport_texture, "width", 1)), 1)
+        texture_height = max(int(getattr(viewport_texture, "height", 1)), 1)
+        signature = (
+            int(ui._values.get("loss_debug_frame", 0)),
+            int(ui._values.get("loss_debug_view", 0)),
+            bool(ui._values.get("training_camera_full_resolution", False)),
+            texture_width,
+            texture_height,
+        )
+        if signature != self._training_camera_view_signature:
+            self._training_camera_view_signature = signature
+            self._training_camera_view_zoom = 1.0
+            self._training_camera_view_center = (0.5, 0.5)
+        origin = imgui.get_cursor_screen_pos()
+        offset_x, offset_y, draw_width, draw_height = _fit_aspect_rect(content_width, content_height, texture_width, texture_height)
+        image_origin = imgui.ImVec2(float(origin.x) + float(offset_x), float(origin.y) + float(offset_y))
+        uv0, uv1 = _training_camera_uv_bounds(self._training_camera_view_center[0], self._training_camera_view_center[1], self._training_camera_view_zoom)
+        imgui.set_cursor_screen_pos(image_origin)
+        imgui.push_style_var(imgui.StyleVar_.frame_padding, imgui.ImVec2(0.0, 0.0))
+        imgui.push_style_color(imgui.Col_.button.value, imgui.ImVec4(0.0, 0.0, 0.0, 0.0))
+        imgui.push_style_color(imgui.Col_.button_hovered.value, imgui.ImVec4(0.0, 0.0, 0.0, 0.0))
+        imgui.push_style_color(imgui.Col_.button_active.value, imgui.ImVec4(0.0, 0.0, 0.0, 0.0))
+        imgui.image_button(
+            "##training_camera_viewport",
+            simgui.texture_ref(viewport_texture),
+            imgui.ImVec2(float(draw_width), float(draw_height)),
+            imgui.ImVec2(*uv0),
+            imgui.ImVec2(*uv1),
+            imgui.ImVec4(0.0, 0.0, 0.0, 0.0),
+            imgui.ImVec4(1.0, 1.0, 1.0, 1.0),
+        )
+        hovered = bool(imgui.is_item_hovered())
+        active = bool(imgui.is_item_active())
+        if hovered and bool(imgui.is_mouse_double_clicked(0)):
+            self._training_camera_view_zoom = 1.0
+            self._training_camera_view_center = (0.5, 0.5)
+        io = imgui.get_io()
+        if hovered and abs(float(getattr(io, "mouse_wheel", 0.0))) > 1e-6:
+            mouse_pos = imgui.get_mouse_pos()
+            local_x = min(max((float(mouse_pos.x) - float(image_origin.x)) / max(float(draw_width), 1.0), 0.0), 1.0)
+            local_y = min(max((float(mouse_pos.y) - float(image_origin.y)) / max(float(draw_height), 1.0), 0.0), 1.0)
+            span = 1.0 / max(float(self._training_camera_view_zoom), 1.0)
+            hover_u = float(uv0[0]) + local_x * span
+            hover_v = float(uv0[1]) + local_y * span
+            new_zoom = min(max(float(self._training_camera_view_zoom) * pow(1.2, float(io.mouse_wheel)), 1.0), 32.0)
+            new_span = 1.0 / new_zoom
+            self._training_camera_view_center = _clamp_training_camera_center(
+                hover_u + (0.5 - local_x) * new_span,
+                hover_v + (0.5 - local_y) * new_span,
+                new_zoom,
+            )
+            self._training_camera_view_zoom = new_zoom
+        if active and bool(imgui.is_mouse_dragging(0, 0.0)):
+            span = 1.0 / max(float(self._training_camera_view_zoom), 1.0)
+            delta = io.mouse_delta
+            center_x, center_y = self._training_camera_view_center
+            self._training_camera_view_center = _clamp_training_camera_center(
+                float(center_x) - float(delta.x) * span / max(float(draw_width), 1.0),
+                float(center_y) - float(delta.y) * span / max(float(draw_height), 1.0),
+                self._training_camera_view_zoom,
+            )
+        imgui.pop_style_color(3)
+        imgui.pop_style_var()
+
     def _draw_viewport_window(self, ui: ViewerUI, viewport_texture: spy.Texture | None, width: int, height: int) -> None:
         viewport_x = 0.0
         viewport_y = self._menu_bar_height
@@ -1033,9 +1130,15 @@ class ToolkitWindow:
             self._viewport_rect = (float(pos.x), float(pos.y), float(size.x), float(size.y))
             self._viewport_content_rect = (content_x, content_y, content_width, content_height)
             image_size = imgui.ImVec2(content_width, content_height)
+            show_training_cameras = bool(ui._values.get("show_training_cameras", False))
             if viewport_texture is not None:
-                imgui.image(simgui.texture_ref(viewport_texture), image_size)
+                if show_training_cameras:
+                    self._draw_training_camera_viewport_image(ui, viewport_texture, content_width, content_height)
+                else:
+                    self._reset_training_camera_view()
+                    imgui.image(simgui.texture_ref(viewport_texture), image_size)
             else:
+                self._reset_training_camera_view()
                 imgui.dummy(image_size)
                 draw_list = imgui.get_window_draw_list()
                 placeholder_bg = _theme_color(ui, (0.92, 0.94, 0.97, 1.0), (0.04, 0.045, 0.055, 1.0))
@@ -1140,17 +1243,42 @@ class ToolkitWindow:
         line_height = float(imgui.get_text_line_height_with_spacing())
         frame_height = float(imgui.get_frame_height())
         spacing_y = float(imgui.get_style().item_spacing.y)
-        height = frame_height + spacing_y + frame_height + spacing_y + line_height
+        text_keys = (
+            "loss_debug_view",
+            "loss_debug_frame",
+            "loss_debug_psnr",
+            "loss_debug_resolution",
+            "loss_debug_ids",
+            "loss_debug_pose_position",
+            "loss_debug_pose_target",
+            "loss_debug_pose_up",
+            "loss_debug_projection",
+            "loss_debug_distortion_primary",
+            "loss_debug_distortion_secondary",
+        )
+        height = frame_height + spacing_y + frame_height + spacing_y + frame_height + spacing_y + frame_height
         if LOSS_DEBUG_OPTIONS[min(max(int(ui._values.get("loss_debug_view", 0)), 0), len(LOSS_DEBUG_OPTIONS) - 1)][0] == "abs_diff":
             height += frame_height + spacing_y
-        if ui._texts.get("loss_debug_frame", ""):
-            height += line_height + spacing_y
-        if ui._texts.get("loss_debug_psnr", ""):
-            height += line_height + spacing_y
+        for key in text_keys:
+            if ui._texts.get(key, ""):
+                height += line_height + spacing_y
         return height
 
     def _draw_training_camera_debug_controls(self, ui: ViewerUI) -> None:
         view_idx = min(max(int(ui._values.get("loss_debug_view", 0)), 0), len(LOSS_DEBUG_OPTIONS) - 1)
+        text_keys = (
+            ("loss_debug_view", False),
+            ("loss_debug_frame", True),
+            ("loss_debug_psnr", True),
+            ("loss_debug_resolution", False),
+            ("loss_debug_ids", False),
+            ("loss_debug_pose_position", False),
+            ("loss_debug_pose_target", False),
+            ("loss_debug_pose_up", False),
+            ("loss_debug_projection", False),
+            ("loss_debug_distortion_primary", False),
+            ("loss_debug_distortion_secondary", False),
+        )
         if imgui.begin_combo("##training_camera_view", LOSS_DEBUG_OPTIONS[view_idx][1]):
             for idx, (_key, label) in enumerate(LOSS_DEBUG_OPTIONS):
                 if imgui.selectable(label, idx == view_idx)[0]:
@@ -1164,13 +1292,15 @@ class ToolkitWindow:
         changed, val = imgui.slider_int("##training_camera_frame", int(ui._values.get("loss_debug_frame", 0)), 0, frame_max)
         if changed:
             ui._values["loss_debug_frame"] = val
-        imgui.text_disabled(ui._texts.get("loss_debug_view", ""))
-        frame_text = ui._texts.get("loss_debug_frame", "")
-        if frame_text:
-            imgui.text_disabled(_status_suffix(frame_text))
-        psnr_text = ui._texts.get("loss_debug_psnr", "")
-        if psnr_text:
-            imgui.text_disabled(_status_suffix(psnr_text))
+        changed, full_res = imgui.checkbox("Full Resolution", bool(ui._values.get("training_camera_full_resolution", False)))
+        if changed:
+            ui._values["training_camera_full_resolution"] = bool(full_res)
+        if imgui.button("Move Main View Here"):
+            self.callbacks.move_to_training_camera()
+        for key, suffix_only in text_keys:
+            text = ui._texts.get(key, "")
+            if text:
+                imgui.text_disabled(_status_suffix(text) if suffix_only else text)
 
     def _draw_viewport_camera_overlays(self, ui: ViewerUI, image_origin: imgui.ImVec2) -> None:
         if not bool(ui._values.get("show_camera_overlays", True)):
@@ -2779,6 +2909,8 @@ def build_ui(renderer) -> ViewerUI:
         "_training_views_rows": (),
         "_training_view_overlay_segments": (),
         "_loss_debug_frame_max": 0,
+        "training_camera_full_resolution": False,
+        "_training_camera_pose_available": False,
         "_viewport_sh_band": int(_VIEWER_UI_DEFAULTS["viewport_sh_band"]),
         "_viewport_sh_control_key": str(_VIEWER_UI_DEFAULTS["viewport_sh_control_key"]),
         "_viewport_sh_stage_label": str(_VIEWER_UI_DEFAULTS["viewport_sh_stage_label"]),
@@ -2792,7 +2924,7 @@ def build_ui(renderer) -> ViewerUI:
         key: "" for key in (
             "fps", "path", "scene_stats", "render_stats", "training",
             "training_time", "training_iters_avg", "training_loss", "training_ssim", "training_density", "training_psnr", "training_instability", "error",
-            "loss_debug_view", "loss_debug_frame", "loss_debug_psnr",
+            "loss_debug_view", "loss_debug_frame", "loss_debug_psnr", "loss_debug_resolution", "loss_debug_ids", "loss_debug_pose_position", "loss_debug_pose_target", "loss_debug_pose_up", "loss_debug_projection", "loss_debug_distortion_primary", "loss_debug_distortion_secondary",
             "colmap_import_status", "colmap_import_current",
             "training_resolution", "training_downscale", "training_schedule", "training_schedule_values", "training_refinement",
             "histogram_status",

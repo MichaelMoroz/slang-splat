@@ -411,6 +411,7 @@ def _append_training_frame(progress: ColmapImportProgress, image_id: int, image:
         int(height),
         float(getattr(camera, "k1", 0.0)),
         float(getattr(camera, "k2", 0.0)),
+        camera_id=int(image.camera_id),
     )
     if progress.init_mode == _COLMAP_IMPORT_DEPTH:
         progress.frame_images.append(image)
@@ -1006,6 +1007,56 @@ def update_debug_frame_slider_range(viewer: object) -> None:
         slider.min = 0
         slider.max = int(max_index)
     slider.value = clamp_index(int(slider.value), max_index + 1)
+
+
+def _selected_training_debug_frame_index(viewer: object) -> int:
+    frames = tuple(getattr(viewer.s, "training_frames", ()))
+    if len(frames) == 0:
+        return 0
+    try:
+        value = int(viewer.c("loss_debug_frame").value)
+    except Exception:
+        value = int(getattr(getattr(viewer, "ui", None), "_values", {}).get("loss_debug_frame", 0))
+    return clamp_index(value, len(frames))
+
+
+def selected_training_debug_camera(viewer: object):
+    frames = tuple(getattr(viewer.s, "training_frames", ()))
+    if len(frames) == 0:
+        return None, None, 0
+    frame_idx = _selected_training_debug_frame_index(viewer)
+    frame = frames[frame_idx]
+    trainer = getattr(viewer.s, "trainer", None)
+    if trainer is not None and hasattr(trainer, "make_frame_camera"):
+        try:
+            width, height = trainer.frame_size(frame_idx) if hasattr(trainer, "frame_size") else (int(getattr(frame, "width", 1)), int(getattr(frame, "height", 1)))
+            return frame, trainer.make_frame_camera(frame_idx, int(width), int(height)), frame_idx
+        except Exception:
+            pass
+    make_camera = getattr(frame, "make_camera", None)
+    if not callable(make_camera):
+        return frame, None, frame_idx
+    try:
+        camera = make_camera(near=float(getattr(viewer.s, "near", 0.1)), far=float(getattr(viewer.s, "far", 120.0)))
+    except TypeError:
+        camera = make_camera()
+    except Exception:
+        camera = None
+    return frame, camera, frame_idx
+
+
+def move_main_camera_to_selected_training_frame(viewer: object) -> int:
+    frame, camera, frame_idx = selected_training_debug_camera(viewer)
+    if frame is None or camera is None:
+        raise RuntimeError("Training camera pose is unavailable.")
+    apply_camera_pose = getattr(viewer, "apply_camera_pose", None)
+    if not callable(apply_camera_pose):
+        raise RuntimeError("Viewer cannot apply camera poses.")
+    apply_camera_pose(camera)
+    ui_values = getattr(getattr(viewer, "ui", None), "_values", None)
+    if isinstance(ui_values, dict):
+        ui_values["show_training_cameras"] = False
+    return int(frame_idx)
 
 
 def _training_debug_splat_age_buffer(viewer: object):
