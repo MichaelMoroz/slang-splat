@@ -677,7 +677,7 @@ class SplatViewer(_ViewerWindowHost):
                     depth_point_count=import_cfg.depth_point_count,
                     diffused_point_count=import_cfg.diffused_point_count,
                     fibonacci_sphere_point_count=import_cfg.fibonacci_sphere_point_count,
-                    fibonacci_sphere_radius=import_cfg.fibonacci_sphere_radius,
+                    fibonacci_sphere_radius_multiplier=getattr(import_cfg, "fibonacci_sphere_radius_multiplier", getattr(import_cfg, "fibonacci_sphere_radius", 2.0)),
                     use_target_alpha_mask=import_cfg.use_target_alpha_mask,
                     pointcloud_enabled=bool(getattr(import_cfg, "pointcloud_enabled", False)),
                     pointcloud_nn_radius_scale_coef=getattr(import_cfg, "pointcloud_nn_radius_scale_coef", None),

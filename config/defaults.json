@@ -248,7 +248,7 @@
       "colmap_custom_mesh_nn_radius_scale_coef": 0.40230000019073486,
       "colmap_fibonacci_sphere_enabled": true,
       "colmap_fibonacci_sphere_point_count": 50601,
-      "colmap_fibonacci_sphere_radius": 101.02799987792969,
+      "colmap_fibonacci_sphere_radius_multiplier": 2.0,
       "colmap_fibonacci_sphere_nn_radius_scale_coef": 1.0
     },
     "ui": {

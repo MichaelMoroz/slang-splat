@@ -1303,7 +1303,7 @@ def test_import_colmap_from_ui_queues_multi_source_settings(tmp_path: Path, monk
                 "colmap_custom_mesh_nn_radius_scale_coef": 0.55,
                 "colmap_fibonacci_sphere_enabled": True,
                 "colmap_fibonacci_sphere_point_count": 512,
-                "colmap_fibonacci_sphere_radius": 12.0,
+                "colmap_fibonacci_sphere_radius_multiplier": 2.5,
                 "colmap_fibonacci_sphere_nn_radius_scale_coef": 1.2,
                 "colmap_image_downscale_mode": 0,
                 "colmap_image_max_size": 2048,
@@ -1370,6 +1370,7 @@ def test_import_colmap_from_ui_queues_multi_source_settings(tmp_path: Path, monk
     assert progress.custom_mesh_point_count == 2048
     assert progress.fibonacci_sphere_enabled is True
     assert progress.fibonacci_sphere_point_count == 512
+    assert progress.fibonacci_sphere_radius_multiplier == pytest.approx(2.5)
     assert progress.fibonacci_sphere_nn_radius_scale_coef == pytest.approx(1.2)
 
 
@@ -1727,7 +1728,7 @@ def test_finish_import_colmap_dataset_seeds_pointcloud_cached_init_source(monkey
         min_track_length=3,
         diffused_point_count=100000,
         fibonacci_sphere_point_count=4,
-        fibonacci_sphere_radius=2.0,
+        fibonacci_sphere_radius_multiplier=2.0,
         recon=recon,
         training_frames=[],
         frame_targets_native=None,
@@ -1937,7 +1938,7 @@ def test_colmap_import_settings_defaults_prefer_pointcloud() -> None:
     assert defaults.depth_value_mode == "z_depth"
     assert defaults.depth_point_count == 100000
     assert defaults.fibonacci_sphere_point_count == 0
-    assert defaults.fibonacci_sphere_radius == 20.0
+    assert defaults.fibonacci_sphere_radius_multiplier == 2.0
     assert defaults.use_target_alpha_mask is False
 
 
@@ -2420,7 +2421,7 @@ def test_ensure_cached_init_source_samples_custom_mesh(monkeypatch, tmp_path: Pa
                 custom_mesh_point_count=2048,
                 min_track_length=3,
                 fibonacci_sphere_point_count=0,
-                fibonacci_sphere_radius=20.0,
+                fibonacci_sphere_radius_multiplier=2.0,
             ),
             cached_init_custom_mesh_positions=None,
             cached_init_custom_mesh_colors=None,

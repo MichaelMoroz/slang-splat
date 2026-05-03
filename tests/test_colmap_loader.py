@@ -379,7 +379,7 @@ def test_colmap_init_uses_direct_pointcloud_when_requested_count_exceeds_points(
     np.testing.assert_allclose(scene.rotations, np.array([[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]], dtype=np.float32), rtol=0.0, atol=1e-6)
 
 
-def test_colmap_fibonacci_sphere_points_use_camera_pose_mean() -> None:
+def test_colmap_fibonacci_sphere_points_use_camera_pose_mean_and_camera_extent_fallback() -> None:
     camera = ColmapCamera(camera_id=1, model_id=1, width=400, height=200, fx=400.0, fy=400.0, cx=200.0, cy=100.0)
     q_wxyz = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
     recon = ColmapReconstruction(
@@ -393,12 +393,41 @@ def test_colmap_fibonacci_sphere_points_use_camera_pose_mean() -> None:
         points3d={},
     )
 
-    positions, colors = colmap_ops.sample_colmap_fibonacci_sphere_points(recon, point_count=8, radius=2.5)
+    positions, colors = colmap_ops.sample_colmap_fibonacci_sphere_points(recon, point_count=8, radius_multiplier=1.25)
 
     assert positions.shape == (8, 3)
     assert colors.shape == (8, 3)
-    np.testing.assert_allclose(np.linalg.norm(positions - np.array([[2.0, 0.0, 0.0]], dtype=np.float32), axis=1), np.full((8,), 2.5, dtype=np.float32), rtol=0.0, atol=1e-5)
+    radii = np.linalg.norm(positions - np.array([[2.0, 0.0, 0.0]], dtype=np.float32), axis=1)
+    assert np.all(radii >= np.float32(2.25))
+    assert np.all(radii <= np.float32(2.75))
+    assert not np.allclose(radii, np.full((8,), 2.5, dtype=np.float32), rtol=0.0, atol=1e-5)
     np.testing.assert_allclose(colors, np.full((8, 3), 0.8, dtype=np.float32), rtol=0.0, atol=1e-6)
+
+
+def test_colmap_fibonacci_sphere_points_use_point_extent_multiplier() -> None:
+    camera = ColmapCamera(camera_id=1, model_id=1, width=400, height=200, fx=400.0, fy=400.0, cx=200.0, cy=100.0)
+    q_wxyz = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    recon = ColmapReconstruction(
+        root=Path("synthetic"),
+        sparse_dir=Path("synthetic") / "sparse" / "0",
+        cameras={1: camera},
+        images={
+            1: ColmapImage(1, q_wxyz, np.array([0.0, 0.0, 0.0], dtype=np.float32), 1, "a.png", np.zeros((0, 2), dtype=np.float32), np.zeros((0,), dtype=np.int64)),
+            2: ColmapImage(2, q_wxyz, np.array([-4.0, 0.0, 0.0], dtype=np.float32), 1, "b.png", np.zeros((0, 2), dtype=np.float32), np.zeros((0,), dtype=np.int64)),
+        },
+        points3d={
+            1: ColmapPoint3D(1, np.array([7.0, 0.0, 0.0], dtype=np.float32), np.array([1.0, 0.0, 0.0], dtype=np.float32), 0.0, track_length=3),
+            2: ColmapPoint3D(2, np.array([2.0, 4.0, 0.0], dtype=np.float32), np.array([0.0, 1.0, 0.0], dtype=np.float32), 0.0, track_length=3),
+        },
+    )
+
+    radius = colmap_ops.resolve_colmap_fibonacci_sphere_radius(recon, radius_multiplier=2.0)
+    positions, _colors = colmap_ops.sample_colmap_fibonacci_sphere_points(recon, point_count=16, radius_multiplier=2.0)
+
+    assert radius == pytest.approx(10.0)
+    radii = np.linalg.norm(positions - np.array([[2.0, 0.0, 0.0]], dtype=np.float32), axis=1)
+    assert np.all(radii >= np.float32(9.0))
+    assert np.all(radii <= np.float32(11.0))
 
 
 def test_colmap_pointcloud_init_filters_points_below_selected_camera_observations() -> None:

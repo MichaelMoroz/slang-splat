@@ -46,7 +46,7 @@ class ColmapImportSettings:
     depth_point_count: int = int(_VIEWER_IMPORT_DEFAULTS["colmap_depth_point_count"])
     diffused_point_count: int = int(_VIEWER_IMPORT_DEFAULTS["colmap_diffused_point_count"])
     fibonacci_sphere_point_count: int = 0
-    fibonacci_sphere_radius: float = 20.0
+    fibonacci_sphere_radius_multiplier: float = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_radius_multiplier", _VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_radius", 2.0)))
     use_target_alpha_mask: bool = False
     pointcloud_enabled: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_pointcloud_enabled", False))
     pointcloud_nn_radius_scale_coef: float = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_pointcloud_nn_radius_scale_coef", _VIEWER_IMPORT_DEFAULTS.get("colmap_nn_radius_scale_coef", 0.5)))
@@ -82,7 +82,7 @@ class ColmapImportProgress:
     depth_point_count: int = 100000
     diffused_point_count: int = 100000
     fibonacci_sphere_point_count: int = 0
-    fibonacci_sphere_radius: float = 20.0
+    fibonacci_sphere_radius_multiplier: float = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_radius_multiplier", _VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_radius", 2.0)))
     use_target_alpha_mask: bool = False
     depth_value_mode: str = "z_depth"
     depth_root: Path | None = None

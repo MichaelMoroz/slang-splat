@@ -40,6 +40,8 @@ DEPTH_INIT_VALUE_Z_DEPTH = "z_depth"
 DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH = 3
 FIBONACCI_SPHERE_GOLDEN_ANGLE = np.pi * (3.0 - np.sqrt(5.0))
 FIBONACCI_SPHERE_COLOR = np.array([0.8, 0.8, 0.8], dtype=np.float32)
+FIBONACCI_SPHERE_RADIUS_JITTER_RATIO = np.float32(0.10)
+FIBONACCI_SPHERE_RADIUS_JITTER_SEQUENCE = np.float32(0.41421356237)
 
 
 @dataclass(slots=True)
@@ -191,10 +193,33 @@ def colmap_camera_centers(recon: ColmapReconstruction) -> np.ndarray:
     return np.ascontiguousarray(np.stack(centers, axis=0), dtype=np.float32) if centers else np.zeros((0, 3), dtype=np.float32)
 
 
+def _max_distance_from_center(points: np.ndarray, center: np.ndarray) -> float:
+    point_arr = np.asarray(points, dtype=np.float32).reshape(-1, 3)
+    if point_arr.shape[0] == 0:
+        return 0.0
+    distances = np.linalg.norm(point_arr - np.asarray(center, dtype=np.float32).reshape(1, 3), axis=1)
+    finite = distances[np.isfinite(distances)]
+    return float(np.max(finite)) if finite.size > 0 else 0.0
+
+
+def resolve_colmap_fibonacci_sphere_radius(
+    recon: ColmapReconstruction,
+    radius_multiplier: float = 2.0,
+) -> float:
+    centers = colmap_camera_centers(recon)
+    if centers.shape[0] == 0:
+        raise RuntimeError("Fibonacci sphere initialization requires at least one COLMAP camera pose.")
+    center = np.mean(centers, axis=0, dtype=np.float32)
+    extent = _max_distance_from_center(_colmap_point_positions(recon, min_track_length=0), center)
+    if extent <= 1e-6:
+        extent = _max_distance_from_center(centers, center)
+    return max(float(radius_multiplier), 0.0) * max(extent, 0.0)
+
+
 def sample_colmap_fibonacci_sphere_points(
     recon: ColmapReconstruction,
     point_count: int,
-    radius: float = 20.0,
+    radius_multiplier: float = 2.0,
 ) -> tuple[np.ndarray, np.ndarray]:
     count = max(int(point_count), 0)
     if count <= 0:
@@ -203,12 +228,15 @@ def sample_colmap_fibonacci_sphere_points(
     if centers.shape[0] == 0:
         raise RuntimeError("Fibonacci sphere initialization requires at least one COLMAP camera pose.")
     center = np.mean(centers, axis=0, dtype=np.float32)
+    base_radius = np.float32(resolve_colmap_fibonacci_sphere_radius(recon, radius_multiplier))
     indices = np.arange(count, dtype=np.float32)
     z = np.float32(1.0) - np.float32(2.0) * (indices + np.float32(0.5)) / np.float32(count)
     xy_radius = np.sqrt(np.maximum(np.float32(0.0), np.float32(1.0) - z * z)).astype(np.float32)
     theta = indices * np.float32(FIBONACCI_SPHERE_GOLDEN_ANGLE)
     directions = np.stack((np.cos(theta) * xy_radius, z, np.sin(theta) * xy_radius), axis=1).astype(np.float32)
-    positions = center[None, :] + directions * np.float32(max(float(radius), 0.0))
+    jitter = np.mod((indices + np.float32(0.5)) * FIBONACCI_SPHERE_RADIUS_JITTER_SEQUENCE, np.float32(1.0))
+    radii = base_radius * (np.float32(1.0) + (jitter * np.float32(2.0) - np.float32(1.0)) * FIBONACCI_SPHERE_RADIUS_JITTER_RATIO)
+    positions = center[None, :] + directions * radii[:, None]
     colors = np.repeat(FIBONACCI_SPHERE_COLOR[None, :], count, axis=0)
     return np.ascontiguousarray(positions, dtype=np.float32), np.ascontiguousarray(colors, dtype=np.float32)
 

@@ -192,7 +192,7 @@ def _update_import_settings(
     depth_point_count: int,
     diffused_point_count: int,
     fibonacci_sphere_point_count: int,
-    fibonacci_sphere_radius: float,
+    fibonacci_sphere_radius_multiplier: float,
     use_target_alpha_mask: bool,
     pointcloud_enabled: bool | None = None,
     pointcloud_nn_radius_scale_coef: float | None = None,
@@ -239,7 +239,7 @@ def _update_import_settings(
         depth_point_count=max(int(depth_point_count), 1),
         diffused_point_count=max(int(diffused_point_count), 1),
         fibonacci_sphere_point_count=max(int(fibonacci_sphere_point_count), 0),
-        fibonacci_sphere_radius=max(float(fibonacci_sphere_radius), 0.0),
+        fibonacci_sphere_radius_multiplier=max(float(fibonacci_sphere_radius_multiplier), 0.0),
         use_target_alpha_mask=bool(use_target_alpha_mask),
         pointcloud_enabled=resolved_pointcloud_enabled,
         pointcloud_nn_radius_scale_coef=resolved_pointcloud_nn_radius_scale_coef,
@@ -287,7 +287,7 @@ def _update_import_settings(
     viewer.ui._values["colmap_custom_mesh_nn_radius_scale_coef"] = resolved_custom_mesh_nn_radius_scale_coef
     viewer.ui._values["colmap_fibonacci_sphere_enabled"] = resolved_fibonacci_sphere_enabled
     viewer.ui._values["colmap_fibonacci_sphere_point_count"] = max(int(fibonacci_sphere_point_count), 0)
-    viewer.ui._values["colmap_fibonacci_sphere_radius"] = max(float(fibonacci_sphere_radius), 0.0)
+    viewer.ui._values["colmap_fibonacci_sphere_radius_multiplier"] = max(float(fibonacci_sphere_radius_multiplier), 0.0)
     viewer.ui._values["colmap_fibonacci_sphere_nn_radius_scale_coef"] = resolved_fibonacci_sphere_nn_radius_scale_coef
     viewer.ui._values["use_target_alpha_mask"] = bool(use_target_alpha_mask)
 

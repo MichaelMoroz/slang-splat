@@ -216,7 +216,7 @@ The current initialization modes are:
 Point-based initializers can optionally append a Fibonacci shell around the arithmetic mean of the COLMAP camera centers.
 
 - `Sphere Point Count` controls the number of appended shell points.
-- `Sphere Radius` controls the shell radius in world space.
+- `Sphere Radius Multiplier` scales the max aligned COLMAP point distance from the shell center; each shell point also gets a deterministic radial jitter of up to 10% to reduce ordering aliasing.
 
 Those appended shell splats are assigned an equal-area dense-overlap scale based only on shell radius and shell point count, not on sparse-cloud NN spacing.
 

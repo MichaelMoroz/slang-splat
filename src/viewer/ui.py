@@ -1999,14 +1999,14 @@ class ToolkitWindow:
             imgui.begin_disabled(not fibonacci_enabled)
             ToolkitWindow._draw_clamped_float(
                 ui,
-                key="colmap_fibonacci_sphere_radius",
-                label="##colmap_fibonacci_sphere_radius",
-                default=20.0,
-                speed=0.1,
+                key="colmap_fibonacci_sphere_radius_multiplier",
+                label="##colmap_fibonacci_sphere_radius_multiplier",
+                default=2.0,
+                speed=0.01,
                 min_value=0.0,
-                max_value=10000.0,
+                max_value=100.0,
                 fmt="%.3f",
-                tooltip="World-space sky sphere radius around the mean camera pose.",
+                tooltip="Multiplier applied to the max aligned COLMAP point distance from the mean camera pose; each shell point also gets deterministic radial jitter within +/-10%.",
                 flags=imgui.SliderFlags_.logarithmic.value,
             )
             imgui.end_disabled()
@@ -2903,6 +2903,7 @@ def build_ui(renderer) -> ViewerUI:
     values["colmap_selected_camera_ids"] = ()
     for key, cast in _VIEWER_IMPORT_EXPORT_FIELDS:
         values[key] = cast(_VIEWER_IMPORT_DEFAULTS.get(key, False if cast is bool else 0 if cast is int else 20.0))
+    values["colmap_fibonacci_sphere_radius_multiplier"] = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_radius_multiplier", _VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_radius", 2.0)))
     values["show_resource_debug"] = False
     for key, cast in _VIEWER_UI_EXPORT_FIELDS[:-3]:
         values[key] = cast(_VIEWER_UI_DEFAULTS[key])

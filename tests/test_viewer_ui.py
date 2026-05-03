@@ -174,7 +174,7 @@ def test_build_ui_initializes_control_groups_and_internal_state() -> None:
         "colmap_auto_rotate_scene",
         "colmap_depth_root",
         "colmap_fibonacci_sphere_point_count",
-        "colmap_fibonacci_sphere_radius",
+        "colmap_fibonacci_sphere_radius_multiplier",
         "colmap_selected_camera_ids",
         "debug_gaussian_scale_multiplier",
         "debug_min_opacity",
