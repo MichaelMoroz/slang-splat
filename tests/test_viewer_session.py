@@ -396,6 +396,74 @@ def test_reset_main_camera_falls_back_to_cached_points(monkeypatch) -> None:
     assert viewer.ui._values["show_training_cameras"] is False
 
 
+def test_reset_main_camera_reuses_initial_training_camera_position(monkeypatch) -> None:
+    fit_bounds = object()
+    fit = SimpleNamespace(near=0.25, far=80.0, move_speed=3.5)
+    pose = SimpleNamespace(
+        position=np.array([1.0, 2.0, 3.0], dtype=np.float32),
+        target=np.array([1.0, 2.0, 4.0], dtype=np.float32),
+        up=np.array([0.0, 1.0, 0.0], dtype=np.float32),
+    )
+    scene = GaussianScene(
+        positions=np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
+        scales=np.array([[1.0, 1.0, 1.0]], dtype=np.float32),
+        rotations=np.array([[0.0, 0.0, 0.0, 1.0]], dtype=np.float32),
+        opacities=np.array([1.0], dtype=np.float32),
+        colors=np.array([[1.0, 1.0, 1.0]], dtype=np.float32),
+        sh_coeffs=np.zeros((1, 0, 3), dtype=np.float32),
+    )
+    calls: list[tuple[str, object]] = []
+    viewer = SimpleNamespace(
+        ui=SimpleNamespace(_values={"show_training_cameras": True}),
+        s=SimpleNamespace(
+            trainer=None,
+            scene=scene,
+            training_frames=[SimpleNamespace(make_camera=lambda near=0.1, far=120.0: calls.append(("make", (near, far))) or pose)],
+        ),
+        apply_camera_position=lambda camera, **kwargs: calls.append(("position", (camera, kwargs))),
+        apply_camera_fit=lambda bounds: calls.append(("fit", bounds)),
+    )
+    monkeypatch.setattr(session, "estimate_scene_bounds", lambda scene_obj: fit_bounds if scene_obj is scene else None)
+    monkeypatch.setattr(session, "fit_camera", lambda bounds, fov_y: fit if bounds is fit_bounds else None)
+
+    session.reset_main_camera(viewer)
+
+    assert calls == [
+        ("make", (0.25, 80.0)),
+        ("position", (pose, {"near": 0.25, "far": 80.0, "move_speed": 3.5})),
+    ]
+    assert viewer.ui._values["show_training_cameras"] is False
+
+
+def test_load_scene_routes_camera_setup_through_reset_main_camera(monkeypatch) -> None:
+    scene_obj = SimpleNamespace(count=1)
+    calls: list[object] = []
+    viewer = SimpleNamespace(
+        s=SimpleNamespace(
+            renderer=SimpleNamespace(set_scene=lambda scene: calls.append(("set_scene", scene))),
+            last_error="old",
+            training_frames=[object()],
+            scene=None,
+            scene_path=None,
+            colmap_root=Path("dataset"),
+            colmap_recon=object(),
+        ),
+    )
+    monkeypatch.setattr(session, "load_gaussian_ply", lambda path: scene_obj)
+    monkeypatch.setattr(session, "_reset_loaded_runtime", lambda viewer_obj: calls.append(("reset_runtime", viewer_obj)))
+    monkeypatch.setattr(session, "reset_main_camera", lambda viewer_obj: calls.append(("reset_camera", viewer_obj)))
+
+    session.load_scene(viewer, Path("scene.ply"))
+
+    assert calls == [("reset_runtime", viewer), ("set_scene", scene_obj), ("reset_camera", viewer)]
+    assert viewer.s.scene is scene_obj
+    assert viewer.s.scene_path == Path("scene.ply")
+    assert viewer.s.colmap_root is None
+    assert viewer.s.colmap_recon is None
+    assert viewer.s.training_frames == []
+    assert viewer.s.last_error == ""
+
+
 def test_reset_training_runtime_waits_and_drains_deferred_resources(monkeypatch) -> None:
     calls: list[tuple[str, object]] = []
     viewer = SimpleNamespace(
@@ -2182,7 +2250,7 @@ def test_initialize_training_scene_rebinds_debug_buffers_for_new_trainer(monkeyp
     monkeypatch.setattr(session, "_build_initial_training_scene", lambda viewer_obj, init, params, init_hparams: (SimpleNamespace(count=8), 0.25))
     monkeypatch.setattr(session, "apply_live_params", lambda viewer_obj: calls.append(f"apply_live_params_trainer_is_none={viewer_obj.s.trainer is None}"))
     monkeypatch.setattr(session, "GaussianTrainer", lambda **kwargs: new_trainer)
-    monkeypatch.setattr(session, "estimate_scene_bounds", lambda scene: scene)
+    monkeypatch.setattr(session, "reset_main_camera", lambda viewer_obj: calls.append(("reset_camera", viewer_obj)))
     monkeypatch.setattr(session, "_renderer_params_signature", lambda params: (params.mode,))
     monkeypatch.setattr(session, "_training_params_signature", lambda params: ("training",))
     monkeypatch.setattr(session, "update_debug_frame_slider_range", lambda viewer_obj: None)
@@ -2192,7 +2260,7 @@ def test_initialize_training_scene_rebinds_debug_buffers_for_new_trainer(monkeyp
     session.initialize_training_scene(viewer)
 
     assert viewer.s.trainer is new_trainer
-    assert calls == ["reset_plot_history", "ensure_renderer_cleared=True", "apply_live_params_trainer_is_none=True", "reset_plot_history"]
+    assert calls == ["reset_plot_history", "ensure_renderer_cleared=True", "apply_live_params_trainer_is_none=True", ("reset_camera", viewer), "reset_plot_history"]
     assert main_renderer.grad_buffer == "new-grad"
     assert main_renderer.splat_age_buffer == "new-splat-age"
     assert debug_renderer.grad_buffer == "new-grad"
@@ -2264,7 +2332,7 @@ def test_initialize_training_scene_rebuilds_training_frames_from_colmap(monkeypa
     monkeypatch.setattr(session, "_build_initial_training_scene", lambda viewer_obj, init, params, init_hparams: (built_scene, 0.25))
     monkeypatch.setattr(session, "apply_live_params", lambda viewer_obj: None)
     monkeypatch.setattr(session, "GaussianTrainer", lambda **kwargs: new_trainer)
-    monkeypatch.setattr(session, "estimate_scene_bounds", lambda loaded_scene: loaded_scene)
+    monkeypatch.setattr(session, "reset_main_camera", lambda viewer_obj: None)
     monkeypatch.setattr(session, "_renderer_params_signature", lambda params: (params.mode,))
     monkeypatch.setattr(session, "_training_params_signature", lambda params: ("training",))
     monkeypatch.setattr(session, "update_debug_frame_slider_range", lambda viewer_obj: None)

@@ -313,27 +313,6 @@ def _training_camera(frames: object, near: float, far: float):
     return None
 
 
-def _apply_initial_camera_fit(viewer: object, fallback_bounds: object | None = None, fallback_factory=None) -> None:
-    if fallback_factory is not None:
-        fallback_bounds = fallback_factory()
-    fit = None
-    if fallback_bounds is not None:
-        try:
-            fit = fit_camera(fallback_bounds, getattr(viewer.s, "fov_y", 60.0))
-        except Exception:
-            fit = None
-    camera = _training_camera(
-        getattr(viewer.s, "training_frames", ()),
-        getattr(viewer.s, "near", 0.1) if fit is None else fit.near,
-        getattr(viewer.s, "far", 120.0) if fit is None else fit.far,
-    )
-    apply_camera_position = getattr(viewer, "apply_camera_position", None)
-    if camera is not None and callable(apply_camera_position):
-        apply_camera_position(camera, near=None if fit is None else fit.near, far=None if fit is None else fit.far, move_speed=None if fit is None else fit.move_speed)
-        return
-    viewer.apply_camera_fit(fallback_bounds)
-
-
 def _point_tables(recon: object, min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH) -> tuple[np.ndarray, np.ndarray]:
     threshold = max(int(min_track_length), 0)
     xyz, rgb = point_tables(recon, min_track_length=threshold)
@@ -1086,18 +1065,46 @@ def _camera_reset_points(viewer: object) -> np.ndarray | None:
         points = getattr(state, attr, None)
         if isinstance(points, np.ndarray) and points.ndim == 2 and points.shape[0] > 0:
             return points
-    return None
+    recon = getattr(state, "colmap_recon", None)
+    if recon is None:
+        return None
+    min_track_length = int(getattr(getattr(state, "colmap_import", None), "min_track_length", DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH))
+    try:
+        points, _ = _point_tables(recon, min_track_length=min_track_length)
+    except Exception:
+        return None
+    return points if points.ndim == 2 and points.shape[0] > 0 else None
 
 
 def reset_main_camera(viewer: object) -> None:
+    fallback_bounds = None
     scene = _camera_reset_scene(viewer)
     if scene is not None:
-        viewer.apply_camera_fit(estimate_scene_bounds(scene))
+        fallback_bounds = estimate_scene_bounds(scene)
     else:
         points = _camera_reset_points(viewer)
-        if points is None:
-            raise RuntimeError("Viewer scene bounds are unavailable.")
-        viewer.apply_camera_fit(estimate_point_bounds(points))
+        if points is not None:
+            fallback_bounds = estimate_point_bounds(points)
+    fit = None
+    if fallback_bounds is not None:
+        try:
+            fit = fit_camera(fallback_bounds, getattr(getattr(viewer, "s", None), "fov_y", 60.0))
+        except Exception:
+            fit = None
+    if fallback_bounds is None and not getattr(getattr(viewer, "s", None), "training_frames", ()):
+        raise RuntimeError("Viewer scene bounds are unavailable.")
+    camera = _training_camera(
+        getattr(getattr(viewer, "s", None), "training_frames", ()),
+        getattr(getattr(viewer, "s", None), "near", 0.1) if fit is None else fit.near,
+        getattr(getattr(viewer, "s", None), "far", 120.0) if fit is None else fit.far,
+    )
+    apply_camera_position = getattr(viewer, "apply_camera_position", None)
+    if camera is not None and callable(apply_camera_position):
+        apply_camera_position(camera, near=None if fit is None else fit.near, far=None if fit is None else fit.far, move_speed=None if fit is None else fit.move_speed)
+    elif fallback_bounds is not None:
+        viewer.apply_camera_fit(fallback_bounds)
+    else:
+        raise RuntimeError("Viewer scene bounds are unavailable.")
     ui_values = getattr(getattr(viewer, "ui", None), "_values", None)
     if isinstance(ui_values, dict):
         ui_values["show_training_cameras"] = False
@@ -1647,7 +1654,7 @@ def load_scene(viewer: object, path: Path) -> None:
     viewer.s.colmap_recon = None
     viewer.s.training_frames = []
     viewer.s.renderer.set_scene(scene)
-    viewer.apply_camera_fit(estimate_scene_bounds(scene))
+    reset_main_camera(viewer)
     viewer.s.last_error = ""
     print(f"Loaded scene: {path} ({scene.count:,} splats)")
 
@@ -1759,7 +1766,7 @@ def _finish_import_colmap_dataset(
         if init_mode != _COLMAP_IMPORT_DEPTH and callable(init_params_fn):
             _ensure_cached_init_source(viewer, init_params_fn())
     apply_live_params(viewer)
-    _apply_initial_camera_fit(viewer, fallback_factory=lambda: estimate_point_bounds(xyz))
+    reset_main_camera(viewer)
     initialize_training_scene(viewer, frame_targets_native=frame_targets_native)
     viewer.s.last_error = ""
     print(
@@ -2154,7 +2161,7 @@ def initialize_training_scene(viewer: object, frame_targets_native: list[spy.Tex
     if getattr(viewer.s, "debug_renderer", None) is not None:
         viewer.s.debug_renderer.max_sh_band = capped_main_sh
     viewer.s.scene = SceneCountProxy(scene.count)
-    _apply_initial_camera_fit(viewer, fallback_factory=lambda: estimate_scene_bounds(scene))
+    reset_main_camera(viewer)
     enc = viewer.device.create_command_encoder()
     renderer.copy_scene_state_to(enc, viewer.s.renderer)
     viewer.device.submit_command_buffer(enc.finish())
