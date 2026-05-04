@@ -366,20 +366,10 @@ def _update_toolkit_history(viewer: object, dt: float) -> None:
         state = viewer.s.trainer.state
         step = int(state.step)
         if step > 0 and (not tk.tk.step_history or step != tk.tk.step_history[-1]):
-            tk.tk.step_history.append(step)
-            tk.tk.step_time_history.append(float(viewer.s.last_time))
-            if np.isfinite(state.avg_loss) and state.avg_loss > 0:
-                tk.tk.loss_history.append(float(state.avg_loss))
-            elif tk.tk.loss_history:
-                tk.tk.loss_history.append(tk.tk.loss_history[-1])
-            if np.isfinite(getattr(state, "avg_ssim", float("nan"))):
-                tk.tk.ssim_history.append(float(np.clip(state.avg_ssim, 0.0, 1.0)))
-            elif tk.tk.ssim_history:
-                tk.tk.ssim_history.append(tk.tk.ssim_history[-1])
-            if np.isfinite(state.avg_psnr):
-                tk.tk.psnr_history.append(float(state.avg_psnr))
-            elif tk.tk.psnr_history:
-                tk.tk.psnr_history.append(tk.tk.psnr_history[-1])
+            loss_value = float(state.avg_loss) if np.isfinite(state.avg_loss) and state.avg_loss > 0 else (float(tk.tk.loss_history[-1]) if tk.tk.loss_history else float("nan"))
+            ssim_value = float(np.clip(state.avg_ssim, 0.0, 1.0)) if np.isfinite(getattr(state, "avg_ssim", float("nan"))) else (float(tk.tk.ssim_history[-1]) if tk.tk.ssim_history else float("nan"))
+            psnr_value = float(state.avg_psnr) if np.isfinite(state.avg_psnr) else (float(tk.tk.psnr_history[-1]) if tk.tk.psnr_history else float("nan"))
+            tk.tk.append_training_plot_sample(step, float(viewer.s.last_time), loss_value, ssim_value, psnr_value)
 
 
 def _training_debug_step(viewer: object) -> int:

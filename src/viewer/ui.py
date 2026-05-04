@@ -68,6 +68,9 @@ TOOLKIT_WIDTH_FRACTION = 0.1875
 _TOOLKIT_MIN_WIDTH = 280.0
 LOSS_HISTORY_SIZE = 5000
 FPS_HISTORY_SIZE = 128
+_LOSS_HISTORY_WINDOW_STEPS = 30000
+_LOSS_HISTORY_BUCKET_COUNT = 1000
+_LOSS_HISTORY_BUCKET_SIZE = max(1, _LOSS_HISTORY_WINDOW_STEPS // _LOSS_HISTORY_BUCKET_COUNT)
 _LOSS_DEBUG_ABS_SCALE_DEFAULT = 1.0
 _LOSS_DEBUG_ABS_SCALE_MIN = 0.125
 _LOSS_DEBUG_ABS_SCALE_MAX = 64.0
@@ -546,12 +549,63 @@ def _control_bound(ui: ViewerUI, spec: ControlSpec, key: str, fallback: int) -> 
 
 @dataclass(slots=True)
 class ToolkitState:
-    loss_history: deque = field(default_factory=partial(deque, maxlen=LOSS_HISTORY_SIZE))
+    loss_history: deque = field(default_factory=partial(deque, maxlen=_LOSS_HISTORY_BUCKET_COUNT))
     fps_history: deque = field(default_factory=partial(deque, maxlen=FPS_HISTORY_SIZE))
-    ssim_history: deque = field(default_factory=partial(deque, maxlen=LOSS_HISTORY_SIZE))
-    psnr_history: deque = field(default_factory=partial(deque, maxlen=LOSS_HISTORY_SIZE))
-    step_history: deque = field(default_factory=partial(deque, maxlen=LOSS_HISTORY_SIZE))
-    step_time_history: deque = field(default_factory=partial(deque, maxlen=LOSS_HISTORY_SIZE))
+    ssim_history: deque = field(default_factory=partial(deque, maxlen=_LOSS_HISTORY_BUCKET_COUNT))
+    psnr_history: deque = field(default_factory=partial(deque, maxlen=_LOSS_HISTORY_BUCKET_COUNT))
+    step_history: deque = field(default_factory=partial(deque, maxlen=_LOSS_HISTORY_BUCKET_COUNT))
+    step_time_history: deque = field(default_factory=partial(deque, maxlen=_LOSS_HISTORY_BUCKET_COUNT))
+    _plot_bucket_index: int = -1
+    _plot_bucket_count: int = 0
+    _plot_bucket_step_sum: float = 0.0
+    _plot_bucket_time_sum: float = 0.0
+    _plot_bucket_loss_sum: float = 0.0
+    _plot_bucket_ssim_sum: float = 0.0
+    _plot_bucket_psnr_sum: float = 0.0
+
+    def _reset_plot_bucket(self) -> None:
+        self._plot_bucket_index = -1
+        self._plot_bucket_count = 0
+        self._plot_bucket_step_sum = 0.0
+        self._plot_bucket_time_sum = 0.0
+        self._plot_bucket_loss_sum = 0.0
+        self._plot_bucket_ssim_sum = 0.0
+        self._plot_bucket_psnr_sum = 0.0
+
+    def append_training_plot_sample(self, step: int, timestamp: float, loss: float, ssim: float, psnr: float) -> None:
+        bucket_index = max(int(step) - 1, 0) // _LOSS_HISTORY_BUCKET_SIZE
+        if bucket_index != self._plot_bucket_index or self._plot_bucket_count <= 0 or not self.step_history:
+            self._plot_bucket_index = bucket_index
+            self._plot_bucket_count = 0
+            self._plot_bucket_step_sum = 0.0
+            self._plot_bucket_time_sum = 0.0
+            self._plot_bucket_loss_sum = 0.0
+            self._plot_bucket_ssim_sum = 0.0
+            self._plot_bucket_psnr_sum = 0.0
+        self._plot_bucket_count += 1
+        count = float(self._plot_bucket_count)
+        self._plot_bucket_step_sum += float(step)
+        self._plot_bucket_time_sum += float(timestamp)
+        self._plot_bucket_loss_sum += float(loss)
+        self._plot_bucket_ssim_sum += float(ssim)
+        self._plot_bucket_psnr_sum += float(psnr)
+        averaged_step = self._plot_bucket_step_sum / count
+        averaged_time = self._plot_bucket_time_sum / count
+        averaged_loss = self._plot_bucket_loss_sum / count
+        averaged_ssim = self._plot_bucket_ssim_sum / count
+        averaged_psnr = self._plot_bucket_psnr_sum / count
+        if self._plot_bucket_count == 1:
+            self.step_history.append(averaged_step)
+            self.step_time_history.append(averaged_time)
+            self.loss_history.append(averaged_loss)
+            self.ssim_history.append(averaged_ssim)
+            self.psnr_history.append(averaged_psnr)
+            return
+        self.step_history[-1] = averaged_step
+        self.step_time_history[-1] = averaged_time
+        self.loss_history[-1] = averaged_loss
+        self.ssim_history[-1] = averaged_ssim
+        self.psnr_history[-1] = averaged_psnr
 
     def clear_plot_history(self) -> None:
         self.loss_history.clear()
@@ -560,6 +614,7 @@ class ToolkitState:
         self.psnr_history.clear()
         self.step_history.clear()
         self.step_time_history.clear()
+        self._reset_plot_bucket()
 
 
 def _noop() -> None:

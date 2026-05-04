@@ -5,9 +5,11 @@ from types import SimpleNamespace
 import time
 
 import numpy as np
+import pytest
 import slangpy as spy
 
 from src.viewer import presenter
+from src.viewer import ui as viewer_ui
 from src.viewer.buffer_debug import ResourceDebugRow, ResourceDebugSnapshot
 from src.viewer import session as viewer_session
 from src.viewer.state import ColmapImportProgress
@@ -717,6 +719,49 @@ def test_update_ui_text_sorts_training_view_rows_by_selected_column() -> None:
     rows = viewer.ui._values["_training_views_rows"]
     assert [row["image_name"] for row in rows] == ["frame_b.png", "frame_a.png"]
     assert [row["loss"] for row in rows] == [0.75, 0.25]
+
+
+def test_update_toolkit_history_averages_samples_within_bucket() -> None:
+    viewer = _viewer(loss_debug=False)
+    viewer.toolkit = SimpleNamespace(tk=viewer_ui.ToolkitState())
+    viewer.s.last_time = 10.0
+    viewer.s.trainer.state.step = 1
+    viewer.s.trainer.state.avg_loss = 3.0
+    viewer.s.trainer.state.avg_ssim = 0.3
+    viewer.s.trainer.state.avg_psnr = 20.0
+
+    presenter._update_toolkit_history(viewer, 1.0 / 60.0)
+
+    viewer.s.last_time = 11.0
+    viewer.s.trainer.state.step = 10
+    viewer.s.trainer.state.avg_loss = 6.0
+    viewer.s.trainer.state.avg_ssim = 0.6
+    viewer.s.trainer.state.avg_psnr = 22.0
+    presenter._update_toolkit_history(viewer, 1.0 / 60.0)
+
+    viewer.s.last_time = 12.0
+    viewer.s.trainer.state.step = 20
+    viewer.s.trainer.state.avg_loss = 9.0
+    viewer.s.trainer.state.avg_ssim = 0.9
+    viewer.s.trainer.state.avg_psnr = 24.0
+    presenter._update_toolkit_history(viewer, 1.0 / 60.0)
+
+    tk = viewer.toolkit.tk
+    assert list(tk.step_history) == [pytest.approx((1.0 + 10.0 + 20.0) / 3.0)]
+    assert list(tk.step_time_history) == [pytest.approx(11.0)]
+    assert list(tk.loss_history) == [pytest.approx(6.0)]
+    assert list(tk.ssim_history) == [pytest.approx(0.6)]
+    assert list(tk.psnr_history) == [pytest.approx(22.0)]
+
+    viewer.s.last_time = 13.0
+    viewer.s.trainer.state.step = 31
+    viewer.s.trainer.state.avg_loss = 12.0
+    viewer.s.trainer.state.avg_ssim = 0.95
+    viewer.s.trainer.state.avg_psnr = 26.0
+    presenter._update_toolkit_history(viewer, 1.0 / 60.0)
+
+    assert list(tk.step_history) == [pytest.approx((1.0 + 10.0 + 20.0) / 3.0), pytest.approx(31.0)]
+    assert list(tk.loss_history) == [pytest.approx(6.0), pytest.approx(12.0)]
 
 
 def test_update_ui_text_skips_resource_debug_snapshot_when_closed(monkeypatch) -> None:
