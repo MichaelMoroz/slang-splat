@@ -88,6 +88,19 @@ _DEBUG_COLORBAR_TICKS = 5
 _DEBUG_COLORBAR_STEPS = 96
 _DEBUG_COLORBAR_SIDE_PAD = 18.0
 _DEBUG_COLORBAR_TOP_PAD = 30.0
+_TRAINING_VIEWS_SORT_DEFAULT_COLUMN = "image_name"
+_TRAINING_VIEWS_SORT_COLUMNS = (
+    ("Image", "image_name", 1, imgui.TableColumnFlags_.width_stretch.value | imgui.TableColumnFlags_.default_sort.value, 0.0),
+    ("Res", "resolution", 2, imgui.TableColumnFlags_.width_fixed.value, 92.0),
+    ("Fx", "fx", 3, imgui.TableColumnFlags_.width_fixed.value, 76.0),
+    ("Fy", "fy", 4, imgui.TableColumnFlags_.width_fixed.value, 76.0),
+    ("Cx", "cx", 5, imgui.TableColumnFlags_.width_fixed.value, 76.0),
+    ("Cy", "cy", 6, imgui.TableColumnFlags_.width_fixed.value, 76.0),
+    ("Min Dist", "camera_min_dist", 7, imgui.TableColumnFlags_.width_fixed.value, 78.0),
+    ("Loss", "loss", 8, imgui.TableColumnFlags_.width_fixed.value, 88.0),
+    ("PSNR", "psnr", 9, imgui.TableColumnFlags_.width_fixed.value, 80.0),
+)
+_TRAINING_VIEWS_SORT_KEY_BY_USER_ID = {user_id: sort_key for _label, sort_key, user_id, _flags, _width in _TRAINING_VIEWS_SORT_COLUMNS}
 _DEBUG_COLORBAR_BOTTOM_PAD = 30.0
 _VIEWPORT_OVERLAY_MARGIN = 8.0
 _VIEWPORT_OVERLAY_WIDTH = 320.0
@@ -2113,6 +2126,26 @@ class ToolkitWindow:
             return nan_text
         return nan_text if not np.isfinite(scalar) else f"{scalar:.{precision}f}"
 
+    @staticmethod
+    def _update_training_views_sort_state(ui: ViewerUI) -> None:
+        sort_specs = imgui.table_get_sort_specs()
+        if sort_specs is None or int(getattr(sort_specs, "specs_count", 0)) <= 0:
+            return
+        try:
+            spec = sort_specs.get_specs(0)
+        except Exception:
+            return
+        sort_key = _TRAINING_VIEWS_SORT_KEY_BY_USER_ID.get(int(getattr(spec, "column_user_id", 0)), _TRAINING_VIEWS_SORT_DEFAULT_COLUMN)
+        sort_direction = int(getattr(spec, "sort_direction", imgui.SortDirection_.ascending.value))
+        if sort_direction == int(imgui.SortDirection_.none.value):
+            return
+        ui._values["_training_views_sort_column"] = sort_key
+        ui._values["_training_views_sort_descending"] = sort_direction == int(imgui.SortDirection_.descending.value)
+        try:
+            sort_specs.specs_dirty = False
+        except Exception:
+            pass
+
     def _draw_training_views_window(self, ui: ViewerUI) -> None:
         if not bool(ui._values.get("show_training_views", False)):
             return
@@ -2134,18 +2167,13 @@ class ToolkitWindow:
                     | imgui.TableFlags_.scroll_x.value
                     | imgui.TableFlags_.scroll_y.value
                     | imgui.TableFlags_.hideable.value
+                    | imgui.TableFlags_.sortable.value
                 )
                 if imgui.begin_table("##training_views", 9, flags):
-                    imgui.table_setup_column("Image", imgui.TableColumnFlags_.width_stretch.value)
-                    imgui.table_setup_column("Res", imgui.TableColumnFlags_.width_fixed.value, 92.0)
-                    imgui.table_setup_column("Fx", imgui.TableColumnFlags_.width_fixed.value, 76.0)
-                    imgui.table_setup_column("Fy", imgui.TableColumnFlags_.width_fixed.value, 76.0)
-                    imgui.table_setup_column("Cx", imgui.TableColumnFlags_.width_fixed.value, 76.0)
-                    imgui.table_setup_column("Cy", imgui.TableColumnFlags_.width_fixed.value, 76.0)
-                    imgui.table_setup_column("Min Dist", imgui.TableColumnFlags_.width_fixed.value, 78.0)
-                    imgui.table_setup_column("Loss", imgui.TableColumnFlags_.width_fixed.value, 88.0)
-                    imgui.table_setup_column("PSNR", imgui.TableColumnFlags_.width_fixed.value, 80.0)
+                    for label, _sort_key, user_id, column_flags, width in _TRAINING_VIEWS_SORT_COLUMNS:
+                        imgui.table_setup_column(label, column_flags, width, user_id)
                     imgui.table_headers_row()
+                    ToolkitWindow._update_training_views_sort_state(ui)
                     for row in rows:
                         imgui.table_next_row()
                         values = (
@@ -2931,6 +2959,8 @@ def build_ui(renderer) -> ViewerUI:
         "_menu_bar_resource_next_update": 0.0,
         "_training_views_rows": (),
         "_training_view_overlay_segments": (),
+        "_training_views_sort_column": _TRAINING_VIEWS_SORT_DEFAULT_COLUMN,
+        "_training_views_sort_descending": False,
         "_loss_debug_frame_max": 0,
         "training_camera_full_resolution": False,
         "_training_camera_pose_available": False,

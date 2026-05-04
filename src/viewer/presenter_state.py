@@ -36,6 +36,9 @@ _CAMERA_OVERLAY_NEAR_FRACTION = 0.35
 _CAMERA_OVERLAY_COLOR = (0.18, 0.70, 0.98, 0.72)
 _CAMERA_OVERLAY_ACTIVE_COLOR = (1.00, 0.78, 0.18, 0.96)
 _CAMERA_MIN_DIST_RING_SAMPLES = 40
+_TRAINING_VIEWS_SORT_DEFAULT_COLUMN = "image_name"
+_TRAINING_VIEWS_SORTABLE_COLUMNS = frozenset(("image_name", "resolution", "fx", "fy", "cx", "cy", "camera_min_dist", "loss", "psnr"))
+_TRAINING_VIEWS_NUMERIC_COLUMNS = frozenset(("fx", "fy", "cx", "cy", "camera_min_dist", "loss", "psnr"))
 
 
 def _control_value(viewer: object, key: str, default: object) -> object:
@@ -410,6 +413,53 @@ def _ui_flag(viewer: object, key: str, default: bool = False) -> bool:
         return bool(default)
 
 
+def _training_views_sort_state(viewer: object) -> tuple[str, bool]:
+    try:
+        sort_column = str(viewer.ui._values.get("_training_views_sort_column", _TRAINING_VIEWS_SORT_DEFAULT_COLUMN))
+        descending = bool(viewer.ui._values.get("_training_views_sort_descending", False))
+    except Exception:
+        return _TRAINING_VIEWS_SORT_DEFAULT_COLUMN, False
+    if sort_column not in _TRAINING_VIEWS_SORTABLE_COLUMNS:
+        sort_column = _TRAINING_VIEWS_SORT_DEFAULT_COLUMN
+    return sort_column, descending
+
+
+def _training_views_resolution_sort_value(row: dict[str, object]) -> tuple[int, int]:
+    width_text, sep, height_text = str(row.get("resolution", "")).partition("x")
+    if sep != "x":
+        return (0, 0)
+    try:
+        return max(int(width_text), 0), max(int(height_text), 0)
+    except (TypeError, ValueError):
+        return (0, 0)
+
+
+def _sort_training_view_rows(viewer: object, rows: list[dict[str, object]]) -> tuple[dict[str, object], ...]:
+    if len(rows) <= 1:
+        return tuple(rows)
+    sort_column, descending = _training_views_sort_state(viewer)
+    ordered = list(rows)
+    if sort_column == "resolution":
+        ordered.sort(key=_training_views_resolution_sort_value, reverse=descending)
+        return tuple(ordered)
+    if sort_column not in _TRAINING_VIEWS_NUMERIC_COLUMNS:
+        ordered.sort(key=lambda row: str(row.get(sort_column, "")).lower(), reverse=descending)
+        return tuple(ordered)
+    finite_rows: list[dict[str, object]] = []
+    nan_rows: list[dict[str, object]] = []
+    for row in ordered:
+        try:
+            value = float(row.get(sort_column, float("nan")))
+        except (TypeError, ValueError):
+            value = float("nan")
+        if np.isfinite(value):
+            finite_rows.append(row)
+        else:
+            nan_rows.append(row)
+    finite_rows.sort(key=lambda row: float(row.get(sort_column, float("nan"))), reverse=descending)
+    return tuple(finite_rows + nan_rows)
+
+
 def _viewport_target_size(viewer: object, fallback_width: int, fallback_height: int) -> tuple[int, int]:
     toolkit = getattr(viewer, "toolkit", None)
     viewport_size = None if toolkit is None else getattr(toolkit, "viewport_size", None)
@@ -488,7 +538,7 @@ def _training_view_rows(viewer: object, metrics: dict[str, np.ndarray] | None = 
                 "is_last": int(frame_index) == last_frame_index,
             }
         )
-    return tuple(rows)
+    return _sort_training_view_rows(viewer, rows)
 
 
 def _camera_overlay_scale(viewer: object) -> float:

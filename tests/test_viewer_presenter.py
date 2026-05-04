@@ -694,6 +694,31 @@ def test_update_ui_text_reuses_single_metrics_snapshot_for_training_rows() -> No
     assert calls == 1
 
 
+def test_update_ui_text_sorts_training_view_rows_by_selected_column() -> None:
+    viewer = _viewer(loss_debug=False)
+    viewer.ui._values["show_training_views"] = True
+    viewer.ui._values["_training_views_sort_column"] = "loss"
+    viewer.ui._values["_training_views_sort_descending"] = True
+    first_frame = viewer.s.training_frames[0]
+    viewer.s.training_frames = [
+        SimpleNamespace(**{**vars(first_frame), "image_path": Path("frame_a.png"), "width": 640, "height": 360, "fx": 525.0, "fy": 520.0, "cx": 320.0, "cy": 180.0}),
+        SimpleNamespace(**{**vars(first_frame), "image_id": 6, "camera_id": 8, "image_path": Path("frame_b.png"), "width": 960, "height": 540, "fx": 430.0, "fy": 428.0, "cx": 480.0, "cy": 270.0}),
+    ]
+    viewer.s.trainer.state.last_frame_index = 1
+    viewer.s.trainer.frame_metrics_snapshot = lambda: {
+        "loss": np.asarray([0.25, 0.75], dtype=np.float64),
+        "mse": np.asarray([0.125, 0.25], dtype=np.float64),
+        "psnr": np.asarray([32.5, 28.0], dtype=np.float64),
+        "visited": np.asarray([True, False], dtype=bool),
+    }
+
+    presenter.update_ui_text(viewer, 1.0 / 60.0)
+
+    rows = viewer.ui._values["_training_views_rows"]
+    assert [row["image_name"] for row in rows] == ["frame_b.png", "frame_a.png"]
+    assert [row["loss"] for row in rows] == [0.75, 0.25]
+
+
 def test_update_ui_text_skips_resource_debug_snapshot_when_closed(monkeypatch) -> None:
     viewer = _viewer(loss_debug=False)
     calls: list[bool] = []

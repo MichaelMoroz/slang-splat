@@ -196,6 +196,8 @@ def test_build_ui_initializes_control_groups_and_internal_state() -> None:
     assert viewer_ui._values["_show_histograms_prev"] is False
     assert viewer_ui._values["_training_views_rows"] == ()
     assert viewer_ui._values["_training_view_overlay_segments"] == ()
+    assert viewer_ui._values["_training_views_sort_column"] == "image_name"
+    assert viewer_ui._values["_training_views_sort_descending"] is False
     assert viewer_ui._values["_viewport_sh_band"] == 3
     assert viewer_ui._values["_viewport_sh_control_key"] in {"sh_band", "sh_band_stage1", "sh_band_stage2", "sh_band_stage3", "sh_band_stage4"}
     assert viewer_ui._values["_viewport_sh_stage_label"] in ui.SCHEDULE_STAGE_SPECS
@@ -904,16 +906,27 @@ def test_viewport_camera_overlays_skip_lines_when_disabled(monkeypatch) -> None:
 def test_training_views_window_docks_and_uses_imgui_table(monkeypatch) -> None:
     dock_calls: list[tuple[int, int]] = []
     table_columns: list[str] = []
+    table_column_specs: list[tuple[str, int, float, int]] = []
     cells: list[str] = []
     table_calls: list[tuple[str, int, int]] = []
+    class _SortSpecs:
+        def __init__(self) -> None:
+            self.specs_count = 1
+            self.specs_dirty = True
+
+        def get_specs(self, index: int):
+            assert index == 0
+            return SimpleNamespace(column_user_id=8, sort_direction=int(ui.imgui.SortDirection_.descending.value))
+
     monkeypatch.setattr(ui.imgui, "set_next_window_dock_id", lambda dock_id, cond: dock_calls.append((int(dock_id), int(cond))))
     monkeypatch.setattr(ui.imgui, "set_next_window_pos", lambda *args, **kwargs: None)
     monkeypatch.setattr(ui.imgui, "set_next_window_size", lambda *args, **kwargs: None)
     monkeypatch.setattr(ui.imgui, "begin", lambda *args, **kwargs: (True, True))
     monkeypatch.setattr(ui.imgui, "end", lambda: None)
     monkeypatch.setattr(ui.imgui, "begin_table", lambda name, columns, flags: table_calls.append((name, int(columns), int(flags))) or True)
-    monkeypatch.setattr(ui.imgui, "table_setup_column", lambda name, *_args: table_columns.append(name))
+    monkeypatch.setattr(ui.imgui, "table_setup_column", lambda name, flags=0, width=0.0, user_id=0: table_columns.append(name) or table_column_specs.append((str(name), int(flags), float(width), int(user_id))))
     monkeypatch.setattr(ui.imgui, "table_headers_row", lambda: None)
+    monkeypatch.setattr(ui.imgui, "table_get_sort_specs", lambda: _SortSpecs())
     monkeypatch.setattr(ui.imgui, "table_next_row", lambda: None)
     monkeypatch.setattr(ui.imgui, "table_next_column", lambda: None)
     monkeypatch.setattr(ui.imgui, "text_unformatted", lambda text: cells.append(text))
@@ -922,6 +935,8 @@ def test_training_views_window_docks_and_uses_imgui_table(monkeypatch) -> None:
     viewer_ui = SimpleNamespace(
         _values={
             "show_training_views": True,
+            "_training_views_sort_column": "image_name",
+            "_training_views_sort_descending": False,
             "_training_views_rows": (
                 {
                     "image_name": "frame.png",
@@ -943,7 +958,12 @@ def test_training_views_window_docks_and_uses_imgui_table(monkeypatch) -> None:
 
     assert dock_calls == [(17, int(ui.imgui.Cond_.appearing.value))]
     assert table_calls and table_calls[0][0] == "##training_views" and table_calls[0][1] == 9
+    assert table_calls[0][2] & int(ui.imgui.TableFlags_.sortable.value)
     assert table_columns == ["Image", "Res", "Fx", "Fy", "Cx", "Cy", "Min Dist", "Loss", "PSNR"]
+    assert table_column_specs[0][3] == 1
+    assert table_column_specs[7][3] == 8
+    assert viewer_ui._values["_training_views_sort_column"] == "loss"
+    assert viewer_ui._values["_training_views_sort_descending"] is True
     assert cells == ["frame.png", "640x360", "525.000", "520.000", "320.000", "180.000", "0.100", "0.2500", "32.50"]
 
 
