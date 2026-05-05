@@ -38,6 +38,7 @@ class AdamOptimizer:
                 "compute_grad_norms": "csComputePackedElementGradNorms",
                 "clip_grads": "csClipPackedParamGrads",
                 "adam_step": "csAdamStepPacked",
+                "regularize": "csRegularizePacked",
             },
         )
 
@@ -143,6 +144,14 @@ class AdamOptimizer:
             command_encoder=encoder,
             debug_label="Adam Step",
             debug_color_index=62,
+        )
+        dispatch(
+            kernel=self._kernels["regularize"],
+            thread_count=self._param_threads(count),
+            vars=vars,
+            command_encoder=encoder,
+            debug_label="Adam Regularize",
+            debug_color_index=63,
         )
 
     @property

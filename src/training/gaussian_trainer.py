@@ -1836,7 +1836,7 @@ class GaussianTrainer:
 
     def _dispatch_optimizer_step(self, encoder: spy.CommandEncoder, step_index: int, frame_camera: Camera | None = None) -> None:
         with debug_region(encoder, "Trainer Optimizer", 52):
-            self.optimizer.update_step(step_index, self.training)
+            self.optimizer.update_step(step_index, self.training, self._scale_reg_reference)
             self.adam_optimizer.dispatch_step(
                 encoder,
                 params_buffer=self.renderer.scene_buffers["splat_params"],

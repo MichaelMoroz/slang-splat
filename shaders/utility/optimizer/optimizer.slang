@@ -30,6 +30,14 @@ void store_optimizer_grad(uint paramId, uint elementId, float value)
     g_OptimizerGrads[optimizer_param_index(g_OptimizerElementCount, paramId, elementId)] = value;
 }
 
+float optimizer_shrink_abs(float value, float delta)
+{
+    if (!(delta > 0.0)) return value;
+    if (value > 0.0) return max(value - delta, 0.0);
+    if (value < 0.0) return min(value + delta, 0.0);
+    return 0.0;
+}
+
 [shader("compute")]
 [numthreads(ADAM_GROUP_SIZE, 1, 1)]
 void csComputePackedElementGradNorms(uint3 dispatchThreadID : SV_DispatchThreadID)
@@ -123,4 +131,26 @@ void csAdamStepPacked(uint3 dispatchThreadID : SV_DispatchThreadID)
     float nextValue = sanitize_scalar(value - update, g_OptimizerRuntime.hugeValue);
     g_OptimizerParams[paramIndex] = clamp(nextValue, settings.valueMin, settings.valueMax);
     g_OptimizerAdamMoments[paramIndex] = moments;
+}
+
+[shader("compute")]
+[numthreads(ADAM_GROUP_SIZE, 1, 1)]
+void csRegularizePacked(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint paramIndex = dispatchThreadID.x;
+    if (paramIndex >= g_OptimizerParamCount) return;
+
+    uint paramGroupSize = max(g_OptimizerParamGroupSize, 1u);
+    uint paramId = paramIndex / paramGroupSize;
+    OptimizerParamSettings settings = g_OptimizerParamSettings[paramId];
+    float value = sanitize_scalar(g_OptimizerParams[paramIndex], g_OptimizerRuntime.hugeValue);
+    if (settings.regularizeTowardWeight > 0.0)
+    {
+        value = lerp(value, settings.regularizeTowardValue, saturate(settings.lr * settings.regularizeTowardWeight));
+    }
+    if (settings.regularizeL1Weight > 0.0)
+    {
+        value = optimizer_shrink_abs(value, settings.lr * settings.regularizeL1Weight);
+    }
+    g_OptimizerParams[paramIndex] = clamp(sanitize_scalar(value, g_OptimizerRuntime.hugeValue), settings.valueMin, settings.valueMax);
 }

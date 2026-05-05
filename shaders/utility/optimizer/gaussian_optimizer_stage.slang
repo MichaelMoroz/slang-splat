@@ -32,12 +32,10 @@ struct GaussianStabilityParams
 
 struct GaussianOptimizerRegularizationParams
 {
-    float scaleL2Weight;
     float scaleAbsWeight;
-    float sh1Weight;
     float opacityWeight;
     float positionPushAwayFromCameraStep;
-    float scaleReference;
+    float reserved;
 };
 
 uniform GaussianStabilityParams g_Stability;
@@ -205,14 +203,6 @@ float sh_non_negative_rescale(TrainableGaussianState state, no_diff uint shBand,
     return saturate(sh_view_dependent_scale_limit(baseColor, sampleColor - baseColor));
 }
 
-float gaussian_optimizer_shrink_abs(float value, float delta)
-{
-    if (!(delta > 0.0)) return value;
-    if (value > 0.0) return max(value - delta, 0.0);
-    if (value < 0.0) return min(value + delta, 0.0);
-    return 0.0;
-}
-
 float gaussian_optimizer_relative_current_contribution(uint splatId)
 {
     uint current = g_GaussianOptimizerSplatContributionInfo[splatId].x;
@@ -232,8 +222,6 @@ void csRegularizeGaussianPacked(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint paramId = paramIndex / splatCount;
     uint splatId = paramIndex % splatCount;
     uint rawOpacityParamId = packed_raw_opacity_param_id(g_StoredPackedParamCount);
-    uint storedShCoeffCount = packed_sh_coeff_count(g_StoredPackedParamCount);
-    uint higherShComponentCount = storedShCoeffCount > 1u ? (storedShCoeffCount - 1u) * SH_PARAM_STRIDE : 0u;
     OptimizerParamSettings settings = g_OptimizerParamSettings[paramId];
     float value = sanitize_scalar(g_SplatParamsRW[paramIndex], g_Stability.hugeValue);
 
@@ -258,14 +246,7 @@ void csRegularizeGaussianPacked(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     if (paramId >= PARAM_SCALE_X && paramId <= PARAM_SCALE_Z)
     {
-        if (g_GaussianOptimizerRegularization.scaleL2Weight > 0.0)
-        {
-            float logReference = log(max(g_GaussianOptimizerRegularization.scaleReference, TINY_VALUE));
-            value = lerp(value, logReference, saturate(settings.lr * g_GaussianOptimizerRegularization.scaleL2Weight * (2.0 / 3.0)));
-        }
         if (g_GaussianOptimizerRegularization.scaleAbsWeight > 0.0) value -= exp(value) * (settings.lr * g_GaussianOptimizerRegularization.scaleAbsWeight * (1.0 / 3.0));
-    } else if (higherShComponentCount > 0u && paramId > PARAM_SH0_B && paramId < rawOpacityParamId) {
-        if (g_GaussianOptimizerRegularization.sh1Weight > 0.0) value = gaussian_optimizer_shrink_abs(value, settings.lr * g_GaussianOptimizerRegularization.sh1Weight * (1.0 / float(higherShComponentCount)));
     } else if (paramId == rawOpacityParamId) {
         if (g_GaussianOptimizerRegularization.opacityWeight > 0.0)
         {

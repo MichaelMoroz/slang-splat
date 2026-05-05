@@ -65,6 +65,7 @@ _ADAM_KERNEL_ENTRIES = {
     "compute_grad_norms": "csComputePackedElementGradNorms",
     "clip_grads": "csClipPackedParamGrads",
     "adam_step": "csAdamStepPacked",
+    "regularize": "csRegularizePacked",
 }
 _GAUSSIAN_OPTIMIZER_KERNEL_ENTRIES = {
     "project_params": "csProjectGaussianParams",

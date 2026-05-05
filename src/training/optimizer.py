@@ -13,7 +13,7 @@ from .schedule import resolve_color_lr_mul, resolve_learning_rate_scale, resolve
 
 class GaussianOptimizer:
     _GROUPS = ((0, 3), (3, 3), (6, 4), (10, 12), (22, 1))
-    _PARAM_SETTINGS_U32_WIDTH = 8
+    _PARAM_SETTINGS_U32_WIDTH = 12
     _threads = staticmethod(thread_count_1d)
 
     def __init__(self, device: spy.Device, renderer: GaussianRenderer, adam_hparams: Any, stability_hparams: Any) -> None:
@@ -23,6 +23,9 @@ class GaussianOptimizer:
         self.stability = stability_hparams
         self._uploaded_lr_scale = float("nan")
         self._uploaded_lr_mul_scales = (float("nan"),) * 6
+        self._uploaded_scale_reg_reference = float("nan")
+        self._uploaded_scale_l2_weight = float("nan")
+        self._uploaded_sh1_reg_weight = float("nan")
         self._buffers: dict[str, spy.Buffer] = {}
         self._param_settings_count = 0
         self._kernels = self._create_kernels()
@@ -95,10 +98,15 @@ class GaussianOptimizer:
             if group_start <= int(param_id) < group_start + group_size: return int(group_start), int(group_size)
         return int(param_id), 1
 
-    def _param_settings(self, lr_scale: float = 1.0, lr_mul_scales: tuple[float, float, float, float, float, float] | None = None) -> np.ndarray:
+    def _param_settings(self, lr_scale: float = 1.0, lr_mul_scales: tuple[float, float, float, float, float, float] | None = None, training_hparams: Any | None = None, scale_reg_reference: float = 1.0) -> np.ndarray:
         settings = np.zeros((self.renderer.packed_trainable_param_count, self._PARAM_SETTINGS_U32_WIDTH), dtype=np.uint32)
         scale = max(float(lr_scale), 0.0)
         position_scale, scale_scale, rotation_scale, color_scale, opacity_scale, sh_scale = tuple(max(float(v), 0.0) for v in (lr_mul_scales or (1.0, 1.0, 1.0, 1.0, 1.0, 1.0)))
+        scale_ref_value = float(np.log(max(float(scale_reg_reference), 1e-8)))
+        scale_l2_weight = 0.0 if training_hparams is None else max(float(training_hparams.scale_l2_weight), 0.0) * (2.0 / 3.0)
+        stored_sh_coeff_count = int(self.renderer.stored_sh_coeff_count)
+        higher_sh_component_count = (stored_sh_coeff_count - 1) * 3 if stored_sh_coeff_count > 1 else 0
+        sh1_weight = 0.0 if training_hparams is None or higher_sh_component_count <= 0 else max(float(training_hparams.sh1_reg_weight), 0.0) / float(higher_sh_component_count)
         for param_id in range(self.renderer.packed_trainable_param_count):
             group_start, group_size = self._group_for_param(param_id)
             if param_id in self.renderer.PARAM_POSITION_IDS:
@@ -122,14 +130,22 @@ class GaussianOptimizer:
             settings[param_id, 4] = np.asarray([self._value_max_for_param(param_id)], dtype=np.float32).view(np.uint32)[0]
             settings[param_id, 5] = np.uint32(group_start)
             settings[param_id, 6] = np.uint32(group_size)
+            if param_id in self.renderer.PARAM_SCALE_IDS and scale_l2_weight > 0.0:
+                settings[param_id, 8] = np.asarray([scale_ref_value], dtype=np.float32).view(np.uint32)[0]
+                settings[param_id, 9] = np.asarray([scale_l2_weight], dtype=np.float32).view(np.uint32)[0]
+            if param_id in self.renderer.PARAM_SH_IDS and param_id not in self.renderer.PARAM_SH0_IDS and sh1_weight > 0.0:
+                settings[param_id, 10] = np.asarray([sh1_weight], dtype=np.float32).view(np.uint32)[0]
         return settings
 
-    def _upload_param_settings(self, lr_scale: float = 1.0, lr_mul_scales: tuple[float, float, float, float, float, float] | None = None) -> None:
+    def _upload_param_settings(self, lr_scale: float = 1.0, lr_mul_scales: tuple[float, float, float, float, float, float] | None = None, training_hparams: Any | None = None, scale_reg_reference: float = 1.0) -> None:
         self._ensure_static_buffers()
         resolved_scales = lr_mul_scales or (1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
-        self._buffers["param_settings"].copy_from_numpy(self._param_settings(lr_scale, resolved_scales))
+        self._buffers["param_settings"].copy_from_numpy(self._param_settings(lr_scale, resolved_scales, training_hparams=training_hparams, scale_reg_reference=scale_reg_reference))
         self._uploaded_lr_scale = float(lr_scale)
         self._uploaded_lr_mul_scales = tuple(float(v) for v in resolved_scales)
+        self._uploaded_scale_reg_reference = float(scale_reg_reference)
+        self._uploaded_scale_l2_weight = 0.0 if training_hparams is None else max(float(training_hparams.scale_l2_weight), 0.0)
+        self._uploaded_sh1_reg_weight = 0.0 if training_hparams is None else max(float(training_hparams.sh1_reg_weight), 0.0)
 
     def update_hyperparams(self, adam_hparams: Any, stability_hparams: Any) -> None:
         self.adam = adam_hparams
@@ -140,7 +156,7 @@ class GaussianOptimizer:
         self.renderer = renderer
         self._upload_param_settings()
 
-    def update_step(self, step_index: int, training_hparams: Any) -> None:
+    def update_step(self, step_index: int, training_hparams: Any, scale_reg_reference: float) -> None:
         lr_scale = resolve_learning_rate_scale(training_hparams, int(step_index))
         color_lr_mul_scale = resolve_color_lr_mul(training_hparams, int(step_index)) / max(float(getattr(training_hparams, "lr_color_mul", 1.0)), 1e-8)
         lr_mul_scales = (
@@ -154,11 +170,17 @@ class GaussianOptimizer:
         if (
             np.isfinite(self._uploaded_lr_scale)
             and all(np.isfinite(v) for v in self._uploaded_lr_mul_scales)
+            and np.isfinite(self._uploaded_scale_reg_reference)
+            and np.isfinite(self._uploaded_scale_l2_weight)
+            and np.isfinite(self._uploaded_sh1_reg_weight)
             and abs(self._uploaded_lr_scale - lr_scale) <= 1e-12
             and all(abs(a - b) <= 1e-12 for a, b in zip(self._uploaded_lr_mul_scales, lr_mul_scales))
+            and abs(self._uploaded_scale_reg_reference - float(scale_reg_reference)) <= 1e-12
+            and abs(self._uploaded_scale_l2_weight - max(float(training_hparams.scale_l2_weight), 0.0)) <= 1e-12
+            and abs(self._uploaded_sh1_reg_weight - max(float(training_hparams.sh1_reg_weight), 0.0)) <= 1e-12
         ):
             return
-        self._upload_param_settings(lr_scale, lr_mul_scales)
+        self._upload_param_settings(lr_scale, lr_mul_scales, training_hparams=training_hparams, scale_reg_reference=scale_reg_reference)
 
     def _projection_vars(self, splat_count: int, training_hparams: Any, step_index: int, max_visible_angle_deg: float | None = None) -> dict[str, object]:
         resolved_max_visible_angle_deg = resolve_max_visible_angle_deg(training_hparams, 0) if max_visible_angle_deg is None else max_visible_angle_deg
@@ -176,12 +198,10 @@ class GaussianOptimizer:
         camera_position = np.zeros((3,), dtype=np.float32) if frame_camera is None else np.asarray(frame_camera.position, dtype=np.float32).reshape(3)
         return {
             "g_GaussianOptimizerRegularization": {
-                "scaleL2Weight": float(max(training_hparams.scale_l2_weight, 0.0)),
                 "scaleAbsWeight": float(max(training_hparams.scale_abs_reg_weight, 0.0)),
-                "sh1Weight": float(max(training_hparams.sh1_reg_weight, 0.0)),
                 "opacityWeight": float(max(training_hparams.opacity_reg_weight, 0.0)),
                 "positionPushAwayFromCameraStep": float(resolve_position_push_away_from_camera_step(training_hparams, int(step_index))),
-                "scaleReference": float(max(scale_reg_reference, 1e-8)),
+                "reserved": 0.0,
             },
             "g_GaussianOptimizerRegularizationCameraPosition": spy.float3(*camera_position.tolist()),
             "g_GaussianOptimizerRegularizationHasCamera": np.uint32(0 if frame_camera is None else 1),
