@@ -25,6 +25,7 @@ from ..training import (
     resolve_sh_lr_mul,
     resolve_sorting_order_dithering,
 )
+from ..training.defaults import DEFAULT_LR_SCHEDULE_STEPS, DEFAULT_LR_STAGE1_STEP, DEFAULT_LR_STAGE2_STEP, DEFAULT_LR_STAGE3_STEP
 from ..utility import clamp_index
 
 _DEFAULT_TRAINING_STEPS_PER_FRAME = 3
@@ -55,10 +56,10 @@ def _schedule_state_from_controls(viewer: object) -> object:
         lr_schedule_stage2_lr=float(_control_value(viewer, "lr_schedule_stage2_lr", 0.001)),
         lr_schedule_stage3_lr=float(_control_value(viewer, "lr_schedule_stage3_lr", 1.5e-4)),
         lr_schedule_end_lr=float(_control_value(viewer, "lr_schedule_end_lr", 0.001)),
-        lr_schedule_steps=int(_control_value(viewer, "lr_schedule_steps", 100000)),
-        lr_schedule_stage1_step=int(_control_value(viewer, "lr_schedule_stage1_step", 3000)),
-        lr_schedule_stage2_step=int(_control_value(viewer, "lr_schedule_stage2_step", 14000)),
-        lr_schedule_stage3_step=int(_control_value(viewer, "lr_schedule_stage3_step", 30000)),
+        lr_schedule_steps=int(_control_value(viewer, "lr_schedule_steps", DEFAULT_LR_SCHEDULE_STEPS)),
+        lr_schedule_stage1_step=int(_control_value(viewer, "lr_schedule_stage1_step", DEFAULT_LR_STAGE1_STEP)),
+        lr_schedule_stage2_step=int(_control_value(viewer, "lr_schedule_stage2_step", DEFAULT_LR_STAGE2_STEP)),
+        lr_schedule_stage3_step=int(_control_value(viewer, "lr_schedule_stage3_step", DEFAULT_LR_STAGE3_STEP)),
         lr_pos_mul=float(_control_value(viewer, "lr_pos_mul", 1.0)),
         lr_pos_stage1_mul=float(_control_value(viewer, "lr_pos_stage1_mul", 0.75)),
         lr_pos_stage2_mul=float(_control_value(viewer, "lr_pos_stage2_mul", 0.2)),

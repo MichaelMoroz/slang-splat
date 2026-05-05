@@ -763,8 +763,11 @@ class SplatViewer(_ViewerWindowHost):
         try:
             ui_values = _viewer_ui_values(self)
             defaults = load_defaults()
+            training_build_args = defaults.setdefault("training_build_args", {})
+            cli_defaults = defaults.setdefault("cli", {})
+            viewer_defaults = defaults.setdefault("viewer", {})
             defaults["training_build_args"] = {
-                **defaults["training_build_args"],
+                **training_build_args,
                 **{
                     build_arg: ui_values[control_key]
                     for build_arg, control_key in _TRAINING_PARAM_KEYS.items()
@@ -772,11 +775,12 @@ class SplatViewer(_ViewerWindowHost):
                 },
             }
             exported = export_repo_defaults_from_ui_values(ui_values)
-            defaults["renderer"] = exported["renderer"]
-            defaults["cli"]["common_render"] = exported["cli"]["common_render"]
-            defaults["viewer"]["controls"] = exported["viewer"]["controls"]
-            defaults["viewer"]["import"] = exported["viewer"]["import"]
-            defaults["viewer"]["ui"] = exported["viewer"]["ui"]
+            defaults["renderer"] = exported.get("renderer", {})
+            cli_defaults["common_render"] = exported.get("cli", {}).get("common_render", {})
+            viewer_export = exported.get("viewer", {})
+            viewer_defaults["controls"] = viewer_export.get("controls", {})
+            viewer_defaults["import"] = viewer_export.get("import", {})
+            viewer_defaults["ui"] = viewer_export.get("ui", {})
             write_defaults(defaults)
         except Exception as exc:
             if hasattr(self, "t"):

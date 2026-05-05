@@ -557,66 +557,47 @@ def choose_colmap_custom_mesh(viewer: object, mesh_path: Path) -> None:
     viewer.s.last_error = ""
 
 
-def _pointcloud_source_enabled(import_cfg: object) -> bool:
-    return bool(getattr(import_cfg, "pointcloud_enabled", False))
+def _import_cfg_enabled(import_cfg: object, attr_name: str, default: bool = False) -> bool:
+    return bool(getattr(import_cfg, attr_name, default))
 
 
-def _diffused_source_enabled(import_cfg: object) -> bool:
-    return bool(getattr(import_cfg, "diffused_enabled", False))
-
-
-def _custom_ply_source_enabled(import_cfg: object) -> bool:
-    return bool(getattr(import_cfg, "custom_ply_enabled", False))
-
-
-def _custom_mesh_source_enabled(import_cfg: object) -> bool:
-    return bool(getattr(import_cfg, "custom_mesh_enabled", False))
+def _import_cfg_nn_radius_scale_coef(import_cfg: object, attr_name: str, default: float = 0.5, fallback_attr: str | None = "nn_radius_scale_coef") -> float:
+    fallback = default if fallback_attr is None else getattr(import_cfg, fallback_attr, default)
+    return float(max(getattr(import_cfg, attr_name, fallback), 1e-4))
 
 
 def _fibonacci_source_enabled(import_cfg: object) -> bool:
-    return bool(getattr(import_cfg, "fibonacci_sphere_enabled", int(getattr(import_cfg, "fibonacci_sphere_point_count", 0)) > 0))
+    return _import_cfg_enabled(import_cfg, "fibonacci_sphere_enabled", int(getattr(import_cfg, "fibonacci_sphere_point_count", 0)) > 0)
 
 
 def _uses_depth_init(import_cfg: object) -> bool:
     if import_cfg is None:
         return False
     return str(getattr(import_cfg, "init_mode", _COLMAP_IMPORT_POINTCLOUD)) == _COLMAP_IMPORT_DEPTH and not any((
-        _pointcloud_source_enabled(import_cfg),
-        _diffused_source_enabled(import_cfg),
-        _custom_ply_source_enabled(import_cfg),
-        _custom_mesh_source_enabled(import_cfg),
+        _import_cfg_enabled(import_cfg, "pointcloud_enabled"),
+        _import_cfg_enabled(import_cfg, "diffused_enabled"),
+        _import_cfg_enabled(import_cfg, "custom_ply_enabled"),
+        _import_cfg_enabled(import_cfg, "custom_mesh_enabled"),
     ))
 
 
 def _enabled_init_source_names(import_cfg: object) -> tuple[str, ...]:
     names: list[str] = []
-    if _pointcloud_source_enabled(import_cfg):
+    if _import_cfg_enabled(import_cfg, "pointcloud_enabled"):
         names.append(_COLMAP_IMPORT_POINTCLOUD)
-    if _diffused_source_enabled(import_cfg):
+    if _import_cfg_enabled(import_cfg, "diffused_enabled"):
         names.append(_COLMAP_IMPORT_DIFFUSED_POINTCLOUD)
-    if _custom_ply_source_enabled(import_cfg):
+    if _import_cfg_enabled(import_cfg, "custom_ply_enabled"):
         names.append(_COLMAP_IMPORT_CUSTOM_PLY)
-    if _custom_mesh_source_enabled(import_cfg):
+    if _import_cfg_enabled(import_cfg, "custom_mesh_enabled"):
         names.append(_COLMAP_IMPORT_CUSTOM_MESH)
     if _fibonacci_source_enabled(import_cfg):
         names.append("fibonacci_sphere")
     return tuple(names)
 
 
-def _pointcloud_nn_radius_scale_coef(import_cfg: object) -> float:
-    return float(max(getattr(import_cfg, "pointcloud_nn_radius_scale_coef", getattr(import_cfg, "nn_radius_scale_coef", 0.5)), 1e-4))
-
-
 def _diffused_diffusion_radius(import_cfg: object) -> float:
     return max(float(getattr(import_cfg, "diffused_diffusion_radius", 1.0)), 0.0)
-
-
-def _diffused_nn_radius_scale_coef(import_cfg: object) -> float:
-    return float(max(getattr(import_cfg, "diffused_nn_radius_scale_coef", getattr(import_cfg, "nn_radius_scale_coef", 0.5)), 1e-4))
-
-
-def _custom_ply_nn_radius_scale_coef(import_cfg: object) -> float:
-    return float(max(getattr(import_cfg, "custom_ply_nn_radius_scale_coef", 1.0), 1e-4))
 
 
 def _custom_mesh_path(import_cfg: object) -> Path | None:
@@ -626,14 +607,6 @@ def _custom_mesh_path(import_cfg: object) -> Path | None:
 
 def _custom_mesh_point_count(import_cfg: object) -> int:
     return max(int(getattr(import_cfg, "custom_mesh_point_count", getattr(import_cfg, "diffused_point_count", 100000))), 1)
-
-
-def _custom_mesh_nn_radius_scale_coef(import_cfg: object) -> float:
-    return float(max(getattr(import_cfg, "custom_mesh_nn_radius_scale_coef", getattr(import_cfg, "nn_radius_scale_coef", 0.5)), 1e-4))
-
-
-def _fibonacci_nn_radius_scale_coef(import_cfg: object) -> float:
-    return float(max(getattr(import_cfg, "fibonacci_sphere_nn_radius_scale_coef", 1.0), 1e-4))
 
 
 def _fibonacci_radius_multiplier(import_cfg: object) -> float:
@@ -753,18 +726,18 @@ def _cached_init_signature(viewer: object, init: object) -> tuple[object, ...] |
         None if viewer.s.colmap_root is None else str(Path(viewer.s.colmap_root).resolve()),
         tuple(_enabled_init_source_names(import_cfg)),
         min_track_length,
-        round(float(_pointcloud_nn_radius_scale_coef(import_cfg)), 6),
+        round(float(_import_cfg_nn_radius_scale_coef(import_cfg, "pointcloud_nn_radius_scale_coef")), 6),
         int(getattr(import_cfg, "diffused_point_count", 0)),
         round(float(_diffused_diffusion_radius(import_cfg)), 6),
-        round(float(_diffused_nn_radius_scale_coef(import_cfg)), 6),
+        round(float(_import_cfg_nn_radius_scale_coef(import_cfg, "diffused_nn_radius_scale_coef")), 6),
         None if getattr(import_cfg, "custom_ply_path", None) is None else str(Path(import_cfg.custom_ply_path).resolve()),
-        round(float(_custom_ply_nn_radius_scale_coef(import_cfg)), 6),
+        round(float(_import_cfg_nn_radius_scale_coef(import_cfg, "custom_ply_nn_radius_scale_coef", default=1.0, fallback_attr=None)), 6),
         None if _custom_mesh_path(import_cfg) is None else str(Path(_custom_mesh_path(import_cfg)).resolve()),
         int(_custom_mesh_point_count(import_cfg)),
-        round(float(_custom_mesh_nn_radius_scale_coef(import_cfg)), 6),
+        round(float(_import_cfg_nn_radius_scale_coef(import_cfg, "custom_mesh_nn_radius_scale_coef")), 6),
         int(getattr(import_cfg, "fibonacci_sphere_point_count", 0)),
         round(float(_fibonacci_radius_multiplier(import_cfg)), 6),
-        round(float(_fibonacci_nn_radius_scale_coef(import_cfg)), 6),
+        round(float(_import_cfg_nn_radius_scale_coef(import_cfg, "fibonacci_sphere_nn_radius_scale_coef", default=1.0, fallback_attr=None)), 6),
         int(init.seed),
     )
 
@@ -1433,34 +1406,34 @@ def _build_initial_training_scene(viewer: object, init: object, params: object, 
         return scene, float(max(resolved_init.base_scale, 1e-8))
     source_scenes: list[GaussianScene] = []
 
-    if _pointcloud_source_enabled(import_cfg):
+    if _import_cfg_enabled(import_cfg, "pointcloud_enabled"):
         positions = getattr(viewer.s, "cached_init_pointcloud_positions", None)
         colors = getattr(viewer.s, "cached_init_pointcloud_colors", None)
         if positions is None or colors is None:
             raise RuntimeError("Cached COLMAP pointcloud initializer data is unavailable.")
-        resolved_init = _pointcloud_init_hparams_from_positions(viewer.s.colmap_recon, positions, int(positions.shape[0]), init_hparams, _pointcloud_nn_radius_scale_coef(import_cfg), min_track_length)
+        resolved_init = _pointcloud_init_hparams_from_positions(viewer.s.colmap_recon, positions, int(positions.shape[0]), init_hparams, _import_cfg_nn_radius_scale_coef(import_cfg, "pointcloud_nn_radius_scale_coef"), min_track_length)
         source_scenes.append(initialize_scene_from_points_colors(positions, colors, init.seed, resolved_init))
 
-    if _diffused_source_enabled(import_cfg):
+    if _import_cfg_enabled(import_cfg, "diffused_enabled"):
         positions = getattr(viewer.s, "cached_init_diffused_positions", None)
         colors = getattr(viewer.s, "cached_init_diffused_colors", None)
         if positions is None or colors is None:
             raise RuntimeError("Cached diffused initializer data is unavailable.")
-        resolved_init = _diffused_pointcloud_init_hparams_from_positions(viewer.s.colmap_recon, positions, init_hparams, _diffused_nn_radius_scale_coef(import_cfg), min_track_length)
+        resolved_init = _diffused_pointcloud_init_hparams_from_positions(viewer.s.colmap_recon, positions, init_hparams, _import_cfg_nn_radius_scale_coef(import_cfg, "diffused_nn_radius_scale_coef"), min_track_length)
         source_scenes.append(initialize_scene_from_points_colors(positions, colors, init.seed, resolved_init))
 
-    if _custom_ply_source_enabled(import_cfg):
+    if _import_cfg_enabled(import_cfg, "custom_ply_enabled"):
         cached_ply_scene = getattr(viewer.s, "cached_init_custom_ply_scene", None)
         if cached_ply_scene is None:
             raise RuntimeError("Cached custom PLY scene is unavailable.")
         source_scenes.append(_copy_gaussian_scene(cached_ply_scene))
 
-    if _custom_mesh_source_enabled(import_cfg):
+    if _import_cfg_enabled(import_cfg, "custom_mesh_enabled"):
         positions = getattr(viewer.s, "cached_init_custom_mesh_positions", None)
         colors = getattr(viewer.s, "cached_init_custom_mesh_colors", None)
         if positions is None or colors is None:
             raise RuntimeError("Cached custom mesh initializer data is unavailable.")
-        resolved_init = _sampled_point_init_hparams_from_positions(positions, int(positions.shape[0]), init_hparams, _custom_mesh_nn_radius_scale_coef(import_cfg))
+        resolved_init = _sampled_point_init_hparams_from_positions(positions, int(positions.shape[0]), init_hparams, _import_cfg_nn_radius_scale_coef(import_cfg, "custom_mesh_nn_radius_scale_coef"))
         source_scenes.append(initialize_scene_from_points_colors(positions, colors, init.seed, resolved_init))
 
     if _fibonacci_source_enabled(import_cfg):
@@ -1468,7 +1441,7 @@ def _build_initial_training_scene(viewer: object, init: object, params: object, 
         colors = getattr(viewer.s, "cached_init_fibonacci_colors", None)
         if positions is None or colors is None:
             raise RuntimeError("Cached Fibonacci sphere initializer data is unavailable.")
-        resolved_init = _sampled_point_init_hparams_from_positions(positions, int(positions.shape[0]), init_hparams, _fibonacci_nn_radius_scale_coef(import_cfg))
+        resolved_init = _sampled_point_init_hparams_from_positions(positions, int(positions.shape[0]), init_hparams, _import_cfg_nn_radius_scale_coef(import_cfg, "fibonacci_sphere_nn_radius_scale_coef", default=1.0, fallback_attr=None))
         source_scenes.append(initialize_scene_from_points_colors(positions, colors, init.seed, resolved_init))
 
     return _concat_gaussian_scenes(source_scenes), None

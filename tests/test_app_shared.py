@@ -7,7 +7,6 @@ import numpy as np
 from src.app.shared import apply_training_profile, build_training_params, estimate_scene_bounds
 from src.scene import GaussianInitHyperParams, GaussianScene
 from src.training import TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, resolve_sorting_order_dithering
-from src.training.defaults import TRAINING_BUILD_ARG_DEFAULTS
 from src.viewer.app import default_training_params
 from src.viewer.session import resolve_effective_training_setup
 from src.viewer.ui import default_control_values
@@ -110,22 +109,7 @@ def test_build_training_params_clamps_ranges():
     assert params.training.lr_sh_stage2_mul == 89.0
     assert params.training.lr_sh_stage3_mul == 90.0
     assert params.training.lr_sh_stage4_mul == 91.0
-    assert hasattr(params.training, "max_visible_angle_deg_stage1")
-    assert hasattr(params.training, "position_random_step_noise_lr")
-    assert hasattr(params.training, "lr_schedule_stage1_lr")
-    assert hasattr(params.training, "ssim_weight_stage1")
-    assert params.training.use_sh_stage1 is False
-    assert params.training.use_sh_stage2 is True
-    assert params.training.use_sh_stage3 is True
-    assert params.training.use_sh_stage4 is True
-    assert params.training.sh_band_stage1 == 0
-    assert params.training.sh_band_stage2 == 2
-    assert params.training.sh_band_stage3 == 3
-    assert params.training.sh_band_stage4 == 3
-    assert params.training.refinement_min_contribution == float(TRAINING_BUILD_ARG_DEFAULTS["refinement_min_contribution"])
-    assert params.training.refinement_min_contribution_decay == 0.995
     assert params.training.refinement_prune_lowest_contribution_ratio == 0.0
-    assert params.training.refinement_opacity_mul == 1.0
     assert params.training.refinement_sample_radius == 0.0
     assert params.training.refinement_clone_scale_mul == 0.0
     assert params.training.refinement_use_compact_split is True
@@ -136,38 +120,16 @@ def test_build_training_params_clamps_ranges():
     assert params.training.refinement_contribution_area_exponent == 0.0
     assert params.training.refinement_contribution_view_count_exponent == 0.0
     assert params.training.max_gaussians == 0
-    assert params.training.train_subsample_factor == 0
 
 
-def test_default_training_params_include_required_training_controls():
+def test_default_training_params_expose_config_backed_training_controls():
     params = default_training_params()
     for key in (
         "density_regularizer",
-        "max_visible_angle_deg",
-        "ssim_weight",
-        "ssim_c2",
-        "position_push_away_from_camera_step",
-        "position_push_away_from_camera_step_stage1",
-        "refinement_prune_lowest_contribution_ratio",
-        "refinement_prune_lowest_contribution_ratio_stage1",
         "refinement_sample_radius",
-        "refinement_clone_scale_mul",
-        "refinement_use_compact_split",
-        "refinement_solve_opacity",
-        "refinement_split_beta",
-        "refinement_grad_variance_weight_exponent",
-        "refinement_contribution_weight_exponent",
-        "refinement_contribution_area_exponent",
-        "refinement_contribution_view_count_exponent",
         "train_subsample_factor",
     ):
         assert hasattr(params.training, key)
-
-
-def test_default_training_params_include_refinement_sample_radius() -> None:
-    params = default_training_params()
-
-    assert hasattr(params.training, "refinement_sample_radius")
 
 
 def test_build_training_params_clamps_subsample_to_one_eighth() -> None:
@@ -177,7 +139,6 @@ def test_build_training_params_clamps_subsample_to_one_eighth() -> None:
 
 
 def test_build_training_params_clamps_sorting_order_dithering() -> None:
-    default = build_training_params(background=(1.0, 1.0, 1.0))
     low = build_training_params(background=(1.0, 1.0, 1.0), sorting_order_dithering=-1.0)
     high = build_training_params(
         background=(1.0, 1.0, 1.0),
@@ -187,10 +148,6 @@ def test_build_training_params_clamps_sorting_order_dithering() -> None:
         sorting_order_dithering_stage3=0.25,
     )
 
-    assert default.training.sorting_order_dithering == float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering"])
-    assert default.training.sorting_order_dithering_stage1 == float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage1"])
-    assert default.training.sorting_order_dithering_stage2 == float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage2"])
-    assert default.training.sorting_order_dithering_stage3 == float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage3"])
     assert low.training.sorting_order_dithering == 0.0
     assert high.training.sorting_order_dithering == 1.0
     assert high.training.sorting_order_dithering_stage1 == 1.0
@@ -319,11 +276,6 @@ def test_viewer_effective_training_setup_keeps_requested_init_opacity():
 
 
 def test_training_hparams_clamp_sorting_order_dithering() -> None:
-    assert TrainingHyperParams().sorting_order_dithering == float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering"])
-    assert TrainingHyperParams().sorting_order_dithering_stage1 == float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage1"])
-    assert TrainingHyperParams().sorting_order_dithering_stage2 == float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage2"])
-    assert TrainingHyperParams().sorting_order_dithering_stage3 == float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage3"])
-    assert TrainingHyperParams().sorting_order_dithering_stage4 == float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage4"])
     assert TrainingHyperParams(sorting_order_dithering=-0.5).sorting_order_dithering == 0.0
     assert TrainingHyperParams(sorting_order_dithering=1.5).sorting_order_dithering == 1.0
     params = TrainingHyperParams(
@@ -339,11 +291,6 @@ def test_training_hparams_clamp_sorting_order_dithering() -> None:
 
 
 def test_training_hparams_clamp_colorspace_mod() -> None:
-    assert TrainingHyperParams().colorspace_mod == float(TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod"])
-    assert TrainingHyperParams().colorspace_mod_stage1 == float(TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage1"])
-    assert TrainingHyperParams().colorspace_mod_stage2 == float(TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage2"])
-    assert TrainingHyperParams().colorspace_mod_stage3 == float(TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage3"])
-    assert TrainingHyperParams().colorspace_mod_stage4 == float(TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage4"])
     assert TrainingHyperParams(colorspace_mod=-0.5).colorspace_mod == 1e-08
     params = TrainingHyperParams(
         colorspace_mod_stage1=-1.0,

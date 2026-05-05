@@ -13,6 +13,7 @@ ALPHA_CUTOFF_DEFAULT = np.float32(1.0 / 255.0)
 ELLIPSE_EPS = 1e-6
 MIN_CONIC_DET = 1e-12
 GAUSSIAN_SUPPORT_SIGMA_RADIUS = np.float32(3.0)
+ELLIPSE_RADIUS_PAD_PX = np.float32(1.0)
 
 
 @dataclass(slots=True)
@@ -303,7 +304,7 @@ def project_splats(
             continue
 
         center_px, radius_px, conic = fitted
-        radius_px = float(max(radius_px + 1.0, 1.0))
+        radius_px = float(max(radius_px + float(ELLIPSE_RADIUS_PAD_PX), 1.0))
         center_radius_depth[index] = np.array((center_px[0], center_px[1], radius_px, cam_distance), dtype=np.float32)
         ellipse_conic[index] = conic
         visible = (
@@ -344,62 +345,36 @@ def _try_prepare_conic_for_binning(conic: np.ndarray, radius: float, half_tile: 
     return (False, bbox) if not np.isfinite(extent).all() else (True, np.clip(extent, 1e-4, radius).astype(np.float32))
 
 
-def _solve_quadratic_interval(quadratic_coeff: float, linear_coeff: float, constant_coeff: float, level: float) -> tuple[bool, tuple[float, float]]:
-    disc = linear_coeff * linear_coeff - quadratic_coeff * (constant_coeff - level)
-    if disc < 0.0 or not math.isfinite(disc):
-        return False, (0.0, 0.0)
-    root = math.sqrt(max(disc, 0.0))
-    interval = ((-linear_coeff - root) / quadratic_coeff, (-linear_coeff + root) / quadratic_coeff)
-    return (math.isfinite(interval[0]) and math.isfinite(interval[1]) and interval[0] <= interval[1]), interval
+def _eval_conic(conic: np.ndarray, x: float, y: float) -> float:
+    return float(conic[0]) * x * x + 2.0 * float(conic[1]) * x * y + float(conic[2]) * y * y
 
 
-def _merge_interval(current: tuple[float, float] | None, candidate: tuple[float, float]) -> tuple[float, float]:
-    return candidate if current is None else (min(current[0], candidate[0]), max(current[1], candidate[1]))
+def _min_conic_over_tile_box(conic: np.ndarray, x0: float, x1: float, y0: float, y1: float) -> float:
+    values = [_eval_conic(conic, x, y) for x in (x0, x1) for y in (y0, y1)]
+    if x0 <= 0.0 <= x1 and y0 <= 0.0 <= y1:
+        return 0.0
+    a, b, c = map(float, conic)
+    if c > 1e-12:
+        values.extend(_eval_conic(conic, x, float(np.clip(-b * x / c, y0, y1))) for x in (x0, x1))
+    if a > 1e-12:
+        values.extend(_eval_conic(conic, float(np.clip(-b * y / a, x0, x1)), y) for y in (y0, y1))
+    return float(min(values))
+
+
+def _tile_box(center: tuple[float, float], scan_along_x: bool, tile_size: int, line_tile: int, minor_tile: int) -> tuple[float, float, float, float]:
+    major = np.array([minor_tile, line_tile], dtype=np.float32) if scan_along_x else np.array([line_tile, minor_tile], dtype=np.float32)
+    lo = major * float(tile_size) - np.asarray(center, dtype=np.float32)
+    hi = (major + 1.0) * float(tile_size) - np.asarray(center, dtype=np.float32)
+    return float(lo[0]), float(hi[0]), float(lo[1]), float(hi[1])
+
+
+def _tile_intersects_ellipse(center: tuple[float, float], conic: np.ndarray, scan_along_x: bool, tile_size: int, line_tile: int, minor_tile: int) -> bool:
+    return _min_conic_over_tile_box(conic, *_tile_box(center, scan_along_x, tile_size, line_tile, minor_tile)) <= 1.0 + ELLIPSE_EPS
 
 
 def _compute_scanline_tile_span_universal(center: tuple[float, float], conic: np.ndarray, scan_along_x: bool, tile_size: int, line_coord_tile: int, min_minor_tile: int, max_minor_tile: int) -> tuple[bool, int, int]:
-    minor_coeff = float(conic[0] if scan_along_x else conic[2])
-    line_coeff = float(conic[2] if scan_along_x else conic[0])
-    mixed_coeff = float(conic[1])
-    det = minor_coeff * line_coeff - mixed_coeff * mixed_coeff
-    if not (minor_coeff > MIN_CONIC_DET and line_coeff > MIN_CONIC_DET and det > MIN_CONIC_DET):
-        return False, 0, 0
-
-    center_minor = float(center[0] if scan_along_x else center[1])
-    center_line = float(center[1] if scan_along_x else center[0])
-    line_start = float(line_coord_tile) * float(tile_size) - center_line
-    line_end = float(line_coord_tile + 1) * float(tile_size) - center_line
-    level = 1.0 + ELLIPSE_EPS
-
-    interval: tuple[float, float] | None = None
-    for line_value in (line_start, line_end):
-        ok, candidate = _solve_quadratic_interval(minor_coeff, mixed_coeff * line_value, line_coeff * line_value * line_value, level)
-        if ok:
-            interval = _merge_interval(interval, candidate)
-
-    interior_coeff = det / line_coeff
-    if interior_coeff > MIN_CONIC_DET:
-        interior_radius = math.sqrt(level / interior_coeff)
-        interior_interval = (-interior_radius, interior_radius)
-        if abs(mixed_coeff) <= MIN_CONIC_DET:
-            if line_start <= 0.0 <= line_end:
-                interval = _merge_interval(interval, interior_interval)
-        else:
-            stationary_minor_start = -line_coeff * line_start / mixed_coeff
-            stationary_minor_end = -line_coeff * line_end / mixed_coeff
-            stationary_interval = (min(stationary_minor_start, stationary_minor_end), max(stationary_minor_start, stationary_minor_end))
-            clipped = (max(interior_interval[0], stationary_interval[0]), min(interior_interval[1], stationary_interval[1]))
-            if clipped[0] <= clipped[1]:
-                interval = _merge_interval(interval, clipped)
-
-    if interval is None:
-        return False, 0, 0
-
-    first_hit = math.ceil((interval[0] + center_minor) / float(tile_size)) - 1
-    last_hit = math.floor((interval[1] + center_minor) / float(tile_size))
-    first_hit = max(first_hit, max(min_minor_tile, 0))
-    last_hit = min(last_hit, max_minor_tile)
-    return (False, 0, 0) if first_hit > last_hit else (True, first_hit, last_hit - first_hit + 1)
+    hits = [minor for minor in range(max(min_minor_tile, 0), max_minor_tile + 1) if _tile_intersects_ellipse(center, conic, scan_along_x, tile_size, line_coord_tile, minor)]
+    return (False, 0, 0) if not hits else (True, hits[0], hits[-1] - hits[0] + 1)
 
 
 def _iter_spans(center: tuple[float, float], conic: np.ndarray, scan_along_x: bool, tile_size: int, primary_lo: int, primary_hi: int, minor_lo: int, minor_hi: int):
@@ -477,12 +452,31 @@ def build_tile_ranges(sorted_keys: np.ndarray, sorted_count: int, tile_count: in
     return ranges
 
 
+def _ray_splat_intersection_alpha(projected: ProjectedSplats, splat_id: int, ray_direction: np.ndarray, alpha_cutoff: float) -> float:
+    opacity = float(np.clip(projected.color_alpha[splat_id, 3], 0.0, 1.0))
+    if opacity < alpha_cutoff:
+        return 0.0
+    support_sigma_radius = math.sqrt(max(-2.0 * math.log(alpha_cutoff / max(opacity, alpha_cutoff)), 0.0))
+    if support_sigma_radius <= 1e-10:
+        return 0.0
+    support_scale = float(GAUSSIAN_SUPPORT_SIGMA_RADIUS) / support_sigma_radius
+    ro_local = projected.pos_local[splat_id] * np.float32(support_scale)
+    ray_local = _quat_rotate(ray_direction, projected.quat[splat_id]) * projected.inv_scale[splat_id] * np.float32(support_scale)
+    denom = float(np.dot(ray_local, ray_local))
+    if denom <= 1e-10:
+        return 0.0
+    t_closest = -float(np.dot(ray_local, ro_local)) / denom
+    if t_closest <= 0.0:
+        return 0.0
+    closest = ro_local + ray_local * np.float32(t_closest)
+    rho2 = max(float(np.dot(closest, closest)), 0.0)
+    return float(opacity * np.exp(-0.5 * support_sigma_radius * support_sigma_radius * rho2))
+
+
 def rasterize(projected: ProjectedSplats, sorted_values: np.ndarray, tile_ranges: np.ndarray, camera: Camera, width: int, height: int, tile_size: int, tile_width: int, background: np.ndarray, alpha_cutoff: float, max_splat_steps: int, transmittance_threshold: float) -> np.ndarray:
     output = np.zeros((height, width, 4), dtype=np.float32)
     bg_linear = np.power(np.clip(background.reshape(3), 0.0, None), 2.2).astype(np.float32)
-
-    def quat_rotate(v: np.ndarray, q: np.ndarray) -> np.ndarray:
-        return v + 2.0 * np.cross(np.cross(v, q[1:4]) + q[0] * v, q[1:4])
+    _ = max_splat_steps
 
     for py in range(height):
         tile_y = py // tile_size
@@ -494,19 +488,10 @@ def rasterize(projected: ProjectedSplats, sorted_values: np.ndarray, tile_ranges
                 continue
             ray = camera.screen_to_world_ray(np.array([float(px) + 0.5, float(py) + 0.5], dtype=np.float32), width, height)
             accum, trans = np.zeros((3,), dtype=np.float32), 1.0
-            for splat_id in map(int, sorted_values[int(start): int(end)][:max_splat_steps]):
+            for splat_id in map(int, sorted_values[int(start): int(end)]):
                 if projected.valid[splat_id] == 0:
                     continue
-                rd_local = quat_rotate(ray, projected.quat[splat_id]) * projected.inv_scale[splat_id]
-                denom = float(np.dot(rd_local, rd_local))
-                if denom <= 1e-10:
-                    continue
-                closest = projected.pos_local[splat_id] + rd_local * float(np.dot(rd_local, -projected.pos_local[splat_id]) / denom)
-                rho = float(np.linalg.norm(closest))
-                if rho >= 1.0:
-                    continue
-                coverage = float((1.0 - rho) ** 2 * (1.0 + 2.0 * rho))
-                alpha = float(np.clip(projected.color_alpha[splat_id, 3] * coverage, 0.0, 1.0))
+                alpha = _ray_splat_intersection_alpha(projected, splat_id, ray, alpha_cutoff)
                 if alpha < alpha_cutoff:
                     continue
                 accum += trans * alpha * projected.color_alpha[splat_id, :3]

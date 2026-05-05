@@ -933,10 +933,13 @@ def test_maybe_reallocate_renderers_recycles_live_renderers_at_interval(monkeypa
 
 def test_rebind_renderer_preserves_refinement_history() -> None:
     calls: list[tuple[str, object]] = []
-    renderer = SimpleNamespace(width=80, height=40, _render_capacity_width=80, _render_capacity_height=40)
+    old_renderer = SimpleNamespace(width=64, height=32, _render_capacity_width=64, _render_capacity_height=32, packed_trainable_param_count=17)
+    renderer = SimpleNamespace(width=80, height=40, _render_capacity_width=80, _render_capacity_height=40, packed_trainable_param_count=17)
+    optimizer = SimpleNamespace(renderer=None)
+    optimizer.rebind_renderer = lambda new_renderer: setattr(optimizer, "renderer", new_renderer)
     trainer = SimpleNamespace(
-        renderer=None,
-        optimizer=SimpleNamespace(renderer=None),
+        renderer=old_renderer,
+        optimizer=optimizer,
         training=SimpleNamespace(train_downscale_factor=1),
         state=SimpleNamespace(step=7),
         _scene_count=32,

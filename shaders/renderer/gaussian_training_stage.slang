@@ -52,7 +52,7 @@ uniform Texture2D<float4> g_Rendered;
 uniform Texture2D<float4> g_Target;
 uniform StructuredBuffer<float> g_RenderedDensity;
 uniform RWStructuredBuffer<float4> g_OutputGrad;
-uniform RWStructuredBuffer<float> g_RegularizerGrad;
+uniform RWStructuredBuffer<float2> g_RegularizerGrad;
 uniform RWStructuredBuffer<float> g_LossBuffer;
 uniform RWStructuredBuffer<float> g_BatchStepInfo;
 uniform RWStructuredBuffer<float> g_TrainingRgbLoss;
@@ -341,7 +341,7 @@ uint refinement_family_frame_hash(uint splatId)
     if (g_RefinementCameraCount == 0u) return seed;
     uint cameraIndex = seed % g_RefinementCameraCount;
     uint baseRow = cameraIndex * REFINEMENT_CAMERA_ROW_COUNT;
-    return refinement_hash_combine(asuint(g_RefinementCameraRows[baseRow + 5u].z), cameraIndex + 1u);
+    return refinement_hash_combine(asuint(g_RefinementCameraRows[baseRow + 5u].y), cameraIndex + 1u);
 }
 
 uint refinement_sample_seed(uint frameHash, uint splatId, uint subsampleId)
@@ -899,7 +899,7 @@ void csComputeBlendedLossBackward(uint3 dispatchThreadID : SV_DispatchThreadID)
     {
         densityGrad = g_DensityRegularizer * g_InvPixelCount * targetMask;
     }
-    g_RegularizerGrad[py * g_Width + px] = clamp(sanitize_scalar(densityGrad, g_LossGradClip), -g_LossGradClip, g_LossGradClip);
+    g_RegularizerGrad[py * g_Width + px] = float2(clamp(sanitize_scalar(densityGrad, g_LossGradClip), -g_LossGradClip, g_LossGradClip), 0.0);
 }
 
 [shader("compute")]

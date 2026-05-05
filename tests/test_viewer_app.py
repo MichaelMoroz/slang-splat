@@ -238,8 +238,8 @@ def test_apply_resize_recreates_renderer_only_for_size_changes(monkeypatch) -> N
 
     monkeypatch.setattr("src.viewer.app.session.recreate_renderer", lambda viewer_obj, width, height: calls.append((width, height)))
 
-    SplatViewer._apply_resize(viewer, 640, 360)
-    SplatViewer._apply_resize(viewer, 800, 600)
+    app.SplatViewer._apply_resize(viewer, 640, 360)
+    app.SplatViewer._apply_resize(viewer, 800, 600)
 
     assert calls == ["wait", "wait", (800, 600)]
     assert viewer.s.last_resize_exception == ""
@@ -256,7 +256,7 @@ def test_apply_resize_prefers_viewport_size_when_available(monkeypatch) -> None:
 
     monkeypatch.setattr("src.viewer.app.session.recreate_renderer", lambda viewer_obj, width, height: calls.append((width, height)))
 
-    SplatViewer._apply_resize(viewer, 1280, 720)
+    app.SplatViewer._apply_resize(viewer, 1280, 720)
 
     assert calls == ["wait", (512, 288)]
 
@@ -307,7 +307,8 @@ def test_save_defaults_callback_updates_cli_common_render(monkeypatch) -> None:
     }
 
     monkeypatch.setattr(
-        "src.viewer.app.load_defaults",
+        app,
+        "load_defaults",
         lambda: {
             "training_build_args": {},
             "renderer": {},
@@ -315,10 +316,10 @@ def test_save_defaults_callback_updates_cli_common_render(monkeypatch) -> None:
             "viewer": {"controls": {}, "import": {}, "ui": {}},
         },
     )
-    monkeypatch.setattr("src.viewer.app.export_repo_defaults_from_ui_values", lambda values: exported)
-    monkeypatch.setattr("src.viewer.app.write_defaults", lambda defaults: written.setdefault("defaults", defaults))
+    monkeypatch.setattr(app, "export_repo_defaults_from_ui_values", lambda values: exported)
+    monkeypatch.setattr(app, "write_defaults", lambda defaults: written.setdefault("defaults", defaults))
 
-    SplatViewer._save_defaults_callback(viewer)
+    app.SplatViewer._save_defaults_callback(viewer)
 
     assert written["defaults"]["renderer"] == exported["renderer"]
     assert written["defaults"]["cli"]["common_render"] == exported["cli"]["common_render"]

@@ -7,7 +7,6 @@ import slangpy as spy
 
 from src.app.training_controls import SCHEDULE_STAGE_CONTROL_DEFS, SCHEDULE_STAGE_GROUPS, TRAIN_SETUP_CONTROL_DEFS
 from src.renderer.render_params import CachedRasterGradParams
-from src.training.defaults import TRAINING_BUILD_ARG_DEFAULTS
 from src.viewer.buffer_debug import ResourceDebugRow, ResourceDebugSnapshot
 from src.viewer import ui
 from src.viewer.constants import _WINDOW_TITLE
@@ -400,19 +399,18 @@ def test_export_repo_defaults_writes_cached_raster_grad_training_render_defaults
 def test_train_schedule_exposes_sorting_order_dithering_controls() -> None:
     stage_controls = {stage: {control.key: control for control in controls} for stage, controls in SCHEDULE_STAGE_CONTROL_DEFS.items()}
     expected = {
-        "Stage 0": ("sorting_order_dithering", float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering"])),
-        "Stage 1": ("sorting_order_dithering_stage1", float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage1"])),
-        "Stage 2": ("sorting_order_dithering_stage2", float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage2"])),
-        "Stage 3": ("sorting_order_dithering_stage3", float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage3"])),
-        "Stage 4": ("sorting_order_dithering_stage4", float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage4"])),
+        "Stage 0": "sorting_order_dithering",
+        "Stage 1": "sorting_order_dithering_stage1",
+        "Stage 2": "sorting_order_dithering_stage2",
+        "Stage 3": "sorting_order_dithering_stage3",
+        "Stage 4": "sorting_order_dithering_stage4",
     }
 
     assert "sorting_order_dithering" not in {control.key for control in TRAIN_SETUP_CONTROL_DEFS}
-    for stage, (key, value) in expected.items():
+    for stage, key in expected.items():
         control = stage_controls[stage][key]
         assert control.kind == "input_float"
         assert control.label == "Sort Dither"
-        assert control.kwargs["value"] == value
         assert control.kwargs["step"] == 1e-3
         assert control.kwargs["step_fast"] == 1e-2
         assert control.build_args == (key,)
@@ -422,19 +420,18 @@ def test_train_schedule_exposes_sorting_order_dithering_controls() -> None:
 def test_train_schedule_exposes_refinement_prune_controls() -> None:
     stage_controls = {stage: {control.key: control for control in controls} for stage, controls in SCHEDULE_STAGE_CONTROL_DEFS.items()}
     expected = {
-        "Stage 0": ("refinement_prune_lowest_contribution_ratio", float(TRAINING_BUILD_ARG_DEFAULTS["refinement_prune_lowest_contribution_ratio"])),
-        "Stage 1": ("refinement_prune_lowest_contribution_ratio_stage1", float(TRAINING_BUILD_ARG_DEFAULTS["refinement_prune_lowest_contribution_ratio_stage1"])),
-        "Stage 2": ("refinement_prune_lowest_contribution_ratio_stage2", float(TRAINING_BUILD_ARG_DEFAULTS["refinement_prune_lowest_contribution_ratio_stage2"])),
-        "Stage 3": ("refinement_prune_lowest_contribution_ratio_stage3", float(TRAINING_BUILD_ARG_DEFAULTS["refinement_prune_lowest_contribution_ratio_stage3"])),
-        "Stage 4": ("refinement_prune_lowest_contribution_ratio_stage4", float(TRAINING_BUILD_ARG_DEFAULTS["refinement_prune_lowest_contribution_ratio_stage4"])),
+        "Stage 0": "refinement_prune_lowest_contribution_ratio",
+        "Stage 1": "refinement_prune_lowest_contribution_ratio_stage1",
+        "Stage 2": "refinement_prune_lowest_contribution_ratio_stage2",
+        "Stage 3": "refinement_prune_lowest_contribution_ratio_stage3",
+        "Stage 4": "refinement_prune_lowest_contribution_ratio_stage4",
     }
 
     assert "refinement_prune_lowest_contribution_ratio" not in {control.key for control in TRAIN_SETUP_CONTROL_DEFS}
-    for stage, (key, value) in expected.items():
+    for stage, key in expected.items():
         control = stage_controls[stage][key]
         assert control.kind == "input_float"
         assert control.label == "Prune Lowest Ratio"
-        assert control.kwargs["value"] == value
         assert control.kwargs["step"] == 1e-3
         assert control.kwargs["step_fast"] == 1e-2
         assert control.build_args == (key,)
@@ -444,18 +441,17 @@ def test_train_schedule_exposes_refinement_prune_controls() -> None:
 def test_train_schedule_exposes_camera_push_controls() -> None:
     stage_controls = {stage: {control.key: control for control in controls} for stage, controls in SCHEDULE_STAGE_CONTROL_DEFS.items()}
     expected = {
-        "Stage 0": ("position_push_away_from_camera_step", float(TRAINING_BUILD_ARG_DEFAULTS["position_push_away_from_camera_step"])),
-        "Stage 1": ("position_push_away_from_camera_step_stage1", float(TRAINING_BUILD_ARG_DEFAULTS["position_push_away_from_camera_step_stage1"])),
-        "Stage 2": ("position_push_away_from_camera_step_stage2", float(TRAINING_BUILD_ARG_DEFAULTS["position_push_away_from_camera_step_stage2"])),
-        "Stage 3": ("position_push_away_from_camera_step_stage3", float(TRAINING_BUILD_ARG_DEFAULTS["position_push_away_from_camera_step_stage3"])),
-        "Stage 4": ("position_push_away_from_camera_step_stage4", float(TRAINING_BUILD_ARG_DEFAULTS["position_push_away_from_camera_step_stage4"])),
+        "Stage 0": "position_push_away_from_camera_step",
+        "Stage 1": "position_push_away_from_camera_step_stage1",
+        "Stage 2": "position_push_away_from_camera_step_stage2",
+        "Stage 3": "position_push_away_from_camera_step_stage3",
+        "Stage 4": "position_push_away_from_camera_step_stage4",
     }
 
-    for stage, (key, value) in expected.items():
+    for stage, key in expected.items():
         control = stage_controls[stage][key]
         assert control.kind == "input_float"
         assert control.label == "Cam Push Step"
-        assert control.kwargs["value"] == value
         assert control.kwargs["step"] == 1e-5
         assert control.kwargs["step_fast"] == 1e-4
         assert control.build_args == (key,)

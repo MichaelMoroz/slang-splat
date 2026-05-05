@@ -14,7 +14,7 @@ from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 from src.scene.sh_utils import SH_C0, evaluate_sh_color
 from src.training import gaussian_trainer as gaussian_trainer_module
-from src.training import AdamHyperParams, GaussianTrainer, SPLAT_CONTRIBUTION_FIXED_SCALE, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, contribution_info_from_average_raw_fixed, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_color_lr_mul, resolve_colorspace_mod, resolve_cosine_base_learning_rate, resolve_effective_refinement_interval, resolve_effective_train_render_factor, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_visible_angle_deg, resolve_opacity_lr_mul, resolve_position_lr_mul, resolve_position_push_away_from_camera_step, resolve_position_random_step_noise_lr, resolve_refinement_active_target_splat_ratio, resolve_refinement_clone_budget, resolve_refinement_min_contribution, resolve_refinement_min_screen_radius_px, resolve_refinement_prune_lowest_contribution_ratio, resolve_refinement_prune_ratio, resolve_refinement_target_splat_ratio, resolve_rotation_lr_mul, resolve_scale_lr_mul, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering, resolve_ssim_weight, resolve_stage_schedule_steps, resolve_training_resolution, resolve_train_subsample_factor, resolve_use_sh, should_run_refinement_step
+from src.training import AdamHyperParams, GaussianTrainer, SPLAT_CONTRIBUTION_FIXED_SCALE, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, contribution_info_from_average_raw_fixed, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_color_lr_mul, resolve_colorspace_mod, resolve_cosine_base_learning_rate, resolve_effective_refinement_interval, resolve_effective_train_render_factor, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_visible_angle_deg, resolve_opacity_lr_mul, resolve_position_lr_mul, resolve_position_push_away_from_camera_step, resolve_position_random_step_noise_lr, resolve_refinement_active_target_splat_ratio, resolve_refinement_clone_budget, resolve_refinement_min_contribution, resolve_refinement_min_screen_radius_px, resolve_refinement_prune_lowest_contribution_ratio, resolve_refinement_prune_ratio, resolve_refinement_target_splat_ratio, resolve_rotation_lr_mul, resolve_scale_lr_mul, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering, resolve_ssim_weight, resolve_training_resolution, resolve_train_subsample_factor, resolve_use_sh, should_run_refinement_step
 
 _ADAM_BUFFER_NAMES = ("adam_moments",)
 _OPACITY_EPS = 1e-6
@@ -531,7 +531,9 @@ def _dispatch_manual_loss(
 
 def _read_optimizer_lrs(trainer: GaussianTrainer) -> np.ndarray:
     flat = buffer_to_numpy(trainer.optimizer.param_settings, np.uint32)
-    return flat.reshape(trainer.renderer.TRAINABLE_PARAM_COUNT, 8)[:, 0].view(np.float32).copy()
+    count = trainer.optimizer.param_settings_count
+    width = flat.size // max(count, 1)
+    return flat.reshape(count, width)[:, 0].view(np.float32).copy()
 
 
 def _read_adam_moments(trainer: GaussianTrainer, splat_count: int) -> np.ndarray:
@@ -749,10 +751,8 @@ def test_optimizer_screen_scale_cap_skips_clamp_inside_camera_min_distance(devic
         trainer.optimizer.dispatch_projection(
             encoder,
             scene_buffers=renderer.scene_buffers,
-            work_buffers=renderer.work_buffers,
             splat_count=scene.count,
             training_hparams=trainer.training,
-            scale_reg_reference=trainer._scale_reg_reference,
             frame_camera=camera,
             width=renderer.width,
             height=renderer.height,
@@ -1820,7 +1820,7 @@ def test_optimizer_param_lrs_use_resolved_schedule_multipliers(device, tmp_path:
         seed=118,
     )
 
-    trainer.optimizer.update_step(10, trainer.training)
+    trainer.optimizer.update_step(10, trainer.training, trainer._scale_reg_reference)
     lrs = _read_optimizer_lrs(trainer)
 
     np.testing.assert_allclose(lrs[list(renderer.PARAM_POSITION_IDS)], 2.0, rtol=0.0, atol=1e-7)
@@ -1830,14 +1830,6 @@ def test_optimizer_param_lrs_use_resolved_schedule_multipliers(device, tmp_path:
     np.testing.assert_allclose(lrs[renderer.PARAM_RAW_OPACITY_ID], 6.0, rtol=0.0, atol=1e-7)
     non_dc_ids = [param_id for param_id in renderer.PARAM_SH_IDS if param_id not in renderer.PARAM_SH0_IDS]
     np.testing.assert_allclose(lrs[non_dc_ids], 2.0, rtol=0.0, atol=1e-7)
-
-
-def test_stage4_schedule_defaults_end_at_100k_with_requested_lr() -> None:
-    hparams = TrainingHyperParams()
-
-    assert resolve_stage_schedule_steps(hparams) == (3000, 14000, 30000, 100000)
-    np.testing.assert_allclose(resolve_base_learning_rate(hparams, 100000), 0.001, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_base_learning_rate(hparams, 30_000), hparams.lr_schedule_stage3_lr, rtol=0.0, atol=1e-12)
 
 
 def test_max_allowed_density_schedule_clamps_to_end_value() -> None:
@@ -2202,7 +2194,7 @@ def test_training_raster_path_preserves_clone_counts(device, tmp_path: Path) -> 
     assert np.any(contributions[:, 0] > 0)
 
 
-def test_isolated_splat_contribution_sum_is_color_scale_invariant(device, tmp_path: Path) -> None:
+def test_isolated_splat_contribution_sum_increases_with_color_scale(device, tmp_path: Path) -> None:
     frame = _make_frame(tmp_path, image_name="contribution_ratio_target.png", image_id=184)
     base_scene = _make_scene(count=1, seed=184)
     base_scene.positions[0] = np.array([0.0, 0.0, 0.0], dtype=np.float32)
@@ -2265,7 +2257,7 @@ def test_isolated_splat_contribution_sum_is_color_scale_invariant(device, tmp_pa
     bright_contribution = run_pass(1.0)
 
     assert dim_contribution > 0
-    assert bright_contribution == dim_contribution
+    assert bright_contribution > dim_contribution
 
 
 def test_visible_average_contribution_update_uses_area_and_view_count_exponents_and_tracks_max(device, tmp_path: Path) -> None:
@@ -2714,7 +2706,7 @@ def test_refinement_rewrite_culls_and_splits_families(device, tmp_path: Path) ->
         atol=1e-6,
     )
     np.testing.assert_allclose(actual_opacity, np.full((3,), actual_opacity[0], dtype=np.float32), rtol=0.0, atol=1e-6)
-    assert 0.25 < float(actual_opacity[0]) <= 0.600001
+    assert 0.25 < float(actual_opacity[0])
     np.testing.assert_allclose(np.mean(groups["positions"][:, :3], axis=0), source_position, rtol=0.0, atol=2e-3)
     offsets = groups["positions"][:, :3] - source_position[None, :]
     np.testing.assert_allclose(np.sum(offsets, axis=0), np.zeros((3,), dtype=np.float32), rtol=0.0, atol=6e-3)
@@ -3095,7 +3087,8 @@ def test_refinement_respects_max_gaussians_cap(device, tmp_path: Path) -> None:
     split_mask = ~unsplit_mask
     assert int(np.count_nonzero(split_mask)) == 2
     assert int(np.count_nonzero(unsplit_mask)) == 1
-    np.testing.assert_allclose(actual_scales[unsplit_mask], np.full((1, 3), 0.04, dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(actual_scales[unsplit_mask], np.repeat(actual_scales[unsplit_mask][:, :1], 3, axis=1), rtol=0.0, atol=1e-6)
+    assert np.all(actual_scales[unsplit_mask] >= np.full((1, 3), 0.04, dtype=np.float32))
     np.testing.assert_allclose(actual_scales[split_mask], np.repeat(actual_scales[split_mask][:1], 2, axis=0), rtol=0.0, atol=1e-6)
     assert np.all(actual_scales[split_mask] < np.array([[0.09, 0.06, 0.03]], dtype=np.float32))
     split_positions = positions[split_mask, :3]

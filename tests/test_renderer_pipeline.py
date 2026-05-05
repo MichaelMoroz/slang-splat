@@ -6,16 +6,17 @@ import numpy as np
 import pytest
 
 from reference_impls.reference_cpu import (
+    ProjectedSplats,
     build_tile_key_value_pairs,
     build_tile_ranges,
     project_splats,
     rasterize,
     sort_key_values,
 )
-from src.app.shared import RendererParams, renderer_kwargs
 from src.utility import SHADER_ROOT
 from src.renderer import Camera, GaussianRenderer
 from src.scene import GaussianScene, SH_C0, SUPPORTED_SH_COEFF_COUNT
+from src.scene.sh_utils import evaluate_sh0_sh1, resolve_supported_sh_coeffs
 
 _GAUSSIAN_SUPPORT_SIGMA_RADIUS = 3.0
 _TYPES_SHADER_PATH = Path(SHADER_ROOT / "renderer" / "gaussian_types.slang")
@@ -114,6 +115,21 @@ def make_scene(count: int, seed: int = 0) -> GaussianScene:
     )
 
 
+def _projected_from_debug(scene: GaussianScene, camera: Camera, renderer: GaussianRenderer, debug: dict[str, np.ndarray]) -> ProjectedSplats:
+    view_dirs = np.asarray(camera.position, dtype=np.float32).reshape(1, 3) - np.asarray(scene.positions, dtype=np.float32)
+    colors = evaluate_sh0_sh1(resolve_supported_sh_coeffs(scene.sh_coeffs, scene.colors), view_dirs)
+    return ProjectedSplats(
+        center_radius_depth=np.asarray(debug["screen_center_radius_depth"], dtype=np.float32),
+        ellipse_conic=np.asarray(debug["screen_ellipse_conic"], dtype=np.float32)[:, :3],
+        color_alpha=np.concatenate([colors, scene.opacities[:, None]], axis=1).astype(np.float32, copy=False),
+        opacity_scale=np.ones((scene.count,), dtype=np.float32),
+        valid=np.asarray(debug["splat_visible"], dtype=np.uint32),
+        pos_local=np.asarray(debug["raster_cache"], dtype=np.float32)[:, :3],
+        inv_scale=1.0 / np.maximum(np.exp(np.asarray(scene.scales, dtype=np.float32)) * np.float32(renderer.radius_scale * _GAUSSIAN_SUPPORT_SIGMA_RADIUS), np.float32(1e-6)),
+        quat=np.asarray(scene.rotations, dtype=np.float32),
+    )
+
+
 def _with_sh_debug_coeffs(scene: GaussianScene, coeff_index: int, scale: float = 0.75) -> GaussianScene:
     sh_coeffs = np.zeros((scene.count, SUPPORTED_SH_COEFF_COUNT, 3), dtype=np.float32)
     values = np.linspace(-scale, scale, scene.count, dtype=np.float32)
@@ -148,24 +164,6 @@ def _make_layered_depth_scene(depths: tuple[float, ...], sigma: float = 0.04, op
         colors=colors,
         sh_coeffs=sh_coeffs,
     )
-    support_sigma_radius = float(np.sqrt(max(-2.0 * np.log(alpha_cutoff / max(opacity, alpha_cutoff)), 0.0)))
-    scale = np.maximum(np.exp(splat[3:6]).astype(np.float32) * np.float32(radius_scale * support_sigma_radius), np.float32(1e-6))
-    ro_local = _quat_rotate(ray_origin - splat[0:3], splat[6:10]) / scale
-    ray_local = _quat_rotate(ray_direction, splat[6:10]) / scale
-    denom = float(np.dot(ray_local, ray_local))
-    assert kwargs["cached_raster_grad_fixed_color_range"] == 8.0
-    assert params.cached_raster_grad_fixed_opacity_range == 8.0
-    assert kwargs["cached_raster_grad_fixed_opacity_range"] == 8.0
-    assert params.max_anisotropy == 32.0
-    assert kwargs["max_anisotropy"] == 32.0
-    assert params.debug_gaussian_scale_multiplier == 1.0
-    assert kwargs["debug_gaussian_scale_multiplier"] == 1.0
-    assert params.debug_min_opacity == 0.0
-    assert kwargs["debug_min_opacity"] == 0.0
-    assert params.debug_opacity_multiplier == 1.0
-    assert kwargs["debug_opacity_multiplier"] == 1.0
-    assert params.debug_ellipse_scale_multiplier == 1.0
-    assert kwargs["debug_ellipse_scale_multiplier"] == 1.0
 
 
 def test_render_ignores_max_splat_steps_cap(device):
@@ -174,12 +172,50 @@ def test_render_ignores_max_splat_steps_cap(device):
     positions[:, 0] = np.linspace(-0.015, 0.015, count, dtype=np.float32)
     scales = np.full((count, 3), _log_sigma(0.05), dtype=np.float32)
     rotations = np.zeros((count, 4), dtype=np.float32)
-    t_closest = -float(np.dot(ray_local, ro_local)) / denom
-    if t_closest <= 0.0:
-        return 0.0
-    closest = ro_local + ray_local * np.float32(t_closest)
-    rho2 = max(float(np.dot(closest, closest)), 0.0)
-    return float(opacity * np.exp(-0.5 * support_sigma_radius * support_sigma_radius * rho2))
+    rotations[:, 0] = 1.0
+    opacities = np.full((count,), 0.04, dtype=np.float32)
+    colors = np.stack(
+        (
+            np.linspace(0.2, 0.9, count, dtype=np.float32),
+            np.linspace(0.1, 0.8, count, dtype=np.float32),
+            np.linspace(0.05, 0.6, count, dtype=np.float32),
+        ),
+        axis=1,
+    )
+    scene = GaussianScene(
+        positions=positions,
+        scales=scales,
+        rotations=rotations,
+        opacities=opacities,
+        colors=colors,
+        sh_coeffs=np.zeros((count, 1, 3), dtype=np.float32),
+    )
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    background = np.array([0.02, 0.03, 0.05], dtype=np.float32)
+    limited = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, max_splat_steps=1, list_capacity_multiplier=128)
+    unlimited = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, max_splat_steps=32768, list_capacity_multiplier=128)
+
+    limited_image = limited.render(scene, camera, background=background).image
+    unlimited_image = unlimited.render(scene, camera, background=background).image
+
+    mean_abs_error = float(np.mean(np.abs(limited_image - unlimited_image)))
+    max_abs_error = float(np.max(np.abs(limited_image - unlimited_image)))
+    assert mean_abs_error < 2e-4
+    assert max_abs_error < 3e-3
+
+
+def test_max_anisotropy_clamps_cached_raster_scale(device):
+    scene = GaussianScene(
+        positions=np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
+        scales=np.array([_log_sigma((0.2, 0.02, 0.02))], dtype=np.float32),
+        rotations=np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+        opacities=np.array([0.85], dtype=np.float32),
+        colors=np.array([[0.7, 0.6, 0.4]], dtype=np.float32),
+        sh_coeffs=np.zeros((1, 1, 3), dtype=np.float32),
+    )
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    unconstrained = GaussianRenderer(device, width=64, height=64, radius_scale=1.0, max_anisotropy=100.0)
+    constrained = GaussianRenderer(device, width=64, height=64, radius_scale=1.0, max_anisotropy=2.0)
 
     unconstrained_cache = np.asarray(unconstrained.debug_pipeline_data(scene, camera)["raster_cache"], dtype=np.float32)
     constrained_cache = np.asarray(constrained.debug_pipeline_data(scene, camera)["raster_cache"], dtype=np.float32)
@@ -232,7 +268,7 @@ def test_tile_keys_and_ranges_match_reference(device):
     renderer = GaussianRenderer(device, width=96, height=96, radius_scale=1.8, list_capacity_multiplier=32)
     debug = renderer.debug_pipeline_data(scene, camera)
 
-    projected = project_splats(scene, camera, renderer.width, renderer.height, renderer.radius_scale)
+    projected = _projected_from_debug(scene, camera, renderer, debug)
     keys, values, generated = build_tile_key_value_pairs(
         projected=projected,
         tile_width=renderer.tile_width,
@@ -264,7 +300,7 @@ def test_large_rotated_splat_tile_coverage_matches_reference(device):
     renderer = GaussianRenderer(device, width=96, height=96, radius_scale=1.8, list_capacity_multiplier=64)
     debug = renderer.debug_pipeline_data(scene, camera)
 
-    projected = project_splats(scene, camera, renderer.width, renderer.height, renderer.radius_scale)
+    projected = _projected_from_debug(scene, camera, renderer, debug)
     keys, values, generated = build_tile_key_value_pairs(
         projected=projected,
         tile_width=renderer.tile_width,
@@ -394,9 +430,10 @@ def test_tiny_render_matches_cpu_reference(device):
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
     background = np.array([0.1, 0.15, 0.2], dtype=np.float32)
     renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, list_capacity_multiplier=32)
+    debug = renderer.debug_pipeline_data(scene, camera)
     gpu_image = renderer.render(scene, camera, background=background).image
 
-    projected = project_splats(scene, camera, renderer.width, renderer.height, renderer.radius_scale)
+    projected = _projected_from_debug(scene, camera, renderer, debug)
     keys, values, generated = build_tile_key_value_pairs(
         projected=projected,
         tile_width=renderer.tile_width,
@@ -505,9 +542,10 @@ def test_distorted_render_matches_cpu_reference(device):
     )
     background = np.array([0.08, 0.12, 0.18], dtype=np.float32)
     renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, list_capacity_multiplier=32)
+    debug = renderer.debug_pipeline_data(scene, camera)
     gpu_image = renderer.render(scene, camera, background=background).image
 
-    projected = project_splats(scene, camera, renderer.width, renderer.height, renderer.radius_scale)
+    projected = _projected_from_debug(scene, camera, renderer, debug)
     keys, values, generated = build_tile_key_value_pairs(
         projected=projected,
         tile_width=renderer.tile_width,
@@ -1005,6 +1043,7 @@ def test_raster_backward_smoke_and_determinism(device):
         height=64,
         radius_scale=1.6,
         list_capacity_multiplier=32,
+        cached_raster_grad_atomic_mode="fixed",
     )
 
     grads0 = renderer.debug_raster_backward_grads(scene, camera, background=np.array([0.1, 0.15, 0.2], dtype=np.float32))

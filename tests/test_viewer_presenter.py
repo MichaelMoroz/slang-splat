@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 import slangpy as spy
 
+from src.training.defaults import DEFAULT_LR_SCHEDULE_STEPS, DEFAULT_LR_STAGE1_STEP, DEFAULT_LR_STAGE2_STEP, DEFAULT_LR_STAGE3_STEP
 from src.viewer import presenter
 from src.viewer import ui as viewer_ui
 from src.viewer.buffer_debug import ResourceDebugRow, ResourceDebugSnapshot
@@ -57,10 +58,10 @@ class _DummyTrainer:
             lr_schedule_stage2_lr=0.001,
             lr_schedule_stage3_lr=1.5e-4,
             lr_schedule_end_lr=0.001,
-            lr_schedule_steps=100000,
-            lr_schedule_stage1_step=3000,
-            lr_schedule_stage2_step=14000,
-            lr_schedule_stage3_step=30000,
+            lr_schedule_steps=DEFAULT_LR_SCHEDULE_STEPS,
+            lr_schedule_stage1_step=DEFAULT_LR_STAGE1_STEP,
+            lr_schedule_stage2_step=DEFAULT_LR_STAGE2_STEP,
+            lr_schedule_stage3_step=DEFAULT_LR_STAGE3_STEP,
             lr_pos_mul=1.0,
             lr_pos_stage1_mul=0.75,
             lr_pos_stage2_mul=0.2,
@@ -304,10 +305,10 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         "lr_schedule_stage2_lr": _control(0.001),
         "lr_schedule_stage3_lr": _control(1.5e-4),
         "lr_schedule_end_lr": _control(0.001),
-        "lr_schedule_steps": _control(100000),
-        "lr_schedule_stage1_step": _control(3000),
-        "lr_schedule_stage2_step": _control(14000),
-        "lr_schedule_stage3_step": _control(30000),
+        "lr_schedule_steps": _control(DEFAULT_LR_SCHEDULE_STEPS),
+        "lr_schedule_stage1_step": _control(DEFAULT_LR_STAGE1_STEP),
+        "lr_schedule_stage2_step": _control(DEFAULT_LR_STAGE2_STEP),
+        "lr_schedule_stage3_step": _control(DEFAULT_LR_STAGE3_STEP),
         "refinement_interval": _control(200),
         "refinement_growth_start_step": _control(500),
         "refinement_target_splat_ratio": _control(0.1),
@@ -642,7 +643,7 @@ def test_update_ui_text_reports_training_schedule_and_refinement() -> None:
 
     assert viewer.ui._values["_training_resolution_sections"] == (("Train Res", (("size", "640x360"), ("factor", 1))),)
     assert viewer.ui._values["_training_downscale_sections"] == (("Downscale", (("mode", "Manual"), ("current", 1), ("subsample", "Off"), ("effective", 1))),)
-    assert viewer.t("training_schedule").text == "LR Schedule: 5.00e-03@0 -> 2.00e-03@3,000 -> 1.00e-03@14,000 -> 1.50e-04@30,000 -> 1.00e-03@100,000 | current=5.00e-03"
+    assert viewer.t("training_schedule").text == "LR Schedule: 5.00e-03@0 -> 2.00e-03@3,000 -> 1.00e-03@12,225 -> 1.50e-04@25,321 -> 1.00e-03@100,000 | current=5.00e-03"
     assert viewer.ui._values["_training_schedule_sections"] == (
         ("", (("step", 0), ("stage", "Stage 0"), ("sh", "SH0"))),
         ("Learning Rates", (("base", 0.005), ("pos", 1.0), ("scale", 5.0), ("rot", 1.0), ("dc", 5.0), ("opacity", 5.0), ("sh", 0.05))),
@@ -905,7 +906,7 @@ def test_update_ui_text_previews_current_schedule_values_without_trainer() -> No
     assert viewer.ui._values["_training_schedule_sections"] == (
         ("", (("step", 0), ("stage", "Stage 0"), ("sh", "SH0"))),
         ("Learning Rates", (("base", 0.005), ("pos", 1.0), ("scale", 5.0), ("rot", 1.0), ("dc", 5.0), ("opacity", 5.0), ("sh", 0.05))),
-        ("Other", (("colorspace", 1.0), ("dither", 0.5), ("prune%", 10.0), ("push", 0.001), ("noise", 500000.0))),
+        ("Other", (("colorspace", 1.0), ("dither", 0.5), ("target%", 10.0), ("prune_floor%", 10.0), ("push", 0.001), ("noise", 500000.0))),
     )
 
 
