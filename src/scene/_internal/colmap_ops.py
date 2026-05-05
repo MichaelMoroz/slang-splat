@@ -851,34 +851,41 @@ def point_nn_scales(points: np.ndarray) -> np.ndarray:
 def _point_local_covariance_frames(
     points: np.ndarray,
     neighbor_count: int = DIFFUSED_INIT_COVARIANCE_NEIGHBOR_COUNT,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     pts = np.ascontiguousarray(points, dtype=np.float32)
     if pts.ndim != 2 or pts.shape[0] == 0:
-        return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3, 3), dtype=np.float32)
-    query_k = min(max(int(neighbor_count), 1), pts.shape[0])
-    _, neighbor_indices = cKDTree(pts).query(pts, k=query_k, workers=-1)
-    if query_k == 1:
-        neighbor_indices = np.asarray(neighbor_indices, dtype=np.int64)[:, None]
+        return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3, 3), dtype=np.float32), np.zeros((0,), dtype=np.float32)
+    if pts.shape[0] == 1:
+        return (
+            np.zeros((1, 3), dtype=np.float32),
+            np.eye(3, dtype=np.float32)[None, :, :],
+            np.full((1,), _MIN_SCALE, dtype=np.float32),
+        )
+    query_k = min(max(int(neighbor_count), 2), pts.shape[0])
+    neighbor_dists, neighbor_indices = cKDTree(pts).query(pts, k=query_k, workers=-1)
     local_points = pts[np.asarray(neighbor_indices, dtype=np.int64)]
     local_means = np.mean(local_points, axis=1, dtype=np.float32, keepdims=True)
     centered = local_points - local_means
     covariance = np.einsum("nki,nkj->nij", centered, centered, optimize=True).astype(np.float32) / np.float32(max(local_points.shape[1] - 1, 1))
     eigvals, eigvecs = np.linalg.eigh(covariance.astype(np.float64))
     order = np.argsort(eigvals, axis=1)[:, ::-1]
-    axis_scales = np.clip(np.sqrt(np.clip(np.take_along_axis(eigvals, order, axis=1), 0.0, None)).astype(np.float32), _MIN_SCALE, _MAX_SCALE)
+    axis_scales = np.clip(np.sqrt(np.clip(np.take_along_axis(eigvals, order, axis=1), 0.0, None)).astype(np.float32), 0.0, _MAX_SCALE)
     rotation_mats = np.take_along_axis(eigvecs, order[:, None, :], axis=2).astype(np.float32)
     rotation_mats[:, :, 2] *= np.where(np.linalg.det(rotation_mats.astype(np.float64)) < 0.0, -1.0, 1.0).astype(np.float32)[:, None]
-    return np.ascontiguousarray(axis_scales, dtype=np.float32), np.ascontiguousarray(rotation_mats, dtype=np.float32)
+    nearest_scales = np.clip(np.asarray(neighbor_dists[:, 1], dtype=np.float32), _MIN_SCALE, _MAX_SCALE)
+    return np.ascontiguousarray(axis_scales, dtype=np.float32), np.ascontiguousarray(rotation_mats, dtype=np.float32), np.ascontiguousarray(nearest_scales, dtype=np.float32)
 
 
 def _point_local_gaussian_axes(points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     pts = np.ascontiguousarray(points, dtype=np.float32)
     if pts.ndim != 2 or pts.shape[0] == 0:
         return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 4), dtype=np.float32)
-    axis_scales, rotation_mats = _point_local_covariance_frames(pts)
-    reference = np.maximum(np.max(axis_scales, axis=1, keepdims=True), np.float32(_MIN_SCALE))
-    scaled_axes = np.ascontiguousarray(axis_scales * (point_nn_scales(pts)[:, None] / reference), dtype=np.float32)
-    rotations = np.ascontiguousarray(np.stack([_rotation_to_quaternion_wxyz(rotation) for rotation in rotation_mats], axis=0), dtype=np.float32)
+    axis_scales, rotation_mats, nearest_scales = _point_local_covariance_frames(pts)
+    clipped_axes = np.clip(axis_scales, _MIN_SCALE, _MAX_SCALE)
+    reference = np.maximum(clipped_axes[:, :1], np.float32(_MIN_SCALE))
+    scaled_axes = np.ascontiguousarray(clipped_axes * (nearest_scales[:, None] / reference), dtype=np.float32)
+    quat_xyzw = Rotation.from_matrix(rotation_mats.astype(np.float64)).as_quat().astype(np.float32)
+    rotations = np.ascontiguousarray(quat_xyzw[:, [3, 0, 1, 2]], dtype=np.float32)
     return scaled_axes, rotations
 
 
@@ -934,7 +941,7 @@ def sample_colmap_diffused_points(
     colors = np.ascontiguousarray(rgb[base_indices], dtype=np.float32)
     if radius <= 0.0:
         return positions, colors
-    axis_scales, rotation_mats = _point_local_covariance_frames(xyz)
+    axis_scales, rotation_mats, _ = _point_local_covariance_frames(xyz)
     covariance_factors = np.ascontiguousarray(rotation_mats * axis_scales[:, None, :], dtype=np.float32)
     offsets = np.einsum(
         "nij,nj->ni",
