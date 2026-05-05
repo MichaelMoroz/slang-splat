@@ -148,44 +148,88 @@ void accumulate_gradient_stats(uint splatId, float contributionNormSq)
     InterlockedAdd(g_GradientStats[gradient_stat_index(splatId, 1u)], waveContributionNormSq);
 }
 
+float load_cached_raster_grad_fixed_component(uint splatCount, uint cacheParamId, uint splatId, float range) { return raster_grad_fixed_dequantize(g_CachedRasterGradsFixed[cached_raster_grad_index(splatCount, cacheParamId, splatId)], range); }
+
+vector<float, N> load_cached_raster_grad_fixed_components<let N : int>(uint splatCount, vector<uint, N> cacheParamIds, uint splatId, vector<float, N> ranges)
+{
+    vector<float, N> values;
+    [unroll] for (int i = 0; i < N; i++) values[i] = load_cached_raster_grad_fixed_component(splatCount, cacheParamIds[i], splatId, ranges[i]);
+    return values;
+}
+
+float load_cached_raster_grad_float_component(uint splatCount, uint cacheParamId, uint splatId) { return g_CachedRasterGradsFloat[cached_raster_grad_index(splatCount, cacheParamId, splatId)]; }
+
+vector<float, N> load_cached_raster_grad_float_components<let N : int>(uint splatCount, vector<uint, N> cacheParamIds, uint splatId)
+{
+    vector<float, N> values;
+    [unroll] for (int i = 0; i < N; i++) values[i] = load_cached_raster_grad_float_component(splatCount, cacheParamIds[i], splatId);
+    return values;
+}
+
+void add_cached_raster_grad_component(uint splatCount, uint cacheParamId, uint splatId, int value, bool includeDepth)
+{
+    if ((!includeDepth && raster_cache_param_uses_depth(cacheParamId)) || value == 0) return;
+    InterlockedAdd(g_CachedRasterGradsFixed[cached_raster_grad_index(splatCount, cacheParamId, splatId)], value);
+}
+
+void add_cached_raster_grad_component(uint splatCount, uint cacheParamId, uint splatId, float value, bool includeDepth)
+{
+    if ((!includeDepth && raster_cache_param_uses_depth(cacheParamId)) || value == 0.0) return;
+    InterlockedAdd(g_CachedRasterGradsFloat[cached_raster_grad_index(splatCount, cacheParamId, splatId)], value);
+}
+
+void add_cached_raster_grad_components<let N : int>(uint splatCount, vector<uint, N> cacheParamIds, uint splatId, vector<int, N> values, bool includeDepth)
+{
+    [unroll] for (int i = 0; i < N; i++) add_cached_raster_grad_component(splatCount, cacheParamIds[i], splatId, values[i], includeDepth);
+}
+
+void add_cached_raster_grad_components<let N : int>(uint splatCount, vector<uint, N> cacheParamIds, uint splatId, vector<float, N> values, bool includeDepth)
+{
+    [unroll] for (int i = 0; i < N; i++) add_cached_raster_grad_component(splatCount, cacheParamIds[i], splatId, values[i], includeDepth);
+}
+
 RasterGaussian load_cached_raster_grad_fixed(uint splatId)
 {
     uint splatCount = g_Prepass.splatCount;
     RasterGaussian cached = g_RasterCache[splatId];
     float characteristicInvScale = raster_grad_fixed_characteristic_inv_scale(cached.sigmaDiag);
     float characteristicScaleSq = 1.0 / max(characteristicInvScale * characteristicInvScale, SMALL_VALUE);
-    float ranges[RASTER_CACHE_PARAM_COUNT] = {
-        g_CachedRasterGradFixedROLocalRange, g_CachedRasterGradFixedROLocalRange, g_CachedRasterGradFixedROLocalRange,
-        g_CachedRasterGradFixedScaleRange, g_CachedRasterGradFixedScaleRange, g_CachedRasterGradFixedScaleRange,
-        g_CachedRasterGradFixedQuatRange, g_CachedRasterGradFixedQuatRange, g_CachedRasterGradFixedQuatRange,
-        g_CachedRasterGradFixedColorRange, g_CachedRasterGradFixedColorRange, g_CachedRasterGradFixedColorRange, g_CachedRasterGradFixedOpacityRange,
-    };
-    float values[RASTER_CACHE_PARAM_COUNT];
-    [unroll] for (uint cacheParamId = 0u; cacheParamId < RASTER_CACHE_PARAM_COUNT; cacheParamId++)
-    {
-        values[cacheParamId] = raster_grad_fixed_dequantize(g_CachedRasterGradsFixed[cached_raster_grad_index(splatCount, cacheParamId, splatId)], ranges[cacheParamId]);
-    }
     RasterGaussian grad;
-    grad.roCamera = float3(values[RASTER_CACHE_RO_CAMERA_X], values[RASTER_CACHE_RO_CAMERA_Y], values[RASTER_CACHE_RO_CAMERA_Z]) * characteristicInvScale;
-    grad.sigmaDiag = float3(values[RASTER_CACHE_SIGMA_XX], values[RASTER_CACHE_SIGMA_YY], values[RASTER_CACHE_SIGMA_ZZ]) * characteristicScaleSq;
-    grad.sigmaOffDiag = float3(values[RASTER_CACHE_SIGMA_XY], values[RASTER_CACHE_SIGMA_XZ], values[RASTER_CACHE_SIGMA_YZ]) * characteristicScaleSq;
-    grad.colorAlpha = float4(values[RASTER_CACHE_COLOR_R], values[RASTER_CACHE_COLOR_G], values[RASTER_CACHE_COLOR_B], values[RASTER_CACHE_FUSED_OPACITY]);
+    grad.roCamera = load_cached_raster_grad_fixed_components<3>(
+        splatCount,
+        uint3(RASTER_CACHE_RO_CAMERA_X, RASTER_CACHE_RO_CAMERA_Y, RASTER_CACHE_RO_CAMERA_Z),
+        splatId,
+        float3(g_CachedRasterGradFixedROLocalRange, g_CachedRasterGradFixedROLocalRange, g_CachedRasterGradFixedROLocalRange)
+    ) * characteristicInvScale;
+    grad.sigmaDiag = load_cached_raster_grad_fixed_components<3>(
+        splatCount,
+        uint3(RASTER_CACHE_SIGMA_XX, RASTER_CACHE_SIGMA_YY, RASTER_CACHE_SIGMA_ZZ),
+        splatId,
+        float3(g_CachedRasterGradFixedScaleRange, g_CachedRasterGradFixedScaleRange, g_CachedRasterGradFixedScaleRange)
+    ) * characteristicScaleSq;
+    grad.sigmaOffDiag = load_cached_raster_grad_fixed_components<3>(
+        splatCount,
+        uint3(RASTER_CACHE_SIGMA_XY, RASTER_CACHE_SIGMA_XZ, RASTER_CACHE_SIGMA_YZ),
+        splatId,
+        float3(g_CachedRasterGradFixedQuatRange, g_CachedRasterGradFixedQuatRange, g_CachedRasterGradFixedQuatRange)
+    ) * characteristicScaleSq;
+    grad.colorAlpha = load_cached_raster_grad_fixed_components<4>(
+        splatCount,
+        uint4(RASTER_CACHE_COLOR_R, RASTER_CACHE_COLOR_G, RASTER_CACHE_COLOR_B, RASTER_CACHE_FUSED_OPACITY),
+        splatId,
+        float4(g_CachedRasterGradFixedColorRange, g_CachedRasterGradFixedColorRange, g_CachedRasterGradFixedColorRange, g_CachedRasterGradFixedOpacityRange)
+    );
     return grad;
 }
 
 RasterGaussian load_cached_raster_grad_float(uint splatId)
 {
     uint splatCount = g_Prepass.splatCount;
-    float values[RASTER_CACHE_PARAM_COUNT];
-    [unroll] for (uint cacheParamId = 0u; cacheParamId < RASTER_CACHE_PARAM_COUNT; cacheParamId++)
-    {
-        values[cacheParamId] = g_CachedRasterGradsFloat[cached_raster_grad_index(splatCount, cacheParamId, splatId)];
-    }
     RasterGaussian grad;
-    grad.roCamera = float3(values[RASTER_CACHE_RO_CAMERA_X], values[RASTER_CACHE_RO_CAMERA_Y], values[RASTER_CACHE_RO_CAMERA_Z]);
-    grad.sigmaDiag = float3(values[RASTER_CACHE_SIGMA_XX], values[RASTER_CACHE_SIGMA_YY], values[RASTER_CACHE_SIGMA_ZZ]);
-    grad.sigmaOffDiag = float3(values[RASTER_CACHE_SIGMA_XY], values[RASTER_CACHE_SIGMA_XZ], values[RASTER_CACHE_SIGMA_YZ]);
-    grad.colorAlpha = float4(values[RASTER_CACHE_COLOR_R], values[RASTER_CACHE_COLOR_G], values[RASTER_CACHE_COLOR_B], values[RASTER_CACHE_FUSED_OPACITY]);
+    grad.roCamera = load_cached_raster_grad_float_components<3>(splatCount, uint3(RASTER_CACHE_RO_CAMERA_X, RASTER_CACHE_RO_CAMERA_Y, RASTER_CACHE_RO_CAMERA_Z), splatId);
+    grad.sigmaDiag = load_cached_raster_grad_float_components<3>(splatCount, uint3(RASTER_CACHE_SIGMA_XX, RASTER_CACHE_SIGMA_YY, RASTER_CACHE_SIGMA_ZZ), splatId);
+    grad.sigmaOffDiag = load_cached_raster_grad_float_components<3>(splatCount, uint3(RASTER_CACHE_SIGMA_XY, RASTER_CACHE_SIGMA_XZ, RASTER_CACHE_SIGMA_YZ), splatId);
+    grad.colorAlpha = load_cached_raster_grad_float_components<4>(splatCount, uint4(RASTER_CACHE_COLOR_R, RASTER_CACHE_COLOR_G, RASTER_CACHE_COLOR_B, RASTER_CACHE_FUSED_OPACITY), splatId);
     return grad;
 }
 
@@ -197,13 +241,6 @@ void flush_cached_raster_grad_fixed(uint splatId, RasterGaussian gaussian, Raste
     float characteristicInvScale = raster_grad_fixed_characteristic_inv_scale(gaussian.sigmaDiag);
     float characteristicScale = 1.0 / max(characteristicInvScale, SMALL_VALUE);
     float characteristicInvScaleSq = characteristicInvScale * characteristicInvScale;
-    // float2 roCamera = WaveActiveSum(dGaussian.roCamera.xy * characteristicScale);
-    // float2 sigmaDiag = WaveActiveSum(dGaussian.sigmaDiag.xy * characteristicInvScaleSq);
-    // float sigmaXY = WaveActiveSum(dGaussian.sigmaOffDiag.x * characteristicInvScaleSq);
-    // float4 colorAlpha = WaveActiveSum(dGaussian.colorAlpha);
-    // if (!WaveIsFirstLane()) return;
-
-    // for fixed point wave ops don't help, at least on nvidia
     float2 roCamera = dGaussian.roCamera.xy * characteristicScale;
     float roCameraZ = dGaussian.roCamera.z * characteristicScale;
     float2 sigmaDiag = dGaussian.sigmaDiag.xy * characteristicInvScaleSq;
@@ -227,17 +264,10 @@ void flush_cached_raster_grad_fixed(uint splatId, RasterGaussian gaussian, Raste
     int qColorB = raster_grad_fixed_quantize(colorAlpha.z, g_CachedRasterGradFixedColorRange);
     int qOpacity = raster_grad_fixed_quantize(colorAlpha.w, g_CachedRasterGradFixedOpacityRange);
 
-    int values[RASTER_CACHE_PARAM_COUNT] = {
-        qRoCameraX, qRoCameraY, qRoCameraZ,
-        qSigmaXX, qSigmaYY, qSigmaZZ,
-        qSigmaXY, qSigmaXZ, qSigmaYZ,
-        qColorR, qColorG, qColorB, qOpacity,
-    };
-    [unroll] for (uint cacheParamId = 0u; cacheParamId < RASTER_CACHE_PARAM_COUNT; cacheParamId++)
-    {
-        if ((!includeDepth && raster_cache_param_uses_depth(cacheParamId)) || values[cacheParamId] == 0) continue;
-        InterlockedAdd(g_CachedRasterGradsFixed[cached_raster_grad_index(splatCount, cacheParamId, splatId)], values[cacheParamId]);
-    }
+    add_cached_raster_grad_components(splatCount, uint3(RASTER_CACHE_RO_CAMERA_X, RASTER_CACHE_RO_CAMERA_Y, RASTER_CACHE_RO_CAMERA_Z), splatId, int3(qRoCameraX, qRoCameraY, qRoCameraZ), includeDepth);
+    add_cached_raster_grad_components(splatCount, uint3(RASTER_CACHE_SIGMA_XX, RASTER_CACHE_SIGMA_YY, RASTER_CACHE_SIGMA_ZZ), splatId, int3(qSigmaXX, qSigmaYY, qSigmaZZ), includeDepth);
+    add_cached_raster_grad_components(splatCount, uint3(RASTER_CACHE_SIGMA_XY, RASTER_CACHE_SIGMA_XZ, RASTER_CACHE_SIGMA_YZ), splatId, int3(qSigmaXY, qSigmaXZ, qSigmaYZ), includeDepth);
+    add_cached_raster_grad_components(splatCount, uint4(RASTER_CACHE_COLOR_R, RASTER_CACHE_COLOR_G, RASTER_CACHE_COLOR_B, RASTER_CACHE_FUSED_OPACITY), splatId, int4(qColorR, qColorG, qColorB, qOpacity), includeDepth);
 }
 
 void flush_cached_raster_grad_float(uint splatId, RasterGaussian.Differential dGaussian)
@@ -255,17 +285,10 @@ void flush_cached_raster_grad_float(uint splatId, RasterGaussian.Differential dG
     float4 colorAlpha = WaveActiveSum(dGaussian.colorAlpha);
     if (!WaveIsFirstLane()) return;
 
-    float values[RASTER_CACHE_PARAM_COUNT] = {
-        roCamera.x, roCamera.y, roCameraZ,
-        sigmaDiag.x, sigmaDiag.y, sigmaZZ,
-        sigmaXY, sigmaXZ, sigmaYZ,
-        colorAlpha.x, colorAlpha.y, colorAlpha.z, colorAlpha.w,
-    };
-    [unroll] for (uint cacheParamId = 0u; cacheParamId < RASTER_CACHE_PARAM_COUNT; cacheParamId++)
-    {
-        if ((!includeDepth && raster_cache_param_uses_depth(cacheParamId)) || values[cacheParamId] == 0.0) continue;
-        InterlockedAdd(g_CachedRasterGradsFloat[cached_raster_grad_index(splatCount, cacheParamId, splatId)], values[cacheParamId]);
-    }
+    add_cached_raster_grad_components(splatCount, uint3(RASTER_CACHE_RO_CAMERA_X, RASTER_CACHE_RO_CAMERA_Y, RASTER_CACHE_RO_CAMERA_Z), splatId, float3(roCamera.x, roCamera.y, roCameraZ), includeDepth);
+    add_cached_raster_grad_components(splatCount, uint3(RASTER_CACHE_SIGMA_XX, RASTER_CACHE_SIGMA_YY, RASTER_CACHE_SIGMA_ZZ), splatId, float3(sigmaDiag.x, sigmaDiag.y, sigmaZZ), includeDepth);
+    add_cached_raster_grad_components(splatCount, uint3(RASTER_CACHE_SIGMA_XY, RASTER_CACHE_SIGMA_XZ, RASTER_CACHE_SIGMA_YZ), splatId, float3(sigmaXY, sigmaXZ, sigmaYZ), includeDepth);
+    add_cached_raster_grad_components(splatCount, uint4(RASTER_CACHE_COLOR_R, RASTER_CACHE_COLOR_G, RASTER_CACHE_COLOR_B, RASTER_CACHE_FUSED_OPACITY), splatId, colorAlpha, includeDepth);
 }
 
 float raster_eval_outline_alpha(uint splatId, float opacity, float2 samplePoint)
@@ -934,52 +957,32 @@ void load_training_forward_cache(RasterPixelInfo info, out RasterReplayState rep
     replayState.processedEnd = g_TrainingProcessedEnd[pixelIndex];
 }
 
-interface IRasterGradVariant
+RasterGaussian load_cached_raster_grad<let FixedPointMode : int>(uint splatId)
 {
-    static RasterGaussian load_cached_raster_grad(uint splatId);
-    static void flush_cached_raster_grad(uint splatId, RasterGaussian gaussian, RasterGaussian.Differential dGaussian);
+    if (FixedPointMode != 0) return load_cached_raster_grad_fixed(splatId);
+    return load_cached_raster_grad_float(splatId);
 }
 
-void resolve_gradient_stats<T : IRasterGradVariant>(uint3 dispatchThreadID)
+void flush_cached_raster_grad<let FixedPointMode : int>(uint splatId, RasterGaussian gaussian, RasterGaussian.Differential dGaussian)
+{
+    if (FixedPointMode != 0) flush_cached_raster_grad_fixed(splatId, gaussian, dGaussian);
+    else flush_cached_raster_grad_float(splatId, dGaussian);
+}
+
+void resolve_gradient_stats<let FixedPointMode : int>(uint3 dispatchThreadID)
 {
     uint splatId = dispatchThreadID.x;
     if (splatId >= g_Prepass.splatCount) return;
 
     float currentSumSq = g_GradientStats[gradient_stat_index(splatId, 1u)];
-    float currentSum = raster_grad_contribution_norm(T.load_cached_raster_grad(splatId));
+    float currentSum = raster_grad_contribution_norm(load_cached_raster_grad<FixedPointMode>(splatId));
     float stepInvSampleCount = g_Raster.debugGradVarianceStepInvSampleCount;
     float varianceNumerator = currentSumSq - currentSum * currentSum * stepInvSampleCount;
     if (isfinite(varianceNumerator) && varianceNumerator > 0.0) g_GradientStats[gradient_stat_index(splatId, 0u)] += varianceNumerator;
     g_GradientStats[gradient_stat_index(splatId, 1u)] = 0.0;
 }
 
-struct FixedRasterGradVariant : IRasterGradVariant
-{
-    static RasterGaussian load_cached_raster_grad(uint splatId)
-    {
-        return load_cached_raster_grad_fixed(splatId);
-    }
-
-    static void flush_cached_raster_grad(uint splatId, RasterGaussian gaussian, RasterGaussian.Differential dGaussian)
-    {
-        flush_cached_raster_grad_fixed(splatId, gaussian, dGaussian);
-    }
-}
-
-struct FloatRasterGradVariant : IRasterGradVariant
-{
-    static RasterGaussian load_cached_raster_grad(uint splatId)
-    {
-        return load_cached_raster_grad_float(splatId);
-    }
-
-    static void flush_cached_raster_grad(uint splatId, RasterGaussian gaussian, RasterGaussian.Differential dGaussian)
-    {
-        flush_cached_raster_grad_float(splatId, dGaussian);
-    }
-}
-
-void raster_backward_replay<T : IRasterGradVariant>(RasterPixelInfo info, inout RasterReplayState replayState, inout RasterReplayStepState.Differential backwardState, uint lane)
+void raster_backward_replay<let FixedPointMode : int>(RasterPixelInfo info, inout RasterReplayState replayState, inout RasterReplayStepState.Differential backwardState, uint lane)
 {
     if (!info.hasTileRange)
     {
@@ -1026,7 +1029,7 @@ void raster_backward_replay<T : IRasterGradVariant>(RasterPixelInfo info, inout 
                 replayState.splatDensitySum = prevState.splatDensityState;
                 replayState.depthState = prevState.depthState;
                 backwardState = dpPrevState.getDifferential();
-                T.flush_cached_raster_grad(splatId, gaussian, dpGaussian.getDifferential());
+                flush_cached_raster_grad<FixedPointMode>(splatId, gaussian, dpGaussian.getDifferential());
             }
             suffixState = suffixState.blend(gaussian.colorAlpha.xyz, alpha);
         }
@@ -1071,12 +1074,12 @@ void clear_raster_grads(uint3 dispatchThreadID)
     if (idx < cachedGradCount) g_CachedRasterGradsFloat[idx] = 0.0;
 }
 
-void backprop_cached_raster_grads<T : IRasterGradVariant>(uint3 dispatchThreadID)
+void backprop_cached_raster_grads<let FixedPointMode : int>(uint3 dispatchThreadID)
 {
     uint splatId = dispatchThreadID.x;
     if (splatId >= g_Prepass.splatCount) return;
 
-    RasterGaussian dRaster = T.load_cached_raster_grad(splatId);
+    RasterGaussian dRaster = load_cached_raster_grad<FixedPointMode>(splatId);
     Gaussian3D gaussian = load_gaussian3d(splatId);
     var dpGaussian = diffPair(gaussian);
     bwd_diff(build_raster_gaussian)(g_Camera, g_Prepass.radiusScale, g_MaxAnisotropy, g_Camera.camPos, g_Raster.shBand, dpGaussian, dRaster);
@@ -1107,28 +1110,44 @@ void csClearRasterGradsFloat(uint3 dispatchThreadID : SV_DispatchThreadID)
 [numthreads(TILE_GROUP_SIZE, 1, 1)]
 void csBackpropCachedRasterGradsFixed(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
-    backprop_cached_raster_grads<FixedRasterGradVariant>(dispatchThreadID);
+    backprop_cached_raster_grads<1>(dispatchThreadID);
 }
 
 [shader("compute")]
 [numthreads(TILE_GROUP_SIZE, 1, 1)]
 void csResolveGradientStatsFixed(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
-    resolve_gradient_stats<FixedRasterGradVariant>(dispatchThreadID);
+    resolve_gradient_stats<1>(dispatchThreadID);
 }
 
 [shader("compute")]
 [numthreads(TILE_GROUP_SIZE, 1, 1)]
 void csBackpropCachedRasterGradsFloat(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
-    backprop_cached_raster_grads<FloatRasterGradVariant>(dispatchThreadID);
+    backprop_cached_raster_grads<0>(dispatchThreadID);
 }
 
 [shader("compute")]
 [numthreads(TILE_GROUP_SIZE, 1, 1)]
 void csResolveGradientStatsFloat(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
-    resolve_gradient_stats<FloatRasterGradVariant>(dispatchThreadID);
+    resolve_gradient_stats<0>(dispatchThreadID);
+}
+
+void rasterize_backward<let FixedPointMode : int>(RasterPixelInfo info, inout RasterReplayState replayState, inout RasterReplayStepState.Differential backwardState, uint lane)
+{
+    load_training_forward_cache(info, replayState);
+    init_raster_backward_state(backwardState);
+    backwardState.pixelState = raster_output_gradient_pixel(info, replayState.pixelState);
+    if (info.pixelActive && info.hasTileRange)
+    {
+        float2 regularizerGrad = g_TrainingRegularizerGrad[raster_pixel_index(info.pixelCoord)];
+        backwardState.splatDensityState = regularizerGrad.x;
+        var dpDepthState = diffPair(replayState.depthState);
+        bwd_diff(raster_depth_output)(dpDepthState, regularizerGrad.y);
+        backwardState.depthState = dpDepthState.getDifferential();
+    }
+    raster_backward_replay<FixedPointMode>(info, replayState, backwardState, lane);
 }
 
 [shader("compute")]
@@ -1164,18 +1183,7 @@ void csRasterizeBackwardFixed(uint3 dispatchThreadID : SV_DispatchThreadID, uint
     RasterPixelInfo info = resolve_raster_pixel(groupID, lane);
     RasterReplayState replayState;
     RasterReplayStepState.Differential backwardState;
-    load_training_forward_cache(info, replayState);
-    init_raster_backward_state(backwardState);
-    backwardState.pixelState = raster_output_gradient_pixel(info, replayState.pixelState);
-    if (info.pixelActive && info.hasTileRange)
-    {
-        float2 regularizerGrad = g_TrainingRegularizerGrad[raster_pixel_index(info.pixelCoord)];
-        backwardState.splatDensityState = regularizerGrad.x;
-        var dpDepthState = diffPair(replayState.depthState);
-        bwd_diff(raster_depth_output)(dpDepthState, regularizerGrad.y);
-        backwardState.depthState = dpDepthState.getDifferential();
-    }
-    raster_backward_replay<FixedRasterGradVariant>(info, replayState, backwardState, lane);
+    rasterize_backward<1>(info, replayState, backwardState, lane);
 }
 
 [shader("compute")]
@@ -1185,16 +1193,5 @@ void csRasterizeBackwardFloat(uint3 dispatchThreadID : SV_DispatchThreadID, uint
     RasterPixelInfo info = resolve_raster_pixel(groupID, lane);
     RasterReplayState replayState;
     RasterReplayStepState.Differential backwardState;
-    load_training_forward_cache(info, replayState);
-    init_raster_backward_state(backwardState);
-    backwardState.pixelState = raster_output_gradient_pixel(info, replayState.pixelState);
-    if (info.pixelActive && info.hasTileRange)
-    {
-        float2 regularizerGrad = g_TrainingRegularizerGrad[raster_pixel_index(info.pixelCoord)];
-        backwardState.splatDensityState = regularizerGrad.x;
-        var dpDepthState = diffPair(replayState.depthState);
-        bwd_diff(raster_depth_output)(dpDepthState, regularizerGrad.y);
-        backwardState.depthState = dpDepthState.getDifferential();
-    }
-    raster_backward_replay<FloatRasterGradVariant>(info, replayState, backwardState, lane);
+    rasterize_backward<0>(info, replayState, backwardState, lane);
 }
