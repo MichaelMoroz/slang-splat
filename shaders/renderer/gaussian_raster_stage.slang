@@ -71,6 +71,11 @@ bool raster_grad_include_depth()
     return g_Raster.cachedRasterGradIncludeDepth != 0u;
 }
 
+bool raster_cache_param_uses_depth(uint cacheParamId)
+{
+    return cacheParamId == RASTER_CACHE_RO_CAMERA_Z || cacheParamId == RASTER_CACHE_SIGMA_ZZ || cacheParamId == RASTER_CACHE_SIGMA_XZ || cacheParamId == RASTER_CACHE_SIGMA_YZ;
+}
+
 uint splat_contribution_fixed_quantize(float value)
 {
     float clamped = clamp(value, 0.0, SPLAT_CONTRIBUTION_FIXED_MAX_F);
@@ -149,56 +154,38 @@ RasterGaussian load_cached_raster_grad_fixed(uint splatId)
     RasterGaussian cached = g_RasterCache[splatId];
     float characteristicInvScale = raster_grad_fixed_characteristic_inv_scale(cached.sigmaDiag);
     float characteristicScaleSq = 1.0 / max(characteristicInvScale * characteristicInvScale, SMALL_VALUE);
+    float ranges[RASTER_CACHE_PARAM_COUNT] = {
+        g_CachedRasterGradFixedROLocalRange, g_CachedRasterGradFixedROLocalRange, g_CachedRasterGradFixedROLocalRange,
+        g_CachedRasterGradFixedScaleRange, g_CachedRasterGradFixedScaleRange, g_CachedRasterGradFixedScaleRange,
+        g_CachedRasterGradFixedQuatRange, g_CachedRasterGradFixedQuatRange, g_CachedRasterGradFixedQuatRange,
+        g_CachedRasterGradFixedColorRange, g_CachedRasterGradFixedColorRange, g_CachedRasterGradFixedColorRange, g_CachedRasterGradFixedOpacityRange,
+    };
+    float values[RASTER_CACHE_PARAM_COUNT];
+    [unroll] for (uint cacheParamId = 0u; cacheParamId < RASTER_CACHE_PARAM_COUNT; cacheParamId++)
+    {
+        values[cacheParamId] = raster_grad_fixed_dequantize(g_CachedRasterGradsFixed[cached_raster_grad_index(splatCount, cacheParamId, splatId)], ranges[cacheParamId]);
+    }
     RasterGaussian grad;
-    grad.roCamera = float3(
-        raster_grad_fixed_dequantize(g_CachedRasterGradsFixed[cached_raster_grad_index(splatCount, RASTER_CACHE_RO_CAMERA_X, splatId)], g_CachedRasterGradFixedROLocalRange) * characteristicInvScale,
-        raster_grad_fixed_dequantize(g_CachedRasterGradsFixed[cached_raster_grad_index(splatCount, RASTER_CACHE_RO_CAMERA_Y, splatId)], g_CachedRasterGradFixedROLocalRange) * characteristicInvScale,
-        raster_grad_fixed_dequantize(g_CachedRasterGradsFixed[cached_raster_grad_index(splatCount, RASTER_CACHE_RO_CAMERA_Z, splatId)], g_CachedRasterGradFixedROLocalRange) * characteristicInvScale
-    );
-    grad.sigmaDiag = float3(
-        raster_grad_fixed_dequantize(g_CachedRasterGradsFixed[cached_raster_grad_index(splatCount, RASTER_CACHE_SIGMA_XX, splatId)], g_CachedRasterGradFixedScaleRange) * characteristicScaleSq,
-        raster_grad_fixed_dequantize(g_CachedRasterGradsFixed[cached_raster_grad_index(splatCount, RASTER_CACHE_SIGMA_YY, splatId)], g_CachedRasterGradFixedScaleRange) * characteristicScaleSq,
-        raster_grad_fixed_dequantize(g_CachedRasterGradsFixed[cached_raster_grad_index(splatCount, RASTER_CACHE_SIGMA_ZZ, splatId)], g_CachedRasterGradFixedScaleRange) * characteristicScaleSq
-    );
-    grad.sigmaOffDiag = float3(
-        raster_grad_fixed_dequantize(g_CachedRasterGradsFixed[cached_raster_grad_index(splatCount, RASTER_CACHE_SIGMA_XY, splatId)], g_CachedRasterGradFixedQuatRange) * characteristicScaleSq,
-        raster_grad_fixed_dequantize(g_CachedRasterGradsFixed[cached_raster_grad_index(splatCount, RASTER_CACHE_SIGMA_XZ, splatId)], g_CachedRasterGradFixedQuatRange) * characteristicScaleSq,
-        raster_grad_fixed_dequantize(g_CachedRasterGradsFixed[cached_raster_grad_index(splatCount, RASTER_CACHE_SIGMA_YZ, splatId)], g_CachedRasterGradFixedQuatRange) * characteristicScaleSq
-    );
-    grad.colorAlpha = float4(
-        raster_grad_fixed_dequantize(g_CachedRasterGradsFixed[cached_raster_grad_index(splatCount, RASTER_CACHE_COLOR_R, splatId)], g_CachedRasterGradFixedColorRange),
-        raster_grad_fixed_dequantize(g_CachedRasterGradsFixed[cached_raster_grad_index(splatCount, RASTER_CACHE_COLOR_G, splatId)], g_CachedRasterGradFixedColorRange),
-        raster_grad_fixed_dequantize(g_CachedRasterGradsFixed[cached_raster_grad_index(splatCount, RASTER_CACHE_COLOR_B, splatId)], g_CachedRasterGradFixedColorRange),
-        raster_grad_fixed_dequantize(g_CachedRasterGradsFixed[cached_raster_grad_index(splatCount, RASTER_CACHE_FUSED_OPACITY, splatId)], g_CachedRasterGradFixedOpacityRange)
-    );
+    grad.roCamera = float3(values[RASTER_CACHE_RO_CAMERA_X], values[RASTER_CACHE_RO_CAMERA_Y], values[RASTER_CACHE_RO_CAMERA_Z]) * characteristicInvScale;
+    grad.sigmaDiag = float3(values[RASTER_CACHE_SIGMA_XX], values[RASTER_CACHE_SIGMA_YY], values[RASTER_CACHE_SIGMA_ZZ]) * characteristicScaleSq;
+    grad.sigmaOffDiag = float3(values[RASTER_CACHE_SIGMA_XY], values[RASTER_CACHE_SIGMA_XZ], values[RASTER_CACHE_SIGMA_YZ]) * characteristicScaleSq;
+    grad.colorAlpha = float4(values[RASTER_CACHE_COLOR_R], values[RASTER_CACHE_COLOR_G], values[RASTER_CACHE_COLOR_B], values[RASTER_CACHE_FUSED_OPACITY]);
     return grad;
 }
 
 RasterGaussian load_cached_raster_grad_float(uint splatId)
 {
     uint splatCount = g_Prepass.splatCount;
+    float values[RASTER_CACHE_PARAM_COUNT];
+    [unroll] for (uint cacheParamId = 0u; cacheParamId < RASTER_CACHE_PARAM_COUNT; cacheParamId++)
+    {
+        values[cacheParamId] = g_CachedRasterGradsFloat[cached_raster_grad_index(splatCount, cacheParamId, splatId)];
+    }
     RasterGaussian grad;
-    grad.roCamera = float3(
-        g_CachedRasterGradsFloat[cached_raster_grad_index(splatCount, RASTER_CACHE_RO_CAMERA_X, splatId)],
-        g_CachedRasterGradsFloat[cached_raster_grad_index(splatCount, RASTER_CACHE_RO_CAMERA_Y, splatId)],
-        g_CachedRasterGradsFloat[cached_raster_grad_index(splatCount, RASTER_CACHE_RO_CAMERA_Z, splatId)]
-    );
-    grad.sigmaDiag = float3(
-        g_CachedRasterGradsFloat[cached_raster_grad_index(splatCount, RASTER_CACHE_SIGMA_XX, splatId)],
-        g_CachedRasterGradsFloat[cached_raster_grad_index(splatCount, RASTER_CACHE_SIGMA_YY, splatId)],
-        g_CachedRasterGradsFloat[cached_raster_grad_index(splatCount, RASTER_CACHE_SIGMA_ZZ, splatId)]
-    );
-    grad.sigmaOffDiag = float3(
-        g_CachedRasterGradsFloat[cached_raster_grad_index(splatCount, RASTER_CACHE_SIGMA_XY, splatId)],
-        g_CachedRasterGradsFloat[cached_raster_grad_index(splatCount, RASTER_CACHE_SIGMA_XZ, splatId)],
-        g_CachedRasterGradsFloat[cached_raster_grad_index(splatCount, RASTER_CACHE_SIGMA_YZ, splatId)]
-    );
-    grad.colorAlpha = float4(
-        g_CachedRasterGradsFloat[cached_raster_grad_index(splatCount, RASTER_CACHE_COLOR_R, splatId)],
-        g_CachedRasterGradsFloat[cached_raster_grad_index(splatCount, RASTER_CACHE_COLOR_G, splatId)],
-        g_CachedRasterGradsFloat[cached_raster_grad_index(splatCount, RASTER_CACHE_COLOR_B, splatId)],
-        g_CachedRasterGradsFloat[cached_raster_grad_index(splatCount, RASTER_CACHE_FUSED_OPACITY, splatId)]
-    );
+    grad.roCamera = float3(values[RASTER_CACHE_RO_CAMERA_X], values[RASTER_CACHE_RO_CAMERA_Y], values[RASTER_CACHE_RO_CAMERA_Z]);
+    grad.sigmaDiag = float3(values[RASTER_CACHE_SIGMA_XX], values[RASTER_CACHE_SIGMA_YY], values[RASTER_CACHE_SIGMA_ZZ]);
+    grad.sigmaOffDiag = float3(values[RASTER_CACHE_SIGMA_XY], values[RASTER_CACHE_SIGMA_XZ], values[RASTER_CACHE_SIGMA_YZ]);
+    grad.colorAlpha = float4(values[RASTER_CACHE_COLOR_R], values[RASTER_CACHE_COLOR_G], values[RASTER_CACHE_COLOR_B], values[RASTER_CACHE_FUSED_OPACITY]);
     return grad;
 }
 
@@ -206,6 +193,7 @@ void flush_cached_raster_grad_fixed(uint splatId, RasterGaussian gaussian, Raste
 {
     uint splatCount = g_Prepass.splatCount;
     accumulate_gradient_stats(splatId, raster_grad_contribution_norm_sq(dGaussian));
+    bool includeDepth = raster_grad_include_depth();
     float characteristicInvScale = raster_grad_fixed_characteristic_inv_scale(gaussian.sigmaDiag);
     float characteristicScale = 1.0 / max(characteristicInvScale, SMALL_VALUE);
     float characteristicInvScaleSq = characteristicInvScale * characteristicInvScale;
@@ -239,25 +227,24 @@ void flush_cached_raster_grad_fixed(uint splatId, RasterGaussian gaussian, Raste
     int qColorB = raster_grad_fixed_quantize(colorAlpha.z, g_CachedRasterGradFixedColorRange);
     int qOpacity = raster_grad_fixed_quantize(colorAlpha.w, g_CachedRasterGradFixedOpacityRange);
 
-    if (qRoCameraX != 0) InterlockedAdd(g_CachedRasterGradsFixed[cached_raster_grad_index(splatCount, RASTER_CACHE_RO_CAMERA_X, splatId)], qRoCameraX);
-    if (qRoCameraY != 0) InterlockedAdd(g_CachedRasterGradsFixed[cached_raster_grad_index(splatCount, RASTER_CACHE_RO_CAMERA_Y, splatId)], qRoCameraY);
-    if (raster_grad_include_depth() && qRoCameraZ != 0) InterlockedAdd(g_CachedRasterGradsFixed[cached_raster_grad_index(splatCount, RASTER_CACHE_RO_CAMERA_Z, splatId)], qRoCameraZ);
-    if (qSigmaXX != 0) InterlockedAdd(g_CachedRasterGradsFixed[cached_raster_grad_index(splatCount, RASTER_CACHE_SIGMA_XX, splatId)], qSigmaXX);
-    if (qSigmaYY != 0) InterlockedAdd(g_CachedRasterGradsFixed[cached_raster_grad_index(splatCount, RASTER_CACHE_SIGMA_YY, splatId)], qSigmaYY);
-    if (raster_grad_include_depth() && qSigmaZZ != 0) InterlockedAdd(g_CachedRasterGradsFixed[cached_raster_grad_index(splatCount, RASTER_CACHE_SIGMA_ZZ, splatId)], qSigmaZZ);
-    if (qSigmaXY != 0) InterlockedAdd(g_CachedRasterGradsFixed[cached_raster_grad_index(splatCount, RASTER_CACHE_SIGMA_XY, splatId)], qSigmaXY);
-    if (raster_grad_include_depth() && qSigmaXZ != 0) InterlockedAdd(g_CachedRasterGradsFixed[cached_raster_grad_index(splatCount, RASTER_CACHE_SIGMA_XZ, splatId)], qSigmaXZ);
-    if (raster_grad_include_depth() && qSigmaYZ != 0) InterlockedAdd(g_CachedRasterGradsFixed[cached_raster_grad_index(splatCount, RASTER_CACHE_SIGMA_YZ, splatId)], qSigmaYZ);
-    if (qColorR != 0) InterlockedAdd(g_CachedRasterGradsFixed[cached_raster_grad_index(splatCount, RASTER_CACHE_COLOR_R, splatId)], qColorR);
-    if (qColorG != 0) InterlockedAdd(g_CachedRasterGradsFixed[cached_raster_grad_index(splatCount, RASTER_CACHE_COLOR_G, splatId)], qColorG);
-    if (qColorB != 0) InterlockedAdd(g_CachedRasterGradsFixed[cached_raster_grad_index(splatCount, RASTER_CACHE_COLOR_B, splatId)], qColorB);
-    if (qOpacity != 0) InterlockedAdd(g_CachedRasterGradsFixed[cached_raster_grad_index(splatCount, RASTER_CACHE_FUSED_OPACITY, splatId)], qOpacity);
+    int values[RASTER_CACHE_PARAM_COUNT] = {
+        qRoCameraX, qRoCameraY, qRoCameraZ,
+        qSigmaXX, qSigmaYY, qSigmaZZ,
+        qSigmaXY, qSigmaXZ, qSigmaYZ,
+        qColorR, qColorG, qColorB, qOpacity,
+    };
+    [unroll] for (uint cacheParamId = 0u; cacheParamId < RASTER_CACHE_PARAM_COUNT; cacheParamId++)
+    {
+        if ((!includeDepth && raster_cache_param_uses_depth(cacheParamId)) || values[cacheParamId] == 0) continue;
+        InterlockedAdd(g_CachedRasterGradsFixed[cached_raster_grad_index(splatCount, cacheParamId, splatId)], values[cacheParamId]);
+    }
 }
 
 void flush_cached_raster_grad_float(uint splatId, RasterGaussian.Differential dGaussian)
 {
     uint splatCount = g_Prepass.splatCount;
     accumulate_gradient_stats(splatId, raster_grad_contribution_norm_sq(dGaussian));
+    bool includeDepth = raster_grad_include_depth();
     float2 roCamera = WaveActiveSum(dGaussian.roCamera.xy);
     float roCameraZ = WaveActiveSum(dGaussian.roCamera.z);
     float2 sigmaDiag = WaveActiveSum(dGaussian.sigmaDiag.xy);
@@ -268,19 +255,17 @@ void flush_cached_raster_grad_float(uint splatId, RasterGaussian.Differential dG
     float4 colorAlpha = WaveActiveSum(dGaussian.colorAlpha);
     if (!WaveIsFirstLane()) return;
 
-    if (roCamera.x != 0.0) InterlockedAdd(g_CachedRasterGradsFloat[cached_raster_grad_index(splatCount, RASTER_CACHE_RO_CAMERA_X, splatId)], roCamera.x);
-    if (roCamera.y != 0.0) InterlockedAdd(g_CachedRasterGradsFloat[cached_raster_grad_index(splatCount, RASTER_CACHE_RO_CAMERA_Y, splatId)], roCamera.y);
-    if (raster_grad_include_depth() && roCameraZ != 0.0) InterlockedAdd(g_CachedRasterGradsFloat[cached_raster_grad_index(splatCount, RASTER_CACHE_RO_CAMERA_Z, splatId)], roCameraZ);
-    if (sigmaDiag.x != 0.0) InterlockedAdd(g_CachedRasterGradsFloat[cached_raster_grad_index(splatCount, RASTER_CACHE_SIGMA_XX, splatId)], sigmaDiag.x);
-    if (sigmaDiag.y != 0.0) InterlockedAdd(g_CachedRasterGradsFloat[cached_raster_grad_index(splatCount, RASTER_CACHE_SIGMA_YY, splatId)], sigmaDiag.y);
-    if (raster_grad_include_depth() && sigmaZZ != 0.0) InterlockedAdd(g_CachedRasterGradsFloat[cached_raster_grad_index(splatCount, RASTER_CACHE_SIGMA_ZZ, splatId)], sigmaZZ);
-    if (sigmaXY != 0.0) InterlockedAdd(g_CachedRasterGradsFloat[cached_raster_grad_index(splatCount, RASTER_CACHE_SIGMA_XY, splatId)], sigmaXY);
-    if (raster_grad_include_depth() && sigmaXZ != 0.0) InterlockedAdd(g_CachedRasterGradsFloat[cached_raster_grad_index(splatCount, RASTER_CACHE_SIGMA_XZ, splatId)], sigmaXZ);
-    if (raster_grad_include_depth() && sigmaYZ != 0.0) InterlockedAdd(g_CachedRasterGradsFloat[cached_raster_grad_index(splatCount, RASTER_CACHE_SIGMA_YZ, splatId)], sigmaYZ);
-    if (colorAlpha.x != 0.0) InterlockedAdd(g_CachedRasterGradsFloat[cached_raster_grad_index(splatCount, RASTER_CACHE_COLOR_R, splatId)], colorAlpha.x);
-    if (colorAlpha.y != 0.0) InterlockedAdd(g_CachedRasterGradsFloat[cached_raster_grad_index(splatCount, RASTER_CACHE_COLOR_G, splatId)], colorAlpha.y);
-    if (colorAlpha.z != 0.0) InterlockedAdd(g_CachedRasterGradsFloat[cached_raster_grad_index(splatCount, RASTER_CACHE_COLOR_B, splatId)], colorAlpha.z);
-    if (colorAlpha.w != 0.0) InterlockedAdd(g_CachedRasterGradsFloat[cached_raster_grad_index(splatCount, RASTER_CACHE_FUSED_OPACITY, splatId)], colorAlpha.w);
+    float values[RASTER_CACHE_PARAM_COUNT] = {
+        roCamera.x, roCamera.y, roCameraZ,
+        sigmaDiag.x, sigmaDiag.y, sigmaZZ,
+        sigmaXY, sigmaXZ, sigmaYZ,
+        colorAlpha.x, colorAlpha.y, colorAlpha.z, colorAlpha.w,
+    };
+    [unroll] for (uint cacheParamId = 0u; cacheParamId < RASTER_CACHE_PARAM_COUNT; cacheParamId++)
+    {
+        if ((!includeDepth && raster_cache_param_uses_depth(cacheParamId)) || values[cacheParamId] == 0.0) continue;
+        InterlockedAdd(g_CachedRasterGradsFloat[cached_raster_grad_index(splatCount, cacheParamId, splatId)], values[cacheParamId]);
+    }
 }
 
 float raster_eval_outline_alpha(uint splatId, float opacity, float2 samplePoint)
@@ -308,25 +293,14 @@ float ellipse_debug_outline_opacity()
     return saturate(max(g_Raster.debugOpacityMultiplier, max(g_Raster.debugMinOpacity, 0.0)));
 }
 
-float ellipse_debug_opacity(float opacity)
-{
-    return saturate(max(opacity * max(g_Raster.debugOpacityMultiplier, 0.0), max(g_Raster.debugMinOpacity, 0.0)));
-}
-
 RasterGaussian ellipse_debug_gaussian(RasterGaussian gaussian)
 {
     float scaleMultiplier = max(g_Raster.debugGaussianScaleMultiplier, SMALL_VALUE);
     float metricScale = 1.0 / (scaleMultiplier * scaleMultiplier);
     gaussian.sigmaDiag *= metricScale;
     gaussian.sigmaOffDiag *= metricScale;
-    gaussian.colorAlpha.w = ellipse_debug_opacity(gaussian.colorAlpha.w);
+    gaussian.colorAlpha.w = saturate(max(gaussian.colorAlpha.w * max(g_Raster.debugOpacityMultiplier, 0.0), max(g_Raster.debugMinOpacity, 0.0)));
     return gaussian;
-}
-
-[Differentiable]
-float raster_eval_alpha_gaussian(RasterGaussian gaussian, no_diff float3 rayDir)
-{
-    return raster_eval_alpha(gaussian.roCamera, gaussian.sigmaDiag, gaussian.sigmaOffDiag, gaussian.colorAlpha.w, rayDir, g_Raster.alphaCutoff);
 }
 
 [Differentiable]
@@ -344,12 +318,6 @@ float2 raster_eval_alpha_depth_gaussian(RasterGaussian gaussian, no_diff float3 
     float alpha = gaussian.colorAlpha.w * exp(-0.5 * ENVELOPE_SIGMA_RADIUS * ENVELOPE_SIGMA_RADIUS * rho2);
     if (alpha < g_Raster.alphaCutoff) return 0.0;
     return float2(alpha, tClosest);
-}
-
-[Differentiable]
-RasterState raster_blend_step_color_alpha(RasterState state, float4 colorAlpha, float alpha)
-{
-    return state.blend(colorAlpha.xyz, alpha);
 }
 
 [Differentiable]
@@ -386,38 +354,48 @@ RasterReplayStepState raster_replay_step(RasterReplayStepState state, RasterGaus
     };
 }
 
+float raster_normalize_log_band(float value, float valueFloor, float threshold, float thresholdMinScale, float thresholdMaxScale)
+{
+    float valueLog10 = log2(max(value, valueFloor)) * LOG2_TO_LOG10;
+    float normalizedThreshold = max(threshold, valueFloor);
+    float bandLog10Min = log2(max(normalizedThreshold * thresholdMinScale, valueFloor)) * LOG2_TO_LOG10;
+    float bandLog10Max = log2(max(normalizedThreshold * thresholdMaxScale, valueFloor)) * LOG2_TO_LOG10;
+    return saturate((valueLog10 - bandLog10Min) / max(bandLog10Max - bandLog10Min, TINY_VALUE));
+}
+
 float raster_normalize_grad_norm(float gradNorm)
 {
-    float gradValue = max(gradNorm, DEBUG_GRAD_NORM_FLOOR);
-    float gradLog10 = log2(gradValue) * LOG2_TO_LOG10;
-    float gradThreshold = max(g_Raster.debugGradNormThreshold, DEBUG_GRAD_NORM_FLOOR);
-    float gradLog10Min = log2(max(gradThreshold * DEBUG_GRAD_THRESHOLD_MIN_SCALE, DEBUG_GRAD_NORM_FLOOR)) * LOG2_TO_LOG10;
-    float gradLog10Max = log2(max(gradThreshold * DEBUG_GRAD_THRESHOLD_MAX_SCALE, DEBUG_GRAD_NORM_FLOOR)) * LOG2_TO_LOG10;
-    return saturate((gradLog10 - gradLog10Min) / max(gradLog10Max - gradLog10Min, TINY_VALUE));
+    return raster_normalize_log_band(
+        gradNorm,
+        DEBUG_GRAD_NORM_FLOOR,
+        g_Raster.debugGradNormThreshold,
+        DEBUG_GRAD_THRESHOLD_MIN_SCALE,
+        DEBUG_GRAD_THRESHOLD_MAX_SCALE
+    );
 }
 
 float raster_normalize_grad_variance(float gradVariance)
 {
     float varianceFloor = DEBUG_GRAD_NORM_FLOOR * DEBUG_GRAD_NORM_FLOOR;
-    float varianceValue = max(gradVariance, varianceFloor);
-    float varianceLog10 = log2(varianceValue) * LOG2_TO_LOG10;
     float gradThreshold = max(g_Raster.debugGradNormThreshold, DEBUG_GRAD_NORM_FLOOR);
-    float varianceThreshold = gradThreshold * gradThreshold;
-    float varianceThresholdMinScale = DEBUG_GRAD_THRESHOLD_MIN_SCALE * DEBUG_GRAD_THRESHOLD_MIN_SCALE;
-    float varianceThresholdMaxScale = DEBUG_GRAD_THRESHOLD_MAX_SCALE * DEBUG_GRAD_THRESHOLD_MAX_SCALE;
-    float varianceLog10Min = log2(max(varianceThreshold * varianceThresholdMinScale, varianceFloor)) * LOG2_TO_LOG10;
-    float varianceLog10Max = log2(max(varianceThreshold * varianceThresholdMaxScale, varianceFloor)) * LOG2_TO_LOG10;
-    return saturate((varianceLog10 - varianceLog10Min) / max(varianceLog10Max - varianceLog10Min, TINY_VALUE));
+    return raster_normalize_log_band(
+        gradVariance,
+        varianceFloor,
+        gradThreshold * gradThreshold,
+        DEBUG_GRAD_THRESHOLD_MIN_SCALE * DEBUG_GRAD_THRESHOLD_MIN_SCALE,
+        DEBUG_GRAD_THRESHOLD_MAX_SCALE * DEBUG_GRAD_THRESHOLD_MAX_SCALE
+    );
 }
 
 float raster_normalize_threshold_band(float value, float threshold)
 {
-    float normalizedValue = max(value, DEBUG_GRAD_NORM_FLOOR);
-    float valueLog10 = log2(normalizedValue) * LOG2_TO_LOG10;
-    float normalizedThreshold = max(threshold, DEBUG_GRAD_NORM_FLOOR);
-    float bandLog10Min = log2(max(normalizedThreshold * DEBUG_GRAD_THRESHOLD_MIN_SCALE, DEBUG_GRAD_NORM_FLOOR)) * LOG2_TO_LOG10;
-    float bandLog10Max = log2(max(normalizedThreshold * DEBUG_GRAD_THRESHOLD_MAX_SCALE, DEBUG_GRAD_NORM_FLOOR)) * LOG2_TO_LOG10;
-    return saturate((valueLog10 - bandLog10Min) / max(bandLog10Max - bandLog10Min, TINY_VALUE));
+    return raster_normalize_log_band(
+        value,
+        DEBUG_GRAD_NORM_FLOOR,
+        threshold,
+        DEBUG_GRAD_THRESHOLD_MIN_SCALE,
+        DEBUG_GRAD_THRESHOLD_MAX_SCALE
+    );
 }
 
 float raster_threshold_from_range(float2 valueRange)
@@ -517,20 +495,6 @@ float2 raster_refinement_distribution_range()
     return float2(valueMin, valueMax);
 }
 
-[Differentiable]
-float4 raster_output_from_state(RasterState state, no_diff float3 background)
-{
-    float3 finalColor = state.accum + state.trans * background;
-    return float4(pow(max(finalColor, 0.0), OUTPUT_GAMMA), 1.0 - state.trans);
-}
-
-[Differentiable]
-float4 raster_training_output_from_state(RasterState state, no_diff float3 background)
-{
-    float3 finalColor = state.accum + state.trans * background;
-    return float4(finalColor, 1.0 - state.trans);
-}
-
 float raster_random_unit_float(uint seed)
 {
     return (float(hash_u32(seed)) + 0.5) * UINT_TO_UNIT_FLOAT;
@@ -576,12 +540,12 @@ struct RasterReplayState
     float4 depthLocalMismatchState;
 };
 
-void init_raster_forward_state(RasterPixelInfo info, out RasterReplayState replayState)
+void init_raster_replay_state(RasterPixelInfo info, uint debugMode, out RasterReplayState replayState)
 {
     replayState.pixelState = { 0.0, 1.0 };
     replayState.processedEnd = info.start;
     replayState.replayBatchEnd = info.start;
-    replayState.debugMode = DEBUG_MODE_NORMAL;
+    replayState.debugMode = debugMode;
     replayState.depthState = 0.0;
     replayState.splatDensitySum = 0.0;
     replayState.spatialDensitySum = 0.0;
@@ -594,32 +558,6 @@ void init_raster_backward_state(out RasterReplayStepState.Differential backwardS
     backwardState.pixelState = { 0.0, 0.0 };
     backwardState.splatDensityState = 0.0;
     backwardState.depthState = 0.0;
-}
-
-void init_raster_debug_state(RasterPixelInfo info, out RasterReplayState replayState)
-{
-    replayState.pixelState = { 0.0, 1.0 };
-    replayState.processedEnd = info.start;
-    replayState.replayBatchEnd = info.start;
-    replayState.debugMode = g_Raster.debugMode;
-    replayState.depthState = 0.0;
-    replayState.splatDensitySum = 0.0;
-    replayState.spatialDensitySum = 0.0;
-    replayState.screenDensitySum = 0.0;
-    replayState.depthLocalMismatchState = 0.0;
-}
-
-void init_training_raster_state(RasterPixelInfo info, out RasterReplayState replayState)
-{
-    replayState.pixelState = { 0.0, 1.0 };
-    replayState.processedEnd = info.start;
-    replayState.replayBatchEnd = info.start;
-    replayState.debugMode = DEBUG_MODE_NORMAL;
-    replayState.depthState = 0.0;
-    replayState.splatDensitySum = 0.0;
-    replayState.spatialDensitySum = 0.0;
-    replayState.screenDensitySum = 0.0;
-    replayState.depthLocalMismatchState = 0.0;
 }
 
 float raster_depth_debug_sigma_scale()
@@ -779,7 +717,7 @@ struct ForwardRasterReplayVariant : IRasterReplayVariant
 {
     static void init_state(RasterPixelInfo info, out RasterReplayState replayState)
     {
-        init_raster_forward_state(info, replayState);
+        init_raster_replay_state(info, DEBUG_MODE_NORMAL, replayState);
     }
 
     static bool eval_hit(RasterPixelInfo info, uint splatId, RasterGaussian gaussian, out float alpha, out float rayDepth)
@@ -800,7 +738,7 @@ struct TrainingRasterReplayVariant : IRasterReplayVariant
 {
     static void init_state(RasterPixelInfo info, out RasterReplayState replayState)
     {
-        init_training_raster_state(info, replayState);
+        init_raster_replay_state(info, DEBUG_MODE_NORMAL, replayState);
     }
 
     static bool eval_hit(RasterPixelInfo info, uint splatId, RasterGaussian gaussian, out float alpha, out float rayDepth)
@@ -825,7 +763,7 @@ struct DebugRasterReplayVariant : IRasterReplayVariant
 {
     static void init_state(RasterPixelInfo info, out RasterReplayState replayState)
     {
-        init_raster_debug_state(info, replayState);
+        init_raster_replay_state(info, g_Raster.debugMode, replayState);
     }
 
     static bool eval_hit(RasterPixelInfo info, uint splatId, RasterGaussian gaussian, out float alpha, out float rayDepth)
@@ -922,22 +860,29 @@ void raster_replay<T : IRasterReplayVariant>(RasterPixelInfo info, uint lane, in
     }
 }
 
+[Differentiable]
+float4 raster_training_output_from_state(RasterState state, no_diff float3 background)
+{
+    float3 finalColor = state.accum + state.trans * background;
+    return float4(finalColor, 1.0 - state.trans);
+}
+
 float4 raster_forward_output_pixel(RasterPixelInfo info, RasterState state)
 {
     if (!info.pixelActive) return float4(0.0, 0.0, 0.0, 1.0);
     float3 background = raster_resolved_background(info.pixelCoord);
-    return info.hasTileRange
-        ? raster_output_from_state(state, background)
-        : float4(pow(max(background, 0.0), OUTPUT_GAMMA), 1.0);
+    if (!info.hasTileRange) return float4(pow(max(background, 0.0), OUTPUT_GAMMA), 1.0);
+    float3 finalColor = state.accum + state.trans * background;
+    return float4(pow(max(finalColor, 0.0), OUTPUT_GAMMA), 1.0 - state.trans);
 }
 
 float4 raster_training_output_pixel(RasterPixelInfo info, RasterState state)
 {
     if (!info.pixelActive) return float4(0.0, 0.0, 0.0, 1.0);
     float3 background = raster_resolved_background(info.pixelCoord);
-    return info.hasTileRange
-        ? raster_training_output_from_state(state, background)
-        : float4(background, 1.0);
+    if (!info.hasTileRange) return float4(background, 1.0);
+    float3 finalColor = state.accum + state.trans * background;
+    return float4(finalColor, 1.0 - state.trans);
 }
 
 float4 raster_debug_output_pixel(RasterPixelInfo info, RasterReplayState replayState)
@@ -977,7 +922,7 @@ void store_training_forward_cache(RasterPixelInfo info, RasterReplayState replay
 
 void load_training_forward_cache(RasterPixelInfo info, out RasterReplayState replayState)
 {
-    init_training_raster_state(info, replayState);
+    init_raster_replay_state(info, DEBUG_MODE_NORMAL, replayState);
     replayState.replayBatchEnd = g_TrainingBatchEnd[info.tileId];
     if (!info.pixelActive) return;
     uint pixelIndex = raster_pixel_index(info.pixelCoord);

@@ -13,32 +13,27 @@ uniform float g_MaxAnisotropy;
 uniform float3 g_SortCameraPosition;
 uniform float g_SortCameraDitherSigma;
 uniform uint g_SortCameraDitherSeed;
-bool load_projected_ellipse(uint splatId, out Ellipse ellipse)
+bool load_prepared_projected_ellipse(uint splatId, out Ellipse ellipse, out ScanlineLoopConfig loopCfg)
 {
     ellipse.init(0.0, 0.0, 0.0);
+    loopCfg = make_scanline_loop_config(g_Prepass, false, 0, -1, 0, -1);
     float4 centerRadiusDepth = g_ScreenCenterRadiusDepth[splatId];
     if (centerRadiusDepth.z <= 0.0 || !all(isfinite(centerRadiusDepth))) return false;
     float4 conicOpacity = g_ScreenEllipseConic[splatId];
     ellipse.init(centerRadiusDepth.xy, centerRadiusDepth.z, conicOpacity.xyz);
-    return all(isfinite(ellipse.centerPx)) && isfinite(ellipse.radiusPx) && all(isfinite(ellipse.conic));
-}
-
-bool prepare_ellipse_for_scanlines(Ellipse ellipseIn, out Ellipse ellipseOut, out ScanlineLoopConfig loopCfg)
-{
-    ellipseOut = ellipseIn;
-    loopCfg = make_scanline_loop_config(g_Prepass, false, 0, -1, 0, -1);
+    if (!all(isfinite(ellipse.centerPx)) || !isfinite(ellipse.radiusPx) || !all(isfinite(ellipse.conic))) return false;
     float tileSize = float(g_Prepass.tileSize);
     float halfTile = 0.5 * tileSize;
-    if (!try_prepare_conic_for_binning(ellipseOut, halfTile)) return false;
+    if (!try_prepare_conic_for_binning(ellipse, halfTile)) return false;
 
-    float2 boundsExtent = ellipseOut.bboxExtent + halfTile;
-    int minX = clamp(int(floor((ellipseOut.centerPx.x - boundsExtent.x) / tileSize)), 0, int(g_Prepass.tileWidth) - 1);
-    int maxX = clamp(int(ceil((ellipseOut.centerPx.x + boundsExtent.x) / tileSize)), 0, int(g_Prepass.tileWidth) - 1);
-    int minY = clamp(int(floor((ellipseOut.centerPx.y - boundsExtent.y) / tileSize)), 0, int(g_Prepass.tileHeight) - 1);
-    int maxY = clamp(int(ceil((ellipseOut.centerPx.y + boundsExtent.y) / tileSize)), 0, int(g_Prepass.tileHeight) - 1);
+    float2 boundsExtent = ellipse.bboxExtent + halfTile;
+    int minX = clamp(int(floor((ellipse.centerPx.x - boundsExtent.x) / tileSize)), 0, int(g_Prepass.tileWidth) - 1);
+    int maxX = clamp(int(ceil((ellipse.centerPx.x + boundsExtent.x) / tileSize)), 0, int(g_Prepass.tileWidth) - 1);
+    int minY = clamp(int(floor((ellipse.centerPx.y - boundsExtent.y) / tileSize)), 0, int(g_Prepass.tileHeight) - 1);
+    int maxY = clamp(int(ceil((ellipse.centerPx.y + boundsExtent.y) / tileSize)), 0, int(g_Prepass.tileHeight) - 1);
     if (minX > maxX || minY > maxY) return false;
 
-    loopCfg = build_scanline_loop_config(g_Prepass, ellipseOut, minX, maxX, minY, maxY);
+    loopCfg = build_scanline_loop_config(g_Prepass, ellipse, minX, maxX, minY, maxY);
     return loopCfg.lineEnd >= loopCfg.lineStart;
 }
 
@@ -109,11 +104,10 @@ void csCountVisibleScanlines(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (visibleSplatId >= visibleCount) return;
 
     uint splatId = g_VisibleValues[visibleSplatId];
-    Ellipse ellipse;
     Ellipse preparedEllipse;
     ScanlineLoopConfig loopCfg;
     uint scanlineCount = 0u;
-    if (load_projected_ellipse(splatId, ellipse) && prepare_ellipse_for_scanlines(ellipse, preparedEllipse, loopCfg))
+    if (load_prepared_projected_ellipse(splatId, preparedEllipse, loopCfg))
     {
         scanlineCount = uint(loopCfg.lineEnd - loopCfg.lineStart + 1);
     }
@@ -129,10 +123,9 @@ void csEmitScanlines(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (visibleSplatId >= visibleCount) return;
 
     uint splatId = g_VisibleValues[visibleSplatId];
-    Ellipse ellipse;
     Ellipse preparedEllipse;
     ScanlineLoopConfig loopCfg;
-    if (!load_projected_ellipse(splatId, ellipse) || !prepare_ellipse_for_scanlines(ellipse, preparedEllipse, loopCfg)) return;
+    if (!load_prepared_projected_ellipse(splatId, preparedEllipse, loopCfg)) return;
 
     uint scanlineBase = g_ScanlineOffsets[visibleSplatId];
     uint scanlineCount = g_ScanlineCounts[visibleSplatId];

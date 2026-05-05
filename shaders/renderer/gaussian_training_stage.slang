@@ -200,11 +200,6 @@ float splat_average_contribution_raw(uint splatId)
     return isfinite(contribution) ? max(contribution, 0.0) : 0.0;
 }
 
-float splat_nonzero_contributing_camera_count(uint splatId)
-{
-    return float(g_SplatContributionInfo[splatId].y);
-}
-
 float refinement_contribution_area_scale(uint splatId)
 {
     float exponent = max(g_RefinementContributionAreaExponent, 0.0);
@@ -222,17 +217,12 @@ float refinement_contribution_count_scale(float count)
     return (isfinite(scale) && scale > SMALL_VALUE) ? scale : 1.0;
 }
 
-float splat_refinement_history_raw(uint splatId)
-{
-    float contribution = g_SplatContributionHistory[splatId];
-    return isfinite(contribution) ? max(contribution, 0.0) : 0.0;
-}
-
 float splat_refinement_contribution_raw(uint splatId)
 {
     float currentMean = splat_average_contribution_raw(splatId);
-    float historyMean = splat_refinement_history_raw(splatId);
-    if (splat_nonzero_contributing_camera_count(splatId) > 0.0)
+    float historyMean = g_SplatContributionHistory[splatId];
+    historyMean = isfinite(historyMean) ? max(historyMean, 0.0) : 0.0;
+    if (g_SplatContributionInfo[splatId].y > 0u)
     {
         if (historyMean > 0.0)
         {
@@ -242,12 +232,6 @@ float splat_refinement_contribution_raw(uint splatId)
         return currentMean;
     }
     return historyMean;
-}
-
-uint ordered_float_sort_key(float value)
-{
-    uint bits = asuint(value);
-    return (bits & 0x80000000u) != 0u ? ~bits : (bits | 0x80000000u);
 }
 
 bool should_cull_refinement_splat(uint splatId, float alpha)
@@ -287,21 +271,6 @@ void store_splat_state(RWStructuredBuffer<float> params, uint splatCount, uint p
         store_splat_sh_coeff(params, splatCount, packedParamCount, coeffIndex, splatId, state.shCoeffs[coeffIndex]);
     }
     store_splat_raw_opacity(params, splatCount, packedParamCount, splatId, state.rawOpacity);
-}
-
-uint adam_moment_index(uint splatCount, uint paramId, uint splatId)
-{
-    return paramId * splatCount + splatId;
-}
-
-float2 load_adam_moment(StructuredBuffer<float2> moments, uint splatCount, uint paramId, uint splatId)
-{
-    return moments[adam_moment_index(splatCount, paramId, splatId)];
-}
-
-void store_adam_moment(RWStructuredBuffer<float2> moments, uint splatCount, uint paramId, uint splatId, float2 value)
-{
-    moments[adam_moment_index(splatCount, paramId, splatId)] = value;
 }
 
 PinholeCamera refinement_camera(uint cameraIndex)
@@ -357,13 +326,7 @@ void copy_adam_state(uint srcSplatId, uint dstSplatId)
     [unroll] for (uint paramId = 0u; paramId < TRAINABLE_PARAM_COUNT; paramId++)
     {
         if (paramId >= paramCount) break;
-        store_adam_moment(
-            g_DstAdamMoments,
-            g_DstSplatCount,
-            paramId,
-            dstSplatId,
-            load_adam_moment(g_SrcAdamMoments, g_SrcSplatCount, paramId, srcSplatId)
-        );
+        g_DstAdamMoments[paramId * g_DstSplatCount + dstSplatId] = g_SrcAdamMoments[paramId * g_SrcSplatCount + srcSplatId];
     }
 }
 
@@ -384,11 +347,6 @@ uint refinement_family_frame_hash(uint splatId)
 uint refinement_sample_seed(uint frameHash, uint splatId, uint subsampleId)
 {
     return refinement_hash_combine(refinement_hash_combine(frameHash, splatId + 1u), subsampleId + 1u);
-}
-
-float refinement_family_disk_root(uint familySize)
-{
-    return sqrt(max(float(familySize), 1.0));
 }
 
 float2 refinement_circular_fibonacci_sample(uint subsampleId, uint familySize)
@@ -415,7 +373,7 @@ float3 refinement_plane_sample_raw(uint frameHash, uint splatId, uint subsampleI
     uint sampleSeed = refinement_sample_seed(frameHash, splatId, subsampleId);
     float2 sample = refinement_circular_fibonacci_sample(subsampleId, familySize) * g_RefinementSampleRadius;
     uint jitterState = refinement_hash_combine(sampleSeed, 0x7f4a7c15u);
-    float jitterScale = g_RefinementSampleRadius * REFINEMENT_FIBONACCI_JITTER_RATIO / refinement_family_disk_root(familySize);
+    float jitterScale = g_RefinementSampleRadius * REFINEMENT_FIBONACCI_JITTER_RATIO / sqrt(max(float(familySize), 1.0));
     sample += rng_normal3_box_muller(jitterState).xy * jitterScale;
     return refinement_largest_area_plane_sample(parentScale, sample);
 }
@@ -436,15 +394,15 @@ float3 refinement_centered_plane_sample(uint frameHash, uint splatId, uint slot,
     return sampleLength > DENSIFY_MAX_STANDARDIZED_SIGMA ? sample * (DENSIFY_MAX_STANDARDIZED_SIGMA / sampleLength) : sample;
 }
 
-float3 refinement_child_log_scale(float3 parentLogScale, float shrink)
-{
-    return parentLogScale + log(max(shrink, SMALL_VALUE));
-}
-
 float refinement_child_shrink(float familySize)
 {
     if (g_RefinementUseCompactSplit != 0u) return pow(max(familySize, 1.0), -max(g_RefinementSplitBeta, 0.0)) * max(g_RefinementCloneScaleMul, 0.0);
     return pow(max(familySize, 1.0), DENSIFY_SCALE_SHRINK_EXPONENT) * max(g_RefinementCloneScaleMul, 0.0);
+}
+
+float3 refinement_child_log_scale(float3 parentLogScale, float shrink)
+{
+    return parentLogScale + log(max(shrink, SMALL_VALUE));
 }
 
 float refinement_child_kernel_at_parent_center(float3 centeredSampleStd, float shrink)
@@ -487,32 +445,17 @@ uint refinement_gradient_stat_index(uint splatId, uint slot)
     return splatId * DEBUG_GRAD_STATS_STRIDE + slot;
 }
 
-float refinement_gradient_variance_weight(uint splatId)
-{
-    float sampleCount = splat_nonzero_contributing_camera_count(splatId);
-    if (!(sampleCount > 0.0)) return 0.0;
-    float varianceNumerator = g_GradientStats[refinement_gradient_stat_index(splatId, 0u)];
-    float variance = varianceNumerator / sampleCount;
-    return isfinite(variance) ? max(variance, 0.0) : 0.0;
-}
-
-float refinement_pixel_contribution_weight(uint splatId)
-{
-    return splat_refinement_contribution_raw(splatId);
-}
-
 float refinement_sampling_distribution(uint splatId)
 {
-    float varianceWeight = pow(refinement_gradient_variance_weight(splatId), g_RefinementGradientVarianceWeightExponent);
-    float contributionWeight = pow(refinement_pixel_contribution_weight(splatId), g_RefinementContributionWeightExponent);
+    float varianceWeight = 0.0;
+    if (g_SplatContributionInfo[splatId].y > 0u)
+    {
+        float variance = g_GradientStats[refinement_gradient_stat_index(splatId, 0u)] / float(g_SplatContributionInfo[splatId].y);
+        varianceWeight = pow(isfinite(variance) ? max(variance, 0.0) : 0.0, g_RefinementGradientVarianceWeightExponent);
+    }
+    float contributionWeight = pow(splat_refinement_contribution_raw(splatId), g_RefinementContributionWeightExponent);
     float distribution = varianceWeight * contributionWeight;
     return isfinite(distribution) ? max(distribution, 0.0) : 0.0;
-}
-
-float position_random_step_gate(float opacity)
-{
-    float x = g_PositionRandomStepOpacityGateSharpness * (g_PositionRandomStepOpacityGateCenter - opacity);
-    return rcp(1.0 + exp(-x));
 }
 
 uint2 training_target_pixel(uint2 pixel)
@@ -579,11 +522,6 @@ float training_target_mask(float alpha)
     return g_UseTargetAlphaMask == 0u ? 1.0 : saturate(alpha);
 }
 
-float3 training_target_rgb(uint2 pixel)
-{
-    return training_target_rgba(pixel).xyz;
-}
-
 uint2 training_clamped_pixel(int2 pixel)
 {
     return uint2(
@@ -592,34 +530,20 @@ uint2 training_clamped_pixel(int2 pixel)
     );
 }
 
-float training_target_luminance(uint2 pixel)
-{
-    return dot(max(training_target_rgb(pixel), 0.0), float3(0.2126, 0.7152, 0.0722));
-}
-
 float training_target_edge_intensity(uint2 pixel)
 {
-    uint2 px00 = training_clamped_pixel(int2(pixel) + int2(-1, -1));
-    uint2 px10 = training_clamped_pixel(int2(pixel) + int2(0, -1));
-    uint2 px20 = training_clamped_pixel(int2(pixel) + int2(1, -1));
-    uint2 px01 = training_clamped_pixel(int2(pixel) + int2(-1, 0));
-    uint2 px21 = training_clamped_pixel(int2(pixel) + int2(1, 0));
-    uint2 px02 = training_clamped_pixel(int2(pixel) + int2(-1, 1));
-    uint2 px12 = training_clamped_pixel(int2(pixel) + int2(0, 1));
-    uint2 px22 = training_clamped_pixel(int2(pixel) + int2(1, 1));
-
-    float tl = training_target_luminance(px00);
-    float tc = training_target_luminance(px10);
-    float tr = training_target_luminance(px20);
-    float ml = training_target_luminance(px01);
-    float mr = training_target_luminance(px21);
-    float bl = training_target_luminance(px02);
-    float bc = training_target_luminance(px12);
-    float br = training_target_luminance(px22);
-
-    float gx = -tl + tr - 2.0 * ml + 2.0 * mr - bl + br;
-    float gy = -tl - 2.0 * tc - tr + bl + 2.0 * bc + br;
-    return length(float2(gx, gy));
+    float2 grad = 0.0;
+    float3 lumaWeights = float3(0.2126, 0.7152, 0.0722);
+    [unroll] for (int y = -1; y <= 1; y++)
+    {
+        [unroll] for (int x = -1; x <= 1; x++)
+        {
+            if (x == 0 && y == 0) continue;
+            float luma = dot(max(training_target_rgba(training_clamped_pixel(int2(pixel) + int2(x, y))).xyz, 0.0), lumaWeights);
+            grad += luma * float2(float(x) * (y == 0 ? 2.0 : 1.0), float(y) * (x == 0 ? 2.0 : 1.0));
+        }
+    }
+    return length(grad);
 }
 
 uint ssim_feature_index(uint2 pixel, uint channel)
@@ -627,19 +551,10 @@ uint ssim_feature_index(uint2 pixel, uint channel)
     return (pixel.y * g_Width + pixel.x) * SSIM_FEATURE_CHANNELS + channel;
 }
 
-void store_ssim_feature(RWStructuredBuffer<float> buffer, uint2 pixel, uint channel, float value)
-{
-    buffer[ssim_feature_index(pixel, channel)] = value;
-}
-
-float load_ssim_feature(StructuredBuffer<float> buffer, uint2 pixel, uint channel)
-{
-    return buffer[ssim_feature_index(pixel, channel)];
-}
-
 void clear_ssim_feature_grads(RWStructuredBuffer<float> buffer, uint2 pixel)
 {
-    [unroll] for (uint channel = 0u; channel < SSIM_FEATURE_CHANNELS; channel++) buffer[ssim_feature_index(pixel, channel)] = 0.0;
+    uint baseIndex = ssim_feature_index(pixel, 0u);
+    [unroll] for (uint channel = 0u; channel < SSIM_FEATURE_CHANNELS; channel++) buffer[baseIndex + channel] = 0.0;
 }
 
 [Differentiable]
@@ -654,20 +569,16 @@ float ssim_channel(float x, float y, float x2, float y2, float xy)
     return numer / denom;
 }
 
-uint ssim_feature_offset(uint colorChannel, uint featureOffset)
-{
-    return colorChannel * SSIM_FEATURES_PER_COLOR + featureOffset;
-}
-
 void store_ssim_moments(RWStructuredBuffer<float> buffer, uint2 pixel, SSIMMoments moments)
 {
     [unroll] for (uint colorChannel = 0u; colorChannel < SSIM_COLOR_CHANNELS; colorChannel++)
     {
-        store_ssim_feature(buffer, pixel, ssim_feature_offset(colorChannel, SSIM_FEATURE_X_OFFSET), moments.x[colorChannel]);
-        store_ssim_feature(buffer, pixel, ssim_feature_offset(colorChannel, SSIM_FEATURE_Y_OFFSET), moments.y[colorChannel]);
-        store_ssim_feature(buffer, pixel, ssim_feature_offset(colorChannel, SSIM_FEATURE_X2_OFFSET), moments.x2[colorChannel]);
-        store_ssim_feature(buffer, pixel, ssim_feature_offset(colorChannel, SSIM_FEATURE_Y2_OFFSET), moments.y2[colorChannel]);
-        store_ssim_feature(buffer, pixel, ssim_feature_offset(colorChannel, SSIM_FEATURE_XY_OFFSET), moments.xy[colorChannel]);
+        uint baseIndex = ssim_feature_index(pixel, colorChannel * SSIM_FEATURES_PER_COLOR);
+        buffer[baseIndex + SSIM_FEATURE_X_OFFSET] = moments.x[colorChannel];
+        buffer[baseIndex + SSIM_FEATURE_Y_OFFSET] = moments.y[colorChannel];
+        buffer[baseIndex + SSIM_FEATURE_X2_OFFSET] = moments.x2[colorChannel];
+        buffer[baseIndex + SSIM_FEATURE_Y2_OFFSET] = moments.y2[colorChannel];
+        buffer[baseIndex + SSIM_FEATURE_XY_OFFSET] = moments.xy[colorChannel];
     }
 }
 
@@ -676,11 +587,12 @@ SSIMMoments load_ssim_moments(StructuredBuffer<float> buffer, uint2 pixel)
     SSIMMoments moments;
     [unroll] for (uint colorChannel = 0u; colorChannel < SSIM_COLOR_CHANNELS; colorChannel++)
     {
-        moments.x[colorChannel] = load_ssim_feature(buffer, pixel, ssim_feature_offset(colorChannel, SSIM_FEATURE_X_OFFSET));
-        moments.y[colorChannel] = load_ssim_feature(buffer, pixel, ssim_feature_offset(colorChannel, SSIM_FEATURE_Y_OFFSET));
-        moments.x2[colorChannel] = load_ssim_feature(buffer, pixel, ssim_feature_offset(colorChannel, SSIM_FEATURE_X2_OFFSET));
-        moments.y2[colorChannel] = load_ssim_feature(buffer, pixel, ssim_feature_offset(colorChannel, SSIM_FEATURE_Y2_OFFSET));
-        moments.xy[colorChannel] = load_ssim_feature(buffer, pixel, ssim_feature_offset(colorChannel, SSIM_FEATURE_XY_OFFSET));
+        uint baseIndex = ssim_feature_index(pixel, colorChannel * SSIM_FEATURES_PER_COLOR);
+        moments.x[colorChannel] = buffer[baseIndex + SSIM_FEATURE_X_OFFSET];
+        moments.y[colorChannel] = buffer[baseIndex + SSIM_FEATURE_Y_OFFSET];
+        moments.x2[colorChannel] = buffer[baseIndex + SSIM_FEATURE_X2_OFFSET];
+        moments.y2[colorChannel] = buffer[baseIndex + SSIM_FEATURE_Y2_OFFSET];
+        moments.xy[colorChannel] = buffer[baseIndex + SSIM_FEATURE_XY_OFFSET];
     }
     return moments;
 }
@@ -689,9 +601,10 @@ void store_ssim_rendered_moment_grads(RWStructuredBuffer<float> buffer, uint2 pi
 {
     [unroll] for (uint colorChannel = 0u; colorChannel < SSIM_COLOR_CHANNELS; colorChannel++)
     {
-        store_ssim_feature(buffer, pixel, ssim_feature_offset(colorChannel, SSIM_FEATURE_X_OFFSET), grads.x[colorChannel]);
-        store_ssim_feature(buffer, pixel, ssim_feature_offset(colorChannel, SSIM_FEATURE_X2_OFFSET), grads.x2[colorChannel]);
-        store_ssim_feature(buffer, pixel, ssim_feature_offset(colorChannel, SSIM_FEATURE_XY_OFFSET), grads.xy[colorChannel]);
+        uint baseIndex = ssim_feature_index(pixel, colorChannel * SSIM_FEATURES_PER_COLOR);
+        buffer[baseIndex + SSIM_FEATURE_X_OFFSET] = grads.x[colorChannel];
+        buffer[baseIndex + SSIM_FEATURE_X2_OFFSET] = grads.x2[colorChannel];
+        buffer[baseIndex + SSIM_FEATURE_XY_OFFSET] = grads.xy[colorChannel];
     }
 }
 
@@ -729,7 +642,8 @@ float dssim_loss_from_blurred_moments(float3 x, no_diff float3 y, float3 x2, no_
 float3 position_random_step_world_delta(SplatState state, inout uint rngState)
 {
     float opacity = opacity_from_raw(state.rawOpacity);
-    float gate = position_random_step_gate(opacity);
+    float x = g_PositionRandomStepOpacityGateSharpness * (g_PositionRandomStepOpacityGateCenter - opacity);
+    float gate = rcp(1.0 + exp(-x));
     float stepScale = gate * max(g_PositionRandomStepNoiseLr, 0.0) * max(g_PositionRandomStepPositionLr, 0.0);
     if (!(stepScale > 0.0)) return 0.0;
 
@@ -761,13 +675,6 @@ void apply_refinement_opacity_mul(inout SplatState state)
     float alpha = opacity_from_raw(state.rawOpacity);
     float scaledAlpha = alpha * saturate(g_RefinementOpacityMul);
     state.rawOpacity = raw_opacity_from_alpha(max(scaledAlpha, min(0.25, alpha)));
-}
-
-float decayed_splat_age(uint splatId)
-{
-    float age = g_SrcSplatAge[splatId];
-    if (!isfinite(age)) age = 0.0;
-    return max(age, 0.0) * 0.5;
 }
 
 [shader("compute")]
@@ -824,7 +731,7 @@ void csComputeSSIMFeatures(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     uint2 pixel = uint2(px, py);
     float3 rendered = sanitize_float3(g_Rendered[pixel].xyz, SANITIZE_HUGE_VALUE);
-    float3 target = training_target_rgb(pixel);
+    float3 target = training_target_rgba(pixel).xyz;
     SSIMMoments moments = ssim_feature_moments(rendered, target);
     store_ssim_moments(g_SSIMMoments, pixel, moments);
 }
@@ -1152,7 +1059,8 @@ void csPrepareRefinementPruneSortInputs(uint3 dispatchThreadID : SV_DispatchThre
     bool eligible = alpha >= g_RefinementAlphaCullThreshold && contribution >= g_RefinementMinContributionThreshold;
     g_RefinementEligibleMask[splatId] = eligible ? 1u : 0u;
     g_RefinementPruneMask[splatId] = 0u;
-    g_RefinementPruneSortKeys[splatId] = eligible ? ordered_float_sort_key(contribution) : 0xFFFFFFFFu;
+    uint bits = asuint(contribution);
+    g_RefinementPruneSortKeys[splatId] = eligible ? (((bits & 0x80000000u) != 0u) ? ~bits : (bits | 0x80000000u)) : 0xFFFFFFFFu;
     g_RefinementPruneSortValues[splatId] = splatId;
 }
 
@@ -1232,7 +1140,12 @@ void csRewriteRefinementSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     uint cloneCount = min(g_CloneCounts[splatId], REFINEMENT_MAX_CLONES_PER_SPLAT);
     bool solveOpacity = g_RefinementSolveOpacity != 0u && cloneCount > 0u;
-    if (!solveOpacity) apply_refinement_opacity_mul(source);
+    if (!solveOpacity)
+    {
+        float alpha = opacity_from_raw(source.rawOpacity);
+        float scaledAlpha = alpha * saturate(g_RefinementOpacityMul);
+        source.rawOpacity = raw_opacity_from_alpha(max(scaledAlpha, min(0.25, alpha)));
+    }
     uint parentIndex = 0u;
     InterlockedAdd(g_AppendCounter[0], 1u, parentIndex);
 
@@ -1271,7 +1184,8 @@ void csRewriteRefinementSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
     }
 
     store_splat_state(g_DstSplatParams, g_DstSplatCount, g_DstPackedParamCount, parentIndex, source);
-    g_DstSplatAge[parentIndex] = decayed_splat_age(splatId);
+    float age = g_SrcSplatAge[splatId];
+    g_DstSplatAge[parentIndex] = max(isfinite(age) ? age : 0.0, 0.0) * 0.5;
     g_DstSplatContributionHistory[parentIndex] = splat_refinement_contribution_raw(splatId);
     copy_adam_state(splatId, parentIndex);
 }
@@ -1315,20 +1229,20 @@ void csComposeEdgeDebug(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint px2 = min(px + 1u, g_DebugWidth - 1u);
     uint py2 = min(py + 1u, g_DebugHeight - 1u);
 
+    float2 grad = 0.0;
     float3 lumaWeights = float3(0.2126, 0.7152, 0.0722);
-    float tl = dot(debug_display_rgb(g_DebugRendered[uint2(px0, py0)].xyz, g_DebugSourceIsLinear), lumaWeights);
-    float tc = dot(debug_display_rgb(g_DebugRendered[uint2(px, py0)].xyz, g_DebugSourceIsLinear), lumaWeights);
-    float tr = dot(debug_display_rgb(g_DebugRendered[uint2(px2, py0)].xyz, g_DebugSourceIsLinear), lumaWeights);
-    float ml = dot(debug_display_rgb(g_DebugRendered[uint2(px0, py)].xyz, g_DebugSourceIsLinear), lumaWeights);
-    float mr = dot(debug_display_rgb(g_DebugRendered[uint2(px2, py)].xyz, g_DebugSourceIsLinear), lumaWeights);
-    float bl = dot(debug_display_rgb(g_DebugRendered[uint2(px0, py2)].xyz, g_DebugSourceIsLinear), lumaWeights);
-    float bc = dot(debug_display_rgb(g_DebugRendered[uint2(px, py2)].xyz, g_DebugSourceIsLinear), lumaWeights);
-    float br = dot(debug_display_rgb(g_DebugRendered[uint2(px2, py2)].xyz, g_DebugSourceIsLinear), lumaWeights);
-
-    float gx = -tl + tr - 2.0 * ml + 2.0 * mr - bl + br;
-    float gy = -tl - 2.0 * tc - tr + bl + 2.0 * bc + br;
-    float gradient = length(float2(gx, gy));
-    float normalized = saturate(gradient / DEBUG_EDGE_GRADIENT_DISPLAY_MAX);
+    [unroll] for (int y = -1; y <= 1; y++)
+    {
+        uint sampleY = y < 0 ? py0 : y > 0 ? py2 : py;
+        [unroll] for (int x = -1; x <= 1; x++)
+        {
+            if (x == 0 && y == 0) continue;
+            uint sampleX = x < 0 ? px0 : x > 0 ? px2 : px;
+            float luma = dot(debug_display_rgb(g_DebugRendered[uint2(sampleX, sampleY)].xyz, g_DebugSourceIsLinear), lumaWeights);
+            grad += luma * float2(float(x) * (y == 0 ? 2.0 : 1.0), float(y) * (x == 0 ? 2.0 : 1.0));
+        }
+    }
+    float normalized = saturate(length(grad) / DEBUG_EDGE_GRADIENT_DISPLAY_MAX);
     g_DebugOutput[uint2(px, py)] = float4(jet_colormap(normalized), 1.0);
 }
 

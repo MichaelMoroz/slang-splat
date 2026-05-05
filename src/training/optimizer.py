@@ -79,9 +79,10 @@ class GaussianOptimizer:
         position_ids = np.asarray(self.renderer.PARAM_POSITION_IDS, dtype=np.intp)
         scale_ids = np.asarray(self.renderer.PARAM_SCALE_IDS, dtype=np.intp)
         rotation_ids = np.asarray(self.renderer.PARAM_ROTATION_IDS, dtype=np.intp)
-        sh0_ids = np.asarray(self.renderer.PARAM_SH0_IDS, dtype=np.intp)
-        higher_sh_ids = np.asarray(self.renderer.PARAM_SH_IDS[len(self.renderer.PARAM_SH0_IDS):], dtype=np.intp)
         raw_opacity_id = int(self.renderer.packed_raw_opacity_param_id)
+        color_ids = np.arange(self.renderer.PARAM_ROTATION_IDS[-1] + 1, raw_opacity_id, dtype=np.intp)
+        sh0_ids = color_ids[:3]
+        higher_sh_ids = color_ids[3:]
         scale = max(float(lr_scale), 0.0)
         position_scale, scale_scale, rotation_scale, color_scale, opacity_scale, sh_scale = (max(float(v), 0.0) for v in (lr_mul_scales or (1.0, 1.0, 1.0, 1.0, 1.0, 1.0)))
         scale_ref_value = float(np.log(max(float(scale_reg_reference), 1e-8)))
@@ -94,7 +95,7 @@ class GaussianOptimizer:
         lrs[position_ids] = float(self.adam.position_lr)
         lrs[scale_ids] = float(self.adam.scale_lr)
         lrs[rotation_ids] = float(self.adam.rotation_lr)
-        lrs[np.asarray(self.renderer.PARAM_COLOR_IDS, dtype=np.intp)] = float(self.adam.color_lr)
+        lrs[color_ids] = float(self.adam.color_lr)
 
         param_scales = np.ones((count,), dtype=np.float32)
         param_scales[position_ids] = position_scale
