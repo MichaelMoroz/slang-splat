@@ -4236,7 +4236,7 @@ def test_training_with_sh_enabled_updates_non_dc_sh_coeffs(device, tmp_path: Pat
     assert float(np.max(np.abs(after))) > 0.0
 
 
-def test_cpu_pointcloud_initializer_rebuilds_scene_with_nn_scales(device, tmp_path: Path):
+def test_cpu_pointcloud_initializer_rebuilds_scene_with_covariance_axes(device, tmp_path: Path):
     frame = _make_frame(tmp_path)
     renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
     point_pos = np.array([[0.0, 0.0, 2.0], [1.0, 0.0, 2.0], [0.0, 1.0, 2.0], [-1.0, -1.0, 2.0]], dtype=np.float32)
@@ -4251,12 +4251,17 @@ def test_cpu_pointcloud_initializer_rebuilds_scene_with_nn_scales(device, tmp_pa
     scales = scene_groups["scales"]
     rotations = scene_groups["rotations"]
     color_alpha = scene_groups["color_alpha"]
-    expected_scales = np.array([[1.0, 1.0, 1.0], [1.0, 1.0, 1.0], [1.0, 1.0, 1.0], [np.sqrt(2.0), np.sqrt(2.0), np.sqrt(2.0)]], dtype=np.float32)
+    expected_major_scales = np.array([1.0, 1.0, 1.0, np.sqrt(2.0)], dtype=np.float32)
 
     assert np.all(np.isfinite(positions))
-    np.testing.assert_allclose(_actual_scale(scales[:, :3]), expected_scales, rtol=0.0, atol=1e-6)
+    scale_axes = _actual_scale(scales[:, :3])
+    np.testing.assert_allclose(np.max(scale_axes, axis=1), expected_major_scales, rtol=0.0, atol=1e-6)
+    assert np.all(scale_axes[:, 0] >= scale_axes[:, 1])
+    assert np.all(scale_axes[:, 1] >= scale_axes[:, 2])
+    assert float(np.max(scale_axes[:, 2])) < 1e-3
     np.testing.assert_allclose(_actual_opacity(color_alpha[:, 3]), np.full((4,), 0.5, dtype=np.float32), rtol=0.0, atol=1e-6)
     assert np.all(np.abs(np.linalg.norm(rotations, axis=1) - 1.0) < 1e-3)
+    assert not np.allclose(rotations, np.repeat(np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32), 4, axis=0), rtol=0.0, atol=1e-3)
     for name in _ADAM_BUFFER_NAMES:
         np.testing.assert_allclose(
             np.frombuffer(trainer.adam_optimizer.buffers[name].to_numpy().tobytes(), dtype=np.float32)[: 8 * renderer.TRAINABLE_PARAM_COUNT],

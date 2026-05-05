@@ -1853,14 +1853,13 @@ class GaussianTrainer:
     def initialize_scene_from_pointcloud(self, splat_count: int, init_hparams: GaussianInitHyperParams, seed: int) -> None:
         if self._init_point_positions_cpu is None or self._init_point_colors_cpu is None or self._init_point_count <= 0:
             raise RuntimeError("Pointcloud initializer buffers are not available.")
-        from ..scene._internal.colmap_ops import point_nn_scales
+        from ..scene._internal.colmap_ops import _point_local_gaussian_axes
 
         count = min(max(int(splat_count), 1), int(self._init_point_count))
         positions = np.ascontiguousarray(self._init_point_positions_cpu[:count], dtype=np.float32)
         colors = np.ascontiguousarray(self._init_point_colors_cpu[:count], dtype=np.float32)
-        scales = np.log(np.repeat(point_nn_scales(positions)[:, None], 3, axis=1).astype(np.float32))
-        rotations = np.zeros((count, 4), dtype=np.float32)
-        rotations[:, 0] = 1.0
+        scales, rotations = _point_local_gaussian_axes(positions)
+        scales = np.log(scales).astype(np.float32)
         scene = GaussianScene(
             positions=positions,
             scales=scales,
@@ -1875,7 +1874,7 @@ class GaussianTrainer:
         self._ensure_refinement_buffers(self._scene_count)
         self._reset_splat_ages()
         self._refinement_camera_signature = None
-        self._scale_reg_reference = float(max(np.exp(np.median(scales[:, 0])), 1e-8))
+        self._scale_reg_reference = float(max(np.median(np.max(np.exp(scales), axis=1)), 1e-8))
         self._zero_optimizer_moments()
         self.state = TrainingState()
         self.state.last_base_lr = self.current_base_lr(0)

@@ -42,6 +42,7 @@ FIBONACCI_SPHERE_GOLDEN_ANGLE = np.pi * (3.0 - np.sqrt(5.0))
 FIBONACCI_SPHERE_COLOR = np.array([0.8, 0.8, 0.8], dtype=np.float32)
 FIBONACCI_SPHERE_RADIUS_JITTER_RATIO = np.float32(0.10)
 FIBONACCI_SPHERE_RADIUS_JITTER_SEQUENCE = np.float32(0.41421356237)
+DIFFUSED_INIT_COVARIANCE_NEIGHBOR_COUNT = 8
 
 
 @dataclass(slots=True)
@@ -836,19 +837,49 @@ def generate_depth_init_points(
     return np.ascontiguousarray(np.stack(positions, axis=0), dtype=np.float32), np.ascontiguousarray(np.stack(colors, axis=0), dtype=np.float32)
 
 
-def _identity_quaternions(count: int) -> np.ndarray:
-    return np.tile(np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32), (max(int(count), 0), 1))
-
-
 def point_nn_scales(points: np.ndarray) -> np.ndarray:
     pts = np.ascontiguousarray(points, dtype=np.float32)
     if pts.ndim != 2 or pts.shape[0] == 0:
         return np.zeros((0,), dtype=np.float32)
     if pts.shape[0] == 1:
-        return np.full((1,), 1e-4, dtype=np.float32)
+        return np.full((1,), _MIN_SCALE, dtype=np.float32)
     dists, _ = cKDTree(pts).query(pts, k=2, workers=-1)
     nearest = np.asarray(dists[:, 1], dtype=np.float32)
-    return np.clip(nearest, 1e-4, 1e4).astype(np.float32)
+    return np.clip(nearest, _MIN_SCALE, _MAX_SCALE).astype(np.float32)
+
+
+def _point_local_covariance_frames(
+    points: np.ndarray,
+    neighbor_count: int = DIFFUSED_INIT_COVARIANCE_NEIGHBOR_COUNT,
+) -> tuple[np.ndarray, np.ndarray]:
+    pts = np.ascontiguousarray(points, dtype=np.float32)
+    if pts.ndim != 2 or pts.shape[0] == 0:
+        return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3, 3), dtype=np.float32)
+    query_k = min(max(int(neighbor_count), 1), pts.shape[0])
+    _, neighbor_indices = cKDTree(pts).query(pts, k=query_k, workers=-1)
+    if query_k == 1:
+        neighbor_indices = np.asarray(neighbor_indices, dtype=np.int64)[:, None]
+    local_points = pts[np.asarray(neighbor_indices, dtype=np.int64)]
+    local_means = np.mean(local_points, axis=1, dtype=np.float32, keepdims=True)
+    centered = local_points - local_means
+    covariance = np.einsum("nki,nkj->nij", centered, centered, optimize=True).astype(np.float32) / np.float32(max(local_points.shape[1] - 1, 1))
+    eigvals, eigvecs = np.linalg.eigh(covariance.astype(np.float64))
+    order = np.argsort(eigvals, axis=1)[:, ::-1]
+    axis_scales = np.clip(np.sqrt(np.clip(np.take_along_axis(eigvals, order, axis=1), 0.0, None)).astype(np.float32), _MIN_SCALE, _MAX_SCALE)
+    rotation_mats = np.take_along_axis(eigvecs, order[:, None, :], axis=2).astype(np.float32)
+    rotation_mats[:, :, 2] *= np.where(np.linalg.det(rotation_mats.astype(np.float64)) < 0.0, -1.0, 1.0).astype(np.float32)[:, None]
+    return np.ascontiguousarray(axis_scales, dtype=np.float32), np.ascontiguousarray(rotation_mats, dtype=np.float32)
+
+
+def _point_local_gaussian_axes(points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    pts = np.ascontiguousarray(points, dtype=np.float32)
+    if pts.ndim != 2 or pts.shape[0] == 0:
+        return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 4), dtype=np.float32)
+    axis_scales, rotation_mats = _point_local_covariance_frames(pts)
+    reference = np.maximum(np.max(axis_scales, axis=1, keepdims=True), np.float32(_MIN_SCALE))
+    scaled_axes = np.ascontiguousarray(axis_scales * (point_nn_scales(pts)[:, None] / reference), dtype=np.float32)
+    rotations = np.ascontiguousarray(np.stack([_rotation_to_quaternion_wxyz(rotation) for rotation in rotation_mats], axis=0), dtype=np.float32)
+    return scaled_axes, rotations
 
 
 def _build_scene_from_positions_colors(
@@ -864,11 +895,10 @@ def _build_scene_from_positions_colors(
     rng = np.random.default_rng(int(seed))
     if init_hparams is not None and init_hparams.position_jitter_std is not None and float(init_hparams.position_jitter_std) > 0.0:
         positions += rng.normal(0.0, float(init_hparams.position_jitter_std), size=positions.shape).astype(np.float32)
-    scales_1d = point_nn_scales(positions)
+    scales, rotations = _point_local_gaussian_axes(positions)
     if init_hparams is not None and init_hparams.base_scale is not None:
-        median_scale = float(np.median(scales_1d)) if scales_1d.size > 0 else 1.0
-        scales_1d = scales_1d * (float(max(init_hparams.base_scale, _MIN_SCALE)) / max(median_scale, 1e-6))
-    scales = np.repeat(scales_1d[:, None], 3, axis=1).astype(np.float32)
+        median_scale = float(np.median(np.max(scales, axis=1))) if scales.shape[0] > 0 else 1.0
+        scales *= np.float32(float(max(init_hparams.base_scale, _MIN_SCALE)) / max(median_scale, 1e-6))
     if init_hparams is not None and init_hparams.scale_jitter_ratio is not None and float(init_hparams.scale_jitter_ratio) > 0.0:
         lo = max(1.0 - float(init_hparams.scale_jitter_ratio), _MIN_SCALE)
         hi = 1.0 + float(init_hparams.scale_jitter_ratio)
@@ -879,7 +909,7 @@ def _build_scene_from_positions_colors(
     return GaussianScene(
         positions=positions,
         scales=scales,
-        rotations=_identity_quaternions(count),
+        rotations=rotations,
         opacities=np.full((count,), opacity, dtype=np.float32),
         colors=colors,
         sh_coeffs=np.pad(rgb_to_sh0(colors)[:, None, :], ((0, 0), (0, SUPPORTED_SH_COEFF_COUNT - 1), (0, 0))).astype(np.float32, copy=False),
@@ -904,9 +934,15 @@ def sample_colmap_diffused_points(
     colors = np.ascontiguousarray(rgb[base_indices], dtype=np.float32)
     if radius <= 0.0:
         return positions, colors
-    original_nn = point_nn_scales(xyz)
-    local_radius = np.ascontiguousarray(original_nn[base_indices] * np.float32(radius), dtype=np.float32)
-    positions += rng.normal(0.0, 1.0, size=positions.shape).astype(np.float32) * local_radius[:, None]
+    axis_scales, rotation_mats = _point_local_covariance_frames(xyz)
+    covariance_factors = np.ascontiguousarray(rotation_mats * axis_scales[:, None, :], dtype=np.float32)
+    offsets = np.einsum(
+        "nij,nj->ni",
+        covariance_factors[base_indices],
+        rng.normal(0.0, 1.0, size=positions.shape).astype(np.float32),
+        optimize=True,
+    ).astype(np.float32)
+    positions += offsets * np.float32(radius)
     return positions, colors
 
 

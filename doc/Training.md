@@ -61,8 +61,8 @@ Current scene-seeding paths include:
 For point-based COLMAP initialization:
 
 - positions come from the filtered sparse point cloud,
-- scale starts from nearest-neighbor point spacing repeated across XYZ,
-- rotation starts as identity quaternion,
+- local covariance of nearby points sets the gaussian principal axes and rotation,
+- nearest-neighbor spacing still sets the overall scale magnitude before the runtime log-scale conversion,
 - opacity starts from the configured constant,
 - the stored runtime scene keeps scale as 3DGS log-scale.
 

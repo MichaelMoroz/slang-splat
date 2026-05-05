@@ -83,9 +83,6 @@ from .state import ColmapImportProgress, ColmapImportSettings, SceneCountProxy
 
 _REFINEMENT_HISTOGRAM_LOG10_FALLBACK_RANGE = (-6.0, 1.0)
 _HISTOGRAM_RANGE_EPS = 1e-6
-_FIBONACCI_SPHERE_EQUAL_AREA_RADIUS_FACTOR = 2.0
-_FIBONACCI_SPHERE_SCALE_MIN = 1e-4
-_FIBONACCI_SPHERE_SCALE_MAX = 1e4
 _DATASET_BC7_TEXCONV_URL = "https://github.com/microsoft/DirectXTex/releases/download/oct2024/texconv.exe"
 _DATASET_BC7_TEXCONV_PATH = Path(__file__).resolve().parents[2] / "temp" / "bc_texture_tools" / "texconv.exe"
 _PERIODIC_RENDERER_REALLOCATION_INTERVAL_S = 120.0
@@ -704,21 +701,6 @@ def _append_fibonacci_sphere_points(
 
 def _resolve_fibonacci_sphere_count(total_count: int, point_count: int) -> int:
     return min(max(int(point_count), 0), max(int(total_count), 0))
-
-
-def _fibonacci_sphere_dense_overlap_scale(point_count: int, radius: float) -> float:
-    if point_count <= 0 or radius <= 0.0:
-        return _FIBONACCI_SPHERE_SCALE_MIN
-    scale = _FIBONACCI_SPHERE_EQUAL_AREA_RADIUS_FACTOR * float(radius) / float(np.sqrt(float(point_count)))
-    return float(np.clip(scale, _FIBONACCI_SPHERE_SCALE_MIN, _FIBONACCI_SPHERE_SCALE_MAX))
-
-
-def _apply_fibonacci_sphere_dense_overlap_scales(scene: GaussianScene, point_count: int, radius: float) -> GaussianScene:
-    if int(point_count) <= 0 or not hasattr(scene, "scales"):
-        return scene
-    count = min(int(point_count), int(scene.scales.shape[0]))
-    scene.scales[-count:, :] = np.float32(np.log(_fibonacci_sphere_dense_overlap_scale(count, radius)))
-    return scene
 
 
 def _copy_gaussian_scene(scene: GaussianScene) -> GaussianScene:
@@ -1448,7 +1430,6 @@ def _build_initial_training_scene(viewer: object, init: object, params: object, 
             chosen_colors = colors[:chosen_base_count]
         resolved_init = _pointcloud_init_hparams_from_positions(viewer.s.colmap_recon, init_positions, params.training.max_gaussians, init_hparams, getattr(import_cfg, "nn_radius_scale_coef", 0.5), min_track_length)
         scene = initialize_scene_from_points_colors(chosen_positions, chosen_colors, init.seed, resolved_init)
-        scene = _apply_fibonacci_sphere_dense_overlap_scales(scene, sphere_count, sphere_radius)
         return scene, float(max(resolved_init.base_scale, 1e-8))
     source_scenes: list[GaussianScene] = []
 

@@ -12,6 +12,7 @@ from src.scene import (
     build_training_frames,
     initialize_scene_from_colmap_diffused_points,
     initialize_scene_from_colmap_points,
+    initialize_scene_from_points_colors,
     load_colmap_reconstruction,
     resolve_colmap_init_hparams,
     sample_colmap_diffused_points,
@@ -375,8 +376,11 @@ def test_colmap_init_uses_direct_pointcloud_when_requested_count_exceeds_points(
     assert scene.count == 2
     assert scene.positions.shape == (2, 3)
     assert scene.colors.shape == (2, 3)
-    np.testing.assert_allclose(_actual_scale(scene.scales), np.full((2, 3), 3.0, dtype=np.float32), rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(scene.rotations, np.array([[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]], dtype=np.float32), rtol=0.0, atol=1e-6)
+    scale_axes = _actual_scale(scene.scales)
+    np.testing.assert_allclose(np.max(scale_axes, axis=1), np.full((2,), 3.0, dtype=np.float32), rtol=0.0, atol=1e-6)
+    assert float(np.max(scale_axes[:, 1:])) < 1e-3
+    assert np.all(np.abs(np.linalg.norm(scene.rotations, axis=1) - 1.0) < 1e-6)
+    assert not np.allclose(scene.rotations, np.array([[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]], dtype=np.float32), rtol=0.0, atol=1e-3)
 
 
 def test_colmap_fibonacci_sphere_points_use_camera_pose_mean_and_camera_extent_fallback() -> None:
@@ -563,23 +567,52 @@ def test_colmap_init_resolver_uses_nn_spacing_as_default_base_scale(tmp_path: Pa
 
     assert resolved.base_scale is not None
     assert np.isclose(resolved.base_scale, 0.75)
-    np.testing.assert_allclose(_actual_scale(scene.scales), np.full((2, 3), 0.75, dtype=np.float32), rtol=0.0, atol=1e-6)
+    scale_axes = _actual_scale(scene.scales)
+    np.testing.assert_allclose(np.max(scale_axes, axis=1), np.full((2,), 0.75, dtype=np.float32), rtol=0.0, atol=1e-6)
+    assert float(np.max(scale_axes[:, 1:])) < 1e-3
+    assert np.all(np.abs(np.linalg.norm(scene.rotations, axis=1) - 1.0) < 1e-6)
 
 
-def test_colmap_diffused_sampling_scales_radius_by_original_nn_distance(tmp_path: Path):
-    root = _build_tiny_colmap_tree(tmp_path, model_id=1)
-    recon = load_colmap_reconstruction(root)
+def test_point_color_init_uses_local_covariance_quat_scale() -> None:
+    positions = np.stack([np.array([float(i), 0.0, 0.0], dtype=np.float32) for i in range(9)], axis=0)
+    colors = np.repeat(np.array([[0.25, 0.5, 0.75]], dtype=np.float32), positions.shape[0], axis=0)
 
-    positions, colors = sample_colmap_diffused_points(recon, point_count=4, diffusion_radius=0.5, seed=9)
+    scene = initialize_scene_from_points_colors(
+        positions,
+        colors,
+        seed=11,
+        init_hparams=GaussianInitHyperParams(position_jitter_std=0.0, base_scale=1.25, scale_jitter_ratio=0.0, initial_opacity=0.2),
+    )
 
-    base_xyz = np.stack([point.xyz for point in recon.points3d.values()], axis=0).astype(np.float32)
-    base_rgb = np.stack([point.rgb for point in recon.points3d.values()], axis=0).astype(np.float32)
+    scale_axes = _actual_scale(scene.scales)
+    np.testing.assert_allclose(np.max(scale_axes, axis=1), np.full((positions.shape[0],), 1.25, dtype=np.float32), rtol=0.0, atol=1e-6)
+    assert float(np.max(scale_axes[:, 1:])) < 1e-3
+    assert np.all(np.abs(np.linalg.norm(scene.rotations, axis=1) - 1.0) < 1e-6)
+
+
+def test_colmap_diffused_sampling_uses_local_covariance_span() -> None:
+    xyz = np.stack([np.array([float(i), 0.0, 0.0], dtype=np.float32) for i in range(9)], axis=0)
+    rgb = np.stack([np.array([float(i) / 8.0, 0.25, 0.75], dtype=np.float32) for i in range(9)], axis=0)
+    recon = ColmapReconstruction(
+        root=Path("synthetic"),
+        sparse_dir=Path("synthetic") / "sparse" / "0",
+        cameras={},
+        images={},
+        points3d={
+            int(index + 1): ColmapPoint3D(int(index + 1), xyz[index], rgb[index], 0.0, track_length=3)
+            for index in range(xyz.shape[0])
+        },
+    )
+
+    positions, colors = sample_colmap_diffused_points(recon, point_count=12, diffusion_radius=0.5, seed=9)
+
     rng = np.random.default_rng(9)
-    base_indices = rng.integers(0, base_xyz.shape[0], size=4, dtype=np.int64)
-    expected = base_xyz[base_indices] + rng.normal(0.0, 1.0, size=(4, 3)).astype(np.float32) * np.float32(1.5)
+    base_indices = rng.integers(0, xyz.shape[0], size=12, dtype=np.int64)
+    base_positions = xyz[base_indices]
 
-    np.testing.assert_allclose(positions, expected, rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(colors, base_rgb[base_indices], rtol=0.0, atol=0.0)
+    np.testing.assert_allclose(positions[:, 1:], base_positions[:, 1:], rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(colors, rgb[base_indices], rtol=0.0, atol=0.0)
+    assert np.any(np.abs(positions[:, 0] - base_positions[:, 0]) > 1e-6)
 
 
 def test_colmap_diffused_init_uses_requested_count_and_nn_scales(tmp_path: Path):
@@ -598,6 +631,7 @@ def test_colmap_diffused_init_uses_requested_count_and_nn_scales(tmp_path: Path)
     assert scene.colors.shape == (5, 3)
     assert np.all(np.isfinite(scene.positions))
     assert np.all(np.isfinite(scene.scales))
+    assert np.all(np.isfinite(scene.rotations))
 
 
 def test_depth_path_matching_is_relative_stem_and_extension_agnostic(tmp_path: Path) -> None:

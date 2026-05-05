@@ -2670,9 +2670,8 @@ def test_build_initial_training_scene_fibonacci_source_uses_own_nn_coef(monkeypa
     low_scene, _ = session._build_initial_training_scene(_viewer_with_coef(0.1), SimpleNamespace(seed=7), SimpleNamespace(training=SimpleNamespace(max_gaussians=2)), SimpleNamespace())
     high_scene, _ = session._build_initial_training_scene(_viewer_with_coef(3.0), SimpleNamespace(seed=7), SimpleNamespace(training=SimpleNamespace(max_gaussians=2)), SimpleNamespace())
 
-    np.testing.assert_allclose(np.exp(low_scene.scales[-4:, 0]), np.ones((4,), dtype=np.float32), rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(np.exp(high_scene.scales[-4:, 0]), np.ones((4,), dtype=np.float32), rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(low_scene.scales[-4:, :], high_scene.scales[-4:, :], rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(low_scene.rotations[-4:, :], high_scene.rotations[-4:, :], rtol=0.0, atol=1e-6)
 
 
 def test_apply_live_params_defers_subsample_runtime_change_until_resize(monkeypatch) -> None:

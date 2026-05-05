@@ -183,12 +183,12 @@ The current initialization modes are:
 - `COLMAP Pointcloud`
   - Seeds directly from sparse COLMAP points.
   - Respects `Min Camera Observations` filtering.
-  - Uses nearest-neighbor spacing with `NN Radius Scale Coef` to derive gaussian scales.
+  - Uses local covariance eigenframes for gaussian rotation and anisotropy, with `NN Radius Scale Coef` setting the overall scale magnitude.
 
 - `Diffused Pointcloud`
   - Resamples filtered sparse points with replacement.
-  - Offsets each sample by local jitter derived from the source-cloud NN distance and `Diffusion Radius`.
-  - Uses the same NN-based scale initialization afterward.
+  - Offsets each sample by a local covariance-shaped Gaussian scaled by `Diffusion Radius`.
+  - Uses the same covariance-based point initializer afterward.
 
 - `Custom PLY`
   - Keeps the COLMAP cameras and training frames.
@@ -218,7 +218,7 @@ Point-based initializers can optionally append a Fibonacci shell around the arit
 - `Sphere Point Count` controls the number of appended shell points.
 - `Sphere Radius Multiplier` scales the max aligned COLMAP point distance from the shell center; each shell point also gets a deterministic radial jitter of up to 10% to reduce ordering aliasing.
 
-Those appended shell splats are assigned an equal-area dense-overlap scale based only on shell radius and shell point count, not on sparse-cloud NN spacing.
+Those appended shell splats now use the same covariance-based point initializer as the other non-PLY point sources.
 
 ## Scene I/O Section
 
