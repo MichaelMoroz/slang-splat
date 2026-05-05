@@ -30,14 +30,6 @@ struct GaussianStabilityParams
     float hugeValue;
 };
 
-struct GaussianOptimizerRegularizationParams
-{
-    float scaleAbsWeight;
-    float opacityWeight;
-    float positionPushAwayFromCameraStep;
-    float reserved;
-};
-
 uniform GaussianStabilityParams g_Stability;
 uniform uint g_SplatCount;
 uniform CameraParams g_CurrentCamera;
@@ -49,9 +41,8 @@ uniform uint g_SHNonNegativeStepIndex;
 uniform uint g_StoredPackedParamCount;
 
 uniform StructuredBuffer<OptimizerParamSettings> g_OptimizerParamSettings;
-uniform GaussianOptimizerRegularizationParams g_GaussianOptimizerRegularization;
+uniform float3 g_GaussianOptimizerRegularization;
 uniform float3 g_GaussianOptimizerRegularizationCameraPosition;
-uniform uint g_GaussianOptimizerRegularizationHasCamera;
 uniform StructuredBuffer<uint4> g_GaussianOptimizerSplatContributionInfo;
 uniform RWStructuredBuffer<float> g_SplatParamsRW;
 
@@ -225,7 +216,7 @@ void csRegularizeGaussianPacked(uint3 dispatchThreadID : SV_DispatchThreadID)
     OptimizerParamSettings settings = g_OptimizerParamSettings[paramId];
     float value = sanitize_scalar(g_SplatParamsRW[paramIndex], g_Stability.hugeValue);
 
-    if (paramId >= PARAM_POSITION_X && paramId <= PARAM_POSITION_Z && g_GaussianOptimizerRegularizationHasCamera != 0u && g_GaussianOptimizerRegularization.positionPushAwayFromCameraStep > 0.0)
+    if (paramId >= PARAM_POSITION_X && paramId <= PARAM_POSITION_Z && g_GaussianOptimizerRegularization.z > 0.0)
     {
         float3 position = load_splat_param_vector<3>(g_SplatParamsRW, g_SplatCount, PARAM_POSITION_X, splatId);
         float3 logScale = load_splat_param_vector<3>(g_SplatParamsRW, g_SplatCount, PARAM_SCALE_X, splatId);
@@ -236,7 +227,7 @@ void csRegularizeGaussianPacked(uint3 dispatchThreadID : SV_DispatchThreadID)
             float avgLogScale = (sanitize_scalar(logScale.x, g_Stability.hugeValue) + sanitize_scalar(logScale.y, g_Stability.hugeValue) + sanitize_scalar(logScale.z, g_Stability.hugeValue)) * (1.0 / 3.0);
             float geoMeanScale = sanitize_scalar(exp(min(avgLogScale, log(max(g_Stability.hugeValue, 1.0)))), g_Stability.hugeValue);
             float3 pushDir = cameraToSplat * rsqrt(distance2);
-            float pushStep = sanitize_scalar(geoMeanScale * gaussian_optimizer_relative_current_contribution(splatId) * g_GaussianOptimizerRegularization.positionPushAwayFromCameraStep, g_Stability.hugeValue);
+            float pushStep = sanitize_scalar(geoMeanScale * gaussian_optimizer_relative_current_contribution(splatId) * g_GaussianOptimizerRegularization.z, g_Stability.hugeValue);
             uint axisIndex = paramId - PARAM_POSITION_X;
             if (axisIndex == 0u) value += pushDir.x * pushStep;
             else if (axisIndex == 1u) value += pushDir.y * pushStep;
@@ -246,12 +237,12 @@ void csRegularizeGaussianPacked(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     if (paramId >= PARAM_SCALE_X && paramId <= PARAM_SCALE_Z)
     {
-        if (g_GaussianOptimizerRegularization.scaleAbsWeight > 0.0) value -= exp(value) * (settings.lr * g_GaussianOptimizerRegularization.scaleAbsWeight * (1.0 / 3.0));
+        if (g_GaussianOptimizerRegularization.x > 0.0) value -= exp(value) * (settings.lr * g_GaussianOptimizerRegularization.x * (1.0 / 3.0));
     } else if (paramId == rawOpacityParamId) {
-        if (g_GaussianOptimizerRegularization.opacityWeight > 0.0)
+        if (g_GaussianOptimizerRegularization.y > 0.0)
         {
             float opacity = opacity_from_raw(value);
-            value -= settings.lr * g_GaussianOptimizerRegularization.opacityWeight * opacity * (1.0 - opacity);
+            value -= settings.lr * g_GaussianOptimizerRegularization.y * opacity * (1.0 - opacity);
         }
     }
 
