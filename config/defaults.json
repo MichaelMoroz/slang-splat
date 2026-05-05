@@ -128,6 +128,8 @@
     "refinement_clone_scale_mul": 1.0,
     "refinement_grad_variance_weight_exponent": 0.30000001192092896,
     "refinement_contribution_weight_exponent": 0.0,
+    "refinement_contribution_area_exponent": 0.5,
+    "refinement_contribution_view_count_exponent": 0.5,
     "max_sh_band": 3,
     "lr_scale_stage1_mul": 5.0,
     "lr_rot_stage1_mul": 1.0,

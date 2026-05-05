@@ -2202,12 +2202,88 @@ def test_training_raster_path_preserves_clone_counts(device, tmp_path: Path) -> 
     assert np.any(contributions[:, 0] > 0)
 
 
-def test_visible_average_contribution_update_ignores_zero_and_tracks_max(device, tmp_path: Path) -> None:
+def test_isolated_splat_contribution_sum_is_color_scale_invariant(device, tmp_path: Path) -> None:
+    frame = _make_frame(tmp_path, image_name="contribution_ratio_target.png", image_id=184)
+    base_scene = _make_scene(count=1, seed=184)
+    base_scene.positions[0] = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+    base_scene.scales[0] = _log_sigma(np.array([0.06, 0.06, 0.06], dtype=np.float32))
+    base_scene.rotations[0] = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    base_scene.opacities[0] = np.float32(0.6)
+    background = np.zeros((3,), dtype=np.float32)
+
+    def run_pass(color_scale: float) -> int:
+        scene = GaussianScene(
+            positions=base_scene.positions.copy(),
+            scales=base_scene.scales.copy(),
+            rotations=base_scene.rotations.copy(),
+            opacities=base_scene.opacities.copy(),
+            colors=(base_scene.colors.copy() * np.float32(color_scale)).astype(np.float32, copy=False),
+            sh_coeffs=base_scene.sh_coeffs.copy(),
+        )
+        renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+        trainer = GaussianTrainer(
+            device=device,
+            renderer=renderer,
+            scene=scene,
+            frames=[frame],
+            training_hparams=TrainingHyperParams(
+                background_mode=TRAIN_BACKGROUND_MODE_CUSTOM,
+                background=(0.0, 0.0, 0.0),
+                density_regularizer=0.0,
+            ),
+            seed=123,
+        )
+        camera = frame.make_camera(near=0.1, far=20.0)
+
+        renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
+        enc = device.create_command_encoder()
+        renderer.rasterize_training_forward_current_scene(
+            enc,
+            camera,
+            background,
+            clone_counts_buffer=trainer.refinement_buffers["clone_counts"],
+            splat_contribution_buffer=trainer.refinement_buffers["splat_contribution"],
+        )
+        target_texture = trainer.get_frame_target_texture(0, native_resolution=False, encoder=enc)
+        trainer._dispatch_loss_forward(enc, target_texture)
+        trainer._dispatch_loss_backward(enc, target_texture)
+        renderer.clear_raster_grads_current_scene(enc)
+        renderer.rasterize_backward_current_scene(
+            enc,
+            camera,
+            background,
+            renderer.output_grad_buffer,
+            regularizer_grad=renderer.work_buffers["training_regularizer_grad"],
+            clone_counts_buffer=trainer.refinement_buffers["clone_counts"],
+            splat_contribution_buffer=trainer.refinement_buffers["splat_contribution"],
+        )
+        device.submit_command_buffer(enc.finish())
+        device.wait()
+        return int(_read_contribution_info(trainer, 1)[0, 0])
+
+    dim_contribution = run_pass(0.25)
+    bright_contribution = run_pass(1.0)
+
+    assert dim_contribution > 0
+    assert bright_contribution == dim_contribution
+
+
+def test_visible_average_contribution_update_uses_area_and_view_count_exponents_and_tracks_max(device, tmp_path: Path) -> None:
     scene = _make_scene(count=3, seed=183)
     frame = _make_frame(tmp_path, image_name="visible_avg_target.png", image_id=183)
     renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
-    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], seed=123)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(refinement_contribution_area_exponent=1.0, refinement_contribution_view_count_exponent=1.0),
+        seed=123,
+    )
     _write_contribution_info(trainer, [10.0, 20.0, 30.0], current=[0, 200, 400], current_max=0)
+    visible_area = np.ones((renderer._work_splat_capacity,), dtype=np.float32)
+    visible_area[: scene.count] = np.array([1.0, 2.0, 4.0], dtype=np.float32)
+    renderer.work_buffers["splat_visible_area_px"].copy_from_numpy(visible_area)
 
     enc = device.create_command_encoder()
     trainer._dispatch("update_visible_average_contribution", enc, spy.uint3(scene.count, 1, 1), trainer._refinement_vars())
@@ -2217,7 +2293,7 @@ def test_visible_average_contribution_update_ignores_zero_and_tracks_max(device,
     info = _read_contribution_info(trainer, scene.count)
     np.testing.assert_array_equal(info[:, 0], np.array([0, 200, 400], dtype=np.uint32))
     np.testing.assert_array_equal(info[:, 1], np.array([1, 2, 2], dtype=np.uint32))
-    np.testing.assert_allclose(_average_contribution_from_info(info), np.array([10.0, 110.0, 215.0], dtype=np.float32), rtol=0.0, atol=1e-5)
+    np.testing.assert_allclose(_average_contribution_from_info(info), np.array([10.0, 60.0, 65.0], dtype=np.float32), rtol=0.0, atol=1e-5)
     assert int(info[0, 3]) == 400
 
 

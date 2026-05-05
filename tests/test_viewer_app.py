@@ -392,6 +392,8 @@ def test_default_training_params_include_training_control_fields() -> None:
         "refinement_target_splat_ratio",
         "refinement_max_growth_per_step",
         "refinement_max_prune_per_step",
+        "refinement_contribution_area_exponent",
+        "refinement_contribution_view_count_exponent",
         "refinement_prune_lowest_contribution_ratio_stage1",
         "refinement_min_contribution",
         "train_subsample_factor",

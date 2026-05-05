@@ -259,6 +259,8 @@ UI_TOOLTIPS = {
     "refinement_split_beta": "Exponent used by compact split shrink: child sigma scales as N^(-beta)",
     "refinement_grad_variance_weight_exponent": "Exponent a in pow(pixel_grad_variance, a) for refinement clone resampling",
     "refinement_contribution_weight_exponent": "Exponent b in pow(pixel_contribution, b) for refinement clone resampling",
+    "refinement_contribution_area_exponent": "Divide each per-view refinement contribution by visible screen area in pixels raised to this exponent before averaging it into history",
+    "refinement_contribution_view_count_exponent": "When combining nonzero per-view refinement contributions, divide the accumulated contribution sum by nonzero view count raised to this exponent",
     "density_regularizer": "Weight applied to the per-pixel hinge penalty max(density - max_allowed_density, 0)",
     "sorting_order_dithering": "Stage 0 sort-camera dither amount; when scheduling is disabled this value is used for the whole run",
     "max_allowed_density": "End-of-training per-pixel density threshold above which the density regularizer activates; runtime ramps from 5.0 to this value over the LR schedule",

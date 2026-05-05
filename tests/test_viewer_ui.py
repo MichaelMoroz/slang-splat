@@ -157,6 +157,8 @@ def test_build_ui_initializes_control_groups_and_internal_state() -> None:
         "refinement_split_beta",
         "refinement_grad_variance_weight_exponent",
         "refinement_contribution_weight_exponent",
+        "refinement_contribution_area_exponent",
+        "refinement_contribution_view_count_exponent",
         "colmap_init_mode",
         "colmap_pointcloud_enabled",
         "colmap_pointcloud_nn_radius_scale_coef",

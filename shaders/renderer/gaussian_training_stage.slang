@@ -112,6 +112,7 @@ uniform RWStructuredBuffer<float> g_AppendParams;
 uniform RWStructuredBuffer<float> g_AppendSplatAge;
 uniform RWStructuredBuffer<uint> g_CloneCounts;
 uniform RWStructuredBuffer<uint4> g_SplatContributionInfo;
+uniform StructuredBuffer<float> g_SplatVisibleAreaPx;
 uniform StructuredBuffer<float> g_SplatContributionHistory;
 uniform RWStructuredBuffer<float> g_GradientStats;
 uniform RWStructuredBuffer<float> g_RefinementWeights;
@@ -146,6 +147,8 @@ uniform uint g_RefinementSolveOpacity;
 uniform float g_RefinementSplitBeta;
 uniform float g_RefinementGradientVarianceWeightExponent;
 uniform float g_RefinementContributionWeightExponent;
+uniform float g_RefinementContributionAreaExponent;
+uniform float g_RefinementContributionViewCountExponent;
 uniform float g_RefinementContributionHistoryDecay;
 uniform float g_RefinementPruneLowestContributionRatio;
 uniform float g_RefinementRadiusScale;
@@ -200,6 +203,23 @@ float splat_average_contribution_raw(uint splatId)
 float splat_nonzero_contributing_camera_count(uint splatId)
 {
     return float(g_SplatContributionInfo[splatId].y);
+}
+
+float refinement_contribution_area_scale(uint splatId)
+{
+    float exponent = max(g_RefinementContributionAreaExponent, 0.0);
+    if (!(exponent > 0.0)) return 1.0;
+    float area = max(g_SplatVisibleAreaPx[splatId], SMALL_VALUE);
+    float scale = pow(area, exponent);
+    return (isfinite(scale) && scale > SMALL_VALUE) ? scale : 1.0;
+}
+
+float refinement_contribution_count_scale(float count)
+{
+    float exponent = max(g_RefinementContributionViewCountExponent, 0.0);
+    if (!(exponent > 0.0) || !(count > 0.0)) return 1.0;
+    float scale = pow(count, exponent);
+    return (isfinite(scale) && scale > SMALL_VALUE) ? scale : 1.0;
 }
 
 float splat_refinement_history_raw(uint splatId)
@@ -1053,11 +1073,17 @@ void csUpdateVisibleAverageContribution(uint3 dispatchThreadID : SV_DispatchThre
         {
             float average = asfloat(info.z);
             average = isfinite(average) ? max(average, 0.0) : 0.0;
-            uint nextCount = info.y + 1u;
-            float nextAverage = average + (float(current) - average) / max(float(nextCount), 1.0);
-            info.y = nextCount;
-            info.z = asuint(isfinite(nextAverage) ? max(nextAverage, 0.0) : 0.0);
-            g_SplatContributionInfo[splatId] = info;
+            float normalizedCurrent = float(current) / refinement_contribution_area_scale(splatId);
+            if (isfinite(normalizedCurrent) && normalizedCurrent > 0.0)
+            {
+                float previousCount = float(info.y);
+                float accumulatedContribution = previousCount > 0.0 ? average * refinement_contribution_count_scale(previousCount) : 0.0;
+                uint nextCount = info.y + 1u;
+                float nextAverage = (accumulatedContribution + normalizedCurrent) / refinement_contribution_count_scale(float(nextCount));
+                info.y = nextCount;
+                info.z = asuint(isfinite(nextAverage) ? max(nextAverage, 0.0) : 0.0);
+                g_SplatContributionInfo[splatId] = info;
+            }
         }
     }
 
