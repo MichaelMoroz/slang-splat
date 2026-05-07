@@ -995,7 +995,7 @@ class GaussianTrainer:
             raise ValueError("Training requires at least one COLMAP frame.")
         if scene is None and scene_count is None:
             raise ValueError("GaussianTrainer requires either scene or scene_count.")
-        self.device, self.renderer, self.frames = device, renderer, frames
+        self.device, self.renderer, self.frames = device, renderer, tuple(frames)
         self._seed = int(seed)
         self._scene_count = int(scene.count if scene is not None else max(int(scene_count if scene_count is not None else 0), 1))
         self.scene = _SceneCountProxy(self._scene_count)
@@ -1498,10 +1498,15 @@ class GaussianTrainer:
         self._frame_cursor = 0
 
     def _next_frame_index(self) -> int:
-        if self._frame_cursor >= len(self.frames):
+        frame_count = len(self.frames)
+        if self._frame_order.shape[0] != frame_count or self._frame_cursor >= frame_count:
             self._reset_frame_order()
         frame_index = int(self._frame_order[self._frame_cursor])
         self._frame_cursor += 1
+        if frame_index < 0 or frame_index >= frame_count:
+            self._reset_frame_order()
+            frame_index = int(self._frame_order[self._frame_cursor])
+            self._frame_cursor += 1
         return frame_index
 
     def _bind_or_upload_init_pointcloud(

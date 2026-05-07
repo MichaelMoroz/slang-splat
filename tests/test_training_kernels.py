@@ -4409,6 +4409,20 @@ def test_training_frame_order_covers_each_view_once_per_epoch(device, tmp_path: 
     assert sorted(seen[4:]) == [0, 1, 2, 3]
 
 
+def test_training_frame_order_recovers_from_stale_permutation() -> None:
+    trainer = object.__new__(GaussianTrainer)
+    trainer.frames = tuple(SimpleNamespace() for _ in range(15))
+    trainer._frame_rng = np.random.default_rng(91)
+    trainer._frame_order = np.arange(14, dtype=np.int32)
+    trainer._frame_cursor = 14
+
+    frame_index = trainer._next_frame_index()
+
+    assert 0 <= frame_index < 15
+    assert trainer._frame_order.shape == (15,)
+    assert trainer._frame_cursor == 1
+
+
 def test_training_prepass_capacity_sync_runs_every_32_steps(device, tmp_path: Path, monkeypatch) -> None:
     frame = _make_frame(tmp_path, width=32, height=32, image_name="capacity_sync_target.png")
     trainer = object.__new__(GaussianTrainer)
