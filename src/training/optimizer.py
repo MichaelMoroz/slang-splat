@@ -79,14 +79,15 @@ class GaussianOptimizer:
         position_ids = np.asarray(self.renderer.PARAM_POSITION_IDS, dtype=np.intp)
         scale_ids = np.asarray(self.renderer.PARAM_SCALE_IDS, dtype=np.intp)
         rotation_ids = np.asarray(self.renderer.PARAM_ROTATION_IDS, dtype=np.intp)
-        sh0_ids = np.asarray(self.renderer.PARAM_SH0_IDS, dtype=np.intp)
-        higher_sh_ids = np.asarray(self.renderer.PARAM_SH_IDS[len(self.renderer.PARAM_SH0_IDS):], dtype=np.intp)
         raw_opacity_id = int(self.renderer.packed_raw_opacity_param_id)
         scale = max(float(lr_scale), 0.0)
         position_scale, scale_scale, rotation_scale, color_scale, opacity_scale, sh_scale = (max(float(v), 0.0) for v in (lr_mul_scales or (1.0, 1.0, 1.0, 1.0, 1.0, 1.0)))
         scale_ref_value = float(np.log(max(float(scale_reg_reference), 1e-8)))
         scale_l2_weight = 0.0 if training_hparams is None else max(float(training_hparams.scale_l2_weight), 0.0) * (2.0 / 3.0)
         stored_sh_coeff_count = int(self.renderer.stored_sh_coeff_count)
+        active_sh_ids = np.asarray(self.renderer.PARAM_SH_IDS[: stored_sh_coeff_count * 3], dtype=np.intp)
+        sh0_ids = active_sh_ids[: len(self.renderer.PARAM_SH0_IDS)]
+        higher_sh_ids = active_sh_ids[len(self.renderer.PARAM_SH0_IDS):]
         higher_sh_component_count = (stored_sh_coeff_count - 1) * 3 if stored_sh_coeff_count > 1 else 0
         sh1_weight = 0.0 if training_hparams is None or higher_sh_component_count <= 0 else max(float(training_hparams.sh1_reg_weight), 0.0) / float(higher_sh_component_count)
 
@@ -94,7 +95,7 @@ class GaussianOptimizer:
         lrs[position_ids] = float(self.adam.position_lr)
         lrs[scale_ids] = float(self.adam.scale_lr)
         lrs[rotation_ids] = float(self.adam.rotation_lr)
-        lrs[np.asarray(self.renderer.PARAM_COLOR_IDS, dtype=np.intp)] = float(self.adam.color_lr)
+        lrs[active_sh_ids] = float(self.adam.color_lr)
 
         param_scales = np.ones((count,), dtype=np.float32)
         param_scales[position_ids] = position_scale

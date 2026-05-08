@@ -531,7 +531,7 @@ def _dispatch_manual_loss(
 
 def _read_optimizer_lrs(trainer: GaussianTrainer) -> np.ndarray:
     flat = buffer_to_numpy(trainer.optimizer.param_settings, np.uint32)
-    return flat.reshape(trainer.renderer.TRAINABLE_PARAM_COUNT, 8)[:, 0].view(np.float32).copy()
+    return flat.reshape(trainer.renderer.packed_trainable_param_count, trainer.optimizer._PARAM_SETTINGS_U32_WIDTH)[:, 0].view(np.float32).copy()
 
 
 def _read_adam_moments(trainer: GaussianTrainer, splat_count: int) -> np.ndarray:
@@ -1820,7 +1820,7 @@ def test_optimizer_param_lrs_use_resolved_schedule_multipliers(device, tmp_path:
         seed=118,
     )
 
-    trainer.optimizer.update_step(10, trainer.training)
+    trainer.optimizer.update_step(10, trainer.training, 1.0)
     lrs = _read_optimizer_lrs(trainer)
 
     np.testing.assert_allclose(lrs[list(renderer.PARAM_POSITION_IDS)], 2.0, rtol=0.0, atol=1e-7)
@@ -1830,6 +1830,31 @@ def test_optimizer_param_lrs_use_resolved_schedule_multipliers(device, tmp_path:
     np.testing.assert_allclose(lrs[renderer.PARAM_RAW_OPACITY_ID], 6.0, rtol=0.0, atol=1e-7)
     non_dc_ids = [param_id for param_id in renderer.PARAM_SH_IDS if param_id not in renderer.PARAM_SH0_IDS]
     np.testing.assert_allclose(lrs[non_dc_ids], 2.0, rtol=0.0, atol=1e-7)
+
+
+def test_optimizer_param_settings_respect_sh0_only_packing(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=1, seed=119)
+    frame = _make_frame(tmp_path, image_name="sh0_optimizer_lrs.png", image_id=49)
+    renderer = GaussianRenderer(device, width=16, height=16, list_capacity_multiplier=4, max_sh_band=0, sh_band=0)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        adam_hparams=AdamHyperParams(position_lr=1.0, scale_lr=2.0, rotation_lr=3.0, color_lr=4.0, opacity_lr=5.0),
+        training_hparams=TrainingHyperParams(max_sh_band=0, sh_band=0),
+        seed=119,
+    )
+
+    trainer.optimizer.update_hyperparams(trainer.adam, trainer.stability)
+    lrs = _read_optimizer_lrs(trainer)
+
+    assert lrs.shape == (14,)
+    np.testing.assert_allclose(lrs[list(renderer.PARAM_POSITION_IDS)], 1.0, rtol=0.0, atol=1e-7)
+    np.testing.assert_allclose(lrs[list(renderer.PARAM_SCALE_IDS)], 2.0, rtol=0.0, atol=1e-7)
+    np.testing.assert_allclose(lrs[list(renderer.PARAM_ROTATION_IDS)], 3.0, rtol=0.0, atol=1e-7)
+    np.testing.assert_allclose(lrs[list(renderer.PARAM_SH0_IDS)], 4.0, rtol=0.0, atol=1e-7)
+    np.testing.assert_allclose(lrs[renderer.packed_raw_opacity_param_id], 5.0, rtol=0.0, atol=1e-7)
 
 
 def test_stage4_schedule_defaults_end_at_100k_with_requested_lr() -> None:
