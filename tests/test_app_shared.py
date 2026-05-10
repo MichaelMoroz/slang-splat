@@ -211,7 +211,7 @@ def test_build_training_params_clamps_refinement_prune_ratio() -> None:
     assert clamped.training.refinement_prune_lowest_contribution_ratio_stage4 == 1.0
 
 
-def test_build_training_params_clamps_position_push_schedule() -> None:
+def test_build_training_params_preserves_signed_position_push_schedule() -> None:
     params = build_training_params(
         background=(1.0, 1.0, 1.0),
         position_push_away_from_camera_step=1e-3,
@@ -234,10 +234,10 @@ def test_build_training_params_clamps_position_push_schedule() -> None:
     assert params.training.position_push_away_from_camera_step_stage2 == 2.5e-4
     assert params.training.position_push_away_from_camera_step_stage3 == 1e-4
     assert params.training.position_push_away_from_camera_step_stage4 == 5e-5
-    assert clamped.training.position_push_away_from_camera_step == 0.0
-    assert clamped.training.position_push_away_from_camera_step_stage1 == 0.0
+    assert clamped.training.position_push_away_from_camera_step == -1.0
+    assert clamped.training.position_push_away_from_camera_step_stage1 == -2.0
     assert clamped.training.position_push_away_from_camera_step_stage2 == 1e4
-    assert clamped.training.position_push_away_from_camera_step_stage3 == 0.0
+    assert clamped.training.position_push_away_from_camera_step_stage3 == -3.0
     assert clamped.training.position_push_away_from_camera_step_stage4 == 1e4
 
 

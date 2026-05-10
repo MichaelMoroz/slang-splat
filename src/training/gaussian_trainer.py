@@ -100,6 +100,11 @@ def _clamp_float_range(owner: object, minimum: float, maximum: float, *names: st
         setattr(owner, name, min(max(float(getattr(owner, name)), minimum), maximum))
 
 
+def _clamp_float_abs(owner: object, maximum_abs: float, *names: str) -> None:
+    for name in names:
+        setattr(owner, name, min(max(float(getattr(owner, name)), -maximum_abs), maximum_abs))
+
+
 def _hash_u32_scalar(value: int) -> np.uint32:
     x = int(value) & 0xFFFFFFFF
     x ^= x >> 16

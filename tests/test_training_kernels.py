@@ -1944,6 +1944,36 @@ def test_camera_push_step_resolves_as_staged_schedule() -> None:
     np.testing.assert_allclose(resolve_position_push_away_from_camera_step(disabled, 100), 0.2, rtol=0.0, atol=1e-12)
 
 
+def test_camera_push_step_resolves_signed_schedule_without_clamping() -> None:
+    hparams = TrainingHyperParams(
+        position_push_away_from_camera_step=-0.2,
+        position_push_away_from_camera_step_stage1=-0.1,
+        position_push_away_from_camera_step_stage2=0.05,
+        position_push_away_from_camera_step_stage3=-0.15,
+        position_push_away_from_camera_step_stage4=-0.3,
+        lr_schedule_enabled=True,
+        lr_schedule_steps=100,
+        lr_schedule_stage1_step=20,
+        lr_schedule_stage2_step=60,
+        lr_schedule_stage3_step=80,
+    )
+
+    np.testing.assert_allclose(resolve_position_push_away_from_camera_step(hparams, 0), -0.2, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_position_push_away_from_camera_step(hparams, 20), -0.1, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_position_push_away_from_camera_step(hparams, 60), 0.05, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_position_push_away_from_camera_step(hparams, 80), -0.15, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_position_push_away_from_camera_step(hparams, 100), -0.3, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_position_push_away_from_camera_step(hparams, 10), -0.15, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_position_push_away_from_camera_step(hparams, 70), -0.05, rtol=0.0, atol=1e-12)
+
+    disabled = TrainingHyperParams(
+        lr_schedule_enabled=False,
+        position_push_away_from_camera_step=-0.2,
+        position_push_away_from_camera_step_stage1=0.0,
+    )
+    np.testing.assert_allclose(resolve_position_push_away_from_camera_step(disabled, 100), -0.2, rtol=0.0, atol=1e-12)
+
+
 def test_refinement_clone_budget_respects_max_gaussians_cap() -> None:
     hparams = TrainingHyperParams(refinement_interval=200, refinement_growth_start_step=0, max_gaussians=1024, refinement_target_splat_ratio=1.0, refinement_prune_lowest_contribution_ratio=0.0, refinement_max_growth_per_step=10.0, refinement_max_prune_per_step=1.0, lr_schedule_enabled=False)
 

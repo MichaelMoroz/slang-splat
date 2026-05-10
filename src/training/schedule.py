@@ -265,7 +265,7 @@ def resolve_position_random_step_noise_lr(training_hparams: Any, step: int) -> f
 
 
 def resolve_position_push_away_from_camera_step(training_hparams: Any, step: int) -> float:
-    start = max(float(getattr(training_hparams, "position_push_away_from_camera_step", 0.0)), 0.0)
+    start = float(getattr(training_hparams, "position_push_away_from_camera_step", 0.0))
     if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
         return start
     return _resolve_staged_linear_value(
@@ -273,10 +273,10 @@ def resolve_position_push_away_from_camera_step(training_hparams: Any, step: int
         step,
         start,
         (
-            max(float(getattr(training_hparams, "position_push_away_from_camera_step_stage1", start)), 0.0),
-            max(float(getattr(training_hparams, "position_push_away_from_camera_step_stage2", start)), 0.0),
-            max(float(getattr(training_hparams, "position_push_away_from_camera_step_stage3", start)), 0.0),
-            max(float(getattr(training_hparams, "position_push_away_from_camera_step_stage4", getattr(training_hparams, "position_push_away_from_camera_step_stage3", start))), 0.0),
+            float(getattr(training_hparams, "position_push_away_from_camera_step_stage1", start)),
+            float(getattr(training_hparams, "position_push_away_from_camera_step_stage2", start)),
+            float(getattr(training_hparams, "position_push_away_from_camera_step_stage3", start)),
+            float(getattr(training_hparams, "position_push_away_from_camera_step_stage4", getattr(training_hparams, "position_push_away_from_camera_step_stage3", start))),
         ),
     )
 

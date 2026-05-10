@@ -196,7 +196,7 @@ void csRegularizeGaussianPacked(uint3 dispatchThreadID : SV_DispatchThreadID)
     OptimizerParamSettings settings = g_OptimizerParamSettings[paramId];
     float value = sanitize_scalar(g_SplatParamsRW[paramIndex], g_Stability.hugeValue);
 
-    if (paramId >= PARAM_POSITION_X && paramId <= PARAM_POSITION_Z && g_GaussianOptimizerRegularization.z > 0.0)
+    if (paramId >= PARAM_POSITION_X && paramId <= PARAM_POSITION_Z && g_GaussianOptimizerRegularization.z != 0.0)
     {
         float3 position = load_splat_param_vector<3>(g_SplatParamsRW, g_SplatCount, PARAM_POSITION_X, splatId);
         float3 logScale = load_splat_param_vector<3>(g_SplatParamsRW, g_SplatCount, PARAM_SCALE_X, splatId);
