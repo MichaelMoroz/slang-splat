@@ -19,6 +19,7 @@ from ..metrics import Metrics
 from ..scan.prefix_sum import GPUPrefixSum
 from ..sort.radix_sort import GPURadixSort
 from ..training import AdamOptimizer, GaussianOptimizer, GaussianTrainer, resolve_sh_band
+from ..training.image_color_init import TrainingImageColorInitializer
 from ..utility import SHADER_ROOT, drain_deferred_resource_releases, load_compute_items, load_compute_kernels, normalize3
 from ..renderer import Camera, GaussianRenderSettings, GaussianRenderer
 from ..scene import GaussianScene, save_gaussian_ply
@@ -143,6 +144,7 @@ def _precompile_runtime_shaders(device: spy.Device) -> None:
     )
     load_compute_kernels(device, SHADER_ROOT / "renderer" / "gaussian_training_stage.slang", _VIEWER_DEBUG_KERNEL_ENTRIES)
     load_compute_kernels(device, SHADER_ROOT / "utility" / "blur" / "separable_gaussian_blur.slang", SeparableGaussianBlur._KERNEL_ENTRIES)
+    load_compute_kernels(device, TrainingImageColorInitializer.SHADER_PATH, TrainingImageColorInitializer.KERNEL_ENTRIES)
     load_compute_kernels(device, SHADER_ROOT / "utility" / "optimizer" / "optimizer.slang", _ADAM_KERNEL_ENTRIES)
     load_compute_kernels(device, SHADER_ROOT / "utility" / "optimizer" / "gaussian_optimizer_stage.slang", _GAUSSIAN_OPTIMIZER_KERNEL_ENTRIES)
     load_compute_items(device, _PREFIX_SUM_ITEM_SPECS)
@@ -729,6 +731,7 @@ class SplatViewer(_ViewerWindowHost):
                     fibonacci_sphere_color=getattr(import_cfg, "fibonacci_sphere_color", (0.8, 0.8, 0.8)),
                     target_alpha_mode=getattr(import_cfg, "target_alpha_mode", None),
                     use_target_alpha_mask=bool(getattr(import_cfg, "use_target_alpha_mask", False)),
+                    training_image_color_init=bool(getattr(import_cfg, "training_image_color_init", False)),
                     pointcloud_enabled=bool(getattr(import_cfg, "pointcloud_enabled", False)),
                     pointcloud_nn_radius_scale_coef=getattr(import_cfg, "pointcloud_nn_radius_scale_coef", None),
                     diffused_enabled=bool(getattr(import_cfg, "diffused_enabled", False)),

@@ -1180,6 +1180,7 @@ def test_import_colmap_from_ui_clears_loaded_scene_before_queueing(tmp_path: Pat
                 "colmap_min_track_length": 5,
                 "colmap_diffused_point_count": 100000,
                 "colmap_pointcloud_enabled": True,
+                "colmap_training_image_color_init": True,
                 "colmap_selected_camera_ids": (7,),
                 "_colmap_camera_rows": ({"camera_id": 7, "frame_count": 1},),
                 "target_alpha_mode": 1,
@@ -1242,6 +1243,7 @@ def test_import_colmap_from_ui_clears_loaded_scene_before_queueing(tmp_path: Pat
     assert viewer.s.colmap_import_progress.selected_camera_ids == (7,)
     assert viewer.s.colmap_import_progress.target_alpha_mode == 1
     assert viewer.s.colmap_import_progress.use_target_alpha_mask is True
+    assert viewer.s.colmap_import_progress.training_image_color_init is True
 
 
 def test_import_colmap_from_ui_queues_custom_mesh_mode(tmp_path: Path, monkeypatch) -> None:
@@ -1842,7 +1844,7 @@ def test_import_colmap_dataset_uses_aligned_reconstruction(monkeypatch) -> None:
     monkeypatch.setattr(
         session,
         "_finish_import_colmap_dataset",
-        lambda viewer_obj, **kwargs: calls.append(("finish", kwargs["recon"], kwargs["training_frames"], kwargs["frame_targets_native"])),
+        lambda viewer_obj, **kwargs: calls.append(("finish", kwargs["recon"], kwargs["training_frames"], kwargs["frame_targets_native"], kwargs["training_image_color_init"])),
     )
     monkeypatch.setattr(session, "_create_native_dataset_textures", lambda viewer_obj, resolved_frames: ["tex0"] if resolved_frames is frames else (_ for _ in ()).throw(AssertionError("unexpected frames")))
 
@@ -1859,6 +1861,7 @@ def test_import_colmap_dataset_uses_aligned_reconstruction(monkeypatch) -> None:
         image_downscale_scale=1.0,
         nn_radius_scale_coef=0.5,
         diffused_point_count=100000,
+        training_image_color_init=True,
     )
 
     assert calls[:3] == [
@@ -1868,7 +1871,7 @@ def test_import_colmap_dataset_uses_aligned_reconstruction(monkeypatch) -> None:
     ]
     assert calls[-2:] == [
         ("frames", recon, Path("dataset/garden/images_8"), (), "original", 2048, 1.0),
-        ("finish", recon, frames, ["tex0"]),
+        ("finish", recon, frames, ["tex0"], True),
     ]
 
 
@@ -1981,6 +1984,7 @@ def test_colmap_import_settings_defaults_prefer_pointcloud() -> None:
 
     assert defaults.init_mode == "pointcloud"
     assert defaults.auto_rotate_scene is True
+    assert defaults.training_image_color_init is False
     assert defaults.nn_radius_scale_coef == 0.5
     assert defaults.min_track_length == 3
     assert defaults.depth_root is None
@@ -2441,6 +2445,38 @@ def test_initialize_training_scene_rebuilds_training_frames_from_colmap(monkeypa
 
     assert viewer.s.colmap_recon is not None
     assert viewer.s.training_frames == [frame]
+
+
+def test_training_image_color_init_runs_only_when_enabled_with_native_targets(monkeypatch) -> None:
+    calls: list[object] = []
+
+    class _Initializer:
+        def __init__(self, device) -> None:
+            calls.append(("create", device))
+
+        def apply(self, encoder, renderer, frames, frame_textures, splat_count) -> None:
+            calls.append(("apply", encoder, renderer, tuple(frames), tuple(frame_textures), splat_count))
+
+    viewer = SimpleNamespace(device="device", s=SimpleNamespace(colmap_import=SimpleNamespace(training_image_color_init=False)))
+    trainer = SimpleNamespace(
+        _frame_targets_native=["tex"],
+        renderer="renderer",
+        frames=["frame"],
+        scene=SimpleNamespace(count=4),
+    )
+    monkeypatch.setattr(session, "TrainingImageColorInitializer", _Initializer)
+
+    session._apply_training_image_color_init(viewer, trainer, "encoder")
+    viewer.s.colmap_import.training_image_color_init = True
+    trainer._frame_targets_native = []
+    session._apply_training_image_color_init(viewer, trainer, "encoder")
+    trainer._frame_targets_native = ["tex"]
+    session._apply_training_image_color_init(viewer, trainer, "encoder")
+
+    assert calls == [
+        ("create", "device"),
+        ("apply", "encoder", "renderer", ("frame",), ("tex",), 4),
+    ]
 
 
 def test_refresh_training_frames_uses_cached_reconstruction(monkeypatch) -> None:

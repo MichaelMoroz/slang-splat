@@ -2143,6 +2143,7 @@ class ToolkitWindow:
             for label, key, tooltip in (
                 ("Auto Rotate Scene", "colmap_auto_rotate_scene", "Apply the COLMAP import auto-alignment pass that reorients the reconstructed scene from the camera layout. Disable this to preserve the original COLMAP orientation."),
                 ("Compress Dataset using BC7", "compress_dataset_using_bc7", "Compress imported training images into BC7 DDS files under Image Folder/cache and reuse that cache on later loads."),
+                ("Initialize Colors From Images", "colmap_training_image_color_init", "After initialization, project each splat into all imported training images and use the nearest valid sampled color."),
             ):
                 changed, value = imgui.checkbox(label, bool(ui._values.get(key, False)))
                 if changed:

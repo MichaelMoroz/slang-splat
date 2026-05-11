@@ -173,6 +173,7 @@ def test_build_ui_initializes_control_groups_and_internal_state() -> None:
         "colmap_fibonacci_sphere_enabled",
         "colmap_fibonacci_sphere_nn_radius_scale_coef",
         "colmap_auto_rotate_scene",
+        "colmap_training_image_color_init",
         "colmap_depth_root",
         "colmap_fibonacci_sphere_point_count",
         "colmap_fibonacci_sphere_radius_multiplier",
@@ -389,6 +390,7 @@ def test_export_repo_defaults_writes_cached_raster_grad_training_render_defaults
     viewer_ui._values["cached_raster_grad_fixed_quat_range"] = 0.125
     viewer_ui._values["cached_raster_grad_fixed_color_range"] = 9.0
     viewer_ui._values["cached_raster_grad_fixed_opacity_range"] = 10.0
+    viewer_ui._values["colmap_training_image_color_init"] = True
 
     exported = ui.export_repo_defaults_from_ui_values(viewer_ui._values)
 
@@ -406,6 +408,7 @@ def test_export_repo_defaults_writes_cached_raster_grad_training_render_defaults
     assert exported["cli"]["common_render"]["cached_raster_grad_fixed_quat_range"] == 0.125
     assert exported["cli"]["common_render"]["cached_raster_grad_fixed_color_range"] == 9.0
     assert exported["cli"]["common_render"]["cached_raster_grad_fixed_opacity_range"] == 10.0
+    assert exported["viewer"]["import"]["colmap_training_image_color_init"] is True
 
 
 def test_train_schedule_exposes_sorting_order_dithering_controls() -> None:

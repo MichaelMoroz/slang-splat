@@ -44,6 +44,7 @@ from ..scene._internal.colmap_ops import (
 )
 from ..training.alpha_modes import TARGET_ALPHA_MODE_OFF, resolve_target_alpha_mode
 from ..training import GaussianTrainer, resolve_effective_train_render_factor, resolve_training_resolution
+from ..training.image_color_init import TrainingImageColorInitializer
 from ..scene._internal.colmap_types import ColmapFrame, ColmapReconstruction, point_tables
 from .session_colmap_utils import (
     _COLMAP_CAMERA_MODEL_NAMES,
@@ -1457,6 +1458,22 @@ def _build_initial_training_scene(viewer: object, init: object, params: object, 
     return _concat_gaussian_scenes(source_scenes), None
 
 
+def _apply_training_image_color_init(viewer: object, trainer: GaussianTrainer, encoder: spy.CommandEncoder) -> None:
+    import_cfg = getattr(viewer.s, "colmap_import", None)
+    if not bool(getattr(import_cfg, "training_image_color_init", False)):
+        return
+    frame_textures = list(getattr(trainer, "_frame_targets_native", ()))
+    if len(frame_textures) == 0:
+        return
+    TrainingImageColorInitializer(viewer.device).apply(
+        encoder,
+        trainer.renderer,
+        list(getattr(trainer, "frames", ())),
+        frame_textures,
+        int(getattr(trainer.scene, "count", 0)),
+    )
+
+
 def resolve_effective_training_setup(viewer: object):
     init = viewer.init_params()
     raw_params = viewer.training_params()
@@ -1708,6 +1725,7 @@ def _finish_import_colmap_dataset(
     init_mode: str,
     auto_rotate_scene: bool = True,
     compress_dataset_using_bc7: bool = False,
+    training_image_color_init: bool = False,
     custom_ply_path: Path | None,
     image_downscale_mode: str,
     image_downscale_max_size: int,
@@ -1757,6 +1775,7 @@ def _finish_import_colmap_dataset(
         init_mode=init_mode,
         auto_rotate_scene=auto_rotate_scene,
         compress_dataset_using_bc7=compress_dataset_using_bc7,
+        training_image_color_init=training_image_color_init,
         custom_ply_path=custom_ply_path,
         image_downscale_mode=image_downscale_mode,
         image_downscale_max_size=image_downscale_max_size,
@@ -1842,6 +1861,7 @@ def import_colmap_dataset(
     target_alpha_mode: int | None = None,
     use_target_alpha_mask: bool = False,
     compress_dataset_using_bc7: bool = False,
+    training_image_color_init: bool = False,
     pointcloud_enabled: bool | None = None,
     pointcloud_nn_radius_scale_coef: float | None = None,
     diffused_enabled: bool | None = None,
@@ -1863,6 +1883,7 @@ def import_colmap_dataset(
         images_root=Path(images_root).resolve(),
         auto_rotate_scene=bool(auto_rotate_scene),
         compress_dataset_using_bc7=bool(compress_dataset_using_bc7),
+        training_image_color_init=bool(training_image_color_init),
         nn_radius_scale_coef=float(nn_radius_scale_coef),
         pointcloud_enabled=bool(pointcloud_enabled),
         pointcloud_nn_radius_scale_coef=float(max(pointcloud_nn_radius_scale_coef if pointcloud_nn_radius_scale_coef is not None else nn_radius_scale_coef, 1e-4)),
@@ -1917,6 +1938,7 @@ def import_colmap_dataset(
         init_mode=init_mode,
         auto_rotate_scene=auto_rotate_scene,
         compress_dataset_using_bc7=compress_dataset_using_bc7,
+        training_image_color_init=training_image_color_init,
         custom_ply_path=custom_ply_path,
         image_downscale_mode=image_downscale_mode,
         image_downscale_max_size=image_downscale_max_size,
@@ -1990,6 +2012,7 @@ def import_colmap_from_ui(viewer: object) -> None:
     auto_rotate_scene = bool(viewer.ui._values.get("colmap_auto_rotate_scene", True))
     target_alpha_mode = resolve_target_alpha_mode(viewer.ui._values.get("target_alpha_mode", None), legacy_use_target_alpha_mask=bool(viewer.ui._values.get("use_target_alpha_mask", False)))
     compress_dataset_using_bc7 = bool(viewer.ui._values.get("compress_dataset_using_bc7", False))
+    training_image_color_init = bool(viewer.ui._values.get("colmap_training_image_color_init", False))
     if not colmap_root.exists():
         raise FileNotFoundError(f"COLMAP root does not exist: {colmap_root}")
     if not _has_colmap_sparse(colmap_root):
@@ -2022,6 +2045,7 @@ def import_colmap_from_ui(viewer: object) -> None:
         auto_rotate_scene=auto_rotate_scene,
         custom_ply_path=None if custom_ply_path is None else custom_ply_path.resolve(),
         compress_dataset_using_bc7=compress_dataset_using_bc7,
+        training_image_color_init=training_image_color_init,
         image_downscale_mode=image_downscale_mode,
         image_downscale_max_size=image_downscale_max_size,
         image_downscale_scale=image_downscale_scale,
@@ -2129,6 +2153,7 @@ def advance_colmap_import(viewer: object) -> None:
                 init_mode=progress.init_mode,
                 auto_rotate_scene=progress.auto_rotate_scene,
                 compress_dataset_using_bc7=progress.compress_dataset_using_bc7,
+                training_image_color_init=progress.training_image_color_init,
                 custom_ply_path=progress.custom_ply_path,
                 image_downscale_mode=progress.image_downscale_mode,
                 image_downscale_max_size=progress.image_downscale_max_size,
@@ -2215,6 +2240,7 @@ def initialize_training_scene(viewer: object, frame_targets_native: list[spy.Tex
     viewer.s.scene = SceneCountProxy(scene.count)
     reset_main_camera(viewer)
     enc = viewer.device.create_command_encoder()
+    _apply_training_image_color_init(viewer, viewer.s.trainer, enc)
     renderer.copy_scene_state_to(enc, viewer.s.renderer)
     viewer.device.submit_command_buffer(enc.finish())
     _apply_debug_buffers(viewer, viewer.s.renderer)

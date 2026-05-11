@@ -184,6 +184,7 @@ def _update_import_settings(
     init_mode: str,
     auto_rotate_scene: bool,
     compress_dataset_using_bc7: bool,
+    training_image_color_init: bool,
     custom_ply_path: Path | None,
     image_downscale_mode: str,
     image_downscale_max_size: int,
@@ -235,6 +236,7 @@ def _update_import_settings(
         init_mode=str(init_mode),
         auto_rotate_scene=bool(auto_rotate_scene),
         compress_dataset_using_bc7=bool(compress_dataset_using_bc7),
+        training_image_color_init=bool(training_image_color_init),
         custom_ply_path=None if custom_ply_path is None else Path(custom_ply_path).resolve(),
         image_downscale_mode=str(image_downscale_mode),
         image_downscale_max_size=max(int(image_downscale_max_size), 1),
@@ -273,6 +275,7 @@ def _update_import_settings(
     )
     viewer.ui._values["colmap_auto_rotate_scene"] = bool(auto_rotate_scene)
     viewer.ui._values["compress_dataset_using_bc7"] = bool(compress_dataset_using_bc7)
+    viewer.ui._values["colmap_training_image_color_init"] = bool(training_image_color_init)
     _set_ui_path(viewer, "colmap_custom_ply_path", custom_ply_path)
     viewer.ui._values["colmap_image_downscale_mode"] = 1 if str(image_downscale_mode) == _COLMAP_IMAGE_DOWNSCALE_MAX_SIZE else 2 if str(image_downscale_mode) == _COLMAP_IMAGE_DOWNSCALE_SCALE else 0
     viewer.ui._values["colmap_image_max_size"] = max(int(image_downscale_max_size), 1)

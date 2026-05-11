@@ -276,6 +276,7 @@ def test_precompile_runtime_shaders_loads_lazy_runtime_shader_sets(monkeypatch) 
     assert any(path == str(app.SHADER_ROOT / "renderer" / "gaussian_raster_stage.slang") and entries.get("training_forward") == "csRasterizeTrainingForwardFloat" for path, entries in kernel_calls)
     assert any(path == str(app.SHADER_ROOT / "renderer" / "gaussian_training_stage.slang") and entries.get("debug_target_sample_kernel") == "csSampleTrainingDebugTarget" for path, entries in kernel_calls)
     assert any(path == str(app.SHADER_ROOT / "utility" / "blur" / "separable_gaussian_blur.slang") and entries.get("horizontal") == "csGaussianBlurHorizontal" for path, entries in kernel_calls)
+    assert any(path == str(app.TrainingImageColorInitializer.SHADER_PATH) and entries.get("sample") == "csSampleTrainingImageColorInit" for path, entries in kernel_calls)
     assert any(path == str(app.SHADER_ROOT / "utility" / "optimizer" / "optimizer.slang") and entries.get("adam_step") == "csAdamStepPacked" for path, entries in kernel_calls)
 
 
