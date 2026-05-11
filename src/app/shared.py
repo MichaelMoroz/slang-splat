@@ -10,6 +10,7 @@ import slangpy as spy
 from ..renderer.render_params import RendererParams
 from ..utility import clamp_float, clamp_int
 from ..scene import GaussianInitHyperParams, GaussianScene
+from ..training.alpha_modes import resolve_target_alpha_mode
 from ..training.defaults import DEFAULT_REFINEMENT_CLONE_SCALE_MUL, DEFAULT_REFINEMENT_CONTRIBUTION_WEIGHT_EXPONENT, DEFAULT_REFINEMENT_GRAD_VARIANCE_WEIGHT_EXPONENT, DEFAULT_REFINEMENT_SPLIT_BETA, TRAINING_BUILD_ARG_DEFAULTS
 from ..training import AdamHyperParams, DEFAULT_DEBUG_CONTRIBUTION_RANGE, DEFAULT_REFINEMENT_MIN_CONTRIBUTION, DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TRAIN_SUBSAMPLE_MAX_FACTOR, TrainingHyperParams, resolve_training_profile
 
@@ -193,6 +194,7 @@ def build_training_params(
     position_random_step_opacity_gate_sharpness: float = TRAINING_BUILD_ARG_DEFAULTS["position_random_step_opacity_gate_sharpness"],
     max_gaussians: int = TRAINING_BUILD_ARG_DEFAULTS["max_gaussians"],
     background_mode: int = TRAINING_BUILD_ARG_DEFAULTS["background_mode"],
+    target_alpha_mode: int | None = TRAINING_BUILD_ARG_DEFAULTS.get("target_alpha_mode", None),
     use_target_alpha_mask: bool = TRAINING_BUILD_ARG_DEFAULTS["use_target_alpha_mask"],
     use_sh: bool = TRAINING_BUILD_ARG_DEFAULTS["use_sh"],
     sh_band: int | None = None,
@@ -277,6 +279,7 @@ def build_training_params(
     resolved_sh_band_stage2 = 2 if sh_band_stage2 is None and bool(use_sh_stage2) else (0 if sh_band_stage2 is None else int(sh_band_stage2))
     resolved_sh_band_stage3 = 3 if sh_band_stage3 is None and bool(use_sh_stage3) else (0 if sh_band_stage3 is None else int(sh_band_stage3))
     resolved_sh_band_stage4 = 3 if sh_band_stage4 is None and bool(use_sh_stage4) else (0 if sh_band_stage4 is None else int(sh_band_stage4))
+    resolved_target_alpha_mode = resolve_target_alpha_mode(target_alpha_mode, legacy_use_target_alpha_mask=bool(use_target_alpha_mask))
     resolved_refinement_variance_exponent = (
         DEFAULT_REFINEMENT_GRAD_VARIANCE_WEIGHT_EXPONENT
         if refinement_grad_variance_weight_exponent is None and refinement_momentum_weight_exponent is None
@@ -312,6 +315,7 @@ def build_training_params(
         background=tuple(float(v) for v in np.asarray(background, dtype=np.float32).reshape(3)),
         camera_min_dist=float(camera_min_dist),
         background_mode=TRAIN_BACKGROUND_MODE_RANDOM if clamp_int(background_mode, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM) == TRAIN_BACKGROUND_MODE_RANDOM else TRAIN_BACKGROUND_MODE_CUSTOM,
+        target_alpha_mode=resolved_target_alpha_mode,
         use_target_alpha_mask=bool(use_target_alpha_mask),
         use_sh=resolved_sh_band > 0,
         sh_band=resolved_sh_band,

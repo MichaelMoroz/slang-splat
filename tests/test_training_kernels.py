@@ -15,6 +15,7 @@ from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 from src.scene.sh_utils import SH_C0, evaluate_sh_color
 from src.training import gaussian_trainer as gaussian_trainer_module
 from src.training import AdamHyperParams, GaussianTrainer, SPLAT_CONTRIBUTION_FIXED_SCALE, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, contribution_info_from_average_raw_fixed, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_color_lr_mul, resolve_colorspace_mod, resolve_cosine_base_learning_rate, resolve_effective_refinement_interval, resolve_effective_train_render_factor, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_visible_angle_deg, resolve_opacity_lr_mul, resolve_opacity_reg_weight, resolve_position_lr_mul, resolve_position_push_away_from_camera_step, resolve_position_random_step_noise_lr, resolve_refinement_active_target_splat_ratio, resolve_refinement_clone_budget, resolve_refinement_min_contribution, resolve_refinement_min_screen_radius_px, resolve_refinement_prune_lowest_contribution_ratio, resolve_refinement_prune_ratio, resolve_refinement_target_splat_ratio, resolve_rotation_lr_mul, resolve_scale_lr_mul, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering, resolve_ssim_weight, resolve_training_resolution, resolve_train_subsample_factor, resolve_use_sh, should_run_refinement_step
+from src.training.alpha_modes import TARGET_ALPHA_MODE_ALPHA_TARGET
 
 _ADAM_BUFFER_NAMES = ("adam_moments",)
 _OPACITY_EPS = 1e-6
@@ -1512,6 +1513,45 @@ def test_target_alpha_mask_skips_masked_pixel_loss_and_output_grads(device, tmp_
     np.testing.assert_allclose((loss_on, mse_on, density_on), (0.0, 0.0, 0.0), rtol=0.0, atol=1e-7)
     np.testing.assert_allclose(grads_on[..., :3], 0.0, rtol=0.0, atol=1e-7)
     np.testing.assert_array_equal(contributions_on, np.zeros_like(contributions_on))
+
+
+def test_target_alpha_mode_adds_alpha_l1_to_loss_and_output_grad(device, tmp_path: Path):
+    trainer_off = _make_loss_only_trainer(
+        device,
+        tmp_path,
+        width=4,
+        height=4,
+        training_hparams=TrainingHyperParams(background_mode=TRAIN_BACKGROUND_MODE_CUSTOM, background=(0.0, 0.0, 0.0), density_regularizer=0.0, ssim_weight=0.0),
+        image_name="alpha_target_off.png",
+        image_id=41,
+    )
+    trainer_alpha = _make_loss_only_trainer(
+        device,
+        tmp_path,
+        width=4,
+        height=4,
+        training_hparams=TrainingHyperParams(background_mode=TRAIN_BACKGROUND_MODE_CUSTOM, background=(0.0, 0.0, 0.0), density_regularizer=0.0, ssim_weight=0.0, target_alpha_mode=TARGET_ALPHA_MODE_ALPHA_TARGET),
+        image_name="alpha_target_on.png",
+        image_id=42,
+    )
+    rendered = np.zeros((4, 4, 4), dtype=np.float32)
+    target = np.zeros((4, 4, 4), dtype=np.float32)
+    rendered[..., :3] = 0.25
+    target[..., :3] = 0.75
+    rendered[..., 3] = 0.9
+    target[..., 3] = 0.1
+
+    _dispatch_manual_loss(trainer_off, rendered, target)
+    total_off, _mse_off, _density_off = trainer_off._read_loss_metrics()
+    grads_off = _read_output_grads(trainer_off.renderer).copy()
+
+    _dispatch_manual_loss(trainer_alpha, rendered, target)
+    total_alpha, _mse_alpha, _density_alpha = trainer_alpha._read_loss_metrics()
+    grads_alpha = _read_output_grads(trainer_alpha.renderer).copy()
+
+    assert total_alpha > total_off
+    np.testing.assert_allclose(grads_alpha[..., :3], grads_off[..., :3] * 0.75, rtol=1e-5, atol=1e-7)
+    np.testing.assert_allclose(grads_alpha[..., 3], np.full((4, 4), 1.0 / 64.0, dtype=np.float32), rtol=1e-5, atol=1e-7)
 
 
 def test_split_raster_backward_consumes_forward_cache_only(device, tmp_path: Path):

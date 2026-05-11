@@ -34,6 +34,7 @@ from ..scene._internal.colmap_ops import (
     DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH,
     DEPTH_INIT_VALUE_DISTANCE,
     DEPTH_INIT_VALUE_Z_DEPTH,
+    FIBONACCI_SPHERE_COLOR,
     TRAINING_FRAME_LOAD_THREADS,
     build_depth_path_index,
     generate_depth_init_points,
@@ -41,6 +42,7 @@ from ..scene._internal.colmap_ops import (
     load_training_frame_rgba8_with_depth_payload,
     match_depth_path,
 )
+from ..training.alpha_modes import TARGET_ALPHA_MODE_OFF, resolve_target_alpha_mode
 from ..training import GaussianTrainer, resolve_effective_train_render_factor, resolve_training_resolution
 from ..scene._internal.colmap_types import ColmapFrame, ColmapReconstruction, point_tables
 from .session_colmap_utils import (
@@ -613,6 +615,10 @@ def _fibonacci_radius_multiplier(import_cfg: object) -> float:
     return max(float(getattr(import_cfg, "fibonacci_sphere_radius_multiplier", getattr(import_cfg, "fibonacci_sphere_radius", 2.0))), 0.0)
 
 
+def _fibonacci_sphere_color(import_cfg: object) -> tuple[float, float, float]:
+    return tuple(float(v) for v in np.clip(np.asarray(getattr(import_cfg, "fibonacci_sphere_color", FIBONACCI_SPHERE_COLOR), dtype=np.float32).reshape(3), 0.0, 1.0))
+
+
 def _concat_gaussian_scenes(scenes: list[GaussianScene]) -> GaussianScene:
     if len(scenes) == 0:
         raise RuntimeError("Enable at least one initialization source before building the training scene.")
@@ -661,11 +667,12 @@ def _append_fibonacci_sphere_points(
     colors: np.ndarray,
     point_count: int,
     radius_multiplier: float,
+    sphere_color: tuple[float, float, float],
 ) -> tuple[np.ndarray, np.ndarray]:
     count = max(int(point_count), 0)
     if count <= 0:
         return positions, colors
-    sphere_positions, sphere_colors = sample_colmap_fibonacci_sphere_points(recon, count, radius_multiplier)
+    sphere_positions, sphere_colors = sample_colmap_fibonacci_sphere_points(recon, count, radius_multiplier, sphere_color=sphere_color)
     return (
         np.ascontiguousarray(np.concatenate((np.asarray(positions, dtype=np.float32), sphere_positions), axis=0), dtype=np.float32),
         np.ascontiguousarray(np.concatenate((np.asarray(colors, dtype=np.float32), sphere_colors), axis=0), dtype=np.float32),
@@ -721,6 +728,7 @@ def _cached_init_signature(viewer: object, init: object) -> tuple[object, ...] |
             int(import_cfg.depth_point_count),
             int(getattr(import_cfg, "fibonacci_sphere_point_count", 0)),
             round(float(_fibonacci_radius_multiplier(import_cfg)), 6),
+            tuple(round(float(v), 6) for v in _fibonacci_sphere_color(import_cfg)),
         )
     return (
         None if viewer.s.colmap_root is None else str(Path(viewer.s.colmap_root).resolve()),
@@ -737,6 +745,7 @@ def _cached_init_signature(viewer: object, init: object) -> tuple[object, ...] |
         round(float(_import_cfg_nn_radius_scale_coef(import_cfg, "custom_mesh_nn_radius_scale_coef")), 6),
         int(getattr(import_cfg, "fibonacci_sphere_point_count", 0)),
         round(float(_fibonacci_radius_multiplier(import_cfg)), 6),
+        tuple(round(float(v), 6) for v in _fibonacci_sphere_color(import_cfg)),
         round(float(_import_cfg_nn_radius_scale_coef(import_cfg, "fibonacci_sphere_nn_radius_scale_coef", default=1.0, fallback_attr=None)), 6),
         int(init.seed),
     )
@@ -817,6 +826,7 @@ def _load_enabled_init_source_payloads(viewer: object, init: object) -> None:
                 viewer.s.colmap_recon,
                 int(getattr(import_cfg, "fibonacci_sphere_point_count", 0)),
                 _fibonacci_radius_multiplier(import_cfg),
+                sphere_color=_fibonacci_sphere_color(import_cfg),
             )
             _store_point_source_cache(viewer, source_name, positions, colors)
 
@@ -1525,26 +1535,35 @@ def sync_scene_from_training_renderer(viewer: object, dst_renderer: GaussianRend
     setattr(viewer.s, f"synced_step_{target}", step)
 
 
+def _histogram_scene_source(viewer: object) -> tuple[GaussianRenderer | None, int, int, object | None, object | None]:
+    trainer = getattr(viewer.s, "trainer", None)
+    training_renderer = getattr(viewer.s, "training_renderer", None)
+    if trainer is not None and training_renderer is not None:
+        return training_renderer, int(trainer.scene.count), int(trainer.state.step), getattr(trainer, "metrics", None), trainer
+    renderer = getattr(viewer.s, "renderer", None)
+    scene = getattr(viewer.s, "scene", None)
+    scene_count = int(getattr(scene, "count", 0)) if scene is not None else 0
+    return renderer, scene_count, 0, None, None
+
+
 def refresh_cached_raster_grad_histograms(viewer: object, force: bool = False) -> None:
     refresh_requested = bool(force or viewer.ui._values.get("_histograms_refresh_requested", False))
-    if viewer.s.trainer is None or viewer.s.training_renderer is None:
+    renderer, scene_count, step, metrics, trainer = _histogram_scene_source(viewer)
+    if renderer is None or scene_count <= 0:
         viewer.s.cached_raster_grad_histograms = None
         viewer.s.cached_raster_grad_ranges = None
-        viewer.s.cached_raster_grad_histogram_status = "Histograms require an initialized training scene."
+        viewer.s.cached_raster_grad_histogram_status = "Histograms require a loaded or initialized scene."
         viewer.ui._values["_histograms_refresh_requested"] = False
         return
     bin_count = max(int(viewer.ui._values.get("hist_bin_count", 64)), 1)
     min_value = float(viewer.ui._values.get("hist_min_value", -1.0))
     max_value = float(viewer.ui._values.get("hist_max_value", 1.0))
-    step = int(viewer.s.trainer.state.step)
-    scene_count = int(viewer.s.trainer.scene.count)
     signature = (step, scene_count, bin_count, min_value, max_value)
     if not refresh_requested:
         return
-    metrics = getattr(viewer.s.trainer, "metrics", None)
-    scene_ranges = viewer.s.training_renderer.compute_scene_param_ranges(scene_count, metrics=metrics)
+    scene_ranges = renderer.compute_scene_param_ranges(scene_count, metrics=metrics)
     scene_min_values, scene_max_values = _scene_histogram_bounds(scene_ranges, min_value, max_value)
-    scene_histograms = viewer.s.training_renderer.compute_scene_param_histograms(
+    scene_histograms = renderer.compute_scene_param_histograms(
         scene_count,
         bin_count=bin_count,
         min_value=min_value,
@@ -1553,11 +1572,14 @@ def refresh_cached_raster_grad_histograms(viewer: object, force: bool = False) -
         param_max_values=scene_max_values,
         metrics=metrics,
     )
-    compute_refinement_ranges = getattr(viewer.s.trainer, "compute_refinement_distribution_ranges", None)
-    refinement_ranges = compute_refinement_ranges(scene_count) if callable(compute_refinement_ranges) else None
-    refinement_min_log10, refinement_max_log10 = _param_range_bounds(refinement_ranges, PARAM_HISTOGRAM_SCALE_LOG10, _REFINEMENT_HISTOGRAM_LOG10_FALLBACK_RANGE)
-    compute_refinement_histograms = getattr(viewer.s.trainer, "compute_refinement_distribution_histograms", None)
-    refinement_histograms = compute_refinement_histograms(scene_count, bin_count=bin_count, min_log10=refinement_min_log10, max_log10=refinement_max_log10) if callable(compute_refinement_histograms) else None
+    refinement_ranges = None
+    refinement_histograms = None
+    if trainer is not None:
+        compute_refinement_ranges = getattr(trainer, "compute_refinement_distribution_ranges", None)
+        refinement_ranges = compute_refinement_ranges(scene_count) if callable(compute_refinement_ranges) else None
+        refinement_min_log10, refinement_max_log10 = _param_range_bounds(refinement_ranges, PARAM_HISTOGRAM_SCALE_LOG10, _REFINEMENT_HISTOGRAM_LOG10_FALLBACK_RANGE)
+        compute_refinement_histograms = getattr(trainer, "compute_refinement_distribution_histograms", None)
+        refinement_histograms = compute_refinement_histograms(scene_count, bin_count=bin_count, min_log10=refinement_min_log10, max_log10=refinement_max_log10) if callable(compute_refinement_histograms) else None
     viewer.s.cached_raster_grad_histograms = _concat_param_histograms(scene_histograms, refinement_histograms)
     viewer.s.cached_raster_grad_ranges = _concat_param_tensor_ranges(scene_ranges, refinement_ranges)
     viewer.s.cached_raster_grad_histogram_mode = ""
@@ -1566,8 +1588,12 @@ def refresh_cached_raster_grad_histograms(viewer: object, force: bool = False) -
     viewer.s.cached_raster_grad_histogram_signature = signature
     total = int(np.sum(viewer.s.cached_raster_grad_histograms.counts))
     viewer.s.cached_raster_grad_histogram_status = (
-        f"Splat histograms | step={step:,} | samples={scene_count:,} | populated={total:,}"
-        if total > 0 or step > 0
+        (
+            f"Splat histograms | step={step:,} | samples={scene_count:,} | populated={total:,}"
+            if trainer is not None
+            else f"Splat histograms | samples={scene_count:,} | populated={total:,}"
+        )
+        if total > 0 or step > 0 or trainer is None
         else "No live splat histogram data is available yet."
     )
     viewer.ui._values["_histograms_refresh_requested"] = False
@@ -1692,6 +1718,8 @@ def _finish_import_colmap_dataset(
     diffused_point_count: int = 100000,
     fibonacci_sphere_point_count: int = 0,
     fibonacci_sphere_radius_multiplier: float = 2.0,
+    fibonacci_sphere_color: tuple[float, float, float] = tuple(float(v) for v in FIBONACCI_SPHERE_COLOR),
+    target_alpha_mode: int | None = None,
     use_target_alpha_mask: bool = False,
     pointcloud_enabled: bool | None = None,
     pointcloud_nn_radius_scale_coef: float | None = None,
@@ -1739,6 +1767,8 @@ def _finish_import_colmap_dataset(
         diffused_point_count=diffused_point_count,
         fibonacci_sphere_point_count=fibonacci_sphere_point_count,
         fibonacci_sphere_radius_multiplier=fibonacci_sphere_radius_multiplier,
+        fibonacci_sphere_color=fibonacci_sphere_color,
+        target_alpha_mode=target_alpha_mode,
         use_target_alpha_mask=use_target_alpha_mask,
         pointcloud_enabled=pointcloud_enabled,
         pointcloud_nn_radius_scale_coef=pointcloud_nn_radius_scale_coef,
@@ -1766,6 +1796,7 @@ def _finish_import_colmap_dataset(
             cached_init_point_colors,
             fibonacci_sphere_point_count,
             fibonacci_sphere_radius_multiplier,
+            fibonacci_sphere_color,
         )
         viewer.s.cached_init_point_positions = np.array(cached_init_point_positions, dtype=np.float32, copy=True)
         viewer.s.cached_init_point_colors = np.array(cached_init_point_colors, dtype=np.float32, copy=True)
@@ -1807,6 +1838,8 @@ def import_colmap_dataset(
     diffused_point_count: int = 100000,
     fibonacci_sphere_point_count: int = 0,
     fibonacci_sphere_radius_multiplier: float = 2.0,
+    fibonacci_sphere_color: tuple[float, float, float] = tuple(float(v) for v in FIBONACCI_SPHERE_COLOR),
+    target_alpha_mode: int | None = None,
     use_target_alpha_mask: bool = False,
     compress_dataset_using_bc7: bool = False,
     pointcloud_enabled: bool | None = None,
@@ -1845,6 +1878,8 @@ def import_colmap_dataset(
         fibonacci_sphere_enabled=bool(fibonacci_sphere_enabled),
         fibonacci_sphere_point_count=max(int(fibonacci_sphere_point_count), 0),
         fibonacci_sphere_radius_multiplier=max(float(fibonacci_sphere_radius_multiplier), 0.0),
+        fibonacci_sphere_color=tuple(float(v) for v in np.clip(np.asarray(fibonacci_sphere_color, dtype=np.float32).reshape(3), 0.0, 1.0)),
+        target_alpha_mode=resolve_target_alpha_mode(target_alpha_mode, legacy_use_target_alpha_mask=use_target_alpha_mask),
         fibonacci_sphere_nn_radius_scale_coef=float(max(fibonacci_sphere_nn_radius_scale_coef if fibonacci_sphere_nn_radius_scale_coef is not None else 1.0, 1e-4)),
     )
     resolved_selected_camera_ids = _normalized_selected_camera_ids(_camera_rows(recon), None if len(selected_camera_ids) == 0 else selected_camera_ids)
@@ -1892,6 +1927,7 @@ def import_colmap_dataset(
         diffused_point_count=diffused_point_count,
         fibonacci_sphere_point_count=fibonacci_sphere_point_count,
         fibonacci_sphere_radius_multiplier=fibonacci_sphere_radius_multiplier,
+        target_alpha_mode=target_alpha_mode,
         use_target_alpha_mask=use_target_alpha_mask,
         pointcloud_enabled=pointcloud_enabled,
         pointcloud_nn_radius_scale_coef=pointcloud_nn_radius_scale_coef,
@@ -1938,6 +1974,7 @@ def import_colmap_from_ui(viewer: object) -> None:
     diffused_point_count = max(int(viewer.ui._values.get("colmap_diffused_point_count", 100000)), 1)
     fibonacci_sphere_point_count = max(int(viewer.ui._values.get("colmap_fibonacci_sphere_point_count", 0)), 0)
     fibonacci_sphere_radius_multiplier = max(float(viewer.ui._values.get("colmap_fibonacci_sphere_radius_multiplier", viewer.ui._values.get("colmap_fibonacci_sphere_radius", 2.0))), 0.0)
+    fibonacci_sphere_color = tuple(float(v) for v in np.clip(np.asarray(viewer.ui._values.get("colmap_fibonacci_sphere_color", FIBONACCI_SPHERE_COLOR), dtype=np.float32).reshape(3), 0.0, 1.0))
     pointcloud_enabled = bool(viewer.ui._values.get("colmap_pointcloud_enabled", False))
     pointcloud_nn_radius_scale_coef = float(viewer.ui._values.get("colmap_pointcloud_nn_radius_scale_coef", nn_radius_scale_coef))
     diffused_enabled = bool(viewer.ui._values.get("colmap_diffused_enabled", False))
@@ -1951,7 +1988,7 @@ def import_colmap_from_ui(viewer: object) -> None:
     fibonacci_sphere_enabled = bool(viewer.ui._values.get("colmap_fibonacci_sphere_enabled", fibonacci_sphere_point_count > 0))
     fibonacci_sphere_nn_radius_scale_coef = float(viewer.ui._values.get("colmap_fibonacci_sphere_nn_radius_scale_coef", 1.0))
     auto_rotate_scene = bool(viewer.ui._values.get("colmap_auto_rotate_scene", True))
-    use_target_alpha_mask = bool(viewer.ui._values.get("use_target_alpha_mask", False))
+    target_alpha_mode = resolve_target_alpha_mode(viewer.ui._values.get("target_alpha_mode", None), legacy_use_target_alpha_mask=bool(viewer.ui._values.get("use_target_alpha_mask", False)))
     compress_dataset_using_bc7 = bool(viewer.ui._values.get("compress_dataset_using_bc7", False))
     if not colmap_root.exists():
         raise FileNotFoundError(f"COLMAP root does not exist: {colmap_root}")
@@ -1994,7 +2031,8 @@ def import_colmap_from_ui(viewer: object) -> None:
         diffused_point_count=diffused_point_count,
         fibonacci_sphere_point_count=fibonacci_sphere_point_count,
         fibonacci_sphere_radius_multiplier=fibonacci_sphere_radius_multiplier,
-        use_target_alpha_mask=use_target_alpha_mask,
+        fibonacci_sphere_color=fibonacci_sphere_color,
+        target_alpha_mode=target_alpha_mode,
         pointcloud_enabled=pointcloud_enabled,
         pointcloud_nn_radius_scale_coef=float(max(pointcloud_nn_radius_scale_coef, 1e-4)),
         diffused_enabled=diffused_enabled,
@@ -2101,7 +2139,8 @@ def advance_colmap_import(viewer: object) -> None:
                 diffused_point_count=progress.diffused_point_count,
                 fibonacci_sphere_point_count=progress.fibonacci_sphere_point_count,
                 fibonacci_sphere_radius_multiplier=progress.fibonacci_sphere_radius_multiplier,
-                use_target_alpha_mask=progress.use_target_alpha_mask,
+                fibonacci_sphere_color=progress.fibonacci_sphere_color,
+                target_alpha_mode=progress.target_alpha_mode,
                 pointcloud_enabled=getattr(progress, "pointcloud_enabled", None),
                 pointcloud_nn_radius_scale_coef=getattr(progress, "pointcloud_nn_radius_scale_coef", None),
                 diffused_enabled=getattr(progress, "diffused_enabled", None),

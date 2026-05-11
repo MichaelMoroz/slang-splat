@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..repo_defaults import viewer_defaults
+from ..training.alpha_modes import TARGET_ALPHA_MODE_LABELS
 from ..training import TRAIN_SUBSAMPLE_MAX_FACTOR
 from ..training.defaults import (
     DEFAULT_LR_SCHEDULE_STEPS,
@@ -96,7 +97,7 @@ TRAIN_SETUP_CONTROL_DEFS = (
     _control("max_gaussians", "input_int", "Max Gaussians", {"value": _default("max_gaussians"), "step": 1000, "step_fast": 10000}, group=TRAINING_SETUP_GROUP, build_args=("max_gaussians",)),
     _control("training_steps_per_frame", "input_int", "Steps / Frame", {"value": int(_VIEWER_CONTROL_DEFAULTS["training_steps_per_frame"]), "step": 1, "step_fast": 2}, group=TRAINING_SETUP_GROUP),
     _control("background_mode", "combo", "Train Background", {"value": _default("background_mode"), "options": TRAIN_BACKGROUND_MODE_LABELS}, group=TRAINING_SETUP_GROUP, build_args=("background_mode",)),
-    _control("use_target_alpha_mask", "checkbox", "Use Target Alpha Mask", {"value": _default("use_target_alpha_mask")}, group=TRAINING_SETUP_GROUP, build_args=("use_target_alpha_mask",)),
+    _control("target_alpha_mode", "combo", "Target Alpha", {"value": int(_default("target_alpha_mode")), "options": TARGET_ALPHA_MODE_LABELS}, group=TRAINING_SETUP_GROUP, build_args=("target_alpha_mode",)),
     _control("max_sh_band", "combo", "Global SH Cap", {"value": 3, "options": SH_BAND_LABELS}, group=TRAINING_SETUP_GROUP, build_args=("max_sh_band",)),
     _control("train_background_color", "color_edit3", "Train BG Color", {"value": tuple(float(v) for v in _VIEWER_CONTROL_DEFAULTS["train_background_color"])}, group=TRAINING_SETUP_GROUP, setup_visibility="background_custom"),
     _control("refinement_interval", "input_int", "Refinement Interval", {"value": _default("refinement_interval"), "step": 10, "step_fast": 50}, group=TRAINING_SETUP_GROUP, build_args=("refinement_interval",)),

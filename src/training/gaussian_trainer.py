@@ -17,6 +17,7 @@ from ..scan.prefix_sum import GPUPrefixSum
 from ..sort.radix_sort import GPURadixSort
 from ..scene import ColmapFrame, GaussianInitHyperParams, GaussianScene, SUPPORTED_SH_COEFF_COUNT, pad_sh_coeffs, rgb_to_sh0, sh_coeffs_to_display_colors
 from ..scene._internal.colmap_ops import TRAINING_FRAME_LOAD_THREADS, load_training_frame_rgba8
+from .alpha_modes import TARGET_ALPHA_MODE_OFF, resolve_target_alpha_mode, target_alpha_skip_mask_enabled
 from .adam import AdamOptimizer, AdamRuntimeHyperParams
 from .defaults import (
     DEFAULT_DEBUG_CONTRIBUTION_RANGE,
@@ -261,7 +262,7 @@ class StabilityHyperParams:
 @dataclass(slots=True)
 class TrainingHyperParams:
     background: tuple[float, float, float] = (1.0, 1.0, 1.0); camera_min_dist: float = TRAINING_BUILD_ARG_DEFAULTS["camera_min_dist"]
-    background_mode: int = TRAIN_BACKGROUND_MODE_RANDOM; use_target_alpha_mask: bool = TRAINING_BUILD_ARG_DEFAULTS["use_target_alpha_mask"]; use_sh: bool = TRAINING_BUILD_ARG_DEFAULTS["use_sh"]; sh_band: int = 0; max_sh_band: int = 3
+    background_mode: int = TRAIN_BACKGROUND_MODE_RANDOM; target_alpha_mode: int | None = None; use_target_alpha_mask: bool = TRAINING_BUILD_ARG_DEFAULTS["use_target_alpha_mask"]; use_sh: bool = TRAINING_BUILD_ARG_DEFAULTS["use_sh"]; sh_band: int = 0; max_sh_band: int = 3
     scale_l2_weight: float = TRAINING_BUILD_ARG_DEFAULTS["scale_l2_weight"]; scale_abs_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["scale_abs_reg_weight"]; sh1_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["sh1_reg_weight"]; opacity_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"]; opacity_reg_weight_stage1: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("opacity_reg_weight_stage1", TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"])); opacity_reg_weight_stage2: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("opacity_reg_weight_stage2", TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"])); opacity_reg_weight_stage3: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("opacity_reg_weight_stage3", TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"])); opacity_reg_weight_stage4: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("opacity_reg_weight_stage4", TRAINING_BUILD_ARG_DEFAULTS.get("opacity_reg_weight_stage3", TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"]))); position_push_away_from_camera_step: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0)); position_push_away_from_camera_step_stage1: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage1", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0))); position_push_away_from_camera_step_stage2: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage2", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0))); position_push_away_from_camera_step_stage3: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage3", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0))); position_push_away_from_camera_step_stage4: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage4", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage3", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0)))); density_regularizer: float = TRAINING_BUILD_ARG_DEFAULTS["density_regularizer"]; max_visible_angle_deg: float = TRAINING_BUILD_ARG_DEFAULTS["max_visible_angle_deg"]; sorting_order_dithering: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering"]; sorting_order_dithering_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage1"]; sorting_order_dithering_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage2"]; sorting_order_dithering_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage3"]; sorting_order_dithering_stage4: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage4"]; colorspace_mod: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod"]; colorspace_mod_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage1"]; colorspace_mod_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage2"]; colorspace_mod_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage3"]; colorspace_mod_stage4: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage4"]; ssim_weight: float = DEFAULT_SSIM_WEIGHT; ssim_c2: float = DEFAULT_SSIM_C2; max_allowed_density_start: float = TRAINING_BUILD_ARG_DEFAULTS["max_allowed_density_start"]; max_allowed_density: float = TRAINING_BUILD_ARG_DEFAULTS["max_allowed_density"]
     refinement_loss_weight: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_loss_weight"]; refinement_target_edge_weight: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_target_edge_weight"]; refinement_min_screen_radius_px: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_min_screen_radius_px"]
     lr_pos_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_mul"]; lr_pos_stage1_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_stage1_mul"]; lr_pos_stage2_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_stage2_mul"]; lr_pos_stage3_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_stage3_mul"]; lr_pos_stage4_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_stage4_mul"]
@@ -288,7 +289,8 @@ class TrainingHyperParams:
         self.background = tuple(float(v) for v in background)
         self.camera_min_dist = float(self.camera_min_dist)
         self.background_mode = TRAIN_BACKGROUND_MODE_RANDOM if int(self.background_mode) == TRAIN_BACKGROUND_MODE_RANDOM else TRAIN_BACKGROUND_MODE_CUSTOM
-        self.use_target_alpha_mask = bool(self.use_target_alpha_mask)
+        self.target_alpha_mode = resolve_target_alpha_mode(self.target_alpha_mode, legacy_use_target_alpha_mask=bool(self.use_target_alpha_mask))
+        self.use_target_alpha_mask = target_alpha_skip_mask_enabled(self.target_alpha_mode)
         self.use_sh = bool(self.use_sh)
         self.sh_band = int(self.sh_band)
         self.max_sh_band = int(self.max_sh_band)
@@ -609,7 +611,7 @@ class GaussianTrainer:
             output_grad=self.renderer.output_grad_buffer,
             grad_scale=1.0,
             target_texture=target_texture,
-            use_target_alpha_mask=bool(self.training.use_target_alpha_mask and target_texture is not None),
+            use_target_alpha_mask=bool(target_alpha_skip_mask_enabled(self.training.target_alpha_mode) and target_texture is not None),
             regularizer_grad=self.renderer.work_buffers["training_regularizer_grad"],
             gradient_stats_buffer=self._refinement_buffers["gradient_stats"],
             splat_contribution_buffer=self._refinement_buffers["splat_contribution"],
@@ -1593,7 +1595,7 @@ class GaussianTrainer:
             "g_Height": int(self.renderer.height),
             "g_InvPixelCount": 1.0 / float(max(self.renderer.width * self.renderer.height, 1)),
             "g_LossGradClip": float(self.stability.loss_grad_clip),
-            "g_UseTargetAlphaMask": int(bool(self.training.use_target_alpha_mask)),
+            "g_TargetAlphaMode": int(self.training.target_alpha_mode),
             "g_DensityRegularizer": float(self.training.density_regularizer),
             "g_ColorspaceMod": float(resolve_colorspace_mod(self.training, resolved_step)),
             "g_SSIMWeight": float(resolve_ssim_weight(self.training, resolved_step)),

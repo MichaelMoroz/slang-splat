@@ -96,6 +96,7 @@ def test_build_training_params_preserves_numeric_ranges():
     assert params.stability.position_abs_max == 0.0
     assert params.training.camera_min_dist == -5.0
     assert params.training.background_mode == TRAIN_BACKGROUND_MODE_RANDOM
+    assert params.training.target_alpha_mode == 0
     assert params.training.use_target_alpha_mask is False
     assert params.training.use_sh is False
     assert params.training.sh_band == 0

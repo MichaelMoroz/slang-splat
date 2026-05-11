@@ -28,6 +28,7 @@ from ..app.training_controls import (
     TRAINING_UI_GROUP_DEFS,
     TRAIN_STABILITY_PAIRED_KEYS,
 )
+from ..training.alpha_modes import TARGET_ALPHA_MODE_LABELS
 from .buffer_debug import ResourceDebugSnapshot, format_resource_bytes, write_resource_debug_log
 from .state import DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH, LOSS_DEBUG_OPTIONS
 from .ui_schema import (
@@ -2078,6 +2079,25 @@ class ToolkitWindow:
                 flags=imgui.SliderFlags_.logarithmic.value,
             )
             imgui.end_disabled()
+            imgui.table_next_row()
+            imgui.table_next_column()
+            imgui.table_next_column()
+            imgui.text_disabled("Sphere Color")
+            imgui.table_next_column()
+            imgui.text_disabled("rgb")
+            imgui.table_next_column()
+            imgui.begin_disabled(not fibonacci_enabled)
+            color = np.asarray(ui._values.get("colmap_fibonacci_sphere_color", (0.8, 0.8, 0.8)), dtype=np.float32).reshape(3)
+            changed, edited_color = imgui.color_edit3(
+                "##colmap_fibonacci_sphere_color",
+                imgui.ImVec4(float(color[0]), float(color[1]), float(color[2]), 1.0),
+            )
+            if changed:
+                ui._values["colmap_fibonacci_sphere_color"] = (float(edited_color.x), float(edited_color.y), float(edited_color.z))
+            if imgui.is_item_hovered():
+                imgui.set_item_tooltip("RGB color assigned to synthesized Fibonacci sky-sphere points.")
+            imgui.end_disabled()
+            imgui.table_next_column()
             _row_nn_scale("colmap_fibonacci_sphere_nn_radius_scale_coef", 1.0, fibonacci_enabled)
 
             imgui.end_table()
@@ -2123,13 +2143,24 @@ class ToolkitWindow:
             for label, key, tooltip in (
                 ("Auto Rotate Scene", "colmap_auto_rotate_scene", "Apply the COLMAP import auto-alignment pass that reorients the reconstructed scene from the camera layout. Disable this to preserve the original COLMAP orientation."),
                 ("Compress Dataset using BC7", "compress_dataset_using_bc7", "Compress imported training images into BC7 DDS files under Image Folder/cache and reuse that cache on later loads."),
-                ("Use Alpha Mask", "use_target_alpha_mask", "If imported images have alpha, transparent pixels are masked out of per-pixel training loss and gradients."),
             ):
                 changed, value = imgui.checkbox(label, bool(ui._values.get(key, False)))
                 if changed:
                     ui._values[key] = bool(value)
                 ToolkitWindow._set_tooltip(tooltip)
                 imgui.spacing()
+            alpha_mode = min(max(int(ui._values.get("target_alpha_mode", 0)), 0), len(TARGET_ALPHA_MODE_LABELS) - 1)
+            if imgui.begin_combo("Target Alpha", TARGET_ALPHA_MODE_LABELS[alpha_mode]):
+                for idx, option in enumerate(TARGET_ALPHA_MODE_LABELS):
+                    selected = idx == alpha_mode
+                    if imgui.selectable(option, selected)[0]:
+                        ui._values["target_alpha_mode"] = idx
+                        ui._values["use_target_alpha_mask"] = idx == 1
+                    if selected:
+                        imgui.set_item_default_focus()
+                imgui.end_combo()
+            ToolkitWindow._set_tooltip("Choose whether target alpha is ignored, used to skip transparent pixels, or trained as part of the L1 target.")
+            imgui.spacing()
             self._draw_colmap_downscale_controls(ui)
             imgui.spacing()
             self._draw_colmap_init_mode_controls(ui)

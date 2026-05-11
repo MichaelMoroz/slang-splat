@@ -1182,7 +1182,7 @@ def test_import_colmap_from_ui_clears_loaded_scene_before_queueing(tmp_path: Pat
                 "colmap_pointcloud_enabled": True,
                 "colmap_selected_camera_ids": (7,),
                 "_colmap_camera_rows": ({"camera_id": 7, "frame_count": 1},),
-                "use_target_alpha_mask": True,
+                "target_alpha_mode": 1,
             }
         ),
         s=SimpleNamespace(
@@ -1240,6 +1240,7 @@ def test_import_colmap_from_ui_clears_loaded_scene_before_queueing(tmp_path: Pat
     assert viewer.s.colmap_import_progress.depth_value_mode == "z_depth"
     assert viewer.s.colmap_import_progress.min_track_length == 5
     assert viewer.s.colmap_import_progress.selected_camera_ids == (7,)
+    assert viewer.s.colmap_import_progress.target_alpha_mode == 1
     assert viewer.s.colmap_import_progress.use_target_alpha_mask is True
 
 
@@ -1351,6 +1352,7 @@ def test_import_colmap_from_ui_queues_multi_source_settings(tmp_path: Path, monk
                 "colmap_fibonacci_sphere_enabled": True,
                 "colmap_fibonacci_sphere_point_count": 512,
                 "colmap_fibonacci_sphere_radius_multiplier": 2.5,
+                "colmap_fibonacci_sphere_color": (0.2, 0.4, 0.6),
                 "colmap_fibonacci_sphere_nn_radius_scale_coef": 1.2,
                 "colmap_image_downscale_mode": 0,
                 "colmap_image_max_size": 2048,
@@ -1418,6 +1420,7 @@ def test_import_colmap_from_ui_queues_multi_source_settings(tmp_path: Path, monk
     assert progress.fibonacci_sphere_enabled is True
     assert progress.fibonacci_sphere_point_count == 512
     assert progress.fibonacci_sphere_radius_multiplier == pytest.approx(2.5)
+    assert progress.fibonacci_sphere_color == pytest.approx((0.2, 0.4, 0.6))
     assert progress.fibonacci_sphere_nn_radius_scale_coef == pytest.approx(1.2)
 
 
@@ -1986,6 +1989,7 @@ def test_colmap_import_settings_defaults_prefer_pointcloud() -> None:
     assert defaults.depth_point_count == 100000
     assert defaults.fibonacci_sphere_point_count == 0
     assert defaults.fibonacci_sphere_radius_multiplier == 2.0
+    assert defaults.fibonacci_sphere_color == pytest.approx((0.8, 0.8, 0.8))
     assert defaults.use_target_alpha_mask is False
 
 
@@ -2077,6 +2081,52 @@ def test_refresh_cached_raster_grad_histograms_honors_manual_refresh() -> None:
     session.refresh_cached_raster_grad_histograms(viewer)
 
     assert calls == [12]
+    assert viewer.ui._values["_histograms_refresh_requested"] is False
+
+
+def test_refresh_cached_raster_grad_histograms_supports_loaded_scene_without_training_state() -> None:
+    calls: list[tuple[str, int, object | None]] = []
+    hist = SimpleNamespace(
+        counts=np.ones((3, 4), dtype=np.int64),
+        param_labels=("position.x", "scale.x", "opacity"),
+        param_groups=(("position", (0,)), ("scale", (1,)), ("opacity", (2,))),
+        param_value_scales=(session.PARAM_HISTOGRAM_SCALE_LINEAR, session.PARAM_HISTOGRAM_SCALE_LOG10, session.PARAM_HISTOGRAM_SCALE_LOG10),
+    )
+    ranges = SimpleNamespace(
+        min_values=np.array([-2.0, -3.0, -1.0], dtype=np.float32),
+        max_values=np.array([5.0, 0.0, -0.1], dtype=np.float32),
+        param_labels=hist.param_labels,
+        param_groups=hist.param_groups,
+        param_value_scales=hist.param_value_scales,
+    )
+    renderer = SimpleNamespace(
+        compute_scene_param_histograms=lambda scene_count, *, bin_count, min_value, max_value, param_min_values=None, param_max_values=None, metrics=None: calls.append(("hist", scene_count, metrics)) or hist,
+        compute_scene_param_ranges=lambda scene_count, *, metrics=None: calls.append(("ranges", scene_count, metrics)) or ranges,
+    )
+    viewer = SimpleNamespace(
+        ui=SimpleNamespace(_values={"hist_bin_count": 4, "hist_min_value": -1.0, "hist_max_value": 1.0, "_histograms_refresh_requested": True}),
+        s=SimpleNamespace(
+            trainer=None,
+            training_renderer=None,
+            renderer=renderer,
+            scene=SimpleNamespace(count=9),
+            cached_raster_grad_histograms=None,
+            cached_raster_grad_ranges=None,
+            cached_raster_grad_histogram_mode="",
+            cached_raster_grad_histogram_step=-1,
+            cached_raster_grad_histogram_scene_count=-1,
+            cached_raster_grad_histogram_signature=None,
+            cached_raster_grad_histogram_status="",
+        ),
+    )
+
+    session.refresh_cached_raster_grad_histograms(viewer)
+
+    assert calls == [("ranges", 9, None), ("hist", 9, None)]
+    assert viewer.s.cached_raster_grad_histograms is hist
+    assert viewer.s.cached_raster_grad_ranges is ranges
+    assert viewer.s.cached_raster_grad_histogram_signature == (0, 9, 4, -1.0, 1.0)
+    assert viewer.s.cached_raster_grad_histogram_status == "Splat histograms | samples=9 | populated=12"
     assert viewer.ui._values["_histograms_refresh_requested"] is False
 
 

@@ -10,6 +10,7 @@ import slangpy as spy
 from ..repo_defaults import viewer_defaults
 from ..metrics import ParamLog10Histograms, ParamTensorRanges
 from ..scene import ColmapFrame, ColmapReconstruction, GaussianScene
+from ..training.alpha_modes import TARGET_ALPHA_MODE_OFF, resolve_target_alpha_mode, target_alpha_skip_mask_enabled
 from ..training import GaussianTrainer
 from ..renderer import GaussianRenderer
 
@@ -47,6 +48,8 @@ class ColmapImportSettings:
     diffused_point_count: int = int(_VIEWER_IMPORT_DEFAULTS["colmap_diffused_point_count"])
     fibonacci_sphere_point_count: int = 0
     fibonacci_sphere_radius_multiplier: float = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_radius_multiplier", _VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_radius", 2.0)))
+    fibonacci_sphere_color: tuple[float, float, float] = tuple(float(v) for v in _VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_color", (0.8, 0.8, 0.8)))
+    target_alpha_mode: int | None = None
     use_target_alpha_mask: bool = False
     pointcloud_enabled: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_pointcloud_enabled", False))
     pointcloud_nn_radius_scale_coef: float = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_pointcloud_nn_radius_scale_coef", _VIEWER_IMPORT_DEFAULTS.get("colmap_nn_radius_scale_coef", 0.5)))
@@ -61,6 +64,10 @@ class ColmapImportSettings:
     custom_mesh_nn_radius_scale_coef: float = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_custom_mesh_nn_radius_scale_coef", _VIEWER_IMPORT_DEFAULTS.get("colmap_nn_radius_scale_coef", 0.5)))
     fibonacci_sphere_enabled: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_enabled", int(_VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_point_count", 0)) > 0))
     fibonacci_sphere_nn_radius_scale_coef: float = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_nn_radius_scale_coef", 1.0))
+
+    def __post_init__(self) -> None:
+        self.target_alpha_mode = resolve_target_alpha_mode(self.target_alpha_mode, legacy_use_target_alpha_mask=self.use_target_alpha_mask)
+        self.use_target_alpha_mask = target_alpha_skip_mask_enabled(self.target_alpha_mode)
 
 
 @dataclass(slots=True)
@@ -83,6 +90,8 @@ class ColmapImportProgress:
     diffused_point_count: int = 100000
     fibonacci_sphere_point_count: int = 0
     fibonacci_sphere_radius_multiplier: float = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_radius_multiplier", _VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_radius", 2.0)))
+    fibonacci_sphere_color: tuple[float, float, float] = tuple(float(v) for v in _VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_color", (0.8, 0.8, 0.8)))
+    target_alpha_mode: int | None = None
     use_target_alpha_mask: bool = False
     depth_value_mode: str = "z_depth"
     depth_root: Path | None = None
@@ -108,6 +117,10 @@ class ColmapImportProgress:
     frames: list[ColmapFrame] = field(default_factory=list)
     frame_images: list[object] = field(default_factory=list)
     depth_paths: list[Path] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.target_alpha_mode = resolve_target_alpha_mode(self.target_alpha_mode, legacy_use_target_alpha_mask=self.use_target_alpha_mask)
+        self.use_target_alpha_mask = target_alpha_skip_mask_enabled(self.target_alpha_mode)
     depth_index: dict[str, Path] | None = None
     depth_init_payloads: list[object] = field(default_factory=list)
     native_textures: list[spy.Texture] = field(default_factory=list)

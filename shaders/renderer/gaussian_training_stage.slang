@@ -14,6 +14,9 @@ static const uint LOSS_SLOT_MSE = 1u;
 static const uint LOSS_SLOT_DENSITY = 2u;
 static const uint LOSS_SLOT_DISPLAY_MSE = 3u;
 static const uint LOSS_SLOT_SSIM = 4u;
+static const uint TARGET_ALPHA_MODE_OFF = 0u;
+static const uint TARGET_ALPHA_MODE_SKIP_MASK = 1u;
+static const uint TARGET_ALPHA_MODE_ALPHA_TARGET = 2u;
 static const float POSITION_RANDOM_STEP_MAX_ANISOTROPY = 4.0;
 static const float DENSIFY_SCALE_SHRINK_EXPONENT = -1.0 / 3.0;
 static const float DENSIFY_MAX_STANDARDIZED_SIGMA = 3.0;
@@ -41,7 +44,7 @@ uniform uint g_Width;
 uniform uint g_Height;
 uniform float g_InvPixelCount;
 uniform float g_LossGradClip;
-uniform uint g_UseTargetAlphaMask;
+uniform uint g_TargetAlphaMode;
 uniform uint g_BatchStepIndex;
 uniform TrainingSubsampleParams g_TrainingSubsample;
 uniform float g_SSIMWeight;
@@ -519,7 +522,12 @@ float3 debug_training_camera_display_rgb(float3 rgb, uint isLinear, uint applyLo
 
 float training_target_mask(float alpha)
 {
-    return g_UseTargetAlphaMask == 0u ? 1.0 : saturate(alpha);
+    return g_TargetAlphaMode == TARGET_ALPHA_MODE_SKIP_MASK ? saturate(alpha) : 1.0;
+}
+
+bool training_target_alpha_enabled()
+{
+    return g_TargetAlphaMode == TARGET_ALPHA_MODE_ALPHA_TARGET;
 }
 
 uint2 training_clamped_pixel(int2 pixel)
@@ -766,7 +774,13 @@ void csComputeBlendedLossForward(
         float3 renderedLoss = training_rendered_loss_colorspace_rgb(rendered);
         float3 targetLoss = training_target_loss_colorspace_rgb(target);
         float targetMask = training_target_mask(rawTargetRgba.w);
-        float l1Loss = rgb_l1_loss(renderedLoss, targetLoss, g_InvPixelCount) * targetMask;
+        float renderedAlpha = saturate(g_Rendered[pixel].w);
+        float targetAlpha = saturate(rawTargetRgba.w);
+        float l1Loss = (
+            training_target_alpha_enabled()
+                ? rgba_l1_loss(float4(renderedLoss, renderedAlpha), float4(targetLoss, targetAlpha), g_InvPixelCount)
+                : rgb_l1_loss(renderedLoss, targetLoss, g_InvPixelCount)
+        ) * targetMask;
         SSIMMoments blurredMoments = load_ssim_moments(g_SSIMBlurredMoments, pixel);
         float ssimMetric = ssim_from_blurred_moments(
             blurredMoments.x,
@@ -885,14 +899,20 @@ void csComputeBlendedLossBackward(uint3 dispatchThreadID : SV_DispatchThreadID)
     float targetMask = training_target_mask(targetRgba.w);
     float3 renderedLoss = training_rendered_loss_colorspace_rgb(rendered);
     float3 targetLoss = training_target_loss_colorspace_rgb(target);
-    float3 dL1Loss = rgb_l1_grad(renderedLoss, targetLoss) * ((1.0 - g_SSIMWeight) * g_InvPixelCount * targetMask);
+    float renderedAlpha = saturate(g_Rendered[pixel].w);
+    float targetAlpha = saturate(targetRgba.w);
+    float4 dL1Loss = (
+        training_target_alpha_enabled()
+            ? rgba_l1_grad(float4(renderedLoss, renderedAlpha), float4(targetLoss, targetAlpha))
+            : float4(rgb_l1_grad(renderedLoss, targetLoss), 0.0)
+    ) * ((1.0 - g_SSIMWeight) * g_InvPixelCount * targetMask);
     SSIMMoments dMoments = load_ssim_moments(g_SSIMFeatureGrads, pixel);
     var dpRenderedSSIM = diffPair(rendered);
     bwd_diff(ssim_feature_moments)(dpRenderedSSIM, target, dMoments);
     var dpRenderedL1 = diffPair(rendered);
-    bwd_diff(training_rendered_loss_colorspace_rgb)(dpRenderedL1, dL1Loss);
+    bwd_diff(training_rendered_loss_colorspace_rgb)(dpRenderedL1, dL1Loss.xyz);
     float3 dOut = clamp(sanitize_float3(dpRenderedSSIM.getDifferential() + dpRenderedL1.getDifferential(), g_LossGradClip), -g_LossGradClip, g_LossGradClip);
-    g_OutputGrad[py * g_Width + px] = float4(dOut, 0.0);
+    g_OutputGrad[py * g_Width + px] = float4(dOut, clamp(sanitize_scalar(dL1Loss.w, g_LossGradClip), -g_LossGradClip, g_LossGradClip));
     float densityGrad = 0.0;
     float density = sanitize_scalar(g_RenderedDensity[py * g_Width + px], SANITIZE_HUGE_VALUE);
     if (g_DensityRegularizer != 0.0 && density > g_MaxAllowedDensity)

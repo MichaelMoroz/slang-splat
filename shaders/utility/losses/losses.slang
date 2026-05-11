@@ -22,6 +22,24 @@ float3 rgb_l1_grad(float3 rendered, no_diff float3 target)
     return signGrad * (1.0 / 3.0);
 }
 
+float rgba_l1_loss(float4 rendered, no_diff float4 target, no_diff float invPixelCount)
+{
+    float4 diff = abs(rendered - target);
+    return dot(diff, float4(1.0, 1.0, 1.0, 1.0)) * 0.25 * invPixelCount;
+}
+
+float4 rgba_l1_grad(float4 rendered, no_diff float4 target)
+{
+    float4 diff = rendered - target;
+    float4 signGrad = float4(
+        diff.x > 0.0 ? 1.0 : diff.x < 0.0 ? -1.0 : 0.0,
+        diff.y > 0.0 ? 1.0 : diff.y < 0.0 ? -1.0 : 0.0,
+        diff.z > 0.0 ? 1.0 : diff.z < 0.0 ? -1.0 : 0.0,
+        diff.w > 0.0 ? 1.0 : diff.w < 0.0 ? -1.0 : 0.0
+    );
+    return signGrad * 0.25;
+}
+
 [Differentiable]
 float scale_log_reference_loss(float3 logScale, no_diff float referenceScale)
 {

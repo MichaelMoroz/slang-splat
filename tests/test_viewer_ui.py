@@ -315,11 +315,11 @@ def test_build_ui_exposes_refinement_clone_scale_mul_default() -> None:
     assert "refinement_clone_scale_mul" in viewer_ui._values
 
 
-def test_train_setup_exposes_global_sh_cap_and_target_alpha_mask_controls() -> None:
+def test_train_setup_exposes_global_sh_cap_and_target_alpha_mode_controls() -> None:
     setup_keys = {control.key for control in TRAIN_SETUP_CONTROL_DEFS}
 
     assert "max_sh_band" in setup_keys
-    assert "use_target_alpha_mask" in setup_keys
+    assert "target_alpha_mode" in setup_keys
 
 
 def test_training_setup_section_draws_controls_from_ordered_specs(monkeypatch) -> None:
@@ -338,7 +338,7 @@ def test_training_setup_section_draws_controls_from_ordered_specs(monkeypatch) -
 
     ui.ToolkitWindow._section_training_setup(toolkit, viewer_ui)
 
-    assert "use_target_alpha_mask" in drawn
+    assert "target_alpha_mode" in drawn
     assert "max_sh_band" in drawn
     assert "train_background_color" not in drawn
     assert "train_auto_start_downscale" not in drawn
