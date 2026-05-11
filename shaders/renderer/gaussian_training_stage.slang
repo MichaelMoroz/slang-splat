@@ -533,6 +533,12 @@ float training_target_rgb_mask(float alpha)
     return 1.0;
 }
 
+float training_target_alpha_mask(float alpha)
+{
+    if (g_TargetAlphaMode != TARGET_ALPHA_MODE_ALPHA_TARGET) return 0.0;
+    return saturate(alpha) > 0.0 ? 0.0 : 1.0;
+}
+
 bool training_target_alpha_enabled()
 {
     return g_TargetAlphaMode == TARGET_ALPHA_MODE_ALPHA_TARGET;
@@ -783,11 +789,11 @@ void csComputeBlendedLossForward(
         float3 targetLoss = training_target_loss_colorspace_rgb(target);
         float targetMask = training_target_mask(rawTargetRgba.w);
         float rgbTargetMask = training_target_rgb_mask(rawTargetRgba.w);
+        float alphaTargetMask = training_target_alpha_mask(rawTargetRgba.w);
         float renderedAlpha = saturate(g_Rendered[pixel].w);
-        float targetAlpha = saturate(rawTargetRgba.w);
         float l1Loss = (
             training_target_alpha_enabled()
-                ? rgba_l1_loss_masked_rgb(float4(renderedLoss, renderedAlpha), float4(targetLoss, targetAlpha), rgbTargetMask, g_InvPixelCount)
+                ? rgb_l1_loss(renderedLoss, targetLoss, g_InvPixelCount) * rgbTargetMask + alpha_l1_loss(renderedAlpha, 0.0, g_InvPixelCount) * alphaTargetMask
                 : rgb_l1_loss(renderedLoss, targetLoss, g_InvPixelCount)
         ) * (training_target_alpha_enabled() ? 1.0 : targetMask);
         SSIMMoments blurredMoments = load_ssim_moments(g_SSIMBlurredMoments, pixel);
@@ -907,13 +913,13 @@ void csComputeBlendedLossBackward(uint3 dispatchThreadID : SV_DispatchThreadID)
     float3 target = targetRgba.xyz;
     float targetMask = training_target_mask(targetRgba.w);
     float rgbTargetMask = training_target_rgb_mask(targetRgba.w);
+    float alphaTargetMask = training_target_alpha_mask(targetRgba.w);
     float3 renderedLoss = training_rendered_loss_colorspace_rgb(rendered);
     float3 targetLoss = training_target_loss_colorspace_rgb(target);
     float renderedAlpha = saturate(g_Rendered[pixel].w);
-    float targetAlpha = saturate(targetRgba.w);
     float4 dL1Loss = (
         training_target_alpha_enabled()
-            ? rgba_l1_grad_masked_rgb(float4(renderedLoss, renderedAlpha), float4(targetLoss, targetAlpha), rgbTargetMask)
+            ? float4(rgb_l1_grad(renderedLoss, targetLoss) * rgbTargetMask, alpha_l1_grad(renderedAlpha, 0.0) * alphaTargetMask)
             : float4(rgb_l1_grad(renderedLoss, targetLoss) * targetMask, 0.0)
     ) * ((1.0 - g_SSIMWeight) * g_InvPixelCount);
     SSIMMoments dMoments = load_ssim_moments(g_SSIMFeatureGrads, pixel);

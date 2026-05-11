@@ -1515,7 +1515,7 @@ def test_target_alpha_mask_skips_masked_pixel_loss_and_output_grads(device, tmp_
     np.testing.assert_array_equal(contributions_on, np.zeros_like(contributions_on))
 
 
-def test_target_alpha_mode_adds_alpha_l1_to_loss_and_output_grad(device, tmp_path: Path):
+def test_target_alpha_mode_uses_plain_rgb_loss_for_nonzero_target_alpha(device, tmp_path: Path):
     trainer_off = _make_loss_only_trainer(
         device,
         tmp_path,
@@ -1549,9 +1549,9 @@ def test_target_alpha_mode_adds_alpha_l1_to_loss_and_output_grad(device, tmp_pat
     total_alpha, _mse_alpha, _density_alpha = trainer_alpha._read_loss_metrics()
     grads_alpha = _read_output_grads(trainer_alpha.renderer).copy()
 
-    assert total_alpha > total_off
-    np.testing.assert_allclose(grads_alpha[..., :3], grads_off[..., :3] * 0.75, rtol=1e-5, atol=1e-7)
-    np.testing.assert_allclose(grads_alpha[..., 3], np.full((4, 4), 1.0 / 64.0, dtype=np.float32), rtol=1e-5, atol=1e-7)
+    np.testing.assert_allclose(total_alpha, total_off, rtol=1e-5, atol=1e-7)
+    np.testing.assert_allclose(grads_alpha[..., :3], grads_off[..., :3], rtol=1e-5, atol=1e-7)
+    np.testing.assert_allclose(grads_alpha[..., 3], 0.0, rtol=0.0, atol=1e-7)
 
 
 def test_target_alpha_mode_ignores_rgb_loss_when_target_alpha_is_zero(device, tmp_path: Path):
