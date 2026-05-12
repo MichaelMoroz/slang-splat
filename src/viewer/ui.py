@@ -114,6 +114,13 @@ _VIEWPORT_OVERLAY_WIDTH = 320.0
 _VIEWPORT_OVERLAY_MIN_WIDTH = 220.0
 _VIEWPORT_OVERLAY_PADDING = 10.0
 _VIEWPORT_OVERLAY_MIN_HEIGHT = 44.0
+_TRAINING_CAMERA_COLMAP_POINT_RADIUS = 2.5
+_TRAINING_CAMERA_COLMAP_POINT_SELECTED_RADIUS = 4.0
+_TRAINING_CAMERA_COLMAP_POINT_HIT_RADIUS = 6.0
+_TRAINING_CAMERA_COLMAP_POINT_CONTEXT_OFFSET = 12.0
+_TRAINING_CAMERA_COLMAP_CONTEXT_VIEW_LIMIT = 16
+_TRAINING_CAMERA_COLMAP_POINT_COLOR = (0.16, 0.86, 0.96, 0.90)
+_TRAINING_CAMERA_COLMAP_POINT_SELECTED_COLOR = (1.00, 0.76, 0.20, 0.98)
 _TRAINING_CAMERA_DEBUG_TEXT_FIELDS = (("loss_debug_frame", True), ("loss_debug_psnr", True))
 _HISTOGRAM_AUTO_RANGE_KEEP_FRACTION = 0.99
 _DOCKSPACE_FLAGS = int(imgui.DockNodeFlags_.none)
@@ -1225,14 +1232,12 @@ class ToolkitWindow:
         point_radius = float(_TRAINING_CAMERA_COLMAP_POINT_RADIUS)
         point_color = _color_u32(*_TRAINING_CAMERA_COLMAP_POINT_COLOR)
         selected_color = _color_u32(*_TRAINING_CAMERA_COLMAP_POINT_SELECTED_COLOR)
-        for visible_offset, point_index in enumerate(visible_indices.tolist()):
-            point_x = float(screen_points[visible_offset, 0])
-            point_y = float(screen_points[visible_offset, 1])
-            color = selected_color if selected_point_id is not None and int(point_ids[point_index]) == selected_point_id else point_color
-            draw_list.add_rect_filled(
-                imgui.ImVec2(point_x - point_radius, point_y - point_radius),
-                imgui.ImVec2(point_x + point_radius, point_y + point_radius),
-                color,
+        draw_list.prim_reserve(6 * int(visible_indices.size), 4 * int(visible_indices.size))
+        for point_x, point_y in screen_points.tolist():
+            draw_list.prim_rect(
+                imgui.ImVec2(float(point_x) - point_radius, float(point_y) - point_radius),
+                imgui.ImVec2(float(point_x) + point_radius, float(point_y) + point_radius),
+                point_color,
             )
         if hovered and bool(imgui.is_mouse_clicked(0)) and not bool(imgui.is_mouse_double_clicked(0)):
             mouse_pos = imgui.get_mouse_pos()

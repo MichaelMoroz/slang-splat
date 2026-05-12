@@ -1251,6 +1251,49 @@ def test_training_camera_viewport_image_preserves_zoom_across_frame_and_view_cha
     assert toolkit._training_camera_view_center == (0.3, 0.7)
 
 
+def test_training_camera_colmap_overlay_batches_point_rects(monkeypatch) -> None:
+    prim_reserve_calls: list[tuple[int, int]] = []
+    prim_rect_calls: list[tuple[float, float, float, float, int]] = []
+
+    class _DrawList:
+        def prim_reserve(self, idx_count: int, vtx_count: int) -> None:
+            prim_reserve_calls.append((int(idx_count), int(vtx_count)))
+
+        def prim_rect(self, a, b, col: int) -> None:
+            prim_rect_calls.append((float(a.x), float(a.y), float(b.x), float(b.y), int(col)))
+
+        def add_rect(self, *_args, **_kwargs) -> None:
+            raise AssertionError("selected outline should not render without a selected point")
+
+    monkeypatch.setattr(ui.imgui, "get_window_draw_list", lambda: _DrawList())
+    monkeypatch.setattr(ui.imgui, "is_mouse_clicked", lambda *_args: False)
+    monkeypatch.setattr(ui.imgui, "is_mouse_double_clicked", lambda *_args: False)
+    toolkit = SimpleNamespace(_training_camera_selected_point_id=None)
+    viewer_ui = SimpleNamespace(
+        _values={
+            "show_training_camera_colmap_points": True,
+            "_training_camera_colmap_points_payload": {
+                "uv": np.asarray(((0.25, 0.50), (0.75, 0.50)), dtype=np.float32),
+                "point_ids": np.asarray((11, 12), dtype=np.int64),
+            },
+        }
+    )
+
+    ui.ToolkitWindow._draw_training_camera_colmap_overlay(
+        toolkit,
+        viewer_ui,
+        ui.imgui.ImVec2(10.0, 20.0),
+        200.0,
+        100.0,
+        (0.0, 0.0),
+        (1.0, 1.0),
+        False,
+    )
+
+    assert prim_reserve_calls == [(12, 8)]
+    assert len(prim_rect_calls) == 2
+
+
 def test_build_ui_initializes_loss_debug_psnr_text() -> None:
     viewer_ui = ui.build_ui(_dummy_renderer())
 
