@@ -313,6 +313,55 @@ def test_reset_training_runtime_clears_all_training_debug_bindings(monkeypatch) 
     assert ("debug_pixels", 0) in calls
 
 
+def test_initialize_photometric_compensation_reuses_training_textures(monkeypatch) -> None:
+    textures = [object(), object()]
+    captured: dict[str, object] = {"sync_calls": 0, "requested_frames": []}
+
+    class _FakePhotometricTrainer:
+        def __init__(self, *, device, reconstruction, frames, hparams, frame_source_textures=None) -> None:
+            captured["device"] = device
+            captured["reconstruction"] = reconstruction
+            captured["frames"] = frames
+            captured["hparams"] = hparams
+            captured["frame_source_textures"] = frame_source_textures
+            self.provider = object()
+
+        def prepare_pair_dataset(self) -> None:
+            captured["prepared"] = True
+
+    def _get_frame_target_texture(frame_index: int, native_resolution: bool = True):
+        captured["requested_frames"].append((int(frame_index), bool(native_resolution)))
+        return textures[frame_index]
+
+    monkeypatch.setattr(session, "PhotometricCompensationTrainer", _FakePhotometricTrainer)
+    monkeypatch.setattr(session, "sync_photometric_target_provider", lambda _viewer: captured.__setitem__("sync_calls", int(captured["sync_calls"]) + 1))
+
+    viewer = SimpleNamespace(
+        device=object(),
+        ui=SimpleNamespace(_values={"photometric_apply_to_targets": True}),
+        s=SimpleNamespace(
+            trainer=SimpleNamespace(get_frame_target_texture=_get_frame_target_texture),
+            colmap_recon=object(),
+            training_frames=[SimpleNamespace(width=16, height=16), SimpleNamespace(width=16, height=16)],
+            photometric_trainer=None,
+            photometric_active=True,
+            photometric_elapsed_s=3.0,
+            photometric_resume_time=None,
+        ),
+    )
+
+    session.initialize_photometric_compensation(viewer)
+
+    assert captured["reconstruction"] is viewer.s.colmap_recon
+    assert captured["frame_source_textures"] == textures
+    assert captured["requested_frames"] == [(0, True), (1, True)]
+    assert captured["prepared"] is True
+    assert captured["sync_calls"] == 2
+    assert viewer.s.photometric_active is False
+    assert viewer.s.photometric_elapsed_s == 0.0
+    assert viewer.s.photometric_resume_time is None
+
+
 def test_move_main_camera_to_selected_training_frame_applies_pose_and_exits_mode() -> None:
     calls: list[tuple[str, object]] = []
     pose = SimpleNamespace(

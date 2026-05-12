@@ -14,16 +14,26 @@ uniform RWStructuredBuffer<float> g_LossSum;
 uniform StructuredBuffer<uint> g_PairIndices;
 uniform StructuredBuffer<uint> g_PairFrameIndicesA;
 uniform StructuredBuffer<uint> g_PairFrameIndicesB;
-uniform StructuredBuffer<float4> g_PairSamplesA;
-uniform StructuredBuffer<float4> g_PairSamplesB;
-uniform StructuredBuffer<float2> g_PairSensorCoordsA;
-uniform StructuredBuffer<float2> g_PairSensorCoordsB;
+uniform RWStructuredBuffer<float4> g_PairSamplesA;
+uniform RWStructuredBuffer<float4> g_PairSamplesB;
+uniform RWStructuredBuffer<float2> g_PairSensorCoordsA;
+uniform RWStructuredBuffer<float2> g_PairSensorCoordsB;
 uniform StructuredBuffer<uint> g_FramePairRanges;
 uniform StructuredBuffer<uint2> g_FramePairEntries;
 
 uniform uint g_FrameCount;
 uniform uint g_PairCount;
+uniform uint g_NeighborhoodSize;
 uniform uint g_NeighborhoodSampleCount;
+
+uniform Texture2D<float4> g_PairDatasetSourceFrame;
+uniform StructuredBuffer<float2> g_PairXYA;
+uniform StructuredBuffer<float2> g_PairXYB;
+uniform StructuredBuffer<uint> g_DatasetFramePairRanges;
+uniform StructuredBuffer<uint2> g_DatasetFramePairEntries;
+uniform uint g_DatasetFrameIndex;
+uniform uint g_DatasetFrameWidth;
+uniform uint g_DatasetFrameHeight;
 
 uniform Texture2D<float4> g_PhotometricSourceTarget;
 uniform RWTexture2D<float4> g_PhotometricTarget;
@@ -136,6 +146,49 @@ float2 load_pair_sensor_coord(uint pairIndex, uint sampleIndex, bool sampleFromB
 {
     uint offset = pairIndex * g_NeighborhoodSampleCount + sampleIndex;
     return sampleFromB ? g_PairSensorCoordsB[offset] : g_PairSensorCoordsA[offset];
+}
+
+[shader("compute")]
+[numthreads(PHOTOMETRIC_THREADS, 1, 1)]
+void csBuildPhotometricPairDataset(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint start = g_DatasetFramePairRanges[g_DatasetFrameIndex];
+    uint stop = g_DatasetFramePairRanges[g_DatasetFrameIndex + 1u];
+    uint entryCount = stop - start;
+    uint threadIndex = dispatchThreadID.x;
+    uint totalSamples = entryCount * g_NeighborhoodSampleCount;
+    if (threadIndex >= totalSamples) return;
+
+    uint localEntryIndex = threadIndex / g_NeighborhoodSampleCount;
+    uint sampleIndex = threadIndex % g_NeighborhoodSampleCount;
+    uint2 entry = g_DatasetFramePairEntries[start + localEntryIndex];
+    uint pairIndex = entry.x;
+    bool sampleFromB = entry.y != 0u;
+    float2 center = sampleFromB ? g_PairXYB[pairIndex] : g_PairXYA[pairIndex];
+    uint neighborhoodSize = max(g_NeighborhoodSize, 1u);
+    uint radius = neighborhoodSize / 2u;
+    int2 basePixel = int2(floor(center));
+    int dx = int(sampleIndex % neighborhoodSize) - int(radius);
+    int dy = int(sampleIndex / neighborhoodSize) - int(radius);
+    uint width = max(g_DatasetFrameWidth, 1u);
+    uint height = max(g_DatasetFrameHeight, 1u);
+    uint px = uint(clamp(basePixel.x + dx, 0, int(width) - 1));
+    uint py = uint(clamp(basePixel.y + dy, 0, int(height) - 1));
+    uint2 pixel = uint2(px, py);
+    uint pairSampleOffset = pairIndex * g_NeighborhoodSampleCount + sampleIndex;
+    float4 sample = sanitize_float4(g_PairDatasetSourceFrame[pixel], SANITIZE_HUGE_VALUE);
+    float2 sensorCoord = float2(
+        (float(px) + 0.5) / max(float(width), 1.0),
+        (float(py) + 0.5) / max(float(height), 1.0)
+    );
+
+    if (sampleFromB) {
+        g_PairSamplesB[pairSampleOffset] = sample;
+        g_PairSensorCoordsB[pairSampleOffset] = sensorCoord;
+    } else {
+        g_PairSamplesA[pairSampleOffset] = sample;
+        g_PairSensorCoordsA[pairSampleOffset] = sensorCoord;
+    }
 }
 
 [Differentiable]

@@ -2315,6 +2315,21 @@ def sync_photometric_target_provider(viewer: object) -> None:
     trainer.set_target_tonemap_provider(provider)
 
 
+def _photometric_frame_source_textures(viewer: object) -> list[spy.Texture] | None:
+    trainer = getattr(viewer.s, "trainer", None)
+    frames = tuple(getattr(viewer.s, "training_frames", ()))
+    get_frame_target_texture = getattr(trainer, "get_frame_target_texture", None)
+    if trainer is None or not callable(get_frame_target_texture) or not frames:
+        return None
+    textures: list[spy.Texture] = []
+    for frame_index in range(len(frames)):
+        texture = get_frame_target_texture(frame_index, native_resolution=True)
+        if texture is None:
+            return None
+        textures.append(texture)
+    return textures
+
+
 def initialize_photometric_compensation(viewer: object) -> None:
     if not viewer.s.training_frames:
         _refresh_training_frames(viewer)
@@ -2323,10 +2338,14 @@ def initialize_photometric_compensation(viewer: object) -> None:
     reset_photometric_compensation(viewer, clear_history=False)
     viewer.s.photometric_trainer = PhotometricCompensationTrainer(
         device=viewer.device,
-        recon=viewer.s.colmap_recon,
+        reconstruction=viewer.s.colmap_recon,
         frames=viewer.s.training_frames,
         hparams=PhotometricCompensationHyperParams(),
+        frame_source_textures=_photometric_frame_source_textures(viewer),
     )
+    prepare_pair_dataset = getattr(viewer.s.photometric_trainer, "prepare_pair_dataset", None)
+    if callable(prepare_pair_dataset):
+        prepare_pair_dataset()
     viewer.s.photometric_active = False
     viewer.s.photometric_elapsed_s = 0.0
     viewer.s.photometric_resume_time = None

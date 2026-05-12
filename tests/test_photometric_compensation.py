@@ -24,6 +24,7 @@ from src.training.photometric_compensation import (
     unpack_ppisp_tonemap_params,
 )
 from src.training.ppisp import PPISPStaticTonemapProvider, PPISPTonemapParams
+from src.utility import buffer_to_numpy
 
 _TRAIN_SUBSAMPLE_HASH_STEP = 0x9E3779B9
 _TRAIN_SUBSAMPLE_HASH_FRAME = 0x85EBCA6B
@@ -166,6 +167,51 @@ def _load_frame_linear_rgba(frame: ColmapFrame) -> np.ndarray:
     rgb = _srgb_to_linear(rgba8[:, :, :3])
     alpha = rgba8[:, :, 3:4].astype(np.float32) / 255.0
     return np.ascontiguousarray(np.concatenate((rgb, alpha), axis=2), dtype=np.float32)
+
+
+def _reference_pair_dataset(
+    frames: list[ColmapFrame],
+    pair_pool,
+    frame_rgba_linear: list[np.ndarray],
+    neighborhood_size: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    sample_count = max(int(neighborhood_size), 1) * max(int(neighborhood_size), 1)
+    pair_count = len(pair_pool)
+    total_samples = pair_count * sample_count
+    samples_a = np.zeros((total_samples, 4), dtype=np.float32)
+    samples_b = np.zeros((total_samples, 4), dtype=np.float32)
+    sensor_coords_a = np.zeros((total_samples, 2), dtype=np.float32)
+    sensor_coords_b = np.zeros((total_samples, 2), dtype=np.float32)
+    radius = max(int(neighborhood_size), 1) // 2
+
+    for pair_index in range(pair_count):
+        frame_index_a = int(pair_pool.frame_indices_a[pair_index])
+        frame_index_b = int(pair_pool.frame_indices_b[pair_index])
+        frame_a = frames[frame_index_a]
+        frame_b = frames[frame_index_b]
+        image_a = np.asarray(frame_rgba_linear[frame_index_a], dtype=np.float32)
+        image_b = np.asarray(frame_rgba_linear[frame_index_b], dtype=np.float32)
+        center_a = np.floor(np.asarray(pair_pool.xy_a[pair_index], dtype=np.float32)).astype(np.int32, copy=False)
+        center_b = np.floor(np.asarray(pair_pool.xy_b[pair_index], dtype=np.float32)).astype(np.int32, copy=False)
+        width_a = max(int(frame_a.width), 1)
+        height_a = max(int(frame_a.height), 1)
+        width_b = max(int(frame_b.width), 1)
+        height_b = max(int(frame_b.height), 1)
+        for sample_y in range(max(int(neighborhood_size), 1)):
+            for sample_x in range(max(int(neighborhood_size), 1)):
+                sample_index = sample_y * max(int(neighborhood_size), 1) + sample_x
+                write_index = pair_index * sample_count + sample_index
+                dx = sample_x - radius
+                dy = sample_y - radius
+                pixel_x_a = int(np.clip(center_a[0] + dx, 0, width_a - 1))
+                pixel_y_a = int(np.clip(center_a[1] + dy, 0, height_a - 1))
+                pixel_x_b = int(np.clip(center_b[0] + dx, 0, width_b - 1))
+                pixel_y_b = int(np.clip(center_b[1] + dy, 0, height_b - 1))
+                samples_a[write_index] = image_a[pixel_y_a, pixel_x_a]
+                samples_b[write_index] = image_b[pixel_y_b, pixel_x_b]
+                sensor_coords_a[write_index] = ((pixel_x_a + 0.5) / width_a, (pixel_y_a + 0.5) / height_a)
+                sensor_coords_b[write_index] = ((pixel_x_b + 0.5) / width_b, (pixel_y_b + 0.5) / height_b)
+    return samples_a, samples_b, sensor_coords_a, sensor_coords_b
 
 
 def test_packed_ppisp_round_trip_and_provider_versioning() -> None:
@@ -320,7 +366,7 @@ def test_photometric_precomputed_pair_dataset_avoids_full_frame_upload(device) -
         seed=29,
     )
 
-    trainer._upload_pair_dataset()
+    trainer.prepare_pair_dataset()
 
     total_frame_pixels = sum(int(frame.width) * int(frame.height) for frame in frames)
     total_dataset_samples = len(trainer.pair_pool) * trainer.hparams.neighborhood_size * trainer.hparams.neighborhood_size
@@ -333,6 +379,41 @@ def test_photometric_precomputed_pair_dataset_avoids_full_frame_upload(device) -
     assert "frame_pixels" not in trainer.buffers
     assert total_dataset_samples < total_frame_pixels
     assert trainer.buffers["pair_samples_a"].size >= total_dataset_samples * 16
+
+
+def test_photometric_gpu_pair_dataset_matches_reference(device) -> None:
+    recon, frames = _make_reconstruction()
+    frame_rgba_linear = [
+        _make_linear_rgba(frame.height, frame.width, rgb_scale=1.0 + 0.1 * frame_index)
+        for frame_index, frame in enumerate(frames)
+    ]
+    trainer = PhotometricCompensationTrainer(
+        device,
+        recon,
+        frames,
+        hparams=PhotometricCompensationHyperParams(batch_pair_count=4, neighborhood_size=3),
+        seed=17,
+        frame_rgba_linear=frame_rgba_linear,
+    )
+
+    trainer.prepare_pair_dataset()
+
+    total_dataset_samples = len(trainer.pair_pool) * trainer.hparams.neighborhood_size * trainer.hparams.neighborhood_size
+    expected_samples_a, expected_samples_b, expected_sensor_coords_a, expected_sensor_coords_b = _reference_pair_dataset(
+        frames,
+        trainer.pair_pool,
+        frame_rgba_linear,
+        trainer.hparams.neighborhood_size,
+    )
+    pair_samples_a = buffer_to_numpy(trainer.buffers["pair_samples_a"], np.float32)[: total_dataset_samples * 4].reshape(total_dataset_samples, 4)
+    pair_samples_b = buffer_to_numpy(trainer.buffers["pair_samples_b"], np.float32)[: total_dataset_samples * 4].reshape(total_dataset_samples, 4)
+    pair_sensor_coords_a = buffer_to_numpy(trainer.buffers["pair_sensor_coords_a"], np.float32)[: total_dataset_samples * 2].reshape(total_dataset_samples, 2)
+    pair_sensor_coords_b = buffer_to_numpy(trainer.buffers["pair_sensor_coords_b"], np.float32)[: total_dataset_samples * 2].reshape(total_dataset_samples, 2)
+
+    np.testing.assert_allclose(pair_samples_a, expected_samples_a, rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(pair_samples_b, expected_samples_b, rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(pair_sensor_coords_a, expected_sensor_coords_a, rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(pair_sensor_coords_b, expected_sensor_coords_b, rtol=0.0, atol=1e-6)
 
 
 def test_gaussian_trainer_applies_target_tonemap_to_downscaled_targets(device, tmp_path: Path) -> None:
