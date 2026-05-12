@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 import slangpy as spy
 
+from src.scene._internal.colmap_types import ColmapImage, ColmapPoint3D, ColmapReconstruction
 from src.training.defaults import DEFAULT_LR_SCHEDULE_STEPS, DEFAULT_LR_STAGE1_STEP, DEFAULT_LR_STAGE2_STEP, DEFAULT_LR_STAGE3_STEP
 from src.training.ppisp import PPISP_FIELD_SPECS
 from src.viewer import presenter
@@ -408,6 +409,73 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         render_frame_index=0,
     )
     return viewer
+
+
+def test_training_camera_colmap_points_payload_clips_and_lists_other_views() -> None:
+    render_limit = presenter._TRAINING_CAMERA_COLMAP_POINT_LIMIT
+    point_xy = np.stack(
+        (
+            np.arange(render_limit + 2, dtype=np.float32) % 64.0,
+            np.full((render_limit + 2,), 12.0, dtype=np.float32),
+        ),
+        axis=1,
+    )
+    point_ids = np.full((render_limit + 2,), 101, dtype=np.int64)
+    recon = ColmapReconstruction(
+        root=Path("dataset"),
+        sparse_dir=Path("dataset/sparse/0"),
+        cameras={},
+        images={
+            3: ColmapImage(
+                image_id=3,
+                q_wxyz=np.asarray((1.0, 0.0, 0.0, 0.0), dtype=np.float32),
+                t_xyz=np.asarray((0.0, 0.0, 0.0), dtype=np.float32),
+                camera_id=7,
+                name="frame.png",
+                points2d_xy=point_xy,
+                points2d_point3d_ids=point_ids,
+            ),
+            5: ColmapImage(
+                image_id=5,
+                q_wxyz=np.asarray((1.0, 0.0, 0.0, 0.0), dtype=np.float32),
+                t_xyz=np.asarray((0.0, 0.0, 0.0), dtype=np.float32),
+                camera_id=7,
+                name="other.png",
+                points2d_xy=np.asarray(((8.0, 9.0),), dtype=np.float32),
+                points2d_point3d_ids=np.asarray((101,), dtype=np.int64),
+            ),
+        },
+        points3d={
+            101: ColmapPoint3D(
+                point_id=101,
+                xyz=np.asarray((0.0, 1.0, 2.0), dtype=np.float32),
+                rgb=np.asarray((1.0, 0.5, 0.25), dtype=np.float32),
+                error=0.125,
+                track_length=2,
+            )
+        },
+    )
+    viewer = SimpleNamespace()
+    viewer.ui = SimpleNamespace(controls={"loss_debug_frame": _control(0)})
+    viewer.c = lambda key: viewer.ui.controls[key]
+    viewer.s = SimpleNamespace(
+        training_frames=[SimpleNamespace(image_id=3, width=64, height=32, image_path=Path("frame.png"))],
+        colmap_recon=recon,
+        training_camera_colmap_observation_index=None,
+        training_camera_colmap_observation_signature=None,
+    )
+
+    payload = presenter._training_camera_colmap_points_payload(viewer)
+
+    assert payload is not None
+    assert payload["total_count"] == render_limit + 2
+    assert payload["render_count"] == render_limit
+    assert payload["point_ids"].shape == (render_limit,)
+    assert payload["track_lengths"][0] == 2
+    assert np.isclose(payload["errors"][0], 0.125)
+    assert payload["other_views"][0] == ((5, "other.png"),)
+    assert np.all(payload["uv"] >= 0.0)
+    assert np.all(payload["uv"] <= 1.0)
 
 
 def test_render_frame_uses_debug_branch_when_visual_loss_debug_enabled(monkeypatch):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 import numpy as np
 import slangpy as spy
@@ -34,6 +35,7 @@ _VIEWER_CLEAR_COLOR = [0.08, 0.09, 0.11, 1.0]
 _RESOURCE_DEBUG_REFRESH_SECONDS = 5.0
 _MENU_BAR_RESOURCE_REFRESH_SECONDS = 1.0
 _HISTOGRAM_REALTIME_REFRESH_SECONDS = 1.0
+_TRAINING_CAMERA_COLMAP_POINT_LIMIT = 4096
 
 
 def _training_camera_full_resolution(viewer: object) -> bool:
@@ -332,6 +334,7 @@ def update_ui_text(viewer: object, dt: float) -> None:
     training_camera_sections, pose_available = _training_camera_debug_panel_sections(viewer)
     _set_ui_value(viewer, "_training_camera_struct_sections", training_camera_sections)
     _set_ui_value(viewer, "_training_camera_pose_available", pose_available)
+    _set_ui_value(viewer, "_training_camera_colmap_points_payload", _training_camera_colmap_points_payload(viewer))
     _set_text(viewer, "path", header_state["path"])
     _set_ui_value(viewer, "_colmap_import_active", bool(header_state["colmap_import_active"]))
     _set_ui_value(viewer, "_colmap_import_fraction", float(header_state["colmap_import_fraction"]))
@@ -530,6 +533,106 @@ def _training_camera_debug_panel_sections(viewer: object) -> tuple[tuple, bool]:
         )),
     )
     return sections, camera is not None
+
+
+def _training_camera_colmap_observation_index(viewer: object) -> dict[int, tuple[tuple[int, str], ...]]:
+    recon = getattr(viewer.s, "colmap_recon", None)
+    if recon is None:
+        return {}
+    signature = (id(recon),)
+    cached_signature = getattr(viewer.s, "training_camera_colmap_observation_signature", None)
+    cached_index = getattr(viewer.s, "training_camera_colmap_observation_index", None)
+    if cached_signature == signature and isinstance(cached_index, dict):
+        return cached_index
+    observations: dict[int, list[tuple[int, str]]] = {}
+    for image_id, image in sorted(getattr(recon, "images", {}).items()):
+        point_ids = np.asarray(getattr(image, "points2d_point3d_ids", ()), dtype=np.int64).reshape(-1)
+        if point_ids.size == 0:
+            continue
+        valid_point_ids = point_ids[point_ids > 0]
+        if valid_point_ids.size == 0:
+            continue
+        image_name = Path(str(getattr(image, "name", f"image_{int(image_id)}"))).name
+        view = (int(image_id), image_name)
+        for point_id in np.unique(valid_point_ids):
+            observations.setdefault(int(point_id), []).append(view)
+    cached = {point_id: tuple(views) for point_id, views in observations.items()}
+    viewer.s.training_camera_colmap_observation_signature = signature
+    viewer.s.training_camera_colmap_observation_index = cached
+    return cached
+
+
+def _training_camera_colmap_points_payload(viewer: object) -> dict[str, object] | None:
+    frames = tuple(getattr(viewer.s, "training_frames", ()))
+    recon = getattr(viewer.s, "colmap_recon", None)
+    if recon is None or len(frames) == 0:
+        return None
+    frame = frames[_debug_frame_idx(viewer)]
+    image_id = getattr(frame, "image_id", None)
+    if image_id is None:
+        return None
+    image = getattr(recon, "images", {}).get(int(image_id))
+    if image is None:
+        return None
+    point_xy = np.asarray(getattr(image, "points2d_xy", ()), dtype=np.float32).reshape(-1, 2)
+    point_ids = np.asarray(getattr(image, "points2d_point3d_ids", ()), dtype=np.int64).reshape(-1)
+    count = min(int(point_xy.shape[0]), int(point_ids.size))
+    source_width = max(int(getattr(frame, "width", 0)), 1)
+    source_height = max(int(getattr(frame, "height", 0)), 1)
+    image_name = Path(str(getattr(image, "name", getattr(frame, "image_path", image_id)))).name
+    if count <= 0:
+        return {
+            "image_id": int(image_id),
+            "image_name": image_name,
+            "source_size": (source_width, source_height),
+            "total_count": 0,
+            "render_count": 0,
+            "point_ids": np.zeros((0,), dtype=np.int64),
+            "xy": np.zeros((0, 2), dtype=np.float32),
+            "uv": np.zeros((0, 2), dtype=np.float32),
+            "track_lengths": np.zeros((0,), dtype=np.int32),
+            "errors": np.zeros((0,), dtype=np.float32),
+            "other_views": (),
+        }
+    point_xy = np.ascontiguousarray(point_xy[:count], dtype=np.float32)
+    point_ids = np.ascontiguousarray(point_ids[:count], dtype=np.int64)
+    valid = np.isfinite(point_xy).all(axis=1) & (point_ids > 0)
+    valid &= (point_xy[:, 0] >= 0.0) & (point_xy[:, 0] <= float(source_width))
+    valid &= (point_xy[:, 1] >= 0.0) & (point_xy[:, 1] <= float(source_height))
+    total_count = int(np.count_nonzero(valid))
+    point_xy = np.ascontiguousarray(point_xy[valid], dtype=np.float32)
+    point_ids = np.ascontiguousarray(point_ids[valid], dtype=np.int64)
+    if point_xy.shape[0] > _TRAINING_CAMERA_COLMAP_POINT_LIMIT:
+        point_xy = np.ascontiguousarray(point_xy[:_TRAINING_CAMERA_COLMAP_POINT_LIMIT], dtype=np.float32)
+        point_ids = np.ascontiguousarray(point_ids[:_TRAINING_CAMERA_COLMAP_POINT_LIMIT], dtype=np.int64)
+    uv = np.zeros((int(point_xy.shape[0]), 2), dtype=np.float32)
+    if point_xy.shape[0] > 0:
+        uv[:, 0] = np.clip(point_xy[:, 0] / float(source_width), 0.0, 1.0)
+        uv[:, 1] = np.clip(point_xy[:, 1] / float(source_height), 0.0, 1.0)
+    point_lookup = getattr(recon, "points3d", {})
+    observation_index = _training_camera_colmap_observation_index(viewer)
+    track_lengths = np.zeros((int(point_ids.size),), dtype=np.int32)
+    errors = np.full((int(point_ids.size),), np.nan, dtype=np.float32)
+    other_views: list[tuple[tuple[int, str], ...]] = []
+    for point_index, point_id in enumerate(point_ids.tolist()):
+        point = point_lookup.get(int(point_id)) if isinstance(point_lookup, dict) else None
+        if point is not None:
+            track_lengths[point_index] = int(getattr(point, "track_length", 0))
+            errors[point_index] = float(getattr(point, "error", float("nan")))
+        other_views.append(tuple(view for view in observation_index.get(int(point_id), ()) if int(view[0]) != int(image_id)))
+    return {
+        "image_id": int(image_id),
+        "image_name": image_name,
+        "source_size": (source_width, source_height),
+        "total_count": total_count,
+        "render_count": int(point_ids.size),
+        "point_ids": point_ids,
+        "xy": point_xy,
+        "uv": uv,
+        "track_lengths": track_lengths,
+        "errors": errors,
+        "other_views": tuple(other_views),
+    }
 
 
 def _apply_training_debug_renderer_hparams(viewer: object, debug_renderer: object, step: int) -> None:

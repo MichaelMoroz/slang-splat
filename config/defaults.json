@@ -340,6 +340,7 @@
       "show_camera_overlays": false,
       "show_camera_labels": false,
       "show_training_cameras": false,
+      "show_training_camera_colmap_points": false,
       "show_camera_min_dist_spheres": false,
       "hist_bin_count": 256,
       "hist_min_value": -117.98536682128906,

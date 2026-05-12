@@ -76,9 +76,11 @@ When `Training Cameras` is enabled in the viewport, the viewport switches from t
 - The overlay keeps the frame selector and loss/debug view selector.
 - `Full Resolution` bypasses the current training subsample path and renders the selected training camera at its source frame resolution.
 - The viewport image is displayed with aspect-fit pan/zoom controls.
+- zoom and pan stay active while switching frames, debug views, and full-resolution mode,
 - mouse wheel zooms,
 - left-drag pans while zoomed,
 - double-click resets the zoom/pan state.
+- `COLMAP Point Matches` overlays up to 4096 observed 2D sparse points for the selected training image, and clicking a point opens a small info window listing the point id, reprojection error, track length, and the other views that observe it.
 - `Move Main View Here` copies the selected training camera position and view direction into the main free-fly camera while keeping the viewer controls roll-free, then automatically exits training-camera mode.
 - `Reset Camera` returns the main free-fly camera to the current scene fit and exits training-camera mode.
 - The overlay also shows the selected frame/image id, source camera id, pose vectors, projection parameters, distortion coefficients, and current target resolution.

@@ -196,6 +196,8 @@ class ViewerState:
     camera_overlay_frame_indices: np.ndarray | None = None
     camera_overlay_world_positions: np.ndarray | None = None
     camera_overlay_signature: tuple[object, ...] | None = None
+    training_camera_colmap_observation_index: dict[int, tuple[tuple[int, str], ...]] | None = None
+    training_camera_colmap_observation_signature: tuple[object, ...] | None = None
     camera_reset_position: tuple[float, float, float] | None = None
     camera_reset_up: tuple[float, float, float] | None = None
     camera_reset_yaw: float | None = None

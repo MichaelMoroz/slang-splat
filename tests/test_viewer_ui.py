@@ -1181,12 +1181,13 @@ def test_viewport_debug_overlay_draws_training_camera_controls(monkeypatch) -> N
         _interface_scale_factor=lambda _ui_obj: 1.0,
         _append_viewport_ui_capture_rect=lambda rect: capture_rects.append(rect),
         _draw_control=lambda *_args, **_kwargs: None,
+        _training_camera_selected_point_id=None,
         callbacks=SimpleNamespace(move_to_training_camera=lambda: None),
         _training_camera_debug_section_height=lambda ui_obj: ui.ToolkitWindow._training_camera_debug_section_height(toolkit, ui_obj),
         _draw_training_camera_debug_controls=lambda ui_obj: ui.ToolkitWindow._draw_training_camera_debug_controls(toolkit, ui_obj),
     )
     viewer_ui = SimpleNamespace(
-        _values={"debug_mode": ui._DEBUG_MODE_VALUES.index("normal"), "show_training_cameras": True, "loss_debug_view": 0, "loss_debug_frame": 3, "_loss_debug_frame_max": 12, "training_camera_full_resolution": False, "_training_camera_struct_sections": (
+        _values={"debug_mode": ui._DEBUG_MODE_VALUES.index("normal"), "show_training_cameras": True, "loss_debug_view": 0, "loss_debug_frame": 3, "_loss_debug_frame_max": 12, "training_camera_full_resolution": False, "show_training_camera_colmap_points": False, "_training_camera_struct_sections": (
             ("Resolution", (("target", "320x180"), ("source", "640x360"), ("full_res", False))),
             ("Ids", (("image", 5), ("camera", 7))),
         )},
@@ -1202,12 +1203,52 @@ def test_viewport_debug_overlay_draws_training_camera_controls(monkeypatch) -> N
     assert capture_rects == [(12.0, 34.0, child_sizes[0][0], child_sizes[0][1])]
     assert combo_labels == [("##training_camera_view", "Rendered")]
     assert slider_calls == [("##training_camera_frame", 3, 0, 12)]
-    assert checkbox_calls == [("Full Resolution", False)]
+    assert checkbox_calls == [("Full Resolution", False), ("COLMAP Point Matches", False)]
     assert button_labels == ["Move Main View Here"]
     assert disabled_text == [
         "frame.png",
         "32.50 dB",
     ]
+
+
+def test_training_camera_viewport_image_preserves_zoom_across_frame_and_view_changes(monkeypatch) -> None:
+    monkeypatch.setattr(ui.imgui, "get_cursor_screen_pos", lambda: ui.imgui.ImVec2(0.0, 0.0))
+    monkeypatch.setattr(ui.imgui, "set_cursor_screen_pos", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "push_style_var", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "pop_style_var", lambda: None)
+    monkeypatch.setattr(ui.imgui, "push_style_color", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "pop_style_color", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "set_next_item_allow_overlap", lambda: None)
+    monkeypatch.setattr(ui.imgui, "image_button", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(ui.imgui, "is_item_hovered", lambda: False)
+    monkeypatch.setattr(ui.imgui, "is_item_active", lambda: False)
+    monkeypatch.setattr(ui.imgui, "is_mouse_double_clicked", lambda *_args: False)
+    monkeypatch.setattr(ui.imgui, "is_mouse_dragging", lambda *_args: False)
+    monkeypatch.setattr(ui.imgui, "get_io", lambda: SimpleNamespace(mouse_wheel=0.0, mouse_delta=ui.imgui.ImVec2(0.0, 0.0)))
+    toolkit = SimpleNamespace(
+        _training_camera_view_zoom=3.5,
+        _training_camera_view_center=(0.3, 0.7),
+        _training_camera_selected_point_id=None,
+        _draw_training_camera_colmap_overlay=lambda *_args: None,
+    )
+    viewer_ui = SimpleNamespace(
+        _values={
+            "loss_debug_frame": 0,
+            "loss_debug_view": 0,
+            "training_camera_full_resolution": False,
+            "show_training_camera_colmap_points": False,
+        }
+    )
+    texture = SimpleNamespace(width=640, height=360)
+
+    ui.ToolkitWindow._draw_training_camera_viewport_image(toolkit, viewer_ui, texture, 640.0, 360.0)
+    viewer_ui._values["loss_debug_frame"] = 4
+    viewer_ui._values["loss_debug_view"] = 2
+    viewer_ui._values["training_camera_full_resolution"] = True
+    ui.ToolkitWindow._draw_training_camera_viewport_image(toolkit, viewer_ui, texture, 640.0, 360.0)
+
+    assert toolkit._training_camera_view_zoom == 3.5
+    assert toolkit._training_camera_view_center == (0.3, 0.7)
 
 
 def test_build_ui_initializes_loss_debug_psnr_text() -> None:

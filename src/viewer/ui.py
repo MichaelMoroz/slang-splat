@@ -709,9 +709,9 @@ class ToolkitWindow:
         self._viewport_ui_capture_rects: tuple[tuple[float, float, float, float], ...] = ()
         self._viewport_window_focused = False
         self._viewport_input_active = False
-        self._training_camera_view_signature: tuple[object, ...] | None = None
         self._training_camera_view_zoom = 1.0
         self._training_camera_view_center = (0.5, 0.5)
+        self._training_camera_selected_point_id: int | None = None
         self._base_style = imgui.Style()
         self._apply_visual_state(initial_scale, int(_VIEWER_CONTROL_DEFAULTS.get("theme", 0)))
 
@@ -1127,22 +1127,13 @@ class ToolkitWindow:
         self._draw_colmap_import_window(ui)
 
     def _reset_training_camera_view(self) -> None:
-        self._training_camera_view_signature = None
         self._training_camera_view_zoom = 1.0
         self._training_camera_view_center = (0.5, 0.5)
+        self._training_camera_selected_point_id = None
 
     def _draw_training_camera_viewport_image(self, ui: ViewerUI, viewport_texture: spy.Texture, content_width: float, content_height: float) -> None:
         texture_width = max(int(getattr(viewport_texture, "width", 1)), 1)
         texture_height = max(int(getattr(viewport_texture, "height", 1)), 1)
-        signature = (
-            int(ui._values.get("loss_debug_frame", 0)),
-            int(ui._values.get("loss_debug_view", 0)),
-            bool(ui._values.get("training_camera_full_resolution", False)),
-        )
-        if signature != self._training_camera_view_signature:
-            self._training_camera_view_signature = signature
-            self._training_camera_view_zoom = 1.0
-            self._training_camera_view_center = (0.5, 0.5)
         origin = imgui.get_cursor_screen_pos()
         offset_x, offset_y, draw_width, draw_height = _fit_aspect_rect(content_width, content_height, texture_width, texture_height)
         image_origin = imgui.ImVec2(float(origin.x) + float(offset_x), float(origin.y) + float(offset_y))
@@ -1164,6 +1155,7 @@ class ToolkitWindow:
         )
         hovered = bool(imgui.is_item_hovered())
         active = bool(imgui.is_item_active())
+        ToolkitWindow._draw_training_camera_colmap_overlay(self, ui, image_origin, draw_width, draw_height, uv0, uv1, hovered)
         if hovered and bool(imgui.is_mouse_double_clicked(0)):
             self._training_camera_view_zoom = 1.0
             self._training_camera_view_center = (0.5, 0.5)
@@ -1194,6 +1186,125 @@ class ToolkitWindow:
             )
         imgui.pop_style_color(3)
         imgui.pop_style_var()
+
+    def _draw_training_camera_colmap_overlay(
+        self,
+        ui: ViewerUI,
+        image_origin: imgui.ImVec2,
+        draw_width: float,
+        draw_height: float,
+        uv0: tuple[float, float],
+        uv1: tuple[float, float],
+        hovered: bool,
+    ) -> None:
+        if not bool(ui._values.get("show_training_camera_colmap_points", False)):
+            self._training_camera_selected_point_id = None
+            return
+        payload = ui._values.get("_training_camera_colmap_points_payload")
+        if not isinstance(payload, dict):
+            self._training_camera_selected_point_id = None
+            return
+        point_uv = np.asarray(payload.get("uv", ()), dtype=np.float32).reshape(-1, 2)
+        point_ids = np.asarray(payload.get("point_ids", ()), dtype=np.int64).reshape(-1)
+        if point_uv.shape[0] == 0 or point_ids.size != point_uv.shape[0]:
+            self._training_camera_selected_point_id = None
+            return
+        span_x = max(float(uv1[0]) - float(uv0[0]), 1e-6)
+        span_y = max(float(uv1[1]) - float(uv0[1]), 1e-6)
+        local_x = (point_uv[:, 0] - float(uv0[0])) / span_x
+        local_y = (point_uv[:, 1] - float(uv0[1])) / span_y
+        visible = (local_x >= 0.0) & (local_x <= 1.0) & (local_y >= 0.0) & (local_y <= 1.0)
+        visible_indices = np.flatnonzero(visible)
+        if visible_indices.size == 0:
+            return
+        screen_points = np.empty((int(visible_indices.size), 2), dtype=np.float32)
+        screen_points[:, 0] = float(image_origin.x) + local_x[visible_indices] * float(draw_width)
+        screen_points[:, 1] = float(image_origin.y) + local_y[visible_indices] * float(draw_height)
+        draw_list = imgui.get_window_draw_list()
+        selected_point_id = None if self._training_camera_selected_point_id is None else int(self._training_camera_selected_point_id)
+        point_radius = float(_TRAINING_CAMERA_COLMAP_POINT_RADIUS)
+        point_color = _color_u32(*_TRAINING_CAMERA_COLMAP_POINT_COLOR)
+        selected_color = _color_u32(*_TRAINING_CAMERA_COLMAP_POINT_SELECTED_COLOR)
+        for visible_offset, point_index in enumerate(visible_indices.tolist()):
+            point_x = float(screen_points[visible_offset, 0])
+            point_y = float(screen_points[visible_offset, 1])
+            color = selected_color if selected_point_id is not None and int(point_ids[point_index]) == selected_point_id else point_color
+            draw_list.add_rect_filled(
+                imgui.ImVec2(point_x - point_radius, point_y - point_radius),
+                imgui.ImVec2(point_x + point_radius, point_y + point_radius),
+                color,
+            )
+        if hovered and bool(imgui.is_mouse_clicked(0)) and not bool(imgui.is_mouse_double_clicked(0)):
+            mouse_pos = imgui.get_mouse_pos()
+            delta = screen_points - np.asarray((float(mouse_pos.x), float(mouse_pos.y)), dtype=np.float32)[None, :]
+            dist_sq = np.sum(delta * delta, axis=1)
+            nearest_offset = int(np.argmin(dist_sq)) if dist_sq.size > 0 else -1
+            hit_radius_sq = float(_TRAINING_CAMERA_COLMAP_POINT_HIT_RADIUS * _TRAINING_CAMERA_COLMAP_POINT_HIT_RADIUS)
+            if nearest_offset >= 0 and float(dist_sq[nearest_offset]) <= hit_radius_sq:
+                self._training_camera_selected_point_id = int(point_ids[int(visible_indices[nearest_offset])])
+                selected_point_id = self._training_camera_selected_point_id
+            else:
+                self._training_camera_selected_point_id = None
+                selected_point_id = None
+        if selected_point_id is None:
+            return
+        selected_indices = np.flatnonzero(point_ids == int(selected_point_id))
+        if selected_indices.size == 0:
+            self._training_camera_selected_point_id = None
+            return
+        selected_index = int(selected_indices[0])
+        if not bool(visible[selected_index]):
+            return
+        selected_screen_x = float(image_origin.x) + float(local_x[selected_index]) * float(draw_width)
+        selected_screen_y = float(image_origin.y) + float(local_y[selected_index]) * float(draw_height)
+        selected_radius = float(_TRAINING_CAMERA_COLMAP_POINT_SELECTED_RADIUS)
+        draw_list.add_rect(
+            imgui.ImVec2(selected_screen_x - selected_radius, selected_screen_y - selected_radius),
+            imgui.ImVec2(selected_screen_x + selected_radius, selected_screen_y + selected_radius),
+            selected_color,
+        )
+        ToolkitWindow._draw_training_camera_colmap_point_info(self, payload, selected_index, selected_screen_x, selected_screen_y)
+
+    def _draw_training_camera_colmap_point_info(self, payload: dict[str, object], point_index: int, point_x: float, point_y: float) -> None:
+        point_ids = np.asarray(payload.get("point_ids", ()), dtype=np.int64).reshape(-1)
+        point_xy = np.asarray(payload.get("xy", ()), dtype=np.float32).reshape(-1, 2)
+        track_lengths = np.asarray(payload.get("track_lengths", ()), dtype=np.int32).reshape(-1)
+        errors = np.asarray(payload.get("errors", ()), dtype=np.float32).reshape(-1)
+        other_views = payload.get("other_views", ())
+        if point_index < 0 or point_index >= point_ids.size or point_index >= point_xy.shape[0]:
+            self._training_camera_selected_point_id = None
+            return
+        point_id = int(point_ids[point_index])
+        point_error = float(errors[point_index]) if point_index < errors.size else float("nan")
+        track_length = int(track_lengths[point_index]) if point_index < track_lengths.size else 0
+        views = other_views[point_index] if point_index < len(other_views) else ()
+        imgui.set_next_window_pos(
+            imgui.ImVec2(point_x + _TRAINING_CAMERA_COLMAP_POINT_CONTEXT_OFFSET, point_y + _TRAINING_CAMERA_COLMAP_POINT_CONTEXT_OFFSET),
+            imgui.Cond_.always.value,
+        )
+        flags = imgui.WindowFlags_.always_auto_resize.value | imgui.WindowFlags_.no_saved_settings.value
+        opened, keep_open = imgui.begin(f"Point Match##training_camera_colmap_point_{point_id}", True, flags=flags)
+        if not keep_open:
+            self._training_camera_selected_point_id = None
+        if opened:
+            pos = imgui.get_window_pos()
+            size = imgui.get_window_size()
+            self._append_viewport_ui_capture_rect((float(pos.x), float(pos.y), float(size.x), float(size.y)))
+            imgui.text_unformatted(f"Point {point_id}")
+            imgui.text_disabled(f"xy: {float(point_xy[point_index, 0]):.1f}, {float(point_xy[point_index, 1]):.1f}")
+            imgui.text_disabled(f"track length: {track_length}")
+            imgui.text_disabled(f"reprojection error: {point_error:.4f}" if np.isfinite(point_error) else "reprojection error: n/a")
+            imgui.separator()
+            if views:
+                imgui.text_unformatted(f"Other views ({len(views)})")
+                for image_id, image_name in views[:_TRAINING_CAMERA_COLMAP_CONTEXT_VIEW_LIMIT]:
+                    imgui.bullet_text(f"[{int(image_id)}] {Path(str(image_name)).name}")
+                hidden_views = len(views) - _TRAINING_CAMERA_COLMAP_CONTEXT_VIEW_LIMIT
+                if hidden_views > 0:
+                    imgui.text_disabled(f"+{hidden_views} more")
+            else:
+                imgui.text_disabled("No other views")
+        imgui.end()
 
     def _draw_viewport_window(self, ui: ViewerUI, viewport_texture: spy.Texture | None, width: int, height: int) -> None:
         viewport_x = 0.0
@@ -1348,9 +1459,11 @@ class ToolkitWindow:
         line_height = float(imgui.get_text_line_height_with_spacing())
         frame_height = float(imgui.get_frame_height())
         spacing_y = float(imgui.get_style().item_spacing.y)
-        height = frame_height + spacing_y + frame_height + spacing_y + frame_height + spacing_y + frame_height
+        height = frame_height + spacing_y + frame_height + spacing_y + frame_height + spacing_y + frame_height + spacing_y + frame_height
         if LOSS_DEBUG_OPTIONS[min(max(int(ui._values.get("loss_debug_view", 0)), 0), len(LOSS_DEBUG_OPTIONS) - 1)][0] == "abs_diff":
             height += frame_height + spacing_y
+        if bool(ui._values.get("show_training_camera_colmap_points", False)):
+            height += line_height + spacing_y
         for key, _suffix_only in _TRAINING_CAMERA_DEBUG_TEXT_FIELDS:
             text = str(ui._texts.get(key, "")).strip()
             if text:
@@ -1379,6 +1492,17 @@ class ToolkitWindow:
         changed, full_res = imgui.checkbox("Full Resolution", bool(ui._values.get("training_camera_full_resolution", False)))
         if changed:
             ui._values["training_camera_full_resolution"] = bool(full_res)
+        changed, show_points = imgui.checkbox("COLMAP Point Matches", bool(ui._values.get("show_training_camera_colmap_points", False)))
+        if changed:
+            ui._values["show_training_camera_colmap_points"] = bool(show_points)
+            if not bool(show_points):
+                self._training_camera_selected_point_id = None
+        if bool(ui._values.get("show_training_camera_colmap_points", False)):
+            payload = ui._values.get("_training_camera_colmap_points_payload")
+            render_count = int(payload.get("render_count", 0)) if isinstance(payload, dict) else 0
+            total_count = int(payload.get("total_count", render_count)) if isinstance(payload, dict) else render_count
+            suffix = f"{render_count:,}" if total_count <= render_count else f"{render_count:,}/{total_count:,}"
+            imgui.text_disabled(f"COLMAP points: {suffix}")
         if imgui.button("Move Main View Here"):
             self.callbacks.move_to_training_camera()
         for key, suffix_only in _TRAINING_CAMERA_DEBUG_TEXT_FIELDS:
@@ -3069,7 +3193,8 @@ def build_ui(renderer) -> ViewerUI:
     values["colmap_fibonacci_sphere_radius_multiplier"] = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_radius_multiplier", _VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_radius", 2.0)))
     values["show_resource_debug"] = False
     for key, cast in _VIEWER_UI_EXPORT_FIELDS[:-3]:
-        values[key] = cast(_VIEWER_UI_DEFAULTS[key])
+        default = False if cast is bool else 0 if cast is int else 0.0
+        values[key] = cast(_VIEWER_UI_DEFAULTS.get(key, default))
     values.update({
         "_exit_confirmation_open": False,
         "_histograms_refresh_requested": False,
@@ -3100,6 +3225,7 @@ def build_ui(renderer) -> ViewerUI:
         "training_camera_full_resolution": False,
         "_training_camera_pose_available": False,
         "_training_camera_struct_sections": (),
+        "_training_camera_colmap_points_payload": None,
         "_training_resolution_sections": (),
         "_training_downscale_sections": (),
         "_training_schedule_sections": (),
