@@ -278,8 +278,11 @@ def test_photometric_packed_adam_converges_per_frame_params(device) -> None:
     )
     trainer = PhotometricCompensationTrainer(device, recon, frames, hparams=hparams, seed=7)
     rng = np.random.default_rng(17)
-    targets = identity_packed_ppisp_params(len(frames)) + rng.normal(0.0, 0.04, size=(PPISP_PACKED_PARAM_COUNT, len(frames))).astype(np.float32)
+    identity = identity_packed_ppisp_params(len(frames))
+    targets = identity + rng.normal(0.0, 0.04, size=(PPISP_PACKED_PARAM_COUNT, len(frames))).astype(np.float32)
+    targets[:, 0] = identity[:, 0]
     params_init = targets + rng.normal(0.0, 0.15, size=targets.shape).astype(np.float32)
+    params_init[:, 0] = identity[:, 0]
     trainer.replace_packed_params(params_init)
 
     usage = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
@@ -313,6 +316,7 @@ def test_photometric_packed_adam_converges_per_frame_params(device) -> None:
     final_error = float(np.mean(np.abs(final_params - targets), dtype=np.float64))
 
     assert np.all(np.isfinite(final_params))
+    np.testing.assert_allclose(final_params[:, 0], identity[:, 0], rtol=0.0, atol=1e-6)
     assert final_error < start_error * 0.02
 
 
@@ -416,6 +420,33 @@ def test_photometric_gpu_pair_dataset_matches_reference(device) -> None:
     np.testing.assert_allclose(pair_sensor_coords_b, expected_sensor_coords_b, rtol=0.0, atol=1e-6)
 
 
+def test_photometric_reference_frame_stays_identity(device) -> None:
+    recon, frames = _make_reconstruction()
+    frame_rgba_linear = [
+        _make_linear_rgba(frame.height, frame.width, rgb_scale=1.0 + 0.05 * frame_index)
+        for frame_index, frame in enumerate(frames)
+    ]
+    trainer = PhotometricCompensationTrainer(
+        device,
+        recon,
+        frames,
+        hparams=PhotometricCompensationHyperParams(batch_pair_count=4, neighborhood_size=3),
+        seed=23,
+        frame_rgba_linear=frame_rgba_linear,
+    )
+
+    identity = identity_packed_ppisp_params(len(frames))
+    params = identity.copy()
+    params[:, 0] += np.float32(0.25)
+    params[:, 1] += np.float32(0.10)
+    trainer.replace_packed_params(params)
+    np.testing.assert_allclose(trainer.read_packed_params()[:, 0], identity[:, 0], rtol=0.0, atol=1e-6)
+
+    trainer.train_step(step_index=1)
+
+    np.testing.assert_allclose(trainer.read_packed_params()[:, 0], identity[:, 0], rtol=0.0, atol=1e-6)
+
+
 def test_gaussian_trainer_applies_target_tonemap_to_downscaled_targets(device, tmp_path: Path) -> None:
     image = np.array(
         [
@@ -511,6 +542,7 @@ def test_photometric_trainer_pair_loss_step_reduces_synthetic_exposure_error(dev
     assert np.isfinite(first_loss)
     assert np.isfinite(trainer.state.ema_loss)
     assert trainer.state.ema_loss < first_loss * 0.3
+    assert exposure_values[0] == pytest.approx(0.0, abs=1e-6)
     assert exposure_values[1] > exposure_values[0] + 0.25
     assert exposure_values[1] > exposure_values[2] + 0.25
 

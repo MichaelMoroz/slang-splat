@@ -341,11 +341,25 @@ def test_initialize_photometric_compensation_reuses_training_textures(monkeypatc
         ui=SimpleNamespace(
             _values={
                 "photometric_apply_to_targets": True,
+                "photometric_batch_pair_count": 4096,
+                "photometric_neighborhood_size": 5,
+                "photometric_min_track_length": 6,
                 "photometric_learning_rate": 0.125,
+                "photometric_exposure_lr_mul": 0.9,
+                "photometric_vignette_lr_mul": 0.8,
+                "photometric_chroma_lr_mul": 0.7,
+                "photometric_crf_lr_mul": 0.6,
+                "photometric_grad_component_clip": 9.0,
+                "photometric_grad_norm_clip": 8.0,
+                "photometric_max_update": 0.07,
                 "photometric_exposure_regularize_weight": 0.75,
                 "photometric_vignette_regularize_weight": 0.5,
                 "photometric_chroma_regularize_weight": 0.25,
                 "photometric_crf_regularize_weight": 0.125,
+                "photometric_exposure_l1_weight": 0.11,
+                "photometric_vignette_l1_weight": 0.12,
+                "photometric_chroma_l1_weight": 0.13,
+                "photometric_crf_l1_weight": 0.14,
             }
         ),
         s=SimpleNamespace(
@@ -364,11 +378,25 @@ def test_initialize_photometric_compensation_reuses_training_textures(monkeypatc
     assert captured["reconstruction"] is viewer.s.colmap_recon
     assert captured["frame_source_textures"] == textures
     assert captured["requested_frames"] == [(0, True), (1, True)]
+    assert int(captured["hparams"].batch_pair_count) == 4096
+    assert int(captured["hparams"].neighborhood_size) == 5
+    assert int(captured["hparams"].min_track_length) == 6
     assert float(captured["hparams"].learning_rate) == pytest.approx(0.125)
+    assert float(captured["hparams"].exposure_lr_mul) == pytest.approx(0.9)
+    assert float(captured["hparams"].vignette_lr_mul) == pytest.approx(0.8)
+    assert float(captured["hparams"].chroma_lr_mul) == pytest.approx(0.7)
+    assert float(captured["hparams"].crf_lr_mul) == pytest.approx(0.6)
     assert float(captured["hparams"].exposure_regularize_weight) == pytest.approx(0.75)
     assert float(captured["hparams"].vignette_regularize_weight) == pytest.approx(0.5)
     assert float(captured["hparams"].chroma_regularize_weight) == pytest.approx(0.25)
     assert float(captured["hparams"].crf_regularize_weight) == pytest.approx(0.125)
+    assert float(captured["hparams"].exposure_l1_weight) == pytest.approx(0.11)
+    assert float(captured["hparams"].vignette_l1_weight) == pytest.approx(0.12)
+    assert float(captured["hparams"].chroma_l1_weight) == pytest.approx(0.13)
+    assert float(captured["hparams"].crf_l1_weight) == pytest.approx(0.14)
+    assert float(captured["hparams"].grad_component_clip) == pytest.approx(9.0)
+    assert float(captured["hparams"].grad_norm_clip) == pytest.approx(8.0)
+    assert float(captured["hparams"].max_update) == pytest.approx(0.07)
     assert captured["prepared"] is True
     assert captured["sync_calls"] == 2
     assert viewer.s.photometric_active is False

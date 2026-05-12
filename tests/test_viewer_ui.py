@@ -1127,12 +1127,28 @@ def test_resource_debug_window_draws_largest_first_table(monkeypatch) -> None:
 
 
 def test_photometric_window_updates_training_controls(monkeypatch) -> None:
+    drag_int_values = {
+        "Batch Pairs": 4096,
+        "Neighborhood": 5,
+        "Min Track Length": 6,
+    }
     drag_float_values = {
         "Learning Rate": 0.125,
+        "Grad Clip": 9.0,
+        "Grad Norm Clip": 8.0,
+        "Max Update": 0.07,
+        "Exposure LR": 0.9,
+        "Vignette LR": 0.8,
+        "Chroma LR": 0.7,
+        "CRF LR": 0.6,
         "Exposure": 0.75,
         "Vignette": 0.5,
         "Chroma": 0.25,
         "CRF": 0.125,
+        "Exposure L1": 0.11,
+        "Vignette L1": 0.12,
+        "Chroma L1": 0.13,
+        "CRF L1": 0.14,
     }
     monkeypatch.setattr(ui.ToolkitWindow, "_register_non_viewport_window", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(ui.imgui, "set_next_window_pos", lambda *args, **kwargs: None)
@@ -1146,7 +1162,7 @@ def test_photometric_window_updates_training_controls(monkeypatch) -> None:
     monkeypatch.setattr(ui.imgui, "separator_text", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(ui.imgui, "button", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(ui.imgui, "checkbox", lambda _label, value: (False, value))
-    monkeypatch.setattr(ui.imgui, "drag_int", lambda _label, value, *_args: (False, value))
+    monkeypatch.setattr(ui.imgui, "drag_int", lambda label, value, *_args: (str(label) in drag_int_values, drag_int_values.get(str(label), value)))
     monkeypatch.setattr(ui.imgui, "slider_int", lambda _label, value, *_args: (False, value))
     monkeypatch.setattr(ui.imgui, "drag_float", lambda label, value, *_args: (True, drag_float_values[str(label)]))
     monkeypatch.setattr(ui.imgui, "is_item_hovered", lambda: False)
@@ -1167,11 +1183,25 @@ def test_photometric_window_updates_training_controls(monkeypatch) -> None:
             "photometric_steps_per_frame": 1,
             "photometric_selected_frame": 0,
             "photometric_frame_max": 0,
+            "photometric_batch_pair_count": 2048,
+            "photometric_neighborhood_size": 3,
+            "photometric_min_track_length": 2,
             "photometric_learning_rate": 0.05,
+            "photometric_grad_component_clip": 10.0,
+            "photometric_grad_norm_clip": 10.0,
+            "photometric_max_update": 0.05,
+            "photometric_exposure_lr_mul": 0.5,
+            "photometric_vignette_lr_mul": 0.25,
+            "photometric_chroma_lr_mul": 0.25,
+            "photometric_crf_lr_mul": 0.125,
             "photometric_exposure_regularize_weight": 0.05,
             "photometric_vignette_regularize_weight": 0.1,
             "photometric_chroma_regularize_weight": 0.2,
             "photometric_crf_regularize_weight": 0.2,
+            "photometric_exposure_l1_weight": 0.0,
+            "photometric_vignette_l1_weight": 0.01,
+            "photometric_chroma_l1_weight": 0.02,
+            "photometric_crf_l1_weight": 0.02,
             "_photometric_param_sections": (),
         },
         _texts={},
@@ -1179,11 +1209,25 @@ def test_photometric_window_updates_training_controls(monkeypatch) -> None:
 
     ui.ToolkitWindow._draw_photometric_compensation_window(toolkit, viewer_ui)
 
+    assert viewer_ui._values["photometric_batch_pair_count"] == 4096
+    assert viewer_ui._values["photometric_neighborhood_size"] == 5
+    assert viewer_ui._values["photometric_min_track_length"] == 6
     assert viewer_ui._values["photometric_learning_rate"] == 0.125
+    assert viewer_ui._values["photometric_grad_component_clip"] == 9.0
+    assert viewer_ui._values["photometric_grad_norm_clip"] == 8.0
+    assert viewer_ui._values["photometric_max_update"] == 0.07
+    assert viewer_ui._values["photometric_exposure_lr_mul"] == 0.9
+    assert viewer_ui._values["photometric_vignette_lr_mul"] == 0.8
+    assert viewer_ui._values["photometric_chroma_lr_mul"] == 0.7
+    assert viewer_ui._values["photometric_crf_lr_mul"] == 0.6
     assert viewer_ui._values["photometric_exposure_regularize_weight"] == 0.75
     assert viewer_ui._values["photometric_vignette_regularize_weight"] == 0.5
     assert viewer_ui._values["photometric_chroma_regularize_weight"] == 0.25
     assert viewer_ui._values["photometric_crf_regularize_weight"] == 0.125
+    assert viewer_ui._values["photometric_exposure_l1_weight"] == 0.11
+    assert viewer_ui._values["photometric_vignette_l1_weight"] == 0.12
+    assert viewer_ui._values["photometric_chroma_l1_weight"] == 0.13
+    assert viewer_ui._values["photometric_crf_l1_weight"] == 0.14
 
 
 def test_viewport_debug_overlay_draws_mode_specific_controls(monkeypatch) -> None:

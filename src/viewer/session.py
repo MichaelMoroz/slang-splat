@@ -2334,11 +2334,52 @@ def _photometric_hparams(viewer: object) -> PhotometricCompensationHyperParams:
     values = getattr(getattr(viewer, "ui", None), "_values", {})
     defaults = PhotometricCompensationHyperParams()
     return PhotometricCompensationHyperParams(
+        batch_pair_count=int(values.get("photometric_batch_pair_count", defaults.batch_pair_count)),
+        neighborhood_size=int(values.get("photometric_neighborhood_size", defaults.neighborhood_size)),
+        min_track_length=int(values.get("photometric_min_track_length", defaults.min_track_length)),
         learning_rate=float(values.get("photometric_learning_rate", defaults.learning_rate)),
+        exposure_lr_mul=float(values.get("photometric_exposure_lr_mul", defaults.exposure_lr_mul)),
+        vignette_lr_mul=float(values.get("photometric_vignette_lr_mul", defaults.vignette_lr_mul)),
+        chroma_lr_mul=float(values.get("photometric_chroma_lr_mul", defaults.chroma_lr_mul)),
+        crf_lr_mul=float(values.get("photometric_crf_lr_mul", defaults.crf_lr_mul)),
         exposure_regularize_weight=float(values.get("photometric_exposure_regularize_weight", defaults.exposure_regularize_weight)),
         vignette_regularize_weight=float(values.get("photometric_vignette_regularize_weight", defaults.vignette_regularize_weight)),
         chroma_regularize_weight=float(values.get("photometric_chroma_regularize_weight", defaults.chroma_regularize_weight)),
         crf_regularize_weight=float(values.get("photometric_crf_regularize_weight", defaults.crf_regularize_weight)),
+        exposure_l1_weight=float(values.get("photometric_exposure_l1_weight", defaults.exposure_l1_weight)),
+        vignette_l1_weight=float(values.get("photometric_vignette_l1_weight", defaults.vignette_l1_weight)),
+        chroma_l1_weight=float(values.get("photometric_chroma_l1_weight", defaults.chroma_l1_weight)),
+        crf_l1_weight=float(values.get("photometric_crf_l1_weight", defaults.crf_l1_weight)),
+        grad_component_clip=float(values.get("photometric_grad_component_clip", defaults.grad_component_clip)),
+        grad_norm_clip=float(values.get("photometric_grad_norm_clip", defaults.grad_norm_clip)),
+        max_update=float(values.get("photometric_max_update", defaults.max_update)),
+    )
+
+
+def sync_photometric_hparams(viewer: object) -> None:
+    trainer = getattr(viewer.s, "photometric_trainer", None)
+    if trainer is None:
+        return
+    values = getattr(getattr(viewer, "ui", None), "_values", {})
+    trainer.hparams = replace(
+        trainer.hparams,
+        batch_pair_count=int(values.get("photometric_batch_pair_count", trainer.hparams.batch_pair_count)),
+        learning_rate=float(values.get("photometric_learning_rate", trainer.hparams.learning_rate)),
+        exposure_lr_mul=float(values.get("photometric_exposure_lr_mul", trainer.hparams.exposure_lr_mul)),
+        vignette_lr_mul=float(values.get("photometric_vignette_lr_mul", trainer.hparams.vignette_lr_mul)),
+        chroma_lr_mul=float(values.get("photometric_chroma_lr_mul", trainer.hparams.chroma_lr_mul)),
+        crf_lr_mul=float(values.get("photometric_crf_lr_mul", trainer.hparams.crf_lr_mul)),
+        exposure_regularize_weight=float(values.get("photometric_exposure_regularize_weight", trainer.hparams.exposure_regularize_weight)),
+        vignette_regularize_weight=float(values.get("photometric_vignette_regularize_weight", trainer.hparams.vignette_regularize_weight)),
+        chroma_regularize_weight=float(values.get("photometric_chroma_regularize_weight", trainer.hparams.chroma_regularize_weight)),
+        crf_regularize_weight=float(values.get("photometric_crf_regularize_weight", trainer.hparams.crf_regularize_weight)),
+        exposure_l1_weight=float(values.get("photometric_exposure_l1_weight", trainer.hparams.exposure_l1_weight)),
+        vignette_l1_weight=float(values.get("photometric_vignette_l1_weight", trainer.hparams.vignette_l1_weight)),
+        chroma_l1_weight=float(values.get("photometric_chroma_l1_weight", trainer.hparams.chroma_l1_weight)),
+        crf_l1_weight=float(values.get("photometric_crf_l1_weight", trainer.hparams.crf_l1_weight)),
+        grad_component_clip=float(values.get("photometric_grad_component_clip", trainer.hparams.grad_component_clip)),
+        grad_norm_clip=float(values.get("photometric_grad_norm_clip", trainer.hparams.grad_norm_clip)),
+        max_update=float(values.get("photometric_max_update", trainer.hparams.max_update)),
     )
 
 

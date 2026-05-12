@@ -926,6 +926,7 @@ def render_frame(viewer: object, render_context: spy.AppWindow.RenderContext) ->
             update_ui_text(viewer, dt)
             return
         session.sync_photometric_target_provider(viewer)
+        session.sync_photometric_hparams(viewer)
         _run_photometric_batch(viewer)
         if runtime_reconfigured:
             viewer.s.training_runtime_factor_changed = False

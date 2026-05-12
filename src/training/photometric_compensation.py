@@ -545,6 +545,26 @@ class PhotometricCompensationTrainer:
         self._upload_param_settings()
         self.reset()
 
+    @staticmethod
+    def _reference_frame_index(frame_count: int) -> int | None:
+        return 0 if int(frame_count) > 0 else None
+
+    def _anchor_reference_frame_params(self, packed: np.ndarray) -> bool:
+        anchor_frame = self._reference_frame_index(self._frame_count)
+        if anchor_frame is None:
+            return False
+        reference = _PPISP_IDENTITY_VALUES.reshape(PPISP_PACKED_PARAM_COUNT)
+        if np.array_equal(np.asarray(packed[:, anchor_frame], dtype=np.float32), reference):
+            return False
+        packed[:, anchor_frame] = reference
+        return True
+
+    def _anchor_reference_frame_buffer(self, packed: np.ndarray | None = None) -> np.ndarray:
+        anchored = self.read_packed_params().copy() if packed is None else np.ascontiguousarray(packed, dtype=np.float32).copy()
+        if self._anchor_reference_frame_params(anchored):
+            self._buffers["params"].copy_from_numpy(anchored.reshape(-1))
+        return anchored
+
     def _runtime_hparams(self) -> AdamRuntimeHyperParams:
         return AdamRuntimeHyperParams(
             grad_component_clip=float(self.hparams.grad_component_clip),
@@ -759,7 +779,7 @@ class PhotometricCompensationTrainer:
             self.state.ema_loss = float(self.hparams.ema_decay * self.state.ema_loss + (1.0 - self.hparams.ema_decay) * self.state.last_loss)
         else:
             self.state.ema_loss = float(self.state.last_loss)
-        packed = self.read_packed_params()
+        packed = self._anchor_reference_frame_buffer()
         self.state.last_regularization_loss = _photometric_regularization_loss(packed, self.hparams)
         self._provider.replace_packed_params(packed)
 
@@ -795,6 +815,7 @@ class PhotometricCompensationTrainer:
 
     def replace_packed_params(self, packed_params: np.ndarray) -> None:
         reshaped = _reshape_packed_params(packed_params, self._frame_count)
+        self._anchor_reference_frame_params(reshaped)
         self._buffers["params"].copy_from_numpy(reshaped.reshape(-1))
         self._provider.replace_packed_params(reshaped)
 
@@ -837,7 +858,7 @@ class PhotometricCompensationTrainer:
         self.device.submit_command_buffer(encoder.finish())
         self.device.wait()
         self.state.step = int(resolved_step)
-        packed = self.read_packed_params()
+        packed = self._anchor_reference_frame_buffer()
         self._provider.replace_packed_params(packed)
 
     def train_step(self, pair_count: int | None = None, *, step_index: int | None = None) -> float:
