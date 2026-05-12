@@ -29,6 +29,7 @@ from .ppisp import PPISP_FIELD_SPECS, PPISP_PACKED_PARAM_COUNT, PPISPTonemapPara
 _PARAM_SETTINGS_U32_WIDTH = 10
 _PAIR_GRAD_THREADS = 64
 _PHOTOMETRIC_SHADER_PATH = SHADER_ROOT / "utility" / "photometric_compensation.slang"
+_PHOTOMETRIC_FULL_PAIR_DATASET_MAX_PAIRS = 1_000_000
 _PPISP_IDENTITY_VALUES = np.concatenate(
     [
         np.asarray(spec.default if spec.size > 1 else (spec.default,), dtype=np.float32).reshape(spec.size)
@@ -170,10 +171,74 @@ class PhotometricObservationPairPool:
 
 
 @dataclass(frozen=True, slots=True)
+class PhotometricObservationTrackPool:
+    point_ids: np.ndarray
+    track_lengths: np.ndarray
+    observation_ranges: np.ndarray
+    observation_frame_indices: np.ndarray
+    observation_xy: np.ndarray
+    pair_ranges: np.ndarray
+
+    def __len__(self) -> int:
+        return int(self.pair_ranges[-1]) if self.pair_ranges.size > 0 else 0
+
+    def sample(self, rng: np.random.Generator, pair_count: int) -> PhotometricObservationPairBatch:
+        requested = max(int(pair_count), 0)
+        total = len(self)
+        if requested <= 0 or total <= 0:
+            empty_i64 = np.zeros((0,), dtype=np.int64)
+            empty_i32 = np.zeros((0,), dtype=np.int32)
+            empty_xy = np.zeros((0, 2), dtype=np.float32)
+            return PhotometricObservationPairBatch(empty_i64, empty_i64, empty_i32, empty_i32, empty_i32, empty_xy, empty_xy)
+        indices = np.asarray(rng.integers(0, total, size=requested, endpoint=False), dtype=np.int64)
+        track_indices = np.searchsorted(np.asarray(self.pair_ranges[1:], dtype=np.int64), indices, side="right")
+        local_pair_indices = indices - np.asarray(self.pair_ranges[track_indices], dtype=np.int64)
+        point_ids = np.empty((requested,), dtype=np.int64)
+        track_lengths = np.empty((requested,), dtype=np.int32)
+        frame_indices_a = np.empty((requested,), dtype=np.int32)
+        frame_indices_b = np.empty((requested,), dtype=np.int32)
+        xy_a = np.empty((requested, 2), dtype=np.float32)
+        xy_b = np.empty((requested, 2), dtype=np.float32)
+        for batch_index in range(requested):
+            track_index = int(track_indices[batch_index])
+            obs_start = int(self.observation_ranges[track_index])
+            obs_stop = int(self.observation_ranges[track_index + 1])
+            left_index, right_index = _decode_observation_pair_index(int(local_pair_indices[batch_index]), obs_stop - obs_start)
+            left_obs_index = obs_start + left_index
+            right_obs_index = obs_start + right_index
+            point_ids[batch_index] = int(self.point_ids[track_index])
+            track_lengths[batch_index] = int(self.track_lengths[track_index])
+            frame_indices_a[batch_index] = int(self.observation_frame_indices[left_obs_index])
+            frame_indices_b[batch_index] = int(self.observation_frame_indices[right_obs_index])
+            xy_a[batch_index] = np.asarray(self.observation_xy[left_obs_index], dtype=np.float32)
+            xy_b[batch_index] = np.asarray(self.observation_xy[right_obs_index], dtype=np.float32)
+        return PhotometricObservationPairBatch(
+            pair_indices=np.ascontiguousarray(indices, dtype=np.int64),
+            point_ids=np.ascontiguousarray(point_ids, dtype=np.int64),
+            track_lengths=np.ascontiguousarray(track_lengths, dtype=np.int32),
+            frame_indices_a=np.ascontiguousarray(frame_indices_a, dtype=np.int32),
+            frame_indices_b=np.ascontiguousarray(frame_indices_b, dtype=np.int32),
+            xy_a=np.ascontiguousarray(xy_a, dtype=np.float32),
+            xy_b=np.ascontiguousarray(xy_b, dtype=np.float32),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class _PhotometricDispatchBatch:
     pair_batch: PhotometricObservationPairBatch
     frame_pair_ranges: np.ndarray
     frame_pair_entries: np.ndarray
+
+
+def _decode_observation_pair_index(pair_index: int, observation_count: int) -> tuple[int, int]:
+    remaining = max(int(observation_count) - 1, 0)
+    left = 0
+    rank = max(int(pair_index), 0)
+    while remaining > 0 and rank >= remaining:
+        rank -= remaining
+        left += 1
+        remaining -= 1
+    return left, left + 1 + rank
 
 
 def _float_bits(values: Any) -> np.ndarray:
@@ -247,17 +312,34 @@ class PackedPPISPTonemapProvider(PPISPTonemapProvider):
         return self._packed_params.reshape(-1).copy() if flatten else self._packed_params.copy()
 
 
-def build_photometric_observation_pair_pool(
+def build_photometric_observation_track_pool(
     reconstruction: ColmapReconstruction,
     frames: list[ColmapFrame],
     *,
     min_track_length: int = 2,
-) -> PhotometricObservationPairPool:
+) -> PhotometricObservationTrackPool:
     frame_lookup = {int(frame.image_id): (frame_index, frame) for frame_index, frame in enumerate(frames)}
-    observation_map: dict[int, list[tuple[int, float, float, int]]] = {}
     min_track = max(int(min_track_length), 2)
     points = getattr(reconstruction, "points3d", {})
     images = getattr(reconstruction, "images", {})
+    if not frame_lookup or not images or not points:
+        empty_i64 = np.zeros((0,), dtype=np.int64)
+        empty_i32 = np.zeros((0,), dtype=np.int32)
+        empty_xy = np.zeros((0, 2), dtype=np.float32)
+        empty_ranges = np.zeros((1,), dtype=np.int64)
+        return PhotometricObservationTrackPool(empty_i64, empty_i32, empty_ranges, empty_i32, empty_xy, empty_ranges.copy())
+
+    max_point_id = max((int(point_id) for point_id in points), default=0)
+    track_length_lookup = np.zeros((max(max_point_id, 0) + 1,), dtype=np.int32)
+    for point_id, point in points.items():
+        track_length = int(getattr(point, "track_length", 0))
+        if track_length >= min_track:
+            track_length_lookup[int(point_id)] = np.int32(track_length)
+
+    point_id_chunks: list[np.ndarray] = []
+    track_length_chunks: list[np.ndarray] = []
+    frame_index_chunks: list[np.ndarray] = []
+    xy_chunks: list[np.ndarray] = []
     for image_id, image in sorted(images.items()):
         frame_entry = frame_lookup.get(int(image_id))
         if frame_entry is None:
@@ -268,51 +350,141 @@ def build_photometric_observation_pair_pool(
         count = min(int(point_xy.shape[0]), int(point_ids.size))
         if count <= 0:
             continue
-        seen_point_ids: set[int] = set()
-        for offset in range(count):
-            point_id = int(point_ids[offset])
-            if point_id <= 0 or point_id in seen_point_ids:
-                continue
-            point = points.get(point_id) if isinstance(points, dict) else None
-            track_length = int(getattr(point, "track_length", 0)) if point is not None else 0
-            if track_length < min_track:
-                continue
-            xy = point_xy[offset]
-            if not np.all(np.isfinite(xy)):
-                continue
-            if float(xy[0]) < 0.0 or float(xy[0]) > float(frame.width) or float(xy[1]) < 0.0 or float(xy[1]) > float(frame.height):
-                continue
-            observation_map.setdefault(point_id, []).append((int(frame_index), float(xy[0]), float(xy[1]), track_length))
-            seen_point_ids.add(point_id)
-
-    point_ids_out: list[int] = []
-    track_lengths_out: list[int] = []
-    frame_indices_a: list[int] = []
-    frame_indices_b: list[int] = []
-    xy_a: list[tuple[float, float]] = []
-    xy_b: list[tuple[float, float]] = []
-    for point_id in sorted(observation_map):
-        observations = sorted(observation_map[point_id], key=lambda item: (item[0], item[1], item[2]))
-        if len(observations) < 2:
+        point_ids = point_ids[:count]
+        point_xy = point_xy[:count]
+        valid = point_ids > 0
+        valid &= point_ids < track_length_lookup.size
+        if not np.any(valid):
             continue
-        track_length = int(observations[0][3])
-        for left_index in range(len(observations) - 1):
-            left = observations[left_index]
-            for right in observations[left_index + 1 :]:
-                point_ids_out.append(int(point_id))
-                track_lengths_out.append(track_length)
-                frame_indices_a.append(int(left[0]))
-                frame_indices_b.append(int(right[0]))
-                xy_a.append((float(left[1]), float(left[2])))
-                xy_b.append((float(right[1]), float(right[2])))
+        valid_ids = point_ids[valid]
+        valid_xy = point_xy[valid]
+        valid_track_lengths = track_length_lookup[valid_ids]
+        valid &= False
+        keep = valid_track_lengths >= min_track
+        if not np.any(keep):
+            continue
+        valid_ids = valid_ids[keep]
+        valid_xy = valid_xy[keep]
+        valid_track_lengths = valid_track_lengths[keep]
+        finite = np.isfinite(valid_xy).all(axis=1)
+        finite &= valid_xy[:, 0] >= 0.0
+        finite &= valid_xy[:, 0] <= float(frame.width)
+        finite &= valid_xy[:, 1] >= 0.0
+        finite &= valid_xy[:, 1] <= float(frame.height)
+        if not np.any(finite):
+            continue
+        valid_ids = valid_ids[finite]
+        valid_xy = valid_xy[finite]
+        valid_track_lengths = valid_track_lengths[finite]
+        _, first_positions = np.unique(valid_ids, return_index=True)
+        if first_positions.size <= 0:
+            continue
+        first_positions = np.sort(first_positions)
+        valid_ids = np.ascontiguousarray(valid_ids[first_positions], dtype=np.int64)
+        valid_xy = np.ascontiguousarray(valid_xy[first_positions], dtype=np.float32)
+        valid_track_lengths = np.ascontiguousarray(valid_track_lengths[first_positions], dtype=np.int32)
+        point_id_chunks.append(valid_ids)
+        track_length_chunks.append(valid_track_lengths)
+        frame_index_chunks.append(np.full((valid_ids.size,), int(frame_index), dtype=np.int32))
+        xy_chunks.append(valid_xy)
 
+    if not point_id_chunks:
+        empty_i64 = np.zeros((0,), dtype=np.int64)
+        empty_i32 = np.zeros((0,), dtype=np.int32)
+        empty_xy = np.zeros((0, 2), dtype=np.float32)
+        empty_ranges = np.zeros((1,), dtype=np.int64)
+        return PhotometricObservationTrackPool(empty_i64, empty_i32, empty_ranges, empty_i32, empty_xy, empty_ranges.copy())
+
+    point_ids = np.ascontiguousarray(np.concatenate(point_id_chunks, axis=0), dtype=np.int64)
+    track_lengths = np.ascontiguousarray(np.concatenate(track_length_chunks, axis=0), dtype=np.int32)
+    frame_indices = np.ascontiguousarray(np.concatenate(frame_index_chunks, axis=0), dtype=np.int32)
+    xy = np.ascontiguousarray(np.concatenate(xy_chunks, axis=0), dtype=np.float32)
+    order = np.lexsort((xy[:, 1], xy[:, 0], frame_indices, point_ids))
+    point_ids = np.ascontiguousarray(point_ids[order], dtype=np.int64)
+    track_lengths = np.ascontiguousarray(track_lengths[order], dtype=np.int32)
+    frame_indices = np.ascontiguousarray(frame_indices[order], dtype=np.int32)
+    xy = np.ascontiguousarray(xy[order], dtype=np.float32)
+    unique_point_ids, starts, counts = np.unique(point_ids, return_index=True, return_counts=True)
+    valid_tracks = counts >= 2
+    if not np.any(valid_tracks):
+        empty_i64 = np.zeros((0,), dtype=np.int64)
+        empty_i32 = np.zeros((0,), dtype=np.int32)
+        empty_xy = np.zeros((0, 2), dtype=np.float32)
+        empty_ranges = np.zeros((1,), dtype=np.int64)
+        return PhotometricObservationTrackPool(empty_i64, empty_i32, empty_ranges, empty_i32, empty_xy, empty_ranges.copy())
+
+    keep_observations = np.repeat(valid_tracks, counts)
+    filtered_counts = np.ascontiguousarray(counts[valid_tracks], dtype=np.int64)
+    observation_ranges = np.zeros((int(filtered_counts.size) + 1,), dtype=np.int64)
+    observation_ranges[1:] = np.cumsum(filtered_counts, dtype=np.int64)
+    pair_ranges = np.zeros((int(filtered_counts.size) + 1,), dtype=np.int64)
+    pair_ranges[1:] = np.cumsum(filtered_counts * (filtered_counts - 1) // 2, dtype=np.int64)
+    return PhotometricObservationTrackPool(
+        point_ids=np.ascontiguousarray(unique_point_ids[valid_tracks], dtype=np.int64),
+        track_lengths=np.ascontiguousarray(track_lengths[starts[valid_tracks]], dtype=np.int32),
+        observation_ranges=np.ascontiguousarray(observation_ranges, dtype=np.int64),
+        observation_frame_indices=np.ascontiguousarray(frame_indices[keep_observations], dtype=np.int32),
+        observation_xy=np.ascontiguousarray(xy[keep_observations], dtype=np.float32),
+        pair_ranges=np.ascontiguousarray(pair_ranges, dtype=np.int64),
+    )
+
+
+def materialize_photometric_observation_pair_pool(track_pool: PhotometricObservationTrackPool) -> PhotometricObservationPairPool:
+    total_pairs = len(track_pool)
+    if total_pairs <= 0:
+        empty_i64 = np.zeros((0,), dtype=np.int64)
+        empty_i32 = np.zeros((0,), dtype=np.int32)
+        empty_xy = np.zeros((0, 2), dtype=np.float32)
+        return PhotometricObservationPairPool(empty_i64, empty_i32, empty_i32, empty_i32, empty_xy, empty_xy)
+    point_ids = np.empty((total_pairs,), dtype=np.int64)
+    track_lengths = np.empty((total_pairs,), dtype=np.int32)
+    frame_indices_a = np.empty((total_pairs,), dtype=np.int32)
+    frame_indices_b = np.empty((total_pairs,), dtype=np.int32)
+    xy_a = np.empty((total_pairs, 2), dtype=np.float32)
+    xy_b = np.empty((total_pairs, 2), dtype=np.float32)
+    write_index = 0
+    for track_index in range(track_pool.point_ids.size):
+        obs_start = int(track_pool.observation_ranges[track_index])
+        obs_stop = int(track_pool.observation_ranges[track_index + 1])
+        obs_count = obs_stop - obs_start
+        if obs_count < 2:
+            continue
+        frames = np.asarray(track_pool.observation_frame_indices[obs_start:obs_stop], dtype=np.int32)
+        xy = np.asarray(track_pool.observation_xy[obs_start:obs_stop], dtype=np.float32)
+        point_id = int(track_pool.point_ids[track_index])
+        track_length = int(track_pool.track_lengths[track_index])
+        for left_index in range(obs_count - 1):
+            count = obs_count - left_index - 1
+            next_write = write_index + count
+            point_ids[write_index:next_write] = point_id
+            track_lengths[write_index:next_write] = track_length
+            frame_indices_a[write_index:next_write] = frames[left_index]
+            frame_indices_b[write_index:next_write] = frames[left_index + 1 :]
+            xy_a[write_index:next_write] = xy[left_index]
+            xy_b[write_index:next_write] = xy[left_index + 1 :]
+            write_index = next_write
     return PhotometricObservationPairPool(
-        point_ids=np.ascontiguousarray(point_ids_out, dtype=np.int64),
-        track_lengths=np.ascontiguousarray(track_lengths_out, dtype=np.int32),
-        frame_indices_a=np.ascontiguousarray(frame_indices_a, dtype=np.int32),
-        frame_indices_b=np.ascontiguousarray(frame_indices_b, dtype=np.int32),
-        xy_a=np.ascontiguousarray(xy_a, dtype=np.float32).reshape(-1, 2),
-        xy_b=np.ascontiguousarray(xy_b, dtype=np.float32).reshape(-1, 2),
+        point_ids=np.ascontiguousarray(point_ids[:write_index], dtype=np.int64),
+        track_lengths=np.ascontiguousarray(track_lengths[:write_index], dtype=np.int32),
+        frame_indices_a=np.ascontiguousarray(frame_indices_a[:write_index], dtype=np.int32),
+        frame_indices_b=np.ascontiguousarray(frame_indices_b[:write_index], dtype=np.int32),
+        xy_a=np.ascontiguousarray(xy_a[:write_index], dtype=np.float32),
+        xy_b=np.ascontiguousarray(xy_b[:write_index], dtype=np.float32),
+    )
+
+
+def build_photometric_observation_pair_pool(
+    reconstruction: ColmapReconstruction,
+    frames: list[ColmapFrame],
+    *,
+    min_track_length: int = 2,
+) -> PhotometricObservationPairPool:
+    return materialize_photometric_observation_pair_pool(
+        build_photometric_observation_track_pool(
+            reconstruction,
+            frames,
+            min_track_length=min_track_length,
+        )
     )
 
 
@@ -535,15 +707,20 @@ class PhotometricCompensationTrainer:
         self._pair_dataset_prepare_index = 0
         self._batch_pair_capacity = 0
         self._frame_pair_entry_capacity = 0
-        self.pair_pool = build_photometric_observation_pair_pool(
+        self.track_pool = build_photometric_observation_track_pool(
             self.reconstruction,
             self.frames,
             min_track_length=self.hparams.min_track_length,
         )
-        if len(self.pair_pool) <= 0:
+        if len(self.track_pool) <= 0:
             raise ValueError("Photometric compensation requires at least one valid cross-view sparse-track pair.")
+        self._pair_dataset_full_precompute_enabled = len(self.track_pool) <= _PHOTOMETRIC_FULL_PAIR_DATASET_MAX_PAIRS
+        self.pair_pool = materialize_photometric_observation_pair_pool(self.track_pool) if self._pair_dataset_full_precompute_enabled else self.track_pool
         self._pair_dataset_sample_count = _pair_dataset_sample_count(self.hparams.neighborhood_size)
-        self._pair_dataset_dispatch = _build_frame_pair_batch(self._frame_count, _pair_pool_batch(self.pair_pool))
+        self._pair_dataset_dispatch = _build_frame_pair_batch(self._frame_count, _pair_pool_batch(self.pair_pool)) if self._pair_dataset_full_precompute_enabled else None
+        if not self._pair_dataset_full_precompute_enabled:
+            self._pair_dataset_uploaded = True
+            self._pair_dataset_metadata_uploaded = True
         self.adam_optimizer = AdamOptimizer(self.device, self.adam, self._runtime_hparams())
         self._ensure_buffers()
         self._upload_param_settings()
@@ -576,6 +753,10 @@ class PhotometricCompensationTrainer:
             max_update=float(self.hparams.max_update),
             huge_value=float(self.hparams.huge_value),
         )
+
+    @property
+    def uses_full_pair_dataset(self) -> bool:
+        return bool(self._pair_dataset_full_precompute_enabled)
 
     def _ensure_buffers(self) -> None:
         if "params" not in self._buffers:
@@ -648,7 +829,7 @@ class PhotometricCompensationTrainer:
             self._frame_pair_entry_capacity = required_entries
 
     def _upload_pair_dataset_metadata(self) -> None:
-        if self._pair_dataset_metadata_uploaded:
+        if not self._pair_dataset_full_precompute_enabled or self._pair_dataset_metadata_uploaded or self._pair_dataset_dispatch is None:
             return
         entry_count = int(self._pair_dataset_dispatch.frame_pair_entries.shape[0])
         self._ensure_pair_dataset_metadata_buffers(len(self.pair_pool), entry_count)
@@ -658,12 +839,18 @@ class PhotometricCompensationTrainer:
         self._buffers["dataset_frame_pair_entries"].copy_from_numpy(self._pair_dataset_dispatch.frame_pair_entries)
         self._pair_dataset_metadata_uploaded = True
 
+    @staticmethod
+    def _pair_dataset_frame_indices_from_ranges(frame_pair_ranges: np.ndarray) -> tuple[int, ...]:
+        frame_ranges = np.asarray(frame_pair_ranges, dtype=np.uint32).reshape(-1)
+        if frame_ranges.size <= 1:
+            return ()
+        active = np.flatnonzero(frame_ranges[1:] > frame_ranges[:-1])
+        return tuple(int(frame_index) for frame_index in active)
+
     def _pair_dataset_work_frame_indices(self) -> tuple[int, ...]:
-        return tuple(
-            frame_index
-            for frame_index in range(self._frame_count)
-            if int(self._pair_dataset_dispatch.frame_pair_ranges[frame_index + 1]) > int(self._pair_dataset_dispatch.frame_pair_ranges[frame_index])
-        )
+        if self._pair_dataset_dispatch is None:
+            return ()
+        return self._pair_dataset_frame_indices_from_ranges(self._pair_dataset_dispatch.frame_pair_ranges)
 
     def _pair_dataset_source_texture(self, frame_index: int) -> tuple[spy.Texture, bool]:
         if self._frame_source_textures is not None:
@@ -693,9 +880,9 @@ class PhotometricCompensationTrainer:
         texture.copy_from_numpy(rgba8)
         return texture, True
 
-    def _dispatch_build_pair_dataset(self, encoder: spy.CommandEncoder, frame_index: int, source_texture: spy.Texture) -> None:
-        start = int(self._pair_dataset_dispatch.frame_pair_ranges[frame_index])
-        stop = int(self._pair_dataset_dispatch.frame_pair_ranges[frame_index + 1])
+    def _dispatch_build_pair_dataset(self, encoder: spy.CommandEncoder, frame_pair_ranges: np.ndarray, frame_index: int, source_texture: spy.Texture) -> None:
+        start = int(frame_pair_ranges[frame_index])
+        stop = int(frame_pair_ranges[frame_index + 1])
         if stop <= start:
             return
         frame = self.frames[frame_index]
@@ -790,7 +977,7 @@ class PhotometricCompensationTrainer:
             frame_index = int(self._pair_dataset_prepare_frame_indices[self._pair_dataset_prepare_index])
             source_texture, owns_texture = self._pair_dataset_source_texture(frame_index)
             encoder = self.device.create_command_encoder()
-            self._dispatch_build_pair_dataset(encoder, frame_index, source_texture)
+            self._dispatch_build_pair_dataset(encoder, self._pair_dataset_dispatch.frame_pair_ranges, frame_index, source_texture)
             self.device.submit_command_buffer(encoder.finish())
             self.device.wait()
             if owns_texture:
@@ -811,10 +998,44 @@ class PhotometricCompensationTrainer:
     def _upload_pair_dataset(self) -> None:
         self.prepare_pair_dataset()
 
+    def _upload_pair_dataset_metadata_for_batch(self, dispatch_batch: _PhotometricDispatchBatch) -> None:
+        pair_batch = dispatch_batch.pair_batch
+        entry_count = int(dispatch_batch.frame_pair_entries.shape[0])
+        self._ensure_pair_dataset_metadata_buffers(pair_batch.pair_count, entry_count)
+        self._buffers["pair_xy_a"].copy_from_numpy(np.ascontiguousarray(pair_batch.xy_a, dtype=np.float32))
+        self._buffers["pair_xy_b"].copy_from_numpy(np.ascontiguousarray(pair_batch.xy_b, dtype=np.float32))
+        self._buffers["dataset_frame_pair_ranges"].copy_from_numpy(np.ascontiguousarray(dispatch_batch.frame_pair_ranges, dtype=np.uint32))
+        self._buffers["dataset_frame_pair_entries"].copy_from_numpy(np.ascontiguousarray(dispatch_batch.frame_pair_entries, dtype=np.uint32))
+
+    def _prepare_pair_dataset_for_batch(self, dispatch_batch: _PhotometricDispatchBatch) -> None:
+        pair_batch = dispatch_batch.pair_batch
+        self._ensure_pair_dataset_buffers(pair_batch.pair_count * self._pair_dataset_sample_count)
+        self._upload_pair_dataset_metadata_for_batch(dispatch_batch)
+        active_frames = self._pair_dataset_frame_indices_from_ranges(dispatch_batch.frame_pair_ranges)
+        if not active_frames:
+            return
+        encoder = self.device.create_command_encoder()
+        owned_textures: list[spy.Texture] = []
+        for frame_index in active_frames:
+            source_texture, owns_texture = self._pair_dataset_source_texture(frame_index)
+            self._dispatch_build_pair_dataset(encoder, dispatch_batch.frame_pair_ranges, frame_index, source_texture)
+            if owns_texture:
+                owned_textures.append(source_texture)
+        self.device.submit_command_buffer(encoder.finish())
+        self.device.wait()
+        for texture in owned_textures:
+            defer_resource_release(texture)
+        if owned_textures:
+            drain_deferred_resource_releases(min_age=0)
+
     def _upload_pair_batch(self, dispatch_batch: _PhotometricDispatchBatch) -> None:
         pair_batch = dispatch_batch.pair_batch
         self._ensure_batch_buffers(pair_batch.pair_count)
-        self._buffers["pair_indices"].copy_from_numpy(np.ascontiguousarray(pair_batch.pair_indices, dtype=np.uint32))
+        if self._pair_dataset_full_precompute_enabled:
+            pair_indices = np.ascontiguousarray(pair_batch.pair_indices, dtype=np.uint32)
+        else:
+            pair_indices = np.arange(pair_batch.pair_count, dtype=np.uint32)
+        self._buffers["pair_indices"].copy_from_numpy(pair_indices)
         self._buffers["pair_frame_indices_a"].copy_from_numpy(np.ascontiguousarray(pair_batch.frame_indices_a, dtype=np.uint32))
         self._buffers["pair_frame_indices_b"].copy_from_numpy(np.ascontiguousarray(pair_batch.frame_indices_b, dtype=np.uint32))
         self._buffers["frame_pair_ranges"].copy_from_numpy(dispatch_batch.frame_pair_ranges)
@@ -939,7 +1160,10 @@ class PhotometricCompensationTrainer:
     def train_step(self, pair_count: int | None = None, *, step_index: int | None = None) -> float:
         dispatch_batch = self.build_dispatch_batch(pair_count)
         resolved_step = self.state.step + 1 if step_index is None else int(step_index)
-        self.prepare_pair_dataset()
+        if self._pair_dataset_full_precompute_enabled:
+            self.prepare_pair_dataset()
+        else:
+            self._prepare_pair_dataset_for_batch(dispatch_batch)
         self._upload_param_settings()
         self._upload_pair_batch(dispatch_batch)
         encoder = self.device.create_command_encoder()

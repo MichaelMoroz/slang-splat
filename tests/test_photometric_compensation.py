@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 import slangpy as spy
 from PIL import Image
+import src.training.photometric_compensation as photometric_compensation_module
 
 from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, ColmapReconstruction, GaussianScene, build_training_frames, load_colmap_reconstruction
@@ -16,6 +17,7 @@ from src.training import GaussianTrainer, TrainingHyperParams
 from src.training.photometric_compensation import (
     PPISP_PACKED_PARAM_COUNT,
     PackedPPISPTonemapProvider,
+    PhotometricObservationPairPool,
     PhotometricCompensationHyperParams,
     PhotometricCompensationTrainer,
     build_photometric_observation_pair_pool,
@@ -466,6 +468,60 @@ def test_photometric_incremental_pair_dataset_preparation_reports_progress(devic
     assert trainer.pair_dataset_prepare_active is False
     assert trainer._pair_dataset_uploaded is True
     assert trainer.pair_dataset_prepare_fraction == pytest.approx(1.0)
+
+
+def test_photometric_trainer_large_pair_pool_uses_batch_local_dataset(device, monkeypatch) -> None:
+    recon, frames = _make_reconstruction()
+    frame_rgba_linear = [
+        _make_linear_rgba(frame.height, frame.width, rgb_scale=1.0 + 0.1 * frame_index)
+        for frame_index, frame in enumerate(frames)
+    ]
+    monkeypatch.setattr(photometric_compensation_module, "_PHOTOMETRIC_FULL_PAIR_DATASET_MAX_PAIRS", 0)
+    trainer = PhotometricCompensationTrainer(
+        device,
+        recon,
+        frames,
+        hparams=PhotometricCompensationHyperParams(batch_pair_count=4, neighborhood_size=3),
+        seed=17,
+        frame_rgba_linear=frame_rgba_linear,
+    )
+
+    assert trainer.uses_full_pair_dataset is False
+    assert trainer._pair_dataset_uploaded is True
+    assert trainer._pair_dataset_sample_capacity == 0
+
+    dispatch_batch = trainer.build_dispatch_batch(2)
+    trainer._prepare_pair_dataset_for_batch(dispatch_batch)
+    trainer._upload_pair_batch(dispatch_batch)
+
+    batch_pool = PhotometricObservationPairPool(
+        point_ids=np.ascontiguousarray(dispatch_batch.pair_batch.point_ids, dtype=np.int64),
+        track_lengths=np.ascontiguousarray(dispatch_batch.pair_batch.track_lengths, dtype=np.int32),
+        frame_indices_a=np.ascontiguousarray(dispatch_batch.pair_batch.frame_indices_a, dtype=np.int32),
+        frame_indices_b=np.ascontiguousarray(dispatch_batch.pair_batch.frame_indices_b, dtype=np.int32),
+        xy_a=np.ascontiguousarray(dispatch_batch.pair_batch.xy_a, dtype=np.float32),
+        xy_b=np.ascontiguousarray(dispatch_batch.pair_batch.xy_b, dtype=np.float32),
+    )
+    sample_count = trainer.hparams.neighborhood_size * trainer.hparams.neighborhood_size
+    total_dataset_samples = dispatch_batch.pair_batch.pair_count * sample_count
+    expected_samples_a, expected_samples_b, expected_sensor_coords_a, expected_sensor_coords_b = _reference_pair_dataset(
+        frames,
+        batch_pool,
+        frame_rgba_linear,
+        trainer.hparams.neighborhood_size,
+    )
+    pair_samples_a = buffer_to_numpy(trainer.buffers["pair_samples_a"], np.float32)[: total_dataset_samples * 4].reshape(total_dataset_samples, 4)
+    pair_samples_b = buffer_to_numpy(trainer.buffers["pair_samples_b"], np.float32)[: total_dataset_samples * 4].reshape(total_dataset_samples, 4)
+    pair_sensor_coords_a = buffer_to_numpy(trainer.buffers["pair_sensor_coords_a"], np.float32)[: total_dataset_samples * 2].reshape(total_dataset_samples, 2)
+    pair_sensor_coords_b = buffer_to_numpy(trainer.buffers["pair_sensor_coords_b"], np.float32)[: total_dataset_samples * 2].reshape(total_dataset_samples, 2)
+    pair_indices = buffer_to_numpy(trainer.buffers["pair_indices"], np.uint32)[: dispatch_batch.pair_batch.pair_count]
+
+    np.testing.assert_allclose(pair_samples_a, expected_samples_a, rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(pair_samples_b, expected_samples_b, rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(pair_sensor_coords_a, expected_sensor_coords_a, rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(pair_sensor_coords_b, expected_sensor_coords_b, rtol=0.0, atol=1e-6)
+    np.testing.assert_array_equal(pair_indices, np.arange(dispatch_batch.pair_batch.pair_count, dtype=np.uint32))
+    assert trainer._pair_dataset_sample_capacity == total_dataset_samples
 
 
 def test_photometric_reference_frame_stays_identity(device) -> None:
