@@ -301,6 +301,41 @@ def test_photometric_param_settings_regularize_toward_identity(device) -> None:
     assert final_distance < start_distance * 0.5
 
 
+def test_photometric_windowed_batch_limits_active_frame_span(device) -> None:
+    dataset_root = Path("dataset/garden")
+    if not dataset_root.exists():
+        pytest.skip("dataset/garden is unavailable.")
+    recon = load_colmap_reconstruction(dataset_root)
+    frames = build_training_frames(recon, images_subdir="images_4")
+    if len(frames) < 16:
+        pytest.skip("dataset/garden/images_4 does not provide enough frames for the windowed photometric regression.")
+
+    trainer = PhotometricCompensationTrainer(
+        device,
+        recon,
+        frames,
+        hparams=PhotometricCompensationHyperParams(
+            frame_window_size=8,
+            batch_pair_count=512,
+        ),
+        seed=29,
+    )
+
+    dispatch_batch = trainer.build_dispatch_batch()
+    active_frames = np.unique(
+        np.concatenate(
+            (
+                np.asarray(dispatch_batch.pair_batch.frame_indices_a, dtype=np.int32),
+                np.asarray(dispatch_batch.pair_batch.frame_indices_b, dtype=np.int32),
+            ),
+            axis=0,
+        )
+    )
+
+    assert active_frames.size > 0
+    assert int(active_frames[-1] - active_frames[0] + 1) <= 8
+
+
 def test_gaussian_trainer_applies_target_tonemap_to_downscaled_targets(device, tmp_path: Path) -> None:
     image = np.array(
         [

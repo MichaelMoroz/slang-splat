@@ -2325,7 +2325,9 @@ def initialize_photometric_compensation(viewer: object) -> None:
         device=viewer.device,
         recon=viewer.s.colmap_recon,
         frames=viewer.s.training_frames,
-        hparams=PhotometricCompensationHyperParams(),
+        hparams=PhotometricCompensationHyperParams(
+            frame_window_size=8,
+        ),
     )
     viewer.s.photometric_active = False
     viewer.s.photometric_elapsed_s = 0.0

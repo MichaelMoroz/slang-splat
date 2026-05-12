@@ -67,6 +67,8 @@ The window contains:
 
 The photometric optimizer steps independently from gaussian optimization. If the apply toggle is enabled, gaussian training consumes the latest learned provider on subsequent target refreshes.
 
+The viewer runtime uses a bounded rolling frame window when it samples photometric batches. That keeps the per-step frame upload proportional to the active window instead of the full imported dataset, which avoids multi-gigabyte uploads on large COLMAP scenes.
+
 ## Validation
 
 The implementation is covered by focused regressions in `tests/test_photometric_compensation.py` and by the existing viewer app/session/presenter/ui test suites.
