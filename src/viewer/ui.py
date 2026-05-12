@@ -2088,6 +2088,11 @@ class ToolkitWindow:
         selected_frame_count = sum(int(row["frame_count"]) for row in camera_rows if int(row["camera_id"]) in selected)
         total_frame_count = sum(int(row["frame_count"]) for row in camera_rows)
         imgui.text_disabled(f"Camera Models: {len(selected)}/{len(camera_rows)} selected | Frames/Poses: {selected_frame_count}/{total_frame_count}")
+        point_stats = ui._values.get("_colmap_point_stats")
+        if isinstance(point_stats, dict):
+            total_points = max(int(point_stats.get("total_points", 0)), 0)
+            tracked_points_min2 = max(int(point_stats.get("tracked_points_min2", 0)), 0)
+            imgui.text_disabled(f"Points: {total_points:,} total | {tracked_points_min2:,} tracked (>=2 obs)")
         if imgui.button("All Models"): selected = set(camera_ids)
         imgui.same_line()
         if imgui.button("No Models"): selected.clear()
@@ -3352,6 +3357,7 @@ def build_ui(renderer) -> ViewerUI:
         "_viewport_sh_band": int(_VIEWER_UI_DEFAULTS["viewport_sh_band"]),
         "_viewport_sh_control_key": str(_VIEWER_UI_DEFAULTS["viewport_sh_control_key"]),
         "_viewport_sh_stage_label": str(_VIEWER_UI_DEFAULTS["viewport_sh_stage_label"]),
+        "_colmap_point_stats": None,
         "_colmap_camera_rows": (),
         "_colmap_import_active": False,
         "_colmap_import_fraction": 0.0,

@@ -213,6 +213,7 @@ def test_build_ui_initializes_control_groups_and_internal_state() -> None:
     assert viewer_ui._values["_viewport_sh_band"] == 3
     assert viewer_ui._values["_viewport_sh_control_key"] in {"sh_band", "sh_band_stage1", "sh_band_stage2", "sh_band_stage3", "sh_band_stage4"}
     assert viewer_ui._values["_viewport_sh_stage_label"] in ui.SCHEDULE_STAGE_SPECS
+    assert viewer_ui._values["_colmap_point_stats"] is None
     assert viewer_ui._values["_colmap_camera_rows"] == ()
     assert "show_renderer_debug" not in viewer_ui._values
 
@@ -645,6 +646,27 @@ def test_colmap_camera_selection_table_ends_child_when_begin_child_returns_false
 
     assert child_end_calls == ["end"]
     assert viewer_ui._values["colmap_selected_camera_ids"] == (1,)
+
+
+def test_colmap_camera_selection_table_shows_point_stats(monkeypatch) -> None:
+    disabled_texts: list[str] = []
+    monkeypatch.setattr(ui.imgui, "text_disabled", lambda text: disabled_texts.append(str(text)))
+    monkeypatch.setattr(ui.imgui, "button", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(ui.imgui, "same_line", lambda: None)
+    monkeypatch.setattr(ui.imgui, "begin_child", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(ui.imgui, "end_child", lambda: None)
+    viewer_ui = SimpleNamespace(
+        _values={
+            "colmap_selected_camera_ids": (1,),
+            "_colmap_point_stats": {"total_points": 12, "tracked_points_min2": 9},
+        },
+        _texts={},
+    )
+    camera_rows = ({"camera_id": 1, "frame_count": 4},)
+
+    ui.ToolkitWindow._draw_colmap_camera_selection_table(SimpleNamespace(), viewer_ui, camera_rows)
+
+    assert "Points: 12 total | 9 tracked (>=2 obs)" in disabled_texts
 
 
 def test_help_windows_dock_into_toolkit_tabs(monkeypatch) -> None:

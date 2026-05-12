@@ -987,6 +987,7 @@ def test_choose_colmap_root_auto_selects_first_matching_image_folder(tmp_path: P
     assert viewer.ui._values["colmap_database_path"] == str(database_path.resolve())
     assert viewer.ui._values["colmap_images_root"] == str(images_root)
     assert viewer.ui._values["colmap_selected_camera_ids"] == (7,)
+    assert viewer.ui._values["_colmap_point_stats"] == {"total_points": 1, "tracked_points_min2": 1}
     assert viewer.ui._values["_colmap_camera_rows"] == (
         {
             "camera_id": 7,
@@ -1076,6 +1077,7 @@ def test_choose_colmap_root_supports_opencv_camera_models(tmp_path: Path, model_
     assert viewer.ui._values["colmap_database_path"] == str(database_path.resolve())
     assert viewer.ui._values["colmap_images_root"] == str(images_root)
     assert viewer.ui._values["colmap_selected_camera_ids"] == (7,)
+    assert viewer.ui._values["_colmap_point_stats"] == {"total_points": 1, "tracked_points_min2": 1}
     assert viewer.ui._values["_colmap_camera_rows"][0]["model_name"] == model_name
     assert viewer.s.last_error == ""
 

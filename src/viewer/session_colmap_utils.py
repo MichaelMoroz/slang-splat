@@ -156,6 +156,21 @@ def _camera_rows(recon: object) -> tuple[dict[str, object], ...]:
     return tuple(rows)
 
 
+def _point_preview_stats(recon: object) -> dict[str, int]:
+    track_lengths = getattr(recon, "point_track_length_table", None)
+    if track_lengths is not None:
+        track_arr = np.asarray(track_lengths, dtype=np.int32).reshape(-1)
+        return {
+            "total_points": int(track_arr.size),
+            "tracked_points_min2": int(np.count_nonzero(track_arr >= 2)),
+        }
+    points = tuple(getattr(recon, "points3d", {}).values())
+    return {
+        "total_points": int(len(points)),
+        "tracked_points_min2": int(sum(int(getattr(point, "track_length", 0)) >= 2 for point in points)),
+    }
+
+
 def _normalized_selected_camera_ids(camera_rows: tuple[dict[str, object], ...], selected_camera_ids: tuple[int, ...] | None = None) -> tuple[int, ...]:
     camera_ids = tuple(int(row["camera_id"]) for row in camera_rows)
     if selected_camera_ids is None:
@@ -168,6 +183,7 @@ def _set_colmap_camera_preview(viewer: object, recon: object, selected_camera_id
     rows = _camera_rows(recon)
     selected_ids = _normalized_selected_camera_ids(rows, selected_camera_ids)
     viewer.ui._values["_colmap_camera_rows"] = rows
+    viewer.ui._values["_colmap_point_stats"] = _point_preview_stats(recon)
     viewer.ui._values["colmap_selected_camera_ids"] = selected_ids
     return selected_ids
 

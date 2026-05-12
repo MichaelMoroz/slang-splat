@@ -67,6 +67,7 @@ from .session_colmap_utils import (
     _has_colmap_sparse as _has_colmap_sparse_impl,
     _load_aligned_colmap_reconstruction as _load_aligned_colmap_reconstruction_impl,
     _normalized_selected_camera_ids as _normalized_selected_camera_ids_impl,
+    _point_preview_stats as _point_preview_stats_impl,
     _resolve_colmap_root_from_selection as _resolve_colmap_root_from_selection_impl,
     _set_colmap_camera_preview as _set_colmap_camera_preview_impl,
     _set_ui_path as _set_ui_path_impl,
@@ -192,6 +193,7 @@ def _set_colmap_camera_preview(
     rows = _camera_rows(recon)
     selected_ids = _normalized_selected_camera_ids(rows, selected_camera_ids)
     viewer.ui._values["_colmap_camera_rows"] = rows
+    viewer.ui._values["_colmap_point_stats"] = _point_preview_stats_impl(recon)
     viewer.ui._values["colmap_selected_camera_ids"] = selected_ids
     return selected_ids
 
