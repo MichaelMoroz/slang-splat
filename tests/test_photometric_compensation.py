@@ -511,6 +511,37 @@ def test_gaussian_trainer_applies_target_tonemap_to_native_subsample_targets(dev
     np.testing.assert_allclose(ssim[:, :, [1, 6, 11]], expected, rtol=0.0, atol=5e-4)
 
 
+def test_gaussian_trainer_reuses_single_compensated_native_target_across_frames(device, tmp_path: Path) -> None:
+    image_a = np.array(
+        [
+            [[16, 32, 48], [32, 48, 64]],
+            [[48, 64, 80], [64, 80, 96]],
+        ],
+        dtype=np.uint8,
+    )
+    image_b = np.array(
+        [
+            [[96, 80, 64], [80, 64, 48]],
+            [[64, 48, 32], [48, 32, 16]],
+        ],
+        dtype=np.uint8,
+    )
+    frame_a = _make_rgb_frame(tmp_path, image_a, image_name="photometric_native_reuse_a.png")
+    frame_b = _make_rgb_frame(tmp_path, image_b, image_name="photometric_native_reuse_b.png", image_id=1)
+    scene = _make_scene(count=1, seed=31)
+    renderer = GaussianRenderer(device, width=2, height=2, list_capacity_multiplier=16)
+    provider = PPISPStaticTonemapProvider(PPISPTonemapParams(exposureEv=1.0))
+    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame_a, frame_b], seed=17, target_tonemap_provider=provider)
+
+    target_a = trainer.get_frame_target_texture(0, native_resolution=True)
+    np.testing.assert_allclose(np.asarray(target_a.to_numpy(), dtype=np.float32)[:, :, :3], np.minimum(_srgb_to_linear(image_a) * 2.0, 1.0), rtol=0.0, atol=5e-4)
+
+    target_b = trainer.get_frame_target_texture(1, native_resolution=True)
+    np.testing.assert_allclose(np.asarray(target_b.to_numpy(), dtype=np.float32)[:, :, :3], np.minimum(_srgb_to_linear(image_b) * 2.0, 1.0), rtol=0.0, atol=5e-4)
+
+    assert target_a is target_b
+
+
 def test_photometric_trainer_pair_loss_step_reduces_synthetic_exposure_error(device) -> None:
     recon, frames = _make_reconstruction()
     base = _make_linear_rgba(frames[0].height, frames[0].width)

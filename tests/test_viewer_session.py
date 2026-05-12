@@ -315,7 +315,7 @@ def test_reset_training_runtime_clears_all_training_debug_bindings(monkeypatch) 
 
 def test_initialize_photometric_compensation_reuses_training_textures(monkeypatch) -> None:
     textures = [object(), object()]
-    captured: dict[str, object] = {"sync_calls": 0, "requested_frames": []}
+    captured: dict[str, object] = {"sync_calls": 0}
 
     class _FakePhotometricTrainer:
         def __init__(self, *, device, reconstruction, frames, hparams, frame_source_textures=None) -> None:
@@ -328,10 +328,6 @@ def test_initialize_photometric_compensation_reuses_training_textures(monkeypatc
 
         def prepare_pair_dataset(self) -> None:
             captured["prepared"] = True
-
-    def _get_frame_target_texture(frame_index: int, native_resolution: bool = True):
-        captured["requested_frames"].append((int(frame_index), bool(native_resolution)))
-        return textures[frame_index]
 
     monkeypatch.setattr(session, "PhotometricCompensationTrainer", _FakePhotometricTrainer)
     monkeypatch.setattr(session, "sync_photometric_target_provider", lambda _viewer: captured.__setitem__("sync_calls", int(captured["sync_calls"]) + 1))
@@ -363,7 +359,7 @@ def test_initialize_photometric_compensation_reuses_training_textures(monkeypatc
             }
         ),
         s=SimpleNamespace(
-            trainer=SimpleNamespace(get_frame_target_texture=_get_frame_target_texture),
+            trainer=SimpleNamespace(_frame_targets_native=textures),
             colmap_recon=object(),
             training_frames=[SimpleNamespace(width=16, height=16), SimpleNamespace(width=16, height=16)],
             photometric_trainer=None,
@@ -377,7 +373,6 @@ def test_initialize_photometric_compensation_reuses_training_textures(monkeypatc
 
     assert captured["reconstruction"] is viewer.s.colmap_recon
     assert captured["frame_source_textures"] == textures
-    assert captured["requested_frames"] == [(0, True), (1, True)]
     assert int(captured["hparams"].batch_pair_count) == 4096
     assert int(captured["hparams"].neighborhood_size) == 5
     assert int(captured["hparams"].min_track_length) == 6
@@ -2404,8 +2399,12 @@ def test_initialize_training_scene_rebinds_debug_buffers_for_new_trainer(monkeyp
         height = 32
         work_buffers = {"debug_grad_norm": "new-grad"}
 
-        def copy_scene_state_to(self, encoder, dst) -> None:
+        def __init__(self) -> None:
+            self.copy_calls: list[tuple[object, bool]] = []
+
+        def copy_scene_state_to(self, encoder, dst, *, include_work_buffers: bool = True) -> None:
             del encoder
+            self.copy_calls.append((dst, bool(include_work_buffers)))
             dst.copy_targets.append(self)
 
     training_renderer = _TrainingRenderer()
@@ -2488,6 +2487,7 @@ def test_initialize_training_scene_rebinds_debug_buffers_for_new_trainer(monkeyp
     assert main_renderer.splat_age_buffer == "new-splat-age"
     assert debug_renderer.grad_buffer == "new-grad"
     assert debug_renderer.splat_age_buffer == "new-splat-age"
+    assert training_renderer.copy_calls == [(main_renderer, False)]
     assert viewer.s.cached_raster_grad_histograms is None
     assert viewer.s.cached_raster_grad_ranges is None
     assert viewer.s.cached_raster_grad_histogram_mode == ""
@@ -2499,7 +2499,7 @@ def test_initialize_training_scene_rebinds_debug_buffers_for_new_trainer(monkeyp
 
 def test_initialize_training_scene_rebuilds_training_frames_from_colmap(monkeypatch) -> None:
     frame = SimpleNamespace(width=48, height=24, image_id=9)
-    training_renderer = SimpleNamespace(copy_scene_state_to=lambda encoder, dst: None)
+    training_renderer = SimpleNamespace(copy_scene_state_to=lambda encoder, dst, **kwargs: None)
     main_renderer = SimpleNamespace(set_debug_grad_norm_buffer=lambda buffer: None, set_debug_splat_age_buffer=lambda buffer: None)
     debug_renderer = SimpleNamespace(set_debug_grad_norm_buffer=lambda buffer: None, set_debug_splat_age_buffer=lambda buffer: None)
     new_trainer = SimpleNamespace(effective_train_downscale_factor=lambda step=0: 1, effective_train_render_factor=lambda step=0: 1, scene=SimpleNamespace(count=8), refinement_buffers={})

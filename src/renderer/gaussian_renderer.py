@@ -1526,13 +1526,16 @@ class GaussianRenderer:
     def _copy_output_texture_to_grad_buffer(self) -> None:
         self.output_grad_buffer.copy_from_numpy(np.ascontiguousarray(self._read_image().reshape(-1, 4), dtype=np.float32))
 
-    def copy_scene_state_to(self, encoder: spy.CommandEncoder, dst: "GaussianRenderer") -> None:
+    def copy_scene_state_to(self, encoder: spy.CommandEncoder, dst: "GaussianRenderer", *, include_work_buffers: bool = True) -> None:
         if self._current_scene is None:
             raise RuntimeError("Source scene is not set.")
         if self._scene_count <= 0:
             raise RuntimeError("Source scene is empty.")
         dst._ensure_scene_buffers(self._scene_count)
-        dst._ensure_work_buffers(self._scene_count)
+        if include_work_buffers:
+            dst._ensure_work_buffers(self._scene_count)
+        else:
+            dst._current_scene = SceneBinding(count=self._scene_count)
         if self.packed_trainable_param_count == dst.packed_trainable_param_count:
             copy_bytes = self._scene_count * self.packed_trainable_param_count * self._U32_BYTES
             for name in self._SCENE_SHADER_VARS:
@@ -1547,7 +1550,9 @@ class GaussianRenderer:
                 sh_coeffs=groups["sh_coeffs"],
                 color_alpha=groups["color_alpha"],
             )
-        dst._scene_count, dst._current_scene = self._scene_count, self._current_scene
+        dst._scene_count = self._scene_count
+        if include_work_buffers:
+            dst._current_scene = self._current_scene
 
     def read_scene_groups(self, splat_count: int | None = None) -> dict[str, np.ndarray]:
         count = self._scene_count if splat_count is None else int(splat_count)

@@ -2255,7 +2255,7 @@ def initialize_training_scene(viewer: object, frame_targets_native: list[spy.Tex
     reset_main_camera(viewer)
     enc = viewer.device.create_command_encoder()
     _apply_training_image_color_init(viewer, viewer.s.trainer, enc)
-    renderer.copy_scene_state_to(enc, viewer.s.renderer)
+    renderer.copy_scene_state_to(enc, viewer.s.renderer, include_work_buffers=False)
     viewer.device.submit_command_buffer(enc.finish())
     _apply_debug_buffers(viewer, viewer.s.renderer)
     _apply_debug_buffers(viewer, viewer.s.debug_renderer)
@@ -2318,16 +2318,12 @@ def sync_photometric_target_provider(viewer: object) -> None:
 def _photometric_frame_source_textures(viewer: object) -> list[spy.Texture] | None:
     trainer = getattr(viewer.s, "trainer", None)
     frames = tuple(getattr(viewer.s, "training_frames", ()))
-    get_frame_target_texture = getattr(trainer, "get_frame_target_texture", None)
-    if trainer is None or not callable(get_frame_target_texture) or not frames:
+    native_targets = getattr(trainer, "_frame_targets_native", None)
+    if trainer is None or not isinstance(native_targets, list) or not frames:
         return None
-    textures: list[spy.Texture] = []
-    for frame_index in range(len(frames)):
-        texture = get_frame_target_texture(frame_index, native_resolution=True)
-        if texture is None:
-            return None
-        textures.append(texture)
-    return textures
+    if len(native_targets) != len(frames) or any(texture is None for texture in native_targets):
+        return None
+    return list(native_targets)
 
 
 def _photometric_hparams(viewer: object) -> PhotometricCompensationHyperParams:

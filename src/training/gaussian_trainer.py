@@ -949,8 +949,9 @@ class GaussianTrainer:
         self._init_point_colors_cpu: np.ndarray | None = None
         self.target_tonemap_provider = target_tonemap_provider
         self._frame_targets_native: list[spy.Texture] = []
-        self._frame_targets_compensated_native: list[spy.Texture | None] = [None for _ in self.frames]
-        self._frame_targets_compensated_versions: list[int] = [-1 for _ in self.frames]
+        self._compensated_native_target: spy.Texture | None = None
+        self._compensated_native_target_frame_index = -1
+        self._compensated_native_target_version = -1
         self._train_target_texture: spy.Texture | None = None
         self._downscaled_target_key: tuple[int, int, int, int, int] | None = None
         self._ssim_blur: SeparableGaussianBlur | None = None
@@ -982,17 +983,19 @@ class GaussianTrainer:
         if self._resources_released:
             if not preserve_frame_targets:
                 self._frame_targets_native = []
-            self._frame_targets_compensated_native = []
-            self._frame_targets_compensated_versions = []
+            self._compensated_native_target = None
+            self._compensated_native_target_frame_index = -1
+            self._compensated_native_target_version = -1
             return
 
         seen: set[int] = set()
         if not preserve_frame_targets:
             _defer_owned_resources(self._frame_targets_native, seen)
         self._frame_targets_native = []
-        _defer_owned_resources(self._frame_targets_compensated_native, seen)
-        self._frame_targets_compensated_native = []
-        self._frame_targets_compensated_versions = []
+        _defer_owned_resources(self._compensated_native_target, seen)
+        self._compensated_native_target = None
+        self._compensated_native_target_frame_index = -1
+        self._compensated_native_target_version = -1
 
         _defer_owned_resources(self._train_target_texture, seen)
         self._train_target_texture = None
@@ -1547,7 +1550,11 @@ class GaussianTrainer:
 
     def set_target_tonemap_provider(self, provider: PPISPTonemapProvider | None) -> None:
         self.target_tonemap_provider = provider
-        self._frame_targets_compensated_versions = [-1 for _ in self.frames]
+        if provider is None:
+            defer_resource_release(self._compensated_native_target)
+            self._compensated_native_target = None
+        self._compensated_native_target_frame_index = -1
+        self._compensated_native_target_version = -1
         self._invalidate_downscaled_target()
 
     def _target_tonemap_version(self) -> int:
@@ -1559,13 +1566,13 @@ class GaussianTrainer:
             return False
         if target_texture is self._train_target_texture:
             return True
-        if any(target_texture is texture for texture in self._frame_targets_compensated_native if texture is not None):
+        if target_texture is self._compensated_native_target:
             return True
         return any(target_texture is texture for texture in self._frame_targets_native)
 
     def _ensure_compensated_native_target_texture(self, frame_index: int) -> spy.Texture:
         frame = self._frame(frame_index)
-        texture = self._frame_targets_compensated_native[frame_index]
+        texture = self._compensated_native_target
         width = max(int(frame.width), 1)
         height = max(int(frame.height), 1)
         if texture is not None and int(texture.width) == width and int(texture.height) == height:
@@ -1579,8 +1586,9 @@ class GaussianTrainer:
             height=height,
             usage=spy.TextureUsage.shader_resource | spy.TextureUsage.unordered_access,
         )
-        self._frame_targets_compensated_native[frame_index] = texture
-        self._frame_targets_compensated_versions[frame_index] = -1
+        self._compensated_native_target = texture
+        self._compensated_native_target_frame_index = -1
+        self._compensated_native_target_version = -1
         return texture
 
     def _refresh_compensated_native_target(self, encoder: spy.CommandEncoder, frame_index: int) -> spy.Texture:
@@ -1589,7 +1597,7 @@ class GaussianTrainer:
             return self._frame_targets_native[frame_index]
         version = self._target_tonemap_version()
         texture = self._ensure_compensated_native_target_texture(frame_index)
-        if self._frame_targets_compensated_versions[frame_index] == version:
+        if self._compensated_native_target_frame_index == int(frame_index) and self._compensated_native_target_version == version:
             return texture
         frame = self._frame(frame_index)
         self._dispatch(
@@ -1606,7 +1614,8 @@ class GaussianTrainer:
                 "g_PhotometricTargetPPISPParams": provider.params_for_frame(frame_index).to_shader_dict(),
             },
         )
-        self._frame_targets_compensated_versions[frame_index] = version
+        self._compensated_native_target_frame_index = int(frame_index)
+        self._compensated_native_target_version = version
         return texture
 
     def _native_target_texture(self, frame_index: int, encoder: spy.CommandEncoder | None = None) -> spy.Texture:
