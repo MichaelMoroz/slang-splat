@@ -495,6 +495,7 @@ def test_gaussian_trainer_applies_target_tonemap_to_native_subsample_targets(dev
 
     renderer.output_texture.copy_from_numpy(np.zeros((renderer.height, renderer.width, 4), dtype=np.float32))
     target_texture = trainer.get_frame_target_texture(0, native_resolution=True)
+    assert trainer._loss_vars(0, step=0, target_texture=target_texture)["g_TargetTextureIsLinear"] == np.uint32(1)
     encoder = device.create_command_encoder()
     trainer._dispatch_ssim_feature_extraction(encoder, target_texture, step=0, frame_index=0)
     device.submit_command_buffer(encoder.finish())

@@ -96,6 +96,7 @@ uniform uint g_DebugWidth;
 uniform uint g_DebugHeight;
 uniform float g_DebugDiffScale;
 uniform uint g_DebugRenderedIsLinear;
+uniform uint g_DebugTargetIsLinear;
 uniform uint g_DebugSourceIsLinear;
 uniform Texture2D<float4> g_LetterboxSource;
 uniform RWTexture2D<float4> g_LetterboxOutput;
@@ -105,6 +106,7 @@ uniform uint g_LetterboxOutputWidth;
 uniform uint g_LetterboxOutputHeight;
 uniform uint g_LetterboxSourceIsLinear;
 uniform uint g_LetterboxApplyLossColorspace;
+uniform uint g_LetterboxSourceUsesTargetLossColorspace;
 uniform uint g_LetterboxApplyPPISP;
 uniform PPISPTonemap g_LetterboxPPISPParams;
 
@@ -522,12 +524,19 @@ float3 debug_display_rgb(float3 rgb, uint isLinear)
     return isLinear != 0u ? training_rendered_to_display_rgb(sanitized) : max(sanitized, 0.0);
 }
 
-float3 debug_training_camera_display_rgb(float3 rgb, uint isLinear, uint applyLossColorspace)
+float3 debug_target_linear_rgb(float3 target)
+{
+    float3 sanitized = sanitize_float3(target, SANITIZE_HUGE_VALUE);
+    return g_DebugTargetIsLinear != 0u ? max(sanitized, 0.0) : training_target_to_linear_rgb(sanitized);
+}
+
+float3 debug_training_camera_display_rgb(float3 rgb, uint isLinear, uint applyLossColorspace, uint sourceUsesTargetLossColorspace)
 {
     if (applyLossColorspace == 0u) return debug_display_rgb(rgb, isLinear);
-    float3 sanitized = sanitize_float3(rgb, SANITIZE_HUGE_VALUE);
-    if (isLinear != 0u) return training_rendered_to_display_rgb(training_rendered_loss_colorspace_rgb(sanitized));
-    return training_rendered_to_display_rgb(training_target_loss_colorspace_rgb(training_target_to_linear_rgb(max(sanitized, 0.0))));
+    float3 linearRgb = isLinear != 0u ? max(sanitize_float3(rgb, SANITIZE_HUGE_VALUE), 0.0) : training_target_to_linear_rgb(max(sanitize_float3(rgb, SANITIZE_HUGE_VALUE), 0.0));
+    return sourceUsesTargetLossColorspace != 0u
+        ? training_rendered_to_display_rgb(training_target_loss_colorspace_rgb(linearRgb))
+        : training_rendered_to_display_rgb(training_rendered_loss_colorspace_rgb(linearRgb));
 }
 
 float3 debug_ppisp_display_rgb(float3 rgb, uint isLinear, float2 sensorCoord)
@@ -826,8 +835,8 @@ void csComputeBlendedLossForward(
         float blendedRgbLoss = lerp(l1Loss, dssimLoss, g_SSIMWeight);
         float mse = rgb_mse_loss(rendered, target, g_InvPixelCount) * rgbTargetMask;
         float displayMSE = rgb_mse_loss(
-            debug_training_camera_display_rgb(rendered, 1u, 1u),
-            debug_training_camera_display_rgb(rawTargetRgba.xyz, 0u, 1u),
+            debug_training_camera_display_rgb(rendered, 1u, 1u, 0u),
+            debug_training_camera_display_rgb(rawTargetRgba.xyz, 0u, 1u, 1u),
             g_InvPixelCount
         ) * rgbTargetMask;
         float density = sanitize_scalar(g_RenderedDensity[py * g_Width + px], SANITIZE_HUGE_VALUE);
@@ -1265,7 +1274,7 @@ void csComposeAbsDiffDebug(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (px >= g_DebugWidth || py >= g_DebugHeight) return;
     uint2 pixel = uint2(px, py);
     float3 rendered = debug_display_rgb(g_DebugRendered[pixel].xyz, g_DebugRenderedIsLinear);
-    float3 target = debug_display_rgb(g_DebugTarget[pixel].xyz, 0u);
+    float3 target = debug_display_rgb(g_DebugTarget[pixel].xyz, g_DebugTargetIsLinear);
     float3 diff = abs(sanitize_float3(rendered - target, SANITIZE_HUGE_VALUE)) * max(g_DebugDiffScale, 0.0);
     g_DebugOutput[pixel] = float4(diff, 1.0);
 }
@@ -1310,7 +1319,7 @@ void csComputeSSIMFeaturesDebug(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     uint2 pixel = uint2(px, py);
     float3 rendered = sanitize_float3(g_DebugRendered[pixel].xyz, SANITIZE_HUGE_VALUE);
-    float3 target = training_target_to_linear_rgb(sanitize_float3(g_DebugTarget[pixel].xyz, SANITIZE_HUGE_VALUE));
+    float3 target = debug_target_linear_rgb(g_DebugTarget[pixel].xyz);
     store_ssim_moments(g_SSIMMoments, pixel, ssim_feature_moments(rendered, target));
 }
 
@@ -1375,6 +1384,6 @@ void csComposeLetterboxDebug(uint3 dispatchThreadID : SV_DispatchThreadID)
     float2 sensorCoord = float2((float(srcX) + 0.5) / srcW, (float(srcY) + 0.5) / srcH);
     float3 displayRgb = g_LetterboxApplyPPISP != 0u
         ? debug_ppisp_display_rgb(sampled.xyz, g_LetterboxSourceIsLinear, sensorCoord)
-        : debug_training_camera_display_rgb(sampled.xyz, g_LetterboxSourceIsLinear, g_LetterboxApplyLossColorspace);
+        : debug_training_camera_display_rgb(sampled.xyz, g_LetterboxSourceIsLinear, g_LetterboxApplyLossColorspace, g_LetterboxSourceUsesTargetLossColorspace);
     g_LetterboxOutput[uint2(px, py)] = float4(displayRgb, 1.0);
 }

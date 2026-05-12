@@ -1640,6 +1640,8 @@ def test_training_targets_use_srgb_textures(device, tmp_path: Path):
     assert native_target.format == spy.Format.rgba8_unorm_srgb
     assert train_target.format == spy.Format.rgba32_float
     assert native_target is not train_target
+    assert trainer._loss_vars(0, step=0, target_texture=native_target)["g_TargetTextureIsLinear"] == np.uint32(0)
+    assert trainer._loss_vars(0, step=0, target_texture=train_target)["g_TargetTextureIsLinear"] == np.uint32(1)
 
 
 def test_training_raster_output_stays_linear_while_display_render_uses_gamma(device, tmp_path: Path):

@@ -47,6 +47,16 @@ def _training_camera_full_resolution(viewer: object) -> bool:
         return False
 
 
+def _training_debug_target_is_linear(trainer: object, target_texture: object) -> bool:
+    if target_texture is None:
+        return False
+    if hasattr(trainer, "target_texture_is_linear"):
+        return bool(trainer.target_texture_is_linear(target_texture))
+    if hasattr(trainer, "_target_texture_is_linear"):
+        return bool(trainer._target_texture_is_linear(target_texture))
+    return False
+
+
 def _ensure_texture(viewer: object, attr: str, width: int, height: int) -> spy.Texture:
     texture = getattr(viewer.s, attr)
     if texture is not None and int(texture.width) == int(width) and int(texture.height) == int(height):
@@ -71,7 +81,17 @@ def _debug_abs_diff_scale(viewer: object) -> float:
     return max(_DEBUG_ABS_DIFF_SCALE_MIN, min(value, _DEBUG_ABS_DIFF_SCALE_MAX))
 
 
-def _dispatch_debug_abs_diff(viewer: object, encoder: spy.CommandEncoder, rendered_tex: spy.Texture, target_tex: spy.Texture, width: int, height: int, *, rendered_is_linear: bool = True) -> spy.Texture:
+def _dispatch_debug_abs_diff(
+    viewer: object,
+    encoder: spy.CommandEncoder,
+    rendered_tex: spy.Texture,
+    target_tex: spy.Texture,
+    width: int,
+    height: int,
+    *,
+    rendered_is_linear: bool = True,
+    target_is_linear: bool = False,
+) -> spy.Texture:
     output = _ensure_texture(viewer, "loss_debug_texture", width, height)
     with debug_region(encoder, "Viewer Debug Abs Diff", 150):
         require_not_none(viewer.s.debug_abs_diff_kernel, "Debug abs-diff kernel is not initialized.").dispatch(
@@ -84,6 +104,7 @@ def _dispatch_debug_abs_diff(viewer: object, encoder: spy.CommandEncoder, render
                 "g_DebugHeight": int(height),
                 "g_DebugDiffScale": _debug_abs_diff_scale(viewer),
                 "g_DebugRenderedIsLinear": int(rendered_is_linear),
+                "g_DebugTargetIsLinear": int(target_is_linear),
             },
             command_encoder=encoder,
         )
@@ -140,7 +161,7 @@ def _ensure_debug_dssim_runtime(viewer: object, width: int, height: int) -> None
     viewer.s.debug_dssim_blurred_moments = blur.make_buffer(_DEBUG_DSSIM_FEATURE_CHANNELS)
 
 
-def _dispatch_debug_dssim_features(viewer: object, encoder: spy.CommandEncoder, rendered_tex: spy.Texture, target_tex: spy.Texture, width: int, height: int) -> None:
+def _dispatch_debug_dssim_features(viewer: object, encoder: spy.CommandEncoder, rendered_tex: spy.Texture, target_tex: spy.Texture, width: int, height: int, *, target_is_linear: bool = False) -> None:
     _ensure_debug_dssim_runtime(viewer, width, height)
     with debug_region(encoder, "Viewer DSSIM Features", 153):
         require_not_none(viewer.s.debug_dssim_features_kernel, "Debug DSSIM feature kernel is not initialized.").dispatch(
@@ -148,6 +169,7 @@ def _dispatch_debug_dssim_features(viewer: object, encoder: spy.CommandEncoder, 
             vars={
                 "g_DebugRendered": rendered_tex,
                 "g_DebugTarget": target_tex,
+                "g_DebugTargetIsLinear": int(target_is_linear),
                 "g_SSIMMoments": require_not_none(viewer.s.debug_dssim_moments, "Debug DSSIM moments buffer is not initialized."),
                 "g_Width": int(width),
                 "g_Height": int(height),
@@ -179,8 +201,8 @@ def _dispatch_debug_dssim_compose(viewer: object, encoder: spy.CommandEncoder, t
     return output
 
 
-def _dispatch_debug_dssim(viewer: object, encoder: spy.CommandEncoder, rendered_tex: spy.Texture, target_tex: spy.Texture, width: int, height: int) -> spy.Texture:
-    _dispatch_debug_dssim_features(viewer, encoder, rendered_tex, target_tex, width, height)
+def _dispatch_debug_dssim(viewer: object, encoder: spy.CommandEncoder, rendered_tex: spy.Texture, target_tex: spy.Texture, width: int, height: int, *, target_is_linear: bool = False) -> spy.Texture:
+    _dispatch_debug_dssim_features(viewer, encoder, rendered_tex, target_tex, width, height, target_is_linear=target_is_linear)
     require_not_none(viewer.s.debug_dssim_blur, "Debug DSSIM blur is not initialized.").blur(
         encoder,
         require_not_none(viewer.s.debug_dssim_moments, "Debug DSSIM moments buffer is not initialized."),
@@ -208,6 +230,7 @@ def _dispatch_training_debug_present(
     *,
     source_is_linear: bool = False,
     apply_loss_colorspace: bool = False,
+    source_uses_target_loss_colorspace: bool = False,
 ) -> spy.Texture:
     output = _ensure_texture(viewer, "debug_present_texture", output_width, output_height)
     with debug_region(encoder, "Viewer Present", 151):
@@ -222,6 +245,7 @@ def _dispatch_training_debug_present(
                 "g_LetterboxOutputHeight": int(output_height),
                 "g_LetterboxSourceIsLinear": int(source_is_linear),
                 "g_LetterboxApplyLossColorspace": int(apply_loss_colorspace),
+                "g_LetterboxSourceUsesTargetLossColorspace": int(source_uses_target_loss_colorspace),
                 "g_ColorspaceMod": _training_debug_colorspace_mod(viewer),
             },
             command_encoder=encoder,
@@ -829,26 +853,28 @@ def _sample_training_debug_target(viewer: object, encoder: spy.CommandEncoder, s
     return output
 
 
-def _render_debug_target(viewer: object, encoder: spy.CommandEncoder, frame_idx: int, width: int, height: int, step: int, sample_vars: dict[str, object] | None) -> spy.Texture:
+def _render_debug_target(viewer: object, encoder: spy.CommandEncoder, frame_idx: int, width: int, height: int, step: int, sample_vars: dict[str, object] | None) -> tuple[spy.Texture, bool]:
     trainer = viewer.s.trainer
     if hasattr(trainer, "ensure_frame_render_resolution"):
         trainer.ensure_frame_render_resolution(frame_idx, step)
     if _training_camera_full_resolution(viewer):
         try:
-            return trainer.get_frame_target_texture(frame_idx, native_resolution=True, encoder=encoder, step=step)
+            target = trainer.get_frame_target_texture(frame_idx, native_resolution=True, encoder=encoder, step=step)
         except TypeError:
-            return trainer.get_frame_target_texture(frame_idx, native_resolution=True, encoder=encoder)
+            target = trainer.get_frame_target_texture(frame_idx, native_resolution=True, encoder=encoder)
+        return target, _training_debug_target_is_linear(trainer, target)
     subsample = int(trainer.effective_train_subsample_factor(frame_idx, step)) if hasattr(trainer, "effective_train_subsample_factor") else 1
     if subsample > 1:
         try:
             native_target = trainer.get_frame_target_texture(frame_idx, native_resolution=True, encoder=encoder, step=step)
         except TypeError:
             native_target = trainer.get_frame_target_texture(frame_idx, native_resolution=True, encoder=encoder)
-        return _sample_training_debug_target(viewer, encoder, native_target, width, height, sample_vars, frame_idx)
+        return _sample_training_debug_target(viewer, encoder, native_target, width, height, sample_vars, frame_idx), _training_debug_target_is_linear(trainer, native_target)
     try:
-        return trainer.get_frame_target_texture(frame_idx, native_resolution=False, encoder=encoder, step=step)
+        target = trainer.get_frame_target_texture(frame_idx, native_resolution=False, encoder=encoder, step=step)
     except TypeError:
-        return trainer.get_frame_target_texture(frame_idx, native_resolution=False, encoder=encoder)
+        target = trainer.get_frame_target_texture(frame_idx, native_resolution=False, encoder=encoder)
+    return target, _training_debug_target_is_linear(trainer, target)
 
 
 def _render_debug_view(viewer: object, encoder: spy.CommandEncoder, output_width: int, output_height: int, render_frame_index: int) -> spy.Texture:
@@ -859,21 +885,43 @@ def _render_debug_view(viewer: object, encoder: spy.CommandEncoder, output_width
         source_tex = debug_render_tex
         source_is_linear = True
         apply_loss_colorspace = True
+        source_uses_target_loss_colorspace = False
     elif debug_view == "rendered_edges":
         source_tex = _dispatch_debug_edge_filter(viewer, encoder, debug_render_tex, debug_width, debug_height, source_is_linear=True)
         source_is_linear = False
         apply_loss_colorspace = False
+        source_uses_target_loss_colorspace = False
     else:
-        target_tex = _render_debug_target(viewer, encoder, frame_idx, debug_width, debug_height, _training_debug_step(viewer), sample_vars)
-        source_is_linear = False
+        target_tex, target_is_linear = _render_debug_target(viewer, encoder, frame_idx, debug_width, debug_height, _training_debug_step(viewer), sample_vars)
         apply_loss_colorspace = debug_view == "target"
-        source_tex = (
-            target_tex if debug_view == "target"
-            else _dispatch_debug_abs_diff(viewer, encoder, debug_render_tex, target_tex, debug_width, debug_height, rendered_is_linear=True) if debug_view == "abs_diff"
-            else _dispatch_debug_dssim(viewer, encoder, debug_render_tex, target_tex, debug_width, debug_height) if debug_view == "dssim"
-            else _dispatch_debug_edge_filter(viewer, encoder, target_tex, debug_width, debug_height, source_is_linear=False)
-        )
-    return _dispatch_training_debug_present(viewer, encoder, source_tex, debug_width, debug_height, debug_width, debug_height, source_is_linear=source_is_linear, apply_loss_colorspace=apply_loss_colorspace)
+        if debug_view == "target":
+            source_tex = target_tex
+            source_is_linear = target_is_linear
+            source_uses_target_loss_colorspace = True
+        elif debug_view == "abs_diff":
+            source_tex = _dispatch_debug_abs_diff(viewer, encoder, debug_render_tex, target_tex, debug_width, debug_height, rendered_is_linear=True, target_is_linear=target_is_linear)
+            source_is_linear = False
+            source_uses_target_loss_colorspace = False
+        elif debug_view == "dssim":
+            source_tex = _dispatch_debug_dssim(viewer, encoder, debug_render_tex, target_tex, debug_width, debug_height, target_is_linear=target_is_linear)
+            source_is_linear = False
+            source_uses_target_loss_colorspace = False
+        else:
+            source_tex = _dispatch_debug_edge_filter(viewer, encoder, target_tex, debug_width, debug_height, source_is_linear=target_is_linear)
+            source_is_linear = False
+            source_uses_target_loss_colorspace = False
+    return _dispatch_training_debug_present(
+        viewer,
+        encoder,
+        source_tex,
+        debug_width,
+        debug_height,
+        debug_width,
+        debug_height,
+        source_is_linear=source_is_linear,
+        apply_loss_colorspace=apply_loss_colorspace,
+        source_uses_target_loss_colorspace=source_uses_target_loss_colorspace,
+    )
 def _render_main_view(viewer: object, encoder: spy.CommandEncoder) -> spy.Texture:
     if viewer.s.trainer is not None and viewer.s.training_renderer is not None:
         session.sync_scene_from_training_renderer(viewer, viewer.s.renderer, target="main")
