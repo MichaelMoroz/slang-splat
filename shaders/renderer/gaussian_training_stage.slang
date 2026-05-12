@@ -54,6 +54,9 @@ uniform float g_ColorspaceMod;
 
 uniform Texture2D<float4> g_Rendered;
 uniform Texture2D<float4> g_Target;
+uniform uint g_TargetTextureIsLinear;
+uniform uint g_TargetApplyPPISP;
+uniform PPISPTonemap g_TargetPPISPParams;
 uniform StructuredBuffer<float> g_RenderedDensity;
 uniform RWStructuredBuffer<float4> g_OutputGrad;
 uniform RWStructuredBuffer<float2> g_RegularizerGrad;
@@ -474,15 +477,31 @@ float4 training_raw_target_rgba(uint2 pixel)
     return sanitize_float4(g_Target[training_target_pixel(pixel)], SANITIZE_HUGE_VALUE);
 }
 
+float2 training_target_sensor_coord(uint2 pixel)
+{
+    uint2 nativePixel = training_target_pixel(pixel);
+    float nativeWidth = max(float(g_TrainingSubsample.nativeWidth), 1.0);
+    float nativeHeight = max(float(g_TrainingSubsample.nativeHeight), 1.0);
+    return float2((float(nativePixel.x) + 0.5) / nativeWidth, (float(nativePixel.y) + 0.5) / nativeHeight);
+}
+
 float3 training_target_to_linear_rgb(float3 target)
 {
     return pow(max(target, 0.0), 1.0 / OUTPUT_GAMMA);
 }
 
+float3 training_target_linear_rgb(uint2 pixel, float3 target)
+{
+    float3 sanitized = sanitize_float3(target, SANITIZE_HUGE_VALUE);
+    float3 linear = g_TargetTextureIsLinear != 0u ? max(sanitized, 0.0) : training_target_to_linear_rgb(sanitized);
+    if (g_TargetApplyPPISP == 0u || g_TrainingSubsample.enabled == 0u) return linear;
+    return training_target_to_linear_rgb(ppisp_apply_tonemap(linear, training_target_sensor_coord(pixel), g_TargetPPISPParams));
+}
+
 float4 training_target_rgba(uint2 pixel)
 {
     float4 target = training_raw_target_rgba(pixel);
-    target.xyz = training_target_to_linear_rgb(target.xyz);
+    target.xyz = training_target_linear_rgb(pixel, target.xyz);
     return target;
 }
 
@@ -724,11 +743,19 @@ void csResampleDownscaledTargetNearest(uint3 dispatchThreadID : SV_DispatchThrea
     uint srcY1 = min(srcY0 + factor, g_SourceHeight);
     float4 accum = 0.0;
     uint sampleCount = 0u;
+    float srcWidth = max(float(g_SourceWidth), 1.0);
+    float srcHeight = max(float(g_SourceHeight), 1.0);
     for (uint srcY = srcY0; srcY < srcY1; srcY++)
     {
         for (uint srcX = srcX0; srcX < srcX1; srcX++)
         {
-            accum += g_SourceTarget[uint2(srcX, srcY)];
+            float4 sample = sanitize_float4(g_SourceTarget[uint2(srcX, srcY)], SANITIZE_HUGE_VALUE);
+            if (g_TargetApplyPPISP != 0u)
+            {
+                float2 sensorCoord = float2((float(srcX) + 0.5) / srcWidth, (float(srcY) + 0.5) / srcHeight);
+                sample.xyz = training_target_to_linear_rgb(ppisp_apply_tonemap(max(sample.xyz, 0.0), sensorCoord, g_TargetPPISPParams));
+            }
+            accum += sample;
             sampleCount += 1u;
         }
     }

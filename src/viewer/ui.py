@@ -618,6 +618,9 @@ class ToolkitState:
     psnr_history: deque = field(default_factory=partial(deque, maxlen=_LOSS_HISTORY_BUCKET_COUNT))
     step_history: deque = field(default_factory=partial(deque, maxlen=_LOSS_HISTORY_BUCKET_COUNT))
     step_time_history: deque = field(default_factory=partial(deque, maxlen=_LOSS_HISTORY_BUCKET_COUNT))
+    photometric_loss_history: deque = field(default_factory=partial(deque, maxlen=_LOSS_HISTORY_BUCKET_COUNT))
+    photometric_step_history: deque = field(default_factory=partial(deque, maxlen=_LOSS_HISTORY_BUCKET_COUNT))
+    photometric_step_time_history: deque = field(default_factory=partial(deque, maxlen=_LOSS_HISTORY_BUCKET_COUNT))
     _plot_bucket_index: int = -1
     _plot_bucket_count: int = 0
     _plot_bucket_step_sum: float = 0.0
@@ -625,6 +628,11 @@ class ToolkitState:
     _plot_bucket_loss_sum: float = 0.0
     _plot_bucket_ssim_sum: float = 0.0
     _plot_bucket_psnr_sum: float = 0.0
+    _photometric_plot_bucket_index: int = -1
+    _photometric_plot_bucket_count: int = 0
+    _photometric_plot_bucket_step_sum: float = 0.0
+    _photometric_plot_bucket_time_sum: float = 0.0
+    _photometric_plot_bucket_loss_sum: float = 0.0
 
     def _reset_plot_bucket(self) -> None:
         self._plot_bucket_index = -1
@@ -634,6 +642,13 @@ class ToolkitState:
         self._plot_bucket_loss_sum = 0.0
         self._plot_bucket_ssim_sum = 0.0
         self._plot_bucket_psnr_sum = 0.0
+
+    def _reset_photometric_plot_bucket(self) -> None:
+        self._photometric_plot_bucket_index = -1
+        self._photometric_plot_bucket_count = 0
+        self._photometric_plot_bucket_step_sum = 0.0
+        self._photometric_plot_bucket_time_sum = 0.0
+        self._photometric_plot_bucket_loss_sum = 0.0
 
     def append_training_plot_sample(self, step: int, timestamp: float, loss: float, ssim: float, psnr: float) -> None:
         bucket_index = max(int(step) - 1, 0) // _LOSS_HISTORY_BUCKET_SIZE
@@ -670,6 +685,37 @@ class ToolkitState:
         self.ssim_history[-1] = averaged_ssim
         self.psnr_history[-1] = averaged_psnr
 
+    def append_photometric_plot_sample(self, step: int, timestamp: float, loss: float) -> None:
+        bucket_index = max(int(step) - 1, 0) // _LOSS_HISTORY_BUCKET_SIZE
+        if bucket_index != self._photometric_plot_bucket_index or self._photometric_plot_bucket_count <= 0 or not self.photometric_step_history:
+            self._photometric_plot_bucket_index = bucket_index
+            self._photometric_plot_bucket_count = 0
+            self._photometric_plot_bucket_step_sum = 0.0
+            self._photometric_plot_bucket_time_sum = 0.0
+            self._photometric_plot_bucket_loss_sum = 0.0
+        self._photometric_plot_bucket_count += 1
+        count = float(self._photometric_plot_bucket_count)
+        self._photometric_plot_bucket_step_sum += float(step)
+        self._photometric_plot_bucket_time_sum += float(timestamp)
+        self._photometric_plot_bucket_loss_sum += float(loss)
+        averaged_step = self._photometric_plot_bucket_step_sum / count
+        averaged_time = self._photometric_plot_bucket_time_sum / count
+        averaged_loss = self._photometric_plot_bucket_loss_sum / count
+        if self._photometric_plot_bucket_count == 1:
+            self.photometric_step_history.append(averaged_step)
+            self.photometric_step_time_history.append(averaged_time)
+            self.photometric_loss_history.append(averaged_loss)
+            return
+        self.photometric_step_history[-1] = averaged_step
+        self.photometric_step_time_history[-1] = averaged_time
+        self.photometric_loss_history[-1] = averaged_loss
+
+    def clear_photometric_plot_history(self) -> None:
+        self.photometric_loss_history.clear()
+        self.photometric_step_history.clear()
+        self.photometric_step_time_history.clear()
+        self._reset_photometric_plot_bucket()
+
     def clear_plot_history(self) -> None:
         self.loss_history.clear()
         self.fps_history.clear()
@@ -678,6 +724,7 @@ class ToolkitState:
         self.step_history.clear()
         self.step_time_history.clear()
         self._reset_plot_bucket()
+        self.clear_photometric_plot_history()
 
 
 def _noop() -> None:
@@ -726,6 +773,9 @@ class ToolkitWindow:
             cancel_exit=_noop,
             start_training=_noop,
             stop_training=_noop,
+            start_photometric=_noop,
+            stop_photometric=_noop,
+            reset_photometric=_noop,
             move_to_training_camera=_noop,
             reset_camera=_noop,
             save_defaults=_noop,
@@ -1141,6 +1191,7 @@ class ToolkitWindow:
         self._draw_viewport_window(ui, viewport_texture, width, height)
         self._draw_debug_colorbar(ui)
         self._draw_histogram_window(ui)
+        self._draw_photometric_compensation_window(ui)
         self._draw_training_views_window(ui)
         self._draw_resource_debug_window(ui)
         self._draw_exit_confirmation_modal(ui)
@@ -1868,7 +1919,7 @@ class ToolkitWindow:
     def _draw_debug_menu(self, ui: ViewerUI) -> None:
         if not imgui.begin_menu("Debug"):
             return
-        for key, label in (("show_resource_debug", "Buffers"), ("show_histograms", "Histograms"), ("show_training_views", "Training Views")):
+        for key, label in (("show_resource_debug", "Buffers"), ("show_histograms", "Histograms"), ("show_photometric_compensation", "Photometric Compensation"), ("show_training_views", "Training Views")):
             selected = bool(ui._values.get(key, False))
             if _menu_item(label, selected=selected):
                 ui._values[key] = not selected
@@ -2553,6 +2604,67 @@ class ToolkitWindow:
                             imgui.table_next_column()
                             imgui.text_unformatted(value)
                     imgui.end_table()
+        imgui.end()
+
+    def _draw_photometric_compensation_window(self, ui: ViewerUI) -> None:
+        if not bool(ui._values.get("show_photometric_compensation", False)):
+            return
+        scale = max(self._applied_interface_scale, 1.0)
+        self._dock_tool_window(imgui.Cond_.appearing.value)
+        imgui.set_next_window_pos(imgui.ImVec2(104.0 * scale, self._menu_bar_height + 72.0 * scale), imgui.Cond_.first_use_ever.value)
+        imgui.set_next_window_size(imgui.ImVec2(760.0 * scale, 720.0 * scale), imgui.Cond_.first_use_ever.value)
+        opened, show = imgui.begin("Photometric Compensation", True)
+        ToolkitWindow._register_non_viewport_window(self)
+        ui._values["show_photometric_compensation"] = bool(show)
+        if opened:
+            for key in ("photometric_status", "photometric_time", "photometric_loss", "photometric_regularization", "photometric_pairs"):
+                text = str(ui._texts.get(key, "")).strip()
+                if text:
+                    imgui.text_wrapped(text)
+            imgui.spacing()
+            half_w = imgui.get_content_region_avail().x * 0.31
+            if imgui.button("Start", imgui.ImVec2(half_w, 0.0)):
+                self.callbacks.start_photometric()
+            imgui.same_line()
+            if imgui.button("Stop", imgui.ImVec2(half_w, 0.0)):
+                self.callbacks.stop_photometric()
+            imgui.same_line()
+            if imgui.button("Reset", imgui.ImVec2(half_w, 0.0)):
+                self.callbacks.reset_photometric()
+            changed, apply_to_targets = imgui.checkbox("Apply to Gaussian Targets", bool(ui._values.get("photometric_apply_to_targets", True)))
+            if changed:
+                ui._values["photometric_apply_to_targets"] = bool(apply_to_targets)
+            changed, steps_per_frame = imgui.drag_int("Steps / Frame", int(ui._values.get("photometric_steps_per_frame", 1)), 0.1, 1, 32)
+            if changed:
+                ui._values["photometric_steps_per_frame"] = max(int(steps_per_frame), 1)
+            frame_max = max(int(ui._values.get("photometric_frame_max", 0)), 0)
+            changed, selected_frame = imgui.slider_int("Frame", int(ui._values.get("photometric_selected_frame", 0)), 0, frame_max)
+            if changed:
+                ui._values["photometric_selected_frame"] = int(selected_frame)
+            plot_scale = self._plot_scale(ui)
+            loss_arr = np.array(self.tk.photometric_loss_history, dtype=np.float64)
+            step_arr = np.array(self.tk.photometric_step_history, dtype=np.float64)
+            if len(loss_arr) >= 2 and len(step_arr) >= 2:
+                min_len = min(len(loss_arr), len(step_arr))
+                s, l = step_arr[:min_len], loss_arr[:min_len]
+                if implot.begin_plot("##PhotometricLoss", imgui.ImVec2(-1, 200.0 * plot_scale)):
+                    implot.setup_axes("step", "loss", 0, implot.AxisFlags_.auto_fit.value)
+                    implot.setup_axis_limits(implot.ImAxis_.x1.value, float(s[0]), float(s[-1]), implot.Cond_.always.value)
+                    implot.setup_axis_scale(implot.ImAxis_.y1.value, implot.Scale_.log10.value)
+                    loss_spec = implot.Spec()
+                    loss_spec.line_color = imgui.ImVec4(0.95, 0.68, 0.22, 1.0)
+                    implot.plot_line("Photometric Loss", s, l, spec=loss_spec)
+                    implot.annotation(float(s[-1]), float(l[-1]), imgui.ImVec4(0.95, 0.68, 0.22, 1.0), imgui.ImVec2(-10, -10), True, f"{l[-1]:.2e}")
+                    implot.end_plot()
+            else:
+                imgui.text_disabled("Waiting for photometric loss data...")
+            sections = tuple(ui._values.get("_photometric_param_sections", ()))
+            if sections:
+                imgui.separator_text("Learned Parameters")
+                draw_struct_sections(sections)
+            else:
+                imgui.separator_text("Learned Parameters")
+                imgui.text_disabled("No photometric parameters are available yet.")
         imgui.end()
 
     def _draw_resource_debug_window(self, ui: ViewerUI) -> None:
@@ -3316,6 +3428,10 @@ def build_ui(renderer) -> ViewerUI:
         values[key] = cast(_VIEWER_IMPORT_DEFAULTS.get(key, False if cast is bool else 0 if cast is int else 20.0))
     values["colmap_fibonacci_sphere_radius_multiplier"] = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_radius_multiplier", _VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_radius", 2.0)))
     values["show_resource_debug"] = False
+    values["show_photometric_compensation"] = False
+    values["photometric_apply_to_targets"] = True
+    values["photometric_steps_per_frame"] = 1
+    values["photometric_selected_frame"] = 0
     for key, cast in _VIEWER_UI_EXPORT_FIELDS[:-3]:
         default = False if cast is bool else 0 if cast is int else 0.0
         values[key] = cast(_VIEWER_UI_DEFAULTS.get(key, default))
@@ -3354,6 +3470,8 @@ def build_ui(renderer) -> ViewerUI:
         "_training_downscale_sections": (),
         "_training_schedule_sections": (),
         "_training_refinement_sections": (),
+        "_photometric_param_sections": (),
+        "photometric_frame_max": 0,
         "_viewport_sh_band": int(_VIEWER_UI_DEFAULTS["viewport_sh_band"]),
         "_viewport_sh_control_key": str(_VIEWER_UI_DEFAULTS["viewport_sh_control_key"]),
         "_viewport_sh_stage_label": str(_VIEWER_UI_DEFAULTS["viewport_sh_stage_label"]),
@@ -3368,6 +3486,7 @@ def build_ui(renderer) -> ViewerUI:
         key: "" for key in (
             "fps", "path", "scene_stats", "render_stats", "training",
             "training_time", "training_iters_avg", "training_loss", "training_ssim", "training_density", "training_psnr", "training_instability", "error",
+            "photometric_status", "photometric_time", "photometric_loss", "photometric_regularization", "photometric_pairs",
             "loss_debug_frame", "loss_debug_psnr",
             "colmap_import_status", "colmap_import_current",
             "training_schedule",

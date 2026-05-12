@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import slangpy as spy
 
 from ..utility import alloc_texture_2d, clamp_index, debug_region, require_not_none
 from ..filter import SeparableGaussianBlur
-from ..training import PPISPTonemapParams, resolve_colorspace_mod, resolve_sh_band
+from ..training import PPISP_FIELD_SPECS, PPISPTonemapParams, resolve_colorspace_mod, resolve_sh_band
 from . import session
 from .buffer_debug import ResourceDebugSnapshot, collect_resource_debug_snapshot, query_total_device_vram_capacity, query_total_device_vram_used_cached, split_resource_usage
 from .presenter_state import (
@@ -16,6 +17,7 @@ from .presenter_state import (
     _debug_view_key,
     _frame_metrics_snapshot,
     _render_stats_text,
+    _run_photometric_batch,
     _run_training_batch,
     _training_camera_debug_active,
     _training_status_texts,
@@ -314,11 +316,85 @@ def _refresh_menu_bar_resource_totals(viewer: object) -> None:
 
 
 def _set_text(viewer: object, key: str, value: object) -> None:
-    viewer.t(key).text = str(value)
+    text = str(value)
+    raw_texts = getattr(getattr(viewer, "ui", None), "_texts", None)
+    if isinstance(raw_texts, dict):
+        raw_texts[key] = text
+    try:
+        viewer.t(key).text = text
+        return
+    except Exception:
+        pass
+    text_map = getattr(getattr(viewer, "ui", None), "texts", None)
+    if isinstance(text_map, dict):
+        proxy = text_map.get(key)
+        if proxy is None or not hasattr(proxy, "text"):
+            text_map[key] = SimpleNamespace(text=text)
+        else:
+            proxy.text = text
+        return
+    raise
 
 
 def _set_ui_value(viewer: object, key: str, value: object) -> None:
     viewer.ui._values[key] = value
+
+
+def _format_photometric_metric(value: float) -> str:
+    return "n/a" if not np.isfinite(value) else f"{value:.6e}"
+
+
+def _photometric_param_sections(viewer: object) -> tuple:
+    frames = tuple(getattr(viewer.s, "training_frames", ()))
+    max_frame = max(len(frames) - 1, 0)
+    selected_frame = clamp_index(int(viewer.ui._values.get("photometric_selected_frame", 0)), max_frame) if frames else 0
+    _set_ui_value(viewer, "photometric_selected_frame", selected_frame)
+    trainer = getattr(viewer.s, "photometric_trainer", None)
+    if trainer is None or not frames:
+        return ()
+    params = trainer.provider.params_for_frame(selected_frame)
+    sections: list[tuple[str, tuple[tuple[str, object], ...]]] = [
+        ("Frame", (
+            ("index", int(selected_frame)),
+            ("image", Path(getattr(frames[selected_frame], "image_path", f"frame_{selected_frame}")).name),
+        )),
+    ]
+    for title, prefix in (("Exposure", "exposure"), ("Vignette", "vignette"), ("Chroma", "chroma"), ("Curve", "crf")):
+        values = []
+        for spec in PPISP_FIELD_SPECS:
+            if not spec.attr.startswith(prefix):
+                continue
+            field_value = getattr(params, spec.attr)
+            value = float(field_value) if spec.size == 1 else tuple(float(component) for component in field_value)
+            values.append((spec.label, value))
+        if values:
+            sections.append((title, tuple(values)))
+    return tuple(sections)
+
+
+def _photometric_status_texts(viewer: object) -> dict[str, str]:
+    trainer = getattr(viewer.s, "photometric_trainer", None)
+    if trainer is None:
+        return {
+            "photometric_status": "Photometric: not initialized",
+            "photometric_time": "Time: n/a",
+            "photometric_loss": "Loss: n/a",
+            "photometric_regularization": "Regularization: n/a",
+            "photometric_pairs": "Pairs: n/a",
+        }
+    state = trainer.state
+    elapsed = float(session.photometric_elapsed_seconds(viewer, now=viewer.s.last_time))
+    avg_iters_s = float(state.step) / elapsed if elapsed > 1e-6 else 0.0
+    return {
+        "photometric_status": (
+            f"Photometric: {'running' if viewer.s.photometric_active else 'paused'}"
+            f" | step={int(state.step):,} | avg it/s={avg_iters_s:.2f}"
+        ),
+        "photometric_time": f"Time: {elapsed:.2f}s",
+        "photometric_loss": f"Loss: last={_format_photometric_metric(float(state.last_loss))} | ema={_format_photometric_metric(float(state.ema_loss))}",
+        "photometric_regularization": f"Regularization: {_format_photometric_metric(float(state.last_regularization_loss))}",
+        "photometric_pairs": f"Pairs: {int(state.last_pair_count):,}",
+    }
 
 
 def update_ui_text(viewer: object, dt: float) -> None:
@@ -350,6 +426,8 @@ def update_ui_text(viewer: object, dt: float) -> None:
     _set_text(viewer, "training_schedule", panel_state["training_schedule"])
     _set_ui_value(viewer, "_training_schedule_sections", panel_state["training_schedule_sections"])
     _set_ui_value(viewer, "_training_refinement_sections", panel_state["training_refinement_sections"])
+    _set_ui_value(viewer, "photometric_frame_max", max(len(viewer.s.training_frames) - 1, 0))
+    _set_ui_value(viewer, "_photometric_param_sections", _photometric_param_sections(viewer))
     _set_ui_value(viewer, "_viewport_sh_control_key", str(panel_state["viewport_sh_control_key"]))
     _set_ui_value(viewer, "_viewport_sh_stage_label", str(panel_state["viewport_sh_stage_label"]))
     _set_text(viewer, "histogram_status", panel_state["histogram_status"])
@@ -363,6 +441,8 @@ def update_ui_text(viewer: object, dt: float) -> None:
     _set_text(viewer, "render_stats", _render_stats_text(stats))
     training_elapsed_s = 0.0 if viewer.s.trainer is None else float(session.training_elapsed_seconds(viewer, now=viewer.s.last_time))
     for key, text in _training_status_texts(viewer, current_splat_count, training_elapsed_s).items():
+        _set_text(viewer, key, text)
+    for key, text in _photometric_status_texts(viewer).items():
         _set_text(viewer, key, text)
     _set_text(viewer, "error", f"Error: {viewer.s.last_error}" if viewer.s.last_error else "")
     _update_toolkit_history(viewer, dt)
@@ -382,6 +462,12 @@ def _update_toolkit_history(viewer: object, dt: float) -> None:
             ssim_value = float(np.clip(state.avg_ssim, 0.0, 1.0)) if np.isfinite(getattr(state, "avg_ssim", float("nan"))) else (float(tk.tk.ssim_history[-1]) if tk.tk.ssim_history else float("nan"))
             psnr_value = float(state.avg_psnr) if np.isfinite(state.avg_psnr) else (float(tk.tk.psnr_history[-1]) if tk.tk.psnr_history else float("nan"))
             tk.tk.append_training_plot_sample(step, float(viewer.s.last_time), loss_value, ssim_value, psnr_value)
+    photometric_trainer = getattr(viewer.s, "photometric_trainer", None)
+    if photometric_trainer is not None:
+        state = photometric_trainer.state
+        step = int(state.step)
+        if step > 0 and (not tk.tk.photometric_step_history or step != tk.tk.photometric_step_history[-1]):
+            tk.tk.append_photometric_plot_sample(step, float(viewer.s.last_time), float(state.ema_loss if np.isfinite(state.ema_loss) else state.last_loss))
 
 
 def _training_debug_step(viewer: object) -> int:
@@ -839,6 +925,8 @@ def render_frame(viewer: object, render_context: spy.AppWindow.RenderContext) ->
             viewer.s.last_render_exception = ""
             update_ui_text(viewer, dt)
             return
+        session.sync_photometric_target_provider(viewer)
+        _run_photometric_batch(viewer)
         if runtime_reconfigured:
             viewer.s.training_runtime_factor_changed = False
             viewer.s.last_training_batch_steps = 0

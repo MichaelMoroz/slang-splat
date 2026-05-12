@@ -26,8 +26,23 @@ from .gaussian_trainer import (
     resolve_train_subsample_factor,
     resolve_training_resolution,
 )
+from .photometric_compensation import (
+    PPISP_PACKED_PARAM_COUNT,
+    PackedPPISPTonemapProvider,
+    PhotometricCompensationAdamHyperParams,
+    PhotometricCompensationHyperParams,
+    PhotometricCompensationState,
+    PhotometricCompensationTrainer,
+    PhotometricObservationPairBatch,
+    PhotometricObservationPairPool,
+    build_photometric_observation_pair_pool,
+    build_ppisp_param_settings,
+    identity_packed_ppisp_params,
+    pack_ppisp_tonemap_params,
+    unpack_ppisp_tonemap_params,
+)
 from .optimizer import GaussianOptimizer
-from .ppisp import PPISP_FIELD_SPECS, PPISPTonemapParams, PPISPStaticTonemapProvider, ppisp_viewer_defaults, ppisp_viewer_export_fields
+from .ppisp import PPISP_FIELD_SPECS, PPISP_PACKED_PARAM_COUNT as PPISP_PACKED_PARAM_COUNT_FROM_PPISP, PPISPTonemapParams, PPISPTonemapProvider, PPISPStaticTonemapProvider, ppisp_viewer_defaults, ppisp_viewer_export_fields
 from .profiles import TRAINING_PROFILE_CHOICES, TrainingProfile, resolve_training_profile
 from .schedule import resolve_base_learning_rate, resolve_color_lr_mul, resolve_colorspace_mod, resolve_refinement_active_target_splat_ratio, resolve_refinement_clone_budget, resolve_refinement_target_splat_ratio, resolve_cosine_base_learning_rate, resolve_effective_refinement_interval, resolve_learning_rate_scale, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_visible_angle_deg, resolve_opacity_lr_mul, resolve_opacity_reg_weight, resolve_position_lr_mul, resolve_position_push_away_from_camera_step, resolve_position_random_step_noise_lr, resolve_refinement_min_contribution, resolve_refinement_min_screen_radius_px, resolve_refinement_prune_lowest_contribution_ratio, resolve_refinement_prune_ratio, resolve_rotation_lr_mul, resolve_scale_lr_mul, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering, resolve_ssim_weight, resolve_stage_schedule_steps, resolve_use_sh, should_run_refinement_step
 
@@ -58,10 +73,25 @@ __all__ = [
     "resolve_training_resolution",
     "GaussianOptimizer",
     "PPISP_FIELD_SPECS",
+    "PPISP_PACKED_PARAM_COUNT",
+    "PPISP_PACKED_PARAM_COUNT_FROM_PPISP",
     "PPISPTonemapParams",
+    "PPISPTonemapProvider",
     "PPISPStaticTonemapProvider",
     "ppisp_viewer_defaults",
     "ppisp_viewer_export_fields",
+    "pack_ppisp_tonemap_params",
+    "unpack_ppisp_tonemap_params",
+    "identity_packed_ppisp_params",
+    "build_ppisp_param_settings",
+    "PackedPPISPTonemapProvider",
+    "PhotometricObservationPairBatch",
+    "PhotometricObservationPairPool",
+    "build_photometric_observation_pair_pool",
+    "PhotometricCompensationAdamHyperParams",
+    "PhotometricCompensationHyperParams",
+    "PhotometricCompensationState",
+    "PhotometricCompensationTrainer",
     "should_run_refinement_step",
     "resolve_refinement_active_target_splat_ratio",
     "resolve_refinement_clone_budget",

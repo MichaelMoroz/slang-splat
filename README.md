@@ -159,6 +159,7 @@ The test suite covers renderer kernels, optimizer behavior, COLMAP loading/init 
 ## Documentation Map
 
 - `doc/Viewer.md`: viewer lifecycle, import flow, debug windows, and training controls.
+- `doc/PhotometricCompensation.md`: per-frame PPISP photometric trainer, pair-loss kernel, and viewer integration.
 - `doc/Training.md`: trainer architecture, optimization loop, schedules, refinement, and CLI notes.
 - `doc/Rendering.md`: renderer passes, debug paths, and raster behavior.
 - `doc/SceneLoading.md`: scene and COLMAP loading behavior.

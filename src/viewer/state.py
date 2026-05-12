@@ -11,7 +11,7 @@ from ..repo_defaults import viewer_defaults
 from ..metrics import ParamLog10Histograms, ParamTensorRanges
 from ..scene import ColmapFrame, ColmapReconstruction, GaussianScene
 from ..training.alpha_modes import TARGET_ALPHA_MODE_OFF, resolve_target_alpha_mode, target_alpha_skip_mask_enabled
-from ..training import GaussianTrainer
+from ..training import GaussianTrainer, PhotometricCompensationTrainer
 from ..renderer import GaussianRenderer
 
 _VIEWER_DEFAULTS = viewer_defaults()
@@ -173,7 +173,9 @@ class ViewerState:
     cached_init_custom_ply_scene: GaussianScene | None = None
     cached_init_custom_mesh_positions: np.ndarray | None = None; cached_init_custom_mesh_colors: np.ndarray | None = None
     cached_init_fibonacci_positions: np.ndarray | None = None; cached_init_fibonacci_colors: np.ndarray | None = None
-    trainer: GaussianTrainer | None = None; training_active: bool = False; viewport_texture: spy.Texture | None = None; loss_debug_texture: spy.Texture | None = None; debug_target_texture: spy.Texture | None = None
+    trainer: GaussianTrainer | None = None; photometric_trainer: PhotometricCompensationTrainer | None = None
+    training_active: bool = False; photometric_active: bool = False
+    viewport_texture: spy.Texture | None = None; loss_debug_texture: spy.Texture | None = None; debug_target_texture: spy.Texture | None = None
     debug_abs_diff_kernel: spy.ComputeKernel | None = None; debug_edge_kernel: spy.ComputeKernel | None = None; debug_dssim_features_kernel: spy.ComputeKernel | None = None; debug_dssim_compose_kernel: spy.ComputeKernel | None = None; debug_letterbox_kernel: spy.ComputeKernel | None = None; debug_target_sample_kernel: spy.ComputeKernel | None = None; debug_present_texture: spy.Texture | None = None
     debug_dssim_blur: object | None = None; debug_dssim_resolution: tuple[int, int] | None = None
     debug_dssim_moments: spy.Buffer | None = None; debug_dssim_blurred_moments: spy.Buffer | None = None
@@ -184,7 +186,9 @@ class ViewerState:
     training_runtime_factor_changed: bool = False; pending_training_runtime_resize: bool = False; pending_training_reinitialize: bool = False
     last_training_batch_steps: int = 0; render_frame_index: int = 0
     last_periodic_renderer_reallocation_time: float | None = None
-    training_elapsed_s: float = 0.0; training_resume_time: float | None = None; last_interaction_time: float = 0.0
+    training_elapsed_s: float = 0.0; training_resume_time: float | None = None
+    photometric_elapsed_s: float = 0.0; photometric_resume_time: float | None = None
+    last_interaction_time: float = 0.0
     cached_raster_grad_histograms: ParamLog10Histograms | None = None
     cached_raster_grad_ranges: ParamTensorRanges | None = None
     cached_raster_grad_histogram_mode: str = ""

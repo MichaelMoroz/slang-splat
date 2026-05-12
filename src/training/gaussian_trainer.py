@@ -32,6 +32,7 @@ from .defaults import (
     TRAINING_BUILD_ARG_DEFAULTS,
 )
 from .optimizer import GaussianOptimizer
+from .ppisp import PPISPTonemapParams, PPISPTonemapProvider
 from .schedule import resolve_base_learning_rate, resolve_colorspace_mod, resolve_effective_refinement_interval, resolve_learning_rate_scale, resolve_position_lr_mul, resolve_position_push_away_from_camera_step, resolve_position_random_step_noise_lr, resolve_refinement_clone_budget, resolve_refinement_min_contribution, resolve_refinement_min_screen_radius_px, resolve_refinement_prune_ratio, resolve_max_allowed_density, resolve_sh_band, resolve_sorting_order_dithering, resolve_ssim_weight, should_run_refinement_step
 
 TRAIN_DOWNSCALE_MODE_AUTO = 0
@@ -892,6 +893,7 @@ class GaussianTrainer:
         init_point_count: int = 0,
         scale_reg_reference: float | None = None,
         frame_targets_native: list[spy.Texture] | None = None,
+        target_tonemap_provider: PPISPTonemapProvider | None = None,
     ) -> None:
         if not frames:
             raise ValueError("Training requires at least one COLMAP frame.")
@@ -944,9 +946,11 @@ class GaussianTrainer:
         self._init_point_count = 0
         self._init_point_positions_cpu: np.ndarray | None = None
         self._init_point_colors_cpu: np.ndarray | None = None
+        self._default_target_tonemap = PPISPTonemapParams()
+        self.target_tonemap_provider = target_tonemap_provider
         self._frame_targets_native: list[spy.Texture] = []
         self._train_target_texture: spy.Texture | None = None
-        self._downscaled_target_key: tuple[int, int, int, int] | None = None
+        self._downscaled_target_key: tuple[int, int, int, int, int] | None = None
         self._ssim_blur: SeparableGaussianBlur | None = None
         self._ssim_resolution: tuple[int, int] | None = None
         self._observed_contribution_pixel_count = 0
@@ -1534,6 +1538,29 @@ class GaussianTrainer:
     def _invalidate_downscaled_target(self) -> None:
         self._downscaled_target_key = None
 
+    def set_target_tonemap_provider(self, provider: PPISPTonemapProvider | None) -> None:
+        self.target_tonemap_provider = provider
+        self._invalidate_downscaled_target()
+
+    def _target_tonemap_version(self) -> int:
+        provider = getattr(self, "target_tonemap_provider", None)
+        return -1 if provider is None else int(getattr(provider, "version", 0))
+
+    def _target_tonemap_vars(self, frame_index: int) -> dict[str, object]:
+        provider = getattr(self, "target_tonemap_provider", None)
+        params = self._default_target_tonemap if provider is None else provider.params_for_frame(frame_index)
+        return {
+            "g_TargetApplyPPISP": np.uint32(0 if provider is None else 1),
+            "g_TargetPPISPParams": params.to_shader_dict(),
+        }
+
+    def _target_texture_is_linear(self, target_texture: spy.Texture | None = None) -> bool:
+        if target_texture is None:
+            return False
+        if target_texture is self._train_target_texture:
+            return True
+        return any(target_texture is texture for texture in self._frame_targets_native)
+
     def _ensure_train_target_texture(self) -> None:
         width = max(int(getattr(self.renderer, "_render_capacity_width", self.renderer.width)), 1)
         height = max(int(getattr(self.renderer, "_render_capacity_height", self.renderer.height)), 1)
@@ -1560,6 +1587,7 @@ class GaussianTrainer:
             "g_SourceHeight": int(frame.height),
             "g_TargetWidth": int(self.renderer.width),
             "g_TargetHeight": int(self.renderer.height),
+            **self._target_tonemap_vars(frame_index),
         }
 
     def _dispatch_downscale_target(self, encoder: spy.CommandEncoder, frame_index: int, step: int | None = None) -> None:
@@ -1582,13 +1610,14 @@ class GaussianTrainer:
             int(factor),
             int(self.renderer.width),
             int(self.renderer.height),
+            int(self._target_tonemap_version()),
         )
         if self._downscaled_target_key == key:
             return
         self._dispatch_downscale_target(encoder, frame_index, step)
         self._downscaled_target_key = key
 
-    def _loss_vars(self, frame_index: int, step: int | None = None) -> dict[str, object]:
+    def _loss_vars(self, frame_index: int, step: int | None = None, target_texture: spy.Texture | None = None) -> dict[str, object]:
         resolved_step = self.state.step if step is None else int(step)
         return {
             "g_Width": int(self.renderer.width),
@@ -1596,6 +1625,7 @@ class GaussianTrainer:
             "g_InvPixelCount": 1.0 / float(max(self.renderer.width * self.renderer.height, 1)),
             "g_LossGradClip": float(self.stability.loss_grad_clip),
             "g_TargetAlphaMode": int(self.training.target_alpha_mode),
+            "g_TargetTextureIsLinear": np.uint32(1 if self._target_texture_is_linear(target_texture) else 0),
             "g_DensityRegularizer": float(self.training.density_regularizer),
             "g_ColorspaceMod": float(resolve_colorspace_mod(self.training, resolved_step)),
             "g_SSIMWeight": float(resolve_ssim_weight(self.training, resolved_step)),
@@ -1603,6 +1633,7 @@ class GaussianTrainer:
             "g_RefinementLossWeight": float(self.training.refinement_loss_weight),
             "g_RefinementTargetEdgeWeight": float(self.training.refinement_target_edge_weight),
             "g_MaxAllowedDensity": float(resolve_max_allowed_density(self.training, resolved_step)),
+            **self._target_tonemap_vars(frame_index),
             **self._training_sample_vars(frame_index, resolved_step),
         }
 
@@ -1624,7 +1655,7 @@ class GaussianTrainer:
                 "g_Rendered": self.renderer.output_texture,
                 "g_Target": target_texture,
                 **self._ssim_vars(),
-                **self._loss_vars(frame_index, step),
+                **self._loss_vars(frame_index, step, target_texture),
             },
         )
 
@@ -1648,12 +1679,12 @@ class GaussianTrainer:
             {
                 "g_Target": target_texture,
                 **self._ssim_vars(),
-                **self._loss_vars(frame_index, step),
+                **self._loss_vars(frame_index, step, target_texture),
             },
         )
 
     def _dispatch_loss_forward(self, encoder: spy.CommandEncoder, target_texture: spy.Texture, step: int | None = None, frame_index: int = 0) -> None:
-        shared = {"g_OutputGrad": self.renderer.output_grad_buffer, "g_RegularizerGrad": self.renderer.work_buffers["training_regularizer_grad"], "g_LossBuffer": self._buffers["loss"], "g_TrainingRgbLoss": self.renderer.work_buffers["training_rgb_loss"], "g_TrainingRgbLossTotal": self.renderer.work_buffers["training_rgb_loss_total"], "g_TrainingTargetEdge": self.renderer.work_buffers["training_target_edge"], "g_TrainingTargetEdgeTotal": self.renderer.work_buffers["training_target_edge_total"], **self._loss_vars(frame_index, step)}
+        shared = {"g_OutputGrad": self.renderer.output_grad_buffer, "g_RegularizerGrad": self.renderer.work_buffers["training_regularizer_grad"], "g_LossBuffer": self._buffers["loss"], "g_TrainingRgbLoss": self.renderer.work_buffers["training_rgb_loss"], "g_TrainingRgbLossTotal": self.renderer.work_buffers["training_rgb_loss_total"], "g_TrainingTargetEdge": self.renderer.work_buffers["training_target_edge"], "g_TrainingTargetEdgeTotal": self.renderer.work_buffers["training_target_edge_total"], **self._loss_vars(frame_index, step, target_texture)}
         self._dispatch("clear_loss", encoder, self._pixel_thread_count(), shared)
         self._dispatch_ssim_feature_extraction(encoder, target_texture, step, frame_index)
         self._dispatch_ssim_blur(encoder, "ssim_moments", "ssim_blurred_moments")
@@ -1673,7 +1704,7 @@ class GaussianTrainer:
                 "g_TrainingTargetEdge": self.renderer.work_buffers["training_target_edge"],
                 "g_TrainingTargetEdgeTotal": self.renderer.work_buffers["training_target_edge_total"],
                 **self._ssim_vars(),
-                **self._loss_vars(frame_index, step),
+                **self._loss_vars(frame_index, step, target_texture),
             },
         )
 
@@ -1692,7 +1723,7 @@ class GaussianTrainer:
                 "g_RegularizerGrad": self.renderer.work_buffers["training_regularizer_grad"],
                 "g_LossBuffer": self._buffers["loss"],
                 **self._ssim_vars(),
-                **self._loss_vars(frame_index, step),
+                **self._loss_vars(frame_index, step, target_texture),
             },
         )
 

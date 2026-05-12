@@ -594,6 +594,9 @@ class SplatViewer(_ViewerWindowHost):
         cb.cancel_exit = self._cancel_exit_callback
         cb.start_training = self._start_training_callback
         cb.stop_training = self._stop_training_callback
+        cb.start_photometric = self._start_photometric_callback
+        cb.stop_photometric = self._stop_photometric_callback
+        cb.reset_photometric = self._reset_photometric_callback
         cb.move_to_training_camera = self._move_to_training_camera_callback
         cb.reset_camera = self._reset_camera_callback
         cb.save_defaults = self._save_defaults_callback
@@ -736,6 +739,16 @@ class SplatViewer(_ViewerWindowHost):
 
     def _stop_training_callback(self) -> None:
         session.set_training_active(self, False)
+
+    def _start_photometric_callback(self) -> None:
+        session.set_photometric_active(self, True)
+
+    def _stop_photometric_callback(self) -> None:
+        session.set_photometric_active(self, False)
+
+    def _reset_photometric_callback(self) -> None:
+        session.reset_photometric_compensation(self)
+        session.initialize_photometric_compensation(self)
 
     def _move_to_training_camera_callback(self) -> None:
         self._run_action(lambda: session.move_main_camera_to_selected_training_frame(self))

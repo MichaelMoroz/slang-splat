@@ -43,7 +43,13 @@ from ..scene._internal.colmap_ops import (
     match_depth_path,
 )
 from ..training.alpha_modes import TARGET_ALPHA_MODE_OFF, resolve_target_alpha_mode
-from ..training import GaussianTrainer, resolve_effective_train_render_factor, resolve_training_resolution
+from ..training import (
+    GaussianTrainer,
+    PhotometricCompensationHyperParams,
+    PhotometricCompensationTrainer,
+    resolve_effective_train_render_factor,
+    resolve_training_resolution,
+)
 from ..training.image_color_init import TrainingImageColorInitializer
 from ..scene._internal.colmap_types import ColmapFrame, ColmapReconstruction, point_tables
 from .session_colmap_utils import (
@@ -912,6 +918,7 @@ def _reset_training_runtime(viewer: object, *, preserve_frame_targets: bool = Fa
 def _reset_loaded_runtime(viewer: object) -> None:
     viewer.s.colmap_import_progress = None
     _reset_training_runtime(viewer)
+    reset_photometric_compensation(viewer)
     _clear_cached_init_source(viewer)
     _clear_main_camera_reset_state(viewer)
     viewer.s.training_camera_colmap_observation_index = None
@@ -2238,6 +2245,7 @@ def initialize_training_scene(viewer: object, frame_targets_native: list[spy.Tex
     elif getattr(viewer.s.colmap_import, "images_root", None) is not None and all(hasattr(frame, "image_path") for frame in viewer.s.training_frames):
         trainer_kwargs["frame_targets_native"] = _create_native_dataset_textures(viewer, viewer.s.training_frames)
     viewer.s.trainer = GaussianTrainer(**trainer_kwargs)
+    sync_photometric_target_provider(viewer)
     capped_main_sh = int(getattr(params.training, "max_sh_band", 3))
     if getattr(viewer.s, "renderer", None) is not None:
         viewer.s.renderer.max_sh_band = capped_main_sh
@@ -2284,6 +2292,77 @@ def training_elapsed_seconds(viewer: object, now: float | None = None) -> float:
         current_time = float(time.perf_counter() if now is None else now)
         elapsed += max(current_time - float(resume_time), 0.0)
     return elapsed
+
+
+def photometric_elapsed_seconds(viewer: object, now: float | None = None) -> float:
+    elapsed = float(getattr(viewer.s, "photometric_elapsed_s", 0.0))
+    resume_time = getattr(viewer.s, "photometric_resume_time", None)
+    if bool(getattr(viewer.s, "photometric_active", False)) and resume_time is not None:
+        current_time = float(time.perf_counter() if now is None else now)
+        elapsed += max(current_time - float(resume_time), 0.0)
+    return elapsed
+
+
+def sync_photometric_target_provider(viewer: object) -> None:
+    trainer = getattr(viewer.s, "trainer", None)
+    if trainer is None:
+        return
+    photometric_trainer = getattr(viewer.s, "photometric_trainer", None)
+    apply_to_targets = bool(getattr(getattr(viewer, "ui", None), "_values", {}).get("photometric_apply_to_targets", True))
+    provider = photometric_trainer.provider if photometric_trainer is not None and apply_to_targets else None
+    if getattr(trainer, "target_tonemap_provider", None) is provider:
+        return
+    trainer.set_target_tonemap_provider(provider)
+
+
+def initialize_photometric_compensation(viewer: object) -> None:
+    if not viewer.s.training_frames:
+        _refresh_training_frames(viewer)
+    if viewer.s.colmap_recon is None or not viewer.s.training_frames:
+        return
+    reset_photometric_compensation(viewer, clear_history=False)
+    viewer.s.photometric_trainer = PhotometricCompensationTrainer(
+        device=viewer.device,
+        recon=viewer.s.colmap_recon,
+        frames=viewer.s.training_frames,
+        hparams=PhotometricCompensationHyperParams(),
+    )
+    viewer.s.photometric_active = False
+    viewer.s.photometric_elapsed_s = 0.0
+    viewer.s.photometric_resume_time = None
+    sync_photometric_target_provider(viewer)
+
+
+def reset_photometric_compensation(viewer: object, *, clear_history: bool = True) -> None:
+    now = float(time.perf_counter())
+    photometric_active = bool(getattr(viewer.s, "photometric_active", False))
+    photometric_resume_time = getattr(viewer.s, "photometric_resume_time", None)
+    if photometric_active and photometric_resume_time is not None:
+        viewer.s.photometric_elapsed_s = float(getattr(viewer.s, "photometric_elapsed_s", 0.0)) + max(now - float(photometric_resume_time), 0.0)
+    viewer.s.photometric_active = False
+    viewer.s.photometric_resume_time = None
+    trainer = getattr(viewer.s, "photometric_trainer", None)
+    release_resources = getattr(trainer, "release_resources", None)
+    if callable(release_resources):
+        release_resources()
+    viewer.s.photometric_trainer = None
+    viewer.s.photometric_elapsed_s = 0.0
+    sync_photometric_target_provider(viewer)
+    if clear_history and hasattr(viewer, "toolkit") and hasattr(getattr(viewer, "toolkit", None), "tk"):
+        viewer.toolkit.tk.clear_photometric_plot_history()
+
+
+def set_photometric_active(viewer: object, active: bool) -> None:
+    if active and getattr(viewer.s, "photometric_trainer", None) is None:
+        initialize_photometric_compensation(viewer)
+    now = float(time.perf_counter())
+    photometric_resume_time = getattr(viewer.s, "photometric_resume_time", None)
+    if bool(getattr(viewer.s, "photometric_active", False)) and photometric_resume_time is not None:
+        viewer.s.photometric_elapsed_s = float(getattr(viewer.s, "photometric_elapsed_s", 0.0)) + max(now - float(photometric_resume_time), 0.0)
+        viewer.s.photometric_resume_time = None
+    viewer.s.photometric_active = bool(active and getattr(viewer.s, "photometric_trainer", None) is not None)
+    if viewer.s.photometric_active:
+        viewer.s.photometric_resume_time = now
 
 
 def set_training_active(viewer: object, active: bool) -> None:

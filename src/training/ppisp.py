@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Protocol
 
 import numpy as np
 import slangpy as spy
@@ -44,6 +44,8 @@ PPISP_FIELD_SPECS: tuple[PPISPFieldSpec, ...] = (
     PPISPFieldSpec("crfXi", "ppisp_crf_xi", "CRF Xi", 3, _vec3(0.5), 0.001, 0.01, "%.5f"),
     PPISPFieldSpec("crfGamma", "ppisp_crf_gamma", "CRF Gamma", 3, _vec3(2.2), 0.001, 0.01, "%.5f"),
 )
+
+PPISP_PACKED_PARAM_COUNT = sum(int(spec.size) for spec in PPISP_FIELD_SPECS)
 
 
 def _coerce_tuple(value: object, size: int) -> tuple[float, ...]:
@@ -107,9 +109,17 @@ class PPISPTonemapParams:
 @dataclass(slots=True)
 class PPISPStaticTonemapProvider:
     params: PPISPTonemapParams
+    version: int = 0
 
     def params_for_frame(self, frame_index: int) -> PPISPTonemapParams:
         return self.params
+
+
+class PPISPTonemapProvider(Protocol):
+    @property
+    def version(self) -> int: ...
+
+    def params_for_frame(self, frame_index: int) -> PPISPTonemapParams: ...
 
 
 def ppisp_viewer_defaults() -> dict[str, object]:

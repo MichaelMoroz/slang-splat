@@ -305,7 +305,7 @@
       "colmap_init_mode": 0,
       "colmap_auto_rotate_scene": true,
       "compress_dataset_using_bc7": true,
-      "colmap_training_image_color_init": true,
+      "colmap_training_image_color_init": false,
       "colmap_image_downscale_mode": 0,
       "colmap_image_max_size": 2048,
       "colmap_image_scale": 1.0,
@@ -326,7 +326,7 @@
       "target_alpha_mode": 0,
       "colmap_fibonacci_sphere_enabled": true,
       "colmap_fibonacci_sphere_point_count": 124001,
-      "colmap_fibonacci_sphere_radius_multiplier": 1.5,
+      "colmap_fibonacci_sphere_radius_multiplier": 2.0,
       "colmap_fibonacci_sphere_color": [
         0.800000011920929,
         0.800000011920929,

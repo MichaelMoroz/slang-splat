@@ -49,6 +49,7 @@ The `Debug` menu toggles the docked inspection windows:
 
 - `Buffers`
 - `Histograms`
+- `Photometric Compensation`
 - `Training Views`
 
 ### Help
@@ -106,7 +107,20 @@ Camera controls:
 
 When a training scene is initialized, the viewer prefers a real training-camera position when one is available. That startup path only copies the camera position and keeps the viewer orientation controls intact; if no usable training pose is available, the viewer falls back to a scene-bounds fit.
 
-The viewport `View Mode` menu includes a viewer-only `PPISP Tonemap` debug view for the free-fly camera. Selecting it uses a PPISP rasterizer resolve that applies the shared exposure, vignetting, chroma, and CRF shader to linear radiance before writing display RGB. Its PPISP parameters are edited in the debug-view overlay, alongside the existing debug-mode controls. Training-camera debug views keep their existing display paths, while the parameter layout is shared with training code so per-frame trainer support can be added later.
+The viewport `View Mode` menu includes a viewer-only `PPISP Tonemap` debug view for the free-fly camera. Selecting it uses a PPISP rasterizer resolve that applies the shared exposure, vignetting, chroma, and CRF shader to linear radiance before writing display RGB. Its debug-view parameters are still edited in the viewport overlay, while learned per-frame PPISP compensation now lives in the separate `Photometric Compensation` window.
+
+## Photometric Compensation Window
+
+`Debug -> Photometric Compensation` opens a dedicated tool window for the per-frame PPISP trainer used to compensate training-image color drift.
+
+The window provides:
+
+- start, stop, and reset controls for the photometric optimizer,
+- an `Apply to Gaussian Targets` toggle that binds the learned provider into gaussian training target sampling,
+- a per-window loss plot independent from the main gaussian training plots,
+- a selected-frame control to inspect the currently learned PPISP parameters for an individual training image.
+
+The learned provider is versioned. When it is bound into the gaussian trainer, downscaled targets and native-subsample targets automatically refresh against the latest photometric parameters without rebuilding unrelated viewer state.
 
 ## Frame Flow
 

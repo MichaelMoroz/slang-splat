@@ -831,6 +831,16 @@ def _run_training_batch(viewer: object) -> int:
     return steps
 
 
+def _run_photometric_batch(viewer: object) -> int:
+    trainer = getattr(viewer.s, "photometric_trainer", None)
+    if not getattr(viewer.s, "photometric_active", False) or trainer is None:
+        return 0
+    steps = max(int(viewer.ui._values.get("photometric_steps_per_frame", 1)), 1)
+    for _ in range(steps):
+        trainer.train_step()
+    return steps
+
+
 def _preview_train_downscale_factor(viewer: object) -> int:
     mode = int(viewer.c("train_downscale_mode").value)
     return max(int(viewer.c("train_auto_start_downscale").value), 1) if mode == _TRAIN_DOWNSCALE_MODE_AUTO else max(mode, 1)
