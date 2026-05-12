@@ -109,6 +109,11 @@ class _DummyTrainer:
             refinement_prune_lowest_contribution_ratio_stage2=0.03,
             refinement_prune_lowest_contribution_ratio_stage3=0.02,
             refinement_prune_lowest_contribution_ratio_stage4=0.01,
+            opacity_reg_weight=3.0,
+            opacity_reg_weight_stage1=1.0,
+            opacity_reg_weight_stage2=0.5,
+            opacity_reg_weight_stage3=0.1,
+            opacity_reg_weight_stage4=0.05,
             position_push_away_from_camera_step=1e-3,
             position_push_away_from_camera_step_stage1=5e-4,
             position_push_away_from_camera_step_stage2=2.5e-4,
@@ -643,11 +648,11 @@ def test_update_ui_text_reports_training_schedule_and_refinement() -> None:
 
     assert viewer.ui._values["_training_resolution_sections"] == (("Train Res", (("size", "640x360"), ("factor", 1))),)
     assert viewer.ui._values["_training_downscale_sections"] == (("Downscale", (("mode", "Manual"), ("current", 1), ("subsample", "Off"), ("effective", 1))),)
-    assert viewer.t("training_schedule").text == "LR Schedule: 5.00e-03@0 -> 2.00e-03@3,000 -> 1.00e-03@12,225 -> 1.50e-04@25,321 -> 1.00e-03@100,000 | current=5.00e-03"
+    assert viewer.t("training_schedule").text == "LR Schedule: 5.00e-03@0 -> 2.00e-03@3,000 -> 1.00e-03@12,225 -> 1.50e-04@30,058 -> 1.00e-03@100,000 | current=5.00e-03"
     assert viewer.ui._values["_training_schedule_sections"] == (
         ("", (("step", 0), ("stage", "Stage 0"), ("sh", "SH0"))),
         ("Learning Rates", (("base", 0.005), ("pos", 1.0), ("scale", 5.0), ("rot", 1.0), ("dc", 5.0), ("opacity", 5.0), ("sh", 0.05))),
-        ("Other", (("colorspace", 1.0), ("dither", 0.5), ("target%", 10.0), ("prune_floor%", 10.0), ("push", 0.001), ("noise", 500000.0))),
+        ("Other", (("colorspace", 1.0), ("dither", 0.5), ("target%", 10.0), ("prune_floor%", 10.0), ("opacity_reg", 3.0), ("push", 0.001), ("noise", 500000.0))),
     )
     assert viewer.ui._values["_training_refinement_sections"] == (("Refinement", (("every", 200), ("target_now%", 0.0), ("target%", 10.0), ("after", 500), ("prune_now%", 10.0), ("prune_floor%", 10.0), ("grow_cap%", 15.0), ("prune_cap%", 15.0), ("alpha<", 0.01), ("min_contrib<", 512.0), ("decay%/pass", 99.5), ("alpha_mul", 1.0), ("clone_scale", 1.0), ("max", 1000000))),)
     assert viewer.t("loss_debug_psnr").text == "PSNR: 32.50 dB"
@@ -906,7 +911,7 @@ def test_update_ui_text_previews_current_schedule_values_without_trainer() -> No
     assert viewer.ui._values["_training_schedule_sections"] == (
         ("", (("step", 0), ("stage", "Stage 0"), ("sh", "SH0"))),
         ("Learning Rates", (("base", 0.005), ("pos", 1.0), ("scale", 5.0), ("rot", 1.0), ("dc", 5.0), ("opacity", 5.0), ("sh", 0.05))),
-        ("Other", (("colorspace", 1.0), ("dither", 0.5), ("target%", 10.0), ("prune_floor%", 10.0), ("push", 0.001), ("noise", 500000.0))),
+        ("Other", (("colorspace", 1.0), ("dither", 0.5), ("target%", 10.0), ("prune_floor%", 10.0), ("opacity_reg", 3.0), ("push", 0.001), ("noise", 500000.0))),
     )
 
 

@@ -278,6 +278,34 @@ def test_train_cli_training_params_include_camera_push_step() -> None:
     assert cli._training_params(args).training.position_push_away_from_camera_step_stage4 == 0.01
 
 
+def test_train_cli_training_params_include_opacity_reg_schedule() -> None:
+    parser = cli.build_parser()
+
+    args = parser.parse_args(
+        [
+            "train-colmap",
+            "--colmap-root",
+            "dummy",
+            "--opacity-reg",
+            "3.0",
+            "--opacity-reg-stage1",
+            "1.0",
+            "--opacity-reg-stage2",
+            "0.5",
+            "--opacity-reg-stage3",
+            "0.1",
+            "--opacity-reg-stage4",
+            "0.05",
+        ]
+    )
+
+    assert cli._training_params(args).training.opacity_reg_weight == 3.0
+    assert cli._training_params(args).training.opacity_reg_weight_stage1 == 1.0
+    assert cli._training_params(args).training.opacity_reg_weight_stage2 == 0.5
+    assert cli._training_params(args).training.opacity_reg_weight_stage3 == 0.1
+    assert cli._training_params(args).training.opacity_reg_weight_stage4 == 0.05
+
+
 def test_train_cli_parser_maps_cached_raster_grad_render_defaults() -> None:
     parser = cli.build_parser()
 

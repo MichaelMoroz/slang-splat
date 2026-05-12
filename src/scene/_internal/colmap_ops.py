@@ -221,6 +221,7 @@ def sample_colmap_fibonacci_sphere_points(
     recon: ColmapReconstruction,
     point_count: int,
     radius_multiplier: float = 2.0,
+    sphere_color: tuple[float, float, float] | np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     count = max(int(point_count), 0)
     if count <= 0:
@@ -238,7 +239,8 @@ def sample_colmap_fibonacci_sphere_points(
     jitter = np.mod((indices + np.float32(0.5)) * FIBONACCI_SPHERE_RADIUS_JITTER_SEQUENCE, np.float32(1.0))
     radii = base_radius * (np.float32(1.0) + (jitter * np.float32(2.0) - np.float32(1.0)) * FIBONACCI_SPHERE_RADIUS_JITTER_RATIO)
     positions = center[None, :] + directions * radii[:, None]
-    colors = np.repeat(FIBONACCI_SPHERE_COLOR[None, :], count, axis=0)
+    resolved_color = np.asarray(FIBONACCI_SPHERE_COLOR if sphere_color is None else sphere_color, dtype=np.float32).reshape(3)
+    colors = np.repeat(resolved_color[None, :], count, axis=0)
     return np.ascontiguousarray(positions, dtype=np.float32), np.ascontiguousarray(colors, dtype=np.float32)
 
 

@@ -408,6 +408,29 @@ def test_colmap_fibonacci_sphere_points_use_camera_pose_mean_and_camera_extent_f
     np.testing.assert_allclose(colors, np.full((8, 3), 0.8, dtype=np.float32), rtol=0.0, atol=1e-6)
 
 
+def test_colmap_fibonacci_sphere_points_accept_custom_color() -> None:
+    camera = ColmapCamera(camera_id=1, model_id=1, width=400, height=200, fx=400.0, fy=400.0, cx=200.0, cy=100.0)
+    q_wxyz = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    recon = ColmapReconstruction(
+        root=Path("synthetic"),
+        sparse_dir=Path("synthetic") / "sparse" / "0",
+        cameras={1: camera},
+        images={
+            1: ColmapImage(1, q_wxyz, np.array([0.0, 0.0, 0.0], dtype=np.float32), 1, "a.png", np.zeros((0, 2), dtype=np.float32), np.zeros((0,), dtype=np.int64)),
+        },
+        points3d={},
+    )
+
+    _positions, colors = colmap_ops.sample_colmap_fibonacci_sphere_points(
+        recon,
+        point_count=4,
+        radius_multiplier=1.0,
+        sphere_color=(0.25, 0.5, 0.75),
+    )
+
+    np.testing.assert_allclose(colors, np.full((4, 3), (0.25, 0.5, 0.75), dtype=np.float32), rtol=0.0, atol=1e-6)
+
+
 def test_colmap_fibonacci_sphere_points_use_point_extent_multiplier() -> None:
     camera = ColmapCamera(camera_id=1, model_id=1, width=400, height=200, fx=400.0, fy=400.0, cx=200.0, cy=100.0)
     q_wxyz = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
