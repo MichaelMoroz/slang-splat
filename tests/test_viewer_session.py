@@ -1997,6 +1997,34 @@ def test_colmap_import_settings_defaults_prefer_pointcloud() -> None:
     assert defaults.use_target_alpha_mask is False
 
 
+def test_reset_loaded_runtime_clears_training_camera_colmap_caches(monkeypatch) -> None:
+    viewer = SimpleNamespace(
+        s=SimpleNamespace(
+            colmap_import_progress=object(),
+            training_camera_colmap_observation_index={101: ((3, "frame.png", 4.0, 5.0),)},
+            training_camera_colmap_observation_signature=("obs",),
+            training_camera_colmap_payload={"image_id": 3},
+            training_camera_colmap_payload_signature=("payload",),
+            applied_renderer_params_main=("renderer",),
+            cached_training_setup_signature=("setup",),
+            cached_training_setup=("cached",),
+        )
+    )
+
+    monkeypatch.setattr(session, "_reset_training_runtime", lambda _viewer: None)
+    monkeypatch.setattr(session, "_clear_cached_init_source", lambda _viewer: None)
+    monkeypatch.setattr(session, "_clear_main_camera_reset_state", lambda _viewer: None)
+    monkeypatch.setattr(session, "update_debug_frame_slider_range", lambda _viewer: None)
+
+    session._reset_loaded_runtime(viewer)
+
+    assert viewer.s.colmap_import_progress is None
+    assert viewer.s.training_camera_colmap_observation_index is None
+    assert viewer.s.training_camera_colmap_observation_signature is None
+    assert viewer.s.training_camera_colmap_payload is None
+    assert viewer.s.training_camera_colmap_payload_signature is None
+
+
 def test_refresh_cached_raster_grad_histograms_requires_explicit_request() -> None:
     calls: list[tuple[int, int, float, float]] = []
     hist = SimpleNamespace(counts=np.ones((14, 8), dtype=np.int64), param_labels=("p",) * 14)

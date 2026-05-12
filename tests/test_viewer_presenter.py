@@ -481,6 +481,66 @@ def test_training_camera_colmap_points_payload_clips_and_lists_other_views() -> 
     assert np.all(payload["uv"] <= 1.0)
 
 
+def test_training_camera_colmap_points_payload_reuses_cached_frame_payload() -> None:
+    recon = ColmapReconstruction(
+        root=Path("dataset"),
+        sparse_dir=Path("dataset/sparse/0"),
+        cameras={},
+        images={
+            3: ColmapImage(
+                image_id=3,
+                q_wxyz=np.asarray((1.0, 0.0, 0.0, 0.0), dtype=np.float32),
+                t_xyz=np.asarray((0.0, 0.0, 0.0), dtype=np.float32),
+                camera_id=7,
+                name="frame.png",
+                points2d_xy=np.asarray(((4.0, 6.0),), dtype=np.float32),
+                points2d_point3d_ids=np.asarray((101,), dtype=np.int64),
+            ),
+        },
+        points3d={
+            101: ColmapPoint3D(
+                point_id=101,
+                xyz=np.asarray((0.0, 1.0, 2.0), dtype=np.float32),
+                rgb=np.asarray((1.0, 0.5, 0.25), dtype=np.float32),
+                error=0.125,
+                track_length=2,
+            )
+        },
+    )
+    viewer = SimpleNamespace()
+    viewer.ui = SimpleNamespace(controls={"loss_debug_frame": _control(0)})
+    viewer.c = lambda key: viewer.ui.controls[key]
+    viewer.s = SimpleNamespace(
+        training_frames=[SimpleNamespace(image_id=3, width=16, height=12, image_path=Path("frame.png"))],
+        colmap_recon=recon,
+        training_camera_colmap_observation_index=None,
+        training_camera_colmap_observation_signature=None,
+        training_camera_colmap_payload=None,
+        training_camera_colmap_payload_signature=None,
+    )
+
+    payload_first = presenter._training_camera_colmap_points_payload(viewer)
+    payload_second = presenter._training_camera_colmap_points_payload(viewer)
+
+    assert payload_first is payload_second
+    assert viewer.s.training_camera_colmap_payload is payload_first
+
+
+def test_update_ui_text_skips_training_camera_colmap_payload_when_overlay_inactive(monkeypatch) -> None:
+    viewer = _viewer(loss_debug=False)
+    viewer.ui._values["show_training_camera_colmap_points"] = True
+
+    monkeypatch.setattr(
+        presenter,
+        "_training_camera_colmap_points_payload",
+        lambda _viewer: (_ for _ in ()).throw(AssertionError("payload should stay inactive")),
+    )
+
+    presenter.update_ui_text(viewer, 1.0 / 60.0)
+
+    assert viewer.ui._values["_training_camera_colmap_points_payload"] is None
+
+
 def test_render_frame_uses_debug_branch_when_visual_loss_debug_enabled(monkeypatch):
     viewer = _viewer(loss_debug=True)
     render_context = SimpleNamespace(surface_texture=SimpleNamespace(width=640, height=360), command_encoder=_DummyEncoder())

@@ -334,7 +334,8 @@ def update_ui_text(viewer: object, dt: float) -> None:
     training_camera_sections, pose_available = _training_camera_debug_panel_sections(viewer)
     _set_ui_value(viewer, "_training_camera_struct_sections", training_camera_sections)
     _set_ui_value(viewer, "_training_camera_pose_available", pose_available)
-    _set_ui_value(viewer, "_training_camera_colmap_points_payload", _training_camera_colmap_points_payload(viewer))
+    colmap_points_enabled = bool(viewer.ui._values.get("show_training_cameras", False)) and bool(viewer.ui._values.get("show_training_camera_colmap_points", False))
+    _set_ui_value(viewer, "_training_camera_colmap_points_payload", _training_camera_colmap_points_payload(viewer) if colmap_points_enabled else None)
     _set_text(viewer, "path", header_state["path"])
     _set_ui_value(viewer, "_colmap_import_active", bool(header_state["colmap_import_active"]))
     _set_ui_value(viewer, "_colmap_import_fraction", float(header_state["colmap_import_fraction"]))
@@ -573,22 +574,34 @@ def _training_camera_colmap_points_payload(viewer: object) -> dict[str, object] 
     frames = tuple(getattr(viewer.s, "training_frames", ()))
     recon = getattr(viewer.s, "colmap_recon", None)
     if recon is None or len(frames) == 0:
+        viewer.s.training_camera_colmap_payload_signature = None
+        viewer.s.training_camera_colmap_payload = None
         return None
-    frame = frames[_debug_frame_idx(viewer)]
+    frame_idx = _debug_frame_idx(viewer)
+    frame = frames[frame_idx]
     image_id = getattr(frame, "image_id", None)
     if image_id is None:
+        viewer.s.training_camera_colmap_payload_signature = None
+        viewer.s.training_camera_colmap_payload = None
         return None
+    source_width = max(int(getattr(frame, "width", 0)), 1)
+    source_height = max(int(getattr(frame, "height", 0)), 1)
+    payload_signature = (id(recon), id(getattr(viewer.s, "training_frames", None)), int(frame_idx), int(image_id), source_width, source_height)
+    cached_signature = getattr(viewer.s, "training_camera_colmap_payload_signature", None)
+    cached_payload = getattr(viewer.s, "training_camera_colmap_payload", None)
+    if cached_signature == payload_signature and isinstance(cached_payload, dict):
+        return cached_payload
     image = getattr(recon, "images", {}).get(int(image_id))
     if image is None:
+        viewer.s.training_camera_colmap_payload_signature = None
+        viewer.s.training_camera_colmap_payload = None
         return None
     point_xy = np.asarray(getattr(image, "points2d_xy", ()), dtype=np.float32).reshape(-1, 2)
     point_ids = np.asarray(getattr(image, "points2d_point3d_ids", ()), dtype=np.int64).reshape(-1)
     count = min(int(point_xy.shape[0]), int(point_ids.size))
-    source_width = max(int(getattr(frame, "width", 0)), 1)
-    source_height = max(int(getattr(frame, "height", 0)), 1)
     image_name = Path(str(getattr(image, "name", getattr(frame, "image_path", image_id)))).name
     if count <= 0:
-        return {
+        payload = {
             "image_id": int(image_id),
             "image_name": image_name,
             "source_size": (source_width, source_height),
@@ -601,6 +614,9 @@ def _training_camera_colmap_points_payload(viewer: object) -> dict[str, object] 
             "errors": np.zeros((0,), dtype=np.float32),
             "other_views": (),
         }
+        viewer.s.training_camera_colmap_payload_signature = payload_signature
+        viewer.s.training_camera_colmap_payload = payload
+        return payload
     point_xy = np.ascontiguousarray(point_xy[:count], dtype=np.float32)
     point_ids = np.ascontiguousarray(point_ids[:count], dtype=np.int64)
     valid = np.isfinite(point_xy).all(axis=1) & (point_ids > 0)
@@ -651,7 +667,7 @@ def _training_camera_colmap_points_payload(viewer: object) -> dict[str, object] 
                 )
             )
         other_views.append(tuple(point_views))
-    return {
+    payload = {
         "image_id": int(image_id),
         "image_name": image_name,
         "source_size": (source_width, source_height),
@@ -664,6 +680,9 @@ def _training_camera_colmap_points_payload(viewer: object) -> dict[str, object] 
         "errors": errors,
         "other_views": tuple(other_views),
     }
+    viewer.s.training_camera_colmap_payload_signature = payload_signature
+    viewer.s.training_camera_colmap_payload = payload
+    return payload
 
 
 def _apply_training_debug_renderer_hparams(viewer: object, debug_renderer: object, step: int) -> None:
