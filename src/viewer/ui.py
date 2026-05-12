@@ -28,6 +28,7 @@ from ..app.training_controls import (
     TRAINING_UI_GROUP_DEFS,
     TRAIN_STABILITY_PAIRED_KEYS,
 )
+from ..training.photometric_compensation import PhotometricCompensationHyperParams
 from ..training.alpha_modes import TARGET_ALPHA_MODE_LABELS
 from ..training.ppisp import PPISP_FIELD_SPECS
 from .buffer_debug import ResourceDebugSnapshot, format_resource_bytes, write_resource_debug_log
@@ -137,6 +138,7 @@ _HISTOGRAM_LINEAR_TAB_LABEL = "Linear Values"
 _HISTOGRAM_LOG10_TAB_LABEL = "Log10 Values"
 _RESOURCE_DEBUG_WINDOW_WIDTH = 1120.0
 _RESOURCE_DEBUG_WINDOW_HEIGHT = 620.0
+_PHOTOMETRIC_UI_DEFAULTS = PhotometricCompensationHyperParams()
 _DEFAULT_HISTOGRAM_GROUPS = (
     ("roLocal", (0, 1, 2)),
     ("scale", (3, 4, 5)),
@@ -2637,6 +2639,57 @@ class ToolkitWindow:
             changed, steps_per_frame = imgui.drag_int("Steps / Frame", int(ui._values.get("photometric_steps_per_frame", 1)), 0.1, 1, 32)
             if changed:
                 ui._values["photometric_steps_per_frame"] = max(int(steps_per_frame), 1)
+            imgui.separator_text("Training")
+            ToolkitWindow._draw_clamped_float(
+                ui,
+                key="photometric_learning_rate",
+                label="Learning Rate",
+                default=float(_PHOTOMETRIC_UI_DEFAULTS.learning_rate),
+                speed=0.001,
+                min_value=1e-4,
+                max_value=1.0,
+                fmt="%.4f",
+                tooltip="Base learning rate for photometric compensation training.",
+                flags=imgui.SliderFlags_.logarithmic.value,
+            )
+            imgui.separator_text("Identity Regularization")
+            for key, label, default, tooltip in (
+                (
+                    "photometric_exposure_regularize_weight",
+                    "Exposure",
+                    float(_PHOTOMETRIC_UI_DEFAULTS.exposure_regularize_weight),
+                    "Quadratic identity regularization weight for exposure EV parameters.",
+                ),
+                (
+                    "photometric_vignette_regularize_weight",
+                    "Vignette",
+                    float(_PHOTOMETRIC_UI_DEFAULTS.vignette_regularize_weight),
+                    "Quadratic identity regularization weight for vignette parameters.",
+                ),
+                (
+                    "photometric_chroma_regularize_weight",
+                    "Chroma",
+                    float(_PHOTOMETRIC_UI_DEFAULTS.chroma_regularize_weight),
+                    "Quadratic identity regularization weight for chromatic-aberration parameters.",
+                ),
+                (
+                    "photometric_crf_regularize_weight",
+                    "CRF",
+                    float(_PHOTOMETRIC_UI_DEFAULTS.crf_regularize_weight),
+                    "Quadratic identity regularization weight for camera-response-curve parameters.",
+                ),
+            ):
+                ToolkitWindow._draw_clamped_float(
+                    ui,
+                    key=key,
+                    label=label,
+                    default=default,
+                    speed=0.0025,
+                    min_value=0.0,
+                    max_value=2.0,
+                    fmt="%.4f",
+                    tooltip=tooltip,
+                )
             frame_max = max(int(ui._values.get("photometric_frame_max", 0)), 0)
             changed, selected_frame = imgui.slider_int("Frame", int(ui._values.get("photometric_selected_frame", 0)), 0, frame_max)
             if changed:
@@ -3432,6 +3485,11 @@ def build_ui(renderer) -> ViewerUI:
     values["photometric_apply_to_targets"] = True
     values["photometric_steps_per_frame"] = 1
     values["photometric_selected_frame"] = 0
+    values["photometric_learning_rate"] = float(_VIEWER_UI_DEFAULTS.get("photometric_learning_rate", _PHOTOMETRIC_UI_DEFAULTS.learning_rate))
+    values["photometric_exposure_regularize_weight"] = float(_VIEWER_UI_DEFAULTS.get("photometric_exposure_regularize_weight", _PHOTOMETRIC_UI_DEFAULTS.exposure_regularize_weight))
+    values["photometric_vignette_regularize_weight"] = float(_VIEWER_UI_DEFAULTS.get("photometric_vignette_regularize_weight", _PHOTOMETRIC_UI_DEFAULTS.vignette_regularize_weight))
+    values["photometric_chroma_regularize_weight"] = float(_VIEWER_UI_DEFAULTS.get("photometric_chroma_regularize_weight", _PHOTOMETRIC_UI_DEFAULTS.chroma_regularize_weight))
+    values["photometric_crf_regularize_weight"] = float(_VIEWER_UI_DEFAULTS.get("photometric_crf_regularize_weight", _PHOTOMETRIC_UI_DEFAULTS.crf_regularize_weight))
     for key, cast in _VIEWER_UI_EXPORT_FIELDS[:-3]:
         default = False if cast is bool else 0 if cast is int else 0.0
         values[key] = cast(_VIEWER_UI_DEFAULTS.get(key, default))

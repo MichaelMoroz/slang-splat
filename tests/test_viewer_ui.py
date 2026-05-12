@@ -1126,6 +1126,66 @@ def test_resource_debug_window_draws_largest_first_table(monkeypatch) -> None:
     assert cells[6:] == ["1.00 KiB", "Texture", "64x4 rgba32_float", "target", "viewer.state.viewport_texture", "srv"]
 
 
+def test_photometric_window_updates_training_controls(monkeypatch) -> None:
+    drag_float_values = {
+        "Learning Rate": 0.125,
+        "Exposure": 0.75,
+        "Vignette": 0.5,
+        "Chroma": 0.25,
+        "CRF": 0.125,
+    }
+    monkeypatch.setattr(ui.ToolkitWindow, "_register_non_viewport_window", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ui.imgui, "set_next_window_pos", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ui.imgui, "set_next_window_size", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ui.imgui, "begin", lambda *args, **kwargs: (True, True))
+    monkeypatch.setattr(ui.imgui, "end", lambda: None)
+    monkeypatch.setattr(ui.imgui, "text_wrapped", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ui.imgui, "text_disabled", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ui.imgui, "spacing", lambda: None)
+    monkeypatch.setattr(ui.imgui, "same_line", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ui.imgui, "separator_text", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ui.imgui, "button", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(ui.imgui, "checkbox", lambda _label, value: (False, value))
+    monkeypatch.setattr(ui.imgui, "drag_int", lambda _label, value, *_args: (False, value))
+    monkeypatch.setattr(ui.imgui, "slider_int", lambda _label, value, *_args: (False, value))
+    monkeypatch.setattr(ui.imgui, "drag_float", lambda label, value, *_args: (True, drag_float_values[str(label)]))
+    monkeypatch.setattr(ui.imgui, "is_item_hovered", lambda: False)
+    monkeypatch.setattr(ui.imgui, "get_content_region_avail", lambda: ui.imgui.ImVec2(420.0, 320.0))
+    toolkit = SimpleNamespace(
+        _menu_bar_height=24.0,
+        _toolkit_dock_id=17,
+        _applied_interface_scale=1.0,
+        _dock_tool_window=lambda *_args: None,
+        _plot_scale=lambda _ui_obj: 1.0,
+        tk=SimpleNamespace(photometric_loss_history=[], photometric_step_history=[]),
+        callbacks=SimpleNamespace(start_photometric=lambda: None, stop_photometric=lambda: None, reset_photometric=lambda: None),
+    )
+    viewer_ui = SimpleNamespace(
+        _values={
+            "show_photometric_compensation": True,
+            "photometric_apply_to_targets": True,
+            "photometric_steps_per_frame": 1,
+            "photometric_selected_frame": 0,
+            "photometric_frame_max": 0,
+            "photometric_learning_rate": 0.05,
+            "photometric_exposure_regularize_weight": 0.05,
+            "photometric_vignette_regularize_weight": 0.1,
+            "photometric_chroma_regularize_weight": 0.2,
+            "photometric_crf_regularize_weight": 0.2,
+            "_photometric_param_sections": (),
+        },
+        _texts={},
+    )
+
+    ui.ToolkitWindow._draw_photometric_compensation_window(toolkit, viewer_ui)
+
+    assert viewer_ui._values["photometric_learning_rate"] == 0.125
+    assert viewer_ui._values["photometric_exposure_regularize_weight"] == 0.75
+    assert viewer_ui._values["photometric_vignette_regularize_weight"] == 0.5
+    assert viewer_ui._values["photometric_chroma_regularize_weight"] == 0.25
+    assert viewer_ui._values["photometric_crf_regularize_weight"] == 0.125
+
+
 def test_viewport_debug_overlay_draws_mode_specific_controls(monkeypatch) -> None:
     drawn: list[tuple[str, bool]] = []
     capture_rects: list[tuple[float, float, float, float]] = []

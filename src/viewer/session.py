@@ -2330,6 +2330,18 @@ def _photometric_frame_source_textures(viewer: object) -> list[spy.Texture] | No
     return textures
 
 
+def _photometric_hparams(viewer: object) -> PhotometricCompensationHyperParams:
+    values = getattr(getattr(viewer, "ui", None), "_values", {})
+    defaults = PhotometricCompensationHyperParams()
+    return PhotometricCompensationHyperParams(
+        learning_rate=float(values.get("photometric_learning_rate", defaults.learning_rate)),
+        exposure_regularize_weight=float(values.get("photometric_exposure_regularize_weight", defaults.exposure_regularize_weight)),
+        vignette_regularize_weight=float(values.get("photometric_vignette_regularize_weight", defaults.vignette_regularize_weight)),
+        chroma_regularize_weight=float(values.get("photometric_chroma_regularize_weight", defaults.chroma_regularize_weight)),
+        crf_regularize_weight=float(values.get("photometric_crf_regularize_weight", defaults.crf_regularize_weight)),
+    )
+
+
 def initialize_photometric_compensation(viewer: object) -> None:
     if not viewer.s.training_frames:
         _refresh_training_frames(viewer)
@@ -2340,7 +2352,7 @@ def initialize_photometric_compensation(viewer: object) -> None:
         device=viewer.device,
         reconstruction=viewer.s.colmap_recon,
         frames=viewer.s.training_frames,
-        hparams=PhotometricCompensationHyperParams(),
+        hparams=_photometric_hparams(viewer),
         frame_source_textures=_photometric_frame_source_textures(viewer),
     )
     prepare_pair_dataset = getattr(viewer.s.photometric_trainer, "prepare_pair_dataset", None)

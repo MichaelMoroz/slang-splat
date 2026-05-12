@@ -346,6 +346,11 @@
       "hist_min_value": -117.98536682128906,
       "hist_max_value": 134.13560485839844,
       "hist_y_limit": 1038814.4,
+      "photometric_learning_rate": 0.05,
+      "photometric_exposure_regularize_weight": 0.05,
+      "photometric_vignette_regularize_weight": 0.1,
+      "photometric_chroma_regularize_weight": 0.2,
+      "photometric_crf_regularize_weight": 0.2,
       "viewport_sh_band": 3,
       "viewport_sh_control_key": "sh_band_stage2",
       "viewport_sh_stage_label": "Stage 2"

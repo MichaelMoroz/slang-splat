@@ -338,7 +338,16 @@ def test_initialize_photometric_compensation_reuses_training_textures(monkeypatc
 
     viewer = SimpleNamespace(
         device=object(),
-        ui=SimpleNamespace(_values={"photometric_apply_to_targets": True}),
+        ui=SimpleNamespace(
+            _values={
+                "photometric_apply_to_targets": True,
+                "photometric_learning_rate": 0.125,
+                "photometric_exposure_regularize_weight": 0.75,
+                "photometric_vignette_regularize_weight": 0.5,
+                "photometric_chroma_regularize_weight": 0.25,
+                "photometric_crf_regularize_weight": 0.125,
+            }
+        ),
         s=SimpleNamespace(
             trainer=SimpleNamespace(get_frame_target_texture=_get_frame_target_texture),
             colmap_recon=object(),
@@ -355,6 +364,11 @@ def test_initialize_photometric_compensation_reuses_training_textures(monkeypatc
     assert captured["reconstruction"] is viewer.s.colmap_recon
     assert captured["frame_source_textures"] == textures
     assert captured["requested_frames"] == [(0, True), (1, True)]
+    assert float(captured["hparams"].learning_rate) == pytest.approx(0.125)
+    assert float(captured["hparams"].exposure_regularize_weight) == pytest.approx(0.75)
+    assert float(captured["hparams"].vignette_regularize_weight) == pytest.approx(0.5)
+    assert float(captured["hparams"].chroma_regularize_weight) == pytest.approx(0.25)
+    assert float(captured["hparams"].crf_regularize_weight) == pytest.approx(0.125)
     assert captured["prepared"] is True
     assert captured["sync_calls"] == 2
     assert viewer.s.photometric_active is False
