@@ -272,6 +272,7 @@ def test_precompile_runtime_shaders_loads_lazy_runtime_shader_sets(monkeypatch) 
 
     assert any(specs.get("scan_blocks_pipeline") == ("pipeline", str(app.SHADER_ROOT / "utility" / "prefix_sum" / "prefix_sum.slang"), "csPrefixScanBlocks") for specs in item_calls)
     assert any(specs.get("scatter") == ("pipeline", str(app.SHADER_ROOT / "utility" / "radix_sort" / "scatter.slang"), "csRadixScatter") for specs in item_calls)
+    assert any(specs.get("_k_raster_ppisp") == ("kernel", str(app.SHADER_ROOT / "renderer" / "gaussian_raster_stage.slang"), "csRasterizePPISP") for specs in item_calls)
     assert any(path == str(app.SHADER_ROOT / "renderer" / "gaussian_raster_stage.slang") and entries.get("training_forward") == "csRasterizeTrainingForwardFixed" for path, entries in kernel_calls)
     assert any(path == str(app.SHADER_ROOT / "renderer" / "gaussian_raster_stage.slang") and entries.get("training_forward") == "csRasterizeTrainingForwardFloat" for path, entries in kernel_calls)
     assert any(path == str(app.SHADER_ROOT / "renderer" / "gaussian_training_stage.slang") and entries.get("debug_target_sample_kernel") == "csSampleTrainingDebugTarget" for path, entries in kernel_calls)
@@ -970,6 +971,10 @@ def test_renderer_params_maps_adam_moment_modes_to_grad_norm_log_range() -> None
         assert params.debug_ellipse_scale_multiplier == 0.75
         assert np.isclose(params.debug_adam_momentum_range[0], 2e-7, rtol=0.0, atol=1e-15)
         assert np.isclose(params.debug_adam_momentum_range[1], 2e-3, rtol=0.0, atol=1e-15)
+
+    controls["debug_mode"].value = app._DEBUG_MODE_VALUES.index("ppisp_tonemap")
+    params = app.SplatViewer.renderer_params(viewer, allow_debug_overlays=True)
+    assert params.debug_mode is None
 
 
 def test_initial_renderer_params_use_repo_defaults_for_cached_grad_depth() -> None:

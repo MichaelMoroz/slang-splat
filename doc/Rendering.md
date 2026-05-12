@@ -70,8 +70,13 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - Shared gaussian staging uses `256`-splat batches.
 - Raster evaluation uses the true decoded support cached in prepass with no separate pixel-floor clamp or fallback alpha branch.
 - Debug processed-count, grad-norm, and ellipse-outline views are handled in the same forward replay loop as normal rendering rather than by a separate debug pass.
-- Writes RGBA output texture.
+- Writes RGBA output texture. `csRasterize` writes the normal display/gamma output; `csRasterizeLinear` reuses the same forward replay and writes linear radiance for viewer post-processing.
 - Primary ray generation goes through `PinholeCamera.screen_to_world_ray(...)`.
+
+### PPISP Viewer Preview
+- `shaders/utility/ppisp_tonemap.slang` owns the differentiable PPISP exposure, vignetting, chroma-correction, and CRF math.
+- The PPISP rasterizer entry point reuses the normal forward replay, maps each pixel center to normalized sensor coordinates, applies `ppisp_apply_tonemap` during final pixel resolve, and writes display-space RGB with the normal raster alpha preserved.
+- PPISP preview is currently a viewer debug mode for the main free-fly view; training loss integration is intentionally deferred, but the Python parameter object and Slang struct layout are shared with training-facing code.
 
 ## 6. Debug Raster
 - Debug modes are integrated into `csRasterize`.

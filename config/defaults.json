@@ -229,6 +229,68 @@
         0.0,
         0.0
       ],
+      "ppisp_exposure_ev": 0.0,
+      "ppisp_vignette_center_x": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "ppisp_vignette_center_y": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "ppisp_vignette_coeff_r2": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ppisp_vignette_coeff_r4": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ppisp_vignette_coeff_r6": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ppisp_chroma_offset_r": [
+        0.0,
+        0.0
+      ],
+      "ppisp_chroma_offset_g": [
+        0.0,
+        0.0
+      ],
+      "ppisp_chroma_offset_b": [
+        0.0,
+        0.0
+      ],
+      "ppisp_chroma_offset_w": [
+        0.0,
+        0.0
+      ],
+      "ppisp_crf_tau": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "ppisp_crf_eta": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "ppisp_crf_xi": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "ppisp_crf_gamma": [
+        2.2,
+        2.2,
+        2.2
+      ],
       "training_steps_per_frame": 8,
       "train_background_color": [
         1.0,

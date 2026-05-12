@@ -18,6 +18,7 @@ from src.renderer import Camera, GaussianRenderer
 from src.renderer.render_params import SORT_SPLATS_BY_DISTANCE_TO_CAMERA, SORT_SPLATS_BY_Z_DEPTH
 from src.scene import GaussianScene, SH_C0, SUPPORTED_SH_COEFF_COUNT
 from src.scene.sh_utils import evaluate_sh0_sh1, resolve_supported_sh_coeffs
+from src.training.ppisp import PPISPTonemapParams
 
 _GAUSSIAN_SUPPORT_SIGMA_RADIUS = 3.0
 _TYPES_SHADER_PATH = Path(SHADER_ROOT / "renderer" / "gaussian_types.slang")
@@ -1341,3 +1342,36 @@ def test_partial_tile_render_matches_cpu_reference(device):
 
     mean_abs_error = float(np.mean(np.abs(gpu_image - cpu_image)))
     assert mean_abs_error < 5e-3
+
+
+def test_render_linear_to_texture_matches_existing_display_gamma(device) -> None:
+    scene = make_scene(12, seed=22)
+    renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, list_capacity_multiplier=32)
+    renderer.set_scene(scene)
+    camera = Camera.look_at((0.0, 0.0, -3.0), (0.0, 0.0, 0.0))
+    background = np.array([0.05, 0.1, 0.2], dtype=np.float32)
+
+    linear_tex, _ = renderer.render_linear_to_texture(camera, background=background)
+    linear = np.asarray(linear_tex.to_numpy(), dtype=np.float32).copy()
+    display_tex, _ = renderer.render_to_texture(camera, background=background)
+    display = np.asarray(display_tex.to_numpy(), dtype=np.float32).copy()
+
+    np.testing.assert_allclose(display[..., :3], np.power(np.maximum(linear[..., :3], 0.0), np.float32(2.2)), rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(display[..., 3], linear[..., 3], rtol=0.0, atol=1e-6)
+
+
+def test_render_ppisp_to_texture_default_matches_existing_display_gamma(device) -> None:
+    scene = make_scene(12, seed=23)
+    renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, list_capacity_multiplier=32)
+    renderer.set_scene(scene)
+    camera = Camera.look_at((0.0, 0.0, -3.0), (0.0, 0.0, 0.0))
+    background = np.array([0.05, 0.1, 0.2], dtype=np.float32)
+
+    ppisp_tex, _ = renderer.render_ppisp_to_texture(camera, PPISPTonemapParams().to_shader_dict(), background=background)
+    ppisp = np.asarray(ppisp_tex.to_numpy(), dtype=np.float32).copy()
+    display_tex, _ = renderer.render_to_texture(camera, background=background)
+    display = np.asarray(display_tex.to_numpy(), dtype=np.float32).copy()
+
+    assert np.all(np.isfinite(ppisp))
+    np.testing.assert_allclose(ppisp[..., :3], display[..., :3], rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(ppisp[..., 3], display[..., 3], rtol=0.0, atol=1e-6)

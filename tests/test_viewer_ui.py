@@ -7,6 +7,7 @@ import slangpy as spy
 
 from src.app.training_controls import SCHEDULE_STAGE_CONTROL_DEFS, SCHEDULE_STAGE_GROUPS, TRAIN_SETUP_CONTROL_DEFS
 from src.renderer.render_params import CachedRasterGradParams, RendererParams, SORT_SPLATS_BY_VALUES, SORT_SPLATS_BY_Z_DEPTH
+from src.training.ppisp import PPISP_FIELD_SPECS
 from src.viewer.buffer_debug import ResourceDebugRow, ResourceDebugSnapshot
 from src.viewer import ui
 from src.viewer.constants import _WINDOW_TITLE
@@ -148,6 +149,7 @@ def test_build_ui_initializes_control_groups_and_internal_state() -> None:
         "hist_y_limit",
         "render_background_mode",
         "render_background_color",
+        *(spec.key for spec in PPISP_FIELD_SPECS),
         "loss_debug_view",
         "refinement_sample_radius",
         "refinement_clone_scale_mul",
@@ -345,6 +347,36 @@ def test_training_setup_section_draws_controls_from_ordered_specs(monkeypatch) -
     assert "train_auto_start_downscale" not in drawn
 
 
+def test_camera_section_does_not_draw_ppisp_controls(monkeypatch) -> None:
+    drawn: list[str] = []
+    reset_calls: list[tuple[str, tuple[str, ...]]] = []
+    monkeypatch.setattr(ui.imgui, "collapsing_header", lambda _label, *_args: True)
+    monkeypatch.setattr(ui.imgui, "drag_float", lambda _label, value, *_args: (False, value))
+    monkeypatch.setattr(ui.imgui, "slider_float", lambda _label, value, *_args: (False, value))
+    monkeypatch.setattr(ui.imgui, "is_item_hovered", lambda: False)
+    monkeypatch.setattr(ui.imgui, "text_disabled", lambda _text: None)
+    monkeypatch.setattr(ui.imgui, "separator", lambda: None)
+    toolkit = SimpleNamespace(
+        _draw_control=lambda _ui_obj, spec, compact=False: drawn.append(spec.key),
+        _ctx_reset=lambda name, _ui_obj, keys: reset_calls.append((name, tuple(keys))),
+    )
+    viewer_ui = SimpleNamespace(
+        _values={
+            "move_speed": 1.0,
+            "fov": 60.0,
+            "render_background_mode": 1,
+            "render_background_color": (0.0, 0.0, 0.0),
+        },
+        _texts={},
+    )
+
+    ui.ToolkitWindow._section_camera(toolkit, viewer_ui)
+
+    for spec in PPISP_FIELD_SPECS:
+        assert spec.key not in drawn
+    assert reset_calls == [("camera_ctx", tuple(spec.key for spec in ui.GROUP_SPECS["Camera"]))]
+
+
 def test_training_setup_section_uses_struct_pretty_printer_for_summaries(monkeypatch) -> None:
     drawn_sections: list[tuple] = []
     disabled_text: list[str] = []
@@ -391,6 +423,9 @@ def test_export_repo_defaults_writes_cached_raster_grad_training_render_defaults
     viewer_ui._values["cached_raster_grad_fixed_color_range"] = 9.0
     viewer_ui._values["cached_raster_grad_fixed_opacity_range"] = 10.0
     viewer_ui._values["colmap_training_image_color_init"] = True
+    viewer_ui._values["ppisp_exposure_ev"] = 0.75
+    viewer_ui._values["ppisp_crf_gamma"] = (2.0, 2.1, 2.2)
+    viewer_ui._values["debug_mode"] = ui._DEBUG_MODE_VALUES.index(ui.PPISP_DEBUG_MODE)
 
     exported = ui.export_repo_defaults_from_ui_values(viewer_ui._values)
 
@@ -408,6 +443,10 @@ def test_export_repo_defaults_writes_cached_raster_grad_training_render_defaults
     assert exported["cli"]["common_render"]["cached_raster_grad_fixed_quat_range"] == 0.125
     assert exported["cli"]["common_render"]["cached_raster_grad_fixed_color_range"] == 9.0
     assert exported["cli"]["common_render"]["cached_raster_grad_fixed_opacity_range"] == 10.0
+    assert exported["renderer"]["debug_mode"] is None
+    assert "ppisp_enabled" not in exported["viewer"]["controls"]
+    assert exported["viewer"]["controls"]["ppisp_exposure_ev"] == 0.75
+    assert exported["viewer"]["controls"]["ppisp_crf_gamma"] == [2.0, 2.1, 2.2]
     assert exported["viewer"]["import"]["colmap_training_image_color_init"] is True
 
 
@@ -1068,6 +1107,32 @@ def test_viewport_debug_overlay_draws_mode_specific_controls(monkeypatch) -> Non
     ]
 
 
+def test_viewport_debug_overlay_draws_ppisp_controls(monkeypatch) -> None:
+    drawn: list[tuple[str, bool]] = []
+    monkeypatch.setattr(ui.imgui, "get_frame_height", lambda: 20.0)
+    monkeypatch.setattr(ui.imgui, "get_style", lambda: SimpleNamespace(item_spacing=ui.imgui.ImVec2(8.0, 6.0)))
+    monkeypatch.setattr(ui.imgui, "calc_text_size", lambda _text: ui.imgui.ImVec2(16.0, 14.0))
+    monkeypatch.setattr(ui.imgui, "push_style_color", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "pop_style_color", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "push_style_var", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "pop_style_var", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "set_cursor_screen_pos", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "begin_child", lambda *_args: True)
+    monkeypatch.setattr(ui.imgui, "end_child", lambda: None)
+    monkeypatch.setattr(ui.imgui, "push_item_width", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "pop_item_width", lambda: None)
+    toolkit = SimpleNamespace(
+        _viewport_content_rect=(0.0, 0.0, 640.0, 720.0),
+        _interface_scale_factor=lambda _ui_obj: 1.0,
+        _draw_control=lambda _ui_obj, spec, compact=False: drawn.append((spec.key, compact)),
+    )
+    viewer_ui = SimpleNamespace(_values={"debug_mode": ui._DEBUG_MODE_VALUES.index(ui.PPISP_DEBUG_MODE)}, _texts={})
+
+    ui.ToolkitWindow._draw_viewport_debug_overlay(toolkit, viewer_ui, ui.imgui.ImVec2(12.0, 34.0))
+
+    assert drawn == [(spec.key, True) for spec in PPISP_FIELD_SPECS]
+
+
 def test_viewport_debug_overlay_draws_training_camera_controls(monkeypatch) -> None:
     child_sizes: list[tuple[float, float]] = []
     combo_labels: list[tuple[str, str]] = []
@@ -1422,6 +1487,8 @@ def test_schedule_step_slider_max_tracks_schedule_steps() -> None:
 def test_debug_mode_labels_include_contribution_amount() -> None:
     assert ui._DEBUG_MODE_VALUES[0] == "normal"
     assert ui._DEBUG_MODE_LABELS[0] == "Normal"
+    assert ui.PPISP_DEBUG_MODE in ui._DEBUG_MODE_VALUES
+    assert "PPISP Tonemap" in ui._DEBUG_MODE_LABELS
     assert "contribution_amount" in ui._DEBUG_MODE_VALUES
     assert "Contribution Amount" in ui._DEBUG_MODE_LABELS
     assert "adam_momentum" in ui._DEBUG_MODE_VALUES
@@ -1457,6 +1524,7 @@ def test_contribution_amount_debug_mode_exposes_no_extra_range_controls() -> Non
     assert ui._renderer_debug_control_keys("processed_count") == ("debug_mode",)
     assert ui._renderer_debug_control_keys("splat_density") == ("debug_mode", "debug_density_min", "debug_density_max")
     assert ui._renderer_debug_control_keys("depth_local_mismatch") == ("debug_mode", "debug_depth_local_mismatch_min", "debug_depth_local_mismatch_max", "debug_depth_local_mismatch_smooth_radius", "debug_depth_local_mismatch_reject_radius")
+    assert ui._renderer_debug_control_keys(ui.PPISP_DEBUG_MODE) == tuple(spec.key for spec in PPISP_FIELD_SPECS)
 
 
 def test_contribution_amount_colorbar_ticks_use_linear_values() -> None:

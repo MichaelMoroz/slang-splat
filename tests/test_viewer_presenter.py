@@ -9,6 +9,7 @@ import pytest
 import slangpy as spy
 
 from src.training.defaults import DEFAULT_LR_SCHEDULE_STEPS, DEFAULT_LR_STAGE1_STEP, DEFAULT_LR_STAGE2_STEP, DEFAULT_LR_STAGE3_STEP
+from src.training.ppisp import PPISP_FIELD_SPECS
 from src.viewer import presenter
 from src.viewer import ui as viewer_ui
 from src.viewer.buffer_debug import ResourceDebugRow, ResourceDebugSnapshot
@@ -32,10 +33,23 @@ class _DummyRenderer:
         self.width = width
         self.height = height
         self.sh_band = 0
+        self.debug_mode = "normal"
         self.training_forward_calls: list[dict[str, object]] = []
+        self.render_calls: list[dict[str, object]] = []
+        self.render_linear_calls: list[dict[str, object]] = []
+        self.render_ppisp_calls: list[dict[str, object]] = []
 
     def render_to_texture(self, camera: object, background: object, read_stats: bool, command_encoder: object) -> tuple[object, dict[str, int | bool | float]]:
-        return object(), {"generated_entries": 1, "written_entries": 2, "overflow": False}
+        self.render_calls.append({"camera": camera, "background": background, "read_stats": read_stats, "command_encoder": command_encoder})
+        return "main_render_tex", {"generated_entries": 1, "written_entries": 2, "overflow": False}
+
+    def render_linear_to_texture(self, camera: object, background: object, read_stats: bool, command_encoder: object) -> tuple[object, dict[str, int | bool | float]]:
+        self.render_linear_calls.append({"camera": camera, "background": background, "read_stats": read_stats, "command_encoder": command_encoder})
+        return "main_linear_tex", {"generated_entries": 3, "written_entries": 4, "overflow": False}
+
+    def render_ppisp_to_texture(self, camera: object, ppisp_tonemap: dict[str, object], background: object, read_stats: bool, command_encoder: object) -> tuple[object, dict[str, int | bool | float]]:
+        self.render_ppisp_calls.append({"camera": camera, "ppisp_tonemap": ppisp_tonemap, "background": background, "read_stats": read_stats, "command_encoder": command_encoder})
+        return "main_ppisp_tex", {"generated_entries": 5, "written_entries": 6, "overflow": False}
 
     def render_training_forward_to_texture(self, camera: object, background: object, read_stats: bool, command_encoder: object, **kwargs) -> tuple[object, dict[str, int | bool | float]]:
         self.training_forward_calls.append({"camera": camera, "background": background, "read_stats": read_stats, "command_encoder": command_encoder, **kwargs})
@@ -354,7 +368,8 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
     viewer.device = SimpleNamespace()
     viewer.toolkit = SimpleNamespace(viewport_size=lambda: (640, 360))
     viewer.loss_debug_view_options = (("rendered", "Rendered"), ("target", "Target"), ("abs_diff", "Abs Diff"), ("dssim", "DSSIM"), ("rendered_edges", "Rendered Edges"), ("target_edges", "Target Edges"))
-    viewer.ui = SimpleNamespace(controls=controls, texts=texts, _values={"show_histograms": False, "_histogram_payload": None, "_histogram_range_payload": None, "show_training_cameras": bool(loss_debug), "show_training_views": False, "show_camera_overlays": False, "show_camera_labels": False, "training_camera_full_resolution": False}, _texts={key: value.text for key, value in texts.items()})
+    ppisp_values = {spec.key: spec.default for spec in PPISP_FIELD_SPECS}
+    viewer.ui = SimpleNamespace(controls=controls, texts=texts, _values={**ppisp_values, "show_histograms": False, "_histogram_payload": None, "_histogram_range_payload": None, "show_training_cameras": bool(loss_debug), "show_training_views": False, "show_camera_overlays": False, "show_camera_labels": False, "training_camera_full_resolution": False}, _texts={key: value.text for key, value in texts.items()})
     viewer.c = lambda key: viewer.ui.controls[key]
     viewer.t = lambda key: viewer.ui.texts[key]
     viewer.camera = lambda: "camera"
@@ -435,6 +450,61 @@ def test_render_frame_uses_main_branch_when_visual_loss_debug_disabled(monkeypat
     assert viewer.s.trainer.step_calls == 3
     assert viewer.s.viewport_texture == "main_tex"
     assert calls == ["apply", f"periodic:{viewer.s.last_time:.1f}", "main", "ui"]
+
+
+def test_render_main_view_uses_existing_path_when_ppisp_disabled(monkeypatch) -> None:
+    viewer = _viewer(loss_debug=False)
+    viewer.s.trainer = None
+    viewer.s.training_renderer = None
+    encoder = _DummyEncoder()
+    calls: list[tuple[str, object]] = []
+
+    monkeypatch.setattr(presenter, "_dispatch_viewport_present", lambda viewer_obj, enc, source_tex, source_width, source_height, output_width, output_height, *, source_is_linear=False: calls.append(("present", source_tex, source_is_linear)) or "present_tex")
+
+    assert presenter._render_main_view(viewer, encoder) == "present_tex"
+    assert viewer.s.renderer.render_calls[0]["camera"] == "camera"
+    assert viewer.s.renderer.render_linear_calls == []
+    assert viewer.s.renderer.render_ppisp_calls == []
+    assert viewer.s.stats["generated_entries"] == 1
+    assert calls == [("present", "main_render_tex", False)]
+
+
+def test_render_main_view_applies_ppisp_debug_mode_in_rasterizer(monkeypatch) -> None:
+    viewer = _viewer(loss_debug=False)
+    viewer.s.trainer = None
+    viewer.s.training_renderer = None
+    viewer.ui._values["debug_mode"] = viewer_ui._DEBUG_MODE_VALUES.index(viewer_ui.PPISP_DEBUG_MODE)
+    viewer.ui._values["ppisp_exposure_ev"] = 1.25
+    encoder = _DummyEncoder()
+    calls: list[tuple[str, object]] = []
+
+    monkeypatch.setattr(presenter, "_dispatch_viewport_present", lambda viewer_obj, enc, source_tex, source_width, source_height, output_width, output_height, *, source_is_linear=False: calls.append(("present", source_tex, source_is_linear)) or "present_tex")
+
+    assert presenter._render_main_view(viewer, encoder) == "present_tex"
+    assert viewer.s.renderer.render_calls == []
+    assert viewer.s.renderer.render_linear_calls == []
+    assert viewer.s.renderer.render_ppisp_calls[0]["camera"] == "camera"
+    params = viewer.s.renderer.render_ppisp_calls[0]["ppisp_tonemap"]
+    assert params["exposureEv"] == 1.25
+    assert set(params) == {spec.attr for spec in PPISP_FIELD_SPECS}
+    assert isinstance(params["chromaOffsetR"], type(spy.float2(0.0, 0.0)))
+    assert isinstance(params["crfGamma"], type(spy.float3(0.0, 0.0, 0.0)))
+    assert viewer.s.stats["generated_entries"] == 5
+    assert calls == [("present", "main_ppisp_tex", False)]
+
+
+def test_render_main_view_skips_ppisp_when_not_ppisp_debug_mode(monkeypatch) -> None:
+    viewer = _viewer(loss_debug=False)
+    viewer.s.trainer = None
+    viewer.s.training_renderer = None
+    viewer.s.renderer.debug_mode = "splat_age"
+
+    monkeypatch.setattr(presenter, "_dispatch_viewport_present", lambda *args, **kwargs: "present_tex")
+
+    assert presenter._render_main_view(viewer, _DummyEncoder()) == "present_tex"
+    assert len(viewer.s.renderer.render_calls) == 1
+    assert viewer.s.renderer.render_linear_calls == []
+    assert viewer.s.renderer.render_ppisp_calls == []
 
 
 def test_render_frame_checks_time_based_renderer_recycling(monkeypatch):

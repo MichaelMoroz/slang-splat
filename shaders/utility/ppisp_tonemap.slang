@@ -45,11 +45,13 @@ float3 ppisp_apply_vignetting(float3 color, no_diff float2 sensorCoord, PPISPTon
     return color * attenuation;
 }
 
+[Differentiable]
 float3 ppisp_lift_chroma(float2 rg)
 {
     return float3(rg, 1.0);
 }
 
+[Differentiable]
 float3 ppisp_homography_nullspace(float3 tR, float3 tG, float3 tB, float3 tW)
 {
     float3 c0 = cross(tW, tR);

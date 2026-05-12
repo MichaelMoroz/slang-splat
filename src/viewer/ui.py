@@ -29,6 +29,7 @@ from ..app.training_controls import (
     TRAIN_STABILITY_PAIRED_KEYS,
 )
 from ..training.alpha_modes import TARGET_ALPHA_MODE_LABELS
+from ..training.ppisp import PPISP_FIELD_SPECS
 from .buffer_debug import ResourceDebugSnapshot, format_resource_bytes, write_resource_debug_log
 from .state import DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH, LOSS_DEBUG_OPTIONS
 from .ui_schema import (
@@ -47,6 +48,7 @@ from .ui_schema import (
     _INTERFACE_SCALE_OPTIONS,
     _LOSS_DEBUG_ABS_SCALE_KEY,
     _OPTIMIZER_TAB_KEYS,
+    _RENDERER_DEBUG_MODE_VALUES,
     _THEME_KEY,
     _TRAINING_RASTER_GRAD_KEYS,
     _TRAIN_OPTIMIZER_SPEC_BY_KEY,
@@ -60,6 +62,7 @@ from .ui_schema import (
     _renderer_atomic_mode_index,
     _renderer_debug_mode_index,
     default_control_values,
+    PPISP_DEBUG_MODE,
 )
 from .ui_pretty import draw_struct_sections, measure_struct_sections
 from .ui_text import _build_about_text, _build_documentation_text, _draw_disabled_wrapped_text, _draw_markdown_text, _status_suffix
@@ -282,10 +285,11 @@ def _theme_color(ui: object, light: tuple[float, float, float, float], dark: tup
 def _debug_colorbar_mode(ui: "ViewerUI") -> str | None:
     index = min(max(int(ui._values.get("debug_mode", 0)), 0), len(_DEBUG_MODE_VALUES) - 1)
     mode = _DEBUG_MODE_VALUES[index]
-    return None if mode in ("normal", "ellipse_outlines", "sh_view_dependent", "sh_coefficient", "black_negative") else mode
+    return None if mode in ("normal", PPISP_DEBUG_MODE, "ellipse_outlines", "sh_view_dependent", "sh_coefficient", "black_negative") else mode
 
 
 def _renderer_debug_control_keys(mode: str) -> tuple[str, ...]:
+    if mode == PPISP_DEBUG_MODE: return tuple(spec.key for spec in PPISP_FIELD_SPECS)
     if mode == "ellipse_outlines": return ("debug_mode", "debug_ellipse_thickness_px", "debug_gaussian_scale_multiplier", "debug_min_opacity", "debug_opacity_multiplier", "debug_ellipse_scale_multiplier")
     if mode == "grad_norm": return ("debug_mode", "debug_grad_norm_threshold")
     if mode == "sh_coefficient": return ("debug_mode", "debug_sh_coeff_index")
@@ -464,7 +468,7 @@ def _export_fields(values: dict[str, object], fields: tuple[tuple[str, object], 
 
 
 def export_repo_defaults_from_ui_values(values: dict[str, object]) -> dict[str, dict[str, object]]:
-    renderer_params = RendererParams.from_ui_values(values, _DEBUG_MODE_VALUES, _threshold_band_range)
+    renderer_params = RendererParams.from_ui_values(values, _RENDERER_DEBUG_MODE_VALUES, _threshold_band_range)
     return {
         "renderer": json_value(renderer_params.renderer_kwargs()),
         "cli": {
@@ -484,6 +488,7 @@ def export_repo_defaults_from_ui_values(values: dict[str, object]) -> dict[str, 
 
 
 RENDER_PARAM_SPECS, DEBUG_RENDER_SPECS, _ALL_DEFAULTS = build_render_spec_bundle(_threshold_from_band_range)
+_DEBUG_VIEW_CONTROL_SPECS = {spec.key: spec for spec in DEBUG_RENDER_SPECS + GROUP_SPECS["PPISP Debug"]}
 
 
 class _ControlProxy:
@@ -1448,7 +1453,7 @@ class ToolkitWindow:
                 if len(control_keys) > 0:
                     imgui.separator()
             for key in control_keys:
-                self._draw_control(ui, next(spec for spec in DEBUG_RENDER_SPECS if spec.key == key), compact=True)
+                self._draw_control(ui, _DEBUG_VIEW_CONTROL_SPECS[key], compact=True)
             imgui.pop_item_width()
         imgui.end_child()
         imgui.pop_style_var()
@@ -2631,6 +2636,7 @@ class ToolkitWindow:
     def _section_camera(self, ui: ViewerUI) -> None:
         if not imgui.collapsing_header("Camera", imgui.TreeNodeFlags_.default_open.value):
             return
+        camera_specs = {spec.key: spec for spec in GROUP_SPECS["Camera"]}
         changed, val = imgui.drag_float(
             "Move Speed", float(ui._values["move_speed"]),
             0.05, 0.0, 0.0, "%.4g", imgui.SliderFlags_.logarithmic.value
@@ -2644,12 +2650,11 @@ class ToolkitWindow:
             ui._values["fov"] = val
         if imgui.is_item_hovered():
             imgui.set_item_tooltip("Vertical field of view in degrees")
-        self._draw_control(ui, next(spec for spec in GROUP_SPECS["Camera"] if spec.key == "render_background_mode"))
+        self._draw_control(ui, camera_specs["render_background_mode"])
         if int(ui._values.get("render_background_mode", 1)) == 1:
-            self._draw_control(ui, next(spec for spec in GROUP_SPECS["Camera"] if spec.key == "render_background_color"))
-        imgui.spacing()
+            self._draw_control(ui, camera_specs["render_background_color"])
         imgui.text_disabled("LMB drag=look | RMB drag=pan | WASDQE=move | Wheel=speed")
-        self._ctx_reset("camera_ctx", ui, ("move_speed", "fov", "render_background_mode", "render_background_color"))
+        self._ctx_reset("camera_ctx", ui, tuple(spec.key for spec in GROUP_SPECS["Camera"]))
         imgui.separator()
 
     def _section_training_control(self, ui: ViewerUI) -> None:
@@ -2965,6 +2970,23 @@ class ToolkitWindow:
             )
             if changed:
                 ui._values[key] = val
+        elif spec.kind in ("input_float2", "input_float3"):
+            size = 2 if spec.kind == "input_float2" else 3
+            value = np.asarray(ui._values[key], dtype=np.float32).reshape(-1)
+            if value.size == 0:
+                value = np.zeros((size,), dtype=np.float32)
+            if value.size < size:
+                value = np.pad(value, (0, size - value.size), mode="edge")
+            changed, val = (imgui.drag_float2 if size == 2 else imgui.drag_float3)(
+                label,
+                [float(v) for v in value[:size]],
+                float(spec.kwargs.get("step", 0.001)),
+                0.0,
+                0.0,
+                spec.kwargs.get("format", "%.3f"),
+            )
+            if changed:
+                ui._values[key] = tuple(float(v) for v in val[:size])
         elif spec.kind == "checkbox":
             changed, val = imgui.checkbox(label, bool(ui._values[key]))
             if changed:
@@ -2978,12 +3000,15 @@ class ToolkitWindow:
         if tip and imgui.is_item_hovered():
             imgui.set_item_tooltip(tip)
 
+    def _reset_values(self, ui: ViewerUI, keys) -> None:
+        for key in keys:
+            if key in _ALL_DEFAULTS:
+                ui._values[key] = _ALL_DEFAULTS[key]
+
     def _ctx_reset(self, ctx_id: str, ui: ViewerUI, keys) -> None:
         if imgui.begin_popup_context_item(ctx_id):
             if imgui.selectable("Reset to Defaults")[0]:
-                for key in keys:
-                    if key in _ALL_DEFAULTS:
-                        ui._values[key] = _ALL_DEFAULTS[key]
+                self._reset_values(ui, keys)
             imgui.separator()
             if imgui.selectable("Copy Values to Clipboard")[0]:
                 lines = [f"{k}={ui._values.get(k, '?')}" for k in keys if k in ui._values]

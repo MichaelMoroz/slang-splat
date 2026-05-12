@@ -7,7 +7,7 @@ import slangpy as spy
 
 from ..utility import alloc_texture_2d, clamp_index, debug_region, require_not_none
 from ..filter import SeparableGaussianBlur
-from ..training import resolve_colorspace_mod, resolve_sh_band
+from ..training import PPISPTonemapParams, resolve_colorspace_mod, resolve_sh_band
 from . import session
 from .buffer_debug import ResourceDebugSnapshot, collect_resource_debug_snapshot, query_total_device_vram_capacity, query_total_device_vram_used_cached, split_resource_usage
 from .presenter_state import (
@@ -22,6 +22,7 @@ from .presenter_state import (
     _ui_header_state,
     _viewport_target_size,
 )
+from .ui_schema import PPISP_DEBUG_MODE, _DEBUG_MODE_VALUES
 
 _DEBUG_TEXTURE_USAGE = spy.TextureUsage.shader_resource | spy.TextureUsage.unordered_access | spy.TextureUsage.copy_destination
 _DEBUG_ABS_DIFF_SCALE_DEFAULT = 1.0
@@ -241,6 +242,13 @@ def _dispatch_viewport_present(viewer: object, encoder: spy.CommandEncoder, sour
             command_encoder=encoder,
         )
     return output
+
+
+def _ppisp_preview_enabled(viewer: object) -> bool:
+    renderer = getattr(getattr(viewer, "s", None), "renderer", None)
+    values = getattr(getattr(viewer, "ui", None), "_values", {})
+    mode_index = min(max(int(values.get("debug_mode", 0)), 0), len(_DEBUG_MODE_VALUES) - 1)
+    return _DEBUG_MODE_VALUES[mode_index] == PPISP_DEBUG_MODE and str(getattr(renderer, "debug_mode", "normal")) == "normal"
 
 
 def _refresh_resource_debug_snapshot(viewer: object) -> None:
@@ -630,9 +638,21 @@ def _render_debug_view(viewer: object, encoder: spy.CommandEncoder, output_width
 def _render_main_view(viewer: object, encoder: spy.CommandEncoder) -> spy.Texture:
     if viewer.s.trainer is not None and viewer.s.training_renderer is not None:
         session.sync_scene_from_training_renderer(viewer, viewer.s.renderer, target="main")
-    out_tex, stats = viewer.s.renderer.render_to_texture(viewer.camera(), background=viewer.s.background, read_stats=True, command_encoder=encoder)
+    camera = viewer.camera()
+    width, height = int(viewer.s.renderer.width), int(viewer.s.renderer.height)
+    if _ppisp_preview_enabled(viewer):
+        out_tex, stats = viewer.s.renderer.render_ppisp_to_texture(
+            camera,
+            PPISPTonemapParams.from_viewer_values(viewer.ui._values).to_shader_dict(),
+            background=viewer.s.background,
+            read_stats=True,
+            command_encoder=encoder,
+        )
+        viewer.s.stats = stats
+        return _dispatch_viewport_present(viewer, encoder, out_tex, width, height, width, height, source_is_linear=False)
+    out_tex, stats = viewer.s.renderer.render_to_texture(camera, background=viewer.s.background, read_stats=True, command_encoder=encoder)
     viewer.s.stats = stats
-    return _dispatch_viewport_present(viewer, encoder, out_tex, int(viewer.s.renderer.width), int(viewer.s.renderer.height), int(viewer.s.renderer.width), int(viewer.s.renderer.height), source_is_linear=False)
+    return _dispatch_viewport_present(viewer, encoder, out_tex, width, height, width, height, source_is_linear=False)
 
 
 def render_frame(viewer: object, render_context: spy.AppWindow.RenderContext) -> None:

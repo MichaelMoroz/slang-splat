@@ -30,6 +30,7 @@ from .state import (
     LOSS_DEBUG_OPTIONS, ViewerState,
 )
 from .ui import _threshold_band_range, build_ui, create_toolkit_window, default_control_values, export_repo_defaults_from_ui_values
+from .ui_schema import _DEBUG_MODE_VALUES, _RENDERER_DEBUG_MODE_VALUES
 
 _VIEW_VEC_EPS = 1e-6
 _SCROLL_SPEED_BASE = 1.1
@@ -92,28 +93,6 @@ _RADIX_SORT_ITEM_SPECS = {
     "prefix_add": ("pipeline", SHADER_ROOT / "utility" / "prefix_sum" / "prefix_sum.slang", "csPrefixAddOffsets"),
     "scatter": ("pipeline", SHADER_ROOT / "utility" / "radix_sort" / "scatter.slang", "csRadixScatter"),
 }
-_DEBUG_MODE_VALUES = (
-    GaussianRenderer.DEBUG_MODE_NORMAL,
-    GaussianRenderer.DEBUG_MODE_PROCESSED_COUNT,
-    GaussianRenderer.DEBUG_MODE_SPLAT_AGE,
-    GaussianRenderer.DEBUG_MODE_ELLIPSE_OUTLINES,
-    GaussianRenderer.DEBUG_MODE_SPLAT_DENSITY,
-    GaussianRenderer.DEBUG_MODE_SPLAT_SPATIAL_DENSITY,
-    GaussianRenderer.DEBUG_MODE_SPLAT_SCREEN_DENSITY,
-    GaussianRenderer.DEBUG_MODE_CONTRIBUTION_AMOUNT,
-    GaussianRenderer.DEBUG_MODE_ADAM_MOMENTUM,
-    GaussianRenderer.DEBUG_MODE_ADAM_SECOND_MOMENT,
-    GaussianRenderer.DEBUG_MODE_GRAD_VARIANCE,
-    GaussianRenderer.DEBUG_MODE_REFINEMENT_DISTRIBUTION,
-    GaussianRenderer.DEBUG_MODE_DEPTH_MEAN,
-    GaussianRenderer.DEBUG_MODE_DEPTH_STD,
-    GaussianRenderer.DEBUG_MODE_DEPTH_LOCAL_MISMATCH,
-    GaussianRenderer.DEBUG_MODE_GRAD_NORM,
-    GaussianRenderer.DEBUG_MODE_SH_VIEW_DEPENDENT,
-    GaussianRenderer.DEBUG_MODE_SH_COEFFICIENT,
-    GaussianRenderer.DEBUG_MODE_BLACK_NEGATIVE,
-)
-
 
 
 def _raster_grad_kernel_entries(entry_suffix: str) -> dict[str, str]:
@@ -445,7 +424,7 @@ class SplatViewer(_ViewerWindowHost):
 
     def renderer_params(self, allow_debug_overlays: bool) -> RendererParams:
         ui_values = _viewer_ui_values(self)
-        params = RendererParams.from_ui_values(ui_values, _DEBUG_MODE_VALUES, _threshold_band_range)
+        params = RendererParams.from_ui_values(ui_values, _RENDERER_DEBUG_MODE_VALUES, _threshold_band_range)
         debug_mode = params.debug_mode if allow_debug_overlays else GaussianRenderer.DEBUG_MODE_NORMAL
         return replace(
             params,

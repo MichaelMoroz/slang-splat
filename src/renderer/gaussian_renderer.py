@@ -251,6 +251,8 @@ class GaussianRenderer:
         ("_k_clear_ranges", "kernel", "gaussian_project_stage.slang", "csClearTileRanges"),
         ("_p_build_ranges", "pipeline", "gaussian_project_stage.slang", "csBuildTileRanges"),
         ("_k_raster", "kernel", "gaussian_raster_stage.slang", "csRasterize"),
+        ("_k_raster_linear", "kernel", "gaussian_raster_stage.slang", "csRasterizeLinear"),
+        ("_k_raster_ppisp", "kernel", "gaussian_raster_stage.slang", "csRasterizePPISP"),
         ("_k_raster_debug", "kernel", "gaussian_raster_stage.slang", "csRasterizeDebug"),
     )
     _buffer_vars = staticmethod(remap_named_buffers)
@@ -1352,19 +1354,22 @@ class GaussianRenderer:
     def _debug_render_enabled(self) -> bool:
         return self.debug_mode != self.DEBUG_MODE_NORMAL
 
-    def _rasterize(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output: spy.Texture | None = None) -> None:
+    def _rasterize(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output: spy.Texture | None = None, *, linear_output: bool = False, ppisp_tonemap: dict[str, object] | None = None) -> None:
         target = self.output_texture if output is None else output
-        shader = self._k_raster_debug if self._debug_render_enabled() else self._k_raster
+        shader = self._k_raster_ppisp if ppisp_tonemap is not None else self._k_raster_linear if linear_output else self._k_raster_debug if self._debug_render_enabled() else self._k_raster
         vars = {**self._scene_vars(), **self._screen_vars(), **self._raster_cache_vars(), "g_SortedValues": self._sorted_values(), "g_TileRanges": self._work_buffers["tile_ranges"], "g_Output": target, **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_range_vars(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background), **self._anisotropy_uniforms(), **self._camera_uniforms(camera), **self._camera_uniforms(camera, "g_TrainingNativeCamera"), **self._disabled_training_sample_vars()}
-        if self.debug_mode == self.DEBUG_MODE_SPLAT_AGE:
+        if ppisp_tonemap is not None:
+            vars["g_PPISPTonemap"] = ppisp_tonemap
+        debug_resources_enabled = ppisp_tonemap is None and not linear_output
+        if debug_resources_enabled and self.debug_mode == self.DEBUG_MODE_SPLAT_AGE:
             vars.update(self._debug_splat_age_var())
-        if self.debug_mode in (self.DEBUG_MODE_CONTRIBUTION_AMOUNT, self.DEBUG_MODE_REFINEMENT_DISTRIBUTION):
+        if debug_resources_enabled and self.debug_mode in (self.DEBUG_MODE_CONTRIBUTION_AMOUNT, self.DEBUG_MODE_REFINEMENT_DISTRIBUTION):
             vars.update(self._debug_splat_contribution_var())
-        if self.debug_mode in (self.DEBUG_MODE_ADAM_MOMENTUM, self.DEBUG_MODE_ADAM_SECOND_MOMENT):
+        if debug_resources_enabled and self.debug_mode in (self.DEBUG_MODE_ADAM_MOMENTUM, self.DEBUG_MODE_ADAM_SECOND_MOMENT):
             vars.update(self._debug_adam_moments_var())
-        if self.debug_mode == self.DEBUG_MODE_GRAD_NORM:
+        if debug_resources_enabled and self.debug_mode == self.DEBUG_MODE_GRAD_NORM:
             vars.update(self._debug_grad_norm_var())
-        if self.debug_mode in (self.DEBUG_MODE_GRAD_VARIANCE, self.DEBUG_MODE_REFINEMENT_DISTRIBUTION):
+        if debug_resources_enabled and self.debug_mode in (self.DEBUG_MODE_GRAD_VARIANCE, self.DEBUG_MODE_REFINEMENT_DISTRIBUTION):
             vars.update(self._debug_grad_stats_var())
         self._dispatch(shader, encoder, self._raster_thread_count(), vars, "Rasterize", 24)
 
@@ -2089,6 +2094,67 @@ class GaussianRenderer:
                 self._record_prepass(command_encoder, scene, camera, enqueue_counter_readback=True)
             self._counter_readback_frame_id += 1
             self._rasterize(command_encoder, camera, background_np)
+        if read_stats:
+            self._update_delayed_counter_stats()
+        self._last_stats = self._stats_payload(scene.count, read_stats)
+        return self.output_texture, self._last_stats
+
+    def render_linear_to_texture(
+        self,
+        camera: Camera,
+        background: np.ndarray | tuple[float, float, float] = (0.0, 0.0, 0.0),
+        read_stats: bool = True,
+        command_encoder: spy.CommandEncoder | None = None,
+    ) -> tuple[spy.Texture, dict[str, int | bool | float]]:
+        scene = self._require_scene()
+        if scene.count <= 0:
+            raise RuntimeError("Cannot render empty scene.")
+        self._ensure_work_buffers(scene.count, self._pending_min_list_entries, self._pending_min_scanline_entries)
+        background_np = self._background_array(background)
+        if command_encoder is None:
+            enc = self.device.create_command_encoder()
+            with debug_region(enc, "Renderer Linear Prepass", 19):
+                self._record_prepass(enc, scene, camera, enqueue_counter_readback=True)
+            self._rasterize(enc, camera, background_np, linear_output=True)
+            self.device.submit_command_buffer(enc.finish())
+            self._counter_readback_frame_id += 1
+            self.device.wait()
+        else:
+            with debug_region(command_encoder, "Renderer Linear Prepass", 19):
+                self._record_prepass(command_encoder, scene, camera, enqueue_counter_readback=True)
+            self._counter_readback_frame_id += 1
+            self._rasterize(command_encoder, camera, background_np, linear_output=True)
+        if read_stats:
+            self._update_delayed_counter_stats()
+        self._last_stats = self._stats_payload(scene.count, read_stats)
+        return self.output_texture, self._last_stats
+
+    def render_ppisp_to_texture(
+        self,
+        camera: Camera,
+        ppisp_tonemap: dict[str, object],
+        background: np.ndarray | tuple[float, float, float] = (0.0, 0.0, 0.0),
+        read_stats: bool = True,
+        command_encoder: spy.CommandEncoder | None = None,
+    ) -> tuple[spy.Texture, dict[str, int | bool | float]]:
+        scene = self._require_scene()
+        if scene.count <= 0:
+            raise RuntimeError("Cannot render empty scene.")
+        self._ensure_work_buffers(scene.count, self._pending_min_list_entries, self._pending_min_scanline_entries)
+        background_np = self._background_array(background)
+        if command_encoder is None:
+            enc = self.device.create_command_encoder()
+            with debug_region(enc, "Renderer PPISP Prepass", 19):
+                self._record_prepass(enc, scene, camera, enqueue_counter_readback=True)
+            self._rasterize(enc, camera, background_np, ppisp_tonemap=ppisp_tonemap)
+            self.device.submit_command_buffer(enc.finish())
+            self._counter_readback_frame_id += 1
+            self.device.wait()
+        else:
+            with debug_region(command_encoder, "Renderer PPISP Prepass", 19):
+                self._record_prepass(command_encoder, scene, camera, enqueue_counter_readback=True)
+            self._counter_readback_frame_id += 1
+            self._rasterize(command_encoder, camera, background_np, ppisp_tonemap=ppisp_tonemap)
         if read_stats:
             self._update_delayed_counter_stats()
         self._last_stats = self._stats_payload(scene.count, read_stats)

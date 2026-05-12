@@ -12,6 +12,7 @@ from ..app.training_controls import (
     TRAINING_UI_GROUP_DEFS,
 )
 from ..renderer.render_params import CachedRasterGradParams, build_debug_render_control_specs, build_renderer_control_specs, renderer_param_tooltips
+from ..training.ppisp import PPISP_FIELD_SPECS, ppisp_viewer_defaults, ppisp_viewer_export_fields
 from .state import LOSS_DEBUG_OPTIONS
 
 _LOSS_DEBUG_ABS_SCALE_KEY = "loss_debug_abs_scale"
@@ -30,8 +31,10 @@ _INTERFACE_SCALE_OPTIONS = (
     ("300%", 3.0),
 )
 _VIEWER_BACKGROUND_MODE_LABELS = ("Train Background", "Custom")
+PPISP_DEBUG_MODE = "ppisp_tonemap"
 _DEBUG_MODE_VALUES = (
     "normal",
+    PPISP_DEBUG_MODE,
     "processed_count",
     "splat_age",
     "ellipse_outlines",
@@ -53,6 +56,7 @@ _DEBUG_MODE_VALUES = (
 )
 _DEBUG_MODE_LABELS = (
     "Normal",
+    "PPISP Tonemap",
     "Processed Count",
     "Splat Age",
     "Ellipse Outlines",
@@ -72,11 +76,13 @@ _DEBUG_MODE_LABELS = (
     "SH Coefficient",
     "Black/Negative Regions",
 )
+_RENDERER_DEBUG_MODE_VALUES = tuple("normal" if value == PPISP_DEBUG_MODE else value for value in _DEBUG_MODE_VALUES)
 _DEBUG_SH_COEFF_LABELS = ("SH0 DC", "SH1 X", "SH1 Y", "SH1 Z", "SH2 0", "SH2 1", "SH2 2", "SH2 3", "SH2 4", "SH3 0", "SH3 1", "SH3 2", "SH3 3", "SH3 4", "SH3 5", "SH3 6")
 _VIEWER_DEFAULTS = viewer_defaults()
 _VIEWER_CONTROL_DEFAULTS = _VIEWER_DEFAULTS["controls"]
 _VIEWER_IMPORT_DEFAULTS = _VIEWER_DEFAULTS["import"]
 _VIEWER_UI_DEFAULTS = _VIEWER_DEFAULTS["ui"]
+_PPISP_DEFAULTS = {**ppisp_viewer_defaults(), **{key: _VIEWER_CONTROL_DEFAULTS[key] for key in ppisp_viewer_defaults() if key in _VIEWER_CONTROL_DEFAULTS}}
 _DEFAULT_INTERFACE_SCALE_INDEX = int(_VIEWER_CONTROL_DEFAULTS["interface_scale"])
 _HISTOGRAM_BIN_COUNT_DEFAULT = int(_VIEWER_UI_DEFAULTS["hist_bin_count"])
 _HISTOGRAM_MIN_VALUE_DEFAULT = float(_VIEWER_UI_DEFAULTS["hist_min_value"])
@@ -126,6 +132,9 @@ GROUP_SPECS = {
         ControlSpec("render_background_mode", "combo", "Render Background", {"value": int(_VIEWER_CONTROL_DEFAULTS["render_background_mode"]), "options": _VIEWER_BACKGROUND_MODE_LABELS}),
         ControlSpec("render_background_color", "color_edit3", "Render BG Color", {"value": tuple(float(v) for v in _VIEWER_CONTROL_DEFAULTS["render_background_color"])}),
     ),
+    "PPISP Debug": (
+        *(ControlSpec(spec.key, f"input_float{spec.size}" if spec.size > 1 else "input_float", spec.label, {"value": _PPISP_DEFAULTS[spec.key], "step": spec.step, "step_fast": spec.step_fast, "format": spec.fmt}) for spec in PPISP_FIELD_SPECS),
+    ),
     "Train Setup": _TRAIN_SETUP_SPECS,
     "Train Optimizer": _TRAIN_OPTIMIZER_SPECS,
     "Train Stability": _TRAIN_STABILITY_SPECS,
@@ -156,6 +165,7 @@ _VIEWER_CONTROL_EXPORT_FIELDS = (
     ("fov", float),
     ("render_background_mode", int),
     ("render_background_color", tuple),
+    *ppisp_viewer_export_fields(),
     ("training_steps_per_frame", int),
     ("train_background_color", tuple),
     ("seed", int),

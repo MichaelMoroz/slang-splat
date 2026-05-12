@@ -6,6 +6,7 @@ import "utility/splatting/common.slang";
 import "utility/splatting/opacity.slang";
 import "utility/splatting/params.slang";
 import "utility/splatting/raster.slang";
+import "utility/ppisp_tonemap.slang";
 
 uniform float g_MaxAnisotropy;
 uniform CameraParams g_TrainingNativeCamera;
@@ -15,6 +16,7 @@ uniform uint g_UseTargetAlphaMask;
 uniform RWStructuredBuffer<uint> g_CloneCounts;
 uniform StructuredBuffer<float> g_SplatAges;
 uniform RWStructuredBuffer<uint4> g_SplatContributionInfo;
+uniform PPISPTonemap g_PPISPTonemap;
 
 struct RasterState : IDifferentiable
 {
@@ -899,6 +901,30 @@ float4 raster_forward_output_pixel(RasterPixelInfo info, RasterState state)
     return float4(pow(max(finalColor, 0.0), OUTPUT_GAMMA), 1.0 - state.trans);
 }
 
+float4 raster_linear_output_pixel(RasterPixelInfo info, RasterState state)
+{
+    if (!info.pixelActive) return float4(0.0, 0.0, 0.0, 1.0);
+    float3 background = raster_resolved_background(info.pixelCoord);
+    if (!info.hasTileRange) return float4(background, 1.0);
+    float3 finalColor = state.accum + state.trans * background;
+    return float4(finalColor, 1.0 - state.trans);
+}
+
+float2 raster_sensor_coord(uint2 pixelCoord)
+{
+    return (float2(pixelCoord) + 0.5) / float2(float(max(g_Raster.width, 1u)), float(max(g_Raster.height, 1u)));
+}
+
+float4 raster_ppisp_output_pixel(RasterPixelInfo info, RasterState state)
+{
+    if (!info.pixelActive) return float4(0.0, 0.0, 0.0, 1.0);
+    float3 background = raster_resolved_background(info.pixelCoord);
+    float alpha = info.hasTileRange ? 1.0 - state.trans : 1.0;
+    float3 radiance = info.hasTileRange ? state.accum + state.trans * background : background;
+    float3 displayRgb = ppisp_apply_tonemap(max(radiance, 0.0), raster_sensor_coord(info.pixelCoord), g_PPISPTonemap);
+    return float4(all(isfinite(displayRgb)) ? displayRgb : float3(0.0), alpha);
+}
+
 float4 raster_training_output_pixel(RasterPixelInfo info, RasterState state)
 {
     if (!info.pixelActive) return float4(0.0, 0.0, 0.0, 1.0);
@@ -1049,6 +1075,30 @@ void csRasterize(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupID : S
     if (info.hasTileRange) raster_replay<ForwardRasterReplayVariant>(info, lane, replayState);
     if (!info.pixelActive) return;
     g_Output[info.pixelCoord] = raster_forward_output_pixel(info, replayState.pixelState);
+}
+
+[shader("compute")]
+[numthreads(RASTER_GROUP_THREADS, 1, 1)]
+void csRasterizeLinear(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint lane : SV_GroupIndex)
+{
+    RasterPixelInfo info = resolve_raster_pixel(groupID, lane);
+    RasterReplayState replayState;
+    ForwardRasterReplayVariant.init_state(info, replayState);
+    if (info.hasTileRange) raster_replay<ForwardRasterReplayVariant>(info, lane, replayState);
+    if (!info.pixelActive) return;
+    g_Output[info.pixelCoord] = raster_linear_output_pixel(info, replayState.pixelState);
+}
+
+[shader("compute")]
+[numthreads(RASTER_GROUP_THREADS, 1, 1)]
+void csRasterizePPISP(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint lane : SV_GroupIndex)
+{
+    RasterPixelInfo info = resolve_raster_pixel(groupID, lane);
+    RasterReplayState replayState;
+    ForwardRasterReplayVariant.init_state(info, replayState);
+    if (info.hasTileRange) raster_replay<ForwardRasterReplayVariant>(info, lane, replayState);
+    if (!info.pixelActive) return;
+    g_Output[info.pixelCoord] = raster_ppisp_output_pixel(info, replayState.pixelState);
 }
 
 [shader("compute")]

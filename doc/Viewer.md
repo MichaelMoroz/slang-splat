@@ -104,6 +104,8 @@ Camera controls:
 
 When a training scene is initialized, the viewer prefers a real training-camera position when one is available. That startup path only copies the camera position and keeps the viewer orientation controls intact; if no usable training pose is available, the viewer falls back to a scene-bounds fit.
 
+The viewport `View Mode` menu includes a viewer-only `PPISP Tonemap` debug view for the free-fly camera. Selecting it uses a PPISP rasterizer resolve that applies the shared exposure, vignetting, chroma, and CRF shader to linear radiance before writing display RGB. Its PPISP parameters are edited in the debug-view overlay, alongside the existing debug-mode controls. Training-camera debug views keep their existing display paths, while the parameter layout is shared with training code so per-frame trainer support can be added later.
+
 ## Frame Flow
 
 Each frame follows this order:
