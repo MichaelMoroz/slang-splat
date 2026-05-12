@@ -353,10 +353,12 @@ def test_initialize_photometric_compensation_reuses_training_textures(monkeypatc
                 "photometric_vignette_regularize_weight": 0.5,
                 "photometric_chroma_regularize_weight": 0.25,
                 "photometric_crf_regularize_weight": 0.125,
+                "photometric_gamma_regularize_weight": 0.0625,
                 "photometric_exposure_l1_weight": 0.11,
                 "photometric_vignette_l1_weight": 0.12,
                 "photometric_chroma_l1_weight": 0.13,
                 "photometric_crf_l1_weight": 0.14,
+                "photometric_gamma_l1_weight": 0.015,
             }
         ),
         s=SimpleNamespace(
@@ -386,10 +388,12 @@ def test_initialize_photometric_compensation_reuses_training_textures(monkeypatc
     assert float(captured["hparams"].vignette_regularize_weight) == pytest.approx(0.5)
     assert float(captured["hparams"].chroma_regularize_weight) == pytest.approx(0.25)
     assert float(captured["hparams"].crf_regularize_weight) == pytest.approx(0.125)
+    assert float(captured["hparams"].gamma_regularize_weight) == pytest.approx(0.0625)
     assert float(captured["hparams"].exposure_l1_weight) == pytest.approx(0.11)
     assert float(captured["hparams"].vignette_l1_weight) == pytest.approx(0.12)
     assert float(captured["hparams"].chroma_l1_weight) == pytest.approx(0.13)
     assert float(captured["hparams"].crf_l1_weight) == pytest.approx(0.14)
+    assert float(captured["hparams"].gamma_l1_weight) == pytest.approx(0.015)
     assert float(captured["hparams"].grad_component_clip) == pytest.approx(9.0)
     assert float(captured["hparams"].grad_norm_clip) == pytest.approx(8.0)
     assert float(captured["hparams"].max_update) == pytest.approx(0.07)

@@ -361,10 +361,12 @@
       "photometric_vignette_regularize_weight": 0.1,
       "photometric_chroma_regularize_weight": 0.2,
       "photometric_crf_regularize_weight": 0.2,
+      "photometric_gamma_regularize_weight": 0.2,
       "photometric_exposure_l1_weight": 0.0,
       "photometric_vignette_l1_weight": 0.01,
       "photometric_chroma_l1_weight": 0.02,
       "photometric_crf_l1_weight": 0.02,
+      "photometric_gamma_l1_weight": 0.02,
       "viewport_sh_band": 3,
       "viewport_sh_control_key": "sh_band_stage2",
       "viewport_sh_stage_label": "Stage 2"

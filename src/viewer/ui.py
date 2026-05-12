@@ -2790,6 +2790,12 @@ class ToolkitWindow:
                     float(_PHOTOMETRIC_UI_DEFAULTS.crf_regularize_weight),
                     "Quadratic identity regularization weight for camera-response-curve parameters.",
                 ),
+                (
+                    "photometric_gamma_regularize_weight",
+                    "Gamma",
+                    float(_PHOTOMETRIC_UI_DEFAULTS.gamma_regularize_weight),
+                    "Quadratic identity regularization weight for CRF gamma parameters.",
+                ),
             ):
                 ToolkitWindow._draw_clamped_float(
                     ui,
@@ -2827,6 +2833,12 @@ class ToolkitWindow:
                     "CRF L1",
                     float(_PHOTOMETRIC_UI_DEFAULTS.crf_l1_weight),
                     "L1 identity regularization weight for camera-response-curve parameters.",
+                ),
+                (
+                    "photometric_gamma_l1_weight",
+                    "Gamma L1",
+                    float(_PHOTOMETRIC_UI_DEFAULTS.gamma_l1_weight),
+                    "L1 identity regularization weight for CRF gamma parameters.",
                 ),
             ):
                 ToolkitWindow._draw_clamped_float(
@@ -3650,10 +3662,12 @@ def build_ui(renderer) -> ViewerUI:
     values["photometric_vignette_regularize_weight"] = float(_VIEWER_UI_DEFAULTS.get("photometric_vignette_regularize_weight", _PHOTOMETRIC_UI_DEFAULTS.vignette_regularize_weight))
     values["photometric_chroma_regularize_weight"] = float(_VIEWER_UI_DEFAULTS.get("photometric_chroma_regularize_weight", _PHOTOMETRIC_UI_DEFAULTS.chroma_regularize_weight))
     values["photometric_crf_regularize_weight"] = float(_VIEWER_UI_DEFAULTS.get("photometric_crf_regularize_weight", _PHOTOMETRIC_UI_DEFAULTS.crf_regularize_weight))
+    values["photometric_gamma_regularize_weight"] = float(_VIEWER_UI_DEFAULTS.get("photometric_gamma_regularize_weight", _PHOTOMETRIC_UI_DEFAULTS.gamma_regularize_weight))
     values["photometric_exposure_l1_weight"] = float(_VIEWER_UI_DEFAULTS.get("photometric_exposure_l1_weight", _PHOTOMETRIC_UI_DEFAULTS.exposure_l1_weight))
     values["photometric_vignette_l1_weight"] = float(_VIEWER_UI_DEFAULTS.get("photometric_vignette_l1_weight", _PHOTOMETRIC_UI_DEFAULTS.vignette_l1_weight))
     values["photometric_chroma_l1_weight"] = float(_VIEWER_UI_DEFAULTS.get("photometric_chroma_l1_weight", _PHOTOMETRIC_UI_DEFAULTS.chroma_l1_weight))
     values["photometric_crf_l1_weight"] = float(_VIEWER_UI_DEFAULTS.get("photometric_crf_l1_weight", _PHOTOMETRIC_UI_DEFAULTS.crf_l1_weight))
+    values["photometric_gamma_l1_weight"] = float(_VIEWER_UI_DEFAULTS.get("photometric_gamma_l1_weight", _PHOTOMETRIC_UI_DEFAULTS.gamma_l1_weight))
     for key, cast in _VIEWER_UI_EXPORT_FIELDS[:-3]:
         default = False if cast is bool else 0 if cast is int else 0.0
         values[key] = cast(_VIEWER_UI_DEFAULTS.get(key, default))

@@ -77,10 +77,12 @@ class PhotometricCompensationHyperParams:
     vignette_regularize_weight: float = 0.1
     chroma_regularize_weight: float = 0.2
     crf_regularize_weight: float = 0.2
+    gamma_regularize_weight: float | None = None
     exposure_l1_weight: float = 0.0
     vignette_l1_weight: float = 0.01
     chroma_l1_weight: float = 0.02
     crf_l1_weight: float = 0.02
+    gamma_l1_weight: float | None = None
     grad_component_clip: float = 10.0
     grad_norm_clip: float = 10.0
     max_update: float = 0.05
@@ -103,10 +105,16 @@ class PhotometricCompensationHyperParams:
         self.vignette_regularize_weight = float(max(self.vignette_regularize_weight, 0.0))
         self.chroma_regularize_weight = float(max(self.chroma_regularize_weight, 0.0))
         self.crf_regularize_weight = float(max(self.crf_regularize_weight, 0.0))
+        if self.gamma_regularize_weight is None:
+            self.gamma_regularize_weight = float(self.crf_regularize_weight)
+        self.gamma_regularize_weight = float(max(self.gamma_regularize_weight, 0.0))
         self.exposure_l1_weight = float(max(self.exposure_l1_weight, 0.0))
         self.vignette_l1_weight = float(max(self.vignette_l1_weight, 0.0))
         self.chroma_l1_weight = float(max(self.chroma_l1_weight, 0.0))
         self.crf_l1_weight = float(max(self.crf_l1_weight, 0.0))
+        if self.gamma_l1_weight is None:
+            self.gamma_l1_weight = float(self.crf_l1_weight)
+        self.gamma_l1_weight = float(max(self.gamma_l1_weight, 0.0))
         self.grad_component_clip = float(max(self.grad_component_clip, 1e-6))
         self.grad_norm_clip = float(max(self.grad_norm_clip, 1e-6))
         self.max_update = float(max(self.max_update, 1e-6))
@@ -495,6 +503,8 @@ def _field_group_name(attr: str) -> str:
         return "vignette"
     if attr.startswith("chroma"):
         return "chroma"
+    if attr == "crfGamma":
+        return "gamma"
     return "crf"
 
 
@@ -506,6 +516,8 @@ def _field_lr_mul(attr: str, hparams: PhotometricCompensationHyperParams) -> flo
         return float(hparams.vignette_lr_mul)
     if group == "chroma":
         return float(hparams.chroma_lr_mul)
+    if group == "gamma":
+        return float(hparams.crf_lr_mul)
     return float(hparams.crf_lr_mul)
 
 
@@ -517,6 +529,8 @@ def _field_regularize_weight(attr: str, hparams: PhotometricCompensationHyperPar
         return float(hparams.vignette_regularize_weight)
     if group == "chroma":
         return float(hparams.chroma_regularize_weight)
+    if group == "gamma":
+        return float(hparams.gamma_regularize_weight)
     return float(hparams.crf_regularize_weight)
 
 
@@ -528,6 +542,8 @@ def _field_l1_weight(attr: str, hparams: PhotometricCompensationHyperParams) -> 
         return float(hparams.vignette_l1_weight)
     if group == "chroma":
         return float(hparams.chroma_l1_weight)
+    if group == "gamma":
+        return float(hparams.gamma_l1_weight)
     return float(hparams.crf_l1_weight)
 
 

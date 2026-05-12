@@ -364,6 +364,42 @@ def test_photometric_param_settings_regularize_toward_identity(device) -> None:
     assert final_distance < start_distance * 0.5
 
 
+def test_photometric_gamma_regularization_is_independent_from_crf_weights(device) -> None:
+    recon, frames = _make_reconstruction()
+    hparams = PhotometricCompensationHyperParams(
+        learning_rate=0.2,
+        exposure_regularize_weight=0.0,
+        vignette_regularize_weight=0.0,
+        chroma_regularize_weight=0.0,
+        crf_regularize_weight=0.0,
+        gamma_regularize_weight=0.5,
+        exposure_l1_weight=0.0,
+        vignette_l1_weight=0.0,
+        chroma_l1_weight=0.0,
+        crf_l1_weight=0.0,
+        gamma_l1_weight=0.05,
+    )
+    trainer = PhotometricCompensationTrainer(device, recon, frames, hparams=hparams, seed=11)
+    identity = identity_packed_ppisp_params(len(frames))
+    params = identity.copy()
+    params[24:33, :] += 0.25
+    params[33:36, :] += 0.6
+    trainer.replace_packed_params(params)
+
+    start_gamma_distance = float(np.mean(np.abs(params[33:36, :] - identity[33:36, :]), dtype=np.float64))
+    start_other_crf_distance = float(np.mean(np.abs(params[24:33, :] - identity[24:33, :]), dtype=np.float64))
+    for step in range(1, 65):
+        trainer.zero_grads()
+        trainer.step_optimizer(step)
+
+    final_params = trainer.read_packed_params()
+    final_gamma_distance = float(np.mean(np.abs(final_params[33:36, :] - identity[33:36, :]), dtype=np.float64))
+    final_other_crf_distance = float(np.mean(np.abs(final_params[24:33, :] - identity[24:33, :]), dtype=np.float64))
+
+    assert final_gamma_distance < start_gamma_distance * 0.5
+    assert final_other_crf_distance == pytest.approx(start_other_crf_distance, rel=0.0, abs=5e-5)
+
+
 def test_photometric_precomputed_pair_dataset_avoids_full_frame_upload(device) -> None:
     dataset_root = Path("dataset/garden")
     if not dataset_root.exists():

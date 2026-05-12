@@ -187,6 +187,8 @@ def test_build_ui_initializes_control_groups_and_internal_state() -> None:
         "colmap_fibonacci_sphere_point_count",
         "colmap_fibonacci_sphere_radius_multiplier",
         "colmap_selected_camera_ids",
+        "photometric_gamma_regularize_weight",
+        "photometric_gamma_l1_weight",
         "debug_gaussian_scale_multiplier",
         "debug_min_opacity",
         "debug_opacity_multiplier",
@@ -1145,10 +1147,12 @@ def test_photometric_window_updates_training_controls(monkeypatch) -> None:
         "Vignette": 0.5,
         "Chroma": 0.25,
         "CRF": 0.125,
+        "Gamma": 0.0625,
         "Exposure L1": 0.11,
         "Vignette L1": 0.12,
         "Chroma L1": 0.13,
         "CRF L1": 0.14,
+        "Gamma L1": 0.015,
     }
     monkeypatch.setattr(ui.ToolkitWindow, "_register_non_viewport_window", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(ui.imgui, "set_next_window_pos", lambda *args, **kwargs: None)
@@ -1198,10 +1202,12 @@ def test_photometric_window_updates_training_controls(monkeypatch) -> None:
             "photometric_vignette_regularize_weight": 0.1,
             "photometric_chroma_regularize_weight": 0.2,
             "photometric_crf_regularize_weight": 0.2,
+            "photometric_gamma_regularize_weight": 0.2,
             "photometric_exposure_l1_weight": 0.0,
             "photometric_vignette_l1_weight": 0.01,
             "photometric_chroma_l1_weight": 0.02,
             "photometric_crf_l1_weight": 0.02,
+            "photometric_gamma_l1_weight": 0.02,
             "_photometric_param_sections": (),
         },
         _texts={},
@@ -1224,10 +1230,12 @@ def test_photometric_window_updates_training_controls(monkeypatch) -> None:
     assert viewer_ui._values["photometric_vignette_regularize_weight"] == 0.5
     assert viewer_ui._values["photometric_chroma_regularize_weight"] == 0.25
     assert viewer_ui._values["photometric_crf_regularize_weight"] == 0.125
+    assert viewer_ui._values["photometric_gamma_regularize_weight"] == 0.0625
     assert viewer_ui._values["photometric_exposure_l1_weight"] == 0.11
     assert viewer_ui._values["photometric_vignette_l1_weight"] == 0.12
     assert viewer_ui._values["photometric_chroma_l1_weight"] == 0.13
     assert viewer_ui._values["photometric_crf_l1_weight"] == 0.14
+    assert viewer_ui._values["photometric_gamma_l1_weight"] == 0.015
 
 
 def test_photometric_compensation_window_draws_prepare_progress(monkeypatch) -> None:
@@ -1283,10 +1291,12 @@ def test_photometric_compensation_window_draws_prepare_progress(monkeypatch) -> 
             "photometric_vignette_regularize_weight": 0.1,
             "photometric_chroma_regularize_weight": 0.2,
             "photometric_crf_regularize_weight": 0.2,
+            "photometric_gamma_regularize_weight": 0.2,
             "photometric_exposure_l1_weight": 0.0,
             "photometric_vignette_l1_weight": 0.01,
             "photometric_chroma_l1_weight": 0.02,
             "photometric_crf_l1_weight": 0.02,
+            "photometric_gamma_l1_weight": 0.02,
             "_photometric_param_sections": (),
             "_photometric_prepare_active": True,
             "_photometric_prepare_fraction": 0.25,
