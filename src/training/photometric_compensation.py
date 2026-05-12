@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -529,6 +530,9 @@ class PhotometricCompensationTrainer:
         self._pair_dataset_sample_capacity = 0
         self._pair_dataset_pair_capacity = 0
         self._pair_dataset_entry_capacity = 0
+        self._pair_dataset_prepare_started = False
+        self._pair_dataset_prepare_frame_indices: tuple[int, ...] = ()
+        self._pair_dataset_prepare_index = 0
         self._batch_pair_capacity = 0
         self._frame_pair_entry_capacity = 0
         self.pair_pool = build_photometric_observation_pair_pool(
@@ -654,6 +658,13 @@ class PhotometricCompensationTrainer:
         self._buffers["dataset_frame_pair_entries"].copy_from_numpy(self._pair_dataset_dispatch.frame_pair_entries)
         self._pair_dataset_metadata_uploaded = True
 
+    def _pair_dataset_work_frame_indices(self) -> tuple[int, ...]:
+        return tuple(
+            frame_index
+            for frame_index in range(self._frame_count)
+            if int(self._pair_dataset_dispatch.frame_pair_ranges[frame_index + 1]) > int(self._pair_dataset_dispatch.frame_pair_ranges[frame_index])
+        )
+
     def _pair_dataset_source_texture(self, frame_index: int) -> tuple[spy.Texture, bool]:
         if self._frame_source_textures is not None:
             return self._frame_source_textures[frame_index], False
@@ -712,16 +723,71 @@ class PhotometricCompensationTrainer:
             debug_color_index=92,
         )
 
-    def prepare_pair_dataset(self) -> None:
+    def _reset_pair_dataset_prepare_state(self) -> None:
+        self._pair_dataset_prepare_started = False
+        self._pair_dataset_prepare_frame_indices = ()
+        self._pair_dataset_prepare_index = 0
+
+    def _finalize_pair_dataset_prepare(self) -> None:
+        self._frame_rgba_linear = None
+        self._pair_dataset_uploaded = True
+        self._reset_pair_dataset_prepare_state()
+
+    @property
+    def pair_dataset_prepare_active(self) -> bool:
+        return bool(self._pair_dataset_prepare_started) and not bool(self._pair_dataset_uploaded)
+
+    @property
+    def pair_dataset_prepare_total_frames(self) -> int:
+        if self._pair_dataset_prepare_started:
+            return int(len(self._pair_dataset_prepare_frame_indices))
         if self._pair_dataset_uploaded:
+            return int(len(self._pair_dataset_work_frame_indices()))
+        return 0
+
+    @property
+    def pair_dataset_prepare_completed_frames(self) -> int:
+        if self._pair_dataset_prepare_started:
+            return min(int(self._pair_dataset_prepare_index), int(len(self._pair_dataset_prepare_frame_indices)))
+        return int(self.pair_dataset_prepare_total_frames) if self._pair_dataset_uploaded else 0
+
+    @property
+    def pair_dataset_prepare_fraction(self) -> float:
+        total = int(self.pair_dataset_prepare_total_frames)
+        if total <= 0:
+            return 1.0 if self._pair_dataset_uploaded else 0.0
+        return min(max(float(self.pair_dataset_prepare_completed_frames) / float(total), 0.0), 1.0)
+
+    @property
+    def pair_dataset_prepare_current_name(self) -> str:
+        if not self._pair_dataset_prepare_started:
+            return ""
+        if self._pair_dataset_prepare_index >= len(self._pair_dataset_prepare_frame_indices):
+            return ""
+        frame_index = int(self._pair_dataset_prepare_frame_indices[self._pair_dataset_prepare_index])
+        image_path = getattr(self.frames[frame_index], "image_path", f"frame_{frame_index}")
+        return Path(image_path).name
+
+    def begin_prepare_pair_dataset(self) -> None:
+        if self._pair_dataset_uploaded or self._pair_dataset_prepare_started:
             return
         self._upload_pair_dataset_metadata()
         self._ensure_pair_dataset_buffers(len(self.pair_pool) * self._pair_dataset_sample_count)
-        for frame_index in range(self._frame_count):
-            start = int(self._pair_dataset_dispatch.frame_pair_ranges[frame_index])
-            stop = int(self._pair_dataset_dispatch.frame_pair_ranges[frame_index + 1])
-            if stop <= start:
-                continue
+        self._pair_dataset_prepare_frame_indices = self._pair_dataset_work_frame_indices()
+        self._pair_dataset_prepare_index = 0
+        self._pair_dataset_prepare_started = True
+        if not self._pair_dataset_prepare_frame_indices:
+            self._finalize_pair_dataset_prepare()
+
+    def advance_prepare_pair_dataset(self, frame_budget: int = 1) -> bool:
+        if self._pair_dataset_uploaded:
+            return True
+        self.begin_prepare_pair_dataset()
+        if self._pair_dataset_uploaded:
+            return True
+        budget = max(int(frame_budget), 1)
+        while budget > 0 and self._pair_dataset_prepare_index < len(self._pair_dataset_prepare_frame_indices):
+            frame_index = int(self._pair_dataset_prepare_frame_indices[self._pair_dataset_prepare_index])
             source_texture, owns_texture = self._pair_dataset_source_texture(frame_index)
             encoder = self.device.create_command_encoder()
             self._dispatch_build_pair_dataset(encoder, frame_index, source_texture)
@@ -730,8 +796,17 @@ class PhotometricCompensationTrainer:
             if owns_texture:
                 defer_resource_release(source_texture)
                 drain_deferred_resource_releases(min_age=0)
-        self._frame_rgba_linear = None
-        self._pair_dataset_uploaded = True
+            self._pair_dataset_prepare_index += 1
+            budget -= 1
+        if self._pair_dataset_prepare_index >= len(self._pair_dataset_prepare_frame_indices):
+            self._finalize_pair_dataset_prepare()
+        return bool(self._pair_dataset_uploaded)
+
+    def prepare_pair_dataset(self) -> None:
+        if self._pair_dataset_uploaded:
+            return
+        self.begin_prepare_pair_dataset()
+        self.advance_prepare_pair_dataset(frame_budget=max(self.pair_dataset_prepare_total_frames, 1))
 
     def _upload_pair_dataset(self) -> None:
         self.prepare_pair_dataset()

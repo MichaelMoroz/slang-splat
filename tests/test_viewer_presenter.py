@@ -949,6 +949,29 @@ def test_update_ui_text_sorts_training_view_rows_by_selected_column() -> None:
     assert [row["loss"] for row in rows] == [0.75, 0.25]
 
 
+def test_update_ui_text_publishes_photometric_prepare_progress(monkeypatch) -> None:
+    viewer = _viewer(loss_debug=False)
+    viewer.s.photometric_prepare_pending_active = True
+    viewer.s.photometric_trainer = SimpleNamespace(
+        pair_dataset_prepare_active=True,
+        pair_dataset_prepare_fraction=0.5,
+        pair_dataset_prepare_current_name="frame_001.png",
+        pair_dataset_prepare_total_frames=4,
+        pair_dataset_prepare_completed_frames=2,
+        pair_pool=(0, 1, 2),
+        provider=SimpleNamespace(params_for_frame=lambda _frame_index: presenter.PPISPTonemapParams()),
+        state=SimpleNamespace(step=0, last_loss=0.0, ema_loss=0.0, last_regularization_loss=0.0, last_pair_count=0),
+    )
+    monkeypatch.setattr(presenter, "_photometric_param_sections", lambda _viewer: ())
+
+    presenter.update_ui_text(viewer, 1.0 / 60.0)
+
+    assert viewer.ui._values["_photometric_prepare_active"] is True
+    assert viewer.ui._values["_photometric_prepare_fraction"] == pytest.approx(0.5)
+    assert viewer.ui._texts["photometric_prepare_current"] == "frame_001.png"
+    assert viewer.ui._texts["photometric_status"] == "Photometric: preparing dataset | auto-start | frames=2/4"
+
+
 def test_update_toolkit_history_averages_samples_within_bucket() -> None:
     viewer = _viewer(loss_debug=False)
     viewer.toolkit = SimpleNamespace(tk=viewer_ui.ToolkitState())

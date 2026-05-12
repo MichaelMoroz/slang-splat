@@ -2623,6 +2623,12 @@ class ToolkitWindow:
                 text = str(ui._texts.get(key, "")).strip()
                 if text:
                     imgui.text_wrapped(text)
+            if bool(ui._values.get("_photometric_prepare_active", False)):
+                progress = max(0.0, min(float(ui._values.get("_photometric_prepare_fraction", 0.0)), 1.0))
+                current_name = str(ui._texts.get("photometric_prepare_current", "")).strip()
+                imgui.progress_bar(progress, imgui.ImVec2(-1.0, 0.0))
+                if current_name:
+                    imgui.text_disabled(current_name)
             imgui.spacing()
             half_w = imgui.get_content_region_avail().x * 0.31
             if imgui.button("Start", imgui.ImVec2(half_w, 0.0)):
@@ -3695,6 +3701,8 @@ def build_ui(renderer) -> ViewerUI:
         "_colmap_camera_rows": (),
         "_colmap_import_active": False,
         "_colmap_import_fraction": 0.0,
+        "_photometric_prepare_active": False,
+        "_photometric_prepare_fraction": 0.0,
         "_can_export_ply": False,
     })
 
@@ -3703,6 +3711,7 @@ def build_ui(renderer) -> ViewerUI:
             "fps", "path", "scene_stats", "render_stats", "training",
             "training_time", "training_iters_avg", "training_loss", "training_ssim", "training_density", "training_psnr", "training_instability", "error",
             "photometric_status", "photometric_time", "photometric_loss", "photometric_regularization", "photometric_pairs",
+            "photometric_prepare_current",
             "loss_debug_frame", "loss_debug_psnr",
             "colmap_import_status", "colmap_import_current",
             "training_schedule",

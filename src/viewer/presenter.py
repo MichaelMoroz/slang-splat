@@ -406,6 +406,21 @@ def _photometric_status_texts(viewer: object) -> dict[str, str]:
             "photometric_regularization": "Regularization: n/a",
             "photometric_pairs": "Pairs: n/a",
         }
+    prepare_active = bool(getattr(trainer, "pair_dataset_prepare_active", False))
+    if prepare_active:
+        total_frames = int(getattr(trainer, "pair_dataset_prepare_total_frames", 0))
+        completed_frames = int(getattr(trainer, "pair_dataset_prepare_completed_frames", 0))
+        pending_start = bool(getattr(viewer.s, "photometric_prepare_pending_active", False))
+        status = "preparing dataset"
+        if pending_start:
+            status += " | auto-start"
+        return {
+            "photometric_status": f"Photometric: {status} | frames={completed_frames:,}/{total_frames:,}",
+            "photometric_time": "Time: n/a",
+            "photometric_loss": "Loss: n/a",
+            "photometric_regularization": "Regularization: n/a",
+            "photometric_pairs": f"Pairs: {len(getattr(trainer, 'pair_pool', ())):,}",
+        }
     state = trainer.state
     elapsed = float(session.photometric_elapsed_seconds(viewer, now=viewer.s.last_time))
     avg_iters_s = float(state.step) / elapsed if elapsed > 1e-6 else 0.0
@@ -452,6 +467,10 @@ def update_ui_text(viewer: object, dt: float) -> None:
     _set_ui_value(viewer, "_training_refinement_sections", panel_state["training_refinement_sections"])
     _set_ui_value(viewer, "photometric_frame_max", max(len(viewer.s.training_frames) - 1, 0))
     _set_ui_value(viewer, "_photometric_param_sections", _photometric_param_sections(viewer))
+    photometric_trainer = getattr(viewer.s, "photometric_trainer", None)
+    _set_ui_value(viewer, "_photometric_prepare_active", bool(getattr(photometric_trainer, "pair_dataset_prepare_active", False)))
+    _set_ui_value(viewer, "_photometric_prepare_fraction", float(getattr(photometric_trainer, "pair_dataset_prepare_fraction", 0.0)))
+    _set_text(viewer, "photometric_prepare_current", str(getattr(photometric_trainer, "pair_dataset_prepare_current_name", "") or ""))
     _set_ui_value(viewer, "_viewport_sh_control_key", str(panel_state["viewport_sh_control_key"]))
     _set_ui_value(viewer, "_viewport_sh_stage_label", str(panel_state["viewport_sh_stage_label"]))
     _set_text(viewer, "histogram_status", panel_state["histogram_status"])
@@ -959,6 +978,7 @@ def render_frame(viewer: object, render_context: spy.AppWindow.RenderContext) ->
             session.reinitialize_training_scene(viewer)
         session.apply_live_params(viewer)
         session.advance_colmap_import(viewer)
+        session.advance_photometric_initialization(viewer)
         if bool(getattr(viewer.s, "pending_training_runtime_resize", False)):
             runtime_reconfigured = bool(session.ensure_training_runtime_resolution(viewer))
         if viewer.s.renderer is None:

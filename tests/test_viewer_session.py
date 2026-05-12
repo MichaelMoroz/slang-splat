@@ -325,9 +325,10 @@ def test_initialize_photometric_compensation_reuses_training_textures(monkeypatc
             captured["hparams"] = hparams
             captured["frame_source_textures"] = frame_source_textures
             self.provider = object()
+            self._pair_dataset_uploaded = False
 
-        def prepare_pair_dataset(self) -> None:
-            captured["prepared"] = True
+        def begin_prepare_pair_dataset(self) -> None:
+            captured["began_prepare"] = True
 
     monkeypatch.setattr(session, "PhotometricCompensationTrainer", _FakePhotometricTrainer)
     monkeypatch.setattr(session, "sync_photometric_target_provider", lambda _viewer: captured.__setitem__("sync_calls", int(captured["sync_calls"]) + 1))
@@ -392,11 +393,67 @@ def test_initialize_photometric_compensation_reuses_training_textures(monkeypatc
     assert float(captured["hparams"].grad_component_clip) == pytest.approx(9.0)
     assert float(captured["hparams"].grad_norm_clip) == pytest.approx(8.0)
     assert float(captured["hparams"].max_update) == pytest.approx(0.07)
-    assert captured["prepared"] is True
+    assert captured["began_prepare"] is True
     assert captured["sync_calls"] == 2
     assert viewer.s.photometric_active is False
+    assert viewer.s.photometric_prepare_pending_active is False
     assert viewer.s.photometric_elapsed_s == 0.0
     assert viewer.s.photometric_resume_time is None
+
+
+def test_advance_photometric_initialization_autostarts_when_requested(monkeypatch) -> None:
+    captured: dict[str, int] = {"sync_calls": 0}
+
+    class _FakePhotometricTrainer:
+        def __init__(self, *, device, reconstruction, frames, hparams, frame_source_textures=None) -> None:
+            self.provider = object()
+            self._pair_dataset_uploaded = False
+            self._advance_calls = 0
+
+        def begin_prepare_pair_dataset(self) -> None:
+            return None
+
+        def advance_prepare_pair_dataset(self, *, frame_budget: int = 1) -> bool:
+            self._advance_calls += int(frame_budget)
+            if self._advance_calls >= 2:
+                self._pair_dataset_uploaded = True
+            return self._pair_dataset_uploaded
+
+    monkeypatch.setattr(session, "PhotometricCompensationTrainer", _FakePhotometricTrainer)
+    monkeypatch.setattr(session, "sync_photometric_target_provider", lambda _viewer: captured.__setitem__("sync_calls", int(captured["sync_calls"]) + 1))
+
+    viewer = SimpleNamespace(
+        device=object(),
+        ui=SimpleNamespace(_values={}),
+        s=SimpleNamespace(
+            trainer=SimpleNamespace(_frame_targets_native=[object(), object()]),
+            colmap_recon=object(),
+            training_frames=[SimpleNamespace(width=16, height=16), SimpleNamespace(width=16, height=16)],
+            photometric_trainer=None,
+            photometric_active=False,
+            photometric_prepare_pending_active=False,
+            photometric_elapsed_s=0.0,
+            photometric_resume_time=None,
+        ),
+    )
+
+    session.set_photometric_active(viewer, True)
+
+    assert viewer.s.photometric_trainer is not None
+    assert viewer.s.photometric_active is False
+    assert viewer.s.photometric_prepare_pending_active is True
+
+    session.advance_photometric_initialization(viewer)
+
+    assert viewer.s.photometric_active is False
+    assert viewer.s.photometric_prepare_pending_active is True
+
+    session.advance_photometric_initialization(viewer)
+
+    assert viewer.s.photometric_active is True
+    assert viewer.s.photometric_prepare_pending_active is False
+    assert viewer.s.photometric_resume_time is not None
+    assert captured["sync_calls"] == 2
 
 
 def test_move_main_camera_to_selected_training_frame_applies_pose_and_exits_mode() -> None:

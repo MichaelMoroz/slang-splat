@@ -1230,6 +1230,79 @@ def test_photometric_window_updates_training_controls(monkeypatch) -> None:
     assert viewer_ui._values["photometric_crf_l1_weight"] == 0.14
 
 
+def test_photometric_compensation_window_draws_prepare_progress(monkeypatch) -> None:
+    progress_calls: list[float] = []
+    disabled_text: list[str] = []
+
+    monkeypatch.setattr(ui.imgui, "set_next_window_pos", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ui.imgui, "set_next_window_size", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ui.imgui, "begin", lambda *_args, **_kwargs: (True, True))
+    monkeypatch.setattr(ui.imgui, "end", lambda: None)
+    monkeypatch.setattr(ui.ToolkitWindow, "_register_non_viewport_window", staticmethod(lambda *_args, **_kwargs: None))
+    monkeypatch.setattr(ui.imgui, "text_wrapped", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ui.imgui, "text_disabled", lambda text: disabled_text.append(str(text)))
+    monkeypatch.setattr(ui.imgui, "progress_bar", lambda progress, *_args, **_kwargs: progress_calls.append(float(progress)))
+    monkeypatch.setattr(ui.imgui, "spacing", lambda: None)
+    monkeypatch.setattr(ui.imgui, "same_line", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ui.imgui, "separator_text", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ui.imgui, "button", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(ui.imgui, "checkbox", lambda _label, value: (False, value))
+    monkeypatch.setattr(ui.imgui, "drag_int", lambda _label, value, *_args: (False, value))
+    monkeypatch.setattr(ui.imgui, "slider_int", lambda _label, value, *_args: (False, value))
+    monkeypatch.setattr(ui.imgui, "drag_float", lambda _label, value, *_args: (False, value))
+    monkeypatch.setattr(ui.imgui, "is_item_hovered", lambda: False)
+    monkeypatch.setattr(ui.imgui, "get_content_region_avail", lambda: ui.imgui.ImVec2(420.0, 320.0))
+    toolkit = SimpleNamespace(
+        _menu_bar_height=24.0,
+        _toolkit_dock_id=17,
+        _applied_interface_scale=1.0,
+        _dock_tool_window=lambda *_args: None,
+        _plot_scale=lambda _ui_obj: 1.0,
+        tk=SimpleNamespace(photometric_loss_history=[], photometric_step_history=[]),
+        callbacks=SimpleNamespace(start_photometric=lambda: None, stop_photometric=lambda: None, reset_photometric=lambda: None),
+    )
+    viewer_ui = SimpleNamespace(
+        _values={
+            "show_photometric_compensation": True,
+            "photometric_apply_to_targets": True,
+            "photometric_steps_per_frame": 1,
+            "photometric_selected_frame": 0,
+            "photometric_frame_max": 0,
+            "photometric_batch_pair_count": 2048,
+            "photometric_neighborhood_size": 3,
+            "photometric_min_track_length": 2,
+            "photometric_learning_rate": 0.05,
+            "photometric_grad_component_clip": 10.0,
+            "photometric_grad_norm_clip": 10.0,
+            "photometric_max_update": 0.05,
+            "photometric_exposure_lr_mul": 0.5,
+            "photometric_vignette_lr_mul": 0.25,
+            "photometric_chroma_lr_mul": 0.25,
+            "photometric_crf_lr_mul": 0.125,
+            "photometric_exposure_regularize_weight": 0.05,
+            "photometric_vignette_regularize_weight": 0.1,
+            "photometric_chroma_regularize_weight": 0.2,
+            "photometric_crf_regularize_weight": 0.2,
+            "photometric_exposure_l1_weight": 0.0,
+            "photometric_vignette_l1_weight": 0.01,
+            "photometric_chroma_l1_weight": 0.02,
+            "photometric_crf_l1_weight": 0.02,
+            "_photometric_param_sections": (),
+            "_photometric_prepare_active": True,
+            "_photometric_prepare_fraction": 0.25,
+        },
+        _texts={
+            "photometric_status": "Photometric: preparing dataset | frames=1/4",
+            "photometric_prepare_current": "frame_001.png",
+        },
+    )
+
+    ui.ToolkitWindow._draw_photometric_compensation_window(toolkit, viewer_ui)
+
+    assert progress_calls == [0.25]
+    assert disabled_text[0] == "frame_001.png"
+
+
 def test_viewport_debug_overlay_draws_mode_specific_controls(monkeypatch) -> None:
     drawn: list[tuple[str, bool]] = []
     capture_rects: list[tuple[float, float, float, float]] = []

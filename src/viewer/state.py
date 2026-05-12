@@ -174,7 +174,7 @@ class ViewerState:
     cached_init_custom_mesh_positions: np.ndarray | None = None; cached_init_custom_mesh_colors: np.ndarray | None = None
     cached_init_fibonacci_positions: np.ndarray | None = None; cached_init_fibonacci_colors: np.ndarray | None = None
     trainer: GaussianTrainer | None = None; photometric_trainer: PhotometricCompensationTrainer | None = None
-    training_active: bool = False; photometric_active: bool = False
+    training_active: bool = False; photometric_active: bool = False; photometric_prepare_pending_active: bool = False
     viewport_texture: spy.Texture | None = None; loss_debug_texture: spy.Texture | None = None; debug_target_texture: spy.Texture | None = None
     debug_abs_diff_kernel: spy.ComputeKernel | None = None; debug_edge_kernel: spy.ComputeKernel | None = None; debug_dssim_features_kernel: spy.ComputeKernel | None = None; debug_dssim_compose_kernel: spy.ComputeKernel | None = None; debug_letterbox_kernel: spy.ComputeKernel | None = None; debug_target_sample_kernel: spy.ComputeKernel | None = None; debug_present_texture: spy.Texture | None = None
     debug_dssim_blur: object | None = None; debug_dssim_resolution: tuple[int, int] | None = None

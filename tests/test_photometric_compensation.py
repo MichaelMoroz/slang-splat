@@ -431,6 +431,43 @@ def test_photometric_gpu_pair_dataset_matches_reference(device) -> None:
     np.testing.assert_allclose(pair_sensor_coords_b, expected_sensor_coords_b, rtol=0.0, atol=1e-6)
 
 
+def test_photometric_incremental_pair_dataset_preparation_reports_progress(device) -> None:
+    recon, frames = _make_reconstruction()
+    frame_rgba_linear = [
+        _make_linear_rgba(frame.height, frame.width, rgb_scale=1.0 + 0.1 * frame_index)
+        for frame_index, frame in enumerate(frames)
+    ]
+    trainer = PhotometricCompensationTrainer(
+        device,
+        recon,
+        frames,
+        hparams=PhotometricCompensationHyperParams(batch_pair_count=4, neighborhood_size=3),
+        seed=17,
+        frame_rgba_linear=frame_rgba_linear,
+    )
+
+    trainer.begin_prepare_pair_dataset()
+
+    assert trainer.pair_dataset_prepare_active is True
+    assert trainer.pair_dataset_prepare_total_frames > 0
+    assert trainer.pair_dataset_prepare_completed_frames == 0
+    assert trainer.pair_dataset_prepare_fraction == pytest.approx(0.0)
+    assert trainer.pair_dataset_prepare_current_name != ""
+
+    completed = trainer.advance_prepare_pair_dataset(frame_budget=1)
+
+    assert completed is False
+    assert trainer.pair_dataset_prepare_active is True
+    assert trainer.pair_dataset_prepare_completed_frames == 1
+    assert trainer.pair_dataset_prepare_fraction > 0.0
+
+    trainer.prepare_pair_dataset()
+
+    assert trainer.pair_dataset_prepare_active is False
+    assert trainer._pair_dataset_uploaded is True
+    assert trainer.pair_dataset_prepare_fraction == pytest.approx(1.0)
+
+
 def test_photometric_reference_frame_stays_identity(device) -> None:
     recon, frames = _make_reconstruction()
     frame_rgba_linear = [

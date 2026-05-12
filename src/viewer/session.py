@@ -2379,7 +2379,38 @@ def sync_photometric_hparams(viewer: object) -> None:
     )
 
 
-def initialize_photometric_compensation(viewer: object) -> None:
+def _photometric_pair_dataset_ready(trainer: object | None) -> bool:
+    if trainer is None:
+        return False
+    return bool(getattr(trainer, "_pair_dataset_uploaded", True))
+
+
+def _begin_photometric_pair_dataset_prepare(trainer: object | None) -> None:
+    if trainer is None:
+        return
+    begin_prepare_pair_dataset = getattr(trainer, "begin_prepare_pair_dataset", None)
+    if callable(begin_prepare_pair_dataset):
+        begin_prepare_pair_dataset()
+        return
+    prepare_pair_dataset = getattr(trainer, "prepare_pair_dataset", None)
+    if callable(prepare_pair_dataset):
+        prepare_pair_dataset()
+
+
+def _advance_photometric_pair_dataset_prepare(trainer: object | None, *, frame_budget: int = 1) -> bool:
+    if trainer is None:
+        return False
+    advance_prepare_pair_dataset = getattr(trainer, "advance_prepare_pair_dataset", None)
+    if callable(advance_prepare_pair_dataset):
+        return bool(advance_prepare_pair_dataset(frame_budget=frame_budget))
+    if not _photometric_pair_dataset_ready(trainer):
+        prepare_pair_dataset = getattr(trainer, "prepare_pair_dataset", None)
+        if callable(prepare_pair_dataset):
+            prepare_pair_dataset()
+    return _photometric_pair_dataset_ready(trainer)
+
+
+def initialize_photometric_compensation(viewer: object, *, activate_when_ready: bool = False) -> None:
     if not viewer.s.training_frames:
         _refresh_training_frames(viewer)
     if viewer.s.colmap_recon is None or not viewer.s.training_frames:
@@ -2392,13 +2423,24 @@ def initialize_photometric_compensation(viewer: object) -> None:
         hparams=_photometric_hparams(viewer),
         frame_source_textures=_photometric_frame_source_textures(viewer),
     )
-    prepare_pair_dataset = getattr(viewer.s.photometric_trainer, "prepare_pair_dataset", None)
-    if callable(prepare_pair_dataset):
-        prepare_pair_dataset()
+    viewer.s.photometric_prepare_pending_active = bool(activate_when_ready)
+    _begin_photometric_pair_dataset_prepare(viewer.s.photometric_trainer)
     viewer.s.photometric_active = False
     viewer.s.photometric_elapsed_s = 0.0
     viewer.s.photometric_resume_time = None
     sync_photometric_target_provider(viewer)
+    if activate_when_ready and _photometric_pair_dataset_ready(viewer.s.photometric_trainer):
+        set_photometric_active(viewer, True)
+
+
+def advance_photometric_initialization(viewer: object) -> None:
+    trainer = getattr(viewer.s, "photometric_trainer", None)
+    if trainer is None or _photometric_pair_dataset_ready(trainer):
+        return
+    if not _advance_photometric_pair_dataset_prepare(trainer, frame_budget=1):
+        return
+    if bool(getattr(viewer.s, "photometric_prepare_pending_active", False)):
+        set_photometric_active(viewer, True)
 
 
 def reset_photometric_compensation(viewer: object, *, clear_history: bool = True) -> None:
@@ -2408,6 +2450,7 @@ def reset_photometric_compensation(viewer: object, *, clear_history: bool = True
     if photometric_active and photometric_resume_time is not None:
         viewer.s.photometric_elapsed_s = float(getattr(viewer.s, "photometric_elapsed_s", 0.0)) + max(now - float(photometric_resume_time), 0.0)
     viewer.s.photometric_active = False
+    viewer.s.photometric_prepare_pending_active = False
     viewer.s.photometric_resume_time = None
     trainer = getattr(viewer.s, "photometric_trainer", None)
     release_resources = getattr(trainer, "release_resources", None)
@@ -2422,13 +2465,16 @@ def reset_photometric_compensation(viewer: object, *, clear_history: bool = True
 
 def set_photometric_active(viewer: object, active: bool) -> None:
     if active and getattr(viewer.s, "photometric_trainer", None) is None:
-        initialize_photometric_compensation(viewer)
+        initialize_photometric_compensation(viewer, activate_when_ready=True)
     now = float(time.perf_counter())
     photometric_resume_time = getattr(viewer.s, "photometric_resume_time", None)
     if bool(getattr(viewer.s, "photometric_active", False)) and photometric_resume_time is not None:
         viewer.s.photometric_elapsed_s = float(getattr(viewer.s, "photometric_elapsed_s", 0.0)) + max(now - float(photometric_resume_time), 0.0)
         viewer.s.photometric_resume_time = None
-    viewer.s.photometric_active = bool(active and getattr(viewer.s, "photometric_trainer", None) is not None)
+    trainer = getattr(viewer.s, "photometric_trainer", None)
+    pair_dataset_ready = _photometric_pair_dataset_ready(trainer)
+    viewer.s.photometric_prepare_pending_active = bool(active and trainer is not None and not pair_dataset_ready)
+    viewer.s.photometric_active = bool(active and trainer is not None and pair_dataset_ready)
     if viewer.s.photometric_active:
         viewer.s.photometric_resume_time = now
 
