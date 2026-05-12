@@ -240,8 +240,8 @@ def _rect_contains(rect: tuple[float, float, float, float], point: tuple[float, 
     return px >= x and py >= y and px < x + width and py < y + height
 
 
-def _should_capture_keyboard_for_ui(handled: bool, viewport_input_active: bool, want_text_input: bool) -> bool:
-    return bool(handled) and not (bool(viewport_input_active) and not bool(want_text_input))
+def _should_capture_keyboard_for_ui(handled: bool, viewport_input_active: bool, want_text_input: bool, non_viewport_ui_focused: bool = False) -> bool:
+    return bool(non_viewport_ui_focused) or (bool(handled) and not (bool(viewport_input_active) and not bool(want_text_input)))
 
 def _point_in_any_rect(point: tuple[float, float] | None, rects: tuple[tuple[float, float, float, float], ...]) -> bool:
     return any(_rect_contains(rect, point) for rect in rects)
@@ -732,6 +732,7 @@ class ToolkitWindow:
         )
         self.tk = ToolkitState()
         self._alive = True
+        self._capture_non_viewport_windows = True
         self._frame_textures: list[spy.Texture] = []
         self._last_frame_time = time.perf_counter()
         self._show_about = False
@@ -758,6 +759,8 @@ class ToolkitWindow:
         self._viewport_rect = (0.0, 0.0, max(float(width) - self._toolkit_rect[2], 1.0), max(float(height), 1.0))
         self._viewport_content_rect = self._viewport_rect
         self._viewport_ui_capture_rects: tuple[tuple[float, float, float, float], ...] = ()
+        self._non_viewport_ui_capture_rects: tuple[tuple[float, float, float, float], ...] = ()
+        self._non_viewport_ui_focused = False
         self._viewport_window_focused = False
         self._viewport_input_active = False
         self._training_camera_view_zoom = 1.0
@@ -1068,7 +1071,7 @@ class ToolkitWindow:
             return False
         self._set_current_context()
         handled = bool(simgui.handle_keyboard_event(event))
-        return _should_capture_keyboard_for_ui(handled, self._viewport_input_active, bool(imgui.get_io().want_text_input))
+        return _should_capture_keyboard_for_ui(handled, bool(getattr(self, "_viewport_input_active", False)), bool(imgui.get_io().want_text_input), bool(getattr(self, "_non_viewport_ui_focused", False)))
 
     def handle_mouse_event(self, event) -> bool:
         if not self._alive:
@@ -1079,18 +1082,42 @@ class ToolkitWindow:
         point = None if pos is None else (float(pos.x), float(pos.y))
         inside_viewport = _rect_contains(self._viewport_content_rect, point)
         point_in_viewport_ui = _point_in_any_rect(point, self._viewport_ui_capture_rects)
+        point_in_non_viewport_ui = _point_in_any_rect(point, getattr(self, "_non_viewport_ui_capture_rects", ()))
         event_type = getattr(event, "type", None)
-        if inside_viewport and event_type in (spy.MouseEventType.button_down, spy.MouseEventType.move, spy.MouseEventType.scroll):
+        if point_in_non_viewport_ui:
+            self._viewport_input_active = False
+        elif inside_viewport and event_type in (spy.MouseEventType.button_down, spy.MouseEventType.move, spy.MouseEventType.scroll):
             self._viewport_input_active = True
         elif event_type == spy.MouseEventType.button_down and not inside_viewport:
             self._viewport_input_active = False
-        return _should_capture_mouse_for_ui(handled, inside_viewport, point_in_viewport_ui)
+        return _should_capture_mouse_for_ui(handled, inside_viewport, point_in_viewport_ui or point_in_non_viewport_ui)
 
     def _append_viewport_ui_capture_rect(self, rect: tuple[float, float, float, float]) -> None:
         x, y, width, height = rect
         if width <= 0.0 or height <= 0.0:
             return
         self._viewport_ui_capture_rects = (*self._viewport_ui_capture_rects, (float(x), float(y), float(width), float(height)))
+
+    def _append_non_viewport_ui_capture_rect(self, rect: tuple[float, float, float, float]) -> None:
+        x, y, width, height = rect
+        if width <= 0.0 or height <= 0.0:
+            return
+        self._non_viewport_ui_capture_rects = (*self._non_viewport_ui_capture_rects, (float(x), float(y), float(width), float(height)))
+
+    def _register_non_viewport_window(self) -> None:
+        if not bool(getattr(self, "_capture_non_viewport_windows", False)):
+            return
+        try:
+            pos = imgui.get_window_pos()
+            size = imgui.get_window_size()
+            ToolkitWindow._append_non_viewport_ui_capture_rect(self, (float(pos.x), float(pos.y), float(size.x), float(size.y)))
+        except Exception:
+            pass
+        try:
+            focused = bool(imgui.is_window_focused(int(imgui.FocusedFlags_.root_and_child_windows)))
+        except Exception:
+            focused = False
+        self._non_viewport_ui_focused = bool(self._non_viewport_ui_focused) or focused
 
     def viewport_size(self) -> tuple[int, int]:
         return _clamp_viewport_size(self._viewport_content_rect[2], self._viewport_content_rect[3])
@@ -1106,6 +1133,8 @@ class ToolkitWindow:
         self._set_current_context()
         simgui.begin_frame(width, height, dt)
         self._sync_interface_scale(ui)
+        self._non_viewport_ui_capture_rects = ()
+        self._non_viewport_ui_focused = False
         self._menu_bar_height = self._draw_main_menu_bar(ui)
         self._draw_dockspace()
         self._draw_panel(ui, width, height)
@@ -1159,6 +1188,7 @@ class ToolkitWindow:
             imgui.set_next_window_dock_id(self._dockspace_id, imgui.Cond_.first_use_ever.value)
         flags = imgui.WindowFlags_.no_collapse.value
         opened, self._toolkit_window_open = imgui.begin(_TOOLKIT_WINDOW_NAME, self._toolkit_window_open, flags=flags)
+        ToolkitWindow._register_non_viewport_window(self)
         if opened:
             pos = imgui.get_window_pos()
             size = imgui.get_window_size()
@@ -1985,6 +2015,7 @@ class ToolkitWindow:
         imgui.set_next_window_pos(imgui.ImVec2(24.0 * scale, self._menu_bar_height + 24.0 * scale), imgui.Cond_.first_use_ever.value)
         imgui.set_next_window_size(imgui.ImVec2(420.0 * scale, 220.0 * scale), imgui.Cond_.first_use_ever.value)
         opened, self._show_about = imgui.begin("About", True)
+        ToolkitWindow._register_non_viewport_window(self)
         if opened:
             _draw_markdown_text(self._about_text)
         imgui.end()
@@ -1997,6 +2028,7 @@ class ToolkitWindow:
         imgui.set_next_window_pos(imgui.ImVec2(40.0 * scale, self._menu_bar_height + 32.0 * scale), imgui.Cond_.first_use_ever.value)
         imgui.set_next_window_size(imgui.ImVec2(760.0 * scale, 620.0 * scale), imgui.Cond_.first_use_ever.value)
         opened, self._show_docs = imgui.begin("Documentation", True)
+        ToolkitWindow._register_non_viewport_window(self)
         if opened:
             imgui.text_disabled("Local viewer documentation")
             imgui.separator()
@@ -2345,6 +2377,7 @@ class ToolkitWindow:
         imgui.set_next_window_pos(imgui.ImVec2(56.0 * scale, self._menu_bar_height + 40.0 * scale), imgui.Cond_.first_use_ever.value)
         imgui.set_next_window_size(imgui.ImVec2(540.0 * scale, 0.0), imgui.Cond_.first_use_ever.value)
         opened, self._show_colmap_import = imgui.begin("COLMAP Import", True)
+        ToolkitWindow._register_non_viewport_window(self)
         import_active = bool(ui._values.get("_colmap_import_active", False))
         if import_active and not self._show_colmap_import:
             self._show_colmap_import = True
@@ -2417,6 +2450,7 @@ class ToolkitWindow:
         imgui.set_next_window_pos(imgui.ImVec2(72.0 * scale, self._menu_bar_height + 56.0 * scale), imgui.Cond_.first_use_ever.value)
         imgui.set_next_window_size(imgui.ImVec2(_HISTOGRAM_WINDOW_WIDTH * scale, _HISTOGRAM_WINDOW_HEIGHT * scale), imgui.Cond_.first_use_ever.value)
         opened, show = imgui.begin("Histograms", True)
+        ToolkitWindow._register_non_viewport_window(self)
         ui._values["show_histograms"] = bool(show)
         ui._values["_show_histograms_prev"] = bool(show)
         if opened:
@@ -2476,6 +2510,7 @@ class ToolkitWindow:
         imgui.set_next_window_pos(imgui.ImVec2(88.0 * scale, self._menu_bar_height + 64.0 * scale), imgui.Cond_.first_use_ever.value)
         imgui.set_next_window_size(imgui.ImVec2(980.0 * scale, 420.0 * scale), imgui.Cond_.first_use_ever.value)
         opened, show = imgui.begin("Training Views", True)
+        ToolkitWindow._register_non_viewport_window(self)
         ui._values["show_training_views"] = bool(show)
         if opened:
             rows = tuple(ui._values.get("_training_views_rows", ()))
@@ -2523,6 +2558,7 @@ class ToolkitWindow:
         imgui.set_next_window_pos(imgui.ImVec2(104.0 * scale, self._menu_bar_height + 72.0 * scale), imgui.Cond_.first_use_ever.value)
         imgui.set_next_window_size(imgui.ImVec2(_RESOURCE_DEBUG_WINDOW_WIDTH * scale, _RESOURCE_DEBUG_WINDOW_HEIGHT * scale), imgui.Cond_.first_use_ever.value)
         opened, show = imgui.begin("Buffers", True)
+        ToolkitWindow._register_non_viewport_window(self)
         ui._values["show_resource_debug"] = bool(show)
         if opened:
             if imgui.button("Refresh"):

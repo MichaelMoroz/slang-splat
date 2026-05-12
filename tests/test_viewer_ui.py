@@ -116,6 +116,7 @@ def test_keyboard_capture_passes_through_for_focused_viewport_without_active_ui_
     assert ui._should_capture_keyboard_for_ui(True, viewport_input_active=True, want_text_input=True) is True
     assert ui._should_capture_keyboard_for_ui(True, viewport_input_active=False, want_text_input=False) is True
     assert ui._should_capture_keyboard_for_ui(False, viewport_input_active=True, want_text_input=False) is False
+    assert ui._should_capture_keyboard_for_ui(False, viewport_input_active=True, want_text_input=False, non_viewport_ui_focused=True) is True
 
 
 def test_mouse_capture_passes_through_for_plain_viewport_interaction() -> None:
@@ -1412,6 +1413,7 @@ def test_handle_mouse_event_captures_viewport_overlay_ui(monkeypatch) -> None:
         _alive=True,
         _viewport_content_rect=(10.0, 20.0, 320.0, 180.0),
         _viewport_ui_capture_rects=((20.0, 30.0, 120.0, 80.0),),
+        _non_viewport_ui_capture_rects=(),
         _viewport_input_active=False,
         _set_current_context=lambda: set_current_context_calls.append("set"),
     )
@@ -1426,6 +1428,46 @@ def test_handle_mouse_event_captures_viewport_overlay_ui(monkeypatch) -> None:
 
     assert handled is True
     assert toolkit._viewport_input_active is True
+    assert set_current_context_calls == ["set"]
+
+def test_handle_mouse_event_captures_overlapping_non_viewport_ui(monkeypatch) -> None:
+    set_current_context_calls: list[str] = []
+    monkeypatch.setattr(ui.simgui, "handle_mouse_event", lambda _event: True)
+    toolkit = SimpleNamespace(
+        _alive=True,
+        _viewport_content_rect=(10.0, 20.0, 320.0, 180.0),
+        _viewport_ui_capture_rects=(),
+        _non_viewport_ui_capture_rects=((20.0, 30.0, 120.0, 80.0),),
+        _viewport_input_active=True,
+        _set_current_context=lambda: set_current_context_calls.append("set"),
+    )
+    event = SimpleNamespace(
+        type=ui.spy.MouseEventType.button_down,
+        pos=ui.spy.float2(30.0, 40.0),
+        button=ui.spy.MouseButton.left,
+        scroll=ui.spy.float2(0.0, 0.0),
+    )
+
+    handled = ui.ToolkitWindow.handle_mouse_event(toolkit, event)
+
+    assert handled is True
+    assert toolkit._viewport_input_active is False
+    assert set_current_context_calls == ["set"]
+
+def test_handle_keyboard_event_captures_focused_non_viewport_ui(monkeypatch) -> None:
+    set_current_context_calls: list[str] = []
+    monkeypatch.setattr(ui.simgui, "handle_keyboard_event", lambda _event: False)
+    monkeypatch.setattr(ui.imgui, "get_io", lambda: SimpleNamespace(want_text_input=False))
+    toolkit = SimpleNamespace(
+        _alive=True,
+        _viewport_input_active=True,
+        _non_viewport_ui_focused=True,
+        _set_current_context=lambda: set_current_context_calls.append("set"),
+    )
+
+    handled = ui.ToolkitWindow.handle_keyboard_event(toolkit, SimpleNamespace())
+
+    assert handled is True
     assert set_current_context_calls == ["set"]
 
 def test_main_menu_bar_draws_right_aligned_status(monkeypatch) -> None:
