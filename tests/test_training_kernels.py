@@ -8,7 +8,7 @@ import pytest
 from PIL import Image
 import slangpy as spy
 
-from src.utility import buffer_to_numpy, thread_count_1d
+from src.utility import buffer_to_numpy, create_default_device, thread_count_1d
 from src.filter import SeparableGaussianBlur
 from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
@@ -695,6 +695,52 @@ def test_training_step_smoke_updates_params_in_fixed_atomic_mode(device, tmp_pat
     assert np.isfinite(loss)
     assert np.all(np.isfinite(after))
     assert np.any(np.abs(after - before) > 0.0)
+
+
+def test_dx12_loss_forward_backward_smoke_runs(tmp_path: Path):
+    try:
+        device = create_default_device(device_type=spy.DeviceType.d3d12, enable_debug_layers=False)
+    except Exception as exc:
+        pytest.skip(f"DX12 device unavailable for training smoke test: {exc}")
+
+    trainer = _make_loss_only_trainer(
+        device,
+        tmp_path,
+        width=8,
+        height=8,
+        training_hparams=TrainingHyperParams(),
+        image_name="dx12_loss_target.png",
+        image_id=23,
+    )
+
+    rendered = np.zeros((8, 8, 4), dtype=np.float32)
+    target = np.zeros((8, 8, 4), dtype=np.float32)
+    _dispatch_manual_loss(trainer, rendered, target)
+
+    total, mse, density = trainer._read_loss_metrics()
+    assert np.isfinite(total)
+    assert np.isfinite(mse)
+    assert np.isfinite(density)
+
+
+def test_dx12_training_step_smoke_uses_supported_cached_grad_mode(tmp_path: Path):
+    try:
+        device = create_default_device(device_type=spy.DeviceType.d3d12, enable_debug_layers=False)
+    except Exception as exc:
+        pytest.skip(f"DX12 device unavailable for training step smoke test: {exc}")
+
+    scene = _make_scene()
+    frame = _make_frame(tmp_path, image_name="dx12_training_step_target.png", image_id=29)
+    renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
+    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], seed=123)
+
+    assert renderer.cached_raster_grad_atomic_mode == "fixed"
+
+    loss = trainer.step()
+
+    assert np.isfinite(loss)
+    assert np.isfinite(trainer.state.last_psnr)
+    assert trainer.state.step == 1
 
 
 def test_training_step_smoke_with_subsampling_produces_finite_updates(device, tmp_path: Path):

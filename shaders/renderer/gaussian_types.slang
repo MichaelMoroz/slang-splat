@@ -71,7 +71,7 @@ uniform RWStructuredBuffer<uint> g_TrainingBatchEnd;
 uniform RWStructuredBuffer<float> g_ParamGrads;
 uniform RWStructuredBuffer<int> g_CachedRasterGradsFixed;
 uniform RWStructuredBuffer<float> g_CachedRasterGradsFloat;
-uniform RWStructuredBuffer<float> g_GradientStats;
+uniform RWByteAddressBuffer g_GradientStats;
 uniform float g_RasterGradDecodeScale;
 uniform float g_CachedRasterGradFixedROLocalRange;
 uniform float g_CachedRasterGradFixedScaleRange;

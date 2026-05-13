@@ -186,6 +186,12 @@ def test_set_training_active_accumulates_elapsed_time_on_pause(monkeypatch) -> N
     assert viewer.s.training_elapsed_s == 4.5
 
 
+def test_renderer_allocate_grad_work_buffers_only_for_training_renderer() -> None:
+    assert session._renderer_allocate_grad_work_buffers("renderer") is False
+    assert session._renderer_allocate_grad_work_buffers("debug_renderer") is False
+    assert session._renderer_allocate_grad_work_buffers("training_renderer") is True
+
+
 def test_reinitialize_training_scene_reuses_existing_native_targets(monkeypatch) -> None:
     textures = [object(), object()]
     viewer = SimpleNamespace(

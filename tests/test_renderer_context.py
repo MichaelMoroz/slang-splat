@@ -48,3 +48,36 @@ def test_render_settings_forward_debug_overlays_to_renderer(monkeypatch) -> None
     assert captured["height"] == 32
     assert captured["kwargs"] == expected_kwargs
     assert captured["kwargs"]["alpha_cutoff"] == 1e-2
+
+
+def test_render_settings_allow_renderer_creation_overrides(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class _RendererStub:
+        CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT = "float"
+        CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED = "fixed"
+
+        @staticmethod
+        def _validate_cached_raster_grad_atomic_mode(mode: str) -> str:
+            return str(mode).strip().lower()
+
+        @staticmethod
+        def _validate_debug_mode(mode: str) -> str:
+            return str(mode).strip().lower()
+
+        def __init__(self, device, width: int, height: int, **kwargs) -> None:
+            captured["device"] = device
+            captured["width"] = width
+            captured["height"] = height
+            captured["kwargs"] = kwargs
+
+    monkeypatch.setattr(renderer_context, "GaussianRenderer", _RendererStub)
+
+    settings = renderer_context.GaussianRenderSettings(width=64, height=32, params=runtime_renderer_params())
+    renderer = settings.create_renderer(device="stub-device", allocate_grad_work_buffers=False)
+
+    assert isinstance(renderer, _RendererStub)
+    assert captured["device"] == "stub-device"
+    assert captured["width"] == 64
+    assert captured["height"] == 32
+    assert captured["kwargs"]["allocate_grad_work_buffers"] is False

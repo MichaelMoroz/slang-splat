@@ -107,6 +107,26 @@ uint gradient_stat_index(uint splatId, uint slot)
     return splatId * DEBUG_GRAD_STATS_STRIDE + slot;
 }
 
+uint gradient_stat_byte_offset(uint splatId, uint slot)
+{
+    return gradient_stat_index(splatId, slot) << 2u;
+}
+
+float load_gradient_stat(uint splatId, uint slot)
+{
+    return g_GradientStats.Load<float>(gradient_stat_byte_offset(splatId, slot));
+}
+
+void store_gradient_stat(uint splatId, uint slot, float value)
+{
+    g_GradientStats.Store<float>(gradient_stat_byte_offset(splatId, slot), value);
+}
+
+void atomic_add_gradient_stat(uint splatId, uint slot, float value)
+{
+    g_GradientStats.InterlockedAddF32(gradient_stat_byte_offset(splatId, slot), value);
+}
+
 float raster_grad_contribution_norm_sq(RasterGaussian.Differential dGaussian)
 {
     float depthContribution = raster_grad_include_depth()
@@ -147,7 +167,7 @@ void accumulate_gradient_stats(uint splatId, float contributionNormSq)
 {
     float waveContributionNormSq = WaveActiveSum((isfinite(contributionNormSq) && contributionNormSq > 0.0) ? contributionNormSq : 0.0);
     if (!WaveIsFirstLane() || !(waveContributionNormSq > 0.0)) return;
-    InterlockedAdd(g_GradientStats[gradient_stat_index(splatId, 1u)], waveContributionNormSq);
+    atomic_add_gradient_stat(splatId, 1u, waveContributionNormSq);
 }
 
 float load_cached_raster_grad_fixed_component(uint splatCount, uint cacheParamId, uint splatId, float range) { return raster_grad_fixed_dequantize(g_CachedRasterGradsFixed[cached_raster_grad_index(splatCount, cacheParamId, splatId)], range); }
@@ -1000,12 +1020,12 @@ void resolve_gradient_stats<let FixedPointMode : int>(uint3 dispatchThreadID)
     uint splatId = dispatchThreadID.x;
     if (splatId >= g_Prepass.splatCount) return;
 
-    float currentSumSq = g_GradientStats[gradient_stat_index(splatId, 1u)];
+    float currentSumSq = load_gradient_stat(splatId, 1u);
     float currentSum = raster_grad_contribution_norm(load_cached_raster_grad<FixedPointMode>(splatId));
     float stepInvSampleCount = g_Raster.debugGradVarianceStepInvSampleCount;
     float varianceNumerator = currentSumSq - currentSum * currentSum * stepInvSampleCount;
-    if (isfinite(varianceNumerator) && varianceNumerator > 0.0) g_GradientStats[gradient_stat_index(splatId, 0u)] += varianceNumerator;
-    g_GradientStats[gradient_stat_index(splatId, 1u)] = 0.0;
+    if (isfinite(varianceNumerator) && varianceNumerator > 0.0) store_gradient_stat(splatId, 0u, load_gradient_stat(splatId, 0u) + varianceNumerator);
+    store_gradient_stat(splatId, 1u, 0.0);
 }
 
 void raster_backward_replay<let FixedPointMode : int>(RasterPixelInfo info, inout RasterReplayState replayState, inout RasterReplayStepState.Differential backwardState, uint lane)

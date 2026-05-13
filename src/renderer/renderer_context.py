@@ -46,8 +46,10 @@ class GaussianRenderSettings:
         kwargs = self.renderer_kwargs()
         return (int(self.width), int(self.height), *(kwargs[name] for name in sorted(kwargs)))
 
-    def create_renderer(self, device: spy.Device) -> GaussianRenderer:
-        return GaussianRenderer(device, width=self.width, height=self.height, **self.renderer_kwargs())
+    def create_renderer(self, device: spy.Device, **overrides: object) -> GaussianRenderer:
+        kwargs = self.renderer_kwargs()
+        kwargs.update(overrides)
+        return GaussianRenderer(device, width=self.width, height=self.height, **kwargs)
 
 
 class GaussianRendererContext:

@@ -399,6 +399,7 @@ class GaussianRenderer:
         return self._buffer_vars(self._RASTER_CACHE_SHADER_VARS, self._work_buffers)
 
     def _raster_grad_vars(self) -> dict[str, object]:
+        self._ensure_grad_work_buffers(self._scene_count)
         return self._buffer_vars(self._RASTER_GRAD_SHADER_VARS, self._work_buffers)
 
     @staticmethod
@@ -499,6 +500,10 @@ class GaussianRenderer:
             supported = ", ".join(cls.CACHED_RASTER_GRAD_ATOMIC_MODES)
             raise ValueError(f"Unsupported cached raster grad atomic mode '{mode}'. Expected one of: {supported}.")
         return resolved
+
+    def _requires_fixed_cached_raster_grad_mode(self) -> bool:
+        api_name = str(getattr(getattr(self.device, "info", None), "api_name", "") or "").strip().casefold()
+        return api_name in {"d3d12", "dx12", "direct3d12", "directx12"}
 
     def _ensure_float_raster_grad_shaders(self) -> _RasterGradShaderSet:
         if self._float_raster_grad_shaders is not None:
@@ -661,6 +666,16 @@ class GaussianRenderer:
         self._ensure_work_buffers(count)
         self._current_scene = SceneBinding(count=count)
 
+    def _has_grad_work_buffers(self) -> bool:
+        return all(name in self._work_buffers for name in self._RASTER_GRAD_SHADER_VARS)
+
+    def _ensure_grad_work_buffers(self, splat_count: int | None = None) -> None:
+        count = self._scene_count if splat_count is None else int(splat_count)
+        if self._has_grad_work_buffers():
+            return
+        self._allocate_grad_work_buffers = True
+        self._ensure_work_buffers(count)
+
     def _enqueue_counter_readback(self, encoder: spy.CommandEncoder) -> None:
         self._ensure_counter_readback_ring()
         slot = self._counter_readback_frame_id % self._COUNTER_READBACK_RING_SIZE
@@ -681,6 +696,7 @@ class GaussianRenderer:
         sort_splats_by: str = SORT_SPLATS_BY_DISTANCE_TO_CAMERA,
         list_capacity_multiplier: int = 64,
         max_prepass_memory_mb: int = 4096,
+        allocate_grad_work_buffers: bool = True,
         proj_distortion_k1: float = 0.0,
         proj_distortion_k2: float = 0.0,
         debug_mode: str | None = None,
@@ -727,6 +743,7 @@ class GaussianRenderer:
         self.list_capacity_multiplier = int(list_capacity_multiplier)
         self.max_prepass_memory_mb = max(int(max_prepass_memory_mb), 1)
         self._max_prepass_memory_bytes = self.max_prepass_memory_mb * self._MEBIBYTE_BYTES
+        self._allocate_grad_work_buffers = bool(allocate_grad_work_buffers)
         self.proj_distortion_k1, self.proj_distortion_k2 = float(proj_distortion_k1), float(proj_distortion_k2)
         self.max_sh_band = int(max_sh_band)
         self.sh_band = (3 if bool(use_sh) else 0) if sh_band is None else int(sh_band)
@@ -915,11 +932,16 @@ class GaussianRenderer:
             "training_batch_end": max(self._render_capacity_tile_count, 1) * self._U32_BYTES,
             "training_splat_contribution": max(self._work_splat_capacity, 1) * self._F32X4_BYTES,
             "raster_cache": max(self._work_splat_capacity, 1) * self._RASTER_CACHE_PARAM_COUNT * self._U32_BYTES,
-            "param_grads": max(self._work_splat_capacity, 1) * self.packed_trainable_param_count * self._U32_BYTES,
-            "cached_raster_grads_fixed": max(self._work_splat_capacity, 1) * self._RASTER_CACHE_PARAM_COUNT * self._U32_BYTES,
-            "cached_raster_grads_float": max(self._work_splat_capacity, 1) * self._RASTER_CACHE_PARAM_COUNT * self._U32_BYTES,
-            "cached_raster_grads_metrics_float": max(self._work_splat_capacity, 1) * self._RASTER_CACHE_PARAM_COUNT * self._U32_BYTES,
         }
+        if self._allocate_grad_work_buffers:
+            sized.update(
+                {
+                    "param_grads": max(self._work_splat_capacity, 1) * self.packed_trainable_param_count * self._U32_BYTES,
+                    "cached_raster_grads_fixed": max(self._work_splat_capacity, 1) * self._RASTER_CACHE_PARAM_COUNT * self._U32_BYTES,
+                    "cached_raster_grads_float": max(self._work_splat_capacity, 1) * self._RASTER_CACHE_PARAM_COUNT * self._U32_BYTES,
+                    "cached_raster_grads_metrics_float": max(self._work_splat_capacity, 1) * self._RASTER_CACHE_PARAM_COUNT * self._U32_BYTES,
+                }
+            )
         allocated = {name: alloc_buffer(self.device, name=f"renderer.work.{name}", size=size, usage=self._RW_BUFFER_USAGE) for name, size in sized.items()}
         self._resource_groups.prepass = {
             name: allocated[name]
@@ -960,10 +982,14 @@ class GaussianRenderer:
                 "raster_cache",
             )
         }
-        self._resource_groups.grad = {
-            name: allocated[name]
-            for name in ("param_grads", "cached_raster_grads_fixed", "cached_raster_grads_float", "cached_raster_grads_metrics_float")
-        }
+        self._resource_groups.grad = (
+            {
+                name: allocated[name]
+                for name in ("param_grads", "cached_raster_grads_fixed", "cached_raster_grads_float", "cached_raster_grads_metrics_float")
+            }
+            if self._allocate_grad_work_buffers
+            else {}
+        )
         self._resource_groups.debug = {
             "fallback_clone_counts": allocated["fallback_clone_counts"],
             "debug_splat_age": allocated["debug_splat_age"],
@@ -1581,6 +1607,7 @@ class GaussianRenderer:
 
     def read_grad_groups(self, splat_count: int | None = None) -> dict[str, np.ndarray]:
         count = self._scene_count if splat_count is None else int(splat_count)
+        self._ensure_grad_work_buffers(count)
         flat = self._read_array(self._work_buffers["param_grads"], np.float32, max(count, 1) * self.packed_trainable_param_count)
         groups = self._unpack_param_groups(flat, count)
         grad_color_alpha = np.zeros((count, 4), dtype=np.float32)
@@ -1605,6 +1632,7 @@ class GaussianRenderer:
 
     def read_cached_raster_grads_fixed(self, splat_count: int | None = None) -> np.ndarray:
         count = self._scene_count if splat_count is None else int(splat_count)
+        self._ensure_grad_work_buffers(count)
         return self._read_array(self._work_buffers["cached_raster_grads_fixed"], np.int32, self._RASTER_CACHE_PARAM_COUNT, max(count, 1)).T[:count].copy()
 
     def read_cached_raster_grads_fixed_decoded(self, splat_count: int | None = None) -> np.ndarray:
@@ -1614,9 +1642,11 @@ class GaussianRenderer:
 
     def read_cached_raster_grads_float(self, splat_count: int | None = None) -> np.ndarray:
         count = self._scene_count if splat_count is None else int(splat_count)
+        self._ensure_grad_work_buffers(count)
         return self._read_array(self._work_buffers["cached_raster_grads_float"], np.float32, self._RASTER_CACHE_PARAM_COUNT, max(count, 1)).T[:count].copy()
 
     def _prepare_active_cached_raster_grads_float_tensor(self, splat_count: int, command_encoder: spy.CommandEncoder) -> spy.Buffer:
+        self._ensure_grad_work_buffers(splat_count)
         if self.cached_raster_grad_atomic_mode == self.CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT:
             return self._work_buffers["cached_raster_grads_float"]
         decoded = self.read_cached_raster_grads_fixed_decoded(splat_count)
@@ -1748,6 +1778,7 @@ class GaussianRenderer:
         grad_sh_coeffs: np.ndarray | None = None,
         grad_color_alpha: np.ndarray | None = None,
     ) -> None:
+        self._ensure_grad_work_buffers(splat_count)
         packed = self._pack_param_groups(
             splat_count,
             positions=grad_positions,
@@ -1832,6 +1863,8 @@ class GaussianRenderer:
     @cached_raster_grad_atomic_mode.setter
     def cached_raster_grad_atomic_mode(self, mode: str) -> None:
         resolved = self._validate_cached_raster_grad_atomic_mode(mode)
+        if resolved == self.CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT and self._requires_fixed_cached_raster_grad_mode():
+            resolved = self.CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED
         if resolved == self.CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT:
             self._ensure_float_raster_grad_shaders()
         self._cached_raster_grad_atomic_mode = resolved

@@ -1224,7 +1224,7 @@ def ensure_renderer(viewer: object, attr: str, width: int, height: int, allow_de
         ) if attr == "training_renderer" else (int(renderer.width), int(renderer.height))
         if renderer_size == size and not force_recreate: return renderer
     previous_renderer = renderer
-    renderer = _create_renderer(viewer, size[0], size[1], allow_debug_overlays)
+    renderer = _create_renderer(viewer, attr, size[0], size[1], allow_debug_overlays)
     if isinstance(viewer.s.scene, GaussianScene):
         renderer.set_scene(viewer.s.scene)
     setattr(viewer.s, attr, renderer)
@@ -1243,7 +1243,7 @@ def _replace_training_renderer(viewer: object, width: int, height: int, *, reset
     previous_renderer = getattr(viewer.s, "training_renderer", None)
     if previous_renderer is None:
         raise RuntimeError("Training renderer is unavailable.")
-    renderer = _create_renderer(viewer, int(width), int(height), allow_debug_overlays=False)
+    renderer = _create_renderer(viewer, "training_renderer", int(width), int(height), allow_debug_overlays=False)
     enc = viewer.device.create_command_encoder()
     previous_renderer.copy_scene_state_to(enc, renderer)
     viewer.device.submit_command_buffer(enc.finish())
@@ -1298,8 +1298,15 @@ def maybe_reallocate_renderers(viewer: object, render_width: int, render_height:
     return recycled
 
 
-def _create_renderer(viewer: object, width: int, height: int, allow_debug_overlays: bool) -> GaussianRenderer:
-    renderer = GaussianRenderSettings.from_renderer_params(int(width), int(height), viewer.renderer_params(allow_debug_overlays)).create_renderer(viewer.device)
+def _renderer_allocate_grad_work_buffers(attr: str) -> bool:
+    return str(attr) == "training_renderer"
+
+
+def _create_renderer(viewer: object, attr: str, width: int, height: int, allow_debug_overlays: bool) -> GaussianRenderer:
+    renderer = GaussianRenderSettings.from_renderer_params(int(width), int(height), viewer.renderer_params(allow_debug_overlays)).create_renderer(
+        viewer.device,
+        allocate_grad_work_buffers=_renderer_allocate_grad_work_buffers(attr),
+    )
     if not allow_debug_overlays or getattr(viewer.s, "trainer", None) is not None:
         _, params, _, _ = resolve_effective_training_setup(viewer)
         renderer.max_sh_band = int(getattr(params.training, "max_sh_band", 3))

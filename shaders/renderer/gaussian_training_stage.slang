@@ -41,6 +41,27 @@ static const uint REFINEMENT_MAX_CLONES_PER_SPLAT = 8u;
 static const uint REFINEMENT_HASH_INIT = 0x9e3779b9u;
 static const uint REFINEMENT_HASH_MIX = 0x85ebca6bu;
 static const float SANITIZE_HUGE_VALUE = 1e8;
+
+uint float_buffer_byte_offset(uint index)
+{
+    return index << 2u;
+}
+
+float load_atomic_float(RWByteAddressBuffer buffer, uint index)
+{
+    return buffer.Load<float>(float_buffer_byte_offset(index));
+}
+
+void store_atomic_float(RWByteAddressBuffer buffer, uint index, float value)
+{
+    buffer.Store<float>(float_buffer_byte_offset(index), value);
+}
+
+void atomic_add_float(RWByteAddressBuffer buffer, uint index, float value)
+{
+    buffer.InterlockedAddF32(float_buffer_byte_offset(index), value);
+}
+
 uniform uint g_Width;
 uniform uint g_Height;
 uniform float g_InvPixelCount;
@@ -58,12 +79,12 @@ uniform uint g_TargetTextureIsLinear;
 uniform StructuredBuffer<float> g_RenderedDensity;
 uniform RWStructuredBuffer<float4> g_OutputGrad;
 uniform RWStructuredBuffer<float2> g_RegularizerGrad;
-uniform RWStructuredBuffer<float> g_LossBuffer;
+uniform RWByteAddressBuffer g_LossBuffer;
 uniform RWStructuredBuffer<float> g_BatchStepInfo;
 uniform RWStructuredBuffer<float> g_TrainingRgbLoss;
-uniform RWStructuredBuffer<float> g_TrainingRgbLossTotal;
+uniform RWByteAddressBuffer g_TrainingRgbLossTotal;
 uniform RWStructuredBuffer<float> g_TrainingTargetEdge;
-uniform RWStructuredBuffer<float> g_TrainingTargetEdgeTotal;
+uniform RWByteAddressBuffer g_TrainingTargetEdgeTotal;
 uniform RWStructuredBuffer<float> g_SSIMMoments;
 uniform StructuredBuffer<float> g_SSIMBlurredMoments;
 uniform RWStructuredBuffer<float> g_SSIMBlurredFeatureGrads;
@@ -760,13 +781,13 @@ void csClearLossBuffer(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint py = dispatchThreadID.y;
     if (px == 0u && py == 0u)
     {
-        g_LossBuffer[LOSS_SLOT_TOTAL] = 0.0;
-        g_LossBuffer[LOSS_SLOT_MSE] = 0.0;
-        g_LossBuffer[LOSS_SLOT_DENSITY] = 0.0;
-        g_LossBuffer[LOSS_SLOT_DISPLAY_MSE] = 0.0;
-        g_LossBuffer[LOSS_SLOT_SSIM] = 0.0;
-        g_TrainingRgbLossTotal[0] = 0.0;
-        g_TrainingTargetEdgeTotal[0] = 0.0;
+        store_atomic_float(g_LossBuffer, LOSS_SLOT_TOTAL, 0.0);
+        store_atomic_float(g_LossBuffer, LOSS_SLOT_MSE, 0.0);
+        store_atomic_float(g_LossBuffer, LOSS_SLOT_DENSITY, 0.0);
+        store_atomic_float(g_LossBuffer, LOSS_SLOT_DISPLAY_MSE, 0.0);
+        store_atomic_float(g_LossBuffer, LOSS_SLOT_SSIM, 0.0);
+        store_atomic_float(g_TrainingRgbLossTotal, 0u, 0.0);
+        store_atomic_float(g_TrainingTargetEdgeTotal, 0u, 0.0);
     }
 }
 
@@ -877,19 +898,19 @@ void csComputeBlendedLossForward(
     }
     if (localIndex == 0u)
     {
-        if (isfinite(gsLoss[0])) InterlockedAdd(g_LossBuffer[LOSS_SLOT_TOTAL], gsLoss[0]);
-        if (isfinite(gsMSE[0])) InterlockedAdd(g_LossBuffer[LOSS_SLOT_MSE], gsMSE[0]);
+        if (isfinite(gsLoss[0])) atomic_add_float(g_LossBuffer, LOSS_SLOT_TOTAL, gsLoss[0]);
+        if (isfinite(gsMSE[0])) atomic_add_float(g_LossBuffer, LOSS_SLOT_MSE, gsMSE[0]);
         if (isfinite(gsRgbLoss[0]))
         {
-            InterlockedAdd(g_TrainingRgbLossTotal[0], gsRgbLoss[0]);
+            atomic_add_float(g_TrainingRgbLossTotal, 0u, gsRgbLoss[0]);
         }
-        if (isfinite(gsDisplayMSE[0])) InterlockedAdd(g_LossBuffer[LOSS_SLOT_DISPLAY_MSE], gsDisplayMSE[0]);
-        if (isfinite(gsSSIM[0])) InterlockedAdd(g_LossBuffer[LOSS_SLOT_SSIM], gsSSIM[0]);
-        if (isfinite(gsTargetEdge[0])) InterlockedAdd(g_TrainingTargetEdgeTotal[0], gsTargetEdge[0]);
+        if (isfinite(gsDisplayMSE[0])) atomic_add_float(g_LossBuffer, LOSS_SLOT_DISPLAY_MSE, gsDisplayMSE[0]);
+        if (isfinite(gsSSIM[0])) atomic_add_float(g_LossBuffer, LOSS_SLOT_SSIM, gsSSIM[0]);
+        if (isfinite(gsTargetEdge[0])) atomic_add_float(g_TrainingTargetEdgeTotal, 0u, gsTargetEdge[0]);
         if (isfinite(gsDensityLoss[0]))
         {
-            InterlockedAdd(g_LossBuffer[LOSS_SLOT_TOTAL], gsDensityLoss[0]);
-            InterlockedAdd(g_LossBuffer[LOSS_SLOT_DENSITY], gsDensityLoss[0]);
+            atomic_add_float(g_LossBuffer, LOSS_SLOT_TOTAL, gsDensityLoss[0]);
+            atomic_add_float(g_LossBuffer, LOSS_SLOT_DENSITY, gsDensityLoss[0]);
         }
     }
 }
@@ -971,11 +992,11 @@ void csCacheTrainingStepInfo(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     if (dispatchThreadID.x != 0u || dispatchThreadID.y != 0u || dispatchThreadID.z != 0u) return;
     uint base = g_BatchStepIndex * 5u;
-    g_BatchStepInfo[base + 0u] = g_LossBuffer[LOSS_SLOT_TOTAL];
-    g_BatchStepInfo[base + 1u] = g_LossBuffer[LOSS_SLOT_MSE];
-    g_BatchStepInfo[base + 2u] = g_LossBuffer[LOSS_SLOT_DENSITY];
-    g_BatchStepInfo[base + 3u] = g_LossBuffer[LOSS_SLOT_DISPLAY_MSE];
-    g_BatchStepInfo[base + 4u] = g_LossBuffer[LOSS_SLOT_SSIM];
+    g_BatchStepInfo[base + 0u] = load_atomic_float(g_LossBuffer, LOSS_SLOT_TOTAL);
+    g_BatchStepInfo[base + 1u] = load_atomic_float(g_LossBuffer, LOSS_SLOT_MSE);
+    g_BatchStepInfo[base + 2u] = load_atomic_float(g_LossBuffer, LOSS_SLOT_DENSITY);
+    g_BatchStepInfo[base + 3u] = load_atomic_float(g_LossBuffer, LOSS_SLOT_DISPLAY_MSE);
+    g_BatchStepInfo[base + 4u] = load_atomic_float(g_LossBuffer, LOSS_SLOT_SSIM);
 }
 
 [shader("compute")]
