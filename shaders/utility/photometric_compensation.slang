@@ -11,26 +11,23 @@ uniform StructuredBuffer<float> g_Params;
 uniform RWStructuredBuffer<float> g_Grads;
 uniform RWStructuredBuffer<float> g_LossSum;
 
-uniform StructuredBuffer<uint> g_PairIndices;
 uniform StructuredBuffer<uint> g_PairFrameIndicesA;
 uniform StructuredBuffer<uint> g_PairFrameIndicesB;
-uniform RWStructuredBuffer<float4> g_PairSamplesA;
-uniform RWStructuredBuffer<float4> g_PairSamplesB;
-uniform RWStructuredBuffer<float2> g_PairSensorCoordsA;
-uniform RWStructuredBuffer<float2> g_PairSensorCoordsB;
+uniform StructuredBuffer<uint> g_PairObservationIndicesA;
+uniform StructuredBuffer<uint> g_PairObservationIndicesB;
+uniform RWStructuredBuffer<float4> g_ObservationMeanSamples;
+uniform RWStructuredBuffer<float2> g_ObservationSensorCoords;
 uniform StructuredBuffer<uint> g_FramePairRanges;
 uniform StructuredBuffer<uint2> g_FramePairEntries;
 
 uniform uint g_FrameCount;
 uniform uint g_PairCount;
 uniform uint g_NeighborhoodSize;
-uniform uint g_NeighborhoodSampleCount;
 
 uniform Texture2D<float4> g_PairDatasetSourceFrame;
-uniform StructuredBuffer<float2> g_PairXYA;
-uniform StructuredBuffer<float2> g_PairXYB;
-uniform StructuredBuffer<uint> g_DatasetFramePairRanges;
-uniform StructuredBuffer<uint2> g_DatasetFramePairEntries;
+uniform StructuredBuffer<float2> g_ObservationXY;
+uniform StructuredBuffer<uint> g_DatasetFrameObservationRanges;
+uniform StructuredBuffer<uint> g_DatasetFrameObservationIndices;
 uniform uint g_DatasetFrameIndex;
 uniform uint g_DatasetFrameWidth;
 uniform uint g_DatasetFrameHeight;
@@ -136,59 +133,59 @@ void add_local_ppisp_grad(inout float grads[PPISP_PARAM_COUNT], PPISPTonemap.Dif
     grads[35u] += diff.crfGamma.z;
 }
 
-float4 load_pair_sample(uint pairIndex, uint sampleIndex, bool sampleFromB)
+float4 load_observation_mean_sample(uint observationIndex)
 {
-    uint offset = pairIndex * g_NeighborhoodSampleCount + sampleIndex;
-    return sanitize_float4(sampleFromB ? g_PairSamplesB[offset] : g_PairSamplesA[offset], SANITIZE_HUGE_VALUE);
+    return sanitize_float4(g_ObservationMeanSamples[observationIndex], SANITIZE_HUGE_VALUE);
 }
 
-float2 load_pair_sensor_coord(uint pairIndex, uint sampleIndex, bool sampleFromB)
+float2 load_observation_sensor_coord(uint observationIndex)
 {
-    uint offset = pairIndex * g_NeighborhoodSampleCount + sampleIndex;
-    return sampleFromB ? g_PairSensorCoordsB[offset] : g_PairSensorCoordsA[offset];
+    return g_ObservationSensorCoords[observationIndex];
 }
 
 [shader("compute")]
 [numthreads(PHOTOMETRIC_THREADS, 1, 1)]
-void csBuildPhotometricPairDataset(uint3 dispatchThreadID : SV_DispatchThreadID)
+void csBuildPhotometricObservationDataset(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
-    uint start = g_DatasetFramePairRanges[g_DatasetFrameIndex];
-    uint stop = g_DatasetFramePairRanges[g_DatasetFrameIndex + 1u];
+    uint start = g_DatasetFrameObservationRanges[g_DatasetFrameIndex];
+    uint stop = g_DatasetFrameObservationRanges[g_DatasetFrameIndex + 1u];
     uint entryCount = stop - start;
     uint threadIndex = dispatchThreadID.x;
-    uint totalSamples = entryCount * g_NeighborhoodSampleCount;
-    if (threadIndex >= totalSamples) return;
+    if (threadIndex >= entryCount) return;
 
-    uint localEntryIndex = threadIndex / g_NeighborhoodSampleCount;
-    uint sampleIndex = threadIndex % g_NeighborhoodSampleCount;
-    uint2 entry = g_DatasetFramePairEntries[start + localEntryIndex];
-    uint pairIndex = entry.x;
-    bool sampleFromB = entry.y != 0u;
-    float2 center = sampleFromB ? g_PairXYB[pairIndex] : g_PairXYA[pairIndex];
+    uint observationIndex = g_DatasetFrameObservationIndices[start + threadIndex];
+    float2 center = g_ObservationXY[observationIndex];
     uint neighborhoodSize = max(g_NeighborhoodSize, 1u);
+    uint neighborhoodSampleCount = neighborhoodSize * neighborhoodSize;
     uint radius = neighborhoodSize / 2u;
     int2 basePixel = int2(floor(center));
-    int dx = int(sampleIndex % neighborhoodSize) - int(radius);
-    int dy = int(sampleIndex / neighborhoodSize) - int(radius);
     uint width = max(g_DatasetFrameWidth, 1u);
     uint height = max(g_DatasetFrameHeight, 1u);
-    uint px = uint(clamp(basePixel.x + dx, 0, int(width) - 1));
-    uint py = uint(clamp(basePixel.y + dy, 0, int(height) - 1));
-    uint2 pixel = uint2(px, py);
-    uint pairSampleOffset = pairIndex * g_NeighborhoodSampleCount + sampleIndex;
-    float4 sample = sanitize_float4(g_PairDatasetSourceFrame[pixel], SANITIZE_HUGE_VALUE);
-    float2 sensorCoord = float2(
-        (float(px) + 0.5) / max(float(width), 1.0),
-        (float(py) + 0.5) / max(float(height), 1.0)
-    );
+    float4 meanSample = 0.0;
+    float2 meanSensorCoord = 0.0;
 
-    if (sampleFromB) {
-        g_PairSamplesB[pairSampleOffset] = sample;
-        g_PairSensorCoordsB[pairSampleOffset] = sensorCoord;
-    } else {
-        g_PairSamplesA[pairSampleOffset] = sample;
-        g_PairSensorCoordsA[pairSampleOffset] = sensorCoord;
+    for (uint sampleY = 0u; sampleY < neighborhoodSize; sampleY++)
+    {
+        for (uint sampleX = 0u; sampleX < neighborhoodSize; sampleX++)
+        {
+            int dx = int(sampleX) - int(radius);
+            int dy = int(sampleY) - int(radius);
+            uint px = uint(clamp(basePixel.x + dx, 0, int(width) - 1));
+            uint py = uint(clamp(basePixel.y + dy, 0, int(height) - 1));
+            uint2 pixel = uint2(px, py);
+            float4 sample = sanitize_float4(g_PairDatasetSourceFrame[pixel], SANITIZE_HUGE_VALUE);
+            float2 sensorCoord = float2(
+                (float(px) + 0.5) / max(float(width), 1.0),
+                (float(py) + 0.5) / max(float(height), 1.0)
+            );
+            meanSample += sample;
+            meanSensorCoord += sensorCoord;
+        }
     }
+
+    float invSampleCount = 1.0 / max(float(neighborhoodSampleCount), 1.0);
+    g_ObservationMeanSamples[observationIndex] = meanSample * invSampleCount;
+    g_ObservationSensorCoords[observationIndex] = meanSensorCoord * invSampleCount;
 }
 
 [Differentiable]
@@ -245,42 +242,24 @@ void csPhotometricPairLossBackward(uint3 dispatchThreadID : SV_DispatchThreadID,
     {
         uint2 entry = g_FramePairEntries[entryIndex];
         uint batchPairIndex = entry.x;
-        uint pairIndex = g_PairIndices[batchPairIndex];
         bool currentIsB = entry.y != 0u;
+        uint currentObservationIndex = currentIsB ? g_PairObservationIndicesB[batchPairIndex] : g_PairObservationIndicesA[batchPairIndex];
+        uint otherObservationIndex = currentIsB ? g_PairObservationIndicesA[batchPairIndex] : g_PairObservationIndicesB[batchPairIndex];
         uint otherFrameIndex = currentIsB ? g_PairFrameIndicesA[batchPairIndex] : g_PairFrameIndicesB[batchPairIndex];
         PPISPTonemap otherParams = load_ppisp(otherFrameIndex);
-        float3 currentMeanRaw = 0.0;
-        float3 reconstructedCurrentMean = 0.0;
-        float sampleCount = max(float(g_NeighborhoodSampleCount), 1.0);
-
-        for (uint sampleIndex = 0u; sampleIndex < g_NeighborhoodSampleCount; sampleIndex++)
-        {
-            float4 currentSample = load_pair_sample(pairIndex, sampleIndex, currentIsB);
-            float4 otherSample = load_pair_sample(pairIndex, sampleIndex, !currentIsB);
-            float2 currentSensorCoord = load_pair_sensor_coord(pairIndex, sampleIndex, currentIsB);
-            float2 otherSensorCoord = load_pair_sensor_coord(pairIndex, sampleIndex, !currentIsB);
-            float3 otherTonemapped = photometric_apply_tonemap(max(otherSample.xyz, 0.0), otherSensorCoord, otherParams);
-            currentMeanRaw += max(currentSample.xyz, 0.0);
-            reconstructedCurrentMean += photometric_inverse_tonemap(otherTonemapped, currentSensorCoord, currentParams);
-        }
-
-        currentMeanRaw /= sampleCount;
-        reconstructedCurrentMean /= sampleCount;
+        float4 currentSample = load_observation_mean_sample(currentObservationIndex);
+        float4 otherSample = load_observation_mean_sample(otherObservationIndex);
+        float2 currentSensorCoord = load_observation_sensor_coord(currentObservationIndex);
+        float2 otherSensorCoord = load_observation_sensor_coord(otherObservationIndex);
+        float3 otherTonemapped = photometric_apply_tonemap(max(otherSample.xyz, 0.0), otherSensorCoord, otherParams);
+        float3 currentMeanRaw = max(currentSample.xyz, 0.0);
+        float3 reconstructedCurrentMean = photometric_inverse_tonemap(otherTonemapped, currentSensorCoord, currentParams);
         float3 meanDiff = currentMeanRaw - reconstructedCurrentMean;
         float pairLoss = dot(abs(meanDiff), float3(1.0 / 3.0));
         float3 dReconstructedMean = -sign(meanDiff) * (lossScale / 3.0);
-        float3 dReconstructedSample = dReconstructedMean / sampleCount;
-
-        for (uint sampleIndex = 0u; sampleIndex < g_NeighborhoodSampleCount; sampleIndex++)
-        {
-            float2 currentSensorCoord = load_pair_sensor_coord(pairIndex, sampleIndex, currentIsB);
-            float4 otherSample = load_pair_sample(pairIndex, sampleIndex, !currentIsB);
-            float2 otherSensorCoord = load_pair_sensor_coord(pairIndex, sampleIndex, !currentIsB);
-            float3 otherTonemapped = photometric_apply_tonemap(max(otherSample.xyz, 0.0), otherSensorCoord, otherParams);
-            DifferentialPair<PPISPTonemap> dpCurrent = diffPair(currentParams, zero_ppisp_differential());
-            bwd_diff(photometric_inverse_tonemap)(otherTonemapped, currentSensorCoord, dpCurrent, dReconstructedSample);
-            add_local_ppisp_grad(localGrads, dpCurrent.d);
-        }
+        DifferentialPair<PPISPTonemap> dpCurrent = diffPair(currentParams, zero_ppisp_differential());
+        bwd_diff(photometric_inverse_tonemap)(otherTonemapped, currentSensorCoord, dpCurrent, dReconstructedMean);
+        add_local_ppisp_grad(localGrads, dpCurrent.d);
 
         localLoss += pairLoss * lossScale;
     }

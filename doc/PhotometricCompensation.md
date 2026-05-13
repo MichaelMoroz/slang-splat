@@ -30,7 +30,7 @@ The trainer builds a deterministic sparse pair pool from tracked COLMAP observat
 - frame A and frame B indices,
 - sensor-space observation coordinates in both images.
 
-For each sampled observation pair, the trainer reads an average `N x N` pixel neighborhood around the tracked position. The current-frame neighborhood stays in raw linear space, while the other-frame neighborhood is pushed through the other frame's PPISP and then pulled back through the current frame's PPISP inverse before an `L1` disagreement is measured between the two current-frame means.
+For each tracked observation, the trainer precomputes a single `N x N` neighborhood mean color and mean sensor coordinate once on the GPU. Training then samples observation pairs from the sparse tracks, keeps the current-frame observation mean in raw linear space, pushes the other-frame observation mean through the other frame's PPISP, pulls it back through the current frame's PPISP inverse, and measures an `L1` disagreement between those two observation-level means.
 
 A separate regularization term keeps the learned exposure, vignette, chroma, and CRF parameters close to the identity mapping so the optimizer does not drift into scene-wide recoloring.
 
@@ -38,12 +38,12 @@ A separate regularization term keeps the learned exposure, vignette, chroma, and
 
 `shaders/utility/photometric_compensation.slang` keeps the autodiff surface intentionally small.
 
-- Neighborhood averaging and the `L1` chain rule are handled manually.
+- Neighborhood averaging is handled once during observation-dataset preparation, and the `L1` chain rule is handled manually in the backward kernel.
 - Reverse-mode autodiff only wraps the narrow per-sample PPISP inverse path used by the current frame for that pair orientation.
 - Per-sample PPISP differentials are reduced in-group and written back through the shared packed gradient buffer.
 - Loss accumulation uses float atomics so the Python trainer can read back a scalar loss for the current step.
 
-This separation avoids the instability that showed up when autodiff covered the full neighborhood sampling path.
+This separation avoids the instability that showed up when autodiff covered the full neighborhood sampling path and keeps the step-time kernel focused on the inverse-tonemap residual rather than repeated texture sampling.
 
 ## Gaussian Training Integration
 
@@ -67,7 +67,7 @@ The window contains:
 
 The photometric optimizer steps independently from gaussian optimization. If the apply toggle is enabled, gaussian training consumes the latest learned provider on subsequent target refreshes.
 
-The trainer builds a compact precomputed pair dataset once, uploads that dataset into GPU buffers, and then trains directly from those buffers. That avoids multi-gigabyte per-step frame uploads on large COLMAP scenes while keeping the photometric loss defined on the tracked neighborhood samples.
+The trainer builds a compact precomputed observation dataset once, uploads those observation means into GPU buffers, and then trains directly from those buffers. That avoids multi-gigabyte per-step frame uploads on large COLMAP scenes and removes the step-time neighborhood reduction work from the photometric training loop.
 
 ## Validation
 

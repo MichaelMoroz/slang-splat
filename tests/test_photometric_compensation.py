@@ -182,49 +182,39 @@ def _native_subsample_target_ssim_rgb(trainer: GaussianTrainer, device: spy.Devi
     return target_texture, ssim[:, :, [1, 6, 11]]
 
 
-def _reference_pair_dataset(
+def _reference_observation_dataset(
     frames: list[ColmapFrame],
-    pair_pool,
+    track_pool,
     frame_rgba_linear: list[np.ndarray],
     neighborhood_size: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    sample_count = max(int(neighborhood_size), 1) * max(int(neighborhood_size), 1)
-    pair_count = len(pair_pool)
-    total_samples = pair_count * sample_count
-    samples_a = np.zeros((total_samples, 4), dtype=np.float32)
-    samples_b = np.zeros((total_samples, 4), dtype=np.float32)
-    sensor_coords_a = np.zeros((total_samples, 2), dtype=np.float32)
-    sensor_coords_b = np.zeros((total_samples, 2), dtype=np.float32)
-    radius = max(int(neighborhood_size), 1) // 2
+) -> tuple[np.ndarray, np.ndarray]:
+    resolved_neighborhood = max(int(neighborhood_size), 1)
+    observation_count = int(track_pool.observation_frame_indices.size)
+    mean_samples = np.zeros((observation_count, 4), dtype=np.float32)
+    mean_sensor_coords = np.zeros((observation_count, 2), dtype=np.float32)
+    radius = resolved_neighborhood // 2
+    inv_sample_count = 1.0 / float(resolved_neighborhood * resolved_neighborhood)
 
-    for pair_index in range(pair_count):
-        frame_index_a = int(pair_pool.frame_indices_a[pair_index])
-        frame_index_b = int(pair_pool.frame_indices_b[pair_index])
-        frame_a = frames[frame_index_a]
-        frame_b = frames[frame_index_b]
-        image_a = np.asarray(frame_rgba_linear[frame_index_a], dtype=np.float32)
-        image_b = np.asarray(frame_rgba_linear[frame_index_b], dtype=np.float32)
-        center_a = np.floor(np.asarray(pair_pool.xy_a[pair_index], dtype=np.float32)).astype(np.int32, copy=False)
-        center_b = np.floor(np.asarray(pair_pool.xy_b[pair_index], dtype=np.float32)).astype(np.int32, copy=False)
-        width_a = max(int(frame_a.width), 1)
-        height_a = max(int(frame_a.height), 1)
-        width_b = max(int(frame_b.width), 1)
-        height_b = max(int(frame_b.height), 1)
-        for sample_y in range(max(int(neighborhood_size), 1)):
-            for sample_x in range(max(int(neighborhood_size), 1)):
-                sample_index = sample_y * max(int(neighborhood_size), 1) + sample_x
-                write_index = pair_index * sample_count + sample_index
+    for observation_index in range(observation_count):
+        frame_index = int(track_pool.observation_frame_indices[observation_index])
+        frame = frames[frame_index]
+        image = np.asarray(frame_rgba_linear[frame_index], dtype=np.float32)
+        center = np.floor(np.asarray(track_pool.observation_xy[observation_index], dtype=np.float32)).astype(np.int32, copy=False)
+        width = max(int(frame.width), 1)
+        height = max(int(frame.height), 1)
+        accum_sample = np.zeros((4,), dtype=np.float64)
+        accum_sensor_coord = np.zeros((2,), dtype=np.float64)
+        for sample_y in range(resolved_neighborhood):
+            for sample_x in range(resolved_neighborhood):
                 dx = sample_x - radius
                 dy = sample_y - radius
-                pixel_x_a = int(np.clip(center_a[0] + dx, 0, width_a - 1))
-                pixel_y_a = int(np.clip(center_a[1] + dy, 0, height_a - 1))
-                pixel_x_b = int(np.clip(center_b[0] + dx, 0, width_b - 1))
-                pixel_y_b = int(np.clip(center_b[1] + dy, 0, height_b - 1))
-                samples_a[write_index] = image_a[pixel_y_a, pixel_x_a]
-                samples_b[write_index] = image_b[pixel_y_b, pixel_x_b]
-                sensor_coords_a[write_index] = ((pixel_x_a + 0.5) / width_a, (pixel_y_a + 0.5) / height_a)
-                sensor_coords_b[write_index] = ((pixel_x_b + 0.5) / width_b, (pixel_y_b + 0.5) / height_b)
-    return samples_a, samples_b, sensor_coords_a, sensor_coords_b
+                pixel_x = int(np.clip(center[0] + dx, 0, width - 1))
+                pixel_y = int(np.clip(center[1] + dy, 0, height - 1))
+                accum_sample += np.asarray(image[pixel_y, pixel_x], dtype=np.float64)
+                accum_sensor_coord += np.asarray(((pixel_x + 0.5) / width, (pixel_y + 0.5) / height), dtype=np.float64)
+        mean_samples[observation_index] = np.asarray(accum_sample * inv_sample_count, dtype=np.float32)
+        mean_sensor_coords[observation_index] = np.asarray(accum_sensor_coord * inv_sample_count, dtype=np.float32)
+    return mean_samples, mean_sensor_coords
 
 
 def _dispatch_ppisp_round_trip(
@@ -515,16 +505,14 @@ def test_photometric_precomputed_pair_dataset_avoids_full_frame_upload(device) -
     trainer.prepare_pair_dataset()
 
     total_frame_pixels = sum(int(frame.width) * int(frame.height) for frame in frames)
-    total_dataset_samples = len(trainer.pair_pool) * trainer.hparams.neighborhood_size * trainer.hparams.neighborhood_size
+    total_observations = int(trainer.track_pool.observation_frame_indices.size)
 
     assert trainer._pair_dataset_uploaded is True
-    assert "pair_samples_a" in trainer.buffers
-    assert "pair_samples_b" in trainer.buffers
-    assert "pair_sensor_coords_a" in trainer.buffers
-    assert "pair_sensor_coords_b" in trainer.buffers
+    assert "observation_mean_samples" in trainer.buffers
+    assert "observation_sensor_coords" in trainer.buffers
     assert "frame_pixels" not in trainer.buffers
-    assert total_dataset_samples < total_frame_pixels
-    assert trainer.buffers["pair_samples_a"].size >= total_dataset_samples * 16
+    assert total_observations < total_frame_pixels
+    assert trainer.buffers["observation_mean_samples"].size >= total_observations * 16
 
 
 def test_photometric_gpu_pair_dataset_matches_reference(device) -> None:
@@ -544,22 +532,18 @@ def test_photometric_gpu_pair_dataset_matches_reference(device) -> None:
 
     trainer.prepare_pair_dataset()
 
-    total_dataset_samples = len(trainer.pair_pool) * trainer.hparams.neighborhood_size * trainer.hparams.neighborhood_size
-    expected_samples_a, expected_samples_b, expected_sensor_coords_a, expected_sensor_coords_b = _reference_pair_dataset(
+    observation_count = int(trainer.track_pool.observation_frame_indices.size)
+    expected_mean_samples, expected_sensor_coords = _reference_observation_dataset(
         frames,
-        trainer.pair_pool,
+        trainer.track_pool,
         frame_rgba_linear,
         trainer.hparams.neighborhood_size,
     )
-    pair_samples_a = buffer_to_numpy(trainer.buffers["pair_samples_a"], np.float32)[: total_dataset_samples * 4].reshape(total_dataset_samples, 4)
-    pair_samples_b = buffer_to_numpy(trainer.buffers["pair_samples_b"], np.float32)[: total_dataset_samples * 4].reshape(total_dataset_samples, 4)
-    pair_sensor_coords_a = buffer_to_numpy(trainer.buffers["pair_sensor_coords_a"], np.float32)[: total_dataset_samples * 2].reshape(total_dataset_samples, 2)
-    pair_sensor_coords_b = buffer_to_numpy(trainer.buffers["pair_sensor_coords_b"], np.float32)[: total_dataset_samples * 2].reshape(total_dataset_samples, 2)
+    observation_mean_samples = buffer_to_numpy(trainer.buffers["observation_mean_samples"], np.float32)[: observation_count * 4].reshape(observation_count, 4)
+    observation_sensor_coords = buffer_to_numpy(trainer.buffers["observation_sensor_coords"], np.float32)[: observation_count * 2].reshape(observation_count, 2)
 
-    np.testing.assert_allclose(pair_samples_a, expected_samples_a, rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(pair_samples_b, expected_samples_b, rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(pair_sensor_coords_a, expected_sensor_coords_a, rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(pair_sensor_coords_b, expected_sensor_coords_b, rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(observation_mean_samples, expected_mean_samples, rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(observation_sensor_coords, expected_sensor_coords, rtol=0.0, atol=1e-6)
 
 
 def test_photometric_incremental_pair_dataset_preparation_reports_progress(device) -> None:
@@ -599,7 +583,7 @@ def test_photometric_incremental_pair_dataset_preparation_reports_progress(devic
     assert trainer.pair_dataset_prepare_fraction == pytest.approx(1.0)
 
 
-def test_photometric_trainer_large_pair_pool_uses_batch_local_dataset(device, monkeypatch) -> None:
+def test_photometric_trainer_large_pair_pool_uses_precomputed_observation_dataset(device, monkeypatch) -> None:
     recon, frames = _make_reconstruction()
     frame_rgba_linear = [
         _make_linear_rgba(frame.height, frame.width, rgb_scale=1.0 + 0.1 * frame_index)
@@ -616,41 +600,28 @@ def test_photometric_trainer_large_pair_pool_uses_batch_local_dataset(device, mo
     )
 
     assert trainer.uses_full_pair_dataset is False
-    assert trainer._pair_dataset_uploaded is True
-    assert trainer._pair_dataset_sample_capacity == 0
+    assert trainer._pair_dataset_uploaded is False
+    assert trainer._pair_dataset_observation_capacity == 0
 
-    dispatch_batch = trainer.build_dispatch_batch(2)
-    trainer._prepare_pair_dataset_for_batch(dispatch_batch)
-    trainer._upload_pair_batch(dispatch_batch)
+    trainer.prepare_pair_dataset()
 
-    batch_pool = PhotometricObservationPairPool(
-        point_ids=np.ascontiguousarray(dispatch_batch.pair_batch.point_ids, dtype=np.int64),
-        track_lengths=np.ascontiguousarray(dispatch_batch.pair_batch.track_lengths, dtype=np.int32),
-        frame_indices_a=np.ascontiguousarray(dispatch_batch.pair_batch.frame_indices_a, dtype=np.int32),
-        frame_indices_b=np.ascontiguousarray(dispatch_batch.pair_batch.frame_indices_b, dtype=np.int32),
-        xy_a=np.ascontiguousarray(dispatch_batch.pair_batch.xy_a, dtype=np.float32),
-        xy_b=np.ascontiguousarray(dispatch_batch.pair_batch.xy_b, dtype=np.float32),
-    )
-    sample_count = trainer.hparams.neighborhood_size * trainer.hparams.neighborhood_size
-    total_dataset_samples = dispatch_batch.pair_batch.pair_count * sample_count
-    expected_samples_a, expected_samples_b, expected_sensor_coords_a, expected_sensor_coords_b = _reference_pair_dataset(
+    observation_count = int(trainer.track_pool.observation_frame_indices.size)
+    expected_mean_samples, expected_sensor_coords = _reference_observation_dataset(
         frames,
-        batch_pool,
+        trainer.track_pool,
         frame_rgba_linear,
         trainer.hparams.neighborhood_size,
     )
-    pair_samples_a = buffer_to_numpy(trainer.buffers["pair_samples_a"], np.float32)[: total_dataset_samples * 4].reshape(total_dataset_samples, 4)
-    pair_samples_b = buffer_to_numpy(trainer.buffers["pair_samples_b"], np.float32)[: total_dataset_samples * 4].reshape(total_dataset_samples, 4)
-    pair_sensor_coords_a = buffer_to_numpy(trainer.buffers["pair_sensor_coords_a"], np.float32)[: total_dataset_samples * 2].reshape(total_dataset_samples, 2)
-    pair_sensor_coords_b = buffer_to_numpy(trainer.buffers["pair_sensor_coords_b"], np.float32)[: total_dataset_samples * 2].reshape(total_dataset_samples, 2)
-    pair_indices = buffer_to_numpy(trainer.buffers["pair_indices"], np.uint32)[: dispatch_batch.pair_batch.pair_count]
+    observation_mean_samples = buffer_to_numpy(trainer.buffers["observation_mean_samples"], np.float32)[: observation_count * 4].reshape(observation_count, 4)
+    observation_sensor_coords = buffer_to_numpy(trainer.buffers["observation_sensor_coords"], np.float32)[: observation_count * 2].reshape(observation_count, 2)
 
-    np.testing.assert_allclose(pair_samples_a, expected_samples_a, rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(pair_samples_b, expected_samples_b, rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(pair_sensor_coords_a, expected_sensor_coords_a, rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(pair_sensor_coords_b, expected_sensor_coords_b, rtol=0.0, atol=1e-6)
-    np.testing.assert_array_equal(pair_indices, np.arange(dispatch_batch.pair_batch.pair_count, dtype=np.uint32))
-    assert trainer._pair_dataset_sample_capacity == total_dataset_samples
+    np.testing.assert_allclose(observation_mean_samples, expected_mean_samples, rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(observation_sensor_coords, expected_sensor_coords, rtol=0.0, atol=1e-6)
+    assert trainer._pair_dataset_observation_capacity == observation_count
+
+    monkeypatch.setattr(trainer, "_prepare_pair_dataset_for_batch", lambda dispatch_batch: (_ for _ in ()).throw(AssertionError("batch-local pair dataset rebuild should not run")))
+    trainer.train_step(pair_count=2, step_index=1)
+    assert trainer.state.step == 1
 
 
 def test_photometric_reference_frame_stays_identity(device) -> None:
