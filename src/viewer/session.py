@@ -890,10 +890,7 @@ def _reset_training_visual_state(viewer: object) -> None:
     viewer.s.cached_raster_grad_histogram_status = ""
 
 
-def _reset_training_runtime(viewer: object, *, preserve_frame_targets: bool = False) -> None:
-    viewer.s.training_active = False
-    viewer.s.training_elapsed_s = 0.0
-    viewer.s.training_resume_time = None
+def _release_training_runtime(viewer: object, *, preserve_frame_targets: bool = False) -> None:
     trainer = getattr(viewer.s, "trainer", None)
     release_resources = getattr(trainer, "release_resources", None)
     if callable(release_resources):
@@ -901,18 +898,41 @@ def _reset_training_runtime(viewer: object, *, preserve_frame_targets: bool = Fa
     viewer.s.trainer = None
     _clear_debug_buffers(getattr(viewer.s, "renderer", None))
     _clear_debug_buffers(getattr(viewer.s, "debug_renderer", None))
+
+
+def _clear_training_runtime_resources(viewer: object) -> None:
+    _clear(viewer, "training_renderer")
+    _flush_deferred_resources(viewer)
+
+
+def _clear_training_runtime_tracking(viewer: object) -> None:
     viewer.s.applied_renderer_params_training = None
-    viewer.s.applied_renderer_params_debug = None
     viewer.s.applied_training_signature = None
     viewer.s.applied_training_runtime_signature = None
     viewer.s.applied_training_runtime_factor = None
+    viewer.s.training_runtime_factor_changed = False
+    viewer.s.pending_training_runtime_resize = False
+    viewer.s.last_training_batch_steps = 0
+
+
+def _reset_training_runtime(viewer: object, *, preserve_frame_targets: bool = False) -> None:
+    viewer.s.training_active = False
+    viewer.s.training_elapsed_s = 0.0
+    viewer.s.training_resume_time = None
+    _release_training_runtime(viewer, preserve_frame_targets=bool(preserve_frame_targets))
+    _clear_training_runtime_tracking(viewer)
+    viewer.s.applied_renderer_params_debug = None
     viewer.s.cached_training_setup_signature = None
     viewer.s.cached_training_setup = None
-    viewer.s.pending_training_runtime_resize = False
     _reset_training_visual_state(viewer)
     _reset_loss_debug(viewer)
-    _clear(viewer, "training_renderer")
-    _flush_deferred_resources(viewer)
+    _clear_training_runtime_resources(viewer)
+
+
+def _reset_gaussian_reinitialize_runtime(viewer: object, *, preserve_frame_targets: bool = False) -> None:
+    _release_training_runtime(viewer, preserve_frame_targets=bool(preserve_frame_targets))
+    _clear_training_runtime_tracking(viewer)
+    _clear_training_runtime_resources(viewer)
 
 
 def _reset_loaded_runtime(viewer: object) -> None:
@@ -1224,7 +1244,7 @@ def ensure_renderer(viewer: object, attr: str, width: int, height: int, allow_de
         ) if attr == "training_renderer" else (int(renderer.width), int(renderer.height))
         if renderer_size == size and not force_recreate: return renderer
     previous_renderer = renderer
-    renderer = _create_renderer(viewer, attr, size[0], size[1], allow_debug_overlays)
+    renderer = _create_renderer(viewer, size[0], size[1], allow_debug_overlays)
     if isinstance(viewer.s.scene, GaussianScene):
         renderer.set_scene(viewer.s.scene)
     setattr(viewer.s, attr, renderer)
@@ -1243,7 +1263,7 @@ def _replace_training_renderer(viewer: object, width: int, height: int, *, reset
     previous_renderer = getattr(viewer.s, "training_renderer", None)
     if previous_renderer is None:
         raise RuntimeError("Training renderer is unavailable.")
-    renderer = _create_renderer(viewer, "training_renderer", int(width), int(height), allow_debug_overlays=False)
+    renderer = _create_renderer(viewer, int(width), int(height), allow_debug_overlays=False)
     enc = viewer.device.create_command_encoder()
     previous_renderer.copy_scene_state_to(enc, renderer)
     viewer.device.submit_command_buffer(enc.finish())
@@ -1298,15 +1318,8 @@ def maybe_reallocate_renderers(viewer: object, render_width: int, render_height:
     return recycled
 
 
-def _renderer_allocate_grad_work_buffers(attr: str) -> bool:
-    return str(attr) == "training_renderer"
-
-
-def _create_renderer(viewer: object, attr: str, width: int, height: int, allow_debug_overlays: bool) -> GaussianRenderer:
-    renderer = GaussianRenderSettings.from_renderer_params(int(width), int(height), viewer.renderer_params(allow_debug_overlays)).create_renderer(
-        viewer.device,
-        allocate_grad_work_buffers=_renderer_allocate_grad_work_buffers(attr),
-    )
+def _create_renderer(viewer: object, width: int, height: int, allow_debug_overlays: bool) -> GaussianRenderer:
+    renderer = GaussianRenderSettings.from_renderer_params(int(width), int(height), viewer.renderer_params(allow_debug_overlays)).create_renderer(viewer.device)
     if not allow_debug_overlays or getattr(viewer.s, "trainer", None) is not None:
         _, params, _, _ = resolve_effective_training_setup(viewer)
         renderer.max_sh_band = int(getattr(params.training, "max_sh_band", 3))
@@ -2217,10 +2230,18 @@ def advance_colmap_import(viewer: object) -> None:
         raise
 
 
-def initialize_training_scene(viewer: object, frame_targets_native: list[spy.Texture] | None = None) -> None:
+def initialize_training_scene(
+    viewer: object,
+    frame_targets_native: list[spy.Texture] | None = None,
+    *,
+    preserve_session_state: bool = False,
+) -> None:
     if viewer.s.colmap_recon is None and viewer.s.colmap_root is None:
         return
-    _reset_training_runtime(viewer, preserve_frame_targets=frame_targets_native is not None)
+    if preserve_session_state:
+        _reset_gaussian_reinitialize_runtime(viewer, preserve_frame_targets=frame_targets_native is not None)
+    else:
+        _reset_training_runtime(viewer, preserve_frame_targets=frame_targets_native is not None)
     if not viewer.s.training_frames:
         _refresh_training_frames(viewer)
     if viewer.s.colmap_recon is None or not viewer.s.training_frames:
@@ -2261,26 +2282,30 @@ def initialize_training_scene(viewer: object, frame_targets_native: list[spy.Tex
     if getattr(viewer.s, "debug_renderer", None) is not None:
         viewer.s.debug_renderer.max_sh_band = capped_main_sh
     viewer.s.scene = SceneCountProxy(scene.count)
-    reset_main_camera(viewer)
+    if not preserve_session_state:
+        reset_main_camera(viewer)
     enc = viewer.device.create_command_encoder()
     _apply_training_image_color_init(viewer, viewer.s.trainer, enc)
     renderer.copy_scene_state_to(enc, viewer.s.renderer, include_work_buffers=False)
     viewer.device.submit_command_buffer(enc.finish())
     _apply_debug_buffers(viewer, viewer.s.renderer)
     _apply_debug_buffers(viewer, viewer.s.debug_renderer)
-    viewer.s.training_active = False
-    viewer.s.training_elapsed_s = 0.0
-    viewer.s.training_resume_time = None
+    if not preserve_session_state:
+        viewer.s.training_active = False
+        viewer.s.training_elapsed_s = 0.0
+        viewer.s.training_resume_time = None
     viewer.s.applied_renderer_params_training = _renderer_params_signature(viewer.renderer_params(False))
     viewer.s.applied_training_signature = _training_live_params_signature(params)
     viewer.s.applied_training_runtime_signature = _training_runtime_signature(params)
     viewer.s.applied_training_runtime_factor = int(viewer.s.trainer.effective_train_render_factor(0)) if hasattr(viewer.s.trainer, "effective_train_render_factor") else int(viewer.s.trainer.effective_train_downscale_factor(0))
     viewer.s.pending_training_runtime_resize = False
     _invalidate(viewer)
-    _reset_training_visual_state(viewer)
+    if not preserve_session_state:
+        _reset_training_visual_state(viewer)
     update_debug_frame_slider_range(viewer)
-    _reset_loss_debug(viewer)
-    viewer.s.last_error = ""
+    if not preserve_session_state:
+        _reset_loss_debug(viewer)
+        viewer.s.last_error = ""
     print(f"Initialized training scene ({scene.count:,} gaussians, profile={profile.name})")
 
 
@@ -2291,7 +2316,7 @@ def reinitialize_training_scene(viewer: object) -> None:
     existing_targets = getattr(trainer, "_frame_targets_native", None) if trainer is not None else None
     if isinstance(existing_targets, list) and len(existing_targets) == len(training_frames) and len(existing_targets) > 0:
         frame_targets_native = list(existing_targets)
-    initialize_training_scene(viewer, frame_targets_native=frame_targets_native)
+    initialize_training_scene(viewer, frame_targets_native=frame_targets_native, preserve_session_state=True)
 
 
 def training_elapsed_seconds(viewer: object, now: float | None = None) -> float:

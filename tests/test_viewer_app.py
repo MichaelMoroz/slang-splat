@@ -261,68 +261,6 @@ def test_apply_resize_prefers_viewport_size_when_available(monkeypatch) -> None:
     assert calls == ["wait", (512, 288)]
 
 
-def test_window_host_on_resize_updates_size_without_surface_reconfigure() -> None:
-    calls: list[object] = []
-    host = SimpleNamespace(
-        _window_width=640,
-        _window_height=360,
-        _surface_suspended=True,
-        _skip_next_resize_dimensions=None,
-        _pending_surface_resize=None,
-        _resize_requires_window_recreate=lambda: False,
-        _suspend_surface=lambda: calls.append("suspend"),
-        _configure_surface=lambda: calls.append("configure"),
-        on_resize=lambda width, height: calls.append(("resize", width, height)),
-    )
-
-    app._ViewerWindowHost._on_window_resize(host, 800, 600)
-
-    assert calls == ["configure", ("resize", 800, 600)]
-    assert host._window_width == 800
-    assert host._window_height == 600
-    assert host._surface_suspended is False
-
-
-def test_window_host_on_resize_defers_dx12_surface_resize() -> None:
-    calls: list[object] = []
-    host = SimpleNamespace(
-        _window_width=640,
-        _window_height=360,
-        _surface_suspended=True,
-        _skip_next_resize_dimensions=None,
-        _pending_surface_resize=None,
-        _resize_requires_window_recreate=lambda: True,
-        _suspend_surface=lambda: calls.append("suspend"),
-        _configure_surface=lambda: calls.append("configure"),
-        on_resize=lambda width, height: calls.append(("resize", width, height)),
-    )
-
-    app._ViewerWindowHost._on_window_resize(host, 800, 600)
-
-    assert calls == []
-    assert host._pending_surface_resize == (800, 600)
-    assert host._window_width == 800
-    assert host._window_height == 600
-
-
-def test_window_host_apply_pending_surface_resize_recreates_dx12_window() -> None:
-    calls: list[object] = []
-    host = SimpleNamespace(
-        _pending_surface_resize=(800, 600),
-        _skip_next_resize_dimensions=None,
-        device=SimpleNamespace(wait=lambda: calls.append("wait")),
-        _resize_requires_window_recreate=lambda: True,
-        _recreate_window=lambda *, open_exit_confirmation: calls.append(("recreate", open_exit_confirmation)),
-        on_resize=lambda width, height: calls.append(("resize", width, height)),
-    )
-
-    app._ViewerWindowHost._apply_pending_surface_resize(host)
-
-    assert calls == ["wait", ("recreate", False), ("resize", 800, 600)]
-    assert host._pending_surface_resize is None
-    assert host._skip_next_resize_dimensions == (800, 600)
-
-
 def test_precompile_runtime_shaders_loads_lazy_runtime_shader_sets(monkeypatch) -> None:
     item_calls: list[dict[str, tuple[str, str, str]]] = []
     kernel_calls: list[tuple[str, dict[str, str]]] = []
@@ -367,7 +305,7 @@ def test_save_defaults_callback_updates_cli_common_render(monkeypatch) -> None:
     exported = {
         "renderer": {"radius_scale": 1.25},
         "cli": {"common_render": {"cached_raster_grad_atomic_mode": "fixed", "cached_raster_grad_fixed_scale_range": 512.0}},
-        "viewer": {"controls": {}, "import": {}, "ui": {"graphics_api": "dx12"}},
+        "viewer": {"controls": {}, "import": {}, "ui": {}},
     }
 
     monkeypatch.setattr(
@@ -387,45 +325,6 @@ def test_save_defaults_callback_updates_cli_common_render(monkeypatch) -> None:
 
     assert written["defaults"]["renderer"] == exported["renderer"]
     assert written["defaults"]["cli"]["common_render"] == exported["cli"]["common_render"]
-    assert written["defaults"]["viewer"]["ui"]["graphics_api"] == "dx12"
-
-
-def test_set_graphics_api_callback_updates_viewer_defaults(monkeypatch) -> None:
-    written: dict[str, object] = {}
-    status = SimpleNamespace(text="")
-    viewer = SimpleNamespace(
-        device=SimpleNamespace(info=SimpleNamespace(api_name="Vulkan")),
-        ui=SimpleNamespace(_values={"graphics_api": "vulkan"}),
-        t=lambda key: status,
-        s=SimpleNamespace(last_error="stale"),
-    )
-    defaults = {"viewer": {"ui": {}}, "cli": {}, "renderer": {}, "training_build_args": {}}
-
-    monkeypatch.setattr(app, "load_defaults", lambda: defaults)
-    monkeypatch.setattr(app, "write_defaults", lambda data: written.setdefault("defaults", data))
-
-    app.SplatViewer._set_graphics_api_callback(viewer, "dx12")
-
-    assert written["defaults"]["viewer"]["ui"]["graphics_api"] == "dx12"
-    assert viewer.ui._values["graphics_api"] == "dx12"
-    assert "restart required" in status.text.lower()
-    assert viewer.s.last_error == ""
-
-
-def test_main_uses_preferred_graphics_api_from_defaults(monkeypatch) -> None:
-    calls: list[tuple[str, object]] = []
-    viewer = SimpleNamespace(run=lambda: calls.append(("run", None)), shutdown=lambda: calls.append(("shutdown", None)))
-
-    monkeypatch.setattr(app, "load_defaults", lambda: {"viewer": {"ui": {"graphics_api": "dx12"}}})
-    monkeypatch.setattr(app, "_compute_view_geometry", lambda: (640, 360))
-    monkeypatch.setattr(app, "create_default_device", lambda **kwargs: calls.append(("device", kwargs["device_type"])) or "device")
-    monkeypatch.setattr(app.spy, "App", lambda device: calls.append(("app", device)) or "app")
-    monkeypatch.setattr(app, "SplatViewer", lambda _app, **kwargs: calls.append(("viewer", kwargs)) or viewer)
-
-    result = app.main()
-
-    assert result == 0
-    assert calls[0] == ("device", app.spy.DeviceType.d3d12)
 
 
 def test_render_records_toolkit_failure_without_raising() -> None:
@@ -450,7 +349,7 @@ def test_reinitialize_callback_defers_scene_rebuild_to_next_frame() -> None:
 
     SplatViewer._reinitialize_callback(viewer)
 
-    assert viewer.s.training_active is False
+    assert viewer.s.training_active is True
     assert viewer.s.pending_training_reinitialize is True
 
 

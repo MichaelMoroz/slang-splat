@@ -186,12 +186,6 @@ def test_set_training_active_accumulates_elapsed_time_on_pause(monkeypatch) -> N
     assert viewer.s.training_elapsed_s == 4.5
 
 
-def test_renderer_allocate_grad_work_buffers_only_for_training_renderer() -> None:
-    assert session._renderer_allocate_grad_work_buffers("renderer") is False
-    assert session._renderer_allocate_grad_work_buffers("debug_renderer") is False
-    assert session._renderer_allocate_grad_work_buffers("training_renderer") is True
-
-
 def test_reinitialize_training_scene_reuses_existing_native_targets(monkeypatch) -> None:
     textures = [object(), object()]
     viewer = SimpleNamespace(
@@ -205,12 +199,166 @@ def test_reinitialize_training_scene_reuses_existing_native_targets(monkeypatch)
     monkeypatch.setattr(
         session,
         "initialize_training_scene",
-        lambda viewer_obj, frame_targets_native=None: captured.append(frame_targets_native),
+        lambda viewer_obj, frame_targets_native=None, preserve_session_state=False: captured.append((frame_targets_native, preserve_session_state)),
     )
 
     session.reinitialize_training_scene(viewer)
 
-    assert captured == [textures]
+    assert captured == [(textures, True)]
+
+
+def test_reinitialize_training_scene_preserves_non_gaussian_state(monkeypatch) -> None:
+    class _Encoder:
+        def finish(self) -> str:
+            return "finished"
+
+    class _ViewportRenderer:
+        def __init__(self) -> None:
+            self.grad_buffer = "stale-grad"
+            self.splat_age_buffer = "stale-splat-age"
+            self.copy_targets: list[object] = []
+
+        def set_debug_grad_norm_buffer(self, buffer) -> None:
+            self.grad_buffer = buffer
+
+        def set_debug_splat_age_buffer(self, buffer) -> None:
+            self.splat_age_buffer = buffer
+
+    class _TrainingRenderer:
+        width = 32
+        height = 32
+        work_buffers = {"debug_grad_norm": "new-grad"}
+
+        def __init__(self) -> None:
+            self.copy_calls: list[tuple[object, bool]] = []
+
+        def copy_scene_state_to(self, encoder, dst, *, include_work_buffers: bool = True) -> None:
+            del encoder
+            self.copy_calls.append((dst, bool(include_work_buffers)))
+            dst.copy_targets.append(self)
+
+    class _NewTrainer(SimpleNamespace):
+        def set_target_tonemap_provider(self, provider) -> None:
+            self.target_tonemap_provider = provider
+
+    calls: list[object] = []
+    captured: dict[str, object] = {}
+    training_renderer = _TrainingRenderer()
+    main_renderer = _ViewportRenderer()
+    debug_renderer = _ViewportRenderer()
+    frame_targets = [object(), object()]
+    provider = object()
+    new_trainer = _NewTrainer(
+        target_tonemap_provider=None,
+        refinement_buffers={"splat_age": "new-splat-age"},
+        effective_train_downscale_factor=lambda step=0: 1,
+        effective_train_render_factor=lambda step=0: 1,
+    )
+    viewer = SimpleNamespace(
+        device=SimpleNamespace(
+            create_command_encoder=lambda: _Encoder(),
+            submit_command_buffer=lambda command_buffer: None,
+        ),
+        toolkit=SimpleNamespace(reset_plot_history=lambda: calls.append("reset_plot_history")),
+        ui=SimpleNamespace(_values={"photometric_apply_to_targets": True}),
+        init_params=lambda: SimpleNamespace(seed=7),
+        renderer_params=lambda allow_debug_overlays: SimpleNamespace(mode="debug" if allow_debug_overlays else "train"),
+        training_params=lambda: object(),
+        apply_camera_fit=lambda bounds: None,
+        s=SimpleNamespace(
+            colmap_recon=object(),
+            training_frames=[SimpleNamespace(width=32, height=32), SimpleNamespace(width=32, height=32)],
+            colmap_import=SimpleNamespace(
+                init_mode="pointcloud",
+                custom_ply_path=None,
+                nn_radius_scale_coef=0.5,
+                diffused_point_count=100,
+            ),
+            trainer=SimpleNamespace(
+                _frame_targets_native=frame_targets,
+                refinement_buffers={"splat_age": "old-splat-age"},
+                release_resources=lambda preserve_frame_targets=False: calls.append(("release", preserve_frame_targets)),
+            ),
+            photometric_trainer=SimpleNamespace(provider=provider),
+            photometric_active=True,
+            photometric_elapsed_s=4.0,
+            photometric_resume_time=11.0,
+            renderer=main_renderer,
+            debug_renderer=debug_renderer,
+            training_renderer=object(),
+            training_active=True,
+            training_elapsed_s=12.0,
+            training_resume_time=3.0,
+            scene=None,
+            applied_renderer_params_training=("stale-train",),
+            applied_renderer_params_debug=("stale-debug",),
+            applied_training_signature=("stale-live",),
+            applied_training_runtime_signature=("stale-runtime",),
+            applied_training_runtime_factor=2,
+            pending_training_runtime_resize=True,
+            training_runtime_factor_changed=True,
+            last_training_batch_steps=6,
+            last_error="stale",
+            colmap_root=None,
+            cached_training_setup_signature=("cached",),
+            cached_training_setup=("cached",),
+        ),
+    )
+
+    monkeypatch.setattr(session, "resolve_effective_training_setup", lambda viewer_obj: (SimpleNamespace(seed=7), SimpleNamespace(training=SimpleNamespace(max_gaussians=8), adam=SimpleNamespace(tag="adam"), stability=SimpleNamespace(tag="stability")), SimpleNamespace(), SimpleNamespace(name="test")))
+    monkeypatch.setattr(session, "resolve_effective_train_render_factor", lambda training, step, width=None, height=None: 1)
+    monkeypatch.setattr(session, "resolve_training_resolution", lambda width, height, factor: (width, height))
+
+    def _ensure_renderer(viewer_obj, attr, width, height, allow_debug_overlays):
+        del attr, width, height, allow_debug_overlays
+        calls.append(f"ensure_renderer_cleared={viewer_obj.s.training_renderer is None}")
+        viewer_obj.s.training_renderer = training_renderer
+        return training_renderer
+
+    monkeypatch.setattr(session, "ensure_renderer", _ensure_renderer)
+    monkeypatch.setattr(session, "_build_initial_training_scene", lambda viewer_obj, init, params, init_hparams: (SimpleNamespace(count=8), 0.25))
+    monkeypatch.setattr(session, "apply_live_params", lambda viewer_obj: calls.append(f"apply_live_params_trainer_is_none={viewer_obj.s.trainer is None}"))
+
+    def _gaussian_trainer(**kwargs):
+        captured["frame_targets_native"] = kwargs.get("frame_targets_native")
+        return new_trainer
+
+    monkeypatch.setattr(session, "GaussianTrainer", _gaussian_trainer)
+    monkeypatch.setattr(session, "reset_main_camera", lambda viewer_obj: calls.append(("reset_camera", viewer_obj)))
+    monkeypatch.setattr(session, "_renderer_params_signature", lambda params: (params.mode,))
+    monkeypatch.setattr(session, "_training_live_params_signature", lambda params: ("training-live",))
+    monkeypatch.setattr(session, "_training_runtime_signature", lambda params: ("training-runtime",))
+    monkeypatch.setattr(session, "update_debug_frame_slider_range", lambda viewer_obj: calls.append("update_slider"))
+    monkeypatch.setattr(session, "_reset_training_visual_state", lambda viewer_obj: calls.append("reset_training_visual"))
+    monkeypatch.setattr(session, "_reset_loss_debug", lambda viewer_obj: calls.append("reset_loss_debug"))
+    monkeypatch.setattr(session, "_invalidate", lambda viewer_obj, *targets: calls.append(("invalidate", targets)))
+
+    session.reinitialize_training_scene(viewer)
+
+    assert captured["frame_targets_native"] == frame_targets
+    assert calls[0] == ("release", True)
+    assert "reset_plot_history" not in calls
+    assert "reset_training_visual" not in calls
+    assert "reset_loss_debug" not in calls
+    assert not any(isinstance(call, tuple) and call[0] == "reset_camera" for call in calls)
+    assert viewer.s.trainer is new_trainer
+    assert viewer.s.training_active is True
+    assert viewer.s.training_elapsed_s == 12.0
+    assert viewer.s.training_resume_time == 3.0
+    assert viewer.s.photometric_trainer.provider is provider
+    assert viewer.s.photometric_active is True
+    assert viewer.s.photometric_elapsed_s == 4.0
+    assert viewer.s.photometric_resume_time == 11.0
+    assert viewer.s.last_error == "stale"
+    assert viewer.s.training_runtime_factor_changed is False
+    assert viewer.s.pending_training_runtime_resize is False
+    assert viewer.s.last_training_batch_steps == 0
+    assert new_trainer.target_tonemap_provider is provider
+    assert main_renderer.grad_buffer == "new-grad"
+    assert main_renderer.splat_age_buffer == "new-splat-age"
+    assert debug_renderer.grad_buffer == "new-grad"
+    assert debug_renderer.splat_age_buffer == "new-splat-age"
+    assert training_renderer.copy_calls == [(main_renderer, False)]
 
 
 def test_reset_training_runtime_releases_trainer_resources(monkeypatch) -> None:

@@ -10,7 +10,7 @@ import numpy as np
 import slangpy as spy
 from slangpy import math as smath
 
-from ..utility import create_default_device, device_type_from_name, device_type_name
+from .. import create_default_device
 from ..repo_defaults import defaults_path, load_defaults, write_defaults
 from ..app.training_controls import TRAINING_BUILD_ARG_UI_KEYS
 from ..app.shared import RendererParams, build_init_params, build_training_params, fit_camera
@@ -93,21 +93,6 @@ _RADIX_SORT_ITEM_SPECS = {
     "prefix_add": ("pipeline", SHADER_ROOT / "utility" / "prefix_sum" / "prefix_sum.slang", "csPrefixAddOffsets"),
     "scatter": ("pipeline", SHADER_ROOT / "utility" / "radix_sort" / "scatter.slang", "csRadixScatter"),
 }
-
-
-def _preferred_graphics_api_name(defaults: dict[str, object] | None = None) -> str:
-    resolved_defaults = load_defaults() if defaults is None else defaults
-    viewer_defaults = resolved_defaults.get("viewer", {}) if isinstance(resolved_defaults, dict) else {}
-    ui_defaults = viewer_defaults.get("ui", {}) if isinstance(viewer_defaults, dict) else {}
-    raw_value = ui_defaults.get("graphics_api", "vulkan") if isinstance(ui_defaults, dict) else "vulkan"
-    try:
-        return device_type_name(device_type_from_name(str(raw_value)))
-    except ValueError:
-        return "vulkan"
-
-
-def _graphics_api_label(value: str) -> str:
-    return "DX12" if str(value) == "dx12" else "Vulkan"
 
 
 def _raster_grad_kernel_entries(entry_suffix: str) -> dict[str, str]:
@@ -194,8 +179,6 @@ class _ViewerWindowHost:
         self._window: spy.Window | None = None
         self._surface: spy.Surface | None = None
         self._surface_suspended = False
-        self._pending_surface_resize: tuple[int, int] | None = None
-        self._skip_next_resize_dimensions: tuple[int, int] | None = None
         self._window_position: spy.int2 | None = None
         self._terminated = False
         self._exit_confirmed = False
@@ -247,10 +230,6 @@ class _ViewerWindowHost:
         width, height = self._current_window_size()
         return width > 0 and height > 0 and not self._surface_suspended
 
-    def _resize_requires_window_recreate(self) -> bool:
-        api_name = str(getattr(getattr(self.device, "info", None), "api_name", "") or "").strip().casefold()
-        return api_name in {"d3d12", "dx12", "direct3d12", "directx12"}
-
     def _recover_surface_failure(self, window: spy.Window, *, open_exit_confirmation: bool = True) -> None:
         if self._window_should_close(window):
             if bool(getattr(self, "_exit_confirmed", False)):
@@ -301,22 +280,6 @@ class _ViewerWindowHost:
         if open_exit_confirmation:
             _request_exit_confirmation(self)
 
-    def _apply_pending_surface_resize(self) -> None:
-        pending_resize = self._pending_surface_resize
-        if pending_resize is None:
-            return
-        self._pending_surface_resize = None
-        if self._resize_requires_window_recreate():
-            self.device.wait()
-            self._skip_next_resize_dimensions = pending_resize
-            self._recreate_window(open_exit_confirmation=False)
-            self.on_resize(*pending_resize)
-            return
-        self.device.wait()
-        self._surface_suspended = False
-        self._configure_surface()
-        self.on_resize(*pending_resize)
-
     def _window_should_close(self, window: spy.Window) -> bool:
         return bool(window.should_close()) and not self._ignore_close_until_present
 
@@ -324,20 +287,10 @@ class _ViewerWindowHost:
         resized_width = int(width)
         resized_height = int(height)
         if resized_width <= 0 or resized_height <= 0:
-            self._pending_surface_resize = None
             self._suspend_surface()
-            return
-        if getattr(self, "_skip_next_resize_dimensions", None) == (resized_width, resized_height):
-            self._skip_next_resize_dimensions = None
-            self._window_width = resized_width
-            self._window_height = resized_height
-            self._surface_suspended = False
             return
         self._window_width = resized_width
         self._window_height = resized_height
-        if self._resize_requires_window_recreate():
-            self._pending_surface_resize = (resized_width, resized_height)
-            return
         self._surface_suspended = False
         self._configure_surface()
         self.on_resize(resized_width, resized_height)
@@ -367,17 +320,6 @@ class _ViewerWindowHost:
                 self._recreate_window(open_exit_confirmation=True)
                 continue
             if not self._surface_renderable():
-                continue
-            try:
-                self._apply_pending_surface_resize()
-            except Exception:
-                self._recover_surface_failure(window, open_exit_confirmation=False)
-                if self._terminated:
-                    break
-                continue
-            window = self._window
-            surface = self._surface
-            if window is None or surface is None:
                 continue
             try:
                 surface_texture = surface.acquire_next_image()
@@ -642,10 +584,7 @@ class SplatViewer(_ViewerWindowHost):
         self.loss_debug_view_options = LOSS_DEBUG_OPTIONS
         self.s = ViewerState(max_prepass_memory_mb=max(int(max_prepass_memory_mb), 1))
         _precompile_runtime_shaders(self.device)
-        self.s.renderer = GaussianRenderSettings.from_renderer_params(width, height, _initial_renderer_params(self.s)).create_renderer(
-            self.device,
-            allocate_grad_work_buffers=False,
-        )
+        self.s.renderer = GaussianRenderSettings.from_renderer_params(width, height, _initial_renderer_params(self.s)).create_renderer(self.device)
         self.ui = build_ui(self.s.renderer)
         self.toolkit = create_toolkit_window(self.device, width, height)
         self._bind_toolkit_callbacks()
@@ -674,7 +613,6 @@ class SplatViewer(_ViewerWindowHost):
         cb.move_to_training_camera = self._move_to_training_camera_callback
         cb.reset_camera = self._reset_camera_callback
         cb.save_defaults = self._save_defaults_callback
-        cb.set_graphics_api = self._set_graphics_api_callback
 
     def _request_exit_callback(self) -> None:
         _request_exit_confirmation(self)
@@ -806,7 +744,6 @@ class SplatViewer(_ViewerWindowHost):
             )
 
     def _reinitialize_callback(self) -> None:
-        self.s.training_active = False
         self.s.pending_training_reinitialize = True
 
     def _start_training_callback(self) -> None:
@@ -861,29 +798,6 @@ class SplatViewer(_ViewerWindowHost):
             return
         if hasattr(self, "t"):
             self.t("defaults_status").text = f"Saved {defaults_path().relative_to(defaults_path().parents[1])}"
-        if hasattr(self, "s"):
-            self.s.last_error = ""
-
-    def _set_graphics_api_callback(self, value: str) -> None:
-        try:
-            graphics_api = device_type_name(device_type_from_name(value))
-            defaults = load_defaults()
-            viewer_defaults = defaults.setdefault("viewer", {})
-            ui_defaults = viewer_defaults.setdefault("ui", {})
-            ui_defaults["graphics_api"] = graphics_api
-            write_defaults(defaults)
-            if hasattr(self, "ui") and hasattr(self.ui, "_values"):
-                self.ui._values["graphics_api"] = graphics_api
-        except Exception as exc:
-            if hasattr(self, "t"):
-                self.t("defaults_status").text = ""
-            if hasattr(self, "s"):
-                self.s.last_error = str(exc)
-            return
-        active_api = _preferred_graphics_api_name({"viewer": {"ui": {"graphics_api": getattr(getattr(getattr(self, "device", None), "info", None), "api_name", graphics_api)}}})
-        status_suffix = " (restart required)" if graphics_api != active_api else ""
-        if hasattr(self, "t"):
-            self.t("defaults_status").text = f"Preferred graphics API: {_graphics_api_label(graphics_api)}{status_suffix}"
         if hasattr(self, "s"):
             self.s.last_error = ""
 
@@ -945,8 +859,7 @@ def _compute_view_geometry() -> tuple[int, int]:
 
 def main() -> int:
     view_w, view_h = _compute_view_geometry()
-    graphics_api = _preferred_graphics_api_name()
-    device = create_default_device(device_type=device_type_from_name(graphics_api), enable_debug_layers=False)
+    device = create_default_device(enable_debug_layers=False)
     app = spy.App(device=device)
     viewer = SplatViewer(app, width=view_w, height=view_h, title=_WINDOW_TITLE, max_prepass_memory_mb=DEFAULT_MAX_PREPASS_MEMORY_MB)
     try:
