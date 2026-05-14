@@ -97,36 +97,38 @@ float3 evaluate_sh0_color_raw(float3 sh0)
 [Differentiable]
 float3 evaluate_sh_band_raw(float3 shCoeffs[SH_COEFF_COUNT], no_diff uint shBand, float3 viewDir)
 {
+    float3 color = evaluate_sh0_color_raw(shCoeffs[0u]);
+    if (shBand == 0u) return color;
+
     float3 dir = normalize_vector_safe(viewDir);
     float x = dir.x;
     float y = dir.y;
     float z = dir.z;
+    color += -SH_C1 * y * shCoeffs[1u]
+        + SH_C1 * z * shCoeffs[2u]
+        - SH_C1 * x * shCoeffs[3u];
+    if (shBand == 1u) return color;
+
     float xx = x * x;
     float yy = y * y;
     float zz = z * z;
     float xy = x * y;
     float yz = y * z;
     float xz = x * z;
-    float basis[SH_COEFF_COUNT];
-    basis[0u] = SH_C0;
-    basis[1u] = -SH_C1 * y;
-    basis[2u] = SH_C1 * z;
-    basis[3u] = -SH_C1 * x;
-    basis[4u] = SH_C2_0 * xy;
-    basis[5u] = SH_C2_1 * yz;
-    basis[6u] = SH_C2_2 * (2.0 * zz - xx - yy);
-    basis[7u] = SH_C2_3 * xz;
-    basis[8u] = SH_C2_4 * (xx - yy);
-    basis[9u] = SH_C3_0 * y * (3.0 * xx - yy);
-    basis[10u] = SH_C3_1 * xy * z;
-    basis[11u] = SH_C3_2 * y * (4.0 * zz - xx - yy);
-    basis[12u] = SH_C3_3 * z * (2.0 * zz - 3.0 * xx - 3.0 * yy);
-    basis[13u] = SH_C3_4 * x * (4.0 * zz - xx - yy);
-    basis[14u] = SH_C3_5 * z * (xx - yy);
-    basis[15u] = SH_C3_6 * x * (xx - 3.0 * yy);
-    uint activeCoeffCount = shBand == 0u ? 1u : shBand == 1u ? 4u : shBand == 2u ? 9u : SH_COEFF_COUNT;
-    float3 color = float3(0.5, 0.5, 0.5);
-    [unroll] for (uint coeffIndex = 0u; coeffIndex < SH_COEFF_COUNT; coeffIndex++) if (coeffIndex < activeCoeffCount) color += basis[coeffIndex] * shCoeffs[coeffIndex];
+    color += SH_C2_0 * xy * shCoeffs[4u]
+        + SH_C2_1 * yz * shCoeffs[5u]
+        + SH_C2_2 * (2.0 * zz - xx - yy) * shCoeffs[6u]
+        + SH_C2_3 * xz * shCoeffs[7u]
+        + SH_C2_4 * (xx - yy) * shCoeffs[8u];
+    if (shBand == 2u) return color;
+
+    color += SH_C3_0 * y * (3.0 * xx - yy) * shCoeffs[9u]
+        + SH_C3_1 * xy * z * shCoeffs[10u]
+        + SH_C3_2 * y * (4.0 * zz - xx - yy) * shCoeffs[11u]
+        + SH_C3_3 * z * (2.0 * zz - 3.0 * xx - 3.0 * yy) * shCoeffs[12u]
+        + SH_C3_4 * x * (4.0 * zz - xx - yy) * shCoeffs[13u]
+        + SH_C3_5 * z * (xx - yy) * shCoeffs[14u]
+        + SH_C3_6 * x * (xx - 3.0 * yy) * shCoeffs[15u];
     return color;
 }
 
