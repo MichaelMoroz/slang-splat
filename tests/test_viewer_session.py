@@ -338,7 +338,7 @@ def test_reinitialize_training_scene_preserves_non_gaussian_state(monkeypatch) -
     assert captured["frame_targets_native"] == frame_targets
     assert calls[0] == ("release", True)
     assert "reset_plot_history" not in calls
-    assert "reset_training_visual" not in calls
+    assert "reset_training_visual" in calls
     assert "reset_loss_debug" not in calls
     assert not any(isinstance(call, tuple) and call[0] == "reset_camera" for call in calls)
     assert viewer.s.trainer is new_trainer
@@ -359,6 +359,46 @@ def test_reinitialize_training_scene_preserves_non_gaussian_state(monkeypatch) -
     assert debug_renderer.grad_buffer == "new-grad"
     assert debug_renderer.splat_age_buffer == "new-splat-age"
     assert training_renderer.copy_calls == [(main_renderer, False)]
+
+
+def test_reset_gaussian_reinitialize_runtime_resets_visual_state_only(monkeypatch) -> None:
+    calls: list[object] = []
+    viewer = SimpleNamespace(
+        s=SimpleNamespace(
+            trainer=SimpleNamespace(release_resources=lambda preserve_frame_targets=False: calls.append(("release", preserve_frame_targets))),
+            training_active=True,
+            training_elapsed_s=12.0,
+            training_resume_time=3.0,
+            applied_renderer_params_training="training",
+            applied_training_signature="sig",
+            applied_training_runtime_signature="runtime",
+            applied_training_runtime_factor=2,
+            cached_training_setup_signature="cached-sig",
+            cached_training_setup="cached",
+            pending_training_runtime_resize=True,
+            last_training_batch_steps=6,
+        )
+    )
+    monkeypatch.setattr(session, "_reset_training_visual_state", lambda viewer_obj: calls.append(("visual", viewer_obj)))
+    monkeypatch.setattr(session, "_clear", lambda viewer_obj, *attrs: calls.append(("clear", attrs)))
+
+    session._reset_gaussian_reinitialize_runtime(viewer, preserve_frame_targets=True)
+
+    assert calls[0] == ("release", True)
+    assert calls[1][0] == "visual"
+    assert calls[2] == ("clear", ("training_renderer",))
+    assert viewer.s.trainer is None
+    assert viewer.s.training_active is True
+    assert viewer.s.training_elapsed_s == 12.0
+    assert viewer.s.training_resume_time == 3.0
+    assert viewer.s.applied_renderer_params_training is None
+    assert viewer.s.applied_training_signature is None
+    assert viewer.s.applied_training_runtime_signature is None
+    assert viewer.s.applied_training_runtime_factor is None
+    assert viewer.s.cached_training_setup_signature == "cached-sig"
+    assert viewer.s.cached_training_setup == "cached"
+    assert viewer.s.pending_training_runtime_resize is False
+    assert viewer.s.last_training_batch_steps == 0
 
 
 def test_reset_training_runtime_releases_trainer_resources(monkeypatch) -> None:

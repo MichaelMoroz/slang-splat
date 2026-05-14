@@ -1042,6 +1042,7 @@ def _reset_training_runtime(viewer: object, *, preserve_frame_targets: bool = Fa
 def _reset_gaussian_reinitialize_runtime(viewer: object, *, preserve_frame_targets: bool = False) -> None:
     _release_training_runtime(viewer, preserve_frame_targets=bool(preserve_frame_targets))
     _clear_training_runtime_tracking(viewer)
+    _reset_training_visual_state(viewer)
     _clear_training_runtime_resources(viewer)
 
 
