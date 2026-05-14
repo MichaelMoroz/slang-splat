@@ -3,11 +3,13 @@ from __future__ import annotations
 import cProfile
 import io
 import pstats
+import re
 import shutil
 import subprocess
+import time
 from contextlib import suppress
 from datetime import datetime
-from os import environ
+from os import environ, getpid
 from pathlib import Path
 from typing import Callable
 
@@ -18,6 +20,10 @@ with suppress(Exception):
 
 if "renderdoc" not in globals():
     renderdoc = None
+
+
+_RENDERDOC_ATTACH_TIMEOUT_SECONDS = 5.0
+_RENDERDOC_ATTACH_POLL_SECONDS = 0.05
 
 
 def _repo_root() -> Path:
@@ -92,6 +98,29 @@ def find_qrenderdoc() -> Path | None:
     return None
 
 
+def find_renderdoccmd() -> Path | None:
+    candidates: list[Path] = []
+    for executable in ("renderdoccmd.exe", "renderdoccmd"):
+        resolved = shutil.which(executable)
+        if resolved:
+            candidates.append(Path(resolved))
+    for env_key in ("ProgramFiles", "ProgramFiles(x86)"):
+        root = environ.get(env_key)
+        if root:
+            candidates.append(Path(root) / "RenderDoc" / "renderdoccmd.exe")
+    with suppress(Exception):
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\renderdoccmd.exe") as key:
+            value, _ = winreg.QueryValueEx(key, None)
+            if value:
+                candidates.append(Path(value))
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate.resolve()
+    return None
+
+
 def _is_qrenderdoc_running() -> bool:
     try:
         result = subprocess.run(
@@ -106,16 +135,90 @@ def _is_qrenderdoc_running() -> bool:
     return result.returncode == 0 and "qrenderdoc.exe" in result.stdout.lower()
 
 
-def ensure_qrenderdoc_running() -> Path:
+def _launch_qrenderdoc(qrenderdoc_path: Path, target_control: str | None = None) -> None:
+    launch_args = [str(qrenderdoc_path)]
+    if target_control:
+        launch_args.extend(["--targetcontrol", target_control])
+    try:
+        subprocess.Popen(launch_args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception as exc:
+        raise RuntimeError(f"Failed to launch RenderDoc: {exc}") from exc
+
+
+def ensure_qrenderdoc_running(target_control: str | None = None) -> Path:
     qrenderdoc_path = find_qrenderdoc()
     if qrenderdoc_path is None:
         raise RuntimeError("RenderDoc was not found. Install RenderDoc or add qrenderdoc to PATH.")
-    if not _is_qrenderdoc_running():
-        try:
-            subprocess.Popen([str(qrenderdoc_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception as exc:
-            raise RuntimeError(f"Failed to launch RenderDoc: {exc}") from exc
+    if target_control is not None or not _is_qrenderdoc_running():
+        _launch_qrenderdoc(qrenderdoc_path, target_control=target_control)
     return qrenderdoc_path
+
+
+def _parse_renderdoc_target_port(output: str) -> int | None:
+    match = re.search(r"Launched as ID\s+(\d+)", output)
+    if match is None:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def _find_process_listener_port(pid: int) -> int | None:
+    try:
+        result = subprocess.run(
+            ["netstat", "-ano", "-p", "tcp"],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=False,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    ports: list[int] = []
+    for line in result.stdout.splitlines():
+        match = re.match(r"^\s*TCP\s+\S+:(\d+)\s+\S+\s+LISTENING\s+(\d+)\s*$", line)
+        if match is None:
+            continue
+        try:
+            local_port = int(match.group(1))
+            owning_pid = int(match.group(2))
+        except ValueError:
+            continue
+        if owning_pid == int(pid):
+            ports.append(local_port)
+    if not ports:
+        return None
+    return max(ports)
+
+
+def _inject_renderdoc(renderdoccmd_path: Path, pid: int) -> int | None:
+    try:
+        result = subprocess.run(
+            [str(renderdoccmd_path), "inject", f"--PID={int(pid)}"],
+            capture_output=True,
+            text=True,
+            timeout=10.0,
+            check=False,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"Failed to inject RenderDoc into PID {int(pid)}: {exc}") from exc
+    output = f"{result.stdout}\n{result.stderr}".strip()
+    if result.returncode != 0:
+        detail = output if output else f"exit code {int(result.returncode)}"
+        raise RuntimeError(f"RenderDoc injection failed for PID {int(pid)}: {detail}")
+    return _parse_renderdoc_target_port(output)
+
+
+def _wait_for_renderdoc_attach(timeout_seconds: float) -> bool:
+    deadline = time.monotonic() + float(timeout_seconds)
+    while time.monotonic() < deadline:
+        if renderdoc is not None and bool(renderdoc.is_available()):
+            return True
+        time.sleep(_RENDERDOC_ATTACH_POLL_SECONDS)
+    return renderdoc is not None and bool(renderdoc.is_available())
 
 
 def capture_renderdoc_frame(
@@ -129,11 +232,25 @@ def capture_renderdoc_frame(
     action_error: Exception | None = None
 
     try:
-        qrenderdoc_path = ensure_qrenderdoc_running()
         if renderdoc is None:
             raise RuntimeError("SlangPy RenderDoc integration is unavailable.")
+        target_port: int | None = None
         if not bool(renderdoc.is_available()):
-            raise RuntimeError("RenderDoc is open, but SlangPy cannot control it yet. Make sure the viewer is attached to the opened RenderDoc instance.")
+            renderdoccmd_path = find_renderdoccmd()
+            if renderdoccmd_path is None:
+                raise RuntimeError("RenderDoc CLI was not found. Install RenderDoc or add renderdoccmd to PATH.")
+            target_port = _inject_renderdoc(renderdoccmd_path, getpid())
+            if not _wait_for_renderdoc_attach(_RENDERDOC_ATTACH_TIMEOUT_SECONDS):
+                raise RuntimeError("RenderDoc injection succeeded, but SlangPy never reported control for this process.")
+        if target_port is None:
+            target_port = _find_process_listener_port(getpid())
+        qrenderdoc_path = (
+            ensure_qrenderdoc_running()
+            if target_port is None
+            else ensure_qrenderdoc_running(f"localhost:{int(target_port)}")
+        )
+        if not bool(renderdoc.is_available()):
+            raise RuntimeError("RenderDoc is not attached to this process after launch/injection.")
         if bool(getattr(renderdoc, "is_frame_capturing", lambda: False)()):
             raise RuntimeError("RenderDoc is already capturing a frame.")
         if not bool(renderdoc.start_frame_capture(device, window)):

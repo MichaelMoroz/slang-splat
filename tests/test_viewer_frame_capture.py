@@ -34,7 +34,8 @@ def test_capture_python_frame_writes_log_and_profile(tmp_path: Path) -> None:
 def test_capture_renderdoc_frame_wraps_action_when_available(monkeypatch) -> None:
     calls: list[object] = []
 
-    monkeypatch.setattr(frame_capture, "ensure_qrenderdoc_running", lambda: Path("C:/Program Files/RenderDoc/qrenderdoc.exe"))
+    monkeypatch.setattr(frame_capture, "ensure_qrenderdoc_running", lambda target_control=None: Path("C:/Program Files/RenderDoc/qrenderdoc.exe"))
+    monkeypatch.setattr(frame_capture, "_find_process_listener_port", lambda _pid: None)
     monkeypatch.setattr(
         frame_capture,
         "renderdoc",
@@ -59,7 +60,9 @@ def test_capture_renderdoc_frame_wraps_action_when_available(monkeypatch) -> Non
 def test_capture_renderdoc_frame_runs_frame_and_reports_unavailable(monkeypatch) -> None:
     calls: list[str] = []
 
-    monkeypatch.setattr(frame_capture, "ensure_qrenderdoc_running", lambda: Path("C:/Program Files/RenderDoc/qrenderdoc.exe"))
+    monkeypatch.setattr(frame_capture, "find_renderdoccmd", lambda: Path("C:/Program Files/RenderDoc/renderdoccmd.exe"))
+    monkeypatch.setattr(frame_capture, "_inject_renderdoc", lambda _path, _pid: 38920)
+    monkeypatch.setattr(frame_capture, "_wait_for_renderdoc_attach", lambda _timeout: False)
     monkeypatch.setattr(
         frame_capture,
         "renderdoc",
@@ -71,7 +74,7 @@ def test_capture_renderdoc_frame_runs_frame_and_reports_unavailable(monkeypatch)
         ),
     )
 
-    with pytest.raises(RuntimeError, match="cannot control"):
+    with pytest.raises(RuntimeError, match="never reported control"):
         frame_capture.capture_renderdoc_frame(lambda: calls.append("frame"), device="device", window="window")
 
     assert calls == ["frame"]
@@ -80,10 +83,21 @@ def test_capture_renderdoc_frame_runs_frame_and_reports_unavailable(monkeypatch)
 def test_capture_renderdoc_frame_runs_frame_and_reports_missing_qrenderdoc(monkeypatch) -> None:
     calls: list[str] = []
 
-    def _missing_qrenderdoc() -> Path:
+    def _missing_qrenderdoc(_target_control=None) -> Path:
         raise RuntimeError("RenderDoc was not found. Install RenderDoc or add qrenderdoc to PATH.")
 
     monkeypatch.setattr(frame_capture, "ensure_qrenderdoc_running", _missing_qrenderdoc)
+    monkeypatch.setattr(frame_capture, "_find_process_listener_port", lambda _pid: None)
+    monkeypatch.setattr(
+        frame_capture,
+        "renderdoc",
+        SimpleNamespace(
+            is_available=lambda: True,
+            is_frame_capturing=lambda: False,
+            start_frame_capture=lambda *_args, **_kwargs: True,
+            end_frame_capture=lambda: True,
+        ),
+    )
 
     with pytest.raises(RuntimeError, match="RenderDoc was not found"):
         frame_capture.capture_renderdoc_frame(lambda: calls.append("frame"), device="device", window="window")
