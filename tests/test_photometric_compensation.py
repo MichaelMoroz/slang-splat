@@ -705,6 +705,92 @@ def test_photometric_target_average_exposure_controls_exposure_regularization_ta
     assert float(np.mean(final_exposure, dtype=np.float64)) == pytest.approx(0.5, abs=0.1)
 
 
+def test_photometric_exposure_l1_regularization_uses_target_average_exposure(device) -> None:
+    recon, frames = _make_reconstruction()
+    trainer = PhotometricCompensationTrainer(
+        device,
+        recon,
+        frames,
+        hparams=PhotometricCompensationHyperParams(
+            batch_pair_count=4,
+            neighborhood_size=3,
+            learning_rate=0.2,
+            target_average_exposure=0.5,
+            exposure_lr_mul=1.0,
+            exposure_regularize_weight=0.0,
+            vignette_regularize_weight=0.0,
+            chroma_regularize_weight=0.0,
+            crf_regularize_weight=0.0,
+            exposure_l1_weight=0.2,
+            vignette_l1_weight=0.0,
+            chroma_l1_weight=0.0,
+            crf_l1_weight=0.0,
+        ),
+        seed=37,
+    )
+
+    params = identity_packed_ppisp_params(len(frames))
+    params[0, :] = np.array((-0.5, -0.25, -0.75), dtype=np.float32)
+    trainer.replace_packed_params(params)
+
+    start_distance = float(np.mean(np.abs(trainer.read_packed_params()[0, :] - np.float32(0.5)), dtype=np.float64))
+    for step in range(1, 33):
+        trainer.zero_grads()
+        trainer.step_optimizer(step)
+
+    final_exposure = trainer.read_packed_params()[0, :]
+    final_distance = float(np.mean(np.abs(final_exposure - np.float32(0.5)), dtype=np.float64))
+
+    assert final_distance < start_distance * 0.5
+    assert float(np.mean(final_exposure, dtype=np.float64)) == pytest.approx(0.5, abs=0.1)
+
+
+def test_photometric_gamma_l1_regularization_shrinks_toward_gamma_identity(device) -> None:
+    recon, frames = _make_reconstruction()
+    trainer = PhotometricCompensationTrainer(
+        device,
+        recon,
+        frames,
+        hparams=PhotometricCompensationHyperParams(
+            batch_pair_count=4,
+            neighborhood_size=3,
+            learning_rate=0.2,
+            crf_lr_mul=1.0,
+            exposure_regularize_weight=0.0,
+            vignette_regularize_weight=0.0,
+            chroma_regularize_weight=0.0,
+            crf_regularize_weight=0.0,
+            gamma_regularize_weight=0.0,
+            exposure_l1_weight=0.0,
+            vignette_l1_weight=0.0,
+            chroma_l1_weight=0.0,
+            crf_l1_weight=0.0,
+            gamma_l1_weight=0.2,
+            enable_exposure=False,
+            enable_color=False,
+            enable_vignette=False,
+            enable_gamma=True,
+        ),
+        seed=41,
+    )
+
+    gamma_layout = next(layout for layout in photometric_compensation_module._FIELD_LAYOUTS if layout.attr == "crfGamma")
+    params = identity_packed_ppisp_params(len(frames))
+    params[gamma_layout.start : gamma_layout.stop, :] = np.array([[3.25], [3.1], [3.4]], dtype=np.float32)
+    trainer.replace_packed_params(params)
+
+    gamma_target = photometric_compensation_module._PPISP_IDENTITY_VALUES[gamma_layout.start : gamma_layout.stop].reshape(gamma_layout.size, 1)
+    start_distance = float(np.mean(np.abs(trainer.read_packed_params()[gamma_layout.start : gamma_layout.stop, :] - gamma_target), dtype=np.float64))
+    for step in range(1, 49):
+        trainer.zero_grads()
+        trainer.step_optimizer(step)
+
+    final_gamma = trainer.read_packed_params()[gamma_layout.start : gamma_layout.stop, :]
+    final_distance = float(np.mean(np.abs(final_gamma - gamma_target), dtype=np.float64))
+
+    assert final_distance < start_distance * 0.5
+
+
 def test_photometric_replace_packed_params_keeps_all_frames_trainable(device) -> None:
     recon, frames = _make_reconstruction()
     trainer = PhotometricCompensationTrainer(
@@ -984,7 +1070,7 @@ def test_photometric_trainer_pair_loss_step_reduces_synthetic_exposure_error(dev
     assert np.isfinite(first_loss)
     assert np.isfinite(trainer.state.ema_loss)
     assert trainer.state.ema_loss < first_loss * 0.3
-    assert exposure_values[0] == pytest.approx(0.0, abs=1e-6)
+    assert exposure_values[0] == pytest.approx(exposure_values[2], abs=0.25)
     assert exposure_values[1] > exposure_values[0] + 0.25
     assert exposure_values[1] > exposure_values[2] + 0.25
 

@@ -38,6 +38,11 @@ float optimizer_shrink_abs(float value, float delta)
     return 0.0;
 }
 
+float optimizer_shrink_abs_toward(float value, float target, float delta)
+{
+    return optimizer_shrink_abs(value - target, delta) + target;
+}
+
 [shader("compute")]
 [numthreads(ADAM_GROUP_SIZE, 1, 1)]
 void csComputePackedElementGradNorms(uint3 dispatchThreadID : SV_DispatchThreadID)
@@ -140,7 +145,7 @@ void csRegularizePacked(uint3 dispatchThreadID : SV_DispatchThreadID)
     }
     if (settings.regularizeL1Weight > 0.0)
     {
-        value = optimizer_shrink_abs(value, settings.lr * settings.regularizeL1Weight);
+        value = optimizer_shrink_abs_toward(value, settings.regularizeTowardValue, settings.lr * settings.regularizeL1Weight);
     }
     g_OptimizerParams[paramIndex] = clamp(sanitize_scalar(value, g_OptimizerRuntime.hugeValue), settings.valueMin, settings.valueMax);
 }
