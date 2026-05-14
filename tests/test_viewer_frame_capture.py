@@ -126,6 +126,9 @@ def test_prepare_renderdoc_startup_injects_and_records_target_port(monkeypatch) 
     calls: list[object] = []
 
     class _RuntimeAPI:
+        def disable_overlay_and_capture_keys(self) -> None:
+            calls.append("disable")
+
         def trigger_capture(self) -> None:
             calls.append("trigger")
 
@@ -152,7 +155,7 @@ def test_prepare_renderdoc_startup_injects_and_records_target_port(monkeypatch) 
 
     assert resolved == 38920
     assert frame_capture._RENDERDOC_TARGET_PORT == 38920
-    assert calls == [("inject", frame_capture.getpid())]
+    assert calls == [("inject", frame_capture.getpid()), "disable"]
 
 
 def test_capture_renderdoc_frame_prefers_recorded_target_port(monkeypatch) -> None:
@@ -160,6 +163,24 @@ def test_capture_renderdoc_frame_prefers_recorded_target_port(monkeypatch) -> No
 
     monkeypatch.setattr(frame_capture, "_RENDERDOC_TARGET_PORT", 38920)
     monkeypatch.setattr(frame_capture, "_find_process_listener_port", lambda _pid: 45000)
+
+    class _RuntimeAPI:
+        def disable_overlay_and_capture_keys(self) -> None:
+            calls.append("disable")
+
+        def get_num_captures(self) -> int:
+            return 0
+
+        def get_capture_path(self, _index: int) -> Path | None:
+            return None
+
+        def trigger_capture(self) -> None:
+            calls.append("trigger")
+
+        def is_target_control_connected(self) -> bool:
+            return True
+
+    monkeypatch.setattr(frame_capture, "_get_runtime_renderdoc_api", lambda: _RuntimeAPI())
     monkeypatch.setattr(frame_capture, "ensure_qrenderdoc_running", lambda target_control=None: calls.append(("ui", target_control)) or Path("C:/Program Files/RenderDoc/qrenderdoc.exe"))
     monkeypatch.setattr(
         frame_capture,
@@ -175,7 +196,49 @@ def test_capture_renderdoc_frame_prefers_recorded_target_port(monkeypatch) -> No
     resolved = frame_capture.capture_renderdoc_frame(lambda: calls.append("frame"), device="device", window="window")
 
     assert resolved == Path("C:/Program Files/RenderDoc/qrenderdoc.exe")
-    assert calls == [("ui", "localhost:38920"), ("start", "device", "window"), "frame", "end"]
+    assert calls == [("start", "device", "window"), "frame", "end", ("ui", "localhost:38920")]
+
+
+def test_capture_renderdoc_frame_opens_latest_capture_file(monkeypatch, tmp_path: Path) -> None:
+    calls: list[object] = []
+    capture_path = tmp_path / "capture.rdc"
+    capture_path.write_text("rdc", encoding="utf-8")
+
+    class _RuntimeAPI:
+        def disable_overlay_and_capture_keys(self) -> None:
+            calls.append("disable")
+
+        def get_num_captures(self) -> int:
+            return 1 if "end" in calls else 0
+
+        def get_capture_path(self, _index: int) -> Path | None:
+            return capture_path
+
+        def trigger_capture(self) -> None:
+            calls.append("trigger")
+
+        def is_target_control_connected(self) -> bool:
+            return True
+
+    monkeypatch.setattr(frame_capture, "_RENDERDOC_TARGET_PORT", 38920)
+    monkeypatch.setattr(frame_capture, "_get_runtime_renderdoc_api", lambda: _RuntimeAPI())
+    monkeypatch.setattr(frame_capture, "_open_qrenderdoc_capture", lambda path, capture, target_control=None: calls.append(("open", path, capture, target_control)) or path)
+    monkeypatch.setattr(frame_capture, "find_qrenderdoc", lambda: Path("C:/Program Files/RenderDoc/qrenderdoc.exe"))
+    monkeypatch.setattr(
+        frame_capture,
+        "renderdoc",
+        SimpleNamespace(
+            is_available=lambda: True,
+            is_frame_capturing=lambda: False,
+            start_frame_capture=lambda device, window=None: calls.append(("start", device, window)) or True,
+            end_frame_capture=lambda: calls.append("end") or True,
+        ),
+    )
+
+    resolved = frame_capture.capture_renderdoc_frame(lambda: calls.append("frame"), device="device", window="window")
+
+    assert resolved == Path("C:/Program Files/RenderDoc/qrenderdoc.exe")
+    assert calls == [("start", "device", "window"), "frame", "end", ("open", Path("C:/Program Files/RenderDoc/qrenderdoc.exe"), capture_path, "localhost:38920")]
 
 
 def test_capture_renderdoc_frame_uses_runtime_api_after_injection(monkeypatch) -> None:
@@ -213,4 +276,4 @@ def test_capture_renderdoc_frame_uses_runtime_api_after_injection(monkeypatch) -
 
     assert resolved == Path("C:/Program Files/RenderDoc/qrenderdoc.exe")
     assert runtime_api.triggered == 1
-    assert calls == ["ui:localhost:38920", "trigger", "frame"]
+    assert calls == ["trigger", "frame", "ui:localhost:38920"]

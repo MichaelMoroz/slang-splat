@@ -57,8 +57,41 @@ class _RenderDocApiStruct(ctypes.Structure):
 class _RuntimeRenderDocAPI:
     def __init__(self, api_ptr: ctypes.c_void_p) -> None:
         api = ctypes.cast(api_ptr, ctypes.POINTER(_RenderDocApiStruct)).contents
+        self._set_focus_toggle_keys = _RENDERDOC_CALLBACK(None, ctypes.c_void_p, ctypes.c_int)(api.SetFocusToggleKeys) if api.SetFocusToggleKeys else None
+        self._set_capture_keys = _RENDERDOC_CALLBACK(None, ctypes.c_void_p, ctypes.c_int)(api.SetCaptureKeys) if api.SetCaptureKeys else None
+        self._mask_overlay_bits = _RENDERDOC_CALLBACK(None, ctypes.c_uint32, ctypes.c_uint32)(api.MaskOverlayBits) if api.MaskOverlayBits else None
+        self._get_num_captures = _RENDERDOC_CALLBACK(ctypes.c_uint32)(api.GetNumCaptures) if api.GetNumCaptures else None
+        self._get_capture = _RENDERDOC_CALLBACK(ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_uint64))(api.GetCapture) if api.GetCapture else None
         self._trigger_capture = _RENDERDOC_CALLBACK(None)(api.TriggerCapture) if api.TriggerCapture else None
         self._is_target_control_connected = _RENDERDOC_CALLBACK(ctypes.c_uint32)(api.IsTargetControlConnected) if api.IsTargetControlConnected else None
+
+    def disable_overlay_and_capture_keys(self) -> None:
+        if self._set_focus_toggle_keys is not None:
+            self._set_focus_toggle_keys(None, 0)
+        if self._set_capture_keys is not None:
+            self._set_capture_keys(None, 0)
+        if self._mask_overlay_bits is not None:
+            self._mask_overlay_bits(0, 0)
+
+    def get_num_captures(self) -> int:
+        if self._get_num_captures is None:
+            return 0
+        return int(self._get_num_captures())
+
+    def get_capture_path(self, index: int) -> Path | None:
+        if self._get_capture is None:
+            return None
+        path_length = ctypes.c_uint32(0)
+        timestamp = ctypes.c_uint64(0)
+        if int(self._get_capture(int(index), None, ctypes.byref(path_length), ctypes.byref(timestamp))) == 0:
+            return None
+        if path_length.value == 0:
+            return None
+        buffer = ctypes.create_string_buffer(int(path_length.value))
+        if int(self._get_capture(int(index), ctypes.cast(buffer, ctypes.c_void_p), ctypes.byref(path_length), ctypes.byref(timestamp))) == 0:
+            return None
+        raw_path = buffer.value.decode("utf-8", errors="ignore").strip()
+        return Path(raw_path) if raw_path else None
 
     def trigger_capture(self) -> None:
         if self._trigger_capture is None:
@@ -258,6 +291,31 @@ def ensure_qrenderdoc_running(target_control: str | None = None) -> Path:
     return qrenderdoc_path
 
 
+def _open_qrenderdoc_capture(qrenderdoc_path: Path, capture_path: Path, *, target_control: str | None = None) -> Path:
+    launch_args = [str(qrenderdoc_path)]
+    if target_control:
+        launch_args.extend(["--targetcontrol", target_control])
+    launch_args.append(str(capture_path))
+    try:
+        subprocess.Popen(launch_args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception as exc:
+        raise RuntimeError(f"Failed to open RenderDoc capture: {exc}") from exc
+    return qrenderdoc_path
+
+
+def _wait_for_new_capture(runtime_api: _RuntimeRenderDocAPI, previous_count: int, timeout_seconds: float) -> Path | None:
+    deadline = time.monotonic() + float(timeout_seconds)
+    while time.monotonic() < deadline:
+        capture_count = runtime_api.get_num_captures()
+        if capture_count > int(previous_count):
+            return runtime_api.get_capture_path(capture_count - 1)
+        time.sleep(_RENDERDOC_ATTACH_POLL_SECONDS)
+    capture_count = runtime_api.get_num_captures()
+    if capture_count > int(previous_count):
+        return runtime_api.get_capture_path(capture_count - 1)
+    return None
+
+
 def _parse_renderdoc_target_port(output: str) -> int | None:
     match = re.search(r"Launched as ID\s+(\d+)", output)
     if match is None:
@@ -322,6 +380,7 @@ def _inject_renderdoc(renderdoccmd_path: Path, pid: int) -> int | None:
 def prepare_renderdoc_startup() -> int | None:
     runtime_api = _get_runtime_renderdoc_api()
     if runtime_api is not None:
+        runtime_api.disable_overlay_and_capture_keys()
         return _remember_renderdoc_target_port(_resolve_renderdoc_target_port(getpid()))
     renderdoccmd_path = find_renderdoccmd()
     if renderdoccmd_path is None:
@@ -330,6 +389,7 @@ def prepare_renderdoc_startup() -> int | None:
     runtime_api = _wait_for_runtime_renderdoc_api(_RENDERDOC_ATTACH_TIMEOUT_SECONDS)
     if runtime_api is None:
         raise RuntimeError("RenderDoc startup injection succeeded, but the RenderDoc runtime API never became available in this process.")
+    runtime_api.disable_overlay_and_capture_keys()
     return _remember_renderdoc_target_port(target_port)
 
 
@@ -353,6 +413,7 @@ def capture_renderdoc_frame(
     action_error: Exception | None = None
     runtime_api = _get_runtime_renderdoc_api()
     use_runtime_trigger = False
+    capture_count_before = runtime_api.get_num_captures() if runtime_api is not None else 0
 
     try:
         target_port: int | None = None
@@ -370,11 +431,6 @@ def capture_renderdoc_frame(
                 target_port = _resolve_renderdoc_target_port(getpid())
         if target_port is None:
             target_port = _resolve_renderdoc_target_port(getpid())
-        qrenderdoc_path = (
-            ensure_qrenderdoc_running()
-            if target_port is None
-            else ensure_qrenderdoc_running(f"localhost:{int(target_port)}")
-        )
         if slangpy_renderdoc_ready:
             if bool(getattr(renderdoc, "is_frame_capturing", lambda: False)()):
                 raise RuntimeError("RenderDoc is already capturing a frame.")
@@ -402,6 +458,14 @@ def capture_renderdoc_frame(
         end_ok = bool(renderdoc.end_frame_capture())
         if not end_ok:
             raise RuntimeError("Failed to end the RenderDoc frame capture.")
+        capture_path = _wait_for_new_capture(runtime_api, capture_count_before, _RENDERDOC_ATTACH_TIMEOUT_SECONDS) if runtime_api is not None else None
+        resolved_target_control = None if target_port is None else f"localhost:{int(target_port)}"
+        if capture_path is not None:
+            qrenderdoc_path = _open_qrenderdoc_capture(find_qrenderdoc() or Path("qrenderdoc.exe"), capture_path, target_control=resolved_target_control)
+        else:
+            qrenderdoc_path = ensure_qrenderdoc_running(resolved_target_control)
+    else:
+        qrenderdoc_path = ensure_qrenderdoc_running(None if target_port is None else f"localhost:{int(target_port)}")
     if action_error is not None:
         raise action_error.with_traceback(action_error.__traceback__)
     return qrenderdoc_path if qrenderdoc_path is not None else Path("qrenderdoc.exe")
