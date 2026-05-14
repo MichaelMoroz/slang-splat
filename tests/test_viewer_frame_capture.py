@@ -63,7 +63,7 @@ def test_capture_renderdoc_frame_runs_frame_and_reports_unavailable(monkeypatch)
 
     monkeypatch.setattr(frame_capture, "find_renderdoccmd", lambda: Path("C:/Program Files/RenderDoc/renderdoccmd.exe"))
     monkeypatch.setattr(frame_capture, "_inject_renderdoc", lambda _path, _pid: 38920)
-    monkeypatch.setattr(frame_capture, "_wait_for_renderdoc_attach", lambda _timeout: False)
+    monkeypatch.setattr(frame_capture, "_wait_for_runtime_renderdoc_api", lambda _timeout: None)
     monkeypatch.setattr(
         frame_capture,
         "renderdoc",
@@ -75,7 +75,7 @@ def test_capture_renderdoc_frame_runs_frame_and_reports_unavailable(monkeypatch)
         ),
     )
 
-    with pytest.raises(RuntimeError, match="never reported control"):
+    with pytest.raises(RuntimeError, match="runtime API never became available"):
         frame_capture.capture_renderdoc_frame(lambda: calls.append("frame"), device="device", window="window")
 
     assert calls == ["frame"]
@@ -119,3 +119,41 @@ def test_inject_renderdoc_accepts_target_id_exit_code(monkeypatch) -> None:
     )
 
     assert frame_capture._inject_renderdoc(Path("C:/Program Files/RenderDoc/renderdoccmd.exe"), 43004) == 38921
+
+
+def test_capture_renderdoc_frame_uses_runtime_api_after_injection(monkeypatch) -> None:
+    calls: list[str] = []
+
+    class _RuntimeAPI:
+        def __init__(self) -> None:
+            self.triggered = 0
+
+        def trigger_capture(self) -> None:
+            self.triggered += 1
+            calls.append("trigger")
+
+        def is_target_control_connected(self) -> bool:
+            return True
+
+    runtime_api = _RuntimeAPI()
+    monkeypatch.setattr(frame_capture, "find_renderdoccmd", lambda: Path("C:/Program Files/RenderDoc/renderdoccmd.exe"))
+    monkeypatch.setattr(frame_capture, "_inject_renderdoc", lambda _path, _pid: 38920)
+    monkeypatch.setattr(frame_capture, "_get_runtime_renderdoc_api", lambda: None)
+    monkeypatch.setattr(frame_capture, "_wait_for_runtime_renderdoc_api", lambda _timeout: runtime_api)
+    monkeypatch.setattr(frame_capture, "ensure_qrenderdoc_running", lambda target_control=None: calls.append(f"ui:{target_control}") or Path("C:/Program Files/RenderDoc/qrenderdoc.exe"))
+    monkeypatch.setattr(
+        frame_capture,
+        "renderdoc",
+        SimpleNamespace(
+            is_available=lambda: False,
+            is_frame_capturing=lambda: False,
+            start_frame_capture=lambda *_args, **_kwargs: False,
+            end_frame_capture=lambda: False,
+        ),
+    )
+
+    resolved = frame_capture.capture_renderdoc_frame(lambda: calls.append("frame"), device="device", window="window")
+
+    assert resolved == Path("C:/Program Files/RenderDoc/qrenderdoc.exe")
+    assert runtime_api.triggered == 1
+    assert calls == ["ui:localhost:38920", "trigger", "frame"]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import cProfile
+import ctypes
 import io
 import pstats
 import re
@@ -24,6 +25,89 @@ if "renderdoc" not in globals():
 
 _RENDERDOC_ATTACH_TIMEOUT_SECONDS = 5.0
 _RENDERDOC_ATTACH_POLL_SECONDS = 0.05
+_RENDERDOC_API_VERSION = 10101
+_RENDERDOC_CALLBACK = ctypes.WINFUNCTYPE if hasattr(ctypes, "WINFUNCTYPE") else ctypes.CFUNCTYPE
+
+
+class _RenderDocApiStruct(ctypes.Structure):
+    _fields_ = [
+        ("GetAPIVersion", ctypes.c_void_p),
+        ("SetCaptureOptionU32", ctypes.c_void_p),
+        ("SetCaptureOptionF32", ctypes.c_void_p),
+        ("GetCaptureOptionU32", ctypes.c_void_p),
+        ("GetCaptureOptionF32", ctypes.c_void_p),
+        ("SetFocusToggleKeys", ctypes.c_void_p),
+        ("SetCaptureKeys", ctypes.c_void_p),
+        ("GetOverlayBits", ctypes.c_void_p),
+        ("MaskOverlayBits", ctypes.c_void_p),
+        ("RemoveHooks", ctypes.c_void_p),
+        ("GetNumCaptures", ctypes.c_void_p),
+        ("GetCapture", ctypes.c_void_p),
+        ("TriggerCapture", ctypes.c_void_p),
+        ("IsTargetControlConnected", ctypes.c_void_p),
+        ("LaunchReplayUI", ctypes.c_void_p),
+        ("SetActiveWindow", ctypes.c_void_p),
+        ("StartFrameCapture", ctypes.c_void_p),
+        ("IsFrameCapturing", ctypes.c_void_p),
+        ("EndFrameCapture", ctypes.c_void_p),
+    ]
+
+
+class _RuntimeRenderDocAPI:
+    def __init__(self, api_ptr: ctypes.c_void_p) -> None:
+        api = ctypes.cast(api_ptr, ctypes.POINTER(_RenderDocApiStruct)).contents
+        self._trigger_capture = _RENDERDOC_CALLBACK(None)(api.TriggerCapture) if api.TriggerCapture else None
+        self._is_target_control_connected = _RENDERDOC_CALLBACK(ctypes.c_uint32)(api.IsTargetControlConnected) if api.IsTargetControlConnected else None
+
+    def trigger_capture(self) -> None:
+        if self._trigger_capture is None:
+            raise RuntimeError("RenderDoc runtime API does not expose TriggerCapture.")
+        self._trigger_capture()
+
+    def is_target_control_connected(self) -> bool:
+        return self._is_target_control_connected is not None and bool(self._is_target_control_connected())
+
+
+def _get_runtime_renderdoc_api() -> _RuntimeRenderDocAPI | None:
+    windll = getattr(ctypes, "WinDLL", None)
+    if windll is None:
+        return None
+    try:
+        kernel32 = windll("kernel32", use_last_error=True)
+        kernel32.GetModuleHandleW.argtypes = [ctypes.c_wchar_p]
+        kernel32.GetModuleHandleW.restype = ctypes.c_void_p
+        module_handle = kernel32.GetModuleHandleW("renderdoc.dll")
+        if not module_handle:
+            return None
+        renderdoc_module = windll("renderdoc.dll")
+        get_api_symbol = getattr(renderdoc_module, "RENDERDOC_GetAPI", None)
+        if get_api_symbol is None:
+            return None
+        get_api = _RENDERDOC_CALLBACK(ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_void_p))(("RENDERDOC_GetAPI", renderdoc_module))
+        api_ptr = ctypes.c_void_p()
+        if int(get_api(int(_RENDERDOC_API_VERSION), ctypes.byref(api_ptr))) != 1 or not api_ptr.value:
+            return None
+    except Exception:
+        return None
+    return _RuntimeRenderDocAPI(api_ptr)
+
+
+def _wait_for_runtime_renderdoc_api(timeout_seconds: float) -> _RuntimeRenderDocAPI | None:
+    deadline = time.monotonic() + float(timeout_seconds)
+    runtime_api = _get_runtime_renderdoc_api()
+    while runtime_api is None and time.monotonic() < deadline:
+        time.sleep(_RENDERDOC_ATTACH_POLL_SECONDS)
+        runtime_api = _get_runtime_renderdoc_api()
+    return runtime_api
+
+
+def _wait_for_target_control_connection(runtime_api: _RuntimeRenderDocAPI, timeout_seconds: float) -> bool:
+    deadline = time.monotonic() + float(timeout_seconds)
+    while time.monotonic() < deadline:
+        if runtime_api.is_target_control_connected():
+            return True
+        time.sleep(_RENDERDOC_ATTACH_POLL_SECONDS)
+    return runtime_api.is_target_control_connected()
 
 
 def _repo_root() -> Path:
@@ -233,18 +317,20 @@ def capture_renderdoc_frame(
     qrenderdoc_path: Path | None = None
     setup_error: RuntimeError | None = None
     action_error: Exception | None = None
+    runtime_api = _get_runtime_renderdoc_api()
+    use_runtime_trigger = False
 
     try:
-        if renderdoc is None:
-            raise RuntimeError("SlangPy RenderDoc integration is unavailable.")
         target_port: int | None = None
-        if not bool(renderdoc.is_available()):
+        slangpy_renderdoc_ready = renderdoc is not None and bool(renderdoc.is_available())
+        if not slangpy_renderdoc_ready:
             renderdoccmd_path = find_renderdoccmd()
             if renderdoccmd_path is None:
                 raise RuntimeError("RenderDoc CLI was not found. Install RenderDoc or add renderdoccmd to PATH.")
             target_port = _inject_renderdoc(renderdoccmd_path, getpid())
-            if not _wait_for_renderdoc_attach(_RENDERDOC_ATTACH_TIMEOUT_SECONDS):
-                raise RuntimeError("RenderDoc injection succeeded, but SlangPy never reported control for this process.")
+            runtime_api = _wait_for_runtime_renderdoc_api(_RENDERDOC_ATTACH_TIMEOUT_SECONDS)
+            if runtime_api is None:
+                raise RuntimeError("RenderDoc injection succeeded, but the RenderDoc runtime API never became available in this process.")
         if target_port is None:
             target_port = _find_process_listener_port(getpid())
         qrenderdoc_path = (
@@ -252,12 +338,17 @@ def capture_renderdoc_frame(
             if target_port is None
             else ensure_qrenderdoc_running(f"localhost:{int(target_port)}")
         )
-        if not bool(renderdoc.is_available()):
-            raise RuntimeError("RenderDoc is not attached to this process after launch/injection.")
-        if bool(getattr(renderdoc, "is_frame_capturing", lambda: False)()):
-            raise RuntimeError("RenderDoc is already capturing a frame.")
-        if not bool(renderdoc.start_frame_capture(device, window)):
-            raise RuntimeError("Failed to start the RenderDoc frame capture.")
+        if slangpy_renderdoc_ready:
+            if bool(getattr(renderdoc, "is_frame_capturing", lambda: False)()):
+                raise RuntimeError("RenderDoc is already capturing a frame.")
+            if not bool(renderdoc.start_frame_capture(device, window)):
+                raise RuntimeError("Failed to start the RenderDoc frame capture.")
+        else:
+            if runtime_api is None:
+                raise RuntimeError("RenderDoc runtime API is not available after launch/injection.")
+            _wait_for_target_control_connection(runtime_api, _RENDERDOC_ATTACH_TIMEOUT_SECONDS)
+            runtime_api.trigger_capture()
+            use_runtime_trigger = True
     except RuntimeError as exc:
         setup_error = exc
 
@@ -270,9 +361,10 @@ def capture_renderdoc_frame(
     except Exception as exc:
         action_error = exc
 
-    end_ok = bool(renderdoc.end_frame_capture())
-    if not end_ok:
-        raise RuntimeError("Failed to end the RenderDoc frame capture.")
+    if not use_runtime_trigger:
+        end_ok = bool(renderdoc.end_frame_capture())
+        if not end_ok:
+            raise RuntimeError("Failed to end the RenderDoc frame capture.")
     if action_error is not None:
         raise action_error.with_traceback(action_error.__traceback__)
     return qrenderdoc_path if qrenderdoc_path is not None else Path("qrenderdoc.exe")
