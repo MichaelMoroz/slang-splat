@@ -41,3 +41,14 @@ def test_training_params_threads_global_sh_cap() -> None:
 
     assert params.training.max_sh_band == 2
     assert resolve_sh_band(params.training, 0) == 2
+
+
+def test_default_training_sh_schedule_keeps_sh2_through_stage2() -> None:
+    hparams = TrainingHyperParams()
+    stage1 = int(hparams.lr_schedule_stage1_step)
+    stage2 = int(hparams.lr_schedule_stage2_step)
+
+    assert resolve_sh_band(hparams, max(stage1 - 1, 0)) == 0
+    assert resolve_sh_band(hparams, stage1) == 2
+    assert resolve_sh_band(hparams, max(stage2 - 1, stage1)) == 2
+    assert resolve_sh_band(hparams, stage2) == 2
