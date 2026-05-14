@@ -206,10 +206,13 @@ def _inject_renderdoc(renderdoccmd_path: Path, pid: int) -> int | None:
     except Exception as exc:
         raise RuntimeError(f"Failed to inject RenderDoc into PID {int(pid)}: {exc}") from exc
     output = f"{result.stdout}\n{result.stderr}".strip()
+    target_port = _parse_renderdoc_target_port(output)
+    if target_port is not None:
+        return target_port
     if result.returncode != 0:
         detail = output if output else f"exit code {int(result.returncode)}"
         raise RuntimeError(f"RenderDoc injection failed for PID {int(pid)}: {detail}")
-    return _parse_renderdoc_target_port(output)
+    return None
 
 
 def _wait_for_renderdoc_attach(timeout_seconds: float) -> bool:

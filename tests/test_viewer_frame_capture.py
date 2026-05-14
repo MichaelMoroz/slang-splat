@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -103,3 +104,18 @@ def test_capture_renderdoc_frame_runs_frame_and_reports_missing_qrenderdoc(monke
         frame_capture.capture_renderdoc_frame(lambda: calls.append("frame"), device="device", window="window")
 
     assert calls == ["frame"]
+
+
+def test_inject_renderdoc_accepts_target_id_exit_code(monkeypatch) -> None:
+    monkeypatch.setattr(
+        frame_capture.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            args=["renderdoccmd", "inject", "--PID=43004"],
+            returncode=38921,
+            stdout="Injecting into PID 43004\nLaunched as ID 38921\n",
+            stderr="",
+        ),
+    )
+
+    assert frame_capture._inject_renderdoc(Path("C:/Program Files/RenderDoc/renderdoccmd.exe"), 43004) == 38921
