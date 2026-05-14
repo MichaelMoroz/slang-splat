@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 from dataclasses import dataclass
 from dataclasses import replace
 import math
@@ -804,16 +803,6 @@ class SplatViewer(_ViewerWindowHost):
             )
         )
 
-    def _prepare_renderdoc_capture_scene_path(self) -> Path | None:
-        if self.s.trainer is None:
-            return self.s.scene_path
-        scene = SplatViewer._export_source_scene(self)
-        include_sh = SplatViewer._export_should_include_sh(self)
-        export_path = frame_capture.renderdoc_capture_scene_path(frame_index=int(getattr(self.s, "render_frame_index", 0)))
-        saved_path = save_gaussian_ply(export_path, scene, include_sh=include_sh)
-        print(f"Prepared RenderDoc capture scene: {saved_path} ({scene.count:,} splats)")
-        return saved_path
-
     def _save_defaults_callback(self) -> None:
         try:
             ui_values = _viewer_ui_values(self)
@@ -928,24 +917,12 @@ def _compute_view_geometry() -> tuple[int, int]:
     return 1600, 900
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(add_help=True)
-    parser.add_argument("--scene", type=Path, default=None)
-    parser.add_argument("--renderdoc-capture-on-startup", action="store_true")
-    parser.add_argument("--exit-after-renderdoc-capture", action="store_true")
-    args = parser.parse_args(argv)
     view_w, view_h = _compute_view_geometry()
     graphics_api = _preferred_graphics_api_name()
     device = create_default_device(device_type=device_type_from_name(graphics_api), enable_debug_layers=False)
     app = spy.App(device=device)
     viewer = SplatViewer(app, width=view_w, height=view_h, title=_WINDOW_TITLE, max_prepass_memory_mb=DEFAULT_MAX_PREPASS_MEMORY_MB)
     try:
-        if args.scene is not None:
-            session.load_scene(viewer, Path(args.scene))
-        if bool(args.exit_after_renderdoc_capture):
-            viewer.s.exit_after_renderdoc_capture = True
-        if bool(args.renderdoc_capture_on_startup):
-            viewer.s.pending_python_frame_capture = False
-            viewer.s.pending_renderdoc_frame_capture = True
         viewer.run()
     finally:
         viewer.shutdown()

@@ -190,7 +190,6 @@ class ViewerState:
     cached_training_setup_signature: tuple[object, ...] | None = None; cached_training_setup: tuple[object, object, object, object] | None = None
     training_runtime_factor_changed: bool = False; pending_training_runtime_resize: bool = False; pending_training_reinitialize: bool = False
     pending_python_frame_capture: bool = False; pending_renderdoc_frame_capture: bool = False
-    exit_after_renderdoc_capture: bool = False
     last_training_batch_steps: int = 0; render_frame_index: int = 0
     last_periodic_renderer_reallocation_time: float | None = None
     training_elapsed_s: float = 0.0; training_resume_time: float | None = None

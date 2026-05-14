@@ -1201,12 +1201,7 @@ def render_frame(viewer: object, render_context: spy.AppWindow.RenderContext) ->
                 ),
                 device=viewer.device,
                 window=getattr(viewer, "_window", None),
-                scene_path=(getattr(viewer, "_prepare_renderdoc_capture_scene_path")() if hasattr(viewer, "_prepare_renderdoc_capture_scene_path") else getattr(viewer.s, "scene_path", None)),
             )
-            if bool(getattr(viewer.s, "exit_after_renderdoc_capture", False)):
-                viewer.s.exit_after_renderdoc_capture = False
-                if hasattr(viewer, "close"):
-                    viewer.close()
         except Exception as exc:
             viewer.s.last_error = str(exc)
             viewer.s.last_render_exception = viewer.s.last_error

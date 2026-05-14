@@ -157,28 +157,3 @@ def test_capture_renderdoc_frame_uses_runtime_api_after_injection(monkeypatch) -
     assert resolved == Path("C:/Program Files/RenderDoc/qrenderdoc.exe")
     assert runtime_api.triggered == 1
     assert calls == ["ui:localhost:38920", "trigger", "frame"]
-
-
-def test_capture_renderdoc_frame_relaunches_for_vulkan(monkeypatch, tmp_path: Path) -> None:
-    calls: list[str] = []
-    scene_path = tmp_path / "scene.ply"
-    scene_path.write_text("ply\n", encoding="utf-8")
-
-    monkeypatch.setattr(frame_capture, "_get_runtime_renderdoc_api", lambda: None)
-    monkeypatch.setattr(frame_capture, "_active_api_name", lambda _device: "vulkan")
-    monkeypatch.setattr(frame_capture, "_capture_renderdoc_via_startup", lambda path, frame_index=None: calls.append(str(path)) or Path("C:/Program Files/RenderDoc/qrenderdoc.exe"))
-    monkeypatch.setattr(
-        frame_capture,
-        "renderdoc",
-        SimpleNamespace(
-            is_available=lambda: False,
-            is_frame_capturing=lambda: False,
-            start_frame_capture=lambda *_args, **_kwargs: False,
-            end_frame_capture=lambda: False,
-        ),
-    )
-
-    resolved = frame_capture.capture_renderdoc_frame(lambda: calls.append("frame"), device="device", window="window", scene_path=scene_path)
-
-    assert resolved == Path("C:/Program Files/RenderDoc/qrenderdoc.exe")
-    assert calls == [str(scene_path)]

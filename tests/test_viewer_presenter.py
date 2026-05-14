@@ -1330,8 +1330,8 @@ def test_render_frame_consumes_pending_renderdoc_capture(monkeypatch):
     render_context = SimpleNamespace(surface_texture=SimpleNamespace(width=640, height=360), command_encoder=_DummyEncoder())
     calls: list[object] = []
 
-    def _capture(action, *, device=None, window=None, scene_path=None):
-        calls.append(("capture", device, window, scene_path))
+    def _capture(action, *, device=None, window=None):
+        calls.append(("capture", device, window))
         action()
         return Path("C:/Program Files/RenderDoc/qrenderdoc.exe")
 
@@ -1345,35 +1345,7 @@ def test_render_frame_consumes_pending_renderdoc_capture(monkeypatch):
 
     assert viewer.s.pending_renderdoc_frame_capture is False
     assert viewer.s.viewport_texture == "main_tex"
-    assert calls == [("capture", viewer.device, "window", None), "apply", ("periodic", 640, 360), "main", "ui"]
-
-
-def test_render_frame_closes_after_startup_renderdoc_capture(monkeypatch):
-    viewer = _viewer(loss_debug=False)
-    viewer.s.pending_renderdoc_frame_capture = True
-    viewer.s.exit_after_renderdoc_capture = True
-    viewer.s.scene_path = Path("scene.ply")
-    viewer._window = "window"
-    render_context = SimpleNamespace(surface_texture=SimpleNamespace(width=640, height=360), command_encoder=_DummyEncoder())
-    calls: list[object] = []
-
-    def _capture(action, *, device=None, window=None, scene_path=None):
-        calls.append(("capture", device, window, scene_path))
-        action()
-        return Path("C:/Program Files/RenderDoc/qrenderdoc.exe")
-
-    monkeypatch.setattr(presenter.frame_capture, "capture_renderdoc_frame", _capture)
-    monkeypatch.setattr(presenter.session, "apply_live_params", lambda viewer_obj: calls.append("apply"))
-    monkeypatch.setattr(presenter.session, "maybe_reallocate_renderers", lambda viewer_obj, width, height, current_time: calls.append(("periodic", width, height)))
-    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, encoder: calls.append("main") or "main_tex")
-    monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
-    viewer._prepare_renderdoc_capture_scene_path = lambda: Path("capture_scene.ply")
-    viewer.close = lambda: calls.append("close")
-
-    presenter.render_frame(viewer, render_context)
-
-    assert viewer.s.exit_after_renderdoc_capture is False
-    assert calls == [("capture", viewer.device, "window", Path("capture_scene.ply")), "apply", ("periodic", 640, 360), "main", "ui", "close"]
+    assert calls == [("capture", viewer.device, "window"), "apply", ("periodic", 640, 360), "main", "ui"]
 
 
 def test_render_frame_skips_training_batch_when_runtime_resize_is_applied(monkeypatch):

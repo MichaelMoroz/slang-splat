@@ -446,42 +446,6 @@ def test_capture_renderdoc_frame_callback_routes_through_run_action() -> None:
     assert viewer.s.pending_renderdoc_frame_capture is True
 
 
-def test_main_loads_scene_and_schedules_startup_renderdoc_capture(monkeypatch, tmp_path: Path) -> None:
-    scene_path = tmp_path / "scene.ply"
-    scene_path.write_text("ply\n", encoding="utf-8")
-    calls: list[object] = []
-    viewer = SimpleNamespace(
-        s=SimpleNamespace(
-            exit_after_renderdoc_capture=False,
-            pending_python_frame_capture=False,
-            pending_renderdoc_frame_capture=False,
-        ),
-        run=lambda: calls.append("run"),
-        shutdown=lambda: calls.append("shutdown"),
-    )
-
-    monkeypatch.setattr(app, "_compute_view_geometry", lambda: (640, 360))
-    monkeypatch.setattr(app, "_preferred_graphics_api_name", lambda: "vulkan")
-    monkeypatch.setattr(app, "create_default_device", lambda **_kwargs: "device")
-    monkeypatch.setattr(app.spy, "App", lambda device=None: SimpleNamespace(device=device))
-    monkeypatch.setattr(app, "SplatViewer", lambda *_args, **_kwargs: viewer)
-    monkeypatch.setattr(app.session, "load_scene", lambda viewer_obj, path: calls.append(("load_scene", path)))
-
-    result = app.main([
-        "--scene",
-        str(scene_path),
-        "--renderdoc-capture-on-startup",
-        "--exit-after-renderdoc-capture",
-    ])
-
-    assert result == 0
-    assert viewer.s.exit_after_renderdoc_capture is True
-    assert viewer.s.pending_python_frame_capture is False
-    assert viewer.s.pending_renderdoc_frame_capture is True
-    assert calls == [("load_scene", scene_path), "run", "shutdown"]
-
-
-def test_default_training_params_include_training_control_fields() -> None:
     params = app.default_training_params()
 
     for key in (

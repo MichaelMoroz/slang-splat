@@ -7,7 +7,6 @@ import pstats
 import re
 import shutil
 import subprocess
-import sys
 import time
 from contextlib import suppress
 from datetime import datetime
@@ -121,76 +120,10 @@ def _python_capture_stem(frame_index: int | None = None, now: datetime | None = 
     return f"python_frame_capture_{timestamp}{frame_suffix}"
 
 
-def _renderdoc_capture_stem(frame_index: int | None = None, now: datetime | None = None) -> str:
-    timestamp = (datetime.now() if now is None else now).strftime("%Y%m%d_%H%M%S")
-    frame_suffix = "" if frame_index is None else f"_frame{int(frame_index):06d}"
-    return f"renderdoc_frame_capture_{timestamp}{frame_suffix}"
-
-
-def renderdoc_capture_scene_path(frame_index: int | None = None, now: datetime | None = None) -> Path:
-    output_dir = _repo_root() / "temp"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    return output_dir / f"{_renderdoc_capture_stem(frame_index, now)}.ply"
-
-
-def _open_qrenderdoc_capture(qrenderdoc_path: Path, capture_path: Path) -> None:
-    try:
-        subprocess.Popen([str(qrenderdoc_path), str(capture_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except Exception as exc:
-        raise RuntimeError(f"Failed to launch RenderDoc capture: {exc}") from exc
-
-
-def _find_latest_renderdoc_capture(capture_template: Path) -> Path | None:
-    captures = sorted(capture_template.parent.glob(f"{capture_template.name}*.rdc"), key=lambda path: path.stat().st_mtime, reverse=True)
-    return captures[0] if captures else None
-
-
 def _active_api_name(device: spy.Device) -> str:
     info = getattr(device, "info", None)
     api_name = getattr(info, "api_name", "")
     return str(api_name).strip().lower()
-
-
-def _capture_renderdoc_via_startup(scene_path: Path, *, frame_index: int | None = None) -> Path:
-    renderdoccmd_path = find_renderdoccmd()
-    if renderdoccmd_path is None:
-        raise RuntimeError("RenderDoc CLI was not found. Install RenderDoc or add renderdoccmd to PATH.")
-    qrenderdoc_path = find_qrenderdoc()
-    if qrenderdoc_path is None:
-        raise RuntimeError("RenderDoc was not found. Install RenderDoc or add qrenderdoc to PATH.")
-    viewer_entry = _repo_root() / "viewer.py"
-    if not scene_path.is_file():
-        raise RuntimeError(f"RenderDoc Vulkan relaunch requires a scene file path, got: {scene_path}")
-    capture_template = (_repo_root() / "temp" / _renderdoc_capture_stem(frame_index)).resolve()
-    try:
-        result = subprocess.run(
-            [
-                str(renderdoccmd_path),
-                "capture",
-                "--capture-file",
-                str(capture_template),
-                str(Path(sys.executable).resolve()),
-                str(viewer_entry),
-                "--scene",
-                str(scene_path),
-                "--renderdoc-capture-on-startup",
-                "--exit-after-renderdoc-capture",
-            ],
-            capture_output=True,
-            text=True,
-            cwd=str(_repo_root()),
-            check=False,
-            timeout=180.0,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError("RenderDoc startup capture timed out waiting for the relaunched viewer to exit.") from exc
-    capture_path = _find_latest_renderdoc_capture(capture_template)
-    if capture_path is None:
-        output = f"{result.stdout}\n{result.stderr}".strip()
-        detail = output if output else f"exit code {int(result.returncode)}"
-        raise RuntimeError(f"RenderDoc startup capture did not produce a capture file: {detail}")
-    _open_qrenderdoc_capture(qrenderdoc_path, capture_path)
-    return qrenderdoc_path
 
 
 def capture_python_frame(
@@ -386,7 +319,6 @@ def capture_renderdoc_frame(
     *,
     device: spy.Device,
     window: spy.Window | None = None,
-    scene_path: Path | None = None,
 ) -> Path:
     qrenderdoc_path: Path | None = None
     setup_error: RuntimeError | None = None
@@ -397,10 +329,6 @@ def capture_renderdoc_frame(
     try:
         target_port: int | None = None
         slangpy_renderdoc_ready = renderdoc is not None and bool(renderdoc.is_available())
-        if not slangpy_renderdoc_ready and _active_api_name(device) == "vulkan":
-            if scene_path is None:
-                raise RuntimeError("RenderDoc cannot late-attach to the current Vulkan device. Load from file or restart the viewer under RenderDoc.")
-            return _capture_renderdoc_via_startup(Path(scene_path), frame_index=None)
         if not slangpy_renderdoc_ready:
             renderdoccmd_path = find_renderdoccmd()
             if renderdoccmd_path is None:
