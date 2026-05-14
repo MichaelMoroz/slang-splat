@@ -91,7 +91,7 @@ def test_training_camera_viewport_image_preserves_pan_zoom_across_texture_refres
         _training_camera_view_zoom=2.5,
         _training_camera_view_center=(0.3, 0.7),
     )
-    viewer_ui = SimpleNamespace(_values={"loss_debug_frame": 3, "loss_debug_view": 1, "training_camera_full_resolution": False})
+    viewer_ui = SimpleNamespace(_values={"loss_debug_frame": 3, "loss_debug_view": 1, "training_camera_full_resolution": False, "training_camera_ppisp_tonemap": True})
 
     ui.ToolkitWindow._draw_training_camera_viewport_image(toolkit, viewer_ui, SimpleNamespace(width=320, height=180), 640.0, 360.0)
 
@@ -153,6 +153,7 @@ def test_build_ui_initializes_control_groups_and_internal_state() -> None:
         "show_camera_min_dist_spheres",
         "show_training_cameras",
         "training_camera_full_resolution",
+        "training_camera_ppisp_tonemap",
         "hist_bin_count",
         "hist_y_limit",
         "render_background_mode",
@@ -1543,8 +1544,8 @@ def test_viewport_debug_overlay_draws_training_camera_controls(monkeypatch) -> N
         _draw_training_camera_debug_controls=lambda ui_obj: ui.ToolkitWindow._draw_training_camera_debug_controls(toolkit, ui_obj),
     )
     viewer_ui = SimpleNamespace(
-        _values={"debug_mode": ui._DEBUG_MODE_VALUES.index("normal"), "show_training_cameras": True, "loss_debug_view": 0, "loss_debug_frame": 3, "_loss_debug_frame_max": 12, "training_camera_full_resolution": False, "show_training_camera_colmap_points": False, "_training_camera_struct_sections": (
-            ("Resolution", (("target", "320x180"), ("source", "640x360"), ("full_res", False))),
+        _values={"debug_mode": ui._DEBUG_MODE_VALUES.index("normal"), "show_training_cameras": True, "loss_debug_view": 0, "loss_debug_frame": 3, "_loss_debug_frame_max": 12, "training_camera_full_resolution": False, "training_camera_ppisp_tonemap": True, "show_training_camera_colmap_points": False, "_training_camera_struct_sections": (
+            ("Resolution", (("target", "320x180"), ("source", "640x360"), ("full_res", False), ("ppisp", True))),
             ("Ids", (("image", 5), ("camera", 7))),
         )},
         _texts={
@@ -1559,7 +1560,7 @@ def test_viewport_debug_overlay_draws_training_camera_controls(monkeypatch) -> N
     assert capture_rects == [(12.0, 34.0, child_sizes[0][0], child_sizes[0][1])]
     assert combo_labels == [("##training_camera_view", "Rendered")]
     assert slider_calls == [("##training_camera_frame", 3, 0, 12)]
-    assert checkbox_calls == [("Full Resolution", False), ("COLMAP Point Matches", False)]
+    assert checkbox_calls == [("Full Resolution", False), ("PPISP Tonemap", True), ("COLMAP Point Matches", False)]
     assert button_labels == ["Move Main View Here"]
     assert disabled_text == [
         "frame.png",
@@ -1592,6 +1593,7 @@ def test_training_camera_viewport_image_preserves_zoom_across_frame_and_view_cha
             "loss_debug_frame": 0,
             "loss_debug_view": 0,
             "training_camera_full_resolution": False,
+            "training_camera_ppisp_tonemap": True,
             "show_training_camera_colmap_points": False,
         }
     )

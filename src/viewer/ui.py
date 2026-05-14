@@ -1757,7 +1757,7 @@ class ToolkitWindow:
         line_height = float(imgui.get_text_line_height_with_spacing())
         frame_height = float(imgui.get_frame_height())
         spacing_y = float(imgui.get_style().item_spacing.y)
-        height = frame_height + spacing_y + frame_height + spacing_y + frame_height + spacing_y + frame_height + spacing_y + frame_height
+        height = frame_height + spacing_y + frame_height + spacing_y + frame_height + spacing_y + frame_height + spacing_y + frame_height + spacing_y + frame_height
         if LOSS_DEBUG_OPTIONS[min(max(int(ui._values.get("loss_debug_view", 0)), 0), len(LOSS_DEBUG_OPTIONS) - 1)][0] == "abs_diff":
             height += frame_height + spacing_y
         if bool(ui._values.get("show_training_camera_colmap_points", False)):
@@ -1790,6 +1790,9 @@ class ToolkitWindow:
         changed, full_res = imgui.checkbox("Full Resolution", bool(ui._values.get("training_camera_full_resolution", False)))
         if changed:
             ui._values["training_camera_full_resolution"] = bool(full_res)
+        changed, ppisp_tonemap = imgui.checkbox("PPISP Tonemap", bool(ui._values.get("training_camera_ppisp_tonemap", True)))
+        if changed:
+            ui._values["training_camera_ppisp_tonemap"] = bool(ppisp_tonemap)
         changed, show_points = imgui.checkbox("COLMAP Point Matches", bool(ui._values.get("show_training_camera_colmap_points", False)))
         if changed:
             ui._values["show_training_camera_colmap_points"] = bool(show_points)
@@ -3910,6 +3913,7 @@ def build_ui(renderer) -> ViewerUI:
         "_training_views_sort_descending": False,
         "_loss_debug_frame_max": 0,
         "training_camera_full_resolution": False,
+        "training_camera_ppisp_tonemap": True,
         "_training_camera_pose_available": False,
         "_training_camera_struct_sections": (),
         "_training_camera_colmap_points_payload": None,

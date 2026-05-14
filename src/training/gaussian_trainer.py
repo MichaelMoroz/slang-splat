@@ -500,10 +500,11 @@ class GaussianTrainer:
         native_resolution: bool = True,
         encoder: spy.CommandEncoder | None = None,
         step: int | None = None,
+        apply_target_tonemap: bool = True,
     ) -> spy.Texture:
         frame_index = clamp_index(frame_index, len(self.frames))
         if native_resolution:
-            return self._native_target_texture(frame_index, encoder)
+            return self._native_target_texture(frame_index, encoder, apply_target_tonemap=apply_target_tonemap)
         self._ensure_train_target_texture()
         if encoder is None:
             local_encoder = self.device.create_command_encoder()
@@ -1633,8 +1634,8 @@ class GaussianTrainer:
         self._compensated_native_target_version = version
         return texture
 
-    def _native_target_texture(self, frame_index: int, encoder: spy.CommandEncoder | None = None) -> spy.Texture:
-        if getattr(self, "target_tonemap_provider", None) is None:
+    def _native_target_texture(self, frame_index: int, encoder: spy.CommandEncoder | None = None, *, apply_target_tonemap: bool = True) -> spy.Texture:
+        if not apply_target_tonemap or getattr(self, "target_tonemap_provider", None) is None:
             return self._frame_targets_native[frame_index]
         if encoder is None:
             local_encoder = self.device.create_command_encoder()

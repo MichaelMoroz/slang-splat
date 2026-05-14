@@ -992,6 +992,47 @@ def test_gaussian_trainer_identity_target_tonemap_matches_no_provider_baseline(d
     np.testing.assert_allclose(identity_ssim, baseline_ssim, rtol=0.0, atol=5e-4)
 
 
+def test_gaussian_trainer_can_bypass_target_tonemap_for_debug_targets(device, tmp_path: Path) -> None:
+    image = np.array(
+        [
+            [[16, 24, 32], [24, 32, 40], [32, 40, 48], [40, 48, 56]],
+            [[24, 32, 40], [32, 40, 48], [40, 48, 56], [48, 56, 64]],
+            [[32, 40, 48], [40, 48, 56], [48, 56, 64], [56, 64, 72]],
+            [[40, 48, 56], [48, 56, 64], [56, 64, 72], [64, 72, 80]],
+        ],
+        dtype=np.uint8,
+    )
+    frame = _make_rgb_frame(tmp_path, image, image_name="photometric_native_debug_bypass.png")
+    baseline = GaussianTrainer(
+        device=device,
+        renderer=GaussianRenderer(device, width=2, height=2, list_capacity_multiplier=16),
+        scene=_make_scene(count=1, seed=29),
+        frames=[frame],
+        training_hparams=TrainingHyperParams(train_subsample_factor=2),
+        seed=17,
+    )
+    compensated = GaussianTrainer(
+        device=device,
+        renderer=GaussianRenderer(device, width=2, height=2, list_capacity_multiplier=16),
+        scene=_make_scene(count=1, seed=29),
+        frames=[frame],
+        training_hparams=TrainingHyperParams(train_subsample_factor=2),
+        seed=17,
+        target_tonemap_provider=PPISPStaticTonemapProvider(PPISPTonemapParams(exposureEv=1.0)),
+    )
+
+    baseline_np = np.asarray(baseline.get_frame_target_texture(0, native_resolution=True).to_numpy(), dtype=np.float32)
+    bypass_texture = compensated.get_frame_target_texture(0, native_resolution=True, apply_target_tonemap=False)
+    bypass_np = np.asarray(bypass_texture.to_numpy(), dtype=np.float32)
+    compensated_texture = compensated.get_frame_target_texture(0, native_resolution=True)
+    compensated_np = np.asarray(compensated_texture.to_numpy(), dtype=np.float32)
+
+    np.testing.assert_allclose(bypass_np, baseline_np, rtol=0.0, atol=1e-6)
+    assert compensated.target_texture_is_linear(compensated_texture) is True
+    assert compensated.target_texture_is_linear(bypass_texture) is False
+    assert float(np.max(np.abs(compensated_np[:, :, :3] - bypass_np[:, :, :3]))) > 1e-3
+
+
 def test_gaussian_trainer_native_subsample_target_tonemap_approaches_baseline_near_identity(device, tmp_path: Path) -> None:
     image = np.array(
         [

@@ -166,8 +166,9 @@ class _DummyTrainer:
         self.background_seed_calls: list[int | None] = []
         self.hparam_calls: list[tuple[int | None, object]] = []
         self.sort_calls: list[tuple[int, int, object]] = []
-        self.target_calls: list[tuple[int, bool]] = []
+        self.target_calls: list[tuple[int, bool, bool]] = []
         self.subsample_factor = 1
+        self.target_tonemap_provider = None
 
     def step(self) -> None:
         self.step_calls += 1
@@ -199,8 +200,8 @@ class _DummyTrainer:
     def current_base_lr(self) -> float:
         return 0.005
 
-    def get_frame_target_texture(self, frame_index: int, native_resolution: bool = True, encoder: object | None = None, step: int | None = None) -> str:
-        self.target_calls.append((int(frame_index), bool(native_resolution)))
+    def get_frame_target_texture(self, frame_index: int, native_resolution: bool = True, encoder: object | None = None, step: int | None = None, apply_target_tonemap: bool = True) -> str:
+        self.target_calls.append((int(frame_index), bool(native_resolution), bool(apply_target_tonemap)))
         return f"target_tex_{frame_index}_{native_resolution}"
 
     def target_texture_is_linear(self, target_texture: object | None = None) -> bool:
@@ -217,27 +218,6 @@ class _DummyTrainer:
     def training_background_seed(self, seed_index: int | None = None) -> int:
         self.background_seed_calls.append(None if seed_index is None else int(seed_index))
         return 1000 + int(seed_index or 0)
-
-
-def test_refresh_menu_bar_device_vram_skips_live_heap_query(monkeypatch) -> None:
-    calls: list[tuple[object, bool]] = []
-    monkeypatch.setattr(
-        presenter,
-        "query_total_device_vram_used_cached",
-        lambda device, *, allow_heap_query=True: calls.append((device, bool(allow_heap_query))) or (123, "cached"),
-    )
-    monkeypatch.setattr(presenter, "query_total_device_vram_capacity", lambda device: (456, "capacity"))
-    viewer = SimpleNamespace(
-        device="device",
-        ui=SimpleNamespace(_values={}),
-        s=SimpleNamespace(last_time=0.0),
-    )
-
-    presenter._refresh_menu_bar_device_vram(viewer)
-
-    assert calls == [("device", False)]
-    assert viewer.ui._values["_menu_bar_device_vram_bytes"] == 123
-    assert viewer.ui._values["_menu_bar_device_vram_total_bytes"] == 456
 
     def training_sample_vars(self, frame_index: int, step: int | None = None, sample_seed_step: int | None = None) -> dict[str, object]:
         self.sample_vars_calls.append((int(frame_index), int(step or 0), None if sample_seed_step is None else int(sample_seed_step)))
@@ -268,6 +248,27 @@ def test_refresh_menu_bar_device_vram_skips_live_heap_query(monkeypatch) -> None
             "psnr": np.asarray([32.5], dtype=np.float64),
             "visited": np.asarray([True], dtype=bool),
         }
+
+
+def test_refresh_menu_bar_device_vram_skips_live_heap_query(monkeypatch) -> None:
+    calls: list[tuple[object, bool]] = []
+    monkeypatch.setattr(
+        presenter,
+        "query_total_device_vram_used_cached",
+        lambda device, *, allow_heap_query=True: calls.append((device, bool(allow_heap_query))) or (123, "cached"),
+    )
+    monkeypatch.setattr(presenter, "query_total_device_vram_capacity", lambda device: (456, "capacity"))
+    viewer = SimpleNamespace(
+        device="device",
+        ui=SimpleNamespace(_values={}),
+        s=SimpleNamespace(last_time=0.0),
+    )
+
+    presenter._refresh_menu_bar_device_vram(viewer)
+
+    assert calls == [("device", False)]
+    assert viewer.ui._values["_menu_bar_device_vram_bytes"] == 123
+    assert viewer.ui._values["_menu_bar_device_vram_total_bytes"] == 456
 
 
 class _CaptureKernel:
@@ -400,7 +401,7 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
     viewer.toolkit = SimpleNamespace(viewport_size=lambda: (640, 360))
     viewer.loss_debug_view_options = (("rendered", "Rendered"), ("target", "Target"), ("abs_diff", "Abs Diff"), ("dssim", "DSSIM"), ("rendered_edges", "Rendered Edges"), ("target_edges", "Target Edges"))
     ppisp_values = {spec.key: spec.default for spec in PPISP_FIELD_SPECS}
-    viewer.ui = SimpleNamespace(controls=controls, texts=texts, _values={**ppisp_values, "show_histograms": False, "_histogram_payload": None, "_histogram_range_payload": None, "show_training_cameras": bool(loss_debug), "show_training_views": False, "show_camera_overlays": False, "show_camera_labels": False, "training_camera_full_resolution": False}, _texts={key: value.text for key, value in texts.items()})
+    viewer.ui = SimpleNamespace(controls=controls, texts=texts, _values={**ppisp_values, "show_histograms": False, "_histogram_payload": None, "_histogram_range_payload": None, "show_training_cameras": bool(loss_debug), "show_training_views": False, "show_camera_overlays": False, "show_camera_labels": False, "training_camera_full_resolution": False, "training_camera_ppisp_tonemap": True}, _texts={key: value.text for key, value in texts.items()})
     viewer.c = lambda key: viewer.ui.controls[key]
     viewer.t = lambda key: viewer.ui.texts[key]
     viewer.camera = lambda: "camera"
@@ -988,6 +989,22 @@ def test_update_ui_text_reports_training_schedule_and_refinement() -> None:
     )
 
 
+def test_update_ui_text_appends_pose_ppisp_values_when_provider_exists() -> None:
+    viewer = _viewer(loss_debug=False)
+    viewer.s.trainer.target_tonemap_provider = SimpleNamespace(
+        params_for_frame=lambda _frame_index: presenter.PPISPTonemapParams(exposureEv=1.25, crfGamma=(2.0, 2.1, 2.2))
+    )
+
+    presenter.update_ui_text(viewer, 1.0 / 60.0)
+
+    sections = viewer.ui._values["_training_camera_struct_sections"]
+    assert sections[0] == ("Resolution", (("target", "320x180"), ("source", "640x360"), ("full_res", False), ("ppisp", True)))
+    assert sections[-4] == ("PPISP Exposure", (("Exposure EV", 1.25),))
+    assert sections[-1][0] == "PPISP Curve"
+    curve_values = dict(sections[-1][1])
+    assert curve_values["CRF Gamma"] == pytest.approx((2.0, 2.1, 2.2), abs=1e-6)
+
+
 def test_update_ui_text_skips_training_view_rows_when_hidden() -> None:
     viewer = _viewer(loss_debug=False)
 
@@ -1509,7 +1526,7 @@ def test_render_debug_target_uses_downscaled_target_without_subsampling() -> Non
 
     assert target == "target_tex_0_False"
     assert is_linear is True
-    assert viewer.s.trainer.target_calls == [(0, False)]
+    assert viewer.s.trainer.target_calls == [(0, False, True)]
 
 
 def test_render_debug_target_samples_native_target_with_render_frame_seed(monkeypatch) -> None:
@@ -1525,7 +1542,7 @@ def test_render_debug_target_samples_native_target_with_render_frame_seed(monkey
 
     assert target is output
     assert is_linear is False
-    assert viewer.s.trainer.target_calls == [(0, True)]
+    assert viewer.s.trainer.target_calls == [(0, True, True)]
     vars = viewer.s.debug_target_sample_kernel.calls[0]["vars"]
     assert vars["g_SourceTarget"] == "target_tex_0_True"
     assert vars["g_DownscaledTarget"] is output
@@ -1543,7 +1560,7 @@ def test_render_debug_target_uses_native_target_when_full_resolution_enabled() -
 
     assert target == "target_tex_0_True"
     assert is_linear is False
-    assert viewer.s.trainer.target_calls == [(0, True)]
+    assert viewer.s.trainer.target_calls == [(0, True, True)]
 
 
 def test_render_debug_target_reports_linear_native_target_when_trainer_marks_it_linear() -> None:
@@ -1555,6 +1572,26 @@ def test_render_debug_target_reports_linear_native_target_when_trainer_marks_it_
 
     assert target == "target_tex_0_True"
     assert is_linear is True
+    assert viewer.s.trainer.target_calls == [(0, True, True)]
+
+
+def test_render_debug_target_bypasses_target_tonemap_when_view_toggle_disabled(monkeypatch) -> None:
+    viewer = _viewer(loss_debug=True)
+    viewer.ui._values["training_camera_ppisp_tonemap"] = False
+    viewer.s.debug_target_sample_kernel = _CaptureKernel()
+    output = SimpleNamespace(width=320, height=180)
+    sample_vars = viewer.s.trainer.training_sample_vars(0, 9, sample_seed_step=77)
+
+    monkeypatch.setattr(presenter, "_ensure_texture", lambda viewer_obj, attr, width, height: output)
+
+    target, is_linear = presenter._render_debug_target(viewer, _DummyEncoder(), 0, 320, 180, 9, sample_vars)
+
+    assert target is output
+    assert is_linear is False
+    assert viewer.s.trainer.target_calls == [(0, True, False)]
+    vars = viewer.s.debug_target_sample_kernel.calls[0]["vars"]
+    assert vars["g_SourceTarget"] == "target_tex_0_True"
+    assert vars["g_DownscaledTarget"] is output
 
 
 def test_dispatch_debug_abs_diff_uses_runtime_ui_scale(monkeypatch) -> None:

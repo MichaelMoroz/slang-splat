@@ -47,6 +47,64 @@ def _training_camera_full_resolution(viewer: object) -> bool:
         return False
 
 
+def _training_camera_ppisp_tonemap(viewer: object) -> bool:
+    try:
+        return bool(viewer.ui._values.get("training_camera_ppisp_tonemap", True))
+    except Exception:
+        return True
+
+
+def _ppisp_struct_sections(params: PPISPTonemapParams, *, title_prefix: str | None = None) -> tuple[tuple[str, tuple[tuple[str, object], ...]], ...]:
+    sections: list[tuple[str, tuple[tuple[str, object], ...]]] = []
+    for title, prefix in (("Exposure", "exposure"), ("Vignette", "vignette"), ("Chroma", "chroma"), ("Curve", "crf")):
+        values: list[tuple[str, object]] = []
+        for spec in PPISP_FIELD_SPECS:
+            if not spec.attr.startswith(prefix):
+                continue
+            field_value = getattr(params, spec.attr, spec.default)
+            value = float(field_value) if spec.size == 1 else tuple(float(component) for component in field_value)
+            values.append((spec.label, value))
+        if values:
+            section_title = title if not title_prefix else f"{title_prefix} {title}"
+            sections.append((section_title, tuple(values)))
+    return tuple(sections)
+
+
+def _training_debug_tonemap_params(viewer: object, frame_idx: int) -> PPISPTonemapParams | None:
+    trainer = getattr(getattr(viewer, "s", None), "trainer", None)
+    provider = getattr(trainer, "target_tonemap_provider", None)
+    if provider is None or not hasattr(provider, "params_for_frame"):
+        return None
+    try:
+        return provider.params_for_frame(int(frame_idx))
+    except Exception:
+        return None
+
+
+def _get_debug_target_texture(
+    trainer: object,
+    frame_idx: int,
+    *,
+    native_resolution: bool,
+    encoder: spy.CommandEncoder,
+    step: int,
+    apply_target_tonemap: bool,
+):
+    try:
+        return trainer.get_frame_target_texture(
+            frame_idx,
+            native_resolution=native_resolution,
+            encoder=encoder,
+            step=step,
+            apply_target_tonemap=apply_target_tonemap,
+        )
+    except TypeError:
+        try:
+            return trainer.get_frame_target_texture(frame_idx, native_resolution=native_resolution, encoder=encoder, step=step)
+        except TypeError:
+            return trainer.get_frame_target_texture(frame_idx, native_resolution=native_resolution, encoder=encoder)
+
+
 def _training_debug_target_is_linear(trainer: object, target_texture: object) -> bool:
     if target_texture is None:
         return False
@@ -383,16 +441,7 @@ def _photometric_param_sections(viewer: object) -> tuple:
             ("image", Path(getattr(frames[selected_frame], "image_path", f"frame_{selected_frame}")).name),
         )),
     ]
-    for title, prefix in (("Exposure", "exposure"), ("Vignette", "vignette"), ("Chroma", "chroma"), ("Curve", "crf")):
-        values = []
-        for spec in PPISP_FIELD_SPECS:
-            if not spec.attr.startswith(prefix):
-                continue
-            field_value = getattr(params, spec.attr)
-            value = float(field_value) if spec.size == 1 else tuple(float(component) for component in field_value)
-            values.append((spec.label, value))
-        if values:
-            sections.append((title, tuple(values)))
+    sections.extend(_ppisp_struct_sections(params))
     return tuple(sections)
 
 
@@ -622,6 +671,7 @@ def _training_camera_debug_panel_sections(viewer: object) -> tuple[tuple, bool]:
     target_width, target_height = _training_debug_resolution(viewer, frame_idx, step)
     native_width, native_height = _training_debug_frame_size(viewer, frame_idx)
     camera = _training_debug_pose_camera(viewer, frame_idx, native_width, native_height)
+    tonemap_params = _training_debug_tonemap_params(viewer, frame_idx)
     camera_id = getattr(frame, "camera_id", None)
     pose_section: tuple = ()
     if camera is not None:
@@ -637,6 +687,7 @@ def _training_camera_debug_panel_sections(viewer: object) -> tuple[tuple, bool]:
             ("target", f"{int(target_width)}x{int(target_height)}"),
             ("source", f"{int(native_width)}x{int(native_height)}"),
             ("full_res", bool(_training_camera_full_resolution(viewer))),
+            *(((("ppisp", bool(_training_camera_ppisp_tonemap(viewer))),) if tonemap_params is not None else ())),
         )),
         ("Ids", (
             ("image", int(getattr(frame, "image_id", -1))),
@@ -661,6 +712,7 @@ def _training_camera_debug_panel_sections(viewer: object) -> tuple[tuple, bool]:
             ("k5", _scalar_or_none(getattr(frame, "k5", None))),
             ("k6", _scalar_or_none(getattr(frame, "k6", None))),
         )),
+        *(() if tonemap_params is None else _ppisp_struct_sections(tonemap_params, title_prefix="PPISP")),
     )
     return sections, camera is not None
 
@@ -934,25 +986,48 @@ def _sample_training_debug_target(viewer: object, encoder: spy.CommandEncoder, s
 
 def _render_debug_target(viewer: object, encoder: spy.CommandEncoder, frame_idx: int, width: int, height: int, step: int, sample_vars: dict[str, object] | None) -> tuple[spy.Texture, bool]:
     trainer = viewer.s.trainer
+    apply_target_tonemap = _training_camera_ppisp_tonemap(viewer)
     if hasattr(trainer, "ensure_frame_render_resolution"):
         trainer.ensure_frame_render_resolution(frame_idx, step)
     if _training_camera_full_resolution(viewer):
-        try:
-            target = trainer.get_frame_target_texture(frame_idx, native_resolution=True, encoder=encoder, step=step)
-        except TypeError:
-            target = trainer.get_frame_target_texture(frame_idx, native_resolution=True, encoder=encoder)
+        target = _get_debug_target_texture(
+            trainer,
+            frame_idx,
+            native_resolution=True,
+            encoder=encoder,
+            step=step,
+            apply_target_tonemap=apply_target_tonemap,
+        )
         return target, _training_debug_target_is_linear(trainer, target)
+    if not apply_target_tonemap:
+        native_target = _get_debug_target_texture(
+            trainer,
+            frame_idx,
+            native_resolution=True,
+            encoder=encoder,
+            step=step,
+            apply_target_tonemap=False,
+        )
+        return _sample_training_debug_target(viewer, encoder, native_target, width, height, sample_vars, frame_idx), _training_debug_target_is_linear(trainer, native_target)
     subsample = int(trainer.effective_train_subsample_factor(frame_idx, step)) if hasattr(trainer, "effective_train_subsample_factor") else 1
     if subsample > 1:
-        try:
-            native_target = trainer.get_frame_target_texture(frame_idx, native_resolution=True, encoder=encoder, step=step)
-        except TypeError:
-            native_target = trainer.get_frame_target_texture(frame_idx, native_resolution=True, encoder=encoder)
+        native_target = _get_debug_target_texture(
+            trainer,
+            frame_idx,
+            native_resolution=True,
+            encoder=encoder,
+            step=step,
+            apply_target_tonemap=True,
+        )
         return _sample_training_debug_target(viewer, encoder, native_target, width, height, sample_vars, frame_idx), _training_debug_target_is_linear(trainer, native_target)
-    try:
-        target = trainer.get_frame_target_texture(frame_idx, native_resolution=False, encoder=encoder, step=step)
-    except TypeError:
-        target = trainer.get_frame_target_texture(frame_idx, native_resolution=False, encoder=encoder)
+    target = _get_debug_target_texture(
+        trainer,
+        frame_idx,
+        native_resolution=False,
+        encoder=encoder,
+        step=step,
+        apply_target_tonemap=True,
+    )
     return target, _training_debug_target_is_linear(trainer, target)
 
 
