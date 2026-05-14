@@ -3012,7 +3012,7 @@ class ToolkitWindow:
                     default=default,
                     speed=0.0025,
                     min_value=0.0,
-                    max_value=2.0,
+                    max_value=4.0,
                     fmt="%.4f",
                     tooltip=tooltip,
                 )
