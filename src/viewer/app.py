@@ -627,6 +627,8 @@ class SplatViewer(_ViewerWindowHost):
         cb.reset_photometric = self._reset_photometric_callback
         cb.move_to_training_camera = self._move_to_training_camera_callback
         cb.reset_camera = self._reset_camera_callback
+        cb.capture_python_frame = self._capture_python_frame_callback
+        cb.capture_renderdoc_frame = self._capture_renderdoc_frame_callback
         cb.save_defaults = self._save_defaults_callback
         cb.set_graphics_api = self._set_graphics_api_callback
 
@@ -740,6 +742,7 @@ class SplatViewer(_ViewerWindowHost):
                     fibonacci_sphere_point_count=import_cfg.fibonacci_sphere_point_count,
                     fibonacci_sphere_radius_multiplier=getattr(import_cfg, "fibonacci_sphere_radius_multiplier", getattr(import_cfg, "fibonacci_sphere_radius", 2.0)),
                     fibonacci_sphere_color=getattr(import_cfg, "fibonacci_sphere_color", (0.8, 0.8, 0.8)),
+                    fibonacci_sphere_upper_hemisphere_only=bool(getattr(import_cfg, "fibonacci_sphere_upper_hemisphere_only", False)),
                     target_alpha_mode=getattr(import_cfg, "target_alpha_mode", None),
                     use_target_alpha_mask=bool(getattr(import_cfg, "use_target_alpha_mask", False)),
                     training_image_color_init=bool(getattr(import_cfg, "training_image_color_init", False)),
@@ -782,6 +785,22 @@ class SplatViewer(_ViewerWindowHost):
 
     def _reset_camera_callback(self) -> None:
         self._run_action(lambda: session.reset_main_camera(self))
+
+    def _capture_python_frame_callback(self) -> None:
+        self._run_action(
+            lambda: (
+                setattr(self.s, "pending_renderdoc_frame_capture", False),
+                setattr(self.s, "pending_python_frame_capture", True),
+            )
+        )
+
+    def _capture_renderdoc_frame_callback(self) -> None:
+        self._run_action(
+            lambda: (
+                setattr(self.s, "pending_python_frame_capture", False),
+                setattr(self.s, "pending_renderdoc_frame_capture", True),
+            )
+        )
 
     def _save_defaults_callback(self) -> None:
         try:

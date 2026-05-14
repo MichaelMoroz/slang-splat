@@ -1668,6 +1668,7 @@ def test_import_colmap_from_ui_queues_multi_source_settings(tmp_path: Path, monk
                 "colmap_fibonacci_sphere_point_count": 512,
                 "colmap_fibonacci_sphere_radius_multiplier": 2.5,
                 "colmap_fibonacci_sphere_color": (0.2, 0.4, 0.6),
+                "colmap_fibonacci_sphere_upper_hemisphere_only": True,
                 "colmap_fibonacci_sphere_nn_radius_scale_coef": 1.2,
                 "colmap_image_downscale_mode": 0,
                 "colmap_image_max_size": 2048,
@@ -1736,6 +1737,7 @@ def test_import_colmap_from_ui_queues_multi_source_settings(tmp_path: Path, monk
     assert progress.fibonacci_sphere_point_count == 512
     assert progress.fibonacci_sphere_radius_multiplier == pytest.approx(2.5)
     assert progress.fibonacci_sphere_color == pytest.approx((0.2, 0.4, 0.6))
+    assert progress.fibonacci_sphere_upper_hemisphere_only is True
     assert progress.fibonacci_sphere_nn_radius_scale_coef == pytest.approx(1.2)
 
 
@@ -2072,7 +2074,7 @@ def test_finish_import_colmap_dataset_seeds_pointcloud_cached_init_source(monkey
     monkeypatch.setattr(session, "initialize_training_scene", lambda viewer_obj, frame_targets_native=None: calls.append(("initialize", frame_targets_native)))
 
     def _ensure_cached(viewer_obj, init) -> None:
-        calls.append(("ensure_cached", init.seed, viewer_obj.s.colmap_import.init_mode, viewer_obj.s.colmap_import.fibonacci_sphere_point_count))
+        calls.append(("ensure_cached", init.seed, viewer_obj.s.colmap_import.init_mode, viewer_obj.s.colmap_import.fibonacci_sphere_point_count, viewer_obj.s.colmap_import.fibonacci_sphere_upper_hemisphere_only))
         viewer_obj.s.cached_init_point_positions = expected_positions
         viewer_obj.s.cached_init_point_colors = expected_colors
         viewer_obj.s.cached_init_signature = ("cached",)
@@ -2094,13 +2096,14 @@ def test_finish_import_colmap_dataset_seeds_pointcloud_cached_init_source(monkey
         diffused_point_count=100000,
         fibonacci_sphere_point_count=4,
         fibonacci_sphere_radius_multiplier=2.0,
+        fibonacci_sphere_upper_hemisphere_only=True,
         recon=recon,
         training_frames=[],
         frame_targets_native=None,
     )
 
     assert calls == [
-        ("ensure_cached", 7, "pointcloud", 4),
+        ("ensure_cached", 7, "pointcloud", 4, True),
         "apply_live",
         ("fit", ("bounds", 1)),
         ("initialize", None),
@@ -2307,7 +2310,51 @@ def test_colmap_import_settings_defaults_prefer_pointcloud() -> None:
     assert defaults.fibonacci_sphere_point_count == 0
     assert defaults.fibonacci_sphere_radius_multiplier == 2.0
     assert defaults.fibonacci_sphere_color == pytest.approx((0.8, 0.8, 0.8))
+    assert defaults.fibonacci_sphere_upper_hemisphere_only is False
     assert defaults.use_target_alpha_mask is False
+
+
+def test_ensure_cached_init_source_samples_upper_fibonacci_hemisphere(monkeypatch) -> None:
+    sampled_positions = np.array([[1.0, 2.0, 3.0], [3.0, 2.0, 1.0]], dtype=np.float32)
+    sampled_colors = np.array([[0.8, 0.8, 0.8], [0.8, 0.8, 0.8]], dtype=np.float32)
+    viewer = SimpleNamespace(
+        s=SimpleNamespace(
+            colmap_recon=object(),
+            colmap_root=Path("dataset/garden"),
+            colmap_import=SimpleNamespace(
+                init_mode="pointcloud",
+                custom_mesh_enabled=False,
+                fibonacci_sphere_enabled=True,
+                fibonacci_sphere_point_count=32,
+                fibonacci_sphere_radius_multiplier=2.5,
+                fibonacci_sphere_upper_hemisphere_only=True,
+                fibonacci_sphere_color=(0.2, 0.4, 0.6),
+                min_track_length=3,
+            ),
+            cached_init_fibonacci_positions=None,
+            cached_init_fibonacci_colors=None,
+            cached_init_scene=None,
+            cached_init_signature=None,
+        )
+    )
+
+    monkeypatch.setattr(
+        session,
+        "sample_colmap_fibonacci_sphere_points",
+        lambda recon_arg, point_count, radius_multiplier, sphere_color=None, upper_hemisphere_only=False: (sampled_positions, sampled_colors)
+        if recon_arg is viewer.s.colmap_recon
+        and int(point_count) == 32
+        and float(radius_multiplier) == pytest.approx(2.5)
+        and tuple(float(v) for v in sphere_color) == pytest.approx((0.2, 0.4, 0.6))
+        and bool(upper_hemisphere_only) is True
+        else (_ for _ in ()).throw(AssertionError("unexpected fibonacci sphere sample request")),
+    )
+
+    session._ensure_cached_init_source(viewer, SimpleNamespace(seed=11))
+
+    assert np.array_equal(viewer.s.cached_init_fibonacci_positions, sampled_positions)
+    assert np.array_equal(viewer.s.cached_init_fibonacci_colors, sampled_colors)
+    assert viewer.s.cached_init_signature == session._cached_init_signature(viewer, SimpleNamespace(seed=11))
 
 
 def test_reset_loaded_runtime_clears_training_camera_colmap_caches(monkeypatch) -> None:

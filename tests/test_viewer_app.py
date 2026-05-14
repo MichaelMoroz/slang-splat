@@ -418,6 +418,34 @@ def test_reset_camera_callback_routes_through_run_action(monkeypatch) -> None:
     assert calls[1] == ("reset", viewer)
 
 
+def test_capture_python_frame_callback_routes_through_run_action() -> None:
+    calls: list[tuple[str, object]] = []
+    viewer = SimpleNamespace(
+        s=SimpleNamespace(pending_python_frame_capture=False),
+        _run_action=lambda action: calls.append(("run_action", action)),
+    )
+
+    app.SplatViewer._capture_python_frame_callback(viewer)
+
+    assert calls[0][0] == "run_action"
+    calls[0][1]()
+    assert viewer.s.pending_python_frame_capture is True
+
+
+def test_capture_renderdoc_frame_callback_routes_through_run_action() -> None:
+    calls: list[tuple[str, object]] = []
+    viewer = SimpleNamespace(
+        s=SimpleNamespace(pending_renderdoc_frame_capture=False),
+        _run_action=lambda action: calls.append(("run_action", action)),
+    )
+
+    app.SplatViewer._capture_renderdoc_frame_callback(viewer)
+
+    assert calls[0][0] == "run_action"
+    calls[0][1]()
+    assert viewer.s.pending_renderdoc_frame_capture is True
+
+
 def test_default_training_params_include_training_control_fields() -> None:
     params = app.default_training_params()
 

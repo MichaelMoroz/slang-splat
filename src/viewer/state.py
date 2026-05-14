@@ -50,6 +50,7 @@ class ColmapImportSettings:
     fibonacci_sphere_point_count: int = 0
     fibonacci_sphere_radius_multiplier: float = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_radius_multiplier", _VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_radius", 2.0)))
     fibonacci_sphere_color: tuple[float, float, float] = tuple(float(v) for v in _VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_color", (0.8, 0.8, 0.8)))
+    fibonacci_sphere_upper_hemisphere_only: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_upper_hemisphere_only", False))
     target_alpha_mode: int | None = None
     use_target_alpha_mask: bool = False
     pointcloud_enabled: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_pointcloud_enabled", False))
@@ -93,6 +94,7 @@ class ColmapImportProgress:
     fibonacci_sphere_point_count: int = 0
     fibonacci_sphere_radius_multiplier: float = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_radius_multiplier", _VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_radius", 2.0)))
     fibonacci_sphere_color: tuple[float, float, float] = tuple(float(v) for v in _VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_color", (0.8, 0.8, 0.8)))
+    fibonacci_sphere_upper_hemisphere_only: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_upper_hemisphere_only", False))
     target_alpha_mode: int | None = None
     use_target_alpha_mask: bool = False
     depth_value_mode: str = "z_depth"
@@ -184,6 +186,7 @@ class ViewerState:
     applied_training_signature: tuple[object, ...] | None = None; applied_training_runtime_signature: tuple[object, ...] | None = None; applied_training_runtime_factor: int | None = None
     cached_training_setup_signature: tuple[object, ...] | None = None; cached_training_setup: tuple[object, object, object, object] | None = None
     training_runtime_factor_changed: bool = False; pending_training_runtime_resize: bool = False; pending_training_reinitialize: bool = False
+    pending_python_frame_capture: bool = False; pending_renderdoc_frame_capture: bool = False
     last_training_batch_steps: int = 0; render_frame_index: int = 0
     last_periodic_renderer_reallocation_time: float | None = None
     training_elapsed_s: float = 0.0; training_resume_time: float | None = None

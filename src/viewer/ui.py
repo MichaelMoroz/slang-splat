@@ -795,6 +795,8 @@ class ToolkitWindow:
             reset_photometric=_noop,
             move_to_training_camera=_noop,
             reset_camera=_noop,
+            capture_python_frame=_noop,
+            capture_renderdoc_frame=_noop,
             save_defaults=_noop,
             set_graphics_api=lambda _value: None,
         )
@@ -1446,6 +1448,27 @@ class ToolkitWindow:
         imgui.pop_style_color(3)
         imgui.pop_style_var()
 
+    def _draw_viewport_capture_buttons(self, ui: ViewerUI, image_origin: imgui.ImVec2) -> None:
+        scale = self._interface_scale_factor(ui)
+        view_x0, _view_y0, view_width, _view_height = self._viewport_content_rect
+        if view_width <= 1.0:
+            return
+        style = imgui.get_style()
+        labels = ("Python Frame Capture", "RenderDoc Capture")
+        button_width = max(float(imgui.calc_text_size(label).x) for label in labels) + 2.0 * float(style.frame_padding.x) + 2.0 * scale
+        button_height = float(imgui.get_frame_height())
+        spacing_y = float(style.item_spacing.y)
+        origin_x = float(view_x0) + float(view_width) - _VIEWPORT_OVERLAY_MARGIN * scale - button_width
+        origin_y = float(image_origin.y) + _VIEWPORT_OVERLAY_MARGIN * scale
+        imgui.push_id("viewport_capture")
+        imgui.set_cursor_screen_pos(imgui.ImVec2(origin_x, origin_y))
+        if _imgui_opened(imgui.button(labels[0], imgui.ImVec2(button_width, 0.0))):
+            self.callbacks.capture_python_frame()
+        if _imgui_opened(imgui.button(labels[1], imgui.ImVec2(button_width, 0.0))):
+            self.callbacks.capture_renderdoc_frame()
+        self._append_viewport_ui_capture_rect((origin_x, origin_y, button_width, 2.0 * button_height + spacing_y))
+        imgui.pop_id()
+
     def _draw_training_camera_colmap_overlay(
         self,
         ui: ViewerUI,
@@ -1629,6 +1652,7 @@ class ToolkitWindow:
                 )
             self._draw_viewport_camera_overlays(ui, cursor)
             overlay_origin = self._draw_viewport_view_menu(ui, cursor)
+            self._draw_viewport_capture_buttons(ui, cursor)
             self._draw_viewport_debug_overlay(ui, overlay_origin)
         else:
             self._viewport_window_focused = False
@@ -2539,6 +2563,24 @@ class ToolkitWindow:
                 flags=imgui.SliderFlags_.logarithmic.value,
             )
             imgui.end_disabled()
+            imgui.table_next_row()
+            imgui.table_next_column()
+            imgui.table_next_column()
+            imgui.text_disabled("Upper Hemisphere")
+            imgui.table_next_column()
+            imgui.text_disabled("top half")
+            imgui.table_next_column()
+            imgui.begin_disabled(not fibonacci_enabled)
+            changed, upper_only = imgui.checkbox(
+                "##colmap_fibonacci_sphere_upper_hemisphere_only",
+                bool(ui._values.get("colmap_fibonacci_sphere_upper_hemisphere_only", False)),
+            )
+            if changed:
+                ui._values["colmap_fibonacci_sphere_upper_hemisphere_only"] = bool(upper_only)
+            if imgui.is_item_hovered():
+                imgui.set_item_tooltip("Restrict synthesized Fibonacci sky-sphere points to the upper hemisphere above the mean COLMAP camera center.")
+            imgui.end_disabled()
+            imgui.table_next_column()
             imgui.table_next_row()
             imgui.table_next_column()
             imgui.table_next_column()

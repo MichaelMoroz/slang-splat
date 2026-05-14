@@ -10,7 +10,7 @@ import slangpy as spy
 from ..utility import alloc_texture_2d, clamp_index, debug_region, require_not_none
 from ..filter import SeparableGaussianBlur
 from ..training import PPISP_FIELD_SPECS, PPISPTonemapParams, resolve_colorspace_mod, resolve_sh_band
-from . import session
+from . import frame_capture, session
 from .buffer_debug import ResourceDebugSnapshot, collect_resource_debug_snapshot, query_total_device_vram_capacity, query_total_device_vram_used_cached, split_resource_usage
 from .presenter_state import (
     _debug_frame_idx,
@@ -1021,16 +1021,18 @@ def _render_main_view(viewer: object, encoder: spy.CommandEncoder) -> spy.Textur
     return _dispatch_viewport_present(viewer, encoder, out_tex, width, height, width, height, source_is_linear=False)
 
 
-def render_frame(viewer: object, render_context: spy.AppWindow.RenderContext) -> None:
+def _render_frame_once(
+    viewer: object,
+    render_context: spy.AppWindow.RenderContext,
+    *,
+    dt: float,
+    now: float,
+    render_frame_index: int,
+) -> None:
     image, encoder = render_context.surface_texture, render_context.command_encoder
-    now = spy.time.perf_counter() if hasattr(spy, "time") else time.perf_counter()
-    dt = max(now - viewer.s.last_time, 1e-5)
-    viewer.s.last_time = now
-    iw, ih = int(image.width), int(image.height)
-    render_width, render_height = _viewport_target_size(viewer, iw, ih)
-    render_frame_index = int(getattr(viewer.s, "render_frame_index", 0))
-    viewer.s.render_frame_index = render_frame_index + 1
     try:
+        iw, ih = int(image.width), int(image.height)
+        render_width, render_height = _viewport_target_size(viewer, iw, ih)
         viewer.update_camera(dt)
         runtime_reconfigured = False
         if bool(getattr(viewer.s, "pending_training_reinitialize", False)):
@@ -1084,3 +1086,50 @@ def render_frame(viewer: object, render_context: spy.AppWindow.RenderContext) ->
         viewer.s.last_render_exception = viewer.s.last_error
         encoder.clear_texture_float(image, clear_value=[0.0, 0.0, 0.0, 1.0])
     update_ui_text(viewer, dt)
+
+
+def render_frame(viewer: object, render_context: spy.AppWindow.RenderContext) -> None:
+    now = spy.time.perf_counter() if hasattr(spy, "time") else time.perf_counter()
+    dt = max(now - viewer.s.last_time, 1e-5)
+    viewer.s.last_time = now
+    render_frame_index = int(getattr(viewer.s, "render_frame_index", 0))
+    viewer.s.render_frame_index = render_frame_index + 1
+
+    if bool(getattr(viewer.s, "pending_python_frame_capture", False)):
+        viewer.s.pending_python_frame_capture = False
+        try:
+            frame_capture.capture_python_frame(
+                lambda: _render_frame_once(
+                    viewer,
+                    render_context,
+                    dt=dt,
+                    now=now,
+                    render_frame_index=render_frame_index,
+                ),
+                frame_index=render_frame_index,
+            )
+        except Exception as exc:
+            viewer.s.last_error = str(exc)
+            viewer.s.last_render_exception = viewer.s.last_error
+        return
+
+    if bool(getattr(viewer.s, "pending_renderdoc_frame_capture", False)):
+        viewer.s.pending_renderdoc_frame_capture = False
+        try:
+            frame_capture.capture_renderdoc_frame(
+                lambda: _render_frame_once(
+                    viewer,
+                    render_context,
+                    dt=dt,
+                    now=now,
+                    render_frame_index=render_frame_index,
+                ),
+                device=viewer.device,
+                window=getattr(viewer, "_window", None),
+            )
+        except Exception as exc:
+            viewer.s.last_error = str(exc)
+            viewer.s.last_render_exception = viewer.s.last_error
+        return
+
+    _render_frame_once(viewer, render_context, dt=dt, now=now, render_frame_index=render_frame_index)

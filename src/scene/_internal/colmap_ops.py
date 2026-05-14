@@ -222,6 +222,7 @@ def sample_colmap_fibonacci_sphere_points(
     point_count: int,
     radius_multiplier: float = 2.0,
     sphere_color: tuple[float, float, float] | np.ndarray | None = None,
+    upper_hemisphere_only: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     count = max(int(point_count), 0)
     if count <= 0:
@@ -232,7 +233,10 @@ def sample_colmap_fibonacci_sphere_points(
     center = np.mean(centers, axis=0, dtype=np.float32)
     base_radius = np.float32(resolve_colmap_fibonacci_sphere_radius(recon, radius_multiplier))
     indices = np.arange(count, dtype=np.float32)
-    z = np.float32(1.0) - np.float32(2.0) * (indices + np.float32(0.5)) / np.float32(count)
+    if upper_hemisphere_only:
+        z = (indices + np.float32(0.5)) / np.float32(count) - np.float32(1.0)
+    else:
+        z = np.float32(1.0) - np.float32(2.0) * (indices + np.float32(0.5)) / np.float32(count)
     xy_radius = np.sqrt(np.maximum(np.float32(0.0), np.float32(1.0) - z * z)).astype(np.float32)
     theta = indices * np.float32(FIBONACCI_SPHERE_GOLDEN_ANGLE)
     directions = np.stack((np.cos(theta) * xy_radius, z, np.sin(theta) * xy_radius), axis=1).astype(np.float32)

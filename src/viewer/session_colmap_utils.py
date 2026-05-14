@@ -212,6 +212,7 @@ def _update_import_settings(
     fibonacci_sphere_point_count: int,
     fibonacci_sphere_radius_multiplier: float,
     fibonacci_sphere_color: tuple[float, float, float],
+    fibonacci_sphere_upper_hemisphere_only: bool = False,
     target_alpha_mode: int | None = None,
     use_target_alpha_mask: bool = False,
     pointcloud_enabled: bool | None = None,
@@ -264,6 +265,7 @@ def _update_import_settings(
         fibonacci_sphere_point_count=max(int(fibonacci_sphere_point_count), 0),
         fibonacci_sphere_radius_multiplier=max(float(fibonacci_sphere_radius_multiplier), 0.0),
         fibonacci_sphere_color=resolved_fibonacci_sphere_color,
+        fibonacci_sphere_upper_hemisphere_only=bool(fibonacci_sphere_upper_hemisphere_only),
         target_alpha_mode=resolved_target_alpha_mode,
         use_target_alpha_mask=target_alpha_skip_mask_enabled(resolved_target_alpha_mode),
         pointcloud_enabled=resolved_pointcloud_enabled,
@@ -315,6 +317,7 @@ def _update_import_settings(
     viewer.ui._values["colmap_fibonacci_sphere_point_count"] = max(int(fibonacci_sphere_point_count), 0)
     viewer.ui._values["colmap_fibonacci_sphere_radius_multiplier"] = max(float(fibonacci_sphere_radius_multiplier), 0.0)
     viewer.ui._values["colmap_fibonacci_sphere_color"] = resolved_fibonacci_sphere_color
+    viewer.ui._values["colmap_fibonacci_sphere_upper_hemisphere_only"] = bool(fibonacci_sphere_upper_hemisphere_only)
     viewer.ui._values["colmap_fibonacci_sphere_nn_radius_scale_coef"] = resolved_fibonacci_sphere_nn_radius_scale_coef
     viewer.ui._values["target_alpha_mode"] = resolved_target_alpha_mode
     viewer.ui._values["use_target_alpha_mask"] = target_alpha_skip_mask_enabled(resolved_target_alpha_mode)

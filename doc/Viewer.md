@@ -70,6 +70,13 @@ The viewport header exposes quick access to:
 - main camera reset,
 - the active SH band cap.
 
+### Viewport Capture
+
+The viewport includes a right-side overlay with two one-shot capture tools:
+
+- `Python Frame Capture`: profiles the next viewer frame with Python `cProfile` and writes both a readable `.txt` report and a raw `.prof` artifact into `temp/`.
+- `RenderDoc Capture`: opens or reuses `qrenderdoc`, then asks `slangpy.renderdoc` to wrap the next viewer frame in a RenderDoc capture. If `qrenderdoc` cannot be found, or if SlangPy still cannot control the opened RenderDoc instance, the viewer reports the failure through the normal error path and still renders the frame normally.
+
 ### Training Camera Mode
 
 When `Training Cameras` is enabled in the viewport, the viewport switches from the free-fly scene render to the currently selected training frame/debug view.
@@ -235,6 +242,7 @@ Point-based initializers can optionally append a Fibonacci shell around the arit
 
 - `Sphere Point Count` controls the number of appended shell points.
 - `Sphere Radius Multiplier` scales the max aligned COLMAP point distance from the shell center; each shell point also gets a deterministic radial jitter of up to 10% to reduce ordering aliasing.
+- `Upper Hemisphere` restricts the synthesized shell to the half-space above the shell center instead of spanning the full sphere.
 
 Those appended shell splats now use the same covariance-based point initializer as the other non-PLY point sources.
 

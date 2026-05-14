@@ -200,6 +200,7 @@ _VIEWER_IMPORT_EXPORT_FIELDS = (
     ("colmap_fibonacci_sphere_point_count", int),
     ("colmap_fibonacci_sphere_radius_multiplier", float),
     ("colmap_fibonacci_sphere_color", tuple),
+    ("colmap_fibonacci_sphere_upper_hemisphere_only", bool),
     ("colmap_fibonacci_sphere_nn_radius_scale_coef", float),
 )
 _VIEWER_UI_EXPORT_FIELDS = (

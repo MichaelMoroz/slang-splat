@@ -181,6 +181,7 @@ def test_build_ui_initializes_control_groups_and_internal_state() -> None:
         "colmap_custom_mesh_point_count",
         "colmap_custom_mesh_nn_radius_scale_coef",
         "colmap_fibonacci_sphere_enabled",
+        "colmap_fibonacci_sphere_upper_hemisphere_only",
         "colmap_fibonacci_sphere_nn_radius_scale_coef",
         "colmap_auto_rotate_scene",
         "colmap_training_image_color_init",
@@ -436,6 +437,41 @@ def test_camera_section_does_not_draw_ppisp_controls(monkeypatch) -> None:
     for spec in PPISP_FIELD_SPECS:
         assert spec.key not in drawn
     assert reset_calls == [("camera_ctx", tuple(spec.key for spec in ui.GROUP_SPECS["Camera"]))]
+
+
+def test_viewport_capture_buttons_route_capture_callbacks(monkeypatch) -> None:
+    button_labels: list[str] = []
+    calls: list[str] = []
+    capture_rects: list[tuple[float, float, float, float]] = []
+
+    monkeypatch.setattr(ui.imgui, "get_style", lambda: SimpleNamespace(frame_padding=ui.imgui.ImVec2(4.0, 3.0), item_spacing=ui.imgui.ImVec2(8.0, 6.0)))
+    monkeypatch.setattr(ui.imgui, "calc_text_size", lambda text: ui.imgui.ImVec2(140.0 if text == "Python Frame Capture" else 150.0, 14.0))
+    monkeypatch.setattr(ui.imgui, "get_frame_height", lambda: 20.0)
+    monkeypatch.setattr(ui.imgui, "push_id", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "pop_id", lambda: None)
+    monkeypatch.setattr(ui.imgui, "set_cursor_screen_pos", lambda *_args: None)
+    monkeypatch.setattr(
+        ui.imgui,
+        "button",
+        lambda label, _size: button_labels.append(str(label)) or str(label) == "RenderDoc Capture",
+    )
+    toolkit = SimpleNamespace(
+        _viewport_content_rect=(50.0, 60.0, 400.0, 240.0),
+        _interface_scale_factor=lambda _ui_obj: 1.0,
+        _append_viewport_ui_capture_rect=lambda rect: capture_rects.append(tuple(float(v) for v in rect)),
+        callbacks=SimpleNamespace(
+            capture_python_frame=lambda: calls.append("python"),
+            capture_renderdoc_frame=lambda: calls.append("renderdoc"),
+        ),
+    )
+
+    ui.ToolkitWindow._draw_viewport_capture_buttons(toolkit, SimpleNamespace(_values={}, _texts={}), ui.imgui.ImVec2(50.0, 60.0))
+
+    assert button_labels == ["Python Frame Capture", "RenderDoc Capture"]
+    assert calls == ["renderdoc"]
+    assert len(capture_rects) == 1
+    assert capture_rects[0][2] > 0.0
+    assert capture_rects[0][3] > 0.0
 
 
 def test_training_setup_section_uses_struct_pretty_printer_for_summaries(monkeypatch) -> None:
