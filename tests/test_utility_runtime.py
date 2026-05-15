@@ -7,10 +7,12 @@ import slangpy as spy
 from src.utility import (
     INDIRECT_BUFFER_USAGE,
     RW_BUFFER_USAGE,
+    SHADER_INCLUDE_PATHS,
     SHADER_ROOT,
     alloc_buffer,
     alloc_texture_2d,
     clear_debug_resource_allocations,
+    default_slang_compiler_options,
     defer_resource_release,
     drain_all_deferred_resource_releases,
     drain_deferred_resource_releases,
@@ -72,6 +74,13 @@ def test_load_compute_items_loads_kernel_and_pipeline(device: spy.Device) -> Non
     assert set(items) == {"blur_horizontal", "prefix_scan"}
     assert items["blur_horizontal"] is not None
     assert items["prefix_scan"] is not None
+
+
+def test_default_slang_compiler_options_enable_renderdoc_debug_info() -> None:
+    options = default_slang_compiler_options()
+
+    assert options["include_paths"] == [str(path) for path in SHADER_INCLUDE_PATHS]
+    assert options["debug_info"] is spy.SlangDebugInfoLevel.standard
 
 
 class _FakeProgramDevice:

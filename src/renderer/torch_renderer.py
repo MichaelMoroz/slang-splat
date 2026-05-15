@@ -6,7 +6,7 @@ from typing import Any
 import numpy as np
 import slangpy as spy
 
-from ..utility import SHADER_INCLUDE_PATHS, SHADER_ROOT, alloc_buffer, debug_region, grow_capacity, load_compute_kernel, thread_count_2d
+from ..utility import SHADER_ROOT, alloc_buffer, debug_region, default_slang_compiler_options, grow_capacity, load_compute_kernel, thread_count_2d
 from .camera import Camera
 from .gaussian_renderer import GaussianRenderer
 from .renderer_context import GaussianRenderSettings, GaussianRendererContext
@@ -109,7 +109,7 @@ class TorchGaussianRendererContext(GaussianRendererContext):
             handles = spy.get_cuda_current_context_native_handles()
         return spy.Device(
             type=spy.DeviceType.cuda,
-            compiler_options={"include_paths": [str(path) for path in SHADER_INCLUDE_PATHS]},
+            compiler_options=default_slang_compiler_options(),
             enable_debug_layers=bool(enable_debug_layers),
             enable_rhi_validation=False,
             enable_cuda_interop=False,

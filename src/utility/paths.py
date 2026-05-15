@@ -43,10 +43,17 @@ def device_type_name(device_type: spy.DeviceType | object) -> str:
     return _DEVICE_TYPE_NAMES.get(device_type, "vulkan")
 
 
+def default_slang_compiler_options() -> dict[str, object]:
+    return {
+        "include_paths": [str(path) for path in SHADER_INCLUDE_PATHS],
+        "debug_info": spy.SlangDebugInfoLevel.standard,
+    }
+
+
 def create_default_device(device_type: spy.DeviceType = spy.DeviceType.vulkan, enable_debug_layers: bool = False) -> spy.Device:
     return spy.Device(
         type=device_type,
-        compiler_options={"include_paths": [str(path) for path in SHADER_INCLUDE_PATHS]},
+        compiler_options=default_slang_compiler_options(),
         enable_debug_layers=bool(enable_debug_layers),
         enable_rhi_validation=False,
         enable_print=False,
