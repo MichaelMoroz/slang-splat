@@ -258,6 +258,30 @@ class _ViewerWindowHost:
         self._surface_suspended = False
         self._configure_surface()
 
+    def _begin_renderdoc_capture(self, window: spy.Window) -> frame_capture.RenderDocCaptureSession | None:
+        if not bool(getattr(getattr(self, "s", None), "pending_renderdoc_frame_capture", False)):
+            return None
+        self.s.pending_renderdoc_frame_capture = False
+        try:
+            return frame_capture.begin_renderdoc_frame_capture(
+                device=self.device,
+                window=window,
+                frame_index=int(getattr(self.s, "render_frame_index", 0)),
+            )
+        except Exception as exc:
+            self.s.last_error = str(exc)
+            self.s.last_render_exception = self.s.last_error
+            return None
+
+    def _finish_renderdoc_capture(self, capture_session: frame_capture.RenderDocCaptureSession | None) -> None:
+        if capture_session is None:
+            return
+        try:
+            frame_capture.end_renderdoc_frame_capture(capture_session)
+        except Exception as exc:
+            self.s.last_error = str(exc)
+            self.s.last_render_exception = self.s.last_error
+
     def _recreate_window(self, *, open_exit_confirmation: bool) -> None:
         previous_window = getattr(self, "_window", None)
         if previous_window is not None:
@@ -336,9 +360,11 @@ class _ViewerWindowHost:
                 continue
             if not self._surface_renderable():
                 continue
+            capture_session = self._begin_renderdoc_capture(window)
             try:
                 surface_texture = surface.acquire_next_image()
             except Exception:
+                self._finish_renderdoc_capture(capture_session)
                 self._recover_surface_failure(window)
                 if self._terminated:
                     break
@@ -349,10 +375,12 @@ class _ViewerWindowHost:
             try:
                 surface.present()
             except Exception:
+                self._finish_renderdoc_capture(capture_session)
                 self._recover_surface_failure(window)
                 if self._terminated:
                     break
                 continue
+            self._finish_renderdoc_capture(capture_session)
             self._ignore_close_until_present = False
 
     def shutdown(self) -> None:
