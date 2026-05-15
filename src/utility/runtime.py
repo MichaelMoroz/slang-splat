@@ -44,6 +44,26 @@ def debug_region(target: object, label: str, color_index: int):
         yield active_target
 
 
+def _resolve_debug_scope_color(debug_label: str | None, debug_color_value: spy.float3 | None, debug_color_index: int | None) -> spy.float3 | None:
+    if debug_label is None:
+        return None
+    if debug_color_value is not None:
+        return debug_color_value
+    if debug_color_index is None:
+        raise ValueError("debug_color_value or debug_color_index is required when debug_label is provided.")
+    return debug_color(int(debug_color_index))
+
+
+@contextmanager
+def _dispatch_debug_scope(target: object, debug_label: str | None, debug_color_value: spy.float3 | None = None, debug_color_index: int | None = None):
+    color = _resolve_debug_scope_color(debug_label, debug_color_value, debug_color_index)
+    if debug_label is None or color is None:
+        yield target
+        return
+    with debug_group(target, str(debug_label), color) as active_target:
+        yield active_target
+
+
 def dispatch(
     *,
     kernel: spy.ComputeKernel,
@@ -54,23 +74,13 @@ def dispatch(
     debug_color_value: spy.float3 | None = None,
     debug_color_index: int | None = None,
 ) -> None:
-    push = getattr(command_encoder, "push_debug_group", None)
-    pop = getattr(command_encoder, "pop_debug_group", None)
-    active = False
-    if debug_label is not None:
-        color = debug_color_value
-        if color is None:
-            if debug_color_index is None:
-                raise ValueError("debug_color_value or debug_color_index is required when debug_label is provided.")
-            color = debug_color(int(debug_color_index))
-        active = callable(push) and callable(pop)
-        if active:
-            push(str(debug_label), color)
-    try:
+    with _dispatch_debug_scope(
+        command_encoder,
+        debug_label,
+        debug_color_value=debug_color_value,
+        debug_color_index=debug_color_index,
+    ):
         kernel.dispatch(thread_count=thread_count, vars=vars, command_encoder=command_encoder)
-    finally:
-        if active:
-            pop()
 
 
 def dispatch_indirect(
@@ -85,24 +95,14 @@ def dispatch_indirect(
     debug_color_value: spy.float3 | None = None,
     debug_color_index: int | None = None,
 ) -> None:
-    push = getattr(command_encoder, "push_debug_group", None)
-    pop = getattr(command_encoder, "pop_debug_group", None)
-    active = False
-    if debug_label is not None:
-        color = debug_color_value
-        if color is None:
-            if debug_color_index is None:
-                raise ValueError("debug_color_value or debug_color_index is required when debug_label is provided.")
-            color = debug_color(int(debug_color_index))
-        active = callable(push) and callable(pop)
-        if active:
-            push(str(debug_label), color)
-    try:
+    with _dispatch_debug_scope(
+        command_encoder,
+        debug_label,
+        debug_color_value=debug_color_value,
+        debug_color_index=debug_color_index,
+    ):
         with command_encoder.begin_compute_pass() as compute_pass:
             cursor = spy.ShaderCursor(compute_pass.bind_pipeline(pipeline))
             for name, value in vars.items():
                 setattr(cursor, name, resource_binder(value) if resource_binder is not None else value)
             compute_pass.dispatch_compute_indirect(spy.BufferOffsetPair(args_buffer, int(arg_offset) * 4))
-    finally:
-        if active:
-            pop()

@@ -6,6 +6,7 @@ from functools import lru_cache
 import operator
 from pathlib import Path
 import re
+from typing import Callable
 
 import numpy as np
 import slangpy as spy
@@ -1380,6 +1381,21 @@ class GaussianRenderer:
     def _debug_render_enabled(self) -> bool:
         return self.debug_mode != self.DEBUG_MODE_NORMAL
 
+    def _record_render_variant(
+        self,
+        encoder: spy.CommandEncoder,
+        *,
+        frame_label: str,
+        prepass_label: str,
+        record_prepass: Callable[[], None],
+        rasterize: Callable[[], None],
+    ) -> None:
+        with debug_region(encoder, frame_label, 18):
+            with debug_region(encoder, prepass_label, 19):
+                record_prepass()
+            with debug_region(encoder, "Renderer Raster", 20):
+                rasterize()
+
     def _rasterize(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray, output: spy.Texture | None = None, *, linear_output: bool = False, ppisp_tonemap: dict[str, object] | None = None) -> None:
         target = self.output_texture if output is None else output
         shader = self._k_raster_ppisp if ppisp_tonemap is not None else self._k_raster_linear if linear_output else self._k_raster_debug if self._debug_render_enabled() else self._k_raster
@@ -1522,20 +1538,23 @@ class GaussianRenderer:
         return generated, sorted_count
 
     def _record_prepass(self, encoder: spy.CommandEncoder, scene: GaussianScene, camera: Camera, enqueue_counter_readback: bool, sort_camera_position: np.ndarray | None = None, sort_camera_dither_sigma: float = 0.0, sort_camera_dither_seed: int = 0) -> None:
-        self._reset_prepass_counters(encoder)
-        self._project_visible_splats(encoder, scene, camera, sort_camera_position, sort_camera_dither_sigma, sort_camera_dither_seed)
-        self._sort_visible_splats(encoder)
-        visible_args = self._visible_dispatch_args(encoder)
-        self._count_visible_scanlines(encoder, visible_args)
-        self._prefix_scanline_counts(encoder)
-        self._emit_scanlines(encoder, visible_args)
-        scanline_args = self._scanline_dispatch_args(encoder)
-        self._count_scanline_tiles(encoder, scanline_args)
-        self._prefix_tile_counts(encoder)
-        if enqueue_counter_readback:
-            self._enqueue_counter_readback(encoder)
-        self._emit_tile_entries(encoder, scanline_args)
-        self._record_tile_range_stage(encoder, self._record_sort_stage(encoder))
+        with debug_region(encoder, "Prepass Setup", 21):
+            self._reset_prepass_counters(encoder)
+            self._project_visible_splats(encoder, scene, camera, sort_camera_position, sort_camera_dither_sigma, sort_camera_dither_seed)
+            self._sort_visible_splats(encoder)
+        with debug_region(encoder, "Prepass Scanlines", 22):
+            visible_args = self._visible_dispatch_args(encoder)
+            self._count_visible_scanlines(encoder, visible_args)
+            self._prefix_scanline_counts(encoder)
+            self._emit_scanlines(encoder, visible_args)
+        with debug_region(encoder, "Prepass Tiles", 23):
+            scanline_args = self._scanline_dispatch_args(encoder)
+            self._count_scanline_tiles(encoder, scanline_args)
+            self._prefix_tile_counts(encoder)
+            if enqueue_counter_readback:
+                self._enqueue_counter_readback(encoder)
+            self._emit_tile_entries(encoder, scanline_args)
+            self._record_tile_range_stage(encoder, self._record_sort_stage(encoder))
 
     def _require_texture(self, attr: str, label: str) -> spy.Texture:
         texture = getattr(self, attr)
@@ -2060,7 +2079,8 @@ class GaussianRenderer:
 
     def record_prepass_for_current_scene(self, encoder: spy.CommandEncoder, camera: Camera, sort_camera_position: np.ndarray | None = None, sort_camera_dither_sigma: float = 0.0, sort_camera_dither_seed: int = 0) -> None:
         scene = self._require_scene()
-        self._record_prepass(encoder, scene, camera, enqueue_counter_readback=False, sort_camera_position=sort_camera_position, sort_camera_dither_sigma=sort_camera_dither_sigma, sort_camera_dither_seed=sort_camera_dither_seed)
+        with debug_region(encoder, "Renderer Prepass", 19):
+            self._record_prepass(encoder, scene, camera, enqueue_counter_readback=False, sort_camera_position=sort_camera_position, sort_camera_dither_sigma=sort_camera_dither_sigma, sort_camera_dither_seed=sort_camera_dither_seed)
 
     def rasterize_current_scene(self, encoder: spy.CommandEncoder, camera: Camera, background: np.ndarray) -> None:
         self._require_scene()
@@ -2121,17 +2141,25 @@ class GaussianRenderer:
         background_np = self._background_array(background)
         if command_encoder is None:
             enc = self.device.create_command_encoder()
-            with debug_region(enc, "Renderer Prepass", 19):
-                self._record_prepass(enc, scene, camera, enqueue_counter_readback=True)
-            self._rasterize(enc, camera, background_np)
+            self._record_render_variant(
+                enc,
+                frame_label="Renderer Display Render",
+                prepass_label="Renderer Prepass",
+                record_prepass=lambda: self._record_prepass(enc, scene, camera, enqueue_counter_readback=True),
+                rasterize=lambda: self._rasterize(enc, camera, background_np),
+            )
             self.device.submit_command_buffer(enc.finish())
             self._counter_readback_frame_id += 1
             self.device.wait()
         else:
-            with debug_region(command_encoder, "Renderer Prepass", 19):
-                self._record_prepass(command_encoder, scene, camera, enqueue_counter_readback=True)
+            self._record_render_variant(
+                command_encoder,
+                frame_label="Renderer Display Render",
+                prepass_label="Renderer Prepass",
+                record_prepass=lambda: self._record_prepass(command_encoder, scene, camera, enqueue_counter_readback=True),
+                rasterize=lambda: self._rasterize(command_encoder, camera, background_np),
+            )
             self._counter_readback_frame_id += 1
-            self._rasterize(command_encoder, camera, background_np)
         if read_stats:
             self._update_delayed_counter_stats()
         self._last_stats = self._stats_payload(scene.count, read_stats)
@@ -2151,17 +2179,25 @@ class GaussianRenderer:
         background_np = self._background_array(background)
         if command_encoder is None:
             enc = self.device.create_command_encoder()
-            with debug_region(enc, "Renderer Linear Prepass", 19):
-                self._record_prepass(enc, scene, camera, enqueue_counter_readback=True)
-            self._rasterize(enc, camera, background_np, linear_output=True)
+            self._record_render_variant(
+                enc,
+                frame_label="Renderer Linear Render",
+                prepass_label="Renderer Linear Prepass",
+                record_prepass=lambda: self._record_prepass(enc, scene, camera, enqueue_counter_readback=True),
+                rasterize=lambda: self._rasterize(enc, camera, background_np, linear_output=True),
+            )
             self.device.submit_command_buffer(enc.finish())
             self._counter_readback_frame_id += 1
             self.device.wait()
         else:
-            with debug_region(command_encoder, "Renderer Linear Prepass", 19):
-                self._record_prepass(command_encoder, scene, camera, enqueue_counter_readback=True)
+            self._record_render_variant(
+                command_encoder,
+                frame_label="Renderer Linear Render",
+                prepass_label="Renderer Linear Prepass",
+                record_prepass=lambda: self._record_prepass(command_encoder, scene, camera, enqueue_counter_readback=True),
+                rasterize=lambda: self._rasterize(command_encoder, camera, background_np, linear_output=True),
+            )
             self._counter_readback_frame_id += 1
-            self._rasterize(command_encoder, camera, background_np, linear_output=True)
         if read_stats:
             self._update_delayed_counter_stats()
         self._last_stats = self._stats_payload(scene.count, read_stats)
@@ -2182,17 +2218,25 @@ class GaussianRenderer:
         background_np = self._background_array(background)
         if command_encoder is None:
             enc = self.device.create_command_encoder()
-            with debug_region(enc, "Renderer PPISP Prepass", 19):
-                self._record_prepass(enc, scene, camera, enqueue_counter_readback=True)
-            self._rasterize(enc, camera, background_np, ppisp_tonemap=ppisp_tonemap)
+            self._record_render_variant(
+                enc,
+                frame_label="Renderer PPISP Render",
+                prepass_label="Renderer PPISP Prepass",
+                record_prepass=lambda: self._record_prepass(enc, scene, camera, enqueue_counter_readback=True),
+                rasterize=lambda: self._rasterize(enc, camera, background_np, ppisp_tonemap=ppisp_tonemap),
+            )
             self.device.submit_command_buffer(enc.finish())
             self._counter_readback_frame_id += 1
             self.device.wait()
         else:
-            with debug_region(command_encoder, "Renderer PPISP Prepass", 19):
-                self._record_prepass(command_encoder, scene, camera, enqueue_counter_readback=True)
+            self._record_render_variant(
+                command_encoder,
+                frame_label="Renderer PPISP Render",
+                prepass_label="Renderer PPISP Prepass",
+                record_prepass=lambda: self._record_prepass(command_encoder, scene, camera, enqueue_counter_readback=True),
+                rasterize=lambda: self._rasterize(command_encoder, camera, background_np, ppisp_tonemap=ppisp_tonemap),
+            )
             self._counter_readback_frame_id += 1
-            self._rasterize(command_encoder, camera, background_np, ppisp_tonemap=ppisp_tonemap)
         if read_stats:
             self._update_delayed_counter_stats()
         self._last_stats = self._stats_payload(scene.count, read_stats)
@@ -2219,17 +2263,25 @@ class GaussianRenderer:
         background_np = self._background_array(background)
         if command_encoder is None:
             enc = self.device.create_command_encoder()
-            with debug_region(enc, "Renderer Training Preview Prepass", 19):
-                self._record_prepass(enc, scene, camera, enqueue_counter_readback=True, sort_camera_position=sort_camera_position, sort_camera_dither_sigma=sort_camera_dither_sigma, sort_camera_dither_seed=sort_camera_dither_seed)
-            self._rasterize_training_forward(enc, camera, background_np, training_background_mode=training_background_mode, training_background_seed=training_background_seed, training_native_camera=training_native_camera, training_sample_vars=training_sample_vars)
+            self._record_render_variant(
+                enc,
+                frame_label="Renderer Training Preview",
+                prepass_label="Renderer Training Preview Prepass",
+                record_prepass=lambda: self._record_prepass(enc, scene, camera, enqueue_counter_readback=True, sort_camera_position=sort_camera_position, sort_camera_dither_sigma=sort_camera_dither_sigma, sort_camera_dither_seed=sort_camera_dither_seed),
+                rasterize=lambda: self._rasterize_training_forward(enc, camera, background_np, training_background_mode=training_background_mode, training_background_seed=training_background_seed, training_native_camera=training_native_camera, training_sample_vars=training_sample_vars),
+            )
             self.device.submit_command_buffer(enc.finish())
             self._counter_readback_frame_id += 1
             self.device.wait()
         else:
-            with debug_region(command_encoder, "Renderer Training Preview Prepass", 19):
-                self._record_prepass(command_encoder, scene, camera, enqueue_counter_readback=True, sort_camera_position=sort_camera_position, sort_camera_dither_sigma=sort_camera_dither_sigma, sort_camera_dither_seed=sort_camera_dither_seed)
+            self._record_render_variant(
+                command_encoder,
+                frame_label="Renderer Training Preview",
+                prepass_label="Renderer Training Preview Prepass",
+                record_prepass=lambda: self._record_prepass(command_encoder, scene, camera, enqueue_counter_readback=True, sort_camera_position=sort_camera_position, sort_camera_dither_sigma=sort_camera_dither_sigma, sort_camera_dither_seed=sort_camera_dither_seed),
+                rasterize=lambda: self._rasterize_training_forward(command_encoder, camera, background_np, training_background_mode=training_background_mode, training_background_seed=training_background_seed, training_native_camera=training_native_camera, training_sample_vars=training_sample_vars),
+            )
             self._counter_readback_frame_id += 1
-            self._rasterize_training_forward(command_encoder, camera, background_np, training_background_mode=training_background_mode, training_background_seed=training_background_seed, training_native_camera=training_native_camera, training_sample_vars=training_sample_vars)
         if read_stats:
             self._update_delayed_counter_stats()
         self._last_stats = self._stats_payload(scene.count, read_stats)
