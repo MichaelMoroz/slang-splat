@@ -441,44 +441,41 @@ def test_camera_section_does_not_draw_ppisp_controls(monkeypatch) -> None:
     assert reset_calls == [("camera_ctx", tuple(spec.key for spec in ui.GROUP_SPECS["Camera"]))]
 
 
-def test_viewport_capture_buttons_route_capture_callbacks(monkeypatch) -> None:
-    button_labels: list[str] = []
-    button_sizes: list[tuple[float, float]] = []
+def test_debug_menu_routes_capture_callbacks_below_separator(monkeypatch) -> None:
+    menu_labels: list[tuple[str, bool, bool]] = []
     calls: list[str] = []
-    capture_rects: list[tuple[float, float, float, float]] = []
-    cursor_positions: list[tuple[float, float]] = []
+    separators: list[str] = []
+    end_calls: list[str] = []
 
-    monkeypatch.setattr(ui.imgui, "get_style", lambda: SimpleNamespace(frame_padding=ui.imgui.ImVec2(4.0, 3.0), item_spacing=ui.imgui.ImVec2(8.0, 6.0)))
-    monkeypatch.setattr(ui.imgui, "calc_text_size", lambda text: ui.imgui.ImVec2(140.0 if text == "Python Frame Capture" else 150.0, 14.0))
-    monkeypatch.setattr(ui.imgui, "get_frame_height", lambda: 20.0)
-    monkeypatch.setattr(ui.imgui, "push_id", lambda *_args: None)
-    monkeypatch.setattr(ui.imgui, "pop_id", lambda: None)
-    monkeypatch.setattr(ui.imgui, "push_style_var", lambda *_args: None)
-    monkeypatch.setattr(ui.imgui, "pop_style_var", lambda *_args: None)
-    monkeypatch.setattr(ui.imgui, "set_cursor_screen_pos", lambda pos: cursor_positions.append((float(pos.x), float(pos.y))))
+    monkeypatch.setattr(ui.imgui, "begin_menu", lambda label: str(label) == "Debug")
+    monkeypatch.setattr(ui.imgui, "end_menu", lambda: end_calls.append("end"))
+    monkeypatch.setattr(ui.imgui, "separator", lambda: separators.append("separator"))
     monkeypatch.setattr(
-        ui.imgui,
-        "button",
-        lambda label, size: button_labels.append(str(label)) or button_sizes.append((float(size.x), float(size.y))) or str(label) == "RenderDoc Capture",
+        ui,
+        "_menu_item",
+        lambda label, shortcut="", selected=False, enabled=True: menu_labels.append((str(label), bool(selected), bool(enabled))) or str(label) == "RenderDoc Capture",
     )
     toolkit = SimpleNamespace(
-        _viewport_content_rect=(50.0, 60.0, 400.0, 240.0),
-        _interface_scale_factor=lambda _ui_obj: 1.0,
-        _append_viewport_ui_capture_rect=lambda rect: capture_rects.append(tuple(float(v) for v in rect)),
         callbacks=SimpleNamespace(
             capture_python_frame=lambda: calls.append("python"),
             capture_renderdoc_frame=lambda: calls.append("renderdoc"),
         ),
     )
+    viewer_ui = SimpleNamespace(_values={"show_resource_debug": False, "show_histograms": True}, _texts={})
 
-    ui.ToolkitWindow._draw_viewport_capture_buttons(toolkit, SimpleNamespace(_values={}, _texts={}), ui.imgui.ImVec2(50.0, 60.0))
+    ui.ToolkitWindow._draw_debug_menu(toolkit, viewer_ui)
 
-    assert button_labels == ["Python Frame Capture", "RenderDoc Capture"]
-    assert cursor_positions == [(284.0, 68.0), (284.0, 90.0)]
-    assert button_sizes == [(158.0, 16.0), (158.0, 16.0)]
+    assert menu_labels == [
+        ("Buffers", False, True),
+        ("Histograms", True, True),
+        ("Python Frame Capture", False, True),
+        ("RenderDoc Capture", False, True),
+    ]
+    assert separators == ["separator"]
     assert calls == ["renderdoc"]
-    assert len(capture_rects) == 1
-    assert capture_rects == [(284.0, 68.0, 158.0, 38.0)]
+    assert end_calls == ["end"]
+    assert viewer_ui._values["show_resource_debug"] is False
+    assert viewer_ui._values["show_histograms"] is True
 
 
 def test_training_setup_section_uses_struct_pretty_printer_for_summaries(monkeypatch) -> None:

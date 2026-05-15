@@ -1448,31 +1448,6 @@ class ToolkitWindow:
         imgui.pop_style_color(3)
         imgui.pop_style_var()
 
-    def _draw_viewport_capture_buttons(self, ui: ViewerUI, image_origin: imgui.ImVec2) -> None:
-        scale = self._interface_scale_factor(ui)
-        view_x0, _view_y0, view_width, _view_height = self._viewport_content_rect
-        if view_width <= 1.0:
-            return
-        style = imgui.get_style()
-        labels = ("Python Frame Capture", "RenderDoc Capture")
-        button_padding = imgui.ImVec2(max(4.0 * scale, 1.0), max(1.0 * scale, 1.0))
-        button_height = max(float(imgui.calc_text_size(labels[0]).y), float(imgui.calc_text_size(labels[1]).y)) + 2.0 * float(button_padding.y)
-        button_width = max(float(imgui.calc_text_size(label).x) for label in labels) + 2.0 * float(button_padding.x)
-        spacing_y = float(style.item_spacing.y)
-        origin_x = float(view_x0) + float(view_width) - _VIEWPORT_OVERLAY_MARGIN * scale - button_width
-        origin_y = float(image_origin.y) + _VIEWPORT_OVERLAY_MARGIN * scale
-        imgui.push_id("viewport_capture")
-        imgui.push_style_var(imgui.StyleVar_.frame_padding.value, button_padding)
-        imgui.set_cursor_screen_pos(imgui.ImVec2(origin_x, origin_y))
-        if _imgui_opened(imgui.button(labels[0], imgui.ImVec2(button_width, button_height))):
-            self.callbacks.capture_python_frame()
-        imgui.set_cursor_screen_pos(imgui.ImVec2(origin_x, origin_y + button_height + spacing_y))
-        if _imgui_opened(imgui.button(labels[1], imgui.ImVec2(button_width, button_height))):
-            self.callbacks.capture_renderdoc_frame()
-        imgui.pop_style_var()
-        self._append_viewport_ui_capture_rect((origin_x, origin_y, button_width, 2.0 * button_height + spacing_y))
-        imgui.pop_id()
-
     def _draw_training_camera_colmap_overlay(
         self,
         ui: ViewerUI,
@@ -1656,7 +1631,6 @@ class ToolkitWindow:
                 )
             self._draw_viewport_camera_overlays(ui, cursor)
             overlay_origin = self._draw_viewport_view_menu(ui, cursor)
-            self._draw_viewport_capture_buttons(ui, cursor)
             self._draw_viewport_debug_overlay(ui, overlay_origin)
         else:
             self._viewport_window_focused = False
@@ -2060,6 +2034,11 @@ class ToolkitWindow:
             selected = bool(ui._values.get(key, False))
             if _menu_item(label, selected=selected):
                 ui._values[key] = not selected
+        imgui.separator()
+        if _menu_item("Python Frame Capture"):
+            self.callbacks.capture_python_frame()
+        if _menu_item("RenderDoc Capture"):
+            self.callbacks.capture_renderdoc_frame()
         imgui.end_menu()
 
     def _draw_training_menu(self, ui: ViewerUI) -> None:
