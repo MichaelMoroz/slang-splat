@@ -145,12 +145,14 @@ uniform RWStructuredBuffer<float> g_DstSplatParams;
 uniform RWStructuredBuffer<float> g_DstSplatAge;
 uniform RWStructuredBuffer<float2> g_DstAdamMoments;
 uniform RWStructuredBuffer<float> g_DstSplatContributionHistory;
+uniform RWStructuredBuffer<float> g_DstSplatViewedFractionHistory;
 uniform RWStructuredBuffer<float> g_AppendParams;
 uniform RWStructuredBuffer<float> g_AppendSplatAge;
 uniform RWStructuredBuffer<uint> g_CloneCounts;
 uniform RWStructuredBuffer<uint4> g_SplatContributionInfo;
 uniform StructuredBuffer<float> g_SplatVisibleAreaPx;
-uniform StructuredBuffer<float> g_SplatContributionHistory;
+uniform RWStructuredBuffer<float> g_SplatContributionHistory;
+uniform RWStructuredBuffer<float> g_SplatViewedFractionHistory;
 uniform RWStructuredBuffer<float> g_GradientStats;
 uniform RWStructuredBuffer<float> g_RefinementWeights;
 uniform RWStructuredBuffer<float> g_RefinementWeightPrefix;
@@ -186,7 +188,7 @@ uniform float g_RefinementGradientVarianceWeightExponent;
 uniform float g_RefinementContributionWeightExponent;
 uniform float g_RefinementContributionAreaExponent;
 uniform float g_RefinementContributionViewCountExponent;
-uniform float g_RefinementContributionHistoryDecay;
+uniform float g_RefinementContributionEMADecay;
 uniform float g_RefinementPruneLowestContributionRatio;
 uniform float g_RefinementRadiusScale;
 
@@ -243,6 +245,30 @@ float splat_contribution_value(uint fixedContribution)
     return float(fixedContribution) / SPLAT_CONTRIBUTION_FIXED_SCALE;
 }
 
+float splat_contribution_ema_raw(uint splatId)
+{
+    float contribution = g_SplatContributionHistory[splatId];
+    return isfinite(contribution) ? max(contribution, 0.0) : 0.0;
+}
+
+float splat_viewed_fraction_ema_raw(uint splatId)
+{
+    float viewedFraction = g_SplatViewedFractionHistory[splatId];
+    return isfinite(viewedFraction) ? max(viewedFraction, 0.0) : 0.0;
+}
+
+float refinement_min_viewed_fraction()
+{
+    return 0.66 / max(float(g_RefinementCameraCount), 1.0);
+}
+
+float effective_refinement_contribution(float contributionEma, float viewedFractionEma)
+{
+    if (!(viewedFractionEma > refinement_min_viewed_fraction())) return 0.0;
+    float contribution = contributionEma / max(viewedFractionEma, SMALL_VALUE);
+    return isfinite(contribution) ? max(contribution, 0.0) : 0.0;
+}
+
 float refinement_contribution_area_scale(uint splatId)
 {
     float exponent = max(g_RefinementContributionAreaExponent, 0.0);
@@ -262,19 +288,7 @@ float refinement_contribution_count_scale(float count)
 
 float splat_refinement_contribution_raw(uint splatId)
 {
-    float currentMean = splat_average_contribution_raw(splatId);
-    float historyMean = g_SplatContributionHistory[splatId];
-    historyMean = isfinite(historyMean) ? max(historyMean, 0.0) : 0.0;
-    if (g_SplatContributionInfo[splatId].y > 0u)
-    {
-        if (historyMean > 0.0)
-        {
-            float historyWeight = clamp(g_RefinementContributionHistoryDecay, 0.0, 1.0);
-            return historyMean * historyWeight + currentMean * (1.0 - historyWeight);
-        }
-        return currentMean;
-    }
-    return historyMean;
+    return effective_refinement_contribution(splat_contribution_ema_raw(splatId), splat_viewed_fraction_ema_raw(splatId));
 }
 
 bool should_cull_refinement_splat(uint splatId, float alpha)
@@ -1118,7 +1132,7 @@ void csClearCloneCounts(uint3 dispatchThreadID : SV_DispatchThreadID)
     }
     if (splatId >= g_SrcSplatCount) return;
     g_CloneCounts[splatId] = 0u;
-    g_SplatContributionInfo[splatId] = uint4(0u);
+    g_SplatContributionInfo[splatId] = uint4(0u, 0u, asuint(splat_refinement_contribution_raw(splatId)), 0u);
     g_GradientStats[splatId * DEBUG_GRAD_STATS_STRIDE + 0u] = 0.0;
     g_GradientStats[splatId * DEBUG_GRAD_STATS_STRIDE + 1u] = 0.0;
 }
@@ -1153,22 +1167,22 @@ void csUpdateVisibleAverageContribution(uint3 dispatchThreadID : SV_DispatchThre
     {
         uint4 info = g_SplatContributionInfo[splatId];
         current = info.x;
-        if (current > 0u)
-        {
-            float average = asfloat(info.z);
-            average = isfinite(average) ? max(average, 0.0) : 0.0;
-            float normalizedCurrent = splat_contribution_value(current) / refinement_contribution_area_scale(splatId);
-            if (isfinite(normalizedCurrent) && normalizedCurrent > 0.0)
-            {
-                float previousCount = float(info.y);
-                float accumulatedContribution = previousCount > 0.0 ? average * refinement_contribution_count_scale(previousCount) : 0.0;
-                uint nextCount = info.y + 1u;
-                float nextAverage = (accumulatedContribution + normalizedCurrent) / refinement_contribution_count_scale(float(nextCount));
-                info.y = nextCount;
-                info.z = asuint(isfinite(nextAverage) ? max(nextAverage, 0.0) : 0.0);
-                g_SplatContributionInfo[splatId] = info;
-            }
-        }
+        float emaDecay = clamp(g_RefinementContributionEMADecay, 0.0, 1.0);
+        float emaBlend = 1.0 - emaDecay;
+        float contributionEma = splat_contribution_ema_raw(splatId);
+        float viewedFractionEma = splat_viewed_fraction_ema_raw(splatId);
+        float normalizedCurrent = current > 0u ? splat_contribution_value(current) / refinement_contribution_area_scale(splatId) : 0.0;
+        normalizedCurrent = isfinite(normalizedCurrent) ? max(normalizedCurrent, 0.0) : 0.0;
+        float seenSample = current > 0u ? 1.0 : 0.0;
+        contributionEma = contributionEma * emaDecay + normalizedCurrent * emaBlend;
+        viewedFractionEma = viewedFractionEma * emaDecay + seenSample * emaBlend;
+        contributionEma = isfinite(contributionEma) ? max(contributionEma, 0.0) : 0.0;
+        viewedFractionEma = isfinite(viewedFractionEma) ? max(viewedFractionEma, 0.0) : 0.0;
+        if (current > 0u) info.y += 1u;
+        info.z = asuint(effective_refinement_contribution(contributionEma, viewedFractionEma));
+        g_SplatContributionHistory[splatId] = contributionEma;
+        g_SplatViewedFractionHistory[splatId] = viewedFractionEma;
+        g_SplatContributionInfo[splatId] = info;
     }
 
     gsContributionMax[lane] = current;
@@ -1232,7 +1246,7 @@ void csPrepareRefinementPruneSortInputs(uint3 dispatchThreadID : SV_DispatchThre
     if (splatId >= g_SrcSplatCount) return;
 
     float alpha = opacity_from_raw(load_splat_raw_opacity(g_SrcSplatParams, g_SrcSplatCount, g_SrcPackedParamCount, splatId));
-    float contribution = splat_average_contribution_raw(splatId);
+    float contribution = splat_refinement_contribution_raw(splatId);
     bool eligible = alpha >= g_RefinementAlphaCullThreshold && contribution >= g_RefinementMinContributionThreshold;
     g_RefinementEligibleMask[splatId] = eligible ? 1u : 0u;
     g_RefinementPruneMask[splatId] = 0u;
@@ -1345,6 +1359,7 @@ void csRewriteRefinementSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
         store_splat_state(g_DstSplatParams, g_DstSplatCount, g_DstPackedParamCount, parentIndex, split_family_member(source, splatId, 0u, familySize, frameHash, familyMean));
         g_DstSplatAge[parentIndex] = 1.0;
         g_DstSplatContributionHistory[parentIndex] = 0.0;
+        g_DstSplatViewedFractionHistory[parentIndex] = 0.0;
         copy_adam_state(splatId, parentIndex);
         [loop] for (uint childSlot = 0u; childSlot < emittedCloneCount; childSlot++)
         {
@@ -1355,6 +1370,7 @@ void csRewriteRefinementSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
             store_splat_state(g_DstSplatParams, g_DstSplatCount, g_DstPackedParamCount, childIndex, child);
             g_DstSplatAge[childIndex] = 1.0;
             g_DstSplatContributionHistory[childIndex] = 0.0;
+            g_DstSplatViewedFractionHistory[childIndex] = 0.0;
             copy_adam_state(splatId, childIndex);
         }
         return;
@@ -1363,7 +1379,8 @@ void csRewriteRefinementSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
     store_splat_state(g_DstSplatParams, g_DstSplatCount, g_DstPackedParamCount, parentIndex, source);
     float age = g_SrcSplatAge[splatId];
     g_DstSplatAge[parentIndex] = max(isfinite(age) ? age : 0.0, 0.0) * 0.5;
-    g_DstSplatContributionHistory[parentIndex] = splat_refinement_contribution_raw(splatId);
+    g_DstSplatContributionHistory[parentIndex] = splat_contribution_ema_raw(splatId);
+    g_DstSplatViewedFractionHistory[parentIndex] = splat_viewed_fraction_ema_raw(splatId);
     copy_adam_state(splatId, parentIndex);
 }
 

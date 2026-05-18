@@ -172,6 +172,22 @@ def _read_contribution_history(trainer: GaussianTrainer, count: int | None = Non
     return buffer_to_numpy(trainer.refinement_buffers["splat_contribution_history"], np.float32)[:resolved].copy()
 
 
+def _read_viewed_fraction_history(trainer: GaussianTrainer, count: int | None = None) -> np.ndarray:
+    resolved = trainer.scene.count if count is None else int(count)
+    return buffer_to_numpy(trainer.refinement_buffers["splat_viewed_fraction_history"], np.float32)[:resolved].copy()
+
+
+def _write_contribution_ema_state(trainer: GaussianTrainer, contribution_ema: np.ndarray | list[float], viewed_fraction_ema: np.ndarray | list[float]) -> None:
+    contribution_values = np.zeros((max(trainer._refinement_splat_capacity, 1),), dtype=np.float32)
+    viewed_values = np.zeros((max(trainer._refinement_splat_capacity, 1),), dtype=np.float32)
+    contribution_array = np.ascontiguousarray(contribution_ema, dtype=np.float32).reshape(-1)
+    viewed_array = np.ascontiguousarray(viewed_fraction_ema, dtype=np.float32).reshape(-1)
+    contribution_values[: contribution_array.shape[0]] = contribution_array
+    viewed_values[: viewed_array.shape[0]] = viewed_array
+    trainer.refinement_buffers["splat_contribution_history"].copy_from_numpy(contribution_values)
+    trainer.refinement_buffers["splat_viewed_fraction_history"].copy_from_numpy(viewed_values)
+
+
 class _CopyRecorder:
     def __init__(self) -> None:
         self.writes: list[np.ndarray] = []
@@ -2328,6 +2344,7 @@ def test_trainer_allocates_minimal_refinement_buffers(device, tmp_path: Path) ->
         "clone_counts",
         "splat_contribution",
         "splat_contribution_history",
+        "splat_viewed_fraction_history",
         "splat_age",
         "gradient_stats",
         "refinement_eligible_mask",
@@ -2344,6 +2361,7 @@ def test_trainer_allocates_minimal_refinement_buffers(device, tmp_path: Path) ->
         "dst_splat_params",
         "dst_splat_age",
         "dst_splat_contribution_history",
+        "dst_splat_viewed_fraction_history",
         "camera_rows",
     }
     assert trainer.refinement_clone_budget() > 0
@@ -2597,11 +2615,13 @@ def test_visible_average_contribution_update_uses_area_and_view_count_exponents_
         device=device,
         renderer=renderer,
         scene=scene,
-        frames=[frame],
+        frames=[frame, frame, frame, frame],
         training_hparams=TrainingHyperParams(refinement_contribution_area_exponent=1.0, refinement_contribution_view_count_exponent=1.0),
         seed=123,
     )
-    _write_contribution_info(trainer, [10.0, 20.0, 30.0], current=[0, 200, 400], current_max=0)
+    current_values = [0, int(200.0 * SPLAT_CONTRIBUTION_FIXED_SCALE), int(400.0 * SPLAT_CONTRIBUTION_FIXED_SCALE)]
+    _write_contribution_info(trainer, [10.0, 20.0, 30.0], current=current_values, current_max=current_values[-1])
+    _write_contribution_ema_state(trainer, [10.0, 20.0, 30.0], [1.0, 1.0, 1.0])
     visible_area = np.ones((renderer._work_splat_capacity,), dtype=np.float32)
     visible_area[: scene.count] = np.array([1.0, 2.0, 4.0], dtype=np.float32)
     renderer.work_buffers["splat_visible_area_px"].copy_from_numpy(visible_area)
@@ -2612,10 +2632,32 @@ def test_visible_average_contribution_update_uses_area_and_view_count_exponents_
     device.wait()
 
     info = _read_contribution_info(trainer, scene.count)
-    np.testing.assert_array_equal(info[:, 0], np.array([0, 200, 400], dtype=np.uint32))
+    ema_decay = float(np.power(0.25, 1.0 / len(trainer.frames)))
+    ema_blend = 1.0 - ema_decay
+    np.testing.assert_array_equal(info[:, 0], np.array(current_values, dtype=np.uint32))
     np.testing.assert_array_equal(info[:, 1], np.array([1, 2, 2], dtype=np.uint32))
-    np.testing.assert_allclose(_average_contribution_from_info(info), np.array([10.0, 60.0, 65.0], dtype=np.float32), rtol=0.0, atol=1e-5)
-    assert int(info[0, 3]) == 400
+    np.testing.assert_allclose(
+        _average_contribution_from_info(info),
+        np.array([
+            10.0,
+            20.0 * ema_decay + 100.0 * ema_blend,
+            30.0 * ema_decay + 100.0 * ema_blend,
+        ], dtype=np.float32),
+        rtol=0.0,
+        atol=1e-5,
+    )
+    np.testing.assert_allclose(
+        _read_contribution_history(trainer, scene.count),
+        np.array([
+            10.0 * ema_decay,
+            20.0 * ema_decay + 100.0 * ema_blend,
+            30.0 * ema_decay + 100.0 * ema_blend,
+        ], dtype=np.float32),
+        rtol=0.0,
+        atol=1e-5,
+    )
+    np.testing.assert_allclose(_read_viewed_fraction_history(trainer, scene.count), np.array([ema_decay, 1.0, 1.0], dtype=np.float32), rtol=0.0, atol=1e-6)
+    assert int(info[0, 3]) == current_values[-1]
 
 
 def test_clear_current_contribution_preserves_visible_average(device, tmp_path: Path) -> None:
@@ -3110,7 +3152,7 @@ def test_refinement_rewrite_halves_unsplit_splat_age(device, tmp_path: Path) -> 
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-6, refinement_min_contribution=50),
+        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-6, refinement_min_contribution=0),
         seed=123,
     )
 
@@ -3123,7 +3165,7 @@ def test_refinement_rewrite_halves_unsplit_splat_age(device, tmp_path: Path) -> 
     np.testing.assert_allclose(splat_age, np.array([0.5], dtype=np.float32), rtol=0.0, atol=1e-7)
 
 
-def test_refinement_history_uses_decay_of_interval_means(device, tmp_path: Path) -> None:
+def test_refinement_rewrite_preserves_unsplit_ema_state_and_zeroes_effective_contribution_below_view_threshold(device, tmp_path: Path) -> None:
     scene = _make_scene(count=1, seed=93)
     scene.opacities[:] = np.array([0.6], dtype=np.float32)
     frame = _make_frame(tmp_path, image_name="refinement_ema_target.png", image_id=115)
@@ -3134,22 +3176,25 @@ def test_refinement_history_uses_decay_of_interval_means(device, tmp_path: Path)
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-6, refinement_min_contribution=50),
+        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-6, refinement_min_contribution=0),
         seed=123,
     )
 
     trainer._observed_contribution_pixel_count = observed_pixels
     clone_counts = np.array([0], dtype=np.uint32)
-    packed = _packed_contribution_info([100.0], trainer._refinement_splat_capacity)
-    packed[0, 1] = np.uint32(8)
-    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(packed)
-    trainer.refinement_buffers["splat_contribution_history"].copy_from_numpy(np.array([200.0], dtype=np.float32))
+    _write_contribution_info(trainer, [0.0])
+    _write_contribution_ema_state(trainer, [200.0], [0.5])
     trainer._run_refinement(clone_counts_override=clone_counts)
 
-    expected_average = 200.0 * gaussian_trainer_module.DEFAULT_REFINEMENT_CONTRIBUTION_HISTORY_DECAY + 100.0 * (1.0 - gaussian_trainer_module.DEFAULT_REFINEMENT_CONTRIBUTION_HISTORY_DECAY)
     np.testing.assert_allclose(
         _read_contribution_history(trainer, trainer.scene.count),
-        np.array([expected_average], dtype=np.float32),
+        np.array([200.0], dtype=np.float32),
+        rtol=0.0,
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        _read_viewed_fraction_history(trainer, trainer.scene.count),
+        np.array([0.5], dtype=np.float32),
         rtol=0.0,
         atol=1e-6,
     )
@@ -3175,22 +3220,26 @@ def test_refinement_rewrite_preserves_unsplit_contribution_history(device, tmp_p
 
     trainer._observed_contribution_pixel_count = observed_pixels
     clone_counts = np.array([0], dtype=np.uint32)
-    packed = _packed_contribution_info([200.0], trainer._refinement_splat_capacity)
-    packed[0, 1] = np.uint32(8)
-    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(packed)
-    trainer.refinement_buffers["splat_contribution_history"].copy_from_numpy(np.array([80.0], dtype=np.float32))
+    _write_contribution_info(trainer, [0.0])
+    _write_contribution_ema_state(trainer, [80.0], [0.8])
     trainer._run_refinement(clone_counts_override=clone_counts)
 
     np.testing.assert_allclose(
         _read_contribution_history(trainer, trainer.scene.count),
-        np.array([80.0 * gaussian_trainer_module.DEFAULT_REFINEMENT_CONTRIBUTION_HISTORY_DECAY + 200.0 * (1.0 - gaussian_trainer_module.DEFAULT_REFINEMENT_CONTRIBUTION_HISTORY_DECAY)], dtype=np.float32),
+        np.array([80.0], dtype=np.float32),
+        rtol=0.0,
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        _read_viewed_fraction_history(trainer, trainer.scene.count),
+        np.array([0.8], dtype=np.float32),
         rtol=0.0,
         atol=1e-6,
     )
     contribution_info = _read_contribution_info(trainer, trainer.scene.count)
     np.testing.assert_allclose(
         _average_contribution_from_info(contribution_info),
-        np.array([0.0], dtype=np.float32),
+        np.array([100.0], dtype=np.float32),
         rtol=0.0,
         atol=1e-6,
     )
@@ -3217,13 +3266,14 @@ def test_refinement_rewrite_resets_split_family_splat_age(device, tmp_path: Path
     clone_counts = np.array([1], dtype=np.uint32)
     trainer.refinement_buffers["splat_age"].copy_from_numpy(np.array([0.25], dtype=np.float32))
     _write_contribution_info(trainer, [200.0])
-    trainer.refinement_buffers["splat_contribution_history"].copy_from_numpy(np.array([80.0], dtype=np.float32))
+    _write_contribution_ema_state(trainer, [80.0], [0.8])
     trainer._run_refinement(clone_counts_override=clone_counts)
 
     assert trainer.scene.count == 2
     splat_age = buffer_to_numpy(trainer.refinement_buffers["splat_age"], np.float32)[: trainer.scene.count]
     np.testing.assert_allclose(splat_age, np.ones((2,), dtype=np.float32), rtol=0.0, atol=1e-7)
     np.testing.assert_allclose(_read_contribution_history(trainer, trainer.scene.count), np.zeros((2,), dtype=np.float32), rtol=0.0, atol=1e-7)
+    np.testing.assert_allclose(_read_viewed_fraction_history(trainer, trainer.scene.count), np.zeros((2,), dtype=np.float32), rtol=0.0, atol=1e-7)
 
 
 def test_refinement_compact_split_beta_scales_split_family_sigma(device, tmp_path: Path) -> None:
