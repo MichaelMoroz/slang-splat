@@ -155,7 +155,13 @@ def _packed_contribution_info(values: np.ndarray | list[float], capacity: int | 
 
 
 def _write_contribution_info(trainer: GaussianTrainer, values: np.ndarray | list[float], current: np.ndarray | list[int] | None = None, current_max: int | None = None) -> None:
-    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(_packed_contribution_info(values, trainer._refinement_splat_capacity, current, current_max))
+    contribution_values = np.maximum(np.ascontiguousarray(values, dtype=np.float32).reshape(-1), 0.0)
+    trainer.refinement_buffers["splat_contribution"].copy_from_numpy(_packed_contribution_info(contribution_values, trainer._refinement_splat_capacity, current, current_max))
+    _write_contribution_ema_state(
+        trainer,
+        contribution_values,
+        np.where(contribution_values > 0.0, 1.0, 0.0).astype(np.float32),
+    )
 
 
 def _read_contribution_info(trainer: GaussianTrainer, count: int | None = None) -> np.ndarray:
@@ -2687,22 +2693,32 @@ def _write_refinement_distribution_inputs(
     contribution_counts: np.ndarray | None = None,
 ) -> None:
     variances = np.ascontiguousarray(variances, dtype=np.float32).reshape(-1)
-    contributions = np.ones_like(variances) if contributions is None else np.ascontiguousarray(contributions, dtype=np.float32).reshape(-1)
-    current_contributions = contributions if current_contributions is None else np.ascontiguousarray(current_contributions, dtype=np.float32).reshape(-1)
+    if contributions is None:
+        contribution_values = _read_contribution_history(trainer, variances.shape[0])
+        if contribution_values.shape[0] != variances.shape[0]: contribution_values = np.zeros_like(variances)
+    else:
+        contribution_values = np.ascontiguousarray(contributions, dtype=np.float32).reshape(-1)
+    current_contributions = contribution_values if current_contributions is None else np.ascontiguousarray(current_contributions, dtype=np.float32).reshape(-1)
     counts = (
-        (np.maximum(contributions, 0.0) > 0.0).astype(np.uint32)
+        (np.maximum(contribution_values, 0.0) > 0.0).astype(np.uint32)
         if contribution_counts is None
         else np.ascontiguousarray(contribution_counts, dtype=np.uint32).reshape(-1)
     )
     stats = np.zeros((variances.shape[0], 2), dtype=np.float32)
     stats[:, 0] = np.maximum(variances, 0.0) * counts.astype(np.float32)
     trainer.refinement_buffers["gradient_stats"].copy_from_numpy(stats)
+    contribution_values = np.maximum(contribution_values, 0.0).astype(np.float32, copy=False)
+    _write_contribution_ema_state(
+        trainer,
+        contribution_values,
+        np.where(contribution_values > 0.0, 1.0, 0.0).astype(np.float32),
+    )
     packed = _packed_contribution_info(
-        np.maximum(contributions, 0.0),
+        contribution_values,
         trainer._refinement_splat_capacity,
         current=np.rint(np.maximum(current_contributions, 0.0) * SPLAT_CONTRIBUTION_FIXED_SCALE).astype(np.uint32),
     )
-    packed[: counts.shape[0], 1] = np.where(np.maximum(contributions, 0.0) > 0.0, counts, 0).astype(np.uint32)
+    packed[: counts.shape[0], 1] = np.where(contribution_values > 0.0, counts, 0).astype(np.uint32)
     trainer.refinement_buffers["splat_contribution"].copy_from_numpy(packed)
 
 
@@ -2864,7 +2880,7 @@ def test_refinement_sampling_exponent_controls_contribution_spikiness(device, tm
         seed=123,
     )
     _write_contribution_info(trainer, np.full((scene.count,), 500, dtype=np.float32))
-    _write_refinement_distribution_inputs(trainer, np.ones((scene.count,), dtype=np.float32), np.array([1.0, 2.0], dtype=np.float32))
+    _write_refinement_distribution_inputs(trainer, np.ones((scene.count,), dtype=np.float32), np.array([100.0, 200.0], dtype=np.float32))
 
     selections = np.zeros((scene.count,), dtype=np.int32)
     for seed in range(64):
@@ -2993,6 +3009,28 @@ def test_refinement_sampling_routes_all_mass_to_single_positive_weight(device, t
     clone_counts, survivor_mask = trainer._sample_refinement_clone_counts()
 
     assert int(np.count_nonzero(survivor_mask)) == 2
+    assert clone_counts[0] == trainer.refinement_clone_budget()
+    assert clone_counts[1] == 0
+
+
+def test_refinement_sampling_skips_splats_below_min_contribution(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=2, seed=199)
+    scene.opacities[:] = np.array([0.9, 0.9], dtype=np.float32)
+    frame = _make_frame(tmp_path, image_name="variance_below_min_contribution_target.png", image_id=199)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=_target_refinement_hparams(scene.count, 8, refinement_min_contribution=50),
+        seed=123,
+    )
+    _write_refinement_distribution_inputs(trainer, np.ones((scene.count,), dtype=np.float32), np.array([200.0, 49.0], dtype=np.float32))
+
+    clone_counts, survivor_mask = trainer._sample_refinement_clone_counts()
+
+    np.testing.assert_array_equal(survivor_mask, np.array([True, False]))
     assert clone_counts[0] == trainer.refinement_clone_budget()
     assert clone_counts[1] == 0
 

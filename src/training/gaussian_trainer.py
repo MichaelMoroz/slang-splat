@@ -671,10 +671,6 @@ class GaussianTrainer:
             return
 
         ratio = self.refinement_prune_ratio(step=self.state.step)
-        if ratio <= 0.0:
-            self._refinement_buffers["refinement_prune_mask"].copy_from_numpy(prune_mask)
-            return
-
         enc = self.device.create_command_encoder()
         self._dispatch(
             "prepare_refinement_prune_sort_inputs",
@@ -682,6 +678,10 @@ class GaussianTrainer:
             thread_count_1d(self._scene_count),
             self._refinement_vars(),
         )
+        if ratio <= 0.0:
+            self.device.submit_command_buffer(enc.finish())
+            self.device.wait()
+            return
         self._prefix_sum.scan_uint(
             enc,
             self._refinement_buffers["refinement_eligible_mask"],

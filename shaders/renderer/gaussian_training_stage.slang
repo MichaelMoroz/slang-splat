@@ -1276,8 +1276,7 @@ void csPrepareRefinementSamplingWeights(uint3 dispatchThreadID : SV_DispatchThre
     if (splatId >= g_SrcSplatCount) return;
 
     g_CloneCounts[splatId] = 0u;
-    float alpha = opacity_from_raw(load_splat_raw_opacity(g_SrcSplatParams, g_SrcSplatCount, g_SrcPackedParamCount, splatId));
-    bool eligible = !should_cull_refinement_splat(splatId, alpha);
+    bool eligible = g_RefinementEligibleMask[splatId] != 0u && g_RefinementPruneMask[splatId] == 0u;
     g_RefinementEligibleMask[splatId] = eligible ? 1u : 0u;
     g_RefinementWeights[splatId] = eligible ? refinement_sampling_distribution(splatId) : 0.0;
 }
