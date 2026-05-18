@@ -129,6 +129,7 @@ class GaussianRenderer:
     DEBUG_MODE_GRAD_VARIANCE = "grad_variance"
     DEBUG_MODE_CONTRIBUTION_AMOUNT = "contribution_amount"
     DEBUG_MODE_CURRENT_FRAME_SPLAT_CONTRIBUTION = "current_frame_splat_contribution"
+    DEBUG_MODE_VIEWED_FRACTION_EMA = "viewed_fraction_ema"
     DEBUG_MODE_ADAM_MOMENTUM = "adam_momentum"
     DEBUG_MODE_ADAM_SECOND_MOMENT = "adam_second_moment"
     DEBUG_MODE_SH_VIEW_DEPENDENT = "sh_view_dependent"
@@ -156,6 +157,7 @@ class GaussianRenderer:
         DEBUG_MODE_BLACK_NEGATIVE,
         DEBUG_MODE_GRAD_VARIANCE,
         DEBUG_MODE_REFINEMENT_DISTRIBUTION,
+        DEBUG_MODE_VIEWED_FRACTION_EMA,
     )
     CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT = "float"
     CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED = "fixed"
@@ -429,6 +431,9 @@ class GaussianRenderer:
 
     def _debug_splat_contribution_var(self) -> dict[str, object]:
         return {"g_SplatContributionInfo": self._debug_splat_contribution_buffer if self._debug_splat_contribution_buffer is not None else self._work_buffers["training_splat_contribution"]}
+
+    def _debug_splat_viewed_fraction_var(self) -> dict[str, object]:
+        return {"g_DebugSplatViewedFractionHistory": self._debug_splat_viewed_fraction_buffer if self._debug_splat_viewed_fraction_buffer is not None else self._work_buffers["debug_splat_viewed_fraction"]}
 
     def _debug_adam_moments_var(self) -> dict[str, object]:
         if self._debug_adam_moments_buffer is None: raise RuntimeError("Adam moment debug mode requires an Adam moments buffer.")
@@ -789,6 +794,7 @@ class GaussianRenderer:
         self._debug_grad_stats_buffer: spy.Buffer | None = None
         self._debug_splat_age_buffer: spy.Buffer | None = None
         self._debug_splat_contribution_buffer: spy.Buffer | None = None
+        self._debug_splat_viewed_fraction_buffer: spy.Buffer | None = None
         self._debug_adam_moments_buffer: spy.Buffer | None = None
         self._debug_contribution_scale = 1.0
         self._debug_grad_variance_inv_sample_count = 1.0
@@ -911,6 +917,7 @@ class GaussianRenderer:
             "debug_splat_age": max(self._work_splat_capacity, 1) * self._U32_BYTES,
             "debug_grad_norm": max(self._work_splat_capacity, 1) * self._U32_BYTES,
             "debug_grad_stats": max(self._work_splat_capacity, 1) * self._GRAD_STATS_STRIDE * self._U32_BYTES,
+            "debug_splat_viewed_fraction": max(self._work_splat_capacity, 1) * self._U32_BYTES,
             "visible_keys": max(self._work_splat_capacity, 1) * self._U32_BYTES,
             "visible_values": max(self._work_splat_capacity, 1) * self._U32_BYTES,
             "visible_counter": self._U32_BYTES,
@@ -998,6 +1005,7 @@ class GaussianRenderer:
             "debug_splat_age": allocated["debug_splat_age"],
             "debug_grad_norm": allocated["debug_grad_norm"],
             "debug_grad_stats": allocated["debug_grad_stats"],
+            "debug_splat_viewed_fraction": allocated["debug_splat_viewed_fraction"],
         }
         self._work_buffers = self._resource_groups.merged_work_buffers()
         self._sorted_keys_buffer = self._work_buffers["keys"]
@@ -1006,6 +1014,7 @@ class GaussianRenderer:
         self._work_buffers["debug_splat_age"].copy_from_numpy(np.ones((max(self._work_splat_capacity, 1),), dtype=np.float32))
         self._work_buffers["debug_grad_norm"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1),), dtype=np.float32))
         self._work_buffers["debug_grad_stats"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1), self._GRAD_STATS_STRIDE), dtype=np.float32))
+        self._work_buffers["debug_splat_viewed_fraction"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1),), dtype=np.float32))
         self._work_buffers["training_splat_contribution"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1), 4), dtype=np.uint32))
         self._work_buffers["training_rgb_loss"].copy_from_numpy(np.zeros((self._render_pixel_capacity(),), dtype=np.float32))
         self._work_buffers["training_rgb_loss_total"].copy_from_numpy(np.zeros((1,), dtype=np.float32))
@@ -1409,6 +1418,8 @@ class GaussianRenderer:
             vars.update(self._debug_splat_age_var())
         if debug_resources_enabled and self.debug_mode in (self.DEBUG_MODE_CONTRIBUTION_AMOUNT, self.DEBUG_MODE_CURRENT_FRAME_SPLAT_CONTRIBUTION, self.DEBUG_MODE_REFINEMENT_DISTRIBUTION):
             vars.update(self._debug_splat_contribution_var())
+        if debug_resources_enabled and self.debug_mode == self.DEBUG_MODE_VIEWED_FRACTION_EMA:
+            vars.update(self._debug_splat_viewed_fraction_var())
         if debug_resources_enabled and self.debug_mode in (self.DEBUG_MODE_ADAM_MOMENTUM, self.DEBUG_MODE_ADAM_SECOND_MOMENT):
             vars.update(self._debug_adam_moments_var())
         if debug_resources_enabled and self.debug_mode == self.DEBUG_MODE_GRAD_NORM:
@@ -2007,6 +2018,9 @@ class GaussianRenderer:
     def set_debug_splat_contribution_buffer(self, buffer: spy.Buffer | None) -> None:
         self._debug_splat_contribution_buffer = buffer
 
+    def set_debug_splat_viewed_fraction_buffer(self, buffer: spy.Buffer | None) -> None:
+        self._debug_splat_viewed_fraction_buffer = buffer
+
     def set_debug_adam_moments_buffer(self, buffer: spy.Buffer | None) -> None:
         self._debug_adam_moments_buffer = buffer
 
@@ -2033,6 +2047,12 @@ class GaussianRenderer:
             packed[0, 3] = int(np.max(current_raw_fixed))
         self._work_buffers["training_splat_contribution"].copy_from_numpy(packed)
         self._debug_splat_contribution_buffer = None
+
+    def upload_debug_splat_viewed_fraction(self, values: np.ndarray) -> None:
+        viewed_fraction = np.maximum(np.ascontiguousarray(values, dtype=np.float32).reshape(-1), 0.0)
+        self._ensure_work_buffers(max(int(viewed_fraction.shape[0]), self._scene_count, 1))
+        self._work_buffers["debug_splat_viewed_fraction"].copy_from_numpy(np.pad(viewed_fraction, (0, max(self._work_splat_capacity - viewed_fraction.shape[0], 0)), constant_values=0.0))
+        self._debug_splat_viewed_fraction_buffer = None
 
     def upload_debug_grad_norm(self, values: np.ndarray) -> None:
         grad = np.ascontiguousarray(values, dtype=np.float32).reshape(-1)

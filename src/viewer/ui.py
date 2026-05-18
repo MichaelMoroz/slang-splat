@@ -337,7 +337,7 @@ def _renderer_debug_control_keys(mode: str) -> tuple[str, ...]:
     if mode == "sh_coefficient": return ("debug_mode", "debug_sh_coeff_index")
     if mode == "splat_age": return ("debug_mode", "debug_splat_age_min", "debug_splat_age_max")
     if mode in ("splat_density", "splat_spatial_density", "splat_screen_density"): return ("debug_mode", "debug_density_min", "debug_density_max")
-    if mode in ("contribution_amount", "current_frame_splat_contribution"): return ("debug_mode", "debug_contribution_min", "debug_contribution_max")
+    if mode in ("contribution_amount", "current_frame_splat_contribution", "viewed_fraction_ema"): return ("debug_mode", "debug_contribution_min", "debug_contribution_max")
     if mode == "refinement_distribution": return ("debug_mode", "debug_refinement_distribution_min", "debug_refinement_distribution_max")
     if mode in ("adam_momentum", "adam_second_moment", "grad_variance"): return ("debug_mode", "debug_grad_norm_threshold")
     if mode == "depth_mean": return ("debug_mode", "debug_depth_mean_min", "debug_depth_mean_max")

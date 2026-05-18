@@ -189,6 +189,7 @@ uniform float g_RefinementContributionWeightExponent;
 uniform float g_RefinementContributionAreaExponent;
 uniform float g_RefinementContributionViewCountExponent;
 uniform float g_RefinementContributionEMADecay;
+uniform float g_RefinementViewedFractionZeroThreshold;
 uniform float g_RefinementPruneLowestContributionRatio;
 uniform float g_RefinementRadiusScale;
 
@@ -259,7 +260,7 @@ float splat_viewed_fraction_ema_raw(uint splatId)
 
 float refinement_min_viewed_fraction()
 {
-    return 0.66 / max(float(g_RefinementCameraCount), 1.0);
+    return max(g_RefinementViewedFractionZeroThreshold, 0.0) / max(float(g_RefinementCameraCount), 1.0);
 }
 
 float effective_refinement_contribution(float contributionEma, float viewedFractionEma)

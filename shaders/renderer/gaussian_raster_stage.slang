@@ -17,6 +17,7 @@ uniform float g_TargetAlphaThreshold;
 uniform RWStructuredBuffer<uint> g_CloneCounts;
 uniform StructuredBuffer<float> g_SplatAges;
 uniform RWStructuredBuffer<uint4> g_SplatContributionInfo;
+uniform StructuredBuffer<float> g_DebugSplatViewedFractionHistory;
 uniform PPISPTonemap g_PPISPTonemap;
 
 struct RasterState : IDifferentiable
@@ -475,6 +476,12 @@ float splat_current_contribution(uint splatId)
     return float(g_SplatContributionInfo[splatId].x) / SPLAT_CONTRIBUTION_FIXED_SCALE;
 }
 
+float splat_viewed_fraction_ema(uint splatId)
+{
+    float viewedFraction = g_DebugSplatViewedFractionHistory[splatId];
+    return isfinite(viewedFraction) ? max(viewedFraction, 0.0) : 0.0;
+}
+
 float splat_nonzero_contributing_camera_count(uint splatId)
 {
     return float(g_SplatContributionInfo[splatId].y);
@@ -490,6 +497,11 @@ float3 raster_current_frame_splat_contribution_color(uint splatId)
 {
     float contributionValue = splat_current_contribution(splatId) * max(g_Raster.debugContributionScale, 0.0);
     return jet_colormap(debug_normalize_range(contributionValue, g_Raster.debugContributionRange));
+}
+
+float3 raster_viewed_fraction_ema_color(uint splatId)
+{
+    return jet_colormap(debug_normalize_range(splat_viewed_fraction_ema(splatId), g_Raster.debugContributionRange));
 }
 
 uint raster_adam_moment_index(uint splatCount, uint paramId, uint splatId)
@@ -702,6 +714,7 @@ float3 raster_debug_color(RasterPixelInfo info, RasterReplayState replayState, u
     if (debugMode == DEBUG_MODE_SPLAT_AGE) return raster_splat_age_color(g_SplatAges[splatId]);
     if (debugMode == DEBUG_MODE_CONTRIBUTION_AMOUNT) return raster_contribution_amount_color(splatId);
     if (debugMode == DEBUG_MODE_CURRENT_FRAME_SPLAT_CONTRIBUTION) return raster_current_frame_splat_contribution_color(splatId);
+    if (debugMode == DEBUG_MODE_VIEWED_FRACTION_EMA) return raster_viewed_fraction_ema_color(splatId);
     if (debugMode == DEBUG_MODE_ADAM_MOMENTUM) return jet_colormap(raster_normalize_threshold_band(raster_adam_momentum_length(splatId), raster_threshold_from_range(g_Raster.debugAdamMomentumRange)));
     if (debugMode == DEBUG_MODE_ADAM_SECOND_MOMENT) return jet_colormap(raster_normalize_threshold_band(raster_adam_second_moment_length(splatId), raster_threshold_from_range(g_Raster.debugAdamMomentumRange)));
     if (debugMode == DEBUG_MODE_BLACK_NEGATIVE)

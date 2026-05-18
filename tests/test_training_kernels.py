@@ -2616,7 +2616,7 @@ def test_visible_average_contribution_update_uses_area_and_view_count_exponents_
         renderer=renderer,
         scene=scene,
         frames=[frame, frame, frame, frame],
-        training_hparams=TrainingHyperParams(refinement_contribution_area_exponent=1.0, refinement_contribution_view_count_exponent=1.0),
+        training_hparams=TrainingHyperParams(refinement_contribution_area_exponent=1.0, refinement_contribution_view_count_exponent=1.0, refinement_ema_pose_count_decay=0.5),
         seed=123,
     )
     current_values = [0, int(200.0 * SPLAT_CONTRIBUTION_FIXED_SCALE), int(400.0 * SPLAT_CONTRIBUTION_FIXED_SCALE)]
@@ -2632,7 +2632,7 @@ def test_visible_average_contribution_update_uses_area_and_view_count_exponents_
     device.wait()
 
     info = _read_contribution_info(trainer, scene.count)
-    ema_decay = float(np.power(0.25, 1.0 / len(trainer.frames)))
+    ema_decay = float(np.power(0.5, 1.0 / len(trainer.frames)))
     ema_blend = 1.0 - ema_decay
     np.testing.assert_array_equal(info[:, 0], np.array(current_values, dtype=np.uint32))
     np.testing.assert_array_equal(info[:, 1], np.array([1, 2, 2], dtype=np.uint32))
@@ -3201,6 +3201,30 @@ def test_refinement_rewrite_preserves_unsplit_ema_state_and_zeroes_effective_con
     contribution_info = _read_contribution_info(trainer, trainer.scene.count)
     np.testing.assert_array_equal(contribution_info[:, 1], np.array([0], dtype=np.uint32))
     np.testing.assert_allclose(_average_contribution_from_info(contribution_info), np.array([0.0], dtype=np.float32), rtol=0.0, atol=1e-6)
+
+
+def test_refinement_rewrite_uses_configured_viewed_fraction_zero_threshold(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=1, seed=94)
+    scene.opacities[:] = np.array([0.6], dtype=np.float32)
+    frame = _make_frame(tmp_path, image_name="refinement_viewed_fraction_threshold_target.png", image_id=116)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    observed_pixels = renderer.width * renderer.height
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-6, refinement_min_contribution=0, refinement_viewed_fraction_zero_threshold=0.4),
+        seed=123,
+    )
+
+    trainer._observed_contribution_pixel_count = observed_pixels
+    _write_contribution_info(trainer, [0.0])
+    _write_contribution_ema_state(trainer, [200.0], [0.5])
+    trainer._run_refinement(clone_counts_override=np.array([0], dtype=np.uint32))
+
+    contribution_info = _read_contribution_info(trainer, trainer.scene.count)
+    np.testing.assert_allclose(_average_contribution_from_info(contribution_info), np.array([400.0], dtype=np.float32), rtol=0.0, atol=1e-6)
 
 
 def test_refinement_rewrite_preserves_unsplit_contribution_history(device, tmp_path: Path) -> None:

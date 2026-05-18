@@ -192,6 +192,16 @@ def test_build_training_params_exposes_compact_refinement_controls() -> None:
     assert clamped.training.refinement_contribution_view_count_exponent == 99.0
 
 
+def test_build_training_params_exposes_refinement_ema_controls() -> None:
+    params = build_training_params(background=(1.0, 1.0, 1.0), refinement_ema_pose_count_decay=0.5, refinement_viewed_fraction_zero_threshold=1.25)
+    clamped = build_training_params(background=(1.0, 1.0, 1.0), refinement_ema_pose_count_decay=5.0, refinement_viewed_fraction_zero_threshold=-1.0)
+
+    assert params.training.refinement_ema_pose_count_decay == 0.5
+    assert params.training.refinement_viewed_fraction_zero_threshold == 1.25
+    assert clamped.training.refinement_ema_pose_count_decay == 1.0
+    assert clamped.training.refinement_viewed_fraction_zero_threshold == 0.0
+
+
 def test_build_training_params_preserves_refinement_prune_ratio() -> None:
     params = build_training_params(
         background=(1.0, 1.0, 1.0),

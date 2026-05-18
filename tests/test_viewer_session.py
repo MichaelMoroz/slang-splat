@@ -469,6 +469,9 @@ def test_reset_training_runtime_clears_all_training_debug_bindings(monkeypatch) 
         def set_debug_splat_contribution_buffer(self, buffer) -> None:
             calls.append((f"{self.prefix}_contribution", buffer))
 
+        def set_debug_splat_viewed_fraction_buffer(self, buffer) -> None:
+            calls.append((f"{self.prefix}_viewed_fraction", buffer))
+
         def set_debug_adam_moments_buffer(self, buffer) -> None:
             calls.append((f"{self.prefix}_adam", buffer))
 
@@ -503,12 +506,14 @@ def test_reset_training_runtime_clears_all_training_debug_bindings(monkeypatch) 
     assert ("main_grad_stats", None) in calls
     assert ("main_splat_age", None) in calls
     assert ("main_contribution", None) in calls
+    assert ("main_viewed_fraction", None) in calls
     assert ("main_adam", None) in calls
     assert ("main_pixels", 0) in calls
     assert ("debug_grad_norm", None) in calls
     assert ("debug_grad_stats", None) in calls
     assert ("debug_splat_age", None) in calls
     assert ("debug_contribution", None) in calls
+    assert ("debug_viewed_fraction", None) in calls
     assert ("debug_adam", None) in calls
     assert ("debug_pixels", 0) in calls
 
@@ -957,6 +962,7 @@ def test_ensure_training_runtime_resolution_rebinds_renderer_without_reset(monke
             self.bound = None
             self.grad_stats_bound = None
             self.contribution_bound = None
+            self.viewed_fraction_bound = None
             self.contribution_pixels = None
 
         def set_debug_grad_norm_buffer(self, buffer) -> None:
@@ -971,13 +977,16 @@ def test_ensure_training_runtime_resolution_rebinds_renderer_without_reset(monke
         def set_debug_splat_contribution_buffer(self, buffer) -> None:
             self.contribution_bound = buffer
 
+        def set_debug_splat_viewed_fraction_buffer(self, buffer) -> None:
+            self.viewed_fraction_bound = buffer
+
         def set_debug_contribution_observed_pixel_count(self, value) -> None:
             self.contribution_pixels = value
 
     new_renderer = SimpleNamespace(width=32, height=32, work_buffers={"debug_grad_norm": "grad_norm"})
     trainer = SimpleNamespace(
         compute_debug_grad_norm=True,
-        refinement_buffers={"splat_contribution": "contrib", "gradient_stats": "grad_stats"},
+        refinement_buffers={"splat_contribution": "contrib", "splat_viewed_fraction_history": "viewed_fraction", "gradient_stats": "grad_stats"},
         observed_contribution_pixel_count=2048,
         effective_train_downscale_factor=lambda: 2,
         max_training_resolution=lambda: (32, 32),
@@ -1010,6 +1019,7 @@ def test_ensure_training_runtime_resolution_rebinds_renderer_without_reset(monke
     assert viewer.s.renderer.bound == "grad_norm"
     assert viewer.s.renderer.grad_stats_bound == "grad_stats"
     assert viewer.s.renderer.contribution_bound == "contrib"
+    assert viewer.s.renderer.viewed_fraction_bound == "viewed_fraction"
     assert viewer.s.renderer.contribution_pixels == 2048
     assert calls == [
         ("copy", new_renderer),

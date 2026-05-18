@@ -1303,6 +1303,14 @@ def _training_debug_splat_contribution_buffer(viewer: object):
     )
 
 
+def _training_debug_splat_viewed_fraction_buffer(viewer: object):
+    return (
+        viewer.s.trainer.refinement_buffers["splat_viewed_fraction_history"]
+        if viewer.s.trainer is not None and "splat_viewed_fraction_history" in viewer.s.trainer.refinement_buffers
+        else None
+    )
+
+
 def _training_debug_adam_moments_buffer(viewer: object):
     return viewer.s.trainer.adam_optimizer.buffers["adam_moments"] if viewer.s.trainer is not None else None
 
@@ -1318,6 +1326,9 @@ def _clear_debug_buffers(renderer: GaussianRenderer | None) -> None:
     bind_contribution = getattr(renderer, "set_debug_splat_contribution_buffer", None)
     if callable(bind_contribution):
         bind_contribution(None)
+    bind_viewed_fraction = getattr(renderer, "set_debug_splat_viewed_fraction_buffer", None)
+    if callable(bind_viewed_fraction):
+        bind_viewed_fraction(None)
     bind_adam_moments = getattr(renderer, "set_debug_adam_moments_buffer", None)
     if callable(bind_adam_moments):
         bind_adam_moments(None)
@@ -1346,6 +1357,9 @@ def _apply_debug_buffers(viewer: object, renderer: GaussianRenderer | None) -> N
     bind_contribution = getattr(renderer, "set_debug_splat_contribution_buffer", None)
     if callable(bind_contribution):
         bind_contribution(_training_debug_splat_contribution_buffer(viewer))
+    bind_viewed_fraction = getattr(renderer, "set_debug_splat_viewed_fraction_buffer", None)
+    if callable(bind_viewed_fraction):
+        bind_viewed_fraction(_training_debug_splat_viewed_fraction_buffer(viewer))
     bind_adam_moments = getattr(renderer, "set_debug_adam_moments_buffer", None)
     if callable(bind_adam_moments):
         bind_adam_moments(_training_debug_adam_moments_buffer(viewer))
