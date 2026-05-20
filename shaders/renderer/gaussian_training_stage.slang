@@ -1436,7 +1436,7 @@ void csComposeEdgeDebug(uint3 dispatchThreadID : SV_DispatchThreadID)
             grad += luma * float2(float(x) * (y == 0 ? 2.0 : 1.0), float(y) * (x == 0 ? 2.0 : 1.0));
         }
     }
-    float normalized = saturate(length(grad) / DEBUG_EDGE_GRADIENT_DISPLAY_MAX);
+    float normalized = length(grad) / DEBUG_EDGE_GRADIENT_DISPLAY_MAX;
     g_DebugOutput[uint2(px, py)] = float4(jet_colormap(normalized), 1.0);
 }
 

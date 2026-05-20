@@ -407,7 +407,7 @@ float raster_normalize_log_band(float value, float valueFloor, float threshold, 
     float normalizedThreshold = max(threshold, valueFloor);
     float bandLog10Min = log2(max(normalizedThreshold * thresholdMinScale, valueFloor)) * LOG2_TO_LOG10;
     float bandLog10Max = log2(max(normalizedThreshold * thresholdMaxScale, valueFloor)) * LOG2_TO_LOG10;
-    return saturate((valueLog10 - bandLog10Min) / max(bandLog10Max - bandLog10Min, TINY_VALUE));
+    return (valueLog10 - bandLog10Min) / max(bandLog10Max - bandLog10Min, TINY_VALUE);
 }
 
 float raster_normalize_grad_norm(float gradNorm)
@@ -457,7 +457,7 @@ float raster_threshold_from_range(float2 valueRange)
 float3 raster_processed_count_color(uint processedCount)
 {
     float normalized = log2(float(processedCount) + 1.0) / max(log2(float(g_Raster.maxSplatSteps) + 1.0), 1.0);
-    return jet_colormap(saturate(normalized));
+    return jet_colormap(normalized);
 }
 
 float3 raster_splat_age_color(float splatAge)
