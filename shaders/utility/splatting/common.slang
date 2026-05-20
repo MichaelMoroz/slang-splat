@@ -487,7 +487,7 @@ float3 local_point_to_world(float3 pLocal, float3 worldPos, float3 invScale, flo
 
 float debug_normalize_range(float value, float2 range)
 {
-    return saturate((value - range.x) / max(range.y - range.x, SMALL_VALUE));
+    return (value - range.x) / max(range.y - range.x, SMALL_VALUE);
 }
 
 float debug_normalize_log_range(float value, float valueFloor, float valueCeil)
@@ -497,7 +497,7 @@ float debug_normalize_log_range(float value, float valueFloor, float valueCeil)
     float logLo = log2(lo);
     float logHi = log2(hi);
     float logValue = log2(max(value, lo));
-    return saturate((logValue - logLo) / max(logHi - logLo, SMALL_VALUE));
+    return (logValue - logLo) / max(logHi - logLo, SMALL_VALUE);
 }
 
 float gaussian_scale_volume(float3 logScale)
@@ -544,7 +544,7 @@ float raster_depth_output(float3 state)
 
 float3 jet_colormap(float value)
 {
-    float x = saturate(value);
+    float x = value;
     float r = saturate(1.5 - abs(4.0 * x - 3.0));
     float g = saturate(1.5 - abs(4.0 * x - 2.0));
     float b = saturate(1.5 - abs(4.0 * x - 1.0));
