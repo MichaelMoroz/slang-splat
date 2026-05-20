@@ -602,6 +602,7 @@ def _start_colmap_import_photometric_compensation(viewer: object, progress: Colm
         reconstruction=progress.recon,
         frames=progress.frames,
         hparams=_photometric_hparams(viewer),
+        database_path=progress.database_path,
         frame_source_textures=frame_source_textures,
     )
     _begin_photometric_pair_dataset_prepare(progress.photometric_trainer)
@@ -614,12 +615,14 @@ def _run_import_photometric_compensation_sync(
     recon: ColmapReconstruction,
     frames: list[ColmapFrame],
     frame_targets_native: list[spy.Texture] | None,
+    database_path: Path | None = None,
 ) -> PhotometricCompensationTrainer:
     trainer = PhotometricCompensationTrainer(
         device=viewer.device,
         reconstruction=recon,
         frames=frames,
         hparams=_photometric_hparams(viewer),
+        database_path=database_path,
         frame_source_textures=None if frame_targets_native is None else list(frame_targets_native),
     )
     try:
@@ -2165,7 +2168,7 @@ def import_colmap_dataset(
             seed=int(viewer.init_params().seed),
         )
     if bool(photometric_compensation_enabled):
-        photometric_trainer = _run_import_photometric_compensation_sync(viewer, recon, training_frames, frame_targets_native)
+        photometric_trainer = _run_import_photometric_compensation_sync(viewer, recon, training_frames, frame_targets_native, database_path=database_path)
     _finish_import_colmap_dataset(
         viewer,
         colmap_root=root,
@@ -2797,12 +2800,14 @@ def initialize_photometric_compensation(viewer: object, *, activate_when_ready: 
         _refresh_training_frames(viewer)
     if viewer.s.colmap_recon is None or not viewer.s.training_frames:
         return
+    colmap_import = getattr(viewer.s, "colmap_import", None)
     reset_photometric_compensation(viewer, clear_history=False)
     viewer.s.photometric_trainer = PhotometricCompensationTrainer(
         device=viewer.device,
         reconstruction=viewer.s.colmap_recon,
         frames=viewer.s.training_frames,
         hparams=_photometric_hparams(viewer),
+        database_path=getattr(colmap_import, "database_path", None),
         frame_source_textures=_photometric_frame_source_textures(viewer),
     )
     viewer.s.photometric_prepare_pending_active = bool(activate_when_ready)

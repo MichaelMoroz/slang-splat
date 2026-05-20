@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import sqlite3
 
 import numpy as np
 import pytest
@@ -89,6 +90,47 @@ def _make_reconstruction() -> tuple[ColmapReconstruction, list[ColmapFrame]]:
     }
     recon = ColmapReconstruction(root=Path("."), sparse_dir=Path("sparse/0"), cameras={}, images=images, points3d=points3d)
     return recon, frames
+
+
+def _colmap_pair_id(image_id_a: int, image_id_b: int) -> int:
+    first, second = sorted((int(image_id_a), int(image_id_b)))
+    return int(first * photometric_compensation_module._COLMAP_PAIR_ID_PRIME + second)
+
+
+def _write_match_database(path: Path) -> Path:
+    keypoints = {
+        1: np.array([[10.0, 20.0], [40.0, 18.0]], dtype=np.float32),
+        2: np.array([[12.0, 22.0], [42.0, 17.0], [8.0, 5.0]], dtype=np.float32),
+        3: np.array([[14.0, 24.0], [60.0, 30.0]], dtype=np.float32),
+    }
+    matches = {
+        (1, 2): np.array([[0, 0], [1, 1]], dtype=np.uint32),
+        (1, 3): np.array([[0, 0]], dtype=np.uint32),
+    }
+    with sqlite3.connect(str(path)) as conn:
+        conn.execute("CREATE TABLE images (image_id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+        conn.execute("CREATE TABLE keypoints (image_id INTEGER PRIMARY KEY, rows INTEGER NOT NULL, cols INTEGER NOT NULL, data BLOB)")
+        conn.execute("CREATE TABLE two_view_geometries (pair_id INTEGER PRIMARY KEY, rows INTEGER NOT NULL, cols INTEGER NOT NULL, data BLOB)")
+        conn.executemany(
+            "INSERT INTO images(image_id, name) VALUES (?, ?)",
+            [(image_id, f"frame_{image_id}.png") for image_id in sorted(keypoints)],
+        )
+        conn.executemany(
+            "INSERT INTO keypoints(image_id, rows, cols, data) VALUES (?, ?, ?, ?)",
+            [
+                (int(image_id), int(xy.shape[0]), int(xy.shape[1]), np.ascontiguousarray(xy, dtype=np.float32).tobytes())
+                for image_id, xy in keypoints.items()
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO two_view_geometries(pair_id, rows, cols, data) VALUES (?, ?, ?, ?)",
+            [
+                (_colmap_pair_id(image_id_a, image_id_b), int(pair_matches.shape[0]), int(pair_matches.shape[1]), np.ascontiguousarray(pair_matches, dtype=np.uint32).tobytes())
+                for (image_id_a, image_id_b), pair_matches in matches.items()
+            ],
+        )
+        conn.commit()
+    return path
 
 
 def _make_scene(count: int = 4, seed: int = 7) -> GaussianScene:
@@ -424,6 +466,34 @@ def test_track_pool_dispatch_sampling_matches_full_sampling() -> None:
     np.testing.assert_array_equal(dispatch.frame_indices_b, full.frame_indices_b)
     np.testing.assert_array_equal(dispatch.observation_indices_a, full.observation_indices_a)
     np.testing.assert_array_equal(dispatch.observation_indices_b, full.observation_indices_b)
+
+
+def test_build_photometric_observation_track_pool_falls_back_to_database_matches(tmp_path: Path) -> None:
+    frames = [_make_frame(1), _make_frame(2), _make_frame(3)]
+    recon = ColmapReconstruction(root=tmp_path, sparse_dir=tmp_path / "sparse" / "0", cameras={}, images={}, points3d={})
+    database_path = _write_match_database(tmp_path / "database.db")
+
+    track_pool = photometric_compensation_module.build_photometric_observation_track_pool(
+        recon,
+        frames,
+        min_track_length=2,
+        database_path=database_path,
+    )
+    pair_pool = build_photometric_observation_pair_pool(
+        recon,
+        frames,
+        min_track_length=2,
+        database_path=database_path,
+    )
+
+    np.testing.assert_array_equal(track_pool.point_ids, np.array([1, 2], dtype=np.int64))
+    np.testing.assert_array_equal(track_pool.track_lengths, np.array([3, 2], dtype=np.int32))
+    np.testing.assert_array_equal(track_pool.observation_frame_indices, np.array([0, 1, 2, 0, 1], dtype=np.int32))
+    np.testing.assert_allclose(track_pool.observation_xy, np.array([[10.0, 20.0], [12.0, 22.0], [14.0, 24.0], [40.0, 18.0], [42.0, 17.0]], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_array_equal(pair_pool.frame_indices_a, np.array([0, 0, 1, 0], dtype=np.int32))
+    np.testing.assert_array_equal(pair_pool.frame_indices_b, np.array([1, 2, 2, 1], dtype=np.int32))
+    np.testing.assert_allclose(pair_pool.xy_a, np.array([[10.0, 20.0], [10.0, 20.0], [12.0, 22.0], [40.0, 18.0]], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(pair_pool.xy_b, np.array([[12.0, 22.0], [14.0, 24.0], [14.0, 24.0], [42.0, 17.0]], dtype=np.float32), rtol=0.0, atol=1e-6)
 
 
 def test_photometric_packed_adam_converges_per_frame_params(device) -> None:

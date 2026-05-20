@@ -521,13 +521,15 @@ def test_reset_training_runtime_clears_all_training_debug_bindings(monkeypatch) 
 def test_initialize_photometric_compensation_reuses_training_textures(monkeypatch) -> None:
     textures = [object(), object()]
     captured: dict[str, object] = {"sync_calls": 0}
+    database_path = Path("dataset/database.db")
 
     class _FakePhotometricTrainer:
-        def __init__(self, *, device, reconstruction, frames, hparams, frame_source_textures=None) -> None:
+        def __init__(self, *, device, reconstruction, frames, hparams, database_path=None, frame_source_textures=None) -> None:
             captured["device"] = device
             captured["reconstruction"] = reconstruction
             captured["frames"] = frames
             captured["hparams"] = hparams
+            captured["database_path"] = database_path
             captured["frame_source_textures"] = frame_source_textures
             self.provider = object()
             self._pair_dataset_uploaded = False
@@ -572,6 +574,7 @@ def test_initialize_photometric_compensation_reuses_training_textures(monkeypatc
         ),
         s=SimpleNamespace(
             trainer=SimpleNamespace(_frame_targets_native=textures),
+            colmap_import=SimpleNamespace(database_path=database_path),
             colmap_recon=object(),
             training_frames=[SimpleNamespace(width=16, height=16), SimpleNamespace(width=16, height=16)],
             photometric_trainer=None,
@@ -584,6 +587,7 @@ def test_initialize_photometric_compensation_reuses_training_textures(monkeypatc
     session.initialize_photometric_compensation(viewer)
 
     assert captured["reconstruction"] is viewer.s.colmap_recon
+    assert captured["database_path"] == database_path
     assert captured["frame_source_textures"] == textures
     assert int(captured["hparams"].batch_pair_count) == 4096
     assert int(captured["hparams"].neighborhood_size) == 5
@@ -622,7 +626,7 @@ def test_advance_photometric_initialization_autostarts_when_requested(monkeypatc
     captured: dict[str, int] = {"sync_calls": 0}
 
     class _FakePhotometricTrainer:
-        def __init__(self, *, device, reconstruction, frames, hparams, frame_source_textures=None) -> None:
+        def __init__(self, *, device, reconstruction, frames, hparams, database_path=None, frame_source_textures=None) -> None:
             self.provider = object()
             self._pair_dataset_uploaded = False
             self._advance_calls = 0
@@ -2156,11 +2160,13 @@ def test_advance_colmap_import_applies_selected_image_downscale(tmp_path: Path, 
 
 def test_advance_colmap_import_runs_photometric_compensation_before_finalize(monkeypatch) -> None:
     calls: list[object] = []
+    database_path = Path("dataset/database.db")
 
     class _FakePhotometricTrainer:
-        def __init__(self, *, device, reconstruction, frames, hparams, frame_source_textures=None) -> None:
+        def __init__(self, *, device, reconstruction, frames, hparams, database_path=None, frame_source_textures=None) -> None:
             del device, reconstruction, hparams
             self.frames = list(frames)
+            self.database_path = database_path
             self.frame_source_textures = frame_source_textures
             self._pair_dataset_uploaded = False
             self._prepare_index = 0
@@ -2202,7 +2208,7 @@ def test_advance_colmap_import_runs_photometric_compensation_before_finalize(mon
             colmap_import_progress=ColmapImportProgress(
                 dataset_root=Path("dataset"),
                 colmap_root=Path("dataset"),
-                database_path=None,
+                database_path=database_path,
                 images_root=Path("dataset/images"),
                 init_mode="pointcloud",
                 custom_ply_path=None,
@@ -2277,6 +2283,7 @@ def test_advance_colmap_import_runs_photometric_compensation_before_finalize(mon
 
     assert viewer.s.colmap_import_progress is None
     assert isinstance(viewer.s.photometric_trainer, _FakePhotometricTrainer)
+    assert viewer.s.photometric_trainer.database_path == database_path
     assert viewer.s.photometric_trainer.state.step == 4
     assert calls == [
         ("finish", True, [viewer.s.photometric_trainer.frame_source_textures[0], viewer.s.photometric_trainer.frame_source_textures[1]]),

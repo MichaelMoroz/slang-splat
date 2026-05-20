@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import sqlite3
 from typing import Any
 
 import numpy as np
@@ -30,6 +31,7 @@ _PARAM_SETTINGS_U32_WIDTH = 7
 _PAIR_GRAD_THREADS = 64
 _PHOTOMETRIC_SHADER_PATH = SHADER_ROOT / "utility" / "photometric_compensation.slang"
 _PHOTOMETRIC_FULL_PAIR_DATASET_MAX_PAIRS = 1_000_000
+_COLMAP_PAIR_ID_PRIME = 2_147_483_647
 _PPISP_IDENTITY_VALUES = np.concatenate(
     [
         np.asarray(spec.default if spec.size > 1 else (spec.default,), dtype=np.float32).reshape(spec.size)
@@ -430,22 +432,26 @@ class PackedPPISPTonemapProvider(PPISPTonemapProvider):
         return self._packed_params.reshape(-1).copy() if flatten else self._packed_params.copy()
 
 
-def build_photometric_observation_track_pool(
+def _empty_photometric_observation_track_pool() -> PhotometricObservationTrackPool:
+    empty_i64 = np.zeros((0,), dtype=np.int64)
+    empty_i32 = np.zeros((0,), dtype=np.int32)
+    empty_xy = np.zeros((0, 2), dtype=np.float32)
+    empty_ranges = np.zeros((1,), dtype=np.int64)
+    return PhotometricObservationTrackPool(empty_i64, empty_i32, empty_ranges, empty_i32, empty_xy, empty_ranges.copy())
+
+
+def _build_photometric_observation_track_pool_from_sparse_tracks(
     reconstruction: ColmapReconstruction,
     frames: list[ColmapFrame],
     *,
-    min_track_length: int = 2,
+    min_track_length: int,
 ) -> PhotometricObservationTrackPool:
     frame_lookup = {int(frame.image_id): (frame_index, frame) for frame_index, frame in enumerate(frames)}
     min_track = max(int(min_track_length), 2)
     points = getattr(reconstruction, "points3d", {})
     images = getattr(reconstruction, "images", {})
     if not frame_lookup or not images or not points:
-        empty_i64 = np.zeros((0,), dtype=np.int64)
-        empty_i32 = np.zeros((0,), dtype=np.int32)
-        empty_xy = np.zeros((0, 2), dtype=np.float32)
-        empty_ranges = np.zeros((1,), dtype=np.int64)
-        return PhotometricObservationTrackPool(empty_i64, empty_i32, empty_ranges, empty_i32, empty_xy, empty_ranges.copy())
+        return _empty_photometric_observation_track_pool()
 
     max_point_id = max((int(point_id) for point_id in points), default=0)
     track_length_lookup = np.zeros((max(max_point_id, 0) + 1,), dtype=np.int32)
@@ -507,11 +513,7 @@ def build_photometric_observation_track_pool(
         xy_chunks.append(valid_xy)
 
     if not point_id_chunks:
-        empty_i64 = np.zeros((0,), dtype=np.int64)
-        empty_i32 = np.zeros((0,), dtype=np.int32)
-        empty_xy = np.zeros((0, 2), dtype=np.float32)
-        empty_ranges = np.zeros((1,), dtype=np.int64)
-        return PhotometricObservationTrackPool(empty_i64, empty_i32, empty_ranges, empty_i32, empty_xy, empty_ranges.copy())
+        return _empty_photometric_observation_track_pool()
 
     point_ids = np.ascontiguousarray(np.concatenate(point_id_chunks, axis=0), dtype=np.int64)
     track_lengths = np.ascontiguousarray(np.concatenate(track_length_chunks, axis=0), dtype=np.int32)
@@ -525,11 +527,7 @@ def build_photometric_observation_track_pool(
     unique_point_ids, starts, counts = np.unique(point_ids, return_index=True, return_counts=True)
     valid_tracks = counts >= 2
     if not np.any(valid_tracks):
-        empty_i64 = np.zeros((0,), dtype=np.int64)
-        empty_i32 = np.zeros((0,), dtype=np.int32)
-        empty_xy = np.zeros((0, 2), dtype=np.float32)
-        empty_ranges = np.zeros((1,), dtype=np.int64)
-        return PhotometricObservationTrackPool(empty_i64, empty_i32, empty_ranges, empty_i32, empty_xy, empty_ranges.copy())
+        return _empty_photometric_observation_track_pool()
 
     keep_observations = np.repeat(valid_tracks, counts)
     filtered_counts = np.ascontiguousarray(counts[valid_tracks], dtype=np.int64)
@@ -544,6 +542,246 @@ def build_photometric_observation_track_pool(
         observation_frame_indices=np.ascontiguousarray(frame_indices[keep_observations], dtype=np.int32),
         observation_xy=np.ascontiguousarray(xy[keep_observations], dtype=np.float32),
         pair_ranges=np.ascontiguousarray(pair_ranges, dtype=np.int64),
+    )
+
+
+def _decode_colmap_pair_id(pair_id: int) -> tuple[int, int]:
+    second = int(pair_id % _COLMAP_PAIR_ID_PRIME)
+    first = int((pair_id - second) // _COLMAP_PAIR_ID_PRIME)
+    return first, second
+
+
+def _chunked_values(values: tuple[int, ...], chunk_size: int = 900) -> tuple[tuple[int, ...], ...]:
+    if not values:
+        return ()
+    return tuple(values[index : index + int(chunk_size)] for index in range(0, len(values), int(chunk_size)))
+
+
+def _load_colmap_keypoint_xy_lookup(conn: sqlite3.Connection, image_ids: tuple[int, ...]) -> dict[int, np.ndarray]:
+    lookup: dict[int, np.ndarray] = {}
+    for chunk in _chunked_values(tuple(sorted({int(image_id) for image_id in image_ids}))):
+        placeholders = ", ".join("?" for _ in chunk)
+        query = f"SELECT image_id, rows, cols, data FROM keypoints WHERE image_id IN ({placeholders}) ORDER BY image_id"
+        for image_id, rows, cols, data in conn.execute(query, chunk):
+            row_count = max(int(rows), 0)
+            col_count = max(int(cols), 0)
+            if row_count <= 0 or col_count < 2 or data is None:
+                continue
+            values = np.frombuffer(data, dtype=np.float32)
+            expected = row_count * col_count
+            if values.size < expected:
+                continue
+            xy = np.ascontiguousarray(values[:expected].reshape(row_count, col_count)[:, :2], dtype=np.float32)
+            lookup[int(image_id)] = xy
+    return lookup
+
+
+def _build_photometric_observation_track_pool_from_match_table(
+    conn: sqlite3.Connection,
+    table_name: str,
+    frames: list[ColmapFrame],
+    keypoint_lookup: dict[int, np.ndarray],
+    *,
+    min_track_length: int,
+) -> PhotometricObservationTrackPool:
+    frame_lookup = {int(frame.image_id): (frame_index, frame) for frame_index, frame in enumerate(frames)}
+    relevant_image_ids = set(frame_lookup)
+    if not relevant_image_ids or not keypoint_lookup:
+        return _empty_photometric_observation_track_pool()
+
+    parent: list[int] = []
+    rank: list[int] = []
+    node_frame_indices: list[int] = []
+    node_keypoint_indices: list[int] = []
+    node_xy: list[np.ndarray] = []
+    observation_nodes: dict[tuple[int, int], int] = {}
+
+    def find(node_index: int) -> int:
+        root = int(node_index)
+        while parent[root] != root:
+            root = parent[root]
+        while parent[node_index] != node_index:
+            next_index = parent[node_index]
+            parent[node_index] = root
+            node_index = next_index
+        return root
+
+    def union(left_index: int, right_index: int) -> None:
+        left_root = find(left_index)
+        right_root = find(right_index)
+        if left_root == right_root:
+            return
+        left_rank = rank[left_root]
+        right_rank = rank[right_root]
+        if left_rank < right_rank:
+            parent[left_root] = right_root
+        elif left_rank > right_rank:
+            parent[right_root] = left_root
+        else:
+            parent[right_root] = left_root
+            rank[left_root] += 1
+
+    def ensure_node(image_id: int, keypoint_index: int) -> int:
+        key = (int(image_id), int(keypoint_index))
+        existing = observation_nodes.get(key)
+        if existing is not None:
+            return existing
+        frame_entry = frame_lookup.get(int(image_id))
+        keypoints = keypoint_lookup.get(int(image_id))
+        if frame_entry is None or keypoints is None:
+            return -1
+        if keypoint_index < 0 or keypoint_index >= int(keypoints.shape[0]):
+            return -1
+        frame_index, frame = frame_entry
+        xy = np.asarray(keypoints[int(keypoint_index)], dtype=np.float32).reshape(2)
+        if not np.isfinite(xy).all():
+            return -1
+        if not (0.0 <= float(xy[0]) <= float(frame.width) and 0.0 <= float(xy[1]) <= float(frame.height)):
+            return -1
+        node_index = len(parent)
+        observation_nodes[key] = node_index
+        parent.append(node_index)
+        rank.append(0)
+        node_frame_indices.append(int(frame_index))
+        node_keypoint_indices.append(int(keypoint_index))
+        node_xy.append(np.ascontiguousarray(xy, dtype=np.float32))
+        return node_index
+
+    query = f"SELECT pair_id, rows, cols, data FROM {table_name} ORDER BY pair_id"
+    for pair_id, rows, cols, data in conn.execute(query):
+        image_id_a, image_id_b = _decode_colmap_pair_id(int(pair_id))
+        if image_id_a not in relevant_image_ids or image_id_b not in relevant_image_ids:
+            continue
+        row_count = max(int(rows), 0)
+        col_count = max(int(cols), 0)
+        if row_count <= 0 or col_count < 2 or data is None:
+            continue
+        matches = np.frombuffer(data, dtype=np.uint32)
+        expected = row_count * col_count
+        if matches.size < expected:
+            continue
+        pairs = matches[:expected].reshape(row_count, col_count)[:, :2]
+        for left_keypoint_index, right_keypoint_index in np.asarray(pairs, dtype=np.int64):
+            left_node = ensure_node(image_id_a, int(left_keypoint_index))
+            right_node = ensure_node(image_id_b, int(right_keypoint_index))
+            if left_node < 0 or right_node < 0:
+                continue
+            union(left_node, right_node)
+
+    if not observation_nodes:
+        return _empty_photometric_observation_track_pool()
+
+    components: dict[int, list[int]] = {}
+    for node_index in range(len(parent)):
+        components.setdefault(find(node_index), []).append(node_index)
+
+    min_track = max(int(min_track_length), 2)
+    track_entries: list[tuple[tuple[tuple[int, int], ...], tuple[int, ...]]] = []
+    for component_nodes in components.values():
+        ordered_nodes = sorted(
+            component_nodes,
+            key=lambda node_index: (
+                int(node_frame_indices[node_index]),
+                int(node_keypoint_indices[node_index]),
+                float(node_xy[node_index][0]),
+                float(node_xy[node_index][1]),
+            ),
+        )
+        kept_nodes: list[int] = []
+        seen_frames: set[int] = set()
+        for node_index in ordered_nodes:
+            frame_index = int(node_frame_indices[node_index])
+            if frame_index in seen_frames:
+                continue
+            seen_frames.add(frame_index)
+            kept_nodes.append(int(node_index))
+        if len(kept_nodes) < min_track:
+            continue
+        sort_key = tuple((int(node_frame_indices[node_index]), int(node_keypoint_indices[node_index])) for node_index in kept_nodes)
+        track_entries.append((sort_key, tuple(kept_nodes)))
+
+    if not track_entries:
+        return _empty_photometric_observation_track_pool()
+
+    track_entries.sort(key=lambda entry: entry[0])
+    observation_ranges = np.zeros((len(track_entries) + 1,), dtype=np.int64)
+    track_lengths = np.empty((len(track_entries),), dtype=np.int32)
+    observation_frame_indices: list[int] = []
+    observation_xy: list[np.ndarray] = []
+    observation_offset = 0
+    for track_index, (_, kept_nodes) in enumerate(track_entries):
+        track_length = len(kept_nodes)
+        track_lengths[track_index] = np.int32(track_length)
+        observation_offset += track_length
+        observation_ranges[track_index + 1] = np.int64(observation_offset)
+        for node_index in kept_nodes:
+            observation_frame_indices.append(int(node_frame_indices[node_index]))
+            observation_xy.append(np.asarray(node_xy[node_index], dtype=np.float32))
+    pair_ranges = np.zeros((len(track_entries) + 1,), dtype=np.int64)
+    track_lengths_i64 = np.asarray(track_lengths, dtype=np.int64)
+    pair_ranges[1:] = np.cumsum(track_lengths_i64 * (track_lengths_i64 - 1) // 2, dtype=np.int64)
+    return PhotometricObservationTrackPool(
+        point_ids=np.arange(1, len(track_entries) + 1, dtype=np.int64),
+        track_lengths=np.ascontiguousarray(track_lengths, dtype=np.int32),
+        observation_ranges=np.ascontiguousarray(observation_ranges, dtype=np.int64),
+        observation_frame_indices=np.ascontiguousarray(np.asarray(observation_frame_indices, dtype=np.int32), dtype=np.int32),
+        observation_xy=np.ascontiguousarray(np.stack(observation_xy, axis=0), dtype=np.float32),
+        pair_ranges=np.ascontiguousarray(pair_ranges, dtype=np.int64),
+    )
+
+
+def _build_photometric_observation_track_pool_from_database_matches(
+    frames: list[ColmapFrame],
+    *,
+    database_path: Path,
+    min_track_length: int,
+) -> PhotometricObservationTrackPool:
+    if not frames:
+        return _empty_photometric_observation_track_pool()
+    db_path = Path(database_path).resolve()
+    if not db_path.exists() or not db_path.is_file():
+        return _empty_photometric_observation_track_pool()
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            table_names = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if "keypoints" not in table_names:
+                return _empty_photometric_observation_track_pool()
+            keypoint_lookup = _load_colmap_keypoint_xy_lookup(conn, tuple(int(frame.image_id) for frame in frames))
+            for table_name in ("two_view_geometries", "matches"):
+                if table_name not in table_names:
+                    continue
+                pool = _build_photometric_observation_track_pool_from_match_table(
+                    conn,
+                    table_name,
+                    frames,
+                    keypoint_lookup,
+                    min_track_length=min_track_length,
+                )
+                if len(pool) > 0:
+                    return pool
+    except sqlite3.Error:
+        return _empty_photometric_observation_track_pool()
+    return _empty_photometric_observation_track_pool()
+
+
+def build_photometric_observation_track_pool(
+    reconstruction: ColmapReconstruction,
+    frames: list[ColmapFrame],
+    *,
+    min_track_length: int = 2,
+    database_path: Path | None = None,
+) -> PhotometricObservationTrackPool:
+    track_pool = _build_photometric_observation_track_pool_from_sparse_tracks(
+        reconstruction,
+        frames,
+        min_track_length=min_track_length,
+    )
+    if len(track_pool) > 0 or database_path is None:
+        return track_pool
+    return _build_photometric_observation_track_pool_from_database_matches(
+        frames,
+        database_path=database_path,
+        min_track_length=min_track_length,
     )
 
 
@@ -602,12 +840,14 @@ def build_photometric_observation_pair_pool(
     frames: list[ColmapFrame],
     *,
     min_track_length: int = 2,
+    database_path: Path | None = None,
 ) -> PhotometricObservationPairPool:
     return materialize_photometric_observation_pair_pool(
         build_photometric_observation_track_pool(
             reconstruction,
             frames,
             min_track_length=min_track_length,
+            database_path=database_path,
         )
     )
 
@@ -804,6 +1044,7 @@ class PhotometricCompensationTrainer:
         hparams: PhotometricCompensationHyperParams | None = None,
         adam_hparams: PhotometricCompensationAdamHyperParams | None = None,
         seed: int = 0,
+        database_path: Path | None = None,
         frame_rgba_linear: list[np.ndarray] | None = None,
         frame_source_textures: list[spy.Texture] | None = None,
     ) -> None:
@@ -850,9 +1091,10 @@ class PhotometricCompensationTrainer:
             self.reconstruction,
             self.frames,
             min_track_length=self.hparams.min_track_length,
+            database_path=database_path,
         )
         if len(self.track_pool) <= 0:
-            raise ValueError("Photometric compensation requires at least one valid cross-view sparse-track pair.")
+            raise ValueError("Photometric compensation requires at least one valid cross-view observation pair.")
         self._pair_dataset_full_precompute_enabled = False
         self.pair_pool = self.track_pool
         self._pair_dataset_dispatch = _build_frame_observation_dataset_dispatch(self._frame_count, self.track_pool.observation_frame_indices)
